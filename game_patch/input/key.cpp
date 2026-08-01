@@ -25,7 +25,10 @@
 #include "../rf/os/os.h"
 #include "../rf/ui.h"
 #include "../multi/alpine_packets.h"
+#include "../multi/pit.h"
 #include "../multi/sprays.h"
+#include "../multi/vote_client.h"
+#include "../misc/vote_panel.h"
 #include "../os/console.h"
 #include "gamepad.h"
 #include "input.h"
@@ -342,12 +345,16 @@ CodeInjection control_config_init_patch{
                                        rf::AlpineControlConfigAction::AF_ACTION_REMOTE_SERVER_CFG);
         alpine_control_config_add_item(ccp, "Inspect Weapon", false, rf::KEY_I, -1, -1,
                                        rf::AlpineControlConfigAction::AF_ACTION_INSPECT_WEAPON);
-        alpine_control_config_add_item(ccp, "Cycle Spectate Modes", false, rf::KEY_PERIOD, -1, -1,
-                                       rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_TOGGLE_FREELOOK);
+        alpine_control_config_add_item(ccp, "Attach Spectate Camera", false, rf::KEY_PERIOD, -1, -1,
+                                       rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_ATTACH);
         alpine_control_config_add_item(ccp, "Toggle Spectate", false, rf::KEY_DIVIDE, -1, -1,
                                        rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_TOGGLE);
+        alpine_control_config_add_item(ccp, "Change Spectate View", false, rf::KEY_SEMICOL, -1, -1,
+                                       rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_CHANGE_VIEW);
         alpine_control_config_add_item(ccp, "Spray", 0, rf::KEY_Z, -1, -1,
                                        rf::AlpineControlConfigAction::AF_ACTION_SPRAY);
+        alpine_control_config_add_item(ccp, "Call Vote Menu", false, rf::KEY_F4, -1, -1,
+                                       rf::AlpineControlConfigAction::AF_ACTION_VOTE_MENU);
         alpine_control_config_add_item(ccp, "Center View", false, -1, -1, -1,
                                        rf::AlpineControlConfigAction::AF_ACTION_CENTER_VIEW);
         alpine_control_config_add_item(ccp, "Gyro Modifier", false, -1, -1, -1,
@@ -409,6 +416,20 @@ static void execute_alive_alpine_control(int action_index)
     }
 }
 
+// AF 1.4+ servers take votes as packets and keep the HUD notification alive
+// until they send the end event; older servers only understand the chat command.
+static void cast_local_vote(bool is_yes_vote)
+{
+    if (is_server_minimum_af_version(1, 4)) {
+        af_send_vote_cast(is_yes_vote);
+        vote_state_mark_local_voted();
+        return;
+    }
+
+    send_chat_line_packet(is_yes_vote ? "/vote yes" : "/vote no", nullptr);
+    remove_hud_vote_notification(); // optimistic; legacy servers send no tally
+}
+
 CodeInjection player_execute_action_patch{
     0x004A6283,
     [](auto& regs) {
@@ -448,24 +469,35 @@ CodeInjection player_execute_action_patch2{
         // only intercept alpine controls
         if (action_index >= starting_alpine_control_index) {
             const int alpine_action_index = action_index - starting_alpine_control_index;
+            // Limbo is handled by the endgame (map rating) path in the other
+            // patch; without the state check both run and F1 in limbo would also
+            // send a real vote packet.
             if (alpine_action_index
                 == static_cast<int>(rf::AlpineControlConfigAction::AF_ACTION_VOTE_YES)
                 && rf::is_multi
-                && !rf::is_server) {
-                send_chat_line_packet("/vote yes", nullptr);
-                remove_hud_vote_notification();
+                && !rf::is_server
+                && rf::gameseq_get_state() != rf::GS_MULTI_LIMBO) {
+                cast_local_vote(true);
             } else if (alpine_action_index
                 == static_cast<int>(rf::AlpineControlConfigAction::AF_ACTION_VOTE_NO)
                 && rf::is_multi
-                && !rf::is_server) {
-                send_chat_line_packet("/vote no", nullptr);
-                remove_hud_vote_notification();
+                && !rf::is_server
+                && rf::gameseq_get_state() != rf::GS_MULTI_LIMBO) {
+                cast_local_vote(false);
             } else if (alpine_action_index
                 == static_cast<int>(rf::AlpineControlConfigAction::AF_ACTION_READY)
-                && rf::is_multi
-                && !rf::is_server) {
-                send_chat_line_packet("/ready", nullptr);
-                draw_hud_ready_notification(false);
+                && rf::is_multi) {
+                if (rf::multi_get_game_type() == rf::NG_TYPE_PIT && !get_local_pre_match_active()) {
+                    // Pit: the Ready key toggles duel-queue membership.
+                    if (rf::is_server) {
+                        pit_handle_queue_request(rf::local_player, 2); // listen host applies directly
+                    } else {
+                        af_send_pit_queue_request(2);
+                    }
+                } else if (!rf::is_server) {
+                    af_send_ready_request(2);
+                    draw_hud_ready_notification(false);  // optimistic hide
+                }
             } else if (alpine_action_index
                 == static_cast<int>(rf::AlpineControlConfigAction::AF_ACTION_CHAT_MENU)
                 && rf::is_multi
@@ -515,12 +547,26 @@ CodeInjection player_execute_action_patch3{
             } else if (alpine_action_index
                 == static_cast<int>(rf::AlpineControlConfigAction::AF_ACTION_REMOTE_SERVER_CFG)
                 && is_server_minimum_af_version(1, 2)) {
+                if (vote_panel_is_gameplay_overlay_active()) {
+                    vote_panel_close();
+                }
                 g_remote_server_cfg_popup.toggle();
             } else if (alpine_action_index
-                == static_cast<int>(rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_TOGGLE_FREELOOK)
+                == static_cast<int>(rf::AlpineControlConfigAction::AF_ACTION_VOTE_MENU)
+                && rf::is_multi
+                && !rf::is_server
+                && rf::gameseq_get_state() == rf::GS_GAMEPLAY) {
+                vote_panel_toggle_gameplay();
+            } else if (alpine_action_index
+                == static_cast<int>(rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_ATTACH)
                 && !rf::is_dedicated_server
                 && multi_spectate_is_spectating()) {
-                multi_spectate_toggle_freelook();
+                multi_spectate_toggle_attach();
+            } else if (alpine_action_index
+                == static_cast<int>(rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_CHANGE_VIEW)
+                && !rf::is_dedicated_server
+                && multi_spectate_is_spectating()) {
+                multi_spectate_change_view();
             } else if (alpine_action_index
                 == static_cast<int>(rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_TOGGLE)
                 && !rf::is_dedicated_server) {
@@ -547,7 +593,10 @@ CodeInjection controls_process_patch{
 
 CodeInjection controls_process_chat_menu_patch{
     0x00430E19,
-    [](auto& regs) {
+    [] {
+        // Spectate numpad binds.
+        multi_spectate_process_bind_input();
+
         const bool chat_menu_numeric_capture_active =
             get_chat_menu_is_active()
             && !rf::console::console_is_visible()

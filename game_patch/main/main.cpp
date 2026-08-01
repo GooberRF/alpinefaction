@@ -30,6 +30,7 @@
 #include "../object/object.h"
 #include "../multi/multi.h"
 #include "../multi/gametype.h"
+#include "../multi/mutators.h"
 #include "../multi/bagman.h"
 #include "../multi/server.h"
 #include "../multi/server_internal.h"
@@ -161,6 +162,8 @@ FunHook<int()> rf_do_frame_hook{
         koth_do_frame();
         gamepad_do_frame();
         bagman_do_frame();
+        hud_pit_queue_auto_spectate();  // client-side Pit auto-spectate
+        gungame_client_do_frame();      // client-side Gun Game level-up notification watcher
         alpine_mesh_do_frame();
         atx_do_frame();
         fflink::do_frame();
@@ -579,6 +582,7 @@ extern "C" DWORD __declspec(dllexport) Init([[maybe_unused]] void* unused)
     fflink::do_patch();
     multi_scoreboard_apply_patch();
     gametype_do_patch();
+    mutators_do_patch();
     vpackfile_apply_patches();
     multi_spectate_appy_patch();
     high_fps_init();
@@ -589,6 +593,7 @@ extern "C" DWORD __declspec(dllexport) Init([[maybe_unused]] void* unused)
     mouse_apply_patch();
     key_apply_patch();
     gamepad_apply_patch();
+    control_input_filter_apply_patch();
 #if !defined(NDEBUG) && defined(HAS_EXPERIMENTAL)
     experimental_init();
 #endif

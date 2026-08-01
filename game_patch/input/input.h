@@ -19,3 +19,4 @@ void key_apply_patch();
 void gamepad_apply_patch();
 void gamepad_do_frame();
 void sdl_input_poll();
+void control_input_filter_apply_patch();

@@ -147,7 +147,11 @@ namespace rf
     static auto& level_point_in_climb_region = addr_as_ref<ClimbRegion*(Vector3* pos)>(0x0045CCA0);
     static auto& geo_region_test_point = addr_as_ref<bool(const Vector3& pos, GeoRegion* region)>(0x0045d520);
 
-    static auto& level_set_level_to_load = addr_as_ref<void(String filename, String state_filename)>(0x0045E2E0);
+    // The callee takes both Strings by value and String-destroys them (frees their buffers). Use String::Pod
+    // (trivial 8-byte {int max_len; char* buf}, ABI-identical under MSVC and GCC) so ownership transfers correctly.
+    // Passing rf::String by value here breaks on MinGW: GCC passes non-trivial classes by hidden reference while
+    // MSVC passes the 8 bytes inline, so the engine would read garbage and free a garbage pointer.
+    static auto& level_set_level_to_load = addr_as_ref<void(String::Pod filename, String::Pod state_filename)>(0x0045E2E0);
     static auto& game_new_game = addr_as_ref<void()>(0x00436950);
 
 }

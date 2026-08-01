@@ -5,6 +5,7 @@
 namespace rf
 {
     struct Player;
+    struct Entity;
 }
 
 enum class RoundState : uint8_t
@@ -17,7 +18,7 @@ enum class RoundState : uint8_t
 
 enum class RoundEndReason : uint8_t
 {
-    EarlyEnd = 0,    // gametype-defined end condition met (e.g. LMS: one player left)
+    EarlyEnd = 0,    // gametype-defined end condition met (e.g. Pit: a dueler died)
     TimeUp = 1,      // round time expired; tiebreak resolves winner
     LevelChange = 3  // level rotation triggered; not a real end
 };
@@ -42,7 +43,7 @@ struct RoundCallbacks
     void (*on_round_cleanup)() = nullptr;
 
     // Per-frame check the gametype can use to declare an early round end
-    // (e.g. LMS detecting <=1 alive). If returning true, *out_winner may be
+    // (e.g. Pit detecting <=1 dueler alive). If returning true, *out_winner may be
     // set to the surviving player (or left null). Called only while the
     // round is Active.
     bool (*should_end_round)(rf::Player** out_winner) = nullptr;
@@ -60,6 +61,15 @@ struct RoundCallbacks
     // Used to gate on minimum player count, warmup, etc.
     bool (*can_round_start)() = nullptr;
 
+    // Optional match-end arbiter for gametypes whose match length isn't a fixed
+    // round count (e.g. best-of-N with sudden death). Consulted after a round
+    // ends, once the winner has been credited. If set, it FULLY governs level
+    // rotation: return true to rotate now (match decided), false to continue to
+    // the next round regardless of cfg().max_rounds. If null, the rounds system
+    // falls back to the stock "current >= max_rounds" rotation. (Pit and Wipeout
+    // both install this to run until a score/round-win limit instead.)
+    bool (*is_match_over)() = nullptr;
+
     // Fired when a player joins while a round is already Active. The
     // gametype's job is to mark the player as "out for this round" — the
     // canonical marker is rf::Player::round_is_out, which the spawn gate
@@ -67,6 +77,13 @@ struct RoundCallbacks
     // on_round_begin. Not called for joins during Inactive/PostRound/
     // Intermission — the spawn gate handles those cases naturally.
     void (*on_late_join)(rf::Player* player) = nullptr;
+
+    // Optional per-player filter for the "Round X - fight!" HUD notification
+    // broadcast at round start. Return false to skip that player (e.g. Pit
+    // sends it only to the current duelers so it doesn't clobber the
+    // persistent queue overlay on waiting players). If null, everyone
+    // receives it.
+    bool (*wants_round_start_notification)(rf::Player* player) = nullptr;
 };
 
 // Register the gametype's hooks. Pass {} to clear. Safe to call repeatedly;
@@ -105,6 +122,12 @@ bool rounds_is_between_rounds(); // true during post-round OR intermission
 // Force end the current round. Safe to call from anywhere; defers to next
 // frame. winner may be null. No-op outside Active state.
 void rounds_request_end(rf::Player* winner, RoundEndReason reason);
+
+// Kill an entity through the full death pipeline with killer info cleared, so
+// no stale obituary/credit fires. No-op if the entity is null or already dying.
+// Shared teardown used by round-based gametypes (between-round cleanup,
+// forfeits). Server-side.
+void rounds_kill_entity_silent(rf::Entity* ep);
 
 // Install engine hooks.
 void rounds_do_patch();

@@ -361,21 +361,8 @@ namespace rf
         ATX_Set_Frame_Time
     };
 
-    // int to EventType
-    inline EventType int_to_event_type(int id)
-    {
-        return static_cast<EventType>(id);
-    }
-
-    // EventType to int
-    inline int event_type_to_int(EventType eventType)
-    {
-        return static_cast<int>(eventType);
-    }
-
     std::vector<rf::Event*> find_all_events_by_type(rf::EventType event_type);
     bool check_if_event_is_type(rf::Event* event, rf::EventType type);
     bool check_if_object_is_event_type(rf::Object* object, rf::EventType type);
     void activate_all_events_of_type(rf::EventType event_type, int trigger_handle, int triggered_by_handle, bool on);
-
 }

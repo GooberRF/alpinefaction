@@ -6,6 +6,7 @@ on:
       - '**.md'
   pull_request:
     paths-ignore: *paths
+  workflow_dispatch:
 
 permissions: {}
 
@@ -14,7 +15,7 @@ env:
   SCCACHE_GHA_ENABLED: 'true'
 
 jobs:
-  build-mingw:
+  build-gnu:
     runs-on: ubuntu-24.04
     # GCC 14 MinGW required for C++23 deducing-this (game_patch targets cxx_std_23).
     # Use mirror.gcr.io to avoid Docker Hub rate limits on shared GitHub runners.
@@ -22,8 +23,8 @@ jobs:
       image: mirror.gcr.io/library/debian:trixie
 
     steps:
-    - uses: actions/checkout@v4
-    - uses: mozilla-actions/sccache-action@v0.0.9
+    - uses: actions/checkout@v6
+    - uses: mozilla-actions/sccache-action@v0.0.10
 
     - name: Install packages
       run: |
@@ -32,7 +33,7 @@ jobs:
         DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
           g++-mingw-w64-i686-posix ninja-build wine32 wine cmake ca-certificates
 
-    - name: Create build environment
+    - name: Create a build environment
       run: cmake -E make_directory ./build
 
     - name: Configure CMake
@@ -52,11 +53,11 @@ jobs:
         mkdir -p $WINEPREFIX
         cmake --build . -j $(nproc)
 
-    - name: Stage artifacts (dist)
+    - name: Stage artifacts
       shell: bash
       run: |
         set -euo pipefail
-        out="$GITHUB_WORKSPACE/dist/mingw"
+        out="$GITHUB_WORKSPACE/dist/gnu"
         mkdir -p "$out"
 
         want=(AlpineFaction.dll AlpineEditor.dll AlpineFactionLauncher.exe CrashHandler.exe d3d8to9.dll alpinefaction.vpp)
@@ -65,21 +66,21 @@ jobs:
           src="$(find "$GITHUB_WORKSPACE/build" -type f -name "$f" -print -quit || true)"
           if [ -z "$src" ]; then
             echo "[ERROR] Missing $f (not found under build/)"
-            echo "Dumping likely output dirs:"
+            echo 'Dumping likely output dirs:'
             find "$GITHUB_WORKSPACE/build" -maxdepth 3 -type d -print
             exit 1
           fi
           cp -f "$src" "$out/$f"
         done
 
-        echo "Staged:"
+        echo 'Staged:'
         ls -la "$out"
 
-    - name: Upload artifact (MinGW)
-      uses: actions/upload-artifact@v4
+    - name: Upload artifacts (GNU)
+      uses: actions/upload-artifact@v6
       with:
-        name: alpinefaction-mingw
-        path: dist/mingw/**
+        name: alpinefaction-gnu
+        path: dist/gnu/**
         if-no-files-found: error
         retention-days: 14
 
@@ -87,8 +88,8 @@ jobs:
     runs-on: windows-2025
 
     steps:
-    - uses: actions/checkout@v4
-    - uses: mozilla-actions/sccache-action@v0.0.9
+    - uses: actions/checkout@v6
+    - uses: mozilla-actions/sccache-action@v0.0.10
 
     - name: Add VS_INSTALL and VS_TOOLS to GITHUB_ENV
       run: |
@@ -96,7 +97,7 @@ jobs:
         "VS_INSTALL=$vs" >> $env:GITHUB_ENV
         "VS_TOOLS=$(Join-Path $vs Common7\Tools)" >> $env:GITHUB_ENV
 
-    - name: Create build environment
+    - name: Create a build environment
       run: cmake -E make_directory .\build
 
     - name: Configure CMake
@@ -127,7 +128,7 @@ jobs:
           -DevCmdArguments '-vcvars_ver=14.44'
         cmake --build . -j $env:NUMBER_OF_PROCESSORS
 
-    - name: Stage artifacts (dist)
+    - name: Stage artifacts
       run: |
         $out = Join-Path $env:GITHUB_WORKSPACE dist\msvc
         New-Item -ItemType Directory -Force -Path $out | Out-Null
@@ -158,8 +159,8 @@ jobs:
         Write-Output 'Staged:'
         Get-ChildItem $out | Format-Table -AutoSize
 
-    - name: Upload artifact (MSVC)
-      uses: actions/upload-artifact@v4
+    - name: Upload artifacts (MSVC)
+      uses: actions/upload-artifact@v6
       with:
         name: alpinefaction-msvc
         path: dist/msvc/**

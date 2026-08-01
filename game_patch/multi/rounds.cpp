@@ -148,18 +148,43 @@ void start_round()
     // The engine uses multi_time_limit (== netgame.max_time_seconds) for the
     // HUD countdown rendered as (max_time - level.time). Setting it to the
     // round's deadline makes the existing HUD show the correct remaining time
-    // every round, with no new packet.
-    rf::multi_time_limit = g_rounds_runtime.round_deadline_level_time;
+    // every round, with no new packet. When round_time is 0 the round is
+    // untimed (e.g. Wipeout, which ends only on a team wipe): use the no-limit
+    // sentinel (<= 0) so no countdown appears on the HUD and the server browser
+    // advertises "no time limit" rather than a huge finite value. tick_active
+    // already skips time-up for untimed rounds.
+    if (cfg().round_time == 0) {
+        rf::multi_time_limit = 0.0f;
+    }
+    else {
+        rf::multi_time_limit = g_rounds_runtime.round_deadline_level_time;
+    }
 
     if (g_rounds_callbacks.on_round_begin) {
         g_rounds_callbacks.on_round_begin();
     }
 
-    af_broadcast_hud_notification(
-        std::format("Round {} of {} - fight!", g_rounds_runtime.current + 1, cfg().max_rounds),
-        3,
-        static_cast<int>(HudNotificationType::Round),
-        true);
+    const std::string round_msg = g_rounds_callbacks.is_match_over
+        ? std::format("Round {} - fight!", g_rounds_runtime.current + 1)
+        : std::format("Round {} of {} - fight!", g_rounds_runtime.current + 1, cfg().max_rounds);
+    // Single per-player delivery site: with no filter installed everyone gets
+    // the "Round X - fight!" line (equivalent to a broadcast); a gametype filter
+    // (e.g. Pit: duelers only, so waiting players keep their queue overlay)
+    // narrows the recipients. af_send_hud_notification handles the listen-server
+    // local-player case and the AF 1.4 recipient gating per player.
+    for (rf::Player& p : SinglyLinkedList{rf::player_list}) {
+        if (p.is_browser) continue;
+        if (g_rounds_callbacks.wants_round_start_notification
+            && !g_rounds_callbacks.wants_round_start_notification(&p)) {
+            continue;
+        }
+        af_send_hud_notification(
+            round_msg,
+            3,
+            static_cast<int>(HudNotificationType::Round),
+            true,
+            &p);
+    }
 }
 
 void enter_post_round()
@@ -194,11 +219,45 @@ void enter_intermission()
     }
 }
 
+void rotate_to_next_level()
+{
+    g_rounds_runtime.state = RoundState::Inactive;
+    g_rounds_runtime.current = 0;
+    g_rounds_runtime.pending_level_change = true; // gate Inactive→start until level actually loads
+    // Advance the rotation. multi_change_level is async; the latch above
+    // keeps rounds_do_frame from restarting a round-set on the doomed level.
+    set_manually_loaded_level(false);
+    rf::multi_change_level(nullptr);
+}
+
 void proceed_to_next_round_or_rotate()
 {
     // Called after the PostRound celebration window expires (or directly if
-    // post_round_time is 0). Decides whether to rotate the level (max rounds
-    // hit) or continue into intermission + the next round.
+    // post_round_time is 0). Decides whether to rotate the level (match/max
+    // rounds decided) or continue into intermission + the next round.
+
+    // Gametype-driven match end (best-of-N + sudden death etc.) takes priority
+    // over the fixed max_rounds count and fully governs rotation when present.
+    if (g_rounds_callbacks.is_match_over) {
+        if (g_rounds_callbacks.is_match_over()) {
+            rf::console::print("Rounds: match decided, advancing to next level.\n");
+            rotate_to_next_level();
+        }
+        else if (cfg().intermission_time > 0) {
+            enter_intermission();
+        }
+        else {
+            if (g_rounds_callbacks.on_round_cleanup) {
+                g_rounds_callbacks.on_round_cleanup();
+            }
+            if (!ready_to_start_round()) {
+                enter_intermission(); // hold here, no countdown
+                return;
+            }
+            start_round();
+        }
+        return;
+    }
 
     if (g_rounds_runtime.current >= cfg().max_rounds) {
         rf::console::print("Rounds: max rounds reached, advancing to next level.\n");
@@ -207,13 +266,7 @@ void proceed_to_next_round_or_rotate()
             3,
             static_cast<int>(HudNotificationType::Round),
             true);
-        g_rounds_runtime.state = RoundState::Inactive;
-        g_rounds_runtime.current = 0;
-        g_rounds_runtime.pending_level_change = true; // gate Inactive→start until level actually loads
-        // Advance the rotation. multi_change_level is async; the latch above
-        // keeps rounds_do_frame from restarting a round-set on the doomed level.
-        set_manually_loaded_level(false);
-        rf::multi_change_level(nullptr);
+        rotate_to_next_level();
         return;
     }
 
@@ -284,7 +337,7 @@ void process_pending_end()
 
 void tick_active()
 {
-    // 1. Gametype-driven early end (e.g. LMS one-alive condition)
+    // 1. Gametype-driven early end (e.g. Pit: a dueler died)
     if (g_rounds_callbacks.should_end_round) {
         rf::Player* w = nullptr;
         if (g_rounds_callbacks.should_end_round(&w)) {
@@ -293,8 +346,8 @@ void tick_active()
         }
     }
 
-    // 2. Time-up
-    if (rf::level.time >= g_rounds_runtime.round_deadline_level_time) {
+    // 2. Time-up (skipped entirely for untimed rounds, round_time == 0)
+    if (cfg().round_time != 0 && rf::level.time >= g_rounds_runtime.round_deadline_level_time) {
         rf::Player* w = nullptr;
         if (g_rounds_callbacks.resolve_timeout_winner) {
             w = g_rounds_callbacks.resolve_timeout_winner();
@@ -402,7 +455,7 @@ void rounds_level_init()
 {
     // Real level boundary: reset counter, state, AND drop any callbacks
     // registered by the previous gametype. The new gametype's level_init
-    // hook re-registers them (e.g. lms_level_init_post for LMS).
+    // hook re-registers them (e.g. pit_level_init_post for Pit).
     g_rounds_runtime.reset();
     g_rounds_callbacks = RoundCallbacks{};
 
@@ -467,6 +520,15 @@ void rounds_request_end(rf::Player* winner, RoundEndReason reason)
             ? static_cast<int>(winner->net_data->player_id)
             : -1;
     g_rounds_runtime.pending_reason = reason;
+}
+
+void rounds_kill_entity_silent(rf::Entity* ep)
+{
+    if (!rf::is_server) return;
+    if (!ep || rf::entity_is_dying(ep)) return;
+    ep->killer_handle = 0;
+    ep->killer_netid = -1;
+    rf::entity_maybe_die(ep);
 }
 
 void rounds_client_set_countdown(int duration_seconds)

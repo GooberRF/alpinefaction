@@ -45,7 +45,9 @@ endif()
 
 macro(enable_warnings target)
     if(NOT MSVC)
-        target_compile_options(${target} PRIVATE -Wall -Wextra -Wundef)
+        target_compile_options(${target} PRIVATE
+            -Wall -Wextra -Wundef
+            -Wformat -Wformat-security -Werror=format-security)
     else()
         target_compile_options(${target} PRIVATE
             /W3

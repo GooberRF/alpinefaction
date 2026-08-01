@@ -148,7 +148,9 @@ namespace rf
         NG_TYPE_ESC = 7,    // Escalation, as of AF v1.2
         NG_TYPE_BAG = 8,    // Bagman, as of AF v1.4
         NG_TYPE_TBAG = 9,   // Team Bagman, as of AF v1.4
-        NG_TYPE_LMS = 10,   // Last Miner Standing, as of AF v1.4
+        NG_TYPE_PIT = 10,   // Pit, as of AF v1.4
+        NG_TYPE_WO = 11,    // Wipeout, as of AF v1.4
+        NG_TYPE_GG = 12, // Gun Game, as of AF v1.4
         // Sentinel: UNK must always be the last entry.
         NG_TYPE_UNK
     };
@@ -196,7 +198,7 @@ namespace rf
         int max_captures;
         NetAddr server_addr;
         int current_level_index;
-        VArray_String<String> levels;
+        VArray<String> levels;
     };
 
     struct JoinRequest
@@ -240,8 +242,8 @@ namespace rf
         int last_packet_received;
         int last_packet_sent;
         NetReliableSocketStatus status;
-        uint16_t oursequence;
-        uint16_t theirsequence;
+        uint16_t theirsequence; // 0x67e: tracks the remote's sequence (window-checked on receive)
+        uint16_t oursequence;   // 0x680: our outgoing counter, stamped into ssequence and bumped per send
         rf::NetAddr net_addr;
         int pings[10];
         uint8_t ping_pos;
@@ -319,7 +321,7 @@ namespace rf
     static auto& multi_powerup_add = addr_as_ref<void(Player* pp, int powerup_type, int time_ms)>(0x00480050);
     static auto& multi_powerup_remove = addr_as_ref<void(Player* pp, int powerup_type)>(0x004801F0);
     static auto& multi_powerup_remove_all_for_player = addr_as_ref<void(Player* pp)>(0x00480310);
-    static auto& send_reload_packet = addr_as_ref<void(Entity* ep, int weapon_type, int clip_ammo, int ammo)>(0x00485B50);
+    static auto& send_reload_packet = addr_as_ref<void(Entity* ep, int weapon_type, int ammo, int clip_ammo)>(0x00485B50);
     static auto& send_obj_kill_packet = addr_as_ref<void(Entity* killed_entity, Item* item, int* a3)>(0x0047E8C0);
     static auto& send_item_create_packet = addr_as_ref<void(Item* item, int16_t* recipient_index, int16_t level_item_index)>(0x00479A20);
     static auto& send_item_apply_packet = addr_as_ref<void(Player* to, int item_handle, int entity_handle, int weapon, int ammo, int clip_ammo)>(0x00479810);

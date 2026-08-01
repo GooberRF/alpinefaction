@@ -1547,7 +1547,7 @@ ConsoleCommand2 debug_achievement_cmd{
             //achievement.icon
         );
 
-        rf::console::printf(msg.c_str());
+        rf::console::print("{}", msg);
     },
     "Look up information for an achievement by UID",
     "dbg_achievement <uid>",

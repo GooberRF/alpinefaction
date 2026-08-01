@@ -13,6 +13,7 @@
 #include "../rf/gr/gr_light.h"
 #include "../rf/os/os.h"
 #include "../rf/os/frametime.h"
+#include "../rf/gameseq.h"
 #include "../os/console.h"
 #include "../main/main.h"
 #include "../misc/alpine_options.h"
@@ -24,7 +25,8 @@
 #include "../multi/server_internal.h"
 #include "../multi/bagman.h"
 #include "../multi/sprays.h"
-#include "../multi/lms.h"
+#include "../multi/pit.h"
+#include "../multi/gungame.h"
 #include "../hud/multi_spectate.h"
 #include "../hud/hud_internal.h"
 #include "../hud/hud.h"
@@ -104,7 +106,17 @@ bool is_server_minimum_af_version(int version_major, int version_minor) {
         return false;
     }
 
-    return server_info->version_major >= version_major && server_info->version_minor >= version_minor;
+    // Lexicographic, matching is_player_minimum_af_client_version. A per-field
+    // >= comparison would wrongly reject e.g. 2.0 against a (1, 4) requirement.
+    if (server_info->version_major > version_major) {
+        return true;
+    }
+
+    if (server_info->version_major < version_major) {
+        return false;
+    }
+
+    return server_info->version_minor >= version_minor;
 }
 
 std::string build_local_spawn_string(bool can_respawn) {
@@ -251,7 +263,8 @@ FunHook<void(rf::Player*)> player_destroy_hook{
         multi_spectate_on_destroy_player(player);
         bagman_on_player_disconnect(player);
         sprays_on_player_destroyed(player);
-        lms_on_player_disconnect(player);
+        pit_on_player_disconnect(player);
+        gungame_on_player_disconnect(player);
         if (rf::is_server) {
             remove_ready_player_silent(player);
             server_vote_on_player_leave(player);
@@ -260,6 +273,17 @@ FunHook<void(rf::Player*)> player_destroy_hook{
             }
             if (player->net_data) {
                 g_select_weapon_done_timestamp[player->net_data->player_id].invalidate();
+            }
+        }
+        // Before the engine frees this player, drop any dangling spectatee
+        // back-reference other players hold to it. The engine frees net_data
+        // without nulling these, so a stale spectatee pointer would be a
+        // use-after-free (e.g. Pit's clear_spectator_fields notify, or
+        // af_process_spectate_start_packet's old_target notify).
+        for (rf::Player& other : SinglyLinkedList{rf::player_list}) {
+            if (&other == player) continue;
+            if (other.spectatee.value_or(nullptr) == player) {
+                other.spectatee = std::nullopt;
             }
         }
         player_destroy_hook.call_target(player);
@@ -523,10 +547,32 @@ CallHook player_is_dying_red_bars_hook{0x00432A5F, player_is_dying_and_not_spect
 CallHook player_is_dying_scoreboard_hook{0x00437C01, player_is_dying_and_not_spectating};
 CallHook player_is_dying_scoreboard2_hook{0x00437C36, player_is_dying_and_not_spectating};
 
+// Report our locally-selected mp character to the server whenever it changes,
+// so server-driven spawns (round modes) and the first post-join spawn use it
+// instead of the default.
+void multi_character_sync_client_do_frame() {
+    static int last_reported = -1;
+
+    if (rf::is_server || !rf::is_multi || !rf::local_player) {
+        last_reported = -1;
+        return;
+    }
+    if (rf::gameseq_get_state() != rf::GameState::GS_GAMEPLAY) {
+        return;
+    }
+
+    const int cur = rf::local_player->settings.multi_character;
+    if (cur != last_reported) {
+        af_send_character_request(cur);
+        last_reported = cur;
+    }
+}
+
 FunHook<void()> players_do_frame_hook{
     0x004A26D0,
     []() {
         players_do_frame_hook.call_target();
+        multi_character_sync_client_do_frame();
         if (multi_spectate_is_spectating()) {
             rf::Player* target = multi_spectate_get_target_player();
             rf::hud_do_frame(target);
@@ -874,7 +920,13 @@ bool player_is_idle(const rf::Player* const player) {
         const bool is_idle = player->idle.check_timer.valid()
             && player->idle.check_timer.elapsed();
         // Player is idle if timer has elapsed and they're not spawned
-        return is_idle && rf::player_is_dead(player) && !player->is_spectator;
+        if (!is_idle || !rf::player_is_dead(player) || player->is_spectator) {
+            return false;
+        }
+        // ...but never when the game itself is what is keeping them unspawned.
+        // Waiting players are not idle and can vote. Players who fail client
+        // requirements (like not having a sufficient AF version) are not exempt.
+        return !player_spawn_blocked_by_game(player);
     } else {
         return player->received_pf_status
             == std::optional{pf_pure_status::af_idle};

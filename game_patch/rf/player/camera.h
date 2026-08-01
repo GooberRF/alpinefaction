@@ -50,4 +50,18 @@ namespace rf
 
     static auto& camera_get_mode = addr_as_ref<CameraMode(const rf::Camera&)>(0x0040D740);
     static auto& camera_shake = addr_as_ref<void(Camera* camera, float amplitude, float time_seconds)>(0x0040E0B0);
+
+    static auto& fixed_camera_count = addr_as_ref<int>(0x005AFB38);
+    static auto& fixed_camera_index = addr_as_ref<int>(0x005AFB6C);
+    static auto& fixed_camera_look_target_handle = addr_as_ref<int>(0x007C7190); // -1 if none
+
+    // Parallel position/orientation arrays for fixed cameras.
+    inline Vector3* fixed_camera_get_pos(int index)
+    {
+        return &addr_as_ref<Vector3*>(0x005AFB40)[index];
+    }
+    inline Matrix3* fixed_camera_get_orient(int index)
+    {
+        return &addr_as_ref<Matrix3*>(0x005AFB68)[index];
+    }
 }

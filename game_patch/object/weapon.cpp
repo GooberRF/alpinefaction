@@ -14,6 +14,7 @@
 #include "../os/console.h"
 #include "../main/main.h"
 #include "../multi/multi.h"
+#include "../multi/kill_attribution.h"
 #include "../misc/misc.h"
 #include "../misc/alpine_settings.h"
 #include "../input/rumble.h"
@@ -55,7 +56,7 @@ CodeInjection weapons_tbl_buffer_overflow_fix_2{
 
 CodeInjection weapon_init_track_reticle_bitmap_injection{
     0x004C6756,
-    [](auto& regs) {
+    [] {
         weapon_reticle_custom_mask.fill(0);
         rocket_locked_custom_reticle = {false, false};
 
@@ -116,6 +117,7 @@ bool rocket_locked_reticle_is_customized(bool bighud) {
 FunHook<void(rf::Weapon*)> weapon_move_one_hook{
     0x004C69A0,
     [](rf::Weapon* weapon) {
+        SplashWeaponScope splash_scope{weapon};
         weapon_move_one_hook.call_target(weapon);
         auto& level_aabb_min = rf::level.geometry->bbox_min;
         auto& level_aabb_max = rf::level.geometry->bbox_max;

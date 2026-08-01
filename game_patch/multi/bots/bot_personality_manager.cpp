@@ -76,7 +76,10 @@ const BotSkillProfile& bot_personality_manager_get_active_skill_profile()
 
 bool bot_personality_manager_is_deathmatch_mode()
 {
-    return rf::is_multi && rf::multi_get_game_type() == rf::NG_TYPE_DM;
+    // Gun Game is identical to DM from a bot's perspective.
+    return rf::is_multi
+        && (rf::multi_get_game_type() == rf::NG_TYPE_DM
+            || rf::multi_get_game_type() == rf::NG_TYPE_GG);
 }
 
 bool bot_personality_manager_is_ctf_mode()

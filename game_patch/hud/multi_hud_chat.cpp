@@ -12,6 +12,7 @@
 #include "../misc/player.h"
 #include "hud_internal.h"
 #include "../misc/alpine_settings.h"
+#include "../misc/vote_panel.h"
 #include <patch_common/CallHook.h>
 #include "../multi/alpine_packets.h"
 
@@ -59,7 +60,8 @@ void multi_hud_render_chat()
         fade_out = rf::chat_fade_out_timer.time_until() / 750.0f;
     }
 
-    if (g_remote_server_cfg_popup.is_active() || g_alpine_game_config.hide_chat) {
+    if (g_remote_server_cfg_popup.is_active() || vote_panel_is_gameplay_overlay_active()
+        || g_alpine_game_config.hide_chat) {
         return;
     }
 
@@ -264,7 +266,7 @@ CallHook<void(const char*, bool)> process_rcon_req_packet_chat_say_hook{
 FunHook<void(int)> multi_chat_say_show_hook{
     0x00444A80,
     [] (const int is_team_chat) {
-        if (!g_remote_server_cfg_popup.is_active()) {
+        if (!g_remote_server_cfg_popup.is_active() && !vote_panel_is_gameplay_overlay_active()) {
             multi_chat_say_show_hook.call_target(is_team_chat);
         }
     },

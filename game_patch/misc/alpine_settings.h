@@ -147,6 +147,7 @@ struct AlpineGameSettings
     bool gaussian_spread = false;
     bool geo_chunk_physics = true;
     bool show_run_timer = true;
+    bool show_gametype_help = true;
     bool show_mini_scoreboard_dm = true;
     bool multi_ricochet = false;
     bool damage_screen_flash = true;
@@ -182,6 +183,7 @@ struct AlpineGameSettings
     bool speed_display = false;
     bool ping_display = true;
     bool spectate_mode_minimal_ui = false;
+    bool spectate_show_camera_meshes = true; // draw camera meshes in free look
     bool save_console_history = false; // checked before config loaded, must be false here
     bool screen_shake_force_off = false;
     bool display_target_player_names = true;
@@ -275,6 +277,8 @@ struct AlpineGameSettings
     bool apply_exposure_damage = true;
     bool climb_fix = true;
     bool killfeed_enabled = false;
+    bool show_assist_names = true;
+    bool highlight_assisted_kills = true;
     bool autodl_blur_background = true;
     bool autodl_download_awps = false;
     bool hide_chat = false;

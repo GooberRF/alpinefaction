@@ -198,6 +198,8 @@ static rf::ui::Checkbox ao_geochunk_cbox;
 static rf::ui::Label ao_geochunk_label;
 static rf::ui::Checkbox ao_autosave_cbox;
 static rf::ui::Label ao_autosave_label;
+static rf::ui::Checkbox ao_gthelp_cbox;
+static rf::ui::Label ao_gthelp_label;
 static rf::ui::Checkbox ao_damagenum_cbox;
 static rf::ui::Label ao_damagenum_label;
 static rf::ui::Checkbox ao_showfps_cbox;
@@ -1374,6 +1376,12 @@ void ao_autosave_cbox_on_click(int x, int y) {
     ao_play_button_snd(g_alpine_game_config.autosave);
 }
 
+void ao_gthelp_cbox_on_click(int x, int y) {
+    g_alpine_game_config.show_gametype_help = !g_alpine_game_config.show_gametype_help;
+    ao_gthelp_cbox.checked = g_alpine_game_config.show_gametype_help;
+    ao_play_button_snd(g_alpine_game_config.show_gametype_help);
+}
+
 void ao_showfps_cbox_on_click(int x, int y) {
     g_alpine_game_config.fps_counter = !g_alpine_game_config.fps_counter;
     ao_showfps_cbox.checked = g_alpine_game_config.fps_counter;
@@ -2024,6 +2032,8 @@ void alpine_options_panel_init() {
         &ao_bombrng_cbox, &ao_bombrng_label, &alpine_options_panel3, ao_bombrng_cbox_on_click, !g_alpine_game_config.static_bomb_code, 280, 144, "Randomize bomb");
     alpine_options_panel_checkbox_init(
         &ao_exposuredamage_cbox, &ao_exposuredamage_label, &alpine_options_panel3, ao_exposuredamage_cbox_on_click, g_alpine_game_config.apply_exposure_damage, 280, 174, "Exposure damage");
+    alpine_options_panel_checkbox_init(
+        &ao_gthelp_cbox, &ao_gthelp_label, &alpine_options_panel3, ao_gthelp_cbox_on_click, g_alpine_game_config.show_gametype_help, 280, 204, "Gametype Help");
 
     // fflink text (panel3)
     std::string fflink_username = g_game_config.fflink_username.value();

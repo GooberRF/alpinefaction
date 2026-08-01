@@ -7,7 +7,9 @@ message(STATUS "Configuring FreeType ${FREETYPE_VERSION}")
 
 FetchContent_Declare(
     freetype
-    URL https://download.savannah.gnu.org/releases/freetype/freetype-${FREETYPE_VERSION}.tar.xz
+    URL
+        https://download.savannah.gnu.org/releases/freetype/freetype-${FREETYPE_VERSION}.tar.xz
+        https://downloads.sourceforge.net/freetype/freetype-${FREETYPE_VERSION}.tar.xz
     URL_HASH SHA256=${FREETYPE_HASH}
     DOWNLOAD_EXTRACT_TIMESTAMP FALSE
 )

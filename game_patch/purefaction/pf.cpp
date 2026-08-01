@@ -9,7 +9,6 @@
 #include "../multi/multi.h"
 #include "pf.h"
 #include "pf_packets.h"
-#include "pf_ac.h"
 #include "../misc/player.h"
 #include "../multi/server.h"
 #include "../multi/alpine_packets.h"
@@ -50,18 +49,21 @@ void send_pf_player_stats_packet(rf::Player* player)
         pf_player_stats_packet::player_stats out_stats{};
         out_stats.player_id = current_player.net_data->player_id;
         const pf_pure_status pure_status = std::invoke([&] {
-            if (current_player.is_spectator) {
-                return pf_pure_status::af_spectator;
-            } else if (current_player.is_bot) {
+            // Check is_bot FIRST: the pure_status values are mutually exclusive,
+            // so a bot must always report as a bot (keeping its "BOT" tag) even
+            // if is_spectator were somehow set — bots can't legitimately spectate.
+            if (current_player.is_bot) {
                 return current_player.is_spawn_disabled
                     ? pf_pure_status::af_spawn_disabled_bot
                     : pf_pure_status::af_bot;
+            } else if (current_player.is_spectator) {
+                return pf_pure_status::af_spectator;
             } else if (current_player.is_browser) {
                 return pf_pure_status::rfsb;
             } else if (player_is_idle(&current_player)) {
                 return pf_pure_status::af_idle;
             } else {
-                return pf_ac_get_pure_status(&current_player);
+                return pf_pure_status::none;
             }
         });
         out_stats.is_pure = static_cast<uint8_t>(pure_status);
@@ -70,7 +72,7 @@ void send_pf_player_stats_packet(rf::Player* player)
         out_stats.streak_current = player_stats.current_streak;
         out_stats.kills = player_stats.num_kills;
         out_stats.deaths = player_stats.num_deaths;
-        out_stats.team_kills = 0;
+        out_stats.assists = player_stats.num_assists;
         ++stats_packet.player_count;
         if (packet_len + sizeof(out_stats) > sizeof(packet_buf)) {
             // One packet should be enough for 32 players (13 bytes * 32 players = 416 bytes)
@@ -148,6 +150,9 @@ static void process_pf_player_stats_packet(const void* data, size_t len, [[ mayb
             stats.current_streak = in_stats.streak_current;
             stats.num_kills = in_stats.kills;
             stats.num_deaths = in_stats.deaths;
+            // A pre-1.4 server sends the hardcoded 0 this slot used to carry, which is the
+            // correct assist count for a server that never tracked any.
+            stats.num_assists = in_stats.assists;
         }
         else {
             xlog::warn("PF player_stats packet: player {} not found", in_stats.player_id);
@@ -155,12 +160,8 @@ static void process_pf_player_stats_packet(const void* data, size_t len, [[ mayb
     }
 }
 
-bool pf_process_packet(const void* data, int len, const rf::NetAddr& addr, rf::Player* player)
+bool pf_process_packet(const void* data, int len, const rf::NetAddr& addr)
 {
-    if (pf_ac_process_packet(data, len, addr, player)) {
-        return true;
-    }
-
     rf_packet_header header{};
     if (len < static_cast<int>(sizeof(header))) {
         return false;
@@ -198,39 +199,4 @@ bool pf_process_raw_unreliable_packet(const void* data, int len, const rf::NetAd
         return true;
     }
     return false;
-}
-
-void pf_player_init([[ maybe_unused ]] rf::Player* const player) {
-    if (rf::is_server) {
-        pf_ac_init_player(player);
-    }
-}
-
-void pf_player_level_load(rf::Player* const player) {
-    if (rf::is_server) {
-        pf_ac_verify_player(player);
-    }
-}
-
-void pf_player_verified(
-    [[ maybe_unused ]] rf::Player* const player,
-    [[ maybe_unused ]] const pf_pure_status pure_status
-) {
-}
-
-bool pf_is_player_verified(rf::Player* player)
-{
-    pf_pure_status status = pf_ac_get_pure_status(player);
-    return status != pf_pure_status::none;
-}
-
-int pf_get_player_ac_level(rf::Player* player)
-{
-    pf_pure_status status = pf_ac_get_pure_status(player);
-    switch (status) {
-        case pf_pure_status::blue: return 2;
-        case pf_pure_status::gold: return 3;
-        case pf_pure_status::fail: return 1;
-        default: return 0;
-    }
 }

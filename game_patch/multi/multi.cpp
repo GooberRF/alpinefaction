@@ -15,9 +15,11 @@
 #include "multi_private.h"
 #include "alpine_packets.h"
 #include "sprays.h"
+#include "kill_attribution.h"
 #include "server_internal.h"
 #include "gametype.h"
 #include "rounds.h"
+#include "mutators.h"
 #include "bots/bot_chat_manager.h"
 #include "../hud/hud.h"
 #include "../hud/multi_spectate.h"
@@ -257,12 +259,7 @@ bool handle_awpgen_param()
         return true;
     }
 
-    std::string level_filename = arg;
-
-    // Normalize .rfl extension
-    if (!string_iends_with(level_filename, ".rfl")) {
-        level_filename += ".rfl";
-    }
+    const std::string level_filename = normalize_level_filename(arg);
 
     // Validate level file is installed
     if (rf::get_file_checksum(level_filename.c_str()) == 0) {
@@ -311,6 +308,9 @@ FunHook<void()> multi_limbo_init{
         if (!rf::is_server && !rf::is_dedicated_server) {
             remove_hud_vote_notification();
             set_local_pre_match_active(false);
+            reset_local_pit_queue_state();
+            reset_local_pit_roster();
+            reset_local_gungame_order();
         }
 
         if (!rf::player_list) {
@@ -333,7 +333,8 @@ FunHook<void()> multi_limbo_init{
         const auto gt = rf::multi_get_game_type();
         bool we_win = false;
 
-        if (gt == rf::NG_TYPE_DM) {
+        if (gt == rf::NG_TYPE_DM || gt == rf::NG_TYPE_PIT || gt == rf::NG_TYPE_GG) {
+            // FFA modes ranked by stats->score (Pit: duel wins).
             // need at least 2 players to possibly win
             if (rf::multi_num_players() >= 2) {
                 int my_score = 0;
@@ -496,6 +497,65 @@ void server_set_player_weapon(rf::Player* pp, rf::Entity* ep, int weapon_type)
     g_select_weapon_done_timestamp[pp->net_data->player_id].set(300);
 }
 
+bool is_remote_charge_pair(int weapon_a, int weapon_b)
+{
+    const auto is_rc = [](int w) {
+        return w == rf::remote_charge_weapon_type || w == rf::remote_charge_det_weapon_type;
+    };
+    return is_rc(weapon_a) && is_rc(weapon_b);
+}
+
+void multi_hide_level_items(const std::vector<int>& allowed_item_type_indices, bool preserve_ctf_objects)
+{
+    if (!rf::is_server) return;
+
+    // CTF flags and bases are gametype objects and should not be hidden by mutators.
+    constexpr uint32_t ctf_object_mask =
+        rf::IF_RED_FLAG | rf::IF_BLUE_FLAG | rf::IF_RED_BASE | rf::IF_BLUE_BASE | rf::IF_CTF_FLAG;
+
+    rf::Item* it = rf::item_list.next;
+    while (it && it != &rf::item_list) {
+        rf::Item* next = it->next;
+        const uint32_t flags = it->item_flags;
+        const bool is_dropped = (flags & rf::IF_DROPPED) != 0;
+
+        // CTF banners are decorative objects and should not be removed.
+        bool preserve = false;
+        if (it->info) {
+            const rf::String& cls = it->info->cls_name;
+            preserve = cls == "CTF Banner Red" || cls == "CTF Banner Blue";
+        }
+        if (!preserve && preserve_ctf_objects) {
+            preserve = (flags & ctf_object_mask) != 0;
+        }
+        if (preserve) {
+            // Leave the item alone.
+            it = next;
+            continue;
+        }
+
+        if (is_dropped) {
+            rf::send_item_apply_packet(nullptr, it->handle, 0, -1, -1, -1);
+            rf::obj_flag_dead(it);
+        }
+        else {
+            const bool allowed =
+                std::find(allowed_item_type_indices.begin(), allowed_item_type_indices.end(), it->info_index)
+                != allowed_item_type_indices.end();
+            // Invalidating respawn_next keeps hidden items from respawning.
+            it->respawn_next.invalidate();
+            if (allowed) {
+                rf::obj_unhide(it);
+            }
+            else {
+                rf::obj_hide(it);
+            }
+        }
+
+        it = next;
+    }
+}
+
 static bool multi_is_rail_gun_on_cooldown(rf::Player* pp, rf::Entity* ep)
 {
     if (ep->ai.current_primary_weapon != rf::rail_gun_weapon_type) {
@@ -513,9 +573,13 @@ FunHook<void(rf::Player*, rf::Entity*, int)> multi_select_weapon_server_side_hoo
             // Nothing to do
             return;
         }
-        if (g_alpine_server_config_active_rules.gungame.enabled &&
-            !((ep->ai.current_primary_weapon == 1 && weapon_type == 0) || (ep->ai.current_primary_weapon == 0 && weapon_type == 1))) {
-            // af_send_automated_chat_msg("Weapon switch denied. In GunGame, you get new weapons by getting frags.", pp);
+        if (gt_is_gungame() && !is_remote_charge_pair(ep->ai.current_primary_weapon, weapon_type)) {
+            // Deny switching in GG except Remote Charge <-> Detonator.
+            return;
+        }
+        if (mutators_should_deny_weapon_switch(ep->ai.current_primary_weapon, weapon_type)) {
+            // Instagib locks the player to the rail.
+            xlog::debug("Player {} denied weapon switch to {} by active mutator", pp->name, weapon_type);
             return;
         }
         bool has_weapon;
@@ -802,8 +866,12 @@ std::string_view multi_game_type_name(const rf::NetGameType game_type) {
         return std::string_view{"Bagman"};
     } else if (game_type == rf::NG_TYPE_TBAG) {
         return std::string_view{"Team Bagman"};
-    } else if (game_type == rf::NG_TYPE_LMS) {
-        return std::string_view{"Last Miner Standing"};
+    } else if (game_type == rf::NG_TYPE_PIT) {
+        return std::string_view{"Pit"};
+    } else if (game_type == rf::NG_TYPE_WO) {
+        return std::string_view{"Wipeout"};
+    } else if (game_type == rf::NG_TYPE_GG) {
+        return std::string_view{"Gun Game"};
     } else if (game_type == rf::NG_TYPE_UNK) {
         return std::string_view{"Unknown"};
     } else {
@@ -833,8 +901,12 @@ std::string_view multi_game_type_name_upper(const rf::NetGameType game_type) {
         return std::string_view{"BAGMAN"};
     } else if (game_type == rf::NG_TYPE_TBAG) {
         return std::string_view{"TEAM BAGMAN"};
-    } else if (game_type == rf::NG_TYPE_LMS) {
-        return std::string_view{"LAST MINER STANDING"};
+    } else if (game_type == rf::NG_TYPE_PIT) {
+        return std::string_view{"PIT"};
+    } else if (game_type == rf::NG_TYPE_WO) {
+        return std::string_view{"WIPEOUT"};
+    } else if (game_type == rf::NG_TYPE_GG) {
+        return std::string_view{"GUN GAME"};
     } else if (game_type == rf::NG_TYPE_UNK) {
         return std::string_view{"UNKNOWN"};
     } else {
@@ -864,8 +936,12 @@ std::string_view multi_game_type_name_short(const rf::NetGameType game_type) {
         return std::string_view{"BAG"};
     } else if (game_type == rf::NG_TYPE_TBAG) {
         return std::string_view{"TBAG"};
-    } else if (game_type == rf::NG_TYPE_LMS) {
-        return std::string_view{"LMS"};
+    } else if (game_type == rf::NG_TYPE_PIT) {
+        return std::string_view{"PIT"};
+    } else if (game_type == rf::NG_TYPE_WO) {
+        return std::string_view{"WO"};
+    } else if (game_type == rf::NG_TYPE_GG) {
+        return std::string_view{"GG"};
     } else if (game_type == rf::NG_TYPE_UNK) {
         return std::string_view{"UNK"};
     } else {
@@ -897,8 +973,12 @@ std::string_view multi_game_type_prefix(const rf::NetGameType game_type) {
         return std::string_view{"bag"};
     } else if (game_type == rf::NG_TYPE_TBAG) {
         return std::string_view{"tbag"};
-    } else if (game_type == rf::NG_TYPE_LMS) {
-        return std::string_view{"lms"};
+    } else if (game_type == rf::NG_TYPE_PIT) {
+        return std::string_view{"pit"};
+    } else if (game_type == rf::NG_TYPE_WO) {
+        return std::string_view{"wo"};
+    } else if (game_type == rf::NG_TYPE_GG) {
+        return std::string_view{"gg"};
     } else if (game_type == rf::NG_TYPE_UNK) {
         // No real level-name prefix for unknown game types; "dm" is the safest fallback.
         return std::string_view{"dm"};
@@ -908,6 +988,41 @@ std::string_view multi_game_type_prefix(const rf::NetGameType game_type) {
         }
         return std::string_view{"dm"};
     }
+}
+
+// Game types that have no dedicated level-name prefix of their own and are
+// played on any standard MP level.
+bool multi_game_type_uses_any_level(rf::NetGameType game_type)
+{
+    return game_type == rf::NetGameType::NG_TYPE_GG
+        || game_type == rf::NetGameType::NG_TYPE_BAG
+        || game_type == rf::NetGameType::NG_TYPE_TBAG
+        || game_type == rf::NetGameType::NG_TYPE_WO
+        || game_type == rf::NetGameType::NG_TYPE_PIT;
+}
+
+// True if the level filename starts with any standard MP gametype prefix. Used
+// by the any-level gametypes above to treat every normal MP level as playable.
+bool multi_level_name_matches_any_mp_prefix(const char* filename)
+{
+    return string_istarts_with(filename, "ctf")
+        || string_istarts_with(filename, "pctf")
+        || string_istarts_with(filename, "dm")
+        || string_istarts_with(filename, "pdm")
+        || string_istarts_with(filename, "koth")
+        || string_istarts_with(filename, "dc")
+        || string_istarts_with(filename, "rev")
+        || string_istarts_with(filename, "esc");
+}
+
+// A level name with ".rfl" appended when it is missing.
+std::string normalize_level_filename(std::string_view name)
+{
+    std::string out{name};
+    if (!out.empty() && !string_iends_with(out, ".rfl")) {
+        out += ".rfl";
+    }
+    return out;
 }
 
 int multi_num_spawned_players() {
@@ -978,7 +1093,7 @@ void start_level_in_multi(std::string filename) {
 
 CodeInjection multi_customize_listen_server_settings_patch {
     0x0044E485,
-    [](auto& regs) {
+    [] {
         configure_custom_gametype_listen_server_settings();
     },
 };
@@ -1217,6 +1332,7 @@ void multi_do_patch()
     multi_customize_listen_server_settings_patch.install();
 
     multi_kill_do_patch();
+    kill_attribution_do_patch();
     sprays_do_patch();
     faction_files_do_patch();
     level_download_do_patch();

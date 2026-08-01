@@ -27,10 +27,12 @@
 #include <patch_common/ShortTypes.h>
 #include "network.h"
 #include "multi.h"
+#include "mutators.h"
 #include "alpine_packets.h"
 #include "server.h"
 #include "server_internal.h"
 #include "sprays.h"
+#include "vote_client.h"
 #include "bots/bot_chat_manager.h"
 #include "../main/main.h"
 #include "../os/os.h"
@@ -51,6 +53,7 @@
 #include "../misc/misc.h"
 #include "../misc/player.h"
 #include "../misc/alpine_settings.h"
+#include "../misc/vote_panel.h"
 #include "../misc/waypoints.h"
 #include "../object/object.h"
 #include "../os/console.h"
@@ -254,7 +257,9 @@ enum packet_type : uint8_t {
     af_server_msg          = 0x5D,
     af_server_req          = 0x5E,
     af_server_bot_control  = 0x5F,
-    af_bagman_state        = 0x60
+    af_bagman_state        = 0x60,
+    af_pit_roster          = 0x61,
+    af_gungame_order       = 0x62
 };
 
 // client -> server
@@ -340,38 +345,13 @@ std::array g_client_side_packet_whitelist{
     af_server_msg,
     af_server_req,
     af_server_bot_control,
-    af_bagman_state
+    af_bagman_state,
+    af_pit_roster,
+    af_gungame_order
 };
 // clang-format on
 
 std::optional<AlpineFactionServerInfo> g_af_server_info;
-
-bool packet_check_whitelist(int packet_type) {
-    bool allowed = false;
-    if (rf::is_server) {
-        auto& whitelist = g_server_side_packet_whitelist;
-        allowed = std::find(whitelist.begin(), whitelist.end(), packet_type) != whitelist.end();
-    }
-    else {
-        auto& whitelist = g_client_side_packet_whitelist;
-        allowed = std::find(whitelist.begin(), whitelist.end(), packet_type) != whitelist.end();
-    }
-    return allowed;
-}
-
-CodeInjection process_game_packet_whitelist_filter{
-    0x0047918D,
-    [](auto& regs) {
-        int packet_type = regs.esi;
-        if (!packet_check_whitelist(packet_type)) {
-            xlog::warn("Ignoring packet 0x{:x}", packet_type);
-            regs.eip = 0x00479194;
-        }
-        else {
-            xlog::trace("Processing packet 0x{:x}", packet_type);
-        }
-    },
-};
 
 static inline uint64_t addr_key(const rf::NetAddr& a)
 {
@@ -810,10 +790,14 @@ FunHook<MultiIoPacketHandler> process_left_game_packet_hook{
 };
 
 void handle_vote_or_ready_up_msg(const std::string_view msg) {
+    // AF 1.4+ servers drive the vote HUD through af_sreq_vote_state and never
+    // send us this text, so the sniffing below only serves older servers.
+    const bool server_uses_vote_packets = is_server_minimum_af_version(1, 4);
+
     constexpr std::string_view vote_start_prefix =
         "\n=============== VOTE STARTING ===============\n";
 
-    if (string_istarts_with(msg, vote_start_prefix)) {
+    if (!server_uses_vote_packets && string_istarts_with(msg, vote_start_prefix)) {
         // Move past the prefix to start parsing the actual vote title
         const std::string_view title = msg.substr(vote_start_prefix.size());
         // Find the position of " vote started by"
@@ -829,7 +813,9 @@ void handle_vote_or_ready_up_msg(const std::string_view msg) {
     // remove ready up prompt if match is cancelled prematurely
     constexpr std::string_view match_canceled_msg = "\xA6 Vote passed: The match has been canceled";
     if (string_istarts_with(msg, match_canceled_msg) || string_istarts_with(msg, match_canceled_msg.substr(2))) {
-        remove_hud_vote_notification();
+        if (!server_uses_vote_packets) {
+            remove_hud_vote_notification();
+        }
         set_local_pre_match_active(false);
         return;
     }
@@ -843,13 +829,18 @@ void handle_vote_or_ready_up_msg(const std::string_view msg) {
     };
 
     // remove the vote notification if the vote has ended
-    for (const std::string_view& end_msg : vote_end_messages) {
-        if (string_istarts_with(msg, end_msg)
-            || string_istarts_with(msg, end_msg.substr(2))) {
-            remove_hud_vote_notification();
-            return;
+    if (!server_uses_vote_packets) {
+        for (const std::string_view& end_msg : vote_end_messages) {
+            if (string_istarts_with(msg, end_msg)
+                || string_istarts_with(msg, end_msg.substr(2))) {
+                remove_hud_vote_notification();
+                return;
+            }
         }
     }
+
+    // TODO: remove after AF 1.4 ships — the two ready-up blocks below drive the
+    // ready prompt from server chat text for AF 1.3 clients on 1.4 servers.
 
     // For initial match queue
     if (string_istarts_with(msg, "\n>>>>>>>>>>>>>>>>> ")) {
@@ -872,6 +863,7 @@ void handle_vote_or_ready_up_msg(const std::string_view msg) {
             return;
         }
     }
+    // --- ready-up compat end ---
 }
 
 void handle_sound_msg(const std::string_view msg) {
@@ -951,7 +943,12 @@ FunHook<MultiIoPacketHandler> process_team_change_packet_hook{
                 af_send_automated_chat_msg(msg, player);
                 return;
             }
-        }        
+            if (auto_team_balance_blocks_team_change(player, data[1])) {
+                af_send_automated_chat_msg(
+                    "You can't change teams right now because it would unbalance the teams.", player);
+                return;
+            }
+        }
         process_team_change_packet_hook.call_target(data, addr);
     },
 };
@@ -1130,17 +1127,37 @@ CodeInjection process_obj_update_check_flags_injection{
         },
     };
 
-// Trigger spectator damage screen flash when the spectated player's health or armor decreases.
+// Largest per-packet decrease still treated as a Super Drain rot tick rather than real damage.
+static constexpr float SUPER_DRAIN_MAX_STEP = 1.5f;
+
 // Injected at the point in process_obj_update_packet where a health/armor decrease has been
 // confirmed (OUF_HEALTH_ARMOR set, new value < entity value) but before the local-player check.
-// edi = entity pointer at this address.
-CodeInjection process_obj_update_health_armor_spectate_injection{
+CodeInjection process_obj_update_health_armor_injection{
     0x0047E4DA,
     [](auto& regs) {
-        if (!g_alpine_game_config.spectate_damage_screen_flash || rf::is_server)
+        if (rf::is_server)
             return;
         rf::Entity* entity = regs.edi;
         if (!entity)
+            return;
+        const auto& server_info = get_af_server_info();
+        if (server_info.has_value() && server_info->super_drain) {
+            const float new_life = *reinterpret_cast<float*>(regs.esp + 0x18);
+            const float new_armor = *reinterpret_cast<float*>(regs.esp + 0x10);
+            const float max_life = entity->info ? entity->info->max_life : 100.0f;
+            const float max_armor = entity->info ? entity->info->max_armor : 100.0f;
+            // A drain tick is a small decrease that leaves the stat at or above its normal max.
+            const bool life_is_drain = new_life >= entity->life
+                || (entity->life - new_life <= SUPER_DRAIN_MAX_STEP && new_life >= max_life);
+            const bool armor_is_drain = new_armor >= entity->armor
+                || (entity->armor - new_armor <= SUPER_DRAIN_MAX_STEP && new_armor >= max_armor);
+            if (life_is_drain && armor_is_drain) {
+                // Reload the new values from the stack and store them.
+                regs.eip = 0x0047E533;
+                return;
+            }
+        }
+        if (!g_alpine_game_config.spectate_damage_screen_flash)
             return;
         rf::Player* spectated = multi_spectate_get_target_player();
         if (!spectated || spectated == rf::local_player || multi_spectate_is_freelook())
@@ -1672,6 +1689,25 @@ CallHook<int(const rf::NetAddr*, std::byte*, size_t)> send_join_accept_packet_ho
         if (server_sprays_enabled()) {
             ext_data.flags |= AlpineFactionJoinAcceptPacketExt::Flags::allow_sprays;
         }
+        if (server_is_match_mode_enabled()) {
+            ext_data.flags |= AlpineFactionJoinAcceptPacketExt::Flags::match_mode;
+        }
+        // Instagib makes the rail a no-clip weapon; deliver it on join so the
+        // client's fire/reload prediction matches (only the rail is supported).
+        if (g_alpine_server_config_active_rules.mutators.no_featured_reload &&
+            g_alpine_server_config_active_rules.mutators.featured_weapon_index == rf::rail_gun_weapon_type) {
+            ext_data.flags |= AlpineFactionJoinAcceptPacketExt::Flags::featured_no_clip;
+        }
+        // Arena: refill the killer's current clip on a frag; the client does this
+        // itself without a reload packet.
+        if (g_alpine_server_config_active_rules.mutators.reload_weapon_on_kill) {
+            ext_data.flags |= AlpineFactionJoinAcceptPacketExt::Flags::reload_on_kill;
+        }
+        // Super Drain: the client suppresses the stock damage feedback for the
+        // server's drain ticks, so it has to know the mutator is active.
+        if (g_alpine_server_config_active_rules.mutators.super_drain_enabled) {
+            ext_data.flags |= AlpineFactionJoinAcceptPacketExt::Flags::super_drain;
+        }
         // AF 1.3+ clients: use footer-based format for forward compatibility
         // Older clients: use legacy raw struct (they don't know about the footer)
         bool use_footer = g_joining_client_version == ClientSoftware::AlpineFaction
@@ -1808,6 +1844,10 @@ CodeInjection process_join_accept_injection{
             server_info.allow_outlines_xray = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::allow_outlines_xray);
             server_info.clear_stale_movement_input = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::clear_stale_movement_input);
             server_info.allow_sprays = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::allow_sprays);
+            server_info.match_mode = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::match_mode);
+            server_info.reload_on_kill = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::reload_on_kill);
+            server_info.super_drain = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::super_drain);
+            // featured_no_clip is intentionally not stored here, it's consumed inline below via mutators_set_no_clip_weapon.
 
             constexpr float default_fov = 90.0f;
             if (!!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::max_fov) && ext_data.max_fov >= default_fov) {
@@ -1818,11 +1858,19 @@ CodeInjection process_join_accept_injection{
             }
             g_af_server_info = std::optional{server_info};
 
+            // Mirror the server's no-clip featured weapon (Instagib rail) on join
+            // so client-side fire/reload prediction matches.
+            mutators_set_no_clip_weapon(
+                !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::featured_no_clip)
+                    ? rf::rail_gun_weapon_type
+                    : -1);
+
             // Update footstep activation based on server permissions
             evaluate_footsteps();
         }
         else {
             g_af_server_info.reset();
+            mutators_set_no_clip_weapon(-1); // non-AF server: ensure no stale override
             evaluate_footsteps();
         }
     },
@@ -2482,9 +2530,13 @@ FunHook<void()> multi_stop_hook{
     0x0046E2C0,
     [] {
         g_af_server_info.reset(); // Clear server info when leaving
+        mutators_set_no_clip_weapon(-1); // restore any server weapon-table overrides
+        vote_client_reset(); // drop the cached vote options and active vote state
+        vote_panel_reset(); // drop the vote form, which describes the server being left
         g_local_player_spectators.clear();
         g_remote_server_cfg_popup.reset();
         set_local_pre_match_active(false); // clear pre-match state when leaving
+        multi_hud_reset_gametype_help(); // show gametype help when joining a server
         reset_local_pending_game_type(); // clear pending game type when leaving
         if (rf::local_player) {
             PlayerAdditionalData* const player_add_data =
@@ -2625,7 +2677,6 @@ CodeInjection send_state_info_injection{
     [](auto& regs) {
         rf::Player* player = regs.edi;
         trigger_send_state_info(player);
-        pf_player_level_load(player);
         sprays_force_state_sync_to(player);
     },
 };
@@ -2634,7 +2685,6 @@ FunHook<void(rf::Player*)> send_players_packet_hook{
     0x00481C70,
     [](rf::Player *player) {
         send_players_packet_hook.call_target(player);
-        pf_player_init(player);
         if (rf::is_server) {
             server_reliable_socket_ready(player);
         }
@@ -2642,14 +2692,12 @@ FunHook<void(rf::Player*)> send_players_packet_hook{
 };
 
 FunHook<void(rf::Entity*, int, int, int)> send_reload_packet_hook{
-    0x00485B50, [](rf::Entity* ep, int weapon_type, int clip_ammo, int ammo) {
-        // Log the clip_ammo and ammo values
-        //xlog::warn("Sending a reload packet for {} with weapon {}, clip_ammo: {}, ammo: {}", ep->name, weapon_type, clip_ammo, ammo);
+    0x00485B50, [](rf::Entity* ep, int weapon_type, int ammo, int clip_ammo) {
+        //xlog::warn("Sending a reload packet for {} with weapon {}, ammo: {}, clip_ammo: {}", ep->name, weapon_type, ammo, clip_ammo);
 
-        // Call the original function
-        send_reload_packet_hook.call_target(ep, weapon_type, clip_ammo, ammo);
-    }};
-
+        send_reload_packet_hook.call_target(ep, weapon_type, ammo, clip_ammo);
+    }
+};
 
 extern FunHook<void __fastcall(void*, int, int, bool, int)> multi_io_stats_add_hook;
 
@@ -2663,10 +2711,10 @@ void __fastcall multi_io_stats_add_new(void *this_, int edx, int size, bool is_s
 
 FunHook<void __fastcall(void*, int, int, bool, int)> multi_io_stats_add_hook{0x0047CAC0, multi_io_stats_add_new};
 
-static void process_custom_packet([[maybe_unused]] void* data, [[maybe_unused]] int len,
+static void process_custom_packet([[maybe_unused]] const void* data, [[maybe_unused]] int len,
                                   [[maybe_unused]] const rf::NetAddr& addr, [[maybe_unused]] rf::Player* player)
 {
-    pf_process_packet(data, len, addr, player);
+    pf_process_packet(data, len, addr);
     af_process_packet(data, len, addr, player);
 }
 
@@ -2712,51 +2760,74 @@ static bool parse_af_gi_req_tail(const uint8_t* pkt, size_t datalen, uint8_t& ou
     return true;
 }
 
+bool packet_check_whitelist(const int packet_type) {
+    bool allowed = false;
+    if (rf::is_server) {
+        const auto& whitelist = g_server_side_packet_whitelist;
+        allowed = std::ranges::find(whitelist, packet_type) != whitelist.end();
+    } else {
+        const auto& whitelist = g_client_side_packet_whitelist;
+        allowed = std::ranges::find(whitelist, packet_type) != whitelist.end();
+    }
+    return allowed;
+}
+
 CodeInjection multi_io_process_packets_injection{
     0x0047918D,
-    [](auto& regs) {
-        int packet_type = regs.esi;
-        if (packet_type > 0x37 || packet_type == static_cast<int>(pf_packet_type::player_stats)) {
-            auto stack_frame = regs.esp + 0x1C;
-            std::byte* data = regs.ecx;
-            int offset = regs.ebp;
-            int len = regs.edi;
-            auto& addr = *addr_as_ref<rf::NetAddr*>(stack_frame + 0xC);
-            auto player = addr_as_ref<rf::Player*>(stack_frame + 0x10);
-            process_custom_packet(data + offset, len, addr, player);
-            regs.eip = 0x00479194;
-        }
-        if (rf::is_dedicated_server || (rf::is_server && !rf::is_dedicated_server)) {
-            // stash the join req packet so we can analyze it if the player successfully joins
-            if (packet_type == static_cast<int>(RF_GamePacketType::RF_GPT_JOIN_REQUEST)) {
-                const uint8_t* base = static_cast<const uint8_t*>(regs.ecx);
-                auto stack_frame = regs.esp + 0x1C;
-                auto& addr = *addr_as_ref<rf::NetAddr*>(stack_frame + 0xC);
-                const int off = regs.ebp;
-                const int len = regs.edi;
+    [] (auto& regs) {
+        const int packet_ty = regs.esi;
 
-                // UDP datagram
+        if (!packet_check_whitelist(packet_ty)) {
+            xlog::warn("Ignoring packet 0x{:x}", packet_ty);
+        SKIP_DEFAULT_HANDLER:
+            regs.eip = 0x00479194;
+            return;
+        }
+
+        xlog::trace("Processing packet 0x{:x}", packet_ty);
+
+        const size_t off = regs.ebp;
+        const size_t len = regs.edi;
+        const uint8_t* const base = regs.ecx;
+        const uint32_t stack_frame = static_cast<uint32_t>(regs.esp) + 0x1C;
+        const rf::NetAddr& addr = *addr_as_ref<const rf::NetAddr*>(stack_frame + 0xC);
+
+        if (packet_ty > 0x37
+            || packet_ty == static_cast<int>(pf_packet_type::player_stats))
+        {
+            rf::Player* const player = addr_as_ref<rf::Player*>(stack_frame + 0x10);
+            process_custom_packet(base + off, static_cast<int>(len), addr, player);
+            goto SKIP_DEFAULT_HANDLER;
+        }
+
+        if (rf::is_server) {
+            if (packet_ty == static_cast<int>(packet_type::join_request)) {
+                // Bytes remaining in their datagram.
                 size_t rx_len = 0;
-                if (g_rx_base && g_rx_len && base + off >= g_rx_base && base + off <= g_rx_base + g_rx_len) {
+                if (g_rx_base
+                    && g_rx_len
+                    && base + off >= g_rx_base
+                    && base + off <= g_rx_base + g_rx_len)
+                {
                     rx_len = (g_rx_base + g_rx_len) - (base + off);
                 }
 
-                // join req stash for later analysis
-                g_join_request_stashed = {addr, base + off, size_t(len), rx_len, uint8_t(packet_type)};
-            }
-            // analyze the game_info_req packet so we can adjust the response if needed
-            if (packet_type == static_cast<int>(RF_GamePacketType::RF_GPT_GAME_INFO_REQUEST)) {
-                const uint8_t* base = static_cast<const uint8_t*>(regs.ecx);
-                auto stack_frame = regs.esp + 0x1C;
-                const auto& addr = *addr_as_ref<rf::NetAddr*>(stack_frame + 0xC);
-                const int off = regs.ebp;
-                const int len = regs.edi;
-
-                uint8_t ver = 0;
-                if (parse_af_gi_req_tail(base + off, size_t(len), ver)) {
+                // Stash their datagram for later analysis, if this player joins
+                // successfully.
+                g_join_request_stashed = StashedPacket{
+                    addr,
+                    base + off,
+                    len,
+                    rx_len,
+                    static_cast<uint8_t>(packet_ty),
+                };
+            } else if (packet_ty == static_cast<int>(packet_type::game_info_request)) {
+                // Analyze their packet, so we can adjust our response, if needed.
+                uint8_t version = 0;
+                if (parse_af_gi_req_tail(base + off, len, version)) {
                     const int64_t now = timer::get_i64(1000);
-                    g_af_gi_req_seen[addr_key(addr)] = AfGiReqSeen{ver, now};
-                    xlog::debug("AF GI-REQ detected from {} (ver={})", addr, ver);
+                    g_af_gi_req_seen[addr_key(addr)] = AfGiReqSeen{version, now};
+                    xlog::debug("AF GI-REQ detected from {} (ver={})", addr, version);
                 }
             }
         }
@@ -3019,9 +3090,6 @@ void network_init()
         patch.install();
     }
 
-    //  Filter packets based on the side (client-side vs server-side)
-    process_game_packet_whitelist_filter.install();
-
     // Hook packet handlers
     process_join_deny_packet_hook.install();
     process_new_player_packet_hook.install();
@@ -3048,7 +3116,7 @@ void network_init()
     process_obj_update_check_flags_injection.install();
 
     // Spectator damage screen flash via obj_update health/armor
-    process_obj_update_health_armor_spectate_injection.install();
+    process_obj_update_health_armor_injection.install();
 
     // Verify on/off weapons handling
     process_obj_update_weapon_fire_injection.install();
@@ -3086,6 +3154,9 @@ void network_init()
 
     // Fix room_index out of bounds vulnerability in pregame_boolean packet
     process_pregame_boolean_packet_validate_room_uid_patch.install();
+
+    // Reliable socket drop diagnostics (when launched with -debug).
+    network_debug_apply_patches();
 
     // Fix crash if room does not exist in glass_kill packet
     process_glass_kill_packet_check_room_exists_patch.install();
@@ -3151,7 +3222,7 @@ void network_init()
     // IP address that the reliable socket uses. This change ensures that the port is also compared.
     write_mem<i8>(0x0046E8DA + 1, 1);
 
-    // Support custom packet types
+    // Support custom packet types and packet filtering.
     AsmWriter{0x0047916D}.nop(2);
     multi_io_process_packets_injection.install();
     multi_io_stats_add_hook.install();

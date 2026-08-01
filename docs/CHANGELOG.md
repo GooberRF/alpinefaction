@@ -34,10 +34,23 @@ Version 1.4.0 (Lupin): Not yet released
 - Add new multiplayer game types:
   - Bagman (`BAG`)
   - Team Bagman (`TBAG`)
-  - Last Miner Standing (`LMS`)
+  - Pit (`PIT`)
+  - Wipeout (`WO`)
+  - Gun Game (`GG`)
 - Add sprays with bindable `Spray` control
   - `cl_sprays` console command to toggle local display and dedicated server `[sprays]` config section
   - `spray` console command to select spray, and in-game spray picker in advanced options
+- Add server-configured mutators:
+  - Instagib
+  - Rails
+  - Arena
+  - Vampire
+  - Super Drain
+- Rework multiplayer voting to use a GUI-based system instead of chat commands
+  - Servers describe their votable levels, game types, and mutator options to clients
+  - `vote level` and `vote match` can now select a game type and any number of mutators (with their options) for the voted level
+  - Add a vote panel for calling any vote the server allows, opened during gameplay with the bindable `Call Vote Menu` control (`F4` by default)
+  - Vote HUD notification now shows live tally, time remaining, and whether you have already voted
 
 ### Minor features, changes, and enhancements
 [@AL2009man](https://github.com/AL2009man)
@@ -70,8 +83,33 @@ Version 1.4.0 (Lupin): Not yet released
 - Require a fresh `Alt` press to kill an unresponsive process
 - Add mini scoreboard HUD element to FFA game types
 - Add `ui_minisb_dm` console command to toggle whether mini scoreboard is displayed in DM mode
+- Retain Glacier-specific chunks when RFLs loaded and re-saved in level editor
+- Add `Attach Spectate Camera` control to toggle spectate between following a player and a detached free camera
+- Add `Change Spectate View` control to switch first/third person while following a player, or free look/static camera while detached
+- Add a middle mouse toggled orbit camera to third person spectate
+- Add stepped zoom to free look spectate
+- Add the ability to drop reusable static cameras in free look spectate, then cycle level-placed and player-dropped cameras in static camera view
+- Add numpad quick-binds to jump directly to bound players or cameras while spectating, with dropped cameras and binds persisted per level
+- Add `spectate_cameras` console command to toggle showing camera meshes at static camera locations while free look spectating
+- Deprecated and removed legacy GunGame dedicated server config items now that `GG` is an actual gametype.
+- Default inactivity tracking for players in dedicated servers to `true`, but kicking inactive players to `false`
+- Add `-debug` command line switch to enable additional debug logging, intended to help identify long-standing netcode issues that are difficult to nail down.
+- Add automatic team balance option which handles unbalanced teams mid-game and stops players from switching teams if it would unbalance them
+- Rate limit spawn-denied notifications (Alpine restriction, anti-cheat, match in progress, respawn delay) to one message per 5 seconds per player so repeated spawn attempts no longer flood chat
+- Truncate over-long names from dedicated server config files when they are quoted in console warnings
+- Remove `vote gametype`, game type selection is now part of `vote level`
+- No longer allow a player to call a vote to kick themselves
+- Change default inactive time before a player is set as idle to 60 seconds (from 30 seconds)
+- Stop labeling players as inactive if they are unable to spawn due to a server or gameplay rule
+- `vote extend` can now select how long to extend the round by, from 1 to 60 minutes (defaults to 5)
+- Kill messages, the game feed, and dedicated server console kill lines now name the weapon that actually dealt the killing blow
+- Kill messages, the game feed, and dedicated server console kill lines now credit assists
+- Add an `Asst` column to the scoreboard showing each player's assist count
+- Add `ui_assist_names` console command to toggle listing the players who assisted in kill messages
+- Add `ui_assist_highlight` console command to toggle highlighting of kill messages for kills you assisted
 
 [@is-this-c](https://github.com/is-this-c)
+- Rewrite `VArray` to fix crashes due to MinGW
 - Add `Anti-aliasing` option to `ADVANCED` options panel
 - Add `r_antialiasing_mode` console command to set anti-aliasing mode at run-time
 - Rename `antialiasing` console command to `r_antialiasing`
@@ -107,6 +145,10 @@ Version 1.4.0 (Lupin): Not yet released
 - Fix camera angle snapping when switching between free look and third person camera modes
 - Fix a server crash that could be triggered by a zero-length UDP packet in the packet receive pump
 - Fix overlapping decals rendering with the oldest on top instead of the newest
+- Fix crash on MinGW builds when launching a dedicated server
+- Fix server version checks comparing each version field independently, which would have rejected a future major version
+- Fix out of bounds read when applying level rules if the rotation shrank while a level was running
+- Fix the remote server config display sometimes being treated as complete before all of its content had arrived
 
 [@is-this-c](https://github.com/is-this-c)
 - Clear cached server config output after a shuffle of a server's rotation

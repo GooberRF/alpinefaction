@@ -10,6 +10,7 @@
 #include "../multi/multi.h"
 #include "../multi/gametype.h"
 #include "../multi/bagman.h"
+#include "../multi/wipeout.h"
 #include "../misc/alpine_options.h"
 #include "../misc/alpine_settings.h"
 #include "../rf/player/control_config.h"
@@ -60,10 +61,37 @@ enum class ScoreboardCategory
     Spectator,
     Idle,
     Browser,
+    // Pit-only sections, appended in top-to-bottom display order (the sort
+    // comparator orders by category ordinal). In Pit every player maps to one
+    // of these, bypassing the config-driven categories above.
+    PitDueler,
+    PitQueued,
+    PitNotQueued,
 };
+
+// Section header label for a Pit category (nullptr for non-Pit categories).
+static const char* pit_section_label(ScoreboardCategory cat)
+{
+    switch (cat) {
+        case ScoreboardCategory::PitDueler:    return "DUELING";
+        case ScoreboardCategory::PitQueued:    return "IN QUEUE";
+        case ScoreboardCategory::PitNotQueued: return "NOT QUEUED";
+        default:                               return nullptr;
+    }
+}
 
 static ScoreboardCategory get_scoreboard_category(const rf::Player* player)
 {
+    // Pit: role comes from the replicated roster and fully overrides the local
+    // scoreboard_split_* settings. Unknown/none (e.g. browsers) folds into NOT
+    // QUEUED.
+    if (gt_is_pit()) {
+        const int role = pit_scoreboard_role_for(player);
+        if (role == 0) return ScoreboardCategory::PitDueler;
+        if (role == 1) return ScoreboardCategory::PitQueued;
+        return ScoreboardCategory::PitNotQueued;
+    }
+
     if (g_alpine_game_config.scoreboard_split_bots && player->is_bot) {
         return ScoreboardCategory::Bot;
     }
@@ -90,8 +118,10 @@ static std::vector<size_t> calculate_divider_indices(const std::vector<rf::Playe
         return divider_indices;
     }
 
-    // split once for all categories other than active
-    if (g_alpine_game_config.scoreboard_split_simple) {
+    // split once for all categories other than active. Pit always splits at
+    // every category (its three sections are independent of the client's
+    // scoreboard_split_* settings), so skip the simple path there.
+    if (!gt_is_pit() && g_alpine_game_config.scoreboard_split_simple) {
         bool has_active = false;
         std::optional<size_t> first_non_active{};
 
@@ -230,6 +260,16 @@ int draw_scoreboard_header(int x, int y, int w, rf::NetGameType game_type, bool 
                 red_score = bagman_get_red_team_score();
                 blue_score = bagman_get_blue_team_score();
             }
+            else if (game_type == rf::NG_TYPE_WO) {
+                static int hud_flag_red_bm = rf::bm::load("hud_flag_red.tga", -1, true);
+                static int hud_flag_blue_bm = rf::bm::load("hud_flag_blue.tga", -1, true);
+                int flag_bm_w, flag_bm_h;
+                rf::bm::get_dimensions(hud_flag_red_bm, &flag_bm_w, &flag_bm_h);
+                rf::gr::bitmap(hud_flag_red_bm, x + w * 2 / 6 - flag_bm_w / 2, cur_y);
+                rf::gr::bitmap(hud_flag_blue_bm, x + w * 4 / 6 - flag_bm_w / 2, cur_y);
+                red_score = wipeout_get_red_team_score();
+                blue_score = wipeout_get_blue_team_score();
+            }
             else if (game_type == rf::NG_TYPE_REV || game_type == rf::NG_TYPE_ESC) {
                 static int hud_flag_red_bm = rf::bm::load("hud_flag_red.tga", -1, true);
                 static int hud_flag_blue_bm = rf::bm::load("hud_flag_blue.tga", -1, true);
@@ -271,23 +311,43 @@ int draw_scoreboard_players(
     const int divider_spacing = row_spacing / 4;
     const int divider_height = std::max(1, static_cast<int>(scale));
 
+    // Pit replaces the plain divider line with a small section header per group.
+    const bool is_pit = gt_is_pit();
+    const int section_font = hud_get_small_font();
+    const int section_font_h = rf::gr::get_font_height(section_font);
+
     int status_w = static_cast<int>(12 * scale);
     int score_w = static_cast<int>((game_type == rf::NG_TYPE_RUN ? 63 : 50) * scale);
     bool show_kd = game_type != rf::NG_TYPE_RUN;
     int kd_w = show_kd ? static_cast<int>(70 * scale) : 0;
+    // Assists are only meaningful where kills are. Kept separate from show_kd so the two
+    // can diverge later.
+    bool show_assists = game_type != rf::NG_TYPE_RUN;
+    int assists_w = show_assists ? static_cast<int>(35 * scale) : 0;
     int caps_w = game_type == rf::NG_TYPE_CTF ? static_cast<int>(45 * scale) : 0;
     const auto& server_info = get_af_server_info();
     bool saving_enabled = server_info.has_value() && server_info->saving_enabled;
     bool show_loads = game_type == rf::NG_TYPE_RUN && saving_enabled;
     int loads_w = show_loads ? static_cast<int>(55 * scale) : 0;
     int ping_w = static_cast<int>(35 * scale);
-    int name_w = w - status_w - score_w - kd_w - caps_w - loads_w - ping_w;
+    int name_w = w - status_w - score_w - kd_w - assists_w - caps_w - loads_w - ping_w;
+
+    // Every column but the name has a fixed width, so the assists column is paid for out of
+    // the name. Give it back rather than squeeze names to nothing on a narrow panel (team
+    // game types split the table in two, and CTF spends another column on caps).
+    const int min_name_w = static_cast<int>(80 * scale);
+    if (show_assists && name_w < min_name_w) {
+        name_w += assists_w;
+        assists_w = 0;
+        show_assists = false;
+    }
 
     int status_x = x;
     int name_x = status_x + status_w;
     int score_x = name_x + name_w;
     int kd_x = score_x + score_w;
-    int caps_x = kd_x + kd_w;
+    int assists_x = kd_x + kd_w;
+    int caps_x = assists_x + assists_w;
     int loads_x = caps_x + caps_w;
     int ping_x = loads_x + loads_w;
 
@@ -302,6 +362,9 @@ int draw_scoreboard_players(
         }
         if (show_kd) {
             rf::gr::string(kd_x, y, "K/D");
+        }
+        if (show_assists) {
+            rf::gr::string(assists_x, y, "Asst");
         }
         if (game_type == rf::NG_TYPE_CTF) {
             rf::gr::string(caps_x, y, rf::strings::caps);
@@ -322,8 +385,30 @@ int draw_scoreboard_players(
     for (size_t i = 0; i < player_list.players.size(); ++i) {
         rf::Player* player = player_list.players[i];
 
-        if (next_divider < player_list.divider_indices.size()
-            && i == player_list.divider_indices[next_divider]) {
+        const bool at_divider = next_divider < player_list.divider_indices.size()
+            && i == player_list.divider_indices[next_divider];
+
+        if (is_pit) {
+            // Pit: draw a section header before the very first row and at each
+            // category boundary (every divider, since Pit splits at every
+            // category). Empty sections produce no divider, hence no header.
+            // Heights are added identically in dry_run and real draw so the
+            // measurement pass stays in sync with the actual layout.
+            if (i == 0 || at_divider) {
+                if (at_divider) {
+                    y += divider_spacing; // gap above the header
+                    ++next_divider;
+                }
+                if (const char* label = pit_section_label(get_scoreboard_category(player))) {
+                    if (!dry_run) {
+                        rf::gr::set_color(0xFF, 0xFF, 0xFF, 0xB0);
+                        rf::gr::string(x, y, label, section_font);
+                    }
+                    y += section_font_h + divider_spacing;
+                }
+            }
+        }
+        else if (at_divider) {
             y += divider_spacing - divider_height;
             if (!dry_run) {
                 rf::gr::set_color(0xFF, 0xFF, 0xFF, 0x80);
@@ -423,6 +508,7 @@ int draw_scoreboard_players(
             int score = 999;
             int num_kills = 999;
             int num_deaths = 999;
+            int num_assists = 999;
             int caps_or_loads = 999;
             int ping = 9999;
 #else
@@ -430,6 +516,7 @@ int draw_scoreboard_players(
             int score = stats->score;
             int num_kills = stats->num_kills;
             int num_deaths = stats->num_deaths;
+            int num_assists = stats->num_assists;
             int caps_or_loads = stats->caps;
             int ping = player->net_data ? player->net_data->ping : 0;
 #endif
@@ -441,6 +528,11 @@ int draw_scoreboard_players(
             if (show_kd) {
                 auto kills_deaths_str = std::format("{}/{}", num_kills, num_deaths);
                 rf::gr::string(kd_x, y, kills_deaths_str.c_str());
+            }
+
+            if (show_assists) {
+                auto assists_str = std::to_string(num_assists);
+                rf::gr::string(assists_x, y, assists_str.c_str());
             }
 
             if (game_type == rf::NG_TYPE_CTF) {
@@ -482,6 +574,17 @@ ScoreboardPlayerList filter_and_sort_players(const std::optional<int> team_id)
 
             if (category_1 != category_2) {
                 return category_1 < category_2;
+            }
+
+            // Pit IN QUEUE section: order by queue position (front of queue on
+            // top). DUELING / NOT QUEUED keep the standard sort below. Ties or
+            // unknown order (0) fall through to the standard comparison.
+            if (category_1 == ScoreboardCategory::PitQueued) {
+                const int order_1 = pit_scoreboard_order_for(player_1);
+                const int order_2 = pit_scoreboard_order_for(player_2);
+                if (order_1 != order_2 && order_1 != 0 && order_2 != 0) {
+                    return order_1 < order_2;
+                }
             }
 
             const rf::NetGameType game_type = rf::multi_get_game_type();

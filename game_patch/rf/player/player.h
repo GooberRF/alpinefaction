@@ -79,6 +79,9 @@ struct PlayerAdditionalData {
 
     std::optional<int> last_spawn_point_index{};
 
+    // Client's locally-selected multiplayer character
+    int reported_multi_character = -1;
+
     // Requires `spawn_delay` to be enabled.
     rf::Timestamp respawn_timer{};
 
@@ -89,6 +92,18 @@ struct PlayerAdditionalData {
     std::optional<rf::Player*> spectatee{};
     bool remote_server_cfg_sent = false;
 
+    // Floor rate limit for af_req_vote_options: the blob is streamed over the
+    // deferred reliable queue, so a client must not be able to spam it.
+    rf::TimestampRealtime vote_options_req_timer{};
+
+    // Generation of the vote-options blob last streamed to this player, so an
+    // identical one is never sent twice.
+    // 0 = nothing sent yet; generations start at 1.
+    uint32_t vote_options_sent_generation = 0;
+
+    // Rate limit for vote rejection replies.
+    rf::TimestampRealtime vote_reject_msg_timer{};
+
     // Server side rail gun reload cooldown, used for force_rail_reload
     // needed because entity_is_reloading is unreliable on server
     rf::Timestamp rail_gun_reload_timer{};
@@ -96,7 +111,23 @@ struct PlayerAdditionalData {
     // Round-based gametypes.
     bool round_is_out = false;
     bool round_participated = false; // the player has participated this round
-    float lms_round_damage_dealt = 0.0f; // damage dealt during current round (tiebreak)
+
+    // Pit (NG_TYPE_PIT): true once the player has opted out of the duel queue for
+    // this session. Auto-queue eligibility is simply !pit_queue_opt_out.
+    bool pit_queue_opt_out = false;
+
+    // Wipeout (NG_TYPE_WO): per-round death counter drives the escalating respawn
+    // delay (5s * deaths); spawned_this_round selects first-spawn (TDM) vs
+    // subsequent-spawn (cluster near teammates) logic. Both reset each round.
+    int wipeout_round_deaths = 0;
+    bool wipeout_spawned_this_round = false;
+    // Throttles the Wipeout / Pit "you can't spawn yet" lines, which have their own
+    // ~3s cadence. Deliberately NOT shared with send_spawn_decline_msg, which uses
+    // a different timer (5s).
+    rf::Timestamp waiting_msg_timer{};
+    // Throttles the spawn-decline notices in multi_spawn_player_server_side
+    // (Alpine restriction, anti-cheat, match in progress, bot, respawn delay).
+    rf::Timestamp spawn_decline_msg_timer{};
 };
 static_assert(alignof(PlayerAdditionalData) == 0x8);
 #endif
@@ -210,6 +241,7 @@ namespace rf
 
     enum PlayerFlags
     {
+        PF_HIDE_FROM_CAMERA = 0x10,
         PF_KILL_AFTER_BLACKOUT = 0x200,
         PF_END_LEVEL_AFTER_BLACKOUT = 0x1000,
     };
