@@ -153,7 +153,7 @@ struct SalvageConfig
 
     void set_cap_limit(int count)
     {
-        cap_limit = std::clamp(count, 1, 32767);
+        cap_limit = std::clamp(count, 1, 65535);
     }
 
     void set_flag_spawn_delay(float in_seconds)
