@@ -181,8 +181,7 @@ bool jetpack_exhaust_emitter_type(rf::ParticleEmitterType* out)
     if (g_jetpack_emitter_type_idx < 0) {
         return false;
     }
-    // 0x007B2770 is an array of ParticleEmitterType POINTERS.
-    *out = *(&rf::g_particle_emitter_types)[g_jetpack_emitter_type_idx];
+    *out = *rf::g_particle_emitter_types[g_jetpack_emitter_type_idx];
 
     // The steam is decoration only; it must never damage an entity that flies
     // through it. Everything else the table asks for is kept.

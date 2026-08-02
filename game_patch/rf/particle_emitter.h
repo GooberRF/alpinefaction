@@ -224,8 +224,9 @@ static auto& particle_create = addr_as_ref<void(int pool_id, ParticleCreateInfo&
     GRoom* room, Vector3* a4, int parent_obj, Particle** result,
     ParticleEmitter* emitter)>(0x00496840);
 
-// Particle emitter type template array (256 entries, indexed by emitter idx)
-static auto& g_particle_emitter_types = addr_as_ref<ParticleEmitterType*>(0x007B2770);
+// Array of particle emitter type template pointers loaded from emitters.tbl
+// (64 slots; live count is at 0x007BD99C, checked by particle_emitter_type_lookup)
+static auto& g_particle_emitter_types = addr_as_ref<ParticleEmitterType*[64]>(0x007B2770);
 static auto& particle_emitter_type_lookup = addr_as_ref<int(const char* name)>(0x00497550);
 
 static auto& particle_emitter_create = addr_as_ref<ParticleEmitter*(
