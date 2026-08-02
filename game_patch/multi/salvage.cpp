@@ -57,8 +57,6 @@ constexpr int kSalClientBaseLookupRetryMs = 1000;
 // within this relative imbalance, i.e. |d_r - d_b| / mean(d_r, d_b).
 constexpr float kSalMaxCenterImbalance = 0.30f;
 constexpr float kSalMidpointGroundTraceDist = 32.0f;
-constexpr int kSalSoundFlagSteal = 0x40;
-constexpr int kSalSoundFlagCapture = 0x3F;
 // Objective glow. Green, like Bagman's — the neutral flag belongs to nobody, so
 // a team colour would be misleading. Radii match what the stock game uses for
 // the equivalent lights: 4.0 for a CTF flag carrier, 3.0 (0x0059479C) for a
@@ -1113,10 +1111,10 @@ void salvage_apply_state_from_packet(uint8_t state, uint8_t carrier_player_id, u
         // caps also arrive via the unreliable stock team_scores packet, which can beat
         // this reliable one, and Carried -> Delayed only ever happens on a capture.
         if (prev_state == SalFlagState::Carried && g_salvage_info.state == SalFlagState::Delayed) {
-            rf::snd_play(kSalSoundFlagCapture, 0, 0.0f, 1.0f);
+            rf::snd_play(stock_sound_id::flag_capture, 0, 0.0f, 1.0f);
         }
         else if (prev_state != SalFlagState::Carried && g_salvage_info.state == SalFlagState::Carried) {
-            rf::snd_play(kSalSoundFlagSteal, 0, 0.0f, 1.0f);
+            rf::snd_play(stock_sound_id::flag_pickup, 0, 0.0f, 1.0f);
         }
         else if (prev_state != SalFlagState::AtSpawn && g_salvage_info.state == SalFlagState::AtSpawn) {
             salvage_play_return_sound();
@@ -1189,7 +1187,7 @@ void salvage_on_flag_touch(rf::Player* player, rf::Item* item)
     salvage_move_carried_flag(); // attach on the same frame it is taken
 
     announce(std::format("{} has the flag!", player->name.c_str()));
-    play_local_transition_sound(kSalSoundFlagSteal);
+    play_local_transition_sound(stock_sound_id::flag_pickup);
     salvage_broadcast_state();
 }
 
@@ -1224,7 +1222,7 @@ void salvage_on_base_touch(rf::Player* player, rf::Item* item)
 
     announce(std::format("{} captured the flag for the {} team!", player->name.c_str(),
         red_base ? "RED" : "BLUE"));
-    play_local_transition_sound(kSalSoundFlagCapture);
+    play_local_transition_sound(stock_sound_id::flag_capture);
     salvage_broadcast_state();
 }
 

@@ -792,9 +792,6 @@ static int sal_icon_deliver_blue() { return g_world_hud_assets.sal_base_blue; }
 
 static void render_salvage_sprite(const rf::Vector3& pos, int bitmap_handle, WorldHUDRenderMode render_mode)
 {
-    if (bitmap_handle <= 0) {
-        return; // asset missing
-    }
     do_render_world_hud_sprite(pos, 0.6f, bitmap_handle, render_mode, true, true, true);
 }
 
