@@ -611,10 +611,17 @@ struct MutatorConfig
 
     // Vampire: gain effective health when dealing PvP damage.
     bool vampire_enabled = false;
+    float vampire_heal_ratio = 0.0f; // effective health granted per point of damage dealt
     bool hide_health_armor_pickups = false;
 
     // Super Drain: rot health/armor above the entity's max back down to it.
     bool super_drain_enabled = false;
+
+    // Big Craters: double the weapon crater radius of explosion geomods.
+    bool big_craters_enabled = false;
+
+    // Flaming Enemies: sustained flamethrower fire damage sets players on fire.
+    bool flaming_enemies_enabled = false;
 
     // Display only: human-readable names of the mutators applied to these rules.
     std::vector<std::string> active_labels;

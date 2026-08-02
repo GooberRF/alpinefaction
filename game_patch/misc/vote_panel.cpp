@@ -177,7 +177,7 @@ struct MutatorDescription
 const MutatorDescription mutator_descriptions[] = {
     {"instagib",
      "Spawn with Rail. One-hit kills, unlimited ammo, no reloads, no weapon switching, no pickups."},
-    {"rails",
+    {"oneweapon",
      "Spawn with Baton. Weapon/ammo pickups based on the specified weapon. No other pickups."},
     {"arena",
      "Spawn with AR and 100/100. Auto reload and reset to 100/100 on a frag. Weapon pickups only."},
@@ -185,6 +185,16 @@ const MutatorDescription mutator_descriptions[] = {
      "Damage enemies to regenerate health and armor."},
     {"superdrain",
      "Super health and armor drain down to 100 over time."},
+    {"armored",
+     "Players spawn with 100 armor."},
+    {"superrail",
+     "Rail gun pickups are treated as super items."},
+    {"bigcraters",
+     "Geomod craters are much larger."},
+    {"flamingenemies",
+     "Continuous flamethrower damage sets enemies on fire."},
+    {"gibbing",
+     "Explosive deaths chunk enemies into gibs."},
 };
 
 const char* mutator_description_for(std::string_view name)

@@ -658,6 +658,14 @@ void serialize_payload(const ShouldGibPayload& payload, std::byte* buf, size_t& 
     offset += sizeof(payload.obj_handle);
 }
 
+// af_sreq_entity_on_fire
+void serialize_payload(const EntityOnFirePayload& payload, std::byte* buf, size_t& offset)
+{
+    std::memcpy(buf + offset, &payload.obj_handle, sizeof(payload.obj_handle));
+    offset += sizeof(payload.obj_handle);
+    buf[offset++] = static_cast<std::byte>(payload.on);
+}
+
 // af_sreq_teleport_entity
 void serialize_payload(const TeleportEntityPayload& payload, std::byte* buf, size_t& offset)
 {
@@ -1645,6 +1653,26 @@ void af_send_should_gib_req(uint32_t obj_handle)
     }
 }
 
+// Flaming Enemies mutator: tell clients an entity caught fire or was extinguished.
+void af_send_entity_on_fire(uint32_t obj_handle, bool on)
+{
+    if (!rf::is_server) {
+        return;
+    }
+
+    af_server_req_packet packet{};
+    packet.header.type = static_cast<uint8_t>(af_packet_type::af_server_req);
+    packet.header.size = sizeof(uint8_t) + sizeof(EntityOnFirePayload);
+    packet.req_type = af_server_req_type::af_sreq_entity_on_fire;
+    packet.payload = EntityOnFirePayload{obj_handle, static_cast<uint8_t>(on ? 1 : 0)};
+
+    for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
+        if (is_player_minimum_af_client_version(&player, 1, 4, 0)) {
+            af_send_server_req_packet(packet, &player);
+        }
+    }
+}
+
 // Tell capable clients what actually landed the killing blow.
 void af_send_kill_info(rf::Player* killed_player)
 {
@@ -2249,6 +2277,31 @@ static void af_process_server_req_packet(const void* data, size_t len, const rf:
                         payload.killed_player_id);
                 }
             }
+            break;
+        }
+        case af_server_req_type::af_sreq_entity_on_fire: {
+            if (remaining < sizeof(EntityOnFirePayload)) {
+                xlog::warn("af_process_server_req_packet: EntityOnFire payload too short");
+                return;
+            }
+
+            EntityOnFirePayload payload{};
+            std::memcpy(&payload.obj_handle, bytes + offset, sizeof(payload.obj_handle));
+            payload.on = bytes[offset + sizeof(payload.obj_handle)];
+
+            rf::Object* remote_object = rf::obj_from_remote_handle(payload.obj_handle);
+            if (!remote_object) {
+                xlog::debug("af_process_server_req_packet: EntityOnFire invalid remote handle {:x}", payload.obj_handle);
+                return;
+            }
+
+            rf::Entity* entity = rf::entity_from_handle(remote_object->handle);
+            if (!entity) {
+                xlog::debug("af_process_server_req_packet: EntityOnFire invalid entity handle {:x}", payload.obj_handle);
+                return;
+            }
+
+            mutators_apply_entity_on_fire(entity, payload.on != 0);
             break;
         }
         case af_server_req_type::af_sreq_vote_state: {

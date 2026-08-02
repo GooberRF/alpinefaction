@@ -279,6 +279,7 @@ enum class af_server_req_type : uint8_t
     af_sreq_vote_state = 0x5,          // Alpine 1.4 (variable, see AfVoteStateEvent)
     af_sreq_vote_options_data = 0x6,   // Alpine 1.4 (chunked vote-options blob)
     af_sreq_kill_info = 0x7,           // Alpine 1.4 (5 bytes: victim, killer, weapon, flags, damage_type)
+    af_sreq_entity_on_fire = 0x8,      // Alpine 1.4 (5 bytes: obj_handle, on)
 };
 
 struct ShouldGibPayload
@@ -349,8 +350,17 @@ static_assert(sizeof(KillInfoPayload) == 5);
 
 constexpr uint8_t af_kill_info_max_assists = 8;
 
+// Used by the Flaming Enemies mutator.
+// This is purely visual on the client. All fire damage is dealt by the server.
+struct EntityOnFirePayload
+{
+    uint32_t obj_handle = 0;
+    uint8_t on = 0; // 1 = ignite, 0 = extinguish
+};
+static_assert(sizeof(EntityOnFirePayload) == 5);
+
 using af_server_req_payload = std::variant<ShouldGibPayload, TeleportEntityPayload, SprayPayload,
-                                           ReadyPromptPayload, PitQueueStatePayload>;
+                                           ReadyPromptPayload, PitQueueStatePayload, EntityOnFirePayload>;
 
 struct af_server_req_packet
 {
@@ -718,6 +728,7 @@ void af_send_character_request(int character_index);
 void af_send_server_req_packet(const af_server_req_packet& packet, rf::Player* player);
 void af_send_should_gib_req(uint32_t obj_handle);
 void af_send_kill_info(rf::Player* killed_player);
+void af_send_entity_on_fire(uint32_t obj_handle, bool on);
 void af_send_teleport_entity_req(uint32_t obj_handle, const rf::Vector3& pos, const rf::Matrix3& orient, const rf::Vector3& vel);
 void af_send_spray_to_player(uint8_t player_id, uint16_t texture_id, const rf::Vector3& pos, const rf::Vector3& normal, uint8_t flags, rf::Player* player);
 void af_broadcast_spray(uint8_t player_id, uint16_t texture_id, const rf::Vector3& pos, const rf::Vector3& normal);

@@ -1687,7 +1687,10 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
     const bool mutators_changed =
         rules.mutators.active_labels != b.mutators.active_labels ||
         rules.mutators.vampire_enabled != b.mutators.vampire_enabled ||
-        rules.mutators.hide_health_armor_pickups != b.mutators.hide_health_armor_pickups;
+        rules.mutators.vampire_heal_ratio != b.mutators.vampire_heal_ratio ||
+        rules.mutators.hide_health_armor_pickups != b.mutators.hide_health_armor_pickups ||
+        rules.mutators.featured_weapon_index != b.mutators.featured_weapon_index ||
+        rules.mutators.redirect_exclude_thrown != b.mutators.redirect_exclude_thrown;
 
     if (base || mutators_changed) {
         std::string joined;
@@ -1697,9 +1700,22 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
             joined += rules.mutators.active_labels[i];
         }
         std::format_to(iter, "  Mutators:                              {}\n", joined.empty() ? "<none>" : joined);
+        // One Weapon options
+        if (rules.mutators.redirect_pickups_to_featured) {
+            const int featured = rules.mutators.featured_weapon_index;
+            const char* featured_name = (featured >= 0 && featured < rf::num_weapon_types)
+                ? rf::weapon_types[featured].name.c_str()
+                : "<invalid>";
+            std::format_to(iter, "    Featured weapon:                     {}\n", featured_name);
+            std::format_to(iter, "    Keep thrown explosives:              {}\n",
+                           rules.mutators.redirect_exclude_thrown);
+        }
+        // Vampire options
         if (rules.mutators.vampire_enabled) {
             std::format_to(iter, "    Hide health/armor pickups:           {}\n",
                            rules.mutators.hide_health_armor_pickups);
+            std::format_to(iter, "    Full lifesteal:                      {}\n",
+                           rules.mutators.vampire_heal_ratio >= 1.0f);
         }
     }
 

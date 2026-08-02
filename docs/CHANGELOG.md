@@ -20,10 +20,15 @@ Version 1.4.0 (Lupin): Not yet released
   - `spray` console command to select spray, and in-game spray picker in advanced options
 - Add server-configured mutators:
   - Instagib
-  - Rails
+  - One Weapon
   - Arena
   - Vampire
   - Super Drain
+  - Armored
+  - Super Rail
+  - Big Craters
+  - Flaming Enemies
+  - Gibbing
 - Rework multiplayer voting to use a GUI-based system instead of chat commands
   - Servers describe their votable levels, game types, and mutator options to clients
   - `vote level` and `vote match` can now select a game type and any number of mutators (with their options) for the voted level

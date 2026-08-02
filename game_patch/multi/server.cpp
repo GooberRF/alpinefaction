@@ -1295,13 +1295,13 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
         bool did_gib = false;
         if (damaged_ep) {
             if (!rf::is_multi) { // SP gibbing
-                if (damaged_ep->life < -100.0f &&               // very dead
-                    damage_type == 3 &&                         // explosive
-                    damaged_ep->material == 3 &&                // flesh
-                    !(damaged_ep->entity_flags & 0x2000000) &&  // custom_corpse (used by snakes and sea creature)
-                    !(damaged_ep->entity_flags & 0x1) &&        // dying
-                    !(damaged_ep->entity_flags & 0x1000) &&     // in_water
-                    !(damaged_ep->entity_flags & 0x2000))       // eye_under_water
+                if (damaged_ep->life < -100.0f &&                          // very dead
+                    damage_type == 3 &&                                    // explosive
+                    damaged_ep->material == 3 &&                           // flesh
+                    !(damaged_ep->entity_flags & rf::EF_CUSTOM_CORPSE) &&  // used by snakes and sea creature
+                    !(damaged_ep->entity_flags & rf::EF_DYING) &&
+                    !(damaged_ep->entity_flags & rf::EF_IN_WATER) &&
+                    !(damaged_ep->entity_flags & rf::EF_EYE_UNDER_WATER))
                 {
                     entity_set_gib_flag(damaged_ep);
                 }
@@ -1312,13 +1312,19 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
                     damage > gibbing.damage_threshold &&            // big damage (default 100.0)
                     (gibbing.all_damage || damage_type == 3) &&     // explosive
                     damaged_ep->material == 3 &&                    // flesh
-                    !(damaged_ep->entity_flags & 0x1))              // dying
+                    !(damaged_ep->entity_flags & rf::EF_DYING))
                 {
                     entity_set_gib_flag(damaged_ep);
                     af_send_should_gib_req(static_cast<uint32_t>(damaged_ep->handle));
                     did_gib = true;
                 }
             }
+        }
+
+        // Flaming Enemies mutator: a big enough explosive hit or any melee hit puts a
+        // burning player's fire out. Any damage source counts, including their own rockets.
+        if (rf::is_multi && rf::is_server && damaged_player && real_damage > 0.0f) {
+            mutators_on_flame_victim_damage(damaged_player, damage_type, damage);
         }
 
         bool is_dead = damaged_ep ? damaged_ep->life <= 0.0f : true;
@@ -1414,6 +1420,9 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
 
             // Vampire mutator
             mutators_on_pvp_damage(killer_player, damaged_player, effective_damage);
+
+            // Flaming Enemies mutator: flamethrower fire damage may grant or refresh a burn
+            mutators_on_flame_damage(killer_player, damaged_player, damage_type, real_damage);
 
             if (g_alpine_server_config.damage_notification_config.enabled && damaged_player && killer_player) {
                 if (!(!damaged_ep || rf::entity_is_dying(damaged_ep) || rf::player_is_dead(damaged_player))) {

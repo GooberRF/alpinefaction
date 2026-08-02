@@ -17,8 +17,12 @@ namespace rf
 
     enum EntityFlags
     {
+        EF_DYING = 0x1,
         EF_JUMP_START_ANIM = 0x2,
         EF_GIB_ON_DEATH = 0x80,
+        EF_IN_WATER = 0x1000,
+        EF_EYE_UNDER_WATER = 0x2000,
+        EF_CUSTOM_CORPSE = 0x2000000,
     };
 
     enum EntityFlags2
@@ -465,6 +469,8 @@ namespace rf
     static auto& entity_is_carrying_corpse = addr_as_ref<bool(Entity *ep)>(0x00429D20);
     static auto& entity_is_slippery = addr_as_ref<bool(Entity* ep)>(0x0040A320);
     static auto& entity_fire_init_bones = addr_as_ref<bool(EntityFireInfo *efi, Object *objp)>(0x0042EB20);
+    static auto& entity_fire_create = addr_as_ref<EntityFireInfo*(int entity_handle, int killer_handle)>(0x0042E910);
+    static auto& entity_fire_destroy = addr_as_ref<void(EntityFireInfo* fire, bool keep_linked)>(0x0042ED20);
     static auto& entity_is_swimming = addr_as_ref<bool(Entity* ep)>(0x0042A0A0);
     static auto& entity_is_crouching = addr_as_ref<bool(Entity* ep)>(0x0040A130);
     static auto& entity_is_falling = addr_as_ref<bool(Entity* ep)>(0x0042A020);
