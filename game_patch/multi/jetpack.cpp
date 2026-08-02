@@ -13,8 +13,10 @@
 #include "../rf/entity.h"
 #include "../rf/object.h"
 #include "../rf/gameseq.h"
+#include "../rf/level.h"
 #include "../rf/particle_emitter.h"
 #include "../rf/os/console.h"
+#include "../os/console.h"
 #include "../rf/os/frametime.h"
 #include "../rf/os/timestamp.h"
 #include "../rf/player/player.h"
@@ -93,6 +95,13 @@ struct JetpackEffectState
 
 // Keyed by entity handle. Holds an entry only while that entity is thrusting.
 std::unordered_map<int, JetpackEffectState> g_jetpack_effects;
+
+// The `jetpack` console command, for single player only and purely for fun. Read
+// exclusively from the !is_multi branch of jetpacks_are_active, so it can never
+// influence a multiplayer game whatever it happens to be set to. Deliberately NOT
+// cleared by jetpack_level_init: it is a player preference that persists across
+// single player level changes until it is toggled off again.
+bool g_jetpack_sp_enabled = false;
 
 float g_jetpack_fuel = 1.0f;
 bool g_jetpack_thrusting = false;
@@ -339,6 +348,15 @@ void jetpack_reset_local_sync()
 // sent settles for free: the flush finds nothing to do.
 void jetpack_sync_local_thrust()
 {
+    // Single player has nobody to tell. Ahead of everything else because rf::is_server
+    // is not a reliable "am I hosting a game" test outside multiplayer, and the branch
+    // below would otherwise reach af_send_jetpack_state. Keeping the shadow in step
+    // makes the per-frame flush a no-op rather than a permanently pending send.
+    if (!rf::is_multi) {
+        g_jetpack_sent_thrust = g_jetpack_thrusting;
+        return;
+    }
+
     if (g_jetpack_sent_thrust == g_jetpack_thrusting || !jetpack_sync_cooldown_clear()) {
         return;
     }
@@ -594,8 +612,10 @@ void jetpack_update_local_player()
     // The hint offers itself only while the pack would actually answer the jump
     // key this instant and the player is not already pressing it. `!jump_down`
     // rather than `!jump_held`, so holding jump and opening the chat box does not
-    // make the hint appear.
-    const bool hint_wanted = !g_jetpack_has_thrusted && falling && grace_elapsed
+    // make the hint appear. Multiplayer only: in single player the pack is turned
+    // on by a deliberate console command, so the player already knows the control,
+    // and the level-scoped reset would re-teach it on every level change.
+    const bool hint_wanted = rf::is_multi && !g_jetpack_has_thrusted && falling && grace_elapsed
         && g_jetpack_fuel > 0.0f && !g_jetpack_tank_empty && !typing && !jump_down;
     if (hint_wanted && !g_jetpack_hint_wanted) {
         // Built on the rising edge only: this is what keeps the draw path free of
@@ -698,9 +718,13 @@ bool jetpack_solve_attachment(rf::Entity* ep, rf::VMesh* mesh, int mesh_prop_idx
 // local player and none of it survives a hidden HUD or a spectate view.
 bool jetpack_hud_is_visible()
 {
-    if (!rf::is_multi || !jetpacks_are_active()) {
+    if (!jetpacks_are_active()) {
         return false;
     }
+    // multi_spectate_is_spectating() is trivially false in single player:
+    // multi_spectate_is_freelook() requires rf::is_multi, and the two mode flags
+    // behind it are only ever set from the multiplayer spectate entry paths and are
+    // cleared by multi_spectate_level_init on every level load.
     if (is_hud_effectively_hidden() || multi_spectate_is_spectating()) {
         return false;
     }
@@ -791,7 +815,10 @@ void jetpack_draw_thrust_hint(int alpha_scale)
 bool jetpacks_are_active()
 {
     if (!rf::is_multi) {
-        return false;
+        // Single player: the `jetpack` console command, nothing else. This is the
+        // only place the flag is ever read, which is what keeps it inert in
+        // multiplayer regardless of what a previous single player session left it at.
+        return g_jetpack_sp_enabled;
     }
     if (rf::is_server) {
         return g_alpine_server_config_active_rules.mutators.jetpacks_enabled;
@@ -857,7 +884,9 @@ void jetpack_do_frame()
     }
 
     const bool in_gameplay = rf::gameseq_get_state() == rf::GameState::GS_GAMEPLAY;
-    const bool active = rf::is_multi && in_gameplay && jetpacks_are_active();
+    // No is_multi term: jetpacks_are_active already answers for both modes, and in
+    // single player it is the console command that decides.
+    const bool active = in_gameplay && jetpacks_are_active();
 
     if (!active) {
         jetpack_set_local_thrust(false);
@@ -880,7 +909,7 @@ void jetpack_do_frame()
 
 void jetpack_render_attachment(rf::Entity* ep)
 {
-    if (!rf::is_multi || !jetpacks_are_active()) {
+    if (!jetpacks_are_active()) {
         return;
     }
     if (!ep || !ep->vmesh || !g_jetpack_mesh || g_jetpack_mesh_prop_idx < 0
@@ -963,4 +992,29 @@ void jetpack_level_init()
     // would otherwise ghost onto the next level's first frame.
     g_jetpack_has_thrusted = false;
     g_jetpack_hint_fade = 0.0f;
+}
+
+ConsoleCommand2 jetpack_cmd{
+    "jetpack",
+    []() {
+        if (!(rf::level.flags & rf::LEVEL_LOADED)) {
+            rf::console::print("No level loaded!");
+            return;
+        }
+
+        if (rf::is_multi) {
+            rf::console::print("That command can't be used in multiplayer.");
+            return;
+        }
+
+        g_jetpack_sp_enabled = !g_jetpack_sp_enabled;
+        rf::console::print("Jetpack {}.", g_jetpack_sp_enabled ? "enabled" : "disabled");
+    },
+    "Toggle a jetpack for yourself",
+    "jetpack",
+};
+
+void jetpack_apply_patch()
+{
+    jetpack_cmd.register_cmd();
 }

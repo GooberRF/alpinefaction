@@ -316,6 +316,10 @@ FunHook<void(bool)> level_init_post_hook{
         populate_fullscreen_overlay_events();
         reset_achievement_state_info();
         multi_level_init_post_gametypes();
+        // Multiplayer resets the jetpack from its own level-init injection.
+        if (!rf::is_multi) {
+            jetpack_level_init();
+        }
         apply_geoable_flags();
         apply_breakable_materials();
 

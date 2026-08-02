@@ -2258,6 +2258,9 @@ void gametype_do_patch()
     // bagman specific
     bagman_do_patch();
 
+    // jetpack specific (registers the single player `jetpack` console command)
+    jetpack_apply_patch();
+
     // rounds
     rounds_do_patch();
 }
