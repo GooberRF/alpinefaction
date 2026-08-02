@@ -144,6 +144,35 @@ struct BagmanConfig
     }
 };
 
+struct SalvageConfig
+{
+    int cap_limit = 5;
+    int flag_spawn_delay_ms = 15000;
+    int flag_capture_respawn_delay_ms = 5000;
+    int flag_return_time_ms = 15000;
+
+    void set_cap_limit(int count)
+    {
+        cap_limit = std::clamp(count, 1, 32767);
+    }
+
+    void set_flag_spawn_delay(float in_seconds)
+    {
+        // 2 bytes (uint16_t) on the wire
+        flag_spawn_delay_ms = std::clamp(static_cast<int>(in_seconds * 1000.0f), 0, 60000);
+    }
+
+    void set_flag_capture_respawn_delay(float in_seconds)
+    {
+        flag_capture_respawn_delay_ms = std::clamp(static_cast<int>(in_seconds * 1000.0f), 0, 60000);
+    }
+
+    void set_flag_return_time(float in_seconds)
+    {
+        flag_return_time_ms = std::clamp(static_cast<int>(in_seconds * 1000.0f), 1000, 60000);
+    }
+};
+
 struct DamageNotificationConfig
 {
     bool enabled = true;
@@ -665,6 +694,7 @@ struct AlpineServerConfigRules
     KillRewardConfig kill_rewards;
     WeaponStayExemptionConfig weapon_stay_exemptions;
     BagmanConfig bagman;
+    SalvageConfig salvage;
     std::map<std::string, std::string> item_replacements;
     std::map<std::string, int> item_respawn_time_overrides;
     DelayedItemsConfig delayed_items;

@@ -42,6 +42,7 @@ enum class af_packet_type : uint8_t
     af_bagman_state = 0x60,             // Alpine 1.4
     af_pit_roster = 0x61,               // Alpine 1.4
     af_gungame_order = 0x62,            // Alpine 1.4
+    af_salvage_state = 0x63,            // Alpine 1.4
 };
 
 struct af_ping_location_req_packet
@@ -409,6 +410,23 @@ struct af_bagman_state_packet
     int16_t  carrier_score;
 };
 
+struct af_salvage_state_packet
+{
+    RF_GamePacketHeader header;
+    uint8_t state;
+    uint8_t carrier_player_id; // 0xFF = nobody
+    uint16_t time_left_ms;     // Dropped: return timer; Delayed: spawn timer; else 0
+    uint16_t red_caps;
+    uint16_t blue_caps;
+    float spawn_x;
+    float spawn_y;
+    float spawn_z;
+    float flag_x;
+    float flag_y;
+    float flag_z;
+};
+static_assert(sizeof(af_salvage_state_packet) == 35);
+
 struct af_koth_hill_captured_packet
 {
     RF_GamePacketHeader header;
@@ -696,6 +714,9 @@ void af_broadcast_pit_roster(const std::vector<af_pit_roster_entry>& roster);
 void af_process_pit_roster_packet(const void* data, size_t len, const rf::NetAddr&);
 void af_send_gungame_order(rf::Player* player, const std::vector<af_gungame_order_entry>& order);
 void af_process_gungame_order_packet(const void* data, size_t len, const rf::NetAddr&);
+void af_send_salvage_state_packet(rf::Player* player);
+void af_send_salvage_state_packet_to_all();
+void af_process_salvage_state_packet(const void* data, size_t len, const rf::NetAddr&);
 void af_send_koth_hill_captured_packet_to_all(uint8_t hill_uid, HillOwner owner, const std::vector<uint8_t>& new_owner_player_ids);
 static void af_process_koth_hill_captured_packet(const void* data, size_t len, const rf::NetAddr&);
 void af_send_just_died_info_packet(rf::Player* to_player, bool respawn_allowed, bool force_respawn, uint16_t spawn_delay);

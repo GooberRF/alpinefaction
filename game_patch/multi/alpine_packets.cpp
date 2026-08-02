@@ -1,6 +1,7 @@
 #include <cstddef>
 #include <cstring>
 #include <cassert>
+#include <cmath>
 #include <algorithm>
 #include <array>
 #include <limits>
@@ -26,6 +27,7 @@
 #include "sprays.h"
 #include "bagman.h"
 #include "pit.h"
+#include "salvage.h"
 #include "vote_client.h"
 #include "../misc/player.h"
 #include "../hud/hud.h"
@@ -161,6 +163,10 @@ bool af_process_packet(
         }
         case af_packet_type::af_gungame_order: {
             af_process_gungame_order_packet(data, static_cast<size_t>(len), addr);
+            return true;
+        }
+        case af_packet_type::af_salvage_state: {
+            af_process_salvage_state_packet(data, static_cast<size_t>(len), addr);
             return true;
         }
         default:
@@ -2638,6 +2644,129 @@ void af_process_bagman_state_packet(const void* data, size_t len, const rf::NetA
     }
 }
 
+// Build the wire packet once from the current salvage state.
+static void build_af_salvage_state_packet(af_salvage_state_packet& pkt)
+{
+    pkt.header.type = static_cast<uint8_t>(af_packet_type::af_salvage_state);
+    pkt.header.size = static_cast<uint16_t>(sizeof(af_salvage_state_packet) - sizeof(RF_GamePacketHeader));
+
+    pkt.state = static_cast<uint8_t>(salvage_get_state());
+    rf::Player* carrier = salvage_get_carrier();
+    pkt.carrier_player_id = (carrier && carrier->net_data) ? carrier->net_data->player_id : 0xFF;
+    pkt.time_left_ms = static_cast<uint16_t>(std::clamp(salvage_get_time_left_ms(), 0, 0xFFFF));
+    pkt.red_caps = static_cast<uint16_t>(std::clamp(salvage_get_red_team_score(), 0, 0xFFFF));
+    pkt.blue_caps = static_cast<uint16_t>(std::clamp(salvage_get_blue_team_score(), 0, 0xFFFF));
+
+    const rf::Vector3& spawn_pos = salvage_get_spawn_pos();
+    pkt.spawn_x = spawn_pos.x;
+    pkt.spawn_y = spawn_pos.y;
+    pkt.spawn_z = spawn_pos.z;
+
+    // Falls back to the home position while the flag is between items (Delayed),
+    // where clients have nothing to place anyway.
+    rf::Vector3 flag_pos = spawn_pos;
+    salvage_get_flag_pos(&flag_pos);
+    pkt.flag_x = flag_pos.x;
+    pkt.flag_y = flag_pos.y;
+    pkt.flag_z = flag_pos.z;
+}
+
+void af_send_salvage_state_packet(rf::Player* player)
+{
+    // server -> single client
+    if (!rf::is_server) {
+        return;
+    }
+    if (!player) {
+        xlog::error("af_salvage_state_packet: Attempted to send to an invalid player");
+        return;
+    }
+
+    af_salvage_state_packet pkt{};
+    build_af_salvage_state_packet(pkt);
+
+    std::byte buf[sizeof(pkt)];
+    std::memcpy(buf, &pkt, sizeof(pkt));
+    af_send_packet(player, buf, static_cast<int>(sizeof(pkt)), true);
+}
+
+void af_send_salvage_state_packet_to_all()
+{
+    // server -> all clients
+    if (!rf::is_server)
+        return;
+
+    af_salvage_state_packet pkt{};
+    build_af_salvage_state_packet(pkt);
+
+    std::byte buf[sizeof(pkt)];
+    std::memcpy(buf, &pkt, sizeof(pkt));
+
+    SinglyLinkedList<rf::Player> players{rf::player_list};
+    for (auto& p : players) {
+        if (!p.net_data)
+            continue;
+        af_send_packet(&p, buf, static_cast<int>(sizeof(pkt)), true);
+    }
+}
+
+void af_process_salvage_state_packet(const void* data, size_t len, const rf::NetAddr&)
+{
+    // Receive: client <- server
+    if (!rf::is_multi || rf::is_server)
+        return;
+    if (len < sizeof(RF_GamePacketHeader))
+        return;
+
+    if (!gt_is_salvage()) {
+        return;
+    }
+
+    RF_GamePacketHeader hdr{};
+    std::memcpy(&hdr, data, sizeof(hdr));
+    if (sizeof(RF_GamePacketHeader) + hdr.size > len) {
+        xlog::warn("salvage_state: truncated (declared={}, len={})", hdr.size, len);
+        return;
+    }
+    if (len < sizeof(af_salvage_state_packet)) {
+        xlog::warn("salvage_state: short packet ({}<{})", len, sizeof(af_salvage_state_packet));
+        return;
+    }
+
+    af_salvage_state_packet pkt{};
+    std::memcpy(&pkt, data, sizeof(pkt));
+
+    const size_t expected_payload = sizeof(af_salvage_state_packet) - sizeof(RF_GamePacketHeader);
+    if (pkt.header.size != expected_payload) {
+        xlog::warn("salvage_state: bad payload size {} (expected {})", pkt.header.size, expected_payload);
+        return;
+    }
+
+    // A NaN, infinity or absurd magnitude here would reach the flag item's position,
+    // the world HUD projection and the bot navigation, and poison them for the rest
+    // of the level. The bound is far outside any legitimate RF level, so it only ever
+    // catches garbage.
+    // This guard will probably never actually trigger, but costs virtually nothing
+    // and is best practice.
+    constexpr float kSalvageMaxCoordMagnitude = 100000.0f;
+    const auto coord_is_sane = [](float v) {
+        return std::isfinite(v) && std::fabs(v) <= kSalvageMaxCoordMagnitude;
+    };
+    if (!coord_is_sane(pkt.spawn_x) || !coord_is_sane(pkt.spawn_y) || !coord_is_sane(pkt.spawn_z)
+        || !coord_is_sane(pkt.flag_x) || !coord_is_sane(pkt.flag_y) || !coord_is_sane(pkt.flag_z)) {
+        static rf::Timestamp non_finite_warn_throttle;
+        if (!non_finite_warn_throttle.valid() || non_finite_warn_throttle.elapsed()) {
+            non_finite_warn_throttle.set(5000);
+            xlog::warn("salvage_state: rejecting packet with out-of-range coordinates");
+        }
+        return;
+    }
+
+    salvage_apply_state_from_packet(pkt.state, pkt.carrier_player_id, pkt.time_left_ms,
+        pkt.red_caps, pkt.blue_caps, rf::Vector3{pkt.spawn_x, pkt.spawn_y, pkt.spawn_z},
+        rf::Vector3{pkt.flag_x, pkt.flag_y, pkt.flag_z});
+}
+
 void af_send_koth_hill_captured_packet(rf::Player* player, uint8_t hill_uid, HillOwner owner, const std::vector<uint8_t>& new_owner_player_ids)
 {
     // Send: server -> client
@@ -2902,6 +3031,7 @@ static void build_af_server_info_packet(af_server_info_packet& pkt)
     // build win_condition
     switch (get_upcoming_game_type()) {
         case rf::NetGameType::NG_TYPE_CTF:
+        case rf::NetGameType::NG_TYPE_SAL:
             pkt.win_condition = static_cast<uint32_t>(rf::netgame.max_captures);
             break;
         case rf::NetGameType::NG_TYPE_KOTH:
@@ -3054,6 +3184,7 @@ static void af_process_server_info_packet(const void* data, size_t len, const rf
     else {
         switch (game_type) {
             case rf::NetGameType::NG_TYPE_CTF:
+            case rf::NetGameType::NG_TYPE_SAL:
                 rf::netgame.max_captures = static_cast<int>(pkt.win_condition);
                 break;
             case rf::NetGameType::NG_TYPE_KOTH:

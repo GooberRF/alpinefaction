@@ -236,6 +236,7 @@ const char* gametype_short_name(uint8_t id)
         case rf::NG_TYPE_PIT: return "PIT";
         case rf::NG_TYPE_WO: return "WO";
         case rf::NG_TYPE_GG: return "GG";
+        case rf::NG_TYPE_SAL: return "SAL";
         default: return nullptr; // unknown to this build
     }
 }

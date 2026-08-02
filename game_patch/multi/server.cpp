@@ -30,6 +30,7 @@
 #include "pit.h"
 #include "wipeout.h"
 #include "gungame.h"
+#include "salvage.h"
 #include "../os/console.h"
 #include "../hud/hud.h"
 #include "../misc/player.h"
@@ -613,12 +614,18 @@ void handle_whosready_command(rf::Player* player)
 
 static void handle_drop_flag_request(rf::Player* player)
 {
-    if (rf::multi_get_game_type() != rf::NG_TYPE_CTF) {
-        return; // can't drop flags unless in CTF
+    const bool is_salvage = gt_is_salvage();
+    if (rf::multi_get_game_type() != rf::NG_TYPE_CTF && !is_salvage) {
+        return; // can't drop flags unless in CTF or SAL
     }
 
     if (!g_alpine_server_config_active_rules.flag_dropping) {
         af_send_automated_chat_msg("This server has disabled flag dropping.", player);
+        return;
+    }
+
+    if (is_salvage) {
+        salvage_handle_drop_flag_request(player);
         return;
     }
 
@@ -845,6 +852,10 @@ std::optional<rf::NetGameType> resolve_gametype_from_name(std::string_view gamet
     if (string_iequals(gametype_name, "gg") ||
         string_iequals(gametype_name, "gungame")) {
         return rf::NetGameType::NG_TYPE_GG;
+    }
+    if (string_iequals(gametype_name, "sal") ||
+        string_iequals(gametype_name, "salvage")) {
+        return rf::NetGameType::NG_TYPE_SAL;
     }
 
     return std::nullopt;
@@ -1474,7 +1485,7 @@ CallHook<void(rf::Player*, int, int)> give_default_weapon_ammo_hook{
 FunHook<bool (const char*, int)> multi_is_level_matching_game_type_hook{
     0x00445050,
     [](const char *filename, int ng_type) {
-        if (ng_type == rf::NetGameType::NG_TYPE_CTF) {
+        if (ng_type == rf::NetGameType::NG_TYPE_CTF || ng_type == rf::NetGameType::NG_TYPE_SAL) {
             return string_istarts_with(filename, "ctf") || string_istarts_with(filename, "pctf");
         }
         else if (ng_type == rf::NetGameType::NG_TYPE_KOTH) {
@@ -2679,6 +2690,10 @@ static int pick_weaker_team()
         red_score = multi_koth_get_red_team_score();
         blue_score = multi_koth_get_blue_team_score();
         break;
+    case rf::NG_TYPE_SAL:
+        red_score = salvage_get_red_team_score();
+        blue_score = salvage_get_blue_team_score();
+        break;
     default:
         break;
     }
@@ -3230,6 +3245,30 @@ bool round_is_tied(rf::NetGameType game_type)
     case rf::NG_TYPE_TBAG: {
         return bagman_get_red_team_score() == bagman_get_blue_team_score();
     }
+    case rf::NG_TYPE_SAL: {
+        const int red_score = salvage_get_red_team_score();
+        const int blue_score = salvage_get_blue_team_score();
+
+        if (red_score == blue_score) {
+            return true;
+        }
+
+        if (g_alpine_server_config_active_rules.overtime.consider_tie_if_flag_stolen) {
+            if (salvage_get_state() != SalFlagState::Carried) {
+                return false;
+            }
+            const rf::Player* carrier = salvage_get_carrier();
+            if (!carrier) {
+                return false;
+            }
+            const bool carrier_is_red = carrier->team == rf::TEAM_RED;
+            return carrier_is_red ? (red_score == blue_score - 1)
+                                  : (blue_score == red_score - 1);
+        }
+        else {
+            return false;
+        }
+    }
     default: // other modes (e.g. RUN) can't be tied
         return false;
     }
@@ -3344,6 +3383,13 @@ FunHook<void()> multi_check_for_round_end_hook{
                 const int limit = g_alpine_server_config_active_rules.bagman.tbag_score_limit;
                 if (bagman_get_red_team_score() >= limit ||
                     bagman_get_blue_team_score() >= limit) {
+                    round_over = true;
+                }
+                break;
+            }
+            case rf::NG_TYPE_SAL: {
+                if (salvage_get_red_team_score() >= rf::multi_cap_limit ||
+                    salvage_get_blue_team_score() >= rf::multi_cap_limit) {
                     round_over = true;
                 }
                 break;
@@ -3680,13 +3726,22 @@ bool are_flags_initialized()
 // returns 1 if closer to red, 0 if closer to blue, nullopt if no flags or flags are the same position
 std::optional<int> is_closer_to_red_flag(const rf::Vector3* pos)
 {
-    if (!are_flags_initialized()) {
+    rf::Vector3 red_flag_pos, blue_flag_pos;
+
+    if (gt_is_salvage()) {
+        // Salvage removes the level's colored flags and repoints ctf_red_flag_pos at
+        // the neutral flag's spawn, so classify against the team bases instead.
+        if (!salvage_get_base_positions(&red_flag_pos, &blue_flag_pos)) {
+            return std::nullopt;
+        }
+    }
+    else if (!are_flags_initialized()) {
         return std::nullopt;
     }
-
-    rf::Vector3 red_flag_pos, blue_flag_pos;
-    rf::multi_ctf_get_red_flag_pos(&red_flag_pos);
-    rf::multi_ctf_get_blue_flag_pos(&blue_flag_pos);
+    else {
+        rf::multi_ctf_get_red_flag_pos(&red_flag_pos);
+        rf::multi_ctf_get_blue_flag_pos(&blue_flag_pos);
+    }
 
     if (red_flag_pos.x == blue_flag_pos.x &&
         red_flag_pos.y == blue_flag_pos.y &&
@@ -3926,6 +3981,7 @@ CodeInjection entity_maybe_die_patch{
         }
 
         bagman_on_entity_will_die(ep);
+        salvage_on_entity_will_die(ep);
         pit_on_entity_will_die(ep);
     },
 };
@@ -4257,6 +4313,7 @@ void server_do_frame()
     pit_do_frame();
     wipeout_do_frame();
     gungame_do_frame();
+    salvage_do_frame();
     rounds_do_frame();
     auto_team_balance_do_frame();
 }

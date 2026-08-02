@@ -2362,6 +2362,8 @@ rf::Color debug_waypoint_color(WaypointType type)
             return {180, 255, 100, 150};
         case WaypointType::water:
             return {60, 140, 255, 150};
+        case WaypointType::salvage_flag:
+            return {255, 235, 120, 150};
         default:
             return {200, 200, 200, 150};
     }

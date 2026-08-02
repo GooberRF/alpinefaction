@@ -145,6 +145,8 @@ set(SRCS
     multi/wipeout.cpp
     multi/gungame.h
     multi/gungame.cpp
+    multi/salvage.h
+    multi/salvage.cpp
     multi/sprays.h
     multi/sprays.cpp
     multi/mutators.h
