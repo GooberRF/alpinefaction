@@ -952,6 +952,15 @@ FunHook<MultiIoPacketHandler> process_team_change_packet_hook{
                     "You can't change teams right now because it would unbalance the teams.", player);
                 return;
             }
+            // Browsers are neither human nor bot, so their team is never forced.
+            if (player && humans_vs_bots_active() && !player->is_browser) {
+                const rf::ubyte required_team = player->is_bot ? rf::TEAM_BLUE : rf::TEAM_RED;
+                if (data[1] != required_team) {
+                    af_send_automated_chat_msg(
+                        "Humans vs. Bots: humans play on the Red team and bots on the Blue team.", player);
+                    return;
+                }
+            }
         }
         process_team_change_packet_hook.call_target(data, addr);
     },
@@ -2116,6 +2125,28 @@ static bool parse_af_join_req_any_tail(const uint8_t* pkt, size_t datalen, size_
     return false;
 }
 
+// The stock team pick for a joining player runs inside the join flow, before the
+// hook below stamps is_bot/is_browser onto the new Player, so it has to classify
+// the client from the same parsed join-req globals this hook reads.
+JoiningClientKind get_joining_client_kind()
+{
+    const bool server_requires_bot_secret = g_alpine_server_config.bot_shared_secret != 0u;
+    const bool bot_secret_valid =
+        g_joining_player_info.bot_shared_secret.has_value()
+        && (g_joining_player_info.bot_shared_secret
+            == std::optional{g_alpine_server_config.bot_shared_secret});
+
+    // A configured secret, presented and matching, is the only way in.
+    if (server_requires_bot_secret && bot_secret_valid) {
+        return JoiningClientKind::Bot;
+    }
+
+    if (g_joining_client_version == ClientSoftware::Browser) {
+        return JoiningClientKind::Browser;
+    }
+    return JoiningClientKind::Human;
+}
+
 FunHook<void(int, rf::NetAddr*)> process_join_req_packet_hook{
     0x0047AC60,
     [](int pPacket, rf::NetAddr* addr) {
@@ -2145,37 +2176,30 @@ FunHook<void(int, rf::NetAddr*)> process_join_req_packet_hook{
                     g_joining_player_info.bot_shared_secret.has_value();
                 const bool server_requires_bot_secret =
                     g_alpine_server_config.bot_shared_secret != 0u;
-                const bool bot_secret_valid =
-                    has_bot_secret
-                    && (g_joining_player_info.bot_shared_secret
-                        == std::optional{g_alpine_server_config.bot_shared_secret});
 
-                bool should_mark_as_bot = false;
-                if (bot_mode_requested) {
-                    should_mark_as_bot = !server_requires_bot_secret || bot_secret_valid;
-                    if (should_mark_as_bot && !server_requires_bot_secret) {
-                        xlog::warn(
-                            "Bot {} joining without shared secret authentication. "
-                            "Configure BotSharedSecret in dedicated_server.txt to require authentication.",
-                            valid_player->name
-                        );
-                    }
-                } else if (server_requires_bot_secret && bot_secret_valid) {
-                    // Backward compatibility for older clients that only send the secret.
-                    should_mark_as_bot = true;
-                }
+                // Shared with the join-time team pick so the two cannot disagree.
+                const bool should_mark_as_bot =
+                    get_joining_client_kind() == JoiningClientKind::Bot;
 
-                // Reject bot clients that provide an invalid shared secret
+                // Reject bot clients that did not authenticate with a shared secret
                 if (bot_mode_requested && !should_mark_as_bot) {
-                    if (has_bot_secret) {
+                    if (!server_requires_bot_secret) {
                         rf::console::print(
-                            "Rejecting {}: invalid bot shared secret provided",
-                            valid_player->name
+                            "Rejecting {} ({}): server has no bot shared secret configured",
+                            valid_player->name,
+                            *addr
+                        );
+                    } else if (has_bot_secret) {
+                        rf::console::print(
+                            "Rejecting {} ({}): invalid bot shared secret provided",
+                            valid_player->name,
+                            *addr
                         );
                     } else {
                         rf::console::print(
-                            "Rejecting {}: no bot shared secret provided",
-                            valid_player->name
+                            "Rejecting {} ({}): no bot shared secret provided",
+                            valid_player->name,
+                            *addr
                         );
                     }
                     rf::multi_kick_player(valid_player);
@@ -2188,18 +2212,10 @@ FunHook<void(int, rf::NetAddr*)> process_join_req_packet_hook{
                     valid_player->is_bot = true;
                     valid_player->bot_skill = 100u;
                     valid_player->is_spawn_disabled = false;
-                    if (bot_secret_valid) {
-                        rf::console::print(
-                            "{}'s bot shared secret was valid",
-                            valid_player->name
-                        );
-                    }
-                    else {
-                        rf::console::print(
-                            "{} joined in client bot mode",
-                            valid_player->name
-                        );
-                    }
+                    rf::console::print(
+                        "{}'s bot shared secret was valid",
+                        valid_player->name
+                    );
                 } else if (has_bot_secret) {
                     rf::console::print(
                         "{}'s bot shared secret was invalid",

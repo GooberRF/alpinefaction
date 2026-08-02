@@ -40,6 +40,7 @@ enum class MutatorId : uint8_t
     FlamingEnemies = 8,
     Gibbing = 9,
     Jetpacks = 10,
+    HumansVsBots = 11,
 };
 
 struct MutatorOptionChoice

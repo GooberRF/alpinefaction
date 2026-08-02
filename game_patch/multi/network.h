@@ -274,6 +274,18 @@ struct AFGameInfoExtra
     bool unknown_game_type = false;
 };
 
+enum class JoiningClientKind
+{
+    Human,
+    Bot,
+    Browser,
+};
+
+// Identity of the client whose join request is currently being processed,
+// derived from the parsed join-req tail. Only meaningful during
+// process_join_req_packet (the globals are reset afterwards).
+JoiningClientKind get_joining_client_kind();
+
 // Look up AF extra data for a server by address. Returns nullptr if not found.
 const AFGameInfoExtra* get_server_browser_extra(const rf::NetAddr& addr);
 void clear_server_browser_extra();

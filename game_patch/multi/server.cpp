@@ -24,6 +24,7 @@
 #include "sprays.h"
 #include "kill_attribution.h"
 #include "multi.h"
+#include "network.h"
 #include "gametype.h"
 #include "mutators.h"
 #include "bagman.h"
@@ -2319,6 +2320,32 @@ bool check_can_player_spawn(rf::Player* player)
     return false;
 }
 
+static void assign_player_to_team(rf::Player* player, rf::ubyte new_team)
+{
+    if (player->team == new_team) {
+        return;
+    }
+
+    player->team = new_team;
+
+    if (player->net_data) {
+        rf::multi_send_team_change_packet(nullptr, player->net_data->player_id, new_team);
+    }
+
+}
+
+bool humans_vs_bots_active()
+{
+    return rf::is_server && multi_is_team_game_type()
+        && g_alpine_server_config_active_rules.mutators.humans_vs_bots_enabled;
+}
+
+// Browsers are neither human nor bot, so they must never reach this.
+static rf::ubyte hvb_team_for_player(const rf::Player* player)
+{
+    return player->is_bot ? rf::TEAM_BLUE : rf::TEAM_RED;
+}
+
 FunHook<void(rf::Player*)> multi_spawn_player_server_side_hook{
     0x00480820,
     [](rf::Player* player) {
@@ -2337,6 +2364,10 @@ FunHook<void(rf::Player*)> multi_spawn_player_server_side_hook{
         }
         if (player->is_spectator) {
             return;
+        }
+        // Humans vs. Bots: correct a stray team before spawn point selection.
+        if (humans_vs_bots_active() && player->team != hvb_team_for_player(player)) {
+            assign_player_to_team(player, hvb_team_for_player(player));
         }
         if (!check_can_player_spawn(player)) {
             return;
@@ -2793,22 +2824,32 @@ FunHook<int()> pick_team_for_new_player_hook{
         if (!multi_is_team_game_type()) {
             return static_cast<int>(rf::TEAM_RED);
         }
+        // Only reached from the join flow, after the join-req tail has been
+        // parsed, so the joining client's identity is still available.
+        if (humans_vs_bots_active()) {
+            switch (get_joining_client_kind()) {
+                case JoiningClientKind::Bot:
+                    return static_cast<int>(rf::TEAM_BLUE);
+                case JoiningClientKind::Human:
+                    return static_cast<int>(rf::TEAM_RED);
+                case JoiningClientKind::Browser:
+                    break; // not a participant; the normal pick applies
+            }
+        }
         return pick_weaker_team();
     },
 };
 
-static void assign_player_to_team(rf::Player* player, rf::ubyte new_team)
+// Humans vs. Bots replacement for balance_teams(): same participant exclusions,
+// but the split is fixed rather than score-based.
+static void hvb_sort_teams()
 {
-    if (player->team == new_team) {
-        return;
+    for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
+        if (player.is_browser || player.is_spectator) {
+            continue;
+        }
+        assign_player_to_team(&player, hvb_team_for_player(&player));
     }
-
-    player->team = new_team;
-
-    if (player->net_data) {
-        rf::multi_send_team_change_packet(nullptr, player->net_data->player_id, new_team);
-    }
-
 }
 
 static void balance_teams()
@@ -2888,9 +2929,14 @@ CodeInjection multi_balance_teams_injection{
     0x0048215D,
     [](auto& regs) {
         const rf::NetGameType current_game_type = rf::multi_get_game_type();
-        if (should_balance_teams(current_game_type)
-            && !g_match_info.pre_match_active && !g_match_info.match_active) {
-            balance_teams();
+        const bool balance = should_balance_teams(current_game_type);
+        if (!g_match_info.pre_match_active && !g_match_info.match_active) {
+            if (humans_vs_bots_active()) {
+                hvb_sort_teams();
+            }
+            else if (balance) {
+                balance_teams();
+            }
         }
         regs.eip = 0x004823ED; // always skip stock balance code
     },
@@ -3046,13 +3092,15 @@ static void auto_team_balance_do_frame()
     }
 
     // Bail (and clear any queued balance) when the feature is off, we're not in
-    // a team game, we're not in gameplay, or a match/pre-match is running. Teams
-    // are fixed during matches, so we don't touch them.
+    // a team game, we're not in gameplay, a match/pre-match is running, or
+    // Humans vs. Bots owns the team split. Teams are fixed during matches, so we
+    // don't touch them.
     if (!g_alpine_server_config_active_rules.auto_team_balance
         || !multi_is_team_game_type()
         || rf::gameseq_get_state() != rf::GS_GAMEPLAY
         || g_match_info.match_active
-        || g_match_info.pre_match_active) {
+        || g_match_info.pre_match_active
+        || humans_vs_bots_active()) {
         auto_team_balance_reset();
         return;
     }
@@ -3109,6 +3157,10 @@ void auto_team_balance_on_player_death(rf::Player* killed_player)
         return;
     }
     if (!multi_is_team_game_type()) {
+        return;
+    }
+    // Humans vs. Bots owns the team split.
+    if (humans_vs_bots_active()) {
         return;
     }
     // Teams are fixed during a match/pre-match — never move players then.
@@ -3168,6 +3220,10 @@ bool auto_team_balance_blocks_team_change(rf::Player* player, int requested_team
         return false;
     }
     if (!g_alpine_server_config_active_rules.auto_team_balance || !multi_is_team_game_type()) {
+        return false;
+    }
+    // Humans vs. Bots gates team changes on its own, with its own message.
+    if (humans_vs_bots_active()) {
         return false;
     }
     // Requesting the team they're already on is a no-op.

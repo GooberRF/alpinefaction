@@ -197,6 +197,8 @@ const MutatorDescription mutator_descriptions[] = {
      "Explosive deaths chunk enemies into gibs."},
     {"jetpacks",
      "All players get jetpacks."},
+    {"humansvsbots",
+     "Bots play on the Blue team. Humans play on the Red team."},
 };
 
 const char* mutator_description_for(std::string_view name)

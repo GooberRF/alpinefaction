@@ -270,6 +270,12 @@ static void apply_jetpacks(AlpineServerConfigRules& r, const toml::table& /*opts
     r.mutators.jetpacks_enabled = true;
 }
 
+// Humans vs. Bots: in a team game type, bots are held on Blue and humans on Red.
+static void apply_humans_vs_bots(AlpineServerConfigRules& r, const toml::table& /*opts*/)
+{
+    r.mutators.humans_vs_bots_enabled = true;
+}
+
 // ============================================================================
 // Registry + application order
 // ============================================================================
@@ -323,11 +329,13 @@ static const MutatorDef MUTATORS[] = {
     {MutatorId::FlamingEnemies, "flamingenemies", "Flaming Enemies", 4, &apply_flaming_enemies, nullptr, 0},
     {MutatorId::Gibbing, "gibbing", "Gibbing", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_gibbing, nullptr, 0},
     {MutatorId::Jetpacks, "jetpacks", "Jetpacks", 4, &apply_jetpacks, nullptr, 0},
+    {MutatorId::HumansVsBots, "humansvsbots", "Humans vs. Bots", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_humans_vs_bots, nullptr, 0},
 };
 
 // Hardcoded order in which simultaneously-active mutators are applied. Later
 // entries win where they overlap.
 static const MutatorId MUTATOR_APPLY_ORDER[] = {
+    MutatorId::HumansVsBots,
     MutatorId::Jetpacks,
     MutatorId::Gibbing,
     MutatorId::FlamingEnemies,

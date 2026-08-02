@@ -47,6 +47,7 @@ void update_player_active_status(rf::Player* player);
 void player_idle_check(rf::Player* player);
 void auto_team_balance_on_player_death(rf::Player* killed_player);
 bool auto_team_balance_blocks_team_change(rf::Player* player, int requested_team);
+bool humans_vs_bots_active();
 void send_sound_packet_throwaway(rf::Player* target, int sound_id);
 void multi_change_level_alpine(const char* filename);
 const char* get_rand_level_filename();

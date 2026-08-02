@@ -31,6 +31,7 @@ Version 1.4.0 (Lupin): Not yet released
   - Flaming Enemies
   - Gibbing
   - Jetpacks
+  - Humans vs. Bots
 - Rework multiplayer voting to use a GUI-based system instead of chat commands
   - Servers describe their votable levels, game types, and mutator options to clients
   - `Level` and `Match` can now select a game type and any number of mutators (with their options) for the voted level
@@ -48,6 +49,7 @@ Version 1.4.0 (Lupin): Not yet released
 - Add support for round-based game types
 - Add dedicated server config fields `max_rounds`, `round_time`, `post_round_time`, and `intermission_time`
 - Add dedicated server config fields `sal_cap_limit`, `sal_flag_spawn_delay`, `sal_flag_capture_respawn_delay`, and `sal_flag_return_time` for the Salvage game type
+- Require a matching `bot_shared_secret` for clients to join dedicated servers in bot mode, rejecting bot join requests when the server has no secret configured
 - Add HUD notification messages via `AF_SERVER_MSG_TYPE_HUD_NOTIFICATION` server message type
 - Add server-initiated HUD countdown via `AF_SERVER_MSG_TYPE_ROUND_COUNTDOWN` server message type
 - Add server-initiated custom sound play via `AF_SERVER_MSG_TYPE_PLAY_CUSTOM_SOUND` server message type

@@ -655,6 +655,9 @@ struct MutatorConfig
     // Jetpacks: every player wears a jetpack; holding jump while falling thrusts.
     bool jetpacks_enabled = false;
 
+    // Humans vs. Bots: bots always play on Blue, humans always on Red.
+    bool humans_vs_bots_enabled = false;
+
     // Display only: human-readable names of the mutators applied to these rules.
     std::vector<std::string> active_labels;
 
