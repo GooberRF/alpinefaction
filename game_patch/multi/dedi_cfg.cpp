@@ -471,9 +471,7 @@ void apply_defaults_for_game_type(rf::NetGameType game_type, AlpineServerConfigR
             rules.gungame_rampage_rewards = true;
             rules.spawn_loadout.loadouts_active = false;
 
-            // 100 / 100 spawn health and armor, +50 effective health kill reward.
-            rules.spawn_armour.enabled = true;
-            rules.spawn_armour.set_value(100.0f);
+            // +50 effective health kill reward.
             rules.kill_rewards.kill_reward_effective_health = 50.0f;
             break;
         }
@@ -789,11 +787,7 @@ static std::vector<std::string> parse_allowed_maps(const toml::table& t)
     if (auto arr = t["allowed_levels"].as_array()) {
         for (auto& node : *arr) {
             if (auto value = node.value<std::string>()) {
-                std::string map_name = *value;
-                if (!string_iends_with(map_name, ".rfl")) {
-                    map_name += ".rfl";
-                }
-                allowed_maps.emplace_back(std::move(map_name));
+                allowed_maps.push_back(normalize_level_filename(*value));
             }
         }
     }
@@ -1126,12 +1120,7 @@ static void add_level_entry_from_table(
         }
     }
 
-    auto tmp_filename = lvl_tbl["filename"].value_or<std::string>("");
-
-    // add .rfl extension if it's missing
-    if (!string_iends_with(tmp_filename, ".rfl")) {
-        tmp_filename += ".rfl";
-    }
+    const auto tmp_filename = normalize_level_filename(lvl_tbl["filename"].value_or<std::string>(""));
 
     rf::File f;
     if (!f.find(tmp_filename.c_str())) {
@@ -1718,7 +1707,10 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
     const bool mutators_changed =
         rules.mutators.active_labels != b.mutators.active_labels ||
         rules.mutators.vampire_enabled != b.mutators.vampire_enabled ||
-        rules.mutators.hide_health_armor_pickups != b.mutators.hide_health_armor_pickups;
+        rules.mutators.vampire_heal_ratio != b.mutators.vampire_heal_ratio ||
+        rules.mutators.hide_health_armor_pickups != b.mutators.hide_health_armor_pickups ||
+        rules.mutators.featured_weapon_index != b.mutators.featured_weapon_index ||
+        rules.mutators.redirect_exclude_thrown != b.mutators.redirect_exclude_thrown;
 
     if (base || mutators_changed) {
         std::string joined;
@@ -1728,9 +1720,22 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
             joined += rules.mutators.active_labels[i];
         }
         std::format_to(iter, "  Mutators:                              {}\n", joined.empty() ? "<none>" : joined);
+        // One Weapon options
+        if (rules.mutators.redirect_pickups_to_featured) {
+            const int featured = rules.mutators.featured_weapon_index;
+            const char* featured_name = (featured >= 0 && featured < rf::num_weapon_types)
+                ? rf::weapon_types[featured].name.c_str()
+                : "<invalid>";
+            std::format_to(iter, "    Featured weapon:                     {}\n", featured_name);
+            std::format_to(iter, "    Keep thrown explosives:              {}\n",
+                           rules.mutators.redirect_exclude_thrown);
+        }
+        // Vampire options
         if (rules.mutators.vampire_enabled) {
             std::format_to(iter, "    Hide health/armor pickups:           {}\n",
                            rules.mutators.hide_health_armor_pickups);
+            std::format_to(iter, "    Full lifesteal:                      {}\n",
+                           rules.mutators.vampire_heal_ratio >= 1.0f);
         }
     }
 

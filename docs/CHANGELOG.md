@@ -21,9 +21,15 @@ Version 1.4.0 (Lupin): Not yet released
   - `spray` console command to select spray, and in-game spray picker in advanced options
 - Add server-configured mutators:
   - Instagib
-  - Rails
+  - One Weapon
   - Arena
   - Vampire
+  - Super Drain
+  - Armored
+  - Super Rail
+  - Big Craters
+  - Flaming Enemies
+  - Gibbing
 - Rework multiplayer voting to use a GUI-based system instead of chat commands
   - Servers describe their votable levels, game types, and mutator options to clients
   - `vote level` and `vote match` can now select a game type and any number of mutators (with their options) for the voted level
@@ -77,8 +83,14 @@ Version 1.4.0 (Lupin): Not yet released
 - Change default inactive time before a player is set as idle to 60 seconds (from 30 seconds)
 - Stop labeling players as inactive if they are unable to spawn due to a server or gameplay rule
 - `vote extend` can now select how long to extend the round by, from 1 to 60 minutes (defaults to 5)
+- Kill messages, the game feed, and dedicated server console kill lines now name the weapon that actually dealt the killing blow
+- Kill messages, the game feed, and dedicated server console kill lines now credit assists
+- Add an `Asst` column to the scoreboard showing each player's assist count
+- Add `ui_assist_names` console command to toggle listing the players who assisted in kill messages
+- Add `ui_assist_highlight` console command to toggle highlighting of kill messages for kills you assisted
 
 [@is-this-c](https://github.com/is-this-c)
+- Rewrite `VArray` to fix crashes due to MinGW
 - Add `Anti-aliasing` option to `ADVANCED` options panel
 - Add `r_antialiasing_mode` console command to set anti-aliasing mode at run-time
 - Rename `antialiasing` console command to `r_antialiasing`

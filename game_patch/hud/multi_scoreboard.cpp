@@ -332,6 +332,10 @@ int draw_scoreboard_players(
     int score_w = static_cast<int>((game_type == rf::NG_TYPE_RUN ? 63 : 50) * scale);
     bool show_kd = game_type != rf::NG_TYPE_RUN;
     int kd_w = show_kd ? static_cast<int>(70 * scale) : 0;
+    // Assists are only meaningful where kills are. Kept separate from show_kd so the two
+    // can diverge later.
+    bool show_assists = game_type != rf::NG_TYPE_RUN;
+    int assists_w = show_assists ? static_cast<int>(35 * scale) : 0;
     const bool show_caps = game_type == rf::NG_TYPE_CTF || game_type == rf::NG_TYPE_SAL;
     int caps_w = show_caps ? static_cast<int>(45 * scale) : 0;
     const auto& server_info = get_af_server_info();
@@ -339,13 +343,24 @@ int draw_scoreboard_players(
     bool show_loads = game_type == rf::NG_TYPE_RUN && saving_enabled;
     int loads_w = show_loads ? static_cast<int>(55 * scale) : 0;
     int ping_w = static_cast<int>(35 * scale);
-    int name_w = w - status_w - score_w - kd_w - caps_w - loads_w - ping_w;
+    int name_w = w - status_w - score_w - kd_w - assists_w - caps_w - loads_w - ping_w;
+
+    // Every column but the name has a fixed width, so the assists column is paid for out of
+    // the name. Give it back rather than squeeze names to nothing on a narrow panel (team
+    // game types split the table in two, and CTF spends another column on caps).
+    const int min_name_w = static_cast<int>(80 * scale);
+    if (show_assists && name_w < min_name_w) {
+        name_w += assists_w;
+        assists_w = 0;
+        show_assists = false;
+    }
 
     int status_x = x;
     int name_x = status_x + status_w;
     int score_x = name_x + name_w;
     int kd_x = score_x + score_w;
-    int caps_x = kd_x + kd_w;
+    int assists_x = kd_x + kd_w;
+    int caps_x = assists_x + assists_w;
     int loads_x = caps_x + caps_w;
     int ping_x = loads_x + loads_w;
 
@@ -360,6 +375,9 @@ int draw_scoreboard_players(
         }
         if (show_kd) {
             rf::gr::string(kd_x, y, "K/D");
+        }
+        if (show_assists) {
+            rf::gr::string(assists_x, y, "Asst");
         }
         if (show_caps) {
             rf::gr::string(caps_x, y, rf::strings::caps);
@@ -507,6 +525,7 @@ int draw_scoreboard_players(
             int score = 999;
             int num_kills = 999;
             int num_deaths = 999;
+            int num_assists = 999;
             int caps_or_loads = 999;
             int ping = 9999;
 #else
@@ -514,6 +533,7 @@ int draw_scoreboard_players(
             int score = stats->score;
             int num_kills = stats->num_kills;
             int num_deaths = stats->num_deaths;
+            int num_assists = stats->num_assists;
             int caps_or_loads = stats->caps;
             int ping = player->net_data ? player->net_data->ping : 0;
 #endif
@@ -525,6 +545,11 @@ int draw_scoreboard_players(
             if (show_kd) {
                 auto kills_deaths_str = std::format("{}/{}", num_kills, num_deaths);
                 rf::gr::string(kd_x, y, kills_deaths_str.c_str());
+            }
+
+            if (show_assists) {
+                auto assists_str = std::to_string(num_assists);
+                rf::gr::string(assists_x, y, assists_str.c_str());
             }
 
             if (show_caps) {

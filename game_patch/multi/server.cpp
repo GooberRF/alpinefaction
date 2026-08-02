@@ -22,6 +22,7 @@
 #include "server_internal.h"
 #include "alpine_packets.h"
 #include "sprays.h"
+#include "kill_attribution.h"
 #include "multi.h"
 #include "gametype.h"
 #include "mutators.h"
@@ -428,7 +429,7 @@ std::string build_info_command_output() {
     }
 
     std::string framerate_line;
-    bool is_server = rf::is_multi && (rf::is_server || rf::is_dedicated_server);
+    bool is_server = rf::is_multi && rf::is_server;
     if (is_server) {
         framerate_line = std::format("Framerate: {:.3f} | FPS: {:.0f} ({} max) | NetFPS: {}\n",
             rf::frametime,
@@ -756,28 +757,12 @@ void shuffle_level_array()
     xlog::info("Shuffled level rotation");
 }
 
-static std::string normalize_level_name(std::string_view in)
-{
-    std::string s(in);
-    // add .rfl if missing
-    auto ends_with_ci = [](const std::string& str, const char* suf) {
-        if (str.size() < 4)
-            return false;
-        auto a = str.substr(str.size() - 4);
-        for (auto& c : a) c = (char)std::tolower((unsigned char)c);
-        return a == suf;
-    };
-    if (!ends_with_ci(s, ".rfl"))
-        s += ".rfl";
-    return s;
-}
-
 static std::pair<bool, int> find_rotation_index_for_level(std::string_view level_name)
 {
     if (!g_dedicated_launched_from_ads)
         return {false, -1};
 
-    const auto wanted = normalize_level_name(level_name);
+    const auto wanted = normalize_level_filename(level_name);
     const auto& cfg = g_alpine_server_config;
 
     for (int i = 0; i < (int)cfg.levels.size(); ++i) {
@@ -798,7 +783,7 @@ static void queue_level_switch_preferring_rotation(std::string_view level_name)
     }
     else {
         // Not in rotation
-        rf::level_filename_to_load = normalize_level_name(level_name).c_str();
+        rf::level_filename_to_load = normalize_level_filename(level_name).c_str();
         set_manually_loaded_level(true);
     }
 }
@@ -1318,15 +1303,16 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
         damaged_ep = rf::entity_from_handle(damaged_ep_handle);
 
         // should entity gib?
+        bool did_gib = false;
         if (damaged_ep) {
             if (!rf::is_multi) { // SP gibbing
-                if (damaged_ep->life < -100.0f &&               // very dead
-                    damage_type == 3 &&                         // explosive
-                    damaged_ep->material == 3 &&                // flesh
-                    !(damaged_ep->entity_flags & 0x2000000) &&  // custom_corpse (used by snakes and sea creature)
-                    !(damaged_ep->entity_flags & 0x1) &&        // dying
-                    !(damaged_ep->entity_flags & 0x1000) &&     // in_water
-                    !(damaged_ep->entity_flags & 0x2000))       // eye_under_water
+                if (damaged_ep->life < -100.0f &&                          // very dead
+                    damage_type == 3 &&                                    // explosive
+                    damaged_ep->material == 3 &&                           // flesh
+                    !(damaged_ep->entity_flags & rf::EF_CUSTOM_CORPSE) &&  // used by snakes and sea creature
+                    !(damaged_ep->entity_flags & rf::EF_DYING) &&
+                    !(damaged_ep->entity_flags & rf::EF_IN_WATER) &&
+                    !(damaged_ep->entity_flags & rf::EF_EYE_UNDER_WATER))
                 {
                     entity_set_gib_flag(damaged_ep);
                 }
@@ -1337,15 +1323,91 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
                     damage > gibbing.damage_threshold &&            // big damage (default 100.0)
                     (gibbing.all_damage || damage_type == 3) &&     // explosive
                     damaged_ep->material == 3 &&                    // flesh
-                    !(damaged_ep->entity_flags & 0x1))              // dying
+                    !(damaged_ep->entity_flags & rf::EF_DYING))
                 {
                     entity_set_gib_flag(damaged_ep);
                     af_send_should_gib_req(static_cast<uint32_t>(damaged_ep->handle));
+                    did_gib = true;
                 }
             }
         }
 
+        // Flaming Enemies mutator: a big enough explosive hit or any melee hit puts a
+        // burning player's fire out. Any damage source counts, including their own rockets.
+        if (rf::is_multi && rf::is_server && damaged_player && real_damage > 0.0f) {
+            mutators_on_flame_victim_damage(damaged_player, damage_type, damage);
+        }
+
         bool is_dead = damaged_ep ? damaged_ep->life <= 0.0f : true;
+
+        // Feed the combat chain that assists are computed from. Must run before the record
+        // step below so the killing hit itself keeps the chain alive. Friendly fire in team
+        // games never earns an assist.
+        if (rf::is_multi && rf::is_server && is_pvp_damage && real_damage > 0.0f
+            && damaged_player->net_data && killer_player->net_data
+            && !(multi_is_team_game_type() && damaged_player->team == killer_player->team)) {
+            kill_attribution_note_pvp_damage(damaged_player->net_data->player_id,
+                                             killer_player->net_data->player_id);
+        }
+
+        // Record what landed the killing blow so the kill message can name the real weapon
+        // instead of whatever the killer happens to be holding when it renders. Only on the
+        // lethal transition: post-death corpse damage must not overwrite it.
+        if (rf::is_multi && rf::is_server && damaged_player && damaged_player->net_data
+            && is_dead && life_before > 0.0f) {
+            const DamageWeaponContext damage_ctx = kill_attribution_get_damage_context();
+            // A weapon type on the obj_damage call itself means a direct hit; splash damage
+            // only ever gets its weapon from the enclosing detonation context.
+            const bool direct_weapon_hit = damage_ctx.weapon_type >= 0 && !damage_ctx.splash;
+            int weapon = damage_ctx.weapon_type;
+            uint8_t kill_flags = damage_ctx.splash ? AF_KILL_FLAG_SPLASH : 0;
+            if (weapon < 0 && killer_player && killer_player != damaged_player) {
+                // No weapon context (fire damage over time, odd paths): the killer's held weapon
+                // at damage time is still better than the client's at-render-time guess.
+                rf::Entity* killer_ep = rf::entity_from_handle(killer_handle);
+                if (killer_ep) {
+                    weapon = killer_ep->ai.current_primary_weapon;
+                }
+            }
+            if (kill_attribution_is_melee_weapon(weapon)) {
+                kill_flags |= AF_KILL_FLAG_MELEE;
+            }
+            if (killer_player == damaged_player) {
+                kill_flags |= AF_KILL_FLAG_SUICIDE;
+            }
+            // Same damage event, same scope: the gib decision was made a few lines above, so
+            // it rides along in the kill info instead of costing 1.4+ clients their own packet.
+            if (did_gib) {
+                kill_flags |= AF_KILL_FLAG_GIBBED;
+            }
+
+            // Hit location is only meaningful for a direct weapon hit, and only when the
+            // region was measured against this victim.
+            if (direct_weapon_hit && !(kill_flags & AF_KILL_FLAG_MELEE)) {
+                const int hit_region = kill_attribution_get_hit_region(damaged_ep_handle);
+                if (hit_region == kill_attribution_hit_region_head) {
+                    kill_flags |= AF_KILL_FLAG_HEADSHOT;
+                }
+                else if (hit_region == kill_attribution_hit_region_legs) {
+                    kill_flags |= AF_KILL_FLAG_LEGSHOT;
+                }
+            }
+
+            const uint8_t killed_id = damaged_player->net_data->player_id;
+            const uint8_t killer_id = (killer_player && killer_player->net_data)
+                ? killer_player->net_data->player_id : 0xFF;
+            std::vector<uint8_t> assists = kill_attribution_take_assists(killed_id, killer_id);
+
+            for (uint8_t assist_id : assists) {
+                rf::Player* assister = rf::multi_find_player_by_id(assist_id);
+                if (assister && assister->stats) {
+                    static_cast<PlayerStatsNew*>(assister->stats)->inc_assists();
+                }
+            }
+
+            kill_attribution_record(killed_id, killer_id, weapon, kill_flags, damage_type,
+                                    std::move(assists));
+        }
 
         // Cap damage to what was actually removed from the victim's health+armor (prevents overkill inflation)
         float effective_damage = real_damage;
@@ -1369,6 +1431,9 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
 
             // Vampire mutator
             mutators_on_pvp_damage(killer_player, damaged_player, effective_damage);
+
+            // Flaming Enemies mutator: flamethrower fire damage may grant or refresh a burn
+            mutators_on_flame_damage(killer_player, damaged_player, damage_type, real_damage);
 
             if (g_alpine_server_config.damage_notification_config.enabled && damaged_player && killer_player) {
                 if (!(!damaged_ep || rf::entity_is_dying(damaged_ep) || rf::player_is_dead(damaged_player))) {
@@ -1976,12 +2041,7 @@ void match_do_frame()
 
 std::pair<bool, std::string> is_level_name_valid(std::string_view level_name_input)
 {
-    std::string level_name{level_name_input};
-
-    // add ".rfl" if it's missing
-    if (!string_iends_with(level_name, ".rfl")) {
-        level_name += ".rfl";
-    }
+    const std::string level_name = normalize_level_filename(level_name_input);
 
     bool is_valid = rf::get_file_checksum(level_name.c_str()) != 0;
 
@@ -3853,9 +3913,11 @@ CallHook<rf::Item*(int, const char*, int, int, const rf::Vector3*, rf::Matrix3*,
         rf::Item* item = item_create_hook.call_target(
             type, name, count, parent_handle, pos, orient, respawn_time, permanent, from_packet);
 
-        if (item && item->respawn_time_ms > 0 &&
-            (rf::is_server || rf::is_dedicated_server) &&
-            g_alpine_server_config_active_rules.delayed_items.contains(name)) {
+        if (item
+            && item->respawn_time_ms > 0
+            && rf::is_server
+            && g_alpine_server_config_active_rules.delayed_items.contains(name))
+        {
             rf::obj_hide(item);
             item->respawn_next.set(item->respawn_time_ms);
         }
@@ -3928,10 +3990,14 @@ void entity_drop_powerup(rf::Entity* ep, int powerup_type, int count)
 CodeInjection entity_maybe_die_patch{
     0x00420600,
     [](auto& regs) {
-        if (!(rf::is_multi && (rf::is_server || rf::is_dedicated_server))) return;
+        if (!(rf::is_multi && rf::is_server)) {
+            return;
+        }
 
         rf::Entity* ep = regs.esi;
-        if (!ep) return;
+        if (!ep) {
+            return;
+        }
 
         rf::Player* player = rf::player_from_entity_handle(ep->handle);
 
@@ -4316,6 +4382,7 @@ void server_do_frame()
     salvage_do_frame();
     rounds_do_frame();
     auto_team_balance_do_frame();
+    mutators_do_frame();
 }
 
 void server_on_limbo_state_enter()

@@ -526,11 +526,7 @@ protected:
 
 static bool does_level_match_gametype_prefix(const std::string& level_name, rf::NetGameType game_type)
 {
-    std::string map_name = level_name;
-
-    if (!string_iends_with(map_name, ".rfl")) {
-        map_name += ".rfl";
-    }
+    const std::string map_name = normalize_level_filename(level_name);
 
     if (game_type == rf::NG_TYPE_RUN && is_known_run_level(level_name)) {
         return true;
@@ -847,6 +843,8 @@ struct VoteMatch : public Vote
             if (m_manual_rules_override) {
                 set_manual_rules_override(std::move(*m_manual_rules_override));
                 apply_rules_for_current_level();
+                // Clients need the new mutator flags now, not at the match-start restart.
+                af_send_server_info_packet_to_all();
                 m_manual_rules_override.reset();
             }
             start_pre_match();
@@ -1468,6 +1466,132 @@ static void blob_sized_u16(std::vector<uint8_t>& blob, WriteBody&& write_body)
     blob[len_pos + 1] = static_cast<uint8_t>((body_len >> 8) & 0xFF);
 }
 
+// The stored variant alternative has to match the option's registry type before
+// anything is written: a value the config parsed as a different TOML type would
+// otherwise be encoded as whatever the emit switch below happens to read.
+static bool declaration_value_matches_type(MutatorOptionType type, const MutatorOptionValue& value)
+{
+    switch (type) {
+        case MutatorOptionType::Bool:
+            return std::holds_alternative<bool>(value);
+        case MutatorOptionType::Choice:
+        case MutatorOptionType::String:
+            return std::holds_alternative<std::string>(value);
+        case MutatorOptionType::Int:
+            return std::holds_alternative<int32_t>(value);
+        case MutatorOptionType::Float:
+            return std::holds_alternative<float>(value);
+    }
+    return false;
+}
+
+// A declaration stores a Choice option's VALUE string (the TOML spelling), while
+// the schema sends the choice LABELS and every wire form carries an index, so the
+// index has to be resolved here. A value that no longer names a choice (registry
+// rebuilt against different weapon/item tables) falls back to the default.
+static uint8_t declaration_choice_index(const MutatorOptionInfo& option, const std::string& value)
+{
+    const size_t choice_count = std::min<size_t>(option.choices.size(), 255);
+    for (size_t c = 0; c < choice_count; ++c) {
+        if (option.choices[c].value == value) {
+            return static_cast<uint8_t>(c);
+        }
+    }
+    xlog::debug("vote options: option '{}' has no choice '{}'; sending its default instead", option.name,
+                value);
+    return option.default_choice;
+}
+
+// One mutator declaration set: the config-declared mutators of a rules scope,
+// in apply order, with their option values. The vote panel pre-selects this so
+// an untouched submission reproduces what the level would run anyway.
+static void blob_declaration_set(std::vector<uint8_t>& blob, const std::vector<MutatorDeclaration>& decls)
+{
+    // Resolved before anything is written: the count precedes the entries, so a
+    // declaration the registry does not know has to be dropped before it is
+    // counted rather than while writing.
+    std::vector<std::pair<const MutatorInfo*, const MutatorDeclaration*>> resolved;
+    resolved.reserve(decls.size());
+    for (const MutatorDeclaration& decl : decls) {
+        const MutatorInfo* info = mutators_find_by_name(decl.name);
+        if (!info) {
+            xlog::debug("vote options: declared mutator '{}' is not in the registry; omitting it", decl.name);
+            continue;
+        }
+        resolved.push_back({info, &decl});
+    }
+
+    const size_t decl_count = std::min<size_t>(resolved.size(), 255);
+    blob_u8(blob, static_cast<uint8_t>(decl_count));
+    for (size_t d = 0; d < decl_count; ++d) {
+        const MutatorInfo& info = *resolved[d].first;
+        const MutatorDeclaration& decl = *resolved[d].second;
+        // u16, not u8: a single 255-byte String option value plus the headers
+        // around it already overflows a u8 body.
+        blob_sized_u16(blob, [&] {
+            blob_u8(blob, static_cast<uint8_t>(info.id));
+
+            // Same reason as the declaration list above: the option count is
+            // written before the options, so resolve them all first.
+            struct ResolvedOption
+            {
+                const MutatorOptionInfo* option;
+                const MutatorOptionValue* value;
+            };
+            std::vector<ResolvedOption> options;
+            options.reserve(decl.options.size());
+            for (const auto& [key, value] : decl.options) {
+                const MutatorOptionInfo* option = nullptr;
+                for (const MutatorOptionInfo& candidate : info.options) {
+                    if (candidate.name == key) {
+                        option = &candidate;
+                        break;
+                    }
+                }
+                if (!option) {
+                    xlog::debug("vote options: mutator '{}' has no option '{}'; omitting it", info.name, key);
+                    continue;
+                }
+                if (!declaration_value_matches_type(option->type, value)) {
+                    xlog::debug("vote options: option '{}' of mutator '{}' holds a value of the wrong type; "
+                                "omitting it", key, info.name);
+                    continue;
+                }
+                options.push_back({option, &value});
+            }
+
+            const size_t option_count = std::min<size_t>(options.size(), 255);
+            blob_u8(blob, static_cast<uint8_t>(option_count));
+            for (size_t o = 0; o < option_count; ++o) {
+                const MutatorOptionInfo& option = *options[o].option;
+                const MutatorOptionValue& value = *options[o].value;
+                blob_u8(blob, option.id);
+                // Same typed encoding as the schema defaults above, so an option
+                // type this client predates makes only that declaration
+                // undecodable rather than the whole set.
+                blob_u8(blob, static_cast<uint8_t>(option.type));
+                switch (option.type) {
+                    case MutatorOptionType::Bool:
+                        blob_u8(blob, std::get<bool>(value) ? 1 : 0);
+                        break;
+                    case MutatorOptionType::Choice:
+                        blob_u8(blob, declaration_choice_index(option, std::get<std::string>(value)));
+                        break;
+                    case MutatorOptionType::Int:
+                        blob_i32(blob, std::get<int32_t>(value));
+                        break;
+                    case MutatorOptionType::Float:
+                        blob_f32(blob, std::get<float>(value));
+                        break;
+                    case MutatorOptionType::String:
+                        blob_str(blob, std::get<std::string>(value));
+                        break;
+                }
+            }
+        });
+    }
+}
+
 // u32 rather than u16: 16 bits left only seven spare vote types, and widening it
 // after release would be a breaking blob change. Same reasoning as
 // build_level_valid_gametype_mask.
@@ -1587,8 +1711,35 @@ static void build_vote_options_blob(std::vector<uint8_t>& blob)
             // Derived from the SAME predicate the call-time gate uses, so the blob can
             // never advertise a level the server would refuse.
             blob_u8(blob, is_level_in_vote_allow_list(level) ? AF_VOTE_LEVEL_FLAG_ALLOWED : 0);
+
+            // Which mutator set the panel pre-selects for this level. A rotation
+            // entry's rules start life as a copy of the base rules, so an entry
+            // that declares nothing of its own compares equal to the base set and
+            // simply inherits it; an entry whose set differs -- including one that
+            // deliberately clears it -- carries its own.
+            const std::vector<MutatorDeclaration>* level_decls = nullptr;
+            for (const auto& entry : g_alpine_server_config.levels) {
+                // Same lookup as vote_natural_rules_for_level: first match wins.
+                if (string_iequals(entry.level_filename, level)) {
+                    level_decls = &entry.rule_overrides.mutators.declarations;
+                    break;
+                }
+            }
+            const auto& base_decls = g_alpine_server_config.base_rules.mutators.declarations;
+            if (!level_decls || *level_decls == base_decls) {
+                blob_u8(blob, static_cast<uint8_t>(AfVoteLevelBaseline::InheritBase));
+            }
+            else {
+                blob_u8(blob, static_cast<uint8_t>(AfVoteLevelBaseline::Explicit));
+                blob_declaration_set(blob, *level_decls);
+            }
         });
     }
+
+    // The base mutator set, as a trailing section: every level that inherits
+    // (kind 0 above) pre-selects this, and so does a manually named level outside
+    // the rotation.
+    blob_declaration_set(blob, g_alpine_server_config.base_rules.mutators.declarations);
 }
 
 void server_vote_invalidate_options_blob()

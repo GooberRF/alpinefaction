@@ -33,12 +33,11 @@ namespace rf
 {
     std::vector<Event*> find_all_events_by_type(EventType event_type)
     {
-        VArray<Event*> full_event_list = event_list;
         std::vector<Event*> matching_event_list;
 
-        for (int i = 0; i < full_event_list.size(); ++i) {
-            auto* event = full_event_list[i];
-            if (event && event->event_type == event_type_to_int(event_type)) {
+        for (int i = 0; i < event_list.size(); ++i) {
+            auto* event = event_list[i];
+            if (event && event->event_type == std::to_underlying(event_type)) {
                 matching_event_list.push_back(event);
             }
         }
@@ -432,12 +431,12 @@ CodeInjection Event__turn_off_redirector_patch {
             rf::Event* event = regs.ecx;
             //xlog::warn("event turned off {}, {}, {}", event->name, event->uid, event->event_type);
 
-            if (event->event_type == rf::event_type_to_int(rf::EventType::Holster_Player_Weapon)) {
+            if (event->event_type == std::to_underlying(rf::EventType::Holster_Player_Weapon)) {
                 event_holster_player_weapon_turn_off();
                 regs.eip = 0x004BA008;
             }
 
-            if (event->event_type == rf::event_type_to_int(rf::EventType::Holster_Weapon)) {
+            if (event->event_type == std::to_underlying(rf::EventType::Holster_Weapon)) {
                 event_holster_weapon_turn_off(event);
                 regs.eip = 0x004BA008;
             }

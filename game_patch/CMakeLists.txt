@@ -152,6 +152,9 @@ set(SRCS
     multi/mutators.h
     multi/mutators.cpp
     multi/kill.cpp
+    multi/kill.h
+    multi/kill_attribution.cpp
+    multi/kill_attribution.h
     multi/network.cpp
     multi/network.h
     multi/network_debug.cpp
@@ -285,6 +288,8 @@ set(SRCS
     misc/spray_picker.h
     misc/vote_panel.cpp
     misc/vote_panel.h
+    misc/saved_votes.cpp
+    misc/saved_votes.h
     misc/game.cpp
     misc/level.cpp
     misc/waypoints.cpp

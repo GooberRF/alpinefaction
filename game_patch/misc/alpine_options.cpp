@@ -8,6 +8,7 @@
 #include "player.h"
 #include "alpine_settings.h"
 #include "../misc/vpackfile.h"
+#include "../multi/multi.h"
 #include "../os/console.h"
 #include "../rf/file/file.h"
 #include "../rf/gr/gr.h"
@@ -61,12 +62,7 @@ bool is_stock_alpha_test_level(const std::string& filename)
 
 bool is_known_run_level(const std::string& filename)
 {
-    std::string level_name = filename;
-    if (!string_iends_with(level_name, ".rfl")) {
-        level_name += ".rfl";
-    }
-
-    return g_known_run_levels.contains(string_to_lower(level_name));
+    return g_known_run_levels.contains(string_to_lower(normalize_level_filename(filename)));
 }
 
 // trim leading and trailing whitespace

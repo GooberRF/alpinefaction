@@ -6,20 +6,27 @@
 #include <string>
 #include <string_view>
 #include <vector>
+#include <patch_common/CallHook.h>
+#include <patch_common/CodeInjection.h>
 #include <patch_common/FunHook.h>
+#include <common/utils/list-utils.h>
 #include <common/utils/string-utils.h>
 #include "mutators.h"
 #include "server_internal.h"
 #include "multi.h"
 #include "gametype.h"
 #include "kill.h"
+#include "kill_attribution.h"
+#include "alpine_packets.h"
 #include "../rf/weapon.h"
 #include "../rf/item.h"
 #include "../rf/entity.h"
 #include "../rf/ai.h"
 #include "../rf/multi.h"
+#include "../rf/gameseq.h"
 #include "../rf/player/player.h"
 #include "../rf/os/console.h"
+#include "../rf/os/timestamp.h"
 
 // Spawn reserve for a no-clip "infinite ammo" weapon. Firing draws from reserve,
 // but we suppress the per-shot decrement, so this is purely the (constant) number
@@ -188,14 +195,73 @@ static void apply_arena(AlpineServerConfigRules& r, const toml::table& /*opts*/)
 // gives 50 effective health back.
 static constexpr float VAMPIRE_HEAL_RATIO = 0.5f;
 static constexpr bool VAMPIRE_DEFAULT_HIDE_HEALTH_ARMOR = true;
+// Full lifesteal option: heal 1:1 instead — damage dealt comes back in full.
+static constexpr float VAMPIRE_FULL_LIFESTEAL_RATIO = 1.0f;
+static constexpr bool VAMPIRE_DEFAULT_FULL_LIFESTEAL = false;
 
 static void apply_vampire(AlpineServerConfigRules& r, const toml::table& opts)
 {
     r.mutators.vampire_enabled = true;
+    r.mutators.vampire_heal_ratio = opts["full_lifesteal"].value_or(VAMPIRE_DEFAULT_FULL_LIFESTEAL)
+        ? VAMPIRE_FULL_LIFESTEAL_RATIO
+        : VAMPIRE_HEAL_RATIO;
 
     // Composed with (not replacing) whatever pickup policy is in force.
     r.mutators.hide_health_armor_pickups =
         opts["hide_health_armor_pickups"].value_or(VAMPIRE_DEFAULT_HIDE_HEALTH_ARMOR);
+}
+
+// Super Drain: health and armor above the entity's normal max rot back down.
+static void apply_super_drain(AlpineServerConfigRules& r, const toml::table& /*opts*/)
+{
+    r.mutators.super_drain_enabled = true;
+}
+
+// Armored: spawn with 100 armor instead of the stock 0.
+static void apply_armored(AlpineServerConfigRules& r, const toml::table& /*opts*/)
+{
+    r.spawn_armour.enabled = true;
+    r.spawn_armour.set_value(100.0f);
+}
+
+// Super Rail: the rail gun pickup ignores weapon stay and respawns on a long timer.
+static constexpr int SUPER_RAIL_RESPAWN_TIME_MS = 60000;
+
+static void apply_super_rail(AlpineServerConfigRules& r, const toml::table& /*opts*/)
+{
+    const int rail = rf::rail_gun_weapon_type;
+    if (rail < 0 || rail >= rf::num_weapon_types) {
+        rf::console::print("  [WARN] Super Rail mutator: the loaded tables have no rail gun\n");
+        return;
+    }
+
+    r.weapon_stay_exemptions.add(mutator_weapon_name(rail), true);
+
+    for (int i = 0; i < rf::num_item_types; ++i) {
+        if (rf::item_info[i].gives_weapon_id == rail) {
+            r.set_item_respawn_time(rf::item_info[i].cls_name.c_str(), SUPER_RAIL_RESPAWN_TIME_MS);
+            break;
+        }
+    }
+}
+
+// Big Craters: double the weapon crater radius of explosion geomods.
+static void apply_big_craters(AlpineServerConfigRules& r, const toml::table& /*opts*/)
+{
+    r.mutators.big_craters_enabled = true;
+}
+
+// Flaming Enemies: sustained flamethrower fire damage sets players on fire in
+// multiplayer, with the SP on-fire visuals but custom damage-over-time logic.
+static void apply_flaming_enemies(AlpineServerConfigRules& r, const toml::table& /*opts*/)
+{
+    r.mutators.flaming_enemies_enabled = true;
+}
+
+// Gibbing: overkill deaths explode into gibs.
+static void apply_gibbing(AlpineServerConfigRules& r, const toml::table& /*opts*/)
+{
+    r.gibbing.enabled = true;
 }
 
 // ============================================================================
@@ -218,9 +284,10 @@ static const MutatorOptionDef RAILS_OPTIONS[] = {
     {1, "exclude_thrown", "Keep thrown explosives", MutatorOptionType::Bool},
 };
 
-// Label kept short enough to clear the option row's checkbox label space at 640x480.
+// Labels kept short enough to clear the option row's checkbox label space at 640x480.
 static const MutatorOptionDef VAMPIRE_OPTIONS[] = {
     {0, "hide_health_armor_pickups", "No health/armor pickups", MutatorOptionType::Bool},
+    {1, "full_lifesteal", "Full lifesteal", MutatorOptionType::Bool},
 };
 
 struct MutatorDef
@@ -240,14 +307,26 @@ struct MutatorDef
 // necessarily what release it shipped in.
 static const MutatorDef MUTATORS[] = {
     {MutatorId::Instagib, "instagib", "Instagib", 4, &apply_instagib, nullptr, 0},
-    {MutatorId::Rails, "rails", "Rails", 4, &apply_rails, RAILS_OPTIONS, std::size(RAILS_OPTIONS)},
+    {MutatorId::Rails, "oneweapon", "One Weapon", 4, &apply_rails, RAILS_OPTIONS, std::size(RAILS_OPTIONS)},
     {MutatorId::Arena, "arena", "Arena", 4, &apply_arena, nullptr, 0},
     {MutatorId::Vampire, "vampire", "Vampire", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_vampire, VAMPIRE_OPTIONS, std::size(VAMPIRE_OPTIONS)},
+    {MutatorId::SuperDrain, "superdrain", "Super Drain", 4, &apply_super_drain, nullptr, 0},
+    {MutatorId::Armored, "armored", "Armored", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_armored, nullptr, 0},
+    {MutatorId::SuperRail, "superrail", "Super Rail", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_super_rail, nullptr, 0},
+    {MutatorId::BigCraters, "bigcraters", "Big Craters", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_big_craters, nullptr, 0},
+    {MutatorId::FlamingEnemies, "flamingenemies", "Flaming Enemies", 4, &apply_flaming_enemies, nullptr, 0},
+    {MutatorId::Gibbing, "gibbing", "Gibbing", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_gibbing, nullptr, 0},
 };
 
 // Hardcoded order in which simultaneously-active mutators are applied. Later
 // entries win where they overlap.
 static const MutatorId MUTATOR_APPLY_ORDER[] = {
+    MutatorId::Gibbing,
+    MutatorId::FlamingEnemies,
+    MutatorId::BigCraters,
+    MutatorId::SuperRail,
+    MutatorId::Armored,
+    MutatorId::SuperDrain,
     MutatorId::Vampire,
     MutatorId::Arena,
     MutatorId::Rails,
@@ -703,8 +782,15 @@ static bool is_standard_health_or_armor_item(const rf::ItemInfo& info)
         || callback == ITEM_TOUCH_MINER_ENVIROSUIT;
 }
 
+// Defined in the Flaming Enemies section below.
+static void flame_level_init();
+
 void mutators_level_init_post()
 {
+    // Both sides: forget the previous level's fire bookkeeping. Its fire records died
+    // with their parent entities; stale pointers here could alias new-level fires.
+    flame_level_init();
+
     if (!rf::is_server)
         return;
 
@@ -850,7 +936,424 @@ void mutators_on_pvp_damage(rf::Player* attacker, rf::Player* victim, float effe
     const float max_armor_limit = std::max(ep->armor, ep->info->max_armor);
 
     // Same logic effective health kill reward uses.
-    distribute_effective_health(ep, effective_damage * VAMPIRE_HEAL_RATIO, max_life_limit, max_armor_limit);
+    distribute_effective_health(ep, effective_damage * m.vampire_heal_ratio, max_life_limit, max_armor_limit);
+}
+
+// Super Drain tick: one global timer drains every alive player's health and
+// armor by one point per second while either sits above the entity's normal max.
+// The fields are written directly, so no damage is dealt and no kill can result;
+// clients suppress the stock damage feedback for these decreases.
+static constexpr int SUPER_DRAIN_TICK_MS = 1000;
+static constexpr float SUPER_DRAIN_PER_TICK = 1.0f;
+
+static rf::Timestamp g_super_drain_tick;
+
+static void super_drain_do_frame()
+{
+    // Dropped rather than left running while the mutator is off or the server is
+    // between levels: a deadline that expired during a level change would make
+    // the first gameplay frame tick immediately instead of a second in.
+    if (!g_alpine_server_config_active_rules.mutators.super_drain_enabled
+        || rf::gameseq_get_state() != rf::GameState::GS_GAMEPLAY) {
+        if (g_super_drain_tick.valid())
+            g_super_drain_tick.invalidate();
+        return;
+    }
+
+    if (!g_super_drain_tick.valid()) {
+        g_super_drain_tick.set(SUPER_DRAIN_TICK_MS);
+        return;
+    }
+    if (!g_super_drain_tick.elapsed())
+        return;
+    g_super_drain_tick.set(SUPER_DRAIN_TICK_MS);
+
+    for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
+        if (rf::player_is_dead(&player) || rf::player_is_dying(&player))
+            continue;
+        rf::Entity* ep = rf::entity_from_handle(player.entity_handle);
+        if (!ep || ep->life <= 0.0f)
+            continue;
+
+        const float max_life = ep->info ? ep->info->max_life : 100.0f;
+        const float max_armor = ep->info ? ep->info->max_armor : 100.0f;
+
+        // The final tick clamps exactly to the max.
+        if (ep->life > max_life)
+            ep->life = std::max(ep->life - SUPER_DRAIN_PER_TICK, max_life);
+        if (ep->armor > max_armor)
+            ep->armor = std::max(ep->armor - SUPER_DRAIN_PER_TICK, max_armor);
+    }
+}
+
+// Big Craters: double the crater radius at the two weapon-detonation geomod_create call
+// sites (impact at 0x004C5323, timed/lifetime detonation at 0x004C6C12). The driller's
+// dig path keeps its own radius. Server only: clients receive the final radius inside
+// the boolean packet, so they need no support.
+static constexpr float BIG_CRATERS_RADIUS_MULTIPLIER = 2.0f;
+
+static CallHook<bool(float, int, rf::GRoom*, rf::Vector3*, rf::Vector3*, int, int)> geomod_create_weapon_hook{
+    {
+        0x004C5323,
+        0x004C6C12,
+    },
+    [](float radius, int parent_handle, rf::GRoom* src_room, rf::Vector3* pos, rf::Vector3* hit_normal,
+       int shape_index, int flags) {
+        if (rf::is_server && g_alpine_server_config_active_rules.mutators.big_craters_enabled) {
+            radius *= BIG_CRATERS_RADIUS_MULTIPLIER;
+        }
+        return geomod_create_weapon_hook.call_target(radius, parent_handle, src_room, pos, hit_normal,
+                                                     shape_index, flags);
+    },
+};
+
+// ============================================================================
+// Flaming Enemies runtime
+// ============================================================================
+//
+// The engine's on-fire system is reused for the visuals only (emitters, looping sound,
+// dynamic light, corpse hand-off); everything else is custom, server-authoritative
+// logic: dealing FLAME_IGNITE_DAMAGE of flamethrower fire damage to a player within
+// FLAME_IGNITE_WINDOW_MS sets them on fire, the burn ticks damage attributed to the
+// igniter, and it ends FLAME_BURN_TIMEOUT_MS after the last flamethrower fire damage
+// (or in water, or on death). Clients are told about ignitions/extinguishes via
+// af_sreq_entity_on_fire and never run the SP burn behavior (no panic state, no
+// engine damage) for these fires.
+
+static constexpr float FLAME_IGNITE_DAMAGE = 25.0f;   // fire damage needed to ignite
+static constexpr int FLAME_IGNITE_WINDOW_MS = 1000;   // within this window
+static constexpr int FLAME_BURN_TIMEOUT_MS = 5000;    // burn ends this long after the last flame hit
+static constexpr int FLAME_DOT_TICK_MS = 500;
+static constexpr float FLAME_DOT_TICK_DAMAGE = 6.0f; // flat per-tick burn
+// A single explosive hit at least this big blows the fire out.
+static constexpr float FLAME_EXTINGUISH_EXPLOSIVE_DAMAGE = 20.0f;
+
+struct FlameVictimState
+{
+    // Rolling pre-ignite damage accounting, per attacker id.
+    struct DamageWindow
+    {
+        float sum = 0.0f;
+        rf::Timestamp expire;
+    };
+    std::map<uint8_t, DamageWindow> windows;
+
+    bool on_fire = false;
+    uint8_t igniter_id = 0xFF;
+    int entity_handle = -1; // the entity that was ignited; a respawn ends the burn
+    rf::Timestamp burn_timeout;
+    rf::Timestamp next_dot_tick;
+};
+
+// Keyed by victim player id. Server only.
+static std::map<uint8_t, FlameVictimState> g_flame_states;
+// Reentrancy guard: the burn's own damage ticks are fire damage from the flamethrower,
+// but they must neither ignite nor refresh a burn.
+static bool g_flame_dot_in_progress = false;
+
+// Fire records created by the mutator. The engine's own burn behavior in
+// entity_fire_update_all (self damage, spreading to nearby entities, panic anim
+// states) is suppressed for these.
+static std::set<rf::EntityFireInfo*> g_flame_managed_fires;
+
+void mutators_apply_entity_on_fire(rf::Entity* ep, bool on_fire)
+{
+    if (!ep)
+        return;
+
+    if (on_fire) {
+        if (ep->entity_fire_handle) {
+            // Already burning (e.g. a corpse lava ignite): adopt the existing fire
+            // so the engine's burn behavior stops driving it.
+            g_flame_managed_fires.insert(ep->entity_fire_handle);
+            return;
+        }
+        rf::EntityFireInfo* fire = rf::entity_fire_create(ep->handle, -1);
+        if (fire) {
+            // entity_fire_create leaves storing the handle to its caller.
+            ep->entity_fire_handle = fire;
+            g_flame_managed_fires.insert(fire);
+        }
+    }
+    else if (ep->entity_fire_handle) {
+        // Clears ep->entity_fire_handle itself; the destroy hook below drops it from
+        // the managed set.
+        rf::entity_fire_destroy(ep->entity_fire_handle, false);
+    }
+}
+
+// Every destruction path (ours, parent deleted, corpse burnt out) funnels through here,
+// so the managed set can never keep a freed record that the engine might recycle.
+FunHook<void(rf::EntityFireInfo*, bool)> entity_fire_destroy_hook{
+    0x0042ED20,
+    [](rf::EntityFireInfo* fire, bool keep_linked) {
+        entity_fire_destroy_hook.call_target(fire, keep_linked);
+        g_flame_managed_fires.erase(fire);
+    },
+};
+
+// entity_fire_update_all: skip the engine's spread-damage pass (fire damage + ignite
+// chance for entities near a burning one) for managed fires. Runs after the emitter
+// bone-position updates, so the visual is unaffected.
+CodeInjection entity_fire_update_all_spread_damage_injection{
+    0x0042F0BD,
+    [](auto& regs) {
+        rf::EntityFireInfo* fire = regs.esi;
+        if (g_flame_managed_fires.contains(fire))
+            regs.eip = 0x0042F1DC;
+    },
+};
+
+// entity_fire_update_all: skip the engine's per-frame self damage and the random
+// panic anim state for managed fires.
+CodeInjection entity_fire_update_all_self_damage_injection{
+    0x0042F218,
+    [](auto& regs) {
+        rf::EntityFireInfo* fire = regs.esi;
+        if (g_flame_managed_fires.contains(fire))
+            regs.eip = 0x0042F2A2;
+    },
+};
+
+static void flame_ignite(FlameVictimState& state, uint8_t igniter_id, rf::Entity* ep)
+{
+    state.on_fire = true;
+    state.igniter_id = igniter_id;
+    state.entity_handle = ep->handle;
+    state.windows.clear();
+    state.burn_timeout.set(FLAME_BURN_TIMEOUT_MS);
+    state.next_dot_tick.set(FLAME_DOT_TICK_MS);
+
+    af_send_entity_on_fire(static_cast<uint32_t>(ep->handle), true);
+    if (!rf::is_dedicated_server) {
+        mutators_apply_entity_on_fire(ep, true); // listen server's own visual
+    }
+}
+
+// `notify_entity` may be null when the victim's entity is already gone (the client-side
+// fire follows the corpse and burns out on its own).
+static void flame_extinguish(rf::Entity* notify_entity)
+{
+    if (!notify_entity)
+        return;
+    af_send_entity_on_fire(static_cast<uint32_t>(notify_entity->handle), false);
+    if (!rf::is_dedicated_server) {
+        mutators_apply_entity_on_fire(notify_entity, false);
+    }
+}
+
+void mutators_on_flame_damage(rf::Player* attacker, rf::Player* victim, int damage_type, float damage)
+{
+    if (!rf::is_server || !rf::is_multi)
+        return;
+    if (!g_alpine_server_config_active_rules.mutators.flaming_enemies_enabled)
+        return;
+    if (g_flame_dot_in_progress)
+        return;
+    if (!attacker || !victim || attacker == victim || !attacker->net_data || !victim->net_data)
+        return;
+    if (damage_type != rf::DT_FIRE || !(damage > 0.0f))
+        return;
+
+    // Only the flamethrower's fire damage grants or refreshes a burn. The flame stream
+    // itself is PARTICLE damage and so carries no weapon identity
+    // in the damage context — fall back to the attacker's held weapon exactly like kill
+    // attribution does for flame kills. The alt-fire canister is a real projectile and
+    // does show up in the context.
+    const DamageWeaponContext damage_ctx = kill_attribution_get_damage_context();
+    bool from_flamethrower;
+    if (damage_ctx.weapon_type >= 0) {
+        from_flamethrower = rf::weapon_is_flamethrower(damage_ctx.weapon_type);
+    }
+    else {
+        rf::Entity* attacker_ep = rf::entity_from_handle(attacker->entity_handle);
+        from_flamethrower =
+            attacker_ep && rf::weapon_is_flamethrower(attacker_ep->ai.current_primary_weapon);
+    }
+    if (!from_flamethrower)
+        return;
+
+    // No igniting teammates.
+    if (multi_game_type_is_team_type(rf::multi_get_game_type()) && attacker->team == victim->team)
+        return;
+
+    FlameVictimState& state = g_flame_states[victim->net_data->player_id];
+    if (state.on_fire) {
+        // Still being cooked: push the timeout out.
+        state.burn_timeout.set(FLAME_BURN_TIMEOUT_MS);
+        return;
+    }
+
+    auto& window = state.windows[attacker->net_data->player_id];
+    if (!window.expire.valid() || window.expire.elapsed()) {
+        window.sum = 0.0f;
+        window.expire.set(FLAME_IGNITE_WINDOW_MS);
+    }
+    window.sum += damage;
+    if (window.sum < FLAME_IGNITE_DAMAGE)
+        return;
+
+    rf::Entity* ep = rf::entity_from_handle(victim->entity_handle);
+    if (!ep || ep->life <= 0.0f || rf::entity_is_dying(ep))
+        return;
+
+    flame_ignite(state, attacker->net_data->player_id, ep);
+}
+
+void mutators_on_flame_victim_damage(rf::Player* victim, int damage_type, float damage)
+{
+    if (!rf::is_server || !rf::is_multi)
+        return;
+    if (!g_alpine_server_config_active_rules.mutators.flaming_enemies_enabled)
+        return;
+    if (!victim || !victim->net_data || !(damage > 0.0f))
+        return;
+
+    // A big enough single blast blows the fire out...
+    bool extinguish =
+        damage_type == rf::DT_EXPLOSIVE && damage >= FLAME_EXTINGUISH_EXPLOSIVE_DAMAGE;
+    if (!extinguish) {
+        // ...and any melee hit (riot stick, riot shield) pats it out.
+        const DamageWeaponContext damage_ctx = kill_attribution_get_damage_context();
+        extinguish = damage_ctx.weapon_type >= 0 && !damage_ctx.splash
+            && kill_attribution_is_melee_weapon(damage_ctx.weapon_type);
+    }
+    if (!extinguish)
+        return;
+
+    auto it = g_flame_states.find(victim->net_data->player_id);
+    if (it == g_flame_states.end() || !it->second.on_fire)
+        return;
+
+    // If the hit also killed them, leave the burn to the death path instead so the
+    // corpse keeps burning.
+    rf::Entity* ep = rf::entity_from_handle(victim->entity_handle);
+    if (!ep || ep->handle != it->second.entity_handle || ep->life <= 0.0f || rf::entity_is_dying(ep))
+        return;
+
+    flame_extinguish(ep);
+    g_flame_states.erase(it);
+}
+
+// Health pickups that extinguish a burning player.
+static const char* const FLAME_EXTINGUISH_HEALTH_ITEMS[] = {
+    "Medical Kit",
+    "First Aid Kit",
+    "Multi Super Health",
+};
+
+void mutators_on_item_picked_up(rf::Item* item, rf::Entity* entity)
+{
+    if (!rf::is_server || !rf::is_multi)
+        return;
+    if (!g_alpine_server_config_active_rules.mutators.flaming_enemies_enabled)
+        return;
+    if (!item || !item->info || !entity)
+        return;
+
+    bool is_health_item = false;
+    for (const char* name : FLAME_EXTINGUISH_HEALTH_ITEMS) {
+        if (string_iequals(item->info->cls_name.c_str(), name)) {
+            is_health_item = true;
+            break;
+        }
+    }
+    if (!is_health_item)
+        return;
+
+    rf::Player* victim = rf::player_from_entity_handle(entity->handle);
+    if (!victim || !victim->net_data)
+        return;
+
+    auto it = g_flame_states.find(victim->net_data->player_id);
+    if (it == g_flame_states.end() || !it->second.on_fire || entity->handle != it->second.entity_handle)
+        return;
+
+    flame_extinguish(entity);
+    g_flame_states.erase(it);
+}
+
+static void flame_level_init()
+{
+    g_flame_states.clear();
+    g_flame_managed_fires.clear();
+}
+
+static void flame_do_frame()
+{
+    if (!g_alpine_server_config_active_rules.mutators.flaming_enemies_enabled
+        || rf::gameseq_get_state() != rf::GameState::GS_GAMEPLAY) {
+        if (!g_flame_states.empty()) {
+            // Mutator switched off or level ending: put out anyone still burning.
+            for (auto& [victim_id, state] : g_flame_states) {
+                if (!state.on_fire)
+                    continue;
+                rf::Player* victim = rf::multi_find_player_by_id(victim_id);
+                rf::Entity* ep = victim ? rf::entity_from_handle(victim->entity_handle) : nullptr;
+                if (ep && ep->handle == state.entity_handle)
+                    flame_extinguish(ep);
+            }
+            g_flame_states.clear();
+        }
+        return;
+    }
+
+    for (auto it = g_flame_states.begin(); it != g_flame_states.end();) {
+        FlameVictimState& state = it->second;
+        if (!state.on_fire) {
+            ++it;
+            continue;
+        }
+
+        rf::Player* victim = rf::multi_find_player_by_id(it->first);
+        rf::Entity* ep = victim ? rf::entity_from_handle(victim->entity_handle) : nullptr;
+
+        // Death, disconnect or respawn ends the burn silently — the client-side fire
+        // follows the corpse and burns out on its own.
+        if (!victim || !ep || ep->handle != state.entity_handle || ep->life <= 0.0f
+            || rf::entity_is_dying(ep) || rf::player_is_dead(victim) || rf::player_is_dying(victim)) {
+            it = g_flame_states.erase(it);
+            continue;
+        }
+
+        // Water and the no-new-fire-damage timeout put the fire out.
+        const bool in_water = (ep->entity_flags & rf::EF_IN_WATER) != 0;
+        if (in_water || state.burn_timeout.elapsed()) {
+            flame_extinguish(ep);
+            it = g_flame_states.erase(it);
+            continue;
+        }
+
+        if (state.next_dot_tick.elapsed()) {
+            state.next_dot_tick.set(FLAME_DOT_TICK_MS);
+
+            // Attribute the burn to the igniter; -1 (an unowned fire death) when they
+            // are gone or have no entity right now.
+            int killer_handle = -1;
+            if (rf::Player* igniter = rf::multi_find_player_by_id(state.igniter_id)) {
+                if (rf::Entity* killer_ep = rf::entity_from_handle(igniter->entity_handle))
+                    killer_handle = killer_ep->handle;
+            }
+
+            // Routed through obj_damage so PvP modifiers, stats, kill attribution
+            // (flamethrower as the weapon) and other mutators see a normal hit.
+            g_flame_dot_in_progress = true;
+            rf::obj_damage(ep->handle, FLAME_DOT_TICK_DAMAGE, killer_handle,
+                           rf::flamethrower_weapon_type, rf::DT_FIRE, nullptr, -1, 0);
+            g_flame_dot_in_progress = false;
+        }
+
+        ++it;
+    }
+}
+
+void mutators_do_frame()
+{
+    if (!rf::is_server)
+        return;
+
+    super_drain_do_frame();
+    flame_do_frame();
 }
 
 // The weapon currently forced to no-clip.
@@ -930,4 +1433,12 @@ void mutators_do_patch()
     weapon_set_multiplayer_mode_hook.install();
     entity_consume_ammo_on_fire_hook.install();
     entity_play_action_animation_hook.install();
+
+    // Big Craters
+    geomod_create_weapon_hook.install();
+
+    // Flaming Enemies
+    entity_fire_destroy_hook.install();
+    entity_fire_update_all_spread_damage_injection.install();
+    entity_fire_update_all_self_damage_injection.install();
 }

@@ -12,6 +12,8 @@ struct AlpineServerConfigRules;
 
 namespace rf
 {
+    struct Entity;
+    struct Item;
     struct Player;
 }
 
@@ -31,6 +33,12 @@ enum class MutatorId : uint8_t
     Rails = 1,
     Arena = 2,
     Vampire = 3,
+    SuperDrain = 4,
+    Armored = 5,
+    SuperRail = 6,
+    BigCraters = 7,
+    FlamingEnemies = 8,
+    Gibbing = 9,
 };
 
 struct MutatorOptionChoice
@@ -78,11 +86,16 @@ struct MutatorInfo
 void mutators_do_patch();
 void apply_mutators_from_toml(const toml::array& mutators_arr, AlpineServerConfigRules& rules);
 void mutators_level_init_post();
+void mutators_do_frame();
 int mutators_redirect_item_index(int item_type_index);
 bool mutators_should_deny_weapon_switch(int from_weapon, int to_weapon);
 void mutators_on_player_frag(rf::Player* killer);
 void mutators_set_no_clip_weapon(int weapon_type);
 void mutators_on_pvp_damage(rf::Player* attacker, rf::Player* victim, float effective_damage);
+void mutators_on_flame_damage(rf::Player* attacker, rf::Player* victim, int damage_type, float damage);
+void mutators_on_flame_victim_damage(rf::Player* victim, int damage_type, float damage);
+void mutators_on_item_picked_up(rf::Item* item, rf::Entity* entity);
+void mutators_apply_entity_on_fire(rf::Entity* ep, bool on_fire);
 
 // Registry view. Built lazily because choice lists (e.g. the Rails featured
 // weapon) are derived from the loaded weapon/item tables.

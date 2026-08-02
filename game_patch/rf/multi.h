@@ -199,7 +199,7 @@ namespace rf
         int max_captures;
         NetAddr server_addr;
         int current_level_index;
-        VArray_String<String> levels;
+        VArray<String> levels;
     };
 
     struct JoinRequest

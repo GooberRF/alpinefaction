@@ -350,7 +350,7 @@ bool is_forward_exempt(rf::EventType event_type) {
 CodeInjection event_type_forwards_messages_patch{
     0x004B8C44, [](auto& regs) {
         if (af_rfl_version(rf::level.version)) {
-            auto event_type = rf::int_to_event_type(static_cast<int>(regs.eax));
+            auto event_type = static_cast<rf::EventType>(regs.eax);
 
             // handle Alpine events that shouldn't forward messages
             // also do not forward for Cyclic_Timer unless legacy cyclic timers are disabled
@@ -372,7 +372,7 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     // Set_Variable
     {
         rf::EventType::Set_Variable, [](const EventCreateParams& params) {
-         auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::Set_Variable));
+         auto* base_event = rf::event_create(params.pos, std::to_underlying(rf::EventType::Set_Variable));
             auto* event = dynamic_cast<EventSetVar*>(base_event);
             if (event) {
                 event->var = static_cast<SetVarOpts>(params.int1);
@@ -387,7 +387,7 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     // Clone_Entity
     {
         rf::EventType::Clone_Entity, [](const EventCreateParams& params) {
-            auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::Clone_Entity));
+            auto* base_event = rf::event_create(params.pos, std::to_underlying(rf::EventType::Clone_Entity));
             auto* event = dynamic_cast<EventCloneEntity*>(base_event);
             if (event) {                
                 event->hostile_to_player = params.bool1;
@@ -400,7 +400,7 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     // Switch_Random
     {
         rf::EventType::Switch_Random, [](const EventCreateParams& params) {
-            auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::Switch_Random));
+            auto* base_event = rf::event_create(params.pos, std::to_underlying(rf::EventType::Switch_Random));
             auto* event = dynamic_cast<EventSwitchRandom*>(base_event);
             if (event) {                
                 event->no_repeats = params.bool1;
@@ -411,7 +411,7 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     // Difficulty_Gate
     {
         rf::EventType::Difficulty_Gate, [](const EventCreateParams& params) {
-            auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::Difficulty_Gate));
+            auto* base_event = rf::event_create(params.pos, std::to_underlying(rf::EventType::Difficulty_Gate));
             auto* event = dynamic_cast<EventDifficultyGate*>(base_event);
             if (event) {
                 event->difficulty = static_cast<rf::GameDifficultyLevel>(params.int1);
@@ -422,7 +422,7 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     // HUD_Message
     {
         rf::EventType::HUD_Message, [](const EventCreateParams& params) {
-            auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::HUD_Message));
+            auto* base_event = rf::event_create(params.pos, std::to_underlying(rf::EventType::HUD_Message));
             auto* event = dynamic_cast<EventHUDMessage*>(base_event);
             if (event) {
                 event->message = params.str1;
@@ -434,7 +434,7 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     // Play_Video
     {
         rf::EventType::Play_Video, [](const EventCreateParams& params) {
-            auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::Play_Video));
+            auto* base_event = rf::event_create(params.pos, std::to_underlying(rf::EventType::Play_Video));
             auto* event = dynamic_cast<EventPlayVideo*>(base_event);
             if (event) {
                 event->filename = params.str1;
@@ -445,7 +445,7 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     // Set_Level_Hardness
     {
         rf::EventType::Set_Level_Hardness, [](const EventCreateParams& params) {
-            auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::Set_Level_Hardness));
+            auto* base_event = rf::event_create(params.pos, std::to_underlying(rf::EventType::Set_Level_Hardness));
             auto* event = dynamic_cast<EventSetLevelHardness*>(base_event);
             if (event) {
                 event->hardness = params.int1;
@@ -456,7 +456,7 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     // Sequence
     {
         rf::EventType::Sequence, [](const EventCreateParams& params) {
-            auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::Sequence));
+            auto* base_event = rf::event_create(params.pos, std::to_underlying(rf::EventType::Sequence));
             auto* event = dynamic_cast<EventSequence*>(base_event);
             if (event) {
                 event->next_link_index = params.int1;
@@ -467,7 +467,7 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     // Remove_Link
     {
         rf::EventType::Remove_Link, [](const EventCreateParams& params) {
-            auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::Remove_Link));
+            auto* base_event = rf::event_create(params.pos, std::to_underlying(rf::EventType::Remove_Link));
             auto* event = dynamic_cast<EventRemoveLink*>(base_event);
             if (event) {
                 event->remove_all = params.bool1;
@@ -478,7 +478,7 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     // Route_Node
     {
         rf::EventType::Route_Node, [](const EventCreateParams& params) {
-            auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::Route_Node));
+            auto* base_event = rf::event_create(params.pos, std::to_underlying(rf::EventType::Route_Node));
             auto* event = dynamic_cast<EventRouteNode*>(base_event);
             if (event) {
                 event->behaviour = static_cast<RouteNodeBehavior>(params.int1);
@@ -491,7 +491,7 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     // Add_Link
     {
         rf::EventType::Add_Link, [](const EventCreateParams& params) {
-            auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::Add_Link));
+            auto* base_event = rf::event_create(params.pos, std::to_underlying(rf::EventType::Add_Link));
             auto* event = dynamic_cast<EventAddLink*>(base_event);
             if (event) {
                 event->subject_uid = params.int1;
@@ -503,7 +503,7 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     // Valid_Gate
     {
         rf::EventType::Valid_Gate, [](const EventCreateParams& params) {
-            auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::Valid_Gate));
+            auto* base_event = rf::event_create(params.pos, std::to_underlying(rf::EventType::Valid_Gate));
             auto* event = dynamic_cast<EventValidGate*>(base_event);
             if (event) {
                 event->check_uid = params.int1;
@@ -514,7 +514,7 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     // Goal_Math
     {
         rf::EventType::Goal_Math, [](const EventCreateParams& params) {
-            auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::Goal_Math));
+            auto* base_event = rf::event_create(params.pos, std::to_underlying(rf::EventType::Goal_Math));
             auto* event = dynamic_cast<EventGoalMath*>(base_event);
             if (event) {
                 event->goal = params.str1;
@@ -527,7 +527,7 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     // Goal_Gate
     {
         rf::EventType::Goal_Gate, [](const EventCreateParams& params) {
-            auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::Goal_Gate));
+            auto* base_event = rf::event_create(params.pos, std::to_underlying(rf::EventType::Goal_Gate));
             auto* event = dynamic_cast<EventGoalGate*>(base_event);
             if (event) {
                 event->goal = params.str1;
@@ -540,7 +540,7 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     // Scope_Gate
     {
         rf::EventType::Scope_Gate, [](const EventCreateParams& params) {
-            auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::Scope_Gate));
+            auto* base_event = rf::event_create(params.pos, std::to_underlying(rf::EventType::Scope_Gate));
             auto* event = dynamic_cast<EventScopeGate*>(base_event);
             if (event) {
                 event->scope = static_cast<ScopeGateTests>(params.int1);
@@ -551,7 +551,7 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     // Inside_Gate
     {
         rf::EventType::Inside_Gate, [](const EventCreateParams& params) {
-            auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::Inside_Gate));
+            auto* base_event = rf::event_create(params.pos, std::to_underlying(rf::EventType::Inside_Gate));
             auto* event = dynamic_cast<EventInsideGate*>(base_event);
             if (event) {
                 event->check_uid = params.int1;
@@ -562,7 +562,7 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     // Set_Difficulty
     {
         rf::EventType::Set_Difficulty, [](const EventCreateParams& params) {
-            auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::Set_Difficulty));
+            auto* base_event = rf::event_create(params.pos, std::to_underlying(rf::EventType::Set_Difficulty));
             auto* event = dynamic_cast<EventSetDifficulty*>(base_event);
             if (event) {
                 event->difficulty = static_cast<rf::GameDifficultyLevel>(params.int1);
@@ -573,7 +573,7 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     // Set_Fog_Far_Clip
     {
         rf::EventType::Set_Fog_Far_Clip, [](const EventCreateParams& params) {
-            auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::Set_Fog_Far_Clip));
+            auto* base_event = rf::event_create(params.pos, std::to_underlying(rf::EventType::Set_Fog_Far_Clip));
             auto* event = dynamic_cast<EventSetFogFarClip*>(base_event);
             if (event) {
                 event->far_clip = params.float1;
@@ -584,7 +584,7 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     // AF_When_Dead
     {
         rf::EventType::AF_When_Dead, [](const EventCreateParams& params) {
-            auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::AF_When_Dead));
+            auto* base_event = rf::event_create(params.pos, std::to_underlying(rf::EventType::AF_When_Dead));
             auto* event = dynamic_cast<EventAFWhenDead*>(base_event);
             if (event) {
                 event->any_dead = params.bool1;
@@ -595,7 +595,7 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     // Gametype_Gate
     {
         rf::EventType::Gametype_Gate, [](const EventCreateParams& params) {
-            auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::Gametype_Gate));
+            auto* base_event = rf::event_create(params.pos, std::to_underlying(rf::EventType::Gametype_Gate));
             auto* event = dynamic_cast<EventGametypeGate*>(base_event);
             if (event) {
                 event->gametype = static_cast<rf::NetGameType>(params.int1);
@@ -606,7 +606,7 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     // Set_Skybox
     {
         rf::EventType::Set_Skybox, [](const EventCreateParams& params) {
-            auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::Set_Skybox));
+            auto* base_event = rf::event_create(params.pos, std::to_underlying(rf::EventType::Set_Skybox));
             auto* event = dynamic_cast<EventSetSkybox*>(base_event);
             if (event) {
                 event->new_sky_room_uid = params.int1;
@@ -620,7 +620,7 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     // Set_Life
     {
         rf::EventType::Set_Life, [](const EventCreateParams& params) {
-            auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::Set_Life));
+            auto* base_event = rf::event_create(params.pos, std::to_underlying(rf::EventType::Set_Life));
             auto* event = dynamic_cast<EventSetLife*>(base_event);
             if (event) {
                 event->new_life = params.float1;
@@ -631,7 +631,7 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     // Set_Debris
     {
         rf::EventType::Set_Debris, [](const EventCreateParams& params) {
-            auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::Set_Debris));
+            auto* base_event = rf::event_create(params.pos, std::to_underlying(rf::EventType::Set_Debris));
             auto* event = dynamic_cast<EventSetDebris*>(base_event);
             if (event) {
                 event->debris_filename = params.str1;
@@ -646,7 +646,7 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     // Set_Fog_Color
     {
         rf::EventType::Set_Fog_Color, [](const EventCreateParams& params) {
-            auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::Set_Fog_Color));
+            auto* base_event = rf::event_create(params.pos, std::to_underlying(rf::EventType::Set_Fog_Color));
             auto* event = dynamic_cast<EventSetFogColor*>(base_event);
             if (event) {
                 event->fog_color = params.str1;
@@ -657,7 +657,7 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     // Set_Entity_Flag
     {
         rf::EventType::Set_Entity_Flag, [](const EventCreateParams& params) {
-            auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::Set_Entity_Flag));
+            auto* base_event = rf::event_create(params.pos, std::to_underlying(rf::EventType::Set_Entity_Flag));
             auto* event = dynamic_cast<EventSetEntityFlag*>(base_event);
             if (event) {
                 event->flag = static_cast<SetEntityFlagOption>(params.int1);
@@ -668,7 +668,7 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     // AF_Teleport_Player
     {
         rf::EventType::AF_Teleport_Player, [](const EventCreateParams& params) {
-            auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::AF_Teleport_Player));
+            auto* base_event = rf::event_create(params.pos, std::to_underlying(rf::EventType::AF_Teleport_Player));
             auto* event = dynamic_cast<EventAFTeleportPlayer*>(base_event);
             if (event) {
                 event->reset_velocity = params.bool1;
@@ -682,7 +682,7 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     // Set_Item_Drop
     {
         rf::EventType::Set_Item_Drop, [](const EventCreateParams& params) {
-            auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::Set_Item_Drop));
+            auto* base_event = rf::event_create(params.pos, std::to_underlying(rf::EventType::Set_Item_Drop));
             auto* event = dynamic_cast<EventSetItemDrop*>(base_event);
             if (event) {
                 event->item_name = params.str1;
@@ -693,7 +693,7 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     // AF_Heal
     {
         rf::EventType::AF_Heal, [](const EventCreateParams& params) {
-            auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::AF_Heal));
+            auto* base_event = rf::event_create(params.pos, std::to_underlying(rf::EventType::AF_Heal));
             auto* event = dynamic_cast<EventAFHeal*>(base_event);
             if (event) {
                 event->amount = params.int1;
@@ -707,7 +707,7 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     // World_HUD_Sprite
     {
         rf::EventType::World_HUD_Sprite, [](const EventCreateParams& params) {
-            auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::World_HUD_Sprite));
+            auto* base_event = rf::event_create(params.pos, std::to_underlying(rf::EventType::World_HUD_Sprite));
             auto* event = dynamic_cast<EventWorldHUDSprite*>(base_event);
             if (event) {
                 event->enabled = params.bool1;
@@ -722,7 +722,7 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     // Set_Light_Color
     {
         rf::EventType::Set_Light_Color, [](const EventCreateParams& params) {
-            auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::Set_Light_Color));
+            auto* base_event = rf::event_create(params.pos, std::to_underlying(rf::EventType::Set_Light_Color));
             auto* event = dynamic_cast<EventSetLightColor*>(base_event);
             if (event) {
                 event->light_color = params.str1;
@@ -734,7 +734,7 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     // Capture_Point_Handler
     {
         rf::EventType::Capture_Point_Handler, [](const EventCreateParams& params) {
-            auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::Capture_Point_Handler));
+            auto* base_event = rf::event_create(params.pos, std::to_underlying(rf::EventType::Capture_Point_Handler));
             auto* event = dynamic_cast<EventCapturePointHandler*>(base_event);
             if (event) {
                 event->name = params.str1;
@@ -750,7 +750,7 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     // Modify_Respawn_Point
     {
         rf::EventType::Modify_Respawn_Point, [](const EventCreateParams& params) {
-            auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::Modify_Respawn_Point));
+            auto* base_event = rf::event_create(params.pos, std::to_underlying(rf::EventType::Modify_Respawn_Point));
             auto* event = dynamic_cast<EventModifyRespawnPoint*>(base_event);
             if (event) {
                 event->red = params.bool1;
@@ -762,7 +762,7 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     // Set_Capture_Point_Owner
     {
         rf::EventType::Set_Capture_Point_Owner, [](const EventCreateParams& params) {
-            auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::Set_Capture_Point_Owner));
+            auto* base_event = rf::event_create(params.pos, std::to_underlying(rf::EventType::Set_Capture_Point_Owner));
             auto* event = dynamic_cast<EventSetCapturePointOwner*>(base_event);
             if (event) {
                 event->owner = params.int1;
@@ -773,7 +773,7 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     // Owner_Gate
     {
         rf::EventType::Owner_Gate, [](const EventCreateParams& params) {
-            auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::Owner_Gate));
+            auto* base_event = rf::event_create(params.pos, std::to_underlying(rf::EventType::Owner_Gate));
             auto* event = dynamic_cast<EventOwnerGate*>(base_event);
             if (event) {
                 event->handler_uid = params.int1;
@@ -785,7 +785,7 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     // Set_Gameplay_Rule
     {
         rf::EventType::Set_Gameplay_Rule, [](const EventCreateParams& params) {
-            auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::Set_Gameplay_Rule));
+            auto* base_event = rf::event_create(params.pos, std::to_underlying(rf::EventType::Set_Gameplay_Rule));
             auto* event = dynamic_cast<EventSetGameplayRule*>(base_event);
             if (event) {
                 event->rule = static_cast<GameplayRule>(params.int1);
@@ -796,7 +796,7 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     // Mesh_Animate
     {
         rf::EventType::Mesh_Animate, [](const EventCreateParams& params) {
-            auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::Mesh_Animate));
+            auto* base_event = rf::event_create(params.pos, std::to_underlying(rf::EventType::Mesh_Animate));
             auto* event = dynamic_cast<EventMeshAnimate*>(base_event);
             if (event) {
                 event->animate_type = params.int1;
@@ -809,7 +809,7 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     // Mesh_Set_Texture
     {
         rf::EventType::Mesh_Set_Texture, [](const EventCreateParams& params) {
-            auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::Mesh_Set_Texture));
+            auto* base_event = rf::event_create(params.pos, std::to_underlying(rf::EventType::Mesh_Set_Texture));
             auto* event = dynamic_cast<EventMeshSetTexture*>(base_event);
             if (event) {
                 event->texture_slot = params.int1;
@@ -821,7 +821,7 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     // Mesh_Set_Collision
     {
         rf::EventType::Mesh_Set_Collision, [](const EventCreateParams& params) {
-            auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::Mesh_Set_Collision));
+            auto* base_event = rf::event_create(params.pos, std::to_underlying(rf::EventType::Mesh_Set_Collision));
             auto* event = dynamic_cast<EventMeshSetCollision*>(base_event);
             if (event) {
                 event->collision_type = params.int1;
@@ -832,7 +832,7 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     // AF_Fullscreen_Image
     {
         rf::EventType::AF_Fullscreen_Image, [](const EventCreateParams& params) {
-            auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::AF_Fullscreen_Image));
+            auto* base_event = rf::event_create(params.pos, std::to_underlying(rf::EventType::AF_Fullscreen_Image));
             auto* event = dynamic_cast<EventFullscreenImage*>(base_event);
             if (event) {
                 event->filename = params.str1;
@@ -848,7 +848,7 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     // AF_Fullscreen_Color
     {
         rf::EventType::AF_Fullscreen_Color, [](const EventCreateParams& params) {
-            auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::AF_Fullscreen_Color));
+            auto* base_event = rf::event_create(params.pos, std::to_underlying(rf::EventType::AF_Fullscreen_Color));
             auto* event = dynamic_cast<EventFullscreenColor*>(base_event);
             if (event) {
                 event->color_string = params.str1;
@@ -864,7 +864,7 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     // Modify_Gas_Region
     {
         rf::EventType::Modify_Gas_Region, [](const EventCreateParams& params) {
-            auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::Modify_Gas_Region));
+            auto* base_event = rf::event_create(params.pos, std::to_underlying(rf::EventType::Modify_Gas_Region));
             auto* event = dynamic_cast<EventModifyGasRegion*>(base_event);
             if (event) {
                 event->color_string = params.str1;
@@ -877,7 +877,7 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     // ATX_Set_Frame
     {
         rf::EventType::ATX_Set_Frame, [](const EventCreateParams& params) {
-            auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::ATX_Set_Frame));
+            auto* base_event = rf::event_create(params.pos, std::to_underlying(rf::EventType::ATX_Set_Frame));
             auto* event = dynamic_cast<EventATXSetFrame*>(base_event);
             if (event) {
                 event->handle = params.str1;
@@ -889,7 +889,7 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     // ATX_Play
     {
         rf::EventType::ATX_Play, [](const EventCreateParams& params) {
-            auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::ATX_Play));
+            auto* base_event = rf::event_create(params.pos, std::to_underlying(rf::EventType::ATX_Play));
             auto* event = dynamic_cast<EventATXPlay*>(base_event);
             if (event) {
                 event->handle = params.str1;
@@ -900,7 +900,7 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     // ATX_Pause
     {
         rf::EventType::ATX_Pause, [](const EventCreateParams& params) {
-            auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::ATX_Pause));
+            auto* base_event = rf::event_create(params.pos, std::to_underlying(rf::EventType::ATX_Pause));
             auto* event = dynamic_cast<EventATXPause*>(base_event);
             if (event) {
                 event->handle = params.str1;
@@ -911,7 +911,7 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     // ATX_Set_Frame_Time
     {
         rf::EventType::ATX_Set_Frame_Time, [](const EventCreateParams& params) {
-            auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::ATX_Set_Frame_Time));
+            auto* base_event = rf::event_create(params.pos, std::to_underlying(rf::EventType::ATX_Set_Frame_Time));
             auto* event = dynamic_cast<EventATXSetFrameTime*>(base_event);
             if (event) {
                 event->handle = params.str1;
@@ -923,7 +923,7 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     // Resize_Gas_Region
     {
         rf::EventType::Resize_Gas_Region, [](const EventCreateParams& params) {
-            auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::Resize_Gas_Region));
+            auto* base_event = rf::event_create(params.pos, std::to_underlying(rf::EventType::Resize_Gas_Region));
             auto* event = dynamic_cast<EventResizeGasRegion*>(base_event);
             if (event) {
                 event->shape = params.int1 + 1; // dropdown index counts from 0, must be incremented
@@ -938,7 +938,7 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
 
 rf::Event* construct_alpine_event(int event_type, const EventCreateParams& params)
 {
-    auto it = event_factories.find(rf::int_to_event_type(event_type));
+    auto it = event_factories.find(static_cast<rf::EventType>(event_type));
     if (it != event_factories.end()) {
         return it->second(params);
     }
@@ -1028,7 +1028,7 @@ CodeInjection level_read_events_movers_patch {
         if (af_rfl_version(rf::level.version)) {
             rf::Event* event = regs.esi;
 
-            if (event->event_type == rf::event_type_to_int(rf::EventType::Anchor_Marker_Orient)) {
+            if (event->event_type == std::to_underlying(rf::EventType::Anchor_Marker_Orient)) {
                 rf::Matrix3 event_orient = event->orient;
 
                 event->start_orient = event_orient;
@@ -1050,7 +1050,7 @@ CodeInjection event_activate_route_node{
 
         if (af_rfl_version(rf::level.version)) {
             // verify it's a Route_Node
-            if (event->event_type == rf::event_type_to_int(rf::EventType::Route_Node)) {
+            if (event->event_type == std::to_underlying(rf::EventType::Route_Node)) {
                 auto* delay_event = reinterpret_cast<EventRouteNode*>(event);
                 bool on = *reinterpret_cast<bool*>(regs.esp + 0x18);
                 bool proceed = true;
