@@ -49,6 +49,7 @@ namespace gr::d3d11
         void set_clip();
         void set_far_clip(bool enabled);
         void flip();
+        void flush_outlines_before_fpgun();
         void texture_save_cache();
         void texture_flush_cache(bool force);
         void texture_flush_non_user_cache();
@@ -98,6 +99,7 @@ namespace gr::d3d11
         void init_back_buffer(const uint32_t sample_count);
         void init_scene_texture();
         void init_depth_stencil_buffer(const uint32_t sample_count);
+        void flush_outlines_before_2d();
 
         HWND hwnd_;
         DynamicLinkLibrary d3d11_lib_;

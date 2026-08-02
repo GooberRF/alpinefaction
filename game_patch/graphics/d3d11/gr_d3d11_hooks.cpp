@@ -661,6 +661,15 @@ namespace gr::d3d11
         return renderer->set_render_target(bm_handle);
     }
 
+    void flush_outlines_before_fpgun()
+    {
+        // Called from a gameplay-side hook (player_fpgun.cpp), so unlike the gr_* vtable
+        // entries above it can be reached without the renderer being constructed.
+        if (renderer) {
+            renderer->flush_outlines_before_fpgun();
+        }
+    }
+
     void clear_solid_render_cache()
     {
         if (renderer) {

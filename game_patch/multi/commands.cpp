@@ -8,6 +8,7 @@
 #include "../rf/os/string.h"
 #include "server.h"
 #include "multi.h"
+#include <common/utils/string-utils.h>
 #include <patch_common/AsmWriter.h>
 #include <patch_common/CallHook.h>
 #include <algorithm>
@@ -33,6 +34,38 @@ void restart_current_level()
 
     if (manual_rules_override)
         set_manual_rules_override(std::move(*manual_rules_override));
+}
+
+// Restart, but running the level's CONFIGURED rules instead of whatever the
+// session's votes put in front of them.
+void restart_current_level_configured()
+{
+    clear_manual_rules_override();
+
+    const std::string filename = rf::level.filename.c_str();
+
+    if (g_dedicated_launched_from_ads) {
+        const auto& levels = g_alpine_server_config.levels;
+        const int idx = rf::netgame.current_level_index;
+        const AlpineServerConfigRules* configured = &g_alpine_server_config.base_rules;
+        if (idx >= 0 && idx < static_cast<int>(levels.size())
+            && string_iequals(levels[idx].level_filename, filename)) {
+            configured = &levels[idx].rule_overrides;
+        }
+        else {
+            for (const auto& entry : levels) {
+                if (string_iequals(entry.level_filename, filename)) {
+                    configured = &entry.rule_overrides;
+                    break;
+                }
+            }
+        }
+        // Explicit so a game type the session voted in cannot survive as the
+        // still-queued upcoming type.
+        set_upcoming_game_type(configured->game_type, UpcomingGameTypeSelection::ExplicitRequest);
+    }
+
+    multi_change_level_alpine(filename.c_str());
 }
 
 void load_next_level()

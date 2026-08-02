@@ -16,11 +16,13 @@
 #include "../multi/gametype.h"
 #include "../multi/bagman.h"
 #include "../multi/jetpack.h"
+#include "../multi/salvage.h"
 #include "../multi/wipeout.h"
 #include "../input/input.h"
 #include "../rf/input.h"
 #include "../rf/hud.h"
 #include "../rf/level.h"
+#include "../rf/bmpman.h"
 #include "../rf/gr/gr.h"
 #include "../rf/gr/gr_font.h"
 #include "../rf/multi.h"
@@ -74,6 +76,7 @@ struct ActiveHudNotification
 static ActiveHudNotification g_hud_notification;
 static ActiveHudNotification g_hud_big_notification;
 constexpr int kHudNotificationFadeMs = 500;
+constexpr const char* kSalvageCarrierNotificationText = "You have the flag! Take it to your base!";
 
 static void hud_notification_clear_slot(ActiveHudNotification& slot)
 {
@@ -884,6 +887,55 @@ static void hud_render_run_timer_widget(int x, int y, int w, int h, int font_id)
     draw_shadow_text(timer_x, timer_y, timer_string, font_id, timer_r, timer_g, timer_b, timer_a);
 }
 
+// Pulsing alpha for the big carrier-flag icon, shared by CTF and Salvage.
+static float hud_carrier_flag_pulse_alpha()
+{
+    static float alpha = 255.0f;
+    static bool falling = false;
+    const float delta_alpha = rf::frametime * 500.0f;
+    if (falling) {
+        alpha -= delta_alpha;
+        if (alpha <= 50.0f) {
+            alpha = 50.0f;
+            falling = false;
+        }
+    }
+    else {
+        alpha += delta_alpha;
+        if (alpha >= 255.0f) {
+            alpha = 255.0f;
+            falling = true;
+        }
+    }
+    return alpha;
+}
+
+// True when the player whose view we are rendering is carrying the Salvage flag.
+static bool hud_view_player_is_salvage_carrier()
+{
+    if (salvage_player_is_carrier(rf::local_player)) {
+        return true;
+    }
+    return multi_spectate_is_spectating()
+        && salvage_player_is_carrier(multi_spectate_get_target_player());
+}
+
+// Big carrier icon only, drawn beside the score box while the viewed player is
+// running the flag. Separate art from the score-row miniflag below; the two are
+// drawn at different sizes in different places and must not be merged.
+static int hud_salvage_flag_bmh()
+{
+    static const int bmh = rf::bm::load("hud_flag_sal.vbm", -1, true);
+    return bmh;
+}
+
+// Score-row indicator only, drawn inside the score box, next to a team's score.
+static int hud_salvage_miniflag_bmh()
+{
+    static const int bmh = rf::bm::load("hud_miniflag_sal.vbm", -1, true);
+    return bmh;
+}
+
 void multi_hud_render_team_scores()
 {
     int clip_h = rf::gr::clip_height();
@@ -914,6 +966,9 @@ void multi_hud_render_team_scores()
     } else if (is_ffa_with_list) {
         box_w = g_big_team_scores_hud ? 280 : 240;
         box_h = g_big_team_scores_hud ? 90 : 65;
+    } else if (game_type == rf::NG_TYPE_SAL) {
+        box_w = g_big_team_scores_hud ? 240 : 185;
+        box_h = g_big_team_scores_hud ? 80 : 55;
     } else {
         const int ctf_box_w = rf::gr::clip_width() <= 1280 ? 350 : 370;
         box_w = g_big_team_scores_hud ? ctf_box_w : 185;
@@ -938,23 +993,7 @@ void multi_hud_render_team_scores()
     int font_id = hud_get_default_font();
 
     if (game_type == rf::NG_TYPE_CTF) {
-        static float hud_flag_alpha = 255.0f;
-        static bool hud_flag_pulse_dir = false;
-        float delta_alpha = rf::frametime * 500.0f;
-        if (hud_flag_pulse_dir) {
-            hud_flag_alpha -= delta_alpha;
-            if (hud_flag_alpha <= 50.0f) {
-                hud_flag_alpha = 50.0f;
-                hud_flag_pulse_dir = false;
-            }
-        }
-        else {
-            hud_flag_alpha += delta_alpha;
-            if (hud_flag_alpha >= 255.0f) {
-                hud_flag_alpha = 255.0f;
-                hud_flag_pulse_dir = true;
-            }
-        }
+        const float hud_flag_alpha = hud_carrier_flag_pulse_alpha();
         rf::gr::set_color(53, 207, 22, 255);
         rf::Player* red_flag_player = g_debug_team_scores_hud ? rf::local_player : rf::multi_ctf_get_red_flag_player();
         if (red_flag_player) {
@@ -992,6 +1031,17 @@ void multi_hud_render_team_scores()
         }
         else {
             rf::gr::string(miniflag_label_x, blue_miniflag_label_y, "missing", font_id);
+        }
+    }
+
+    // Salvage: the neutral flag has no per-team row, but the carrier gets the
+    // same big pulsing flag icon CTF gives its carriers.
+    float sal_flag_alpha = 255.0f;
+    if (game_type == rf::NG_TYPE_SAL) {
+        sal_flag_alpha = hud_carrier_flag_pulse_alpha();
+        if (hud_view_player_is_salvage_carrier()) {
+            rf::gr::set_color(255, 255, 255, static_cast<int>(sal_flag_alpha));
+            hud_scaled_bitmap(hud_salvage_flag_bmh(), flag_x, box_y, flag_scale, rf::hud_flag_gr_mode);
         }
     }
 
@@ -1056,6 +1106,11 @@ void multi_hud_render_team_scores()
             rf::gr::set_color(53, 207, 22, 255);
             red_score = wipeout_get_red_team_score();
             blue_score = wipeout_get_blue_team_score();
+        }
+        else if (game_type == rf::NG_TYPE_SAL) {
+            rf::gr::set_color(53, 207, 22, 255);
+            red_score = salvage_get_red_team_score();
+            blue_score = salvage_get_blue_team_score();
         }
     }
 
@@ -1133,9 +1188,30 @@ void multi_hud_render_team_scores()
     }
     else if (!is_rev && !is_esc) {
         auto [str_w, str_h] = rf::gr::get_string_size(red_score_str, font_id);
-        rf::gr::string(box_x + box_w - 5 - str_w, red_miniflag_label_y, red_score_str.c_str(), font_id);
+        const int red_score_x = box_x + box_w - 5 - str_w;
+        rf::gr::string(red_score_x, red_miniflag_label_y, red_score_str.c_str(), font_id);
         std::tie(str_w, str_h) = rf::gr::get_string_size(blue_score_str, font_id);
-        rf::gr::string(box_x + box_w - 5 - str_w, blue_miniflag_label_y, blue_score_str.c_str(), font_id);
+        const int blue_score_x = box_x + box_w - 5 - str_w;
+        rf::gr::string(blue_score_x, blue_miniflag_label_y, blue_score_str.c_str(), font_id);
+
+        // Salvage: park the neutral flag just left of the score of whichever team
+        // is holding it.
+        if (game_type == rf::NG_TYPE_SAL && salvage_get_state() == SalFlagState::Carried) {
+            const int sal_miniflag_bmh = hud_salvage_miniflag_bmh();
+            const rf::Player* carrier = salvage_get_carrier();
+            if (carrier) {
+                const bool carried_by_red = carrier->team == rf::TEAM_RED;
+                const float sal_flag_scale = g_big_team_scores_hud ? 1.5f : 1.0f;
+                int sal_bm_w = 0, sal_bm_h = 0;
+                rf::bm::get_dimensions(sal_miniflag_bmh, &sal_bm_w, &sal_bm_h);
+                const int sal_flag_x = (carried_by_red ? red_score_x : blue_score_x)
+                    - static_cast<int>(sal_bm_w * sal_flag_scale) - 6;
+                const int sal_flag_y = carried_by_red ? red_miniflag_y : blue_miniflag_y;
+                rf::gr::set_color(255, 255, 255, static_cast<int>(sal_flag_alpha));
+                hud_scaled_bitmap(sal_miniflag_bmh, sal_flag_x, sal_flag_y, sal_flag_scale,
+                    rf::hud_flag_gr_mode);
+            }
+        }
     }
 
     // render capture point bars
@@ -1149,10 +1225,18 @@ CodeInjection multi_hud_render_team_scores_new_gamemodes_patch {
     [](auto& regs) {
         const auto game_type = rf::multi_get_game_type();
         const bool is_ffa_with_list = game_type == rf::NG_TYPE_BAG
-            || game_type == rf::NG_TYPE_PIT
-            || game_type == rf::NG_TYPE_GG
-            || (game_type == rf::NG_TYPE_DM && g_alpine_game_config.show_mini_scoreboard_dm);
-        if (gt_is_koth() || gt_is_dc() || gt_is_rev() || gt_is_run() || gt_is_esc() || gt_is_tbag() || gt_is_wipeout() || is_ffa_with_list) {
+                                    || game_type == rf::NG_TYPE_PIT
+                                    || game_type == rf::NG_TYPE_GG
+                                    || (game_type == rf::NG_TYPE_DM && g_alpine_game_config.show_mini_scoreboard_dm);
+        if (gt_is_koth() ||
+            gt_is_dc() ||
+            gt_is_rev() ||
+            gt_is_run() ||
+            gt_is_esc() ||
+            gt_is_tbag() ||
+            gt_is_wipeout() ||
+            gt_is_salvage() ||
+            is_ffa_with_list) {
             regs.eip = 0x00476E06; // multi_hud_render_team_scores
         }
     }
@@ -1610,6 +1694,32 @@ static void hud_pit_queue_ensure() {
     }
 }
 
+// Keep the Salvage carrier overlay alive.
+static void hud_salvage_carrier_ensure() {
+    if (rf::is_dedicated_server) return;
+
+    // Nothing objective-related belongs on screen before the match starts.
+    if (!salvage_player_is_carrier(rf::local_player) || g_pre_match_active) {
+        if (g_hud_notification.type == HudNotificationType::SalvageCarrier) {
+            hud_notification_remove(HudNotificationType::SalvageCarrier, false);
+        }
+        return;
+    }
+
+    // Already up (and not fading back out) — nothing to do.
+    if (g_hud_notification.type == HudNotificationType::SalvageCarrier
+        && !g_hud_notification.fade_start.valid()) {
+        return;
+    }
+    // Yield to any other notification owning the slot; reclaim once it clears.
+    if (g_hud_notification.type != HudNotificationType::None
+        && g_hud_notification.type != HudNotificationType::SalvageCarrier) {
+        return;
+    }
+    hud_notification_show(kSalvageCarrierNotificationText, -1,
+        HudNotificationType::SalvageCarrier, false);
+}
+
 // Drop a queued player into freelook spectate when the server has flagged it.
 void hud_pit_queue_auto_spectate() {
     if (rf::is_server) return;
@@ -1812,13 +1922,14 @@ void multi_hud_render_local_player_spectators() {
         int x = 10;
         if (multi_is_team_game_type()) {
             x += box_x + box_w;
-            if (rf::multi_get_game_type() == rf::NG_TYPE_CTF) {
-                const bool has_flag = rf::multi_ctf_get_blue_flag_player() == rf::local_player
-                    || rf::multi_ctf_get_red_flag_player() == rf::local_player;
-                if (has_flag) {
-                    constexpr int flag_and_space_w = 111;
-                    x += flag_and_space_w;
-                }
+            // Clear the big carrier flag icon when it is on screen.
+            const bool has_flag = game_type == rf::NG_TYPE_CTF
+                ? (rf::multi_ctf_get_blue_flag_player() == rf::local_player
+                    || rf::multi_ctf_get_red_flag_player() == rf::local_player)
+                : salvage_player_is_carrier(rf::local_player);
+            if (has_flag) {
+                constexpr int flag_and_space_w = 111;
+                x += flag_and_space_w;
             }
         }
         const int y = rf::gr::clip_height() - (g_alpine_game_config.big_hud ? 30 : 20);
@@ -1909,6 +2020,7 @@ CodeInjection multi_hud_render_patch{
 
         hud_ready_prompt_ensure();
         hud_pit_queue_ensure();
+        hud_salvage_carrier_ensure();
         hud_render_notification();
         hud_render_big_notification();
 

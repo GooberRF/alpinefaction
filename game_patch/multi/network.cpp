@@ -31,6 +31,8 @@
 #include "alpine_packets.h"
 #include "server.h"
 #include "server_internal.h"
+#include "salvage.h"
+#include "bagman.h"
 #include "sprays.h"
 #include "vote_client.h"
 #include "bots/bot_chat_manager.h"
@@ -259,7 +261,8 @@ enum packet_type : uint8_t {
     af_server_bot_control  = 0x5F,
     af_bagman_state        = 0x60,
     af_pit_roster          = 0x61,
-    af_gungame_order       = 0x62
+    af_gungame_order       = 0x62,
+    af_salvage_state       = 0x63
 };
 
 // client -> server
@@ -347,7 +350,8 @@ std::array g_client_side_packet_whitelist{
     af_server_bot_control,
     af_bagman_state,
     af_pit_roster,
-    af_gungame_order
+    af_gungame_order,
+    af_salvage_state
 };
 // clang-format on
 
@@ -2538,11 +2542,15 @@ FunHook<void()> multi_stop_hook{
         mutators_set_no_clip_weapon(-1); // restore any server weapon-table overrides
         vote_client_reset(); // drop the cached vote options and active vote state
         vote_panel_reset(); // drop the vote form, which describes the server being left
+        clear_pending_rotation_preserve(); // server side: no rotation carry survives a session
+        af_reset_session_overrides_snapshot();
         g_local_player_spectators.clear();
         g_remote_server_cfg_popup.reset();
         set_local_pre_match_active(false); // clear pre-match state when leaving
         multi_hud_reset_gametype_help(); // show gametype help when joining a server
         reset_local_pending_game_type(); // clear pending game type when leaving
+        salvage_on_multi_shutdown(); // put the flag_red item class back to items.tbl
+        bagman_on_multi_shutdown();  // put the amp aura bitmap back to its stock value
         if (rf::local_player) {
             PlayerAdditionalData* const player_add_data =
                 static_cast<PlayerAdditionalData*>(rf::local_player);

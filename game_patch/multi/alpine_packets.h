@@ -42,6 +42,7 @@ enum class af_packet_type : uint8_t
     af_bagman_state = 0x60,             // Alpine 1.4
     af_pit_roster = 0x61,               // Alpine 1.4
     af_gungame_order = 0x62,            // Alpine 1.4
+    af_salvage_state = 0x63,            // Alpine 1.4
 };
 
 struct af_ping_location_req_packet
@@ -88,7 +89,7 @@ enum class af_client_req_type : uint8_t
     af_req_character = 0x3,
     af_req_ready = 0x4,        // Alpine 1.4 (1 byte: action 0=unready,1=ready,2=toggle)
     af_req_pit_queue = 0x5,    // Alpine 1.4 (1 byte: action 0=leave,1=join,2=toggle)
-    af_req_vote_call = 0x6,    // Alpine 1.4 (variable, see af_build_vote_call_payload)
+    af_req_vote_call = 0x6,    // Alpine 1.4 (variable, see af_send_vote_call)
     af_req_vote_cast = 0x7,    // Alpine 1.4 (1 byte: 0 = no, 1 = yes)
     af_req_vote_cancel = 0x8,  // Alpine 1.4 (no additional data)
     af_req_vote_options = 0x9, // Alpine 1.4 (5 bytes: flags + known_generation)
@@ -218,6 +219,9 @@ enum af_vote_server_flags : uint8_t
     // vote_level.only_allow_gametype_prefix is on, so each level's
     // valid_gametype_mask actually restricts something and the UI may say so.
     AF_VOTE_SERVER_FLAG_GAMETYPE_PREFIX = 1 << 0,
+    // The server reads the trailing "preserve" byte on rotation vote calls, so
+    // the UI may offer the option.
+    AF_VOTE_SERVER_FLAG_ROTATION_PRESERVE = 1 << 1,
 };
 
 struct HandicapPayload
@@ -475,6 +479,23 @@ struct af_bagman_state_packet
     int16_t  carrier_score;
 };
 
+struct af_salvage_state_packet
+{
+    RF_GamePacketHeader header;
+    uint8_t state;
+    uint8_t carrier_player_id; // 0xFF = nobody
+    uint16_t time_left_ms;     // Dropped: return timer; Delayed: spawn timer; else 0
+    uint16_t red_caps;
+    uint16_t blue_caps;
+    float spawn_x;
+    float spawn_y;
+    float spawn_z;
+    float flag_x;
+    float flag_y;
+    float flag_z;
+};
+static_assert(sizeof(af_salvage_state_packet) == 35);
+
 struct af_koth_hill_captured_packet
 {
     RF_GamePacketHeader header;
@@ -728,6 +749,7 @@ struct AfVoteCallParams
     uint8_t gametype = af_vote_gametype_none;
     uint8_t extend_minutes = af_vote_extend_default_minutes;
     std::vector<VoteMutatorInput> mutators;
+    bool preserve = true;
 };
 
 bool af_process_packet(const void* data, int len, const rf::NetAddr& addr, rf::Player* player);
@@ -768,12 +790,16 @@ void af_broadcast_pit_roster(const std::vector<af_pit_roster_entry>& roster);
 void af_process_pit_roster_packet(const void* data, size_t len, const rf::NetAddr&);
 void af_send_gungame_order(rf::Player* player, const std::vector<af_gungame_order_entry>& order);
 void af_process_gungame_order_packet(const void* data, size_t len, const rf::NetAddr&);
+void af_send_salvage_state_packet(rf::Player* player);
+void af_send_salvage_state_packet_to_all();
+void af_process_salvage_state_packet(const void* data, size_t len, const rf::NetAddr&);
 void af_send_koth_hill_captured_packet_to_all(uint8_t hill_uid, HillOwner owner, const std::vector<uint8_t>& new_owner_player_ids);
 static void af_process_koth_hill_captured_packet(const void* data, size_t len, const rf::NetAddr&);
 void af_send_just_died_info_packet(rf::Player* to_player, bool respawn_allowed, bool force_respawn, uint16_t spawn_delay);
 static void af_process_just_died_info_packet(const void* data, size_t len, const rf::NetAddr& addr);
 void af_send_server_info_packet(rf::Player* player);
 void af_send_server_info_packet_to_all();
+void af_reset_session_overrides_snapshot();
 static void af_process_server_info_packet(const void* data, size_t len, const rf::NetAddr&);
 void af_send_spectate_start_packet(const rf::Player* spectatee);
 void af_process_spectate_start_packet(const void* data, size_t len, const rf::NetAddr&);

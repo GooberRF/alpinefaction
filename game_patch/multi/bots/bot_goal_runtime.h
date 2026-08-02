@@ -12,6 +12,7 @@ bool bot_goal_runtime_abort_crater_goal();
 bool bot_goal_runtime_abort_shatter_goal();
 bool bot_goal_runtime_abort_ctf_goal();
 bool bot_goal_runtime_abort_bagman_goal();
+bool bot_goal_runtime_abort_salvage_goal();
 bool bot_goal_runtime_abort_control_point_goal();
 
 bool bot_goal_runtime_route_to_waypoint_target_with_recovery(

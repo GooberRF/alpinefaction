@@ -349,7 +349,9 @@ bool parse_vote_options_blob(const uint8_t* data, size_t len, VoteOptionsData& o
 
     VoteOptionsData parsed;
     parsed.enabled_vote_mask = r.u32();
-    parsed.gametype_prefix_restricted = (r.u8() & AF_VOTE_SERVER_FLAG_GAMETYPE_PREFIX) != 0;
+    const uint8_t server_flags = r.u8();
+    parsed.gametype_prefix_restricted = (server_flags & AF_VOTE_SERVER_FLAG_GAMETYPE_PREFIX) != 0;
+    parsed.rotation_preserve_supported = (server_flags & AF_VOTE_SERVER_FLAG_ROTATION_PRESERVE) != 0;
 
     // Game type entries are length-prefixed, so fields a newer server appends
     // inside one are skipped instead of desyncing everything behind it.

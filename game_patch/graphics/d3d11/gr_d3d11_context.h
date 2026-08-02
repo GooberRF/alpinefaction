@@ -51,7 +51,13 @@ namespace gr::d3d11
     public:
         ViewProjTransformBuffer(ID3D11Device* device);
 
+        // Builds the view matrix from rf::gr::eye_pos / rf::gr::eye_matrix as they
+        // stand right now. Correct while the engine is mid-scene; end-of-frame
+        // passes have to use the explicit-camera overload instead, because
+        // gr_setup_3d has re-pointed those globals by then.
         void update(const Projection& proj, ID3D11DeviceContext* device_context);
+        void update(const Projection& proj, const rf::Vector3& eye_pos, const rf::Matrix3& eye_orient,
+            ID3D11DeviceContext* device_context);
 
         operator ID3D11Buffer*() const
         {
@@ -410,6 +416,17 @@ namespace gr::d3d11
         {
             projection_ = proj;
             view_proj_transform_cbuffer_.update(projection_, device_context_);
+        }
+
+        // Same, but with the camera passed in rather than read from the engine
+        // globals. Needed by anything that draws world geometry after the scene
+        // phase: gr_setup_3d overwrites rf::gr::eye_pos / eye_matrix several more
+        // times before the frame is presented, so "restore the projection" alone
+        // still leaves the view matrix pointing at a different camera.
+        void update_view_proj_transform(Projection proj, const rf::Vector3& eye_pos, const rf::Matrix3& eye_orient)
+        {
+            projection_ = proj;
+            view_proj_transform_cbuffer_.update(projection_, eye_pos, eye_orient, device_context_);
         }
 
         void update_per_frame_constants()

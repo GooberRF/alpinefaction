@@ -552,7 +552,7 @@ static bool does_level_match_gametype_prefix(const std::string& level_name, rf::
         return true;
     }
 
-    if (game_type == rf::NG_TYPE_CTF && matches_prefix("pctf")) {
+    if ((game_type == rf::NG_TYPE_CTF || game_type == rf::NG_TYPE_SAL) && matches_prefix("pctf")) {
         return true;
     }
 
@@ -620,11 +620,10 @@ static bool is_level_valid_for_vote_gametype(const std::string& level_name, rf::
 // prefix-match validity so a client can offer an opt-in "filter by gametype" view
 // even on a server that doesn't enforce it. Whether the server actually enforces
 // the rules is advertised separately via AF_VOTE_SERVER_FLAG_GAMETYPE_PREFIX.
-// 32 bits so future game types beyond NG_TYPE_GG still fit.
 static uint32_t build_level_valid_gametype_mask(const std::string& level_name)
 {
     uint32_t mask = 0;
-    for (int i = 0; i <= static_cast<int>(rf::NG_TYPE_GG); ++i) {
+    for (int i = 0; i <= static_cast<int>(rf::NG_TYPE_SAL); ++i) {
         if (does_level_match_gametype_prefix(level_name, static_cast<rf::NetGameType>(i))) {
             mask |= (1u << i);
         }
@@ -1123,8 +1122,73 @@ struct VoteLevel : public Vote
     }
 };
 
-struct VoteRestart : public Vote
+// Shared by the four rotation votes (restart / next / random / previous), which
+// can carry the session's vote-set rules onto the level they load.
+struct VoteRotation : public Vote
 {
+    bool m_preserve;
+    std::vector<MutatorDeclaration> m_carried_mutators;
+    std::optional<rf::NetGameType> m_carried_gametype;
+    std::string m_carried_labels;
+
+    explicit VoteRotation(bool preserve) : m_preserve(preserve) {}
+
+    [[nodiscard]] bool carries_anything() const
+    {
+        return !m_carried_mutators.empty() || m_carried_gametype.has_value();
+    }
+
+    bool validate([[maybe_unused]] rf::Player* source) override
+    {
+        // Preserve means "keep the overrides a vote set for this session", not
+        // "propagate whatever is running": with no session override in play it is
+        // a no-op, so a default-checked Next vote cannot stamp this level's
+        // configured game type onto the operator's next rotation entry.
+        if (!m_preserve || !g_manual_rules_override) {
+            return true;
+        }
+
+        const auto& active = g_alpine_server_config_active_rules;
+        m_carried_mutators = active.mutators.declarations;
+        // Only carry a game type that actually deviates from what this level runs
+        // on its own; otherwise the target level's own configured type must win.
+        if (active.game_type != vote_natural_rules_for_level(rf::level.filename.c_str()).game_type) {
+            m_carried_gametype = active.game_type;
+        }
+        m_carried_labels = mutators_join_labels(m_carried_mutators);
+        return true;
+    }
+
+    [[nodiscard]] std::string carry_suffix() const
+    {
+        if (!carries_anything()) {
+            return {};
+        }
+        return build_rules_title_suffix(m_carried_gametype, m_carried_labels);
+    }
+
+    // Rotation loads advance the cursor through a non-manual level change, which
+    // ignores g_manual_rules_override, so what is carried goes into the one-shot
+    // stash apply_rules_for_current_level consumes.
+    void stash_carry() const
+    {
+        if (!carries_anything()) {
+            return;
+        }
+        PendingRotationPreserve pending;
+        pending.declarations = m_carried_mutators;
+        pending.gametype = m_carried_gametype;
+        set_pending_rotation_preserve(std::move(pending));
+
+        if (m_carried_gametype) {
+            set_upcoming_game_type(*m_carried_gametype, UpcomingGameTypeSelection::ExplicitRequest);
+        }
+    }
+};
+
+struct VoteRestart : public VoteRotation
+{
+    using VoteRotation::VoteRotation;
 
     VoteType get_type() const override
     {
@@ -1133,17 +1197,27 @@ struct VoteRestart : public Vote
 
     [[nodiscard]] std::string get_title() const override
     {
-        return "RESTART LEVEL";
+        return std::format("RESTART LEVEL{}", carry_suffix());
     }
 
     [[nodiscard]] std::string get_outcome_text(bool accepted) const override
     {
-        return accepted ? "Vote passed: restarting level" : Vote::get_outcome_text(false);
+        if (!accepted) {
+            return Vote::get_outcome_text(false);
+        }
+        return std::format("Vote passed: restarting level{}", carry_suffix());
     }
 
     void on_accepted() override
     {
-        restart_current_level();
+        // restart_current_level() round-trips the session override itself, so the
+        // stash is not needed here — only the configured-rules reload is new.
+        if (m_preserve) {
+            restart_current_level();
+        }
+        else {
+            restart_current_level_configured();
+        }
     }
 
     [[nodiscard]] const VoteConfig& get_config() const override
@@ -1152,8 +1226,10 @@ struct VoteRestart : public Vote
     }
 };
 
-struct VoteNext : public Vote
+struct VoteNext : public VoteRotation
 {
+    using VoteRotation::VoteRotation;
+
     VoteType get_type() const override
     {
         return VoteType::Next;
@@ -1161,16 +1237,20 @@ struct VoteNext : public Vote
 
     [[nodiscard]] std::string get_title() const override
     {
-        return "LOAD NEXT LEVEL";
+        return std::format("LOAD NEXT LEVEL{}", carry_suffix());
     }
 
     [[nodiscard]] std::string get_outcome_text(bool accepted) const override
     {
-        return accepted ? "Vote passed: loading next level" : Vote::get_outcome_text(false);
+        if (!accepted) {
+            return Vote::get_outcome_text(false);
+        }
+        return std::format("Vote passed: loading next level{}", carry_suffix());
     }
 
     void on_accepted() override
     {
+        stash_carry();
         load_next_level();
     }
 
@@ -1180,8 +1260,10 @@ struct VoteNext : public Vote
     }
 };
 
-struct VoteRandom : public Vote
+struct VoteRandom : public VoteRotation
 {
+    using VoteRotation::VoteRotation;
+
     VoteType get_type() const override
     {
         return VoteType::Random;
@@ -1189,17 +1271,20 @@ struct VoteRandom : public Vote
 
     [[nodiscard]] std::string get_title() const override
     {
-        return "LOAD RANDOM LEVEL";
+        return std::format("LOAD RANDOM LEVEL{}", carry_suffix());
     }
 
     [[nodiscard]] std::string get_outcome_text(bool accepted) const override
     {
-        return accepted ? "Vote passed: loading random level from rotation"
-                        : Vote::get_outcome_text(false);
+        if (!accepted) {
+            return Vote::get_outcome_text(false);
+        }
+        return std::format("Vote passed: loading random level from rotation{}", carry_suffix());
     }
 
     void on_accepted() override
     {
+        stash_carry();
         // if dynamic rotation is on, just load the next level
         g_alpine_server_config.dynamic_rotation ? load_next_level() : load_rand_level();
     }
@@ -1210,8 +1295,10 @@ struct VoteRandom : public Vote
     }
 };
 
-struct VotePrevious : public Vote
+struct VotePrevious : public VoteRotation
 {
+    using VoteRotation::VoteRotation;
+
     VoteType get_type() const override
     {
         return VoteType::Previous;
@@ -1219,16 +1306,20 @@ struct VotePrevious : public Vote
 
     [[nodiscard]] std::string get_title() const override
     {
-        return "LOAD PREV LEVEL";
+        return std::format("LOAD PREV LEVEL{}", carry_suffix());
     }
 
     [[nodiscard]] std::string get_outcome_text(bool accepted) const override
     {
-        return accepted ? "Vote passed: loading previous level" : Vote::get_outcome_text(false);
+        if (!accepted) {
+            return Vote::get_outcome_text(false);
+        }
+        return std::format("Vote passed: loading previous level{}", carry_suffix());
     }
 
     void on_accepted() override
     {
+        stash_carry();
         load_prev_level();
     }
 
@@ -1624,12 +1715,13 @@ static void build_vote_options_blob(std::vector<uint8_t>& blob)
     if (g_alpine_server_config.vote_level.only_allow_gametype_prefix) {
         server_flags |= AF_VOTE_SERVER_FLAG_GAMETYPE_PREFIX;
     }
+    server_flags |= AF_VOTE_SERVER_FLAG_ROTATION_PRESERVE;
     blob_u8(blob, server_flags);
 
     // Game types. Length-prefixed per entry (u16, not u8: display_name alone can be
     // 255 bytes plus the fixed fields), so per-gametype data can be appended inside
     // the entry later without desyncing an older client.
-    const int gametype_count = static_cast<int>(rf::NG_TYPE_GG) + 1;
+    const int gametype_count = static_cast<int>(rf::NG_TYPE_SAL) + 1;
     blob_u8(blob, static_cast<uint8_t>(gametype_count));
     for (int i = 0; i < gametype_count; ++i) {
         const auto game_type = static_cast<rf::NetGameType>(i);
@@ -1887,7 +1979,7 @@ static bool resolve_vote_gametype(uint8_t wire_value, rf::Player* sender, std::o
         out = std::nullopt;
         return true;
     }
-    if (wire_value > static_cast<uint8_t>(rf::NG_TYPE_GG)) {
+    if (wire_value > static_cast<uint8_t>(rf::NG_TYPE_SAL)) {
         send_vote_reject_msg("Cannot start vote: this server does not support that game type.", sender);
         return false;
     }
@@ -1972,16 +2064,16 @@ void handle_vote_call_packet(rf::Player* sender, AfVoteCallParams&& params)
             g_vote_mgr.StartVote<VoteExtend>(sender, static_cast<int>(params.extend_minutes));
             break;
         case AfVoteType::Restart:
-            g_vote_mgr.StartVote<VoteRestart>(sender);
+            g_vote_mgr.StartVote<VoteRestart>(sender, params.preserve);
             break;
         case AfVoteType::Next:
-            g_vote_mgr.StartVote<VoteNext>(sender);
+            g_vote_mgr.StartVote<VoteNext>(sender, params.preserve);
             break;
         case AfVoteType::Random:
-            g_vote_mgr.StartVote<VoteRandom>(sender);
+            g_vote_mgr.StartVote<VoteRandom>(sender, params.preserve);
             break;
         case AfVoteType::Previous:
-            g_vote_mgr.StartVote<VotePrevious>(sender);
+            g_vote_mgr.StartVote<VotePrevious>(sender, params.preserve);
             break;
         case AfVoteType::CancelMatch:
             g_vote_mgr.StartVote<VoteCancelMatch>(sender);

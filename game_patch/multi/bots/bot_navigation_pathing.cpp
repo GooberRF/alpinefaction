@@ -1047,6 +1047,11 @@ void reset_client_bot_state()
     g_client_bot_state.control_point_route_fail_timer.invalidate();
     g_client_bot_state.control_point_patrol_waypoint = 0;
     g_client_bot_state.control_point_patrol_timer.invalidate();
+    g_client_bot_state.salvage_stage_hold_pos = {};
+    g_client_bot_state.salvage_stage_orbit_timer.invalidate();
+    g_client_bot_state.salvage_stage_orbit_left = false;
+    g_client_bot_state.salvage_stage_route_fails = 0;
+    g_client_bot_state.salvage_stage_given_up = false;
     g_client_bot_state.firing.wants_fire = false;
     g_client_bot_state.firing.synthetic_primary_fire_down = false;
     g_client_bot_state.firing.synthetic_secondary_fire_down = false;
@@ -2082,6 +2087,7 @@ bool update_waypoint_target_towards(
             || bot_goal_is_control_point_objective(g_client_bot_state.active_goal)
             || bot_goal_is_ctf_objective(g_client_bot_state.active_goal)
             || bot_goal_is_bagman_objective(g_client_bot_state.active_goal)
+            || bot_goal_is_salvage_objective(g_client_bot_state.active_goal)
             || g_client_bot_state.active_goal == BotGoalType::activate_bridge
             || g_client_bot_state.active_goal == BotGoalType::create_crater
             || g_client_bot_state.active_goal == BotGoalType::shatter_glass)) {
@@ -2270,6 +2276,7 @@ bool update_waypoint_target_towards(
             || bot_goal_is_item_collection(g_client_bot_state.active_goal)
             || bot_goal_is_ctf_objective(g_client_bot_state.active_goal)
             || bot_goal_is_bagman_objective(g_client_bot_state.active_goal)
+            || bot_goal_is_salvage_objective(g_client_bot_state.active_goal)
             || g_client_bot_state.active_goal == BotGoalType::activate_bridge
             || g_client_bot_state.active_goal == BotGoalType::create_crater
             || g_client_bot_state.active_goal == BotGoalType::shatter_glass;

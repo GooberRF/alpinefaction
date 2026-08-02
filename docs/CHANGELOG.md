@@ -15,6 +15,7 @@ Version 1.4.0 (Lupin): Not yet released
   - Pit (`PIT`)
   - Wipeout (`WO`)
   - Gun Game (`GG`)
+  - Salvage (`SAL`)
 - Add sprays with bindable `Spray` control
   - `cl_sprays` console command to toggle local display and dedicated server `[sprays]` config section
   - `spray` console command to select spray, and in-game spray picker in advanced options
@@ -32,7 +33,7 @@ Version 1.4.0 (Lupin): Not yet released
   - Jetpacks
 - Rework multiplayer voting to use a GUI-based system instead of chat commands
   - Servers describe their votable levels, game types, and mutator options to clients
-  - `vote level` and `vote match` can now select a game type and any number of mutators (with their options) for the voted level
+  - `Level` and `Match` can now select a game type and any number of mutators (with their options) for the voted level
   - Add a vote panel for calling any vote the server allows, opened during gameplay with the bindable `Call Vote Menu` control (`F4` by default)
   - Vote HUD notification now shows live tally, time remaining, and whether you have already voted
 
@@ -46,6 +47,7 @@ Version 1.4.0 (Lupin): Not yet released
 - Make clock clutter objects correctly display the current local real world time
 - Add support for round-based game types
 - Add dedicated server config fields `max_rounds`, `round_time`, `post_round_time`, and `intermission_time`
+- Add dedicated server config fields `sal_cap_limit`, `sal_flag_spawn_delay`, `sal_flag_capture_respawn_delay`, and `sal_flag_return_time` for the Salvage game type
 - Add HUD notification messages via `AF_SERVER_MSG_TYPE_HUD_NOTIFICATION` server message type
 - Add server-initiated HUD countdown via `AF_SERVER_MSG_TYPE_ROUND_COUNTDOWN` server message type
 - Add server-initiated custom sound play via `AF_SERVER_MSG_TYPE_PLAY_CUSTOM_SOUND` server message type
