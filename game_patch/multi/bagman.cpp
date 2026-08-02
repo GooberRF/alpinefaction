@@ -812,6 +812,10 @@ bool bagman_query_carrier_bag_outline(
 // d3d11 outline renderer (which compares this mesh's lod against the per-frame
 // cached carrier-bag lod), so no MRF flag is needed when rendering it — that
 // keeps the outline working even when the carrier is portal-culled.
+//
+// The entity_render injection that draws this (and the jetpack attachment) now
+// lives in gametype.cpp as carrier_attachment_render_patch, shared by every
+// gametype that hangs something off an entity.
 rf::VMesh* bagman_get_carrier_mesh()
 {
     return g_bag_carrier_mesh;

@@ -6,6 +6,7 @@
 #include "hud.h"
 #include "hud_internal.h"
 #include "../misc/vote_panel.h"
+#include "../multi/jetpack.h"
 #include "multi_scoreboard.h"
 #include "multi_spectate.h"
 #include "remote_server_cfg_ui.h"
@@ -410,6 +411,11 @@ CallHook hud_msg_render_gr_get_font_height_hook{
 
 void hud_render_00437BC0()
 {
+    // Single player jetpack HUD. Multiplayer draws it from multi_hud_render.
+    if (!rf::is_multi) {
+        jetpack_render_hud();
+    }
+
     if (!rf::is_multi || !rf::local_player) {
         return;
     }

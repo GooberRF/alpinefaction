@@ -29,6 +29,7 @@
 #include "kill.h"
 #include "kill_attribution.h"
 #include "bagman.h"
+#include "jetpack.h"
 #include "pit.h"
 #include "salvage.h"
 #include "vote_client.h"
@@ -637,6 +638,12 @@ void serialize_payload(const VoteOptionsReqPayload& payload, std::byte* buf, siz
     offset += sizeof(payload.known_generation);
 }
 
+// af_req_jetpack_state
+void serialize_payload(const JetpackStateReqPayload& payload, std::byte* buf, size_t& offset)
+{
+    buf[offset++] = static_cast<std::byte>(payload.on);
+}
+
 // af_sreq_ready_prompt
 void serialize_payload(const ReadyPromptPayload& payload, std::byte* buf, size_t& offset)
 {
@@ -666,6 +673,14 @@ void serialize_payload(const ShouldGibPayload& payload, std::byte* buf, size_t& 
 
 // af_sreq_entity_on_fire
 void serialize_payload(const EntityOnFirePayload& payload, std::byte* buf, size_t& offset)
+{
+    std::memcpy(buf + offset, &payload.obj_handle, sizeof(payload.obj_handle));
+    offset += sizeof(payload.obj_handle);
+    buf[offset++] = static_cast<std::byte>(payload.on);
+}
+
+// af_sreq_jetpack_state
+void serialize_payload(const EntityJetpackPayload& payload, std::byte* buf, size_t& offset)
 {
     std::memcpy(buf + offset, &payload.obj_handle, sizeof(payload.obj_handle));
     offset += sizeof(payload.obj_handle);
@@ -793,6 +808,23 @@ void af_send_ready_request(uint8_t action)
     packet.header.size = sizeof(uint8_t) + sizeof(uint8_t); // req_type + action
     packet.req_type = af_client_req_type::af_req_ready;
     packet.payload = ReadyReqPayload{action};
+
+    af_send_client_req_packet(packet, true); // reliable
+}
+
+// Jetpacks mutator: report that the local player's thrusters turned on or off.
+// Movement is clientside, so this is only for the visuals/audio on other clients.
+void af_send_jetpack_state_request(bool on)
+{
+    if (!rf::is_multi || rf::is_server) {
+        return;
+    }
+
+    af_client_req_packet packet{};
+    packet.header.type = static_cast<uint8_t>(af_packet_type::af_client_req);
+    packet.header.size = sizeof(uint8_t) + sizeof(JetpackStateReqPayload);
+    packet.req_type = af_client_req_type::af_req_jetpack_state;
+    packet.payload = JetpackStateReqPayload{static_cast<uint8_t>(on ? 1 : 0)};
 
     af_send_client_req_packet(packet, true); // reliable
 }
@@ -1518,6 +1550,18 @@ static void af_process_client_req_packet(const void* data, size_t len, const rf:
             sprays_handle_spray_request(player, texture_id, spray_pos, spray_normal);
             break;
         }
+        case af_client_req_type::af_req_jetpack_state: {
+            if (remaining < sizeof(JetpackStateReqPayload)) {
+                xlog::warn("af_process_client_req_packet: JetpackState payload too short");
+                return;
+            }
+            if (!g_alpine_server_config_active_rules.mutators.jetpacks_enabled) {
+                return;
+            }
+            const bool on = bytes[offset] != 0;
+            jetpack_server_on_state_request(player, on);
+            break;
+        }
         case af_client_req_type::af_req_ready: {
             if (remaining < sizeof(uint8_t)) {
                 xlog::warn("af_process_client_req_packet: Ready payload too short");
@@ -1695,6 +1739,41 @@ void af_send_entity_on_fire(uint32_t obj_handle, bool on)
     packet.payload = EntityOnFirePayload{obj_handle, static_cast<uint8_t>(on ? 1 : 0)};
 
     for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
+        if (is_player_minimum_af_client_version(&player, 1, 4, 0)) {
+            af_send_server_req_packet(packet, &player);
+        }
+    }
+}
+
+// Jetpacks mutator: relay a player's thrust state to everyone else.
+// The owner is skipped because it applies its own effects locally.
+void af_send_jetpack_state(uint32_t obj_handle, bool on)
+{
+    if (!rf::is_server) {
+        return;
+    }
+
+    af_server_req_packet packet{};
+    packet.header.type = static_cast<uint8_t>(af_packet_type::af_server_req);
+    packet.header.size = sizeof(uint8_t) + sizeof(EntityJetpackPayload);
+    packet.req_type = af_server_req_type::af_sreq_jetpack_state;
+    packet.payload = EntityJetpackPayload{obj_handle, static_cast<uint8_t>(on ? 1 : 0)};
+
+    for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
+        if (static_cast<uint32_t>(player.entity_handle) == obj_handle) {
+            continue;
+        }
+        // Bots and browsers have no purpose for presentation metadata,
+        // save the packets.
+        if (!player.net_data || player.is_bot || player.is_browser) {
+            continue;
+        }
+        // state 2 is "in game"; stock send_obj_kill_packet gates on it too (0x0047ED9B).
+        // A still-joining client has no entity to hang the thruster on; it picks the
+        // stream up at the owner's next state change.
+        if (player.net_data->state != 2) {
+            continue;
+        }
         if (is_player_minimum_af_client_version(&player, 1, 4, 0)) {
             af_send_server_req_packet(packet, &player);
         }
@@ -2330,6 +2409,36 @@ static void af_process_server_req_packet(const void* data, size_t len, const rf:
             }
 
             mutators_apply_entity_on_fire(entity, payload.on != 0);
+            break;
+        }
+        case af_server_req_type::af_sreq_jetpack_state: {
+            if (remaining < sizeof(EntityJetpackPayload)) {
+                xlog::warn("af_process_server_req_packet: JetpackState payload too short");
+                return;
+            }
+
+            EntityJetpackPayload payload{};
+            std::memcpy(&payload.obj_handle, bytes + offset, sizeof(payload.obj_handle));
+            payload.on = bytes[offset + sizeof(payload.obj_handle)];
+
+            rf::Object* remote_object = rf::obj_from_remote_handle(payload.obj_handle);
+            if (!remote_object) {
+                xlog::debug("af_process_server_req_packet: JetpackState invalid remote handle {:x}", payload.obj_handle);
+                return;
+            }
+
+            rf::Entity* entity = rf::entity_from_handle(remote_object->handle);
+            if (!entity) {
+                xlog::debug("af_process_server_req_packet: JetpackState invalid entity handle {:x}", payload.obj_handle);
+                return;
+            }
+
+            // The local player drives its own effects from its own input.
+            if (rf::local_player && entity->handle == rf::local_player->entity_handle) {
+                return;
+            }
+
+            jetpack_apply_entity_thrust(entity, payload.on != 0);
             break;
         }
         case af_server_req_type::af_sreq_vote_state: {
@@ -3194,6 +3303,10 @@ static void build_af_server_info_packet(af_server_info_packet& pkt)
         af |= af_server_info_flags::SIF_RELOAD_ON_KILL;
     if (g_alpine_server_config_active_rules.mutators.super_drain_enabled)
         af |= af_server_info_flags::SIF_SUPER_DRAIN;
+    if (g_alpine_server_config_active_rules.mutators.jetpacks_enabled)
+        af |= af_server_info_flags::SIF_JETPACKS;
+    // Must stay immediately ahead of the signal_cfg_changed check below, which
+    // consumes the flag this sets.
     {
         std::string session_overrides;
         print_session_overrides(session_overrides);
@@ -3296,6 +3409,7 @@ static void decode_af_server_info_flags(const af_server_info_packet& pkt, Alpine
     server_info.allow_sprays = (pkt.af_flags & af_server_info_flags::SIF_ALLOW_SPRAYS) != 0;
     server_info.reload_on_kill = (pkt.af_flags & af_server_info_flags::SIF_RELOAD_ON_KILL) != 0;
     server_info.super_drain = (pkt.af_flags & af_server_info_flags::SIF_SUPER_DRAIN) != 0;
+    server_info.jetpacks = (pkt.af_flags & af_server_info_flags::SIF_JETPACKS) != 0;
 }
 
 // Apply af_server_info_packet flags to the local server info (for listen server host)

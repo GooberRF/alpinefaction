@@ -264,6 +264,12 @@ static void apply_gibbing(AlpineServerConfigRules& r, const toml::table& /*opts*
     r.gibbing.enabled = true;
 }
 
+// Jetpacks: every player wears a jetpack and can thrust upward in midair.
+static void apply_jetpacks(AlpineServerConfigRules& r, const toml::table& /*opts*/)
+{
+    r.mutators.jetpacks_enabled = true;
+}
+
 // ============================================================================
 // Registry + application order
 // ============================================================================
@@ -316,11 +322,13 @@ static const MutatorDef MUTATORS[] = {
     {MutatorId::BigCraters, "bigcraters", "Big Craters", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_big_craters, nullptr, 0},
     {MutatorId::FlamingEnemies, "flamingenemies", "Flaming Enemies", 4, &apply_flaming_enemies, nullptr, 0},
     {MutatorId::Gibbing, "gibbing", "Gibbing", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_gibbing, nullptr, 0},
+    {MutatorId::Jetpacks, "jetpacks", "Jetpacks", 4, &apply_jetpacks, nullptr, 0},
 };
 
 // Hardcoded order in which simultaneously-active mutators are applied. Later
 // entries win where they overlap.
 static const MutatorId MUTATOR_APPLY_ORDER[] = {
+    MutatorId::Jetpacks,
     MutatorId::Gibbing,
     MutatorId::FlamingEnemies,
     MutatorId::BigCraters,

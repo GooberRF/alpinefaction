@@ -8,6 +8,7 @@
 #include <common/version/version.h>
 #include "gametype.h"
 #include "bagman.h"
+#include "jetpack.h"
 #include "rounds.h"
 #include "pit.h"
 #include "wipeout.h"
@@ -2045,6 +2046,7 @@ CodeInjection multi_level_init_gametypes_injection{
         rounds_level_init();
         hill_mode_level_init();
         bagman_level_init();
+        jetpack_level_init();
         salvage_level_init();
         pit_level_init();
         wipeout_level_init();
@@ -2199,9 +2201,17 @@ CodeInjection process_team_score_patch{
 CodeInjection carrier_attachment_render_patch{
     0x00421C0B,
     [](auto& regs) {
-        if (!rf::is_multi || !gt_is_bagman_any()) return;
         auto* ep = reinterpret_cast<rf::Entity*>(regs.esi.value);
         if (!ep) return;
+
+        // Shared entity_render attachment point for jetpacks. Deliberately ahead
+        // of the bagman gates below and not gated on rf::is_multi: the Jetpacks
+        // mutator applies to every gametype, and the single player `jetpack`
+        // command uses this same hook. jetpack_render_attachment() does its own
+        // active/first-person checks and yields to the bag on the carrier.
+        jetpack_render_attachment(ep);
+
+        if (!rf::is_multi || !gt_is_bagman_any()) return;
 
         // The hooked entity must be the carrier: the query derives its transform
         // from the carrier entity's $prop_flag.
@@ -2320,6 +2330,9 @@ void gametype_do_patch()
 
     // bagman specific
     bagman_do_patch();
+
+    // jetpack specific (registers the single player `jetpack` console command)
+    jetpack_apply_patch();
 
     // salvage specific
     salvage_do_patch();

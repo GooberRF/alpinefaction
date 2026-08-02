@@ -270,6 +270,7 @@ add_packfile(alpinefaction.vpp
     images/dec_af_csp08.png
     images/dec_af_csp09.tga
     images/dec_af_csp10.tga
+    images/af-jetpack1skin1.tga
 
     fonts/biggerfont.vf
     fonts/regularfont.ttf
@@ -289,6 +290,7 @@ add_packfile(alpinefaction.vpp
     meshes/meatchunk4.v3m
     meshes/meatchunk5.v3m
     meshes/af_pickup-bag.v3m
+    meshes/af-jetpack1.v3m
     meshes/AFSALflag1.vfx
 
     standard_vs:${CMAKE_BINARY_DIR}/shaders/standard_vs.bin

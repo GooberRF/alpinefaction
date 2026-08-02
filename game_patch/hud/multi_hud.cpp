@@ -15,6 +15,7 @@
 #include "../multi/multi.h"
 #include "../multi/gametype.h"
 #include "../multi/bagman.h"
+#include "../multi/jetpack.h"
 #include "../multi/salvage.h"
 #include "../multi/wipeout.h"
 #include "../input/input.h"
@@ -2036,6 +2037,7 @@ CodeInjection multi_hud_render_patch{
         }
 
         multi_hud_render_killfeed();
+        jetpack_render_hud();
     }
 };
 

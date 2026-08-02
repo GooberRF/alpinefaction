@@ -1712,6 +1712,10 @@ CallHook<int(const rf::NetAddr*, std::byte*, size_t)> send_join_accept_packet_ho
         if (g_alpine_server_config_active_rules.mutators.super_drain_enabled) {
             ext_data.flags |= AlpineFactionJoinAcceptPacketExt::Flags::super_drain;
         }
+        // Jetpacks: the client owns the entire movement, so it has to know.
+        if (g_alpine_server_config_active_rules.mutators.jetpacks_enabled) {
+            ext_data.flags |= AlpineFactionJoinAcceptPacketExt::Flags::jetpacks;
+        }
         // AF 1.3+ clients: use footer-based format for forward compatibility
         // Older clients: use legacy raw struct (they don't know about the footer)
         bool use_footer = g_joining_client_version == ClientSoftware::AlpineFaction
@@ -1851,6 +1855,7 @@ CodeInjection process_join_accept_injection{
             server_info.match_mode = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::match_mode);
             server_info.reload_on_kill = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::reload_on_kill);
             server_info.super_drain = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::super_drain);
+            server_info.jetpacks = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::jetpacks);
             // featured_no_clip is intentionally not stored here, it's consumed inline below via mutators_set_no_clip_weapon.
 
             constexpr float default_fov = 90.0f;

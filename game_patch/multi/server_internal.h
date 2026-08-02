@@ -182,7 +182,7 @@ struct DamageNotificationConfig
 struct SprayConfig
 {
     bool enabled = true;
-    int cooldown_ms = 10000;
+    int cooldown_ms = 500;
 };
 
 struct CriticalHitsConfig
@@ -651,6 +651,9 @@ struct MutatorConfig
 
     // Flaming Enemies: sustained flamethrower fire damage sets players on fire.
     bool flaming_enemies_enabled = false;
+
+    // Jetpacks: every player wears a jetpack; holding jump while falling thrusts.
+    bool jetpacks_enabled = false;
 
     // Display only: human-readable names of the mutators applied to these rules.
     std::vector<std::string> active_labels;

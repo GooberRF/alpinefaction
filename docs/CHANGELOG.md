@@ -30,6 +30,7 @@ Version 1.4.0 (Lupin): Not yet released
   - Big Craters
   - Flaming Enemies
   - Gibbing
+  - Jetpacks
 - Rework multiplayer voting to use a GUI-based system instead of chat commands
   - Servers describe their votable levels, game types, and mutator options to clients
   - `Level` and `Match` can now select a game type and any number of mutators (with their options) for the voted level
@@ -54,6 +55,7 @@ Version 1.4.0 (Lupin): Not yet released
 - Add `Sort` options (by name or by UID, with an optional `Group by type` toggle) to the editor's Select Objects and Show/Hide Objects windows
 - Add `camera4` console command for static camera in single player
 - Add `camera5` console command for tripod (follow player) camera in single player
+- Add `jetpack` console command to toggle a jetpack for yourself in single player
 - Remove the redundant per-packet `select()` before each `net_send` and in the packet receive pump, reducing dedicated server network syscall overhead (and wineserver round trips on Linux)
 - Raise the UDP socket `SO_RCVBUF` from 32 KB to 256 KB to reduce reliable-packet retransmit cascades on busy dedicated servers
 - Batch win32 console writes and throttle console input line reprints to reduce dedicated server console API overhead

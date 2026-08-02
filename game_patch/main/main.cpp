@@ -32,6 +32,7 @@
 #include "../multi/gametype.h"
 #include "../multi/mutators.h"
 #include "../multi/bagman.h"
+#include "../multi/jetpack.h"
 #include "../multi/salvage.h"
 #include "../multi/server.h"
 #include "../multi/server_internal.h"
@@ -160,6 +161,7 @@ FunHook<int()> rf_do_frame_hook{
         client_bot_do_frame();
         koth_do_frame();
         bagman_do_frame();
+        jetpack_do_frame();
         salvage_client_do_frame();      // client-side Salvage carried-flag attachment
         hud_pit_queue_auto_spectate();  // client-side Pit auto-spectate
         gungame_client_do_frame();      // client-side Gun Game level-up notification watcher
@@ -316,6 +318,10 @@ FunHook<void(bool)> level_init_post_hook{
         populate_fullscreen_overlay_events();
         reset_achievement_state_info();
         multi_level_init_post_gametypes();
+        // Multiplayer resets the jetpack from its own level-init injection.
+        if (!rf::is_multi) {
+            jetpack_level_init();
+        }
         apply_geoable_flags();
         apply_breakable_materials();
 

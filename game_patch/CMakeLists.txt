@@ -137,6 +137,8 @@ set(SRCS
     multi/gametype.cpp
     multi/bagman.h
     multi/bagman.cpp
+    multi/jetpack.h
+    multi/jetpack.cpp
     multi/rounds.h
     multi/rounds.cpp
     multi/pit.h
