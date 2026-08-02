@@ -423,6 +423,18 @@ void apply_defaults_for_game_type(rf::NetGameType game_type, AlpineServerConfigR
             break;
         }
 
+        case rf::NetGameType::NG_TYPE_SAL: {
+            rules.spawn_delay.enabled = true;
+            rules.spawn_delay.set_base_value(1.0f);
+            rules.location_pinging = true;
+
+            // primary weapon
+            rules.default_player_weapon.set_weapon("12mm handgun");
+
+            rules.spawn_loadout.loadouts_active = false;
+            break;
+        }
+
         case rf::NetGameType::NG_TYPE_PIT: {
             rules.spawn_delay.enabled = false;
             rules.force_respawn = false;
@@ -598,6 +610,14 @@ AlpineServerConfigRules parse_server_rules(const toml::table& t, const AlpineSer
         o.bagman.set_bag_return_time(*v);
     if (auto v = t["bag_spawn_delay"].value<float>())
         o.bagman.set_bag_spawn_delay(*v);
+    if (auto v = t["sal_cap_limit"].value<int>())
+        o.salvage.set_cap_limit(*v);
+    if (auto v = t["sal_flag_spawn_delay"].value<float>())
+        o.salvage.set_flag_spawn_delay(*v);
+    if (auto v = t["sal_flag_capture_respawn_delay"].value<float>())
+        o.salvage.set_flag_capture_respawn_delay(*v);
+    if (auto v = t["sal_flag_return_time"].value<float>())
+        o.salvage.set_flag_return_time(*v);
     if (auto v = t["geo_limit"].value<int>())
         o.set_geo_limit(*v);
     if (auto v = t["rf2_geo_limit"].value<int>())
@@ -1774,6 +1794,8 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
         std::format_to(iter, "  BAG player score limit:                {}\n", rules.bagman.bag_score_limit);
     if (base || rules.bagman.tbag_score_limit != b.bagman.tbag_score_limit)
         std::format_to(iter, "  TBAG team score limit:                 {}\n", rules.bagman.tbag_score_limit);
+    if (base || rules.salvage.cap_limit != b.salvage.cap_limit)
+        std::format_to(iter, "  SAL flag capture limit:                {}\n", rules.salvage.cap_limit);
 
     // common limits & flags
     if (base || rules.geo_limit != b.geo_limit)
@@ -1801,6 +1823,12 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
         std::format_to(iter, "  BAG/TBAG bag return time:              {} sec\n", rules.bagman.bag_return_time_ms / 1000.0f);
     if (base || rules.bagman.bag_spawn_delay_ms != b.bagman.bag_spawn_delay_ms)
         std::format_to(iter, "  BAG/TBAG bag spawn delay:              {} sec\n", rules.bagman.bag_spawn_delay_ms / 1000.0f);
+    if (base || rules.salvage.flag_spawn_delay_ms != b.salvage.flag_spawn_delay_ms)
+        std::format_to(iter, "  SAL flag spawn delay:                  {} sec\n", rules.salvage.flag_spawn_delay_ms / 1000.0f);
+    if (base || rules.salvage.flag_capture_respawn_delay_ms != b.salvage.flag_capture_respawn_delay_ms)
+        std::format_to(iter, "  SAL flag respawn delay after capture:  {} sec\n", rules.salvage.flag_capture_respawn_delay_ms / 1000.0f);
+    if (base || rules.salvage.flag_return_time_ms != b.salvage.flag_return_time_ms)
+        std::format_to(iter, "  SAL dropped flag return time:          {} sec\n", rules.salvage.flag_return_time_ms / 1000.0f);
     if (base || rules.flag_dropping != b.flag_dropping)
         std::format_to(iter, "  CTF flag dropping:                     {}\n", rules.flag_dropping);
     if (base || rules.flag_captures_while_stolen != b.flag_captures_while_stolen)
@@ -2358,6 +2386,9 @@ void apply_alpine_dedicated_server_rules(rf::NetGameInfo& netgame, const AlpineS
             break;
         case rf::NetGameType::NG_TYPE_GG:
             netgame.max_kills = r.gungame_score_limit;
+            break;
+        case rf::NetGameType::NG_TYPE_SAL:
+            netgame.max_captures = r.salvage.cap_limit;
             break;
         default:
             netgame.max_kills = r.individual_kill_limit;

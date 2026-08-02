@@ -13,6 +13,7 @@
 #include "../multi/server.h"
 #include "../multi/gametype.h"
 #include "../multi/bagman.h"
+#include "../multi/salvage.h"
 #include "../misc/alpine_settings.h"
 #include "../sound/sound.h"
 #include "../rf/hud.h"
@@ -67,6 +68,10 @@ void load_world_hud_assets() {
     g_world_hud_assets.koth_ring_fade = rf::bm::load("af_wh_koth_ring_fade.tga", -1, true);
     g_world_hud_assets.bag_player_icon = rf::bm::load("af_wh_bag_hold.tga", -1, true);
     g_world_hud_assets.bag_pickup_icon = rf::bm::load("af_wh_bag_take.tga", -1, true);
+    g_world_hud_assets.sal_take = rf::bm::load("af_wh_sal_take.tga", -1, true);
+    g_world_hud_assets.sal_wait = rf::bm::load("af_wh_sal_wait.tga", -1, true);
+    g_world_hud_assets.sal_base_red = rf::bm::load("af_wh_sal_base_red.tga", -1, true);
+    g_world_hud_assets.sal_base_blue = rf::bm::load("af_wh_sal_base_blue.tga", -1, true);
 }
 
 static rf::gr::Mode bitmap_mode_from(WorldHUDRenderMode render_mode)
@@ -758,6 +763,122 @@ void build_bag_icon()
     }
 }
 
+// Draw a countdown above a world position in the format ##.#
+static void render_world_hud_countdown(const rf::Vector3& anchor, float y_offset, int time_left_ms)
+{
+    const std::string label = std::format("{:.1f}", std::max(0, time_left_ms) / 1000.0f);
+
+    const int font = get_world_hud_font(g_alpine_game_config.get_world_hud_damage_text_scale());
+    const auto [text_width, text_height] = rf::gr::get_string_size(label, font);
+    const int half_text_width = text_width / 2;
+
+    rf::Vector3 text_pos = anchor;
+    text_pos.y += y_offset;
+
+    render_string_3d_pos_new(text_pos, label, -half_text_width, -25, font, 255, 220, 64, 255);
+}
+
+static int sal_icon_carrier(bool carrier_is_friendly)
+{
+    return carrier_is_friendly ? g_world_hud_assets.sal_wait : g_world_hud_assets.bag_player_icon;
+}
+
+static int sal_icon_on_ground()    { return g_world_hud_assets.sal_take; }
+static int sal_icon_spawn_wait()   { return g_world_hud_assets.sal_wait; }
+static int sal_icon_base_red()     { return g_world_hud_assets.koth_red; }
+static int sal_icon_base_blue()    { return g_world_hud_assets.koth_blue; }
+static int sal_icon_deliver_red()  { return g_world_hud_assets.sal_base_red; }
+static int sal_icon_deliver_blue() { return g_world_hud_assets.sal_base_blue; }
+
+static void render_salvage_sprite(const rf::Vector3& pos, int bitmap_handle, WorldHUDRenderMode render_mode)
+{
+    do_render_world_hud_sprite(pos, 0.6f, bitmap_handle, render_mode, true, true, true);
+}
+
+static rf::Player* salvage_viewed_player()
+{
+    if (multi_spectate_is_spectating()) {
+        return multi_spectate_get_target_player();
+    }
+    return rf::local_player;
+}
+
+static int salvage_viewer_team()
+{
+    const rf::Player* viewer = salvage_viewed_player();
+    return viewer ? static_cast<int>(viewer->team) : -1;
+}
+
+// Team whose base should show the capture sprite.
+static int salvage_deliver_base_team()
+{
+    rf::Player* viewer = salvage_viewed_player();
+    if (salvage_player_is_carrier(viewer)) {
+        return viewer->team;
+    }
+    return -1;
+}
+
+// Draw Salvage's flag sprites.
+void build_salvage_icons()
+{
+    const auto render_mode = g_alpine_game_config.world_hud_flag_overdraw ? WorldHUDRenderMode::overdraw : WorldHUDRenderMode::no_overdraw;
+    const SalFlagState state = salvage_get_state();
+
+    // Both capture bases are marked in every flag state.
+    rf::Vector3 base_red{};
+    rf::Vector3 base_blue{};
+    if (salvage_get_base_positions(&base_red, &base_blue)) {
+        const int deliver_team = salvage_deliver_base_team();
+        base_red.y += WorldHUDRender::ctf_flag_offset;
+        base_blue.y += WorldHUDRender::ctf_flag_offset;
+        render_salvage_sprite(base_red,
+            deliver_team == rf::TEAM_RED ? sal_icon_deliver_red() : sal_icon_base_red(), render_mode);
+        render_salvage_sprite(base_blue,
+            deliver_team == rf::TEAM_BLUE ? sal_icon_deliver_blue() : sal_icon_base_blue(), render_mode);
+    }
+
+    if (state == SalFlagState::Carried) {
+        rf::Player* carrier = salvage_get_carrier();
+        if (carrier && !salvage_viewer_is_carrier_first_person()) {
+            if (rf::Entity* carrier_ep = rf::entity_from_handle(carrier->entity_handle)) {
+                rf::Vector3 pos = carrier_ep->pos;
+                pos.y += WorldHUDRender::bag_player_icon_offset;
+                // Team-relative marker.
+                const int viewer_team = salvage_viewer_team();
+                const bool carrier_is_friendly =
+                    viewer_team >= 0 && viewer_team == static_cast<int>(carrier->team);
+                render_salvage_sprite(pos, sal_icon_carrier(carrier_is_friendly), render_mode);
+            }
+        }
+        return; // nothing marks the vacant spawn while somebody is running the flag
+    }
+
+    if (state == SalFlagState::AtSpawn || state == SalFlagState::Dropped) {
+        // Gated on state, not on the item: the flag item stays alive while carried.
+        rf::Vector3 flag_pos;
+        if (salvage_get_client_flag_pos(&flag_pos)) {
+            flag_pos.y += WorldHUDRender::ctf_flag_offset;
+            render_salvage_sprite(flag_pos, sal_icon_on_ground(), render_mode);
+            if (state == SalFlagState::Dropped) {
+                render_world_hud_countdown(flag_pos, WorldHUDRender::bag_countdown_offset,
+                    salvage_get_time_left_ms());
+            }
+        }
+        return; // a dropped flag is marked where it lies
+    }
+
+    // Delayed: no flag exists yet.
+    if (state != SalFlagState::Delayed || !salvage_spawn_is_known()) {
+        return; // the server hasn't told us where home is yet
+    }
+
+    rf::Vector3 spawn_pos = salvage_get_spawn_pos();
+    spawn_pos.y += WorldHUDRender::ctf_flag_offset;
+    render_salvage_sprite(spawn_pos, sal_icon_spawn_wait(), render_mode);
+    render_world_hud_countdown(spawn_pos, WorldHUDRender::bag_countdown_offset, salvage_get_time_left_ms());
+}
+
 static inline void make_onb_edge_with_up(const rf::Vector3& dir_norm, const rf::Vector3& up_exact, rf::Matrix3& M)
 {
     rf::Vector3 r = dir_norm;
@@ -1108,6 +1229,12 @@ static void build_koth_hill_outlines()
 void hud_world_do_frame() {
     if (rf::is_multi && g_alpine_game_config.world_hud_ctf_icons && rf::multi_get_game_type() == rf::NetGameType::NG_TYPE_CTF) {
         build_ctf_flag_icons();
+    }
+    if (rf::is_multi && gt_is_salvage()) {
+        salvage_update_dynamic_light();
+        if (g_alpine_game_config.world_hud_ctf_icons) {
+            build_salvage_icons();
+        }
     }
     if (rf::is_multi && gt_is_bagman_any()) {
         build_bag_icon();

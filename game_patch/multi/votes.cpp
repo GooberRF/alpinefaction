@@ -552,7 +552,7 @@ static bool does_level_match_gametype_prefix(const std::string& level_name, rf::
         return true;
     }
 
-    if (game_type == rf::NG_TYPE_CTF && matches_prefix("pctf")) {
+    if ((game_type == rf::NG_TYPE_CTF || game_type == rf::NG_TYPE_SAL) && matches_prefix("pctf")) {
         return true;
     }
 
@@ -620,11 +620,10 @@ static bool is_level_valid_for_vote_gametype(const std::string& level_name, rf::
 // prefix-match validity so a client can offer an opt-in "filter by gametype" view
 // even on a server that doesn't enforce it. Whether the server actually enforces
 // the rules is advertised separately via AF_VOTE_SERVER_FLAG_GAMETYPE_PREFIX.
-// 32 bits so future game types beyond NG_TYPE_GG still fit.
 static uint32_t build_level_valid_gametype_mask(const std::string& level_name)
 {
     uint32_t mask = 0;
-    for (int i = 0; i <= static_cast<int>(rf::NG_TYPE_GG); ++i) {
+    for (int i = 0; i <= static_cast<int>(rf::NG_TYPE_SAL); ++i) {
         if (does_level_match_gametype_prefix(level_name, static_cast<rf::NetGameType>(i))) {
             mask |= (1u << i);
         }
@@ -1629,7 +1628,7 @@ static void build_vote_options_blob(std::vector<uint8_t>& blob)
     // Game types. Length-prefixed per entry (u16, not u8: display_name alone can be
     // 255 bytes plus the fixed fields), so per-gametype data can be appended inside
     // the entry later without desyncing an older client.
-    const int gametype_count = static_cast<int>(rf::NG_TYPE_GG) + 1;
+    const int gametype_count = static_cast<int>(rf::NG_TYPE_SAL) + 1;
     blob_u8(blob, static_cast<uint8_t>(gametype_count));
     for (int i = 0; i < gametype_count; ++i) {
         const auto game_type = static_cast<rf::NetGameType>(i);
@@ -1887,7 +1886,7 @@ static bool resolve_vote_gametype(uint8_t wire_value, rf::Player* sender, std::o
         out = std::nullopt;
         return true;
     }
-    if (wire_value > static_cast<uint8_t>(rf::NG_TYPE_GG)) {
+    if (wire_value > static_cast<uint8_t>(rf::NG_TYPE_SAL)) {
         send_vote_reject_msg("Cannot start vote: this server does not support that game type.", sender);
         return false;
     }

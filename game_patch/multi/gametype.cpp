@@ -12,6 +12,7 @@
 #include "pit.h"
 #include "wipeout.h"
 #include "gungame.h"
+#include "salvage.h"
 #include "multi.h"
 #include "mutators.h"
 #include "alpine_packets.h"
@@ -20,8 +21,11 @@
 #include "../sound/sound.h"
 #include "../rf/os/timestamp.h"
 #include "../object/event_alpine.h"
+#include "../rf/entity.h"
 #include "../rf/gameseq.h"
 #include "../rf/localize.h"
+#include "../rf/v3d.h"
+#include "../rf/vmesh.h"
 
 static char* const* g_af_gametype_names[rf::NG_TYPE_UNK + 1];
 
@@ -45,6 +49,8 @@ static char wo_name[] = "WO";
 static char* wo_slot = wo_name;
 static char gg_name[] = "GG";
 static char* gg_slot = gg_name;
+static char sal_name[] = "SAL";
+static char* sal_slot = sal_name;
 // UNK is the sentinel; new game types must be added above
 static char unk_name[] = "UNK";
 static char* unk_slot = unk_name;
@@ -89,6 +95,7 @@ void populate_gametype_table() {
     g_af_gametype_names[rf::NG_TYPE_PIT]    = &pit_slot;
     g_af_gametype_names[rf::NG_TYPE_WO]     = &wo_slot;
     g_af_gametype_names[rf::NG_TYPE_GG]     = &gg_slot;
+    g_af_gametype_names[rf::NG_TYPE_SAL]    = &sal_slot;
     g_af_gametype_names[rf::NG_TYPE_UNK]    = &unk_slot;
 
     for (int i = 0; i < 5; ++i) {
@@ -138,6 +145,7 @@ bool multi_game_type_is_team_type(rf::NetGameType game_type)
         case rf::NG_TYPE_ESC:
         case rf::NG_TYPE_TBAG:
         case rf::NG_TYPE_WO:
+        case rf::NG_TYPE_SAL:
             return true;
         default:
             return false;
@@ -261,6 +269,11 @@ bool gt_is_gungame()
     return rf::multi_get_game_type() == rf::NetGameType::NG_TYPE_GG;
 }
 
+bool gt_is_salvage()
+{
+    return rf::multi_get_game_type() == rf::NetGameType::NG_TYPE_SAL;
+}
+
 const char* multi_gametype_help_text(rf::NetGameType game_type)
 {
     switch (game_type) {
@@ -290,6 +303,8 @@ const char* multi_gametype_help_text(rf::NetGameType game_type)
             return "Wipeout: Frag all enemy players before they respawn";
         case rf::NG_TYPE_GG:
             return "Gun Game: Get frags to advance to a new weapon";
+        case rf::NG_TYPE_SAL:
+            return "Salvage: Steal the flag and take it to your base";
         default:
             return nullptr;
     }
@@ -2011,6 +2026,7 @@ void multi_level_init_post_gametypes()
 {
     hill_mode_level_init_post();
     bagman_level_init_post();
+    salvage_level_init_post();
     pit_level_init_post();
     wipeout_level_init_post();
     gungame_level_init_post();
@@ -2029,6 +2045,7 @@ CodeInjection multi_level_init_gametypes_injection{
         rounds_level_init();
         hill_mode_level_init();
         bagman_level_init();
+        salvage_level_init();
         pit_level_init();
         wipeout_level_init();
         gungame_level_init();
@@ -2072,6 +2089,13 @@ CodeInjection send_team_score_state_info_patch{
             }
         }
 
+        // send salvage flag state packet on join
+        if (gt_is_salvage()) {
+            if (rf::Player* pp = regs.edi) {
+                salvage_force_state_sync_to(pp);
+            }
+        }
+
         // send Pit queue state and roster on join.
         if (gt_is_pit()) {
             if (rf::Player* pp = regs.edi) {
@@ -2110,7 +2134,7 @@ CodeInjection send_team_score_patch{
     0x00472151,
     [](auto& regs) {
         if (gt_is_koth() || gt_is_dc()) {
-            // both int16_t on the wire
+            // both uint16_t on the wire
             const uint16_t red_score = (uint16_t)std::clamp(multi_koth_get_red_team_score(), 0, 0xFFFF);
             const uint16_t blue_score = (uint16_t)std::clamp(multi_koth_get_blue_team_score(), 0, 0xFFFF);
             regs.si = red_score;
@@ -2131,6 +2155,13 @@ CodeInjection send_team_score_patch{
             regs.ax = blue_score;
             regs.eip = 0x00472176; // use stock game packet send
         }
+        else if (gt_is_salvage()) {
+            const uint16_t red_score = (uint16_t)std::clamp(salvage_get_red_team_score(), 0, 0xFFFF);
+            const uint16_t blue_score = (uint16_t)std::clamp(salvage_get_blue_team_score(), 0, 0xFFFF);
+            regs.si = red_score;
+            regs.ax = blue_score;
+            regs.eip = 0x00472176; // use stock game packet send
+        }
     },
 };
 
@@ -2139,24 +2170,55 @@ CodeInjection process_team_score_patch{
     0x0047221D,
     [](auto& regs) {
         if (gt_is_koth() || gt_is_dc()) {
-            // both int16_t on the wire
-            int red_score = regs.esi;
-            int blue_score = regs.edi;
+            int red_score = static_cast<uint16_t>(regs.si.value);
+            int blue_score = static_cast<uint16_t>(regs.di.value);
             multi_koth_set_red_team_score(red_score);
             multi_koth_set_blue_team_score(blue_score);
         }
         else if (gt_is_tbag()) {
-            int red_score = regs.esi;
-            int blue_score = regs.edi;
+            int red_score = static_cast<uint16_t>(regs.si.value);
+            int blue_score = static_cast<uint16_t>(regs.di.value);
             bagman_set_red_team_score(red_score);
             bagman_set_blue_team_score(blue_score);
         }
         else if (gt_is_wipeout()) {
-            int red_score = regs.esi;
-            int blue_score = regs.edi;
+            int red_score = static_cast<uint16_t>(regs.si.value);
+            int blue_score = static_cast<uint16_t>(regs.di.value);
             wipeout_set_red_team_score(red_score);
             wipeout_set_blue_team_score(blue_score);
         }
+        else if (gt_is_salvage()) {
+            int red_score = static_cast<uint16_t>(regs.si.value);
+            int blue_score = static_cast<uint16_t>(regs.di.value);
+            salvage_set_red_team_score(red_score);
+            salvage_set_blue_team_score(blue_score);
+        }
+    },
+};
+
+CodeInjection carrier_attachment_render_patch{
+    0x00421C0B,
+    [](auto& regs) {
+        if (!rf::is_multi || !gt_is_bagman_any()) return;
+        auto* ep = reinterpret_cast<rf::Entity*>(regs.esi.value);
+        if (!ep) return;
+
+        // The hooked entity must be the carrier: the query derives its transform
+        // from the carrier entity's $prop_flag.
+        if (!g_bagman_info.carrier || ep->handle != g_bagman_info.carrier->entity_handle) return;
+
+        rf::VifLodMesh* lod = nullptr;
+        rf::Vector3 pos{};
+        rf::Matrix3 orient{};
+        if (!bagman_query_carrier_bag_outline(&lod, &pos, &orient)) return;
+
+        rf::VMesh* mesh = bagman_get_carrier_mesh();
+        if (!mesh) return;
+
+        rf::MeshRenderParams params{};
+        params.init_defaults();
+        params.orient = orient;
+        rf::vmesh_render(mesh, &pos, &orient, &params);
     },
 };
 
@@ -2253,8 +2315,14 @@ void gametype_do_patch()
     // handle new non-team modes
     multi_get_game_type_non_team_mode_hook.install();
 
+    // render the cosmetic carrier attachment for the gametypes that have one
+    carrier_attachment_render_patch.install();
+
     // bagman specific
     bagman_do_patch();
+
+    // salvage specific
+    salvage_do_patch();
 
     // rounds
     rounds_do_patch();

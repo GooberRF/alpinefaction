@@ -10,6 +10,7 @@ void evaluate_lightmaps_only();
 int gr_font_get_default();
 void gr_font_set_default(int font_id);
 bool gr_set_render_target(int bm_handle);
+void gr_flush_outlines_before_fpgun();
 bool gr_is_texture_format_supported(rf::bm::Format format);
 void gr_bitmap_scaled_float(int bitmap_handle, float x, float y, float w, float h, float sx, float sy, float sw, float sh, bool flip_x, bool flip_y, rf::gr::Mode mode);
 float gr_scale_fov_hor_plus(float horizontal_fov);
