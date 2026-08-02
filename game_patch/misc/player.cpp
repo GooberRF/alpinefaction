@@ -24,6 +24,7 @@
 #include "../multi/gametype.h"
 #include "../multi/server_internal.h"
 #include "../multi/bagman.h"
+#include "../multi/salvage.h"
 #include "../multi/sprays.h"
 #include "../multi/pit.h"
 #include "../multi/gungame.h"
@@ -262,6 +263,7 @@ FunHook<void(rf::Player*)> player_destroy_hook{
     [](rf::Player* player) {
         multi_spectate_on_destroy_player(player);
         bagman_on_player_disconnect(player);
+        salvage_on_player_disconnect(player);
         sprays_on_player_destroyed(player);
         pit_on_player_disconnect(player);
         gungame_on_player_disconnect(player);

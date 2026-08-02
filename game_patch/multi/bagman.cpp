@@ -371,6 +371,23 @@ void bagman_level_init()
     g_bagman_info.carrier_amp_refresh.invalidate();
 }
 
+// g_bag_light_handle must not outlive the level that created it. The engine frees the
+// bag glow during that level's teardown, so the handle is left naming a released pool
+// entry, and the first bagman_update_dynamic_light of the next session deletes it a
+// second time - an unlink of an already unlinked entry, which writes through its null
+// prev pointer. hud_world_do_frame reaches that call in the frames between multi_start
+// and the new level's init, so the stale handle really is live long enough to be used.
+// Same story for g_bag_carrier_mesh, which points into the outgoing level's meshes.
+void bagman_on_multi_shutdown()
+{
+    revert_aura_swap_if_active();
+    g_bagman_info = BagmanInfo{};
+    g_bag_light_handle = -1;
+    g_bag_light_pulse_phase = 0.0f;
+    g_bag_carrier_mesh = nullptr;
+    g_bag_carrier_mesh_load_attempted = false;
+}
+
 void bagman_level_init_post()
 {
     if (!g_bagman_info.active) return;
@@ -791,33 +808,14 @@ bool bagman_query_carrier_bag_outline(
     return true;
 }
 
-// Render the cosmetic bag mesh on the carrier's back. The green outline is
-// queued separately by the d3d11 outline renderer (which compares this mesh's
-// lod against the per-frame cached carrier-bag lod), so no MRF flag is needed
-// here — that keeps the outline working even when the carrier is portal-culled.
-CodeInjection bagman_render_carrier_attachment_patch{
-    0x00421c08,
-    [](auto& regs) {
-        // The hooked entity must be the carrier for the transform to be
-        // valid (bagman_query_carrier_bag_outline derives from the carrier
-        // entity). Gate on that before doing the shared query.
-        if (!rf::is_multi || !gt_is_bagman_any() || !g_bagman_info.carrier) return;
-        auto* ep = reinterpret_cast<rf::Entity*>(regs.esi.value);
-        if (!ep || ep->handle != g_bagman_info.carrier->entity_handle) return;
-
-        rf::VifLodMesh* lod = nullptr;
-        rf::Vector3 bag_pos_world{};
-        rf::Matrix3 bag_orient_world{};
-        if (!bagman_query_carrier_bag_outline(&lod, &bag_pos_world, &bag_orient_world)) {
-            return;
-        }
-
-        rf::MeshRenderParams params{};
-        params.init_defaults();
-        params.orient = bag_orient_world;
-        rf::vmesh_render(g_bag_carrier_mesh, &bag_pos_world, &bag_orient_world, &params);
-    },
-};
+// The cosmetic bag mesh itself. The green outline is queued separately by the
+// d3d11 outline renderer (which compares this mesh's lod against the per-frame
+// cached carrier-bag lod), so no MRF flag is needed when rendering it — that
+// keeps the outline working even when the carrier is portal-culled.
+rf::VMesh* bagman_get_carrier_mesh()
+{
+    return g_bag_carrier_mesh;
+}
 
 void bagman_update_dynamic_light()
 {
@@ -1026,9 +1024,6 @@ void bagman_do_patch()
 
     // Block dying entities from picking up the bag
     bagman_block_dying_bag_pickup_patch.install();
-
-    // Render the cosmetic bag mesh on the carrier each frame
-    bagman_render_carrier_attachment_patch.install();
 
     // Bagman's dynamic light is green instead of purple
     bagman_carrier_amp_light_color_patch.install();

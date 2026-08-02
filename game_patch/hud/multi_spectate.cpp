@@ -1918,6 +1918,7 @@ static int spectate_bottom_left_hud_top()
     case rf::NG_TYPE_CTF:
     case rf::NG_TYPE_TEAMDM:
     case rf::NG_TYPE_TBAG:
+    case rf::NG_TYPE_SAL:
         return clip_h - (big ? 80 : 55) - 10;
     default:
         return clip_h; // no bottom-left cluster
@@ -2120,6 +2121,7 @@ void multi_spectate_render() {
             const rf::NetGameType game_type = rf::multi_get_game_type();
             const bool is_ctf = game_type == rf::NG_TYPE_CTF;
             const bool is_tdm = game_type == rf::NG_TYPE_TEAMDM;
+            const bool is_sal = game_type == rf::NG_TYPE_SAL;
             const bool is_koth = game_type == rf::NG_TYPE_KOTH;
             const bool is_dc = game_type == rf::NG_TYPE_DC;
             const bool is_esc = game_type == rf::NG_TYPE_ESC;
@@ -2142,7 +2144,7 @@ void multi_spectate_render() {
                     return g_alpine_game_config.death_bars
                         ? std::min(y, low_death_bar_y)
                         : y;
-                } else if (is_ctf || is_tdm) {
+                } else if (is_ctf || is_tdm || is_sal) {
                     const int y = rf::gr::clip_height()
                         - 10
                         - (g_alpine_game_config.big_hud ? 80 : 55);

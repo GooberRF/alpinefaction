@@ -34,6 +34,10 @@ struct WorldHUDAssets
     int koth_ring_fade;
     int bag_player_icon;
     int bag_pickup_icon;
+    int sal_take;
+    int sal_wait;
+    int sal_base_red;
+    int sal_base_blue;
 };
 
 struct KothHudTuning

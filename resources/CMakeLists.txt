@@ -176,6 +176,10 @@ add_packfile(alpinefaction.vpp
     images/af_wh_koth_fill_red.tga
     images/af_wh_koth_fill_blue.tga
     images/af_wh_koth_ring_fade.tga
+    images/af_wh_sal_wait.tga
+    images/af_wh_sal_take.tga
+    images/af_wh_sal_base_blue.tga
+    images/af_wh_sal_base_red.tga
     images/afsbi_spawned.tga
     images/afsbi_spawned_1.tga
     images/afsbi_dead.tga
@@ -237,6 +241,11 @@ add_packfile(alpinefaction.vpp
     images/hud_miniflag_blue_1.vbm
     images/hud_miniflag_hilight_1.vbm
     images/hud_miniflag_red_1.vbm
+    images/hud_miniflag_sal_1.vbm
+    images/hud_miniflag_sal.vbm
+    images/hud_microflag_sal.vbm
+    images/hud_flag_sal.vbm
+    images/CTFflag-afgr.tga
     images/noclip_ammo_bar_1.tga
     images/Icon_EAX.tga
     images/Icon_Event.tga
@@ -280,6 +289,7 @@ add_packfile(alpinefaction.vpp
     meshes/meatchunk4.v3m
     meshes/meatchunk5.v3m
     meshes/af_pickup-bag.v3m
+    meshes/AFSALflag1.vfx
 
     standard_vs:${CMAKE_BINARY_DIR}/shaders/standard_vs.bin
     character_vs:${CMAKE_BINARY_DIR}/shaders/character_vs.bin
