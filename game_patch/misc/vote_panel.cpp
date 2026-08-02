@@ -218,7 +218,7 @@ struct VoteTypeInfo
     const char* description;
 };
 
-// Display order for the vote type buttons (user-specified); enabled_vote_types()
+// Display order for the vote type buttons (user-specified); enabled_vote_tabs()
 // preserves it and the sequence flows up to fill gaps left by disabled types.
 const VoteTypeInfo vote_type_infos[] = {
     {AfVoteType::Level, "Level", "Load a specific level, optionally with a game type and mutators."},
@@ -258,13 +258,40 @@ const char* gametype_short_name(uint8_t id)
     }
 }
 
-std::vector<const VoteTypeInfo*> enabled_vote_types()
+// The four level-rotation votes share one tab; the form picks which of them is
+// actually called.
+bool is_rotation_vote_type(AfVoteType type)
 {
-    std::vector<const VoteTypeInfo*> out;
+    return type == AfVoteType::Restart || type == AfVoteType::Next
+        || type == AfVoteType::Previous || type == AfVoteType::Random;
+}
+
+// One button in the tab row. Every tab but Rotation covers exactly one vote type.
+struct VoteTab
+{
+    const char* label = "";
+    bool is_rotation = false;
+    std::vector<const VoteTypeInfo*> types; // display order; never empty
+};
+
+std::vector<VoteTab> enabled_vote_tabs()
+{
+    std::vector<VoteTab> out;
+    int rotation_tab = -1;
     for (const auto& info : vote_type_infos) {
-        if (vote_options_is_type_enabled(info.type)) {
-            out.push_back(&info);
+        if (!vote_options_is_type_enabled(info.type)) {
+            continue;
         }
+        if (is_rotation_vote_type(info.type)) {
+            if (rotation_tab < 0) {
+                // Lands where the first enabled rotation type sat, i.e. after Level.
+                out.push_back(VoteTab{"Rotation", true, {}});
+                rotation_tab = static_cast<int>(out.size()) - 1;
+            }
+            out[rotation_tab].types.push_back(&info);
+            continue;
+        }
+        out.push_back(VoteTab{info.label, false, {&info}});
     }
     return out;
 }
@@ -301,6 +328,10 @@ struct FormState
     bool on_saved_tab = false;
 
     int type_index = 0;
+    // Which of the Rotation tab's enabled subtypes is selected, and whether the
+    // session's voted rules ride along with it.
+    int rotation_index = 0;
+    bool rotation_preserve = true;
     int kick_index = 0;
     std::string level_selection; // level NAME; empty = the "Current level" row
     bool manual_level = false;
@@ -335,6 +366,28 @@ std::vector<KickCandidate> g_kick_cache;
 std::vector<std::string> g_kick_names;
 
 FormState g_form;
+
+// The vote type a tab is currently editing. Null only for an empty tab, which
+// enabled_vote_tabs() never produces.
+const VoteTypeInfo* tab_selected_type(const VoteTab& tab)
+{
+    if (tab.types.empty()) {
+        return nullptr;
+    }
+    const int index = tab.is_rotation
+        ? std::clamp(g_form.rotation_index, 0, static_cast<int>(tab.types.size()) - 1)
+        : 0;
+    return tab.types[index];
+}
+
+// The tab the form is on, or null when the tab list has shrunk under it.
+const VoteTab* selected_tab(const std::vector<VoteTab>& tabs)
+{
+    if (g_form.type_index < 0 || g_form.type_index >= static_cast<int>(tabs.size())) {
+        return nullptr;
+    }
+    return &tabs[g_form.type_index];
+}
 
 // Popup input targets. The stock popup callback takes no arguments, so the
 // widget that opened it has to be remembered here.
@@ -1025,6 +1078,8 @@ void build_form(const VoteOptionsData& options)
     g_form.built_fingerprint = schema_fingerprint(options);
 
     g_form.type_index = 0;
+    g_form.rotation_index = 0;
+    g_form.rotation_preserve = true;
     g_form.kick_index = 0;
     g_form.level_selection.clear();
     g_form.manual_level = false;
@@ -1372,9 +1427,11 @@ void load_saved_vote_into_form(const SavedVote& vote, const VoteOptionsData& opt
 {
     g_form.on_saved_tab = false;
 
-    const auto types = enabled_vote_types();
-    for (int i = 0; i < static_cast<int>(types.size()); ++i) {
-        if (types[i]->type == vote.type) {
+    // Only Level/Match/Extend are savable, so this never has to target the
+    // Rotation tab's grouped subtypes.
+    const auto tabs = enabled_vote_tabs();
+    for (int i = 0; i < static_cast<int>(tabs.size()); ++i) {
+        if (!tabs[i].is_rotation && tabs[i].types.front()->type == vote.type) {
             g_form.type_index = i;
             break;
         }
@@ -1783,11 +1840,13 @@ void do_saved_tab(PanelUi& ui, const Layout& lo, const Rect& content, const Vote
 // instead of silently doing nothing when pressed.
 bool vote_form_is_sendable(const VoteOptionsData& options)
 {
-    const auto types = enabled_vote_types();
-    if (g_form.type_index < 0 || g_form.type_index >= static_cast<int>(types.size())) {
+    const auto tabs = enabled_vote_tabs();
+    const VoteTab* tab = selected_tab(tabs);
+    const VoteTypeInfo* selected = tab ? tab_selected_type(*tab) : nullptr;
+    if (!selected) {
         return false;
     }
-    switch (types[g_form.type_index]->type) {
+    switch (selected->type) {
         case AfVoteType::Kick: {
             const auto candidates = build_kick_candidates();
             return g_form.kick_index >= 0
@@ -1807,13 +1866,15 @@ bool vote_form_is_sendable(const VoteOptionsData& options)
 
 void send_vote_from_form(const VoteOptionsData& options)
 {
-    const auto types = enabled_vote_types();
-    if (g_form.type_index < 0 || g_form.type_index >= static_cast<int>(types.size())) {
+    const auto tabs = enabled_vote_tabs();
+    const VoteTab* tab = selected_tab(tabs);
+    const VoteTypeInfo* selected = tab ? tab_selected_type(*tab) : nullptr;
+    if (!selected) {
         return;
     }
 
     AfVoteCallParams params;
-    params.type = types[g_form.type_index]->type;
+    params.type = selected->type;
 
     switch (params.type) {
         case AfVoteType::Kick: {
@@ -1844,6 +1905,12 @@ void send_vote_from_form(const VoteOptionsData& options)
             params.extend_minutes = static_cast<uint8_t>(std::clamp(g_form.extend_minutes,
                 static_cast<int>(af_vote_extend_min_minutes),
                 static_cast<int>(af_vote_extend_max_minutes)));
+            break;
+        case AfVoteType::Restart:
+        case AfVoteType::Next:
+        case AfVoteType::Random:
+        case AfVoteType::Previous:
+            params.preserve = g_form.rotation_preserve;
             break;
         default:
             break; // parameterless
@@ -1947,11 +2014,13 @@ void saved_vote_name_popup_callback()
 
 void begin_save_from_form(const VoteOptionsData& options)
 {
-    const auto types = enabled_vote_types();
-    if (g_form.type_index < 0 || g_form.type_index >= static_cast<int>(types.size())) {
+    const auto tabs = enabled_vote_tabs();
+    const VoteTab* tab = selected_tab(tabs);
+    const VoteTypeInfo* selected = tab ? tab_selected_type(*tab) : nullptr;
+    if (!selected) {
         return;
     }
-    const AfVoteType type = types[g_form.type_index]->type;
+    const AfVoteType type = selected->type;
     if (!saved_vote_type_is_savable(type)) {
         return;
     }
@@ -2469,14 +2538,14 @@ bool do_close_button(PanelUi& ui, const Layout& lo)
 }
 
 // Tab row across the top: "Saved" first, then one button per enabled vote type.
-int do_tab_row(PanelUi& ui, const Layout& lo, const std::vector<const VoteTypeInfo*>& types)
+int do_tab_row(PanelUi& ui, const Layout& lo, const std::vector<VoteTab>& tabs)
 {
     // One uniform width sized to the widest label, "Saved" included, keeps the
     // grid aligned; the content below starts under however many rows that makes.
     const int hpad = std::max(4, scaled(10.0f));
     int widest = rf::gr::get_string_size("Saved", lo.font).first;
-    for (const VoteTypeInfo* info : types) {
-        widest = std::max(widest, rf::gr::get_string_size(info->label, lo.font).first);
+    for (const VoteTab& tab : tabs) {
+        widest = std::max(widest, rf::gr::get_string_size(tab.label, lo.font).first);
     }
     const int btn_w = widest + 2 * hpad;
     const int btn_h = lo.row_h;
@@ -2502,14 +2571,14 @@ int do_tab_row(PanelUi& ui, const Layout& lo, const std::vector<const VoteTypeIn
     // Wider gap than between the type buttons.
     x += btn_w + 3 * lo.gap;
 
-    for (int i = 0; i < static_cast<int>(types.size()); ++i) {
+    for (int i = 0; i < static_cast<int>(tabs.size()); ++i) {
         if (x > lo.cx && x + btn_w > lo.cx + lo.cw) {
             x = lo.cx;
             y += btn_h + lo.gap;
         }
         const Rect btn{x, y, btn_w, btn_h};
         const bool active = !g_form.on_saved_tab && i == g_form.type_index;
-        if (ui_button(ui, btn, types[i]->label, lo.font, true, active)) {
+        if (ui_button(ui, btn, tabs[i].label, lo.font, true, active)) {
             if (!active) {
                 g_form.on_saved_tab = false;
                 g_form.type_index = i;
@@ -2523,8 +2592,56 @@ int do_tab_row(PanelUi& ui, const Layout& lo, const std::vector<const VoteTypeIn
     return y + btn_h + lo.gap + lo.gap;
 }
 
+// The Rotation tab: pick one of the enabled rotation votes, decide whether the
+// session's voted rules ride along, read what the pick does.
+void do_rotation_form(PanelUi& ui, const Layout& lo, const VoteOptionsData& options,
+                      const VoteTab& tab, int y)
+{
+    const int font_h = rf::gr::get_font_height(lo.font);
+    const int line_h = font_h + 1;
+    const int body_bottom = lo.cy + lo.ch;
+    const int count = static_cast<int>(tab.types.size());
+    g_form.rotation_index = std::clamp(g_form.rotation_index, 0, count - 1);
+
+    if (ui.draw) {
+        set_header_color();
+        rf::gr::string(lo.cx, y, "Action", lo.font);
+    }
+    y += font_h + lo.gap;
+
+    const int btn_w = std::min(lo.cw, std::max(scaled(180.0f), lo.cw / 3));
+    for (int i = 0; i < count; ++i) {
+        const Rect row{lo.cx, y, btn_w, lo.row_h};
+        const bool active = i == g_form.rotation_index;
+        if (ui_button(ui, row, tab.types[i]->label, lo.font, true, active)) {
+            g_form.rotation_index = i;
+            play_click_sound();
+        }
+        y += lo.row_h + lo.gap;
+    }
+
+    y += lo.gap;
+
+    // Only offered on a server that reads the flag; otherwise the row is not
+    // drawn and its space is not reserved.
+    if (options.rotation_preserve_supported) {
+        const Rect cb{lo.cx, y, lo.cw, lo.row_h};
+        if (ui_checkbox(ui, cb, g_form.rotation_preserve, "Preserve current gametype and mutators",
+                lo.font)) {
+            g_form.rotation_preserve = !g_form.rotation_preserve;
+            play_toggle_sound(g_form.rotation_preserve);
+        }
+        y += lo.row_h + lo.gap * 2;
+    }
+
+    if (ui.draw) {
+        draw_wrapped({lo.cx, y, lo.cw, std::max(line_h, body_bottom - y)},
+            tab.types[g_form.rotation_index]->description, lo.font, line_h);
+    }
+}
+
 void do_form(PanelUi& ui, const Layout& lo, const VoteOptionsData& options,
-             const std::vector<const VoteTypeInfo*>& types, int content_y)
+             const std::vector<VoteTab>& tabs, int content_y)
 {
     // Re-derive the mutator pre-selection whenever its context moves.
     {
@@ -2539,15 +2656,25 @@ void do_form(PanelUi& ui, const Layout& lo, const VoteOptionsData& options,
         }
     }
 
-    if (types.empty()) {
+    if (tabs.empty()) {
         do_message_block(ui, lo, {"This server has no votes enabled."});
         return;
     }
 
     int y = content_y;
 
-    const AfVoteType type = types[g_form.type_index]->type;
+    const VoteTab& tab = tabs[g_form.type_index];
+    const VoteTypeInfo* selected = tab_selected_type(tab);
+    if (!selected) {
+        return;
+    }
+    const AfVoteType type = selected->type;
     const int body_bottom = lo.cy + lo.ch;
+
+    if (tab.is_rotation) {
+        do_rotation_form(ui, lo, options, tab, y);
+        return;
+    }
 
     if (type == AfVoteType::Kick) {
         if (ui.draw) {
@@ -2608,13 +2735,13 @@ void do_form(PanelUi& ui, const Layout& lo, const VoteOptionsData& options,
 
         if (ui.draw) {
             draw_wrapped({lo.cx, y, lo.cw, std::max(line_h, body_bottom - y)},
-                types[g_form.type_index]->description, lo.font, line_h);
+                selected->description, lo.font, line_h);
         }
         return;
     }
 
     if (type != AfVoteType::Level && type != AfVoteType::Match) {
-        do_message_block(ui, lo, {types[g_form.type_index]->description});
+        do_message_block(ui, lo, {selected->description});
         return;
     }
 
@@ -2736,12 +2863,12 @@ void vote_panel_do(PanelUi& ui)
 
     // The form has to exist before the tab row, which reads (and clamps) the
     // selected type out of it.
-    std::vector<const VoteTypeInfo*> types;
+    std::vector<VoteTab> tabs;
     if (mode == PanelMode::Form && options) {
         ensure_form(*options);
-        types = enabled_vote_types();
-        if (!types.empty()) {
-            g_form.type_index = std::clamp(g_form.type_index, 0, static_cast<int>(types.size()) - 1);
+        tabs = enabled_vote_tabs();
+        if (!tabs.empty()) {
+            g_form.type_index = std::clamp(g_form.type_index, 0, static_cast<int>(tabs.size()) - 1);
         }
     }
 
@@ -2749,7 +2876,7 @@ void vote_panel_do(PanelUi& ui)
     // keep at least one row of body rather than letting the content rects go
     // negative (compute_layout guarantees lo.ch >= lo.row_h, so this cannot move
     // the content above lo.cy).
-    const int content_y = std::min(do_tab_row(ui, lo, types), lo.cy + lo.ch - lo.row_h);
+    const int content_y = std::min(do_tab_row(ui, lo, tabs), lo.cy + lo.ch - lo.row_h);
     const Rect content{lo.cx, content_y, lo.cw, lo.cy + lo.ch - content_y};
 
     if (g_form.on_saved_tab) {
@@ -2774,7 +2901,7 @@ void vote_panel_do(PanelUi& ui)
                 break;
             case PanelMode::Form:
                 if (options) {
-                    do_form(ui, lo, *options, types, content_y);
+                    do_form(ui, lo, *options, tabs, content_y);
                 }
                 break;
         }
@@ -2812,9 +2939,10 @@ void vote_panel_do(PanelUi& ui)
         can_send = !vote_active && vote_form_is_sendable(*options);
         // Saving is local, so it is deliberately NOT gated on vote_active; only
         // the three savable types offer it.
-        const auto types_now = enabled_vote_types();
-        can_save = g_form.type_index >= 0 && g_form.type_index < static_cast<int>(types_now.size())
-            && saved_vote_type_is_savable(types_now[g_form.type_index]->type)
+        const auto tabs_now = enabled_vote_tabs();
+        const VoteTab* tab_now = selected_tab(tabs_now);
+        const VoteTypeInfo* selected_now = tab_now ? tab_selected_type(*tab_now) : nullptr;
+        can_save = selected_now != nullptr && saved_vote_type_is_savable(selected_now->type)
             && vote_form_is_sendable(*options);
     }
 

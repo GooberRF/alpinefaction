@@ -911,6 +911,11 @@ struct VoteReader
     size_t pos = 0;
     bool ok = true;
 
+    [[nodiscard]] size_t remaining() const
+    {
+        return ok ? len - pos : 0;
+    }
+
     uint8_t u8()
     {
         if (!ok || 1 > len - pos) {
@@ -1134,6 +1139,13 @@ void af_send_vote_call(const AfVoteCallParams& params)
             break;
         case AfVoteType::Extend:
             w.u8(params.extend_minutes);
+            break;
+        case AfVoteType::Restart:
+        case AfVoteType::Next:
+        case AfVoteType::Random:
+        case AfVoteType::Previous:
+            // Trailing and optional: a server that predates it stops reading here.
+            w.u8(params.preserve ? 1 : 0);
             break;
         default:
             break; // parameterless vote types
@@ -1566,6 +1578,16 @@ static void af_process_client_req_packet(const void* data, size_t len, const rf:
                     break;
                 case AfVoteType::Extend:
                     params.extend_minutes = r.u8();
+                    break;
+                case AfVoteType::Restart:
+                case AfVoteType::Next:
+                case AfVoteType::Random:
+                case AfVoteType::Previous:
+                    // Optional trailing byte. A client that predates it omits it,
+                    // so fall back to what those votes did before the flag existed.
+                    params.preserve = r.remaining() > 0
+                        ? r.u8() != 0
+                        : params.type == AfVoteType::Restart;
                     break;
                 default:
                     break; // parameterless vote types
@@ -3097,6 +3119,16 @@ static void af_process_just_died_info_packet(const void* data, size_t len, const
     set_local_spawn_delay(respawn_allowed, force_respawn, static_cast<int>(spawn_delay));
 }
 
+// Last session-overrides text clients were told about.
+// Used to ensure "OUTDATED" is shown on remote server cfg printout
+// after new session overrides are applied.
+static std::string g_session_overrides_snapshot;
+
+void af_reset_session_overrides_snapshot()
+{
+    g_session_overrides_snapshot.clear();
+}
+
 static void build_af_server_info_packet(af_server_info_packet& pkt)
 {
     pkt = {};
@@ -3162,6 +3194,15 @@ static void build_af_server_info_packet(af_server_info_packet& pkt)
         af |= af_server_info_flags::SIF_RELOAD_ON_KILL;
     if (g_alpine_server_config_active_rules.mutators.super_drain_enabled)
         af |= af_server_info_flags::SIF_SUPER_DRAIN;
+    {
+        std::string session_overrides;
+        print_session_overrides(session_overrides);
+        if (session_overrides != g_session_overrides_snapshot) {
+            g_session_overrides_snapshot = std::move(session_overrides);
+            g_alpine_server_config.printed_cfg.clear();
+            g_alpine_server_config.signal_cfg_changed = true;
+        }
+    }
     if (g_alpine_server_config.signal_cfg_changed) {
         af |= af_server_info_flags::SIF_SERVER_CFG_CHANGED;
         for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
@@ -3543,12 +3584,16 @@ void af_send_server_cfg(rf::Player* player) {
         return;
     }
 
-    if (g_alpine_server_config.printed_cfg.empty()) {
+    const int rules_generation = get_active_rules_generation();
+    if (g_alpine_server_config.printed_cfg.empty()
+        || g_alpine_server_config.printed_cfg_generation != rules_generation) {
+        g_alpine_server_config.printed_cfg.clear();
         print_alpine_dedicated_server_config_info(
             g_alpine_server_config.printed_cfg,
             true,
             true
         );
+        g_alpine_server_config.printed_cfg_generation = rules_generation;
     }
 
     const auto send_msg = [player] (const std::string_view msg) {

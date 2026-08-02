@@ -32,7 +32,7 @@ Version 1.4.0 (Lupin): Not yet released
   - Gibbing
 - Rework multiplayer voting to use a GUI-based system instead of chat commands
   - Servers describe their votable levels, game types, and mutator options to clients
-  - `vote level` and `vote match` can now select a game type and any number of mutators (with their options) for the voted level
+  - `Level` and `Match` can now select a game type and any number of mutators (with their options) for the voted level
   - Add a vote panel for calling any vote the server allows, opened during gameplay with the bindable `Call Vote Menu` control (`F4` by default)
   - Vote HUD notification now shows live tally, time remaining, and whether you have already voted
 

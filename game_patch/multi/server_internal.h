@@ -890,6 +890,10 @@ struct AlpineServerConfig
     std::vector<AlpineServerConfigLevelEntry> levels;
 
     std::string printed_cfg{};
+    // get_active_rules_generation() the cached print was built at. Session
+    // overrides (votes) change what that print says without touching the config,
+    // so an empty-cache check alone would serve a stale copy to remote clients.
+    int printed_cfg_generation = -1;
     bool signal_cfg_changed = false;
 
     // =============================================
@@ -924,7 +928,10 @@ struct ManualRulesOverride
 {
     AlpineServerConfigRules rules;
     std::vector<std::pair<std::filesystem::path, std::optional<std::string>>> applied_preset_paths;
+    // Mutually exclusive: an override comes either from a named rules preset or
+    // from voted mutators, and the two are described differently to operators.
     std::optional<std::string> preset_alias;
+    std::optional<std::string> mutator_labels;
 };
 
 struct MatchInfo
@@ -961,6 +968,16 @@ struct MatchInfo
     }
 };
 
+// One-shot carry of the session's vote-set rules across a ROTATION level change
+// (next / previous / random). Those loads advance the rotation cursor and by
+// design ignore g_manual_rules_override, so the vote stashes what to carry and
+// apply_rules_for_current_level layers it onto the target level's own rules.
+struct PendingRotationPreserve
+{
+    std::vector<MutatorDeclaration> declarations;
+    std::optional<rf::NetGameType> gametype;
+};
+
 extern AlpineServerConfig g_alpine_server_config;
 extern AlpineServerConfigRules g_alpine_server_config_active_rules;
 extern std::optional<ManualRulesOverride> g_manual_rules_override;
@@ -982,6 +999,9 @@ bool is_rcon_command_masterlisted(std::string_view command);
 bool set_upcoming_game_type(rf::NetGameType gt, UpcomingGameTypeSelection selection = UpcomingGameTypeSelection::Rotation);
 void apply_defaults_for_game_type(rf::NetGameType game_type, AlpineServerConfigRules& rules);
 int get_active_rules_generation();
+// Appends the "Session overrides" section of the config print, or nothing when no
+// session override is in effect.
+void print_session_overrides(std::string& output);
 void cleanup_win32_server_console();
 // Legacy chat vote CASTING, kept for clients older than 1.4 (which have no
 // af_req_vote_cast). Only yes/no (and the y/n aliases) are handled; returns false
@@ -1007,6 +1027,9 @@ std::pair<bool, std::string> is_level_name_valid(std::string_view level_name_inp
 std::optional<ManualRulesOverride> load_rules_preset_alias(std::string_view preset_name);
 void set_manual_rules_override(ManualRulesOverride override_rules);
 void clear_manual_rules_override();
+void set_pending_rotation_preserve(PendingRotationPreserve pending);
+void clear_pending_rotation_preserve();
+const std::optional<PendingRotationPreserve>& get_pending_rotation_preserve();
 bool is_player_in_match(rf::Player* player);
 bool is_player_ready(rf::Player* player);
 // True when the game itself is currently refusing to spawn this player (respawn
@@ -1026,6 +1049,7 @@ void rebuild_rotation_from_cfg();
 void on_dedicated_server_launch_post();
 void extend_round_time(int minutes);
 void restart_current_level();
+void restart_current_level_configured();
 void load_next_level();
 void load_rand_level();
 void load_prev_level();

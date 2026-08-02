@@ -89,7 +89,7 @@ enum class af_client_req_type : uint8_t
     af_req_character = 0x3,
     af_req_ready = 0x4,        // Alpine 1.4 (1 byte: action 0=unready,1=ready,2=toggle)
     af_req_pit_queue = 0x5,    // Alpine 1.4 (1 byte: action 0=leave,1=join,2=toggle)
-    af_req_vote_call = 0x6,    // Alpine 1.4 (variable, see af_build_vote_call_payload)
+    af_req_vote_call = 0x6,    // Alpine 1.4 (variable, see af_send_vote_call)
     af_req_vote_cast = 0x7,    // Alpine 1.4 (1 byte: 0 = no, 1 = yes)
     af_req_vote_cancel = 0x8,  // Alpine 1.4 (no additional data)
     af_req_vote_options = 0x9, // Alpine 1.4 (5 bytes: flags + known_generation)
@@ -218,6 +218,9 @@ enum af_vote_server_flags : uint8_t
     // vote_level.only_allow_gametype_prefix is on, so each level's
     // valid_gametype_mask actually restricts something and the UI may say so.
     AF_VOTE_SERVER_FLAG_GAMETYPE_PREFIX = 1 << 0,
+    // The server reads the trailing "preserve" byte on rotation vote calls, so
+    // the UI may offer the option.
+    AF_VOTE_SERVER_FLAG_ROTATION_PRESERVE = 1 << 1,
 };
 
 struct HandicapPayload
@@ -726,6 +729,7 @@ struct AfVoteCallParams
     uint8_t gametype = af_vote_gametype_none;
     uint8_t extend_minutes = af_vote_extend_default_minutes;
     std::vector<VoteMutatorInput> mutators;
+    bool preserve = true;
 };
 
 bool af_process_packet(const void* data, int len, const rf::NetAddr& addr, rf::Player* player);
@@ -773,6 +777,7 @@ void af_send_just_died_info_packet(rf::Player* to_player, bool respawn_allowed, 
 static void af_process_just_died_info_packet(const void* data, size_t len, const rf::NetAddr& addr);
 void af_send_server_info_packet(rf::Player* player);
 void af_send_server_info_packet_to_all();
+void af_reset_session_overrides_snapshot();
 static void af_process_server_info_packet(const void* data, size_t len, const rf::NetAddr&);
 void af_send_spectate_start_packet(const rf::Player* spectatee);
 void af_process_spectate_start_packet(const void* data, size_t len, const rf::NetAddr&);

@@ -92,6 +92,7 @@ struct VoteOptionsData
     // false the mask is still populated and a client may offer it as an opt-in
     // filter, but off-prefix votes are accepted.
     bool gametype_prefix_restricted = false;
+    bool rotation_preserve_supported = false;
     std::vector<VoteGametypeInfo> gametypes;
     std::vector<VoteMutatorSchema> mutators;
     std::vector<VoteLevelInfo> levels; // rotation order, then vote-allowed extras

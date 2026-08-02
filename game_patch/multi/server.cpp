@@ -196,6 +196,23 @@ void clear_manual_rules_override()
     g_manual_rules_override.reset();
 }
 
+static std::optional<PendingRotationPreserve> g_pending_rotation_preserve;
+
+void set_pending_rotation_preserve(PendingRotationPreserve pending)
+{
+    g_pending_rotation_preserve = std::move(pending);
+}
+
+void clear_pending_rotation_preserve()
+{
+    g_pending_rotation_preserve.reset();
+}
+
+const std::optional<PendingRotationPreserve>& get_pending_rotation_preserve()
+{
+    return g_pending_rotation_preserve;
+}
+
 bool is_rcon_command_masterlisted(std::string_view command)
 {
     for (const auto& allowed : g_rcon_cmd_masterlist) {

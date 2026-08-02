@@ -758,7 +758,7 @@ std::optional<ManualRulesOverride> load_vote_rules_override(
     result.rules = std::move(rules);
     std::string labels = mutators_join_labels(mutators);
     if (!labels.empty())
-        result.preset_alias = std::move(labels);
+        result.mutator_labels = std::move(labels);
     return result;
 }
 

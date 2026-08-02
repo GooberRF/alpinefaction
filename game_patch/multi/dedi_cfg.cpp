@@ -2183,9 +2183,80 @@ void print_rules_with_presets(std::string& output, const AlpineServerConfigRules
     print_rules(output, rules, base);
 }
 
+std::string format_mutator_option_value(const MutatorOptionValue& value)
+{
+    return std::visit([](const auto& v) -> std::string {
+        using T = std::decay_t<decltype(v)>;
+        if constexpr (std::is_same_v<T, bool>)
+            return v ? "true" : "false";
+        else if constexpr (std::is_same_v<T, float>)
+            return std::format("{:g}", v);
+        else if constexpr (std::is_same_v<T, std::string>)
+            return v;
+        else
+            return std::format("{}", v);
+    }, value);
+}
+
+// Rules the running level would use with no session override in play.
+const AlpineServerConfigRules& configured_rules_for_running_level()
+{
+    const auto& cfg = g_alpine_server_config;
+    const int idx = rf::netgame.current_level_index;
+    if (idx >= 0 && idx < static_cast<int>(cfg.levels.size())
+        && string_iequals(cfg.levels[idx].level_filename, rf::level.filename.c_str())) {
+        return cfg.levels[idx].rule_overrides;
+    }
+    return cfg.base_rules;
+}
+
+// Rules a vote (or a manual rules load) put in front of the configured ones for
+// this session. Printed above the static config so the two are never confused.
+void print_session_overrides(std::string& output)
+{
+    if (!g_manual_rules_override) {
+        return;
+    }
+
+    const auto& active = g_alpine_server_config_active_rules;
+    const AlpineServerConfigRules& configured = configured_rules_for_running_level();
+    const bool game_type_differs = active.game_type != configured.game_type;
+    const bool mutators_differ = active.mutators.declarations != configured.mutators.declarations;
+    if (!game_type_differs && !mutators_differ) {
+        return;
+    }
+
+    const auto iter = std::back_inserter(output);
+    std::format_to(iter, "\n---- Session overrides ----\n");
+
+    if (game_type_differs) {
+        std::format_to(iter, "  Game type:                             {} (configured: {})\n",
+                       multi_game_type_name_short(active.game_type),
+                       multi_game_type_name_short(configured.game_type));
+    }
+
+    if (mutators_differ) {
+        const std::string joined = mutators_join_labels(active.mutators.declarations);
+        std::format_to(iter, "  Mutators:                              {}\n",
+                       joined.empty() ? "<none>" : joined);
+        for (const auto& decl : active.mutators.declarations) {
+            if (decl.options.empty()) {
+                continue;
+            }
+            const MutatorInfo* info = mutators_find_by_name(decl.name);
+            std::format_to(iter, "    {}:\n", info ? info->label : decl.name);
+            for (const auto& [name, value] : decl.options) {
+                std::format_to(iter, "      {} = {}\n", name, format_mutator_option_value(value));
+            }
+        }
+    }
+}
+
 void print_alpine_dedicated_server_config_info(std::string& output, bool verbose, const bool remote) {
     auto& netgame = rf::netgame;
     const auto& cfg = g_alpine_server_config;
+
+    print_session_overrides(output);
 
     const auto iter = std::back_inserter(output);
     std::format_to(iter, "\n---- Core configuration ----\n");
@@ -2437,6 +2508,7 @@ void load_and_print_alpine_dedicated_server_config(std::string ads_config_name, 
         g_alpine_server_config.printed_cfg.clear();
         cfg.signal_cfg_changed = true;
         server_vote_invalidate_options_blob();
+        clear_pending_rotation_preserve();
     }
 
     initialize_core_alpine_dedicated_server_settings(netgame, cfg, on_launch);
@@ -2475,7 +2547,11 @@ bool apply_game_type_for_current_level() {
         desired = has_already_queued_change ? upcoming : manual_rules.game_type;
 
         if (!g_ads_minimal_server_info && !has_already_queued_change && desired != upcoming) {
-            if (g_manual_rules_override && g_manual_rules_override->preset_alias) {
+            if (g_manual_rules_override && g_manual_rules_override->mutator_labels) {
+                rf::console::print("Applying voted mutators '{}' game type {} for manually loaded level {}...\n",
+                    *g_manual_rules_override->mutator_labels, multi_game_type_name_short(desired), rf::level_filename_to_load);
+            }
+            else if (g_manual_rules_override && g_manual_rules_override->preset_alias) {
                 rf::console::print("Applying rules preset '{}' game type {} for manually loaded level {}...\n",
                     *g_manual_rules_override->preset_alias, multi_game_type_name_short(desired), rf::level_filename_to_load);
             }
@@ -2548,7 +2624,10 @@ void apply_rules_for_current_level()
         if (g_manual_rules_override) {
             g_alpine_server_config_active_rules = g_manual_rules_override->rules;
             if (!g_ads_minimal_server_info) {
-                if (g_manual_rules_override->preset_alias)
+                if (g_manual_rules_override->mutator_labels)
+                    rf::console::print("Applying voted mutators '{}' for manually loaded level {}...\n",
+                                       *g_manual_rules_override->mutator_labels, rf::level_filename_to_load);
+                else if (g_manual_rules_override->preset_alias)
                     rf::console::print("Applying rules preset '{}' for manually loaded level {}...\n",
                                        *g_manual_rules_override->preset_alias, rf::level_filename_to_load);
                 else
@@ -2576,6 +2655,26 @@ void apply_rules_for_current_level()
             std::string_view level_name =
                 idx_valid ? std::string_view(cfg.levels[idx].level_filename) : std::string_view("UNKNOWN");
             rf::console::print("Applying level-specific rules for server rotation index {} ({})...\n", idx, level_name);
+        }
+    }
+
+    // A rotation vote asked to carry the session's vote-set rules onto this level.
+    // Layered on top of the rules resolved above, then stored back as the session
+    // override so the config print reports it and a later preserve vote continues it.
+    // Deliberately NOT via set_manual_rules_override(): that would also flag the
+    // level as manually loaded and break the rotation cursor's semantics.
+    if (get_pending_rotation_preserve()) {
+        const PendingRotationPreserve pending = *get_pending_rotation_preserve();
+        clear_pending_rotation_preserve();
+
+        auto carried = load_vote_rules_override(rf::level_filename_to_load.c_str(),
+                                                pending.declarations, pending.gametype);
+        if (carried) {
+            g_alpine_server_config_active_rules = carried->rules;
+            g_manual_rules_override = std::move(*carried);
+            if (!g_ads_minimal_server_info) {
+                rf::console::print("Carrying voted session rules onto {}...\n", rf::level_filename_to_load);
+            }
         }
     }
 
@@ -2716,7 +2815,9 @@ ConsoleCommand2 print_level_rules_cmd{
             if (manual_load) {
                 rf::console::print("\n---- Rules for level {} ----\n", rf::level_filename_to_load, idx);
                 if (g_manual_rules_override) {
-                    if (g_manual_rules_override->preset_alias)
+                    if (g_manual_rules_override->mutator_labels)
+                        rf::console::print("  (manually loaded {} is using voted mutators '{}')\n\n", rf::level_filename_to_load, *g_manual_rules_override->mutator_labels);
+                    else if (g_manual_rules_override->preset_alias)
                         rf::console::print("  (manually loaded {} is using rules preset '{}')\n\n", rf::level_filename_to_load, *g_manual_rules_override->preset_alias);
                     else
                         rf::console::print("  (manually loaded {} has a manual rules override)\n\n", rf::level_filename_to_load);
