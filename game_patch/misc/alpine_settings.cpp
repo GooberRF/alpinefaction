@@ -1197,6 +1197,10 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.gamepad_joy_camera = std::stoi(settings["GamepadJoyCamera"]) != 0;
         processed_keys.insert("GamepadJoyCamera");
     }
+    if (settings.count("GamepadFlickstickAllowScoped")) {
+        g_alpine_game_config.gamepad_flickstick_allow_scoped = std::stoi(settings["GamepadFlickstickAllowScoped"]) != 0;
+        processed_keys.insert("GamepadFlickstickAllowScoped");
+    }
     if (settings.count("GamepadFlickstickSweep")) {
         g_alpine_game_config.gamepad_flickstick_sweep = std::clamp(std::stof(settings["GamepadFlickstickSweep"]), 0.01f, 10.0f);
         processed_keys.insert("GamepadFlickstickSweep");
@@ -1460,6 +1464,7 @@ void alpine_control_config_serialize(std::ofstream& file, const rf::ControlConfi
     file << "GamepadScopeSensitivityModifier=" << g_alpine_game_config.gamepad_scope_sensitivity_modifier << "\n";
     file << "GamepadScannerSensitivityModifier=" << g_alpine_game_config.gamepad_scanner_sensitivity_modifier << "\n";
     file << "GamepadJoyCamera=" << g_alpine_game_config.gamepad_joy_camera << "\n";
+    file << "GamepadFlickstickAllowScoped=" << g_alpine_game_config.gamepad_flickstick_allow_scoped << "\n";
     file << "GamepadFlickstickSweep=" << g_alpine_game_config.gamepad_flickstick_sweep << "\n";    
     file << "GamepadFlickstickDeadzone=" << g_alpine_game_config.gamepad_flickstick_deadzone << "\n";
     file << "GamepadFlickstickReleaseDeadzone=" << g_alpine_game_config.gamepad_flickstick_release_deadzone << "\n";

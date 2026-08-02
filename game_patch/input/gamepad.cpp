@@ -1320,7 +1320,9 @@ void consume_raw_gamepad_deltas(float& pitch_delta, float& yaw_delta)
         }
     }
 
-    if (g_alpine_game_config.gamepad_joy_camera && !freelook_camera_active && !is_scoped_or_scanning) {
+    bool allow_flickstick = g_alpine_game_config.gamepad_joy_camera && !freelook_camera_active
+        && (!is_scoped_or_scanning || g_alpine_game_config.gamepad_flickstick_allow_scoped);
+    if (allow_flickstick) {
         gamepad_apply_flickstick(cam_x, cam_y, yaw_delta, pitch_delta);
         yaw_delta   *= gamepad_zoom_sens;
         pitch_delta *= gamepad_zoom_sens;
@@ -1645,6 +1647,16 @@ ConsoleCommand2 joy_flickstick_release_deadzone_cmd{
     },
     "Set flick-stick release deadzone 0.0-0.9 (default 0.70)",
     "joy_flickstick_release_deadzone [value]",
+};
+
+ConsoleCommand2 joy_flickstick_allow_scoped_cmd{
+    "joy_flickstick_allow_scoped",
+    [](std::optional<int> val) {
+        if (val) g_alpine_game_config.gamepad_flickstick_allow_scoped = val.value() != 0;
+        rf::console::print("Joy flick-stick in scopes: {}", g_alpine_game_config.gamepad_flickstick_allow_scoped ? "enabled" : "disabled");
+    },
+    "Allow flick-stick to be used when scoped (default 1)",
+    "joy_flickstick_allow_scoped [0|1]",
 };
 
 ConsoleCommand2 joy_rumble_cmd{
@@ -2207,6 +2219,7 @@ void gamepad_apply_patch()
     joy_flickstick_smoothing_cmd.register_cmd();
     joy_flickstick_deadzone_cmd.register_cmd();
     joy_flickstick_release_deadzone_cmd.register_cmd();
+    joy_flickstick_allow_scoped_cmd.register_cmd();
     joy_rumble_cmd.register_cmd();
     joy_rumble_triggers_cmd.register_cmd();
     joy_rumble_weapon_cmd.register_cmd();

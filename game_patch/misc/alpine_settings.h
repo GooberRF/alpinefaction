@@ -205,6 +205,7 @@ struct AlpineGameSettings
     int gamepad_gyro_vh_mixer = 0;  // -100 = reduce vertical, 0 = 1:1, +100 = reduce horizontal
     float gamepad_gyro_menu_cursor_sensitivity = 20.0f; // 0 = disabled
     bool gamepad_joy_camera = false;
+    bool gamepad_flickstick_allow_scoped = true;
     float gamepad_flickstick_sweep = 1.0f;    
     float gamepad_flickstick_deadzone = 0.90f;
     float gamepad_flickstick_release_deadzone = 0.70f;
