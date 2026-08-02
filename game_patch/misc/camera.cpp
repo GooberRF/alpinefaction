@@ -464,11 +464,6 @@ CodeInjection linear_pitch_patch{
     },
 };
 
-void camera_start_reset_to_horizon()
-{
-    s_camera_resetting = true;
-}
-
 ConsoleCommand2 linear_pitch_cmd{
     "cl_linearpitch",
     []() {

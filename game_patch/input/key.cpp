@@ -410,10 +410,6 @@ static void execute_alive_alpine_control(int action_index)
         static_cast<int>(rf::AlpineControlConfigAction::AF_ACTION_INSPECT_WEAPON)) {
         fpgun_play_random_idle_anim();
     }
-    else if (action_index == starting_alpine_control_index +
-        static_cast<int>(rf::AlpineControlConfigAction::AF_ACTION_CENTER_VIEW)) {
-        camera_start_reset_to_horizon();
-    }
 }
 
 // AF 1.4+ servers take votes as packets and keep the HUD notification alive
