@@ -195,6 +195,8 @@ const MutatorDescription mutator_descriptions[] = {
      "Continuous flamethrower damage sets enemies on fire."},
     {"gibbing",
      "Explosive deaths chunk enemies into gibs."},
+    {"jetpacks",
+     "All players get jetpacks."},
 };
 
 const char* mutator_description_for(std::string_view name)

@@ -29,6 +29,7 @@ Version 1.4.0 (Lupin): Not yet released
   - Big Craters
   - Flaming Enemies
   - Gibbing
+  - Jetpacks
 - Rework multiplayer voting to use a GUI-based system instead of chat commands
   - Servers describe their votable levels, game types, and mutator options to clients
   - `vote level` and `vote match` can now select a game type and any number of mutators (with their options) for the voted level

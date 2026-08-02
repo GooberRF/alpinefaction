@@ -32,6 +32,7 @@
 #include "../multi/gametype.h"
 #include "../multi/mutators.h"
 #include "../multi/bagman.h"
+#include "../multi/jetpack.h"
 #include "../multi/server.h"
 #include "../multi/server_internal.h"
 #include "../multi/alpine_packets.h"
@@ -159,6 +160,7 @@ FunHook<int()> rf_do_frame_hook{
         client_bot_do_frame();
         koth_do_frame();
         bagman_do_frame();
+        jetpack_do_frame();
         hud_pit_queue_auto_spectate();  // client-side Pit auto-spectate
         gungame_client_do_frame();      // client-side Gun Game level-up notification watcher
         alpine_mesh_do_frame();

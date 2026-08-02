@@ -8,6 +8,7 @@
 #include <common/version/version.h>
 #include "gametype.h"
 #include "bagman.h"
+#include "jetpack.h"
 #include "rounds.h"
 #include "pit.h"
 #include "wipeout.h"
@@ -2029,6 +2030,7 @@ CodeInjection multi_level_init_gametypes_injection{
         rounds_level_init();
         hill_mode_level_init();
         bagman_level_init();
+        jetpack_level_init();
         pit_level_init();
         wipeout_level_init();
         gungame_level_init();

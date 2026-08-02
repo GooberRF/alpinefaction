@@ -192,6 +192,7 @@ struct AlpineFactionJoinAcceptPacketExt
         featured_no_clip    = 1u << 19,
         reload_on_kill      = 1u << 20,
         super_drain         = 1u << 21,
+        jetpacks            = 1u << 22,
     } flags = Flags::none;
 
     float max_fov = 0.0f;

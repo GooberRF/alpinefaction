@@ -11,6 +11,7 @@
 #include <common/utils/string-utils.h>
 #include <common/rfproto.h>
 #include "bagman.h"
+#include "jetpack.h"
 #include "gametype.h"
 #include "kill.h"
 #include "multi.h"
@@ -798,11 +799,15 @@ bool bagman_query_carrier_bag_outline(
 CodeInjection bagman_render_carrier_attachment_patch{
     0x00421c08,
     [](auto& regs) {
+        auto* ep = reinterpret_cast<rf::Entity*>(regs.esi.value);
+
+        // Shared entity_render attachment point for jetpacks
+        jetpack_render_attachment(ep);
+
         // The hooked entity must be the carrier for the transform to be
         // valid (bagman_query_carrier_bag_outline derives from the carrier
         // entity). Gate on that before doing the shared query.
         if (!rf::is_multi || !gt_is_bagman_any() || !g_bagman_info.carrier) return;
-        auto* ep = reinterpret_cast<rf::Entity*>(regs.esi.value);
         if (!ep || ep->handle != g_bagman_info.carrier->entity_handle) return;
 
         rf::VifLodMesh* lod = nullptr;

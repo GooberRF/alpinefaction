@@ -92,6 +92,7 @@ enum class af_client_req_type : uint8_t
     af_req_vote_cast = 0x7,    // Alpine 1.4 (1 byte: 0 = no, 1 = yes)
     af_req_vote_cancel = 0x8,  // Alpine 1.4 (no additional data)
     af_req_vote_options = 0x9, // Alpine 1.4 (5 bytes: flags + known_generation)
+    af_req_jetpack_state = 0xA, // Alpine 1.4 (1 byte: on 0/1)
 };
 
 // Frozen wire constants, values can NEVER be reordered or changed.
@@ -258,9 +259,16 @@ struct VoteOptionsReqPayload
     uint32_t known_generation = 0;  // meaningful only with AF_VOTE_OPTIONS_REQ_HAS_CACHE
 };
 
+// Jetpacks mutator: the client owns its own movement and just tells the server
+// when its thrusters turn on or off so the effects can be relayed to everyone.
+struct JetpackStateReqPayload
+{
+    uint8_t on = 0;
+};
+
 using af_client_payload = std::variant<HandicapPayload, SprayReqPayload, CharacterPayload,
                                        ReadyReqPayload, PitQueueReqPayload, VoteCastReqPayload,
-                                       VoteOptionsReqPayload, std::monostate>;
+                                       VoteOptionsReqPayload, JetpackStateReqPayload, std::monostate>;
 
 struct af_client_req_packet
 {
@@ -280,6 +288,7 @@ enum class af_server_req_type : uint8_t
     af_sreq_vote_options_data = 0x6,   // Alpine 1.4 (chunked vote-options blob)
     af_sreq_kill_info = 0x7,           // Alpine 1.4 (5 bytes: victim, killer, weapon, flags, damage_type)
     af_sreq_entity_on_fire = 0x8,      // Alpine 1.4 (5 bytes: obj_handle, on)
+    af_sreq_jetpack_state = 0x9,       // Alpine 1.4 (5 bytes: obj_handle, on)
 };
 
 struct ShouldGibPayload
@@ -359,8 +368,18 @@ struct EntityOnFirePayload
 };
 static_assert(sizeof(EntityOnFirePayload) == 5);
 
+// Used by the Jetpacks mutator. Purely visual: the thrusting client already
+// applied its own physics, this only drives the effects on every other client.
+struct EntityJetpackPayload
+{
+    uint32_t obj_handle = 0;
+    uint8_t on = 0; // 1 = thrusting, 0 = idle
+};
+static_assert(sizeof(EntityJetpackPayload) == 5);
+
 using af_server_req_payload = std::variant<ShouldGibPayload, TeleportEntityPayload, SprayPayload,
-                                           ReadyPromptPayload, PitQueueStatePayload, EntityOnFirePayload>;
+                                           ReadyPromptPayload, PitQueueStatePayload, EntityOnFirePayload,
+                                           EntityJetpackPayload>;
 
 struct af_server_req_packet
 {
@@ -538,6 +557,7 @@ enum af_server_info_flags : uint32_t {
     SIF_FEATURED_NO_CLIP = 1u << 20,
     SIF_RELOAD_ON_KILL = 1u << 21,
     SIF_SUPER_DRAIN = 1u << 22,
+    SIF_JETPACKS = 1u << 23,
 };
 
 // Subset of `rf::NetGameFlags`.
@@ -729,6 +749,8 @@ void af_send_server_req_packet(const af_server_req_packet& packet, rf::Player* p
 void af_send_should_gib_req(uint32_t obj_handle);
 void af_send_kill_info(rf::Player* killed_player);
 void af_send_entity_on_fire(uint32_t obj_handle, bool on);
+void af_send_jetpack_state_request(bool on);
+void af_send_jetpack_state(uint32_t obj_handle, bool on);
 void af_send_teleport_entity_req(uint32_t obj_handle, const rf::Vector3& pos, const rf::Matrix3& orient, const rf::Vector3& vel);
 void af_send_spray_to_player(uint8_t player_id, uint16_t texture_id, const rf::Vector3& pos, const rf::Vector3& normal, uint8_t flags, rf::Player* player);
 void af_broadcast_spray(uint8_t player_id, uint16_t texture_id, const rf::Vector3& pos, const rf::Vector3& normal);
