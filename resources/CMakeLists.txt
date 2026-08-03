@@ -292,6 +292,7 @@ add_packfile(alpinefaction.vpp
     meshes/af_pickup-bag.v3m
     meshes/af-jetpack1.v3m
     meshes/AFSALflag1.vfx
+    meshes/af-jg1.v3m
 
     standard_vs:${CMAKE_BINARY_DIR}/shaders/standard_vs.bin
     character_vs:${CMAKE_BINARY_DIR}/shaders/character_vs.bin

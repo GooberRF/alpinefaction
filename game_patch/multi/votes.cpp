@@ -1783,6 +1783,8 @@ static void build_vote_options_blob(std::vector<uint8_t>& blob)
                     }
                 });
             }
+            // game types this mutator can apply in.
+            blob_u32(blob, mutator.valid_gametype_mask);
         });
     }
 

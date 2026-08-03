@@ -72,6 +72,13 @@ struct MutatorOptionInfo
 // floor and does not even require an Alpine client.
 inline constexpr int MUTATOR_NO_CLIENT_REQUIREMENT = 0;
 
+// What a mutator needs from the game type in order to be applied.
+enum class MutatorGametypeReq : uint8_t
+{
+    Any,      // every game type
+    TeamOnly, // only team game types
+};
+
 struct MutatorInfo
 {
     MutatorId id = MutatorId::Instagib;
@@ -82,6 +89,9 @@ struct MutatorInfo
     // server with this mutator active, or MUTATOR_NO_CLIENT_REQUIREMENT for
     // none.
     int min_client_minor_version = MUTATOR_NO_CLIENT_REQUIREMENT;
+
+    // Game types this mutator can be used in.
+    uint32_t valid_gametype_mask = MUTATOR_GAMETYPE_MASK_ANY;
 
     std::vector<MutatorOptionInfo> options;
 };

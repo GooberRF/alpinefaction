@@ -1165,11 +1165,37 @@ uint8_t selected_gametype(const VoteOptionsData& options, bool team_only)
     return gametypes[index]->id;
 }
 
-std::vector<VoteMutatorInput> build_mutator_inputs(const VoteOptionsData& options)
+// The game type the vote would actually run under.
+uint8_t effective_gametype(const VoteOptionsData& options, bool team_only)
+{
+    const uint8_t chosen = selected_gametype(options, team_only);
+    if (chosen != af_vote_gametype_none) {
+        return chosen;
+    }
+    const std::string level = selected_level();
+    if (!level.empty()) {
+        for (const auto& entry : options.levels) {
+            if (string_iequals(entry.filename, level)) {
+                return entry.natural_gametype;
+            }
+        }
+    }
+    return static_cast<uint8_t>(rf::multi_get_game_type());
+}
+
+// A mutator that can't be used in this game type is shown greyed out.
+bool mutator_offered(const VoteMutatorSchema& schema, uint8_t game_type)
+{
+    return mutator_gametype_mask_allows(schema.valid_gametype_mask, game_type);
+}
+
+std::vector<VoteMutatorInput> build_mutator_inputs(const VoteOptionsData& options, uint8_t game_type)
 {
     std::vector<VoteMutatorInput> out;
     for (size_t i = 0; i < options.mutators.size() && i < g_form.mutators.size(); ++i) {
-        if (!g_form.mutators[i].enabled) {
+        // Never send a mutator the panel is greying out, but it may still be
+        // checked from a pre-selection or an earlier game type choice.
+        if (!g_form.mutators[i].enabled || !mutator_offered(options.mutators[i], game_type)) {
             continue;
         }
         const VoteMutatorSchema& schema = options.mutators[i];
@@ -1897,14 +1923,14 @@ void send_vote_from_form(const VoteOptionsData& options)
                 return;
             }
             params.gametype = selected_gametype(options, false);
-            params.mutators = build_mutator_inputs(options);
+            params.mutators = build_mutator_inputs(options, effective_gametype(options, false));
             break;
         }
         case AfVoteType::Match: {
             params.team_size = static_cast<uint8_t>(g_form.team_size);
             params.level = selected_level();
             params.gametype = selected_gametype(options, true);
-            params.mutators = build_mutator_inputs(options);
+            params.mutators = build_mutator_inputs(options, effective_gametype(options, true));
             break;
         }
         case AfVoteType::Extend:
@@ -1942,11 +1968,12 @@ void send_saved_vote(const SavedVote& vote, const VoteOptionsData& options)
 
 // Enabled mutators as names/labels rather than the schema's ids, so the entry
 // stays meaningful on a server whose blob numbers them differently.
-std::vector<SavedVoteMutator> build_saved_mutators(const VoteOptionsData& options)
+std::vector<SavedVoteMutator> build_saved_mutators(const VoteOptionsData& options, uint8_t game_type)
 {
     std::vector<SavedVoteMutator> out;
     for (size_t i = 0; i < options.mutators.size() && i < g_form.mutators.size(); ++i) {
-        if (!g_form.mutators[i].enabled) {
+        // Same filter build_mutator_inputs uses.
+        if (!g_form.mutators[i].enabled || !mutator_offered(options.mutators[i], game_type)) {
             continue;
         }
         const VoteMutatorSchema& schema = options.mutators[i];
@@ -2045,7 +2072,7 @@ void begin_save_from_form(const VoteOptionsData& options)
         if (is_match) {
             vote.team_size = static_cast<uint8_t>(std::clamp(g_form.team_size, 1, 8));
         }
-        vote.mutators = build_saved_mutators(options);
+        vote.mutators = build_saved_mutators(options, effective_gametype(options, is_match));
     }
 
     // Snapshotted here, not in the callback: the popup returns later and a blob
@@ -2073,12 +2100,13 @@ void do_message_block(PanelUi& ui, const Layout& lo, const std::vector<std::stri
 // Total height of every mutator row plus the option rows of expanded mutators.
 // Must match the advance in do_mutator_rows exactly (rows whose option type has
 // no widget consume nothing -- see option_has_widget).
-int mutator_content_height(const Layout& lo, const VoteOptionsData& options)
+int mutator_content_height(const Layout& lo, const VoteOptionsData& options, uint8_t game_type)
 {
     int h = 0;
     for (size_t i = 0; i < options.mutators.size() && i < g_form.mutators.size(); ++i) {
         h += lo.row_h;
-        if (g_form.mutators[i].enabled) {
+        // A greyed-out mutator shows no option rows even while checked.
+        if (g_form.mutators[i].enabled && mutator_offered(options.mutators[i], game_type)) {
             const size_t count =
                 std::min(options.mutators[i].options.size(), g_form.mutators[i].options.size());
             for (size_t o = 0; o < count; ++o) {
@@ -2095,7 +2123,7 @@ int mutator_content_height(const Layout& lo, const VoteOptionsData& options)
 // underneath. Rects are absolute screen space with the scroll offset already
 // applied by the caller; rows outside `view` are neither drawn nor hit-tested.
 void do_mutator_rows(PanelUi& ui, const Layout& lo, const VoteOptionsData& options,
-                     const Rect& view, int start_y)
+                     const Rect& view, int start_y, uint8_t game_type)
 {
     const int indent = std::max(8, scaled(16.0f));
     const int view_bottom = view.y + view.h;
@@ -2108,14 +2136,18 @@ void do_mutator_rows(PanelUi& ui, const Layout& lo, const VoteOptionsData& optio
     for (size_t i = 0; i < options.mutators.size() && i < g_form.mutators.size(); ++i) {
         const VoteMutatorSchema& schema = options.mutators[i];
         PanelMutatorSelection& selection = g_form.mutators[i];
+        // Does nothing under the game type this vote would run: the row stays in
+        // place but goes inactive.
+        const bool offered = mutator_offered(schema, game_type);
 
         if (row_visible(y)) {
             const Rect row{view.x, y, view.w, lo.row_h};
+            // Hovering still describes an unavailable mutator.
             if (!ui.draw && ui_hover(ui, row)) {
                 g_form.description_mutator = static_cast<int>(i);
                 g_hovered_mutator_this_pass = true;
             }
-            if (ui_checkbox(ui, row, selection.enabled, schema.label.c_str(), lo.font)) {
+            if (ui_checkbox(ui, row, selection.enabled, schema.label.c_str(), lo.font, offered)) {
                 selection.enabled = !selection.enabled;
                 g_form.mutators_touched = true; // the form is the player's from here on
                 g_form.description_mutator = static_cast<int>(i);
@@ -2125,7 +2157,7 @@ void do_mutator_rows(PanelUi& ui, const Layout& lo, const VoteOptionsData& optio
         }
         y += lo.row_h;
 
-        if (!selection.enabled) {
+        if (!selection.enabled || !offered) {
             continue;
         }
 
@@ -2219,12 +2251,12 @@ void do_mutator_rows(PanelUi& ui, const Layout& lo, const VoteOptionsData& optio
 // clipped, no scrollbar is drawn and the wheel is left alone, so the layout is
 // identical to what it was before scrolling existed.
 void do_mutator_scroll_region(PanelUi& ui, const Layout& lo, const VoteOptionsData& options,
-                              const Rect& view)
+                              const Rect& view, uint8_t game_type)
 {
     if (!ui.draw) {
         g_hovered_mutator_this_pass = false;
     }
-    const int content_h = mutator_content_height(lo, options);
+    const int content_h = mutator_content_height(lo, options, game_type);
     const float max_scroll = static_cast<float>(std::max(0, content_h - view.h));
 
     if (!ui.draw && max_scroll > 0.0f && ui.wheel != 0 && point_in(ui.mx, ui.my, view)) {
@@ -2253,7 +2285,7 @@ void do_mutator_scroll_region(PanelUi& ui, const Layout& lo, const VoteOptionsDa
         ui.origin_y = view.y;
     }
 
-    do_mutator_rows(ui, lo, options, view, start_y);
+    do_mutator_rows(ui, lo, options, view, start_y, game_type);
 
     // Hovering away clears the description unless the mutator was toggled (a
     // deliberate click keeps its description pinned).
@@ -2825,7 +2857,9 @@ void do_form(PanelUi& ui, const Layout& lo, const VoteOptionsData& options,
     const int desc_h = 3 * desc_line_h;
     const int mutator_bottom = right_col.y + right_col.h - desc_h - lo.gap;
     const Rect mutator_view{right_col.x, ry, right_col.w, std::max(lo.row_h, mutator_bottom - ry)};
-    do_mutator_scroll_region(ui, lo, options, mutator_view);
+    // Resolved after the game type cycler above has consumed this frame's input,
+    // so moving it greys the affected mutators on the same frame.
+    do_mutator_scroll_region(ui, lo, options, mutator_view, effective_gametype(options, is_match));
 
     if (ui.draw) {
         const Rect desc{right_col.x, right_col.y + right_col.h - desc_h, right_col.w, desc_h};

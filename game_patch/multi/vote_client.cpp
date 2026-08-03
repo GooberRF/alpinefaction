@@ -236,6 +236,14 @@ bool parse_mutator_descriptor(BlobReader& r, VoteMutatorSchema& out)
         r.skip(body_len); // unconditional: parsed or not, the next option starts here
     }
 
+    // Game type restriction, appended after the options.
+    if (r.remaining() >= sizeof(uint32_t)) {
+        const uint32_t mask = r.u32();
+        if (r.ok()) {
+            out.valid_gametype_mask = mask;
+        }
+    }
+
     return true;
 }
 

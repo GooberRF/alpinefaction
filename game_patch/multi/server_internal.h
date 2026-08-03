@@ -582,6 +582,11 @@ enum class MutatorOptionType : uint8_t
     String = 4,
 };
 
+inline constexpr uint32_t MUTATOR_GAMETYPE_MASK_ANY = 0xFFFFFFFFu;
+
+// Does valid_gametype_mask permit game_type?
+bool mutator_gametype_mask_allows(uint32_t valid_gametype_mask, uint8_t game_type);
+
 using MutatorOptionValue = std::variant<bool, int32_t, float, std::string>;
 
 // One declared mutator plus its option values, keyed by TOML key. Kept generic

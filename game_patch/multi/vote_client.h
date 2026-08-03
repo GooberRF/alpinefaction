@@ -39,6 +39,7 @@ struct VoteMutatorSchema
     uint8_t id = 0;
     std::string name;  // canonical, keys the client-local description table
     std::string label; // UI text
+    uint32_t valid_gametype_mask = MUTATOR_GAMETYPE_MASK_ANY;
     std::vector<VoteMutatorOptionSchema> options;
 };
 

@@ -33,6 +33,7 @@
 #include "server_internal.h"
 #include "salvage.h"
 #include "bagman.h"
+#include "gungame.h"
 #include "sprays.h"
 #include "vote_client.h"
 #include "bots/bot_chat_manager.h"
@@ -1016,6 +1017,19 @@ FunHook<MultiIoPacketHandler> process_reload_packet_hook{
 
             // Call original handler
             process_reload_packet_hook.call_target(data, addr);
+        }
+    },
+};
+
+// Don't play the reload deny beep when reload packets are denied locally.
+// Stops disjointed deny beeps from playing in Gun Game when server forces
+// a "reload" of a weapon without a clip to refresh the displayed ammo count.
+CodeInjection entity_reload_packet_deny_sound_injection{
+    0x00425466,
+    [](auto& regs) {
+        const bool is_reload_packet = addr_as_ref<bool>(regs.esp + 0x1C);
+        if (is_reload_packet) {
+            regs.eip = 0x00425479;
         }
     },
 };
@@ -2567,6 +2581,7 @@ FunHook<void()> multi_stop_hook{
         reset_local_pending_game_type(); // clear pending game type when leaving
         salvage_on_multi_shutdown(); // put the flag_red item class back to items.tbl
         bagman_on_multi_shutdown();  // put the amp aura bitmap back to its stock value
+        gungame_on_multi_shutdown(); // put the Jeep Gun mesh + damage back to weapons.tbl
         if (rf::local_player) {
             PlayerAdditionalData* const player_add_data =
                 static_cast<PlayerAdditionalData*>(rf::local_player);
@@ -3134,6 +3149,7 @@ void network_init()
     process_entity_create_packet_hook.install();
     process_reload_packet_hook.install();
     process_reload_request_packet_hook.install();
+    entity_reload_packet_deny_sound_injection.install();
     process_entity_create_packet_injection.install(); // save char if server forces it
     process_entity_create_packet_injection2.install(); // reset char after server forced it
 

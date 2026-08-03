@@ -336,6 +336,7 @@ struct MutatorDef
     void (*apply)(AlpineServerConfigRules&, const toml::table&);
     const MutatorOptionDef* options;
     size_t num_options;
+    MutatorGametypeReq gametype_req = MutatorGametypeReq::Any;
 };
 
 // Per-mutator client requirement — what the mutator actually depends on, not
@@ -352,7 +353,7 @@ static const MutatorDef MUTATORS[] = {
     {MutatorId::FlamingEnemies, "flamingenemies", "Flaming Enemies", 4, &apply_flaming_enemies, nullptr, 0},
     {MutatorId::Gibbing, "gibbing", "Gibbing", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_gibbing, nullptr, 0},
     {MutatorId::Jetpacks, "jetpacks", "Jetpacks", 4, &apply_jetpacks, nullptr, 0},
-    {MutatorId::HumansVsBots, "humansvsbots", "Humans vs. Bots", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_humans_vs_bots, nullptr, 0},
+    {MutatorId::HumansVsBots, "humansvsbots", "Humans vs. Bots", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_humans_vs_bots, nullptr, 0, MutatorGametypeReq::TeamOnly},
     {MutatorId::DelayedSupers, "delayedsupers", "Delayed Supers", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_delayed_supers, nullptr, 0},
 };
 
@@ -373,6 +374,29 @@ static const MutatorId MUTATOR_APPLY_ORDER[] = {
     MutatorId::Rails,
     MutatorId::Instagib,
 };
+
+// Resolve a static requirement to the concrete set of game types it permits.
+static uint32_t gametype_mask_for_req(MutatorGametypeReq req)
+{
+    if (req == MutatorGametypeReq::Any)
+        return MUTATOR_GAMETYPE_MASK_ANY;
+
+    uint32_t mask = 0;
+    for (int i = 0; i < static_cast<int>(rf::NG_TYPE_UNK); ++i) {
+        if (multi_game_type_is_team_type(static_cast<rf::NetGameType>(i)))
+            mask |= 1u << i;
+    }
+    return mask;
+}
+
+bool mutator_gametype_mask_allows(uint32_t valid_gametype_mask, uint8_t game_type)
+{
+    // A game type past the mask's width can't be expressed, so don't let it
+    // restrict anything.
+    if (game_type >= 32)
+        return true;
+    return (valid_gametype_mask & (1u << game_type)) != 0;
+}
 
 static const MutatorDef* find_mutator_by_name(std::string_view name)
 {
@@ -496,6 +520,7 @@ const std::vector<MutatorInfo>& mutators_get_registry()
         info.name = def.name;
         info.label = def.label;
         info.min_client_minor_version = def.min_client_minor_version;
+        info.valid_gametype_mask = gametype_mask_for_req(def.gametype_req);
 
         for (size_t i = 0; i < def.num_options; ++i) {
             const MutatorOptionDef& opt_def = def.options[i];
@@ -611,12 +636,22 @@ void apply_mutators_from_toml(const toml::array& mutators_arr, AlpineServerConfi
             continue;
 
         const MutatorDef* def = find_mutator_by_id(id);
-        def->apply(rules, it->second);
 
-        // Record for display; replace any inherited entry for the same mutator.
+        // A mutator that does nothing in this scope's game type is not applied
+        // and is left out of the displayed labels, declaration is still recorded.
+        const bool available = mutator_gametype_mask_allows(
+            gametype_mask_for_req(def->gametype_req), static_cast<uint8_t>(rules.game_type));
+
         auto& labels = rules.mutators.active_labels;
         labels.erase(std::remove(labels.begin(), labels.end(), def->label), labels.end());
-        labels.push_back(def->label);
+
+        if (available) {
+            def->apply(rules, it->second);
+            labels.push_back(def->label);
+        }
+        else {
+            rf::console::print("  [WARN] mutator '{}' does nothing in this game type and was not applied\n", def->name);
+        }
 
         // Record the raw declaration so this scope's mutators can be re-applied
         // after a runtime game_type change wipes MutatorConfig (see
@@ -796,8 +831,14 @@ std::optional<ManualRulesOverride> load_vote_rules_override(
     }
 
     ManualRulesOverride result;
+    // Reported from what actually applied rather than from what was voted.
+    std::string labels;
+    for (const auto& label : rules.mutators.active_labels) {
+        if (!labels.empty())
+            labels += ", ";
+        labels += label;
+    }
     result.rules = std::move(rules);
-    std::string labels = mutators_join_labels(mutators);
     if (!labels.empty())
         result.mutator_labels = std::move(labels);
     return result;

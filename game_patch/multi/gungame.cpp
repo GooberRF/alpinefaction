@@ -20,6 +20,7 @@
 #include "../rf/multi.h"
 #include "../rf/entity.h"
 #include "../rf/weapon.h"
+#include "../rf/vmesh.h"
 #include "../rf/player/player.h"
 #include "../rf/gameseq.h"
 
@@ -29,9 +30,9 @@ namespace
 // Built-in default progression, used unless specified with `gg_tiers` dedi cfg param.
 // Each tier is shuffled per player at order-build time.
 const std::vector<std::vector<const char*>> g_tier_names = {
-    {"rail_gun", "heavy_machine_gun", "Assault Rifle", "scope_assault_rifle"},
-    {"Rocket Launcher", "Grenade", "shoulder_cannon"},
-    {"Sniper Rifle", "Remote Charge", "Machine Pistol"},
+    {"heavy_machine_gun", "Rocket Launcher", "scope_assault_rifle"},
+    {"Jeep Gun", "Assault Rifle", "shoulder_cannon", "rail_gun"},
+    {"Sniper Rifle", "Remote Charge", "Machine Pistol", "Grenade"},
     {"12mm handgun", "Flamethrower", "Shotgun"},
 };
 
@@ -39,6 +40,117 @@ const std::vector<std::vector<const char*>> g_tier_names = {
 // the built-in table) and the resolved final-level weapon.
 std::vector<std::vector<int>> g_resolved_tiers;
 int g_final_weapon_index = -1;
+
+// Jeep Gun weapon-class overrides for Gun Game
+constexpr const char* kJeepGunWeaponClass = "Jeep Gun";
+constexpr const char* kJeepGunMeshFilename = "af-jg1.v3m";
+constexpr float kJeepGunDamageMulti = 45.0f;
+rf::VMesh* g_jeep_gun_mesh = nullptr;
+bool g_jeep_gun_mesh_load_attempted = false;
+
+// What we changed on the Jeep Gun class, so it can be put back exactly.
+// weapon_type < 0 means "nothing is currently swapped".
+struct JeepGunOverride
+{
+    int weapon_type = -1;
+    // Stock Jeep Gun has no third person mesh, so this is normally empty.
+    std::string saved_mesh_filename;
+    rf::VMesh* saved_mesh = nullptr;
+    int saved_muzzle_tag = -1;
+    int saved_grip_tag = -1;
+    float saved_damage_multi = 0.0f;
+    bool mesh_swapped = false;
+    bool damage_swapped = false;
+};
+JeepGunOverride g_jeep_gun_override;
+
+// Loaded per level, never cached across one. A mesh we load with vmesh_load is a
+// level resource, so it dies with the level that loaded it and the pointer must not
+// outlive it.
+void ensure_jeep_gun_mesh_loaded()
+{
+    if (g_jeep_gun_mesh_load_attempted) return;
+    g_jeep_gun_mesh_load_attempted = true;
+    g_jeep_gun_mesh = rf::vmesh_load(kJeepGunMeshFilename, rf::MESH_TYPE_STATIC, -1);
+    if (!g_jeep_gun_mesh) {
+        xlog::warn("GunGame: failed to load '{}', keeping the Jeep Gun's stock mesh", kJeepGunMeshFilename);
+    }
+}
+
+// Drop the cached mesh so the next apply loads one belonging to the incoming level.
+void forget_jeep_gun_mesh()
+{
+    g_jeep_gun_mesh = nullptr;
+    g_jeep_gun_mesh_load_attempted = false;
+}
+
+void revert_jeep_gun_overrides()
+{
+    JeepGunOverride& o = g_jeep_gun_override;
+    if (o.weapon_type < 0) return;
+
+    if (o.weapon_type < rf::num_weapon_types) {
+        rf::WeaponInfo& wi = rf::weapon_types[o.weapon_type];
+        if (o.mesh_swapped) {
+            wi.third_person_vmesh_filename = o.saved_mesh_filename.c_str();
+            wi.third_person_vmesh_handle = o.saved_mesh;
+            wi.third_person_muzzle_tag = o.saved_muzzle_tag;
+            wi.third_person_grip_tag = o.saved_grip_tag;
+        }
+        if (o.damage_swapped) {
+            wi.damage_multi = o.saved_damage_multi;
+        }
+    }
+    o = JeepGunOverride{};
+}
+
+void apply_jeep_gun_overrides()
+{
+    if (!rf::is_multi || !gt_is_gungame()) return;
+    if (g_jeep_gun_override.weapon_type >= 0) return; // already swapped in
+
+    const int wt = rf::weapon_lookup_type(kJeepGunWeaponClass);
+    if (wt < 0 || wt >= rf::num_weapon_types) return;
+    rf::WeaponInfo& wi = rf::weapon_types[wt];
+
+    JeepGunOverride pending;
+    pending.weapon_type = wt;
+
+    // damage is server only.
+    if (rf::is_server) {
+        pending.saved_damage_multi = wi.damage_multi;
+        pending.damage_swapped = true;
+    }
+
+    // mesh is interactive client only (client or listen server).
+    if (!rf::is_dedicated_server && !is_headless_mode()) {
+        ensure_jeep_gun_mesh_loaded();
+        if (g_jeep_gun_mesh) {
+            pending.saved_mesh_filename = wi.third_person_vmesh_filename.c_str();
+            pending.saved_mesh = wi.third_person_vmesh_handle;
+            pending.saved_muzzle_tag = wi.third_person_muzzle_tag;
+            pending.saved_grip_tag = wi.third_person_grip_tag;
+            pending.mesh_swapped = true;
+        }
+    }
+
+    if (!pending.damage_swapped && !pending.mesh_swapped) return;
+
+    g_jeep_gun_override = pending;
+    if (pending.damage_swapped) {
+        wi.damage_multi = kJeepGunDamageMulti;
+    }
+    if (pending.mesh_swapped) {
+        // Filename first: it is what the engine's accessor gates on, and without it
+        // the handle below is never handed back to the render path.
+        wi.third_person_vmesh_filename = kJeepGunMeshFilename;
+        wi.third_person_vmesh_handle = g_jeep_gun_mesh;
+        // Force the muzzle/grip prop points to re-resolve against our mesh instead
+        // of keeping indices cached from whatever was there before.
+        wi.third_person_muzzle_tag = -1;
+        wi.third_person_grip_tag = -1;
+    }
+}
 
 // Per-player state (server-side): score-threshold -> weapon-index map, and the
 // score each player's current life began at (drives the per-weapon rampage
@@ -302,6 +414,10 @@ bool is_weapon_level_up(int new_weapon, int current_weapon)
 
 void gungame_level_init()
 {
+    revert_jeep_gun_overrides();
+    forget_jeep_gun_mesh();
+    apply_jeep_gun_overrides(); // no-ops outside GunGame
+
     // Real level boundary: drop all per-player state and the announce latch. Tier
     // weapons are (re)resolved in level_init_post once weapons.tbl is loaded.
     g_player_orders.clear();
@@ -310,6 +426,16 @@ void gungame_level_init()
     g_orders_built_limit = -1;
     g_orders_built_generation = -1;
     g_final_reached_announced = false;
+}
+
+// Ensure the Jeep Gun changes do not persist when we leave multiplayer.
+void gungame_on_multi_shutdown()
+{
+    // Revert first so the class stops naming our mesh, then drop it: the session's
+    // level dies with it, taking the mesh, and single player must not be able to
+    // reach a freed pointer through the Jeep Gun class.
+    revert_jeep_gun_overrides();
+    forget_jeep_gun_mesh();
 }
 
 void gungame_level_init_post()
@@ -434,10 +560,13 @@ void gungame_do_frame()
             if (w == rf::remote_charge_det_weapon_type) {
                 w = rf::remote_charge_weapon_type; // the pair shares the charge ammo
             }
-            if (w >= 0 && w < 64 && !rf::weapon_uses_clip(w)) {
+            if (w >= 0 && w < rf::num_weapon_types && !rf::weapon_uses_clip(w)) {
                 const rf::WeaponInfo& winfo = rf::weapon_types[w];
-                if (winfo.ammo_type >= 0 && winfo.ammo_type < 32
-                    && ep->ai.ammo[winfo.ammo_type] < winfo.max_ammo) {
+                // Let the reserve DRAIN and refill it only once half spent, avoids
+                // huge reliable packet bursts with continuously firing no-clip weapons
+                // like the Jeep Gun.
+                if (winfo.ammo_type >= 0 && winfo.ammo_type < 32 && winfo.max_ammo > 0
+                    && ep->ai.ammo[winfo.ammo_type] <= winfo.max_ammo / 2) {
                     ep->ai.ammo[winfo.ammo_type] = winfo.max_ammo;
                     if (&p != rf::local_player && !p.is_bot) {
                         send_nonclip_ammo_sync(&p, ep, w);
@@ -516,7 +645,7 @@ void gungame_on_player_kill(rf::Player* killer, rf::Player* killed)
         // Resolve the configured final weapon's display name (gg_final_weapon),
         // falling back to a generic literal if it's out of range or unnamed.
         const char* final_name = "final weapon";
-        if (g_final_weapon_index >= 0 && g_final_weapon_index < 64
+        if (g_final_weapon_index >= 0 && g_final_weapon_index < rf::num_weapon_types
             && rf::weapon_types[g_final_weapon_index].display_name) {
             final_name = rf::weapon_types[g_final_weapon_index].display_name;
         }
