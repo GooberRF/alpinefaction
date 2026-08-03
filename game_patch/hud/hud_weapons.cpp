@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <patch_common/CallHook.h>
 #include <patch_common/FunHook.h>
 #include <patch_common/CodeInjection.h>
@@ -124,11 +125,68 @@ CodeInjection render_reticle_check_custom_injection{
     },
 };
 
+// A weapon with no FP mesh is confusing, render the weapon's display name
+// so at least you know what gun you have out.
+bool weapon_has_first_person_mesh(int weapon_type)
+{
+    if (weapon_type < 0 || weapon_type >= rf::num_weapon_types) {
+        return true;
+    }
+    const char* filename = rf::weapon_types[weapon_type].first_person_vmesh_filename;
+    return filename && *filename;
+}
+
+void hud_render_weapon_name_label(int weapon_type)
+{
+    // Hidden with the first person weapon itself.
+    if (!rf::local_player || !rf::local_player->settings.render_fpgun) {
+        return;
+    }
+    if (weapon_has_first_person_mesh(weapon_type)) {
+        return;
+    }
+    const char* name = rf::weapon_types[weapon_type].display_name;
+    if (!name || !*name) {
+        name = rf::weapon_types[weapon_type].name;   // fall back to the class name
+    }
+    if (!name || !*name) {
+        return;
+    }
+
+    const int font_id = rf::hud_text_font_num;
+    const auto [text_w, text_h] = rf::gr::get_string_size(name, font_id);
+
+    const int pad = std::max(4, static_cast<int>(6 * g_hud_ammo_scale));
+    const int box_w = text_w + pad * 2;
+    const int box_h = text_h + pad;
+    const int margin_x = std::max(8, static_cast<int>(12 * g_hud_ammo_scale));
+    const int margin_y = std::max(40, static_cast<int>(64 * g_hud_ammo_scale));
+    const int box_x = rf::gr::screen_width() - box_w - margin_x;
+    const int box_y = rf::gr::screen_height() - box_h - margin_y;
+
+    rf::gr::set_color(0, 0, 0, 140);
+    rf::gr::rect(box_x, box_y, box_w, box_h);
+    rf::gr::set_color(rf::hud_full_color);
+    hud_rect_border(box_x, box_y, box_w, box_h, 1);
+    rf::gr::string(box_x + pad, box_y + pad / 2, name, font_id);
+}
+
 FunHook<void(rf::Entity*, int, int, bool)> hud_render_ammo_hook{
     0x0043A510,
     [](rf::Entity *entity, int weapon_type, int offset_y, bool is_inactive) {
         offset_y = static_cast<int>(offset_y * g_hud_ammo_scale);
         hud_render_ammo_hook.call_target(entity, weapon_type, offset_y, is_inactive);
+        if (!is_inactive) {
+            hud_render_weapon_name_label(weapon_type);
+        }
+    },
+};
+
+FunHook<void(rf::Entity*, int)> hud_render_ammo_no_clip_hook{
+    0x0043ADD0,
+    [](rf::Entity* entity, int weapon_type) {
+        hud_render_ammo_no_clip_hook.call_target(entity, weapon_type);
+        hud_render_weapon_name_label(weapon_type);
     },
 };
 
@@ -212,6 +270,7 @@ void hud_weapons_apply_patches()
     // Big HUD support for ammo display
     hud_render_ammo_gr_bitmap_hook.install();
     hud_render_ammo_hook.install();
+    hud_render_ammo_no_clip_hook.install();
 
     // reticle color and scale
     render_reticle_gr_bitmap_hook.install();

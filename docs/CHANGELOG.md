@@ -95,6 +95,8 @@ Version 1.4.0 (Lupin): Not yet released
 - Add an `Asst` column to the scoreboard showing each player's assist count
 - Add `ui_assist_names` console command to toggle listing the players who assisted in kill messages
 - Add `ui_assist_highlight` console command to toggle highlighting of kill messages for kills you assisted
+- Show a label on the HUD indicating the name of the selected weapon if it has no FP mesh.
+- Tweak weapon values for some SP-intended weapon classes that are used in Weird Gun Game
 
 [@is-this-c](https://github.com/is-this-c)
 - Rewrite `VArray` to fix crashes due to MinGW

@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <format>
 #include <map>
+#include <optional>
 #include <random>
 #include <string>
 #include <unordered_map>
@@ -48,10 +49,9 @@ const std::vector<std::vector<const char*>> g_tier_names_weird = {
 std::vector<std::vector<int>> g_resolved_tiers;
 int g_final_weapon_index = -1;
 
-// Jeep Gun weapon-class overrides for Gun Game
+// Jeep Gun third person mesh override for Gun Game.
 constexpr const char* kJeepGunWeaponClass = "Jeep Gun";
 constexpr const char* kJeepGunMeshFilename = "af-jg1.v3m";
-constexpr float kJeepGunDamageMulti = 45.0f;
 rf::VMesh* g_jeep_gun_mesh = nullptr;
 bool g_jeep_gun_mesh_load_attempted = false;
 
@@ -65,9 +65,6 @@ struct JeepGunOverride
     rf::VMesh* saved_mesh = nullptr;
     int saved_muzzle_tag = -1;
     int saved_grip_tag = -1;
-    float saved_damage_multi = 0.0f;
-    bool mesh_swapped = false;
-    bool damage_swapped = false;
 };
 JeepGunOverride g_jeep_gun_override;
 
@@ -98,15 +95,10 @@ void revert_jeep_gun_overrides()
 
     if (o.weapon_type < rf::num_weapon_types) {
         rf::WeaponInfo& wi = rf::weapon_types[o.weapon_type];
-        if (o.mesh_swapped) {
-            wi.third_person_vmesh_filename = o.saved_mesh_filename.c_str();
-            wi.third_person_vmesh_handle = o.saved_mesh;
-            wi.third_person_muzzle_tag = o.saved_muzzle_tag;
-            wi.third_person_grip_tag = o.saved_grip_tag;
-        }
-        if (o.damage_swapped) {
-            wi.damage_multi = o.saved_damage_multi;
-        }
+        wi.third_person_vmesh_filename = o.saved_mesh_filename.c_str();
+        wi.third_person_vmesh_handle = o.saved_mesh;
+        wi.third_person_muzzle_tag = o.saved_muzzle_tag;
+        wi.third_person_grip_tag = o.saved_grip_tag;
     }
     o = JeepGunOverride{};
 }
@@ -116,46 +108,141 @@ void apply_jeep_gun_overrides()
     if (!rf::is_multi || !gt_is_gungame()) return;
     if (g_jeep_gun_override.weapon_type >= 0) return; // already swapped in
 
+    // Interactive clients only (client or listen server).
+    if (rf::is_dedicated_server || is_headless_mode()) return;
+
     const int wt = rf::weapon_lookup_type(kJeepGunWeaponClass);
     if (wt < 0 || wt >= rf::num_weapon_types) return;
+
+    ensure_jeep_gun_mesh_loaded();
+    if (!g_jeep_gun_mesh) return; // no mesh installed: leave the class alone
+
     rf::WeaponInfo& wi = rf::weapon_types[wt];
+    JeepGunOverride& o = g_jeep_gun_override;
+    o.weapon_type = wt;
+    o.saved_mesh_filename = wi.third_person_vmesh_filename.c_str();
+    o.saved_mesh = wi.third_person_vmesh_handle;
+    o.saved_muzzle_tag = wi.third_person_muzzle_tag;
+    o.saved_grip_tag = wi.third_person_grip_tag;
 
-    JeepGunOverride pending;
-    pending.weapon_type = wt;
+    wi.third_person_vmesh_filename = kJeepGunMeshFilename;
+    wi.third_person_vmesh_handle = g_jeep_gun_mesh;
+    wi.third_person_muzzle_tag = -1;
+    wi.third_person_grip_tag = -1;
+}
 
-    // damage is server only.
-    if (rf::is_server) {
-        pending.saved_damage_multi = wi.damage_multi;
-        pending.damage_swapped = true;
+// Gun Game weapon class stat overrides
+// Applied on both client and server.
+struct GunGameWeaponTweak
+{
+    const char* weapon_class;
+    bool add_from_eye = false;
+    std::optional<float> fire_wait;
+    std::optional<float> impact_delay;
+    std::optional<float> damage_multi;
+    std::optional<float> damage_radius;
+    std::optional<float> lifetime;
+};
+
+const GunGameWeaponTweak GG_WEAPON_TWEAKS[] = {
+    {.weapon_class = "Jeep Gun", .damage_multi = 45.0f}, // third person mesh is handled separately
+    {.weapon_class = "TriBeam Laser", .add_from_eye = true, .fire_wait = 1.0f, .impact_delay = 0.0f, .damage_radius = 4.0f},
+    {.weapon_class = "Laser", .add_from_eye = true},
+    {.weapon_class = "Capek Cane", .add_from_eye = true, .fire_wait = 1.0f, .impact_delay = 0.0f},
+    {.weapon_class = "Big Rock Snake Spit", .add_from_eye = true, .fire_wait = 1.0f, .impact_delay = 0.0f, .damage_multi = 200.0f},
+    {.weapon_class = "Torpedo", .add_from_eye = true, .fire_wait = 1.0f, .damage_multi = 500.0f, .lifetime = 20.0f},
+    {.weapon_class = "Sea Creature Sonar Attack", .fire_wait = 1.0f, .damage_multi = 280.0f, .damage_radius = 4.0f},
+    {.weapon_class = "Vauss", .damage_multi = 45.0f},
+};
+
+// Every field a tweak can reach, captured before the first write.
+struct GunGameWeaponSaved
+{
+    int weapon_type = -1;
+    int flags = 0;
+    float fire_wait = 0.0f;
+    float impact_delay = 0.0f;
+    float damage_multi = 0.0f;
+    float damage_radius = 0.0f;
+    float damage_radius_multi = 0.0f;
+    float damage_radius_single = 0.0f;
+    float lifetime = 0.0f;
+    float lifetime_multi = 0.0f;
+    float lifetime_single = 0.0f;
+    float lifetime_mul_vel = 0.0f;
+};
+std::vector<GunGameWeaponSaved> g_gg_weapon_saved;
+
+void revert_gungame_weapon_tweaks()
+{
+    for (const GunGameWeaponSaved& s : g_gg_weapon_saved) {
+        if (s.weapon_type < 0 || s.weapon_type >= rf::num_weapon_types) continue;
+        rf::WeaponInfo& wi = rf::weapon_types[s.weapon_type];
+        wi.flags = s.flags;
+        wi.fire_wait = s.fire_wait;
+        wi.create_weapon_delay_seconds[0] = s.impact_delay;
+        wi.damage_multi = s.damage_multi;
+        wi.damage_radius = s.damage_radius;
+        wi.damage_radius_multi = s.damage_radius_multi;
+        wi.damage_radius_single = s.damage_radius_single;
+        wi.lifetime_seconds = s.lifetime;
+        wi.lifetime_seconds_multi = s.lifetime_multi;
+        wi.lifetime_seconds_single = s.lifetime_single;
+        wi.lifetime_mul_vel = s.lifetime_mul_vel;
     }
+    g_gg_weapon_saved.clear();
+}
 
-    // mesh is interactive client only (client or listen server).
-    if (!rf::is_dedicated_server && !is_headless_mode()) {
-        ensure_jeep_gun_mesh_loaded();
-        if (g_jeep_gun_mesh) {
-            pending.saved_mesh_filename = wi.third_person_vmesh_filename.c_str();
-            pending.saved_mesh = wi.third_person_vmesh_handle;
-            pending.saved_muzzle_tag = wi.third_person_muzzle_tag;
-            pending.saved_grip_tag = wi.third_person_grip_tag;
-            pending.mesh_swapped = true;
+void apply_gungame_weapon_tweaks()
+{
+    if (!rf::is_multi || !gt_is_gungame()) return;
+    if (!g_gg_weapon_saved.empty()) return; // already applied
+
+    for (const GunGameWeaponTweak& t : GG_WEAPON_TWEAKS) {
+        const int wt = rf::weapon_lookup_type(t.weapon_class);
+        if (wt < 0 || wt >= rf::num_weapon_types) {
+            xlog::warn("GunGame: weapon class '{}' did not resolve; leaving it alone", t.weapon_class);
+            continue;
         }
-    }
+        rf::WeaponInfo& wi = rf::weapon_types[wt];
 
-    if (!pending.damage_swapped && !pending.mesh_swapped) return;
+        GunGameWeaponSaved saved;
+        saved.weapon_type = wt;
+        saved.flags = wi.flags;
+        saved.fire_wait = wi.fire_wait;
+        saved.impact_delay = wi.create_weapon_delay_seconds[0];
+        saved.damage_multi = wi.damage_multi;
+        saved.damage_radius = wi.damage_radius;
+        saved.damage_radius_multi = wi.damage_radius_multi;
+        saved.damage_radius_single = wi.damage_radius_single;
+        saved.lifetime = wi.lifetime_seconds;
+        saved.lifetime_multi = wi.lifetime_seconds_multi;
+        saved.lifetime_single = wi.lifetime_seconds_single;
+        saved.lifetime_mul_vel = wi.lifetime_mul_vel;
+        g_gg_weapon_saved.push_back(saved);
 
-    g_jeep_gun_override = pending;
-    if (pending.damage_swapped) {
-        wi.damage_multi = kJeepGunDamageMulti;
-    }
-    if (pending.mesh_swapped) {
-        // Filename first: it is what the engine's accessor gates on, and without it
-        // the handle below is never handed back to the render path.
-        wi.third_person_vmesh_filename = kJeepGunMeshFilename;
-        wi.third_person_vmesh_handle = g_jeep_gun_mesh;
-        // Force the muzzle/grip prop points to re-resolve against our mesh instead
-        // of keeping indices cached from whatever was there before.
-        wi.third_person_muzzle_tag = -1;
-        wi.third_person_grip_tag = -1;
+        if (t.add_from_eye) wi.flags |= rf::WTF_FROM_EYE;
+        if (t.fire_wait) wi.fire_wait = *t.fire_wait;
+        if (t.impact_delay) wi.create_weapon_delay_seconds[0] = *t.impact_delay;
+        if (t.damage_multi) wi.damage_multi = *t.damage_multi;
+
+        // damage_radius and lifetime_seconds are BOTH re-derived from a _single or
+        // _multi source whenever the engine switches weapon mode.
+        // All three are written: the effective one to take effect now, and
+        // both sources so no mode switch in either direction can undo it.
+        if (t.damage_radius) {
+            wi.damage_radius = *t.damage_radius;
+            wi.damage_radius_multi = *t.damage_radius;
+            wi.damage_radius_single = *t.damage_radius;
+        }
+        if (t.lifetime) {
+            wi.lifetime_seconds = *t.lifetime;
+            wi.lifetime_seconds_multi = *t.lifetime;
+            wi.lifetime_seconds_single = *t.lifetime;
+            // lifetime_mul_vel is max_speed * lifetime, precomputed ONCE at startup.
+            // Recompute with the engine's formula.
+            wi.lifetime_mul_vel = wi.max_speed * *t.lifetime;
+        }
     }
 }
 
@@ -428,6 +515,8 @@ void gungame_level_init()
     revert_jeep_gun_overrides();
     forget_jeep_gun_mesh();
     apply_jeep_gun_overrides(); // no-ops outside GunGame
+    revert_gungame_weapon_tweaks();
+    apply_gungame_weapon_tweaks(); // no-ops outside GunGame
 
     // Real level boundary: drop all per-player state and the announce latch. Tier
     // weapons are (re)resolved in level_init_post once weapons.tbl is loaded.
@@ -439,7 +528,7 @@ void gungame_level_init()
     g_final_reached_announced = false;
 }
 
-// Ensure the Jeep Gun changes do not persist when we leave multiplayer.
+// Ensure the weapon class changes do not persist when we leave multiplayer.
 void gungame_on_multi_shutdown()
 {
     // Revert first so the class stops naming our mesh, then drop it: the session's
@@ -447,6 +536,7 @@ void gungame_on_multi_shutdown()
     // reach a freed pointer through the Jeep Gun class.
     revert_jeep_gun_overrides();
     forget_jeep_gun_mesh();
+    revert_gungame_weapon_tweaks();
 }
 
 void gungame_level_init_post()
