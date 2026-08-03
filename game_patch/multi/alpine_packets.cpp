@@ -3305,6 +3305,8 @@ static void build_af_server_info_packet(af_server_info_packet& pkt)
         af |= af_server_info_flags::SIF_SUPER_DRAIN;
     if (g_alpine_server_config_active_rules.mutators.jetpacks_enabled)
         af |= af_server_info_flags::SIF_JETPACKS;
+    if (g_alpine_server_config_active_rules.mutators.low_gravity_enabled)
+        af |= af_server_info_flags::SIF_LOW_GRAVITY;
     // Must stay immediately ahead of the signal_cfg_changed check below, which
     // consumes the flag this sets.
     {
@@ -3410,6 +3412,7 @@ static void decode_af_server_info_flags(const af_server_info_packet& pkt, Alpine
     server_info.reload_on_kill = (pkt.af_flags & af_server_info_flags::SIF_RELOAD_ON_KILL) != 0;
     server_info.super_drain = (pkt.af_flags & af_server_info_flags::SIF_SUPER_DRAIN) != 0;
     server_info.jetpacks = (pkt.af_flags & af_server_info_flags::SIF_JETPACKS) != 0;
+    server_info.low_gravity = (pkt.af_flags & af_server_info_flags::SIF_LOW_GRAVITY) != 0;
 }
 
 // Apply af_server_info_packet flags to the local server info (for listen server host)
@@ -3539,6 +3542,9 @@ static void af_process_server_info_packet(const void* data, size_t len, const rf
     mutators_set_no_clip_weapon((pkt.af_flags & af_server_info_flags::SIF_FEATURED_NO_CLIP)
                                     ? rf::rail_gun_weapon_type
                                     : -1);
+
+    // Same for gravity.
+    mutators_update_low_gravity();
 
     if ((pkt.af_flags & af_server_info_flags::SIF_SERVER_CFG_CHANGED) != 0) {
         g_remote_server_cfg_popup.set_cfg_changed();

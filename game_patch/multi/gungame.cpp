@@ -30,10 +30,17 @@ namespace
 // Built-in default progression, used unless specified with `gg_tiers` dedi cfg param.
 // Each tier is shuffled per player at order-build time.
 const std::vector<std::vector<const char*>> g_tier_names = {
-    {"heavy_machine_gun", "Rocket Launcher", "scope_assault_rifle"},
-    {"Jeep Gun", "Assault Rifle", "shoulder_cannon", "rail_gun"},
+    {"heavy_machine_gun", "Rocket Launcher", "scope_assault_rifle", "Assault Rifle"},
+    {"Jeep Gun", "Machine Pistol Special", "shoulder_cannon", "rail_gun"},
     {"Sniper Rifle", "Remote Charge", "Machine Pistol", "Grenade"},
     {"12mm handgun", "Flamethrower", "Shotgun"},
+};
+
+const std::vector<std::vector<const char*>> g_tier_names_weird = {
+    {"Grenade", "Rocket Launcher", "Vauss", "Assault Rifle"},
+    {"Jeep Gun", "Big Rock Snake Spit", "Torpedo", "Capek Cane"},
+    {"Remote Charge", "HEAP", "12mm handgun", "Flamethrower"},
+    {"Sea Creature Sonar Attack", "Laser", "TriBeam Laser"},
 };
 
 // Resolved tier weapon indices (config-driven when gungame_tiers is set, else
@@ -210,11 +217,13 @@ void resolve_tier_weapons()
         return idx;
     };
 
+    const bool weird = g_alpine_server_config_active_rules.mutators.weird_gungame_enabled;
+
     // Config-driven layout (gungame_tiers): outer array = tiers in order, inner
     // = weapons.tbl names. Failed names are skipped, empty tiers dropped. If the
     // whole config resolves to nothing, fall back to the built-in table.
     const auto& cfg_tiers = g_alpine_server_config_active_rules.gungame_tiers;
-    if (!cfg_tiers.empty()) {
+    if (!weird && !cfg_tiers.empty()) {
         for (const auto& tier_names : cfg_tiers) {
             std::vector<int> resolved;
             for (const std::string& name : tier_names) {
@@ -231,7 +240,7 @@ void resolve_tier_weapons()
     }
 
     if (g_resolved_tiers.empty()) {
-        for (const auto& tier_names : g_tier_names) {
+        for (const auto& tier_names : (weird ? g_tier_names_weird : g_tier_names)) {
             std::vector<int> resolved;
             for (const char* name : tier_names) {
                 const int idx = resolve_one(name);
@@ -243,14 +252,16 @@ void resolve_tier_weapons()
         }
     }
 
-    // Final level weapon (gungame_final_weapon config; Riot Stick by default).
-    const std::string& final_name = g_alpine_server_config_active_rules.gungame_final_weapon;
+    // Final level weapon.
+    const char* const default_final = weird ? "riot shield" : "Riot Stick";
+    const std::string final_name =
+        weird ? std::string() : g_alpine_server_config_active_rules.gungame_final_weapon;
     int final_idx = final_name.empty() ? -1 : rf::weapon_lookup_type(final_name.c_str());
     if (final_idx < 0) {
-        if (!final_name.empty() && final_name != "Riot Stick") {
-            xlog::warn("GunGame: final weapon '{}' did not resolve; using Riot Stick", final_name);
+        if (!final_name.empty() && final_name != default_final) {
+            xlog::warn("GunGame: final weapon '{}' did not resolve; using {}", final_name, default_final);
         }
-        final_idx = rf::weapon_lookup_type("Riot Stick");
+        final_idx = rf::weapon_lookup_type(default_final);
     }
     g_final_weapon_index = (final_idx >= 0) ? final_idx : rf::riot_stick_weapon_type;
 }

@@ -201,6 +201,10 @@ const MutatorDescription mutator_descriptions[] = {
      "Bots play on the Blue team. Humans play on the Red team."},
     {"delayedsupers",
      "Super items start the round hidden, then respawn normally."},
+    {"weirdgungame",
+     "Gun Game includes weird creature weapons and lasers."},
+    {"lowgravity",
+     "Low gravity for all players and projectiles."},
 };
 
 const char* mutator_description_for(std::string_view name)

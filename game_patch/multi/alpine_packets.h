@@ -579,6 +579,7 @@ enum af_server_info_flags : uint32_t {
     SIF_RELOAD_ON_KILL = 1u << 21,
     SIF_SUPER_DRAIN = 1u << 22,
     SIF_JETPACKS = 1u << 23,
+    SIF_LOW_GRAVITY = 1u << 24,
 };
 
 // Subset of `rf::NetGameFlags`.

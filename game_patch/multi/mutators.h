@@ -42,6 +42,8 @@ enum class MutatorId : uint8_t
     Jetpacks = 10,
     HumansVsBots = 11,
     DelayedSupers = 12,
+    WeirdGunGame = 13,
+    LowGravity = 14,
 };
 
 struct MutatorOptionChoice
@@ -75,8 +77,9 @@ inline constexpr int MUTATOR_NO_CLIENT_REQUIREMENT = 0;
 // What a mutator needs from the game type in order to be applied.
 enum class MutatorGametypeReq : uint8_t
 {
-    Any,      // every game type
-    TeamOnly, // only team game types
+    Any,         // every game type
+    TeamOnly,
+    GunGameOnly,
 };
 
 struct MutatorInfo
@@ -100,6 +103,8 @@ void mutators_do_patch();
 void apply_mutators_from_toml(const toml::array& mutators_arr, AlpineServerConfigRules& rules);
 void mutators_level_init_post();
 void mutators_do_frame();
+void mutators_update_low_gravity();
+void mutators_on_multi_shutdown();
 int mutators_redirect_item_index(int item_type_index);
 bool mutators_should_deny_weapon_switch(int from_weapon, int to_weapon);
 void mutators_on_player_frag(rf::Player* killer);

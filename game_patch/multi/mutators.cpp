@@ -299,6 +299,18 @@ static void apply_delayed_supers(AlpineServerConfigRules& r, const toml::table& 
         r.delayed_items.add("rail gun");
 }
 
+// Weird Gun Game.
+static void apply_weird_gungame(AlpineServerConfigRules& r, const toml::table& /*opts*/)
+{
+    r.mutators.weird_gungame_enabled = true;
+}
+
+// Low Gravity.
+static void apply_low_gravity(AlpineServerConfigRules& r, const toml::table& /*opts*/)
+{
+    r.mutators.low_gravity_enabled = true;
+}
+
 // ============================================================================
 // Registry + application order
 // ============================================================================
@@ -355,11 +367,15 @@ static const MutatorDef MUTATORS[] = {
     {MutatorId::Jetpacks, "jetpacks", "Jetpacks", 4, &apply_jetpacks, nullptr, 0},
     {MutatorId::HumansVsBots, "humansvsbots", "Humans vs. Bots", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_humans_vs_bots, nullptr, 0, MutatorGametypeReq::TeamOnly},
     {MutatorId::DelayedSupers, "delayedsupers", "Delayed Supers", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_delayed_supers, nullptr, 0},
+    {MutatorId::WeirdGunGame, "weirdgungame", "Weird Gun Game", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_weird_gungame, nullptr, 0, MutatorGametypeReq::GunGameOnly},
+    {MutatorId::LowGravity, "lowgravity", "Low Gravity", 4, &apply_low_gravity, nullptr, 0},
 };
 
 // Hardcoded order in which simultaneously-active mutators are applied. Later
 // entries win where they overlap.
 static const MutatorId MUTATOR_APPLY_ORDER[] = {
+    MutatorId::LowGravity,
+    MutatorId::WeirdGunGame,
     MutatorId::HumansVsBots,
     MutatorId::Jetpacks,
     MutatorId::Gibbing,
@@ -378,15 +394,21 @@ static const MutatorId MUTATOR_APPLY_ORDER[] = {
 // Resolve a static requirement to the concrete set of game types it permits.
 static uint32_t gametype_mask_for_req(MutatorGametypeReq req)
 {
-    if (req == MutatorGametypeReq::Any)
-        return MUTATOR_GAMETYPE_MASK_ANY;
-
-    uint32_t mask = 0;
-    for (int i = 0; i < static_cast<int>(rf::NG_TYPE_UNK); ++i) {
-        if (multi_game_type_is_team_type(static_cast<rf::NetGameType>(i)))
-            mask |= 1u << i;
+    switch (req) {
+        case MutatorGametypeReq::TeamOnly: {
+            uint32_t mask = 0;
+            for (int i = 0; i < static_cast<int>(rf::NG_TYPE_UNK); ++i) {
+                if (multi_game_type_is_team_type(static_cast<rf::NetGameType>(i)))
+                    mask |= 1u << i;
+            }
+            return mask;
+        }
+        case MutatorGametypeReq::GunGameOnly:
+            return 1u << static_cast<int>(rf::NG_TYPE_GG);
+        case MutatorGametypeReq::Any:
+            break;
     }
-    return mask;
+    return MUTATOR_GAMETYPE_MASK_ANY;
 }
 
 bool mutator_gametype_mask_allows(uint32_t valid_gametype_mask, uint8_t game_type)
@@ -867,11 +889,60 @@ static bool is_standard_health_or_armor_item(const rf::ItemInfo& info)
 // Defined in the Flaming Enemies section below.
 static void flame_level_init();
 
+static constexpr float LOW_GRAVITY_VALUE = 5.8f;
+
+static bool g_low_gravity_applied = false;
+static float g_saved_gravity = 0.0f;
+
+static bool low_gravity_is_active()
+{
+    if (!rf::is_multi)
+        return false;
+    if (rf::is_server)
+        return g_alpine_server_config_active_rules.mutators.low_gravity_enabled;
+    // Server informs the client via SIF_LOW_GRAVITY.
+    const auto& info = get_af_server_info();
+    return info.has_value() && info->low_gravity;
+}
+
+void mutators_update_low_gravity()
+{
+    const bool want = low_gravity_is_active();
+    if (want == g_low_gravity_applied)
+        return;
+
+    if (want) {
+        // Whatever the level set for itself, captured before we overwrite it.
+        g_saved_gravity = rf::gravity;
+        g_low_gravity_applied = true;
+        rf::level_set_gravity(LOW_GRAVITY_VALUE);
+    }
+    else {
+        g_low_gravity_applied = false;
+        rf::level_set_gravity(g_saved_gravity);
+    }
+}
+
+void mutators_on_multi_shutdown()
+{
+    // Leaving multiplayer mid-level: single player must not inherit the override.
+    mutators_update_low_gravity();
+    if (g_low_gravity_applied) {
+        g_low_gravity_applied = false;
+        rf::level_set_gravity(g_saved_gravity);
+    }
+}
+
 void mutators_level_init_post()
 {
     // Both sides: forget the previous level's fire bookkeeping. Its fire records died
     // with their parent entities; stale pointers here could alias new-level fires.
     flame_level_init();
+
+    // Both sides. The incoming level has already set its own gravity, so the saved
+    // value from the outgoing one is stale and must be dropped WITHOUT writing it.
+    g_low_gravity_applied = false;
+    mutators_update_low_gravity();
 
     if (!rf::is_server)
         return;

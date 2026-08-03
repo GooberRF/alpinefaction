@@ -1739,6 +1739,10 @@ CallHook<int(const rf::NetAddr*, std::byte*, size_t)> send_join_accept_packet_ho
         if (g_alpine_server_config_active_rules.mutators.jetpacks_enabled) {
             ext_data.flags |= AlpineFactionJoinAcceptPacketExt::Flags::jetpacks;
         }
+        // Low gravity: the client owns the entire movement, so it has to know.
+        if (g_alpine_server_config_active_rules.mutators.low_gravity_enabled) {
+            ext_data.flags |= AlpineFactionJoinAcceptPacketExt::Flags::low_gravity;
+        }
         // AF 1.3+ clients: use footer-based format for forward compatibility
         // Older clients: use legacy raw struct (they don't know about the footer)
         bool use_footer = g_joining_client_version == ClientSoftware::AlpineFaction
@@ -1879,6 +1883,7 @@ CodeInjection process_join_accept_injection{
             server_info.reload_on_kill = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::reload_on_kill);
             server_info.super_drain = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::super_drain);
             server_info.jetpacks = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::jetpacks);
+            server_info.low_gravity = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::low_gravity);
             // featured_no_clip is intentionally not stored here, it's consumed inline below via mutators_set_no_clip_weapon.
 
             constexpr float default_fov = 90.0f;
@@ -1897,12 +1902,16 @@ CodeInjection process_join_accept_injection{
                     ? rf::rail_gun_weapon_type
                     : -1);
 
+            // Settle local gravity against it.
+            mutators_update_low_gravity();
+
             // Update footstep activation based on server permissions
             evaluate_footsteps();
         }
         else {
             g_af_server_info.reset();
             mutators_set_no_clip_weapon(-1); // non-AF server: ensure no stale override
+            mutators_update_low_gravity();   // no stale gravity override
             evaluate_footsteps();
         }
     },
@@ -2582,6 +2591,7 @@ FunHook<void()> multi_stop_hook{
         salvage_on_multi_shutdown(); // put the flag_red item class back to items.tbl
         bagman_on_multi_shutdown();  // put the amp aura bitmap back to its stock value
         gungame_on_multi_shutdown(); // put the Jeep Gun mesh + damage back to weapons.tbl
+        mutators_on_multi_shutdown(); // put the level's own gravity back
         if (rf::local_player) {
             PlayerAdditionalData* const player_add_data =
                 static_cast<PlayerAdditionalData*>(rf::local_player);

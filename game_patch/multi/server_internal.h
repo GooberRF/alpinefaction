@@ -667,6 +667,14 @@ struct MutatorConfig
     // This is used by Delayed Supers to delay the rail gun pickup too.
     bool super_rail_enabled = false;
 
+    // Weird Gun Game: swap Gun Game's built-in progression and final weapon for
+    // the weird ones.
+    bool weird_gungame_enabled = false;
+
+    // Low Gravity: run the level at reduced gravity. Must apply on both server
+    // (for projectiles) and clients (for movement)
+    bool low_gravity_enabled = false;
+
     // Display only: human-readable names of the mutators applied to these rules.
     std::vector<std::string> active_labels;
 
