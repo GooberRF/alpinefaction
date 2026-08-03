@@ -658,6 +658,10 @@ struct MutatorConfig
     // Humans vs. Bots: bots always play on Blue, humans always on Red.
     bool humans_vs_bots_enabled = false;
 
+    // Super Rail: treat the rail item as a super pickup.
+    // This is used by Delayed Supers to delay the rail gun pickup too.
+    bool super_rail_enabled = false;
+
     // Display only: human-readable names of the mutators applied to these rules.
     std::vector<std::string> active_labels;
 

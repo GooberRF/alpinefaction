@@ -41,6 +41,7 @@ enum class MutatorId : uint8_t
     Gibbing = 9,
     Jetpacks = 10,
     HumansVsBots = 11,
+    DelayedSupers = 12,
 };
 
 struct MutatorOptionChoice

@@ -32,6 +32,7 @@ Version 1.4.0 (Lupin): Not yet released
   - Gibbing
   - Jetpacks
   - Humans vs. Bots
+  - Delayed Supers
 - Rework multiplayer voting to use a GUI-based system instead of chat commands
   - Servers describe their votable levels, game types, and mutator options to clients
   - `Level` and `Match` can now select a game type and any number of mutators (with their options) for the voted level

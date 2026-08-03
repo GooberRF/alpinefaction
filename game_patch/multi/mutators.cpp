@@ -235,6 +235,8 @@ static void apply_super_rail(AlpineServerConfigRules& r, const toml::table& /*op
         return;
     }
 
+    r.mutators.super_rail_enabled = true;
+
     r.weapon_stay_exemptions.add(mutator_weapon_name(rail), true);
 
     for (int i = 0; i < rf::num_item_types; ++i) {
@@ -274,6 +276,27 @@ static void apply_jetpacks(AlpineServerConfigRules& r, const toml::table& /*opts
 static void apply_humans_vs_bots(AlpineServerConfigRules& r, const toml::table& /*opts*/)
 {
     r.mutators.humans_vs_bots_enabled = true;
+}
+
+// Delayed Supers: super-tier items start hidden and only begin their normal
+// respawn timer once it first elapses.
+static const char* const DELAYED_SUPERS_ITEMS[] = {
+    "Multi Super Health",
+    "Multi Super Armor",
+    "Multi Invulnerability",
+    "Multi Damage Amplifier",
+    "shoulder_cannon",
+};
+
+static void apply_delayed_supers(AlpineServerConfigRules& r, const toml::table& /*opts*/)
+{
+    for (const char* name : DELAYED_SUPERS_ITEMS)
+        r.delayed_items.add(name);
+
+    // Only delay the rail gun pickup when Super Rail is also active; applied
+    // after Super Rail in MUTATOR_APPLY_ORDER so its flag is already set.
+    if (r.mutators.super_rail_enabled)
+        r.delayed_items.add("rail gun");
 }
 
 // ============================================================================
@@ -330,6 +353,7 @@ static const MutatorDef MUTATORS[] = {
     {MutatorId::Gibbing, "gibbing", "Gibbing", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_gibbing, nullptr, 0},
     {MutatorId::Jetpacks, "jetpacks", "Jetpacks", 4, &apply_jetpacks, nullptr, 0},
     {MutatorId::HumansVsBots, "humansvsbots", "Humans vs. Bots", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_humans_vs_bots, nullptr, 0},
+    {MutatorId::DelayedSupers, "delayedsupers", "Delayed Supers", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_delayed_supers, nullptr, 0},
 };
 
 // Hardcoded order in which simultaneously-active mutators are applied. Later
@@ -341,6 +365,7 @@ static const MutatorId MUTATOR_APPLY_ORDER[] = {
     MutatorId::FlamingEnemies,
     MutatorId::BigCraters,
     MutatorId::SuperRail,
+    MutatorId::DelayedSupers,
     MutatorId::Armored,
     MutatorId::SuperDrain,
     MutatorId::Vampire,
