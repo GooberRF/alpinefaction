@@ -78,13 +78,8 @@ namespace rf
     };
 
     static auto& gravity = addr_as_ref<float>(0x005A00DC);
+    static auto& level_set_gravity = addr_as_ref<void(float value)>(0x004A0E20);
 
     static auto& physics_create_object = addr_as_ref<void(PhysicsData *pd, ObjectCreateInfo *oci)>(0x0049EC90);
     static auto& physics_delete_object = addr_as_ref<void(PhysicsData *pd)>(0x0049F1D0);
-
-    template<>
-    inline void VArray<PCollisionSphere>::add(PCollisionSphere element)
-    {
-        AddrCaller{0x00417F30}.this_call(this, element);
-    }
 }

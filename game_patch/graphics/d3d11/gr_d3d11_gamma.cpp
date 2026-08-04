@@ -3,7 +3,7 @@
 #include "gr_d3d11.h"
 #include "gr_d3d11_shader.h"
 
-namespace df::gr::d3d11
+namespace gr::d3d11
 {
     struct alignas(16) GammaBufferData
     {

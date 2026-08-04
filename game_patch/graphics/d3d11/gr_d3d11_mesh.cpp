@@ -25,9 +25,7 @@
 #include "gr_d3d11_shader.h"
 #include "../../object/object.h"
 
-using namespace rf;
-
-namespace df::gr::d3d11
+namespace gr::d3d11
 {
     bool g_level_vertex_lighting = false;
 
@@ -78,7 +76,7 @@ namespace df::gr::d3d11
     // Per-entity cache of the last valid blended ambient (keyed by MeshRenderParams address).
     // When an entity walks over geometry without lightmaps (ambient_color = white),
     // the cached value is used instead of falling back to global ambient.
-    static std::unordered_map<const MeshRenderParams*, std::array<float, 3>> entity_ambient_cache;
+    static std::unordered_map<const rf::MeshRenderParams*, std::array<float, 3>> entity_ambient_cache;
 
     void clear_entity_ambient_cache()
     {
@@ -87,9 +85,9 @@ namespace df::gr::d3d11
 
     struct PackedRgb
     {
-        ubyte red;
-        ubyte green;
-        ubyte blue;
+        rf::ubyte red;
+        rf::ubyte green;
+        rf::ubyte blue;
     };
 
     struct VertexColorKey
@@ -153,13 +151,13 @@ namespace df::gr::d3d11
         }
     }
 
-    static bool is_vif_chunk_double_sided(const VifChunk& chunk)
+    static bool is_vif_chunk_double_sided(const rf::VifChunk& chunk)
     {
         for (int face_index = 0; face_index < chunk.num_faces; ++face_index) {
             auto& face = chunk.faces[face_index];
             // If any face belonging to a chunk is not double sided mark the chunk as not double sided and
             // duplicate individual faces that have double sided flag
-            if (!(face.flags & VIF_FACE_DOUBLE_SIDED)) {
+            if (!(face.flags & rf::VIF_FACE_DOUBLE_SIDED)) {
                 return false;
             }
         }
@@ -169,8 +167,8 @@ namespace df::gr::d3d11
     class MeshRenderCache : public BaseMeshRenderCache
     {
     public:
-        MeshRenderCache(VifLodMesh* lod_mesh, BufferWrapper& vertex_buffer, BufferWrapper& index_buffer, RenderContext& render_context,
-            MeshMaterial* materials = nullptr, int num_materials = 0);
+        MeshRenderCache(rf::VifLodMesh* lod_mesh, BufferWrapper& vertex_buffer, BufferWrapper& index_buffer, RenderContext& render_context,
+            rf::MeshMaterial* materials = nullptr, int num_materials = 0);
 
         const std::vector<GpuVertex>& vertices() const
         {
@@ -201,11 +199,11 @@ namespace df::gr::d3d11
     };
 
     MeshRenderCache::MeshRenderCache(
-        VifLodMesh* lod_mesh,
+        rf::VifLodMesh* lod_mesh,
         BufferWrapper& vertex_buffer,
         BufferWrapper& index_buffer,
         RenderContext& render_context,
-        MeshMaterial* materials,
+        rf::MeshMaterial* materials,
         int num_materials
     ) :
         BaseMeshRenderCache(lod_mesh),
@@ -264,7 +262,7 @@ namespace df::gr::d3d11
                     gpu_inds.emplace_back(face.vindex1);
                     gpu_inds.emplace_back(face.vindex2);
                     gpu_inds.emplace_back(face.vindex3);
-                    if ((face.flags & VIF_FACE_DOUBLE_SIDED) && !double_sided) {
+                    if ((face.flags & rf::VIF_FACE_DOUBLE_SIDED) && !double_sided) {
                         gpu_inds.emplace_back(face.vindex1);
                         gpu_inds.emplace_back(face.vindex3);
                         gpu_inds.emplace_back(face.vindex2);
@@ -366,7 +364,7 @@ namespace df::gr::d3d11
     {
     public:
         BoneTransformsBuffer(ID3D11Device* device);
-        void update(const CharacterInstance* ci, ID3D11DeviceContext* device_context);
+        void update(const rf::CharacterInstance* ci, ID3D11DeviceContext* device_context);
 
         operator ID3D11Buffer*() const
         {
@@ -390,7 +388,7 @@ namespace df::gr::d3d11
         );
     }
 
-    static inline GpuMatrix4x3 convert_bone_matrix(const Matrix43& mat)
+    static inline GpuMatrix4x3 convert_bone_matrix(const rf::Matrix43& mat)
     {
         return {{
             {mat.orient.rvec.x, mat.orient.uvec.x, mat.orient.fvec.x, mat.origin.x},
@@ -399,14 +397,14 @@ namespace df::gr::d3d11
         }};
     }
 
-    void BoneTransformsBuffer::update(const CharacterInstance* ci, ID3D11DeviceContext* device_context)
+    void BoneTransformsBuffer::update(const rf::CharacterInstance* ci, ID3D11DeviceContext* device_context)
     {
         // Note: if some matrices that are unused by skeleton are referenced by vertices and not get initialized
         //       bad things can happen even if weight is zero (e.g. in case of NaNs)
         BoneTransformsBufferData data{};
 
         for (int i = 0; i < ci->base_character->num_bones; ++i) {
-            const Matrix43& bone_mat = ci->bone_transforms_final[i];
+            const rf::Matrix43& bone_mat = ci->bone_transforms_final[i];
             data.matrices[i] = convert_bone_matrix(bone_mat);
         }
 
@@ -422,7 +420,7 @@ namespace df::gr::d3d11
     class CharacterMeshRenderCache : public BaseMeshRenderCache
     {
     public:
-        CharacterMeshRenderCache(VifLodMesh* lod_mesh, ID3D11Device* device);
+        CharacterMeshRenderCache(rf::VifLodMesh* lod_mesh, ID3D11Device* device);
 
         void bind_buffers(RenderContext& render_context, bool morphed)
         {
@@ -434,7 +432,7 @@ namespace df::gr::d3d11
             render_context.set_index_buffer(index_buffer_);
         }
 
-        void update_bone_transforms_buffer(const CharacterInstance* ci, RenderContext& render_context)
+        void update_bone_transforms_buffer(const rf::CharacterInstance* ci, RenderContext& render_context)
         {
             bone_transforms_buffer_.update(ci, render_context.device_context());
         }
@@ -481,7 +479,7 @@ namespace df::gr::d3d11
         mutable std::vector<uint64_t> last_vertex_color_generations_;
     };
 
-    CharacterMeshRenderCache::CharacterMeshRenderCache(VifLodMesh* lod_mesh, ID3D11Device* device) :
+    CharacterMeshRenderCache::CharacterMeshRenderCache(rf::VifLodMesh* lod_mesh, ID3D11Device* device) :
         BaseMeshRenderCache(lod_mesh), bone_transforms_buffer_{device},
         missing_vertex_colors_logged_(lod_mesh->num_levels, false),
         vertex_color_buffers_(lod_mesh->num_levels),
@@ -553,7 +551,7 @@ namespace df::gr::d3d11
                     gpu_inds.emplace_back(face.vindex1);
                     gpu_inds.emplace_back(face.vindex2);
                     gpu_inds.emplace_back(face.vindex3);
-                    if ((face.flags & VIF_FACE_DOUBLE_SIDED) && !double_sided) {
+                    if ((face.flags & rf::VIF_FACE_DOUBLE_SIDED) && !double_sided) {
                         gpu_inds.emplace_back(face.vindex1);
                         gpu_inds.emplace_back(face.vindex3);
                         gpu_inds.emplace_back(face.vindex2);
@@ -693,8 +691,8 @@ namespace df::gr::d3d11
             
             // fixes heap corruption when v3c files have mismatched vertex layouts
             int safe_size = std::max<int>(chunk.num_vecs, mesh->num_original_vecs);
-            std::vector<Vector3> morphed_vecs(safe_size);
-            std::memcpy(morphed_vecs.data(), chunk.vecs, chunk.num_vecs * sizeof(Vector3));
+            std::vector<rf::Vector3> morphed_vecs(safe_size);
+            std::memcpy(morphed_vecs.data(), chunk.vecs, chunk.num_vecs * sizeof(rf::Vector3));
             skeleton->morph(morphed_vecs.data(), chunk.num_vecs, time, chunk.orig_map, mesh->num_original_vecs);
             for (int vert_index = 0; vert_index < chunk.num_vecs; ++vert_index) {
                 int pos_vert_offset = chunk.same_vertex_offsets[vert_index];
@@ -827,7 +825,7 @@ namespace df::gr::d3d11
         render_caches_.erase(lod_mesh);
     }
 
-    static inline const int* get_tex_handles(rf::VifLodMesh* lod_mesh, const MeshRenderParams& params, int lod_index)
+    static inline const int* get_tex_handles(rf::VifLodMesh* lod_mesh, const rf::MeshRenderParams& params, int lod_index)
     {
         if (params.alt_tex) {
             return params.alt_tex;
@@ -835,33 +833,34 @@ namespace df::gr::d3d11
         return lod_mesh->meshes[lod_index]->tex_handles;
     }
 
-    void MeshRenderer::draw_cached_mesh(rf::VifLodMesh *lod_mesh, BaseMeshRenderCache& cache, const MeshRenderParams& params, int lod_index, bool skip_ambient_cache)
+
+    void MeshRenderer::draw_cached_mesh(rf::VifLodMesh *lod_mesh, BaseMeshRenderCache& cache, const rf::MeshRenderParams& params, int lod_index, bool skip_ambient_cache)
     {
         bool is_character_mesh = dynamic_cast<const CharacterMeshRenderCache*>(&cache) != nullptr;
         // picmip does not apply to game objects (entities, items, held weapons, fpgun)
-        bool is_fp_weapon = (params.flags & MRF_FIRST_PERSON) != 0;
+        bool is_fp_weapon = (params.flags & rf::MRF_FIRST_PERSON) != 0;
         bool is_object_mesh = is_character_mesh || is_fp_weapon || ScopedPicmipSkipObject::active();
         RenderContext::ScopedPicmipActive picmip_scope{render_context_, !is_object_mesh};
 
         const int* tex_handles = get_tex_handles(lod_mesh, params, lod_index);
         render_context_.set_primitive_topology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
-        std::optional<gr::Mode> forced_mode;
-        bool ir_scanner = (params.flags & MRF_SCANNER_1) != 0;
+        std::optional<rf::gr::Mode> forced_mode;
+        bool ir_scanner = (params.flags & rf::MRF_SCANNER_1) != 0;
         if (ir_scanner) {
             // used by rail gun scanner for heat overlays
             forced_mode.emplace(
-                TEXTURE_SOURCE_NONE,
-                COLOR_SOURCE_VERTEX,
-                ALPHA_SOURCE_VERTEX,
-                ALPHA_BLEND_ALPHA,
-                ZBUFFER_TYPE_FULL,
-                FOG_ALLOWED
+                rf::gr::TEXTURE_SOURCE_NONE,
+                rf::gr::COLOR_SOURCE_VERTEX,
+                rf::gr::ALPHA_SOURCE_VERTEX,
+                rf::gr::ALPHA_BLEND_ALPHA,
+                rf::gr::ZBUFFER_TYPE_FULL,
+                rf::gr::FOG_ALLOWED
             );
             static int null_tex_handles[7] = {-1, -1, -1, -1, -1, -1, -1};
             tex_handles = null_tex_handles;
         }
-        else if (params.flags & MRF_SCANNER_2) {
+        else if (params.flags & rf::MRF_SCANNER_2) {
             // used by rocket launcher scanner together with flag 1 so this code block seems unused
             assert(false);
         }
@@ -883,7 +882,7 @@ namespace df::gr::d3d11
                 if (is_character_mesh) {
                     color = add_clamped(params.ambient_color, {224, 224, 224, 224});
                 } else {
-                    if (params.flags & MeshRenderFlags::MRF_CUSTOM_AMBIENT_COLOR) {
+                    if (params.flags & rf::MeshRenderFlags::MRF_CUSTOM_AMBIENT_COLOR) {
                         color = g_character_meshes_are_fullbright
                             ? rf::Color{255, 255, 255, 255}
                             : params.ambient_color;
@@ -896,24 +895,24 @@ namespace df::gr::d3d11
                 // Enhanced pixel lighting: GPU handles all lighting
                 if (is_character_mesh) {
                     color = {255, 255, 255, 255};
-                    bool fullbright_character = g_character_meshes_are_fullbright && (params.flags & MRF_FIRST_PERSON) == 0;
+                    bool fullbright_character = g_character_meshes_are_fullbright && (params.flags & rf::MRF_FIRST_PERSON) == 0;
                     gpu_dynamic_lighting = !fullbright_character;
                 } else {
                     color = {255, 255, 255, 255};
                     gpu_dynamic_lighting = true;
                 }
             }
-            color.alpha = static_cast<ubyte>(params.alpha);
+            color.alpha = static_cast<rf::ubyte>(params.alpha);
         } else {
             // IR render colours:
             // characters are rendered using self_illum (derived from dist + body temp in player_fpgun_render_ir)
             // vehicles are rendered white
             if (is_character_mesh && g_alpine_game_config.thermal_entity_color_override) {
                 auto [r, g, b, a] = extract_color_components(*g_alpine_game_config.thermal_entity_color_override);
-                color = rf::Color{static_cast<ubyte>(r), static_cast<ubyte>(g), static_cast<ubyte>(b), static_cast<ubyte>(a)};
+                color = rf::Color{static_cast<rf::ubyte>(r), static_cast<rf::ubyte>(g), static_cast<rf::ubyte>(b), static_cast<rf::ubyte>(a)};
             } else {
                 color = is_character_mesh ? params.self_illum : rf::Color{255, 255, 255, 255};
-                color.alpha = static_cast<ubyte>(params.alpha);
+                color.alpha = static_cast<rf::ubyte>(params.alpha);
             }
         }
 
@@ -923,7 +922,7 @@ namespace df::gr::d3d11
             // directional key/fill lights (FUN_0052dad0), NOT as the flat ambient.
             // The flat ambient base is always the global level ambient.
             // Blend a small amount of the entity's lightmap color for environmental tinting.
-            if (params.flags & MRF_CUSTOM_AMBIENT_COLOR) {
+            if (params.flags & rf::MRF_CUSTOM_AMBIENT_COLOR) {
                 // White (255,255,255) means no lightmap data (e.g. invisible geometry).
                 // In that case, reuse the last valid blended ambient for this entity so
                 // lighting stays consistent when walking over geometry without lightmaps.
@@ -1031,7 +1030,7 @@ namespace df::gr::d3d11
             float self_illum = 0.0f;
             if (gpu_dynamic_lighting) {
                 self_illum = b.self_illumination;
-                if (b.mode.get_color_source() == gr::COLOR_SOURCE_TEXTURE) {
+                if (b.mode.get_color_source() == rf::gr::COLOR_SOURCE_TEXTURE) {
                     self_illum = 1.0f;
                 }
             }
@@ -1046,13 +1045,13 @@ namespace df::gr::d3d11
             render_context_.draw_indexed(b.num_indices, b.start_index, b.base_vertex);
         }
         if (params.powerup_bitmaps[0] != -1 && !ir_scanner) {
-            gr::Mode powerup_mode{
-                gr::TEXTURE_SOURCE_CLAMP,
-                gr::COLOR_SOURCE_TEXTURE,
-                gr::ALPHA_SOURCE_TEXTURE,
-                gr::ALPHA_BLEND_ALPHA_ADDITIVE,
-                gr::ZBUFFER_TYPE_READ,
-                gr::FOG_NOT_ALLOWED,
+            rf::gr::Mode powerup_mode{
+                rf::gr::TEXTURE_SOURCE_CLAMP,
+                rf::gr::COLOR_SOURCE_TEXTURE,
+                rf::gr::ALPHA_SOURCE_TEXTURE,
+                rf::gr::ALPHA_BLEND_ALPHA_ADDITIVE,
+                rf::gr::ZBUFFER_TYPE_READ,
+                rf::gr::FOG_NOT_ALLOWED,
             };
             render_context_.set_mode(powerup_mode);
             render_context_.set_textures(params.powerup_bitmaps[0], -1);

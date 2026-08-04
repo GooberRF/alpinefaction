@@ -89,6 +89,11 @@ Rob_Marion:
 soneproject:
 * af_killsound1.wav (CC-BY 3.0: https://freesound.org/s/346425/)
 
+theplax:
+* af_spray1.ogg (CC-BY 4.0: https://freesound.org/s/657793/)
+
+Drummyfish:
+* af-jetpack1skin1.tga and af-jetpack1.v3m (CC0: https://opengameart.org/content/oldschool-afps-weapons/)
 
 ###############################################################################
 ## stb_image, stb_vorbis

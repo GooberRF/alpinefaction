@@ -117,6 +117,20 @@ const char* bot_goal_type_to_string(const BotGoalType goal)
             return "ctf_capture_flag";
         case BotGoalType::ctf_hold_enemy_flag:
             return "ctf_hold_enemy_flag";
+        case BotGoalType::bag_pickup:
+            return "bag_pickup";
+        case BotGoalType::bag_camp:
+            return "bag_camp";
+        case BotGoalType::bag_chase_carrier:
+            return "bag_chase_carrier";
+        case BotGoalType::sal_seek_flag:
+            return "sal_seek_flag";
+        case BotGoalType::sal_deliver_flag:
+            return "sal_deliver_flag";
+        case BotGoalType::sal_chase_carrier:
+            return "sal_chase_carrier";
+        case BotGoalType::sal_stage_at_spawn:
+            return "sal_stage_at_spawn";
         case BotGoalType::control_point_objective:
             return "control_point_objective";
         case BotGoalType::roam:

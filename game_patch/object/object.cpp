@@ -268,6 +268,20 @@ CodeInjection obj_create_mesh_check_valid{
     },
 };
 
+FunHook<bool(rf::VMesh*, rf::VMeshCollisionInput*, rf::VMeshCollisionOutput*, bool)> vmesh_collide_hook{
+    0x005031F0,
+    [](rf::VMesh* vmesh, rf::VMeshCollisionInput* in, rf::VMeshCollisionOutput* out, bool clear) {
+        if (!vmesh) {
+            if (clear && out) {
+                out->fraction = 1.0f;
+                out->triangle_indices = nullptr;
+            }
+            return false;
+        }
+        return vmesh_collide_hook.call_target(vmesh, in, out, clear);
+    },
+};
+
 FunHook<void(rf::Object*)> obj_delete_mesh_hook{
     0x00489FC0,
     [](rf::Object* objp) {
@@ -297,7 +311,7 @@ CodeInjection mover_process_post_patch{
         if (object && object->type == rf::OT_EVENT) {
             rf::Event* event = static_cast<rf::Event*>(object);
 
-            if (event->event_type == rf::event_type_to_int(rf::EventType::Anchor_Marker)) {
+            if (event->event_type == std::to_underlying(rf::EventType::Anchor_Marker)) {
                 for (const auto& linked_uid : event->links) {
                     
                     // check for an object - Note objects store handles in link int rather than UID
@@ -331,7 +345,7 @@ CodeInjection mover_process_post_patch{
                 }
             }
 
-            if (event->event_type == rf::event_type_to_int(rf::EventType::Anchor_Marker_Orient)) {
+            if (event->event_type == std::to_underlying(rf::EventType::Anchor_Marker_Orient)) {
                 for (const auto& linked_uid : event->links) {
                     
                     // check for an object - Note objects store handles in link int rather than UID
@@ -588,6 +602,9 @@ void object_do_patch()
 
     // Print a warning to console when an invalid mesh would have been loaded
     obj_create_mesh_check_valid.install();
+
+    // Skip vmesh_collide when the mesh is invalid (fix crash from null deref)
+    vmesh_collide_hook.install();
 
     // Optimize Object::find_room function
     object_find_room_optimization.install();

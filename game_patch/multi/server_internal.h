@@ -5,6 +5,7 @@
 #include <set>
 #include <map>
 #include <optional>
+#include <variant>
 #include <vector>
 #include <filesystem>
 #include <unordered_map>
@@ -22,6 +23,8 @@ namespace rf
 {
     struct Player;
 }
+
+struct AfVoteCallParams; // alpine_packets.h
 
 // used for game_info packets
 struct AFGameInfoFlags
@@ -72,10 +75,10 @@ struct SpawnProtectionConfig
 
 struct InactivityConfig
 {
-    bool enabled = false;
-    bool kick_after_warning = true;
+    bool enabled = true;
+    bool kick_after_warning = false;
     uint32_t new_player_grace_ms = 120000;
-    uint32_t allowed_inactive_ms = 30000;
+    uint32_t allowed_inactive_ms = 60000;
     uint32_t warning_duration_ms = 10000;
     std::string kick_message = "You have been marked as idle due to inactivity! You will be kicked from the game unless you respawn in the next 10 seconds.";
 
@@ -100,109 +103,90 @@ struct VoteConfig
     bool enabled = false;
     bool ignore_nonvoters = false;
     int time_limit_seconds = 60;
+    // The votable-level allow list.
     std::vector<std::string> allowed_maps;
-    bool add_rotation_to_allowed_levels = false;
+    bool add_rotation_to_allowed_levels = true;
+    // Also allow every installed level whose filename matches a votable game type
+    // prefix. Resolved at config load and when a level is installed at runtime.
+    bool add_installed_to_allowed_levels = false;
     bool only_allow_gametype_prefix = false;
 
     // =============================================
     
     void set_time_limit_seconds(float in_time)
     {
-        time_limit_seconds = static_cast<int>(std::max(in_time, 1.0f));
-    }
-};
-
-struct GunGameLevelEntry
-{
-    int kills = -1;             // manual mode
-    int tier = -1;              // dynamic mode
-    std::string weapon_name;    // only used for config print on launch
-    int weapon_index = -1;
-
-    auto operator<=>(const GunGameLevelEntry&) const = default;
-};
-
-struct GunGameConfig
-{
-    bool enabled = false;
-    bool dynamic_progression = false;
-    bool rampage_rewards = false;
-
-    std::optional<GunGameLevelEntry> final_level;
-    std::vector<GunGameLevelEntry> levels;
-
-    // =============================================
-
-    static int resolve_weapon(std::string_view name)
-    {
-        int idx = rf::weapon_lookup_type(name.data());
-        return idx;
-    }
-
-    bool set_final_level(int kills, std::string_view weapon)
-    {
-        int idx = resolve_weapon(weapon);
-        if (idx < 0)
-            return false;
-        final_level = GunGameLevelEntry{kills, -1, std::string{weapon}, idx};
-        return true;
-    }
-
-    // Manual mode entry
-    bool add_level_by_kills(int kills, std::string_view weapon)
-    {
-        int idx = resolve_weapon(weapon);
-        if (idx < 0)
-            return false;
-        // replace if same kills already present
-        auto it = std::find_if(levels.begin(), levels.end(), [&](auto const& e) { return e.kills == kills; });
-        if (it != levels.end()) {
-            it->weapon_name = weapon;
-            it->weapon_index = idx;
-            it->tier = -1;
-            return false;
-        }
-        levels.push_back(GunGameLevelEntry{kills, -1, std::string{weapon}, idx});
-        return true;
-    }
-
-    // Dynamic mode entry
-    bool add_level_by_tier(int tier, std::string_view weapon)
-    {
-        int idx = resolve_weapon(weapon);
-        if (idx < 0)
-            return false;
-        levels.push_back(GunGameLevelEntry{-1, tier, std::string{weapon}, idx});
-        return true;
-    }
-
-    void normalize_manual()
-    {
-        std::sort(levels.begin(), levels.end(), [](auto const& a, auto const& b) { return a.kills < b.kills; });
-        // dedupe by kills (keep last)
-        std::vector<GunGameLevelEntry> out;
-        for (auto const& e : levels) {
-            if (e.kills < 0)
-                continue; // ignore tier entries in manual
-            if (!out.empty() && out.back().kills == e.kills)
-                out.back() = e;
-            else
-                out.push_back(e);
-        }
-        levels.swap(out);
+        time_limit_seconds = static_cast<int>(std::clamp(in_time, 1.0f, 65535.0f));
     }
 };
 
 struct BagmanConfig
 {
-    bool enabled = false;
-    float bag_return_time = 25000.0f;
+    int bag_return_time_ms = 7500;
+    int bag_spawn_delay_ms = 7500;
+    int bag_score_limit = 150;
+    int tbag_score_limit = 300;
+
+    void set_bag_return_time(float in_seconds)
+    {
+        // 2 bytes (uint16_t) on the wire
+        bag_return_time_ms = std::clamp(static_cast<int>(in_seconds * 1000.0f), 1000, 60000);
+    }
+
+    void set_bag_spawn_delay(float in_seconds)
+    {
+        bag_spawn_delay_ms = std::clamp(static_cast<int>(in_seconds * 1000.0f), 0, 60000);
+    }
+
+    void set_bag_score_limit(int count)
+    {
+        bag_score_limit = std::clamp(count, 1, 32767);
+    }
+
+    void set_tbag_score_limit(int count)
+    {
+        tbag_score_limit = std::clamp(count, 1, 65535);
+    }
+};
+
+struct SalvageConfig
+{
+    int cap_limit = 5;
+    int flag_spawn_delay_ms = 15000;
+    int flag_capture_respawn_delay_ms = 5000;
+    int flag_return_time_ms = 15000;
+
+    void set_cap_limit(int count)
+    {
+        cap_limit = std::clamp(count, 1, 65535);
+    }
+
+    void set_flag_spawn_delay(float in_seconds)
+    {
+        // 2 bytes (uint16_t) on the wire
+        flag_spawn_delay_ms = std::clamp(static_cast<int>(in_seconds * 1000.0f), 0, 60000);
+    }
+
+    void set_flag_capture_respawn_delay(float in_seconds)
+    {
+        flag_capture_respawn_delay_ms = std::clamp(static_cast<int>(in_seconds * 1000.0f), 0, 60000);
+    }
+
+    void set_flag_return_time(float in_seconds)
+    {
+        flag_return_time_ms = std::clamp(static_cast<int>(in_seconds * 1000.0f), 1000, 60000);
+    }
 };
 
 struct DamageNotificationConfig
 {
     bool enabled = true;
     bool support_legacy_clients = true;
+};
+
+struct SprayConfig
+{
+    bool enabled = true;
+    int cooldown_ms = 500;
 };
 
 struct CriticalHitsConfig
@@ -250,6 +234,21 @@ struct WeaponStayExemptionConfigOld
     bool riot_stick = false;
     bool riot_shield = false;
     bool rail_gun = false;
+};
+
+struct RoundConfig
+{
+    int max_rounds = 5;            // rounds per map before rotation
+    uint16_t round_time = 90;      // seconds per round
+    uint8_t post_round_time = 3;   // seconds of celebration after round end
+    uint8_t intermission_time = 3; // seconds of countdown between rounds
+
+    // =============================================
+
+    void set_max_rounds(int v) { max_rounds = std::clamp(v, 1, 999); }
+    void set_round_time(int v) { round_time = static_cast<uint16_t>(std::clamp(v, 10, 3600)); }
+    void set_post_round_time(int v) { post_round_time = static_cast<uint8_t>(std::clamp(v, 0, 10)); }
+    void set_intermission_time(int v) { intermission_time = static_cast<uint8_t>(std::clamp(v, 0, 10)); }
 };
 
 struct OvertimeConfig
@@ -565,17 +564,144 @@ struct GibConfig
     }
 };
 
+// Controls which level pickups survive under a mutator. Enforced server-side in
+// mutators_level_init_post() via multi_hide_level_items().
+enum class PickupPolicy : uint8_t
+{
+    Normal = 0,           // no suppression (default)
+    WeaponsAndAmmoOnly,   // keep weapon + ammo pickups, hide everything else
+    WeaponsOnly,          // keep weapon pickups, hide everything else
+    HideAll               // hide every pickup
+};
+
+// Type tag for a mutator option value.
+// FROZEN wire constants: these values are sent in the vote-options schema and
+// echoed back in vote-call packets. Never reorder or reuse.
+enum class MutatorOptionType : uint8_t
+{
+    Bool = 0,
+    Choice = 1,
+    Int = 2,
+    Float = 3,
+    String = 4,
+};
+
+inline constexpr uint32_t MUTATOR_GAMETYPE_MASK_ANY = 0xFFFFFFFFu;
+
+// Does valid_gametype_mask permit game_type?
+bool mutator_gametype_mask_allows(uint32_t valid_gametype_mask, uint8_t game_type);
+
+using MutatorOptionValue = std::variant<bool, int32_t, float, std::string>;
+
+// One declared mutator plus its option values, keyed by TOML key. Kept generic
+// so new mutator options need no struct changes here or in the TOML round-trip.
+struct MutatorDeclaration
+{
+    std::string name; // canonical mutator name (matches mutators_find_by_name)
+    std::map<std::string, MutatorOptionValue> options;
+
+    // Order-sensitive deep equality, which is what the vote-options blob uses to
+    // decide whether a level's mutator set differs from the base set.
+    bool operator==(const MutatorDeclaration&) const = default;
+};
+
+// A single mutator option as received from a vote-call packet, before it is
+// validated against the server's schema.
+struct VoteMutatorOptionInput
+{
+    uint8_t option_id = 0;
+    MutatorOptionType type = MutatorOptionType::Bool;
+    bool bool_value = false;
+    uint8_t choice_index = 0;
+    int32_t int_value = 0;
+    float float_value = 0.0f;
+    std::string string_value;
+};
+
+struct VoteMutatorInput
+{
+    uint8_t mutator_id = 0;
+    std::vector<VoteMutatorOptionInput> options;
+};
+
+struct MutatorConfig
+{
+    PickupPolicy pickup_policy = PickupPolicy::Normal;
+
+    // The weapon a mode is built around.
+    int featured_weapon_index = -1;
+
+    // Instagib: deny switching away from the featured weapon (server-side gate).
+    bool lock_to_featured_weapon = false;
+
+    // Instagib: refill the featured weapon's clip after every shot so it never
+    // reloads. Featured weapon must use a clip.
+    bool no_featured_reload = false;
+
+    // Rails: redirect level weapon/ammo pickups to the featured weapon's pickup.
+    bool redirect_pickups_to_featured = false;
+    bool redirect_exclude_thrown = false; // leave Remote Charges / Grenade alone
+    int featured_weapon_item_index = -1;  // resolved item type that gives the featured weapon
+    int featured_ammo_item_index = -1;    // resolved item type that gives featured ammo
+
+    // Arena: instantly refill the killer's current weapon clip after each frag.
+    bool reload_weapon_on_kill = false;
+
+    // Vampire: gain effective health when dealing PvP damage.
+    bool vampire_enabled = false;
+    float vampire_heal_ratio = 0.0f; // effective health granted per point of damage dealt
+    bool hide_health_armor_pickups = false;
+
+    // Super Drain: rot health/armor above the entity's max back down to it.
+    bool super_drain_enabled = false;
+
+    // Big Craters: double the weapon crater radius of explosion geomods.
+    bool big_craters_enabled = false;
+
+    // Flaming Enemies: sustained flamethrower fire damage sets players on fire.
+    bool flaming_enemies_enabled = false;
+
+    // Jetpacks: every player wears a jetpack; holding jump while falling thrusts.
+    bool jetpacks_enabled = false;
+
+    // Humans vs. Bots: bots always play on Blue, humans always on Red.
+    bool humans_vs_bots_enabled = false;
+
+    // Super Rail: treat the rail item as a super pickup.
+    // This is used by Delayed Supers to delay the rail gun pickup too.
+    bool super_rail_enabled = false;
+
+    // Weird Gun Game: swap Gun Game's built-in progression and final weapon for
+    // the weird ones.
+    bool weird_gungame_enabled = false;
+
+    // Low Gravity: run the level at reduced gravity. Must apply on both server
+    // (for projectiles) and clients (for movement)
+    bool low_gravity_enabled = false;
+
+    // Display only: human-readable names of the mutators applied to these rules.
+    std::vector<std::string> active_labels;
+
+    // Raw declarations (name + options) that produced this config, in apply
+    // order. Used to re-apply the scope's mutators after a runtime game_type
+    // change rebuilds the loadout and clears the rest of this struct.
+    std::vector<MutatorDeclaration> declarations;
+};
+
 struct AlpineServerConfigRules
 {
     // stock game rules
     rf::NetGameType game_type = rf::NetGameType::NG_TYPE_DM;
     float time_limit = 600.0f;
     OvertimeConfig overtime;
+    RoundConfig rounds;
     int individual_kill_limit = 30;
     int team_kill_limit = 100;
     int cap_limit = 5;
     int koth_score_limit = 100;
     int dc_score_limit = 300;
+    int pit_score_limit = 10;
+    int gungame_score_limit = 30;
     int geo_limit = 64;
     int rf2_geo_limit = -1; // -1 = unlimited, 0 = disabled, >0 = specific limit
     bool team_damage = false;
@@ -583,6 +709,7 @@ struct AlpineServerConfigRules
     bool weapons_stay = false;
     bool force_respawn = false;
     bool balance_teams = false;
+    bool auto_team_balance = false;
     int ideal_player_count = 32;
     bool saving_enabled = false;
     bool flag_dropping = true;
@@ -607,14 +734,19 @@ struct AlpineServerConfigRules
     bool force_rail_reload = true;
     KillRewardConfig kill_rewards;
     WeaponStayExemptionConfig weapon_stay_exemptions;
+    BagmanConfig bagman;
+    SalvageConfig salvage;
     std::map<std::string, std::string> item_replacements;
     std::map<std::string, int> item_respawn_time_overrides;
     DelayedItemsConfig delayed_items;
     ForceCharacterConfig force_character;
     CriticalHitsConfig critical_hits;
-    GunGameConfig gungame;
+    bool gungame_rampage_rewards = true;
+    std::vector<std::vector<std::string>> gungame_tiers; // uses built-in tiers if not specified
+    std::string gungame_final_weapon = "Riot Stick";
     bool geo_chunk_physics = true;
     bool clear_stale_movement_input = false;
+    MutatorConfig mutators;
 
     // =============================================
     void set_time_limit(float count)
@@ -623,7 +755,7 @@ struct AlpineServerConfigRules
     }
     void set_individual_kill_limit(int count)
     {
-        individual_kill_limit = std::clamp(count, 1, 65535);
+        individual_kill_limit = std::clamp(count, 1, 32767);
     }
     void set_team_kill_limit(int count)
     {
@@ -641,6 +773,14 @@ struct AlpineServerConfigRules
     {
         dc_score_limit = std::clamp(count, 1, 65535);
     }
+    void set_pit_score_limit(int count)
+    {
+        pit_score_limit = std::clamp(count, 1, 32767);
+    }
+    void set_gungame_score_limit(int count)
+    {
+        gungame_score_limit = std::clamp(count, 1, 32767);
+    }
     void set_geo_limit(int count)
     {
         geo_limit = std::clamp(count, 0, 128);
@@ -653,6 +793,48 @@ struct AlpineServerConfigRules
     {
         ideal_player_count = std::clamp(count, 1, 32);
     }
+
+    // The score limit that decides a win in `game_type`.
+    std::optional<int> get_score_limit(rf::NetGameType game_type) const
+    {
+        switch (game_type) {
+            case rf::NetGameType::NG_TYPE_CTF:     return cap_limit;
+            case rf::NetGameType::NG_TYPE_SAL:     return salvage.cap_limit;
+            case rf::NetGameType::NG_TYPE_TEAMDM:  return team_kill_limit;
+            case rf::NetGameType::NG_TYPE_KOTH:    return koth_score_limit;
+            case rf::NetGameType::NG_TYPE_DC:      return dc_score_limit;
+            case rf::NetGameType::NG_TYPE_PIT:     return pit_score_limit;
+            case rf::NetGameType::NG_TYPE_GG:      return gungame_score_limit;
+            case rf::NetGameType::NG_TYPE_BAG:     return bagman.bag_score_limit;
+            case rf::NetGameType::NG_TYPE_TBAG:    return bagman.tbag_score_limit;
+            case rf::NetGameType::NG_TYPE_RUN:
+            case rf::NetGameType::NG_TYPE_REV:
+            case rf::NetGameType::NG_TYPE_ESC:     return std::nullopt;
+            default:                               return individual_kill_limit;
+        }
+    }
+
+    // Counterpart to get_score_limit: routes through each field's own setter so the
+    // per-game-type clamping still applies. Returns false for the game types that
+    // have no score limit to set.
+    bool set_score_limit(rf::NetGameType game_type, int count)
+    {
+        switch (game_type) {
+            case rf::NetGameType::NG_TYPE_CTF:     set_cap_limit(count); return true;
+            case rf::NetGameType::NG_TYPE_SAL:     salvage.set_cap_limit(count); return true;
+            case rf::NetGameType::NG_TYPE_TEAMDM:  set_team_kill_limit(count); return true;
+            case rf::NetGameType::NG_TYPE_KOTH:    set_koth_score_limit(count); return true;
+            case rf::NetGameType::NG_TYPE_DC:      set_dc_score_limit(count); return true;
+            case rf::NetGameType::NG_TYPE_PIT:     set_pit_score_limit(count); return true;
+            case rf::NetGameType::NG_TYPE_GG:      set_gungame_score_limit(count); return true;
+            case rf::NetGameType::NG_TYPE_BAG:     bagman.set_bag_score_limit(count); return true;
+            case rf::NetGameType::NG_TYPE_TBAG:    bagman.set_tbag_score_limit(count); return true;
+            case rf::NetGameType::NG_TYPE_RUN:
+            case rf::NetGameType::NG_TYPE_REV:
+            case rf::NetGameType::NG_TYPE_ESC:     return false;
+            default:                               set_individual_kill_limit(count); return true;
+        }
+    }
     void set_flag_return_time(float in_time)
     {
         ctf_flag_return_time_ms = static_cast<int>(std::max(in_time * 1000.0f, 1000.0f));
@@ -661,10 +843,9 @@ struct AlpineServerConfigRules
     {
         pvp_damage_modifier = std::clamp(modifier, 0.0f, 100.0f);
     }
-    bool add_item_replacement(std::string_view original, std::string_view replacement)
+    bool add_item_replacement(const std::string& original, const std::string& replacement)
     {
-        int orig_idx = rf::item_lookup_type(original.data());
-        int repl_idx = rf::item_lookup_type(replacement.data());
+        int orig_idx = rf::item_lookup_type(original.c_str());
         if (orig_idx < 0) {
             // check if original name is invalid
             // replacement name being blank is fine, removes item
@@ -688,6 +869,11 @@ struct AlpineServerConfigLevelEntry
 {
     std::string level_filename;
     AlpineServerConfigRules rule_overrides;
+    // The same rules re-resolved with every config-declared mutator stripped.
+    // Starting point for a level/match vote that carries mutators, so the voted
+    // mutators replace (rather than stack on) whatever the config declared while
+    // the rest of this level's rules — notably its game type — are preserved.
+    AlpineServerConfigRules rule_overrides_no_mutators;
     std::vector<std::pair<std::filesystem::path, std::optional<std::string>>> applied_rules_preset_paths;
 };
 
@@ -752,11 +938,11 @@ struct AlpineServerConfig
     AlpineRestrictConfig alpine_restricted_config;
     InactivityConfig inactivity_config;
     DamageNotificationConfig damage_notification_config;
+    SprayConfig spray_config;
     ClickLimiterConfig click_limiter_config;
     VoteConfig vote_match;
     VoteConfig vote_kick;
     VoteConfig vote_level;
-    VoteConfig vote_gametype;
     VoteConfig vote_extend;
     VoteConfig vote_restart;
     VoteConfig vote_next;
@@ -764,11 +950,19 @@ struct AlpineServerConfig
     VoteConfig vote_previous;
 
     AlpineServerConfigRules base_rules;
+    // Base rules re-parsed with all mutators stripped. Used as the starting point
+    // for a mutator applied via a level/match vote, so the voted mutator replaces
+    // (rather than stacks on) any mutator the base rules declared.
+    AlpineServerConfigRules base_rules_no_mutators;
     std::vector<std::pair<std::filesystem::path, std::optional<std::string>>> base_rules_preset_paths;
     std::map<std::string, std::filesystem::path> rules_preset_aliases;
     std::vector<AlpineServerConfigLevelEntry> levels;
 
     std::string printed_cfg{};
+    // get_active_rules_generation() the cached print was built at. Session
+    // overrides (votes) change what that print says without touching the config,
+    // so an empty-cache check alone would serve a stale copy to remote clients.
+    int printed_cfg_generation = -1;
     bool signal_cfg_changed = false;
 
     // =============================================
@@ -803,7 +997,10 @@ struct ManualRulesOverride
 {
     AlpineServerConfigRules rules;
     std::vector<std::pair<std::filesystem::path, std::optional<std::string>>> applied_preset_paths;
+    // Mutually exclusive: an override comes either from a named rules preset or
+    // from voted mutators, and the two are described differently to operators.
     std::optional<std::string> preset_alias;
+    std::optional<std::string> mutator_labels;
 };
 
 struct MatchInfo
@@ -840,6 +1037,16 @@ struct MatchInfo
     }
 };
 
+// One-shot carry of the session's vote-set rules across a ROTATION level change
+// (next / previous / random). Those loads advance the rotation cursor and by
+// design ignore g_manual_rules_override, so the vote stashes what to carry and
+// apply_rules_for_current_level layers it onto the target level's own rules.
+struct PendingRotationPreserve
+{
+    std::vector<MutatorDeclaration> declarations;
+    std::optional<rf::NetGameType> gametype;
+};
+
 extern AlpineServerConfig g_alpine_server_config;
 extern AlpineServerConfigRules g_alpine_server_config_active_rules;
 extern std::optional<ManualRulesOverride> g_manual_rules_override;
@@ -860,16 +1067,44 @@ UpcomingGameTypeSelection get_upcoming_game_type_selection();
 bool is_rcon_command_masterlisted(std::string_view command);
 bool set_upcoming_game_type(rf::NetGameType gt, UpcomingGameTypeSelection selection = UpcomingGameTypeSelection::Rotation);
 void apply_defaults_for_game_type(rf::NetGameType game_type, AlpineServerConfigRules& rules);
+int get_active_rules_generation();
+// Appends the "Session overrides" section of the config print, or nothing when no
+// session override is in effect.
+void print_session_overrides(std::string& output);
 void cleanup_win32_server_console();
-void handle_vote_command(std::string_view vote_name, std::string_view vote_arg, rf::Player* sender);
+// Legacy chat vote CASTING, kept for clients older than 1.4 (which have no
+// af_req_vote_cast). Only yes/no (and the y/n aliases) are handled; returns false
+// for anything else so the chat dispatcher reports it as an unrecognized command.
+bool handle_vote_command(std::string_view vote_args, rf::Player* sender);
+// Packet-driven vote entry points (see alpine_packets.h for the wire formats).
+void handle_vote_call_packet(rf::Player* sender, AfVoteCallParams&& params);
+void handle_vote_cast_packet(rf::Player* sender, bool is_yes_vote);
+void handle_vote_cancel_packet(rf::Player* sender);
+// af_req_vote_options: streams the blob unless this player already has the
+// current generation. `known_generation` is only meaningful with has_cache.
+void server_vote_handle_options_request(rf::Player* sender, bool has_cache, uint32_t known_generation);
+// Serialized vote-options blob (server side). `generation` is bumped whenever the
+// blob is rebuilt, so a client can tell a refresh from a redundant re-send and
+// discard a stream that was superseded mid-flight.
+const std::vector<uint8_t>& server_vote_get_options_blob(uint32_t& generation);
+void server_vote_invalidate_options_blob();
+void vote_level_refresh_allowed_maps();
+// Push the current vote state to a player who joined while a vote is running.
+void server_vote_send_state_to_new_player(rf::Player* player);
 void handle_player_set_handicap(rf::Player* player, uint8_t amount);
 std::vector<rf::Player*> get_clients(bool include_browsers, bool include_bots);
 std::pair<bool, std::string> is_level_name_valid(std::string_view level_name_input);
 std::optional<ManualRulesOverride> load_rules_preset_alias(std::string_view preset_name);
 void set_manual_rules_override(ManualRulesOverride override_rules);
 void clear_manual_rules_override();
+void set_pending_rotation_preserve(PendingRotationPreserve pending);
+void clear_pending_rotation_preserve();
+const std::optional<PendingRotationPreserve>& get_pending_rotation_preserve();
 bool is_player_in_match(rf::Player* player);
 bool is_player_ready(rf::Player* player);
+// True when the game itself is currently refusing to spawn this player (respawn
+// delay, gametype spawn gate, match in progress they are not part of).
+bool player_spawn_blocked_by_game(const rf::Player* player);
 void update_pre_match_powerups(rf::Player* player);
 void start_match();
 void cancel_match();
@@ -884,6 +1119,7 @@ void rebuild_rotation_from_cfg();
 void on_dedicated_server_launch_post();
 void extend_round_time(int minutes);
 void restart_current_level();
+void restart_current_level_configured();
 void load_next_level();
 void load_rand_level();
 void load_prev_level();

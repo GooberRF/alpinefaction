@@ -2,6 +2,7 @@
 #include <windowsx.h>
 #include <commctrl.h>
 #include <cstdint>
+#include <cstring>
 #include <algorithm>
 #include <map>
 #include <set>
@@ -16,6 +17,7 @@
 #include "mesh.h"
 #include "note.h"
 #include "corona.h"
+#include "bag.h"
 #include "mfc_types.h"
 #include "level.h"
 #include "vtypes.h"
@@ -47,11 +49,12 @@ struct CopyLinkEntry {
     std::vector<int> original_links;
 };
 
-// Separate lists matching clipboard paste order (stock first, then mesh, note, corona)
+// Separate lists matching clipboard paste order (stock first, then mesh, note, corona, bag)
 static std::vector<CopyLinkEntry> g_copy_stock_entries;
 static std::vector<CopyLinkEntry> g_copy_mesh_entries;
 static std::vector<CopyLinkEntry> g_copy_note_entries;
 static std::vector<CopyLinkEntry> g_copy_corona_entries;
+static std::vector<CopyLinkEntry> g_copy_bag_entries;
 
 // Set of all UIDs that were part of the copied selection (for filtering external links)
 static std::set<int> g_copy_all_uids;
@@ -60,7 +63,8 @@ static bool is_alpine_type(DedObjectType type)
 {
     return type == DedObjectType::DED_MESH ||
            type == DedObjectType::DED_NOTE ||
-           type == DedObjectType::DED_CORONA;
+           type == DedObjectType::DED_CORONA ||
+           type == DedObjectType::DED_BAG;
 }
 
 // Capture link snapshot from the current selection before copy processes it.
@@ -72,6 +76,7 @@ static void capture_copy_link_snapshot()
     g_copy_mesh_entries.clear();
     g_copy_note_entries.clear();
     g_copy_corona_entries.clear();
+    g_copy_bag_entries.clear();
     g_copy_all_uids.clear();
 
     auto* level = CDedLevel::Get();
@@ -112,6 +117,9 @@ static void capture_copy_link_snapshot()
             case DedObjectType::DED_CORONA:
                 g_copy_corona_entries.push_back(std::move(entry));
                 break;
+            case DedObjectType::DED_BAG:
+                g_copy_bag_entries.push_back(std::move(entry));
+                break;
             default:
                 g_copy_stock_entries.push_back(std::move(entry));
                 break;
@@ -125,7 +133,7 @@ static void capture_copy_link_snapshot()
 //   - alpine→stock links
 //   - alpine→alpine links
 static void fix_paste_links(CDedLevel* level, int stock_count, int mesh_count,
-                            int note_count, int corona_count)
+                            int note_count, int corona_count, int bag_count)
 {
     // Verify counts match the snapshot (mismatch means the clipboard state diverged).
     // This is the safety guard for the selection-ordering assumption: if anything is
@@ -133,26 +141,28 @@ static void fix_paste_links(CDedLevel* level, int stock_count, int mesh_count,
     if (stock_count != static_cast<int>(g_copy_stock_entries.size()) ||
         mesh_count != static_cast<int>(g_copy_mesh_entries.size()) ||
         note_count != static_cast<int>(g_copy_note_entries.size()) ||
-        corona_count != static_cast<int>(g_copy_corona_entries.size())) {
+        corona_count != static_cast<int>(g_copy_corona_entries.size()) ||
+        bag_count != static_cast<int>(g_copy_bag_entries.size())) {
         xlog::warn("[AlpineObj] Paste link fixup skipped: count mismatch "
-            "(stock {}/{}, mesh {}/{}, note {}/{}, corona {}/{})",
+            "(stock {}/{}, mesh {}/{}, note {}/{}, corona {}/{}, bag {}/{})",
             stock_count, g_copy_stock_entries.size(),
             mesh_count, g_copy_mesh_entries.size(),
             note_count, g_copy_note_entries.size(),
-            corona_count, g_copy_corona_entries.size());
+            corona_count, g_copy_corona_entries.size(),
+            bag_count, g_copy_bag_entries.size());
         return;
     }
 
     // Nothing to fix if there are no alpine objects involved
-    bool has_alpine = (mesh_count + note_count + corona_count) > 0;
+    bool has_alpine = (mesh_count + note_count + corona_count + bag_count) > 0;
     if (!has_alpine) return;
 
     auto& sel = level->selection;
-    int total = stock_count + mesh_count + note_count + corona_count;
+    int total = stock_count + mesh_count + note_count + corona_count + bag_count;
     if (sel.size < total) return;
 
-    // Build old_uid → new_uid mapping from all four entry lists.
-    // Selection order after paste: stock objects first, then meshes, notes, coronas.
+    // Build old_uid → new_uid mapping from all entry lists.
+    // Selection order after paste: stock objects first, then meshes, notes, coronas, bags.
     std::map<int, int> uid_map;
     int idx = 0;
     for (int i = 0; i < stock_count; i++, idx++)
@@ -163,6 +173,8 @@ static void fix_paste_links(CDedLevel* level, int stock_count, int mesh_count,
         uid_map[g_copy_note_entries[i].original_uid] = sel.data_ptr[idx]->uid;
     for (int i = 0; i < corona_count; i++, idx++)
         uid_map[g_copy_corona_entries[i].original_uid] = sel.data_ptr[idx]->uid;
+    for (int i = 0; i < bag_count; i++, idx++)
+        uid_map[g_copy_bag_entries[i].original_uid] = sel.data_ptr[idx]->uid;
 
     // Apply links from the snapshot to each pasted object
     auto apply_links = [&](const std::vector<CopyLinkEntry>& entries, int count, int& sel_idx) {
@@ -196,9 +208,10 @@ static void fix_paste_links(CDedLevel* level, int stock_count, int mesh_count,
     apply_links(g_copy_mesh_entries, mesh_count, idx);
     apply_links(g_copy_note_entries, note_count, idx);
     apply_links(g_copy_corona_entries, corona_count, idx);
+    apply_links(g_copy_bag_entries, bag_count, idx);
 
-    xlog::trace("[AlpineObj] Fixed paste links for {} stock + {} mesh + {} note + {} corona objects",
-        stock_count, mesh_count, note_count, corona_count);
+    xlog::trace("[AlpineObj] Fixed paste links for {} stock + {} mesh + {} note + {} corona + {} bag objects",
+        stock_count, mesh_count, note_count, corona_count, bag_count);
 }
 
 // ─── UID Generation ─────────────────────────────────────────────────────────
@@ -215,6 +228,7 @@ FunHook<int()> alpine_generate_uid_hook{
             mesh_ensure_uid(uid);
             note_ensure_uid(uid);
             corona_ensure_uid(uid);
+            bag_ensure_uid(uid);
         }
         return uid;
     },
@@ -246,6 +260,11 @@ CodeInjection alpine_properties_patch{
             regs.eip = 0x00402293;
             return;
         }
+        if (regs.eax == static_cast<int>(DedObjectType::DED_BAG)) {
+            // Bag has no editable properties — suppress stock dispatch.
+            regs.eip = 0x00402293;
+            return;
+        }
     },
 };
 
@@ -266,6 +285,7 @@ CodeInjection alpine_tree_patch{
         mesh_tree_populate(tree, master_groups, level);
         note_tree_populate(tree, master_groups, level);
         corona_tree_populate(tree, master_groups, level);
+        bag_tree_populate(tree, master_groups, level);
         tree->sort_children(master_groups);
     },
 };
@@ -287,6 +307,7 @@ CodeInjection alpine_pick_patch{
         mesh_pick(level, param1, param2);
         note_pick(level, param1, param2);
         corona_pick(level, param1, param2);
+        bag_pick(level, param1, param2);
     },
 };
 
@@ -320,6 +341,9 @@ CodeInjection alpine_click_pick_patch{
             // Check corona objects using fixed screen radius
             DedCorona* best_corona = corona_click_pick(level, click_x, click_y);
 
+            // Check bag objects using fixed screen radius
+            DedBag* best_bag = bag_click_pick(level, click_x, click_y);
+
             // Determine best Alpine hit
             DedObject* best_alpine = nullptr;
             float best_dist_sq = 1e30f;
@@ -348,6 +372,18 @@ CodeInjection alpine_click_pick_patch{
                     if (!best_alpine || corona_dist < best_dist_sq) {
                         best_alpine = static_cast<DedObject*>(best_corona);
                         best_dist_sq = corona_dist;
+                    }
+                }
+            }
+            if (best_bag) {
+                float bag_pos[3] = {best_bag->pos.x, best_bag->pos.y, best_bag->pos.z};
+                float bsx = 0.0f, bsy = 0.0f;
+                if (project_to_screen_2d(bag_pos, &bsx, &bsy)) {
+                    float bdx = bsx - click_x, bdy = bsy - click_y;
+                    float bag_dist = bdx * bdx + bdy * bdy;
+                    if (!best_alpine || bag_dist < best_dist_sq) {
+                        best_alpine = static_cast<DedObject*>(best_bag);
+                        best_dist_sq = bag_dist;
                     }
                 }
             }
@@ -395,6 +431,7 @@ CodeInjection alpine_copy_begin_hook{
         mesh_clear_clipboard();
         note_clear_clipboard();
         corona_clear_clipboard();
+        bag_clear_clipboard();
         capture_copy_link_snapshot();
     },
 };
@@ -419,6 +456,11 @@ CodeInjection alpine_copy_hook{
         else if (source && source->type == DedObjectType::DED_CORONA) {
             regs.ebx = reinterpret_cast<uintptr_t>(source);
             corona_copy_object(source);
+            regs.eip = 0x00412edb;
+        }
+        else if (source && source->type == DedObjectType::DED_BAG) {
+            regs.ebx = reinterpret_cast<uintptr_t>(source);
+            bag_copy_object(source);
             regs.eip = 0x00412edb;
         }
     },
@@ -446,8 +488,11 @@ static void __fastcall alpine_paste_wrapper(void* ecx_level, void* /*edx_unused*
     corona_paste_objects(level);
     int corona_count = level->selection.size - stock_count - mesh_count - note_count;
 
+    bag_paste_objects(level);
+    int bag_count = level->selection.size - stock_count - mesh_count - note_count - corona_count;
+
     // Fix links that the stock paste missed (involving alpine object types)
-    fix_paste_links(level, stock_count, mesh_count, note_count, corona_count);
+    fix_paste_links(level, stock_count, mesh_count, note_count, corona_count, bag_count);
 }
 
 // ─── Delete / Cut ───────────────────────────────────────────────────────────
@@ -485,6 +530,9 @@ CodeInjection alpine_paste_finalize_patch{
         else if (obj && obj->type == DedObjectType::DED_CORONA) {
             corona_handle_delete_or_cut(obj);
         }
+        else if (obj && obj->type == DedObjectType::DED_BAG) {
+            bag_handle_delete_or_cut(obj);
+        }
     },
 };
 
@@ -520,6 +568,13 @@ CodeInjection alpine_undo_readd_patch{
                 props.corona_objects.push_back(corona);
             }
         }
+        else if (obj->type == DedObjectType::DED_BAG) {
+            auto* bag = static_cast<DedBag*>(obj);
+            if (std::find(props.bag_objects.begin(), props.bag_objects.end(), bag)
+                == props.bag_objects.end()) {
+                props.bag_objects.push_back(bag);
+            }
+        }
     },
 };
 
@@ -551,6 +606,7 @@ CodeInjection alpine_delete_patch{
         note_handle_delete_selection(level);
         mesh_handle_delete_selection(level);
         corona_handle_delete_selection(level);
+        bag_handle_delete_selection(level);
     },
 };
 
@@ -564,12 +620,13 @@ CodeInjection alpine_object_tree_patch{
         mesh_tree_add_object_type(tree);
         note_tree_add_object_type(tree);
         corona_tree_add_object_type(tree);
+        bag_tree_add_object_type(tree);
         tree->sort_children(static_cast<int>(reinterpret_cast<intptr_t>(TVI_ROOT)));
     },
 };
 
 // Track which Alpine object type the tree view is creating.
-static int g_alpine_create_type = 0; // 0=Mesh, 2=Note, 3=Corona
+static int g_alpine_create_type = 0; // 0=Mesh, 2=Note, 3=Corona, 4=Bag
 
 // Hook factory FUN_00442a40 to detect Alpine object types by tree item text.
 int __fastcall alpine_factory_hooked(void* ecx_panel, void* /*edx*/, void* tree_item);
@@ -596,6 +653,9 @@ int __fastcall alpine_factory_hooked(void* ecx_panel, void* edx, void* tree_item
         else if (strcmp(text, "Corona") == 0) {
             g_alpine_create_type = 3;
         }
+        else if (strcmp(text, "Bag") == 0) {
+            g_alpine_create_type = 4;
+        }
     }
 
     return alpine_factory_hook.call_target(ecx_panel, edx, tree_item);
@@ -612,6 +672,9 @@ CodeInjection alpine_create_object_patch{
             }
             else if (g_alpine_create_type == 3) {
                 PlaceNewCoronaObject();
+            }
+            else if (g_alpine_create_type == 4) {
+                PlaceNewBagObject();
             }
             else {
                 PlaceNewMeshObject();
@@ -635,6 +698,7 @@ CodeInjection alpine_render_patch{
         mesh_render(level);
         note_render(level);
         corona_render(level);
+        bag_render(level);
     },
 };
 
@@ -668,6 +732,7 @@ static const char* get_type_display_name(DedObjectType type)
         case DedObjectType::DED_MESH:               return "Mesh";
         case DedObjectType::DED_NOTE:               return "Note";
         case DedObjectType::DED_CORONA:             return "Corona";
+        case DedObjectType::DED_BAG:                return "Bag";
         default:                                    return "Unknown";
     }
 }
@@ -677,6 +742,7 @@ static const char* get_type_display_name(DedObjectType type)
 // Type filter entries — alphabetical, matching stock + Alpine types
 static const struct { DedObjectType type; const char* label; } g_type_filters[] = {
     {DedObjectType::DED_AMBIENT_SOUND,    "Ambient Sounds"},
+    {DedObjectType::DED_BAG,              "Bags"},
     {DedObjectType::DED_BOLT_EMITTER,     "Bolt Emitters"},
     {DedObjectType::DED_CLIMBING_REGION,  "Climbing Regions"},
     {DedObjectType::DED_CLUTTER,          "Clutter"},
@@ -707,6 +773,10 @@ constexpr int g_num_type_filters = sizeof(g_type_filters) / sizeof(g_type_filter
 static bool g_filter_state_initialized = false;
 static bool g_filter_states[30] = {}; // indexed by g_type_filters position
 
+// Persistent "Sort" selection across dialog invocations (within same session)
+static int g_display_sort_mode = 0; // 0 = by name, 1 = by UID
+static bool g_display_group_by_type = false;
+
 struct ObjectEntry {
     DedObject* obj;
     std::string text; // "CLASS_NAME : SCRIPT_NAME (UID)"
@@ -722,9 +792,11 @@ struct TypeFilterDialogData {
     CDedLevel* level;
     std::vector<ObjectEntry> all_objects;
     HWND filter_cbs[30]; // checkbox HWNDs for "Show In List"
-    int sort_mode;       // 0 = name, 1 = type
+    int sort_mode;       // 0 = by name, 1 = by UID
+    bool group_by_type;  // when true, group rows by type (with headers); sort_mode orders within each group
     std::vector<DedObject*> result_objects;
     HWND to_mesh_btn = nullptr; // "To Mesh Object" button (select mode only)
+    HFONT bold_font = nullptr;  // bold variant for type-group header rows
 };
 
 // Collect all objects from master_objects + moving_groups
@@ -770,6 +842,46 @@ static void collect_all_objects(CDedLevel* level, bool include_hidden,
     }
 }
 
+static void count_objects_by_type(CDedLevel* level, int counts[])
+{
+    for (int i = 0; i < g_num_type_filters; i++)
+        counts[i] = 0;
+
+    auto bump = [&](DedObject* obj) {
+        if (!obj) return;
+        for (int i = 0; i < g_num_type_filters; i++) {
+            if (g_type_filters[i].type == obj->type) {
+                counts[i]++;
+                break;
+            }
+        }
+    };
+
+    auto& master = level->master_objects;
+    for (int i = 0; i < master.size; i++)
+        bump(master.data_ptr[i]);
+
+    auto& mg = level->moving_groups;
+    for (int i = 0; i < mg.size; i++) {
+        auto* group = mg.data_ptr[i];
+        if (!group || !group->keyframes) continue;
+        auto& kfs = *group->keyframes;
+        for (int j = 0; j < kfs.size; j++)
+            bump(kfs.data_ptr[j]);
+    }
+}
+
+// Plural group label for a type, matching the "Show In List" filter labels.
+// Falls back to the singular display name for types absent from the filter list.
+static const char* get_type_group_label(DedObjectType type)
+{
+    for (int i = 0; i < g_num_type_filters; i++) {
+        if (g_type_filters[i].type == type)
+            return g_type_filters[i].label;
+    }
+    return get_type_display_name(type);
+}
+
 // Check if a type is visible in the "Show In List" filter
 static bool is_type_filtered_in(TypeFilterDialogData* data, DedObjectType type)
 {
@@ -811,43 +923,76 @@ static void refresh_object_list(HWND hwnd, TypeFilterDialogData* data)
             filtered.push_back(&e);
     }
 
-    // Sort
-    if (data->sort_mode == 0) {
-        std::sort(filtered.begin(), filtered.end(),
-            [](auto* a, auto* b) { return a->text < b->text; });
-    } else {
-        std::sort(filtered.begin(), filtered.end(), [](auto* a, auto* b) {
-            if (a->type != b->type) return a->type < b->type;
-            return a->text < b->text;
+    const bool by_uid = (data->sort_mode == 1);
+    auto within = [by_uid](const ObjectEntry* a, const ObjectEntry* b) {
+        return by_uid ? (a->obj->uid < b->obj->uid) : (a->text < b->text);
+    };
+    if (data->group_by_type) {
+        std::sort(filtered.begin(), filtered.end(), [&](auto* a, auto* b) {
+            int c = strcmp(get_type_group_label(a->type), get_type_group_label(b->type));
+            if (c != 0) return c < 0;
+            return within(a, b);
         });
+    } else {
+        std::sort(filtered.begin(), filtered.end(), within);
     }
 
-    // Repopulate
     SendMessage(list, WM_SETREDRAW, FALSE, 0);
     ListView_DeleteAllItems(list);
+    const bool group_by_type = data->group_by_type;
+    DedObjectType last_type{};
+    bool have_last = false;
+    int row = 0;
     for (size_t i = 0; i < filtered.size(); i++) {
+        const ObjectEntry* e = filtered[i];
+
+        if (group_by_type && (!have_last || e->type != last_type)) {
+            LVITEM hdr = {};
+            hdr.mask = LVIF_TEXT | LVIF_PARAM;
+            hdr.iItem = row;
+            hdr.pszText = const_cast<char*>(get_type_group_label(e->type));
+            hdr.lParam = 0; // marks a header row: no object, not selectable
+            ListView_InsertItem(list, &hdr);
+            if (data->hide_mode) // headers have no meaningful check state
+                ListView_SetItemState(list, row, INDEXTOSTATEIMAGEMASK(0), LVIS_STATEIMAGEMASK);
+            row++;
+        }
+        last_type = e->type;
+        have_last = true;
+
         LVITEM item = {};
         item.mask = LVIF_TEXT | LVIF_PARAM;
-        item.iItem = static_cast<int>(i);
-        item.pszText = const_cast<char*>(filtered[i]->text.c_str());
-        item.lParam = reinterpret_cast<LPARAM>(filtered[i]->obj);
+        item.iItem = row;
+        item.pszText = const_cast<char*>(e->text.c_str());
+        item.lParam = reinterpret_cast<LPARAM>(e->obj);
         ListView_InsertItem(list, &item);
 
         if (data->hide_mode) {
             // Restore check state
-            auto it = check_states.find(filtered[i]->obj);
-            bool checked = (it != check_states.end()) ? it->second : filtered[i]->initially_visible;
-            ListView_SetCheckState(list, static_cast<int>(i), checked);
+            auto it = check_states.find(e->obj);
+            bool checked = (it != check_states.end()) ? it->second : e->initially_visible;
+            ListView_SetCheckState(list, row, checked);
         } else {
             // Restore selection state, or use initial selection from editor
-            auto it = sel_states.find(filtered[i]->obj);
-            bool selected = (it != sel_states.end()) ? it->second : filtered[i]->initially_selected;
+            auto it = sel_states.find(e->obj);
+            bool selected = (it != sel_states.end()) ? it->second : e->initially_selected;
             if (selected)
-                ListView_SetItemState(list, static_cast<int>(i), LVIS_SELECTED, LVIS_SELECTED);
+                ListView_SetItemState(list, row, LVIS_SELECTED, LVIS_SELECTED);
         }
+        row++;
     }
     SendMessage(list, WM_SETREDRAW, TRUE, 0);
     InvalidateRect(list, nullptr, TRUE);
+}
+
+// Get the object bound to a ListView row, or nullptr for type-group header rows.
+static DedObject* lv_get_obj(HWND list, int idx)
+{
+    LVITEM lvi = {};
+    lvi.mask = LVIF_PARAM;
+    lvi.iItem = idx;
+    if (!ListView_GetItem(list, &lvi)) return nullptr;
+    return reinterpret_cast<DedObject*>(lvi.lParam);
 }
 
 // ─── ListView subclass for click-drag multi-select ──────────────────────────
@@ -875,6 +1020,7 @@ static void drag_update_selection(HWND hwnd, int current_idx)
     SendMessage(hwnd, WM_SETREDRAW, FALSE, 0);
     for (int i = 0; i < count; i++) {
         UINT want = (i >= lo && i <= hi) ? LVIS_SELECTED : 0;
+        if (want && !lv_get_obj(hwnd, i)) want = 0; // never select header rows
         ListView_SetItemState(hwnd, i, want, LVIS_SELECTED);
     }
     SendMessage(hwnd, WM_SETREDRAW, TRUE, 0);
@@ -914,6 +1060,10 @@ static LRESULT CALLBACK ListViewDragSelectProc(HWND hwnd, UINT msg, WPARAM wpara
             // Let checkbox clicks pass through to default handler
             if (ht.flags & LVHT_ONITEMSTATEICON)
                 break;
+
+            // Ignore clicks on type-group header rows (no associated object)
+            if (!lv_get_obj(hwnd, idx))
+                return 0;
 
             int count = ListView_GetItemCount(hwnd);
             SendMessage(hwnd, WM_SETREDRAW, FALSE, 0);
@@ -1042,14 +1192,30 @@ static INT_PTR CALLBACK TypeFilterDlgProc(HWND hwnd, UINT msg, WPARAM wparam, LP
             g_filter_state_initialized = true;
         }
 
+        // Count objects of each type so the count can be shown after each label
+        int type_counts[g_num_type_filters];
+        count_objects_by_type(data->level, type_counts);
+
         // Create "Show In List" checkboxes dynamically (positions in DLU, converted to pixels)
         HFONT font = reinterpret_cast<HFONT>(SendMessage(hwnd, WM_GETFONT, 0, 0));
+
+        // Bold variant of the dialog font, used to custom-draw type-group headers
+        {
+            LOGFONT lf = {};
+            if (font && GetObject(font, sizeof(lf), &lf)) {
+                lf.lfWeight = FW_BOLD;
+                data->bold_font = CreateFontIndirect(&lf);
+            }
+        }
         for (int i = 0; i < g_num_type_filters; i++) {
             RECT rc = {230, static_cast<LONG>(12 + i * 9),
-                        230 + 108, static_cast<LONG>(12 + i * 9 + 8)};
+                        230 + 114, static_cast<LONG>(12 + i * 9 + 8)};
             MapDialogRect(hwnd, &rc);
+            char cb_label[128];
+            snprintf(cb_label, sizeof(cb_label), "%s (%d)",
+                g_type_filters[i].label, type_counts[i]);
             data->filter_cbs[i] = CreateWindow(
-                "BUTTON", g_type_filters[i].label,
+                "BUTTON", cb_label,
                 WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
                 rc.left, rc.top, rc.right - rc.left, rc.bottom - rc.top,
                 hwnd,
@@ -1080,10 +1246,15 @@ static INT_PTR CALLBACK TypeFilterDlgProc(HWND hwnd, UINT msg, WPARAM wparam, LP
             SendMessage(btn_uncheck, WM_SETFONT, reinterpret_cast<WPARAM>(font), FALSE);
         }
 
-        // Sort by Name initially
-        data->sort_mode = 0;
-        CheckRadioButton(hwnd, IDC_TYPE_FILTER_SORT_NAME, IDC_TYPE_FILTER_SORT_TYPE,
-            IDC_TYPE_FILTER_SORT_NAME);
+        // Restore the "Sort" selection from the last dialog use this session.
+        data->sort_mode = g_display_sort_mode;
+        data->group_by_type = g_display_group_by_type;
+        SendDlgItemMessage(hwnd, IDC_TYPE_FILTER_SORT_NAME, BM_SETCHECK,
+            data->sort_mode == 0 ? BST_CHECKED : BST_UNCHECKED, 0);
+        SendDlgItemMessage(hwnd, IDC_TYPE_FILTER_SORT_UID, BM_SETCHECK,
+            data->sort_mode == 1 ? BST_CHECKED : BST_UNCHECKED, 0);
+        SendDlgItemMessage(hwnd, IDC_TYPE_FILTER_GROUP_TYPE, BM_SETCHECK,
+            data->group_by_type ? BST_CHECKED : BST_UNCHECKED, 0);
 
         // Create "To Mesh Object" button in select mode
         if (!data->hide_mode) {
@@ -1142,9 +1313,19 @@ static INT_PTR CALLBACK TypeFilterDlgProc(HWND hwnd, UINT msg, WPARAM wparam, LP
         }
 
         // Sort radio changed
-        if ((id == IDC_TYPE_FILTER_SORT_NAME || id == IDC_TYPE_FILTER_SORT_TYPE) &&
+        if ((id == IDC_TYPE_FILTER_SORT_NAME || id == IDC_TYPE_FILTER_SORT_UID) &&
             notify == BN_CLICKED) {
-            data->sort_mode = (id == IDC_TYPE_FILTER_SORT_TYPE) ? 1 : 0;
+            data->sort_mode = (id == IDC_TYPE_FILTER_SORT_UID) ? 1 : 0;
+            g_display_sort_mode = data->sort_mode; // remember for next dialog open
+            refresh_object_list(hwnd, data);
+            return TRUE;
+        }
+
+        // "Group by type" checkbox toggled
+        if (id == IDC_TYPE_FILTER_GROUP_TYPE && notify == BN_CLICKED) {
+            data->group_by_type =
+                SendMessage(reinterpret_cast<HWND>(lparam), BM_GETCHECK, 0, 0) == BST_CHECKED;
+            g_display_group_by_type = data->group_by_type; // remember for next dialog open
             refresh_object_list(hwnd, data);
             return TRUE;
         }
@@ -1233,8 +1414,10 @@ static INT_PTR CALLBACK TypeFilterDlgProc(HWND hwnd, UINT msg, WPARAM wparam, LP
             HWND list = GetDlgItem(hwnd, IDC_TYPE_FILTER_LIST);
             int count = ListView_GetItemCount(list);
             data->updating_checks = true;
-            for (int i = 0; i < count; i++)
+            for (int i = 0; i < count; i++) {
+                if (!lv_get_obj(list, i)) continue; // skip header rows
                 ListView_SetCheckState(list, i, FALSE);
+            }
             data->updating_checks = false;
             return TRUE;
         }
@@ -1243,12 +1426,16 @@ static INT_PTR CALLBACK TypeFilterDlgProc(HWND hwnd, UINT msg, WPARAM wparam, LP
             int count = ListView_GetItemCount(list);
             if (data->hide_mode) {
                 data->updating_checks = true;
-                for (int i = 0; i < count; i++)
+                for (int i = 0; i < count; i++) {
+                    if (!lv_get_obj(list, i)) continue; // skip header rows
                     ListView_SetCheckState(list, i, TRUE);
+                }
                 data->updating_checks = false;
             } else {
-                for (int i = 0; i < count; i++)
+                for (int i = 0; i < count; i++) {
+                    if (!lv_get_obj(list, i)) continue; // skip header rows
                     ListView_SetItemState(list, i, LVIS_SELECTED, LVIS_SELECTED);
+                }
             }
             return TRUE;
         }
@@ -1257,11 +1444,14 @@ static INT_PTR CALLBACK TypeFilterDlgProc(HWND hwnd, UINT msg, WPARAM wparam, LP
             int count = ListView_GetItemCount(list);
             if (data->hide_mode) {
                 data->updating_checks = true;
-                for (int i = 0; i < count; i++)
+                for (int i = 0; i < count; i++) {
+                    if (!lv_get_obj(list, i)) continue; // skip header rows
                     ListView_SetCheckState(list, i, !ListView_GetCheckState(list, i));
+                }
                 data->updating_checks = false;
             } else {
                 for (int i = 0; i < count; i++) {
+                    if (!lv_get_obj(list, i)) continue; // skip header rows
                     UINT s = ListView_GetItemState(list, i, LVIS_SELECTED);
                     ListView_SetItemState(list, i, s ^ LVIS_SELECTED, LVIS_SELECTED);
                 }
@@ -1503,6 +1693,24 @@ static INT_PTR CALLBACK TypeFilterDlgProc(HWND hwnd, UINT msg, WPARAM wparam, LP
 
     case WM_NOTIFY: {
         auto* nmhdr = reinterpret_cast<NMHDR*>(lparam);
+
+        if (nmhdr->idFrom == IDC_TYPE_FILTER_LIST && nmhdr->code == NM_CUSTOMDRAW) {
+            auto* cd = reinterpret_cast<LPNMLVCUSTOMDRAW>(lparam);
+            LRESULT res = CDRF_DODEFAULT;
+            if (cd->nmcd.dwDrawStage == CDDS_PREPAINT) {
+                res = CDRF_NOTIFYITEMDRAW;
+            } else if (cd->nmcd.dwDrawStage == CDDS_ITEMPREPAINT &&
+                       cd->nmcd.lItemlParam == 0) {
+                if (data && data->bold_font)
+                    SelectObject(cd->nmcd.hdc, data->bold_font);
+                cd->clrText = GetSysColor(COLOR_BTNTEXT);
+                cd->clrTextBk = GetSysColor(COLOR_BTNFACE);
+                res = CDRF_NEWFONT;
+            }
+            SetWindowLongPtr(hwnd, DWLP_MSGRESULT, res);
+            return TRUE;
+        }
+
         if (nmhdr->idFrom == IDC_TYPE_FILTER_LIST && nmhdr->code == LVN_ITEMCHANGED) {
             auto* nmlv = reinterpret_cast<NMLISTVIEW*>(lparam);
             // Detect checkbox state change (LVIS_STATEIMAGEMASK tracks check state)
@@ -1536,6 +1744,13 @@ static INT_PTR CALLBACK TypeFilterDlgProc(HWND hwnd, UINT msg, WPARAM wparam, LP
         }
         break;
     } // WM_NOTIFY
+
+    case WM_DESTROY:
+        if (data && data->bold_font) {
+            DeleteObject(data->bold_font);
+            data->bold_font = nullptr;
+        }
+        break;
     }
     return FALSE;
 }
@@ -1583,11 +1798,12 @@ void alpine_hide_objects(CDedLevel* level)
 
 // Global vectors to collect Alpine objects during group serialization.
 // FUN_00435630 (per-group serializer) has a switch on obj->type that handles types 0..0x16.
-// Alpine types (0x17=DED_MESH, 0x18=DED_NOTE, 0x19=DED_CORONA) fall through and are silently
-// dropped. We hook the switch's overflow check (JA at 0x00435a82) to collect them here.
+// Alpine types (0x17=DED_MESH, 0x18=DED_NOTE, 0x19=DED_CORONA, 0x1A=DED_BAG) fall through
+// and are silently dropped.
 static std::vector<DedMesh*> g_group_save_meshes;
 static std::vector<DedNote*> g_group_save_notes;
 static std::vector<DedCorona*> g_group_save_coronas;
+static std::vector<DedBag*> g_group_save_bags;
 
 // Brush UIDs captured in serialization order during group save.
 // Used to write brush metadata (geoable/breakable flags) to the .rfg brush group chunk.
@@ -1603,6 +1819,7 @@ CodeInjection alpine_group_save_clear_hook{
         g_group_save_meshes.clear();
         g_group_save_notes.clear();
         g_group_save_coronas.clear();
+        g_group_save_bags.clear();
         g_group_save_brush_uids.clear();
     },
 };
@@ -1633,6 +1850,8 @@ CodeInjection alpine_group_type_collect_hook{
                 g_group_save_notes.push_back(static_cast<DedNote*>(obj));
             else if (type == static_cast<int>(DedObjectType::DED_CORONA))
                 g_group_save_coronas.push_back(static_cast<DedCorona*>(obj));
+            else if (type == static_cast<int>(DedObjectType::DED_BAG))
+                g_group_save_bags.push_back(static_cast<DedBag*>(obj));
             regs.eip = 0x00435be1; // skip to loop continue
         }
         // types <= 0x16 fall through to jump table at 0x00435a88
@@ -1671,6 +1890,13 @@ CodeInjection alpine_group_save_hook{
             props.corona_objects.assign(g_group_save_coronas.begin(), g_group_save_coronas.end());
             corona_serialize_chunk(*level, *file);
             props.corona_objects = std::move(saved);
+        }
+
+        if (!g_group_save_bags.empty()) {
+            auto saved = std::move(props.bag_objects);
+            props.bag_objects.assign(g_group_save_bags.begin(), g_group_save_bags.end());
+            bag_serialize_chunk(*level, *file);
+            props.bag_objects = std::move(saved);
         }
 
         // Write brush group metadata chunk: which brushes (by serialization index) are
@@ -1730,12 +1956,14 @@ CodeInjection alpine_group_save_hook{
             }
         }
 
-        xlog::info("[AlpineObj] Saved {} meshes, {} notes, {} coronas to group",
-            g_group_save_meshes.size(), g_group_save_notes.size(), g_group_save_coronas.size());
+        xlog::info("[AlpineObj] Saved {} meshes, {} notes, {} coronas, {} bags to group",
+            g_group_save_meshes.size(), g_group_save_notes.size(),
+            g_group_save_coronas.size(), g_group_save_bags.size());
 
         g_group_save_meshes.clear();
         g_group_save_notes.clear();
         g_group_save_coronas.clear();
+        g_group_save_bags.clear();
         g_group_save_brush_uids.clear();
     },
 };
@@ -1770,6 +1998,7 @@ CodeInjection alpine_group_load_hook{
         auto mesh_start = props.mesh_objects.size();
         auto note_start = props.note_objects.size();
         auto corona_start = props.corona_objects.size();
+        auto bag_start = props.bag_objects.size();
 
         // Brush group entries parsed from the .rfg brush metadata chunk.
         std::vector<BrushGroupEntry> brush_group_entries;
@@ -1790,6 +2019,9 @@ CodeInjection alpine_group_load_hook{
             }
             else if (chunk_id == alpine_corona_chunk_id) {
                 corona_deserialize_chunk(*level, *file, chunk_size);
+            }
+            else if (chunk_id == alpine_bag_chunk_id) {
+                bag_deserialize_chunk(*level, *file, chunk_size);
             }
             else if (chunk_id == alpine_brush_group_chunk_id) {
                 // Read brush metadata chunk, tracking remaining bytes to stay within chunk bounds
@@ -1848,9 +2080,10 @@ CodeInjection alpine_group_load_hook{
         int meshes_loaded = static_cast<int>(props.mesh_objects.size() - mesh_start);
         int notes_loaded = static_cast<int>(props.note_objects.size() - note_start);
         int coronas_loaded = static_cast<int>(props.corona_objects.size() - corona_start);
+        int bags_loaded = static_cast<int>(props.bag_objects.size() - bag_start);
         bool has_brush_props = !brush_group_entries.empty();
 
-        if (!meshes_loaded && !notes_loaded && !coronas_loaded && !has_brush_props)
+        if (!meshes_loaded && !notes_loaded && !coronas_loaded && !bags_loaded && !has_brush_props)
             return;
 
         // Assign new unique UIDs to imported Alpine objects (group import must not
@@ -1862,6 +2095,8 @@ CodeInjection alpine_group_load_hook{
             static_cast<DedObject*>(props.note_objects[i])->uid = generate_uid();
         for (auto i = corona_start; i < props.corona_objects.size(); i++)
             static_cast<DedObject*>(props.corona_objects[i])->uid = generate_uid();
+        for (auto i = bag_start; i < props.bag_objects.size(); i++)
+            static_cast<DedObject*>(props.bag_objects[i])->uid = generate_uid();
 
         // Add newly loaded Alpine objects to the selection so they move with the
         // other stock objects when the user places the imported group.
@@ -1871,6 +2106,8 @@ CodeInjection alpine_group_load_hook{
             level->add_to_selection(static_cast<DedObject*>(props.note_objects[i]));
         for (auto i = corona_start; i < props.corona_objects.size(); i++)
             level->add_to_selection(static_cast<DedObject*>(props.corona_objects[i]));
+        for (auto i = bag_start; i < props.bag_objects.size(); i++)
+            level->add_to_selection(static_cast<DedObject*>(props.bag_objects[i]));
 
         // Refresh console display to include newly selected Alpine objects
         // (stock FUN_00423460 runs inside FUN_00438340, before our hook loads them)
@@ -1898,6 +2135,8 @@ CodeInjection alpine_group_load_hook{
                     entry->objects.push_back(static_cast<DedObject*>(props.note_objects[i]));
                 for (auto i = corona_start; i < props.corona_objects.size(); i++)
                     entry->objects.push_back(static_cast<DedObject*>(props.corona_objects[i]));
+                for (auto i = bag_start; i < props.bag_objects.size(); i++)
+                    entry->objects.push_back(static_cast<DedObject*>(props.bag_objects[i]));
 
                 // Apply brush group properties: map serialization index → final brush UID
                 // via the group entry's brushes VArray (same order as serialized).
@@ -1936,8 +2175,8 @@ CodeInjection alpine_group_load_hook{
             }
         }
 
-        xlog::info("[AlpineObj] Loaded {} meshes, {} notes, {} coronas from group",
-            meshes_loaded, notes_loaded, coronas_loaded);
+        xlog::info("[AlpineObj] Loaded {} meshes, {} notes, {} coronas, {} bags from group",
+            meshes_loaded, notes_loaded, coronas_loaded, bags_loaded);
     },
 };
 

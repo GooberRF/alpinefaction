@@ -34,6 +34,7 @@
 #define ADS_VERSION            2      // .toml dedicated server config files
 #define AFS_VERSION            14     // alpine_settings.ini
 #define AFCC_VERSION           2      // alpine_system.ini
+#define AFL_VERSION            1      // .afl per-level saved info
 
 // Increment only when absolutely necessary! Will break level compatibility for older clients.
 // Stock RF1 uses versions 156 - 200. RF2 uses version 295

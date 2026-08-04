@@ -1449,6 +1449,26 @@ float bot_nav_compute_route_score(
             special_penalty += threat_penalty * 2.1f;
         }
     }
+    else if (bot_goal_is_salvage_objective(g_client_bot_state.active_goal)
+        && g_client_bot_state.active_goal != BotGoalType::sal_stage_at_spawn) {
+        const bool sneaky_capper = bot_personality_has_quirk(BotPersonalityQuirk::sneaky_capper);
+        target_distance_weight *= 1.40f;
+        item_weight *= 0.68f;
+        if (g_client_bot_state.active_goal == BotGoalType::sal_deliver_flag) {
+            target_distance_weight *= 1.08f;
+            special_weight *= 0.92f;
+        }
+
+        if (!sneaky_capper
+            && (g_client_bot_state.active_goal == BotGoalType::sal_seek_flag
+                || g_client_bot_state.active_goal == BotGoalType::sal_deliver_flag)) {
+            // Non-sneaky salvage behavior should commit to direct, stable routes.
+            detour_weight *= 2.25f;
+            turn_weight *= 1.35f;
+            target_distance_weight *= 1.18f;
+            revisit_penalty_weight *= 0.35f;
+        }
+    }
 
     const float power_position_bonus = (power_position_weight > 0.0f)
         ? compute_waypoint_path_power_position_bonus(path)
@@ -1717,6 +1737,7 @@ bool bot_nav_pick_waypoint_route_to_goal_randomized_after_stuck(
         bot_goal_is_control_point_objective(g_client_bot_state.active_goal)
         || bot_goal_is_item_collection(g_client_bot_state.active_goal)
         || bot_goal_is_ctf_objective(g_client_bot_state.active_goal)
+        || bot_goal_is_salvage_objective(g_client_bot_state.active_goal)
         || g_client_bot_state.active_goal == BotGoalType::activate_bridge
         || g_client_bot_state.active_goal == BotGoalType::create_crater
         || g_client_bot_state.active_goal == BotGoalType::shatter_glass;
@@ -1872,22 +1893,24 @@ bool bot_nav_pick_waypoint_route_to_goal_randomized_after_stuck(
         }
     );
 
-    const bool force_direct_ctf_choice =
-        bot_goal_is_ctf_objective(g_client_bot_state.active_goal)
-        && !bot_personality_has_quirk(BotPersonalityQuirk::sneaky_capper)
+    const bool force_direct_objective_choice =
+        !bot_personality_has_quirk(BotPersonalityQuirk::sneaky_capper)
         && (g_client_bot_state.active_goal == BotGoalType::ctf_steal_flag
-            || g_client_bot_state.active_goal == BotGoalType::ctf_capture_flag);
+            || g_client_bot_state.active_goal == BotGoalType::ctf_capture_flag
+            || g_client_bot_state.active_goal == BotGoalType::sal_deliver_flag);
     const bool force_stable_route_choice =
         (bot_goal_is_item_collection(g_client_bot_state.active_goal)
             || g_client_bot_state.active_goal == BotGoalType::activate_bridge
             || g_client_bot_state.active_goal == BotGoalType::create_crater
-            || g_client_bot_state.active_goal == BotGoalType::shatter_glass)
+            || g_client_bot_state.active_goal == BotGoalType::shatter_glass
+            || g_client_bot_state.active_goal == BotGoalType::bag_pickup
+            || g_client_bot_state.active_goal == BotGoalType::sal_seek_flag)
         && !g_client_bot_state.recovery_pending_reroute;
     const bool force_stable_recover_eliminate =
         g_client_bot_state.active_goal == BotGoalType::eliminate_target
         && (g_client_bot_state.fsm_state == BotFsmState::recover_navigation
             || g_client_bot_state.recovery_pending_reroute);
-    const int pool_size = (force_direct_ctf_choice
+    const int pool_size = (force_direct_objective_choice
                            || force_stable_route_choice
                            || force_stable_recover_eliminate)
         ? 1
@@ -1895,7 +1918,7 @@ bool bot_nav_pick_waypoint_route_to_goal_randomized_after_stuck(
               static_cast<int>(route_candidates.size()),
               kRouteSelectionPool
           );
-    const float decisiveness = (force_direct_ctf_choice
+    const float decisiveness = (force_direct_objective_choice
                                 || force_stable_route_choice
                                 || force_stable_recover_eliminate)
         ? 1.0f
@@ -1945,6 +1968,7 @@ bool bot_nav_pick_waypoint_route_to_goal_long_detour(
         bot_goal_is_control_point_objective(g_client_bot_state.active_goal)
         || bot_goal_is_item_collection(g_client_bot_state.active_goal)
         || bot_goal_is_ctf_objective(g_client_bot_state.active_goal)
+        || bot_goal_is_salvage_objective(g_client_bot_state.active_goal)
         || g_client_bot_state.active_goal == BotGoalType::activate_bridge
         || g_client_bot_state.active_goal == BotGoalType::create_crater
         || g_client_bot_state.active_goal == BotGoalType::shatter_glass;

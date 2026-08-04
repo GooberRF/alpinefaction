@@ -89,6 +89,7 @@ add_packfile(alpinefaction.vpp
     sounds/af_achievement1.wav
     sounds/af_pinglocation1.wav
     sounds/af_hitsound1.wav
+    sounds/af_spray1.ogg
     sounds/af_killsound1.wav
     sounds/af_radmsg_000.ogg
     sounds/af_radmsg_001.ogg
@@ -175,6 +176,10 @@ add_packfile(alpinefaction.vpp
     images/af_wh_koth_fill_red.tga
     images/af_wh_koth_fill_blue.tga
     images/af_wh_koth_ring_fade.tga
+    images/af_wh_sal_wait.tga
+    images/af_wh_sal_take.tga
+    images/af_wh_sal_base_blue.tga
+    images/af_wh_sal_base_red.tga
     images/afsbi_spawned.tga
     images/afsbi_spawned_1.tga
     images/afsbi_dead.tga
@@ -236,16 +241,36 @@ add_packfile(alpinefaction.vpp
     images/hud_miniflag_blue_1.vbm
     images/hud_miniflag_hilight_1.vbm
     images/hud_miniflag_red_1.vbm
+    images/hud_miniflag_sal_1.vbm
+    images/hud_miniflag_sal.vbm
+    images/hud_microflag_sal.vbm
+    images/hud_flag_sal.vbm
+    images/CTFflag-afgr.tga
     images/noclip_ammo_bar_1.tga
     images/Icon_EAX.tga
     images/Icon_Event.tga
     images/Icon_AFNote.tga
     images/Icon_AFCorona.tga
+    images/Icon_AFBag.tga
     images/radar_dish.tga
     images/score_aflogo.tga
     images/mtl_archway04-mip1.tga
     images/pls_airlockmat01-mip2.tga
     images/consolebutton2A.tga
+    images/af_powerup-bag.vbm
+    images/af_wh_bag_hold.tga
+    images/af_wh_bag_take.tga
+    images/dec_af_csp01.png
+    images/dec_af_csp02.png
+    images/dec_af_csp03.png
+    images/dec_af_csp04.png
+    images/dec_af_csp05.png
+    images/dec_af_csp06.tga
+    images/dec_af_csp07.png
+    images/dec_af_csp08.png
+    images/dec_af_csp09.tga
+    images/dec_af_csp10.tga
+    images/af-jetpack1skin1.tga
 
     fonts/biggerfont.vf
     fonts/regularfont.ttf
@@ -264,6 +289,10 @@ add_packfile(alpinefaction.vpp
     meshes/meatchunk3.v3m
     meshes/meatchunk4.v3m
     meshes/meatchunk5.v3m
+    meshes/af_pickup-bag.v3m
+    meshes/af-jetpack1.v3m
+    meshes/AFSALflag1.vfx
+    meshes/af-jg1.v3m
 
     standard_vs:${CMAKE_BINARY_DIR}/shaders/standard_vs.bin
     character_vs:${CMAKE_BINARY_DIR}/shaders/character_vs.bin

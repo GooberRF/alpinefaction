@@ -151,6 +151,7 @@ namespace rf
     static auto& played_n_seconds_left_sound = addr_as_ref<bool[10]>(0x006C9D38);
     static auto& played_half_minute_left_sound = addr_as_ref<bool>(0x006C9D58);
     static auto& played_one_minute_left_sound = addr_as_ref<bool>(0x006C9D59);
+    static auto& multi_hud_render_countdown = addr_as_ref<void(bool visible)>(0x00476EA0);
 
     static auto& time_left_alpha = addr_as_ref<float>(0x006C9D48);
     static auto& time_left_hours = addr_as_ref<int>(0x006C9D4C);

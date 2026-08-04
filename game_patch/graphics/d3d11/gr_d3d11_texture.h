@@ -4,7 +4,7 @@
 #include <d3d11.h>
 #include <common/ComPtr.h>
 
-namespace df::gr::d3d11
+namespace gr::d3d11
 {
     class TextureManager
     {
@@ -36,12 +36,11 @@ namespace df::gr::d3d11
             return {texture.get_or_create_texture_view(device_, device_context_), texture.u_scale, texture.v_scale};
         }
 
-        ID3D11RenderTargetView* lookup_render_target(int bm_handle)
-        {
+        ID3D11RenderTargetView* lookup_render_target(const int bm_handle) {
             if (bm_handle < 0) {
                 return nullptr;
             }
-            Texture& texture = get_or_load_texture(bm_handle, false);
+            const Texture& texture = get_or_load_texture(bm_handle, false);
             return texture.render_target_view;
         }
 
@@ -89,6 +88,18 @@ namespace df::gr::d3d11
                 else {
                     ++it;
                 }
+            }
+        }
+
+        void flush_render_targets() {
+            std::vector<int> render_targets{};
+            for (const auto& [bm_index, texture] : texture_cache_) {
+                if (texture.render_target_view) {
+                    render_targets.push_back(texture.bm_handle);
+                }
+            }
+            for (const int bm_handle : render_targets) {
+                mark_dirty(bm_handle);
             }
         }
 

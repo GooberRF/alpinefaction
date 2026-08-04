@@ -235,6 +235,7 @@ namespace rf::ui
     static auto& popup_abort = addr_as_ref<void()>(0x004559C0);
     static auto& popup_set_text = addr_as_ref<void(const char *text)>(0x00455A50);
     static auto& popup_get_input = addr_as_ref<void(char* string, int max_len)>(0x004566A0);
+    static auto& popup_is_active = addr_as_ref<bool()>(0x00456680);
 
     static auto& mainmenu_quit_game_confirmed = addr_as_ref<void()>(0x00443CB0);
 
@@ -288,6 +289,11 @@ namespace rf::ui
     static auto& options_controls_bindings_down_on_click = addr_as_ref<void(int x, int y)>(0x00450130);
     static auto& options_controls_current_gadget = addr_as_ref<int>(0x0063FFE8);
     static auto& options_controls_waiting_for_key = addr_as_ref<bool>(0x00640060);
+    
+    // Assigns to the currently selected binding row and clears the same scan code /
+    // mouse button from all other bindings (pass -1 for the unused parameter)
+    static auto& options_controls_assign_binding = addr_as_ref<void(int scan_code, int mouse_btn_id)>(0x0044FFD0);
+    static auto& options_controls_stop_waiting_for_key = addr_as_ref<void()>(0x0044FC00);
 
     // multi -> create game
     static auto& create_game_map_list_up_on_click = addr_as_ref<void(int x, int y)>(0x004451F0);

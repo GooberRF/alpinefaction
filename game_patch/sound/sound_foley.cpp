@@ -59,7 +59,7 @@ void sound_foley_level_cleanup(BreakableMaterialState* states, int count)
 // Builds custom ImpactSoundSets for materials that don't have stock Custom Sound Sets.
 CodeInjection foley_iss_init_injection{
     0x00467c1c,
-    [](auto& regs) {
+    [] {
         static constexpr const char* k_rock_wavs[] = {
             "Geodebris_01.wav", "Geodebris_02.wav",
             "Geodebris_03.wav", "Geodebris_04.wav",

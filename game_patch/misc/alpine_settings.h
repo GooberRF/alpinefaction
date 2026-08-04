@@ -8,6 +8,9 @@
 
 extern bool g_loaded_alpine_settings_file;
 
+// forward declaration (in sprays.cpp)
+int spray_count();
+
 struct AlpineGameSettings
 {
     // fov
@@ -96,6 +99,14 @@ struct AlpineGameSettings
     bool show_location_pings = true;
     bool play_hit_sounds = true;
 
+    bool spray_display = true;
+    int selected_spray_index = 0;
+    void set_selected_spray_index(int index)
+    {
+        const int count = spray_count();
+        selected_spray_index = (count > 0) ? std::clamp(index, 0, count - 1) : 0;
+    }
+
     static constexpr int min_hit_sound_interval_ms = 0;
     static constexpr int max_hit_sound_interval_ms = 1000;
     int hit_sound_min_interval_ms = 20;
@@ -111,6 +122,8 @@ struct AlpineGameSettings
     bool gaussian_spread = false;
     bool geo_chunk_physics = true;
     bool show_run_timer = true;
+    bool show_gametype_help = true;
+    bool show_mini_scoreboard_dm = true;
     bool multi_ricochet = false;
     bool damage_screen_flash = true;
     bool spectate_damage_screen_flash = true;
@@ -145,6 +158,7 @@ struct AlpineGameSettings
     bool speed_display = false;
     bool ping_display = true;
     bool spectate_mode_minimal_ui = false;
+    bool spectate_show_camera_meshes = true; // draw camera meshes in free look
     bool save_console_history = false; // checked before config loaded, must be false here
     bool screen_shake_force_off = false;
     bool display_target_player_names = true;
@@ -162,6 +176,7 @@ struct AlpineGameSettings
     bool af_branding = true;
     int seasonal_effect = 1; // 0=none, 1=auto, 2=always_snow
     bool player_join_beep = false;
+    bool player_join_flash = true;
     bool full_range_lighting = true;
     bool always_clamp_official_lightmaps = false;
     bool ignore_tbl_vertex_lighting = false;
@@ -208,10 +223,16 @@ struct AlpineGameSettings
     bool apply_exposure_damage = true;
     bool climb_fix = true;
     bool killfeed_enabled = false;
+    bool show_assist_names = true;
+    bool highlight_assisted_kills = true;
     bool autodl_blur_background = true;
     bool autodl_download_awps = false;
     bool hide_chat = false;
     bool spectate_cinematic_mode = false;
+
+    // MSAA anti-aliasing
+    // 1 = disabled, 2/4/8 = MSAA level
+    uint32_t sample_count = 1;
 
     // hud color overrides
     std::optional<uint32_t> sniper_scope_color_override{};

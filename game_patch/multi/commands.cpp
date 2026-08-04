@@ -8,8 +8,11 @@
 #include "../rf/os/string.h"
 #include "server.h"
 #include "multi.h"
+#include <common/utils/string-utils.h>
 #include <patch_common/AsmWriter.h>
 #include <patch_common/CallHook.h>
+#include <algorithm>
+#include <cstdint>
 #include <vector>
 #include <format>
 #include <optional>
@@ -31,6 +34,38 @@ void restart_current_level()
 
     if (manual_rules_override)
         set_manual_rules_override(std::move(*manual_rules_override));
+}
+
+// Restart, but running the level's CONFIGURED rules instead of whatever the
+// session's votes put in front of them.
+void restart_current_level_configured()
+{
+    clear_manual_rules_override();
+
+    const std::string filename = rf::level.filename.c_str();
+
+    if (g_dedicated_launched_from_ads) {
+        const auto& levels = g_alpine_server_config.levels;
+        const int idx = rf::netgame.current_level_index;
+        const AlpineServerConfigRules* configured = &g_alpine_server_config.base_rules;
+        if (idx >= 0 && idx < static_cast<int>(levels.size())
+            && string_iequals(levels[idx].level_filename, filename)) {
+            configured = &levels[idx].rule_overrides;
+        }
+        else {
+            for (const auto& entry : levels) {
+                if (string_iequals(entry.level_filename, filename)) {
+                    configured = &entry.rule_overrides;
+                    break;
+                }
+            }
+        }
+        // Explicit so a game type the session voted in cannot survive as the
+        // still-queued upcoming type.
+        set_upcoming_game_type(configured->game_type, UpcomingGameTypeSelection::ExplicitRequest);
+    }
+
+    multi_change_level_alpine(filename.c_str());
 }
 
 void load_next_level()
@@ -138,22 +173,34 @@ ConsoleCommand2 map_prev_cmd{
 };
 
 void kick_player_delayed(const rf::Player* const player) {
+    if (!player || !player->net_data) {
+        return;
+    }
+    const int player_id = player->net_data->player_id;
+    if (std::find(g_players_to_kick.begin(), g_players_to_kick.end(), player_id) != g_players_to_kick.end()) {
+        return;
+    }
     rf::console::print("{}{}", player->name, rf::strings::was_kicked);
-    g_players_to_kick.push_back(player->net_data->player_id);
+    g_players_to_kick.push_back(player_id);
 }
 
 CallHook<void(const rf::Player*)> multi_kick_player_hook{0x0047B9BD, kick_player_delayed};
 
 void process_delayed_kicks()
 {
-    // Process kicks outside of packet processing loop to avoid crash when a player is suddenly destroyed (00479299)
-    for (int player_id : g_players_to_kick) {
-        rf::Player* player = rf::multi_find_player_by_id(player_id);
-        if (player) {
-            rf::multi_kick_player(player);
+    // Process kicks outside of packet processing loop to avoid crash when a player is suddenly destroyed.
+    // The engine's receive loop caches player_list->next before dispatching each packet, so destroying
+    // a player from inside a packet handler makes the loop walk a freed rf::Player on the next iteration.
+    while (!g_players_to_kick.empty()) {
+        std::vector<int> batch;
+        batch.swap(g_players_to_kick);
+        for (int player_id : batch) {
+            rf::Player* player = rf::multi_find_player_by_id(static_cast<uint8_t>(player_id));
+            if (player) {
+                rf::multi_kick_player(player);
+            }
         }
     }
-    g_players_to_kick.clear();
 }
 
 void ban_cmd_handler_hook()

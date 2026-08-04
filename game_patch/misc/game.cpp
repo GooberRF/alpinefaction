@@ -8,6 +8,7 @@
 #include <patch_common/AsmWriter.h>
 #include <xlog/xlog.h>
 #include "../os/console.h"
+#include "../bmpman/bmpman.h"
 #include "../rf/misc.h"
 #include "../rf/file/file.h"
 #include "../rf/gr/gr.h"
@@ -153,14 +154,14 @@ CodeInjection gameplay_render_frame_display_full_screen_image_injection{
 static FunHook<void(rf::GameState, bool)> rf_do_state_hook{
     0x004B1E70,
     [](rf::GameState state, bool paused) {
-        if (state == rf::GS_MULTI_LEVEL_DOWNLOAD) {
+        if (state == rf::GS_MULTI_LIMBO_JUST_JOINED) {
+            multi_limbo_just_joined_do_frame();
+        } else if (state == rf::GS_MULTI_LEVEL_DOWNLOAD) {
             multi_level_download_do_frame();
-        }
-        else if (state == rf::GS_END_GAME) {
+        } else if (state == rf::GS_END_GAME) {
             multi_level_download_abort();
             rf_do_state_hook.call_target(state, paused);
-        }
-        else {
+        } else {
             rf_do_state_hook.call_target(state, paused);
         }
     },

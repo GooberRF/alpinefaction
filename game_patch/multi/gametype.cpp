@@ -7,17 +7,28 @@
 #include <common/utils/list-utils.h>
 #include <common/version/version.h>
 #include "gametype.h"
+#include "bagman.h"
+#include "jetpack.h"
+#include "rounds.h"
+#include "pit.h"
+#include "wipeout.h"
+#include "gungame.h"
+#include "salvage.h"
 #include "multi.h"
+#include "mutators.h"
 #include "alpine_packets.h"
 #include "../hud/hud_internal.h"
 #include "../hud/multi_spectate.h"
 #include "../sound/sound.h"
 #include "../rf/os/timestamp.h"
 #include "../object/event_alpine.h"
+#include "../rf/entity.h"
 #include "../rf/gameseq.h"
 #include "../rf/localize.h"
+#include "../rf/v3d.h"
+#include "../rf/vmesh.h"
 
-static char* const* g_af_gametype_names[8];
+static char* const* g_af_gametype_names[rf::NG_TYPE_UNK + 1];
 
 static char koth_name[] = "KOTH";
 static char* koth_slot = koth_name;
@@ -29,6 +40,21 @@ static char run_name[] = "RUN";
 static char* run_slot = run_name;
 static char esc_name[] = "ESC";
 static char* esc_slot = esc_name;
+static char bag_name[] = "BAG";
+static char* bag_slot = bag_name;
+static char tbag_name[] = "TBAG";
+static char* tbag_slot = tbag_name;
+static char pit_name[] = "PIT";
+static char* pit_slot = pit_name;
+static char wo_name[] = "WO";
+static char* wo_slot = wo_name;
+static char gg_name[] = "GG";
+static char* gg_slot = gg_name;
+static char sal_name[] = "SAL";
+static char* sal_slot = sal_name;
+// UNK is the sentinel; new game types must be added above
+static char unk_name[] = "UNK";
+static char* unk_slot = unk_name;
 
 KothInfo g_koth_info; // KOTH and DC
 rf::Timestamp g_local_contest_alarm_cooldown;
@@ -57,14 +83,21 @@ static void stop_hill_sounds()
 }
 
 void populate_gametype_table() {
-    g_af_gametype_names[0] = &rf::strings::dm;
-    g_af_gametype_names[1] = &rf::strings::ctf;
-    g_af_gametype_names[2] = &rf::strings::teamdm;
-    g_af_gametype_names[3] = &koth_slot;
-    g_af_gametype_names[4] = &dc_slot;
-    g_af_gametype_names[5] = &rev_slot;
-    g_af_gametype_names[6] = &run_slot;
-    g_af_gametype_names[7] = &esc_slot;
+    g_af_gametype_names[rf::NG_TYPE_DM]     = &rf::strings::dm;
+    g_af_gametype_names[rf::NG_TYPE_CTF]    = &rf::strings::ctf;
+    g_af_gametype_names[rf::NG_TYPE_TEAMDM] = &rf::strings::teamdm;
+    g_af_gametype_names[rf::NG_TYPE_KOTH]   = &koth_slot;
+    g_af_gametype_names[rf::NG_TYPE_DC]     = &dc_slot;
+    g_af_gametype_names[rf::NG_TYPE_REV]    = &rev_slot;
+    g_af_gametype_names[rf::NG_TYPE_RUN]    = &run_slot;
+    g_af_gametype_names[rf::NG_TYPE_ESC]    = &esc_slot;
+    g_af_gametype_names[rf::NG_TYPE_BAG]    = &bag_slot;
+    g_af_gametype_names[rf::NG_TYPE_TBAG]   = &tbag_slot;
+    g_af_gametype_names[rf::NG_TYPE_PIT]    = &pit_slot;
+    g_af_gametype_names[rf::NG_TYPE_WO]     = &wo_slot;
+    g_af_gametype_names[rf::NG_TYPE_GG]     = &gg_slot;
+    g_af_gametype_names[rf::NG_TYPE_SAL]    = &sal_slot;
+    g_af_gametype_names[rf::NG_TYPE_UNK]    = &unk_slot;
 
     for (int i = 0; i < 5; ++i) {
         const char* const* slot = g_af_gametype_names[i];
@@ -72,6 +105,20 @@ void populate_gametype_table() {
         //xlog::warn("GameType[{}]: {} (slot={}, name_ptr={})", i, name, static_cast<const void*>(slot), static_cast<const void*>(*slot));
     }
 }
+
+FunHook<int(uint8_t*, int)> server_list_load_entry_game_type_guard{
+    0x0044B810,
+    [](uint8_t* record, int is_favorite) -> int {
+        if (record) {
+            constexpr int num_gametypes = sizeof(g_af_gametype_names) / sizeof(g_af_gametype_names[0]);
+            auto& game_type = *reinterpret_cast<int32_t*>(record + 0x58);
+            if (game_type < 0 || game_type >= num_gametypes) {
+                game_type = static_cast<int32_t>(rf::NG_TYPE_UNK);
+            }
+        }
+        return server_list_load_entry_game_type_guard.call_target(record, is_favorite);
+    },
+};
 
 CallHook<char*(const char*, const char*)> listen_server_map_list_filename_contains_hook{
     0x00445730,
@@ -97,8 +144,11 @@ bool multi_game_type_is_team_type(rf::NetGameType game_type)
         case rf::NG_TYPE_DC:
         case rf::NG_TYPE_REV:
         case rf::NG_TYPE_ESC:
+        case rf::NG_TYPE_TBAG:
+        case rf::NG_TYPE_WO:
+        case rf::NG_TYPE_SAL:
             return true;
-        default: // DM, RUN
+        default:
             return false;
     }
 }
@@ -111,7 +161,7 @@ bool multi_game_type_has_hills(rf::NetGameType game_type)
         case rf::NG_TYPE_REV:
         case rf::NG_TYPE_ESC:
             return true;
-        default: // DM, CTF, TDM, RUN
+        default:
             return false;
     }
 }
@@ -188,6 +238,93 @@ bool gt_is_esc()
 bool gt_is_run()
 {
     return rf::multi_get_game_type() == rf::NetGameType::NG_TYPE_RUN;
+}
+
+bool gt_is_bag()
+{
+    return rf::multi_get_game_type() == rf::NetGameType::NG_TYPE_BAG;
+}
+
+bool gt_is_tbag()
+{
+    return rf::multi_get_game_type() == rf::NetGameType::NG_TYPE_TBAG;
+}
+
+bool gt_is_bagman_any()
+{
+    return gt_is_bag() || gt_is_tbag();
+}
+
+bool gt_is_pit()
+{
+    return rf::multi_get_game_type() == rf::NetGameType::NG_TYPE_PIT;
+}
+
+bool gt_is_wipeout()
+{
+    return rf::multi_get_game_type() == rf::NetGameType::NG_TYPE_WO;
+}
+
+bool gt_is_gungame()
+{
+    return rf::multi_get_game_type() == rf::NetGameType::NG_TYPE_GG;
+}
+
+bool gt_is_salvage()
+{
+    return rf::multi_get_game_type() == rf::NetGameType::NG_TYPE_SAL;
+}
+
+const char* multi_gametype_help_text(rf::NetGameType game_type)
+{
+    switch (game_type) {
+        case rf::NG_TYPE_DM:
+            return "Deathmatch: Frag everyone, free for all";
+        case rf::NG_TYPE_CTF:
+            return "Capture the Flag: Steal the the enemy flag and take it to your base";
+        case rf::NG_TYPE_TEAMDM:
+            return "Team Deathmatch: Frag everyone on the enemy team";
+        case rf::NG_TYPE_KOTH:
+            return "King of the Hill: Capture and hold the hill to earn points for your team";
+        case rf::NG_TYPE_DC:
+            return "Damage Control: Capture and hold control points to earn points for your team";
+        case rf::NG_TYPE_REV:
+            return "Revolt: Red attacks and captures control points in order, Blue defends";
+        case rf::NG_TYPE_RUN:
+            return "Run: Finish the course as fast as you can";
+        case rf::NG_TYPE_ESC:
+            return "Escalation: Capture control points in the path toward the enemy base";
+        case rf::NG_TYPE_BAG:
+            return "Bagman: Steal and hold the bag to earn points";
+        case rf::NG_TYPE_TBAG:
+            return "Team Bagman: Steal and hold the bag to earn points for your team";
+        case rf::NG_TYPE_PIT:
+            return "Pit: Duels, winner plays the next player in the queue";
+        case rf::NG_TYPE_WO:
+            return "Wipeout: Frag all enemy players before they respawn";
+        case rf::NG_TYPE_GG:
+            return "Gun Game: Get frags to advance to a new weapon";
+        case rf::NG_TYPE_SAL:
+            return "Salvage: Steal the flag and take it to your base";
+        default:
+            return nullptr;
+    }
+}
+
+bool gt_uses_custom_scoring()
+{
+    return gt_is_bagman_any() || gt_is_pit() || gt_is_wipeout();
+}
+
+bool gt_type_uses_rounds(rf::NetGameType game_type)
+{
+    return game_type == rf::NetGameType::NG_TYPE_PIT
+        || game_type == rf::NetGameType::NG_TYPE_WO;
+}
+
+bool gt_uses_rounds()
+{
+    return gt_type_uses_rounds(rf::multi_get_game_type());
 }
 
 static HillInfo* esc_find_hill_by_role(HillRole role)
@@ -295,7 +432,7 @@ bool koth_capture_point_handler_uses_cylinder(int handler_uid, int trigger_uid)
 
         if (rf::Event* event = rf::event_lookup_from_uid(handler_uid);
             event
-            && event->event_type == rf::event_type_to_int(rf::EventType::Capture_Point_Handler)) {
+            && event->event_type == std::to_underlying(rf::EventType::Capture_Point_Handler)) {
             auto* handler = static_cast<EventCapturePointHandler*>(event);
             return handler->sphere_to_cylinder;
         }
@@ -1559,7 +1696,7 @@ static void update_hill_client_predict_rev(HillInfo& h, int dt_ms)
 static void koth_client_predict_tick(int dt_ms)
 {
     // client-only; server is authoritative
-    if (!rf::is_multi || rf::is_server || rf::is_dedicated_server)
+    if (!rf::is_multi || rf::is_server)
         return;
 
     // score prediction in KOTH/DC
@@ -1889,13 +2026,31 @@ void hill_mode_level_init_post()
 void multi_level_init_post_gametypes()
 {
     hill_mode_level_init_post();
+    bagman_level_init_post();
+    salvage_level_init_post();
+    pit_level_init_post();
+    wipeout_level_init_post();
+    gungame_level_init_post();
+    // Rounds must initialise AFTER per-gametype level-init so the gametype
+    // has registered its callbacks before round 1 begins.
+    rounds_level_init_post();
+    // Mutator pickup suppression runs last so its policy applies on top of any
+    // gametype-specific item handling.
+    mutators_level_init_post();
 }
 
 // pre level being loaded
 CodeInjection multi_level_init_gametypes_injection{
     0x0046E466,
-    [](auto& regs) {
+    [] {
+        rounds_level_init();
         hill_mode_level_init();
+        bagman_level_init();
+        jetpack_level_init();
+        salvage_level_init();
+        pit_level_init();
+        wipeout_level_init();
+        gungame_level_init();
     },
 };
 
@@ -1929,9 +2084,31 @@ CodeInjection send_team_score_state_info_patch{
             }
         }
 
+        // send bagman state packet on join
+        if (gt_is_bagman_any()) {
+            if (rf::Player* pp = regs.edi) {
+                bagman_force_state_sync_to(pp);
+            }
+        }
+
+        // send salvage flag state packet on join
+        if (gt_is_salvage()) {
+            if (rf::Player* pp = regs.edi) {
+                salvage_force_state_sync_to(pp);
+            }
+        }
+
+        // send Pit queue state and roster on join.
+        if (gt_is_pit()) {
+            if (rf::Player* pp = regs.edi) {
+                pit_send_queue_state(pp);
+                pit_send_roster_to(pp);
+            }
+        }
+
         // send team_scores packet
         if (multi_game_type_is_team_type(game_type) && !gt_is_rev()) {
-            regs.eip = 0x00481859; 
+            regs.eip = 0x00481859;
         }
     },
 };
@@ -1959,9 +2136,30 @@ CodeInjection send_team_score_patch{
     0x00472151,
     [](auto& regs) {
         if (gt_is_koth() || gt_is_dc()) {
-            // both int16_t on the wire
+            // both uint16_t on the wire
             const uint16_t red_score = (uint16_t)std::clamp(multi_koth_get_red_team_score(), 0, 0xFFFF);
             const uint16_t blue_score = (uint16_t)std::clamp(multi_koth_get_blue_team_score(), 0, 0xFFFF);
+            regs.si = red_score;
+            regs.ax = blue_score;
+            regs.eip = 0x00472176; // use stock game packet send
+        }
+        else if (gt_is_tbag()) {
+            const uint16_t red_score = (uint16_t)std::clamp(bagman_get_red_team_score(), 0, 0xFFFF);
+            const uint16_t blue_score = (uint16_t)std::clamp(bagman_get_blue_team_score(), 0, 0xFFFF);
+            regs.si = red_score;
+            regs.ax = blue_score;
+            regs.eip = 0x00472176; // use stock game packet send
+        }
+        else if (gt_is_wipeout()) {
+            const uint16_t red_score = (uint16_t)std::clamp(wipeout_get_red_team_score(), 0, 0xFFFF);
+            const uint16_t blue_score = (uint16_t)std::clamp(wipeout_get_blue_team_score(), 0, 0xFFFF);
+            regs.si = red_score;
+            regs.ax = blue_score;
+            regs.eip = 0x00472176; // use stock game packet send
+        }
+        else if (gt_is_salvage()) {
+            const uint16_t red_score = (uint16_t)std::clamp(salvage_get_red_team_score(), 0, 0xFFFF);
+            const uint16_t blue_score = (uint16_t)std::clamp(salvage_get_blue_team_score(), 0, 0xFFFF);
             regs.si = red_score;
             regs.ax = blue_score;
             regs.eip = 0x00472176; // use stock game packet send
@@ -1974,12 +2172,63 @@ CodeInjection process_team_score_patch{
     0x0047221D,
     [](auto& regs) {
         if (gt_is_koth() || gt_is_dc()) {
-            // both int16_t on the wire
-            int red_score = regs.esi;
-            int blue_score = regs.edi;
+            int red_score = static_cast<uint16_t>(regs.si.value);
+            int blue_score = static_cast<uint16_t>(regs.di.value);
             multi_koth_set_red_team_score(red_score);
             multi_koth_set_blue_team_score(blue_score);
         }
+        else if (gt_is_tbag()) {
+            int red_score = static_cast<uint16_t>(regs.si.value);
+            int blue_score = static_cast<uint16_t>(regs.di.value);
+            bagman_set_red_team_score(red_score);
+            bagman_set_blue_team_score(blue_score);
+        }
+        else if (gt_is_wipeout()) {
+            int red_score = static_cast<uint16_t>(regs.si.value);
+            int blue_score = static_cast<uint16_t>(regs.di.value);
+            wipeout_set_red_team_score(red_score);
+            wipeout_set_blue_team_score(blue_score);
+        }
+        else if (gt_is_salvage()) {
+            int red_score = static_cast<uint16_t>(regs.si.value);
+            int blue_score = static_cast<uint16_t>(regs.di.value);
+            salvage_set_red_team_score(red_score);
+            salvage_set_blue_team_score(blue_score);
+        }
+    },
+};
+
+CodeInjection carrier_attachment_render_patch{
+    0x00421C0B,
+    [](auto& regs) {
+        auto* ep = reinterpret_cast<rf::Entity*>(regs.esi.value);
+        if (!ep) return;
+
+        // Shared entity_render attachment point for jetpacks. Deliberately ahead
+        // of the bagman gates below and not gated on rf::is_multi: the Jetpacks
+        // mutator applies to every gametype, and the single player `jetpack`
+        // command uses this same hook. jetpack_render_attachment() does its own
+        // active/first-person checks and yields to the bag on the carrier.
+        jetpack_render_attachment(ep);
+
+        if (!rf::is_multi || !gt_is_bagman_any()) return;
+
+        // The hooked entity must be the carrier: the query derives its transform
+        // from the carrier entity's $prop_flag.
+        if (!g_bagman_info.carrier || ep->handle != g_bagman_info.carrier->entity_handle) return;
+
+        rf::VifLodMesh* lod = nullptr;
+        rf::Vector3 pos{};
+        rf::Matrix3 orient{};
+        if (!bagman_query_carrier_bag_outline(&lod, &pos, &orient)) return;
+
+        rf::VMesh* mesh = bagman_get_carrier_mesh();
+        if (!mesh) return;
+
+        rf::MeshRenderParams params{};
+        params.init_defaults();
+        params.orient = orient;
+        rf::vmesh_render(mesh, &pos, &orient, &params);
     },
 };
 
@@ -2019,6 +2268,7 @@ CallHook<int()> multi_get_game_type_non_team_mode_hook{
         0x00444A93, // multi_chat_say_show
         0x00476CA8, // multi_hud_level_init for "You are on team X" for client
         0x004827E1, // multi_get_new_player_team on join
+        0x0048939F, // team damage gate
     },
     []() {
         // all are calls to multi_get_game_type in the stock game
@@ -2039,13 +2289,18 @@ void gametype_do_patch()
     write_mem<uint32_t>((0x0044C227) + 3, (uint32_t)(uintptr_t)&g_af_gametype_names[0]); // multi_join_game_render_row
     write_mem<uint32_t>((0x0044C724) + 3, (uint32_t)(uintptr_t)&g_af_gametype_names[0]); // multi_join_game_init
 
-    // patch listen server create menu gametype select field to use new table
+    // patch listen server create menu gametype select field to use new table.
+    // End pointer stops at NG_TYPE_UNK so UNK doesn't appear as a host-selectable
+    // option in the dropdown — UNK is a display-only sentinel for the browser.
     const uintptr_t base = (uintptr_t)&g_af_gametype_names[0];
-    const uintptr_t end = base + sizeof(g_af_gametype_names);
+    const uintptr_t end = (uintptr_t)&g_af_gametype_names[rf::NG_TYPE_UNK];
     const uintptr_t kMovBase = 0x004459B1;
     const uintptr_t kCmpEnd = 0x004459CE;
     write_mem<uint32_t>(kMovBase + 1, (uint32_t)base);
     write_mem<uint32_t>(kCmpEnd + 2, (uint32_t)end);
+
+    // Defensive clamp against game_type OOB crash in stale server records (like from favlist.adr)
+    server_list_load_entry_game_type_guard.install();
 
     // team_score packet expansion to support new team gametypes
     send_team_score_server_do_frame_patch.install();
@@ -2069,4 +2324,19 @@ void gametype_do_patch()
 
     // handle new non-team modes
     multi_get_game_type_non_team_mode_hook.install();
+
+    // render the cosmetic carrier attachment for the gametypes that have one
+    carrier_attachment_render_patch.install();
+
+    // bagman specific
+    bagman_do_patch();
+
+    // jetpack specific (registers the single player `jetpack` console command)
+    jetpack_apply_patch();
+
+    // salvage specific
+    salvage_do_patch();
+
+    // rounds
+    rounds_do_patch();
 }

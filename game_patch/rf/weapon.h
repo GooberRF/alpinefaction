@@ -279,6 +279,7 @@ namespace rf
     static auto& rocket_launcher_weapon_type = addr_as_ref<int>(0x00872458);
     static auto& shoulder_cannon_weapon_type = addr_as_ref<int>(0x0087244C);
     static auto& rail_gun_weapon_type = addr_as_ref<int>(0x00872124);
+    static auto& flamethrower_weapon_type = addr_as_ref<int>(0x0087243C);
     static auto& assault_rifle_weapon_type = addr_as_ref<int>(0x00872470);
     static auto& sniper_rifle_weapon_type = addr_as_ref<int>(0x00872440);
     static auto& scope_assault_rifle_weapon_type = addr_as_ref<int>(0x0087245C);

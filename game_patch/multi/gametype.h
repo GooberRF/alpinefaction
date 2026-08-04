@@ -1,11 +1,14 @@
 #pragma once
 
 #include <optional>
+#include <string>
 #include <xlog/xlog.h>
 #include "../rf/trigger.h"
 #include "../rf/os/string.h"
 #include "../rf/os/timestamp.h"
 #include "../rf/multi.h"
+#include "../rf/math/vector.h"
+#include "../rf/math/matrix.h"
 
 // forward declarations
 struct EventCapturePointHandler;
@@ -170,6 +173,19 @@ bool gt_is_dc();
 bool gt_is_rev();
 bool gt_is_esc();
 bool gt_is_run();
+bool gt_is_bag();
+bool gt_is_tbag();
+bool gt_is_bagman_any();
+bool gt_is_pit();
+bool gt_is_wipeout();
+bool gt_is_gungame();
+bool gt_is_salvage();
+const char* multi_gametype_help_text(rf::NetGameType game_type);
+
+// Score is driven by gametype-specific logic rather than directly by frags.
+bool gt_uses_custom_scoring();
+bool gt_uses_rounds();
+bool gt_type_uses_rounds(rf::NetGameType game_type);
 bool rev_all_points_permalocked();
 bool esc_all_points_owned_by_one_team();
 bool esc_team_can_attack_hill(const HillInfo& hill, HillOwner team);

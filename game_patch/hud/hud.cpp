@@ -5,6 +5,8 @@
 #include <xlog/xlog.h>
 #include "hud.h"
 #include "hud_internal.h"
+#include "../misc/vote_panel.h"
+#include "../multi/jetpack.h"
 #include "multi_scoreboard.h"
 #include "multi_spectate.h"
 #include "remote_server_cfg_ui.h"
@@ -167,7 +169,7 @@ void set_big_hud(bool is_big)
     set_big_countdown_counter(is_big);
 
     // TODO: Message Log - Note: it remembers text height in save files so method of recalculation is needed
-    //write_mem<i8>(0x004553DB + 1, is_big ? 127 : 70);
+    // write_mem<i8>(0x004553DB + 1, is_big ? 127 : 70);
 }
 
 ConsoleCommand2 bighud_cmd{
@@ -409,6 +411,11 @@ CallHook hud_msg_render_gr_get_font_height_hook{
 
 void hud_render_00437BC0()
 {
+    // Single player jetpack HUD. Multiplayer draws it from multi_hud_render.
+    if (!rf::is_multi) {
+        jetpack_render_hud();
+    }
+
     if (!rf::is_multi || !rf::local_player) {
         return;
     }
@@ -422,7 +429,8 @@ void hud_render_00437BC0()
     bool limbo = rf::gameseq_get_state() == rf::GS_MULTI_LIMBO;
     bool show_scoreboard = scoreboard_control_pressed || (!multi_spectate_is_spectating() && is_player_dead) || limbo;
 
-    scoreboard_maybe_render(show_scoreboard && !g_remote_server_cfg_popup.is_active());
+    scoreboard_maybe_render(show_scoreboard && !g_remote_server_cfg_popup.is_active()
+        && !vote_panel_is_gameplay_overlay_active());
 }
 
 void hud_apply_patches()

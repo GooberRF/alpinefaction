@@ -4,7 +4,7 @@
 #include "../../rf/math/vector.h"
 #include "../../rf/math/matrix.h"
 
-namespace df::gr::d3d11
+namespace gr::d3d11
 {
     // 4 rows, 4 cols (column-major)
     using GpuMatrix4x4 = std::array<std::array<float, 4>, 4>;

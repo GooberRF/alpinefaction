@@ -21,6 +21,7 @@ static int g_cutscene_bg_sound_sig = -1;
 static int g_custom_sound_entry_start = -1;
 static int g_taunt_sound_start = -1;
 static int g_radmsg_sound_start = -1;
+static int g_spray_sound_id = -1;
 #ifdef DEBUG
 int g_sound_test = 0;
 #endif
@@ -153,7 +154,7 @@ ConsoleCommand2 level_sounds_cmd{
 
 ConsoleCommand2 sound_enabled_cmd{
     "dbg_togglesound",
-    [](std::optional<bool> enabled) {
+    [] {
         g_alpine_game_config.sound_enabled = !g_alpine_game_config.sound_enabled;
         set_sound_enabled(g_alpine_game_config.sound_enabled);
         rf::console::print("Game sound is now {}.", g_alpine_game_config.sound_enabled ? "enabled" : "disabled");
@@ -167,7 +168,8 @@ FunHook<int(int, int, float, float)> snd_play_hook{
     [](int handle, int group, float pan, float volume) {
         xlog::trace("snd_play {} {} {:.2f} {:.2f}", handle, group, pan, volume);
 
-        if (!rf::sound_enabled || handle < 0) {
+        // Upper-bound guard
+        if (!rf::sound_enabled || handle < 0 || handle >= rf::g_num_sounds) {
             return -1;
         }
         if (rf::snd_load_hint(handle) != 0) {
@@ -474,9 +476,25 @@ int get_custom_sound_id(int custom_id) {
     return g_custom_sound_entry_start + custom_id;
 }
 
+bool is_valid_custom_sound_id(int custom_id) {
+    // g_custom_sound_entry_start is -1 when sounds aren't loaded (dedicated
+    // server). Custom sounds occupy [g_custom_sound_entry_start, g_num_sounds);
+    // anything outside that is not a registered custom sound.
+    if (g_custom_sound_entry_start < 0 || custom_id < 0) {
+        return false;
+    }
+    const int handle = g_custom_sound_entry_start + custom_id;
+    return handle >= 0 && handle < rf::g_num_sounds;
+}
+
 int get_custom_chat_message_sound_id(int custom_id, bool is_taunt)
 {
     return is_taunt ? g_taunt_sound_start + custom_id : g_radmsg_sound_start + custom_id;
+}
+
+int get_spray_sound_id()
+{
+    return g_spray_sound_id;
 }
 
 void gamesound_parse_custom_sounds() 
@@ -492,6 +510,10 @@ void gamesound_parse_custom_sounds()
         {"af_hitsound1.wav", 10.0f, 1.0f, 1.0f},        // 2
         {"af_killsound1.wav", 10.0f, 1.0f, 1.0f},       // 3
         {"Console_Large_03.wav", 10.0f, 1.0f, 1.0f},
+        {"MP_ANN_04.wav", 10.0f, 1.0f, 1.0f},           // time expired
+        {"MP_ANN_06.wav", 10.0f, 1.0f, 1.0f},           // match over
+        {"MP_ANN_10.wav", 10.0f, 1.0f, 1.0f},           // five kills remaining
+        {"MP_ANN_11.wav", 10.0f, 1.0f, 1.0f},           // one kill remaining
         {"af_radmsg_000.ogg", 10.0f, 1.0f, 1.0f},
         {"af_radmsg_001.ogg", 10.0f, 1.0f, 1.0f},
         {"af_radmsg_002.ogg", 10.0f, 1.0f, 1.0f},
@@ -598,6 +620,7 @@ void gamesound_parse_custom_sounds()
         {"MP_TAUNT_72.wav", 10.0f, 1.0f, 1.0f},
         {"MP_TAUNT_73.wav", 10.0f, 1.0f, 1.0f},
         {"MP_TAUNT_74.wav", 10.0f, 1.0f, 1.0f},
+        {"af_spray1.ogg", 10.0f, 1.0f, 1.0f},
     };
 
     for (const auto& sound : custom_sounds) 
@@ -612,6 +635,7 @@ void gamesound_parse_custom_sounds()
 
     g_taunt_sound_start = rf::snd_pc_find_by_name("MP_TAUNT_16.wav");
     g_radmsg_sound_start = rf::snd_pc_find_by_name("af_radmsg_000.ogg");
+    g_spray_sound_id = rf::snd_pc_find_by_name("af_spray1.ogg");
 
     //xlog::warn("Custom sounds added, starting at ID {}. Taunts start at ID {}", g_custom_sound_entry_start, g_taunt_sound_start);
 }

@@ -18,7 +18,24 @@ constexpr int alpine_props_chunk_id = 0x0AFBA5ED;
 constexpr int alpine_mesh_chunk_id = 0x0AFBAE01;
 constexpr int alpine_note_chunk_id = 0x0AFBAE02;
 constexpr int alpine_corona_chunk_id = 0x0AFBAE03;
+constexpr int alpine_bag_chunk_id = 0x0AFBAE04;
 constexpr int alpine_brush_group_chunk_id = 0x0AFBAE05; // brush metadata in .rfg group files only
+
+// Glacier saves new RFL chunks for its own purposes (metadata). Alpine Faction can
+// neither read nor parse these, but AlpineEditor retains them verbatim on load and
+// re-emits them on save so the originating editor can still read the file properly.
+constexpr uint32_t glacier_chunk_id_mask = 0xFFF00000u;
+constexpr uint32_t glacier_chunk_id_prefix = 0x6ED00000u;
+inline bool is_glacier_chunk_id(uint32_t id)
+{
+    return (id & glacier_chunk_id_mask) == glacier_chunk_id_prefix;
+}
+
+// A retained RFL section captured verbatim from Glacier.
+struct RetainedRflChunk {
+    uint32_t id;
+    std::vector<uint8_t> data;
+};
 
 // Per-entry data in the alpine_brush_group_chunk_id chunk (.rfg only).
 // Stores geoable/breakable flags for brushes by serialization index.
@@ -366,6 +383,12 @@ struct AlpineLevelProperties
     // Alpine corona objects
     std::vector<DedCorona*> corona_objects;
 
+    // Alpine bag objects
+    std::vector<DedBag*> bag_objects;
+
+    // Retained Glacier RFL sections (0x6ED-prefixed IDs).
+    std::vector<RetainedRflChunk> retained_chunks;
+
     static constexpr std::uint32_t current_alpine_chunk_version = 4u;
 
     // defaults for existing levels, overwritten for maps with these fields in their alpine level props chunk
@@ -402,6 +425,16 @@ struct AlpineLevelProperties
             DestroyDedCorona(c);
         }
         corona_objects.clear();
+
+        for (auto* b : bag_objects) {
+            b->field_4.free();
+            b->script_name.free();
+            b->class_name.free();
+            delete b;
+        }
+        bag_objects.clear();
+
+        retained_chunks.clear();
     }
 
     void Serialize(rf::File& file) const

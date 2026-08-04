@@ -6,6 +6,7 @@
 #include "../main/main.h"
 #include "../multi/gametype.h"
 #include "../multi/multi.h"
+#include "../multi/salvage.h"
 #include "../os/console.h"
 #include <xlog/xlog.h>
 #include "../rf/collide.h"
@@ -96,6 +97,7 @@ bool trace_segment_hits_breakable_glass(const rf::Vector3& from, const rf::Vecto
 bool waypoint_has_link_to(int from, int to);
 rf::Mover* find_mover_by_uid(int mover_uid);
 void update_ctf_dropped_flag_temporary_waypoints();
+void update_salvage_flag_temporary_waypoint();
 bool is_waypoint_bot_mode_active();
 bool are_waypoint_commands_enabled_for_local_client();
 bool is_ctf_mode_for_waypoints();
@@ -456,6 +458,10 @@ WaypointType waypoint_type_from_int(int raw_type)
             return WaypointType::conveyer;
         case static_cast<int>(WaypointType::water):
             return WaypointType::water;
+        case static_cast<int>(WaypointType::bag):
+            return WaypointType::bag;
+        case static_cast<int>(WaypointType::salvage_flag):
+            return WaypointType::salvage_flag;
         default:
             return static_cast<WaypointType>(raw_type);
     }
@@ -503,6 +509,10 @@ std::string_view waypoint_type_name(WaypointType type)
             return "conveyer";
         case WaypointType::water:
             return "water";
+        case WaypointType::bag:
+            return "bag";
+        case WaypointType::salvage_flag:
+            return "salvage_flag";
         default:
             return "unknown";
     }
@@ -1252,7 +1262,7 @@ void build_waypoint_cell_map(WaypointCellMap& out_map, float cell_size)
     }
 }
 
-bool trace_ground_below_point(const rf::Vector3& pos, float max_downward_dist, rf::Vector3* out_hit_point = nullptr)
+bool trace_ground_below_point(const rf::Vector3& pos, float max_downward_dist, rf::Vector3* out_hit_point)
 {
     if (max_downward_dist <= 0.0f) {
         return false;
@@ -2524,7 +2534,7 @@ void seed_waypoint_zones_from_trigger_damage_events()
                 continue;
             }
             auto* event = static_cast<rf::Event*>(linked_obj);
-            if (event->event_type != rf::event_type_to_int(rf::EventType::Continuous_Damage)) {
+            if (event->event_type != std::to_underlying(rf::EventType::Continuous_Damage)) {
                 continue;
             }
             auto* continuous_damage_event = static_cast<rf::ContinuousDamageEvent*>(event);
@@ -2584,7 +2594,7 @@ void seed_waypoint_zones_from_control_points()
         int handler_uid = -1;
         if (hill.handler) {
             auto* handler_event = reinterpret_cast<rf::Event*>(hill.handler);
-            if (handler_event->event_type == rf::event_type_to_int(rf::EventType::Capture_Point_Handler)) {
+            if (handler_event->event_type == std::to_underlying(rf::EventType::Capture_Point_Handler)) {
                 handler_uid = handler_event->uid;
             }
         }
@@ -2592,7 +2602,7 @@ void seed_waypoint_zones_from_control_points()
         if (handler_uid >= 0) {
             rf::Event* handler_event = rf::event_lookup_from_uid(handler_uid);
             if (!handler_event
-                || handler_event->event_type != rf::event_type_to_int(rf::EventType::Capture_Point_Handler)) {
+                || handler_event->event_type != std::to_underlying(rf::EventType::Capture_Point_Handler)) {
                 continue;
             }
         }
@@ -2678,14 +2688,14 @@ void seed_waypoints_from_teleport_events(
             if (rf::Object* linked_obj = rf::obj_from_handle(linked_id);
                 linked_obj && linked_obj->type == rf::OT_EVENT) {
                 auto* linked_event = static_cast<rf::Event*>(linked_obj);
-                if (linked_event->event_type == rf::event_type_to_int(rf::EventType::AF_Teleport_Player)) {
+                if (linked_event->event_type == std::to_underlying(rf::EventType::AF_Teleport_Player)) {
                     linked_teleport_uid = linked_event->uid;
                 }
             }
 
             if (linked_teleport_uid < 0) {
                 if (rf::Event* linked_event = rf::event_lookup_from_uid(linked_id); linked_event) {
-                    if (linked_event->event_type == rf::event_type_to_int(rf::EventType::AF_Teleport_Player)) {
+                    if (linked_event->event_type == std::to_underlying(rf::EventType::AF_Teleport_Player)) {
                         linked_teleport_uid = linked_event->uid;
                     }
                 }
@@ -2781,7 +2791,7 @@ void seed_waypoints_from_legacy_teleporters(
 
         if (first_kf) {
             rf::Event* first_event = rf::event_lookup_from_uid(first_kf->event_uid);
-            if (first_event && first_event->event_type == rf::event_type_to_int(rf::EventType::Teleport_Player)) {
+            if (first_event && first_event->event_type == std::to_underlying(rf::EventType::Teleport_Player)) {
                 // Case A: first keyframe directly triggers Teleport_Player
                 teleport_event_uid = first_event->uid;
             }
@@ -2801,7 +2811,7 @@ void seed_waypoints_from_legacy_teleporters(
                     const rf::MoverKeyframe* last_kf = mover->keyframes[keyframe_count - 1];
                     if (last_kf) {
                         rf::Event* last_event = rf::event_lookup_from_uid(last_kf->event_uid);
-                        if (last_event && last_event->event_type == rf::event_type_to_int(rf::EventType::Teleport_Player)) {
+                        if (last_event && last_event->event_type == std::to_underlying(rf::EventType::Teleport_Player)) {
                             teleport_event_uid = last_event->uid;
                         }
                     }
@@ -3460,6 +3470,158 @@ void remove_temporary_ctf_flag_waypoints(bool red_flag)
     }
 }
 
+// Bagman: there is at most one bag waypoint at any time.
+int find_temporary_bag_waypoint()
+{
+    for (int waypoint_uid = 1; waypoint_uid < static_cast<int>(g_waypoints.size()); ++waypoint_uid) {
+        const auto& node = g_waypoints[waypoint_uid];
+        if (!node.valid || !node.temporary) continue;
+        if (node.type != WaypointType::bag) continue;
+        return waypoint_uid;
+    }
+    return 0;
+}
+
+void remove_temporary_bag_waypoints()
+{
+    while (true) {
+        const int waypoint_uid = find_temporary_bag_waypoint();
+        if (waypoint_uid <= 0) break;
+        remove_waypoint_by_uid(waypoint_uid);
+    }
+}
+
+int create_temporary_bag_waypoint(const rf::Vector3& bag_pos)
+{
+    const int waypoint_uid = add_waypoint(
+        bag_pos,
+        WaypointType::bag,
+        0,
+        false,
+        true,
+        kBagWaypointLinkRadius,
+        -1,
+        nullptr,
+        false,
+        static_cast<int>(WaypointDroppedSubtype::normal),
+        true);
+    link_temporary_waypoint_like_crater(waypoint_uid);
+    return waypoint_uid;
+}
+
+void waypoints_on_bag_world_pos(const rf::Vector3& bag_pos)
+{
+    if (!is_waypoint_bot_mode_active()) return;
+    if (!(rf::level.flags & rf::LEVEL_LOADED)) return;
+
+    const int existing = find_temporary_bag_waypoint();
+    if (existing <= 0) {
+        create_temporary_bag_waypoint(bag_pos);
+        return;
+    }
+    // Move the waypoint if the bag has shifted more than the CTF threshold.
+    constexpr float kBagWaypointMoveThreshold = 0.75f;
+    auto& waypoint = g_waypoints[existing];
+    if (distance_sq(waypoint.pos, bag_pos)
+        <= kBagWaypointMoveThreshold * kBagWaypointMoveThreshold) {
+        return;
+    }
+    remove_waypoint_by_uid(existing);
+    create_temporary_bag_waypoint(bag_pos);
+}
+
+void waypoints_on_bag_carried()
+{
+    if (!is_waypoint_bot_mode_active()) return;
+    if (!(rf::level.flags & rf::LEVEL_LOADED)) return;
+    remove_temporary_bag_waypoints();
+}
+
+bool waypoints_find_bag_waypoint(int& out_waypoint, rf::Vector3& out_pos)
+{
+    const int waypoint_uid = find_temporary_bag_waypoint();
+    if (waypoint_uid <= 0) return false;
+    out_waypoint = waypoint_uid;
+    out_pos = g_waypoints[waypoint_uid].pos;
+    return true;
+}
+
+// Salvage: there is at most one neutral flag waypoint at any time.
+int find_temporary_salvage_flag_waypoint()
+{
+    for (int waypoint_uid = 1; waypoint_uid < static_cast<int>(g_waypoints.size()); ++waypoint_uid) {
+        const auto& node = g_waypoints[waypoint_uid];
+        if (!node.valid || !node.temporary) continue;
+        if (node.type != WaypointType::salvage_flag) continue;
+        return waypoint_uid;
+    }
+    return 0;
+}
+
+void remove_temporary_salvage_flag_waypoints()
+{
+    while (true) {
+        const int waypoint_uid = find_temporary_salvage_flag_waypoint();
+        if (waypoint_uid <= 0) break;
+        remove_waypoint_by_uid(waypoint_uid);
+    }
+}
+
+int create_temporary_salvage_flag_waypoint(const rf::Vector3& flag_pos)
+{
+    const int waypoint_uid = add_waypoint(
+        flag_pos,
+        WaypointType::salvage_flag,
+        0,
+        false,
+        true,
+        kSalvageFlagWaypointLinkRadius,
+        -1,
+        nullptr,
+        false,
+        static_cast<int>(WaypointDroppedSubtype::normal),
+        true);
+    link_temporary_waypoint_like_crater(waypoint_uid);
+    return waypoint_uid;
+}
+
+void waypoints_on_salvage_flag_world_pos(const rf::Vector3& flag_pos)
+{
+    if (!is_waypoint_bot_mode_active()) return;
+    if (!(rf::level.flags & rf::LEVEL_LOADED)) return;
+
+    const int existing = find_temporary_salvage_flag_waypoint();
+    if (existing <= 0) {
+        create_temporary_salvage_flag_waypoint(flag_pos);
+        return;
+    }
+    // Move the waypoint if the flag has shifted more than the CTF threshold.
+    constexpr float kSalvageFlagWaypointMoveThreshold = 0.75f;
+    auto& waypoint = g_waypoints[existing];
+    if (distance_sq(waypoint.pos, flag_pos)
+        <= kSalvageFlagWaypointMoveThreshold * kSalvageFlagWaypointMoveThreshold) {
+        return;
+    }
+    remove_waypoint_by_uid(existing);
+    create_temporary_salvage_flag_waypoint(flag_pos);
+}
+
+void waypoints_on_salvage_flag_carried()
+{
+    if (!is_waypoint_bot_mode_active()) return;
+    if (!(rf::level.flags & rf::LEVEL_LOADED)) return;
+    remove_temporary_salvage_flag_waypoints();
+}
+
+bool waypoints_find_salvage_flag_waypoint(int& out_waypoint, rf::Vector3& out_pos)
+{
+    const int waypoint_uid = find_temporary_salvage_flag_waypoint();
+    if (waypoint_uid <= 0) return false;
+    out_waypoint = waypoint_uid;
+    out_pos = g_waypoints[waypoint_uid].pos;
+    return true;
+}
+
 void update_ctf_dropped_flag_temporary_waypoint_for_team(bool red_flag)
 {
     const bool dropped_by_runtime_state = is_ctf_flag_dropped(red_flag);
@@ -3515,6 +3677,48 @@ void update_ctf_dropped_flag_temporary_waypoints()
 
     update_ctf_dropped_flag_temporary_waypoint_for_team(true);
     update_ctf_dropped_flag_temporary_waypoint_for_team(false);
+}
+
+// Salvage analog of the CTF reconcile above, and the SOLE driver of the temporary
+// flag node: nothing on the packet path touches it any more. Running once per frame
+// off the replicated state naturally caps the create/destroy churn at the frame rate
+// and is self-healing — the waypoint file can load (or be cleared) long after the
+// one-shot AtSpawn broadcast, and the node still appears. The cost of dropping the
+// packet-driven calls is at most one frame of lag on a transition.
+void update_salvage_flag_temporary_waypoint()
+{
+    if (!(rf::level.flags & rf::LEVEL_LOADED)) {
+        return;
+    }
+    if (!is_waypoint_bot_mode_active() || !gt_is_salvage()) {
+        remove_temporary_salvage_flag_waypoints();
+        return;
+    }
+
+    // Carried is the only state with nothing on the ground to mark. Delayed keeps the
+    // node at the replicated home: no flag item exists yet, but that is precisely
+    // where one is about to, and it is the routing anchor bots stage on during the
+    // spawn delay.
+    const SalFlagState state = salvage_get_state();
+    if (state == SalFlagState::Carried) {
+        waypoints_on_salvage_flag_carried();
+        return;
+    }
+
+    rf::Vector3 flag_pos{};
+    bool has_flag_pos = salvage_get_client_flag_pos(&flag_pos);
+    if (!has_flag_pos
+        && (state == SalFlagState::AtSpawn || state == SalFlagState::Delayed)
+        && salvage_spawn_is_known()) {
+        // Same fallback the packet hook uses: the item create packet can lag the
+        // state packet, and the replicated home is where the flag will land. While
+        // Delayed there is no item at all, so this is the only source.
+        flag_pos = salvage_get_spawn_pos();
+        has_flag_pos = true;
+    }
+    if (has_flag_pos) {
+        waypoints_on_salvage_flag_world_pos(flag_pos);
+    }
 }
 
 void sanitize_waypoint_links_against_geometry()
@@ -9119,6 +9323,7 @@ void waypoints_do_frame()
 
     update_bridge_zone_states();
     update_ctf_dropped_flag_temporary_waypoints();
+    update_salvage_flag_temporary_waypoint();
     waypoints_utils_do_frame();
 
     if (!are_waypoint_commands_enabled_for_local_client()) {

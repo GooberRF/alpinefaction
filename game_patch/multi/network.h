@@ -189,6 +189,13 @@ struct AlpineFactionJoinAcceptPacketExt
         allow_outlines      = 1u << 14,
         allow_outlines_xray = 1u << 15,
         clear_stale_movement_input = 1u << 16,
+        allow_sprays        = 1u << 17,
+        match_mode          = 1u << 18,
+        featured_no_clip    = 1u << 19,
+        reload_on_kill      = 1u << 20,
+        super_drain         = 1u << 21,
+        jetpacks            = 1u << 22,
+        low_gravity         = 1u << 23,
     } flags = Flags::none;
 
     float max_fov = 0.0f;
@@ -266,7 +273,21 @@ struct AFGameInfoExtra
     uint8_t num_human_players = 0;
     uint8_t num_browsers = 0;
     uint8_t num_total_clients = 0;
+    // Server's reported game_type was >= RF_GT_UNK, used to block joins.
+    bool unknown_game_type = false;
 };
+
+enum class JoiningClientKind
+{
+    Human,
+    Bot,
+    Browser,
+};
+
+// Identity of the client whose join request is currently being processed,
+// derived from the parsed join-req tail. Only meaningful during
+// process_join_req_packet (the globals are reset afterwards).
+JoiningClientKind get_joining_client_kind();
 
 // Look up AF extra data for a server by address. Returns nullptr if not found.
 const AFGameInfoExtra* get_server_browser_extra(const rf::NetAddr& addr);
@@ -277,6 +298,7 @@ void handle_vote_or_ready_up_msg(std::string_view msg);
 void handle_sound_msg(std::string_view name);
 void send_queues_rel_clear_packets(int socket_id);
 void send_queues_rel_add_packet(int socket_id, const uint8_t* data, size_t len);
+void network_debug_apply_patches();
 void clear_rcon_profile_sessions();
 void multi_disconnect_from_server();
 

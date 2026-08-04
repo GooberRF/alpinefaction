@@ -4,9 +4,7 @@
 #include "gr_d3d11_shader.h"
 #include "gr_d3d11_context.h"
 
-using namespace rf;
-
-namespace df::gr::d3d11
+namespace gr::d3d11
 {
     constexpr int batch_max_vertex = 6000;
     constexpr int batch_max_index = 10000;
@@ -71,41 +69,41 @@ namespace df::gr::d3d11
         render_context_.draw_indexed(num_index, start_index, start_vertex);
     }
 
-    static inline bool mode_uses_vertex_color(gr::Mode mode)
+    static inline bool mode_uses_vertex_color(rf::gr::Mode mode)
     {
-        if (mode.get_texture_source() == gr::TEXTURE_SOURCE_NONE) {
+        if (mode.get_texture_source() == rf::gr::TEXTURE_SOURCE_NONE) {
             return true;
         }
-        return mode.get_color_source() != gr::COLOR_SOURCE_TEXTURE;
+        return mode.get_color_source() != rf::gr::COLOR_SOURCE_TEXTURE;
     }
 
-    static inline bool mode_uses_vertex_alpha(gr::Mode mode)
+    static inline bool mode_uses_vertex_alpha(rf::gr::Mode mode)
     {
-        if (mode.get_texture_source() == gr::TEXTURE_SOURCE_NONE) {
+        if (mode.get_texture_source() == rf::gr::TEXTURE_SOURCE_NONE) {
             return true;
         }
-        return mode.get_alpha_source() != gr::ALPHA_SOURCE_TEXTURE;
+        return mode.get_alpha_source() != rf::gr::ALPHA_SOURCE_TEXTURE;
     }
 
-    static inline rf::Color get_vertex_color_from_screen(gr::Mode mode)
+    static inline rf::Color get_vertex_color_from_screen(rf::gr::Mode mode)
     {
         rf::Color color{255, 255, 255, 255};
         if (mode_uses_vertex_color(mode)) {
-            color.red = gr::screen.current_color.red;
-            color.green = gr::screen.current_color.green;
-            color.blue = gr::screen.current_color.blue;
+            color.red = rf::gr::screen.current_color.red;
+            color.green = rf::gr::screen.current_color.green;
+            color.blue = rf::gr::screen.current_color.blue;
         }
         if (mode_uses_vertex_alpha(mode)) {
-            color.alpha = gr::screen.current_color.alpha;
+            color.alpha = rf::gr::screen.current_color.alpha;
         }
         return color;
     }
 
-    inline std::array<float, 4> DynamicGeometryRenderer::convert_pos(const gr::Vertex& v, bool is_3d)
+    inline std::array<float, 4> DynamicGeometryRenderer::convert_pos(const rf::gr::Vertex& v, bool is_3d)
     {
-        Vector3 ndc{
-            ((v.sx - gr::screen.offset_x) / gr::screen.clip_width * 2.0f - 1.0f),
-            ((v.sy - gr::screen.offset_y) / gr::screen.clip_height * -2.0f + 1.0f),
+        rf::Vector3 ndc{
+            ((v.sx - rf::gr::screen.offset_x) / rf::gr::screen.clip_width * 2.0f - 1.0f),
+            ((v.sy - rf::gr::screen.offset_y) / rf::gr::screen.clip_height * -2.0f + 1.0f),
             v.sw,
         };
         // Set w to depth in camera space (needed for 3D rendering)
@@ -118,7 +116,7 @@ namespace df::gr::d3d11
         };
     }
 
-    void DynamicGeometryRenderer::add_poly(int nv, const gr::Vertex **vertices, int vertex_attributes, const std::array<int, 2>& tex_handles, gr::Mode mode)
+    void DynamicGeometryRenderer::add_poly(int nv, const rf::gr::Vertex **vertices, int vertex_attributes, const std::array<int, 2>& tex_handles, rf::gr::Mode mode)
     {
         int num_index = (nv - 2) * 3;
         if (nv > batch_max_vertex || num_index > batch_max_index) {
@@ -139,16 +137,16 @@ namespace df::gr::d3d11
         bool use_vert_color = mode_uses_vertex_color(mode);
         bool use_vert_alpha = mode_uses_vertex_alpha(mode);
         rf::Color color{255, 255, 255, 255};
-        if (use_vert_color && !(vertex_attributes & gr::TMAP_FLAG_RGB)) {
-            color.red = gr::screen.current_color.red;
-            color.green = gr::screen.current_color.green;
-            color.blue = gr::screen.current_color.blue;
+        if (use_vert_color && !(vertex_attributes & rf::gr::TMAP_FLAG_RGB)) {
+            color.red = rf::gr::screen.current_color.red;
+            color.green = rf::gr::screen.current_color.green;
+            color.blue = rf::gr::screen.current_color.blue;
         }
-        if (use_vert_alpha && !(vertex_attributes & gr::TMAP_FLAG_ALPHA)) {
-            color.alpha = gr::screen.current_color.alpha;
+        if (use_vert_alpha && !(vertex_attributes & rf::gr::TMAP_FLAG_ALPHA)) {
+            color.alpha = rf::gr::screen.current_color.alpha;
         }
         for (int i = 0; i < nv; ++i) {
-            const gr::Vertex& in_vert = *vertices[i];
+            const rf::gr::Vertex& in_vert = *vertices[i];
             GpuTransformedVertex& out_vert = gpu_verts[i];
             auto [x, y, z, w] = convert_pos(in_vert, true);
             out_vert.x = x;
@@ -156,12 +154,12 @@ namespace df::gr::d3d11
             out_vert.z = z;
             out_vert.w = w;
 
-            if (use_vert_color && (vertex_attributes & gr::TMAP_FLAG_RGB)) {
+            if (use_vert_color && (vertex_attributes & rf::gr::TMAP_FLAG_RGB)) {
                 color.red = in_vert.r;
                 color.green = in_vert.g;
                 color.blue = in_vert.b;
             }
-            if (use_vert_alpha && (vertex_attributes & gr::TMAP_FLAG_ALPHA)) {
+            if (use_vert_alpha && (vertex_attributes & rf::gr::TMAP_FLAG_ALPHA)) {
                 color.alpha = in_vert.a;
             }
             out_vert.diffuse = pack_color(color);
@@ -177,7 +175,7 @@ namespace df::gr::d3d11
         }
     }
 
-    void DynamicGeometryRenderer::line(const gr::Vertex **vertices, rf::gr::Mode mode, bool is_3d)
+    void DynamicGeometryRenderer::line(const rf::gr::Vertex **vertices, rf::gr::Mode mode, bool is_3d)
     {
         constexpr int num_verts = 2;
         constexpr int num_inds = 2;
@@ -193,7 +191,7 @@ namespace df::gr::d3d11
         int diffuse = pack_color(color);
 
         for (int i = 0; i < num_verts; ++i) {
-            const gr::Vertex& in_vert = *vertices[i];
+            const rf::gr::Vertex& in_vert = *vertices[i];
             GpuTransformedVertex& out_vert = gpu_verts[i];
             auto [x, y, z, w] = convert_pos(in_vert, is_3d);
             out_vert.x = x;
@@ -225,11 +223,11 @@ namespace df::gr::d3d11
         line(verts_ptrs, mode, false);
     }
 
-    void DynamicGeometryRenderer::bitmap(int bm_handle, float x, float y, float w, float h, float sx, float sy, float sw, float sh, bool flip_x, bool flip_y, gr::Mode mode)
+    void DynamicGeometryRenderer::bitmap(int bm_handle, float x, float y, float w, float h, float sx, float sy, float sw, float sh, bool flip_x, bool flip_y, rf::gr::Mode mode)
     {
         //xlog::trace("Drawing bitmap");
         int bm_w, bm_h;
-        bm::get_dimensions(bm_handle, &bm_w, &bm_h);
+        rf::bm::get_dimensions(bm_handle, &bm_w, &bm_h);
 
         // For some reason original implementation do not allow UVs > 1
         sw = std::min(sw, bm_w - sx);
@@ -238,10 +236,10 @@ namespace df::gr::d3d11
             return;
         }
 
-        float sx_left = x / gr::screen.clip_width * 2.0f - 1.0f;
-        float sx_right = (x + w) / gr::screen.clip_width * 2.0f - 1.0f;
-        float sy_top = y / gr::screen.clip_height * -2.0f + 1.0f;
-        float sy_bottom = (y + h) / gr::screen.clip_height * -2.0f + 1.0f;
+        float sx_left = x / rf::gr::screen.clip_width * 2.0f - 1.0f;
+        float sx_right = (x + w) / rf::gr::screen.clip_width * 2.0f - 1.0f;
+        float sy_top = y / rf::gr::screen.clip_height * -2.0f + 1.0f;
+        float sy_bottom = (y + h) / rf::gr::screen.clip_height * -2.0f + 1.0f;
         float u_left = sx / bm_w;
         float u_right = (sx + sw) / bm_w;
         float v_top = sy / bm_h;

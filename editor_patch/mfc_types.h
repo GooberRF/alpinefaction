@@ -143,7 +143,8 @@ enum class DedObjectType : int
     DED_PUSH_REGION = 0x16,
     DED_MESH = 0x17,   // Alpine 1.3
     DED_NOTE = 0x18,   // Alpine 1.3
-    DED_CORONA = 0x19  // Alpine 1.3
+    DED_CORONA = 0x19, // Alpine 1.3
+    DED_BAG = 0x1A     // Alpine 1.4
 };
 
 struct Vector3
@@ -439,6 +440,11 @@ struct DedMesh : DedObject
 struct DedNote : DedObject
 {
     std::vector<std::string> notes;
+};
+
+struct DedBag : DedObject
+{
+    // No properties available
 };
 
 struct DedCorona : DedObject

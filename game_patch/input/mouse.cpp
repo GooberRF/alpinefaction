@@ -13,6 +13,7 @@
 #include "../rf/player/camera.h"
 #include "../misc/alpine_settings.h"
 #include "../main/main.h"
+#include "../hud/multi_spectate.h"
 #include "mouse.h"
 #include "../multi/multi.h"
 #include "input.h"
@@ -236,9 +237,10 @@ FunHook<void(int&, int&, int&)> mouse_get_delta_hook{
         }
 
         // If the player entity is not valid (dead/spawn transition), pause raw delta.
-        // Exception: spectator freelook camera should still receive mouse input.
+        // Exception: the spectator freelook camera and third-person orbit spectate both drive
+        // the camera with mouse input, so let their deltas through.
         if (!rf::local_player_entity || rf::entity_is_dying(rf::local_player_entity)) {
-            if (!is_freelook_camera()) {
+            if (!is_freelook_camera() && !multi_spectate_is_third_person_orbit()) {
                 reset_mouse_delta_accumulators();
                 dx = 0;
                 dy = 0;
@@ -419,6 +421,16 @@ CodeInjection static_zoom_sensitivity_patch2 {
         }
     },
 };
+
+// Feed extra mouse buttons (Mouse 4+) into RF's key system as custom scan codes.
+// The controls binding UI picks them up from the key queue like any key press.
+void mouse_handle_xbutton_wm(int rf_btn, bool down)
+{
+    int extra = rf_btn - 3;
+    if (extra < 0 || extra >= CTRL_EXTRA_MOUSE_SCAN_COUNT)
+        return;
+    rf::key_process_event(CTRL_EXTRA_MOUSE_SCAN_BASE + extra, down ? 1 : 0, 0);
+}
 
 void mouse_apply_patch()
 {

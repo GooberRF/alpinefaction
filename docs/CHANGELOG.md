@@ -9,6 +9,39 @@ Version 1.4.0 (Lupin): Not yet released
   - Fine tuned texture animation without being subject to VBM format limitations
   - Accessible to event system via handle for level-driven behaviour scripting
 - Support PNG and JPG texture formats in game and level editor
+- Add new multiplayer game types:
+  - Bagman (`BAG`)
+  - Team Bagman (`TBAG`)
+  - Pit (`PIT`)
+  - Wipeout (`WO`)
+  - Gun Game (`GG`)
+  - Salvage (`SAL`)
+- Add sprays with bindable `Spray` control
+  - `cl_sprays` console command to toggle local display and dedicated server `[sprays]` config section
+  - `spray` console command to select spray, and in-game spray picker in advanced options
+- Add server-configured mutators:
+  - Instagib
+  - One Weapon
+  - Arena
+  - Vampire
+  - Super Drain
+  - Armored
+  - Super Rail
+  - Big Craters
+  - Flaming Enemies
+  - Gibbing
+  - Jetpacks
+  - Humans vs. Bots
+  - Delayed Supers
+  - Weird Gun Game
+  - Low Gravity
+  - Score Limit Override
+  - Ideal Player Count Override
+- Rework multiplayer voting to use a GUI-based system instead of chat commands
+  - Servers describe their votable levels, game types, and mutator options to clients
+  - `Level` and `Match` can now select a game type and any number of mutators (with their options) for the voted level
+  - Add a vote panel for calling any vote the server allows, opened during gameplay with the bindable `Call Vote Menu` control (`F4` by default)
+  - Vote HUD notification now shows live tally, time remaining, and whether you have already voted
 
 ### Minor features, changes, and enhancements
 [@GooberRF](https://github.com/GooberRF)
@@ -16,30 +49,109 @@ Version 1.4.0 (Lupin): Not yet released
 - Bump RFL version to 305
 - Add `ATX_Set_Frame`, `ATX_Play`, `ATX_Pause`, `ATX_Set_Frame_Time` events
 - Add vote-allowed levels to level autodownload list for dedicated servers
-- Add `fflink_gsk` dedicated server config field and `sv_fflink_status` / `sv_fflink_resync` console commands for FactionFiles session key exchange
+- Add `fflink_gsk` dedicated server config field and `sv_fflink_status` and `sv_fflink_resync` console commands for FactionFiles session key exchange
 - Make clock clutter objects correctly display the current local real world time
+- Add support for round-based game types
+- Add dedicated server config fields `max_rounds`, `round_time`, `post_round_time`, and `intermission_time`
+- Add dedicated server config fields `sal_cap_limit`, `sal_flag_spawn_delay`, `sal_flag_capture_respawn_delay`, and `sal_flag_return_time` for the Salvage game type
+- Require a matching `bot_shared_secret` for clients to join dedicated servers in bot mode, rejecting bot join requests when the server has no secret configured
+- Add HUD notification messages via `AF_SERVER_MSG_TYPE_HUD_NOTIFICATION` server message type
+- Add server-initiated HUD countdown via `AF_SERVER_MSG_TYPE_ROUND_COUNTDOWN` server message type
+- Add server-initiated custom sound play via `AF_SERVER_MSG_TYPE_PLAY_CUSTOM_SOUND` server message type
+- Add per-type object count next to each entry in the `Show In List` filter in the editor's Select Objects and Show/Hide Objects windows
+- Add `Sort` options (by name or by UID, with an optional `Group by type` toggle) to the editor's Select Objects and Show/Hide Objects windows
+- Add `camera4` console command for static camera in single player
+- Add `camera5` console command for tripod (follow player) camera in single player
+- Add `jetpack` console command to toggle a jetpack for yourself in single player
+- Remove the redundant per-packet `select()` before each `net_send` and in the packet receive pump, reducing dedicated server network syscall overhead (and wineserver round trips on Linux)
+- Raise the UDP socket `SO_RCVBUF` from 32 KB to 256 KB to reduce reliable-packet retransmit cascades on busy dedicated servers
+- Batch win32 console writes and throttle console input line reprints to reduce dedicated server console API overhead
+- Use `Sleep` instead of a waitable timer in `wait_for` when running under Wine to reduce dedicated server CPU load
+- Automatically enable the win32 console for dedicated servers running under Wine
+- Gather `af_obj_update` packet data once per frame instead of once per recipient and reuse packet buffers
+- Add full_admin profile rcon access to `maxfps` and `sv_netfps` commands
+- Require a fresh `Alt` press to kill an unresponsive process
+- Add mini scoreboard HUD element to FFA game types
+- Add `ui_minisb_dm` console command to toggle whether mini scoreboard is displayed in DM mode
+- Retain Glacier-specific chunks when RFLs loaded and re-saved in level editor
+- Add `Attach Spectate Camera` control to toggle spectate between following a player and a detached free camera
+- Add `Change Spectate View` control to switch first/third person while following a player, or free look/static camera while detached
+- Add a middle mouse toggled orbit camera to third person spectate
+- Add stepped zoom to free look spectate
+- Add the ability to drop reusable static cameras in free look spectate, then cycle level-placed and player-dropped cameras in static camera view
+- Add numpad quick-binds to jump directly to bound players or cameras while spectating, with dropped cameras and binds persisted per level
+- Add `spectate_cameras` console command to toggle showing camera meshes at static camera locations while free look spectating
+- Deprecated and removed legacy GunGame dedicated server config items now that `GG` is an actual gametype.
+- Default inactivity tracking for players in dedicated servers to `true`, but kicking inactive players to `false`
+- Add `-debug` command line switch to enable additional debug logging, intended to help identify long-standing netcode issues that are difficult to nail down.
+- Add automatic team balance option which handles unbalanced teams mid-game and stops players from switching teams if it would unbalance them
+- Rate limit spawn-denied notifications (Alpine restriction, anti-cheat, match in progress, respawn delay) to one message per 5 seconds per player so repeated spawn attempts no longer flood chat
+- Truncate over-long names from dedicated server config files when they are quoted in console warnings
+- Remove `vote gametype`, game type selection is now part of `vote level`
+- No longer allow a player to call a vote to kick themselves
+- Change default inactive time before a player is set as idle to 60 seconds (from 30 seconds)
+- Stop labeling players as inactive if they are unable to spawn due to a server or gameplay rule
+- `vote extend` can now select how long to extend the round by, from 1 to 60 minutes (defaults to 5)
+- Kill messages, the game feed, and dedicated server console kill lines now name the weapon that actually dealt the killing blow
+- Kill messages, the game feed, and dedicated server console kill lines now credit assists
+- Add an `Asst` column to the scoreboard showing each player's assist count
+- Add `ui_assist_names` console command to toggle listing the players who assisted in kill messages
+- Add `ui_assist_highlight` console command to toggle highlighting of kill messages for kills you assisted
+- Show a label on the HUD indicating the name of the selected weapon if it has no FP mesh.
+- Tweak weapon values for some SP-intended weapon classes that are used in Weird Gun Game
+- Add dedicated server config field `add_installed_to_allowed_levels` to allow voting for every installed level whose filename matches a game type prefix, including levels installed while the server is running
 
 [@is-this-c](https://github.com/is-this-c)
 - Add `IoCursor` and `PacketBuilder`
-- Disable `Refresh Selected` in the server browser, only if `Refresh Selected` was pressed
-- Never disable `Add Server` in the server browser
+- Rewrite `VArray` to fix crashes due to MinGW
+- Add `Anti-aliasing` option to `ADVANCED` options panel
+- Add `r_antialiasing_mode` console command to set anti-aliasing mode at run-time
+- Rename `antialiasing` console command to `r_antialiasing`
+- Allow players to join between levels
+- Add `mp_join_flash` console command to flash your window upon player joins, if your window is out of focus
+- Rename `mp_notifyonjoin` console command to `mp_join_beep`
+- Server browser
+  - Disable `Refresh Selected`, only if `Refresh Selected` was pressed
+  - Never disable `Add Server`
 - Add `NOT IN ROUND`, `IDLE`, and `SPECTATOR` to the spectate UI
 - Remote server config UI
   - Add `Net FPS` and `Target FPS`
   - Add detection of manually loaded levels
   - Highlight an active level in a server's rotation via background color instead of text color
 
+[@AL2009man](https://github.com/AL2009man)
+- Add support for binding controls to additional mouse buttons and `Alt` keys
+
 ### Bug fixes
 [@GooberRF](https://github.com/GooberRF)
 - Fix team balance not properly randomizing the distribution order of equal-scoring human players
 - Fix incorrect clickable area size for launcher FFLink button
 - Fix "allow clientside mods from legacy directories" option not applying correctly for DDS files
+- Fix `AF_Teleport_Player` event clientside smoothly interpolating the teleported entity position
+- Fix ability to configure invalid values for `individual_kill_limit` in ADS configs
+- Fix dedicated server crash when a non-player entity dies while `spawn_delay` is enabled
+- Fix future game types not being correctly handled by joining clients
+- Fix `Join Server` crash if `favlist.adr` entries have newer game types
+- Fix client crash when a bot targets a player whose name contains `$`
+- Fix crash when a collision query targets an object whose mesh failed to load
+- Fix skybox rendering issues with Direct3D 11 renderer on community level `ctf-stronghold.rfl`
+- Fix unbounded read when a request to play a sound above `g_num_sounds` is made
+- Fix camera angle snapping when switching between free look and third person camera modes
+- Fix a server crash that could be triggered by a zero-length UDP packet in the packet receive pump
+- Fix overlapping decals rendering with the oldest on top instead of the newest
+- Fix crash on MinGW builds when launching a dedicated server
+- Fix server version checks comparing each version field independently, which would have rejected a future major version
+- Fix out of bounds read when applying level rules if the rotation shrank while a level was running
+- Fix the remote server config display sometimes being treated as complete before all of its content had arrived
 
 [@is-this-c](https://github.com/is-this-c)
 - Clear cached server config output after a shuffle of a server's rotation
 - For `Refresh Selected`, re-enable `Get Servers` etc. immediately upon response instead of waiting for timeout
 - Disable weapon cycle selection, if `Mouse 3` is pressed
 - For `Run` games, rename `Score` column to `Deaths`, and compare `Loads` in `std::ranges::sort`
+
+[@AL2009man](https://github.com/AL2009man)
+- Fix brief game freeze whenever an `Alt` key is pressed
 
 Version 1.3.0 (Bakeapple): Released Apr-22-2026
 --------------------------------
@@ -57,14 +169,14 @@ Version 1.3.0 (Bakeapple): Released Apr-22-2026
   - Support `Alpha` field in `Decal` objects placed in version >= 304 levels
   - Support movers, meshes, and mesh pixel lighting in skyboxes
   - Support gas regions
-- Expanded destruction capabilities available to developers
+- Expand destruction capabilities available to developers
   - `Brush-based geomod` switch added to level properties; if true, use level hardness for geoable brushes (RF2-style)
   - Geo regions allow traditional world-based geomod to be used even when brush-based switch is true
   - `Is Geoable` flag added to brush properties
   - Support for rock, wood, cement, metal, and ice breakable detail brushes
   - Add dynamic debris generation from breakable detail brushes
   - `No Debris` flag added to brush properties for breakable detail brushes
-- Added new object types
+- Add new object types
   - `Mesh` for configuring custom static, skeletal, or animated meshes in levels
   - `Corona` for configuring custom glare effects in levels
   - `Note` for leaving important information in levels (editor only)

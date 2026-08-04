@@ -16,6 +16,7 @@
 #include "../rf/player/player.h"
 #include "../rf/trigger.h"
 #include "../graphics/gr.h"
+#include "../input/control_input_filter.h"
 #include <patch_common/FunHook.h>
 #include <algorithm>
 #include <array>
@@ -346,36 +347,15 @@ bool should_block_waypoint_editor_mouse_action(
     return false;
 }
 
-FunHook<bool(rf::ControlConfig*, rf::ControlConfigAction, bool*)> control_config_check_pressed_waypoint_editor_hook{
-    0x0043D4F0,
-    [](rf::ControlConfig* control_config, rf::ControlConfigAction action, bool* just_pressed) {
-        if (should_block_waypoint_editor_mouse_action(control_config, action)) {
-            if (just_pressed) {
-                *just_pressed = false;
-            }
-            return false;
-        }
-        return control_config_check_pressed_waypoint_editor_hook.call_target(control_config, action, just_pressed);
-    },
-};
-
-FunHook<bool(rf::ControlConfig*, rf::ControlConfigAction)> control_is_control_down_waypoint_editor_hook{
-    0x00430F40,
-    [](rf::ControlConfig* control_config, rf::ControlConfigAction action) {
-        if (should_block_waypoint_editor_mouse_action(control_config, action)) {
-            return false;
-        }
-        return control_is_control_down_waypoint_editor_hook.call_target(control_config, action);
-    },
-};
-
+// control_input_filter owns the hooks and installs them at startup; this only
+// contributes the editor's veto. Called from every level init, so the flag keeps
+// registration to one.
 void ensure_waypoint_editor_input_hooks_installed()
 {
     if (g_waypoint_editor_input_hooks_installed) {
         return;
     }
-    control_config_check_pressed_waypoint_editor_hook.install();
-    control_is_control_down_waypoint_editor_hook.install();
+    control_input_filter_add_veto(&should_block_waypoint_editor_mouse_action);
     g_waypoint_editor_input_hooks_installed = true;
 }
 
@@ -405,9 +385,9 @@ void capture_waypoint_editor_mouse_input()
     rf::mouse_get_pos(g_waypoint_editor_mouse_x, g_waypoint_editor_mouse_y, mouse_z);
     g_waypoint_editor_left_click_pressed = rf::mouse_was_button_pressed(0) > 0;
     // Use secondary attack bind (whatever key/button it's bound to) for cursor toggle.
-    // Call the original (unhooked) function since our hook blocks this action.
+    // Read past the filter since our own veto blocks this action.
     bool secondary_just_pressed = false;
-    control_config_check_pressed_waypoint_editor_hook.call_target(
+    control_input_filter_check_pressed_unfiltered(
         &rf::local_player->settings.controls,
         rf::CC_ACTION_SECONDARY_ATTACK,
         &secondary_just_pressed);
@@ -2382,6 +2362,8 @@ rf::Color debug_waypoint_color(WaypointType type)
             return {180, 255, 100, 150};
         case WaypointType::water:
             return {60, 140, 255, 150};
+        case WaypointType::salvage_flag:
+            return {255, 235, 120, 150};
         default:
             return {200, 200, 200, 150};
     }

@@ -17,6 +17,7 @@ struct PlayerStatsNew : rf::PlayerLevelStats
     unsigned short num_deaths;
     unsigned short current_streak;
     unsigned short max_streak;
+    unsigned short num_assists;
     float num_shots_hit;
     float num_shots_fired;
     float damage_received;
@@ -35,6 +36,11 @@ struct PlayerStatsNew : rf::PlayerLevelStats
         ++num_deaths;
         current_streak = 0;
         damage_given_current_life = 0;
+    }
+
+    void inc_assists()
+    {
+        ++num_assists;
     }
 
     void add_shots_hit(float add)
@@ -72,6 +78,7 @@ struct PlayerStatsNew : rf::PlayerLevelStats
     {
         num_kills = 0;
         num_deaths = 0;
+        num_assists = 0;
         num_shots_hit = 0.0f;
         num_shots_fired = 0.0f;
         current_streak = 0;
@@ -109,6 +116,12 @@ struct AlpineFactionServerInfo
     bool allow_outlines_xray = false;
     bool clear_stale_movement_input = false;
     bool was_manual_level_load = false;
+    bool allow_sprays = false;
+    bool match_mode = false;
+    bool reload_on_kill = false;
+    bool super_drain = false;
+    bool jetpacks = false;
+    bool low_gravity = false;
 };
 
 enum class AlpineRestrictVerdict : uint8_t
@@ -121,6 +134,7 @@ enum class AlpineRestrictVerdict : uint8_t
 };
 
 extern rf::Timestamp g_select_weapon_done_timestamp[rf::multi_max_player_id];
+extern bool g_multi_limbo_just_joined_req_leave;
 
 void set_local_pending_game_type(rf::NetGameType game_type, int win_condition);
 void reset_local_pending_game_type();
@@ -144,20 +158,28 @@ void multi_init_player(rf::Player* player);
 void send_chat_line_packet(std::string_view msg, rf::Player* target, rf::Player* sender = nullptr, bool is_team_msg = false);
 const std::optional<AlpineFactionServerInfo>& get_af_server_info();
 std::optional<AlpineFactionServerInfo>& get_af_server_info_mutable();
+void multi_limbo_just_joined_do_frame();
 void multi_level_download_do_frame();
 void multi_level_download_abort();
+void multi_level_download_manager_start(std::string filename);
+bool multi_next_level_exists();
 bool rotation_autodl_in_progress();
 void rotation_autodl_start(size_t levels_count, std::vector<std::string> unique_levels);
 void multi_ban_apply_patch();
 std::expected<uint32_t, std::errc> get_level_file_version(const std::string& file_name);
 void print_player_info(rf::Player* player, bool new_join);
 void server_set_player_weapon(rf::Player* pp, rf::Entity* ep, int weapon_type);
+bool is_remote_charge_pair(int weapon_a, int weapon_b);
+void multi_hide_level_items(const std::vector<int>& allowed_item_type_indices, bool preserve_ctf_objects = false);
 void start_level_in_multi(std::string filename);
 std::optional<std::string> multi_ban_unban_last();
 std::string_view multi_game_type_name(rf::NetGameType game_type);
 std::string_view multi_game_type_name_upper(rf::NetGameType game_type);
 std::string_view multi_game_type_name_short(rf::NetGameType game_type);
 std::string_view multi_game_type_prefix(rf::NetGameType game_type);
+bool multi_game_type_uses_any_level(rf::NetGameType game_type);
+bool multi_level_name_matches_any_mp_prefix(const char* filename);
+std::string normalize_level_filename(std::string_view name); // appends ".rfl" when it is missing
 [[nodiscard]] int multi_num_spawned_players();
 int get_semi_auto_fire_wait_override();
 void mp_send_handicap_request(bool force);

@@ -135,6 +135,20 @@ namespace rf
         {
             AddrCaller{0x0048A230}.this_call(this, new_pos);
         }
+
+        // Set the room this object is considered to be in. Passing nullptr forces update_room()
+        // to perform a full position-based room lookup on its next call.
+        void set_room(GRoom* new_room)
+        {
+            AddrCaller{0x0048A160}.this_call(this, new_room);
+        }
+
+        // Recompute which room this object is in from its current position (also updates the
+        // liquid/underwater state and clears the teleported flag).
+        void update_room()
+        {
+            AddrCaller{0x0048A190}.this_call(this);
+        }
     };
 #pragma pack(pop)
     static_assert(sizeof(Object) == 0x28C);
@@ -221,6 +235,9 @@ namespace rf
     static auto& physics_force_to_ground = addr_as_ref<void(Object* obj)>(0x004A0770);
 
     static auto& obj_set_friendliness = addr_as_ref<void(Object* obj, int friendliness)>(0x00489F70);
+
+    static auto& obj_damage = addr_as_ref<float(int victim_handle, float damage, int killer_handle,
+        int weapon_type, int damage_type, Vector3* pos, int killer_uid, char flags)>(0x004892C0);
 
     static auto& object_list = addr_as_ref<Object>(0x0073D880);
 

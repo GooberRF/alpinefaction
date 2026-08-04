@@ -14,7 +14,7 @@ namespace rf
     struct GDecal;
 }
 
-namespace df::gr::d3d11
+namespace gr::d3d11
 {
     class StateManager;
     class DynamicGeometryRenderer;

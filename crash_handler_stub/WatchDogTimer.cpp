@@ -21,6 +21,9 @@ class WatchDogTimer::Impl
     std::mutex m_mutex;
     std::atomic<bool> m_exiting;
     bool m_running = false;
+    // Touched only by the checker thread: Alt kill-switch arming state, reset when no hang is active
+    bool m_kill_armed = false;
+    bool m_hang_reported = false;
 
 public:
     Impl(std::chrono::milliseconds timeout) : m_timeout(timeout)
@@ -77,6 +80,12 @@ private:
             if (check_for_time_out()) {
                 handle_time_out();
             }
+            else {
+                // No hang in progress (or it recovered) - the next hang requires a fresh
+                // Alt press before it can be killed
+                m_kill_armed = false;
+                m_hang_reported = false;
+            }
             std::unique_lock<std::mutex> lk(m_mutex);
             m_cond_var.wait_for(lk, check_interval);
         }
@@ -91,12 +100,20 @@ private:
 
     void handle_time_out()
     {
-        if (GetAsyncKeyState(VK_MENU) & 0x8000) {
+        // Only treat Alt as a kill request if it was pressed after the hang began: Alt can be
+        // held as a regular game binding, so an Alt that was already down when the game stopped
+        // responding must be observed released once before it arms the kill switch.
+        bool alt_down = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
+        if (!alt_down) {
+            m_kill_armed = true;
+        }
+        if (alt_down && m_kill_armed) {
             xlog::info("Crash of not responding process has been requested");
             crash_observed_thread();
         }
-        else {
-            xlog::info("Process is not responding! Hold the Alt key for a few seconds to kill the process and generate a crash report that will allow to debug the problem...");
+        else if (!m_hang_reported) {
+            xlog::info("Process is not responding! Release the Alt key if it is held, then hold it for a few seconds to kill the process and generate a crash report that will help in debugging the problem...");
+            m_hang_reported = true;
         }
     }
 

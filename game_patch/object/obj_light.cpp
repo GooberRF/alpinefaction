@@ -107,7 +107,7 @@ void evaluate_fullbright_meshes()
 
     if (is_d3d11()) {
         if (g_character_meshes_are_fullbright != previous_fullbright_state) {
-            df::gr::d3d11::on_character_fullbright_state_changed();
+            gr::d3d11::on_character_fullbright_state_changed();
         }
     }
     else { // d3d9
@@ -201,10 +201,10 @@ ConsoleCommand2 mesh_lighting_cmd{
         if (mode_opt) {
             g_alpine_game_config.mesh_lighting_mode = std::clamp(mode_opt.value(), 0, 2);
             recalc_mesh_static_lighting();
-            df::gr::d3d11::evaluate_mesh_lighting(rf::level.filename);
+            gr::d3d11::evaluate_mesh_lighting(rf::level.filename);
         }
         rf::console::print("Mesh lighting: {} (mode {})", mesh_lighting_mode_name(g_alpine_game_config.mesh_lighting_mode), g_alpine_game_config.mesh_lighting_mode);
-        if (g_alpine_game_config.mesh_lighting_mode == 2 && df::gr::d3d11::level_uses_vertex_lighting()) {
+        if (g_alpine_game_config.mesh_lighting_mode == 2 && gr::d3d11::level_uses_vertex_lighting()) {
             rf::console::print("Note: per-map override is forcing vertex lighting for this level");
         }
     },
@@ -231,11 +231,11 @@ ConsoleCommand2 pixel_light_overbright_cmd{
         if (value_opt) {
             g_alpine_game_config.set_pixel_light_overbright(value_opt.value());
             // Re-evaluate cached state so the change takes effect immediately
-            df::gr::d3d11::evaluate_pixel_light_overbright(rf::level.filename);
+            gr::d3d11::evaluate_pixel_light_overbright(rf::level.filename);
         }
         rf::console::print("Pixel light overbright range: {:.2f}",
             g_alpine_game_config.pixel_light_overbright);
-        if (df::gr::d3d11::g_level_pixel_light_overbright != g_alpine_game_config.pixel_light_overbright) {
+        if (gr::d3d11::g_level_pixel_light_overbright != g_alpine_game_config.pixel_light_overbright) {
             rf::console::print("Note: per-map override in mapname_info.tbl is active for this level");
         }
     },
@@ -247,7 +247,7 @@ ConsoleCommand2 ignore_tbl_vertex_lighting_cmd{
     "cl_ignore_tbl_vertex_lighting",
     []() {
         g_alpine_game_config.ignore_tbl_vertex_lighting = !g_alpine_game_config.ignore_tbl_vertex_lighting;
-        df::gr::d3d11::evaluate_mesh_lighting(rf::level.filename);
+        gr::d3d11::evaluate_mesh_lighting(rf::level.filename);
         recalc_mesh_static_lighting();
         rf::console::printf("Ignore TBL vertex lighting override: %s", g_alpine_game_config.ignore_tbl_vertex_lighting ? "enabled" : "disabled");
     },
@@ -258,7 +258,7 @@ ConsoleCommand2 ignore_tbl_pixel_light_overbright_cmd{
     "cl_ignore_tbl_pixel_light_overbright",
     []() {
         g_alpine_game_config.ignore_tbl_pixel_light_overbright = !g_alpine_game_config.ignore_tbl_pixel_light_overbright;
-        df::gr::d3d11::evaluate_pixel_light_overbright(rf::level.filename);
+        gr::d3d11::evaluate_pixel_light_overbright(rf::level.filename);
         rf::console::printf("Ignore TBL pixel light overbright override: %s", g_alpine_game_config.ignore_tbl_pixel_light_overbright ? "enabled" : "disabled");
     },
     "Toggle ignoring per-map pixel light overbright overrides from mapname_info.tbl.",

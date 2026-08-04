@@ -5,6 +5,7 @@
 #include <common/utils/os-utils.h>
 #include "alpine_settings.h"
 #include "alpine_options.h"
+#include "saved_votes.h"
 #include <common/version/version.h>
 #include "../os/console.h"
 #include "../os/os.h"
@@ -32,6 +33,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <xlog/xlog.h>
+#include "../graphics/gr.h"
 
 bool g_loaded_alpine_settings_file = false;
 bool g_loaded_alpine_core_config_file = false;
@@ -373,6 +375,10 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.spectate_mode_minimal_ui = std::stoi(settings["SpectateMinimalUI"]);
         processed_keys.insert("SpectateMinimalUI");
     }
+    if (settings.count("SpectateShowCameras")) {
+        g_alpine_game_config.spectate_show_camera_meshes = std::stoi(settings["SpectateShowCameras"]);
+        processed_keys.insert("SpectateShowCameras");
+    }
     if (settings.count("ShowFPS")) {
         g_alpine_game_config.fps_counter = std::stoi(settings["ShowFPS"]);
         processed_keys.insert("ShowFPS");
@@ -664,6 +670,10 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.ignore_tbl_lightmap_clamping = std::stoi(settings["IgnoreTblLightmapClamping"]);
         processed_keys.insert("IgnoreTblLightmapClamping");
     }
+    if (settings.contains("SampleCount")) {
+        g_alpine_game_config.sample_count = std::stoi(settings["SampleCount"]);
+        processed_keys.insert("SampleCount");
+    }
 
     // Load UI settings
     if (settings.count("BigHUD")) {
@@ -944,9 +954,25 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.play_hit_sounds = std::stoi(settings["PlayHitsounds"]);
         processed_keys.insert("PlayHitsounds");
     }
+    if (settings.count("SprayDisplay")) {
+        g_alpine_game_config.spray_display = std::stoi(settings["SprayDisplay"]);
+        processed_keys.insert("SprayDisplay");
+    }
+    if (settings.count("SpraySelection")) {
+        g_alpine_game_config.set_selected_spray_index(std::stoi(settings["SpraySelection"]));
+        processed_keys.insert("SpraySelection");
+    }
     if (settings.count("KillfeedEnabled")) {
         g_alpine_game_config.killfeed_enabled = std::stoi(settings["KillfeedEnabled"]);
         processed_keys.insert("KillfeedEnabled");
+    }
+    if (settings.count("ShowAssistNames")) {
+        g_alpine_game_config.show_assist_names = std::stoi(settings["ShowAssistNames"]);
+        processed_keys.insert("ShowAssistNames");
+    }
+    if (settings.count("HighlightAssistedKills")) {
+        g_alpine_game_config.highlight_assisted_kills = std::stoi(settings["HighlightAssistedKills"]);
+        processed_keys.insert("HighlightAssistedKills");
     }
     if (settings.count("HitSoundIntervalMs")) {
         g_alpine_game_config.set_hit_sound_min_interval_ms(std::stoi(settings["HitSoundIntervalMs"]));
@@ -959,6 +985,14 @@ bool alpine_player_settings_load(rf::Player* player)
     if (settings.count("ShowRunTimer")) {
         g_alpine_game_config.show_run_timer = std::stoi(settings["ShowRunTimer"]);
         processed_keys.insert("ShowRunTimer");
+    }
+    if (settings.count("ShowGametypeHelp")) {
+        g_alpine_game_config.show_gametype_help = std::stoi(settings["ShowGametypeHelp"]);
+        processed_keys.insert("ShowGametypeHelp");
+    }
+    if (settings.count("ShowMiniScoreboardDM")) {
+        g_alpine_game_config.show_mini_scoreboard_dm = std::stoi(settings["ShowMiniScoreboardDM"]);
+        processed_keys.insert("ShowMiniScoreboardDM");
     }
     if (settings.count("VisualRicochet")) {
         g_alpine_game_config.multi_ricochet = std::stoi(settings["VisualRicochet"]);
@@ -1010,6 +1044,10 @@ bool alpine_player_settings_load(rf::Player* player)
     if (settings.count("PlayerJoinBeep")) {
         g_alpine_game_config.player_join_beep = std::stoi(settings["PlayerJoinBeep"]);
         processed_keys.insert("PlayerJoinBeep");
+    }
+    if (settings.count("PlayerJoinFlash")) {
+        g_alpine_game_config.player_join_flash = std::stoi(settings["PlayerJoinFlash"]);
+        processed_keys.insert("PlayerJoinFlash");
     }
     if (settings.count("WorldHUDAltDamageIndicators")) {
         g_alpine_game_config.world_hud_alt_damage_indicators = std::stoi(settings["WorldHUDAltDamageIndicators"]);
@@ -1157,6 +1195,50 @@ bool alpine_player_settings_load(rf::Player* player)
         }
     }
 
+    // Load saved votes. Keys are reindexed from the store on every save, so the
+    // numeric suffix is only a load order; a key whose suffix is not a number was
+    // not written by this build and is left to the generic orphan mechanism below.
+    {
+        std::vector<std::pair<unsigned long, const std::string*>> saved_vote_keys;
+        for (const auto& [key, value] : settings) {
+            if (!string_starts_with(key, "SavedVote")) {
+                continue;
+            }
+            const std::string suffix = key.substr(9); // strlen("SavedVote")
+            if (suffix.empty() || suffix.find_first_not_of("0123456789") != std::string::npos
+                || suffix.size() > 9) {
+                continue;
+            }
+            saved_vote_keys.emplace_back(std::stoul(suffix), &key);
+        }
+        std::ranges::sort(saved_vote_keys, {}, [](const auto& entry) { return entry.first; });
+
+        // The settings file can be reloaded; without this the store (and its
+        // preserved-line list) would double.
+        saved_votes_clear();
+        for (const auto& [index, key] : saved_vote_keys) {
+            const std::string& value = settings[*key];
+            // Claimed either way: saved_votes owns the preservation of anything it
+            // cannot use, so the key must never reach the orphan collector.
+            processed_keys.insert(*key);
+
+            SavedVote vote;
+            if (saved_votes_is_full()) {
+                // Stop parsing entirely once the store is full: the remaining lines
+                // are carried forward verbatim instead of being dropped.
+                xlog::warn("Saved vote store full; preserving unread entry {}", *key);
+                saved_votes_add_unparsed(value);
+            }
+            else if (saved_vote_parse(value, vote)) {
+                saved_votes_load_add(std::move(vote));
+            }
+            else {
+                xlog::warn("Preserving unreadable saved vote {}={}", *key, value);
+                saved_votes_add_unparsed(value);
+            }
+        }
+    }
+
     // Iterate through newly loaded bindings and resolve conflicts
     // Earlier bind takes priority when conflicts occur
     resolve_scan_code_conflicts(player->settings.controls);
@@ -1291,6 +1373,7 @@ void alpine_player_settings_save(rf::Player* player)
     file << "ExplosionFlashLightsEnv=" << g_alpine_game_config.explosion_env_flash_lights << "\n";
     file << "BurningEntityLights=" << g_alpine_game_config.burning_entity_lights << "\n";
     file << "SpectateMinimalUI=" << g_alpine_game_config.spectate_mode_minimal_ui << "\n";
+    file << "SpectateShowCameras=" << g_alpine_game_config.spectate_show_camera_meshes << "\n";
     file << "ShowFPS=" << g_alpine_game_config.fps_counter << "\n";
     file << "ShowSpeed=" << g_alpine_game_config.speed_display << "\n";
     file << "FPSCounterAverageMs=" << g_alpine_game_config.fps_counter_average_ms << "\n";
@@ -1377,6 +1460,7 @@ void alpine_player_settings_save(rf::Player* player)
     file << "IgnoreTblVertexLighting=" << g_alpine_game_config.ignore_tbl_vertex_lighting << "\n";
     file << "IgnoreTblPixelLightOverbright=" << g_alpine_game_config.ignore_tbl_pixel_light_overbright << "\n";
     file << "IgnoreTblLightmapClamping=" << g_alpine_game_config.ignore_tbl_lightmap_clamping << "\n";
+    file << "SampleCount=" << g_alpine_game_config.sample_count << "\n";
 
     // UI
     file << "\n[UISettings]\n";
@@ -1464,10 +1548,16 @@ void alpine_player_settings_save(rf::Player* player)
     file << "WorldHUDTeamLabels=" << g_alpine_game_config.world_hud_team_player_labels << "\n";
     file << "ShowLocationPings=" << g_alpine_game_config.show_location_pings << "\n";
     file << "PlayHitsounds=" << g_alpine_game_config.play_hit_sounds << "\n";
+    file << "SprayDisplay=" << g_alpine_game_config.spray_display << "\n";
+    file << "SpraySelection=" << g_alpine_game_config.selected_spray_index << "\n";
     file << "KillfeedEnabled=" << g_alpine_game_config.killfeed_enabled << "\n";
+    file << "ShowAssistNames=" << g_alpine_game_config.show_assist_names << "\n";
+    file << "HighlightAssistedKills=" << g_alpine_game_config.highlight_assisted_kills << "\n";
     file << "HitSoundIntervalMs=" << g_alpine_game_config.hit_sound_min_interval_ms << "\n";
     file << "PlayTaunts=" << g_alpine_game_config.play_taunt_sounds << "\n";
     file << "ShowRunTimer=" << g_alpine_game_config.show_run_timer << "\n";
+    file << "ShowGametypeHelp=" << g_alpine_game_config.show_gametype_help << "\n";
+    file << "ShowMiniScoreboardDM=" << g_alpine_game_config.show_mini_scoreboard_dm << "\n";
     file << "VisualRicochet=" << g_alpine_game_config.multi_ricochet << "\n";
     file << "DeathBars=" << g_alpine_game_config.death_bars << "\n";
     file << "ShowEnemyBullets=" << g_alpine_game_config.show_enemy_bullets << "\n";
@@ -1480,6 +1570,7 @@ void alpine_player_settings_save(rf::Player* player)
     file << "ServerNetFPS=" << g_alpine_game_config.server_netfps << "\n";
     file << "DisableMultiCharacterLOD=" << g_alpine_game_config.multi_no_character_lod << "\n";
     file << "PlayerJoinBeep=" << g_alpine_game_config.player_join_beep << "\n";
+    file << "PlayerJoinFlash=" << g_alpine_game_config.player_join_flash << "\n";
     file << "WorldHUDAltDamageIndicators=" << g_alpine_game_config.world_hud_alt_damage_indicators << "\n";
     file << "DesiredHandicap=" << g_alpine_game_config.desired_handicap << "\n";
     file << "CPOutlineHeightScale=" << g_alpine_game_config.control_point_outline_height_scale << "\n";
@@ -1493,6 +1584,26 @@ void alpine_player_settings_save(rf::Player* player)
     file << "AutodlDownloadAwps=" << g_alpine_game_config.autodl_download_awps << "\n";
     file << "HideChat=" << g_alpine_game_config.hide_chat << "\n";
     file << "SpectateCinematicMode=" << g_alpine_game_config.spectate_cinematic_mode << "\n";
+
+    // Saved votes. Reindexed from the store every save, so a deletion leaves no gap.
+    const std::vector<SavedVote>& saved_votes = saved_votes_get();
+    const std::vector<std::string>& unreadable_saved_votes = saved_votes_unparsed();
+    if (!saved_votes.empty() || !unreadable_saved_votes.empty()) {
+        file << "\n[SavedVotes]\n";
+        file << "; Format is SavedVote{N}=1|{Name}|{Type}|{Level}|{GameType}|{TeamSize}|{ExtendMinutes}|{Mutators}\n";
+
+        for (size_t i = 0; i < saved_votes.size(); ++i) {
+            file << "SavedVote" << i << "=" << saved_vote_encode(saved_votes[i]) << "\n";
+        }
+        if (!unreadable_saved_votes.empty()) {
+            // Keyed after the valid entries so the reindexing above can never
+            // collide with (and so overwrite) one of these.
+            file << "; The entries below could not be read by this client and are carried forward as-is.\n";
+            for (size_t i = 0; i < unreadable_saved_votes.size(); ++i) {
+                file << "SavedVote" << saved_votes.size() + i << "=" << unreadable_saved_votes[i] << "\n";
+            }
+        }
+    }
 
     alpine_control_config_serialize(file, player->settings.controls);
 
@@ -1589,6 +1700,11 @@ CallHook<void(rf::Player*)> player_settings_load_hook{
             else {
                 xlog::warn("Legacy RF settings file not found. Applying default settings.");
             }
+        }
+
+        // HACKFIX.  We need to load our settings earlier.
+        if (g_alpine_game_config.sample_count != 1) {
+           gr_flush_frame_buffers();
         }
 
         // display popup recommending ff link (skip for bots)
@@ -1707,7 +1823,7 @@ ConsoleCommand2 shadow_items_cmd{
 ConsoleCommand2 dbg_shadows_cmd{
     "dbg_shadows",
     []() {
-        using ESR = df::gr::d3d11::EntityShadowRenderer;
+        using ESR = gr::d3d11::EntityShadowRenderer;
         if (rf::is_multi && !rf::is_server) {
             rf::console::print("This command is only available in single-player or as host");
             return;
@@ -1724,7 +1840,7 @@ ConsoleCommand2 shadow_distance_cmd{
         if (value_opt) {
             g_alpine_game_config.set_shadow_distance(value_opt.value());
         }
-        using ESR = df::gr::d3d11::EntityShadowRenderer;
+        using ESR = gr::d3d11::EntityShadowRenderer;
         int d = g_alpine_game_config.shadow_distance;
         rf::console::print("Shadow distance: {} ({}) [0-5]",
             d, ESR::preset_names[d]);
@@ -1739,7 +1855,7 @@ ConsoleCommand2 shadow_quality_cmd{
         if (value_opt) {
             g_alpine_game_config.set_shadow_quality(value_opt.value());
         }
-        using ESR = df::gr::d3d11::EntityShadowRenderer;
+        using ESR = gr::d3d11::EntityShadowRenderer;
         int q = g_alpine_game_config.shadow_quality;
         const auto& preset = ESR::shadow_quality_presets[q];
         if (preset.resolution == 0) {

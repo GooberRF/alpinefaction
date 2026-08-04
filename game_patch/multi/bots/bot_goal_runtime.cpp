@@ -53,6 +53,11 @@ void bot_goal_runtime_clear_non_active_goal_state(const BotGoalType active_goal)
         g_client_bot_state.control_point_patrol_waypoint = 0;
         g_client_bot_state.control_point_patrol_timer.invalidate();
     }
+    if (active_goal != BotGoalType::sal_stage_at_spawn) {
+        g_client_bot_state.salvage_stage_hold_pos = {};
+        g_client_bot_state.salvage_stage_orbit_timer.invalidate();
+        g_client_bot_state.salvage_stage_orbit_left = false;
+    }
 }
 
 bool bot_goal_runtime_abort_bridge_goal()
@@ -84,6 +89,24 @@ bool bot_goal_runtime_abort_shatter_goal()
 bool bot_goal_runtime_abort_ctf_goal()
 {
     bot_state_set_roam_fallback_goal(250);
+    g_client_bot_state.ctf_objective_route_fail_timer.invalidate();
+    bot_state_clear_waypoint_route(true, true, false);
+    return false;
+}
+
+bool bot_goal_runtime_abort_bagman_goal()
+{
+    bot_state_set_roam_fallback_goal(250);
+    // Reuse the CTF objective fail timer slot.
+    g_client_bot_state.ctf_objective_route_fail_timer.invalidate();
+    bot_state_clear_waypoint_route(true, true, false);
+    return false;
+}
+
+bool bot_goal_runtime_abort_salvage_goal()
+{
+    bot_state_set_roam_fallback_goal(250);
+    // Reuse the CTF objective fail timer slot.
     g_client_bot_state.ctf_objective_route_fail_timer.invalidate();
     bot_state_clear_waypoint_route(true, true, false);
     return false;

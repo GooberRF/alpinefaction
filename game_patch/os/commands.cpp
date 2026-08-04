@@ -425,6 +425,9 @@ void handle_camera_command(FunHook<void()>& hook)
         return;
     }
 
+    // Release any decoupled camera before applying a stock camera mode.
+    alpine_camera_clear_static_mode();
+
     hook.call_target();
 
     const rf::CameraMode current_mode = rf::camera_get_mode(*rf::local_player->cam);

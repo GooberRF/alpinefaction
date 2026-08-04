@@ -28,6 +28,7 @@
 #include <patch_common/FunHook.h>
 #include "../../main/main.h"
 #include "../../graphics/gr.h"
+#include "../../input/control_input_filter.h"
 #include "../../misc/alpine_settings.h"
 #include "../../misc/waypoints.h"
 #include "../../rf/ai.h"
@@ -445,7 +446,8 @@ ObjectiveProgressWatchdogAction update_objective_progress_watchdog(
     const bool combat_lock_expired)
 {
     if (g_client_bot_state.active_goal == BotGoalType::none
-        || g_client_bot_state.active_goal == BotGoalType::eliminate_target) {
+        || g_client_bot_state.active_goal == BotGoalType::eliminate_target
+        || g_client_bot_state.active_goal == BotGoalType::sal_stage_at_spawn) {
         reset_objective_progress_watchdog(true);
         return ObjectiveProgressWatchdogAction::none;
     }
@@ -2123,14 +2125,6 @@ bool pick_waypoint_route_to_goal_long_detour(
     );
 }
 
-bool is_client_bot_active()
-{
-    return client_bot_launch_enabled()
-        && rf::is_multi
-        && !rf::is_dedicated_server
-        && rf::gameseq_get_state() == rf::GS_GAMEPLAY;
-}
-
 const char* waypoint_type_to_string(const WaypointType type)
 {
     switch (type) {
@@ -2162,6 +2156,8 @@ const char* waypoint_type_to_string(const WaypointType type)
             return "tele_exit";
         case WaypointType::water:
             return "water";
+        case WaypointType::salvage_flag:
+            return "salvage_flag";
         default:
             return "unknown";
     }
@@ -2198,6 +2194,8 @@ rf::Color waypoint_debug_color(const WaypointType type)
             return {255, 80, 220, 150};
         case WaypointType::water:
             return {60, 140, 255, 150};
+        case WaypointType::salvage_flag:
+            return {255, 235, 120, 150};
         default:
             return {200, 200, 200, 150};
     }
@@ -2234,7 +2232,13 @@ void update_bot_status_hud()
             rf::Player* target_player =
                 rf::player_from_entity_handle(g_client_bot_state.goal_target_handle);
             if (target_player && !target_player->name.empty()) {
+                // rf::hud_msg treats '$' as the start of a $TOKEN$ substitution and fatal-errors
+                // on an unterminated token, so neutralize any '$' in the player name first.
                 std::snprintf(target_label, sizeof(target_label), "%.22s", target_player->name.c_str());
+                for (char& c : target_label) {
+                    if (c == '\0') break;
+                    if (c == '$') c = '_';
+                }
             }
             else {
                 std::snprintf(target_label, sizeof(target_label), "uid%d", g_client_bot_state.goal_target_identifier);
@@ -2525,51 +2529,31 @@ FunHook<void(rf::Player*, rf::ControlConfig*, rf::ControlInfo*, int, int)> contr
     },
 };
 
-FunHook<bool(rf::ControlConfig*, rf::ControlConfigAction, bool*)> control_config_check_pressed_hook{
-    0x0043D4F0,
-    [](rf::ControlConfig* ccp, rf::ControlConfigAction action, bool* just_pressed_out) {
-        bool base_just_pressed = false;
-        bool* base_just_pressed_out = just_pressed_out ? &base_just_pressed : nullptr;
-        const bool base_pressed = control_config_check_pressed_hook.call_target(
-            ccp,
-            action,
-            base_just_pressed_out
-        );
-        if (just_pressed_out) {
-            *just_pressed_out = base_just_pressed;
-        }
+// The bot's fire policy, laid over the engine's reading of the attack binds by
+// control_input_filter.
+ControlInputInjection bot_synthetic_fire_injection(rf::ControlConfig* ccp, rf::ControlConfigAction action)
+{
+    if (!is_client_bot_active()
+        || !rf::gameseq_in_gameplay()
+        || !rf::local_player
+        || ccp != &rf::local_player->settings.controls) {
+        return {};
+    }
 
-        if (!is_client_bot_active()
-            || !rf::gameseq_in_gameplay()
-            || !rf::local_player
-            || ccp != &rf::local_player->settings.controls) {
-            return base_pressed;
-        }
-
-        bool synthetic_pressed = false;
-        bool synthetic_just_pressed = false;
-        if (action == rf::CC_ACTION_PRIMARY_ATTACK) {
-            synthetic_pressed = g_client_bot_state.firing.synthetic_primary_fire_down;
-            synthetic_just_pressed = g_client_bot_state.firing.synthetic_primary_fire_just_pressed;
-        }
-        else if (action == rf::CC_ACTION_SECONDARY_ATTACK) {
-            synthetic_pressed = g_client_bot_state.firing.synthetic_secondary_fire_down;
-            synthetic_just_pressed = g_client_bot_state.firing.synthetic_secondary_fire_just_pressed;
-        }
-        else {
-            return base_pressed;
-        }
-
-        if (!synthetic_pressed) {
-            return base_pressed;
-        }
-
-        if (just_pressed_out) {
-            *just_pressed_out = *just_pressed_out || synthetic_just_pressed;
-        }
-        return true;
-    },
-};
+    if (action == rf::CC_ACTION_PRIMARY_ATTACK) {
+        return {
+            g_client_bot_state.firing.synthetic_primary_fire_down,
+            g_client_bot_state.firing.synthetic_primary_fire_just_pressed,
+        };
+    }
+    if (action == rf::CC_ACTION_SECONDARY_ATTACK) {
+        return {
+            g_client_bot_state.firing.synthetic_secondary_fire_down,
+            g_client_bot_state.firing.synthetic_secondary_fire_just_pressed,
+        };
+    }
+    return {};
+}
 
 void ensure_bot_input_hook_installed()
 {
@@ -2579,7 +2563,7 @@ void ensure_bot_input_hook_installed()
 
     if (!g_bot_input_hook_installed) {
         controls_read_internal2_hook.install();
-        control_config_check_pressed_hook.install();
+        control_input_filter_add_press_injection(&bot_synthetic_fire_injection);
         g_bot_input_hook_installed = true;
     }
 }
@@ -2715,6 +2699,14 @@ bool bot_internal_is_control_point_mode()
     return bot_personality_manager_is_control_point_mode();
 }
 
+bool is_client_bot_active()
+{
+    return client_bot_launch_enabled()
+        && rf::is_multi
+        && !rf::is_dedicated_server
+        && rf::gameseq_get_state() == rf::GS_GAMEPLAY;
+}
+
 void client_bot_render_debug()
 {
     draw_bot_route_debug();
@@ -2842,6 +2834,11 @@ void client_bot_do_frame()
         g_client_bot_state.control_point_route_fail_timer.invalidate();
         g_client_bot_state.control_point_patrol_waypoint = 0;
         g_client_bot_state.control_point_patrol_timer.invalidate();
+        g_client_bot_state.salvage_stage_hold_pos = {};
+        g_client_bot_state.salvage_stage_orbit_timer.invalidate();
+        g_client_bot_state.salvage_stage_orbit_left = false;
+        g_client_bot_state.salvage_stage_route_fails = 0;
+        g_client_bot_state.salvage_stage_given_up = false;
         g_client_bot_state.last_recorded_health = -1.0f;
         g_client_bot_state.last_recorded_armor = -1.0f;
         clear_semi_auto_click_state();
@@ -2886,6 +2883,11 @@ void client_bot_do_frame()
         g_client_bot_state.control_point_route_fail_timer.invalidate();
         g_client_bot_state.control_point_patrol_waypoint = 0;
         g_client_bot_state.control_point_patrol_timer.invalidate();
+        g_client_bot_state.salvage_stage_hold_pos = {};
+        g_client_bot_state.salvage_stage_orbit_timer.invalidate();
+        g_client_bot_state.salvage_stage_orbit_left = false;
+        g_client_bot_state.salvage_stage_route_fails = 0;
+        g_client_bot_state.salvage_stage_given_up = false;
         g_client_bot_state.last_recorded_health = -1.0f;
         g_client_bot_state.last_recorded_armor = -1.0f;
         g_client_bot_state.bridge.zone_uid = -1;
@@ -2967,6 +2969,11 @@ void client_bot_do_frame()
         g_client_bot_state.control_point_route_fail_timer.invalidate();
         g_client_bot_state.control_point_patrol_waypoint = 0;
         g_client_bot_state.control_point_patrol_timer.invalidate();
+        g_client_bot_state.salvage_stage_hold_pos = {};
+        g_client_bot_state.salvage_stage_orbit_timer.invalidate();
+        g_client_bot_state.salvage_stage_orbit_left = false;
+        g_client_bot_state.salvage_stage_route_fails = 0;
+        g_client_bot_state.salvage_stage_given_up = false;
         g_client_bot_state.last_recorded_health = -1.0f;
         g_client_bot_state.last_recorded_armor = -1.0f;
         g_client_bot_state.console_status_timer.invalidate();

@@ -20,12 +20,7 @@ namespace rf
     struct CharacterInstance;
 }
 
-namespace df::gr
-{
-    using namespace rf::gr;
-}
-
-namespace df::gr::d3d11
+namespace gr::d3d11
 {
     class StateManager;
     class ShaderManager;
@@ -54,6 +49,7 @@ namespace df::gr::d3d11
         void set_clip();
         void set_far_clip(bool enabled);
         void flip();
+        void flush_outlines_before_fpgun();
         void texture_save_cache();
         void texture_flush_cache(bool force);
         void texture_flush_non_user_cache();
@@ -92,14 +88,18 @@ namespace df::gr::d3d11
         void clear_mesh_lights();
         void set_pow2_tex_active(bool active);
         float z_far() const;
+        bool supports_sample_count(uint32_t sample_count);
+        uint32_t get_sample_count() const;
+        void flush_frame_buffers();
         bool supports_exclusive_fullscreen() const;
 
     private:
         void init_device();
         void init_swap_chain(HWND hwnd);
-        void init_back_buffer();
+        void init_back_buffer(const uint32_t sample_count);
         void init_scene_texture();
-        void init_depth_stencil_buffer();
+        void init_depth_stencil_buffer(const uint32_t sample_count);
+        void flush_outlines_before_2d();
 
         HWND hwnd_;
         DynamicLinkLibrary d3d11_lib_;
@@ -153,7 +153,7 @@ namespace df::gr::d3d11
 
     #define DF_GR_D3D11_CHECK_HR(code) { \
         const char* const func_name = __func__; \
-        ::df::gr::d3d11::check_hr( \
+        ::gr::d3d11::check_hr( \
             code, \
             [=] { \
                 ::xlog::error( \

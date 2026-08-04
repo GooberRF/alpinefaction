@@ -12,7 +12,7 @@
 #include "../../rf/gr/gr.h"
 #include "gr_d3d11_mesh.h"
 
-namespace df::gr::d3d11
+namespace gr::d3d11
 {
 
     class StateManager;
@@ -51,7 +51,13 @@ namespace df::gr::d3d11
     public:
         ViewProjTransformBuffer(ID3D11Device* device);
 
+        // Builds the view matrix from rf::gr::eye_pos / rf::gr::eye_matrix as they
+        // stand right now. Correct while the engine is mid-scene; end-of-frame
+        // passes have to use the explicit-camera overload instead, because
+        // gr_setup_3d has re-pointed those globals by then.
         void update(const Projection& proj, ID3D11DeviceContext* device_context);
+        void update(const Projection& proj, const rf::Vector3& eye_pos, const rf::Matrix3& eye_orient,
+            ID3D11DeviceContext* device_context);
 
         operator ID3D11Buffer*() const
         {
@@ -82,10 +88,10 @@ namespace df::gr::d3d11
     public:
         RenderModeBuffer(ID3D11Device* device);
 
-        void update(gr::Mode mode, rf::Color color, bool lightmap_only, bool dynamic_lighting, float self_illumination, bool apply_light_scale, bool emissive_override, ID3D11DeviceContext* device_context)
+        void update(rf::gr::Mode mode, rf::Color color, bool lightmap_only, bool dynamic_lighting, float self_illumination, bool apply_light_scale, bool emissive_override, ID3D11DeviceContext* device_context)
         {
-            bool alpha_test = mode.get_zbuffer_type() == gr::ZBUFFER_TYPE_FULL_ALPHA_TEST;
-            bool fog_allowed = mode.get_fog_type() != gr::FOG_NOT_ALLOWED;
+            bool alpha_test = mode.get_zbuffer_type() == rf::gr::ZBUFFER_TYPE_FULL_ALPHA_TEST;
+            bool fog_allowed = mode.get_fog_type() != rf::gr::FOG_NOT_ALLOWED;
             int colorblind_mode = g_alpine_game_config.colorblind_mode;
             float dynamic_light_ndotl = g_alpine_game_config.dynamic_light_ndotl;
             float pixel_light_overbright = g_level_pixel_light_overbright;
@@ -302,8 +308,9 @@ namespace df::gr::d3d11
         class ScopedPicmipActive
         {
         public:
-            ScopedPicmipActive(RenderContext& ctx, bool active) :
-                ctx_{ctx}, prev_{ctx.picmip_active_}
+            ScopedPicmipActive(RenderContext& ctx, bool active)
+                : ctx_{ctx}
+                , prev_{ctx.picmip_active_}
             {
                 ctx_.set_picmip_active(active);
             }
@@ -315,7 +322,7 @@ namespace df::gr::d3d11
             bool prev_;
         };
 
-        void set_mode(gr::Mode mode, rf::Color color = {255, 255, 255, 255}, bool lightmap_only = false, bool dynamic_lighting = false, float self_illumination = 0.0f, bool apply_light_scale = true, bool emissive_override = false)
+        void set_mode(rf::gr::Mode mode, rf::Color color = {255, 255, 255, 255}, bool lightmap_only = false, bool dynamic_lighting = false, float self_illumination = 0.0f, bool apply_light_scale = true, bool emissive_override = false)
         {
             render_mode_cbuffer_.update(mode, color, lightmap_only, dynamic_lighting, self_illumination, apply_light_scale, emissive_override, device_context_);
             if (!current_mode_ || current_mode_.value() != mode || current_picmip_active_ != picmip_active_) {
@@ -409,6 +416,17 @@ namespace df::gr::d3d11
         {
             projection_ = proj;
             view_proj_transform_cbuffer_.update(projection_, device_context_);
+        }
+
+        // Same, but with the camera passed in rather than read from the engine
+        // globals. Needed by anything that draws world geometry after the scene
+        // phase: gr_setup_3d overwrites rf::gr::eye_pos / eye_matrix several more
+        // times before the frame is presented, so "restore the projection" alone
+        // still leaves the view matrix pointing at a different camera.
+        void update_view_proj_transform(Projection proj, const rf::Vector3& eye_pos, const rf::Matrix3& eye_orient)
+        {
+            projection_ = proj;
+            view_proj_transform_cbuffer_.update(projection_, eye_pos, eye_orient, device_context_);
         }
 
         void update_per_frame_constants()
@@ -608,7 +626,7 @@ namespace df::gr::d3d11
         D3D11_PRIMITIVE_TOPOLOGY current_primitive_topology_ = D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED;
         std::array<int, 2> current_tex_handles_ = {-2, -2};
         D3D11_CULL_MODE current_cull_mode_ = D3D11_CULL_NONE;
-        std::optional<gr::Mode> current_mode_;
+        std::optional<rf::gr::Mode> current_mode_;
         bool picmip_active_ = false;
         bool current_picmip_active_ = false;
         std::array<ID3D11SamplerState*, 2> current_sampler_states_ = {nullptr, nullptr};

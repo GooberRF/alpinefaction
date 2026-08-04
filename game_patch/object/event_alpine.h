@@ -5,6 +5,7 @@
 #include <sstream>
 #include <optional>
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <algorithm>
 #include <common/utils/list-utils.h>
@@ -33,6 +34,7 @@
 #include "../graphics/gr.h"
 #include "../misc/level.h"
 #include "../misc/alpine_settings.h"
+#include "../multi/alpine_packets.h"
 
 extern void set_sky_room_uid_override(
     int room_uid,
@@ -1059,13 +1061,13 @@ struct EventScopeGate : rf::Event
             pass = !rf::is_multi;
             break;
         case ScopeGateTests::server:
-            pass = (rf::is_server || rf::is_dedicated_server);
+            pass = rf::is_server;
             break;
         case ScopeGateTests::dedicated:
             pass = rf::is_dedicated_server;
             break;
         case ScopeGateTests::client:
-            pass = !(rf::is_server || rf::is_dedicated_server);
+            pass = !rf::is_server;
             break;
         case ScopeGateTests::triggered_by:
             pass = (rf::local_player && (rf::local_player->entity_handle == this->triggered_by_handle));
@@ -1824,6 +1826,22 @@ struct EventAFTeleportPlayer : rf::Event
                         exit_vclip_id, this->room, &this->pos, &this->pos, 1.0f, -1, &this->orient.fvec, 1);
                 }
             }
+
+            // Replicate the position snap to clients
+            if (rf::is_multi && rf::is_server) {
+                af_send_teleport_entity_req(
+                    static_cast<uint32_t>(teleported_entity->handle),
+                    this->pos,
+                    this->orient,
+                    teleported_entity->p_data.vel);
+
+                // Suppress prediction for the teleported player's own client
+                // so they don't rubber band between positions
+                if (rf::Player* teleported_player = rf::player_from_entity_handle(teleported_entity->handle)) {
+                    teleported_player->saving.last_teleport_timer.set(300);
+                    teleported_player->saving.last_teleport_pos = this->pos;
+                }
+            }
         }
     }
 };
@@ -2327,7 +2345,7 @@ private:
                     continue;
 
                 auto* linked_event = static_cast<rf::Event*>(obj);
-                if (linked_event->event_type != rf::event_type_to_int(rf::EventType::Capture_Point_Handler))
+                if (linked_event->event_type != std::to_underlying(rf::EventType::Capture_Point_Handler))
                     continue;
 
                 auto* handler = static_cast<EventCapturePointHandler*>(linked_event);
@@ -2396,7 +2414,7 @@ private:
         }
 
         auto* linked_event = static_cast<Event*>(obj);
-        if (linked_event->event_type != rf::event_type_to_int(rf::EventType::Capture_Point_Handler)) {
+        if (linked_event->event_type != std::to_underlying(rf::EventType::Capture_Point_Handler)) {
             return false;
         }
 

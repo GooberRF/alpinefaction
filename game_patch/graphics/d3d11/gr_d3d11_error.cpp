@@ -2,7 +2,7 @@
 #include "gr_d3d11.h"
 #include "../../rf/os/os.h"
 
-namespace df::gr::d3d11
+namespace gr::d3d11
 {
     #define GR_D3D11_ERROR_CASE(hr) case hr: return #hr;
 

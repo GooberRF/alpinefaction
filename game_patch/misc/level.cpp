@@ -15,6 +15,7 @@
 #include "player.h"
 #include "../multi/server.h"
 #include "../object/alpine_corona.h"
+#include "../object/alpine_bag.h"
 #include "../object/mover.h"
 #include "../hud/hud_world.h"
 
@@ -57,7 +58,7 @@ CodeInjection level_read_moving_group_travel_time_patch{
             // if "Use Travel Time As Velocity" is used, allow accel/decel values to exceed travel time
             if (!mci->time_is_velocity) {
                 for (int i = 0; i < mci->keyframes.size(); ++i) {
-                    if (auto kf = mci->keyframes.get(i)) {
+                    if (auto kf = mci->keyframes.at(i)) {
                         const float sum_ramp_times = kf->ramp_up_time_seconds + kf->ramp_down_time_seconds;
                         kf->forward_time_seconds = std::max(kf->forward_time_seconds, sum_ramp_times);
                         kf->reverse_time_seconds = std::max(kf->reverse_time_seconds, sum_ramp_times);
@@ -110,6 +111,7 @@ CodeInjection level_load_init_patch{
         DashLevelProps::instance() = {};
         alpine_mesh_clear_state();
         alpine_corona_clear_state();
+        alpine_bag_clear_state();
         gas_region_clear_state();
         alpine_mover_clear_hold_open();
         hud_world_level_unload();
@@ -145,6 +147,13 @@ CodeInjection level_load_chunk_patch{
             regs.eip = 0x004608EF;
         }
 
+        // handling for alpine bag objects chunk
+        if (chunk_id == alpine_bag_chunk_id) {
+            xlog::debug("[Level] Loading alpine bag chunk: len={}", chunk_len);
+            alpine_bag_load_chunk(file, chunk_len);
+            regs.eip = 0x004608EF;
+        }
+
         // handling for dash faction level props chunk, safe up to v1
         if (chunk_id == dash_level_props_chunk_id) {
             auto version = file.read<std::uint32_t>();
@@ -158,31 +167,60 @@ CodeInjection level_load_chunk_patch{
     },
 };
 
-FunHook<void(rf::File* file)> level_read_mp_respawns_hook{
+FunHook<void(rf::File*)> level_read_mp_respawns_hook{
     0x00462B20,
-    [](rf::File* file) {
-        rf::Vector3 pos;
-        rf::Matrix3 orient;
-        rf::String script_name;
-        rf::String tmp_string; // only in rfl version < 67
-        int count = file->read_int(0, 0);
+    [] (rf::File* const file) {
+        rf::Vector3 pos{};
+        rf::Matrix3 orient{};
+        rf::String script_name{};
+
+        const int count = file->read_int(0, 0);
 
         for (int j = 0; j < count; ++j) {
-            int uid = file->read_int(0, 0);
+            [[maybe_unused]]
+            const int uid = file->read_int(0, 0);
             file->read_vector(&pos, 0, &rf::file_default_vector);
             file->read_matrix(&orient, 0, &rf::file_default_matrix);
             file->read_string(&script_name, 0, 0);
-            if (file->get_version() < 67)
-                file->read_string(&tmp_string, 0, 0); // unused
-            bool unk1 = file->read_bool(0, true);
-            int team = file->read_int(0, 0);
-            bool red = file->read_bool(172, true);
-            bool blue = file->read_bool(172, true);
-            bool bot = file->read_bool(172, false);
 
-            //xlog::warn("[{}] uid={} name='{}' unk1={} team={} red={} blue={} bot={} pos=({}, {}, {})", j, uid, script_name.c_str(), unk1, team, red, blue, bot, pos.x, pos.y, pos.z);
+            if (file->get_version() < 67) {
+                rf::String unused{};
+                file->read_string(&unused, 0, 0);
+            }
 
-            multi_create_alpine_respawn_point(uid, script_name.c_str(), pos, orient, red, blue, true);
+            [[maybe_unused]]
+            const bool unk1 = file->read_bool(0, true);
+            [[maybe_unused]]
+            const int team = file->read_int(0, 0);
+            const bool red = file->read_bool(172, true);
+            const bool blue = file->read_bool(172, true);
+            [[maybe_unused]]
+            const bool bot = file->read_bool(172, false);
+
+            // xlog::warn(
+            //     "[{}] uid={} name='{}' unk1={} team={} red={} blue={} bot={} pos=({}, {}, {})",
+            //     j,
+            //     uid,
+            //     script_name.c_str(),
+            //     unk1,
+            //     team,
+            //     red,
+            //     blue,
+            //     bot,
+            //     pos.x,
+            //     pos.y,
+            //     pos.z
+            // );
+
+            multi_create_alpine_respawn_point(
+                uid,
+                script_name.c_str(),
+                pos,
+                orient,
+                red,
+                blue,
+                true
+            );
         }
     },
 };
