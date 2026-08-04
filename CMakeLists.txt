@@ -35,10 +35,18 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 if(MSVC)
     add_compile_definitions(_CRT_SECURE_NO_WARNINGS)
     add_compile_options(/arch:SSE2)
+    # Pin both charsets. Sources are UTF-8; narrow string literals are Windows-1252,
+    # because the .vf bitmap fonts are indexed by Windows-1252 byte value and several
+    # literals embed those bytes directly (\x95 bullet, \xA6 chat prefix, ...).
+    # Without this the ordinary literal encoding follows the build machine's system
+    # code page: on a DBCS locale such as 932 those bytes become invalid multi-byte
+    # sequences and std::format throws std::format_error at runtime.
+    add_compile_options(/source-charset:utf-8 /execution-charset:windows-1252)
     # Statically link Microsoft's CRT.
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 else()
     add_compile_options(-msse2)
+    add_compile_options(-finput-charset=UTF-8 -fexec-charset=WINDOWS-1252)
 endif()
 
 # Macros
