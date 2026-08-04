@@ -483,7 +483,7 @@ void af_send_obj_update_packet(rf::Player* player)
         return;
     }
 
-    static std::byte packet_buf[rf::max_packet_size];
+    static std::byte packet_buf[rf::MAX_PACKET_SIZE];
 
     // Fill packet header
     RF_GamePacketHeader header{};
@@ -1019,7 +1019,7 @@ struct VoteReader
 };
 
 // The protocol's only limits on a vote call are the u8 count encoding and
-// rf::max_packet_size (enforced by VoteWriter) — there is no separate policy cap.
+// rf::MAX_PACKET_SIZE (enforced by VoteWriter) — there is no separate policy cap.
 //
 // Returns false if the selection cannot be encoded. Never truncates or wraps:
 // silently dropping part of a player's mutator selection would start a vote that
@@ -1144,7 +1144,7 @@ void af_send_vote_call(const AfVoteCallParams& params)
         return;
     }
 
-    std::byte buf[rf::max_packet_size];
+    std::byte buf[rf::MAX_PACKET_SIZE];
     RF_GamePacketHeader header{};
     header.type = static_cast<uint8_t>(af_packet_type::af_client_req);
 
@@ -1191,7 +1191,7 @@ void af_send_vote_call(const AfVoteCallParams& params)
         // Would have overflowed the packet buffer. Dropping the send is the only
         // safe option, but never do it silently.
         xlog::warn("af_send_vote_call: vote type {} payload exceeds the {} byte packet buffer; not sent",
-                   static_cast<int>(params.type), rf::max_packet_size);
+                   static_cast<int>(params.type), rf::MAX_PACKET_SIZE);
         return;
     }
 
@@ -1284,9 +1284,9 @@ void af_send_vote_state_start(rf::Player* player, AfVoteType type, uint16_t time
     // remaining + flags + the two string length bytes.
     constexpr size_t fixed_len = sizeof(RF_GamePacketHeader) + 9 + 2;
     // Guards str_budget against underflowing if fields are ever added here.
-    static_assert(fixed_len < rf::max_packet_size,
+    static_assert(fixed_len < rf::MAX_PACKET_SIZE,
                   "af_sreq_vote_state start fixed fields no longer fit a packet");
-    constexpr size_t str_budget = rf::max_packet_size - fixed_len;
+    constexpr size_t str_budget = rf::MAX_PACKET_SIZE - fixed_len;
 
     // A long title (many mutators) must never cost the client its START event,
     // so both strings are truncated to fit rather than overflowing the packet.
@@ -1301,7 +1301,7 @@ void af_send_vote_state_start(rf::Player* player, AfVoteType type, uint16_t time
         flags |= AF_VOTE_STATE_FLAG_SYNC;
     }
 
-    std::byte buf[rf::max_packet_size];
+    std::byte buf[rf::MAX_PACKET_SIZE];
     VoteWriter w{buf, sizeof(buf), sizeof(RF_GamePacketHeader)};
     w.u8(static_cast<uint8_t>(af_server_req_type::af_sreq_vote_state));
     w.u8(static_cast<uint8_t>(AfVoteStateEvent::Start));
@@ -1322,7 +1322,7 @@ void af_send_vote_state_update(rf::Player* player, uint8_t yes, uint8_t no, uint
         return;
     }
 
-    std::byte buf[rf::max_packet_size];
+    std::byte buf[rf::MAX_PACKET_SIZE];
     VoteWriter w{buf, sizeof(buf), sizeof(RF_GamePacketHeader)};
     w.u8(static_cast<uint8_t>(af_server_req_type::af_sreq_vote_state));
     w.u8(static_cast<uint8_t>(AfVoteStateEvent::Update));
@@ -1341,13 +1341,13 @@ void af_send_vote_state_end(rf::Player* player, AfVoteResult result, bool passed
 
     // header + req_type + event + result + flags + the detail length byte.
     constexpr size_t fixed_len = sizeof(RF_GamePacketHeader) + 4 + 1;
-    static_assert(fixed_len < rf::max_packet_size,
+    static_assert(fixed_len < rf::MAX_PACKET_SIZE,
                   "af_sreq_vote_state end fixed fields no longer fit a packet");
     // The detail line is truncated rather than dropped: losing the end event
     // entirely would strand the client's HUD notification.
-    const size_t detail_len = std::min<size_t>({detail.size(), 255, rf::max_packet_size - fixed_len});
+    const size_t detail_len = std::min<size_t>({detail.size(), 255, rf::MAX_PACKET_SIZE - fixed_len});
 
-    std::byte buf[rf::max_packet_size];
+    std::byte buf[rf::MAX_PACKET_SIZE];
     VoteWriter w{buf, sizeof(buf), sizeof(RF_GamePacketHeader)};
     w.u8(static_cast<uint8_t>(af_server_req_type::af_sreq_vote_state));
     w.u8(static_cast<uint8_t>(AfVoteStateEvent::End));
@@ -1386,12 +1386,12 @@ void af_send_vote_options_data(rf::Player* player)
 
     // req_type + stream event + generation
     constexpr size_t frame_prefix = sizeof(uint8_t) + sizeof(uint8_t) + sizeof(uint32_t);
-    constexpr size_t max_chunk_len = rf::max_packet_size - sizeof(RF_GamePacketHeader) - frame_prefix;
+    constexpr size_t max_chunk_len = rf::MAX_PACKET_SIZE - sizeof(RF_GamePacketHeader) - frame_prefix;
     static_assert(max_chunk_len > 0, "vote options chunk payload no longer fits a packet");
 
     const auto queue_frame = [&](AfVoteOptionsStream event, const uint8_t* data, size_t len,
                                  std::optional<uint32_t> extra) {
-        std::byte buf[rf::max_packet_size];
+        std::byte buf[rf::MAX_PACKET_SIZE];
         VoteWriter w{buf, sizeof(buf), sizeof(RF_GamePacketHeader)};
         w.u8(static_cast<uint8_t>(af_server_req_type::af_sreq_vote_options_data));
         w.u8(static_cast<uint8_t>(event));
@@ -1806,7 +1806,7 @@ void af_send_kill_info(rf::Player* killed_player)
         return;
     }
 
-    std::byte buf[rf::max_packet_size];
+    std::byte buf[rf::MAX_PACKET_SIZE];
     size_t off = 0;
 
     RF_GamePacketHeader header{};
@@ -2013,7 +2013,7 @@ void af_send_pit_roster(rf::Player* player, const std::vector<af_pit_roster_entr
         return;
     }
 
-    std::byte buf[rf::max_packet_size];
+    std::byte buf[rf::MAX_PACKET_SIZE];
     const size_t max_entries =
         (sizeof(buf) - sizeof(RF_GamePacketHeader) - sizeof(uint8_t)) / sizeof(af_pit_roster_entry);
     const uint8_t count =
@@ -2104,7 +2104,7 @@ void af_send_gungame_order(rf::Player* player, const std::vector<af_gungame_orde
         return;
     }
 
-    std::byte buf[rf::max_packet_size];
+    std::byte buf[rf::MAX_PACKET_SIZE];
     const size_t max_entries =
         (sizeof(buf) - sizeof(RF_GamePacketHeader) - sizeof(uint8_t)) / sizeof(af_gungame_order_entry);
     const uint8_t count =
@@ -3809,7 +3809,7 @@ af_server_msg_packet_buf build_hud_notification_packet(
     std::string_view text, int8_t duration_seconds,
     uint8_t notification_type, bool fade_on_expire
 ) {
-    constexpr size_t max_len = rf::max_packet_size
+    constexpr size_t max_len = rf::MAX_PACKET_SIZE
         - sizeof(af_server_msg_packet)
         - sizeof(af_hud_notification_prefix);
     const size_t len = std::clamp(text.size(), 0uz, max_len);
