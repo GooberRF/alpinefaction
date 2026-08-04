@@ -1075,7 +1075,7 @@ void cleanup_win32_server_console();
 // Legacy chat vote CASTING, kept for clients older than 1.4 (which have no
 // af_req_vote_cast). Only yes/no (and the y/n aliases) are handled; returns false
 // for anything else so the chat dispatcher reports it as an unrecognized command.
-bool handle_vote_command(std::string_view vote_name, rf::Player* sender);
+bool handle_vote_command(std::string_view vote_args, rf::Player* sender);
 // Packet-driven vote entry points (see alpine_packets.h for the wire formats).
 void handle_vote_call_packet(rf::Player* sender, AfVoteCallParams&& params);
 void handle_vote_cast_packet(rf::Player* sender, bool is_yes_vote);

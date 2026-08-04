@@ -1993,17 +1993,52 @@ static bool check_voter_eligibility(rf::Player* sender)
 
 // Chat is a legacy path: 1.4+ clients call, cast and cancel with packets. All that
 // survives here is casting, for clients too old to have af_req_vote_cast.
-bool handle_vote_command(std::string_view vote_name, rf::Player* sender)
+bool handle_vote_command(std::string_view vote_args, rf::Player* sender)
 {
+    auto [vote_name, vote_rest] = strip_by_space(vote_args);
+
     const bool is_yes = vote_name == "yes" || vote_name == "y";
-    if (!is_yes && vote_name != "no" && vote_name != "n") {
-        return false;
+    if (is_yes || vote_name == "no" || vote_name == "n") {
+        // Recognized either way: an ineligible voter has already been told why.
+        if (check_voter_eligibility(sender)) {
+            g_vote_mgr.add_player_vote(is_yes, sender);
+        }
+        return true;
     }
 
-    // Recognized either way: an ineligible voter has already been told why.
-    if (check_voter_eligibility(sender)) {
-        g_vote_mgr.add_player_vote(is_yes, sender);
+    AfVoteCallParams params;
+
+    if (vote_name == "level" || vote_name == "map") {
+        // First token only; a level filename never contains a space, and taking
+        // the rest verbatim would fold a stray trailing word into the name.
+        const std::string_view level = strip_by_space(vote_rest).first;
+        if (level.empty()) {
+            send_vote_reject_msg("Usage: vote level <filename>", sender);
+            return true; // recognized, just unusable as typed
+        }
+        params.type = AfVoteType::Level;
+        // Left unnormalized on purpose: VoteLevel::validate runs the name through
+        // is_level_name_valid, the same path a panel-typed name takes.
+        params.level = std::string{level};
     }
+    else if (vote_name == "next") {
+        params.type = AfVoteType::Next;
+    }
+    else if (vote_name == "previous" || vote_name == "prev") {
+        params.type = AfVoteType::Previous;
+    }
+    else if (vote_name == "restart" || vote_name == "rest") {
+        params.type = AfVoteType::Restart;
+    }
+    else if (vote_name == "extend") {
+        // params.extend_minutes already defaults to af_vote_extend_default_minutes.
+        params.type = AfVoteType::Extend;
+    }
+    else {
+        return false; // not a vote command; caller reports it as unrecognized
+    }
+
+    handle_vote_call_packet(sender, std::move(params));
     return true;
 }
 

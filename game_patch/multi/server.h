@@ -17,6 +17,7 @@ bool apply_game_type_for_current_level();
 void apply_rules_for_current_level();
 void server_do_frame();
 bool check_server_chat_command(const char* msg, rf::Player* sender);
+std::pair<std::string_view, std::string_view> strip_by_space(std::string_view str);
 bool server_is_saving_enabled();
 bool server_is_match_mode_enabled();
 bool server_allow_fullbright_meshes();

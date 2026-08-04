@@ -1127,9 +1127,8 @@ bool handle_server_chat_command(std::string_view server_command, rf::Player* sen
         );
     }
     else if (cmd_name == "vote") {
-        // Only used by old clients casting a vote. Anything else under `vote` moved
-        // to packets in 1.4, so it falls through as unrecognized like any other.
-        return handle_vote_command(strip_by_space(cmd_arg).first, sender);
+        // Only used by old clients casting a vote.
+        return handle_vote_command(cmd_arg, sender);
     }
     else if (cmd_name == "nextmap" || cmd_name == "nextlevel") {
         handle_next_map_command(sender);
