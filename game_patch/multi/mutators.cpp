@@ -311,6 +311,25 @@ static void apply_low_gravity(AlpineServerConfigRules& r, const toml::table& /*o
     r.mutators.low_gravity_enabled = true;
 }
 
+// Score Limit Override.
+static void apply_score_limit_override(AlpineServerConfigRules& r, const toml::table& opts)
+{
+    auto v = opts["score_limit"].value<int64_t>();
+    if (!v)
+        return;
+    const int value = static_cast<int>(std::clamp<int64_t>(*v, 1, INT32_MAX));
+    if (!r.set_score_limit(r.game_type, value)) {
+        rf::console::print("  [WARN] Score Limit Override: this game type has no score limit\n");
+    }
+}
+
+// Ideal Player Count Override: the count the server advertises as its target size.
+static void apply_ideal_player_count_override(AlpineServerConfigRules& r, const toml::table& opts)
+{
+    if (auto v = opts["ideal_players"].value<int64_t>())
+        r.set_ideal_player_count(static_cast<int>(std::clamp<int64_t>(*v, 1, INT32_MAX)));
+}
+
 // ============================================================================
 // Registry + application order
 // ============================================================================
@@ -337,6 +356,14 @@ static const MutatorOptionDef VAMPIRE_OPTIONS[] = {
     {1, "full_lifesteal", "Full lifesteal", MutatorOptionType::Bool},
 };
 
+static const MutatorOptionDef SCORE_LIMIT_OPTIONS[] = {
+    {0, "score_limit", "Score limit", MutatorOptionType::Int},
+};
+
+static const MutatorOptionDef IDEAL_PLAYERS_OPTIONS[] = {
+    {0, "ideal_players", "Ideal players", MutatorOptionType::Int},
+};
+
 struct MutatorDef
 {
     MutatorId id;
@@ -349,13 +376,24 @@ struct MutatorDef
     const MutatorOptionDef* options;
     size_t num_options;
     MutatorGametypeReq gametype_req = MutatorGametypeReq::Any;
+
+    // Vote notification / chat text. Most mutators are just their label, but where
+    // the chosen value is the whole point of the vote it is worth showing:
+    // "One Weapon [Rail]", "Score Limit [30]". Deliberately opt-in per mutator --
+    // spelling out every option would bury the line in noise.
+
+    // vote_label overrides `label` for that line only (nullptr = use `label`), and
+    // vote_detail_option names the option whose value goes in the brackets
+    // (nullptr = no brackets). A Choice shows its short UI label, not its raw value.
+    const char* vote_label = nullptr;
+    const char* vote_detail_option = nullptr;
 };
 
 // Per-mutator client requirement — what the mutator actually depends on, not
 // necessarily what release it shipped in.
 static const MutatorDef MUTATORS[] = {
     {MutatorId::Instagib, "instagib", "Instagib", 4, &apply_instagib, nullptr, 0},
-    {MutatorId::Rails, "oneweapon", "One Weapon", 4, &apply_rails, RAILS_OPTIONS, std::size(RAILS_OPTIONS)},
+    {MutatorId::Rails, "oneweapon", "One Weapon", 4, &apply_rails, RAILS_OPTIONS, std::size(RAILS_OPTIONS), MutatorGametypeReq::Any, nullptr, "featured_weapon"},
     {MutatorId::Arena, "arena", "Arena", 4, &apply_arena, nullptr, 0},
     {MutatorId::Vampire, "vampire", "Vampire", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_vampire, VAMPIRE_OPTIONS, std::size(VAMPIRE_OPTIONS)},
     {MutatorId::SuperDrain, "superdrain", "Super Drain", 4, &apply_super_drain, nullptr, 0},
@@ -369,6 +407,8 @@ static const MutatorDef MUTATORS[] = {
     {MutatorId::DelayedSupers, "delayedsupers", "Delayed Supers", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_delayed_supers, nullptr, 0},
     {MutatorId::WeirdGunGame, "weirdgungame", "Weird Gun Game", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_weird_gungame, nullptr, 0, MutatorGametypeReq::GunGameOnly},
     {MutatorId::LowGravity, "lowgravity", "Low Gravity", 4, &apply_low_gravity, nullptr, 0},
+    {MutatorId::ScoreLimitOverride, "scorelimit", "Score Limit Override", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_score_limit_override, SCORE_LIMIT_OPTIONS, std::size(SCORE_LIMIT_OPTIONS), MutatorGametypeReq::HasScoreLimit, "Score Limit", "score_limit"},
+    {MutatorId::IdealPlayerCountOverride, "idealplayers", "Ideal Player Count Override", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_ideal_player_count_override, IDEAL_PLAYERS_OPTIONS, std::size(IDEAL_PLAYERS_OPTIONS), MutatorGametypeReq::BotsSupported, "Ideal Players", "ideal_players"},
 };
 
 // Hardcoded order in which simultaneously-active mutators are applied. Later
@@ -389,6 +429,8 @@ static const MutatorId MUTATOR_APPLY_ORDER[] = {
     MutatorId::Arena,
     MutatorId::Rails,
     MutatorId::Instagib,
+    MutatorId::ScoreLimitOverride,
+    MutatorId::IdealPlayerCountOverride,
 };
 
 // Resolve a static requirement to the concrete set of game types it permits.
@@ -405,6 +447,21 @@ static uint32_t gametype_mask_for_req(MutatorGametypeReq req)
         }
         case MutatorGametypeReq::GunGameOnly:
             return 1u << static_cast<int>(rf::NG_TYPE_GG);
+        case MutatorGametypeReq::HasScoreLimit: {
+            // Read straight off the same mapping the Score Limit Override mutator
+            // writes through, so the two can never disagree: a game type whose
+            // limit is nullopt has nothing to override.
+            uint32_t mask = 0;
+            const auto& rules = g_alpine_server_config_active_rules;
+            for (int i = 0; i < static_cast<int>(rf::NG_TYPE_UNK); ++i) {
+                if (rules.get_score_limit(static_cast<rf::NetGameType>(i)))
+                    mask |= 1u << i;
+            }
+            return mask;
+        }
+        case MutatorGametypeReq::BotsSupported:
+            // Bots can't play RUN.
+            return MUTATOR_GAMETYPE_MASK_ANY & ~(1u << static_cast<int>(rf::NG_TYPE_RUN));
         case MutatorGametypeReq::Any:
             break;
     }
@@ -528,12 +585,19 @@ static std::vector<MutatorOptionChoice> build_featured_weapon_choices()
 static std::vector<MutatorInfo> g_mutator_registry;
 // Whether the cached build saw the weapon/item tables.
 static bool g_mutator_registry_built_with_tables = false;
+// Active-rules generation the cached defaults were taken from. The score limit and
+// ideal player count defaults are live server values, so the cache has to follow a
+// config reload (sv_loadconfig) or it would keep advertising the old numbers.
+static int g_mutator_registry_generation = -1;
 
 const std::vector<MutatorInfo>& mutators_get_registry()
 {
     const bool tables_ready = rf::num_weapon_types > 0 && rf::num_item_types > 0;
-    if (!g_mutator_registry.empty() && (g_mutator_registry_built_with_tables || !tables_ready))
+    const int generation = get_active_rules_generation();
+    if (!g_mutator_registry.empty() && (g_mutator_registry_built_with_tables || !tables_ready)
+        && generation == g_mutator_registry_generation)
         return g_mutator_registry;
+    g_mutator_registry_generation = generation;
 
     std::vector<MutatorInfo> registry;
     for (const auto& def : MUTATORS) {
@@ -570,6 +634,15 @@ const std::vector<MutatorInfo>& mutators_get_registry()
             }
             else if (def.id == MutatorId::Vampire && opt.name == "hide_health_armor_pickups") {
                 opt.default_bool = VAMPIRE_DEFAULT_HIDE_HEALTH_ARMOR;
+            }
+            // Both override defaults are the server's CURRENT value, so a vote that
+            // enables one without touching it changes nothing.
+            else if (def.id == MutatorId::ScoreLimitOverride && opt.name == "score_limit") {
+                const auto& rules = g_alpine_server_config_active_rules;
+                opt.default_int = rules.get_score_limit(rules.game_type).value_or(1);
+            }
+            else if (def.id == MutatorId::IdealPlayerCountOverride && opt.name == "ideal_players") {
+                opt.default_int = g_alpine_server_config_active_rules.ideal_player_count;
             }
 
             info.options.push_back(std::move(opt));
@@ -795,14 +868,61 @@ std::optional<std::string> mutators_build_declarations_from_vote(
     return std::nullopt;
 }
 
+// The bracketed detail for one mutator's vote line, or empty when it has none.
+// Only the option named by vote_detail_option is shown; a Choice resolves to its
+// short UI label ("Rail") rather than the raw TOML value ("rail_gun").
+static std::string mutator_vote_detail(const MutatorDef& def, const MutatorDeclaration& decl)
+{
+    if (!def.vote_detail_option)
+        return {};
+
+    const auto it = decl.options.find(def.vote_detail_option);
+    if (it == decl.options.end())
+        return {}; // left at its default, which the vote line does not spell out
+
+    if (const auto* v = std::get_if<int32_t>(&it->second))
+        return std::format("{}", *v);
+    if (const auto* v = std::get_if<float>(&it->second))
+        return std::format("{:g}", *v);
+    if (const auto* v = std::get_if<bool>(&it->second))
+        return *v ? "on" : "off";
+
+    const auto* str = std::get_if<std::string>(&it->second);
+    if (!str)
+        return {};
+
+    // Choice: map the stored value back to the label the voter actually picked.
+    if (const MutatorInfo* info = mutators_find_by_id(def.id)) {
+        for (const auto& opt : info->options) {
+            if (opt.name != def.vote_detail_option)
+                continue;
+            for (const auto& choice : opt.choices) {
+                if (string_iequals(choice.value, *str))
+                    return choice.label;
+            }
+            break;
+        }
+    }
+    return *str;
+}
+
 std::string mutators_join_labels(const std::vector<MutatorDeclaration>& declarations)
 {
     std::string joined;
     for (const auto& decl : declarations) {
-        const MutatorInfo* info = mutators_find_by_name(decl.name);
         if (!joined.empty())
             joined += ", ";
-        joined += info ? info->label : decl.name;
+
+        const MutatorDef* def = find_mutator_by_name(decl.name);
+        if (!def) {
+            joined += decl.name;
+            continue;
+        }
+        joined += def->vote_label ? def->vote_label : def->label;
+
+        const std::string detail = mutator_vote_detail(*def, decl);
+        if (!detail.empty())
+            joined += std::format(" [{}]", detail);
     }
     return joined;
 }

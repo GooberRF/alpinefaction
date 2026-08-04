@@ -44,6 +44,8 @@ enum class MutatorId : uint8_t
     DelayedSupers = 12,
     WeirdGunGame = 13,
     LowGravity = 14,
+    ScoreLimitOverride = 15,
+    IdealPlayerCountOverride = 16,
 };
 
 struct MutatorOptionChoice
@@ -80,6 +82,8 @@ enum class MutatorGametypeReq : uint8_t
     Any,         // every game type
     TeamOnly,
     GunGameOnly,
+    HasScoreLimit, // excludes the types scored without a numeric limit
+    BotsSupported, // excludes the types bots cannot play
 };
 
 struct MutatorInfo

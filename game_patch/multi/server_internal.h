@@ -103,8 +103,12 @@ struct VoteConfig
     bool enabled = false;
     bool ignore_nonvoters = false;
     int time_limit_seconds = 60;
+    // The votable-level allow list.
     std::vector<std::string> allowed_maps;
-    bool add_rotation_to_allowed_levels = false;
+    bool add_rotation_to_allowed_levels = true;
+    // Also allow every installed level whose filename matches a votable game type
+    // prefix. Resolved at config load and when a level is installed at runtime.
+    bool add_installed_to_allowed_levels = false;
     bool only_allow_gametype_prefix = false;
 
     // =============================================
@@ -789,6 +793,48 @@ struct AlpineServerConfigRules
     {
         ideal_player_count = std::clamp(count, 1, 32);
     }
+
+    // The score limit that decides a win in `game_type`.
+    std::optional<int> get_score_limit(rf::NetGameType game_type) const
+    {
+        switch (game_type) {
+            case rf::NetGameType::NG_TYPE_CTF:     return cap_limit;
+            case rf::NetGameType::NG_TYPE_SAL:     return salvage.cap_limit;
+            case rf::NetGameType::NG_TYPE_TEAMDM:  return team_kill_limit;
+            case rf::NetGameType::NG_TYPE_KOTH:    return koth_score_limit;
+            case rf::NetGameType::NG_TYPE_DC:      return dc_score_limit;
+            case rf::NetGameType::NG_TYPE_PIT:     return pit_score_limit;
+            case rf::NetGameType::NG_TYPE_GG:      return gungame_score_limit;
+            case rf::NetGameType::NG_TYPE_BAG:     return bagman.bag_score_limit;
+            case rf::NetGameType::NG_TYPE_TBAG:    return bagman.tbag_score_limit;
+            case rf::NetGameType::NG_TYPE_RUN:
+            case rf::NetGameType::NG_TYPE_REV:
+            case rf::NetGameType::NG_TYPE_ESC:     return std::nullopt;
+            default:                               return individual_kill_limit;
+        }
+    }
+
+    // Counterpart to get_score_limit: routes through each field's own setter so the
+    // per-game-type clamping still applies. Returns false for the game types that
+    // have no score limit to set.
+    bool set_score_limit(rf::NetGameType game_type, int count)
+    {
+        switch (game_type) {
+            case rf::NetGameType::NG_TYPE_CTF:     set_cap_limit(count); return true;
+            case rf::NetGameType::NG_TYPE_SAL:     salvage.set_cap_limit(count); return true;
+            case rf::NetGameType::NG_TYPE_TEAMDM:  set_team_kill_limit(count); return true;
+            case rf::NetGameType::NG_TYPE_KOTH:    set_koth_score_limit(count); return true;
+            case rf::NetGameType::NG_TYPE_DC:      set_dc_score_limit(count); return true;
+            case rf::NetGameType::NG_TYPE_PIT:     set_pit_score_limit(count); return true;
+            case rf::NetGameType::NG_TYPE_GG:      set_gungame_score_limit(count); return true;
+            case rf::NetGameType::NG_TYPE_BAG:     bagman.set_bag_score_limit(count); return true;
+            case rf::NetGameType::NG_TYPE_TBAG:    bagman.set_tbag_score_limit(count); return true;
+            case rf::NetGameType::NG_TYPE_RUN:
+            case rf::NetGameType::NG_TYPE_REV:
+            case rf::NetGameType::NG_TYPE_ESC:     return false;
+            default:                               set_individual_kill_limit(count); return true;
+        }
+    }
     void set_flag_return_time(float in_time)
     {
         ctf_flag_return_time_ms = static_cast<int>(std::max(in_time * 1000.0f, 1000.0f));
@@ -1042,6 +1088,7 @@ void server_vote_handle_options_request(rf::Player* sender, bool has_cache, uint
 // discard a stream that was superseded mid-flight.
 const std::vector<uint8_t>& server_vote_get_options_blob(uint32_t& generation);
 void server_vote_invalidate_options_blob();
+void vote_level_refresh_allowed_maps();
 // Push the current vote state to a player who joined while a vote is running.
 void server_vote_send_state_to_new_player(rf::Player* player);
 void handle_player_set_handicap(rf::Player* player, uint8_t amount);

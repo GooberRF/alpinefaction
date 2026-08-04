@@ -32,6 +32,7 @@
 #include "../os/console.h"
 #include "../hud/hud.h"
 #include "multi.h"
+#include "server_internal.h"
 #include "faction_files.h"
 #include "../misc/alpine_settings.h"
 #include "../misc/waypoints.h"
@@ -131,6 +132,13 @@ static void load_packfiles(const std::vector<std::string>& packfiles)
         }
     }
     rf::vpackfile_set_loading_user_maps(false);
+
+    // vpackfile_add put the new levels in the packfile lookup table, so a server
+    // offering installed levels for vote picks them up now rather than at the
+    // next config load.
+    if (rf::is_server) {
+        vote_level_refresh_allowed_maps();
+    }
 }
 
 static bool gunzip_file(const char* gz_path, const char* output_path)

@@ -35,6 +35,8 @@ Version 1.4.0 (Lupin): Not yet released
   - Delayed Supers
   - Weird Gun Game
   - Low Gravity
+  - Score Limit Override
+  - Ideal Player Count Override
 - Rework multiplayer voting to use a GUI-based system instead of chat commands
   - Servers describe their votable levels, game types, and mutator options to clients
   - `Level` and `Match` can now select a game type and any number of mutators (with their options) for the voted level
@@ -97,6 +99,7 @@ Version 1.4.0 (Lupin): Not yet released
 - Add `ui_assist_highlight` console command to toggle highlighting of kill messages for kills you assisted
 - Show a label on the HUD indicating the name of the selected weapon if it has no FP mesh.
 - Tweak weapon values for some SP-intended weapon classes that are used in Weird Gun Game
+- Add dedicated server config field `add_installed_to_allowed_levels` to allow voting for every installed level whose filename matches a game type prefix, including levels installed while the server is running
 
 [@is-this-c](https://github.com/is-this-c)
 - Rewrite `VArray` to fix crashes due to MinGW

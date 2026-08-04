@@ -381,6 +381,14 @@ bool parse_vote_options_blob(const uint8_t* data, size_t len, VoteOptionsData& o
         gt.id = body.u8();
         gt.is_team_type = (body.u8() & AF_VOTE_GAMETYPE_FLAG_TEAM) != 0;
         gt.name = body.str();
+        // Appended after the name; absent from a server built before it existed,
+        // which leaves score_limit at 0 and simply means "no default to offer".
+        if (body.remaining() >= sizeof(int32_t)) {
+            const int32_t limit = body.i32();
+            if (body.ok()) {
+                gt.score_limit = limit;
+            }
+        }
         if (body.ok()) {
             parsed.gametypes.push_back(std::move(gt));
         }

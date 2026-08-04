@@ -15,6 +15,9 @@ struct VoteGametypeInfo
     uint8_t id = 0; // rf::NetGameType
     bool is_team_type = false;
     std::string name;
+    // This game type's score limit on the server, used to default the Score Limit
+    // Override mutator as the panel's game type cycler moves.
+    int32_t score_limit = 0;
 };
 
 struct VoteMutatorOptionSchema

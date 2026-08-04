@@ -817,6 +817,8 @@ static VoteConfig parse_vote_level_config(const toml::table& t)
     if (v.enabled) {
         if (auto x = t["add_rotation_to_allowed_levels"].value<bool>())
             v.add_rotation_to_allowed_levels = *x;
+        if (auto x = t["add_installed_to_allowed_levels"].value<bool>())
+            v.add_installed_to_allowed_levels = *x;
         if (auto x = t["only_allow_gametype_prefix"].value<bool>())
             v.only_allow_gametype_prefix = *x;
     }
@@ -2395,16 +2397,21 @@ void print_alpine_dedicated_server_config_info(std::string& output, bool verbose
         std::format_to(iter, "    Ignore nonvoters:                    {}\n", cfg.vote_level.ignore_nonvoters);
         std::format_to(iter, "    Time limit:                          {} sec\n", cfg.vote_level.time_limit_seconds);
         std::format_to(iter, "    Add rotation to allowed levels:      {}\n", cfg.vote_level.add_rotation_to_allowed_levels);
+        std::format_to(iter, "    Add installed to allowed levels:     {}\n", cfg.vote_level.add_installed_to_allowed_levels);
         std::format_to(iter, "    Only allow gametype prefix:          {}\n", cfg.vote_level.only_allow_gametype_prefix);
-        if (!cfg.vote_level.allowed_maps.empty()) {
-            std::string allowed_maps;
-            for (size_t i = 0; i < cfg.vote_level.allowed_maps.size(); ++i) {
-                if (i != 0) {
-                    allowed_maps += ", ";
-                }
-                allowed_maps += cfg.vote_level.allowed_maps[i];
+
+        // Counts what is actually votable, not just allowed_maps.
+        {
+            std::set<std::string> votable;
+            for (const auto& name : cfg.vote_level.allowed_maps) {
+                votable.insert(string_to_lower(name));
             }
-            std::format_to(iter, "    Allowed levels:                      {}\n", allowed_maps);
+            if (cfg.vote_level.add_rotation_to_allowed_levels) {
+                for (const auto& level_entry : cfg.levels) {
+                    votable.insert(string_to_lower(level_entry.level_filename));
+                }
+            }
+            std::format_to(iter, "    Allowed levels:                      {}\n", votable.size());
         }
     }
     
@@ -2512,6 +2519,10 @@ void load_and_print_alpine_dedicated_server_config(std::string ads_config_name, 
     }
 
     initialize_core_alpine_dedicated_server_settings(netgame, cfg, on_launch);
+
+    // After the parse rebuilt allowed_maps from the TOML: materialize the derived
+    // entries (installed levels, glass_house fallback) back into it.
+    vote_level_refresh_allowed_maps();
 
     apply_alpine_dedicated_server_rules(netgame, cfg.base_rules); // base rules
 

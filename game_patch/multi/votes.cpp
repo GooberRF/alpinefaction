@@ -29,6 +29,7 @@
 #include "mutators.h"
 #include "server.h"
 #include "alpine_packets.h"
+#include "../misc/vpackfile.h"
 
 MatchInfo g_match_info;
 
@@ -631,19 +632,76 @@ static uint32_t build_level_valid_gametype_mask(const std::string& level_name)
     return mask;
 }
 
+// Does this filename carry one of the prefixes any votable game type recognizes?
+static bool level_matches_votable_prefix(const char* filename)
+{
+    return multi_level_name_matches_any_mp_prefix(filename) || string_istarts_with(filename, "run");
+}
+
+// Materialize the derived entries into vote_level.allowed_maps:
+//   - with add_installed_to_allowed_levels, every installed .rfl whose filename
+//     matches a votable game type prefix,
+//   - glass_house.rfl when neither the rotation nor allowed_levels names any
+//     level, because that is the level the server actually loads then.
+// Run after each config load (which rebuilds allowed_maps from the TOML) and
+// after a level installs at runtime, rather than enumerating the packfile table
+// on every blob build. Duplicates are skipped, so re-running is always safe.
+void vote_level_refresh_allowed_maps()
+{
+    auto& cfg = g_alpine_server_config.vote_level;
+    if (!cfg.enabled) {
+        return;
+    }
+
+    // Evaluated before the appends below so a refresh after an install still
+    // remembers whether the OPERATOR configured anything: the fallback keys off
+    // the rotation and the configured list, never off what this function added.
+    const bool nothing_configured = cfg.allowed_maps.empty() && g_alpine_server_config.levels.empty();
+
+    std::set<std::string> present;
+    for (const auto& name : cfg.allowed_maps) {
+        present.insert(string_to_lower(name));
+    }
+
+    bool changed = false;
+    const auto add = [&](const std::string& name) {
+        if (present.insert(string_to_lower(name)).second) {
+            cfg.allowed_maps.push_back(name);
+            changed = true;
+        }
+    };
+
+    if (cfg.add_installed_to_allowed_levels) {
+        // Sorted before appending: the packfile lookup table iterates in hash
+        // order, and an alphabetical map list is what players expect to scroll.
+        std::vector<std::string> installed;
+        vpackfile_find_matching_files(StringMatcher().suffix(".rfl"), [&](const char* name) {
+            if (level_matches_votable_prefix(name)) {
+                installed.emplace_back(name);
+            }
+        });
+        std::sort(installed.begin(), installed.end());
+        for (const auto& name : installed) {
+            add(name);
+        }
+    }
+
+    if (nothing_configured) {
+        // The server falls back to loading glass_house.rfl when its rotation is
+        // empty, so that one level is votable rather than everything.
+        add("glass_house.rfl");
+    }
+
+    if (changed) {
+        server_vote_invalidate_options_blob();
+    }
+}
+
 // The allow-list arm of vote validation, as a pure predicate: is this level one
-// the server permits votes for at all, independent of game type? Note that a level
-// merely being in the ROTATION is not enough — with a non-empty allowed_maps and
-// add_rotation_to_allowed_levels off (the default) rotation levels are refused.
-// The blob advertises the answer per level so a client can filter its map list
-// instead of offering votes the server will reject.
+// the server permits votes for at all, independent of game type?
 static bool is_level_in_vote_allow_list(const std::string& level_name)
 {
     const auto& vote_level_cfg = g_alpine_server_config.vote_level;
-
-    if (vote_level_cfg.allowed_maps.empty() && !vote_level_cfg.add_rotation_to_allowed_levels) {
-        return true; // no allowed_levels configured and not adding rotation, so all levels are allowed
-    }
 
     const auto matches = [&](const std::string& allowed_name) {
         return string_iequals(allowed_name, level_name);
@@ -661,9 +719,7 @@ static bool is_level_in_vote_allow_list(const std::string& level_name)
         }
     }
 
-    // allowed_maps empty but add_rotation_to_allowed_levels on and the rotation is
-    // empty too: nothing was configured, so everything is allowed.
-    return vote_level_cfg.allowed_maps.empty() && g_alpine_server_config.levels.empty();
+    return false;
 }
 
 static bool is_level_allowed_for_vote(const std::string& level_name, rf::Player* source,
@@ -1729,6 +1785,7 @@ static void build_vote_options_blob(std::vector<uint8_t>& blob)
             blob_u8(blob, static_cast<uint8_t>(i));
             blob_u8(blob, multi_game_type_is_team_type(game_type) ? AF_VOTE_GAMETYPE_FLAG_TEAM : 0);
             blob_str(blob, multi_game_type_name(game_type));
+            blob_i32(blob, g_alpine_server_config_active_rules.get_score_limit(game_type).value_or(0));
         });
     }
 

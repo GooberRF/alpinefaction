@@ -2,6 +2,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstdint>
+#include <optional>
 #include <format>
 #include <string>
 #include <string_view>
@@ -24,6 +25,7 @@
 #include "../rf/gr/gr.h"
 #include "../rf/gr/gr_font.h"
 #include "../rf/input.h"
+#include "../rf/os/console.h"
 #include "../rf/level.h"
 #include "../rf/multi.h"
 #include "../rf/player/control_config.h"
@@ -43,6 +45,35 @@ bool g_open = false;
 // persisted; ignored (forced on) while the server enforces the prefix.
 bool g_filter_gametype_local = false;
 
+// Typed level-name filter, applied to the level list AFTER the gametype filter.
+// Cleared when the panel closes.
+std::string g_level_filter_text;
+constexpr size_t LEVEL_FILTER_MAX_LEN = 24;
+
+// Case-insensitive, with the separator characters dropped from both sides.
+std::string level_filter_normalize(std::string_view s)
+{
+    std::string out;
+    out.reserve(s.size());
+    for (const char c : s) {
+        if (c == '-' || c == '_' || c == ' ') {
+            continue;
+        }
+        out.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+    }
+    return out;
+}
+
+bool level_matches_name_filter(const std::string& filename)
+{
+    if (g_level_filter_text.empty()) {
+        return true;
+    }
+    return level_filter_normalize(filename).find(level_filter_normalize(g_level_filter_text))
+        != std::string::npos;
+}
+
+
 // Description area: hover drives it, a toggle pins it until the next hover.
 bool g_hovered_mutator_this_pass = false;
 bool g_description_pinned = false;
@@ -55,6 +86,7 @@ struct LevelListCache
     bool valid = false;
     uint32_t levels_fp = 0;
     bool filter_active = false;
+    std::string name_filter; // g_level_filter_text the rows were built against
     uint8_t gametype = af_vote_gametype_none;
     bool allow_current = false;
 
@@ -62,6 +94,7 @@ struct LevelListCache
     int first_level_row = 0;
     int gametype_hidden = 0;    // dropped by the gametype mask (opt-in or enforced)
     int not_allowed_hidden = 0; // dropped by allowed_for_vote (always applied)
+    int name_filter_hidden = 0; // dropped by the typed name filter
 
     // Selection row resolved from the stored name, cached against it.
     bool sel_valid = false;
@@ -205,6 +238,10 @@ const MutatorDescription mutator_descriptions[] = {
      "Gun Game includes weird creature weapons and lasers."},
     {"lowgravity",
      "Low gravity for all players and projectiles."},
+    {"scorelimit",
+     "Sets the score limit for the game type being voted, instead of the server's."},
+    {"idealplayers",
+     "Sets the player count the server advertises as its target size."},
 };
 
 const char* mutator_description_for(std::string_view name)
@@ -316,6 +353,9 @@ struct PanelOptionValue
     uint8_t choice_index = 0;
     int32_t int_value = 0;
     float float_value = 0.0f;
+
+    // The last int value the panel filled in by itself.
+    std::optional<int32_t> auto_defaulted_int;
 };
 
 struct PanelMutatorSelection
@@ -536,6 +576,191 @@ bool ui_hover(const PanelUi& ui, const Rect& r)
         return false;
     }
     return point_in(ui.mx, ui.my, r);
+}
+
+// String boxes (level filter, manual level name) edit their bound string live.
+// Numeric boxes (mutator Int/Float options) edit g_text_input_buffer and commit
+// on ENTER / click-away / focus loss, or revert on ESC.
+
+// Defined below with the other widget helpers; needed here because the text
+// input draws inside scroll regions, where the clip origin must be subtracted.
+Rect ui_draw_rect(const PanelUi& ui, const Rect& r);
+
+constexpr uint32_t kTextInputLevelFilter = 1;
+constexpr uint32_t kTextInputManualLevel = 2;
+
+uint32_t text_input_id_for_option(uint8_t mutator_id, uint8_t option_id)
+{
+    return 0x10000u | (static_cast<uint32_t>(mutator_id) << 8) | option_id;
+}
+
+uint32_t g_text_input_focus = 0; // 0 = none
+// Latched by the focused box's hit-test.
+bool g_text_input_seen_this_pass = false;
+// Numeric edit buffer; the bound value is only written on commit.
+std::string g_text_input_buffer;
+
+bool text_input_char_filename(char c)
+{
+    return std::isalnum(static_cast<unsigned char>(c)) != 0
+        || c == '-' || c == '_' || c == '.' || c == ' ';
+}
+
+bool text_input_char_numeric(char c)
+{
+    return std::isdigit(static_cast<unsigned char>(c)) != 0 || c == '-' || c == '.';
+}
+
+// Parse-and-write for a numeric box. Re-validated before application.
+void commit_numeric_text_input()
+{
+    const VoteOptionsData* options = vote_options_get();
+    if (!options || g_popup_mutator < 0 || g_popup_option < 0) {
+        return;
+    }
+    if (g_popup_mutator >= static_cast<int>(options->mutators.size())
+        || g_popup_mutator >= static_cast<int>(g_form.mutators.size())) {
+        return;
+    }
+    const auto& schema = options->mutators[g_popup_mutator];
+    if (g_popup_option >= static_cast<int>(schema.options.size())
+        || g_popup_option >= static_cast<int>(g_form.mutators[g_popup_mutator].options.size())) {
+        return;
+    }
+    if (schema.id != g_popup_mutator_id
+        || schema.options[g_popup_option].id != g_popup_option_id) {
+        return;
+    }
+
+    PanelOptionValue& value = g_form.mutators[g_popup_mutator].options[g_popup_option];
+    try {
+        if (schema.options[g_popup_option].type == MutatorOptionType::Int) {
+            value.int_value = std::stoi(g_text_input_buffer);
+        }
+        else {
+            const float parsed = std::stof(g_text_input_buffer);
+            if (std::isfinite(parsed)) {
+                value.float_value = parsed;
+            }
+            else {
+                xlog::info("vote panel: non-finite option input '{}' ignored", g_text_input_buffer);
+            }
+        }
+    }
+    catch (const std::exception& e) {
+        xlog::info("vote panel: invalid option input '{}', reason: {}", g_text_input_buffer, e.what());
+    }
+}
+
+// End the focused edit. String boxes edit live, so for them this only drops focus.
+void text_input_release_focus(bool commit)
+{
+    if (g_text_input_focus == 0) {
+        return;
+    }
+    if (g_popup_mutator >= 0) { // a numeric box owns the write-back target
+        if (commit) {
+            commit_numeric_text_input();
+        }
+        clear_popup_target();
+    }
+    g_text_input_focus = 0;
+    g_text_input_buffer.clear();
+}
+
+struct TextInputResult
+{
+    bool changed = false;      // `text` was edited this pass
+    bool gained_focus = false; // this click focused the box; caller seeds state
+};
+
+TextInputResult ui_text_input(PanelUi& ui, const Rect& r, uint32_t id, std::string& text,
+                              size_t max_len, bool (*allow_char)(char), const char* hint,
+                              int font, bool enabled = true)
+{
+    TextInputResult res;
+    const bool focused_at_entry = g_text_input_focus == id;
+
+    if (!ui.draw) {
+        if (focused_at_entry) {
+            g_text_input_seen_this_pass = true;
+        }
+        if (ui.click) {
+            const bool inside = enabled && ui_hover(ui, r);
+            if (inside && !focused_at_entry) {
+                text_input_release_focus(true); // commit whatever box held it
+                g_text_input_focus = id;
+                // Latch on gain as well as on hold.
+                g_text_input_seen_this_pass = true;
+                res.gained_focus = true;
+            }
+            else if (!inside && focused_at_entry) {
+                text_input_release_focus(true);
+            }
+        }
+        // Pump only when the box already held focus at entry: the pass that
+        // grants focus returns first so the caller can seed the edit buffer.
+        if (focused_at_entry && g_text_input_focus == id) {
+            for (;;) {
+                const rf::Key key = rf::key_get();
+                if (key == rf::KEY_NONE) {
+                    break;
+                }
+                const int code = key & rf::KEY_MASK;
+                if (code == rf::KEY_ESC) {
+                    text_input_release_focus(false);
+                    break;
+                }
+                if (code == rf::KEY_ENTER || code == rf::KEY_PADENTER) {
+                    text_input_release_focus(true);
+                    break;
+                }
+                if (code == rf::KEY_BACKSP) {
+                    if (!text.empty()) {
+                        text.pop_back();
+                        res.changed = true;
+                    }
+                    continue;
+                }
+                const int ascii = rf::key_to_ascii(static_cast<int16_t>(key));
+                if (ascii > 0 && ascii < 0x80 && ascii != 0xFF) {
+                    const char c = static_cast<char>(ascii);
+                    if (allow_char(c) && text.size() < max_len) {
+                        text.push_back(c);
+                        res.changed = true;
+                    }
+                }
+            }
+        }
+        return res;
+    }
+
+    // Draw pass. Layout is absolute screen space; inside a scroll region the
+    // clip origin has moved the drawing origin, so subtract it like every other
+    // widget does.
+    const Rect d = ui_draw_rect(ui, r);
+    const bool focused = g_text_input_focus == id;
+    rf::gr::set_color(8, 8, 8, 235);
+    rf::gr::rect(d.x, d.y, d.w, d.h);
+    const int border = !enabled ? 80 : (focused ? 220 : 120);
+    rf::gr::set_color(border, border, border, 255);
+    hud_rect_border(d.x, d.y, d.w, d.h, 1);
+    const int pad = std::max(3, scaled(6.0f));
+    const int text_y = d.y + (d.h - rf::gr::get_font_height(font)) / 2;
+    if (text.empty() && !focused) {
+        const int hint_grey = enabled ? 140 : 90;
+        rf::gr::set_color(hint_grey, hint_grey, hint_grey, 255);
+        rf::gr::string(d.x + pad, text_y, hint ? hint : "", font);
+    }
+    else {
+        // Trailing underscore as the caret while typing.
+        const std::string shown = focused ? text + "_" : text;
+        const int text_grey = enabled ? 255 : 120;
+        rf::gr::set_color(text_grey, text_grey, text_grey, 255);
+        rf::gr::string(d.x + pad, text_y,
+            hud_fit_string(shown, d.w - 2 * pad, nullptr, font).c_str(), font);
+    }
+    return res;
 }
 
 // Absolute rect -> coordinates to draw at under the active clip window.
@@ -1193,6 +1418,48 @@ bool mutator_offered(const VoteMutatorSchema& schema, uint8_t game_type)
     return mutator_gametype_mask_allows(schema.valid_gametype_mask, game_type);
 }
 
+// Score Limit Override defaults to the limit the chosen game type already runs, so
+// enabling it without touching the number changes nothing. Each game type keeps its
+// own limit and the type is picked live here, so the default has to follow the
+// cycler instead of being fixed when the form is built.
+// Stops as soon as the player edits the field: the value is only replaced while it
+// still matches whatever the panel last put there.
+void sync_score_limit_default(const VoteOptionsData& options, uint8_t game_type)
+{
+    const VoteGametypeInfo* gametype = nullptr;
+    for (const auto& entry : options.gametypes) {
+        if (entry.id == game_type) {
+            gametype = &entry;
+            break;
+        }
+    }
+    // 0 means the type has no score limit, or the server predates the field.
+    // Either way there is nothing better to offer than the schema default.
+    if (!gametype || gametype->score_limit <= 0) {
+        return;
+    }
+
+    for (size_t i = 0; i < options.mutators.size() && i < g_form.mutators.size(); ++i) {
+        const VoteMutatorSchema& schema = options.mutators[i];
+        if (schema.name != "scorelimit") {
+            continue;
+        }
+        for (size_t o = 0; o < schema.options.size() && o < g_form.mutators[i].options.size(); ++o) {
+            if (schema.options[o].name != "score_limit") {
+                continue;
+            }
+            PanelOptionValue& value = g_form.mutators[i].options[o];
+            if (value.auto_defaulted_int && value.int_value != *value.auto_defaulted_int) {
+                return; // the player owns this number now
+            }
+            value.int_value = gametype->score_limit;
+            value.auto_defaulted_int = gametype->score_limit;
+            return;
+        }
+        return;
+    }
+}
+
 std::vector<VoteMutatorInput> build_mutator_inputs(const VoteOptionsData& options, uint8_t game_type)
 {
     std::vector<VoteMutatorInput> out;
@@ -1228,13 +1495,6 @@ std::vector<VoteMutatorInput> build_mutator_inputs(const VoteOptionsData& option
 // suppresses our own input handling while it is up)
 // ---------------------------------------------------------------------------
 
-void manual_level_popup_callback()
-{
-    char buffer[32] = "";
-    rf::ui::popup_get_input(buffer, sizeof(buffer));
-    g_form.manual_level_name = buffer;
-}
-
 // Extend's duration entry.
 void extend_minutes_popup_callback()
 {
@@ -1249,53 +1509,6 @@ void extend_minutes_popup_callback()
         // Non-numeric or out of int range: keep whatever was already selected.
         xlog::info("vote panel: invalid extend duration '{}', reason: {}", buffer, e.what());
     }
-}
-
-void mutator_option_popup_callback()
-{
-    char buffer[32] = "";
-    rf::ui::popup_get_input(buffer, sizeof(buffer));
-
-    const VoteOptionsData* options = vote_options_get();
-    if (!options || g_popup_mutator < 0 || g_popup_option < 0) {
-        return;
-    }
-    if (g_popup_mutator >= static_cast<int>(options->mutators.size())
-        || g_popup_mutator >= static_cast<int>(g_form.mutators.size())) {
-        return;
-    }
-    const auto& schema = options->mutators[g_popup_mutator];
-    if (g_popup_option >= static_cast<int>(schema.options.size())
-        || g_popup_option >= static_cast<int>(g_form.mutators[g_popup_mutator].options.size())) {
-        return;
-    }
-    // Identity check, not just bounds: the slot must still be the option the
-    // popup was opened for.
-    if (schema.id != g_popup_mutator_id
-        || schema.options[g_popup_option].id != g_popup_option_id) {
-        clear_popup_target();
-        return;
-    }
-
-    PanelOptionValue& value = g_form.mutators[g_popup_mutator].options[g_popup_option];
-    try {
-        if (schema.options[g_popup_option].type == MutatorOptionType::Int) {
-            value.int_value = std::stoi(buffer);
-        }
-        else {
-            const float parsed = std::stof(buffer);
-            if (std::isfinite(parsed)) {
-                value.float_value = parsed;
-            }
-            else {
-                xlog::info("vote panel: non-finite option input '{}' ignored", buffer);
-            }
-        }
-    }
-    catch (const std::exception& e) {
-        xlog::info("vote panel: invalid option input '{}', reason: {}", buffer, e.what());
-    }
-    clear_popup_target();
 }
 
 // ---------------------------------------------------------------------------
@@ -2226,20 +2439,30 @@ void do_mutator_rows(PanelUi& ui, const Layout& lo, const VoteOptionsData& optio
                              label_w, lo.row_h}, option.label.c_str(), lo.font, true);
                     }
                     const Rect value_rect{opt_row.x + label_w, opt_row.y, opt_row.w - label_w, lo.row_h};
-                    const std::string text = option.type == MutatorOptionType::Int
+                    // Inline edit.
+                    const uint32_t input_id = text_input_id_for_option(schema.id, option.id);
+                    const bool editing = g_text_input_focus == input_id;
+                    std::string display = option.type == MutatorOptionType::Int
                         ? std::format("{}", value.int_value)
                         : std::format("{:.2f}", value.float_value);
-                    if (ui_button(ui, value_rect, text.c_str(), lo.font)) {
-                        // Indices, not positions, so scrolling can't misdirect the popup;
-                        // ids so a blob refresh before OK can't either.
+                    const TextInputResult res = ui_text_input(ui, value_rect, input_id,
+                        editing ? g_text_input_buffer : display, 15, text_input_char_numeric,
+                        nullptr, lo.font);
+                    if (res.gained_focus) {
+                        // Indices, not positions, so scrolling can't misdirect the
+                        // commit; ids so a blob refresh mid-edit can't either.
                         g_popup_mutator = static_cast<int>(i);
                         g_popup_option = static_cast<int>(o);
                         g_popup_mutator_id = schema.id;
                         g_popup_option_id = option.id;
-                        // Marked on OPEN rather than on commit: the popup owns the
+                        // Seed without trailing zeros: "30", not "30.00".
+                        g_text_input_buffer = option.type == MutatorOptionType::Int
+                            ? std::format("{}", value.int_value)
+                            : std::format("{:g}", value.float_value);
+                        // Marked on focus rather than on commit: the box owns the
                         // value from here, and it must not be re-derived underneath.
                         g_form.mutators_touched = true;
-                        rf::ui::popup_message(option.label.c_str(), "", mutator_option_popup_callback, 1);
+                        play_click_sound();
                     }
                     break;
                 }
@@ -2348,6 +2571,25 @@ void do_level_column(PanelUi& ui, const Layout& lo, const VoteOptionsData& optio
     }
     y += header_h + lo.gap;
 
+    // Typed name filter box. Click to focus, type to filter live; ENTER or a
+    // click elsewhere unfocuses, ESC unfocuses before anything may close the
+    // panel. Layout-aware typing and the control veto come with ui_text_input.
+    {
+        const Rect box{col.x, y, col.w, lo.row_h};
+        const TextInputResult res = ui_text_input(ui, box, kTextInputLevelFilter,
+            g_level_filter_text, LEVEL_FILTER_MAX_LEN, text_input_char_filename,
+            "Click to filter maps...", lo.font);
+        if (res.gained_focus) {
+            play_click_sound();
+        }
+        if (res.changed) {
+            // The rows under the list just changed wholesale; the wheel position
+            // in the old set means nothing in the new one.
+            g_form.level_scroll = 0.0f;
+        }
+    }
+    y += lo.row_h + lo.gap;
+
     // Read after the checkbox so a toggle takes effect in the same pass.
     const bool filter_active = options.gametype_prefix_restricted || g_filter_gametype_local;
 
@@ -2358,13 +2600,16 @@ void do_level_column(PanelUi& ui, const Layout& lo, const VoteOptionsData& optio
     const uint32_t levels_fp = level_list_fingerprint(options);
     LevelListCache& cache = g_level_cache;
     if (!cache.valid || cache.levels_fp != levels_fp || cache.filter_active != filter_active
+        || cache.name_filter != g_level_filter_text
         || cache.gametype != gametype || cache.allow_current != allow_current) {
         cache.levels_fp = levels_fp;
         cache.filter_active = filter_active;
+        cache.name_filter = g_level_filter_text;
         cache.gametype = gametype;
         cache.allow_current = allow_current;
         cache.gametype_hidden = 0;
         cache.not_allowed_hidden = 0;
+        cache.name_filter_hidden = 0;
         cache.sel_valid = false;
 
         std::vector<std::string> levels;
@@ -2382,6 +2627,12 @@ void do_level_column(PanelUi& ui, const Layout& lo, const VoteOptionsData& optio
                     ++cache.gametype_hidden;
                     continue;
                 }
+            }
+            // After the gametype filter: the typed filter narrows within
+            // whatever set the gametype rules leave votable.
+            if (!level_matches_name_filter(level.filename)) {
+                ++cache.name_filter_hidden;
+                continue;
             }
             levels.push_back(level.filename);
         }
@@ -2507,10 +2758,14 @@ void do_level_column(PanelUi& ui, const Layout& lo, const VoteOptionsData& optio
             rf::gr::set_color(120, 120, 120, 255);
             hud_rect_border(list.x, list.y, list.w, list.h, 1);
             const int pad = std::max(3, scaled(6.0f));
+            // The typed filter is the most local cause, so it is named first: maps
+            // it hid come back with backspace, not by changing the game type.
+            const char* empty_text = cache.name_filter_hidden > 0
+                ? "No maps match the filter"
+                : (cache.gametype_hidden > 0 ? "No maps available for this game type"
+                                             : "No maps available for voting on this server");
             draw_wrapped({list.x + pad, list.y + pad, list.w - 2 * pad, list.h - 2 * pad},
-                cache.gametype_hidden > 0 ? "No maps available for this game type"
-                                          : "No maps available for voting on this server",
-                lo.font, line_h);
+                empty_text, lo.font, line_h);
         }
     }
     else {
@@ -2541,12 +2796,13 @@ void do_level_column(PanelUi& ui, const Layout& lo, const VoteOptionsData& optio
     y += lo.row_h;
 
     const Rect manual_value{col.x, y, col.w, lo.row_h};
-    const std::string manual_text = g_form.manual_level_name.empty()
-        ? std::string{"(click to type a level name)"}
-        : g_form.manual_level_name;
-    if (ui_button(ui, manual_value, manual_text.c_str(), lo.font, g_form.manual_level)
-        && g_form.manual_level) {
-        rf::ui::popup_message("Enter level file name:", "", manual_level_popup_callback, 1);
+    // Inline, same widget as the filter box.
+    // Greyed and non-focusable until the checkbox above enables manual entry.
+    const TextInputResult manual_res = ui_text_input(ui, manual_value, kTextInputManualLevel,
+        g_form.manual_level_name, 31, text_input_char_filename,
+        "(click to type a level name)", lo.font, g_form.manual_level);
+    if (manual_res.gained_focus) {
+        play_click_sound();
     }
 }
 
@@ -2863,7 +3119,14 @@ void do_form(PanelUi& ui, const Layout& lo, const VoteOptionsData& options,
     const Rect mutator_view{right_col.x, ry, right_col.w, std::max(lo.row_h, mutator_bottom - ry)};
     // Resolved after the game type cycler above has consumed this frame's input,
     // so moving it greys the affected mutators on the same frame.
-    do_mutator_scroll_region(ui, lo, options, mutator_view, effective_gametype(options, is_match));
+    const uint8_t mutator_gametype = effective_gametype(options, is_match);
+    // Same reason this is here and not in the cycler block: the score limit default
+    // has to settle against the type chosen THIS frame, before the option row that
+    // shows it is drawn below.
+    if (!ui.draw) {
+        sync_score_limit_default(options, mutator_gametype);
+    }
+    do_mutator_scroll_region(ui, lo, options, mutator_view, mutator_gametype);
 
     if (ui.draw) {
         const Rect desc{right_col.x, right_col.y + right_col.h - desc_h, right_col.w, desc_h};
@@ -3034,11 +3297,17 @@ void vote_panel_gameplay_input()
     // Re-assert every frame; respawns and camera changes reset mouse mode.
     gameplay_overlay_apply_mouse(true);
 
-    // A stock popup (manual level name, int/float option) takes over input while
+    // A stock popup (extend duration, saved-vote name) takes over input while
     // it is up. gameseq_process passes no_input=1 to the state's own frame, but
     // this gameplay pump runs outside that, so it has to check explicitly.
     if (rf::ui::popup_is_active()) {
         return; // the popup owns input; panel keeps rendering underneath
+    }
+
+    // The console reads the same key queue this panel's text boxes drain, so a
+    // focused box would type into both at once.
+    if (rf::console::console_is_visible() && g_text_input_focus != 0) {
+        text_input_release_focus(true);
     }
 
     // Read the wheel accumulator before touching the mouse API.
@@ -3054,7 +3323,14 @@ void vote_panel_gameplay_input()
     ui.click = rf::mouse_was_button_pressed(0) != 0;
     ui.rclick = rf::mouse_was_button_pressed(1) != 0;
     ui.wheel = wheel;
+    g_text_input_seen_this_pass = false;
     vote_panel_do(ui);
+    // A pass that never reached the focused box (tab switch, collapsed mutator,
+    // scrolled-away row) commits and drops it, so the blanket control veto
+    // cannot persist without a visible box.
+    if (g_text_input_focus != 0 && !g_text_input_seen_this_pass) {
+        text_input_release_focus(true);
+    }
 }
 
 void vote_panel_gameplay_render()
@@ -3109,6 +3385,15 @@ FunHook<void(rf::GameState, bool, bool)> gameseq_push_state_hook{
     0x00434410,
     [](rf::GameState state, bool transparent, bool pause_beneath) {
         if (state == rf::GS_MAIN_MENU && g_open) {
+            // ESC backs out one layer at a time: first out of a focused text box,
+            // then out of the panel. Normally the focused box consumes ESC from
+            // the key queue itself; this is the fallback for a race where the
+            // game's own handler saw the key first.
+            if (g_text_input_focus != 0) {
+                text_input_release_focus(false);
+                play_click_sound();
+                return;
+            }
             vote_panel_close();
             play_click_sound();
             return;
@@ -3117,8 +3402,7 @@ FunHook<void(rf::GameState, bool, bool)> gameseq_push_state_hook{
     },
 };
 
-// Clicking in the panel must not also fire the weapon. Movement is left alone
-// (the panel does not pause a multiplayer game), matching the waypoint editor.
+// Clicking in the panel must not also fire the weapon.
 bool gameplay_overlay_blocks_action(rf::ControlConfig* ccp, rf::ControlConfigAction action)
 {
     if (!g_open && g_swallow_attack_frames <= 0) {
@@ -3126,6 +3410,9 @@ bool gameplay_overlay_blocks_action(rf::ControlConfig* ccp, rf::ControlConfigAct
     }
     if (!rf::local_player || ccp != &rf::local_player->settings.controls) {
         return false;
+    }
+    if (g_open && g_text_input_focus != 0) {
+        return true;
     }
     return action == rf::CC_ACTION_PRIMARY_ATTACK || action == rf::CC_ACTION_SECONDARY_ATTACK;
 }
@@ -3187,6 +3474,11 @@ void vote_panel_close()
         g_swallow_attack_frames = 2;
     }
     g_open = false;
+    // ESC-close discards a half-typed numeric edit.
+    text_input_release_focus(false);
+    // A filter is a transient search; carrying one across opens would read as a
+    // mysteriously shrunken map list next time.
+    g_level_filter_text.clear();
     clear_popup_target();
     clear_pending_save();
 }
@@ -3218,6 +3510,9 @@ void vote_panel_reset()
     // Pending one-shot scroll requests describe a list state that is gone.
     g_saved_scroll_to_selection = false;
     g_level_scroll_to_selection = false;
+    // The form this edit was writing into is gone with the server.
+    text_input_release_focus(false);
+    g_level_filter_text.clear();
 }
 
 void vote_panel_toggle_gameplay()
