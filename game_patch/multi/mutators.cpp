@@ -1140,6 +1140,11 @@ bool mutators_dodging_active()
     return info.has_value() && info->dodging;
 }
 
+static bool any_movement_mutator_active()
+{
+    return mutators_skiing_active() || mutators_bhop_active() || mutators_dodging_active();
+}
+
 static bool ski_held(rf::Entity* ep)
 {
     if (!mutators_skiing_active() || ep != rf::local_player_entity || !rf::local_player)
@@ -1345,6 +1350,15 @@ static int64_t g_dodge_key_edge_ms[DODGE_KEY_COUNT] = {};
 static bool g_dodge_jump_down = false;
 static int64_t g_dodge_last_ms = 0;
 
+static void dodge_clear_input()
+{
+    for (int i = 0; i < DODGE_KEY_COUNT; ++i) {
+        g_dodge_key_down[i] = false;
+        g_dodge_key_edge_ms[i] = 0;
+    }
+    g_dodge_jump_down = false;
+}
+
 // entity_jump is unusable for this: it refuses outright while crouched and
 // hard-codes the full jump height, so its observable effects are replicated
 // here with the dodge's own velocities.
@@ -1378,16 +1392,14 @@ static bool dodge_poll(rf::Entity* ep)
     // Typing into chat must never dodge, and must not leave a half-armed
     // tap behind either.
     if (rf::console::console_is_visible() || rf::multi_chat_is_say_visible()) {
-        for (int i = 0; i < DODGE_KEY_COUNT; ++i) {
-            g_dodge_key_down[i] = false;
-            g_dodge_key_edge_ms[i] = 0;
-        }
-        g_dodge_jump_down = false;
+        dodge_clear_input();
         return false;
     }
     if (!rf::local_player || rf::entity_is_dying(ep) || rf::entity_in_vehicle(ep)
-        || rf::entity_is_swimming(ep) || rf::entity_is_climbing(ep))
+        || rf::entity_is_swimming(ep) || rf::entity_is_climbing(ep)) {
+        dodge_clear_input();
         return false;
+    }
 
     auto* controls = &rf::local_player->settings.controls;
     const bool ready = now - g_dodge_last_ms >= DODGE_COOLDOWN_MS;
@@ -1428,14 +1440,14 @@ static bool dodge_poll(rf::Entity* ep)
 }
 
 // The client-side prediction replay
-static int g_dodge_replay_depth = 0;
+static int g_move_replay_depth = 0;
 
-CallHook<void __cdecl(void*, int)> dodge_prediction_replay_hook{
+CallHook<void __cdecl(void*, int)> move_prediction_replay_hook{
     0x00483A21,
     [](void* work_list, int commit) {
-        ++g_dodge_replay_depth;
-        dodge_prediction_replay_hook.call_target(work_list, commit);
-        --g_dodge_replay_depth;
+        ++g_move_replay_depth;
+        move_prediction_replay_hook.call_target(work_list, commit);
+        --g_move_replay_depth;
     },
 };
 
@@ -1448,9 +1460,12 @@ static int64_t g_ski_last_air_ms = 0;
 CallHook<void(rf::Entity*)> ski_ground_move_hook{
     0x0049F8A2,
     [](rf::Entity* ep) {
+        if (g_move_replay_depth > 0) {
+            ski_ground_move_hook.call_target(ep);
+            return;
+        }
         // Grounded by construction.
-        if (mutators_dodging_active() && ep == rf::local_player_entity && g_dodge_replay_depth == 0
-            && dodge_poll(ep)) {
+        if (mutators_dodging_active() && ep == rf::local_player_entity && dodge_poll(ep)) {
             // Ground move still runs this frame.
             float& info_accel = ep->info->acceleration;
             const float saved_accel = info_accel;
@@ -1520,7 +1535,7 @@ CallHook<void(rf::Entity*)> ski_ground_move_hook{
 CallHook<void __cdecl(rf::Entity*, float)> ski_fall_damage_hook{
     {0x0049DE23, 0x0049DE39, 0x0049D4B6, 0x004A0C28},
     [](rf::Entity* ep, float impact) {
-        if (ep && ski_held(ep))
+        if (ep && ep == rf::local_player_entity && any_movement_mutator_active())
             return;
         ski_fall_damage_hook.call_target(ep, impact);
     },
@@ -1530,7 +1545,7 @@ CallHook<void __cdecl(rf::Entity*, float)> ski_fall_damage_hook{
 CallHook<void(rf::Entity*)> ski_air_move_hook{
     0x0049F6AD,
     [](rf::Entity* ep) {
-        if ((!mutators_skiing_active() && !mutators_bhop_active() && !mutators_dodging_active())
+        if (g_move_replay_depth > 0 || !any_movement_mutator_active()
             || ep != rf::local_player_entity) {
             ski_air_move_hook.call_target(ep);
             return;
@@ -1568,11 +1583,7 @@ void mutators_on_multi_shutdown()
 {
     g_ski_engaged = false;
     g_ski_last_air_ms = 0;
-    for (int i = 0; i < DODGE_KEY_COUNT; ++i) {
-        g_dodge_key_down[i] = false;
-        g_dodge_key_edge_ms[i] = 0;
-    }
-    g_dodge_jump_down = false;
+    dodge_clear_input();
     g_dodge_last_ms = 0;
 
     // Leaving multiplayer mid-level: single player must not inherit the override.
@@ -1588,6 +1599,10 @@ void mutators_level_init_post()
     // Both sides: forget the previous level's fire bookkeeping. Its fire records died
     // with their parent entities; stale pointers here could alias new-level fires.
     flame_level_init();
+
+    // Both sides: input edges and the dodge cooldown must not cross a level change.
+    dodge_clear_input();
+    g_dodge_last_ms = 0;
 
     // Both sides. The incoming level has already set its own gravity, so the saved
     // value from the outgoing one is stale and must be dropped WITHOUT writing it.
@@ -2249,5 +2264,5 @@ void mutators_do_patch()
     ski_ground_move_hook.install();
     ski_fall_damage_hook.install();
     ski_air_move_hook.install();
-    dodge_prediction_replay_hook.install();
+    move_prediction_replay_hook.install();
 }
