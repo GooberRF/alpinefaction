@@ -132,4 +132,5 @@ namespace rf
 
     static auto& foley_lookup_by_name = addr_as_ref<int(const char* name)>(0x00434CB0);
     static auto& foley_get_sound_handle = addr_as_ref<int(int foley_id)>(0x00434DA0);
+    static auto& foley_get_sound_handle_at = addr_as_ref<int(int foley_id, int index)>(0x00434D00);
 }

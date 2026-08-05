@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <cmath>
 #include <format>
 #include <map>
 #include <optional>
@@ -25,8 +26,12 @@
 #include "../rf/multi.h"
 #include "../rf/gameseq.h"
 #include "../rf/player/player.h"
+#include "../rf/player/control_config.h"
 #include "../rf/os/console.h"
 #include "../rf/os/timestamp.h"
+#include "../rf/physics.h"
+#include "../rf/sound/sound.h"
+#include "../os/os.h"
 
 // Spawn reserve for a no-clip "infinite ammo" weapon. Firing draws from reserve,
 // but we suppress the per-shot decrement, so this is purely the (constant) number
@@ -311,6 +316,24 @@ static void apply_low_gravity(AlpineServerConfigRules& r, const toml::table& /*o
     r.mutators.low_gravity_enabled = true;
 }
 
+// Skiing.
+static void apply_skiing(AlpineServerConfigRules& r, const toml::table& /*opts*/)
+{
+    r.mutators.skiing_enabled = true;
+}
+
+// Bunny Hopping.
+static void apply_bunny_hopping(AlpineServerConfigRules& r, const toml::table& /*opts*/)
+{
+    r.mutators.bhop_enabled = true;
+}
+
+// Dodging.
+static void apply_dodging(AlpineServerConfigRules& r, const toml::table& /*opts*/)
+{
+    r.mutators.dodging_enabled = true;
+}
+
 // Score Limit Override.
 static void apply_score_limit_override(AlpineServerConfigRules& r, const toml::table& opts)
 {
@@ -407,6 +430,9 @@ static const MutatorDef MUTATORS[] = {
     {MutatorId::DelayedSupers, "delayedsupers", "Delayed Supers", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_delayed_supers, nullptr, 0},
     {MutatorId::WeirdGunGame, "weirdgungame", "Weird Gun Game", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_weird_gungame, nullptr, 0, MutatorGametypeReq::GunGameOnly},
     {MutatorId::LowGravity, "lowgravity", "Low Gravity", 4, &apply_low_gravity, nullptr, 0},
+    {MutatorId::Skiing, "skiing", "Skiing", 4, &apply_skiing, nullptr, 0},
+    {MutatorId::BunnyHopping, "bunnyhopping", "Bunny Hopping", 4, &apply_bunny_hopping, nullptr, 0},
+    {MutatorId::Dodging, "dodging", "Dodging", 4, &apply_dodging, nullptr, 0},
     {MutatorId::ScoreLimitOverride, "scorelimit", "Score Limit Override", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_score_limit_override, SCORE_LIMIT_OPTIONS, std::size(SCORE_LIMIT_OPTIONS), MutatorGametypeReq::HasScoreLimit, "Score Limit", "score_limit"},
     {MutatorId::IdealPlayerCountOverride, "idealplayers", "Ideal Player Count Override", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_ideal_player_count_override, IDEAL_PLAYERS_OPTIONS, std::size(IDEAL_PLAYERS_OPTIONS), MutatorGametypeReq::BotsSupported, "Ideal Players", "ideal_players"},
 };
@@ -414,6 +440,9 @@ static const MutatorDef MUTATORS[] = {
 // Hardcoded order in which simultaneously-active mutators are applied. Later
 // entries win where they overlap.
 static const MutatorId MUTATOR_APPLY_ORDER[] = {
+    MutatorId::Dodging,
+    MutatorId::BunnyHopping,
+    MutatorId::Skiing,
     MutatorId::LowGravity,
     MutatorId::WeirdGunGame,
     MutatorId::HumansVsBots,
@@ -1043,8 +1072,520 @@ void mutators_update_low_gravity()
     }
 }
 
+// Skiing parameters.
+static constexpr float SKI_ENTER_SPEED = 1.5f;          // engage above this
+static constexpr float SKI_EXIT_SPEED = 1.0f;           // disengage below this
+static constexpr float SKI_MIN_SLOPE = 0.15f;           // |n_xz| that counts as a slope
+static constexpr float SKI_TURN_RATE_DEG_PER_S = 90.0f; // carve rate, magnitude preserving
+static constexpr float SKI_FRICTION_PER_S = 0.05f;      // on slopes: near-frictionless
+static constexpr float SKI_FRICTION_FLAT_PER_S = 0.4f;  // level ground: long but finite glide
+static constexpr float SKI_SEPARATION_EPS = 0.5f;       // vn above this is a real convex break, not jitter
+static constexpr float SKI_RELEASE_PUSH = 0.75f;        // m/s off the face so collide-and-slide can't re-engage
+static constexpr float SKI_STRAFE_WISHSPEED_FRAC = 0.25f;
+static constexpr float SKI_STRAFE_ACCEL = 10.0f;
+
+// 0.5 is the engine's own standable threshold: the ground snap compares against
+// it at 0x004A0A82 and calls entity_make_freefall below it (constant 0x005893C0).
+static constexpr float SKI_MIN_WALKABLE_NY = 0.5f;
+
+// Bunny Hopping parameters. Separate mutator, but it shares the strafe gain
+// formula and the air momentum cap with Skiing.
+static constexpr float BHOP_AIR_GAIN_MIN_SPEED = 3.0f;   // below this, air input is pure stock
+static constexpr float BHOP_AIR_GAIN_CROSS_BAND = 0.75f; // |cos| bound: wish within ~41-139 deg of velocity
+static constexpr int BHOP_LAND_GRACE_MS = 450;           // window after airborne where decel is gentle
+static constexpr float BHOP_LAND_GRACE_DECEL = 3.0f;     // m/s^2 the excess above run speed may bleed during the grace window
+
+// Dodging parameters. directional dodge from a double-tapped movement key,
+// or from  crouch+jump while holding one. Grounded only.
+static constexpr int DODGE_TAP_WINDOW_MS = 300;       // max gap between the two taps
+static constexpr int DODGE_COOLDOWN_MS = 750;         // between dodges
+static constexpr float DODGE_SPEED_FACTOR = 2.25f;    // burst speed as a factor of info->max_vel
+static constexpr float DODGE_VERTICAL_FACTOR = 0.5f;  // pop as a factor of the stock jump velocity
+
+// A manual freefall must arm the anti-restick window itself (real jumps get it from the
+// AF injection inside entity_jump); 64ms matches stock, and the dodge's pop clears the
+// falling probe's 0.1 reach at ~41ms.
+extern rf::Timestamp g_player_jump_timestamp;
+
+bool mutators_skiing_active()
+{
+    if (!rf::is_multi)
+        return false;
+    if (rf::is_server)
+        return g_alpine_server_config_active_rules.mutators.skiing_enabled;
+    // Server informs the client via SIF_SKIING.
+    const auto& info = get_af_server_info();
+    return info.has_value() && info->skiing;
+}
+
+bool mutators_bhop_active()
+{
+    if (!rf::is_multi)
+        return false;
+    if (rf::is_server)
+        return g_alpine_server_config_active_rules.mutators.bhop_enabled;
+    // Server informs the client via SIF_BHOP.
+    const auto& info = get_af_server_info();
+    return info.has_value() && info->bunny_hopping;
+}
+
+bool mutators_dodging_active()
+{
+    if (!rf::is_multi)
+        return false;
+    if (rf::is_server)
+        return g_alpine_server_config_active_rules.mutators.dodging_enabled;
+    // Server informs the client via SIF_DODGING.
+    const auto& info = get_af_server_info();
+    return info.has_value() && info->dodging;
+}
+
+static bool any_movement_mutator_active()
+{
+    return mutators_skiing_active() || mutators_bhop_active() || mutators_dodging_active();
+}
+
+static bool ski_held(rf::Entity* ep)
+{
+    if (!mutators_skiing_active() || ep != rf::local_player_entity || !rf::local_player)
+        return false;
+    if (rf::entity_is_dying(ep))
+        return false;
+    if (rf::entity_in_vehicle(ep) || rf::entity_is_swimming(ep) || rf::entity_is_climbing(ep))
+        return false;
+    if (rf::console::console_is_visible() || rf::multi_chat_is_say_visible())
+        return false;
+    return rf::control_is_control_down(&rf::local_player->settings.controls, rf::CC_ACTION_CROUCH);
+}
+
+static bool g_ski_engaged = false;
+
+// Below both thresholds stock crouch movement applies unchanged.
+static bool ski_ground_active(rf::Entity* ep)
+{
+    if (!ski_held(ep)) {
+        if (ep == rf::local_player_entity)
+            g_ski_engaged = false;
+        return false;
+    }
+    const auto& vel = ep->p_data.vel;
+    const float speed = std::sqrt(vel.x * vel.x + vel.z * vel.z);
+    const rf::Vector3& n = ep->p_data.collide_out.hit_normal;
+
+    if (speed > SKI_ENTER_SPEED || std::sqrt(n.x * n.x + n.z * n.z) > SKI_MIN_SLOPE)
+        g_ski_engaged = true;
+    else if (speed < SKI_EXIT_SPEED)
+        g_ski_engaged = false;
+    return g_ski_engaged;
+}
+
+// View basis flattened to XZ and combined before normalizing.
+// False when the combination degenerates (no input, or a straight-up view).
+static bool ski_view_dir(rf::Entity* ep, float fwd, float side, float& out_x, float& out_z)
+{
+    const rf::Vector3& f = ep->eye_orient.fvec;
+    const rf::Vector3& r = ep->eye_orient.rvec;
+    const float raw_x = f.x * fwd + r.x * side;
+    const float raw_z = f.z * fwd + r.z * side;
+    const float len = std::sqrt(raw_x * raw_x + raw_z * raw_z);
+    if (len <= 1e-4f)
+        return false;
+    out_x = raw_x / len;
+    out_z = raw_z / len;
+    return true;
+}
+
+// View+keys wish direction on the XZ plane. False when no input, when typing
+// (console/chat swallow movement keys), or when the flattened basis degenerates.
+static bool ski_wish_dir(rf::Entity* ep, float& out_x, float& out_z)
+{
+    if (!rf::local_player)
+        return false;
+    if (rf::console::console_is_visible() || rf::multi_chat_is_say_visible())
+        return false;
+
+    float fwd = 0.0f;
+    float side = 0.0f;
+    auto* controls = &rf::local_player->settings.controls;
+    if (rf::control_is_control_down(controls, rf::CC_ACTION_FORWARD))
+        fwd += 1.0f;
+    if (rf::control_is_control_down(controls, rf::CC_ACTION_BACKWARD))
+        fwd -= 1.0f;
+    if (rf::control_is_control_down(controls, rf::CC_ACTION_SLIDE_RIGHT))
+        side += 1.0f;
+    if (rf::control_is_control_down(controls, rf::CC_ACTION_SLIDE_LEFT))
+        side -= 1.0f;
+
+    return ski_view_dir(ep, fwd, side, out_x, out_z);
+}
+
+// Strafe gain, the one authority for the formula. The dot-cap limits speed
+// along the wish direction, so gain comes from steering across the velocity and
+// never from holding forward; the step rate uses the full max_vel.`along` is the
+// caller's already-computed dot of horizontal velocity with the wish direction.
+static void ski_strafe_gain(rf::Entity* ep, float dt, float wish_x, float wish_z, float along)
+{
+    if (dt <= 0.0f)
+        return;
+    const float add = SKI_STRAFE_WISHSPEED_FRAC * ep->info->max_vel - along;
+    if (add <= 0.0f)
+        return;
+    auto& vel = ep->p_data.vel;
+    const float step = std::min(SKI_STRAFE_ACCEL * ep->info->max_vel * dt, add);
+    vel.x += wish_x * step;
+    vel.z += wish_z * step;
+}
+
+static void ski_apply(rf::Entity* ep, float dt)
+{
+    auto& vel = ep->p_data.vel;
+    // Stock ground move reads this same field for its own slope projection
+    // and only inside its on-ground branch, so it is the ground
+    // contact normal and it is valid exactly when skiing needs it.
+    const rf::Vector3& n = ep->p_data.collide_out.hit_normal;
+
+    // Too steep to stand on: release instead of skiing it. Slope-following aims
+    // the velocity along the old surface.
+    if (!(n.y > SKI_MIN_WALKABLE_NY)) {
+        // The velocity still points down the approach slope into the space of
+        // this face and the first airborne step would slam into it and get
+        // slid down the face by the collision response. Strip only the inward
+        // component so the flight separates cleanly; tangential speed is kept.
+        const float vn = vel.x * n.x + vel.y * n.y + vel.z * n.z;
+        if (vn < 0.0f) {
+            vel.x -= n.x * vn;
+            vel.y -= n.y * vn;
+            vel.z -= n.z * vn;
+        }
+        // Stripping the inward component leaves the flight starting flush with
+        // the face, where any residual into-face motion re-engages the airborne
+        // collide-and-slide every frame and rides the player down it. A small
+        // outward impulse guarantees separation instead.
+        vel.x += n.x * SKI_RELEASE_PUSH;
+        vel.y += n.y * SKI_RELEASE_PUSH;
+        vel.z += n.z * SKI_RELEASE_PUSH;
+        rf::entity_make_freefall(ep);
+        return;
+    }
+
+    // Contact can push, never pull, but with a deadband.
+    // Only separation faster than the deadband is a real convex
+    // break; below it the small positive vn is projected away,
+    // which is bounded suction of at most SKI_SEPARATION_EPS.
+    const float vn = vel.x * n.x + vel.y * n.y + vel.z * n.z;
+    if (vn < SKI_SEPARATION_EPS) {
+        vel.x -= n.x * vn;
+        vel.y -= n.y * vn;
+        vel.z -= n.z * vn;
+
+        // Tangential gravity: g projected onto the plane. Flat ground
+        // (n_xz == 0) contributes nothing horizontally.
+        vel.x += rf::gravity * n.y * n.x * dt;
+        vel.y -= rf::gravity * (1.0f - n.y * n.y) * dt;
+        vel.z += rf::gravity * n.y * n.z * dt;
+    }
+    else {
+        // Surface receding underfoot; ground mode applies no gravity of its own,
+        // so start the fall now rather than floating until the probe lets go.
+        vel.y -= rf::gravity * dt;
+    }
+
+    float wish_x, wish_z;
+    const bool has_wish = ski_wish_dir(ep, wish_x, wish_z);
+    const float along = has_wish ? (vel.x * wish_x + vel.z * wish_z) : 0.0f;
+    const bool gaining = has_wish && along < SKI_STRAFE_WISHSPEED_FRAC * ep->info->max_vel;
+    const float speed = std::sqrt(vel.x * vel.x + vel.z * vel.z);
+
+    // The two mechanisms are adversaries, so they time-slice instead of stacking.
+    // Steering across the velocity holds the gain window open:
+    // accumulate and do NOT carve - the carve's auto-alignment is exactly what
+    // would close the window within a frame or two and starve the gain.
+    // Aim settled inside the cap cone.
+    if (gaining) {
+        ski_strafe_gain(ep, dt, wish_x, wish_z, along);
+    }
+    // Carve: rotate the horizontal velocity toward the wish direction at a fixed
+    // rate, preserving magnitude, so turning conserves speed and cannot pump it.
+    else if (has_wish && speed >= SKI_EXIT_SPEED) {
+        const float dir_x = vel.x / speed;
+        const float dir_z = vel.z / speed;
+        const float dot = std::clamp(dir_x * wish_x + dir_z * wish_z, -1.0f, 1.0f);
+        const float cross = dir_x * wish_z - dir_z * wish_x;
+        const float max_step = SKI_TURN_RATE_DEG_PER_S * (3.14159265f / 180.0f) * dt;
+        const float step = std::min(std::acos(dot), max_step) * (cross < 0.0f ? -1.0f : 1.0f);
+        const float cs = std::cos(step);
+        const float sn = std::sin(step);
+        vel.x = (dir_x * cs - dir_z * sn) * speed;
+        vel.z = (dir_x * sn + dir_z * cs) * speed;
+    }
+
+    // Applies to both modes: flat friction opposes idle wiggling, so a gain only
+    // pays off on a real line.
+    // Slopes glide nearly forever; level ground has to bleed off in a sane time.
+    const float friction = (std::sqrt(n.x * n.x + n.z * n.z) < SKI_MIN_SLOPE)
+        ? SKI_FRICTION_FLAT_PER_S
+        : SKI_FRICTION_PER_S;
+    const float keep = std::max(0.0f, 1.0f - friction * dt);
+    vel.x *= keep;
+    vel.z *= keep;
+    // vel.y follows the slope via the projection above, so it is not touched here.
+}
+
+struct DodgeKeyDef
+{
+    rf::ControlConfigAction control;
+    float fwd;
+    float side;
+};
+static const DodgeKeyDef DODGE_KEYS[] = {
+    {rf::CC_ACTION_FORWARD, 1.0f, 0.0f},
+    {rf::CC_ACTION_BACKWARD, -1.0f, 0.0f},
+    {rf::CC_ACTION_SLIDE_RIGHT, 0.0f, 1.0f},
+    {rf::CC_ACTION_SLIDE_LEFT, 0.0f, -1.0f},
+};
+static constexpr int DODGE_KEY_COUNT = static_cast<int>(std::size(DODGE_KEYS));
+
+static bool g_dodge_key_down[DODGE_KEY_COUNT] = {};
+static int64_t g_dodge_key_edge_ms[DODGE_KEY_COUNT] = {};
+static bool g_dodge_jump_down = false;
+static int64_t g_dodge_last_ms = 0;
+
+static void dodge_clear_input()
+{
+    for (int i = 0; i < DODGE_KEY_COUNT; ++i) {
+        g_dodge_key_down[i] = false;
+        g_dodge_key_edge_ms[i] = 0;
+    }
+    g_dodge_jump_down = false;
+}
+
+// entity_jump is unusable for this: it refuses outright while crouched and
+// hard-codes the full jump height, so its observable effects are replicated
+// here with the dodge's own velocities.
+static void dodge_execute(rf::Entity* ep, float dir_x, float dir_z, int64_t now)
+{
+    auto& vel = ep->p_data.vel;
+    const float burst = DODGE_SPEED_FACTOR * ep->info->max_vel;
+    const float along = vel.x * dir_x + vel.z * dir_z;
+    // Never rob momentum already heading that way, never hand a redirect the
+    // full carried speed.
+    const float speed = std::max(burst, along);
+
+    vel.x = dir_x * speed;
+    vel.z = dir_z * speed;
+    vel.y = DODGE_VERTICAL_FACTOR * rf::jump_velocity;
+
+    ep->entity_flags |= rf::EF_JUMP_START_ANIM;
+    const int snd = rf::foley_get_sound_handle_at(ep->info->jump_sound, 0);
+    if (snd >= 0)
+        rf::snd_play(snd, rf::SOUND_GROUP_EFFECTS, 0.0f, 1.0f);
+    rf::entity_make_freefall(ep);
+    g_player_jump_timestamp.set(64);
+    g_dodge_last_ms = now;
+}
+
+// True when a dodge fired this frame.
+static bool dodge_poll(rf::Entity* ep)
+{
+    const int64_t now = timer::get_i64(1000);
+
+    // Typing into chat must never dodge, and must not leave a half-armed
+    // tap behind either.
+    if (rf::console::console_is_visible() || rf::multi_chat_is_say_visible()) {
+        dodge_clear_input();
+        return false;
+    }
+    if (!rf::local_player || rf::entity_is_dying(ep) || rf::entity_in_vehicle(ep)
+        || rf::entity_is_swimming(ep) || rf::entity_is_climbing(ep)) {
+        dodge_clear_input();
+        return false;
+    }
+
+    auto* controls = &rf::local_player->settings.controls;
+    const bool ready = now - g_dodge_last_ms >= DODGE_COOLDOWN_MS;
+    bool fired = false;
+    float dir_x = 0.0f;
+    float dir_z = 0.0f;
+
+    for (int i = 0; i < DODGE_KEY_COUNT; ++i) {
+        const bool down = rf::control_is_control_down(controls, DODGE_KEYS[i].control);
+        const bool rising = down && !g_dodge_key_down[i];
+        g_dodge_key_down[i] = down;
+        if (!rising)
+            continue;
+        // Two rising edges inherently need a release between them, so this is a
+        // real double-tap. The direction is the tapped key's, not the currently
+        // held combination.
+        if (!fired && ready && now - g_dodge_key_edge_ms[i] < DODGE_TAP_WINDOW_MS
+            && ski_view_dir(ep, DODGE_KEYS[i].fwd, DODGE_KEYS[i].side, dir_x, dir_z)) {
+            g_dodge_key_edge_ms[i] = 0;
+            fired = true;
+            continue;
+        }
+        g_dodge_key_edge_ms[i] = now;
+    }
+
+    const bool jump_down = rf::control_is_control_down(controls, rf::CC_ACTION_JUMP);
+    const bool jump_rising = jump_down && !g_dodge_jump_down;
+    g_dodge_jump_down = jump_down;
+    // Stock entity_jump rejects the press while crouched.
+    // Eight directions come free from the held-key combination.
+    if (!fired && jump_rising && ready && rf::entity_is_crouching(ep)
+        && ski_wish_dir(ep, dir_x, dir_z))
+        fired = true;
+
+    if (fired)
+        dodge_execute(ep, dir_x, dir_z, now);
+    return fired;
+}
+
+// The client-side prediction replay
+static int g_move_replay_depth = 0;
+
+CallHook<void __cdecl(void*, int)> move_prediction_replay_hook{
+    0x00483A21,
+    [](void* work_list, int commit) {
+        ++g_move_replay_depth;
+        move_prediction_replay_hook.call_target(work_list, commit);
+        --g_move_replay_depth;
+    },
+};
+
+// Stamped every active airborne frame by the air hook below.
+static int64_t g_ski_last_air_ms = 0;
+
+// Skiing is always the multiplayer on-ground case, which takes ground move's
+// rf::mp_ground_acceleration branch rather than the info->acceleration one, so
+// zeroing info->acceleration alone would do nothing; both divisors are zeroed.
+CallHook<void(rf::Entity*)> ski_ground_move_hook{
+    0x0049F8A2,
+    [](rf::Entity* ep) {
+        if (g_move_replay_depth > 0) {
+            ski_ground_move_hook.call_target(ep);
+            return;
+        }
+        // Grounded by construction.
+        if (mutators_dodging_active() && ep == rf::local_player_entity && dodge_poll(ep)) {
+            // Ground move still runs this frame.
+            float& info_accel = ep->info->acceleration;
+            const float saved_accel = info_accel;
+            const float saved_divisor = rf::mp_ground_acceleration;
+            info_accel = 0.0f;
+            rf::mp_ground_acceleration = 0.0f;
+            ski_ground_move_hook.call_target(ep);
+            info_accel = saved_accel;
+            rf::mp_ground_acceleration = saved_divisor;
+            return;
+        }
+
+        if (!ski_ground_active(ep)) {
+            // Landing grace.
+            const bool graceable = mutators_bhop_active() && ep == rf::local_player_entity;
+            float pre_speed = 0.0f;
+            float run_cap = 0.0f;
+            float pre_dir_x = 0.0f;
+            float pre_dir_z = 0.0f;
+            bool grace = false;
+            if (graceable) {
+                const auto& vel = ep->p_data.vel;
+                pre_speed = std::sqrt(vel.x * vel.x + vel.z * vel.z);
+                run_cap = ep->max_vel;
+                grace = pre_speed > run_cap
+                    && timer::get_i64(1000) - g_ski_last_air_ms < BHOP_LAND_GRACE_MS;
+                if (grace && pre_speed > 1e-4f) {
+                    pre_dir_x = vel.x / pre_speed;
+                    pre_dir_z = vel.z / pre_speed;
+                }
+            }
+            const float dt = ep->p_data.frame_time_left;
+            ski_ground_move_hook.call_target(ep);
+            if (grace) {
+                auto& vel = ep->p_data.vel;
+                const float post_speed = std::sqrt(vel.x * vel.x + vel.z * vel.z);
+                // Bounded below by run speed and above by the carried speed:
+                // floor_speed <= pre_speed holds by construction.
+                const float floor_speed = std::max(run_cap, pre_speed - BHOP_LAND_GRACE_DECEL * dt);
+                // Only while the player is driving the line.
+                float wish_x, wish_z;
+                const bool driving = ski_wish_dir(ep, wish_x, wish_z)
+                    && (wish_x * pre_dir_x + wish_z * pre_dir_z) > 0.0f;
+                if (driving && post_speed > 1e-4f && post_speed < floor_speed) {
+                    const float scale = floor_speed / post_speed;
+                    vel.x *= scale;
+                    vel.z *= scale;
+                }
+            }
+            return;
+        }
+        const float dt = ep->p_data.frame_time_left;
+        float& info_accel = ep->info->acceleration;
+        const float saved_accel = info_accel;
+        const float saved_divisor = rf::mp_ground_acceleration;
+        info_accel = 0.0f;
+        rf::mp_ground_acceleration = 0.0f;
+        ski_ground_move_hook.call_target(ep);
+        info_accel = saved_accel;
+        rf::mp_ground_acceleration = saved_divisor;
+
+        ski_apply(ep, dt);
+    },
+};
+
+// Full fall damage immunity while the ski input is held.
+CallHook<void __cdecl(rf::Entity*, float)> ski_fall_damage_hook{
+    {0x0049DE23, 0x0049DE39, 0x0049D4B6, 0x004A0C28},
+    [](rf::Entity* ep, float impact) {
+        if (ep && ep == rf::local_player_entity && any_movement_mutator_active())
+            return;
+        ski_fall_damage_hook.call_target(ep, impact);
+    },
+};
+
+// Shared by multiple movement mutators to fix getting stuck in the floor.
+CallHook<void(rf::Entity*)> ski_air_move_hook{
+    0x0049F6AD,
+    [](rf::Entity* ep) {
+        if (g_move_replay_depth > 0 || !any_movement_mutator_active()
+            || ep != rf::local_player_entity) {
+            ski_air_move_hook.call_target(ep);
+            return;
+        }
+        // Every active airborne frame, for the ground hook's landing grace.
+        g_ski_last_air_ms = timer::get_i64(1000);
+
+        auto& vel = ep->p_data.vel;
+        // Air move scales its own step by this; read before the call in case it
+        // is consumed.
+        const float dt = ep->p_data.frame_time_left;
+        const float pre_speed = std::sqrt(vel.x * vel.x + vel.z * vel.z);
+        const bool custom = (ep->p_data.flags & rf::PF_USE_CUSTOM_MAX_VEL) != 0;
+        float& limit = custom ? ep->custom_max_vel : ep->info->max_vel;
+        const float saved_limit = limit;
+        if (pre_speed > limit)
+            limit = pre_speed;
+        ski_air_move_hook.call_target(ep);
+        limit = saved_limit;
+
+        // Air gain only on a deliberate cross-strafe.
+        float wish_x, wish_z;
+        if (mutators_bhop_active() && ski_wish_dir(ep, wish_x, wish_z)) {
+            const float speed = std::sqrt(vel.x * vel.x + vel.z * vel.z);
+            if (speed >= BHOP_AIR_GAIN_MIN_SPEED) {
+                const float along = vel.x * wish_x + vel.z * wish_z;
+                if (std::fabs(along) < BHOP_AIR_GAIN_CROSS_BAND * speed)
+                    ski_strafe_gain(ep, dt, wish_x, wish_z, along);
+            }
+        }
+    },
+};
+
 void mutators_on_multi_shutdown()
 {
+    g_ski_engaged = false;
+    g_ski_last_air_ms = 0;
+    dodge_clear_input();
+    g_dodge_last_ms = 0;
+
     // Leaving multiplayer mid-level: single player must not inherit the override.
     mutators_update_low_gravity();
     if (g_low_gravity_applied) {
@@ -1058,6 +1599,10 @@ void mutators_level_init_post()
     // Both sides: forget the previous level's fire bookkeeping. Its fire records died
     // with their parent entities; stale pointers here could alias new-level fires.
     flame_level_init();
+
+    // Both sides: input edges and the dodge cooldown must not cross a level change.
+    dodge_clear_input();
+    g_dodge_last_ms = 0;
 
     // Both sides. The incoming level has already set its own gravity, so the saved
     // value from the outgoing one is stale and must be dropped WITHOUT writing it.
@@ -1714,4 +2259,10 @@ void mutators_do_patch()
     entity_fire_destroy_hook.install();
     entity_fire_update_all_spread_damage_injection.install();
     entity_fire_update_all_self_damage_injection.install();
+
+    // Skiing
+    ski_ground_move_hook.install();
+    ski_fall_damage_hook.install();
+    ski_air_move_hook.install();
+    move_prediction_replay_hook.install();
 }

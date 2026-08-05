@@ -122,6 +122,9 @@ struct AlpineFactionServerInfo
     bool super_drain = false;
     bool jetpacks = false;
     bool low_gravity = false;
+    bool skiing = false;
+    bool bunny_hopping = false;
+    bool dodging = false;
 };
 
 enum class AlpineRestrictVerdict : uint8_t

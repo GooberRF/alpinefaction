@@ -75,11 +75,12 @@ namespace rf
         PF_COLLIDE_OBJECTS = 0x20,       // participate in object-object collision pairs
         PF_UNK_40          = 0x40,
         PF_BOUNCE          = 0x100,      // bounce on impact (added when debris_flags & 0x04)
+        PF_USE_CUSTOM_MAX_VEL = 0x200000, // movement clamps use Entity::custom_max_vel instead of EntityInfo::max_vel; cleared by entity_land (0x00419830)
     };
 
     static auto& gravity = addr_as_ref<float>(0x005A00DC);
     static auto& level_set_gravity = addr_as_ref<void(float value)>(0x004A0E20);
-
+    static auto& mp_ground_acceleration = addr_as_ref<float>(0x007C7084);
     static auto& physics_create_object = addr_as_ref<void(PhysicsData *pd, ObjectCreateInfo *oci)>(0x0049EC90);
     static auto& physics_delete_object = addr_as_ref<void(PhysicsData *pd)>(0x0049F1D0);
 }

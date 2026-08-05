@@ -580,6 +580,9 @@ enum af_server_info_flags : uint32_t {
     SIF_SUPER_DRAIN = 1u << 22,
     SIF_JETPACKS = 1u << 23,
     SIF_LOW_GRAVITY = 1u << 24,
+    SIF_SKIING = 1u << 25,
+    SIF_BHOP = 1u << 26,
+    SIF_DODGING = 1u << 27,
 };
 
 // Subset of `rf::NetGameFlags`.

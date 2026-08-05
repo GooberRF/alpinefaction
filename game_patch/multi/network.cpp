@@ -1743,6 +1743,18 @@ CallHook<int(const rf::NetAddr*, std::byte*, size_t)> send_join_accept_packet_ho
         if (g_alpine_server_config_active_rules.mutators.low_gravity_enabled) {
             ext_data.flags |= AlpineFactionJoinAcceptPacketExt::Flags::low_gravity;
         }
+        // Skiing: the client owns the entire movement, so it has to know.
+        if (g_alpine_server_config_active_rules.mutators.skiing_enabled) {
+            ext_data.flags |= AlpineFactionJoinAcceptPacketExt::Flags::skiing;
+        }
+        // Bunny hopping: the client owns the entire movement, so it has to know.
+        if (g_alpine_server_config_active_rules.mutators.bhop_enabled) {
+            ext_data.flags |= AlpineFactionJoinAcceptPacketExt::Flags::bunny_hopping;
+        }
+        // Dodging: the client owns the entire movement, so it has to know.
+        if (g_alpine_server_config_active_rules.mutators.dodging_enabled) {
+            ext_data.flags |= AlpineFactionJoinAcceptPacketExt::Flags::dodging;
+        }
         // AF 1.3+ clients: use footer-based format for forward compatibility
         // Older clients: use legacy raw struct (they don't know about the footer)
         bool use_footer = g_joining_client_version == ClientSoftware::AlpineFaction
@@ -1884,6 +1896,9 @@ CodeInjection process_join_accept_injection{
             server_info.super_drain = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::super_drain);
             server_info.jetpacks = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::jetpacks);
             server_info.low_gravity = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::low_gravity);
+            server_info.skiing = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::skiing);
+            server_info.bunny_hopping = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::bunny_hopping);
+            server_info.dodging = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::dodging);
             // featured_no_clip is intentionally not stored here, it's consumed inline below via mutators_set_no_clip_weapon.
 
             constexpr float default_fov = 90.0f;
