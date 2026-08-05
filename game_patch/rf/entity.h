@@ -397,7 +397,7 @@ namespace rf
         int bot_index;
         int mp_character_id;
         int powerup_light_handle;
-        float custom_max_vel; // horizontal speed cap used instead of info->max_vel when p_data.flags & 0x200000
+        float custom_max_vel; // horizontal speed cap used instead of info->max_vel when p_data.flags & PF_USE_CUSTOM_MAX_VEL
         VMesh *respawn_vfx_handle;
         Timestamp field_1490;
     };

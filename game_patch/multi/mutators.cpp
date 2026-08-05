@@ -1159,7 +1159,8 @@ static bool g_ski_engaged = false;
 static bool ski_ground_active(rf::Entity* ep)
 {
     if (!ski_held(ep)) {
-        g_ski_engaged = false;
+        if (ep == rf::local_player_entity)
+            g_ski_engaged = false;
         return false;
     }
     const auto& vel = ep->p_data.vel;
@@ -1542,7 +1543,7 @@ CallHook<void(rf::Entity*)> ski_air_move_hook{
         // is consumed.
         const float dt = ep->p_data.frame_time_left;
         const float pre_speed = std::sqrt(vel.x * vel.x + vel.z * vel.z);
-        const bool custom = (ep->p_data.flags & 0x200000) != 0;
+        const bool custom = (ep->p_data.flags & rf::PF_USE_CUSTOM_MAX_VEL) != 0;
         float& limit = custom ? ep->custom_max_vel : ep->info->max_vel;
         const float saved_limit = limit;
         if (pre_speed > limit)
