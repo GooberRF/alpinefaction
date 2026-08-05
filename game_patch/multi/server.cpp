@@ -59,6 +59,17 @@
 #include "../rf/level.h"
 #include "../rf/collide.h"
 
+// ShellExecuteA benoetigt folgende header-Dateien:
+#include <common/utils/os-utils.h>
+#include <shellapi.h>
+#include <windows.h>
+// filexists needs this:
+#include <filesystem>
+namespace fs = std::filesystem;
+
+
+
+
 // all commands that can be used by any rcon profiles
 // full_admin gives access to this entire list
 const std::vector<std::string> g_rcon_cmd_masterlist = {
@@ -1076,6 +1087,81 @@ ConsoleCommand2 checkmaps_cmd{
     "Check whether any levels on the server rotation or vote-allowed list are unavailable for autodownload from FactionFiles.",
     "sv_checkmaps",
 };
+
+
+// Willson
+ConsoleCommand2 sv_checkawp{
+    "sv_checkawp",
+    []() {
+        if (!rf::is_dedicated_server) {
+            rf::console::print("This command is only available for dedicated servers.\n");
+            return;
+        }
+
+        const auto& levels = g_alpine_server_config.levels;
+        const auto& allowed_maps = g_alpine_server_config.vote_level.allowed_maps;
+        if (levels.empty() && allowed_maps.empty()) {
+            rf::console::print("Server rotation and vote-allowed list are both empty.\n");
+            return;
+        }
+
+        if (rotation_autodl_in_progress()) {
+            rf::console::print("FactionFiles autodownload check is already running.\n");
+            return;
+        }
+
+        const size_t total_count = levels.size() + allowed_maps.size();
+        rf::console::print("Checking FactionFiles for {} levels. This may take a moment...", total_count);
+
+        std::vector<std::string> unique_levels;
+        std::unordered_map<std::string, size_t> unique_level_index;
+        unique_levels.reserve(total_count);
+        unique_level_index.reserve(total_count);
+
+        std::string af_install_dir = get_module_dir(g_hmodule);
+        af_install_dir = af_install_dir.substr(4); // Remove the "\?\\" prefix
+
+        auto rf_path = std::string{rf::root_path};
+        for (const auto& entry : levels) {
+            std::string filename = entry.level_filename;
+            filename = string_to_lower(filename);
+            filename = filename.substr(0, filename.size() - 4); // Remove the ".rfl" extension
+            rf::console::print("Checking level: {}", filename);
+            std::string awppathname = rf_path + "user_maps\\waypoints\\" + filename + ".awp";
+            fs::path awp_path = fs::path(rf_path) / "user_maps" / "waypoints" / (filename + ".awp");
+
+            if (!fs::exists(awp_path)) {
+                rf::console::print("AWP does NOT exist for level: {}", filename + ".rfl");
+                // Launch AlpineFactionLauncher.exe with the - awpgen argument to generate the AWP file
+                std::string alpineoptions = " -awpgen " + filename + ".rfl";
+                ShellExecuteA(nullptr, "open", "AlpineFactionLauncher.exe", alpineoptions.c_str(),
+                              af_install_dir.c_str(), SW_SHOWNOACTIVATE);
+            }
+        }
+
+        // Not tested yet, but this should work for the allowed maps as well
+        for (const auto& entry : allowed_maps) {
+            std::string filename = entry;
+            filename = string_to_lower(filename);
+            filename = filename.substr(0, filename.size() - 4); // Remove the ".rfl" extension
+            rf::console::print("Checking level: {}", filename);
+            std::string awppathname = rf_path + "user_maps\\waypoints\\" + filename + ".awp";
+            fs::path awp_path = fs::path(rf_path) / "user_maps" / "waypoints" / (filename + ".awp");
+            if (!fs::exists(awp_path)) {
+                rf::console::print("AWP does NOT exist for level: {}", filename + ".rfl");
+                // Launch AlpineFactionLauncher.exe with the - awpgen argument to generate the AWP file
+                std::string alpineoptions = " -awpgen " + filename + ".rfl";
+                ShellExecuteA(nullptr, "open", "AlpineFactionLauncher.exe", alpineoptions.c_str(),
+                              af_install_dir.c_str(), SW_SHOWNOACTIVATE);
+            }
+        }
+    },
+
+};
+
+
+
+
 
 void multi_change_level_alpine(const char* filename) {
     const bool have_name = (filename && filename[0] != '\0');
@@ -4308,6 +4394,8 @@ void server_init()
     gt_cmd.register_cmd();
     alpine_restrict_status_cmd.register_cmd();
     checkmaps_cmd.register_cmd();
+
+    sv_checkawp.register_cmd();
 }
 
 static void bot_decommission(
