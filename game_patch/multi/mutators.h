@@ -46,6 +46,9 @@ enum class MutatorId : uint8_t
     LowGravity = 14,
     ScoreLimitOverride = 15,
     IdealPlayerCountOverride = 16,
+    Skiing = 17,
+    BunnyHopping = 18,
+    Dodging = 19,
 };
 
 struct MutatorOptionChoice
@@ -118,6 +121,9 @@ void mutators_on_flame_damage(rf::Player* attacker, rf::Player* victim, int dama
 void mutators_on_flame_victim_damage(rf::Player* victim, int damage_type, float damage);
 void mutators_on_item_picked_up(rf::Item* item, rf::Entity* entity);
 void mutators_apply_entity_on_fire(rf::Entity* ep, bool on_fire);
+bool mutators_skiing_active();
+bool mutators_bhop_active();
+bool mutators_dodging_active();
 
 // Registry view. Built lazily because choice lists (e.g. the Rails featured
 // weapon) are derived from the loaded weapon/item tables.

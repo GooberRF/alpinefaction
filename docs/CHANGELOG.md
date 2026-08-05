@@ -35,6 +35,9 @@ Version 1.4.0 (Lupin): Not yet released
   - Delayed Supers
   - Weird Gun Game
   - Low Gravity
+  - Skiing
+  - Bunny Hopping
+  - Dodging
   - Score Limit Override
   - Ideal Player Count Override
 - Rework multiplayer voting to use a GUI-based system instead of chat commands
