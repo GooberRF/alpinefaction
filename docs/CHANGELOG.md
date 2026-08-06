@@ -65,7 +65,9 @@ Version 1.4.0 (Lupin): Not yet released
 - Add `Sort` options (by name or by UID, with an optional `Group by type` toggle) to the editor's Select Objects and Show/Hide Objects windows
 - Add `camera4` console command for static camera in single player
 - Add `camera5` console command for tripod (follow player) camera in single player
-- Add `jetpack` console command to toggle a jetpack for yourself in single player
+- Add `jetpack` console command to toggle a jetpack in single player
+- Add `skifree` console command to toggle skiing and dodging in single player
+- Add `pogo` console command to toggle pogo in single player
 - Remove the redundant per-packet `select()` before each `net_send` and in the packet receive pump, reducing dedicated server network syscall overhead (and wineserver round trips on Linux)
 - Raise the UDP socket `SO_RCVBUF` from 32 KB to 256 KB to reduce reliable-packet retransmit cascades on busy dedicated servers
 - Batch win32 console writes and throttle console input line reprints to reduce dedicated server console API overhead
@@ -153,6 +155,7 @@ Version 1.4.0 (Lupin): Not yet released
 - Fix riot shields not being able to be picked up again after breaking while weapon stay was enabled
 - Fix servers relaying weapon shots twice, which made shots spawn duplicate projectiles, muzzle flashes, fire sounds, and shell casings in third person
 - Fix first person spectate sometimes showing a silencer on the pistol
+- Fix `$Fall Damage Slam Multiplier` `af_game.tbl` option not working in single player
 
 [@is-this-c](https://github.com/is-this-c)
 - Clear cached server config output after a shuffle of a server's rotation

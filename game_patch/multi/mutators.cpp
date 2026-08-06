@@ -25,12 +25,14 @@
 #include "../rf/ai.h"
 #include "../rf/multi.h"
 #include "../rf/gameseq.h"
+#include "../rf/level.h"
 #include "../rf/player/player.h"
 #include "../rf/player/control_config.h"
 #include "../rf/os/console.h"
 #include "../rf/os/timestamp.h"
 #include "../rf/physics.h"
 #include "../rf/sound/sound.h"
+#include "../os/console.h"
 #include "../os/os.h"
 
 // Spawn reserve for a no-clip "infinite ammo" weapon. Firing draws from reserve,
@@ -1101,10 +1103,16 @@ static constexpr float DODGE_VERTICAL_FACTOR = 0.5f;  // pop as a factor of the 
 // falling probe's 0.1 reach at ~41ms.
 extern rf::Timestamp g_player_jump_timestamp;
 
+// `skifree` console command, single player only.
+static bool g_skifree_sp_enabled = false;
+
+// `pogo` console command, single player only.
+static bool g_pogo_sp_enabled = false;
+
 bool mutators_skiing_active()
 {
     if (!rf::is_multi)
-        return false;
+        return g_skifree_sp_enabled;
     if (rf::is_server)
         return g_alpine_server_config_active_rules.mutators.skiing_enabled;
     // Server informs the client via SIF_SKIING.
@@ -1115,7 +1123,7 @@ bool mutators_skiing_active()
 bool mutators_dodging_active()
 {
     if (!rf::is_multi)
-        return false;
+        return g_skifree_sp_enabled;
     if (rf::is_server)
         return g_alpine_server_config_active_rules.mutators.dodging_enabled;
     // Server informs the client via SIF_DODGING.
@@ -1126,7 +1134,7 @@ bool mutators_dodging_active()
 bool mutators_pogo_active()
 {
     if (!rf::is_multi)
-        return false;
+        return g_pogo_sp_enabled;
     if (rf::is_server)
         return g_alpine_server_config_active_rules.mutators.pogo_enabled;
     // Server informs the client via SIF_POGO.
@@ -1526,9 +1534,11 @@ CallHook<void(rf::Entity*)> ski_ground_move_hook{
     },
 };
 
-// Full fall damage immunity while the ski input is held.
+// Slam and rigid-body impact fall damage: immunity insingle player and multiplayer
+// when movement mutators are active. Note 0x004A0C28 (landing) fall damage is not
+// hooked, because we want it to still apply.
 CallHook<void __cdecl(rf::Entity*, float)> ski_fall_damage_hook{
-    {0x0049DE23, 0x0049DE39, 0x0049D4B6, 0x004A0C28},
+    {0x0049D4B6, 0x0049DE23, 0x0049DE39},
     [](rf::Entity* ep, float impact) {
         if (ep && ep == rf::local_player_entity && any_movement_mutator_active())
             return;
@@ -1583,6 +1593,51 @@ void mutators_on_multi_shutdown()
         rf::level_set_gravity(g_saved_gravity);
     }
 }
+
+ConsoleCommand2 skifree_cmd{
+    "skifree",
+    []() {
+        if (!(rf::level.flags & rf::LEVEL_LOADED)) {
+            rf::console::print("No level loaded!");
+            return;
+        }
+
+        if (rf::is_multi) {
+            rf::console::print("That command can't be used in multiplayer.");
+            return;
+        }
+
+        g_skifree_sp_enabled = !g_skifree_sp_enabled;
+        // A latched ski engage or a half-armed dodge tap from the previous enable
+        // window must not survive into the next one.
+        g_ski_engaged = false;
+        dodge_clear_input();
+        g_dodge_last_ms = 0;
+        rf::console::print("Skifree {}.", g_skifree_sp_enabled ? "enabled" : "disabled");
+    },
+    "",
+    "skifree",
+};
+
+ConsoleCommand2 pogo_cmd{
+    "pogo",
+    []() {
+        if (!(rf::level.flags & rf::LEVEL_LOADED)) {
+            rf::console::print("No level loaded!");
+            return;
+        }
+
+        if (rf::is_multi) {
+            rf::console::print("That command can't be used in multiplayer.");
+            return;
+        }
+
+        g_pogo_sp_enabled = !g_pogo_sp_enabled;
+        rf::console::print("Pogo {}.", g_pogo_sp_enabled ? "enabled" : "disabled");
+    },
+    "",
+    "pogo",
+};
 
 void mutators_level_init_post()
 {
@@ -2255,4 +2310,8 @@ void mutators_do_patch()
     ski_fall_damage_hook.install();
     ski_air_move_hook.install();
     move_prediction_replay_hook.install();
+
+    // Single player `skifree` and `pogo` cheat commands
+    skifree_cmd.register_cmd();
+    pogo_cmd.register_cmd();
 }
