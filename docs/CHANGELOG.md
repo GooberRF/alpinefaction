@@ -36,8 +36,8 @@ Version 1.4.0 (Lupin): Not yet released
   - Weird Gun Game
   - Low Gravity
   - Skiing
-  - Bunny Hopping
   - Dodging
+  - Pogo
   - Score Limit Override
   - Ideal Player Count Override
 - Rework multiplayer voting to use a GUI-based system instead of chat commands
@@ -103,6 +103,7 @@ Version 1.4.0 (Lupin): Not yet released
 - Show a label on the HUD indicating the name of the selected weapon if it has no FP mesh.
 - Tweak weapon values for some SP-intended weapon classes that are used in Weird Gun Game
 - Add dedicated server config field `add_installed_to_allowed_levels` to allow voting for every installed level whose filename matches a game type prefix, including levels installed while the server is running
+- Do not allow `vote kick` targeting bots
 
 [@is-this-c](https://github.com/is-this-c)
 - Rewrite `VArray` to fix crashes due to MinGW
@@ -145,6 +146,7 @@ Version 1.4.0 (Lupin): Not yet released
 - Fix server version checks comparing each version field independently, which would have rejected a future major version
 - Fix out of bounds read when applying level rules if the rotation shrank while a level was running
 - Fix the remote server config display sometimes being treated as complete before all of its content had arrived
+- Fix rcon feedback for the `info` command being cut off when the output exceeded a single packet
 - Fix damage to riot shields not being replicated to clients in multiplayer
 - Fix riot shield third person models being left behind when their holder disconnects
 - Fix the riot shield third person model floating in front of the camera when first person spectating its holder

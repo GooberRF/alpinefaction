@@ -323,16 +323,16 @@ static void apply_skiing(AlpineServerConfigRules& r, const toml::table& /*opts*/
     r.mutators.skiing_enabled = true;
 }
 
-// Bunny Hopping.
-static void apply_bunny_hopping(AlpineServerConfigRules& r, const toml::table& /*opts*/)
-{
-    r.mutators.bhop_enabled = true;
-}
-
 // Dodging.
 static void apply_dodging(AlpineServerConfigRules& r, const toml::table& /*opts*/)
 {
     r.mutators.dodging_enabled = true;
+}
+
+// Pogo.
+static void apply_pogo(AlpineServerConfigRules& r, const toml::table& /*opts*/)
+{
+    r.mutators.pogo_enabled = true;
 }
 
 // Score Limit Override.
@@ -432,8 +432,8 @@ static const MutatorDef MUTATORS[] = {
     {MutatorId::WeirdGunGame, "weirdgungame", "Weird Gun Game", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_weird_gungame, nullptr, 0, MutatorGametypeReq::GunGameOnly},
     {MutatorId::LowGravity, "lowgravity", "Low Gravity", 4, &apply_low_gravity, nullptr, 0},
     {MutatorId::Skiing, "skiing", "Skiing", 4, &apply_skiing, nullptr, 0},
-    {MutatorId::BunnyHopping, "bunnyhopping", "Bunny Hopping", 4, &apply_bunny_hopping, nullptr, 0},
     {MutatorId::Dodging, "dodging", "Dodging", 4, &apply_dodging, nullptr, 0},
+    {MutatorId::Pogo, "pogo", "Pogo", 4, &apply_pogo, nullptr, 0},
     {MutatorId::ScoreLimitOverride, "scorelimit", "Score Limit Override", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_score_limit_override, SCORE_LIMIT_OPTIONS, std::size(SCORE_LIMIT_OPTIONS), MutatorGametypeReq::HasScoreLimit, "Score Limit", "score_limit"},
     {MutatorId::IdealPlayerCountOverride, "idealplayers", "Ideal Player Count Override", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_ideal_player_count_override, IDEAL_PLAYERS_OPTIONS, std::size(IDEAL_PLAYERS_OPTIONS), MutatorGametypeReq::BotsSupported, "Ideal Players", "ideal_players"},
 };
@@ -441,8 +441,8 @@ static const MutatorDef MUTATORS[] = {
 // Hardcoded order in which simultaneously-active mutators are applied. Later
 // entries win where they overlap.
 static const MutatorId MUTATOR_APPLY_ORDER[] = {
+    MutatorId::Pogo,
     MutatorId::Dodging,
-    MutatorId::BunnyHopping,
     MutatorId::Skiing,
     MutatorId::LowGravity,
     MutatorId::WeirdGunGame,
@@ -1089,13 +1089,6 @@ static constexpr float SKI_STRAFE_ACCEL = 10.0f;
 // it at 0x004A0A82 and calls entity_make_freefall below it (constant 0x005893C0).
 static constexpr float SKI_MIN_WALKABLE_NY = 0.5f;
 
-// Bunny Hopping parameters. Separate mutator, but it shares the strafe gain
-// formula and the air momentum cap with Skiing.
-static constexpr float BHOP_AIR_GAIN_MIN_SPEED = 3.0f;   // below this, air input is pure stock
-static constexpr float BHOP_AIR_GAIN_CROSS_BAND = 0.75f; // |cos| bound: wish within ~41-139 deg of velocity
-static constexpr int BHOP_LAND_GRACE_MS = 450;           // window after airborne where decel is gentle
-static constexpr float BHOP_LAND_GRACE_DECEL = 3.0f;     // m/s^2 the excess above run speed may bleed during the grace window
-
 // Dodging parameters. directional dodge from a double-tapped movement key,
 // or from  crouch+jump while holding one. Grounded only.
 static constexpr int DODGE_TAP_WINDOW_MS = 300;       // max gap between the two taps
@@ -1119,17 +1112,6 @@ bool mutators_skiing_active()
     return info.has_value() && info->skiing;
 }
 
-bool mutators_bhop_active()
-{
-    if (!rf::is_multi)
-        return false;
-    if (rf::is_server)
-        return g_alpine_server_config_active_rules.mutators.bhop_enabled;
-    // Server informs the client via SIF_BHOP.
-    const auto& info = get_af_server_info();
-    return info.has_value() && info->bunny_hopping;
-}
-
 bool mutators_dodging_active()
 {
     if (!rf::is_multi)
@@ -1141,9 +1123,20 @@ bool mutators_dodging_active()
     return info.has_value() && info->dodging;
 }
 
+bool mutators_pogo_active()
+{
+    if (!rf::is_multi)
+        return false;
+    if (rf::is_server)
+        return g_alpine_server_config_active_rules.mutators.pogo_enabled;
+    // Server informs the client via SIF_POGO.
+    const auto& info = get_af_server_info();
+    return info.has_value() && info->pogo;
+}
+
 static bool any_movement_mutator_active()
 {
-    return mutators_skiing_active() || mutators_bhop_active() || mutators_dodging_active();
+    return mutators_skiing_active() || mutators_dodging_active() || mutators_pogo_active();
 }
 
 static bool ski_held(rf::Entity* ep)
@@ -1440,6 +1433,31 @@ static bool dodge_poll(rf::Entity* ep)
     return fired;
 }
 
+// True when a pogo hop fired this frame.
+static bool pogo_poll(rf::Entity* ep)
+{
+    if (rf::console::console_is_visible() || rf::multi_chat_is_say_visible())
+        return false;
+    if (!rf::local_player || rf::entity_is_dying(ep) || rf::entity_in_vehicle(ep)
+        || rf::entity_is_swimming(ep) || rf::entity_is_climbing(ep))
+        return false;
+    if (!rf::control_is_control_down(&rf::local_player->settings.controls, rf::CC_ACTION_JUMP))
+        return false;
+
+    // entity_jump's own acceptance conditions, tested before the clamp below so it
+    // can never zero vel.y on a frame the jump would decline.
+    const int mode = ep->move_mode ? ep->move_mode->mode : -1;
+    if ((mode != 1 && mode != 2) || rf::entity_is_crouching(ep))
+        return false;
+
+    auto& vel = ep->p_data.vel;
+    // Stock subtracts downward velocity from the jump.
+    if (vel.y < 0.0f)
+        vel.y = 0.0f;
+    rf::entity_jump(ep);
+    return true;
+}
+
 // The client-side prediction replay
 static int g_move_replay_depth = 0;
 
@@ -1451,9 +1469,6 @@ CallHook<void __cdecl(void*, int)> move_prediction_replay_hook{
         --g_move_replay_depth;
     },
 };
-
-// Stamped every active airborne frame by the air hook below.
-static int64_t g_ski_last_air_ms = 0;
 
 // Skiing is always the multiplayer on-ground case, which takes ground move's
 // rf::mp_ground_acceleration branch rather than the info->acceleration one, so
@@ -1479,46 +1494,24 @@ CallHook<void(rf::Entity*)> ski_ground_move_hook{
             return;
         }
 
-        if (!ski_ground_active(ep)) {
-            // Landing grace.
-            const bool graceable = mutators_bhop_active() && ep == rf::local_player_entity;
-            float pre_speed = 0.0f;
-            float run_cap = 0.0f;
-            float pre_dir_x = 0.0f;
-            float pre_dir_z = 0.0f;
-            bool grace = false;
-            if (graceable) {
-                const auto& vel = ep->p_data.vel;
-                pre_speed = std::sqrt(vel.x * vel.x + vel.z * vel.z);
-                run_cap = ep->max_vel;
-                grace = pre_speed > run_cap
-                    && timer::get_i64(1000) - g_ski_last_air_ms < BHOP_LAND_GRACE_MS;
-                if (grace && pre_speed > 1e-4f) {
-                    pre_dir_x = vel.x / pre_speed;
-                    pre_dir_z = vel.z / pre_speed;
-                }
-            }
-            const float dt = ep->p_data.frame_time_left;
+        if (mutators_pogo_active() && ep == rf::local_player_entity && pogo_poll(ep)) {
+            float& info_accel = ep->info->acceleration;
+            const float saved_accel = info_accel;
+            const float saved_divisor = rf::mp_ground_acceleration;
+            info_accel = 0.0f;
+            rf::mp_ground_acceleration = 0.0f;
             ski_ground_move_hook.call_target(ep);
-            if (grace) {
-                auto& vel = ep->p_data.vel;
-                const float post_speed = std::sqrt(vel.x * vel.x + vel.z * vel.z);
-                // Bounded below by run speed and above by the carried speed:
-                // floor_speed <= pre_speed holds by construction.
-                const float floor_speed = std::max(run_cap, pre_speed - BHOP_LAND_GRACE_DECEL * dt);
-                // Only while the player is driving the line.
-                float wish_x, wish_z;
-                const bool driving = ski_wish_dir(ep, wish_x, wish_z)
-                    && (wish_x * pre_dir_x + wish_z * pre_dir_z) > 0.0f;
-                if (driving && post_speed > 1e-4f && post_speed < floor_speed) {
-                    const float scale = floor_speed / post_speed;
-                    vel.x *= scale;
-                    vel.z *= scale;
-                }
-            }
+            info_accel = saved_accel;
+            rf::mp_ground_acceleration = saved_divisor;
+            return;
+        }
+
+        if (!ski_ground_active(ep)) {
+            ski_ground_move_hook.call_target(ep);
             return;
         }
         const float dt = ep->p_data.frame_time_left;
+        const bool first_dispatch = (ep->p_data.flags & rf::PF_ACCEL_APPLIED) == 0;
         float& info_accel = ep->info->acceleration;
         const float saved_accel = info_accel;
         const float saved_divisor = rf::mp_ground_acceleration;
@@ -1528,7 +1521,8 @@ CallHook<void(rf::Entity*)> ski_ground_move_hook{
         info_accel = saved_accel;
         rf::mp_ground_acceleration = saved_divisor;
 
-        ski_apply(ep, dt);
+        if (first_dispatch)
+            ski_apply(ep, dt);
     },
 };
 
@@ -1551,14 +1545,9 @@ CallHook<void(rf::Entity*)> ski_air_move_hook{
             ski_air_move_hook.call_target(ep);
             return;
         }
-        // Every active airborne frame, for the ground hook's landing grace.
-        g_ski_last_air_ms = timer::get_i64(1000);
-
         auto& vel = ep->p_data.vel;
-        // Air move scales its own step by this; read before the call in case it
-        // is consumed.
-        const float dt = ep->p_data.frame_time_left;
         const float pre_speed = std::sqrt(vel.x * vel.x + vel.z * vel.z);
+
         const bool custom = (ep->p_data.flags & rf::PF_USE_CUSTOM_MAX_VEL) != 0;
         float& limit = custom ? ep->custom_max_vel : ep->info->max_vel;
         const float saved_limit = limit;
@@ -1567,14 +1556,15 @@ CallHook<void(rf::Entity*)> ski_air_move_hook{
         ski_air_move_hook.call_target(ep);
         limit = saved_limit;
 
-        // Air gain only on a deliberate cross-strafe.
-        float wish_x, wish_z;
-        if (mutators_bhop_active() && ski_wish_dir(ep, wish_x, wish_z)) {
-            const float speed = std::sqrt(vel.x * vel.x + vel.z * vel.z);
-            if (speed >= BHOP_AIR_GAIN_MIN_SPEED) {
-                const float along = vel.x * wish_x + vel.z * wish_z;
-                if (std::fabs(along) < BHOP_AIR_GAIN_CROSS_BAND * speed)
-                    ski_strafe_gain(ep, dt, wish_x, wish_z, along);
+        // Direction from stock, magnitude floored.
+        // Only protects earned momentum; below run speed stock braking is untouched.
+        const float run_speed = ep->max_vel;
+        if (pre_speed > run_speed) {
+            const float post = std::sqrt(vel.x * vel.x + vel.z * vel.z);
+            if (post > 1e-4f && post < pre_speed) {
+                const float scale = pre_speed / post;
+                vel.x *= scale;
+                vel.z *= scale;
             }
         }
     },
@@ -1583,7 +1573,6 @@ CallHook<void(rf::Entity*)> ski_air_move_hook{
 void mutators_on_multi_shutdown()
 {
     g_ski_engaged = false;
-    g_ski_last_air_ms = 0;
     dodge_clear_input();
     g_dodge_last_ms = 0;
 

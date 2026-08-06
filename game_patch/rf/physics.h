@@ -76,6 +76,7 @@ namespace rf
         PF_UNK_40          = 0x40,
         PF_BOUNCE          = 0x100,      // bounce on impact (added when debris_flags & 0x04)
         PF_USE_CUSTOM_MAX_VEL = 0x200000, // movement clamps use Entity::custom_max_vel instead of EntityInfo::max_vel; cleared by entity_land (0x00419830)
+        PF_ACCEL_APPLIED = 0x1000000, // dispatcher tail sets this; stock acceleration blocks bail when set (once-per-frame gate)
     };
 
     static auto& gravity = addr_as_ref<float>(0x005A00DC);
