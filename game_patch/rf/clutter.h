@@ -124,4 +124,6 @@ namespace rf
     static auto& monitor_list = addr_as_ref<Monitor>(0x005C98A8);
 
     static auto& clutter_restore_mesh = addr_as_ref<void(Clutter *clutter, const char *mesh_name)>(0x00410ED0);
+    static auto& clutter_damage = addr_as_ref<void(Clutter* cp, float damage, int responsible_entity_handle, int damage_type, PCollisionOut* collide_out)>(0x00410270);
+    static auto& riot_shield_clutter_type = addr_as_ref<int>(0x005AFB78);
 }

@@ -46,6 +46,7 @@
 #include "../rf/math/matrix.h"
 #include "../rf/player/player.h"
 #include "../rf/os/frametime.h"
+#include "../object/object.h"
 #include "../rf/item.h"
 #include "../rf/gameseq.h"
 #include "../rf/misc.h"
@@ -2418,6 +2419,9 @@ FunHook<void(rf::Player*)> multi_spawn_player_server_side_hook{
                 if (gt_is_gungame()) {
                     gungame_on_player_spawn(player);
                 }
+                // Fresh entity, so any riot shield break suppression from the life
+                // that just ended can never apply to them again.
+                riot_shield_on_player_spawn(player);
             }
 
             // inform newly spawned players of their loadout

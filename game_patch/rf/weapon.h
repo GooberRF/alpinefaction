@@ -273,6 +273,7 @@ namespace rf
     static auto& machine_pistol_weapon_type = addr_as_ref<int>(0x0085CCD8);
     static auto& num_weapon_types = addr_as_ref<int>(0x00872448);
     static auto& riot_stick_weapon_type = addr_as_ref<int>(0x00872468);
+    static auto& riot_shield_weapon_type = addr_as_ref<int>(0x0085CCE4);
     static auto& remote_charge_weapon_type = addr_as_ref<int>(0x0087210C);
     static auto& grenade_weapon_type = addr_as_ref<int>(0x00872118);
     static auto& shotgun_weapon_type = addr_as_ref<int>(0x00872108);
