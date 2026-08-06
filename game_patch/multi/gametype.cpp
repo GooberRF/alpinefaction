@@ -21,6 +21,7 @@
 #include "../hud/multi_spectate.h"
 #include "../sound/sound.h"
 #include "../rf/os/timestamp.h"
+#include "../object/object.h"
 #include "../object/event_alpine.h"
 #include "../rf/entity.h"
 #include "../rf/gameseq.h"
@@ -2051,6 +2052,7 @@ CodeInjection multi_level_init_gametypes_injection{
         pit_level_init();
         wipeout_level_init();
         gungame_level_init();
+        riot_shield_on_multi_level_init();
     },
 };
 

@@ -293,6 +293,7 @@ enum class af_server_req_type : uint8_t
     af_sreq_kill_info = 0x7,           // Alpine 1.4 (5 bytes: victim, killer, weapon, flags, damage_type)
     af_sreq_entity_on_fire = 0x8,      // Alpine 1.4 (5 bytes: obj_handle, on)
     af_sreq_jetpack_state = 0x9,       // Alpine 1.4 (5 bytes: obj_handle, on)
+    af_sreq_riot_shield_state = 0xA,   // Alpine 1.4 (20 bytes: obj_handle, life, impact_pos)
 };
 
 struct ShouldGibPayload
@@ -381,9 +382,18 @@ struct EntityJetpackPayload
 };
 static_assert(sizeof(EntityJetpackPayload) == 5);
 
+// Riot shield durability is server authoritative.
+struct RiotShieldStatePayload
+{
+    uint32_t obj_handle = 0;   // handle of the entity HOLDING the shield, not of the shield itself
+    float life = 0.f;          // shield life remaining after the damage, <= 0 means broken
+    RF_Vector impact_pos = {}; // world position of the hit, used to place the impact decal
+};
+static_assert(sizeof(RiotShieldStatePayload) == 20);
+
 using af_server_req_payload = std::variant<ShouldGibPayload, TeleportEntityPayload, SprayPayload,
                                            ReadyPromptPayload, PitQueueStatePayload, EntityOnFirePayload,
-                                           EntityJetpackPayload>;
+                                           EntityJetpackPayload, RiotShieldStatePayload>;
 
 struct af_server_req_packet
 {
@@ -768,12 +778,13 @@ static void af_process_obj_update_packet(const void* data, size_t len, const rf:
 void af_send_client_req_packet(const af_client_req_packet& packet, bool is_reliable = false);
 static void af_process_client_req_packet(const void* data, size_t len, const rf::NetAddr& addr);
 void af_send_character_request(int character_index);
-void af_send_server_req_packet(const af_server_req_packet& packet, rf::Player* player);
+void af_send_server_req_packet(const af_server_req_packet& packet, rf::Player* player, bool reliable = true);
 void af_send_should_gib_req(uint32_t obj_handle);
 void af_send_kill_info(rf::Player* killed_player);
 void af_send_entity_on_fire(uint32_t obj_handle, bool on);
 void af_send_jetpack_state_request(bool on);
 void af_send_jetpack_state(uint32_t obj_handle, bool on);
+void af_send_riot_shield_state(uint32_t obj_handle, float life, const rf::Vector3& impact_pos);
 void af_send_teleport_entity_req(uint32_t obj_handle, const rf::Vector3& pos, const rf::Matrix3& orient, const rf::Vector3& vel);
 void af_send_spray_to_player(uint8_t player_id, uint16_t texture_id, const rf::Vector3& pos, const rf::Vector3& normal, uint8_t flags, rf::Player* player);
 void af_broadcast_spray(uint8_t player_id, uint16_t texture_id, const rf::Vector3& pos, const rf::Vector3& normal);

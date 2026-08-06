@@ -1,6 +1,7 @@
 #include "player.h"
 #include "../rf/player/player.h"
 #include "../rf/player/camera.h"
+#include "../rf/player/player_fpgun.h"
 #include "../rf/entity.h"
 #include "../rf/multi.h"
 #include "../rf/sound/sound.h"
@@ -296,6 +297,13 @@ FunHook<rf::Entity*(rf::Player*, int, const rf::Vector3*, const rf::Matrix3*, in
     0x004A4130,
     [](rf::Player* pp, int entity_type, const rf::Vector3* pos, const rf::Matrix3* orient, int multi_entity_index) {
         rf::Entity* ep = player_create_entity_hook.call_target(pp, entity_type, pos, orient, multi_entity_index);
+
+        // The riot shield break latch is only cleared by the fpgun break completion,
+        // which cannot run if the shield broke on the hit that killed the holder.
+        if (pp && pp == rf::local_player) {
+            rf::fpgun_riot_shield_breaking = false;
+        }
+
         if (ep) {
             multi_spectate_player_create_entity_post(pp, ep);
             if (pp->is_bot) {

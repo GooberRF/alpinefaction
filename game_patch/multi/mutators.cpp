@@ -188,6 +188,7 @@ static void apply_arena(AlpineServerConfigRules& r, const toml::table& /*opts*/)
 
     // No pickups except weapons.
     r.mutators.pickup_policy = PickupPolicy::WeaponsOnly;
+    r.drop_weapons = false;
 }
 
 // Vampire: landing damage on another player heals the attacker for a fixed

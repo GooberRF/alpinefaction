@@ -827,6 +827,18 @@ bool multi_is_weapon_fire_allowed_server_side(rf::Entity *ep, int weapon_type, b
     return false;
 }
 
+// Stock RF broadcasts a received weapon fire packet twice.
+CallHook<void(rf::Entity*, rf::Vector3*, rf::Matrix3*, int, bool)> entity_fire_weapon_relay_hook{
+    0x004267BC,
+    [](rf::Entity* ep, rf::Vector3* pos, rf::Matrix3* orient, int weapon_type, bool alt_fire) {
+        if (rf::is_server && ep != rf::local_player_entity
+            && rf::player_from_entity_handle(ep->handle) != nullptr) {
+            return;
+        }
+        entity_fire_weapon_relay_hook.call_target(ep, pos, orient, weapon_type, alt_fire);
+    },
+};
+
 FunHook<void(rf::Entity*, int, rf::Vector3&, rf::Matrix3&, bool)> multi_process_remote_weapon_fire_hook{
     0x0047D220,
     [](rf::Entity *ep, int weapon_type, rf::Vector3& pos, rf::Matrix3& orient, bool alt_fire) {
@@ -1337,6 +1349,9 @@ void multi_do_patch()
 
     // Check ammo server-side when handling weapon fire packets
     multi_process_remote_weapon_fire_hook.install();
+
+    // Stock RF broadcasts a received weapon fire packet twice
+    entity_fire_weapon_relay_hook.install();
 
     // Prevent crash when CTF flag item pointers are NULL
     multi_ctf_is_red_flag_in_base_hook.install();

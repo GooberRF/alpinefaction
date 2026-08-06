@@ -687,6 +687,17 @@ void serialize_payload(const EntityJetpackPayload& payload, std::byte* buf, size
     buf[offset++] = static_cast<std::byte>(payload.on);
 }
 
+// af_sreq_riot_shield_state
+void serialize_payload(const RiotShieldStatePayload& payload, std::byte* buf, size_t& offset)
+{
+    std::memcpy(buf + offset, &payload.obj_handle, sizeof(payload.obj_handle));
+    offset += sizeof(payload.obj_handle);
+    std::memcpy(buf + offset, &payload.life, sizeof(payload.life));
+    offset += sizeof(payload.life);
+    std::memcpy(buf + offset, &payload.impact_pos, sizeof(payload.impact_pos));
+    offset += sizeof(payload.impact_pos);
+}
+
 // af_sreq_teleport_entity
 void serialize_payload(const TeleportEntityPayload& payload, std::byte* buf, size_t& offset)
 {
@@ -1682,7 +1693,7 @@ static void af_process_client_req_packet(const void* data, size_t len, const rf:
     }
 }
 
-void af_send_server_req_packet(const af_server_req_packet& packet, rf::Player* player)
+void af_send_server_req_packet(const af_server_req_packet& packet, rf::Player* player, bool reliable)
 {
     // Send: server -> client
     if (!rf::is_server || !player || !player->net_data) {
@@ -1700,7 +1711,7 @@ void af_send_server_req_packet(const af_server_req_packet& packet, rf::Player* p
     std::visit([&](const auto& payload) { serialize_payload(payload, buf, offset); }, packet.payload);
 
     int total_len = static_cast<int>(offset);
-    af_send_packet(player, buf, total_len, true);
+    af_send_packet(player, buf, total_len, reliable);
 }
 
 void af_send_should_gib_req(uint32_t obj_handle)
@@ -1776,6 +1787,47 @@ void af_send_jetpack_state(uint32_t obj_handle, bool on)
         }
         if (is_player_minimum_af_client_version(&player, 1, 4, 0)) {
             af_send_server_req_packet(packet, &player);
+        }
+    }
+}
+
+// Riot shield durability is server authoritative. Broadcast every damage event.
+void af_send_riot_shield_state(uint32_t obj_handle, float life, const rf::Vector3& impact_pos)
+{
+    if (!rf::is_server) {
+        return;
+    }
+
+    RF_Vector pos{};
+    std::memcpy(&pos, &impact_pos, sizeof(pos));
+
+    af_server_req_packet packet{};
+    packet.header.type = static_cast<uint8_t>(af_packet_type::af_server_req);
+    packet.header.size = sizeof(uint8_t) + sizeof(RiotShieldStatePayload);
+    packet.req_type = af_server_req_type::af_sreq_riot_shield_state;
+    packet.payload = RiotShieldStatePayload{obj_handle, life, pos};
+
+    // life is absolute rather than a delta, so a dropped non-break update is
+    // corrected by the next hit and costs nothing but a missed impact decal.
+    // The break must never be lost, so only that one goes reliable.
+    //
+    // The negation is DELIBERATE - do not "simplify" it to life <= 0.0f. Here life is
+    // read straight off the clutter after damage with no validation, so NaN is
+    // theoretically reachable, and the engine treats NaN as a break. C++
+    // NaN <= 0.0f is false, so the plain form would send that break unreliably. This
+    // form is true for NaN and so errs toward reliable delivery.
+    const bool reliable = !(life > 0.0f);
+
+    for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
+        // Bots and browsers have no use for presentation state.
+        if (!player.net_data || player.is_bot || player.is_browser) {
+            continue;
+        }
+        if (player.net_data->state != 2) {
+            continue;
+        }
+        if (is_player_minimum_af_client_version(&player, 1, 4, 0)) {
+            af_send_server_req_packet(packet, &player, reliable);
         }
     }
 }
@@ -2439,6 +2491,39 @@ static void af_process_server_req_packet(const void* data, size_t len, const rf:
             }
 
             jetpack_apply_entity_thrust(entity, payload.on != 0);
+            break;
+        }
+        case af_server_req_type::af_sreq_riot_shield_state: {
+            if (remaining < sizeof(RiotShieldStatePayload)) {
+                xlog::warn("af_process_server_req_packet: RiotShieldState payload too short");
+                return;
+            }
+
+            RiotShieldStatePayload payload{};
+            std::memcpy(&payload.obj_handle, bytes + offset, sizeof(payload.obj_handle));
+            offset += sizeof(payload.obj_handle);
+            std::memcpy(&payload.life, bytes + offset, sizeof(payload.life));
+            offset += sizeof(payload.life);
+            std::memcpy(&payload.impact_pos, bytes + offset, sizeof(payload.impact_pos));
+            offset += sizeof(payload.impact_pos);
+
+            rf::Object* remote_object = rf::obj_from_remote_handle(payload.obj_handle);
+            if (!remote_object) {
+                xlog::debug("af_process_server_req_packet: RiotShieldState invalid remote handle {:x}",
+                    payload.obj_handle);
+                return;
+            }
+
+            rf::Entity* entity = rf::entity_from_handle(remote_object->handle);
+            if (!entity) {
+                xlog::debug("af_process_server_req_packet: RiotShieldState invalid entity handle {:x}",
+                    payload.obj_handle);
+                return;
+            }
+
+            rf::Vector3 impact_pos;
+            std::memcpy(&impact_pos, &payload.impact_pos, sizeof(impact_pos));
+            riot_shield_apply_remote_state(entity, payload.life, impact_pos);
             break;
         }
         case af_server_req_type::af_sreq_vote_state: {

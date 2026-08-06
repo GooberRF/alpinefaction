@@ -2592,6 +2592,7 @@ FunHook<void()> multi_stop_hook{
         bagman_on_multi_shutdown();  // put the amp aura bitmap back to its stock value
         gungame_on_multi_shutdown(); // put the Jeep Gun mesh + damage back to weapons.tbl
         mutators_on_multi_shutdown(); // put the level's own gravity back
+        riot_shield_on_multi_level_init(); // drop any pending riot shield break suppressions
         if (rf::local_player) {
             PlayerAdditionalData* const player_add_data =
                 static_cast<PlayerAdditionalData*>(rf::local_player);
