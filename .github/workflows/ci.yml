@@ -31,7 +31,28 @@ jobs:
         dpkg --add-architecture i386
         apt-get update
         DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-          g++-mingw-w64-i686-posix ninja-build wine32 wine cmake ca-certificates
+          g++-mingw-w64-i686-posix ninja-build wine32 wine cmake ca-certificates \
+          winetricks cabextract curl
+
+    - name: Cache winetricks downloads
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/winetricks
+        key: winetricks-d3dcompiler_43
+
+    # shader_compiler.exe runs under Wine and links d3dcompiler_43. Wine's builtin d3dcompiler
+    # forwards to vkd3d-shader, which ignores the optimization flags and flattens all control
+    # flow - the resulting shaders are ~20x larger and drivers refuse to create them, so the
+    # game dies in fatal_gr_error on level load. Install the real Microsoft DLL instead.
+    - name: Set up Wine prefix
+      run: |
+        export WINEPREFIX=$GITHUB_WORKSPACE/.wine
+        export WINEARCH=win32
+        export WINEDEBUG=-all
+        wineboot --init
+        wineserver -w
+        winetricks -q d3dcompiler_43
+        wineserver -w
 
     - name: Create a build environment
       run: cmake -E make_directory ./build
@@ -50,7 +71,9 @@ jobs:
       working-directory: ./build
       run: |
         export WINEPREFIX=$GITHUB_WORKSPACE/.wine
-        mkdir -p $WINEPREFIX
+        export WINEARCH=win32
+        export WINEDEBUG=-all
+        export WINEDLLOVERRIDES=d3dcompiler_43=n
         cmake --build . -j $(nproc)
 
     - name: Stage artifacts

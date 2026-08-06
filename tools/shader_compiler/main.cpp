@@ -1,5 +1,7 @@
 #include <d3dcompiler.h>
 #include <cstdio>
+#include <cstring>
+#include <cstdint>
 #include <vector>
 #include <string_view>
 #include <fstream>
@@ -8,6 +10,47 @@
 #ifndef D3D_COMPILE_STANDARD_FILE_INCLUDE
 #define D3D_COMPILE_STANDARD_FILE_INCLUDE ((ID3DInclude*)(UINT_PTR)1)
 #endif
+
+// Returns the compiler identification string stored in the RDEF chunk of a DXBC blob,
+// or an empty view if it cannot be located.
+static std::string_view get_dxbc_creator(const char* data, std::size_t size)
+{
+    auto read_u32 = [data](std::size_t offset) {
+        std::uint32_t value;
+        std::memcpy(&value, data + offset, sizeof(value));
+        return value;
+    };
+
+    // DXBC header: magic, 16 byte digest, version, total size, chunk count, chunk offsets
+    if (size < 32 || std::memcmp(data, "DXBC", 4) != 0) {
+        return {};
+    }
+    std::uint32_t num_chunks = read_u32(28);
+    if (num_chunks > (size - 32) / 4) {
+        return {};
+    }
+
+    for (std::uint32_t i = 0; i < num_chunks; ++i) {
+        std::size_t chunk_offset = read_u32(32 + i * 4);
+        if (chunk_offset > size - 8 || std::memcmp(data + chunk_offset, "RDEF", 4) != 0) {
+            continue;
+        }
+        // RDEF body: buffer/binding counts and offsets, version, flags, then the creator offset
+        std::size_t body_offset = chunk_offset + 8;
+        if (body_offset + 28 > size) {
+            return {};
+        }
+        std::size_t creator_offset = body_offset + read_u32(body_offset + 24);
+        if (creator_offset >= size) {
+            return {};
+        }
+        const char* creator = data + creator_offset;
+        std::size_t max_len = size - creator_offset;
+        const void* nul = std::memchr(creator, '\0', max_len);
+        return {creator, nul ? static_cast<const char*>(nul) - creator : max_len};
+    }
+    return {};
+}
 
 int main(int argc, char* argv[])
 {
@@ -136,6 +179,29 @@ int main(int argc, char* argv[])
 
     auto shader_size = shader_bytecode->GetBufferSize();
     auto shader_data = shader_bytecode->GetBufferPointer();
+
+    // When running under Wine without a native d3dcompiler DLL, D3DCompile is served by Wine's
+    // builtin implementation, which forwards to vkd3d-shader. That compiler ignores the
+    // optimization flags and flattens all control flow, so the bytecode ends up an order of
+    // magnitude larger and needs far more temporary registers than drivers accept - the shaders
+    // then fail to create at runtime. Reject such blobs instead of packing them.
+    auto creator = get_dxbc_creator(static_cast<const char*>(shader_data), shader_size);
+    if (creator.find("Microsoft") == std::string_view::npos) {
+        if (creator.empty()) {
+            creator = "<unknown>";
+        }
+        printf(
+            "Refusing to write %s: compiled by \"%.*s\" instead of the Microsoft HLSL compiler.\n"
+            "Install a native d3dcompiler_43.dll into the Wine prefix, e.g. "
+            "`winetricks -q d3dcompiler_43`, and set WINEDLLOVERRIDES=d3dcompiler_43=n.\n",
+            output_filename.c_str(),
+            static_cast<int>(creator.size()),
+            creator.data()
+        );
+        shader_bytecode->Release();
+        return 1;
+    }
+
     std::fstream output_file{output_filename.c_str(), std::ios_base::out | std::ios_base::binary};
     if (!output_file) {
         printf("Failed to open output file: %s\n", output_filename.c_str());
