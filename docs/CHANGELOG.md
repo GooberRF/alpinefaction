@@ -163,6 +163,9 @@ Version 1.4.0 (Lupin): Not yet released
 [@AL2009man](https://github.com/AL2009man)
 - Fix brief game freeze whenever an `Alt` key is pressed
 
+[@jyh9521](https://github.com/jyh9521)
+- Fix crash on join for builds compiled on Windows systems using a Japanese, Chinese, or Korean locale
+
 Version 1.3.0 (Bakeapple): Released Apr-22-2026
 --------------------------------
 ### Major features
