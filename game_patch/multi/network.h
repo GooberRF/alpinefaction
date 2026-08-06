@@ -195,7 +195,7 @@ struct AlpineFactionJoinAcceptPacketExt
         jetpacks            = 1u << 22,
         low_gravity         = 1u << 23,
         skiing              = 1u << 24,
-        bunny_hopping       = 1u << 25,
+        pogo                = 1u << 25,
         dodging             = 1u << 26,
     } flags = Flags::none;
 

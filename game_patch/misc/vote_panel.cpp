@@ -239,11 +239,11 @@ const MutatorDescription mutator_descriptions[] = {
     {"lowgravity",
      "Low gravity for all players and projectiles."},
     {"skiing",
-     "Experimental: hold crouch to ski - maintain speed and build downhill."},
-    {"bunnyhopping",
-     "Experimental: maintain speed through hops, gain by strafe-turning midair."},
+     "Hold crouch to ski - maintain speed and build downhill."},
     {"dodging",
-     "Experimental: double-tap or crouch-jump a direction to dodge."},
+     "Double-tap or crouch-jump a direction to dodge."},
+    {"pogo",
+     "Hold jump to hop automatically when you land."},
     {"scorelimit",
      "Sets the score limit for the game type being voted, instead of the server's."},
     {"idealplayers",
@@ -1144,7 +1144,7 @@ std::vector<KickCandidate> build_kick_candidates()
         return out;
     }
     for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
-        if (&player == rf::local_player || !player.net_data) {
+        if (&player == rf::local_player || !player.net_data || player.is_bot) {
             continue;
         }
         KickCandidate candidate;

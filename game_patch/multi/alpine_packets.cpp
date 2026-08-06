@@ -3309,10 +3309,10 @@ static void build_af_server_info_packet(af_server_info_packet& pkt)
         af |= af_server_info_flags::SIF_LOW_GRAVITY;
     if (g_alpine_server_config_active_rules.mutators.skiing_enabled)
         af |= af_server_info_flags::SIF_SKIING;
-    if (g_alpine_server_config_active_rules.mutators.bhop_enabled)
-        af |= af_server_info_flags::SIF_BHOP;
     if (g_alpine_server_config_active_rules.mutators.dodging_enabled)
         af |= af_server_info_flags::SIF_DODGING;
+    if (g_alpine_server_config_active_rules.mutators.pogo_enabled)
+        af |= af_server_info_flags::SIF_POGO;
     // Must stay immediately ahead of the signal_cfg_changed check below, which
     // consumes the flag this sets.
     {
@@ -3420,8 +3420,8 @@ static void decode_af_server_info_flags(const af_server_info_packet& pkt, Alpine
     server_info.jetpacks = (pkt.af_flags & af_server_info_flags::SIF_JETPACKS) != 0;
     server_info.low_gravity = (pkt.af_flags & af_server_info_flags::SIF_LOW_GRAVITY) != 0;
     server_info.skiing = (pkt.af_flags & af_server_info_flags::SIF_SKIING) != 0;
-    server_info.bunny_hopping = (pkt.af_flags & af_server_info_flags::SIF_BHOP) != 0;
     server_info.dodging = (pkt.af_flags & af_server_info_flags::SIF_DODGING) != 0;
+    server_info.pogo = (pkt.af_flags & af_server_info_flags::SIF_POGO) != 0;
 }
 
 // Apply af_server_info_packet flags to the local server info (for listen server host)
@@ -3939,14 +3939,31 @@ void af_send_server_console_msg(const std::string_view msg, rf::Player* player, 
         return;
     }
 
-    const af_server_msg_packet_buf buf = build_server_console_msg_packet(msg);
+    constexpr size_t max_len = rf::max_packet_size - sizeof(af_server_msg_packet);
+    std::string_view remaining = msg;
+    do {
+        std::string_view chunk = remaining;
+        if (chunk.size() > max_len) {
+            chunk = chunk.substr(0, max_len);
+            // split after the last complete line when possible
+            if (const size_t nl = chunk.rfind('\n'); nl != std::string_view::npos) {
+                chunk = chunk.substr(0, nl + 1);
+            }
+        }
+        remaining.remove_prefix(chunk.size());
 
-    rf::multi_io_send_reliable(
-        player,
-        &buf.packet,
-        buf.packet.header.size + sizeof(buf.packet.header),
-        0
-    );
+        if (chunk.ends_with('\n')) {
+            chunk.remove_suffix(1); // client console starts a new line per packet
+        }
+
+        const af_server_msg_packet_buf buf = build_server_console_msg_packet(chunk);
+        rf::multi_io_send_reliable(
+            player,
+            &buf.packet,
+            buf.packet.header.size + sizeof(buf.packet.header),
+            0
+        );
+    } while (!remaining.empty());
 }
 
 void af_send_automated_chat_msg(const std::string_view msg, rf::Player* player, bool tell_server) {

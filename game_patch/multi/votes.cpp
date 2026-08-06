@@ -998,6 +998,10 @@ struct VoteKick : public Vote
                                        source);
             return false;
         }
+        if (m_target_player->is_bot) {
+            send_vote_reject_msg("Cannot start vote: bots cannot be kicked.", source);
+            return false;
+        }
         // Self-kick is disallowed: it is a no-op the caller can already do by
         // disconnecting, it passes instantly (the caller's own yes vote decides it),
         // and it matches the `kick` console command's "You cannot kick yourself!".

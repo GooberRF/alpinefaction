@@ -1747,13 +1747,13 @@ CallHook<int(const rf::NetAddr*, std::byte*, size_t)> send_join_accept_packet_ho
         if (g_alpine_server_config_active_rules.mutators.skiing_enabled) {
             ext_data.flags |= AlpineFactionJoinAcceptPacketExt::Flags::skiing;
         }
-        // Bunny hopping: the client owns the entire movement, so it has to know.
-        if (g_alpine_server_config_active_rules.mutators.bhop_enabled) {
-            ext_data.flags |= AlpineFactionJoinAcceptPacketExt::Flags::bunny_hopping;
-        }
         // Dodging: the client owns the entire movement, so it has to know.
         if (g_alpine_server_config_active_rules.mutators.dodging_enabled) {
             ext_data.flags |= AlpineFactionJoinAcceptPacketExt::Flags::dodging;
+        }
+        // Pogo: the client owns the entire movement, so it has to know.
+        if (g_alpine_server_config_active_rules.mutators.pogo_enabled) {
+            ext_data.flags |= AlpineFactionJoinAcceptPacketExt::Flags::pogo;
         }
         // AF 1.3+ clients: use footer-based format for forward compatibility
         // Older clients: use legacy raw struct (they don't know about the footer)
@@ -1897,8 +1897,8 @@ CodeInjection process_join_accept_injection{
             server_info.jetpacks = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::jetpacks);
             server_info.low_gravity = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::low_gravity);
             server_info.skiing = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::skiing);
-            server_info.bunny_hopping = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::bunny_hopping);
             server_info.dodging = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::dodging);
+            server_info.pogo = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::pogo);
             // featured_no_clip is intentionally not stored here, it's consumed inline below via mutators_set_no_clip_weapon.
 
             constexpr float default_fov = 90.0f;
