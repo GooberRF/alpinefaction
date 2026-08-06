@@ -21,6 +21,11 @@ jobs:
     # Use mirror.gcr.io to avoid Docker Hub rate limits on shared GitHub runners.
     container:
       image: mirror.gcr.io/library/debian:trixie
+    env:
+      # d3dcompiler_43.dll is used only as a build tool under Wine - it is never packed into
+      # alpinefaction.vpp or staged as an artifact, so nothing here is redistributed.
+      DIRECTX_REDIST_URL: https://download.microsoft.com/download/8/4/A/84A35BF1-DAFE-4AE8-82AF-AD2AE20B6B14/directx_Jun2010_redist.exe
+      D3DCOMPILER_43_SHA256: 2f23182ec6f4889397ac4bf03d62536136c5bdba825c7d2c4ef08c827f3a8a1c
 
     steps:
     - uses: actions/checkout@v6
@@ -32,27 +37,55 @@ jobs:
         apt-get update
         DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
           g++-mingw-w64-i686-posix ninja-build wine32 wine cmake ca-certificates \
-          winetricks cabextract curl
+          cabextract curl
 
-    - name: Cache winetricks downloads
+    - name: Cache Microsoft D3DCompiler
+      id: d3dcompiler-cache
       uses: actions/cache@v4
       with:
-        path: ~/.cache/winetricks
-        key: winetricks-d3dcompiler_43
+        path: .d3dcompiler
+        key: d3dcompiler_43-directx-jun2010
 
     # shader_compiler.exe runs under Wine and links d3dcompiler_43. Wine's builtin d3dcompiler
     # forwards to vkd3d-shader, which ignores the optimization flags and flattens all control
-    # flow - the resulting shaders are ~20x larger and drivers refuse to create them, so the
-    # game dies in fatal_gr_error on level load. Install the real Microsoft DLL instead.
+    # flow - the resulting shaders come out ~20x larger and need far more temporary registers
+    # than drivers accept, so the game dies in fatal_gr_error on level load. Extract the real
+    # Microsoft DLL out of the DirectX June 2010 redistributable instead.
+    - name: Fetch Microsoft D3DCompiler
+      if: steps.d3dcompiler-cache.outputs.cache-hit != 'true'
+      run: |
+        set -euo pipefail
+        tmp="$(mktemp -d)"
+        curl -fsSL -o "$tmp/directx_redist.exe" "$DIRECTX_REDIST_URL"
+        # The redist also bundles D3DCompiler_42 and the x64 builds, so name the cab exactly.
+        # Both -F patterns use the archive's own spelling, and the results are looked up with
+        # -iname, so neither cabextract's case folding nor -L has to behave a particular way.
+        cabextract -d "$tmp" -L -F 'Jun2010_D3DCompiler_43_x86.cab' "$tmp/directx_redist.exe"
+        inner="$(find "$tmp" -maxdepth 1 -iname 'Jun2010_D3DCompiler_43_x86.cab' -print -quit)"
+        if [ -z "$inner" ]; then
+          echo '[ERROR] Jun2010_D3DCompiler_43_x86.cab not found in the DirectX redistributable'
+          exit 1
+        fi
+        cabextract -d "$tmp/dll" -L -F 'D3DCompiler_43.dll' "$inner"
+        dll="$(find "$tmp/dll" -maxdepth 1 -iname 'd3dcompiler_43.dll' -print -quit)"
+        if [ -z "$dll" ]; then
+          echo '[ERROR] d3dcompiler_43.dll not found in Jun2010_D3DCompiler_43_x86.cab'
+          exit 1
+        fi
+        mkdir -p .d3dcompiler
+        cp "$dll" .d3dcompiler/d3dcompiler_43.dll
+
     - name: Set up Wine prefix
       run: |
+        set -euo pipefail
+        # Runs on the cached path too, so a stale or corrupted cache entry is caught as well.
+        echo "$D3DCOMPILER_43_SHA256  .d3dcompiler/d3dcompiler_43.dll" | sha256sum -c -
         export WINEPREFIX=$GITHUB_WORKSPACE/.wine
         export WINEARCH=win32
         export WINEDEBUG=-all
         wineboot --init
         wineserver -w
-        winetricks -q d3dcompiler_43
-        wineserver -w
+        cp .d3dcompiler/d3dcompiler_43.dll "$WINEPREFIX/drive_c/windows/system32/"
 
     - name: Create a build environment
       run: cmake -E make_directory ./build
