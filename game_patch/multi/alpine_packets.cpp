@@ -67,8 +67,8 @@ void af_send_packet(rf::Player* player, const void* data, int len, bool is_relia
         }
         return;
     }
-    if (len <= 0 || len > rf::max_packet_size) {
-        xlog::error("af_send_packet: Packet size {} exceeds max {}", len, rf::max_packet_size);
+    if (len <= 0 || len > rf::MAX_PACKET_SIZE) {
+        xlog::error("af_send_packet: Packet size {} exceeds max {}", len, rf::MAX_PACKET_SIZE);
         return;
     }
 
@@ -178,7 +178,7 @@ void af_send_ping_location_req_packet(rf::Vector3* pos)
         return;
     }
 
-    std::byte packet_buf[rf::max_packet_size];
+    std::byte packet_buf[rf::MAX_PACKET_SIZE];
     af_ping_location_req_packet ping_location_req_packet{};
     ping_location_req_packet.header.type = static_cast<uint8_t>(af_packet_type::af_ping_location_req);
     ping_location_req_packet.header.size = sizeof(ping_location_req_packet) - sizeof(ping_location_req_packet.header);
@@ -259,7 +259,7 @@ void af_send_ping_location_packet(rf::Vector3* pos, uint8_t player_id, rf::Playe
         return;
     }
 
-    std::byte packet_buf[rf::max_packet_size];
+    std::byte packet_buf[rf::MAX_PACKET_SIZE];
     af_ping_location_packet ping_location_packet{};
     ping_location_packet.header.type = static_cast<uint8_t>(af_packet_type::af_ping_location);
     ping_location_packet.header.size = sizeof(ping_location_packet) - sizeof(ping_location_packet.header);
@@ -339,7 +339,7 @@ void af_send_damage_notify_packet(uint8_t player_id, float damage, bool died, rf
         return;
     }
 
-    std::byte packet_buf[rf::max_packet_size];
+    std::byte packet_buf[rf::MAX_PACKET_SIZE];
     af_damage_notify_packet damage_notify_packet{};
     damage_notify_packet.header.type = static_cast<uint8_t>(af_packet_type::af_damage_notify);
     damage_notify_packet.header.size = sizeof(damage_notify_packet) - sizeof(damage_notify_packet.header);
@@ -478,12 +478,12 @@ void af_send_obj_update_packet(rf::Player* player)
     size_t object_data_size = obj_updates.size() * sizeof(af_obj_update);
     size_t total_packet_size = sizeof(RF_GamePacketHeader) + object_data_size;
 
-    if (total_packet_size > rf::max_packet_size) {
+    if (total_packet_size > rf::MAX_PACKET_SIZE) {
         xlog::error("af_send_obj_update_packet: Packet too large! Size: {}", total_packet_size);
         return;
     }
 
-    static std::byte packet_buf[rf::max_packet_size];
+    static std::byte packet_buf[rf::MAX_PACKET_SIZE];
 
     // Fill packet header
     RF_GamePacketHeader header{};
@@ -771,7 +771,7 @@ void af_send_client_req_packet(const af_client_req_packet& packet, bool is_relia
         return;
     }
 
-    std::byte buf[rf::max_packet_size];
+    std::byte buf[rf::MAX_PACKET_SIZE];
     size_t offset = 0;
 
     // Write header
@@ -1030,7 +1030,7 @@ struct VoteReader
 };
 
 // The protocol's only limits on a vote call are the u8 count encoding and
-// rf::max_packet_size (enforced by VoteWriter) — there is no separate policy cap.
+// rf::MAX_PACKET_SIZE (enforced by VoteWriter) — there is no separate policy cap.
 //
 // Returns false if the selection cannot be encoded. Never truncates or wraps:
 // silently dropping part of a player's mutator selection would start a vote that
@@ -1155,7 +1155,7 @@ void af_send_vote_call(const AfVoteCallParams& params)
         return;
     }
 
-    std::byte buf[rf::max_packet_size];
+    std::byte buf[rf::MAX_PACKET_SIZE];
     RF_GamePacketHeader header{};
     header.type = static_cast<uint8_t>(af_packet_type::af_client_req);
 
@@ -1202,7 +1202,7 @@ void af_send_vote_call(const AfVoteCallParams& params)
         // Would have overflowed the packet buffer. Dropping the send is the only
         // safe option, but never do it silently.
         xlog::warn("af_send_vote_call: vote type {} payload exceeds the {} byte packet buffer; not sent",
-                   static_cast<int>(params.type), rf::max_packet_size);
+                   static_cast<int>(params.type), rf::MAX_PACKET_SIZE);
         return;
     }
 
@@ -1295,9 +1295,9 @@ void af_send_vote_state_start(rf::Player* player, AfVoteType type, uint16_t time
     // remaining + flags + the two string length bytes.
     constexpr size_t fixed_len = sizeof(RF_GamePacketHeader) + 9 + 2;
     // Guards str_budget against underflowing if fields are ever added here.
-    static_assert(fixed_len < rf::max_packet_size,
+    static_assert(fixed_len < rf::MAX_PACKET_SIZE,
                   "af_sreq_vote_state start fixed fields no longer fit a packet");
-    constexpr size_t str_budget = rf::max_packet_size - fixed_len;
+    constexpr size_t str_budget = rf::MAX_PACKET_SIZE - fixed_len;
 
     // A long title (many mutators) must never cost the client its START event,
     // so both strings are truncated to fit rather than overflowing the packet.
@@ -1312,7 +1312,7 @@ void af_send_vote_state_start(rf::Player* player, AfVoteType type, uint16_t time
         flags |= AF_VOTE_STATE_FLAG_SYNC;
     }
 
-    std::byte buf[rf::max_packet_size];
+    std::byte buf[rf::MAX_PACKET_SIZE];
     VoteWriter w{buf, sizeof(buf), sizeof(RF_GamePacketHeader)};
     w.u8(static_cast<uint8_t>(af_server_req_type::af_sreq_vote_state));
     w.u8(static_cast<uint8_t>(AfVoteStateEvent::Start));
@@ -1333,7 +1333,7 @@ void af_send_vote_state_update(rf::Player* player, uint8_t yes, uint8_t no, uint
         return;
     }
 
-    std::byte buf[rf::max_packet_size];
+    std::byte buf[rf::MAX_PACKET_SIZE];
     VoteWriter w{buf, sizeof(buf), sizeof(RF_GamePacketHeader)};
     w.u8(static_cast<uint8_t>(af_server_req_type::af_sreq_vote_state));
     w.u8(static_cast<uint8_t>(AfVoteStateEvent::Update));
@@ -1352,13 +1352,13 @@ void af_send_vote_state_end(rf::Player* player, AfVoteResult result, bool passed
 
     // header + req_type + event + result + flags + the detail length byte.
     constexpr size_t fixed_len = sizeof(RF_GamePacketHeader) + 4 + 1;
-    static_assert(fixed_len < rf::max_packet_size,
+    static_assert(fixed_len < rf::MAX_PACKET_SIZE,
                   "af_sreq_vote_state end fixed fields no longer fit a packet");
     // The detail line is truncated rather than dropped: losing the end event
     // entirely would strand the client's HUD notification.
-    const size_t detail_len = std::min<size_t>({detail.size(), 255, rf::max_packet_size - fixed_len});
+    const size_t detail_len = std::min<size_t>({detail.size(), 255, rf::MAX_PACKET_SIZE - fixed_len});
 
-    std::byte buf[rf::max_packet_size];
+    std::byte buf[rf::MAX_PACKET_SIZE];
     VoteWriter w{buf, sizeof(buf), sizeof(RF_GamePacketHeader)};
     w.u8(static_cast<uint8_t>(af_server_req_type::af_sreq_vote_state));
     w.u8(static_cast<uint8_t>(AfVoteStateEvent::End));
@@ -1397,12 +1397,12 @@ void af_send_vote_options_data(rf::Player* player)
 
     // req_type + stream event + generation
     constexpr size_t frame_prefix = sizeof(uint8_t) + sizeof(uint8_t) + sizeof(uint32_t);
-    constexpr size_t max_chunk_len = rf::max_packet_size - sizeof(RF_GamePacketHeader) - frame_prefix;
+    constexpr size_t max_chunk_len = rf::MAX_PACKET_SIZE - sizeof(RF_GamePacketHeader) - frame_prefix;
     static_assert(max_chunk_len > 0, "vote options chunk payload no longer fits a packet");
 
     const auto queue_frame = [&](AfVoteOptionsStream event, const uint8_t* data, size_t len,
                                  std::optional<uint32_t> extra) {
-        std::byte buf[rf::max_packet_size];
+        std::byte buf[rf::MAX_PACKET_SIZE];
         VoteWriter w{buf, sizeof(buf), sizeof(RF_GamePacketHeader)};
         w.u8(static_cast<uint8_t>(af_server_req_type::af_sreq_vote_options_data));
         w.u8(static_cast<uint8_t>(event));
@@ -1700,7 +1700,7 @@ void af_send_server_req_packet(const af_server_req_packet& packet, rf::Player* p
         return;
     }
 
-    std::byte buf[rf::max_packet_size];
+    std::byte buf[rf::MAX_PACKET_SIZE];
     size_t offset = 0;
 
     std::memcpy(buf + offset, &packet.header, sizeof(packet.header));
@@ -1858,7 +1858,7 @@ void af_send_kill_info(rf::Player* killed_player)
         return;
     }
 
-    std::byte buf[rf::max_packet_size];
+    std::byte buf[rf::MAX_PACKET_SIZE];
     size_t off = 0;
 
     RF_GamePacketHeader header{};
@@ -2065,7 +2065,7 @@ void af_send_pit_roster(rf::Player* player, const std::vector<af_pit_roster_entr
         return;
     }
 
-    std::byte buf[rf::max_packet_size];
+    std::byte buf[rf::MAX_PACKET_SIZE];
     const size_t max_entries =
         (sizeof(buf) - sizeof(RF_GamePacketHeader) - sizeof(uint8_t)) / sizeof(af_pit_roster_entry);
     const uint8_t count =
@@ -2156,7 +2156,7 @@ void af_send_gungame_order(rf::Player* player, const std::vector<af_gungame_orde
         return;
     }
 
-    std::byte buf[rf::max_packet_size];
+    std::byte buf[rf::MAX_PACKET_SIZE];
     const size_t max_entries =
         (sizeof(buf) - sizeof(RF_GamePacketHeader) - sizeof(uint8_t)) / sizeof(af_gungame_order_entry);
     const uint8_t count =
@@ -2669,7 +2669,7 @@ void af_send_just_spawned_loadout(rf::Player* to_player, std::vector<WeaponLoado
     if (!rf::is_server || !to_player)
         return;
 
-    std::byte buf[rf::max_packet_size];
+    std::byte buf[rf::MAX_PACKET_SIZE];
     if (sizeof(buf) < sizeof(RF_GamePacketHeader) + 1)
         return;
 
@@ -2694,7 +2694,7 @@ void af_send_just_spawned_loadout(rf::Player* to_player, std::vector<WeaponLoado
     hdr->size = static_cast<uint16_t>(1 + payload_written);
 
     const size_t total_len = sizeof(RF_GamePacketHeader) + hdr->size;
-    if (total_len > rf::max_packet_size)
+    if (total_len > rf::MAX_PACKET_SIZE)
         return;
 
     af_send_packet(to_player, buf, static_cast<int>(total_len), true);
@@ -2793,10 +2793,10 @@ void af_send_koth_hill_state_packet(rf::Player* player, const HillInfo& h, const
     pkt.red_score = static_cast<uint16_t>(std::clamp(g_koth_info.red_team_score, 0, 0xFFFF));
     pkt.blue_score = static_cast<uint16_t>(std::clamp(g_koth_info.blue_team_score, 0, 0xFFFF));
 
-    std::byte buf[rf::max_packet_size];
+    std::byte buf[rf::MAX_PACKET_SIZE];
     const size_t wire_sz = sizeof(pkt);
-    if (wire_sz > rf::max_packet_size) {
-        xlog::error("af_koth_state: packet too large ({}>{})", wire_sz, rf::max_packet_size);
+    if (wire_sz > rf::MAX_PACKET_SIZE) {
+        xlog::error("af_koth_state: packet too large ({}>{})", wire_sz, rf::MAX_PACKET_SIZE);
         return;
     }
     std::memcpy(buf, &pkt, wire_sz);
@@ -3143,12 +3143,12 @@ void af_send_koth_hill_captured_packet(rf::Player* player, uint8_t hill_uid, Hil
     const size_t payload_size = (sizeof(af_koth_hill_captured_packet) - sizeof(RF_GamePacketHeader)) + id_count;
     const size_t wire_size = sizeof(RF_GamePacketHeader) + payload_size;
 
-    if (wire_size > rf::max_packet_size) {
-        xlog::error("af_koth_hill_captured: packet too large ({} > {})", wire_size, rf::max_packet_size);
+    if (wire_size > rf::MAX_PACKET_SIZE) {
+        xlog::error("af_koth_hill_captured: packet too large ({} > {})", wire_size, rf::MAX_PACKET_SIZE);
         return;
     }
 
-    std::byte packet_buf[rf::max_packet_size];
+    std::byte packet_buf[rf::MAX_PACKET_SIZE];
 
     af_koth_hill_captured_packet af_koth_hill_captured_packet{};
     af_koth_hill_captured_packet.header.type = static_cast<uint8_t>(af_packet_type::af_koth_hill_captured);
@@ -3811,7 +3811,7 @@ void af_send_server_cfg(rf::Player* player) {
     }
 
     const auto send_msg = [player] (const std::string_view msg) {
-        constexpr size_t max_chunk_len = rf::max_packet_size - sizeof(af_server_msg_packet);
+        constexpr size_t max_chunk_len = rf::MAX_PACKET_SIZE - sizeof(af_server_msg_packet);
         const size_t len = std::clamp(msg.size(), 0uz, max_chunk_len);
 
         af_server_msg_packet server_msg_packet;
@@ -3848,7 +3848,7 @@ void af_send_server_cfg(rf::Player* player) {
     // tag rather than widening this clear.
     send_queues_rel_clear_packets(player->net_data->reliable_socket);
 
-    constexpr int chunk_size = rf::max_packet_size - sizeof(af_server_msg_packet);
+    constexpr int chunk_size = rf::MAX_PACKET_SIZE - sizeof(af_server_msg_packet);
     for (const auto chunk : g_alpine_server_config.printed_cfg
         | std::views::chunk(chunk_size)) {
         send_msg(std::string_view{chunk.begin(), chunk.end()});
@@ -3877,13 +3877,13 @@ void af_send_server_cfg(rf::Player* player) {
 
 union af_server_msg_packet_buf {
     af_server_msg_packet packet;
-    std::array<uint8_t, rf::max_packet_size> buf;
+    std::array<uint8_t, rf::MAX_PACKET_SIZE> buf;
 };
 
 af_server_msg_packet_buf build_automated_chat_msg_packet(
     const std::string_view msg
 ) {
-    constexpr size_t max_len = rf::max_packet_size - sizeof(af_server_msg_packet);
+    constexpr size_t max_len = rf::MAX_PACKET_SIZE - sizeof(af_server_msg_packet);
     const size_t len = std::clamp(msg.size(), 0uz, max_len);
 
     af_server_msg_packet_buf buf{};
@@ -3903,7 +3903,7 @@ af_server_msg_packet_buf build_hud_notification_packet(
     std::string_view text, int8_t duration_seconds,
     uint8_t notification_type, bool fade_on_expire
 ) {
-    constexpr size_t max_len = rf::max_packet_size
+    constexpr size_t max_len = rf::MAX_PACKET_SIZE
         - sizeof(af_server_msg_packet)
         - sizeof(af_hud_notification_prefix);
     const size_t len = std::clamp(text.size(), 0uz, max_len);
@@ -3931,7 +3931,7 @@ af_server_msg_packet_buf build_hud_notification_packet(
 af_server_msg_packet_buf build_server_console_msg_packet(
     const std::string_view msg
 ) {
-    constexpr size_t max_len = rf::max_packet_size - sizeof(af_server_msg_packet);
+    constexpr size_t max_len = rf::MAX_PACKET_SIZE - sizeof(af_server_msg_packet);
     const size_t len = std::clamp(msg.size(), 0uz, max_len);
 
     af_server_msg_packet_buf buf{};
@@ -4331,7 +4331,7 @@ void af_send_bot_control_simple(rf::Player* player, af_bot_control_type subtype)
         return;
     }
 
-    std::byte buf[rf::max_packet_size];
+    std::byte buf[rf::MAX_PACKET_SIZE];
     size_t offset = 0;
 
     RF_GamePacketHeader header{};
@@ -4404,7 +4404,7 @@ void af_send_bot_control_update_personality(rf::Player* player, const ServerBotC
         return;
     }
 
-    std::byte buf[rf::max_packet_size];
+    std::byte buf[rf::MAX_PACKET_SIZE];
     const size_t len = write_profile_update_payload(
         buf, sizeof(buf),
         af_bot_control_type::update_personality,
@@ -4423,7 +4423,7 @@ void af_send_bot_control_update_skill(rf::Player* player, const ServerBotConfig&
         return;
     }
 
-    std::byte buf[rf::max_packet_size];
+    std::byte buf[rf::MAX_PACKET_SIZE];
     const size_t len = write_profile_update_payload(
         buf, sizeof(buf),
         af_bot_control_type::update_skill,
@@ -4445,7 +4445,7 @@ void af_send_bot_control_update_identity(rf::Player* player, const std::string& 
     const uint8_t name_len = static_cast<uint8_t>(
         std::min<size_t>(name.size(), kMaxPresetNameLen));
 
-    std::byte buf[rf::max_packet_size];
+    std::byte buf[rf::MAX_PACKET_SIZE];
     size_t offset = 0;
 
     RF_GamePacketHeader header{};
@@ -4857,7 +4857,7 @@ void af_send_player_info_response(const rf::NetAddr& addr)
 
     // Compute segment boundaries (each segment fits within max_packet_size)
     constexpr int header_size = static_cast<int>(sizeof(af_player_info_packet));
-    constexpr int max_payload = static_cast<int>(rf::max_packet_size) - header_size;
+    constexpr int max_payload = static_cast<int>(rf::MAX_PACKET_SIZE) - header_size;
 
     int seg_boundaries[max_players + 2]; // preamble + entries + sentinel
     int total_segments = 0;
@@ -4893,7 +4893,7 @@ void af_send_player_info_response(const rf::NetAddr& addr)
     }
 
     // Build and send each segment
-    std::byte packet_buf[rf::max_packet_size];
+    std::byte packet_buf[rf::MAX_PACKET_SIZE];
     for (int seg = 0; seg < total_segments; ++seg) {
         int first_entry = seg_boundaries[seg];
         int end_entry = seg_boundaries[seg + 1];
