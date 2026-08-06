@@ -158,6 +158,7 @@ FunHook<int()> rf_do_frame_hook{
         rf::os_poll();
         high_fps_update();
         server_do_frame();
+        riot_shield_do_frame();
         client_bot_do_frame();
         koth_do_frame();
         bagman_do_frame();

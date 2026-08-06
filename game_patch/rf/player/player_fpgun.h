@@ -8,6 +8,8 @@
 namespace rf
 {
     struct Player;
+    struct Clutter;
+    struct PCollisionOut;
 
     struct PlayerFpgunData
     {
@@ -85,4 +87,7 @@ namespace rf
     static auto& player_fpgun_load_meshes = addr_as_ref<void()>(0x004AE530);
     static auto& player_fpgun_delete_meshes = addr_as_ref<void()>(0x004AEB40);
     static auto& player_fpgun_page_in = addr_as_ref<void(Player* player, int unused, int weapon_type)>(0x004AE350);
+    static auto& player_fpgun_add_shield_decal = addr_as_ref<void(Player* player, Clutter* shield, PCollisionOut* collide_out)>(0x004A7110);
+    static auto& player_fpgun_delete_shield_decals = addr_as_ref<void(Player* player)>(0x004A70E0);
+    static auto& fpgun_riot_shield_breaking = addr_as_ref<bool>(0x007CAB58);
 }

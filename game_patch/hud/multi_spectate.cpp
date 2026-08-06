@@ -23,6 +23,7 @@
 #include "../rf/collide.h"
 #include "../rf/geometry.h"
 #include "../rf/math/matrix.h"
+#include "../object/object.h"
 #include "../main/main.h"
 #include "../input/mouse.h"
 #include "../misc/player.h"
@@ -239,6 +240,14 @@ void multi_spectate_sync_crouch_anim()
     }
 }
 
+// Called when we stop rendering a player's first person weapon: drops the shield decals
+// that accumulated on them and clears the fpgun break latch.
+static void spectate_release_riot_shield_view_state(rf::Player* player)
+{
+    riot_shield_reset_fp_decals(player);
+    rf::fpgun_riot_shield_breaking = false;
+}
+
 void multi_spectate_set_target_player(rf::Player* player)
 {
     if (!player)
@@ -247,7 +256,7 @@ void multi_spectate_set_target_player(rf::Player* player)
     if (!rf::local_player || !rf::local_player->cam || !g_spectate_mode_target || g_spectate_mode_target == player)
         return;
 
-    if (is_force_respawn()) {
+    if (is_force_respawn() && player != rf::local_player) {
         rf::String msg{"You cannot use Spectate Mode because Force Respawn is enabled in this server!"};
         rf::String prefix;
         rf::multi_chat_print(msg, rf::ChatMsgColor::white_white, prefix);
@@ -261,6 +270,7 @@ void multi_spectate_set_target_player(rf::Player* player)
 
 #if SPECTATE_MODE_SHOW_WEAPON
         g_spectate_mode_target->flags &= ~rf::PF_HIDE_FROM_CAMERA;
+        spectate_release_riot_shield_view_state(g_spectate_mode_target);
         rf::Entity* entity = rf::entity_from_handle(g_spectate_mode_target->entity_handle);
         if (entity)
             entity->local_player = nullptr;
@@ -305,6 +315,7 @@ void multi_spectate_set_target_player(rf::Player* player)
 
 #if SPECTATE_MODE_SHOW_WEAPON
     player->flags |= rf::PF_HIDE_FROM_CAMERA;
+    player->fpgun_data.show_silencer = false;
     player->fpgun_data.fpgun_weapon_type = -1;
     player->weapon_mesh_handle = nullptr;
     rf::Entity* entity = rf::entity_from_handle(player->entity_handle);
@@ -409,6 +420,7 @@ static void spectate_unbind_target()
 
 #if SPECTATE_MODE_SHOW_WEAPON
         g_spectate_mode_target->flags &= ~rf::PF_HIDE_FROM_CAMERA;
+        spectate_release_riot_shield_view_state(g_spectate_mode_target);
         rf::Entity* entity = rf::entity_from_handle(g_spectate_mode_target->entity_handle);
         if (entity)
             entity->local_player = nullptr;
@@ -444,6 +456,7 @@ static void spectate_apply_player_view_mode()
 #if SPECTATE_MODE_SHOW_WEAPON
         // Hide the target's body and render their first-person weapon.
         g_spectate_mode_target->flags |= rf::PF_HIDE_FROM_CAMERA;
+        g_spectate_mode_target->fpgun_data.show_silencer = false;
         g_spectate_mode_target->fpgun_data.fpgun_weapon_type = -1;
         g_spectate_mode_target->weapon_mesh_handle = nullptr;
         if (entity) {
@@ -458,6 +471,7 @@ static void spectate_apply_player_view_mode()
         // Third person / orbit: show the target's body, drop the first-person weapon overlay.
 #if SPECTATE_MODE_SHOW_WEAPON
         g_spectate_mode_target->flags &= ~rf::PF_HIDE_FROM_CAMERA;
+        spectate_release_riot_shield_view_state(g_spectate_mode_target);
         if (entity)
             entity->local_player = nullptr;
         player_fpgun_set_player(rf::local_player);

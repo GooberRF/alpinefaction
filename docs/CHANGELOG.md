@@ -147,6 +147,12 @@ Version 1.4.0 (Lupin): Not yet released
 - Fix out of bounds read when applying level rules if the rotation shrank while a level was running
 - Fix the remote server config display sometimes being treated as complete before all of its content had arrived
 - Fix rcon feedback for the `info` command being cut off when the output exceeded a single packet
+- Fix damage to riot shields not being replicated to clients in multiplayer
+- Fix riot shield third person models being left behind when their holder disconnects
+- Fix the riot shield third person model floating in front of the camera when first person spectating its holder
+- Fix riot shields not being able to be picked up again after breaking while weapon stay was enabled
+- Fix servers relaying weapon shots twice, which made shots spawn duplicate projectiles, muzzle flashes, fire sounds, and shell casings in third person
+- Fix first person spectate sometimes showing a silencer on the pistol
 
 [@is-this-c](https://github.com/is-this-c)
 - Clear cached server config output after a shuffle of a server's rotation
