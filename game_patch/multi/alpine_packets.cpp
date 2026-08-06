@@ -3392,6 +3392,12 @@ static void build_af_server_info_packet(af_server_info_packet& pkt)
         af |= af_server_info_flags::SIF_JETPACKS;
     if (g_alpine_server_config_active_rules.mutators.low_gravity_enabled)
         af |= af_server_info_flags::SIF_LOW_GRAVITY;
+    if (g_alpine_server_config_active_rules.mutators.skiing_enabled)
+        af |= af_server_info_flags::SIF_SKIING;
+    if (g_alpine_server_config_active_rules.mutators.bhop_enabled)
+        af |= af_server_info_flags::SIF_BHOP;
+    if (g_alpine_server_config_active_rules.mutators.dodging_enabled)
+        af |= af_server_info_flags::SIF_DODGING;
     // Must stay immediately ahead of the signal_cfg_changed check below, which
     // consumes the flag this sets.
     {
@@ -3498,6 +3504,9 @@ static void decode_af_server_info_flags(const af_server_info_packet& pkt, Alpine
     server_info.super_drain = (pkt.af_flags & af_server_info_flags::SIF_SUPER_DRAIN) != 0;
     server_info.jetpacks = (pkt.af_flags & af_server_info_flags::SIF_JETPACKS) != 0;
     server_info.low_gravity = (pkt.af_flags & af_server_info_flags::SIF_LOW_GRAVITY) != 0;
+    server_info.skiing = (pkt.af_flags & af_server_info_flags::SIF_SKIING) != 0;
+    server_info.bunny_hopping = (pkt.af_flags & af_server_info_flags::SIF_BHOP) != 0;
+    server_info.dodging = (pkt.af_flags & af_server_info_flags::SIF_DODGING) != 0;
 }
 
 // Apply af_server_info_packet flags to the local server info (for listen server host)

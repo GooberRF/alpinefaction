@@ -679,6 +679,15 @@ struct MutatorConfig
     // (for projectiles) and clients (for movement)
     bool low_gravity_enabled = false;
 
+    // Skiing: hold crouch to slide without ground friction. Client-side physics.
+    bool skiing_enabled = false;
+
+    // Bunny Hopping: midair strafe gain and a landing friction grace. Client-side physics.
+    bool bhop_enabled = false;
+
+    // Dodging: double-tap or crouch-jump directional dodge. Client-side physics.
+    bool dodging_enabled = false;
+
     // Display only: human-readable names of the mutators applied to these rules.
     std::vector<std::string> active_labels;
 

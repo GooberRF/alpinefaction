@@ -397,7 +397,7 @@ namespace rf
         int bot_index;
         int mp_character_id;
         int powerup_light_handle;
-        int field_1488;
+        float custom_max_vel; // horizontal speed cap used instead of info->max_vel when p_data.flags & PF_USE_CUSTOM_MAX_VEL
         VMesh *respawn_vfx_handle;
         Timestamp field_1490;
     };
@@ -480,6 +480,8 @@ namespace rf
     static auto& entity_is_flying = addr_as_ref<bool(Entity* ep)>(0x0042A060);
     static auto& entity_make_fly = addr_as_ref<void(Entity* ep)>(0x00428130);
     static auto& entity_make_run = addr_as_ref<void(Entity* ep)>(0x004280B0);
+    static auto& entity_jump = addr_as_ref<void(Entity* ep)>(0x004288B0);
+    static auto& jump_velocity = addr_as_ref<float>(0x0062F2C8);
     static auto& entity_on_ground = addr_as_ref<bool(Entity* ep)>(0x0042A0D0);
     static auto& entity_can_swim = addr_as_ref<bool(Entity* ep)>(0x00427FF0);
     static auto& entity_headlamp_turn_on = addr_as_ref<void(Entity* ep)>(0x00429560);
