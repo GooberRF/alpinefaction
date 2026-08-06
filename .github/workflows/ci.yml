@@ -81,8 +81,14 @@ jobs:
         # Runs on the cached path too, so a stale or corrupted cache entry is caught as well.
         echo "$D3DCOMPILER_43_SHA256  .d3dcompiler/d3dcompiler_43.dll" | sha256sum -c -
         export WINEPREFIX=$GITHUB_WORKSPACE/.wine
+        # win32 keeps drive_c/windows/system32 as the 32-bit DLL directory, which is where the
+        # i686 shader_compiler.exe looks. A win64 prefix would want syswow64 instead.
         export WINEARCH=win32
         export WINEDEBUG=-all
+        # The workspace is owned by the runner uid rather than by root inside the container, and
+        # Wine refuses to create a prefix below a directory it does not own. Creating it here
+        # leaves Wine with nothing to do but accept the existing root-owned directory.
+        mkdir -p "$WINEPREFIX"
         wineboot --init
         wineserver -w
         cp .d3dcompiler/d3dcompiler_43.dll "$WINEPREFIX/drive_c/windows/system32/"
