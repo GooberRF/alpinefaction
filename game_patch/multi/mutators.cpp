@@ -82,7 +82,6 @@ static void set_single_weapon_loadout(AlpineServerConfigRules& r, int weapon_typ
 {
     r.spawn_loadout.red_weapons.clear();
     r.spawn_loadout.blue_weapons.clear();
-    r.spawn_loadout.loadouts_active = true;
     r.spawn_loadout.add(mutator_weapon_name(weapon_type), reserve_ammo, false, true);
     r.default_player_weapon.set_weapon(mutator_weapon_name(weapon_type));
 }
@@ -175,7 +174,6 @@ static void apply_arena(AlpineServerConfigRules& r, const toml::table& /*opts*/)
     const int baton = rf::riot_stick_weapon_type;
     r.spawn_loadout.red_weapons.clear();
     r.spawn_loadout.blue_weapons.clear();
-    r.spawn_loadout.loadouts_active = true;
     r.spawn_loadout.add("Riot Stick", rf::weapon_types[baton].clip_size_multi, false, true);
     r.spawn_loadout.add("Assault Rifle", 999, false, true);
     r.default_player_weapon.set_weapon("Assault Rifle");

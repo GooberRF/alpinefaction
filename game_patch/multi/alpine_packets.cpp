@@ -2738,8 +2738,12 @@ static void af_process_just_spawned_info_packet(const void* data, size_t len, co
             }
 
             const auto* entries = reinterpret_cast<const LoadoutEntry*>(p);
-            if (!rf::local_player)
+            // A zero length loadout means the server did not take over the stock spawn
+            // grant, so the weapons this client gave itself are the correct ones.
+            if (!rf::local_player || num == 0)
                 return;
+
+            bool granted[64] = {};
 
             for (uint8_t i = 0; i < num; ++i) {
                 const int weapon_idx = static_cast<int>(entries[i].weapon_index);
@@ -2752,11 +2756,33 @@ static void af_process_just_spawned_info_packet(const void* data, size_t len, co
                 }
 
                 // add weapon locally
-                rf::player_add_weapon(rf::local_player, weapon_idx, ammo);
+                af_give_loadout_weapon(rf::local_player, weapon_idx, ammo);
+                granted[weapon_idx] = true;
 
                 // if remote charge, we also need to add the detonator
                 if (weapon_idx == rf::remote_charge_weapon_type && rf::local_player_entity) {
                     rf::ai_add_weapon(&rf::local_player_entity->ai, rf::remote_charge_det_weapon_type, 0);
+                    if (rf::remote_charge_det_weapon_type >= 0 && rf::remote_charge_det_weapon_type < 64) {
+                        granted[rf::remote_charge_det_weapon_type] = true;
+                    }
+                }
+            }
+
+            // This client ran the stock spawn grant locally (default player weapon plus the
+            // Riot Stick) while the server replaced it with the loadout, so drop anything the
+            // server did not hand out.
+            if (rf::AiInfo* ai = rf::player_get_ai(rf::local_player)) {
+                const int weapon_count = std::min(rf::num_weapon_types, 64);
+                for (int wt = 0; wt < weapon_count; ++wt) {
+                    // ai_remove_weapon only clears has_weapon, so a weapon still selected in
+                    // either slot has to be left alone - otherwise the slot keeps pointing at
+                    // a weapon the entity no longer owns.
+                    if (wt == ai->current_primary_weapon || wt == ai->current_secondary_weapon) {
+                        continue;
+                    }
+                    if (!granted[wt] && rf::ai_has_weapon(ai, wt)) {
+                        rf::ai_remove_weapon(ai, wt);
+                    }
                 }
             }
         } break;

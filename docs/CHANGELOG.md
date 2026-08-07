@@ -106,6 +106,9 @@ Version 1.4.0 (Lupin): Not yet released
 - Tweak weapon values for some SP-intended weapon classes that are used in Weird Gun Game
 - Add dedicated server config field `add_installed_to_allowed_levels` to allow voting for every installed level whose filename matches a game type prefix, including levels installed while the server is running
 - Do not allow `vote kick` targeting bots
+- Add dedicated server config field `spawn_loadout_blue` to give the blue team its own spawn loadout, with `spawn_loadout` applying to every player when it is not specified
+- Indicate in the dedicated server config printout whether the spawn loadout is granted by the loadout or by the stock spawn weapons, and list the red and blue team loadouts separately when both are configured
+- Add Alpine Faction 1.4.0 clients to the `sv_restrict_status` common test cases
 
 [@is-this-c](https://github.com/is-this-c)
 - Rewrite `VArray` to fix crashes due to MinGW
@@ -158,6 +161,14 @@ Version 1.4.0 (Lupin): Not yet released
 - Fix `$Fall Damage Slam Multiplier` `af_game.tbl` option not working in single player
 - Fix `r_picmip` reducing the resolution of glass and grating textures
 - Fix flags and other backpack attachments facing the wrong way on the `Eos` multiplayer character
+- Fix granting a weapon with no ammo type, such as the riot shield, corrupting the holder's secondary weapon slot, which showed an unselectable empty Remote Charge in the weapon select menu
+- Fix game type default rules, including the spawn loadout and spawn weapon, not being applied to dedicated servers configured for the `DM`, `CTF`, or `TDM` game types
+- Fix `spawn_weapon` not replacing the game type's default weapon in the spawn loadout, which granted both
+- Fix `ammo` in a `spawn_loadout` entry being ignored when the weapon was already in the loadout from game type defaults or a broader rules scope
+- Fix `include = false` in a `spawn_loadout` entry still granting the weapon on the server while never sending it to clients
+- Fix an unrecognized `weapon_name` in a `spawn_loadout` entry being silently ignored, which could leave players spawning with no weapons
+- Fix clients keeping weapons the server did not grant when a spawn loadout replaces the stock spawn weapons, which left unusable weapons in the weapon select menu
+- Fix `infinite_reloads` not filling reserve ammo on weapon pickup
 
 [@is-this-c](https://github.com/is-this-c)
 - Clear cached server config output after a shuffle of a server's rotation
