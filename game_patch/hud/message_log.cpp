@@ -58,8 +58,8 @@ CallHook<void(int, int, int, int, int, int, int, int, int, bool, bool, rf::gr::M
 // (line count + 1) x gr_get_font_height(-1), i.e. measured with the *default* font,
 // while the body is drawn with rfpc-medium.vf. Once a localization redirects the
 // bitmap fonts to a TTF those differ, so entries overlap and the scroll arithmetic
-// (0x00454F53 / 0x004550BC sum the same field) stops working. Fixing the stored
-// value covers drawing and scrolling at once.
+// (0x00454F53 / 0x004550BC sum the same field) stops working. Recomputing the
+// height at read time (from the text/font actually drawn) fixes drawing and scrolling together.
 // ---------------------------------------------------------------------------
 
 static auto& message_log_font = addr_as_ref<int>(0x006C66F0);
