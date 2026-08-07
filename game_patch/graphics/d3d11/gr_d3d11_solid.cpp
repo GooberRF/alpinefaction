@@ -223,6 +223,9 @@ namespace gr::d3d11
         // World geometry UVs are authored for pow2 texture dimensions on old GPUs,
         // so suppress UV scaling for this entire pass
         render_context.set_suppress_texture_uv_scale(true);
+        // Exempt glass, grating, and other see-through textures from picmip.
+        RenderContext::ScopedPicmipActive picmip_scope{render_context,
+            render_context.picmip_active() && what != FaceRenderType::alpha};
         for (SolidBatch& b : batches) {
             bool lightmap_only = rf::gr::show_lightmaps && what != FaceRenderType::alpha;
             render_context.set_mode(b.mode, {255, 255, 255, 255}, lightmap_only);
