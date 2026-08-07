@@ -3969,7 +3969,7 @@ void af_broadcast_automated_chat_msg(const std::string_view msg) {
                 0
             );
         } else {
-            send_chat_line_packet(std::format("\xA6 {}", msg), &player);
+            send_chat_line_packet(std::string("\xA6 ") + std::string(msg), &player);
         }
     }
 }
