@@ -156,6 +156,8 @@ Version 1.4.0 (Lupin): Not yet released
 - Fix servers relaying weapon shots twice, which made shots spawn duplicate projectiles, muzzle flashes, fire sounds, and shell casings in third person
 - Fix first person spectate sometimes showing a silencer on the pistol
 - Fix `$Fall Damage Slam Multiplier` `af_game.tbl` option not working in single player
+- Fix `r_picmip` reducing the resolution of glass and grating textures
+- Fix flags and other backpack attachments facing the wrong way on the `Eos` multiplayer character
 
 [@is-this-c](https://github.com/is-this-c)
 - Clear cached server config output after a shuffle of a server's rotation
