@@ -94,6 +94,7 @@ enum class af_client_req_type : uint8_t
     af_req_vote_cancel = 0x8,  // Alpine 1.4 (no additional data)
     af_req_vote_options = 0x9, // Alpine 1.4 (5 bytes: flags + known_generation)
     af_req_jetpack_state = 0xA, // Alpine 1.4 (1 byte: on 0/1)
+    af_req_stats_pssk = 0xB,    // Alpine 1.4 (32 bytes: player stats session key, no NUL)
 };
 
 // Frozen wire constants, values can NEVER be reordered or changed.
@@ -270,9 +271,18 @@ struct JetpackStateReqPayload
     uint8_t on = 0;
 };
 
+// The player stats session key minted by FactionFiles for this join, handed to the
+// server so it can report this player's stats. Raw, not NUL terminated.
+struct StatsPsskPayload
+{
+    char pssk[32] = {};
+};
+static_assert(sizeof(StatsPsskPayload) == 32);
+
 using af_client_payload = std::variant<HandicapPayload, SprayReqPayload, CharacterPayload,
                                        ReadyReqPayload, PitQueueReqPayload, VoteCastReqPayload,
-                                       VoteOptionsReqPayload, JetpackStateReqPayload, std::monostate>;
+                                       VoteOptionsReqPayload, JetpackStateReqPayload,
+                                       StatsPsskPayload, std::monostate>;
 
 struct af_client_req_packet
 {
@@ -843,6 +853,7 @@ void af_send_server_cfg_request();
 void af_send_spray_request(uint16_t texture_id, const rf::Vector3& pos, const rf::Vector3& normal);
 void af_send_ready_request(uint8_t action);      // 0 = unready, 1 = ready, 2 = toggle
 void af_send_pit_queue_request(uint8_t action);  // 0 = leave, 1 = join, 2 = toggle
+void af_send_stats_pssk(const std::string& pssk);
 
 // vote system (client -> server)
 void af_send_vote_call(const AfVoteCallParams& params);

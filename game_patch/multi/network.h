@@ -197,6 +197,7 @@ struct AlpineFactionJoinAcceptPacketExt
         skiing              = 1u << 24,
         pogo                = 1u << 25,
         dodging             = 1u << 26,
+        stats_enabled       = 1u << 27,
     } flags = Flags::none;
 
     float max_fov = 0.0f;
@@ -260,6 +261,9 @@ struct AlpineFactionJoinReqPacketExt // used for stashed data during join proces
 };
 template<>
 struct EnableEnumBitwiseOperators<AlpineFactionJoinReqPacketExt::Flags> : std::true_type {};
+
+// Bits of AFGameInfoExtra::af_flags, produced by AFGameInfoFlags::game_info_flags_to_uint32().
+constexpr uint32_t AF_GI_FLAG_STATS_ENABLED = 1u << 9;
 
 // Per-server extra data parsed from the AF game_info v2 extension
 struct AFGameInfoExtra

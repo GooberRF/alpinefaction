@@ -21,4 +21,11 @@ void drain_pending_main_thread_tasks();
 // Sanitize response strings before logging
 std::string sanitize_for_log(std::string_view in);
 
+// GSK format: exactly 32 lowercase hex chars.
+bool is_valid_gsk_format(std::string_view gsk);
+
+// Session/stats key format: exactly 32 alphanumeric chars. Shared by the GSSK,
+// the player stats key (PSK) and the player stats session key (PSSK).
+bool is_valid_stats_key_format(std::string_view key);
+
 } // namespace fflink

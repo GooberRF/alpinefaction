@@ -63,6 +63,8 @@
 #include "../purefaction/pf.h"
 #include "../sound/sound.h"
 #include "../misc/tlv.h"
+#include "../fflink/afstats_client.h"
+#include "../fflink/fflink_session.h"
 
 // NET_IFINDEX_UNSPECIFIED is not defined in MinGW headers
 #ifndef NET_IFINDEX_UNSPECIFIED
@@ -1402,6 +1404,10 @@ CallHook<int(const rf::NetAddr*, std::byte*, size_t)> send_game_info_packet_hook
             req_ver = it->second.ver;
         }
 
+        // Tracks the FactionFiles session, which settles after startup and can lapse,
+        // so it is refreshed here rather than only at server init.
+        g_game_info_server_flags.stats_enabled = fflink::afstats_server_enabled();
+
         // level filename (null-terminated, used by AF extensions)
         uint8_t fname[64] = {0};
         size_t fname_len = 0;
@@ -1567,6 +1573,7 @@ CallHook<int(const rf::NetAddr*, std::byte*, size_t)> send_join_req_packet_hook{
                 show_unsupported_game_type_popup();
                 return 0;
             }
+            fflink::afstats_on_join_req(*addr, extra && (extra->af_flags & AF_GI_FLAG_STATS_ENABLED));
         }
 
         const bool session_client_bot_mode = client_bot_launch_enabled();
@@ -1755,6 +1762,12 @@ CallHook<int(const rf::NetAddr*, std::byte*, size_t)> send_join_accept_packet_ho
         if (g_alpine_server_config_active_rules.mutators.pogo_enabled) {
             ext_data.flags |= AlpineFactionJoinAcceptPacketExt::Flags::pogo;
         }
+        // Direct connects have no browser game_info entry, so this is the only
+        // point at which they learn to run the stats key exchange.
+        if (fflink::afstats_server_enabled()) {
+            ext_data.flags |= AlpineFactionJoinAcceptPacketExt::Flags::stats_enabled;
+            xlog::warn("[afstats] advertising stats-enabled in join_accept");
+        }
         // AF 1.3+ clients: use footer-based format for forward compatibility
         // Older clients: use legacy raw struct (they don't know about the footer)
         bool use_footer = g_joining_client_version == ClientSoftware::AlpineFaction
@@ -1900,6 +1913,9 @@ CodeInjection process_join_accept_injection{
             server_info.dodging = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::dodging);
             server_info.pogo = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::pogo);
             // featured_no_clip is intentionally not stored here, it's consumed inline below via mutators_set_no_clip_weapon.
+
+            fflink::afstats_on_join_accept(
+                !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::stats_enabled));
 
             constexpr float default_fov = 90.0f;
             if (!!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::max_fov) && ext_data.max_fov >= default_fov) {
@@ -2608,6 +2624,7 @@ FunHook<void()> multi_stop_hook{
         gungame_on_multi_shutdown(); // put the Jeep Gun mesh + damage back to weapons.tbl
         mutators_on_multi_shutdown(); // put the level's own gravity back
         riot_shield_on_multi_level_init(); // drop any pending riot shield break suppressions
+        fflink::afstats_reset(); // a stats session key is only ever valid for the join it was minted for
         if (rf::local_player) {
             PlayerAdditionalData* const player_add_data =
                 static_cast<PlayerAdditionalData*>(rf::local_player);

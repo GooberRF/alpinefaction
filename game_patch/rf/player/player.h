@@ -128,6 +128,10 @@ struct PlayerAdditionalData {
     // Throttles the spawn-decline notices in multi_spawn_player_server_side
     // (Alpine restriction, anti-cheat, match in progress, bot, respawn delay).
     rf::Timestamp spawn_decline_msg_timer{};
+
+    // FactionFiles player stats session key delivered by the client on join.
+    // Never persisted, unique per join.
+    std::optional<std::string> afstats_pssk{};
 };
 static_assert(alignof(PlayerAdditionalData) == 0x8);
 #endif

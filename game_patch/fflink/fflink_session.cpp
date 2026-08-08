@@ -15,10 +15,13 @@
 #include <xlog/xlog.h>
 
 #include <common/HttpRequest.h>
+#include <common/utils/list-utils.h>
 #include <common/version/version.h>
 
 #include "../multi/server_internal.h"
 #include "../os/console.h"
+#include "../rf/multi.h"
+#include "../rf/player/player.h"
 #include "fflink_utils.h"
 
 namespace fflink {
@@ -39,41 +42,6 @@ std::mutex g_state_mutex;
 SessionState g_state;
 std::string g_gssk; // protected by g_state_mutex
 std::atomic<bool> g_exchange_in_flight{false};
-
-bool is_lower_hex_char(char c)
-{
-    return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
-}
-
-bool is_valid_gsk_format(std::string_view gsk)
-{
-    if (gsk.size() != 32) {
-        return false;
-    }
-    for (char c : gsk) {
-        if (!is_lower_hex_char(c)) {
-            return false;
-        }
-    }
-    return true;
-}
-
-bool is_valid_gssk_format(std::string_view gssk)
-{
-    if (gssk.size() != 32) {
-        return false;
-    }
-    for (char c : gssk) {
-        const bool ok =
-            (c >= '0' && c <= '9') ||
-            (c >= 'a' && c <= 'z') ||
-            (c >= 'A' && c <= 'Z');
-        if (!ok) {
-            return false;
-        }
-    }
-    return true;
-}
 
 void set_state(SessionStatus status, int server_id, std::string_view error_msg, std::string_view gssk)
 {
@@ -174,7 +142,7 @@ ExchangeOutcome do_one_exchange(const std::string& gsk)
             auto j = nlohmann::json::parse(response);
             auto gssk = j.at("gssk").get<std::string>();
             const auto server_id = j.at("server_id").get<int>();
-            if (!is_valid_gssk_format(gssk)) {
+            if (!is_valid_stats_key_format(gssk)) {
                 throw std::runtime_error("gssk has invalid format");
             }
             out.kind = ExchangeOutcome::Kind::success;
@@ -227,8 +195,7 @@ void exchange_worker_impl(const std::string& gsk)
             xlog::info("[fflink] session established (server_id={})", outcome.server_id);
             set_state(SessionStatus::valid, outcome.server_id, "", outcome.gssk);
             enqueue_console_line(std::format(
-                "FactionFiles session established (server id {}, gssk={}).",
-                outcome.server_id, outcome.gssk));
+                "FactionFiles session established (server id {}).", outcome.server_id));
             g_exchange_in_flight.store(false, std::memory_order_release);
             return;
         }
@@ -350,6 +317,18 @@ std::string get_gssk()
     return g_gssk;
 }
 
+bool afstats_server_enabled()
+{
+    const auto& cfg = g_alpine_server_config;
+    if (cfg.fflink_gsk.empty() || !is_valid_gsk_format(cfg.fflink_gsk)) {
+        return false;
+    }
+    // Deliberately not "session valid": the exchange lands seconds after launch and
+    // may lapse during an FF outage, and a PSSK held across either is still useful.
+    const auto status = snapshot_state().status;
+    return status != SessionStatus::bad_gsk_format && status != SessionStatus::rejected_by_server;
+}
+
 namespace {
 
 const char* status_to_str(SessionStatus s)
@@ -375,6 +354,15 @@ ConsoleCommand2 sv_fflink_status_cmd{
         }
         if (!state.last_error.empty()) {
             rf::console::print("  Last error: {}", state.last_error);
+        }
+        if (rf::is_multi && rf::is_server) {
+            int with_pssk = 0;
+            for (const rf::Player& player : SinglyLinkedList{rf::player_list}) {
+                if (player.afstats_pssk) {
+                    ++with_pssk;
+                }
+            }
+            rf::console::print("  Connected players with a stats session key: {}", with_pssk);
         }
     },
     "Show the current FactionFiles server session link status.",

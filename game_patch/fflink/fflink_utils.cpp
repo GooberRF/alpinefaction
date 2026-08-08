@@ -18,6 +18,11 @@ std::vector<std::string> g_pending_console_lines;
 std::mutex g_pending_tasks_mutex;
 std::vector<std::function<void()>> g_pending_tasks;
 
+bool is_lower_hex_char(char c)
+{
+    return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+}
+
 } // namespace
 
 void enqueue_console_line(std::string line)
@@ -80,6 +85,36 @@ std::string sanitize_for_log(std::string_view in)
         }
     }
     return out;
+}
+
+bool is_valid_gsk_format(std::string_view gsk)
+{
+    if (gsk.size() != 32) {
+        return false;
+    }
+    for (char c : gsk) {
+        if (!is_lower_hex_char(c)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool is_valid_stats_key_format(std::string_view key)
+{
+    if (key.size() != 32) {
+        return false;
+    }
+    for (char c : key) {
+        const bool ok =
+            (c >= '0' && c <= '9') ||
+            (c >= 'a' && c <= 'z') ||
+            (c >= 'A' && c <= 'Z');
+        if (!ok) {
+            return false;
+        }
+    }
+    return true;
 }
 
 } // namespace fflink

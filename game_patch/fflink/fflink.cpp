@@ -1,3 +1,4 @@
+#include "afstats_client.h"
 #include "fflink.h"
 #include "fflink_session.h"
 #include "fflink_utils.h"
@@ -7,6 +8,7 @@ namespace fflink {
 void do_patch()
 {
     session_do_patch();
+    afstats_do_patch();
 }
 
 void do_frame()

@@ -47,6 +47,8 @@
 #include "../misc/misc.h"
 #include "../purefaction/pf_packets.h"
 #include "../os/os.h"
+#include "../fflink/fflink_session.h"
+#include "../fflink/fflink_utils.h"
 
 void af_send_packet(rf::Player* player, const void* data, int len, bool is_reliable)
 {
@@ -644,6 +646,13 @@ void serialize_payload(const JetpackStateReqPayload& payload, std::byte* buf, si
     buf[offset++] = static_cast<std::byte>(payload.on);
 }
 
+// af_req_stats_pssk
+void serialize_payload(const StatsPsskPayload& payload, std::byte* buf, size_t& offset)
+{
+    std::memcpy(buf + offset, payload.pssk, sizeof(payload.pssk));
+    offset += sizeof(payload.pssk);
+}
+
 // af_sreq_ready_prompt
 void serialize_payload(const ReadyPromptPayload& payload, std::byte* buf, size_t& offset)
 {
@@ -836,6 +845,29 @@ void af_send_jetpack_state_request(bool on)
     packet.header.size = sizeof(uint8_t) + sizeof(JetpackStateReqPayload);
     packet.req_type = af_client_req_type::af_req_jetpack_state;
     packet.payload = JetpackStateReqPayload{static_cast<uint8_t>(on ? 1 : 0)};
+
+    af_send_client_req_packet(packet, true); // reliable
+}
+
+// Hand the server the FactionFiles session key that authorizes it to report this
+// player's stats. Minted per join, so it is only ever sent once per connection.
+void af_send_stats_pssk(const std::string& pssk)
+{
+    if (!rf::is_multi || rf::is_server) {
+        return;
+    }
+
+    StatsPsskPayload payload{};
+    if (pssk.size() != sizeof(payload.pssk)) {
+        return;
+    }
+    std::memcpy(payload.pssk, pssk.data(), sizeof(payload.pssk));
+
+    af_client_req_packet packet{};
+    packet.header.type = static_cast<uint8_t>(af_packet_type::af_client_req);
+    packet.header.size = sizeof(uint8_t) + sizeof(StatsPsskPayload);
+    packet.req_type = af_client_req_type::af_req_stats_pssk;
+    packet.payload = payload;
 
     af_send_client_req_packet(packet, true); // reliable
 }
@@ -1597,6 +1629,33 @@ static void af_process_client_req_packet(const void* data, size_t len, const rf:
             if (gt_is_pit()) {
                 pit_handle_queue_request(player, action);
             }
+            break;
+        }
+        case af_client_req_type::af_req_stats_pssk: {
+            if (player->is_browser) {
+                xlog::warn("[afstats] dropping PSSK from a browser ({})", player->name);
+                return;
+            }
+            if (!fflink::afstats_server_enabled()) {
+                xlog::warn("[afstats] dropping PSSK from {}: stats are not enabled on this server",
+                           player->name);
+                return;
+            }
+            if (remaining < sizeof(StatsPsskPayload)) {
+                xlog::warn("[afstats] PSSK payload from {} too short ({} < {})", player->name, remaining,
+                           sizeof(StatsPsskPayload));
+                return;
+            }
+            const std::string_view pssk{reinterpret_cast<const char*>(bytes + offset), sizeof(StatsPsskPayload)};
+            if (!fflink::is_valid_stats_key_format(pssk)) {
+                xlog::warn("[afstats] malformed PSSK from {}", player->name);
+                return;
+            }
+            const bool replacing = player->afstats_pssk.has_value();
+            player->afstats_pssk = std::string{pssk};
+            // VERIFICATION PHASE ONLY: logs the session key verbatim, by explicit request.
+            xlog::warn("[afstats] received PSSK {} from {}{}", pssk, player->name,
+                       replacing ? " (replacing a previous one)" : "");
             break;
         }
         case af_client_req_type::af_req_vote_call: {

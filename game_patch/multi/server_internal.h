@@ -38,6 +38,7 @@ struct AFGameInfoFlags
     bool saving_enabled         = false;
     bool gaussian_spread        = false;
     bool damage_notifications   = false;
+    bool stats_enabled          = false;
 
     uint32_t game_info_flags_to_uint32() const
     {
@@ -49,7 +50,8 @@ struct AFGameInfoFlags
                (static_cast<uint32_t>(match_mode)               << 5) |
                (static_cast<uint32_t>(saving_enabled)           << 6) |
                (static_cast<uint32_t>(gaussian_spread)          << 7) |
-               (static_cast<uint32_t>(damage_notifications)     << 8);
+               (static_cast<uint32_t>(damage_notifications)     << 8) |
+               (static_cast<uint32_t>(stats_enabled)            << 9);
     }
 };
 

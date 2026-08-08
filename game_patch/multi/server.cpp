@@ -59,6 +59,7 @@
 #include "../rf/os/timer.h"
 #include "../rf/level.h"
 #include "../rf/collide.h"
+#include "../fflink/fflink_session.h"
 
 // all commands that can be used by any rcon profiles
 // full_admin gives access to this entire list
@@ -4720,4 +4721,5 @@ void initialize_game_info_server_flags()
     g_game_info_server_flags.saving_enabled = server_is_saving_enabled();
     g_game_info_server_flags.gaussian_spread = server_gaussian_spread();
     g_game_info_server_flags.damage_notifications = server_has_damage_notifications();
+    g_game_info_server_flags.stats_enabled = fflink::afstats_server_enabled();
 }
