@@ -17,6 +17,7 @@
 #include "../multi/kill_attribution.h"
 #include "../misc/misc.h"
 #include "../misc/alpine_settings.h"
+#include "../input/rumble.h"
 
 static std::array<uint8_t, 64U> weapon_reticle_custom_mask{}; // bit 0 = _0, bit 1 = _1
 static std::pair<bool, bool> rocket_locked_custom_reticle = {false, false};
@@ -319,6 +320,8 @@ CodeInjection entity_fire_primary_weapon_semi_auto_patch {
                 }
             }
         }
+
+        rumble_on_turret_fire(entity);
     },
 };
 
