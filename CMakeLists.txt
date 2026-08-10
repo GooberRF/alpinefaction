@@ -1,5 +1,18 @@
 # CMake 3.15 is required for CMAKE_MSVC_RUNTIME_LIBRARY.
 cmake_minimum_required(VERSION 3.15)
+
+if(MSVC)
+    # Pin both charsets. Sources are UTF-8; narrow string literals are Windows-1252,
+    # because the .vf bitmap fonts are indexed by Windows-1252 byte value and several
+    # literals embed those bytes directly (\x95 bullet, \xA6 chat prefix, ...).
+    # Without this the ordinary literal encoding follows the build machine's system
+    # code page: on a DBCS locale such as 932 those bytes become invalid multi-byte
+    # sequences and std::format throws std::format_error at runtime.
+    # Set via _INIT variables before project() to prevent CMake 3.23+ /utf-8 conflict.
+    set(CMAKE_C_FLAGS_INIT "/source-charset:utf-8 /execution-charset:windows-1252")
+    set(CMAKE_CXX_FLAGS_INIT "/source-charset:utf-8 /execution-charset:windows-1252")
+endif()
+
 project(AlpineFaction)
 
 if(NOT "${CMAKE_SIZEOF_VOID_P}" STREQUAL "4")
@@ -35,13 +48,8 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 if(MSVC)
     add_compile_definitions(_CRT_SECURE_NO_WARNINGS)
     add_compile_options(/arch:SSE2)
-    # Pin both charsets. Sources are UTF-8; narrow string literals are Windows-1252,
-    # because the .vf bitmap fonts are indexed by Windows-1252 byte value and several
-    # literals embed those bytes directly (\x95 bullet, \xA6 chat prefix, ...).
-    # Without this the ordinary literal encoding follows the build machine's system
-    # code page: on a DBCS locale such as 932 those bytes become invalid multi-byte
-    # sequences and std::format throws std::format_error at runtime.
-    add_compile_options(/source-charset:utf-8 /execution-charset:windows-1252)
+    # Charset flags set via CMAKE_*_FLAGS_INIT before project() to prevent CMake 3.23+
+    # from adding conflicting /utf-8. See preamble for detailed explanation.
     # Statically link Microsoft's CRT.
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 else()
