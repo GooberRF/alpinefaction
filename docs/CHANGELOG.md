@@ -181,6 +181,8 @@ Version 1.4.0 (Lupin): Not yet released
 
 [@jyh9521](https://github.com/jyh9521)
 - Fix crash on join for builds compiled on Windows systems using a Japanese, Chinese, or Korean locale
+- Fix crash when a HUD element requests an out of range TrueType font id
+- Fix TrueType fonts rendering the wrong glyphs when a character fails to load
 
 Version 1.3.0 (Bakeapple): Released Apr-22-2026
 --------------------------------
