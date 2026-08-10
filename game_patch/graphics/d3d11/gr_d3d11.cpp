@@ -518,7 +518,7 @@ namespace gr::d3d11
         // here (on the first bitmap after 3D scene rendering), outlines land in the
         // framebuffer first, and subsequent bitmaps (scope etc.) commit on top of them.
         // If outlines were already flushed in zbuffer_clear this is a no-op.
-        outline_renderer_->flush(*mesh_renderer_);
+        flush_outlines_before_2d();
         dyn_geo_renderer_->bitmap(bm_handle,
             static_cast<float>(x), static_cast<float>(y), static_cast<float>(w), static_cast<float>(h),
             static_cast<float>(sx), static_cast<float>(sy), static_cast<float>(sw), static_cast<float>(sh),
@@ -527,8 +527,83 @@ namespace gr::d3d11
 
     void Renderer::bitmap(int bm_handle, float x, float y, float w, float h, float sx, float sy, float sw, float sh, bool flip_x, bool flip_y, rf::gr::Mode mode)
     {
-        outline_renderer_->flush(*mesh_renderer_);
+        flush_outlines_before_2d();
         dyn_geo_renderer_->bitmap(bm_handle, x, y, w, h, sx, sy, sw, sh, flip_x, flip_y, mode);
+    }
+
+    void Renderer::flush_outlines_before_2d()
+    {
+        outline_renderer_->flush(*mesh_renderer_);
+        // The .vfx outlines (the salvage flag) are queued at scene setup and have no
+        // natural render path, so there is no mid-scene draw to piggyback on; they are
+        // drained at explicit points instead, all of which rebind the saved scene camera
+        // and all of which are idempotent (flush_vfx() early-outs on an empty queue and
+        // clears it after drawing). Three drains, none of which is reliably "first":
+        //   - here, on the first 2D bitmap after the scene. In practice this is usually
+        //     what fires first, because the world HUD draws its text and sprites through
+        //     gr_bitmap before the fpgun renders; it is also the only drain a frame with
+        //     no fpgun at all (third person, spectate, scoped, dead) ever reaches.
+        //   - flush_outlines_before_fpgun(), from the fpgun's own gr_setup_3d call site.
+        //     This is the one that matters for *placement*: on a frame where nothing
+        //     drew a bitmap first, it puts the outline under the first-person weapon,
+        //     matching where the entity outlines already land.
+        //   - flush_forced_xray(), from flip() and the screenshot path, as the safety
+        //     net for a frame that reaches neither of the above.
+        // Whichever runs first wins and the rest no-op. Only an *early* drain is
+        // dangerous (see Renderer::zbuffer_clear); extra late ones cost nothing.
+        //
+        // Same render-target guard as the fpgun drain: a 2D bitmap can be issued while
+        // the rail-gun scanner texture is bound, and an outline must never land there.
+        if (render_target_bm_handle_ == -1) {
+            outline_renderer_->flush_vfx();
+        }
+    }
+
+    void Renderer::flush_outlines_before_fpgun()
+    {
+        // Placement-defining drain point for the .vfx (salvage flag) outlines, called
+        // from the CallHook on the fpgun's own gr_setup_3d (0x004AB411, in
+        // player_fpgun_render). On most frames the pre-2D drain in
+        // flush_outlines_before_2d() has already emptied the queue via the world HUD's
+        // own bitmaps and this is a no-op; it is what guarantees the outline lands
+        // under the gun on any frame where it has not.
+        //
+        // Why that point is provably past all world rendering, from the call graph:
+        //   gameplay_render_frame (0x00431A00) runs the world through
+        //   g_solid_portal_renderer at 0x00431FF8, then reaches player_render at
+        //   0x0043285D by straight-line code — every branch into 0x00432856 is a forward
+        //   jump out of the rail-scanner block, there is no path back to the world pass.
+        //   player_render (0x004A2B30) has exactly one caller (0x0043285D) and calls
+        //   player_fpgun_render (0x004AB1A0) at 0x004A2B56; player_fpgun_render likewise
+        //   has exactly one caller. 0x004AB411 has no incoming xrefs, so it is reached
+        //   only by fall-through, once, after every early-out in that function; and it is
+        //   the *first* gr_setup_3d in it, so nothing of the gun has drawn yet.
+        //   The IR and rail-gun scanner passes render from separate functions
+        //   (player_fpgun_render_ir 0x004AEEF0, player_fpgun_render_for_rail_gun
+        //   0x004ADC60, both called from render_to_dynamic_textures 0x00431820, which
+        //   runs before gameplay_render_frame) and never reach 0x004AB411.
+        // This is the opposite of the sky-room zbuffer_clear trap documented below in
+        // zbuffer_clear(): that hook fires before any room geometry, this one after all
+        // of it.
+        //
+        // The render target here is the back buffer: render_to_dynamic_textures restores
+        // it (gr_set_render_target(-1) at 0x00431890) before gameplay_render_frame, and
+        // nothing in gameplay_render_frame switches it. The guard below makes that
+        // structural rather than argued, mirroring the one setup_3d uses for
+        // begin_frame() — a drain must never land in the rail-scanner texture.
+        if (render_target_bm_handle_ != -1) {
+            return;
+        }
+        // Deliberately only the .vfx queue. The character/v3d queues already drain
+        // mid-scene (liquid surfaces, zbuffer_clear, first 2D bitmap) and reordering
+        // them against pending dyn_geo would change what draws over what.
+        // dyn_geo is deliberately not flushed first either: leaving it pending keeps the
+        // established "outlines first, dyn_geo (labels, crosshair, world HUD) on top"
+        // ordering that zbuffer_clear() sets up.
+        // We run before gr_setup_3d, so this is also before the fpgun's zbuffer clear:
+        // scene depth is still intact, and the clear afterwards wipes the stencil refs
+        // these passes wrote, leaving the gun a clean stencil buffer.
+        outline_renderer_->flush_vfx();
     }
 
     void Renderer::page_in(int bm_handle)
@@ -558,6 +633,15 @@ namespace gr::d3d11
         // this flush via the dyn_geo batcher's automatic state-change flush. The
         // bitmap() override handles that case by flushing outlines on the first
         // bitmap call, so this flush here is then a no-op and that path is also safe.
+        // Note: the .vfx (salvage flag) outlines are deliberately NOT drained here.
+        // This hook is not "the end of the scene": the engine's gr_zbuffer_clear also
+        // fires from the sky-room render (0x004D3AA3, reached from
+        // g_solid_portal_renderer at 0x004D4663), which runs immediately after the
+        // scene's gr_setup_3d and *before* any room geometry or objects are drawn.
+        // Draining the queue there painted the flag outline onto the sky and let the
+        // whole world overwrite it, and because the flush empties the queue every
+        // later consumer found nothing left. The .vfx outlines are drawn from
+        // flush_forced_xray() instead, which rebinds the scene camera explicitly.
         outline_renderer_->flush(*mesh_renderer_);
         dyn_geo_renderer_->flush();
         render_context_->zbuffer_clear();
@@ -765,6 +849,23 @@ namespace gr::d3d11
 
     rf::bm::Format Renderer::read_back_buffer([[maybe_unused]] int x, [[maybe_unused]] int y, int w, int h, rf::ubyte *data)
     {
+        // Screenshots grab the scene before it is presented: game_do_frame calls
+        // game_maybe_take_screenshot (0x00436910 -> gr_screen_capture -> here) right
+        // after game_render_frame and only reaches gr_flip afterwards. Forced xray
+        // outlines are drawn from flip(), so without this they would be in the
+        // presented frame but missing from every saved screenshot — the salvage flag
+        // (which has no natural render path at all) and any portal-culled bag or
+        // player outline. The scene is already complete at this point, including the
+        // fpgun zbuffer_clear, so this draws the same pixels flip() would; the flush
+        // clears its queues, which makes the later call in flip() a no-op.
+        // Gated on the engine's pending-screenshot flag, which game_print_screen sets
+        // and game_maybe_take_screenshot only clears after gr_screen_capture returns,
+        // so the other gr_read_backbuffer callers (bitmap locks that can land in the
+        // middle of a frame) keep their existing behaviour.
+        static auto& screenshot_pending = addr_as_ref<char>(0x00637085);
+        if (screenshot_pending) {
+            outline_renderer_->flush_forced_xray(*mesh_renderer_);
+        }
         dyn_geo_renderer_->flush();
         // Resolve the current scene content into a readable texture.
         // With MSAA the scene lives in msaa_render_target_; without MSAA it is

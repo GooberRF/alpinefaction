@@ -524,8 +524,10 @@ CallHook<int(const char*, int, bool)> ice_geo_crater_bm_load_hook {
 };
 
 // fall damage when impacting
+// engine splits the slam call site by rf::is_multi
+// (0x0049DE23 single player, 0x0049DE39 multiplayer)
 CallHook<void(rf::Entity*, float)> physics_calc_fall_damage_slam_hook{
-    0x0049DE39,
+    {0x0049DE23, 0x0049DE39},
     [](rf::Entity* entity, float rel_vel) {
         float damage_multiplier = get_option_or_default<float>(AlpineOptionID::FallDamageSlamMultiplier, 1.0f);
         float adjusted_rel_vel = rel_vel * damage_multiplier;

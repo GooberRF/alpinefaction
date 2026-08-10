@@ -8,6 +8,7 @@
 #include <patch_common/AsmWriter.h>
 #include <xlog/xlog.h>
 #include "../os/console.h"
+#include "../bmpman/bmpman.h"
 #include "../rf/misc.h"
 #include "../rf/file/file.h"
 #include "../rf/gr/gr.h"

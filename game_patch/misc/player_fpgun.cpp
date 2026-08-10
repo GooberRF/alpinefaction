@@ -285,6 +285,8 @@ CodeInjection after_game_render_to_dynamic_textures{
 CallHook<void(rf::Matrix3&, rf::Vector3&, float, bool, bool)> player_fpgun_render_gr_setup_3d_hook{
     0x004AB411,
     [](rf::Matrix3& viewer_orient, rf::Vector3& viewer_pos, float horizontal_fov, bool zbuffer_flag, bool z_scale) {
+        // Flush VFX mesh outlines so they don't render on top of fpguns.
+        gr_flush_outlines_before_fpgun();
         horizontal_fov *= g_alpine_game_config.fpgun_fov_scale;
         horizontal_fov = gr_scale_fov_hor_plus(horizontal_fov);
         player_fpgun_render_gr_setup_3d_hook

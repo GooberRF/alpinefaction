@@ -2,6 +2,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstdint>
+#include <optional>
 #include <format>
 #include <string>
 #include <string_view>
@@ -24,6 +25,7 @@
 #include "../rf/gr/gr.h"
 #include "../rf/gr/gr_font.h"
 #include "../rf/input.h"
+#include "../rf/os/console.h"
 #include "../rf/level.h"
 #include "../rf/multi.h"
 #include "../rf/player/control_config.h"
@@ -43,6 +45,35 @@ bool g_open = false;
 // persisted; ignored (forced on) while the server enforces the prefix.
 bool g_filter_gametype_local = false;
 
+// Typed level-name filter, applied to the level list AFTER the gametype filter.
+// Cleared when the panel closes.
+std::string g_level_filter_text;
+constexpr size_t LEVEL_FILTER_MAX_LEN = 24;
+
+// Case-insensitive, with the separator characters dropped from both sides.
+std::string level_filter_normalize(std::string_view s)
+{
+    std::string out;
+    out.reserve(s.size());
+    for (const char c : s) {
+        if (c == '-' || c == '_' || c == ' ') {
+            continue;
+        }
+        out.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+    }
+    return out;
+}
+
+bool level_matches_name_filter(const std::string& filename)
+{
+    if (g_level_filter_text.empty()) {
+        return true;
+    }
+    return level_filter_normalize(filename).find(level_filter_normalize(g_level_filter_text))
+        != std::string::npos;
+}
+
+
 // Description area: hover drives it, a toggle pins it until the next hover.
 bool g_hovered_mutator_this_pass = false;
 bool g_description_pinned = false;
@@ -55,6 +86,7 @@ struct LevelListCache
     bool valid = false;
     uint32_t levels_fp = 0;
     bool filter_active = false;
+    std::string name_filter; // g_level_filter_text the rows were built against
     uint8_t gametype = af_vote_gametype_none;
     bool allow_current = false;
 
@@ -62,6 +94,7 @@ struct LevelListCache
     int first_level_row = 0;
     int gametype_hidden = 0;    // dropped by the gametype mask (opt-in or enforced)
     int not_allowed_hidden = 0; // dropped by allowed_for_vote (always applied)
+    int name_filter_hidden = 0; // dropped by the typed name filter
 
     // Selection row resolved from the stored name, cached against it.
     bool sel_valid = false;
@@ -177,7 +210,7 @@ struct MutatorDescription
 const MutatorDescription mutator_descriptions[] = {
     {"instagib",
      "Spawn with Rail. One-hit kills, unlimited ammo, no reloads, no weapon switching, no pickups."},
-    {"rails",
+    {"oneweapon",
      "Spawn with Baton. Weapon/ammo pickups based on the specified weapon. No other pickups."},
     {"arena",
      "Spawn with AR and 100/100. Auto reload and reset to 100/100 on a frag. Weapon pickups only."},
@@ -185,6 +218,36 @@ const MutatorDescription mutator_descriptions[] = {
      "Damage enemies to regenerate health and armor."},
     {"superdrain",
      "Super health and armor drain down to 100 over time."},
+    {"armored",
+     "Players spawn with 100 armor."},
+    {"superrail",
+     "Rail gun pickups are treated as super items."},
+    {"bigcraters",
+     "Geomod craters are much larger."},
+    {"flamingenemies",
+     "Continuous flamethrower damage sets enemies on fire."},
+    {"gibbing",
+     "Explosive deaths chunk enemies into gibs."},
+    {"jetpacks",
+     "All players get jetpacks."},
+    {"humansvsbots",
+     "Bots play on the Blue team. Humans play on the Red team."},
+    {"delayedsupers",
+     "Super items start the round hidden, then respawn normally."},
+    {"weirdgungame",
+     "Gun Game includes weird creature weapons and lasers."},
+    {"lowgravity",
+     "Low gravity for all players and projectiles."},
+    {"skiing",
+     "Hold crouch to ski - maintain speed and build downhill."},
+    {"dodging",
+     "Double-tap or crouch-jump a direction to dodge."},
+    {"pogo",
+     "Hold jump to hop automatically when you land."},
+    {"scorelimit",
+     "Sets the score limit for the game type being voted, instead of the server's."},
+    {"idealplayers",
+     "Sets the player count the server advertises as its target size."},
 };
 
 const char* mutator_description_for(std::string_view name)
@@ -208,7 +271,7 @@ struct VoteTypeInfo
     const char* description;
 };
 
-// Display order for the vote type buttons (user-specified); enabled_vote_types()
+// Display order for the vote type buttons (user-specified); enabled_vote_tabs()
 // preserves it and the sequence flows up to fill gaps left by disabled types.
 const VoteTypeInfo vote_type_infos[] = {
     {AfVoteType::Level, "Level", "Load a specific level, optionally with a game type and mutators."},
@@ -243,17 +306,45 @@ const char* gametype_short_name(uint8_t id)
         case rf::NG_TYPE_PIT: return "PIT";
         case rf::NG_TYPE_WO: return "WO";
         case rf::NG_TYPE_GG: return "GG";
+        case rf::NG_TYPE_SAL: return "SAL";
         default: return nullptr; // unknown to this build
     }
 }
 
-std::vector<const VoteTypeInfo*> enabled_vote_types()
+// The four level-rotation votes share one tab; the form picks which of them is
+// actually called.
+bool is_rotation_vote_type(AfVoteType type)
 {
-    std::vector<const VoteTypeInfo*> out;
+    return type == AfVoteType::Restart || type == AfVoteType::Next
+        || type == AfVoteType::Previous || type == AfVoteType::Random;
+}
+
+// One button in the tab row. Every tab but Rotation covers exactly one vote type.
+struct VoteTab
+{
+    const char* label = "";
+    bool is_rotation = false;
+    std::vector<const VoteTypeInfo*> types; // display order; never empty
+};
+
+std::vector<VoteTab> enabled_vote_tabs()
+{
+    std::vector<VoteTab> out;
+    int rotation_tab = -1;
     for (const auto& info : vote_type_infos) {
-        if (vote_options_is_type_enabled(info.type)) {
-            out.push_back(&info);
+        if (!vote_options_is_type_enabled(info.type)) {
+            continue;
         }
+        if (is_rotation_vote_type(info.type)) {
+            if (rotation_tab < 0) {
+                // Lands where the first enabled rotation type sat, i.e. after Level.
+                out.push_back(VoteTab{"Rotation", true, {}});
+                rotation_tab = static_cast<int>(out.size()) - 1;
+            }
+            out[rotation_tab].types.push_back(&info);
+            continue;
+        }
+        out.push_back(VoteTab{info.label, false, {&info}});
     }
     return out;
 }
@@ -268,6 +359,9 @@ struct PanelOptionValue
     uint8_t choice_index = 0;
     int32_t int_value = 0;
     float float_value = 0.0f;
+
+    // The last int value the panel filled in by itself.
+    std::optional<int32_t> auto_defaulted_int;
 };
 
 struct PanelMutatorSelection
@@ -290,6 +384,10 @@ struct FormState
     bool on_saved_tab = false;
 
     int type_index = 0;
+    // Which of the Rotation tab's enabled subtypes is selected, and whether the
+    // session's voted rules ride along with it.
+    int rotation_index = 0;
+    bool rotation_preserve = true;
     int kick_index = 0;
     std::string level_selection; // level NAME; empty = the "Current level" row
     bool manual_level = false;
@@ -324,6 +422,28 @@ std::vector<KickCandidate> g_kick_cache;
 std::vector<std::string> g_kick_names;
 
 FormState g_form;
+
+// The vote type a tab is currently editing. Null only for an empty tab, which
+// enabled_vote_tabs() never produces.
+const VoteTypeInfo* tab_selected_type(const VoteTab& tab)
+{
+    if (tab.types.empty()) {
+        return nullptr;
+    }
+    const int index = tab.is_rotation
+        ? std::clamp(g_form.rotation_index, 0, static_cast<int>(tab.types.size()) - 1)
+        : 0;
+    return tab.types[index];
+}
+
+// The tab the form is on, or null when the tab list has shrunk under it.
+const VoteTab* selected_tab(const std::vector<VoteTab>& tabs)
+{
+    if (g_form.type_index < 0 || g_form.type_index >= static_cast<int>(tabs.size())) {
+        return nullptr;
+    }
+    return &tabs[g_form.type_index];
+}
 
 // Popup input targets. The stock popup callback takes no arguments, so the
 // widget that opened it has to be remembered here.
@@ -462,6 +582,191 @@ bool ui_hover(const PanelUi& ui, const Rect& r)
         return false;
     }
     return point_in(ui.mx, ui.my, r);
+}
+
+// String boxes (level filter, manual level name) edit their bound string live.
+// Numeric boxes (mutator Int/Float options) edit g_text_input_buffer and commit
+// on ENTER / click-away / focus loss, or revert on ESC.
+
+// Defined below with the other widget helpers; needed here because the text
+// input draws inside scroll regions, where the clip origin must be subtracted.
+Rect ui_draw_rect(const PanelUi& ui, const Rect& r);
+
+constexpr uint32_t kTextInputLevelFilter = 1;
+constexpr uint32_t kTextInputManualLevel = 2;
+
+uint32_t text_input_id_for_option(uint8_t mutator_id, uint8_t option_id)
+{
+    return 0x10000u | (static_cast<uint32_t>(mutator_id) << 8) | option_id;
+}
+
+uint32_t g_text_input_focus = 0; // 0 = none
+// Latched by the focused box's hit-test.
+bool g_text_input_seen_this_pass = false;
+// Numeric edit buffer; the bound value is only written on commit.
+std::string g_text_input_buffer;
+
+bool text_input_char_filename(char c)
+{
+    return std::isalnum(static_cast<unsigned char>(c)) != 0
+        || c == '-' || c == '_' || c == '.' || c == ' ';
+}
+
+bool text_input_char_numeric(char c)
+{
+    return std::isdigit(static_cast<unsigned char>(c)) != 0 || c == '-' || c == '.';
+}
+
+// Parse-and-write for a numeric box. Re-validated before application.
+void commit_numeric_text_input()
+{
+    const VoteOptionsData* options = vote_options_get();
+    if (!options || g_popup_mutator < 0 || g_popup_option < 0) {
+        return;
+    }
+    if (g_popup_mutator >= static_cast<int>(options->mutators.size())
+        || g_popup_mutator >= static_cast<int>(g_form.mutators.size())) {
+        return;
+    }
+    const auto& schema = options->mutators[g_popup_mutator];
+    if (g_popup_option >= static_cast<int>(schema.options.size())
+        || g_popup_option >= static_cast<int>(g_form.mutators[g_popup_mutator].options.size())) {
+        return;
+    }
+    if (schema.id != g_popup_mutator_id
+        || schema.options[g_popup_option].id != g_popup_option_id) {
+        return;
+    }
+
+    PanelOptionValue& value = g_form.mutators[g_popup_mutator].options[g_popup_option];
+    try {
+        if (schema.options[g_popup_option].type == MutatorOptionType::Int) {
+            value.int_value = std::stoi(g_text_input_buffer);
+        }
+        else {
+            const float parsed = std::stof(g_text_input_buffer);
+            if (std::isfinite(parsed)) {
+                value.float_value = parsed;
+            }
+            else {
+                xlog::info("vote panel: non-finite option input '{}' ignored", g_text_input_buffer);
+            }
+        }
+    }
+    catch (const std::exception& e) {
+        xlog::info("vote panel: invalid option input '{}', reason: {}", g_text_input_buffer, e.what());
+    }
+}
+
+// End the focused edit. String boxes edit live, so for them this only drops focus.
+void text_input_release_focus(bool commit)
+{
+    if (g_text_input_focus == 0) {
+        return;
+    }
+    if (g_popup_mutator >= 0) { // a numeric box owns the write-back target
+        if (commit) {
+            commit_numeric_text_input();
+        }
+        clear_popup_target();
+    }
+    g_text_input_focus = 0;
+    g_text_input_buffer.clear();
+}
+
+struct TextInputResult
+{
+    bool changed = false;      // `text` was edited this pass
+    bool gained_focus = false; // this click focused the box; caller seeds state
+};
+
+TextInputResult ui_text_input(PanelUi& ui, const Rect& r, uint32_t id, std::string& text,
+                              size_t max_len, bool (*allow_char)(char), const char* hint,
+                              int font, bool enabled = true)
+{
+    TextInputResult res;
+    const bool focused_at_entry = g_text_input_focus == id;
+
+    if (!ui.draw) {
+        if (focused_at_entry) {
+            g_text_input_seen_this_pass = true;
+        }
+        if (ui.click) {
+            const bool inside = enabled && ui_hover(ui, r);
+            if (inside && !focused_at_entry) {
+                text_input_release_focus(true); // commit whatever box held it
+                g_text_input_focus = id;
+                // Latch on gain as well as on hold.
+                g_text_input_seen_this_pass = true;
+                res.gained_focus = true;
+            }
+            else if (!inside && focused_at_entry) {
+                text_input_release_focus(true);
+            }
+        }
+        // Pump only when the box already held focus at entry: the pass that
+        // grants focus returns first so the caller can seed the edit buffer.
+        if (focused_at_entry && g_text_input_focus == id) {
+            for (;;) {
+                const rf::Key key = rf::key_get();
+                if (key == rf::KEY_NONE) {
+                    break;
+                }
+                const int code = key & rf::KEY_MASK;
+                if (code == rf::KEY_ESC) {
+                    text_input_release_focus(false);
+                    break;
+                }
+                if (code == rf::KEY_ENTER || code == rf::KEY_PADENTER) {
+                    text_input_release_focus(true);
+                    break;
+                }
+                if (code == rf::KEY_BACKSP) {
+                    if (!text.empty()) {
+                        text.pop_back();
+                        res.changed = true;
+                    }
+                    continue;
+                }
+                const int ascii = rf::key_to_ascii(static_cast<int16_t>(key));
+                if (ascii > 0 && ascii < 0x80 && ascii != 0xFF) {
+                    const char c = static_cast<char>(ascii);
+                    if (allow_char(c) && text.size() < max_len) {
+                        text.push_back(c);
+                        res.changed = true;
+                    }
+                }
+            }
+        }
+        return res;
+    }
+
+    // Draw pass. Layout is absolute screen space; inside a scroll region the
+    // clip origin has moved the drawing origin, so subtract it like every other
+    // widget does.
+    const Rect d = ui_draw_rect(ui, r);
+    const bool focused = g_text_input_focus == id;
+    rf::gr::set_color(8, 8, 8, 235);
+    rf::gr::rect(d.x, d.y, d.w, d.h);
+    const int border = !enabled ? 80 : (focused ? 220 : 120);
+    rf::gr::set_color(border, border, border, 255);
+    hud_rect_border(d.x, d.y, d.w, d.h, 1);
+    const int pad = std::max(3, scaled(6.0f));
+    const int text_y = d.y + (d.h - rf::gr::get_font_height(font)) / 2;
+    if (text.empty() && !focused) {
+        const int hint_grey = enabled ? 140 : 90;
+        rf::gr::set_color(hint_grey, hint_grey, hint_grey, 255);
+        rf::gr::string(d.x + pad, text_y, hint ? hint : "", font);
+    }
+    else {
+        // Trailing underscore as the caret while typing.
+        const std::string shown = focused ? text + "_" : text;
+        const int text_grey = enabled ? 255 : 120;
+        rf::gr::set_color(text_grey, text_grey, text_grey, 255);
+        rf::gr::string(d.x + pad, text_y,
+            hud_fit_string(shown, d.w - 2 * pad, nullptr, font).c_str(), font);
+    }
+    return res;
 }
 
 // Absolute rect -> coordinates to draw at under the active clip window.
@@ -839,7 +1144,7 @@ std::vector<KickCandidate> build_kick_candidates()
         return out;
     }
     for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
-        if (&player == rf::local_player || !player.net_data) {
+        if (&player == rf::local_player || !player.net_data || player.is_bot) {
             continue;
         }
         KickCandidate candidate;
@@ -1014,6 +1319,8 @@ void build_form(const VoteOptionsData& options)
     g_form.built_fingerprint = schema_fingerprint(options);
 
     g_form.type_index = 0;
+    g_form.rotation_index = 0;
+    g_form.rotation_preserve = true;
     g_form.kick_index = 0;
     g_form.level_selection.clear();
     g_form.manual_level = false;
@@ -1093,11 +1400,79 @@ uint8_t selected_gametype(const VoteOptionsData& options, bool team_only)
     return gametypes[index]->id;
 }
 
-std::vector<VoteMutatorInput> build_mutator_inputs(const VoteOptionsData& options)
+// The game type the vote would actually run under.
+uint8_t effective_gametype(const VoteOptionsData& options, bool team_only)
+{
+    const uint8_t chosen = selected_gametype(options, team_only);
+    if (chosen != af_vote_gametype_none) {
+        return chosen;
+    }
+    const std::string level = selected_level();
+    if (!level.empty()) {
+        for (const auto& entry : options.levels) {
+            if (string_iequals(entry.filename, level)) {
+                return entry.natural_gametype;
+            }
+        }
+    }
+    return static_cast<uint8_t>(rf::multi_get_game_type());
+}
+
+// A mutator that can't be used in this game type is shown greyed out.
+bool mutator_offered(const VoteMutatorSchema& schema, uint8_t game_type)
+{
+    return mutator_gametype_mask_allows(schema.valid_gametype_mask, game_type);
+}
+
+// Score Limit Override defaults to the limit the chosen game type already runs, so
+// enabling it without touching the number changes nothing. Each game type keeps its
+// own limit and the type is picked live here, so the default has to follow the
+// cycler instead of being fixed when the form is built.
+// Stops as soon as the player edits the field: the value is only replaced while it
+// still matches whatever the panel last put there.
+void sync_score_limit_default(const VoteOptionsData& options, uint8_t game_type)
+{
+    const VoteGametypeInfo* gametype = nullptr;
+    for (const auto& entry : options.gametypes) {
+        if (entry.id == game_type) {
+            gametype = &entry;
+            break;
+        }
+    }
+    // 0 means the type has no score limit, or the server predates the field.
+    // Either way there is nothing better to offer than the schema default.
+    if (!gametype || gametype->score_limit <= 0) {
+        return;
+    }
+
+    for (size_t i = 0; i < options.mutators.size() && i < g_form.mutators.size(); ++i) {
+        const VoteMutatorSchema& schema = options.mutators[i];
+        if (schema.name != "scorelimit") {
+            continue;
+        }
+        for (size_t o = 0; o < schema.options.size() && o < g_form.mutators[i].options.size(); ++o) {
+            if (schema.options[o].name != "score_limit") {
+                continue;
+            }
+            PanelOptionValue& value = g_form.mutators[i].options[o];
+            if (value.auto_defaulted_int && value.int_value != *value.auto_defaulted_int) {
+                return; // the player owns this number now
+            }
+            value.int_value = gametype->score_limit;
+            value.auto_defaulted_int = gametype->score_limit;
+            return;
+        }
+        return;
+    }
+}
+
+std::vector<VoteMutatorInput> build_mutator_inputs(const VoteOptionsData& options, uint8_t game_type)
 {
     std::vector<VoteMutatorInput> out;
     for (size_t i = 0; i < options.mutators.size() && i < g_form.mutators.size(); ++i) {
-        if (!g_form.mutators[i].enabled) {
+        // Never send a mutator the panel is greying out, but it may still be
+        // checked from a pre-selection or an earlier game type choice.
+        if (!g_form.mutators[i].enabled || !mutator_offered(options.mutators[i], game_type)) {
             continue;
         }
         const VoteMutatorSchema& schema = options.mutators[i];
@@ -1126,13 +1501,6 @@ std::vector<VoteMutatorInput> build_mutator_inputs(const VoteOptionsData& option
 // suppresses our own input handling while it is up)
 // ---------------------------------------------------------------------------
 
-void manual_level_popup_callback()
-{
-    char buffer[32] = "";
-    rf::ui::popup_get_input(buffer, sizeof(buffer));
-    g_form.manual_level_name = buffer;
-}
-
 // Extend's duration entry.
 void extend_minutes_popup_callback()
 {
@@ -1147,53 +1515,6 @@ void extend_minutes_popup_callback()
         // Non-numeric or out of int range: keep whatever was already selected.
         xlog::info("vote panel: invalid extend duration '{}', reason: {}", buffer, e.what());
     }
-}
-
-void mutator_option_popup_callback()
-{
-    char buffer[32] = "";
-    rf::ui::popup_get_input(buffer, sizeof(buffer));
-
-    const VoteOptionsData* options = vote_options_get();
-    if (!options || g_popup_mutator < 0 || g_popup_option < 0) {
-        return;
-    }
-    if (g_popup_mutator >= static_cast<int>(options->mutators.size())
-        || g_popup_mutator >= static_cast<int>(g_form.mutators.size())) {
-        return;
-    }
-    const auto& schema = options->mutators[g_popup_mutator];
-    if (g_popup_option >= static_cast<int>(schema.options.size())
-        || g_popup_option >= static_cast<int>(g_form.mutators[g_popup_mutator].options.size())) {
-        return;
-    }
-    // Identity check, not just bounds: the slot must still be the option the
-    // popup was opened for.
-    if (schema.id != g_popup_mutator_id
-        || schema.options[g_popup_option].id != g_popup_option_id) {
-        clear_popup_target();
-        return;
-    }
-
-    PanelOptionValue& value = g_form.mutators[g_popup_mutator].options[g_popup_option];
-    try {
-        if (schema.options[g_popup_option].type == MutatorOptionType::Int) {
-            value.int_value = std::stoi(buffer);
-        }
-        else {
-            const float parsed = std::stof(buffer);
-            if (std::isfinite(parsed)) {
-                value.float_value = parsed;
-            }
-            else {
-                xlog::info("vote panel: non-finite option input '{}' ignored", buffer);
-            }
-        }
-    }
-    catch (const std::exception& e) {
-        xlog::info("vote panel: invalid option input '{}', reason: {}", buffer, e.what());
-    }
-    clear_popup_target();
 }
 
 // ---------------------------------------------------------------------------
@@ -1361,9 +1682,11 @@ void load_saved_vote_into_form(const SavedVote& vote, const VoteOptionsData& opt
 {
     g_form.on_saved_tab = false;
 
-    const auto types = enabled_vote_types();
-    for (int i = 0; i < static_cast<int>(types.size()); ++i) {
-        if (types[i]->type == vote.type) {
+    // Only Level/Match/Extend are savable, so this never has to target the
+    // Rotation tab's grouped subtypes.
+    const auto tabs = enabled_vote_tabs();
+    for (int i = 0; i < static_cast<int>(tabs.size()); ++i) {
+        if (!tabs[i].is_rotation && tabs[i].types.front()->type == vote.type) {
             g_form.type_index = i;
             break;
         }
@@ -1772,11 +2095,13 @@ void do_saved_tab(PanelUi& ui, const Layout& lo, const Rect& content, const Vote
 // instead of silently doing nothing when pressed.
 bool vote_form_is_sendable(const VoteOptionsData& options)
 {
-    const auto types = enabled_vote_types();
-    if (g_form.type_index < 0 || g_form.type_index >= static_cast<int>(types.size())) {
+    const auto tabs = enabled_vote_tabs();
+    const VoteTab* tab = selected_tab(tabs);
+    const VoteTypeInfo* selected = tab ? tab_selected_type(*tab) : nullptr;
+    if (!selected) {
         return false;
     }
-    switch (types[g_form.type_index]->type) {
+    switch (selected->type) {
         case AfVoteType::Kick: {
             const auto candidates = build_kick_candidates();
             return g_form.kick_index >= 0
@@ -1796,13 +2121,15 @@ bool vote_form_is_sendable(const VoteOptionsData& options)
 
 void send_vote_from_form(const VoteOptionsData& options)
 {
-    const auto types = enabled_vote_types();
-    if (g_form.type_index < 0 || g_form.type_index >= static_cast<int>(types.size())) {
+    const auto tabs = enabled_vote_tabs();
+    const VoteTab* tab = selected_tab(tabs);
+    const VoteTypeInfo* selected = tab ? tab_selected_type(*tab) : nullptr;
+    if (!selected) {
         return;
     }
 
     AfVoteCallParams params;
-    params.type = types[g_form.type_index]->type;
+    params.type = selected->type;
 
     switch (params.type) {
         case AfVoteType::Kick: {
@@ -1819,20 +2146,26 @@ void send_vote_from_form(const VoteOptionsData& options)
                 return;
             }
             params.gametype = selected_gametype(options, false);
-            params.mutators = build_mutator_inputs(options);
+            params.mutators = build_mutator_inputs(options, effective_gametype(options, false));
             break;
         }
         case AfVoteType::Match: {
             params.team_size = static_cast<uint8_t>(g_form.team_size);
             params.level = selected_level();
             params.gametype = selected_gametype(options, true);
-            params.mutators = build_mutator_inputs(options);
+            params.mutators = build_mutator_inputs(options, effective_gametype(options, true));
             break;
         }
         case AfVoteType::Extend:
             params.extend_minutes = static_cast<uint8_t>(std::clamp(g_form.extend_minutes,
                 static_cast<int>(af_vote_extend_min_minutes),
                 static_cast<int>(af_vote_extend_max_minutes)));
+            break;
+        case AfVoteType::Restart:
+        case AfVoteType::Next:
+        case AfVoteType::Random:
+        case AfVoteType::Previous:
+            params.preserve = g_form.rotation_preserve;
             break;
         default:
             break; // parameterless
@@ -1858,11 +2191,12 @@ void send_saved_vote(const SavedVote& vote, const VoteOptionsData& options)
 
 // Enabled mutators as names/labels rather than the schema's ids, so the entry
 // stays meaningful on a server whose blob numbers them differently.
-std::vector<SavedVoteMutator> build_saved_mutators(const VoteOptionsData& options)
+std::vector<SavedVoteMutator> build_saved_mutators(const VoteOptionsData& options, uint8_t game_type)
 {
     std::vector<SavedVoteMutator> out;
     for (size_t i = 0; i < options.mutators.size() && i < g_form.mutators.size(); ++i) {
-        if (!g_form.mutators[i].enabled) {
+        // Same filter build_mutator_inputs uses.
+        if (!g_form.mutators[i].enabled || !mutator_offered(options.mutators[i], game_type)) {
             continue;
         }
         const VoteMutatorSchema& schema = options.mutators[i];
@@ -1936,11 +2270,13 @@ void saved_vote_name_popup_callback()
 
 void begin_save_from_form(const VoteOptionsData& options)
 {
-    const auto types = enabled_vote_types();
-    if (g_form.type_index < 0 || g_form.type_index >= static_cast<int>(types.size())) {
+    const auto tabs = enabled_vote_tabs();
+    const VoteTab* tab = selected_tab(tabs);
+    const VoteTypeInfo* selected = tab ? tab_selected_type(*tab) : nullptr;
+    if (!selected) {
         return;
     }
-    const AfVoteType type = types[g_form.type_index]->type;
+    const AfVoteType type = selected->type;
     if (!saved_vote_type_is_savable(type)) {
         return;
     }
@@ -1959,7 +2295,7 @@ void begin_save_from_form(const VoteOptionsData& options)
         if (is_match) {
             vote.team_size = static_cast<uint8_t>(std::clamp(g_form.team_size, 1, 8));
         }
-        vote.mutators = build_saved_mutators(options);
+        vote.mutators = build_saved_mutators(options, effective_gametype(options, is_match));
     }
 
     // Snapshotted here, not in the callback: the popup returns later and a blob
@@ -1987,12 +2323,13 @@ void do_message_block(PanelUi& ui, const Layout& lo, const std::vector<std::stri
 // Total height of every mutator row plus the option rows of expanded mutators.
 // Must match the advance in do_mutator_rows exactly (rows whose option type has
 // no widget consume nothing -- see option_has_widget).
-int mutator_content_height(const Layout& lo, const VoteOptionsData& options)
+int mutator_content_height(const Layout& lo, const VoteOptionsData& options, uint8_t game_type)
 {
     int h = 0;
     for (size_t i = 0; i < options.mutators.size() && i < g_form.mutators.size(); ++i) {
         h += lo.row_h;
-        if (g_form.mutators[i].enabled) {
+        // A greyed-out mutator shows no option rows even while checked.
+        if (g_form.mutators[i].enabled && mutator_offered(options.mutators[i], game_type)) {
             const size_t count =
                 std::min(options.mutators[i].options.size(), g_form.mutators[i].options.size());
             for (size_t o = 0; o < count; ++o) {
@@ -2009,7 +2346,7 @@ int mutator_content_height(const Layout& lo, const VoteOptionsData& options)
 // underneath. Rects are absolute screen space with the scroll offset already
 // applied by the caller; rows outside `view` are neither drawn nor hit-tested.
 void do_mutator_rows(PanelUi& ui, const Layout& lo, const VoteOptionsData& options,
-                     const Rect& view, int start_y)
+                     const Rect& view, int start_y, uint8_t game_type)
 {
     const int indent = std::max(8, scaled(16.0f));
     const int view_bottom = view.y + view.h;
@@ -2022,14 +2359,18 @@ void do_mutator_rows(PanelUi& ui, const Layout& lo, const VoteOptionsData& optio
     for (size_t i = 0; i < options.mutators.size() && i < g_form.mutators.size(); ++i) {
         const VoteMutatorSchema& schema = options.mutators[i];
         PanelMutatorSelection& selection = g_form.mutators[i];
+        // Does nothing under the game type this vote would run: the row stays in
+        // place but goes inactive.
+        const bool offered = mutator_offered(schema, game_type);
 
         if (row_visible(y)) {
             const Rect row{view.x, y, view.w, lo.row_h};
+            // Hovering still describes an unavailable mutator.
             if (!ui.draw && ui_hover(ui, row)) {
                 g_form.description_mutator = static_cast<int>(i);
                 g_hovered_mutator_this_pass = true;
             }
-            if (ui_checkbox(ui, row, selection.enabled, schema.label.c_str(), lo.font)) {
+            if (ui_checkbox(ui, row, selection.enabled, schema.label.c_str(), lo.font, offered)) {
                 selection.enabled = !selection.enabled;
                 g_form.mutators_touched = true; // the form is the player's from here on
                 g_form.description_mutator = static_cast<int>(i);
@@ -2039,7 +2380,7 @@ void do_mutator_rows(PanelUi& ui, const Layout& lo, const VoteOptionsData& optio
         }
         y += lo.row_h;
 
-        if (!selection.enabled) {
+        if (!selection.enabled || !offered) {
             continue;
         }
 
@@ -2104,20 +2445,30 @@ void do_mutator_rows(PanelUi& ui, const Layout& lo, const VoteOptionsData& optio
                              label_w, lo.row_h}, option.label.c_str(), lo.font, true);
                     }
                     const Rect value_rect{opt_row.x + label_w, opt_row.y, opt_row.w - label_w, lo.row_h};
-                    const std::string text = option.type == MutatorOptionType::Int
+                    // Inline edit.
+                    const uint32_t input_id = text_input_id_for_option(schema.id, option.id);
+                    const bool editing = g_text_input_focus == input_id;
+                    std::string display = option.type == MutatorOptionType::Int
                         ? std::format("{}", value.int_value)
                         : std::format("{:.2f}", value.float_value);
-                    if (ui_button(ui, value_rect, text.c_str(), lo.font)) {
-                        // Indices, not positions, so scrolling can't misdirect the popup;
-                        // ids so a blob refresh before OK can't either.
+                    const TextInputResult res = ui_text_input(ui, value_rect, input_id,
+                        editing ? g_text_input_buffer : display, 15, text_input_char_numeric,
+                        nullptr, lo.font);
+                    if (res.gained_focus) {
+                        // Indices, not positions, so scrolling can't misdirect the
+                        // commit; ids so a blob refresh mid-edit can't either.
                         g_popup_mutator = static_cast<int>(i);
                         g_popup_option = static_cast<int>(o);
                         g_popup_mutator_id = schema.id;
                         g_popup_option_id = option.id;
-                        // Marked on OPEN rather than on commit: the popup owns the
+                        // Seed without trailing zeros: "30", not "30.00".
+                        g_text_input_buffer = option.type == MutatorOptionType::Int
+                            ? std::format("{}", value.int_value)
+                            : std::format("{:g}", value.float_value);
+                        // Marked on focus rather than on commit: the box owns the
                         // value from here, and it must not be re-derived underneath.
                         g_form.mutators_touched = true;
-                        rf::ui::popup_message(option.label.c_str(), "", mutator_option_popup_callback, 1);
+                        play_click_sound();
                     }
                     break;
                 }
@@ -2133,12 +2484,12 @@ void do_mutator_rows(PanelUi& ui, const Layout& lo, const VoteOptionsData& optio
 // clipped, no scrollbar is drawn and the wheel is left alone, so the layout is
 // identical to what it was before scrolling existed.
 void do_mutator_scroll_region(PanelUi& ui, const Layout& lo, const VoteOptionsData& options,
-                              const Rect& view)
+                              const Rect& view, uint8_t game_type)
 {
     if (!ui.draw) {
         g_hovered_mutator_this_pass = false;
     }
-    const int content_h = mutator_content_height(lo, options);
+    const int content_h = mutator_content_height(lo, options, game_type);
     const float max_scroll = static_cast<float>(std::max(0, content_h - view.h));
 
     if (!ui.draw && max_scroll > 0.0f && ui.wheel != 0 && point_in(ui.mx, ui.my, view)) {
@@ -2167,7 +2518,7 @@ void do_mutator_scroll_region(PanelUi& ui, const Layout& lo, const VoteOptionsDa
         ui.origin_y = view.y;
     }
 
-    do_mutator_rows(ui, lo, options, view, start_y);
+    do_mutator_rows(ui, lo, options, view, start_y, game_type);
 
     // Hovering away clears the description unless the mutator was toggled (a
     // deliberate click keeps its description pinned).
@@ -2226,6 +2577,25 @@ void do_level_column(PanelUi& ui, const Layout& lo, const VoteOptionsData& optio
     }
     y += header_h + lo.gap;
 
+    // Typed name filter box. Click to focus, type to filter live; ENTER or a
+    // click elsewhere unfocuses, ESC unfocuses before anything may close the
+    // panel. Layout-aware typing and the control veto come with ui_text_input.
+    {
+        const Rect box{col.x, y, col.w, lo.row_h};
+        const TextInputResult res = ui_text_input(ui, box, kTextInputLevelFilter,
+            g_level_filter_text, LEVEL_FILTER_MAX_LEN, text_input_char_filename,
+            "Click to filter maps...", lo.font);
+        if (res.gained_focus) {
+            play_click_sound();
+        }
+        if (res.changed) {
+            // The rows under the list just changed wholesale; the wheel position
+            // in the old set means nothing in the new one.
+            g_form.level_scroll = 0.0f;
+        }
+    }
+    y += lo.row_h + lo.gap;
+
     // Read after the checkbox so a toggle takes effect in the same pass.
     const bool filter_active = options.gametype_prefix_restricted || g_filter_gametype_local;
 
@@ -2236,13 +2606,16 @@ void do_level_column(PanelUi& ui, const Layout& lo, const VoteOptionsData& optio
     const uint32_t levels_fp = level_list_fingerprint(options);
     LevelListCache& cache = g_level_cache;
     if (!cache.valid || cache.levels_fp != levels_fp || cache.filter_active != filter_active
+        || cache.name_filter != g_level_filter_text
         || cache.gametype != gametype || cache.allow_current != allow_current) {
         cache.levels_fp = levels_fp;
         cache.filter_active = filter_active;
+        cache.name_filter = g_level_filter_text;
         cache.gametype = gametype;
         cache.allow_current = allow_current;
         cache.gametype_hidden = 0;
         cache.not_allowed_hidden = 0;
+        cache.name_filter_hidden = 0;
         cache.sel_valid = false;
 
         std::vector<std::string> levels;
@@ -2260,6 +2633,12 @@ void do_level_column(PanelUi& ui, const Layout& lo, const VoteOptionsData& optio
                     ++cache.gametype_hidden;
                     continue;
                 }
+            }
+            // After the gametype filter: the typed filter narrows within
+            // whatever set the gametype rules leave votable.
+            if (!level_matches_name_filter(level.filename)) {
+                ++cache.name_filter_hidden;
+                continue;
             }
             levels.push_back(level.filename);
         }
@@ -2385,10 +2764,14 @@ void do_level_column(PanelUi& ui, const Layout& lo, const VoteOptionsData& optio
             rf::gr::set_color(120, 120, 120, 255);
             hud_rect_border(list.x, list.y, list.w, list.h, 1);
             const int pad = std::max(3, scaled(6.0f));
+            // The typed filter is the most local cause, so it is named first: maps
+            // it hid come back with backspace, not by changing the game type.
+            const char* empty_text = cache.name_filter_hidden > 0
+                ? "No maps match the filter"
+                : (cache.gametype_hidden > 0 ? "No maps available for this game type"
+                                             : "No maps available for voting on this server");
             draw_wrapped({list.x + pad, list.y + pad, list.w - 2 * pad, list.h - 2 * pad},
-                cache.gametype_hidden > 0 ? "No maps available for this game type"
-                                          : "No maps available for voting on this server",
-                lo.font, line_h);
+                empty_text, lo.font, line_h);
         }
     }
     else {
@@ -2419,12 +2802,13 @@ void do_level_column(PanelUi& ui, const Layout& lo, const VoteOptionsData& optio
     y += lo.row_h;
 
     const Rect manual_value{col.x, y, col.w, lo.row_h};
-    const std::string manual_text = g_form.manual_level_name.empty()
-        ? std::string{"(click to type a level name)"}
-        : g_form.manual_level_name;
-    if (ui_button(ui, manual_value, manual_text.c_str(), lo.font, g_form.manual_level)
-        && g_form.manual_level) {
-        rf::ui::popup_message("Enter level file name:", "", manual_level_popup_callback, 1);
+    // Inline, same widget as the filter box.
+    // Greyed and non-focusable until the checkbox above enables manual entry.
+    const TextInputResult manual_res = ui_text_input(ui, manual_value, kTextInputManualLevel,
+        g_form.manual_level_name, 31, text_input_char_filename,
+        "(click to type a level name)", lo.font, g_form.manual_level);
+    if (manual_res.gained_focus) {
+        play_click_sound();
     }
 }
 
@@ -2458,14 +2842,14 @@ bool do_close_button(PanelUi& ui, const Layout& lo)
 }
 
 // Tab row across the top: "Saved" first, then one button per enabled vote type.
-int do_tab_row(PanelUi& ui, const Layout& lo, const std::vector<const VoteTypeInfo*>& types)
+int do_tab_row(PanelUi& ui, const Layout& lo, const std::vector<VoteTab>& tabs)
 {
     // One uniform width sized to the widest label, "Saved" included, keeps the
     // grid aligned; the content below starts under however many rows that makes.
     const int hpad = std::max(4, scaled(10.0f));
     int widest = rf::gr::get_string_size("Saved", lo.font).first;
-    for (const VoteTypeInfo* info : types) {
-        widest = std::max(widest, rf::gr::get_string_size(info->label, lo.font).first);
+    for (const VoteTab& tab : tabs) {
+        widest = std::max(widest, rf::gr::get_string_size(tab.label, lo.font).first);
     }
     const int btn_w = widest + 2 * hpad;
     const int btn_h = lo.row_h;
@@ -2491,14 +2875,14 @@ int do_tab_row(PanelUi& ui, const Layout& lo, const std::vector<const VoteTypeIn
     // Wider gap than between the type buttons.
     x += btn_w + 3 * lo.gap;
 
-    for (int i = 0; i < static_cast<int>(types.size()); ++i) {
+    for (int i = 0; i < static_cast<int>(tabs.size()); ++i) {
         if (x > lo.cx && x + btn_w > lo.cx + lo.cw) {
             x = lo.cx;
             y += btn_h + lo.gap;
         }
         const Rect btn{x, y, btn_w, btn_h};
         const bool active = !g_form.on_saved_tab && i == g_form.type_index;
-        if (ui_button(ui, btn, types[i]->label, lo.font, true, active)) {
+        if (ui_button(ui, btn, tabs[i].label, lo.font, true, active)) {
             if (!active) {
                 g_form.on_saved_tab = false;
                 g_form.type_index = i;
@@ -2512,8 +2896,56 @@ int do_tab_row(PanelUi& ui, const Layout& lo, const std::vector<const VoteTypeIn
     return y + btn_h + lo.gap + lo.gap;
 }
 
+// The Rotation tab: pick one of the enabled rotation votes, decide whether the
+// session's voted rules ride along, read what the pick does.
+void do_rotation_form(PanelUi& ui, const Layout& lo, const VoteOptionsData& options,
+                      const VoteTab& tab, int y)
+{
+    const int font_h = rf::gr::get_font_height(lo.font);
+    const int line_h = font_h + 1;
+    const int body_bottom = lo.cy + lo.ch;
+    const int count = static_cast<int>(tab.types.size());
+    g_form.rotation_index = std::clamp(g_form.rotation_index, 0, count - 1);
+
+    if (ui.draw) {
+        set_header_color();
+        rf::gr::string(lo.cx, y, "Action", lo.font);
+    }
+    y += font_h + lo.gap;
+
+    const int btn_w = std::min(lo.cw, std::max(scaled(180.0f), lo.cw / 3));
+    for (int i = 0; i < count; ++i) {
+        const Rect row{lo.cx, y, btn_w, lo.row_h};
+        const bool active = i == g_form.rotation_index;
+        if (ui_button(ui, row, tab.types[i]->label, lo.font, true, active)) {
+            g_form.rotation_index = i;
+            play_click_sound();
+        }
+        y += lo.row_h + lo.gap;
+    }
+
+    y += lo.gap;
+
+    // Only offered on a server that reads the flag; otherwise the row is not
+    // drawn and its space is not reserved.
+    if (options.rotation_preserve_supported) {
+        const Rect cb{lo.cx, y, lo.cw, lo.row_h};
+        if (ui_checkbox(ui, cb, g_form.rotation_preserve, "Preserve current gametype and mutators",
+                lo.font)) {
+            g_form.rotation_preserve = !g_form.rotation_preserve;
+            play_toggle_sound(g_form.rotation_preserve);
+        }
+        y += lo.row_h + lo.gap * 2;
+    }
+
+    if (ui.draw) {
+        draw_wrapped({lo.cx, y, lo.cw, std::max(line_h, body_bottom - y)},
+            tab.types[g_form.rotation_index]->description, lo.font, line_h);
+    }
+}
+
 void do_form(PanelUi& ui, const Layout& lo, const VoteOptionsData& options,
-             const std::vector<const VoteTypeInfo*>& types, int content_y)
+             const std::vector<VoteTab>& tabs, int content_y)
 {
     // Re-derive the mutator pre-selection whenever its context moves.
     {
@@ -2528,15 +2960,25 @@ void do_form(PanelUi& ui, const Layout& lo, const VoteOptionsData& options,
         }
     }
 
-    if (types.empty()) {
+    if (tabs.empty()) {
         do_message_block(ui, lo, {"This server has no votes enabled."});
         return;
     }
 
     int y = content_y;
 
-    const AfVoteType type = types[g_form.type_index]->type;
+    const VoteTab& tab = tabs[g_form.type_index];
+    const VoteTypeInfo* selected = tab_selected_type(tab);
+    if (!selected) {
+        return;
+    }
+    const AfVoteType type = selected->type;
     const int body_bottom = lo.cy + lo.ch;
+
+    if (tab.is_rotation) {
+        do_rotation_form(ui, lo, options, tab, y);
+        return;
+    }
 
     if (type == AfVoteType::Kick) {
         if (ui.draw) {
@@ -2597,13 +3039,13 @@ void do_form(PanelUi& ui, const Layout& lo, const VoteOptionsData& options,
 
         if (ui.draw) {
             draw_wrapped({lo.cx, y, lo.cw, std::max(line_h, body_bottom - y)},
-                types[g_form.type_index]->description, lo.font, line_h);
+                selected->description, lo.font, line_h);
         }
         return;
     }
 
     if (type != AfVoteType::Level && type != AfVoteType::Match) {
-        do_message_block(ui, lo, {types[g_form.type_index]->description});
+        do_message_block(ui, lo, {selected->description});
         return;
     }
 
@@ -2681,7 +3123,16 @@ void do_form(PanelUi& ui, const Layout& lo, const VoteOptionsData& options,
     const int desc_h = 3 * desc_line_h;
     const int mutator_bottom = right_col.y + right_col.h - desc_h - lo.gap;
     const Rect mutator_view{right_col.x, ry, right_col.w, std::max(lo.row_h, mutator_bottom - ry)};
-    do_mutator_scroll_region(ui, lo, options, mutator_view);
+    // Resolved after the game type cycler above has consumed this frame's input,
+    // so moving it greys the affected mutators on the same frame.
+    const uint8_t mutator_gametype = effective_gametype(options, is_match);
+    // Same reason this is here and not in the cycler block: the score limit default
+    // has to settle against the type chosen THIS frame, before the option row that
+    // shows it is drawn below.
+    if (!ui.draw) {
+        sync_score_limit_default(options, mutator_gametype);
+    }
+    do_mutator_scroll_region(ui, lo, options, mutator_view, mutator_gametype);
 
     if (ui.draw) {
         const Rect desc{right_col.x, right_col.y + right_col.h - desc_h, right_col.w, desc_h};
@@ -2725,12 +3176,12 @@ void vote_panel_do(PanelUi& ui)
 
     // The form has to exist before the tab row, which reads (and clamps) the
     // selected type out of it.
-    std::vector<const VoteTypeInfo*> types;
+    std::vector<VoteTab> tabs;
     if (mode == PanelMode::Form && options) {
         ensure_form(*options);
-        types = enabled_vote_types();
-        if (!types.empty()) {
-            g_form.type_index = std::clamp(g_form.type_index, 0, static_cast<int>(types.size()) - 1);
+        tabs = enabled_vote_tabs();
+        if (!tabs.empty()) {
+            g_form.type_index = std::clamp(g_form.type_index, 0, static_cast<int>(tabs.size()) - 1);
         }
     }
 
@@ -2738,7 +3189,7 @@ void vote_panel_do(PanelUi& ui)
     // keep at least one row of body rather than letting the content rects go
     // negative (compute_layout guarantees lo.ch >= lo.row_h, so this cannot move
     // the content above lo.cy).
-    const int content_y = std::min(do_tab_row(ui, lo, types), lo.cy + lo.ch - lo.row_h);
+    const int content_y = std::min(do_tab_row(ui, lo, tabs), lo.cy + lo.ch - lo.row_h);
     const Rect content{lo.cx, content_y, lo.cw, lo.cy + lo.ch - content_y};
 
     if (g_form.on_saved_tab) {
@@ -2763,7 +3214,7 @@ void vote_panel_do(PanelUi& ui)
                 break;
             case PanelMode::Form:
                 if (options) {
-                    do_form(ui, lo, *options, types, content_y);
+                    do_form(ui, lo, *options, tabs, content_y);
                 }
                 break;
         }
@@ -2801,9 +3252,10 @@ void vote_panel_do(PanelUi& ui)
         can_send = !vote_active && vote_form_is_sendable(*options);
         // Saving is local, so it is deliberately NOT gated on vote_active; only
         // the three savable types offer it.
-        const auto types_now = enabled_vote_types();
-        can_save = g_form.type_index >= 0 && g_form.type_index < static_cast<int>(types_now.size())
-            && saved_vote_type_is_savable(types_now[g_form.type_index]->type)
+        const auto tabs_now = enabled_vote_tabs();
+        const VoteTab* tab_now = selected_tab(tabs_now);
+        const VoteTypeInfo* selected_now = tab_now ? tab_selected_type(*tab_now) : nullptr;
+        can_save = selected_now != nullptr && saved_vote_type_is_savable(selected_now->type)
             && vote_form_is_sendable(*options);
     }
 
@@ -2851,11 +3303,17 @@ void vote_panel_gameplay_input()
     // Re-assert every frame; respawns and camera changes reset mouse mode.
     gameplay_overlay_apply_mouse(true);
 
-    // A stock popup (manual level name, int/float option) takes over input while
+    // A stock popup (extend duration, saved-vote name) takes over input while
     // it is up. gameseq_process passes no_input=1 to the state's own frame, but
     // this gameplay pump runs outside that, so it has to check explicitly.
     if (rf::ui::popup_is_active()) {
         return; // the popup owns input; panel keeps rendering underneath
+    }
+
+    // The console reads the same key queue this panel's text boxes drain, so a
+    // focused box would type into both at once.
+    if (rf::console::console_is_visible() && g_text_input_focus != 0) {
+        text_input_release_focus(true);
     }
 
     // Read the wheel accumulator before touching the mouse API.
@@ -2871,7 +3329,14 @@ void vote_panel_gameplay_input()
     ui.click = rf::mouse_was_button_pressed(0) != 0;
     ui.rclick = rf::mouse_was_button_pressed(1) != 0;
     ui.wheel = wheel;
+    g_text_input_seen_this_pass = false;
     vote_panel_do(ui);
+    // A pass that never reached the focused box (tab switch, collapsed mutator,
+    // scrolled-away row) commits and drops it, so the blanket control veto
+    // cannot persist without a visible box.
+    if (g_text_input_focus != 0 && !g_text_input_seen_this_pass) {
+        text_input_release_focus(true);
+    }
 }
 
 void vote_panel_gameplay_render()
@@ -2926,6 +3391,15 @@ FunHook<void(rf::GameState, bool, bool)> gameseq_push_state_hook{
     0x00434410,
     [](rf::GameState state, bool transparent, bool pause_beneath) {
         if (state == rf::GS_MAIN_MENU && g_open) {
+            // ESC backs out one layer at a time: first out of a focused text box,
+            // then out of the panel. Normally the focused box consumes ESC from
+            // the key queue itself; this is the fallback for a race where the
+            // game's own handler saw the key first.
+            if (g_text_input_focus != 0) {
+                text_input_release_focus(false);
+                play_click_sound();
+                return;
+            }
             vote_panel_close();
             play_click_sound();
             return;
@@ -2934,8 +3408,7 @@ FunHook<void(rf::GameState, bool, bool)> gameseq_push_state_hook{
     },
 };
 
-// Clicking in the panel must not also fire the weapon. Movement is left alone
-// (the panel does not pause a multiplayer game), matching the waypoint editor.
+// Clicking in the panel must not also fire the weapon.
 bool gameplay_overlay_blocks_action(rf::ControlConfig* ccp, rf::ControlConfigAction action)
 {
     if (!g_open && g_swallow_attack_frames <= 0) {
@@ -2943,6 +3416,9 @@ bool gameplay_overlay_blocks_action(rf::ControlConfig* ccp, rf::ControlConfigAct
     }
     if (!rf::local_player || ccp != &rf::local_player->settings.controls) {
         return false;
+    }
+    if (g_open && g_text_input_focus != 0) {
+        return true;
     }
     return action == rf::CC_ACTION_PRIMARY_ATTACK || action == rf::CC_ACTION_SECONDARY_ATTACK;
 }
@@ -3004,6 +3480,11 @@ void vote_panel_close()
         g_swallow_attack_frames = 2;
     }
     g_open = false;
+    // ESC-close discards a half-typed numeric edit.
+    text_input_release_focus(false);
+    // A filter is a transient search; carrying one across opens would read as a
+    // mysteriously shrunken map list next time.
+    g_level_filter_text.clear();
     clear_popup_target();
     clear_pending_save();
 }
@@ -3035,6 +3516,9 @@ void vote_panel_reset()
     // Pending one-shot scroll requests describe a list state that is gone.
     g_saved_scroll_to_selection = false;
     g_level_scroll_to_selection = false;
+    // The form this edit was writing into is gone with the server.
+    text_input_release_focus(false);
+    g_level_filter_text.clear();
 }
 
 void vote_panel_toggle_gameplay()

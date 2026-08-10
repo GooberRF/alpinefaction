@@ -330,10 +330,16 @@ void apply_defaults_for_game_type(rf::NetGameType game_type, AlpineServerConfigR
     // Mutators declared in the same scope re-apply immediately after this returns;
     // a scope that changes game_type must re-declare its mutators.
     rules.mutators = MutatorConfig{};
+    rules.game_type_defaults_applied = true;
 
-    // all modes get baton
-    int baton_ammo = rf::weapon_types[rf::riot_stick_weapon_type].clip_size_multi;
-    rules.spawn_loadout.add("Riot Stick", baton_ammo, false, true);
+    // Rebuilt from nothing so one call always yields this game type's complete loadout
+    // regardless of what the rules held before. Anything layered on afterwards (operator
+    // spawn_loadout keys, mutators) is applied by the caller, not here.
+    rules.spawn_loadout.red_weapons.clear();
+    rules.spawn_loadout.blue_weapons.clear();
+
+    // Every mode gets the baton unless a case below drops it.
+    rules.spawn_loadout.add("Riot Stick", AlpineServerConfigRules::stock_riot_stick_reserve(), false, true);
     rules.set_pvp_damage_modifier(1.0f);
     rules.no_player_collide = false;
     rules.location_pinging = false;
@@ -349,10 +355,7 @@ void apply_defaults_for_game_type(rf::NetGameType game_type, AlpineServerConfigR
             rules.spawn_loadout.add("Remote Charge", 3, false, true);
 
             // primary weapon
-            rules.spawn_loadout.remove("12mm handgun", false);
             rules.default_player_weapon.set_weapon("Machine Pistol");
-
-            rules.spawn_loadout.loadouts_active = true;
             break;
         }
 
@@ -364,7 +367,6 @@ void apply_defaults_for_game_type(rf::NetGameType game_type, AlpineServerConfigR
             // primary weapon
             rules.default_player_weapon.set_weapon("12mm handgun");
 
-            rules.spawn_loadout.loadouts_active = false;
             break;
         }
 
@@ -377,10 +379,7 @@ void apply_defaults_for_game_type(rf::NetGameType game_type, AlpineServerConfigR
             rules.spawn_loadout.add("Remote Charge", 3, false, true);
 
             // primary weapon
-            rules.spawn_loadout.remove("12mm handgun", false);
             rules.default_player_weapon.set_weapon("Machine Pistol");
-
-            rules.spawn_loadout.loadouts_active = true;
             break;
         }
 
@@ -393,10 +392,7 @@ void apply_defaults_for_game_type(rf::NetGameType game_type, AlpineServerConfigR
             rules.spawn_loadout.add("Remote Charge", 3, false, true);
 
             // primary weapon
-            rules.spawn_loadout.remove("12mm handgun", false);
             rules.default_player_weapon.set_weapon("Machine Pistol");
-
-            rules.spawn_loadout.loadouts_active = true;
             break;
         }
 
@@ -411,7 +407,6 @@ void apply_defaults_for_game_type(rf::NetGameType game_type, AlpineServerConfigR
             // primary weapon
             rules.default_player_weapon.set_weapon("12mm handgun");
 
-            rules.spawn_loadout.loadouts_active = false;
             break;
         }
 
@@ -420,6 +415,17 @@ void apply_defaults_for_game_type(rf::NetGameType game_type, AlpineServerConfigR
             rules.spawn_delay.enabled = true;
             rules.spawn_delay.set_base_value(2.0f);
             rules.location_pinging = (game_type == rf::NetGameType::NG_TYPE_TBAG);
+            break;
+        }
+
+        case rf::NetGameType::NG_TYPE_SAL: {
+            rules.spawn_delay.enabled = true;
+            rules.spawn_delay.set_base_value(1.0f);
+            rules.location_pinging = true;
+
+            // primary weapon
+            rules.default_player_weapon.set_weapon("12mm handgun");
+
             break;
         }
 
@@ -438,7 +444,6 @@ void apply_defaults_for_game_type(rf::NetGameType game_type, AlpineServerConfigR
 
             // Loadout: Baton, AR
             constexpr int pit_reserve = 999;
-            rules.spawn_loadout.loadouts_active = true;
             rules.spawn_loadout.add("Assault Rifle", pit_reserve, false, true);
             rules.weapon_infinite_magazines = true;
             rules.default_player_weapon.set_weapon("Assault Rifle");
@@ -457,7 +462,6 @@ void apply_defaults_for_game_type(rf::NetGameType game_type, AlpineServerConfigR
             rules.drop_weapons = false;
             rules.drop_amps = false;
             rules.gungame_rampage_rewards = true;
-            rules.spawn_loadout.loadouts_active = false;
 
             // +50 effective health kill reward.
             rules.kill_rewards.kill_reward_effective_health = 50.0f;
@@ -483,7 +487,6 @@ void apply_defaults_for_game_type(rf::NetGameType game_type, AlpineServerConfigR
             // Fixed loadout: Pistol / AR / SR / RL / SG, with infinite reloads
             // and large reserves (effectively infinite ammo).
             constexpr int wo_reserve = 999;
-            rules.spawn_loadout.loadouts_active = true;
             rules.spawn_loadout.add("12mm handgun", wo_reserve, false, true);
             rules.spawn_loadout.add("Assault Rifle", wo_reserve, false, true);
             rules.spawn_loadout.add("Sniper Rifle", wo_reserve, false, true);
@@ -511,15 +514,16 @@ void apply_defaults_for_game_type(rf::NetGameType game_type, AlpineServerConfigR
             // primary weapon
             rules.default_player_weapon.set_weapon("12mm handgun");
 
-            rules.spawn_loadout.loadouts_active = false;
             break;
         }
     }
 
-    // handle default player weapon
-    if (rules.default_player_weapon.index >= 0) {
-        int default_ammo = rf::weapon_types[rules.default_player_weapon.index].clip_size_multi * rules.default_player_weapon.num_clips;
-        rules.spawn_loadout.add(rules.default_player_weapon.weapon_name, default_ammo, false, true);
+    // Complete the loadout with the spawn weapon, unless the case above already placed it
+    // with reserve ammo of its own choosing.
+    if (rules.default_player_weapon.index >= 0
+        && !rules.spawn_loadout.contains(rules.default_player_weapon.weapon_name)) {
+        rules.spawn_loadout.add(rules.default_player_weapon.weapon_name,
+                                rules.stock_spawn_weapon_reserve(), false, true);
     }
 }
 
@@ -556,7 +560,7 @@ AlpineServerConfigRules parse_server_rules(const toml::table& t, const AlpineSer
 
     o.game_type = resolved_game_type;
 
-    if (game_type_changed)
+    if (game_type_changed || !o.game_type_defaults_applied)
         apply_defaults_for_game_type(o.game_type, o);
 
     // Mutators are applied after the gametype defaults but before any explicitly
@@ -598,6 +602,14 @@ AlpineServerConfigRules parse_server_rules(const toml::table& t, const AlpineSer
         o.bagman.set_bag_return_time(*v);
     if (auto v = t["bag_spawn_delay"].value<float>())
         o.bagman.set_bag_spawn_delay(*v);
+    if (auto v = t["sal_cap_limit"].value<int>())
+        o.salvage.set_cap_limit(*v);
+    if (auto v = t["sal_flag_spawn_delay"].value<float>())
+        o.salvage.set_flag_spawn_delay(*v);
+    if (auto v = t["sal_flag_capture_respawn_delay"].value<float>())
+        o.salvage.set_flag_capture_respawn_delay(*v);
+    if (auto v = t["sal_flag_return_time"].value<float>())
+        o.salvage.set_flag_return_time(*v);
     if (auto v = t["geo_limit"].value<int>())
         o.set_geo_limit(*v);
     if (auto v = t["rf2_geo_limit"].value<int>())
@@ -646,8 +658,23 @@ AlpineServerConfigRules parse_server_rules(const toml::table& t, const AlpineSer
     if (auto v = t["force_rail_reload"].value<bool>())
         o.force_rail_reload = *v;
 
-    if (auto sub = t["spawn_weapon"].as_table())
+    if (auto sub = t["spawn_weapon"].as_table()) {
+        const std::string prev_default = o.default_player_weapon.weapon_name;
         o.default_player_weapon = parse_default_player_weapon(*sub, o.default_player_weapon);
+
+        // The gametype defaults already put the spawn weapon they chose into the loadout, so
+        // overriding it here has to replace that entry instead of leaving both. The reserve is
+        // refreshed even when only `clips` changed, otherwise the stale entry would no longer
+        // match stock_spawn_weapon_reserve() and spawn_loadout_is_active() would report a real
+        // loadout, needlessly locking legacy clients out. Any spawn_loadout key in this scope
+        // is parsed after this and still wins.
+        if (o.default_player_weapon.index >= 0) {
+            if (!prev_default.empty() && o.default_player_weapon.weapon_name != prev_default) {
+                o.spawn_loadout.remove(prev_default, false);
+            }
+            o.spawn_loadout.add(o.default_player_weapon.weapon_name, o.stock_spawn_weapon_reserve(), false, true);
+        }
+    }
     if (auto sub = t["spawn_life"].as_table())
         o.spawn_life  = parse_spawn_life_config(*sub, o.spawn_life);
     if (auto sub = t["spawn_armor"].as_table())
@@ -658,18 +685,34 @@ AlpineServerConfigRules parse_server_rules(const toml::table& t, const AlpineSer
     if (auto sub = t["gibbing"].as_table())
         o.gibbing = parse_gib_config(*sub, o.gibbing);
 
-    if (auto arr = t["spawn_loadout"].as_array()) {
+    // spawn_loadout is the loadout for everyone; spawn_loadout_blue overrides it for the
+    // blue team only.
+    auto parse_spawn_loadout_array = [&](const char* key, bool blue_team) {
+        auto arr = t[key].as_array();
+        if (!arr) {
+            return;
+        }
         for (auto& node : *arr) {
             if (auto tbl = node.as_table()) {
                 if (auto nameOpt = (*tbl)["weapon_name"].value<std::string>()) {
-                    int ammo = (*tbl)["ammo"].value<int>().value_or(0);
+                    // weapon_name must match a weapons.tbl $Name. Resolve up front so an
+                    // unknown name is reported instead of silently dropping the entry.
+                    if (rf::weapon_lookup_type(nameOpt->c_str()) < 0) {
+                        if (!g_rules_parse_quiet)
+                            rf::console::print("  [WARN] {} weapon_name '{}' is not a weapons.tbl weapon; entry ignored.\n", key, *nameOpt);
+                        continue;
+                    }
+                    auto ammo = (*tbl)["ammo"].value<int>();
                     bool enabled = (*tbl)["include"].value<bool>().value_or(true); // default true if not specified
-                    o.spawn_loadout.add(*nameOpt, ammo, false, enabled);
-                    o.spawn_loadout.loadouts_active = true;
+                    // An entry that omits `ammo` is restating the weapon, not asking for a
+                    // zero reserve, so it must not overwrite what an earlier layer set.
+                    o.spawn_loadout.add(*nameOpt, ammo.value_or(0), blue_team, enabled, ammo.has_value());
                 }
             }
         }
-    }
+    };
+    parse_spawn_loadout_array("spawn_loadout", false);
+    parse_spawn_loadout_array("spawn_loadout_blue", true);
 
     if (auto sub = t["spawn_protection"].as_table())
         o.spawn_protection = parse_spawn_protection_config(*sub, o.spawn_protection);
@@ -797,6 +840,8 @@ static VoteConfig parse_vote_level_config(const toml::table& t)
     if (v.enabled) {
         if (auto x = t["add_rotation_to_allowed_levels"].value<bool>())
             v.add_rotation_to_allowed_levels = *x;
+        if (auto x = t["add_installed_to_allowed_levels"].value<bool>())
+            v.add_installed_to_allowed_levels = *x;
         if (auto x = t["only_allow_gametype_prefix"].value<bool>())
             v.only_allow_gametype_prefix = *x;
     }
@@ -1576,6 +1621,11 @@ void load_ads_server_config(std::string ads_config_name, bool allow_missing_leve
 
     AlpineServerConfig cfg;     // start from defaults
 
+    // Seed the game type defaults before parsing so an explicit game_type
+    // layers on top of them.
+    apply_defaults_for_game_type(cfg.base_rules.game_type, cfg.base_rules);
+    apply_defaults_for_game_type(cfg.base_rules_no_mutators.game_type, cfg.base_rules_no_mutators);
+
     toml::table root;
     try {
         root = toml::parse_file(ads_config_name);
@@ -1687,7 +1737,10 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
     const bool mutators_changed =
         rules.mutators.active_labels != b.mutators.active_labels ||
         rules.mutators.vampire_enabled != b.mutators.vampire_enabled ||
-        rules.mutators.hide_health_armor_pickups != b.mutators.hide_health_armor_pickups;
+        rules.mutators.vampire_heal_ratio != b.mutators.vampire_heal_ratio ||
+        rules.mutators.hide_health_armor_pickups != b.mutators.hide_health_armor_pickups ||
+        rules.mutators.featured_weapon_index != b.mutators.featured_weapon_index ||
+        rules.mutators.redirect_exclude_thrown != b.mutators.redirect_exclude_thrown;
 
     if (base || mutators_changed) {
         std::string joined;
@@ -1697,9 +1750,22 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
             joined += rules.mutators.active_labels[i];
         }
         std::format_to(iter, "  Mutators:                              {}\n", joined.empty() ? "<none>" : joined);
+        // One Weapon options
+        if (rules.mutators.redirect_pickups_to_featured) {
+            const int featured = rules.mutators.featured_weapon_index;
+            const char* featured_name = (featured >= 0 && featured < rf::num_weapon_types)
+                ? rf::weapon_types[featured].name.c_str()
+                : "<invalid>";
+            std::format_to(iter, "    Featured weapon:                     {}\n", featured_name);
+            std::format_to(iter, "    Keep thrown explosives:              {}\n",
+                           rules.mutators.redirect_exclude_thrown);
+        }
+        // Vampire options
         if (rules.mutators.vampire_enabled) {
             std::format_to(iter, "    Hide health/armor pickups:           {}\n",
                            rules.mutators.hide_health_armor_pickups);
+            std::format_to(iter, "    Full lifesteal:                      {}\n",
+                           rules.mutators.vampire_heal_ratio >= 1.0f);
         }
     }
 
@@ -1758,6 +1824,8 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
         std::format_to(iter, "  BAG player score limit:                {}\n", rules.bagman.bag_score_limit);
     if (base || rules.bagman.tbag_score_limit != b.bagman.tbag_score_limit)
         std::format_to(iter, "  TBAG team score limit:                 {}\n", rules.bagman.tbag_score_limit);
+    if (base || rules.salvage.cap_limit != b.salvage.cap_limit)
+        std::format_to(iter, "  SAL flag capture limit:                {}\n", rules.salvage.cap_limit);
 
     // common limits & flags
     if (base || rules.geo_limit != b.geo_limit)
@@ -1785,6 +1853,12 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
         std::format_to(iter, "  BAG/TBAG bag return time:              {} sec\n", rules.bagman.bag_return_time_ms / 1000.0f);
     if (base || rules.bagman.bag_spawn_delay_ms != b.bagman.bag_spawn_delay_ms)
         std::format_to(iter, "  BAG/TBAG bag spawn delay:              {} sec\n", rules.bagman.bag_spawn_delay_ms / 1000.0f);
+    if (base || rules.salvage.flag_spawn_delay_ms != b.salvage.flag_spawn_delay_ms)
+        std::format_to(iter, "  SAL flag spawn delay:                  {} sec\n", rules.salvage.flag_spawn_delay_ms / 1000.0f);
+    if (base || rules.salvage.flag_capture_respawn_delay_ms != b.salvage.flag_capture_respawn_delay_ms)
+        std::format_to(iter, "  SAL flag respawn delay after capture:  {} sec\n", rules.salvage.flag_capture_respawn_delay_ms / 1000.0f);
+    if (base || rules.salvage.flag_return_time_ms != b.salvage.flag_return_time_ms)
+        std::format_to(iter, "  SAL dropped flag return time:          {} sec\n", rules.salvage.flag_return_time_ms / 1000.0f);
     if (base || rules.flag_dropping != b.flag_dropping)
         std::format_to(iter, "  CTF flag dropping:                     {}\n", rules.flag_dropping);
     if (base || rules.flag_captures_while_stolen != b.flag_captures_while_stolen)
@@ -1877,8 +1951,15 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
         }
     );
 
-    if (base || anySpawnLoadoutChanged) {
-        std::format_to(iter, "  Spawn loadout:\n");
+    const bool has_blue_loadout = !rules.spawn_loadout.blue_weapons.empty();
+
+    if (base || anySpawnLoadoutChanged || has_blue_loadout) {
+        // Say how the loadout reaches players - the list is carried either way, and when it
+        // matches the stock grant it is delivered by that instead of by the loadout packet.
+        std::format_to(iter, "  Spawn loadout{}:{}{}\n",
+                       has_blue_loadout ? " (red team)" : "",
+                       has_blue_loadout ? "              " : "                         ",
+                       rules.spawn_loadout_is_active() ? "granted by loadout" : "granted by stock spawn");
         for (auto const& e : rules.spawn_loadout.red_weapons) {
             bool unchanged = std::any_of(
                 b.spawn_loadout.red_weapons.begin(), b.spawn_loadout.red_weapons.end(), [&](auto const& be) {
@@ -1886,6 +1967,14 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
                 }
             );
             if (base || !unchanged) {
+                std::format_to(iter, "    {:<20}                 {}\n", e.weapon_name + ':', e.enabled);
+                std::format_to(iter, "      Extra ammo:                        {}\n", e.reserve_ammo);
+            }
+        }
+
+        if (has_blue_loadout) {
+            std::format_to(iter, "  Spawn loadout (blue team):\n");
+            for (auto const& e : rules.spawn_loadout.blue_weapons) {
                 std::format_to(iter, "    {:<20}                 {}\n", e.weapon_name + ':', e.enabled);
                 std::format_to(iter, "      Extra ammo:                        {}\n", e.reserve_ammo);
             }
@@ -2139,9 +2228,80 @@ void print_rules_with_presets(std::string& output, const AlpineServerConfigRules
     print_rules(output, rules, base);
 }
 
+std::string format_mutator_option_value(const MutatorOptionValue& value)
+{
+    return std::visit([](const auto& v) -> std::string {
+        using T = std::decay_t<decltype(v)>;
+        if constexpr (std::is_same_v<T, bool>)
+            return v ? "true" : "false";
+        else if constexpr (std::is_same_v<T, float>)
+            return std::format("{:g}", v);
+        else if constexpr (std::is_same_v<T, std::string>)
+            return v;
+        else
+            return std::format("{}", v);
+    }, value);
+}
+
+// Rules the running level would use with no session override in play.
+const AlpineServerConfigRules& configured_rules_for_running_level()
+{
+    const auto& cfg = g_alpine_server_config;
+    const int idx = rf::netgame.current_level_index;
+    if (idx >= 0 && idx < static_cast<int>(cfg.levels.size())
+        && string_iequals(cfg.levels[idx].level_filename, rf::level.filename.c_str())) {
+        return cfg.levels[idx].rule_overrides;
+    }
+    return cfg.base_rules;
+}
+
+// Rules a vote (or a manual rules load) put in front of the configured ones for
+// this session. Printed above the static config so the two are never confused.
+void print_session_overrides(std::string& output)
+{
+    if (!g_manual_rules_override) {
+        return;
+    }
+
+    const auto& active = g_alpine_server_config_active_rules;
+    const AlpineServerConfigRules& configured = configured_rules_for_running_level();
+    const bool game_type_differs = active.game_type != configured.game_type;
+    const bool mutators_differ = active.mutators.declarations != configured.mutators.declarations;
+    if (!game_type_differs && !mutators_differ) {
+        return;
+    }
+
+    const auto iter = std::back_inserter(output);
+    std::format_to(iter, "\n---- Session overrides ----\n");
+
+    if (game_type_differs) {
+        std::format_to(iter, "  Game type:                             {} (configured: {})\n",
+                       multi_game_type_name_short(active.game_type),
+                       multi_game_type_name_short(configured.game_type));
+    }
+
+    if (mutators_differ) {
+        const std::string joined = mutators_join_labels(active.mutators.declarations);
+        std::format_to(iter, "  Mutators:                              {}\n",
+                       joined.empty() ? "<none>" : joined);
+        for (const auto& decl : active.mutators.declarations) {
+            if (decl.options.empty()) {
+                continue;
+            }
+            const MutatorInfo* info = mutators_find_by_name(decl.name);
+            std::format_to(iter, "    {}:\n", info ? info->label : decl.name);
+            for (const auto& [name, value] : decl.options) {
+                std::format_to(iter, "      {} = {}\n", name, format_mutator_option_value(value));
+            }
+        }
+    }
+}
+
 void print_alpine_dedicated_server_config_info(std::string& output, bool verbose, const bool remote) {
     auto& netgame = rf::netgame;
     const auto& cfg = g_alpine_server_config;
+
+    print_session_overrides(output);
 
     const auto iter = std::back_inserter(output);
     std::format_to(iter, "\n---- Core configuration ----\n");
@@ -2280,16 +2440,21 @@ void print_alpine_dedicated_server_config_info(std::string& output, bool verbose
         std::format_to(iter, "    Ignore nonvoters:                    {}\n", cfg.vote_level.ignore_nonvoters);
         std::format_to(iter, "    Time limit:                          {} sec\n", cfg.vote_level.time_limit_seconds);
         std::format_to(iter, "    Add rotation to allowed levels:      {}\n", cfg.vote_level.add_rotation_to_allowed_levels);
+        std::format_to(iter, "    Add installed to allowed levels:     {}\n", cfg.vote_level.add_installed_to_allowed_levels);
         std::format_to(iter, "    Only allow gametype prefix:          {}\n", cfg.vote_level.only_allow_gametype_prefix);
-        if (!cfg.vote_level.allowed_maps.empty()) {
-            std::string allowed_maps;
-            for (size_t i = 0; i < cfg.vote_level.allowed_maps.size(); ++i) {
-                if (i != 0) {
-                    allowed_maps += ", ";
-                }
-                allowed_maps += cfg.vote_level.allowed_maps[i];
+
+        // Counts what is actually votable, not just allowed_maps.
+        {
+            std::set<std::string> votable;
+            for (const auto& name : cfg.vote_level.allowed_maps) {
+                votable.insert(string_to_lower(name));
             }
-            std::format_to(iter, "    Allowed levels:                      {}\n", allowed_maps);
+            if (cfg.vote_level.add_rotation_to_allowed_levels) {
+                for (const auto& level_entry : cfg.levels) {
+                    votable.insert(string_to_lower(level_entry.level_filename));
+                }
+            }
+            std::format_to(iter, "    Allowed levels:                      {}\n", votable.size());
         }
     }
     
@@ -2343,6 +2508,9 @@ void apply_alpine_dedicated_server_rules(rf::NetGameInfo& netgame, const AlpineS
         case rf::NetGameType::NG_TYPE_GG:
             netgame.max_kills = r.gungame_score_limit;
             break;
+        case rf::NetGameType::NG_TYPE_SAL:
+            netgame.max_captures = r.salvage.cap_limit;
+            break;
         default:
             netgame.max_kills = r.individual_kill_limit;
             break;
@@ -2390,9 +2558,14 @@ void load_and_print_alpine_dedicated_server_config(std::string ads_config_name, 
         g_alpine_server_config.printed_cfg.clear();
         cfg.signal_cfg_changed = true;
         server_vote_invalidate_options_blob();
+        clear_pending_rotation_preserve();
     }
 
     initialize_core_alpine_dedicated_server_settings(netgame, cfg, on_launch);
+
+    // After the parse rebuilt allowed_maps from the TOML: materialize the derived
+    // entries (installed levels, glass_house fallback) back into it.
+    vote_level_refresh_allowed_maps();
 
     apply_alpine_dedicated_server_rules(netgame, cfg.base_rules); // base rules
 
@@ -2428,7 +2601,11 @@ bool apply_game_type_for_current_level() {
         desired = has_already_queued_change ? upcoming : manual_rules.game_type;
 
         if (!g_ads_minimal_server_info && !has_already_queued_change && desired != upcoming) {
-            if (g_manual_rules_override && g_manual_rules_override->preset_alias) {
+            if (g_manual_rules_override && g_manual_rules_override->mutator_labels) {
+                rf::console::print("Applying voted mutators '{}' game type {} for manually loaded level {}...\n",
+                    *g_manual_rules_override->mutator_labels, multi_game_type_name_short(desired), rf::level_filename_to_load);
+            }
+            else if (g_manual_rules_override && g_manual_rules_override->preset_alias) {
                 rf::console::print("Applying rules preset '{}' game type {} for manually loaded level {}...\n",
                     *g_manual_rules_override->preset_alias, multi_game_type_name_short(desired), rf::level_filename_to_load);
             }
@@ -2501,7 +2678,10 @@ void apply_rules_for_current_level()
         if (g_manual_rules_override) {
             g_alpine_server_config_active_rules = g_manual_rules_override->rules;
             if (!g_ads_minimal_server_info) {
-                if (g_manual_rules_override->preset_alias)
+                if (g_manual_rules_override->mutator_labels)
+                    rf::console::print("Applying voted mutators '{}' for manually loaded level {}...\n",
+                                       *g_manual_rules_override->mutator_labels, rf::level_filename_to_load);
+                else if (g_manual_rules_override->preset_alias)
                     rf::console::print("Applying rules preset '{}' for manually loaded level {}...\n",
                                        *g_manual_rules_override->preset_alias, rf::level_filename_to_load);
                 else
@@ -2529,6 +2709,26 @@ void apply_rules_for_current_level()
             std::string_view level_name =
                 idx_valid ? std::string_view(cfg.levels[idx].level_filename) : std::string_view("UNKNOWN");
             rf::console::print("Applying level-specific rules for server rotation index {} ({})...\n", idx, level_name);
+        }
+    }
+
+    // A rotation vote asked to carry the session's vote-set rules onto this level.
+    // Layered on top of the rules resolved above, then stored back as the session
+    // override so the config print reports it and a later preserve vote continues it.
+    // Deliberately NOT via set_manual_rules_override(): that would also flag the
+    // level as manually loaded and break the rotation cursor's semantics.
+    if (get_pending_rotation_preserve()) {
+        const PendingRotationPreserve pending = *get_pending_rotation_preserve();
+        clear_pending_rotation_preserve();
+
+        auto carried = load_vote_rules_override(rf::level_filename_to_load.c_str(),
+                                                pending.declarations, pending.gametype);
+        if (carried) {
+            g_alpine_server_config_active_rules = carried->rules;
+            g_manual_rules_override = std::move(*carried);
+            if (!g_ads_minimal_server_info) {
+                rf::console::print("Carrying voted session rules onto {}...\n", rf::level_filename_to_load);
+            }
         }
     }
 
@@ -2669,7 +2869,9 @@ ConsoleCommand2 print_level_rules_cmd{
             if (manual_load) {
                 rf::console::print("\n---- Rules for level {} ----\n", rf::level_filename_to_load, idx);
                 if (g_manual_rules_override) {
-                    if (g_manual_rules_override->preset_alias)
+                    if (g_manual_rules_override->mutator_labels)
+                        rf::console::print("  (manually loaded {} is using voted mutators '{}')\n\n", rf::level_filename_to_load, *g_manual_rules_override->mutator_labels);
+                    else if (g_manual_rules_override->preset_alias)
                         rf::console::print("  (manually loaded {} is using rules preset '{}')\n\n", rf::level_filename_to_load, *g_manual_rules_override->preset_alias);
                     else
                         rf::console::print("  (manually loaded {} has a manual rules override)\n\n", rf::level_filename_to_load);

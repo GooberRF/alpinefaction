@@ -12,6 +12,8 @@ struct AlpineServerConfigRules;
 
 namespace rf
 {
+    struct Entity;
+    struct Item;
     struct Player;
 }
 
@@ -32,6 +34,21 @@ enum class MutatorId : uint8_t
     Arena = 2,
     Vampire = 3,
     SuperDrain = 4,
+    Armored = 5,
+    SuperRail = 6,
+    BigCraters = 7,
+    FlamingEnemies = 8,
+    Gibbing = 9,
+    Jetpacks = 10,
+    HumansVsBots = 11,
+    DelayedSupers = 12,
+    WeirdGunGame = 13,
+    LowGravity = 14,
+    ScoreLimitOverride = 15,
+    IdealPlayerCountOverride = 16,
+    Skiing = 17,
+    Pogo = 18,
+    Dodging = 19,
 };
 
 struct MutatorOptionChoice
@@ -62,6 +79,16 @@ struct MutatorOptionInfo
 // floor and does not even require an Alpine client.
 inline constexpr int MUTATOR_NO_CLIENT_REQUIREMENT = 0;
 
+// What a mutator needs from the game type in order to be applied.
+enum class MutatorGametypeReq : uint8_t
+{
+    Any,         // every game type
+    TeamOnly,
+    GunGameOnly,
+    HasScoreLimit, // excludes the types scored without a numeric limit
+    BotsSupported, // excludes the types bots cannot play
+};
+
 struct MutatorInfo
 {
     MutatorId id = MutatorId::Instagib;
@@ -73,6 +100,9 @@ struct MutatorInfo
     // none.
     int min_client_minor_version = MUTATOR_NO_CLIENT_REQUIREMENT;
 
+    // Game types this mutator can be used in.
+    uint32_t valid_gametype_mask = MUTATOR_GAMETYPE_MASK_ANY;
+
     std::vector<MutatorOptionInfo> options;
 };
 
@@ -80,11 +110,20 @@ void mutators_do_patch();
 void apply_mutators_from_toml(const toml::array& mutators_arr, AlpineServerConfigRules& rules);
 void mutators_level_init_post();
 void mutators_do_frame();
+void mutators_update_low_gravity();
+void mutators_on_multi_shutdown();
 int mutators_redirect_item_index(int item_type_index);
 bool mutators_should_deny_weapon_switch(int from_weapon, int to_weapon);
 void mutators_on_player_frag(rf::Player* killer);
 void mutators_set_no_clip_weapon(int weapon_type);
 void mutators_on_pvp_damage(rf::Player* attacker, rf::Player* victim, float effective_damage);
+void mutators_on_flame_damage(rf::Player* attacker, rf::Player* victim, int damage_type, float damage);
+void mutators_on_flame_victim_damage(rf::Player* victim, int damage_type, float damage);
+void mutators_on_item_picked_up(rf::Item* item, rf::Entity* entity);
+void mutators_apply_entity_on_fire(rf::Entity* ep, bool on_fire);
+bool mutators_skiing_active();
+bool mutators_dodging_active();
+bool mutators_pogo_active();
 
 // Registry view. Built lazily because choice lists (e.g. the Rails featured
 // weapon) are derived from the loaded weapon/item tables.

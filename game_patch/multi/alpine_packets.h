@@ -42,6 +42,7 @@ enum class af_packet_type : uint8_t
     af_bagman_state = 0x60,             // Alpine 1.4
     af_pit_roster = 0x61,               // Alpine 1.4
     af_gungame_order = 0x62,            // Alpine 1.4
+    af_salvage_state = 0x63,            // Alpine 1.4
 };
 
 struct af_ping_location_req_packet
@@ -88,10 +89,11 @@ enum class af_client_req_type : uint8_t
     af_req_character = 0x3,
     af_req_ready = 0x4,        // Alpine 1.4 (1 byte: action 0=unready,1=ready,2=toggle)
     af_req_pit_queue = 0x5,    // Alpine 1.4 (1 byte: action 0=leave,1=join,2=toggle)
-    af_req_vote_call = 0x6,    // Alpine 1.4 (variable, see af_build_vote_call_payload)
+    af_req_vote_call = 0x6,    // Alpine 1.4 (variable, see af_send_vote_call)
     af_req_vote_cast = 0x7,    // Alpine 1.4 (1 byte: 0 = no, 1 = yes)
     af_req_vote_cancel = 0x8,  // Alpine 1.4 (no additional data)
     af_req_vote_options = 0x9, // Alpine 1.4 (5 bytes: flags + known_generation)
+    af_req_jetpack_state = 0xA, // Alpine 1.4 (1 byte: on 0/1)
 };
 
 // Frozen wire constants, values can NEVER be reordered or changed.
@@ -217,6 +219,9 @@ enum af_vote_server_flags : uint8_t
     // vote_level.only_allow_gametype_prefix is on, so each level's
     // valid_gametype_mask actually restricts something and the UI may say so.
     AF_VOTE_SERVER_FLAG_GAMETYPE_PREFIX = 1 << 0,
+    // The server reads the trailing "preserve" byte on rotation vote calls, so
+    // the UI may offer the option.
+    AF_VOTE_SERVER_FLAG_ROTATION_PRESERVE = 1 << 1,
 };
 
 struct HandicapPayload
@@ -258,9 +263,16 @@ struct VoteOptionsReqPayload
     uint32_t known_generation = 0;  // meaningful only with AF_VOTE_OPTIONS_REQ_HAS_CACHE
 };
 
+// Jetpacks mutator: the client owns its own movement and just tells the server
+// when its thrusters turn on or off so the effects can be relayed to everyone.
+struct JetpackStateReqPayload
+{
+    uint8_t on = 0;
+};
+
 using af_client_payload = std::variant<HandicapPayload, SprayReqPayload, CharacterPayload,
                                        ReadyReqPayload, PitQueueReqPayload, VoteCastReqPayload,
-                                       VoteOptionsReqPayload, std::monostate>;
+                                       VoteOptionsReqPayload, JetpackStateReqPayload, std::monostate>;
 
 struct af_client_req_packet
 {
@@ -279,6 +291,9 @@ enum class af_server_req_type : uint8_t
     af_sreq_vote_state = 0x5,          // Alpine 1.4 (variable, see AfVoteStateEvent)
     af_sreq_vote_options_data = 0x6,   // Alpine 1.4 (chunked vote-options blob)
     af_sreq_kill_info = 0x7,           // Alpine 1.4 (5 bytes: victim, killer, weapon, flags, damage_type)
+    af_sreq_entity_on_fire = 0x8,      // Alpine 1.4 (5 bytes: obj_handle, on)
+    af_sreq_jetpack_state = 0x9,       // Alpine 1.4 (5 bytes: obj_handle, on)
+    af_sreq_riot_shield_state = 0xA,   // Alpine 1.4 (20 bytes: obj_handle, life, impact_pos)
 };
 
 struct ShouldGibPayload
@@ -349,8 +364,36 @@ static_assert(sizeof(KillInfoPayload) == 5);
 
 constexpr uint8_t af_kill_info_max_assists = 8;
 
+// Used by the Flaming Enemies mutator.
+// This is purely visual on the client. All fire damage is dealt by the server.
+struct EntityOnFirePayload
+{
+    uint32_t obj_handle = 0;
+    uint8_t on = 0; // 1 = ignite, 0 = extinguish
+};
+static_assert(sizeof(EntityOnFirePayload) == 5);
+
+// Used by the Jetpacks mutator. Purely visual: the thrusting client already
+// applied its own physics, this only drives the effects on every other client.
+struct EntityJetpackPayload
+{
+    uint32_t obj_handle = 0;
+    uint8_t on = 0; // 1 = thrusting, 0 = idle
+};
+static_assert(sizeof(EntityJetpackPayload) == 5);
+
+// Riot shield durability is server authoritative.
+struct RiotShieldStatePayload
+{
+    uint32_t obj_handle = 0;   // handle of the entity HOLDING the shield, not of the shield itself
+    float life = 0.f;          // shield life remaining after the damage, <= 0 means broken
+    RF_Vector impact_pos = {}; // world position of the hit, used to place the impact decal
+};
+static_assert(sizeof(RiotShieldStatePayload) == 20);
+
 using af_server_req_payload = std::variant<ShouldGibPayload, TeleportEntityPayload, SprayPayload,
-                                           ReadyPromptPayload, PitQueueStatePayload>;
+                                           ReadyPromptPayload, PitQueueStatePayload, EntityOnFirePayload,
+                                           EntityJetpackPayload, RiotShieldStatePayload>;
 
 struct af_server_req_packet
 {
@@ -446,6 +489,23 @@ struct af_bagman_state_packet
     int16_t  carrier_score;
 };
 
+struct af_salvage_state_packet
+{
+    RF_GamePacketHeader header;
+    uint8_t state;
+    uint8_t carrier_player_id; // 0xFF = nobody
+    uint16_t time_left_ms;     // Dropped: return timer; Delayed: spawn timer; else 0
+    uint16_t red_caps;
+    uint16_t blue_caps;
+    float spawn_x;
+    float spawn_y;
+    float spawn_z;
+    float flag_x;
+    float flag_y;
+    float flag_z;
+};
+static_assert(sizeof(af_salvage_state_packet) == 35);
+
 struct af_koth_hill_captured_packet
 {
     RF_GamePacketHeader header;
@@ -528,6 +588,11 @@ enum af_server_info_flags : uint32_t {
     SIF_FEATURED_NO_CLIP = 1u << 20,
     SIF_RELOAD_ON_KILL = 1u << 21,
     SIF_SUPER_DRAIN = 1u << 22,
+    SIF_JETPACKS = 1u << 23,
+    SIF_LOW_GRAVITY = 1u << 24,
+    SIF_SKIING = 1u << 25,
+    SIF_POGO = 1u << 26,
+    SIF_DODGING = 1u << 27,
 };
 
 // Subset of `rf::NetGameFlags`.
@@ -698,6 +763,7 @@ struct AfVoteCallParams
     uint8_t gametype = af_vote_gametype_none;
     uint8_t extend_minutes = af_vote_extend_default_minutes;
     std::vector<VoteMutatorInput> mutators;
+    bool preserve = true;
 };
 
 bool af_process_packet(const void* data, int len, const rf::NetAddr& addr, rf::Player* player);
@@ -715,9 +781,13 @@ static void af_process_obj_update_packet(const void* data, size_t len, const rf:
 void af_send_client_req_packet(const af_client_req_packet& packet, bool is_reliable = false);
 static void af_process_client_req_packet(const void* data, size_t len, const rf::NetAddr& addr);
 void af_send_character_request(int character_index);
-void af_send_server_req_packet(const af_server_req_packet& packet, rf::Player* player);
+void af_send_server_req_packet(const af_server_req_packet& packet, rf::Player* player, bool reliable = true);
 void af_send_should_gib_req(uint32_t obj_handle);
 void af_send_kill_info(rf::Player* killed_player);
+void af_send_entity_on_fire(uint32_t obj_handle, bool on);
+void af_send_jetpack_state_request(bool on);
+void af_send_jetpack_state(uint32_t obj_handle, bool on);
+void af_send_riot_shield_state(uint32_t obj_handle, float life, const rf::Vector3& impact_pos);
 void af_send_teleport_entity_req(uint32_t obj_handle, const rf::Vector3& pos, const rf::Matrix3& orient, const rf::Vector3& vel);
 void af_send_spray_to_player(uint8_t player_id, uint16_t texture_id, const rf::Vector3& pos, const rf::Vector3& normal, uint8_t flags, rf::Player* player);
 void af_broadcast_spray(uint8_t player_id, uint16_t texture_id, const rf::Vector3& pos, const rf::Vector3& normal);
@@ -735,12 +805,16 @@ void af_broadcast_pit_roster(const std::vector<af_pit_roster_entry>& roster);
 void af_process_pit_roster_packet(const void* data, size_t len, const rf::NetAddr&);
 void af_send_gungame_order(rf::Player* player, const std::vector<af_gungame_order_entry>& order);
 void af_process_gungame_order_packet(const void* data, size_t len, const rf::NetAddr&);
+void af_send_salvage_state_packet(rf::Player* player);
+void af_send_salvage_state_packet_to_all();
+void af_process_salvage_state_packet(const void* data, size_t len, const rf::NetAddr&);
 void af_send_koth_hill_captured_packet_to_all(uint8_t hill_uid, HillOwner owner, const std::vector<uint8_t>& new_owner_player_ids);
 static void af_process_koth_hill_captured_packet(const void* data, size_t len, const rf::NetAddr&);
 void af_send_just_died_info_packet(rf::Player* to_player, bool respawn_allowed, bool force_respawn, uint16_t spawn_delay);
 static void af_process_just_died_info_packet(const void* data, size_t len, const rf::NetAddr& addr);
 void af_send_server_info_packet(rf::Player* player);
 void af_send_server_info_packet_to_all();
+void af_reset_session_overrides_snapshot();
 static void af_process_server_info_packet(const void* data, size_t len, const rf::NetAddr&);
 void af_send_spectate_start_packet(const rf::Player* spectatee);
 void af_process_spectate_start_packet(const void* data, size_t len, const rf::NetAddr&);

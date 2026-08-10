@@ -11,6 +11,7 @@ namespace rf
     struct Item;
     struct NetAddr;
     struct VifLodMesh;
+    struct VMesh;
 }
 
 enum class BagState : uint8_t
@@ -46,6 +47,7 @@ extern BagmanInfo g_bagman_info;
 
 void bagman_level_init();
 void bagman_level_init_post();
+void bagman_on_multi_shutdown();
 void bagman_do_frame();
 void bagman_on_player_disconnect(rf::Player* player);
 void bagman_on_entity_will_die(rf::Entity* ep);
@@ -60,6 +62,7 @@ bool bagman_viewer_is_carrier_first_person();
 bool bagman_get_client_pickup_pos(rf::Vector3* out_pos);
 bool bagman_query_pickup_bag_outline(rf::VifLodMesh** out_lod_mesh, rf::Vector3* out_pos, rf::Matrix3* out_orient);
 bool bagman_query_carrier_bag_outline(rf::VifLodMesh** out_lod_mesh, rf::Vector3* out_pos, rf::Matrix3* out_orient);
+rf::VMesh* bagman_get_carrier_mesh();
 void bagman_tick_pickup_spin();
 void bagman_update_dynamic_light();
 void bagman_play_return_sound();

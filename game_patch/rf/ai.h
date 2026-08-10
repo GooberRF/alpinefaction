@@ -220,6 +220,7 @@ namespace rf
     static auto& ai_get_attack_range = addr_as_ref<float(AiInfo& ai)>(0x004077A0);
     static auto& ai_has_weapon = addr_as_ref<bool(AiInfo *ai_info, int weapon_type)>(0x00403250);
     static auto& ai_add_weapon = addr_as_ref<void(AiInfo *ai_info, int weapon_type, int clip_count)>(0x004030D0);
+    static auto& ai_remove_weapon = addr_as_ref<void(AiInfo *ai_info, int weapon_type)>(0x004031A0);
     static auto& ai_set_target = addr_as_ref<void(AiInfo* ai_info, int target_handle)>(0x00409050);
     static auto& ai_set_mode =
         addr_as_ref<void(AiInfo* ai_info, AiMode mode, int mode_param_0, int mode_param_1)>(0x00407E20);

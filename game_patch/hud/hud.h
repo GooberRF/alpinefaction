@@ -39,6 +39,7 @@ enum class HudNotificationType : int
     Rampage,        // big center-screen callout (renders in its own slot)
     Generic,        // standard slot (under the chat box)
     GenericBig,     // big center-screen slot
+    SalvageCarrier, // local only, persistent (Salvage flag carrier overlay)
 };
 
 void hud_notification_show(std::string text, int duration_seconds, HudNotificationType type, bool fade_on_expire);

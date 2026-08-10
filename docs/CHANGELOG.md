@@ -37,18 +37,34 @@ Version 1.4.0 (Lupin): Not yet released
   - Pit (`PIT`)
   - Wipeout (`WO`)
   - Gun Game (`GG`)
+  - Salvage (`SAL`)
 - Add sprays with bindable `Spray` control
   - `cl_sprays` console command to toggle local display and dedicated server `[sprays]` config section
   - `spray` console command to select spray, and in-game spray picker in advanced options
 - Add server-configured mutators:
   - Instagib
-  - Rails
+  - One Weapon
   - Arena
   - Vampire
   - Super Drain
+  - Armored
+  - Super Rail
+  - Big Craters
+  - Flaming Enemies
+  - Gibbing
+  - Jetpacks
+  - Humans vs. Bots
+  - Delayed Supers
+  - Weird Gun Game
+  - Low Gravity
+  - Skiing
+  - Dodging
+  - Pogo
+  - Score Limit Override
+  - Ideal Player Count Override
 - Rework multiplayer voting to use a GUI-based system instead of chat commands
   - Servers describe their votable levels, game types, and mutator options to clients
-  - `vote level` and `vote match` can now select a game type and any number of mutators (with their options) for the voted level
+  - `Level` and `Match` can now select a game type and any number of mutators (with their options) for the voted level
   - Add a vote panel for calling any vote the server allows, opened during gameplay with the bindable `Call Vote Menu` control (`F4` by default)
   - Vote HUD notification now shows live tally, time remaining, and whether you have already voted
 
@@ -66,6 +82,8 @@ Version 1.4.0 (Lupin): Not yet released
 - Make clock clutter objects correctly display the current local real world time
 - Add support for round-based game types
 - Add dedicated server config fields `max_rounds`, `round_time`, `post_round_time`, and `intermission_time`
+- Add dedicated server config fields `sal_cap_limit`, `sal_flag_spawn_delay`, `sal_flag_capture_respawn_delay`, and `sal_flag_return_time` for the Salvage game type
+- Require a matching `bot_shared_secret` for clients to join dedicated servers in bot mode, rejecting bot join requests when the server has no secret configured
 - Add HUD notification messages via `AF_SERVER_MSG_TYPE_HUD_NOTIFICATION` server message type
 - Add server-initiated HUD countdown via `AF_SERVER_MSG_TYPE_ROUND_COUNTDOWN` server message type
 - Add server-initiated custom sound play via `AF_SERVER_MSG_TYPE_PLAY_CUSTOM_SOUND` server message type
@@ -73,6 +91,9 @@ Version 1.4.0 (Lupin): Not yet released
 - Add `Sort` options (by name or by UID, with an optional `Group by type` toggle) to the editor's Select Objects and Show/Hide Objects windows
 - Add `camera4` console command for static camera in single player
 - Add `camera5` console command for tripod (follow player) camera in single player
+- Add `jetpack` console command to toggle a jetpack in single player
+- Add `skifree` console command to toggle skiing and dodging in single player
+- Add `pogo` console command to toggle pogo in single player
 - Remove the redundant per-packet `select()` before each `net_send` and in the packet receive pump, reducing dedicated server network syscall overhead (and wineserver round trips on Linux)
 - Raise the UDP socket `SO_RCVBUF` from 32 KB to 256 KB to reduce reliable-packet retransmit cascades on busy dedicated servers
 - Batch win32 console writes and throttle console input line reprints to reduce dedicated server console API overhead
@@ -107,6 +128,13 @@ Version 1.4.0 (Lupin): Not yet released
 - Add an `Asst` column to the scoreboard showing each player's assist count
 - Add `ui_assist_names` console command to toggle listing the players who assisted in kill messages
 - Add `ui_assist_highlight` console command to toggle highlighting of kill messages for kills you assisted
+- Show a label on the HUD indicating the name of the selected weapon if it has no FP mesh.
+- Tweak weapon values for some SP-intended weapon classes that are used in Weird Gun Game
+- Add dedicated server config field `add_installed_to_allowed_levels` to allow voting for every installed level whose filename matches a game type prefix, including levels installed while the server is running
+- Do not allow `vote kick` targeting bots
+- Add dedicated server config field `spawn_loadout_blue` to give the blue team its own spawn loadout, with `spawn_loadout` applying to every player when it is not specified
+- Indicate in the dedicated server config printout whether the spawn loadout is granted by the loadout or by the stock spawn weapons, and list the red and blue team loadouts separately when both are configured
+- Add Alpine Faction 1.4.0 clients to the `sv_restrict_status` common test cases
 
 [@is-this-c](https://github.com/is-this-c)
 - Rewrite `VArray` to fix crashes due to MinGW
@@ -149,6 +177,24 @@ Version 1.4.0 (Lupin): Not yet released
 - Fix server version checks comparing each version field independently, which would have rejected a future major version
 - Fix out of bounds read when applying level rules if the rotation shrank while a level was running
 - Fix the remote server config display sometimes being treated as complete before all of its content had arrived
+- Fix rcon feedback for the `info` command being cut off when the output exceeded a single packet
+- Fix damage to riot shields not being replicated to clients in multiplayer
+- Fix riot shield third person models being left behind when their holder disconnects
+- Fix the riot shield third person model floating in front of the camera when first person spectating its holder
+- Fix riot shields not being able to be picked up again after breaking while weapon stay was enabled
+- Fix servers relaying weapon shots twice, which made shots spawn duplicate projectiles, muzzle flashes, fire sounds, and shell casings in third person
+- Fix first person spectate sometimes showing a silencer on the pistol
+- Fix `$Fall Damage Slam Multiplier` `af_game.tbl` option not working in single player
+- Fix `r_picmip` reducing the resolution of glass and grating textures
+- Fix flags and other backpack attachments facing the wrong way on the `Eos` multiplayer character
+- Fix granting a weapon with no ammo type, such as the riot shield, corrupting the holder's secondary weapon slot, which showed an unselectable empty Remote Charge in the weapon select menu
+- Fix game type default rules, including the spawn loadout and spawn weapon, not being applied to dedicated servers configured for the `DM`, `CTF`, or `TDM` game types
+- Fix `spawn_weapon` not replacing the game type's default weapon in the spawn loadout, which granted both
+- Fix `ammo` in a `spawn_loadout` entry being ignored when the weapon was already in the loadout from game type defaults or a broader rules scope
+- Fix `include = false` in a `spawn_loadout` entry still granting the weapon on the server while never sending it to clients
+- Fix an unrecognized `weapon_name` in a `spawn_loadout` entry being silently ignored, which could leave players spawning with no weapons
+- Fix clients keeping weapons the server did not grant when a spawn loadout replaces the stock spawn weapons, which left unusable weapons in the weapon select menu
+- Fix `infinite_reloads` not filling reserve ammo on weapon pickup
 
 [@is-this-c](https://github.com/is-this-c)
 - Clear cached server config output after a shuffle of a server's rotation
@@ -158,6 +204,9 @@ Version 1.4.0 (Lupin): Not yet released
 
 [@AL2009man](https://github.com/AL2009man)
 - Fix brief game freeze whenever an `Alt` key is pressed
+
+[@jyh9521](https://github.com/jyh9521)
+- Fix crash on join for builds compiled on Windows systems using a Japanese, Chinese, or Korean locale
 
 Version 1.3.0 (Bakeapple): Released Apr-22-2026
 --------------------------------

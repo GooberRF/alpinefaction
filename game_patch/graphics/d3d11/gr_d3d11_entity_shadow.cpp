@@ -22,6 +22,7 @@
 #include "../../rf/os/frametime.h"
 #include "../../misc/alpine_settings.h"
 #include "../../hud/multi_spectate.h"
+#include "../../multi/salvage.h"
 
 namespace gr::d3d11
 {
@@ -624,6 +625,8 @@ namespace gr::d3d11
             first_person_player = rf::local_player;
         }
 
+        const bool hide_salvage_flag = salvage_viewer_is_carrier_first_person();
+
         for (auto& item : DoublyLinkedList{rf::item_list}) {
             if (item.obj_flags & (rf::OF_DELAYED_DELETE | rf::OF_HIDDEN)) continue;
             if (!item.vmesh) continue;
@@ -646,6 +649,8 @@ namespace gr::d3d11
                  (&item == rf::ctf_blue_flag_item && rf::multi_ctf_get_blue_flag_player() == first_person_player))) {
                 continue;
             }
+
+            if (hide_salvage_flag && salvage_is_flag_item(&item)) continue;
 
             float dx = item.pos.x - current_camera_pos_.x;
             float dy = item.pos.y - current_camera_pos_.y;

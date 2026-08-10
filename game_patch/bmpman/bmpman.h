@@ -4,6 +4,12 @@
 #include "../rf/bmpman.h"
 #include "../rf/gr/gr.h"
 
+// rf::bm::load never fails: a missing file gets a generated 32x32 checkerboard
+// placeholder with a real handle, so "handle != -1" is not a presence test. Probe
+// the VFS first when the caller wants a genuine "not installed" answer (-1).
+// Defined in misc/game.cpp.
+int bm_load_if_exists(const char* name, int unk, bool generate_mipmaps);
+
 void bm_set_dynamic(int bm_handle, bool dynamic);
 bool bm_is_dynamic(int bm_handle);
 void bm_change_format(int bm_handle, rf::bm::Format format);

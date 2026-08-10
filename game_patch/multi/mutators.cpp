@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <cmath>
 #include <format>
 #include <map>
 #include <optional>
@@ -6,6 +7,8 @@
 #include <string>
 #include <string_view>
 #include <vector>
+#include <patch_common/CallHook.h>
+#include <patch_common/CodeInjection.h>
 #include <patch_common/FunHook.h>
 #include <common/utils/list-utils.h>
 #include <common/utils/string-utils.h>
@@ -14,15 +17,23 @@
 #include "multi.h"
 #include "gametype.h"
 #include "kill.h"
+#include "kill_attribution.h"
+#include "alpine_packets.h"
 #include "../rf/weapon.h"
 #include "../rf/item.h"
 #include "../rf/entity.h"
 #include "../rf/ai.h"
 #include "../rf/multi.h"
 #include "../rf/gameseq.h"
+#include "../rf/level.h"
 #include "../rf/player/player.h"
+#include "../rf/player/control_config.h"
 #include "../rf/os/console.h"
 #include "../rf/os/timestamp.h"
+#include "../rf/physics.h"
+#include "../rf/sound/sound.h"
+#include "../os/console.h"
+#include "../os/os.h"
 
 // Spawn reserve for a no-clip "infinite ammo" weapon. Firing draws from reserve,
 // but we suppress the per-shot decrement, so this is purely the (constant) number
@@ -71,7 +82,6 @@ static void set_single_weapon_loadout(AlpineServerConfigRules& r, int weapon_typ
 {
     r.spawn_loadout.red_weapons.clear();
     r.spawn_loadout.blue_weapons.clear();
-    r.spawn_loadout.loadouts_active = true;
     r.spawn_loadout.add(mutator_weapon_name(weapon_type), reserve_ammo, false, true);
     r.default_player_weapon.set_weapon(mutator_weapon_name(weapon_type));
 }
@@ -164,7 +174,6 @@ static void apply_arena(AlpineServerConfigRules& r, const toml::table& /*opts*/)
     const int baton = rf::riot_stick_weapon_type;
     r.spawn_loadout.red_weapons.clear();
     r.spawn_loadout.blue_weapons.clear();
-    r.spawn_loadout.loadouts_active = true;
     r.spawn_loadout.add("Riot Stick", rf::weapon_types[baton].clip_size_multi, false, true);
     r.spawn_loadout.add("Assault Rifle", 999, false, true);
     r.default_player_weapon.set_weapon("Assault Rifle");
@@ -184,6 +193,7 @@ static void apply_arena(AlpineServerConfigRules& r, const toml::table& /*opts*/)
 
     // No pickups except weapons.
     r.mutators.pickup_policy = PickupPolicy::WeaponsOnly;
+    r.drop_weapons = false;
 }
 
 // Vampire: landing damage on another player heals the attacker for a fixed
@@ -191,10 +201,16 @@ static void apply_arena(AlpineServerConfigRules& r, const toml::table& /*opts*/)
 // gives 50 effective health back.
 static constexpr float VAMPIRE_HEAL_RATIO = 0.5f;
 static constexpr bool VAMPIRE_DEFAULT_HIDE_HEALTH_ARMOR = true;
+// Full lifesteal option: heal 1:1 instead — damage dealt comes back in full.
+static constexpr float VAMPIRE_FULL_LIFESTEAL_RATIO = 1.0f;
+static constexpr bool VAMPIRE_DEFAULT_FULL_LIFESTEAL = false;
 
 static void apply_vampire(AlpineServerConfigRules& r, const toml::table& opts)
 {
     r.mutators.vampire_enabled = true;
+    r.mutators.vampire_heal_ratio = opts["full_lifesteal"].value_or(VAMPIRE_DEFAULT_FULL_LIFESTEAL)
+        ? VAMPIRE_FULL_LIFESTEAL_RATIO
+        : VAMPIRE_HEAL_RATIO;
 
     // Composed with (not replacing) whatever pickup policy is in force.
     r.mutators.hide_health_armor_pickups =
@@ -205,6 +221,137 @@ static void apply_vampire(AlpineServerConfigRules& r, const toml::table& opts)
 static void apply_super_drain(AlpineServerConfigRules& r, const toml::table& /*opts*/)
 {
     r.mutators.super_drain_enabled = true;
+}
+
+// Armored: spawn with 100 armor instead of the stock 0.
+static void apply_armored(AlpineServerConfigRules& r, const toml::table& /*opts*/)
+{
+    r.spawn_armour.enabled = true;
+    r.spawn_armour.set_value(100.0f);
+}
+
+// Super Rail: the rail gun pickup ignores weapon stay and respawns on a long timer.
+static constexpr int SUPER_RAIL_RESPAWN_TIME_MS = 60000;
+
+static void apply_super_rail(AlpineServerConfigRules& r, const toml::table& /*opts*/)
+{
+    const int rail = rf::rail_gun_weapon_type;
+    if (rail < 0 || rail >= rf::num_weapon_types) {
+        rf::console::print("  [WARN] Super Rail mutator: the loaded tables have no rail gun\n");
+        return;
+    }
+
+    r.mutators.super_rail_enabled = true;
+
+    r.weapon_stay_exemptions.add(mutator_weapon_name(rail), true);
+
+    for (int i = 0; i < rf::num_item_types; ++i) {
+        if (rf::item_info[i].gives_weapon_id == rail) {
+            r.set_item_respawn_time(rf::item_info[i].cls_name.c_str(), SUPER_RAIL_RESPAWN_TIME_MS);
+            break;
+        }
+    }
+}
+
+// Big Craters: double the weapon crater radius of explosion geomods.
+static void apply_big_craters(AlpineServerConfigRules& r, const toml::table& /*opts*/)
+{
+    r.mutators.big_craters_enabled = true;
+}
+
+// Flaming Enemies: sustained flamethrower fire damage sets players on fire in
+// multiplayer, with the SP on-fire visuals but custom damage-over-time logic.
+static void apply_flaming_enemies(AlpineServerConfigRules& r, const toml::table& /*opts*/)
+{
+    r.mutators.flaming_enemies_enabled = true;
+}
+
+// Gibbing: overkill deaths explode into gibs.
+static void apply_gibbing(AlpineServerConfigRules& r, const toml::table& /*opts*/)
+{
+    r.gibbing.enabled = true;
+}
+
+// Jetpacks: every player wears a jetpack and can thrust upward in midair.
+static void apply_jetpacks(AlpineServerConfigRules& r, const toml::table& /*opts*/)
+{
+    r.mutators.jetpacks_enabled = true;
+}
+
+// Humans vs. Bots: in a team game type, bots are held on Blue and humans on Red.
+static void apply_humans_vs_bots(AlpineServerConfigRules& r, const toml::table& /*opts*/)
+{
+    r.mutators.humans_vs_bots_enabled = true;
+}
+
+// Delayed Supers: super-tier items start hidden and only begin their normal
+// respawn timer once it first elapses.
+static const char* const DELAYED_SUPERS_ITEMS[] = {
+    "Multi Super Health",
+    "Multi Super Armor",
+    "Multi Invulnerability",
+    "Multi Damage Amplifier",
+    "shoulder_cannon",
+};
+
+static void apply_delayed_supers(AlpineServerConfigRules& r, const toml::table& /*opts*/)
+{
+    for (const char* name : DELAYED_SUPERS_ITEMS)
+        r.delayed_items.add(name);
+
+    // Only delay the rail gun pickup when Super Rail is also active; applied
+    // after Super Rail in MUTATOR_APPLY_ORDER so its flag is already set.
+    if (r.mutators.super_rail_enabled)
+        r.delayed_items.add("rail gun");
+}
+
+// Weird Gun Game.
+static void apply_weird_gungame(AlpineServerConfigRules& r, const toml::table& /*opts*/)
+{
+    r.mutators.weird_gungame_enabled = true;
+}
+
+// Low Gravity.
+static void apply_low_gravity(AlpineServerConfigRules& r, const toml::table& /*opts*/)
+{
+    r.mutators.low_gravity_enabled = true;
+}
+
+// Skiing.
+static void apply_skiing(AlpineServerConfigRules& r, const toml::table& /*opts*/)
+{
+    r.mutators.skiing_enabled = true;
+}
+
+// Dodging.
+static void apply_dodging(AlpineServerConfigRules& r, const toml::table& /*opts*/)
+{
+    r.mutators.dodging_enabled = true;
+}
+
+// Pogo.
+static void apply_pogo(AlpineServerConfigRules& r, const toml::table& /*opts*/)
+{
+    r.mutators.pogo_enabled = true;
+}
+
+// Score Limit Override.
+static void apply_score_limit_override(AlpineServerConfigRules& r, const toml::table& opts)
+{
+    auto v = opts["score_limit"].value<int64_t>();
+    if (!v)
+        return;
+    const int value = static_cast<int>(std::clamp<int64_t>(*v, 1, INT32_MAX));
+    if (!r.set_score_limit(r.game_type, value)) {
+        rf::console::print("  [WARN] Score Limit Override: this game type has no score limit\n");
+    }
+}
+
+// Ideal Player Count Override: the count the server advertises as its target size.
+static void apply_ideal_player_count_override(AlpineServerConfigRules& r, const toml::table& opts)
+{
+    if (auto v = opts["ideal_players"].value<int64_t>())
+        r.set_ideal_player_count(static_cast<int>(std::clamp<int64_t>(*v, 1, INT32_MAX)));
 }
 
 // ============================================================================
@@ -227,9 +374,18 @@ static const MutatorOptionDef RAILS_OPTIONS[] = {
     {1, "exclude_thrown", "Keep thrown explosives", MutatorOptionType::Bool},
 };
 
-// Label kept short enough to clear the option row's checkbox label space at 640x480.
+// Labels kept short enough to clear the option row's checkbox label space at 640x480.
 static const MutatorOptionDef VAMPIRE_OPTIONS[] = {
     {0, "hide_health_armor_pickups", "No health/armor pickups", MutatorOptionType::Bool},
+    {1, "full_lifesteal", "Full lifesteal", MutatorOptionType::Bool},
+};
+
+static const MutatorOptionDef SCORE_LIMIT_OPTIONS[] = {
+    {0, "score_limit", "Score limit", MutatorOptionType::Int},
+};
+
+static const MutatorOptionDef IDEAL_PLAYERS_OPTIONS[] = {
+    {0, "ideal_players", "Ideal players", MutatorOptionType::Int},
 };
 
 struct MutatorDef
@@ -243,27 +399,113 @@ struct MutatorDef
     void (*apply)(AlpineServerConfigRules&, const toml::table&);
     const MutatorOptionDef* options;
     size_t num_options;
+    MutatorGametypeReq gametype_req = MutatorGametypeReq::Any;
+
+    // Vote notification / chat text. Most mutators are just their label, but where
+    // the chosen value is the whole point of the vote it is worth showing:
+    // "One Weapon [Rail]", "Score Limit [30]". Deliberately opt-in per mutator --
+    // spelling out every option would bury the line in noise.
+
+    // vote_label overrides `label` for that line only (nullptr = use `label`), and
+    // vote_detail_option names the option whose value goes in the brackets
+    // (nullptr = no brackets). A Choice shows its short UI label, not its raw value.
+    const char* vote_label = nullptr;
+    const char* vote_detail_option = nullptr;
 };
 
 // Per-mutator client requirement — what the mutator actually depends on, not
 // necessarily what release it shipped in.
 static const MutatorDef MUTATORS[] = {
     {MutatorId::Instagib, "instagib", "Instagib", 4, &apply_instagib, nullptr, 0},
-    {MutatorId::Rails, "rails", "Rails", 4, &apply_rails, RAILS_OPTIONS, std::size(RAILS_OPTIONS)},
+    {MutatorId::Rails, "oneweapon", "One Weapon", 4, &apply_rails, RAILS_OPTIONS, std::size(RAILS_OPTIONS), MutatorGametypeReq::Any, nullptr, "featured_weapon"},
     {MutatorId::Arena, "arena", "Arena", 4, &apply_arena, nullptr, 0},
     {MutatorId::Vampire, "vampire", "Vampire", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_vampire, VAMPIRE_OPTIONS, std::size(VAMPIRE_OPTIONS)},
     {MutatorId::SuperDrain, "superdrain", "Super Drain", 4, &apply_super_drain, nullptr, 0},
+    {MutatorId::Armored, "armored", "Armored", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_armored, nullptr, 0},
+    {MutatorId::SuperRail, "superrail", "Super Rail", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_super_rail, nullptr, 0},
+    {MutatorId::BigCraters, "bigcraters", "Big Craters", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_big_craters, nullptr, 0},
+    {MutatorId::FlamingEnemies, "flamingenemies", "Flaming Enemies", 4, &apply_flaming_enemies, nullptr, 0},
+    {MutatorId::Gibbing, "gibbing", "Gibbing", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_gibbing, nullptr, 0},
+    {MutatorId::Jetpacks, "jetpacks", "Jetpacks", 4, &apply_jetpacks, nullptr, 0},
+    {MutatorId::HumansVsBots, "humansvsbots", "Humans vs. Bots", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_humans_vs_bots, nullptr, 0, MutatorGametypeReq::TeamOnly},
+    {MutatorId::DelayedSupers, "delayedsupers", "Delayed Supers", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_delayed_supers, nullptr, 0},
+    {MutatorId::WeirdGunGame, "weirdgungame", "Weird Gun Game", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_weird_gungame, nullptr, 0, MutatorGametypeReq::GunGameOnly},
+    {MutatorId::LowGravity, "lowgravity", "Low Gravity", 4, &apply_low_gravity, nullptr, 0},
+    {MutatorId::Skiing, "skiing", "Skiing", 4, &apply_skiing, nullptr, 0},
+    {MutatorId::Dodging, "dodging", "Dodging", 4, &apply_dodging, nullptr, 0},
+    {MutatorId::Pogo, "pogo", "Pogo", 4, &apply_pogo, nullptr, 0},
+    {MutatorId::ScoreLimitOverride, "scorelimit", "Score Limit Override", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_score_limit_override, SCORE_LIMIT_OPTIONS, std::size(SCORE_LIMIT_OPTIONS), MutatorGametypeReq::HasScoreLimit, "Score Limit", "score_limit"},
+    {MutatorId::IdealPlayerCountOverride, "idealplayers", "Ideal Player Count Override", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_ideal_player_count_override, IDEAL_PLAYERS_OPTIONS, std::size(IDEAL_PLAYERS_OPTIONS), MutatorGametypeReq::BotsSupported, "Ideal Players", "ideal_players"},
 };
 
 // Hardcoded order in which simultaneously-active mutators are applied. Later
 // entries win where they overlap.
 static const MutatorId MUTATOR_APPLY_ORDER[] = {
+    MutatorId::Pogo,
+    MutatorId::Dodging,
+    MutatorId::Skiing,
+    MutatorId::LowGravity,
+    MutatorId::WeirdGunGame,
+    MutatorId::HumansVsBots,
+    MutatorId::Jetpacks,
+    MutatorId::Gibbing,
+    MutatorId::FlamingEnemies,
+    MutatorId::BigCraters,
+    MutatorId::SuperRail,
+    MutatorId::DelayedSupers,
+    MutatorId::Armored,
     MutatorId::SuperDrain,
     MutatorId::Vampire,
     MutatorId::Arena,
     MutatorId::Rails,
     MutatorId::Instagib,
+    MutatorId::ScoreLimitOverride,
+    MutatorId::IdealPlayerCountOverride,
 };
+
+// Resolve a static requirement to the concrete set of game types it permits.
+static uint32_t gametype_mask_for_req(MutatorGametypeReq req)
+{
+    switch (req) {
+        case MutatorGametypeReq::TeamOnly: {
+            uint32_t mask = 0;
+            for (int i = 0; i < static_cast<int>(rf::NG_TYPE_UNK); ++i) {
+                if (multi_game_type_is_team_type(static_cast<rf::NetGameType>(i)))
+                    mask |= 1u << i;
+            }
+            return mask;
+        }
+        case MutatorGametypeReq::GunGameOnly:
+            return 1u << static_cast<int>(rf::NG_TYPE_GG);
+        case MutatorGametypeReq::HasScoreLimit: {
+            // Read straight off the same mapping the Score Limit Override mutator
+            // writes through, so the two can never disagree: a game type whose
+            // limit is nullopt has nothing to override.
+            uint32_t mask = 0;
+            const auto& rules = g_alpine_server_config_active_rules;
+            for (int i = 0; i < static_cast<int>(rf::NG_TYPE_UNK); ++i) {
+                if (rules.get_score_limit(static_cast<rf::NetGameType>(i)))
+                    mask |= 1u << i;
+            }
+            return mask;
+        }
+        case MutatorGametypeReq::BotsSupported:
+            // Bots can't play RUN.
+            return MUTATOR_GAMETYPE_MASK_ANY & ~(1u << static_cast<int>(rf::NG_TYPE_RUN));
+        case MutatorGametypeReq::Any:
+            break;
+    }
+    return MUTATOR_GAMETYPE_MASK_ANY;
+}
+
+bool mutator_gametype_mask_allows(uint32_t valid_gametype_mask, uint8_t game_type)
+{
+    // A game type past the mask's width can't be expressed, so don't let it
+    // restrict anything.
+    if (game_type >= 32)
+        return true;
+    return (valid_gametype_mask & (1u << game_type)) != 0;
+}
 
 static const MutatorDef* find_mutator_by_name(std::string_view name)
 {
@@ -373,12 +615,19 @@ static std::vector<MutatorOptionChoice> build_featured_weapon_choices()
 static std::vector<MutatorInfo> g_mutator_registry;
 // Whether the cached build saw the weapon/item tables.
 static bool g_mutator_registry_built_with_tables = false;
+// Active-rules generation the cached defaults were taken from. The score limit and
+// ideal player count defaults are live server values, so the cache has to follow a
+// config reload (sv_loadconfig) or it would keep advertising the old numbers.
+static int g_mutator_registry_generation = -1;
 
 const std::vector<MutatorInfo>& mutators_get_registry()
 {
     const bool tables_ready = rf::num_weapon_types > 0 && rf::num_item_types > 0;
-    if (!g_mutator_registry.empty() && (g_mutator_registry_built_with_tables || !tables_ready))
+    const int generation = get_active_rules_generation();
+    if (!g_mutator_registry.empty() && (g_mutator_registry_built_with_tables || !tables_ready)
+        && generation == g_mutator_registry_generation)
         return g_mutator_registry;
+    g_mutator_registry_generation = generation;
 
     std::vector<MutatorInfo> registry;
     for (const auto& def : MUTATORS) {
@@ -387,6 +636,7 @@ const std::vector<MutatorInfo>& mutators_get_registry()
         info.name = def.name;
         info.label = def.label;
         info.min_client_minor_version = def.min_client_minor_version;
+        info.valid_gametype_mask = gametype_mask_for_req(def.gametype_req);
 
         for (size_t i = 0; i < def.num_options; ++i) {
             const MutatorOptionDef& opt_def = def.options[i];
@@ -414,6 +664,15 @@ const std::vector<MutatorInfo>& mutators_get_registry()
             }
             else if (def.id == MutatorId::Vampire && opt.name == "hide_health_armor_pickups") {
                 opt.default_bool = VAMPIRE_DEFAULT_HIDE_HEALTH_ARMOR;
+            }
+            // Both override defaults are the server's CURRENT value, so a vote that
+            // enables one without touching it changes nothing.
+            else if (def.id == MutatorId::ScoreLimitOverride && opt.name == "score_limit") {
+                const auto& rules = g_alpine_server_config_active_rules;
+                opt.default_int = rules.get_score_limit(rules.game_type).value_or(1);
+            }
+            else if (def.id == MutatorId::IdealPlayerCountOverride && opt.name == "ideal_players") {
+                opt.default_int = g_alpine_server_config_active_rules.ideal_player_count;
             }
 
             info.options.push_back(std::move(opt));
@@ -502,12 +761,22 @@ void apply_mutators_from_toml(const toml::array& mutators_arr, AlpineServerConfi
             continue;
 
         const MutatorDef* def = find_mutator_by_id(id);
-        def->apply(rules, it->second);
 
-        // Record for display; replace any inherited entry for the same mutator.
+        // A mutator that does nothing in this scope's game type is not applied
+        // and is left out of the displayed labels, declaration is still recorded.
+        const bool available = mutator_gametype_mask_allows(
+            gametype_mask_for_req(def->gametype_req), static_cast<uint8_t>(rules.game_type));
+
         auto& labels = rules.mutators.active_labels;
         labels.erase(std::remove(labels.begin(), labels.end(), def->label), labels.end());
-        labels.push_back(def->label);
+
+        if (available) {
+            def->apply(rules, it->second);
+            labels.push_back(def->label);
+        }
+        else {
+            rf::console::print("  [WARN] mutator '{}' does nothing in this game type and was not applied\n", def->name);
+        }
 
         // Record the raw declaration so this scope's mutators can be re-applied
         // after a runtime game_type change wipes MutatorConfig (see
@@ -629,14 +898,61 @@ std::optional<std::string> mutators_build_declarations_from_vote(
     return std::nullopt;
 }
 
+// The bracketed detail for one mutator's vote line, or empty when it has none.
+// Only the option named by vote_detail_option is shown; a Choice resolves to its
+// short UI label ("Rail") rather than the raw TOML value ("rail_gun").
+static std::string mutator_vote_detail(const MutatorDef& def, const MutatorDeclaration& decl)
+{
+    if (!def.vote_detail_option)
+        return {};
+
+    const auto it = decl.options.find(def.vote_detail_option);
+    if (it == decl.options.end())
+        return {}; // left at its default, which the vote line does not spell out
+
+    if (const auto* v = std::get_if<int32_t>(&it->second))
+        return std::format("{}", *v);
+    if (const auto* v = std::get_if<float>(&it->second))
+        return std::format("{:g}", *v);
+    if (const auto* v = std::get_if<bool>(&it->second))
+        return *v ? "on" : "off";
+
+    const auto* str = std::get_if<std::string>(&it->second);
+    if (!str)
+        return {};
+
+    // Choice: map the stored value back to the label the voter actually picked.
+    if (const MutatorInfo* info = mutators_find_by_id(def.id)) {
+        for (const auto& opt : info->options) {
+            if (opt.name != def.vote_detail_option)
+                continue;
+            for (const auto& choice : opt.choices) {
+                if (string_iequals(choice.value, *str))
+                    return choice.label;
+            }
+            break;
+        }
+    }
+    return *str;
+}
+
 std::string mutators_join_labels(const std::vector<MutatorDeclaration>& declarations)
 {
     std::string joined;
     for (const auto& decl : declarations) {
-        const MutatorInfo* info = mutators_find_by_name(decl.name);
         if (!joined.empty())
             joined += ", ";
-        joined += info ? info->label : decl.name;
+
+        const MutatorDef* def = find_mutator_by_name(decl.name);
+        if (!def) {
+            joined += decl.name;
+            continue;
+        }
+        joined += def->vote_label ? def->vote_label : def->label;
+
+        const std::string detail = mutator_vote_detail(*def, decl);
+        if (!detail.empty())
+            joined += std::format(" [{}]", detail);
     }
     return joined;
 }
@@ -687,10 +1003,16 @@ std::optional<ManualRulesOverride> load_vote_rules_override(
     }
 
     ManualRulesOverride result;
+    // Reported from what actually applied rather than from what was voted.
+    std::string labels;
+    for (const auto& label : rules.mutators.active_labels) {
+        if (!labels.empty())
+            labels += ", ";
+        labels += label;
+    }
     result.rules = std::move(rules);
-    std::string labels = mutators_join_labels(mutators);
     if (!labels.empty())
-        result.preset_alias = std::move(labels);
+        result.mutator_labels = std::move(labels);
     return result;
 }
 
@@ -714,8 +1036,622 @@ static bool is_standard_health_or_armor_item(const rf::ItemInfo& info)
         || callback == ITEM_TOUCH_MINER_ENVIROSUIT;
 }
 
+// Defined in the Flaming Enemies section below.
+static void flame_level_init();
+
+static constexpr float LOW_GRAVITY_VALUE = 5.8f;
+
+static bool g_low_gravity_applied = false;
+static float g_saved_gravity = 0.0f;
+
+static bool low_gravity_is_active()
+{
+    if (!rf::is_multi)
+        return false;
+    if (rf::is_server)
+        return g_alpine_server_config_active_rules.mutators.low_gravity_enabled;
+    // Server informs the client via SIF_LOW_GRAVITY.
+    const auto& info = get_af_server_info();
+    return info.has_value() && info->low_gravity;
+}
+
+void mutators_update_low_gravity()
+{
+    const bool want = low_gravity_is_active();
+    if (want == g_low_gravity_applied)
+        return;
+
+    if (want) {
+        // Whatever the level set for itself, captured before we overwrite it.
+        g_saved_gravity = rf::gravity;
+        g_low_gravity_applied = true;
+        rf::level_set_gravity(LOW_GRAVITY_VALUE);
+    }
+    else {
+        g_low_gravity_applied = false;
+        rf::level_set_gravity(g_saved_gravity);
+    }
+}
+
+// Skiing parameters.
+static constexpr float SKI_ENTER_SPEED = 1.5f;          // engage above this
+static constexpr float SKI_EXIT_SPEED = 1.0f;           // disengage below this
+static constexpr float SKI_MIN_SLOPE = 0.15f;           // |n_xz| that counts as a slope
+static constexpr float SKI_TURN_RATE_DEG_PER_S = 90.0f; // carve rate, magnitude preserving
+static constexpr float SKI_FRICTION_PER_S = 0.05f;      // on slopes: near-frictionless
+static constexpr float SKI_FRICTION_FLAT_PER_S = 0.4f;  // level ground: long but finite glide
+static constexpr float SKI_SEPARATION_EPS = 0.5f;       // vn above this is a real convex break, not jitter
+static constexpr float SKI_RELEASE_PUSH = 0.75f;        // m/s off the face so collide-and-slide can't re-engage
+static constexpr float SKI_STRAFE_WISHSPEED_FRAC = 0.25f;
+static constexpr float SKI_STRAFE_ACCEL = 10.0f;
+
+// 0.5 is the engine's own standable threshold: the ground snap compares against
+// it at 0x004A0A82 and calls entity_make_freefall below it (constant 0x005893C0).
+static constexpr float SKI_MIN_WALKABLE_NY = 0.5f;
+
+// Dodging parameters. directional dodge from a double-tapped movement key,
+// or from  crouch+jump while holding one. Grounded only.
+static constexpr int DODGE_TAP_WINDOW_MS = 300;       // max gap between the two taps
+static constexpr int DODGE_COOLDOWN_MS = 750;         // between dodges
+static constexpr float DODGE_SPEED_FACTOR = 2.25f;    // burst speed as a factor of info->max_vel
+static constexpr float DODGE_VERTICAL_FACTOR = 0.5f;  // pop as a factor of the stock jump velocity
+
+// A manual freefall must arm the anti-restick window itself (real jumps get it from the
+// AF injection inside entity_jump); 64ms matches stock, and the dodge's pop clears the
+// falling probe's 0.1 reach at ~41ms.
+extern rf::Timestamp g_player_jump_timestamp;
+
+// `skifree` console command, single player only.
+static bool g_skifree_sp_enabled = false;
+
+// `pogo` console command, single player only.
+static bool g_pogo_sp_enabled = false;
+
+bool mutators_skiing_active()
+{
+    if (!rf::is_multi)
+        return g_skifree_sp_enabled;
+    if (rf::is_server)
+        return g_alpine_server_config_active_rules.mutators.skiing_enabled;
+    // Server informs the client via SIF_SKIING.
+    const auto& info = get_af_server_info();
+    return info.has_value() && info->skiing;
+}
+
+bool mutators_dodging_active()
+{
+    if (!rf::is_multi)
+        return g_skifree_sp_enabled;
+    if (rf::is_server)
+        return g_alpine_server_config_active_rules.mutators.dodging_enabled;
+    // Server informs the client via SIF_DODGING.
+    const auto& info = get_af_server_info();
+    return info.has_value() && info->dodging;
+}
+
+bool mutators_pogo_active()
+{
+    if (!rf::is_multi)
+        return g_pogo_sp_enabled;
+    if (rf::is_server)
+        return g_alpine_server_config_active_rules.mutators.pogo_enabled;
+    // Server informs the client via SIF_POGO.
+    const auto& info = get_af_server_info();
+    return info.has_value() && info->pogo;
+}
+
+static bool any_movement_mutator_active()
+{
+    return mutators_skiing_active() || mutators_dodging_active() || mutators_pogo_active();
+}
+
+static bool ski_held(rf::Entity* ep)
+{
+    if (!mutators_skiing_active() || ep != rf::local_player_entity || !rf::local_player)
+        return false;
+    if (rf::entity_is_dying(ep))
+        return false;
+    if (rf::entity_in_vehicle(ep) || rf::entity_is_swimming(ep) || rf::entity_is_climbing(ep))
+        return false;
+    if (rf::console::console_is_visible() || rf::multi_chat_is_say_visible())
+        return false;
+    return rf::control_is_control_down(&rf::local_player->settings.controls, rf::CC_ACTION_CROUCH);
+}
+
+static bool g_ski_engaged = false;
+
+// Below both thresholds stock crouch movement applies unchanged.
+static bool ski_ground_active(rf::Entity* ep)
+{
+    if (!ski_held(ep)) {
+        if (ep == rf::local_player_entity)
+            g_ski_engaged = false;
+        return false;
+    }
+    const auto& vel = ep->p_data.vel;
+    const float speed = std::sqrt(vel.x * vel.x + vel.z * vel.z);
+    const rf::Vector3& n = ep->p_data.collide_out.hit_normal;
+
+    if (speed > SKI_ENTER_SPEED || std::sqrt(n.x * n.x + n.z * n.z) > SKI_MIN_SLOPE)
+        g_ski_engaged = true;
+    else if (speed < SKI_EXIT_SPEED)
+        g_ski_engaged = false;
+    return g_ski_engaged;
+}
+
+// View basis flattened to XZ and combined before normalizing.
+// False when the combination degenerates (no input, or a straight-up view).
+static bool ski_view_dir(rf::Entity* ep, float fwd, float side, float& out_x, float& out_z)
+{
+    const rf::Vector3& f = ep->eye_orient.fvec;
+    const rf::Vector3& r = ep->eye_orient.rvec;
+    const float raw_x = f.x * fwd + r.x * side;
+    const float raw_z = f.z * fwd + r.z * side;
+    const float len = std::sqrt(raw_x * raw_x + raw_z * raw_z);
+    if (len <= 1e-4f)
+        return false;
+    out_x = raw_x / len;
+    out_z = raw_z / len;
+    return true;
+}
+
+// View+keys wish direction on the XZ plane. False when no input, when typing
+// (console/chat swallow movement keys), or when the flattened basis degenerates.
+static bool ski_wish_dir(rf::Entity* ep, float& out_x, float& out_z)
+{
+    if (!rf::local_player)
+        return false;
+    if (rf::console::console_is_visible() || rf::multi_chat_is_say_visible())
+        return false;
+
+    float fwd = 0.0f;
+    float side = 0.0f;
+    auto* controls = &rf::local_player->settings.controls;
+    if (rf::control_is_control_down(controls, rf::CC_ACTION_FORWARD))
+        fwd += 1.0f;
+    if (rf::control_is_control_down(controls, rf::CC_ACTION_BACKWARD))
+        fwd -= 1.0f;
+    if (rf::control_is_control_down(controls, rf::CC_ACTION_SLIDE_RIGHT))
+        side += 1.0f;
+    if (rf::control_is_control_down(controls, rf::CC_ACTION_SLIDE_LEFT))
+        side -= 1.0f;
+
+    return ski_view_dir(ep, fwd, side, out_x, out_z);
+}
+
+// Strafe gain, the one authority for the formula. The dot-cap limits speed
+// along the wish direction, so gain comes from steering across the velocity and
+// never from holding forward; the step rate uses the full max_vel.`along` is the
+// caller's already-computed dot of horizontal velocity with the wish direction.
+static void ski_strafe_gain(rf::Entity* ep, float dt, float wish_x, float wish_z, float along)
+{
+    if (dt <= 0.0f)
+        return;
+    const float add = SKI_STRAFE_WISHSPEED_FRAC * ep->info->max_vel - along;
+    if (add <= 0.0f)
+        return;
+    auto& vel = ep->p_data.vel;
+    const float step = std::min(SKI_STRAFE_ACCEL * ep->info->max_vel * dt, add);
+    vel.x += wish_x * step;
+    vel.z += wish_z * step;
+}
+
+static void ski_apply(rf::Entity* ep, float dt)
+{
+    auto& vel = ep->p_data.vel;
+    // Stock ground move reads this same field for its own slope projection
+    // and only inside its on-ground branch, so it is the ground
+    // contact normal and it is valid exactly when skiing needs it.
+    const rf::Vector3& n = ep->p_data.collide_out.hit_normal;
+
+    // Too steep to stand on: release instead of skiing it. Slope-following aims
+    // the velocity along the old surface.
+    if (!(n.y > SKI_MIN_WALKABLE_NY)) {
+        // The velocity still points down the approach slope into the space of
+        // this face and the first airborne step would slam into it and get
+        // slid down the face by the collision response. Strip only the inward
+        // component so the flight separates cleanly; tangential speed is kept.
+        const float vn = vel.x * n.x + vel.y * n.y + vel.z * n.z;
+        if (vn < 0.0f) {
+            vel.x -= n.x * vn;
+            vel.y -= n.y * vn;
+            vel.z -= n.z * vn;
+        }
+        // Stripping the inward component leaves the flight starting flush with
+        // the face, where any residual into-face motion re-engages the airborne
+        // collide-and-slide every frame and rides the player down it. A small
+        // outward impulse guarantees separation instead.
+        vel.x += n.x * SKI_RELEASE_PUSH;
+        vel.y += n.y * SKI_RELEASE_PUSH;
+        vel.z += n.z * SKI_RELEASE_PUSH;
+        rf::entity_make_freefall(ep);
+        return;
+    }
+
+    // Contact can push, never pull, but with a deadband.
+    // Only separation faster than the deadband is a real convex
+    // break; below it the small positive vn is projected away,
+    // which is bounded suction of at most SKI_SEPARATION_EPS.
+    const float vn = vel.x * n.x + vel.y * n.y + vel.z * n.z;
+    if (vn < SKI_SEPARATION_EPS) {
+        vel.x -= n.x * vn;
+        vel.y -= n.y * vn;
+        vel.z -= n.z * vn;
+
+        // Tangential gravity: g projected onto the plane. Flat ground
+        // (n_xz == 0) contributes nothing horizontally.
+        vel.x += rf::gravity * n.y * n.x * dt;
+        vel.y -= rf::gravity * (1.0f - n.y * n.y) * dt;
+        vel.z += rf::gravity * n.y * n.z * dt;
+    }
+    else {
+        // Surface receding underfoot; ground mode applies no gravity of its own,
+        // so start the fall now rather than floating until the probe lets go.
+        vel.y -= rf::gravity * dt;
+    }
+
+    float wish_x, wish_z;
+    const bool has_wish = ski_wish_dir(ep, wish_x, wish_z);
+    const float along = has_wish ? (vel.x * wish_x + vel.z * wish_z) : 0.0f;
+    const bool gaining = has_wish && along < SKI_STRAFE_WISHSPEED_FRAC * ep->info->max_vel;
+    const float speed = std::sqrt(vel.x * vel.x + vel.z * vel.z);
+
+    // The two mechanisms are adversaries, so they time-slice instead of stacking.
+    // Steering across the velocity holds the gain window open:
+    // accumulate and do NOT carve - the carve's auto-alignment is exactly what
+    // would close the window within a frame or two and starve the gain.
+    // Aim settled inside the cap cone.
+    if (gaining) {
+        ski_strafe_gain(ep, dt, wish_x, wish_z, along);
+    }
+    // Carve: rotate the horizontal velocity toward the wish direction at a fixed
+    // rate, preserving magnitude, so turning conserves speed and cannot pump it.
+    else if (has_wish && speed >= SKI_EXIT_SPEED) {
+        const float dir_x = vel.x / speed;
+        const float dir_z = vel.z / speed;
+        const float dot = std::clamp(dir_x * wish_x + dir_z * wish_z, -1.0f, 1.0f);
+        const float cross = dir_x * wish_z - dir_z * wish_x;
+        const float max_step = SKI_TURN_RATE_DEG_PER_S * (3.14159265f / 180.0f) * dt;
+        const float step = std::min(std::acos(dot), max_step) * (cross < 0.0f ? -1.0f : 1.0f);
+        const float cs = std::cos(step);
+        const float sn = std::sin(step);
+        vel.x = (dir_x * cs - dir_z * sn) * speed;
+        vel.z = (dir_x * sn + dir_z * cs) * speed;
+    }
+
+    // Applies to both modes: flat friction opposes idle wiggling, so a gain only
+    // pays off on a real line.
+    // Slopes glide nearly forever; level ground has to bleed off in a sane time.
+    const float friction = (std::sqrt(n.x * n.x + n.z * n.z) < SKI_MIN_SLOPE)
+        ? SKI_FRICTION_FLAT_PER_S
+        : SKI_FRICTION_PER_S;
+    const float keep = std::max(0.0f, 1.0f - friction * dt);
+    vel.x *= keep;
+    vel.z *= keep;
+    // vel.y follows the slope via the projection above, so it is not touched here.
+}
+
+struct DodgeKeyDef
+{
+    rf::ControlConfigAction control;
+    float fwd;
+    float side;
+};
+static const DodgeKeyDef DODGE_KEYS[] = {
+    {rf::CC_ACTION_FORWARD, 1.0f, 0.0f},
+    {rf::CC_ACTION_BACKWARD, -1.0f, 0.0f},
+    {rf::CC_ACTION_SLIDE_RIGHT, 0.0f, 1.0f},
+    {rf::CC_ACTION_SLIDE_LEFT, 0.0f, -1.0f},
+};
+static constexpr int DODGE_KEY_COUNT = static_cast<int>(std::size(DODGE_KEYS));
+
+static bool g_dodge_key_down[DODGE_KEY_COUNT] = {};
+static int64_t g_dodge_key_edge_ms[DODGE_KEY_COUNT] = {};
+static bool g_dodge_jump_down = false;
+static int64_t g_dodge_last_ms = 0;
+
+static void dodge_clear_input()
+{
+    for (int i = 0; i < DODGE_KEY_COUNT; ++i) {
+        g_dodge_key_down[i] = false;
+        g_dodge_key_edge_ms[i] = 0;
+    }
+    g_dodge_jump_down = false;
+}
+
+// entity_jump is unusable for this: it refuses outright while crouched and
+// hard-codes the full jump height, so its observable effects are replicated
+// here with the dodge's own velocities.
+static void dodge_execute(rf::Entity* ep, float dir_x, float dir_z, int64_t now)
+{
+    auto& vel = ep->p_data.vel;
+    const float burst = DODGE_SPEED_FACTOR * ep->info->max_vel;
+    const float along = vel.x * dir_x + vel.z * dir_z;
+    // Never rob momentum already heading that way, never hand a redirect the
+    // full carried speed.
+    const float speed = std::max(burst, along);
+
+    vel.x = dir_x * speed;
+    vel.z = dir_z * speed;
+    vel.y = DODGE_VERTICAL_FACTOR * rf::jump_velocity;
+
+    ep->entity_flags |= rf::EF_JUMP_START_ANIM;
+    const int snd = rf::foley_get_sound_handle_at(ep->info->jump_sound, 0);
+    if (snd >= 0)
+        rf::snd_play(snd, rf::SOUND_GROUP_EFFECTS, 0.0f, 1.0f);
+    rf::entity_make_freefall(ep);
+    g_player_jump_timestamp.set(64);
+    g_dodge_last_ms = now;
+}
+
+// True when a dodge fired this frame.
+static bool dodge_poll(rf::Entity* ep)
+{
+    const int64_t now = timer::get_i64(1000);
+
+    // Typing into chat must never dodge, and must not leave a half-armed
+    // tap behind either.
+    if (rf::console::console_is_visible() || rf::multi_chat_is_say_visible()) {
+        dodge_clear_input();
+        return false;
+    }
+    if (!rf::local_player || rf::entity_is_dying(ep) || rf::entity_in_vehicle(ep)
+        || rf::entity_is_swimming(ep) || rf::entity_is_climbing(ep)) {
+        dodge_clear_input();
+        return false;
+    }
+
+    auto* controls = &rf::local_player->settings.controls;
+    const bool ready = now - g_dodge_last_ms >= DODGE_COOLDOWN_MS;
+    bool fired = false;
+    float dir_x = 0.0f;
+    float dir_z = 0.0f;
+
+    for (int i = 0; i < DODGE_KEY_COUNT; ++i) {
+        const bool down = rf::control_is_control_down(controls, DODGE_KEYS[i].control);
+        const bool rising = down && !g_dodge_key_down[i];
+        g_dodge_key_down[i] = down;
+        if (!rising)
+            continue;
+        // Two rising edges inherently need a release between them, so this is a
+        // real double-tap. The direction is the tapped key's, not the currently
+        // held combination.
+        if (!fired && ready && now - g_dodge_key_edge_ms[i] < DODGE_TAP_WINDOW_MS
+            && ski_view_dir(ep, DODGE_KEYS[i].fwd, DODGE_KEYS[i].side, dir_x, dir_z)) {
+            g_dodge_key_edge_ms[i] = 0;
+            fired = true;
+            continue;
+        }
+        g_dodge_key_edge_ms[i] = now;
+    }
+
+    const bool jump_down = rf::control_is_control_down(controls, rf::CC_ACTION_JUMP);
+    const bool jump_rising = jump_down && !g_dodge_jump_down;
+    g_dodge_jump_down = jump_down;
+    // Stock entity_jump rejects the press while crouched.
+    // Eight directions come free from the held-key combination.
+    if (!fired && jump_rising && ready && rf::entity_is_crouching(ep)
+        && ski_wish_dir(ep, dir_x, dir_z))
+        fired = true;
+
+    if (fired)
+        dodge_execute(ep, dir_x, dir_z, now);
+    return fired;
+}
+
+// True when a pogo hop fired this frame.
+static bool pogo_poll(rf::Entity* ep)
+{
+    if (rf::console::console_is_visible() || rf::multi_chat_is_say_visible())
+        return false;
+    if (!rf::local_player || rf::entity_is_dying(ep) || rf::entity_in_vehicle(ep)
+        || rf::entity_is_swimming(ep) || rf::entity_is_climbing(ep))
+        return false;
+    if (!rf::control_is_control_down(&rf::local_player->settings.controls, rf::CC_ACTION_JUMP))
+        return false;
+
+    // entity_jump's own acceptance conditions, tested before the clamp below so it
+    // can never zero vel.y on a frame the jump would decline.
+    const int mode = ep->move_mode ? ep->move_mode->mode : -1;
+    if ((mode != 1 && mode != 2) || rf::entity_is_crouching(ep))
+        return false;
+
+    auto& vel = ep->p_data.vel;
+    // Stock subtracts downward velocity from the jump.
+    if (vel.y < 0.0f)
+        vel.y = 0.0f;
+    rf::entity_jump(ep);
+    return true;
+}
+
+// The client-side prediction replay
+static int g_move_replay_depth = 0;
+
+CallHook<void __cdecl(void*, int)> move_prediction_replay_hook{
+    0x00483A21,
+    [](void* work_list, int commit) {
+        ++g_move_replay_depth;
+        move_prediction_replay_hook.call_target(work_list, commit);
+        --g_move_replay_depth;
+    },
+};
+
+// Skiing is always the multiplayer on-ground case, which takes ground move's
+// rf::mp_ground_acceleration branch rather than the info->acceleration one, so
+// zeroing info->acceleration alone would do nothing; both divisors are zeroed.
+CallHook<void(rf::Entity*)> ski_ground_move_hook{
+    0x0049F8A2,
+    [](rf::Entity* ep) {
+        if (g_move_replay_depth > 0) {
+            ski_ground_move_hook.call_target(ep);
+            return;
+        }
+        // Grounded by construction.
+        if (mutators_dodging_active() && ep == rf::local_player_entity && dodge_poll(ep)) {
+            // Ground move still runs this frame.
+            float& info_accel = ep->info->acceleration;
+            const float saved_accel = info_accel;
+            const float saved_divisor = rf::mp_ground_acceleration;
+            info_accel = 0.0f;
+            rf::mp_ground_acceleration = 0.0f;
+            ski_ground_move_hook.call_target(ep);
+            info_accel = saved_accel;
+            rf::mp_ground_acceleration = saved_divisor;
+            return;
+        }
+
+        if (mutators_pogo_active() && ep == rf::local_player_entity && pogo_poll(ep)) {
+            float& info_accel = ep->info->acceleration;
+            const float saved_accel = info_accel;
+            const float saved_divisor = rf::mp_ground_acceleration;
+            info_accel = 0.0f;
+            rf::mp_ground_acceleration = 0.0f;
+            ski_ground_move_hook.call_target(ep);
+            info_accel = saved_accel;
+            rf::mp_ground_acceleration = saved_divisor;
+            return;
+        }
+
+        if (!ski_ground_active(ep)) {
+            ski_ground_move_hook.call_target(ep);
+            return;
+        }
+        const float dt = ep->p_data.frame_time_left;
+        const bool first_dispatch = (ep->p_data.flags & rf::PF_ACCEL_APPLIED) == 0;
+        float& info_accel = ep->info->acceleration;
+        const float saved_accel = info_accel;
+        const float saved_divisor = rf::mp_ground_acceleration;
+        info_accel = 0.0f;
+        rf::mp_ground_acceleration = 0.0f;
+        ski_ground_move_hook.call_target(ep);
+        info_accel = saved_accel;
+        rf::mp_ground_acceleration = saved_divisor;
+
+        if (first_dispatch)
+            ski_apply(ep, dt);
+    },
+};
+
+// Slam and rigid-body impact fall damage: immunity insingle player and multiplayer
+// when movement mutators are active. Note 0x004A0C28 (landing) fall damage is not
+// hooked, because we want it to still apply.
+CallHook<void __cdecl(rf::Entity*, float)> ski_fall_damage_hook{
+    {0x0049D4B6, 0x0049DE23, 0x0049DE39},
+    [](rf::Entity* ep, float impact) {
+        if (ep && ep == rf::local_player_entity && any_movement_mutator_active())
+            return;
+        ski_fall_damage_hook.call_target(ep, impact);
+    },
+};
+
+// Shared by multiple movement mutators to fix getting stuck in the floor.
+CallHook<void(rf::Entity*)> ski_air_move_hook{
+    0x0049F6AD,
+    [](rf::Entity* ep) {
+        if (g_move_replay_depth > 0 || !any_movement_mutator_active()
+            || ep != rf::local_player_entity) {
+            ski_air_move_hook.call_target(ep);
+            return;
+        }
+        auto& vel = ep->p_data.vel;
+        const float pre_speed = std::sqrt(vel.x * vel.x + vel.z * vel.z);
+
+        const bool custom = (ep->p_data.flags & rf::PF_USE_CUSTOM_MAX_VEL) != 0;
+        float& limit = custom ? ep->custom_max_vel : ep->info->max_vel;
+        const float saved_limit = limit;
+        if (pre_speed > limit)
+            limit = pre_speed;
+        ski_air_move_hook.call_target(ep);
+        limit = saved_limit;
+
+        // Direction from stock, magnitude floored.
+        // Only protects earned momentum; below run speed stock braking is untouched.
+        const float run_speed = ep->max_vel;
+        if (pre_speed > run_speed) {
+            const float post = std::sqrt(vel.x * vel.x + vel.z * vel.z);
+            if (post > 1e-4f && post < pre_speed) {
+                const float scale = pre_speed / post;
+                vel.x *= scale;
+                vel.z *= scale;
+            }
+        }
+    },
+};
+
+void mutators_on_multi_shutdown()
+{
+    g_ski_engaged = false;
+    dodge_clear_input();
+    g_dodge_last_ms = 0;
+
+    // Leaving multiplayer mid-level: single player must not inherit the override.
+    mutators_update_low_gravity();
+    if (g_low_gravity_applied) {
+        g_low_gravity_applied = false;
+        rf::level_set_gravity(g_saved_gravity);
+    }
+}
+
+ConsoleCommand2 skifree_cmd{
+    "skifree",
+    []() {
+        if (!(rf::level.flags & rf::LEVEL_LOADED)) {
+            rf::console::print("No level loaded!");
+            return;
+        }
+
+        if (rf::is_multi) {
+            rf::console::print("That command can't be used in multiplayer.");
+            return;
+        }
+
+        g_skifree_sp_enabled = !g_skifree_sp_enabled;
+        // A latched ski engage or a half-armed dodge tap from the previous enable
+        // window must not survive into the next one.
+        g_ski_engaged = false;
+        dodge_clear_input();
+        g_dodge_last_ms = 0;
+        rf::console::print("Skifree {}.", g_skifree_sp_enabled ? "enabled" : "disabled");
+    },
+    "",
+    "skifree",
+};
+
+ConsoleCommand2 pogo_cmd{
+    "pogo",
+    []() {
+        if (!(rf::level.flags & rf::LEVEL_LOADED)) {
+            rf::console::print("No level loaded!");
+            return;
+        }
+
+        if (rf::is_multi) {
+            rf::console::print("That command can't be used in multiplayer.");
+            return;
+        }
+
+        g_pogo_sp_enabled = !g_pogo_sp_enabled;
+        rf::console::print("Pogo {}.", g_pogo_sp_enabled ? "enabled" : "disabled");
+    },
+    "",
+    "pogo",
+};
+
 void mutators_level_init_post()
 {
+    // Both sides: forget the previous level's fire bookkeeping. Its fire records died
+    // with their parent entities; stale pointers here could alias new-level fires.
+    flame_level_init();
+
+    // Both sides: input edges and the dodge cooldown must not cross a level change.
+    dodge_clear_input();
+    g_dodge_last_ms = 0;
+
+    // Both sides. The incoming level has already set its own gravity, so the saved
+    // value from the outgoing one is stale and must be dropped WITHOUT writing it.
+    g_low_gravity_applied = false;
+    mutators_update_low_gravity();
+
     if (!rf::is_server)
         return;
 
@@ -861,7 +1797,7 @@ void mutators_on_pvp_damage(rf::Player* attacker, rf::Player* victim, float effe
     const float max_armor_limit = std::max(ep->armor, ep->info->max_armor);
 
     // Same logic effective health kill reward uses.
-    distribute_effective_health(ep, effective_damage * VAMPIRE_HEAL_RATIO, max_life_limit, max_armor_limit);
+    distribute_effective_health(ep, effective_damage * m.vampire_heal_ratio, max_life_limit, max_armor_limit);
 }
 
 // Super Drain tick: one global timer drains every alive player's health and
@@ -873,11 +1809,8 @@ static constexpr float SUPER_DRAIN_PER_TICK = 1.0f;
 
 static rf::Timestamp g_super_drain_tick;
 
-void mutators_do_frame()
+static void super_drain_do_frame()
 {
-    if (!rf::is_server)
-        return;
-
     // Dropped rather than left running while the mutator is off or the server is
     // between levels: a deadline that expired during a level change would make
     // the first gameplay frame tick immediately instead of a second in.
@@ -912,6 +1845,376 @@ void mutators_do_frame()
         if (ep->armor > max_armor)
             ep->armor = std::max(ep->armor - SUPER_DRAIN_PER_TICK, max_armor);
     }
+}
+
+// Big Craters: double the crater radius at the two weapon-detonation geomod_create call
+// sites (impact at 0x004C5323, timed/lifetime detonation at 0x004C6C12). The driller's
+// dig path keeps its own radius. Server only: clients receive the final radius inside
+// the boolean packet, so they need no support.
+static constexpr float BIG_CRATERS_RADIUS_MULTIPLIER = 2.0f;
+
+static CallHook<bool(float, int, rf::GRoom*, rf::Vector3*, rf::Vector3*, int, int)> geomod_create_weapon_hook{
+    {
+        0x004C5323,
+        0x004C6C12,
+    },
+    [](float radius, int parent_handle, rf::GRoom* src_room, rf::Vector3* pos, rf::Vector3* hit_normal,
+       int shape_index, int flags) {
+        if (rf::is_server && g_alpine_server_config_active_rules.mutators.big_craters_enabled) {
+            radius *= BIG_CRATERS_RADIUS_MULTIPLIER;
+        }
+        return geomod_create_weapon_hook.call_target(radius, parent_handle, src_room, pos, hit_normal,
+                                                     shape_index, flags);
+    },
+};
+
+// ============================================================================
+// Flaming Enemies runtime
+// ============================================================================
+//
+// The engine's on-fire system is reused for the visuals only (emitters, looping sound,
+// dynamic light, corpse hand-off); everything else is custom, server-authoritative
+// logic: dealing FLAME_IGNITE_DAMAGE of flamethrower fire damage to a player within
+// FLAME_IGNITE_WINDOW_MS sets them on fire, the burn ticks damage attributed to the
+// igniter, and it ends FLAME_BURN_TIMEOUT_MS after the last flamethrower fire damage
+// (or in water, or on death). Clients are told about ignitions/extinguishes via
+// af_sreq_entity_on_fire and never run the SP burn behavior (no panic state, no
+// engine damage) for these fires.
+
+static constexpr float FLAME_IGNITE_DAMAGE = 25.0f;   // fire damage needed to ignite
+static constexpr int FLAME_IGNITE_WINDOW_MS = 1000;   // within this window
+static constexpr int FLAME_BURN_TIMEOUT_MS = 5000;    // burn ends this long after the last flame hit
+static constexpr int FLAME_DOT_TICK_MS = 500;
+static constexpr float FLAME_DOT_TICK_DAMAGE = 6.0f; // flat per-tick burn
+// A single explosive hit at least this big blows the fire out.
+static constexpr float FLAME_EXTINGUISH_EXPLOSIVE_DAMAGE = 20.0f;
+
+struct FlameVictimState
+{
+    // Rolling pre-ignite damage accounting, per attacker id.
+    struct DamageWindow
+    {
+        float sum = 0.0f;
+        rf::Timestamp expire;
+    };
+    std::map<uint8_t, DamageWindow> windows;
+
+    bool on_fire = false;
+    uint8_t igniter_id = 0xFF;
+    int entity_handle = -1; // the entity that was ignited; a respawn ends the burn
+    rf::Timestamp burn_timeout;
+    rf::Timestamp next_dot_tick;
+};
+
+// Keyed by victim player id. Server only.
+static std::map<uint8_t, FlameVictimState> g_flame_states;
+// Reentrancy guard: the burn's own damage ticks are fire damage from the flamethrower,
+// but they must neither ignite nor refresh a burn.
+static bool g_flame_dot_in_progress = false;
+
+// Fire records created by the mutator. The engine's own burn behavior in
+// entity_fire_update_all (self damage, spreading to nearby entities, panic anim
+// states) is suppressed for these.
+static std::set<rf::EntityFireInfo*> g_flame_managed_fires;
+
+void mutators_apply_entity_on_fire(rf::Entity* ep, bool on_fire)
+{
+    if (!ep)
+        return;
+
+    if (on_fire) {
+        if (ep->entity_fire_handle) {
+            // Already burning (e.g. a corpse lava ignite): adopt the existing fire
+            // so the engine's burn behavior stops driving it.
+            g_flame_managed_fires.insert(ep->entity_fire_handle);
+            return;
+        }
+        rf::EntityFireInfo* fire = rf::entity_fire_create(ep->handle, -1);
+        if (fire) {
+            // entity_fire_create leaves storing the handle to its caller.
+            ep->entity_fire_handle = fire;
+            g_flame_managed_fires.insert(fire);
+        }
+    }
+    else if (ep->entity_fire_handle) {
+        // Clears ep->entity_fire_handle itself; the destroy hook below drops it from
+        // the managed set.
+        rf::entity_fire_destroy(ep->entity_fire_handle, false);
+    }
+}
+
+// Every destruction path (ours, parent deleted, corpse burnt out) funnels through here,
+// so the managed set can never keep a freed record that the engine might recycle.
+FunHook<void(rf::EntityFireInfo*, bool)> entity_fire_destroy_hook{
+    0x0042ED20,
+    [](rf::EntityFireInfo* fire, bool keep_linked) {
+        entity_fire_destroy_hook.call_target(fire, keep_linked);
+        g_flame_managed_fires.erase(fire);
+    },
+};
+
+// entity_fire_update_all: skip the engine's spread-damage pass (fire damage + ignite
+// chance for entities near a burning one) for managed fires. Runs after the emitter
+// bone-position updates, so the visual is unaffected.
+CodeInjection entity_fire_update_all_spread_damage_injection{
+    0x0042F0BD,
+    [](auto& regs) {
+        rf::EntityFireInfo* fire = regs.esi;
+        if (g_flame_managed_fires.contains(fire))
+            regs.eip = 0x0042F1DC;
+    },
+};
+
+// entity_fire_update_all: skip the engine's per-frame self damage and the random
+// panic anim state for managed fires.
+CodeInjection entity_fire_update_all_self_damage_injection{
+    0x0042F218,
+    [](auto& regs) {
+        rf::EntityFireInfo* fire = regs.esi;
+        if (g_flame_managed_fires.contains(fire))
+            regs.eip = 0x0042F2A2;
+    },
+};
+
+static void flame_ignite(FlameVictimState& state, uint8_t igniter_id, rf::Entity* ep)
+{
+    state.on_fire = true;
+    state.igniter_id = igniter_id;
+    state.entity_handle = ep->handle;
+    state.windows.clear();
+    state.burn_timeout.set(FLAME_BURN_TIMEOUT_MS);
+    state.next_dot_tick.set(FLAME_DOT_TICK_MS);
+
+    af_send_entity_on_fire(static_cast<uint32_t>(ep->handle), true);
+    if (!rf::is_dedicated_server) {
+        mutators_apply_entity_on_fire(ep, true); // listen server's own visual
+    }
+}
+
+// `notify_entity` may be null when the victim's entity is already gone (the client-side
+// fire follows the corpse and burns out on its own).
+static void flame_extinguish(rf::Entity* notify_entity)
+{
+    if (!notify_entity)
+        return;
+    af_send_entity_on_fire(static_cast<uint32_t>(notify_entity->handle), false);
+    if (!rf::is_dedicated_server) {
+        mutators_apply_entity_on_fire(notify_entity, false);
+    }
+}
+
+void mutators_on_flame_damage(rf::Player* attacker, rf::Player* victim, int damage_type, float damage)
+{
+    if (!rf::is_server || !rf::is_multi)
+        return;
+    if (!g_alpine_server_config_active_rules.mutators.flaming_enemies_enabled)
+        return;
+    if (g_flame_dot_in_progress)
+        return;
+    if (!attacker || !victim || attacker == victim || !attacker->net_data || !victim->net_data)
+        return;
+    if (damage_type != rf::DT_FIRE || !(damage > 0.0f))
+        return;
+
+    // Only the flamethrower's fire damage grants or refreshes a burn. The flame stream
+    // itself is PARTICLE damage and so carries no weapon identity
+    // in the damage context — fall back to the attacker's held weapon exactly like kill
+    // attribution does for flame kills. The alt-fire canister is a real projectile and
+    // does show up in the context.
+    const DamageWeaponContext damage_ctx = kill_attribution_get_damage_context();
+    bool from_flamethrower;
+    if (damage_ctx.weapon_type >= 0) {
+        from_flamethrower = rf::weapon_is_flamethrower(damage_ctx.weapon_type);
+    }
+    else {
+        rf::Entity* attacker_ep = rf::entity_from_handle(attacker->entity_handle);
+        from_flamethrower =
+            attacker_ep && rf::weapon_is_flamethrower(attacker_ep->ai.current_primary_weapon);
+    }
+    if (!from_flamethrower)
+        return;
+
+    // No igniting teammates.
+    if (multi_game_type_is_team_type(rf::multi_get_game_type()) && attacker->team == victim->team)
+        return;
+
+    FlameVictimState& state = g_flame_states[victim->net_data->player_id];
+    if (state.on_fire) {
+        // Still being cooked: push the timeout out.
+        state.burn_timeout.set(FLAME_BURN_TIMEOUT_MS);
+        return;
+    }
+
+    auto& window = state.windows[attacker->net_data->player_id];
+    if (!window.expire.valid() || window.expire.elapsed()) {
+        window.sum = 0.0f;
+        window.expire.set(FLAME_IGNITE_WINDOW_MS);
+    }
+    window.sum += damage;
+    if (window.sum < FLAME_IGNITE_DAMAGE)
+        return;
+
+    rf::Entity* ep = rf::entity_from_handle(victim->entity_handle);
+    if (!ep || ep->life <= 0.0f || rf::entity_is_dying(ep))
+        return;
+
+    flame_ignite(state, attacker->net_data->player_id, ep);
+}
+
+void mutators_on_flame_victim_damage(rf::Player* victim, int damage_type, float damage)
+{
+    if (!rf::is_server || !rf::is_multi)
+        return;
+    if (!g_alpine_server_config_active_rules.mutators.flaming_enemies_enabled)
+        return;
+    if (!victim || !victim->net_data || !(damage > 0.0f))
+        return;
+
+    // A big enough single blast blows the fire out...
+    bool extinguish =
+        damage_type == rf::DT_EXPLOSIVE && damage >= FLAME_EXTINGUISH_EXPLOSIVE_DAMAGE;
+    if (!extinguish) {
+        // ...and any melee hit (riot stick, riot shield) pats it out.
+        const DamageWeaponContext damage_ctx = kill_attribution_get_damage_context();
+        extinguish = damage_ctx.weapon_type >= 0 && !damage_ctx.splash
+            && kill_attribution_is_melee_weapon(damage_ctx.weapon_type);
+    }
+    if (!extinguish)
+        return;
+
+    auto it = g_flame_states.find(victim->net_data->player_id);
+    if (it == g_flame_states.end() || !it->second.on_fire)
+        return;
+
+    // If the hit also killed them, leave the burn to the death path instead so the
+    // corpse keeps burning.
+    rf::Entity* ep = rf::entity_from_handle(victim->entity_handle);
+    if (!ep || ep->handle != it->second.entity_handle || ep->life <= 0.0f || rf::entity_is_dying(ep))
+        return;
+
+    flame_extinguish(ep);
+    g_flame_states.erase(it);
+}
+
+// Health pickups that extinguish a burning player.
+static const char* const FLAME_EXTINGUISH_HEALTH_ITEMS[] = {
+    "Medical Kit",
+    "First Aid Kit",
+    "Multi Super Health",
+};
+
+void mutators_on_item_picked_up(rf::Item* item, rf::Entity* entity)
+{
+    if (!rf::is_server || !rf::is_multi)
+        return;
+    if (!g_alpine_server_config_active_rules.mutators.flaming_enemies_enabled)
+        return;
+    if (!item || !item->info || !entity)
+        return;
+
+    bool is_health_item = false;
+    for (const char* name : FLAME_EXTINGUISH_HEALTH_ITEMS) {
+        if (string_iequals(item->info->cls_name.c_str(), name)) {
+            is_health_item = true;
+            break;
+        }
+    }
+    if (!is_health_item)
+        return;
+
+    rf::Player* victim = rf::player_from_entity_handle(entity->handle);
+    if (!victim || !victim->net_data)
+        return;
+
+    auto it = g_flame_states.find(victim->net_data->player_id);
+    if (it == g_flame_states.end() || !it->second.on_fire || entity->handle != it->second.entity_handle)
+        return;
+
+    flame_extinguish(entity);
+    g_flame_states.erase(it);
+}
+
+static void flame_level_init()
+{
+    g_flame_states.clear();
+    g_flame_managed_fires.clear();
+}
+
+static void flame_do_frame()
+{
+    if (!g_alpine_server_config_active_rules.mutators.flaming_enemies_enabled
+        || rf::gameseq_get_state() != rf::GameState::GS_GAMEPLAY) {
+        if (!g_flame_states.empty()) {
+            // Mutator switched off or level ending: put out anyone still burning.
+            for (auto& [victim_id, state] : g_flame_states) {
+                if (!state.on_fire)
+                    continue;
+                rf::Player* victim = rf::multi_find_player_by_id(victim_id);
+                rf::Entity* ep = victim ? rf::entity_from_handle(victim->entity_handle) : nullptr;
+                if (ep && ep->handle == state.entity_handle)
+                    flame_extinguish(ep);
+            }
+            g_flame_states.clear();
+        }
+        return;
+    }
+
+    for (auto it = g_flame_states.begin(); it != g_flame_states.end();) {
+        FlameVictimState& state = it->second;
+        if (!state.on_fire) {
+            ++it;
+            continue;
+        }
+
+        rf::Player* victim = rf::multi_find_player_by_id(it->first);
+        rf::Entity* ep = victim ? rf::entity_from_handle(victim->entity_handle) : nullptr;
+
+        // Death, disconnect or respawn ends the burn silently — the client-side fire
+        // follows the corpse and burns out on its own.
+        if (!victim || !ep || ep->handle != state.entity_handle || ep->life <= 0.0f
+            || rf::entity_is_dying(ep) || rf::player_is_dead(victim) || rf::player_is_dying(victim)) {
+            it = g_flame_states.erase(it);
+            continue;
+        }
+
+        // Water and the no-new-fire-damage timeout put the fire out.
+        const bool in_water = (ep->entity_flags & rf::EF_IN_WATER) != 0;
+        if (in_water || state.burn_timeout.elapsed()) {
+            flame_extinguish(ep);
+            it = g_flame_states.erase(it);
+            continue;
+        }
+
+        if (state.next_dot_tick.elapsed()) {
+            state.next_dot_tick.set(FLAME_DOT_TICK_MS);
+
+            // Attribute the burn to the igniter; -1 (an unowned fire death) when they
+            // are gone or have no entity right now.
+            int killer_handle = -1;
+            if (rf::Player* igniter = rf::multi_find_player_by_id(state.igniter_id)) {
+                if (rf::Entity* killer_ep = rf::entity_from_handle(igniter->entity_handle))
+                    killer_handle = killer_ep->handle;
+            }
+
+            // Routed through obj_damage so PvP modifiers, stats, kill attribution
+            // (flamethrower as the weapon) and other mutators see a normal hit.
+            g_flame_dot_in_progress = true;
+            rf::obj_damage(ep->handle, FLAME_DOT_TICK_DAMAGE, killer_handle,
+                           rf::flamethrower_weapon_type, rf::DT_FIRE, nullptr, -1, 0);
+            g_flame_dot_in_progress = false;
+        }
+
+        ++it;
+    }
+}
+
+void mutators_do_frame()
+{
+    if (!rf::is_server)
+        return;
+
+    super_drain_do_frame();
+    flame_do_frame();
 }
 
 // The weapon currently forced to no-clip.
@@ -991,4 +2294,22 @@ void mutators_do_patch()
     weapon_set_multiplayer_mode_hook.install();
     entity_consume_ammo_on_fire_hook.install();
     entity_play_action_animation_hook.install();
+
+    // Big Craters
+    geomod_create_weapon_hook.install();
+
+    // Flaming Enemies
+    entity_fire_destroy_hook.install();
+    entity_fire_update_all_spread_damage_injection.install();
+    entity_fire_update_all_self_damage_injection.install();
+
+    // Skiing
+    ski_ground_move_hook.install();
+    ski_fall_damage_hook.install();
+    ski_air_move_hook.install();
+    move_prediction_replay_hook.install();
+
+    // Single player `skifree` and `pogo` cheat commands
+    skifree_cmd.register_cmd();
+    pogo_cmd.register_cmd();
 }

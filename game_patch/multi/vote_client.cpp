@@ -236,6 +236,14 @@ bool parse_mutator_descriptor(BlobReader& r, VoteMutatorSchema& out)
         r.skip(body_len); // unconditional: parsed or not, the next option starts here
     }
 
+    // Game type restriction, appended after the options.
+    if (r.remaining() >= sizeof(uint32_t)) {
+        const uint32_t mask = r.u32();
+        if (r.ok()) {
+            out.valid_gametype_mask = mask;
+        }
+    }
+
     return true;
 }
 
@@ -349,7 +357,9 @@ bool parse_vote_options_blob(const uint8_t* data, size_t len, VoteOptionsData& o
 
     VoteOptionsData parsed;
     parsed.enabled_vote_mask = r.u32();
-    parsed.gametype_prefix_restricted = (r.u8() & AF_VOTE_SERVER_FLAG_GAMETYPE_PREFIX) != 0;
+    const uint8_t server_flags = r.u8();
+    parsed.gametype_prefix_restricted = (server_flags & AF_VOTE_SERVER_FLAG_GAMETYPE_PREFIX) != 0;
+    parsed.rotation_preserve_supported = (server_flags & AF_VOTE_SERVER_FLAG_ROTATION_PRESERVE) != 0;
 
     // Game type entries are length-prefixed, so fields a newer server appends
     // inside one are skipped instead of desyncing everything behind it.
@@ -371,6 +381,14 @@ bool parse_vote_options_blob(const uint8_t* data, size_t len, VoteOptionsData& o
         gt.id = body.u8();
         gt.is_team_type = (body.u8() & AF_VOTE_GAMETYPE_FLAG_TEAM) != 0;
         gt.name = body.str();
+        // Appended after the name; absent from a server built before it existed,
+        // which leaves score_limit at 0 and simply means "no default to offer".
+        if (body.remaining() >= sizeof(int32_t)) {
+            const int32_t limit = body.i32();
+            if (body.ok()) {
+                gt.score_limit = limit;
+            }
+        }
         if (body.ok()) {
             parsed.gametypes.push_back(std::move(gt));
         }

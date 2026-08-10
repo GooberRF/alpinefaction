@@ -4,6 +4,8 @@ namespace rf
 {
     struct Object;
     struct Player;
+    struct Entity;
+    struct Vector3;
 
     struct AlpineRespawnPoint
     {
@@ -31,6 +33,11 @@ void set_alpine_respawn_point_enabled(rf::AlpineRespawnPoint* point, bool enable
 void set_alpine_respawn_point_teams(rf::AlpineRespawnPoint* point, bool red, bool blue);
 std::vector<rf::AlpineRespawnPoint> get_alpine_respawn_points();
 void entity_set_gib_flag(rf::Entity* ep);
+void riot_shield_apply_remote_state(rf::Entity* ep, float life, const rf::Vector3& impact_pos);
+void riot_shield_do_frame();
+void riot_shield_on_player_spawn(rf::Player* player);
+void riot_shield_reset_fp_decals(rf::Player* player);
+void riot_shield_on_multi_level_init();
 
 constexpr size_t old_obj_limit = 1024;
 constexpr size_t obj_limit = 65536;

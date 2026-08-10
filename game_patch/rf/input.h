@@ -127,6 +127,8 @@ namespace rf
     static auto& key_process_event = addr_as_ref<void(int scan_code, int key_down, int delta_time)>(0x0051E6C0);
     static auto& key_is_down = addr_as_ref<bool(Key key)>(0x0051F220);
     static auto& key_get_and_reset_down_counter = addr_as_ref<int(Key key)>(0x0051F140);
+    static auto& key_get = addr_as_ref<Key()>(0x0051F000);
+    static auto& key_to_ascii = addr_as_ref<int(int16_t key)>(0x0051EFC0);
 
     static auto& scope_sensitivity_constant = addr_as_ref<float>(0x005895C0);
     static auto& mouse_initialized = addr_as_ref<uint8_t>(0x01885461);

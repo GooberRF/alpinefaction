@@ -4,7 +4,11 @@
 #include <patch_common/AsmWriter.h>
 #include <patch_common/StaticBufferResizePatch.h>
 #include <common/utils/string-utils.h>
+#include <common/utils/list-utils.h>
 #include <xlog/xlog.h>
+#include <unordered_map>
+#include <algorithm>
+#include <cmath>
 #include "../rf/gr/gr_light.h"
 #include "../rf/sound/sound.h"
 #include "../rf/object.h"
@@ -16,6 +20,15 @@
 #include "../rf/geometry.h"
 #include "../rf/math/ix.h"
 #include "../rf/gameseq.h"
+#include "../rf/entity.h"
+#include "../rf/weapon.h"
+#include "../rf/item.h"
+#include "../rf/player/player.h"
+#include "../rf/player/player_fpgun.h"
+#include "../hud/multi_spectate.h"
+#include "../multi/alpine_packets.h"
+#include "../multi/gametype.h"
+#include "../multi/server_internal.h"
 #include "../misc/alpine_options.h"
 #include "../misc/misc.h"
 #include "../misc/achievements.h"
@@ -451,18 +464,383 @@ CallHook<void(rf::Object*)> obj_flag_dead_clutter_hook{
     },
 };
 
+// Multiplayer riot shield synchronization
+static constexpr int k_shield_break_suppress_ms = 5000;
+static std::unordered_map<int, rf::Timestamp> g_shield_break_pending;
+
+// Record that this holder's shield has broken, so entity_process cannot immediately
+// hand them a fresh one. Applies on both sides: the server races an in-flight client
+// obj_update that still claims the riot shield, the client races its own
+// entity_process creating a shield after the break packet has already arrived.
+static void riot_shield_note_break(int holder_handle)
+{
+    g_shield_break_pending[holder_handle].set(k_shield_break_suppress_ms);
+}
+
+static bool clutter_is_riot_shield(rf::Clutter* cp)
+{
+    return cp && rf::riot_shield_clutter_type >= 0 && cp->info_index == rf::riot_shield_clutter_type;
+}
+
+static bool obj_is_riot_shield(rf::Object* objp)
+{
+    return objp && objp->type == rf::OT_CLUTTER && clutter_is_riot_shield(static_cast<rf::Clutter*>(objp));
+}
+
+// The player whose first person weapon is currently rendering as a
+// spectate target, or null when that is not happening.
+static rf::Player* riot_shield_fp_spectate_target()
+{
+    if (!rf::is_multi || !multi_spectate_is_first_person()) {
+        return nullptr;
+    }
+    rf::Player* target = multi_spectate_get_target_player();
+    // Spectating yourself is the stock case and is already handled.
+    return (target && target != rf::local_player) ? target : nullptr;
+}
+
+static bool riot_shield_is_unbreakable()
+{
+    if (gt_is_gungame()) {
+        return true;
+    }
+
+    const auto& mutators = g_alpine_server_config_active_rules.mutators;
+    return mutators.lock_to_featured_weapon && mutators.featured_weapon_index >= 0;
+}
+
+// Let a player pick up a riot shield again after theirs broke.
+static void riot_shield_clear_weapon_stay_markers(rf::Player* holder)
+{
+    if (!holder || rf::riot_shield_weapon_type < 0) {
+        return;
+    }
+
+    const int count = std::min(rf::num_item_types, 96);
+    for (int i = 0; i < count; ++i) {
+        if (rf::item_info[i].gives_weapon_id == rf::riot_shield_weapon_type) {
+            holder->key_items[i] = false;
+        }
+    }
+}
+
+static bool entity_has_riot_shield_weapon(rf::Entity* ep)
+{
+    const int weapon_type = rf::riot_shield_weapon_type;
+    if (!ep || weapon_type < 0 || weapon_type >= 64) {
+        return false;
+    }
+    return ep->ai.has_weapon[weapon_type];
+}
+
+// Remove a holder's shield object without any break effects and forget the handle.
+static void riot_shield_remove_silently(rf::Entity* ep)
+{
+    if (!ep || ep->riot_shield_handle == -1) {
+        return;
+    }
+    if (rf::Object* shield_objp = rf::obj_from_handle(ep->riot_shield_handle)) {
+        shield_objp->obj_flags |= rf::OF_DELAYED_DELETE;
+    }
+    ep->riot_shield_handle = -1;
+}
+
+// How many of a player's 25 first person shield decal slots are occupied. Used to tell
+// whether stock clutter_damage added a decal of its own on this hit.
+static int riot_shield_fp_decal_count(rf::Player* pp)
+{
+    if (!pp) {
+        return 0;
+    }
+    int count = 0;
+    for (void* decal : pp->shield_decals) {
+        if (decal) {
+            ++count;
+        }
+    }
+    return count;
+}
+
+// Server side: damage the shield.
 FunHook<void(rf::Clutter*, float, int, int, rf::PCollisionOut*)> clutter_damage_hook{
     0x00410270,
     [](rf::Clutter* damaged_cp, float damage, int responsible_entity_handle, int damage_type, rf::PCollisionOut* collide_out) {
-
-        if (rf::is_multi && damaged_cp->name == "riot_shield") {
-            xlog::warn("damaged {}, info index {}", damaged_cp->name, damaged_cp->info_index);
+        if (!rf::is_multi || !clutter_is_riot_shield(damaged_cp)) {
+            clutter_damage_hook.call_target(damaged_cp, damage, responsible_entity_handle, damage_type, collide_out);
             return;
         }
 
+        // Do not affect level-placed riot shield clutter objects.
+        if (!rf::entity_from_handle(damaged_cp->parent_handle)) {
+            clutter_damage_hook.call_target(damaged_cp, damage, responsible_entity_handle, damage_type, collide_out);
+            return;
+        }
+
+        // Clients never damage a shield locally - its life is replicated by the server.
+        if (!rf::is_server) {
+            return;
+        }
+
+        if (riot_shield_is_unbreakable()) {
+            return;
+        }
+
+        const int holder_handle = damaged_cp->parent_handle;
+        const rf::Vector3 impact_pos = collide_out ? collide_out->hit_point : damaged_cp->pos;
+
         clutter_damage_hook.call_target(damaged_cp, damage, responsible_entity_handle, damage_type, collide_out);
+
+        const float life = damaged_cp->life;
+        af_send_riot_shield_state(static_cast<uint32_t>(holder_handle), life, impact_pos);
+
+        if (life <= 0.0f) {
+            riot_shield_note_break(holder_handle);
+            riot_shield_clear_weapon_stay_markers(rf::player_from_entity_handle(holder_handle));
+        }
     },
 };
+
+// Client side: bring the local copy of a holder's shield in line with the server.
+void riot_shield_apply_remote_state(rf::Entity* ep, float life, const rf::Vector3& impact_pos)
+{
+    if (!ep) {
+        return;
+    }
+
+    // life comes straight off the wire. Validate before ANY use of it, so the single
+    // break predicate below is the only one this function needs.
+    if (!std::isfinite(life)) {
+        return;
+    }
+
+    const bool is_break = life <= 0.0f;
+
+    // Never run clutter_damage for a dying holder.
+    if (rf::entity_is_dying(ep)) {
+        if (is_break) {
+            riot_shield_remove_silently(ep);
+            riot_shield_reset_fp_decals(rf::player_from_entity_handle(ep->handle));
+            riot_shield_note_break(ep->handle);
+        }
+        return;
+    }
+
+    rf::Object* shield_objp = rf::obj_from_handle(ep->riot_shield_handle);
+    if (!obj_is_riot_shield(shield_objp)) {
+        // No shield object here yet. If this was the break, record it anyway so the
+        // create suppression drops the replacement entity_process would otherwise make.
+        if (is_break) {
+            riot_shield_note_break(ep->handle);
+        }
+        return;
+    }
+
+    rf::Clutter* shield_cp = static_cast<rf::Clutter*>(shield_objp);
+
+    life = std::min(std::max(life, 0.0f), shield_cp->life);
+
+    const float delta = shield_cp->life - life;
+    if (delta <= 0.0f) {
+        // Deliberately does NOT write life back, those updates are sent unreliably.
+        return;
+    }
+
+    // clutter_damage only reads hit_point out of the collision (to place the
+    // impact decal) and tolerates a null pointer, but we have a real position.
+    rf::PCollisionOut collide_out{};
+    collide_out.hit_point = impact_pos;
+    collide_out.obj_handle = -1;
+
+    rf::Player* holder = rf::player_from_entity_handle(ep->handle);
+
+    // The decal counts below are only consulted for a spectate target, which is false
+    // for almost every damage event, so only scan the 25 slot array when it matters.
+    const bool is_fp_spectate_target = holder && holder == riot_shield_fp_spectate_target();
+    const int decals_before = is_fp_spectate_target ? riot_shield_fp_decal_count(holder) : 0;
+
+    // damage_type -1 skips clutter.tbl damage scaling so `delta` lands verbatim and the
+    // client ends up on exactly the life the server reported.
+    clutter_damage_hook.call_target(shield_cp, delta, -1, -1, &collide_out);
+
+    const int decals_after = is_fp_spectate_target ? riot_shield_fp_decal_count(holder) : 0;
+
+    if (is_break) {
+        // clutter_damage just stored our -1 damage type into the clutter, and
+        // clutter_process's shatter branch only spawns the glass debris when
+        // 0 <= dmg_type_that_killed_me <= 2.
+        shield_cp->dmg_type_that_killed_me = rf::DT_BULLET;
+        riot_shield_note_break(ep->handle);
+    }
+
+    // Impact decals for a first person spectate target.
+    if (is_fp_spectate_target) {
+        if (is_break) {
+            // The break takes the first person branch here, which never reaches
+            // ai_remove_weapon, so nothing in the engine clears these.
+            riot_shield_reset_fp_decals(holder);
+        }
+        else if (decals_after <= decals_before) {
+            rf::player_fpgun_add_shield_decal(holder, shield_cp, &collide_out);
+        }
+    }
+}
+
+// entity_process creates the third person shield when the holder's current primary
+// weapon is the riot shield and no shield object exists yet. Suppressed briefly after a
+// break so an in-flight obj_update cannot hand out a fresh full life shield.
+CallHook<rf::Clutter*(int, const char*, int, rf::Vector3*, rf::Matrix3*, int)> entity_process_create_riot_shield_hook{
+    0x0041DB7F,
+    [](int clutter_type, const char* name, int parent_handle, rf::Vector3* pos, rf::Matrix3* orient,
+       int killable) -> rf::Clutter* {
+        if (rf::is_multi && g_shield_break_pending.contains(parent_handle)) {
+            // The caller null checks the result.
+            return nullptr;
+        }
+
+        rf::Clutter* shield_cp = entity_process_create_riot_shield_hook.call_target(clutter_type, name, parent_handle, pos, orient, killable);
+
+        // A brand new shield must start undamaged on screen.
+        if (shield_cp && rf::is_multi) {
+            riot_shield_reset_fp_decals(rf::player_from_entity_handle(parent_handle));
+        }
+
+        return shield_cp;
+    },
+};
+
+// The fpgun break completion runs for whichever player's first person weapon is being
+// rendered.
+CallHook<void(rf::Player*, int, bool, bool)> fpgun_riot_shield_break_switch_weapon_hook{
+    0x004AB7C3,
+    [](rf::Player* player, int weapon_type, bool play_draw_anim, bool force) {
+        if (player != rf::local_player) {
+            return;
+        }
+        fpgun_riot_shield_break_switch_weapon_hook.call_target(player, weapon_type, play_draw_anim, force);
+    },
+};
+
+// Stock entity_delete never touches riot_shield_handle, so an unbroken shield outlives
+// its holder - in multiplayer that leaves one floating wherever they died or left.
+FunHook<void(rf::Entity*)> entity_delete_riot_shield_hook{
+    0x00424F40,
+    [](rf::Entity* ep) {
+        if (rf::is_multi && ep) {
+            // Silent removal, no shatter debris: the shield did not break.
+            riot_shield_remove_silently(ep);
+            g_shield_break_pending.erase(ep->handle);
+        }
+
+        entity_delete_riot_shield_hook.call_target(ep);
+    },
+};
+
+// Handle riot shield for first person spectators.
+static int g_spectate_hidden_shield_handle = -1;
+
+CodeInjection gameplay_render_hide_spectate_riot_shield_injection{
+    0x00431C75,
+    []() {
+        g_spectate_hidden_shield_handle = -1;
+
+        rf::Player* target = riot_shield_fp_spectate_target();
+        if (!target) {
+            return;
+        }
+        rf::Entity* ep = rf::entity_from_handle(target->entity_handle);
+        if (!ep || ep->ai.current_primary_weapon != rf::riot_shield_weapon_type) {
+            return;
+        }
+        rf::Object* shield_objp = rf::obj_from_handle(ep->riot_shield_handle);
+        // Already hidden for some other reason: leave it alone so the paired
+        // unhide below cannot make it visible.
+        if (!obj_is_riot_shield(shield_objp) || (shield_objp->obj_flags & rf::OF_HIDDEN)) {
+            return;
+        }
+
+        rf::obj_hide(shield_objp);
+        g_spectate_hidden_shield_handle = shield_objp->handle;
+    },
+};
+
+CodeInjection gameplay_render_unhide_spectate_riot_shield_injection{
+    0x00432D12,
+    []() {
+        if (g_spectate_hidden_shield_handle == -1) {
+            return;
+        }
+        rf::Object* shield_objp = rf::obj_from_handle(g_spectate_hidden_shield_handle);
+        g_spectate_hidden_shield_handle = -1;
+        if (shield_objp) {
+            rf::obj_unhide(shield_objp);
+        }
+    },
+};
+
+// Drop every first person shield impact decal belonging to a player.
+void riot_shield_reset_fp_decals(rf::Player* player)
+{
+    if (player) {
+        rf::player_fpgun_delete_shield_decals(player);
+    }
+}
+
+void riot_shield_do_frame()
+{
+    if (!rf::is_multi || g_shield_break_pending.empty()) {
+        return;
+    }
+
+    std::erase_if(g_shield_break_pending, [](auto& entry) {
+        auto& [handle, expiry] = entry;
+
+        // Backstop only.
+        if (!expiry.valid() || expiry.elapsed()) {
+            return true;
+        }
+
+        rf::Entity* ep = rf::entity_from_handle(handle);
+        if (!ep) {
+            return true;
+        }
+
+        // Holder's own client: the first person break defers clearing
+        // current_primary_weapon until the animation completes, and that field is what
+        // gates shield creation, so this self-times with the animation instead of
+        // guessing at a duration.
+        if (ep->local_player && ep->ai.current_primary_weapon != rf::riot_shield_weapon_type) {
+            return true;
+        }
+
+        // Server only: legitimate re-acquisition is instant.
+        return rf::is_server && entity_has_riot_shield_weapon(ep) && ep->riot_shield_handle == -1;
+    });
+}
+
+// Handle reuse guard. Runs AFTER the spawn, so player->entity_handle is already the NEW
+// entity - the old life's entry was cleared by the entity delete hook, not here.
+void riot_shield_on_player_spawn(rf::Player* player)
+{
+    if (!player) {
+        return;
+    }
+    g_shield_break_pending.erase(player->entity_handle);
+}
+
+
+// Level change: free every player's shield decals.
+static void riot_shield_free_all_fp_decals()
+{
+    for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
+        riot_shield_reset_fp_decals(&player);
+    }
+}
+
+void riot_shield_on_multi_level_init()
+{
+    g_shield_break_pending.clear();
+    riot_shield_free_all_fp_decals();
+}
 
 static void client_alpine_mesh_on_death(rf::Object* objp)
 {
@@ -529,8 +907,15 @@ FunHook<void(rf::Object*)> obj_unhide_hook{
 
 void object_do_patch()
 {
-    // Disable damage for the riot shield in multiplayer (needs fix)
-    //clutter_damage_hook.install(); // disabled for now, makes riot shields persist after player leaves
+    // Server authoritative riot shield durability, replicated to clients
+    clutter_damage_hook.install();
+    
+    // Hide the first person spectate target's third person shield during the scene
+    gameplay_render_hide_spectate_riot_shield_injection.install();
+    gameplay_render_unhide_spectate_riot_shield_injection.install();
+    entity_process_create_riot_shield_hook.install();
+    entity_delete_riot_shield_hook.install();
+    fpgun_riot_shield_break_switch_weapon_hook.install();
 
     // Deregister collision for hidden objects in v304+ levels
     obj_hide_hook.install();

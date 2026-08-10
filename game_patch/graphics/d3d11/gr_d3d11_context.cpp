@@ -144,8 +144,14 @@ namespace gr::d3d11
 
     void ViewProjTransformBuffer::update(const Projection& proj, ID3D11DeviceContext* device_context)
     {
+        update(proj, rf::gr::eye_pos, rf::gr::eye_matrix, device_context);
+    }
+
+    void ViewProjTransformBuffer::update(const Projection& proj, const rf::Vector3& eye_pos,
+        const rf::Matrix3& eye_orient, ID3D11DeviceContext* device_context)
+    {
         ViewProjTransformBufferData data;
-        data.view_mat = build_view_matrix(rf::gr::eye_pos, rf::gr::eye_matrix);
+        data.view_mat = build_view_matrix(eye_pos, eye_orient);
         data.proj_mat = proj.matrix();
 
         D3D11_MAPPED_SUBRESOURCE mapped_subres;

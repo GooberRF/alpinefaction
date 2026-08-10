@@ -31,6 +31,9 @@
 #include "alpine_packets.h"
 #include "server.h"
 #include "server_internal.h"
+#include "salvage.h"
+#include "bagman.h"
+#include "gungame.h"
 #include "sprays.h"
 #include "vote_client.h"
 #include "bots/bot_chat_manager.h"
@@ -259,7 +262,8 @@ enum packet_type : uint8_t {
     af_server_bot_control  = 0x5F,
     af_bagman_state        = 0x60,
     af_pit_roster          = 0x61,
-    af_gungame_order       = 0x62
+    af_gungame_order       = 0x62,
+    af_salvage_state       = 0x63
 };
 
 // client -> server
@@ -347,7 +351,8 @@ std::array g_client_side_packet_whitelist{
     af_server_bot_control,
     af_bagman_state,
     af_pit_roster,
-    af_gungame_order
+    af_gungame_order,
+    af_salvage_state
 };
 // clang-format on
 
@@ -948,6 +953,15 @@ FunHook<MultiIoPacketHandler> process_team_change_packet_hook{
                     "You can't change teams right now because it would unbalance the teams.", player);
                 return;
             }
+            // Browsers are neither human nor bot, so their team is never forced.
+            if (player && humans_vs_bots_active() && !player->is_browser) {
+                const rf::ubyte required_team = player->is_bot ? rf::TEAM_BLUE : rf::TEAM_RED;
+                if (data[1] != required_team) {
+                    af_send_automated_chat_msg(
+                        "Humans vs. Bots: humans play on the Red team and bots on the Blue team.", player);
+                    return;
+                }
+            }
         }
         process_team_change_packet_hook.call_target(data, addr);
     },
@@ -1003,6 +1017,19 @@ FunHook<MultiIoPacketHandler> process_reload_packet_hook{
 
             // Call original handler
             process_reload_packet_hook.call_target(data, addr);
+        }
+    },
+};
+
+// Don't play the reload deny beep when reload packets are denied locally.
+// Stops disjointed deny beeps from playing in Gun Game when server forces
+// a "reload" of a weapon without a clip to refresh the displayed ammo count.
+CodeInjection entity_reload_packet_deny_sound_injection{
+    0x00425466,
+    [](auto& regs) {
+        const bool is_reload_packet = addr_as_ref<bool>(regs.esp + 0x1C);
+        if (is_reload_packet) {
+            regs.eip = 0x00425479;
         }
     },
 };
@@ -1708,6 +1735,26 @@ CallHook<int(const rf::NetAddr*, std::byte*, size_t)> send_join_accept_packet_ho
         if (g_alpine_server_config_active_rules.mutators.super_drain_enabled) {
             ext_data.flags |= AlpineFactionJoinAcceptPacketExt::Flags::super_drain;
         }
+        // Jetpacks: the client owns the entire movement, so it has to know.
+        if (g_alpine_server_config_active_rules.mutators.jetpacks_enabled) {
+            ext_data.flags |= AlpineFactionJoinAcceptPacketExt::Flags::jetpacks;
+        }
+        // Low gravity: the client owns the entire movement, so it has to know.
+        if (g_alpine_server_config_active_rules.mutators.low_gravity_enabled) {
+            ext_data.flags |= AlpineFactionJoinAcceptPacketExt::Flags::low_gravity;
+        }
+        // Skiing: the client owns the entire movement, so it has to know.
+        if (g_alpine_server_config_active_rules.mutators.skiing_enabled) {
+            ext_data.flags |= AlpineFactionJoinAcceptPacketExt::Flags::skiing;
+        }
+        // Dodging: the client owns the entire movement, so it has to know.
+        if (g_alpine_server_config_active_rules.mutators.dodging_enabled) {
+            ext_data.flags |= AlpineFactionJoinAcceptPacketExt::Flags::dodging;
+        }
+        // Pogo: the client owns the entire movement, so it has to know.
+        if (g_alpine_server_config_active_rules.mutators.pogo_enabled) {
+            ext_data.flags |= AlpineFactionJoinAcceptPacketExt::Flags::pogo;
+        }
         // AF 1.3+ clients: use footer-based format for forward compatibility
         // Older clients: use legacy raw struct (they don't know about the footer)
         bool use_footer = g_joining_client_version == ClientSoftware::AlpineFaction
@@ -1847,6 +1894,11 @@ CodeInjection process_join_accept_injection{
             server_info.match_mode = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::match_mode);
             server_info.reload_on_kill = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::reload_on_kill);
             server_info.super_drain = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::super_drain);
+            server_info.jetpacks = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::jetpacks);
+            server_info.low_gravity = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::low_gravity);
+            server_info.skiing = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::skiing);
+            server_info.dodging = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::dodging);
+            server_info.pogo = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::pogo);
             // featured_no_clip is intentionally not stored here, it's consumed inline below via mutators_set_no_clip_weapon.
 
             constexpr float default_fov = 90.0f;
@@ -1865,12 +1917,16 @@ CodeInjection process_join_accept_injection{
                     ? rf::rail_gun_weapon_type
                     : -1);
 
+            // Settle local gravity against it.
+            mutators_update_low_gravity();
+
             // Update footstep activation based on server permissions
             evaluate_footsteps();
         }
         else {
             g_af_server_info.reset();
             mutators_set_no_clip_weapon(-1); // non-AF server: ensure no stale override
+            mutators_update_low_gravity();   // no stale gravity override
             evaluate_footsteps();
         }
     },
@@ -2107,6 +2163,28 @@ static bool parse_af_join_req_any_tail(const uint8_t* pkt, size_t datalen, size_
     return false;
 }
 
+// The stock team pick for a joining player runs inside the join flow, before the
+// hook below stamps is_bot/is_browser onto the new Player, so it has to classify
+// the client from the same parsed join-req globals this hook reads.
+JoiningClientKind get_joining_client_kind()
+{
+    const bool server_requires_bot_secret = g_alpine_server_config.bot_shared_secret != 0u;
+    const bool bot_secret_valid =
+        g_joining_player_info.bot_shared_secret.has_value()
+        && (g_joining_player_info.bot_shared_secret
+            == std::optional{g_alpine_server_config.bot_shared_secret});
+
+    // A configured secret, presented and matching, is the only way in.
+    if (server_requires_bot_secret && bot_secret_valid) {
+        return JoiningClientKind::Bot;
+    }
+
+    if (g_joining_client_version == ClientSoftware::Browser) {
+        return JoiningClientKind::Browser;
+    }
+    return JoiningClientKind::Human;
+}
+
 FunHook<void(int, rf::NetAddr*)> process_join_req_packet_hook{
     0x0047AC60,
     [](int pPacket, rf::NetAddr* addr) {
@@ -2136,37 +2214,30 @@ FunHook<void(int, rf::NetAddr*)> process_join_req_packet_hook{
                     g_joining_player_info.bot_shared_secret.has_value();
                 const bool server_requires_bot_secret =
                     g_alpine_server_config.bot_shared_secret != 0u;
-                const bool bot_secret_valid =
-                    has_bot_secret
-                    && (g_joining_player_info.bot_shared_secret
-                        == std::optional{g_alpine_server_config.bot_shared_secret});
 
-                bool should_mark_as_bot = false;
-                if (bot_mode_requested) {
-                    should_mark_as_bot = !server_requires_bot_secret || bot_secret_valid;
-                    if (should_mark_as_bot && !server_requires_bot_secret) {
-                        xlog::warn(
-                            "Bot {} joining without shared secret authentication. "
-                            "Configure BotSharedSecret in dedicated_server.txt to require authentication.",
-                            valid_player->name
-                        );
-                    }
-                } else if (server_requires_bot_secret && bot_secret_valid) {
-                    // Backward compatibility for older clients that only send the secret.
-                    should_mark_as_bot = true;
-                }
+                // Shared with the join-time team pick so the two cannot disagree.
+                const bool should_mark_as_bot =
+                    get_joining_client_kind() == JoiningClientKind::Bot;
 
-                // Reject bot clients that provide an invalid shared secret
+                // Reject bot clients that did not authenticate with a shared secret
                 if (bot_mode_requested && !should_mark_as_bot) {
-                    if (has_bot_secret) {
+                    if (!server_requires_bot_secret) {
                         rf::console::print(
-                            "Rejecting {}: invalid bot shared secret provided",
-                            valid_player->name
+                            "Rejecting {} ({}): server has no bot shared secret configured",
+                            valid_player->name,
+                            *addr
+                        );
+                    } else if (has_bot_secret) {
+                        rf::console::print(
+                            "Rejecting {} ({}): invalid bot shared secret provided",
+                            valid_player->name,
+                            *addr
                         );
                     } else {
                         rf::console::print(
-                            "Rejecting {}: no bot shared secret provided",
-                            valid_player->name
+                            "Rejecting {} ({}): no bot shared secret provided",
+                            valid_player->name,
+                            *addr
                         );
                     }
                     rf::multi_kick_player(valid_player);
@@ -2179,18 +2250,10 @@ FunHook<void(int, rf::NetAddr*)> process_join_req_packet_hook{
                     valid_player->is_bot = true;
                     valid_player->bot_skill = 100u;
                     valid_player->is_spawn_disabled = false;
-                    if (bot_secret_valid) {
-                        rf::console::print(
-                            "{}'s bot shared secret was valid",
-                            valid_player->name
-                        );
-                    }
-                    else {
-                        rf::console::print(
-                            "{} joined in client bot mode",
-                            valid_player->name
-                        );
-                    }
+                    rf::console::print(
+                        "{}'s bot shared secret was valid",
+                        valid_player->name
+                    );
                 } else if (has_bot_secret) {
                     rf::console::print(
                         "{}'s bot shared secret was invalid",
@@ -2533,11 +2596,18 @@ FunHook<void()> multi_stop_hook{
         mutators_set_no_clip_weapon(-1); // restore any server weapon-table overrides
         vote_client_reset(); // drop the cached vote options and active vote state
         vote_panel_reset(); // drop the vote form, which describes the server being left
+        clear_pending_rotation_preserve(); // server side: no rotation carry survives a session
+        af_reset_session_overrides_snapshot();
         g_local_player_spectators.clear();
         g_remote_server_cfg_popup.reset();
         set_local_pre_match_active(false); // clear pre-match state when leaving
         multi_hud_reset_gametype_help(); // show gametype help when joining a server
         reset_local_pending_game_type(); // clear pending game type when leaving
+        salvage_on_multi_shutdown(); // put the flag_red item class back to items.tbl
+        bagman_on_multi_shutdown();  // put the amp aura bitmap back to its stock value
+        gungame_on_multi_shutdown(); // put the Jeep Gun mesh + damage back to weapons.tbl
+        mutators_on_multi_shutdown(); // put the level's own gravity back
+        riot_shield_on_multi_level_init(); // drop any pending riot shield break suppressions
         if (rf::local_player) {
             PlayerAdditionalData* const player_add_data =
                 static_cast<PlayerAdditionalData*>(rf::local_player);
@@ -3105,6 +3175,7 @@ void network_init()
     process_entity_create_packet_hook.install();
     process_reload_packet_hook.install();
     process_reload_request_packet_hook.install();
+    entity_reload_packet_deny_sound_injection.install();
     process_entity_create_packet_injection.install(); // save char if server forces it
     process_entity_create_packet_injection2.install(); // reset char after server forced it
 

@@ -236,6 +236,9 @@ namespace rf
 
     static auto& obj_set_friendliness = addr_as_ref<void(Object* obj, int friendliness)>(0x00489F70);
 
+    static auto& obj_damage = addr_as_ref<float(int victim_handle, float damage, int killer_handle,
+        int weapon_type, int damage_type, Vector3* pos, int killer_uid, char flags)>(0x004892C0);
+
     static auto& object_list = addr_as_ref<Object>(0x0073D880);
 
     static auto& debris_create = addr_as_ref<Debris*(int parent_handle, const char* vmesh_filename,

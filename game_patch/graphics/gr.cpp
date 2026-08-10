@@ -431,6 +431,15 @@ bool gr_set_render_target(int bm_handle)
     return false;
 }
 
+// Drain the queued .vfx x-ray outlines (the salvage flag) now, so they land under the
+// first-person weapon instead of over it.
+void gr_flush_outlines_before_fpgun()
+{
+    if (rf::gr::screen.mode == rf::gr::DIRECT3D && is_d3d11()) {
+        gr::d3d11::flush_outlines_before_fpgun();
+    }
+}
+
 void gr_bitmap_scaled_float(int bitmap_handle, float x, float y, float w, float h,
                             float sx, float sy, float sw, float sh, bool flip_x, bool flip_y, rf::gr::Mode mode)
 {

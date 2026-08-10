@@ -153,6 +153,13 @@ struct ParticleEmitter
         AddrCaller{0x004973B0}.this_call(this);
     }
 
+    // Advances one emitter by a frame: alternate on/off states, a particle spawn
+    // once the spawn timer is up and a room refresh from the parent object.
+    void update()
+    {
+        AddrCaller{0x004972F0}.this_call(this);
+    }
+
     void spawn_first_particle()
     {
         AddrCaller{0x00496C50}.this_call(this);
@@ -160,7 +167,10 @@ struct ParticleEmitter
 
     void destroy()
     {
-        AddrCaller{0x00497D80}.this_call(this);
+        // Note: the engine function is __cdecl, not __thiscall.
+        // Calling it as a this_call makes the engine unlink
+        // stack garbage instead of this emitter and crash.
+        AddrCaller{0x00497D80}.c_call(this);
     }
 };
 static_assert(sizeof(ParticleEmitter) == 0x158);
@@ -214,8 +224,10 @@ static auto& particle_create = addr_as_ref<void(int pool_id, ParticleCreateInfo&
     GRoom* room, Vector3* a4, int parent_obj, Particle** result,
     ParticleEmitter* emitter)>(0x00496840);
 
-// Particle emitter type template array (256 entries, indexed by emitter idx)
-static auto& g_particle_emitter_types = addr_as_ref<ParticleEmitterType*>(0x007B2770);
+// Array of particle emitter type template pointers loaded from emitters.tbl
+// (64 slots; live count is at 0x007BD99C, checked by particle_emitter_type_lookup)
+static auto& g_particle_emitter_types = addr_as_ref<ParticleEmitterType*[64]>(0x007B2770);
+static auto& particle_emitter_type_lookup = addr_as_ref<int(const char* name)>(0x00497550);
 
 static auto& particle_emitter_create = addr_as_ref<ParticleEmitter*(
     int parent_handle, ParticleEmitterType& type, GRoom* room, Vector3& pos, bool is_on)>(0x00497CA0);

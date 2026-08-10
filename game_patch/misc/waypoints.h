@@ -19,6 +19,7 @@ constexpr int kMaxWaypointLinks = 6;
 constexpr float kWaypointRadius = 4.0f / 3.0f;
 constexpr float kWaypointLinkRadius = kWaypointRadius * 3.0f;
 constexpr float kBagWaypointLinkRadius = kWaypointLinkRadius * 2.5f;
+constexpr float kSalvageFlagWaypointLinkRadius = kWaypointLinkRadius * 2.5f;
 constexpr float kWaypointLinkRadiusEpsilon = 0.001f;
 constexpr float kWaypointRadiusCompressionScale = 100.0f;
 constexpr float kJumpPadAutoLinkRangeScale = 0.5f;
@@ -72,6 +73,7 @@ enum class WaypointType : int
     conveyer = 13,
     water = 14,
     bag = 15,
+    salvage_flag = 16,
 };
 
 enum class WaypointDroppedSubtype : int
@@ -199,6 +201,10 @@ struct WpCacheNode
     rf::Vector3 max{};
 };
 
+// Downward world trace used by waypoint generation to find the floor under a
+// point. Also used by Salvage to snap a computed midpoint to the ground.
+bool trace_ground_below_point(const rf::Vector3& pos, float max_downward_dist, rf::Vector3* out_hit_point = nullptr);
+
 void waypoints_init();
 int get_local_awp_revision(const std::string& rfl_filename);
 std::optional<std::string> get_waypoint_dir();
@@ -221,6 +227,9 @@ void waypoints_on_ctf_flag_picked_up_packet(uint8_t picker_player_id);
 void waypoints_on_bag_world_pos(const rf::Vector3& bag_pos);
 void waypoints_on_bag_carried();
 bool waypoints_find_bag_waypoint(int& out_waypoint, rf::Vector3& out_pos);
+void waypoints_on_salvage_flag_world_pos(const rf::Vector3& flag_pos);
+void waypoints_on_salvage_flag_carried();
+bool waypoints_find_salvage_flag_waypoint(int& out_waypoint, rf::Vector3& out_pos);
 
 bool waypoints_get_bridge_zone_state(int zone_uid, WaypointBridgeZoneState& out_state);
 bool waypoints_find_nearest_inactive_bridge_zone(const rf::Vector3& from_pos, WaypointBridgeZoneState& out_state);

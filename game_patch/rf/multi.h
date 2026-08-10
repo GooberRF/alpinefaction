@@ -151,6 +151,7 @@ namespace rf
         NG_TYPE_PIT = 10,   // Pit, as of AF v1.4
         NG_TYPE_WO = 11,    // Wipeout, as of AF v1.4
         NG_TYPE_GG = 12, // Gun Game, as of AF v1.4
+        NG_TYPE_SAL = 13,   // Salvage, as of AF v1.4
         // Sentinel: UNK must always be the last entry.
         NG_TYPE_UNK
     };

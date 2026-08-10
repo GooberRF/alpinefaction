@@ -146,6 +146,8 @@ set(SRCS
     multi/gametype.cpp
     multi/bagman.h
     multi/bagman.cpp
+    multi/jetpack.h
+    multi/jetpack.cpp
     multi/rounds.h
     multi/rounds.cpp
     multi/pit.h
@@ -154,6 +156,8 @@ set(SRCS
     multi/wipeout.cpp
     multi/gungame.h
     multi/gungame.cpp
+    multi/salvage.h
+    multi/salvage.cpp
     multi/sprays.h
     multi/sprays.cpp
     multi/mutators.h

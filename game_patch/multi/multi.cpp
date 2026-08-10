@@ -19,6 +19,7 @@
 #include "server_internal.h"
 #include "gametype.h"
 #include "rounds.h"
+#include "salvage.h"
 #include "mutators.h"
 #include "bots/bot_chat_manager.h"
 #include "../hud/hud.h"
@@ -370,6 +371,11 @@ FunHook<void()> multi_limbo_init{
                 blue = multi_koth_get_blue_team_score();
                 break;
             }
+            case rf::NG_TYPE_SAL: {
+                red = salvage_get_red_team_score();
+                blue = salvage_get_blue_team_score();
+                break;
+            }
             case rf::NG_TYPE_REV: {
                 red = static_cast<int>(rev_all_points_permalocked());
                 blue = static_cast<int>(!rev_all_points_permalocked());
@@ -479,6 +485,11 @@ FunHook<void()> multi_ctf_level_init_hook{
         if (info_index >= 0) {
             rf::item_info[info_index].flags &= ~rf::IIF_SPINS_IN_MULTI;
         }
+        // Salvage's neutral flag spins whenever it is on the ground, including at
+        // its home spawn, and uses its own mesh. Both are flag_red class state, so
+        // this runs after the clear above because the engine calls
+        // multi_ctf_level_init from multi_level_init for every game type.
+        salvage_apply_flag_class_overrides();
     },
 };
 
@@ -816,6 +827,18 @@ bool multi_is_weapon_fire_allowed_server_side(rf::Entity *ep, int weapon_type, b
     return false;
 }
 
+// Stock RF broadcasts a received weapon fire packet twice.
+CallHook<void(rf::Entity*, rf::Vector3*, rf::Matrix3*, int, bool)> entity_fire_weapon_relay_hook{
+    0x004267BC,
+    [](rf::Entity* ep, rf::Vector3* pos, rf::Matrix3* orient, int weapon_type, bool alt_fire) {
+        if (rf::is_server && ep != rf::local_player_entity
+            && rf::player_from_entity_handle(ep->handle) != nullptr) {
+            return;
+        }
+        entity_fire_weapon_relay_hook.call_target(ep, pos, orient, weapon_type, alt_fire);
+    },
+};
+
 FunHook<void(rf::Entity*, int, rf::Vector3&, rf::Matrix3&, bool)> multi_process_remote_weapon_fire_hook{
     0x0047D220,
     [](rf::Entity *ep, int weapon_type, rf::Vector3& pos, rf::Matrix3& orient, bool alt_fire) {
@@ -872,6 +895,8 @@ std::string_view multi_game_type_name(const rf::NetGameType game_type) {
         return std::string_view{"Wipeout"};
     } else if (game_type == rf::NG_TYPE_GG) {
         return std::string_view{"Gun Game"};
+    } else if (game_type == rf::NG_TYPE_SAL) {
+        return std::string_view{"Salvage"};
     } else if (game_type == rf::NG_TYPE_UNK) {
         return std::string_view{"Unknown"};
     } else {
@@ -907,6 +932,8 @@ std::string_view multi_game_type_name_upper(const rf::NetGameType game_type) {
         return std::string_view{"WIPEOUT"};
     } else if (game_type == rf::NG_TYPE_GG) {
         return std::string_view{"GUN GAME"};
+    } else if (game_type == rf::NG_TYPE_SAL) {
+        return std::string_view{"SALVAGE"};
     } else if (game_type == rf::NG_TYPE_UNK) {
         return std::string_view{"UNKNOWN"};
     } else {
@@ -942,6 +969,8 @@ std::string_view multi_game_type_name_short(const rf::NetGameType game_type) {
         return std::string_view{"WO"};
     } else if (game_type == rf::NG_TYPE_GG) {
         return std::string_view{"GG"};
+    } else if (game_type == rf::NG_TYPE_SAL) {
+        return std::string_view{"SAL"};
     } else if (game_type == rf::NG_TYPE_UNK) {
         return std::string_view{"UNK"};
     } else {
@@ -979,6 +1008,8 @@ std::string_view multi_game_type_prefix(const rf::NetGameType game_type) {
         return std::string_view{"wo"};
     } else if (game_type == rf::NG_TYPE_GG) {
         return std::string_view{"gg"};
+    } else if (game_type == rf::NG_TYPE_SAL) {
+        return std::string_view{"ctf"};
     } else if (game_type == rf::NG_TYPE_UNK) {
         // No real level-name prefix for unknown game types; "dm" is the safest fallback.
         return std::string_view{"dm"};
@@ -1318,6 +1349,9 @@ void multi_do_patch()
 
     // Check ammo server-side when handling weapon fire packets
     multi_process_remote_weapon_fire_hook.install();
+
+    // Stock RF broadcasts a received weapon fire packet twice
+    entity_fire_weapon_relay_hook.install();
 
     // Prevent crash when CTF flag item pointers are NULL
     multi_ctf_is_red_flag_in_base_hook.install();

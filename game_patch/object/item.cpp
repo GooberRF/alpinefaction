@@ -14,6 +14,7 @@
 #include "../rf/player/player.h"
 #include "../misc/achievements.h"
 #include "../misc/misc.h"
+#include "../multi/mutators.h"
 #include "../multi/server.h"
 
 int item_lookup_type(const char* name)
@@ -35,7 +36,13 @@ int item_lookup_type(const char* name)
 FunHook<int(int, int, int, int)> item_touch_weapon_hook{
     0x0045A6D0,
     [](int entity_handle, int item_handle, int weapon_type, int count) {
-        if (server_weapon_items_give_full_ammo() && weapon_type != rf::shoulder_cannon_weapon_type) {
+        // Exclude fusion from "weapon items give full ammo", but not from "infinite magazines"
+        const bool full_ammo_pickup =
+            server_weapon_items_give_full_ammo() && weapon_type != rf::shoulder_cannon_weapon_type;
+        // Infinite magazines is only meaningful if there is a magazine to reload from, so it
+        // tops the weapon up.
+            if ((full_ammo_pickup || server_weapon_infinite_magazines())
+            && weapon_type >= 0 && weapon_type < rf::num_weapon_types) {
             rf::WeaponInfo& winfo = rf::weapon_types[weapon_type];
             count = winfo.max_ammo + winfo.clip_size;
         }
@@ -97,25 +104,34 @@ CodeInjection game_level_init_pre_patch{
     }
 };
 
+// Both injections below fire right after the touch callback confirmed a pickup.
+static void on_item_picked_up(rf::Item* item, rf::Entity* entity)
+{
+    if (!item || !entity) {
+        return;
+    }
+
+    if (!rf::is_multi) {
+        if (entity == rf::local_player_entity) {
+            //xlog::warn("player {} picked up item {}, uid {}, handle {}", entity->name, item->name, item->uid, item->handle);
+            if (is_achievement_system_initialized()) {
+                achievement_check_item_picked_up(item);
+            }
+
+            rf::activate_all_events_of_type(rf::EventType::When_Picked_Up, item->handle, entity->handle, true);
+        }
+    }
+    else {
+        mutators_on_item_picked_up(item, entity);
+    }
+}
+
 CodeInjection item_pickup_patch {
     0x004597BA,
     [](auto& regs) {
-        if (!rf::is_multi) {
-            bool picked_up = regs.eax != -1;
-
-            if (picked_up)
-            {
-                rf::Item* item = regs.esi;
-                rf::Entity* entity = regs.edi;
-                if (item && entity && entity == rf::local_player_entity) {
-                    //xlog::warn("player {} picked up item {}, uid {}, handle {}", entity->name, item->name, item->uid, item->handle);
-                    if (is_achievement_system_initialized()) {
-                        achievement_check_item_picked_up(item);
-                    }
-
-                    rf::activate_all_events_of_type(rf::EventType::When_Picked_Up, item->handle, entity->handle, true);
-                }
-            }
+        bool picked_up = regs.eax != -1;
+        if (picked_up) {
+            on_item_picked_up(regs.esi, regs.edi);
         }
     }
 };
@@ -123,22 +139,9 @@ CodeInjection item_pickup_patch {
 CodeInjection item_pickup_patch2 {
     0x004597D8,
     [](auto& regs) {
-        if (!rf::is_multi) {
-            bool picked_up = regs.eax != -1;
-
-            if (picked_up)
-            {
-                rf::Item* item = regs.esi;
-                rf::Entity* entity = regs.edi;
-                if (item && entity && entity == rf::local_player_entity) {
-                    //xlog::warn("player {} picked up item {}, uid {}, handle {}", entity->name, item->name, item->uid, item->handle);
-                    if (is_achievement_system_initialized()) {
-                        achievement_check_item_picked_up(item);
-                    }
-
-                    rf::activate_all_events_of_type(rf::EventType::When_Picked_Up, item->handle, entity->handle, true);
-                }
-            }
+        bool picked_up = regs.eax != -1;
+        if (picked_up) {
+            on_item_picked_up(regs.esi, regs.edi);
         }
     }
 };

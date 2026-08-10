@@ -494,6 +494,7 @@ CallHook level_init_pre_console_output_hook{
                         auto& server_info = get_af_server_info_mutable().value();
                         switch (rf::netgame.type) {
                         case rf::NetGameType::NG_TYPE_CTF:
+                        case rf::NetGameType::NG_TYPE_SAL:
                             rf::netgame.max_captures = g_local_pending_win_condition.value();
                             break;
                         case rf::NetGameType::NG_TYPE_KOTH:

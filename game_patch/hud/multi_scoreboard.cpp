@@ -10,6 +10,7 @@
 #include "../multi/multi.h"
 #include "../multi/gametype.h"
 #include "../multi/bagman.h"
+#include "../multi/salvage.h"
 #include "../multi/wipeout.h"
 #include "../misc/alpine_options.h"
 #include "../misc/alpine_settings.h"
@@ -260,6 +261,17 @@ int draw_scoreboard_header(int x, int y, int w, rf::NetGameType game_type, bool 
                 red_score = bagman_get_red_team_score();
                 blue_score = bagman_get_blue_team_score();
             }
+            else if (game_type == rf::NG_TYPE_SAL) {
+                // Placeholder art: Salvage borrows the CTF flag icons.
+                static int hud_flag_red_bm = rf::bm::load("hud_flag_red.tga", -1, true);
+                static int hud_flag_blue_bm = rf::bm::load("hud_flag_blue.tga", -1, true);
+                int flag_bm_w, flag_bm_h;
+                rf::bm::get_dimensions(hud_flag_red_bm, &flag_bm_w, &flag_bm_h);
+                rf::gr::bitmap(hud_flag_red_bm, x + w * 2 / 6 - flag_bm_w / 2, cur_y);
+                rf::gr::bitmap(hud_flag_blue_bm, x + w * 4 / 6 - flag_bm_w / 2, cur_y);
+                red_score = salvage_get_red_team_score();
+                blue_score = salvage_get_blue_team_score();
+            }
             else if (game_type == rf::NG_TYPE_WO) {
                 static int hud_flag_red_bm = rf::bm::load("hud_flag_red.tga", -1, true);
                 static int hud_flag_blue_bm = rf::bm::load("hud_flag_blue.tga", -1, true);
@@ -324,7 +336,8 @@ int draw_scoreboard_players(
     // can diverge later.
     bool show_assists = game_type != rf::NG_TYPE_RUN;
     int assists_w = show_assists ? static_cast<int>(35 * scale) : 0;
-    int caps_w = game_type == rf::NG_TYPE_CTF ? static_cast<int>(45 * scale) : 0;
+    const bool show_caps = game_type == rf::NG_TYPE_CTF || game_type == rf::NG_TYPE_SAL;
+    int caps_w = show_caps ? static_cast<int>(45 * scale) : 0;
     const auto& server_info = get_af_server_info();
     bool saving_enabled = server_info.has_value() && server_info->saving_enabled;
     bool show_loads = game_type == rf::NG_TYPE_RUN && saving_enabled;
@@ -366,7 +379,7 @@ int draw_scoreboard_players(
         if (show_assists) {
             rf::gr::string(assists_x, y, "Asst");
         }
-        if (game_type == rf::NG_TYPE_CTF) {
+        if (show_caps) {
             rf::gr::string(caps_x, y, rf::strings::caps);
         }
         if (show_loads) {
@@ -428,6 +441,8 @@ int draw_scoreboard_players(
                 rf::bm::load("hud_microflag_red.tga", -1, true);
             static const int hud_micro_flag_blue_bm =
                 rf::bm::load("hud_microflag_blue.tga", -1, true);
+            static const int hud_micro_flag_sal_bm =
+                rf::bm::load("hud_microflag_sal.vbm", -1, true);
 
         const bool is_spawned = !rf::player_is_dead(player)
             && !rf::player_is_dying(player);
@@ -441,6 +456,8 @@ int draw_scoreboard_players(
                 && !is_spawned)
                 || player_is_idle(player)) {
                 return idle_bm;
+            } else if (salvage_player_is_carrier(player)) {
+                return hud_micro_flag_sal_bm;
             } else if (player == red_flag_player) {
                 return hud_micro_flag_red_bm;
             } else if (player == blue_flag_player) {
@@ -535,7 +552,7 @@ int draw_scoreboard_players(
                 rf::gr::string(assists_x, y, assists_str.c_str());
             }
 
-            if (game_type == rf::NG_TYPE_CTF) {
+            if (show_caps) {
                 auto caps_str = std::to_string(caps_or_loads);
                 rf::gr::string(caps_x, y, caps_str.c_str());
             }

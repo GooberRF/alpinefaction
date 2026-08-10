@@ -1,6 +1,7 @@
 #include <cstddef>
 #include <cstring>
 #include <cassert>
+#include <cmath>
 #include <algorithm>
 #include <array>
 #include <limits>
@@ -28,7 +29,9 @@
 #include "kill.h"
 #include "kill_attribution.h"
 #include "bagman.h"
+#include "jetpack.h"
 #include "pit.h"
+#include "salvage.h"
 #include "vote_client.h"
 #include "../misc/player.h"
 #include "../hud/hud.h"
@@ -156,6 +159,10 @@ bool af_process_packet(
         }
         case af_packet_type::af_gungame_order: {
             af_process_gungame_order_packet(data, static_cast<size_t>(len), addr);
+            return true;
+        }
+        case af_packet_type::af_salvage_state: {
+            af_process_salvage_state_packet(data, static_cast<size_t>(len), addr);
             return true;
         }
         default:
@@ -631,6 +638,12 @@ void serialize_payload(const VoteOptionsReqPayload& payload, std::byte* buf, siz
     offset += sizeof(payload.known_generation);
 }
 
+// af_req_jetpack_state
+void serialize_payload(const JetpackStateReqPayload& payload, std::byte* buf, size_t& offset)
+{
+    buf[offset++] = static_cast<std::byte>(payload.on);
+}
+
 // af_sreq_ready_prompt
 void serialize_payload(const ReadyPromptPayload& payload, std::byte* buf, size_t& offset)
 {
@@ -656,6 +669,33 @@ void serialize_payload(const ShouldGibPayload& payload, std::byte* buf, size_t& 
 {
     std::memcpy(buf + offset, &payload.obj_handle, sizeof(payload.obj_handle));
     offset += sizeof(payload.obj_handle);
+}
+
+// af_sreq_entity_on_fire
+void serialize_payload(const EntityOnFirePayload& payload, std::byte* buf, size_t& offset)
+{
+    std::memcpy(buf + offset, &payload.obj_handle, sizeof(payload.obj_handle));
+    offset += sizeof(payload.obj_handle);
+    buf[offset++] = static_cast<std::byte>(payload.on);
+}
+
+// af_sreq_jetpack_state
+void serialize_payload(const EntityJetpackPayload& payload, std::byte* buf, size_t& offset)
+{
+    std::memcpy(buf + offset, &payload.obj_handle, sizeof(payload.obj_handle));
+    offset += sizeof(payload.obj_handle);
+    buf[offset++] = static_cast<std::byte>(payload.on);
+}
+
+// af_sreq_riot_shield_state
+void serialize_payload(const RiotShieldStatePayload& payload, std::byte* buf, size_t& offset)
+{
+    std::memcpy(buf + offset, &payload.obj_handle, sizeof(payload.obj_handle));
+    offset += sizeof(payload.obj_handle);
+    std::memcpy(buf + offset, &payload.life, sizeof(payload.life));
+    offset += sizeof(payload.life);
+    std::memcpy(buf + offset, &payload.impact_pos, sizeof(payload.impact_pos));
+    offset += sizeof(payload.impact_pos);
 }
 
 // af_sreq_teleport_entity
@@ -783,6 +823,23 @@ void af_send_ready_request(uint8_t action)
     af_send_client_req_packet(packet, true); // reliable
 }
 
+// Jetpacks mutator: report that the local player's thrusters turned on or off.
+// Movement is clientside, so this is only for the visuals/audio on other clients.
+void af_send_jetpack_state_request(bool on)
+{
+    if (!rf::is_multi || rf::is_server) {
+        return;
+    }
+
+    af_client_req_packet packet{};
+    packet.header.type = static_cast<uint8_t>(af_packet_type::af_client_req);
+    packet.header.size = sizeof(uint8_t) + sizeof(JetpackStateReqPayload);
+    packet.req_type = af_client_req_type::af_req_jetpack_state;
+    packet.payload = JetpackStateReqPayload{static_cast<uint8_t>(on ? 1 : 0)};
+
+    af_send_client_req_packet(packet, true); // reliable
+}
+
 // Request a Pit duel-queue action (join/leave/toggle) from the server.
 void af_send_pit_queue_request(uint8_t action)
 {
@@ -896,6 +953,11 @@ struct VoteReader
     size_t len;
     size_t pos = 0;
     bool ok = true;
+
+    [[nodiscard]] size_t remaining() const
+    {
+        return ok ? len - pos : 0;
+    }
 
     uint8_t u8()
     {
@@ -1120,6 +1182,13 @@ void af_send_vote_call(const AfVoteCallParams& params)
             break;
         case AfVoteType::Extend:
             w.u8(params.extend_minutes);
+            break;
+        case AfVoteType::Restart:
+        case AfVoteType::Next:
+        case AfVoteType::Random:
+        case AfVoteType::Previous:
+            // Trailing and optional: a server that predates it stops reading here.
+            w.u8(params.preserve ? 1 : 0);
             break;
         default:
             break; // parameterless vote types
@@ -1492,6 +1561,18 @@ static void af_process_client_req_packet(const void* data, size_t len, const rf:
             sprays_handle_spray_request(player, texture_id, spray_pos, spray_normal);
             break;
         }
+        case af_client_req_type::af_req_jetpack_state: {
+            if (remaining < sizeof(JetpackStateReqPayload)) {
+                xlog::warn("af_process_client_req_packet: JetpackState payload too short");
+                return;
+            }
+            if (!g_alpine_server_config_active_rules.mutators.jetpacks_enabled) {
+                return;
+            }
+            const bool on = bytes[offset] != 0;
+            jetpack_server_on_state_request(player, on);
+            break;
+        }
         case af_client_req_type::af_req_ready: {
             if (remaining < sizeof(uint8_t)) {
                 xlog::warn("af_process_client_req_packet: Ready payload too short");
@@ -1553,6 +1634,16 @@ static void af_process_client_req_packet(const void* data, size_t len, const rf:
                 case AfVoteType::Extend:
                     params.extend_minutes = r.u8();
                     break;
+                case AfVoteType::Restart:
+                case AfVoteType::Next:
+                case AfVoteType::Random:
+                case AfVoteType::Previous:
+                    // Optional trailing byte. A client that predates it omits it,
+                    // so fall back to what those votes did before the flag existed.
+                    params.preserve = r.remaining() > 0
+                        ? r.u8() != 0
+                        : params.type == AfVoteType::Restart;
+                    break;
                 default:
                     break; // parameterless vote types
             }
@@ -1602,7 +1693,7 @@ static void af_process_client_req_packet(const void* data, size_t len, const rf:
     }
 }
 
-void af_send_server_req_packet(const af_server_req_packet& packet, rf::Player* player)
+void af_send_server_req_packet(const af_server_req_packet& packet, rf::Player* player, bool reliable)
 {
     // Send: server -> client
     if (!rf::is_server || !player || !player->net_data) {
@@ -1620,7 +1711,7 @@ void af_send_server_req_packet(const af_server_req_packet& packet, rf::Player* p
     std::visit([&](const auto& payload) { serialize_payload(payload, buf, offset); }, packet.payload);
 
     int total_len = static_cast<int>(offset);
-    af_send_packet(player, buf, total_len, true);
+    af_send_packet(player, buf, total_len, reliable);
 }
 
 void af_send_should_gib_req(uint32_t obj_handle)
@@ -1641,6 +1732,102 @@ void af_send_should_gib_req(uint32_t obj_handle)
         if (is_player_minimum_af_client_version(&player, 1, 2, 1)
             && !is_player_minimum_af_client_version(&player, 1, 4, 0)) {
             af_send_server_req_packet(packet, &player);
+        }
+    }
+}
+
+// Flaming Enemies mutator: tell clients an entity caught fire or was extinguished.
+void af_send_entity_on_fire(uint32_t obj_handle, bool on)
+{
+    if (!rf::is_server) {
+        return;
+    }
+
+    af_server_req_packet packet{};
+    packet.header.type = static_cast<uint8_t>(af_packet_type::af_server_req);
+    packet.header.size = sizeof(uint8_t) + sizeof(EntityOnFirePayload);
+    packet.req_type = af_server_req_type::af_sreq_entity_on_fire;
+    packet.payload = EntityOnFirePayload{obj_handle, static_cast<uint8_t>(on ? 1 : 0)};
+
+    for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
+        if (is_player_minimum_af_client_version(&player, 1, 4, 0)) {
+            af_send_server_req_packet(packet, &player);
+        }
+    }
+}
+
+// Jetpacks mutator: relay a player's thrust state to everyone else.
+// The owner is skipped because it applies its own effects locally.
+void af_send_jetpack_state(uint32_t obj_handle, bool on)
+{
+    if (!rf::is_server) {
+        return;
+    }
+
+    af_server_req_packet packet{};
+    packet.header.type = static_cast<uint8_t>(af_packet_type::af_server_req);
+    packet.header.size = sizeof(uint8_t) + sizeof(EntityJetpackPayload);
+    packet.req_type = af_server_req_type::af_sreq_jetpack_state;
+    packet.payload = EntityJetpackPayload{obj_handle, static_cast<uint8_t>(on ? 1 : 0)};
+
+    for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
+        if (static_cast<uint32_t>(player.entity_handle) == obj_handle) {
+            continue;
+        }
+        // Bots and browsers have no purpose for presentation metadata,
+        // save the packets.
+        if (!player.net_data || player.is_bot || player.is_browser) {
+            continue;
+        }
+        // state 2 is "in game"; stock send_obj_kill_packet gates on it too (0x0047ED9B).
+        // A still-joining client has no entity to hang the thruster on; it picks the
+        // stream up at the owner's next state change.
+        if (player.net_data->state != 2) {
+            continue;
+        }
+        if (is_player_minimum_af_client_version(&player, 1, 4, 0)) {
+            af_send_server_req_packet(packet, &player);
+        }
+    }
+}
+
+// Riot shield durability is server authoritative. Broadcast every damage event.
+void af_send_riot_shield_state(uint32_t obj_handle, float life, const rf::Vector3& impact_pos)
+{
+    if (!rf::is_server) {
+        return;
+    }
+
+    RF_Vector pos{};
+    std::memcpy(&pos, &impact_pos, sizeof(pos));
+
+    af_server_req_packet packet{};
+    packet.header.type = static_cast<uint8_t>(af_packet_type::af_server_req);
+    packet.header.size = sizeof(uint8_t) + sizeof(RiotShieldStatePayload);
+    packet.req_type = af_server_req_type::af_sreq_riot_shield_state;
+    packet.payload = RiotShieldStatePayload{obj_handle, life, pos};
+
+    // life is absolute rather than a delta, so a dropped non-break update is
+    // corrected by the next hit and costs nothing but a missed impact decal.
+    // The break must never be lost, so only that one goes reliable.
+    //
+    // The negation is DELIBERATE - do not "simplify" it to life <= 0.0f. Here life is
+    // read straight off the clutter after damage with no validation, so NaN is
+    // theoretically reachable, and the engine treats NaN as a break. C++
+    // NaN <= 0.0f is false, so the plain form would send that break unreliably. This
+    // form is true for NaN and so errs toward reliable delivery.
+    const bool reliable = !(life > 0.0f);
+
+    for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
+        // Bots and browsers have no use for presentation state.
+        if (!player.net_data || player.is_bot || player.is_browser) {
+            continue;
+        }
+        if (player.net_data->state != 2) {
+            continue;
+        }
+        if (is_player_minimum_af_client_version(&player, 1, 4, 0)) {
+            af_send_server_req_packet(packet, &player, reliable);
         }
     }
 }
@@ -2251,6 +2438,94 @@ static void af_process_server_req_packet(const void* data, size_t len, const rf:
             }
             break;
         }
+        case af_server_req_type::af_sreq_entity_on_fire: {
+            if (remaining < sizeof(EntityOnFirePayload)) {
+                xlog::warn("af_process_server_req_packet: EntityOnFire payload too short");
+                return;
+            }
+
+            EntityOnFirePayload payload{};
+            std::memcpy(&payload.obj_handle, bytes + offset, sizeof(payload.obj_handle));
+            payload.on = bytes[offset + sizeof(payload.obj_handle)];
+
+            rf::Object* remote_object = rf::obj_from_remote_handle(payload.obj_handle);
+            if (!remote_object) {
+                xlog::debug("af_process_server_req_packet: EntityOnFire invalid remote handle {:x}", payload.obj_handle);
+                return;
+            }
+
+            rf::Entity* entity = rf::entity_from_handle(remote_object->handle);
+            if (!entity) {
+                xlog::debug("af_process_server_req_packet: EntityOnFire invalid entity handle {:x}", payload.obj_handle);
+                return;
+            }
+
+            mutators_apply_entity_on_fire(entity, payload.on != 0);
+            break;
+        }
+        case af_server_req_type::af_sreq_jetpack_state: {
+            if (remaining < sizeof(EntityJetpackPayload)) {
+                xlog::warn("af_process_server_req_packet: JetpackState payload too short");
+                return;
+            }
+
+            EntityJetpackPayload payload{};
+            std::memcpy(&payload.obj_handle, bytes + offset, sizeof(payload.obj_handle));
+            payload.on = bytes[offset + sizeof(payload.obj_handle)];
+
+            rf::Object* remote_object = rf::obj_from_remote_handle(payload.obj_handle);
+            if (!remote_object) {
+                xlog::debug("af_process_server_req_packet: JetpackState invalid remote handle {:x}", payload.obj_handle);
+                return;
+            }
+
+            rf::Entity* entity = rf::entity_from_handle(remote_object->handle);
+            if (!entity) {
+                xlog::debug("af_process_server_req_packet: JetpackState invalid entity handle {:x}", payload.obj_handle);
+                return;
+            }
+
+            // The local player drives its own effects from its own input.
+            if (rf::local_player && entity->handle == rf::local_player->entity_handle) {
+                return;
+            }
+
+            jetpack_apply_entity_thrust(entity, payload.on != 0);
+            break;
+        }
+        case af_server_req_type::af_sreq_riot_shield_state: {
+            if (remaining < sizeof(RiotShieldStatePayload)) {
+                xlog::warn("af_process_server_req_packet: RiotShieldState payload too short");
+                return;
+            }
+
+            RiotShieldStatePayload payload{};
+            std::memcpy(&payload.obj_handle, bytes + offset, sizeof(payload.obj_handle));
+            offset += sizeof(payload.obj_handle);
+            std::memcpy(&payload.life, bytes + offset, sizeof(payload.life));
+            offset += sizeof(payload.life);
+            std::memcpy(&payload.impact_pos, bytes + offset, sizeof(payload.impact_pos));
+            offset += sizeof(payload.impact_pos);
+
+            rf::Object* remote_object = rf::obj_from_remote_handle(payload.obj_handle);
+            if (!remote_object) {
+                xlog::debug("af_process_server_req_packet: RiotShieldState invalid remote handle {:x}",
+                    payload.obj_handle);
+                return;
+            }
+
+            rf::Entity* entity = rf::entity_from_handle(remote_object->handle);
+            if (!entity) {
+                xlog::debug("af_process_server_req_packet: RiotShieldState invalid entity handle {:x}",
+                    payload.obj_handle);
+                return;
+            }
+
+            rf::Vector3 impact_pos;
+            std::memcpy(&impact_pos, &payload.impact_pos, sizeof(impact_pos));
+            riot_shield_apply_remote_state(entity, payload.life, impact_pos);
+            break;
+        }
         case af_server_req_type::af_sreq_vote_state: {
             VoteReader r{bytes + offset, remaining};
             const uint8_t event = r.u8();
@@ -2463,8 +2738,12 @@ static void af_process_just_spawned_info_packet(const void* data, size_t len, co
             }
 
             const auto* entries = reinterpret_cast<const LoadoutEntry*>(p);
-            if (!rf::local_player)
+            // A zero length loadout means the server did not take over the stock spawn
+            // grant, so the weapons this client gave itself are the correct ones.
+            if (!rf::local_player || num == 0)
                 return;
+
+            bool granted[64] = {};
 
             for (uint8_t i = 0; i < num; ++i) {
                 const int weapon_idx = static_cast<int>(entries[i].weapon_index);
@@ -2477,11 +2756,33 @@ static void af_process_just_spawned_info_packet(const void* data, size_t len, co
                 }
 
                 // add weapon locally
-                rf::player_add_weapon(rf::local_player, weapon_idx, ammo);
+                af_give_loadout_weapon(rf::local_player, weapon_idx, ammo);
+                granted[weapon_idx] = true;
 
                 // if remote charge, we also need to add the detonator
                 if (weapon_idx == rf::remote_charge_weapon_type && rf::local_player_entity) {
                     rf::ai_add_weapon(&rf::local_player_entity->ai, rf::remote_charge_det_weapon_type, 0);
+                    if (rf::remote_charge_det_weapon_type >= 0 && rf::remote_charge_det_weapon_type < 64) {
+                        granted[rf::remote_charge_det_weapon_type] = true;
+                    }
+                }
+            }
+
+            // This client ran the stock spawn grant locally (default player weapon plus the
+            // Riot Stick) while the server replaced it with the loadout, so drop anything the
+            // server did not hand out.
+            if (rf::AiInfo* ai = rf::player_get_ai(rf::local_player)) {
+                const int weapon_count = std::min(rf::num_weapon_types, 64);
+                for (int wt = 0; wt < weapon_count; ++wt) {
+                    // ai_remove_weapon only clears has_weapon, so a weapon still selected in
+                    // either slot has to be left alone - otherwise the slot keeps pointing at
+                    // a weapon the entity no longer owns.
+                    if (wt == ai->current_primary_weapon || wt == ai->current_secondary_weapon) {
+                        continue;
+                    }
+                    if (!granted[wt] && rf::ai_has_weapon(ai, wt)) {
+                        rf::ai_remove_weapon(ai, wt);
+                    }
                 }
             }
         } break;
@@ -2729,6 +3030,129 @@ void af_process_bagman_state_packet(const void* data, size_t len, const rf::NetA
     }
 }
 
+// Build the wire packet once from the current salvage state.
+static void build_af_salvage_state_packet(af_salvage_state_packet& pkt)
+{
+    pkt.header.type = static_cast<uint8_t>(af_packet_type::af_salvage_state);
+    pkt.header.size = static_cast<uint16_t>(sizeof(af_salvage_state_packet) - sizeof(RF_GamePacketHeader));
+
+    pkt.state = static_cast<uint8_t>(salvage_get_state());
+    rf::Player* carrier = salvage_get_carrier();
+    pkt.carrier_player_id = (carrier && carrier->net_data) ? carrier->net_data->player_id : 0xFF;
+    pkt.time_left_ms = static_cast<uint16_t>(std::clamp(salvage_get_time_left_ms(), 0, 0xFFFF));
+    pkt.red_caps = static_cast<uint16_t>(std::clamp(salvage_get_red_team_score(), 0, 0xFFFF));
+    pkt.blue_caps = static_cast<uint16_t>(std::clamp(salvage_get_blue_team_score(), 0, 0xFFFF));
+
+    const rf::Vector3& spawn_pos = salvage_get_spawn_pos();
+    pkt.spawn_x = spawn_pos.x;
+    pkt.spawn_y = spawn_pos.y;
+    pkt.spawn_z = spawn_pos.z;
+
+    // Falls back to the home position while the flag is between items (Delayed),
+    // where clients have nothing to place anyway.
+    rf::Vector3 flag_pos = spawn_pos;
+    salvage_get_flag_pos(&flag_pos);
+    pkt.flag_x = flag_pos.x;
+    pkt.flag_y = flag_pos.y;
+    pkt.flag_z = flag_pos.z;
+}
+
+void af_send_salvage_state_packet(rf::Player* player)
+{
+    // server -> single client
+    if (!rf::is_server) {
+        return;
+    }
+    if (!player) {
+        xlog::error("af_salvage_state_packet: Attempted to send to an invalid player");
+        return;
+    }
+
+    af_salvage_state_packet pkt{};
+    build_af_salvage_state_packet(pkt);
+
+    std::byte buf[sizeof(pkt)];
+    std::memcpy(buf, &pkt, sizeof(pkt));
+    af_send_packet(player, buf, static_cast<int>(sizeof(pkt)), true);
+}
+
+void af_send_salvage_state_packet_to_all()
+{
+    // server -> all clients
+    if (!rf::is_server)
+        return;
+
+    af_salvage_state_packet pkt{};
+    build_af_salvage_state_packet(pkt);
+
+    std::byte buf[sizeof(pkt)];
+    std::memcpy(buf, &pkt, sizeof(pkt));
+
+    SinglyLinkedList<rf::Player> players{rf::player_list};
+    for (auto& p : players) {
+        if (!p.net_data)
+            continue;
+        af_send_packet(&p, buf, static_cast<int>(sizeof(pkt)), true);
+    }
+}
+
+void af_process_salvage_state_packet(const void* data, size_t len, const rf::NetAddr&)
+{
+    // Receive: client <- server
+    if (!rf::is_multi || rf::is_server)
+        return;
+    if (len < sizeof(RF_GamePacketHeader))
+        return;
+
+    if (!gt_is_salvage()) {
+        return;
+    }
+
+    RF_GamePacketHeader hdr{};
+    std::memcpy(&hdr, data, sizeof(hdr));
+    if (sizeof(RF_GamePacketHeader) + hdr.size > len) {
+        xlog::warn("salvage_state: truncated (declared={}, len={})", hdr.size, len);
+        return;
+    }
+    if (len < sizeof(af_salvage_state_packet)) {
+        xlog::warn("salvage_state: short packet ({}<{})", len, sizeof(af_salvage_state_packet));
+        return;
+    }
+
+    af_salvage_state_packet pkt{};
+    std::memcpy(&pkt, data, sizeof(pkt));
+
+    const size_t expected_payload = sizeof(af_salvage_state_packet) - sizeof(RF_GamePacketHeader);
+    if (pkt.header.size != expected_payload) {
+        xlog::warn("salvage_state: bad payload size {} (expected {})", pkt.header.size, expected_payload);
+        return;
+    }
+
+    // A NaN, infinity or absurd magnitude here would reach the flag item's position,
+    // the world HUD projection and the bot navigation, and poison them for the rest
+    // of the level. The bound is far outside any legitimate RF level, so it only ever
+    // catches garbage.
+    // This guard will probably never actually trigger, but costs virtually nothing
+    // and is best practice.
+    constexpr float kSalvageMaxCoordMagnitude = 100000.0f;
+    const auto coord_is_sane = [](float v) {
+        return std::isfinite(v) && std::fabs(v) <= kSalvageMaxCoordMagnitude;
+    };
+    if (!coord_is_sane(pkt.spawn_x) || !coord_is_sane(pkt.spawn_y) || !coord_is_sane(pkt.spawn_z)
+        || !coord_is_sane(pkt.flag_x) || !coord_is_sane(pkt.flag_y) || !coord_is_sane(pkt.flag_z)) {
+        static rf::Timestamp non_finite_warn_throttle;
+        if (!non_finite_warn_throttle.valid() || non_finite_warn_throttle.elapsed()) {
+            non_finite_warn_throttle.set(5000);
+            xlog::warn("salvage_state: rejecting packet with out-of-range coordinates");
+        }
+        return;
+    }
+
+    salvage_apply_state_from_packet(pkt.state, pkt.carrier_player_id, pkt.time_left_ms,
+        pkt.red_caps, pkt.blue_caps, rf::Vector3{pkt.spawn_x, pkt.spawn_y, pkt.spawn_z},
+        rf::Vector3{pkt.flag_x, pkt.flag_y, pkt.flag_z});
+}
+
 void af_send_koth_hill_captured_packet(rf::Player* player, uint8_t hill_uid, HillOwner owner, const std::vector<uint8_t>& new_owner_player_ids)
 {
     // Send: server -> client
@@ -2915,6 +3339,16 @@ static void af_process_just_died_info_packet(const void* data, size_t len, const
     set_local_spawn_delay(respawn_allowed, force_respawn, static_cast<int>(spawn_delay));
 }
 
+// Last session-overrides text clients were told about.
+// Used to ensure "OUTDATED" is shown on remote server cfg printout
+// after new session overrides are applied.
+static std::string g_session_overrides_snapshot;
+
+void af_reset_session_overrides_snapshot()
+{
+    g_session_overrides_snapshot.clear();
+}
+
 static void build_af_server_info_packet(af_server_info_packet& pkt)
 {
     pkt = {};
@@ -2980,6 +3414,27 @@ static void build_af_server_info_packet(af_server_info_packet& pkt)
         af |= af_server_info_flags::SIF_RELOAD_ON_KILL;
     if (g_alpine_server_config_active_rules.mutators.super_drain_enabled)
         af |= af_server_info_flags::SIF_SUPER_DRAIN;
+    if (g_alpine_server_config_active_rules.mutators.jetpacks_enabled)
+        af |= af_server_info_flags::SIF_JETPACKS;
+    if (g_alpine_server_config_active_rules.mutators.low_gravity_enabled)
+        af |= af_server_info_flags::SIF_LOW_GRAVITY;
+    if (g_alpine_server_config_active_rules.mutators.skiing_enabled)
+        af |= af_server_info_flags::SIF_SKIING;
+    if (g_alpine_server_config_active_rules.mutators.dodging_enabled)
+        af |= af_server_info_flags::SIF_DODGING;
+    if (g_alpine_server_config_active_rules.mutators.pogo_enabled)
+        af |= af_server_info_flags::SIF_POGO;
+    // Must stay immediately ahead of the signal_cfg_changed check below, which
+    // consumes the flag this sets.
+    {
+        std::string session_overrides;
+        print_session_overrides(session_overrides);
+        if (session_overrides != g_session_overrides_snapshot) {
+            g_session_overrides_snapshot = std::move(session_overrides);
+            g_alpine_server_config.printed_cfg.clear();
+            g_alpine_server_config.signal_cfg_changed = true;
+        }
+    }
     if (g_alpine_server_config.signal_cfg_changed) {
         af |= af_server_info_flags::SIF_SERVER_CFG_CHANGED;
         for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
@@ -2995,6 +3450,7 @@ static void build_af_server_info_packet(af_server_info_packet& pkt)
     // build win_condition
     switch (get_upcoming_game_type()) {
         case rf::NetGameType::NG_TYPE_CTF:
+        case rf::NetGameType::NG_TYPE_SAL:
             pkt.win_condition = static_cast<uint32_t>(rf::netgame.max_captures);
             break;
         case rf::NetGameType::NG_TYPE_KOTH:
@@ -3072,6 +3528,11 @@ static void decode_af_server_info_flags(const af_server_info_packet& pkt, Alpine
     server_info.allow_sprays = (pkt.af_flags & af_server_info_flags::SIF_ALLOW_SPRAYS) != 0;
     server_info.reload_on_kill = (pkt.af_flags & af_server_info_flags::SIF_RELOAD_ON_KILL) != 0;
     server_info.super_drain = (pkt.af_flags & af_server_info_flags::SIF_SUPER_DRAIN) != 0;
+    server_info.jetpacks = (pkt.af_flags & af_server_info_flags::SIF_JETPACKS) != 0;
+    server_info.low_gravity = (pkt.af_flags & af_server_info_flags::SIF_LOW_GRAVITY) != 0;
+    server_info.skiing = (pkt.af_flags & af_server_info_flags::SIF_SKIING) != 0;
+    server_info.dodging = (pkt.af_flags & af_server_info_flags::SIF_DODGING) != 0;
+    server_info.pogo = (pkt.af_flags & af_server_info_flags::SIF_POGO) != 0;
 }
 
 // Apply af_server_info_packet flags to the local server info (for listen server host)
@@ -3148,6 +3609,7 @@ static void af_process_server_info_packet(const void* data, size_t len, const rf
     else {
         switch (game_type) {
             case rf::NetGameType::NG_TYPE_CTF:
+            case rf::NetGameType::NG_TYPE_SAL:
                 rf::netgame.max_captures = static_cast<int>(pkt.win_condition);
                 break;
             case rf::NetGameType::NG_TYPE_KOTH:
@@ -3200,6 +3662,9 @@ static void af_process_server_info_packet(const void* data, size_t len, const rf
     mutators_set_no_clip_weapon((pkt.af_flags & af_server_info_flags::SIF_FEATURED_NO_CLIP)
                                     ? rf::rail_gun_weapon_type
                                     : -1);
+
+    // Same for gravity.
+    mutators_update_low_gravity();
 
     if ((pkt.af_flags & af_server_info_flags::SIF_SERVER_CFG_CHANGED) != 0) {
         g_remote_server_cfg_popup.set_cfg_changed();
@@ -3359,12 +3824,16 @@ void af_send_server_cfg(rf::Player* player) {
         return;
     }
 
-    if (g_alpine_server_config.printed_cfg.empty()) {
+    const int rules_generation = get_active_rules_generation();
+    if (g_alpine_server_config.printed_cfg.empty()
+        || g_alpine_server_config.printed_cfg_generation != rules_generation) {
+        g_alpine_server_config.printed_cfg.clear();
         print_alpine_dedicated_server_config_info(
             g_alpine_server_config.printed_cfg,
             true,
             true
         );
+        g_alpine_server_config.printed_cfg_generation = rules_generation;
     }
 
     const auto send_msg = [player] (const std::string_view msg) {
@@ -3581,14 +4050,31 @@ void af_send_server_console_msg(const std::string_view msg, rf::Player* player, 
         return;
     }
 
-    const af_server_msg_packet_buf buf = build_server_console_msg_packet(msg);
+    constexpr size_t max_len = rf::max_packet_size - sizeof(af_server_msg_packet);
+    std::string_view remaining = msg;
+    do {
+        std::string_view chunk = remaining;
+        if (chunk.size() > max_len) {
+            chunk = chunk.substr(0, max_len);
+            // split after the last complete line when possible
+            if (const size_t nl = chunk.rfind('\n'); nl != std::string_view::npos) {
+                chunk = chunk.substr(0, nl + 1);
+            }
+        }
+        remaining.remove_prefix(chunk.size());
 
-    rf::multi_io_send_reliable(
-        player,
-        &buf.packet,
-        buf.packet.header.size + sizeof(buf.packet.header),
-        0
-    );
+        if (chunk.ends_with('\n')) {
+            chunk.remove_suffix(1); // client console starts a new line per packet
+        }
+
+        const af_server_msg_packet_buf buf = build_server_console_msg_packet(chunk);
+        rf::multi_io_send_reliable(
+            player,
+            &buf.packet,
+            buf.packet.header.size + sizeof(buf.packet.header),
+            0
+        );
+    } while (!remaining.empty());
 }
 
 void af_send_automated_chat_msg(const std::string_view msg, rf::Player* player, bool tell_server) {

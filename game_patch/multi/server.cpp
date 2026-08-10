@@ -24,6 +24,7 @@
 #include "sprays.h"
 #include "kill_attribution.h"
 #include "multi.h"
+#include "network.h"
 #include "gametype.h"
 #include "mutators.h"
 #include "bagman.h"
@@ -31,6 +32,7 @@
 #include "pit.h"
 #include "wipeout.h"
 #include "gungame.h"
+#include "salvage.h"
 #include "../os/console.h"
 #include "../hud/hud.h"
 #include "../misc/player.h"
@@ -45,6 +47,7 @@
 #include "../rf/math/matrix.h"
 #include "../rf/player/player.h"
 #include "../rf/os/frametime.h"
+#include "../object/object.h"
 #include "../rf/item.h"
 #include "../rf/gameseq.h"
 #include "../rf/misc.h"
@@ -194,6 +197,23 @@ void set_manual_rules_override(ManualRulesOverride override_rules)
 void clear_manual_rules_override()
 {
     g_manual_rules_override.reset();
+}
+
+static std::optional<PendingRotationPreserve> g_pending_rotation_preserve;
+
+void set_pending_rotation_preserve(PendingRotationPreserve pending)
+{
+    g_pending_rotation_preserve = std::move(pending);
+}
+
+void clear_pending_rotation_preserve()
+{
+    g_pending_rotation_preserve.reset();
+}
+
+const std::optional<PendingRotationPreserve>& get_pending_rotation_preserve()
+{
+    return g_pending_rotation_preserve;
 }
 
 bool is_rcon_command_masterlisted(std::string_view command)
@@ -615,12 +635,18 @@ void handle_whosready_command(rf::Player* player)
 
 static void handle_drop_flag_request(rf::Player* player)
 {
-    if (rf::multi_get_game_type() != rf::NG_TYPE_CTF) {
-        return; // can't drop flags unless in CTF
+    const bool is_salvage = gt_is_salvage();
+    if (rf::multi_get_game_type() != rf::NG_TYPE_CTF && !is_salvage) {
+        return; // can't drop flags unless in CTF or SAL
     }
 
     if (!g_alpine_server_config_active_rules.flag_dropping) {
         af_send_automated_chat_msg("This server has disabled flag dropping.", player);
+        return;
+    }
+
+    if (is_salvage) {
+        salvage_handle_drop_flag_request(player);
         return;
     }
 
@@ -832,6 +858,10 @@ std::optional<rf::NetGameType> resolve_gametype_from_name(std::string_view gamet
         string_iequals(gametype_name, "gungame")) {
         return rf::NetGameType::NG_TYPE_GG;
     }
+    if (string_iequals(gametype_name, "sal") ||
+        string_iequals(gametype_name, "salvage")) {
+        return rf::NetGameType::NG_TYPE_SAL;
+    }
 
     return std::nullopt;
 }
@@ -961,6 +991,7 @@ static void print_alpine_restrict_status_summary()
     rf::console::print("  Require stable AF build: {}", enforce_release ? "yes" : "no");
     rf::console::print("  Require D3D11: {}", require_d3d11 ? "yes" : "no");
 
+    const uint32_t alpine_v140_max_rfl = 305u;
     const uint32_t alpine_v130_max_rfl = 304u;
     const uint32_t alpine_v122_max_rfl = 303u;
     const uint32_t alpine_v120_max_rfl = 302u;
@@ -973,11 +1004,12 @@ static void print_alpine_restrict_status_summary()
     };
 
     rf::console::print("Common test cases:");
-    rf::console::print("{}", describe_client("Alpine Faction 1.3.0 (D3D11)", ClientVersionInfoProfile{ClientSoftware::AlpineFaction, 1u, 3u, 0u, VERSION_TYPE_RELEASE, alpine_v130_max_rfl, true}));
-    rf::console::print("{}", describe_client("Alpine Faction 1.3.0 (D3D8)", ClientVersionInfoProfile{ClientSoftware::AlpineFaction, 1u, 3u, 0u, VERSION_TYPE_RELEASE, alpine_v130_max_rfl}));
+    rf::console::print("{}", describe_client("Alpine Faction 1.4.0 (D3D11)", ClientVersionInfoProfile{ClientSoftware::AlpineFaction, 1u, 4u, 0u, VERSION_TYPE_RELEASE, alpine_v140_max_rfl, true}));
+    rf::console::print("{}", describe_client("Alpine Faction 1.4.0 (D3D8)", ClientVersionInfoProfile{ClientSoftware::AlpineFaction, 1u, 4u, 0u, VERSION_TYPE_RELEASE, alpine_v140_max_rfl}));
+    rf::console::print("{}", describe_client("Alpine Faction 1.4.0-dev", ClientVersionInfoProfile{ClientSoftware::AlpineFaction, 1u, 4u, 0u, VERSION_TYPE_DEV, alpine_v140_max_rfl}));
+    rf::console::print("{}", describe_client("Alpine Faction 1.3.0", ClientVersionInfoProfile{ClientSoftware::AlpineFaction, 1u, 3u, 0u, VERSION_TYPE_RELEASE, alpine_v130_max_rfl}));
     rf::console::print("{}", describe_client("Alpine Faction 1.2.2", ClientVersionInfoProfile{ClientSoftware::AlpineFaction, 1u, 2u, 2u, VERSION_TYPE_RELEASE, alpine_v122_max_rfl}));
     rf::console::print("{}", describe_client("Alpine Faction 1.2.0", ClientVersionInfoProfile{ClientSoftware::AlpineFaction, 1u, 2u, 0u, VERSION_TYPE_RELEASE, alpine_v120_max_rfl}));
-    rf::console::print("{}", describe_client("Alpine Faction 1.2.0-dev", ClientVersionInfoProfile{ClientSoftware::AlpineFaction, 1u, 2u, 0u, VERSION_TYPE_DEV, alpine_v120_max_rfl}));
     rf::console::print("{}", describe_client("Alpine Faction 1.1.0", ClientVersionInfoProfile{ClientSoftware::AlpineFaction, 1u, 1u, 0u, VERSION_TYPE_RELEASE, alpine_v110_max_rfl}));
     rf::console::print("{}", describe_client("Dash Faction 1.9", ClientVersionInfoProfile{ClientSoftware::DashFaction, 1u, 9u, 0u, VERSION_TYPE_RELEASE, legacy_max_rfl}));
     rf::console::print("{}", describe_client("Pure Faction 3.0", ClientVersionInfoProfile{ClientSoftware::PureFaction, 3u, 0u, 0u, VERSION_TYPE_RELEASE, legacy_max_rfl}));
@@ -1099,9 +1131,8 @@ bool handle_server_chat_command(std::string_view server_command, rf::Player* sen
         );
     }
     else if (cmd_name == "vote") {
-        // Only used by old clients casting a vote. Anything else under `vote` moved
-        // to packets in 1.4, so it falls through as unrecognized like any other.
-        return handle_vote_command(strip_by_space(cmd_arg).first, sender);
+        // Only used by old clients casting a vote.
+        return handle_vote_command(cmd_arg, sender);
     }
     else if (cmd_name == "nextmap" || cmd_name == "nextlevel") {
         handle_next_map_command(sender);
@@ -1296,13 +1327,13 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
         bool did_gib = false;
         if (damaged_ep) {
             if (!rf::is_multi) { // SP gibbing
-                if (damaged_ep->life < -100.0f &&               // very dead
-                    damage_type == 3 &&                         // explosive
-                    damaged_ep->material == 3 &&                // flesh
-                    !(damaged_ep->entity_flags & 0x2000000) &&  // custom_corpse (used by snakes and sea creature)
-                    !(damaged_ep->entity_flags & 0x1) &&        // dying
-                    !(damaged_ep->entity_flags & 0x1000) &&     // in_water
-                    !(damaged_ep->entity_flags & 0x2000))       // eye_under_water
+                if (damaged_ep->life < -100.0f &&                          // very dead
+                    damage_type == 3 &&                                    // explosive
+                    damaged_ep->material == 3 &&                           // flesh
+                    !(damaged_ep->entity_flags & rf::EF_CUSTOM_CORPSE) &&  // used by snakes and sea creature
+                    !(damaged_ep->entity_flags & rf::EF_DYING) &&
+                    !(damaged_ep->entity_flags & rf::EF_IN_WATER) &&
+                    !(damaged_ep->entity_flags & rf::EF_EYE_UNDER_WATER))
                 {
                     entity_set_gib_flag(damaged_ep);
                 }
@@ -1313,13 +1344,19 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
                     damage > gibbing.damage_threshold &&            // big damage (default 100.0)
                     (gibbing.all_damage || damage_type == 3) &&     // explosive
                     damaged_ep->material == 3 &&                    // flesh
-                    !(damaged_ep->entity_flags & 0x1))              // dying
+                    !(damaged_ep->entity_flags & rf::EF_DYING))
                 {
                     entity_set_gib_flag(damaged_ep);
                     af_send_should_gib_req(static_cast<uint32_t>(damaged_ep->handle));
                     did_gib = true;
                 }
             }
+        }
+
+        // Flaming Enemies mutator: a big enough explosive hit or any melee hit puts a
+        // burning player's fire out. Any damage source counts, including their own rockets.
+        if (rf::is_multi && rf::is_server && damaged_player && real_damage > 0.0f) {
+            mutators_on_flame_victim_damage(damaged_player, damage_type, damage);
         }
 
         bool is_dead = damaged_ep ? damaged_ep->life <= 0.0f : true;
@@ -1415,6 +1452,9 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
 
             // Vampire mutator
             mutators_on_pvp_damage(killer_player, damaged_player, effective_damage);
+
+            // Flaming Enemies mutator: flamethrower fire damage may grant or refresh a burn
+            mutators_on_flame_damage(killer_player, damaged_player, damage_type, real_damage);
 
             if (g_alpine_server_config.damage_notification_config.enabled && damaged_player && killer_player) {
                 if (!(!damaged_ep || rf::entity_is_dying(damaged_ep) || rf::player_is_dead(damaged_player))) {
@@ -1522,7 +1562,7 @@ CallHook<void(rf::Player*, int, int)> give_default_weapon_ammo_hook{
             ammo = rf::weapon_types[weapon_type].max_ammo;
         }
         // if not using loadouts, this adjusts spawn weapon reserve ammo to match our clip config
-        else if (rf::is_server && !g_alpine_server_config_active_rules.spawn_loadout.loadouts_active
+        else if (rf::is_server && !g_alpine_server_config_active_rules.spawn_loadout_is_active()
                  && g_alpine_server_config_active_rules.default_player_weapon.index >= 0) {
             ammo = rf::weapon_types[g_alpine_server_config_active_rules.default_player_weapon.index].clip_size_multi *
                    g_alpine_server_config_active_rules.default_player_weapon.num_clips;
@@ -1536,7 +1576,7 @@ CallHook<void(rf::Player*, int, int)> give_default_weapon_ammo_hook{
 FunHook<bool (const char*, int)> multi_is_level_matching_game_type_hook{
     0x00445050,
     [](const char *filename, int ng_type) {
-        if (ng_type == rf::NetGameType::NG_TYPE_CTF) {
+        if (ng_type == rf::NetGameType::NG_TYPE_CTF || ng_type == rf::NetGameType::NG_TYPE_SAL) {
             return string_istarts_with(filename, "ctf") || string_istarts_with(filename, "pctf");
         }
         else if (ng_type == rf::NetGameType::NG_TYPE_KOTH) {
@@ -1562,20 +1602,91 @@ FunHook<bool (const char*, int)> multi_is_level_matching_game_type_hook{
     },
 };
 
+// Mirrors player_add_weapon (0x004A4000), except the reserve ammo write is skipped for
+// weapons with no ammo type. That function indexes ai.ammo[ammo_type] unguarded, and the
+// Riot Shield's `$Ammo Type: ""` resolves to -1, which aliases AiInfo::current_secondary_weapon
+// and destroys its -1 "no secondary weapon" sentinel. Stock never hits this because it only
+// ever grants the spawn weapon through it; the engine's other two ammo writers both guard.
+void af_give_loadout_weapon(rf::Player* pp, int weapon_type, int reserve_ammo)
+{
+    if (!pp || weapon_type < 0 || weapon_type >= rf::num_weapon_types) {
+        return;
+    }
+    rf::AiInfo* ai = rf::player_get_ai(pp);
+    if (!ai) {
+        return;
+    }
+
+    const rf::WeaponInfo& wi = rf::weapon_types[weapon_type];
+    rf::ai_add_weapon(ai, weapon_type, -1);
+    if (wi.ammo_type >= 0 && wi.ammo_type < 32) {
+        // Clamped low as well as high: the reserve arrives from config or off the wire, and
+        // a negative one would stick until the player picked ammo up.
+        ai->ammo[wi.ammo_type] = std::clamp(reserve_ammo, 0, std::max(wi.max_ammo, 0));
+    }
+    ai->clip_ammo[weapon_type] = wi.clip_size;
+}
+
+// Stock reaches player_add_weapon for the spawn weapon too, so the guard has to live on the
+// function rather than only on our loadout call sites - `spawn_weapon = "riot shield"` with no
+// loadout entry took the stock path and reintroduced the phantom Remote Charge.
+FunHook<void(rf::Player*, int, int)> player_add_weapon_hook{
+    0x004A4000,
+    [](rf::Player* pp, int weapon_type, int ammo) {
+        if (weapon_type >= 0 && weapon_type < rf::num_weapon_types
+            && rf::weapon_types[weapon_type].ammo_type < 0) {
+            af_give_loadout_weapon(pp, weapon_type, ammo);
+            return;
+        }
+        player_add_weapon_hook.call_target(pp, weapon_type, ammo);
+    },
+};
+
+// red_weapons is everyone's loadout. A blue list is only consulted when one was actually
+// configured, so an operator who wants both teams alike states it once.
+const std::vector<WeaponLoadoutEntry>& spawn_loadout_for_player(rf::Player* pp)
+{
+    const auto& loadout = g_alpine_server_config_active_rules.spawn_loadout;
+    if (!loadout.blue_weapons.empty() && pp && pp->team == rf::TEAM_BLUE) {
+        return loadout.blue_weapons;
+    }
+    return loadout.red_weapons;
+}
+
+bool spawn_loadout_has_enabled_weapon(rf::Player* pp)
+{
+    const auto& list = spawn_loadout_for_player(pp);
+    return std::any_of(list.begin(), list.end(), [](auto const& e) { return e.enabled; });
+}
+
 // handle spawn loadouts (not legacy client compatible)
 CodeInjection player_create_entity_default_weapon_injection {
     0x004A43F6,
     [](auto& regs) {
+        rf::Player* player = regs.ebp;
         if (rf::is_server &&
-            g_alpine_server_config_active_rules.spawn_loadout.loadouts_active &&
-            !gt_is_gungame() // no loadouts when gungame is on
+            g_alpine_server_config_active_rules.spawn_loadout_is_active() &&
+            !gt_is_gungame() && // no loadouts when gungame is on
+            // Never take over the stock grant with nothing to hand out - that spawns
+            // the player with no weapons at all.
+            spawn_loadout_has_enabled_weapon(player)
             ) {
-            rf::Player* player = regs.ebp;
+            const int spawn_weapon = g_alpine_server_config_active_rules.default_player_weapon.index;
+            int last_granted = -1;
+            bool loadout_has_spawn_weapon = false;
 
-            for (auto const& e : g_alpine_server_config_active_rules.spawn_loadout.red_weapons) {
-                rf::player_add_weapon(player, e.index, e.reserve_ammo);
-                rf::player_set_default_primary(player, e.index);
+            for (auto const& e : spawn_loadout_for_player(player)) {
+                if (!e.enabled) {
+                    continue;
+                }
+                af_give_loadout_weapon(player, e.index, e.reserve_ammo);
+                loadout_has_spawn_weapon |= (e.index == spawn_weapon);
+                last_granted = e.index;
             }
+
+            // Spawn holding the configured spawn weapon, not whatever happens to sit last in
+            // the list.
+            rf::player_set_default_primary(player, loadout_has_spawn_weapon ? spawn_weapon : last_granted);
             regs.eip = 0x004A4481;
         }
     },
@@ -2288,6 +2399,32 @@ bool check_can_player_spawn(rf::Player* player)
     return false;
 }
 
+static void assign_player_to_team(rf::Player* player, rf::ubyte new_team)
+{
+    if (player->team == new_team) {
+        return;
+    }
+
+    player->team = new_team;
+
+    if (player->net_data) {
+        rf::multi_send_team_change_packet(nullptr, player->net_data->player_id, new_team);
+    }
+
+}
+
+bool humans_vs_bots_active()
+{
+    return rf::is_server && multi_is_team_game_type()
+        && g_alpine_server_config_active_rules.mutators.humans_vs_bots_enabled;
+}
+
+// Browsers are neither human nor bot, so they must never reach this.
+static rf::ubyte hvb_team_for_player(const rf::Player* player)
+{
+    return player->is_bot ? rf::TEAM_BLUE : rf::TEAM_RED;
+}
+
 FunHook<void(rf::Player*)> multi_spawn_player_server_side_hook{
     0x00480820,
     [](rf::Player* player) {
@@ -2306,6 +2443,10 @@ FunHook<void(rf::Player*)> multi_spawn_player_server_side_hook{
         }
         if (player->is_spectator) {
             return;
+        }
+        // Humans vs. Bots: correct a stray team before spawn point selection.
+        if (humans_vs_bots_active() && player->team != hvb_team_for_player(player)) {
+            assign_player_to_team(player, hvb_team_for_player(player));
         }
         if (!check_can_player_spawn(player)) {
             return;
@@ -2357,17 +2498,28 @@ FunHook<void(rf::Player*)> multi_spawn_player_server_side_hook{
                 if (gt_is_gungame()) {
                     gungame_on_player_spawn(player);
                 }
+                // Fresh entity, so any riot shield break suppression from the life
+                // that just ended can never apply to them again.
+                riot_shield_on_player_spawn(player);
             }
 
             // inform newly spawned players of their loadout
             if (rf::is_server
-                && (g_alpine_server_config_active_rules.spawn_loadout.loadouts_active
+                && (g_alpine_server_config_active_rules.spawn_loadout_is_active()
                     // no loadouts when gungame is on
                     && !gt_is_gungame())
+                // Must match the spawn injection's condition: if it did not replace the
+                // stock grant, the client's own is correct and must not be reconciled away.
+                && spawn_loadout_has_enabled_weapon(player)
             ) {
+                const auto& loadout = spawn_loadout_for_player(player);
+
                 // Add each weapon in the loadout to the player on the server
-                for (auto const& e : g_alpine_server_config_active_rules.spawn_loadout.red_weapons) {
-                    rf::player_add_weapon(player, e.index, e.reserve_ammo);
+                for (auto const& e : loadout) {
+                    if (!e.enabled) {
+                        continue;
+                    }
+                    af_give_loadout_weapon(player, e.index, e.reserve_ammo);
 
                     // if remote charge, we also need to add the detonator
                     if (e.index == rf::remote_charge_weapon_type) {
@@ -2376,10 +2528,7 @@ FunHook<void(rf::Player*)> multi_spawn_player_server_side_hook{
                     }
                 }
 
-                af_send_just_spawned_loadout(
-                    player,
-                    g_alpine_server_config_active_rules.spawn_loadout.red_weapons
-                );
+                af_send_just_spawned_loadout(player, loadout);
             }
         }
 
@@ -2736,6 +2885,10 @@ static int pick_weaker_team()
         red_score = multi_koth_get_red_team_score();
         blue_score = multi_koth_get_blue_team_score();
         break;
+    case rf::NG_TYPE_SAL:
+        red_score = salvage_get_red_team_score();
+        blue_score = salvage_get_blue_team_score();
+        break;
     default:
         break;
     }
@@ -2758,22 +2911,32 @@ FunHook<int()> pick_team_for_new_player_hook{
         if (!multi_is_team_game_type()) {
             return static_cast<int>(rf::TEAM_RED);
         }
+        // Only reached from the join flow, after the join-req tail has been
+        // parsed, so the joining client's identity is still available.
+        if (humans_vs_bots_active()) {
+            switch (get_joining_client_kind()) {
+                case JoiningClientKind::Bot:
+                    return static_cast<int>(rf::TEAM_BLUE);
+                case JoiningClientKind::Human:
+                    return static_cast<int>(rf::TEAM_RED);
+                case JoiningClientKind::Browser:
+                    break; // not a participant; the normal pick applies
+            }
+        }
         return pick_weaker_team();
     },
 };
 
-static void assign_player_to_team(rf::Player* player, rf::ubyte new_team)
+// Humans vs. Bots replacement for balance_teams(): same participant exclusions,
+// but the split is fixed rather than score-based.
+static void hvb_sort_teams()
 {
-    if (player->team == new_team) {
-        return;
+    for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
+        if (player.is_browser || player.is_spectator) {
+            continue;
+        }
+        assign_player_to_team(&player, hvb_team_for_player(&player));
     }
-
-    player->team = new_team;
-
-    if (player->net_data) {
-        rf::multi_send_team_change_packet(nullptr, player->net_data->player_id, new_team);
-    }
-
 }
 
 static void balance_teams()
@@ -2853,9 +3016,14 @@ CodeInjection multi_balance_teams_injection{
     0x0048215D,
     [](auto& regs) {
         const rf::NetGameType current_game_type = rf::multi_get_game_type();
-        if (should_balance_teams(current_game_type)
-            && !g_match_info.pre_match_active && !g_match_info.match_active) {
-            balance_teams();
+        const bool balance = should_balance_teams(current_game_type);
+        if (!g_match_info.pre_match_active && !g_match_info.match_active) {
+            if (humans_vs_bots_active()) {
+                hvb_sort_teams();
+            }
+            else if (balance) {
+                balance_teams();
+            }
         }
         regs.eip = 0x004823ED; // always skip stock balance code
     },
@@ -3011,13 +3179,15 @@ static void auto_team_balance_do_frame()
     }
 
     // Bail (and clear any queued balance) when the feature is off, we're not in
-    // a team game, we're not in gameplay, or a match/pre-match is running. Teams
-    // are fixed during matches, so we don't touch them.
+    // a team game, we're not in gameplay, a match/pre-match is running, or
+    // Humans vs. Bots owns the team split. Teams are fixed during matches, so we
+    // don't touch them.
     if (!g_alpine_server_config_active_rules.auto_team_balance
         || !multi_is_team_game_type()
         || rf::gameseq_get_state() != rf::GS_GAMEPLAY
         || g_match_info.match_active
-        || g_match_info.pre_match_active) {
+        || g_match_info.pre_match_active
+        || humans_vs_bots_active()) {
         auto_team_balance_reset();
         return;
     }
@@ -3074,6 +3244,10 @@ void auto_team_balance_on_player_death(rf::Player* killed_player)
         return;
     }
     if (!multi_is_team_game_type()) {
+        return;
+    }
+    // Humans vs. Bots owns the team split.
+    if (humans_vs_bots_active()) {
         return;
     }
     // Teams are fixed during a match/pre-match — never move players then.
@@ -3133,6 +3307,10 @@ bool auto_team_balance_blocks_team_change(rf::Player* player, int requested_team
         return false;
     }
     if (!g_alpine_server_config_active_rules.auto_team_balance || !multi_is_team_game_type()) {
+        return false;
+    }
+    // Humans vs. Bots gates team changes on its own, with its own message.
+    if (humans_vs_bots_active()) {
         return false;
     }
     // Requesting the team they're already on is a no-op.
@@ -3287,6 +3465,30 @@ bool round_is_tied(rf::NetGameType game_type)
     case rf::NG_TYPE_TBAG: {
         return bagman_get_red_team_score() == bagman_get_blue_team_score();
     }
+    case rf::NG_TYPE_SAL: {
+        const int red_score = salvage_get_red_team_score();
+        const int blue_score = salvage_get_blue_team_score();
+
+        if (red_score == blue_score) {
+            return true;
+        }
+
+        if (g_alpine_server_config_active_rules.overtime.consider_tie_if_flag_stolen) {
+            if (salvage_get_state() != SalFlagState::Carried) {
+                return false;
+            }
+            const rf::Player* carrier = salvage_get_carrier();
+            if (!carrier) {
+                return false;
+            }
+            const bool carrier_is_red = carrier->team == rf::TEAM_RED;
+            return carrier_is_red ? (red_score == blue_score - 1)
+                                  : (blue_score == red_score - 1);
+        }
+        else {
+            return false;
+        }
+    }
     default: // other modes (e.g. RUN) can't be tied
         return false;
     }
@@ -3401,6 +3603,13 @@ FunHook<void()> multi_check_for_round_end_hook{
                 const int limit = g_alpine_server_config_active_rules.bagman.tbag_score_limit;
                 if (bagman_get_red_team_score() >= limit ||
                     bagman_get_blue_team_score() >= limit) {
+                    round_over = true;
+                }
+                break;
+            }
+            case rf::NG_TYPE_SAL: {
+                if (salvage_get_red_team_score() >= rf::multi_cap_limit ||
+                    salvage_get_blue_team_score() >= rf::multi_cap_limit) {
                     round_over = true;
                 }
                 break;
@@ -3737,13 +3946,22 @@ bool are_flags_initialized()
 // returns 1 if closer to red, 0 if closer to blue, nullopt if no flags or flags are the same position
 std::optional<int> is_closer_to_red_flag(const rf::Vector3* pos)
 {
-    if (!are_flags_initialized()) {
+    rf::Vector3 red_flag_pos, blue_flag_pos;
+
+    if (gt_is_salvage()) {
+        // Salvage removes the level's colored flags and repoints ctf_red_flag_pos at
+        // the neutral flag's spawn, so classify against the team bases instead.
+        if (!salvage_get_base_positions(&red_flag_pos, &blue_flag_pos)) {
+            return std::nullopt;
+        }
+    }
+    else if (!are_flags_initialized()) {
         return std::nullopt;
     }
-
-    rf::Vector3 red_flag_pos, blue_flag_pos;
-    rf::multi_ctf_get_red_flag_pos(&red_flag_pos);
-    rf::multi_ctf_get_blue_flag_pos(&blue_flag_pos);
+    else {
+        rf::multi_ctf_get_red_flag_pos(&red_flag_pos);
+        rf::multi_ctf_get_blue_flag_pos(&blue_flag_pos);
+    }
 
     if (red_flag_pos.x == blue_flag_pos.x &&
         red_flag_pos.y == blue_flag_pos.y &&
@@ -3989,6 +4207,7 @@ CodeInjection entity_maybe_die_patch{
         }
 
         bagman_on_entity_will_die(ep);
+        salvage_on_entity_will_die(ep);
         pit_on_entity_will_die(ep);
     },
 };
@@ -4104,6 +4323,7 @@ void server_init()
     // Default player weapon class and ammo override
     player_create_entity_find_default_weapon_injection.install();
     give_default_weapon_ammo_hook.install();
+    player_add_weapon_hook.install();
 
     init_server_commands();
 
@@ -4320,6 +4540,7 @@ void server_do_frame()
     pit_do_frame();
     wipeout_do_frame();
     gungame_do_frame();
+    salvage_do_frame();
     rounds_do_frame();
     auto_team_balance_do_frame();
     mutators_do_frame();
@@ -4481,7 +4702,7 @@ std::tuple<bool, int, bool, bool> server_features_require_alpine_client()
         min_minor_version = std::max(min_minor_version, 1);
     }
 
-    if (g_alpine_server_config_active_rules.spawn_loadout.loadouts_active) {
+    if (g_alpine_server_config_active_rules.spawn_loadout_is_active()) {
         requires_alpine = true;
         min_minor_version = std::max(min_minor_version, 2);
     }
@@ -4528,6 +4749,11 @@ std::tuple<bool, int, bool, bool> server_features_require_alpine_client()
 bool server_weapon_items_give_full_ammo()
 {
     return g_alpine_server_config_active_rules.weapon_items_give_full_ammo;
+}
+
+bool server_weapon_infinite_magazines()
+{
+    return g_alpine_server_config_active_rules.weapon_infinite_magazines;
 }
 
 const AlpineServerConfig& server_get_alpine_config()

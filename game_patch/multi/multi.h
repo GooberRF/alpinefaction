@@ -120,6 +120,11 @@ struct AlpineFactionServerInfo
     bool match_mode = false;
     bool reload_on_kill = false;
     bool super_drain = false;
+    bool jetpacks = false;
+    bool low_gravity = false;
+    bool skiing = false;
+    bool dodging = false;
+    bool pogo = false;
 };
 
 enum class AlpineRestrictVerdict : uint8_t

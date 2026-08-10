@@ -13,6 +13,7 @@
 #include "bot_waypoint_route.h"
 #include "../bagman.h"
 #include "../gametype.h"
+#include "../salvage.h"
 #include "../../rf/multi.h"
 #include "../../rf/player/player.h"
 #include "../../rf/trigger.h"
@@ -2185,21 +2186,21 @@ bool update_bagman_objective_goal(
     if (g_client_bot_state.active_goal == BotGoalType::bag_pickup) {
         const float goal_dist_sq = rf::vec_dist_squared(&local_entity.pos, &target_pos);
         rf::Vector3 los_target = target_pos;
-        los_target.z += 2.5f;
+        los_target.y += 2.5f;
         const bool direct_approach_allowed = bot_has_unobstructed_level_los(
             local_entity.eye_pos, los_target, nullptr, nullptr);
 
         constexpr float kBagDirectApproachRadius = kWaypointLinkRadius * 2.0f;
         constexpr float kBagAnchorProximityRadius = kWaypointReachRadius * 2.0f;
         // Hard-commit at close range regardless of LOS, using horizontal
-        // (xy) distance — bags can sit on small platforms or ledges so the
-        // bot's foot z often differs from the bag's z by 2-4u even when
+        // (xz) distance — bags can sit on small platforms or ledges so the
+        // bot's foot height often differs from the bag's by 2-4u even when
         // they're effectively "right there" in plan view.
-        const float dx = target_pos.x - local_entity.pos.x;
-        const float dy = target_pos.y - local_entity.pos.y;
-        const float xy_dist_sq = dx * dx + dy * dy;
-        constexpr float kBagHardCommitXyRadius = 6.0f;
-        if (xy_dist_sq <= kBagHardCommitXyRadius * kBagHardCommitXyRadius) {
+        const float horizontal_dist_sq = bot_horizontal_dist_sq(target_pos, local_entity.pos);
+        constexpr float kBagHardCommitHorizontalRadius = 6.0f;
+        constexpr float kBagHardCommitVerticalRadius = 4.0f;
+        if (horizontal_dist_sq <= kBagHardCommitHorizontalRadius * kBagHardCommitHorizontalRadius
+            && std::abs(target_pos.y - local_entity.pos.y) <= kBagHardCommitVerticalRadius) {
             bot_internal_clear_waypoint_route();
             move_target = target_pos;
             has_move_target = true;
@@ -2259,6 +2260,282 @@ bool update_bagman_objective_goal(
             g_client_bot_state.ctf_objective_route_fail_timer.set(5000);
         } else if (g_client_bot_state.ctf_objective_route_fail_timer.elapsed()) {
             return bot_goal_runtime_abort_bagman_goal();
+        }
+        if (bot_has_unobstructed_level_los(
+                local_entity.eye_pos, target_pos, nullptr, nullptr)) {
+            move_target = target_pos;
+            has_move_target = true;
+        }
+        return true;
+    }
+
+    g_client_bot_state.ctf_objective_route_fail_timer.invalidate();
+    move_target = g_client_bot_state.waypoint_target_pos;
+    has_move_target = true;
+    return true;
+}
+
+// Drive bot movement for salvage goals.
+bool update_salvage_objective_goal(
+    const rf::Entity& local_entity,
+    rf::Vector3& move_target,
+    bool& has_move_target)
+{
+    if (!gt_is_salvage() || !rf::local_player) {
+        return bot_goal_runtime_abort_salvage_goal();
+    }
+
+    rf::Vector3 target_pos{};
+    bool has_target = false;
+
+    switch (g_client_bot_state.active_goal) {
+        case BotGoalType::sal_seek_flag: {
+            // Flag must still be on the ground.
+            if (salvage_get_state() != SalFlagState::AtSpawn
+                && salvage_get_state() != SalFlagState::Dropped) {
+                return bot_goal_runtime_abort_salvage_goal();
+            }
+            int flag_wp = 0;
+            rf::Vector3 flag_wp_pos{};
+            const bool has_flag_waypoint =
+                waypoints_find_salvage_flag_waypoint(flag_wp, flag_wp_pos);
+            if (!salvage_get_client_flag_pos(&target_pos)) {
+                if (!has_flag_waypoint) {
+                    return bot_goal_runtime_abort_salvage_goal();
+                }
+                target_pos = flag_wp_pos;
+            }
+            if (has_flag_waypoint) {
+                g_client_bot_state.goal_target_waypoint = flag_wp;
+            }
+            has_target = true;
+            break;
+        }
+        case BotGoalType::sal_deliver_flag: {
+            // Must still be carrier.
+            if (salvage_get_state() != SalFlagState::Carried
+                || !salvage_player_is_carrier(rf::local_player)) {
+                return bot_goal_runtime_abort_salvage_goal();
+            }
+            if (!salvage_get_local_team_base_pos(&target_pos)) {
+                return bot_goal_runtime_abort_salvage_goal();
+            }
+            has_target = true;
+            break;
+        }
+        case BotGoalType::sal_chase_carrier: {
+            // Track the live carrier entity.
+            rf::Player* carrier = salvage_get_carrier();
+            if (salvage_get_state() != SalFlagState::Carried || !carrier) {
+                return bot_goal_runtime_abort_salvage_goal();
+            }
+            if (carrier == rf::local_player || carrier->team == rf::local_player->team) {
+                return bot_goal_runtime_abort_salvage_goal();
+            }
+            rf::Entity* carrier_ent = rf::entity_from_handle(carrier->entity_handle);
+            if (!carrier_ent || rf::entity_is_dying(carrier_ent)) {
+                return bot_goal_runtime_abort_salvage_goal();
+            }
+            target_pos = carrier_ent->pos;
+            g_client_bot_state.goal_target_handle = carrier_ent->handle;
+            g_client_bot_state.goal_target_identifier = carrier_ent->uid;
+            has_target = true;
+            break;
+        }
+        case BotGoalType::sal_stage_at_spawn: {
+            // Only meaningful while the spawn delay is running.
+            if (salvage_get_state() != SalFlagState::Delayed || !salvage_spawn_is_known()) {
+                return bot_goal_runtime_abort_salvage_goal();
+            }
+            target_pos = salvage_get_spawn_pos();
+            int stage_wp = 0;
+            rf::Vector3 stage_wp_pos{};
+            if (waypoints_find_salvage_flag_waypoint(stage_wp, stage_wp_pos)) {
+                g_client_bot_state.goal_target_waypoint = stage_wp;
+            }
+            has_target = true;
+            break;
+        }
+        default:
+            return false;
+    }
+
+    if (!has_target || target_pos.len_sq() <= 0.0001f) {
+        return bot_goal_runtime_abort_salvage_goal();
+    }
+
+    g_client_bot_state.goal_target_pos = target_pos;
+
+    // Snap the goal waypoint to the closest one near the target if we don't have one.
+    rf::Vector3 waypoint_pos{};
+    bool waypoint_valid =
+        g_client_bot_state.goal_target_waypoint > 0
+        && waypoints_get_pos(g_client_bot_state.goal_target_waypoint, waypoint_pos);
+    if (!waypoint_valid) {
+        const int snap_waypoint = bot_find_closest_waypoint_with_fallback(target_pos);
+        if (snap_waypoint > 0
+            && waypoints_get_pos(snap_waypoint, waypoint_pos)) {
+            g_client_bot_state.goal_target_waypoint = snap_waypoint;
+            waypoint_valid = true;
+        }
+    }
+    if (g_client_bot_state.active_goal == BotGoalType::sal_seek_flag) {
+        const float goal_dist_sq = rf::vec_dist_squared(&local_entity.pos, &target_pos);
+        rf::Vector3 los_target = target_pos;
+        los_target.y += 2.5f;
+        const bool direct_approach_allowed = bot_has_unobstructed_level_los(
+            local_entity.eye_pos, los_target, nullptr, nullptr);
+
+        constexpr float kSalvageDirectApproachRadius = kWaypointLinkRadius * 2.0f;
+        constexpr float kSalvageAnchorProximityRadius = kWaypointReachRadius * 2.0f;
+        // Hard-commit at close range regardless of LOS, using horizontal (xz)
+        // distance — the flag can sit on a small platform or ledge, so the
+        // bot's foot height often differs from the flag's by 2-4u even when
+        // they're effectively "right there" in plan view.
+        const float horizontal_dist_sq = bot_horizontal_dist_sq(target_pos, local_entity.pos);
+        constexpr float kSalvageHardCommitHorizontalRadius = 6.0f;
+        constexpr float kSalvageHardCommitVerticalRadius = 4.0f;
+        if (horizontal_dist_sq
+                <= kSalvageHardCommitHorizontalRadius * kSalvageHardCommitHorizontalRadius
+            && std::abs(target_pos.y - local_entity.pos.y)
+                <= kSalvageHardCommitVerticalRadius) {
+            bot_internal_clear_waypoint_route();
+            move_target = target_pos;
+            has_move_target = true;
+            return true;
+        }
+        if (goal_dist_sq <= kSalvageDirectApproachRadius * kSalvageDirectApproachRadius
+            && direct_approach_allowed) {
+            bot_internal_clear_waypoint_route();
+            move_target = target_pos;
+            has_move_target = true;
+            return true;
+        }
+        if (waypoint_valid) {
+            const float dist_to_anchor_sq = rf::vec_dist_squared(&local_entity.pos, &waypoint_pos);
+            if (dist_to_anchor_sq
+                    <= kSalvageAnchorProximityRadius * kSalvageAnchorProximityRadius
+                && direct_approach_allowed) {
+                bot_internal_clear_waypoint_route();
+                move_target = target_pos;
+                has_move_target = true;
+                return true;
+            }
+        }
+    }
+    else if (g_client_bot_state.active_goal == BotGoalType::sal_stage_at_spawn) {
+        // Generous "near mid" arrival: 3x the waypoint reach radius, i.e. anywhere in
+        // the general area of the spawn counts as arrived.
+        constexpr float kSalvageStageArrivalRadius = kWaypointReachRadius * 3.0f;
+        const float stage_dist_sq = rf::vec_dist_squared(&local_entity.pos, &target_pos);
+        if (stage_dist_sq <= kSalvageStageArrivalRadius * kSalvageStageArrivalRadius) {
+            bot_internal_clear_waypoint_route();
+            g_client_bot_state.ctf_objective_route_fail_timer.invalidate();
+
+            // bag_camp-style hold: latch the arrival spot once and keep it.
+            rf::Vector3& hold_pos = g_client_bot_state.salvage_stage_hold_pos;
+            const bool hold_valid =
+                hold_pos.len_sq() > 0.0001f
+                && rf::vec_dist_squared(&hold_pos, &local_entity.pos)
+                    <= kSalvageStageArrivalRadius * kSalvageStageArrivalRadius;
+            if (!hold_valid) {
+                hold_pos = local_entity.pos;
+            }
+
+            // Alternating lateral step around the latched spot, borrowed from the
+            // control-point single-anchor orbit.
+            if (!g_client_bot_state.salvage_stage_orbit_timer.valid()
+                || g_client_bot_state.salvage_stage_orbit_timer.elapsed()) {
+                g_client_bot_state.salvage_stage_orbit_left =
+                    !g_client_bot_state.salvage_stage_orbit_left;
+                g_client_bot_state.salvage_stage_orbit_timer.set(1100);
+            }
+            const rf::Vector3 lateral = forward_from_non_linear_yaw_pitch(
+                local_entity.control_data.phb.y
+                    + (g_client_bot_state.salvage_stage_orbit_left ? 1.57079632679f
+                                                                   : -1.57079632679f),
+                0.0f);
+            move_target = hold_pos + lateral * (kWaypointReachRadius * 0.75f);
+            has_move_target = true;
+            return true;
+        }
+    }
+    else if (g_client_bot_state.active_goal == BotGoalType::sal_deliver_flag) {
+        // Base anchor commit, mirroring the CTF capture approach: only run
+        // straight at the base once we have LOS to it.
+        const float goal_dist_sq = rf::vec_dist_squared(&local_entity.pos, &target_pos);
+        const bool direct_approach_allowed = bot_has_unobstructed_level_los(
+            local_entity.eye_pos, target_pos, nullptr, nullptr);
+        if (goal_dist_sq <= kWaypointLinkRadius * kWaypointLinkRadius && direct_approach_allowed) {
+            bot_internal_clear_waypoint_route();
+            move_target = target_pos;
+            has_move_target = true;
+            return true;
+        }
+        if (waypoint_valid) {
+            constexpr float kSalvageFinalApproachWaypointProximity = kWaypointReachRadius * 1.2f;
+            const float dist_to_anchor_sq = rf::vec_dist_squared(&local_entity.pos, &waypoint_pos);
+            if (dist_to_anchor_sq
+                <= kSalvageFinalApproachWaypointProximity * kSalvageFinalApproachWaypointProximity) {
+                if (direct_approach_allowed) {
+                    // Once we reach the anchor waypoint near the base, commit to
+                    // running directly over it to score.
+                    bot_internal_clear_waypoint_route();
+                    move_target = target_pos;
+                    has_move_target = true;
+                    return true;
+                }
+                // No LOS to the base: re-route to a waypoint closer to it rather
+                // than walking through walls.
+                g_client_bot_state.goal_target_waypoint =
+                    bot_find_closest_waypoint_with_fallback(target_pos);
+                waypoint_valid =
+                    g_client_bot_state.goal_target_waypoint > 0
+                    && waypoints_get_pos(g_client_bot_state.goal_target_waypoint, waypoint_pos);
+            }
+        }
+    }
+
+    const rf::Vector3 routing_destination =
+        waypoint_valid ? waypoint_pos : target_pos;
+
+    bool routed = bot_internal_update_waypoint_target_towards(
+        local_entity,
+        routing_destination,
+        nullptr,
+        nullptr,
+        scale_repath_ms(kItemRouteRepathMs));
+    if (!routed && waypoint_valid) {
+        // Try routing to the live target pos in case the waypoint anchor is isolated.
+        routed = bot_internal_update_waypoint_target_towards(
+            local_entity,
+            target_pos,
+            nullptr,
+            nullptr,
+            scale_repath_ms(kItemRouteRepathMs));
+    }
+    if (!routed) {
+        bot_internal_start_recovery_anchor_reroute(
+            local_entity, g_client_bot_state.goal_target_waypoint);
+        routed = bot_internal_update_waypoint_target_towards(
+            local_entity,
+            routing_destination,
+            nullptr,
+            nullptr,
+            scale_repath_ms(kWaypointRecoveryRepathMs, true));
+    }
+    if (!routed) {
+        // Persistent failure: time-box and abort after a window.
+        if (!g_client_bot_state.ctf_objective_route_fail_timer.valid()) {
+            g_client_bot_state.ctf_objective_route_fail_timer.set(5000);
+        } else if (g_client_bot_state.ctf_objective_route_fail_timer.elapsed()) {
+            if (g_client_bot_state.active_goal == BotGoalType::sal_stage_at_spawn
+                && ++g_client_bot_state.salvage_stage_route_fails
+                       >= kSalvageStageMaxRouteFails) {
+                // The flag home is unroutable on this map.
+                g_client_bot_state.salvage_stage_given_up = true;
+            }
+            return bot_goal_runtime_abort_salvage_goal();
         }
         if (bot_has_unobstructed_level_los(
                 local_entity.eye_pos, target_pos, nullptr, nullptr)) {
@@ -2612,6 +2889,8 @@ void bot_update_move_target(
         case BotFsmState::ctf_objective:
             if (bot_goal_is_bagman_objective(g_client_bot_state.active_goal)) {
                 update_bagman_objective_goal(local_entity, move_target, has_move_target);
+            } else if (bot_goal_is_salvage_objective(g_client_bot_state.active_goal)) {
+                update_salvage_objective_goal(local_entity, move_target, has_move_target);
             } else {
                 update_ctf_objective_goal(local_entity, move_target, has_move_target);
             }

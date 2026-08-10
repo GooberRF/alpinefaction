@@ -14,4 +14,5 @@ namespace gr::d3d11 {
     bool is_antialiasing_err();
     bool supports_sample_count(uint32_t sample_count);
     void flush_frame_buffers();
+    void flush_outlines_before_fpgun();
 }

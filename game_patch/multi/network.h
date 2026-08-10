@@ -192,6 +192,11 @@ struct AlpineFactionJoinAcceptPacketExt
         featured_no_clip    = 1u << 19,
         reload_on_kill      = 1u << 20,
         super_drain         = 1u << 21,
+        jetpacks            = 1u << 22,
+        low_gravity         = 1u << 23,
+        skiing              = 1u << 24,
+        pogo                = 1u << 25,
+        dodging             = 1u << 26,
     } flags = Flags::none;
 
     float max_fov = 0.0f;
@@ -272,6 +277,18 @@ struct AFGameInfoExtra
     // Server's reported game_type was >= RF_GT_UNK, used to block joins.
     bool unknown_game_type = false;
 };
+
+enum class JoiningClientKind
+{
+    Human,
+    Bot,
+    Browser,
+};
+
+// Identity of the client whose join request is currently being processed,
+// derived from the parsed join-req tail. Only meaningful during
+// process_join_req_packet (the globals are reset afterwards).
+JoiningClientKind get_joining_client_kind();
 
 // Look up AF extra data for a server by address. Returns nullptr if not found.
 const AFGameInfoExtra* get_server_browser_extra(const rf::NetAddr& addr);

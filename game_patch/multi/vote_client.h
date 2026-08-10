@@ -15,6 +15,9 @@ struct VoteGametypeInfo
     uint8_t id = 0; // rf::NetGameType
     bool is_team_type = false;
     std::string name;
+    // This game type's score limit on the server, used to default the Score Limit
+    // Override mutator as the panel's game type cycler moves.
+    int32_t score_limit = 0;
 };
 
 struct VoteMutatorOptionSchema
@@ -39,6 +42,7 @@ struct VoteMutatorSchema
     uint8_t id = 0;
     std::string name;  // canonical, keys the client-local description table
     std::string label; // UI text
+    uint32_t valid_gametype_mask = MUTATOR_GAMETYPE_MASK_ANY;
     std::vector<VoteMutatorOptionSchema> options;
 };
 
@@ -92,6 +96,7 @@ struct VoteOptionsData
     // false the mask is still populated and a client may offer it as an opt-in
     // filter, but off-prefix votes are accepted.
     bool gametype_prefix_restricted = false;
+    bool rotation_preserve_supported = false;
     std::vector<VoteGametypeInfo> gametypes;
     std::vector<VoteMutatorSchema> mutators;
     std::vector<VoteLevelInfo> levels; // rotation order, then vote-allowed extras

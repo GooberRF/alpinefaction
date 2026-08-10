@@ -446,7 +446,8 @@ ObjectiveProgressWatchdogAction update_objective_progress_watchdog(
     const bool combat_lock_expired)
 {
     if (g_client_bot_state.active_goal == BotGoalType::none
-        || g_client_bot_state.active_goal == BotGoalType::eliminate_target) {
+        || g_client_bot_state.active_goal == BotGoalType::eliminate_target
+        || g_client_bot_state.active_goal == BotGoalType::sal_stage_at_spawn) {
         reset_objective_progress_watchdog(true);
         return ObjectiveProgressWatchdogAction::none;
     }
@@ -2155,6 +2156,8 @@ const char* waypoint_type_to_string(const WaypointType type)
             return "tele_exit";
         case WaypointType::water:
             return "water";
+        case WaypointType::salvage_flag:
+            return "salvage_flag";
         default:
             return "unknown";
     }
@@ -2191,6 +2194,8 @@ rf::Color waypoint_debug_color(const WaypointType type)
             return {255, 80, 220, 150};
         case WaypointType::water:
             return {60, 140, 255, 150};
+        case WaypointType::salvage_flag:
+            return {255, 235, 120, 150};
         default:
             return {200, 200, 200, 150};
     }
@@ -2829,6 +2834,11 @@ void client_bot_do_frame()
         g_client_bot_state.control_point_route_fail_timer.invalidate();
         g_client_bot_state.control_point_patrol_waypoint = 0;
         g_client_bot_state.control_point_patrol_timer.invalidate();
+        g_client_bot_state.salvage_stage_hold_pos = {};
+        g_client_bot_state.salvage_stage_orbit_timer.invalidate();
+        g_client_bot_state.salvage_stage_orbit_left = false;
+        g_client_bot_state.salvage_stage_route_fails = 0;
+        g_client_bot_state.salvage_stage_given_up = false;
         g_client_bot_state.last_recorded_health = -1.0f;
         g_client_bot_state.last_recorded_armor = -1.0f;
         clear_semi_auto_click_state();
@@ -2873,6 +2883,11 @@ void client_bot_do_frame()
         g_client_bot_state.control_point_route_fail_timer.invalidate();
         g_client_bot_state.control_point_patrol_waypoint = 0;
         g_client_bot_state.control_point_patrol_timer.invalidate();
+        g_client_bot_state.salvage_stage_hold_pos = {};
+        g_client_bot_state.salvage_stage_orbit_timer.invalidate();
+        g_client_bot_state.salvage_stage_orbit_left = false;
+        g_client_bot_state.salvage_stage_route_fails = 0;
+        g_client_bot_state.salvage_stage_given_up = false;
         g_client_bot_state.last_recorded_health = -1.0f;
         g_client_bot_state.last_recorded_armor = -1.0f;
         g_client_bot_state.bridge.zone_uid = -1;
@@ -2954,6 +2969,11 @@ void client_bot_do_frame()
         g_client_bot_state.control_point_route_fail_timer.invalidate();
         g_client_bot_state.control_point_patrol_waypoint = 0;
         g_client_bot_state.control_point_patrol_timer.invalidate();
+        g_client_bot_state.salvage_stage_hold_pos = {};
+        g_client_bot_state.salvage_stage_orbit_timer.invalidate();
+        g_client_bot_state.salvage_stage_orbit_left = false;
+        g_client_bot_state.salvage_stage_route_fails = 0;
+        g_client_bot_state.salvage_stage_given_up = false;
         g_client_bot_state.last_recorded_health = -1.0f;
         g_client_bot_state.last_recorded_armor = -1.0f;
         g_client_bot_state.console_status_timer.invalidate();
