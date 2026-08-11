@@ -346,6 +346,7 @@ namespace rf
     static auto& num_multi_characters = addr_as_ref<int>(0x006C9C60);
     static auto& simultaneous_ping = addr_as_ref<uint32_t>(0x00599CD8);
     static auto& tracker_addr = addr_as_ref<NetAddr>(0x006FC550);
+    static auto& tracker_hostname = addr_as_ref<char[64]>(0x0059F4B4);
     static auto& rcon_password = addr_as_ref<char[20]>(0x0064ECD0);
 
     enum ChatSayType {
