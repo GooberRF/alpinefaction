@@ -13,9 +13,10 @@ FetchContent_Declare(
     DOWNLOAD_EXTRACT_TIMESTAMP FALSE
 )
 
-set(SDL_STATIC ON  CACHE BOOL "" FORCE)
-set(SDL_SHARED OFF CACHE BOOL "" FORCE)
-set(SDL_TEST   OFF CACHE BOOL "" FORCE)
+set(SDL_STATIC      ON  CACHE BOOL "" FORCE)
+set(SDL_SHARED      OFF CACHE BOOL "" FORCE)
+set(SDL_TEST        OFF CACHE BOOL "" FORCE)
+set(SDL_TEST_LIBRARY OFF CACHE BOOL "" FORCE)
 
 # Disable all subsystems except those required for gamepad/joystick input
 set(SDL_AUDIO        OFF CACHE BOOL "" FORCE)
@@ -29,3 +30,13 @@ set(SDL_TRAY         OFF CACHE BOOL "" FORCE)
 set(SDL_NOTIFICATION OFF CACHE BOOL "" FORCE)
 
 FetchContent_MakeAvailable(SDL3)
+# SDL3's  CMakeLists unconditionally adds /utf-8 (as MSVC-only generator), we're skipping it.
+if(MSVC AND TARGET SDL3-static)
+    get_target_property(_sdl3_compile_opts SDL3-static COMPILE_OPTIONS)
+    if(_sdl3_compile_opts)
+        list(REMOVE_ITEM _sdl3_compile_opts
+            "$<$<C_COMPILER_ID:MSVC>:/utf-8>"
+            "$<$<CXX_COMPILER_ID:MSVC>:/utf-8>")
+        set_target_properties(SDL3-static PROPERTIES COMPILE_OPTIONS "${_sdl3_compile_opts}")
+    endif()
+endif()
