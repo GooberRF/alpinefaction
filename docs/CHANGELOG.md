@@ -388,6 +388,10 @@ Version 1.3.0 (Bakeapple): Released Apr-22-2026
 - Fix Alt+Enter crash in Direct3D 11 renderer
 - Fix premature idle transition in first person weapon running animations
 
+### Imported libraries
+- [json](https://github.com/nlohmann/json) by Niels Lohmann
+- [stb_image](https://github.com/nothings/stb) by Sean Barrett
+
 Version 1.2.2 (Willow): Released Jan-04-2026
 --------------------------------
 ### Minor features, changes, and enhancements
