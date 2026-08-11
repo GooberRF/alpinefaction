@@ -60,11 +60,22 @@ static void tracker_dns_resolve_worker(std::string host, uint32_t current_ip)
 {
     uint32_t ip = 0;
     uint32_t ttl_s = 0;
-    bool found = false;
 
     PDNS_RECORDA records = nullptr;
     if (DnsQuery_A(host.c_str(), DNS_TYPE_A, DNS_QUERY_STANDARD, nullptr, &records, nullptr) == ERROR_SUCCESS) {
+        uint32_t first_ip = 0;
+        uint32_t first_ttl_s = 0;
+        uint32_t match_ip = 0;
+        uint32_t match_ttl_s = 0;
+        uint32_t cname_ttl_s = UINT32_MAX;
+
+        // Walk the whole list rather than stopping at a match: the alias and address records can be
+        // returned in any order, so an early exit could miss a CNAME that caps the refresh interval
         for (PDNS_RECORDA rec = records; rec; rec = rec->pNext) {
+            if (rec->wType == DNS_TYPE_CNAME) {
+                cname_ttl_s = std::min<uint32_t>(cname_ttl_s, rec->dwTtl);
+                continue;
+            }
             if (rec->wType != DNS_TYPE_A) {
                 continue;
             }
@@ -73,20 +84,25 @@ static void tracker_dns_resolve_worker(std::string host, uint32_t current_ip)
             if (rec_ip == 0) {
                 continue;
             }
-            if (!found) {
-                ip = rec_ip;
-                ttl_s = rec->dwTtl;
-                found = true;
+            if (first_ip == 0) {
+                first_ip = rec_ip;
+                first_ttl_s = rec->dwTtl;
             }
             // Resolvers rotate multi-A answers, and flapping the tracker address drops in-flight
             // replies (they are validated against it), so stay on the current one while it is offered
-            if (rec_ip == current_ip) {
-                ip = rec_ip;
-                ttl_s = rec->dwTtl;
-                break;
+            if (rec_ip == current_ip && match_ip == 0) {
+                match_ip = rec_ip;
+                match_ttl_s = rec->dwTtl;
             }
         }
         DnsRecordListFree(records, DnsFreeRecordList);
+
+        ip = match_ip != 0 ? match_ip : first_ip;
+        ttl_s = match_ip != 0 ? match_ttl_s : first_ttl_s;
+        // An aliased name expires with the shortest TTL in its chain, not with the address record
+        if (ip != 0) {
+            ttl_s = std::min(ttl_s, cname_ttl_s);
+        }
     }
 
     g_tracker_dns.result_ttl_s.store(ttl_s);
