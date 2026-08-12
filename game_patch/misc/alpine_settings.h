@@ -337,7 +337,7 @@ struct AlpineGameSettings
     }
 
     std::string multiplayer_tracker = "rfgt.factionfiles.com";
-    static constexpr size_t max_tracker_hostname_length = 200;
+    static constexpr size_t max_tracker_hostname_length = 63;
     void set_multiplayer_tracker(const std::string& tracker_hostname)
     {
         if (!tracker_hostname.empty() && tracker_hostname.length() <= max_tracker_hostname_length)

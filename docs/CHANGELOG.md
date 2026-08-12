@@ -109,6 +109,7 @@ Version 1.4.0 (Lupin): Not yet released
 - Add dedicated server config field `spawn_loadout_blue` to give the blue team its own spawn loadout, with `spawn_loadout` applying to every player when it is not specified
 - Indicate in the dedicated server config printout whether the spawn loadout is granted by the loadout or by the stock spawn weapons, and list the red and blue team loadouts separately when both are configured
 - Add Alpine Faction 1.4.0 clients to the `sv_restrict_status` common test cases
+- Respect DNS TTL for the multiplayer tracker hostname
 
 [@is-this-c](https://github.com/is-this-c)
 - Rewrite `VArray` to fix crashes due to MinGW
@@ -169,6 +170,7 @@ Version 1.4.0 (Lupin): Not yet released
 - Fix an unrecognized `weapon_name` in a `spawn_loadout` entry being silently ignored, which could leave players spawning with no weapons
 - Fix clients keeping weapons the server did not grant when a spawn loadout replaces the stock spawn weapons, which left unusable weapons in the weapon select menu
 - Fix `infinite_reloads` not filling reserve ammo on weapon pickup
+- Fix `MultiplayerTracker` values longer than 63 characters overflowing an internal game buffer
 
 [@is-this-c](https://github.com/is-this-c)
 - Clear cached server config output after a shuffle of a server's rotation
