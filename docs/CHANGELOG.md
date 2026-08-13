@@ -173,6 +173,7 @@ Version 1.4.0 (Lupin): Not yet released
 - Fix `infinite_reloads` not filling reserve ammo on weapon pickup
 - Fix `MultiplayerTracker` values longer than 63 characters overflowing an internal game buffer
 - Fix level editor crash on startup when many custom texture subdirectories exist under `user_maps\textures`
+- Fix level editor saving a collision mode on animated (`.vfx`) meshes, which do not support collision
 
 [@is-this-c](https://github.com/is-this-c)
 - Clear cached server config output after a shuffle of a server's rotation
