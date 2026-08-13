@@ -172,6 +172,7 @@ Version 1.4.0 (Lupin): Not yet released
 - Fix clients keeping weapons the server did not grant when a spawn loadout replaces the stock spawn weapons, which left unusable weapons in the weapon select menu
 - Fix `infinite_reloads` not filling reserve ammo on weapon pickup
 - Fix `MultiplayerTracker` values longer than 63 characters overflowing an internal game buffer
+- Fix level editor crash on startup when many custom texture subdirectories exist under `user_maps\textures`
 
 [@is-this-c](https://github.com/is-this-c)
 - Clear cached server config output after a shuffle of a server's rotation

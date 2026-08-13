@@ -191,6 +191,21 @@ CodeInjection config_save_skip_custom_subdirs{
     }
 };
 
+// FUN_0041b7c0 (startup default-texture folder group build) indexes the folder-name
+// VString array at manager+0x88 with each category's path_handle. Custom subdirectory
+// categories store a VFS path slot there instead, which reads out of bounds.
+// Inject at 0x0041b9fa (EAX = TextureCategory** array element) and jump to the loop
+// increment at 0x0041bad7 to skip them.
+CodeInjection folder_group_build_skip_custom_subdirs{
+    0x0041b9fa,
+    [](auto& regs) {
+        auto* cat = *reinterpret_cast<TextureCategory**>(static_cast<int>(regs.eax));
+        if (strncmp(cat->name.c_str(), "Custom - ", 9) == 0) {
+            regs.eip = 0x0041bad7;
+        }
+    }
+};
+
 // FUN_004452f0 (texture mode sidebar) uses a fixed path_handle from [dialog+0x98] for all
 // custom categories. This is the root "Custom" directory handle. For our subdirectory categories
 // ("Custom - <dir>"), we need to use the selected category's own path_handle instead.
@@ -753,6 +768,7 @@ void ApplyTexturesPatches() {
     vpp_clear_log_injection.install();
     vpp_mesh_files_injection.install();
     config_save_skip_custom_subdirs.install();
+    folder_group_build_skip_custom_subdirs.install();
     texture_refresh_all_iterate_custom_injection.install();
     texture_refresh_dedup_master_injection.install();
 }
