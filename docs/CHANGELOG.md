@@ -153,6 +153,12 @@ Version 1.4.0 (Lupin): Not yet released
 - Improve netfps consistency by making the effective object update send rate match the target netfps on both servers and clients, instead of falling short by a frame rate dependent amount
 - Skip server object update records that carry no new movement keyframe, so `sv_netfps` values above the client send rate no longer degrade interpolation smoothness with duplicate keyframes
 
+[@jyh9521](https://github.com/jyh9521)
+- Render text as UTF-8, so TrueType fonts can display non-Latin scripts
+  - Glyphs are rasterized on demand instead of up front, so a large character set does not cost hundreds of megabytes
+  - Line breaking and truncation happen on code point boundaries, including the usual CJK rules
+  - General purpose `.vf` bitmap fonts resolve to their TrueType equivalents
+
 ### Bug fixes
 [@GooberRF](https://github.com/GooberRF)
 - Fix team balance not properly randomizing the distribution order of equal-scoring human players
