@@ -89,7 +89,8 @@ static constexpr size_t V3D_MAX_BATCH_VERTICES = 5460;
 void meshes_init_paths();
 void reload_custom_meshes();
 
-// Find a mesh file (.v3m, .v3c, .vfx, .rfa) on disk by searching mesh directories.
+// Find a mesh file (.v3m, .v3c, .vfx, .rfa) on disk by searching mesh directories:
+// user_maps\meshes, red\meshes, and every subdirectory of either (any depth).
 // Returns the full absolute path, or empty string if not found.
 // Stock meshes only exist inside VPP archives and won't be found as loose files.
 std::string find_mesh_on_disk(const char* filename);
