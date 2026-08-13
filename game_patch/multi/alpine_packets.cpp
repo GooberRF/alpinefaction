@@ -1737,7 +1737,7 @@ void af_send_should_gib_req(uint32_t obj_handle)
 }
 
 // Flaming Enemies mutator: tell clients an entity caught fire or was extinguished.
-void af_send_entity_on_fire(uint32_t obj_handle, bool on)
+void af_send_entity_on_fire(uint32_t obj_handle, bool on, bool reliable)
 {
     if (!rf::is_server) {
         return;
@@ -1751,7 +1751,7 @@ void af_send_entity_on_fire(uint32_t obj_handle, bool on)
 
     for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
         if (is_player_minimum_af_client_version(&player, 1, 4, 0)) {
-            af_send_server_req_packet(packet, &player);
+            af_send_server_req_packet(packet, &player, reliable);
         }
     }
 }
