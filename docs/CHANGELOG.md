@@ -110,6 +110,7 @@ Version 1.4.0 (Lupin): Not yet released
 - Indicate in the dedicated server config printout whether the spawn loadout is granted by the loadout or by the stock spawn weapons, and list the red and blue team loadouts separately when both are configured
 - Add Alpine Faction 1.4.0 clients to the `sv_restrict_status` common test cases
 - Respect DNS TTL for the multiplayer tracker hostname
+- Load mesh files from subdirectories of `user_maps\meshes` and `red\meshes` in the level editor
 
 [@is-this-c](https://github.com/is-this-c)
 - Rewrite `VArray` to fix crashes due to MinGW

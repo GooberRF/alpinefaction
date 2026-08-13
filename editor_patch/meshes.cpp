@@ -3,6 +3,7 @@
 #include <string>
 #include <vector>
 #include <algorithm>
+#include <unordered_set>
 #include <windows.h>
 #include <xlog/xlog.h>
 #include <patch_common/MemUtils.h>
@@ -11,29 +12,132 @@
 
 // ─── VFS path management ───────────────────────────────────────────────────
 
-static int g_mesh_path_slots[2] = {-1, -1};
+static const char* const MESH_EXTENSIONS = ".v3m .v3c .vfx .rfa";
+static constexpr int MESH_SUBDIR_MAX_DEPTH = 8;
+
+// VFS slots returned by file_add_path, rescanned on reload
+static std::vector<int> g_mesh_path_slots;
+// Exe-relative directories (with trailing backslash) probed by find_mesh_on_disk, in priority order
+static std::vector<std::string> g_mesh_search_dirs;
+// Exe-relative directories (no trailing backslash) already passed to file_add_path.
+// file_add_path does not deduplicate: calling it again with an already registered path appends
+// the extension list to that slot's extensions instead of creating a new slot, growing it without
+// bound. Every path must therefore be registered exactly once.
+static std::unordered_set<std::string> g_registered_mesh_dirs;
+
+static std::string get_exe_dir()
+{
+    char exe_path[MAX_PATH];
+    DWORD len = GetModuleFileNameA(NULL, exe_path, MAX_PATH);
+    if (len == 0 || len >= MAX_PATH) return {};
+    char* last_sep = std::strrchr(exe_path, '\\');
+    if (!last_sep) return {};
+    *(last_sep + 1) = '\0';
+    return std::string{exe_path};
+}
+
+// Append every subdirectory of `rel_dir` (exe-relative, no trailing backslash) to `out` as
+// exe-relative paths without trailing backslash, recursing depth-first in sorted order.
+static void collect_subdirs_recursive(const std::string& exe_dir, const std::string& rel_dir, int depth, std::vector<std::string>& out)
+{
+    if (depth >= MESH_SUBDIR_MAX_DEPTH) return;
+
+    std::string search_pattern = exe_dir + rel_dir + "\\*";
+    WIN32_FIND_DATAA find_data;
+    HANDLE find_handle = FindFirstFileA(search_pattern.c_str(), &find_data);
+    if (find_handle == INVALID_HANDLE_VALUE) return;
+
+    std::vector<std::string> names;
+    do {
+        if (!(find_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
+            continue;
+        }
+        // Reparse points can form cycles that would make this recursion unbounded
+        if (find_data.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) {
+            continue;
+        }
+        if (std::strcmp(find_data.cFileName, ".") == 0 || std::strcmp(find_data.cFileName, "..") == 0) {
+            continue;
+        }
+        names.emplace_back(find_data.cFileName);
+    } while (FindNextFileA(find_handle, &find_data));
+    FindClose(find_handle);
+
+    // Sorted so registration order (and therefore VFS lookup order) is deterministic
+    std::sort(names.begin(), names.end());
+
+    for (const auto& name : names) {
+        std::string sub_rel = rel_dir + "\\" + name;
+        out.push_back(sub_rel);
+        collect_subdirs_recursive(exe_dir, sub_rel, depth + 1, out);
+    }
+}
+
+// Enumerate every subdirectory (any depth) of the exe-relative mesh root `root`
+static std::vector<std::string> enumerate_mesh_subdirs(const char* root)
+{
+    std::vector<std::string> subdirs;
+    std::string exe_dir = get_exe_dir();
+    if (exe_dir.empty()) return subdirs;
+    collect_subdirs_recursive(exe_dir, root, 0, subdirs);
+    return subdirs;
+}
+
+// Register `rel_dir` with the VFS unless it is already registered, recording it for reload.
+static void register_mesh_dir(const std::string& rel_dir)
+{
+    if (!g_registered_mesh_dirs.insert(rel_dir).second) return;
+
+    int slot = file_add_path(rel_dir.c_str(), MESH_EXTENSIONS, false);
+    if (slot >= 0) {
+        g_mesh_path_slots.push_back(slot);
+    }
+    else {
+        xlog::warn("Failed to register mesh path '{}' (VFS path table full)", rel_dir);
+    }
+}
 
 void meshes_init_paths()
 {
-    g_mesh_path_slots[0] = file_add_path("red\\meshes", ".v3m .v3c .vfx .rfa", false);
-    g_mesh_path_slots[1] = file_add_path("user_maps\\meshes", ".v3m .v3c .vfx .rfa", false);
+    register_mesh_dir("red\\meshes");
+    register_mesh_dir("user_maps\\meshes");
+
+    // user_maps\meshes is searched first so map-local meshes win over the stock tree
+    g_mesh_search_dirs.emplace_back("user_maps\\meshes\\");
+    g_mesh_search_dirs.emplace_back("red\\meshes\\");
+
+    // Both roots stay ahead of every subdirectory (a mesh sitting directly in a root is by far the
+    // common case), and within the subdirectories user_maps still wins over the stock tree
+    std::vector<std::string> subdirs = enumerate_mesh_subdirs("user_maps\\meshes");
+    std::vector<std::string> red_subdirs = enumerate_mesh_subdirs("red\\meshes");
+    subdirs.insert(subdirs.end(), red_subdirs.begin(), red_subdirs.end());
+
+    for (const auto& subdir : subdirs) {
+        register_mesh_dir(subdir);
+        g_mesh_search_dirs.push_back(subdir + "\\");
+    }
+
+    xlog::info("Registered {} mesh subdirectories under user_maps\\meshes and red\\meshes", subdirs.size());
 }
 
 void reload_custom_meshes()
 {
-    for (int slot : g_mesh_path_slots) {
-        if (slot >= 0) {
-            file_scan_path(slot);
+    // Pick up subdirectories created since init; already registered ones must be skipped
+    for (const char* root : {"user_maps\\meshes", "red\\meshes"}) {
+        for (const auto& subdir : enumerate_mesh_subdirs(root)) {
+            if (g_registered_mesh_dirs.count(subdir)) continue;
+            register_mesh_dir(subdir);
+            g_mesh_search_dirs.push_back(subdir + "\\");
+            xlog::info("Registered new mesh subdirectory '{}'", subdir);
         }
+    }
+
+    for (int slot : g_mesh_path_slots) {
+        file_scan_path(slot);
     }
 }
 
 // ─── Mesh file disk lookup ─────────────────────────────────────────────────
-
-static const char* mesh_search_dirs[] = {
-    "user_maps\\meshes\\",
-    "red\\meshes\\",
-};
 
 static bool has_mesh_extension(const char* filename)
 {
@@ -56,14 +160,11 @@ std::string find_mesh_on_disk(const char* filename)
     bare = bare ? bare + 1 : filename;
     if (!bare[0]) return {};
 
-    char exe_dir[MAX_PATH];
-    DWORD len = GetModuleFileNameA(NULL, exe_dir, MAX_PATH);
-    if (len == 0 || len >= MAX_PATH) return {};
-    char* last_sep = std::strrchr(exe_dir, '\\');
-    if (last_sep) *(last_sep + 1) = '\0';
+    std::string exe_dir = get_exe_dir();
+    if (exe_dir.empty()) return {};
 
-    for (const char* search_dir : mesh_search_dirs) {
-        std::string full_path = std::string(exe_dir) + search_dir + bare;
+    for (const auto& search_dir : g_mesh_search_dirs) {
+        std::string full_path = exe_dir + search_dir + bare;
         if (GetFileAttributesA(full_path.c_str()) != INVALID_FILE_ATTRIBUTES) {
             return full_path;
         }
