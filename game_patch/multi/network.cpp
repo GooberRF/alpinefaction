@@ -64,6 +64,7 @@
 #include "../sound/sound.h"
 #include "../misc/tlv.h"
 #include "../fflink/afstats_client.h"
+#include "../fflink/afstats_events.h"
 #include "../fflink/fflink_session.h"
 
 // NET_IFINDEX_UNSPECIFIED is not defined in MinGW headers
@@ -791,6 +792,13 @@ FunHook<MultiIoPacketHandler> process_left_game_packet_hook{
                 build_local_player_spectators_strings();
             }
         }
+        else if (rf::Player* const player = rf::multi_find_player_by_id(data[0])) {
+            // A left_game packet means the client announced its own departure, so
+            // this is a quit rather than a timeout the server had to notice.
+            afstats::note_leave_reason(player, data[1] == RF_LeftReason::RF_LR_KICKED
+                ? afstats::LeaveReason::kicked
+                : afstats::LeaveReason::quit);
+        }
 
         process_left_game_packet_hook.call_target(data, addr);
     },
@@ -931,6 +939,15 @@ FunHook<MultiIoPacketHandler> process_name_change_packet_hook{
         // server-side and client-side
         verify_player_id_in_packet(&data[0], addr, "name_change");
         process_name_change_packet_hook.call_target(data, addr);
+
+        if (rf::is_server) {
+            // call_target applied the rename server-side (and rebroadcast it); read
+            // the finalized name back for the stats stream. data[0] is the player id,
+            // corrected by verify_player_id_in_packet above.
+            if (rf::Player* const player = rf::multi_find_player_by_id(data[0])) {
+                afstats::on_player_rename(player, player->name.c_str());
+            }
+        }
     },
 };
 
@@ -965,7 +982,16 @@ FunHook<MultiIoPacketHandler> process_team_change_packet_hook{
                 }
             }
         }
+        // The stock handler owns the write, and it no-ops on a same-team request, so
+        // the transition is only observable by comparing across the call.
+        rf::Player* const changing = rf::is_server ? rf::multi_find_player_by_id(data[0]) : nullptr;
+        const rf::ubyte team_before = changing ? changing->team : rf::ubyte{};
         process_team_change_packet_hook.call_target(data, addr);
+        if (changing && changing->team != team_before) {
+            afstats::on_status(changing, changing->team == rf::TEAM_BLUE
+                ? afstats::StatusKind::team_blue
+                : afstats::StatusKind::team_red);
+        }
     },
 };
 
@@ -1573,7 +1599,7 @@ CallHook<int(const rf::NetAddr*, std::byte*, size_t)> send_join_req_packet_hook{
                 show_unsupported_game_type_popup();
                 return 0;
             }
-            fflink::afstats_on_join_req(*addr, extra && (extra->af_flags & AF_GI_FLAG_STATS_ENABLED));
+            fflink::afstats_client_on_join_req(*addr, extra && (extra->af_flags & AF_GI_FLAG_STATS_ENABLED));
         }
 
         const bool session_client_bot_mode = client_bot_launch_enabled();
@@ -1766,7 +1792,7 @@ CallHook<int(const rf::NetAddr*, std::byte*, size_t)> send_join_accept_packet_ho
         // point at which they learn to run the stats key exchange.
         if (fflink::afstats_server_enabled()) {
             ext_data.flags |= AlpineFactionJoinAcceptPacketExt::Flags::stats_enabled;
-            xlog::warn("[afstats] advertising stats-enabled in join_accept");
+            xlog::debug("[afstats] advertising stats-enabled in join_accept");
         }
         // AF 1.3+ clients: use footer-based format for forward compatibility
         // Older clients: use legacy raw struct (they don't know about the footer)
@@ -1914,7 +1940,7 @@ CodeInjection process_join_accept_injection{
             server_info.pogo = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::pogo);
             // featured_no_clip is intentionally not stored here, it's consumed inline below via mutators_set_no_clip_weapon.
 
-            fflink::afstats_on_join_accept(
+            fflink::afstats_client_on_join_accept(
                 !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::stats_enabled));
 
             constexpr float default_fov = 90.0f;
@@ -2290,6 +2316,10 @@ FunHook<void(int, rf::NetAddr*)> process_join_req_packet_hook{
             if (g_dedicated_launched_from_ads) {
                 print_player_info(valid_player, true);
             }
+
+            // Last thing in the join: is_bot / is_browser / version_info are only
+            // correct now, and the anti-fake-bot path above already returned.
+            afstats::on_player_join(valid_player);
         }
     },
 };
@@ -2624,7 +2654,8 @@ FunHook<void()> multi_stop_hook{
         gungame_on_multi_shutdown(); // put the Jeep Gun mesh + damage back to weapons.tbl
         mutators_on_multi_shutdown(); // put the level's own gravity back
         riot_shield_on_multi_level_init(); // drop any pending riot shield break suppressions
-        fflink::afstats_reset(); // a stats session key is only ever valid for the join it was minted for
+        afstats::on_shutdown(); // best-effort final flush of the stats event stream
+        fflink::afstats_client_reset(); // a stats session key is only ever valid for the join it was minted for
         if (rf::local_player) {
             PlayerAdditionalData* const player_add_data =
                 static_cast<PlayerAdditionalData*>(rf::local_player);

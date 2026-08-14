@@ -1066,6 +1066,7 @@ extern bool g_manually_loaded_level;
 extern std::string g_ads_config_name;
 extern AFGameInfoFlags g_game_info_server_flags;
 extern std::string g_prev_level;
+extern bool g_is_overtime;
 extern MatchInfo g_match_info;
 
 enum class UpcomingGameTypeSelection {
@@ -1120,6 +1121,9 @@ void update_pre_match_powerups(rf::Player* player);
 void start_match();
 void cancel_match();
 void start_pre_match();
+// The afstats::MatchState value describing the ready-up match system right now,
+// as a raw uint8 so this header stays free of the stats API. Read at round_start.
+uint8_t af_match_state_for_stats();
 void set_ready_status(rf::Player* player, bool is_ready);
 void remove_ready_player_silent(rf::Player* player);
 void toggle_ready_status(rf::Player* player);

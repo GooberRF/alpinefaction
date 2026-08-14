@@ -176,6 +176,8 @@ set(SRCS
     multi/faction_files.h
     fflink/afstats_client.cpp
     fflink/afstats_client.h
+    fflink/afstats_events.cpp
+    fflink/afstats_events.h
     fflink/fflink.cpp
     fflink/fflink.h
     fflink/fflink_achievements.cpp

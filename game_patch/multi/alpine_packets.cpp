@@ -47,6 +47,8 @@
 #include "../misc/misc.h"
 #include "../purefaction/pf_packets.h"
 #include "../os/os.h"
+#include "../fflink/afstats_client.h"
+#include "../fflink/afstats_events.h"
 #include "../fflink/fflink_session.h"
 #include "../fflink/fflink_utils.h"
 
@@ -1651,11 +1653,29 @@ static void af_process_client_req_packet(const void* data, size_t len, const rf:
                 xlog::warn("[afstats] malformed PSSK from {}", player->name);
                 return;
             }
-            const bool replacing = player->afstats_pssk.has_value();
+            // First-write-wins, ahead of everything else: a PSSK is minted per join and
+            // delivered once, so a second key on the same connection has no legitimate
+            // meaning. Rejecting before the store closes the identity-rewrite hole on
+            // afstats_pssk the same way on_pssk_received closes it on afstats_key, and
+            // rejecting before the log means a client cannot drive log volume at all.
+            // Dropped silently on purpose: a resend is normal and must not warn.
+            if (player->afstats_pssk.has_value()) {
+                break;
+            }
+            // Floor the delivery rate so a client cannot flood the pre-store window.
+            // Dropped silently: no per-packet warn.
+            constexpr int64_t k_pssk_min_interval_ms = 1000;
+            const int64_t now_ms = timer::get_i64(1000);
+            if (player->last_pssk_ms && now_ms - *player->last_pssk_ms < k_pssk_min_interval_ms) {
+                return;
+            }
+            player->last_pssk_ms = now_ms;
             player->afstats_pssk = std::string{pssk};
-            // VERIFICATION PHASE ONLY: logs the session key verbatim, by explicit request.
-            xlog::warn("[afstats] received PSSK {} from {}{}", pssk, player->name,
-                       replacing ? " (replacing a previous one)" : "");
+            if constexpr (AFSTATS_VERIFICATION_LOGGING) {
+                // VERIFICATION PHASE ONLY: logs the session key verbatim, by explicit request.
+                xlog::warn("[afstats] received PSSK {} from {}", pssk, player->name);
+            }
+            afstats::on_pssk_received(player);
             break;
         }
         case af_client_req_type::af_req_vote_call: {
@@ -3382,27 +3402,12 @@ void af_reset_session_overrides_snapshot()
     g_session_overrides_snapshot.clear();
 }
 
-static void build_af_server_info_packet(af_server_info_packet& pkt)
+// The stable server-info AF flags, computed fresh from config/state with no side
+// effects. build_af_server_info_packet ORs in the transient SIF_SERVER_CFG_CHANGED
+// signal separately; the stats round_start snapshot reads this pure value so its
+// af_flags never lag the cached-packet static.
+uint32_t af_compute_server_info_flags()
 {
-    pkt = {};
-    pkt.header.type = static_cast<uint8_t>(af_packet_type::af_server_info);
-    pkt.header.size = static_cast<uint16_t>(sizeof(af_server_info_packet) - sizeof(RF_GamePacketHeader));
-
-    // build rf_flags
-    uint32_t rf32 = 0;
-    if (rf::netgame.flags & rf::NetGameFlags::NG_FLAG_WEAPON_STAY)
-        rf32 |= static_cast<uint32_t>(rf_server_info_flags::RFSIF_WEAPON_STAY);
-    if (rf::netgame.flags & rf::NetGameFlags::NG_FLAG_FORCE_RESPAWN)
-        rf32 |= static_cast<uint32_t>(rf_server_info_flags::RFSIF_FORCE_RESPAWN);
-    if (rf::netgame.flags & rf::NetGameFlags::NG_FLAG_TEAM_DAMAGE)
-        rf32 |= static_cast<uint32_t>(rf_server_info_flags::RFSIF_TEAM_DAMAGE);
-    if (rf::netgame.flags & rf::NetGameFlags::NG_FLAG_FALL_DAMAGE)
-        rf32 |= static_cast<uint32_t>(rf_server_info_flags::RFSIF_FALL_DAMAGE);
-    if (rf::netgame.flags & rf::NetGameFlags::NG_FLAG_BALANCE_TEAMS)
-        rf32 |= static_cast<uint32_t>(rf_server_info_flags::RFSIF_BALANCE_TEAMS);
-    pkt.rf_flags = static_cast<uint8_t>(rf32);
-
-    // build af_flags
     uint32_t af = 0;
     if (g_alpine_server_config_active_rules.saving_enabled)
         af |= af_server_info_flags::SIF_POSITION_SAVING;
@@ -3457,6 +3462,32 @@ static void build_af_server_info_packet(af_server_info_packet& pkt)
         af |= af_server_info_flags::SIF_DODGING;
     if (g_alpine_server_config_active_rules.mutators.pogo_enabled)
         af |= af_server_info_flags::SIF_POGO;
+    return af;
+}
+
+static void build_af_server_info_packet(af_server_info_packet& pkt)
+{
+    pkt = {};
+    pkt.header.type = static_cast<uint8_t>(af_packet_type::af_server_info);
+    pkt.header.size = static_cast<uint16_t>(sizeof(af_server_info_packet) - sizeof(RF_GamePacketHeader));
+
+    // build rf_flags
+    uint32_t rf32 = 0;
+    if (rf::netgame.flags & rf::NetGameFlags::NG_FLAG_WEAPON_STAY)
+        rf32 |= static_cast<uint32_t>(rf_server_info_flags::RFSIF_WEAPON_STAY);
+    if (rf::netgame.flags & rf::NetGameFlags::NG_FLAG_FORCE_RESPAWN)
+        rf32 |= static_cast<uint32_t>(rf_server_info_flags::RFSIF_FORCE_RESPAWN);
+    if (rf::netgame.flags & rf::NetGameFlags::NG_FLAG_TEAM_DAMAGE)
+        rf32 |= static_cast<uint32_t>(rf_server_info_flags::RFSIF_TEAM_DAMAGE);
+    if (rf::netgame.flags & rf::NetGameFlags::NG_FLAG_FALL_DAMAGE)
+        rf32 |= static_cast<uint32_t>(rf_server_info_flags::RFSIF_FALL_DAMAGE);
+    if (rf::netgame.flags & rf::NetGameFlags::NG_FLAG_BALANCE_TEAMS)
+        rf32 |= static_cast<uint32_t>(rf_server_info_flags::RFSIF_BALANCE_TEAMS);
+    pkt.rf_flags = static_cast<uint8_t>(rf32);
+
+    // build af_flags (stable bits factored out so the stats snapshot can compute
+    // them fresh without the SIF_SERVER_CFG_CHANGED side effect below)
+    uint32_t af = af_compute_server_info_flags();
     // Must stay immediately ahead of the signal_cfg_changed check below, which
     // consumes the flag this sets.
     {
@@ -3784,6 +3815,7 @@ void af_process_spectate_start_packet(
     }
 
     spectator->spectatee = then_some(in_spectate, new_target);
+    const bool was_spectator = spectator->is_spectator;
     if (!spectator->is_spectator && in_spectate) {
         spectator->spectate_start_time = std::chrono::steady_clock::now();
     }
@@ -3791,6 +3823,11 @@ void af_process_spectate_start_packet(
         spectator->spectate_start_time = std::nullopt;
     }
     spectator->is_spectator = in_spectate;
+    // Only the edge: a spectator retargeting sends this packet too.
+    if (was_spectator != in_spectate) {
+        afstats::on_status(spectator, in_spectate ? afstats::StatusKind::spec_start
+                                                  : afstats::StatusKind::spec_stop);
+    }
 }
 
 void af_send_spectate_notify_packet(

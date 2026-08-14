@@ -5,12 +5,15 @@
 #include <utility>
 #include <vector>
 #include <patch_common/FunHook.h>
+#include "../rf/clutter.h"
 #include "../rf/entity.h"
 #include "../rf/item.h"
 #include "../rf/math/vector.h"
 #include "../rf/multi.h"
+#include "../rf/object.h"
 #include "../rf/player/player.h"
 #include "../rf/weapon.h"
+#include "../fflink/afstats_events.h"
 #include "alpine_packets.h"
 #include "kill_attribution.h"
 
@@ -118,10 +121,33 @@ FunHook<float(int, float, int, int, int, rf::Vector3*, int, char)> obj_damage_ho
             g_damage_ctx = {};
         }
 
+        // Stats stream: snapshot whether this blow is about to kill a live
+        // clutter prop, so the alive->dead transition can be detected after the damage
+        // lands. obj_damage is the lethal-blow context that carries killer/weapon/damage
+        // type. Already-dead / delayed-delete clutter is excluded so a repeat blow on a
+        // corpse cannot emit a second time.
+        const rf::Object* const victim_before = rf::obj_from_handle(victim_handle);
+        // Local, not a static: obj_damage recurses (chained deaths), and a shared flag
+        // would be clobbered by the inner call before the outer one reads it.
+        const bool clutter_alive_before = victim_before && victim_before->type == rf::OT_CLUTTER
+            && !(victim_before->obj_flags & rf::OF_DELAYED_DELETE) && victim_before->life > 0.0f;
+
         const float real_damage = obj_damage_hook.call_target(victim_handle, damage, killer_handle,
                                                               weapon_type, damage_type, pos,
                                                               killer_uid, flags);
         g_damage_ctx = prev_ctx;
+
+        // Re-resolve rather than reusing the pre-call pointer: RF handles carry a
+        // generation, so a victim freed inside the damage call yields null here instead of
+        // a dangling read. That removes the whole lifetime assumption -- whether clutter
+        // death defers deletion or not, this can only ever touch a live object.
+        if (clutter_alive_before) {
+            rf::Object* const after = rf::obj_from_handle(victim_handle);
+            if (after && after->type == rf::OT_CLUTTER && after->life <= 0.0f) {
+                afstats::on_clutter_destroyed(static_cast<rf::Clutter*>(after), killer_handle,
+                                              weapon_type, damage_type);
+            }
+        }
         return real_damage;
     },
 };

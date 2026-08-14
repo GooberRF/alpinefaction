@@ -15,6 +15,7 @@
 #include "server.h"
 #include "server_internal.h"
 #include "alpine_packets.h"
+#include "../fflink/afstats_events.h"
 #include "../hud/hud.h"
 #include "../sound/sound.h"
 #include "../rf/multi.h"
@@ -151,9 +152,13 @@ void clear_spectator_fields(rf::Player* p)
     if (old_target && rf::is_server) {
         af_send_spectate_notify_packet(old_target, p, false);
     }
+    const bool was_spectator = p->is_spectator;
     p->is_spectator = false;
     p->spectatee = std::nullopt;
     p->spectate_start_time = std::nullopt;
+    if (was_spectator) {
+        afstats::on_status(p, afstats::StatusKind::spec_stop);
+    }
 }
 
 // Validate/fill both dueler slots. Slot 0 is the "champion seat" by convention
@@ -213,6 +218,10 @@ void pit_on_round_begin()
     }
 
     pit_broadcast_queue_states();
+
+    // A Pit duel is reported as a 1v1 match: it is the unit that has participants
+    // and a winner, which is what the match events describe.
+    afstats::on_match_start(1, {g_pit.dueler[0], g_pit.dueler[1]});
 
     // Match point: if either dueler is one duel win away from the score limit,
     // play the "one kill remaining" announcer cue for everyone in the server.
@@ -305,6 +314,10 @@ rf::Player* pit_resolve_timeout_winner()
 void pit_on_round_end(rf::Player* winner, RoundEndReason reason)
 {
     if (!rf::is_server) return;
+
+    // A draw (timeout, or both duelers gone) reports no winner rather than a cancel:
+    // the duel ran to completion, it simply decided nothing.
+    afstats::on_match_end(afstats::MatchResult::completed, afstats::team_none, winner);
 
     rf::Player* d0 = g_pit.dueler[0];
     rf::Player* d1 = g_pit.dueler[1];

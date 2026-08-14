@@ -5,6 +5,7 @@
 #include <xlog/xlog.h>
 #include <algorithm>
 #include <string_view>
+#include "../fflink/afstats_events.h"
 #include "../rf/event.h"
 #include "../rf/item.h"
 #include "../rf/misc.h"
@@ -117,6 +118,11 @@ static void on_item_picked_up(rf::Item* item, rf::Entity* entity)
     }
     else {
         mutators_on_item_picked_up(item, entity);
+        if (rf::is_server) {
+            // respawn_time_ms is the per-instance value and already reflects any
+            // server-config or mutator override; negative means it never respawns.
+            afstats::on_item_pickup(rf::player_from_entity_handle(entity->handle), item->info_index, item->pos, item->respawn_time_ms);
+        }
     }
 }
 

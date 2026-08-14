@@ -53,6 +53,7 @@ void bagman_on_player_disconnect(rf::Player* player);
 void bagman_on_entity_will_die(rf::Entity* ep);
 int bagman_get_red_team_score();
 int bagman_get_blue_team_score();
+int bagman_get_score_tick_ms();
 void bagman_set_red_team_score(int v);
 void bagman_set_blue_team_score(int v);
 void bagman_force_state_sync_to(rf::Player* player);

@@ -824,6 +824,7 @@ void af_send_just_died_info_packet(rf::Player* to_player, bool respawn_allowed, 
 static void af_process_just_died_info_packet(const void* data, size_t len, const rf::NetAddr& addr);
 void af_send_server_info_packet(rf::Player* player);
 void af_send_server_info_packet_to_all();
+uint32_t af_compute_server_info_flags();
 void af_reset_session_overrides_snapshot();
 static void af_process_server_info_packet(const void* data, size_t len, const rf::NetAddr&);
 void af_send_spectate_start_packet(const rf::Player* spectatee);

@@ -17,6 +17,7 @@
 #include "multi.h"
 #include "mutators.h"
 #include "alpine_packets.h"
+#include "../fflink/afstats_events.h"
 #include "../hud/hud_internal.h"
 #include "../hud/multi_spectate.h"
 #include "../sound/sound.h"
@@ -1069,6 +1070,27 @@ static void esc_apply_initial_ownerships()
     }
 }
 
+static uint8_t afstats_team_for_owner(HillOwner owner)
+{
+    switch (owner) {
+        case HillOwner::HO_Red:  return afstats::team_red;
+        case HillOwner::HO_Blue: return afstats::team_blue;
+        default:                 return afstats::team_none;
+    }
+}
+
+static std::vector<rf::Player*> players_from_ids(const std::vector<uint8_t>& ids)
+{
+    std::vector<rf::Player*> players;
+    players.reserve(ids.size());
+    for (uint8_t id : ids) {
+        if (rf::Player* p = rf::multi_find_player_by_id(id)) {
+            players.push_back(p);
+        }
+    }
+    return players;
+}
+
 static void server_maybe_broadcast_state(HillInfo& h, const Presence& pres)
 {
     const uint8_t prog_bucket = static_cast<uint8_t>(h.capture_progress / 5);
@@ -1083,6 +1105,23 @@ static void server_maybe_broadcast_state(HillInfo& h, const Presence& pres)
 
     if (!changed)
         return;
+
+    // Contest is a per-tick derived condition with nothing latched to hook, so the
+    // edge is taken against the same snapshot the network dedup already keeps.
+    const bool was_contested = h.net_last_red > 0 && h.net_last_blue > 0;
+    const bool is_contested = pres.red > 0 && pres.blue > 0;
+    if (was_contested != is_contested) {
+        afstats::on_point_event(h.hill_uid,
+            is_contested ? afstats::PointEventKind::contest_start
+                         : afstats::PointEventKind::contest_end,
+            afstats_team_for_owner(h.ownership), {},
+            h.lock_status != HillLockStatus::HLS_Available);
+    }
+    if (h.net_last_lock_status != h.lock_status) {
+        afstats::on_point_event(h.hill_uid, afstats::PointEventKind::lock_change,
+            afstats_team_for_owner(h.ownership), {},
+            h.lock_status != HillLockStatus::HLS_Available);
+    }
 
     af_send_koth_hill_state_packet_to_all(h, pres);
 
@@ -1196,6 +1235,15 @@ static void koth_apply_ownership(HillInfo& h, HillOwner new_owner, bool announce
                 ids = on_capture_collect_player_ids_on_hill_for_team(h, reward_team);
             const uint8_t uid8 = static_cast<uint8_t>(std::clamp(h.hill_uid, 0, 255));
             af_send_koth_hill_captured_packet_to_all(uid8, new_owner, ids);
+            afstats::on_point_event(h.hill_uid, afstats::PointEventKind::owner_change,
+                afstats_team_for_owner(new_owner), players_from_ids(ids),
+                h.lock_status != HillLockStatus::HLS_Available);
+        }
+        else {
+            // A silent flip (script/event driven) still changes ownership.
+            afstats::on_point_event(h.hill_uid, afstats::PointEventKind::owner_change,
+                afstats_team_for_owner(new_owner), {},
+                h.lock_status != HillLockStatus::HLS_Available);
         }
     }
 }
@@ -2038,6 +2086,12 @@ void multi_level_init_post_gametypes()
     // Mutator pickup suppression runs last so its policy applies on top of any
     // gametype-specific item handling.
     mutators_level_init_post();
+
+    // After everything above, so the round_start snapshot sees the level, the
+    // game type, the active rules and every gametype's own state as final.
+    if (rf::is_multi && rf::is_server) {
+        afstats::on_round_start();
+    }
 }
 
 // pre level being loaded

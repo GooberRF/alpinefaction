@@ -37,6 +37,9 @@ constexpr const char* k_user_agent = AF_USER_AGENT_SUFFIX("AFStatsPlayer");
 constexpr unsigned long k_connect_timeout_ms = 3000;
 constexpr unsigned long k_receive_timeout_ms = 5000;
 
+// Harden against a broken response from FF being unbounded.
+constexpr size_t k_max_response_bytes = 256 * 1024;
+
 // Delays before each retry (seconds). The array size is also the retry count.
 constexpr int k_retry_delays_s[] = {2, 5};
 
@@ -127,18 +130,20 @@ ExchangeOutcome do_one_exchange(const std::string& psk, const std::string& fflin
     const std::string body =
         nlohmann::json{{"psk", as_json(psk)}, {"fflink_token", as_json(fflink_token)}}.dump();
 
-    // Redacted copy for logging — neither key may ever be written to disk. The
-    // placeholder is fixed width so the log does not even carry a key length.
-    const auto redacted = [](const std::string& value) {
-        return value.empty() ? nlohmann::json(nullptr) : nlohmann::json("<redacted>");
-    };
-    const std::string body_for_log =
-        nlohmann::json{{"psk", redacted(psk)}, {"fflink_token", redacted(fflink_token)}}.dump();
-    xlog::warn("[afstats] >>> POST {}", k_session_url);
-    xlog::warn("[afstats] >>> User-Agent: {}", k_user_agent);
-    xlog::warn("[afstats] >>> Content-Type: application/json");
-    xlog::warn("[afstats] >>> Content-Length: {}", body.size());
-    xlog::warn("[afstats] >>> body ({} bytes): {}", body.size(), body_for_log);
+    if constexpr (AFSTATS_VERIFICATION_LOGGING) {
+        // Redacted copy for logging — neither key may ever be written to disk. The
+        // placeholder is fixed width so the log does not even carry a key length.
+        const auto redacted = [](const std::string& value) {
+            return value.empty() ? nlohmann::json(nullptr) : nlohmann::json("<redacted>");
+        };
+        const std::string body_for_log =
+            nlohmann::json{{"psk", redacted(psk)}, {"fflink_token", redacted(fflink_token)}}.dump();
+        xlog::warn("[afstats] >>> POST {}", k_session_url);
+        xlog::warn("[afstats] >>> User-Agent: {}", k_user_agent);
+        xlog::warn("[afstats] >>> Content-Type: application/json");
+        xlog::warn("[afstats] >>> Content-Length: {}", body.size());
+        xlog::warn("[afstats] >>> body ({} bytes): {}", body.size(), body_for_log);
+    }
 
     std::string response;
     int status_code = 0;
@@ -154,7 +159,14 @@ ExchangeOutcome do_one_exchange(const std::string& psk, const std::string& fflin
 
         char buf[1024];
         std::ostringstream stream;
+        size_t total = 0;
         while (size_t n = req.read(buf, sizeof(buf))) {
+            total += n;
+            if (total > k_max_response_bytes) {
+                // A broken or hostile endpoint must not stream unbounded data into
+                // memory; classify as transient.
+                throw std::runtime_error("response exceeded size cap");
+            }
             stream.write(buf, n);
         }
         response = stream.str();
@@ -162,21 +174,16 @@ ExchangeOutcome do_one_exchange(const std::string& psk, const std::string& fflin
     catch (const std::exception& e) {
         out.kind = ExchangeOutcome::Kind::transient_error;
         out.error_detail = std::string{"network error: "} + e.what();
-        xlog::warn("[afstats] <<< {} (classified transient)", out.error_detail);
+        if constexpr (AFSTATS_VERIFICATION_LOGGING) {
+            xlog::warn("[afstats] <<< {} (classified transient)", out.error_detail);
+        }
         return out;
     }
 
-    xlog::warn("[afstats] <<< HTTP {} from {} ({} byte body)", status_code, k_session_url, response.size());
-
-    constexpr size_t k_log_response_prefix = 256;
-    auto log_body_preview = [&]() {
-        const std::string response_preview = sanitize_for_log(
-            response.size() <= k_log_response_prefix
-                ? std::string_view{response}
-                : std::string_view{response}.substr(0, k_log_response_prefix));
-        const char* truncated = response.size() > k_log_response_prefix ? "...[truncated]" : "";
-        xlog::warn("[afstats] <<< body: {}{}", response_preview, truncated);
-    };
+    if constexpr (AFSTATS_VERIFICATION_LOGGING) {
+        xlog::warn("[afstats] <<< HTTP {} from {} ({} byte body)", status_code, k_session_url,
+                   response.size());
+    }
 
     if (status_code == 200) {
         try {
@@ -204,7 +211,9 @@ ExchangeOutcome do_one_exchange(const std::string& psk, const std::string& fflin
             if (j.contains("user_name") && j["user_name"].is_string()) {
                 out.user_name = sanitize_for_log(j["user_name"].get<std::string>());
             }
-            xlog::warn("[afstats] <<< parsed OK (classified success)");
+            if constexpr (AFSTATS_VERIFICATION_LOGGING) {
+                xlog::warn("[afstats] <<< parsed OK (classified success)");
+            }
             return out;
         }
         catch (const nlohmann::json::parse_error& e) {
@@ -228,7 +237,15 @@ ExchangeOutcome do_one_exchange(const std::string& psk, const std::string& fflin
         }
     }
 
-    log_body_preview();
+    if constexpr (AFSTATS_VERIFICATION_LOGGING) {
+        constexpr size_t k_log_response_prefix = 256;
+        const std::string response_preview = sanitize_for_log(
+            response.size() <= k_log_response_prefix
+                ? std::string_view{response}
+                : std::string_view{response}.substr(0, k_log_response_prefix));
+        const char* truncated = response.size() > k_log_response_prefix ? "...[truncated]" : "";
+        xlog::warn("[afstats] <<< body: {}{}", response_preview, truncated);
+    }
 
     std::string error_code = "unspecified";
     try {
@@ -251,41 +268,59 @@ ExchangeOutcome do_one_exchange(const std::string& psk, const std::string& fflin
     else {
         out.kind = ExchangeOutcome::Kind::transient_error;
     }
-    xlog::warn("[afstats] <<< {} classified as {}", out.error_detail, kind_to_str(out.kind));
+    if constexpr (AFSTATS_VERIFICATION_LOGGING) {
+        xlog::warn("[afstats] <<< {} classified as {}", out.error_detail, kind_to_str(out.kind));
+    }
     return out;
 }
 
 void maybe_send_pssk()
 {
     if (g_state.status != Status::done) {
-        xlog::warn("[afstats] holding PSSK delivery: exchange status is {}", status_to_str(g_state.status));
+        if constexpr (AFSTATS_VERIFICATION_LOGGING) {
+            xlog::warn("[afstats] holding PSSK delivery: exchange status is {}",
+                       status_to_str(g_state.status));
+        }
         return;
     }
     if (!g_state.in_game) {
-        xlog::warn("[afstats] holding PSSK delivery: not in the game yet");
+        if constexpr (AFSTATS_VERIFICATION_LOGGING) {
+            xlog::warn("[afstats] holding PSSK delivery: not in the game yet");
+        }
         return;
     }
     if (g_state.pssk_sent) {
-        xlog::warn("[afstats] holding PSSK delivery: already sent for this join");
+        if constexpr (AFSTATS_VERIFICATION_LOGGING) {
+            xlog::warn("[afstats] holding PSSK delivery: already sent for this join");
+        }
         return;
     }
-    // VERIFICATION PHASE ONLY: logs the session key verbatim, by explicit request.
-    xlog::warn("[afstats] delivering PSSK {} to server", g_state.pssk);
+    if constexpr (AFSTATS_VERIFICATION_LOGGING) {
+        // VERIFICATION PHASE ONLY: logs the session key verbatim, by explicit request.
+        xlog::warn("[afstats] delivering PSSK {} to server", g_state.pssk);
+    }
     af_send_stats_pssk(g_state.pssk);
     g_state.pssk_sent = true;
-    xlog::warn("[afstats] PSSK sent (join_id={})", g_state.join_id);
+    if constexpr (AFSTATS_VERIFICATION_LOGGING) {
+        xlog::warn("[afstats] PSSK sent (join_id={})", g_state.join_id);
+    }
 }
 
 void on_exchange_finished(uint32_t join_id, ExchangeOutcome outcome)
 {
     if (join_id != g_state.join_id) {
-        xlog::warn("[afstats] dropping stale exchange result (started for join_id={}, current join_id={})",
-                   join_id, g_state.join_id);
+        if constexpr (AFSTATS_VERIFICATION_LOGGING) {
+            xlog::warn(
+                "[afstats] dropping stale exchange result (started for join_id={}, current join_id={})",
+                join_id, g_state.join_id);
+        }
         return; // the join this was started for is gone
     }
 
-    xlog::warn("[afstats] exchange finished for join_id={} with outcome {}", join_id,
-               kind_to_str(outcome.kind));
+    if constexpr (AFSTATS_VERIFICATION_LOGGING) {
+        xlog::warn("[afstats] exchange finished for join_id={} with outcome {}", join_id,
+                   kind_to_str(outcome.kind));
+    }
 
     if (outcome.kind == ExchangeOutcome::Kind::mint_rate_limited) {
         g_mint_backoff_until = std::chrono::steady_clock::now() + k_mint_backoff;
@@ -305,10 +340,14 @@ void on_exchange_finished(uint32_t join_id, ExchangeOutcome outcome)
     if (outcome.psk != g_game_config.afstats_psk.value()) {
         g_game_config.afstats_psk = outcome.psk;
         g_game_config.save();
-        xlog::warn("[afstats] new PSK persisted to config");
+        if constexpr (AFSTATS_VERIFICATION_LOGGING) {
+            xlog::warn("[afstats] new PSK persisted to config");
+        }
     }
     else {
-        xlog::warn("[afstats] PSK unchanged, nothing written to config");
+        if constexpr (AFSTATS_VERIFICATION_LOGGING) {
+            xlog::warn("[afstats] PSK unchanged, nothing written to config");
+        }
     }
 
     g_state.status = Status::done;
@@ -316,12 +355,14 @@ void on_exchange_finished(uint32_t join_id, ExchangeOutcome outcome)
     g_state.user_id = outcome.user_id;
     g_state.user_name = std::move(outcome.user_name);
 
-    // VERIFICATION PHASE ONLY: logs the session key verbatim, by explicit request.
-    xlog::warn("[afstats] obtained PSSK {}", g_state.pssk);
-    xlog::warn("[afstats] session ready (psk_origin={}, fflink_status={}, user_id={}, user_name={})",
-               outcome.psk_origin.empty() ? "<absent>" : outcome.psk_origin,
-               outcome.fflink_status.empty() ? "<absent>" : outcome.fflink_status, g_state.user_id,
-               g_state.user_name.empty() ? "anonymous" : g_state.user_name);
+    if constexpr (AFSTATS_VERIFICATION_LOGGING) {
+        // VERIFICATION PHASE ONLY: logs the session key verbatim, by explicit request.
+        xlog::warn("[afstats] obtained PSSK {}", g_state.pssk);
+        xlog::warn("[afstats] session ready (psk_origin={}, fflink_status={}, user_id={}, user_name={})",
+                   outcome.psk_origin.empty() ? "<absent>" : outcome.psk_origin,
+                   outcome.fflink_status.empty() ? "<absent>" : outcome.fflink_status, g_state.user_id,
+                   g_state.user_name.empty() ? "anonymous" : g_state.user_name);
+    }
 
     if (outcome.fflink_status == "unknown" && !g_stale_link_notice_shown) {
         g_stale_link_notice_shown = true;
@@ -339,12 +380,17 @@ void exchange_worker_impl(uint32_t join_id, const std::string& psk, const std::s
     for (int attempt = 0;; ++attempt) {
         const uint32_t active = g_active_join_id.load(std::memory_order_acquire);
         if (active != join_id) {
-            xlog::warn("[afstats] worker aborting: join_id={} is stale (active join_id={})", join_id,
-                       active);
+            if constexpr (AFSTATS_VERIFICATION_LOGGING) {
+                xlog::warn("[afstats] worker aborting: join_id={} is stale (active join_id={})", join_id,
+                           active);
+            }
             return;
         }
 
-        xlog::warn("[afstats] exchange attempt {}/{} for join_id={}", attempt + 1, max_attempts, join_id);
+        if constexpr (AFSTATS_VERIFICATION_LOGGING) {
+            xlog::warn("[afstats] exchange attempt {}/{} for join_id={}", attempt + 1, max_attempts,
+                       join_id);
+        }
 
         // Always the same PSK: retrying with null would abandon the player's key.
         ExchangeOutcome outcome = do_one_exchange(psk, fflink_token);
@@ -352,8 +398,10 @@ void exchange_worker_impl(uint32_t join_id, const std::string& psk, const std::s
         const bool can_retry = outcome.kind == ExchangeOutcome::Kind::transient_error
             && attempt < static_cast<int>(std::size(k_retry_delays_s));
         if (!can_retry) {
-            xlog::warn("[afstats] no further attempts ({}), handing result to the main thread",
-                       kind_to_str(outcome.kind));
+            if constexpr (AFSTATS_VERIFICATION_LOGGING) {
+                xlog::warn("[afstats] no further attempts ({}), handing result to the main thread",
+                           kind_to_str(outcome.kind));
+            }
             enqueue_main_thread_task([join_id, outcome = std::move(outcome)]() mutable {
                 on_exchange_finished(join_id, std::move(outcome));
             });
@@ -361,8 +409,10 @@ void exchange_worker_impl(uint32_t join_id, const std::string& psk, const std::s
         }
 
         const int delay_s = k_retry_delays_s[attempt];
-        xlog::warn("[afstats] attempt {} failed ({}); retrying in {}s", attempt + 1, outcome.error_detail,
-                   delay_s);
+        if constexpr (AFSTATS_VERIFICATION_LOGGING) {
+            xlog::warn("[afstats] attempt {} failed ({}); retrying in {}s", attempt + 1,
+                       outcome.error_detail, delay_s);
+        }
         std::this_thread::sleep_for(std::chrono::seconds(delay_s));
     }
 }
@@ -384,11 +434,15 @@ void exchange_worker(uint32_t join_id, std::string psk, std::string fflink_token
 void maybe_start_exchange()
 {
     if (g_state.exchange_started) {
-        xlog::warn("[afstats] skipping exchange: already started for join_id={}", g_state.join_id);
+        if constexpr (AFSTATS_VERIFICATION_LOGGING) {
+            xlog::warn("[afstats] skipping exchange: already started for join_id={}", g_state.join_id);
+        }
         return; // join_req resends and the join_accept trigger both land here
     }
     if (client_bot_launch_enabled()) {
-        xlog::warn("[afstats] skipping exchange: this client is a launch bot");
+        if constexpr (AFSTATS_VERIFICATION_LOGGING) {
+            xlog::warn("[afstats] skipping exchange: this client is a launch bot");
+        }
         return; // client bots must never mint PSKs
     }
 
@@ -400,19 +454,23 @@ void maybe_start_exchange()
     // The mint limit only applies to new keys, so a client holding one is never blocked.
     const auto now = std::chrono::steady_clock::now();
     if (psk.empty() && now < g_mint_backoff_until) {
-        const auto remaining_s =
-            std::chrono::duration_cast<std::chrono::seconds>(g_mint_backoff_until - now).count();
-        xlog::warn("[afstats] skipping exchange: mint backoff active for another {}s and no stored PSK",
-                   remaining_s);
+        if constexpr (AFSTATS_VERIFICATION_LOGGING) {
+            const auto remaining_s =
+                std::chrono::duration_cast<std::chrono::seconds>(g_mint_backoff_until - now).count();
+            xlog::warn("[afstats] skipping exchange: mint backoff active for another {}s and no stored PSK",
+                       remaining_s);
+        }
         return;
     }
 
     g_state.exchange_started = true;
     g_state.status = Status::in_flight;
 
-    const bool have_token = !g_game_config.fflink_token.value().empty();
-    xlog::warn("[afstats] starting exchange (join_id={}, stored PSK: {}, fflink token: {})",
-               g_state.join_id, psk.empty() ? "no" : "yes", have_token ? "yes" : "no");
+    if constexpr (AFSTATS_VERIFICATION_LOGGING) {
+        const bool have_token = !g_game_config.fflink_token.value().empty();
+        xlog::warn("[afstats] starting exchange (join_id={}, stored PSK: {}, fflink token: {})",
+                   g_state.join_id, psk.empty() ? "no" : "yes", have_token ? "yes" : "no");
+    }
 
     try {
         std::thread(exchange_worker, g_state.join_id, std::move(psk),
@@ -442,31 +500,38 @@ ConsoleCommand2 afstats_status_cmd{
 
 } // namespace
 
-void afstats_on_join_req(const rf::NetAddr& addr, bool stats_enabled)
+void afstats_client_on_join_req(const rf::NetAddr& addr, bool stats_enabled)
 {
-    xlog::warn("[afstats] join_req to {} (stats_enabled={})", addr, stats_enabled ? "yes" : "no");
+    xlog::debug("[afstats] join_req to {} (stats_enabled={})", addr, stats_enabled ? "yes" : "no");
 
     // The stock cancel path leaves multiplayer without a multi_stop, so a join the
     // player abandoned is only cleared here, when the next one starts elsewhere.
     if (g_state.target && *g_state.target != addr) {
-        xlog::warn("[afstats] target changed from {} to {}; dropping the abandoned join's state",
-                   *g_state.target, addr);
-        afstats_reset();
+        if constexpr (AFSTATS_VERIFICATION_LOGGING) {
+            xlog::warn("[afstats] target changed from {} to {}; dropping the abandoned join's state",
+                       *g_state.target, addr);
+        }
+        afstats_client_reset();
     }
     g_state.target = addr;
 
     if (!stats_enabled) {
-        xlog::warn("[afstats] browser entry says this server is not stats-enabled; no exchange from join_req");
+        if constexpr (AFSTATS_VERIFICATION_LOGGING) {
+            xlog::warn(
+                "[afstats] browser entry says this server is not stats-enabled; no exchange from join_req");
+        }
         return;
     }
     g_state.stats_enabled = true;
     maybe_start_exchange();
 }
 
-void afstats_on_join_accept(bool stats_enabled)
+void afstats_client_on_join_accept(bool stats_enabled)
 {
-    xlog::warn("[afstats] join_accept parsed (stats_enabled={}, exchange already started={})",
-               stats_enabled ? "yes" : "no", g_state.exchange_started ? "yes" : "no");
+    if constexpr (AFSTATS_VERIFICATION_LOGGING) {
+        xlog::warn("[afstats] join_accept parsed (stats_enabled={}, exchange already started={})",
+                   stats_enabled ? "yes" : "no", g_state.exchange_started ? "yes" : "no");
+    }
 
     if (!stats_enabled) {
         return;
@@ -475,24 +540,40 @@ void afstats_on_join_accept(bool stats_enabled)
     maybe_start_exchange();
 }
 
-void afstats_on_entered_game()
+void afstats_client_on_entered_game()
 {
     g_state.in_game = true;
-    xlog::warn("[afstats] entered the game (join_id={}, exchange status={})", g_state.join_id,
-               status_to_str(g_state.status));
+    if constexpr (AFSTATS_VERIFICATION_LOGGING) {
+        xlog::warn("[afstats] entered the game (join_id={}, exchange status={})", g_state.join_id,
+                   status_to_str(g_state.status));
+    }
     maybe_send_pssk();
 }
 
-void afstats_reset()
+// Overwrites a key's bytes before the string is cleared/freed, so a live PSSK does
+// not linger in the freed allocation. volatile keeps the writes from being elided.
+void secure_wipe(std::string& s)
+{
+    volatile char* p = const_cast<volatile char*>(s.data());
+    for (size_t i = 0; i < s.size(); ++i) {
+        p[i] = '\0';
+    }
+    s.clear();
+}
+
+void afstats_client_reset()
 {
     const uint32_t next_join_id = g_state.join_id + 1;
-    xlog::warn("[afstats] resetting join state (join_id {} -> {})", g_state.join_id, next_join_id);
+    if constexpr (AFSTATS_VERIFICATION_LOGGING) {
+        xlog::warn("[afstats] resetting join state (join_id {} -> {})", g_state.join_id, next_join_id);
+    }
+    secure_wipe(g_state.pssk); // scrub the PSSK before the state is dropped
     g_state = JoinState{};
     g_state.join_id = next_join_id;
     g_active_join_id.store(next_join_id, std::memory_order_release);
 }
 
-void afstats_do_patch()
+void afstats_client_do_patch()
 {
     afstats_status_cmd.register_cmd();
 }
