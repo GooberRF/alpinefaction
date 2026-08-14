@@ -45,6 +45,12 @@ Version 1.4.0 (Lupin): Not yet released
   - `Level` and `Match` can now select a game type and any number of mutators (with their options) for the voted level
   - Add a vote panel for calling any vote the server allows, opened during gameplay with the bindable `Call Vote Menu` control (`F4` by default)
   - Vote HUD notification now shows live tally, time remaining, and whether you have already voted
+- Add FactionFiles-supported multiplayer statistics tracking
+  - Dedicated servers with a configured `fflink_gsk` report a gameplay event stream to FactionFiles
+  - Clients joining a stats-enabled server obtain a stats session key from FactionFiles and deliver it to the server, attributing their stats to their linked FactionFiles account (or anonymously to their game installation when unlinked)
+  - Players on legacy clients can still join and play normally, and are tracked per-connection without cross-session identity
+  - `afstats_status` console command shows the local stats session state
+  - `sv_afstats_trace` console command logs outgoing report batches (with session keys redacted) on dedicated servers
 
 ### Minor features, changes, and enhancements
 [@GooberRF](https://github.com/GooberRF)
