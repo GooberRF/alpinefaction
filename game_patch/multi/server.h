@@ -40,6 +40,7 @@ int server_spray_cooldown_ms();
 std::tuple<bool, int, bool, bool> server_features_require_alpine_client();
 void server_reliable_socket_ready(rf::Player* player);
 bool server_weapon_items_give_full_ammo();
+bool server_weapon_infinite_magazines();
 void server_add_player_weapon(rf::Player* player, int weapon_type, bool full_ammo);
 void send_nonclip_ammo_sync(rf::Player* player, rf::Entity* entity, int weapon_type);
 void multi_create_alpine_respawn_point(int uid, const char* name, rf::Vector3 pos, rf::Matrix3 orient, bool red, bool blue, bool enabled);

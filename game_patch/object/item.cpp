@@ -37,7 +37,13 @@ int item_lookup_type(const char* name)
 FunHook<int(int, int, int, int)> item_touch_weapon_hook{
     0x0045A6D0,
     [](int entity_handle, int item_handle, int weapon_type, int count) {
-        if (server_weapon_items_give_full_ammo() && weapon_type != rf::shoulder_cannon_weapon_type) {
+        // Exclude fusion from "weapon items give full ammo", but not from "infinite magazines"
+        const bool full_ammo_pickup =
+            server_weapon_items_give_full_ammo() && weapon_type != rf::shoulder_cannon_weapon_type;
+        // Infinite magazines is only meaningful if there is a magazine to reload from, so it
+        // tops the weapon up.
+            if ((full_ammo_pickup || server_weapon_infinite_magazines())
+            && weapon_type >= 0 && weapon_type < rf::num_weapon_types) {
             rf::WeaponInfo& winfo = rf::weapon_types[weapon_type];
             count = winfo.max_ammo + winfo.clip_size;
         }

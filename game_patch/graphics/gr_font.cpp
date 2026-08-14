@@ -1,5 +1,6 @@
 #include <memory>
 #include <unordered_map>
+#include <unordered_set>
 #include <cstddef>
 #include <exception>
 #include <cctype>
@@ -322,7 +323,13 @@ GrNewFont::GrNewFont(std::string_view name) :
     for (auto codepoint : unicode_code_points) {
         error = FT_Load_Char(face, codepoint, FT_LOAD_RENDER);
         if (error) {
-            xlog::error("FT_Load_Char failed: {}", error);
+            // char_map_ stores indices into unicode_code_points, so glyphs_ has to stay
+            // index aligned with it. Skipping an entry here would shift every later glyph
+            // by one and push the last char_map_ entries past the end of glyphs_ -- an out
+            // of range operator[] read that does not throw and is not otherwise detectable.
+            // A zero filled glyph draws nothing and advances the pen by nothing.
+            xlog::error("FT_Load_Char failed for codepoint {:#x}: {}", codepoint, error);
+            glyphs_.push_back(GlyphInfo{});
             continue;
         }
         FT_GlyphSlot slot = face->glyph;
@@ -498,6 +505,15 @@ FunHook<bool(const char*)> gr_set_default_font_hook{
     },
 };
 
+// A bad font id is typically a stuck value in a HUD element, so it recurs every frame.
+// The log appender flushes synchronously, so reporting it unconditionally would be
+// thousands of disk writes per second. Report each distinct id once.
+static bool report_bad_font_id_once(int font_num)
+{
+    static std::unordered_set<int> reported;
+    return reported.insert(font_num).second;
+}
+
 FunHook<int(int)> gr_get_font_height_hook{
     0x0051F4D0,
     [](int font_num) {
@@ -505,8 +521,15 @@ FunHook<int(int)> gr_get_font_height_hook{
             font_num = g_default_font_id;
         }
         if (font_num & ttf_font_flag) {
-            auto& font = g_fonts[font_num & ~ttf_font_flag];
-            return font.get_height();
+            unsigned idx = static_cast<unsigned>(font_num & ~ttf_font_flag);
+            if (idx >= g_fonts.size()) {
+                if (report_bad_font_id_once(font_num)) {
+                    xlog::error("gr_get_font_height: bad TTF font id {:#x} (have {})",
+                        font_num, g_fonts.size());
+                }
+                return 0;
+            }
+            return g_fonts[idx].get_height();
         }
         return gr_get_font_height_hook.call_target(font_num);
     },
@@ -519,8 +542,15 @@ FunHook<void(int, int, const char*, int, rf::gr::Mode)> gr_string_hook{
             font_num = g_default_font_id;
         }
         if (font_num & ttf_font_flag) {
-            auto& font = g_fonts[font_num & ~ttf_font_flag];
-            font.draw(x, y, text, mode);
+            unsigned idx = static_cast<unsigned>(font_num & ~ttf_font_flag);
+            if (idx >= g_fonts.size()) {
+                if (report_bad_font_id_once(font_num)) {
+                    xlog::error("gr_string: bad TTF font id {:#x} (have {})",
+                        font_num, g_fonts.size());
+                }
+                return;
+            }
+            g_fonts[idx].draw(x, y, text, mode);
         }
         else {
             gr_string_hook.call_target(x, y, text, font_num, mode);
@@ -535,7 +565,16 @@ FunHook<void(int*, int*, const char*, int, int)> gr_get_string_size_hook{
             font_num = g_default_font_id;
         }
         if (font_num & ttf_font_flag) {
-            auto& font = g_fonts[font_num & ~ttf_font_flag];
+            unsigned idx = static_cast<unsigned>(font_num & ~ttf_font_flag);
+            if (idx >= g_fonts.size()) {
+                if (report_bad_font_id_once(font_num)) {
+                    xlog::error("gr_get_string_size: bad TTF font id {:#x} (have {})",
+                        font_num, g_fonts.size());
+                }
+                *out_width = 0;
+                *out_height = 0;
+                return;
+            }
             std::string_view text_sv;
             if (text_len < 0) {
                 text_sv = std::string_view{text};
@@ -543,7 +582,7 @@ FunHook<void(int*, int*, const char*, int, int)> gr_get_string_size_hook{
             else {
                 text_sv = std::string_view{text, static_cast<size_t>(text_len)};
             }
-            font.get_size(out_width, out_height, text_sv);
+            g_fonts[idx].get_size(out_width, out_height, text_sv);
         }
         else {
             gr_get_string_size_hook.call_target(out_width, out_height, text, text_len, font_num);

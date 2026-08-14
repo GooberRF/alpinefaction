@@ -423,6 +423,10 @@ void hud_render_00437BC0()
     // Render spectate mode UI under scoreboard
     multi_spectate_render();
 
+    if (rf::gameseq_get_state() != rf::GS_MULTI_LIMBO) {
+        multi_hud_render_killfeed();
+    }
+
     auto& cc = rf::local_player->settings.controls;
     bool scoreboard_control_pressed = rf::control_config_check_pressed(&cc, rf::CC_ACTION_MP_STATS, nullptr);
     bool is_player_dead = rf::player_is_dead(rf::local_player) || rf::player_is_dying(rf::local_player);

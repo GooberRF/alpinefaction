@@ -1001,6 +1001,7 @@ static void print_alpine_restrict_status_summary()
     rf::console::print("  Require stable AF build: {}", enforce_release ? "yes" : "no");
     rf::console::print("  Require D3D11: {}", require_d3d11 ? "yes" : "no");
 
+    const uint32_t alpine_v140_max_rfl = 305u;
     const uint32_t alpine_v130_max_rfl = 304u;
     const uint32_t alpine_v122_max_rfl = 303u;
     const uint32_t alpine_v120_max_rfl = 302u;
@@ -1013,11 +1014,12 @@ static void print_alpine_restrict_status_summary()
     };
 
     rf::console::print("Common test cases:");
-    rf::console::print("{}", describe_client("Alpine Faction 1.3.0 (D3D11)", ClientVersionInfoProfile{ClientSoftware::AlpineFaction, 1u, 3u, 0u, VERSION_TYPE_RELEASE, alpine_v130_max_rfl, true}));
-    rf::console::print("{}", describe_client("Alpine Faction 1.3.0 (D3D8)", ClientVersionInfoProfile{ClientSoftware::AlpineFaction, 1u, 3u, 0u, VERSION_TYPE_RELEASE, alpine_v130_max_rfl}));
+    rf::console::print("{}", describe_client("Alpine Faction 1.4.0 (D3D11)", ClientVersionInfoProfile{ClientSoftware::AlpineFaction, 1u, 4u, 0u, VERSION_TYPE_RELEASE, alpine_v140_max_rfl, true}));
+    rf::console::print("{}", describe_client("Alpine Faction 1.4.0 (D3D8)", ClientVersionInfoProfile{ClientSoftware::AlpineFaction, 1u, 4u, 0u, VERSION_TYPE_RELEASE, alpine_v140_max_rfl}));
+    rf::console::print("{}", describe_client("Alpine Faction 1.4.0-dev", ClientVersionInfoProfile{ClientSoftware::AlpineFaction, 1u, 4u, 0u, VERSION_TYPE_DEV, alpine_v140_max_rfl}));
+    rf::console::print("{}", describe_client("Alpine Faction 1.3.0", ClientVersionInfoProfile{ClientSoftware::AlpineFaction, 1u, 3u, 0u, VERSION_TYPE_RELEASE, alpine_v130_max_rfl}));
     rf::console::print("{}", describe_client("Alpine Faction 1.2.2", ClientVersionInfoProfile{ClientSoftware::AlpineFaction, 1u, 2u, 2u, VERSION_TYPE_RELEASE, alpine_v122_max_rfl}));
     rf::console::print("{}", describe_client("Alpine Faction 1.2.0", ClientVersionInfoProfile{ClientSoftware::AlpineFaction, 1u, 2u, 0u, VERSION_TYPE_RELEASE, alpine_v120_max_rfl}));
-    rf::console::print("{}", describe_client("Alpine Faction 1.2.0-dev", ClientVersionInfoProfile{ClientSoftware::AlpineFaction, 1u, 2u, 0u, VERSION_TYPE_DEV, alpine_v120_max_rfl}));
     rf::console::print("{}", describe_client("Alpine Faction 1.1.0", ClientVersionInfoProfile{ClientSoftware::AlpineFaction, 1u, 1u, 0u, VERSION_TYPE_RELEASE, alpine_v110_max_rfl}));
     rf::console::print("{}", describe_client("Dash Faction 1.9", ClientVersionInfoProfile{ClientSoftware::DashFaction, 1u, 9u, 0u, VERSION_TYPE_RELEASE, legacy_max_rfl}));
     rf::console::print("{}", describe_client("Pure Faction 3.0", ClientVersionInfoProfile{ClientSoftware::PureFaction, 3u, 0u, 0u, VERSION_TYPE_RELEASE, legacy_max_rfl}));
@@ -1597,7 +1599,7 @@ CallHook<void(rf::Player*, int, int)> give_default_weapon_ammo_hook{
             ammo = rf::weapon_types[weapon_type].max_ammo;
         }
         // if not using loadouts, this adjusts spawn weapon reserve ammo to match our clip config
-        else if (rf::is_server && !g_alpine_server_config_active_rules.spawn_loadout.loadouts_active
+        else if (rf::is_server && !g_alpine_server_config_active_rules.spawn_loadout_is_active()
                  && g_alpine_server_config_active_rules.default_player_weapon.index >= 0) {
             ammo = rf::weapon_types[g_alpine_server_config_active_rules.default_player_weapon.index].clip_size_multi *
                    g_alpine_server_config_active_rules.default_player_weapon.num_clips;
@@ -1637,20 +1639,91 @@ FunHook<bool (const char*, int)> multi_is_level_matching_game_type_hook{
     },
 };
 
+// Mirrors player_add_weapon (0x004A4000), except the reserve ammo write is skipped for
+// weapons with no ammo type. That function indexes ai.ammo[ammo_type] unguarded, and the
+// Riot Shield's `$Ammo Type: ""` resolves to -1, which aliases AiInfo::current_secondary_weapon
+// and destroys its -1 "no secondary weapon" sentinel. Stock never hits this because it only
+// ever grants the spawn weapon through it; the engine's other two ammo writers both guard.
+void af_give_loadout_weapon(rf::Player* pp, int weapon_type, int reserve_ammo)
+{
+    if (!pp || weapon_type < 0 || weapon_type >= rf::num_weapon_types) {
+        return;
+    }
+    rf::AiInfo* ai = rf::player_get_ai(pp);
+    if (!ai) {
+        return;
+    }
+
+    const rf::WeaponInfo& wi = rf::weapon_types[weapon_type];
+    rf::ai_add_weapon(ai, weapon_type, -1);
+    if (wi.ammo_type >= 0 && wi.ammo_type < 32) {
+        // Clamped low as well as high: the reserve arrives from config or off the wire, and
+        // a negative one would stick until the player picked ammo up.
+        ai->ammo[wi.ammo_type] = std::clamp(reserve_ammo, 0, std::max(wi.max_ammo, 0));
+    }
+    ai->clip_ammo[weapon_type] = wi.clip_size;
+}
+
+// Stock reaches player_add_weapon for the spawn weapon too, so the guard has to live on the
+// function rather than only on our loadout call sites - `spawn_weapon = "riot shield"` with no
+// loadout entry took the stock path and reintroduced the phantom Remote Charge.
+FunHook<void(rf::Player*, int, int)> player_add_weapon_hook{
+    0x004A4000,
+    [](rf::Player* pp, int weapon_type, int ammo) {
+        if (weapon_type >= 0 && weapon_type < rf::num_weapon_types
+            && rf::weapon_types[weapon_type].ammo_type < 0) {
+            af_give_loadout_weapon(pp, weapon_type, ammo);
+            return;
+        }
+        player_add_weapon_hook.call_target(pp, weapon_type, ammo);
+    },
+};
+
+// red_weapons is everyone's loadout. A blue list is only consulted when one was actually
+// configured, so an operator who wants both teams alike states it once.
+const std::vector<WeaponLoadoutEntry>& spawn_loadout_for_player(rf::Player* pp)
+{
+    const auto& loadout = g_alpine_server_config_active_rules.spawn_loadout;
+    if (!loadout.blue_weapons.empty() && pp && pp->team == rf::TEAM_BLUE) {
+        return loadout.blue_weapons;
+    }
+    return loadout.red_weapons;
+}
+
+bool spawn_loadout_has_enabled_weapon(rf::Player* pp)
+{
+    const auto& list = spawn_loadout_for_player(pp);
+    return std::any_of(list.begin(), list.end(), [](auto const& e) { return e.enabled; });
+}
+
 // handle spawn loadouts (not legacy client compatible)
 CodeInjection player_create_entity_default_weapon_injection {
     0x004A43F6,
     [](auto& regs) {
+        rf::Player* player = regs.ebp;
         if (rf::is_server &&
-            g_alpine_server_config_active_rules.spawn_loadout.loadouts_active &&
-            !gt_is_gungame() // no loadouts when gungame is on
+            g_alpine_server_config_active_rules.spawn_loadout_is_active() &&
+            !gt_is_gungame() && // no loadouts when gungame is on
+            // Never take over the stock grant with nothing to hand out - that spawns
+            // the player with no weapons at all.
+            spawn_loadout_has_enabled_weapon(player)
             ) {
-            rf::Player* player = regs.ebp;
+            const int spawn_weapon = g_alpine_server_config_active_rules.default_player_weapon.index;
+            int last_granted = -1;
+            bool loadout_has_spawn_weapon = false;
 
-            for (auto const& e : g_alpine_server_config_active_rules.spawn_loadout.red_weapons) {
-                rf::player_add_weapon(player, e.index, e.reserve_ammo);
-                rf::player_set_default_primary(player, e.index);
+            for (auto const& e : spawn_loadout_for_player(player)) {
+                if (!e.enabled) {
+                    continue;
+                }
+                af_give_loadout_weapon(player, e.index, e.reserve_ammo);
+                loadout_has_spawn_weapon |= (e.index == spawn_weapon);
+                last_granted = e.index;
             }
+
+            // Spawn holding the configured spawn weapon, not whatever happens to sit last in
+            // the list.
+            rf::player_set_default_primary(player, loadout_has_spawn_weapon ? spawn_weapon : last_granted);
             regs.eip = 0x004A4481;
         }
     },
@@ -2495,13 +2568,21 @@ FunHook<void(rf::Player*)> multi_spawn_player_server_side_hook{
 
             // inform newly spawned players of their loadout
             if (rf::is_server
-                && (g_alpine_server_config_active_rules.spawn_loadout.loadouts_active
+                && (g_alpine_server_config_active_rules.spawn_loadout_is_active()
                     // no loadouts when gungame is on
                     && !gt_is_gungame())
+                // Must match the spawn injection's condition: if it did not replace the
+                // stock grant, the client's own is correct and must not be reconciled away.
+                && spawn_loadout_has_enabled_weapon(player)
             ) {
+                const auto& loadout = spawn_loadout_for_player(player);
+
                 // Add each weapon in the loadout to the player on the server
-                for (auto const& e : g_alpine_server_config_active_rules.spawn_loadout.red_weapons) {
-                    rf::player_add_weapon(player, e.index, e.reserve_ammo);
+                for (auto const& e : loadout) {
+                    if (!e.enabled) {
+                        continue;
+                    }
+                    af_give_loadout_weapon(player, e.index, e.reserve_ammo);
 
                     // if remote charge, we also need to add the detonator
                     if (e.index == rf::remote_charge_weapon_type) {
@@ -2510,10 +2591,7 @@ FunHook<void(rf::Player*)> multi_spawn_player_server_side_hook{
                     }
                 }
 
-                af_send_just_spawned_loadout(
-                    player,
-                    g_alpine_server_config_active_rules.spawn_loadout.red_weapons
-                );
+                af_send_just_spawned_loadout(player, loadout);
             }
         }
 
@@ -4384,6 +4462,7 @@ void server_init()
     // Default player weapon class and ammo override
     player_create_entity_find_default_weapon_injection.install();
     give_default_weapon_ammo_hook.install();
+    player_add_weapon_hook.install();
 
     init_server_commands();
 
@@ -4766,7 +4845,7 @@ std::tuple<bool, int, bool, bool> server_features_require_alpine_client()
         min_minor_version = std::max(min_minor_version, 1);
     }
 
-    if (g_alpine_server_config_active_rules.spawn_loadout.loadouts_active) {
+    if (g_alpine_server_config_active_rules.spawn_loadout_is_active()) {
         requires_alpine = true;
         min_minor_version = std::max(min_minor_version, 2);
     }
@@ -4813,6 +4892,11 @@ std::tuple<bool, int, bool, bool> server_features_require_alpine_client()
 bool server_weapon_items_give_full_ammo()
 {
     return g_alpine_server_config_active_rules.weapon_items_give_full_ammo;
+}
+
+bool server_weapon_infinite_magazines()
+{
+    return g_alpine_server_config_active_rules.weapon_infinite_magazines;
 }
 
 const AlpineServerConfig& server_get_alpine_config()

@@ -82,7 +82,6 @@ static void set_single_weapon_loadout(AlpineServerConfigRules& r, int weapon_typ
 {
     r.spawn_loadout.red_weapons.clear();
     r.spawn_loadout.blue_weapons.clear();
-    r.spawn_loadout.loadouts_active = true;
     r.spawn_loadout.add(mutator_weapon_name(weapon_type), reserve_ammo, false, true);
     r.default_player_weapon.set_weapon(mutator_weapon_name(weapon_type));
 }
@@ -175,7 +174,6 @@ static void apply_arena(AlpineServerConfigRules& r, const toml::table& /*opts*/)
     const int baton = rf::riot_stick_weapon_type;
     r.spawn_loadout.red_weapons.clear();
     r.spawn_loadout.blue_weapons.clear();
-    r.spawn_loadout.loadouts_active = true;
     r.spawn_loadout.add("Riot Stick", rf::weapon_types[baton].clip_size_multi, false, true);
     r.spawn_loadout.add("Assault Rifle", 999, false, true);
     r.default_player_weapon.set_weapon("Assault Rifle");
@@ -1040,6 +1038,7 @@ static bool is_standard_health_or_armor_item(const rf::ItemInfo& info)
 
 // Defined in the Flaming Enemies section below.
 static void flame_level_init();
+static void flame_multi_shutdown();
 
 static constexpr float LOW_GRAVITY_VALUE = 5.8f;
 
@@ -1585,6 +1584,7 @@ void mutators_on_multi_shutdown()
     g_ski_engaged = false;
     dodge_clear_input();
     g_dodge_last_ms = 0;
+    flame_multi_shutdown();
 
     // Leaving multiplayer mid-level: single player must not inherit the override.
     mutators_update_low_gravity();
@@ -1890,6 +1890,11 @@ static constexpr int FLAME_DOT_TICK_MS = 500;
 static constexpr float FLAME_DOT_TICK_DAMAGE = 6.0f; // flat per-tick burn
 // A single explosive hit at least this big blows the fire out.
 static constexpr float FLAME_EXTINGUISH_EXPLOSIVE_DAMAGE = 20.0f;
+// Burn state is leased: the server pulses `on` on this cadence while a victim burns and
+// the client drops the visual when its lease runs out, so a dropped extinguish packet
+// cannot strand a fire. The lease must survive a couple of consecutive lost pulses.
+static constexpr int FLAME_LEASE_REFRESH_MS = 1000;
+static constexpr int FLAME_CLIENT_LEASE_MS = 3000;
 
 struct FlameVictimState
 {
@@ -1906,6 +1911,7 @@ struct FlameVictimState
     int entity_handle = -1; // the entity that was ignited; a respawn ends the burn
     rf::Timestamp burn_timeout;
     rf::Timestamp next_dot_tick;
+    rf::Timestamp next_lease_refresh;
 };
 
 // Keyed by victim player id. Server only.
@@ -1914,10 +1920,10 @@ static std::map<uint8_t, FlameVictimState> g_flame_states;
 // but they must neither ignite nor refresh a burn.
 static bool g_flame_dot_in_progress = false;
 
-// Fire records created by the mutator. The engine's own burn behavior in
-// entity_fire_update_all (self damage, spreading to nearby entities, panic anim
-// states) is suppressed for these.
-static std::set<rf::EntityFireInfo*> g_flame_managed_fires;
+// Fire records created by the mutator, each with its lease deadline. The engine's own
+// burn behavior in entity_fire_update_all (self damage, spreading to nearby entities,
+// panic anim states) is suppressed for these.
+static std::map<rf::EntityFireInfo*, rf::Timestamp> g_flame_managed_fires;
 
 void mutators_apply_entity_on_fire(rf::Entity* ep, bool on_fire)
 {
@@ -1926,21 +1932,21 @@ void mutators_apply_entity_on_fire(rf::Entity* ep, bool on_fire)
 
     if (on_fire) {
         if (ep->entity_fire_handle) {
-            // Already burning (e.g. a corpse lava ignite): adopt the existing fire
-            // so the engine's burn behavior stops driving it.
-            g_flame_managed_fires.insert(ep->entity_fire_handle);
+            // Already burning (e.g. a corpse lava ignite, or a lease refresh): adopt the
+            // existing fire so the engine's burn behavior stops driving it.
+            g_flame_managed_fires[ep->entity_fire_handle].set(FLAME_CLIENT_LEASE_MS);
             return;
         }
         rf::EntityFireInfo* fire = rf::entity_fire_create(ep->handle, -1);
         if (fire) {
             // entity_fire_create leaves storing the handle to its caller.
             ep->entity_fire_handle = fire;
-            g_flame_managed_fires.insert(fire);
+            g_flame_managed_fires[fire].set(FLAME_CLIENT_LEASE_MS);
         }
     }
     else if (ep->entity_fire_handle) {
         // Clears ep->entity_fire_handle itself; the destroy hook below drops it from
-        // the managed set.
+        // the managed map.
         rf::entity_fire_destroy(ep->entity_fire_handle, false);
     }
 }
@@ -1986,6 +1992,7 @@ static void flame_ignite(FlameVictimState& state, uint8_t igniter_id, rf::Entity
     state.windows.clear();
     state.burn_timeout.set(FLAME_BURN_TIMEOUT_MS);
     state.next_dot_tick.set(FLAME_DOT_TICK_MS);
+    state.next_lease_refresh.set(FLAME_LEASE_REFRESH_MS);
 
     af_send_entity_on_fire(static_cast<uint32_t>(ep->handle), true);
     if (!rf::is_dedicated_server) {
@@ -2142,6 +2149,12 @@ static void flame_level_init()
     g_flame_managed_fires.clear();
 }
 
+// The engine tears the fire pool down itself; only the references here must be dropped.
+static void flame_multi_shutdown()
+{
+    g_flame_managed_fires.clear();
+}
+
 static void flame_do_frame()
 {
     if (!g_alpine_server_config_active_rules.mutators.flaming_enemies_enabled
@@ -2187,6 +2200,13 @@ static void flame_do_frame()
             continue;
         }
 
+        // Renew the clients' visual lease. Unreliable by design: these are redundant,
+        // and the reliable channel silently drops sends when its window saturates.
+        if (state.next_lease_refresh.elapsed()) {
+            state.next_lease_refresh.set(FLAME_LEASE_REFRESH_MS);
+            af_send_entity_on_fire(static_cast<uint32_t>(state.entity_handle), true, false);
+        }
+
         if (state.next_dot_tick.elapsed()) {
             state.next_dot_tick.set(FLAME_DOT_TICK_MS);
 
@@ -2210,10 +2230,31 @@ static void flame_do_frame()
     }
 }
 
+// Managed clientside visual fires only burn out by themselves once handed off to a corpse,
+// so a lost extinguish packet would strand one. Drop any whose lease stopped being renewed.
+static void flame_client_do_frame()
+{
+    if (!rf::is_multi || g_flame_managed_fires.empty())
+        return;
+
+    std::vector<rf::EntityFireInfo*> expired;
+    for (const auto& [fire, lease] : g_flame_managed_fires) {
+        if (!fire->time_limited && lease.elapsed())
+            expired.push_back(fire);
+    }
+    // Destroying removes the entry via entity_fire_destroy_hook, so it cannot be done
+    // while iterating.
+    for (rf::EntityFireInfo* fire : expired) {
+        rf::entity_fire_destroy(fire, false);
+    }
+}
+
 void mutators_do_frame()
 {
-    if (!rf::is_server)
+    if (!rf::is_server) {
+        flame_client_do_frame();
         return;
+    }
 
     super_drain_do_frame();
     flame_do_frame();

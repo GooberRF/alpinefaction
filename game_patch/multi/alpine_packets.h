@@ -794,7 +794,7 @@ void af_send_character_request(int character_index);
 void af_send_server_req_packet(const af_server_req_packet& packet, rf::Player* player, bool reliable = true);
 void af_send_should_gib_req(uint32_t obj_handle);
 void af_send_kill_info(rf::Player* killed_player);
-void af_send_entity_on_fire(uint32_t obj_handle, bool on);
+void af_send_entity_on_fire(uint32_t obj_handle, bool on, bool reliable = true);
 void af_send_jetpack_state_request(bool on);
 void af_send_jetpack_state(uint32_t obj_handle, bool on);
 void af_send_riot_shield_state(uint32_t obj_handle, float life, const rf::Vector3& impact_pos);

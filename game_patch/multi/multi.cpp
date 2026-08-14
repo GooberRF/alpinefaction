@@ -739,7 +739,7 @@ bool is_entity_out_of_ammo(rf::Entity *entity, int weapon_type, bool alt_fire)
 }
 void send_private_message_for_cancelled_shot(rf::Player* player, const std::string& reason)
 {
-    auto message = std::format("\xA6 Shot canceled: {}", reason);
+    auto message = std::string("\xA6 Shot canceled: ") + reason;
     af_send_automated_chat_msg(message, player);
 }
 

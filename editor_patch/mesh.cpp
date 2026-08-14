@@ -559,6 +559,9 @@ static void mesh_dialog_update_state(HWND hdlg)
     // Collision: not applicable for VFX
     bool enable_collision = has_filename && !string_iequals(ext, "vfx");
     EnableWindow(GetDlgItem(hdlg, IDC_MESH_COLLISION_MODE), enable_collision);
+    if (has_filename && string_iequals(ext, "vfx")) {
+        SendMessageA(GetDlgItem(hdlg, IDC_MESH_COLLISION_MODE), CB_SETCURSEL, 0, 0);
+    }
 
     // Material overrides: enable/disable controls based on filename
     EnableWindow(GetDlgItem(hdlg, IDC_MESH_OVERRIDE_LIST), has_filename);
@@ -614,6 +617,9 @@ static void mesh_dialog_update_state(HWND hdlg)
         // Collision: not for vfx corpse meshes
         bool corpse_has_collision = has_corpse && !string_iequals(corpse_ext, "vfx");
         EnableWindow(GetDlgItem(hdlg, IDC_MESH_CLUTTER_CORPSE_COLLISION), corpse_has_collision);
+        if (has_corpse && string_iequals(corpse_ext, "vfx")) {
+            SendMessageA(GetDlgItem(hdlg, IDC_MESH_CLUTTER_CORPSE_COLLISION), CB_SETCURSEL, 0, 0);
+        }
 
         // Material: enabled whenever a corpse mesh is specified
         EnableWindow(GetDlgItem(hdlg, IDC_MESH_CLUTTER_CORPSE_MATERIAL), has_corpse);
@@ -1012,7 +1018,7 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
             bool force_clear_collision = !collision_enabled && filename_changed;
             int collision_sel = collision_enabled
                 ? static_cast<int>(SendMessageA(combo, CB_GETCURSEL, 0, 0))
-                : 2; // default: All
+                : 0; // VFX meshes do not support collision
             // "Undefined" is index 3 — only present in multi-select mode
             bool collision_changed = false;
             if (force_clear_collision) {
@@ -1098,8 +1104,14 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
 
                 {
                     HWND corpse_col = GetDlgItem(hdlg, IDC_MESH_CLUTTER_CORPSE_COLLISION);
-                    int sel = static_cast<int>(SendMessageA(corpse_col, CB_GETCURSEL, 0, 0));
-                    new_clutter.corpse_collision = (sel >= 0 && sel <= 2) ? static_cast<uint8_t>(sel) : 0;
+                    if (IsWindowEnabled(corpse_col)) {
+                        int sel = static_cast<int>(SendMessageA(corpse_col, CB_GETCURSEL, 0, 0));
+                        new_clutter.corpse_collision = (sel >= 0 && sel <= 2) ? static_cast<uint8_t>(sel) : 0;
+                    }
+                    else {
+                        // VFX meshes do not support collision
+                        new_clutter.corpse_collision = 0;
+                    }
                 }
 
                 {

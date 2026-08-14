@@ -330,10 +330,16 @@ void apply_defaults_for_game_type(rf::NetGameType game_type, AlpineServerConfigR
     // Mutators declared in the same scope re-apply immediately after this returns;
     // a scope that changes game_type must re-declare its mutators.
     rules.mutators = MutatorConfig{};
+    rules.game_type_defaults_applied = true;
 
-    // all modes get baton
-    int baton_ammo = rf::weapon_types[rf::riot_stick_weapon_type].clip_size_multi;
-    rules.spawn_loadout.add("Riot Stick", baton_ammo, false, true);
+    // Rebuilt from nothing so one call always yields this game type's complete loadout
+    // regardless of what the rules held before. Anything layered on afterwards (operator
+    // spawn_loadout keys, mutators) is applied by the caller, not here.
+    rules.spawn_loadout.red_weapons.clear();
+    rules.spawn_loadout.blue_weapons.clear();
+
+    // Every mode gets the baton unless a case below drops it.
+    rules.spawn_loadout.add("Riot Stick", AlpineServerConfigRules::stock_riot_stick_reserve(), false, true);
     rules.set_pvp_damage_modifier(1.0f);
     rules.no_player_collide = false;
     rules.location_pinging = false;
@@ -349,10 +355,7 @@ void apply_defaults_for_game_type(rf::NetGameType game_type, AlpineServerConfigR
             rules.spawn_loadout.add("Remote Charge", 3, false, true);
 
             // primary weapon
-            rules.spawn_loadout.remove("12mm handgun", false);
             rules.default_player_weapon.set_weapon("Machine Pistol");
-
-            rules.spawn_loadout.loadouts_active = true;
             break;
         }
 
@@ -364,7 +367,6 @@ void apply_defaults_for_game_type(rf::NetGameType game_type, AlpineServerConfigR
             // primary weapon
             rules.default_player_weapon.set_weapon("12mm handgun");
 
-            rules.spawn_loadout.loadouts_active = false;
             break;
         }
 
@@ -377,10 +379,7 @@ void apply_defaults_for_game_type(rf::NetGameType game_type, AlpineServerConfigR
             rules.spawn_loadout.add("Remote Charge", 3, false, true);
 
             // primary weapon
-            rules.spawn_loadout.remove("12mm handgun", false);
             rules.default_player_weapon.set_weapon("Machine Pistol");
-
-            rules.spawn_loadout.loadouts_active = true;
             break;
         }
 
@@ -393,10 +392,7 @@ void apply_defaults_for_game_type(rf::NetGameType game_type, AlpineServerConfigR
             rules.spawn_loadout.add("Remote Charge", 3, false, true);
 
             // primary weapon
-            rules.spawn_loadout.remove("12mm handgun", false);
             rules.default_player_weapon.set_weapon("Machine Pistol");
-
-            rules.spawn_loadout.loadouts_active = true;
             break;
         }
 
@@ -411,7 +407,6 @@ void apply_defaults_for_game_type(rf::NetGameType game_type, AlpineServerConfigR
             // primary weapon
             rules.default_player_weapon.set_weapon("12mm handgun");
 
-            rules.spawn_loadout.loadouts_active = false;
             break;
         }
 
@@ -431,7 +426,6 @@ void apply_defaults_for_game_type(rf::NetGameType game_type, AlpineServerConfigR
             // primary weapon
             rules.default_player_weapon.set_weapon("12mm handgun");
 
-            rules.spawn_loadout.loadouts_active = false;
             break;
         }
 
@@ -450,7 +444,6 @@ void apply_defaults_for_game_type(rf::NetGameType game_type, AlpineServerConfigR
 
             // Loadout: Baton, AR
             constexpr int pit_reserve = 999;
-            rules.spawn_loadout.loadouts_active = true;
             rules.spawn_loadout.add("Assault Rifle", pit_reserve, false, true);
             rules.weapon_infinite_magazines = true;
             rules.default_player_weapon.set_weapon("Assault Rifle");
@@ -469,7 +462,6 @@ void apply_defaults_for_game_type(rf::NetGameType game_type, AlpineServerConfigR
             rules.drop_weapons = false;
             rules.drop_amps = false;
             rules.gungame_rampage_rewards = true;
-            rules.spawn_loadout.loadouts_active = false;
 
             // +50 effective health kill reward.
             rules.kill_rewards.kill_reward_effective_health = 50.0f;
@@ -495,7 +487,6 @@ void apply_defaults_for_game_type(rf::NetGameType game_type, AlpineServerConfigR
             // Fixed loadout: Pistol / AR / SR / RL / SG, with infinite reloads
             // and large reserves (effectively infinite ammo).
             constexpr int wo_reserve = 999;
-            rules.spawn_loadout.loadouts_active = true;
             rules.spawn_loadout.add("12mm handgun", wo_reserve, false, true);
             rules.spawn_loadout.add("Assault Rifle", wo_reserve, false, true);
             rules.spawn_loadout.add("Sniper Rifle", wo_reserve, false, true);
@@ -523,15 +514,16 @@ void apply_defaults_for_game_type(rf::NetGameType game_type, AlpineServerConfigR
             // primary weapon
             rules.default_player_weapon.set_weapon("12mm handgun");
 
-            rules.spawn_loadout.loadouts_active = false;
             break;
         }
     }
 
-    // handle default player weapon
-    if (rules.default_player_weapon.index >= 0) {
-        int default_ammo = rf::weapon_types[rules.default_player_weapon.index].clip_size_multi * rules.default_player_weapon.num_clips;
-        rules.spawn_loadout.add(rules.default_player_weapon.weapon_name, default_ammo, false, true);
+    // Complete the loadout with the spawn weapon, unless the case above already placed it
+    // with reserve ammo of its own choosing.
+    if (rules.default_player_weapon.index >= 0
+        && !rules.spawn_loadout.contains(rules.default_player_weapon.weapon_name)) {
+        rules.spawn_loadout.add(rules.default_player_weapon.weapon_name,
+                                rules.stock_spawn_weapon_reserve(), false, true);
     }
 }
 
@@ -568,7 +560,7 @@ AlpineServerConfigRules parse_server_rules(const toml::table& t, const AlpineSer
 
     o.game_type = resolved_game_type;
 
-    if (game_type_changed)
+    if (game_type_changed || !o.game_type_defaults_applied)
         apply_defaults_for_game_type(o.game_type, o);
 
     // Mutators are applied after the gametype defaults but before any explicitly
@@ -666,8 +658,23 @@ AlpineServerConfigRules parse_server_rules(const toml::table& t, const AlpineSer
     if (auto v = t["force_rail_reload"].value<bool>())
         o.force_rail_reload = *v;
 
-    if (auto sub = t["spawn_weapon"].as_table())
+    if (auto sub = t["spawn_weapon"].as_table()) {
+        const std::string prev_default = o.default_player_weapon.weapon_name;
         o.default_player_weapon = parse_default_player_weapon(*sub, o.default_player_weapon);
+
+        // The gametype defaults already put the spawn weapon they chose into the loadout, so
+        // overriding it here has to replace that entry instead of leaving both. The reserve is
+        // refreshed even when only `clips` changed, otherwise the stale entry would no longer
+        // match stock_spawn_weapon_reserve() and spawn_loadout_is_active() would report a real
+        // loadout, needlessly locking legacy clients out. Any spawn_loadout key in this scope
+        // is parsed after this and still wins.
+        if (o.default_player_weapon.index >= 0) {
+            if (!prev_default.empty() && o.default_player_weapon.weapon_name != prev_default) {
+                o.spawn_loadout.remove(prev_default, false);
+            }
+            o.spawn_loadout.add(o.default_player_weapon.weapon_name, o.stock_spawn_weapon_reserve(), false, true);
+        }
+    }
     if (auto sub = t["spawn_life"].as_table())
         o.spawn_life  = parse_spawn_life_config(*sub, o.spawn_life);
     if (auto sub = t["spawn_armor"].as_table())
@@ -678,18 +685,34 @@ AlpineServerConfigRules parse_server_rules(const toml::table& t, const AlpineSer
     if (auto sub = t["gibbing"].as_table())
         o.gibbing = parse_gib_config(*sub, o.gibbing);
 
-    if (auto arr = t["spawn_loadout"].as_array()) {
+    // spawn_loadout is the loadout for everyone; spawn_loadout_blue overrides it for the
+    // blue team only.
+    auto parse_spawn_loadout_array = [&](const char* key, bool blue_team) {
+        auto arr = t[key].as_array();
+        if (!arr) {
+            return;
+        }
         for (auto& node : *arr) {
             if (auto tbl = node.as_table()) {
                 if (auto nameOpt = (*tbl)["weapon_name"].value<std::string>()) {
-                    int ammo = (*tbl)["ammo"].value<int>().value_or(0);
+                    // weapon_name must match a weapons.tbl $Name. Resolve up front so an
+                    // unknown name is reported instead of silently dropping the entry.
+                    if (rf::weapon_lookup_type(nameOpt->c_str()) < 0) {
+                        if (!g_rules_parse_quiet)
+                            rf::console::print("  [WARN] {} weapon_name '{}' is not a weapons.tbl weapon; entry ignored.\n", key, *nameOpt);
+                        continue;
+                    }
+                    auto ammo = (*tbl)["ammo"].value<int>();
                     bool enabled = (*tbl)["include"].value<bool>().value_or(true); // default true if not specified
-                    o.spawn_loadout.add(*nameOpt, ammo, false, enabled);
-                    o.spawn_loadout.loadouts_active = true;
+                    // An entry that omits `ammo` is restating the weapon, not asking for a
+                    // zero reserve, so it must not overwrite what an earlier layer set.
+                    o.spawn_loadout.add(*nameOpt, ammo.value_or(0), blue_team, enabled, ammo.has_value());
                 }
             }
         }
-    }
+    };
+    parse_spawn_loadout_array("spawn_loadout", false);
+    parse_spawn_loadout_array("spawn_loadout_blue", true);
 
     if (auto sub = t["spawn_protection"].as_table())
         o.spawn_protection = parse_spawn_protection_config(*sub, o.spawn_protection);
@@ -1598,6 +1621,11 @@ void load_ads_server_config(std::string ads_config_name, bool allow_missing_leve
 
     AlpineServerConfig cfg;     // start from defaults
 
+    // Seed the game type defaults before parsing so an explicit game_type
+    // layers on top of them.
+    apply_defaults_for_game_type(cfg.base_rules.game_type, cfg.base_rules);
+    apply_defaults_for_game_type(cfg.base_rules_no_mutators.game_type, cfg.base_rules_no_mutators);
+
     toml::table root;
     try {
         root = toml::parse_file(ads_config_name);
@@ -1923,8 +1951,15 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
         }
     );
 
-    if (base || anySpawnLoadoutChanged) {
-        std::format_to(iter, "  Spawn loadout:\n");
+    const bool has_blue_loadout = !rules.spawn_loadout.blue_weapons.empty();
+
+    if (base || anySpawnLoadoutChanged || has_blue_loadout) {
+        // Say how the loadout reaches players - the list is carried either way, and when it
+        // matches the stock grant it is delivered by that instead of by the loadout packet.
+        std::format_to(iter, "  Spawn loadout{}:{}{}\n",
+                       has_blue_loadout ? " (red team)" : "",
+                       has_blue_loadout ? "              " : "                         ",
+                       rules.spawn_loadout_is_active() ? "granted by loadout" : "granted by stock spawn");
         for (auto const& e : rules.spawn_loadout.red_weapons) {
             bool unchanged = std::any_of(
                 b.spawn_loadout.red_weapons.begin(), b.spawn_loadout.red_weapons.end(), [&](auto const& be) {
@@ -1932,6 +1967,14 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
                 }
             );
             if (base || !unchanged) {
+                std::format_to(iter, "    {:<20}                 {}\n", e.weapon_name + ':', e.enabled);
+                std::format_to(iter, "      Extra ammo:                        {}\n", e.reserve_ammo);
+            }
+        }
+
+        if (has_blue_loadout) {
+            std::format_to(iter, "  Spawn loadout (blue team):\n");
+            for (auto const& e : rules.spawn_loadout.blue_weapons) {
                 std::format_to(iter, "    {:<20}                 {}\n", e.weapon_name + ':', e.enabled);
                 std::format_to(iter, "      Extra ammo:                        {}\n", e.reserve_ammo);
             }

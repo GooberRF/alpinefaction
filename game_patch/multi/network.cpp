@@ -26,6 +26,7 @@
 #include <patch_common/AsmWriter.h>
 #include <patch_common/ShortTypes.h>
 #include "network.h"
+#include "tracker.h"
 #include "multi.h"
 #include "mutators.h"
 #include "alpine_packets.h"
@@ -1343,16 +1344,6 @@ CodeInjection process_glass_kill_packet_check_room_exists_patch{
     },
 };
 
-CallHook<int(void*, int, int, rf::NetAddr&, int)> net_get_tracker_hook{
-    0x00482ED4,
-    [](void* data, int a2, int a3, rf::NetAddr& addr, int super_type) {
-        int res = net_get_tracker_hook.call_target(data, a2, a3, addr, super_type);
-        if (res != -1 && addr != rf::tracker_addr)
-            res = -1;
-        return res;
-    },
-};
-
 std::pair<std::unique_ptr<std::byte[]>, size_t> extend_packet_bytes(const std::byte* data, size_t len, const void* add, size_t add_len)
 {
     auto passthrough = [&](const char* why) {
@@ -2656,18 +2647,6 @@ FunHook<void(int, rf::NetAddr*)> multi_start_hook{
     },
 };
 
-FunHook<void()> tracker_do_broadcast_server_hook{
-    0x00483130,
-    []() {
-        tracker_do_broadcast_server_hook.call_target();
-        if (g_alpine_server_config.upnp_enabled) {
-            // Auto forward server port using UPnP (in background thread)
-            std::thread upnp_thread{try_to_auto_forward_port, rf::net_port};
-            upnp_thread.detach();
-        }
-    },
-};
-
 static std::array<
     std::deque<std::vector<uint8_t>>,
     rf::NET_MAX_REL_SOCKETS
@@ -3344,8 +3323,8 @@ void network_init()
     // Fix crash if room does not exist in glass_kill packet
     process_glass_kill_packet_check_room_exists_patch.install();
 
-    // Make sure tracker packets come from configured tracker
-    net_get_tracker_hook.install();
+    // Tracker packet filtering, UPnP port forwarding, and tracker hostname DNS refresh
+    tracker_do_patch();
 
     // Add Alpine Faction signature to game_info, game_info_req, join_req, join_accept packets
     send_game_info_packet_hook.install();
@@ -3369,9 +3348,6 @@ void network_init()
 
     // Use port 7755 when hosting a server without 'Force port' option
     multi_start_hook.install();
-
-    // Use UPnP for port forwarding if server is not in LAN-only mode
-    tracker_do_broadcast_server_hook.install();
 
     // Allow changing client and server update rate
     client_update_rate_injection.install();
