@@ -175,6 +175,7 @@ Version 1.4.0 (Lupin): Not yet released
 - Fix level editor crash on startup when many custom texture subdirectories exist under `user_maps\textures`
 - Fix level editor saving a collision mode on animated (`.vfx`) meshes, which do not support collision
 - Fix the game feed rendering on top of the scoreboard
+- Fix textures referenced by custom `.vfx` mesh files not being included when the level editor packs a VPP
 
 [@is-this-c](https://github.com/is-this-c)
 - Clear cached server config output after a shuffle of a server's rotation

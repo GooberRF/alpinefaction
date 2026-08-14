@@ -84,6 +84,15 @@ static constexpr uint32_t V3D_LOD_TRIANGLE_PLANES = 0x20;
 // 5460 * 12 = 65520, already 16-byte aligned, fits in uint16_t.
 static constexpr size_t V3D_MAX_BATCH_VERTICES = 5460;
 
+// ─── VFX format constants ──────────────────────────────────────────────────
+
+static constexpr uint32_t VFX_SIGNATURE = 0x58465356; // 'VSFX'
+static constexpr uint32_t VFX_CHUNK_MATL = 0x4C54414D; // 'MATL'
+static constexpr uint32_t VFX_CHUNK_CHNE = 0x454E4843; // 'CHNE'
+static constexpr int VFX_MATERIAL_NAME_SIZE = 32;
+static constexpr int VFX_MAX_MIX_FRAMES = 10000;
+static constexpr int VFX_MAX_CHAIN_VERTICES = 1000000;
+
 // ─── Functions ─────────────────────────────────────────────────────────────
 
 void meshes_init_paths();
@@ -98,3 +107,9 @@ std::string find_mesh_on_disk(const char* filename);
 // Extract diffuse texture names from a V3M/V3C file by parsing the binary format.
 // Returns a deduplicated list of texture filenames referenced by materials.
 std::vector<std::string> extract_v3d_texture_names(const char* filepath);
+
+// Extract texture names from a VFX effect file by parsing its MATL and CHNE chunks.
+// Returns a deduplicated list of material and chain glow texture filenames.
+// Pre-4.0 files store material data inline in their effect chunks instead of in
+// MATL chunks, so they yield nothing. Only stock effects use those versions.
+std::vector<std::string> extract_vfx_texture_names(const char* filepath);
