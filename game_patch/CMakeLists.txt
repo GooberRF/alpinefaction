@@ -169,6 +169,8 @@ set(SRCS
     multi/network.cpp
     multi/network.h
     multi/network_debug.cpp
+    multi/tracker.cpp
+    multi/tracker.h
     multi/saved_info.cpp
     multi/saved_info.h
     multi/level_download.cpp
@@ -375,6 +377,7 @@ target_link_libraries(AlpineFaction
     winmm
     iphlpapi
     ws2_32
+    dnsapi
     freetype
     stb_vorbis
     stb_image

@@ -2036,7 +2036,6 @@ CodeInjection multi_hud_render_patch{
             }
         }
 
-        multi_hud_render_killfeed();
         jetpack_render_hud();
     }
 };

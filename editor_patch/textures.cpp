@@ -191,6 +191,21 @@ CodeInjection config_save_skip_custom_subdirs{
     }
 };
 
+// FUN_0041b7c0 (startup default-texture folder group build) indexes the folder-name
+// VString array at manager+0x88 with each category's path_handle. Custom subdirectory
+// categories store a VFS path slot there instead, which reads out of bounds.
+// Inject at 0x0041b9fa (EAX = TextureCategory** array element) and jump to the loop
+// increment at 0x0041bad7 to skip them.
+CodeInjection folder_group_build_skip_custom_subdirs{
+    0x0041b9fa,
+    [](auto& regs) {
+        auto* cat = *reinterpret_cast<TextureCategory**>(static_cast<int>(regs.eax));
+        if (strncmp(cat->name.c_str(), "Custom - ", 9) == 0) {
+            regs.eip = 0x0041bad7;
+        }
+    }
+};
+
 // FUN_004452f0 (texture mode sidebar) uses a fixed path_handle from [dialog+0x98] for all
 // custom categories. This is the root "Custom" directory handle. For our subdirectory categories
 // ("Custom - <dir>"), we need to use the selected category's own path_handle instead.
@@ -510,13 +525,14 @@ static void add_mesh_to_vpp_list(const char* filename)
     xlog::info("VPP: Added mesh file '{}'", full_path);
 }
 
-// Find a V3M/V3C mesh file on disk and add its referenced textures to the VPP pack list.
+// Find a mesh file on disk and add its referenced textures to the VPP pack list.
 static void add_mesh_textures_to_pack_list(void* temp_list, const char* filename)
 {
     std::string path = find_mesh_on_disk(filename);
     if (path.empty()) return;
 
-    auto tex_names = extract_v3d_texture_names(path.c_str());
+    auto tex_names = string_iends_with(path, ".vfx") ? extract_vfx_texture_names(path.c_str())
+                                                     : extract_v3d_texture_names(path.c_str());
     for (const auto& name : tex_names) {
         add_texture_to_pack_list(temp_list, name.c_str());
         xlog::info("VPP: Added texture '{}' from mesh '{}'", name, filename);
@@ -753,6 +769,7 @@ void ApplyTexturesPatches() {
     vpp_clear_log_injection.install();
     vpp_mesh_files_injection.install();
     config_save_skip_custom_subdirs.install();
+    folder_group_build_skip_custom_subdirs.install();
     texture_refresh_all_iterate_custom_injection.install();
     texture_refresh_dedup_master_injection.install();
 }

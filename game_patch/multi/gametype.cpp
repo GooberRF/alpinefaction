@@ -314,7 +314,7 @@ const char* multi_gametype_help_text(rf::NetGameType game_type)
 
 bool gt_uses_custom_scoring()
 {
-    return gt_is_bagman_any() || gt_is_pit() || gt_is_wipeout();
+    return gt_is_bagman_any() || gt_is_pit();
 }
 
 bool gt_type_uses_rounds(rf::NetGameType game_type)

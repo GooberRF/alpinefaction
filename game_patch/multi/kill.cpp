@@ -463,7 +463,11 @@ void on_player_kill(rf::Player* killed_player, rf::Player* killer_player)
         const bool score_from_kills = !gt_uses_custom_scoring();
         if (killer_player != killed_player) {
             if (score_from_kills) {
-                rf::player_add_score(killer_player, 1);
+                // No score for team kills for individual or team
+                const bool team_kill = multi_is_team_game_type() && killer_player->team == killed_player->team;
+                if (!team_kill) {
+                    rf::player_add_score(killer_player, 1);
+                }
             }
             killer_stats->inc_kills();
         }

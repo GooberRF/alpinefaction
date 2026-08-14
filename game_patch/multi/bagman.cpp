@@ -542,6 +542,7 @@ void bagman_do_frame()
 
             // Score tick during active gameplay
             if (rf::gameseq_get_state() == rf::GameState::GS_GAMEPLAY
+                && !g_match_info.pre_match_active
                 && g_bagman_info.score_tick.elapsed()) {
                 rf::player_add_score(g_bagman_info.carrier, 1);
                 if (gt_is_tbag()) {
