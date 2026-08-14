@@ -32,6 +32,7 @@
 #include "../rf/parse.h"
 #include "../rf/vmesh.h"
 #include "../rf/level.h"
+#include "../rf/localize.h"
 #include "../rf/file/file.h"
 #include "../object/object.h"
 #include "waypoints.h"
@@ -371,10 +372,9 @@ FunHook<void(int)> lcl_init_missing_string_fix{
     0x004B08E0,
     [](int lang_id) {
         lcl_init_missing_string_fix.call_target(lang_id);
-        auto& strings = addr_as_ref<char*[1000]>(0x007CBBF0);
-        if (!strings[889]) {
+        if (!rf::strings::array[889]) {
             static char timed_out_joining[] = " timed out joining the game";
-            strings[889] = timed_out_joining;
+            const_cast<char*&>(rf::strings::array[889]) = timed_out_joining;
         }
     },
 };
