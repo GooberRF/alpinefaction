@@ -366,6 +366,19 @@ FunHook<void(const char*, int)> lcl_add_message_bof_fix{
     },
 };
 
+// stock strings.tbl has no entry 889, used as the left_game reason 6 suffix
+FunHook<void(int)> lcl_init_missing_string_fix{
+    0x004B08E0,
+    [](int lang_id) {
+        lcl_init_missing_string_fix.call_target(lang_id);
+        auto& strings = addr_as_ref<char*[1000]>(0x007CBBF0);
+        if (!strings[889]) {
+            static char timed_out_joining[] = " timed out joining the game";
+            strings[889] = timed_out_joining;
+        }
+    },
+};
+
 CodeInjection glass_shard_level_init_fix{
     0x00435A90,
     []() {
@@ -671,6 +684,7 @@ void misc_init()
     pc_multi_tbl_buffer_overflow_fix.install();
     emitters_tbl_buffer_overflow_fix.install();
     lcl_add_message_bof_fix.install();
+    lcl_init_missing_string_fix.install();
 
     // Fix killed glass restoration from a save file
     AsmWriter(0x0043604A).nop(5);
