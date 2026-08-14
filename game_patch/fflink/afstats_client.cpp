@@ -14,6 +14,7 @@
 #include <utility>
 
 #include <json.hpp>
+#include <patch_common/FunHook.h>
 #include <xlog/xlog.h>
 
 #include <common/HttpRequest.h>
@@ -242,7 +243,8 @@ ExchangeOutcome do_one_exchange(const std::string& psk, const std::string& fflin
         const std::string response_preview = sanitize_for_log(
             response.size() <= k_log_response_prefix
                 ? std::string_view{response}
-                : std::string_view{response}.substr(0, k_log_response_prefix));
+                : std::string_view{response}.substr(0, k_log_response_prefix),
+            k_log_response_prefix);
         const char* truncated = response.size() > k_log_response_prefix ? "...[truncated]" : "";
         xlog::warn("[afstats] <<< body: {}{}", response_preview, truncated);
     }
@@ -276,6 +278,14 @@ ExchangeOutcome do_one_exchange(const std::string& psk, const std::string& fflin
 
 void maybe_send_pssk()
 {
+    if (!g_state.stats_enabled) {
+        // An exchange the browser entry started can outlive the accept that disowned it,
+        // so delivery is gated on the flag rather than on how the exchange began.
+        if constexpr (AFSTATS_VERIFICATION_LOGGING) {
+            xlog::warn("[afstats] holding PSSK delivery: this server is not stats-enabled");
+        }
+        return;
+    }
     if (g_state.status != Status::done) {
         if constexpr (AFSTATS_VERIFICATION_LOGGING) {
             xlog::warn("[afstats] holding PSSK delivery: exchange status is {}",
@@ -308,10 +318,38 @@ void maybe_send_pssk()
 
 void on_exchange_finished(uint32_t join_id, ExchangeOutcome outcome)
 {
+    // Two effects are process-lifetime, not join-scoped, so they run BEFORE the stale
+    // guard below: an abandoned or superseded join must not throw them away.
+    //   - The 429 mint backoff is per-IP-per-hour on the FF side, so it has to hold
+    //     even if the join it was minted for is already gone.
+    //   - A freshly minted PSK is the player's key regardless of which join fetched it;
+    //     persisting it here (rather than after the guard) is what lets a same-address
+    //     retry reuse it instead of minting again.
+    // PSSK DELIVERY stays join-scoped and remains below the guard.
+    if (outcome.kind == ExchangeOutcome::Kind::mint_rate_limited) {
+        g_mint_backoff_until = std::chrono::steady_clock::now() + k_mint_backoff;
+        xlog::warn("[afstats] mint backoff armed for the next {} minutes", k_mint_backoff.count());
+    }
+    if (outcome.kind == ExchangeOutcome::Kind::success) {
+        // The returned PSK is authoritative; it differs from ours whenever we sent
+        // none, sent one FactionFiles no longer knows, or the player relinked.
+        if (outcome.psk != g_game_config.afstats_psk.value()) {
+            g_game_config.afstats_psk = outcome.psk;
+            g_game_config.save();
+            if constexpr (AFSTATS_VERIFICATION_LOGGING) {
+                xlog::warn("[afstats] new PSK persisted to config");
+            }
+        }
+        else if constexpr (AFSTATS_VERIFICATION_LOGGING) {
+            xlog::warn("[afstats] PSK unchanged, nothing written to config");
+        }
+    }
+
     if (join_id != g_state.join_id) {
         if constexpr (AFSTATS_VERIFICATION_LOGGING) {
             xlog::warn(
-                "[afstats] dropping stale exchange result (started for join_id={}, current join_id={})",
+                "[afstats] dropping stale exchange result (started for join_id={}, current join_id={}); "
+                "PSK/backoff already applied above",
                 join_id, g_state.join_id);
         }
         return; // the join this was started for is gone
@@ -322,32 +360,12 @@ void on_exchange_finished(uint32_t join_id, ExchangeOutcome outcome)
                    kind_to_str(outcome.kind));
     }
 
-    if (outcome.kind == ExchangeOutcome::Kind::mint_rate_limited) {
-        g_mint_backoff_until = std::chrono::steady_clock::now() + k_mint_backoff;
-        xlog::warn("[afstats] mint backoff armed for the next {} minutes", k_mint_backoff.count());
-    }
-
     if (outcome.kind != ExchangeOutcome::Kind::success) {
         xlog::warn("[afstats] no stats session this join: {} ({})", kind_to_str(outcome.kind),
                    outcome.error_detail);
         g_state.status = Status::failed;
         rf::console::print("Stats are unavailable this session ({}).", outcome.error_detail);
         return;
-    }
-
-    // The returned PSK is authoritative; it differs from ours whenever we sent
-    // none, sent one FactionFiles no longer knows, or the player relinked.
-    if (outcome.psk != g_game_config.afstats_psk.value()) {
-        g_game_config.afstats_psk = outcome.psk;
-        g_game_config.save();
-        if constexpr (AFSTATS_VERIFICATION_LOGGING) {
-            xlog::warn("[afstats] new PSK persisted to config");
-        }
-    }
-    else {
-        if constexpr (AFSTATS_VERIFICATION_LOGGING) {
-            xlog::warn("[afstats] PSK unchanged, nothing written to config");
-        }
     }
 
     g_state.status = Status::done;
@@ -498,14 +516,46 @@ ConsoleCommand2 afstats_status_cmd{
     "Show the status of this session's FactionFiles player stats link.",
 };
 
+// multi_set_current_server_addr: the engine records the server it is about to send a
+// join_req to. Every join attempt runs through it exactly once — the server list's
+// join button, the password prompt's callback, and our own -url path — and nothing
+// else calls it, so it is the one signal that a NEW attempt is beginning.
+//
+// This is where an abandoned attempt is dropped. The stock join has no cancel of its
+// own: leaving the connecting screen never reaches multi_stop, so without this a
+// cancel followed by a rejoin to the same address would inherit the abandoned
+// attempt's exchange state and PSSK (and its pssk_sent latch, which would suppress
+// delivery on the new connection entirely).
+//
+// Reset only on a NEW target. A wrong-password retry re-enters this hook with the same
+// address; resetting there would wipe an in-progress or completed exchange and any live
+// PSSK, and force a needless FF mint round-trip on the retry. multi_stop already resets
+// on a genuine disconnect, so a rejoin to the same address after leaving starts clean
+// regardless. g_state.target is cleared by afstats_client_reset(), so the last address
+// is tracked here rather than read back from it.
+std::optional<rf::NetAddr> g_last_attempt_addr;
+
+FunHook<void(const rf::NetAddr&)> multi_set_current_server_addr_hook{
+    0x0044B380,
+    [](const rf::NetAddr& addr) {
+        multi_set_current_server_addr_hook.call_target(addr);
+        if (!g_last_attempt_addr || *g_last_attempt_addr != addr) {
+            g_last_attempt_addr = addr;
+            afstats_client_reset();
+        }
+    },
+};
+
 } // namespace
 
 void afstats_client_on_join_req(const rf::NetAddr& addr, bool stats_enabled)
 {
     xlog::debug("[afstats] join_req to {} (stats_enabled={})", addr, stats_enabled ? "yes" : "no");
 
-    // The stock cancel path leaves multiplayer without a multi_stop, so a join the
-    // player abandoned is only cleared here, when the next one starts elsewhere.
+    // The attempt-start hook above already cleared any abandoned
+    // join, so this only fires if a join_req ever reaches the wire without the engine
+    // recording the target first. Retransmits within one attempt carry the same
+    // address and must not reset.
     if (g_state.target && *g_state.target != addr) {
         if constexpr (AFSTATS_VERIFICATION_LOGGING) {
             xlog::warn("[afstats] target changed from {} to {}; dropping the abandoned join's state",
@@ -529,14 +579,17 @@ void afstats_client_on_join_req(const rf::NetAddr& addr, bool stats_enabled)
 void afstats_client_on_join_accept(bool stats_enabled)
 {
     if constexpr (AFSTATS_VERIFICATION_LOGGING) {
-        xlog::warn("[afstats] join_accept parsed (stats_enabled={}, exchange already started={})",
+        xlog::warn("[afstats] join_accept settled stats_enabled={} (exchange already started={})",
                    stats_enabled ? "yes" : "no", g_state.exchange_started ? "yes" : "no");
     }
 
+    // The accept is the server describing itself, so it settles the flag in both
+    // directions: a browser entry that said "stats enabled" can be stale or simply
+    // belong to a different server that has since taken the address.
+    g_state.stats_enabled = stats_enabled;
     if (!stats_enabled) {
         return;
     }
-    g_state.stats_enabled = true;
     maybe_start_exchange();
 }
 
@@ -576,6 +629,7 @@ void afstats_client_reset()
 void afstats_client_do_patch()
 {
     afstats_status_cmd.register_cmd();
+    multi_set_current_server_addr_hook.install();
 }
 
 } // namespace fflink

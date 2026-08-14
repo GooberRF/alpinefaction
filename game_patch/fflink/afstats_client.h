@@ -12,14 +12,17 @@ namespace rf
 
 namespace fflink {
 
-// A join_req is going out to `addr`. Anything tracked for a different server is
-// dropped first, so a join the player cancelled can never hand its key to the next
-// one. `stats_enabled` comes from the target's server browser entry and starts the
-// PSK -> PSSK exchange; join_req resends do not start it twice.
+// A join_req is going out to `addr`. State from an abandoned attempt is already gone
+// by this point (the attempt-start hook clears it), so a join the player cancelled can
+// never hand its key to the next one. `stats_enabled` comes from the target's server
+// browser entry and starts the PSK -> PSSK exchange; join_req resends do not start it
+// twice.
 void afstats_client_on_join_req(const rf::NetAddr& addr, bool stats_enabled);
 
-// The join_accept has been parsed. This is where a direct connect - which has no
-// browser entry when its join_req goes out - learns the server is stats-enabled.
+// The server accepted the join and said whether it reports stats: true from the AF
+// join_accept extension, false when there is no extension to read. This is where a
+// direct connect - which has no browser entry when its join_req goes out - learns the
+// server is stats-enabled, and where a stale browser entry claiming so is corrected.
 void afstats_client_on_join_accept(bool stats_enabled);
 
 // The client has entered the game and the reliable channel is up, so a PSSK that is

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <string_view>
 #include <vector>
 
 namespace rf
@@ -131,8 +132,10 @@ void note_leave_reason(rf::Player* player, LeaveReason reason);
 void on_player_leave(rf::Player* player);
 
 // The server processed a name change for this player. Emits `player_rename` with
-// the finalized name; call after the stock handler has applied it.
-void on_player_rename(rf::Player* player, const char* name);
+// the finalized name; call after the stock handler has applied it. `prev_name` is the
+// name the player held before this change (what the stream last reported): an unchanged
+// name emits nothing, and successive changes are rate-floored.
+void on_player_rename(rf::Player* player, const char* name, std::string_view prev_name);
 
 // A level finished loading server-side. Emits `round_start`.
 void on_round_start();

@@ -38,6 +38,12 @@ constexpr unsigned long k_receive_timeout_ms = 3000;
 // Backoff schedule for transient failures (seconds). After the last entry, entries continue using the last delay.
 constexpr int k_backoff_schedule_s[] = {5, 30, 120};
 
+// The session response is a small JSON object; cap the read so a broken or hostile
+// endpoint can't stream unbounded data into memory. Mirrors the cap the events and
+// player-stats clients already enforce. Past the cap the read throws and is classified
+// as a transient error, so the exchange simply retries.
+constexpr size_t k_max_response_bytes = 256 * 1024;
+
 std::mutex g_state_mutex;
 SessionState g_state;
 std::string g_gssk; // protected by g_state_mutex
@@ -94,7 +100,14 @@ ExchangeOutcome do_one_exchange(const std::string& gsk)
 
         char buf[1024];
         std::ostringstream stream;
+        size_t total = 0;
         while (size_t n = req.read(buf, sizeof(buf))) {
+            total += n;
+            if (total > k_max_response_bytes) {
+                // The per-read receive timeout bounds how long any one read blocks; this
+                // byte cap bounds the total so a slow trickle can't grow unbounded either.
+                throw std::runtime_error("response exceeded size cap");
+            }
             stream.write(buf, n);
         }
         response = stream.str();
@@ -113,7 +126,8 @@ ExchangeOutcome do_one_exchange(const std::string& gsk)
         const std::string response_preview = sanitize_for_log(
             response.size() <= k_log_response_prefix
                 ? std::string_view{response}
-                : std::string_view{response}.substr(0, k_log_response_prefix));
+                : std::string_view{response}.substr(0, k_log_response_prefix),
+            k_log_response_prefix);
         const char* truncated = response.size() > k_log_response_prefix ? "...[truncated]" : "";
         xlog::info("[fflink] response body: {}{}", response_preview, truncated);
     };

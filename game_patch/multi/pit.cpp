@@ -189,6 +189,25 @@ void prepare_dueler(rf::Player* p)
     clear_spectator_fields(p);
 }
 
+// The duel counts as started once both duelers have live entities, which is also the
+// point where the pairing stops being provisional: until then pit_should_end_round
+// may still swap a slot (or abandon the round outright) while it waits for both
+// players. Reporting the 1v1 match here rather than at round begin means the
+// participants are the two players who actually fought, and a pairing that never got
+// off the ground reports nothing at all — on_match_end is a no-op without a match
+// start, so an abandoned round stays silent on both ends.
+void latch_duel_started()
+{
+    if (g_pit.duel_started) return;
+    if (!player_has_alive_entity(g_pit.dueler[0]) || !player_has_alive_entity(g_pit.dueler[1])) return;
+
+    g_pit.duel_started = true;
+
+    // A Pit duel is reported as a 1v1 match: it is the unit that has participants
+    // and a winner, which is what the match events describe.
+    afstats::on_match_start(1, {g_pit.dueler[0], g_pit.dueler[1]});
+}
+
 // === Round callbacks ============================================
 
 void pit_on_round_begin()
@@ -218,10 +237,6 @@ void pit_on_round_begin()
     }
 
     pit_broadcast_queue_states();
-
-    // A Pit duel is reported as a 1v1 match: it is the unit that has participants
-    // and a winner, which is what the match events describe.
-    afstats::on_match_start(1, {g_pit.dueler[0], g_pit.dueler[1]});
 
     // Match point: if either dueler is one duel win away from the score limit,
     // play the "one kill remaining" announcer cue for everyone in the server.
@@ -281,9 +296,7 @@ bool pit_should_end_round(rf::Player** out_winner)
         if (changed) pit_broadcast_queue_states();
 
         // Latch once both duelers actually have live entities.
-        if (player_has_alive_entity(g_pit.dueler[0]) && player_has_alive_entity(g_pit.dueler[1])) {
-            g_pit.duel_started = true;
-        }
+        latch_duel_started();
         return false;
     }
 
@@ -557,11 +570,7 @@ void pit_do_frame()
         }
         g_internal_spawn_in_progress = false;
 
-        if (!g_pit.duel_started
-            && player_has_alive_entity(g_pit.dueler[0])
-            && player_has_alive_entity(g_pit.dueler[1])) {
-            g_pit.duel_started = true;
-        }
+        latch_duel_started();
     }
 }
 

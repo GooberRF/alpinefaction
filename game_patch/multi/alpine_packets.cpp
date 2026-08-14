@@ -1634,23 +1634,47 @@ static void af_process_client_req_packet(const void* data, size_t len, const rf:
             break;
         }
         case af_client_req_type::af_req_stats_pssk: {
+            constexpr int64_t k_pssk_min_interval_ms = 1000;
+            const int64_t now_ms = timer::get_i64(1000);
+            // Every rejection below is reachable once per packet, so the warns get their
+            // own per-player floor: the first-write-wins check and the delivery rate floor
+            // further down are both too late to stop a client from driving log volume.
+            // A throttled warn still drops the packet, it just goes unlogged. The floor
+            // is tracked separately from last_pssk_ms so a rejected packet can never
+            // delay the one good PSSK a join is allowed to deliver.
+            const auto warn_throttle_open = [&]() {
+                if (player->last_pssk_warn_ms
+                    && now_ms - *player->last_pssk_warn_ms < k_pssk_min_interval_ms) {
+                    return false;
+                }
+                player->last_pssk_warn_ms = now_ms;
+                return true;
+            };
             if (player->is_browser) {
-                xlog::warn("[afstats] dropping PSSK from a browser ({})", player->name);
+                if (warn_throttle_open()) {
+                    xlog::warn("[afstats] dropping PSSK from a browser ({})", player->name);
+                }
                 return;
             }
             if (!fflink::afstats_server_enabled()) {
-                xlog::warn("[afstats] dropping PSSK from {}: stats are not enabled on this server",
-                           player->name);
+                if (warn_throttle_open()) {
+                    xlog::warn("[afstats] dropping PSSK from {}: stats are not enabled on this server",
+                               player->name);
+                }
                 return;
             }
             if (remaining < sizeof(StatsPsskPayload)) {
-                xlog::warn("[afstats] PSSK payload from {} too short ({} < {})", player->name, remaining,
-                           sizeof(StatsPsskPayload));
+                if (warn_throttle_open()) {
+                    xlog::warn("[afstats] PSSK payload from {} too short ({} < {})", player->name,
+                               remaining, sizeof(StatsPsskPayload));
+                }
                 return;
             }
             const std::string_view pssk{reinterpret_cast<const char*>(bytes + offset), sizeof(StatsPsskPayload)};
             if (!fflink::is_valid_stats_key_format(pssk)) {
-                xlog::warn("[afstats] malformed PSSK from {}", player->name);
+                if (warn_throttle_open()) {
+                    xlog::warn("[afstats] malformed PSSK from {}", player->name);
+                }
                 return;
             }
             // First-write-wins, ahead of everything else: a PSSK is minted per join and
@@ -1664,8 +1688,6 @@ static void af_process_client_req_packet(const void* data, size_t len, const rf:
             }
             // Floor the delivery rate so a client cannot flood the pre-store window.
             // Dropped silently: no per-packet warn.
-            constexpr int64_t k_pssk_min_interval_ms = 1000;
-            const int64_t now_ms = timer::get_i64(1000);
             if (player->last_pssk_ms && now_ms - *player->last_pssk_ms < k_pssk_min_interval_ms) {
                 return;
             }

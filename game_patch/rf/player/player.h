@@ -100,6 +100,12 @@ struct PlayerAdditionalData {
     std::optional<int64_t> last_spray_ms{};
     // Floor rate limit for af_req_stats_pssk so a client cannot flood the handler.
     std::optional<int64_t> last_pssk_ms{};
+    // Separate floor for the af_req_stats_pssk rejection warns, so a rejected packet
+    // never eats the delivery budget above.
+    std::optional<int64_t> last_pssk_warn_ms{};
+    // Floor rate limit for stats player_rename emission so a client cannot turn a rename
+    // flood into an event flood. Uses the afstats uptime clock (resets per session).
+    std::optional<int64_t> last_rename_ms{};
 
     struct {
         std::map<std::string, PlayerNetGameSaveData> saves{};

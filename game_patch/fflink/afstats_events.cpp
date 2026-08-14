@@ -70,6 +70,14 @@ constexpr size_t k_max_response_bytes = 256 * 1024;
 
 constexpr auto k_pulse_interval = std::chrono::seconds(5);
 constexpr auto k_rate_limit_backoff = std::chrono::seconds(30);
+
+// Minimum spacing between successive event POSTs, enforced even while draining a backlog
+// at ack rate. Without it, a client packet flood grows the queue fast enough that every
+// ack immediately re-arms the pulse, turning post->ack->post into a POST (and TLS
+// handshake) storm at RTT frequency. With a 500 ms floor and 500 events per batch even a
+// full 20k backlog still drains in tens of seconds, but the outbound rate stays capped
+// well below RTT. A round_end flush is not client-floodable and deliberately bypasses this.
+constexpr auto k_min_post_interval = std::chrono::milliseconds(500);
 constexpr int64_t k_ping_sample_interval_ms = 10000;
 
 constexpr unsigned long k_connect_timeout_ms = 3000;
@@ -547,6 +555,9 @@ PendingGap g_pending_gap;
 
 bool g_send_in_flight = false;
 std::chrono::steady_clock::time_point g_next_pulse{};
+// When the last event POST was handed to the worker. Floors how soon the ack-driven
+// fast-drain may re-arm the pulse (see k_min_post_interval).
+std::chrono::steady_clock::time_point g_last_post_at{};
 std::chrono::steady_clock::duration g_pulse_interval = k_pulse_interval;
 bool g_paused_401 = false;
 std::string g_paused_gssk;
@@ -1585,6 +1596,7 @@ void dispatch(PendingBatch& batch, const std::string& gssk)
     }
     g_worker_cv.notify_one();
     g_send_in_flight = true;
+    g_last_post_at = std::chrono::steady_clock::now();
 }
 
 void build_batch_from_queue()
@@ -1701,9 +1713,11 @@ void on_send_result(SendResult result)
         g_pending.pop_front();
         ++g_batches_acked;
         g_pulse_interval = k_pulse_interval;
-        // Drain a backlog at ack rate rather than one batch per pulse.
+        // Drain a backlog faster than one batch per pulse, but never post more often than
+        // the floor: floor the re-arm to k_min_post_interval after the last POST so a
+        // client flood can't reflect into a POST/handshake storm at RTT frequency.
         if (!g_pending.empty() || g_queue.size() >= k_max_events_per_batch) {
-            g_next_pulse = std::chrono::steady_clock::now();
+            g_next_pulse = std::max(std::chrono::steady_clock::now(), g_last_post_at + k_min_post_interval);
         }
         return;
     }
@@ -1794,6 +1808,13 @@ void reset_module_state()
     g_session_started = false;
     g_session_id.clear();
     g_reannouncing = false;
+
+    // Diagnostics describe one session's stream, so they go with it: otherwise the
+    // status console reports the previous session's totals against a fresh session id.
+    g_last_response = "none yet";
+    g_events_emitted = 0;
+    g_events_dropped = 0;
+    g_batches_acked = 0;
 
     // Per-player identity belongs to the session that minted it. Leaving keys behind
     // would strand everyone still connected: on_player_join refuses to mint over an
@@ -2248,14 +2269,37 @@ void on_player_leave(rf::Player* player)
     player->afstats_key.clear();
 }
 
-void on_player_rename(rf::Player* player, const char* name)
+void on_player_rename(rf::Player* player, const char* name, std::string_view prev_name)
 {
     if (!player || !ensure_session() || player->afstats_key.empty()) {
         return;
     }
+    const std::string new_name = sanitize_string(name ? name : "", k_max_name_len);
+
+    // Only the edge matters. A client can resend its current name, and the roster
+    // already carries whatever the player holds, so an unchanged name is not a stream
+    // event. Compare the sanitized forms so a change confined to bytes the wire never
+    // shows is also a no-op. This intentionally does not touch the rate floor below.
+    if (new_name == sanitize_string(prev_name, k_max_name_len)) {
+        return;
+    }
+
+    // Floor the emission rate so a rename flood cannot become an event flood. The stock
+    // handler already applied and rebroadcast the name; only the stats event is gated,
+    // and the next roster still reports the live name regardless. uptime_ms() resets when
+    // a new session starts, so a stored value ahead of `now` is treated as out of the
+    // window and allowed through rather than wrongly suppressed.
+    const int64_t now = static_cast<int64_t>(uptime_ms());
+    constexpr int64_t k_rename_floor_ms = 1000;
+    if (player->last_rename_ms && now >= *player->last_rename_ms
+        && now - *player->last_rename_ms < k_rename_floor_ms) {
+        return;
+    }
+    player->last_rename_ms = now;
+
     EvPlayerRename ev;
     ev.player = player->afstats_key;
-    ev.name = sanitize_string(name ? name : "", k_max_name_len);
+    ev.name = new_name;
     if constexpr (AFSTATS_VERIFICATION_LOGGING) {
         // Redacted: the key is incidental here, the name change is the subject.
         xlog::warn("[afstats-ev] rename {} -> '{}'", key_suffix(ev.player), ev.name);
@@ -2572,6 +2616,17 @@ void on_match_start(int team_size, const std::vector<rf::Player*>& participants)
     if (!ensure_session()) {
         return;
     }
+    // A prior match that never saw its end still holds the shared latch: an external
+    // level change or admin map mid-match closes the round path but not the match path,
+    // leaving g_match_open set. Close it as canceled before opening the new one so the
+    // stream never carries two match_start without an end between them. This is done here
+    // rather than in on_round_start on purpose: a ready-up match spans multiple rounds
+    // (start_match restarts the level, firing on_round_start while the match is live), so
+    // closing on round_start would wrongly cancel a live ready-up match. on_match_start
+    // fires once per match for both producers, so it is the safe single close point.
+    if (g_match_open) {
+        on_match_end(MatchResult::canceled, team_none, nullptr);
+    }
     EvMatchStart ev;
     ev.team_size = static_cast<uint32_t>(std::max(team_size, 0));
     for (rf::Player* player : participants) {
@@ -2752,14 +2807,40 @@ void do_frame_impl()
         return;
     }
 
+    const auto now = std::chrono::steady_clock::now();
+    const bool pulse_due = now >= g_next_pulse;
+
+    // A revoked or malformed GSK never yields a GSSK, so stop the stream cleanly
+    // instead of caching forever. Checked here rather than only on the paused-401
+    // path below because a session starts on the first event, which can land while
+    // the key exchange is still pending: if that exchange then hard-rejects, nothing
+    // is ever posted, no 401 ever comes back, and the pause path is unreachable while
+    // the queue and the per-frame sampling run on. A genuinely new GSSK later restarts
+    // a fresh session through ensure_session().
+    // Only on the pulse: snapshot_state() is a mutex plus a copy.
+    if (pulse_due) {
+        const auto status = fflink::snapshot_state().status;
+        if (status == fflink::SessionStatus::rejected_by_server
+            || status == fflink::SessionStatus::bad_gsk_format) {
+            // The GSSK is contractually rejected (a 4xx, or a malformed configured GSK),
+            // so nothing more can be transmitted: an open round, an open match, and the
+            // whole queue terminate silently by necessity. Unlike the shutdown flush path
+            // above, no closing round_end / match_end is emitted, because there is no
+            // session left to carry it — this is the spec's orphaned-session behavior, not
+            // a dropped event we could recover. reset_module_state() clears g_match_open
+            // (and g_round_open) so a genuinely new GSSK later starts a clean session.
+            xlog::warn("[afstats-ev] session key permanently rejected; stopping the event stream");
+            reset_module_state();
+            return;
+        }
+    }
+
     for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
         if (!player.is_browser && !player.afstats_key.empty()) {
             sample_player_state(&player);
         }
     }
 
-    const auto now = std::chrono::steady_clock::now();
-    const bool pulse_due = now >= g_next_pulse;
     if (pulse_due) {
         g_next_pulse = now + g_pulse_interval;
         // Move the damage/accuracy accumulators into the live queue every pulse,
@@ -2770,18 +2851,9 @@ void do_frame_impl()
 
     if (g_paused_401) {
         // Only re-check the session key on the pulse, not every frame, so a long
-        // pause is not a per-frame get_gssk() mutex + string copy.
+        // pause is not a per-frame get_gssk() mutex + string copy. A permanent
+        // rejection has already been handled above.
         if (!pulse_due) {
-            return;
-        }
-        // A revoked or malformed GSK never yields a new GSSK, so stop the stream
-        // cleanly instead of caching forever. A genuinely new GSSK later restarts a
-        // fresh session through ensure_session().
-        const auto status = fflink::snapshot_state().status;
-        if (status == fflink::SessionStatus::rejected_by_server
-            || status == fflink::SessionStatus::bad_gsk_format) {
-            xlog::warn("[afstats-ev] session key permanently rejected; stopping the event stream");
-            reset_module_state();
             return;
         }
         const std::string gssk = fflink::get_gssk();
@@ -2813,6 +2885,12 @@ void on_shutdown_impl()
     if (g_round_open) {
         note_round_end_type(RoundEndType::server_shutdown);
         emit_round_end(RoundEndType::server_shutdown);
+    }
+
+    // The shutdown flush below can still transmit, so close an open match rather than
+    // dropping it silently. Its match_end is queued here and goes out with the flush.
+    if (g_match_open) {
+        on_match_end(MatchResult::canceled, team_none, nullptr);
     }
 
     // Tell the worker to stop; the final attempt runs inline so its timeouts, not a

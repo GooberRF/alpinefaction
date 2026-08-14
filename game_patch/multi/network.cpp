@@ -938,6 +938,17 @@ FunHook<MultiIoPacketHandler> process_name_change_packet_hook{
     [](char* data, const rf::NetAddr& addr) {
         // server-side and client-side
         verify_player_id_in_packet(&data[0], addr, "name_change");
+
+        // Snapshot the current name before the stock handler overwrites it in place, so
+        // the stats emission can fire only on an actual change (clients can re-send the
+        // same name) — the pre-change name is exactly what the stream last reported.
+        std::string prev_name;
+        if (rf::is_server) {
+            if (const rf::Player* const player = rf::multi_find_player_by_id(data[0])) {
+                prev_name = player->name.c_str();
+            }
+        }
+
         process_name_change_packet_hook.call_target(data, addr);
 
         if (rf::is_server) {
@@ -945,7 +956,7 @@ FunHook<MultiIoPacketHandler> process_name_change_packet_hook{
             // the finalized name back for the stats stream. data[0] is the player id,
             // corrected by verify_player_id_in_packet above.
             if (rf::Player* const player = rf::multi_find_player_by_id(data[0])) {
-                afstats::on_player_rename(player, player->name.c_str());
+                afstats::on_player_rename(player, player->name.c_str(), prev_name);
             }
         }
     },
@@ -1806,19 +1817,46 @@ CallHook<int(const rf::NetAddr*, std::byte*, size_t)> send_join_accept_packet_ho
     },
 };
 
+// How much of the AF join_accept extension could be read. This trichotomy is
+// load-bearing for the stats flag:
+//   absent      - no AF extension at all (stock/DF/legacy non-AF). The ONLY state
+//                 permitted to clear a browser-derived stats flag to false.
+//   unparseable - AF-ish but the stats flag can't be trusted (footer magic without our
+//                 signature, or the signature read but the flags field was truncated
+//                 before it). Leave the browser-derived flag as-is; never downgrade a
+//                 real stats server's player to untracked on a short/corrupt accept.
+//   parsed_full - the flags field was positively read; the stats flag is authoritative.
+enum class JoinAcceptAf
+{
+    absent,
+    unparseable,
+    parsed_full,
+};
+
 // Parse AF extension from join_accept payload.
 // payload: points to start of payload (past 3-byte RF_GamePacketHeader)
 // payload_len: header.size field from the packet header
 // ext_offset: offset within payload where AF extension is expected (from stock field parsing)
-// Handles both footer-based (AF 1.3+) and legacy (pre-1.3) formats.
-static bool parse_join_accept_af_ext(const uint8_t* payload, size_t payload_len, size_t ext_offset,
+// Handles both footer-based (AF 1.3+) and legacy (pre-1.3) formats. `out` is populated
+// (and af_signature validated) for the parsed_* results.
+static JoinAcceptAf parse_join_accept_af_ext(const uint8_t* payload, size_t payload_len, size_t ext_offset,
     AlpineFactionJoinAcceptPacketExt& out)
 {
     std::memset(&out, 0, sizeof(out));
     if (!payload || payload_len == 0)
-        return false;
+        return JoinAcceptAf::unparseable; // no usable payload: not a positive non-AF signal
 
     const uint8_t* end = payload + payload_len;
+
+    // The stats flag lives past the signature; count the flag as read only when the copied
+    // span reached the end of the flags field. Real AF servers always send the full struct,
+    // so a signature-but-flags-truncated accept is a defensive path for a corrupted/short
+    // packet, never a normal one — it falls under `unparseable` (flag can't be trusted).
+    const size_t flags_end = offsetof(AlpineFactionJoinAcceptPacketExt, flags)
+        + sizeof(AlpineFactionJoinAcceptPacketExt::Flags);
+    const auto classify = [flags_end](size_t copy_len) {
+        return copy_len >= flags_end ? JoinAcceptAf::parsed_full : JoinAcceptAf::unparseable;
+    };
 
     // Try footer-based parsing first (AF 1.3+ server)
     if (payload_len >= sizeof(AFFooter)) {
@@ -1831,22 +1869,29 @@ static bool parse_join_accept_af_ext(const uint8_t* payload, size_t payload_len,
                 if (core >= payload) {
                     size_t copy_len = std::min(sizeof(out), core_len);
                     std::memcpy(&out, core, copy_len);
-                    return out.af_signature == ALPINE_FACTION_SIGNATURE;
+                    if (out.af_signature == ALPINE_FACTION_SIGNATURE) {
+                        return classify(copy_len);
+                    }
                 }
             }
-            return false; // footer present but malformed
+            // Footer magic present but the core did not yield our signature: an AF
+            // extension is here, just not one we can read — not a stock/DF server.
+            return JoinAcceptAf::unparseable;
         }
     }
 
     // Fallback: legacy format (pre-1.3 server) — extension appended raw after stock fields
-    if (ext_offset >= payload_len) return false;
+    if (ext_offset >= payload_len) return JoinAcceptAf::absent;
     const uint8_t* p = payload + ext_offset;
     size_t tail_len = end - p;
-    if (tail_len == 0) return false;
+    if (tail_len == 0) return JoinAcceptAf::absent;
 
     size_t copy_len = std::min(sizeof(out), tail_len);
     std::memcpy(&out, p, copy_len);
-    return out.af_signature == ALPINE_FACTION_SIGNATURE;
+    if (out.af_signature != ALPINE_FACTION_SIGNATURE) {
+        return JoinAcceptAf::absent; // stock/DF/other: no AF extension present
+    }
+    return classify(copy_len);
 }
 
 // Gate process_join_accept_packet so the engine never assigns an unknown
@@ -1902,7 +1947,11 @@ CodeInjection process_join_accept_injection{
         size_t payload_len = hdr.size;
         size_t ext_offset = static_cast<size_t>(regs.esi) + 5;
 
-        bool parsed = parse_join_accept_af_ext(payload, payload_len, ext_offset, ext_data);
+        JoinAcceptAf af_result = parse_join_accept_af_ext(payload, payload_len, ext_offset, ext_data);
+        // Only a fully-read extension drives server_info: a truncated/corrupt accept is
+        // untrustworthy, so it is treated like the no-extension case for server_info and
+        // handled separately for the stats flag below.
+        bool parsed = af_result == JoinAcceptAf::parsed_full;
 
         xlog::debug("Checking for join_accept AF extension: {:08X} (parsed: {})", ext_data.af_signature, parsed);
         if (parsed) {
@@ -1940,6 +1989,8 @@ CodeInjection process_join_accept_injection{
             server_info.pogo = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::pogo);
             // featured_no_clip is intentionally not stored here, it's consumed inline below via mutators_set_no_clip_weapon.
 
+            // parsed_full is the only state reaching this branch, so the stats flag was
+            // positively read and is authoritative for settling the session.
             fflink::afstats_client_on_join_accept(
                 !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::stats_enabled));
 
@@ -1970,6 +2021,19 @@ CodeInjection process_join_accept_injection{
             mutators_set_no_clip_weapon(-1); // non-AF server: ensure no stale override
             mutators_update_low_gravity();   // no stale gravity override
             evaluate_footsteps();
+            // Only a confidently non-AF accept clears the browser-derived stats flag: a
+            // server with no AF extension at all cannot host stats, and the browser entry
+            // we may have latched from is not the server speaking. An AF extension that is
+            // present but unreadable is deliberately left alone — hard-clearing it here
+            // silently downgrades a real stats server's player to untracked for the whole
+            // session..
+            if (af_result == JoinAcceptAf::absent) {
+                fflink::afstats_client_on_join_accept(false);
+            }
+            else {
+                xlog::debug("[afstats] join_accept AF extension present but unparseable; "
+                            "leaving the stats flag as the browser reported it");
+            }
         }
     },
 };
