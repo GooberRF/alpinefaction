@@ -218,7 +218,15 @@ CodeInjection sidebar_custom_texture_path_injection{
         auto* panel = reinterpret_cast<TextureModePanel*>(static_cast<uintptr_t>(regs.esi));
         auto* cat_array = reinterpret_cast<VArray<TextureCategory*>*>(
             static_cast<char*>(panel->texture_manager) + 0x7C);
-        regs.edx = (*cat_array)[panel->category_index]->path_handle;
+        int path_handle = (*cat_array)[panel->category_index]->path_handle;
+        // A custom subdirectory whose VFS path failed to register (path table full)
+        // has path_handle == -1. This EDX value flows into the search's path-handle
+        // arg (FUN_004c3ec0 -> FUN_004c33d0), whose stock guard is `if (param_1 != 0)`:
+        // a negative handle passes that guard and indexes (&DAT_0156b110)[-3] out of
+        // bounds, then strlen's it -> crash. 0 is the stock "no path" sentinel that
+        // skips the prefix cleanly, so fall back to it (mirrors the handle>=0 guard in
+        // reload_custom_textures) — the category behaves as if it had no custom path.
+        regs.edx = (path_handle >= 0) ? path_handle : 0;
         // Original MOV EDX,[ESI+0x98] is 6 bytes; continue at next instruction
         regs.eip = 0x00445415;
     },
@@ -355,6 +363,10 @@ CodeInjection texture_refresh_all_iterate_custom_injection{
         for (int i = 0; i < cat_array->get_size(); i++) {
             TextureCategory* cat = (*cat_array)[i];
             if (std::strncmp(cat->name.c_str(), "Custom", 6) != 0) continue;
+            // A subdirectory whose VFS path failed to register has path_handle == -1;
+            // texture_browser_scan_path (0x004c3ec0) would index the path table out of
+            // bounds on a negative handle. Skip it (mirrors reload_custom_textures).
+            if (cat->path_handle < 0) continue;
 
             TextureListSentinel temp;
             temp.head = reinterpret_cast<TextureListNode*>(&temp);

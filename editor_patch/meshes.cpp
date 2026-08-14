@@ -86,10 +86,13 @@ static std::vector<std::string> enumerate_mesh_subdirs(const char* root)
 // Register `rel_dir` with the VFS unless it is already registered, recording it for reload.
 static void register_mesh_dir(const std::string& rel_dir)
 {
-    if (!g_registered_mesh_dirs.insert(rel_dir).second) return;
+    if (g_registered_mesh_dirs.count(rel_dir)) return;
 
     int slot = file_add_path(rel_dir.c_str(), MESH_EXTENSIONS, false);
     if (slot >= 0) {
+        // Mark as registered only on success so a dir that failed because the VFS path
+        // table was full is retried on a later call instead of being permanently skipped.
+        g_registered_mesh_dirs.insert(rel_dir);
         g_mesh_path_slots.push_back(slot);
     }
     else {

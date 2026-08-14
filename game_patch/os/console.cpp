@@ -151,6 +151,66 @@ void console_register_command(rf::console::Command* cmd)
         assert(false);
 }
 
+// The stock console writer (rf::console::output at 0x00509EC0) splits `text` on
+// '\n' and strncpy's each segment into a fixed 0x105-byte ring slot with no length
+// check: bytes [0, 0x101) hold the segment text plus its NUL and [0x101, 0x105) hold
+// the color dword, across 500 slots based at 0x01754730. A single newline-delimited
+// segment longer than the slot runs past its entry and corrupts adjacent .data
+// globals (the same hazard noted at game_patch/multi/mutators.cpp:44). Clamp each
+// segment defensively before it reaches the stock writer.
+constexpr size_t k_console_slot_size = 0x105;   // ring slot stride (261 bytes)
+constexpr size_t k_console_max_segment = 255;   // conservative cap on text bytes before the NUL
+static_assert(k_console_max_segment + 1 <= k_console_slot_size - 4,
+              "clamped segment + NUL must fit before the color dword in a ring slot");
+
+// True if any '\n'-delimited segment of `text` exceeds the slot cap. `text` must be non-null.
+static bool console_line_exceeds_slot(const char* text)
+{
+    size_t seg_len = 0;
+    for (const char* p = text; *p; ++p) {
+        if (*p == '\n') {
+            seg_len = 0;
+        }
+        else if (++seg_len > k_console_max_segment) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Rebuild `text` with every '\n'-delimited segment capped at k_console_max_segment
+// bytes, backing off to a UTF-8 code-point boundary so a multibyte sequence is never
+// split (same boundary rule as fflink::sanitize_for_log). Line structure is preserved:
+// each segment is capped independently and the '\n' separators are kept.
+static std::string console_clamp_segments(const char* text)
+{
+    std::string out;
+    const char* seg = text;
+    for (;;) {
+        const char* nl = seg;
+        while (*nl && *nl != '\n') {
+            ++nl;
+        }
+        size_t seg_len = static_cast<size_t>(nl - seg);
+        if (seg_len > k_console_max_segment) {
+            size_t cut = k_console_max_segment;
+            // If the cap lands in the middle of a UTF-8 sequence, step back over the
+            // continuation bytes (10xxxxxx) so the partial code point is dropped whole.
+            while (cut > 0 && (static_cast<unsigned char>(seg[cut]) & 0xC0) == 0x80) {
+                --cut;
+            }
+            seg_len = cut;
+        }
+        out.append(seg, seg_len);
+        if (*nl == '\0') {
+            break;
+        }
+        out.push_back('\n');
+        seg = nl + 1;
+    }
+    return out;
+}
+
 static FunHook<void(const char*, const rf::Color*)> console_output_hook{
     &rf::console::output,
     [](const char* text, const rf::Color* color) {
@@ -158,7 +218,17 @@ static FunHook<void(const char*, const rf::Color*)> console_output_hook{
             win32_console_output(text, color);
         }
         else {
-            console_output_hook.call_target(text, color);
+            // Clamp over-long lines before they reach the stock ring-buffer writer,
+            // which has no length check (see console_clamp_segments). Inert on the
+            // happy path: with no over-long segment we pass the original pointer
+            // through unchanged with zero allocation. Null text delegates as-is.
+            const char* out_text = text;
+            std::string clamped;
+            if (text && console_line_exceeds_slot(text)) {
+                clamped = console_clamp_segments(text);
+                out_text = clamped.c_str();
+            }
+            console_output_hook.call_target(out_text, color);
         }
         std::string_view text_view{text};
         console_log_write(text_view);
