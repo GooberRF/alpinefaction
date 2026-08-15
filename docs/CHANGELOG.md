@@ -178,6 +178,7 @@ Version 1.4.0 (Lupin): Not yet released
 - Fix the game feed rendering on top of the scoreboard
 - Fix textures referenced by custom `.vfx` mesh files not being included when the level editor packs a VPP
 - Fix chat and console showing only a bare player name when a player leaves after timing out waiting for game state
+- Fix players being kicked with "couldn't join between the levels" when a level switch begins while they are joining
 
 [@is-this-c](https://github.com/is-this-c)
 - Clear cached server config output after a shuffle of a server's rotation

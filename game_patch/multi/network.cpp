@@ -2576,6 +2576,7 @@ FunHook<void()> multi_stop_hook{
         vote_client_reset(); // drop the cached vote options and active vote state
         vote_panel_reset(); // drop the vote form, which describes the server being left
         clear_pending_rotation_preserve(); // server side: no rotation carry survives a session
+        server_reset_level_tracking(); // server side: forget per-session level switch tracking
         af_reset_session_overrides_snapshot();
         g_local_player_spectators.clear();
         g_remote_server_cfg_popup.reset();
@@ -2718,6 +2719,20 @@ CodeInjection obj_interp_too_fast_fix{
         const int frame_time_us = regs.ebp;
         regs.eax = now - frame_time_us;
         regs.edi = now;
+    },
+};
+
+// EBX is the player and the NUL-terminated requested filename is at ESP+4 at this point;
+// 0x00481C5C is the handler epilogue, reached without booting the player
+CodeInjection process_state_info_req_boot_patch{
+    0x00481C31,
+    [](auto& regs) {
+        const rf::Player* player = regs.ebx;
+        const char* req = reinterpret_cast<const char*>(regs.esp + 4);
+        if (player && req[0] && state_info_req_mismatch_is_benign(player, req)) {
+            xlog::info("Dropping stale state_info_req from {} for level {}", player->name, req);
+            regs.eip = 0x00481C5C;
+        }
     },
 };
 
@@ -3247,6 +3262,9 @@ void network_init()
 
     // Fix object interpolation playing too fast causing a possible jitter
     obj_interp_too_fast_fix.install();
+
+    // Don't boot joining players whose state_info_req names a level the switch left behind
+    process_state_info_req_boot_patch.install();
 
     // Send trigger_activate packets for late joiners
     send_state_info_injection.install();

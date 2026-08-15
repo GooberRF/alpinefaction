@@ -1739,6 +1739,7 @@ CodeInjection multi_on_new_player_injection{
     [](auto& regs) {
         rf::Player* player = regs.esi;
         if (player) {
+            server_record_join_time_level(player);
             update_player_active_status(player); // active pulse on join
         }
 
@@ -2752,8 +2753,107 @@ static void send_bot_config_with_identity(rf::Player* player, const ServerBotCon
         config.personality_preset, slot, config.skill_preset, player->name, resolved_character);
 }
 
+// the engine broadcasts leave_limbo per player and silently skips anyone whose reliable socket
+// has not formed yet, so a level switch overlapping a join needs re-delivery and forgiveness
+static std::string g_prev_level_filename;
+static std::array<std::string, 256> g_join_time_level;
+
+static const char* expected_level_filename()
+{
+    return (rf::multi_server_flags & rf::NG_FLAG_CHANGING_LEVEL) != 0
+        ? rf::level_filename_to_load.c_str()
+        : rf::level.filename.c_str();
+}
+
+void server_record_join_time_level(rf::Player* player)
+{
+    if (player && player->net_data) {
+        g_join_time_level[player->net_data->player_id] = rf::level.filename.c_str();
+    }
+}
+
+void server_reset_level_tracking()
+{
+    g_prev_level_filename.clear();
+    for (std::string& entry : g_join_time_level) {
+        entry.clear();
+    }
+}
+
+bool state_info_req_mismatch_is_benign(const rf::Player* player, const char* req)
+{
+    if (!player->net_data) {
+        return false;
+    }
+
+    const std::string_view req_sv{req};
+
+    if ((rf::multi_server_flags & rf::NG_FLAG_CHANGING_LEVEL) != 0) {
+        const char* outgoing = rf::level.filename.c_str();
+        if (outgoing && *outgoing && string_iequals(req_sv, outgoing)) {
+            return true;
+        }
+    }
+
+    if (!g_prev_level_filename.empty() && string_iequals(req_sv, g_prev_level_filename)) {
+        return true;
+    }
+
+    const std::string& join_level = g_join_time_level[player->net_data->player_id];
+    return !join_level.empty() && string_iequals(req_sv, join_level);
+}
+
+FunHook<void()> send_leave_limbo_packet_hook{
+    0x0047C0A0,
+    [] {
+        g_prev_level_filename = rf::level.filename.c_str();
+        send_leave_limbo_packet_hook.call_target();
+    },
+};
+
+static void send_leave_limbo_packet_to_player(rf::Player* player, const char* filename)
+{
+    const size_t name_len = std::strlen(filename);
+    const size_t packet_len = sizeof(RF_GamePacketHeader) + name_len + 1 + sizeof(int32_t);
+    if (packet_len > rf::max_packet_size) {
+        return;
+    }
+
+    int32_t checksum;
+    if ((rf::multi_server_flags & rf::NG_FLAG_CHANGING_LEVEL) != 0) {
+        int32_t& cached_checksum = addr_as_ref<int32_t>(0x00646070);
+        if (cached_checksum == 0) {
+            cached_checksum = static_cast<int32_t>(rf::get_file_checksum(filename));
+        }
+        checksum = cached_checksum;
+    }
+    else {
+        checksum = static_cast<int32_t>(rf::get_file_checksum(filename));
+    }
+
+    uint8_t buf[rf::max_packet_size];
+    RF_GamePacketHeader header{};
+    header.type = RF_GPT_LEAVE_LIMBO;
+    header.size = static_cast<uint16_t>(name_len + 1 + sizeof(int32_t));
+    std::memcpy(buf, &header, sizeof(header));
+    std::memcpy(buf + sizeof(header), filename, name_len + 1);
+    std::memcpy(buf + sizeof(header) + name_len + 1, &checksum, sizeof(checksum));
+
+    rf::multi_io_send_reliable(player, buf, static_cast<int>(packet_len), 0);
+}
+
 void server_reliable_socket_ready(rf::Player* player)
 {
+    if (player->version_info.software != ClientSoftware::Browser && player->net_data) {
+        const std::string& join_level = g_join_time_level[player->net_data->player_id];
+        const char* expected = expected_level_filename();
+        if (!join_level.empty() && expected && *expected && !string_iequals(join_level, expected)) {
+            xlog::info("Re-sending leave_limbo to {}: joined during {} but server is on {}",
+                player->name, join_level, expected);
+            send_leave_limbo_packet_to_player(player, expected);
+        }
+    }
+
     // Send bot config once the reliable connection is ready.
     if (player->is_bot) {
         // Refuse to give a profile if there are already enough bots for the ideal player count
@@ -4348,6 +4448,9 @@ void server_init()
 
     // Exclude spectators and browsers from team selection when a new player joins
     pick_team_for_new_player_hook.install();
+
+    // Track the outgoing level across a switch so joiners are not booted for reporting it
+    send_leave_limbo_packet_hook.install();
 
     // Customized dedicated server console message when player joins
     multi_on_new_player_injection.install();
