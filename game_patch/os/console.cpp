@@ -230,7 +230,7 @@ static FunHook<void(const char*, const rf::Color*)> console_output_hook{
             }
             console_output_hook.call_target(out_text, color);
         }
-        std::string_view text_view{text};
+        std::string_view text_view = text ? std::string_view{text} : std::string_view{};
         console_log_write(text_view);
         if (g_console_log.is_open() && (text_view.empty() || (text_view.back() != '\n' && text_view.back() != '\r'))) {
             g_console_log.put('\n');

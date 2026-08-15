@@ -1485,7 +1485,11 @@ SendResult do_one_post(const SendJob& job, unsigned long connect_timeout_ms, uns
             if (j.contains("ok") && j["ok"].is_boolean() && j["ok"].get<bool>()
                 && j.contains("batch") && j["batch"].is_number_integer()) {
                 const auto acked = j["batch"].get<int64_t>();
-                if (acked >= 0) {
+                // Reject out-of-range batch numbers before the uint32 cast: a value above
+                // UINT32_MAX would wrap and could alias a live batch number, discarding that
+                // batch as acked. A well-formed ack always fits, so this only rejects
+                // malformed/hostile input.
+                if (acked >= 0 && acked <= static_cast<int64_t>(UINT32_MAX)) {
                     out.ack_ok = true;
                     out.ack_batch = static_cast<uint32_t>(acked);
                 }
@@ -2722,7 +2726,11 @@ void on_match_end_derived(MatchResult result)
 
 void on_subround_start(const std::vector<rf::Player*>& participants)
 {
-    if (!ensure_session()) {
+    // A subround only exists inside an open game round. If the game round is closed
+    // (e.g. the session was torn down and lazily restarted mid-game, so on_round_start
+    // has not run since), suppress it: otherwise this subround_start would never be
+    // paired with a close, since emit_round_end only fires while g_round_open is true.
+    if (!ensure_session() || !g_round_open) {
         return;
     }
     // A prior subround that never saw its end still holds the latch (a level change
