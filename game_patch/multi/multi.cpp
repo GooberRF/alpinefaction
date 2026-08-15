@@ -22,6 +22,7 @@
 #include "salvage.h"
 #include "mutators.h"
 #include "bots/bot_chat_manager.h"
+#include "../fflink/afstats_events.h"
 #include "../hud/hud.h"
 #include "../hud/multi_spectate.h"
 #include "../rf/file/file.h"
@@ -287,6 +288,9 @@ FunHook<void()> multi_limbo_init{
 
             if (g_match_info.match_active) {
                 af_broadcast_automated_chat_msg("\xA6 Match complete!");
+                // Before reset(), which drops the roster, and while the scores the
+                // winner is derived from are still the finished match's.
+                afstats::on_match_end_derived(afstats::MatchResult::completed);
                 g_match_info.reset();
             }
             else if (g_match_info.pre_match_active && g_match_info.everyone_ready) {
@@ -849,6 +853,21 @@ FunHook<void(rf::Entity*, int, rf::Vector3&, rf::Matrix3&, bool)> multi_process_
             }
         }
         multi_process_remote_weapon_fire_hook.call_target(ep, weapon_type, pos, orient, alt_fire);
+
+        // One trigger pull. Counting projectiles rather than shots here is what makes
+        // pellet weapons comparable with single-projectile ones.
+        if (rf::is_server) {
+            if (rf::Player* pp = rf::player_from_entity_handle(ep->handle)) {
+                int projectiles = 1;
+                if (kill_attribution_is_valid_weapon_type(weapon_type)) {
+                    projectiles = std::max(rf::weapon_types[weapon_type].num_projectiles, 1);
+                }
+                if (ep->entity_flags2 & 0x1000) { // EF2_SHOTGUN_DOUBLE_BULLET_UNK
+                    projectiles *= 2;
+                }
+                afstats::on_weapon_fired(pp, weapon_type, static_cast<uint32_t>(projectiles));
+            }
+        }
 
         // Notify spectate system of weapon fire so the fpgun fire animation is triggered.
         // Skip thrown projectile weapons (grenade, C4, flamethrower canister alt-fire) because

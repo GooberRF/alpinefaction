@@ -17,6 +17,7 @@
 #include "server.h"
 #include "server_internal.h"
 #include "alpine_packets.h"
+#include "../fflink/afstats_events.h"
 #include "../rf/multi.h"
 #include "../rf/item.h"
 #include "../rf/entity.h"
@@ -315,7 +316,12 @@ void bagman_broadcast_state()
     af_send_bagman_state_packet_to_all();
 }
 
-int bagman_get_red_team_score() 
+int bagman_get_score_tick_ms()
+{
+    return kScoreTickMs;
+}
+
+int bagman_get_red_team_score()
 {
     return g_bagman_info.red_team_score;
 }
@@ -422,6 +428,7 @@ static rf::Player* find_player_with_bag_powerup()
 static void on_pickup(rf::Player* player)
 {
     rf::Entity* ep = alive_entity_for(player);
+    const BagState state_before = g_bagman_info.state;
 
     g_bagman_info.carrier = player;
     g_bagman_info.state = BagState::BS_Carried;
@@ -435,6 +442,9 @@ static void on_pickup(rf::Player* player)
     rf::multi_powerup_add(player, kPowerupTypeAmp, kCarrierAmpDurationMs);
 
     announce(std::format("{} has the bag!", player->name.c_str()));
+    afstats::on_bagman_pickup(player, g_bagman_info.bag_pos,
+        state_before == BagState::BS_Dropped ? afstats::BagmanFrom::dropped
+                                             : afstats::BagmanFrom::spawn);
     bagman_broadcast_state();
 }
 
@@ -445,6 +455,7 @@ static void drop_bag_at_position(rf::Player* prev_carrier, const rf::Vector3& dr
     g_bagman_info.state = BagState::BS_Dropped;
     g_bagman_info.bag_pos = drop_pos;
     g_bagman_info.return_timer.set(g_alpine_server_config_active_rules.bagman.bag_return_time_ms);
+    afstats::on_bagman_event(afstats::BagmanEventKind::drop, prev_carrier, drop_pos);
 
     if (prev_carrier) {
         rf::multi_powerup_remove(prev_carrier, kPowerupTypeAmp);
@@ -481,6 +492,7 @@ static void drop_bag_from_entity(rf::Player* prev_carrier, rf::Entity* ep)
     rf::Vector3 drop_pos = ep ? ep->pos : g_bagman_info.bag_pos;
     rf::Matrix3 drop_orient = ep ? ep->orient : g_bagman_info.spawn_orient;
     spawn_bag_item(drop_pos, drop_orient);
+    afstats::on_bagman_event(afstats::BagmanEventKind::drop, prev_carrier, drop_pos);
 
     if (prev_carrier) {
         announce(std::format("{} dropped the bag!", prev_carrier->name.c_str()));
@@ -498,6 +510,7 @@ void bagman_play_return_sound()
 
 static void on_return()
 {
+    afstats::on_bagman_event(afstats::BagmanEventKind::ret, nullptr, g_bagman_info.spawn_pos);
     g_bagman_info.state = BagState::BS_At_Spawn;
     g_bagman_info.return_timer.invalidate();
     g_bagman_info.bag_respawn_retry_timer.invalidate();
@@ -567,6 +580,8 @@ void bagman_do_frame()
                 g_bagman_info.state = BagState::BS_At_Spawn;
                 spawn_bag_item(g_bagman_info.spawn_pos, g_bagman_info.spawn_orient);
                 announce("The bag is now available!");
+                afstats::on_bagman_event(afstats::BagmanEventKind::available, nullptr,
+                                         g_bagman_info.spawn_pos);
                 bagman_broadcast_state();
             }
             return;

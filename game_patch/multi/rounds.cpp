@@ -11,6 +11,7 @@
 #include "server.h"
 #include "server_internal.h"
 #include "alpine_packets.h"
+#include "../fflink/afstats_events.h"
 #include "../hud/hud.h"
 #include "../rf/multi.h"
 #include "../rf/entity.h"
@@ -226,6 +227,7 @@ void rotate_to_next_level()
     g_rounds_runtime.pending_level_change = true; // gate Inactive→start until level actually loads
     // Advance the rotation. multi_change_level is async; the latch above
     // keeps rounds_do_frame from restarting a round-set on the doomed level.
+    afstats::note_round_end_type(afstats::RoundEndType::level_logic);
     set_manually_loaded_level(false);
     rf::multi_change_level(nullptr);
 }

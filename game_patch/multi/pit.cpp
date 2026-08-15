@@ -15,6 +15,7 @@
 #include "server.h"
 #include "server_internal.h"
 #include "alpine_packets.h"
+#include "../fflink/afstats_events.h"
 #include "../hud/hud.h"
 #include "../sound/sound.h"
 #include "../rf/multi.h"
@@ -151,9 +152,13 @@ void clear_spectator_fields(rf::Player* p)
     if (old_target && rf::is_server) {
         af_send_spectate_notify_packet(old_target, p, false);
     }
+    const bool was_spectator = p->is_spectator;
     p->is_spectator = false;
     p->spectatee = std::nullopt;
     p->spectate_start_time = std::nullopt;
+    if (was_spectator) {
+        afstats::on_status(p, afstats::StatusKind::spec_stop);
+    }
 }
 
 // Validate/fill both dueler slots. Slot 0 is the "champion seat" by convention
@@ -182,6 +187,25 @@ void prepare_dueler(rf::Player* p)
     p->round_participated = false;
     p->respawn_timer.invalidate();
     clear_spectator_fields(p);
+}
+
+// The duel counts as started once both duelers have live entities, which is also the
+// point where the pairing stops being provisional: until then pit_should_end_round
+// may still swap a slot (or abandon the round outright) while it waits for both
+// players. Reporting the subround here rather than at round begin means the
+// participants are the two players who actually fought, and a pairing that never got
+// off the ground reports nothing at all — on_subround_end is a no-op without a subround
+// start, so an abandoned round stays silent on both ends.
+void latch_duel_started()
+{
+    if (g_pit.duel_started) return;
+    if (!player_has_alive_entity(g_pit.dueler[0]) || !player_has_alive_entity(g_pit.dueler[1])) return;
+
+    g_pit.duel_started = true;
+
+    // A Pit duel is reported as a subround: it is the unit that has participants
+    // and a winner, which is what the subround events describe.
+    afstats::on_subround_start({g_pit.dueler[0], g_pit.dueler[1]});
 }
 
 // === Round callbacks ============================================
@@ -272,9 +296,7 @@ bool pit_should_end_round(rf::Player** out_winner)
         if (changed) pit_broadcast_queue_states();
 
         // Latch once both duelers actually have live entities.
-        if (player_has_alive_entity(g_pit.dueler[0]) && player_has_alive_entity(g_pit.dueler[1])) {
-            g_pit.duel_started = true;
-        }
+        latch_duel_started();
         return false;
     }
 
@@ -305,6 +327,16 @@ rf::Player* pit_resolve_timeout_winner()
 void pit_on_round_end(rf::Player* winner, RoundEndReason reason)
 {
     if (!rf::is_server) return;
+
+    // A draw (timeout, or both duelers gone) reports no winner rather than a cancel:
+    // the duel ran to completion, it simply decided nothing. A level change ends the
+    // subround without a decided contest.
+    afstats::SubroundResult result =
+        (reason == RoundEndReason::LevelChange) ? afstats::SubroundResult::canceled
+        : (winner != nullptr)                   ? afstats::SubroundResult::completed
+                                                : afstats::SubroundResult::draw;
+    // Pit is FFA: no winning team, the winner (if any) is the surviving dueler.
+    afstats::on_subround_end(result, afstats::team_none, winner);
 
     rf::Player* d0 = g_pit.dueler[0];
     rf::Player* d1 = g_pit.dueler[1];
@@ -544,11 +576,7 @@ void pit_do_frame()
         }
         g_internal_spawn_in_progress = false;
 
-        if (!g_pit.duel_started
-            && player_has_alive_entity(g_pit.dueler[0])
-            && player_has_alive_entity(g_pit.dueler[1])) {
-            g_pit.duel_started = true;
-        }
+        latch_duel_started();
     }
 }
 

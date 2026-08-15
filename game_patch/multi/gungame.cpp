@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <format>
+#include <iterator>
 #include <map>
 #include <optional>
 #include <random>
@@ -15,6 +16,7 @@
 #include "server.h"
 #include "server_internal.h"
 #include "alpine_packets.h"
+#include "../fflink/afstats_events.h"
 #include "../main/main.h"
 #include "../sound/sound.h"
 #include "../hud/hud.h"
@@ -735,6 +737,10 @@ void gungame_on_player_kill(rf::Player* killer, rf::Player* killed)
                 grant_rampage_reward(killer);
             }
         }
+        // There is no stored level counter: the level is the player's position in
+        // their own score-threshold -> weapon order map.
+        const int level = static_cast<int>(std::distance(order.begin(), order.upper_bound(score)));
+        afstats::on_gg_levelup(killer, level, weapon);
         grant_and_switch(killer, weapon);
     }
 

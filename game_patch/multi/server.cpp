@@ -59,6 +59,8 @@
 #include "../rf/os/timer.h"
 #include "../rf/level.h"
 #include "../rf/collide.h"
+#include "../fflink/afstats_events.h"
+#include "../fflink/fflink_session.h"
 
 // all commands that can be used by any rcon profiles
 // full_admin gives access to this entire list
@@ -558,7 +560,11 @@ void handle_load_command(rf::Player* player, std::string_view save_name)
 void handle_player_set_handicap(rf::Player* player, uint8_t amount)
 {
     const uint8_t applied = static_cast<uint8_t>(std::clamp<int>(amount, 0, 99));
+    const bool changed = player->damage_handicap != applied;
     player->damage_handicap = applied;
+    if (changed) {
+        afstats::on_status(player, afstats::StatusKind::handicap, applied);
+    }
     rf::console::print("At their request, {} has been given a {}% damage reduction handicap.", player->name, applied);
     auto msg = std::format("At your request, you have been given a {}% damage reduction handicap.", applied);
     af_send_automated_chat_msg(msg, player);
@@ -632,6 +638,10 @@ void handle_whosready_command(rf::Player* player)
     }
 }
 
+// Set for exactly one multi_ctf_drop_flag call by handle_drop_flag_request. Every
+// other caller of that function (death, disconnect, kick) is a death drop.
+static bool g_ctf_drop_is_manual = false;
+
 static void handle_drop_flag_request(rf::Player* player)
 {
     const bool is_salvage = gt_is_salvage();
@@ -651,6 +661,7 @@ static void handle_drop_flag_request(rf::Player* player)
 
     // drop flag if held
     if (rf::multi_ctf_get_red_flag_player() == player || rf::multi_ctf_get_blue_flag_player() == player) {
+        g_ctf_drop_is_manual = true;
         rf::multi_ctf_drop_flag(player);
         rf::ctf_flag_cooldown_timestamp.set(750);
     }
@@ -1316,6 +1327,9 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
         float life_before = damaged_ep->life;
         float armor_before = damaged_ep->armor;
         int damaged_ep_handle = damaged_ep->handle;
+        // A gib destroys the entity, so the death position has to be taken before
+        // damage is applied to still be available afterwards.
+        rf::Vector3 victim_pos_before_damage = damaged_ep->pos;
 
         float real_damage = entity_damage_hook.call_target(damaged_ep, damage, killer_handle, damage_type, killer_uid);
 
@@ -1360,6 +1374,13 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
 
         bool is_dead = damaged_ep ? damaged_ep->life <= 0.0f : true;
 
+        // Hoisted out of the lethal-blow block below: the stats stream needs the same
+        // weapon attribution for every damage application, not just the last one.
+        const DamageWeaponContext damage_ctx = kill_attribution_get_damage_context();
+        // A weapon type on the obj_damage call itself means a direct hit; splash damage
+        // only ever gets its weapon from the enclosing detonation context.
+        const bool direct_weapon_hit = damage_ctx.weapon_type >= 0 && !damage_ctx.splash;
+
         // Feed the combat chain that assists are computed from. Must run before the record
         // step below so the killing hit itself keeps the chain alive. Friendly fire in team
         // games never earns an assist.
@@ -1375,10 +1396,6 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
         // lethal transition: post-death corpse damage must not overwrite it.
         if (rf::is_multi && rf::is_server && damaged_player && damaged_player->net_data
             && is_dead && life_before > 0.0f) {
-            const DamageWeaponContext damage_ctx = kill_attribution_get_damage_context();
-            // A weapon type on the obj_damage call itself means a direct hit; splash damage
-            // only ever gets its weapon from the enclosing detonation context.
-            const bool direct_weapon_hit = damage_ctx.weapon_type >= 0 && !damage_ctx.splash;
             int weapon = damage_ctx.weapon_type;
             uint8_t kill_flags = damage_ctx.splash ? AF_KILL_FLAG_SPLASH : 0;
             if (weapon < 0 && killer_player && killer_player != damaged_player) {
@@ -1425,6 +1442,13 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
                 }
             }
 
+            // Same flags and assist list the af_kill_info packet is built from, so
+            // the stats stream and the in-game attribution can never disagree.
+            const rf::Vector3 victim_pos = damaged_ep ? damaged_ep->pos : victim_pos_before_damage;
+            const rf::Entity* killer_ep_for_pos = rf::entity_from_handle(killer_handle);
+            afstats::on_kill(damaged_player, killer_player, weapon, damage_type, kill_flags, assists,
+                             victim_pos, killer_ep_for_pos ? &killer_ep_for_pos->pos : nullptr);
+
             kill_attribution_record(killed_id, killer_id, weapon, kill_flags, damage_type,
                                     std::move(assists));
         }
@@ -1439,6 +1463,25 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
             } else {
                 effective_damage = std::min(real_damage, std::max(life_before, 0.0f) + std::max(armor_before, 0.0f) * 2.0f);
             }
+        }
+
+        // Feeds the windowed damage/accuracy aggregates. Deliberately wider than the
+        // PvP block below: environmental deaths and self-damage are real damage the
+        // stream reports, with a null attacker where there is no player behind it.
+        if (rf::is_server && damaged_player && real_damage > 0.0f) {
+            int stats_weapon = damage_ctx.weapon_type;
+            if (stats_weapon < 0 && killer_player && killer_player != damaged_player) {
+                if (rf::Entity* killer_ep = rf::entity_from_handle(killer_handle)) {
+                    stats_weapon = killer_ep->ai.current_primary_weapon;
+                }
+            }
+            bool stats_headshot = false;
+            if (direct_weapon_hit && !kill_attribution_is_melee_weapon(stats_weapon)) {
+                stats_headshot = kill_attribution_get_hit_region(damaged_ep_handle)
+                    == kill_attribution_hit_region_head;
+            }
+            afstats::on_damage(killer_player, damaged_player, stats_weapon, damage_type,
+                               effective_damage, direct_weapon_hit, stats_headshot);
         }
 
         if (rf::is_server && is_pvp_damage && real_damage > 0.0f) {
@@ -1848,6 +1891,10 @@ void start_match()
                                              g_match_info.ready_players_blue.end());
     g_match_info.ready_players_blue.clear();
 
+    afstats::on_match_start(g_match_info.team_size,
+        std::vector<rf::Player*>(g_match_info.active_match_players.begin(),
+                                 g_match_info.active_match_players.end()));
+
     for (rf::Player* player : get_clients(false, false)) {
         af_send_ready_prompt(player, 0); // match starting — pre-match no longer active
     }
@@ -1861,6 +1908,9 @@ void start_match()
 void cancel_match()
 {
     rf::console::print("Canceling match");
+    // Before load_next_level: the limbo it drives reaches the match-completed path
+    // with match_active still set, and the stream must report this as a cancel.
+    afstats::on_match_end(afstats::MatchResult::canceled, afstats::team_none, nullptr);
     if (g_match_info.match_active) {
         load_next_level(); // end the round if active match is canceled
     }
@@ -1931,6 +1981,22 @@ void start_pre_match()
             update_pre_match_powerups(player);
         }
     }
+}
+
+uint8_t af_match_state_for_stats()
+{
+    if (g_match_info.match_active) {
+        return static_cast<uint8_t>(afstats::MatchState::match_active);
+    }
+    // pre_match_queued counts as pre-match because of when this is read. The
+    // round_start stamp is taken from multi_level_init_post_gametypes, which the
+    // level-init injection runs BEFORE its own start_pre_match() call — so a
+    // pre-match that a match vote queued for this level load is still merely
+    // queued at stamp time, even though the round about to begin is ready-up play.
+    if (g_match_info.pre_match_active || g_match_info.pre_match_queued) {
+        return static_cast<uint8_t>(afstats::MatchState::pre_match);
+    }
+    return static_cast<uint8_t>(afstats::MatchState::none);
 }
 
 void add_ready_player(rf::Player* player)
@@ -2400,6 +2466,8 @@ static void assign_player_to_team(rf::Player* player, rf::ubyte new_team)
     }
 
     player->team = new_team;
+    afstats::on_status(player, new_team == rf::TEAM_BLUE ? afstats::StatusKind::team_blue
+                                                         : afstats::StatusKind::team_red);
 
     if (player->net_data) {
         rf::multi_send_team_change_packet(nullptr, player->net_data->player_id, new_team);
@@ -2495,6 +2563,7 @@ FunHook<void(rf::Player*)> multi_spawn_player_server_side_hook{
                 // Fresh entity, so any riot shield break suppression from the life
                 // that just ended can never apply to them again.
                 riot_shield_on_player_spawn(player);
+                afstats::on_spawn(player, ep->pos);
             }
 
             // inform newly spawned players of their loadout
@@ -3628,6 +3697,10 @@ FunHook<void()> multi_check_for_round_end_hook{
                 af_broadcast_automated_chat_msg(msg);
             }
             else {
+                // time_up is a local, so the stats stream has to be told which
+                // limit fired before the level change unwinds it.
+                afstats::note_round_end_type(time_up ? afstats::RoundEndType::time_limit
+                                                     : afstats::RoundEndType::score_limit);
                 set_manually_loaded_level(false);
                 rf::multi_change_level(nullptr);
             }
@@ -4252,6 +4325,76 @@ CodeInjection dropped_red_flag_return_time_patch{
     },
 };
 
+// Every drop cause funnels through here: death, manual request, disconnect, kick.
+FunHook<void(rf::Player*)> multi_ctf_drop_flag_hook{
+    0x00473F40,
+    [](rf::Player* player) {
+        // get_*_flag_player() returns null when no one carries the flag, so without
+        // the player!=null guard a null drop would false-match and sample a phantom.
+        const bool had_red = player != nullptr && rf::multi_ctf_get_red_flag_player() == player;
+        const bool had_blue = player != nullptr && rf::multi_ctf_get_blue_flag_player() == player;
+        rf::Vector3 drop_pos{};
+        if (had_red) {
+            rf::multi_ctf_get_red_flag_pos(&drop_pos);
+        }
+        else if (had_blue) {
+            rf::multi_ctf_get_blue_flag_pos(&drop_pos);
+        }
+
+        multi_ctf_drop_flag_hook.call_target(player);
+
+        if (rf::is_server && (had_red || had_blue)) {
+            afstats::on_flag_event(g_ctf_drop_is_manual ? afstats::FlagEventKind::drop_manual
+                                                        : afstats::FlagEventKind::drop_death,
+                                   had_red ? afstats::team_red : afstats::team_blue, player,
+                                   drop_pos);
+        }
+        g_ctf_drop_is_manual = false;
+    },
+};
+
+// The stolen-flag return timers are only checked here, and the return they drive
+// is the one flag transition with no player behind it.
+FunHook<void()> multi_ctf_do_frame_hook{
+    0x00472ED0,
+    []() {
+        // Pure observer: nothing here runs when stats are off. The position getters
+        // copy from globals (they do not dereference the flag items), and the
+        // in-base getters are null-guarded; still, only sample a side whose flag item
+        // exists so a one-flag level can never reach a getter with a null item.
+        // Salvage reports its own returns from salvage_do_frame.
+        const bool sampling = rf::is_server && fflink::afstats_server_enabled()
+            && rf::multi_get_game_type() == rf::NG_TYPE_CTF;
+        const bool sample_red = sampling && rf::ctf_red_flag_item != nullptr;
+        const bool sample_blue = sampling && rf::ctf_blue_flag_item != nullptr;
+        bool red_home_before = false;
+        bool blue_home_before = false;
+        rf::Vector3 red_pos{};
+        rf::Vector3 blue_pos{};
+        if (sample_red) {
+            red_home_before = rf::multi_ctf_is_red_flag_in_base();
+            rf::multi_ctf_get_red_flag_pos(&red_pos);
+        }
+        if (sample_blue) {
+            blue_home_before = rf::multi_ctf_is_blue_flag_in_base();
+            rf::multi_ctf_get_blue_flag_pos(&blue_pos);
+        }
+
+        multi_ctf_do_frame_hook.call_target();
+
+        // A touch return is reported from the touch dispatch, which runs outside this
+        // frame function, so anything that came home in here was the timer.
+        if (sample_red && !red_home_before && rf::multi_ctf_is_red_flag_in_base()) {
+            afstats::on_flag_event(afstats::FlagEventKind::return_timeout, afstats::team_red,
+                                   nullptr, red_pos);
+        }
+        if (sample_blue && !blue_home_before && rf::multi_ctf_is_blue_flag_in_base()) {
+            afstats::on_flag_event(afstats::FlagEventKind::return_timeout, afstats::team_blue,
+                                   nullptr, blue_pos);
+        }
+    },
+};
+
 CodeInjection sp_damage_calculation_patch{
     0x0041A373,
     [](auto& regs) {
@@ -4281,6 +4424,8 @@ void server_init()
 
     // Set CTF flag return time
     dropped_blue_flag_return_time_patch.install();
+    multi_ctf_drop_flag_hook.install();
+    multi_ctf_do_frame_hook.install();
     dropped_red_flag_return_time_patch.install();
 
     // SP-style damage calculations (ie. armour doesnt fully protect health)
@@ -4542,6 +4687,10 @@ void server_do_frame()
 
 void server_on_limbo_state_enter()
 {
+    // First, while g_is_overtime, the level info and the scores still describe the
+    // round that just finished.
+    afstats::on_round_end();
+
     g_is_overtime = false;
     g_prev_level = rf::level.filename.c_str();
     server_vote_on_limbo_state_enter();
@@ -4804,4 +4953,5 @@ void initialize_game_info_server_flags()
     g_game_info_server_flags.saving_enabled = server_is_saving_enabled();
     g_game_info_server_flags.gaussian_spread = server_gaussian_spread();
     g_game_info_server_flags.damage_notifications = server_has_damage_notifications();
+    g_game_info_server_flags.stats_enabled = fflink::afstats_server_enabled();
 }

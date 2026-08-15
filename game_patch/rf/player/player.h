@@ -43,6 +43,39 @@ struct ClientVersionInfoProfile {
     bool is_d3d11 = false;
 };
 
+// Per-round, per-player counters for the FactionFiles event stream. Reset at
+// every round start; serialized whole into the round_end / player_leave summary
+// block. Score and caps are read live from the engine at summary time instead of
+// being duplicated here.
+struct AfstatsRoundCounters {
+    uint32_t kills = 0;
+    uint32_t deaths = 0;
+    uint32_t assists = 0;
+    uint32_t caps = 0;
+    uint32_t shots_fired = 0;
+    uint32_t shots_hit = 0;
+    float damage_dealt = 0.0f;
+    float damage_taken = 0.0f;
+    uint32_t highest_streak = 0;
+    uint32_t current_streak = 0;
+    int64_t time_played_ms = 0;
+    int64_t time_spectating_ms = 0;
+    int64_t time_idle_ms = 0;
+    int64_t ping_sum = 0;
+    uint32_t ping_samples = 0;
+
+    // Bookkeeping. The time accumulators above are advanced by sampling the
+    // player's state on the sender pulse, so these mark where the last sample
+    // landed rather than when a state was entered.
+    int64_t present_since_ms = 0;
+    int64_t last_sample_ms = 0;
+    int64_t last_ping_sample_ms = 0;
+
+    // Idle is a computed predicate with no stored engine state, so the sampler
+    // edge-detects it against this.
+    bool was_idle = false;
+};
+
 struct PlayerAdditionalData {
     // Shared variables.
     bool is_bot = false;
@@ -65,6 +98,14 @@ struct PlayerAdditionalData {
     std::optional<int64_t> last_hit_sound_ms{};
     std::optional<int64_t> last_critical_sound_ms{};
     std::optional<int64_t> last_spray_ms{};
+    // Floor rate limit for af_req_stats_pssk so a client cannot flood the handler.
+    std::optional<int64_t> last_pssk_ms{};
+    // Separate floor for the af_req_stats_pssk rejection warns, so a rejected packet
+    // never eats the delivery budget above.
+    std::optional<int64_t> last_pssk_warn_ms{};
+    // Floor rate limit for stats player_rename emission so a client cannot turn a rename
+    // flood into an event flood. Uses the afstats uptime clock (resets per session).
+    std::optional<int64_t> last_rename_ms{};
 
     struct {
         std::map<std::string, PlayerNetGameSaveData> saves{};
@@ -128,6 +169,21 @@ struct PlayerAdditionalData {
     // Throttles the spawn-decline notices in multi_spawn_player_server_side
     // (Alpine restriction, anti-cheat, match in progress, bot, respawn delay).
     rf::Timestamp spawn_decline_msg_timer{};
+
+    // FactionFiles player stats session key delivered by the client on join.
+    // Never persisted, unique per join.
+    std::optional<std::string> afstats_pssk{};
+
+    // How the event stream refers to this player: a UPSSK minted by this server at
+    // join, replaced by the PSSK above once the client delivers one. Empty for
+    // browsers and whenever stats reporting is off.
+    std::string afstats_key{};
+    AfstatsRoundCounters afstats_round{};
+
+    // Value from the stats stream's leave-reason registry. First writer wins, so a
+    // specific reason (banned, vote_kicked) survives the generic kick that follows
+    // it; -1 means the player vanished without any local notice, i.e. a timeout.
+    int8_t afstats_leave_reason = -1;
 };
 static_assert(alignof(PlayerAdditionalData) == 0x8);
 #endif
