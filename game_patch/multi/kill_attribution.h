@@ -55,6 +55,11 @@ DamageWeaponContext kill_attribution_get_damage_context();
 // for `entity_handle`. -1 otherwise.
 int kill_attribution_get_hit_region(int entity_handle);
 
+// True while a projectile impact (weapon_hit_obj) is being resolved, i.e. the damage currently
+// being applied was delivered by a real projectile rather than by a per-frame damage processor
+// that happens to name a weapon (the burning-object spread does exactly that).
+bool kill_attribution_in_projectile_impact();
+
 // True when `weapon_type` is safe to use as an index into rf::weapon_types. Matters because
 // the index reaches display code over the wire, where nothing constrains it.
 bool kill_attribution_is_valid_weapon_type(int weapon_type);

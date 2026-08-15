@@ -1262,6 +1262,88 @@ void send_critical_hit_packet(rf::Player* target)
     send_sound_packet(target, target->last_critical_sound_ms, 10, stock_sound_id::jolt_01); // rate limit 10/sec
 }
 
+// Accuracy shot scope, set by multi_lag_comp_weapon_fire_hook. A lag-compensated projectile's
+// entire flight -- including every victim a rail bolt pierces -- resolves synchronously inside one
+// multi_lag_comp_weapon_fire call (0x0046F380, the per-victim hit handler, has exactly one caller:
+// 0x0046FAB5 inside 0x0046F7E0). The scope lets the accuracy counters award at most one hit per
+// projectile: hitting three players with one bolt is one accurate shot, not three.
+static bool g_accuracy_shot_scope_active = false;
+static bool g_accuracy_shot_hit_counted = false;
+
+// Consume-once: true if this damage application may count as an accuracy hit.
+static bool accuracy_shot_scope_consume()
+{
+    if (!g_accuracy_shot_scope_active) {
+        return true; // non-lag-comp weapons are single-hit by construction (stock tbl)
+    }
+    if (g_accuracy_shot_hit_counted) {
+        return false;
+    }
+    g_accuracy_shot_hit_counted = true;
+    return true;
+}
+
+// Melee hit credits: a melee hit only counts if a melee swing was counted as fired for it.
+//
+// Melee fires deferred projectiles. The swing arms ai.create_weapon_delay_timestamps from the
+// weapon's impact delays (entity_fire_weapon, 0x0042607D / 0x004261DA), and the server creates
+// the projectiles later in entity_process -> 0x00409340, which walks *both* timestamps and calls
+// weapon_create at 0x0040956B for each one that elapsed. (player_do_frame's 0x004A28FA is the
+// client-side twin, for the local player only -- 0x00409340 skips the local entity, and a
+// dedicated server never runs player_do_frame at all.)
+//
+// The counts do not line up on their own. The stick relays one fire packet per impact delay, and
+// each packet re-arms *both* timestamps unconditionally, so one fire input yields 2 packets but
+// up to 3 projectiles: the second packet lands before the first packet's long timestamp expires
+// and pushes it out rather than replacing a spent one. Crediting makes the ledger exact --
+// hits can never outrun the swings actually counted -- without depending on any timing window.
+struct MeleeHitCredits
+{
+    int count = 0;
+    int64_t expires_at = 0;
+};
+
+// Long enough for the last deferred projectile of a swing to fly (max stock impact delay 0.6s),
+// short enough that a whiffed swing's credit cannot be spent much later.
+constexpr int64_t melee_credit_lifetime_ms = 2000;
+// Bounds accumulation from a player swinging at empty air.
+constexpr int melee_credit_cap = 4;
+
+static MeleeHitCredits* melee_credits_for(rf::Player* pp)
+{
+    static std::vector<MeleeHitCredits> credits(rf::multi_max_player_id);
+    if (!pp || !pp->net_data) {
+        return nullptr;
+    }
+    const int player_id = pp->net_data->player_id;
+    if (player_id < 0 || player_id >= static_cast<int>(credits.size())) {
+        return nullptr;
+    }
+    MeleeHitCredits& c = credits[player_id];
+    if (c.count > 0 && timer::get_i64(1000) >= c.expires_at) {
+        c.count = 0;
+    }
+    return &c;
+}
+
+void melee_grant_hit_credit(rf::Player* pp)
+{
+    if (MeleeHitCredits* c = melee_credits_for(pp)) {
+        c->count = std::min(c->count + 1, melee_credit_cap);
+        c->expires_at = timer::get_i64(1000) + melee_credit_lifetime_ms;
+    }
+}
+
+static bool melee_consume_hit_credit(rf::Player* pp)
+{
+    MeleeHitCredits* c = melee_credits_for(pp);
+    if (!c || c->count <= 0) {
+        return false;
+    }
+    --c->count;
+    return true;
+}
+
 FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
     0x0041A350,
     [](rf::Entity* damaged_ep, float damage, int killer_handle, int damage_type, int killer_uid) {
@@ -1475,13 +1557,55 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
                     stats_weapon = killer_ep->ai.current_primary_weapon;
                 }
             }
+            const bool stats_melee = kill_attribution_is_melee_weapon(stats_weapon);
             bool stats_headshot = false;
-            if (direct_weapon_hit && !kill_attribution_is_melee_weapon(stats_weapon)) {
+            if (direct_weapon_hit && !stats_melee) {
+                // Hit region is projectile-measured, so melee stays out of headshot detection.
                 stats_headshot = kill_attribution_get_hit_region(damaged_ep_handle)
                     == kill_attribution_hit_region_head;
             }
+
+            // The one condition that drives both accuracy counters (afstats and the legacy
+            // scoreboard), so the two can never disagree.
+            bool count_hit = direct_weapon_hit && killer_player;
+            if (count_hit) {
+                // An accurate shot has to be something a projectile actually delivered. Direct
+                // weapon damage reaches here two ways: a projectile impact (weapon_hit_obj, which
+                // covers ordinary projectiles and the deferred melee ones) or the lag-compensated
+                // rewind raycast (inside the 0x0046F7E0 scope). The burning-object processor
+                // (0x0042F1BC) is neither -- it calls obj_damage once per frame per victim with an
+                // explicit flamethrower weapon type and no projectile behind it, which would
+                // otherwise let burn spread farm hits without ever firing a shot.
+                count_hit = kill_attribution_in_projectile_impact() || g_accuracy_shot_scope_active;
+            }
+            if (count_hit && stats_melee) {
+                // Riot stick alt (taser) and the drill are on/off melee modes: they are
+                // indistinguishable from swings by weapon id and damage type, but continuous fire
+                // only happens while the server-side ai.weapon_is_on state is set -- the same state
+                // that gates entity_process's per-frame fire path (0x0041E6F4 -> 0x0041E727).
+                // Those modes never send a fire packet, so no fired is ever counted for them; their
+                // hits must not count either.
+                rf::Entity* killer_ep = rf::entity_from_handle(killer_handle);
+                if (!killer_ep || rf::entity_weapon_is_on(killer_ep->handle, stats_weapon)) {
+                    count_hit = false;
+                }
+            }
+            if (count_hit) {
+                // At most one hit per lag-compensated projectile (rail piercing).
+                count_hit = accuracy_shot_scope_consume();
+            }
+            if (count_hit && stats_melee) {
+                // Last gate, so a credit is only spent on a hit that would otherwise count:
+                // a melee hit has to be backed by a swing that was counted as fired.
+                count_hit = melee_consume_hit_credit(killer_player);
+            }
+
             afstats::on_damage(killer_player, damaged_player, stats_weapon, damage_type,
-                               effective_damage, direct_weapon_hit, stats_headshot);
+                               effective_damage, count_hit, stats_headshot);
+
+            if (count_hit && killer_player->stats) {
+                static_cast<PlayerStatsNew*>(killer_player->stats)->add_shots_hit(1.0f);
+            }
         }
 
         if (rf::is_server && is_pvp_damage && real_damage > 0.0f) {
@@ -2601,61 +2725,54 @@ FunHook<void(rf::Player*)> multi_spawn_player_server_side_hook{
     },
 };
 
-static float get_weapon_shot_stats_delta(rf::Weapon* wp)
-{
-    int num_projectiles = wp->info->num_projectiles;
-    rf::Entity* parent_ep = rf::entity_from_handle(wp->parent_handle);
-    if (parent_ep && parent_ep->entity_flags2 & 0x1000) { // EF2_SHOTGUN_DOUBLE_BULLET_UNK
-        num_projectiles *= 2;
-    }
-    return 1.0f / num_projectiles;
-}
-
-static void maybe_increment_weapon_hits_stat(int hit_obj_handle, rf::Weapon *wp)
-{
-    rf::Entity* attacker_ep = rf::entity_from_handle(wp->parent_handle);
-    if (!attacker_ep) {
-        return;
-    }
-
-    rf::Entity* hit_ep = rf::entity_from_handle(hit_obj_handle);
-    if (!hit_ep) {
-        return;
-    }
-
-    rf::Player* attacker_pp = rf::player_from_entity_handle(attacker_ep->handle);
-    rf::Player* hit_pp = rf::player_from_entity_handle(hit_ep->handle);
-    if (!attacker_pp || !hit_pp) {
-        return;
-    }
-
-    if (!multi_is_team_game_type() || attacker_pp->team != hit_pp->team) {
-        auto* stats = static_cast<PlayerStatsNew*>(attacker_pp->stats);
-        stats->add_shots_hit(get_weapon_shot_stats_delta(wp));
-        xlog::trace("hit a_ep {} wp {} h_ep {}", attacker_ep, wp, hit_ep);
-    }
-}
-
-FunHook<int(rf::LevelCollisionOut*, rf::Weapon*)> multi_lag_comp_handle_hit_hook{
-    0x0046F380,
-    [](rf::LevelCollisionOut *col_info, rf::Weapon *wp) {
-        if (rf::is_server) {
-            maybe_increment_weapon_hits_stat(col_info->obj_handle, wp);
-        }
-        return multi_lag_comp_handle_hit_hook.call_target(col_info, wp);
-    },
-};
-
+// Retained purely as the accuracy shot scope (see accuracy_shot_scope_consume) -- the fired
+// counting that used to live here moved to weapon_fire_projectile_create_hook, which covers every
+// weapon instead of only the lag-compensated (bullet) ones. Save/restore rather than set/clear,
+// mirroring SplashWeaponScope.
 FunHook<void(rf::Entity*, rf::Weapon*)> multi_lag_comp_weapon_fire_hook{
     0x0046F7E0,
     [](rf::Entity *ep, rf::Weapon *wp) {
+        const bool prev_active = g_accuracy_shot_scope_active;
+        const bool prev_counted = g_accuracy_shot_hit_counted;
+        g_accuracy_shot_scope_active = true;
+        g_accuracy_shot_hit_counted = false;
         multi_lag_comp_weapon_fire_hook.call_target(ep, wp);
-        rf::Player* pp = rf::player_from_entity_handle(ep->handle);
-        if (pp && pp->stats) {
-            auto* stats = static_cast<PlayerStatsNew*>(pp->stats);
-            stats->add_shots_fired(get_weapon_shot_stats_delta(wp));
-            xlog::trace("fired a_ep {} wp {}", ep, wp);
+        g_accuracy_shot_scope_active = prev_active;
+        g_accuracy_shot_hit_counted = prev_counted;
+    },
+};
+
+// Counts one shot per real projectile created by a player's trigger pull, for both the afstats
+// stream and the legacy scoreboard counters -- they are fed from the same sites so they can never
+// disagree.
+// Hooked at the call sites, NOT on weapon_create itself: lag-compensated (bullet)
+// weapons create a second, ghost projectile per shot at 0x004266F8 for the rewind
+// raycast, and a FunHook on weapon_create would double-count exactly the way PF's
+// accuracy stat does. 0x00426665 = entity_fire_weapon's per-projectile loop
+// (ordinary packet fire + continuous on/off fire from entity_process); 0x0047D2DE =
+// the fire-packet handler's thrown branch, reached only by the flamethrower-alt canister,
+// the grenade and the remote charge (branch chain 0x0047D26A-0x0047D2AB; the detonator is
+// routed to 0x00429C70, which creates nothing). The branches are mutually
+// exclusive, so each projectile is counted exactly once. Counting per creation also
+// makes shotgun pellets and double blasts exact without reading the weapon table.
+// alt_fire is typed int, not bool, so the dword the call site pushes is forwarded
+// byte-for-byte; the hook never reads it.
+CallHook<rf::Weapon*(int, int, rf::Vector3*, rf::Matrix3*, int, int)>
+    weapon_fire_projectile_create_hook{
+    {0x00426665, 0x0047D2DE},
+    [](int weapon_type, int parent_handle, rf::Vector3* pos, rf::Matrix3* orient,
+       int alt_fire, int a6) {
+        rf::Weapon* wp = weapon_fire_projectile_create_hook.call_target(
+            weapon_type, parent_handle, pos, orient, alt_fire, a6);
+        if (wp && rf::is_server) {
+            if (rf::Player* pp = rf::player_from_entity_handle(parent_handle)) {
+                afstats::on_weapon_fired(pp, weapon_type, 1);
+                if (pp->stats) {
+                    static_cast<PlayerStatsNew*>(pp->stats)->add_shots_fired(1.0f);
+                }
+            }
         }
+        return wp;
     },
 };
 
@@ -4506,11 +4623,20 @@ void server_init()
     // Support forcing player character
     multi_spawn_player_server_side_hook.install();
 
-    // Hook lag compensation functions to calculate accuracy only for weapons with bullets
-    // Note: weapons with bullets (projectiles) are created twice server-side so hooking weapon_create would
-    // be problematic (PF went this way and its accuracy stat is broken)
-    multi_lag_comp_handle_hit_hook.install();
+    // Accuracy. The legacy scoreboard/PF/'/stats' counters and the afstats stream are fed from the
+    // same places so they can never disagree: fired at projectile creation (all weapons, including
+    // the continuous-fire modes that never send a fire packet), hits at the single shared condition
+    // in entity_damage_hook. Melee is the exception on the fired side -- it does create weapon
+    // objects, but deferred: the swing arms the impact-delay timestamps and the projectile appears
+    // later at the deliberately unhooked 0x004A28FA (player_do_frame) -- so its swings are counted
+    // from their fire packets in multi.cpp instead, one shot per swing.
+    // Note: weapons with bullets (projectiles) are created twice server-side, so hooking
+    // weapon_create itself would be problematic (PF went this way and its accuracy stat is broken)
+    // -- hooking the call sites avoids the second, ghost creation at 0x004266F8.
+    // The lag comp fire hook no longer counts anything; it only scopes a projectile's flight so
+    // rail piercing awards at most one hit per bolt.
     multi_lag_comp_weapon_fire_hook.install();
+    weapon_fire_projectile_create_hook.install();
 
     // Set lower bound of server max players clamp range to 1 (instead of 2)
     write_mem<i8>(0x0046DD4F + 1, 1);

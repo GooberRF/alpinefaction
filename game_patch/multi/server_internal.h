@@ -1247,3 +1247,8 @@ bool multi_set_gametype_alpine(std::string_view gametype_name);
 bool is_gametype_name_valid(std::string_view gametype_name);
 void launch_alpine_dedicated_server();
 std::string build_info_command_output();
+
+// Accuracy for melee, whose projectiles are created later than the swing that pays for them.
+// Called once per melee swing counted as fired; entity_damage_hook spends the credit when that
+// swing's projectile connects, so melee hits can never outrun melee shots. Server-side only.
+void melee_grant_hit_credit(rf::Player* attacker);

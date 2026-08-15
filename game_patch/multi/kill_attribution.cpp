@@ -25,6 +25,11 @@
 static DamageWeaponContext g_damage_ctx;
 // Weapon of the explosion whose radius-damage tree is currently running.
 static std::optional<int> g_splash_weapon_ctx;
+// True while a projectile impact (weapon_hit_obj) is being resolved. Distinguishes damage a
+// projectile actually delivered from weapon-typed damage produced by per-frame processors --
+// notably the burning-object spread at 0x0042F1BC, which calls obj_damage with an explicit
+// flamethrower weapon type and no projectile behind it.
+static bool g_projectile_impact_active = false;
 
 // Body region of the most recent projectile hit test, tagged with the entity it was for so a
 // hit on someone else cannot be mistaken for a hit on the victim.
@@ -173,7 +178,14 @@ FunHook<bool(rf::Weapon*)> weapon_hit_obj_hook{
     0x004C59F0,
     [](rf::Weapon* wp) {
         SplashWeaponScope splash_scope{wp};
-        return weapon_hit_obj_hook.call_target(wp);
+        // The direct-hit obj_damage call lives inside this function (0x004C6132), so the flag
+        // marks damage that a real projectile impact produced. Saved and restored rather than
+        // cleared, because impacts nest the same way chained detonations do.
+        const bool prev_impact = g_projectile_impact_active;
+        g_projectile_impact_active = true;
+        const bool result = weapon_hit_obj_hook.call_target(wp);
+        g_projectile_impact_active = prev_impact;
+        return result;
     },
 };
 
@@ -205,6 +217,11 @@ FunHook<void(rf::Entity*, rf::Item*, int*)> send_obj_kill_packet_hook{
 DamageWeaponContext kill_attribution_get_damage_context()
 {
     return g_damage_ctx;
+}
+
+bool kill_attribution_in_projectile_impact()
+{
+    return g_projectile_impact_active;
 }
 
 int kill_attribution_get_hit_region(int entity_handle)
@@ -351,6 +368,7 @@ void kill_attribution_level_init()
     g_kill_attribution_sent_sequence.clear();
     g_combat_chains.clear();
     g_splash_weapon_ctx.reset();
+    g_projectile_impact_active = false;
     g_damage_ctx = {};
     g_hit_region_ctx = {};
     g_riot_shield_weapon_type = -2;
