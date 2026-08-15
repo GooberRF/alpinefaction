@@ -99,6 +99,14 @@ enum class MatchResult : uint8_t
     canceled = 1,
 };
 
+// Wire values from the subround_end `result` registry.
+enum class SubroundResult : uint8_t
+{
+    completed = 0, // decided (a winner_team or winner_player is set)
+    draw = 1,      // ran to completion with no winner (double wipe, timeout tie, mutual death)
+    canceled = 2,  // ended without a decided contest (level change, or abandoned before it could start)
+};
+
 // Wire values from the round_start `match_state` registry. Stamped on every
 // round_start so warmup play is distinguishable from match play at round
 // granularity, without depending on the (gap-lossy) match_start/match_end pair.
@@ -201,6 +209,13 @@ void on_match_end(MatchResult result, uint8_t winner_team, rf::Player* winner_pl
 // Same, for the ready-up match system, which stores no winner: the winning team or
 // top-scoring player is derived from the live scores at the call site.
 void on_match_end_derived(MatchResult result);
+
+// Subround system: a traditional round driven by rounds.cpp (a Pit duel, a Wipeout
+// round). Nested inside a game (round_*). Numbering is 1-based and restarts each game.
+void on_subround_start(const std::vector<rf::Player*>& participants);
+// `winner_team` is the team registry (team_none when not applicable) and
+// `winner_player` is set only for duel-style subrounds.
+void on_subround_end(SubroundResult result, uint8_t winner_team, rf::Player* winner_player);
 
 // Vote lifecycle. `vote_type` and `result` are the wire-frozen AfVoteType /
 // AfVoteResult values and go out verbatim. `vote_type` is repeated on `vote_ended`

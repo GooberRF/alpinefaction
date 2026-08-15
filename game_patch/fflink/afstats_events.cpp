@@ -328,6 +328,22 @@ struct EvMatchEnd
     std::string winner_player; // empty = null
 };
 
+struct EvSubroundStart
+{
+    uint32_t index = 0;
+    uint8_t match_state = 0;
+    std::vector<std::string> participants;
+};
+
+struct EvSubroundEnd
+{
+    uint32_t index = 0;
+    uint8_t result = 0;
+    uint8_t winner_team = team_none;
+    std::string winner_player; // empty = null
+    uint64_t duration_ms = 0;
+};
+
 struct EvVoteCalled
 {
     uint8_t vote_type = 0;
@@ -381,8 +397,8 @@ using EventPayload =
     std::variant<EvServerHello, EvGap, EvPlayerJoin, EvPlayerRemediate, EvPlayerRename, EvPlayerLeave,
                  EvRoundStart, EvRoundEnd, EvKill, EvSpawn, EvDamage, EvAccuracy, EvStatus,
                  EvItemPickup, EvFlagEvent, EvPointEvent, EvBagmanEvent, EvGgLevelup, EvMatchStart,
-                 EvMatchEnd, EvVoteCalled, EvVoteEnded, EvGeomod, EvClutterDestroyed,
-                 EvDetailBrushDestroyed>;
+                 EvMatchEnd, EvSubroundStart, EvSubroundEnd, EvVoteCalled, EvVoteEnded, EvGeomod,
+                 EvClutterDestroyed, EvDetailBrushDestroyed>;
 
 struct Event
 {
@@ -422,6 +438,11 @@ bool g_any_round_started = false;
 // A cancel and the limbo that follows it both reach the match-end path; this makes
 // the second one a no-op.
 bool g_match_open = false;
+// Subround (Pit duel / Wipeout round) latch. index is 1-based and restarts each game;
+// the open flag makes subround_start/subround_end strictly alternate.
+uint32_t g_subround_index = 0;
+bool g_subround_open = false;
+int64_t g_subround_start_ms = 0;
 std::optional<RoundEndType> g_pending_end_type;
 
 std::deque<Event> g_queue;
@@ -1253,6 +1274,21 @@ nlohmann::json event_to_json(const Event& e)
                 j["winner_player"] =
                     p.winner_player.empty() ? nlohmann::json(nullptr) : nlohmann::json(p.winner_player);
             }
+            else if constexpr (std::is_same_v<T, EvSubroundStart>) {
+                j["type"] = "subround_start";
+                j["index"] = p.index;
+                j["match_state"] = p.match_state;
+                j["participants"] = p.participants;
+            }
+            else if constexpr (std::is_same_v<T, EvSubroundEnd>) {
+                j["type"] = "subround_end";
+                j["index"] = p.index;
+                j["result"] = p.result;
+                j["winner_team"] = p.winner_team;
+                j["winner_player"] =
+                    p.winner_player.empty() ? nlohmann::json(nullptr) : nlohmann::json(p.winner_player);
+                j["duration_ms"] = p.duration_ms;
+            }
             else if constexpr (std::is_same_v<T, EvVoteCalled>) {
                 j["type"] = "vote_called";
                 j["vote_type"] = p.vote_type;
@@ -1800,6 +1836,8 @@ void reset_module_state()
     g_round_open = false;
     g_any_round_started = false;
     g_match_open = false;
+    g_subround_index = 0;
+    g_subround_open = false;
     g_pending_end_type.reset();
     g_send_in_flight = false;
     g_paused_401 = false;
@@ -2074,6 +2112,12 @@ void emit_round_end(RoundEndType end_type)
     // Aggregates belong to the round that is closing, not the one that follows.
     flush_accumulators();
 
+    // A subround still open when the game ends emits its subround_end first, so the
+    // stream closes the nested unit before the round that contained it.
+    if (g_subround_open) {
+        on_subround_end(SubroundResult::canceled, team_none, nullptr);
+    }
+
     const auto game_type = rf::multi_get_game_type();
 
     EvRoundEnd ev;
@@ -2323,6 +2367,10 @@ void on_round_start()
     g_any_round_started = true;
     g_round_open = true;
     g_pending_end_type.reset();
+    // A new game restarts subround numbering. Any subround still open was closed by the
+    // emit_round_end above; drop the latch regardless so the count starts clean.
+    g_subround_index = 0;
+    g_subround_open = false;
 
     for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
         if (!player.is_browser) {
@@ -2616,14 +2664,14 @@ void on_match_start(int team_size, const std::vector<rf::Player*>& participants)
     if (!ensure_session()) {
         return;
     }
-    // A prior match that never saw its end still holds the shared latch: an external
-    // level change or admin map mid-match closes the round path but not the match path,
-    // leaving g_match_open set. Close it as canceled before opening the new one so the
-    // stream never carries two match_start without an end between them. This is done here
-    // rather than in on_round_start on purpose: a ready-up match spans multiple rounds
-    // (start_match restarts the level, firing on_round_start while the match is live), so
-    // closing on round_start would wrongly cancel a live ready-up match. on_match_start
-    // fires once per match for both producers, so it is the safe single close point.
+    // A prior match that never saw its end still holds the latch: an external level
+    // change or admin map mid-match closes the round path but not the match path, leaving
+    // g_match_open set. Close it as canceled before opening the new one so the stream
+    // never carries two match_start without an end between them. This is done here rather
+    // than in on_round_start on purpose: a ready-up match (now the sole match_* producer)
+    // spans multiple rounds -- start_match restarts the level, firing on_round_start while
+    // the match is live -- so closing on round_start would wrongly cancel a live match.
+    // on_match_start fires once per match, so it is the safe single close point.
     if (g_match_open) {
         on_match_end(MatchResult::canceled, team_none, nullptr);
     }
@@ -2670,6 +2718,60 @@ void on_match_end_derived(MatchResult result)
     rf::Player* winner_player = nullptr;
     derive_winner(winner_team, winner_player);
     on_match_end(result, winner_team, winner_player);
+}
+
+void on_subround_start(const std::vector<rf::Player*>& participants)
+{
+    if (!ensure_session()) {
+        return;
+    }
+    // A prior subround that never saw its end still holds the latch (a level change
+    // between subrounds, an abandoned pairing). Close it as canceled before opening the
+    // new one so the stream never carries two subround_start without an end between them.
+    if (g_subround_open) {
+        on_subround_end(SubroundResult::canceled, team_none, nullptr);
+    }
+    ++g_subround_index;
+    g_subround_start_ms = static_cast<int64_t>(uptime_ms());
+    g_subround_open = true;
+
+    EvSubroundStart ev;
+    ev.index = g_subround_index;
+    // Reuse the same source round_start stamps, so a subround's state matches its game.
+    ev.match_state = af_match_state_for_stats();
+    for (rf::Player* player : participants) {
+        if (player && !player->afstats_key.empty()) {
+            ev.participants.push_back(player->afstats_key);
+        }
+    }
+    if (g_trace) {
+        xlog::warn("[afstats-ev] subround_start {} with {} participants", ev.index,
+                   ev.participants.size());
+    }
+    push_event(std::move(ev));
+}
+
+void on_subround_end(SubroundResult result, uint8_t winner_team, rf::Player* winner_player)
+{
+    if (!ensure_session() || !g_subround_open) {
+        return; // no open subround: an end with no start (abandoned pairing) stays silent
+    }
+    g_subround_open = false;
+
+    EvSubroundEnd ev;
+    ev.index = g_subround_index;
+    ev.result = static_cast<uint8_t>(result);
+    ev.winner_team = winner_team;
+    if (winner_player && !winner_player->afstats_key.empty()) {
+        ev.winner_player = winner_player->afstats_key;
+    }
+    const int64_t now = static_cast<int64_t>(uptime_ms());
+    ev.duration_ms = static_cast<uint64_t>(std::max<int64_t>(0, now - g_subround_start_ms));
+    if (g_trace) {
+        xlog::warn("[afstats-ev] subround_end {} result {} winner_team {}", ev.index, ev.result,
+                   ev.winner_team);
+    }
+    push_event(std::move(ev));
 }
 
 void on_vote_called(uint8_t vote_type, rf::Player* initiator, rf::Player* target, const char* detail)
@@ -2885,6 +2987,12 @@ void on_shutdown_impl()
     if (g_round_open) {
         note_round_end_type(RoundEndType::server_shutdown);
         emit_round_end(RoundEndType::server_shutdown);
+    }
+
+    // The shutdown flush below can still transmit, so close an open subround rather than
+    // dropping it silently (emit_round_end already closed it when a round was open).
+    if (g_subround_open) {
+        on_subround_end(SubroundResult::canceled, team_none, nullptr);
     }
 
     // The shutdown flush below can still transmit, so close an open match rather than
