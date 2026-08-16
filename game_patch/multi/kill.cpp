@@ -116,6 +116,9 @@ FunHook<void()> multi_level_init_hook{
         g_pending_kill_attributions.clear();
         kill_attribution_level_init();
 
+        // Melee hit credits and flamethrower windows are per-player-id and outlive nothing.
+        accuracy_stats_level_init();
+
         // Stop allowing endgame votes after the next level starts
         multi_player_set_can_endgame_vote(false);
 

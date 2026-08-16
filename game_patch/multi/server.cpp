@@ -59,6 +59,7 @@
 #include "../rf/os/timer.h"
 #include "../rf/level.h"
 #include "../rf/collide.h"
+#include "../fflink/afstats_client.h" // AFSTATS_VERIFICATION_LOGGING
 #include "../fflink/afstats_events.h"
 #include "../fflink/fflink_session.h"
 
@@ -1262,56 +1263,68 @@ void send_critical_hit_packet(rf::Player* target)
     send_sound_packet(target, target->last_critical_sound_ms, 10, stock_sound_id::jolt_01); // rate limit 10/sec
 }
 
-// Accuracy shot scope, set by multi_lag_comp_weapon_fire_hook. A lag-compensated projectile's
-// entire flight -- including every victim a rail bolt pierces -- resolves synchronously inside one
-// multi_lag_comp_weapon_fire call (0x0046F380, the per-victim hit handler, has exactly one caller:
-// 0x0046FAB5 inside 0x0046F7E0). The scope lets the accuracy counters award at most one hit per
-// projectile: hitting three players with one bolt is one accurate shot, not three.
-static bool g_accuracy_shot_scope_active = false;
-static bool g_accuracy_shot_hit_counted = false;
+// One lag-compensated projectile's whole flight, every pierced victim included, resolves inside a
+// single multi_lag_comp_weapon_fire call -- so this scope caps a rail bolt at one hit.
+struct AccuracyShotState
+{
+    bool active = false;
+    bool hit_counted = false;
+};
+static AccuracyShotState g_accuracy_shot;
+
+// RAII: an early return inside the hooked call must not leave the scope open. Restores rather
+// than clears, because these scopes nest.
+class AccuracyShotScope
+{
+public:
+    AccuracyShotScope() : saved_(g_accuracy_shot) { g_accuracy_shot = {true, false}; }
+    ~AccuracyShotScope() { g_accuracy_shot = saved_; }
+
+    AccuracyShotScope(const AccuracyShotScope&) = delete;
+    AccuracyShotScope& operator=(const AccuracyShotScope&) = delete;
+    AccuracyShotScope(AccuracyShotScope&&) = delete;
+    AccuracyShotScope& operator=(AccuracyShotScope&&) = delete;
+
+private:
+    AccuracyShotState saved_;
+};
 
 // Consume-once: true if this damage application may count as an accuracy hit.
 static bool accuracy_shot_scope_consume()
 {
-    if (!g_accuracy_shot_scope_active) {
+    if (!g_accuracy_shot.active) {
         return true; // non-lag-comp weapons are single-hit by construction (stock tbl)
     }
-    if (g_accuracy_shot_hit_counted) {
+    if (g_accuracy_shot.hit_counted) {
         return false;
     }
-    g_accuracy_shot_hit_counted = true;
+    g_accuracy_shot.hit_counted = true;
     return true;
 }
 
-// Melee hit credits: a melee hit only counts if a melee swing was counted as fired for it.
-//
-// Melee fires deferred projectiles. The swing arms ai.create_weapon_delay_timestamps from the
-// weapon's impact delays (entity_fire_weapon, 0x0042607D / 0x004261DA), and the server creates
-// the projectiles later in entity_process -> 0x00409340, which walks *both* timestamps and calls
-// weapon_create at 0x0040956B for each one that elapsed. (player_do_frame's 0x004A28FA is the
-// client-side twin, for the local player only -- 0x00409340 skips the local entity, and a
-// dedicated server never runs player_do_frame at all.)
-//
-// The counts do not line up on their own. The stick relays one fire packet per impact delay, and
-// each packet re-arms *both* timestamps unconditionally, so one fire input yields 2 packets but
-// up to 3 projectiles: the second packet lands before the first packet's long timestamp expires
-// and pushes it out rather than replacing a spent one. Crediting makes the ledger exact --
-// hits can never outrun the swings actually counted -- without depending on any timing window.
+// A melee hit only counts if a swing was counted as fired for it. Melee projectiles are deferred
+// and a swing can land more of them than it sent packets, so the ledger -- not timing -- is what
+// keeps hits from outrunning swings.
 struct MeleeHitCredits
 {
     int count = 0;
     int64_t expires_at = 0;
 };
 
-// Long enough for the last deferred projectile of a swing to fly (max stock impact delay 0.6s),
-// short enough that a whiffed swing's credit cannot be spent much later.
+// Covers the slowest deferred projectile of a swing (max stock impact delay 0.6s). One deadline
+// per player that each grant slides forward, so the cap is what actually bounds the backlog.
 constexpr int64_t melee_credit_lifetime_ms = 2000;
-// Bounds accumulation from a player swinging at empty air.
 constexpr int melee_credit_cap = 4;
+
+static std::vector<MeleeHitCredits>& melee_credits()
+{
+    static std::vector<MeleeHitCredits> credits(rf::multi_max_player_id);
+    return credits;
+}
 
 static MeleeHitCredits* melee_credits_for(rf::Player* pp)
 {
-    static std::vector<MeleeHitCredits> credits(rf::multi_max_player_id);
+    std::vector<MeleeHitCredits>& credits = melee_credits();
     if (!pp || !pp->net_data) {
         return nullptr;
     }
@@ -1342,6 +1355,166 @@ static bool melee_consume_hit_credit(rf::Player* pp)
     }
     --c->count;
     return true;
+}
+
+// Classified by blast radius, never by damage type. damage_radius is the field the engine itself
+// passes to the detonation's radius call, already resolved to the multiplayer value.
+static bool is_splash_capable_weapon(int weapon_type)
+{
+    return kill_attribution_is_valid_weapon_type(weapon_type)
+        && rf::weapon_types[weapon_type].damage_radius > 0.0f;
+}
+
+// Continuous modes that emit a projectile every frame or two (flamethrower stream, continuous
+// melee) are counted by TIME: a hold is diced into 500 ms windows, one window is one shot, and a
+// window scores one hit. For these weapons windows are the ONLY fired source.
+//
+// Fired is emitted when a window OPENS, so T ms emits floor(T/500) + 1 shots. That extra opening
+// shot is deliberate -- it is what guarantees hits <= fired.
+struct ContinuousWindow
+{
+    bool open = false;
+    // A window opened by one weapon must never pay for another's hits.
+    int weapon_type = -1;
+    int accum_ms = 0;
+    bool hit_marked = false;
+    int64_t grace_until = 0;
+};
+
+// One window is 500 ms of cumulative hold time.
+constexpr int continuous_window_ms = 500;
+
+// Bullet continuous modes (machine pistol primary, AR alt) are deliberately excluded -- they stay
+// on per-projectile accounting. The drill rides in free on the melee test.
+static bool is_time_counted_continuous_weapon(int weapon_type)
+{
+    return kill_attribution_is_valid_weapon_type(weapon_type)
+        && (rf::weapon_is_flamethrower(weapon_type) || rf::weapon_is_melee(weapon_type));
+}
+
+// How long a window stays open after release: makes taps cumulative and lets in-flight projectiles
+// mark the window that paid for them. From the weapon's projectile lifetime, clamped so a modded
+// table cannot hold one open indefinitely.
+static int64_t continuous_window_grace_ms(int weapon_type)
+{
+    float lifetime_seconds = 0.0f;
+    if (kill_attribution_is_valid_weapon_type(weapon_type)) {
+        lifetime_seconds = rf::weapon_types[weapon_type].lifetime_seconds;
+    }
+    return std::clamp<int64_t>(static_cast<int64_t>(lifetime_seconds * 1000.0f), 500, 3000);
+}
+
+static std::vector<ContinuousWindow>& continuous_windows()
+{
+    static std::vector<ContinuousWindow> windows(rf::multi_max_player_id);
+    return windows;
+}
+
+static ContinuousWindow* continuous_window_for(rf::Player* pp)
+{
+    if (!pp || !pp->net_data) {
+        return nullptr;
+    }
+    const int player_id = pp->net_data->player_id;
+    if (player_id < 0 || player_id >= static_cast<int>(continuous_windows().size())) {
+        return nullptr;
+    }
+    return &continuous_windows()[player_id];
+}
+
+static void continuous_window_emit_fired(rf::Player* pp, int weapon_type)
+{
+    afstats::on_weapon_fired(pp, weapon_type, 1);
+    if (pp->stats) {
+        static_cast<PlayerStatsNew*>(pp->stats)->add_shots_fired(1.0f);
+    }
+}
+
+// First contact of a window is its hit; later ones are already paid for. The weapon must match
+// the one the window was opened for.
+static bool continuous_window_mark_hit(rf::Player* attacker, int weapon_type)
+{
+    ContinuousWindow* w = continuous_window_for(attacker);
+    if (!w || !w->open || w->weapon_type != weapon_type || w->hit_marked) {
+        return false;
+    }
+    w->hit_marked = true;
+    return true;
+}
+
+// Both per-player ledgers are indexed by player id, and the engine REUSES ids -- clearing on
+// destroy is what stops a joining player inheriting the previous holder's credits or window.
+void accuracy_stats_on_player_destroy(rf::Player* player)
+{
+    if (!player || !player->net_data) {
+        return;
+    }
+    const int player_id = player->net_data->player_id;
+    if (player_id < 0 || player_id >= rf::multi_max_player_id) {
+        return;
+    }
+    melee_credits()[player_id] = MeleeHitCredits{};
+    continuous_windows()[player_id] = ContinuousWindow{};
+}
+
+void accuracy_stats_level_init()
+{
+    std::fill(melee_credits().begin(), melee_credits().end(), MeleeHitCredits{});
+    std::fill(continuous_windows().begin(), continuous_windows().end(), ContinuousWindow{});
+}
+
+// Accumulates continuous-fire hold time and emits the fired events. Runs once per frame per player
+// from server_do_frame, which ticks on dedicated servers.
+static void continuous_windows_do_frame()
+{
+    if (!rf::is_server || !rf::is_multi || !rf::player_list) {
+        return;
+    }
+    const int64_t now = timer::get_i64(1000);
+    static int64_t last_now = 0;
+    // Clamped: a level load or a hitch must not dump seconds of "hold" into every open window.
+    const int delta_ms =
+        last_now == 0 ? 0 : static_cast<int>(std::clamp<int64_t>(now - last_now, 0, 250));
+    last_now = now;
+
+    for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
+        ContinuousWindow* w = continuous_window_for(&player);
+        if (!w) {
+            continue;
+        }
+        rf::Entity* ep = rf::entity_from_handle(player.entity_handle);
+        const int weapon_type = ep ? ep->ai.current_primary_weapon : -1;
+        // weapon_is_on is the server-side continuous-fire state -- set for the flamethrower's
+        // stream and for continuous melee, never for the thrown canister (alt fire is not an
+        // on/off mode) nor for discrete swings. So this is exactly "holding a time-counted
+        // continuous trigger".
+        const bool firing = ep && is_time_counted_continuous_weapon(weapon_type)
+            && rf::entity_weapon_is_on(ep->handle, weapon_type);
+
+        if (firing) {
+            // Switching weapons closes the old window rather than carrying it over.
+            if (w->open && w->weapon_type != weapon_type) {
+                *w = ContinuousWindow{};
+            }
+            if (!w->open) {
+                w->open = true;
+                w->weapon_type = weapon_type;
+                w->accum_ms = 0;
+                w->hit_marked = false;
+                continuous_window_emit_fired(&player, weapon_type);
+            }
+            w->accum_ms += delta_ms;
+            while (w->accum_ms >= continuous_window_ms) {
+                w->accum_ms -= continuous_window_ms;
+                w->hit_marked = false;
+                continuous_window_emit_fired(&player, weapon_type);
+            }
+            w->grace_until = now + continuous_window_grace_ms(weapon_type);
+        }
+        else if (w->open && now >= w->grace_until) {
+            *w = ContinuousWindow{};
+        }
+    }
 }
 
 FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
@@ -1566,39 +1739,91 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
             }
 
             // The one condition that drives both accuracy counters (afstats and the legacy
-            // scoreboard), so the two can never disagree.
-            bool count_hit = direct_weapon_hit && killer_player;
-            if (count_hit) {
-                // An accurate shot has to be something a projectile actually delivered. Direct
-                // weapon damage reaches here two ways: a projectile impact (weapon_hit_obj, which
-                // covers ordinary projectiles and the deferred melee ones) or the lag-compensated
-                // rewind raycast (inside the 0x0046F7E0 scope). The burning-object processor
-                // (0x0042F1BC) is neither -- it calls obj_damage once per frame per victim with an
-                // explicit flamethrower weapon type and no projectile behind it, which would
-                // otherwise let burn spread farm hits without ever firing a shot.
-                count_hit = kill_attribution_in_projectile_impact() || g_accuracy_shot_scope_active;
-            }
-            if (count_hit && stats_melee) {
-                // Riot stick alt (taser) and the drill are on/off melee modes: they are
-                // indistinguishable from swings by weapon id and damage type, but continuous fire
-                // only happens while the server-side ai.weapon_is_on state is set -- the same state
-                // that gates entity_process's per-frame fire path (0x0041E6F4 -> 0x0041E727).
-                // Those modes never send a fire packet, so no fired is ever counted for them; their
-                // hits must not count either.
-                rf::Entity* killer_ep = rf::entity_from_handle(killer_handle);
-                if (!killer_ep || rf::entity_weapon_is_on(killer_ep->handle, stats_weapon)) {
-                    count_hit = false;
+            // scoreboard), so the two can never disagree. Each weapon class earns a hit its own
+            // way, but every class shares two rules: the damage has to have been delivered by a
+            // real projectile, and it has to have landed on somebody else.
+            //
+            // INVARIANT -- every gate below fails CLOSED: count_hit starts false and is only set
+            // by a branch that positively established its case, so missing state can only ever
+            // under-count. That is what keeps hits <= fired by construction.
+            bool count_hit = false;
+            // "A projectile or a damaging particle delivered this damage", as opposed to a
+            // per-frame processor that merely names a weapon -- the burn spread and the Flaming
+            // Enemies DoT are inside none of these scopes, which is what keeps them out.
+            const bool from_projectile = kill_attribution_in_projectile_impact()
+                || kill_attribution_in_splash_scope()
+                || kill_attribution_in_particle_damage()
+                || g_accuracy_shot.active;
+
+            // Self-damage never scores. Compared by ENTITY HANDLE, not Player pointer: the same
+            // physical self-hit was observed resolving to equal pointers on one damage application
+            // and unequal on another. Uses the handle captured before the call -- the entity may
+            // have been freed inside it.
+            const bool self_damage = killer_handle == damaged_ep_handle
+                || (killer_player && killer_player == damaged_player);
+
+            // Particle damage names no weapon, so fall back to what the attacker is holding.
+            // Unlike the stats_weapon fallback above this needs no killer != victim test, because
+            // it is only read after the self gate.
+            int accuracy_weapon = stats_weapon;
+            if (accuracy_weapon < 0) {
+                if (rf::Entity* kep = rf::entity_from_handle(killer_handle)) {
+                    accuracy_weapon = kep->ai.current_primary_weapon;
                 }
             }
-            if (count_hit) {
-                // At most one hit per lag-compensated projectile (rail piercing).
-                count_hit = accuracy_shot_scope_consume();
+
+            // rf::weapon_is_melee deliberately, NOT kill_attribution_is_melee_weapon: the fired
+            // side grants credits on the engine's WTF_MELEE branch, so the hit side must select on
+            // the same predicate or a modded table missing the flag would demand credits that are
+            // never granted. (The other predicate still drives kill flags and headshot exclusion.)
+            const bool accuracy_melee = kill_attribution_is_valid_weapon_type(stats_weapon)
+                && rf::weapon_is_melee(stats_weapon);
+
+            if (killer_player && !self_damage && from_projectile) {
+                if (kill_attribution_in_particle_damage()) {
+                    // Flamethrower stream. Time-counted: first contact in an open window scores,
+                    // contact with no open window is dropped.
+                    if (is_time_counted_continuous_weapon(accuracy_weapon)) {
+                        count_hit = continuous_window_mark_hit(killer_player, accuracy_weapon);
+                    }
+                }
+                else if (accuracy_melee) {
+                    // Melee splits by mode on ai.weapon_is_on, the same state that gates
+                    // entity_process's per-frame fire path. Sampled at damage time, so a projectile
+                    // landing across a transition can be routed to the other mode; both modes are
+                    // bounded by their own fired source, so that cannot inflate.
+                    rf::Entity* killer_ep = rf::entity_from_handle(killer_handle);
+                    if (!killer_ep) {
+                        // Attacker's entity already freed: fail closed, the credit ages out.
+                        count_hit = false;
+                    }
+                    else if (rf::entity_weapon_is_on(killer_ep->handle, stats_weapon)) {
+                        // Continuous melee (taser, drill): time-counted like the flame stream, it
+                        // lands a projectile per frame. Swing credits are never touched here --
+                        // they are swings-only.
+                        count_hit = continuous_window_mark_hit(killer_player, stats_weapon);
+                    }
+                    else {
+                        // Discrete swing: must be backed by a counted swing. The credit is spent
+                        // LAST, only on a hit that would otherwise count.
+                        count_hit = direct_weapon_hit
+                            && accuracy_shot_scope_consume()
+                            && melee_consume_hit_credit(killer_player);
+                    }
+                }
+                else if (is_splash_capable_weapon(stats_weapon)) {
+                    // Any damage to another player counts, direct or blast, capped at one hit per
+                    // detonation. A projectile's direct contact and its blast share one scope and
+                    // one latch, so a squarely-hit canister is still one hit.
+                    count_hit = kill_attribution_splash_hit_consume();
+                }
+                else {
+                    // Bullets and other direct-only weapons; the rail cap keeps a pierced line to
+                    // one hit.
+                    count_hit = direct_weapon_hit && accuracy_shot_scope_consume();
+                }
             }
-            if (count_hit && stats_melee) {
-                // Last gate, so a credit is only spent on a hit that would otherwise count:
-                // a melee hit has to be backed by a swing that was counted as fired.
-                count_hit = melee_consume_hit_credit(killer_player);
-            }
+
 
             afstats::on_damage(killer_player, damaged_player, stats_weapon, damage_type,
                                effective_damage, count_hit, stats_headshot);
@@ -2732,31 +2957,21 @@ FunHook<void(rf::Player*)> multi_spawn_player_server_side_hook{
 FunHook<void(rf::Entity*, rf::Weapon*)> multi_lag_comp_weapon_fire_hook{
     0x0046F7E0,
     [](rf::Entity *ep, rf::Weapon *wp) {
-        const bool prev_active = g_accuracy_shot_scope_active;
-        const bool prev_counted = g_accuracy_shot_hit_counted;
-        g_accuracy_shot_scope_active = true;
-        g_accuracy_shot_hit_counted = false;
+        const AccuracyShotScope shot_scope;
         multi_lag_comp_weapon_fire_hook.call_target(ep, wp);
-        g_accuracy_shot_scope_active = prev_active;
-        g_accuracy_shot_hit_counted = prev_counted;
     },
 };
 
-// Counts one shot per real projectile created by a player's trigger pull, for both the afstats
-// stream and the legacy scoreboard counters -- they are fed from the same sites so they can never
-// disagree.
-// Hooked at the call sites, NOT on weapon_create itself: lag-compensated (bullet)
-// weapons create a second, ghost projectile per shot at 0x004266F8 for the rewind
-// raycast, and a FunHook on weapon_create would double-count exactly the way PF's
-// accuracy stat does. 0x00426665 = entity_fire_weapon's per-projectile loop
-// (ordinary packet fire + continuous on/off fire from entity_process); 0x0047D2DE =
-// the fire-packet handler's thrown branch, reached only by the flamethrower-alt canister,
-// the grenade and the remote charge (branch chain 0x0047D26A-0x0047D2AB; the detonator is
-// routed to 0x00429C70, which creates nothing). The branches are mutually
-// exclusive, so each projectile is counted exactly once. Counting per creation also
-// makes shotgun pellets and double blasts exact without reading the weapon table.
-// alt_fire is typed int, not bool, so the dword the call site pushes is forwarded
-// byte-for-byte; the hook never reads it.
+// One shot per real projectile created by a trigger pull, to both counters.
+//
+// Hooked at the CALL SITES, never on weapon_create itself: lag-compensated weapons create a second
+// ghost projectile per shot at 0x004266F8 for the rewind raycast, so a FunHook there double-counts
+// exactly the way PF's accuracy stat does. The two sites are mutually exclusive, so each projectile
+// is counted once, and counting per creation makes pellets and double blasts exact for free.
+// alt_fire is typed int so the pushed dword is forwarded byte-for-byte; the hook never reads it.
+// Anything that starts reading it MUST mask to the low byte and compare against 1: the engine
+// writes the flag as a byte and pushes the containing dword, leaving the upper 24 bits as stack
+// residue (a genuine alt shot was captured as 0xEE5EB801).
 CallHook<rf::Weapon*(int, int, rf::Vector3*, rf::Matrix3*, int, int)>
     weapon_fire_projectile_create_hook{
     {0x00426665, 0x0047D2DE},
@@ -4623,18 +4838,9 @@ void server_init()
     // Support forcing player character
     multi_spawn_player_server_side_hook.install();
 
-    // Accuracy. The legacy scoreboard/PF/'/stats' counters and the afstats stream are fed from the
-    // same places so they can never disagree: fired at projectile creation (all weapons, including
-    // the continuous-fire modes that never send a fire packet), hits at the single shared condition
-    // in entity_damage_hook. Melee is the exception on the fired side -- it does create weapon
-    // objects, but deferred: the swing arms the impact-delay timestamps and the projectile appears
-    // later at the deliberately unhooked 0x004A28FA (player_do_frame) -- so its swings are counted
-    // from their fire packets in multi.cpp instead, one shot per swing.
-    // Note: weapons with bullets (projectiles) are created twice server-side, so hooking
-    // weapon_create itself would be problematic (PF went this way and its accuracy stat is broken)
-    // -- hooking the call sites avoids the second, ghost creation at 0x004266F8.
-    // The lag comp fire hook no longer counts anything; it only scopes a projectile's flight so
-    // rail piercing awards at most one hit per bolt.
+    // Accuracy: the legacy scoreboard/PF//stats counters and the afstats stream are fed from the
+    // same sites so they can never disagree. The lag comp fire hook counts nothing -- it only
+    // scopes a projectile's flight so rail piercing awards at most one hit per bolt.
     multi_lag_comp_weapon_fire_hook.install();
     weapon_fire_projectile_create_hook.install();
 
@@ -4800,6 +5006,7 @@ void server_do_frame()
 {
     bot_decommission_check();
     server_vote_do_frame();
+    continuous_windows_do_frame();
     match_do_frame();
     process_delayed_kicks();
     pit_do_frame();

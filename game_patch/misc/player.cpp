@@ -269,6 +269,7 @@ FunHook<void(rf::Player*)> player_destroy_hook{
         sprays_on_player_destroyed(player);
         pit_on_player_disconnect(player);
         gungame_on_player_disconnect(player);
+        accuracy_stats_on_player_destroy(player);
         if (rf::is_server) {
             // Must run while PlayerAdditionalData is still alive, since the leave
             // event carries the player's partial-round summary.

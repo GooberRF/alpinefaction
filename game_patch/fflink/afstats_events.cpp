@@ -929,6 +929,19 @@ void flush_accumulators()
         ev.fired = node.mapped().fired;
         ev.hit = node.mapped().hit;
         ev.hit_head = node.mapped().hit_head;
+        if constexpr (AFSTATS_VERIFICATION_LOGGING) {
+            // The invariant the accuracy design rests on: a hit is only ever counted against a
+            // shot already counted as fired. Hits outrunning shots means a counting path escaped
+            // that rule.
+            if (ev.hit > ev.fired) {
+                xlog::warn("[afstats-inv] accuracy hit > fired for weapon {}: {} hit vs {} fired",
+                           ev.weapon, ev.hit, ev.fired);
+            }
+            if (ev.hit_head > ev.hit) {
+                xlog::warn("[afstats-inv] accuracy headshots > hits for weapon {}: {} vs {}",
+                           ev.weapon, ev.hit_head, ev.hit);
+            }
+        }
         push_event(std::move(ev));
     }
 }

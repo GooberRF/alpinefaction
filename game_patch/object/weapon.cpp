@@ -116,6 +116,8 @@ bool rocket_locked_reticle_is_customized(bool bighud) {
 FunHook<void(rf::Weapon*)> weapon_move_one_hook{
     0x004C69A0,
     [](rf::Weapon* weapon) {
+        // Covers fused and detonator-triggered explosions, which detonate from inside the mover.
+        // Constructed EVERY frame for EVERY live weapon, so the scope ctor must stay a pure lookup.
         SplashWeaponScope splash_scope{weapon};
         weapon_move_one_hook.call_target(weapon);
         auto& level_aabb_min = rf::level.geometry->bbox_min;

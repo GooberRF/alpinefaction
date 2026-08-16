@@ -854,27 +854,14 @@ FunHook<void(rf::Entity*, int, rf::Vector3&, rf::Matrix3&, bool)> multi_process_
         }
         multi_process_remote_weapon_fire_hook.call_target(ep, weapon_type, pos, orient, alt_fire);
 
-        // Fired-counting for weapons whose projectiles are created at the hooked sites happens
-        // there (weapon_fire_projectile_create_hook in server.cpp), which also covers the
-        // continuous-fire weapons that never send a fire packet.
-        //
-        // Melee is counted here instead. It does create weapon objects, but deferred: the swing
-        // only arms the impact-delay timestamps and the projectiles appear later, server-side in
-        // entity_process -> 0x00409340 (weapon_create at 0x0040956B), neither of which is a hooked
-        // creation site. The countable signal is the swing's fire packet -- melee passes every
-        // server-side gate above and the click limiter skips it. A weapon with two impact delays
-        // swings twice per fire input (stock riot stick: 0.15 and 0.6) and relays a packet for
-        // each, so one packet is one shot. On/off melee modes (riot stick alt taser, drill) never
-        // send fire packets and so are never counted; their hits are excluded to match (see the
-        // weapon_is_on check in entity_damage_hook).
-        //
-        // Each counted swing also grants one melee hit credit. The server creates up to three
-        // projectiles for a two-packet swing (each packet re-arms both timestamps), so without
-        // the credit ledger melee hits could outrun melee shots.
+        // Melee is the one weapon counted here rather than at projectile creation: its projectiles
+        // are deferred and appear at an unhooked creation site, so the swing's fire packet is the
+        // countable signal. One packet is one shot (the stick's two impact delays are two real
+        // swings). Each counted swing also grants a hit credit, because the server can create more
+        // projectiles than the swing sent packets.
         //
         // rf::weapon_is_melee, not kill_attribution_is_melee_weapon: this must match the engine's
-        // own WTF_MELEE branch exactly. A modded melee weapon without the flag takes the ordinary
-        // path and is already counted at creation, so counting it here too would double it.
+        // own WTF_MELEE branch, or a modded weapon gets counted here AND at creation.
         if (rf::is_server && rf::weapon_is_melee(weapon_type)) {
             if (rf::Player* pp = rf::player_from_entity_handle(ep->handle)) {
                 afstats::on_weapon_fired(pp, weapon_type, 1);
