@@ -59,7 +59,6 @@
 #include "../rf/os/timer.h"
 #include "../rf/level.h"
 #include "../rf/collide.h"
-#include "../fflink/afstats_client.h"
 #include "../fflink/afstats_events.h"
 #include "../fflink/fflink_session.h"
 
@@ -1457,11 +1456,12 @@ static ContinuousWindow* continuous_window_for(rf::Player* pp)
     if (!pp || !pp->net_data) {
         return nullptr;
     }
+    std::vector<ContinuousWindow>& windows = continuous_windows();
     const int player_id = pp->net_data->player_id;
-    if (player_id < 0 || player_id >= static_cast<int>(continuous_windows().size())) {
+    if (player_id < 0 || player_id >= static_cast<int>(windows.size())) {
         return nullptr;
     }
-    return &continuous_windows()[player_id];
+    return &windows[player_id];
 }
 
 static void continuous_window_emit_fired(rf::Player* pp, int weapon_type)

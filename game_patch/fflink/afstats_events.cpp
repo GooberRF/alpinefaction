@@ -46,7 +46,7 @@
 #include "../rf/multi.h"
 #include "../rf/os/os.h"
 #include "../rf/player/player.h"
-#include "afstats_client.h" // AFSTATS_VERIFICATION_LOGGING
+#include "afstats_client.h"
 #include "fflink_session.h"
 #include "fflink_utils.h"
 

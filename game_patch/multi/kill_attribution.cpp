@@ -6,7 +6,6 @@
 #include <vector>
 #include <patch_common/CallHook.h>
 #include <patch_common/FunHook.h>
-#include <xlog/xlog.h>
 #include "../rf/clutter.h"
 #include "../rf/entity.h"
 #include "../rf/item.h"
@@ -15,7 +14,6 @@
 #include "../rf/object.h"
 #include "../rf/player/player.h"
 #include "../rf/weapon.h"
-#include "../fflink/afstats_client.h" // AFSTATS_VERIFICATION_LOGGING
 #include "../fflink/afstats_events.h"
 #include "alpine_packets.h"
 #include "kill_attribution.h"
