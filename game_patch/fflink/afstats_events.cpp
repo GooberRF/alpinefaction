@@ -537,6 +537,34 @@ struct AccuracyKeyLess
 std::map<DamageKey, DamageAccum, DamageKeyLess> g_damage_accum;
 std::map<AccuracyKey, AccuracyAccum, AccuracyKeyLess> g_accuracy_accum;
 
+// Verification only: cumulative per-(player, weapon) totals behind the accuracy tripwire. A single
+// flush window is not a valid comparison - a projectile's fired and its hit routinely land in
+// different batches (a rocket in flight across a flush, a melee impact delay, the flame grace
+// tail), so per-batch hit-without-fired is legitimate. Only the running totals must hold.
+struct AccuracyTotals
+{
+    uint64_t fired = 0;
+    uint64_t hit = 0;
+    uint64_t hit_head = 0;
+};
+std::map<AccuracyKey, AccuracyTotals, AccuracyKeyLess> g_accuracy_totals;
+
+static void verify_accuracy_totals(const EvAccuracy& ev)
+{
+    AccuracyTotals& totals = g_accuracy_totals[AccuracyKey{ev.player, ev.weapon}];
+    totals.fired += ev.fired;
+    totals.hit += ev.hit;
+    totals.hit_head += ev.hit_head;
+    if (totals.hit > totals.fired) {
+        xlog::warn("[afstats-inv] cumulative accuracy hit > fired for weapon {}: {} hit vs {} fired",
+                   ev.weapon, totals.hit, totals.fired);
+    }
+    if (totals.hit_head > totals.hit) {
+        xlog::warn("[afstats-inv] cumulative headshots > hits for weapon {}: {} vs {}",
+                   ev.weapon, totals.hit_head, totals.hit);
+    }
+}
+
 // Finds the bucket for a lookup view, creating it (and only then paying for the owning
 // key) if it does not exist yet.
 DamageAccum& damage_bucket(const DamageKeyView& k)
@@ -931,16 +959,8 @@ void flush_accumulators()
         ev.hit_head = node.mapped().hit_head;
         if constexpr (AFSTATS_VERIFICATION_LOGGING) {
             // The invariant the accuracy design rests on: a hit is only ever counted against a
-            // shot already counted as fired. Hits outrunning shots means a counting path escaped
-            // that rule.
-            if (ev.hit > ev.fired) {
-                xlog::warn("[afstats-inv] accuracy hit > fired for weapon {}: {} hit vs {} fired",
-                           ev.weapon, ev.hit, ev.fired);
-            }
-            if (ev.hit_head > ev.hit) {
-                xlog::warn("[afstats-inv] accuracy headshots > hits for weapon {}: {} vs {}",
-                           ev.weapon, ev.hit_head, ev.hit);
-            }
+            // shot already counted as fired. Checked on cumulative totals, not this batch.
+            verify_accuracy_totals(ev);
         }
         push_event(std::move(ev));
     }
@@ -1846,6 +1866,7 @@ void reset_module_state()
     g_pending.clear();
     g_damage_accum.clear();
     g_accuracy_accum.clear();
+    g_accuracy_totals.clear();
     g_pending_gap = PendingGap{};
     g_next_seq = 1;
     g_next_batch = 1;
@@ -2500,7 +2521,7 @@ void on_spawn(rf::Player* player, const rf::Vector3& pos)
 }
 
 void on_damage(rf::Player* attacker, rf::Player* victim, int weapon_type, int damage_type, float amount,
-               bool direct_hit, bool headshot)
+               bool accuracy_hit, bool headshot)
 {
     if (!victim || amount <= 0.0f || !ensure_session() || victim->afstats_key.empty()) {
         return;
@@ -2530,11 +2551,10 @@ void on_damage(rf::Player* attacker, rf::Player* victim, int weapon_type, int da
         attacker->afstats_round.damage_dealt += amount;
     }
 
-    // Only a direct projectile hit is an accuracy hit. Splash still
-    // counts toward `damage`, which is why this is not the same condition. `hit`
-    // counts damage-applications, so a projectile that damages two players counts
-    // twice; that is definitional, accuracy is only compared within a weapon.
-    if (direct_hit && weapon_type >= 0 && !attacker_key.empty()) {
+    // The caller decides what counts as an accuracy hit - splash detonations and continuous
+    // windows included - and this block only applies that decision, which is why it is not the
+    // same condition as the `damage` aggregate above.
+    if (accuracy_hit && weapon_type >= 0 && !attacker_key.empty()) {
         AccuracyAccum& shots = accuracy_bucket(AccuracyKeyView{attacker_key, weapon_type});
         ++shots.hit;
         if (headshot) {

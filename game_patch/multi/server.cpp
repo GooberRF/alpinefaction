@@ -1305,8 +1305,13 @@ static bool accuracy_shot_scope_consume()
 // A melee hit only counts if a swing was counted as fired for it. Melee projectiles are deferred
 // and a swing can land more of them than it sent packets, so the ledger - not timing - is what
 // keeps hits from outrunning swings.
+//
+// Keyed by (player, WEAPON), because accuracy buckets are per weapon: a stick swing's late third
+// impact must never spend a credit granted by a riot shield swing, which would leave the stick
+// bucket at hit > fired even though the player's total was legal.
 struct MeleeHitCredits
 {
+    int weapon_type = -1;
     int count = 0;
     int64_t expires_at = 0;
 };
@@ -1316,44 +1321,81 @@ struct MeleeHitCredits
 constexpr int64_t melee_credit_lifetime_ms = 2000;
 constexpr int melee_credit_cap = 4;
 
-static std::vector<MeleeHitCredits>& melee_credits()
+// Stock offers at most a riot stick and a riot shield; four slots leaves room for a modded table
+// without needing a map on a per-damage path.
+constexpr int melee_credit_slots = 4;
+using MeleeCreditSlots = std::array<MeleeHitCredits, melee_credit_slots>;
+
+static std::vector<MeleeCreditSlots>& melee_credits()
 {
-    static std::vector<MeleeHitCredits> credits(rf::multi_max_player_id);
+    static std::vector<MeleeCreditSlots> credits(rf::multi_max_player_id);
     return credits;
 }
 
-static MeleeHitCredits* melee_credits_for(rf::Player* pp)
+static MeleeCreditSlots* melee_credit_slots_for(rf::Player* pp)
 {
-    std::vector<MeleeHitCredits>& credits = melee_credits();
     if (!pp || !pp->net_data) {
         return nullptr;
     }
+    std::vector<MeleeCreditSlots>& credits = melee_credits();
     const int player_id = pp->net_data->player_id;
     if (player_id < 0 || player_id >= static_cast<int>(credits.size())) {
         return nullptr;
     }
-    MeleeHitCredits& c = credits[player_id];
-    if (c.count > 0 && timer::get_i64(1000) >= c.expires_at) {
-        c.count = 0;
-    }
-    return &c;
+    return &credits[player_id];
 }
 
-void melee_grant_hit_credit(rf::Player* pp)
+// An expired slot drops its count but keeps pointing at its weapon; it is only re-pointed when a
+// grant needs a slot and none is free.
+static MeleeHitCredits* melee_credit_find(MeleeCreditSlots& slots, int weapon_type, int64_t now)
 {
-    if (MeleeHitCredits* c = melee_credits_for(pp)) {
-        c->count = std::min(c->count + 1, melee_credit_cap);
-        c->expires_at = timer::get_i64(1000) + melee_credit_lifetime_ms;
+    for (MeleeHitCredits& slot : slots) {
+        if (slot.weapon_type == weapon_type) {
+            if (slot.count > 0 && now >= slot.expires_at) {
+                slot.count = 0;
+            }
+            return &slot;
+        }
     }
+    return nullptr;
 }
 
-static bool melee_consume_hit_credit(rf::Player* pp)
+void melee_grant_hit_credit(rf::Player* pp, int weapon_type)
 {
-    MeleeHitCredits* c = melee_credits_for(pp);
-    if (!c || c->count <= 0) {
+    MeleeCreditSlots* slots = melee_credit_slots_for(pp);
+    if (!slots || weapon_type < 0) {
+        return;
+    }
+    const int64_t now = timer::get_i64(1000);
+    MeleeHitCredits* credit = melee_credit_find(*slots, weapon_type, now);
+    if (!credit) {
+        // Take an unused or spent slot.
+        for (MeleeHitCredits& slot : *slots) {
+            if (slot.weapon_type < 0 || slot.count <= 0 || now >= slot.expires_at) {
+                credit = &slot;
+                break;
+            }
+        }
+        if (!credit) {
+            return;
+        }
+        *credit = MeleeHitCredits{weapon_type, 0, 0};
+    }
+    credit->count = std::min(credit->count + 1, melee_credit_cap);
+    credit->expires_at = now + melee_credit_lifetime_ms;
+}
+
+static bool melee_consume_hit_credit(rf::Player* pp, int weapon_type)
+{
+    MeleeCreditSlots* slots = melee_credit_slots_for(pp);
+    if (!slots || weapon_type < 0) {
         return false;
     }
-    --c->count;
+    MeleeHitCredits* credit = melee_credit_find(*slots, weapon_type, timer::get_i64(1000));
+    if (!credit || credit->count <= 0) {
+        return false;
+    }
+    --credit->count;
     return true;
 }
 
@@ -1453,13 +1495,13 @@ void accuracy_stats_on_player_destroy(rf::Player* player)
     if (player_id < 0 || player_id >= rf::multi_max_player_id) {
         return;
     }
-    melee_credits()[player_id] = MeleeHitCredits{};
+    melee_credits()[player_id] = MeleeCreditSlots{};
     continuous_windows()[player_id] = ContinuousWindow{};
 }
 
 void accuracy_stats_level_init()
 {
-    std::fill(melee_credits().begin(), melee_credits().end(), MeleeHitCredits{});
+    std::fill(melee_credits().begin(), melee_credits().end(), MeleeCreditSlots{});
     std::fill(continuous_windows().begin(), continuous_windows().end(), ContinuousWindow{});
 }
 
@@ -1762,6 +1804,11 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
             const bool self_damage = killer_handle == damaged_ep_handle
                 || (killer_player && killer_player == damaged_player);
 
+            // Overkill-capped damage on a corpse: real_damage was positive but nothing was left to
+            // remove. afstats refuses amount <= 0, so counting it here would diverge the two
+            // counters.
+            const bool scoreable_damage = effective_damage > 0.0f;
+
             // Particle damage names no weapon, so fall back to what the attacker is holding.
             // Unlike the stats_weapon fallback above this needs no killer != victim test, because
             // it is only read after the self gate.
@@ -1779,7 +1826,7 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
             const bool accuracy_melee = kill_attribution_is_valid_weapon_type(stats_weapon)
                 && rf::weapon_is_melee(stats_weapon);
 
-            if (killer_player && !self_damage && from_projectile) {
+            if (killer_player && !self_damage && scoreable_damage && from_projectile) {
                 if (kill_attribution_in_particle_damage()) {
                     // Flamethrower stream. Time-counted: first contact in an open window scores,
                     // contact with no open window is dropped.
@@ -1804,11 +1851,12 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
                         count_hit = continuous_window_mark_hit(killer_player, stats_weapon);
                     }
                     else {
-                        // Discrete swing: must be backed by a counted swing. The credit is spent
-                        // LAST, only on a hit that would otherwise count.
+                        // Discrete swing: must be backed by a counted swing. The credit is checked
+                        // before the shot latch so a refused credit cannot burn a latch melee never
+                        // needs anyway (melee is not lag-compensated, so the latch is a no-op here).
                         count_hit = direct_weapon_hit
-                            && accuracy_shot_scope_consume()
-                            && melee_consume_hit_credit(killer_player);
+                            && melee_consume_hit_credit(killer_player, stats_weapon)
+                            && accuracy_shot_scope_consume();
                     }
                 }
                 else if (is_splash_capable_weapon(stats_weapon)) {

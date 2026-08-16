@@ -868,7 +868,7 @@ FunHook<void(rf::Entity*, int, rf::Vector3&, rf::Matrix3&, bool)> multi_process_
                 if (pp->stats) {
                     static_cast<PlayerStatsNew*>(pp->stats)->add_shots_fired(1.0f);
                 }
-                melee_grant_hit_credit(pp);
+                melee_grant_hit_credit(pp, weapon_type);
             }
         }
 

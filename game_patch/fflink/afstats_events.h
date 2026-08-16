@@ -166,12 +166,14 @@ void on_kill(rf::Player* victim, rf::Player* killer, int weapon_type, int damage
 // A player spawned server-side.
 void on_spawn(rf::Player* player, const rf::Vector3& pos);
 
-// Damage was applied to a player. Feeds the windowed `damage` aggregate and, when
-// `direct_hit` is set, the `hit`/`hit_head` side of the `accuracy` aggregate --
-// splash contributes damage but is never a projectile hit. A null
-// `attacker` is environmental. `amount` is effective post-armor damage.
+// Damage was applied to a player. Feeds the windowed `damage` aggregate, and the `hit`/`hit_head`
+// side of the `accuracy` aggregate when `accuracy_hit` is set. That flag is the caller's decision
+// that this application counts as an accuracy hit - it covers splash detonations and continuous
+// windows too, not just direct projectile impacts. A null `attacker` is environmental.
+// `amount` is what the hit actually removed from the victim's combined health and armor pools
+// capped at what they had left; only a hit that removed nothing (a corpse) is zero.
 void on_damage(rf::Player* attacker, rf::Player* victim, int weapon_type, int damage_type,
-               float amount, bool direct_hit, bool headshot);
+               float amount, bool accuracy_hit, bool headshot);
 
 // A player pulled a trigger. `projectiles` is the shot's projectile count from the
 // weapon table, so pellet weapons account exactly.
