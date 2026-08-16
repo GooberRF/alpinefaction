@@ -56,6 +56,10 @@ struct AfstatsRoundCounters {
     uint32_t shots_hit = 0;
     float damage_dealt = 0.0f;
     float damage_taken = 0.0f;
+    // Efficiency = damage actually dealt to other players / damage those shots could have dealt.
+    // Full-scope weapons only, so numerator and denominator describe the same weapon set.
+    float efficiency_dealt = 0.0f;
+    float damage_potential = 0.0f;
     uint32_t highest_streak = 0;
     uint32_t current_streak = 0;
     int64_t time_played_ms = 0;

@@ -864,9 +864,16 @@ FunHook<void(rf::Entity*, int, rf::Vector3&, rf::Matrix3&, bool)> multi_process_
         // own WTF_MELEE branch, or a modded weapon gets counted here AND at creation.
         if (rf::is_server && rf::weapon_is_melee(weapon_type)) {
             if (rf::Player* pp = rf::player_from_entity_handle(ep->handle)) {
-                afstats::on_weapon_fired(pp, weapon_type, 1);
+                // A swing's potential is the weapon's primary damage; the taser's zaps accrue
+                // their own alt-damage potential at the deferred creation site instead.
+                const float potential = kill_attribution_is_valid_weapon_type(weapon_type)
+                    ? rf::weapon_types[weapon_type].damage_multi
+                    : 0.0f;
+                afstats::on_weapon_fired(pp, weapon_type, 1, afstats::CountScope::full, potential);
                 if (pp->stats) {
-                    static_cast<PlayerStatsNew*>(pp->stats)->add_shots_fired(1.0f);
+                    auto* stats = static_cast<PlayerStatsNew*>(pp->stats);
+                    stats->add_shots_fired(1.0f);
+                    stats->add_damage_potential(potential);
                 }
                 melee_grant_hit_credit(pp, weapon_type);
             }

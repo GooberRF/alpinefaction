@@ -143,6 +143,8 @@ struct RosterEntry
     uint32_t shots_hit = 0;
     float damage_dealt = 0.0f;
     float damage_taken = 0.0f;
+    float efficiency_dealt = 0.0f;
+    float damage_potential = 0.0f;
     uint32_t highest_streak = 0;
     int64_t time_played_ms = 0;
     int64_t time_spectating_ms = 0;
@@ -264,6 +266,10 @@ struct EvAccuracy
     uint32_t fired = 0;
     uint32_t hit = 0;
     uint32_t hit_head = 0;
+    uint32_t hit_torso = 0;
+    uint32_t hit_legs = 0;
+    float damage_dealt = 0.0f;
+    float damage_potential = 0.0f;
 };
 
 struct EvStatus
@@ -464,6 +470,10 @@ struct AccuracyAccum
     uint32_t fired = 0;
     uint32_t hit = 0;
     uint32_t hit_head = 0;
+    uint32_t hit_torso = 0;
+    uint32_t hit_legs = 0;
+    float dealt = 0.0f;
+    float potential = 0.0f;
 };
 
 // Non-owning lookup keys. on_damage and on_weapon_fired run on every damage
@@ -546,6 +556,8 @@ struct AccuracyTotals
     uint64_t fired = 0;
     uint64_t hit = 0;
     uint64_t hit_head = 0;
+    uint64_t hit_torso = 0;
+    uint64_t hit_legs = 0;
 };
 std::map<AccuracyKey, AccuracyTotals, AccuracyKeyLess> g_accuracy_totals;
 
@@ -555,6 +567,8 @@ static void verify_accuracy_totals(const EvAccuracy& ev)
     totals.fired += ev.fired;
     totals.hit += ev.hit;
     totals.hit_head += ev.hit_head;
+    totals.hit_torso += ev.hit_torso;
+    totals.hit_legs += ev.hit_legs;
     if (totals.hit > totals.fired) {
         xlog::warn("[afstats-inv] cumulative accuracy hit > fired for weapon {}: {} hit vs {} fired",
                    ev.weapon, totals.hit, totals.fired);
@@ -562,6 +576,13 @@ static void verify_accuracy_totals(const EvAccuracy& ev)
     if (totals.hit_head > totals.hit) {
         xlog::warn("[afstats-inv] cumulative headshots > hits for weapon {}: {} vs {}",
                    ev.weapon, totals.hit_head, totals.hit);
+    }
+    // A hit carries at most one region, so the regions can only ever sum to less than the hits
+    // (splash, flame, taser and melee hits carry none) - never more.
+    const uint64_t regions = totals.hit_head + totals.hit_torso + totals.hit_legs;
+    if (regions > totals.hit) {
+        xlog::warn("[afstats-inv] cumulative region hits > hits for weapon {}: {} vs {}",
+                   ev.weapon, regions, totals.hit);
     }
 }
 
@@ -957,6 +978,10 @@ void flush_accumulators()
         ev.fired = node.mapped().fired;
         ev.hit = node.mapped().hit;
         ev.hit_head = node.mapped().hit_head;
+        ev.hit_torso = node.mapped().hit_torso;
+        ev.hit_legs = node.mapped().hit_legs;
+        ev.damage_dealt = node.mapped().dealt;
+        ev.damage_potential = node.mapped().potential;
         if constexpr (AFSTATS_VERIFICATION_LOGGING) {
             // The invariant the accuracy design rests on: a hit is only ever counted against a
             // shot already counted as fired. Checked on cumulative totals, not this batch.
@@ -1046,6 +1071,8 @@ RosterEntry build_roster_entry(rf::Player* player, bool with_summary)
     e.assists = c.assists;
     e.shots_fired = c.shots_fired;
     e.shots_hit = c.shots_hit;
+    e.efficiency_dealt = c.efficiency_dealt;
+    e.damage_potential = c.damage_potential;
     e.damage_dealt = c.damage_dealt;
     e.damage_taken = c.damage_taken;
     e.highest_streak = c.highest_streak;
@@ -1107,6 +1134,8 @@ nlohmann::json roster_entry_to_json(const RosterEntry& e)
     j["caps"] = e.caps;
     j["shots_fired"] = e.shots_fired;
     j["shots_hit"] = e.shots_hit;
+    j["efficiency_dealt"] = e.efficiency_dealt;
+    j["damage_potential"] = e.damage_potential;
     j["damage_dealt"] = e.damage_dealt;
     j["damage_taken"] = e.damage_taken;
     j["highest_streak"] = e.highest_streak;
@@ -1249,6 +1278,10 @@ nlohmann::json event_to_json(const Event& e)
                 j["fired"] = p.fired;
                 j["hit"] = p.hit;
                 j["hit_head"] = p.hit_head;
+                j["hit_torso"] = p.hit_torso;
+                j["hit_legs"] = p.hit_legs;
+                j["damage_dealt"] = p.damage_dealt;
+                j["damage_potential"] = p.damage_potential;
             }
             else if constexpr (std::is_same_v<T, EvStatus>) {
                 j["type"] = "status";
@@ -2521,7 +2554,7 @@ void on_spawn(rf::Player* player, const rf::Vector3& pos)
 }
 
 void on_damage(rf::Player* attacker, rf::Player* victim, int weapon_type, int damage_type, float amount,
-               bool accuracy_hit, bool headshot)
+               bool accuracy_hit, int region, CountScope hit_scope)
 {
     if (!victim || amount <= 0.0f || !ensure_session() || victim->afstats_key.empty()) {
         return;
@@ -2557,21 +2590,56 @@ void on_damage(rf::Player* attacker, rf::Player* victim, int weapon_type, int da
     if (accuracy_hit && weapon_type >= 0 && !attacker_key.empty()) {
         AccuracyAccum& shots = accuracy_bucket(AccuracyKeyView{attacker_key, weapon_type});
         ++shots.hit;
-        if (headshot) {
+        // A hit carries at most one region, and only here: a hit that was not classified (-1, or
+        // anything outside the three known regions) increments nothing, which is why the region
+        // counters can only ever sum to at most `hit`.
+        if (region == 0) {
+            ++shots.hit_legs;
+        }
+        else if (region == 1) {
+            ++shots.hit_torso;
+        }
+        else if (region == 2) {
             ++shots.hit_head;
         }
-        ++attacker->afstats_round.shots_hit;
+        // The per-weapon bucket always gets the hit; the overall summary only for scopes whose
+        // shots are discrete, so window-counted modes never distort it.
+        if (hit_scope == CountScope::full) {
+            ++attacker->afstats_round.shots_hit;
+        }
     }
 }
 
-void on_weapon_fired(rf::Player* player, int weapon_type, uint32_t projectiles)
+void on_weapon_fired(rf::Player* player, int weapon_type, uint32_t projectiles, CountScope scope,
+                     float potential_damage)
 {
     if (!player || weapon_type < 0 || projectiles == 0 || !ensure_session()
         || player->afstats_key.empty()) {
         return;
     }
-    accuracy_bucket(AccuracyKeyView{player->afstats_key, weapon_type}).fired += projectiles;
-    player->afstats_round.shots_fired += projectiles;
+    AccuracyAccum& bucket = accuracy_bucket(AccuracyKeyView{player->afstats_key, weapon_type});
+    bucket.fired += projectiles;
+    if (potential_damage > 0.0f) {
+        bucket.potential += potential_damage;
+    }
+    // Paired with the hit side in on_damage: a scope excluded from the summary here is excluded
+    // there too, so the summary's shots and hits always describe the same set of weapons.
+    if (scope == CountScope::full) {
+        player->afstats_round.shots_fired += projectiles;
+        player->afstats_round.damage_potential += potential_damage;
+    }
+}
+
+void on_damage_dealt(rf::Player* attacker, int weapon_type, float amount, CountScope scope)
+{
+    if (!attacker || weapon_type < 0 || amount <= 0.0f || !ensure_session()
+        || attacker->afstats_key.empty()) {
+        return;
+    }
+    accuracy_bucket(AccuracyKeyView{attacker->afstats_key, weapon_type}).dealt += amount;
+    if (scope == CountScope::full) {
+        attacker->afstats_round.efficiency_dealt += amount;
+    }
 }
 
 void on_status(rf::Player* player, StatusKind kind, int value)

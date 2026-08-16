@@ -166,18 +166,41 @@ void on_kill(rf::Player* victim, rf::Player* killer, int weapon_type, int damage
 // A player spawned server-side.
 void on_spawn(rf::Player* player, const rf::Vector3& pos);
 
-// Damage was applied to a player. Feeds the windowed `damage` aggregate, and the `hit`/`hit_head`
-// side of the `accuracy` aggregate when `accuracy_hit` is set. That flag is the caller's decision
-// that this application counts as an accuracy hit - it covers splash detonations and continuous
-// windows too, not just direct projectile impacts. A null `attacker` is environmental.
+// Where a counted shot or hit is recorded. `full` is every weapon whose shots are discrete:
+// the weapon's accuracy bucket, the player's round summary, and (at the call site) the legacy
+// scoreboard counters. `bucket_only` is the time-sliced continuous modes -- flamethrower stream,
+// taser/drill - whose window shots are not comparable 1:1 with discrete ones, so they stay out of
+// the overall figures and live only in their per-weapon bucket.
+enum class CountScope
+{
+    full,
+    bucket_only,
+};
+
+// Damage was applied to a player. Feeds the windowed `damage` aggregate, and the `hit` /
+// `hit_legs` / `hit_torso` / `hit_head` side of the `accuracy` aggregate when `accuracy_hit` is
+// set. That flag is the caller's decision that this application counts as an accuracy hit - it
+// covers splash detonations and continuous windows too, not just direct projectile impacts.
+// `region` is the victim's hit region: -1 = none, 0 = legs, 1 = torso, 2 = head. It is only read
+// inside the accuracy-hit branch, and anything other than 0/1/2 increments no region counter.
+// A null `attacker` is environmental.
 // `amount` is what the hit actually removed from the victim's combined health and armor pools
 // capped at what they had left; only a hit that removed nothing (a corpse) is zero.
 void on_damage(rf::Player* attacker, rf::Player* victim, int weapon_type, int damage_type,
-               float amount, bool accuracy_hit, bool headshot);
+               float amount, bool accuracy_hit, int region,
+               CountScope hit_scope = CountScope::full);
 
 // A player pulled a trigger. `projectiles` is the shot's projectile count from the
 // weapon table, so pellet weapons account exactly.
-void on_weapon_fired(rf::Player* player, int weapon_type, uint32_t projectiles);
+// `potential_damage` is what those shots could have dealt at multiplayer damage values (torso),
+// the denominator of efficiency. It follows the same scope as the shot it belongs to.
+void on_weapon_fired(rf::Player* player, int weapon_type, uint32_t projectiles,
+                     CountScope scope = CountScope::full, float potential_damage = 0.0f);
+
+// Effective damage this weapon dealt to ANOTHER player - the efficiency numerator. Self-damage is
+// never dealt, though its shot's potential still counts, so a rocket jump lowers efficiency.
+void on_damage_dealt(rf::Player* attacker, int weapon_type, float amount,
+                     CountScope scope = CountScope::full);
 
 // Out-of-band player state change. `value` is only read for
 // StatusKind::handicap.

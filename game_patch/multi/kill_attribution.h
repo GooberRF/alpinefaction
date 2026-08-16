@@ -46,6 +46,7 @@ struct DamageWeaponContext
 };
 
 constexpr int kill_attribution_hit_region_head = 2;
+constexpr int kill_attribution_hit_region_torso = 1;
 constexpr int kill_attribution_hit_region_legs = 0;
 
 void kill_attribution_do_patch();

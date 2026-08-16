@@ -23,6 +23,11 @@ struct PlayerStatsNew : rf::PlayerLevelStats
     float damage_received;
     float damage_given;
     float damage_given_current_life;
+    // Efficiency numerator/denominator. Deliberately NOT damage_given: that counts every weapon,
+    // while potential only accrues for weapons whose shots reach these counters, so pairing the two
+    // would compare a flame-inclusive numerator with a flame-exclusive denominator.
+    float efficiency_dealt;
+    float damage_potential;
 
     void inc_kills()
     {
@@ -55,6 +60,16 @@ struct PlayerStatsNew : rf::PlayerLevelStats
         num_shots_fired += add;
     }
 
+    void add_efficiency_dealt(float add)
+    {
+        efficiency_dealt += add;
+    }
+
+    void add_damage_potential(float add)
+    {
+        damage_potential += add;
+    }
+
     void add_damage_received(float damage)
     {
         damage_received += damage;
@@ -74,6 +89,16 @@ struct PlayerStatsNew : rf::PlayerLevelStats
         return 0;
     }
 
+    // Not clamped: over 100% is legitimate. One rocket's potential is its damage value, but its
+    // blast can deal that much to several players at once.
+    [[nodiscard]] float calc_efficiency() const
+    {
+        if (damage_potential > 0) {
+            return efficiency_dealt / damage_potential;
+        }
+        return 0;
+    }
+
     void clear()
     {
         num_kills = 0;
@@ -81,6 +106,8 @@ struct PlayerStatsNew : rf::PlayerLevelStats
         num_assists = 0;
         num_shots_hit = 0.0f;
         num_shots_fired = 0.0f;
+        efficiency_dealt = 0.0f;
+        damage_potential = 0.0f;
         current_streak = 0;
         max_streak = 0;
         damage_received = 0;
