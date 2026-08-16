@@ -25,8 +25,8 @@
 // state; the data collected here is shipped alongside instead.
 
 // Everything that describes what is currently being resolved inside an obj_damage or impact call
-// tree. Grouped so the invariants live in one place: every field here is scope-owned -- written
-// only by one of the RAII guards below, read only through the accessors -- and none of it means
+// tree. Grouped so the invariants live in one place: every field here is scope-owned - written
+// only by one of the RAII guards below, read only through the accessors - and none of it means
 // anything outside such a tree.
 //
 // The guards restore PER CONCERN, never by snapshotting the whole struct: splash_hit_counted has
@@ -254,7 +254,7 @@ FunHook<float(int, float, int, int, int, rf::Vector3*, int, char)> obj_damage_ho
 
         // Re-resolve rather than reusing the pre-call pointer: RF handles carry a
         // generation, so a victim freed inside the damage call yields null here instead of
-        // a dangling read. That removes the whole lifetime assumption -- whether clutter
+        // a dangling read. That removes the whole lifetime assumption - whether clutter
         // death defers deletion or not, this can only ever touch a live object.
         if (clutter_alive_before) {
             rf::Object* const after = rf::obj_from_handle(victim_handle);
