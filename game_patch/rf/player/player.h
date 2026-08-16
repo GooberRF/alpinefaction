@@ -43,11 +43,11 @@ struct ClientVersionInfoProfile {
     bool is_d3d11 = false;
 };
 
-// Per-round, per-player counters for the FactionFiles event stream. Reset at
-// every round start; serialized whole into the round_end / player_leave summary
+// Per-game, per-player counters for the FactionFiles event stream. Reset at
+// every game start; serialized whole into the game_end / player_leave summary
 // block. Score and caps are read live from the engine at summary time instead of
 // being duplicated here.
-struct AfstatsRoundCounters {
+struct AfstatsGameCounters {
     uint32_t kills = 0;
     uint32_t deaths = 0;
     uint32_t assists = 0;
@@ -182,7 +182,7 @@ struct PlayerAdditionalData {
     // join, replaced by the PSSK above once the client delivers one. Empty for
     // browsers and whenever stats reporting is off.
     std::string afstats_key{};
-    AfstatsRoundCounters afstats_round{};
+    AfstatsGameCounters afstats_game{};
 
     // Value from the stats stream's leave-reason registry. First writer wins, so a
     // specific reason (banned, vote_kicked) survives the generic kick that follows

@@ -700,12 +700,12 @@ static void send_private_message_with_stats(rf::Player* player)
     auto str = std::format(
         "PLAYER STATS\n"
         "Kills: {} - Deaths: {} - Max Streak: {}\n"
-        "Accuracy: {}% ({:.0f}/{:.0f}) - Damage Given: {:.0f} - Damage Taken: {:.0f}\n"
-        "Efficiency: {}% ({:.0f}/{:.0f})",
+        "Accuracy: {}% ({:.0f}/{:.0f}) - Efficiency: {}% ({:.0f}/{:.0f})\n"
+        "Damage Given: {:.0f} - Damage Taken: {:.0f}",
         stats->num_kills, stats->num_deaths, stats->max_streak,
         accuracy, stats->num_shots_hit, stats->num_shots_fired,
-        stats->damage_given, stats->damage_received,
-        efficiency, stats->efficiency_dealt, stats->damage_potential);
+        efficiency, stats->efficiency_dealt, stats->damage_potential,
+        stats->damage_given, stats->damage_received);
     af_send_automated_chat_msg(str, player);
 }
 
@@ -4191,8 +4191,8 @@ FunHook<void()> multi_check_for_round_end_hook{
             else {
                 // time_up is a local, so the stats stream has to be told which
                 // limit fired before the level change unwinds it.
-                afstats::note_round_end_type(time_up ? afstats::RoundEndType::time_limit
-                                                     : afstats::RoundEndType::score_limit);
+                afstats::note_game_end_type(time_up ? afstats::GameEndType::time_limit
+                                                     : afstats::GameEndType::score_limit);
                 set_manually_loaded_level(false);
                 rf::multi_change_level(nullptr);
             }
@@ -5183,7 +5183,7 @@ void server_on_limbo_state_enter()
 {
     // First, while g_is_overtime, the level info and the scores still describe the
     // round that just finished.
-    afstats::on_round_end();
+    afstats::on_game_end();
 
     g_is_overtime = false;
     g_prev_level = rf::level.filename.c_str();

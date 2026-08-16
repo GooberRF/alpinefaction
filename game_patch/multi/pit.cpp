@@ -192,9 +192,9 @@ void prepare_dueler(rf::Player* p)
 // The duel counts as started once both duelers have live entities, which is also the
 // point where the pairing stops being provisional: until then pit_should_end_round
 // may still swap a slot (or abandon the round outright) while it waits for both
-// players. Reporting the subround here rather than at round begin means the
+// players. Reporting the round here rather than at round begin means the
 // participants are the two players who actually fought, and a pairing that never got
-// off the ground reports nothing at all — on_subround_end is a no-op without a subround
+// off the ground reports nothing at all — on_round_end is a no-op without a round
 // start, so an abandoned round stays silent on both ends.
 void latch_duel_started()
 {
@@ -203,9 +203,9 @@ void latch_duel_started()
 
     g_pit.duel_started = true;
 
-    // A Pit duel is reported as a subround: it is the unit that has participants
-    // and a winner, which is what the subround events describe.
-    afstats::on_subround_start({g_pit.dueler[0], g_pit.dueler[1]});
+    // A Pit duel is reported as a round: it is the unit that has participants
+    // and a winner, which is what the round events describe.
+    afstats::on_round_start({g_pit.dueler[0], g_pit.dueler[1]});
 }
 
 // === Round callbacks ============================================
@@ -330,13 +330,13 @@ void pit_on_round_end(rf::Player* winner, RoundEndReason reason)
 
     // A draw (timeout, or both duelers gone) reports no winner rather than a cancel:
     // the duel ran to completion, it simply decided nothing. A level change ends the
-    // subround without a decided contest.
-    afstats::SubroundResult result =
-        (reason == RoundEndReason::LevelChange) ? afstats::SubroundResult::canceled
-        : (winner != nullptr)                   ? afstats::SubroundResult::completed
-                                                : afstats::SubroundResult::draw;
+    // round without a decided contest.
+    afstats::RoundResult result =
+        (reason == RoundEndReason::LevelChange) ? afstats::RoundResult::canceled
+        : (winner != nullptr)                   ? afstats::RoundResult::completed
+                                                : afstats::RoundResult::draw;
     // Pit is FFA: no winning team, the winner (if any) is the surviving dueler.
-    afstats::on_subround_end(result, afstats::team_none, winner);
+    afstats::on_round_end(result, afstats::team_none, winner);
 
     rf::Player* d0 = g_pit.dueler[0];
     rf::Player* d1 = g_pit.dueler[1];

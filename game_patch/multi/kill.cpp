@@ -559,6 +559,12 @@ void multi_kill_do_patch()
         .jmp(0x00420B03);
 
     // Change player stats structure
+    static_assert(sizeof(PlayerStatsNew) <= 127,
+                  "player_create allocates this struct through a `push imm8` at 0x004A33B5, so the "
+                  "size below is written into a single signed byte. Growth past 127 truncates "
+                  "silently and the engine keeps allocating the short block while every accessor "
+                  "reads the full struct. Replace the allocation site before significantly growing "
+                  "this struct.");
     write_mem<i8>(0x004A33B5 + 1, sizeof(PlayerStatsNew));
     multi_level_init_hook.install();
 

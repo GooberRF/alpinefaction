@@ -932,7 +932,7 @@ struct VoteMatch : public Vote
                 clear_manual_rules_override();
             if (m_gametype)
                 set_upcoming_game_type(*m_gametype, UpcomingGameTypeSelection::ExplicitRequest);
-            afstats::note_round_end_type(afstats::RoundEndType::map_change_vote);
+            afstats::note_game_end_type(afstats::GameEndType::map_change_vote);
             multi_change_level_alpine(m_level_name.c_str());
             if (m_manual_rules_override) {
                 set_manual_rules_override(std::move(*m_manual_rules_override));
@@ -979,7 +979,7 @@ struct VoteCancelMatch : public Vote
     void on_accepted() override
     {
         // cancel_match() ends the round via load_next_level() when a match is live.
-        afstats::note_round_end_type(afstats::RoundEndType::map_change_vote);
+        afstats::note_game_end_type(afstats::GameEndType::map_change_vote);
         cancel_match();
     }
 
@@ -1200,7 +1200,7 @@ struct VoteLevel : public Vote
             set_upcoming_game_type(*m_gametype, UpcomingGameTypeSelection::ExplicitRequest);
         }
 
-        afstats::note_round_end_type(afstats::RoundEndType::map_change_vote);
+        afstats::note_game_end_type(afstats::GameEndType::map_change_vote);
         multi_change_level_alpine(m_level_name.c_str());
 
         if (m_manual_rules_override) {
@@ -1307,7 +1307,7 @@ struct VoteRestart : public VoteRotation
     {
         // restart_current_level() round-trips the session override itself, so the
         // stash is not needed here — only the configured-rules reload is new.
-        afstats::note_round_end_type(afstats::RoundEndType::map_change_vote);
+        afstats::note_game_end_type(afstats::GameEndType::map_change_vote);
         if (m_preserve) {
             restart_current_level();
         }
@@ -1347,7 +1347,7 @@ struct VoteNext : public VoteRotation
     void on_accepted() override
     {
         stash_carry();
-        afstats::note_round_end_type(afstats::RoundEndType::map_change_vote);
+        afstats::note_game_end_type(afstats::GameEndType::map_change_vote);
         load_next_level();
     }
 
@@ -1382,7 +1382,7 @@ struct VoteRandom : public VoteRotation
     void on_accepted() override
     {
         stash_carry();
-        afstats::note_round_end_type(afstats::RoundEndType::map_change_vote);
+        afstats::note_game_end_type(afstats::GameEndType::map_change_vote);
         // if dynamic rotation is on, just load the next level
         g_alpine_server_config.dynamic_rotation ? load_next_level() : load_rand_level();
     }
@@ -1418,7 +1418,7 @@ struct VotePrevious : public VoteRotation
     void on_accepted() override
     {
         stash_carry();
-        afstats::note_round_end_type(afstats::RoundEndType::map_change_vote);
+        afstats::note_game_end_type(afstats::GameEndType::map_change_vote);
         load_prev_level();
     }
 

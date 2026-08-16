@@ -113,6 +113,7 @@ struct PlayerStatsNew : rf::PlayerLevelStats
         damage_received = 0;
         damage_given = 0;
         damage_given_current_life = 0;
+        took_part_in_flag_capture = false;
     }
 };
 

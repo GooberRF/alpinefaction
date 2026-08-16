@@ -19,8 +19,8 @@ namespace rf
 // exists.
 namespace afstats {
 
-// Wire values from the round_end `end_type` registry.
-enum class RoundEndType : uint8_t
+// Wire values from the game_end `end_type` registry.
+enum class GameEndType : uint8_t
 {
     time_limit = 0,
     score_limit = 1,
@@ -99,16 +99,16 @@ enum class MatchResult : uint8_t
     canceled = 1,
 };
 
-// Wire values from the subround_end `result` registry.
-enum class SubroundResult : uint8_t
+// Wire values from the round_end `result` registry.
+enum class RoundResult : uint8_t
 {
     completed = 0, // decided (a winner_team or winner_player is set)
     draw = 1,      // ran to completion with no winner (double wipe, timeout tie, mutual death)
     canceled = 2,  // ended without a decided contest (level change, or abandoned before it could start)
 };
 
-// Wire values from the round_start `match_state` registry. Stamped on every
-// round_start so warmup play is distinguishable from match play at round
+// Wire values from the game_start `match_state` registry. Stamped on every
+// game_start so warmup play is distinguishable from match play at game
 // granularity, without depending on the (gap-lossy) match_start/match_end pair.
 enum class MatchState : uint8_t
 {
@@ -136,7 +136,7 @@ void on_pssk_received(rf::Player* player);
 void note_leave_reason(rf::Player* player, LeaveReason reason);
 
 // The player is being torn down. Must run while PlayerAdditionalData is still
-// alive; emits `player_leave` with the partial-round summary.
+// alive; emits `player_leave` with the partial-game summary.
 void on_player_leave(rf::Player* player);
 
 // The server processed a name change for this player. Emits `player_rename` with
@@ -145,15 +145,15 @@ void on_player_leave(rf::Player* player);
 // name emits nothing, and successive changes are rate-floored.
 void on_player_rename(rf::Player* player, const char* name, std::string_view prev_name);
 
-// A level finished loading server-side. Emits `round_start`.
-void on_round_start();
+// A level finished loading server-side. Emits `game_start`.
+void on_game_start();
 
-// Record why the current round is ending. First writer wins; consumed and reset
-// by on_round_end(). Without a call the round is reported as a manual change.
-void note_round_end_type(RoundEndType end_type);
+// Record why the current game is ending. First writer wins; consumed and reset
+// by on_game_end(). Without a call the game is reported as a manual change.
+void note_game_end_type(GameEndType end_type);
 
-// The server entered limbo, i.e. the round is over. Emits `round_end`.
-void on_round_end();
+// The server entered limbo, i.e. the game is over. Emits `game_end`.
+void on_game_end();
 
 // A lethal blow landed. Arguments mirror what the af_kill_info path already
 // computed: `weapon_type` < 0 and a null `killer` are reported as JSON null,
@@ -167,7 +167,7 @@ void on_kill(rf::Player* victim, rf::Player* killer, int weapon_type, int damage
 void on_spawn(rf::Player* player, const rf::Vector3& pos);
 
 // Where a counted shot or hit is recorded. `full` is every weapon whose shots are discrete:
-// the weapon's accuracy bucket, the player's round summary, and (at the call site) the legacy
+// the weapon's accuracy bucket, the player's game summary, and (at the call site) the legacy
 // scoreboard counters. `bucket_only` is the time-sliced continuous modes -- flamethrower stream,
 // taser/drill - whose window shots are not comparable 1:1 with discrete ones, so they stay out of
 // the overall figures and live only in their per-weapon bucket.
@@ -235,12 +235,12 @@ void on_match_end(MatchResult result, uint8_t winner_team, rf::Player* winner_pl
 // top-scoring player is derived from the live scores at the call site.
 void on_match_end_derived(MatchResult result);
 
-// Subround system: a traditional round driven by rounds.cpp (a Pit duel, a Wipeout
-// round). Nested inside a game (round_*). Numbering is 1-based and restarts each game.
-void on_subround_start(const std::vector<rf::Player*>& participants);
+// Round system: a traditional round driven by rounds.cpp (a Pit duel, a Wipeout
+// round). Nested inside a game (game_*). Numbering is 1-based and restarts each game.
+void on_round_start(const std::vector<rf::Player*>& participants);
 // `winner_team` is the team registry (team_none when not applicable) and
-// `winner_player` is set only for duel-style subrounds.
-void on_subround_end(SubroundResult result, uint8_t winner_team, rf::Player* winner_player);
+// `winner_player` is set only for duel-style rounds.
+void on_round_end(RoundResult result, uint8_t winner_team, rf::Player* winner_player);
 
 // Vote lifecycle. `vote_type` and `result` are the wire-frozen AfVoteType /
 // AfVoteResult values and go out verbatim. `vote_type` is repeated on `vote_ended`
@@ -283,7 +283,7 @@ void do_patch();
 // Sender pulse. Called from fflink::do_frame().
 void do_frame();
 
-// Clean shutdown: close any open round and make one bounded attempt to flush.
+// Clean shutdown: close any open game and make one bounded attempt to flush.
 // Never blocks for more than about two seconds, and there is no delivery
 // guarantee.
 void on_shutdown();
