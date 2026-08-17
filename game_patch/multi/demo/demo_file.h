@@ -118,15 +118,15 @@ struct DemoRecord
     }
     [[nodiscard]] const uint8_t* packet_data() const
     {
-        return payload.data() + 1;
+        return payload.size() < 1 + 3 ? payload.data() : payload.data() + 1;
     }
     [[nodiscard]] size_t packet_len() const
     {
-        return payload.size() - 1;
+        return payload.size() < 1 + 3 ? 0 : payload.size() - 1;
     }
     [[nodiscard]] uint8_t packet_type() const
     {
-        return payload[1];
+        return payload.size() < 1 + 3 ? 0 : payload[1];
     }
 };
 
@@ -150,6 +150,12 @@ public:
     {
         return m_packet_count;
     }
+    // True if a write failed (which closes the file). Lets the recorder tear down
+    // recording cleanly instead of leaving the virtual player orphaned.
+    [[nodiscard]] bool had_error() const
+    {
+        return m_had_error;
+    }
     [[nodiscard]] const std::string& path() const
     {
         return m_path;
@@ -158,6 +164,7 @@ public:
 private:
     void* m_file = nullptr; // gzFile
     uint32_t m_packet_count = 0;
+    bool m_had_error = false;
     std::string m_path;
 };
 
@@ -221,13 +228,14 @@ private:
 // Builds "<rf_root>\demos\" (optionally creating it) and returns the full path for a new
 // demo file named "<map>_<YYYYMMDD-HHMMSS>.afd". Returns empty on failure.
 std::string demo_file_build_new_path(const std::string& map_name);
-// Resolves a user-supplied demo name to a full path (prepends <rf_root>\demos\ for relative
-// names and appends .afd if missing). Relative names may contain subfolders
-// ("tourney\match1"); ".." components are rejected (returns empty).
+// Resolves a demo name (as produced by the listing, i.e. with its .afd extension) to a full
+// path: prepends <rf_root>\demos\ for relative names and appends .afd only when the name does
+// not already end in it (identity for listing names; "x" -> "x.afd"). Relative names may
+// contain subfolders ("tourney\match1"); ".." components are rejected (returns empty).
 std::string demo_file_resolve_path(const std::string& name);
 // Deletes a demo file from disk. Returns false (and logs) on failure.
 bool demo_file_delete(const std::string& path);
-// Lists demo names (without the .afd extension) whose relative path starts with prefix
+// Lists demo names (with their .afd extension) whose relative path starts with prefix
 // (case-insensitive; empty prefix lists the demos root). The prefix may contain subfolders:
 // everything up to the last path separator selects the folder to list, the remainder
 // filters entries within it. Matching subfolders are returned with a trailing backslash
@@ -241,7 +249,7 @@ struct DemoDirListing
 {
     bool ok = false;                // false if the directory could not be opened
     std::vector<std::string> dirs;  // subfolder leaf names, sorted ascending
-    std::vector<std::string> names; // demo leaf names without .afd, sorted ascending
+    std::vector<std::string> names; // demo leaf names with .afd, sorted ascending
 };
 
 // Lists one folder under <rf_root>\demos. rel_dir is a backslash-separated relative path

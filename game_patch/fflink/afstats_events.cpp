@@ -2275,8 +2275,8 @@ ConsoleCommand2 sv_afstats_trace_cmd{
 
 void on_player_join(rf::Player* player)
 {
-    if (!player || player->is_browser) {
-        return; // browsers never join and never appear in the stream
+    if (!player || player->is_browser || player->is_observer()) {
+        return; // browsers/demo recorder never join and never appear in the stream
     }
     if (!ensure_session()) {
         return;

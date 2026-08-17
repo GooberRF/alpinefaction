@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <array>
 #include <charconv>
 #include <cstring>
 #include <format>
@@ -257,28 +258,54 @@ namespace
         return decision;
     }
 
-    void feed_packet_record(const DemoRecord& rec, bool fast_forward)
+    // Feeds exactly one recorded game packet through the engine dispatcher. A crafted
+    // .afd could declare a sub-packet size that doesn't match the record, driving the
+    // dispatcher/handlers past a tight heap block (H1). Two defenses: (1) require the
+    // record to hold exactly one well-framed packet ({u8 type, u16 size, payload} with
+    // size == len-3); (2) feed from a reused, zero-filled scratch buffer sized like the
+    // wire path's 16KB static receive arena, so any handler over-read lands in zeroed
+    // scratch instead of adjacent heap. Returns false when the record is rejected.
+    bool feed_one_packet(const uint8_t* data, size_t len)
+    {
+        static std::array<uint8_t, 0x4000> scratch;
+        if (len < 3 || len > scratch.size())
+            return false;
+        const size_t declared = static_cast<size_t>(data[1]) | (static_cast<size_t>(data[2]) << 8);
+        if (declared != len - 3)
+            return false;
+        std::memset(scratch.data(), 0, scratch.size());
+        std::memcpy(scratch.data(), data, len);
+        rf::multi_io_process_packets(scratch.data(), len, demo_playback_addr, nullptr);
+        return true;
+    }
+
+    // Returns true only when the record was actually handed to the engine dispatcher
+    // (feed_one_packet accepted it). Transition detectors are computed from the raw
+    // record, so callers that advance the state machine (players_fed, state_info_done)
+    // must gate on this - a mis-framed record feed_one_packet drops (H1) must not
+    // advance state without the engine ever processing the packet (N5 wedge).
+    bool feed_packet_record(const DemoRecord& rec, bool fast_forward)
     {
         if (!rec.is_packet())
-            return;
+            return false;
         const uint8_t packet_type = rec.packet_type();
         // The synthesized join_accept was consumed at session start; a stray one
         // mid-stream must not re-trigger a level load
         if (packet_type == pkt_join_accept)
-            return;
+            return false;
         // leave_limbo at a segment tail would start loading the next level of the
         // rotation; a demo file ends at the limbo scoreboard instead
         if (packet_type == pkt_leave_limbo)
-            return;
+            return false;
         if (fast_forward && (packet_type == pkt_sound || packet_type == pkt_weapon_fire))
-            return; // no lasting state; skipping avoids sound/effect spam
+            return false; // no lasting state; skipping avoids sound/effect spam
         if (!packet_check_whitelist(packet_type)) {
             xlog::warn("Demo playback: skipping non-whitelisted packet type 0x{:02x}", packet_type);
-            return;
+            return false;
         }
         const TeamScopeDecision team_scope = check_team_scoped_record(rec, fast_forward);
         if (team_scope.skip)
-            return;
+            return false;
         // First normal-paced position update after a seek: the world has settled, the
         // post-seek suppression (overlay + mute) can end this frame
         if (!fast_forward && g_ctx.seek_settle
@@ -290,9 +317,10 @@ namespace
             saved_local_team = rf::local_player->team;
             rf::local_player->team = *team_scope.spoof_local_team;
         }
-        rf::multi_io_process_packets(rec.packet_data(), rec.packet_len(), demo_playback_addr, nullptr);
+        const bool fed = feed_one_packet(rec.packet_data(), rec.packet_len());
         if (saved_local_team)
             rf::local_player->team = *saved_local_team;
+        return fed;
     }
 
     void clear_all_object_interpolation()
@@ -830,8 +858,7 @@ namespace
         while (ensure_pending_record()) {
             if (g_ctx.pending.is_packet() && g_ctx.pending.packet_type() == pkt_join_accept) {
                 g_ctx.state = PlaybackState::waiting_for_level;
-                rf::multi_io_process_packets(g_ctx.pending.packet_data(), g_ctx.pending.packet_len(),
-                                             demo_playback_addr, nullptr);
+                feed_one_packet(g_ctx.pending.packet_data(), g_ctx.pending.packet_len());
                 consume_pending_record();
                 if (!rf::is_multi) {
                     // The handler rejected the packet (unsupported game type popup etc.)
@@ -1450,9 +1477,12 @@ void demo_playback_do_frame()
         if (!g_ctx.players_fed) {
             while (g_ctx.state == PlaybackState::waiting_for_level && ensure_pending_record()) {
                 const bool is_players = is_final_players_packet(g_ctx.pending);
-                feed_packet_record(g_ctx.pending, false);
+                const bool fed = feed_packet_record(g_ctx.pending, false);
                 consume_pending_record();
-                if (is_players) {
+                // Only advance once the engine actually processed the roster - a
+                // mis-framed players record feed_one_packet dropped keeps the pump
+                // searching for a real final chunk instead of wedging pregame (N5).
+                if (is_players && fed) {
                     g_ctx.players_fed = true;
                     xlog::info("Demo playback: player roster fed, level load should start");
                     break;
@@ -1474,10 +1504,12 @@ void demo_playback_do_frame()
             while (g_ctx.state == PlaybackState::feeding_state_info && ensure_pending_record()) {
                 const DemoRecord& rec = g_ctx.pending;
                 const bool is_done_marker = rec.is_packet() && rec.packet_type() == pkt_state_info_done;
-                feed_packet_record(rec, false);
+                const bool fed = feed_packet_record(rec, false);
                 g_ctx.clock_ms = rec.t_ms;
                 consume_pending_record();
-                if (is_done_marker) {
+                // Only complete the handshake if the marker was actually processed; a
+                // mis-framed state_info_done feed_one_packet dropped must not fake it (N5).
+                if (is_done_marker && fed) {
                     g_ctx.state = PlaybackState::playing;
                     xlog::info("Demo playback: state info complete, entering playback");
                     break;

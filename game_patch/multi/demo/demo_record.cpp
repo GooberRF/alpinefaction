@@ -50,6 +50,9 @@ namespace
         // A human player (not a bot/browser) was connected at some point during the
         // current segment; auto-recorded segments without one are discarded on close
         bool segment_had_human = false;
+        // A write failed; the recorder must be destroyed at a safe frame point (see
+        // capture_packet - deletion mid-send-loop is a UAF).
+        bool teardown_pending = false;
     };
 
     DemoRecordState g_state;
@@ -72,14 +75,27 @@ namespace
             return;
         // Keep the recorder's fabricated reliable socket looking alive so the
         // reliable-socket health check never reads it as timed out (taps fire at
-        // obj-update rate in gameplay and at netgame_update rate in limbo)
+        // obj-update rate in gameplay and at netgame_update rate in limbo).
+        // last_packet_sent is refreshed too so the reliable-socket frame never fires a
+        // 10s keepalive sendto to the fake 127.0.0.1:1 address.
         if (g_state.recorder && g_state.recorder->net_data) {
             const auto socket_id = static_cast<int>(g_state.recorder->net_data->reliable_socket);
             if (socket_id >= 0 && socket_id < rf::NET_MAX_REL_SOCKETS) {
-                rf::net_rel_sockets[socket_id].last_packet_received = static_cast<int>(timer::get_i64(1000));
+                const int now = static_cast<int>(timer::get_i64(1000));
+                rf::net_rel_sockets[socket_id].last_packet_received = now;
+                rf::net_rel_sockets[socket_id].last_packet_sent = now;
             }
         }
         g_state.writer.write_packet(record_time_ms(), data, len, flags);
+        // A write failure closes the file. Tear recording down cleanly instead of
+        // orphaning the virtual player, but DEFER the actual player_delete: capture_packet
+        // runs inside the engine's obj_update send loop (FUN_0047e630), which reads
+        // player->next from the current node AFTER the send - deleting the recorder here
+        // would make that read a use-after-free. The drain runs at frame level.
+        if (g_state.writer.had_error()) {
+            rf::console::print("Demo recording stopped: write failed");
+            g_state.teardown_pending = true;
+        }
     }
 
     rf::Player* create_recorder_player()
@@ -95,12 +111,12 @@ namespace
         player->team = 0xFF;
         player->entity_handle = -1;
         player->is_human_player = false;
-        // DemoListener gets the observer exemptions (spawning, votes, team balance,
-        // rosters, gametype participation) but receives every gameplay packet a
-        // current Alpine client would - AF version gates treat it as AlpineFaction
+        // The Observer type gets the observer exemptions (spawning, votes, team
+        // balance, rosters, gametype participation) but receives every gameplay packet
+        // a current Alpine client would - AF version gates treat it as AlpineFaction
         // at the reported version, so the demo matches what a modern client sees.
         player->version_info = ClientVersionInfoProfile{
-            ClientSoftware::DemoListener, VERSION_MAJOR, VERSION_MINOR, VERSION_PATCH, VERSION_TYPE,
+            ClientSoftware::Observer, VERSION_MAJOR, VERSION_MINOR, VERSION_PATCH, VERSION_TYPE,
             MAXIMUM_RFL_VERSION, false};
 
         rf::PlayerNetData* net_data = player->net_data;
@@ -127,6 +143,7 @@ namespace
 
     void destroy_recorder_player()
     {
+        g_state.teardown_pending = false;
         rf::Player* player = std::exchange(g_state.recorder, nullptr);
         if (!player)
             return;
@@ -239,6 +256,11 @@ namespace
     {
         if (g_state.writer.is_open() || !recording_possible())
             return;
+        // Never (re)start on top of a recorder awaiting the deferred write-failure
+        // teardown - destroy it first so a fresh segment gets a fresh virtual player.
+        if (g_state.teardown_pending) {
+            destroy_recorder_player();
+        }
         if (!g_state.recorder) {
             g_state.recorder = create_recorder_player();
             if (!g_state.recorder)
@@ -261,7 +283,7 @@ namespace
     FunHook<void(rf::Player*, const void*, int)> multi_io_send_hook{
         0x00479370,
         [](rf::Player* player, const void* packet, int len) {
-            if (player && player->is_demo_listener()) {
+            if (player && player->is_observer()) {
                 // Capture before buffering; never let recorder traffic reach a socket
                 capture_packet(packet, len, 0);
                 return;
@@ -273,7 +295,7 @@ namespace
     FunHook<void(rf::Player*, const void*, int, int)> multi_io_send_reliable_hook{
         0x00479480,
         [](rf::Player* player, const void* data, int len, int not_limbo) {
-            if (player && player->is_demo_listener()) {
+            if (player && player->is_observer()) {
                 capture_packet(data, len, DEMO_PKT_RELIABLE);
                 return;
             }
@@ -328,6 +350,26 @@ namespace
 bool demo_record_active()
 {
     return g_state.writer.is_open();
+}
+
+rf::Player* demo_record_recorder()
+{
+    return g_state.recorder;
+}
+
+void demo_record_on_player_deleted(rf::Player* player)
+{
+    // The engine is freeing this player right now. If it is our virtual recorder
+    // (kicked by name, or reaped by the reliable-socket timeout sweep), drop our raw
+    // pointer WITHOUT calling player_delete again and finalize any open segment.
+    // Otherwise g_state.recorder would dangle (use-after-free / heap corruption).
+    if (!g_state.recorder || player != g_state.recorder)
+        return;
+    g_state.recorder = nullptr;
+    g_state.teardown_pending = false; // the engine is doing the teardown for us
+    close_segment();
+    g_state.stopped_by_command = false;
+    g_state.auto_started = false;
 }
 
 bool demo_record_capture_join_accept(const rf::NetAddr& addr, const void* data, size_t len)
@@ -404,6 +446,15 @@ void demo_record_on_human_join()
 {
     if (g_state.writer.is_open()) {
         g_state.segment_had_human = true;
+    }
+}
+
+void demo_record_server_do_frame()
+{
+    // Runs the deferred write-failure teardown (see capture_packet) at frame level,
+    // outside the engine's obj_update send loop, so destroying the recorder is safe.
+    if (g_state.teardown_pending) {
+        destroy_recorder_player();
     }
 }
 

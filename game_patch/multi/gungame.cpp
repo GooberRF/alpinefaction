@@ -559,7 +559,7 @@ void gungame_level_init_post()
     // reset_local_gungame_order on level load and be wiped. gungame_do_frame
     // sends once the client is LOADED (past its reset).
     for (rf::Player& p : SinglyLinkedList{rf::player_list}) {
-        if (p.is_observer()) continue;
+        if (p.is_non_participant()) continue;
         auto& order = (g_player_orders[&p] = build_order_for_player());
 
         // Anyone who already has a live entity spawned BEFORE this init ran
@@ -614,7 +614,7 @@ void gungame_do_frame()
 
         bool any_at_final = false;
         for (rf::Player& p : SinglyLinkedList{rf::player_list}) {
-            if (p.is_observer()) continue;
+            if (p.is_non_participant()) continue;
             auto& order = ensure_order(&p);
             const int score = p.stats ? p.stats->score : 0;
             if (score >= g_orders_built_limit - 1) any_at_final = true;

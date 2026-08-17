@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
 #include <ctime>
 #include <format>
@@ -72,6 +73,21 @@ namespace
         }
         return dir;
     }
+
+    // True if any backslash/slash-separated component is exactly "..", i.e. the path
+    // could escape <rf_root>\demos.
+    bool has_parent_dir_component(const std::string& s)
+    {
+        for (size_t pos = 0; pos < s.size();) {
+            size_t end = s.find_first_of("\\/", pos);
+            if (end == std::string::npos)
+                end = s.size();
+            if (end - pos == 2 && s[pos] == '.' && s[pos + 1] == '.')
+                return true;
+            pos = end + 1;
+        }
+        return false;
+    }
 }
 
 DemoFileWriter::~DemoFileWriter()
@@ -119,6 +135,7 @@ bool DemoFileWriter::open(const std::string& path, const DemoHeaderInfo& header)
     m_file = file;
     m_path = path;
     m_packet_count = 0;
+    m_had_error = false;
     return true;
 }
 
@@ -138,6 +155,7 @@ void DemoFileWriter::write_packet(uint32_t t_ms, const void* data, size_t len, u
         xlog::error("Failed writing to demo file {} - stopping recording", m_path);
         gzclose(as_gz(m_file));
         m_file = nullptr;
+        m_had_error = true;
         return;
     }
     ++m_packet_count;
@@ -179,7 +197,11 @@ DemoFileReader::OpenResult DemoFileReader::open(const std::string& path)
         return OpenResult::cant_open;
     m_file = file;
     m_path = path;
-    m_header = {}; // don't leak TLV values from a previously opened file (m_footer persists for rewind)
+    // Don't leak state from a previously opened file. rewind_to_records() re-opens the
+    // same file to restart iteration, so it stashes and restores the footer around this.
+    m_header = {};
+    m_footer = {};
+    m_has_footer = false;
 
     uint32_t magic = 0;
     uint32_t header_len = 0;
@@ -237,9 +259,14 @@ DemoFileReader::OpenResult DemoFileReader::open(const std::string& path)
         case DemoHeaderTlvType::server_netfps:
             m_header.server_netfps = entry->read_le<uint32_t>().value_or(0);
             break;
-        case DemoHeaderTlvType::start_time_unix:
-            m_header.start_time_unix = entry->read_le<uint64_t>().value_or(0);
+        case DemoHeaderTlvType::start_time_unix: {
+            // Clamp to a sane range: MSVC localtime() returns NULL outside [0, 32535215999]
+            // (year 3000), which would crash the browser's strftime path. Treat
+            // out-of-range as unknown (0).
+            const uint64_t t = entry->read_le<uint64_t>().value_or(0);
+            m_header.start_time_unix = t > 32535215999ull ? 0 : t;
             break;
+        }
         case DemoHeaderTlvType::server_max_players:
             m_header.server_max_players = entry->read_le<uint32_t>().value_or(0);
             break;
@@ -309,8 +336,16 @@ bool DemoFileReader::rewind_to_records()
     if (m_path.empty())
         return false;
     const std::string path = m_path;
+    // open() clears the footer for a fresh file; this re-opens the SAME file to restart
+    // iteration, so the footer discovered on the first pass still applies - preserve it.
+    const bool had_footer = m_has_footer;
+    const DemoFooterInfo footer = m_footer;
     const OpenResult result = open(path);
-    return result == OpenResult::ok || result == OpenResult::missing_features;
+    if (result != OpenResult::ok && result != OpenResult::missing_features)
+        return false;
+    m_has_footer = had_footer;
+    m_footer = footer;
+    return true;
 }
 
 std::string demo_file_build_new_path(const std::string& map_name)
@@ -321,7 +356,10 @@ std::string demo_file_build_new_path(const std::string& map_name)
     std::time_t now = std::time(nullptr);
     std::tm* tm_buf = std::localtime(&now);
     char timestamp[32];
-    std::strftime(timestamp, sizeof(timestamp), "%Y%m%d-%H%M%S", tm_buf);
+    if (tm_buf)
+        std::strftime(timestamp, sizeof(timestamp), "%Y%m%d-%H%M%S", tm_buf);
+    else // mis-set clock (pre-1970 / post-3000): fall back to the raw epoch
+        std::snprintf(timestamp, sizeof(timestamp), "%lld", static_cast<long long>(now));
     return std::format("{}\\{}_{}.afd", dir, map_name, timestamp);
 }
 
@@ -337,6 +375,8 @@ bool demo_file_delete(const std::string& path)
 DemoDirListing demo_file_list_dir(const std::string& rel_dir)
 {
     DemoDirListing listing;
+    if (has_parent_dir_component(rel_dir))
+        return listing; // ".." would enumerate outside <rf_root>\demos
     auto dir = demos_dir(false);
     if (dir.empty())
         return listing;
@@ -362,7 +402,6 @@ DemoDirListing demo_file_list_dir(const std::string& rel_dir)
         else {
             std::string name = find_data.cFileName;
             if (name.size() > 4 && _stricmp(name.c_str() + name.size() - 4, ".afd") == 0) {
-                name.resize(name.size() - 4);
                 listing.names.push_back(std::move(name));
             }
         }
@@ -402,20 +441,16 @@ std::vector<std::string> demo_file_list_names(const std::string& prefix)
 
 std::string demo_file_resolve_path(const std::string& name)
 {
+    // The listing yields names with their .afd extension, so only append when the
+    // name lacks it (identity for names that already end in .afd; "x" -> "x.afd").
     std::string result = name;
     if (result.size() < 4 || _stricmp(result.c_str() + result.size() - 4, ".afd") != 0)
         result += ".afd";
     const bool is_absolute = result.contains(':') || result.starts_with("\\") || result.starts_with("/");
     if (!is_absolute) {
         // Reject ".." components so relative names cannot escape <rf_root>\demos
-        for (size_t pos = 0; pos < result.size();) {
-            size_t end = result.find_first_of("\\/", pos);
-            if (end == std::string::npos)
-                end = result.size();
-            if (end - pos == 2 && result[pos] == '.' && result[pos + 1] == '.')
-                return {};
-            pos = end + 1;
-        }
+        if (has_parent_dir_component(result))
+            return {};
         auto dir = demos_dir(false);
         if (dir.empty())
             return result;

@@ -1140,7 +1140,7 @@ void multi_hud_render_team_scores()
         size_t entry_count = 0;
         for (rf::Player& p : SinglyLinkedList{rf::player_list}) {
             if (!p.stats) continue;
-            if (p.is_observer()) continue;
+            if (p.is_non_participant()) continue;
             // The demo viewer is not part of the recorded match - no phantom row
             if (demo_playback_active() && &p == rf::local_player) continue;
             if (entry_count >= kMaxEntries) break;

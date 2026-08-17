@@ -62,7 +62,12 @@ namespace
         if (end >= len) {
             return std::nullopt; // missing NUL terminator
         }
-        std::string str{reinterpret_cast<const char*>(data + pos), end - pos};
+        // Cap the stored length: these become player names fed to hud_fit_string, whose
+        // per-row cost is O(n^2) in the name length (H3). Stock names are <= 31 bytes on
+        // the wire. The cursor still advances past the full string so later fields parse.
+        constexpr size_t max_name_len = 64;
+        const size_t stored_len = std::min(end - pos, max_name_len);
+        std::string str{reinterpret_cast<const char*>(data + pos), stored_len};
         pos = end + 1;
         return str;
     }

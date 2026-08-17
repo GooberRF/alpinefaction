@@ -24,8 +24,20 @@ void demo_do_patch();
 void demo_server_on_level_init_post();
 // Finalizes the current segment and removes the virtual player. Called from multi_stop_hook.
 void demo_record_on_multi_stop();
+// Server per-frame tick: runs the deferred write-failure teardown at a safe point (the
+// recorder cannot be destroyed inside the send taps - that runs mid obj_update loop).
+// Called from multi_io_do_frame_hook's server path.
+void demo_record_server_do_frame();
+// Notification that the engine is deleting a player (from player_destroy_hook). If it is
+// the virtual recorder (kick-by-name, reliable-socket timeout sweep), drops the module's
+// pointer and finalizes any open segment WITHOUT re-deleting the player. Cheap no-op when
+// no recorder exists. Prevents the recorder Player* from dangling (C1).
+void demo_record_on_player_deleted(rf::Player* player);
 // True while a demo file is being written.
 bool demo_record_active();
+// The virtual recorder Player*, or null when not recording. Used by the netgame_update
+// broadcast hook to deliver a targeted full-roster update to the recorder for capture.
+rf::Player* demo_record_recorder();
 // Marks the current segment as having had a human player connected. Called from the
 // join flow once is_bot/is_browser classification is final; auto-recorded segments
 // that never see a human (empty server or bots/browsers only) are deleted on close.

@@ -106,7 +106,7 @@ static ScoreboardCategory get_scoreboard_category(const rf::Player* player)
         return ScoreboardCategory::Idle;
     }
 
-    if (g_alpine_game_config.scoreboard_split_browsers && player->is_observer()) {
+    if (g_alpine_game_config.scoreboard_split_browsers && player->is_browser) {
         return ScoreboardCategory::Browser;
     }
 
@@ -448,7 +448,7 @@ int draw_scoreboard_players(
         const bool is_spawned = !rf::player_is_dead(player)
             && !rf::player_is_dying(player);
         const int status_bm = std::invoke([&] {
-            if (player->is_observer()) {
+            if (player->is_browser) {
                 return browser_bm;
             } else if (player->is_spectator) {
                 return spectator_bm;
@@ -583,6 +583,10 @@ ScoreboardPlayerList filter_and_sort_players(const std::optional<int> team_id)
         if (demo_playback_active() && &player == rf::local_player) {
             continue;
         }
+        // A recording listen-server host must not list its own virtual recorder
+        if (player.is_observer()) {
+            continue;
+        }
         if (!team_id || player.team == team_id.value()) {
             player_list.players.push_back(&player);
         }
@@ -628,9 +632,9 @@ ScoreboardPlayerList filter_and_sort_players(const std::optional<int> team_id)
 
             // Sort players before bots, and both before observers.
             if (player_1->is_human_player) {
-                return player_2->is_bot || player_2->is_observer();
+                return player_2->is_bot || player_2->is_browser;
             } else {
-                return player_1->is_bot && player_2->is_observer();
+                return player_1->is_bot && player_2->is_browser;
             }
         }
     );

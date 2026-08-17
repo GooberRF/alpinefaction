@@ -201,9 +201,13 @@ namespace
                 entry.start_time = reader.header().start_time_unix;
                 if (entry.start_time != 0) {
                     std::time_t t = static_cast<std::time_t>(entry.start_time);
-                    char date_buf[32];
-                    std::strftime(date_buf, sizeof(date_buf), "%Y-%m-%d %H:%M", std::localtime(&t));
-                    entry.date_str = date_buf;
+                    // localtime returns NULL for out-of-range values; strftime(NULL) would
+                    // trip the invalid-parameter handler and kill the process
+                    if (const std::tm* tm = std::localtime(&t)) {
+                        char date_buf[32];
+                        std::strftime(date_buf, sizeof(date_buf), "%Y-%m-%d %H:%M", tm);
+                        entry.date_str = date_buf;
+                    }
                 }
             }
             g_entries.push_back(std::move(entry));
@@ -550,9 +554,13 @@ namespace
         std::string date_str = "-";
         if (hdr.start_time_unix != 0) {
             std::time_t t = static_cast<std::time_t>(hdr.start_time_unix);
-            char date_buf[32];
-            std::strftime(date_buf, sizeof(date_buf), "%Y-%m-%d %H:%M", std::localtime(&t));
-            date_str = date_buf;
+            // localtime returns NULL for out-of-range values; strftime(NULL) would trip
+            // the invalid-parameter handler and kill the process
+            if (const std::tm* tm = std::localtime(&t)) {
+                char date_buf[32];
+                std::strftime(date_buf, sizeof(date_buf), "%Y-%m-%d %H:%M", tm);
+                date_str = date_buf;
+            }
         }
         std::string duration = format_duration(g_detail.duration_ms);
         if (!g_detail.has_footer) {

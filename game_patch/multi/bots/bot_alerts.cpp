@@ -53,7 +53,7 @@ bool is_enemy_candidate_player(
     if (&candidate == &local_player) {
         return false;
     }
-    if (candidate.is_observer() || candidate.is_spectator || candidate.is_spawn_disabled) {
+    if (candidate.is_non_participant() || candidate.is_spectator || candidate.is_spawn_disabled) {
         return false;
     }
     if (team_mode && candidate.team == local_player.team) {

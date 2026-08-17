@@ -422,11 +422,10 @@ static void af_process_damage_notify_packet(const void* data, size_t len, const 
 
     // Attacker-tagged form (recorded demos): the stream carries every player's
     // notifications, so mirror only those of the player currently being spectated -
-    // matching what a live first-person spectator of that player would get.
-    if (len > sizeof(damage_notify_packet)) {
-        if (!demo_playback_active()) {
-            return;
-        }
+    // matching what a live first-person spectator of that player would get. Live
+    // traffic ignores any trailing bytes (forward-compatible tail) and falls through
+    // to process the base packet.
+    if (len > sizeof(damage_notify_packet) && demo_playback_active()) {
         const uint8_t attacker_id = static_cast<const uint8_t*>(data)[sizeof(damage_notify_packet)];
         // Dealing damage marks the attacker as recently active for auto-follow
         demo_playback_note_player_activity(rf::multi_find_player_by_id(attacker_id));
@@ -1890,7 +1889,7 @@ void af_send_should_gib_req(uint32_t obj_handle)
         // which is meaningless on replay (kill info is keyed by player id instead).
         if (is_player_minimum_af_client_version(&player, 1, 2, 1)
             && !is_player_minimum_af_client_version(&player, 1, 4, 0)
-            && !player.is_demo_listener()) {
+            && !player.is_observer()) {
             af_send_server_req_packet(packet, &player);
         }
     }
@@ -5023,7 +5022,7 @@ void af_send_player_info_response(const rf::NetAddr& addr)
     for (auto& player : player_list) {
         // The demo recorder is not a real client - keep it out of server-browser
         // player listings
-        if (player.is_demo_listener()) {
+        if (player.is_observer()) {
             continue;
         }
         int name_len = std::min<int>(player.name.size(), max_name_len);

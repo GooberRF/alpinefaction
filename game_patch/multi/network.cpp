@@ -922,7 +922,7 @@ FunHook<MultiIoPacketHandler> process_chat_line_packet_hook{
                 // The stock relay loop team-filters recipients, so the teamless demo
                 // recorder never gets team chat; mirror the wire packet (the handler
                 // only receives the body) tagged with the sender's team.
-                const size_t body_len = 2 + std::strlen(msg) + 1;
+                const size_t body_len = 2 + strnlen(msg, rf::max_packet_size - 3) + 1;
                 std::byte packet_buf[rf::max_packet_size];
                 if (sizeof(RF_GamePacketHeader) + body_len <= sizeof(packet_buf)) {
                     RF_GamePacketHeader header{};
@@ -1003,7 +1003,7 @@ FunHook<MultiIoPacketHandler> process_team_change_packet_hook{
                 return;
             }
             // Observers are neither human nor bot, so their team is never forced.
-            if (player && humans_vs_bots_active() && !player->is_observer()) {
+            if (player && humans_vs_bots_active() && !player->is_non_participant()) {
                 const rf::ubyte required_team = player->is_bot ? rf::TEAM_BLUE : rf::TEAM_RED;
                 if (data[1] != required_team) {
                     af_send_automated_chat_msg(
@@ -1474,7 +1474,7 @@ CallHook<int(const rf::NetAddr*, std::byte*, size_t)> send_game_info_packet_hook
             for (const rf::Player& p : SinglyLinkedList{rf::player_list}) {
                 // The demo recorder is not a real client - keep it out of every
                 // advertised counter (the stock count excludes it too)
-                if (p.is_demo_listener())
+                if (p.is_observer())
                     continue;
                 if (p.is_browser)
                     ++num_browsers;
@@ -2718,6 +2718,13 @@ FunHook<int(int*, bool)> psnet_rel_close_socket_hook{
 FunHook<void()> multi_stop_hook{
     0x0046E2C0,
     [] {
+        // Clear a stale demo-browser jump latch (M9) on any non-demo stop so it can't
+        // stay stuck (while set, rf_state_is_closed_hook forces every state closed). A
+        // demo teardown keeps it armed: demo_playback_active() is still true here, the
+        // playback context is only reset by demo_playback_on_multi_stop below.
+        if (!demo_playback_active()) {
+            set_jump_to_demo_browser(false);
+        }
         demo_record_on_multi_stop();   // finalize the demo segment + remove the virtual player
         demo_playback_on_multi_stop(); // engine-initiated stop during playback resets the session
         g_af_server_info.reset(); // Clear server info when leaving
@@ -3076,7 +3083,7 @@ CallHook<int()> game_info_num_players_hook{
         int player_count = 0;
         auto player_list = SinglyLinkedList{rf::player_list};
         for (const auto& current_player : player_list) {
-            if (current_player.is_observer()) continue;
+            if (current_player.is_non_participant()) continue;
             player_count++;
         }
         return player_count;
@@ -3111,11 +3118,25 @@ FunHook<void(rf::Player*)> send_netgame_update_packet_hook{
             for (rf::Player& p : SinglyLinkedList{rf::player_list}) {
                 send_stats(&p);
             }
+            // Broadcast: the stock function packs one body from the whole player_list.
+            // Hide the recorder so real clients don't receive a phantom stats row for a
+            // player id absent from their roster (M7). No-op without a recorder.
+            {
+                DemoRosterHideGuard roster_guard{nullptr};
+                send_netgame_update_packet_hook.call_target(player);
+            }
+            // The guard also drops the recorder from the broadcast's per-recipient send
+            // loop, so after it re-links the recorder deliver a targeted full-roster
+            // netgame_update - the sole carrier of net score/ping/caps into the demo (its
+            // own row is filtered on playback). call_target hits the original directly so
+            // this does not re-enter the hook; send_stats already ran for the recorder in
+            // the loop above, so it is not resent here.
+            if (rf::Player* rec = demo_record_recorder())
+                send_netgame_update_packet_hook.call_target(rec);
         } else {
             send_stats(player);
+            send_netgame_update_packet_hook.call_target(player);
         }
-
-        send_netgame_update_packet_hook.call_target(player);
     },
 };
 
@@ -3128,6 +3149,8 @@ FunHook<void()> multi_io_do_frame_hook{
             demo_playback_do_frame();
             return;
         }
+
+        demo_record_server_do_frame(); // deferred write-failure teardown at a safe point
 
         // Drain `g_send_queues_rel`.
         for (int i = 0; i < std::size(rf::net_rel_sockets); ++i) {

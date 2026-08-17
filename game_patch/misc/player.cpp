@@ -23,6 +23,7 @@
 #include "../input/input.h"
 #include "../multi/multi.h"
 #include "../multi/demo/demo_ui.h"
+#include "../multi/demo/demo.h"
 #include "../multi/gametype.h"
 #include "../multi/server_internal.h"
 #include "../multi/bagman.h"
@@ -80,7 +81,7 @@ bool is_player_minimum_af_client_version(
     // so AF version gates must treat it as an Alpine client - otherwise no
     // AF-gated packet would ever reach the demo recorder.
     if (player->version_info.software != ClientSoftware::AlpineFaction
-        && player->version_info.software != ClientSoftware::DemoListener) {
+        && player->version_info.software != ClientSoftware::Observer) {
         return false;
     }
 
@@ -268,6 +269,10 @@ FunHook<rf::Player*(bool)> player_create_hook{
 FunHook<void(rf::Player*)> player_destroy_hook{
     0x004A35C0,
     [](rf::Player* player) {
+        // Must run before any other subsystem frees state: if the engine is deleting
+        // the virtual demo recorder, the demo module has to drop its raw pointer here
+        // or it dangles (C1). Cheap no-op when no recording is active.
+        demo_record_on_player_deleted(player);
         multi_spectate_on_destroy_player(player);
         bagman_on_player_disconnect(player);
         salvage_on_player_disconnect(player);
@@ -941,7 +946,7 @@ bool player_is_idle(const rf::Player* const player) {
     if (rf::is_server) {
         // The demo recorder never spawns and never sends activity; its idle timer
         // is never armed either, but keep the exemption explicit.
-        if (player->is_demo_listener()) {
+        if (player->is_observer()) {
             return false;
         }
         // Check if the player's idle timer has elapsed

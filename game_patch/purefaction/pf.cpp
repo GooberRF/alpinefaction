@@ -49,7 +49,7 @@ void send_pf_player_stats_packet(rf::Player* player)
         // The demo recorder is not a real client: real recipients would drop its
         // unknown id anyway, and in demo captures the entry maps onto the playback
         // viewer's local player.
-        if (current_player.is_demo_listener()) {
+        if (current_player.is_observer()) {
             continue;
         }
         PlayerStatsNew& player_stats = *static_cast<PlayerStatsNew*>(current_player.stats);

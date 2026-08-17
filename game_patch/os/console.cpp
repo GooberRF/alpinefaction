@@ -83,7 +83,11 @@ rf::Player* find_best_matching_player(const char* name)
 {
     rf::Player* found_player;
     int num_found = 0;
+    // The virtual demo recorder ("[demo]") must never be selectable by name - a
+    // kick/ban would free it behind the demo module's back (C1).
     find_player(StringMatcher().exact(name), [&](rf::Player* player) {
+        if (player->is_observer())
+            return;
         found_player = player;
         ++num_found;
     });
@@ -92,6 +96,8 @@ rf::Player* find_best_matching_player(const char* name)
 
     num_found = 0;
     find_player(StringMatcher().infix(name), [&](rf::Player* player) {
+        if (player->is_observer())
+            return;
         found_player = player;
         ++num_found;
     });

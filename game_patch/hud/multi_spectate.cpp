@@ -362,7 +362,7 @@ static void spectate_next_player(const bool dir, const bool try_alive_players_fi
         }
         if (new_target == g_spectate_mode_target) {
             break; // nothing found
-        } else if (new_target->is_observer()) {
+        } else if (new_target->is_non_participant()) {
             continue;
         } else if (try_alive_players_first && rf::player_is_dead(new_target)) {
             continue;
@@ -711,7 +711,7 @@ static void spectate_set_view_mode(SpectateViewMode to)
             // Coming from a free view - acquire and bind a target.
             rf::Player* resume = (g_spectate_freelook_saved_target
                 && g_spectate_freelook_saved_target != rf::local_player
-                && !g_spectate_freelook_saved_target->is_observer())
+                && !g_spectate_freelook_saved_target->is_non_participant())
                 ? g_spectate_freelook_saved_target
                 : nullptr;
             g_spectate_freelook_saved_target = nullptr;
@@ -752,7 +752,7 @@ SpectateCameraState multi_spectate_get_camera_state()
 
 void multi_spectate_apply_camera_state(const SpectateCameraState& state, rf::Player* target)
 {
-    if (!state.attached || !target || target == rf::local_player || target->is_observer()) {
+    if (!state.attached || !target || target == rf::local_player || target->is_non_participant()) {
         multi_spectate_enter_freelook();
         return;
     }
@@ -1316,7 +1316,7 @@ static void spectate_populate_default_binds()
     // Seed numpad 0-9 with the current top-scoring spectatable players (highest first).
     std::vector<rf::Player*> players;
     for (rf::Player& p : SinglyLinkedList{rf::player_list}) {
-        if (&p == rf::local_player || p.is_observer() || !p.stats) {
+        if (&p == rf::local_player || p.is_non_participant() || !p.stats) {
             continue;
         }
         players.push_back(&p);

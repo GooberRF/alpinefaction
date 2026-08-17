@@ -35,7 +35,7 @@ enum class ClientSoftware {
     // Runs the current AF build's code: AF version gates treat it as AlpineFaction
     // (see is_player_minimum_af_client_version). Never has an entity, never
     // reaches a real socket; multi_io_send* taps divert its traffic to the demo file.
-    DemoListener = 5
+    Observer = 5
 };
 
 struct ClientVersionInfoProfile {
@@ -94,16 +94,17 @@ struct PlayerAdditionalData {
     bool is_spectator = false;
     bool is_human_player = true;
 
-    bool is_demo_listener() const
-    {
-        return version_info.software == ClientSoftware::DemoListener;
-    }
-    // Non-participant observer (browser or demo listener): exempt from spawning,
-    // votes, team balance, rosters, gametype participation. NOT for packet-send
-    // gates - the demo listener must RECEIVE what a real client would see.
+    // Demo observer: the server-side virtual recorder only. NOT for packet-send
+    // gates - the observer must RECEIVE what a real client would see.
     bool is_observer() const
     {
-        return is_browser || is_demo_listener();
+        return version_info.software == ClientSoftware::Observer;
+    }
+    // Any non-participating connection (browser or demo observer): exempt from
+    // spawning, votes, team balance, rosters, gametype participation.
+    bool is_non_participant() const
+    {
+        return is_browser || is_observer();
     }
 
     // Client-side variables.
