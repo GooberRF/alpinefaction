@@ -2187,16 +2187,55 @@ CodeInjection alpine_group_load_hook{
         // Assign new unique UIDs to imported Alpine objects (group import must not
         // reuse UIDs from the file — stock FUN_004365c0 does the same for stock types).
         // generate_uid (vtypes.h, hooked by alpine_generate_uid_hook) considers all objects.
-        for (auto i = mesh_start; i < props.mesh_objects.size(); i++)
-            static_cast<DedObject*>(props.mesh_objects[i])->uid = generate_uid();
-        for (auto i = note_start; i < props.note_objects.size(); i++)
-            static_cast<DedObject*>(props.note_objects[i])->uid = generate_uid();
-        for (auto i = corona_start; i < props.corona_objects.size(); i++)
-            static_cast<DedObject*>(props.corona_objects[i])->uid = generate_uid();
-        for (auto i = bag_start; i < props.bag_objects.size(); i++)
-            static_cast<DedObject*>(props.bag_objects[i])->uid = generate_uid();
-        for (auto i = weather_region_start; i < props.weather_region_objects.size(); i++)
-            static_cast<DedObject*>(props.weather_region_objects[i])->uid = generate_uid();
+        // old_uid → new_uid for every renumbered Alpine object, used to repair links below.
+        std::map<int, int> alpine_uid_map;
+        auto renumber = [&](auto& objects, std::size_t start) {
+            for (auto i = start; i < objects.size(); i++) {
+                auto* obj = static_cast<DedObject*>(objects[i]);
+                int old_uid = obj->uid;
+                obj->uid = generate_uid();
+                if (old_uid != obj->uid)
+                    alpine_uid_map[old_uid] = obj->uid;
+            }
+        };
+        renumber(props.mesh_objects, mesh_start);
+        renumber(props.note_objects, note_start);
+        renumber(props.corona_objects, corona_start);
+        renumber(props.bag_objects, bag_start);
+        renumber(props.weather_region_objects, weather_region_start);
+
+        // Every Alpine object now holds its new UID, so any old UID still reported as in use
+        // belongs to a different object (e.g. a stock object stock renumbered into that value).
+        // Such a mapping is ambiguous and rewriting it could break a correct stock link — drop it.
+        for (auto it = alpine_uid_map.begin(); it != alpine_uid_map.end();) {
+            if (is_uid_in_use(it->first))
+                it = alpine_uid_map.erase(it);
+            else
+                ++it;
+        }
+
+        // Stock's group importer (FUN_004363c0) rewrites imported link arrays only for the
+        // objects it renumbers itself, so imported event→Alpine links still hold the old
+        // file UIDs after the renumbering above. Patch them, scoped to the objects this
+        // import created so pre-existing level objects are never touched.
+        if (!alpine_uid_map.empty()) {
+            auto rewrite_links = [&](DedObject* obj) {
+                if (!obj) return;
+                for (int k = 0; k < obj->links.size; k++) {
+                    auto it = alpine_uid_map.find(obj->links.data_ptr[k]);
+                    if (it != alpine_uid_map.end())
+                        obj->links.data_ptr[k] = it->second;
+                }
+            };
+
+            auto& groups = level->moving_groups;
+            for (int gi = g_moving_groups_size_before_load; gi < groups.size; gi++) {
+                auto* entry = groups.data_ptr[gi];
+                if (!entry) continue;
+                for (int oi = 0; oi < entry->objects.size; oi++)
+                    rewrite_links(entry->objects.data_ptr[oi]);
+            }
+        }
 
         // Add newly loaded Alpine objects to the selection so they move with the
         // other stock objects when the user places the imported group.

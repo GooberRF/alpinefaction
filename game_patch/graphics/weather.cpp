@@ -690,8 +690,8 @@ void snow_do_frame(WeatherParticle* particles, int count, const WeatherBox& box,
     }
 }
 
-ConsoleCommand2 cl_weather_cmd{
-    "cl_weather",
+ConsoleCommand2 r_weather_cmd{
+    "r_weather",
     []() {
         g_alpine_game_config.weather = !g_alpine_game_config.weather;
         rf::console::print("Weather region effects are {}",
@@ -1005,5 +1005,5 @@ void weather_apply_patch()
 {
     weather_reset_states();
     plankton_update_render_hook.install();
-    cl_weather_cmd.register_cmd();
+    r_weather_cmd.register_cmd();
 }

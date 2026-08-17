@@ -119,7 +119,7 @@ Version 1.4.0 (Lupin): Not yet released
 - Load mesh files from subdirectories of `user_maps\meshes` and `red\meshes` in the level editor
 - Add Weather Regions for rain and snow environmental particle effects
 - Add `Weather_Region_State` event
-- Add `cl_weather` console command to toggle rendering of weather effects
+- Add `r_weather` console command to toggle rendering of weather effects
 
 [@is-this-c](https://github.com/is-this-c)
 - Rewrite `VArray` to fix crashes due to MinGW
@@ -143,7 +143,6 @@ Version 1.4.0 (Lupin): Not yet released
 
 ### Bug fixes
 [@GooberRF](https://github.com/GooberRF)
-- Fix plankton bunching into a small drifting cluster instead of distributing around the camera in some liquids
 - Fix team balance not properly randomizing the distribution order of equal-scoring human players
 - Fix incorrect clickable area size for launcher FFLink button
 - Fix "allow clientside mods from legacy directories" option not applying correctly for DDS files
@@ -190,6 +189,8 @@ Version 1.4.0 (Lupin): Not yet released
 - Fix chat and console showing only a bare player name when a player leaves after timing out waiting for game state
 - Fix an over-long console line overflowing the fixed-size console output buffer
 - Fix level editor crash when a custom mesh or texture subdirectory cannot be registered because the editor's internal path table is full
+- Fix plankton bunching into a small drifting cluster instead of distributing around the camera in some liquids
+- Fix links targeting Alpine objects breaking when a group containing them is imported in the level editor
 
 [@is-this-c](https://github.com/is-this-c)
 - Clear cached server config output after a shuffle of a server's rotation

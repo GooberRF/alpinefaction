@@ -364,6 +364,8 @@ static auto& gr_cam_param = addr_as_ref<float>(0x014cf7e0);
 // ─── Misc ────────────────────────────────────────────────────────────────────
 
 static auto& generate_uid = addr_as_ref<int()>(0x00484230);
+// True if uid is already taken. Scans master objects, brush list, undo/redo stacks.
+static auto& is_uid_in_use = addr_as_ref<bool __cdecl(int uid)>(0x00484000);
 static auto& file_add_path = addr_as_ref<int __cdecl(const char* path, const char* exts, bool cd)>(0x004C3950);
 static auto& file_scan_path = addr_as_ref<void(int slot_index)>(0x004CF800);
 static auto& rf_alloc = addr_as_ref<void* __cdecl(size_t size)>(0x0052ee74);
