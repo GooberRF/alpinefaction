@@ -854,18 +854,28 @@ FunHook<void(rf::Entity*, int, rf::Vector3&, rf::Matrix3&, bool)> multi_process_
         }
         multi_process_remote_weapon_fire_hook.call_target(ep, weapon_type, pos, orient, alt_fire);
 
-        // One trigger pull. Counting projectiles rather than shots here is what makes
-        // pellet weapons comparable with single-projectile ones.
-        if (rf::is_server) {
+        // Melee is the one weapon counted here rather than at projectile creation: its projectiles
+        // are deferred and appear at an unhooked creation site, so the swing's fire packet is the
+        // countable signal. One packet is one shot (the stick's two impact delays are two real
+        // swings). Each counted swing also grants a hit credit, because the server can create more
+        // projectiles than the swing sent packets.
+        //
+        // rf::weapon_is_melee, not kill_attribution_is_melee_weapon: this must match the engine's
+        // own WTF_MELEE branch, or a modded weapon gets counted here AND at creation.
+        if (rf::is_server && rf::weapon_is_melee(weapon_type)) {
             if (rf::Player* pp = rf::player_from_entity_handle(ep->handle)) {
-                int projectiles = 1;
-                if (kill_attribution_is_valid_weapon_type(weapon_type)) {
-                    projectiles = std::max(rf::weapon_types[weapon_type].num_projectiles, 1);
+                // A swing's potential is the weapon's primary damage; the taser's zaps accrue
+                // their own alt-damage potential at the deferred creation site instead.
+                const float potential = kill_attribution_is_valid_weapon_type(weapon_type)
+                    ? rf::weapon_types[weapon_type].damage_multi
+                    : 0.0f;
+                afstats::on_weapon_fired(pp, weapon_type, 1, afstats::CountScope::full, potential);
+                if (pp->stats) {
+                    auto* stats = static_cast<PlayerStatsNew*>(pp->stats);
+                    stats->add_shots_fired(1.0f);
+                    stats->add_damage_potential(potential);
                 }
-                if (ep->entity_flags2 & 0x1000) { // EF2_SHOTGUN_DOUBLE_BULLET_UNK
-                    projectiles *= 2;
-                }
-                afstats::on_weapon_fired(pp, weapon_type, static_cast<uint32_t>(projectiles));
+                melee_grant_hit_credit(pp, weapon_type);
             }
         }
 
