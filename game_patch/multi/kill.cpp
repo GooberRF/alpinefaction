@@ -116,6 +116,9 @@ FunHook<void()> multi_level_init_hook{
         g_pending_kill_attributions.clear();
         kill_attribution_level_init();
 
+        // Melee hit credits and flamethrower windows are per-player-id and outlive nothing.
+        accuracy_stats_level_init();
+
         // Stop allowing endgame votes after the next level starts
         multi_player_set_can_endgame_vote(false);
 
@@ -556,6 +559,12 @@ void multi_kill_do_patch()
         .jmp(0x00420B03);
 
     // Change player stats structure
+    static_assert(sizeof(PlayerStatsNew) <= 127,
+                  "player_create allocates this struct through a `push imm8` at 0x004A33B5, so the "
+                  "size below is written into a single signed byte. Growth past 127 truncates "
+                  "silently and the engine keeps allocating the short block while every accessor "
+                  "reads the full struct. Replace the allocation site before significantly growing "
+                  "this struct.");
     write_mem<i8>(0x004A33B5 + 1, sizeof(PlayerStatsNew));
     multi_level_init_hook.install();
 

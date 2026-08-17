@@ -2090,7 +2090,7 @@ void multi_level_init_post_gametypes()
     // After everything above, so the round_start snapshot sees the level, the
     // game type, the active rules and every gametype's own state as final.
     if (rf::is_multi && rf::is_server) {
-        afstats::on_round_start();
+        afstats::on_game_start();
     }
 }
 

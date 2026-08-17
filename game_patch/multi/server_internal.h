@@ -1247,3 +1247,13 @@ bool multi_set_gametype_alpine(std::string_view gametype_name);
 bool is_gametype_name_valid(std::string_view gametype_name);
 void launch_alpine_dedicated_server();
 std::string build_info_command_output();
+
+// Called once per melee swing counted as fired. entity_damage_hook spends the credit when that
+// swing's deferred projectile connects, so melee hits can never outrun melee swings. Keyed per
+// weapon, because accuracy buckets are.
+void melee_grant_hit_credit(rf::Player* attacker, int weapon_type);
+
+// The per-player accuracy ledgers are indexed by player id, which the engine reuses -- both must
+// be cleared on player destroy and on level load so a joiner cannot inherit them.
+void accuracy_stats_on_player_destroy(rf::Player* player);
+void accuracy_stats_level_init();

@@ -117,6 +117,7 @@ Version 1.4.0 (Lupin): Not yet released
 - Add Alpine Faction 1.4.0 clients to the `sv_restrict_status` common test cases
 - Respect DNS TTL for the multiplayer tracker hostname
 - Load mesh files from subdirectories of `user_maps\meshes` and `red\meshes` in the level editor
+- Rework multiplayer accuracy statistics with one shared definition feeding the scoreboard and FactionFiles stats reporting
 
 [@is-this-c](https://github.com/is-this-c)
 - Rewrite `VArray` to fix crashes due to MinGW
@@ -186,6 +187,7 @@ Version 1.4.0 (Lupin): Not yet released
 - Fix chat and console showing only a bare player name when a player leaves after timing out waiting for game state
 - Fix an over-long console line overflowing the fixed-size console output buffer
 - Fix level editor crash when a custom mesh or texture subdirectory cannot be registered because the editor's internal path table is full
+- Fix several multiplayer accuracy calculation issues
 
 [@is-this-c](https://github.com/is-this-c)
 - Clear cached server config output after a shuffle of a server's rotation

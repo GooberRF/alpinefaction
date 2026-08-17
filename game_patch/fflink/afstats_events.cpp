@@ -46,7 +46,7 @@
 #include "../rf/multi.h"
 #include "../rf/os/os.h"
 #include "../rf/player/player.h"
-#include "afstats_client.h" // AFSTATS_VERIFICATION_LOGGING
+#include "afstats_client.h"
 #include "fflink_session.h"
 #include "fflink_utils.h"
 
@@ -58,6 +58,10 @@ constexpr const char* k_events_url = "https://link.factionfiles.com/afstats/v1/e
 constexpr const char* k_user_agent = AF_USER_AGENT_SUFFIX("AFStatsEvents");
 
 constexpr int k_envelope_version = 1;
+
+// Event-vocabulary version. An absent `schema` key means schema 1. Bump this whenever an
+// event type or key changes meaning rather than being added.
+constexpr int k_event_schema_version = 2;
 
 // Hard caps FactionFiles enforces. Staying under them client-side means
 // the 413 split path only ever fires on a contract mismatch.
@@ -76,7 +80,7 @@ constexpr auto k_rate_limit_backoff = std::chrono::seconds(30);
 // ack immediately re-arms the pulse, turning post->ack->post into a POST (and TLS
 // handshake) storm at RTT frequency. With a 500 ms floor and 500 events per batch even a
 // full 20k backlog still drains in tens of seconds, but the outbound rate stays capped
-// well below RTT. A round_end flush is not client-floodable and deliberately bypasses this.
+// well below RTT. A game_end flush is not client-floodable and deliberately bypasses this.
 constexpr auto k_min_post_interval = std::chrono::milliseconds(500);
 constexpr int64_t k_ping_sample_interval_ms = 10000;
 
@@ -123,7 +127,7 @@ constexpr uint8_t k_platform_wine = 1;
 constexpr uint8_t k_join_kind_human = 0;
 constexpr uint8_t k_join_kind_bot = 1;
 
-// A roster entry plus the summary block round_end and player_leave
+// A roster entry plus the summary block game_end and player_leave
 // append to it. `has_summary` selects which of the two shapes is serialized.
 struct RosterEntry
 {
@@ -143,6 +147,8 @@ struct RosterEntry
     uint32_t shots_hit = 0;
     float damage_dealt = 0.0f;
     float damage_taken = 0.0f;
+    float efficiency_dealt = 0.0f;
+    float damage_potential = 0.0f;
     uint32_t highest_streak = 0;
     int64_t time_played_ms = 0;
     int64_t time_spectating_ms = 0;
@@ -200,7 +206,7 @@ struct EvPlayerLeave
     RosterEntry stats;
 };
 
-struct EvRoundStart
+struct EvGameStart
 {
     std::string tc_mod;
     std::string level_file;
@@ -218,7 +224,7 @@ struct EvRoundStart
     std::vector<RosterEntry> roster;
 };
 
-struct EvRoundEnd
+struct EvGameEnd
 {
     uint8_t end_type = 0;
     uint64_t duration_ms = 0;
@@ -264,6 +270,10 @@ struct EvAccuracy
     uint32_t fired = 0;
     uint32_t hit = 0;
     uint32_t hit_head = 0;
+    uint32_t hit_torso = 0;
+    uint32_t hit_legs = 0;
+    float damage_dealt = 0.0f;
+    float damage_potential = 0.0f;
 };
 
 struct EvStatus
@@ -328,14 +338,14 @@ struct EvMatchEnd
     std::string winner_player; // empty = null
 };
 
-struct EvSubroundStart
+struct EvRoundStart
 {
     uint32_t index = 0;
     uint8_t match_state = 0;
     std::vector<std::string> participants;
 };
 
-struct EvSubroundEnd
+struct EvRoundEnd
 {
     uint32_t index = 0;
     uint8_t result = 0;
@@ -395,16 +405,16 @@ struct EvDetailBrushDestroyed
 
 using EventPayload =
     std::variant<EvServerHello, EvGap, EvPlayerJoin, EvPlayerRemediate, EvPlayerRename, EvPlayerLeave,
-                 EvRoundStart, EvRoundEnd, EvKill, EvSpawn, EvDamage, EvAccuracy, EvStatus,
+                 EvGameStart, EvGameEnd, EvKill, EvSpawn, EvDamage, EvAccuracy, EvStatus,
                  EvItemPickup, EvFlagEvent, EvPointEvent, EvBagmanEvent, EvGgLevelup, EvMatchStart,
-                 EvMatchEnd, EvSubroundStart, EvSubroundEnd, EvVoteCalled, EvVoteEnded, EvGeomod,
+                 EvMatchEnd, EvRoundStart, EvRoundEnd, EvVoteCalled, EvVoteEnded, EvGeomod,
                  EvClutterDestroyed, EvDetailBrushDestroyed>;
 
 struct Event
 {
     uint64_t seq = 0;
     uint64_t t = 0;
-    uint32_t round = 0;
+    uint32_t game = 0;
     EventPayload payload;
 };
 
@@ -432,18 +442,18 @@ std::string g_session_id;
 uint32_t g_session_generation = 0;
 uint64_t g_next_seq = 1;
 uint32_t g_next_batch = 1;
-uint32_t g_round = 1;
-bool g_round_open = false;
-bool g_any_round_started = false;
+uint32_t g_game = 1;
+bool g_game_open = false;
+bool g_any_game_started = false;
 // A cancel and the limbo that follows it both reach the match-end path; this makes
 // the second one a no-op.
 bool g_match_open = false;
-// Subround (Pit duel / Wipeout round) latch. index is 1-based and restarts each game;
-// the open flag makes subround_start/subround_end strictly alternate.
-uint32_t g_subround_index = 0;
-bool g_subround_open = false;
-int64_t g_subround_start_ms = 0;
-std::optional<RoundEndType> g_pending_end_type;
+// Round (Pit duel / Wipeout round) latch. index is 1-based and restarts each game;
+// the open flag makes round_start/round_end strictly alternate.
+uint32_t g_round_index = 0;
+bool g_round_open = false;
+int64_t g_round_start_ms = 0;
+std::optional<GameEndType> g_pending_end_type;
 
 std::deque<Event> g_queue;
 std::deque<PendingBatch> g_pending;
@@ -464,6 +474,10 @@ struct AccuracyAccum
     uint32_t fired = 0;
     uint32_t hit = 0;
     uint32_t hit_head = 0;
+    uint32_t hit_torso = 0;
+    uint32_t hit_legs = 0;
+    float dealt = 0.0f;
+    float potential = 0.0f;
 };
 
 // Non-owning lookup keys. on_damage and on_weapon_fired run on every damage
@@ -536,6 +550,45 @@ struct AccuracyKeyLess
 
 std::map<DamageKey, DamageAccum, DamageKeyLess> g_damage_accum;
 std::map<AccuracyKey, AccuracyAccum, AccuracyKeyLess> g_accuracy_accum;
+
+// Verification only: cumulative per-(player, weapon) totals behind the accuracy tripwire. A single
+// flush window is not a valid comparison - a projectile's fired and its hit routinely land in
+// different batches (a rocket in flight across a flush, a melee impact delay, the flame grace
+// tail), so per-batch hit-without-fired is legitimate. Only the running totals must hold.
+struct AccuracyTotals
+{
+    uint64_t fired = 0;
+    uint64_t hit = 0;
+    uint64_t hit_head = 0;
+    uint64_t hit_torso = 0;
+    uint64_t hit_legs = 0;
+};
+std::map<AccuracyKey, AccuracyTotals, AccuracyKeyLess> g_accuracy_totals;
+
+static void verify_accuracy_totals(const EvAccuracy& ev)
+{
+    AccuracyTotals& totals = g_accuracy_totals[AccuracyKey{ev.player, ev.weapon}];
+    totals.fired += ev.fired;
+    totals.hit += ev.hit;
+    totals.hit_head += ev.hit_head;
+    totals.hit_torso += ev.hit_torso;
+    totals.hit_legs += ev.hit_legs;
+    if (totals.hit > totals.fired) {
+        xlog::warn("[afstats-inv] cumulative accuracy hit > fired for weapon {}: {} hit vs {} fired",
+                   ev.weapon, totals.hit, totals.fired);
+    }
+    if (totals.hit_head > totals.hit) {
+        xlog::warn("[afstats-inv] cumulative headshots > hits for weapon {}: {} vs {}",
+                   ev.weapon, totals.hit_head, totals.hit);
+    }
+    // A hit carries at most one region, so the regions can only ever sum to less than the hits
+    // (splash, flame, taser and melee hits carry none) - never more.
+    const uint64_t regions = totals.hit_head + totals.hit_torso + totals.hit_legs;
+    if (regions > totals.hit) {
+        xlog::warn("[afstats-inv] cumulative region hits > hits for weapon {}: {} vs {}",
+                   ev.weapon, regions, totals.hit);
+    }
+}
 
 // Finds the bucket for a lookup view, creating it (and only then paying for the owning
 // key) if it does not exist yet.
@@ -824,7 +877,7 @@ uint8_t team_id(const rf::Player* player)
 }
 
 // -------------------------------------------------------------------------
-// Queue and round counters
+// Queue and game counters
 // -------------------------------------------------------------------------
 
 // Folds a loss into the current overflow episode. No queue event and at most one
@@ -850,7 +903,7 @@ void push_event(EventPayload payload)
     Event e;
     e.seq = g_next_seq++;
     e.t = uptime_ms();
-    e.round = g_round;
+    e.game = g_game;
     e.payload = std::move(payload);
     g_queue.push_back(std::move(e));
     ++g_events_emitted;
@@ -895,14 +948,14 @@ void materialize_pending_gap()
     Event e;
     e.seq = g_next_seq++;
     e.t = uptime_ms();
-    e.round = g_round;
+    e.game = g_game;
     e.payload = std::move(gap);
     g_queue.push_back(std::move(e));
 }
 
 // Materializes the windowed aggregates into events. Runs immediately before a
-// batch is cut and before a round closes, so an aggregate never lands under the
-// round number of the round after the one it happened in.
+// batch is cut and before a game closes, so an aggregate never lands under the
+// game number of the game after the one it happened in.
 void flush_accumulators()
 {
     // extract() yields a node whose key() is mutable, so the captured-at-damage-time
@@ -929,17 +982,26 @@ void flush_accumulators()
         ev.fired = node.mapped().fired;
         ev.hit = node.mapped().hit;
         ev.hit_head = node.mapped().hit_head;
+        ev.hit_torso = node.mapped().hit_torso;
+        ev.hit_legs = node.mapped().hit_legs;
+        ev.damage_dealt = node.mapped().dealt;
+        ev.damage_potential = node.mapped().potential;
+        if constexpr (AFSTATS_VERIFICATION_LOGGING) {
+            // The invariant the accuracy design rests on: a hit is only ever counted against a
+            // shot already counted as fired. Checked on cumulative totals, not this batch.
+            verify_accuracy_totals(ev);
+        }
         push_event(std::move(ev));
     }
 }
 
-void reset_round_counters(rf::Player* player)
+void reset_game_counters(rf::Player* player)
 {
     const int64_t now = static_cast<int64_t>(uptime_ms());
-    player->afstats_round = AfstatsRoundCounters{};
-    player->afstats_round.present_since_ms = now;
-    player->afstats_round.last_sample_ms = now;
-    player->afstats_round.last_ping_sample_ms = now;
+    player->afstats_game = AfstatsGameCounters{};
+    player->afstats_game.present_since_ms = now;
+    player->afstats_game.last_sample_ms = now;
+    player->afstats_game.last_ping_sample_ms = now;
 }
 
 // Advances the time accumulators by sampling the player's current state, and
@@ -953,7 +1015,7 @@ void sample_player_state(rf::Player* player)
         return;
     }
     const int64_t now = static_cast<int64_t>(uptime_ms());
-    auto& c = player->afstats_round;
+    auto& c = player->afstats_game;
     const bool idle = player_is_idle(player);
     const int64_t delta = now - c.last_sample_ms;
     if (delta > 0) {
@@ -1000,10 +1062,10 @@ RosterEntry build_roster_entry(rf::Player* player, bool with_summary)
     }
 
     sample_player_state(player);
-    const auto& c = player->afstats_round;
+    const auto& c = player->afstats_game;
     e.has_summary = true;
     // Score and caps are the engine's own per-level numbers; duplicating them into
-    // the round counters would just give them a second chance to disagree.
+    // the game counters would just give them a second chance to disagree.
     if (player->stats) {
         e.score = player->stats->score;
         e.caps = static_cast<uint32_t>(std::max<int>(player->stats->caps, 0));
@@ -1013,6 +1075,8 @@ RosterEntry build_roster_entry(rf::Player* player, bool with_summary)
     e.assists = c.assists;
     e.shots_fired = c.shots_fired;
     e.shots_hit = c.shots_hit;
+    e.efficiency_dealt = c.efficiency_dealt;
+    e.damage_potential = c.damage_potential;
     e.damage_dealt = c.damage_dealt;
     e.damage_taken = c.damage_taken;
     e.highest_streak = c.highest_streak;
@@ -1074,6 +1138,8 @@ nlohmann::json roster_entry_to_json(const RosterEntry& e)
     j["caps"] = e.caps;
     j["shots_fired"] = e.shots_fired;
     j["shots_hit"] = e.shots_hit;
+    j["efficiency_dealt"] = e.efficiency_dealt;
+    j["damage_potential"] = e.damage_potential;
     j["damage_dealt"] = e.damage_dealt;
     j["damage_taken"] = e.damage_taken;
     j["highest_streak"] = e.highest_streak;
@@ -1089,7 +1155,7 @@ nlohmann::json event_to_json(const Event& e)
     nlohmann::json j{
         {"seq", e.seq},
         {"t", e.t},
-        {"round", e.round},
+        {"game", e.game},
     };
 
     std::visit(
@@ -1132,8 +1198,8 @@ nlohmann::json event_to_json(const Event& e)
                 j["reason"] = p.reason;
                 j["stats"] = roster_entry_to_json(p.stats);
             }
-            else if constexpr (std::is_same_v<T, EvRoundStart>) {
-                j["type"] = "round_start";
+            else if constexpr (std::is_same_v<T, EvGameStart>) {
+                j["type"] = "game_start";
                 j["tc_mod"] = p.tc_mod;
                 j["level_file"] = p.level_file;
                 j["level_name"] = p.level_name;
@@ -1171,8 +1237,8 @@ nlohmann::json event_to_json(const Event& e)
                 }
                 j["roster"] = std::move(roster);
             }
-            else if constexpr (std::is_same_v<T, EvRoundEnd>) {
-                j["type"] = "round_end";
+            else if constexpr (std::is_same_v<T, EvGameEnd>) {
+                j["type"] = "game_end";
                 j["end_type"] = p.end_type;
                 j["duration_ms"] = p.duration_ms;
                 j["overtime"] = p.overtime;
@@ -1216,6 +1282,10 @@ nlohmann::json event_to_json(const Event& e)
                 j["fired"] = p.fired;
                 j["hit"] = p.hit;
                 j["hit_head"] = p.hit_head;
+                j["hit_torso"] = p.hit_torso;
+                j["hit_legs"] = p.hit_legs;
+                j["damage_dealt"] = p.damage_dealt;
+                j["damage_potential"] = p.damage_potential;
             }
             else if constexpr (std::is_same_v<T, EvStatus>) {
                 j["type"] = "status";
@@ -1274,14 +1344,14 @@ nlohmann::json event_to_json(const Event& e)
                 j["winner_player"] =
                     p.winner_player.empty() ? nlohmann::json(nullptr) : nlohmann::json(p.winner_player);
             }
-            else if constexpr (std::is_same_v<T, EvSubroundStart>) {
-                j["type"] = "subround_start";
+            else if constexpr (std::is_same_v<T, EvRoundStart>) {
+                j["type"] = "round_start";
                 j["index"] = p.index;
                 j["match_state"] = p.match_state;
                 j["participants"] = p.participants;
             }
-            else if constexpr (std::is_same_v<T, EvSubroundEnd>) {
-                j["type"] = "subround_end";
+            else if constexpr (std::is_same_v<T, EvRoundEnd>) {
+                j["type"] = "round_end";
                 j["index"] = p.index;
                 j["result"] = p.result;
                 j["winner_team"] = p.winner_team;
@@ -1346,6 +1416,7 @@ nlohmann::json build_envelope_json(const PendingBatch& batch, const std::string&
 {
     nlohmann::json j{
         {"v", k_envelope_version},
+        {"schema", k_event_schema_version},
         {"gssk", gssk},
         {"session", g_session_id},
         {"batch", batch.batch},
@@ -1377,7 +1448,7 @@ void redact_credentials(nlohmann::json& node)
     static constexpr std::string_view key_fields[] = {
         "gssk",   "player",   "victim", "killer",       "attacker",
         "initiator", "target", "upssk", "pssk",         "winner_player"};
-    // Fields whose value is an array of key strings (round_end.players is an array of
+    // Fields whose value is an array of key strings (game_end.players is an array of
     // roster objects instead, so it is handled by the recursion below, not here).
     static constexpr std::string_view key_list_fields[] = {"assists", "participants"};
 
@@ -1390,7 +1461,7 @@ void redact_credentials(nlohmann::json& node)
                 v = "***";
             }
             else if (k == "players" && v.is_array()) {
-                // point_event.players is a key list; round_end.players is roster objects.
+                // point_event.players is a key list; game_end.players is roster objects.
                 for (auto& e : v) {
                     if (e.is_string()) {
                         e = "***";
@@ -1833,15 +1904,16 @@ void reset_module_state()
     g_pending.clear();
     g_damage_accum.clear();
     g_accuracy_accum.clear();
+    g_accuracy_totals.clear();
     g_pending_gap = PendingGap{};
     g_next_seq = 1;
     g_next_batch = 1;
-    g_round = 1;
-    g_round_open = false;
-    g_any_round_started = false;
+    g_game = 1;
+    g_game_open = false;
+    g_any_game_started = false;
     g_match_open = false;
-    g_subround_index = 0;
-    g_subround_open = false;
+    g_round_index = 0;
+    g_round_open = false;
     g_pending_end_type.reset();
     g_send_in_flight = false;
     g_paused_401 = false;
@@ -1869,7 +1941,7 @@ void reset_module_state()
     // The re-announce re-applies it through on_pssk_received instead.
     for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
         player.afstats_key.clear();
-        player.afstats_round = AfstatsRoundCounters{};
+        player.afstats_game = AfstatsGameCounters{};
         player.afstats_leave_reason = -1;
     }
 }
@@ -1924,7 +1996,7 @@ bool ensure_session()
 }
 
 // -------------------------------------------------------------------------
-// round_start / round_end content
+// game_start / game_end content
 // -------------------------------------------------------------------------
 
 std::vector<MutatorRecord> build_mutators()
@@ -2111,20 +2183,20 @@ void derive_winner(uint8_t& winner_team, rf::Player*& winner_player)
     }
 }
 
-void emit_round_end(RoundEndType end_type)
+void emit_game_end(GameEndType end_type)
 {
-    // Aggregates belong to the round that is closing, not the one that follows.
+    // Aggregates belong to the game that is closing, not the one that follows.
     flush_accumulators();
 
-    // A subround still open when the game ends emits its subround_end first, so the
-    // stream closes the nested unit before the round that contained it.
-    if (g_subround_open) {
-        on_subround_end(SubroundResult::canceled, team_none, nullptr);
+    // A round still open when the game ends emits its round_end first, so the
+    // stream closes the nested unit before the game that contained it.
+    if (g_round_open) {
+        on_round_end(RoundResult::canceled, team_none, nullptr);
     }
 
     const auto game_type = rf::multi_get_game_type();
 
-    EvRoundEnd ev;
+    EvGameEnd ev;
     ev.end_type = static_cast<uint8_t>(end_type);
     ev.duration_ms = static_cast<uint64_t>(std::max(rf::level.time, 0.0f) * 1000.0f);
     ev.overtime = g_is_overtime;
@@ -2132,16 +2204,16 @@ void emit_round_end(RoundEndType end_type)
     ev.players = build_roster(true);
 
     if constexpr (AFSTATS_VERIFICATION_LOGGING) {
-        xlog::warn("[afstats-ev] round {} ended ({}, {} ms, {} players)", g_round, ev.end_type,
+        xlog::warn("[afstats-ev] game {} ended ({}, {} ms, {} players)", g_game, ev.end_type,
                    ev.duration_ms, ev.players.size());
     }
     push_event(std::move(ev));
 
-    g_round_open = false;
+    g_game_open = false;
     g_pending_end_type.reset();
 
-    // Build immediately at round end so the website can show finished
-    // rounds promptly instead of waiting out the pulse.
+    // Build immediately at game end so the website can show finished
+    // games promptly instead of waiting out the pulse.
     g_next_pulse = std::chrono::steady_clock::now();
 }
 
@@ -2158,7 +2230,7 @@ ConsoleCommand2 sv_afstats_events_status_cmd{
             return;
         }
         rf::console::print("AF stats event stream: session {}", g_session_id);
-        rf::console::print("  Round: {} ({})", g_round, g_round_open ? "open" : "closed");
+        rf::console::print("  Game: {} ({})", g_game, g_game_open ? "open" : "closed");
         rf::console::print("  Events emitted: {} (dropped {})", g_events_emitted, g_events_dropped);
         rf::console::print("  Queue depth: {} / {}", g_queue.size(), k_max_queued_events);
         rf::console::print("  Batches acked: {} (next batch number {})", g_batches_acked, g_next_batch);
@@ -2214,7 +2286,7 @@ void on_player_join(rf::Player* player)
     }
 
     player->afstats_key = mint_upssk();
-    reset_round_counters(player);
+    reset_game_counters(player);
     player->afstats_leave_reason = -1;
 
     EvPlayerJoin ev;
@@ -2232,7 +2304,7 @@ void on_player_join(rf::Player* player)
     }
     push_event(std::move(ev));
 
-    // A player joining mid-round is in no round_start roster until the next one, so
+    // A player joining mid-game is in no game_start roster until the next one, so
     // without this FF derives team=none for them. Team is finalized by the
     // join flow before this runs; fire only for team gametypes, once per join.
     if (multi_is_team_game_type()) {
@@ -2355,36 +2427,36 @@ void on_player_rename(rf::Player* player, const char* name, std::string_view pre
     push_event(std::move(ev));
 }
 
-void on_round_start()
+void on_game_start()
 {
     if (!ensure_session()) {
         return;
     }
-    if (g_round_open) {
-        // A round that never reported an end (level reload during limbo, etc.).
-        emit_round_end(g_pending_end_type.value_or(RoundEndType::map_change_manual));
+    if (g_game_open) {
+        // A game that never reported an end (level reload during limbo, etc.).
+        emit_game_end(g_pending_end_type.value_or(GameEndType::map_change_manual));
     }
     flush_accumulators();
-    if (g_any_round_started) {
-        ++g_round;
+    if (g_any_game_started) {
+        ++g_game;
     }
-    g_any_round_started = true;
-    g_round_open = true;
+    g_any_game_started = true;
+    g_game_open = true;
     g_pending_end_type.reset();
-    // A new game restarts subround numbering. Any subround still open was closed by the
-    // emit_round_end above; drop the latch regardless so the count starts clean.
-    g_subround_index = 0;
-    g_subround_open = false;
+    // A new game restarts round numbering. Any round still open was closed by the
+    // emit_game_end above; drop the latch regardless so the count starts clean.
+    g_round_index = 0;
+    g_round_open = false;
 
     for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
         if (!player.is_browser) {
-            reset_round_counters(&player);
+            reset_game_counters(&player);
         }
     }
 
     const auto game_type = rf::multi_get_game_type();
 
-    EvRoundStart ev;
+    EvGameStart ev;
     ev.tc_mod = rf::mod_param.found() ? sanitize_string(rf::mod_param.get_arg(), k_max_string_len)
                                       : std::string{};
     ev.level_file = sanitize_string(rf::level.filename.c_str(), k_max_string_len);
@@ -2395,11 +2467,11 @@ void on_round_start()
     ev.overtime_enabled = g_alpine_server_config_active_rules.overtime.enabled;
     // Computed fresh from config/state rather than read back from the cached
     // server-info static, which is 0 until the first server-info packet is built:
-    // a dedicated server's first round_start can precede any such packet.
+    // a dedicated server's first game_start can precede any such packet.
     ev.af_flags = af_compute_server_info_flags();
     ev.rf_flags = build_rf_flags();
     ev.gi_flags = server_get_game_info_flags().game_info_flags_to_uint32();
-    // Always stamped, so warmup and match rounds are separable even when the
+    // Always stamped, so warmup and match games are separable even when the
     // match_start / match_end pair was lost to a gap.
     ev.match_state = af_match_state_for_stats();
     ev.mutators = build_mutators();
@@ -2407,13 +2479,13 @@ void on_round_start()
     ev.roster = build_roster(false);
 
     if constexpr (AFSTATS_VERIFICATION_LOGGING) {
-        xlog::warn("[afstats-ev] round {} started: {} (gametype {}), {} players, {} mutators", g_round,
+        xlog::warn("[afstats-ev] game {} started: {} (gametype {}), {} players, {} mutators", g_game,
                    ev.level_file, ev.gametype, ev.roster.size(), ev.mutators.size());
     }
     push_event(std::move(ev));
 }
 
-void note_round_end_type(RoundEndType end_type)
+void note_game_end_type(GameEndType end_type)
 {
     if (!emitting_enabled()) {
         return; // never write the latch on a stats-disabled server
@@ -2423,12 +2495,12 @@ void note_round_end_type(RoundEndType end_type)
     }
 }
 
-void on_round_end()
+void on_game_end()
 {
-    if (!g_session_started || !g_round_open) {
+    if (!g_session_started || !g_game_open) {
         return;
     }
-    emit_round_end(g_pending_end_type.value_or(RoundEndType::map_change_manual));
+    emit_game_end(g_pending_end_type.value_or(GameEndType::map_change_manual));
 }
 
 void on_kill(rf::Player* victim, rf::Player* killer, int weapon_type, int damage_type, uint8_t kill_flags,
@@ -2459,14 +2531,14 @@ void on_kill(rf::Player* victim, rf::Player* killer, int weapon_type, int damage
         rf::Player* assister = rf::multi_find_player_by_id(assist_id);
         if (assister && !assister->afstats_key.empty()) {
             ev.assists.push_back(assister->afstats_key);
-            ++assister->afstats_round.assists;
+            ++assister->afstats_game.assists;
         }
     }
 
-    ++victim->afstats_round.deaths;
-    victim->afstats_round.current_streak = 0;
+    ++victim->afstats_game.deaths;
+    victim->afstats_game.current_streak = 0;
     if (killer && killer != victim) {
-        auto& c = killer->afstats_round;
+        auto& c = killer->afstats_game;
         ++c.kills;
         ++c.current_streak;
         c.highest_streak = std::max(c.highest_streak, c.current_streak);
@@ -2487,7 +2559,7 @@ void on_spawn(rf::Player* player, const rf::Vector3& pos)
 }
 
 void on_damage(rf::Player* attacker, rf::Player* victim, int weapon_type, int damage_type, float amount,
-               bool direct_hit, bool headshot)
+               bool accuracy_hit, int region, CountScope hit_scope)
 {
     if (!victim || amount <= 0.0f || !ensure_session() || victim->afstats_key.empty()) {
         return;
@@ -2506,7 +2578,7 @@ void on_damage(rf::Player* attacker, rf::Player* victim, int weapon_type, int da
     acc.amount += amount;
     ++acc.hits;
 
-    victim->afstats_round.damage_taken += amount;
+    victim->afstats_game.damage_taken += amount;
     // Count self-splash toward damage_dealt too: the stream emits a damage
     // event for attacker==victim, and FF folds that into damage_dealt, so the summary
     // counter must match or it diverges from the stream by exactly the self-damage.
@@ -2514,31 +2586,65 @@ void on_damage(rf::Player* attacker, rf::Player* victim, int weapon_type, int da
     // below and the victim-side guard above: a player with no stats key never appears in
     // a roster, so accumulating a summary for them can only ever be dead work.
     if (!attacker_key.empty()) {
-        attacker->afstats_round.damage_dealt += amount;
+        attacker->afstats_game.damage_dealt += amount;
     }
 
-    // Only a direct projectile hit is an accuracy hit. Splash still
-    // counts toward `damage`, which is why this is not the same condition. `hit`
-    // counts damage-applications, so a projectile that damages two players counts
-    // twice; that is definitional, accuracy is only compared within a weapon.
-    if (direct_hit && weapon_type >= 0 && !attacker_key.empty()) {
+    // The caller decides what counts as an accuracy hit - splash detonations and continuous
+    // windows included - and this block only applies that decision, which is why it is not the
+    // same condition as the `damage` aggregate above.
+    if (accuracy_hit && weapon_type >= 0 && !attacker_key.empty()) {
         AccuracyAccum& shots = accuracy_bucket(AccuracyKeyView{attacker_key, weapon_type});
         ++shots.hit;
-        if (headshot) {
+        // A hit carries at most one region, and only here: a hit that was not classified (-1, or
+        // anything outside the three known regions) increments nothing, which is why the region
+        // counters can only ever sum to at most `hit`.
+        if (region == 0) {
+            ++shots.hit_legs;
+        }
+        else if (region == 1) {
+            ++shots.hit_torso;
+        }
+        else if (region == 2) {
             ++shots.hit_head;
         }
-        ++attacker->afstats_round.shots_hit;
+        // The per-weapon bucket always gets the hit; the overall summary only for scopes whose
+        // shots are discrete, so window-counted modes never distort it.
+        if (hit_scope == CountScope::full) {
+            ++attacker->afstats_game.shots_hit;
+        }
     }
 }
 
-void on_weapon_fired(rf::Player* player, int weapon_type, uint32_t projectiles)
+void on_weapon_fired(rf::Player* player, int weapon_type, uint32_t projectiles, CountScope scope,
+                     float potential_damage)
 {
     if (!player || weapon_type < 0 || projectiles == 0 || !ensure_session()
         || player->afstats_key.empty()) {
         return;
     }
-    accuracy_bucket(AccuracyKeyView{player->afstats_key, weapon_type}).fired += projectiles;
-    player->afstats_round.shots_fired += projectiles;
+    AccuracyAccum& bucket = accuracy_bucket(AccuracyKeyView{player->afstats_key, weapon_type});
+    bucket.fired += projectiles;
+    if (potential_damage > 0.0f) {
+        bucket.potential += potential_damage;
+    }
+    // Paired with the hit side in on_damage: a scope excluded from the summary here is excluded
+    // there too, so the summary's shots and hits always describe the same set of weapons.
+    if (scope == CountScope::full) {
+        player->afstats_game.shots_fired += projectiles;
+        player->afstats_game.damage_potential += potential_damage;
+    }
+}
+
+void on_damage_dealt(rf::Player* attacker, int weapon_type, float amount, CountScope scope)
+{
+    if (!attacker || weapon_type < 0 || amount <= 0.0f || !ensure_session()
+        || attacker->afstats_key.empty()) {
+        return;
+    }
+    accuracy_bucket(AccuracyKeyView{attacker->afstats_key, weapon_type}).dealt += amount;
+    if (scope == CountScope::full) {
+        attacker->afstats_game.efficiency_dealt += amount;
+    }
 }
 
 void on_status(rf::Player* player, StatusKind kind, int value)
@@ -2669,12 +2775,12 @@ void on_match_start(int team_size, const std::vector<rf::Player*>& participants)
         return;
     }
     // A prior match that never saw its end still holds the latch: an external level
-    // change or admin map mid-match closes the round path but not the match path, leaving
+    // change or admin map mid-match closes the game path but not the match path, leaving
     // g_match_open set. Close it as canceled before opening the new one so the stream
     // never carries two match_start without an end between them. This is done here rather
-    // than in on_round_start on purpose: a ready-up match (now the sole match_* producer)
-    // spans multiple rounds -- start_match restarts the level, firing on_round_start while
-    // the match is live -- so closing on round_start would wrongly cancel a live match.
+    // than in on_game_start on purpose: a ready-up match (now the sole match_* producer)
+    // spans multiple games -- start_match restarts the level, firing on_game_start while
+    // the match is live -- so closing on game_start would wrongly cancel a live match.
     // on_match_start fires once per match, so it is the safe single close point.
     if (g_match_open) {
         on_match_end(MatchResult::canceled, team_none, nullptr);
@@ -2724,28 +2830,28 @@ void on_match_end_derived(MatchResult result)
     on_match_end(result, winner_team, winner_player);
 }
 
-void on_subround_start(const std::vector<rf::Player*>& participants)
+void on_round_start(const std::vector<rf::Player*>& participants)
 {
-    // A subround only exists inside an open game round. If the game round is closed
-    // (e.g. the session was torn down and lazily restarted mid-game, so on_round_start
-    // has not run since), suppress it: otherwise this subround_start would never be
-    // paired with a close, since emit_round_end only fires while g_round_open is true.
-    if (!ensure_session() || !g_round_open) {
+    // A round only exists inside an open game. If the game is closed
+    // (e.g. the session was torn down and lazily restarted mid-game, so on_game_start
+    // has not run since), suppress it: otherwise this round_start would never be
+    // paired with a close, since emit_game_end only fires while g_game_open is true.
+    if (!ensure_session() || !g_game_open) {
         return;
     }
-    // A prior subround that never saw its end still holds the latch (a level change
-    // between subrounds, an abandoned pairing). Close it as canceled before opening the
-    // new one so the stream never carries two subround_start without an end between them.
-    if (g_subround_open) {
-        on_subround_end(SubroundResult::canceled, team_none, nullptr);
+    // A prior round that never saw its end still holds the latch (a level change
+    // between rounds, an abandoned pairing). Close it as canceled before opening the
+    // new one so the stream never carries two round_start without an end between them.
+    if (g_round_open) {
+        on_round_end(RoundResult::canceled, team_none, nullptr);
     }
-    ++g_subround_index;
-    g_subround_start_ms = static_cast<int64_t>(uptime_ms());
-    g_subround_open = true;
+    ++g_round_index;
+    g_round_start_ms = static_cast<int64_t>(uptime_ms());
+    g_round_open = true;
 
-    EvSubroundStart ev;
-    ev.index = g_subround_index;
-    // Reuse the same source round_start stamps, so a subround's state matches its game.
+    EvRoundStart ev;
+    ev.index = g_round_index;
+    // Reuse the same source game_start stamps, so a round's state matches its game.
     ev.match_state = af_match_state_for_stats();
     for (rf::Player* player : participants) {
         if (player && !player->afstats_key.empty()) {
@@ -2753,30 +2859,30 @@ void on_subround_start(const std::vector<rf::Player*>& participants)
         }
     }
     if (g_trace) {
-        xlog::warn("[afstats-ev] subround_start {} with {} participants", ev.index,
+        xlog::warn("[afstats-ev] round_start {} with {} participants", ev.index,
                    ev.participants.size());
     }
     push_event(std::move(ev));
 }
 
-void on_subround_end(SubroundResult result, uint8_t winner_team, rf::Player* winner_player)
+void on_round_end(RoundResult result, uint8_t winner_team, rf::Player* winner_player)
 {
-    if (!ensure_session() || !g_subround_open) {
-        return; // no open subround: an end with no start (abandoned pairing) stays silent
+    if (!ensure_session() || !g_round_open) {
+        return; // no open round: an end with no start (abandoned pairing) stays silent
     }
-    g_subround_open = false;
+    g_round_open = false;
 
-    EvSubroundEnd ev;
-    ev.index = g_subround_index;
+    EvRoundEnd ev;
+    ev.index = g_round_index;
     ev.result = static_cast<uint8_t>(result);
     ev.winner_team = winner_team;
     if (winner_player && !winner_player->afstats_key.empty()) {
         ev.winner_player = winner_player->afstats_key;
     }
     const int64_t now = static_cast<int64_t>(uptime_ms());
-    ev.duration_ms = static_cast<uint64_t>(std::max<int64_t>(0, now - g_subround_start_ms));
+    ev.duration_ms = static_cast<uint64_t>(std::max<int64_t>(0, now - g_round_start_ms));
     if (g_trace) {
-        xlog::warn("[afstats-ev] subround_end {} result {} winner_team {}", ev.index, ev.result,
+        xlog::warn("[afstats-ev] round_end {} result {} winner_team {}", ev.index, ev.result,
                    ev.winner_team);
     }
     push_event(std::move(ev));
@@ -2933,12 +3039,12 @@ void do_frame_impl()
         if (status == fflink::SessionStatus::rejected_by_server
             || status == fflink::SessionStatus::bad_gsk_format) {
             // The GSSK is contractually rejected (a 4xx, or a malformed configured GSK),
-            // so nothing more can be transmitted: an open round, an open match, and the
+            // so nothing more can be transmitted: an open game, an open match, and the
             // whole queue terminate silently by necessity. Unlike the shutdown flush path
-            // above, no closing round_end / match_end is emitted, because there is no
+            // above, no closing game_end / match_end is emitted, because there is no
             // session left to carry it — this is the spec's orphaned-session behavior, not
             // a dropped event we could recover. reset_module_state() clears g_match_open
-            // (and g_round_open) so a genuinely new GSSK later starts a clean session.
+            // (and g_game_open) so a genuinely new GSSK later starts a clean session.
             xlog::warn("[afstats-ev] session key permanently rejected; stopping the event stream");
             reset_module_state();
             return;
@@ -2955,7 +3061,7 @@ void do_frame_impl()
         g_next_pulse = now + g_pulse_interval;
         // Move the damage/accuracy accumulators into the live queue every pulse,
         // even while a batch is in flight or the stream is paused, so they can't grow
-        // for a whole round and then dump thousands of events in one frame at its end.
+        // for a whole game and then dump thousands of events in one frame at its end.
         flush_accumulators();
     }
 
@@ -2992,15 +3098,15 @@ void on_shutdown_impl()
         return;
     }
 
-    if (g_round_open) {
-        note_round_end_type(RoundEndType::server_shutdown);
-        emit_round_end(RoundEndType::server_shutdown);
+    if (g_game_open) {
+        note_game_end_type(GameEndType::server_shutdown);
+        emit_game_end(GameEndType::server_shutdown);
     }
 
-    // The shutdown flush below can still transmit, so close an open subround rather than
-    // dropping it silently (emit_round_end already closed it when a round was open).
-    if (g_subround_open) {
-        on_subround_end(SubroundResult::canceled, team_none, nullptr);
+    // The shutdown flush below can still transmit, so close an open round rather than
+    // dropping it silently (emit_game_end already closed it when a game was open).
+    if (g_round_open) {
+        on_round_end(RoundResult::canceled, team_none, nullptr);
     }
 
     // The shutdown flush below can still transmit, so close an open match rather than
