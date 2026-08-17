@@ -186,13 +186,6 @@ bool jetpack_exhaust_emitter_type(rf::ParticleEmitterType* out)
     // The steam is decoration only; it must never damage an entity that flies
     // through it. Everything else the table asks for is kept.
     out->particle_flags2 &= ~PARTICLE_FLAG2_DAMAGES;
-
-    // The emitters.tbl parser leaves uid and active_distance untouched, so tbl
-    // templates carry whatever the allocation happened to contain. Both are
-    // copied into the emitter and a stray pair would let the AF active distance
-    // cull silently drop the exhaust.
-    out->uid = 0;
-    out->active_distance = 0.0f;
     return true;
 }
 

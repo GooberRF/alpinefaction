@@ -51,19 +51,14 @@ static FunHook<void(rf::Skeleton*, bool)> skeleton_unlink_base_hook{
             if (sp->base_usage_count != 0) {
                 xlog::warn("Expected 0 base usages for skeleton '{}' but got {}", sp->mvf_filename, sp->base_usage_count);
             }
-            // Unlike stock RF (static skeleton array), the pool deallocates on erase.
-            // Freeing while animation instances are still playing this skeleton would
-            // leave them with dangling pointers (observed via demo playback: morphs on
-            // freed entries, later a corrupted-object crash in the renderer). Keep the
-            // entry alive; skeleton_flush/skeleton_close reap it once instances are gone.
-            if (sp->instance_usage_count > 0 && !force_unload) {
-                xlog::warn("Keeping skeleton '{}' alive - {} instance usages remain after last base unlink",
-                           sp->mvf_filename, sp->instance_usage_count);
-                return;
-            }
             if (sp->instance_usage_count > 0) {
-                xlog::warn("Force-unloading skeleton '{}' with {} live instance usages",
-                           sp->mvf_filename, sp->instance_usage_count);
+                // A live animation instance still plays this skeleton (e.g. an entity
+                // mid-death-anim whose character was just deleted). Freeing now would leave
+                // the instance with a dangling pointer that is dereferenced every frame and
+                // written on instance teardown. Keep the entry (and its animation data)
+                // alive; skeleton_flush()/skeleton_close() reap it once instances are gone.
+                xlog::debug("Keeping skeleton '{}' alive: {} instance usages remain", sp->mvf_filename, sp->instance_usage_count);
+                return;
             }
             xlog::trace("Unloading skeleton: {} (total {})", sp->mvf_filename, skeletons.size());
             skeleton_cleanup_one(sp);
@@ -84,19 +79,26 @@ static FunHook<void()> skeleton_init_hook{
 static FunHook<void()> skeleton_close_hook{
     0x00539DB0,
     []() {
-        for (auto& p : skeletons) {
-            auto& skeleton = p.second;
-            if (skeleton->base_usage_count > 0) {
+        auto it = skeletons.begin();
+        while (it != skeletons.end()) {
+            rf::Skeleton* sp = it->second.get();
+            if (sp->base_usage_count > 0) {
                 xlog::warn("Expected 0 base usages for skeleton '{}' but got {}",
-                    skeleton->mvf_filename, skeleton->base_usage_count);
+                    sp->mvf_filename, sp->base_usage_count);
             }
-            if (skeleton->instance_usage_count > 0) {
-                xlog::warn("Expected 0 instance usages for skeleton '{}' but got {}",
-                    skeleton->mvf_filename, skeleton->instance_usage_count);
+            if (sp->instance_usage_count > 0) {
+                // Same hazard as in skeleton_unlink_base_hook: a live animation instance
+                // still references this entry, so freeing it here would leave a dangling
+                // pointer. Keep it (and its animation data) alive; it is reaped by a
+                // later skeleton_flush()/close once the instance count drains.
+                xlog::warn("Keeping skeleton '{}' alive at close: {} instance usages remain",
+                    sp->mvf_filename, sp->instance_usage_count);
+                ++it;
+                continue;
             }
-            skeleton_cleanup_one(skeleton.get());
+            skeleton_cleanup_one(sp);
+            it = skeletons.erase(it);
         }
-        skeletons.clear();
     },
 };
 
@@ -105,8 +107,7 @@ static void skeleton_flush()
     auto it = skeletons.begin();
     while (it != skeletons.end()) {
         rf::Skeleton* sp = it->second.get();
-        // Instance usages keep the entry alive too - see skeleton_unlink_base_hook
-        if (sp->base_usage_count == 0 && sp->instance_usage_count <= 0) {
+        if (sp->base_usage_count == 0 && sp->instance_usage_count == 0) {
             xlog::trace("Unloading unused skeleton '{}'", sp->mvf_filename);
             skeleton_cleanup_one(sp);
             it = skeletons.erase(it);
