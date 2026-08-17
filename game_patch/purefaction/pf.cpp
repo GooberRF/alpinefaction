@@ -36,7 +36,7 @@ void send_pf_player_stats_packet(rf::Player* player)
         return;
     }
 
-    std::byte packet_buf[rf::max_packet_size];
+    std::byte packet_buf[rf::MAX_PACKET_SIZE];
     pf_player_stats_packet stats_packet{};
     stats_packet.hdr.type = static_cast<uint8_t>(pf_packet_type::player_stats);
     stats_packet.hdr.size = sizeof(stats_packet) - sizeof(stats_packet.hdr);
