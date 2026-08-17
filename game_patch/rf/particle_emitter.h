@@ -107,6 +107,19 @@ struct Particle
 };
 static_assert(sizeof(Particle) == 0x78);
 
+// Underwater plankton mote. Not emitter driven.
+struct PlanktonParticle
+{
+    Vector3 pos;
+    Vector3 vel;
+    float size;
+    ubyte r;
+    ubyte g;
+    ubyte b;
+    ubyte a;
+};
+static_assert(sizeof(PlanktonParticle) == 0x20);
+
 struct ParticleEmitter
 {
     int uid;
@@ -235,5 +248,12 @@ static auto& particle_emitter_create = addr_as_ref<ParticleEmitter*(
 // spawn particle explosion from explosion.tbl by name.
 static auto& particle_explosion_create = addr_as_ref<void(
     const char* name, Vector3* pos, Vector3* dir, float radius_scale, GRoom* room, unsigned int flags)>(0x0048e640);
+
+// Plankton pool capacity; the max_plankton command clamps g_max_plankton to this.
+constexpr int num_plankton_particles = 1024;
+static auto& g_plankton_particles = addr_as_ref<PlanktonParticle[num_plankton_particles]>(0x007BD9E8);
+static auto& g_max_plankton = addr_as_ref<int>(0x005A00B0);
+// Half extent of the box a mote is respawned into when it leaves the camera box.
+static auto& g_plankton_box_extent = addr_as_ref<float>(0x005A00C0);
 
 }

@@ -391,6 +391,46 @@ CodeInjection texture_refresh_dedup_master_injection{
     }
 };
 
+// ─── Texture browser invocation ─────────────────────────────────────────────
+
+// CDedLevel holds one shared browser instance in dialog_panels[] (+0x444); the browser is
+// the entry at +0x4a0, which is what every stock browse handler reaches for.
+static_assert(offsetof(CDedLevel, dialog_panels) == 0x444);
+constexpr int texture_browser_panel_index = (0x4a0 - 0x444) / 4;
+
+// SetFolderByName takes the string by value and destroys it (MSVC callee-destroys), so the
+// buffer handed over must not be freed here.
+struct VStringByValue {
+    int max_len;
+    char* buf;
+};
+
+int texture_browser_pick(const char* folder, int current_bm)
+{
+    auto* level = CDedLevel::Get();
+    if (!level) return -1;
+
+    auto* panel = static_cast<TextureBrowserPanel*>(
+        level->dialog_panels[texture_browser_panel_index]);
+    if (!panel || !panel->preview) return -1;
+
+    if (folder && folder[0]) {
+        VString folder_name;
+        folder_name.assign_0(folder);
+        AddrCaller{0x004711c0}.this_call<int>(
+            panel, VStringByValue{folder_name.max_len, folder_name.buf});
+    }
+
+    panel->preview->bm_handle = current_bm;
+
+    // DoModal is CDialog vtable slot 46
+    auto** vtbl = *reinterpret_cast<void***>(panel);
+    auto do_modal = reinterpret_cast<int(__thiscall*)(void*)>(vtbl[0xb8 / 4]);
+    if (do_modal(panel) != IDOK) return -1;
+
+    return panel->preview->bm_handle;
+}
+
 // VPP packfile creation (FUN_004482c0) constructs custom texture paths by combining a
 // fixed base directory ("user_maps\textures\") with the bare filename via FUN_004b6ee0.
 // For textures in subdirectories, this produces the wrong path. Inject at 0x004485a2

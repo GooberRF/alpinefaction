@@ -534,6 +534,10 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.show_glares = std::stoi(settings["ShowGlares"]);
         processed_keys.insert("ShowGlares");
     }
+    if (settings.count("Weather")) {
+        g_alpine_game_config.weather = std::stoi(settings["Weather"]);
+        processed_keys.insert("Weather");
+    }
     if (settings.count("MeshLightingMode")) {
         g_alpine_game_config.mesh_lighting_mode = std::clamp(std::stoi(settings["MeshLightingMode"]), 0, 2);
         recalc_mesh_static_lighting();
@@ -1427,6 +1431,7 @@ void alpine_player_settings_save(rf::Player* player)
     file << "DisableTextures=" << g_alpine_game_config.try_disable_textures << "\n";
     file << "DisableMuzzleFlashLights=" << g_alpine_game_config.try_disable_muzzle_flash_lights << "\n";
     file << "ShowGlares=" << g_alpine_game_config.show_glares << "\n";
+    file << "Weather=" << g_alpine_game_config.weather << "\n";
     file << "MeshLightingMode=" << g_alpine_game_config.mesh_lighting_mode << "\n";
     file << "DynamicLightNdotL=" << g_alpine_game_config.dynamic_light_ndotl << "\n";
     file << "PixelLightOverbright=" << g_alpine_game_config.pixel_light_overbright << "\n";

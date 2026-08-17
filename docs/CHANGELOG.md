@@ -117,6 +117,9 @@ Version 1.4.0 (Lupin): Not yet released
 - Add Alpine Faction 1.4.0 clients to the `sv_restrict_status` common test cases
 - Respect DNS TTL for the multiplayer tracker hostname
 - Load mesh files from subdirectories of `user_maps\meshes` and `red\meshes` in the level editor
+- Add Weather Regions for rain and snow environmental particle effects
+- Add `Weather_Region_State` event
+- Add `r_weather` console command to toggle rendering of weather effects
 - Rework multiplayer accuracy statistics with one shared definition feeding the scoreboard and FactionFiles stats reporting
 
 [@is-this-c](https://github.com/is-this-c)
@@ -187,6 +190,8 @@ Version 1.4.0 (Lupin): Not yet released
 - Fix chat and console showing only a bare player name when a player leaves after timing out waiting for game state
 - Fix an over-long console line overflowing the fixed-size console output buffer
 - Fix level editor crash when a custom mesh or texture subdirectory cannot be registered because the editor's internal path table is full
+- Fix plankton bunching into a small drifting cluster instead of distributing around the camera in some liquids
+- Fix links targeting Alpine objects breaking when a group containing them is imported in the level editor
 - Fix several multiplayer accuracy calculation issues
 
 [@is-this-c](https://github.com/is-this-c)
