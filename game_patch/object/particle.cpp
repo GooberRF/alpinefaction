@@ -60,7 +60,7 @@ CallHook<void(int, rf::ParticleCreateInfo&, rf::GRoom*, rf::Vector3*, int, rf::P
     [](int pool_id, rf::ParticleCreateInfo& pci, rf::GRoom* room, rf::Vector3 *a4, int parent_obj, rf::Particle** result, rf::ParticleEmitter* emitter) {
         // On AF levels, create particles only within the active distance
         // Applies to particle emitters placed in level file
-        if (!rf::is_server && !rf::is_dedicated_server && af_rfl_version(rf::level.version) && parent_obj == 0 && emitter->uid > 0) {
+        if (!rf::is_dedicated_server && af_rfl_version(rf::level.version) && parent_obj == 0 && emitter->uid > 0) {
             rf::Vector3 camera_pos = rf::camera_get_pos(rf::local_player->cam);
             float dist = camera_pos.distance_to(emitter->pos);
             if (emitter->active_distance != 0.0f && emitter->active_distance <= dist) {
@@ -135,6 +135,19 @@ CallHook<void(rf::ParticleEmitter*, const rf::Vector3*, const rf::Vector3*, floa
     },
 };
 
+FunHook<void()> particle_emitter_types_load_hook{
+    0x00496DF0,
+    []() {
+        particle_emitter_types_load_hook.call_target();
+        // The tbl parser never writes uid or active_distance, so templates keep
+        // heap garbage that the level-emitter checks can mistake for real values
+        for (int i = 0; i < rf::g_num_particle_emitter_types; ++i) {
+            rf::g_particle_emitter_types[i]->uid = 0;
+            rf::g_particle_emitter_types[i]->active_distance = 0.0f;
+        }
+    },
+};
+
 void particle_do_patch()
 {
     // Make particle emitters placed in AF level files respect the Active Distance param
@@ -164,4 +177,7 @@ void particle_do_patch()
 
     // Improve sorting in respect to the liquid surface
     particle_emitter_g_portal_object_add_hook.install();
+
+    // Zero garbage uid/active_distance left in emitters.tbl templates by the parser
+    particle_emitter_types_load_hook.install();
 }

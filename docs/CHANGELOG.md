@@ -193,6 +193,8 @@ Version 1.4.0 (Lupin): Not yet released
 - Fix plankton bunching into a small drifting cluster instead of distributing around the camera in some liquids
 - Fix links targeting Alpine objects breaking when a group containing them is imported in the level editor
 - Fix several multiplayer accuracy calculation issues
+- Fix `Active Distance` on level-placed particle emitters being ignored when hosting a listen server
+- Fix particle emitters created from `emitters.tbl` templates inheriting uninitialized UID and `Active Distance` values that could make their particles silently fail to spawn in rare cases
 
 [@is-this-c](https://github.com/is-this-c)
 - Clear cached server config output after a shuffle of a server's rotation
