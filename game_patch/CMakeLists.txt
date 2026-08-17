@@ -123,6 +123,7 @@ set(SRCS
     debug/debugwinmsg.cpp
     debug/debug_cmd.cpp
     debug/debug.cpp
+    debug/exception_logger.cpp
     debug/obj_debug.cpp
     debug/debug.h
     debug/debug_internal.h
