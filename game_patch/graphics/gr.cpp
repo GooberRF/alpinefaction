@@ -679,7 +679,7 @@ void gr_apply_patch()
     // Lights
     gr_light_apply_patch();
 
-    // Plankton fix and per-room rain/snow
+    // Plankton fix and weather regions
     weather_apply_patch();
 
     if (!headless_bot_graphics_bypass) {
