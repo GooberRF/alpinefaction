@@ -160,7 +160,7 @@ rf::Entity* bot_perception_manager_select_enemy_target(
             continue;
         }
 
-        if (candidate.is_browser || candidate.is_spectator || candidate.is_spawn_disabled) {
+        if (candidate.is_observer() || candidate.is_spectator || candidate.is_spawn_disabled) {
             continue;
         }
 

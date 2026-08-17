@@ -1,5 +1,7 @@
 #include "multi_spectate.h"
 #include "../misc/vote_panel.h"
+#include "../multi/demo/demo.h"
+#include "../multi/demo/demo_ui.h"
 #include "hud.h"
 #include "hud_internal.h"
 #include "multi_scoreboard.h"
@@ -145,6 +147,17 @@ static bool g_prev_weapon_is_on = false;
 static bool g_prev_is_reloading = false;
 static bool g_prev_alt_fire_is_on = false;
 static int g_prev_weapon_type = -1;
+
+// Forget the fire/reload/weapon edges tracked for the spectated player. Used after a demo
+// seek: the pre-seek edges are stale and would otherwise trigger spurious fire/draw anims
+// on the first post-seek frame. g_prev_weapon_type = -1 suppresses the draw-anim edge.
+void multi_spectate_reset_action_anim_edge_state()
+{
+    g_prev_weapon_is_on = false;
+    g_prev_is_reloading = false;
+    g_prev_alt_fire_is_on = false;
+    g_prev_weapon_type = -1;
+}
 
 void player_fpgun_set_player(rf::Player* pp);
 
@@ -349,7 +362,7 @@ static void spectate_next_player(const bool dir, const bool try_alive_players_fi
         }
         if (new_target == g_spectate_mode_target) {
             break; // nothing found
-        } else if (new_target->is_browser) {
+        } else if (new_target->is_observer()) {
             continue;
         } else if (try_alive_players_first && rf::player_is_dead(new_target)) {
             continue;
@@ -698,7 +711,7 @@ static void spectate_set_view_mode(SpectateViewMode to)
             // Coming from a free view - acquire and bind a target.
             rf::Player* resume = (g_spectate_freelook_saved_target
                 && g_spectate_freelook_saved_target != rf::local_player
-                && !g_spectate_freelook_saved_target->is_browser)
+                && !g_spectate_freelook_saved_target->is_observer())
                 ? g_spectate_freelook_saved_target
                 : nullptr;
             g_spectate_freelook_saved_target = nullptr;
@@ -726,6 +739,33 @@ static void spectate_set_view_mode(SpectateViewMode to)
             multi_spectate_enter_freelook();
         else
             spectate_enter_static();
+    }
+}
+
+SpectateCameraState multi_spectate_get_camera_state()
+{
+    SpectateCameraState state;
+    state.attached = g_spectate_mode_enabled && spectate_is_player_view(g_spectate_view_mode);
+    state.third_person = g_spectate_view_mode == SpectateViewMode::third_person;
+    return state;
+}
+
+void multi_spectate_apply_camera_state(const SpectateCameraState& state, rf::Player* target)
+{
+    if (!state.attached || !target || target == rf::local_player || target->is_observer()) {
+        multi_spectate_enter_freelook();
+        return;
+    }
+    // set_target_player handles entering attached spectate from a free view (defaults
+    // the view mode to first person and syncs the attached-submode memory)
+    multi_spectate_set_target_player(target);
+    if (!g_spectate_mode_enabled)
+        return; // attach was blocked (no camera yet etc.) - caller may retry
+    g_spectate_last_attached = true;
+    if (state.third_person && g_spectate_view_mode != SpectateViewMode::third_person) {
+        g_spectate_third_person_orbit = false;
+        g_spectate_attached_submode = SpectateViewMode::third_person;
+        spectate_set_view_mode(SpectateViewMode::third_person);
     }
 }
 
@@ -944,6 +984,10 @@ void multi_spectate_toggle()
     if (!rf::is_multi || rf::is_dedicated_server || !rf::player_is_dead(rf::local_player))
         return;
 
+    // Spectate is forced on during demo playback - exiting it makes no sense there.
+    if (demo_playback_active())
+        return;
+
     if (multi_spectate_is_spectating()) {
         multi_spectate_leave();
     }
@@ -1105,6 +1149,8 @@ ConsoleCommand2 spectate_cmd{
         }
 
         auto print_exit_hint = [] {
+            if (demo_playback_active())
+                return;
             std::string bind = get_action_bind_name(
                 get_af_control(rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_TOGGLE)
             );
@@ -1124,6 +1170,11 @@ ConsoleCommand2 spectate_cmd{
             print_exit_hint();
         }
         else if (g_spectate_mode_enabled || multi_spectate_is_freelook()) {
+            // spectate is forced on during demo playback - it cannot be exited
+            if (demo_playback_active()) {
+                rf::console::output("Spectate mode cannot be exited during demo playback.", nullptr);
+                return;
+            }
             // leave spectate mode
             multi_spectate_leave();
         }
@@ -1265,7 +1316,7 @@ static void spectate_populate_default_binds()
     // Seed numpad 0-9 with the current top-scoring spectatable players (highest first).
     std::vector<rf::Player*> players;
     for (rf::Player& p : SinglyLinkedList{rf::player_list}) {
-        if (&p == rf::local_player || p.is_browser || !p.stats) {
+        if (&p == rf::local_player || p.is_observer() || !p.stats) {
             continue;
         }
         players.push_back(&p);
@@ -1600,7 +1651,11 @@ static void player_render_new(rf::Player* player)
                 // AIF_ALT_FIRE distinguishes primary vs alt fire on the same weapon_is_on state.
                 // For continuous alt fire weapons (baton taser): skip WA_CUSTOM_START intro, go
                 // straight to WS_LOOP_FIRE on rising edge, play WA_CUSTOM_LEAVE on falling edge.
-                bool weapon_is_on = rf::entity_weapon_is_on(entity->handle, weapon_type);
+                // While demo pause has the sim frozen the fire latch keeps its last value -
+                // treat it as not firing so pausing reads as a falling edge (muzzle flash and
+                // fire anim stop) and resuming as a rising edge, instead of firing forever
+                bool weapon_is_on = rf::entity_weapon_is_on(entity->handle, weapon_type)
+                    && !demo_playback_sim_frozen();
                 bool is_alt_fire = (entity->ai.ai_flags & rf::AIF_ALT_FIRE) != 0;
                 bool is_continuous_alt_fire_weapon =
                     rf::weapon_is_on_off_weapon(weapon_type, true);
@@ -1669,7 +1724,8 @@ static void player_render_new(rf::Player* player)
         // The state anim hook inside process should already set this, but the animation transition
         // system may not complete in time for the render check. Directly writing the state fields
         // guarantees player_fpgun_render's is_in_state_anim(WS_LOOP_FIRE) check passes.
-        if (entity && rf::entity_weapon_is_on(entity->handle, entity->ai.current_primary_weapon)) {
+        if (entity && rf::entity_weapon_is_on(entity->handle, entity->ai.current_primary_weapon)
+            && !demo_playback_sim_frozen()) {
             g_spectate_mode_target->fpgun_current_state_anim = rf::WS_LOOP_FIRE;
         }
 
@@ -1949,6 +2005,36 @@ static int spectate_raise_hints_above_hud(int hints_y, int line_count, int line_
     return hints_y;
 }
 
+// Bind-name strings backing the demo playback hint rows; must outlive the
+// hints array they are pushed into (the pairs hold raw c_str() pointers).
+struct DemoPlaybackHintBinds
+{
+    std::string popup;
+    std::string rewind;
+    std::string forward;
+    std::string pause;
+};
+
+// Appends the demo playback control hints (demo controls popup + its keyboard
+// shortcuts) to a spectate hint column. No-op outside demo playback.
+static int append_demo_playback_hints(std::pair<const char*, const char*>* hints, int nh,
+    DemoPlaybackHintBinds& binds)
+{
+    if (!demo_playback_active())
+        return nh;
+    binds.popup = get_action_bind_name(rf::ControlConfigAction::CC_ACTION_USE).c_str();
+    binds.rewind = get_action_bind_name(
+        get_af_control(rf::AlpineControlConfigAction::AF_ACTION_VOTE_YES)).c_str();
+    binds.forward = get_action_bind_name(
+        get_af_control(rf::AlpineControlConfigAction::AF_ACTION_VOTE_NO)).c_str();
+    binds.pause = get_action_bind_name(rf::ControlConfigAction::CC_ACTION_RELOAD).c_str();
+    hints[nh++] = {binds.popup.c_str(), "Demo Controls"};
+    hints[nh++] = {binds.rewind.c_str(), "Rewind 10s"};
+    hints[nh++] = {binds.forward.c_str(), "Forward 10s"};
+    hints[nh++] = {binds.pause.c_str(), "Pause / Resume"};
+    return nh;
+}
+
 // Draw a column of bind/label hint rows (bind right-aligned at left_x, label at right_x).
 static void draw_spectate_hints(const std::pair<const char*, const char*>* hints, int count,
     int left_x, int right_x, int y, int font, int font_h)
@@ -1989,7 +2075,7 @@ void multi_spectate_render() {
     spectate_render_bind_dialog();
 
     if (multi_spectate_is_static()) {
-        if (!g_alpine_game_config.spectate_mode_minimal_ui && !g_remote_server_cfg_popup.is_active() && !vote_panel_is_gameplay_overlay_active()) {
+        if (!g_alpine_game_config.spectate_mode_minimal_ui && !g_remote_server_cfg_popup.is_active() && !vote_panel_is_gameplay_overlay_active() && !demo_controls_ui_is_open()) {
             int medium_font = hud_get_default_font();
             int medium_font_h = rf::gr::get_font_height(medium_font);
             int large_font = hud_get_large_font();
@@ -2037,7 +2123,8 @@ void multi_spectate_render() {
             std::string prev_cam_text =
                 get_action_bind_name(rf::ControlConfigAction::CC_ACTION_SECONDARY_ATTACK);
 
-            std::pair<const char*, const char*> hints[12];
+            DemoPlaybackHintBinds demo_binds;
+            std::pair<const char*, const char*> hints[16];
             int nh = 0;
             hints[nh++] = {attach_text.c_str(), "Attach to Player"};
             hints[nh++] = {change_text.c_str(), "Free / Static Camera"};
@@ -2048,7 +2135,9 @@ void multi_spectate_render() {
             hints[nh++] = {"NUM 0-9", "Jump to Camera"};
             hints[nh++] = {"NUM ENTER", "Camera Quick-Binds"};
             hints[nh++] = {spec_menu_text.c_str(), "Open Spectate Options Menu"};
-            hints[nh++] = {exit_spec_text.c_str(), "Exit Spectate Mode"};
+            if (!demo_playback_active())
+                hints[nh++] = {exit_spec_text.c_str(), "Exit Spectate Mode"};
+            nh = append_demo_playback_hints(hints, nh, demo_binds);
             hints_y = spectate_raise_hints_above_hud(hints_y, nh, medium_font_h);
             draw_spectate_hints(hints, nh, hints_left_x, hints_right_x, hints_y, medium_font, medium_font_h);
         }
@@ -2056,7 +2145,7 @@ void multi_spectate_render() {
     }
 
     if (multi_spectate_is_freelook()) {
-        if (!g_alpine_game_config.spectate_mode_minimal_ui && !g_remote_server_cfg_popup.is_active() && !vote_panel_is_gameplay_overlay_active()) {
+        if (!g_alpine_game_config.spectate_mode_minimal_ui && !g_remote_server_cfg_popup.is_active() && !vote_panel_is_gameplay_overlay_active() && !demo_controls_ui_is_open()) {
             int medium_font = hud_get_default_font();
             int medium_font_h = rf::gr::get_font_height(medium_font);
             int large_font = hud_get_large_font();
@@ -2098,14 +2187,17 @@ void multi_spectate_render() {
             std::string drop_text =
                 get_action_bind_name(rf::ControlConfigAction::CC_ACTION_SECONDARY_ATTACK);
 
-            std::pair<const char*, const char*> hints[12];
+            DemoPlaybackHintBinds demo_binds;
+            std::pair<const char*, const char*> hints[16];
             int nh = 0;
             hints[nh++] = {attach_text.c_str(), "Attach to Player"};
             hints[nh++] = {change_text.c_str(), "Free / Static Camera"};
             hints[nh++] = {zoom_text.c_str(), "Zoom"};
             hints[nh++] = {drop_text.c_str(), "Drop Camera"};
             hints[nh++] = {spec_menu_text.c_str(), "Open Spectate Options Menu"};
-            hints[nh++] = {exit_spec_text.c_str(), "Exit Spectate Mode"};
+            if (!demo_playback_active())
+                hints[nh++] = {exit_spec_text.c_str(), "Exit Spectate Mode"};
+            nh = append_demo_playback_hints(hints, nh, demo_binds);
             int hints_y = scr_h - (g_alpine_game_config.big_hud ? 200 : 120) + medium_font_h * 2;
             hints_y = spectate_raise_hints_above_hud(hints_y, nh, medium_font_h);
             draw_spectate_hints(hints, nh, hints_left_x, hints_right_x, hints_y, medium_font, medium_font_h);
@@ -2123,7 +2215,7 @@ void multi_spectate_render() {
 
     if (!g_spectate_mode_enabled) {
         if (rf::player_is_dead(rf::local_player)
-            && !g_remote_server_cfg_popup.is_active() && !vote_panel_is_gameplay_overlay_active()) {
+            && !g_remote_server_cfg_popup.is_active() && !vote_panel_is_gameplay_overlay_active() && !demo_controls_ui_is_open()) {
             const std::string spectate_bind_text = get_action_bind_name(
                 get_af_control(rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_TOGGLE)
             );
@@ -2215,7 +2307,7 @@ void multi_spectate_render() {
         rf::gr::string_aligned(rf::gr::ALIGN_CENTER, title_x, title_y + large_font_h,
             view_subtitle, medium_font);
 
-        if (!g_remote_server_cfg_popup.is_active() && !vote_panel_is_gameplay_overlay_active()) {
+        if (!g_remote_server_cfg_popup.is_active() && !vote_panel_is_gameplay_overlay_active() && !demo_controls_ui_is_open()) {
             int hints_left_x = g_alpine_game_config.big_hud ? 120 : 70;
             int hints_right_x = g_alpine_game_config.big_hud ? 140 : 80;
             std::string attach_text = get_action_bind_name(
@@ -2233,7 +2325,8 @@ void multi_spectate_render() {
             std::string next_player_text =
                 get_action_bind_name(rf::ControlConfigAction::CC_ACTION_PRIMARY_ATTACK);
 
-            std::pair<const char*, const char*> hints[12];
+            DemoPlaybackHintBinds demo_binds;
+            std::pair<const char*, const char*> hints[16];
             int nh = 0;
             hints[nh++] = {attach_text.c_str(), "Detach Camera"};
             hints[nh++] = {change_text.c_str(), "First / Third Person View"};
@@ -2243,7 +2336,9 @@ void multi_spectate_render() {
             hints[nh++] = {"NUM 0-9", "Jump to Player"};
             hints[nh++] = {"NUM ENTER", "Player Quick-Binds"};
             hints[nh++] = {spec_menu_text.c_str(), "Open Spectate Options Menu"};
-            hints[nh++] = {exit_spec_text.c_str(), "Exit Spectate Mode"};
+            if (!demo_playback_active())
+                hints[nh++] = {exit_spec_text.c_str(), "Exit Spectate Mode"};
+            nh = append_demo_playback_hints(hints, nh, demo_binds);
             int hints_y = scr_h - (g_alpine_game_config.big_hud ? 200 : 120) + medium_font_h * 2;
             hints_y = spectate_raise_hints_above_hud(hints_y, nh, medium_font_h);
             draw_spectate_hints(hints, nh, hints_left_x, hints_right_x, hints_y, medium_font, medium_font_h);
@@ -2327,7 +2422,7 @@ void multi_spectate_render() {
     render_spectate_powerup_icons(entity, bar_x, bar_y, bar_h);
 
     // Draw next/prev player hints flanking the nameplate bar
-    if (!g_alpine_game_config.spectate_mode_minimal_ui && !g_remote_server_cfg_popup.is_active() && !vote_panel_is_gameplay_overlay_active()) {
+    if (!g_alpine_game_config.spectate_mode_minimal_ui && !g_remote_server_cfg_popup.is_active() && !vote_panel_is_gameplay_overlay_active() && !demo_controls_ui_is_open()) {
         std::string prev_player_text =
             get_action_bind_name(rf::ControlConfigAction::CC_ACTION_SECONDARY_ATTACK);
         std::string next_player_text =

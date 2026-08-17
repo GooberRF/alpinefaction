@@ -34,7 +34,7 @@ public:
                 ParseAFLink(std::string_view(narrowArg));
             }
             else {
-                if (arg == "-level" || arg == "-levelm" || arg == "-awpgen") {
+                if (arg == "-level" || arg == "-levelm" || arg == "-awpgen" || arg == "-demo") {
                     has_level_arg = true;
                 }
                 else if (arg == "-dedicated" || arg == "-ads") {

@@ -7,6 +7,7 @@
 #include "multi_scoreboard.h"
 #include "../input/input.h"
 #include "../multi/endgame_votes.h"
+#include "../multi/demo/demo.h"
 #include "../multi/multi.h"
 #include "../multi/gametype.h"
 #include "../multi/bagman.h"
@@ -105,7 +106,7 @@ static ScoreboardCategory get_scoreboard_category(const rf::Player* player)
         return ScoreboardCategory::Idle;
     }
 
-    if (g_alpine_game_config.scoreboard_split_browsers && player->is_browser) {
+    if (g_alpine_game_config.scoreboard_split_browsers && player->is_observer()) {
         return ScoreboardCategory::Browser;
     }
 
@@ -447,7 +448,7 @@ int draw_scoreboard_players(
         const bool is_spawned = !rf::player_is_dead(player)
             && !rf::player_is_dying(player);
         const int status_bm = std::invoke([&] {
-            if (player->is_browser) {
+            if (player->is_observer()) {
                 return browser_bm;
             } else if (player->is_spectator) {
                 return spectator_bm;
@@ -578,6 +579,10 @@ ScoreboardPlayerList filter_and_sort_players(const std::optional<int> team_id)
     player_list.players.reserve(32);
 
     for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
+        // The demo viewer is not part of the recorded match - no phantom row
+        if (demo_playback_active() && &player == rf::local_player) {
+            continue;
+        }
         if (!team_id || player.team == team_id.value()) {
             player_list.players.push_back(&player);
         }
@@ -621,11 +626,11 @@ ScoreboardPlayerList filter_and_sort_players(const std::optional<int> team_id)
                 }
             }
 
-            // Sort players before bots, and both before browsers.
+            // Sort players before bots, and both before observers.
             if (player_1->is_human_player) {
-                return player_2->is_bot || player_2->is_browser;
+                return player_2->is_bot || player_2->is_observer();
             } else {
-                return player_1->is_bot && player_2->is_browser;
+                return player_1->is_bot && player_2->is_observer();
             }
         }
     );

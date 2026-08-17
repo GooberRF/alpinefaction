@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstddef>
+#include <cstdint>
 #include <patch_common/MemUtils.h>
 #include <common/utils/enum-bitwise-operators.h>
 #include "math/vector.h"
@@ -73,15 +75,50 @@ namespace rf
         OF_WAS_TELEPORTED = 0x4000000, // forces physics/position update this frame
     };
 
+    // Network interpolation state of a remote object: a 20-keyframe ring of replicated
+    // snapshots, evaluated at interp_time by ObjInterp::interp_rotation (0x00484307) and
+    // ObjInterp::get_next_pos_and_vel via multi_obj_interp_orient/pos. Keyframes are kept
+    // oldest-first (insertion shifts the arrays down when full), so time_array[0] is
+    // always the oldest sample. Layout: research/systems/interpolation-and-hit-detection.md
+#pragma pack(push, 1)
     struct ObjInterp
     {
-        char data_[0x900];
+        static constexpr int max_keyframes = 20;
+
+        Vector3 pos_array[max_keyframes];
+        Vector3 phb_array[max_keyframes];
+        Vector3 eye_phb_array[max_keyframes];
+        Vector3 vel_array[max_keyframes];
+        Vector3 move_array[max_keyframes];
+        uint32_t always_0_array[max_keyframes];
+        uint16_t time_array[max_keyframes]; // 16-bit server ms ticks
+        uint32_t flags;    // bit 0: empty/unanchored (set by Clear, cleared when a sample
+                           // anchors interp_time), bit 1: updated this frame
+        uint16_t interp_time; // evaluation time (16-bit server ms ticks)
+        uint8_t pad_52e[2];
+        uint32_t frame_time_us; // wall-clock stamp of the last frame advance (ms with AF's
+                                // obj_interp_too_fast_fix; stock stored µs)
+        uint32_t num; // stored keyframes (0-20)
+        uint32_t last_update_time; // wall-clock timer_get(1000) stamp of the newest sample's
+                                   // arrival; -1 = no sample yet (set by Clear)
+        int32_t arrive_time_diff[max_keyframes]; // wall-clock arrival gaps between samples (ms)
+        float arrive_time_avg_diff; // average of arrive_time_diff - drives the spline endpoint
+                                    // dead-reckoning step and the interp_time re-anchor headroom
+        char pos_curve[0x184]; // CatmullRomCurve
+        char unk_curve[0x184]; // CatmullRomCurve
+        char lag_comp_data[0x68];
 
         void Clear()
         {
             AddrCaller{0x00483330}.this_call(this);
         }
     };
+#pragma pack(pop)
+    static_assert(sizeof(ObjInterp) == 0x900);
+    static_assert(offsetof(ObjInterp, time_array) == 0x500);
+    static_assert(offsetof(ObjInterp, flags) == 0x528);
+    static_assert(offsetof(ObjInterp, interp_time) == 0x52C);
+    static_assert(offsetof(ObjInterp, num) == 0x534);
 
     enum ObjFriendliness
     {
@@ -240,6 +277,8 @@ namespace rf
         int weapon_type, int damage_type, Vector3* pos, int killer_uid, char flags)>(0x004892C0);
 
     static auto& object_list = addr_as_ref<Object>(0x0073D880);
+
+    static auto& debris_list = addr_as_ref<Debris>(0x005C98E8);
 
     static auto& debris_create = addr_as_ref<Debris*(int parent_handle, const char* vmesh_filename,
         float mass, DebrisCreateStruct* dcs, int mesh_num, float collision_radius)>(0x00412E70);

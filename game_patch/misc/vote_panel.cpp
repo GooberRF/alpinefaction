@@ -19,6 +19,7 @@
 #include "../hud/remote_server_cfg_ui.h"
 #include "../input/control_input_filter.h"
 #include "../multi/alpine_packets.h"
+#include "../multi/demo/demo_ui.h"
 #include "../multi/multi.h"
 #include "../multi/vote_client.h"
 #include "../rf/gameseq.h"
@@ -154,44 +155,6 @@ void vote_panel_decay_attack_swallow()
         return; // still held: keep swallowing
     }
     --g_swallow_attack_frames;
-}
-
-void gameplay_overlay_apply_mouse(bool active)
-{
-    rf::Player* const player = rf::local_player;
-
-    if (active) {
-        if (player && !g_gameplay_mouse_overridden) {
-            g_gameplay_prev_mouse_look = player->settings.controls.mouse_look;
-            g_gameplay_mouse_overridden = true;
-        }
-        if (player) {
-            player->settings.controls.mouse_look = false;
-        }
-        if (rf::keep_mouse_centered) {
-            rf::mouse_keep_centered_disable();
-        }
-        rf::mouse_set_visible(true);
-        return;
-    }
-
-    // mouse_look is a persisted player setting: only drop the override once the
-    // saved value is actually back. If the player object is gone (disconnect,
-    // kick, level change) keep it pending so the next apply can still restore it
-    // rather than losing the user's setting permanently.
-    if (g_gameplay_mouse_overridden) {
-        if (!player) {
-            return;
-        }
-        player->settings.controls.mouse_look = g_gameplay_prev_mouse_look;
-        g_gameplay_mouse_overridden = false;
-    }
-    // Only re-grab the cursor if we are actually still in gameplay; on a level
-    // change the engine owns the mouse mode.
-    if (rf::gameseq_get_state() == rf::GS_GAMEPLAY && !rf::keep_mouse_centered) {
-        rf::mouse_keep_centered_enable();
-        rf::mouse_set_visible(false);
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -3380,6 +3343,7 @@ CallHook<rf::GameState()> gameseq_process_hook{
         // Before the state runs its frame, so the overlay sees keys/clicks first.
         vote_panel_decay_attack_swallow();
         vote_panel_gameplay_input();
+        demo_controls_ui_input();
         return gameseq_process_hook.call_target();
     },
 };
@@ -3390,6 +3354,11 @@ CallHook<rf::GameState()> gameseq_process_hook{
 FunHook<void(rf::GameState, bool, bool)> gameseq_push_state_hook{
     0x00434410,
     [](rf::GameState state, bool transparent, bool pause_beneath) {
+        if (state == rf::GS_MAIN_MENU && demo_controls_ui_is_open()) {
+            demo_controls_ui_close();
+            play_click_sound();
+            return;
+        }
         if (state == rf::GS_MAIN_MENU && g_open) {
             // ESC backs out one layer at a time: first out of a focused text box,
             // then out of the panel. Normally the focused box consumes ESC from
@@ -3466,11 +3435,53 @@ FunHook<void(int, int)> gameseq_state_do_frame_hook{
         gameseq_state_do_frame_hook.call_target(state_index, no_input);
         if (depth.is_outermost()) {
             vote_panel_gameplay_render();
+            demo_controls_ui_render();
         }
     },
 };
 
 } // namespace
+
+// Shared by every gameplay overlay that needs a free cursor (vote panel, demo
+// controls popup); the overlays are mutually exclusive, so sharing the save/restore
+// state below is safe.
+void gameplay_overlay_apply_mouse(bool active)
+{
+    rf::Player* const player = rf::local_player;
+
+    if (active) {
+        if (player && !g_gameplay_mouse_overridden) {
+            g_gameplay_prev_mouse_look = player->settings.controls.mouse_look;
+            g_gameplay_mouse_overridden = true;
+        }
+        if (player) {
+            player->settings.controls.mouse_look = false;
+        }
+        if (rf::keep_mouse_centered) {
+            rf::mouse_keep_centered_disable();
+        }
+        rf::mouse_set_visible(true);
+        return;
+    }
+
+    // mouse_look is a persisted player setting: only drop the override once the
+    // saved value is actually back. If the player object is gone (disconnect,
+    // kick, level change) keep it pending so the next apply can still restore it
+    // rather than losing the user's setting permanently.
+    if (g_gameplay_mouse_overridden) {
+        if (!player) {
+            return;
+        }
+        player->settings.controls.mouse_look = g_gameplay_prev_mouse_look;
+        g_gameplay_mouse_overridden = false;
+    }
+    // Only re-grab the cursor if we are actually still in gameplay; on a level
+    // change the engine owns the mouse mode.
+    if (rf::gameseq_get_state() == rf::GS_GAMEPLAY && !rf::keep_mouse_centered) {
+        rf::mouse_keep_centered_enable();
+        rf::mouse_set_visible(false);
+    }
+}
 
 void vote_panel_close()
 {
@@ -3532,11 +3543,12 @@ void vote_panel_toggle_gameplay()
         return;
     }
 
-    // Mutually exclusive with the remote server config overlay: both are
-    // full-screen and both read the same non-consuming mouse state.
+    // Mutually exclusive with the remote server config overlay and the demo
+    // controls popup: all read the same non-consuming mouse state.
     if (g_remote_server_cfg_popup.is_active()) {
         g_remote_server_cfg_popup.toggle();
     }
+    demo_controls_ui_close();
 
     ensure_control_veto_registered();
     g_open = true;

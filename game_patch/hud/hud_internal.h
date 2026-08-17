@@ -40,7 +40,8 @@ enum class ChatMenuListType : int
     Basic,
     Map,
     TeamMode,
-    CTF
+    CTF,
+    DemoPlayback
 };
 
 struct ChatMenuElement

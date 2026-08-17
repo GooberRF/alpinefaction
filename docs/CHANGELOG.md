@@ -52,6 +52,20 @@ Version 1.4.0 (Lupin): Not yet released
   - `afstats_status` console command shows the local stats session state
   - `sv_afstats_trace` console command logs outgoing report batches (with session keys redacted) on dedicated servers
 
+[@nickalreadyinuse](https://github.com/nickalreadyinuse)
+- Add server-side demo recording and client-side playback
+  - Dedicated servers record gameplay to `.afd` files in the `demos` folder, automatically per level via the `demo_auto_record` config option or manually with the `sv_record` toggle command
+  - Chat is included in recordings by default; servers can exclude it with the `demo_chat_record` config option
+  - Auto-recorded demos are discarded if no player was connected during the recording
+  - On servers running match mode, demos are only auto-recorded for live matches
+  - Play back demos with `demo_play`, and control playback with `demo_pause`, `demo_seek` (absolute, relative, or `mm:ss`), `demo_timescale` (0.05x-10x), and `demo_stop`; `demo_info` prints a demo file's metadata
+  - During playback, all spectate controls are available: follow any player in first or third person, or use a free camera
+  - Add in-game playback controls popup (opened with the `Use` key during playback) with pause and skip buttons and a clickable timeline scrubber
+  - Add `demo_povcomp` command for ping compensation while following a player - delays other players to approximate what the followed player saw when they aimed
+  - Add optional playback overlays: powerup respawn timers (`spectate_powerups`), player health/armor bars (`spectate_playerinfo`), and respawn point indicators (`spectate_spawns`)
+  - Add in-game Demos menu (Extras -> Demos) for browsing demos and launching playback, with per-demo details including level, date, duration, server name, players, and final scoreboard
+  - Demos can be organized into subfolders of the `demos` folder, browsable in the Demos menu and usable with `demo_play`/`demo_info` (e.g. `demo_play tourney\match1`)
+
 ### Minor features, changes, and enhancements
 [@GooberRF](https://github.com/GooberRF)
 - Support DDS texture format in level editor

@@ -46,6 +46,12 @@ void send_pf_player_stats_packet(rf::Player* player)
     size_t packet_len = sizeof(stats_packet);
     auto player_list = SinglyLinkedList{rf::player_list};
     for (auto& current_player : player_list) {
+        // The demo recorder is not a real client: real recipients would drop its
+        // unknown id anyway, and in demo captures the entry maps onto the playback
+        // viewer's local player.
+        if (current_player.is_demo_listener()) {
+            continue;
+        }
         PlayerStatsNew& player_stats = *static_cast<PlayerStatsNew*>(current_player.stats);
         pf_player_stats_packet::player_stats out_stats{};
         out_stats.player_id = current_player.net_data->player_id;

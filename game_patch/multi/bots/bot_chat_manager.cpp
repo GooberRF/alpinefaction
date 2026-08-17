@@ -113,7 +113,7 @@ bool bot_chat_send_taunt_message(const std::string_view taunt_message)
 bool bot_chat_has_human_audience()
 {
     for (const rf::Player& player : SinglyLinkedList{rf::player_list}) {
-        if (player.is_bot || player.is_browser) {
+        if (player.is_bot || player.is_observer()) {
             continue;
         }
         return true;

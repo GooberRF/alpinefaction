@@ -86,6 +86,11 @@ Root: HKCR; Subkey: "af"; ValueType: "string"; ValueData: "URL:Red Faction Proto
 Root: HKCR; Subkey: "af"; ValueType: "string"; ValueName: "URL Protocol"; ValueData: ""
 Root: HKCR; Subkey: "af\DefaultIcon"; ValueType: "string"; ValueData: "{app}\AlpineFactionLauncher.exe,0"
 Root: HKCR; Subkey: "af\shell\open\command"; ValueType: "string"; ValueData: """{app}\AlpineFactionLauncher.exe"" -aflink %1"
+; afd demo file extension association
+Root: HKCR; Subkey: ".afd"; ValueType: "string"; ValueData: "AlpineFactionDemo"; Flags: uninsdeletekey
+Root: HKCR; Subkey: "AlpineFactionDemo"; ValueType: "string"; ValueData: "Alpine Faction Demo"; Flags: uninsdeletekey
+Root: HKCR; Subkey: "AlpineFactionDemo\DefaultIcon"; ValueType: "string"; ValueData: "{app}\AlpineFactionLauncher.exe,0"
+Root: HKCR; Subkey: "AlpineFactionDemo\shell\open\command"; ValueType: "string"; ValueData: """{app}\AlpineFactionLauncher.exe"" -game -demo ""%1"""
 ; rfl file extension association
 Root: HKCR; Subkey: ".rfl"; ValueType: "string"; ValueData: "AlpineFactionLevelEditor"; Flags: uninsdeletekey; Tasks: rflassoc
 Root: HKCR; Subkey: "AlpineFactionLevelEditor"; ValueType: "string"; ValueData: "Alpine Faction Level Editor"; Flags: uninsdeletekey; Tasks: rflassoc

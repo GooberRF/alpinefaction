@@ -144,6 +144,7 @@ int LauncherApp::Run()
             "-game        Starts game immediately\n"
             "-level name  Starts game immediately and loads specified level\n"
             "-levelm name  Starts game immediately and loads specified level in multiplayer\n"
+            "-demo file   Starts game immediately and plays specified demo file\n"
             "-editor      Starts level editor immediately\n"
             "-exe-path     Override patched executable file location\n"
             "args...      Additional arguments passed to game or editor\n",

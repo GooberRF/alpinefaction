@@ -21,6 +21,7 @@
 #include "server.h"
 #include "server_internal.h"
 #include "alpine_packets.h"
+#include "demo/demo.h"
 #include "sprays.h"
 #include "kill_attribution.h"
 #include "multi.h"
@@ -356,6 +357,8 @@ std::string build_player_info_line(rf::Player* player, bool new_join) {
         name += " (bot)";
     } else if (player_is_idle(player)) {
         name += " (idle)";
+    } else if (player->is_demo_listener()) {
+        name += " (demo)";
     } else if (player->is_browser) {
         name += " (browser)";
     }
@@ -386,6 +389,14 @@ std::string build_player_info_line(rf::Player* player, bool new_join) {
     else if (player->version_info.software == ClientSoftware::Browser) {
         client_info = std::format(
             "RF Server Browser {}.{}.{}",
+            player->version_info.major,
+            player->version_info.minor,
+            player->version_info.patch
+        );
+    }
+    else if (player->version_info.software == ClientSoftware::DemoListener) {
+        client_info = std::format(
+            "Demo Listener {}.{}.{}",
             player->version_info.major,
             player->version_info.minor,
             player->version_info.patch
@@ -749,7 +760,10 @@ CodeInjection multi_limbo_leave_pre_patch{
                 if (&p == rf::local_player)
                     continue;
 
-                if (static_cast<int>(p.version_info.max_rfl_ver) < ver && p.version_info.software != ClientSoftware::Browser) {
+                // Observers (browsers, demo recorder) are never kicked here: they don't
+                // load levels, and the recorder must survive level changes (a dangling
+                // g_state.recorder would crash the next demo segment).
+                if (static_cast<int>(p.version_info.max_rfl_ver) < ver && !p.is_observer()) {
                     auto server_msg = std::format("{} was kicked because they cannot load the upcoming level.", p.name);
                     rf::console::print("{}", server_msg); // remote-supplied name
 
@@ -758,7 +772,7 @@ CodeInjection multi_limbo_leave_pre_patch{
                 }
                 else if (get_upcoming_game_type() != rf::netgame.type &&
                     !(p.version_info.software == ClientSoftware::AlpineFaction && p.version_info.minor >= 2) &&
-                    p.version_info.software != ClientSoftware::Browser) {
+                    !p.is_observer()) {
                     auto server_msg = std::format("{} was kicked because their client does not support changing game type.", p.name);
                     rf::console::print("{}", server_msg); // remote-supplied name
 
@@ -2003,6 +2017,14 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
                             }
                         }
                     }
+
+                    // Mirror into the demo (attacker-tagged; playback filters to the
+                    // spectated player)
+                    demo_record_pvp_damage_notify(
+                        damaged_player->net_data->player_id,
+                        effective_damage,
+                        is_dead,
+                        killer_player->net_data->player_id);
                 }
             }
         }
@@ -2294,9 +2316,9 @@ std::vector<rf::Player*> get_clients(
     clients.reserve(32);
 
     for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
-        if ((player.is_browser && include_browsers)
+        if ((player.is_observer() && include_browsers)
             || (player.is_bot && include_bots)
-            || (!player.is_browser && !player.is_bot))
+            || (!player.is_observer() && !player.is_bot))
         {
             clients.push_back(&player);
         }
@@ -2742,8 +2764,8 @@ void player_idle_check(rf::Player* const player) {
         // don't mark players as idle unless we're in gameplay
         return;
     } else if (player->version_info.software == ClientSoftware::Browser
-        || player->is_bot) {
-        return; // don't mark browsers or bots as idle
+        || player->is_demo_listener() || player->is_bot) {
+        return; // don't mark browsers, the demo recorder, or bots as idle
     } else if (g_match_info.match_active || g_match_info.pre_match_active) {
         // don't mark players as idle during a match or pre-match
         return;
@@ -2791,6 +2813,12 @@ bool version_is_older(int aMaj, int aMin, int bMaj, int bMin)
 std::tuple<AlpineRestrictVerdict, std::string, bool> evaluate_alpine_restrict_status(
     const ClientVersionInfoProfile& info, const bool check_level_version)
 {
+    // The demo recorder is the server's own virtual player - client restrictions
+    // never apply to it (a hard reject would kick it mid-recording).
+    if (info.software == ClientSoftware::DemoListener) {
+        return {AlpineRestrictVerdict::ok, {}, false};
+    }
+
     const auto& cfg = g_alpine_server_config.alpine_restricted_config;
 
     const auto [auto_require_alpine, min_minor_version, hard_reject, require_release_version] = server_features_require_alpine_client();
@@ -2972,7 +3000,7 @@ FunHook<void(rf::Player*)> multi_spawn_player_server_side_hook{
             // No forced character: honour the character the client reported.
             player->settings.multi_character = player->reported_multi_character;
         }
-        if (player->is_browser) {
+        if (player->is_observer()) {
             return;
         }
         if (player->is_spectator) {
@@ -3406,7 +3434,7 @@ static int pick_weaker_team()
     int red_count = 0, blue_count = 0;
     int red_bots = 0, blue_bots = 0;
     for (const rf::Player& player : SinglyLinkedList{rf::player_list}) {
-        if (player.is_browser || player.is_spectator) {
+        if (player.is_observer() || player.is_spectator) {
             continue;
         }
         if (player.team == rf::TEAM_RED) {
@@ -3487,7 +3515,7 @@ FunHook<int()> pick_team_for_new_player_hook{
 static void hvb_sort_teams()
 {
     for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
-        if (player.is_browser || player.is_spectator) {
+        if (player.is_observer() || player.is_spectator) {
             continue;
         }
         assign_player_to_team(&player, hvb_team_for_player(&player));
@@ -3500,7 +3528,7 @@ static void balance_teams()
     std::vector<rf::Player*> bots;
 
     for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
-        if (player.is_browser || player.is_spectator) {
+        if (player.is_observer() || player.is_spectator) {
             continue;
         }
         if (player.is_bot) {
@@ -3617,7 +3645,7 @@ static void count_active_team_players(int& red, int& blue, const rf::Player* exc
     red = 0;
     blue = 0;
     for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
-        if (&player == exclude || player.is_browser || player.is_spectator || player_is_idle(&player)) {
+        if (&player == exclude || player.is_observer() || player.is_spectator || player_is_idle(&player)) {
             continue;
         }
         if (player.team == rf::TEAM_RED) {
@@ -3690,7 +3718,7 @@ static bool auto_team_balance_player_eligible(rf::Player* const player)
     if (!player) {
         return false;
     }
-    if (player->is_browser || player->is_spectator || player_is_idle(player)) {
+    if (player->is_observer() || player->is_spectator || player_is_idle(player)) {
         return false;
     }
     if (is_player_ready(player) || is_player_in_match(player)) {
@@ -3874,7 +3902,7 @@ bool auto_team_balance_blocks_team_change(rf::Player* player, int requested_team
     }
     // Browsers and spectators aren't active on a team, so their own team
     // selection can't unbalance the active roster.
-    if (player->is_browser || player->is_spectator) {
+    if (player->is_observer() || player->is_spectator) {
         return false;
     }
 
@@ -5106,7 +5134,7 @@ static void bot_decommission_check() {
 
     const bool is_team_mode = multi_is_team_game_type();
     for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
-        if (player.is_browser) {
+        if (player.is_observer()) {
             continue;
         }
 
@@ -5208,11 +5236,11 @@ void server_on_limbo_state_enter()
         }
 
         if (&player != rf::local_player) {
-            if (ver > player.version_info.max_rfl_ver && player.version_info.software != ClientSoftware::Browser) {
+            if (ver > player.version_info.max_rfl_ver && !player.is_observer()) {
                 notify_for_upcoming_level_version_incompatible(&player);
             } else if (get_upcoming_game_type() != rf::netgame.type
                 && !(player.version_info.software == ClientSoftware::AlpineFaction && player.version_info.minor >= 2U)
-                && player.version_info.software != ClientSoftware::Browser) {
+                && !player.is_observer()) {
                 // only notify them if they CAN load the map, otherwise they can't play anyway so no point
                 notify_for_client_incompatible_with_switching_game_type(&player);
             }
@@ -5229,6 +5257,16 @@ void server_on_limbo_state_enter()
 bool server_is_saving_enabled()
 {
     return g_alpine_server_config_active_rules.saving_enabled;
+}
+
+bool server_demo_auto_record()
+{
+    return g_alpine_server_config.demo_auto_record;
+}
+
+bool server_demo_chat_record()
+{
+    return g_alpine_server_config.demo_chat_record;
 }
 
 bool server_allow_fullbright_meshes()

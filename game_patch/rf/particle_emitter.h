@@ -256,4 +256,14 @@ static auto& g_max_plankton = addr_as_ref<int>(0x005A00B0);
 // Half extent of the box a mote is respawned into when it leaves the camera box.
 static auto& g_plankton_box_extent = addr_as_ref<float>(0x005A00C0);
 
+// Returns every live particle (main list, per-emitter lists and the secondary list) to the
+// free pool via particle_emitter_level_release. Emitter records themselves are NOT destroyed,
+// so pointers held by entities/fires/explosions stay valid (verified in disassembly).
+static auto& particle_level_release = addr_as_ref<void()>(0x004950A0);
+
+// Destroys each live explosion's owned particle emitters, then zeroes the explosion slot pool
+// and rebuilds the free list (supersets explosion_level_init 0x0048E150). Used by level_release;
+// safe mid-level.
+static auto& explosion_shut_down = addr_as_ref<void()>(0x0048E1C0);
+
 }

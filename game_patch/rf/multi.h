@@ -52,6 +52,9 @@ namespace rf
     static const auto& net_same = addr_as_ref<int(const NetAddr &addr1, const NetAddr &addr2, bool check_port)>(0x0052A930);
     static const auto& net_rel_send = addr_as_ref<int(int, const uint8_t*, int)>(0x0052A310);
     static auto& net_udp_socket = addr_as_ref<int>(0x005A660C);
+    // Reliable-socket slot id of the client's server connection, set by
+    // psnet_rel_connect_to_server (0x0052A4B0)
+    static auto& net_rel_last_connect_socket = addr_as_ref<int>(0x005A6608);
     static auto& net_port = addr_as_ref<unsigned short>(0x01B587D4);
     static const auto& net_stats_update = addr_as_ref<void()>(0x00528580);
     static const auto& net_stats_add = addr_as_ref<void(int, int, int, int)>(0x005286A0);
@@ -308,6 +311,10 @@ namespace rf
     static auto& multi_chat_add_msg = addr_as_ref<void(Player* pp, const char* msg, bool is_team_msg)>(0x00443FB0);
     static auto& multi_is_connecting_to_server = addr_as_ref<uint8_t(const NetAddr& addr)>(0x0044AD80);
     static auto& multi_clear_current_server_addr = addr_as_ref<void()>(0x0044AD60);
+    // IP of the server a join is pending against; gates process_join_accept_packet
+    // (multi_join_game_is_connecting @ 0x0044AD70 / multi_is_connecting_to_server @ 0x0044AD80)
+    static auto& multi_pending_join_server_ip = addr_as_ref<uint32_t>(0x0063F63C);
+    static auto& multi_join_game_is_connecting = addr_as_ref<uint8_t()>(0x0044AD70);
     static auto& multi_join_in_progress = addr_as_ref<bool>(0x0063E93C);
     using MultiIoProcessPackets_Type = void(const void* data, size_t len, const NetAddr& addr, Player* player);
     static auto& multi_io_process_packets = addr_as_ref<MultiIoProcessPackets_Type>(0x004790D0);
@@ -332,7 +339,20 @@ namespace rf
     static auto& local_spawn_attempt_timer = addr_as_ref<Timestamp>(0x007C718C);
 
 
+    // Server-side join flow (used by the demo recorder's virtual player)
+    static auto& send_join_accept_packet = addr_as_ref<void(const NetAddr* addr, Player* player)>(0x0047A6D0);
+    static auto& send_players_packet = addr_as_ref<void(Player* player)>(0x00481C70);
+    static auto& send_state_info = addr_as_ref<void(Player* player)>(0x00481750);
+    static auto& send_netgame_update_packet = addr_as_ref<void(Player* player_or_null)>(0x00484DD0);
+    static auto& multi_alloc_player_id = addr_as_ref<uint8_t()>(0x0046EF00);
+    static auto& multi_player_left_game = addr_as_ref<void(Player* player)>(0x0046E9D0);
+    static auto& update_player_rate = addr_as_ref<void(Player* player)>(0x0047E7D0);
+    // Client-side: reset by process_obj_update_packet; drives the broken-connection icon,
+    // the 20s timeout popup and the sim pause (see research/functions-deep/multi_check_connection_broken.md)
+    static auto& multi_connection_broken_timestamp = addr_as_ref<Timestamp>(0x0064ECA8);
+
     static auto& set_in_mp_flag = addr_as_ref<void()>(0x0046ED50);
+    static auto& remove_in_mp_flag = addr_as_ref<void()>(0x0046ED60);
     static auto& multi_start = addr_as_ref<void(int is_client, const NetAddr* serv_addr)>(0x0046D5B0);
     static auto& multi_stop = addr_as_ref<void()>(0x0046E2C0);
     static auto& multi_load_next_level = addr_as_ref<void()>(0x0046ED70);

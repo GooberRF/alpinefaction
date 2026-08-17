@@ -946,6 +946,18 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.world_hud_spectate_player_labels = std::stoi(settings["WorldHUDSpectateLabels"]);
         processed_keys.insert("WorldHUDSpectateLabels");
     }
+    if (settings.count("WorldHUDDemoPlayerInfo")) {
+        g_alpine_game_config.world_hud_demo_player_info = std::stoi(settings["WorldHUDDemoPlayerInfo"]);
+        processed_keys.insert("WorldHUDDemoPlayerInfo");
+    }
+    if (settings.count("WorldHUDDemoSpawns")) {
+        g_alpine_game_config.world_hud_demo_spawns = std::stoi(settings["WorldHUDDemoSpawns"]);
+        processed_keys.insert("WorldHUDDemoSpawns");
+    }
+    if (settings.count("DemoPowerupTimers")) {
+        g_alpine_game_config.demo_powerup_timers = std::stoi(settings["DemoPowerupTimers"]);
+        processed_keys.insert("DemoPowerupTimers");
+    }
     if (settings.count("WorldHUDTeamLabels")) {
         g_alpine_game_config.world_hud_team_player_labels = std::stoi(settings["WorldHUDTeamLabels"]);
         processed_keys.insert("WorldHUDTeamLabels");
@@ -1550,6 +1562,9 @@ void alpine_player_settings_save(rf::Player* player)
     file << "WorldHUDHillOverdraw=" << g_alpine_game_config.world_hud_hill_overdraw << "\n";
     file << "WorldHUDDamageNumbers=" << g_alpine_game_config.world_hud_damage_numbers << "\n";
     file << "WorldHUDSpectateLabels=" << g_alpine_game_config.world_hud_spectate_player_labels << "\n";
+    file << "WorldHUDDemoPlayerInfo=" << g_alpine_game_config.world_hud_demo_player_info << "\n";
+    file << "WorldHUDDemoSpawns=" << g_alpine_game_config.world_hud_demo_spawns << "\n";
+    file << "DemoPowerupTimers=" << g_alpine_game_config.demo_powerup_timers << "\n";
     file << "WorldHUDTeamLabels=" << g_alpine_game_config.world_hud_team_player_labels << "\n";
     file << "ShowLocationPings=" << g_alpine_game_config.show_location_pings << "\n";
     file << "PlayHitsounds=" << g_alpine_game_config.play_hit_sounds << "\n";

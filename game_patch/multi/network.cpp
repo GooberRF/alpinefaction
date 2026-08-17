@@ -28,6 +28,7 @@
 #include "network.h"
 #include "tracker.h"
 #include "multi.h"
+#include "demo/demo.h"
 #include "mutators.h"
 #include "alpine_packets.h"
 #include "server.h"
@@ -916,6 +917,22 @@ FunHook<MultiIoPacketHandler> process_chat_line_packet_hook{
             if (check_server_chat_command(msg, src_player)) {
                 return;
             }
+
+            if (team_msg && demo_record_active()) {
+                // The stock relay loop team-filters recipients, so the teamless demo
+                // recorder never gets team chat; mirror the wire packet (the handler
+                // only receives the body) tagged with the sender's team.
+                const size_t body_len = 2 + std::strlen(msg) + 1;
+                std::byte packet_buf[rf::max_packet_size];
+                if (sizeof(RF_GamePacketHeader) + body_len <= sizeof(packet_buf)) {
+                    RF_GamePacketHeader header{};
+                    header.type = chat_line;
+                    header.size = static_cast<uint16_t>(body_len);
+                    std::memcpy(packet_buf, &header, sizeof(header));
+                    std::memcpy(packet_buf + sizeof(header), data, body_len);
+                    demo_record_capture_team_scoped(packet_buf, sizeof(header) + body_len, src_player->team);
+                }
+            }
         }
 
         if (!rf::is_dedicated_server) {
@@ -985,8 +1002,8 @@ FunHook<MultiIoPacketHandler> process_team_change_packet_hook{
                     "You can't change teams right now because it would unbalance the teams.", player);
                 return;
             }
-            // Browsers are neither human nor bot, so their team is never forced.
-            if (player && humans_vs_bots_active() && !player->is_browser) {
+            // Observers are neither human nor bot, so their team is never forced.
+            if (player && humans_vs_bots_active() && !player->is_observer()) {
                 const rf::ubyte required_team = player->is_bot ? rf::TEAM_BLUE : rf::TEAM_RED;
                 if (data[1] != required_team) {
                     af_send_automated_chat_msg(
@@ -1455,6 +1472,10 @@ CallHook<int(const rf::NetAddr*, std::byte*, size_t)> send_game_info_packet_hook
             uint8_t num_human_players = 0;
             uint8_t num_browsers = 0;
             for (const rf::Player& p : SinglyLinkedList{rf::player_list}) {
+                // The demo recorder is not a real client - keep it out of every
+                // advertised counter (the stock count excludes it too)
+                if (p.is_demo_listener())
+                    continue;
                 if (p.is_browser)
                     ++num_browsers;
                 else if (p.is_bot)
@@ -1805,6 +1826,11 @@ CallHook<int(const rf::NetAddr*, std::byte*, size_t)> send_join_accept_packet_ho
         auto [buf, new_len] = use_footer
             ? append_af_tail(data, len, &ext_data, sizeof(ext_data))
             : extend_packet_bytes(data, len, &ext_data, sizeof(ext_data));
+        // Demo recorder: write the finished bytes (incl. the AF ext that populates
+        // g_af_server_info on playback) into the demo instead of a socket
+        if (demo_record_capture_join_accept(*addr, buf.get(), new_len)) {
+            return static_cast<int>(new_len);
+        }
         return send_join_accept_packet_hook.call_target(addr, buf.get(), new_len);
     },
 };
@@ -2376,6 +2402,10 @@ FunHook<void(int, rf::NetAddr*)> process_join_req_packet_hook{
             // Last thing in the join: is_bot / is_browser / version_info are only
             // correct now, and the anti-fake-bot path above already returned.
             afstats::on_player_join(valid_player);
+
+            if (valid_player->is_human_player) {
+                demo_record_on_human_join();
+            }
         }
     },
 };
@@ -2664,6 +2694,12 @@ void send_queues_rel_add_packet(
     const uint8_t* const data,
     const size_t len
 ) {
+    // The demo recorder's slot is fabricated - the drain path would net_rel_send for
+    // real (retransmitting forever to the phantom address) and bypass the demo capture
+    // taps. Vote-options/remote-config streams have no value in a demo anyway.
+    if (socket_id >= 0 && socket_id == demo_record_reliable_socket()) {
+        return;
+    }
     if (socket_id >= 0 && socket_id < std::size(g_send_queues_rel)) {
         g_send_queues_rel[socket_id].emplace_back(data, data + len);
     }
@@ -2682,6 +2718,8 @@ FunHook<int(int*, bool)> psnet_rel_close_socket_hook{
 FunHook<void()> multi_stop_hook{
     0x0046E2C0,
     [] {
+        demo_record_on_multi_stop();   // finalize the demo segment + remove the virtual player
+        demo_playback_on_multi_stop(); // engine-initiated stop during playback resets the session
         g_af_server_info.reset(); // Clear server info when leaving
         mutators_set_no_clip_weapon(-1); // restore any server weapon-table overrides
         vote_client_reset(); // drop the cached vote options and active vote state
@@ -2847,7 +2885,12 @@ CodeInjection send_state_info_injection{
 FunHook<void(rf::Player*)> send_players_packet_hook{
     0x00481C70,
     [](rf::Player *player) {
-        send_players_packet_hook.call_target(player);
+        {
+            // Hide the demo recorder from the packed roster - a real client would
+            // otherwise create a phantom "[demo]" player from this packet
+            DemoRosterHideGuard roster_guard{player};
+            send_players_packet_hook.call_target(player);
+        }
         if (rf::is_server) {
             server_reliable_socket_ready(player);
         }
@@ -3033,7 +3076,7 @@ CallHook<int()> game_info_num_players_hook{
         int player_count = 0;
         auto player_list = SinglyLinkedList{rf::player_list};
         for (const auto& current_player : player_list) {
-            if (current_player.version_info.software == ClientSoftware::Browser) continue;
+            if (current_player.is_observer()) continue;
             player_count++;
         }
         return player_count;
@@ -3082,6 +3125,7 @@ FunHook<void()> multi_io_do_frame_hook{
         multi_io_do_frame_hook.call_target();
 
         if (!rf::is_server) {
+            demo_playback_do_frame();
             return;
         }
 

@@ -34,6 +34,7 @@
 #include "weather.h"
 #include "../misc/alpine_options.h"
 #include "../hud/multi_spectate.h"
+#include "../multi/demo/demo.h"
 #include "legacy/gr_d3d.h"
 #include "d3d11/gr_d3d11_hooks.h"
 
@@ -317,7 +318,7 @@ ConsoleCommand2 disable_rendering_cmd{
 FunHook<void(rf::Player*, int)> gameplay_render_frame_hook{
     0x00431A00,
     [](rf::Player* pp, int flags) {
-        if (is_headless_mode() || !g_alpine_game_config.rendering_enabled) {
+        if (is_headless_mode() || !g_alpine_game_config.rendering_enabled || demo_playback_is_seeking()) {
             return;
         }
 
@@ -329,7 +330,7 @@ FunHook<void(rf::Player*, int)> gameplay_render_frame_hook{
 FunHook<void()> gameplay_render_frame_pre_hook{
     0x00431820,
     []() {
-        if (is_headless_mode() || !g_alpine_game_config.rendering_enabled) {
+        if (is_headless_mode() || !g_alpine_game_config.rendering_enabled || demo_playback_is_seeking()) {
             return;
         }
 
@@ -357,6 +358,22 @@ FunHook<void()> explosion_do_frame_hook{
     []() {
         explosion_do_frame_hook.call_target();
         explosion_flash_lights_do_frame();
+    },
+};
+
+// Vclips (explosion sprites etc.) spawned during a demo seek burst barely age before the
+// seek ends and would all pop on screen at once afterwards. Failing the call here also
+// suppresses the flash lights the two CallHooks below add on success, and the particles
+// and explosions vclip_play_3d itself creates.
+FunHook<int(int index, rf::GRoom* src_room, rf::Vector3* src_pos, rf::Vector3* pos,
+    float radius, int parent_handle, rf::Vector3* dir, bool play_sound)> vclip_play_3d_hook{
+    0x004C16E0,
+    [](int index, rf::GRoom* src_room, rf::Vector3* src_pos, rf::Vector3* pos,
+        float radius, int parent_handle, rf::Vector3* dir, bool play_sound) {
+        if (demo_playback_in_seek_burst()) {
+            return -1;
+        }
+        return vclip_play_3d_hook.call_target(index, src_room, src_pos, pos, radius, parent_handle, dir, play_sound);
     },
 };
 
@@ -731,6 +748,7 @@ void gr_apply_patch()
     // Handle explosion dynamic light flashes
     vclip_init_hook.install();
     explosion_do_frame_hook.install();
+    vclip_play_3d_hook.install();
     vclip_play_3d_weapon_hook.install();
     vclip_play_3d_env_hook.install();
 

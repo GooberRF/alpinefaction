@@ -16,6 +16,7 @@
 #include "../multi/salvage.h"
 #include "../misc/alpine_settings.h"
 #include "../sound/sound.h"
+#include "../multi/demo/demo.h"
 #include "../rf/hud.h"
 #include "../rf/player/player.h"
 #include "../rf/player/camera.h"
@@ -570,9 +571,64 @@ static void build_koth_hill_icons()
     }
 }
 
+// Health/armor bar plate drawn above a player's name label during demo playback.
+// offset_y is the plate's bottom edge; the plate extends upward so it never covers
+// the player model. Both bars share one scale so the 50-unit notches line up; the
+// scale grows in 50-unit steps when a value exceeds 100 (super health/armor amps).
+static void render_player_info_bars(const rf::Vector3& pos, int offset_y, float life, float armor)
+{
+    rf::gr::Vertex dest;
+    if (rf::gr::rotate_vertex(&dest, &pos))
+        return;
+    rf::gr::project_vertex(&dest);
+    if (!(dest.flags & 1))
+        return;
+
+    const float ui_scale = g_alpine_game_config.get_world_hud_label_text_scale();
+    const int health = std::max(0, static_cast<int>(std::lround(life)));
+    const int armor_points = std::max(0, static_cast<int>(std::lround(armor)));
+    const int bar_max = std::max({100, (health + 49) / 50 * 50, (armor_points + 49) / 50 * 50});
+
+    const float px_per_unit = 0.6f * ui_scale;
+    const int bar_w = std::max(1, static_cast<int>(std::lround(bar_max * px_per_unit)));
+    const int bar_h = std::max(2, static_cast<int>(std::lround(4.0f * ui_scale)));
+    constexpr int gap = 1;
+    constexpr int pad = 1;
+
+    const int plate_w = bar_w + 2 * pad;
+    const int plate_h = 2 * bar_h + gap + 2 * pad;
+    const int x = static_cast<int>(dest.sx) - plate_w / 2;
+    const int y = static_cast<int>(dest.sy) + offset_y - plate_h;
+
+    rf::gr::set_color(0, 0, 0, 140);
+    rf::gr::rect(x, y, plate_w, plate_h);
+
+    const int health_y = y + pad;
+    const int armor_y = health_y + bar_h + gap;
+
+    auto fill_w = [&](int value) {
+        return static_cast<int>(std::lround(static_cast<float>(std::min(value, bar_max)) / bar_max * bar_w));
+    };
+
+    rf::gr::set_color(90, 200, 90, 220); // health - green
+    if (int w = fill_w(health); w > 0)
+        rf::gr::rect(x + pad, health_y, w, bar_h);
+    rf::gr::set_color(210, 175, 60, 220); // armor - amber
+    if (int w = fill_w(armor_points); w > 0)
+        rf::gr::rect(x + pad, armor_y, w, bar_h);
+
+    // notches every 50 units, spanning both bars
+    rf::gr::set_color(0, 0, 0, 200);
+    for (int notch = 50; notch < bar_max; notch += 50) {
+        int notch_x = x + pad + static_cast<int>(std::lround(static_cast<float>(notch) / bar_max * bar_w));
+        rf::gr::rect(notch_x, health_y, 1, 2 * bar_h + gap);
+    }
+}
+
 void build_player_labels() {
     bool is_spectating = multi_spectate_is_spectating();
-    bool show_all = is_spectating && g_alpine_game_config.world_hud_spectate_player_labels;
+    bool demo_player_info = demo_playback_active() && g_alpine_game_config.world_hud_demo_player_info;
+    bool show_all = is_spectating && (g_alpine_game_config.world_hud_spectate_player_labels || demo_player_info);
     bool is_team_mode = multi_is_team_game_type();
     bool show_teammates = g_alpine_game_config.world_hud_team_player_labels && is_team_mode && !is_spectating;
     auto spectate_target = multi_spectate_get_target_player();
@@ -657,6 +713,11 @@ void build_player_labels() {
         }
 
         render_string_3d_pos_new(string_pos, label.c_str(), -half_text_width, centered_offset_y, font, label_r, label_g, label_b, label_a);
+
+        if (demo_player_info) {
+            render_player_info_bars(string_pos, centered_offset_y - 2, player_entity->life,
+                                    player_entity->armor);
+        }
     }
 }
 
@@ -1243,7 +1304,8 @@ void hud_world_do_frame() {
         build_koth_hill_icons();
         build_koth_hill_outlines();
     }
-    if (g_pre_match_active || (draw_mp_spawn_world_hud && (!rf::is_multi || rf::is_server))) {
+    if (g_pre_match_active || (draw_mp_spawn_world_hud && (!rf::is_multi || rf::is_server)) ||
+        (demo_playback_active() && g_alpine_game_config.world_hud_demo_spawns)) {
         build_mp_respawn_icons();
     }
     if (!world_hud_sprite_events.empty()) {
@@ -1256,7 +1318,9 @@ void hud_world_do_frame() {
         build_ephemeral_world_hud_strings();
     }
     if (rf::is_multi &&
-    ((multi_spectate_is_spectating() && g_alpine_game_config.world_hud_spectate_player_labels) ||
+    ((multi_spectate_is_spectating() &&
+    (g_alpine_game_config.world_hud_spectate_player_labels ||
+    (demo_playback_active() && g_alpine_game_config.world_hud_demo_player_info))) ||
     (!multi_spectate_is_spectating() && g_alpine_game_config.world_hud_team_player_labels && multi_is_team_game_type()))) {
         build_player_labels();
     }
@@ -1458,6 +1522,28 @@ ConsoleCommand2 worldhudspectateplayerlabels_cmd{
     "spectate_playerlabels",
 };
 
+ConsoleCommand2 worldhuddemoplayerinfo_cmd{
+    "spectate_playerinfo",
+    []() {
+        g_alpine_game_config.world_hud_demo_player_info = !g_alpine_game_config.world_hud_demo_player_info;
+        rf::console::print("Demo playback player healthbars are {}",
+                           g_alpine_game_config.world_hud_demo_player_info ? "enabled" : "disabled");
+    },
+    "Toggle whether to display player health/armor bars during demo playback",
+    "spectate_playerinfo",
+};
+
+ConsoleCommand2 worldhuddemospawns_cmd{
+    "spectate_spawns",
+    []() {
+        g_alpine_game_config.world_hud_demo_spawns = !g_alpine_game_config.world_hud_demo_spawns;
+        rf::console::print("Demo playback respawn point indicators are {}",
+                           g_alpine_game_config.world_hud_demo_spawns ? "enabled" : "disabled");
+    },
+    "Toggle whether world HUD indicators for multiplayer respawn points are drawn during demo playback",
+    "spectate_spawns",
+};
+
 ConsoleCommand2 worldhudteamplayerlabels_cmd{
     "cl_wh_teamplayerlabels",
     []() {
@@ -1540,6 +1626,8 @@ void hud_world_apply_patch()
     worldhudhilloverdraw_cmd.register_cmd();
     worldhuddamagenumbers_cmd.register_cmd();
     worldhudspectateplayerlabels_cmd.register_cmd();
+    worldhuddemoplayerinfo_cmd.register_cmd();
+    worldhuddemospawns_cmd.register_cmd();
     worldhudteamplayerlabels_cmd.register_cmd();
     worldhudmpspawns_cmd.register_cmd();
     set_cp_outline_height_cmd.register_cmd();

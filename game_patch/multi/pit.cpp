@@ -46,7 +46,7 @@ bool g_internal_spawn_in_progress = false;
 bool player_has_alive_entity(rf::Player* p)
 {
     if (!p) return false;
-    if (p->is_browser) return false;
+    if (p->is_observer()) return false;
     rf::Entity* ep = rf::entity_from_handle(p->entity_handle);
     if (!ep) return false;
     if (rf::entity_is_dying(ep)) return false;
@@ -73,7 +73,7 @@ bool player_is_loaded(rf::Player* p)
 // is re-enabled, the auto-enqueue pass picks it up again.
 bool is_eligible(rf::Player* p)
 {
-    if (!p || p->is_browser || p->pit_queue_opt_out) return false;
+    if (!p || p->is_observer() || p->pit_queue_opt_out) return false;
     if (p->is_bot && p->is_spawn_disabled) return false;
     return true;
 }
@@ -417,7 +417,7 @@ void pit_on_round_end(rf::Player* winner, RoundEndReason reason)
     // Deny spawns during the celebration window for everyone but a surviving
     // winner (whose entity is still alive until on_round_cleanup).
     for (rf::Player& p : SinglyLinkedList{rf::player_list}) {
-        if (p.is_browser) continue;
+        if (p.is_observer()) continue;
         if (&p == winner) continue;
         p.round_is_out = true;
     }
@@ -433,7 +433,7 @@ void pit_on_round_cleanup()
     // Kill any survivors through the full death pipeline so the next round
     // starts everyone fresh (killer info cleared so no stale obituary fires).
     for (rf::Player& p : SinglyLinkedList{rf::player_list}) {
-        if (p.is_browser) continue;
+        if (p.is_observer()) continue;
         p.round_is_out = true;
         rounds_kill_entity_silent(rf::entity_from_handle(p.entity_handle));
     }
@@ -476,7 +476,7 @@ bool pit_wants_round_start_notification(rf::Player* player)
 {
     // Only the two duelers get the "Round X - fight!" notification; queued and
     // opted-out players keep their persistent queue overlay uninterrupted.
-    return player && !player->is_browser && is_dueler(player);
+    return player && !player->is_observer() && is_dueler(player);
 }
 
 bool pit_is_match_over()
@@ -489,7 +489,7 @@ bool pit_is_match_over()
     if (g_pit.match_decided) return true;
     const int limit = g_alpine_server_config_active_rules.pit_score_limit;
     for (rf::Player& p : SinglyLinkedList{rf::player_list}) {
-        if (p.is_browser) continue;
+        if (p.is_observer()) continue;
         if (p.stats && p.stats->score >= limit) return true;
     }
     return false;
@@ -662,7 +662,7 @@ void pit_handle_queue_request(rf::Player* player, uint8_t action)
 {
     if (!rf::is_server) return;
     if (!gt_is_pit()) return;
-    if (!player || player->is_browser) return;
+    if (!player || player->is_observer()) return;
 
     // 0 = leave, 1 = join, 2 = toggle. A player is "in" when not opted out.
     bool want_join;
@@ -741,7 +741,10 @@ void pit_reset_world_items()
 
 void pit_send_queue_state(rf::Player* p)
 {
-    if (!rf::is_server || !p || p->is_browser) return;
+    // Observer check on purpose (incl. demo listener): the payload encodes the
+    // RECIPIENT'S own queue position/spectate directive, which would mislead
+    // demo playback if captured.
+    if (!rf::is_server || !p || p->is_observer()) return;
 
     const uint8_t total = static_cast<uint8_t>(std::min<size_t>(g_pit.queue.size(), 255));
 
@@ -776,7 +779,7 @@ static std::vector<af_pit_roster_entry> build_pit_roster()
 {
     std::vector<af_pit_roster_entry> roster;
     for (rf::Player& p : SinglyLinkedList{rf::player_list}) {
-        if (p.is_browser) continue;
+        if (p.is_observer()) continue;
         if (!p.net_data) continue;
         uint8_t role = PIT_ROLE_NOT_QUEUED;
         uint8_t order = 0; // 1-based queue position for queued players; 0 otherwise
@@ -801,7 +804,7 @@ void pit_broadcast_queue_states()
     if (!rf::is_server) return;
 
     for (rf::Player& p : SinglyLinkedList{rf::player_list}) {
-        if (p.is_browser) continue;
+        if (p.is_observer()) continue;
         pit_send_queue_state(&p);
     }
 

@@ -95,6 +95,9 @@ struct AlpineGameSettings
     bool world_hud_hill_overdraw = true;
     bool world_hud_damage_numbers = true;
     bool world_hud_spectate_player_labels = false;
+    bool world_hud_demo_player_info = false;
+    bool world_hud_demo_spawns = false;
+    bool demo_powerup_timers = true;
     bool world_hud_team_player_labels = false;
     bool show_location_pings = true;
     bool play_hit_sounds = true;

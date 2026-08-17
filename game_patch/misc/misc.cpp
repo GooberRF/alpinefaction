@@ -22,6 +22,8 @@
 #include "../os/console.h"
 #include "../main/main.h"
 #include "../multi/multi.h"
+#include "../multi/demo/demo.h"
+#include "../multi/demo/demo_browser.h"
 #include "../multi/server.h"
 #include "../rf/gr/gr.h"
 #include "../rf/player/player.h"
@@ -30,6 +32,7 @@
 #include "../rf/os/os.h"
 #include "../rf/misc.h"
 #include "../rf/parse.h"
+#include "../rf/geometry.h"
 #include "../rf/vmesh.h"
 #include "../rf/level.h"
 #include "../rf/localize.h"
@@ -63,6 +66,7 @@ struct JoinMpGameData
 
 bool g_in_mp_game = false;
 bool g_jump_to_multi_server_list = false;
+bool g_jump_to_demo_browser = false;
 std::optional<JoinMpGameData> g_join_mp_game_seq_data;
 std::optional<std::string> g_levelm_filename;
 std::optional<rf::NetGameType> g_local_pending_game_type; // used for pending gt received from server. I don't like this being here, todo: refactor
@@ -132,6 +136,11 @@ void set_jump_to_multi_server_list(bool jump)
     g_jump_to_multi_server_list = jump;
 }
 
+void set_jump_to_demo_browser(bool jump)
+{
+    g_jump_to_demo_browser = jump;
+}
+
 void start_join_multi_game_sequence(const rf::NetAddr& addr, const std::string& password)
 {
     g_jump_to_multi_server_list = true;
@@ -180,7 +189,11 @@ FunHook<void(rf::GameState, rf::GameState)> rf_init_state_hook{
             && (old_state == rf::GS_END_GAME || old_state == rf::GS_NEW_LEVEL);
         if (exiting_game && g_in_mp_game) {
             g_in_mp_game = false;
-            g_jump_to_multi_server_list = true;
+            // Exiting demo playback lands on the demo browser (flag set by the demo
+            // system at teardown) instead of the multiplayer server list
+            if (!g_jump_to_demo_browser) {
+                g_jump_to_multi_server_list = true;
+            }
         }
 
         if (g_jump_to_multi_server_list) {
@@ -217,13 +230,41 @@ FunHook<void(rf::GameState, rf::GameState)> rf_init_state_hook{
                 }
             }
         }
+
+        // Same close-and-advance machinery as the server-list jump above, but landing
+        // on the Extras menu with the demo browser overlay open (demo playback exit)
+        if (g_jump_to_demo_browser) {
+            if (state == rf::GS_MAIN_MENU) {
+                set_sound_enabled(false);
+                // mainmenu_do_open_multi_menu performs this cleanup before leaving a
+                // post-game main menu; mainmenu_open_extras lacks it because the stock
+                // Extras button is never reachable with game state left behind
+                if (!addr_as_ref<bool>(0x0063C11C)) { // mainmenu "game beneath the menu" flag
+                    rf::game_shutdown();
+                }
+                AddrCaller{0x00443C70}.c_call(); // mainmenu_open_extras
+                rf::gameseq_close_state(state, old_state, false);
+                old_state = state;
+                state = rf::gameseq_process_deferred_change();
+                rf_init_state_hook.call_target(state, old_state);
+            }
+
+            if (state == rf::GS_EXTRAS_MENU) {
+                g_jump_to_demo_browser = false;
+                set_sound_enabled(true);
+                demo_browser_open();
+            }
+        }
+
+        // Deferred demo-playback restart (backward seek) once a menu state is reached
+        demo_playback_on_state_init(std::to_underlying(state));
     },
 };
 
 FunHook<bool(int)> rf_state_is_closed_hook{
     0x004B1DD0,
     [](int state) {
-        if (g_jump_to_multi_server_list)
+        if (g_jump_to_multi_server_list || g_jump_to_demo_browser)
             return true;
         return rf_state_is_closed_hook.call_target(state);
     },
@@ -384,8 +425,7 @@ FunHook<void(int)> lcl_init_missing_string_fix{
 CodeInjection glass_shard_level_init_fix{
     0x00435A90,
     []() {
-        auto glass_shard_level_init = addr_as_ref<void()>(0x00490F60);
-        glass_shard_level_init();
+        rf::glass_shard_level_init();
     },
 };
 

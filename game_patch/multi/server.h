@@ -20,6 +20,8 @@ bool check_server_chat_command(const char* msg, rf::Player* sender);
 std::pair<std::string_view, std::string_view> strip_by_space(std::string_view str);
 bool server_is_saving_enabled();
 bool server_is_match_mode_enabled();
+bool server_demo_auto_record();
+bool server_demo_chat_record();
 bool server_allow_fullbright_meshes();
 bool server_allow_lightmaps_only();
 bool server_allow_disable_screenshake();

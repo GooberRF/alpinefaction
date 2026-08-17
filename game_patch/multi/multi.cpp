@@ -11,6 +11,7 @@
 #include <common/version/version.h>
 #include <common/utils/list-utils.h>
 #include "multi.h"
+#include "demo/demo.h"
 #include "endgame_votes.h"
 #include "multi_private.h"
 #include "alpine_packets.h"
@@ -1400,6 +1401,7 @@ void multi_do_patch()
     faction_files_do_patch();
     level_download_do_patch();
     network_init();
+    demo_do_patch();
     multi_tdm_apply_patch();
 
     level_download_init();
@@ -1442,6 +1444,9 @@ void multi_after_full_game_init()
     populate_gametype_table();
     if (!handle_bot_cmd_line_params()) {
         return; // bot launch validation failed, process is quitting
+    }
+    if (demo_playback_handle_startup_param()) {
+        return; // -demo launches straight into demo playback
     }
     handle_url_param();
     if (!handle_awpgen_param()) {

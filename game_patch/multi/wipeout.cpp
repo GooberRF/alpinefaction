@@ -50,7 +50,7 @@ bool g_round_had_both_teams = false;
 bool player_has_alive_entity(rf::Player* p)
 {
     if (!p) return false;
-    if (p->is_browser) return false;
+    if (p->is_observer()) return false;
     if (p->is_spectator) return false; // spectators never count toward wipe detection
     rf::Entity* ep = rf::entity_from_handle(p->entity_handle);
     if (!ep) return false;
@@ -72,7 +72,7 @@ int count_team_alive(int team)
 {
     int n = 0;
     for (rf::Player& p : SinglyLinkedList{rf::player_list}) {
-        if (p.is_browser) continue;
+        if (p.is_observer()) continue;
         if (p.team != team) continue;
         if (player_has_alive_entity(&p)) ++n;
     }
@@ -86,7 +86,7 @@ int count_team_waiting(int team)
 {
     int n = 0;
     for (rf::Player& p : SinglyLinkedList{rf::player_list}) {
-        if (p.is_browser) continue;
+        if (p.is_observer()) continue;
         if (p.is_spectator) continue;
         if (p.team != team) continue;
         if (!player_has_alive_entity(&p)) ++n;
@@ -120,7 +120,7 @@ bool wipeout_can_round_start()
     int red_loaded = 0;
     int blue_loaded = 0;
     for (rf::Player& p : SinglyLinkedList{rf::player_list}) {
-        if (p.is_browser) continue;
+        if (p.is_observer()) continue;
         if (p.is_spectator) continue;
         if (!player_is_loaded(&p)) continue;
         if (p.team == rf::TEAM_RED) ++red_loaded;
@@ -139,7 +139,7 @@ void wipeout_on_round_begin()
     g_internal_spawn_in_progress = true;
     int spawned = 0;
     for (rf::Player& p : SinglyLinkedList{rf::player_list}) {
-        if (p.is_browser) continue;
+        if (p.is_observer()) continue;
 
         // Fresh round: clear elimination, participation, the per-round death
         // counter (resets the escalating delay) and any lingering respawn timer
@@ -299,7 +299,7 @@ void wipeout_on_round_cleanup()
     // Kill any survivors through the full death pipeline so the next round
     // starts everyone fresh (killer info cleared so no stale obituary fires).
     for (rf::Player& p : SinglyLinkedList{rf::player_list}) {
-        if (p.is_browser) continue;
+        if (p.is_observer()) continue;
         p.round_is_out = true;
         rounds_kill_entity_silent(rf::entity_from_handle(p.entity_handle));
     }
@@ -383,7 +383,7 @@ void wipeout_do_frame()
     // their respawn_timer, which is what makes a full-team wipe achievable.
     g_internal_spawn_in_progress = true;
     for (rf::Player& p : SinglyLinkedList{rf::player_list}) {
-        if (p.is_browser) continue;
+        if (p.is_observer()) continue;
         if (p.is_spectator) continue;
 
         if (player_has_alive_entity(&p)) {

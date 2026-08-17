@@ -234,7 +234,7 @@ bool has_alive_enemy_players(const rf::Player& local_player)
         if (&candidate == &local_player) {
             continue;
         }
-        if (candidate.is_browser || candidate.is_spectator || candidate.is_spawn_disabled) {
+        if (candidate.is_observer() || candidate.is_spectator || candidate.is_spawn_disabled) {
             continue;
         }
         if (team_mode && candidate.team == local_player.team) {

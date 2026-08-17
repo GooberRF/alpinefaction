@@ -22,6 +22,7 @@
 #include "../sound/sound.h"
 #include "../input/input.h"
 #include "../multi/multi.h"
+#include "../multi/demo/demo_ui.h"
 #include "../multi/gametype.h"
 #include "../multi/server_internal.h"
 #include "../multi/bagman.h"
@@ -75,7 +76,11 @@ bool is_player_minimum_af_client_version(
         return false;
     }
 
-    if (player->version_info.software != ClientSoftware::AlpineFaction) {
+    // The demo listener runs the current AF build's code and reports its version,
+    // so AF version gates must treat it as an Alpine client - otherwise no
+    // AF-gated packet would ever reach the demo recorder.
+    if (player->version_info.software != ClientSoftware::AlpineFaction
+        && player->version_info.software != ClientSoftware::DemoListener) {
         return false;
     }
 
@@ -522,6 +527,9 @@ CallHook<void __fastcall(rf::Timestamp*, int, int)> player_execute_action_timest
 FunHook<void(rf::Player*, rf::ControlConfigAction, bool)> player_execute_action_hook{
     0x004A6210,
     [](rf::Player* player, rf::ControlConfigAction action, bool was_pressed) {
+        if (demo_controls_ui_execute_action(action, was_pressed)) {
+            return; // demo playback controls (USE popup toggle, seek/pause keys)
+        }
         if (!multi_spectate_execute_action(action, was_pressed)) {
             player_execute_action_hook.call_target(player, action, was_pressed);
         }
@@ -931,6 +939,11 @@ void update_player_flashlight() {
 
 bool player_is_idle(const rf::Player* const player) {
     if (rf::is_server) {
+        // The demo recorder never spawns and never sends activity; its idle timer
+        // is never armed either, but keep the exemption explicit.
+        if (player->is_demo_listener()) {
+            return false;
+        }
         // Check if the player's idle timer has elapsed
         const bool is_idle = player->idle.check_timer.valid()
             && player->idle.check_timer.elapsed();
