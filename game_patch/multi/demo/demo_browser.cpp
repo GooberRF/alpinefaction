@@ -193,7 +193,9 @@ namespace
             Entry entry;
             entry.name = name;
             DemoFileReader reader;
-            if (reader.open(demo_file_resolve_path(join_rel(g_current_dir, name))) == DemoFileReader::OpenResult::ok) {
+            const auto open_result = reader.open(demo_file_resolve_path(join_rel(g_current_dir, name)));
+            if (open_result == DemoFileReader::OpenResult::ok
+                || open_result == DemoFileReader::OpenResult::missing_features) {
                 entry.valid = true;
                 entry.level = reader.header().level_filename;
                 entry.start_time = reader.header().start_time_unix;
@@ -391,7 +393,8 @@ namespace
         }
 
         if (rf::mouse_was_button_pressed(0)) {
-            if (lo.watch_w > 0 && point_in(x, y, lo.watch_x, lo.watch_y, lo.watch_w, lo.watch_h)) {
+            if (lo.watch_w > 0 && !g_detail.requires_newer
+                && point_in(x, y, lo.watch_x, lo.watch_y, lo.watch_w, lo.watch_h)) {
                 // On failure the wrapper prints the reason; keep the detail screen open
                 if (demo_playback_start_from_menu(g_detail_name)) {
                     demo_browser_close();
@@ -659,7 +662,14 @@ namespace
             rf::gr::rect(bar_x, std::lround(bar_y), bar_w, std::lround(bar_h));
         }
 
-        draw_button(lo.watch_x, lo.watch_y, lo.watch_w, lo.watch_h, "Watch", font, fh);
+        if (g_detail.requires_newer) {
+            rf::gr::set_color(200, 200, 200, 255);
+            rf::gr::string_aligned(rf::gr::ALIGN_CENTER, lo.watch_x + lo.watch_w / 2,
+                lo.watch_y + (lo.watch_h - fh) / 2, "Requires newer Alpine Faction", font);
+        }
+        else {
+            draw_button(lo.watch_x, lo.watch_y, lo.watch_w, lo.watch_h, "Watch", font, fh);
+        }
         draw_button(lo.back_x, lo.back_y, lo.back_w, lo.back_h, "Back (Esc)", font, fh);
     }
 

@@ -15,15 +15,38 @@
 //   type 0xFF (footer): {duration_ms u32, packet_count u32} — clean-close marker; a
 //                       missing footer means "unclean but playable"
 // Unknown TLV types and unknown record types are skipped (forward compatibility).
+//
+// Compatibility policy (mirrors the .rfl chunk approach - everything is skippable by length):
+//   - minor bump: additive changes only - new TLV types, new record types (which must be
+//     safe to skip), new DemoPacketFlags bits. Old readers skip what they don't know and
+//     still play; readers never branch on minor - per-record flags and TLVs carry the
+//     semantics (see DEMO_PKT_TEAM_SCOPED for the pattern).
+//   - major bump: structural change to the prelude or record framing. Old readers reject
+//     with OpenResult::newer_format.
+//   - TLV ids are permanent: never reuse an id or change its value width - TlvReader
+//     requires the exact width, so a widened value silently reads as 0 on old readers.
+//     Allocate a new id instead.
+//   - Content an old reader cannot meaningfully play (e.g. a new game mode) must set a bit
+//     in the required_features TLV; readers refuse playback when they see unknown bits
+//     (OpenResult::missing_features).
+//   - Wire-packet layout changes should be additive/length-discriminated where possible
+//     (see af_damage_notify's attacker-tagged demo form); otherwise gate the decoder on
+//     the recording build's version via demo_playback_recorded_af_version() (demo.h).
 
 constexpr uint32_t AFD_MAGIC = 0x4D444641; // "AFDM" little-endian
 constexpr uint16_t AFD_FORMAT_MAJOR = 1;
-constexpr uint16_t AFD_FORMAT_MINOR = 1; // 1.1: team-scoped packet flags (DEMO_PKT_TEAM_*)
+// 1.1: team-scoped packet flags (DEMO_PKT_TEAM_*); 1.2: required_features TLV
+constexpr uint16_t AFD_FORMAT_MINOR = 2;
+
+// Feature bits this build understands. A demo whose required_features TLV has any other
+// bit set is refused (missing_features). Bits are permanent like TLV ids: define new ones
+// here (from bit 0 upward) as must-understand features are added, and never reuse them.
+constexpr uint32_t AFD_KNOWN_FEATURES = 0;
 
 enum class DemoRecordType : uint8_t
 {
     packet = 0x00,
-    marker = 0x01, // reserved
+    marker = 0x01, // reserved for format 2.0 keyframe records (see research/demo-system-prd.md §3)
     footer = 0xFF,
 };
 
@@ -51,6 +74,7 @@ enum class DemoHeaderTlvType : uint8_t
     start_time_unix = 0x0A,
     server_max_players = 0x0B,
     demo_player_id = 0x0C,
+    required_features = 0x0D, // u32 bitmask; unknown bits => missing_features on open
 };
 
 struct DemoHeaderInfo
@@ -69,6 +93,7 @@ struct DemoHeaderInfo
     uint64_t start_time_unix = 0;
     uint32_t server_max_players = 0;
     uint8_t demo_player_id = 0;
+    uint32_t required_features = 0; // absent TLV (older demo) => no requirements
 };
 
 struct DemoFooterInfo
@@ -146,6 +171,10 @@ public:
         bad_magic,
         newer_format,
         bad_header,
+        // required_features has bits this build doesn't know. Unlike the other failure
+        // results the reader stays open with the header parsed, so browser/details code
+        // can still show the demo's metadata; playback must refuse.
+        missing_features,
     };
 
     ~DemoFileReader();

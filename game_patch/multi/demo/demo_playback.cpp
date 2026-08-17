@@ -860,6 +860,7 @@ namespace
             rf::console::print("Not an Alpine demo file: {}", path);
             return false;
         case OpenResult::newer_format:
+        case OpenResult::missing_features:
             rf::console::print("This demo was recorded by a newer Alpine Faction version - cannot play");
             g_ctx.reader.close();
             return false;
@@ -874,6 +875,13 @@ namespace
         const auto& header = g_ctx.reader.header();
         if (header.level_filename.empty()) {
             rf::console::print("Cannot play demo: the file does not name its level");
+            g_ctx.reader.close();
+            return false;
+        }
+        // Belt and braces for a future game mode that forgot to allocate a required_features
+        // bit: an unknown netgame type would ride the join flow into undefined UI/scoring
+        if (header.game_type < 0 || header.game_type >= rf::NG_TYPE_UNK) {
+            rf::console::print("This demo was recorded by a newer Alpine Faction version - cannot play");
             g_ctx.reader.close();
             return false;
         }
@@ -1237,7 +1245,9 @@ namespace
         [](std::string filename) {
             DemoFileReader reader;
             auto path = demo_file_resolve_path(filename);
-            if (reader.open(path) != DemoFileReader::OpenResult::ok) {
+            const auto open_result = reader.open(path);
+            if (open_result != DemoFileReader::OpenResult::ok
+                && open_result != DemoFileReader::OpenResult::missing_features) {
                 rf::console::print("Cannot parse demo file: {}", path);
                 return;
             }
@@ -1254,6 +1264,10 @@ namespace
             rf::console::print("  Format: {}.{}, recorded by Alpine Faction {}.{}.{}", header.format_major,
                                header.format_minor, header.af_version_major, header.af_version_minor,
                                header.af_version_patch);
+            if (open_result == DemoFileReader::OpenResult::missing_features) {
+                rf::console::print("  Playback requires a newer Alpine Faction version (features 0x{:08X})",
+                                   header.required_features);
+            }
             rf::console::print("  Server: {}", header.server_name);
             rf::console::print("  Level: {} (game type {})", header.level_filename, header.game_type);
             if (!header.mod_name.empty()) {
@@ -1272,6 +1286,15 @@ namespace
 bool demo_playback_active()
 {
     return g_ctx.state != PlaybackState::inactive;
+}
+
+DemoRecordedAfVersion demo_playback_recorded_af_version()
+{
+    if (!g_ctx.reader.is_open()) {
+        return {};
+    }
+    const auto& header = g_ctx.reader.header();
+    return {header.af_version_major, header.af_version_minor, header.af_version_patch};
 }
 
 bool demo_playback_is_seeking()

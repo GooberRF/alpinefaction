@@ -102,6 +102,7 @@ bool DemoFileWriter::open(const std::string& path, const DemoHeaderInfo& header)
     tlv.write_le(DemoHeaderTlvType::start_time_unix, header.start_time_unix);
     tlv.write_le(DemoHeaderTlvType::server_max_players, header.server_max_players);
     tlv.write_le(DemoHeaderTlvType::demo_player_id, header.demo_player_id);
+    tlv.write_le(DemoHeaderTlvType::required_features, header.required_features);
 
     std::vector<uint8_t> prelude;
     append_le(prelude, AFD_MAGIC);
@@ -178,6 +179,7 @@ DemoFileReader::OpenResult DemoFileReader::open(const std::string& path)
         return OpenResult::cant_open;
     m_file = file;
     m_path = path;
+    m_header = {}; // don't leak TLV values from a previously opened file (m_footer persists for rewind)
 
     uint32_t magic = 0;
     uint32_t header_len = 0;
@@ -244,10 +246,17 @@ DemoFileReader::OpenResult DemoFileReader::open(const std::string& path)
         case DemoHeaderTlvType::demo_player_id:
             m_header.demo_player_id = entry->read_le<uint8_t>().value_or(0);
             break;
+        case DemoHeaderTlvType::required_features:
+            m_header.required_features = entry->read_le<uint32_t>().value_or(0);
+            break;
         default:
             // Unknown TLV type written by a newer minor version - skip
             break;
         }
+    }
+    if (m_header.required_features & ~AFD_KNOWN_FEATURES) {
+        // Reader intentionally stays open (see OpenResult::missing_features)
+        return OpenResult::missing_features;
     }
     return OpenResult::ok;
 }
@@ -300,7 +309,8 @@ bool DemoFileReader::rewind_to_records()
     if (m_path.empty())
         return false;
     const std::string path = m_path;
-    return open(path) == OpenResult::ok;
+    const OpenResult result = open(path);
+    return result == OpenResult::ok || result == OpenResult::missing_features;
 }
 
 std::string demo_file_build_new_path(const std::string& map_name)

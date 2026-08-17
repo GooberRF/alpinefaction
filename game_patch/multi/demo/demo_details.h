@@ -19,6 +19,9 @@ struct DemoScoreRow
 struct DemoDetails
 {
     bool readable = false; // open + header parse succeeded
+    // Demo needs features this build doesn't know (required_features TLV) - metadata and
+    // scoreboard are still shown but playback would refuse
+    bool requires_newer = false;
     DemoHeaderInfo header;
     bool has_footer = false;
     uint32_t duration_ms = 0; // footer when present, else last record timestamp

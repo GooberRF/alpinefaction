@@ -69,6 +69,16 @@ private:
 
 // True while demo playback owns the multiplayer session.
 bool demo_playback_active();
+// Recording build's AF version while a demo is loaded for playback; all zeros otherwise.
+// The designated hook for packet decoders that must branch on the wire layout the
+// recording build wrote (compare with version_is_older from multi/multi.h).
+struct DemoRecordedAfVersion
+{
+    int major = 0;
+    int minor = 0;
+    int patch = 0;
+};
+DemoRecordedAfVersion demo_playback_recorded_af_version();
 // True while a seek fast-forward or its post-seek settle window is active - world
 // rendering and audio are suppressed and the seek overlay is drawn instead.
 bool demo_playback_is_seeking();

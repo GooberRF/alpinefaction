@@ -154,6 +154,9 @@ namespace
         // path that doesn't know about it, fail soft instead of crashing here
         header.demo_player_id = (g_state.recorder && g_state.recorder->net_data)
             ? g_state.recorder->net_data->player_id : 0;
+        // Set bits (defined next to AFD_KNOWN_FEATURES in demo_file.h) when this recording
+        // uses features an older reader cannot meaningfully play back
+        header.required_features = 0;
         return header;
     }
 

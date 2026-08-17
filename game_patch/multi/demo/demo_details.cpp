@@ -164,10 +164,13 @@ DemoDetails demo_scan_details(const std::string& name)
     DemoDetails details;
 
     DemoFileReader reader;
-    if (reader.open(demo_file_resolve_path(name)) != DemoFileReader::OpenResult::ok) {
+    const auto open_result = reader.open(demo_file_resolve_path(name));
+    if (open_result != DemoFileReader::OpenResult::ok
+        && open_result != DemoFileReader::OpenResult::missing_features) {
         return details;
     }
     details.readable = true;
+    details.requires_newer = open_result == DemoFileReader::OpenResult::missing_features;
     details.header = reader.header();
 
     uint32_t last_t_ms = 0;
