@@ -45,17 +45,33 @@ struct TextureListSentinel {
     TextureListNode* tail;      // = &self when empty
 };
 
+// CBitmapPreviewDialog (RED template 217): a 120x120 child dialog whose OnPaint
+// (0x0044c1b0) renders bm_handle through the editor renderer. Every stock bitmap picker
+// owns one, and the browser reports its result through the one it holds.
+struct BitmapPreviewDialog {
+    char pad_0[0x5c];
+    int bm_handle;                      // 0x5c
+};
+static_assert(offsetof(BitmapPreviewDialog, bm_handle) == 0x5c);
+
 struct TextureBrowserPanel {
     char pad_0[0x278];
     TextureListSentinel master_list;    // 0x278 — currently-displayed entries
-    char pad_280[0x34];
+    char pad_280[0x30];
+    BitmapPreviewDialog* preview;       // 0x2b0 — seeded before DoModal, holds the pick after
     void* category_holder;              // 0x2b4 — VArray<TextureCategory*> at +0x7C
     char pad_2b8[0x04];
     uint8_t listbox_dirty;              // 0x2bc — non-zero forces listbox repaint
 };
 static_assert(offsetof(TextureBrowserPanel, master_list) == 0x278);
+static_assert(offsetof(TextureBrowserPanel, preview) == 0x2b0);
 static_assert(offsetof(TextureBrowserPanel, category_holder) == 0x2b4);
 static_assert(offsetof(TextureBrowserPanel, listbox_dirty) == 0x2bc);
+
+// Run the stock texture browser the way EmitterPropertiesDialog::OnBrowseForBitmap
+// (0x0045c140) does: preselect `folder`, seed the browser with `current_bm`, and return the
+// handle the user picked. Returns -1 when the browser is unavailable or was cancelled.
+int texture_browser_pick(const char* folder, int current_bm);
 
 inline VArray<TextureCategory*>* texture_browser_categories(TextureBrowserPanel* panel)
 {

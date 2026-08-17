@@ -22,6 +22,7 @@
 #include "../bmpman/bmpman.h"
 #include "../debug/debug.h"
 #include "../graphics/gr.h"
+#include "../graphics/weather.h"
 #include "../graphics/d3d11/gr_d3d11_mesh.h"
 #include "../hud/hud.h"
 #include "../hud/hud_world.h"
@@ -188,6 +189,7 @@ CodeInjection after_level_render_hook{
 #if !defined(NDEBUG) && defined(HAS_EXPERIMENTAL)
         experimental_render_in_game();
 #endif
+        weather_render();
         debug_render();
         waypoints_render_debug();
         client_bot_render_debug();

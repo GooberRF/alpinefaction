@@ -18,6 +18,7 @@
 #include "note.h"
 #include "corona.h"
 #include "bag.h"
+#include "weather_region.h"
 #include "mfc_types.h"
 #include "level.h"
 #include "vtypes.h"
@@ -55,6 +56,7 @@ static std::vector<CopyLinkEntry> g_copy_mesh_entries;
 static std::vector<CopyLinkEntry> g_copy_note_entries;
 static std::vector<CopyLinkEntry> g_copy_corona_entries;
 static std::vector<CopyLinkEntry> g_copy_bag_entries;
+static std::vector<CopyLinkEntry> g_copy_weather_region_entries;
 
 // Set of all UIDs that were part of the copied selection (for filtering external links)
 static std::set<int> g_copy_all_uids;
@@ -64,7 +66,8 @@ static bool is_alpine_type(DedObjectType type)
     return type == DedObjectType::DED_MESH ||
            type == DedObjectType::DED_NOTE ||
            type == DedObjectType::DED_CORONA ||
-           type == DedObjectType::DED_BAG;
+           type == DedObjectType::DED_BAG ||
+           type == DedObjectType::DED_WEATHER_REGION;
 }
 
 // Capture link snapshot from the current selection before copy processes it.
@@ -77,6 +80,7 @@ static void capture_copy_link_snapshot()
     g_copy_note_entries.clear();
     g_copy_corona_entries.clear();
     g_copy_bag_entries.clear();
+    g_copy_weather_region_entries.clear();
     g_copy_all_uids.clear();
 
     auto* level = CDedLevel::Get();
@@ -120,6 +124,9 @@ static void capture_copy_link_snapshot()
             case DedObjectType::DED_BAG:
                 g_copy_bag_entries.push_back(std::move(entry));
                 break;
+            case DedObjectType::DED_WEATHER_REGION:
+                g_copy_weather_region_entries.push_back(std::move(entry));
+                break;
             default:
                 g_copy_stock_entries.push_back(std::move(entry));
                 break;
@@ -133,7 +140,8 @@ static void capture_copy_link_snapshot()
 //   - alpine→stock links
 //   - alpine→alpine links
 static void fix_paste_links(CDedLevel* level, int stock_count, int mesh_count,
-                            int note_count, int corona_count, int bag_count)
+                            int note_count, int corona_count, int bag_count,
+                            int weather_region_count)
 {
     // Verify counts match the snapshot (mismatch means the clipboard state diverged).
     // This is the safety guard for the selection-ordering assumption: if anything is
@@ -142,27 +150,30 @@ static void fix_paste_links(CDedLevel* level, int stock_count, int mesh_count,
         mesh_count != static_cast<int>(g_copy_mesh_entries.size()) ||
         note_count != static_cast<int>(g_copy_note_entries.size()) ||
         corona_count != static_cast<int>(g_copy_corona_entries.size()) ||
-        bag_count != static_cast<int>(g_copy_bag_entries.size())) {
+        bag_count != static_cast<int>(g_copy_bag_entries.size()) ||
+        weather_region_count != static_cast<int>(g_copy_weather_region_entries.size())) {
         xlog::warn("[AlpineObj] Paste link fixup skipped: count mismatch "
-            "(stock {}/{}, mesh {}/{}, note {}/{}, corona {}/{}, bag {}/{})",
+            "(stock {}/{}, mesh {}/{}, note {}/{}, corona {}/{}, bag {}/{}, weather region {}/{})",
             stock_count, g_copy_stock_entries.size(),
             mesh_count, g_copy_mesh_entries.size(),
             note_count, g_copy_note_entries.size(),
             corona_count, g_copy_corona_entries.size(),
-            bag_count, g_copy_bag_entries.size());
+            bag_count, g_copy_bag_entries.size(),
+            weather_region_count, g_copy_weather_region_entries.size());
         return;
     }
 
     // Nothing to fix if there are no alpine objects involved
-    bool has_alpine = (mesh_count + note_count + corona_count + bag_count) > 0;
+    bool has_alpine = (mesh_count + note_count + corona_count + bag_count + weather_region_count) > 0;
     if (!has_alpine) return;
 
     auto& sel = level->selection;
-    int total = stock_count + mesh_count + note_count + corona_count + bag_count;
+    int total = stock_count + mesh_count + note_count + corona_count + bag_count + weather_region_count;
     if (sel.size < total) return;
 
     // Build old_uid → new_uid mapping from all entry lists.
-    // Selection order after paste: stock objects first, then meshes, notes, coronas, bags.
+    // Selection order after paste: stock objects first, then meshes, notes, coronas, bags,
+    // weather regions.
     std::map<int, int> uid_map;
     int idx = 0;
     for (int i = 0; i < stock_count; i++, idx++)
@@ -175,6 +186,8 @@ static void fix_paste_links(CDedLevel* level, int stock_count, int mesh_count,
         uid_map[g_copy_corona_entries[i].original_uid] = sel.data_ptr[idx]->uid;
     for (int i = 0; i < bag_count; i++, idx++)
         uid_map[g_copy_bag_entries[i].original_uid] = sel.data_ptr[idx]->uid;
+    for (int i = 0; i < weather_region_count; i++, idx++)
+        uid_map[g_copy_weather_region_entries[i].original_uid] = sel.data_ptr[idx]->uid;
 
     // Apply links from the snapshot to each pasted object
     auto apply_links = [&](const std::vector<CopyLinkEntry>& entries, int count, int& sel_idx) {
@@ -209,9 +222,11 @@ static void fix_paste_links(CDedLevel* level, int stock_count, int mesh_count,
     apply_links(g_copy_note_entries, note_count, idx);
     apply_links(g_copy_corona_entries, corona_count, idx);
     apply_links(g_copy_bag_entries, bag_count, idx);
+    apply_links(g_copy_weather_region_entries, weather_region_count, idx);
 
-    xlog::trace("[AlpineObj] Fixed paste links for {} stock + {} mesh + {} note + {} corona + {} bag objects",
-        stock_count, mesh_count, note_count, corona_count, bag_count);
+    xlog::trace("[AlpineObj] Fixed paste links for {} stock + {} mesh + {} note + {} corona + {} bag "
+        "+ {} weather region objects",
+        stock_count, mesh_count, note_count, corona_count, bag_count, weather_region_count);
 }
 
 // ─── UID Generation ─────────────────────────────────────────────────────────
@@ -229,6 +244,7 @@ FunHook<int()> alpine_generate_uid_hook{
             note_ensure_uid(uid);
             corona_ensure_uid(uid);
             bag_ensure_uid(uid);
+            weather_region_ensure_uid(uid);
         }
         return uid;
     },
@@ -265,6 +281,12 @@ CodeInjection alpine_properties_patch{
             regs.eip = 0x00402293;
             return;
         }
+        if (regs.eax == static_cast<int>(DedObjectType::DED_WEATHER_REGION)) {
+            auto* level = reinterpret_cast<CDedLevel*>(static_cast<uintptr_t>(regs.esi));
+            ShowWeatherRegionPropertiesDialog(level);
+            regs.eip = 0x00402293;
+            return;
+        }
     },
 };
 
@@ -286,6 +308,7 @@ CodeInjection alpine_tree_patch{
         note_tree_populate(tree, master_groups, level);
         corona_tree_populate(tree, master_groups, level);
         bag_tree_populate(tree, master_groups, level);
+        weather_region_tree_populate(tree, master_groups, level);
         tree->sort_children(master_groups);
     },
 };
@@ -308,6 +331,7 @@ CodeInjection alpine_pick_patch{
         note_pick(level, param1, param2);
         corona_pick(level, param1, param2);
         bag_pick(level, param1, param2);
+        weather_region_pick(level, param1, param2);
     },
 };
 
@@ -343,6 +367,9 @@ CodeInjection alpine_click_pick_patch{
 
             // Check bag objects using fixed screen radius
             DedBag* best_bag = bag_click_pick(level, click_x, click_y);
+
+            // Check weather region objects using fixed screen radius
+            DedWeatherRegion* best_weather_region = weather_region_click_pick(level, click_x, click_y);
 
             // Determine best Alpine hit
             DedObject* best_alpine = nullptr;
@@ -384,6 +411,19 @@ CodeInjection alpine_click_pick_patch{
                     if (!best_alpine || bag_dist < best_dist_sq) {
                         best_alpine = static_cast<DedObject*>(best_bag);
                         best_dist_sq = bag_dist;
+                    }
+                }
+            }
+            if (best_weather_region) {
+                float wr_pos[3] = {best_weather_region->pos.x, best_weather_region->pos.y,
+                    best_weather_region->pos.z};
+                float wsx = 0.0f, wsy = 0.0f;
+                if (project_to_screen_2d(wr_pos, &wsx, &wsy)) {
+                    float wdx = wsx - click_x, wdy = wsy - click_y;
+                    float wr_dist = wdx * wdx + wdy * wdy;
+                    if (!best_alpine || wr_dist < best_dist_sq) {
+                        best_alpine = static_cast<DedObject*>(best_weather_region);
+                        best_dist_sq = wr_dist;
                     }
                 }
             }
@@ -432,6 +472,7 @@ CodeInjection alpine_copy_begin_hook{
         note_clear_clipboard();
         corona_clear_clipboard();
         bag_clear_clipboard();
+        weather_region_clear_clipboard();
         capture_copy_link_snapshot();
     },
 };
@@ -463,6 +504,11 @@ CodeInjection alpine_copy_hook{
             bag_copy_object(source);
             regs.eip = 0x00412edb;
         }
+        else if (source && source->type == DedObjectType::DED_WEATHER_REGION) {
+            regs.ebx = reinterpret_cast<uintptr_t>(source);
+            weather_region_copy_object(source);
+            regs.eip = 0x00412edb;
+        }
     },
 };
 
@@ -491,8 +537,13 @@ static void __fastcall alpine_paste_wrapper(void* ecx_level, void* /*edx_unused*
     bag_paste_objects(level);
     int bag_count = level->selection.size - stock_count - mesh_count - note_count - corona_count;
 
+    weather_region_paste_objects(level);
+    int weather_region_count = level->selection.size - stock_count - mesh_count - note_count
+        - corona_count - bag_count;
+
     // Fix links that the stock paste missed (involving alpine object types)
-    fix_paste_links(level, stock_count, mesh_count, note_count, corona_count, bag_count);
+    fix_paste_links(level, stock_count, mesh_count, note_count, corona_count, bag_count,
+        weather_region_count);
 }
 
 // ─── Delete / Cut ───────────────────────────────────────────────────────────
@@ -532,6 +583,9 @@ CodeInjection alpine_paste_finalize_patch{
         }
         else if (obj && obj->type == DedObjectType::DED_BAG) {
             bag_handle_delete_or_cut(obj);
+        }
+        else if (obj && obj->type == DedObjectType::DED_WEATHER_REGION) {
+            weather_region_handle_delete_or_cut(obj);
         }
     },
 };
@@ -575,6 +629,13 @@ CodeInjection alpine_undo_readd_patch{
                 props.bag_objects.push_back(bag);
             }
         }
+        else if (obj->type == DedObjectType::DED_WEATHER_REGION) {
+            auto* weather_region = static_cast<DedWeatherRegion*>(obj);
+            if (std::find(props.weather_region_objects.begin(), props.weather_region_objects.end(),
+                weather_region) == props.weather_region_objects.end()) {
+                props.weather_region_objects.push_back(weather_region);
+            }
+        }
     },
 };
 
@@ -607,6 +668,7 @@ CodeInjection alpine_delete_patch{
         mesh_handle_delete_selection(level);
         corona_handle_delete_selection(level);
         bag_handle_delete_selection(level);
+        weather_region_handle_delete_selection(level);
     },
 };
 
@@ -621,12 +683,13 @@ CodeInjection alpine_object_tree_patch{
         note_tree_add_object_type(tree);
         corona_tree_add_object_type(tree);
         bag_tree_add_object_type(tree);
+        weather_region_tree_add_object_type(tree);
         tree->sort_children(static_cast<int>(reinterpret_cast<intptr_t>(TVI_ROOT)));
     },
 };
 
 // Track which Alpine object type the tree view is creating.
-static int g_alpine_create_type = 0; // 0=Mesh, 2=Note, 3=Corona, 4=Bag
+static int g_alpine_create_type = 0; // 0=Mesh, 2=Note, 3=Corona, 4=Bag, 5=Weather Region
 
 // Hook factory FUN_00442a40 to detect Alpine object types by tree item text.
 int __fastcall alpine_factory_hooked(void* ecx_panel, void* /*edx*/, void* tree_item);
@@ -656,6 +719,9 @@ int __fastcall alpine_factory_hooked(void* ecx_panel, void* edx, void* tree_item
         else if (strcmp(text, "Bag") == 0) {
             g_alpine_create_type = 4;
         }
+        else if (strcmp(text, "Weather Region") == 0) {
+            g_alpine_create_type = 5;
+        }
     }
 
     return alpine_factory_hook.call_target(ecx_panel, edx, tree_item);
@@ -675,6 +741,9 @@ CodeInjection alpine_create_object_patch{
             }
             else if (g_alpine_create_type == 4) {
                 PlaceNewBagObject();
+            }
+            else if (g_alpine_create_type == 5) {
+                PlaceNewWeatherRegionObject();
             }
             else {
                 PlaceNewMeshObject();
@@ -699,6 +768,7 @@ CodeInjection alpine_render_patch{
         note_render(level);
         corona_render(level);
         bag_render(level);
+        weather_region_render(level);
     },
 };
 
@@ -733,6 +803,7 @@ static const char* get_type_display_name(DedObjectType type)
         case DedObjectType::DED_NOTE:               return "Note";
         case DedObjectType::DED_CORONA:             return "Corona";
         case DedObjectType::DED_BAG:                return "Bag";
+        case DedObjectType::DED_WEATHER_REGION:     return "Weather Region";
         default:                                    return "Unknown";
     }
 }
@@ -766,6 +837,7 @@ static const struct { DedObjectType type; const char* label; } g_type_filters[] 
     {DedObjectType::DED_ROOM_EFFECT,      "Room Effects"},
     {DedObjectType::DED_TARGET,           "Targets"},
     {DedObjectType::DED_TRIGGER,          "Triggers"},
+    {DedObjectType::DED_WEATHER_REGION,   "Weather Regions"},
 };
 constexpr int g_num_type_filters = sizeof(g_type_filters) / sizeof(g_type_filters[0]);
 
@@ -1798,12 +1870,13 @@ void alpine_hide_objects(CDedLevel* level)
 
 // Global vectors to collect Alpine objects during group serialization.
 // FUN_00435630 (per-group serializer) has a switch on obj->type that handles types 0..0x16.
-// Alpine types (0x17=DED_MESH, 0x18=DED_NOTE, 0x19=DED_CORONA, 0x1A=DED_BAG) fall through
-// and are silently dropped.
+// Alpine types (0x17=DED_MESH, 0x18=DED_NOTE, 0x19=DED_CORONA, 0x1A=DED_BAG,
+// 0x1B=DED_WEATHER_REGION) fall through and are silently dropped.
 static std::vector<DedMesh*> g_group_save_meshes;
 static std::vector<DedNote*> g_group_save_notes;
 static std::vector<DedCorona*> g_group_save_coronas;
 static std::vector<DedBag*> g_group_save_bags;
+static std::vector<DedWeatherRegion*> g_group_save_weather_regions;
 
 // Brush UIDs captured in serialization order during group save.
 // Used to write brush metadata (geoable/breakable flags) to the .rfg brush group chunk.
@@ -1820,6 +1893,7 @@ CodeInjection alpine_group_save_clear_hook{
         g_group_save_notes.clear();
         g_group_save_coronas.clear();
         g_group_save_bags.clear();
+        g_group_save_weather_regions.clear();
         g_group_save_brush_uids.clear();
     },
 };
@@ -1852,6 +1926,8 @@ CodeInjection alpine_group_type_collect_hook{
                 g_group_save_coronas.push_back(static_cast<DedCorona*>(obj));
             else if (type == static_cast<int>(DedObjectType::DED_BAG))
                 g_group_save_bags.push_back(static_cast<DedBag*>(obj));
+            else if (type == static_cast<int>(DedObjectType::DED_WEATHER_REGION))
+                g_group_save_weather_regions.push_back(static_cast<DedWeatherRegion*>(obj));
             regs.eip = 0x00435be1; // skip to loop continue
         }
         // types <= 0x16 fall through to jump table at 0x00435a88
@@ -1897,6 +1973,13 @@ CodeInjection alpine_group_save_hook{
             props.bag_objects.assign(g_group_save_bags.begin(), g_group_save_bags.end());
             bag_serialize_chunk(*level, *file);
             props.bag_objects = std::move(saved);
+        }
+
+        if (!g_group_save_weather_regions.empty()) {
+            auto saved = std::move(props.weather_region_objects);
+            props.weather_region_objects.assign(g_group_save_weather_regions.begin(), g_group_save_weather_regions.end());
+            weather_region_serialize_chunk(*level, *file);
+            props.weather_region_objects = std::move(saved);
         }
 
         // Write brush group metadata chunk: which brushes (by serialization index) are
@@ -1956,14 +2039,19 @@ CodeInjection alpine_group_save_hook{
             }
         }
 
-        xlog::info("[AlpineObj] Saved {} meshes, {} notes, {} coronas, {} bags to group",
-            g_group_save_meshes.size(), g_group_save_notes.size(),
-            g_group_save_coronas.size(), g_group_save_bags.size());
+        xlog::info("[AlpineObj] Saved {} meshes, {} notes, {} coronas, {} bags, {} weather regions to group",
+            g_group_save_meshes.size(),
+            g_group_save_notes.size(),
+            g_group_save_coronas.size(),
+            g_group_save_bags.size(),
+            g_group_save_weather_regions.size()
+        );
 
         g_group_save_meshes.clear();
         g_group_save_notes.clear();
         g_group_save_coronas.clear();
         g_group_save_bags.clear();
+        g_group_save_weather_regions.clear();
         g_group_save_brush_uids.clear();
     },
 };
@@ -1999,6 +2087,7 @@ CodeInjection alpine_group_load_hook{
         auto note_start = props.note_objects.size();
         auto corona_start = props.corona_objects.size();
         auto bag_start = props.bag_objects.size();
+        auto weather_region_start = props.weather_region_objects.size();
 
         // Brush group entries parsed from the .rfg brush metadata chunk.
         std::vector<BrushGroupEntry> brush_group_entries;
@@ -2022,6 +2111,9 @@ CodeInjection alpine_group_load_hook{
             }
             else if (chunk_id == alpine_bag_chunk_id) {
                 bag_deserialize_chunk(*level, *file, chunk_size);
+            }
+            else if (chunk_id == alpine_weather_region_chunk_id) {
+                weather_region_deserialize_chunk(*level, *file, chunk_size);
             }
             else if (chunk_id == alpine_brush_group_chunk_id) {
                 // Read brush metadata chunk, tracking remaining bytes to stay within chunk bounds
@@ -2081,9 +2173,15 @@ CodeInjection alpine_group_load_hook{
         int notes_loaded = static_cast<int>(props.note_objects.size() - note_start);
         int coronas_loaded = static_cast<int>(props.corona_objects.size() - corona_start);
         int bags_loaded = static_cast<int>(props.bag_objects.size() - bag_start);
+        int weather_regions_loaded = static_cast<int>(props.weather_region_objects.size() - weather_region_start);
         bool has_brush_props = !brush_group_entries.empty();
 
-        if (!meshes_loaded && !notes_loaded && !coronas_loaded && !bags_loaded && !has_brush_props)
+        if (!meshes_loaded &&
+            !notes_loaded &&
+            !coronas_loaded &&
+            !bags_loaded &&
+            !weather_regions_loaded &&
+            !has_brush_props)
             return;
 
         // Assign new unique UIDs to imported Alpine objects (group import must not
@@ -2097,6 +2195,8 @@ CodeInjection alpine_group_load_hook{
             static_cast<DedObject*>(props.corona_objects[i])->uid = generate_uid();
         for (auto i = bag_start; i < props.bag_objects.size(); i++)
             static_cast<DedObject*>(props.bag_objects[i])->uid = generate_uid();
+        for (auto i = weather_region_start; i < props.weather_region_objects.size(); i++)
+            static_cast<DedObject*>(props.weather_region_objects[i])->uid = generate_uid();
 
         // Add newly loaded Alpine objects to the selection so they move with the
         // other stock objects when the user places the imported group.
@@ -2108,6 +2208,8 @@ CodeInjection alpine_group_load_hook{
             level->add_to_selection(static_cast<DedObject*>(props.corona_objects[i]));
         for (auto i = bag_start; i < props.bag_objects.size(); i++)
             level->add_to_selection(static_cast<DedObject*>(props.bag_objects[i]));
+        for (auto i = weather_region_start; i < props.weather_region_objects.size(); i++)
+            level->add_to_selection(static_cast<DedObject*>(props.weather_region_objects[i]));
 
         // Refresh console display to include newly selected Alpine objects
         // (stock FUN_00423460 runs inside FUN_00438340, before our hook loads them)
@@ -2137,6 +2239,8 @@ CodeInjection alpine_group_load_hook{
                     entry->objects.push_back(static_cast<DedObject*>(props.corona_objects[i]));
                 for (auto i = bag_start; i < props.bag_objects.size(); i++)
                     entry->objects.push_back(static_cast<DedObject*>(props.bag_objects[i]));
+                for (auto i = weather_region_start; i < props.weather_region_objects.size(); i++)
+                    entry->objects.push_back(static_cast<DedObject*>(props.weather_region_objects[i]));
 
                 // Apply brush group properties: map serialization index → final brush UID
                 // via the group entry's brushes VArray (same order as serialized).
@@ -2175,8 +2279,8 @@ CodeInjection alpine_group_load_hook{
             }
         }
 
-        xlog::info("[AlpineObj] Loaded {} meshes, {} notes, {} coronas, {} bags from group",
-            meshes_loaded, notes_loaded, coronas_loaded, bags_loaded);
+        xlog::info("[AlpineObj] Loaded {} meshes, {} notes, {} coronas, {} bags, {} weather regions from group",
+            meshes_loaded, notes_loaded, coronas_loaded, bags_loaded, weather_regions_loaded);
     },
 };
 

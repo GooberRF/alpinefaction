@@ -6,6 +6,7 @@
 namespace rf
 {
     struct Entity;
+    struct GRoom;
     struct Player;
 
     enum CameraMode
@@ -48,6 +49,7 @@ namespace rf
         return result;
     }
 
+    static auto& camera_get_room = addr_as_ref<GRoom*(Camera* camera)>(0x0040E0A0);
     static auto& camera_get_mode = addr_as_ref<CameraMode(const rf::Camera&)>(0x0040D740);
     static auto& camera_shake = addr_as_ref<void(Camera* camera, float amplitude, float time_seconds)>(0x0040E0B0);
 
