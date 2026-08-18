@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <array>
 #include <charconv>
+#include <cmath>
 #include <cstring>
 #include <format>
 #include <optional>
@@ -206,19 +207,6 @@ namespace
         return data[3 + body_len - 1] == 2;
     }
 
-    // The player the camera is following (or will re-attach to mid fast-forward, when
-    // the live spectate state is not yet re-established); null in free camera.
-    rf::Player* resolve_followed_player()
-    {
-        if (multi_spectate_is_following_player()) {
-            if (rf::Player* target = multi_spectate_get_target_player())
-                return target;
-        }
-        if (g_ctx.cam_target_id >= 0)
-            return rf::multi_find_player_by_id(static_cast<uint8_t>(g_ctx.cam_target_id));
-        return nullptr;
-    }
-
     struct TeamScopeDecision
     {
         bool skip = false;
@@ -228,24 +216,35 @@ namespace
         std::optional<rf::ubyte> spoof_local_team;
     };
 
-    // Team-scoped traffic (team chat, team location pings): show only what the
-    // followed player's team would have seen; free camera sees both teams
+    // Team-scoped playback filtering. Only two record types carry the flag: team chat
+    // (pkt_chat_line) and team location pings (pkt_af_ping_location); the recorder always
+    // captures both teams' traffic, this only decides what to surface during playback.
+    //  - Team chat always plays in the chat box regardless of spectate mode or team; spoof
+    //    the local team to the sender's so the stock handler renders it as a team line
+    //    (TEAM tag + color) instead of dropping it.
+    //  - Team pings are transient world markers: shown only while anchored to a player
+    //    (first/third person) whose team matches, and never replayed during fast-forward.
     TeamScopeDecision check_team_scoped_record(const DemoRecord& rec, bool fast_forward)
     {
         TeamScopeDecision decision;
         if (!(rec.flags() & DEMO_PKT_TEAM_SCOPED))
             return decision;
         const uint8_t packet_type = rec.packet_type();
-        if (fast_forward && packet_type == pkt_af_ping_location) {
-            decision.skip = true; // transient world marker; team chat still accumulates across seeks
-            return decision;
-        }
         const rf::ubyte scoped_team = (rec.flags() & DEMO_PKT_TEAM1) ? 1 : 0;
-        rf::Player* followed = resolve_followed_player();
-        if (followed && followed->team != scoped_team) {
-            decision.skip = true;
+
+        if (packet_type == pkt_af_ping_location) {
+            if (fast_forward) {
+                decision.skip = true;
+                return decision;
+            }
+            rf::Player* anchor = multi_spectate_is_following_player()
+                ? multi_spectate_get_target_player()
+                : nullptr;
+            if (!anchor || anchor->team != scoped_team)
+                decision.skip = true;
             return decision;
         }
+
         if (packet_type == pkt_chat_line) {
             rf::ubyte sender_team = scoped_team;
             // wire layout: {type u8, size u16}, player_id u8, is_team_msg u8, msg...
@@ -1177,6 +1176,8 @@ namespace
             auto [p2, ec2] = std::from_chars(arg.data() + colon + 1, arg.data() + arg.size(), seconds);
             if (ec1 != std::errc{} || ec2 != std::errc{})
                 return std::nullopt;
+            if (p1 != arg.data() + colon || p2 != arg.data() + arg.size())
+                return std::nullopt; // reject trailing garbage in either field
             return (minutes * 60.0 + seconds) * 1000.0;
         }
         // +N / -N relative seconds, N absolute seconds
@@ -1186,6 +1187,8 @@ namespace
         auto [ptr, ec] = std::from_chars(begin, arg.data() + arg.size(), seconds);
         if (ec != std::errc{})
             return std::nullopt;
+        if (ptr != arg.data() + arg.size() || !std::isfinite(seconds))
+            return std::nullopt; // reject trailing garbage / non-finite (inf, nan)
         if (relative)
             return g_ctx.clock_ms + seconds * 1000.0;
         return seconds * 1000.0;

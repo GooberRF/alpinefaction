@@ -3398,7 +3398,8 @@ void server_reliable_socket_ready(rf::Player* player)
 
     // advertise AF to non-alpine clients if configured
     if (g_alpine_server_config.alpine_restricted_config.advertise_alpine) {
-        if (player->version_info.software != ClientSoftware::AlpineFaction) {
+        if (player->version_info.software != ClientSoftware::AlpineFaction
+            && player->version_info.software != ClientSoftware::Observer) {
             auto msg = std::format(
                 "Have you heard of Alpine Faction? It's a new patch with lots of new and modern features! This server encourages you to upgrade for the best player experience. Learn more at alpinefaction.com");
             af_send_automated_chat_msg(msg, player);
