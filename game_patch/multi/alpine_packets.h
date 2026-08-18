@@ -304,7 +304,7 @@ enum class af_server_req_type : uint8_t
     af_sreq_entity_on_fire = 0x8,      // Alpine 1.4 (5 bytes: obj_handle, on)
     af_sreq_jetpack_state = 0x9,       // Alpine 1.4 (5 bytes: obj_handle, on)
     af_sreq_riot_shield_state = 0xA,   // Alpine 1.4 (20 bytes: obj_handle, life, impact_pos)
-    af_sreq_award = 0xB,               // Alpine 1.4 (1 byte: award_id)
+    af_sreq_award = 0xB,               // Alpine 1.4 (2 bytes: award_id, victim_player_id; 0xFF = no victim)
 };
 
 struct ShouldGibPayload

@@ -124,6 +124,8 @@ void mutators_apply_entity_on_fire(rf::Entity* ep, bool on_fire);
 // Server-authoritative Flaming Enemies burn state for a player id.
 // False on clients and whenever the mutator is not running.
 bool mutators_player_is_on_fire(uint8_t player_id);
+// Player ids are reused: a leaving player's burn state must not be inherited by the id's next owner.
+void mutators_on_player_destroy(rf::Player* player);
 bool mutators_skiing_active();
 bool mutators_dodging_active();
 bool mutators_pogo_active();

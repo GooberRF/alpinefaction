@@ -7,7 +7,6 @@
 #include <common/utils/list-utils.h>
 #include <common/version/version.h>
 #include "gametype.h"
-#include "awards.h"
 #include "bagman.h"
 #include "jetpack.h"
 #include "rounds.h"
@@ -1239,8 +1238,6 @@ static void koth_apply_ownership(HillInfo& h, HillOwner new_owner, bool announce
             afstats::on_point_event(h.hill_uid, afstats::PointEventKind::owner_change,
                 afstats_team_for_owner(new_owner), players_from_ids(ids),
                 h.lock_status != HillLockStatus::HLS_Available);
-            // REV/ESC never tick a score: taking the point IS the scoring event there.
-            awards_on_hill_owner_change(h, static_cast<int>(reward_team), ids);
         }
         else {
             // A silent flip (script/event driven) still changes ownership.
@@ -1435,7 +1432,6 @@ void update_hill_server(HillInfo& h, int dt_ms)
                         //xlog::warn("[KOTH] {}: BLUE +1 (total R={} B={})", h.name.c_str(), g_koth_info.red_team_score, g_koth_info.blue_team_score);
                     }
                     h.hold_ms_accum -= g_koth_info.rules.ms_per_point;
-                    awards_on_hill_score_tick(h, static_cast<int>(h.ownership));
                 }
             }
         }

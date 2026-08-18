@@ -45,6 +45,9 @@ enum class HudNotificationType : int
 
 void hud_notification_show(std::string text, int duration_seconds, HudNotificationType type, bool fade_on_expire);
 void hud_notification_remove(HudNotificationType type, bool instant);
+// Current occupant of the big center-screen slot; None once a notification has fully expired and
+// faded (the render pass owns that transition).
+HudNotificationType hud_big_notification_current_type();
 
 // Returns true if HUD should be hidden (cl_hud off, or cinematic spectate freelook)
 bool is_hud_effectively_hidden();

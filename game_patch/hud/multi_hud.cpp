@@ -1303,6 +1303,11 @@ void draw_respawn_timer_notification(bool can_respawn, bool force_respawn, int s
     g_draw_respawn_timer_can_respawn = can_respawn;
 }
 
+HudNotificationType hud_big_notification_current_type()
+{
+    return g_hud_big_notification.type;
+}
+
 void hud_notification_show(std::string text, int duration_seconds,
     HudNotificationType type, bool fade_on_expire)
 {

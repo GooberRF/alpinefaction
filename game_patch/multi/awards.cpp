@@ -4,13 +4,11 @@
 #include <deque>
 #include <format>
 #include <map>
-#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
 #include <common/utils/list-utils.h>
 #include "../rf/entity.h"
-#include "../rf/level.h"
 #include "../rf/math/vector.h"
 #include "../rf/multi.h"
 #include "../rf/object.h"
@@ -24,7 +22,6 @@
 #include "../sound/sound.h"
 #include "alpine_packets.h"
 #include "awards.h"
-#include "bagman.h"
 #include "gametype.h"
 #include "kill_attribution.h"
 #include "multi.h"
@@ -62,13 +59,14 @@ int player_id_of(const rf::Player* player)
 }
 
 // "Enemy" excludes teammates in team modes and excludes the player themselves everywhere, so
-// team kills and suicides advance nothing.
-bool is_enemy_kill(const rf::Player* killer, const rf::Player* victim)
+// team kills and suicides advance nothing. The victim's team is a parameter because on the kill
+// path it has to be the team held when the damage landed, not whatever death processing left.
+bool is_enemy_kill(const rf::Player* killer, const rf::Player* victim, int victim_team)
 {
     if (!killer || !victim || killer == victim) {
         return false;
     }
-    if (multi_is_team_game_type() && killer->team == victim->team) {
+    if (multi_is_team_game_type() && killer->team == victim_team) {
         return false;
     }
     return true;
@@ -109,13 +107,19 @@ constexpr float last_stand_life = 2.0f;
 constexpr float denied_base_radius = 2.0f;
 constexpr int area_denied_capture_milli = 98000;
 constexpr int64_t bag_check_window_ms = 1000;
-constexpr float clutch_remaining_seconds = 2.0f;
 constexpr uint8_t nemesis_kills_needed = 5;
+// One detonation resolves all its deaths in a single frame, so the per-kill awards (Last Stand,
+// Toasty, ...) would otherwise land once per victim. The same award within this window is one
+// achievement, not several. Kept to a few frames on purpose: kills a human lands in genuine quick
+// succession are separate events and must all count.
+constexpr int64_t award_repeat_window_ms = 50;
 
 struct AwardPlayerState
 {
-    // Riot Control: timestamps of the recent riot stick / riot shield kills.
-    std::deque<int64_t> riot_kills;
+    // Riot Control: timestamps of the recent riot stick / riot shield kills. A fixed window on
+    // purpose: 256 of these live in a flat array, so the state may not heap-allocate.
+    std::array<int64_t, riot_control_kills_needed> riot_kills{};
+    int riot_kill_count = 0;
     // Impressive: a sniper/rail shot is in flight, and the length of the current consecutive-hit
     // chain.
     bool shot_pending = false;
@@ -131,6 +135,8 @@ struct AwardPlayerState
     // Bag Check: when this player last took the bag.
     bool has_bag_pickup = false;
     int64_t bag_pickup_ms = 0;
+    // Per-award repeat throttle; 0 = never granted.
+    std::array<int64_t, award_id_count> last_grant_ms{};
 };
 
 std::vector<AwardPlayerState>& player_states()
@@ -177,6 +183,7 @@ struct DetonationKills
 
 struct DetonationFrame
 {
+    int weapon_type = -1;
     std::vector<DetonationKills> killers;
 };
 
@@ -242,171 +249,6 @@ void sample_ctf_flag_homes()
     }
 }
 
-// -------------------------------------------------------------------------
-// Clutch: the decisive scoring event of the game.
-// -------------------------------------------------------------------------
-
-// Sides are compared, never displayed: a team index in team modes, an offset player id otherwise.
-constexpr int clutch_ffa_side_base = 100;
-
-struct ClutchRecord
-{
-    bool valid = false;
-    int side = -1;
-    std::vector<uint8_t> player_ids;
-    float remaining = -1.0f;
-};
-
-ClutchRecord g_clutch;
-bool g_clutch_end_type_known = false;
-
-int clutch_side_of(const rf::Player* player)
-{
-    if (!player) {
-        return -1;
-    }
-    if (multi_is_team_game_type()) {
-        return player->team == 0 ? 0 : 1;
-    }
-    const int id = player_id_of(player);
-    return id < 0 ? -1 : clutch_ffa_side_base + id;
-}
-
-std::optional<int> strict_leader(int red, int blue)
-{
-    if (red > blue) {
-        return 0;
-    }
-    if (blue > red) {
-        return 1;
-    }
-    return {};
-}
-
-std::optional<int> ffa_strict_leader()
-{
-    int best = -1;
-    int best_side = -1;
-    bool tied = false;
-    for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
-        if (player.is_browser || !player.stats) {
-            continue;
-        }
-        const int score = player.stats->score;
-        if (score > best) {
-            best = score;
-            best_side = clutch_side_of(&player);
-            tied = false;
-        }
-        else if (score == best) {
-            tied = true;
-        }
-    }
-    if (best_side < 0 || tied) {
-        return {};
-    }
-    return best_side;
-}
-
-std::optional<int> hills_owning_team()
-{
-    bool any_red = false;
-    bool any_blue = false;
-    for (const HillInfo& hill : g_koth_info.hills) {
-        any_red |= hill.ownership == HillOwner::HO_Red;
-        any_blue |= hill.ownership == HillOwner::HO_Blue;
-    }
-    if (any_red && !any_blue) {
-        return 0;
-    }
-    if (any_blue && !any_red) {
-        return 1;
-    }
-    return {};
-}
-
-// The side that is strictly ahead right now, or nothing when the standings are tied. REV and ESC
-// have no running score: their "lead" is the win condition itself, so a decisive record only ever
-// exists there once a team has actually taken every point.
-std::optional<int> current_strict_leader()
-{
-    switch (rf::multi_get_game_type()) {
-    case rf::NG_TYPE_DM:
-    case rf::NG_TYPE_GG:
-    case rf::NG_TYPE_BAG:
-        return ffa_strict_leader();
-    case rf::NG_TYPE_TEAMDM:
-        return strict_leader(rf::multi_tdm_get_red_team_score(), rf::multi_tdm_get_blue_team_score());
-    case rf::NG_TYPE_CTF:
-        return strict_leader(rf::multi_ctf_get_red_team_score(), rf::multi_ctf_get_blue_team_score());
-    case rf::NG_TYPE_TBAG:
-        return strict_leader(bagman_get_red_team_score(), bagman_get_blue_team_score());
-    case rf::NG_TYPE_SAL:
-        return strict_leader(salvage_get_red_team_score(), salvage_get_blue_team_score());
-    case rf::NG_TYPE_KOTH:
-    case rf::NG_TYPE_DC:
-        return strict_leader(multi_koth_get_red_team_score(), multi_koth_get_blue_team_score());
-    case rf::NG_TYPE_REV:
-        return rev_all_points_permalocked() ? std::optional<int>{0} : std::optional<int>{};
-    case rf::NG_TYPE_ESC:
-        return esc_all_points_owned_by_one_team() ? hills_owning_team() : std::optional<int>{};
-    default:
-        return {};
-    }
-}
-
-// Seconds left on the clock. extend_round_time pushes level.time back, so overtime needs no special
-// case: a limitless overtime simply leaves this negative, which no Clutch test accepts.
-std::optional<float> clutch_remaining()
-{
-    if (rf::multi_time_limit <= 0.0f) {
-        return {};
-    }
-    return rf::multi_time_limit - rf::level.time;
-}
-
-// An attributable scoring event. Records the go-ahead event of whoever is leading after it: if the
-// lead is later lost or tied the record is dropped, so what survives to game end is always the
-// eventual winner's own decisive event.
-void note_scoring_event(const std::vector<rf::Player*>& scorers)
-{
-    if (!awards_tracking_active() || gt_uses_rounds() || scorers.empty()) {
-        return;
-    }
-    const std::optional<float> remaining = clutch_remaining();
-    if (!remaining) {
-        return; // no time limit: nothing to be clutch about
-    }
-
-    const std::optional<int> leader = current_strict_leader();
-    if (!leader) {
-        g_clutch = {};
-        return;
-    }
-    const int scorer_side = clutch_side_of(scorers.front());
-    if (*leader != scorer_side) {
-        // Somebody else still leads; their own go-ahead event is the one that counts.
-        if (!g_clutch.valid || g_clutch.side != *leader) {
-            g_clutch = {};
-        }
-        return;
-    }
-    if (g_clutch.valid && g_clutch.side == scorer_side) {
-        return; // already ahead, this is not the go-ahead event
-    }
-
-    g_clutch = {};
-    g_clutch.valid = true;
-    g_clutch.side = scorer_side;
-    g_clutch.remaining = *remaining;
-    for (rf::Player* scorer : scorers) {
-        const int id = player_id_of(scorer);
-        if (id >= 0) {
-            g_clutch.player_ids.push_back(static_cast<uint8_t>(id));
-        }
-    }
-}
-
 } // namespace
 
 // -------------------------------------------------------------------------
@@ -417,6 +259,17 @@ void grant_award(rf::Player* recipient, AwardId id, rf::Player* victim)
 {
     if (!recipient || !awards_tracking_active()) {
         return;
+    }
+
+    // The same award twice in one instant is one achievement (an explosion's eight deaths all
+    // resolve in the same frame). Suppressed entirely: the stats event is a duplicate too.
+    if (AwardPlayerState* state = state_for(recipient)) {
+        int64_t& last = state->last_grant_ms[static_cast<size_t>(id)];
+        const int64_t now = now_ms();
+        if (last != 0 && now - last < award_repeat_window_ms) {
+            return;
+        }
+        last = now;
     }
 
     afstats::on_award(recipient, static_cast<uint8_t>(id), victim);
@@ -469,13 +322,20 @@ void check_riot_control(rf::Player* killer, rf::Player* victim, int weapon_type)
         return;
     }
     const int64_t now = now_ms();
-    while (!state->riot_kills.empty() && now - state->riot_kills.front() > riot_control_window_ms) {
-        state->riot_kills.pop_front();
+    // Compact the window in place, dropping anything older than 10 s (and, should the window
+    // somehow be full, the oldest entry - it can never matter which, a grant empties it).
+    int kept = 0;
+    for (int i = 0; i < state->riot_kill_count; ++i) {
+        if (now - state->riot_kills[i] <= riot_control_window_ms
+            && kept < riot_control_kills_needed - 1) {
+            state->riot_kills[kept++] = state->riot_kills[i];
+        }
     }
-    state->riot_kills.push_back(now);
-    if (static_cast<int>(state->riot_kills.size()) >= riot_control_kills_needed) {
+    state->riot_kills[kept++] = now;
+    state->riot_kill_count = kept;
+    if (state->riot_kill_count >= riot_control_kills_needed) {
         // Cleared, not trimmed: the next award needs three fresh kills.
-        state->riot_kills.clear();
+        state->riot_kill_count = 0;
         grant_award(killer, AwardId::riot_control, victim);
     }
 }
@@ -518,6 +378,11 @@ void check_last_stand(rf::Player* killer, rf::Player* victim, int killer_entity_
     if (!killer_ep) {
         return;
     }
+    // A trade leaves the killer's entity resolvable but dead; surviving on a sliver is the whole
+    // point of the award, so a posthumous kill earns nothing.
+    if (killer_ep->life <= 0.0f || rf::entity_is_dying(killer_ep)) {
+        return;
+    }
     if (killer_ep->life < last_stand_life && killer_ep->armor <= 0.0f) {
         grant_award(killer, AwardId::last_stand, victim);
     }
@@ -525,7 +390,7 @@ void check_last_stand(rf::Player* killer, rf::Player* victim, int killer_entity_
 
 // CTF: the victim delivers to their OWN team's flag stand, and only if a capture would actually
 // happen there at that instant.
-bool ctf_capture_denied(rf::Player* killer, rf::Player* victim, rf::Vector3* out_base)
+bool ctf_capture_denied(rf::Player* killer, rf::Player* victim, int victim_team_raw, rf::Vector3* out_base)
 {
     if (rf::multi_get_game_type() != rf::NG_TYPE_CTF) {
         return false;
@@ -543,7 +408,7 @@ bool ctf_capture_denied(rf::Player* killer, rf::Player* victim, rf::Vector3* out
         return false;
     }
 
-    const int victim_team = victim->team == 0 ? 0 : 1;
+    const int victim_team = victim_team_raw == 0 ? 0 : 1;
     const bool own_flag_home =
         victim_team == 0 ? rf::multi_ctf_is_red_flag_in_base() : rf::multi_ctf_is_blue_flag_in_base();
     if (!own_flag_home && !g_alpine_server_config_active_rules.flag_captures_while_stolen) {
@@ -567,12 +432,12 @@ bool ctf_capture_denied(rf::Player* killer, rf::Player* victim, rf::Vector3* out
     return true;
 }
 
-bool sal_capture_denied(rf::Player* killer, rf::Player* victim, rf::Vector3* out_base)
+bool sal_capture_denied(rf::Player* killer, rf::Player* victim, int victim_team, rf::Vector3* out_base)
 {
     if (!gt_is_salvage() || salvage_get_carrier() != victim) {
         return false;
     }
-    if (multi_is_team_game_type() && killer->team == victim->team) {
+    if (multi_is_team_game_type() && killer->team == victim_team) {
         return false;
     }
     rf::Vector3 red_base{};
@@ -581,14 +446,15 @@ bool sal_capture_denied(rf::Player* killer, rf::Player* victim, rf::Vector3* out
         return false;
     }
     // Salvage always allows a capture, so proximity to the victim's own base is the whole test.
-    *out_base = victim->team == 0 ? red_base : blue_base;
+    *out_base = victim_team == 0 ? red_base : blue_base;
     return true;
 }
 
-void check_capture_denied(rf::Player* killer, rf::Player* victim)
+void check_capture_denied(rf::Player* killer, rf::Player* victim, int victim_team)
 {
     rf::Vector3 base{};
-    if (!ctf_capture_denied(killer, victim, &base) && !sal_capture_denied(killer, victim, &base)) {
+    if (!ctf_capture_denied(killer, victim, victim_team, &base)
+        && !sal_capture_denied(killer, victim, victim_team, &base)) {
         return;
     }
 
@@ -602,16 +468,28 @@ void check_capture_denied(rf::Player* killer, rf::Player* victim)
     }
 }
 
-void check_area_denied(rf::Player* killer, rf::Player* victim)
+void check_area_denied(rf::Player* killer, rf::Player* victim, int victim_team_raw)
 {
     if (!multi_game_type_has_hills(rf::multi_get_game_type())) {
         return;
     }
-    const HillOwner victim_team = victim->team == 0 ? HillOwner::HO_Red : HillOwner::HO_Blue;
+    const HillOwner victim_team = victim_team_raw == 0 ? HillOwner::HO_Red : HillOwner::HO_Blue;
     const HillOwner killer_team = killer->team == 0 ? HillOwner::HO_Red : HillOwner::HO_Blue;
 
     for (const HillInfo& hill : g_koth_info.hills) {
         if (!hill.trigger || !hill.handler) {
+            continue;
+        }
+        // The hill has to be one that can actually be taken right now. A locked or permalocked hill
+        // keeps whatever capture_milli and steal_dir it had when it locked - update_hill_server
+        // returns early for those without clearing either - so stale 99% progress sits on it for
+        // the rest of the level and would otherwise qualify every kill on top of it.
+        if (hill.lock_status != HillLockStatus::HLS_Available) {
+            continue;
+        }
+        // ESC additionally gates by role: a hill whose prerequisite the victim's team has not taken
+        // is not attackable by them, so progress there is not progress toward anything.
+        if (gt_is_esc() && !esc_team_can_attack_hill(hill, victim_team)) {
             continue;
         }
         // Progress only counts when it belongs to the victim's team: steal_dir is who the hill is
@@ -731,7 +609,6 @@ constexpr std::array<AwardDisplay, award_id_count> award_display{{
     {"CAPTURE DENIED!", nullptr, custom_sound_id::af_achievement},
     {"AREA DENIED!", nullptr, custom_sound_id::af_achievement},
     {"BAG CHECK!", nullptr, custom_sound_id::af_achievement},
-    {"CLUTCH!", nullptr, custom_sound_id::af_achievement},
     {"REVENGE!", "REVENGE ON {}!", custom_sound_id::af_achievement},
     {"DOMINATING!", "DOMINATING {}!", custom_sound_id::af_achievement},
     {"YOU'RE ON A RAMPAGE!", nullptr, custom_sound_id::af_achievement},
@@ -772,7 +649,7 @@ ConsoleCommand2 awards_display_cmd{
 // -------------------------------------------------------------------------
 
 void awards_on_kill(rf::Player* victim, rf::Player* killer, int weapon_type, bool splash,
-                    int killer_entity_handle)
+                    int killer_entity_handle, int victim_team)
 {
     if (!awards_tracking_active() || !victim) {
         return;
@@ -788,13 +665,20 @@ void awards_on_kill(rf::Player* victim, rf::Player* killer, int weapon_type, boo
 
     sample_ctf_flag_homes();
 
-    if (!is_enemy_kill(killer, victim)) {
+    if (!is_enemy_kill(killer, victim, victim_team)) {
         return;
     }
 
-    // Massacre: bank the kill against the detonation currently being resolved.
-    if (splash && kill_attribution_in_splash_scope() && g_detonation_depth > 0) {
-        const int killer_id = player_id_of(killer);
+    // Massacre: bank the kill against the detonation currently being resolved. The detonation's
+    // own direct-hit victim counts alongside the splash victims, but only for a weapon that
+    // actually explodes - a piercing bullet's kills are the 2fer's business, not this one's.
+    if (kill_attribution_in_splash_scope() && g_detonation_depth > 0) {
+        const DetonationFrame& open_frame = g_detonation_stack[g_detonation_depth - 1];
+        const bool direct_of_this_detonation =
+            !splash && weapon_type >= 0 && weapon_type == open_frame.weapon_type
+            && kill_attribution_is_valid_weapon_type(weapon_type)
+            && rf::weapon_types[weapon_type].damage_radius > 0.0f;
+        const int killer_id = (splash || direct_of_this_detonation) ? player_id_of(killer) : -1;
         if (killer_id >= 0) {
             DetonationFrame& frame = g_detonation_stack[g_detonation_depth - 1];
             auto it = std::find_if(frame.killers.begin(), frame.killers.end(),
@@ -825,16 +709,9 @@ void awards_on_kill(rf::Player* victim, rf::Player* killer, int weapon_type, boo
     check_excellent(killer, victim);
     check_streak(killer, victim);
     check_last_stand(killer, victim, killer_entity_handle);
-    check_capture_denied(killer, victim);
-    check_area_denied(killer, victim);
+    check_capture_denied(killer, victim, victim_team);
+    check_area_denied(killer, victim, victim_team);
     update_nemesis(killer, victim);
-
-    // Frags only move the score in the frag-scored game types; elsewhere a kill is not a scoring
-    // event and must not overwrite the real decisive one.
-    const rf::NetGameType game_type = rf::multi_get_game_type();
-    if (game_type == rf::NG_TYPE_DM || game_type == rf::NG_TYPE_TEAMDM || game_type == rf::NG_TYPE_GG) {
-        note_scoring_event({killer});
-    }
 }
 
 void awards_on_weapon_fired(rf::Player* player, int weapon_type)
@@ -868,7 +745,7 @@ void awards_on_direct_hit(rf::Player* attacker, rf::Player* victim, int weapon_t
         return;
     }
     state->shot_pending = false;
-    if (!is_enemy_kill(attacker, victim)) {
+    if (!is_enemy_kill(attacker, victim, victim->team)) {
         state->hit_chain = 0; // a teammate is a miss as far as this chain is concerned
         return;
     }
@@ -907,12 +784,13 @@ AwardsShotScope::~AwardsShotScope()
     }
 }
 
-void awards_detonation_begin()
+void awards_detonation_begin(int weapon_type)
 {
     ++g_detonation_depth;
     if (static_cast<int>(g_detonation_stack.size()) < g_detonation_depth) {
         g_detonation_stack.resize(g_detonation_depth);
     }
+    g_detonation_stack[g_detonation_depth - 1].weapon_type = weapon_type;
     g_detonation_stack[g_detonation_depth - 1].killers.clear();
 }
 
@@ -968,7 +846,6 @@ void awards_on_ctf_capture(rf::Player* player)
         state->clean_steal = false;
         grant_award(player, AwardId::flag_runner);
     }
-    note_scoring_event({player});
 }
 
 void awards_on_sal_flag_taken(rf::Player* player, bool from_spawn)
@@ -998,7 +875,6 @@ void awards_on_sal_capture(rf::Player* player)
         state->clean_steal = false;
         grant_award(player, AwardId::flag_runner);
     }
-    note_scoring_event({player});
 }
 
 void awards_on_bagman_pickup(rf::Player* player)
@@ -1029,89 +905,6 @@ void awards_on_bagman_carrier_death(rf::Player* carrier, rf::Player* killer)
     }
 }
 
-void awards_on_bagman_score_tick(rf::Player* carrier)
-{
-    note_scoring_event({carrier});
-}
-
-void awards_on_hill_score_tick(const HillInfo& hill, int team)
-{
-    if (!awards_tracking_active()) {
-        return;
-    }
-    const auto owner = static_cast<HillOwner>(team);
-    if (owner != HillOwner::HO_Red && owner != HillOwner::HO_Blue) {
-        return;
-    }
-    // The tick is the team's, but Clutch is per player: everyone holding the hill when it scored.
-    std::vector<rf::Player*> scorers;
-    for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
-        if (!player_is_countable(player)) {
-            continue;
-        }
-        const HillOwner player_team = player.team == 0 ? HillOwner::HO_Red : HillOwner::HO_Blue;
-        if (player_team != owner || !player_inside_hill_trigger(hill, player)) {
-            continue;
-        }
-        scorers.push_back(&player);
-    }
-    if (!scorers.empty()) {
-        note_scoring_event(scorers);
-    }
-}
-
-void awards_on_hill_owner_change(const HillInfo&, int team, const std::vector<uint8_t>& player_ids)
-{
-    if (!awards_tracking_active()) {
-        return;
-    }
-    const auto owner = static_cast<HillOwner>(team);
-    if (owner != HillOwner::HO_Red && owner != HillOwner::HO_Blue) {
-        return;
-    }
-    std::vector<rf::Player*> scorers;
-    for (uint8_t id : player_ids) {
-        if (rf::Player* player = rf::multi_find_player_by_id(id)) {
-            scorers.push_back(player);
-        }
-    }
-    if (scorers.empty()) {
-        return;
-    }
-    note_scoring_event(scorers);
-}
-
-void awards_note_game_end_type(bool time_limit)
-{
-    static_cast<void>(time_limit);
-    // Both limits are decisive ends; a vote or level logic ending the game never latches this, so
-    // Clutch cannot fire for one.
-    g_clutch_end_type_known = true;
-}
-
-void awards_on_game_end()
-{
-    if (!rf::is_multi || !rf::is_server) {
-        return;
-    }
-    if (!g_clutch_end_type_known || !g_clutch.valid || gt_uses_rounds()) {
-        g_clutch = {};
-        g_clutch_end_type_known = false;
-        return;
-    }
-
-    const std::optional<int> winner = current_strict_leader();
-    const bool in_window = g_clutch.remaining >= 0.0f && g_clutch.remaining < clutch_remaining_seconds;
-    if (winner && *winner == g_clutch.side && in_window) {
-        for (uint8_t id : g_clutch.player_ids) {
-            grant_award(rf::multi_find_player_by_id(id), AwardId::clutch);
-        }
-    }
-
-    g_clutch = {};
-    g_clutch_end_type_known = false;
-}
-
 void awards_on_player_destroy(rf::Player* player)
 {
     const int id = player_id_of(player);
@@ -1120,13 +913,6 @@ void awards_on_player_destroy(rf::Player* player)
     }
     player_states()[id] = AwardPlayerState{};
     clear_nemesis_pairs_for(static_cast<uint8_t>(id));
-
-    // The decisive record holds ids, not pointers; a departing scorer must not be granted through
-    // whoever inherits its id.
-    std::erase(g_clutch.player_ids, static_cast<uint8_t>(id));
-    if (g_clutch.valid && g_clutch.player_ids.empty()) {
-        g_clutch = {};
-    }
 }
 
 void awards_level_init()
@@ -1138,8 +924,6 @@ void awards_level_init()
     g_shot_scope = {};
     g_flag_home[0] = {};
     g_flag_home[1] = {};
-    g_clutch = {};
-    g_clutch_end_type_known = false;
     g_award_queue.clear();
     g_award_slot_busy.invalidate();
 }
@@ -1157,7 +941,8 @@ void awards_client_on_award_received(uint8_t award_id, uint8_t victim_player_id)
         return;
     }
     if (g_award_queue.size() >= award_queue_cap) {
-        return;
+        // Keep the newest: with a full backlog the oldest entries are the stalest news.
+        g_award_queue.pop_front();
     }
 
     const AwardDisplay& display = award_display[award_id];
@@ -1176,11 +961,28 @@ void awards_client_on_award_received(uint8_t award_id, uint8_t victim_player_id)
 
 void awards_client_do_frame()
 {
+    if (!rf::is_multi) {
+        // Left the server: whatever is still queued belongs to the game it was earned in, and
+        // must not fire over the menu.
+        g_award_queue.clear();
+        g_award_slot_busy.invalidate();
+        return;
+    }
     if (g_award_queue.empty()) {
         return;
     }
-    if (g_award_slot_busy.valid() && !g_award_slot_busy.elapsed()) {
-        return; // the previous award still owns the slot
+
+    // The queue advances off the slot's real state, not just its own timer: another notification
+    // may have overwritten the award (no point waiting out a callout nobody can see), and one it
+    // did not put up itself is not its to stomp.
+    const HudNotificationType big_slot_type = hud_big_notification_current_type();
+    if (big_slot_type == HudNotificationType::Award) {
+        if (g_award_slot_busy.valid() && !g_award_slot_busy.elapsed()) {
+            return; // the previous award still owns the slot
+        }
+    }
+    else if (big_slot_type != HudNotificationType::None) {
+        return;
     }
 
     QueuedAward award = std::move(g_award_queue.front());

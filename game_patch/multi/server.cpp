@@ -1662,6 +1662,9 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
         // A gib destroys the entity, so the death position has to be taken before
         // damage is applied to still be available afterwards.
         rf::Vector3 victim_pos_before_damage = damaged_ep->pos;
+        // The kill is judged against the team the victim had when the damage landed: death
+        // processing can move them (auto team balance), and awards must not see that.
+        const int victim_team_before_damage = damaged_player ? damaged_player->team : 0;
 
         float real_damage = entity_damage_hook.call_target(damaged_ep, damage, killer_handle, damage_type, killer_uid);
 
@@ -1787,7 +1790,8 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
             // Same resolved killer, weapon and splash decision the attribution above is built
             // from. Runs for every death, so the victim-side award resets cover world deaths and
             // suicides too.
-            awards_on_kill(damaged_player, killer_player, weapon, damage_ctx.splash, killer_handle);
+            awards_on_kill(damaged_player, killer_player, weapon, damage_ctx.splash, killer_handle,
+                           victim_team_before_damage);
         }
 
         // Cap damage to what was actually removed from the victim's health+armor (prevents overkill inflation)
@@ -4206,7 +4210,6 @@ FunHook<void()> multi_check_for_round_end_hook{
                 // limit fired before the level change unwinds it.
                 afstats::note_game_end_type(time_up ? afstats::GameEndType::time_limit
                                                      : afstats::GameEndType::score_limit);
-                awards_note_game_end_type(time_up);
                 set_manually_loaded_level(false);
                 rf::multi_change_level(nullptr);
             }
@@ -5199,7 +5202,6 @@ void server_on_limbo_state_enter()
     // First, while g_is_overtime, the level info and the scores still describe the
     // round that just finished.
     afstats::on_game_end();
-    awards_on_game_end();
 
     g_is_overtime = false;
     g_prev_level = rf::level.filename.c_str();

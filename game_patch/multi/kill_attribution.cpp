@@ -185,8 +185,9 @@ SplashWeaponScope::SplashWeaponScope(rf::Weapon* wp)
     // weapon, so anything consumed here fires on a projectile's first frame, not at its impact.
     g_ctx.splash_scope = true;
     g_ctx.splash_hit_counted = false;
-    // One detonation frame per scope, for the Massacre award. Nests with the scope.
-    awards_detonation_begin();
+    // One detonation frame per scope, for the Massacre award. Nests with the scope. The weapon
+    // rides along so the detonation's own direct-hit kill can be matched to it.
+    awards_detonation_begin(wp->info_index);
 }
 
 SplashWeaponScope::~SplashWeaponScope()

@@ -569,7 +569,6 @@ void bagman_do_frame()
                     }
                 }
                 apply_effective_health_reward(g_bagman_info.carrier, kCarrierTickEffectiveHealth);
-                awards_on_bagman_score_tick(g_bagman_info.carrier);
                 g_bagman_info.score_tick.set(kScoreTickMs);
 
                 // Broadcast immediately so clients see the score increment

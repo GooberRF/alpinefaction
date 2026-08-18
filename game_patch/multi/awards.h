@@ -1,7 +1,6 @@
 #pragma once
 
 #include <cstdint>
-#include <vector>
 
 namespace rf
 {
@@ -10,8 +9,6 @@ namespace rf
     struct Weapon;
     struct Vector3;
 }
-
-struct HillInfo;
 
 // Wire-frozen registry: the id is what goes on the af_sreq_award packet and into the afstats
 // `award` event, so entries are APPEND-ONLY and existing values never change meaning. The client
@@ -31,13 +28,12 @@ enum class AwardId : uint8_t
     capture_denied = 10,
     area_denied = 11,
     bag_check = 12,
-    clutch = 13,
-    revenge = 14,
-    dominating = 15,
-    rampage = 16,
+    revenge = 13,
+    dominating = 14,
+    rampage = 15,
 };
 
-constexpr uint8_t award_id_count = 17;
+constexpr uint8_t award_id_count = 16;
 
 // Wire sentinel for "this award has no opposing player", in the award packet's victim id.
 constexpr uint8_t award_no_victim = 0xFF;
@@ -61,8 +57,10 @@ void grant_award(rf::Player* recipient, AwardId id, rf::Player* victim = nullptr
 
 // Lethal transition, from entity_damage_hook. Runs for every death, killer included or not: the
 // victim-side resets (streak, sniper/rail chain) must fire on world deaths and suicides too.
+// `victim_team` is the team the victim had when the damage landed - death processing can move
+// them (auto team balance) before this runs.
 void awards_on_kill(rf::Player* victim, rf::Player* killer, int weapon_type, bool splash,
-                    int killer_entity_handle);
+                    int killer_entity_handle, int victim_team);
 
 // Any counted shot leaving a player's weapon, from the afstats fired sites.
 void awards_on_weapon_fired(rf::Player* player, int weapon_type);
@@ -85,8 +83,9 @@ private:
 };
 
 // One detonation's kills, driven from SplashWeaponScope. Scopes nest (a rocket setting off a remote
-// charge), so each explosion counts its own victims.
-void awards_detonation_begin();
+// charge), so each explosion counts its own victims. The weapon lets the detonation's own direct-hit
+// kill count toward it alongside the splash kills.
+void awards_detonation_begin(int weapon_type);
 void awards_detonation_end();
 
 // Flag carrying. CTF distinguishes a steal from a ground pickup by `from_base`; Salvage by whether
@@ -100,16 +99,6 @@ void awards_on_sal_capture(rf::Player* player);
 
 void awards_on_bagman_pickup(rf::Player* player);
 void awards_on_bagman_carrier_death(rf::Player* carrier, rf::Player* killer);
-void awards_on_bagman_score_tick(rf::Player* carrier);
-
-// Hill scoring. `team` is a HillOwner value (1 = red, 2 = blue).
-void awards_on_hill_score_tick(const HillInfo& hill, int team);
-void awards_on_hill_owner_change(const HillInfo& hill, int team, const std::vector<uint8_t>& player_ids);
-
-// Which limit ended the game, latched where afstats is told the same thing. Clutch only resolves
-// for a time-limit or score-limit end.
-void awards_note_game_end_type(bool time_limit);
-void awards_on_game_end();
 
 // -------------------------------------------------------------------------
 // Client-side display

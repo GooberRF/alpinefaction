@@ -1925,10 +1925,20 @@ static bool g_flame_dot_in_progress = false;
 // panic anim states) is suppressed for these.
 static std::map<rf::EntityFireInfo*, rf::Timestamp> g_flame_managed_fires;
 
+// Stale state cannot leak through here: the flame_do_frame sweep erases a burn within a frame
+// of its owner dying, respawning or leaving, and mutators_on_player_destroy erases it on the
+// spot for a disconnect.
 bool mutators_player_is_on_fire(uint8_t player_id)
 {
     auto it = g_flame_states.find(player_id);
     return it != g_flame_states.end() && it->second.on_fire;
+}
+
+void mutators_on_player_destroy(rf::Player* player)
+{
+    if (player && player->net_data) {
+        g_flame_states.erase(static_cast<uint8_t>(player->net_data->player_id));
+    }
 }
 
 void mutators_apply_entity_on_fire(rf::Entity* ep, bool on_fire)
