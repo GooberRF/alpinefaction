@@ -51,6 +51,13 @@ Version 1.4.0 (Lupin): Not yet released
   - Players on legacy clients can join and play normally, and are tracked per-connection without cross-session identity
   - `afstats_status` console command shows the local stats session state
   - `sv_afstats_trace` console command logs outgoing report batches (with session keys redacted) on dedicated servers
+- Add multiplayer awards for notable feats, detected by the server and announced to the player who earned them with big HUD text and a sound
+  - Toasty, Massacre, Riot Control, 2fer, Impressive, Excellent, Overkill, Unstoppable, Last Stand, Flag Runner, Capture Denied, Area Denied, Bag Check, Clutch, Revenge, Dominating, and Rampage
+  - Killing the same player 5 times without them killing you back makes you their nemesis, announced in chat and earning the Dominating award, which names them
+  - Killing the player dominating you ends it, also announced in chat, and earns the Revenge award, which names them
+  - Awards are also shown to anyone spectating the player who earned them
+  - Awards earned are reported to FactionFiles as part of the multiplayer statistics event stream
+  - `cl_awards` console command to toggle local display and audio
 
 ### Minor features, changes, and enhancements
 [@GooberRF](https://github.com/GooberRF)

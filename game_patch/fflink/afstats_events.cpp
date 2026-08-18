@@ -247,6 +247,13 @@ struct EvKill
     Vec3 killer_pos;
 };
 
+struct EvAward
+{
+    std::string player;
+    uint8_t award_id = 0;
+    std::string victim; // empty = the award had no opposing player, reported as null
+};
+
 struct EvSpawn
 {
     std::string player;
@@ -408,7 +415,7 @@ using EventPayload =
                  EvGameStart, EvGameEnd, EvKill, EvSpawn, EvDamage, EvAccuracy, EvStatus,
                  EvItemPickup, EvFlagEvent, EvPointEvent, EvBagmanEvent, EvGgLevelup, EvMatchStart,
                  EvMatchEnd, EvRoundStart, EvRoundEnd, EvVoteCalled, EvVoteEnded, EvGeomod,
-                 EvClutterDestroyed, EvDetailBrushDestroyed>;
+                 EvClutterDestroyed, EvDetailBrushDestroyed, EvAward>;
 
 struct Event
 {
@@ -1260,6 +1267,12 @@ nlohmann::json event_to_json(const Event& e)
                 j["assists"] = p.assists;
                 j["victim_pos"] = pos_to_json(p.victim_pos);
                 j["killer_pos"] = p.has_killer_pos ? pos_to_json(p.killer_pos) : nlohmann::json(nullptr);
+            }
+            else if constexpr (std::is_same_v<T, EvAward>) {
+                j["type"] = "award";
+                j["player"] = p.player;
+                j["award_id"] = p.award_id;
+                j["victim"] = p.victim.empty() ? nlohmann::json(nullptr) : nlohmann::json(p.victim);
             }
             else if constexpr (std::is_same_v<T, EvSpawn>) {
                 j["type"] = "spawn";
@@ -2544,6 +2557,21 @@ void on_kill(rf::Player* victim, rf::Player* killer, int weapon_type, int damage
         c.highest_streak = std::max(c.highest_streak, c.current_streak);
     }
 
+    push_event(std::move(ev));
+}
+
+void on_award(rf::Player* player, uint8_t award_id, rf::Player* victim)
+{
+    if (!player || !ensure_session() || player->afstats_key.empty()) {
+        return;
+    }
+
+    EvAward ev;
+    ev.player = player->afstats_key;
+    ev.award_id = award_id;
+    if (victim && !victim->afstats_key.empty()) {
+        ev.victim = victim->afstats_key;
+    }
     push_event(std::move(ev));
 }
 

@@ -1925,6 +1925,12 @@ static bool g_flame_dot_in_progress = false;
 // panic anim states) is suppressed for these.
 static std::map<rf::EntityFireInfo*, rf::Timestamp> g_flame_managed_fires;
 
+bool mutators_player_is_on_fire(uint8_t player_id)
+{
+    auto it = g_flame_states.find(player_id);
+    return it != g_flame_states.end() && it->second.on_fire;
+}
+
 void mutators_apply_entity_on_fire(rf::Entity* ep, bool on_fire)
 {
     if (!ep)

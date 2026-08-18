@@ -121,6 +121,9 @@ void mutators_on_flame_damage(rf::Player* attacker, rf::Player* victim, int dama
 void mutators_on_flame_victim_damage(rf::Player* victim, int damage_type, float damage);
 void mutators_on_item_picked_up(rf::Item* item, rf::Entity* entity);
 void mutators_apply_entity_on_fire(rf::Entity* ep, bool on_fire);
+// Server-authoritative Flaming Enemies burn state for a player id.
+// False on clients and whenever the mutator is not running.
+bool mutators_player_is_on_fire(uint8_t player_id);
 bool mutators_skiing_active();
 bool mutators_dodging_active();
 bool mutators_pogo_active();

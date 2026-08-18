@@ -23,6 +23,7 @@
 #include "alpine_packets.h"
 #include "sprays.h"
 #include "kill_attribution.h"
+#include "awards.h"
 #include "multi.h"
 #include "network.h"
 #include "gametype.h"
@@ -1502,6 +1503,7 @@ static void fire_tick_emit_fired(rf::Player* pp, int weapon_type)
 {
     afstats::on_weapon_fired(pp, weapon_type, 1, afstats::CountScope::bucket_only,
                              weapon_potential_damage(weapon_type, false));
+    awards_on_weapon_fired(pp, weapon_type);
 }
 
 // First contact of a window is its hit; later ones are already paid for. The weapon must match
@@ -1781,6 +1783,11 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
 
             kill_attribution_record(killed_id, killer_id, weapon, kill_flags, damage_type,
                                     std::move(assists));
+
+            // Same resolved killer, weapon and splash decision the attribution above is built
+            // from. Runs for every death, so the victim-side award resets cover world deaths and
+            // suicides too.
+            awards_on_kill(damaged_player, killer_player, weapon, damage_ctx.splash, killer_handle);
         }
 
         // Cap damage to what was actually removed from the victim's health+armor (prevents overkill inflation)
@@ -1925,6 +1932,9 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
                     // Bullets and other direct-only weapons; the rail cap keeps a pierced line to
                     // one hit.
                     count_hit = direct_weapon_hit && accuracy_shot_scope_consume();
+                    if (count_hit) {
+                        awards_on_direct_hit(killer_player, damaged_player, stats_weapon);
+                    }
                 }
             }
 
@@ -3081,6 +3091,7 @@ FunHook<void(rf::Entity*, rf::Weapon*)> multi_lag_comp_weapon_fire_hook{
     0x0046F7E0,
     [](rf::Entity *ep, rf::Weapon *wp) {
         const AccuracyShotScope shot_scope;
+        const AwardsShotScope award_shot_scope{ep, wp};
         multi_lag_comp_weapon_fire_hook.call_target(ep, wp);
     },
 };
@@ -3109,6 +3120,7 @@ CallHook<rf::Weapon*(int, int, rf::Vector3*, rf::Matrix3*, int, int)>
                 const bool is_alt = (alt_fire & 0xFF) == 1;
                 const float potential = weapon_potential_damage(weapon_type, is_alt);
                 afstats::on_weapon_fired(pp, weapon_type, 1, afstats::CountScope::full, potential);
+                awards_on_weapon_fired(pp, weapon_type);
                 if (pp->stats) {
                     auto* stats = static_cast<PlayerStatsNew*>(pp->stats);
                     stats->add_shots_fired(1.0f);
@@ -3145,6 +3157,7 @@ CallHook<rf::Weapon*(int, int, rf::Vector3*, rf::Matrix3*, int, int)>
                 // projectiles take no potential here; their swing paid for it at the packet site.
                 afstats::on_weapon_fired(pp, weapon_type, 1, afstats::CountScope::bucket_only,
                                          weapon_potential_damage(weapon_type, true));
+                awards_on_weapon_fired(pp, weapon_type);
             }
         }
         return wp;
@@ -4193,6 +4206,7 @@ FunHook<void()> multi_check_for_round_end_hook{
                 // limit fired before the level change unwinds it.
                 afstats::note_game_end_type(time_up ? afstats::GameEndType::time_limit
                                                      : afstats::GameEndType::score_limit);
+                awards_note_game_end_type(time_up);
                 set_manually_loaded_level(false);
                 rf::multi_change_level(nullptr);
             }
@@ -4840,6 +4854,7 @@ FunHook<void(rf::Player*)> multi_ctf_drop_flag_hook{
                                                         : afstats::FlagEventKind::drop_death,
                                    had_red ? afstats::team_red : afstats::team_blue, player,
                                    drop_pos);
+            awards_on_ctf_flag_dropped(player);
         }
         g_ctf_drop_is_manual = false;
     },
@@ -5184,6 +5199,7 @@ void server_on_limbo_state_enter()
     // First, while g_is_overtime, the level info and the scores still describe the
     // round that just finished.
     afstats::on_game_end();
+    awards_on_game_end();
 
     g_is_overtime = false;
     g_prev_level = rf::level.filename.c_str();

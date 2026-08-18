@@ -157,6 +157,8 @@ set(SRCS
     multi/kill.h
     multi/kill_attribution.cpp
     multi/kill_attribution.h
+    multi/awards.cpp
+    multi/awards.h
     multi/network.cpp
     multi/network.h
     multi/network_debug.cpp

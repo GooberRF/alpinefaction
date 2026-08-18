@@ -304,6 +304,7 @@ enum class af_server_req_type : uint8_t
     af_sreq_entity_on_fire = 0x8,      // Alpine 1.4 (5 bytes: obj_handle, on)
     af_sreq_jetpack_state = 0x9,       // Alpine 1.4 (5 bytes: obj_handle, on)
     af_sreq_riot_shield_state = 0xA,   // Alpine 1.4 (20 bytes: obj_handle, life, impact_pos)
+    af_sreq_award = 0xB,               // Alpine 1.4 (1 byte: award_id)
 };
 
 struct ShouldGibPayload
@@ -401,9 +402,19 @@ struct RiotShieldStatePayload
 };
 static_assert(sizeof(RiotShieldStatePayload) == 20);
 
+// The client owns the text and the sound for each id, so only the id and the opposing player go
+// over the wire. Ids are the wire-frozen AwardId registry in awards.h; the victim id is there for
+// the awards whose callout names them, and is award_no_victim for the rest.
+struct AwardPayload
+{
+    uint8_t award_id = 0;
+    uint8_t victim_player_id = 0xFF; // award_no_victim
+};
+static_assert(sizeof(AwardPayload) == 2);
+
 using af_server_req_payload = std::variant<ShouldGibPayload, TeleportEntityPayload, SprayPayload,
                                            ReadyPromptPayload, PitQueueStatePayload, EntityOnFirePayload,
-                                           EntityJetpackPayload, RiotShieldStatePayload>;
+                                           EntityJetpackPayload, RiotShieldStatePayload, AwardPayload>;
 
 struct af_server_req_packet
 {
@@ -798,6 +809,7 @@ void af_send_entity_on_fire(uint32_t obj_handle, bool on, bool reliable = true);
 void af_send_jetpack_state_request(bool on);
 void af_send_jetpack_state(uint32_t obj_handle, bool on);
 void af_send_riot_shield_state(uint32_t obj_handle, float life, const rf::Vector3& impact_pos);
+void af_send_award(rf::Player* player, uint8_t award_id, uint8_t victim_player_id);
 void af_send_teleport_entity_req(uint32_t obj_handle, const rf::Vector3& pos, const rf::Matrix3& orient, const rf::Vector3& vel);
 void af_send_spray_to_player(uint8_t player_id, uint16_t texture_id, const rf::Vector3& pos, const rf::Vector3& normal, uint8_t flags, rf::Player* player);
 void af_broadcast_spray(uint8_t player_id, uint16_t texture_id, const rf::Vector3& pos, const rf::Vector3& normal);
