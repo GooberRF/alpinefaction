@@ -399,7 +399,16 @@ std::string demo_file_build_new_path(const std::string& map_name)
         std::strftime(timestamp, sizeof(timestamp), "%Y%m%d-%H%M%S", tm_buf);
     else // mis-set clock (pre-1970 / post-3000): fall back to the raw epoch
         std::snprintf(timestamp, sizeof(timestamp), "%lld", static_cast<long long>(now));
-    return std::format("{}\\{}_{}.afd", dir, map_name, timestamp);
+    auto base = std::format("{}\\{}_{}.afd", dir, map_name, timestamp);
+    // Same-second recordings of the same map would collide and gzopen("wb") would truncate the first
+    if (GetFileAttributesA(base.c_str()) == INVALID_FILE_ATTRIBUTES)
+        return base;
+    for (int n = 1; n < 100000; ++n) {
+        auto candidate = std::format("{}\\{}_{}_{}.afd", dir, map_name, timestamp, n);
+        if (GetFileAttributesA(candidate.c_str()) == INVALID_FILE_ATTRIBUTES)
+            return candidate;
+    }
+    return base;
 }
 
 bool demo_file_delete(const std::string& path)

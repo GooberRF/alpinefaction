@@ -133,6 +133,11 @@ namespace
         // funnel, so -1 would silently drop their packets from the demo. The slot is
         // kept fresh in capture_packet and closed by player_delete on teardown.
         net_data->reliable_socket = demo_alloc_fake_reliable_socket(demo_recorder_addr);
+        if (net_data->reliable_socket < 0) {
+            xlog::warn("Demo recorder: no free reliable socket slot; not recording");
+            rf::player_delete(player);
+            return nullptr;
+        }
         // Never NPF_WAITING_FOR_RELIABLE_SOCKET (0x4); loaded so level-change logic
         // does not wait for a client that never answers.
         net_data->flags = rf::NPF_CLIENT_IS_LOADED;
