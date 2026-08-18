@@ -16,6 +16,8 @@
 #include "../server.h"
 #include "../server_internal.h"
 #include "../alpine_packets.h"
+#include "../../fflink/afstats_events.h"
+#include "../../fflink/demo_upload.h"
 #include "../../misc/alpine_settings.h"
 #include "../../os/os.h"
 #include "../../rf/multi.h"
@@ -176,6 +178,17 @@ namespace
         // Set bits (defined next to AFD_KNOWN_FEATURES in demo_file.h) when this recording
         // uses features an older reader cannot meaningfully play back
         header.required_features = 0;
+        // Stamp the afstats identity only on auto-recorded segments reported under a live
+        // session, so this segment can be attributed to the game its events were reported
+        // under. Manual sv_record and no-GSK/no-game recordings carry no identity and are
+        // never uploaded. on_game_start (which increments g_game) runs earlier in the
+        // level-init path than this, so the identity captured here is the current game's.
+        if (g_state.auto_started) {
+            if (auto id = afstats::current_reporting_game()) {
+                header.afstats_session_id = id->session_id;
+                header.afstats_game = id->game;
+            }
+        }
         return header;
     }
 
@@ -244,13 +257,23 @@ namespace
     {
         if (!g_state.writer.is_open())
             return;
+        const bool was_auto = g_state.auto_started;
         g_state.writer.close(record_time_ms());
-        if (g_state.auto_started && !g_state.segment_had_human
-            && demo_file_delete(g_state.writer.path())) {
-            rf::console::print("Demo discarded (no players): {}", g_state.writer.path());
+        // An empty auto segment is never uploaded, whether or not its delete succeeds: on a
+        // failed delete the empty file is left on disk but still not enqueued.
+        const bool discard = g_state.auto_started && !g_state.segment_had_human;
+        if (discard) {
+            if (demo_file_delete(g_state.writer.path())) {
+                rf::console::print("Demo discarded (no players): {}", g_state.writer.path());
+            }
             return;
         }
         rf::console::print("Demo recording stopped: {}", g_state.writer.path());
+        // Only auto-recorded, kept segments are candidates for FactionFiles upload; the
+        // uploader re-checks header identity and size before enqueuing.
+        if (was_auto) {
+            fflink::demo_upload_on_segment_closed(g_state.writer.path());
+        }
     }
 
     bool recording_possible()

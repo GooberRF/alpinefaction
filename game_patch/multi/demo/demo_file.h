@@ -42,8 +42,10 @@
 constexpr uint32_t AFD_MAGIC = 0x4D444641; // "AFDM" little-endian
 constexpr uint16_t AFD_FORMAT_MAJOR = 1;
 // 1.1: team-scoped packet flags (DEMO_PKT_TEAM_*); 1.2: required_features TLV;
-// 1.3: server_info record (0x02) — additive, display-only, no required_features bit needed
-constexpr uint16_t AFD_FORMAT_MINOR = 3;
+// 1.3: server_info record (0x02) — additive, display-only, no required_features bit needed;
+// 1.4: afstats identity TLVs (afstats_session_id + afstats_game) — additive, display-only,
+// stamped on auto-recorded segments for FactionFiles upload attribution
+constexpr uint16_t AFD_FORMAT_MINOR = 4;
 
 // Feature bits this build understands. A demo whose required_features TLV has any other
 // bit set is refused (missing_features). Bits are permanent like TLV ids: define new ones
@@ -83,6 +85,8 @@ enum class DemoHeaderTlvType : uint8_t
     server_max_players = 0x0B,
     demo_player_id = 0x0C,
     required_features = 0x0D, // u32 bitmask; unknown bits => missing_features on open
+    afstats_session_id = 0x0E, // string; the afstats session the game was reported under (empty = none)
+    afstats_game = 0x0F,       // u32; the afstats per-session game counter (0 = none)
 };
 
 struct DemoHeaderInfo
@@ -102,6 +106,10 @@ struct DemoHeaderInfo
     uint32_t server_max_players = 0;
     uint8_t demo_player_id = 0;
     uint32_t required_features = 0; // absent TLV (older demo) => no requirements
+    // afstats identity, populated only for auto-recorded segments reported to FactionFiles
+    // under a live session; empty session id / game 0 means "not eligible for upload".
+    std::string afstats_session_id;
+    uint32_t afstats_game = 0;
 };
 
 struct DemoFooterInfo
@@ -253,6 +261,12 @@ std::string demo_file_build_new_path(const std::string& map_name);
 std::string demo_file_resolve_path(const std::string& name);
 // Deletes a demo file from disk. Returns false (and logs) on failure.
 bool demo_file_delete(const std::string& path);
+// "<rf_root>\demos" (optionally created). Empty on failure. The upload feature enumerates
+// the demos root and needs the same base path the recorder writes into.
+std::string demo_file_demos_dir(bool create);
+// "<rf_root>\demos\uploaded" (optionally created). Empty on failure. Where the uploader
+// moves a demo after a confirmed upload when delete-after-send is off.
+std::string demo_file_uploaded_dir(bool create);
 // Lists demo names (with their .afd extension) whose relative path starts with prefix
 // (case-insensitive; empty prefix lists the demos root). The prefix may contain subfolders:
 // everything up to the last path separator selects the folder to list, the remainder

@@ -5270,6 +5270,26 @@ bool server_demo_chat_record()
     return g_alpine_server_config.demo_chat_record;
 }
 
+bool server_fflink_demo_upload()
+{
+    return g_alpine_server_config.fflink_demo_upload;
+}
+
+int server_fflink_demo_max_mb()
+{
+    return g_alpine_server_config.fflink_demo_max_mb;
+}
+
+int server_fflink_demo_queue_max()
+{
+    return g_alpine_server_config.fflink_demo_queue_max;
+}
+
+bool server_fflink_demo_delete_after_send()
+{
+    return g_alpine_server_config.fflink_demo_delete_after_send;
+}
+
 bool server_allow_fullbright_meshes()
 {
     return g_alpine_server_config.allow_fullbright_meshes;

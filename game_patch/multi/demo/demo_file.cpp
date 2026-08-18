@@ -120,6 +120,8 @@ bool DemoFileWriter::open(const std::string& path, const DemoHeaderInfo& header)
     tlv.write_le(DemoHeaderTlvType::server_max_players, header.server_max_players);
     tlv.write_le(DemoHeaderTlvType::demo_player_id, header.demo_player_id);
     tlv.write_le(DemoHeaderTlvType::required_features, header.required_features);
+    tlv_write_str(tlv_buf, DemoHeaderTlvType::afstats_session_id, header.afstats_session_id);
+    tlv.write_le(DemoHeaderTlvType::afstats_game, header.afstats_game);
 
     std::vector<uint8_t> prelude;
     append_le(prelude, AFD_MAGIC);
@@ -296,6 +298,12 @@ DemoFileReader::OpenResult DemoFileReader::open(const std::string& path)
         case DemoHeaderTlvType::required_features:
             m_header.required_features = entry->read_le<uint32_t>().value_or(0);
             break;
+        case DemoHeaderTlvType::afstats_session_id:
+            m_header.afstats_session_id = read_str();
+            break;
+        case DemoHeaderTlvType::afstats_game:
+            m_header.afstats_game = entry->read_le<uint32_t>().value_or(0);
+            break;
         default:
             // Unknown TLV type written by a newer minor version - skip
             break;
@@ -401,6 +409,28 @@ bool demo_file_delete(const std::string& path)
         return false;
     }
     return true;
+}
+
+std::string demo_file_demos_dir(bool create)
+{
+    return demos_dir(create);
+}
+
+std::string demo_file_uploaded_dir(bool create)
+{
+    auto dir = demos_dir(create);
+    if (dir.empty())
+        return {};
+    dir += "\\uploaded";
+    if (dir.size() + 64 > rf::max_path_len) {
+        xlog::error("demo uploaded path is too long!");
+        return {};
+    }
+    if (create && !CreateDirectoryA(dir.c_str(), nullptr) && GetLastError() != ERROR_ALREADY_EXISTS) {
+        xlog::error("Failed to create demos/uploaded directory, error {}", GetLastError());
+        return {};
+    }
+    return dir;
 }
 
 DemoDirListing demo_file_list_dir(const std::string& rel_dir)

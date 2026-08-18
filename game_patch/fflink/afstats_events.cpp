@@ -2839,6 +2839,16 @@ void on_detail_brush_destroyed(uint8_t material, int room_uid, int killer_handle
     push_event(std::move(ev));
 }
 
+std::optional<GameIdentity> current_reporting_game()
+{
+    // Every field read here is main-thread-owned (see the module-state section), so no
+    // locking is needed. Reported only for a real open game under a live session key.
+    if (!fflink::afstats_server_enabled() || !g_game_open || g_session_id.empty() || g_game < 1) {
+        return std::nullopt;
+    }
+    return GameIdentity{g_session_id, g_game};
+}
+
 void do_patch()
 {
     sv_afstats_events_status_cmd.register_cmd();

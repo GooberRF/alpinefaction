@@ -1021,6 +1021,10 @@ struct AlpineServerConfig
     bool upnp_enabled = false;
     bool demo_auto_record = false;
     bool demo_chat_record = true;
+    bool fflink_demo_upload = true;
+    int fflink_demo_max_mb = 100;
+    int fflink_demo_queue_max = 32;
+    bool fflink_demo_delete_after_send = false;
     bool require_client_mod = true;
     bool dynamic_rotation = false;
     bool gaussian_spread = true;
