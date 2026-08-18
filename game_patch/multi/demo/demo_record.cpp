@@ -9,7 +9,9 @@
 #include <patch_common/FunHook.h>
 #include "demo.h"
 #include "demo_file.h"
+#include "demo_server_config.h"
 #include "demo_internal.h"
+#include "../server_config_snapshot.h"
 #include "../network.h"
 #include "../server.h"
 #include "../server_internal.h"
@@ -227,6 +229,10 @@ namespace
         g_state.segment_start_ms = timer::get_i64(1000);
         if (!g_state.writer.open(path, build_header_info()))
             return;
+        // First record of the segment: the server's base config (mutators/gametype
+        // settings/flags) for a future details pane. Recorder is server-side, so it reads
+        // config directly. One snapshot per segment at start is sufficient.
+        g_state.writer.write_server_info(encode_server_config_block(server_config::capture_server_config_snapshot()));
         // Humans persisting from the previous level count; mid-segment joins are
         // reported through demo_record_on_human_join
         g_state.segment_had_human = !get_clients(false, false).empty();

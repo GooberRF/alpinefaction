@@ -1,8 +1,10 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
+#include "../server_config_snapshot.h"
 
 // .afd demo file container (see research/demo-system-prd.md §3).
 // Entire file is a gzip stream. Inside:
@@ -12,6 +14,10 @@
 // Record payloads:
 //   type 0x00 (packet): {flags u8, packet bytes} — bytes are the logical game packet
 //                       exactly as passed to multi_io_send* ({u8 type, u16 size, payload})
+//   type 0x02 (server_info): a self-describing versioned block (block_version u8, then the
+//                       server's base config: mutators, gametype settings, a few flags) —
+//                       written once as the first record of a segment. Display-only metadata
+//                       (see demo_server_config.h); readers that don't know it skip it.
 //   type 0xFF (footer): {duration_ms u32, packet_count u32} — clean-close marker; a
 //                       missing footer means "unclean but playable"
 // Unknown TLV types and unknown record types are skipped (forward compatibility).
@@ -35,8 +41,9 @@
 
 constexpr uint32_t AFD_MAGIC = 0x4D444641; // "AFDM" little-endian
 constexpr uint16_t AFD_FORMAT_MAJOR = 1;
-// 1.1: team-scoped packet flags (DEMO_PKT_TEAM_*); 1.2: required_features TLV
-constexpr uint16_t AFD_FORMAT_MINOR = 2;
+// 1.1: team-scoped packet flags (DEMO_PKT_TEAM_*); 1.2: required_features TLV;
+// 1.3: server_info record (0x02) — additive, display-only, no required_features bit needed
+constexpr uint16_t AFD_FORMAT_MINOR = 3;
 
 // Feature bits this build understands. A demo whose required_features TLV has any other
 // bit set is refused (missing_features). Bits are permanent like TLV ids: define new ones
@@ -47,6 +54,7 @@ enum class DemoRecordType : uint8_t
 {
     packet = 0x00,
     marker = 0x01, // reserved for format 2.0 keyframe records (see research/demo-system-prd.md §3)
+    server_info = 0x02, // versioned server-config block (display-only metadata; see demo_server_config.h)
     footer = 0xFF,
 };
 
@@ -137,6 +145,9 @@ public:
 
     bool open(const std::string& path, const DemoHeaderInfo& header);
     void write_packet(uint32_t t_ms, const void* data, size_t len, uint8_t flags);
+    // Writes one server_info record carrying an encoded server-config block. No-op if the
+    // block is empty or exceeds the u16 record payload cap.
+    void write_server_info(const std::vector<uint8_t>& block);
     // Writes the footer record and closes the stream.
     void close(uint32_t duration_ms);
     // Closes without a footer (error path); the file stays parseable.
@@ -210,6 +221,12 @@ public:
     {
         return m_footer;
     }
+    // The server-config block decoded from the head-of-stream server_info record, if the
+    // demo carried one and it decoded cleanly. Populated by any full record scan.
+    [[nodiscard]] const std::optional<server_config::ServerConfigSnapshot>& server_config() const
+    {
+        return m_server_config;
+    }
     [[nodiscard]] const std::string& path() const
     {
         return m_path;
@@ -222,6 +239,7 @@ private:
     DemoHeaderInfo m_header;
     DemoFooterInfo m_footer;
     bool m_has_footer = false;
+    std::optional<server_config::ServerConfigSnapshot> m_server_config;
     std::string m_path;
 };
 

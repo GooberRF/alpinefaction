@@ -38,6 +38,7 @@
 #include "../multi/gametype.h"
 #include "../multi/multi.h"
 #include "../multi/salvage.h"
+#include "../multi/server_config_snapshot.h"
 #include "../multi/server_internal.h"
 #include "../multi/wipeout.h"
 #include "../os/console.h"
@@ -94,7 +95,6 @@ constexpr unsigned long k_shutdown_connect_timeout_ms = 500;
 constexpr unsigned long k_shutdown_receive_timeout_ms = 1000;
 
 constexpr size_t k_max_name_len = 32;
-constexpr size_t k_max_string_len = 64;
 
 // -------------------------------------------------------------------------
 // Event records. Gameplay hooks fill these in; JSON is only ever built when a
@@ -156,13 +156,13 @@ struct RosterEntry
     int avg_ping = 0;
 };
 
-using SettingValue = std::variant<bool, int64_t, double, std::string>;
-
-struct MutatorRecord
-{
-    std::string name;
-    std::vector<std::pair<std::string, SettingValue>> settings;
-};
+// Config data model, sanitizer, and the byte cap for external strings live in the shared
+// server_config module so afstats and the demo recorder report identical data. Brought into
+// scope here so the existing event-struct fields and serializers reference them unchanged.
+using server_config::k_max_string_len;
+using server_config::MutatorRecord;
+using server_config::sanitize_string;
+using server_config::SettingValue;
 
 struct EvServerHello
 {
@@ -745,77 +745,6 @@ std::string mint_upssk()
     // "u-" plus 30 alphanumerics, structurally disjoint from the PSSK
     // alphabet so any key self-identifies as tracked or untracked.
     return "u-" + random_chars("0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz", 62, 30);
-}
-
-std::string sanitize_string(std::string_view in, size_t max_len)
-{
-    // Guarantees valid UTF-8 output: every codepoint that reaches JSON is a whole,
-    // well-formed sequence, so json::dump() can never throw on this string (the
-    // build enables nlohmann exceptions and a throw here would unwind into the stock
-    // game loop). max_len is a byte cap; truncation stops on a sequence boundary so a
-    // codepoint is never bisected. C0 controls and DEL are stripped as before.
-    std::string out;
-    out.reserve(std::min(in.size(), max_len));
-    const size_t n = in.size();
-    size_t i = 0;
-    while (i < n) {
-        const unsigned char c0 = static_cast<unsigned char>(in[i]);
-        size_t seq_len = 0;
-        uint32_t cp = 0;
-        if (c0 < 0x80) {
-            seq_len = 1;
-            cp = c0;
-        }
-        else if ((c0 & 0xE0) == 0xC0) {
-            seq_len = 2;
-            cp = c0 & 0x1Fu;
-        }
-        else if ((c0 & 0xF0) == 0xE0) {
-            seq_len = 3;
-            cp = c0 & 0x0Fu;
-        }
-        else if ((c0 & 0xF8) == 0xF0) {
-            seq_len = 4;
-            cp = c0 & 0x07u;
-        }
-
-        bool valid = seq_len != 0 && i + seq_len <= n;
-        for (size_t k = 1; valid && k < seq_len; ++k) {
-            const unsigned char cc = static_cast<unsigned char>(in[i + k]);
-            if ((cc & 0xC0) != 0x80) {
-                valid = false;
-                break;
-            }
-            cp = (cp << 6) | (cc & 0x3Fu);
-        }
-        if (valid) {
-            // Reject overlong encodings, UTF-16 surrogates, and out-of-range values.
-            static constexpr uint32_t min_cp[5] = {0, 0x0, 0x80, 0x800, 0x10000};
-            if (cp < min_cp[seq_len] || (cp >= 0xD800 && cp <= 0xDFFF) || cp > 0x10FFFF) {
-                valid = false;
-            }
-        }
-
-        if (!valid) {
-            // Replace exactly one bad byte and resync; never emit a partial sequence.
-            if (out.size() + 1 > max_len) {
-                break;
-            }
-            out.push_back('?');
-            ++i;
-            continue;
-        }
-        if (seq_len == 1 && (cp < 0x20 || cp == 0x7F)) {
-            ++i;
-            continue;
-        }
-        if (out.size() + seq_len > max_len) {
-            break;
-        }
-        out.append(in.substr(i, seq_len));
-        i += seq_len;
-    }
-    return out;
 }
 
 // A stats key reduced to a form that identifies it in a log without being usable: the
@@ -1999,108 +1928,6 @@ bool ensure_session()
 // game_start / game_end content
 // -------------------------------------------------------------------------
 
-std::vector<MutatorRecord> build_mutators()
-{
-    std::vector<MutatorRecord> out;
-    for (const MutatorDeclaration& decl : g_alpine_server_config_active_rules.mutators.declarations) {
-        MutatorRecord record;
-        // Mutator names, option keys, and string values are operator-authored config,
-        // so they go through sanitize_string like every other external string.
-        record.name = sanitize_string(decl.name, k_max_string_len);
-        for (const auto& [key, value] : decl.options) {
-            std::string clean_key = sanitize_string(key, k_max_string_len);
-            std::visit(
-                [&record, &clean_key](const auto& v) {
-                    using T = std::decay_t<decltype(v)>;
-                    if constexpr (std::is_same_v<T, bool>) {
-                        record.settings.emplace_back(clean_key, SettingValue{v});
-                    }
-                    else if constexpr (std::is_same_v<T, int32_t>) {
-                        record.settings.emplace_back(clean_key, SettingValue{static_cast<int64_t>(v)});
-                    }
-                    else if constexpr (std::is_same_v<T, float>) {
-                        record.settings.emplace_back(clean_key, SettingValue{static_cast<double>(v)});
-                    }
-                    else {
-                        record.settings.emplace_back(clean_key,
-                                                     SettingValue{sanitize_string(v, k_max_string_len)});
-                    }
-                },
-                value);
-        }
-        out.push_back(std::move(record));
-    }
-    return out;
-}
-
-std::vector<std::pair<std::string, SettingValue>> build_gametype_settings(rf::NetGameType type)
-{
-    const auto& rules = g_alpine_server_config_active_rules;
-    std::vector<std::pair<std::string, SettingValue>> out;
-    const auto add = [&out](const char* key, int64_t value) {
-        out.emplace_back(key, SettingValue{value});
-    };
-
-    switch (type) {
-        case rf::NG_TYPE_BAG:
-        case rf::NG_TYPE_TBAG:
-            add("score_tick_ms", bagman_get_score_tick_ms());
-            add("bag_return_time_ms", rules.bagman.bag_return_time_ms);
-            add("bag_spawn_delay_ms", rules.bagman.bag_spawn_delay_ms);
-            break;
-        case rf::NG_TYPE_SAL:
-            add("flag_spawn_delay_ms", rules.salvage.flag_spawn_delay_ms);
-            add("flag_capture_respawn_delay_ms", rules.salvage.flag_capture_respawn_delay_ms);
-            add("flag_return_time_ms", rules.salvage.flag_return_time_ms);
-            break;
-        case rf::NG_TYPE_CTF:
-            add("flag_return_time_ms", rules.ctf_flag_return_time_ms);
-            break;
-        case rf::NG_TYPE_KOTH:
-        case rf::NG_TYPE_DC:
-        case rf::NG_TYPE_REV:
-        case rf::NG_TYPE_ESC:
-            add("grow_rate", g_koth_info.rules.grow_rate);
-            add("drain_empty_rate", g_koth_info.rules.drain_empty_rate);
-            add("drain_defended_rate", g_koth_info.rules.drain_defended_rate);
-            add("ms_per_point", g_koth_info.rules.ms_per_point);
-            break;
-        case rf::NG_TYPE_PIT:
-        case rf::NG_TYPE_WO:
-            add("max_rounds", rules.rounds.max_rounds);
-            add("round_time_s", rules.rounds.round_time);
-            add("post_round_time_s", rules.rounds.post_round_time);
-            add("intermission_time_s", rules.rounds.intermission_time);
-            break;
-        default:
-            break;
-    }
-    return out;
-}
-
-uint8_t build_rf_flags()
-{
-    // Recomputed rather than read back from build_af_server_info_packet, which is
-    // not idempotent.
-    uint8_t flags = 0;
-    if (rf::netgame.flags & rf::NG_FLAG_WEAPON_STAY) {
-        flags |= rf_server_info_flags::RFSIF_WEAPON_STAY;
-    }
-    if (rf::netgame.flags & rf::NG_FLAG_FORCE_RESPAWN) {
-        flags |= rf_server_info_flags::RFSIF_FORCE_RESPAWN;
-    }
-    if (rf::netgame.flags & rf::NG_FLAG_TEAM_DAMAGE) {
-        flags |= rf_server_info_flags::RFSIF_TEAM_DAMAGE;
-    }
-    if (rf::netgame.flags & rf::NG_FLAG_FALL_DAMAGE) {
-        flags |= rf_server_info_flags::RFSIF_FALL_DAMAGE;
-    }
-    if (rf::netgame.flags & rf::NG_FLAG_BALANCE_TEAMS) {
-        flags |= rf_server_info_flags::RFSIF_BALANCE_TEAMS;
-    }
-    return flags;
-}
-
 void team_scores(rf::NetGameType type, int& red, int& blue)
 {
     red = 0;
@@ -2469,13 +2296,16 @@ void on_game_start()
     // server-info static, which is 0 until the first server-info packet is built:
     // a dedicated server's first game_start can precede any such packet.
     ev.af_flags = af_compute_server_info_flags();
-    ev.rf_flags = build_rf_flags();
-    ev.gi_flags = server_get_game_info_flags().game_info_flags_to_uint32();
-    // Always stamped, so warmup and match games are separable even when the
-    // match_start / match_end pair was lost to a gap.
-    ev.match_state = af_match_state_for_stats();
-    ev.mutators = build_mutators();
-    ev.gametype_settings = build_gametype_settings(game_type);
+    // Base config (rf_flags/gi_flags/match_state/mutators/gametype_settings) comes from the
+    // shared server_config snapshot - the same one the demo recorder stores - so both report
+    // identical data. match_state is always stamped, so warmup and match games are separable
+    // even when the match_start / match_end pair was lost to a gap.
+    server_config::ServerConfigSnapshot config = server_config::capture_server_config_snapshot();
+    ev.rf_flags = config.rf_flags;
+    ev.gi_flags = config.gi_flags;
+    ev.match_state = config.match_state;
+    ev.mutators = std::move(config.mutators);
+    ev.gametype_settings = std::move(config.gametype_settings);
     ev.roster = build_roster(false);
 
     if constexpr (AFSTATS_VERIFICATION_LOGGING) {

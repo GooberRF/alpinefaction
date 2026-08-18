@@ -8,6 +8,7 @@
 #include <windows.h>
 #include <xlog/xlog.h>
 #include "demo_file.h"
+#include "demo_server_config.h"
 #include "../../misc/tlv.h"
 #include "../../rf/file/file.h"
 
@@ -161,6 +162,24 @@ void DemoFileWriter::write_packet(uint32_t t_ms, const void* data, size_t len, u
     ++m_packet_count;
 }
 
+void DemoFileWriter::write_server_info(const std::vector<uint8_t>& block)
+{
+    if (!m_file || block.empty() || block.size() > 0xFFFF - 1)
+        return;
+    std::vector<uint8_t> buf;
+    buf.reserve(4 + 1 + 2 + block.size());
+    append_le(buf, uint32_t{0}); // t_ms = 0: sits at the head of the stream
+    buf.push_back(std::to_underlying(DemoRecordType::server_info));
+    append_le(buf, static_cast<uint16_t>(block.size()));
+    buf.insert(buf.end(), block.begin(), block.end());
+    if (!gz_write_all(as_gz(m_file), buf.data(), buf.size())) {
+        xlog::error("Failed writing server_info to demo file {} - stopping recording", m_path);
+        gzclose(as_gz(m_file));
+        m_file = nullptr;
+        m_had_error = true;
+    }
+}
+
 void DemoFileWriter::close(uint32_t duration_ms)
 {
     if (!m_file)
@@ -202,6 +221,7 @@ DemoFileReader::OpenResult DemoFileReader::open(const std::string& path)
     m_header = {};
     m_footer = {};
     m_has_footer = false;
+    m_server_config = std::nullopt;
 
     uint32_t magic = 0;
     uint32_t header_len = 0;
@@ -320,6 +340,13 @@ bool DemoFileReader::next_record(DemoRecord& out)
             }
             return false;
         }
+        if (type == std::to_underlying(DemoRecordType::server_info)) {
+            // Head-of-stream display-only metadata: decode once, then skip like any other
+            // non-packet record (never returned as a packet, never ends iteration).
+            if (!m_server_config)
+                m_server_config = decode_server_config_block(payload.data(), payload.size());
+            continue;
+        }
         if (type != std::to_underlying(DemoRecordType::packet)) {
             xlog::debug("Skipping unknown demo record type 0x{:02x}", type);
             continue; // unknown/reserved record type - skip (forward compat)
@@ -340,11 +367,15 @@ bool DemoFileReader::rewind_to_records()
     // iteration, so the footer discovered on the first pass still applies - preserve it.
     const bool had_footer = m_has_footer;
     const DemoFooterInfo footer = m_footer;
+    // The server_info record sits at the head, so a fresh scan re-reads it anyway; preserve
+    // it across the re-open too so server_config() stays valid without a full re-scan.
+    const std::optional<server_config::ServerConfigSnapshot> server_config = m_server_config;
     const OpenResult result = open(path);
     if (result != OpenResult::ok && result != OpenResult::missing_features)
         return false;
     m_has_footer = had_footer;
     m_footer = footer;
+    m_server_config = server_config;
     return true;
 }
 

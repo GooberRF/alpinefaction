@@ -159,11 +159,15 @@ set(SRCS
     multi/kill.h
     multi/kill_attribution.cpp
     multi/kill_attribution.h
+    multi/server_config_snapshot.h
+    multi/server_config_snapshot.cpp
     multi/demo/demo.h
     multi/demo/demo.cpp
     multi/demo/demo_internal.h
     multi/demo/demo_file.h
     multi/demo/demo_file.cpp
+    multi/demo/demo_server_config.h
+    multi/demo/demo_server_config.cpp
     multi/demo/demo_record.cpp
     multi/demo/demo_playback.cpp
     multi/demo/demo_browser.h
