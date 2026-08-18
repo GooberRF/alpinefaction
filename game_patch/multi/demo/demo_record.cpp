@@ -264,6 +264,9 @@ namespace
             return;
         const bool was_auto = g_state.auto_started;
         g_state.writer.close(record_time_ms());
+        // A finalization failure (footer write / flush) leaves a possibly-truncated file:
+        // don't announce a clean stop or enqueue it for upload.
+        const bool finalize_ok = !g_state.writer.had_error();
         // An empty auto segment is never uploaded, whether or not its delete succeeds: on a
         // failed delete the empty file is left on disk but still not enqueued.
         const bool discard = g_state.auto_started && !g_state.segment_had_human;
@@ -271,6 +274,11 @@ namespace
             if (demo_file_delete(g_state.writer.path())) {
                 rf::console::print("Demo discarded (no players): {}", g_state.writer.path());
             }
+            return;
+        }
+        if (!finalize_ok) {
+            rf::console::print("Demo recording stopped with a write error - not uploading: {}",
+                               g_state.writer.path());
             return;
         }
         rf::console::print("Demo recording stopped: {}", g_state.writer.path());

@@ -192,9 +192,14 @@ void DemoFileWriter::close(uint32_t duration_ms)
     append_le(buf, static_cast<uint16_t>(8));
     append_le(buf, duration_ms);
     append_le(buf, m_packet_count);
-    gz_write_all(as_gz(m_file), buf.data(), buf.size());
-    gzclose(as_gz(m_file));
+    // Propagate a finalization failure (disk full / flush error) so a truncated demo is not
+    // reported as a clean close and enqueued for upload.
+    bool ok = gz_write_all(as_gz(m_file), buf.data(), buf.size());
+    if (gzclose(as_gz(m_file)) != Z_OK)
+        ok = false;
     m_file = nullptr;
+    if (!ok)
+        m_had_error = true;
 }
 
 void DemoFileWriter::abort()
@@ -408,7 +413,9 @@ std::string demo_file_build_new_path(const std::string& map_name)
         if (GetFileAttributesA(candidate.c_str()) == INVALID_FILE_ATTRIBUTES)
             return candidate;
     }
-    return base;
+    // Every candidate is taken (not reachable in practice): fail rather than return an
+    // existing path that gzopen("wb") would truncate. The caller declines to record.
+    return {};
 }
 
 bool demo_file_delete(const std::string& path)
