@@ -630,7 +630,7 @@ ScoreboardPlayerList filter_and_sort_players(const std::optional<int> team_id)
                 }
             }
 
-            // Sort players before bots, and both before observers.
+            // Sort players before bots, and both before browsers.
             if (player_1->is_human_player) {
                 return player_2->is_bot || player_2->is_browser;
             } else {
