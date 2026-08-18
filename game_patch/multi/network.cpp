@@ -3090,6 +3090,25 @@ CallHook<int()> game_info_num_players_hook{
     },
 };
 
+// The engine's join server-full check (0x0047AE10) counts player_list via 0x00484830,
+// which now includes the virtual demo recorder. Exclude ONLY the recorder (Observer) so
+// auto-recording never eats a real slot; browsers are left counted.
+// Todo: At some point revisit whether browsers need to be counted.
+// As-is would present scoreboard problems, possibly crashing legacy clients.
+// Potential solution could involve not reporting browser clients to legacy clients,
+// and properly handling their display in Alpine. Leaving alone for now.
+CallHook<int()> server_full_num_players_hook{
+    0x0047AE47,
+    []() {
+        int player_count = 0;
+        for (const auto& current_player : SinglyLinkedList{rf::player_list}) {
+            if (current_player.is_observer()) continue;
+            player_count++;
+        }
+        return player_count;
+    },
+};
+
 // add af_obj_update packet, send once per player after the entity loop in
 CodeInjection send_players_obj_update_packets_injection{
     0x0047E787,
@@ -3463,6 +3482,7 @@ void network_init()
 
     // Ignore browsers when calculating player count for info requests
     game_info_num_players_hook.install();
+    server_full_num_players_hook.install();
 
     // Send `pf_player_stats_packet` with score.
     send_netgame_update_packet_hook.install();
