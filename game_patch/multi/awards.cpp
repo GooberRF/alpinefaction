@@ -1044,7 +1044,10 @@ void awards_client_do_frame()
     g_award_queue.pop_front();
 
     hud_notification_show(std::move(award.text), award_display_seconds, HudNotificationType::Award, true);
-    play_local_sound_2d(static_cast<uint16_t>(get_award_sound_id()), 0, 1.0f);
+    const int sound_id = get_award_sound_id();
+    if (sound_id >= 0) {
+        play_local_sound_2d(static_cast<uint16_t>(sound_id), 0, 1.0f);
+    }
     g_award_slot_busy.set(award_slot_hold_ms);
 }
 
