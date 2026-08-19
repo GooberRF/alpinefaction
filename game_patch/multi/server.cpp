@@ -1260,8 +1260,8 @@ void send_sound_packet(
 // so a real position is a world sound at that point for every client, stock ones included.
 //
 // Broadcast, so it carries the same three limits every AF broadcast does: it never leaves the
-// sound's own audible range, the listen host plays it instead of mailing it to itself, and each
-// recipient has a floor on how often one can reach them.
+// sound's own audible range around a recipient the server can place, the listen host plays it
+// instead of mailing it to itself, and each recipient has a floor on how often one can reach them.
 void send_sound_packet_3d(const rf::Vector3& pos, int sound_id)
 {
     constexpr int world_sound_rate_limit = 10; // per second, per recipient
@@ -1288,13 +1288,17 @@ void send_sound_packet_3d(const rf::Vector3& pos, int sound_id)
         if (!player.net_data) {
             continue;
         }
-        // A recipient with no entity has no position to be in range of,
-        // so it hears nothing rather than everything.
+        // Best listener position the server knows: the recipient's own entity, else the entity
+        // it spectates in first person.
         rf::Entity* ep = rf::entity_from_handle(player.entity_handle);
         if (!ep) {
-            continue;
+            if (rf::Player* spectatee = player.spectatee.value_or(nullptr)) {
+                ep = rf::entity_from_handle(spectatee->entity_handle);
+            }
         }
-        if (max_range_sq > 0.0f && (ep->pos - pos).len_sq() > max_range_sq) {
+        // With no listener position there is nothing to cull against, so send it anyway - the
+        // packet is positional and the client's own snd_play_3d attenuates it against its camera.
+        if (ep && max_range_sq > 0.0f && (ep->pos - pos).len_sq() > max_range_sq) {
             continue;
         }
         if (player.last_world_sound_ms
