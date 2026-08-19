@@ -13,7 +13,7 @@
 #include <thread>
 #include <utility>
 
-#include <json.hpp>
+#include <nlohmann/json.hpp>
 #include <patch_common/FunHook.h>
 #include <xlog/xlog.h>
 

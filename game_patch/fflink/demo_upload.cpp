@@ -16,7 +16,7 @@
 #include <windows.h>
 #include <zlib.h>
 
-#include <json.hpp>
+#include <nlohmann/json.hpp>
 #include <xlog/xlog.h>
 
 #include <common/HttpRequest.h>

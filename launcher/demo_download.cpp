@@ -4,7 +4,7 @@
 #include <cstdio>
 #include <windows.h>
 #include <xlog/xlog.h>
-#include <json.hpp>
+#include <nlohmann/json.hpp>
 #include <common/version/version.h>
 
 // The download URL comes from the response.

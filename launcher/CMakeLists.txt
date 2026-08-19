@@ -50,7 +50,7 @@ setup_debug_info(AlpineFactionLauncher)
 target_compile_definitions(AlpineFactionLauncher PRIVATE XLOG_NO_MACROS)
 
 target_include_directories(AlpineFactionLauncher SYSTEM PRIVATE
-    ${CMAKE_SOURCE_DIR}/vendor/nlohmann
+    ${CMAKE_SOURCE_DIR}/vendor
     ${CMAKE_SOURCE_DIR}/vendor/d3d8
     ${CMAKE_SOURCE_DIR}/vendor/win32xx
     ${CMAKE_SOURCE_DIR}/vendor/zlib

@@ -5,7 +5,7 @@
 #include <chrono>
 #include <functional>
 #include <stdexcept>
-#include <json.hpp>
+#include <nlohmann/json.hpp>
 #include <xlog/xlog.h>
 #include <common/version/version.h>
 #include <common/utils/string-utils.h>
