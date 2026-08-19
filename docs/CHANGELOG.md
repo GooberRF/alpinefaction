@@ -52,6 +52,9 @@ Version 1.4.0 (Lupin): Not yet released
   - Auto recorded demos automatically upload to FactionFiles (`fflink_demo_upload`) and associate with game record
   - `afstats_status` console command shows the local stats session state
   - `sv_afstats_trace` console command logs outgoing report batches (with session keys redacted) on dedicated servers
+- Add multiplayer awards
+  - Reported to FactionFiles as part of multiplayer statistics
+  - `cl_awards` console command to toggle local display and audio
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Add server-side demo recording and client-side playback

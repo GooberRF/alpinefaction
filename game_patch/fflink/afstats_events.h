@@ -180,6 +180,11 @@ void on_kill(rf::Player* victim, rf::Player* killer, int weapon_type, int damage
              uint8_t kill_flags, const std::vector<uint8_t>& assist_player_ids,
              const rf::Vector3& victim_pos, const rf::Vector3* killer_pos);
 
+// A player earned an award. `award_id` is the wire-frozen AwardId registry in multi/awards.h and
+// goes on the wire verbatim; `victim` is the opposing player the award was earned against, null
+// for the awards that have none.
+void on_award(rf::Player* player, uint8_t award_id, rf::Player* victim);
+
 // A player spawned server-side.
 void on_spawn(rf::Player* player, const rf::Vector3& pos);
 

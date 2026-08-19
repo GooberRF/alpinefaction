@@ -177,6 +177,8 @@ set(SRCS
     multi/demo/demo_ui.h
     multi/demo/demo_ui.cpp
     multi/demo/demo_powerup_timers.cpp
+    multi/awards.cpp
+    multi/awards.h
     multi/network.cpp
     multi/network.h
     multi/network_debug.cpp

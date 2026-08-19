@@ -247,6 +247,13 @@ struct EvKill
     Vec3 killer_pos;
 };
 
+struct EvAward
+{
+    std::string player;
+    uint8_t award_id = 0;
+    std::string victim; // empty = the award had no opposing player, reported as null
+};
+
 struct EvSpawn
 {
     std::string player;
@@ -403,12 +410,28 @@ struct EvDetailBrushDestroyed
     Vec3 pos;
 };
 
+// Both score-change events carry the absolute current value, never a delta: a stream
+// consumer that lost events still lands on the right number from the next one.
+struct EvPlayerScoreChange
+{
+    std::string player;
+    int score = 0;
+    int caps = 0;
+};
+
+struct EvTeamScoreChange
+{
+    uint8_t team = team_none;
+    int score = 0;
+};
+
 using EventPayload =
     std::variant<EvServerHello, EvGap, EvPlayerJoin, EvPlayerRemediate, EvPlayerRename, EvPlayerLeave,
                  EvGameStart, EvGameEnd, EvKill, EvSpawn, EvDamage, EvAccuracy, EvStatus,
                  EvItemPickup, EvFlagEvent, EvPointEvent, EvBagmanEvent, EvGgLevelup, EvMatchStart,
                  EvMatchEnd, EvRoundStart, EvRoundEnd, EvVoteCalled, EvVoteEnded, EvGeomod,
-                 EvClutterDestroyed, EvDetailBrushDestroyed>;
+                 EvClutterDestroyed, EvDetailBrushDestroyed, EvAward, EvPlayerScoreChange,
+                 EvTeamScoreChange>;
 
 struct Event
 {
@@ -445,6 +468,13 @@ uint32_t g_next_batch = 1;
 uint32_t g_game = 1;
 bool g_game_open = false;
 bool g_any_game_started = false;
+// Last team scores a team_score_change reported. Diffed on the sampler like the
+// per-player baselines above them; reset at game start, where the engine's own team
+// scores are 0. Only read while a game is open, so the limbo gap -- where the game type
+// for the next level is already applied while the old level's scores still stand -- can
+// never be mistaken for a score change.
+int g_last_red_score = 0;
+int g_last_blue_score = 0;
 // A cancel and the limbo that follows it both reach the match-end path; this makes
 // the second one a no-op.
 bool g_match_open = false;
@@ -933,6 +963,31 @@ void reset_game_counters(rf::Player* player)
     player->afstats_game.last_ping_sample_ms = now;
 }
 
+// Both score-change emitters are file-local: nothing outside this module detects the
+// change, so there is no call site to expose them to.
+void emit_player_score_change(const rf::Player* player, int score, int caps)
+{
+    EvPlayerScoreChange ev;
+    ev.player = player->afstats_key;
+    ev.score = score;
+    ev.caps = caps;
+    if (g_trace) {
+        xlog::warn("[afstats-ev] player_score_change {} score {} caps {}", player->name, score, caps);
+    }
+    push_event(std::move(ev));
+}
+
+void emit_team_score_change(uint8_t team, int score)
+{
+    EvTeamScoreChange ev;
+    ev.team = team;
+    ev.score = score;
+    if (g_trace) {
+        xlog::warn("[afstats-ev] team_score_change team {} score {}", team, score);
+    }
+    push_event(std::move(ev));
+}
+
 // Advances the time accumulators by sampling the player's current state, and
 // edge-detects idle. Called on the sender pulse and again whenever a summary is
 // about to be serialized, so the coarse totals need no per-transition hook. Idle
@@ -967,6 +1022,23 @@ void sample_player_state(rf::Player* player)
         c.ping_sum += player->net_data->ping;
         ++c.ping_samples;
         c.last_ping_sample_ms = now;
+    }
+
+    // Score and caps have no single writer to hook, so the change is detected here by
+    // diffing the engine's own per-level numbers. A player with no stats key yet emits
+    // nothing AND leaves the baselines alone, so the first sample after a mid-game PSSK
+    // exchange completes reports their current standings as one catch-up event. Both
+    // values ride along on either change: the pair is what a consumer wants anyway, and
+    // one event is cheaper than two.
+    if (player->stats) {
+        const int score = player->stats->score;
+        const int caps = std::max<int>(player->stats->caps, 0);
+        if ((score != c.last_reported_score || caps != c.last_reported_caps)
+            && !player->afstats_key.empty()) {
+            c.last_reported_score = score;
+            c.last_reported_caps = caps;
+            emit_player_score_change(player, score, caps);
+        }
     }
 }
 
@@ -1190,6 +1262,12 @@ nlohmann::json event_to_json(const Event& e)
                 j["victim_pos"] = pos_to_json(p.victim_pos);
                 j["killer_pos"] = p.has_killer_pos ? pos_to_json(p.killer_pos) : nlohmann::json(nullptr);
             }
+            else if constexpr (std::is_same_v<T, EvAward>) {
+                j["type"] = "award";
+                j["player"] = p.player;
+                j["award_id"] = p.award_id;
+                j["victim"] = p.victim.empty() ? nlohmann::json(nullptr) : nlohmann::json(p.victim);
+            }
             else if constexpr (std::is_same_v<T, EvSpawn>) {
                 j["type"] = "spawn";
                 j["player"] = p.player;
@@ -1329,6 +1407,17 @@ nlohmann::json event_to_json(const Event& e)
                 j["weapon"] = p.weapon < 0 ? nlohmann::json(nullptr) : nlohmann::json(p.weapon);
                 j["damage_type"] = p.damage_type;
                 j["pos"] = pos_to_json(p.pos);
+            }
+            else if constexpr (std::is_same_v<T, EvPlayerScoreChange>) {
+                j["type"] = "player_score_change";
+                j["player"] = p.player;
+                j["score"] = p.score;
+                j["caps"] = p.caps;
+            }
+            else if constexpr (std::is_same_v<T, EvTeamScoreChange>) {
+                j["type"] = "team_score_change";
+                j["team"] = p.team;
+                j["score"] = p.score;
             }
             else {
                 // Every variant alternative must have a branch above; a new event without
@@ -1840,6 +1929,8 @@ void reset_module_state()
     g_game = 1;
     g_game_open = false;
     g_any_game_started = false;
+    g_last_red_score = 0;
+    g_last_blue_score = 0;
     g_match_open = false;
     g_round_index = 0;
     g_round_open = false;
@@ -1966,6 +2057,39 @@ void team_scores(rf::NetGameType type, int& red, int& blue)
     }
 }
 
+// The team half of the score-change detection: one diff per frame against the last
+// reported pair, for the same reason the per-player one exists -- captures, frags, the
+// KOTH/DC hold tick, bagman carrier ticks and salvage captures all move these numbers,
+// and none of them is a single hookable site. Runs only inside an open game, so the
+// limbo gap (game type for the next level already applied, old level's scores still
+// standing) cannot be read as a change.
+//
+// REV and ESC are team types with no running team score: their contest is decided by
+// hill state, and gametype.cpp's hold tick explicitly skips them, so their entry in
+// team_scores() reads a KOTH counter that stays 0 all game. They emit nothing.
+void sample_team_scores()
+{
+    if (!g_game_open || !multi_is_team_game_type()) {
+        return;
+    }
+    const auto game_type = rf::multi_get_game_type();
+    if (game_type == rf::NG_TYPE_REV || game_type == rf::NG_TYPE_ESC) {
+        return;
+    }
+
+    int red = 0;
+    int blue = 0;
+    team_scores(game_type, red, blue);
+    if (red != g_last_red_score) {
+        g_last_red_score = red;
+        emit_team_score_change(team_red, red);
+    }
+    if (blue != g_last_blue_score) {
+        g_last_blue_score = blue;
+        emit_team_score_change(team_blue, blue);
+    }
+}
+
 // The match system stores no winner, so it is derived the same way the endgame HUD
 // does: team scores in team types, top score otherwise. A tie reports no winner.
 void derive_winner(uint8_t& winner_team, rf::Player*& winner_player)
@@ -2014,6 +2138,12 @@ void emit_game_end(GameEndType end_type)
 {
     // Aggregates belong to the game that is closing, not the one that follows.
     flush_accumulators();
+
+    // One last diff while the game is still open, so the closing team_score_change values
+    // agree with the red_score / blue_score this event reports instead of trailing them by
+    // up to a frame. The per-player side of the same reconciliation comes for free:
+    // build_roster(true) below samples every player.
+    sample_team_scores();
 
     // A round still open when the game ends emits its round_end first, so the
     // stream closes the nested unit before the game that contained it.
@@ -2280,6 +2410,11 @@ void on_game_start()
             reset_game_counters(&player);
         }
     }
+    // Same baseline reset for the team scores the per-player one gets from
+    // reset_game_counters. Zero is the engine's own value at level load, so the first
+    // sample of the new game reports no change rather than a spurious one.
+    g_last_red_score = 0;
+    g_last_blue_score = 0;
 
     const auto game_type = rf::multi_get_game_type();
 
@@ -2374,6 +2509,21 @@ void on_kill(rf::Player* victim, rf::Player* killer, int weapon_type, int damage
         c.highest_streak = std::max(c.highest_streak, c.current_streak);
     }
 
+    push_event(std::move(ev));
+}
+
+void on_award(rf::Player* player, uint8_t award_id, rf::Player* victim)
+{
+    if (!player || !ensure_session() || player->afstats_key.empty()) {
+        return;
+    }
+
+    EvAward ev;
+    ev.player = player->afstats_key;
+    ev.award_id = award_id;
+    if (victim && !victim->afstats_key.empty()) {
+        ev.victim = victim->afstats_key;
+    }
     push_event(std::move(ev));
 }
 
@@ -2896,6 +3046,8 @@ void do_frame_impl()
             sample_player_state(&player);
         }
     }
+    // Once per frame, not once per player: the team scores are per-team state.
+    sample_team_scores();
 
     if (pulse_due) {
         g_next_pulse = now + g_pulse_interval;

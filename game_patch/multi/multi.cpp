@@ -17,6 +17,7 @@
 #include "alpine_packets.h"
 #include "sprays.h"
 #include "kill_attribution.h"
+#include "awards.h"
 #include "server_internal.h"
 #include "gametype.h"
 #include "rounds.h"
@@ -871,6 +872,7 @@ FunHook<void(rf::Entity*, int, rf::Vector3&, rf::Matrix3&, bool)> multi_process_
                     ? rf::weapon_types[weapon_type].damage_multi
                     : 0.0f;
                 afstats::on_weapon_fired(pp, weapon_type, 1, afstats::CountScope::full, potential);
+                awards_on_weapon_fired(pp, weapon_type);
                 if (pp->stats) {
                     auto* stats = static_cast<PlayerStatsNew*>(pp->stats);
                     stats->add_shots_fired(1.0f);
@@ -1397,6 +1399,7 @@ void multi_do_patch()
 
     multi_kill_do_patch();
     kill_attribution_do_patch();
+    awards_do_patch();
     sprays_do_patch();
     faction_files_do_patch();
     level_download_do_patch();

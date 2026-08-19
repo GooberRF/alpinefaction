@@ -24,6 +24,7 @@
 #include "demo/demo.h"
 #include "sprays.h"
 #include "kill_attribution.h"
+#include "awards.h"
 #include "multi.h"
 #include "network.h"
 #include "gametype.h"
@@ -1286,6 +1287,7 @@ struct AccuracyShotState
 {
     bool active = false;
     bool hit_counted = false;
+    int shooter_handle = -1;
 };
 static AccuracyShotState g_accuracy_shot;
 
@@ -1294,7 +1296,11 @@ static AccuracyShotState g_accuracy_shot;
 class AccuracyShotScope
 {
 public:
-    AccuracyShotScope() : saved_(g_accuracy_shot) { g_accuracy_shot = {true, false}; }
+    explicit AccuracyShotScope(rf::Entity* shooter)
+        : saved_(g_accuracy_shot)
+    {
+        g_accuracy_shot = {true, false, shooter ? shooter->handle : -1};
+    }
     ~AccuracyShotScope() { g_accuracy_shot = saved_; }
 
     AccuracyShotScope(const AccuracyShotScope&) = delete;
@@ -1516,6 +1522,7 @@ static void fire_tick_emit_fired(rf::Player* pp, int weapon_type)
 {
     afstats::on_weapon_fired(pp, weapon_type, 1, afstats::CountScope::bucket_only,
                              weapon_potential_damage(weapon_type, false));
+    awards_on_weapon_fired(pp, weapon_type);
 }
 
 // First contact of a window is its hit; later ones are already paid for. The weapon must match
@@ -1674,6 +1681,9 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
         // A gib destroys the entity, so the death position has to be taken before
         // damage is applied to still be available afterwards.
         rf::Vector3 victim_pos_before_damage = damaged_ep->pos;
+        // The kill is judged against the team the victim had when the damage landed: death
+        // processing can move them (auto team balance), and awards must not see that.
+        const int victim_team_before_damage = damaged_player ? damaged_player->team : 0;
 
         float real_damage = entity_damage_hook.call_target(damaged_ep, damage, killer_handle, damage_type, killer_uid);
 
@@ -1795,6 +1805,20 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
 
             kill_attribution_record(killed_id, killer_id, weapon, kill_flags, damage_type,
                                     std::move(assists));
+
+            // Same resolved killer, weapon and splash decision the attribution above is built
+            // from. Runs for every death, so the victim-side award resets cover world deaths and
+            // suicides too.
+            awards_on_kill(damaged_player, killer_player, weapon, damage_ctx.splash, killer_handle,
+                           victim_team_before_damage);
+
+            // Arena's reload-on-kill is applied from on_player_kill, which the engine only runs
+            // in its deferred death processing - too late for the shot that killed, whose clip
+            // decrement has already happened by then.
+            if (killer_player && killer_player != damaged_player && g_accuracy_shot.active
+                && g_accuracy_shot.shooter_handle == killer_handle) {
+                mutators_note_pending_frag_refill();
+            }
         }
 
         // Cap damage to what was actually removed from the victim's health+armor (prevents overkill inflation)
@@ -1939,6 +1963,9 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
                     // Bullets and other direct-only weapons; the rail cap keeps a pierced line to
                     // one hit.
                     count_hit = direct_weapon_hit && accuracy_shot_scope_consume();
+                    if (count_hit) {
+                        awards_on_direct_hit(killer_player, damaged_player, stats_weapon);
+                    }
                 }
             }
 
@@ -3109,7 +3136,8 @@ FunHook<void(rf::Player*)> multi_spawn_player_server_side_hook{
 FunHook<void(rf::Entity*, rf::Weapon*)> multi_lag_comp_weapon_fire_hook{
     0x0046F7E0,
     [](rf::Entity *ep, rf::Weapon *wp) {
-        const AccuracyShotScope shot_scope;
+        const AccuracyShotScope shot_scope{ep};
+        const AwardsShotScope award_shot_scope{ep, wp};
         multi_lag_comp_weapon_fire_hook.call_target(ep, wp);
     },
 };
@@ -3138,6 +3166,7 @@ CallHook<rf::Weapon*(int, int, rf::Vector3*, rf::Matrix3*, int, int)>
                 const bool is_alt = (alt_fire & 0xFF) == 1;
                 const float potential = weapon_potential_damage(weapon_type, is_alt);
                 afstats::on_weapon_fired(pp, weapon_type, 1, afstats::CountScope::full, potential);
+                awards_on_weapon_fired(pp, weapon_type);
                 if (pp->stats) {
                     auto* stats = static_cast<PlayerStatsNew*>(pp->stats);
                     stats->add_shots_fired(1.0f);
@@ -3174,6 +3203,7 @@ CallHook<rf::Weapon*(int, int, rf::Vector3*, rf::Matrix3*, int, int)>
                 // projectiles take no potential here; their swing paid for it at the packet site.
                 afstats::on_weapon_fired(pp, weapon_type, 1, afstats::CountScope::bucket_only,
                                          weapon_potential_damage(weapon_type, true));
+                awards_on_weapon_fired(pp, weapon_type);
             }
         }
         return wp;
@@ -4870,6 +4900,7 @@ FunHook<void(rf::Player*)> multi_ctf_drop_flag_hook{
                                                         : afstats::FlagEventKind::drop_death,
                                    had_red ? afstats::team_red : afstats::team_blue, player,
                                    drop_pos);
+            awards_on_ctf_flag_dropped(player);
         }
         g_ctf_drop_is_manual = false;
     },
