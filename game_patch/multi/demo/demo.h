@@ -55,6 +55,10 @@ void demo_record_capture_team_scoped(const void* data, size_t len, unsigned char
 // can filter to the spectated player. Called from the server damage path next to the
 // live attacker/spectator sends; no-op unless recording.
 void demo_record_pvp_damage_notify(unsigned char victim_id, float damage, bool died, unsigned char attacker_id);
+// Mirrors an earned award into the demo, tagged with the earner so playback can filter to
+// the spectated player. Called from grant_award next to the live award sends; no-op unless
+// recording.
+void demo_record_award(unsigned char award_id, unsigned char victim_player_id, unsigned char earner_id);
 // Reliable-socket slot of the recorder's virtual player, or -1. Used to keep the
 // deferred reliable queue (send_queues_rel_add_packet) away from the fabricated slot -
 // its drain path sends via net_rel_send for real, bypassing the capture taps.

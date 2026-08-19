@@ -2274,7 +2274,9 @@ CodeInjection send_ping_time_wrap_fix{
         if (!io_stats.send_ping_packet_timestamp.valid() || io_stats.send_ping_packet_timestamp.elapsed()) {
             xlog::trace("sending ping");
             io_stats.send_ping_packet_timestamp.set(3000);
-            rf::multi_ping_player(player);
+            if (!player->is_observer()) { // recorder's phantom socket must not be pinged
+                rf::multi_ping_player(player);
+            }
             io_stats.last_ping_time = rf::timer::get(1000);
 
             // check if player is idle

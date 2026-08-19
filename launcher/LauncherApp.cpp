@@ -146,7 +146,7 @@ int show_demo_confirm_dialog(const std::wstring& content)
 {
     const TASKDIALOG_BUTTON buttons[] = {
         {1001, L"Download and watch\nSave the demo and start playing it now."},
-        {1002, L"Download only\nSave the demo; watch it later from the in-game Demos menu."},
+        {1002, L"Download only\nSave the demo so you can watch it later."},
     };
     TASKDIALOGCONFIG cfg = {};
     cfg.cbSize = sizeof(cfg);
@@ -257,16 +257,15 @@ int LauncherApp::Run()
             try {
                 download_success = downloader.download_and_extract(
                     file_id, file_info->file_type, [&](unsigned bytes_received, std::chrono::milliseconds duration) {
-                        PostMessage(progressDlg.GetHwnd(), WM_UPDATE_PROGRESS, bytes_received, 0);
-                        return true; // Continue downloading
+                        progressDlg.SetProgress(bytes_received);
+                        return !progressDlg.IsCancelRequested();
                     });
 
-                // Notify the progress dialog that the download is complete
-                PostMessage(progressDlg.GetHwnd(), WM_DOWNLOAD_COMPLETE, download_success, 0);
+                progressDlg.SetFinished(download_success);
             }
             catch (const std::exception& e) { // catch errors
                 xlog::error("Please try again. An error occured when downloading:: {}", e.what());
-                PostMessage(progressDlg.GetHwnd(), WM_DOWNLOAD_COMPLETE, FALSE, 0);
+                progressDlg.SetFinished(false);
             }
         });
 
@@ -275,6 +274,11 @@ int LauncherApp::Run()
 
         // Wait for the thread to finish
         downloadThread.join();
+
+        if (progressDlg.IsCancelRequested()) {
+            xlog::info("User canceled download.");
+            return 0;
+        }
 
         // download succeeded?
         if (download_success) {
@@ -385,8 +389,8 @@ int LauncherApp::Run()
 
             std::thread dlThread([&]() {
                 auto post_progress = [&](uint64_t received) {
-                    PostMessage(progressDlg.GetHwnd(), WM_UPDATE_PROGRESS, static_cast<WPARAM>(received), 0);
-                    return true;
+                    progressDlg.SetProgress(static_cast<unsigned>(received));
+                    return !progressDlg.IsCancelRequested();
                 };
                 try {
                     dstatus = downloader.download(url, dest_path, k_max_demo_bytes, expected, post_progress);
@@ -402,12 +406,15 @@ int LauncherApp::Run()
                 catch (const std::exception& e) {
                     xlog::error("Demo download error: {}", e.what());
                 }
-                PostMessage(progressDlg.GetHwnd(), WM_DOWNLOAD_COMPLETE,
-                            dstatus == DemoDownloader::DownloadStatus::ok, 0);
+                progressDlg.SetFinished(dstatus == DemoDownloader::DownloadStatus::ok);
             });
 
             progressDlg.DoModal(nullptr);
             dlThread.join();
+
+            if (progressDlg.IsCancelRequested()) {
+                return 0;
+            }
 
             if (dstatus != DemoDownloader::DownloadStatus::ok) {
                 MessageBoxA(nullptr, "The demo could not be downloaded. Please try again later.", "Alpine Faction",

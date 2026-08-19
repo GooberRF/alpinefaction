@@ -1942,6 +1942,29 @@ void af_send_award(rf::Player* player, uint8_t award_id, uint8_t victim_player_i
     af_send_server_req_packet(packet, player);
 }
 
+void af_send_award_for_demo(rf::Player* recorder, uint8_t award_id, uint8_t victim_player_id, uint8_t earner_id)
+{
+    if (!rf::is_server || !recorder) {
+        return;
+    }
+
+    af_server_req_packet packet{};
+    packet.header.type = static_cast<uint8_t>(af_packet_type::af_server_req);
+    packet.header.size = sizeof(uint8_t) + sizeof(AwardPayload) + 1; // req_type + payload + earner tag
+    packet.req_type = af_server_req_type::af_sreq_award;
+    packet.payload = AwardPayload{award_id, victim_player_id};
+
+    std::byte buf[rf::max_packet_size];
+    size_t offset = 0;
+    std::memcpy(buf + offset, &packet.header, sizeof(packet.header));
+    offset += sizeof(packet.header);
+    buf[offset++] = static_cast<std::byte>(packet.req_type);
+    std::visit([&](const auto& payload) { serialize_payload(payload, buf, offset); }, packet.payload);
+    buf[offset++] = static_cast<std::byte>(earner_id);
+
+    af_send_packet(recorder, buf, static_cast<int>(offset), true);
+}
+
 // Jetpacks mutator: relay a player's thrust state to everyone else.
 // The owner is skipped because it applies its own effects locally.
 void af_send_jetpack_state(uint32_t obj_handle, bool on)
@@ -2730,6 +2753,17 @@ static void af_process_server_req_packet(const void* data, size_t len, const rf:
                 // Fail closed: a newer server naming an award this build has no text for.
                 xlog::debug("af_process_server_req_packet: unknown award id {}", award_id);
                 return;
+            }
+
+            // Earner-tagged form (recorded demos): the stream carries every player's awards,
+            // so show only the one currently being spectated.
+            if (remaining > sizeof(AwardPayload) && demo_playback_active()) {
+                const uint8_t earner_id = bytes[offset + sizeof(AwardPayload)];
+                demo_playback_note_player_activity(rf::multi_find_player_by_id(earner_id));
+                rf::Player* spectated = multi_spectate_get_target_player();
+                if (!spectated || !spectated->net_data || spectated->net_data->player_id != earner_id) {
+                    return;
+                }
             }
 
             awards_client_on_award_received(award_id, victim_player_id);

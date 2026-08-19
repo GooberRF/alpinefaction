@@ -448,6 +448,13 @@ void demo_record_pvp_damage_notify(unsigned char victim_id, float damage, bool d
     af_send_damage_notify_packet_for_demo(victim_id, damage, died, attacker_id, g_state.recorder);
 }
 
+void demo_record_award(unsigned char award_id, unsigned char victim_player_id, unsigned char earner_id)
+{
+    if (!g_state.recorder || !g_state.writer.is_open())
+        return;
+    af_send_award_for_demo(g_state.recorder, award_id, victim_player_id, earner_id);
+}
+
 void demo_server_on_level_init_post()
 {
     if (!rf::is_multi || !rf::is_server)

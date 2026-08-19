@@ -25,7 +25,7 @@ public:
             else if (arg == "-help" || arg == "-h") {
                 m_help = true;
             }
-            else if (arg == "-exe-path") {
+            else if (arg == "-exe-path" && i + 1 < args.size()) {
                 m_exe_path = {args[++i].c_str()};
             }
             else if (arg == "-aflink" && i + 1 < args.size()) {
