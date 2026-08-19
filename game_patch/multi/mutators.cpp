@@ -3078,6 +3078,12 @@ float crits_damage_multiplier(rf::Player* attacker, rf::Player* victim)
     if (!crit)
         return 1.0f;
 
+    // Same gate as the roll, re-checked at damage time: a crit tagged before the pickup - thrown
+    // remote charge, grenade in flight, armed continuous window - would otherwise stack x3 on the
+    // engine's x4 amp damage. Bagman is exempt for the same reason the roll exempts it.
+    if (!gt_is_bagman_any() && rf::multi_powerup_has_player(attacker, 1)) // amp
+        return 1.0f;
+
     return CRIT_DAMAGE_MULTIPLIER;
 }
 
