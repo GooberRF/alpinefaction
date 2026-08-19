@@ -11,6 +11,7 @@
 #include <common/utils/string-utils.h>
 #include <common/rfproto.h>
 #include "bagman.h"
+#include "awards.h"
 #include "gametype.h"
 #include "kill.h"
 #include "multi.h"
@@ -445,6 +446,8 @@ static void on_pickup(rf::Player* player)
     afstats::on_bagman_pickup(player, g_bagman_info.bag_pos,
         state_before == BagState::BS_Dropped ? afstats::BagmanFrom::dropped
                                              : afstats::BagmanFrom::spawn);
+    // Bag Check counts from any pickup, spawn or dropped alike.
+    awards_on_bagman_pickup(player);
     bagman_broadcast_state();
 }
 
@@ -667,6 +670,7 @@ void bagman_on_entity_will_die(rf::Entity* ep)
     if (killer && killer != player) {
         apply_effective_health_reward(killer, kCarrierKillEffectiveHealth);
     }
+    awards_on_bagman_carrier_death(player, killer);
 
     drop_bag_from_entity(player, ep);
 }

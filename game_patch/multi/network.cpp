@@ -2783,8 +2783,12 @@ void send_chat_line_packet(const std::string_view msg, rf::Player* target, rf::P
 CodeInjection client_update_rate_injection{
     0x0047E5D8,
     [] (auto& regs) {
+        constexpr int interval = 1000 / CLIENT_NET_FPS;
+        auto& obj_update_timestamp = addr_as_ref<rf::TimestampRealtime>(0x006FB424);
+        int overshoot = obj_update_timestamp.time_since();
         int& send_obj_update_interval = addr_as_ref<int>(regs.esp);
-        send_obj_update_interval = 1000 / CLIENT_NET_FPS;
+        send_obj_update_interval =
+            (overshoot > 0 && overshoot < interval) ? interval - overshoot : interval;
     },
 };
 
@@ -2793,6 +2797,18 @@ CodeInjection server_update_rate_injection{
     [] (auto& regs) {
         int& min_send_obj_update_interval = addr_as_ref<int>(regs.esp);
         min_send_obj_update_interval = 1000 / g_alpine_game_config.server_netfps;
+    },
+};
+
+CodeInjection server_obj_update_schedule_injection{
+    0x0047E6AA,
+    [] (auto& regs) {
+        rf::PlayerNetData* pnd = regs.eax;
+        int overshoot = pnd->obj_update_timestamp.time_since();
+        int interval = regs.ecx;
+        if (overshoot > 0 && overshoot < interval) {
+            regs.ecx = interval - overshoot;
+        }
     },
 };
 
@@ -3357,6 +3373,9 @@ void network_init()
     client_update_rate_injection.install();
     server_update_rate_injection.install();
     netfps_cmd.register_cmd();
+
+    // Make average obj_update send rate framerate-independent (deadline-based rescheduling)
+    server_obj_update_schedule_injection.install();
 
     // Fix rotation interpolation (Y axis) when it goes from 360 to 0 degrees
     obj_interp_rotation_fix.install();

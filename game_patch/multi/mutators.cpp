@@ -1768,6 +1768,49 @@ bool mutators_should_deny_weapon_switch(int from_weapon, int to_weapon)
     return to_weapon != m.featured_weapon_index;
 }
 
+// Reset the killer's held clip to full. No reload packet is sent, so there's no reload
+// animation or pause, you just keep firing. Both reload-on-kill paths below write through
+// here so the deferred refill and the in-fire-call one can never disagree.
+static void frag_refill_current_clip(rf::Entity* ep)
+{
+    if (!ep)
+        return;
+
+    const int wt = ep->ai.current_primary_weapon;
+    if (wt < 0 || wt >= rf::num_weapon_types || !rf::weapon_uses_clip(wt))
+        return;
+
+    ep->ai.clip_ammo[wt] = rf::weapon_types[wt].clip_size;
+}
+
+// Reload-on-kill (Arena) race, server side.
+static bool g_pending_frag_refill = false;
+
+// Both gates live here, so a note can only exist on a server actually running the mutator.
+void mutators_note_pending_frag_refill()
+{
+    if (!rf::is_server || !g_alpine_server_config_active_rules.mutators.reload_weapon_on_kill)
+        return;
+    g_pending_frag_refill = true;
+}
+
+// entity_fire_weapon (0x00425830), immediately past the shot's clip decrement. There are two
+// decrement calls, 0x004267C6 and 0x004267DB, and the second is not an alternative: it runs
+// straight after the first for a double-blast shotgun blast (entity flag 0x1000), so a refill
+// placed between them would leave the clip one short. This site is past both.
+CodeInjection entity_fire_weapon_frag_refill_injection{
+    0x004267E3,
+    [](auto& regs) {
+        if (!g_pending_frag_refill)
+            return;
+        // Whatever is noted belongs to this call by construction, so it is spent here whether or
+        // not the refill lands - and a pierce that killed several players at once, having noted
+        // once per victim, is worth exactly one clip.
+        g_pending_frag_refill = false;
+        frag_refill_current_clip(static_cast<rf::Entity*>(regs.esi));
+    },
+};
+
 void mutators_on_player_frag(rf::Player* killer)
 {
     if (!killer)
@@ -1785,18 +1828,10 @@ void mutators_on_player_frag(rf::Player* killer)
     if (!rf::is_server && killer != rf::local_player)
         return;
 
-    rf::Entity* ep = rf::entity_from_handle(killer->entity_handle);
-    if (!ep)
-        return;
-
-    const int wt = ep->ai.current_primary_weapon;
-    if (wt < 0 || wt >= rf::num_weapon_types || !rf::weapon_uses_clip(wt))
-        return;
-
-    // Reset the clip to full directly, on both the server (authoritative) and the
-    // killer's own client. No reload packet is sent, so there's no reload animation
-    // or pause, you just keep firing.
-    ep->ai.clip_ammo[wt] = rf::weapon_types[wt].clip_size;
+    // The deferred refill still covers every kill, and is the only refill for the ones that do
+    // not resolve inside the killer's own fire call (a rocket detonating later, burn damage).
+    // For a kill the injection above already paid out, this is a no-op re-write of a full clip.
+    frag_refill_current_clip(rf::entity_from_handle(killer->entity_handle));
 }
 
 void mutators_on_pvp_damage(rf::Player* attacker, rf::Player* victim, float effective_damage)
@@ -1954,6 +1989,25 @@ static bool g_flame_dot_in_progress = false;
 // burn behavior in entity_fire_update_all (self damage, spreading to nearby entities,
 // panic anim states) is suppressed for these.
 static std::map<rf::EntityFireInfo*, rf::Timestamp> g_flame_managed_fires;
+
+// Stale state cannot leak through here: the flame_do_frame sweep erases a burn within a frame
+// of its owner dying, respawning or leaving, and mutators_on_player_destroy erases it on the
+// spot for a disconnect.
+int mutators_player_fire_igniter(uint8_t player_id)
+{
+    auto it = g_flame_states.find(player_id);
+    if (it == g_flame_states.end() || !it->second.on_fire || it->second.igniter_id == 0xFF) {
+        return -1;
+    }
+    return it->second.igniter_id;
+}
+
+void mutators_on_player_destroy(rf::Player* player)
+{
+    if (player && player->net_data) {
+        g_flame_states.erase(static_cast<uint8_t>(player->net_data->player_id));
+    }
+}
 
 void mutators_apply_entity_on_fire(rf::Entity* ep, bool on_fire)
 {
@@ -3158,6 +3212,9 @@ void mutators_do_patch()
     weapon_set_multiplayer_mode_hook.install();
     entity_consume_ammo_on_fire_hook.install();
     entity_play_action_animation_hook.install();
+
+    // Arena reload-on-kill
+    entity_fire_weapon_frag_refill_injection.install();
 
     // Big Craters
     geomod_create_weapon_hook.install();

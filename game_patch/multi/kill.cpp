@@ -27,6 +27,7 @@
 #include "multi_private.h"
 #include "mutators.h"
 #include "alpine_packets.h"
+#include "awards.h"
 #include "sprays.h"
 #include "gungame.h"
 #include "../misc/player.h"
@@ -118,6 +119,10 @@ FunHook<void()> multi_level_init_hook{
 
         // Melee hit credits and flamethrower windows are per-player-id and outlive nothing.
         accuracy_stats_level_init();
+
+        // Award tracking, including the nemesis pairs - those survive Pit/Wipeout rounds, but
+        // never a level.
+        awards_level_init();
 
         // Stop allowing endgame votes after the next level starts
         multi_player_set_can_endgame_vote(false);

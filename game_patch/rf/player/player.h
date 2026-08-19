@@ -78,6 +78,10 @@ struct AfstatsGameCounters {
     // Idle is a computed predicate with no stored engine state, so the sampler
     // edge-detects it against this.
     bool was_idle = false;
+
+    // Last score and caps a player_score_change reported for this player.
+    int last_reported_score = 0;
+    int last_reported_caps = 0;
 };
 
 struct PlayerAdditionalData {

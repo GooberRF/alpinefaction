@@ -25,6 +25,7 @@
 #include "server.h"
 #include "../hud/hud_world.h"
 #include "alpine_packets.h"
+#include "awards.h"
 #include "sprays.h"
 #include "kill.h"
 #include "kill_attribution.h"
@@ -761,6 +762,13 @@ void serialize_payload(const RiotShieldStatePayload& payload, std::byte* buf, si
     offset += sizeof(payload.life);
     std::memcpy(buf + offset, &payload.impact_pos, sizeof(payload.impact_pos));
     offset += sizeof(payload.impact_pos);
+}
+
+// af_sreq_award
+void serialize_payload(const AwardPayload& payload, std::byte* buf, size_t& offset)
+{
+    buf[offset++] = static_cast<std::byte>(payload.award_id);
+    buf[offset++] = static_cast<std::byte>(payload.victim_player_id);
 }
 
 // af_sreq_teleport_entity
@@ -1911,6 +1919,25 @@ void af_send_entity_on_fire(uint32_t obj_handle, bool on, bool reliable)
     }
 }
 
+// Tell one player they earned an award.
+void af_send_award(rf::Player* player, uint8_t award_id, uint8_t victim_player_id)
+{
+    if (!rf::is_server || !player || !player->net_data || player->is_bot || player->is_browser) {
+        return;
+    }
+    if (!is_player_minimum_af_client_version(player, 1, 4, 0)) {
+        return;
+    }
+
+    af_server_req_packet packet{};
+    packet.header.type = static_cast<uint8_t>(af_packet_type::af_server_req);
+    packet.header.size = sizeof(uint8_t) + sizeof(AwardPayload);
+    packet.req_type = af_server_req_type::af_sreq_award;
+    packet.payload = AwardPayload{award_id, victim_player_id};
+
+    af_send_server_req_packet(packet, player);
+}
+
 // Jetpacks mutator: relay a player's thrust state to everyone else.
 // The owner is skipped because it applies its own effects locally.
 void af_send_jetpack_state(uint32_t obj_handle, bool on)
@@ -2679,6 +2706,23 @@ static void af_process_server_req_packet(const void* data, size_t len, const rf:
             rf::Vector3 impact_pos;
             std::memcpy(&impact_pos, &payload.impact_pos, sizeof(impact_pos));
             riot_shield_apply_remote_state(entity, payload.life, impact_pos);
+            break;
+        }
+        case af_server_req_type::af_sreq_award: {
+            if (remaining < sizeof(AwardPayload)) {
+                xlog::warn("af_process_server_req_packet: Award payload too short");
+                return;
+            }
+
+            const uint8_t award_id = bytes[offset];
+            const uint8_t victim_player_id = bytes[offset + 1];
+            if (award_id >= award_id_count) {
+                // Fail closed: a newer server naming an award this build has no text for.
+                xlog::debug("af_process_server_req_packet: unknown award id {}", award_id);
+                return;
+            }
+
+            awards_client_on_award_received(award_id, victim_player_id);
             break;
         }
         case af_server_req_type::af_sreq_vote_state: {
