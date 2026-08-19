@@ -2801,9 +2801,9 @@ CodeInjection server_update_rate_injection{
 CodeInjection server_obj_update_schedule_injection{
     0x0047E6AA,
     [] (auto& regs) {
-        auto* pnd = reinterpret_cast<rf::PlayerNetData*>(static_cast<uintptr_t>(regs.eax));
+        rf::PlayerNetData* pnd = regs.eax;
         int overshoot = pnd->obj_update_timestamp.time_since();
-        int interval = static_cast<int>(regs.ecx);
+        int interval = regs.ecx;
         if (overshoot > 0 && overshoot < interval) {
             regs.ecx = interval - overshoot;
         }
