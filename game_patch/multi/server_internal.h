@@ -654,7 +654,6 @@ struct MutatorConfig
 
     // Critical Hits: random crits rolled at fire time.
     bool crits_enabled = false;
-    bool crits_minicrits = false;
 
     // Super Drain: rot health/armor above the entity's max back down to it.
     bool super_drain_enabled = false;

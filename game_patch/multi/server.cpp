@@ -57,6 +57,7 @@
 #include "../rf/entity.h"
 #include "../rf/os/os.h"
 #include "../rf/os/timer.h"
+#include "../rf/sound/sound.h"
 #include "../rf/level.h"
 #include "../rf/collide.h"
 #include "../fflink/afstats_events.h"
@@ -1257,8 +1258,14 @@ void send_sound_packet(
 
 // The stock client handler (0x00471FF0) hands the packet position straight to snd_play_3d,
 // so a real position is a world sound at that point for every client, stock ones included.
+//
+// Broadcast, so it carries the same three limits every AF broadcast does: it never leaves the
+// sound's own audible range, the listen host plays it instead of mailing it to itself, and each
+// recipient has a floor on how often one can reach them.
 void send_sound_packet_3d(const rf::Vector3& pos, int sound_id)
 {
+    constexpr int world_sound_rate_limit = 10; // per second, per recipient
+
     RF_SoundPacket packet{};
     packet.header.type = RF_GPT_SOUND;
     packet.header.size = sizeof(packet) - sizeof(packet.header);
@@ -1267,8 +1274,37 @@ void send_sound_packet_3d(const rf::Vector3& pos, int sound_id)
     packet.pos.y = pos.y;
     packet.pos.z = pos.z;
 
+    // Sound::max_range (+0x28) is the distance the engine itself derived from the sounds.tbl
+    // min_range / volume / rolloff when the sound was registered (snd_pc_get_handle 0x00543580)
+    // - past it a client's snd_play_3d attenuates the sound to nothing, so the packet is pure
+    // bandwidth. Zero means the table never registered (a dedicated server may not load it),
+    // and then nothing is culled.
+    const float max_range =
+        sound_id >= 0 && sound_id < rf::g_num_sounds ? rf::sounds[sound_id].max_range : 0.0f;
+    const float max_range_sq = max_range * max_range;
+    const int64_t now = timer::get_i64(1000);
+
     for (auto& player : SinglyLinkedList{rf::player_list}) {
         if (!player.net_data) {
+            continue;
+        }
+        // A recipient with no entity has no position to be in range of,
+        // so it hears nothing rather than everything.
+        rf::Entity* ep = rf::entity_from_handle(player.entity_handle);
+        if (!ep) {
+            continue;
+        }
+        if (max_range_sq > 0.0f && (ep->pos - pos).len_sq() > max_range_sq) {
+            continue;
+        }
+        if (player.last_world_sound_ms
+            && now - *player.last_world_sound_ms < 1000 / world_sound_rate_limit) {
+            continue;
+        }
+        player.last_world_sound_ms.emplace(now);
+        if (&player == rf::local_player) {
+            // Listen host: a packet addressed to itself is discarded, so it plays it directly.
+            rf::snd_play_3d(sound_id, pos, 1.0f, rf::Vector3{}, rf::SOUND_GROUP_EFFECTS);
             continue;
         }
         rf::multi_io_send(&player, &packet, sizeof(packet));
@@ -1574,10 +1610,11 @@ static void fire_ticks_do_frame()
         const int weapon_type = ep ? ep->ai.current_primary_weapon : -1;
         // weapon_is_on is the server-side continuous-fire state - set for the flamethrower's
         // stream and for continuous melee, never for the thrown canister (alt fire is not an
-        // on/off mode) nor for discrete swings. So this is exactly "holding a time-counted
-        // continuous trigger".
-        const bool firing = ep && is_fire_tick_counted_weapon(weapon_type)
+        // on/off mode) nor for discrete swings. So this is exactly "holding a continuous
+        // trigger"; narrowing it to the tick-counted set is what makes it "time-counted".
+        const bool weapon_on = ep && kill_attribution_is_valid_weapon_type(weapon_type)
             && rf::entity_weapon_is_on(ep->handle, weapon_type);
+        const bool firing = weapon_on && is_fire_tick_counted_weapon(weapon_type);
 
         if (firing) {
             // Switching weapons closes the old window rather than carrying it over.
@@ -1604,9 +1641,9 @@ static void fire_ticks_do_frame()
             *w = FireTickWindow{};
         }
 
-        // Critical Hits mutator: the stream has no projectile to roll for, so it rolls on
-        // its own cadence off the same continuous-fire state.
-        crits_on_flame_stream_frame(&player, weapon_type, firing, delta_ms);
+        // Critical Hits mutator: continuous fire produces no discrete fire event to roll for, so
+        // it rolls on its own cadence off the same state.
+        crits_on_continuous_fire_frame(&player, weapon_type, weapon_on, delta_ms);
     }
 }
 
@@ -1617,7 +1654,6 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
         rf::Player* killer_player = rf::player_from_entity_handle(killer_handle);
         bool is_pvp_damage = damaged_player && killer_player && damaged_player != killer_player;
         bool crit_applied = false;
-        bool crit_mini = false;
         if (rf::is_server && is_pvp_damage) {
             damage *= g_alpine_server_config_active_rules.pvp_damage_modifier;
 
@@ -1642,8 +1678,7 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
 
             // Critical Hits mutator: the roll happened at fire time; this is where the
             // shot it belongs to is finally applied to a victim.
-            const float crit_multiplier =
-                crits_damage_multiplier(killer_player, damaged_player, crit_mini);
+            const float crit_multiplier = crits_damage_multiplier(killer_player, damaged_player);
             if (crit_multiplier > 1.0f) {
                 damage *= crit_multiplier;
                 crit_applied = true;
@@ -1980,7 +2015,6 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
                             effective_damage,
                             is_dead,
                             crit_applied,
-                            crit_applied && crit_mini,
                             killer_player);
                     }
                     else if (g_alpine_server_config.damage_notification_config.support_legacy_clients) {
@@ -2001,7 +2035,6 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
                                     effective_damage,
                                     is_dead,
                                     crit_applied,
-                                    crit_applied && crit_mini,
                                     &player);
                             }
                         }
@@ -3133,13 +3166,19 @@ CallHook<rf::Weapon*(int, int, rf::Vector3*, rf::Matrix3*, int, int)>
 // are counted once per fire packet. ai.weapon_is_on is what separates the two: it is set only for
 // the continuous mode. Bucket-only, like the flame stream (see fire_tick_emit_fired).
 //
-// 0x00426E5D and 0x004A28FA are thrown-weapon release creators (grenade / remote charge windup
-// ending), the deferred paths beyond melee: between them they make the thrower's own client-side
-// projectile and the server-side one for bots and the listen host. Remote humans' throws create
-// inline at 0x0047D2DE instead.
+// Both sites drain the SAME pair of impact-delay timestamps (entity +0x4C0/+0x4C4) with
+// ai.current_primary_weapon, so between them they cover every deferred creation of a melee swing,
+// a taser/drill zap, and a thrown weapon's release (grenade / remote charge windup ending):
+// 0x0040956B is the entity-side creator (FUN_00409340, driven from entity_process, and it returns
+// early for the local player's entity), 0x004A28FA the local player's own (FUN_004A2700, so the
+// firing client and the listen host). Remote humans' throws create inline at 0x0047D2DE instead.
+//
+// 0x00426E5D is deliberately NOT here: it sits in the AI secondary-fire creator (FUN_00426CA0,
+// scheduled by the pending-shot queue in FUN_00409280) and fires ai.current_secondary_weapon,
+// which is a different weapon from the one any of the above rolled or counted for.
 CallHook<rf::Weapon*(int, int, rf::Vector3*, rf::Matrix3*, int, int)>
     deferred_melee_create_hook{
-    {0x0040956B, 0x00426E5D, 0x004A28FA},
+    {0x0040956B, 0x004A28FA},
     [](int weapon_type, int parent_handle, rf::Vector3* pos, rf::Matrix3* orient,
        int alt_fire, int a6) {
         rf::Weapon* wp = deferred_melee_create_hook.call_target(
@@ -3150,9 +3189,12 @@ CallHook<rf::Weapon*(int, int, rf::Vector3*, rf::Matrix3*, int, int)>
             rf::Entity* ep = rf::entity_from_handle(parent_handle);
             rf::Player* pp = rf::player_from_entity_handle(parent_handle);
             if (ep && pp && rf::entity_weapon_is_on(ep->handle, weapon_type)) {
-                // alt_fire is hard-coded 0 at this call site, so weapon_is_on - the same thing
-                // that identifies the zap - is what selects the alt damage value. Swing
-                // projectiles take no potential here; their swing paid for it at the packet site.
+                // alt_fire is a literal 0 at 0x0040956B but a runtime dword at 0x004A28FA - a
+                // byte flag written into a reused parameter slot (0x004A28AC/0x004A28B7) whose
+                // upper bytes are the caller's stack residue, exactly the hazard documented
+                // above - so it is not read: weapon_is_on, the same thing that identifies the
+                // zap, is what selects the alt damage value. Swing projectiles take no potential
+                // here; their swing paid for it at the packet site.
                 afstats::on_weapon_fired(pp, weapon_type, 1, afstats::CountScope::bucket_only,
                                          weapon_potential_damage(weapon_type, true));
             }

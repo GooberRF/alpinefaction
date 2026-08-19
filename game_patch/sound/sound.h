@@ -43,7 +43,6 @@ namespace custom_sound_id
 namespace stock_sound_id
 {
     constexpr int end_voice            = 4;    // end_voice.wav
-    constexpr int alarm_01             = 28;   // alarm_01.wav
     constexpr int beep_01              = 29;   // Beep01.wav
     constexpr int jolt_01              = 35;   // Jolt_01.wav
     constexpr int menu_select          = 41;   // menu_select.wav

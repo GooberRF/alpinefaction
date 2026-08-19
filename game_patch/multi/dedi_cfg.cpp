@@ -1719,8 +1719,7 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
         rules.mutators.hide_health_armor_pickups != b.mutators.hide_health_armor_pickups ||
         rules.mutators.featured_weapon_index != b.mutators.featured_weapon_index ||
         rules.mutators.redirect_exclude_thrown != b.mutators.redirect_exclude_thrown ||
-        rules.mutators.crits_enabled != b.mutators.crits_enabled ||
-        rules.mutators.crits_minicrits != b.mutators.crits_minicrits;
+        rules.mutators.crits_enabled != b.mutators.crits_enabled;
 
     if (base || mutators_changed) {
         std::string joined;
@@ -1746,11 +1745,6 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
                            rules.mutators.hide_health_armor_pickups);
             std::format_to(iter, "    Full lifesteal:                      {}\n",
                            rules.mutators.vampire_heal_ratio >= 1.0f);
-        }
-        // Critical Hits options
-        if (rules.mutators.crits_enabled) {
-            std::format_to(iter, "    Mini-crits:                          {}\n",
-                           rules.mutators.crits_minicrits);
         }
     }
 

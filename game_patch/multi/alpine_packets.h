@@ -61,9 +61,8 @@ struct af_ping_location_packet
 
 enum af_damage_notify_flags : uint8_t
 {
-    AF_DAMAGE_NOTIFY_DIED     = 1 << 0,
-    AF_DAMAGE_NOTIFY_CRIT     = 1 << 1,
-    AF_DAMAGE_NOTIFY_MINICRIT = 1 << 2,
+    AF_DAMAGE_NOTIFY_DIED = 1 << 0,
+    AF_DAMAGE_NOTIFY_CRIT = 1 << 1,
 };
 
 struct af_damage_notify_packet
@@ -802,8 +801,7 @@ static void af_process_ping_location_req_packet(const void* data, size_t len, co
 void af_send_ping_location_packet_to_team(rf::Vector3* pos, uint8_t player_id, rf::ubyte team);
 void af_send_ping_location_packet_to_all(rf::Vector3* pos, uint8_t player_id);
 static void af_process_ping_location_packet(const void* data, size_t len, const rf::NetAddr& addr);
-void af_send_damage_notify_packet(uint8_t player_id, float damage, bool died, bool crit, bool mini_crit,
-                                  rf::Player* player);
+void af_send_damage_notify_packet(uint8_t player_id, float damage, bool died, bool crit, rf::Player* player);
 static void af_process_damage_notify_packet(const void* data, size_t len, const rf::NetAddr& addr);
 void af_send_crit_shot_packet(uint8_t shooter_player_id, uint8_t weapon_type, rf::Player* player);
 static void af_process_crit_shot_packet(const void* data, size_t len, const rf::NetAddr& addr);

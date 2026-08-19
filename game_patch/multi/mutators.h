@@ -16,6 +16,7 @@ namespace rf
     struct Item;
     struct Object;
     struct Player;
+    struct Vector3;
     struct Weapon;
 }
 
@@ -153,6 +154,7 @@ private:
     bool saved_shot_sent_;
     bool saved_fire_sounded_;
     int saved_shooter_handle_;
+    bool owns_ = false;
 };
 
 // Publishes whether the projectile whose impact/detonation is being resolved was tagged as
@@ -179,16 +181,24 @@ void crits_on_weapon_created(rf::Weapon* wp, int parent_handle);
 // shooter's pending swing roll instead of the fire scope.
 void crits_on_deferred_created(rf::Weapon* wp, int parent_handle);
 void crits_on_object_dead(rf::Object* objp);
-// Continuous flamethrower stream: rolls on its own cadence and stamps a crit window.
-void crits_on_flame_stream_frame(rf::Player* pp, int weapon_type, bool firing, int delta_ms);
+// The crit detonation sound; returns the blast-radius scale the caller must apply to the
+// explosion. Called from every player-attributed explosion_apply_radius_damage call site: two
+// are hooked here, the third is driven by weapon.cpp.
+float crits_on_explosion(const rf::Vector3* pos, float radius);
+// Continuous fire (flamethrower stream, taser, drill): the engine re-enters the fire path on its
+// own instead of once per shot, so these roll on a cadence and stamp a crit window. `weapon_on`
+// is the raw engine state; which weapons the window applies to is decided inside.
+void crits_on_continuous_fire_frame(rf::Player* pp, int weapon_type, bool weapon_on, int delta_ms);
 // Feeds the recent-damage ramp the crit chance scales with.
 void crits_on_damage_dealt(rf::Player* attacker, float effective_damage);
 // Damage multiplier for the PvP damage currently being applied, 1.0 when it is not a crit.
-float crits_damage_multiplier(rf::Player* attacker, rf::Player* victim, bool& out_mini);
+float crits_damage_multiplier(rf::Player* attacker, rf::Player* victim);
 // Client side, in-flight telegraph. af_crit_shot marker for a shooter's next projectile.
 void crits_on_crit_shot(uint8_t shooter_player_id, uint8_t weapon_type);
 // Client side, called after the world scene renders.
 void crits_client_render();
+// Client side, the local player's own crit-fire reticle flash; drawn with the multiplayer HUD.
+void crits_client_render_reticle_flash();
 
 // Registry view. Built lazily because choice lists (e.g. the Rails featured
 // weapon) are derived from the loaded weapon/item tables.

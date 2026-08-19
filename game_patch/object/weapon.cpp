@@ -201,12 +201,16 @@ ConsoleCommand2 show_enemy_bullets_cmd{
     "Toggles visibility of enemy bullet impacts",
 };
 
+// 0x004C53A8 is also the Critical Hits mutator's weapon_hit_level detonation site, so it calls
+// crits_on_explosion from here rather than putting a second CallHook on the same address
+// (see crits_explosion_hook in multi/mutators.cpp).
 CallHook<void(rf::Vector3&, float, float, int, int)> weapon_hit_wall_obj_apply_radius_damage_hook{
     0x004C53A8,
     [](rf::Vector3& epicenter, float damage, float radius, int killer_handle, int damage_type) {
         auto& collide_out = *reinterpret_cast<rf::PCollisionOut*>(&epicenter);
         auto new_epicenter = epicenter + collide_out.hit_normal * 0.0001f;
-        weapon_hit_wall_obj_apply_radius_damage_hook.call_target(new_epicenter, damage, radius, killer_handle, damage_type);
+        const float crit_scale = crits_on_explosion(&new_epicenter, radius);
+        weapon_hit_wall_obj_apply_radius_damage_hook.call_target(new_epicenter, damage, radius * crit_scale, killer_handle, damage_type);
     },
 };
 

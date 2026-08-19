@@ -219,6 +219,7 @@ struct EvGameStart
     uint8_t rf_flags = 0;
     uint32_t gi_flags = 0;
     uint8_t match_state = 0;
+    bool crits_enabled = false;
     std::vector<MutatorRecord> mutators;
     std::vector<std::pair<std::string, SettingValue>> gametype_settings;
     std::vector<RosterEntry> roster;
@@ -1211,6 +1212,7 @@ nlohmann::json event_to_json(const Event& e)
                 j["rf_flags"] = p.rf_flags;
                 j["gi_flags"] = p.gi_flags;
                 j["match_state"] = p.match_state;
+                j["crits_enabled"] = p.crits_enabled;
 
                 auto mutators = nlohmann::json::array();
                 for (const auto& m : p.mutators) {
@@ -2474,6 +2476,10 @@ void on_game_start()
     // Always stamped, so warmup and match games are separable even when the
     // match_start / match_end pair was lost to a gap.
     ev.match_state = af_match_state_for_stats();
+    // Resolved, not declared: `mutators` below lists what the config asked for, including
+    // entries the game type rejected and omitting options that were left at their default.
+    // Crits rescale damage, so what FF needs is what the damage path itself reads.
+    ev.crits_enabled = g_alpine_server_config_active_rules.mutators.crits_enabled;
     ev.mutators = build_mutators();
     ev.gametype_settings = build_gametype_settings(game_type);
     ev.roster = build_roster(false);

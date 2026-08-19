@@ -340,8 +340,7 @@ static void af_process_ping_location_packet(const void* data, size_t len, const 
     add_location_ping_world_hud_sprite(pos, player->name, ping_location_packet.player_id);
 }
 
-void af_send_damage_notify_packet(uint8_t player_id, float damage, bool died, bool crit, bool mini_crit,
-                                  rf::Player* player)
+void af_send_damage_notify_packet(uint8_t player_id, float damage, bool died, bool crit, rf::Player* player)
 {
     // Send: server -> client
     if (!rf::is_server) {
@@ -360,9 +359,8 @@ void af_send_damage_notify_packet(uint8_t player_id, float damage, bool died, bo
     damage_notify_packet.damage = static_cast<uint16_t>(rounded_damage);
 
     damage_notify_packet.flags =
-        (died      ? AF_DAMAGE_NOTIFY_DIED     : 0) |
-        (crit      ? AF_DAMAGE_NOTIFY_CRIT     : 0) |
-        (mini_crit ? AF_DAMAGE_NOTIFY_MINICRIT : 0);
+        (died ? AF_DAMAGE_NOTIFY_DIED : 0) |
+        (crit ? AF_DAMAGE_NOTIFY_CRIT : 0);
 
     std::memcpy(packet_buf, &damage_notify_packet, sizeof(damage_notify_packet));
 
@@ -398,9 +396,7 @@ static void af_process_damage_notify_packet(const void* data, size_t len, const 
     }
 
     const bool died = (damage_notify_packet.flags & AF_DAMAGE_NOTIFY_DIED) != 0;
-    // Mini-crits share the crit styling and sound.
-    const bool crit =
-        (damage_notify_packet.flags & (AF_DAMAGE_NOTIFY_CRIT | AF_DAMAGE_NOTIFY_MINICRIT)) != 0;
+    const bool crit = (damage_notify_packet.flags & AF_DAMAGE_NOTIFY_CRIT) != 0;
     add_damage_notify_world_hud_string(entity->pos, damage_notify_packet.player_id, damage_notify_packet.damage,
                                        died, crit);
     play_local_hit_sound(died);
