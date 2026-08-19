@@ -17,6 +17,7 @@
 #include "../fflink/afstats_events.h"
 #include "alpine_packets.h"
 #include "kill_attribution.h"
+#include "mutators.h"
 
 // Server-side capture of what actually landed the killing blow. The stock obj_kill packet
 // carries no weapon at all, so every client used to guess it from replicated held-weapon
@@ -286,6 +287,8 @@ FunHook<bool(rf::Weapon*)> weapon_hit_obj_hook{
     0x004C59F0,
     [](rf::Weapon* wp) {
         SplashWeaponScope splash_scope{wp};
+        // Covers the direct hit and the impact splash alike.
+        const CritWeaponScope crit_scope{wp};
         // The direct-hit obj_damage lives inside this function, so the flag marks damage a real
         // impact produced.
         const ProjectileImpactScope impact_scope;
@@ -313,6 +316,7 @@ FunHook<bool(rf::Weapon*)> weapon_hit_level_hook{
     0x004C4EC0,
     [](rf::Weapon* wp) {
         SplashWeaponScope splash_scope{wp};
+        const CritWeaponScope crit_scope{wp};
         const bool result = weapon_hit_level_hook.call_target(wp);
         return result;
     },

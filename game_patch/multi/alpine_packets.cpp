@@ -169,6 +169,10 @@ bool af_process_packet(
             af_process_salvage_state_packet(data, static_cast<size_t>(len), addr);
             return true;
         }
+        case af_packet_type::af_crit_shot: {
+            af_process_crit_shot_packet(data, static_cast<size_t>(len), addr);
+            return true;
+        }
         default:
             return false; // ignore if unrecognized
     }
@@ -336,7 +340,8 @@ static void af_process_ping_location_packet(const void* data, size_t len, const 
     add_location_ping_world_hud_sprite(pos, player->name, ping_location_packet.player_id);
 }
 
-void af_send_damage_notify_packet(uint8_t player_id, float damage, bool died, rf::Player* player)
+void af_send_damage_notify_packet(uint8_t player_id, float damage, bool died, bool crit, bool mini_crit,
+                                  rf::Player* player)
 {
     // Send: server -> client
     if (!rf::is_server) {
@@ -355,7 +360,9 @@ void af_send_damage_notify_packet(uint8_t player_id, float damage, bool died, rf
     damage_notify_packet.damage = static_cast<uint16_t>(rounded_damage);
 
     damage_notify_packet.flags =
-        (static_cast<uint8_t>(died)       << 0);
+        (died      ? AF_DAMAGE_NOTIFY_DIED     : 0) |
+        (crit      ? AF_DAMAGE_NOTIFY_CRIT     : 0) |
+        (mini_crit ? AF_DAMAGE_NOTIFY_MINICRIT : 0);
 
     std::memcpy(packet_buf, &damage_notify_packet, sizeof(damage_notify_packet));
 
@@ -390,9 +397,60 @@ static void af_process_damage_notify_packet(const void* data, size_t len, const 
         return;
     }
 
-    bool died = static_cast<bool>(damage_notify_packet.flags & 0x01);
-    add_damage_notify_world_hud_string(entity->pos, damage_notify_packet.player_id, damage_notify_packet.damage, died);
+    const bool died = (damage_notify_packet.flags & AF_DAMAGE_NOTIFY_DIED) != 0;
+    // Mini-crits share the crit styling and sound.
+    const bool crit =
+        (damage_notify_packet.flags & (AF_DAMAGE_NOTIFY_CRIT | AF_DAMAGE_NOTIFY_MINICRIT)) != 0;
+    add_damage_notify_world_hud_string(entity->pos, damage_notify_packet.player_id, damage_notify_packet.damage,
+                                       died, crit);
     play_local_hit_sound(died);
+}
+
+void af_send_crit_shot_packet(uint8_t shooter_player_id, uint8_t weapon_type, rf::Player* player)
+{
+    // Send: server -> client
+    if (!rf::is_server) {
+        return;
+    }
+    if (!player) {
+        xlog::error("af_crit_shot_packet: Attempted to send to an invalid player");
+        return;
+    }
+
+    af_crit_shot_packet crit_shot_packet{};
+    crit_shot_packet.header.type = static_cast<uint8_t>(af_packet_type::af_crit_shot);
+    crit_shot_packet.header.size = sizeof(crit_shot_packet) - sizeof(crit_shot_packet.header);
+    crit_shot_packet.shooter_player_id = shooter_player_id;
+    crit_shot_packet.weapon_type = weapon_type;
+
+    std::byte packet_buf[sizeof(crit_shot_packet)];
+    std::memcpy(packet_buf, &crit_shot_packet, sizeof(crit_shot_packet));
+    af_send_packet(player, packet_buf, sizeof(crit_shot_packet), false);
+}
+
+static void af_process_crit_shot_packet(const void* data, size_t len, const rf::NetAddr&)
+{
+    // Receive: client <- server
+    if (!rf::is_multi || rf::is_server) {
+        return;
+    }
+
+    af_crit_shot_packet crit_shot_packet{};
+    if (len < sizeof(crit_shot_packet)) {
+        return;
+    }
+    std::memcpy(&crit_shot_packet, data, sizeof(crit_shot_packet));
+
+    constexpr size_t expected_payload = sizeof(af_crit_shot_packet) - sizeof(RF_GamePacketHeader);
+    if (crit_shot_packet.header.size != expected_payload) {
+        return;
+    }
+
+    if (!kill_attribution_is_valid_weapon_type(crit_shot_packet.weapon_type)) {
+        return;
+    }
+
+    crits_on_crit_shot(crit_shot_packet.shooter_player_id, crit_shot_packet.weapon_type);
 }
 
 void af_send_obj_update_packet(rf::Player* player)

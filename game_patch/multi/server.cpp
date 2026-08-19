@@ -1255,15 +1255,29 @@ void send_sound_packet(
     rf::multi_io_send(target, &packet, sizeof(packet));
 }
 
+// The stock client handler (0x00471FF0) hands the packet position straight to snd_play_3d,
+// so a real position is a world sound at that point for every client, stock ones included.
+void send_sound_packet_3d(const rf::Vector3& pos, int sound_id)
+{
+    RF_SoundPacket packet{};
+    packet.header.type = RF_GPT_SOUND;
+    packet.header.size = sizeof(packet) - sizeof(packet.header);
+    packet.sound_id = static_cast<uint16_t>(sound_id);
+    packet.pos.x = pos.x;
+    packet.pos.y = pos.y;
+    packet.pos.z = pos.z;
+
+    for (auto& player : SinglyLinkedList{rf::player_list}) {
+        if (!player.net_data) {
+            continue;
+        }
+        rf::multi_io_send(&player, &packet, sizeof(packet));
+    }
+}
+
 void send_legacy_hit_sound_packet(rf::Player* const target) {
     // fallback for legacy clients
     send_sound_packet(target, target->last_hit_sound_ms, 10, stock_sound_id::beep_01);
-}
-
-// todo optimization: move this to a new flag on af_damage_notify packet
-void send_critical_hit_packet(rf::Player* target)
-{
-    send_sound_packet(target, target->last_critical_sound_ms, 10, stock_sound_id::jolt_01); // rate limit 10/sec
 }
 
 // One lag-compensated projectile's whole flight, every pierced victim included, resolves inside a
@@ -1589,6 +1603,10 @@ static void fire_ticks_do_frame()
         else if (w->open && now >= w->grace_until) {
             *w = FireTickWindow{};
         }
+
+        // Critical Hits mutator: the stream has no projectile to roll for, so it rolls on
+        // its own cadence off the same continuous-fire state.
+        crits_on_flame_stream_frame(&player, weapon_type, firing, delta_ms);
     }
 }
 
@@ -1598,6 +1616,8 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
         rf::Player* damaged_player = rf::player_from_entity_handle(damaged_ep->handle);
         rf::Player* killer_player = rf::player_from_entity_handle(killer_handle);
         bool is_pvp_damage = damaged_player && killer_player && damaged_player != killer_player;
+        bool crit_applied = false;
+        bool crit_mini = false;
         if (rf::is_server && is_pvp_damage) {
             damage *= g_alpine_server_config_active_rules.pvp_damage_modifier;
 
@@ -1620,37 +1640,13 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
                 //xlog::debug("Applying handicap {}% ({}x multiplier) to damage, new damage: {}", player->damage_handicap, reduction, damage);
             }
 
-            // Check if this is a crit
-            if (g_alpine_server_config_active_rules.critical_hits.enabled) {
-                float base_chance = g_alpine_server_config_active_rules.critical_hits.base_chance;
-                float bonus_chance = 0.0f;
-
-                // calculate bonus chance
-                if (g_alpine_server_config_active_rules.critical_hits.dynamic_scale && killer_player->stats) {
-                    auto* killer_stats = static_cast<PlayerStatsNew*>(killer_player->stats);
-
-                    bonus_chance = 0.1f * std::min(killer_stats->damage_given_current_life /
-                        g_alpine_server_config_active_rules.critical_hits.dynamic_damage_bonus_ceiling, 1.0f);
-                }
-
-                float critical_hit_chance = base_chance + bonus_chance;
-                //xlog::debug("Critical hit chance: {:.2f}", critical_hit_chance);
-
-                std::uniform_real_distribution<float> dist_crit(0.0f, 1.0f);
-                float random_value = dist_crit(g_rng);
-                if (random_value < critical_hit_chance) {
-
-                    // Apply amp modifier to the critical hit
-                    damage *= (!rf::multi_powerup_has_player(killer_player, 1)) ? rf::g_multi_damage_modifier : 1.0f;
-
-                    // On a crit, add amp for a duration
-                    int amp_time_to_add = rf::multi_powerup_get_time_until(killer_player, 1) + g_alpine_server_config_active_rules.critical_hits.reward_duration;
-
-                    rf::multi_powerup_add(killer_player, 1, amp_time_to_add);
-
-                    // Notify with sound
-                    send_critical_hit_packet(killer_player);
-                }
+            // Critical Hits mutator: the roll happened at fire time; this is where the
+            // shot it belongs to is finally applied to a victim.
+            const float crit_multiplier =
+                crits_damage_multiplier(killer_player, damaged_player, crit_mini);
+            if (crit_multiplier > 1.0f) {
+                damage *= crit_multiplier;
+                crit_applied = true;
             }
         }
 
@@ -1964,6 +1960,9 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
             auto* damaged_player_stats = static_cast<PlayerStatsNew*>(damaged_player->stats);
             damaged_player_stats->add_damage_received(effective_damage);
 
+            // Critical Hits mutator: recent damage dealt is what the crit chance ramps on
+            crits_on_damage_dealt(killer_player, effective_damage);
+
             // Vampire mutator
             mutators_on_pvp_damage(killer_player, damaged_player, effective_damage);
 
@@ -1980,6 +1979,8 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
                             damaged_player->net_data->player_id,
                             effective_damage,
                             is_dead,
+                            crit_applied,
+                            crit_applied && crit_mini,
                             killer_player);
                     }
                     else if (g_alpine_server_config.damage_notification_config.support_legacy_clients) {
@@ -1999,6 +2000,8 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
                                     damaged_player->net_data->player_id,
                                     effective_damage,
                                     is_dead,
+                                    crit_applied,
+                                    crit_applied && crit_mini,
                                     &player);
                             }
                         }
@@ -3102,6 +3105,7 @@ CallHook<rf::Weapon*(int, int, rf::Vector3*, rf::Matrix3*, int, int)>
        int alt_fire, int a6) {
         rf::Weapon* wp = weapon_fire_projectile_create_hook.call_target(
             weapon_type, parent_handle, pos, orient, alt_fire, a6);
+        crits_on_weapon_created(wp, parent_handle);
         if (wp && rf::is_server) {
             if (rf::Player* pp = rf::player_from_entity_handle(parent_handle)) {
                 // Low byte compared against 1, matching the engine's own contract -- the pushed
@@ -3128,13 +3132,19 @@ CallHook<rf::Weapon*(int, int, rf::Vector3*, rf::Matrix3*, int, int)>
 // The same site also creates discrete swing projectiles, which must NOT be counted here - swings
 // are counted once per fire packet. ai.weapon_is_on is what separates the two: it is set only for
 // the continuous mode. Bucket-only, like the flame stream (see fire_tick_emit_fired).
+//
+// 0x00426E5D and 0x004A28FA are thrown-weapon release creators (grenade / remote charge windup
+// ending), the deferred paths beyond melee: between them they make the thrower's own client-side
+// projectile and the server-side one for bots and the listen host. Remote humans' throws create
+// inline at 0x0047D2DE instead.
 CallHook<rf::Weapon*(int, int, rf::Vector3*, rf::Matrix3*, int, int)>
     deferred_melee_create_hook{
-    0x0040956B,
+    {0x0040956B, 0x00426E5D, 0x004A28FA},
     [](int weapon_type, int parent_handle, rf::Vector3* pos, rf::Matrix3* orient,
        int alt_fire, int a6) {
         rf::Weapon* wp = deferred_melee_create_hook.call_target(
             weapon_type, parent_handle, pos, orient, alt_fire, a6);
+        crits_on_deferred_created(wp, parent_handle);
         if (wp && rf::is_server && kill_attribution_is_valid_weapon_type(weapon_type)
             && rf::weapon_is_melee(weapon_type)) {
             rf::Entity* ep = rf::entity_from_handle(parent_handle);

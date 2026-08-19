@@ -852,7 +852,13 @@ FunHook<void(rf::Entity*, int, rf::Vector3&, rf::Matrix3&, bool)> multi_process_
                 return;
             }
         }
-        multi_process_remote_weapon_fire_hook.call_target(ep, weapon_type, pos, orient, alt_fire);
+        {
+            // Critical Hits mutator: the outer scope of this trigger pull. Thrown weapons
+            // (grenade, C4, flamethrower canister) get their projectile created inline here
+            // without ever reaching entity_fire_weapon, so its scope would never open.
+            const CritFireScope crit_scope{ep};
+            multi_process_remote_weapon_fire_hook.call_target(ep, weapon_type, pos, orient, alt_fire);
+        }
 
         // Melee is the one weapon counted here rather than at projectile creation: its projectiles
         // are deferred and appear at an unhooked creation site, so the swing's fire packet is the

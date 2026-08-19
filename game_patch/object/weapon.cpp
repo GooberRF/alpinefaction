@@ -15,6 +15,7 @@
 #include "../main/main.h"
 #include "../multi/multi.h"
 #include "../multi/kill_attribution.h"
+#include "../multi/mutators.h"
 #include "../misc/misc.h"
 #include "../misc/alpine_settings.h"
 
@@ -119,6 +120,7 @@ FunHook<void(rf::Weapon*)> weapon_move_one_hook{
         // Covers fused and detonator-triggered explosions, which detonate from inside the mover.
         // Constructed EVERY frame for EVERY live weapon, so the scope ctor must stay a pure lookup.
         SplashWeaponScope splash_scope{weapon};
+        const CritWeaponScope crit_scope{weapon};
         weapon_move_one_hook.call_target(weapon);
         auto& level_aabb_min = rf::level.geometry->bbox_min;
         auto& level_aabb_max = rf::level.geometry->bbox_max;

@@ -100,7 +100,6 @@ struct PlayerAdditionalData {
     std::optional<std::chrono::steady_clock::time_point> spectate_start_time{};
 
     std::optional<int64_t> last_hit_sound_ms{};
-    std::optional<int64_t> last_critical_sound_ms{};
     std::optional<int64_t> last_spray_ms{};
     // Floor rate limit for af_req_stats_pssk so a client cannot flood the handler.
     std::optional<int64_t> last_pssk_ms{};
