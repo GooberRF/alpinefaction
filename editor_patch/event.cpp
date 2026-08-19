@@ -35,7 +35,7 @@
 
 // Custom event support
 constexpr int original_event_count = 89;
-constexpr int new_event_count = 59; // must be 1 higher than actual count
+constexpr int new_event_count = 60; // must be 1 higher than actual count
 constexpr int total_event_count = original_event_count + new_event_count;
 std::unique_ptr<const char*[]> extended_event_names; // array to hold original + additional event names
 
@@ -99,6 +99,7 @@ const char* additional_event_names[new_event_count] = {
     "ATX_Play",
     "ATX_Pause",
     "ATX_Set_Frame_Time",
+    "Weather_Region_State",
     "_dummy"
 };
 

@@ -31,6 +31,7 @@
 #include "../rf/ui.h"
 #include "gr.h"
 #include "gr_internal.h"
+#include "weather.h"
 #include "../misc/alpine_options.h"
 #include "../hud/multi_spectate.h"
 #include "legacy/gr_d3d.h"
@@ -677,6 +678,9 @@ void gr_apply_patch()
 
     // Lights
     gr_light_apply_patch();
+
+    // Plankton fix and weather regions
+    weather_apply_patch();
 
     if (!headless_bot_graphics_bypass) {
         const bool use_d3d11_renderer =

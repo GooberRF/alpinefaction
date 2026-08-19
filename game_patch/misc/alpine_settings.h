@@ -147,6 +147,7 @@ struct AlpineGameSettings
         pixel_light_overbright = std::clamp(value, 0.0f, 3.0f);
     }
     bool show_glares = true;
+    bool weather = true;
     bool show_enemy_bullets = true;
     bool fps_counter = true;
     static constexpr int min_fps_counter_average_ms = 0;

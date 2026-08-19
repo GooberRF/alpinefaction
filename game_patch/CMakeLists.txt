@@ -60,6 +60,8 @@ set(SRCS
     graphics/gr.cpp
     graphics/gr.h
     graphics/gr_light.cpp
+    graphics/weather.cpp
+    graphics/weather.h
     graphics/legacy/gr_d3d.cpp
     graphics/legacy/gr_d3d_texture.cpp
     graphics/legacy/gr_d3d_capture.cpp

@@ -235,7 +235,7 @@ static CriticalHitsConfig parse_critical_hits_config(const toml::table& t, Criti
             c.set_reward_duration(*v);
         if (auto v = t["base_chance"].value<float>())
             c.set_base_chance(*v);
-        if (auto v = t["dynamic_scale"].value<float>())
+        if (auto v = t["dynamic_scale"].value<bool>())
             c.dynamic_scale = *v;
         if (auto v = t["dynamic_damage_bonus_ceiling"].value<float>())
             c.set_damage_bonus_ceiling(*v);

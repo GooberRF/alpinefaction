@@ -110,6 +110,8 @@ static void apply_instagib(AlpineServerConfigRules& r, const toml::table& /*opts
     r.mutators.featured_weapon_index = rail;
     r.mutators.lock_to_featured_weapon = true;
     r.mutators.no_featured_reload = true;
+    // One Weapon applies before Instagib; drop its pickup redirect so the leftover state can never fire.
+    r.mutators.redirect_pickups_to_featured = false;
 
     // No pickups; no weapon drops.
     r.mutators.pickup_policy = PickupPolicy::HideAll;
@@ -129,7 +131,7 @@ static void apply_rails(AlpineServerConfigRules& r, const toml::table& opts)
         if (idx >= 0)
             featured = idx;
         else
-            rf::console::print("  [WARN] Rails mutator: unknown featured_weapon '{}', using rail gun\n",
+            rf::console::print("  [WARN] oneweapon mutator: unknown featured_weapon '{}', using rail gun\n",
                                clamp_for_console(*v));
     }
     const bool exclude_thrown = opts["exclude_thrown"].value_or(RAILS_DEFAULT_EXCLUDE_THROWN);
@@ -582,8 +584,8 @@ static const char* weapon_short_label(std::string_view display_name, std::string
     return nullptr;
 }
 
-// Weapons the Rails mutator can feature: anything a level pickup can grant.
-// Rails redirects every weapon/ammo pickup onto the featured weapon's own
+// Weapons the One Weapon mutator can feature: anything a level pickup can grant.
+// One Weapon redirects every weapon/ammo pickup onto the featured weapon's own
 // pickup, so a weapon without one would leave players stuck with the baton.
 // Not relevant in the stock game but could be in TC mods.
 static std::vector<MutatorOptionChoice> build_featured_weapon_choices()
@@ -1689,7 +1691,7 @@ void mutators_level_init_post()
     multi_hide_level_items(allowed, true);
 }
 
-// Thrown explosives (Remote Charges, Grenade) the Rails mutator can exempt from
+// Thrown explosives (Remote Charges, Grenade) the One Weapon mutator can exempt from
 // pickup replacement.
 static bool is_thrown_explosive_weapon(int weapon_type)
 {

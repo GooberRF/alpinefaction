@@ -85,7 +85,8 @@ enum class AlpineDedEventID : int
     ATX_Set_Frame,
     ATX_Play,
     ATX_Pause,
-    ATX_Set_Frame_Time
+    ATX_Set_Frame_Time,
+    Weather_Region_State
 };
 
 constexpr int af_ded_event_to_int(AlpineDedEventID event_id) noexcept
