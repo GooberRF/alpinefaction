@@ -65,6 +65,9 @@ public:
             else if (type == "link") {
                 m_aflink_arg = value;
             }
+            else if (type == "demo") {
+                m_afdemo_arg = value;
+            }
         }
         else {
             //m_aflink_arg = std::string(url); // Store entire af:// argument if no slash
@@ -88,7 +91,20 @@ public:
 
     [[nodiscard]] bool HasAFFlag() const
     {
-        return m_aflink_arg.has_value() || m_afdownload_arg.has_value();
+        return m_aflink_arg.has_value() || m_afdownload_arg.has_value() || m_afdemo_arg.has_value();
+    }
+
+    [[nodiscard]] std::optional<std::string> GetAFDemoArg() const
+    {
+        return m_afdemo_arg;
+    }
+
+    // Arrange for the game to launch straight into playback of a downloaded demo.
+    void PlayDemoAfterLaunch(const std::string& demo_path)
+    {
+        m_pass_through_args.emplace_back("-demo");
+        m_pass_through_args.push_back(demo_path);
+        m_game = true;
     }
 
     [[nodiscard]] std::optional<std::string> GetAFLinkArg() const
@@ -117,6 +133,7 @@ private:
     bool m_help = false;
     std::optional<std::string> m_afdownload_arg;
     std::optional<std::string> m_aflink_arg;
+    std::optional<std::string> m_afdemo_arg;
     std::optional<std::string> m_exe_path;
     std::vector<std::string> m_pass_through_args;
 };

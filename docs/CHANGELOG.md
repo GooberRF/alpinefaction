@@ -139,6 +139,7 @@ Version 1.4.0 (Lupin): Not yet released
 - Add `Weather_Region_State` event
 - Add `r_weather` console command to toggle rendering of weather effects
 - Rework multiplayer accuracy statistics with one shared definition feeding the scoreboard and FactionFiles stats reporting
+- Support af://demo/ID on the af protocol to play demos from FactionFiles
 
 [@is-this-c](https://github.com/is-this-c)
 - Rewrite `VArray` to fix crashes due to MinGW

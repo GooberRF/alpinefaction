@@ -1,5 +1,6 @@
 #include "LauncherApp.h"
 #include "faction_files.h"
+#include "demo_download.h"
 #include "DownloadProgressDlg.h"
 #include "MainDlg.h"
 #include "LauncherCommandLineInfo.h"
@@ -10,12 +11,165 @@
 #include <launcher_common/VideoDeviceInfoProvider.h>
 #include <xlog/xlog.h>
 #include <thread>
+#include <filesystem>
+#include <ctime>
+#include <cstdio>
+#include <commctrl.h>
 
 #ifdef _DEBUG
 #define new DEBUG_NEW
 #endif
 
 static bool fflink_token_is_invalid = false;
+
+// ---------------------------------------------------------------------------
+// af://demo/<game_id> helpers
+// ---------------------------------------------------------------------------
+namespace {
+
+std::wstring widen(const std::string& s)
+{
+    if (s.empty())
+        return {};
+    int n = MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), nullptr, 0);
+    if (n <= 0)
+        return {};
+    std::wstring w(static_cast<size_t>(n), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), w.data(), n);
+    return w;
+}
+
+// Replace characters not valid in a Windows filename component; trim and cap length.
+std::string sanitize_filename_part(const std::string& s)
+{
+    std::string out;
+    for (char c : s) {
+        switch (c) {
+        case '\\': case '/': case ':': case '*': case '?':
+        case '"': case '<': case '>': case '|':
+            out += '_';
+            break;
+        default:
+            out += (static_cast<unsigned char>(c) < 0x20) ? '_' : c;
+            break;
+        }
+    }
+    while (!out.empty() && (out.back() == ' ' || out.back() == '.'))
+        out.pop_back();
+    if (out.size() > 64)
+        out.resize(64);
+    return out;
+}
+
+// A demo we already downloaded carries the game id in its name; find it if present.
+std::string find_cached_demo(const std::string& dir, const std::string& game_id)
+{
+    std::error_code ec;
+    if (!std::filesystem::is_directory(dir, ec))
+        return {};
+    for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
+        if (ec)
+            break;
+        if (!entry.is_regular_file(ec))
+            continue;
+        const std::string name = entry.path().filename().string();
+        if (name.size() >= 4 && name.substr(name.size() - 4) == ".afd"
+            && name.find(game_id) != std::string::npos) {
+            return entry.path().string();
+        }
+    }
+    return {};
+}
+
+std::string format_hms(int64_t duration_ms)
+{
+    if (duration_ms <= 0)
+        return {};
+    const int64_t total_s = duration_ms / 1000;
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "%lld:%02lld", static_cast<long long>(total_s / 60),
+                  static_cast<long long>(total_s % 60));
+    return buf;
+}
+
+std::string format_unix_date(int64_t unix_seconds)
+{
+    if (unix_seconds <= 0)
+        return {};
+    const std::time_t t = static_cast<std::time_t>(unix_seconds);
+    const std::tm* tm = std::localtime(&t);
+    if (!tm)
+        return {};
+    char buf[64];
+    std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M", tm);
+    return buf;
+}
+
+std::wstring build_demo_confirm_text(const DemoDownloader::ResolveResult& info, bool already_have)
+{
+    std::string text;
+    if (info.game) {
+        const auto& g = *info.game;
+        std::string map = !g.level_name.empty() ? g.level_name : g.level_file;
+        if (map.empty())
+            map = "Unknown map";
+        text += "Map: " + map;
+        if (!g.gametype_name.empty())
+            text += " (" + g.gametype_name + ")";
+        text += "\n";
+        if (!g.server_name.empty())
+            text += "Server: " + g.server_name + "\n";
+        if (!g.tc_mod.empty())
+            text += "Mod: " + g.tc_mod + "\n";
+        const std::string len = format_hms(g.duration_ms);
+        if (!len.empty())
+            text += "Length: " + len + "\n";
+        const std::string when = format_unix_date(g.started_at ? g.started_at : info.uploaded_at);
+        if (!when.empty())
+            text += "Recorded: " + when + "\n";
+    }
+    else {
+        text += "No details are available for this demo.\n";
+    }
+    if (info.bytes > 0) {
+        char sizebuf[32];
+        std::snprintf(sizebuf, sizeof(sizebuf), "%.1f MB", static_cast<double>(info.bytes) / (1024.0 * 1024.0));
+        text += std::string("Size: ") + sizebuf;
+    }
+    if (already_have)
+        text += "\n\nThis demo is already saved on your PC; \"Download and watch\" plays it without downloading again.";
+    return widen(text);
+}
+
+// Returns 1 = download and watch, 2 = download only, 0 = cancel.
+int show_demo_confirm_dialog(const std::wstring& content)
+{
+    const TASKDIALOG_BUTTON buttons[] = {
+        {1001, L"Download and watch\nSave the demo and start playing it now."},
+        {1002, L"Download only\nSave the demo; watch it later from the in-game Demos menu."},
+    };
+    TASKDIALOGCONFIG cfg = {};
+    cfg.cbSize = sizeof(cfg);
+    cfg.dwFlags = TDF_ALLOW_DIALOG_CANCELLATION | TDF_USE_COMMAND_LINKS;
+    cfg.pszWindowTitle = L"Watch Demo - Alpine Faction";
+    cfg.pszMainIcon = TD_INFORMATION_ICON;
+    cfg.pszMainInstruction = L"Are you sure you want to watch this demo?";
+    cfg.pszContent = content.c_str();
+    cfg.pButtons = buttons;
+    cfg.cButtons = ARRAYSIZE(buttons);
+    cfg.dwCommonButtons = TDCBF_CANCEL_BUTTON;
+    cfg.nDefaultButton = 1001;
+    int pressed = 0;
+    if (FAILED(TaskDialogIndirect(&cfg, &pressed, nullptr, nullptr)))
+        return 0;
+    if (pressed == 1001)
+        return 1;
+    if (pressed == 1002)
+        return 2;
+    return 0;
+}
+
+} // namespace
 
 // LauncherApp initialization
 int LauncherApp::Run()
@@ -134,6 +288,143 @@ int LauncherApp::Run()
         }
         else {
             MessageBoxA(nullptr, "Download or install failed!", "Error", MB_OK | MB_ICONERROR);
+        }
+    }
+
+    if (m_cmd_line_info.GetAFDemoArg().has_value()) {
+        std::string game_id = m_cmd_line_info.GetAFDemoArg().value();
+        xlog::info("Processing af://demo/{}", game_id);
+
+        if (!DemoDownloader::is_valid_game_id(game_id)) {
+            MessageBoxA(nullptr, "That demo link is not valid.", "Alpine Faction", MB_OK | MB_ICONERROR);
+            return 0;
+        }
+
+        // Locate <game>\demos\downloaded from the configured game executable.
+        std::string demos_dir;
+        {
+            GameConfig cfg;
+            if (cfg.load() && !cfg.game_executable_path.value().empty()) {
+                std::filesystem::path exe(cfg.game_executable_path.value());
+                demos_dir = (exe.parent_path() / "demos" / "downloaded").string();
+            }
+        }
+        if (demos_dir.empty()) {
+            MessageBoxA(nullptr,
+                        "Could not find your Red Faction installation. Open the launcher and set the game path first.",
+                        "Alpine Faction", MB_OK | MB_ICONERROR);
+            return 0;
+        }
+
+        // Already downloaded? Dedup is keyed on the game id embedded in the filename.
+        std::string cached_path = find_cached_demo(demos_dir, game_id);
+        const bool already_have = !cached_path.empty();
+
+        // Resolve for the download URL and display info. Required when not cached; best
+        // effort when cached (we can still play what we already have if resolve fails).
+        DemoDownloader downloader;
+        DemoDownloader::ResolveResult info;
+        const auto rstatus = downloader.resolve(game_id, info);
+        if (!already_have && rstatus != DemoDownloader::ResolveStatus::ok) {
+            const char* msg = "That demo is not available.";
+            switch (rstatus) {
+            case DemoDownloader::ResolveStatus::disabled:
+                msg = "Demo downloads are temporarily unavailable. Please try again later.";
+                break;
+            case DemoDownloader::ResolveStatus::server_error:
+            case DemoDownloader::ResolveStatus::network_error:
+                msg = "Could not reach FactionFiles to fetch that demo. Please try again later.";
+                break;
+            case DemoDownloader::ResolveStatus::invalid_id:
+                msg = "That demo link is not valid.";
+                break;
+            default:
+                break; // not_found
+            }
+            MessageBoxA(nullptr, msg, "Alpine Faction", MB_OK | MB_ICONINFORMATION);
+            return 0;
+        }
+
+        constexpr uint64_t k_max_demo_bytes = 100ull * 1024 * 1024;
+        if (!already_have && info.bytes > k_max_demo_bytes) {
+            MessageBoxA(nullptr, "That demo is too large to download.", "Alpine Faction", MB_OK | MB_ICONERROR);
+            return 0;
+        }
+
+        // Destination path (keyed on game id so a future click dedups).
+        std::string dest_path = cached_path;
+        std::string display_name;
+        if (already_have) {
+            display_name = std::filesystem::path(cached_path).filename().string();
+        }
+        else {
+            std::filesystem::create_directories(demos_dir);
+            std::string friendly = "demo";
+            if (info.game) {
+                std::string base = !info.game->level_name.empty() ? info.game->level_name : info.game->level_file;
+                if (base.size() > 4 && base.substr(base.size() - 4) == ".rfl")
+                    base = base.substr(0, base.size() - 4);
+                const std::string s = sanitize_filename_part(base);
+                if (!s.empty())
+                    friendly = s;
+            }
+            display_name = friendly + "_" + game_id + ".afd";
+            dest_path = (std::filesystem::path(demos_dir) / display_name).string();
+        }
+
+        // Confirm: Download and watch / Download only / Cancel.
+        const int choice = show_demo_confirm_dialog(build_demo_confirm_text(info, already_have));
+        if (choice == 0)
+            return 0;
+
+        if (!already_have) {
+            DownloadProgressDlg progressDlg(0, display_name, static_cast<size_t>(info.bytes / 1024));
+            DemoDownloader::DownloadStatus dstatus = DemoDownloader::DownloadStatus::network_error;
+            const std::string url = info.download_url;
+            const uint64_t expected = info.bytes;
+
+            std::thread dlThread([&]() {
+                auto post_progress = [&](uint64_t received) {
+                    PostMessage(progressDlg.GetHwnd(), WM_UPDATE_PROGRESS, static_cast<WPARAM>(received), 0);
+                    return true;
+                };
+                try {
+                    dstatus = downloader.download(url, dest_path, k_max_demo_bytes, expected, post_progress);
+                    if (dstatus == DemoDownloader::DownloadStatus::link_expired) {
+                        // Signed URL expired between resolve and download - resolve once more.
+                        DemoDownloader::ResolveResult info2;
+                        if (downloader.resolve(game_id, info2) == DemoDownloader::ResolveStatus::ok) {
+                            dstatus = downloader.download(info2.download_url, dest_path, k_max_demo_bytes,
+                                                          info2.bytes, post_progress);
+                        }
+                    }
+                }
+                catch (const std::exception& e) {
+                    xlog::error("Demo download error: {}", e.what());
+                }
+                PostMessage(progressDlg.GetHwnd(), WM_DOWNLOAD_COMPLETE,
+                            dstatus == DemoDownloader::DownloadStatus::ok, 0);
+            });
+
+            progressDlg.DoModal(nullptr);
+            dlThread.join();
+
+            if (dstatus != DemoDownloader::DownloadStatus::ok) {
+                MessageBoxA(nullptr, "The demo could not be downloaded. Please try again later.", "Alpine Faction",
+                            MB_OK | MB_ICONERROR);
+                return 0;
+            }
+        }
+
+        if (choice == 1) {
+            // Download and watch: launch the game straight into playback (falls through to LaunchGame).
+            m_cmd_line_info.PlayDemoAfterLaunch(dest_path);
+        }
+        else {
+            // Download only: keep it saved, do not play.
+            MessageBoxA(nullptr, "Demo saved. You can watch it any time from the Demos menu in-game.",
+                        "Alpine Faction", MB_OK | MB_ICONINFORMATION);
+            return 0;
         }
     }
 
