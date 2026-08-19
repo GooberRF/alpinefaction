@@ -104,12 +104,12 @@ constexpr int64_t excellent_window_ms = 2000;
 constexpr int overkill_streak = 10;
 constexpr int unstoppable_streak_step = 10;
 constexpr float last_stand_life = 2.0f;
-constexpr float denied_base_radius = 2.0f;
+constexpr float denied_base_radius = 5.0f;
 constexpr int area_denied_capture_milli = 98000;
 constexpr int64_t bag_check_window_ms = 1000;
 constexpr uint8_t nemesis_kills_needed = 5;
 // One detonation resolves all its deaths in a single frame, so the per-kill awards (Last Stand,
-// Toasty, ...) would otherwise land once per victim. The same award within this window is one
+// Riot Control, ...) would otherwise land once per victim. The same award within this window is one
 // achievement, not several. Kept to a few frames on purpose: kills a human lands in genuine quick
 // succession are separate events and must all count.
 constexpr int64_t award_repeat_window_ms = 50;
@@ -592,26 +592,25 @@ struct AwardDisplay
     // std::format pattern naming the opposing player, for the awards whose callout does. Null for
     // the rest, and unused when the id did not resolve to a connected player.
     const char* victim_text;
-    int custom_sound; // per-award on purpose: real files can replace the placeholder individually
 };
 
 constexpr std::array<AwardDisplay, award_id_count> award_display{{
-    {"TOASTY!", nullptr, custom_sound_id::af_achievement},
-    {"MASSACRE!", nullptr, custom_sound_id::af_achievement},
-    {"RIOT CONTROL!", nullptr, custom_sound_id::af_achievement},
-    {"2FER!", nullptr, custom_sound_id::af_achievement},
-    {"IMPRESSIVE!", nullptr, custom_sound_id::af_achievement},
-    {"EXCELLENT!", nullptr, custom_sound_id::af_achievement},
-    {"OVERKILL!", nullptr, custom_sound_id::af_achievement},
-    {"UNSTOPPABLE!", nullptr, custom_sound_id::af_achievement},
-    {"LAST STAND!", nullptr, custom_sound_id::af_achievement},
-    {"FLAG RUNNER!", nullptr, custom_sound_id::af_achievement},
-    {"CAPTURE DENIED!", nullptr, custom_sound_id::af_achievement},
-    {"AREA DENIED!", nullptr, custom_sound_id::af_achievement},
-    {"BAG CHECK!", nullptr, custom_sound_id::af_achievement},
-    {"REVENGE!", "REVENGE ON {}!", custom_sound_id::af_achievement},
-    {"DOMINATING!", "DOMINATING {}!", custom_sound_id::af_achievement},
-    {"YOU'RE ON A RAMPAGE!", nullptr, custom_sound_id::af_achievement},
+    {"TOASTY!", nullptr},
+    {"MASSACRE!", nullptr},
+    {"RIOT CONTROL!", nullptr},
+    {"2FER!", nullptr},
+    {"IMPRESSIVE!", nullptr},
+    {"EXCELLENT!", nullptr},
+    {"OVERKILL!", nullptr},
+    {"UNSTOPPABLE!", nullptr},
+    {"LAST STAND!", nullptr},
+    {"FLAG RUNNER!", nullptr},
+    {"CAPTURE DENIED!", nullptr},
+    {"AREA DENIED!", nullptr},
+    {"BAG CHECK!", nullptr},
+    {"REVENGE!", "REVENGE ON {}!"},
+    {"DOMINATING!", "DOMINATING {}!"},
+    {"YOU'RE ON A RAMPAGE!", nullptr},
 }};
 
 constexpr int award_display_seconds = 3;
@@ -620,16 +619,40 @@ constexpr int award_slot_hold_ms = award_display_seconds * 1000 + 500;
 // A burst of awards is worth showing; an unbounded backlog is not.
 constexpr size_t award_queue_cap = 8;
 
+// Excellent and Impressive are the common ones, and they ride along with the rarer awards often
+// enough to drown them out - a 2fer always earns an excellent too. They are demoted for LOCAL
+// DISPLAY ONLY: the server still grants them and the stats stream still records them, they just
+// yield the callout whenever anything else wants it.
+bool is_low_priority_award(uint8_t award_id)
+{
+    return award_id == static_cast<uint8_t>(AwardId::excellent)
+        || award_id == static_cast<uint8_t>(AwardId::impressive);
+}
+
+// A low-priority award may not display until this long after it arrives, which is what makes
+// yielding possible at all.
+constexpr int award_low_priority_hold_ms = 250;
+
 // The text is resolved when the award arrives, not when it reaches the front of the queue: a named
 // player may well have left by then.
 struct QueuedAward
 {
     std::string text;
-    int custom_sound = custom_sound_id::af_achievement;
+    // Set only for low-priority awards, and the marker for them: valid() means "this entry is
+    // still yielding", and it may not be displayed before it elapses.
+    rf::Timestamp hold_until;
 };
 
 std::deque<QueuedAward> g_award_queue;
 rf::Timestamp g_award_slot_busy;
+
+// True while an award this module put up still owns the big slot. Same test awards_client_do_frame
+// gates on, so "already displaying" means the same thing to both.
+bool award_currently_displaying()
+{
+    return hud_big_notification_current_type() == HudNotificationType::Award
+        && g_award_slot_busy.valid() && !g_award_slot_busy.elapsed();
+}
 
 ConsoleCommand2 awards_display_cmd{
     "cl_awards",
@@ -693,15 +716,22 @@ void awards_on_kill(rf::Player* victim, rf::Player* killer, int weapon_type, boo
         }
     }
 
-    // 2fer: kills of one lag-compensated sniper/rail bolt.
+    // 2fer: kills of one lag-compensated sniper/rail bolt. Only kills this bolt itself dealt
+    // count - a kill credited to the same shooter by another source while the scope is open
+    // (their burning victim expiring, a rocket already in the air) carries a different weapon
+    // type and is no part of the shot.
     if (!splash && g_shot_scope.active && g_shot_scope.shooter_id == player_id_of(killer)
-        && is_sniper_or_rail(g_shot_scope.weapon_type)) {
+        && weapon_type == g_shot_scope.weapon_type && is_sniper_or_rail(g_shot_scope.weapon_type)) {
         ++g_shot_scope.enemy_kills;
         g_shot_scope.last_victim = victim;
     }
 
+    // Toasty: burn out the player who lit you, before their fire burns you out. Both ids must be
+    // real - the accessor's "not burning" answer is -1, which is also an unidentifiable player.
     const int killer_id = player_id_of(killer);
-    if (killer_id >= 0 && mutators_player_is_on_fire(static_cast<uint8_t>(killer_id))) {
+    const int toasty_victim_id = player_id_of(victim);
+    if (killer_id >= 0 && toasty_victim_id >= 0
+        && mutators_player_fire_igniter(static_cast<uint8_t>(killer_id)) == toasty_victim_id) {
         grant_award(killer, AwardId::toasty, victim);
     }
 
@@ -940,6 +970,22 @@ void awards_client_on_award_received(uint8_t award_id, uint8_t victim_player_id)
     if (!g_alpine_game_config.show_awards || rf::is_dedicated_server) {
         return;
     }
+
+    // Demotion of excellent/impressive, both halves of it. A low-priority entry is therefore only
+    // ever alone in the queue: anything already there or on screen drops it on arrival, and
+    // anything arriving later evicts it.
+    const bool low_priority = is_low_priority_award(award_id);
+    if (low_priority) {
+        if (!g_award_queue.empty() || award_currently_displaying()) {
+            return; // something better is already showing or waiting - this one is not worth a turn
+        }
+    }
+    else if (!g_award_queue.empty() && g_award_queue.front().hold_until.valid()) {
+        // The queued low-priority award has not displayed yet (entries are popped when they do),
+        // so this is the "same time as another award" case: the better award takes the slot.
+        g_award_queue.clear();
+    }
+
     if (g_award_queue.size() >= award_queue_cap) {
         // Keep the newest: with a full backlog the oldest entries are the stalest news.
         g_award_queue.pop_front();
@@ -956,7 +1002,11 @@ void awards_client_on_award_received(uint8_t award_id, uint8_t victim_player_id)
         }
     }
 
-    g_award_queue.push_back({std::move(text), display.custom_sound});
+    QueuedAward queued{std::move(text), {}};
+    if (low_priority) {
+        queued.hold_until.set(award_low_priority_hold_ms);
+    }
+    g_award_queue.push_back(std::move(queued));
 }
 
 void awards_client_do_frame()
@@ -969,6 +1019,11 @@ void awards_client_do_frame()
         return;
     }
     if (g_award_queue.empty()) {
+        return;
+    }
+    if (g_award_queue.front().hold_until.valid() && !g_award_queue.front().hold_until.elapsed()) {
+        // A low-priority award still inside its yield window. Nothing can be stuck behind it: it is
+        // only ever queued when the queue is empty, and anything arriving after it removes it.
         return;
     }
 
@@ -989,7 +1044,7 @@ void awards_client_do_frame()
     g_award_queue.pop_front();
 
     hud_notification_show(std::move(award.text), award_display_seconds, HudNotificationType::Award, true);
-    play_local_sound_2d(static_cast<uint16_t>(get_custom_sound_id(award.custom_sound)), 0, 1.0f);
+    play_local_sound_2d(static_cast<uint16_t>(get_award_sound_id()), 0, 1.0f);
     g_award_slot_busy.set(award_slot_hold_ms);
 }
 

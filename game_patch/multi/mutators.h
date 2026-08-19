@@ -115,15 +115,22 @@ void mutators_on_multi_shutdown();
 int mutators_redirect_item_index(int item_type_index);
 bool mutators_should_deny_weapon_switch(int from_weapon, int to_weapon);
 void mutators_on_player_frag(rf::Player* killer);
+// Reload-on-kill, server only: note that the shot currently being processed has earned its
+// firer a refill, for that shot's own fire call to spend once it has decremented the clip. Only
+// valid to call while the killing bolt's flight is still resolving, i.e. from the lethal
+// transition of damage dealt by the firer's own shot - see mutators.cpp.
+void mutators_note_pending_frag_refill();
 void mutators_set_no_clip_weapon(int weapon_type);
 void mutators_on_pvp_damage(rf::Player* attacker, rf::Player* victim, float effective_damage);
 void mutators_on_flame_damage(rf::Player* attacker, rf::Player* victim, int damage_type, float damage);
 void mutators_on_flame_victim_damage(rf::Player* victim, int damage_type, float damage);
 void mutators_on_item_picked_up(rf::Item* item, rf::Entity* entity);
 void mutators_apply_entity_on_fire(rf::Entity* ep, bool on_fire);
-// Server-authoritative Flaming Enemies burn state for a player id.
-// False on clients and whenever the mutator is not running.
-bool mutators_player_is_on_fire(uint8_t player_id);
+// Server-authoritative Flaming Enemies burn state for a player id: the id of the player who set
+// them alight, while they are still burning from it. -1 when they are not burning and for a burn
+// with no owner, so the result never matches a real player id unless there is an igniter to blame.
+// Always -1 on clients and whenever the mutator is not running.
+int mutators_player_fire_igniter(uint8_t player_id);
 // Player ids are reused: a leaving player's burn state must not be inherited by the id's next owner.
 void mutators_on_player_destroy(rf::Player* player);
 bool mutators_skiing_active();

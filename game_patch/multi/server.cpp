@@ -1273,6 +1273,7 @@ struct AccuracyShotState
 {
     bool active = false;
     bool hit_counted = false;
+    int shooter_handle = -1;
 };
 static AccuracyShotState g_accuracy_shot;
 
@@ -1281,7 +1282,11 @@ static AccuracyShotState g_accuracy_shot;
 class AccuracyShotScope
 {
 public:
-    AccuracyShotScope() : saved_(g_accuracy_shot) { g_accuracy_shot = {true, false}; }
+    explicit AccuracyShotScope(rf::Entity* shooter)
+        : saved_(g_accuracy_shot)
+    {
+        g_accuracy_shot = {true, false, shooter ? shooter->handle : -1};
+    }
     ~AccuracyShotScope() { g_accuracy_shot = saved_; }
 
     AccuracyShotScope(const AccuracyShotScope&) = delete;
@@ -1792,6 +1797,14 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
             // suicides too.
             awards_on_kill(damaged_player, killer_player, weapon, damage_ctx.splash, killer_handle,
                            victim_team_before_damage);
+
+            // Arena's reload-on-kill is applied from on_player_kill, which the engine only runs
+            // in its deferred death processing - too late for the shot that killed, whose clip
+            // decrement has already happened by then.
+            if (killer_player && killer_player != damaged_player && g_accuracy_shot.active
+                && g_accuracy_shot.shooter_handle == killer_handle) {
+                mutators_note_pending_frag_refill();
+            }
         }
 
         // Cap damage to what was actually removed from the victim's health+armor (prevents overkill inflation)
@@ -3094,7 +3107,7 @@ FunHook<void(rf::Player*)> multi_spawn_player_server_side_hook{
 FunHook<void(rf::Entity*, rf::Weapon*)> multi_lag_comp_weapon_fire_hook{
     0x0046F7E0,
     [](rf::Entity *ep, rf::Weapon *wp) {
-        const AccuracyShotScope shot_scope;
+        const AccuracyShotScope shot_scope{ep};
         const AwardsShotScope award_shot_scope{ep, wp};
         multi_lag_comp_weapon_fire_hook.call_target(ep, wp);
     },

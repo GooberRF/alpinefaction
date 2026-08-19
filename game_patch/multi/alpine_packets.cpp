@@ -1865,9 +1865,7 @@ void af_send_entity_on_fire(uint32_t obj_handle, bool on, bool reliable)
     }
 }
 
-// Tell one player they earned an award. Sent unreliable on purpose: an award is pure
-// presentation, so a lost packet costs a callout, not gameplay - and a burst of awards
-// must not eat into the reliable window the connection's health depends on.
+// Tell one player they earned an award.
 void af_send_award(rf::Player* player, uint8_t award_id, uint8_t victim_player_id)
 {
     if (!rf::is_server || !player || !player->net_data || player->is_bot || player->is_browser) {
@@ -1883,7 +1881,7 @@ void af_send_award(rf::Player* player, uint8_t award_id, uint8_t victim_player_i
     packet.req_type = af_server_req_type::af_sreq_award;
     packet.payload = AwardPayload{award_id, victim_player_id};
 
-    af_send_server_req_packet(packet, player, false);
+    af_send_server_req_packet(packet, player);
 }
 
 // Jetpacks mutator: relay a player's thrust state to everyone else.
