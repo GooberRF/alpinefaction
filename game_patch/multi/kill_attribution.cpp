@@ -16,6 +16,7 @@
 #include "../rf/weapon.h"
 #include "../fflink/afstats_events.h"
 #include "alpine_packets.h"
+#include "awards.h"
 #include "kill_attribution.h"
 
 // Server-side capture of what actually landed the killing blow. The stock obj_kill packet
@@ -184,6 +185,9 @@ SplashWeaponScope::SplashWeaponScope(rf::Weapon* wp)
     // weapon, so anything consumed here fires on a projectile's first frame, not at its impact.
     g_ctx.splash_scope = true;
     g_ctx.splash_hit_counted = false;
+    // One detonation frame per scope, for the Massacre award. Nests with the scope. The weapon
+    // rides along so the detonation's own direct-hit kill can be matched to it.
+    awards_detonation_begin(wp->info_index);
 }
 
 SplashWeaponScope::~SplashWeaponScope()
@@ -195,6 +199,7 @@ SplashWeaponScope::~SplashWeaponScope()
         g_ctx.splash_weapon = prev_;
         g_ctx.splash_hit_counted = prev_hit_counted_;
         g_ctx.splash_scope = prev_.has_value();
+        awards_detonation_end();
     }
 }
 

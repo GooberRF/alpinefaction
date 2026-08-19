@@ -11,6 +11,7 @@
 #include <xlog/xlog.h>
 #include <common/utils/list-utils.h>
 #include "gungame.h"
+#include "awards.h"
 #include "gametype.h"
 #include "multi.h"
 #include "server.h"
@@ -478,9 +479,8 @@ void grant_and_switch(rf::Player* player, int weapon_type)
     server_set_player_weapon(player, entity, weapon_type);
 }
 
-// Random powerup + reward sound for newly reaching and passing a weapon level
-// on a single life (rampage).
-// Announced via the big center-screen HUD notification.
+// Random powerup for newly reaching and passing a weapon level on a single life.
+// Announced as an award.
 void grant_rampage_reward(rf::Player* player)
 {
     std::uniform_int_distribution<int> powerup_dist(0, 2); // invuln, amp, or super armour
@@ -498,8 +498,7 @@ void grant_rampage_reward(rf::Player* player)
         rf::multi_powerup_add(player, random_powerup, 10000);
     }
 
-    af_send_hud_notification("YOU'RE ON A RAMPAGE", 3, static_cast<int>(HudNotificationType::Rampage), true, player);
-    send_sound_packet_throwaway(player, stock_sound_id::jolt_01);
+    grant_award(player, AwardId::rampage);
 }
 
 // True level-up: the weapon changed AND it's not just the Remote Charge <->
@@ -726,14 +725,16 @@ void gungame_on_player_kill(rf::Player* killer, rf::Player* killed)
         // that weapon also happened this life.
         if (g_alpine_server_config_active_rules.gungame_rampage_rewards) {
             const int prev_score = score - 1; // the engine adds exactly 1 per kill
-            int completed_start = order.empty() ? 0 : order.begin()->first;
+            const int first_start = order.empty() ? 0 : order.begin()->first;
+            int completed_start = first_start;
             auto span_it = order.upper_bound(prev_score);
             if (span_it != order.begin()) {
                 completed_start = std::prev(span_it)->first;
             }
             const auto life_it = g_life_start_score.find(killer);
             const int life_start = (life_it != g_life_start_score.end()) ? life_it->second : score;
-            if (life_start == 0 || life_start < completed_start) {
+            // The first level is never entered by levelling up, passing it is not a rampage.
+            if (completed_start > first_start && life_start < completed_start) {
                 grant_rampage_reward(killer);
             }
         }

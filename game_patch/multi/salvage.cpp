@@ -13,6 +13,7 @@
 #include <patch_common/MemUtils.h>
 #include <common/utils/string-utils.h>
 #include "salvage.h"
+#include "awards.h"
 #include "gametype.h"
 #include "server_internal.h"
 #include "alpine_packets.h"
@@ -593,6 +594,8 @@ void drop_flag_at(rf::Player* prev_carrier, const rf::Vector3& drop_pos)
                                             : afstats::FlagEventKind::drop_death,
                            afstats::team_none, prev_carrier, drop_pos);
     g_drop_is_manual = false;
+    // Every drop cause funnels through here, so this is the one place Flag Runner has to break.
+    awards_on_sal_flag_dropped(prev_carrier);
 
     set_carrier(nullptr);
     g_salvage_info.state = SalFlagState::Dropped;
@@ -1194,6 +1197,7 @@ void salvage_on_flag_touch(rf::Player* player, rf::Item* item)
     afstats::on_flag_event(from_base ? afstats::FlagEventKind::steal
                                      : afstats::FlagEventKind::pickup,
                            afstats::team_none, player, ep->pos);
+    awards_on_sal_flag_taken(player, from_base);
 
     set_carrier(player);
     g_salvage_info.state = SalFlagState::Carried;
@@ -1229,6 +1233,7 @@ void salvage_on_base_touch(rf::Player* player, rf::Item* item)
     }
 
     afstats::on_flag_event(afstats::FlagEventKind::capture, afstats::team_none, player, item->pos);
+    awards_on_sal_capture(player);
 
     rf::player_add_score(player, 4);
     if (player->stats) {
@@ -1390,20 +1395,27 @@ FunHook<void(rf::Player*, rf::Item*)> multi_ctf_apply_flag_hook{
 
             multi_ctf_apply_flag_hook.call_target(pp, item);
 
-            if (rf::is_server && fflink::afstats_server_enabled() && pp && item) {
-                const uint8_t flag_team = red_flag ? afstats::team_red : afstats::team_blue;
+            if (rf::is_server && pp && item) {
                 rf::Player* const carrier_after = red_flag ? rf::multi_ctf_get_red_flag_player()
                                                            : rf::multi_ctf_get_blue_flag_player();
-                const bool in_base_after =
-                    red_flag ? rf::multi_ctf_is_red_flag_in_base() : rf::multi_ctf_is_blue_flag_in_base();
-                if (carrier_after == pp && carrier_before != pp) {
-                    afstats::on_flag_event(in_base_before ? afstats::FlagEventKind::steal
-                                                          : afstats::FlagEventKind::pickup,
-                                           flag_team, pp, touch_pos);
+                const bool took_flag = carrier_after == pp && carrier_before != pp;
+                if (took_flag) {
+                    awards_on_ctf_flag_taken(pp, red_flag, in_base_before, touch_pos);
                 }
-                else if (!in_base_before && in_base_after) {
-                    afstats::on_flag_event(afstats::FlagEventKind::return_touch, flag_team, pp,
-                                           touch_pos);
+
+                if (fflink::afstats_server_enabled()) {
+                    const uint8_t flag_team = red_flag ? afstats::team_red : afstats::team_blue;
+                    const bool in_base_after = red_flag ? rf::multi_ctf_is_red_flag_in_base()
+                                                        : rf::multi_ctf_is_blue_flag_in_base();
+                    if (took_flag) {
+                        afstats::on_flag_event(in_base_before ? afstats::FlagEventKind::steal
+                                                              : afstats::FlagEventKind::pickup,
+                                               flag_team, pp, touch_pos);
+                    }
+                    else if (!in_base_before && in_base_after) {
+                        afstats::on_flag_event(afstats::FlagEventKind::return_touch, flag_team, pp,
+                                               touch_pos);
+                    }
                 }
             }
             return;
@@ -1425,14 +1437,17 @@ FunHook<void(rf::Player*, rf::Item*)> multi_ctf_apply_item_hook{
 
             multi_ctf_apply_item_hook.call_target(pp, item);
 
-            if (rf::is_server && fflink::afstats_server_enabled() && pp && item) {
+            if (rf::is_server && pp && item) {
                 const bool red_capped = rf::multi_ctf_get_red_team_score() != red_before;
                 const bool blue_capped = rf::multi_ctf_get_blue_team_score() != blue_before;
                 if (red_capped || blue_capped) {
-                    // The flag that was captured is the enemy's, not the capper's.
-                    afstats::on_flag_event(afstats::FlagEventKind::capture,
-                                           red_capped ? afstats::team_blue : afstats::team_red, pp,
-                                           base_pos);
+                    awards_on_ctf_capture(pp);
+                    if (fflink::afstats_server_enabled()) {
+                        // The flag that was captured is the enemy's, not the capper's.
+                        afstats::on_flag_event(afstats::FlagEventKind::capture,
+                                               red_capped ? afstats::team_blue : afstats::team_red,
+                                               pp, base_pos);
+                    }
                 }
             }
             return;

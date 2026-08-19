@@ -51,6 +51,9 @@ Version 1.4.0 (Lupin): Not yet released
   - Players on legacy clients can join and play normally, and are tracked per-connection without cross-session identity
   - `afstats_status` console command shows the local stats session state
   - `sv_afstats_trace` console command logs outgoing report batches (with session keys redacted) on dedicated servers
+- Add multiplayer awards
+  - Reported to FactionFiles as part of multiplayer statistics
+  - `cl_awards` console command to toggle local display and audio
 
 ### Minor features, changes, and enhancements
 [@GooberRF](https://github.com/GooberRF)

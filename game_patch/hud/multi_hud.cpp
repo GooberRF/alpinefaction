@@ -1303,10 +1303,17 @@ void draw_respawn_timer_notification(bool can_respawn, bool force_respawn, int s
     g_draw_respawn_timer_can_respawn = can_respawn;
 }
 
+HudNotificationType hud_big_notification_current_type()
+{
+    return g_hud_big_notification.type;
+}
+
 void hud_notification_show(std::string text, int duration_seconds,
     HudNotificationType type, bool fade_on_expire)
 {
-    const bool big_slot = type == HudNotificationType::Rampage || type == HudNotificationType::GenericBig;
+    const bool big_slot = type == HudNotificationType::Rampage ||
+                          type == HudNotificationType::GenericBig ||
+                          type == HudNotificationType::Award;
     ActiveHudNotification& slot = big_slot ? g_hud_big_notification : g_hud_notification;
     slot.type = type;
     slot.text = std::move(text);
@@ -1321,7 +1328,9 @@ void hud_notification_show(std::string text, int duration_seconds,
 
 void hud_notification_remove(HudNotificationType type, bool instant)
 {
-    const bool big_slot_type = type == HudNotificationType::Rampage || type == HudNotificationType::GenericBig;
+    const bool big_slot_type = type == HudNotificationType::Rampage ||
+                               type == HudNotificationType::GenericBig ||
+                               type == HudNotificationType::Award;
     if ((big_slot_type || type == HudNotificationType::None)
         && g_hud_big_notification.type != HudNotificationType::None
         && (!big_slot_type || g_hud_big_notification.type == type)) {
