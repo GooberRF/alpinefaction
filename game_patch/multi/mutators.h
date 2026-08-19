@@ -126,7 +126,6 @@ void mutators_on_player_frag(rf::Player* killer);
 void mutators_note_pending_frag_refill();
 void mutators_set_no_clip_weapon(int weapon_type);
 void mutators_on_pvp_damage(rf::Player* attacker, rf::Player* victim, float effective_damage);
-void mutators_on_player_destroy(rf::Player* player);
 void mutators_on_flame_damage(rf::Player* attacker, rf::Player* victim, int damage_type, float damage);
 void mutators_on_flame_victim_damage(rf::Player* victim, int damage_type, float damage);
 void mutators_on_item_picked_up(rf::Item* item, rf::Entity* entity);
@@ -136,7 +135,8 @@ void mutators_apply_entity_on_fire(rf::Entity* ep, bool on_fire);
 // with no owner, so the result never matches a real player id unless there is an igniter to blame.
 // Always -1 on clients and whenever the mutator is not running.
 int mutators_player_fire_igniter(uint8_t player_id);
-// Player ids are reused: a leaving player's burn state must not be inherited by the id's next owner.
+// Player ids are reused: a leaving player's burn state must not be inherited by the id's next owner,
+// and the crit mutator's per-player state goes with it.
 void mutators_on_player_destroy(rf::Player* player);
 bool mutators_skiing_active();
 bool mutators_dodging_active();

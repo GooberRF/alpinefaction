@@ -1063,6 +1063,7 @@ static void flame_multi_shutdown();
 // Defined in the Critical Hits section below.
 static void crits_reset();
 static float crit_radius_scale();
+static void crits_on_player_destroy(rf::Player* player);
 
 static constexpr float LOW_GRAVITY_VALUE = 5.8f;
 
@@ -2007,6 +2008,7 @@ void mutators_on_player_destroy(rf::Player* player)
     if (player && player->net_data) {
         g_flame_states.erase(static_cast<uint8_t>(player->net_data->player_id));
     }
+    crits_on_player_destroy(player);
 }
 
 void mutators_apply_entity_on_fire(rf::Entity* ep, bool on_fire)
@@ -3090,7 +3092,7 @@ static float crit_radius_scale()
     return CRIT_CRATER_RADIUS_SCALE;
 }
 
-void mutators_on_player_destroy(rf::Player* player)
+static void crits_on_player_destroy(rf::Player* player)
 {
     // Whole-struct assignment, not a flag reset: the ramp deque has to go with it.
     if (CritPlayerState* state = crit_state_for(player))
