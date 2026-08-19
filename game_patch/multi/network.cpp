@@ -8,6 +8,7 @@
 #include <thread>
 #include <utility>
 #include <deque>
+#include <unordered_map>
 #include <winsock2.h>
 #include <iphlpapi.h>
 #include <ws2ipdef.h>
@@ -2810,6 +2811,41 @@ CodeInjection server_obj_update_schedule_injection{
     },
 };
 
+// Newest interp tick already sent per (recipient player, entity handle)
+static std::unordered_map<uint64_t, uint16_t> g_sent_obj_update_ticks;
+
+// The server relays remote entities as (pos, tick) keyframes echoed from the source client
+// (get_entity_data 0x0047D9A0), so when sv_netfps exceeds a client's send rate it re-sends the
+// same keyframe. Receivers append those duplicates, which halves ObjInterp's average arrival
+// interval and with it the interpolation delay window (2.2x that average), causing jitter.
+// Skip an entity's record entirely when it has no new keyframe for this recipient. Records for
+// the recipient's own entity carry no keyframes (only health/armor/weapon), so they are exempt
+// and stay at full rate.
+FunHook<int(rf::Player*, rf::Entity*, void*)> pack_obj_update_data_hook{
+    0x0047DB20,
+    [] (rf::Player* pp, rf::Entity* ep, void* data) {
+        if (rf::is_server && ep != rf::local_player_entity && pp->entity_handle != ep->handle
+            && ep->obj_interp && ep->obj_interp->num_frames() > 0) {
+            const uint16_t tick = ep->obj_interp->newest_frame_time();
+            if (g_sent_obj_update_ticks.size() > 8192) {
+                // ponytail: cap growth from entity handle churn; a clear only costs one
+                // duplicate keyframe per (player, entity) pair
+                g_sent_obj_update_ticks.clear();
+            }
+            const uint64_t key = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(pp)) << 32
+                | static_cast<uint32_t>(ep->handle);
+            auto [it, inserted] = g_sent_obj_update_ticks.try_emplace(key, tick);
+            if (!inserted) {
+                if (it->second == tick) {
+                    return 0; // no new keyframe since the last send to this player
+                }
+                it->second = tick;
+            }
+        }
+        return pack_obj_update_data_hook.call_target(pp, ep, data);
+    },
+};
+
 ConsoleCommand2 netfps_cmd{
     "sv_netfps",
     [] (std::optional<int> update_rate) {
@@ -3374,6 +3410,10 @@ void network_init()
 
     // Make average obj_update send rate framerate-independent (deadline-based rescheduling)
     server_obj_update_schedule_injection.install();
+
+    // Skip obj_update records that carry no new keyframe, so sv_netfps above the client send
+    // rate doesn't flood receivers with duplicate keyframes that degrade interpolation
+    pack_obj_update_data_hook.install();
 
     // Fix rotation interpolation (Y axis) when it goes from 360 to 0 degrees
     obj_interp_rotation_fix.install();
