@@ -35,6 +35,7 @@
 #include "../rf/localize.h"
 #include "../rf/file/file.h"
 #include "../object/object.h"
+#include "../fflink/afstats_client.h"
 #include "waypoints.h"
 
 void achievements_apply_patch();
@@ -234,6 +235,7 @@ FunHook<void()> multi_after_players_packet_hook{
         multi_after_players_packet_hook.call_target();
         g_in_mp_game = true;
         mp_send_handicap_request(false);
+        fflink::afstats_client_on_entered_game();
     },
 };
 

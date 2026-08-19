@@ -16,12 +16,14 @@
 #include "alpine_packets.h"
 #include "sprays.h"
 #include "kill_attribution.h"
+#include "awards.h"
 #include "server_internal.h"
 #include "gametype.h"
 #include "rounds.h"
 #include "salvage.h"
 #include "mutators.h"
 #include "bots/bot_chat_manager.h"
+#include "../fflink/afstats_events.h"
 #include "../hud/hud.h"
 #include "../hud/multi_spectate.h"
 #include "../rf/file/file.h"
@@ -287,6 +289,9 @@ FunHook<void()> multi_limbo_init{
 
             if (g_match_info.match_active) {
                 af_broadcast_automated_chat_msg("\xA6 Match complete!");
+                // Before reset(), which drops the roster, and while the scores the
+                // winner is derived from are still the finished match's.
+                afstats::on_match_end_derived(afstats::MatchResult::completed);
                 g_match_info.reset();
             }
             else if (g_match_info.pre_match_active && g_match_info.everyone_ready) {
@@ -850,6 +855,32 @@ FunHook<void(rf::Entity*, int, rf::Vector3&, rf::Matrix3&, bool)> multi_process_
         }
         multi_process_remote_weapon_fire_hook.call_target(ep, weapon_type, pos, orient, alt_fire);
 
+        // Melee is the one weapon counted here rather than at projectile creation: its projectiles
+        // are deferred and appear at an unhooked creation site, so the swing's fire packet is the
+        // countable signal. One packet is one shot (the stick's two impact delays are two real
+        // swings). Each counted swing also grants a hit credit, because the server can create more
+        // projectiles than the swing sent packets.
+        //
+        // rf::weapon_is_melee, not kill_attribution_is_melee_weapon: this must match the engine's
+        // own WTF_MELEE branch, or a modded weapon gets counted here AND at creation.
+        if (rf::is_server && rf::weapon_is_melee(weapon_type)) {
+            if (rf::Player* pp = rf::player_from_entity_handle(ep->handle)) {
+                // A swing's potential is the weapon's primary damage; the taser's zaps accrue
+                // their own alt-damage potential at the deferred creation site instead.
+                const float potential = kill_attribution_is_valid_weapon_type(weapon_type)
+                    ? rf::weapon_types[weapon_type].damage_multi
+                    : 0.0f;
+                afstats::on_weapon_fired(pp, weapon_type, 1, afstats::CountScope::full, potential);
+                awards_on_weapon_fired(pp, weapon_type);
+                if (pp->stats) {
+                    auto* stats = static_cast<PlayerStatsNew*>(pp->stats);
+                    stats->add_shots_fired(1.0f);
+                    stats->add_damage_potential(potential);
+                }
+                melee_grant_hit_credit(pp, weapon_type);
+            }
+        }
+
         // Notify spectate system of weapon fire so the fpgun fire animation is triggered.
         // Skip thrown projectile weapons (grenade, C4, flamethrower canister alt-fire) because
         // their animation is driven earlier and at the correct time by entity_play_attack_anim_spectate_hook.
@@ -1367,6 +1398,7 @@ void multi_do_patch()
 
     multi_kill_do_patch();
     kill_attribution_do_patch();
+    awards_do_patch();
     sprays_do_patch();
     faction_files_do_patch();
     level_download_do_patch();

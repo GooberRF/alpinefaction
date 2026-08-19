@@ -29,6 +29,7 @@
 #include "../multi/alpine_packets.h"
 #include "../multi/gametype.h"
 #include "../multi/server_internal.h"
+#include "../graphics/weather.h"
 #include "../misc/alpine_options.h"
 #include "../misc/misc.h"
 #include "../misc/achievements.h"
@@ -355,6 +356,9 @@ CodeInjection mover_process_post_patch{
                     if (auto* gas_region = gas_region_get_by_uid(linked_uid)) {
                         gas_region->pos = event->pos;
                     }
+
+                    // check for a weather region
+                    weather_move_region(linked_uid, event->pos);
                 }
             }
 
@@ -402,6 +406,9 @@ CodeInjection mover_process_post_patch{
                         gas_region->pos = event->pos;
                         gas_region->orient = event->orient;
                     }
+
+                    // check for a weather region
+                    weather_move_region(linked_uid, event->pos, event->orient);
                 }
             }
         }

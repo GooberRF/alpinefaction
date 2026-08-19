@@ -29,10 +29,13 @@
 #include "../multi/sprays.h"
 #include "../multi/pit.h"
 #include "../multi/gungame.h"
+#include "../multi/awards.h"
+#include "../multi/mutators.h"
 #include "../hud/multi_spectate.h"
 #include "../hud/hud_internal.h"
 #include "../hud/hud.h"
 #include "../multi/alpine_packets.h"
+#include "../fflink/afstats_events.h"
 #include "../hud/hud_world.h"
 #include <common/utils/list-utils.h>
 #include <common/version/version.h>
@@ -268,7 +271,13 @@ FunHook<void(rf::Player*)> player_destroy_hook{
         sprays_on_player_destroyed(player);
         pit_on_player_disconnect(player);
         gungame_on_player_disconnect(player);
+        accuracy_stats_on_player_destroy(player);
+        awards_on_player_destroy(player);
+        mutators_on_player_destroy(player);
         if (rf::is_server) {
+            // Must run while PlayerAdditionalData is still alive, since the leave
+            // event carries the player's partial-game summary.
+            afstats::on_player_leave(player);
             remove_ready_player_silent(player);
             server_vote_on_player_leave(player);
             if (player->is_bot) {

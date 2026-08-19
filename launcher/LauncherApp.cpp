@@ -222,6 +222,10 @@ bool LauncherApp::ValidateAFLinkToken(const std::string& fflink_token)
             xlog::warn("Invalid FactionFiles link token detected.");
             game_config.fflink_token = "";
             game_config.fflink_username = "";
+            // The token is no longer valid (account unlinked or token revoked FactionFiles-side),
+            // so reset the stats identity as well: the next stats-server join mints a fresh,
+            // unlinked PSK rather than reusing the one tied to the now-detached account.
+            game_config.afstats_psk = "";
             game_config.save();
             fflink_token_is_invalid = true;
             return 0;

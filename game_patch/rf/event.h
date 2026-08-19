@@ -358,7 +358,8 @@ namespace rf
         ATX_Set_Frame,
         ATX_Play,
         ATX_Pause,
-        ATX_Set_Frame_Time
+        ATX_Set_Frame_Time,
+        Weather_Region_State
     };
 
     std::vector<rf::Event*> find_all_events_by_type(rf::EventType event_type);

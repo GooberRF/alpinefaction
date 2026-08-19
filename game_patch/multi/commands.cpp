@@ -1,4 +1,5 @@
 #include "../os/console.h"
+#include "../fflink/afstats_events.h"
 #include "server_internal.h"
 #include "../rf/multi.h"
 #include "../rf/gameseq.h"
@@ -197,6 +198,9 @@ void process_delayed_kicks()
         for (int player_id : batch) {
             rf::Player* player = rf::multi_find_player_by_id(static_cast<uint8_t>(player_id));
             if (player) {
+                // Generic fallback: a ban or vote kick has already tagged its own
+                // reason, and note_leave_reason keeps the first writer.
+                afstats::note_leave_reason(player, afstats::LeaveReason::kicked);
                 rf::multi_kick_player(player);
             }
         }
@@ -213,6 +217,7 @@ void ban_cmd_handler_hook()
             if (player) {
                 if (player != rf::local_player) {
                     rf::console::printf(rf::strings::banning_player, player->name.c_str());
+                    afstats::note_leave_reason(player, afstats::LeaveReason::banned);
                     rf::multi_ban_ip(player->net_data->addr);
                     kick_player_delayed(player);
                 }

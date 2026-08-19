@@ -1,6 +1,7 @@
 #include <cstddef>
 #include <cstring>
 #include <cassert>
+#include <algorithm>
 #include <array>
 #include <common/config/BuildConfig.h>
 #include <common/utils/list-utils.h>
@@ -67,7 +68,10 @@ void send_pf_player_stats_packet(rf::Player* player)
             }
         });
         out_stats.is_pure = static_cast<uint8_t>(pure_status);
-        out_stats.accuracy = static_cast<uint8_t>(player_stats.calc_accuracy() * 100.f);
+        // Clamped: converting an out-of-range float to an unsigned type is undefined, and
+        // accuracy is a ratio of two independently maintained counters.
+        out_stats.accuracy =
+            static_cast<uint8_t>(std::clamp(player_stats.calc_accuracy(), 0.0f, 1.0f) * 100.f);
         out_stats.streak_max = player_stats.max_streak;
         out_stats.streak_current = player_stats.current_streak;
         out_stats.kills = player_stats.num_kills;

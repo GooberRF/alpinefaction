@@ -60,6 +60,8 @@ set(SRCS
     graphics/gr.cpp
     graphics/gr.h
     graphics/gr_light.cpp
+    graphics/weather.cpp
+    graphics/weather.h
     graphics/legacy/gr_d3d.cpp
     graphics/legacy/gr_d3d_texture.cpp
     graphics/legacy/gr_d3d_capture.cpp
@@ -157,6 +159,8 @@ set(SRCS
     multi/kill.h
     multi/kill_attribution.cpp
     multi/kill_attribution.h
+    multi/awards.cpp
+    multi/awards.h
     multi/network.cpp
     multi/network.h
     multi/network_debug.cpp
@@ -176,6 +180,10 @@ set(SRCS
     multi/endgame_votes.h
     multi/faction_files.cpp
     multi/faction_files.h
+    fflink/afstats_client.cpp
+    fflink/afstats_client.h
+    fflink/afstats_events.cpp
+    fflink/afstats_events.h
     fflink/fflink.cpp
     fflink/fflink.h
     fflink/fflink_achievements.cpp

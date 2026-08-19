@@ -45,6 +45,15 @@ Version 1.4.0 (Lupin): Not yet released
   - `Level` and `Match` can now select a game type and any number of mutators (with their options) for the voted level
   - Add a vote panel for calling any vote the server allows, opened during gameplay with the bindable `Call Vote Menu` control (`F4` by default)
   - Vote HUD notification now shows live tally, time remaining, and whether you have already voted
+- Add FactionFiles-integrated multiplayer statistics tracking
+  - Dedicated servers with a configured `fflink_gsk` report a gameplay event stream to FactionFiles
+  - Clients joining a stats-enabled server obtain a stats session key from FactionFiles and deliver it to the server, attributing their stats to their linked FactionFiles account (or anonymously to their game installation when unlinked)
+  - Players on legacy clients can join and play normally, and are tracked per-connection without cross-session identity
+  - `afstats_status` console command shows the local stats session state
+  - `sv_afstats_trace` console command logs outgoing report batches (with session keys redacted) on dedicated servers
+- Add multiplayer awards
+  - Reported to FactionFiles as part of multiplayer statistics
+  - `cl_awards` console command to toggle local display and audio
 
 ### Minor features, changes, and enhancements
 [@GooberRF](https://github.com/GooberRF)
@@ -111,6 +120,10 @@ Version 1.4.0 (Lupin): Not yet released
 - Add Alpine Faction 1.4.0 clients to the `sv_restrict_status` common test cases
 - Respect DNS TTL for the multiplayer tracker hostname
 - Load mesh files from subdirectories of `user_maps\meshes` and `red\meshes` in the level editor
+- Add Weather Regions for rain and snow environmental particle effects
+- Add `Weather_Region_State` event
+- Add `r_weather` console command to toggle rendering of weather effects
+- Rework multiplayer accuracy statistics with one shared definition feeding the scoreboard and FactionFiles stats reporting
 
 [@is-this-c](https://github.com/is-this-c)
 - Rewrite `VArray` to fix crashes due to MinGW
@@ -181,6 +194,15 @@ Version 1.4.0 (Lupin): Not yet released
 - Fix the game feed rendering on top of the scoreboard
 - Fix textures referenced by custom `.vfx` mesh files not being included when the level editor packs a VPP
 - Fix chat and console showing only a bare player name when a player leaves after timing out waiting for game state
+- Fix an over-long console line overflowing the fixed-size console output buffer
+- Fix level editor crash when a custom mesh or texture subdirectory cannot be registered because the editor's internal path table is full
+- Fix plankton bunching into a small drifting cluster instead of distributing around the camera in some liquids
+- Fix links targeting Alpine objects breaking when a group containing them is imported in the level editor
+- Fix several multiplayer accuracy calculation issues
+- Fix `Active Distance` on level-placed particle emitters being ignored when hosting a listen server
+- Fix particle emitters created from `emitters.tbl` templates inheriting uninitialized UID and `Active Distance` values that could make their particles silently fail to spawn in rare cases
+- Fix spacebar (when bound to `Jump`) moving freelook camera upward when typing in chat
+- Fix crash risk when leaving a match or changing levels by keeping animation skeletons loaded while animation instances are still playing them, instead of unloading as soon as no character references them
 
 [@is-this-c](https://github.com/is-this-c)
 - Clear cached server config output after a shuffle of a server's rotation

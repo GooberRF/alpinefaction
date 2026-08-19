@@ -13,6 +13,7 @@
 
 void DestroyDedMesh(DedMesh* mesh);
 void DestroyDedCorona(DedCorona* corona);
+void DestroyDedWeatherRegion(DedWeatherRegion* weather_region);
 
 constexpr int alpine_props_chunk_id = 0x0AFBA5ED;
 constexpr int alpine_mesh_chunk_id = 0x0AFBAE01;
@@ -20,6 +21,7 @@ constexpr int alpine_note_chunk_id = 0x0AFBAE02;
 constexpr int alpine_corona_chunk_id = 0x0AFBAE03;
 constexpr int alpine_bag_chunk_id = 0x0AFBAE04;
 constexpr int alpine_brush_group_chunk_id = 0x0AFBAE05; // brush metadata in .rfg group files only
+constexpr int alpine_weather_region_chunk_id = 0x0AFBAE06;
 
 // Glacier saves new RFL chunks for its own purposes (metadata). Alpine Faction can
 // neither read nor parse these, but AlpineEditor retains them verbatim on load and
@@ -386,6 +388,9 @@ struct AlpineLevelProperties
     // Alpine bag objects
     std::vector<DedBag*> bag_objects;
 
+    // Alpine weather region objects
+    std::vector<DedWeatherRegion*> weather_region_objects;
+
     // Retained Glacier RFL sections (0x6ED-prefixed IDs).
     std::vector<RetainedRflChunk> retained_chunks;
 
@@ -433,6 +438,11 @@ struct AlpineLevelProperties
             delete b;
         }
         bag_objects.clear();
+
+        for (auto* w : weather_region_objects) {
+            DestroyDedWeatherRegion(w);
+        }
+        weather_region_objects.clear();
 
         retained_chunks.clear();
     }

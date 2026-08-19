@@ -534,6 +534,10 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.show_glares = std::stoi(settings["ShowGlares"]);
         processed_keys.insert("ShowGlares");
     }
+    if (settings.count("Weather")) {
+        g_alpine_game_config.weather = std::stoi(settings["Weather"]);
+        processed_keys.insert("Weather");
+    }
     if (settings.count("MeshLightingMode")) {
         g_alpine_game_config.mesh_lighting_mode = std::clamp(std::stoi(settings["MeshLightingMode"]), 0, 2);
         recalc_mesh_static_lighting();
@@ -953,6 +957,10 @@ bool alpine_player_settings_load(rf::Player* player)
     if (settings.count("PlayHitsounds")) {
         g_alpine_game_config.play_hit_sounds = std::stoi(settings["PlayHitsounds"]);
         processed_keys.insert("PlayHitsounds");
+    }
+    if (settings.count("ShowAwards")) {
+        g_alpine_game_config.show_awards = std::stoi(settings["ShowAwards"]);
+        processed_keys.insert("ShowAwards");
     }
     if (settings.count("SprayDisplay")) {
         g_alpine_game_config.spray_display = std::stoi(settings["SprayDisplay"]);
@@ -1427,6 +1435,7 @@ void alpine_player_settings_save(rf::Player* player)
     file << "DisableTextures=" << g_alpine_game_config.try_disable_textures << "\n";
     file << "DisableMuzzleFlashLights=" << g_alpine_game_config.try_disable_muzzle_flash_lights << "\n";
     file << "ShowGlares=" << g_alpine_game_config.show_glares << "\n";
+    file << "Weather=" << g_alpine_game_config.weather << "\n";
     file << "MeshLightingMode=" << g_alpine_game_config.mesh_lighting_mode << "\n";
     file << "DynamicLightNdotL=" << g_alpine_game_config.dynamic_light_ndotl << "\n";
     file << "PixelLightOverbright=" << g_alpine_game_config.pixel_light_overbright << "\n";
@@ -1548,6 +1557,7 @@ void alpine_player_settings_save(rf::Player* player)
     file << "WorldHUDTeamLabels=" << g_alpine_game_config.world_hud_team_player_labels << "\n";
     file << "ShowLocationPings=" << g_alpine_game_config.show_location_pings << "\n";
     file << "PlayHitsounds=" << g_alpine_game_config.play_hit_sounds << "\n";
+    file << "ShowAwards=" << g_alpine_game_config.show_awards << "\n";
     file << "SprayDisplay=" << g_alpine_game_config.spray_display << "\n";
     file << "SpraySelection=" << g_alpine_game_config.selected_spray_index << "\n";
     file << "KillfeedEnabled=" << g_alpine_game_config.killfeed_enabled << "\n";

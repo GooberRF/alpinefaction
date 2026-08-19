@@ -24,6 +24,7 @@
 #include <common/utils/string-utils.h>
 #include <xlog/xlog.h>
 #include "server_internal.h"
+#include "../fflink/afstats_events.h"
 #include "multi.h"
 #include "gametype.h"
 #include "mutators.h"
@@ -179,6 +180,14 @@ public:
         announced = true;
         send_vote_starting_msg(source);
 
+        // After validate(), so a level vote's detail is the resolved filename rather
+        // than the raw client string.
+        afstats::on_vote_called(static_cast<uint8_t>(vote_type_to_wire(get_type())), source,
+            get_target_player_id() >= 0
+                ? rf::multi_find_player_by_id(static_cast<uint8_t>(get_target_player_id()))
+                : nullptr,
+            get_detail().c_str());
+
         early_finish_check_timer.set(1000);
 
         return check_for_early_vote_finish();
@@ -316,6 +325,13 @@ public:
         }
         end_event_sent = true;
 
+        // Raw ballots, not the timeout path's adjusted tally: the stream reports what
+        // players actually cast and lets FactionFiles apply its own interpretation.
+        const VoteTally stats_tally = compute_tally();
+        afstats::on_vote_ended(static_cast<uint8_t>(vote_type_to_wire(get_type())),
+                               static_cast<uint8_t>(result), stats_tally.yes, stats_tally.no,
+                               stats_tally.yes + stats_tally.no + stats_tally.remaining);
+
         for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
             // Same filter as the start event: a client that never got a start
             // event must not get updates or an end event either.
@@ -334,6 +350,12 @@ public:
 protected:
     [[nodiscard]] virtual std::string get_title() const = 0;
     [[nodiscard]] virtual const VoteConfig& get_config() const = 0;
+
+    // Stats-stream only: the bare subject of the vote (a level filename, a minute
+    // count), not the decorated title. Empty when the vote has no subject.
+    [[nodiscard]] virtual std::string get_detail() const { return {}; }
+    // Stats-stream only: -1 for every vote that has no target player.
+    [[nodiscard]] virtual int get_target_player_id() const { return -1; }
 
     // The one line that describes the outcome. Broadcast as chat to legacy clients
     // and carried in the structured end event, so both see identical wording.
@@ -910,6 +932,7 @@ struct VoteMatch : public Vote
                 clear_manual_rules_override();
             if (m_gametype)
                 set_upcoming_game_type(*m_gametype, UpcomingGameTypeSelection::ExplicitRequest);
+            afstats::note_game_end_type(afstats::GameEndType::map_change_vote);
             multi_change_level_alpine(m_level_name.c_str());
             if (m_manual_rules_override) {
                 set_manual_rules_override(std::move(*m_manual_rules_override));
@@ -917,6 +940,8 @@ struct VoteMatch : public Vote
             }
         }
     }
+
+    [[nodiscard]] std::string get_detail() const override { return m_level_name; }
 
     [[nodiscard]] const VoteConfig& get_config() const override
     {
@@ -953,6 +978,8 @@ struct VoteCancelMatch : public Vote
 
     void on_accepted() override
     {
+        // cancel_match() ends the round via load_next_level() when a match is live.
+        afstats::note_game_end_type(afstats::GameEndType::map_change_vote);
         cancel_match();
     }
 
@@ -970,6 +997,8 @@ struct VoteKick : public Vote
     // kick itself: the outcome runs a frame later, by which time the pointer could
     // name a destroyed player. -1 means "never resolvable".
     int m_target_player_id = -1;
+
+    [[nodiscard]] int get_target_player_id() const override { return m_target_player_id; }
 
     explicit VoteKick(rf::Player* target)
         : m_target_player(target),
@@ -1039,6 +1068,7 @@ struct VoteKick : public Vote
             return;
         }
         if (rf::Player* target = rf::multi_find_player_by_id(static_cast<uint8_t>(m_target_player_id))) {
+            afstats::note_leave_reason(target, afstats::LeaveReason::vote_kicked);
             kick_player_delayed(target);
         }
     }
@@ -1093,6 +1123,8 @@ struct VoteExtend : public Vote
         // extend_round_time takes MINUTES.
         extend_round_time(m_minutes);
     }
+
+    [[nodiscard]] std::string get_detail() const override { return std::to_string(m_minutes); }
 
     [[nodiscard]] const VoteConfig& get_config() const override
     {
@@ -1168,6 +1200,7 @@ struct VoteLevel : public Vote
             set_upcoming_game_type(*m_gametype, UpcomingGameTypeSelection::ExplicitRequest);
         }
 
+        afstats::note_game_end_type(afstats::GameEndType::map_change_vote);
         multi_change_level_alpine(m_level_name.c_str());
 
         if (m_manual_rules_override) {
@@ -1175,6 +1208,8 @@ struct VoteLevel : public Vote
             m_manual_rules_override.reset();
         }
     }
+
+    [[nodiscard]] std::string get_detail() const override { return m_level_name; }
 
     [[nodiscard]] const VoteConfig& get_config() const override
     {
@@ -1272,6 +1307,7 @@ struct VoteRestart : public VoteRotation
     {
         // restart_current_level() round-trips the session override itself, so the
         // stash is not needed here — only the configured-rules reload is new.
+        afstats::note_game_end_type(afstats::GameEndType::map_change_vote);
         if (m_preserve) {
             restart_current_level();
         }
@@ -1311,6 +1347,7 @@ struct VoteNext : public VoteRotation
     void on_accepted() override
     {
         stash_carry();
+        afstats::note_game_end_type(afstats::GameEndType::map_change_vote);
         load_next_level();
     }
 
@@ -1345,6 +1382,7 @@ struct VoteRandom : public VoteRotation
     void on_accepted() override
     {
         stash_carry();
+        afstats::note_game_end_type(afstats::GameEndType::map_change_vote);
         // if dynamic rotation is on, just load the next level
         g_alpine_server_config.dynamic_rotation ? load_next_level() : load_rand_level();
     }
@@ -1380,6 +1418,7 @@ struct VotePrevious : public VoteRotation
     void on_accepted() override
     {
         stash_carry();
+        afstats::note_game_end_type(afstats::GameEndType::map_change_vote);
         load_prev_level();
     }
 

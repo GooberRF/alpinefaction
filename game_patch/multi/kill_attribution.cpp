@@ -4,24 +4,119 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
+#include <patch_common/CallHook.h>
 #include <patch_common/FunHook.h>
+#include "../rf/clutter.h"
 #include "../rf/entity.h"
 #include "../rf/item.h"
 #include "../rf/math/vector.h"
 #include "../rf/multi.h"
+#include "../rf/object.h"
 #include "../rf/player/player.h"
 #include "../rf/weapon.h"
+#include "../fflink/afstats_events.h"
 #include "alpine_packets.h"
+#include "awards.h"
 #include "kill_attribution.h"
 
 // Server-side capture of what actually landed the killing blow. The stock obj_kill packet
 // carries no weapon at all, so every client used to guess it from replicated held-weapon
 // state; the data collected here is shipped alongside instead.
 
-// Valid only inside an obj_damage call tree.
-static DamageWeaponContext g_damage_ctx;
-// Weapon of the explosion whose radius-damage tree is currently running.
-static std::optional<int> g_splash_weapon_ctx;
+// Everything that describes what is currently being resolved inside an obj_damage or impact call
+// tree. Grouped so the invariants live in one place: every field here is scope-owned - written
+// only by one of the RAII guards below, read only through the accessors - and none of it means
+// anything outside such a tree.
+//
+// The guards restore PER CONCERN, never by snapshotting the whole struct: splash_hit_counted has
+// to survive the nested obj_damage calls inside one detonation, or every victim of a blast gets a
+// fresh unspent hit.
+struct DamageResolutionContext
+{
+    // Weapon and splash flag of the obj_damage call being processed.
+    DamageWeaponContext damage{};
+    // Weapon of the explosion whose radius-damage tree is currently running.
+    std::optional<int> splash_weapon{};
+    // Inside weapon_hit_obj: a real projectile delivered this, as opposed to a per-frame processor
+    // that merely names a weapon (the burn spread does exactly that).
+    bool projectile_impact = false;
+    // Inside a SplashWeaponScope, and whether that detonation's single accuracy hit is spent.
+    bool splash_scope = false;
+    bool splash_hit_counted = false;
+    // A damaging particle is applying its contact damage (the flamethrower stream).
+    bool particle_damage = false;
+};
+static DamageResolutionContext g_ctx;
+
+// Restores one field on the way out, so an early return inside a hooked call cannot leak scope
+// state.
+template<typename T>
+class ScopedRestore
+{
+public:
+    explicit ScopedRestore(T& slot) : slot_(slot), saved_(slot) {}
+    ~ScopedRestore() { slot_ = saved_; }
+    ScopedRestore(const ScopedRestore&) = delete;
+    ScopedRestore& operator=(const ScopedRestore&) = delete;
+    ScopedRestore(ScopedRestore&&) = delete;
+    ScopedRestore& operator=(ScopedRestore&&) = delete;
+
+private:
+    T& slot_;
+    T saved_;
+};
+
+// Marks the obj_damage call being processed with its weapon, or with the enclosing explosion's
+// weapon when the call itself names none.
+class DamageWeaponScope
+{
+public:
+    explicit DamageWeaponScope(int weapon_type) : restore_(g_ctx.damage)
+    {
+        if (weapon_type >= 0) {
+            g_ctx.damage = {weapon_type, false};
+        }
+        else if (g_ctx.splash_weapon) {
+            g_ctx.damage = {*g_ctx.splash_weapon, true};
+        }
+        else {
+            g_ctx.damage = {};
+        }
+    }
+
+    DamageWeaponScope(const DamageWeaponScope&) = delete;
+    DamageWeaponScope& operator=(const DamageWeaponScope&) = delete;
+
+private:
+    ScopedRestore<DamageWeaponContext> restore_;
+};
+
+// Marks damage as delivered by a projectile impact rather than by a per-frame processor.
+class ProjectileImpactScope
+{
+public:
+    ProjectileImpactScope() : restore_(g_ctx.projectile_impact) { g_ctx.projectile_impact = true; }
+
+    ProjectileImpactScope(const ProjectileImpactScope&) = delete;
+    ProjectileImpactScope& operator=(const ProjectileImpactScope&) = delete;
+
+private:
+    ScopedRestore<bool> restore_;
+};
+
+// Damage delivered by a damaging particle. Scoped to one call inside the particle update, so
+// nothing else in that system and nothing in the burn processors is covered.
+class ParticleDamageScope
+{
+public:
+    ParticleDamageScope() : restore_(g_ctx.particle_damage) { g_ctx.particle_damage = true; }
+
+    ParticleDamageScope(const ParticleDamageScope&) = delete;
+    ParticleDamageScope& operator=(const ParticleDamageScope&) = delete;
+
+private:
+    ScopedRestore<bool> restore_;
+};
 
 // Body region of the most recent projectile hit test, tagged with the entity it was for so a
 // hit on someone else cannot be mistaken for a hit on the victim.
@@ -82,17 +177,49 @@ SplashWeaponScope::SplashWeaponScope(rf::Weapon* wp)
         return;
     }
     active_ = true;
-    prev_ = g_splash_weapon_ctx;
-    g_splash_weapon_ctx = wp->info_index;
+    prev_ = g_ctx.splash_weapon;
+    prev_hit_counted_ = g_ctx.splash_hit_counted;
+    g_ctx.splash_weapon = wp->info_index;
+    // A fresh detonation starts with its hit unspent, whatever the enclosing one did. Keep this
+    // ctor free of consuming or erasing: weapon_move_one constructs it every frame per live
+    // weapon, so anything consumed here fires on a projectile's first frame, not at its impact.
+    g_ctx.splash_scope = true;
+    g_ctx.splash_hit_counted = false;
+    // One detonation frame per scope, for the Massacre award. Nests with the scope. The weapon
+    // rides along so the detonation's own direct-hit kill can be matched to it.
+    awards_detonation_begin(wp->info_index);
 }
 
 SplashWeaponScope::~SplashWeaponScope()
 {
     if (active_) {
         // Restore instead of clearing: detonations chain (a rocket setting off a
-        // remote charge) and each explosion must keep its own weapon.
-        g_splash_weapon_ctx = prev_;
+        // remote charge) and each explosion must keep its own weapon, and its own
+        // unspent accuracy hit.
+        g_ctx.splash_weapon = prev_;
+        g_ctx.splash_hit_counted = prev_hit_counted_;
+        g_ctx.splash_scope = prev_.has_value();
+        awards_detonation_end();
     }
+}
+
+bool kill_attribution_in_splash_scope()
+{
+    return g_ctx.splash_scope;
+}
+
+bool kill_attribution_splash_hit_consume()
+{
+    if (!g_ctx.splash_scope) {
+        // Fail closed. Every stock splash application arrives inside a scope, so this costs
+        // nothing there; it stops a modded lag-comp weapon with a blast radius scoring per victim.
+        return false;
+    }
+    if (g_ctx.splash_hit_counted) {
+        return false;
+    }
+    g_ctx.splash_hit_counted = true;
+    return true;
 }
 
 // Universal damage dispatcher and the only place a weapon type is passed in.
@@ -105,23 +232,40 @@ FunHook<float(int, float, int, int, int, rf::Vector3*, int, char)> obj_damage_ho
             return obj_damage_hook.call_target(victim_handle, damage, killer_handle, weapon_type, damage_type, pos, killer_uid, flags);
         }
 
-        // obj_damage recurses (chained deaths, explosions setting off explosions), so the
-        // outer call's context is saved and restored rather than blindly cleared.
-        const DamageWeaponContext prev_ctx = g_damage_ctx;
-        if (weapon_type >= 0) {
-            g_damage_ctx = {weapon_type, false};
-        }
-        else if (g_splash_weapon_ctx) {
-            g_damage_ctx = {*g_splash_weapon_ctx, true};
-        }
-        else {
-            g_damage_ctx = {};
+        // Stats stream: snapshot whether this blow is about to kill a live
+        // clutter prop, so the alive->dead transition can be detected after the damage
+        // lands. obj_damage is the lethal-blow context that carries killer/weapon/damage
+        // type. Already-dead / delayed-delete clutter is excluded so a repeat blow on a
+        // corpse cannot emit a second time.
+        const rf::Object* const victim_before = rf::obj_from_handle(victim_handle);
+        // Local, not a static: obj_damage recurses (chained deaths), and a shared flag
+        // would be clobbered by the inner call before the outer one reads it.
+        const bool clutter_alive_before = victim_before && victim_before->type == rf::OT_CLUTTER
+            && !(victim_before->obj_flags & rf::OF_DELAYED_DELETE) && victim_before->life > 0.0f;
+
+        // obj_damage recurses (chained deaths, explosions setting off explosions), so the outer
+        // call's context is restored on the way out rather than blindly cleared. The guard is
+        // scoped to the call alone: everything after it runs with the enclosing context back in
+        // place, exactly as the manual restore this replaced did.
+        float real_damage;
+        {
+            const DamageWeaponScope weapon_scope{weapon_type};
+            real_damage = obj_damage_hook.call_target(victim_handle, damage, killer_handle,
+                                                      weapon_type, damage_type, pos,
+                                                      killer_uid, flags);
         }
 
-        const float real_damage = obj_damage_hook.call_target(victim_handle, damage, killer_handle,
-                                                              weapon_type, damage_type, pos,
-                                                              killer_uid, flags);
-        g_damage_ctx = prev_ctx;
+        // Re-resolve rather than reusing the pre-call pointer: RF handles carry a
+        // generation, so a victim freed inside the damage call yields null here instead of
+        // a dangling read. That removes the whole lifetime assumption - whether clutter
+        // death defers deletion or not, this can only ever touch a live object.
+        if (clutter_alive_before) {
+            rf::Object* const after = rf::obj_from_handle(victim_handle);
+            if (after && after->type == rf::OT_CLUTTER && after->life <= 0.0f) {
+                afstats::on_clutter_destroyed(static_cast<rf::Clutter*>(after), killer_handle,
+                                              weapon_type, damage_type);
+            }
+        }
         return real_damage;
     },
 };
@@ -147,7 +291,25 @@ FunHook<bool(rf::Weapon*)> weapon_hit_obj_hook{
     0x004C59F0,
     [](rf::Weapon* wp) {
         SplashWeaponScope splash_scope{wp};
-        return weapon_hit_obj_hook.call_target(wp);
+        // The direct-hit obj_damage lives inside this function, so the flag marks damage a real
+        // impact produced.
+        const ProjectileImpactScope impact_scope;
+        const bool result = weapon_hit_obj_hook.call_target(wp);
+        return result;
+    },
+};
+
+// The flamethrower stream damages through the particle system, not weapon objects: the particle
+// update applies contact damage here with weapon_type = -1, which is why it arrives naming no
+// weapon and inside no projectile scope. Hooked at the CALL SITE, not the function, so the burn
+// spread and the Flaming Enemies DoT stay outside it.
+CallHook<float(int, float, int, int, int, rf::Vector3*, int, char)> particle_damage_hook{
+    0x00495520,
+    [](int victim_handle, float damage, int killer_handle, int weapon_type, int damage_type,
+       rf::Vector3* pos, int killer_uid, char flags) {
+        const ParticleDamageScope particle_scope;
+        return particle_damage_hook.call_target(victim_handle, damage, killer_handle, weapon_type,
+                                                damage_type, pos, killer_uid, flags);
     },
 };
 
@@ -156,7 +318,8 @@ FunHook<bool(rf::Weapon*)> weapon_hit_level_hook{
     0x004C4EC0,
     [](rf::Weapon* wp) {
         SplashWeaponScope splash_scope{wp};
-        return weapon_hit_level_hook.call_target(wp);
+        const bool result = weapon_hit_level_hook.call_target(wp);
+        return result;
     },
 };
 
@@ -178,7 +341,17 @@ FunHook<void(rf::Entity*, rf::Item*, int*)> send_obj_kill_packet_hook{
 
 DamageWeaponContext kill_attribution_get_damage_context()
 {
-    return g_damage_ctx;
+    return g_ctx.damage;
+}
+
+bool kill_attribution_in_projectile_impact()
+{
+    return g_ctx.projectile_impact;
+}
+
+bool kill_attribution_in_particle_damage()
+{
+    return g_ctx.particle_damage;
 }
 
 int kill_attribution_get_hit_region(int entity_handle)
@@ -324,8 +497,7 @@ void kill_attribution_level_init()
     g_kill_attributions.clear();
     g_kill_attribution_sent_sequence.clear();
     g_combat_chains.clear();
-    g_splash_weapon_ctx.reset();
-    g_damage_ctx = {};
+    g_ctx = DamageResolutionContext{};
     g_hit_region_ctx = {};
     g_riot_shield_weapon_type = -2;
 }
@@ -336,5 +508,6 @@ void kill_attribution_do_patch()
     get_hit_region_multiplier_hook.install();
     weapon_hit_obj_hook.install();
     weapon_hit_level_hook.install();
+    particle_damage_hook.install();
     send_obj_kill_packet_hook.install();
 }

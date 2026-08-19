@@ -38,6 +38,7 @@ struct AFGameInfoFlags
     bool saving_enabled         = false;
     bool gaussian_spread        = false;
     bool damage_notifications   = false;
+    bool stats_enabled          = false;
 
     uint32_t game_info_flags_to_uint32() const
     {
@@ -49,7 +50,8 @@ struct AFGameInfoFlags
                (static_cast<uint32_t>(match_mode)               << 5) |
                (static_cast<uint32_t>(saving_enabled)           << 6) |
                (static_cast<uint32_t>(gaussian_spread)          << 7) |
-               (static_cast<uint32_t>(damage_notifications)     << 8);
+               (static_cast<uint32_t>(damage_notifications)     << 8) |
+               (static_cast<uint32_t>(stats_enabled)            << 9);
     }
 };
 
@@ -1150,6 +1152,7 @@ extern bool g_manually_loaded_level;
 extern std::string g_ads_config_name;
 extern AFGameInfoFlags g_game_info_server_flags;
 extern std::string g_prev_level;
+extern bool g_is_overtime;
 extern MatchInfo g_match_info;
 
 enum class UpcomingGameTypeSelection {
@@ -1207,6 +1210,9 @@ void update_pre_match_powerups(rf::Player* player);
 void start_match();
 void cancel_match();
 void start_pre_match();
+// The afstats::MatchState value describing the ready-up match system right now,
+// as a raw uint8 so this header stays free of the stats API. Read at round_start.
+uint8_t af_match_state_for_stats();
 void set_ready_status(rf::Player* player, bool is_ready);
 void remove_ready_player_silent(rf::Player* player);
 void toggle_ready_status(rf::Player* player);
@@ -1241,3 +1247,13 @@ bool multi_set_gametype_alpine(std::string_view gametype_name);
 bool is_gametype_name_valid(std::string_view gametype_name);
 void launch_alpine_dedicated_server();
 std::string build_info_command_output();
+
+// Called once per melee swing counted as fired. entity_damage_hook spends the credit when that
+// swing's deferred projectile connects, so melee hits can never outrun melee swings. Keyed per
+// weapon, because accuracy buckets are.
+void melee_grant_hit_credit(rf::Player* attacker, int weapon_type);
+
+// The per-player accuracy ledgers are indexed by player id, which the engine reuses -- both must
+// be cleared on player destroy and on level load so a joiner cannot inherit them.
+void accuracy_stats_on_player_destroy(rf::Player* player);
+void accuracy_stats_level_init();

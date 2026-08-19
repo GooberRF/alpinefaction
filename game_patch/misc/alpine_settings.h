@@ -98,6 +98,7 @@ struct AlpineGameSettings
     bool world_hud_team_player_labels = false;
     bool show_location_pings = true;
     bool play_hit_sounds = true;
+    bool show_awards = true;
 
     bool spray_display = true;
     int selected_spray_index = 0;
@@ -146,6 +147,7 @@ struct AlpineGameSettings
         pixel_light_overbright = std::clamp(value, 0.0f, 3.0f);
     }
     bool show_glares = true;
+    bool weather = true;
     bool show_enemy_bullets = true;
     bool fps_counter = true;
     static constexpr int min_fps_counter_average_ms = 0;

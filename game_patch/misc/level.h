@@ -13,6 +13,7 @@ constexpr int dash_level_props_chunk_id = 0xDA58FA00;
 constexpr int alpine_mesh_chunk_id = 0x0AFBAE01;
 constexpr int alpine_corona_chunk_id = 0x0AFBAE03;
 constexpr int alpine_bag_chunk_id = 0x0AFBAE04;
+constexpr int alpine_weather_region_chunk_id = 0x0AFBAE06;
 
 // should match structure in editor_patch\level.h
 struct AlpineLevelProperties

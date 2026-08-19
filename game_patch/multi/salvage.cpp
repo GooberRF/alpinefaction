@@ -13,9 +13,12 @@
 #include <patch_common/MemUtils.h>
 #include <common/utils/string-utils.h>
 #include "salvage.h"
+#include "awards.h"
 #include "gametype.h"
 #include "server_internal.h"
 #include "alpine_packets.h"
+#include "../fflink/afstats_events.h"
+#include "../fflink/fflink_session.h"
 #include "../hud/multi_spectate.h"
 #include "../misc/waypoints.h"
 #include "../rf/entity.h"
@@ -580,8 +583,20 @@ void spawn_flag_at_home()
     }
 }
 
+// Set for exactly one drop_flag_at call by salvage_handle_drop_flag_request; every
+// other drop (death, disconnect, forced) is a death drop.
+static bool g_drop_is_manual = false;
+
 void drop_flag_at(rf::Player* prev_carrier, const rf::Vector3& drop_pos)
 {
+    // Salvage's object is neutral, so its team is always the "none" sentinel.
+    afstats::on_flag_event(g_drop_is_manual ? afstats::FlagEventKind::drop_manual
+                                            : afstats::FlagEventKind::drop_death,
+                           afstats::team_none, prev_carrier, drop_pos);
+    g_drop_is_manual = false;
+    // Every drop cause funnels through here, so this is the one place Flag Runner has to break.
+    awards_on_sal_flag_dropped(prev_carrier);
+
     set_carrier(nullptr);
     g_salvage_info.state = SalFlagState::Dropped;
     g_salvage_info.spawn_delay_timer.invalidate();
@@ -1178,6 +1193,12 @@ void salvage_on_flag_touch(rf::Player* player, rf::Item* item)
     // attachment just computed. CTF clears the same bit when a flag is taken.
     set_flag_item_class_spin(false);
 
+    const bool from_base = g_salvage_info.state == SalFlagState::AtSpawn;
+    afstats::on_flag_event(from_base ? afstats::FlagEventKind::steal
+                                     : afstats::FlagEventKind::pickup,
+                           afstats::team_none, player, ep->pos);
+    awards_on_sal_flag_taken(player, from_base);
+
     set_carrier(player);
     g_salvage_info.state = SalFlagState::Carried;
     g_salvage_info.last_carrier_pos = ep->pos;
@@ -1210,6 +1231,9 @@ void salvage_on_base_touch(rf::Player* player, rf::Item* item)
     else {
         ++g_salvage_info.blue_caps;
     }
+
+    afstats::on_flag_event(afstats::FlagEventKind::capture, afstats::team_none, player, item->pos);
+    awards_on_sal_capture(player);
 
     rf::player_add_score(player, 4);
     if (player->stats) {
@@ -1257,6 +1281,7 @@ void salvage_handle_drop_flag_request(rf::Player* player)
     if (g_salvage_info.carrier != player) return;
 
     rf::Entity* ep = alive_entity_for(player);
+    g_drop_is_manual = true;
     drop_flag_at(player, ep ? ep->pos : g_salvage_info.last_carrier_pos);
 }
 
@@ -1299,6 +1324,8 @@ void salvage_do_frame()
     if (g_salvage_info.state == SalFlagState::Delayed) {
         if (g_salvage_info.spawn_delay_timer.valid() && g_salvage_info.spawn_delay_timer.elapsed()) {
             spawn_flag_at_home();
+            afstats::on_flag_event(afstats::FlagEventKind::reset, afstats::team_none, nullptr,
+                                   g_salvage_info.spawn_pos);
             announce("The flag is now available!");
             play_local_transition_sound(stock_sound_id::flag_respawn);
             salvage_broadcast_state();
@@ -1308,6 +1335,8 @@ void salvage_do_frame()
     else if (g_salvage_info.state == SalFlagState::Dropped) {
         if (g_salvage_info.return_timer.valid() && g_salvage_info.return_timer.elapsed()) {
             spawn_flag_at_home();
+            afstats::on_flag_event(afstats::FlagEventKind::return_timeout, afstats::team_none,
+                                   nullptr, g_salvage_info.spawn_pos);
             announce("The flag has returned.");
             play_local_transition_sound(stock_sound_id::flag_respawn);
             salvage_broadcast_state();
@@ -1356,7 +1385,39 @@ FunHook<void(rf::Player*, rf::Item*)> multi_ctf_apply_flag_hook{
     0x004738D0,
     [](rf::Player* pp, rf::Item* item) {
         if (!gt_is_salvage()) {
+            // The engine's own dispatch point for a CTF flag touch, and the only
+            // place that sees the pre-touch state a steal is distinguished by.
+            const bool red_flag = item && (item->item_flags & rf::IF_RED_FLAG) != 0;
+            const bool in_base_before = item && (item->item_flags & rf::IF_CTF_FLAG) != 0;
+            const rf::Vector3 touch_pos = item ? item->pos : rf::Vector3{};
+            rf::Player* const carrier_before =
+                red_flag ? rf::multi_ctf_get_red_flag_player() : rf::multi_ctf_get_blue_flag_player();
+
             multi_ctf_apply_flag_hook.call_target(pp, item);
+
+            if (rf::is_server && pp && item) {
+                rf::Player* const carrier_after = red_flag ? rf::multi_ctf_get_red_flag_player()
+                                                           : rf::multi_ctf_get_blue_flag_player();
+                const bool took_flag = carrier_after == pp && carrier_before != pp;
+                if (took_flag) {
+                    awards_on_ctf_flag_taken(pp, red_flag, in_base_before, touch_pos);
+                }
+
+                if (fflink::afstats_server_enabled()) {
+                    const uint8_t flag_team = red_flag ? afstats::team_red : afstats::team_blue;
+                    const bool in_base_after = red_flag ? rf::multi_ctf_is_red_flag_in_base()
+                                                        : rf::multi_ctf_is_blue_flag_in_base();
+                    if (took_flag) {
+                        afstats::on_flag_event(in_base_before ? afstats::FlagEventKind::steal
+                                                              : afstats::FlagEventKind::pickup,
+                                               flag_team, pp, touch_pos);
+                    }
+                    else if (!in_base_before && in_base_after) {
+                        afstats::on_flag_event(afstats::FlagEventKind::return_touch, flag_team, pp,
+                                               touch_pos);
+                    }
+                }
+            }
             return;
         }
         salvage_on_flag_touch(pp, item);
@@ -1368,7 +1429,27 @@ FunHook<void(rf::Player*, rf::Item*)> multi_ctf_apply_item_hook{
     0x00473BA0,
     [](rf::Player* pp, rf::Item* item) {
         if (!gt_is_salvage()) {
+            // A base touch only scores when the toucher was carrying the enemy flag,
+            // which the team score moving is the reliable evidence of.
+            const int red_before = rf::multi_ctf_get_red_team_score();
+            const int blue_before = rf::multi_ctf_get_blue_team_score();
+            const rf::Vector3 base_pos = item ? item->pos : rf::Vector3{};
+
             multi_ctf_apply_item_hook.call_target(pp, item);
+
+            if (rf::is_server && pp && item) {
+                const bool red_capped = rf::multi_ctf_get_red_team_score() != red_before;
+                const bool blue_capped = rf::multi_ctf_get_blue_team_score() != blue_before;
+                if (red_capped || blue_capped) {
+                    awards_on_ctf_capture(pp);
+                    if (fflink::afstats_server_enabled()) {
+                        // The flag that was captured is the enemy's, not the capper's.
+                        afstats::on_flag_event(afstats::FlagEventKind::capture,
+                                               red_capped ? afstats::team_blue : afstats::team_red,
+                                               pp, base_pos);
+                    }
+                }
+            }
             return;
         }
         salvage_on_base_touch(pp, item);
