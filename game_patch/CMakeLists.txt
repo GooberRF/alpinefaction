@@ -109,6 +109,8 @@ set(SRCS
     hud/hud_internal.h
     hud/hud.cpp
     hud/hud.h
+    hud/subtitles.cpp
+    hud/subtitles.h
     hud/hud_world.cpp
     hud/hud_world.h
     hud/remote_server_cfg_ui.cpp
