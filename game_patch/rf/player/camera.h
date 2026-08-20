@@ -34,6 +34,10 @@ namespace rf
     static auto& camera_enter_freelook = addr_as_ref<bool(Camera *camera)>(0x0040DCF0);
     static auto& camera_enter_fixed = addr_as_ref<void(Camera *camera)>(0x0040DF70);
     static auto& camera_enter_random_fixed_pos = addr_as_ref<void()>(0x0040E070);
+    // Runs camera_do_frame_one (0x0040D850) for every in-use camera. Normally called
+    // from gameplay_sim_frame; callable standalone (demo pause keeps cameras alive
+    // while the rest of the sim is frozen).
+    static auto& cameras_do_frame = addr_as_ref<void()>(0x0040D820);
 
     inline Vector3 camera_get_pos(Camera *camera)
     {

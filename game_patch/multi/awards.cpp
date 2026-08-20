@@ -22,6 +22,7 @@
 #include "../sound/sound.h"
 #include "alpine_packets.h"
 #include "awards.h"
+#include "demo/demo.h"
 #include "gametype.h"
 #include "kill_attribution.h"
 #include "multi.h"
@@ -301,6 +302,15 @@ void grant_award(rf::Player* recipient, AwardId id, rf::Player* victim)
         }
         if (player.spectatee.value_or(nullptr) == recipient) {
             notify(&player);
+        }
+    }
+
+    // Mirror to the demo recorder tagged with the earner so playback shows it to whoever
+    // is spectating the earner.
+    if (demo_record_recorder()) {
+        const int earner_id = player_id_of(recipient);
+        if (earner_id >= 0) {
+            demo_record_award(static_cast<uint8_t>(id), wire_victim, static_cast<uint8_t>(earner_id));
         }
     }
 }

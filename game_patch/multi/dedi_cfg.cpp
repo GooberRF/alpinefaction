@@ -1324,6 +1324,30 @@ static void apply_known_key_in_order(AlpineServerConfig& cfg, const std::string&
         if (auto v = node.value<bool>())
             cfg.upnp_enabled = *v;
     }
+    else if (key == "demo_auto_record") {
+        if (auto v = node.value<bool>())
+            cfg.demo_auto_record = *v;
+    }
+    else if (key == "demo_chat_record") {
+        if (auto v = node.value<bool>())
+            cfg.demo_chat_record = *v;
+    }
+    else if (key == "fflink_demo_upload") {
+        if (auto v = node.value<bool>())
+            cfg.fflink_demo_upload = *v;
+    }
+    else if (key == "fflink_demo_max_mb") {
+        if (auto v = node.value<int>())
+            cfg.fflink_demo_max_mb = *v;
+    }
+    else if (key == "fflink_demo_queue_max") {
+        if (auto v = node.value<int>())
+            cfg.fflink_demo_queue_max = *v;
+    }
+    else if (key == "fflink_demo_delete_after_send") {
+        if (auto v = node.value<bool>())
+            cfg.fflink_demo_delete_after_send = *v;
+    }
     else if (key == "dynamic_rotation") {
         if (auto v = node.value<bool>())
             cfg.dynamic_rotation = *v;
@@ -2284,6 +2308,12 @@ void print_alpine_dedicated_server_config_info(std::string& output, bool verbose
     std::format_to(iter, "  Max players:                           {}\n", netgame.max_players);
     std::format_to(iter, "  Levels in rotation:                    {}\n", cfg.levels.size());
     std::format_to(iter, "  Dynamic rotation:                      {}\n", cfg.dynamic_rotation);
+    std::format_to(iter, "  Demo auto record:                      {}\n", cfg.demo_auto_record);
+    std::format_to(iter, "  Demo chat record:                      {}\n", cfg.demo_chat_record);
+    std::format_to(iter, "  FactionFiles demo upload:              {}\n", cfg.fflink_demo_upload);
+    std::format_to(iter, "  FactionFiles demo max MB:              {}\n", cfg.fflink_demo_max_mb);
+    std::format_to(iter, "  FactionFiles demo queue max:           {}\n", cfg.fflink_demo_queue_max);
+    std::format_to(iter, "  FactionFiles demo delete after send:   {}\n", cfg.fflink_demo_delete_after_send);
 
     if (rf::mod_param.found()) {
         std::format_to(iter, "  TC mod loaded:                         {}\n", rf::mod_param.get_arg());

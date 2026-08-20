@@ -484,7 +484,7 @@ protected:
         if (is_listen_server_host(p)) {
             return false; // has no way to vote at all; see is_listen_server_host
         }
-        if (p->version_info.software == ClientSoftware::Browser
+        if (p->is_non_participant()
             || p->is_bot
             || player_is_idle(p)
             || !player_meets_alpine_restrict(p)) {
@@ -1022,7 +1022,7 @@ struct VoteKick : public Vote
             send_vote_reject_msg("Cannot start vote: the server host cannot be kicked.", source);
             return false;
         }
-        if (m_target_player->is_browser) {
+        if (m_target_player->is_non_participant()) {
             send_vote_reject_msg("Cannot start vote: that connection is a server browser, not a player.",
                                        source);
             return false;

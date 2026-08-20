@@ -10,6 +10,8 @@
 #include "../misc/alpine_settings.h"
 #include "../misc/waypoints_utils.h"
 #include "../multi/multi.h"
+#include "../multi/demo/demo.h"
+#include "../multi/demo/demo_ui.h"
 #include "../multi/endgame_votes.h"
 #include "../rf/input.h"
 #include "../rf/entity.h"
@@ -465,16 +467,19 @@ CodeInjection player_execute_action_patch3{
                 toggle_chat_menu(ChatMenuType::Spectate);
             } else if (alpine_action_index
                 == static_cast<int>(rf::AlpineControlConfigAction::AF_ACTION_REMOTE_SERVER_CFG)
-                && is_server_minimum_af_version(1, 2)) {
+                && is_server_minimum_af_version(1, 2)
+                && !demo_playback_active()) {
                 if (vote_panel_is_gameplay_overlay_active()) {
                     vote_panel_close();
                 }
+                demo_controls_ui_close();
                 g_remote_server_cfg_popup.toggle();
             } else if (alpine_action_index
                 == static_cast<int>(rf::AlpineControlConfigAction::AF_ACTION_VOTE_MENU)
                 && rf::is_multi
                 && !rf::is_server
-                && rf::gameseq_get_state() == rf::GS_GAMEPLAY) {
+                && rf::gameseq_get_state() == rf::GS_GAMEPLAY
+                && !demo_playback_active()) {
                 vote_panel_toggle_gameplay();
             } else if (alpine_action_index
                 == static_cast<int>(rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_ATTACH)

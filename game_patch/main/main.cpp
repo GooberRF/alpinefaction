@@ -30,6 +30,7 @@
 #include "../hud/multi_spectate.h"
 #include "../object/object.h"
 #include "../multi/multi.h"
+#include "../multi/demo/demo.h"
 #include "../multi/gametype.h"
 #include "../multi/mutators.h"
 #include "../multi/bagman.h"
@@ -43,6 +44,7 @@
 #include "../misc/misc.h"
 #include "../misc/achievements.h"
 #include "../misc/spray_picker.h"
+#include "../multi/demo/demo_browser.h"
 #include "../misc/alpine_options.h"
 #include "../misc/alpine_settings.h"
 #include "../misc/vpackfile.h"
@@ -209,12 +211,14 @@ CodeInjection after_frame_render_hook{
             && state != rf::GS_NEW_LEVEL
             && state != rf::GS_MULTI_GETTING_STATE_INFO) {
             // Draw on top (after scene)
+            demo_playback_render_seek_overlay(); // first: covers the stale frame, UI below stays on top
             frametime_render_ui();
             achievement_system_do_frame();
             awards_client_do_frame();
             fullscreen_overlay_do_frame();
             gas_region_transition_do_frame();
             spray_picker_render();
+            demo_browser_render();
 #if !defined(NDEBUG) && defined(HAS_EXPERIMENTAL)
             experimental_render();
 #endif
@@ -324,6 +328,8 @@ FunHook<void(bool)> level_init_post_hook{
         populate_fullscreen_overlay_events();
         reset_achievement_state_info();
         multi_level_init_post_gametypes();
+        // After gametype init so the demo snapshot includes koth/bagman/salvage/pit state
+        demo_server_on_level_init_post();
         // Multiplayer resets the jetpack from its own level-init injection.
         if (!rf::is_multi) {
             jetpack_level_init();

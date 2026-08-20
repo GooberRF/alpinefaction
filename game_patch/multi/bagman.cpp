@@ -710,7 +710,8 @@ rf::Item* find_client_side_bag_pickup_item()
     if (g_bagman_info.bag_item_type < 0) return nullptr;
     rf::Item* it = rf::item_list.next;
     while (it && it != &rf::item_list) {
-        if (it->info_index == g_bagman_info.bag_item_type) {
+        if (it->info_index == g_bagman_info.bag_item_type &&
+            !(it->obj_flags & (rf::OF_DELAYED_DELETE | rf::OF_HIDDEN))) {
             return it;
         }
         it = it->next;

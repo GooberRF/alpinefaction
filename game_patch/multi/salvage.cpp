@@ -637,15 +637,18 @@ rf::Item* find_client_side_flag_item()
 {
     if (g_salvage_info.flag_item_type < 0) return nullptr;
 
+    // A hidden or dying item is never the live flag.
     if (rf::Item* cached = item_from_handle_or_null(g_client_flag_item_handle)) {
-        if (cached->info_index == g_salvage_info.flag_item_type) {
+        if (cached->info_index == g_salvage_info.flag_item_type &&
+            !(cached->obj_flags & (rf::OF_DELAYED_DELETE | rf::OF_HIDDEN))) {
             return cached;
         }
     }
     g_client_flag_item_handle = -1;
 
     for (rf::Item* it = rf::item_list.next; it && it != &rf::item_list; it = it->next) {
-        if (it->info_index == g_salvage_info.flag_item_type) {
+        if (it->info_index == g_salvage_info.flag_item_type &&
+            !(it->obj_flags & (rf::OF_DELAYED_DELETE | rf::OF_HIDDEN))) {
             g_client_flag_item_handle = it->handle;
             return it;
         }

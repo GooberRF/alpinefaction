@@ -19,6 +19,7 @@
 #include "../rf/weapon.h"
 #include "../rf/os/frametime.h"
 #include "multi.h"
+#include "demo/demo.h"
 #include "mutators.h"
 #include "network.h"
 #include "server_internal.h"
@@ -261,6 +262,18 @@ static void af_process_ping_location_req_packet(const void* data, size_t len, co
                 : af_send_ping_location_packet_to_team(&pos, player->net_data->player_id, player->team);
 }
 
+static af_ping_location_packet build_ping_location_packet(const rf::Vector3* pos, uint8_t player_id)
+{
+    af_ping_location_packet ping_location_packet{};
+    ping_location_packet.header.type = static_cast<uint8_t>(af_packet_type::af_ping_location);
+    ping_location_packet.header.size = sizeof(ping_location_packet) - sizeof(ping_location_packet.header);
+    ping_location_packet.pos.x = pos->x;
+    ping_location_packet.pos.y = pos->y;
+    ping_location_packet.pos.z = pos->z;
+    ping_location_packet.player_id = player_id;
+    return ping_location_packet;
+}
+
 void af_send_ping_location_packet(rf::Vector3* pos, uint8_t player_id, rf::Player* player)
 {
     // Send: server -> client
@@ -269,13 +282,7 @@ void af_send_ping_location_packet(rf::Vector3* pos, uint8_t player_id, rf::Playe
     }
 
     std::byte packet_buf[rf::max_packet_size];
-    af_ping_location_packet ping_location_packet{};
-    ping_location_packet.header.type = static_cast<uint8_t>(af_packet_type::af_ping_location);
-    ping_location_packet.header.size = sizeof(ping_location_packet) - sizeof(ping_location_packet.header);
-    ping_location_packet.pos.x = pos->x;
-    ping_location_packet.pos.y = pos->y;
-    ping_location_packet.pos.z = pos->z;
-    ping_location_packet.player_id = player_id;
+    af_ping_location_packet ping_location_packet = build_ping_location_packet(pos, player_id);
 
     std::memcpy(packet_buf, &ping_location_packet, sizeof(ping_location_packet));
 
@@ -297,6 +304,13 @@ void af_send_ping_location_packet_to_team(rf::Vector3* pos, uint8_t player_id, r
         if (player.team != team) continue; // Skip if not on the correct team
 
         af_send_ping_location_packet(pos, player_id, &player);
+    }
+
+    // The teamless demo recorder fails the team compare above; mirror the packet
+    // into the demo tagged with the scoped team so playback can filter it.
+    if (demo_record_active()) {
+        af_ping_location_packet ping_location_packet = build_ping_location_packet(pos, player_id);
+        demo_record_capture_team_scoped(&ping_location_packet, sizeof(ping_location_packet), team);
     }
 }
 
@@ -372,6 +386,34 @@ void af_send_damage_notify_packet(uint8_t player_id, float damage, bool died, bo
     af_send_packet(player, packet_buf, sizeof(damage_notify_packet), false);
 }
 
+void af_send_damage_notify_packet_for_demo(uint8_t victim_id, float damage, bool died, bool crit,
+                                           uint8_t attacker_id, rf::Player* recorder)
+{
+    // Send: server -> demo recorder only
+    if (!rf::is_server || !recorder) {
+        return;
+    }
+
+    const int rounded_damage = static_cast<int>(std::round(damage));
+    if (rounded_damage <= 0) {
+        return; // skip negligible damage
+    }
+
+    af_damage_notify_packet damage_notify_packet{};
+    damage_notify_packet.header.type = static_cast<uint8_t>(af_packet_type::af_damage_notify);
+    damage_notify_packet.header.size = sizeof(damage_notify_packet) - sizeof(damage_notify_packet.header) + 1;
+    damage_notify_packet.player_id = victim_id;
+    damage_notify_packet.damage = static_cast<uint16_t>(rounded_damage);
+    damage_notify_packet.flags =
+        (died ? AF_DAMAGE_NOTIFY_DIED : 0) |
+        (crit ? AF_DAMAGE_NOTIFY_CRIT : 0);
+
+    std::byte packet_buf[sizeof(damage_notify_packet) + 1];
+    std::memcpy(packet_buf, &damage_notify_packet, sizeof(damage_notify_packet));
+    packet_buf[sizeof(damage_notify_packet)] = static_cast<std::byte>(attacker_id);
+    af_send_packet(recorder, packet_buf, sizeof(packet_buf), false);
+}
+
 static void af_process_damage_notify_packet(const void* data, size_t len, const rf::NetAddr& addr)
 {
     // Receive: client <- server
@@ -385,6 +427,21 @@ static void af_process_damage_notify_packet(const void* data, size_t len, const 
     }
 
     std::memcpy(&damage_notify_packet, data, sizeof(damage_notify_packet));
+
+    // Attacker-tagged form (recorded demos): the stream carries every player's
+    // notifications, so mirror only those of the player currently being spectated -
+    // matching what a live first-person spectator of that player would get. Live
+    // traffic ignores any trailing bytes (forward-compatible tail) and falls through
+    // to process the base packet.
+    if (len > sizeof(damage_notify_packet) && demo_playback_active()) {
+        const uint8_t attacker_id = static_cast<const uint8_t*>(data)[sizeof(damage_notify_packet)];
+        // Dealing damage marks the attacker as recently active for auto-follow
+        demo_playback_note_player_activity(rf::multi_find_player_by_id(attacker_id));
+        rf::Player* spectated = multi_spectate_get_target_player();
+        if (!spectated || !spectated->net_data || spectated->net_data->player_id != attacker_id) {
+            return;
+        }
+    }
 
     rf::Player* player = rf::multi_find_player_by_id(damage_notify_packet.player_id);
     if (!player) {
@@ -1892,8 +1949,11 @@ void af_send_should_gib_req(uint32_t obj_handle)
     for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
         // 1.2.1 through 1.3 only. Alpine 1.4+ receives the same decision as
         // AF_KILL_FLAG_GIBBED inside the kill-info packet it is already being sent.
+        // Never captured into demos: the payload is keyed by server obj_handle,
+        // which is meaningless on replay (kill info is keyed by player id instead).
         if (is_player_minimum_af_client_version(&player, 1, 2, 1)
-            && !is_player_minimum_af_client_version(&player, 1, 4, 0)) {
+            && !is_player_minimum_af_client_version(&player, 1, 4, 0)
+            && !player.is_observer()) {
             af_send_server_req_packet(packet, &player);
         }
     }
@@ -1936,6 +1996,29 @@ void af_send_award(rf::Player* player, uint8_t award_id, uint8_t victim_player_i
     packet.payload = AwardPayload{award_id, victim_player_id};
 
     af_send_server_req_packet(packet, player);
+}
+
+void af_send_award_for_demo(rf::Player* recorder, uint8_t award_id, uint8_t victim_player_id, uint8_t earner_id)
+{
+    if (!rf::is_server || !recorder) {
+        return;
+    }
+
+    af_server_req_packet packet{};
+    packet.header.type = static_cast<uint8_t>(af_packet_type::af_server_req);
+    packet.header.size = sizeof(uint8_t) + sizeof(AwardPayload) + 1; // req_type + payload + earner tag
+    packet.req_type = af_server_req_type::af_sreq_award;
+    packet.payload = AwardPayload{award_id, victim_player_id};
+
+    std::byte buf[rf::max_packet_size];
+    size_t offset = 0;
+    std::memcpy(buf + offset, &packet.header, sizeof(packet.header));
+    offset += sizeof(packet.header);
+    buf[offset++] = static_cast<std::byte>(packet.req_type);
+    std::visit([&](const auto& payload) { serialize_payload(payload, buf, offset); }, packet.payload);
+    buf[offset++] = static_cast<std::byte>(earner_id);
+
+    af_send_packet(recorder, buf, static_cast<int>(offset), true);
 }
 
 // Jetpacks mutator: relay a player's thrust state to everyone else.
@@ -2455,6 +2538,12 @@ static void af_process_server_req_packet(const void* data, size_t len, const rf:
 
     switch (req_type) {
         case af_server_req_type::af_sreq_should_gib: {
+            // Keyed by server obj_handle, which does not match the handles a replay
+            // reconstructs. Demos never legitimately contain it (the recorder reports
+            // 1.4+ and gets AF_KILL_FLAG_GIBBED via kill info), so drop any stray one.
+            if (demo_playback_active()) {
+                break;
+            }
             if (remaining < sizeof(uint32_t)) {
                 xlog::warn("af_process_server_req_packet: ShouldGib payload too short");
                 return;
@@ -2720,6 +2809,17 @@ static void af_process_server_req_packet(const void* data, size_t len, const rf:
                 // Fail closed: a newer server naming an award this build has no text for.
                 xlog::debug("af_process_server_req_packet: unknown award id {}", award_id);
                 return;
+            }
+
+            // Earner-tagged form (recorded demos): the stream carries every player's awards,
+            // so show only the one currently being spectated.
+            if (remaining > sizeof(AwardPayload) && demo_playback_active()) {
+                const uint8_t earner_id = bytes[offset + sizeof(AwardPayload)];
+                demo_playback_note_player_activity(rf::multi_find_player_by_id(earner_id));
+                rf::Player* spectated = multi_spectate_get_target_player();
+                if (!spectated || !spectated->net_data || spectated->net_data->player_id != earner_id) {
+                    return;
+                }
             }
 
             awards_client_on_award_received(award_id, victim_player_id);
@@ -5054,6 +5154,11 @@ void af_send_player_info_response(const rf::NetAddr& addr)
     constexpr int max_name_len = 31; // wire protocol cap
     auto player_list = SinglyLinkedList(rf::player_list);
     for (auto& player : player_list) {
+        // The demo recorder is not a real client - keep it out of server-browser
+        // player listings
+        if (player.is_observer()) {
+            continue;
+        }
         int name_len = std::min<int>(player.name.size(), max_name_len);
         int entry_size = 1 + 2 + 2 + 2 + 2 + name_len + 1; // flags + score + kills + deaths + caps + name + null
 

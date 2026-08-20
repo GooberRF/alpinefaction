@@ -34,6 +34,7 @@
 #include "multi.h"
 #include "server_internal.h"
 #include "faction_files.h"
+#include "demo/demo.h"
 #include "../misc/alpine_settings.h"
 #include "../misc/waypoints.h"
 
@@ -1038,8 +1039,18 @@ public:
 class SetNewLevelStateDownloadListener : public LevelDownloadOperation::Listener
 {
 public:
-    void on_finish(LevelDownloadOperation&, bool) override
+    void on_finish(LevelDownloadOperation& operation, bool success) override
     {
+        if (!success && demo_playback_active()) {
+            // A live join entering GS_NEW_LEVEL without the level shows the engine's
+            // join-failed handling, but a demo session has no server to fall back on -
+            // end playback cleanly instead
+            rf::console::print("{}", operation.get_state() == LevelDownloadState::not_found
+                                         ? "Cannot play demo: the map was not found on FactionFiles"
+                                         : "Cannot play demo: the map download failed");
+            demo_playback_stop();
+            return;
+        }
         xlog::trace("Changing game state to GS_NEW_LEVEL");
         rf::gameseq_set_state(rf::GS_NEW_LEVEL, false);
     }

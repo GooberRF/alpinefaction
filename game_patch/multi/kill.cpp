@@ -27,6 +27,7 @@
 #include "multi_private.h"
 #include "mutators.h"
 #include "alpine_packets.h"
+#include "demo/demo.h"
 #include "awards.h"
 #include "sprays.h"
 #include "gungame.h"
@@ -498,6 +499,7 @@ void on_player_kill(rf::Player* killed_player, rf::Player* killer_player)
             mutators_on_player_frag(killer_player);
         }
 
+        demo_playback_note_player_activity(killer_player); // auto-follow candidate during playback
         multi_spectate_on_player_kill(killed_player, killer_player);
 
         if (gt_is_gungame() && killer_player != killed_player) {

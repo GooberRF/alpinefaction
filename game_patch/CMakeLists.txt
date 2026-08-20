@@ -159,6 +159,24 @@ set(SRCS
     multi/kill.h
     multi/kill_attribution.cpp
     multi/kill_attribution.h
+    multi/server_config_snapshot.h
+    multi/server_config_snapshot.cpp
+    multi/demo/demo.h
+    multi/demo/demo.cpp
+    multi/demo/demo_internal.h
+    multi/demo/demo_file.h
+    multi/demo/demo_file.cpp
+    multi/demo/demo_server_config.h
+    multi/demo/demo_server_config.cpp
+    multi/demo/demo_record.cpp
+    multi/demo/demo_playback.cpp
+    multi/demo/demo_browser.h
+    multi/demo/demo_browser.cpp
+    multi/demo/demo_details.h
+    multi/demo/demo_details.cpp
+    multi/demo/demo_ui.h
+    multi/demo/demo_ui.cpp
+    multi/demo/demo_powerup_timers.cpp
     multi/awards.cpp
     multi/awards.h
     multi/network.cpp
@@ -184,6 +202,8 @@ set(SRCS
     fflink/afstats_client.h
     fflink/afstats_events.cpp
     fflink/afstats_events.h
+    fflink/demo_upload.cpp
+    fflink/demo_upload.h
     fflink/fflink.cpp
     fflink/fflink.h
     fflink/fflink_achievements.cpp
@@ -344,7 +364,6 @@ target_include_directories(AlpineFaction PRIVATE
     ${CMAKE_SOURCE_DIR}/vendor/xxhash
     ${CMAKE_SOURCE_DIR}/vendor/stb
     ${CMAKE_SOURCE_DIR}/vendor/freetype/include
-    ${CMAKE_SOURCE_DIR}/vendor/nlohmann
 )
 
 if(NOT MSVC)
