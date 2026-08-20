@@ -57,8 +57,11 @@ void auto_team_balance_on_player_death(rf::Player* killed_player);
 bool auto_team_balance_blocks_team_change(rf::Player* player, int requested_team);
 bool humans_vs_bots_active();
 void send_sound_packet_throwaway(rf::Player* target, int sound_id);
+// World-space sound broadcast to every connected player, via the stock sound packet.
+void broadcast_sound_packet_3d(const rf::Vector3& pos, int sound_id);
 void multi_change_level_alpine(const char* filename);
 const char* get_rand_level_filename();
-void shuffle_level_array();void process_queued_spawn_points_from_items();
+void shuffle_level_array();
+void process_queued_spawn_points_from_items();
 bool is_player_idle(const rf::Player* player);
 void entity_drop_powerup(rf::Entity* ep, int powerup_type, int count);

@@ -225,25 +225,6 @@ static ForceCharacterConfig parse_force_character_config(const toml::table& t, F
     return c;
 }
 
-static CriticalHitsConfig parse_critical_hits_config(const toml::table& t, CriticalHitsConfig c)
-{
-    if (auto x = t["enabled"].value<bool>())
-        c.enabled = *x;
-
-    if (c.enabled) {
-        if (auto v = t["reward_duration"].value<int>())
-            c.set_reward_duration(*v);
-        if (auto v = t["base_chance"].value<float>())
-            c.set_base_chance(*v);
-        if (auto v = t["dynamic_scale"].value<bool>())
-            c.dynamic_scale = *v;
-        if (auto v = t["dynamic_damage_bonus_ceiling"].value<float>())
-            c.set_damage_bonus_ceiling(*v);
-    }
-
-    return c;
-}
-
 static WelcomeMessageConfig parse_welcome_message_config(const toml::table& t, WelcomeMessageConfig c)
 {
     if (auto x = t["enabled"].value<bool>())
@@ -773,9 +754,6 @@ AlpineServerConfigRules parse_server_rules(const toml::table& t, const AlpineSer
 
     if (auto sub = t["force_character"].as_table())
         o.force_character = parse_force_character_config(*sub, o.force_character);
-
-    if (auto sub = t["critical_hits"].as_table())
-        o.critical_hits = parse_critical_hits_config(*sub, o.critical_hits);
 
     if (auto v = t["gg_rampage_rewards"].value<bool>())
         o.gungame_rampage_rewards = *v;
@@ -1764,7 +1742,8 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
         rules.mutators.vampire_heal_ratio != b.mutators.vampire_heal_ratio ||
         rules.mutators.hide_health_armor_pickups != b.mutators.hide_health_armor_pickups ||
         rules.mutators.featured_weapon_index != b.mutators.featured_weapon_index ||
-        rules.mutators.redirect_exclude_thrown != b.mutators.redirect_exclude_thrown;
+        rules.mutators.redirect_exclude_thrown != b.mutators.redirect_exclude_thrown ||
+        rules.mutators.crits_enabled != b.mutators.crits_enabled;
 
     if (base || mutators_changed) {
         std::string joined;
@@ -2188,25 +2167,6 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
         std::format_to(iter, "  Forced character:                      {}\n", rules.force_character.enabled);
         if (rules.force_character.enabled) {
             std::format_to(iter, "    Character:                           {} ({})\n", rules.force_character.character_name, rules.force_character.character_index);
-        }
-    }
-
-    // critical hits
-    if (base || rules.critical_hits.enabled != b.critical_hits.enabled ||
-        (rules.critical_hits.enabled && rules.critical_hits.reward_duration != b.critical_hits.reward_duration) ||
-        (rules.critical_hits.enabled && rules.critical_hits.base_chance != b.critical_hits.base_chance) ||
-        (rules.critical_hits.enabled && rules.critical_hits.dynamic_scale != b.critical_hits.dynamic_scale) ||
-        (rules.critical_hits.enabled && rules.critical_hits.dynamic_scale &&
-         rules.critical_hits.dynamic_damage_bonus_ceiling != b.critical_hits.dynamic_damage_bonus_ceiling)
-        ) {
-        std::format_to(iter, "  Critical hits:                         {}\n", rules.critical_hits.enabled);
-        if (rules.critical_hits.enabled) {
-            std::format_to(iter, "    Reward duration:                     {} ms\n", rules.critical_hits.reward_duration);
-            std::format_to(iter, "    Base chance:                         {:.1f}%\n", rules.critical_hits.base_chance * 100.0f);
-            std::format_to(iter, "    Dynamic scale:                       {}\n", rules.critical_hits.dynamic_scale);
-            if (rules.critical_hits.dynamic_scale) {
-                std::format_to(iter, "      Dynamic damage bonus ceiling:      {}\n", rules.critical_hits.dynamic_damage_bonus_ceiling);
-            }
         }
     }
 

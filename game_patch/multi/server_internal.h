@@ -191,34 +191,6 @@ struct SprayConfig
     int cooldown_ms = 500;
 };
 
-struct CriticalHitsConfig
-{
-    bool enabled = false;
-    //int sound_id = 35; // hardcoded
-    //int rate_limit = 10; // hardcoded
-    uint32_t reward_duration = 1500;
-    float base_chance = 0.1f;
-    bool dynamic_scale = true;
-    float dynamic_damage_bonus_ceiling = 1200.0f;
-
-    // =============================================
-
-    void set_reward_duration(int new_ms)
-    {
-        reward_duration = std::clamp(new_ms, 50, 60000); // max 1 min
-    }
-
-    void set_base_chance(float in_value)
-    {
-        base_chance = std::clamp(in_value, 0.01f, 1.0f); // percentile
-    }
-
-    void set_damage_bonus_ceiling(float in_value)
-    {
-        dynamic_damage_bonus_ceiling = std::clamp(in_value, 100.0f, 100000.0f);
-    }
-};
-
 struct WeaponStayExemptionConfigOld
 {
     bool enabled = false;
@@ -680,6 +652,9 @@ struct MutatorConfig
     float vampire_heal_ratio = 0.0f; // effective health granted per point of damage dealt
     bool hide_health_armor_pickups = false;
 
+    // Critical Hits: random crits rolled at fire time.
+    bool crits_enabled = false;
+
     // Super Drain: rot health/armor above the entity's max back down to it.
     bool super_drain_enabled = false;
 
@@ -781,7 +756,6 @@ struct AlpineServerConfigRules
     std::map<std::string, int> item_respawn_time_overrides;
     DelayedItemsConfig delayed_items;
     ForceCharacterConfig force_character;
-    CriticalHitsConfig critical_hits;
     bool gungame_rampage_rewards = true;
     std::vector<std::vector<std::string>> gungame_tiers; // uses built-in tiers if not specified
     std::string gungame_final_weapon = "Riot Stick";

@@ -219,6 +219,7 @@ struct EvGameStart
     uint8_t rf_flags = 0;
     uint32_t gi_flags = 0;
     uint8_t match_state = 0;
+    bool crits_enabled = false;
     std::vector<MutatorRecord> mutators;
     std::vector<std::pair<std::string, SettingValue>> gametype_settings;
     std::vector<RosterEntry> roster;
@@ -1212,6 +1213,7 @@ nlohmann::json event_to_json(const Event& e)
                 j["rf_flags"] = p.rf_flags;
                 j["gi_flags"] = p.gi_flags;
                 j["match_state"] = p.match_state;
+                j["crits_enabled"] = p.crits_enabled;
 
                 auto mutators = nlohmann::json::array();
                 for (const auto& m : p.mutators) {
@@ -2441,6 +2443,9 @@ void on_game_start()
     ev.match_state = config.match_state;
     ev.mutators = std::move(config.mutators);
     ev.gametype_settings = std::move(config.gametype_settings);
+    // Resolved, not declared: the mutators list above is what the config asked for; crits
+    // rescale damage, so what FF needs is what the damage path itself reads.
+    ev.crits_enabled = g_alpine_server_config_active_rules.mutators.crits_enabled;
     ev.roster = build_roster(false);
 
     if constexpr (AFSTATS_VERIFICATION_LOGGING) {

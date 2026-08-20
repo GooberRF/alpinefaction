@@ -29,6 +29,7 @@
 #include "../multi/alpine_packets.h"
 #include "../multi/gametype.h"
 #include "../multi/server_internal.h"
+#include "../multi/mutators.h"
 #include "../graphics/weather.h"
 #include "../misc/alpine_options.h"
 #include "../misc/misc.h"
@@ -435,6 +436,9 @@ FunHook<void(rf::Entity*)> entity_on_dead_hook{
 FunHook<void(rf::Object*)> obj_flag_dead_hook{
     0x0048AB40,
     [](rf::Object* objp) {
+        // Crit tags are keyed by object handle, which the engine recycles.
+        crits_on_object_dead(objp);
+
         if (objp->type == rf::OT_CLUTTER && !(objp->obj_flags & rf::OF_DELAYED_DELETE)) {
             rf::Clutter* cp = reinterpret_cast<rf::Clutter*>(objp);
 

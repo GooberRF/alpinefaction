@@ -54,6 +54,7 @@
 #include "../misc/vote_panel.h"
 #include "../multi/network.h"
 #include "../multi/bots/bot_main.h"
+#include "../multi/mutators.h"
 #include "multi_spectate.h"
 
 static bool g_big_team_scores_hud = false;
@@ -2057,6 +2058,7 @@ CodeInjection multi_hud_render_patch{
         }
 
         jetpack_render_hud();
+        crits_client_render_reticle_flash();
     }
 };
 

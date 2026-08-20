@@ -179,6 +179,8 @@ const MutatorDescription mutator_descriptions[] = {
      "Spawn with AR and 100/100. Auto reload and reset to 100/100 on a frag. Weapon pickups only."},
     {"vampire",
      "Damage enemies to regenerate health and armor."},
+    {"crits",
+     "Random critical hits, ramps with recent damage dealt."},
     {"superdrain",
      "Super health and armor drain down to 100 over time."},
     {"armored",
