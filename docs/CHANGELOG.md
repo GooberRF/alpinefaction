@@ -70,6 +70,7 @@ Version 1.4.0 (Lupin): Not yet released
   - Add optional playback overlays: powerup respawn timers (`spectate_powerups`), player health/armor bars (`spectate_playerinfo`), and respawn point indicators (`spectate_spawns`)
   - Add in-game Demos menu (Extras -> Demos) for browsing demos and launching playback, with per-demo details including level, date, duration, server name, players, and final scoreboard
   - Demos can be organized into subfolders of the `demos` folder, browsable in the Demos menu and usable with `demo_play`/`demo_info` (e.g. `demo_play tourney\match1`)
+  - Register `.afd` file association in Windows registry to allow double clicking on demos to play them
 
 ### Minor features, changes, and enhancements
 [@GooberRF](https://github.com/GooberRF)

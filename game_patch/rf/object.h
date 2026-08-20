@@ -79,7 +79,7 @@ namespace rf
     // snapshots, evaluated at interp_time by ObjInterp::interp_rotation (0x00484307) and
     // ObjInterp::get_next_pos_and_vel via multi_obj_interp_orient/pos. Keyframes are kept
     // oldest-first (insertion shifts the arrays down when full), so time_array[0] is
-    // always the oldest sample. Layout: research/systems/interpolation-and-hit-detection.md
+    // always the oldest sample.
 #pragma pack(push, 1)
     struct ObjInterp
     {

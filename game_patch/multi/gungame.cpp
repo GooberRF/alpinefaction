@@ -784,4 +784,3 @@ int gungame_spawn_weapon_for(rf::Player* player)
     const int score = player->stats ? player->stats->score : 0;
     return weapon_for_score(order, score);
 }
-

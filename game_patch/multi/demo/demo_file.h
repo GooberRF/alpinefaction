@@ -7,7 +7,7 @@
 #include <common/afd_format.h>
 #include "../server_config_snapshot.h"
 
-// .afd demo file container (see research/demo-system-prd.md §3).
+// .afd demo file container.
 // Entire file is a gzip stream. Inside:
 //   [Fixed prelude]  magic u32 'AFDM', format_major u16, format_minor u16, header_len u32
 //   [TLV header]     header_len bytes of {type u8, len u8, value} entries
@@ -43,7 +43,7 @@
 enum class DemoRecordType : uint8_t
 {
     packet = 0x00,
-    marker = 0x01, // reserved for format 2.0 keyframe records (see research/demo-system-prd.md §3)
+    marker = 0x01, // reserved for format 2.0 keyframe records
     server_info = 0x02, // versioned server-config block (display-only metadata; see demo_server_config.h)
     footer = 0xFF,
 };

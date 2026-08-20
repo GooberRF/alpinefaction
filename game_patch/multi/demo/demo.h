@@ -6,7 +6,6 @@
 
 // Alpine Demos ("Alpine Demos" / .afd): server-side demo recording via a virtual
 // spectator player + client-side playback through the engine's own join flow.
-// See research/demo-system-prd.md.
 
 namespace rf
 {

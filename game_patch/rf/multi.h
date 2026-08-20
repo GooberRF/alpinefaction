@@ -348,7 +348,7 @@ namespace rf
     static auto& multi_player_left_game = addr_as_ref<void(Player* player)>(0x0046E9D0);
     static auto& update_player_rate = addr_as_ref<void(Player* player)>(0x0047E7D0);
     // Client-side: reset by process_obj_update_packet; drives the broken-connection icon,
-    // the 20s timeout popup and the sim pause (see research/functions-deep/multi_check_connection_broken.md)
+    // the 20s timeout popup and the sim pause.
     static auto& multi_connection_broken_timestamp = addr_as_ref<Timestamp>(0x0064ECA8);
 
     static auto& set_in_mp_flag = addr_as_ref<void()>(0x0046ED50);
