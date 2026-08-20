@@ -816,8 +816,8 @@ void af_send_damage_notify_packet(uint8_t player_id, float damage, bool died, bo
 // Demo-recorder variant: same payload plus a trailing attacker id, so playback can
 // filter notifications down to the player currently being spectated. Live clients
 // never receive this form (their copy is implicitly "attacker = you").
-void af_send_damage_notify_packet_for_demo(uint8_t victim_id, float damage, bool died, uint8_t attacker_id,
-                                           rf::Player* recorder);
+void af_send_damage_notify_packet_for_demo(uint8_t victim_id, float damage, bool died, bool crit,
+                                           uint8_t attacker_id, rf::Player* recorder);
 static void af_process_damage_notify_packet(const void* data, size_t len, const rf::NetAddr& addr);
 void af_send_crit_shot_packet(uint8_t shooter_player_id, uint8_t weapon_type, rf::Player* player);
 static void af_process_crit_shot_packet(const void* data, size_t len, const rf::NetAddr& addr);

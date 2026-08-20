@@ -386,8 +386,8 @@ void af_send_damage_notify_packet(uint8_t player_id, float damage, bool died, bo
     af_send_packet(player, packet_buf, sizeof(damage_notify_packet), false);
 }
 
-void af_send_damage_notify_packet_for_demo(uint8_t victim_id, float damage, bool died, uint8_t attacker_id,
-                                           rf::Player* recorder)
+void af_send_damage_notify_packet_for_demo(uint8_t victim_id, float damage, bool died, bool crit,
+                                           uint8_t attacker_id, rf::Player* recorder)
 {
     // Send: server -> demo recorder only
     if (!rf::is_server || !recorder) {
@@ -404,7 +404,9 @@ void af_send_damage_notify_packet_for_demo(uint8_t victim_id, float damage, bool
     damage_notify_packet.header.size = sizeof(damage_notify_packet) - sizeof(damage_notify_packet.header) + 1;
     damage_notify_packet.player_id = victim_id;
     damage_notify_packet.damage = static_cast<uint16_t>(rounded_damage);
-    damage_notify_packet.flags = (static_cast<uint8_t>(died) << 0);
+    damage_notify_packet.flags =
+        (died ? AF_DAMAGE_NOTIFY_DIED : 0) |
+        (crit ? AF_DAMAGE_NOTIFY_CRIT : 0);
 
     std::byte packet_buf[sizeof(damage_notify_packet) + 1];
     std::memcpy(packet_buf, &damage_notify_packet, sizeof(damage_notify_packet));

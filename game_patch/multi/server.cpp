@@ -2071,6 +2071,7 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
                         damaged_player->net_data->player_id,
                         effective_damage,
                         is_dead,
+                        crit_applied,
                         killer_player->net_data->player_id);
                 }
             }
