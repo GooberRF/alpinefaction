@@ -14,6 +14,7 @@
 #include <xlog/xlog.h>
 #include <thread>
 #include <filesystem>
+#include <algorithm>
 #include <ctime>
 #include <cstdio>
 #include <commctrl.h>
@@ -145,7 +146,11 @@ std::wstring build_demo_confirm_text(const DemoDisplayInfo& info)
     }
     if (info.bytes > 0) {
         char sizebuf[32];
-        std::snprintf(sizebuf, sizeof(sizebuf), "%.1f MB", static_cast<double>(info.bytes) / (1024.0 * 1024.0));
+        const double mb = static_cast<double>(info.bytes) / (1024.0 * 1024.0);
+        if (mb < 0.05)
+            std::snprintf(sizebuf, sizeof(sizebuf), "%.2f MB", std::max(mb, 0.01));
+        else
+            std::snprintf(sizebuf, sizeof(sizebuf), "%.1f MB", mb);
         text += std::string("Size: ") + sizebuf;
     }
     return widen(text);
