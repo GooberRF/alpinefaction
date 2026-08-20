@@ -2311,6 +2311,14 @@ void derive_winner(uint8_t& winner_team, rf::Player*& winner_player)
 
 void emit_game_end(GameEndType end_type)
 {
+    // Any UPSSK -> PSSK mapping the server holds but has not queued yet must precede
+    // game_end in the stream.
+    for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
+        if (player.afstats_pssk && player.afstats_key.starts_with("u-")) {
+            on_pssk_received(&player);
+        }
+    }
+
     // Aggregates belong to the game that is closing, not the one that follows.
     flush_accumulators();
 
