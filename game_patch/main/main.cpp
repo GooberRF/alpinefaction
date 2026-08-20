@@ -191,6 +191,7 @@ CodeInjection after_level_render_hook{
         experimental_render_in_game();
 #endif
         weather_render();
+        crits_client_render();
         debug_render();
         waypoints_render_debug();
         client_bot_render_debug();

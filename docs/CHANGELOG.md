@@ -24,6 +24,7 @@ Version 1.4.0 (Lupin): Not yet released
   - One Weapon
   - Arena
   - Vampire
+  - Critical Hits
   - Super Drain
   - Armored
   - Super Rail
@@ -95,7 +96,8 @@ Version 1.4.0 (Lupin): Not yet released
 - Add the ability to drop reusable static cameras in free look spectate, then cycle level-placed and player-dropped cameras in static camera view
 - Add numpad quick-binds to jump directly to bound players or cameras while spectating, with dropped cameras and binds persisted per level
 - Add `spectate_cameras` console command to toggle showing camera meshes at static camera locations while free look spectating
-- Deprecated and removed legacy GunGame dedicated server config items now that `GG` is an actual gametype.
+- Deprecated and removed legacy GunGame dedicated server config items now that `GG` is an actual gametype
+- Deprecated and removed legacy critical hits dedicated server config items now that it is a mutator
 - Default inactivity tracking for players in dedicated servers to `true`, but kicking inactive players to `false`
 - Add `-debug` command line switch to enable additional debug logging, intended to help identify long-standing netcode issues that are difficult to nail down.
 - Add automatic team balance option which handles unbalanced teams mid-game and stops players from switching teams if it would unbalance them
@@ -125,6 +127,7 @@ Version 1.4.0 (Lupin): Not yet released
 - Add `r_weather` console command to toggle rendering of weather effects
 - Rework multiplayer accuracy statistics with one shared definition feeding the scoreboard and FactionFiles stats reporting
 - Set client netfps to 40, server default netfps to 40 (configurable)
+- Make color pickers in the level editor open at the current color instead of black
 
 [@is-this-c](https://github.com/is-this-c)
 - Rewrite `VArray` to fix crashes due to MinGW

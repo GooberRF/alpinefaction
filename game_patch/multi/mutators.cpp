@@ -1,11 +1,14 @@
 #include <algorithm>
 #include <cmath>
+#include <deque>
 #include <format>
 #include <map>
 #include <optional>
+#include <random>
 #include <set>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 #include <vector>
 #include <patch_common/CallHook.h>
 #include <patch_common/CodeInjection.h>
@@ -19,6 +22,8 @@
 #include "kill.h"
 #include "kill_attribution.h"
 #include "alpine_packets.h"
+#include "server.h"
+#include "../sound/sound.h"
 #include "../rf/weapon.h"
 #include "../rf/item.h"
 #include "../rf/entity.h"
@@ -31,9 +36,14 @@
 #include "../rf/os/console.h"
 #include "../rf/os/timestamp.h"
 #include "../rf/physics.h"
+#include "../rf/gr/gr.h"
 #include "../rf/sound/sound.h"
 #include "../os/console.h"
 #include "../os/os.h"
+#include "../main/main.h"
+#include "../hud/multi_spectate.h"
+#include "../misc/player.h"
+#include "../misc/alpine_settings.h"
 
 // Spawn reserve for a no-clip "infinite ammo" weapon. Firing draws from reserve,
 // but we suppress the per-shot decrement, so this is purely the (constant) number
@@ -217,6 +227,12 @@ static void apply_vampire(AlpineServerConfigRules& r, const toml::table& opts)
     // Composed with (not replacing) whatever pickup policy is in force.
     r.mutators.hide_health_armor_pickups =
         opts["hide_health_armor_pickups"].value_or(VAMPIRE_DEFAULT_HIDE_HEALTH_ARMOR);
+}
+
+// Critical Hits: random crits rolled at fire time.
+static void apply_crits(AlpineServerConfigRules& r, const toml::table& /*opts*/)
+{
+    r.mutators.crits_enabled = true;
 }
 
 // Super Drain: health and armor above the entity's normal max rot back down.
@@ -422,6 +438,7 @@ static const MutatorDef MUTATORS[] = {
     {MutatorId::Rails, "oneweapon", "One Weapon", 4, &apply_rails, RAILS_OPTIONS, std::size(RAILS_OPTIONS), MutatorGametypeReq::Any, nullptr, "featured_weapon"},
     {MutatorId::Arena, "arena", "Arena", 4, &apply_arena, nullptr, 0},
     {MutatorId::Vampire, "vampire", "Vampire", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_vampire, VAMPIRE_OPTIONS, std::size(VAMPIRE_OPTIONS)},
+    {MutatorId::Crits, "crits", "Critical Hits", 4, &apply_crits, nullptr, 0},
     {MutatorId::SuperDrain, "superdrain", "Super Drain", 4, &apply_super_drain, nullptr, 0},
     {MutatorId::Armored, "armored", "Armored", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_armored, nullptr, 0},
     {MutatorId::SuperRail, "superrail", "Super Rail", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_super_rail, nullptr, 0},
@@ -458,6 +475,7 @@ static const MutatorId MUTATOR_APPLY_ORDER[] = {
     MutatorId::Armored,
     MutatorId::SuperDrain,
     MutatorId::Vampire,
+    MutatorId::Crits,
     MutatorId::Arena,
     MutatorId::Rails,
     MutatorId::Instagib,
@@ -1042,6 +1060,11 @@ static bool is_standard_health_or_armor_item(const rf::ItemInfo& info)
 static void flame_level_init();
 static void flame_multi_shutdown();
 
+// Defined in the Critical Hits section below.
+static void crits_reset();
+static float crit_radius_scale();
+static void crits_on_player_destroy(rf::Player* player);
+
 static constexpr float LOW_GRAVITY_VALUE = 5.8f;
 
 static bool g_low_gravity_applied = false;
@@ -1587,6 +1610,7 @@ void mutators_on_multi_shutdown()
     dodge_clear_input();
     g_dodge_last_ms = 0;
     flame_multi_shutdown();
+    crits_reset();
 
     // Leaving multiplayer mid-level: single player must not inherit the override.
     mutators_update_low_gravity();
@@ -1646,6 +1670,9 @@ void mutators_level_init_post()
     // Both sides: forget the previous level's fire bookkeeping. Its fire records died
     // with their parent entities; stale pointers here could alias new-level fires.
     flame_level_init();
+
+    // Crit tags key off object handles, which the next level reuses.
+    crits_reset();
 
     // Both sides: input edges and the dodge cooldown must not cross a level change.
     dodge_clear_input();
@@ -1902,6 +1929,8 @@ static CallHook<bool(float, int, rf::GRoom*, rf::Vector3*, rf::Vector3*, int, in
         if (rf::is_server && g_alpine_server_config_active_rules.mutators.big_craters_enabled) {
             radius *= BIG_CRATERS_RADIUS_MULTIPLIER;
         }
+        // Critical Hits stacks on top of Big Craters by design (x2 * x1.5 = x3).
+        radius *= crit_radius_scale();
         return geomod_create_weapon_hook.call_target(radius, parent_handle, src_room, pos, hit_normal,
                                                      shape_index, flags);
     },
@@ -1979,6 +2008,7 @@ void mutators_on_player_destroy(rf::Player* player)
     if (player && player->net_data) {
         g_flame_states.erase(static_cast<uint8_t>(player->net_data->player_id));
     }
+    crits_on_player_destroy(player);
 }
 
 void mutators_apply_entity_on_fire(rf::Entity* ep, bool on_fire)
@@ -2305,6 +2335,803 @@ static void flame_client_do_frame()
     }
 }
 
+
+// ============================================================================
+// Critical Hits
+// ============================================================================
+
+// Chance ramps linearly with the damage dealt in the trailing window,
+// capped at CRIT_RAMP_DAMAGE_CAP.
+static constexpr int64_t CRIT_RAMP_WINDOW_MS = 20000;
+static constexpr float CRIT_RAMP_DAMAGE_CAP = 800.0f;
+static constexpr float CRIT_RANGED_BASE_CHANCE = 0.02f;
+static constexpr float CRIT_RANGED_RAMP_CHANCE = 0.15f;
+static constexpr float CRIT_MELEE_BASE_CHANCE = 0.15f;
+static constexpr float CRIT_MELEE_RAMP_CHANCE = 0.45f;
+static constexpr float CRIT_DAMAGE_MULTIPLIER = 3.0f;
+// Continuous fire (flamethrower stream, taser).
+static constexpr int CRIT_CONTINUOUS_ROLL_INTERVAL_MS = 1000;
+static constexpr int64_t CRIT_CONTINUOUS_WINDOW_MS = 2000;
+// A melee swing's projectiles are created frames after its fire event;
+// the swing's roll waits this long for them.
+static constexpr int64_t CRIT_MELEE_PENDING_MS = 500;
+// A thrown weapon's roll waits out its windup ($Impact Delay) plus this much slack.
+static constexpr int64_t CRIT_DEFERRED_PENDING_SLACK_MS = 1000;
+// Scales both the geomod crater and the explosion damage radius of a crit shot.
+static constexpr float CRIT_CRATER_RADIUS_SCALE = 1.25f;
+
+struct CritPlayerState
+{
+    // (timestamp, damage) of recent damage dealt, trimmed to CRIT_RAMP_WINDOW_MS on read.
+    std::deque<std::pair<int64_t, float>> ramp;
+
+    // A deferred fire's roll (melee swing or thrown windup), waiting for the projectiles the
+    // engine creates frames later. Melee holds it for its whole window rather than consuming,
+    // so a swing that creates two impacts crits with both; a throw spends it on its release.
+    // Keyed by weapon too: only a creation of the weapon that was rolled for may spend it.
+    bool deferred_pending = false;
+    bool deferred_sounded = false;
+    int deferred_weapon_type = -1;
+    int64_t deferred_pending_until = 0;
+
+    bool continuous_firing = false;
+    int continuous_accum_ms = 0;
+    int64_t continuous_crit_until = 0;
+};
+
+// Server only, indexed by player id exactly like the accuracy ledgers in server.cpp. The engine
+// reuses ids, so an entry is wiped when its player is destroyed.
+static std::vector<CritPlayerState>& crit_players()
+{
+    static std::vector<CritPlayerState> states(rf::multi_max_player_id);
+    return states;
+}
+
+// Weapon object handles rolled as crits, for the projectiles and explosions that outlive
+// their fire frame. Only crit shots are inserted, so membership IS the tag.
+static std::unordered_set<int> g_crit_projectiles;
+
+// Leak backstop only: object handles are generation-checked, so evicting a stale tag can at
+// worst lose a crit, never mistag another weapon.
+static void crit_projectile_tag(int handle)
+{
+    if (g_crit_projectiles.size() >= 256)
+        g_crit_projectiles.erase(g_crit_projectiles.begin());
+    g_crit_projectiles.insert(handle);
+}
+
+struct CritFireState
+{
+    bool active = false;
+    bool crit = false;
+    // One af_crit_shot per fire event, not per projectile: a volley shares one roll.
+    bool shot_sent = false;
+    // Likewise one fire sound per fire event, whatever the volley's projectile count.
+    bool fire_sounded = false;
+    int shooter_handle = 0;
+};
+static CritFireState g_crit_fire;
+
+struct CritDamageState
+{
+    bool active = false;
+    bool crit = false;
+};
+static CritDamageState g_crit_damage;
+
+static bool crits_are_active()
+{
+    return rf::is_multi && rf::is_server
+        && g_alpine_server_config_active_rules.mutators.crits_enabled;
+}
+
+static CritPlayerState* crit_state_for(rf::Player* pp)
+{
+    if (!pp || !pp->net_data)
+        return nullptr;
+    std::vector<CritPlayerState>& states = crit_players();
+    const int player_id = pp->net_data->player_id;
+    if (player_id < 0 || player_id >= static_cast<int>(states.size()))
+        return nullptr;
+    return &states[player_id];
+}
+
+static void crit_ramp_trim(CritPlayerState& state, int64_t now)
+{
+    while (!state.ramp.empty() && now - state.ramp.front().first > CRIT_RAMP_WINDOW_MS)
+        state.ramp.pop_front();
+}
+
+static float crit_ramp_fraction(CritPlayerState& state, int64_t now)
+{
+    crit_ramp_trim(state, now);
+    float sum = 0.0f;
+    for (const auto& entry : state.ramp)
+        sum += entry.second;
+    return std::min(sum / CRIT_RAMP_DAMAGE_CAP, 1.0f);
+}
+
+// The continuous modes that produce no fire event of their own: Their crits come from a
+// window instead.
+static bool crit_weapon_uses_continuous_window(int weapon_type)
+{
+    return kill_attribution_is_valid_weapon_type(weapon_type)
+        && (rf::weapon_is_flamethrower(weapon_type) || rf::weapon_is_melee(weapon_type));
+}
+
+// Longest windup ($Impact Delay) either fire mode puts between the trigger and the projectile.
+static float crit_weapon_windup_seconds(int weapon_type)
+{
+    if (!kill_attribution_is_valid_weapon_type(weapon_type))
+        return 0.0f;
+    return std::max(rf::weapon_types[weapon_type].create_weapon_delay_seconds[0],
+                    rf::weapon_types[weapon_type].alt_create_weapon_delay_seconds[0]);
+}
+
+// One roll for one trigger pull. The Damage Amplifier suppresses rolls outright: it is
+// already RF's crit-boost state, and x4 amp on top of x3 crit is a x12 spike.
+static bool crits_roll(rf::Player* pp, int weapon_type)
+{
+    CritPlayerState* state = crit_state_for(pp);
+    if (!state)
+        return false;
+    // Bagman hands the carrier a rolling amp as the carry buff, not a pickup - blocking rolls
+    // on it would strip the carrier of crits for the whole carry.
+    if (!gt_is_bagman_any() && rf::multi_powerup_has_player(pp, 1)) // amp
+        return false;
+
+    const float ramp = crit_ramp_fraction(*state, timer::get_i64(1000));
+    // Same predicate the hold semantics use, so the shield and any modded melee weapon ride
+    // the melee curve rather than only the riot stick.
+    const bool melee = kill_attribution_is_valid_weapon_type(weapon_type)
+        && rf::weapon_is_melee(weapon_type);
+    const float chance = melee
+        ? CRIT_MELEE_BASE_CHANCE + CRIT_MELEE_RAMP_CHANCE * ramp
+        : CRIT_RANGED_BASE_CHANCE + CRIT_RANGED_RAMP_CHANCE * ramp;
+
+    std::uniform_real_distribution<float> dist(0.0f, 1.0f);
+    return dist(g_rng) < chance;
+}
+
+CritFireScope::CritFireScope(rf::Entity* ep)
+    : saved_active_(g_crit_fire.active), saved_crit_(g_crit_fire.crit),
+      saved_shot_sent_(g_crit_fire.shot_sent), saved_fire_sounded_(g_crit_fire.fire_sounded),
+      saved_shooter_handle_(g_crit_fire.shooter_handle)
+{
+    if (!crits_are_active() || !ep)
+        return;
+    // multi_process_remote_weapon_fire's scope is already open for this same trigger pull:
+    // rolling again here would roughly double the effective crit rate on remote hitscan.
+    if (saved_active_ && saved_shooter_handle_ == ep->handle)
+        return;
+
+    rf::Player* pp = rf::player_from_entity_handle(ep->handle);
+    if (!pp)
+        return;
+
+    const int weapon_type = ep->ai.current_primary_weapon;
+    // entity_process re-enters entity_fire_weapon while a continuous trigger is held,
+    // and the on state is set ONLY inside entity_fire_weapon - so it is false on the
+    // trigger pull and true on every repeat.
+    if (rf::entity_weapon_is_on(ep->handle, weapon_type)
+        && crit_weapon_uses_continuous_window(weapon_type)) {
+        return;
+    }
+
+    const bool crit = crits_roll(pp, weapon_type);
+    g_crit_fire = {true, crit, false, false, ep->handle};
+    owns_ = true;
+
+    // The engine's melee and thrown branches create no projectile here - entity_process makes
+    // them frames later - so those rolls are parked for the deferred creator instead of riding
+    // this scope. A remote human's throw creates inline instead, and that create clears the
+    // parked roll (crits_on_weapon_created) so one fire event can never spend it twice.
+    if (kill_attribution_is_valid_weapon_type(weapon_type)) {
+        const bool melee = rf::weapon_is_melee(weapon_type);
+        const float windup = crit_weapon_windup_seconds(weapon_type);
+        if (melee || windup > 0.0f) {
+            if (CritPlayerState* state = crit_state_for(pp)) {
+                state->deferred_pending = crit;
+                state->deferred_sounded = false;
+                state->deferred_weapon_type = weapon_type;
+                state->deferred_pending_until = timer::get_i64(1000)
+                    + (melee ? CRIT_MELEE_PENDING_MS
+                             : static_cast<int64_t>(windup * 1000.0f) + CRIT_DEFERRED_PENDING_SLACK_MS);
+            }
+        }
+    }
+}
+
+CritFireScope::~CritFireScope()
+{
+    if (owns_) {
+        g_crit_fire = {saved_active_, saved_crit_, saved_shot_sent_, saved_fire_sounded_,
+                       saved_shooter_handle_};
+    }
+}
+
+CritWeaponScope::CritWeaponScope(rf::Weapon* wp)
+    : saved_active_(g_crit_damage.active), saved_crit_(g_crit_damage.crit)
+{
+    if (!crits_are_active() || !wp)
+        return;
+    g_crit_damage = {true, g_crit_projectiles.count(wp->handle) != 0};
+}
+
+CritWeaponScope::~CritWeaponScope()
+{
+    g_crit_damage = {saved_active_, saved_crit_};
+}
+
+// A crit-tagged projectile announces its own detonation, whether or not it craters, damages
+// anyone, or just hits a wall. Driven from the three player-attributed call sites of
+// explosion_apply_radius_damage - the function itself opens on an x87 instruction and cannot be
+// hooked - all three of which run under CritWeaponScope. Each is the terminal detonation of one
+// weapon (the weapon is flagged dead on the way out), so one blast is one sound.
+float crits_on_explosion(const rf::Vector3* pos, float radius)
+{
+    // The radius gates it: weapon_hit_level makes this call for bullets too, with no blast.
+    if (!pos || !(radius > 0.0f) || !crits_are_active() || !g_crit_damage.active || !g_crit_damage.crit)
+        return 1.0f;
+    broadcast_sound_packet_3d(*pos, stock_sound_id::jolt_01);
+    return crit_radius_scale();
+}
+
+// The third site, 0x004C53A8 in weapon_hit_level, is already taken by weapon.cpp's
+// weapon_hit_wall_obj_apply_radius_damage_hook - two CallHooks on one address would fight over
+// it - so that one calls crits_on_explosion directly instead.
+CallHook<void(rf::Vector3*, float, float, int, int)> crits_explosion_hook{
+    {
+        0x004C62F5, // weapon_hit_obj, impact splash
+        0x004C6C94, // weapon_move_one, fuse / detonator / lifetime expiry
+    },
+    [](rf::Vector3* pos, float damage, float radius, int killer_handle, int damage_type) {
+        const float scale = crits_on_explosion(pos, radius);
+        crits_explosion_hook.call_target(pos, damage, radius * scale, killer_handle, damage_type);
+    },
+};
+
+// Only the weapons whose projectile flies long enough to be worth telegraphing: rockets,
+// grenades, remote charges, fusion. Bullets are covered by the impact/victim layer instead -
+// in the stock table 'undeviating' marks exactly them and no flying projectile carries it.
+static bool crit_weapon_is_projectile(int weapon_type)
+{
+    if (!kill_attribution_is_valid_weapon_type(weapon_type))
+        return false;
+    if (rf::weapon_types[weapon_type].flags2 & rf::WTF2_UNDEVIATING)
+        return false;
+    return !rf::weapon_is_melee(weapon_type);
+}
+
+// Every crit shot is audible where it was fired, whatever the weapon class: a bullet volley
+// or a melee swing reads as a crit even when it connects with nothing. Anchored to the point
+// where the shot materialises, because entity_fire_weapon can be entered and abort without
+// producing one (no ammo / weapon-select gate).
+static void crits_play_fire_sound(const rf::Vector3& pos)
+{
+    if (g_crit_fire.fire_sounded)
+        return;
+    g_crit_fire.fire_sounded = true;
+    broadcast_sound_packet_3d(pos, stock_sound_id::jolt_01);
+}
+
+// Defined with the rest of the telegraph below; the listen host drives them from the server side.
+static void crit_glow_add(int handle, const rf::gr::Color& color);
+static rf::gr::Color crit_glow_color_for(const rf::Player* pp);
+static void crits_flash_reticle();
+
+// The shooter's own client flashes its reticle for every crit fire event, whatever the weapon
+// class, so this goes out for hitscan, melee and the continuous window too - unlike the
+// all-players broadcast, which observers only need for the in-flight glow. Anyone spectating
+// the shooter is watching that same screen, so it is mailed the same event. Each caller is
+// already once-per-fire-event guarded.
+static void crits_send_shot_to_shooter(rf::Player* shooter, int weapon_type)
+{
+    if (!shooter || !shooter->net_data)
+        return;
+    // A listen host's own packet would be discarded, so its flash is stamped directly.
+    if (shooter == rf::local_player) {
+        crits_flash_reticle();
+    }
+    else if (is_player_minimum_af_client_version(shooter, 1, 4, 0)) {
+        af_send_crit_shot_packet(shooter->net_data->player_id,
+            static_cast<uint8_t>(weapon_type), shooter);
+    }
+
+    // A listen host cannot spectate, so every spectator here is a real client.
+    for (auto& player : SinglyLinkedList{rf::player_list}) {
+        if (!player.net_data || player.spectatee.value_or(nullptr) != shooter)
+            continue;
+        if (is_player_minimum_af_client_version(&player, 1, 4, 0)) {
+            af_send_crit_shot_packet(shooter->net_data->player_id,
+                static_cast<uint8_t>(weapon_type), &player);
+        }
+    }
+}
+
+// Sent from the tag-insertion path rather than the roll site, so it only ever goes out for
+// a shot that really was created and tagged. Once per fire event: a volley shares one roll,
+// and the lag-comp ghost is created at an unhooked site and never reaches here.
+static void crits_broadcast_shot(rf::Weapon* wp, int parent_handle)
+{
+    // shot_sent only means anything while its fire scope is open; a deferred creation runs
+    // after the scope closed and must not stamp the restored baseline state.
+    if (g_crit_fire.active && g_crit_fire.shot_sent)
+        return;
+    rf::Player* shooter = rf::player_from_entity_handle(parent_handle);
+    if (!shooter || !shooter->net_data)
+        return;
+    if (g_crit_fire.active)
+        g_crit_fire.shot_sent = true;
+
+    crits_send_shot_to_shooter(shooter, wp->info_index);
+
+    // Everyone else is told only about the shots worth telegraphing in flight.
+    if (!crit_weapon_is_projectile(wp->info_index))
+        return;
+
+    // A listen host is its own client, and a packet addressed to local_player is discarded, so
+    // the glow the packet would have produced there is added straight to the client container.
+    if (!rf::is_dedicated_server)
+        crit_glow_add(wp->handle, crit_glow_color_for(shooter));
+
+    const uint8_t shooter_id = shooter->net_data->player_id;
+    const uint8_t weapon_type = static_cast<uint8_t>(wp->info_index);
+    for (auto& player : SinglyLinkedList{rf::player_list}) {
+        if (!player.net_data || &player == rf::local_player || &player == shooter)
+            continue; // the shooter was mailed above, a listen host glowed it instead
+        if (player.spectatee.value_or(nullptr) == shooter)
+            continue; // spectating the shooter, so it was mailed above too
+        if (is_player_minimum_af_client_version(&player, 1, 4, 0))
+            af_send_crit_shot_packet(shooter_id, weapon_type, &player);
+    }
+}
+
+// ============================================================================
+// Critical Hits - in-flight telegraph (client side)
+// ============================================================================
+//
+// Cosmetic only. Nothing below runs on a server or feeds back into damage or state.
+
+// How long after af_crit_shot a marker still claims a newly created projectile.
+static constexpr int64_t CRIT_SHOT_MARKER_MS = 250;
+// The local player's shot is predicted client side, so it already exists by the time the
+// packet lands and has to be found by looking back rather than waiting for a creation.
+static constexpr int64_t CRIT_SHOT_LOCAL_LOOKBACK_MS = 500;
+// A self marker instead covers the other ordering: the server hears a thrown fire and
+// broadcasts af_crit_shot while the thrower's own projectile is still a windup away. Parked
+// for weapons that have such a windup and no others.
+static constexpr int64_t CRIT_SHOT_SELF_MARKER_MS = 3000;
+// Every container below is fed by remote input, so every one of them is bounded.
+static constexpr std::size_t CRIT_CLIENT_MAX_MARKERS = 16;
+static constexpr std::size_t CRIT_CLIENT_MAX_GLOWS = 32;
+static constexpr std::size_t CRIT_CLIENT_MAX_LOCAL_SHOTS = 8;
+static constexpr float CRIT_GLOW_RADIUS_SCALE = 2.0f;
+static constexpr float CRIT_GLOW_MIN_RADIUS = 0.5f;
+static constexpr rf::gr::Color CRIT_GLOW_COLOR_RED{255, 64, 40};
+static constexpr rf::gr::Color CRIT_GLOW_COLOR_BLUE{64, 112, 255};
+static constexpr rf::gr::Color CRIT_GLOW_COLOR_NEUTRAL{255, 144, 32};
+// The shooter's own reticle flash: the only crit feedback a hitscan, melee or flame crit
+// gives on the screen that fired it, so it covers every weapon class.
+static constexpr int64_t CRIT_RETICLE_FLASH_MS = 350;
+static constexpr int CRIT_RETICLE_FLASH_SIZE = 96; // ~3x the stock reticle bitmap
+static constexpr rf::gr::Color CRIT_RETICLE_FLASH_COLOR{255, 96, 32};
+static constexpr rf::gr::Mode CRIT_RETICLE_FLASH_MODE{
+    rf::gr::TEXTURE_SOURCE_CLAMP,
+    rf::gr::COLOR_SOURCE_VERTEX_TIMES_TEXTURE,
+    rf::gr::ALPHA_SOURCE_VERTEX_TIMES_TEXTURE,
+    rf::gr::ALPHA_BLEND_ALPHA_ADDITIVE, // additive, but still faded by the vertex alpha
+    rf::gr::ZBUFFER_TYPE_NONE,
+    rf::gr::FOG_NOT_ALLOWED,
+};
+static int64_t g_crit_reticle_flash_at = 0;
+
+struct CritShotMarker
+{
+    uint8_t shooter_player_id;
+    uint8_t weapon_type;
+    int64_t expiry;
+    rf::gr::Color color;
+};
+static std::deque<CritShotMarker> g_crit_shot_markers;
+
+struct CritGlow
+{
+    int handle;
+    // Resolved when the shot was marked: the shooter can change team or leave mid-flight.
+    rf::gr::Color color;
+};
+static std::deque<CritGlow> g_crit_glows;
+
+struct CritLocalShot
+{
+    int handle;
+    int weapon_type;
+    int64_t created;
+};
+static std::deque<CritLocalShot> g_crit_local_shots;
+
+static rf::gr::Color crit_glow_color_for(const rf::Player* pp)
+{
+    if (!pp || !multi_game_type_is_team_type(rf::multi_get_game_type()))
+        return CRIT_GLOW_COLOR_NEUTRAL;
+    return pp->team ? CRIT_GLOW_COLOR_BLUE : CRIT_GLOW_COLOR_RED;
+}
+
+static void crit_glow_add(int handle, const rf::gr::Color& color)
+{
+    if (g_crit_glows.size() >= CRIT_CLIENT_MAX_GLOWS)
+        g_crit_glows.pop_front();
+    g_crit_glows.push_back({handle, color});
+}
+
+static void crits_flash_reticle()
+{
+    g_crit_reticle_flash_at = timer::get_i64(1000);
+}
+
+// The engine's own projectile head glow texture.
+static int crit_glow_bitmap()
+{
+    static const int bmh = rf::bm::load("glow01.tga", -1, true);
+    return bmh;
+}
+
+void crits_on_crit_shot(uint8_t shooter_player_id, uint8_t weapon_type)
+{
+    if (!rf::is_multi || rf::is_server)
+        return;
+
+    rf::Player* shooter = rf::multi_find_player_by_id(shooter_player_id);
+    if (!shooter)
+        return;
+
+    const int64_t now = timer::get_i64(1000);
+    const rf::gr::Color color = crit_glow_color_for(shooter);
+    std::erase_if(g_crit_shot_markers, [now](const CritShotMarker& m) { return now > m.expiry; });
+
+    const bool self = shooter == rf::local_player;
+    // A first-person spectator is looking through the shooter's eyes, so it gets the flash too -
+    // but nothing else below, which all belongs to the shooter's own predicted projectile.
+    const bool spectating_shooter = !self && multi_spectate_is_first_person()
+        && multi_spectate_get_target_player() == shooter;
+    if (self || spectating_shooter)
+        crits_flash_reticle();
+
+    // Everything below telegraphs a projectile in flight; a hitscan, melee or flame crit has
+    // none, and the flash above is its whole story. The shooter and anyone spectating it are
+    // mailed for every weapon class, so both reach here without one.
+    if (!crit_weapon_is_projectile(weapon_type))
+        return;
+
+    if (self) {
+        // Prediction already spawned the projectile, so it is claimed by looking back
+        // through the local shots instead of waiting for a creation that has been and gone.
+        for (auto it = g_crit_local_shots.rbegin(); it != g_crit_local_shots.rend(); ++it) {
+            if (it->weapon_type != weapon_type || now - it->created > CRIT_SHOT_LOCAL_LOOKBACK_MS)
+                continue;
+            const rf::Object* objp = rf::obj_from_handle(it->handle);
+            if (!objp || objp->type != rf::OT_WEAPON)
+                continue;
+            crit_glow_add(it->handle, color);
+            return;
+        }
+        // Not spawned yet: a thrown weapon's own projectile appears only when the windup
+        // ends, well after the server heard the fire - park a marker like a remote shooter's.
+        // An instant weapon has no such gap, so a late packet parking a self marker would
+        // only ever glow the NEXT, non-crit shot: the retro-scan above is its whole story.
+        if (!(crit_weapon_windup_seconds(weapon_type) > 0.0f))
+            return;
+    }
+
+    if (g_crit_shot_markers.size() >= CRIT_CLIENT_MAX_MARKERS)
+        g_crit_shot_markers.pop_front();
+    g_crit_shot_markers.push_back({shooter_player_id, weapon_type,
+        now + (self ? CRIT_SHOT_SELF_MARKER_MS : CRIT_SHOT_MARKER_MS), color});
+}
+
+static void crits_client_on_weapon_created(rf::Weapon* wp, int parent_handle)
+{
+    if (!rf::is_multi || !crit_weapon_is_projectile(wp->info_index))
+        return;
+
+    rf::Player* shooter = rf::player_from_entity_handle(parent_handle);
+    if (!shooter || !shooter->net_data)
+        return;
+
+    const int64_t now = timer::get_i64(1000);
+
+    if (shooter == rf::local_player) {
+        if (g_crit_local_shots.size() >= CRIT_CLIENT_MAX_LOCAL_SHOTS)
+            g_crit_local_shots.pop_front();
+        g_crit_local_shots.push_back({wp->handle, wp->info_index, now});
+        // No return: an af_crit_shot that raced ahead of a thrown windup parked a self marker.
+    }
+
+    for (auto it = g_crit_shot_markers.begin(); it != g_crit_shot_markers.end(); ++it) {
+        if (it->shooter_player_id != shooter->net_data->player_id
+            || it->weapon_type != wp->info_index || now > it->expiry) {
+            continue;
+        }
+        crit_glow_add(wp->handle, it->color);
+        g_crit_shot_markers.erase(it);
+        return;
+    }
+}
+
+void crits_client_render()
+{
+    if (g_crit_glows.empty())
+        return;
+
+    // Drawn the same way stock weapon_render draws it.
+    const int glow_bitmap = crit_glow_bitmap();
+    if (glow_bitmap < 0) {
+        g_crit_glows.clear();
+        return;
+    }
+
+    rf::gr::set_texture(glow_bitmap, -1);
+
+    std::erase_if(g_crit_glows, [](const CritGlow& glow) {
+        const rf::Object* objp = rf::obj_from_handle(glow.handle);
+        if (!objp || objp->type != rf::OT_WEAPON)
+            return true;
+        rf::Vector3 pos = objp->pos;
+        const float scale = std::max(objp->radius, CRIT_GLOW_MIN_RADIUS) * CRIT_GLOW_RADIUS_SCALE;
+        rf::gr::set_color(glow.color);
+        rf::gr::bitmap_3d_angle(&pos, 0.0f, scale, rf::gr::glow_3d_bitmap_mode);
+        return false;
+    });
+}
+
+// Drawn from the multiplayer HUD render path, so it lands over the world with the rest of the
+// HUD and never runs outside multiplayer gameplay.
+void crits_client_render_reticle_flash()
+{
+    if (!g_crit_reticle_flash_at || !g_alpine_game_config.crit_reticle_flash)
+        return;
+    const int64_t elapsed = timer::get_i64(1000) - g_crit_reticle_flash_at;
+    if (elapsed < 0 || elapsed >= CRIT_RETICLE_FLASH_MS) {
+        g_crit_reticle_flash_at = 0;
+        return;
+    }
+    const int glow_bitmap = crit_glow_bitmap();
+    if (glow_bitmap < 0) {
+        g_crit_reticle_flash_at = 0;
+        return;
+    }
+    int bm_w = 0, bm_h = 0;
+    rf::bm::get_dimensions(glow_bitmap, &bm_w, &bm_h);
+    if (bm_w <= 0 || bm_h <= 0)
+        return;
+
+    const float fade = 1.0f - static_cast<float>(elapsed) / CRIT_RETICLE_FLASH_MS;
+    const int x = (rf::gr::clip_width() - CRIT_RETICLE_FLASH_SIZE) / 2;
+    const int y = (rf::gr::clip_height() - CRIT_RETICLE_FLASH_SIZE) / 2;
+    rf::gr::set_color(CRIT_RETICLE_FLASH_COLOR.red, CRIT_RETICLE_FLASH_COLOR.green,
+        CRIT_RETICLE_FLASH_COLOR.blue, static_cast<rf::ubyte>(fade * 255.0f));
+    rf::gr::bitmap_scaled(glow_bitmap, x, y, CRIT_RETICLE_FLASH_SIZE, CRIT_RETICLE_FLASH_SIZE,
+        0, 0, bm_w, bm_h, false, false, CRIT_RETICLE_FLASH_MODE);
+}
+
+ConsoleCommand2 crit_reticle_flash_cmd{
+    "mp_crit_flash",
+    []() {
+        g_alpine_game_config.crit_reticle_flash = !g_alpine_game_config.crit_reticle_flash;
+        rf::console::print("Crit reticle flashes are {}", g_alpine_game_config.crit_reticle_flash ? "enabled" : "disabled");
+    },
+    "Toggles the reticle flash shown when you fire a critical hit",
+};
+
+void crits_on_weapon_created(rf::Weapon* wp, int parent_handle)
+{
+    if (!wp)
+        return;
+    if (!rf::is_server) {
+        crits_client_on_weapon_created(wp, parent_handle);
+        return;
+    }
+    if (!crits_are_active())
+        return;
+    if (g_crit_fire.active && g_crit_fire.shooter_handle == parent_handle) {
+        // This fire event materialised inline, so any roll it parked for the deferred
+        // creator (a remote human's throw parks one) is void. Only its own weapon's, though:
+        // a pending roll for a different weapon belongs to a fire event that has not resolved.
+        CritPlayerState* state = crit_state_for(rf::player_from_entity_handle(parent_handle));
+        if (state && state->deferred_weapon_type == wp->info_index)
+            state->deferred_pending = false;
+        if (g_crit_fire.crit) {
+            crit_projectile_tag(wp->handle);
+            crits_play_fire_sound(wp->pos);
+            crits_broadcast_shot(wp, parent_handle);
+        }
+    }
+}
+
+void crits_on_deferred_created(rf::Weapon* wp, int parent_handle)
+{
+    if (!wp)
+        return;
+    if (!rf::is_server) {
+        // The thrower's own client creates its thrown weapons here, not at the fire sites.
+        crits_client_on_weapon_created(wp, parent_handle);
+        return;
+    }
+    if (!crits_are_active())
+        return;
+    CritPlayerState* state = crit_state_for(rf::player_from_entity_handle(parent_handle));
+    if (!state)
+        return;
+
+    const int64_t now = timer::get_i64(1000);
+
+    // Continuous melee (the riot stick's taser,) has no fire event of its own to roll for,
+    // Those zaps take the continuous window, not a swing's parked roll.
+    rf::Entity* ep = rf::entity_from_handle(parent_handle);
+    if (ep && rf::entity_weapon_is_on(ep->handle, wp->info_index)
+        && crit_weapon_uses_continuous_window(wp->info_index)) {
+        if (now < state->continuous_crit_until)
+            crit_projectile_tag(wp->handle);
+        return;
+    }
+
+    if (!state->deferred_pending || state->deferred_weapon_type != wp->info_index)
+        return;
+    if (now > state->deferred_pending_until) {
+        state->deferred_pending = false;
+        return;
+    }
+    // Melee is not consumed: one swing can create two impacts and both belong to its single
+    // roll. A throw releases one projectile, so its roll is spent.
+    crit_projectile_tag(wp->handle);
+    if (!rf::weapon_is_melee(wp->info_index))
+        state->deferred_pending = false;
+
+    // The deferred creation happens per fire event whether or not it connects - and a swing
+    // making two impacts still sounds and announces once.
+    if (!state->deferred_sounded) {
+        state->deferred_sounded = true;
+        broadcast_sound_packet_3d(wp->pos, stock_sound_id::jolt_01);
+        crits_broadcast_shot(wp, parent_handle);
+    }
+}
+
+void crits_on_object_dead(rf::Object* objp)
+{
+    if (!g_crit_projectiles.empty() && objp && objp->type == rf::OT_WEAPON)
+        g_crit_projectiles.erase(objp->handle);
+}
+
+void crits_on_continuous_fire_frame(rf::Player* pp, int weapon_type, bool weapon_on, int delta_ms)
+{
+    if (!crits_are_active())
+        return;
+    CritPlayerState* state = crit_state_for(pp);
+    if (!state)
+        return;
+
+    if (!(weapon_on && crit_weapon_uses_continuous_window(weapon_type))) {
+        state->continuous_firing = false;
+        return;
+    }
+
+    bool roll = false;
+    if (!state->continuous_firing) {
+        state->continuous_firing = true;
+        state->continuous_accum_ms = 0;
+        roll = true;
+    }
+    else {
+        state->continuous_accum_ms += delta_ms;
+        while (state->continuous_accum_ms >= CRIT_CONTINUOUS_ROLL_INTERVAL_MS) {
+            state->continuous_accum_ms -= CRIT_CONTINUOUS_ROLL_INTERVAL_MS;
+            roll = true;
+        }
+    }
+
+    if (roll && crits_roll(pp, weapon_type)) {
+        state->continuous_crit_until = timer::get_i64(1000) + CRIT_CONTINUOUS_WINDOW_MS;
+        // Once per arming, never per zap: the stream has no projectile to telegraph and the
+        // taser's zaps come out several times a second.
+        if (rf::Entity* ep = rf::entity_from_handle(pp->entity_handle))
+            broadcast_sound_packet_3d(ep->pos, stock_sound_id::jolt_01);
+        crits_send_shot_to_shooter(pp, weapon_type);
+    }
+}
+
+void crits_on_damage_dealt(rf::Player* attacker, float effective_damage)
+{
+    if (!crits_are_active() || !(effective_damage > 0.0f))
+        return;
+    CritPlayerState* state = crit_state_for(attacker);
+    if (!state)
+        return;
+    const int64_t now = timer::get_i64(1000);
+    state->ramp.emplace_back(now, effective_damage);
+    crit_ramp_trim(*state, now);
+}
+
+float crits_damage_multiplier(rf::Player* attacker, rf::Player* victim)
+{
+    if (!crits_are_active() || !attacker || !victim || attacker == victim)
+        return 1.0f;
+    // No friendly-fire crits.
+    if (multi_game_type_is_team_type(rf::multi_get_game_type()) && attacker->team == victim->team)
+        return 1.0f;
+
+    // The three sources are mutually exclusive in practice, but they are ORed rather than
+    // chained: a lag-comp ghost carries no tag of its own and only the fire scope knows it
+    // was a crit shot.
+    bool crit = g_crit_damage.active && g_crit_damage.crit;
+    if (!crit && g_crit_fire.active && g_crit_fire.crit) {
+        rf::Entity* attacker_ep = rf::entity_from_handle(attacker->entity_handle);
+        crit = attacker_ep && g_crit_fire.shooter_handle == attacker_ep->handle;
+    }
+    if (!crit && kill_attribution_in_particle_damage()) {
+        // The flame stream damages through the particle system, which names no weapon. That
+        // scope is also what keeps the Flaming Enemies burn DoT - same DT_FIRE damage type,
+        // applied from the frame loop - out of the crit window.
+        const CritPlayerState* state = crit_state_for(attacker);
+        crit = state && timer::get_i64(1000) < state->continuous_crit_until;
+    }
+    if (!crit)
+        return 1.0f;
+
+    // Same gate as the roll, re-checked at damage time: a crit tagged before the pickup - thrown
+    // remote charge, grenade in flight, armed continuous window - would otherwise stack x3 on the
+    // engine's x4 amp damage. Bagman is exempt for the same reason the roll exempts it.
+    if (!gt_is_bagman_any() && rf::multi_powerup_has_player(attacker, 1)) // amp
+        return 1.0f;
+
+    return CRIT_DAMAGE_MULTIPLIER;
+}
+
+// Read from the two weapon-detonation geomod call sites, which sit inside weapon_hit_level and
+// weapon_move_one - so the detonating projectile's tag is already published by CritWeaponScope.
+// Server only via crits_are_active(), and geomod_create itself returns early for multiplayer
+// clients, so the scaled radius reaches them in the boolean packet rather than being recomputed.
+static float crit_radius_scale()
+{
+    if (!crits_are_active() || !g_crit_damage.active || !g_crit_damage.crit)
+        return 1.0f;
+    return CRIT_CRATER_RADIUS_SCALE;
+}
+
+static void crits_on_player_destroy(rf::Player* player)
+{
+    // Whole-struct assignment, not a flag reset: the ramp deque has to go with it.
+    if (CritPlayerState* state = crit_state_for(player))
+        *state = CritPlayerState{};
+}
+
+static void crits_reset()
+{
+    std::fill(crit_players().begin(), crit_players().end(), CritPlayerState{});
+    g_crit_projectiles.clear();
+    g_crit_fire = {};
+    g_crit_damage = {};
+    g_crit_shot_markers.clear();
+    g_crit_glows.clear();
+    g_crit_local_shots.clear();
+    g_crit_reticle_flash_at = 0;
+}
+
+// The universal fire function: the listen host's own trigger, bots, and every remote
+// non-thrown shot all arrive here, and one call is one trigger pull (its barrel and pellet
+// loops, and their lag-compensated resolution, all run inside it). The weapon type is not an
+// argument - it comes from the entity. All six arguments are typed to forward the pushed
+// dwords byte-for-byte; none of them is read.
+FunHook<void(rf::Entity*, int, int, rf::Weapon**, rf::Vector3*, rf::Matrix3*)>
+    entity_fire_weapon_hook{
+    0x00425830,
+    [](rf::Entity* ep, int a2, int alt_fire, rf::Weapon** out_weapon, rf::Vector3* pos,
+       rf::Matrix3* orient) {
+        const CritFireScope crit_scope{ep};
+        entity_fire_weapon_hook.call_target(ep, a2, alt_fire, out_weapon, pos, orient);
+    },
+};
+
 void mutators_do_frame()
 {
     if (!rf::is_server) {
@@ -2400,6 +3227,10 @@ void mutators_do_patch()
     // Big Craters
     geomod_create_weapon_hook.install();
 
+    // Critical Hits
+    entity_fire_weapon_hook.install();
+    crits_explosion_hook.install();
+
     // Flaming Enemies
     entity_fire_destroy_hook.install();
     entity_fire_update_all_spread_damage_injection.install();
@@ -2414,4 +3245,6 @@ void mutators_do_patch()
     // Single player `skifree` and `pogo` cheat commands
     skifree_cmd.register_cmd();
     pogo_cmd.register_cmd();
+
+    crit_reticle_flash_cmd.register_cmd();
 }

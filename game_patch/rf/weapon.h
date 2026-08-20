@@ -235,6 +235,20 @@ namespace rf
         WTF_TRACERS = 0x40000000,
         WTF_PIERCING = 0x80000000,
     };
+    enum WeaponTypeFlags2
+    {
+        WTF2_PIERCES_ALL = 0x1,
+        WTF2_RANDOM_BMP_ORIENT = 0x2,
+        WTF2_CYCLE_ALPHA = 0x4,
+        WTF2_NO_FIRE_THROUGH = 0x8,
+        WTF2_NO_WORLD_COLLIDE = 0x10,
+        WTF2_UNDEVIATING = 0x20,
+        WTF2_FLAME = 0x40,
+        WTF2_HAS_SCANNER = 0x80,
+        WTF2_DAMAGE_SELF = 0x100,
+        WTF2_HAS_PILOT_FLAME = 0x200,
+        WTF2_MULTI_MESH_COLLIDE = 0x400,
+    };
     struct Weapon : Object
     {
         Weapon *next;

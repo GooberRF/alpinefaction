@@ -126,6 +126,7 @@ struct AlpineGameSettings
     bool show_gametype_help = true;
     bool show_mini_scoreboard_dm = true;
     bool multi_ricochet = false;
+    bool crit_reticle_flash = true;
     bool damage_screen_flash = true;
     bool spectate_damage_screen_flash = true;
     bool explosion_weapon_flash_lights = true;

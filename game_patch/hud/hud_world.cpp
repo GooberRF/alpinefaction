@@ -683,6 +683,9 @@ void build_ephemeral_world_hud_sprite_icons() {
     }
 }
 
+// Crit damage numbers read as a different class of event, not just a bigger number.
+constexpr float world_hud_crit_damage_text_scale = 1.5f;
+
 void build_ephemeral_world_hud_strings() {
     std::erase_if(ephemeral_world_hud_strings, [](const EphemeralWorldHUDString& es) {
         return !es.timestamp.valid() || es.timestamp.elapsed();
@@ -690,7 +693,9 @@ void build_ephemeral_world_hud_strings() {
 
     for (const auto& es : ephemeral_world_hud_strings) {
         int label_y_offset = 0;
-        const int font = get_world_hud_font(g_alpine_game_config.get_world_hud_damage_text_scale());
+        const float text_scale = g_alpine_game_config.get_world_hud_damage_text_scale()
+            * (es.crit ? world_hud_crit_damage_text_scale : 1.0f);
+        const int font = get_world_hud_font(text_scale);
         rf::Vector3 string_pos = es.pos;
         string_pos.y += 0.85f;
 
@@ -1351,7 +1356,8 @@ void add_location_ping_world_hud_sprite(rf::Vector3 pos, std::string player_name
     ephemeral_world_hud_sprites.push_back(es);
 }
 
-void add_damage_notify_world_hud_string(rf::Vector3 pos, uint8_t damaged_player_id, uint16_t damage, bool died)
+void add_damage_notify_world_hud_string(rf::Vector3 pos, uint8_t damaged_player_id, uint16_t damage, bool died,
+                                       bool crit)
 {
     if (!g_alpine_game_config.world_hud_damage_numbers) {
         return; // turned off
@@ -1369,6 +1375,7 @@ void add_damage_notify_world_hud_string(rf::Vector3 pos, uint8_t damaged_player_
         if (it != ephemeral_world_hud_strings.end()) {
             // If found, sum the damage values and remove the old entry
             damage += it->damage;
+            crit = crit || it->crit;
             ephemeral_world_hud_strings.erase(it);
         }
     }
@@ -1380,8 +1387,14 @@ void add_damage_notify_world_hud_string(rf::Vector3 pos, uint8_t damaged_player_
     es.timestamp.set_ms(1000);
     es.float_away = true;
     es.wind_phase_offset = wind_offset_dist(g_rng);
+    es.crit = crit;
 
-    if (g_alpine_game_config.damage_notify_color_override)
+    // A crit keeps its own colour even under the user override: the colour is what
+    // separates it from an ordinary hit.
+    if (crit) {
+        es.color = {255, 80, 0, 255};
+    }
+    else if (g_alpine_game_config.damage_notify_color_override)
     {
         es.color = rf::Color::from_hex(*g_alpine_game_config.damage_notify_color_override);
     }
