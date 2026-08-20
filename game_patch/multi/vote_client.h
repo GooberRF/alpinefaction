@@ -103,6 +103,10 @@ struct VoteOptionsData
     // Mutators the server's base rules declare; the baseline for every level that
     // does not carry its own. Empty for a server built before the blob carried it.
     std::vector<VoteMutatorDecl> base_mutator_decls;
+    // Whether the blob actually carried that section. An empty set is meaningful
+    // ("base declares none"), so a consumer offering it as a choice has to tell that
+    // apart from a server that never sent one.
+    bool base_mutator_decls_present = false;
 };
 
 // Does this level match the given game type's level prefix rules? Whether that
@@ -153,6 +157,17 @@ bool vote_options_is_type_enabled(AfVoteType type);
 // Ask the server for the blob if it isn't loaded (or went stale). Rate limited.
 void vote_options_request_if_needed();
 void vote_options_mark_stale();
+
+// --- active mutator set (af_sreq_active_mutators) ---
+// The mutator declarations the server session is running right now, including any a
+// vote installed. `nullptr` until the server has sent one, which is also what an
+// old server leaves forever: consumers fall back to the config-derived baseline the
+// options blob carries.
+const std::vector<VoteMutatorDecl>* vote_active_mutators_get();
+// Bumped on every push, so a consumer that derived state from the set can notice a
+// change without comparing the declarations. 0 means nothing has been received.
+uint32_t vote_active_mutators_revision();
+void vote_active_mutators_on_received(const uint8_t* data, size_t len);
 
 // Blob stream (af_sreq_vote_options_data). Ordered reliable delivery, so Begin ->
 // Data* -> End arrive in that order; anything out of order is a protocol error and

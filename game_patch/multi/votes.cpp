@@ -561,25 +561,7 @@ static bool does_level_match_gametype_prefix(const std::string& level_name, rf::
         return true;
     }
 
-    const auto base_prefix = multi_game_type_prefix(game_type);
-
-    auto matches_prefix = [&](std::string_view prefix) {
-        return string_istarts_with(map_name, prefix);
-    };
-
-    if (matches_prefix(base_prefix)) {
-        return true;
-    }
-
-    if ((game_type == rf::NG_TYPE_DM || game_type == rf::NG_TYPE_TEAMDM) && matches_prefix("pdm")) {
-        return true;
-    }
-
-    if ((game_type == rf::NG_TYPE_CTF || game_type == rf::NG_TYPE_SAL) && matches_prefix("pctf")) {
-        return true;
-    }
-
-    return false;
+    return multi_level_name_has_game_type_prefix(map_name, game_type);
 }
 
 // The union of the rotation and the vote-allowed list, in rotation order, with
@@ -610,21 +592,13 @@ static std::vector<std::string> build_votable_level_list()
     return levels;
 }
 
-// The game type the voted level will actually run with, mirroring
-// load_vote_rules_override's inheritance: a voted game type wins; otherwise a
-// vote that builds an override rebases onto the level's natural rules, and a
-// vote that builds no override leaves the level running exactly as it is.
+// The game type the voted level will actually run with. Same resolution
+// load_vote_rules_override applies, so validation can never accept a combination
+// the application then changes.
 static rf::NetGameType resolve_effective_vote_game_type(const std::string& level_name,
-                                                        std::optional<rf::NetGameType> gametype,
-                                                        bool builds_override, bool keeps_current_level)
+                                                        std::optional<rf::NetGameType> gametype)
 {
-    if (gametype) {
-        return *gametype;
-    }
-    if (!builds_override && keeps_current_level) {
-        return g_alpine_server_config_active_rules.game_type;
-    }
-    return vote_natural_rules_for_level(level_name).game_type;
+    return gametype.value_or(resolve_level_default_game_type(level_name));
 }
 
 // Enforcement-aware answer to "would the server accept this level voted with this
@@ -779,19 +753,32 @@ static std::string build_rules_title_suffix(std::optional<rf::NetGameType> gamet
     return suffix;
 }
 
+// The mutator set a vote installs. A vote that names its own set (the panel always
+// sends the full selection, empty included) replaces the baseline outright; one
+// that names none — a chat vote — inherits whatever the session is running.
+static std::vector<MutatorDeclaration> effective_vote_mutators(
+    const std::vector<MutatorDeclaration>& voted, bool voted_set_is_explicit)
+{
+    if (voted_set_is_explicit) {
+        return voted;
+    }
+    return g_alpine_server_config_active_rules.mutators.declarations;
+}
+
 struct VoteMatch : public Vote
 {
     int m_team_size;
     std::string m_level_name;
     std::optional<rf::NetGameType> m_gametype;
     std::vector<MutatorDeclaration> m_mutators;
+    bool m_mutators_explicit;
     std::optional<ManualRulesOverride> m_manual_rules_override;
     std::string m_mutator_labels;
 
     VoteMatch(int team_size, std::string level_name, std::optional<rf::NetGameType> gametype,
-              std::vector<MutatorDeclaration> mutators)
+              std::vector<MutatorDeclaration> mutators, bool mutators_explicit)
         : m_team_size(team_size), m_level_name(std::move(level_name)), m_gametype(gametype),
-          m_mutators(std::move(mutators))
+          m_mutators(std::move(mutators)), m_mutators_explicit(mutators_explicit)
     {}
 
     VoteType get_type() const override
@@ -819,15 +806,11 @@ struct VoteMatch : public Vote
             m_level_name = std::move(normalized_name);
         }
 
-        // A match on the current level with no rules override keeps the level
-        // (and therefore its active rules) exactly as they are; anything else
-        // re-resolves from the level's natural rules. Level names are compared
-        // case-insensitively: they come from a client packet, a config file and the
-        // engine, none of which agree on case.
-        const bool builds_override = !m_mutators.empty() || m_gametype.has_value();
+        // Level names are compared case-insensitively: they come from a client
+        // packet, a config file and the engine, none of which agree on case.
         const bool using_current_level = string_iequals(m_level_name, rf::level.filename.c_str());
-        const rf::NetGameType effective_game_type = resolve_effective_vote_game_type(
-            m_level_name, m_gametype, builds_override, using_current_level);
+        const rf::NetGameType effective_game_type =
+            resolve_effective_vote_game_type(m_level_name, m_gametype);
 
         if (!is_level_allowed_for_vote(m_level_name, source, effective_game_type)) {
             return false;
@@ -845,8 +828,19 @@ struct VoteMatch : public Vote
             return false;
         }
 
-        m_manual_rules_override = load_vote_rules_override(m_level_name, m_mutators, m_gametype);
-        m_mutator_labels = mutators_join_labels(m_mutators);
+        const std::vector<MutatorDeclaration> effective_mutators =
+            effective_vote_mutators(m_mutators, m_mutators_explicit);
+        // A match on the current level that asks for nothing the level is not
+        // already running keeps the active rules untouched, so an entry's own
+        // configured rules survive a plain "start a match here" vote.
+        const auto& active = g_alpine_server_config_active_rules;
+        const bool rules_unchanged = effective_game_type == active.game_type
+            && effective_mutators == active.mutators.declarations;
+        if (!using_current_level || !rules_unchanged) {
+            m_manual_rules_override =
+                load_vote_rules_override(m_level_name, effective_mutators, effective_game_type);
+        }
+        m_mutator_labels = mutators_join_labels(effective_mutators);
 
         // Deliberately does NOT touch g_match_info: validation passing only means
         // the vote may be PUT, not that it wins. Writing team_size /
@@ -1137,12 +1131,14 @@ struct VoteLevel : public Vote
     std::string m_level_name;
     std::optional<rf::NetGameType> m_gametype;
     std::vector<MutatorDeclaration> m_mutators;
-    std::optional<ManualRulesOverride> m_manual_rules_override;
+    bool m_mutators_explicit;
+    ManualRulesOverride m_manual_rules_override;
     std::string m_mutator_labels;
 
     VoteLevel(std::string level_name, std::optional<rf::NetGameType> gametype,
-              std::vector<MutatorDeclaration> mutators)
-        : m_level_name(std::move(level_name)), m_gametype(gametype), m_mutators(std::move(mutators))
+              std::vector<MutatorDeclaration> mutators, bool mutators_explicit)
+        : m_level_name(std::move(level_name)), m_gametype(gametype), m_mutators(std::move(mutators)),
+          m_mutators_explicit(mutators_explicit)
     {}
 
     VoteType get_type() const override
@@ -1162,18 +1158,18 @@ struct VoteLevel : public Vote
 
         m_level_name = std::move(level_name);
 
-        // A level vote always reloads the level, so it never keeps the currently
-        // active rules — the target always re-resolves from rotation/base.
-        const bool builds_override = !m_mutators.empty() || m_gametype.has_value();
-        const rf::NetGameType effective_game_type = resolve_effective_vote_game_type(
-            m_level_name, m_gametype, builds_override, /*keeps_current_level*/ false);
+        const rf::NetGameType effective_game_type =
+            resolve_effective_vote_game_type(m_level_name, m_gametype);
 
         if (!is_level_allowed_for_vote(m_level_name, source, effective_game_type)) {
             return false;
         }
 
-        m_manual_rules_override = load_vote_rules_override(m_level_name, m_mutators, m_gametype);
-        m_mutator_labels = mutators_join_labels(m_mutators);
+        const std::vector<MutatorDeclaration> effective_mutators =
+            effective_vote_mutators(m_mutators, m_mutators_explicit);
+        m_manual_rules_override =
+            load_vote_rules_override(m_level_name, effective_mutators, effective_game_type);
+        m_mutator_labels = mutators_join_labels(effective_mutators);
         return true;
     }
 
@@ -1203,10 +1199,10 @@ struct VoteLevel : public Vote
         afstats::note_game_end_type(afstats::GameEndType::map_change_vote);
         multi_change_level_alpine(m_level_name.c_str());
 
-        if (m_manual_rules_override) {
-            set_manual_rules_override(std::move(*m_manual_rules_override));
-            m_manual_rules_override.reset();
-        }
+        // Installed AFTER the level switch: a voted level that happens to be in the
+        // rotation goes through set_manually_loaded_level(false), which drops the
+        // override.
+        set_manual_rules_override(std::move(m_manual_rules_override));
     }
 
     [[nodiscard]] std::string get_detail() const override { return m_level_name; }
@@ -1247,7 +1243,7 @@ struct VoteRotation : public Vote
         m_carried_mutators = active.mutators.declarations;
         // Only carry a game type that actually deviates from what this level runs
         // on its own; otherwise the target level's own configured type must win.
-        if (active.game_type != vote_natural_rules_for_level(rf::level.filename.c_str()).game_type) {
+        if (active.game_type != resolve_level_default_game_type(rf::level.filename.c_str())) {
             m_carried_gametype = active.game_type;
         }
         m_carried_labels = mutators_join_labels(m_carried_mutators);
@@ -1901,7 +1897,7 @@ static void build_vote_options_blob(std::vector<uint8_t>& blob)
         const std::string& level = levels[i];
         blob_sized_u16(blob, [&] {
             blob_str(blob, level);
-            blob_u8(blob, static_cast<uint8_t>(vote_natural_rules_for_level(level).game_type));
+            blob_u8(blob, static_cast<uint8_t>(resolve_level_default_game_type(level)));
             blob_u32(blob, build_level_valid_gametype_mask(level));
             // Derived from the SAME predicate the call-time gate uses, so the blob can
             // never advertise a level the server would refuse.
@@ -1914,7 +1910,7 @@ static void build_vote_options_blob(std::vector<uint8_t>& blob)
             // deliberately clears it -- carries its own.
             const std::vector<MutatorDeclaration>* level_decls = nullptr;
             for (const auto& entry : g_alpine_server_config.levels) {
-                // Same lookup as vote_natural_rules_for_level: first match wins.
+                // Same lookup as resolve_level_default_game_type: first match wins.
                 if (string_iequals(entry.level_filename, level)) {
                     level_decls = &entry.rule_overrides.mutators.declarations;
                     break;
@@ -1935,6 +1931,12 @@ static void build_vote_options_blob(std::vector<uint8_t>& blob)
     // (kind 0 above) pre-selects this, and so does a manually named level outside
     // the rotation.
     blob_declaration_set(blob, g_alpine_server_config.base_rules.mutators.declarations);
+}
+
+void server_vote_build_active_mutators_blob(std::vector<uint8_t>& blob)
+{
+    blob.clear();
+    blob_declaration_set(blob, g_alpine_server_config_active_rules.mutators.declarations);
 }
 
 void server_vote_invalidate_options_blob()
@@ -2172,7 +2174,8 @@ void handle_vote_call_packet(rf::Player* sender, AfVoteCallParams&& params)
                 send_vote_reject_msg("Cannot start vote: no level was specified.", sender);
                 return;
             }
-            g_vote_mgr.StartVote<VoteLevel>(sender, std::move(params.level), gametype, std::move(mutators));
+            g_vote_mgr.StartVote<VoteLevel>(sender, std::move(params.level), gametype, std::move(mutators),
+                                            params.mutators_explicit);
             break;
         }
         case AfVoteType::Match: {
@@ -2185,7 +2188,8 @@ void handle_vote_call_packet(rf::Player* sender, AfVoteCallParams&& params)
                 return;
             }
             g_vote_mgr.StartVote<VoteMatch>(sender, static_cast<int>(params.team_size),
-                                            std::move(params.level), gametype, std::move(mutators));
+                                            std::move(params.level), gametype, std::move(mutators),
+                                            params.mutators_explicit);
             break;
         }
         case AfVoteType::Extend:

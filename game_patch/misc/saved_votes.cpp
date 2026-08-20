@@ -643,6 +643,9 @@ AfVoteCallParams saved_vote_build_params(const SavedVote& vote, const VoteOption
         case AfVoteType::Match: {
             params.level = vote.level;
             params.gametype = vote.gametype;
+            // A saved entry records the complete mutator selection, so an empty one
+            // means "no mutators", not "keep whatever the session runs".
+            params.mutators_explicit = true;
             if (vote.type == AfVoteType::Match) {
                 params.team_size = static_cast<uint8_t>(std::clamp<int>(vote.team_size, 1, 8));
             }

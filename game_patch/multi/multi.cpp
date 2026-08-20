@@ -1058,6 +1058,50 @@ std::string_view multi_game_type_prefix(const rf::NetGameType game_type) {
     }
 }
 
+// Does this filename carry THIS game type's own level prefix? Strictly the prefix:
+// the any-level rule and the RUN level list are the caller's business. The two "p"
+// prefixes belong to the game types that share the base prefix, so this is the one
+// place that owns those pairings.
+bool multi_level_name_has_game_type_prefix(std::string_view level_filename, rf::NetGameType game_type)
+{
+    if (string_istarts_with(level_filename, multi_game_type_prefix(game_type))) {
+        return true;
+    }
+    if ((game_type == rf::NG_TYPE_DM || game_type == rf::NG_TYPE_TEAMDM)
+        && string_istarts_with(level_filename, "pdm")) {
+        return true;
+    }
+    if ((game_type == rf::NG_TYPE_CTF || game_type == rf::NG_TYPE_SAL)
+        && string_istarts_with(level_filename, "pctf")) {
+        return true;
+    }
+    return false;
+}
+
+// The game type a level filename's prefix names, or nullopt for a filename that
+// carries no game type prefix at all. Derived from multi_game_type_prefix rather
+// than from a table of its own, so adding or removing a prefix there is all it
+// takes. Enum order decides the two prefixes two game types share (DM precedes
+// TeamDM, CTF precedes SAL) and keeps NG_TYPE_UNK — whose prefix is a fallback,
+// not its own — out of it.
+//
+// The any-level game types are skipped: their nominal prefix is what THEIR levels
+// would be called, not something a filename can be identified by, so wooden_bridge
+// must not read as Wipeout. This direction only; they still accept any mp level.
+std::optional<rf::NetGameType> multi_game_type_for_level_prefix(std::string_view level_filename)
+{
+    for (int i = 0; i <= static_cast<int>(rf::NG_TYPE_SAL); ++i) {
+        const auto game_type = static_cast<rf::NetGameType>(i);
+        if (multi_game_type_uses_any_level(game_type)) {
+            continue;
+        }
+        if (multi_level_name_has_game_type_prefix(level_filename, game_type)) {
+            return game_type;
+        }
+    }
+    return std::nullopt;
+}
+
 // Game types that have no dedicated level-name prefix of their own and are
 // played on any standard MP level.
 bool multi_game_type_uses_any_level(rf::NetGameType game_type)

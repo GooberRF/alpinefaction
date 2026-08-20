@@ -43,6 +43,7 @@
 #include "../main/main.h"
 #include "../hud/multi_spectate.h"
 #include "../misc/player.h"
+#include "../misc/alpine_options.h"
 #include "../misc/alpine_settings.h"
 
 // Spawn reserve for a no-clip "infinite ammo" weapon. Firing draws from reserve,
@@ -977,50 +978,62 @@ std::string mutators_join_labels(const std::vector<MutatorDeclaration>& declarat
     return joined;
 }
 
-const AlpineServerConfigRules& vote_natural_rules_for_level(std::string_view level_filename)
+rf::NetGameType resolve_level_default_game_type(std::string_view level_filename)
 {
+    const std::string normalized = normalize_level_filename(level_filename);
+
     for (const auto& entry : g_alpine_server_config.levels) {
-        if (string_iequals(entry.level_filename, level_filename))
-            return entry.rule_overrides_no_mutators;
+        if (string_iequals(entry.level_filename, normalized))
+            return entry.rule_overrides.game_type;
     }
-    // Not in the rotation: a manually named level runs on the base rules.
-    return g_alpine_server_config.base_rules_no_mutators;
+
+    // Run maps are named for the campaign they came from, not for a game type, so
+    // the quirks table is the only thing that can identify them. Behind the rotation
+    // lookup: an operator who configured one as something else meant it.
+    if (is_known_run_level(normalized))
+        return rf::NetGameType::NG_TYPE_RUN;
+
+    if (auto from_prefix = multi_game_type_for_level_prefix(normalized))
+        return *from_prefix;
+
+    return g_alpine_server_config.base_rules.game_type;
 }
 
-std::optional<ManualRulesOverride> load_vote_rules_override(
-    std::string_view level_filename, const std::vector<MutatorDeclaration>& mutators,
-    std::optional<rf::NetGameType> gametype)
+AlpineServerConfigRules build_derived_server_rules(rf::NetGameType game_type,
+                                                   const std::vector<MutatorDeclaration>& mutators)
 {
-    if (mutators.empty() && !gametype)
-        return std::nullopt;
+    const auto& cfg = g_alpine_server_config;
 
-    // Inheritance rule for a vote override, in layering order:
-    //   1. the rules the voted level would run with on its own — its rotation
-    //      entry's rules if it is in the rotation, otherwise the base rules —
-    //      with config-declared mutators stripped (voted mutators REPLACE
-    //      configured ones rather than stacking on them),
-    //   2. the voted game type and its gametype defaults, if one was voted,
-    //   3. the voted mutator declarations.
-    // Starting from the base rules instead (as this used to) silently dragged the
-    // base game type onto a level whose rotation entry overrides it, so adding a
-    // single mutator to a level vote could flip the whole game type.
-    AlpineServerConfigRules rules = vote_natural_rules_for_level(level_filename);
-
-    if (gametype && rules.game_type != *gametype) {
-        // Only re-derive the gametype defaults when the type actually CHANGES.
-        // apply_defaults_for_game_type() overwrites operator-configured rules
-        // (spawn loadout, pvp_damage_modifier, spawn_delay, ...), so explicitly
-        // voting the type a level already runs must behave the same as voting
-        // "Server default" rather than silently wiping the config. It also
-        // rebuilds the loadout and clears MutatorConfig, so mutators come after.
-        rules.game_type = *gametype;
-        apply_defaults_for_game_type(*gametype, rules);
+    AlpineServerConfigRules rules;
+    if (game_type == cfg.base_rules.game_type) {
+        // The operator's own keys already sit on top of this game type's defaults in
+        // parse order, which is a layering the rebuild below cannot reproduce.
+        rules = cfg.base_rules_no_mutators;
+    }
+    else {
+        // Never derived from another game type's materialized rules: those carry
+        // fields (spawn_life, drop_weapons, ...) that apply_defaults_for_game_type
+        // does not claim back, so they would leak into the new game type.
+        rules = cfg.base_rules_keys_only;
+        rules.game_type = game_type;
+        apply_defaults_for_game_type(game_type, rules);
     }
 
     if (!mutators.empty()) {
         const toml::array arr = mutator_declarations_to_toml_array(mutators);
         apply_mutators_from_toml(arr, rules);
     }
+
+    return rules;
+}
+
+ManualRulesOverride load_vote_rules_override(
+    std::string_view level_filename, const std::vector<MutatorDeclaration>& mutators,
+    std::optional<rf::NetGameType> gametype)
+{
+    const rf::NetGameType game_type = gametype.value_or(resolve_level_default_game_type(level_filename));
+
+    AlpineServerConfigRules rules = build_derived_server_rules(game_type, mutators);
 
     ManualRulesOverride result;
     // Reported from what actually applied rather than from what was voted.

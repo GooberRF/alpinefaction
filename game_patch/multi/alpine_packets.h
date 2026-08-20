@@ -322,6 +322,7 @@ enum class af_server_req_type : uint8_t
     af_sreq_jetpack_state = 0x9,       // Alpine 1.4 (5 bytes: obj_handle, on)
     af_sreq_riot_shield_state = 0xA,   // Alpine 1.4 (20 bytes: obj_handle, life, impact_pos)
     af_sreq_award = 0xB,               // Alpine 1.4 (2 bytes: award_id, victim_player_id; 0xFF = no victim)
+    af_sreq_active_mutators = 0xC,     // Alpine 1.4 (variable: one declaration set, see blob_declaration_set)
 };
 
 struct ShouldGibPayload
@@ -801,6 +802,10 @@ struct AfVoteCallParams
     uint8_t gametype = af_vote_gametype_none;
     uint8_t extend_minutes = af_vote_extend_default_minutes;
     std::vector<VoteMutatorInput> mutators;
+    // `mutators` is the caller's complete selection, empty included, and replaces
+    // whatever the session is running. False (a chat vote, which cannot name
+    // mutators) means "keep the session's set".
+    bool mutators_explicit = false;
     bool preserve = true;
 };
 

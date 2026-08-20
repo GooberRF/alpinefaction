@@ -524,36 +524,69 @@ struct RulesParseQuietGuard
     RulesParseQuietGuard& operator=(const RulesParseQuietGuard&) = delete;
 };
 
+// What a parse pass over a rules scope is allowed to touch.
+enum class RulesParseMode
+{
+    Full,       // game type resolution, gametype defaults, mutators, explicit keys
+    NoMutators, // the same minus the mutator declarations
+    KeysOnly,   // only the explicit keys
+};
+
+struct RulesParseOptions
+{
+    RulesParseMode mode = RulesParseMode::Full;
+    // Struct defaults plus the operator's explicit base keys. When set, a scope that
+    // resolves a DIFFERENT game type is rebuilt from this rather than inheriting the
+    // materialized rules it was handed, so no field claimed by the previous game type
+    // can survive into the new one. Null while the base scope itself is parsed (its
+    // own keys are what this is built from).
+    const AlpineServerConfigRules* rebase_source = nullptr;
+};
+
+static void apply_rules_keys_from_toml(const toml::table& t, AlpineServerConfigRules& o);
+
 // parse toml rules
 // for base rules, load all speciifed. For not specified, defaults are in struct
 // for level-specific rules, start with base rules and load anything specified beyond that
-AlpineServerConfigRules parse_server_rules(const toml::table& t, const AlpineServerConfigRules& base_rules, bool apply_mutators = true)
+AlpineServerConfigRules parse_server_rules(const toml::table& t, const AlpineServerConfigRules& base_rules,
+                                           const RulesParseOptions& opts = {})
 {
     AlpineServerConfigRules o = base_rules;
 
-    rf::NetGameType resolved_game_type = o.game_type;
-    if (auto v = t["game_type"].value<std::string>()) {
-        auto gt_opt = resolve_gametype_from_name(*v);
-        resolved_game_type = gt_opt.has_value() ? gt_opt.value() : rf::NetGameType::NG_TYPE_DM;
+    if (opts.mode != RulesParseMode::KeysOnly) {
+        rf::NetGameType resolved_game_type = o.game_type;
+        if (auto v = t["game_type"].value<std::string>()) {
+            auto gt_opt = resolve_gametype_from_name(*v);
+            resolved_game_type = gt_opt.has_value() ? gt_opt.value() : rf::NetGameType::NG_TYPE_DM;
+        }
+
+        const bool game_type_changed = resolved_game_type != base_rules.game_type;
+
+        if (game_type_changed && opts.rebase_source)
+            o = *opts.rebase_source;
+
+        o.game_type = resolved_game_type;
+
+        if (game_type_changed || !o.game_type_defaults_applied)
+            apply_defaults_for_game_type(o.game_type, o);
+
+        // Mutators are applied after the gametype defaults but before any explicitly
+        // set rule keys in this scope, so manual keys still override mutator presets.
+        // parse_server_rules runs once per scope (base, then each level), which yields
+        // the requested layering: gametype defaults -> base mutators -> manual base ->
+        // per-level mutators -> manual per-level.
+        if (opts.mode == RulesParseMode::Full) {
+            if (auto mut_arr = t["mutators"].as_array())
+                apply_mutators_from_toml(*mut_arr, o);
+        }
     }
 
-    const bool game_type_changed = resolved_game_type != base_rules.game_type;
+    apply_rules_keys_from_toml(t, o);
+    return o;
+}
 
-    o.game_type = resolved_game_type;
-
-    if (game_type_changed || !o.game_type_defaults_applied)
-        apply_defaults_for_game_type(o.game_type, o);
-
-    // Mutators are applied after the gametype defaults but before any explicitly
-    // set rule keys in this scope, so manual keys still override mutator presets.
-    // parse_server_rules runs once per scope (base, then each level), which yields
-    // the requested layering: gametype defaults -> base mutators -> manual base ->
-    // per-level mutators -> manual per-level.
-    if (apply_mutators) {
-        if (auto mut_arr = t["mutators"].as_array())
-            apply_mutators_from_toml(*mut_arr, o);
-    }
-
+static void apply_rules_keys_from_toml(const toml::table& t, AlpineServerConfigRules& o)
+{
     if (auto v = t["time_limit"].value<float>())
         o.set_time_limit(*v);
     if (auto v = t["overtime"].as_table())
@@ -777,8 +810,6 @@ AlpineServerConfigRules parse_server_rules(const toml::table& t, const AlpineSer
     }
     if (auto v = t["gg_final_weapon"].value<std::string>())
         o.gungame_final_weapon = *v;
-
-    return o;
 }
 
 static std::vector<std::string> parse_allowed_maps(const toml::table& t)
@@ -972,7 +1003,7 @@ static AlpineServerConfigRules apply_rules_presets_and_overrides(
     const toml::table& scope_tbl, const fs::path& base_dir, const AlpineServerConfigRules& starting_rules,
     std::string_view context, const std::map<std::string, std::filesystem::path>* preset_aliases = nullptr,
     std::vector<fs::path>* preset_stack = nullptr, std::vector<std::pair<std::filesystem::path, std::optional<std::string>>>* applied_presets = nullptr,
-    bool apply_mutators = true)
+    const RulesParseOptions& opts = {})
 {
     std::vector<fs::path> local_stack;
     const bool is_root_call = !preset_stack;
@@ -1025,7 +1056,7 @@ static AlpineServerConfigRules apply_rules_presets_and_overrides(
                 preset_rules = &preset_root;
 
             std::string next_context = std::format("rules preset '{}'", resolved_path.generic_string());
-            rules = apply_rules_presets_and_overrides(*preset_rules, resolved_path.parent_path(), rules, next_context, preset_aliases, preset_stack, applied_presets, apply_mutators);
+            rules = apply_rules_presets_and_overrides(*preset_rules, resolved_path.parent_path(), rules, next_context, preset_aliases, preset_stack, applied_presets, opts);
             if (applied_presets) {
                 if (used_alias)
                     applied_presets->emplace_back(resolved_path, preset_path);
@@ -1058,10 +1089,10 @@ static AlpineServerConfigRules apply_rules_presets_and_overrides(
     }
 
     // Allow presets to specify rule keys directly at the current scope.
-    rules = parse_server_rules(scope_tbl, rules, apply_mutators);
+    rules = parse_server_rules(scope_tbl, rules, opts);
 
     if (auto rules_tbl = scope_tbl["rules"].as_table())
-        rules = parse_server_rules(*rules_tbl, rules, apply_mutators);
+        rules = parse_server_rules(*rules_tbl, rules, opts);
 
     return rules;
 }
@@ -1096,7 +1127,8 @@ std::optional<ManualRulesOverride> load_rules_preset_alias(std::string_view pres
         result.rules = apply_rules_presets_and_overrides(
             *preset_rules, resolved_path.parent_path(), g_alpine_server_config.base_rules,
             std::format("rules preset alias '{}'", preset_name), &g_alpine_server_config.rules_preset_aliases,
-            nullptr, &applied_presets);
+            nullptr, &applied_presets,
+            RulesParseOptions{RulesParseMode::Full, &g_alpine_server_config.base_rules_keys_only});
 
         applied_presets.emplace_back(resolved_path, preset_name);
         result.applied_preset_paths = std::move(applied_presets);
@@ -1139,15 +1171,9 @@ static void add_level_entry_from_table(
 
     std::string context = "level '" + (tmp_filename.empty() ? std::string("<unknown>") : tmp_filename) + "'";
     entry.rule_overrides = apply_rules_presets_and_overrides(
-        lvl_tbl, base_dir, cfg.base_rules, context, &cfg.rules_preset_aliases, nullptr, &entry.applied_rules_preset_paths);
-    // Mutator-free variant, used as the starting point for level/match votes
-    // that carry mutators.
-    {
-        const RulesParseQuietGuard quiet;
-        entry.rule_overrides_no_mutators = apply_rules_presets_and_overrides(
-            lvl_tbl, base_dir, cfg.base_rules_no_mutators, context,
-            &cfg.rules_preset_aliases, nullptr, nullptr, /*apply_mutators*/ false);
-    }
+        lvl_tbl, base_dir, cfg.base_rules, context, &cfg.rules_preset_aliases, nullptr,
+        &entry.applied_rules_preset_paths,
+        RulesParseOptions{RulesParseMode::Full, &cfg.base_rules_keys_only});
 
     cfg.levels.push_back(std::move(entry));
 }
@@ -1428,7 +1454,15 @@ static void apply_known_table_in_order(
             const RulesParseQuietGuard quiet;
             cfg.base_rules_no_mutators = apply_rules_presets_and_overrides(
                 tbl, base_dir, cfg.base_rules_no_mutators, "base configuration",
-                &cfg.rules_preset_aliases, nullptr, nullptr, /*apply_mutators*/ false);
+                &cfg.rules_preset_aliases, nullptr, nullptr,
+                RulesParseOptions{RulesParseMode::NoMutators, nullptr});
+            // And the operator's explicit keys alone, over struct defaults: the only
+            // form that can be replayed onto a DIFFERENT game type's defaults without
+            // dragging this game type's fields along.
+            cfg.base_rules_keys_only = apply_rules_presets_and_overrides(
+                tbl, base_dir, cfg.base_rules_keys_only, "base configuration",
+                &cfg.rules_preset_aliases, nullptr, nullptr,
+                RulesParseOptions{RulesParseMode::KeysOnly, nullptr});
         }
     }
     else if (key == "levels") {
@@ -2519,6 +2553,7 @@ void load_and_print_alpine_dedicated_server_config(std::string ads_config_name, 
         cfg.signal_cfg_changed = true;
         server_vote_invalidate_options_blob();
         clear_pending_rotation_preserve();
+        af_send_active_mutators_to_all();
     }
 
     initialize_core_alpine_dedicated_server_settings(netgame, cfg, on_launch);
@@ -2555,10 +2590,13 @@ bool apply_game_type_for_current_level() {
     rf::NetGameType desired = rf::NetGameType::NG_TYPE_DM;
 
     if (manual_load) {
-        const AlpineServerConfigRules& manual_rules =
-            g_manual_rules_override ? g_manual_rules_override->rules : cfg.base_rules;
+        // Same resolution a vote for this level would get, so a manual load and a
+        // level vote never disagree about what the level runs.
+        const rf::NetGameType level_default = g_manual_rules_override
+            ? g_manual_rules_override->rules.game_type
+            : resolve_level_default_game_type(rf::level_filename_to_load.c_str());
 
-        desired = has_already_queued_change ? upcoming : manual_rules.game_type;
+        desired = has_already_queued_change ? upcoming : level_default;
 
         if (!g_ads_minimal_server_info && !has_already_queued_change && desired != upcoming) {
             if (g_manual_rules_override && g_manual_rules_override->mutator_labels) {
@@ -2650,9 +2688,17 @@ void apply_rules_for_current_level()
             }
         }
         else {
-            g_alpine_server_config_active_rules = cfg.base_rules;
+            // A manual load derives exactly like a level vote that named nothing:
+            // the game type already resolved for this level (an explicit sv_gametype
+            // request, else the level's own default) and the session's mutator set.
+            // Never a copy of the previous level's rules, which would carry its game
+            // type's fields into a different game type.
+            const std::vector<MutatorDeclaration> session_mutators =
+                g_alpine_server_config_active_rules.mutators.declarations;
+            g_alpine_server_config_active_rules =
+                build_derived_server_rules(rf::netgame.type, session_mutators);
             if (!g_ads_minimal_server_info)
-                rf::console::print("Applying base rules for manually loaded level {}...\n", rf::level_filename_to_load);
+                rf::console::print("Applying derived rules for manually loaded level {}...\n", rf::level_filename_to_load);
         }
     }
     else { // level is in rotation
@@ -2681,33 +2727,25 @@ void apply_rules_for_current_level()
         const PendingRotationPreserve pending = *get_pending_rotation_preserve();
         clear_pending_rotation_preserve();
 
-        auto carried = load_vote_rules_override(rf::level_filename_to_load.c_str(),
-                                                pending.declarations, pending.gametype);
-        if (carried) {
-            g_alpine_server_config_active_rules = carried->rules;
-            g_manual_rules_override = std::move(*carried);
-            if (!g_ads_minimal_server_info) {
-                rf::console::print("Carrying voted session rules onto {}...\n", rf::level_filename_to_load);
-            }
+        ManualRulesOverride carried = load_vote_rules_override(rf::level_filename_to_load.c_str(),
+                                                               pending.declarations, pending.gametype);
+        g_alpine_server_config_active_rules = carried.rules;
+        g_manual_rules_override = std::move(carried);
+        if (!g_ads_minimal_server_info) {
+            rf::console::print("Carrying voted session rules onto {}...\n", rf::level_filename_to_load);
         }
     }
 
-    // respect game type specific base rules (eg. koth spawn loadout) for voted or manually loaded maps
+    // The rules resolved above can still name a different game type than the one the
+    // level is actually starting under (sv_gametype against a rotation entry). Rebuilt
+    // rather than retargeted in place: retargeting leaves every field the old game type
+    // claimed and the new one does not (spawn_life, drop_weapons, ...) in force.
     const rf::NetGameType active_game_type = rf::netgame.type;
     if (g_alpine_server_config_active_rules.game_type != active_game_type) {
-        // apply_defaults_for_game_type() rebuilds the loadout and clears MutatorConfig,
-        // so capture this scope's mutator declarations first and re-apply them on top
-        // of the new game-type defaults.
         const std::vector<MutatorDeclaration> saved_mutators =
             g_alpine_server_config_active_rules.mutators.declarations;
-
-        g_alpine_server_config_active_rules.game_type = active_game_type;
-        apply_defaults_for_game_type(active_game_type, g_alpine_server_config_active_rules);
-
-        if (!saved_mutators.empty()) {
-            const toml::array mut_arr = mutator_declarations_to_toml_array(saved_mutators);
-            apply_mutators_from_toml(mut_arr, g_alpine_server_config_active_rules);
-        }
+        g_alpine_server_config_active_rules =
+            build_derived_server_rules(active_game_type, saved_mutators);
     }
 
     // apply the rules
@@ -2715,6 +2753,10 @@ void apply_rules_for_current_level()
 
     // Signal consumers that the active rules were (re)applied this call.
     ++g_active_rules_generation;
+
+    // The vote panel pre-selects the session's mutator set, so clients need it
+    // whenever it can have changed.
+    af_send_active_mutators_to_all();
 }
 
 void init_alpine_dedicated_server() {

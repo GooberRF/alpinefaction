@@ -6,6 +6,7 @@
 #include "vote_client.h"
 #include "alpine_packets.h"
 #include "../hud/hud.h"
+#include "../misc/alpine_options.h"
 #include "../misc/alpine_settings.h"
 #include "../os/os.h"
 #include "../rf/multi.h"
@@ -40,6 +41,10 @@ struct VoteOptionsCache
 
 VoteOptionsCache g_vote_options;
 std::optional<ActiveVoteState> g_active_vote;
+
+// Session mutator set pushed by the server (af_sreq_active_mutators).
+std::optional<std::vector<VoteMutatorDecl>> g_active_mutators;
+uint32_t g_active_mutators_revision = 0;
 
 // Retry interval while we have no blob at all. Once one is loaded a stale marker
 // costs exactly one request, so this only paces the initial fetch.
@@ -443,6 +448,14 @@ bool parse_vote_options_blob(const uint8_t* data, size_t len, VoteOptionsData& o
         level.filename = body.str();
         level.natural_gametype = body.u8();
         level.valid_gametype_mask = body.u32();
+        // A run map is identified by the quirks table, not by its filename, and a
+        // dedicated server never loads that table -- so the mask it sent leaves RUN
+        // out. Corrected once here rather than at each consumer, so the panel's
+        // filter and its RUN pre-selection cannot disagree. Local only: the server
+        // still adjudicates the vote it is actually sent.
+        if (is_known_run_level(level.filename)) {
+            level.valid_gametype_mask |= 1u << static_cast<unsigned>(rf::NG_TYPE_RUN);
+        }
         level.allowed_for_vote = (body.u8() & AF_VOTE_LEVEL_FLAG_ALLOWED) != 0;
         // Read the entry's own success BEFORE the appended baseline set below, so
         // trouble in the addition can only cost the pre-selection, never the level.
@@ -477,9 +490,14 @@ bool parse_vote_options_blob(const uint8_t* data, size_t len, VoteOptionsData& o
     // The base mutator set, appended after the level section. Failing to read it
     // costs the vote panel's pre-selection and nothing else, so it never fails the
     // blob: a blob from a server built before it existed simply ends here.
-    if (r.remaining() > 0 && !parse_declaration_set(r, parsed.base_mutator_decls)) {
-        xlog::debug("vote options: unparseable base mutator set; the vote panel will pre-select nothing");
-        parsed.base_mutator_decls.clear();
+    if (r.remaining() > 0) {
+        if (parse_declaration_set(r, parsed.base_mutator_decls)) {
+            parsed.base_mutator_decls_present = true;
+        }
+        else {
+            xlog::debug("vote options: unparseable base mutator set; the vote panel will pre-select nothing");
+            parsed.base_mutator_decls.clear();
+        }
     }
 
     // Anything left over is a section a newer server appended; ignored on purpose.
@@ -530,6 +548,30 @@ const VoteOptionsData* vote_options_get()
 uint32_t vote_options_loaded_generation()
 {
     return g_vote_options.loaded_generation;
+}
+
+const std::vector<VoteMutatorDecl>* vote_active_mutators_get()
+{
+    return g_active_mutators ? &*g_active_mutators : nullptr;
+}
+
+uint32_t vote_active_mutators_revision()
+{
+    return g_active_mutators_revision;
+}
+
+void vote_active_mutators_on_received(const uint8_t* data, size_t len)
+{
+    BlobReader r{data, len};
+    std::vector<VoteMutatorDecl> decls;
+    if (!parse_declaration_set(r, decls)) {
+        xlog::warn("vote options: unparseable active mutator set ({} bytes); keeping the previous one", len);
+        return;
+    }
+    // An empty set is meaningful ("the session runs no mutators"), so it is stored
+    // like any other rather than read as "nothing received".
+    g_active_mutators = std::move(decls);
+    ++g_active_mutators_revision;
 }
 
 bool vote_level_allows_gametype(const VoteLevelInfo& level, uint8_t game_type)
@@ -804,6 +846,8 @@ void vote_client_reset()
     // Drops any partial stream along with the parsed cache: the accumulated bytes
     // belong to the server we just left.
     g_vote_options = VoteOptionsCache{};
+    g_active_mutators.reset();
+    g_active_mutators_revision = 0;
     // Also drop the HUD prompt: without this a vote left running on the server we
     // just left would keep its notification up across a reconnect elsewhere.
     remove_hud_vote_notification();

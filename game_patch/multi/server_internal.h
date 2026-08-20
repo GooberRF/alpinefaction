@@ -940,11 +940,6 @@ struct AlpineServerConfigLevelEntry
 {
     std::string level_filename;
     AlpineServerConfigRules rule_overrides;
-    // The same rules re-resolved with every config-declared mutator stripped.
-    // Starting point for a level/match vote that carries mutators, so the voted
-    // mutators replace (rather than stack on) whatever the config declared while
-    // the rest of this level's rules — notably its game type — are preserved.
-    AlpineServerConfigRules rule_overrides_no_mutators;
     std::vector<std::pair<std::filesystem::path, std::optional<std::string>>> applied_rules_preset_paths;
 };
 
@@ -1025,6 +1020,10 @@ struct AlpineServerConfig
     // for a mutator applied via a level/match vote, so the voted mutator replaces
     // (rather than stacks on) any mutator the base rules declared.
     AlpineServerConfigRules base_rules_no_mutators;
+    // The operator's explicit base keys layered over struct defaults and NOTHING else:
+    // no game type resolution, no gametype defaults, no mutators. Rules for any other
+    // game type are built from this, so nothing the base game type claimed can leak in.
+    AlpineServerConfigRules base_rules_keys_only;
     std::vector<std::pair<std::filesystem::path, std::optional<std::string>>> base_rules_preset_paths;
     std::map<std::string, std::filesystem::path> rules_preset_aliases;
     std::vector<AlpineServerConfigLevelEntry> levels;
@@ -1163,6 +1162,14 @@ void server_vote_handle_options_request(rf::Player* sender, bool has_cache, uint
 // discard a stream that was superseded mid-flight.
 const std::vector<uint8_t>& server_vote_get_options_blob(uint32_t& generation);
 void server_vote_invalidate_options_blob();
+// The mutator declaration set currently in force, in the vote-options blob's
+// declaration-set encoding. This is session state, not config, so it is pushed
+// separately from the (config-derived, cached) options blob.
+void server_vote_build_active_mutators_blob(std::vector<uint8_t>& blob);
+// Push that set to one player / to every 1.4+ client. Called on join and whenever
+// the active rules are (re)applied.
+void af_send_active_mutators(rf::Player* player);
+void af_send_active_mutators_to_all();
 void vote_level_refresh_allowed_maps();
 // Push the current vote state to a player who joined while a vote is running.
 void server_vote_send_state_to_new_player(rf::Player* player);

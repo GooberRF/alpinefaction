@@ -234,14 +234,20 @@ std::optional<std::string> mutators_build_declarations_from_vote(
 // Human-readable labels of the declared mutators, joined with ", ".
 std::string mutators_join_labels(const std::vector<MutatorDeclaration>& declarations);
 
-// The rules `level_filename` would run with if no vote were involved: its
-// rotation entry's rules when it is in the rotation, otherwise the base rules —
-// in both cases with config-declared mutators stripped.
-const AlpineServerConfigRules& vote_natural_rules_for_level(std::string_view level_filename);
+// The game type a level runs under when nothing names one: its rotation entry's
+// type when it is in the rotation, else the type its filename prefix names, else
+// the base game type. The single answer validation and application both use.
+rf::NetGameType resolve_level_default_game_type(std::string_view level_filename);
 
-// Build the rules a level/match vote should install: the voted level's natural
-// rules (above), optionally re-based on a voted game type plus that type's
-// defaults, then the voted mutators applied in MUTATOR_APPLY_ORDER.
-std::optional<ManualRulesOverride> load_vote_rules_override(
+// Rules for `game_type` built without inheriting any other game type's fields:
+// the materialized base rules when it IS the base game type, otherwise struct
+// defaults + the operator's base keys + that type's defaults. `mutators` is
+// applied last, in MUTATOR_APPLY_ORDER.
+AlpineServerConfigRules build_derived_server_rules(rf::NetGameType game_type,
+                                                   const std::vector<MutatorDeclaration>& mutators);
+
+// Build the rules a level/match vote (or a manual level load) should install.
+// `gametype` falls back to resolve_level_default_game_type.
+ManualRulesOverride load_vote_rules_override(
     std::string_view level_filename, const std::vector<MutatorDeclaration>& mutators,
     std::optional<rf::NetGameType> gametype);
