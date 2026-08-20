@@ -43,6 +43,7 @@ enum class af_packet_type : uint8_t
     af_pit_roster = 0x61,               // Alpine 1.4
     af_gungame_order = 0x62,            // Alpine 1.4
     af_salvage_state = 0x63,            // Alpine 1.4
+    af_crit_shot = 0x64,                // Alpine 1.4
 };
 
 struct af_ping_location_req_packet
@@ -58,13 +59,29 @@ struct af_ping_location_packet
     RF_Vector pos;
 };
 
+enum af_damage_notify_flags : uint8_t
+{
+    AF_DAMAGE_NOTIFY_DIED = 1 << 0,
+    AF_DAMAGE_NOTIFY_CRIT = 1 << 1,
+};
+
 struct af_damage_notify_packet
 {
     RF_GamePacketHeader header;
     uint8_t player_id;
     uint16_t damage;
-    uint8_t flags;
+    uint8_t flags; // af_damage_notify_flags
 };
+
+// Critical Hits mutator, in-flight telegraph. Sent once per crit-rolled projectile fire
+// event; clients hold it as a short-lived marker for the weapon object that shot spawns.
+struct af_crit_shot_packet
+{
+    RF_GamePacketHeader header;
+    uint8_t shooter_player_id;
+    uint8_t weapon_type;
+};
+static_assert(sizeof(af_crit_shot_packet) == sizeof(RF_GamePacketHeader) + 2);
 
 struct af_obj_update // members of af_obj_update_packet
 {
@@ -795,8 +812,10 @@ static void af_process_ping_location_req_packet(const void* data, size_t len, co
 void af_send_ping_location_packet_to_team(rf::Vector3* pos, uint8_t player_id, rf::ubyte team);
 void af_send_ping_location_packet_to_all(rf::Vector3* pos, uint8_t player_id);
 static void af_process_ping_location_packet(const void* data, size_t len, const rf::NetAddr& addr);
-void af_send_damage_notify_packet(uint8_t player_id, float damage, bool died, rf::Player* player);
+void af_send_damage_notify_packet(uint8_t player_id, float damage, bool died, bool crit, rf::Player* player);
 static void af_process_damage_notify_packet(const void* data, size_t len, const rf::NetAddr& addr);
+void af_send_crit_shot_packet(uint8_t shooter_player_id, uint8_t weapon_type, rf::Player* player);
+static void af_process_crit_shot_packet(const void* data, size_t len, const rf::NetAddr& addr);
 void af_send_obj_update_packet(rf::Player* player);
 static void af_process_obj_update_packet(const void* data, size_t len, const rf::NetAddr& addr);
 void af_send_client_req_packet(const af_client_req_packet& packet, bool is_reliable = false);

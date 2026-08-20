@@ -14,7 +14,10 @@ namespace rf
 {
     struct Entity;
     struct Item;
+    struct Object;
     struct Player;
+    struct Vector3;
+    struct Weapon;
 }
 
 // Mutators quickly reconfigure a set of gameplay rules to produce an alternate
@@ -49,6 +52,7 @@ enum class MutatorId : uint8_t
     Skiing = 17,
     Pogo = 18,
     Dodging = 19,
+    Crits = 20,
 };
 
 struct MutatorOptionChoice
@@ -131,11 +135,82 @@ void mutators_apply_entity_on_fire(rf::Entity* ep, bool on_fire);
 // with no owner, so the result never matches a real player id unless there is an igniter to blame.
 // Always -1 on clients and whenever the mutator is not running.
 int mutators_player_fire_igniter(uint8_t player_id);
-// Player ids are reused: a leaving player's burn state must not be inherited by the id's next owner.
+// Player ids are reused: a leaving player's burn state must not be inherited by the id's next owner,
+// and the crit mutator's per-player state goes with it.
 void mutators_on_player_destroy(rf::Player* player);
 bool mutators_skiing_active();
 bool mutators_dodging_active();
 bool mutators_pogo_active();
+
+// ---------------------------------------------------------------------------
+// Critical Hits mutator
+// ---------------------------------------------------------------------------
+
+// One trigger pull's crit roll. Nesting-aware: multi_process_remote_weapon_fire calls
+// entity_fire_weapon, so a remote non-thrown shot opens two scopes and only the outermost
+// may roll - re-rolling in the inner one would double the effective crit rate.
+class CritFireScope
+{
+public:
+    explicit CritFireScope(rf::Entity* ep);
+    ~CritFireScope();
+
+    CritFireScope(const CritFireScope&) = delete;
+    CritFireScope& operator=(const CritFireScope&) = delete;
+
+private:
+    // Saved rather than cleared, exactly like SplashWeaponScope: an inner scope restores
+    // the outer roll on the way out instead of dropping it.
+    bool saved_active_;
+    bool saved_crit_;
+    bool saved_shot_sent_;
+    bool saved_fire_sounded_;
+    int saved_shooter_handle_;
+    bool owns_ = false;
+};
+
+// Publishes whether the projectile whose impact/detonation is being resolved was tagged as
+// a crit. Constructed every frame for every live weapon (weapon_move_one), so the ctor must
+// stay a pure lookup.
+class CritWeaponScope
+{
+public:
+    explicit CritWeaponScope(rf::Weapon* wp);
+    ~CritWeaponScope();
+
+    CritWeaponScope(const CritWeaponScope&) = delete;
+    CritWeaponScope& operator=(const CritWeaponScope&) = delete;
+
+private:
+    bool saved_active_;
+    bool saved_crit_;
+};
+
+// Tag a projectile the open fire scope rolled a crit for. Called from the weapon_create CALL
+// SITES only - the lag-comp ghost must never be tagged.
+void crits_on_weapon_created(rf::Weapon* wp, int parent_handle);
+// Melee swings create their projectiles frames after the fire event, so they take the
+// shooter's pending swing roll instead of the fire scope.
+void crits_on_deferred_created(rf::Weapon* wp, int parent_handle);
+void crits_on_object_dead(rf::Object* objp);
+// The crit detonation sound; returns the blast-radius scale the caller must apply to the
+// explosion. Called from every player-attributed explosion_apply_radius_damage call site: two
+// are hooked here, the third is driven by weapon.cpp.
+float crits_on_explosion(const rf::Vector3* pos, float radius);
+// Continuous fire (flamethrower stream, taser, drill): the engine re-enters the fire path on its
+// own instead of once per shot, so these roll on a cadence and stamp a crit window. `weapon_on`
+// is the raw engine state; which weapons the window applies to is decided inside.
+void crits_on_continuous_fire_frame(rf::Player* pp, int weapon_type, bool weapon_on, int delta_ms);
+// Feeds the recent-damage ramp the crit chance scales with.
+void crits_on_damage_dealt(rf::Player* attacker, float effective_damage);
+// Damage multiplier for the PvP damage currently being applied, 1.0 when it is not a crit.
+float crits_damage_multiplier(rf::Player* attacker, rf::Player* victim);
+// Client side, in-flight telegraph. af_crit_shot marker for a shooter's next projectile.
+void crits_on_crit_shot(uint8_t shooter_player_id, uint8_t weapon_type);
+// Client side, called after the world scene renders.
+void crits_client_render();
+// Client side, the local player's own crit-fire reticle flash; drawn with the multiplayer HUD.
+void crits_client_render_reticle_flash();
 
 // Registry view. Built lazily because choice lists (e.g. the Rails featured
 // weapon) are derived from the loaded weapon/item tables.

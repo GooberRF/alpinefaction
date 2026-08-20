@@ -1006,6 +1006,10 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.multi_ricochet = std::stoi(settings["VisualRicochet"]);
         processed_keys.insert("VisualRicochet");
     }
+    if (settings.count("CritReticleFlash")) {
+        g_alpine_game_config.crit_reticle_flash = std::stoi(settings["CritReticleFlash"]);
+        processed_keys.insert("CritReticleFlash");
+    }
     if (settings.count("DeathBars")) {
         g_alpine_game_config.death_bars = std::stoi(settings["DeathBars"]);
         processed_keys.insert("DeathBars");
@@ -1569,6 +1573,7 @@ void alpine_player_settings_save(rf::Player* player)
     file << "ShowGametypeHelp=" << g_alpine_game_config.show_gametype_help << "\n";
     file << "ShowMiniScoreboardDM=" << g_alpine_game_config.show_mini_scoreboard_dm << "\n";
     file << "VisualRicochet=" << g_alpine_game_config.multi_ricochet << "\n";
+    file << "CritReticleFlash=" << g_alpine_game_config.crit_reticle_flash << "\n";
     file << "DeathBars=" << g_alpine_game_config.death_bars << "\n";
     file << "ShowEnemyBullets=" << g_alpine_game_config.show_enemy_bullets << "\n";
     file << "ShowPing=" << g_alpine_game_config.ping_display << "\n";
