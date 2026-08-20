@@ -23,6 +23,8 @@ add_packfile(alpinefaction.vpp
     tables/maps_af.txt
     tables/events.tbl
     tables/af_level_quirks.tbl
+    tables/alpine_npc_subtitles_en.toml
+    tables/alpine_cutscene_subtitles_en.toml
 
     # waypoint files
     waypoints/dm01.awp
