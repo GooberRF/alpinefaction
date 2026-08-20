@@ -61,9 +61,11 @@ struct VoteMutatorDeclValue
     std::string string_value;
 };
 
-// One config-declared mutator. The panel pre-selects these so that submitting an
-// untouched vote reproduces what the level would run anyway (votes replace the
-// configured mutator set rather than stacking on it).
+// One declared mutator and the values it carries. The shape of every declaration
+// set the server sends: a level's configured set, the base set, and the set the
+// session is currently running. The panel pre-selects one of those so that
+// submitting an untouched vote reproduces what is already running (a vote replaces
+// the mutator set rather than stacking on it).
 struct VoteMutatorDecl
 {
     uint8_t mutator_id = 0;

@@ -508,21 +508,8 @@ void apply_defaults_for_game_type(rf::NetGameType game_type, AlpineServerConfigR
     }
 }
 
-// Set while a scope is re-parsed to DERIVE a second rules variant (the
-// mutator-free baseline vote overrides start from). That pass walks the same TOML
-// and re-reads the same preset files, so without this every preset warning and
-// error was printed twice per scope — the repeat tagged "(no mutators)", which an
-// admin has no way to interpret. The first pass is the one that reports problems.
-static bool g_rules_parse_quiet = false;
-
-struct RulesParseQuietGuard
-{
-    bool previous;
-    RulesParseQuietGuard() : previous(g_rules_parse_quiet) { g_rules_parse_quiet = true; }
-    ~RulesParseQuietGuard() { g_rules_parse_quiet = previous; }
-    RulesParseQuietGuard(const RulesParseQuietGuard&) = delete;
-    RulesParseQuietGuard& operator=(const RulesParseQuietGuard&) = delete;
-};
+// Declared in server_internal.h; see there for what it suppresses and why.
+bool g_rules_parse_quiet = false;
 
 // What a parse pass over a rules scope is allowed to touch.
 enum class RulesParseMode
@@ -548,8 +535,8 @@ static void apply_rules_keys_from_toml(const toml::table& t, AlpineServerConfigR
 // parse toml rules
 // for base rules, load all speciifed. For not specified, defaults are in struct
 // for level-specific rules, start with base rules and load anything specified beyond that
-AlpineServerConfigRules parse_server_rules(const toml::table& t, const AlpineServerConfigRules& base_rules,
-                                           const RulesParseOptions& opts = {})
+static AlpineServerConfigRules parse_server_rules(const toml::table& t, const AlpineServerConfigRules& base_rules,
+                                                  const RulesParseOptions& opts = {})
 {
     AlpineServerConfigRules o = base_rules;
 
@@ -2553,7 +2540,6 @@ void load_and_print_alpine_dedicated_server_config(std::string ads_config_name, 
         cfg.signal_cfg_changed = true;
         server_vote_invalidate_options_blob();
         clear_pending_rotation_preserve();
-        af_send_active_mutators_to_all();
     }
 
     initialize_core_alpine_dedicated_server_settings(netgame, cfg, on_launch);
@@ -2690,13 +2676,18 @@ void apply_rules_for_current_level()
         else {
             // A manual load derives exactly like a level vote that named nothing:
             // the game type already resolved for this level (an explicit sv_gametype
-            // request, else the level's own default) and the session's mutator set.
+            // request, else the level's own default) over the configured base set.
             // Never a copy of the previous level's rules, which would carry its game
-            // type's fields into a different game type.
-            const std::vector<MutatorDeclaration> session_mutators =
-                g_alpine_server_config_active_rules.mutators.declarations;
+            // type's fields into a different game type -- and never its mutators
+            // either: a vote-installed set lives in g_manual_rules_override (handled
+            // above, so `map x` mid-session still carries it) or in the rotation
+            // preserve stash (consumed below). Reaching here means neither is in
+            // play, i.e. something cleared the override, and reading the still-active
+            // rules would resurrect exactly what the clear was for.
+            const std::vector<MutatorDeclaration> base_mutators =
+                cfg.base_rules.mutators.declarations;
             g_alpine_server_config_active_rules =
-                build_derived_server_rules(rf::netgame.type, session_mutators);
+                build_derived_server_rules(rf::netgame.type, base_mutators);
             if (!g_ads_minimal_server_info)
                 rf::console::print("Applying derived rules for manually loaded level {}...\n", rf::level_filename_to_load);
         }
@@ -2746,17 +2737,26 @@ void apply_rules_for_current_level()
             g_alpine_server_config_active_rules.mutators.declarations;
         g_alpine_server_config_active_rules =
             build_derived_server_rules(active_game_type, saved_mutators);
+        // The session override is what the NEXT manual load resolves its game type
+        // and rules from, so leaving it on the retargeted-away game type would have
+        // that load revert this one.
+        if (g_manual_rules_override) {
+            g_manual_rules_override->rules = g_alpine_server_config_active_rules;
+        }
     }
 
     // apply the rules
     apply_alpine_dedicated_server_rules(netgame, g_alpine_server_config_active_rules);
 
+    // The vote panel pre-selects the session's mutator set, so clients need it
+    // whenever it can have changed. Ahead of the generation bump: the blob only
+    // needs the registry's ids and option shapes, none of which the bump changes,
+    // so paying a full registry rebuild inside the fan-out buys nothing. The next
+    // consumer that actually reads the live defaults rebuilds it instead.
+    af_send_active_mutators_to_all();
+
     // Signal consumers that the active rules were (re)applied this call.
     ++g_active_rules_generation;
-
-    // The vote panel pre-selects the session's mutator set, so clients need it
-    // whenever it can have changed.
-    af_send_active_mutators_to_all();
 }
 
 void init_alpine_dedicated_server() {

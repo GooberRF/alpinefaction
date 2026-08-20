@@ -6,7 +6,6 @@
 #include "vote_client.h"
 #include "alpine_packets.h"
 #include "../hud/hud.h"
-#include "../misc/alpine_options.h"
 #include "../misc/alpine_settings.h"
 #include "../os/os.h"
 #include "../rf/multi.h"
@@ -447,15 +446,10 @@ bool parse_vote_options_blob(const uint8_t* data, size_t len, VoteOptionsData& o
         VoteLevelInfo level;
         level.filename = body.str();
         level.natural_gametype = body.u8();
+        // Taken as sent: the server loads the quirks table too, so its mask already
+        // carries RUN for a run map. Adding it locally would only make the panel
+        // offer what a differently-configured server will refuse.
         level.valid_gametype_mask = body.u32();
-        // A run map is identified by the quirks table, not by its filename, and a
-        // dedicated server never loads that table -- so the mask it sent leaves RUN
-        // out. Corrected once here rather than at each consumer, so the panel's
-        // filter and its RUN pre-selection cannot disagree. Local only: the server
-        // still adjudicates the vote it is actually sent.
-        if (is_known_run_level(level.filename)) {
-            level.valid_gametype_mask |= 1u << static_cast<unsigned>(rf::NG_TYPE_RUN);
-        }
         level.allowed_for_vote = (body.u8() & AF_VOTE_LEVEL_FLAG_ALLOWED) != 0;
         // Read the entry's own success BEFORE the appended baseline set below, so
         // trouble in the addition can only cost the pre-selection, never the level.
@@ -487,16 +481,26 @@ bool parse_vote_options_blob(const uint8_t* data, size_t len, VoteOptionsData& o
         r.skip(body_len); // unconditional: the next entry starts here either way
     }
 
-    // The base mutator set, appended after the level section. Failing to read it
-    // costs the vote panel's pre-selection and nothing else, so it never fails the
-    // blob: a blob from a server built before it existed simply ends here.
+    // The base mutator set, appended after the level section behind its own u16
+    // length. Failing to read it costs the vote panel's pre-selection and nothing
+    // else, so it never fails the blob: a blob from a server built before it existed
+    // simply ends here. `present` is set only when the section genuinely parsed, so
+    // "base runs nothing" stays distinct from "base unknown".
     if (r.remaining() > 0) {
-        if (parse_declaration_set(r, parsed.base_mutator_decls)) {
-            parsed.base_mutator_decls_present = true;
+        const uint16_t base_len = r.u16();
+        if (!r.ok() || base_len > r.remaining()) {
+            xlog::debug("vote options: truncated base mutator section; the vote panel will pre-select nothing");
         }
         else {
-            xlog::debug("vote options: unparseable base mutator set; the vote panel will pre-select nothing");
-            parsed.base_mutator_decls.clear();
+            BlobReader body{r.cur(), base_len};
+            if (parse_declaration_set(body, parsed.base_mutator_decls) && body.ok()) {
+                parsed.base_mutator_decls_present = true;
+            }
+            else {
+                xlog::debug("vote options: unparseable base mutator set; the vote panel will pre-select nothing");
+                parsed.base_mutator_decls.clear();
+            }
+            r.skip(base_len);
         }
     }
 

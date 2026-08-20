@@ -1064,6 +1064,11 @@ std::string_view multi_game_type_prefix(const rf::NetGameType game_type) {
 // place that owns those pairings.
 bool multi_level_name_has_game_type_prefix(std::string_view level_filename, rf::NetGameType game_type)
 {
+    // UNK has no prefix of its own -- multi_game_type_prefix falls back to "dm" for
+    // it, which would claim every dm* name.
+    if (game_type == rf::NG_TYPE_UNK) {
+        return false;
+    }
     if (string_istarts_with(level_filename, multi_game_type_prefix(game_type))) {
         return true;
     }
@@ -1090,7 +1095,7 @@ bool multi_level_name_has_game_type_prefix(std::string_view level_filename, rf::
 // must not read as Wipeout. This direction only; they still accept any mp level.
 std::optional<rf::NetGameType> multi_game_type_for_level_prefix(std::string_view level_filename)
 {
-    for (int i = 0; i <= static_cast<int>(rf::NG_TYPE_SAL); ++i) {
+    for (int i = 0; i < static_cast<int>(rf::NG_TYPE_UNK); ++i) {
         const auto game_type = static_cast<rf::NetGameType>(i);
         if (multi_game_type_uses_any_level(game_type)) {
             continue;

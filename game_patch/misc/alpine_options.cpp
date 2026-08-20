@@ -848,12 +848,13 @@ void load_single_af_options_file(const std::string& file_name)
         }
 
         auto meta_it = option_metadata.find(option_name);
+        const bool meta_found = meta_it != option_metadata.end();
 
         // Allow any af_client*.tbl file for options designated to af_client.tbl
-        bool is_af_client_variant = (meta_it->second.filename == "af_client.tbl" &&
+        bool is_af_client_variant = (meta_found && meta_it->second.filename == "af_client.tbl" &&
                                      file_name.rfind("af_client", 0) == 0 && file_name.ends_with(".tbl"));
 
-        if (meta_it != option_metadata.end() &&
+        if (meta_found &&
             (meta_it->second.filename == file_name || is_af_client_variant) &&
             (!rf::is_dedicated_server || meta_it->second.apply_on_server)) {
             
@@ -866,7 +867,7 @@ void load_single_af_options_file(const std::string& file_name)
                 xlog::debug("Option ID {} marked as loaded", static_cast<std::size_t>(metadata.id));
             }
         }
-        else if (meta_it != option_metadata.end()) {
+        else if (meta_found) {
             if (meta_it->second.filename != file_name && !is_af_client_variant) {
                 xlog::warn("Option {} in {} skipped (wrong alpine tbl file)", option_name, file_name);
             }

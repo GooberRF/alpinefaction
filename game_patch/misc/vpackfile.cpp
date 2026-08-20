@@ -677,7 +677,7 @@ static void vpackfile_init_new()
         rf::vpackfile_add("music.vpp", nullptr);
         rf::vpackfile_add("ui.vpp", nullptr);
     }
-    
+
     load_alpinefaction_vpp();
     rf::vpackfile_add("tables.vpp", nullptr);
     addr_as_ref<int>(0x01BDB218) = 1;          // VPackfilesLoaded

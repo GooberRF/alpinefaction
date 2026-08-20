@@ -338,7 +338,9 @@ const std::vector<std::string>& saved_votes_unparsed()
 
 std::string saved_vote_encode(const SavedVote& vote)
 {
-    std::string out = "1|";
+    // Version 2 appends the explicit-mutators field. Version 1 records still load;
+    // see saved_vote_parse.
+    std::string out = "2|";
     out += encode_field(vote.name);
     out += '|';
     out += std::format("{}", static_cast<unsigned>(vote.type));
@@ -397,6 +399,8 @@ std::string saved_vote_encode(const SavedVote& vote)
             }
         }
     }
+    out += '|';
+    out += vote.mutators_explicit ? '1' : '0';
     return out;
 }
 
@@ -411,7 +415,10 @@ bool saved_vote_parse(std::string_view encoded, SavedVote& out)
     }
 
     const auto fields = split_view(encoded, '|');
-    if (fields.size() != 8 || fields[0] != "1") {
+    // Version 1: 8 fields. Version 2: the same plus the explicit-mutators field.
+    const bool v1 = fields.size() == 8 && fields[0] == "1";
+    const bool v2 = fields.size() == 9 && fields[0] == "2";
+    if (!v1 && !v2) {
         return false;
     }
 
@@ -524,6 +531,16 @@ bool saved_vote_parse(std::string_view encoded, SavedVote& out)
             }
             vote.mutators.push_back(std::move(mutator));
         }
+    }
+
+    // Version 2 only. A version 1 record predates the field and keeps the meaning it
+    // was written with: inherit whatever set the session is running.
+    if (fields.size() == 9) {
+        unsigned long explicit_raw = 0;
+        if (!parse_uint_field(fields[8], explicit_raw) || explicit_raw > 1) {
+            return false;
+        }
+        vote.mutators_explicit = explicit_raw != 0;
     }
 
     // A Level vote with no level could never be called, so it is rejected here
@@ -643,9 +660,11 @@ AfVoteCallParams saved_vote_build_params(const SavedVote& vote, const VoteOption
         case AfVoteType::Match: {
             params.level = vote.level;
             params.gametype = vote.gametype;
-            // A saved entry records the complete mutator selection, so an empty one
-            // means "no mutators", not "keep whatever the session runs".
-            params.mutators_explicit = true;
+            // An entry the panel saved records the complete selection, so an empty
+            // one means "no mutators" rather than "keep whatever the session runs".
+            // A record written before the field existed says nothing, and inheriting
+            // is what it meant.
+            params.mutators_explicit = vote.mutators_explicit;
             if (vote.type == AfVoteType::Match) {
                 params.team_size = static_cast<uint8_t>(std::clamp<int>(vote.team_size, 1, 8));
             }

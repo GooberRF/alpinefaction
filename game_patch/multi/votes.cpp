@@ -620,7 +620,7 @@ static bool is_level_valid_for_vote_gametype(const std::string& level_name, rf::
 static uint32_t build_level_valid_gametype_mask(const std::string& level_name)
 {
     uint32_t mask = 0;
-    for (int i = 0; i <= static_cast<int>(rf::NG_TYPE_SAL); ++i) {
+    for (int i = 0; i < static_cast<int>(rf::NG_TYPE_UNK); ++i) {
         if (does_level_match_gametype_prefix(level_name, static_cast<rf::NetGameType>(i))) {
             mask |= (1u << i);
         }
@@ -1929,8 +1929,12 @@ static void build_vote_options_blob(std::vector<uint8_t>& blob)
 
     // The base mutator set, as a trailing section: every level that inherits
     // (kind 0 above) pre-selects this, and so does a manually named level outside
-    // the rotation.
-    blob_declaration_set(blob, g_alpine_server_config.base_rules.mutators.declarations);
+    // the rotation. Length-prefixed like every other repeated record, so a stray
+    // trailing byte cannot read as an empty set and a further section can still be
+    // appended after it.
+    blob_sized_u16(blob, [&] {
+        blob_declaration_set(blob, g_alpine_server_config.base_rules.mutators.declarations);
+    });
 }
 
 void server_vote_build_active_mutators_blob(std::vector<uint8_t>& blob)
@@ -2126,10 +2130,10 @@ static bool resolve_vote_gametype(uint8_t wire_value, rf::Player* sender, std::o
     return true;
 }
 
-static bool resolve_vote_mutators(const std::vector<VoteMutatorInput>& input, rf::Player* sender,
-                                  std::vector<MutatorDeclaration>& out)
+static bool resolve_vote_mutators(const std::vector<VoteMutatorInput>& input, rf::NetGameType game_type,
+                                  rf::Player* sender, std::vector<MutatorDeclaration>& out)
 {
-    if (auto error = mutators_build_declarations_from_vote(input, out)) {
+    if (auto error = mutators_build_declarations_from_vote(input, game_type, out)) {
         send_vote_reject_msg(std::format("Cannot start vote: {}", *error), sender);
         return false;
     }
@@ -2162,16 +2166,19 @@ void handle_vote_call_packet(rf::Player* sender, AfVoteCallParams&& params)
             break;
         }
         case AfVoteType::Level: {
+            if (params.level.empty()) {
+                send_vote_reject_msg("Cannot start vote: no level was specified.", sender);
+                return;
+            }
             std::optional<rf::NetGameType> gametype;
             if (!resolve_vote_gametype(params.gametype, sender, gametype)) {
                 return;
             }
             std::vector<MutatorDeclaration> mutators;
-            if (!resolve_vote_mutators(params.mutators, sender, mutators)) {
-                return;
-            }
-            if (params.level.empty()) {
-                send_vote_reject_msg("Cannot start vote: no level was specified.", sender);
+            // Same resolution validate() applies to the same inputs, so a selection
+            // is checked against the mask of the type it would actually run under.
+            if (!resolve_vote_mutators(params.mutators,
+                    resolve_effective_vote_game_type(params.level, gametype), sender, mutators)) {
                 return;
             }
             g_vote_mgr.StartVote<VoteLevel>(sender, std::move(params.level), gametype, std::move(mutators),
@@ -2183,8 +2190,12 @@ void handle_vote_call_packet(rf::Player* sender, AfVoteCallParams&& params)
             if (!resolve_vote_gametype(params.gametype, sender, gametype)) {
                 return;
             }
+            // An empty level means the current one, exactly as validate() reads it.
+            const std::string match_level =
+                params.level.empty() ? std::string{rf::level.filename.c_str()} : params.level;
             std::vector<MutatorDeclaration> mutators;
-            if (!resolve_vote_mutators(params.mutators, sender, mutators)) {
+            if (!resolve_vote_mutators(params.mutators,
+                    resolve_effective_vote_game_type(match_level, gametype), sender, mutators)) {
                 return;
             }
             g_vote_mgr.StartVote<VoteMatch>(sender, static_cast<int>(params.team_size),

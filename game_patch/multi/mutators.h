@@ -8,8 +8,6 @@
 #include <toml++/toml.hpp>
 #include "server_internal.h"
 
-struct AlpineServerConfigRules;
-
 namespace rf
 {
     struct Entity;
@@ -228,8 +226,12 @@ toml::array mutator_declarations_to_toml_array(const std::vector<MutatorDeclarat
 
 // Validate packet-supplied mutator selections against the registry and turn them
 // into declarations. Returns an error string on failure, std::nullopt on success.
+// `game_type` is the type the vote would actually run under; a mutator that is not
+// valid for it is rejected outright. Explicit wire selections only -- an inherited
+// session set is not built through here and must keep crossing game types.
 std::optional<std::string> mutators_build_declarations_from_vote(
-    const std::vector<VoteMutatorInput>& input, std::vector<MutatorDeclaration>& out);
+    const std::vector<VoteMutatorInput>& input, rf::NetGameType game_type,
+    std::vector<MutatorDeclaration>& out);
 
 // Human-readable labels of the declared mutators, joined with ", ".
 std::string mutators_join_labels(const std::vector<MutatorDeclaration>& declarations);

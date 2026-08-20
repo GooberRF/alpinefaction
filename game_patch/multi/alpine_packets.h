@@ -219,6 +219,17 @@ enum af_vote_level_flags : uint8_t
     AF_VOTE_LEVEL_FLAG_ALLOWED = 1 << 0,
 };
 
+// The optional trailing flags byte of a Level/Match vote call. Reserved bits are
+// masked off by the server and ignored, so a later writer can claim one without
+// breaking an older server; an absent byte falls back to "explicit iff the vote
+// named any mutator", which is what a client that predates the byte meant.
+enum af_vote_call_flags : uint8_t
+{
+    // `mutators` is the caller's complete selection, empty included. Clear means
+    // "keep whatever set the session is running".
+    AF_VOTE_CALL_FLAG_MUTATORS_EXPLICIT = 1 << 0,
+};
+
 // The `baseline_kind` byte appended after a level entry's flags: which mutator
 // set the vote panel pre-selects when that level is picked.
 enum class AfVoteLevelBaseline : uint8_t
@@ -802,9 +813,9 @@ struct AfVoteCallParams
     uint8_t gametype = af_vote_gametype_none;
     uint8_t extend_minutes = af_vote_extend_default_minutes;
     std::vector<VoteMutatorInput> mutators;
-    // `mutators` is the caller's complete selection, empty included, and replaces
-    // whatever the session is running. False (a chat vote, which cannot name
-    // mutators) means "keep the session's set".
+    // AF_VOTE_CALL_FLAG_MUTATORS_EXPLICIT: `mutators` is the caller's complete
+    // selection, empty included, and replaces whatever the session is running.
+    // False (a chat vote, which cannot name mutators) means "keep the session's set".
     bool mutators_explicit = false;
     bool preserve = true;
 };

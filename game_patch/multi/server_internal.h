@@ -1138,6 +1138,21 @@ UpcomingGameTypeSelection get_upcoming_game_type_selection();
 bool is_rcon_command_masterlisted(std::string_view command);
 bool set_upcoming_game_type(rf::NetGameType gt, UpcomingGameTypeSelection selection = UpcomingGameTypeSelection::Rotation);
 void apply_defaults_for_game_type(rf::NetGameType game_type, AlpineServerConfigRules& rules);
+// Set while rules are parsed or derived somewhere the resulting complaints would be
+// noise: the mutator-free/keys-only re-parses of an already-reported scope, and the
+// runtime re-derivations (level load, vote apply, game type retarget) that replay a
+// set the config already reported on. The config's own Full pass is the one that
+// reports problems.
+extern bool g_rules_parse_quiet;
+
+struct RulesParseQuietGuard
+{
+    bool previous;
+    RulesParseQuietGuard() : previous(g_rules_parse_quiet) { g_rules_parse_quiet = true; }
+    ~RulesParseQuietGuard() { g_rules_parse_quiet = previous; }
+    RulesParseQuietGuard(const RulesParseQuietGuard&) = delete;
+    RulesParseQuietGuard& operator=(const RulesParseQuietGuard&) = delete;
+};
 // Grants one spawn loadout weapon. Use instead of rf::player_add_weapon, which writes
 // ai.ammo[-1] for weapons with no ammo type.
 void af_give_loadout_weapon(rf::Player* pp, int weapon_type, int reserve_ammo);
