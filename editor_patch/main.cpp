@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <string_view>
 #include <windows.h>
+#include <commdlg.h>
 #include <shellapi.h>
 #include <vector>
 #include <memory>
@@ -716,6 +717,72 @@ CodeInjection CCutscenePropertiesDialog_ct_crash_fix{
         void* this_ = regs.esi;
         auto& this_num_shots = struct_field_ref<int>(this_, 0x60);
         this_num_shots = 0;
+    },
+};
+
+enum class ColorPickerSrc : uint8_t { dialog_ebx, dialog_esi, level };
+
+struct ColorPickerSite
+{
+    uintptr_t ret_addr;
+    ColorPickerSrc src;
+    uint32_t offset;
+};
+
+// Stock "Change color" handlers all build CColorDialog with clrInit=0, so the picker opens on
+// black. Keyed on the ctor return address, seed clrInit/CC_RGBINIT from the color the calling
+// dialog is currently displaying.
+constexpr ColorPickerSite color_picker_sites[] = {
+    {0x0045649D, ColorPickerSrc::dialog_ebx, 0x244},
+    {0x0045BDDD, ColorPickerSrc::dialog_ebx, 0x520}, // particle emitter
+    {0x0045BE9D, ColorPickerSrc::dialog_ebx, 0x528},
+    {0x0045EBAD, ColorPickerSrc::dialog_esi, 0x114},
+    {0x00463CBD, ColorPickerSrc::dialog_ebx, 0x12C}, // gas region
+    {0x004676FE, ColorPickerSrc::level,      0x030}, // level properties ambient
+    {0x00467EFE, ColorPickerSrc::level,      0x038}, // level properties fog
+    {0x00468FED, ColorPickerSrc::dialog_esi, 0x398}, // light properties
+    {0x0046CBCD, ColorPickerSrc::dialog_ebx, 0x330}, // room properties
+    {0x0046CC8D, ColorPickerSrc::dialog_ebx, 0x340},
+    {0x00475BAD, ColorPickerSrc::dialog_ebx, 0x0C0}, // uv unwrap line color
+    {0x00479C5D, ColorPickerSrc::dialog_ebx, 0x424}, // editor preferences colors
+    {0x00479D1D, ColorPickerSrc::dialog_ebx, 0x42C},
+    {0x00479DDD, ColorPickerSrc::dialog_ebx, 0x434},
+    {0x00479E9D, ColorPickerSrc::dialog_ebx, 0x43C},
+    {0x00479F5D, ColorPickerSrc::dialog_ebx, 0x444},
+    {0x0047A01D, ColorPickerSrc::dialog_ebx, 0x44C},
+    {0x0047A0DD, ColorPickerSrc::dialog_ebx, 0x454},
+    {0x0047A19D, ColorPickerSrc::dialog_ebx, 0x45C},
+    {0x0047A25D, ColorPickerSrc::dialog_ebx, 0x464},
+    {0x0047A31D, ColorPickerSrc::dialog_ebx, 0x46C},
+    {0x0047A3DD, ColorPickerSrc::dialog_ebx, 0x474},
+    {0x0047A49D, ColorPickerSrc::dialog_ebx, 0x47C},
+    {0x0047A55D, ColorPickerSrc::dialog_ebx, 0x484},
+    {0x0047A61D, ColorPickerSrc::dialog_ebx, 0x48C},
+    {0x0047A6DD, ColorPickerSrc::dialog_ebx, 0x494},
+    {0x0047A79D, ColorPickerSrc::dialog_ebx, 0x49C},
+};
+
+CodeInjection CColorDialog_ct_seed_current_color{
+    0x0052D3BF,
+    [](auto& regs) {
+        uintptr_t stack_ptr = regs.esp;
+        auto* args = reinterpret_cast<uint32_t*>(stack_ptr);
+        for (const auto& site : color_picker_sites) {
+            if (site.ret_addr != args[0]) {
+                continue;
+            }
+            uintptr_t base = 0;
+            switch (site.src) {
+                case ColorPickerSrc::dialog_ebx: base = regs.ebx; break;
+                case ColorPickerSrc::dialog_esi: base = regs.esi; break;
+                case ColorPickerSrc::level: base = reinterpret_cast<uintptr_t>(CDedLevel::Get()); break;
+            }
+            if (base) {
+                args[1] = *reinterpret_cast<const uint32_t*>(base + site.offset) & 0xFFFFFF;
+                args[2] |= CC_RGBINIT;
+            }
+            return;
+        }
     },
 };
 
@@ -1894,6 +1961,9 @@ extern "C" DWORD AF_DLL_EXPORT Init([[maybe_unused]] void* unused)
 
     // Subclass face mode panel for Delete/Delete Ext./Split button handling
     face_panel_subclass_injection.install();
+
+    // Open the color picker on the current color instead of black
+    CColorDialog_ct_seed_current_color.install();
 
     return 1; // success
 }
