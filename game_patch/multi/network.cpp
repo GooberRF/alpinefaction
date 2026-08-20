@@ -2680,6 +2680,9 @@ FunHook<int(int*, bool)> psnet_rel_close_socket_hook{
     },
 };
 
+// Newest interp tick already sent per (recipient player, entity handle)
+static std::unordered_map<uint64_t, uint16_t> g_sent_obj_update_ticks;
+
 FunHook<void()> multi_stop_hook{
     0x0046E2C0,
     [] {
@@ -2702,6 +2705,7 @@ FunHook<void()> multi_stop_hook{
         riot_shield_on_multi_level_init(); // drop any pending riot shield break suppressions
         afstats::on_shutdown(); // best-effort final flush of the stats event stream
         fflink::afstats_client_reset(); // a stats session key is only ever valid for the join it was minted for
+        g_sent_obj_update_ticks.clear(); // drop per-recipient obj_update keyframe-dedup state from the session being left
         if (rf::local_player) {
             PlayerAdditionalData* const player_add_data =
                 static_cast<PlayerAdditionalData*>(rf::local_player);
@@ -2811,16 +2815,14 @@ CodeInjection server_obj_update_schedule_injection{
     },
 };
 
-// Newest interp tick already sent per (recipient player, entity handle)
-static std::unordered_map<uint64_t, uint16_t> g_sent_obj_update_ticks;
-
-// The server relays remote entities as (pos, tick) keyframes echoed from the source client
-// (get_entity_data 0x0047D9A0), so when sv_netfps exceeds a client's send rate it re-sends the
-// same keyframe. Receivers append those duplicates, which halves ObjInterp's average arrival
-// interval and with it the interpolation delay window (2.2x that average), causing jitter.
-// Skip an entity's record entirely when it has no new keyframe for this recipient. Records for
-// the recipient's own entity carry no keyframes (only health/armor/weapon), so they are exempt
-// and stay at full rate.
+// A remote entity's obj_update record carries a (pos, tick) movement keyframe echoed from the
+// source client (get_entity_data 0x0047D9A0) plus its health/armor, weapon, and fire state. When
+// sv_netfps exceeds a client's send rate the server re-sends the same keyframe; receivers append
+// the duplicates, which halves ObjInterp's average arrival interval and with it the interpolation
+// delay window (2.2x that average), causing jitter. Skip the whole record when its keyframe tick
+// is unchanged for this recipient; this defers the non-authoritative health/armor/weapon/fire
+// fields by at most one client send interval. The recipient's own record carries no keyframe
+// (health/armor/weapon only), so it is exempt and stays at full rate.
 FunHook<int(rf::Player*, rf::Entity*, void*)> pack_obj_update_data_hook{
     0x0047DB20,
     [] (rf::Player* pp, rf::Entity* ep, void* data) {
