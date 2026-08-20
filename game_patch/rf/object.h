@@ -113,16 +113,16 @@ namespace rf
             AddrCaller{0x00483330}.this_call(this);
         }
 
-        // number of stored keyframes (0-20), at +0x534
+        // number of stored keyframes (0-20)
         [[nodiscard]] int num_frames() const
         {
-            return *reinterpret_cast<const int*>(data_ + 0x534);
+            return static_cast<int>(num);
         }
 
-        // 16-bit ms tick of the newest keyframe (time_array at +0x500); requires num_frames() > 0
+        // 16-bit ms tick of the newest keyframe; requires num_frames() > 0
         [[nodiscard]] uint16_t newest_frame_time() const
         {
-            return *reinterpret_cast<const uint16_t*>(data_ + 0x500 + (num_frames() - 1) * 2);
+            return time_array[num_frames() - 1];
         }
     };
 #pragma pack(pop)
