@@ -51,6 +51,7 @@
 #include "../rf/player/player.h"
 #include "../rf/weapon.h"
 #include "../rf/entity.h"
+#include "../rf/item.h"
 #include "../rf/os/console.h"
 #include "../rf/os/os.h"
 #include "../rf/os/timer.h"
@@ -2968,6 +2969,21 @@ FunHook<void(rf::Entity*, int, int, int)> send_reload_packet_hook{
     }
 };
 
+// Never replicate an item already flagged dead: no kill packet ever follows, so a
+// client that got the create would keep the item forever. Every live caller sends
+// freshly created items - only the demo recorder's level-init snapshot can hit this,
+// where gametype init has removed level items (Salvage/Bagman) that the deferred
+// delete has not reaped yet.
+FunHook<void(rf::Item*, rf::Player*, int16_t)> send_item_create_packet_hook{
+    0x00479A20,
+    [](rf::Item* item, rf::Player* recipient, int16_t level_item_index) {
+        if (item && (item->obj_flags & rf::OF_DELAYED_DELETE)) {
+            return;
+        }
+        send_item_create_packet_hook.call_target(item, recipient, level_item_index);
+    },
+};
+
 extern FunHook<void __fastcall(void*, int, int, bool, int)> multi_io_stats_add_hook;
 
 void __fastcall multi_io_stats_add_new(void *this_, int edx, int size, bool is_send, int packet_type)
@@ -3519,6 +3535,9 @@ void network_init()
 
     // Handle infinite ammo reloads
     send_reload_packet_hook.install();
+
+    // Never replicate items that are already flagged dead
+    send_item_create_packet_hook.install();
 
     // Use spawnpoint team property in TeamDM game (PF compatible)
     write_mem<u8>(0x00470395 + 4, 0); // change cmp argument: CTF -> DM
