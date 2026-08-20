@@ -38,8 +38,6 @@ namespace
     // (real loopback clients cannot bind port 1).
     constexpr rf::NetAddr demo_recorder_addr{{0x7F000001}, 1};
 
-    constexpr uint8_t pkt_chat_line = 0x0C;
-
     struct DemoRecordState
     {
         rf::Player* recorder = nullptr;
@@ -75,7 +73,7 @@ namespace
         // {u8 type, u16 size, ...}: type is the first byte of every captured packet.
         // Covers public chat, server chat_line broadcasts, and the team-chat mirror;
         // team location pings (af_ping_location) are unaffected.
-        if (len > 0 && static_cast<const uint8_t*>(data)[0] == pkt_chat_line && !server_demo_chat_record())
+        if (len > 0 && static_cast<const uint8_t*>(data)[0] == RF_GPT_CHAT_LINE && !server_demo_chat_record())
             return;
         // Keep the recorder's fabricated reliable socket looking alive so the
         // reliable-socket health check never reads it as timed out (taps fire at

@@ -1,20 +1,12 @@
 #include <algorithm>
 #include <optional>
+#include <common/rfproto.h>
 #include "demo_details.h"
 #include "demo_file.h"
 #include "../gametype.h"
 
 namespace
 {
-    constexpr uint8_t pkt_new_player = 0x05;
-    constexpr uint8_t pkt_players = 0x06;
-    constexpr uint8_t pkt_left_game = 0x07;
-    constexpr uint8_t pkt_name_change = 0x0D;
-    constexpr uint8_t pkt_team_change = 0x17;
-    constexpr uint8_t pkt_netgame_update = 0x1A;
-    constexpr uint8_t pkt_ctf_flag_capture = 0x20;
-    constexpr uint8_t pkt_team_score = 0x35;
-
     // Bounds-checked little-endian cursor readers; nullopt aborts decoding of the
     // current packet (the scan continues with the next record).
     std::optional<uint8_t> read_u8(const uint8_t* data, size_t len, size_t& pos)
@@ -189,36 +181,36 @@ DemoDetails demo_scan_details(const std::string& name)
         const size_t len = rec.packet_len();
         size_t pos = 3; // past the {u8 type, u16 size} packet header
         switch (rec.packet_type()) {
-        case pkt_players:
+        case RF_GPT_PLAYERS:
             decode_players(data, len, pos, details.rows);
             break;
-        case pkt_new_player:
+        case RF_GPT_NEW_PLAYER:
             decode_new_player(data, len, pos, details.rows);
             break;
-        case pkt_left_game:
+        case RF_GPT_LEFT_GAME:
             // Final scoreboard mirrors who was present at the end (like the live limbo screen)
             if (auto id = read_u8(data, len, pos)) {
                 std::erase_if(details.rows, [&](const DemoScoreRow& row) { return row.id == *id; });
             }
             break;
-        case pkt_name_change:
+        case RF_GPT_NAME_CHANGE:
             if (auto id = read_u8(data, len, pos)) {
                 if (auto new_name = read_cstr(data, len, pos)) {
                     upsert_row(details.rows, *id).name = *new_name;
                 }
             }
             break;
-        case pkt_team_change:
+        case RF_GPT_TEAM_CHANGE:
             if (auto id = read_u8(data, len, pos)) {
                 if (auto team = read_u8(data, len, pos)) {
                     upsert_row(details.rows, *id).team = normalize_team(*team);
                 }
             }
             break;
-        case pkt_netgame_update:
+        case RF_GPT_NETGAME_UPDATE:
             decode_netgame_update(data, len, pos, details.rows);
             break;
-        case pkt_team_score:
+        case RF_GPT_TEAM_SCORES:
             if (auto red = read_u16(data, len, pos)) {
                 if (auto blue = read_u16(data, len, pos)) {
                     details.red_score = *red;
@@ -227,7 +219,7 @@ DemoDetails demo_scan_details(const std::string& name)
                 }
             }
             break;
-        case pkt_ctf_flag_capture:
+        case RF_GPT_CTF_FLAG_CAPTURED:
             // {u8 team, u8 player_id, u8 flags_red, u8 flags_blue}
             if (skip(2, len, pos)) {
                 if (auto red = read_u8(data, len, pos)) {

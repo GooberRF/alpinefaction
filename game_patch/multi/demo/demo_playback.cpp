@@ -6,6 +6,7 @@
 #include <format>
 #include <optional>
 #include <string>
+#include <common/rfproto.h>
 #include <common/utils/list-utils.h>
 #include <xlog/xlog.h>
 #include <patch_common/CallHook.h>
@@ -15,6 +16,7 @@
 #include "demo_internal.h"
 #include "../network.h"
 #include "../multi.h"
+#include "../alpine_packets.h"
 #include "../../misc/misc.h"
 #include "../../misc/alpine_settings.h"
 #include "../../hud/multi_spectate.h"
@@ -54,18 +56,6 @@ static rf::CmdLineParam& get_demo_cmd_line_param()
 
 namespace
 {
-    // Stock packet type ids the playback pump treats specially
-    constexpr uint8_t pkt_join_accept = 0x03;
-    constexpr uint8_t pkt_players = 0x06;
-    constexpr uint8_t pkt_state_info_done = 0x0A;
-    constexpr uint8_t pkt_chat_line = 0x0C;
-    constexpr uint8_t pkt_leave_limbo = 0x16;
-    constexpr uint8_t pkt_obj_update = 0x26;
-    constexpr uint8_t pkt_weapon_fire = 0x30;
-    constexpr uint8_t pkt_sound = 0x34;
-    constexpr uint8_t pkt_af_ping_location = 0x51;
-    constexpr uint8_t pkt_af_obj_update = 0x53;
-
     // Synthetic "server" address the whole replayed session runs against; equals the
     // recorder's reserved address so recorded self-references stay coherent.
     constexpr rf::NetAddr demo_playback_addr{{0x7F000001}, 1};
@@ -196,7 +186,7 @@ namespace
     // not stop at an earlier chunk or the join never leaves the server list.
     bool is_final_players_packet(const DemoRecord& rec)
     {
-        if (!rec.is_packet() || rec.packet_type() != pkt_players)
+        if (!rec.is_packet() || rec.packet_type() != RF_GPT_PLAYERS)
             return false;
         const uint8_t* data = rec.packet_data();
         const size_t len = rec.packet_len();
@@ -217,7 +207,7 @@ namespace
     };
 
     // Team-scoped playback filtering. Only two record types carry the flag: team chat
-    // (pkt_chat_line) and team location pings (pkt_af_ping_location); the recorder always
+    // (RF_GPT_CHAT_LINE) and team location pings (af_ping_location); the recorder always
     // captures both teams' traffic, this only decides what to surface during playback.
     //  - Team chat always plays in the chat box regardless of spectate mode or team; spoof
     //    the local team to the sender's so the stock handler renders it as a team line
@@ -232,7 +222,7 @@ namespace
         const uint8_t packet_type = rec.packet_type();
         const rf::ubyte scoped_team = (rec.flags() & DEMO_PKT_TEAM1) ? 1 : 0;
 
-        if (packet_type == pkt_af_ping_location) {
+        if (packet_type == static_cast<uint8_t>(af_packet_type::af_ping_location)) {
             if (fast_forward) {
                 decision.skip = true;
                 return decision;
@@ -245,7 +235,7 @@ namespace
             return decision;
         }
 
-        if (packet_type == pkt_chat_line) {
+        if (packet_type == RF_GPT_CHAT_LINE) {
             rf::ubyte sender_team = scoped_team;
             // wire layout: {type u8, size u16}, player_id u8, is_team_msg u8, msg...
             if (rec.packet_len() >= 5) {
@@ -290,13 +280,13 @@ namespace
         const uint8_t packet_type = rec.packet_type();
         // The synthesized join_accept was consumed at session start; a stray one
         // mid-stream must not re-trigger a level load
-        if (packet_type == pkt_join_accept)
+        if (packet_type == RF_GPT_JOIN_ACCEPT)
             return false;
         // leave_limbo at a segment tail would start loading the next level of the
         // rotation; a demo file ends at the limbo scoreboard instead
-        if (packet_type == pkt_leave_limbo)
+        if (packet_type == RF_GPT_LEAVE_LIMBO)
             return false;
-        if (fast_forward && (packet_type == pkt_sound || packet_type == pkt_weapon_fire))
+        if (fast_forward && (packet_type == RF_GPT_SOUND || packet_type == RF_GPT_WEAPON_FIRE))
             return false; // no lasting state; skipping avoids sound/effect spam
         if (!packet_check_whitelist(packet_type)) {
             xlog::warn("Demo playback: skipping non-whitelisted packet type 0x{:02x}", packet_type);
@@ -308,7 +298,8 @@ namespace
         // First normal-paced position update after a seek: the world has settled, the
         // post-seek suppression (overlay + mute) can end this frame
         if (!fast_forward && g_ctx.seek_settle
-            && (packet_type == pkt_obj_update || packet_type == pkt_af_obj_update)) {
+            && (packet_type == RF_GPT_OBJECT_UPDATE
+                || packet_type == static_cast<uint8_t>(af_packet_type::af_obj_update))) {
             g_ctx.seek_obj_update_seen = true;
         }
         std::optional<rf::ubyte> saved_local_team;
@@ -855,7 +846,7 @@ namespace
     void feed_join_accept()
     {
         while (ensure_pending_record()) {
-            if (g_ctx.pending.is_packet() && g_ctx.pending.packet_type() == pkt_join_accept) {
+            if (g_ctx.pending.is_packet() && g_ctx.pending.packet_type() == RF_GPT_JOIN_ACCEPT) {
                 g_ctx.state = PlaybackState::waiting_for_level;
                 feed_one_packet(g_ctx.pending.packet_data(), g_ctx.pending.packet_len());
                 consume_pending_record();
@@ -1506,7 +1497,7 @@ void demo_playback_do_frame()
             // the session (multi_stop -> reset_ctx), so re-check the state per record.
             while (g_ctx.state == PlaybackState::feeding_state_info && ensure_pending_record()) {
                 const DemoRecord& rec = g_ctx.pending;
-                const bool is_done_marker = rec.is_packet() && rec.packet_type() == pkt_state_info_done;
+                const bool is_done_marker = rec.is_packet() && rec.packet_type() == RF_GPT_STATE_INFO_DONE;
                 const bool fed = feed_packet_record(rec, false);
                 g_ctx.clock_ms = rec.t_ms;
                 consume_pending_record();
