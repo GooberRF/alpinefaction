@@ -104,7 +104,7 @@ struct PlayerAdditionalData {
     std::optional<std::chrono::steady_clock::time_point> spectate_start_time{};
 
     std::optional<int64_t> last_hit_sound_ms{};
-    // Floor rate limit for broadcast 3d world sounds (send_sound_packet_3d).
+    // Floor rate limit for broadcast 3d world sounds (broadcast_sound_packet_3d).
     std::optional<int64_t> last_world_sound_ms{};
     std::optional<int64_t> last_spray_ms{};
     // Floor rate limit for af_req_stats_pssk so a client cannot flood the handler.

@@ -2573,7 +2573,7 @@ float crits_on_explosion(const rf::Vector3* pos, float radius)
     // The radius gates it: weapon_hit_level makes this call for bullets too, with no blast.
     if (!pos || !(radius > 0.0f) || !crits_are_active() || !g_crit_damage.active || !g_crit_damage.crit)
         return 1.0f;
-    send_sound_packet_3d(*pos, stock_sound_id::jolt_01);
+    broadcast_sound_packet_3d(*pos, stock_sound_id::jolt_01);
     return crit_radius_scale();
 }
 
@@ -2612,7 +2612,7 @@ static void crits_play_fire_sound(const rf::Vector3& pos)
     if (g_crit_fire.fire_sounded)
         return;
     g_crit_fire.fire_sounded = true;
-    send_sound_packet_3d(pos, stock_sound_id::jolt_01);
+    broadcast_sound_packet_3d(pos, stock_sound_id::jolt_01);
 }
 
 // Defined with the rest of the telegraph below; the listen host drives them from the server side.
@@ -2992,7 +2992,7 @@ void crits_on_deferred_created(rf::Weapon* wp, int parent_handle)
     // making two impacts still sounds and announces once.
     if (!state->deferred_sounded) {
         state->deferred_sounded = true;
-        send_sound_packet_3d(wp->pos, stock_sound_id::jolt_01);
+        broadcast_sound_packet_3d(wp->pos, stock_sound_id::jolt_01);
         crits_broadcast_shot(wp, parent_handle);
     }
 }
@@ -3035,7 +3035,7 @@ void crits_on_continuous_fire_frame(rf::Player* pp, int weapon_type, bool weapon
         // Once per arming, never per zap: the stream has no projectile to telegraph and the
         // taser's zaps come out several times a second.
         if (rf::Entity* ep = rf::entity_from_handle(pp->entity_handle))
-            send_sound_packet_3d(ep->pos, stock_sound_id::jolt_01);
+            broadcast_sound_packet_3d(ep->pos, stock_sound_id::jolt_01);
         crits_send_shot_to_shooter(pp, weapon_type);
     }
 }

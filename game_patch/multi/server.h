@@ -52,7 +52,7 @@ bool auto_team_balance_blocks_team_change(rf::Player* player, int requested_team
 bool humans_vs_bots_active();
 void send_sound_packet_throwaway(rf::Player* target, int sound_id);
 // World-space sound broadcast to every connected player, via the stock sound packet.
-void send_sound_packet_3d(const rf::Vector3& pos, int sound_id);
+void broadcast_sound_packet_3d(const rf::Vector3& pos, int sound_id);
 void multi_change_level_alpine(const char* filename);
 const char* get_rand_level_filename();
 void shuffle_level_array();

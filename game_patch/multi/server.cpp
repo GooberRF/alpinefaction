@@ -1260,10 +1260,10 @@ void send_sound_packet(
 // The stock client handler (0x00471FF0) hands the packet position straight to snd_play_3d,
 // so a real position is a world sound at that point for every client, stock ones included.
 //
-// Broadcast, so it carries the same three limits every AF broadcast does: it never leaves the
-// sound's own audible range around a recipient the server can place, the listen host plays it
-// instead of mailing it to itself, and each recipient has a floor on how often one can reach them.
-void send_sound_packet_3d(const rf::Vector3& pos, int sound_id)
+// The packet is positional and the receiving client attenuates it against its own camera, so
+// every connected client gets it - dead, spectating and freelook included. The listen host plays
+// it directly instead of mailing it to itself, and the per-recipient rate floor bounds the cost.
+void broadcast_sound_packet_3d(const rf::Vector3& pos, int sound_id)
 {
     constexpr int world_sound_rate_limit = 10; // per second, per recipient
 
@@ -1275,31 +1275,10 @@ void send_sound_packet_3d(const rf::Vector3& pos, int sound_id)
     packet.pos.y = pos.y;
     packet.pos.z = pos.z;
 
-    // Sound::max_range (+0x28) is the distance the engine itself derived from the sounds.tbl
-    // min_range / volume / rolloff when the sound was registered (snd_pc_get_handle 0x00543580)
-    // - past it a client's snd_play_3d attenuates the sound to nothing, so the packet is pure
-    // bandwidth. Zero means the table never registered (a dedicated server may not load it),
-    // and then nothing is culled.
-    const float max_range =
-        sound_id >= 0 && sound_id < rf::g_num_sounds ? rf::sounds[sound_id].max_range : 0.0f;
-    const float max_range_sq = max_range * max_range;
     const int64_t now = timer::get_i64(1000);
 
     for (auto& player : SinglyLinkedList{rf::player_list}) {
         if (!player.net_data) {
-            continue;
-        }
-        // Best listener position the server knows: the recipient's own entity, else the entity
-        // it spectates in first person.
-        rf::Entity* ep = rf::entity_from_handle(player.entity_handle);
-        if (!ep) {
-            if (rf::Player* spectatee = player.spectatee.value_or(nullptr)) {
-                ep = rf::entity_from_handle(spectatee->entity_handle);
-            }
-        }
-        // With no listener position there is nothing to cull against, so send it anyway - the
-        // packet is positional and the client's own snd_play_3d attenuates it against its camera.
-        if (ep && max_range_sq > 0.0f && (ep->pos - pos).len_sq() > max_range_sq) {
             continue;
         }
         if (player.last_world_sound_ms
