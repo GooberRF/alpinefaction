@@ -1,9 +1,11 @@
 #include "LauncherApp.h"
 #include "faction_files.h"
+#include "afd_header_reader.h"
 #include "demo_download.h"
 #include "DownloadProgressDlg.h"
 #include "MainDlg.h"
 #include "LauncherCommandLineInfo.h"
+#include <common/afd_format.h>
 #include <common/config/GameConfig.h>
 #include <common/version/version.h>
 #include <common/error/error-utils.h>
@@ -23,7 +25,7 @@
 static bool fflink_token_is_invalid = false;
 
 // ---------------------------------------------------------------------------
-// af://demo/<game_id> helpers
+// Demo confirmation helpers (af://demo/<game_id> and local .afd files)
 // ---------------------------------------------------------------------------
 namespace {
 
@@ -105,48 +107,71 @@ std::string format_unix_date(int64_t unix_seconds)
     return buf;
 }
 
-std::wstring build_demo_confirm_text(const DemoDownloader::ResolveResult& info, bool already_have)
+// What the confirmation dialog shows, whichever source the details came from
+// (a FactionFiles resolve for af://demo, or the .afd header for a local file).
+struct DemoDisplayInfo
+{
+    std::string map;
+    std::string gametype_name;
+    std::string server_name;
+    std::string mod_name;
+    int64_t duration_ms = 0;
+    int64_t recorded_unix = 0;
+    uint64_t bytes = 0;
+};
+
+std::wstring build_demo_confirm_text(const DemoDisplayInfo& info)
 {
     std::string text;
-    if (info.game) {
-        const auto& g = *info.game;
-        std::string map = !g.level_name.empty() ? g.level_name : g.level_file;
-        if (map.empty())
-            map = "Unknown map";
-        text += "Map: " + map;
-        if (!g.gametype_name.empty())
-            text += " (" + g.gametype_name + ")";
-        text += "\n";
-        if (!g.server_name.empty())
-            text += "Server: " + g.server_name + "\n";
-        if (!g.tc_mod.empty())
-            text += "Mod: " + g.tc_mod + "\n";
-        const std::string len = format_hms(g.duration_ms);
-        if (!len.empty())
-            text += "Length: " + len + "\n";
-        const std::string when = format_unix_date(g.started_at ? g.started_at : info.uploaded_at);
-        if (!when.empty())
-            text += "Recorded: " + when + "\n";
+    if (info.map.empty() && info.server_name.empty() && info.mod_name.empty() && info.duration_ms == 0
+        && info.recorded_unix == 0) {
+        text += "No details are available for this demo.\n";
     }
     else {
-        text += "No details are available for this demo.\n";
+        text += "Map: " + info.map;
+        if (!info.gametype_name.empty())
+            text += " (" + info.gametype_name + ")";
+        text += "\n";
+        if (!info.server_name.empty())
+            text += "Server: " + info.server_name + "\n";
+        if (!info.mod_name.empty())
+            text += "Mod: " + info.mod_name + "\n";
+        const std::string len = format_hms(info.duration_ms);
+        if (!len.empty())
+            text += "Length: " + len + "\n";
+        const std::string when = format_unix_date(info.recorded_unix);
+        if (!when.empty())
+            text += "Recorded: " + when + "\n";
     }
     if (info.bytes > 0) {
         char sizebuf[32];
         std::snprintf(sizebuf, sizeof(sizebuf), "%.1f MB", static_cast<double>(info.bytes) / (1024.0 * 1024.0));
         text += std::string("Size: ") + sizebuf;
     }
-    if (already_have)
-        text += "\n\nThis demo is already saved on your PC; \"Download and watch\" plays it without downloading again.";
     return widen(text);
 }
 
-// Returns 1 = download and watch, 2 = download only, 0 = cancel.
-int show_demo_confirm_dialog(const std::wstring& content)
+// rf::NetGameType index; kept in sync with multi_game_type_name (game_patch/multi/multi.cpp).
+std::string demo_game_type_name(int32_t game_type)
 {
-    const TASKDIALOG_BUTTON buttons[] = {
+    static const char* const names[] = {
+        "Deathmatch", "Capture the Flag", "Team Deathmatch", "King of the Hill", "Damage Control",
+        "Revolt", "Run", "Escalation", "Bagman", "Team Bagman", "Pit", "Wipeout", "Gun Game", "Salvage",
+    };
+    if (game_type < 0 || game_type >= static_cast<int32_t>(ARRAYSIZE(names)))
+        return {};
+    return names[game_type];
+}
+
+// Returns 1 = watch, 2 = download only, 0 = cancel.
+int show_demo_confirm_dialog(const std::wstring& content, bool offer_download_only)
+{
+    const TASKDIALOG_BUTTON download_buttons[] = {
         {1001, L"Download and watch\nSave the demo and start playing it now."},
         {1002, L"Download only\nSave the demo so you can watch it later."},
+    };
+    const TASKDIALOG_BUTTON play_buttons[] = {
+        {1001, L"Watch\nStart the game and play this demo."},
     };
     TASKDIALOGCONFIG cfg = {};
     cfg.cbSize = sizeof(cfg);
@@ -155,8 +180,9 @@ int show_demo_confirm_dialog(const std::wstring& content)
     cfg.pszMainIcon = TD_INFORMATION_ICON;
     cfg.pszMainInstruction = L"Are you sure you want to watch this demo?";
     cfg.pszContent = content.c_str();
-    cfg.pButtons = buttons;
-    cfg.cButtons = ARRAYSIZE(buttons);
+    cfg.pButtons = offer_download_only ? download_buttons : play_buttons;
+    cfg.cButtons = offer_download_only ? static_cast<UINT>(ARRAYSIZE(download_buttons))
+                                       : static_cast<UINT>(ARRAYSIZE(play_buttons));
     cfg.dwCommonButtons = TDCBF_CANCEL_BUTTON;
     cfg.nDefaultButton = 1001;
     int pressed = 0;
@@ -376,8 +402,41 @@ int LauncherApp::Run()
             dest_path = (std::filesystem::path(demos_dir) / display_name).string();
         }
 
-        // Confirm: Download and watch / Download only / Cancel.
-        const int choice = show_demo_confirm_dialog(build_demo_confirm_text(info, already_have));
+        // Confirm: Watch when already cached, otherwise Download and watch / Download only / Cancel.
+        DemoDisplayInfo display;
+        if (info.game) {
+            const auto& g = *info.game;
+            display.map = !g.level_name.empty() ? g.level_name : g.level_file;
+            if (display.map.empty())
+                display.map = "Unknown map";
+            display.gametype_name = g.gametype_name;
+            display.server_name = g.server_name;
+            display.mod_name = g.tc_mod;
+            display.duration_ms = g.duration_ms;
+            display.recorded_unix = g.started_at ? g.started_at : info.uploaded_at;
+        }
+        else if (already_have) {
+            AfdHeaderInfo hdr;
+            if (afd_read_header(cached_path, hdr) == AfdReadStatus::ok) {
+                display.map = hdr.level_filename;
+                if (display.map.size() > 4 && display.map.substr(display.map.size() - 4) == ".rfl")
+                    display.map = display.map.substr(0, display.map.size() - 4);
+                display.gametype_name = demo_game_type_name(hdr.game_type);
+                display.server_name = hdr.server_name;
+                display.mod_name = hdr.mod_name;
+                display.recorded_unix = static_cast<int64_t>(hdr.start_time_unix);
+            }
+        }
+        if (already_have) {
+            std::error_code ec;
+            display.bytes = std::filesystem::file_size(cached_path, ec);
+            if (ec)
+                display.bytes = 0;
+        }
+        else {
+            display.bytes = info.bytes;
+        }
+        const int choice = show_demo_confirm_dialog(build_demo_confirm_text(display), !already_have);
         if (choice == 0)
             return 0;
 
@@ -435,6 +494,60 @@ int LauncherApp::Run()
         }
     }
 
+    if (m_cmd_line_info.GetPlayDemoArg().has_value()) {
+        const std::string demo_path = m_cmd_line_info.GetPlayDemoArg().value();
+        xlog::info("Processing -play-demo {}", demo_path);
+
+        std::error_code ec;
+        if (!std::filesystem::exists(demo_path, ec)) {
+            MessageBoxA(nullptr, "That demo file could not be found.", "Alpine Faction", MB_OK | MB_ICONERROR);
+            return 0;
+        }
+
+        static const char newer_version_msg[] =
+            "This demo was recorded by a newer version of Alpine Faction. Update Alpine Faction to watch it.";
+
+        AfdHeaderInfo hdr;
+        const AfdReadStatus rstatus = afd_read_header(demo_path, hdr);
+        if (rstatus != AfdReadStatus::ok) {
+            const char* msg = "This file is not a valid Alpine Faction demo.";
+            switch (rstatus) {
+            case AfdReadStatus::cant_open:
+                msg = "That demo file could not be opened.";
+                break;
+            case AfdReadStatus::newer_format:
+                msg = newer_version_msg;
+                break;
+            default:
+                break; // bad_magic, bad_header
+            }
+            MessageBoxA(nullptr, msg, "Alpine Faction", MB_OK | MB_ICONERROR);
+            return 0;
+        }
+        if ((hdr.required_features & ~AFD_KNOWN_FEATURES) != 0) {
+            MessageBoxA(nullptr, newer_version_msg, "Alpine Faction", MB_OK | MB_ICONERROR);
+            return 0;
+        }
+
+        DemoDisplayInfo display;
+        display.map = hdr.level_filename;
+        if (display.map.size() > 4 && display.map.substr(display.map.size() - 4) == ".rfl")
+            display.map = display.map.substr(0, display.map.size() - 4);
+        display.gametype_name = demo_game_type_name(hdr.game_type);
+        display.server_name = hdr.server_name;
+        display.mod_name = hdr.mod_name;
+        display.recorded_unix = static_cast<int64_t>(hdr.start_time_unix);
+        display.bytes = std::filesystem::file_size(demo_path, ec);
+        if (ec)
+            display.bytes = 0;
+
+        if (show_demo_confirm_dialog(build_demo_confirm_text(display), false) == 0)
+            return 0;
+
+        // Falls through to LaunchGame.
+        m_cmd_line_info.PlayDemoAfterLaunch(demo_path);
+    }
+
     if (m_cmd_line_info.HasHelpFlag()) {
         // Note: we can't use stdio console API in win32 application
         Message(nullptr,
@@ -443,6 +556,7 @@ int LauncherApp::Run()
             "-level name  Starts game immediately and loads specified level\n"
             "-levelm name  Starts game immediately and loads specified level in multiplayer\n"
             "-demo file   Starts game immediately and plays specified demo file\n"
+            "-play-demo file  Shows demo info and asks before playing it\n"
             "-editor      Starts level editor immediately\n"
             "-exe-path     Override patched executable file location\n"
             "args...      Additional arguments passed to game or editor\n",

@@ -1,6 +1,8 @@
 set(SRCS
     AboutDlg.cpp
     AboutDlg.h
+    afd_header_reader.cpp
+    afd_header_reader.h
     CMakeLists.txt
     AlpineFactionLauncher.rc
     demo_download.cpp

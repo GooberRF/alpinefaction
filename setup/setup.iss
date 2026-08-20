@@ -91,7 +91,7 @@ Root: HKCR; Subkey: "af\shell\open\command"; ValueType: "string"; ValueData: """
 Root: HKCR; Subkey: ".afd"; ValueType: "string"; ValueData: "AlpineFactionDemo"; Flags: uninsdeletekey; Tasks: afdassoc
 Root: HKCR; Subkey: "AlpineFactionDemo"; ValueType: "string"; ValueData: "Alpine Faction Demo"; Flags: uninsdeletekey; Tasks: afdassoc
 Root: HKCR; Subkey: "AlpineFactionDemo\DefaultIcon"; ValueType: "string"; ValueData: "{app}\AlpineFactionLauncher.exe,0"; Tasks: afdassoc
-Root: HKCR; Subkey: "AlpineFactionDemo\shell\open\command"; ValueType: "string"; ValueData: """{app}\AlpineFactionLauncher.exe"" -game -demo ""%1"""; Tasks: afdassoc
+Root: HKCR; Subkey: "AlpineFactionDemo\shell\open\command"; ValueType: "string"; ValueData: """{app}\AlpineFactionLauncher.exe"" -play-demo ""%1"""; Tasks: afdassoc
 ; rfl file extension association
 Root: HKCR; Subkey: ".rfl"; ValueType: "string"; ValueData: "AlpineFactionLevelEditor"; Flags: uninsdeletekey; Tasks: rflassoc
 Root: HKCR; Subkey: "AlpineFactionLevelEditor"; ValueType: "string"; ValueData: "Alpine Faction Level Editor"; Flags: uninsdeletekey; Tasks: rflassoc

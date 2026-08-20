@@ -7,9 +7,9 @@
 #include <zlib.h>
 #include <windows.h>
 #include <xlog/xlog.h>
+#include <common/tlv.h>
 #include "demo_file.h"
 #include "demo_server_config.h"
-#include "../../misc/tlv.h"
 #include "../../rf/file/file.h"
 
 namespace

@@ -20,6 +20,7 @@
 #include <common/utils/list-utils.h>
 #include <common/utils/string-utils.h>
 #include <common/ComPtr.h>
+#include <common/tlv.h>
 #include <xlog/xlog.h>
 #include <patch_common/CallHook.h>
 #include <patch_common/FunHook.h>
@@ -66,7 +67,6 @@
 #include "../os/console.h"
 #include "../purefaction/pf.h"
 #include "../sound/sound.h"
-#include "../misc/tlv.h"
 #include "../fflink/afstats_client.h"
 #include "../fflink/afstats_events.h"
 #include "../fflink/fflink_session.h"
