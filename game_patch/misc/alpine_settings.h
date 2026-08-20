@@ -371,7 +371,7 @@ struct AlpineGameSettings
     // server netfps default is 1/0.085 ~= 12
     static constexpr unsigned min_server_netfps = 12u;
     static constexpr unsigned max_server_netfps = 300u;
-    unsigned server_netfps = 30u;
+    unsigned server_netfps = 40u;
     void set_server_netfps(unsigned netfps_value)
     {
         server_netfps = std::clamp(netfps_value, min_server_netfps, max_server_netfps);

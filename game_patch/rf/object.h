@@ -112,6 +112,18 @@ namespace rf
         {
             AddrCaller{0x00483330}.this_call(this);
         }
+
+        // number of stored keyframes (0-20), at +0x534
+        [[nodiscard]] int num_frames() const
+        {
+            return *reinterpret_cast<const int*>(data_ + 0x534);
+        }
+
+        // 16-bit ms tick of the newest keyframe (time_array at +0x500); requires num_frames() > 0
+        [[nodiscard]] uint16_t newest_frame_time() const
+        {
+            return *reinterpret_cast<const uint16_t*>(data_ + 0x500 + (num_frames() - 1) * 2);
+        }
     };
 #pragma pack(pop)
     static_assert(sizeof(ObjInterp) == 0x900);
