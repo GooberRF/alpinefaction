@@ -126,6 +126,7 @@ Version 1.4.0 (Lupin): Not yet released
 - Add `Weather_Region_State` event
 - Add `r_weather` console command to toggle rendering of weather effects
 - Rework multiplayer accuracy statistics with one shared definition feeding the scoreboard and FactionFiles stats reporting
+- Set client netfps to 40, server default netfps to 40 (configurable)
 - Make color pickers in the level editor open at the current color instead of black
 
 [@is-this-c](https://github.com/is-this-c)
@@ -150,6 +151,7 @@ Version 1.4.0 (Lupin): Not yet released
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Improve netfps consistency by making the effective object update send rate match the target netfps on both servers and clients, instead of falling short by a frame rate dependent amount
+- Skip server object update records that carry no new movement keyframe, so `sv_netfps` values above the client send rate no longer degrade interpolation smoothness with duplicate keyframes
 
 ### Bug fixes
 [@GooberRF](https://github.com/GooberRF)

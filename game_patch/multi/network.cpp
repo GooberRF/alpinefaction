@@ -8,6 +8,7 @@
 #include <thread>
 #include <utility>
 #include <deque>
+#include <unordered_map>
 #include <winsock2.h>
 #include <iphlpapi.h>
 #include <ws2ipdef.h>
@@ -74,7 +75,7 @@
 #define NET_IFINDEX_UNSPECIFIED 0
 #endif
 
-static constexpr int CLIENT_NET_FPS = 30;
+static constexpr int CLIENT_NET_FPS = 40;
 
 // Popup shown when the user attempts to join a server whose game type this build doesn't recognize.
 static void show_unsupported_game_type_popup()
@@ -2681,6 +2682,9 @@ FunHook<int(int*, bool)> psnet_rel_close_socket_hook{
     },
 };
 
+// Newest interp tick already sent per (recipient player, entity handle)
+static std::unordered_map<uint64_t, uint16_t> g_sent_obj_update_ticks;
+
 FunHook<void()> multi_stop_hook{
     0x0046E2C0,
     [] {
@@ -2703,6 +2707,7 @@ FunHook<void()> multi_stop_hook{
         riot_shield_on_multi_level_init(); // drop any pending riot shield break suppressions
         afstats::on_shutdown(); // best-effort final flush of the stats event stream
         fflink::afstats_client_reset(); // a stats session key is only ever valid for the join it was minted for
+        g_sent_obj_update_ticks.clear(); // drop per-recipient obj_update keyframe-dedup state from the session being left
         if (rf::local_player) {
             PlayerAdditionalData* const player_add_data =
                 static_cast<PlayerAdditionalData*>(rf::local_player);
@@ -2809,6 +2814,39 @@ CodeInjection server_obj_update_schedule_injection{
         if (overshoot > 0 && overshoot < interval) {
             regs.ecx = interval - overshoot;
         }
+    },
+};
+
+// A remote entity's obj_update record carries a (pos, tick) movement keyframe echoed from the
+// source client (get_entity_data 0x0047D9A0) plus its health/armor, weapon, and fire state. When
+// sv_netfps exceeds a client's send rate the server re-sends the same keyframe; receivers append
+// the duplicates, which halves ObjInterp's average arrival interval and with it the interpolation
+// delay window (2.2x that average), causing jitter. Skip the whole record when its keyframe tick
+// is unchanged for this recipient; this defers the non-authoritative health/armor/weapon/fire
+// fields by at most one client send interval. The recipient's own record carries no keyframe
+// (health/armor/weapon only), so it is exempt and stays at full rate.
+FunHook<int(rf::Player*, rf::Entity*, void*)> pack_obj_update_data_hook{
+    0x0047DB20,
+    [] (rf::Player* pp, rf::Entity* ep, void* data) {
+        if (rf::is_server && ep != rf::local_player_entity && pp->entity_handle != ep->handle
+            && ep->obj_interp && ep->obj_interp->num_frames() > 0) {
+            const uint16_t tick = ep->obj_interp->newest_frame_time();
+            if (g_sent_obj_update_ticks.size() > 8192) {
+                // ponytail: cap growth from entity handle churn; a clear only costs one
+                // duplicate keyframe per (player, entity) pair
+                g_sent_obj_update_ticks.clear();
+            }
+            const uint64_t key = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(pp)) << 32
+                | static_cast<uint32_t>(ep->handle);
+            auto [it, inserted] = g_sent_obj_update_ticks.try_emplace(key, tick);
+            if (!inserted) {
+                if (it->second == tick) {
+                    return 0; // no new keyframe since the last send to this player
+                }
+                it->second = tick;
+            }
+        }
+        return pack_obj_update_data_hook.call_target(pp, ep, data);
     },
 };
 
@@ -3376,6 +3414,10 @@ void network_init()
 
     // Make average obj_update send rate framerate-independent (deadline-based rescheduling)
     server_obj_update_schedule_injection.install();
+
+    // Skip obj_update records that carry no new keyframe, so sv_netfps above the client send
+    // rate doesn't flood receivers with duplicate keyframes that degrade interpolation
+    pack_obj_update_data_hook.install();
 
     // Fix rotation interpolation (Y axis) when it goes from 360 to 0 degrees
     obj_interp_rotation_fix.install();
