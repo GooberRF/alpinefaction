@@ -131,6 +131,7 @@ namespace rf
     static_assert(offsetof(ObjInterp, flags) == 0x528);
     static_assert(offsetof(ObjInterp, interp_time) == 0x52C);
     static_assert(offsetof(ObjInterp, num) == 0x534);
+    static_assert(offsetof(ObjInterp, arrive_time_avg_diff) == 0x58C);
 
     enum ObjFriendliness
     {

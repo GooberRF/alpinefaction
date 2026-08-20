@@ -35,9 +35,12 @@
 #include <common/config/BuildConfig.h>
 #include <xlog/xlog.h>
 #include <algorithm>
+#include <charconv>
 #include <cmath>
 #include <limits>
+#include <optional>
 #include <vector>
+#include "../rf/os/frametime.h"
 #include <common/utils/list-utils.h>
 #include <toml++/toml.hpp>
 #include "../rf/input.h"
@@ -862,12 +865,180 @@ static void spectate_delete_current_dropped_camera()
     rf::console::print("Deleted camera ({} static cameras remain).", total);
 }
 
+// ---- POV ping compensation ("povcomp") ----
+//
+// While following a player, the spectator renders the target and every other entity on
+// one common timeline (each interp ring is evaluated ~own ping/2 + interp headroom behind
+// the server, uniformly - so the spectator's own latency cancels out of the relative
+// alignment). But the pose the target produced at server tick T was aimed at a world they
+// saw at T - (their ping + their client's interp delay). Realign by evaluating every
+// other player entity's interp ring that far in the past, so the crosshair lines up with
+// targets the way the shooter saw them - the same rewind the server's lag compensation
+// applied when it validated their hits. The ring holds real received history (20
+// keyframes, ~500ms at 40 netfps), so this stays smooth. Projectiles/corpses/
+// movers are not biased: tracers must leave the (un-delayed) POV muzzle, and alignment
+// only matters against players.
+//
+
+static int g_povcomp_override_ms = -1; // >= 0: fixed delay instead of ping-derived
+// Delay currently applied to non-target entities, slewed toward the desired value each
+// frame so the world glides on target/ping changes
+static float g_povcomp_applied_ms = 0.0f;
+
+constexpr int povcomp_max_ms = 450; // interp ring depth bounds usable delay anyway
+constexpr float povcomp_slew_ms_per_s = 300.0f;
+
+// The engine anchors each ring's interp_time at 2.2x the average sample-arrival interval
+// behind the newest keyframe (flt_59F50C), so the target's client viewed remote entities
+// ~ping + 2.2 * update interval in the past relative to the server timeline.
+constexpr float povcomp_interp_headroom = 2.2f;
+
+static int povcomp_desired_ms()
+{
+    if (!g_alpine_game_config.spectate_povcomp || !rf::is_multi || !multi_spectate_is_following_player())
+        return 0;
+    rf::Player* target = multi_spectate_get_target_player();
+    if (!target || !target->net_data || target == rf::local_player)
+        return 0;
+    int desired = g_povcomp_override_ms;
+    if (desired < 0) {
+        // The server's netfps isn't known client-side; the measured average arrival
+        // interval of the target's own ring is the same cadence their client observed
+        float interval_ms = 25.0f; // fallback: netfps 40
+        rf::Entity* target_entity = rf::entity_from_handle(target->entity_handle);
+        if (target_entity && target_entity->obj_interp && target_entity->obj_interp->num_frames() >= 2) {
+            interval_ms = std::clamp(target_entity->obj_interp->arrive_time_avg_diff,
+                                     1000.0f / 300.0f, 1000.0f / 12.0f);
+        }
+        desired = target->net_data->ping + static_cast<int>(povcomp_interp_headroom * interval_ms);
+    }
+    return std::clamp(desired, 0, povcomp_max_ms);
+}
+
+// Slew the applied delay so the world glides instead of popping when the followed
+// target (and thus ping) changes, a netgame_update revises the ping, or the mode
+// is toggled. Snap to zero when not following: the local player may be about to
+// respawn and other players must not linger in the past.
+static void povcomp_do_frame()
+{
+    if (!multi_spectate_is_following_player()) {
+        g_povcomp_applied_ms = 0.0f;
+        return;
+    }
+    const auto desired = static_cast<float>(povcomp_desired_ms());
+    const float step = povcomp_slew_ms_per_s * rf::frametime;
+    if (g_povcomp_applied_ms < desired) {
+        g_povcomp_applied_ms = std::min(g_povcomp_applied_ms + step, desired);
+    }
+    else {
+        g_povcomp_applied_ms = std::max(g_povcomp_applied_ms - step, desired);
+    }
+}
+
+// Clamp the bias so the biased evaluation time stays within the ring's recorded
+// span. interp_time and time_array are 16-bit server ms ticks; blind subtraction
+// near a numeric wrap would read as ~65s in the future and trip determine_frame's
+// 5000ms staleness cutoff. time_array[0] is always the oldest sample (insertion
+// shifts the arrays down when full). Returns 0 when biasing is unsafe this frame.
+static uint16_t povcomp_safe_bias(rf::ObjInterp* interp, int desired_ms)
+{
+    // flags bit 0 = ring empty/unanchored: set by Clear(), cleared once a sample
+    // anchors interp_time (frame_start skips processing while it is set)
+    if ((interp->flags & 1) != 0 || interp->num < 2)
+        return 0; // ring unusable; the stock path holds the current pos anyway
+    const auto avail = static_cast<uint16_t>(interp->interp_time - interp->time_array[0]);
+    if (avail > 0x1388)
+        return 0; // stale/wrapped ring - leave it to the stock staleness handling
+    return static_cast<uint16_t>(std::min<int>(desired_ms, avail));
+}
+
+static int povcomp_bias_for(rf::Entity* entity)
+{
+    if (g_povcomp_applied_ms < 1.0f)
+        return 0;
+    // Resolved fresh per call: target switches take effect instantly and a dead
+    // target (entity_handle resolving to nothing) just leaves the whole world
+    // coherently delayed
+    rf::Player* target = multi_spectate_get_target_player();
+    if (target && entity->handle == target->entity_handle)
+        return 0; // the POV entity stays on the common timeline
+    return static_cast<int>(g_povcomp_applied_ms);
+}
+
+static void povcomp_interp_call(rf::Entity* entity, auto& hook)
+{
+    rf::ObjInterp* interp = entity->obj_interp;
+    const int desired = interp ? povcomp_bias_for(entity) : 0;
+    const uint16_t bias = desired > 0 ? povcomp_safe_bias(interp, desired) : 0;
+    if (bias == 0) {
+        hook.call_target(entity);
+        return;
+    }
+    // Save/call/restore keeps every other consumer of interp_time (frame_start
+    // progression, sample-insertion staleness, lag comp) seeing the true value
+    const uint16_t saved = interp->interp_time;
+    interp->interp_time = static_cast<uint16_t>(saved - bias);
+    hook.call_target(entity);
+    interp->interp_time = saved;
+}
+
+// The two evaluation entry points physics_simulate_entity calls for every remote
+// entity with the network-interpolated physics flag - exactly the player entities
+static FunHook<void(rf::Entity*)> multi_obj_interp_orient_hook{
+    0x00484650,
+    [](rf::Entity* entity) { povcomp_interp_call(entity, multi_obj_interp_orient_hook); },
+};
+
+static FunHook<void(rf::Entity*)> multi_obj_interp_pos_hook{
+    0x00484770,
+    [](rf::Entity* entity) { povcomp_interp_call(entity, multi_obj_interp_pos_hook); },
+};
+
+static ConsoleCommand2 spectate_povcomp_cmd{
+    "spectate_povcomp",
+    [](std::optional<std::string> arg) {
+        if (arg) {
+            if (*arg == "on" || *arg == "auto") {
+                g_alpine_game_config.spectate_povcomp = true;
+                g_povcomp_override_ms = -1;
+            }
+            else if (*arg == "off") {
+                g_alpine_game_config.spectate_povcomp = false;
+            }
+            else {
+                int value = 0;
+                auto [ptr, ec] = std::from_chars(arg->data(), arg->data() + arg->size(), value);
+                if (ec != std::errc{} || ptr != arg->data() + arg->size()) {
+                    rf::console::print("Usage: spectate_povcomp [on|off|<delay ms>]");
+                    return;
+                }
+                g_alpine_game_config.spectate_povcomp = true;
+                g_povcomp_override_ms = std::clamp(value, 0, povcomp_max_ms);
+            }
+        }
+        if (!g_alpine_game_config.spectate_povcomp) {
+            rf::console::print("Spectate POV ping compensation: off");
+        }
+        else if (g_povcomp_override_ms >= 0) {
+            rf::console::print("Spectate POV ping compensation: on (override {} ms)", g_povcomp_override_ms);
+        }
+        else {
+            rf::console::print("Spectate POV ping compensation: on (auto, currently ~{} ms)",
+                               static_cast<int>(g_povcomp_applied_ms));
+        }
+    },
+    "Ping compensation while spectating a player - delays other players to match what "
+    "the spectated player saw when they aimed",
+    "spectate_povcomp [on|off|<delay ms>]",
+};
+
 // Per-frame camera positioning for third-person orbit (called from camera_do_frame_hook). Returns
 // true if it positioned the camera, so the stock per-frame third-person logic is skipped.
 bool multi_spectate_camera_do_frame(rf::Camera* camera)
 {
     if (!rf::local_player || camera != rf::local_player->cam || !camera->camera_entity)
         return false;
+    povcomp_do_frame();
     rf::Entity* ce = camera->camera_entity;
 
     // Static spectate on a player-dropped camera (level .rfl cameras are drawn by the engine's
@@ -1817,7 +1988,12 @@ void multi_spectate_appy_patch()
     spectate_mode_minimal_ui_cmd.register_cmd();
     spectate_mode_follow_killer_cmd.register_cmd();
     spectate_cameras_cmd.register_cmd();
+    spectate_povcomp_cmd.register_cmd();
     spectate_render_camera_meshes_patch.install();
+
+    // POV ping compensation: bias non-target entities' interp evaluation into the past
+    multi_obj_interp_orient_hook.install();
+    multi_obj_interp_pos_hook.install();
 
     // Handle scanner state in entity state flags (both sending and receiving)
     entity_state_flags_sync_hook.install();
@@ -1876,6 +2052,7 @@ void multi_spectate_player_create_entity_post(rf::Player* player, [[maybe_unused
 void multi_spectate_level_init()
 {
     g_spawned_in_current_level = false;
+    g_povcomp_applied_ms = 0.0f; // interp rings start empty - ramp the delay back up
     g_spectate_freelook_saved_target = nullptr;
     g_spectate_view_mode = SpectateViewMode::first_person;
     g_spectate_third_person_orbit = false;
@@ -2300,12 +2477,15 @@ void multi_spectate_render() {
         );
 
         // Current-view subtitle just below the title.
-        const char* view_subtitle = g_spectate_view_mode == SpectateViewMode::first_person
+        std::string view_subtitle = g_spectate_view_mode == SpectateViewMode::first_person
             ? "First Person"
             : (g_spectate_third_person_orbit ? "Third Person (Orbit)" : "Third Person");
+        if (g_povcomp_applied_ms >= 1.0f) {
+            view_subtitle += "  [povcomp ~" + std::to_string(static_cast<int>(g_povcomp_applied_ms)) + "ms]";
+        }
         rf::gr::set_color(0xFF, 0xFF, 0xFF, 0xB0);
         rf::gr::string_aligned(rf::gr::ALIGN_CENTER, title_x, title_y + large_font_h,
-            view_subtitle, medium_font);
+            view_subtitle.c_str(), medium_font);
 
         if (!g_remote_server_cfg_popup.is_active() && !vote_panel_is_gameplay_overlay_active() && !demo_controls_ui_is_open()) {
             int hints_left_x = g_alpine_game_config.big_hud ? 120 : 70;
