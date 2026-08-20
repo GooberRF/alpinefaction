@@ -153,6 +153,11 @@ Version 1.4.0 (Lupin): Not yet released
 - Improve netfps consistency by making the effective object update send rate match the target netfps on both servers and clients, instead of falling short by a frame rate dependent amount
 - Skip server object update records that carry no new movement keyframe, so `sv_netfps` values above the client send rate no longer degrade interpolation smoothness with duplicate keyframes
 
+[@jyh9521](https://github.com/jyh9521)
+- Add subtitles for spoken voice lines and for the in-engine cutscenes, neither of which had any in the original game
+  - Driven by optional TOML tables in a packfile, looked up per language, so a translation can supply its own
+  - English tables included: the level dialogue text the game already ships but never displays, plus transcriptions of the ambient lines that have no text anywhere
+
 ### Bug fixes
 [@GooberRF](https://github.com/GooberRF)
 - Fix team balance not properly randomizing the distribution order of equal-scoring human players
