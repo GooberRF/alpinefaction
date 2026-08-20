@@ -192,6 +192,11 @@ Version 1.4.0 (Lupin): Released Aug-25-2026
 - Reduce latency on continuous fire weapons by sending an object update immediately when one starts or stops firing instead of waiting for the next scheduled send
 - Add `spectate_povcomp` command for ping compensation while following a player in spectate mode - delays other players to approximate what the followed player saw when they aimed
 
+[@jyh9521](https://github.com/jyh9521)
+- Add subtitles for spoken voice lines and for the in-engine cutscenes, neither of which had any in the original game
+  - Driven by optional TOML tables in a packfile, looked up per language, so a translation can supply its own
+  - English tables included: the level dialogue text the game already ships but never displays, plus transcriptions of the ambient lines that have no text anywhere
+
 ### Bug fixes
 [@GooberRF](https://github.com/GooberRF)
 - Fix team balance not properly randomizing the distribution order of equal-scoring human players
