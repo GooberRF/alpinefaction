@@ -124,6 +124,7 @@ Version 1.4.0 (Lupin): Not yet released
 - Add `Weather_Region_State` event
 - Add `r_weather` console command to toggle rendering of weather effects
 - Rework multiplayer accuracy statistics with one shared definition feeding the scoreboard and FactionFiles stats reporting
+- Set client netfps to 40, server default netfps to 40 (configurable)
 
 [@is-this-c](https://github.com/is-this-c)
 - Rewrite `VArray` to fix crashes due to MinGW
