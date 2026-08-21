@@ -1,6 +1,8 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -148,6 +150,21 @@ void on_player_rename(rf::Player* player, const char* name, std::string_view pre
 // A level finished loading server-side. Emits `game_start`.
 void on_game_start();
 
+// The session id and per-session game counter the server is currently reporting
+// under. The demo recorder stamps these onto an auto-recorded segment's header so the
+// segment can be attributed to the same game its events were reported under.
+struct GameIdentity
+{
+    std::string session_id; // 16 lowercase hex
+    uint32_t game = 0;      // 1-based, non-zero
+};
+
+// Returns the current reporting identity ONLY while afstats is actively reporting to
+// FactionFiles for a real open game (a usable GSK is configured and not hard-rejected,
+// a game is open, the session id is minted, and the game counter is >= 1); nullopt in
+// every other case. Main-thread only: it reads main-thread-owned state without locking.
+std::optional<GameIdentity> current_reporting_game();
+
 // Record why the current game is ending. First writer wins; consumed and reset
 // by on_game_end(). Without a call the game is reported as a manual change.
 void note_game_end_type(GameEndType end_type);
@@ -210,6 +227,10 @@ void on_damage_dealt(rf::Player* attacker, int weapon_type, float amount,
 // Out-of-band player state change. `value` is only read for
 // StatusKind::handicap.
 void on_status(rf::Player* player, StatusKind kind, int value = 0);
+
+// The server answered a client's ping with a pong. Drives the per-window pong counter,
+// which is never reported itself: a window that saw none reports its ping as -1.
+void on_pong_received(rf::Player* player);
 
 // A player picked an item up server-side. `respawn_ms` is 0 when it never respawns.
 void on_item_pickup(rf::Player* player, int item_type, const rf::Vector3& pos, int respawn_ms);

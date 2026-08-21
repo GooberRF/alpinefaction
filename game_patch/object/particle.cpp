@@ -6,6 +6,7 @@
 #include <common/utils/string-utils.h>
 #include <xlog/xlog.h>
 #include "../misc/misc.h"
+#include "../multi/demo/demo.h"
 #include "../rf/particle_emitter.h"
 #include "../rf/geometry.h"
 #include "../rf/multi.h"
@@ -75,6 +76,12 @@ FunHook<void(int, rf::ParticleCreateInfo&, rf::GRoom*, rf::Vector3*, int, rf::Pa
     0x00496840,
     [](int pool_id, rf::ParticleCreateInfo& pci, rf::GRoom* room, rf::Vector3 *a4, int parent_obj, rf::Particle** result, rf::ParticleEmitter* emitter) {
         bool damages_flag = pci.flags2 & 1;
+        // Particles spawned during a demo seek burst barely age before the seek ends and
+        // would all pop on screen at once afterwards - drop them (the post-seek cull in
+        // demo_playback.cpp is the backstop for effects created via other paths)
+        if (demo_playback_in_seek_burst()) {
+            return;
+        }
         // Do not create not damaging particles on a dedicated server
         if (damages_flag || !rf::is_dedicated_server) {
             particle_create_hook.call_target(pool_id, pci, room, a4, parent_obj, result, emitter);

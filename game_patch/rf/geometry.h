@@ -623,6 +623,13 @@ namespace rf
     static auto& g_decal_destroy = addr_as_ref<void(GDecal*)>(0x004D6C50);
     static auto& geomod_create_rock_debris = addr_as_ref<int(Vector3* orientation, float scaled_radius,
         Vector3* source_dir, int texture, int room_ptr)>(0x0048FE30);
+    // Recycles every live glass shard back into the pool and re-resolves foley sounds/bitmaps
+    // (cached lookups). Does not touch broken-pane state (that lives in room/face data);
+    // safe to call mid-level.
+    static auto& glass_shard_level_init = addr_as_ref<void()>(0x00490F60);
+    // Recycles every live geomod debris rock back into the pool. Craters themselves are
+    // geometry and are unaffected; safe to call mid-level.
+    static auto& geomod_debris_level_init = addr_as_ref<void()>(0x0048F400);
 
     static auto& g_cache_clear = addr_as_ref<void()>(0x004F0B90);
     static auto& g_get_room_render_list = addr_as_ref<void(GRoom ***rooms, int *num_rooms)>(0x004D3330);

@@ -6,6 +6,7 @@
 #include "hud.h"
 #include "hud_internal.h"
 #include "../misc/vote_panel.h"
+#include "../multi/demo/demo.h"
 #include "../multi/jetpack.h"
 #include "multi_scoreboard.h"
 #include "multi_spectate.h"
@@ -426,6 +427,12 @@ void hud_render_00437BC0()
     if (rf::gameseq_get_state() != rf::GS_MULTI_LIMBO) {
         multi_hud_render_killfeed();
     }
+
+    // Demo playback overlay (file name, clock, pause/timescale)
+    demo_playback_render();
+
+    // Powerup respawn timers during demo playback
+    demo_powerup_timers_render();
 
     auto& cc = rf::local_player->settings.controls;
     bool scoreboard_control_pressed = rf::control_config_check_pressed(&cc, rf::CC_ACTION_MP_STATS, nullptr);

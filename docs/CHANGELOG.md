@@ -51,11 +51,27 @@ Version 1.4.0 (Lupin): Not yet released
   - Dedicated servers with a configured `fflink_gsk` report a gameplay event stream to FactionFiles
   - Clients joining a stats-enabled server obtain a stats session key from FactionFiles and deliver it to the server, attributing their stats to their linked FactionFiles account (or anonymously to their game installation when unlinked)
   - Players on legacy clients can join and play normally, and are tracked per-connection without cross-session identity
+  - Auto recorded demos automatically upload to FactionFiles (`fflink_demo_upload`) and associate with game record
   - `afstats_status` console command shows the local stats session state
   - `sv_afstats_trace` console command logs outgoing report batches (with session keys redacted) on dedicated servers
 - Add multiplayer awards
   - Reported to FactionFiles as part of multiplayer statistics
   - `cl_awards` console command to toggle local display and audio
+
+[@nickalreadyinuse](https://github.com/nickalreadyinuse)
+- Add server-side demo recording and client-side playback
+  - Dedicated servers record gameplay to `.afd` files in the `demos` folder, automatically per level via the `demo_auto_record` config option or manually with the `sv_record` toggle command
+  - Chat is included in recordings by default; servers can exclude it with the `demo_chat_record` config option
+  - Auto-recorded demos are discarded if no player was connected during the recording
+  - On servers running match mode, demos are only auto-recorded for live matches
+  - Play back demos with `demo_play`, and control playback with `demo_pause`, `demo_seek` (absolute, relative, or `mm:ss`), `demo_timescale` (0.05x-10x), and `demo_stop`; `demo_info` prints a demo file's metadata
+  - During playback, all spectate controls are available: follow any player in first or third person, or use a free camera
+  - Add in-game playback controls popup (opened with the `Use` key during playback) with pause and skip buttons and a clickable timeline scrubber
+  - Add `demo_povcomp` command for ping compensation while following a player - delays other players to approximate what the followed player saw when they aimed
+  - Add optional playback overlays: powerup respawn timers (`spectate_powerups`), player health/armor bars (`spectate_playerinfo`), and respawn point indicators (`spectate_spawns`)
+  - Add in-game Demos menu (Extras -> Demos) for browsing demos and launching playback, with per-demo details including level, date, duration, server name, players, and final scoreboard
+  - Demos can be organized into subfolders of the `demos` folder, browsable in the Demos menu and usable with `demo_play`/`demo_info` (e.g. `demo_play tourney\match1`)
+  - Register `.afd` file association in Windows registry to allow double clicking on demos to play them
 
 ### Minor features, changes, and enhancements
 [@GooberRF](https://github.com/GooberRF)
@@ -128,6 +144,7 @@ Version 1.4.0 (Lupin): Not yet released
 - Add `Weather_Region_State` event
 - Add `r_weather` console command to toggle rendering of weather effects
 - Rework multiplayer accuracy statistics with one shared definition feeding the scoreboard and FactionFiles stats reporting
+- Support af://demo/ID on the af protocol to play demos from FactionFiles
 - Set client netfps to 40, server default netfps to 40 (configurable)
 - Make color pickers in the level editor open at the current color instead of black
 
@@ -154,6 +171,7 @@ Version 1.4.0 (Lupin): Not yet released
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Improve netfps consistency by making the effective object update send rate match the target netfps on both servers and clients, instead of falling short by a frame rate dependent amount
 - Skip server object update records that carry no new movement keyframe, so `sv_netfps` values above the client send rate no longer degrade interpolation smoothness with duplicate keyframes
+- Add `spectate_povcomp` command for ping compensation while following a player in spectate mode - delays other players to approximate what the followed player saw when they aimed
 
 ### Bug fixes
 [@GooberRF](https://github.com/GooberRF)

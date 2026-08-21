@@ -379,6 +379,10 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.spectate_show_camera_meshes = std::stoi(settings["SpectateShowCameras"]);
         processed_keys.insert("SpectateShowCameras");
     }
+    if (settings.count("SpectatePovComp")) {
+        g_alpine_game_config.spectate_povcomp = std::stoi(settings["SpectatePovComp"]);
+        processed_keys.insert("SpectatePovComp");
+    }
     if (settings.count("ShowFPS")) {
         g_alpine_game_config.fps_counter = std::stoi(settings["ShowFPS"]);
         processed_keys.insert("ShowFPS");
@@ -946,6 +950,18 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.world_hud_spectate_player_labels = std::stoi(settings["WorldHUDSpectateLabels"]);
         processed_keys.insert("WorldHUDSpectateLabels");
     }
+    if (settings.count("WorldHUDDemoPlayerInfo")) {
+        g_alpine_game_config.world_hud_demo_player_info = std::stoi(settings["WorldHUDDemoPlayerInfo"]);
+        processed_keys.insert("WorldHUDDemoPlayerInfo");
+    }
+    if (settings.count("WorldHUDDemoSpawns")) {
+        g_alpine_game_config.world_hud_demo_spawns = std::stoi(settings["WorldHUDDemoSpawns"]);
+        processed_keys.insert("WorldHUDDemoSpawns");
+    }
+    if (settings.count("DemoPowerupTimers")) {
+        g_alpine_game_config.demo_powerup_timers = std::stoi(settings["DemoPowerupTimers"]);
+        processed_keys.insert("DemoPowerupTimers");
+    }
     if (settings.count("WorldHUDTeamLabels")) {
         g_alpine_game_config.world_hud_team_player_labels = std::stoi(settings["WorldHUDTeamLabels"]);
         processed_keys.insert("WorldHUDTeamLabels");
@@ -1386,6 +1402,7 @@ void alpine_player_settings_save(rf::Player* player)
     file << "BurningEntityLights=" << g_alpine_game_config.burning_entity_lights << "\n";
     file << "SpectateMinimalUI=" << g_alpine_game_config.spectate_mode_minimal_ui << "\n";
     file << "SpectateShowCameras=" << g_alpine_game_config.spectate_show_camera_meshes << "\n";
+    file << "SpectatePovComp=" << g_alpine_game_config.spectate_povcomp << "\n";
     file << "ShowFPS=" << g_alpine_game_config.fps_counter << "\n";
     file << "ShowSpeed=" << g_alpine_game_config.speed_display << "\n";
     file << "FPSCounterAverageMs=" << g_alpine_game_config.fps_counter_average_ms << "\n";
@@ -1558,6 +1575,9 @@ void alpine_player_settings_save(rf::Player* player)
     file << "WorldHUDHillOverdraw=" << g_alpine_game_config.world_hud_hill_overdraw << "\n";
     file << "WorldHUDDamageNumbers=" << g_alpine_game_config.world_hud_damage_numbers << "\n";
     file << "WorldHUDSpectateLabels=" << g_alpine_game_config.world_hud_spectate_player_labels << "\n";
+    file << "WorldHUDDemoPlayerInfo=" << g_alpine_game_config.world_hud_demo_player_info << "\n";
+    file << "WorldHUDDemoSpawns=" << g_alpine_game_config.world_hud_demo_spawns << "\n";
+    file << "DemoPowerupTimers=" << g_alpine_game_config.demo_powerup_timers << "\n";
     file << "WorldHUDTeamLabels=" << g_alpine_game_config.world_hud_team_player_labels << "\n";
     file << "ShowLocationPings=" << g_alpine_game_config.show_location_pings << "\n";
     file << "PlayHitsounds=" << g_alpine_game_config.play_hit_sounds << "\n";

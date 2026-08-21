@@ -60,8 +60,8 @@ constexpr int kSalClientBaseLookupRetryMs = 1000;
 // within this relative imbalance, i.e. |d_r - d_b| / mean(d_r, d_b).
 constexpr float kSalMaxCenterImbalance = 0.30f;
 constexpr float kSalMidpointGroundTraceDist = 32.0f;
-// Objective glow. Green, like Bagman's — the neutral flag belongs to nobody, so
-// a team colour would be misleading. Radii match what the stock game uses for
+constexpr float kSalHardcodedSpawnClearRadius = 2.0f;
+// Green objective glow. Radii match what the stock game uses for
 // the equivalent lights: 4.0 for a CTF flag carrier, 3.0 (0x0059479C) for a
 // powerup/pickup sitting on the ground.
 constexpr float kSalCarrierLightRadius = 4.0f;
@@ -76,8 +76,14 @@ namespace
 // maps where the automatic center resolution picks a poor spot.
 struct SalFlagSpawnEntry { const char* rfl; float x, y, z; };
 constexpr SalFlagSpawnEntry kSalFlagSpawnPositions[] = {
-    // { "ctf01.rfl", 0.0f, 0.0f, 0.0f },
-    { nullptr, 0.0f, 0.0f, 0.0f },
+    { "pctf01.rfl", -0.01f, -0.16f, 19.04f },
+    { "pctf02.rfl", 109.0f, 1.0f, 0.0f },
+    { "ctf03.rfl", 3.76f, -5.47f, 0.13f },
+    { "ctf06.rfl", 0.56f, -0.05f, -0.02f },
+    { "ctf07.rfl", 8.50f, -5.25f, 9.25f },
+    { "ctftesseract.rfl", 8.0f, 3.0f, 48.0f },
+    { "ctfdarktess.rfl", 8.0f, 3.0f, 48.0f },
+    { "CTF-RFU3-Pyramid.rfl", 4.74f, -2.97f, -0.55f },
 };
 
 // Priority-ordered item classes considered as the map center.
@@ -505,8 +511,17 @@ void resolve_flag_spawn()
     if (auto override_pos = lookup_hardcoded_flag_spawn(rf::level.filename.c_str())) {
         g_salvage_info.spawn_pos = *override_pos;
         g_salvage_info.spawn_known = true;
-        xlog::info("salvage: flag spawn from hardcoded table at ({},{},{})",
+        xlog::debug("salvage: flag spawn from hardcoded table at ({},{},{})",
             g_salvage_info.spawn_pos.x, g_salvage_info.spawn_pos.y, g_salvage_info.spawn_pos.z);
+        // Items on the override spot would sit inside the flag, remove them.
+        rf::Item* it = rf::item_list.next;
+        while (it && it != &rf::item_list) {
+            rf::Item* next = it->next;
+            if ((it->pos - g_salvage_info.spawn_pos).len() <= kSalHardcodedSpawnClearRadius) {
+                rf::obj_flag_dead(it);
+            }
+            it = next;
+        }
         return;
     }
 
@@ -637,15 +652,18 @@ rf::Item* find_client_side_flag_item()
 {
     if (g_salvage_info.flag_item_type < 0) return nullptr;
 
+    // A hidden or dying item is never the live flag.
     if (rf::Item* cached = item_from_handle_or_null(g_client_flag_item_handle)) {
-        if (cached->info_index == g_salvage_info.flag_item_type) {
+        if (cached->info_index == g_salvage_info.flag_item_type &&
+            !(cached->obj_flags & (rf::OF_DELAYED_DELETE | rf::OF_HIDDEN))) {
             return cached;
         }
     }
     g_client_flag_item_handle = -1;
 
     for (rf::Item* it = rf::item_list.next; it && it != &rf::item_list; it = it->next) {
-        if (it->info_index == g_salvage_info.flag_item_type) {
+        if (it->info_index == g_salvage_info.flag_item_type &&
+            !(it->obj_flags & (rf::OF_DELAYED_DELETE | rf::OF_HIDDEN))) {
             g_client_flag_item_handle = it->handle;
             return it;
         }

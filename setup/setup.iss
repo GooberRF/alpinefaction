@@ -31,6 +31,7 @@ WizardStyle=modern
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
 Name: "replacerflauncher"; Description: "Replace Red Faction launcher with the Alpine Faction launcher (required for Steam support)"; GroupDescription: "Other options:"
 Name: "rflassoc"; Description: "Associate the .rfl file extension with the Alpine Faction level editor"; GroupDescription: "Other options:"
+Name: "afdassoc"; Description: "Associate the .afd demo file extension with Alpine Faction"; GroupDescription: "Other options:"
 Name: "redvisualstyles"; Description: "Enable Windows visual styles for the level editor (experimental)"; GroupDescription: "Other options:"; Flags: unchecked
 
 [Files]
@@ -86,6 +87,11 @@ Root: HKCR; Subkey: "af"; ValueType: "string"; ValueData: "URL:Red Faction Proto
 Root: HKCR; Subkey: "af"; ValueType: "string"; ValueName: "URL Protocol"; ValueData: ""
 Root: HKCR; Subkey: "af\DefaultIcon"; ValueType: "string"; ValueData: "{app}\AlpineFactionLauncher.exe,0"
 Root: HKCR; Subkey: "af\shell\open\command"; ValueType: "string"; ValueData: """{app}\AlpineFactionLauncher.exe"" -aflink %1"
+; afd demo file extension association
+Root: HKCR; Subkey: ".afd"; ValueType: "string"; ValueData: "AlpineFactionDemo"; Flags: uninsdeletekey; Tasks: afdassoc
+Root: HKCR; Subkey: "AlpineFactionDemo"; ValueType: "string"; ValueData: "Alpine Faction Demo"; Flags: uninsdeletekey; Tasks: afdassoc
+Root: HKCR; Subkey: "AlpineFactionDemo\DefaultIcon"; ValueType: "string"; ValueData: "{app}\AlpineFactionLauncher.exe,0"; Tasks: afdassoc
+Root: HKCR; Subkey: "AlpineFactionDemo\shell\open\command"; ValueType: "string"; ValueData: """{app}\AlpineFactionLauncher.exe"" -play-demo ""%1"""; Tasks: afdassoc
 ; rfl file extension association
 Root: HKCR; Subkey: ".rfl"; ValueType: "string"; ValueData: "AlpineFactionLevelEditor"; Flags: uninsdeletekey; Tasks: rflassoc
 Root: HKCR; Subkey: "AlpineFactionLevelEditor"; ValueType: "string"; ValueData: "Alpine Faction Level Editor"; Flags: uninsdeletekey; Tasks: rflassoc

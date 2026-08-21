@@ -20,6 +20,7 @@
 #include <common/utils/list-utils.h>
 #include <common/utils/string-utils.h>
 #include <common/ComPtr.h>
+#include <common/tlv.h>
 #include <xlog/xlog.h>
 #include <patch_common/CallHook.h>
 #include <patch_common/FunHook.h>
@@ -29,6 +30,7 @@
 #include "network.h"
 #include "tracker.h"
 #include "multi.h"
+#include "demo/demo.h"
 #include "mutators.h"
 #include "alpine_packets.h"
 #include "server.h"
@@ -49,6 +51,7 @@
 #include "../rf/player/player.h"
 #include "../rf/weapon.h"
 #include "../rf/entity.h"
+#include "../rf/item.h"
 #include "../rf/os/console.h"
 #include "../rf/os/os.h"
 #include "../rf/os/timer.h"
@@ -65,7 +68,6 @@
 #include "../os/console.h"
 #include "../purefaction/pf.h"
 #include "../sound/sound.h"
-#include "../misc/tlv.h"
 #include "../fflink/afstats_client.h"
 #include "../fflink/afstats_events.h"
 #include "../fflink/fflink_session.h"
@@ -919,6 +921,22 @@ FunHook<MultiIoPacketHandler> process_chat_line_packet_hook{
             if (check_server_chat_command(msg, src_player)) {
                 return;
             }
+
+            if (team_msg && demo_record_active()) {
+                // The stock relay loop team-filters recipients, so the teamless demo
+                // recorder never gets team chat; mirror the wire packet (the handler
+                // only receives the body) tagged with the sender's team.
+                const size_t body_len = 2 + strnlen(msg, rf::max_packet_size - 3) + 1;
+                std::byte packet_buf[rf::max_packet_size];
+                if (sizeof(RF_GamePacketHeader) + body_len <= sizeof(packet_buf)) {
+                    RF_GamePacketHeader header{};
+                    header.type = chat_line;
+                    header.size = static_cast<uint16_t>(body_len);
+                    std::memcpy(packet_buf, &header, sizeof(header));
+                    std::memcpy(packet_buf + sizeof(header), data, body_len);
+                    demo_record_capture_team_scoped(packet_buf, sizeof(header) + body_len, src_player->team);
+                }
+            }
         }
 
         if (!rf::is_dedicated_server) {
@@ -988,8 +1006,8 @@ FunHook<MultiIoPacketHandler> process_team_change_packet_hook{
                     "You can't change teams right now because it would unbalance the teams.", player);
                 return;
             }
-            // Browsers are neither human nor bot, so their team is never forced.
-            if (player && humans_vs_bots_active() && !player->is_browser) {
+            // Observers are neither human nor bot, so their team is never forced.
+            if (player && humans_vs_bots_active() && !player->is_non_participant()) {
                 const rf::ubyte required_team = player->is_bot ? rf::TEAM_BLUE : rf::TEAM_RED;
                 if (data[1] != required_team) {
                     af_send_automated_chat_msg(
@@ -1090,6 +1108,18 @@ FunHook<MultiIoPacketHandler> process_reload_request_packet_hook{
         if (pp) {
             void multi_reload_weapon_server_side(rf::Player* pp, int weapon_type);
             multi_reload_weapon_server_side(pp, weapon_type);
+        }
+    },
+};
+
+FunHook<MultiIoPacketHandler> process_pong_packet_hook{
+    0x00484D50,
+    [](char* data, const rf::NetAddr& addr) {
+        process_pong_packet_hook.call_target(data, addr);
+        if (rf::is_server) {
+            if (rf::Player* player = rf::multi_find_player_by_addr(addr)) {
+                afstats::on_pong_received(player);
+            }
         }
     },
 };
@@ -1458,6 +1488,10 @@ CallHook<int(const rf::NetAddr*, std::byte*, size_t)> send_game_info_packet_hook
             uint8_t num_human_players = 0;
             uint8_t num_browsers = 0;
             for (const rf::Player& p : SinglyLinkedList{rf::player_list}) {
+                // The demo recorder is not a real client - keep it out of every
+                // advertised counter (the stock count excludes it too)
+                if (p.is_observer())
+                    continue;
                 if (p.is_browser)
                     ++num_browsers;
                 else if (p.is_bot)
@@ -1808,6 +1842,11 @@ CallHook<int(const rf::NetAddr*, std::byte*, size_t)> send_join_accept_packet_ho
         auto [buf, new_len] = use_footer
             ? append_af_tail(data, len, &ext_data, sizeof(ext_data))
             : extend_packet_bytes(data, len, &ext_data, sizeof(ext_data));
+        // Demo recorder: write the finished bytes (incl. the AF ext that populates
+        // g_af_server_info on playback) into the demo instead of a socket
+        if (demo_record_capture_join_accept(*addr, buf.get(), new_len)) {
+            return static_cast<int>(new_len);
+        }
         return send_join_accept_packet_hook.call_target(addr, buf.get(), new_len);
     },
 };
@@ -2379,6 +2418,10 @@ FunHook<void(int, rf::NetAddr*)> process_join_req_packet_hook{
             // Last thing in the join: is_bot / is_browser / version_info are only
             // correct now, and the anti-fake-bot path above already returned.
             afstats::on_player_join(valid_player);
+
+            if (valid_player->is_human_player) {
+                demo_record_on_human_join();
+            }
         }
     },
 };
@@ -2667,6 +2710,12 @@ void send_queues_rel_add_packet(
     const uint8_t* const data,
     const size_t len
 ) {
+    // The demo recorder's slot is fabricated - the drain path would net_rel_send for
+    // real (retransmitting forever to the phantom address) and bypass the demo capture
+    // taps. Vote-options/remote-config streams have no value in a demo anyway.
+    if (socket_id >= 0 && socket_id == demo_record_reliable_socket()) {
+        return;
+    }
     if (socket_id >= 0 && socket_id < std::size(g_send_queues_rel)) {
         g_send_queues_rel[socket_id].emplace_back(data, data + len);
     }
@@ -2688,6 +2737,15 @@ static std::unordered_map<uint64_t, uint16_t> g_sent_obj_update_ticks;
 FunHook<void()> multi_stop_hook{
     0x0046E2C0,
     [] {
+        // Clear a stale demo-browser jump latch (M9) on any non-demo stop so it can't
+        // stay stuck (while set, rf_state_is_closed_hook forces every state closed). A
+        // demo teardown keeps it armed: demo_playback_active() is still true here, the
+        // playback context is only reset by demo_playback_on_multi_stop below.
+        if (!demo_playback_active()) {
+            set_jump_to_demo_browser(false);
+        }
+        demo_record_on_multi_stop();   // finalize the demo segment + remove the virtual player
+        demo_playback_on_multi_stop(); // engine-initiated stop during playback resets the session
         g_af_server_info.reset(); // Clear server info when leaving
         mutators_set_no_clip_weapon(-1); // restore any server weapon-table overrides
         vote_client_reset(); // drop the cached vote options and active vote state
@@ -2903,7 +2961,12 @@ CodeInjection send_state_info_injection{
 FunHook<void(rf::Player*)> send_players_packet_hook{
     0x00481C70,
     [](rf::Player *player) {
-        send_players_packet_hook.call_target(player);
+        {
+            // Hide the demo recorder from the packed roster - a real client would
+            // otherwise create a phantom "[demo]" player from this packet
+            DemoRosterHideGuard roster_guard{player};
+            send_players_packet_hook.call_target(player);
+        }
         if (rf::is_server) {
             server_reliable_socket_ready(player);
         }
@@ -2916,6 +2979,21 @@ FunHook<void(rf::Entity*, int, int, int)> send_reload_packet_hook{
 
         send_reload_packet_hook.call_target(ep, weapon_type, ammo, clip_ammo);
     }
+};
+
+// Never replicate an item already flagged dead: no kill packet ever follows, so a
+// client that got the create would keep the item forever. Every live caller sends
+// freshly created items - only the demo recorder's level-init snapshot can hit this,
+// where gametype init has removed level items (Salvage/Bagman) that the deferred
+// delete has not reaped yet.
+FunHook<void(rf::Item*, rf::Player*, int16_t)> send_item_create_packet_hook{
+    0x00479A20,
+    [](rf::Item* item, rf::Player* recipient, int16_t level_item_index) {
+        if (item && (item->obj_flags & rf::OF_DELAYED_DELETE)) {
+            return;
+        }
+        send_item_create_packet_hook.call_target(item, recipient, level_item_index);
+    },
 };
 
 extern FunHook<void __fastcall(void*, int, int, bool, int)> multi_io_stats_add_hook;
@@ -3089,7 +3167,26 @@ CallHook<int()> game_info_num_players_hook{
         int player_count = 0;
         auto player_list = SinglyLinkedList{rf::player_list};
         for (const auto& current_player : player_list) {
-            if (current_player.version_info.software == ClientSoftware::Browser) continue;
+            if (current_player.is_non_participant()) continue;
+            player_count++;
+        }
+        return player_count;
+    },
+};
+
+// The engine's join server-full check (0x0047AE10) counts player_list via 0x00484830,
+// which now includes the virtual demo recorder. Exclude ONLY the recorder (Observer) so
+// auto-recording never eats a real slot; browsers are left counted.
+// Todo: At some point revisit whether browsers need to be counted.
+// As-is would present scoreboard problems, possibly crashing legacy clients.
+// Potential solution could involve not reporting browser clients to legacy clients,
+// and properly handling their display in Alpine. Leaving alone for now.
+CallHook<int()> server_full_num_players_hook{
+    0x0047AE47,
+    []() {
+        int player_count = 0;
+        for (const auto& current_player : SinglyLinkedList{rf::player_list}) {
+            if (current_player.is_observer()) continue;
             player_count++;
         }
         return player_count;
@@ -3124,11 +3221,25 @@ FunHook<void(rf::Player*)> send_netgame_update_packet_hook{
             for (rf::Player& p : SinglyLinkedList{rf::player_list}) {
                 send_stats(&p);
             }
+            // Broadcast: the stock function packs one body from the whole player_list.
+            // Hide the recorder so real clients don't receive a phantom stats row for a
+            // player id absent from their roster (M7). No-op without a recorder.
+            {
+                DemoRosterHideGuard roster_guard{nullptr};
+                send_netgame_update_packet_hook.call_target(player);
+            }
+            // The guard also drops the recorder from the broadcast's per-recipient send
+            // loop, so after it re-links the recorder deliver a targeted full-roster
+            // netgame_update - the sole carrier of net score/ping/caps into the demo (its
+            // own row is filtered on playback). call_target hits the original directly so
+            // this does not re-enter the hook; send_stats already ran for the recorder in
+            // the loop above, so it is not resent here.
+            if (rf::Player* rec = demo_record_recorder())
+                send_netgame_update_packet_hook.call_target(rec);
         } else {
             send_stats(player);
+            send_netgame_update_packet_hook.call_target(player);
         }
-
-        send_netgame_update_packet_hook.call_target(player);
     },
 };
 
@@ -3138,8 +3249,11 @@ FunHook<void()> multi_io_do_frame_hook{
         multi_io_do_frame_hook.call_target();
 
         if (!rf::is_server) {
+            demo_playback_do_frame();
             return;
         }
+
+        demo_record_server_do_frame(); // deferred write-failure teardown at a safe point
 
         // Drain `g_send_queues_rel`.
         for (int i = 0; i < std::size(rf::net_rel_sockets); ++i) {
@@ -3324,6 +3438,7 @@ void network_init()
     process_entity_create_packet_hook.install();
     process_reload_packet_hook.install();
     process_reload_request_packet_hook.install();
+    process_pong_packet_hook.install();
     entity_reload_packet_deny_sound_injection.install();
     process_entity_create_packet_injection.install(); // save char if server forces it
     process_entity_create_packet_injection2.install(); // reset char after server forced it
@@ -3434,6 +3549,9 @@ void network_init()
     // Handle infinite ammo reloads
     send_reload_packet_hook.install();
 
+    // Never replicate items that are already flagged dead
+    send_item_create_packet_hook.install();
+
     // Use spawnpoint team property in TeamDM game (PF compatible)
     write_mem<u8>(0x00470395 + 4, 0); // change cmp argument: CTF -> DM
     write_mem<u8>(0x0047039A, asm_opcodes::jz_rel_short);  // invert jump condition: jnz -> jz
@@ -3459,6 +3577,7 @@ void network_init()
 
     // Ignore browsers when calculating player count for info requests
     game_info_num_players_hook.install();
+    server_full_num_players_hook.install();
 
     // Send `pf_player_stats_packet` with score.
     send_netgame_update_packet_hook.install();

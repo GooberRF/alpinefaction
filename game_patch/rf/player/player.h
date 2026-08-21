@@ -30,7 +30,12 @@ enum class ClientSoftware {
     Browser = 1,
     PureFaction = 2,
     DashFaction = 3,
-    AlpineFaction = 4
+    AlpineFaction = 4,
+    // Server-side virtual player that records demos (game_patch/multi/demo/).
+    // Runs the current AF build's code: AF version gates treat it as AlpineFaction
+    // (see is_player_minimum_af_client_version). Never has an entity, never
+    // reaches a real socket; multi_io_send* taps divert its traffic to the demo file.
+    Observer = 5
 };
 
 struct ClientVersionInfoProfile {
@@ -67,6 +72,13 @@ struct AfstatsGameCounters {
     int64_t time_idle_ms = 0;
     int64_t ping_sum = 0;
     uint32_t ping_samples = 0;
+    // The same, but only over the current player_pings window: sampled every frame and
+    // cleared each time that event is emitted, so it averages the window, not the game.
+    int64_t interval_ping_sum = 0;
+    uint32_t interval_ping_samples = 0;
+    // Pongs the client answered in the current player_pings window. Never reported
+    // directly; zero over a whole window is what makes that window's ping report -1.
+    uint32_t interval_pong_count = 0;
 
     // Bookkeeping. The time accumulators above are advanced by sampling the
     // player's state on the sender pulse, so these mark where the last sample
@@ -92,6 +104,19 @@ struct PlayerAdditionalData {
     bool is_browser = false;
     bool is_spectator = false;
     bool is_human_player = true;
+
+    // Demo observer: the server-side virtual recorder only. NOT for packet-send
+    // gates - the observer must RECEIVE what a real client would see.
+    bool is_observer() const
+    {
+        return version_info.software == ClientSoftware::Observer;
+    }
+    // Any non-participating connection (browser or demo observer): exempt from
+    // spawning, votes, team balance, rosters, gametype participation.
+    bool is_non_participant() const
+    {
+        return is_browser || is_observer();
+    }
 
     // Client-side variables.
     std::optional<pf_pure_status> received_pf_status{};
@@ -377,6 +402,13 @@ namespace rf
 
     static auto& player_list = addr_as_ref<Player*>(0x007C75CC);
     static auto& local_player = addr_as_ref<Player*>(0x007C75D4);
+
+    // Allocates the Player (Alpine-extended size via patch at 0x004A3329) together with its
+    // PlayerNetData (reliable_socket = -1, buffers zeroed) and links it into player_list.
+    static auto& player_allocate = addr_as_ref<Player*(bool is_local)>(0x004A3310);
+    // Unlinks from player_list and frees net_data/stats/player. Closes net_data->reliable_socket
+    // if != -1 (the demo recorder holds a real slot, which this releases).
+    static auto& player_delete = addr_as_ref<void(Player* player)>(0x004A35C0);
 
     static auto& player_from_entity_handle = addr_as_ref<Player*(int entity_handle)>(0x004A3740);
     static auto& player_is_undercover = addr_as_ref<bool()>(0x004B0580);

@@ -11,7 +11,7 @@
 #include <string>
 #include <thread>
 
-#include <json.hpp>
+#include <nlohmann/json.hpp>
 #include <xlog/xlog.h>
 
 #include <common/HttpRequest.h>

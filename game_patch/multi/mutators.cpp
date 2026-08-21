@@ -23,6 +23,7 @@
 #include "kill_attribution.h"
 #include "alpine_packets.h"
 #include "server.h"
+#include "demo/demo.h"
 #include "../sound/sound.h"
 #include "../rf/weapon.h"
 #include "../rf/item.h"
@@ -2732,6 +2733,10 @@ static void crits_broadcast_shot(rf::Weapon* wp, int parent_handle)
 
     crits_send_shot_to_shooter(shooter, wp->info_index);
 
+    // Mirror to the demo recorder for every weapon class; playback filters by the spectated
+    // shooter. The projectile-only broadcast below excludes the recorder to avoid a duplicate.
+    demo_record_crit_shot(shooter->net_data->player_id, static_cast<uint8_t>(wp->info_index));
+
     // Everyone else is told only about the shots worth telegraphing in flight.
     if (!crit_weapon_is_projectile(wp->info_index))
         return;
@@ -2748,6 +2753,8 @@ static void crits_broadcast_shot(rf::Weapon* wp, int parent_handle)
             continue; // the shooter was mailed above, a listen host glowed it instead
         if (player.spectatee.value_or(nullptr) == shooter)
             continue; // spectating the shooter, so it was mailed above too
+        if (player.is_observer())
+            continue; // the demo recorder is mailed once above for every weapon class
         if (is_player_minimum_af_client_version(&player, 1, 4, 0))
             af_send_crit_shot_packet(shooter_id, weapon_type, &player);
     }

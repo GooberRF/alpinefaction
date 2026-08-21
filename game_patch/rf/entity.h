@@ -471,6 +471,10 @@ namespace rf
     static auto& entity_fire_init_bones = addr_as_ref<bool(EntityFireInfo *efi, Object *objp)>(0x0042EB20);
     static auto& entity_fire_create = addr_as_ref<EntityFireInfo*(int entity_handle, int killer_handle)>(0x0042E910);
     static auto& entity_fire_destroy = addr_as_ref<void(EntityFireInfo* fire, bool keep_linked)>(0x0042ED20);
+    // Head pointer of the circular burn-effect list iterated by entity_fire_update_all; null when
+    // empty. entity_fire_destroy(fire, false) unlinks and updates this head, so
+    // "while (entity_fire_list) entity_fire_destroy(entity_fire_list, false);" drains it safely.
+    static auto& entity_fire_list = addr_as_ref<EntityFireInfo*>(0x0062F770);
     static auto& entity_is_swimming = addr_as_ref<bool(Entity* ep)>(0x0042A0A0);
     static auto& entity_is_crouching = addr_as_ref<bool(Entity* ep)>(0x0040A130);
     static auto& entity_is_falling = addr_as_ref<bool(Entity* ep)>(0x0042A020);

@@ -95,6 +95,9 @@ struct AlpineGameSettings
     bool world_hud_hill_overdraw = true;
     bool world_hud_damage_numbers = true;
     bool world_hud_spectate_player_labels = false;
+    bool world_hud_demo_player_info = false;
+    bool world_hud_demo_spawns = false;
+    bool demo_powerup_timers = true;
     bool world_hud_team_player_labels = false;
     bool show_location_pings = true;
     bool play_hit_sounds = true;
@@ -162,6 +165,7 @@ struct AlpineGameSettings
     bool ping_display = true;
     bool spectate_mode_minimal_ui = false;
     bool spectate_show_camera_meshes = true; // draw camera meshes in free look
+    bool spectate_povcomp = true; // delay other players to match what the spectated player saw
     bool save_console_history = false; // checked before config loaded, must be false here
     bool screen_shake_force_off = false;
     bool display_target_player_names = true;

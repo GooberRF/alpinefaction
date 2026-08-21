@@ -829,6 +829,11 @@ void af_send_ping_location_packet_to_team(rf::Vector3* pos, uint8_t player_id, r
 void af_send_ping_location_packet_to_all(rf::Vector3* pos, uint8_t player_id);
 static void af_process_ping_location_packet(const void* data, size_t len, const rf::NetAddr& addr);
 void af_send_damage_notify_packet(uint8_t player_id, float damage, bool died, bool crit, rf::Player* player);
+// Demo-recorder variant: same payload plus a trailing attacker id, so playback can
+// filter notifications down to the player currently being spectated. Live clients
+// never receive this form (their copy is implicitly "attacker = you").
+void af_send_damage_notify_packet_for_demo(uint8_t victim_id, float damage, bool died, bool crit,
+                                           uint8_t attacker_id, rf::Player* recorder);
 static void af_process_damage_notify_packet(const void* data, size_t len, const rf::NetAddr& addr);
 void af_send_crit_shot_packet(uint8_t shooter_player_id, uint8_t weapon_type, rf::Player* player);
 static void af_process_crit_shot_packet(const void* data, size_t len, const rf::NetAddr& addr);
@@ -845,6 +850,7 @@ void af_send_jetpack_state_request(bool on);
 void af_send_jetpack_state(uint32_t obj_handle, bool on);
 void af_send_riot_shield_state(uint32_t obj_handle, float life, const rf::Vector3& impact_pos);
 void af_send_award(rf::Player* player, uint8_t award_id, uint8_t victim_player_id);
+void af_send_award_for_demo(rf::Player* recorder, uint8_t award_id, uint8_t victim_player_id, uint8_t earner_id);
 void af_send_teleport_entity_req(uint32_t obj_handle, const rf::Vector3& pos, const rf::Matrix3& orient, const rf::Vector3& vel);
 void af_send_spray_to_player(uint8_t player_id, uint16_t texture_id, const rf::Vector3& pos, const rf::Vector3& normal, uint8_t flags, rf::Player* player);
 void af_broadcast_spray(uint8_t player_id, uint16_t texture_id, const rf::Vector3& pos, const rf::Vector3& normal);
