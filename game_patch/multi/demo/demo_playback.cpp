@@ -1058,23 +1058,6 @@ namespace
         }
     }
 
-    // Clamp the bias so the biased evaluation time stays within the ring's recorded
-    // span. interp_time and time_array are 16-bit server ms ticks; blind subtraction
-    // near a numeric wrap would read as ~65s in the future and trip determine_frame's
-    // 5000ms staleness cutoff. time_array[0] is always the oldest sample (insertion
-    // shifts the arrays down when full). Returns 0 when biasing is unsafe this frame.
-    uint16_t povcomp_safe_bias(rf::ObjInterp* interp, int desired_ms)
-    {
-        // flags bit 0 = ring empty/unanchored: set by Clear(), cleared once a sample
-        // anchors interp_time (frame_start skips processing while it is set)
-        if ((interp->flags & 1) != 0 || interp->num < 2)
-            return 0; // ring unusable; the stock path holds the current pos anyway
-        const auto avail = static_cast<uint16_t>(interp->interp_time - interp->time_array[0]);
-        if (avail > 0x1388)
-            return 0; // stale/wrapped ring - leave it to the stock staleness handling
-        return static_cast<uint16_t>(std::min<int>(desired_ms, avail));
-    }
-
     int povcomp_bias_for(rf::Entity* entity)
     {
         if (!demo_playback_active() || g_ctx.povcomp_applied_ms < 1.0f)
@@ -1087,35 +1070,6 @@ namespace
             return 0; // the POV entity stays on demo time
         return static_cast<int>(g_ctx.povcomp_applied_ms);
     }
-
-    void povcomp_interp_call(rf::Entity* entity, auto& hook)
-    {
-        rf::ObjInterp* interp = entity->obj_interp;
-        const int desired = interp ? povcomp_bias_for(entity) : 0;
-        const uint16_t bias = desired > 0 ? povcomp_safe_bias(interp, desired) : 0;
-        if (bias == 0) {
-            hook.call_target(entity);
-            return;
-        }
-        // Save/call/restore keeps every other consumer of interp_time (frame_start
-        // progression, sample-insertion staleness, lag comp) seeing the true value
-        const uint16_t saved = interp->interp_time;
-        interp->interp_time = static_cast<uint16_t>(saved - bias);
-        hook.call_target(entity);
-        interp->interp_time = saved;
-    }
-
-    // The two evaluation entry points physics_simulate_entity calls for every remote
-    // entity with the network-interpolated physics flag - exactly the player entities
-    FunHook<void(rf::Entity*)> multi_obj_interp_orient_hook{
-        0x00484650,
-        [](rf::Entity* entity) { povcomp_interp_call(entity, multi_obj_interp_orient_hook); },
-    };
-
-    FunHook<void(rf::Entity*)> multi_obj_interp_pos_hook{
-        0x00484770,
-        [](rf::Entity* entity) { povcomp_interp_call(entity, multi_obj_interp_pos_hook); },
-    };
 
     ConsoleCommand2 demo_povcomp_cmd{
         "demo_povcomp",
@@ -1307,6 +1261,11 @@ namespace
 bool demo_playback_active()
 {
     return g_ctx.state != PlaybackState::inactive;
+}
+
+int demo_playback_povcomp_bias(rf::Entity* entity)
+{
+    return povcomp_bias_for(entity);
 }
 
 DemoRecordedAfVersion demo_playback_recorded_af_version()
@@ -1764,8 +1723,6 @@ void demo_playback_do_patch()
     psnet_send_internal_hook.install();
     multi_check_socket_status_hook.install();
     psnet_rel_connect_to_server_hook.install();
-    multi_obj_interp_orient_hook.install();
-    multi_obj_interp_pos_hook.install();
     gameplay_sim_frame_hook.install();
     vmesh_process_hook.install();
     item_render_game_is_paused_hook.install();
