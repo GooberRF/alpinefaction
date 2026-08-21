@@ -459,6 +459,7 @@ static void drop_bag_at_position(rf::Player* prev_carrier, const rf::Vector3& dr
     g_bagman_info.bag_pos = drop_pos;
     g_bagman_info.return_timer.set(g_alpine_server_config_active_rules.bagman.bag_return_time_ms);
     afstats::on_bagman_event(afstats::BagmanEventKind::drop, prev_carrier, drop_pos);
+    awards_on_bagman_drop(prev_carrier);
 
     if (prev_carrier) {
         rf::multi_powerup_remove(prev_carrier, kPowerupTypeAmp);
@@ -496,6 +497,7 @@ static void drop_bag_from_entity(rf::Player* prev_carrier, rf::Entity* ep)
     rf::Matrix3 drop_orient = ep ? ep->orient : g_bagman_info.spawn_orient;
     spawn_bag_item(drop_pos, drop_orient);
     afstats::on_bagman_event(afstats::BagmanEventKind::drop, prev_carrier, drop_pos);
+    awards_on_bagman_drop(prev_carrier);
 
     if (prev_carrier) {
         announce(std::format("{} dropped the bag!", prev_carrier->name.c_str()));
@@ -556,23 +558,26 @@ void bagman_do_frame()
                 g_bagman_info.carrier_amp_refresh.set(kCarrierAmpRefreshIntervalMs);
             }
 
-            // Score tick during active gameplay
+            // Score tick during active gameplay. Hazard Pay shares the gate.
             if (rf::gameseq_get_state() == rf::GameState::GS_GAMEPLAY
-                && !g_match_info.pre_match_active
-                && g_bagman_info.score_tick.elapsed()) {
-                rf::player_add_score(g_bagman_info.carrier, 1);
-                if (gt_is_tbag()) {
-                    if (g_bagman_info.carrier->team == 0) {
-                        g_bagman_info.red_team_score++;
-                    } else {
-                        g_bagman_info.blue_team_score++;
-                    }
-                }
-                apply_effective_health_reward(g_bagman_info.carrier, kCarrierTickEffectiveHealth);
-                g_bagman_info.score_tick.set(kScoreTickMs);
+                && !g_match_info.pre_match_active) {
+                awards_on_bagman_hold_tick(g_bagman_info.carrier);
 
-                // Broadcast immediately so clients see the score increment
-                bagman_broadcast_state();
+                if (g_bagman_info.score_tick.elapsed()) {
+                    rf::player_add_score(g_bagman_info.carrier, 1);
+                    if (gt_is_tbag()) {
+                        if (g_bagman_info.carrier->team == 0) {
+                            g_bagman_info.red_team_score++;
+                        } else {
+                            g_bagman_info.blue_team_score++;
+                        }
+                    }
+                    apply_effective_health_reward(g_bagman_info.carrier, kCarrierTickEffectiveHealth);
+                    g_bagman_info.score_tick.set(kScoreTickMs);
+
+                    // Broadcast immediately so clients see the score increment
+                    bagman_broadcast_state();
+                }
             }
         }
     } else {
