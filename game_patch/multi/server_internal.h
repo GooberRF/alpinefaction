@@ -1025,9 +1025,8 @@ struct AlpineServerConfig
     // for a mutator applied via a level/match vote, so the voted mutator replaces
     // (rather than stacks on) any mutator the base rules declared.
     AlpineServerConfigRules base_rules_no_mutators;
-    // The operator's explicit base keys layered over struct defaults and NOTHING else:
-    // no game type resolution, no gametype defaults, no mutators. Rules for any other
-    // game type are built from this, so nothing the base game type claimed can leak in.
+    // The operator's explicit base keys over struct defaults and NOTHING else. Rules
+    // for any other game type are built from this, so nothing can leak in.
     AlpineServerConfigRules base_rules_keys_only;
     std::vector<AlpineServerConfigLevelEntry> levels;
 
@@ -1070,6 +1069,10 @@ struct ManualRulesOverride
 {
     AlpineServerConfigRules rules;
     std::optional<std::string> mutator_labels;
+    // The vote that installed this named a game type or submitted its own mutator
+    // set. A plain vote installs derived rules too, but arms no session set, so a
+    // rotation preserve vote after one carries nothing.
+    bool explicit_session = false;
 };
 
 struct MatchInfo
@@ -1126,11 +1129,8 @@ extern AFGameInfoFlags g_game_info_server_flags;
 extern std::string g_prev_level;
 extern bool g_is_overtime;
 extern MatchInfo g_match_info;
-// Set while rules are parsed or derived somewhere the resulting complaints would be
-// noise: the mutator-free/keys-only re-parses of an already-reported scope, and the
-// runtime re-derivations (level load, vote apply, game type retarget) that replay a
-// set the config already reported on. The config's own Full pass is the one that
-// reports problems.
+// Set while rules are re-parsed or re-derived over a scope the config's own Full pass
+// already reported on; that pass is the one that reports problems.
 extern bool g_rules_parse_quiet;
 
 struct RulesParseQuietGuard
@@ -1176,9 +1176,11 @@ void server_vote_handle_options_request(rf::Player* sender, bool has_cache, uint
 // discard a stream that was superseded mid-flight.
 const std::vector<uint8_t>& server_vote_get_options_blob(uint32_t& generation);
 void server_vote_invalidate_options_blob();
-// The mutator declaration set currently in force, in the vote-options blob's
-// declaration-set encoding. This is session state, not config, so it is pushed
-// separately from the (config-derived, cached) options blob.
+// Rebuild the blob if invalid and report whether the bytes actually changed. The build
+// is content-addressed, so most invalidations answer false.
+bool server_vote_refresh_options_blob();
+// The mutator set currently in force, in the options blob's declaration-set encoding.
+// Session state, not config, so it is pushed separately from that blob.
 void server_vote_build_active_mutators_blob(std::vector<uint8_t>& blob);
 void vote_level_refresh_allowed_maps();
 // Push the current vote state to a player who joined while a vote is running.

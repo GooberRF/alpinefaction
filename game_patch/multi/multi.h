@@ -208,9 +208,6 @@ std::string_view multi_game_type_name(rf::NetGameType game_type);
 std::string_view multi_game_type_name_upper(rf::NetGameType game_type);
 std::string_view multi_game_type_name_short(rf::NetGameType game_type);
 std::string_view multi_game_type_prefix(rf::NetGameType game_type);
-// Strict prefix test: does the filename carry this game type's own level prefix
-// (including the "p" variant of a shared one)? No any-level or RUN special casing.
-bool multi_level_name_has_game_type_prefix(std::string_view level_filename, rf::NetGameType game_type);
 // The inverse of multi_game_type_prefix: the game type a filename's prefix names.
 std::optional<rf::NetGameType> multi_game_type_for_level_prefix(std::string_view level_filename);
 bool multi_game_type_uses_any_level(rf::NetGameType game_type);

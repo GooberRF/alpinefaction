@@ -1526,17 +1526,24 @@ void af_send_vote_state_end(rf::Player* player, AfVoteResult result, bool passed
     af_finish_vote_state_packet(player, buf, w);
 }
 
-// The mutator set the session is currently running, which is what the vote panel
-// pre-selects. Deliberately NOT part of the vote-options blob: that blob is
-// config-derived and cached behind a generation counter, while this changes with
-// every vote that installs an override.
-// Returns false only when the declarations do not fit a packet, which is a
-// property of the blob rather than of the recipient -- so a fan-out can stop on it
-// instead of logging the same complaint once per player.
-static bool af_send_active_mutators_blob(rf::Player* player, const std::vector<uint8_t>& decls)
+// The mutator set the session is running, which is what the vote panel pre-selects.
+// NOT part of the vote-options blob: that is config-derived and cached behind a
+// generation, while this changes with every vote that installs an override.
+// Whether the declarations plus the req-type byte fit one packet. A property of the
+// blob, not of the recipient, so a fan-out answers it once.
+static bool af_active_mutators_blob_fits(const std::vector<uint8_t>& decls)
+{
+    if (sizeof(RF_GamePacketHeader) + 1 + decls.size() <= rf::max_packet_size) {
+        return true;
+    }
+    xlog::warn("af_send_active_mutators: {} bytes of declarations do not fit a packet", decls.size());
+    return false;
+}
+
+static void af_send_active_mutators_blob(rf::Player* player, const std::vector<uint8_t>& decls)
 {
     if (!af_vote_recipient_is_structured(player)) {
-        return true;
+        return;
     }
 
     std::byte buf[rf::max_packet_size];
@@ -1544,8 +1551,7 @@ static bool af_send_active_mutators_blob(rf::Player* player, const std::vector<u
     w.u8(static_cast<uint8_t>(af_server_req_type::af_sreq_active_mutators));
     w.bytes(decls.data(), decls.size());
     if (!w.ok) {
-        xlog::warn("af_send_active_mutators_blob: {} bytes of declarations do not fit a packet", decls.size());
-        return false;
+        return; // size already reported by af_active_mutators_blob_fits
     }
 
     RF_GamePacketHeader header{};
@@ -1553,7 +1559,6 @@ static bool af_send_active_mutators_blob(rf::Player* player, const std::vector<u
     header.size = static_cast<uint16_t>(w.off - sizeof(header));
     std::memcpy(buf, &header, sizeof(header));
     af_send_packet(player, buf, static_cast<int>(w.off), true);
-    return true;
 }
 
 void af_send_active_mutators(rf::Player* player)
@@ -1563,6 +1568,9 @@ void af_send_active_mutators(rf::Player* player)
     }
     std::vector<uint8_t> decls;
     server_vote_build_active_mutators_blob(decls);
+    if (!af_active_mutators_blob_fits(decls)) {
+        return;
+    }
     af_send_active_mutators_blob(player, decls);
 }
 
@@ -1574,12 +1582,13 @@ void af_send_active_mutators_to_all()
     // Built once: building it walks the mutator registry.
     std::vector<uint8_t> decls;
     server_vote_build_active_mutators_blob(decls);
+    if (!af_active_mutators_blob_fits(decls)) {
+        return;
+    }
 
     auto player_list = SinglyLinkedList{rf::player_list};
     for (auto& player : player_list) {
-        if (!af_send_active_mutators_blob(&player, decls)) {
-            return;
-        }
+        af_send_active_mutators_blob(&player, decls);
     }
 }
 
@@ -1903,12 +1912,6 @@ static void af_process_client_req_packet(const void* data, size_t len, const rf:
                         xlog::warn("af_process_client_req_packet: bad vote level mutators");
                         return;
                     }
-                    // Optional trailing flags byte; reserved bits are ignored. A
-                    // caller that omits it (or a client that predates it) is
-                    // explicit only if it named anything.
-                    params.mutators_explicit = r.remaining() > 0
-                        ? (r.u8() & AF_VOTE_CALL_FLAG_MUTATORS_EXPLICIT) != 0
-                        : !params.mutators.empty();
                     break;
                 case AfVoteType::Match:
                     params.team_size = r.u8();
@@ -1918,9 +1921,6 @@ static void af_process_client_req_packet(const void* data, size_t len, const rf:
                         xlog::warn("af_process_client_req_packet: bad vote match mutators");
                         return;
                     }
-                    params.mutators_explicit = r.remaining() > 0
-                        ? (r.u8() & AF_VOTE_CALL_FLAG_MUTATORS_EXPLICIT) != 0
-                        : !params.mutators.empty();
                     break;
                 case AfVoteType::Extend:
                     params.extend_minutes = r.u8();
@@ -1937,6 +1937,14 @@ static void af_process_client_req_packet(const void* data, size_t len, const rf:
                     break;
                 default:
                     break; // parameterless vote types
+            }
+
+            // Optional trailing flags byte, read here because it sits directly behind
+            // the mutator section. Omitted means explicit only if a mutator was named.
+            if (params.type == AfVoteType::Level || params.type == AfVoteType::Match) {
+                params.mutators_explicit = r.remaining() > 0
+                    ? (r.u8() & AF_VOTE_CALL_FLAG_MUTATORS_EXPLICIT) != 0
+                    : !params.mutators.empty();
             }
 
             if (!r.ok) {

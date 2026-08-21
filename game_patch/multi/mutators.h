@@ -226,42 +226,34 @@ toml::array mutator_declarations_to_toml_array(const std::vector<MutatorDeclarat
 
 // Validate packet-supplied mutator selections against the registry and turn them
 // into declarations. Returns an error string on failure, std::nullopt on success.
-// `game_type` is the type the vote would actually run under; a mutator that is not
-// valid for it is rejected outright. Explicit wire selections only -- an inherited
-// session set is not built through here and must keep crossing game types.
+// `game_type` is the type the vote would actually run under; a mutator not valid for
+// it is rejected. Explicit wire selections only -- an inherited set must keep crossing
+// game types.
 std::optional<std::string> mutators_build_declarations_from_vote(
     const std::vector<VoteMutatorInput>& input, rf::NetGameType game_type,
     std::vector<MutatorDeclaration>& out);
 
-// Human-readable labels of the declared mutators, joined with ", ".
-std::string mutators_join_labels(const std::vector<MutatorDeclaration>& declarations);
+// Labels of the declared mutators, joined with ", ". Passing a game type drops the
+// declarations it would filter out at application time.
+std::string mutators_join_labels(const std::vector<MutatorDeclaration>& declarations,
+                                 std::optional<rf::NetGameType> game_type = std::nullopt);
 
-// The same, minus the declarations `game_type` filters out at application time, so
-// a vote title names exactly what the vote puts in force.
-std::string mutators_join_labels_for_game_type(const std::vector<MutatorDeclaration>& declarations,
-                                               rf::NetGameType game_type);
-
-// Labels of the mutators these rules actually put in force, joined with ", ", or
-// nullopt when none of them applied. The one derivation every ManualRulesOverride
-// label line uses, so a game type retarget that drops a mutator drops its label too.
+// Labels of the mutators these rules actually put in force, or nullopt when none did.
+// Every ManualRulesOverride label line derives from here.
 std::optional<std::string> mutators_active_labels_string(const AlpineServerConfigRules& rules);
 
-// The game type a level runs under when nothing names one, in precedence order:
-// its rotation entry's configured type, else Run for a level the quirks table
-// knows as a run map, else the base game type when that type can host the level
-// at all, else the type the filename prefix names, else the base game type. The
-// single answer validation and application both use.
+// The game type a level runs under when nothing names one, in precedence order: its
+// rotation entry's type, else Run for a quirks-table run map, else the base type if it
+// can host the level, else the filename prefix's type, else the base type.
 rf::NetGameType resolve_level_default_game_type(std::string_view level_filename);
 
-// Rules for `game_type` built without inheriting any other game type's fields:
-// the materialized base rules when it IS the base game type, otherwise struct
-// defaults + the operator's base keys + that type's defaults. `mutators` is
-// applied last, in MUTATOR_APPLY_ORDER.
+// Rules for `game_type` built without inheriting any other game type's fields.
+// `mutators` is applied last, in MUTATOR_APPLY_ORDER.
 AlpineServerConfigRules build_derived_server_rules(rf::NetGameType game_type,
                                                    const std::vector<MutatorDeclaration>& mutators);
 
-// Build the rules a level/match vote (or a manual level load) should install.
-// `gametype` falls back to resolve_level_default_game_type.
+// Rules a level/match vote (or a manual level load) installs. `gametype` falls back
+// to resolve_level_default_game_type.
 ManualRulesOverride load_vote_rules_override(
     std::string_view level_filename, const std::vector<MutatorDeclaration>& mutators,
     std::optional<rf::NetGameType> gametype);

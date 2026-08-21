@@ -582,6 +582,14 @@ static bool is_level_valid_for_vote_gametype(const std::string& level_name, rf::
     if (!g_alpine_server_config.vote_level.only_allow_gametype_prefix) {
         return true;
     }
+    // A level's own resolved default is always acceptable: it is what this server
+    // runs the level as, and resolve_level_default_game_type is not bound by the
+    // prefix rules (a rotation entry's configured type, or the base fallback for a
+    // name no prefix claims, can sit outside the mask). Refusing it would make the
+    // server reject its own configuration.
+    if (game_type == resolve_level_default_game_type(level_name)) {
+        return true;
+    }
     return multi_level_name_matches_game_type(level_name, game_type);
 }
 
@@ -726,9 +734,8 @@ static std::string build_rules_title_suffix(std::optional<rf::NetGameType> gamet
     return suffix;
 }
 
-// The game type a level/match vote title names. An explicitly voted one is always
-// announced; an inherited one only when the level will not run what is running now,
-// so a bare chat vote that silently changes the game type still says so.
+// The game type a vote title names: an explicit one always, an inherited one only when
+// it differs from what is running.
 static std::optional<rf::NetGameType> title_gametype(std::optional<rf::NetGameType> voted,
                                                      rf::NetGameType effective)
 {
@@ -815,12 +822,11 @@ struct VoteMatch : public Vote
 
         const std::vector<MutatorDeclaration> effective_mutators =
             effective_vote_mutators(m_mutators, m_mutators_explicit);
-        // Always derived, exactly like a level vote: the vote targets the LEVEL, so
-        // the match runs the base rules plus the voted game type's defaults plus the
-        // mutator set, never the rotation slot's own rules.
+        // Always derived, like a level vote: never the rotation slot's own rules.
         m_manual_rules_override =
             load_vote_rules_override(m_level_name, effective_mutators, effective_game_type);
-        m_mutator_labels = mutators_join_labels_for_game_type(effective_mutators, effective_game_type);
+        m_manual_rules_override.explicit_session = m_gametype.has_value() || m_mutators_explicit;
+        m_mutator_labels = mutators_join_labels(effective_mutators, effective_game_type);
         m_title_gametype = title_gametype(m_gametype, effective_game_type);
 
         // Deliberately does NOT touch g_match_info: validation passing only means
@@ -851,8 +857,6 @@ struct VoteMatch : public Vote
         // on_accepted() publishes the match state, and it is the vote's own level
         // that matters anyway.
         plan.level_is_current = string_iequals(m_level_name, rf::level.filename.c_str());
-        // Only a game type change forces the reload; the rules themselves are applied
-        // in place.
         plan.using_current_level =
             plan.level_is_current && m_manual_rules_override.rules.game_type == rf::netgame.type;
         return plan;
@@ -899,9 +903,7 @@ struct VoteMatch : public Vote
                 set_upcoming_game_type(*m_gametype, UpcomingGameTypeSelection::ExplicitRequest);
             afstats::note_game_end_type(afstats::GameEndType::map_change_vote);
             multi_change_level_alpine(m_level_name.c_str());
-            // Installed AFTER the level switch, like VoteLevel: a voted level that is
-            // in the rotation goes through set_manually_loaded_level(false), which
-            // would drop the override.
+            // AFTER the level switch, which drops the override for a rotation level.
             set_manual_rules_override(std::move(m_manual_rules_override));
         }
     }
@@ -1142,7 +1144,8 @@ struct VoteLevel : public Vote
             effective_vote_mutators(m_mutators, m_mutators_explicit);
         m_manual_rules_override =
             load_vote_rules_override(m_level_name, effective_mutators, effective_game_type);
-        m_mutator_labels = mutators_join_labels_for_game_type(effective_mutators, effective_game_type);
+        m_manual_rules_override.explicit_session = m_gametype.has_value() || m_mutators_explicit;
+        m_mutator_labels = mutators_join_labels(effective_mutators, effective_game_type);
         m_title_gametype = title_gametype(m_gametype, effective_game_type);
         return true;
     }
@@ -1173,9 +1176,7 @@ struct VoteLevel : public Vote
         afstats::note_game_end_type(afstats::GameEndType::map_change_vote);
         multi_change_level_alpine(m_level_name.c_str());
 
-        // Installed AFTER the level switch: a voted level that happens to be in the
-        // rotation goes through set_manually_loaded_level(false), which drops the
-        // override.
+        // AFTER the level switch, which drops the override for a rotation level.
         set_manual_rules_override(std::move(m_manual_rules_override));
     }
 
@@ -1205,11 +1206,12 @@ struct VoteRotation : public Vote
 
     bool validate([[maybe_unused]] rf::Player* source) override
     {
-        // Preserve means "keep the overrides a vote set for this session", not
-        // "propagate whatever is running": with no session override in play it is
-        // a no-op, so a default-checked Next vote cannot stamp this level's
-        // configured game type onto the operator's next rotation entry.
-        if (!m_preserve || !g_manual_rules_override) {
+        // Preserve means "keep the rules a vote EXPLICITLY set for this session" —
+        // a named game type or a submitted mutator set — not "propagate whatever is
+        // running". A plain level vote installs derived rules but arms nothing, so a
+        // default-checked Next vote after one cannot stamp this level's configured
+        // game type onto the operator's next rotation entry.
+        if (!m_preserve || !g_manual_rules_override || !g_manual_rules_override->explicit_session) {
             return true;
         }
 
@@ -1537,6 +1539,8 @@ VoteMgr g_vote_mgr;
 // ============================================================================
 
 static std::vector<uint8_t> g_vote_options_blob;
+// Scratch the blob is rebuilt into, so the cached copy survives the comparison.
+static std::vector<uint8_t> g_vote_options_blob_scratch;
 // Wide enough that it can never wrap. A u8 wrapped every 256 rebuilds (a rotation
 // shuffle bumps it once per cycle), and a client holding a stale blob at a
 // recurring generation would then never refresh.
@@ -1764,7 +1768,12 @@ static uint32_t build_enabled_vote_mask()
     uint32_t mask = 0;
     if (cfg.vote_kick.enabled) mask |= bit(AfVoteType::Kick);
     if (cfg.vote_level.enabled) mask |= bit(AfVoteType::Level);
-    if (cfg.vote_match.enabled) mask |= bit(AfVoteType::Match) | bit(AfVoteType::CancelMatch);
+    // VoteMatch::validate refuses every match on a server whose base game type is
+    // not a team type, and only a match vote can queue one, so neither type is
+    // advertised there rather than being offered and always rejected.
+    if (cfg.vote_match.enabled && multi_game_type_is_team_type(cfg.base_rules.game_type)) {
+        mask |= bit(AfVoteType::Match) | bit(AfVoteType::CancelMatch);
+    }
     if (cfg.vote_extend.enabled) mask |= bit(AfVoteType::Extend);
     if (cfg.vote_restart.enabled) mask |= bit(AfVoteType::Restart);
     if (cfg.vote_next.enabled) mask |= bit(AfVoteType::Next);
@@ -1790,7 +1799,7 @@ static void build_vote_options_blob(std::vector<uint8_t>& blob)
     // Game types. Length-prefixed per entry (u16, not u8: display_name alone can be
     // 255 bytes plus the fixed fields), so per-gametype data can be appended inside
     // the entry later without desyncing an older client.
-    const int gametype_count = static_cast<int>(rf::NG_TYPE_SAL) + 1;
+    const int gametype_count = static_cast<int>(rf::NG_TYPE_UNK);
     blob_u8(blob, static_cast<uint8_t>(gametype_count));
     for (int i = 0; i < gametype_count; ++i) {
         const auto game_type = static_cast<rf::NetGameType>(i);
@@ -1871,6 +1880,12 @@ static void build_vote_options_blob(std::vector<uint8_t>& blob)
         const std::string& level = levels[i];
         blob_sized_u16(blob, [&] {
             blob_str(blob, level);
+            // Exactly what resolve_level_default_game_type answers, never corrected
+            // against the mask: a level's default can sit OUTSIDE its own mask (a
+            // rotation entry's configured type, or the base fallback for a name no
+            // prefix rule claims), and is_level_valid_for_vote_gametype accepts it
+            // there, so a corrected byte would advertise a type the server does not
+            // actually run this level as.
             blob_u8(blob, static_cast<uint8_t>(resolve_level_default_game_type(level)));
             blob_u32(blob, build_level_valid_gametype_mask(level));
             // Derived from the SAME predicate the call-time gate uses, so the blob can
@@ -1909,6 +1924,12 @@ static void build_vote_options_blob(std::vector<uint8_t>& blob)
     blob_sized_u16(blob, [&] {
         blob_declaration_set(blob, g_alpine_server_config.base_rules.mutators.declarations);
     });
+
+    // The base rules' game type: the fallback for a name nothing else claims, so a
+    // client can derive a manually typed level's type as this server will.
+    // Skip-tolerant in both directions, so it needs no FURTHER bump on top of the v2
+    // the u16 level section already required.
+    blob_u8(blob, static_cast<uint8_t>(g_alpine_server_config.base_rules.game_type));
 }
 
 void server_vote_build_active_mutators_blob(std::vector<uint8_t>& blob)
@@ -1922,14 +1943,27 @@ void server_vote_invalidate_options_blob()
     g_vote_options_blob_valid = false;
 }
 
+bool server_vote_refresh_options_blob()
+{
+    const uint32_t before = g_vote_options_generation;
+    uint32_t after = 0;
+    server_vote_get_options_blob(after);
+    return after != before;
+}
+
 const std::vector<uint8_t>& server_vote_get_options_blob(uint32_t& generation)
 {
     if (!g_vote_options_blob_valid) {
-        build_vote_options_blob(g_vote_options_blob);
-        ++g_vote_options_generation; // starts at 1, so 0 means "nothing sent yet"
+        // Content-addressed: every level load invalidates the cache but almost all
+        // rebuild the same bytes, and a generation bump re-streams to every client.
+        build_vote_options_blob(g_vote_options_blob_scratch);
+        if (g_vote_options_blob_scratch != g_vote_options_blob) {
+            g_vote_options_blob.swap(g_vote_options_blob_scratch);
+            ++g_vote_options_generation; // starts at 1, so 0 means "nothing sent yet"
+            xlog::debug("vote options: rebuilt blob ({} bytes, generation {})",
+                        g_vote_options_blob.size(), g_vote_options_generation);
+        }
         g_vote_options_blob_valid = true;
-        xlog::debug("vote options: rebuilt blob ({} bytes, generation {})",
-                    g_vote_options_blob.size(), g_vote_options_generation);
     }
     generation = g_vote_options_generation;
     return g_vote_options_blob;
@@ -2149,8 +2183,8 @@ void handle_vote_call_packet(rf::Player* sender, AfVoteCallParams&& params)
                 return;
             }
             std::vector<MutatorDeclaration> mutators;
-            // Same resolution validate() applies to the same inputs, so a selection
-            // is checked against the mask of the type it would actually run under.
+            // Same resolution validate() applies, so the type checked is the one that
+            // would actually run.
             if (!resolve_vote_mutators(params.mutators,
                     gametype.value_or(resolve_level_default_game_type(params.level)), sender, mutators)) {
                 return;

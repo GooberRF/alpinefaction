@@ -1063,14 +1063,10 @@ std::string_view multi_game_type_prefix(const rf::NetGameType game_type) {
     }
 }
 
-// Does this filename carry THIS game type's own level prefix? Strictly the prefix:
-// the any-level rule and the RUN level list are the caller's business. The two "p"
-// prefixes belong to the game types that share the base prefix, so this is the one
-// place that owns those pairings.
-bool multi_level_name_has_game_type_prefix(std::string_view level_filename, rf::NetGameType game_type)
+// Strictly the prefix: the any-level rule and the RUN level list are the caller's.
+static bool multi_level_name_has_game_type_prefix(std::string_view level_filename, rf::NetGameType game_type)
 {
-    // UNK has no prefix of its own -- multi_game_type_prefix falls back to "dm" for
-    // it, which would claim every dm* name.
+    // UNK has no prefix of its own; multi_game_type_prefix answers "dm" for it.
     if (game_type == rf::NG_TYPE_UNK) {
         return false;
     }
@@ -1088,16 +1084,9 @@ bool multi_level_name_has_game_type_prefix(std::string_view level_filename, rf::
     return false;
 }
 
-// The game type a level filename's prefix names, or nullopt for a filename that
-// carries no game type prefix at all. Derived from multi_game_type_prefix rather
-// than from a table of its own, so adding or removing a prefix there is all it
-// takes. Enum order decides the two prefixes two game types share (DM precedes
-// TeamDM, CTF precedes SAL) and keeps NG_TYPE_UNK -- whose prefix is a fallback,
-// not its own -- out of it.
-//
-// The any-level game types are skipped: their nominal prefix is what THEIR levels
-// would be called, not something a filename can be identified by, so wooden_bridge
-// must not read as Wipeout. This direction only; they still accept any mp level.
+// The game type a level filename's prefix names, or nullopt when it carries none.
+// Enum order decides a shared prefix (DM before TeamDM, CTF before SAL). The any-level
+// game types are skipped -- this direction only, they still ACCEPT any mp level.
 std::optional<rf::NetGameType> multi_game_type_for_level_prefix(std::string_view level_filename)
 {
     for (int i = 0; i < static_cast<int>(rf::NG_TYPE_UNK); ++i) {
@@ -1137,13 +1126,9 @@ bool multi_level_name_matches_any_mp_prefix(const char* filename)
         || string_istarts_with(filename, "esc");
 }
 
-// The whole "can this game type be played on a level with this name?" question:
-// the strict prefix above, plus the quirks table's run maps and the any-level game
-// types' acceptance of every standard MP level. The vote gate and the vote blob's
-// per-level mask are both derived from here, so those two always agree.
-// resolve_level_default_game_type is NOT bound by it: a rotation entry's configured
-// game type is returned as-is, and a name no rule claims falls back to the base game
-// type -- so a natural game type CAN sit outside the mask advertised beside it.
+// "Can this game type be played on a level with this name?" The vote gate and the
+// blob's per-level mask both derive from here. resolve_level_default_game_type is NOT
+// bound by it and can answer outside the mask.
 bool multi_level_name_matches_game_type(std::string_view level_filename, rf::NetGameType game_type)
 {
     const std::string map_name = normalize_level_filename(level_filename);

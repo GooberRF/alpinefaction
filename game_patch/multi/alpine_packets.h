@@ -223,13 +223,11 @@ enum af_vote_level_flags : uint8_t
 };
 
 // The optional trailing flags byte of a Level/Match vote call. Reserved bits are
-// masked off by the server and ignored, so a later writer can claim one without
-// breaking an older server; an absent byte falls back to "explicit iff the vote
-// named any mutator", which is what a client that predates the byte meant.
+// ignored; an ABSENT byte means "explicit iff the vote named any mutator".
 enum af_vote_call_flags : uint8_t
 {
-    // `mutators` is the caller's complete selection, empty included. Clear means
-    // "keep whatever set the session is running".
+    // `mutators` is the complete selection, empty included. Clear means "keep
+    // whatever set the session is running".
     AF_VOTE_CALL_FLAG_MUTATORS_EXPLICIT = 1 << 0,
 };
 
@@ -816,6 +814,7 @@ struct AfVoteCallParams
     uint8_t gametype = af_vote_gametype_none;
     uint8_t extend_minutes = af_vote_extend_default_minutes;
     std::vector<VoteMutatorInput> mutators;
+    // False means "inherit the session's set", the legacy/chat-vote meaning.
     bool mutators_explicit = false;
     bool preserve = true;
 };
@@ -927,8 +926,8 @@ void af_send_vote_state_update(rf::Player* player, uint8_t yes, uint8_t no, uint
 void af_send_vote_state_end(rf::Player* player, AfVoteResult result, bool passed,
                             std::string_view detail);
 void af_send_vote_options_data(rf::Player* player);
-// Push the mutator declaration set currently in force to one player / to every 1.4+
-// client. Called on join and whenever the active rules are (re)applied.
+// Push the mutator set currently in force. Called on join and whenever the active
+// rules are (re)applied.
 void af_send_active_mutators(rf::Player* player);
 void af_send_active_mutators_to_all();
 

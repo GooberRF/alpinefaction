@@ -8,6 +8,11 @@ void vote_panel_close();
 void vote_panel_toggle_gameplay();
 // True while the overlay is up; drives HUD/chat/input suppression.
 bool vote_panel_is_gameplay_overlay_active();
+// True while a panel text box has focus, i.e. keystrokes are being typed into the
+// panel. Anything that reads key state directly (rather than through the control
+// config, which the panel's veto already covers) has to consult this the same way
+// it consults console/chat visibility.
+bool vote_panel_is_capturing_text();
 // Drop the whole form (leaving a server).
 void vote_panel_reset();
 

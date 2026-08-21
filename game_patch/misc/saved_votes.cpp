@@ -15,6 +15,7 @@
 #include "alpine_settings.h"
 #include "../multi/multi.h"
 #include "../multi/vote_client.h"
+#include "../rf/level.h"
 
 namespace
 {
@@ -37,12 +38,10 @@ constexpr size_t max_unparsed_lines = 50;
 //
 // <mutators> is entries joined by ';', each `name` or `name:opt=Xval,opt=Xval`,
 // where the value's first character types it: b0/b1 bool, i<n> int, f<n> float,
-// c<label> choice. <explicit> is 0/1: whether <mutators> is the complete set the
-// vote installs. Every free-text field percent-encodes the separators plus any
+// c<label> choice. <explicit> is 0/1: whether <mutators> is the complete set the vote
+// installs. Every free-text field percent-encodes the separators plus any
 // control character, so a level or choice label containing one round-trips.
-//
-// Version 1 is the same line without <explicit>; it still loads, see
-// saved_vote_parse.
+// Version 1 is the same line without <explicit>, and still loads.
 // ---------------------------------------------------------------------------
 
 constexpr std::string_view reserved_chars = "%|;:,=";
@@ -264,6 +263,48 @@ const VoteMutatorOptionSchema* find_option_schema(const VoteMutatorSchema& schem
         }
     }
     return nullptr;
+}
+
+// The level a Level/Match record is judged and called against. VoteMatch::validate
+// substitutes the running level for an empty name; same here.
+std::string gate_level_for(const SavedVote& vote)
+{
+    if (vote.type == AfVoteType::Match && vote.level.empty()) {
+        return std::string{rf::level.filename.c_str()};
+    }
+    return vote.level;
+}
+
+// The game type a Level/Match record resolves to AND the byte
+// saved_vote_build_params sends for it -- one function so the availability answer
+// can only ever be about the bytes that actually go out. A record naming a type
+// keeps it; a record naming none is resolved through the same helpers the live
+// form's pre-selection uses, so a saved call and the equivalent live call are the
+// same packet.
+//
+// af_vote_gametype_none out means nothing here could resolve it: the level is not
+// in the blob AND the server is too old to have sent a base game type (or, for the
+// running level, the blob offered no team game type). The wire byte then stays none
+// and the server resolves it from its own config, which is the one state both ends
+// have to defer on.
+uint8_t effective_gametype_for(const SavedVote& vote, const VoteOptionsData& options)
+{
+    if (vote.gametype != af_vote_gametype_none) {
+        return vote.gametype;
+    }
+    if (vote.type != AfVoteType::Level && vote.type != AfVoteType::Match) {
+        return af_vote_gametype_none;
+    }
+    // A Match record that follows the running level is the panel's "Current level"
+    // row: it resolves from the type RUNNING, not from that level's configured one.
+    if (vote.type == AfVoteType::Match && vote.level.empty()) {
+        return vote_match_current_level_gametype(options);
+    }
+    const std::string gate_level = gate_level_for(vote);
+    if (!find_level_info(options, gate_level) && !options.base_game_type_present) {
+        return af_vote_gametype_none;
+    }
+    return vote_default_gametype_for_level(options, gate_level);
 }
 
 } // namespace
@@ -564,10 +605,8 @@ bool saved_vote_parse(std::string_view encoded, SavedVote& out)
         vote.mutators_explicit = explicit_raw != 0;
     }
     else {
-        // Version 1 predates the field, so it gets the same fallback the wire format
-        // gives a call with no flags byte (named anything => explicit), plus the
-        // gametype term: a v1 record naming a game type meant that game type with
-        // exactly the list it carried, empty included.
+        // Version 1 predates the field: same fallback the wire gives a call with no
+        // flags byte, plus the gametype term.
         vote.mutators_explicit = !vote.mutators.empty() || vote.gametype != af_vote_gametype_none;
     }
 
@@ -600,31 +639,37 @@ SavedVoteAvailability saved_vote_check(const SavedVote& vote, const VoteOptionsD
         out.reasons.emplace_back("This vote type is disabled on this server");
     }
 
-    // The game type the server will resolve this vote to, and so the one it gates the
-    // vote's mutators and Match's team-type rule against: the record's own, or when it
-    // names none, the level's natural type -- the answer resolve_level_default_game_type
-    // gives the server there. A level name the blob does not list leaves it unresolved,
-    // and af_vote_gametype_none sits past the mask's width, so the checks below then
-    // restrict nothing - the same deferral to the server the level check makes.
-    uint8_t effective_gametype = vote.gametype;
+    // The game type the server will resolve this vote to, and the byte
+    // saved_vote_build_params sends for it -- the same derivation, so a record that
+    // passes here is a record whose exact packet the server accepts.
+    //
+    // af_vote_gametype_none survives only when nothing could resolve it, and each
+    // check below treats that differently: the offered-type and Match team checks
+    // skip it explicitly, mutator_gametype_mask_allows lets a value past the mask's
+    // width through, but vote_level_allows_gametype REFUSES one. That last pair only
+    // meets when the level is listed, and a listed level always resolves to a real
+    // type (its own blob byte, or the running one for a Match on the current level)
+    // -- so it takes a blob that literally sent 0xFF as a level's natural game type
+    // to reach it, and greying the record out is then the honest answer.
+    uint8_t effective_gametype = effective_gametype_for(vote, *options);
+    // Nothing resolved it and the record follows the running level: the byte sent is
+    // none, so the server resolves it from the level running there. Judged against
+    // the type running here, which is the closest this side can get.
+    if (effective_gametype == af_vote_gametype_none && vote.type == AfVoteType::Match
+        && vote.level.empty()) {
+        effective_gametype = static_cast<uint8_t>(rf::multi_get_game_type());
+    }
 
     if (vote.type == AfVoteType::Level || vote.type == AfVoteType::Match) {
-        const VoteLevelInfo* found = find_level_info(*options, vote.level);
-        if (effective_gametype == af_vote_gametype_none) {
-            if (found) {
-                effective_gametype = found->natural_gametype;
-            }
-            else if (vote.type == AfVoteType::Match && vote.level.empty()) {
-                // Match's "current level" row.
-                effective_gametype = static_cast<uint8_t>(rf::multi_get_game_type());
-            }
-        }
+        const bool use_current_level = vote.type == AfVoteType::Match && vote.level.empty();
+        const std::string gate_level = gate_level_for(vote);
+        const VoteLevelInfo* found = find_level_info(*options, gate_level);
 
-        if (vote.level.empty()) {
+        if (gate_level.empty()) {
             if (vote.type == AfVoteType::Level) {
                 out.reasons.emplace_back("No level is saved for this vote");
             }
-            // Match's empty level is the "current level" row: always valid.
+            // Match with no level running yet: nothing to gate against.
         }
         else {
             // A level the blob does not list at all is still allowed: that is
@@ -632,27 +677,34 @@ SavedVoteAvailability saved_vote_check(const SavedVote& vote, const VoteOptionsD
             // adjudicates it at call time.
             if (found) {
                 if (!found->allowed_for_vote) {
-                    out.reasons.emplace_back("Level is not on the server's vote list");
+                    out.reasons.emplace_back(use_current_level
+                        ? "Current level is not on the server's vote list"
+                        : "Level is not on the server's vote list");
                 }
-                else if (options->gametype_prefix_restricted) {
-                    const bool matches = vote.gametype == af_vote_gametype_none
-                        ? vote_level_allows_default_gametype(*found)
-                        : vote_level_allows_gametype(*found, vote.gametype);
-                    if (!matches) {
-                        out.reasons.emplace_back("Level is not valid for this game type here");
-                    }
+                else if (options->gametype_prefix_restricted
+                         && !vote_level_allows_gametype(*found, effective_gametype)) {
+                    out.reasons.emplace_back(use_current_level
+                        ? "Current level is not valid for this game type here"
+                        : "Level is not valid for this game type here");
                 }
             }
         }
     }
 
-    if (vote.gametype != af_vote_gametype_none && !find_gametype_info(*options, vote.gametype)) {
+    // Only Level and Match put a game type and a mutator set on the wire (see
+    // saved_vote_build_params); an Extend record sends neither, so a stray field on
+    // a hand-edited one must not make it uncallable.
+    const bool sends_rules = vote.type == AfVoteType::Level || vote.type == AfVoteType::Match;
+
+    // Keyed on the SENT type, not the record's own: the blob lists every game type
+    // the server's resolve_vote_gametype accepts, so this is that bound mirrored --
+    // and it has to cover a derived byte too, now that one can be sent.
+    if (sends_rules && effective_gametype != af_vote_gametype_none
+        && !find_gametype_info(*options, effective_gametype)) {
         out.reasons.emplace_back("Game type not offered on this server");
     }
 
-    // Gated on the RESOLVED type, not the record's own: the server rejects a match
-    // against whatever will actually apply (VoteMatch::validate), so a record that
-    // names no game type has to be judged by the one its level resolves to.
+    // Gated on the RESOLVED type: VoteMatch::validate judges what will actually apply.
     if (vote.type == AfVoteType::Match && effective_gametype != af_vote_gametype_none) {
         const VoteGametypeInfo* found = find_gametype_info(*options, effective_gametype);
         if (found && !found->is_team_type) {
@@ -660,31 +712,33 @@ SavedVoteAvailability saved_vote_check(const SavedVote& vote, const VoteOptionsD
         }
     }
 
-    for (const auto& mutator : vote.mutators) {
-        const VoteMutatorSchema* schema = find_mutator_schema(*options, mutator.name);
-        if (!schema) {
-            out.reasons.push_back(std::format("Mutator '{}' is not available here", mutator.name));
-            continue;
-        }
-        // The gate mutators_build_declarations_from_vote applies at call time.
-        if (!mutator_gametype_mask_allows(schema->valid_gametype_mask, effective_gametype)) {
-            out.reasons.push_back(
-                std::format("Mutator '{}' cannot be used in this game type", mutator.name));
-            continue;
-        }
-        for (const auto& value : mutator.values) {
-            const VoteMutatorOptionSchema* option = find_option_schema(*schema, value);
-            if (!option) {
-                // One line per mutator: listing every mismatched option of a
-                // mutator that simply changed shape says nothing extra.
-                out.reasons.push_back(
-                    std::format("Mutator '{}' has different options here", mutator.name));
-                break;
+    if (sends_rules) {
+        for (const auto& mutator : vote.mutators) {
+            const VoteMutatorSchema* schema = find_mutator_schema(*options, mutator.name);
+            if (!schema) {
+                out.reasons.push_back(std::format("Mutator '{}' is not available here", mutator.name));
+                continue;
             }
-            if (value.type == MutatorOptionType::Choice
-                && find_choice_index(*option, value.choice_label) < 0) {
-                out.reasons.push_back(std::format("Mutator '{}': choice '{}' not available here",
-                    mutator.name, value.choice_label));
+            // The gate mutators_build_declarations_from_vote applies at call time.
+            if (!mutator_gametype_mask_allows(schema->valid_gametype_mask, effective_gametype)) {
+                out.reasons.push_back(
+                    std::format("Mutator '{}' cannot be used in this game type", mutator.name));
+                continue;
+            }
+            for (const auto& value : mutator.values) {
+                const VoteMutatorOptionSchema* option = find_option_schema(*schema, value);
+                if (!option) {
+                    // One line per mutator: listing every mismatched option of a
+                    // mutator that simply changed shape says nothing extra.
+                    out.reasons.push_back(
+                        std::format("Mutator '{}' has different options here", mutator.name));
+                    break;
+                }
+                if (value.type == MutatorOptionType::Choice
+                    && find_choice_index(*option, value.choice_label) < 0) {
+                    out.reasons.push_back(std::format("Mutator '{}': choice '{}' not available here",
+                        mutator.name, value.choice_label));
+                }
             }
         }
     }
@@ -702,7 +756,10 @@ AfVoteCallParams saved_vote_build_params(const SavedVote& vote, const VoteOption
         case AfVoteType::Level:
         case AfVoteType::Match: {
             params.level = vote.level;
-            params.gametype = vote.gametype;
+            // Resolved rather than forwarded: sending the derived type is what makes
+            // saved_vote_check's answer be about the packet that actually goes out,
+            // and it is the same byte the live form submits for the same selection.
+            params.gametype = effective_gametype_for(vote, options);
             params.mutators_explicit = vote.mutators_explicit;
             if (vote.type == AfVoteType::Match) {
                 params.team_size = static_cast<uint8_t>(std::clamp<int>(vote.team_size, 1, 8));

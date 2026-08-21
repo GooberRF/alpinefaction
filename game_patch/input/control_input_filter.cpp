@@ -44,11 +44,11 @@ ControlInputInjection resolve_injection(rf::ControlConfig* ccp, rf::ControlConfi
 FunHook<bool(rf::ControlConfig*, rf::ControlConfigAction, bool*)> control_config_check_pressed_hook{
     0x0043D4F0,
     [](rf::ControlConfig* ccp, rf::ControlConfigAction action, bool* just_pressed) {
-        // A veto owns the action completely: no injection can lift it. The engine
-        // is still called, but key press consumed so they don't all pile up and
-        // process all at once when the veto is over.
+        // A veto owns the action completely: no injection can lift it. The engine is
+        // still called, for every veto participant, so the press is consumed rather
+        // than piling up and firing all at once when the veto lifts.
         if (action_is_vetoed(ccp, action)) {
-            control_config_check_pressed_hook.call_target(ccp, action, nullptr);
+            control_input_filter_check_pressed_unfiltered(ccp, action, nullptr);
             if (just_pressed) {
                 *just_pressed = false;
             }
@@ -72,9 +72,7 @@ FunHook<bool(rf::ControlConfig*, rf::ControlConfigAction)> control_is_control_do
     0x00430F40,
     [](rf::ControlConfig* ccp, rf::ControlConfigAction action) {
         if (action_is_vetoed(ccp, action)) {
-            // Nothing to drain today - this one only reads key/mouse down state -
-            // but kept symmetrical with the check above so the two cannot drift.
-            control_is_control_down_hook.call_target(ccp, action);
+            // No drain needed: 0x00430F40 only makes plain global reads.
             return false;
         }
         // Deliberately no injection: bots drive fire through

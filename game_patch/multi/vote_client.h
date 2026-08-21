@@ -61,11 +61,8 @@ struct VoteMutatorDeclValue
     std::string string_value;
 };
 
-// One declared mutator and the values it carries. The shape of every declaration
-// set the server sends: a level's configured set, the base set, and the set the
-// session is currently running. The panel pre-selects one of those so that
-// submitting an untouched vote reproduces what is already running (a vote replaces
-// the mutator set rather than stacking on it).
+// One declared mutator and its values: the shape of every declaration set the server
+// sends. A vote REPLACES the mutator set rather than stacking on it.
 struct VoteMutatorDecl
 {
     uint8_t mutator_id = 0;
@@ -102,22 +99,36 @@ struct VoteOptionsData
     std::vector<VoteGametypeInfo> gametypes;
     std::vector<VoteMutatorSchema> mutators;
     std::vector<VoteLevelInfo> levels; // rotation order, then vote-allowed extras
-    // Mutators the server's base rules declare. No longer the panel's pre-selection:
-    // that is the session's ACTIVE set (vote_active_mutators_get). This is what the
-    // panel's "Base" button applies, and the fallback baseline on a server too old to
-    // push an active set. Empty for a server built before the blob carried it.
+    // What the panel's "Base" button applies, and the baseline on a server too old to
+    // push an active set.
     std::vector<VoteMutatorDecl> base_mutator_decls;
-    // Whether the blob actually carried that section. An empty set is meaningful
-    // ("base declares none"), so a consumer offering it as a choice has to tell that
-    // apart from a server that never sent one.
+    // Whether the blob carried that section: "base declares none" is not "base unknown".
     bool base_mutator_decls_present = false;
+    // The base rules' game type: the fallback for a name nothing else claims. Absent
+    // from a server built before the blob carried it.
+    uint8_t base_game_type = 0; // rf::NetGameType
+    bool base_game_type_present = false;
 };
 
-// Does this level match the given game type's level prefix rules? Whether that
-// is a hard restriction depends on VoteOptionsData::gametype_prefix_restricted.
+// Would the server accept this level voted with this game type? Its prefix rules,
+// plus the level's own default, which the server always accepts. Whether that is a
+// hard restriction depends on VoteOptionsData::gametype_prefix_restricted.
 bool vote_level_allows_gametype(const VoteLevelInfo& level, uint8_t game_type);
 // Same, against the level's own game type, for a vote that names none.
 bool vote_level_allows_default_gametype(const VoteLevelInfo& level);
+
+// The game type a vote naming none resolves to: the level's own byte when the server
+// listed it, else its resolution order replayed against the blob's base game type. An
+// empty name answers with what is running here (Match's "current level"). The single
+// client-side answer, so the panel and the saved-vote check agree.
+uint8_t vote_default_gametype_for_level(const VoteOptionsData& options, std::string_view level_string);
+
+// The game type a Match vote on the CURRENT level resolves to: what the session is
+// running, put through the match game type cycler's team-only remap (DM becomes
+// TeamDM when the server offers it, otherwise the first team type offered; none when
+// it offers no team type at all). The single answer for both the panel's "Current
+// level" row and a saved Match record with no level, so both send the same byte.
+uint8_t vote_match_current_level_gametype(const VoteOptionsData& options);
 
 struct ActiveVoteState
 {
@@ -163,13 +174,9 @@ void vote_options_request_if_needed();
 void vote_options_mark_stale();
 
 // --- active mutator set (af_sreq_active_mutators) ---
-// The mutator declarations the server session is running right now, including any a
-// vote installed. `nullptr` until the server has sent one, which is also what an
-// old server leaves forever: consumers fall back to the config-derived baseline the
-// options blob carries.
+// What the session is running right now. `nullptr` until the server sends one.
 const std::vector<VoteMutatorDecl>* vote_active_mutators_get();
-// Bumped on every push, so a consumer that derived state from the set can notice a
-// change without comparing the declarations. 0 means nothing has been received.
+// Bumped on every push; 0 means nothing received yet.
 uint32_t vote_active_mutators_revision();
 void vote_active_mutators_on_received(const uint8_t* data, size_t len);
 

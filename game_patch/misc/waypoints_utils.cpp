@@ -1,6 +1,7 @@
 #include "waypoints_utils.h"
 #include "waypoints_internal.h"
 #include "alpine_settings.h"
+#include "vote_panel.h"
 #include "../hud/multi_spectate.h"
 #include "../rf/collide.h"
 #include "../rf/entity.h"
@@ -941,6 +942,14 @@ void handle_waypoint_editor_input()
     if (!waypoint_editor_selection_mode_active()
         || g_waypoint_editor_selection.kind == WaypointEditorSelectionKind::none
         || waypoint_editor_modal_dialog_open()) {
+        return;
+    }
+
+    // Raw key read, so the control veto does not cover it: a focused vote panel box
+    // owns the keyboard. Consumed and discarded rather than left standing, which
+    // would delete the selection on the frame after the box loses focus.
+    if (vote_panel_is_capturing_text()) {
+        rf::key_get_and_reset_down_counter(rf::KEY_DELETE);
         return;
     }
 
@@ -1907,9 +1916,47 @@ void append_text_from_count(std::string& field, const int count, const char ch)
     }
 }
 
+// These pumps are raw key reads, so the control veto does not cover them. Same gate
+// the digit capture in key.cpp uses: a focused vote panel box owns the keyboard.
+// Every key a pump would otherwise read is still CONSUMED here and discarded --
+// early-returning instead would leave the counters standing and flush a whole
+// typed level name into the field on the frame after the box loses focus.
+// The panel's own text arrives through the key ring (the 0x004306F0 hook), which
+// these per-scancode counters are no part of, so draining them costs it nothing.
+bool drain_dialog_keys_while_panel_captures(const bool with_minus = false)
+{
+    if (!vote_panel_is_capturing_text()) {
+        return false;
+    }
+
+    rf::key_get_and_reset_down_counter(rf::KEY_ESC);
+    rf::key_get_and_reset_down_counter(rf::KEY_ENTER);
+    rf::key_get_and_reset_down_counter(rf::KEY_PADENTER);
+    rf::key_get_and_reset_down_counter(rf::KEY_BACKSP);
+    if (with_minus) {
+        rf::key_get_and_reset_down_counter(rf::KEY_MINUS);
+        rf::key_get_and_reset_down_counter(rf::KEY_PADMINUS);
+    }
+    // Both halves of every digit: the raw counter and anything key.cpp stashed
+    // before the box took focus.
+    for (int key = rf::KEY_1; key <= rf::KEY_0; ++key) {
+        rf::key_get_and_reset_down_counter(static_cast<rf::Key>(key));
+        waypoints_utils_consume_numeric_key(key);
+    }
+    // Keypad digits are not contiguous in the scancode order.
+    for (const rf::Key key : {rf::KEY_PAD0, rf::KEY_PAD1, rf::KEY_PAD2, rf::KEY_PAD3, rf::KEY_PAD4,
+                              rf::KEY_PAD5, rf::KEY_PAD6, rf::KEY_PAD7, rf::KEY_PAD8, rf::KEY_PAD9}) {
+        rf::key_get_and_reset_down_counter(key);
+    }
+    return true;
+}
+
 void process_link_editor_keyboard_input()
 {
     if (!g_waypoint_link_editor_dialog.open || !g_waypoint_editor_mouse_ui_mode) {
+        return;
+    }
+    if (drain_dialog_keys_while_panel_captures(true)) {
         return;
     }
 
@@ -2010,6 +2057,9 @@ void process_zone_create_trigger_uid_keyboard_input()
     if (!g_waypoint_zone_create_dialog.open
         || g_waypoint_zone_create_dialog.stage != WaypointZoneCreateDialogStage::enter_trigger_uid
         || !g_waypoint_editor_mouse_ui_mode) {
+        return;
+    }
+    if (drain_dialog_keys_while_panel_captures()) {
         return;
     }
 
@@ -2150,6 +2200,9 @@ void process_bridge_waypoint_keyboard_input()
         || !g_waypoint_editor_mouse_ui_mode) {
         return;
     }
+    if (drain_dialog_keys_while_panel_captures()) {
+        return;
+    }
 
     if (rf::key_get_and_reset_down_counter(rf::KEY_ESC) > 0) {
         close_waypoint_zone_create_dialog();
@@ -2220,6 +2273,9 @@ void open_target_link_editor_dialog(const int target_uid)
 void process_target_link_editor_keyboard_input()
 {
     if (!g_waypoint_target_link_editor_dialog.open || !g_waypoint_editor_mouse_ui_mode) {
+        return;
+    }
+    if (drain_dialog_keys_while_panel_captures()) {
         return;
     }
 
@@ -2296,6 +2352,9 @@ void open_zone_bridge_editor_dialog(const int zone_uid)
 void process_zone_bridge_editor_keyboard_input()
 {
     if (!g_waypoint_zone_bridge_editor_dialog.open || !g_waypoint_editor_mouse_ui_mode) {
+        return;
+    }
+    if (drain_dialog_keys_while_panel_captures()) {
         return;
     }
 

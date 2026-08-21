@@ -147,6 +147,8 @@ Version 1.4.0 (Lupin): Not yet released
 - Support af://demo/ID on the af protocol to play demos from FactionFiles
 - Set client netfps to 40, server default netfps to 40 (configurable)
 - Make color pickers in the level editor open at the current color instead of black
+- A voted level now derives its rules from the server's base rules plus the voted mutator set, rather than inheriting the rules of whichever rotation slot happens to name that level
+- `sv_gametype` against a level in the rotation now rebuilds the rules from the base rules for the new game type instead of retargeting the old game type's rules in place
 
 [@is-this-c](https://github.com/is-this-c)
 - Rewrite `VArray` to fix crashes due to MinGW

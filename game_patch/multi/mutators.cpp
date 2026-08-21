@@ -872,8 +872,6 @@ std::optional<std::string> mutators_build_declarations_from_vote(
         if (!seen_ids.insert(entry.mutator_id).second) {
             return std::format("mutator '{}' was selected more than once", info->label);
         }
-        // The panel greys these out rather than offering them, so a selection that
-        // reaches here did not come from one.
         if (!mutator_gametype_mask_allows(info->valid_gametype_mask, static_cast<uint8_t>(game_type))) {
             return std::format("mutator '{}' cannot be used in {}", info->label,
                                multi_game_type_name_short(game_type));
@@ -913,8 +911,7 @@ std::optional<std::string> mutators_build_declarations_from_vote(
                     decl.options[opt->name] = opt_in.int_value;
                     break;
                 case MutatorOptionType::Float:
-                    // Nothing downstream (rules math, the config print, the TOML
-                    // round-trip) is prepared for a NaN or an infinity off the wire.
+                    // Nothing downstream is prepared for a NaN or infinity off the wire.
                     if (!std::isfinite(opt_in.float_value)) {
                         return std::format("option '{}' of mutator '{}' has an out of range value",
                                            opt->name, info->label);
@@ -977,8 +974,8 @@ static std::string join_labels(const std::vector<MutatorDeclaration>& declaratio
     std::string joined;
     for (const auto& decl : declarations) {
         const MutatorDef* def = find_mutator_by_name(decl.name);
-        // Same availability test apply_mutators_from_toml runs, so the line can
-        // never name a mutator the game type is about to drop.
+        // Same availability test apply_mutators_from_toml runs, so the line can never
+        // name a mutator the game type drops.
         if (def && game_type
             && !mutator_gametype_mask_allows(gametype_mask_for_req(def->gametype_req),
                                              static_cast<uint8_t>(*game_type)))
@@ -1000,13 +997,8 @@ static std::string join_labels(const std::vector<MutatorDeclaration>& declaratio
     return joined;
 }
 
-std::string mutators_join_labels(const std::vector<MutatorDeclaration>& declarations)
-{
-    return join_labels(declarations, std::nullopt);
-}
-
-std::string mutators_join_labels_for_game_type(const std::vector<MutatorDeclaration>& declarations,
-                                               rf::NetGameType game_type)
+std::string mutators_join_labels(const std::vector<MutatorDeclaration>& declarations,
+                                 std::optional<rf::NetGameType> game_type)
 {
     return join_labels(declarations, game_type);
 }
@@ -1020,16 +1012,13 @@ rf::NetGameType resolve_level_default_game_type(std::string_view level_filename)
             return entry.rule_overrides.game_type;
     }
 
-    // Run maps are named for the campaign they came from, not for a game type, so
-    // the quirks table is the only thing that can identify them. Behind the rotation
-    // lookup: an operator who configured one as something else meant it.
+    // Run maps carry no prefix, so the quirks table is the only thing that identifies
+    // them. Behind the rotation lookup, which the operator meant.
     if (is_known_run_level(normalized))
         return rf::NetGameType::NG_TYPE_RUN;
 
-    // Ahead of the prefix scan: the server's own game type gets this level if it can
-    // host it at all, so a TeamDM server keeps TeamDM for dm07 instead of handing it
-    // to the DM the prefix names. Only when the base cannot host it does the prefix
-    // decide.
+    // Ahead of the prefix scan: the base game type gets the level if it can host it,
+    // so a TeamDM server keeps TeamDM for dm07 rather than the prefix's DM.
     const rf::NetGameType base_gt = g_alpine_server_config.base_rules.game_type;
     if (multi_level_name_matches_game_type(normalized, base_gt))
         return base_gt;
@@ -1044,29 +1033,31 @@ AlpineServerConfigRules build_derived_server_rules(rf::NetGameType game_type,
                                                    const std::vector<MutatorDeclaration>& mutators)
 {
     const auto& cfg = g_alpine_server_config;
-    // Every runtime derivation replays a set the config parse already reported on,
-    // and this one runs on every level load, vote apply and game type retarget.
+
+    // Nothing to derive: the fully layered base rules ARE the answer. Rebuilding would
+    // apply the mutators last and lose the keys-over-mutators layering.
+    if (game_type == cfg.base_rules.game_type && mutators == cfg.base_rules.mutators.declarations) {
+        return cfg.base_rules;
+    }
+
+    // Every runtime derivation replays a set the config parse already reported on.
     const RulesParseQuietGuard quiet;
 
     AlpineServerConfigRules rules;
     if (game_type == cfg.base_rules.game_type) {
-        // The operator's own keys already sit on top of this game type's defaults in
-        // parse order, which is a layering the rebuild below cannot reproduce.
+        // The operator's keys already sit on this game type's defaults in parse order.
         rules = cfg.base_rules_no_mutators;
     }
     else {
-        // Never derived from another game type's materialized rules: those carry
-        // fields (spawn_life, drop_weapons, ...) that apply_defaults_for_game_type
-        // does not claim back, so they would leak into the new game type.
+        // Never from another game type's materialized rules: they carry fields
+        // apply_defaults_for_game_type does not claim back.
         rules = cfg.base_rules_keys_only;
         rules.game_type = game_type;
         apply_defaults_for_game_type(game_type, rules);
     }
 
-    // Applied AFTER the base keys, deliberately the reverse of the config parse
-    // (which applies a scope's keys after its mutators), because here the set is a
-    // voted layer that has to win over what it was layered onto -- and a manual
-    // `map` load routes the base-declared set through this same path.
+    // Applied AFTER the base keys, the reverse of the config parse: a voted layer has
+    // to win over what it was layered onto.
     if (!mutators.empty()) {
         const toml::array arr = mutator_declarations_to_toml_array(mutators);
         apply_mutators_from_toml(arr, rules);
@@ -2796,8 +2787,8 @@ static constexpr rf::gr::Mode CRIT_RETICLE_FLASH_MODE{
     rf::gr::ZBUFFER_TYPE_NONE,
     rf::gr::FOG_NOT_ALLOWED,
 };
-// Colour resolved when the flash is stamped, not when it is drawn: a first person spectator
-// flashes in the shooter's colour rather than its own.
+// Colour resolved when the flash is stamped, not when it is drawn: a first person
+// spectator flashes in the shooter's colour rather than its own.
 struct CritReticleFlash
 {
     int64_t at = 0;

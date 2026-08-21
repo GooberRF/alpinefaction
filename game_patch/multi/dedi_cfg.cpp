@@ -396,6 +396,10 @@ void apply_defaults_for_game_type(rf::NetGameType game_type, AlpineServerConfigR
             rules.spawn_delay.enabled = true;
             rules.spawn_delay.set_base_value(2.0f);
             rules.location_pinging = (game_type == rf::NetGameType::NG_TYPE_TBAG);
+
+            // primary weapon
+            rules.default_player_weapon.set_weapon("12mm handgun");
+
             break;
         }
 
@@ -514,19 +518,15 @@ bool g_rules_parse_quiet = false;
 enum class RulesParseMode
 {
     Full,       // game type resolution, gametype defaults, mutators, explicit keys
-    // The same minus the mutator declarations. Only used to build base_rules_no_mutators.
-    NoMutators,
+    NoMutators, // the same, minus the mutator declarations
     KeysOnly,   // only the explicit keys
 };
 
 struct RulesParseOptions
 {
     RulesParseMode mode = RulesParseMode::Full;
-    // Struct defaults plus the operator's explicit base keys. When set, a scope that
-    // resolves a DIFFERENT game type is rebuilt from this rather than inheriting the
-    // materialized rules it was handed, so no field claimed by the previous game type
-    // can survive into the new one. Null while the base scope itself is parsed (its
-    // own keys are what this is built from).
+    // Struct defaults plus the operator's explicit base keys. A scope resolving a
+    // DIFFERENT game type is rebuilt from this rather than inheriting what it was handed.
     const AlpineServerConfigRules* rebase_source = nullptr;
 };
 
@@ -757,11 +757,9 @@ static void apply_rules_keys_from_toml(const toml::table& t, AlpineServerConfigR
         o.gungame_final_weapon = *v;
 }
 
-// Applies one rules table over the rules handed in: that table's mutators (Full mode
-// only) and then its explicit keys, so manual keys still override mutator presets.
-// Game type resolution and gametype defaults are done once per scope, up front, by
-// parse_scope_rules. The layering across scopes is: gametype defaults -> base mutators
-// -> manual base -> per-level mutators -> manual per-level.
+// Applies one rules table: mutators (Full mode only) then explicit keys, so manual
+// keys always win. Across scopes: gametype defaults -> base mutators -> manual base
+// -> per-level mutators -> manual per-level.
 static AlpineServerConfigRules parse_server_rules(const toml::table& t, const AlpineServerConfigRules& base_rules,
                                                   const RulesParseOptions& opts = {})
 {
@@ -963,9 +961,8 @@ static AlpineRestrictConfig parse_alpine_restrict_config(const toml::table &t)
 
 namespace fs = std::filesystem;
 
-// A rules scope can carry rule keys both at its own top level and in a nested
-// [.rules] table (e.g. [base] and [base.rules], a [[levels]] entry and its
-// [levels.rules]). Both are applied, top level first.
+// A scope can carry rule keys at its top level AND in a nested [.rules] table; both
+// are applied, top level first.
 static AlpineServerConfigRules parse_scope_rules(
     const toml::table& scope_tbl, const AlpineServerConfigRules& starting_rules,
     const RulesParseOptions& opts = {})
@@ -974,9 +971,8 @@ static AlpineServerConfigRules parse_scope_rules(
     const toml::table* nested_rules_tbl = scope_tbl["rules"].as_table();
 
     if (opts.mode != RulesParseMode::KeysOnly) {
-        // Either table may declare the scope's game type, and the nested one wins because
-        // it is applied last. Resolved (and rebased) once here, before any key is applied,
-        // so the second table's game type cannot discard what the first one set.
+        // Either table may declare the game type, nested wins. Resolved before any key
+        // is applied, so the second table cannot discard the first.
         std::optional<std::string> game_type_name;
         if (nested_rules_tbl)
             game_type_name = (*nested_rules_tbl)["game_type"].value<std::string>();
@@ -1295,9 +1291,7 @@ static void apply_known_table_in_order(
             const RulesParseQuietGuard quiet;
             cfg.base_rules_no_mutators = parse_scope_rules(
                 tbl, cfg.base_rules_no_mutators, RulesParseOptions{RulesParseMode::NoMutators});
-            // And the operator's explicit keys alone, over struct defaults: the only
-            // form that can be replayed onto a DIFFERENT game type's defaults without
-            // dragging this game type's fields along.
+            // The only form replayable onto a DIFFERENT game type's defaults.
             cfg.base_rules_keys_only = parse_scope_rules(
                 tbl, cfg.base_rules_keys_only, RulesParseOptions{RulesParseMode::KeysOnly});
         }
@@ -1469,8 +1463,8 @@ void load_ads_server_config(std::string ads_config_name, bool allow_missing_leve
     AlpineServerConfig cfg;     // start from defaults
 
     // Seed the game type defaults before parsing so an explicit game_type
-    // layers on top of them. Not base_rules_keys_only: it must stay struct defaults
-    // plus the operator's explicit keys, with no game type's fields baked in.
+    // layers on top of them. Not base_rules_keys_only, which must stay free of any
+    // game type's fields.
     apply_defaults_for_game_type(cfg.base_rules.game_type, cfg.base_rules);
     apply_defaults_for_game_type(cfg.base_rules_no_mutators.game_type, cfg.base_rules_no_mutators);
 
@@ -2401,8 +2395,7 @@ bool apply_game_type_for_current_level() {
     rf::NetGameType desired = rf::NetGameType::NG_TYPE_DM;
 
     if (manual_load) {
-        // Same resolution a vote for this level would get, so a manual load and a
-        // level vote never disagree about what the level runs.
+        // Same resolution a vote for this level would get.
         const rf::NetGameType level_default = g_manual_rules_override
             ? g_manual_rules_override->rules.game_type
             : resolve_level_default_game_type(rf::level_filename_to_load.c_str());
@@ -2419,7 +2412,7 @@ bool apply_game_type_for_current_level() {
                     multi_game_type_name_short(desired), rf::level_filename_to_load);
             }
             else {
-                rf::console::print("Applying base game type {} for manually loaded level {}...\n",
+                rf::console::print("Applying default game type {} for manually loaded level {}...\n",
                     multi_game_type_name_short(desired), rf::level_filename_to_load);
             }
         }
@@ -2492,16 +2485,8 @@ void apply_rules_for_current_level()
             }
         }
         else {
-            // A manual load derives exactly like a level vote that named nothing:
-            // the game type already resolved for this level (an explicit sv_gametype
-            // request, else the level's own default) over the configured base set.
-            // Never a copy of the previous level's rules, which would carry its game
-            // type's fields into a different game type -- and never its mutators
-            // either: a vote-installed set lives in g_manual_rules_override (handled
-            // above, so `map x` mid-session still carries it) or in the rotation
-            // preserve stash (consumed below). Reaching here means neither is in
-            // play, i.e. something cleared the override, and reading the still-active
-            // rules would resurrect exactly what the clear was for.
+            // Derives like a level vote that named nothing. Never a copy of the previous
+            // level's rules, which would carry its game type's fields over.
             g_alpine_server_config_active_rules =
                 build_derived_server_rules(rf::netgame.type, cfg.base_rules.mutators.declarations);
             if (!g_ads_minimal_server_info)
@@ -2526,9 +2511,8 @@ void apply_rules_for_current_level()
     }
 
     // A rotation vote asked to carry the session's vote-set rules onto this level.
-    // Derived from scratch and REPLACING the rules resolved above, then stored back as
-    // the session override so the config print reports it and a later preserve vote
-    // continues it.
+    // Derived from scratch, REPLACING the rules above, and stored back as the session
+    // override so a later preserve vote continues it.
     // Deliberately NOT via set_manual_rules_override(): that would also flag the
     // level as manually loaded and break the rotation cursor's semantics.
     if (get_pending_rotation_preserve()) {
@@ -2537,6 +2521,9 @@ void apply_rules_for_current_level()
 
         ManualRulesOverride carried = load_vote_rules_override(rf::level_filename_to_load.c_str(),
                                                                pending.declarations, pending.gametype);
+        // A carried set was explicit where it was voted, and stays so here: a further
+        // preserve vote continues it.
+        carried.explicit_session = true;
         g_alpine_server_config_active_rules = carried.rules;
         g_manual_rules_override = std::move(carried);
         if (!g_ads_minimal_server_info) {
@@ -2544,23 +2531,17 @@ void apply_rules_for_current_level()
         }
     }
 
-    // The rules resolved above can still name a different game type than the one the
-    // level is actually starting under (sv_gametype against a rotation entry). Rebuilt
-    // rather than retargeted in place: retargeting leaves every field the old game type
-    // claimed and the new one does not (spawn_life, drop_weapons, ...) in force.
+    // The rules above can still name a different game type than the level is starting
+    // under (sv_gametype on a rotation entry). Rebuilt, not retargeted: retargeting
+    // leaves fields only the old game type claimed in force.
     const rf::NetGameType active_game_type = rf::netgame.type;
     if (g_alpine_server_config_active_rules.game_type != active_game_type) {
         const std::vector<MutatorDeclaration> saved_mutators =
             g_alpine_server_config_active_rules.mutators.declarations;
         g_alpine_server_config_active_rules =
             build_derived_server_rules(active_game_type, saved_mutators);
-        // The session override is what the NEXT manual load resolves its game type
-        // and rules from, so leaving it on the retargeted-away game type would have
-        // that load revert this one.
         if (g_manual_rules_override) {
             g_manual_rules_override->rules = g_alpine_server_config_active_rules;
-            // Derived the same way load_vote_rules_override derives it, so the prints
-            // cannot keep naming a mutator the retarget just dropped.
             g_manual_rules_override->mutator_labels =
                 mutators_active_labels_string(g_alpine_server_config_active_rules);
         }
@@ -2569,19 +2550,17 @@ void apply_rules_for_current_level()
     // apply the rules
     apply_alpine_dedicated_server_rules(netgame, g_alpine_server_config_active_rules);
 
-    // The vote panel pre-selects the session's mutator set, so clients need it
-    // whenever it can have changed.
-    af_send_active_mutators_to_all();
-    // The options blob quotes live rules (per-gametype score limits, the score
-    // limit / ideal players defaults the registry reads off them), so a vote that
-    // changed them leaves the cached copy stale. Only marked here; the rebuild is
-    // lazy, on the next request. The cfg-changed signal is the only thing that tells
-    // connected clients to re-request it.
-    server_vote_invalidate_options_blob();
-    cfg.signal_cfg_changed = true;
-
-    // Signal consumers that the active rules were (re)applied this call.
+    // Must precede the blob rebuild below: the mutator registry caches its live-value
+    // defaults against this generation.
     ++g_active_rules_generation;
+
+    af_send_active_mutators_to_all();
+    // Rebuilt eagerly because the cfg-changed signal -- what makes every client
+    // re-request the blob -- is only worth raising when the bytes actually moved.
+    server_vote_invalidate_options_blob();
+    if (server_vote_refresh_options_blob()) {
+        cfg.signal_cfg_changed = true;
+    }
 }
 
 void init_alpine_dedicated_server() {
@@ -2672,7 +2651,7 @@ ConsoleCommand2 print_level_rules_cmd{
                     matches.push_back(i);
             }
             if (matches.empty()) {
-                rf::console::print("Level {} not found in rotation. If manually loaded, base rules would be used.\n", *maybe_filename);
+                rf::console::print("Level {} not found in rotation. If manually loaded, rules derived for its game type would be used.\n", *maybe_filename);
                 return;
             }
         } else {
@@ -2705,9 +2684,9 @@ ConsoleCommand2 print_level_rules_cmd{
                     rf::console::print("{}", output.c_str());
                 }
                 else {
-                    rf::console::print("  (manually loaded {} is using base rules)\n\n", rf::level_filename_to_load);
+                    rf::console::print("  (manually loaded {} is using rules derived for its game type)\n\n", rf::level_filename_to_load);
                     std::string output{};
-                    print_rules(output, cfg.base_rules, true);
+                    print_rules(output, g_alpine_server_config_active_rules, true);
                     rf::console::print("{}", output.c_str());
                 }
             }
