@@ -11,6 +11,7 @@ namespace rf
 {
     struct Player;
     struct NetAddr;
+    struct Entity;
 }
 
 // Installs all demo hooks and console commands. Called from multi_do_patch().
@@ -88,6 +89,10 @@ private:
 
 // True while demo playback owns the multiplayer session.
 bool demo_playback_active();
+// POV ping compensation delay (ms) to apply to this entity's interp evaluation during
+// playback; 0 for the followed player or when povcomp is inactive. The interp hooks
+// live in multi_spectate.cpp (shared with live-spectate povcomp).
+int demo_playback_povcomp_bias(rf::Entity* entity);
 // Recording build's AF version while a demo is loaded for playback; all zeros otherwise.
 // The designated hook for packet decoders that must branch on the wire layout the
 // recording build wrote (compare with version_is_older from multi/multi.h).

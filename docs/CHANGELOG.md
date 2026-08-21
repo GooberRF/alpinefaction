@@ -169,6 +169,7 @@ Version 1.4.0 (Lupin): Not yet released
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Improve netfps consistency by making the effective object update send rate match the target netfps on both servers and clients, instead of falling short by a frame rate dependent amount
 - Skip server object update records that carry no new movement keyframe, so `sv_netfps` values above the client send rate no longer degrade interpolation smoothness with duplicate keyframes
+- Add `spectate_povcomp` command for ping compensation while following a player in spectate mode - delays other players to approximate what the followed player saw when they aimed
 
 ### Bug fixes
 [@GooberRF](https://github.com/GooberRF)
