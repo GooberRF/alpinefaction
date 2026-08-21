@@ -78,6 +78,7 @@ struct SalFlagSpawnEntry { const char* rfl; float x, y, z; };
 constexpr SalFlagSpawnEntry kSalFlagSpawnPositions[] = {
     { "pctf01.rfl", -0.01f, -0.16f, 19.04f },
     { "pctf02.rfl", 109.0f, 1.0f, 0.0f },
+    { "pctf03.rfl", -27.09f, 9.35f, -23.53f },
     { "ctf03.rfl", 3.76f, -5.47f, 0.13f },
     { "ctf06.rfl", 0.56f, -0.05f, -0.02f },
     { "ctf07.rfl", 8.50f, -5.25f, 9.25f },

@@ -592,6 +592,19 @@ bool g_text_input_seen_this_pass = false;
 // Numeric edit buffer; the bound value is only written on commit.
 std::string g_text_input_buffer;
 
+// RF drains its key queue exactly once a frame, inside game_poll, and hands every
+// key to the current game state's key callback. The focused box publishes what it
+// is editing here for the callback to write into.
+struct TextInputTarget
+{
+    std::string* text = nullptr;
+    size_t max_len = 0;
+    bool (*allow_char)(char) = nullptr;
+};
+TextInputTarget g_text_input_target;
+// Set by the callback, consumed by the owning box on its next input pass.
+bool g_text_input_changed = false;
+
 bool text_input_char_filename(char c)
 {
     return std::isalnum(static_cast<unsigned char>(c)) != 0
@@ -664,11 +677,14 @@ void text_input_release_focus(bool commit)
     }
     g_text_input_focus = 0;
     g_text_input_buffer.clear();
+    // Nothing may be written through the descriptor without a focused box.
+    g_text_input_target = TextInputTarget{};
+    g_text_input_changed = false;
 }
 
 struct TextInputResult
 {
-    bool changed = false;      // `text` was edited this pass
+    bool changed = false;      // `text` was edited since the previous pass
     bool gained_focus = false; // this click focused the box; caller seeds state
 };
 
@@ -696,39 +712,11 @@ TextInputResult ui_text_input(PanelUi& ui, const Rect& r, uint32_t id, std::stri
                 text_input_release_focus(true);
             }
         }
-        // Pump only when the box already held focus at entry: the pass that
-        // grants focus returns first so the caller can seed the edit buffer.
+        // Publish only when the box already held focus at entry, and still does.
         if (focused_at_entry && g_text_input_focus == id) {
-            for (;;) {
-                const rf::Key key = rf::key_get();
-                if (key == rf::KEY_NONE) {
-                    break;
-                }
-                const int code = key & rf::KEY_MASK;
-                if (code == rf::KEY_ESC) {
-                    text_input_release_focus(false);
-                    break;
-                }
-                if (code == rf::KEY_ENTER || code == rf::KEY_PADENTER) {
-                    text_input_release_focus(true);
-                    break;
-                }
-                if (code == rf::KEY_BACKSP) {
-                    if (!text.empty()) {
-                        text.pop_back();
-                        res.changed = true;
-                    }
-                    continue;
-                }
-                const int ascii = rf::key_to_ascii(static_cast<int16_t>(key));
-                if (ascii > 0 && ascii < 0x80 && ascii != 0xFF) {
-                    const char c = static_cast<char>(ascii);
-                    if (allow_char(c) && text.size() < max_len) {
-                        text.push_back(c);
-                        res.changed = true;
-                    }
-                }
-            }
+            g_text_input_target = TextInputTarget{&text, max_len, allow_char};
+            res.changed = g_text_input_changed;
+            g_text_input_changed = false;
         }
         return res;
     }
@@ -3668,6 +3656,49 @@ CallHook<rf::GameState()> gameseq_process_hook{
     },
 };
 
+// A focused panel box takes precedence, everything else passes straight through.
+FunHook<void(int)> gameplay_key_callback_hook{
+    0x004306F0,
+    [](int key) {
+        if (key == rf::KEY_NONE || !g_open || g_text_input_focus == 0) {
+            gameplay_key_callback_hook.call_target(key);
+            return;
+        }
+
+        const int code = key & rf::KEY_MASK;
+        if (code == rf::KEY_ESC) {
+            text_input_release_focus(false);
+            return;
+        }
+        if (code == rf::KEY_ENTER || code == rf::KEY_PADENTER) {
+            text_input_release_focus(true);
+            return;
+        }
+
+        std::string* const text = g_text_input_target.text;
+        if (!text) {
+            // Focus was granted this frame; the box publishes on its next pass.
+            // Swallowed rather than passed on, so it cannot fire a binding.
+            return;
+        }
+        if (code == rf::KEY_BACKSP) {
+            if (!text->empty()) {
+                text->pop_back();
+                g_text_input_changed = true;
+            }
+            return;
+        }
+        const int ascii = rf::key_to_ascii(static_cast<int16_t>(key));
+        if (ascii > 0 && ascii < 0x80 && ascii != 0xFF) {
+            const char c = static_cast<char>(ascii);
+            if (g_text_input_target.allow_char(c) && text->size() < g_text_input_target.max_len) {
+                text->push_back(c);
+                g_text_input_changed = true;
+            }
+        }
+    },
+};
+
 // ESC during gameplay pushes GS_MAIN_MENU. While the overlay is up, treat that
 // as "close the modal" and swallow the push, so ESC dismisses the panel and the
 // ESC menu can never open on top of the overlay.
@@ -3680,10 +3711,7 @@ FunHook<void(rf::GameState, bool, bool)> gameseq_push_state_hook{
             return;
         }
         if (state == rf::GS_MAIN_MENU && g_open) {
-            // ESC backs out one layer at a time: first out of a focused text box,
-            // then out of the panel. Normally the focused box consumes ESC from
-            // the key queue itself; this is the fallback for a race where the
-            // game's own handler saw the key first.
+            // ESC backs out one layer at a time.
             if (g_text_input_focus != 0) {
                 text_input_release_focus(false);
                 play_click_sound();
@@ -3887,4 +3915,5 @@ void vote_panel_apply_patch()
     gameseq_process_hook.install();
     gameseq_push_state_hook.install();
     gameseq_state_do_frame_hook.install();
+    gameplay_key_callback_hook.install();
 }
