@@ -1539,11 +1539,9 @@ int gametype_offer_index(const VoteOptionsData& options, bool team_only, uint8_t
 
 // Cycler index of `game_type` when this vote offers it. When it does not -- a Match
 // on a level whose own game type is not a team type -- DM resolves to TeamDM, the
-// team form of the same thing; anything else leaves the cycler at `current_index`
-// rather than snapping to the first entry, which on Match is CTF and would filter
-// the level list down to maps the player never asked for.
-int gametype_cycler_index(const VoteOptionsData& options, bool team_only, uint8_t game_type,
-                          int current_index)
+// team form of the same thing; anything else holds `current_index` rather than
+// moving the cycler under a player who did not ask for it.
+int gametype_cycler_index(const VoteOptionsData& options, bool team_only, uint8_t game_type, int current_index)
 {
     const auto gametypes = selectable_gametypes(options, team_only);
     if (const int index = gametype_index_in(gametypes, game_type); index >= 0) {
@@ -3391,9 +3389,8 @@ void do_form(PanelUi& ui, const Layout& lo, const VoteOptionsData& options,
             set_header_color();
             rf::gr::string(right_col.x, ry, "Mutators", lo.font);
         }
-        // Two ways back to a server-defined set. They differ in whether the section
-        // keeps following the session afterwards: Current IS the auto baseline, so it
-        // re-arms; Base is a deliberate deviation from it, so it pins.
+        // Current IS the auto baseline, so it re-arms the section to keep following
+        // the session; Base is a deviation from it, so it pins.
         const int btn_pad = std::max(6, scaled(12.0f));
         const int btn_cap = std::max(0, right_col.w / 4);
         const int current_w =

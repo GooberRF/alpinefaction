@@ -940,7 +940,6 @@ struct AlpineServerConfigLevelEntry
 {
     std::string level_filename;
     AlpineServerConfigRules rule_overrides;
-    std::vector<std::pair<std::filesystem::path, std::optional<std::string>>> applied_rules_preset_paths;
 };
 
 struct AlpineRconProfile
@@ -1024,8 +1023,6 @@ struct AlpineServerConfig
     // no game type resolution, no gametype defaults, no mutators. Rules for any other
     // game type are built from this, so nothing the base game type claimed can leak in.
     AlpineServerConfigRules base_rules_keys_only;
-    std::vector<std::pair<std::filesystem::path, std::optional<std::string>>> base_rules_preset_paths;
-    std::map<std::string, std::filesystem::path> rules_preset_aliases;
     std::vector<AlpineServerConfigLevelEntry> levels;
 
     std::string printed_cfg{};
@@ -1066,10 +1063,6 @@ struct AlpineServerConfig
 struct ManualRulesOverride
 {
     AlpineServerConfigRules rules;
-    std::vector<std::pair<std::filesystem::path, std::optional<std::string>>> applied_preset_paths;
-    // Mutually exclusive: an override comes either from a named rules preset or
-    // from voted mutators, and the two are described differently to operators.
-    std::optional<std::string> preset_alias;
     std::optional<std::string> mutator_labels;
 };
 
@@ -1187,7 +1180,6 @@ void server_vote_send_state_to_new_player(rf::Player* player);
 void handle_player_set_handicap(rf::Player* player, uint8_t amount);
 std::vector<rf::Player*> get_clients(bool include_browsers, bool include_bots);
 std::pair<bool, std::string> is_level_name_valid(std::string_view level_name_input);
-std::optional<ManualRulesOverride> load_rules_preset_alias(std::string_view preset_name);
 void set_manual_rules_override(ManualRulesOverride override_rules);
 void clear_manual_rules_override();
 void set_pending_rotation_preserve(PendingRotationPreserve pending);

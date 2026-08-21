@@ -38,7 +38,7 @@ struct SavedVote
     uint8_t extend_minutes = af_vote_extend_default_minutes;
     std::vector<SavedVoteMutator> mutators;
     // A record written before this field existed derives it from whether that
-    // record named any mutators.
+    // record named any mutators or named a game type.
     bool mutators_explicit = false;
 };
 

@@ -246,9 +246,11 @@ std::string mutators_join_labels_for_game_type(const std::vector<MutatorDeclarat
 // label line uses, so a game type retarget that drops a mutator drops its label too.
 std::optional<std::string> mutators_active_labels_string(const AlpineServerConfigRules& rules);
 
-// The game type a level runs under when nothing names one: its rotation entry's
-// type when it is in the rotation, else the type its filename prefix names, else
-// the base game type. The single answer validation and application both use.
+// The game type a level runs under when nothing names one, in precedence order:
+// its rotation entry's configured type, else Run for a level the quirks table
+// knows as a run map, else the base game type when that type can host the level
+// at all, else the type the filename prefix names, else the base game type. The
+// single answer validation and application both use.
 rf::NetGameType resolve_level_default_game_type(std::string_view level_filename);
 
 // Rules for `game_type` built without inheriting any other game type's fields:

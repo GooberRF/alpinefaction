@@ -1062,6 +1062,10 @@ AlpineServerConfigRules build_derived_server_rules(rf::NetGameType game_type,
         apply_defaults_for_game_type(game_type, rules);
     }
 
+    // Applied AFTER the base keys, deliberately the reverse of the config parse
+    // (which applies a scope's keys after its mutators), because here the set is a
+    // voted layer that has to win over what it was layered onto -- and a manual
+    // `map` load routes the base-declared set through this same path.
     if (!mutators.empty()) {
         const toml::array arr = mutator_declarations_to_toml_array(mutators);
         apply_mutators_from_toml(arr, rules);

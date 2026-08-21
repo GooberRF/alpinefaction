@@ -75,7 +75,7 @@ struct VoteMutatorDecl
 struct VoteLevelInfo
 {
     std::string filename;
-    // Game type this level runs with when the vote picks "Server default".
+    // The level's own game type: what it runs under when a vote names none.
     uint8_t natural_gametype = 0; // rf::NetGameType
     // bit N (matching NetGameType N) = this level matches that game type's level
     // prefix rules.
@@ -116,7 +116,7 @@ struct VoteOptionsData
 // Does this level match the given game type's level prefix rules? Whether that
 // is a hard restriction depends on VoteOptionsData::gametype_prefix_restricted.
 bool vote_level_allows_gametype(const VoteLevelInfo& level, uint8_t game_type);
-// Same, for the "Server default" (no gametype override) selection.
+// Same, against the level's own game type, for a vote that names none.
 bool vote_level_allows_default_gametype(const VoteLevelInfo& level);
 
 struct ActiveVoteState

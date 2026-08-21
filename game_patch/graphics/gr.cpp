@@ -602,8 +602,7 @@ void evaluate_pow2tex(const rf::String& level_filename) {
     // if dbg_pow2tex is active, use manual override instead of level filename lookup
     if (!override_pow2tex) {
         const bool should_p2t_fix = is_p2t_fix_level(level_filename);
-        // Renderer-only, so a dedicated server has nothing to report -- and the
-        // quirks table lists enough levels to bury its console.
+        // Renderer-only, so a dedicated server has nothing to report.
         if (!rf::is_dedicated_server && should_p2t_fix) {
             rf::console::print("Applying power of 2 texture fix to known affected level {}", level_filename);
         }

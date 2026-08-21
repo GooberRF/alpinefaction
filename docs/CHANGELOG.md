@@ -99,6 +99,7 @@ Version 1.4.0 (Lupin): Not yet released
 - Add `spectate_cameras` console command to toggle showing camera meshes at static camera locations while free look spectating
 - Deprecated and removed legacy GunGame dedicated server config items now that `GG` is an actual gametype
 - Deprecated and removed legacy critical hits dedicated server config items now that it is a mutator
+- Deprecated and removed the `rules_presets` dedicated server config item and its `rules_preset_aliases` table
 - Default inactivity tracking for players in dedicated servers to `true`, but kicking inactive players to `false`
 - Add `-debug` command line switch to enable additional debug logging, intended to help identify long-standing netcode issues that are difficult to nail down.
 - Add automatic team balance option which handles unbalanced teams mid-game and stops players from switching teams if it would unbalance them

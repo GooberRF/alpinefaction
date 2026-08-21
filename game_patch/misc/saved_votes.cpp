@@ -243,6 +243,16 @@ const VoteLevelInfo* find_level_info(const VoteOptionsData& options, std::string
     return nullptr;
 }
 
+const VoteGametypeInfo* find_gametype_info(const VoteOptionsData& options, uint8_t game_type)
+{
+    for (const auto& gametype : options.gametypes) {
+        if (gametype.id == game_type) {
+            return &gametype;
+        }
+    }
+    return nullptr;
+}
+
 const VoteMutatorOptionSchema* find_option_schema(const VoteMutatorSchema& schema,
                                                   const SavedVoteOptionValue& value)
 {
@@ -546,7 +556,7 @@ bool saved_vote_parse(std::string_view encoded, SavedVote& out)
         }
     }
 
-    if (fields.size() == 9) {
+    if (v2) {
         unsigned long explicit_raw = 0;
         if (!parse_uint_field(fields[8], explicit_raw) || explicit_raw > 1) {
             return false;
@@ -554,7 +564,10 @@ bool saved_vote_parse(std::string_view encoded, SavedVote& out)
         vote.mutators_explicit = explicit_raw != 0;
     }
     else {
-        // Version 1 predates the field; reproduce what the build that wrote it did.
+        // Version 1 predates the field, so it gets the same fallback the wire format
+        // gives a call with no flags byte (named anything => explicit), plus the
+        // gametype term: a v1 record naming a game type meant that game type with
+        // exactly the list it carried, empty included.
         vote.mutators_explicit = !vote.mutators.empty() || vote.gametype != af_vote_gametype_none;
     }
 
@@ -587,18 +600,24 @@ SavedVoteAvailability saved_vote_check(const SavedVote& vote, const VoteOptionsD
         out.reasons.emplace_back("This vote type is disabled on this server");
     }
 
-    // The game type the server will gate this vote's mutators against: the record's
-    // own, or for a "Server default" record the level's natural type, which is the
-    // answer resolve_level_default_game_type gives the server there. A level the blob
-    // does not list leaves it unresolved, and af_vote_gametype_none sits past the
-    // mask's width, so the mutator check below then restricts nothing -- the same
-    // deferral to the server the level check makes.
+    // The game type the server will resolve this vote to, and so the one it gates the
+    // vote's mutators and Match's team-type rule against: the record's own, or when it
+    // names none, the level's natural type -- the answer resolve_level_default_game_type
+    // gives the server there. A level name the blob does not list leaves it unresolved,
+    // and af_vote_gametype_none sits past the mask's width, so the checks below then
+    // restrict nothing - the same deferral to the server the level check makes.
     uint8_t effective_gametype = vote.gametype;
 
     if (vote.type == AfVoteType::Level || vote.type == AfVoteType::Match) {
         const VoteLevelInfo* found = find_level_info(*options, vote.level);
-        if (found && effective_gametype == af_vote_gametype_none) {
-            effective_gametype = found->natural_gametype;
+        if (effective_gametype == af_vote_gametype_none) {
+            if (found) {
+                effective_gametype = found->natural_gametype;
+            }
+            else if (vote.type == AfVoteType::Match && vote.level.empty()) {
+                // Match's "current level" row.
+                effective_gametype = static_cast<uint8_t>(rf::multi_get_game_type());
+            }
         }
 
         if (vote.level.empty()) {
@@ -627,18 +646,16 @@ SavedVoteAvailability saved_vote_check(const SavedVote& vote, const VoteOptionsD
         }
     }
 
-    if (vote.gametype != af_vote_gametype_none) {
-        const VoteGametypeInfo* found = nullptr;
-        for (const auto& gametype : options->gametypes) {
-            if (gametype.id == vote.gametype) {
-                found = &gametype;
-                break;
-            }
-        }
-        if (!found) {
-            out.reasons.emplace_back("Game type not offered on this server");
-        }
-        else if (vote.type == AfVoteType::Match && !found->is_team_type) {
+    if (vote.gametype != af_vote_gametype_none && !find_gametype_info(*options, vote.gametype)) {
+        out.reasons.emplace_back("Game type not offered on this server");
+    }
+
+    // Gated on the RESOLVED type, not the record's own: the server rejects a match
+    // against whatever will actually apply (VoteMatch::validate), so a record that
+    // names no game type has to be judged by the one its level resolves to.
+    if (vote.type == AfVoteType::Match && effective_gametype != af_vote_gametype_none) {
+        const VoteGametypeInfo* found = find_gametype_info(*options, effective_gametype);
+        if (found && !found->is_team_type) {
             out.reasons.emplace_back("Not a team game type");
         }
     }
