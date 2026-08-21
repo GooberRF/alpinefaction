@@ -215,6 +215,10 @@ bool multi_level_name_has_game_type_prefix(std::string_view level_filename, rf::
 std::optional<rf::NetGameType> multi_game_type_for_level_prefix(std::string_view level_filename);
 bool multi_game_type_uses_any_level(rf::NetGameType game_type);
 bool multi_level_name_matches_any_mp_prefix(const char* filename);
+// Full acceptance test: the strict prefix, the quirks table's run maps and the
+// any-level game types. The predicate the vote gate and the vote blob's per-level
+// mask share; level default resolution can answer outside it (see multi.cpp).
+bool multi_level_name_matches_game_type(std::string_view level_filename, rf::NetGameType game_type);
 std::string normalize_level_filename(std::string_view name); // appends ".rfl" when it is missing
 [[nodiscard]] int multi_num_spawned_players();
 int get_semi_auto_fire_wait_override();

@@ -182,7 +182,10 @@ enum af_vote_end_flags : uint8_t
 // Repeated records in the blob are length-prefixed, so additions to the blob
 // are not compatibility breaking. This version should be incremented only if
 // the core format changes - like redefining a field or reordering/removing them.
-constexpr uint8_t af_vote_options_blob_version = 1;
+//
+// 2: the trailing base mutator section gained a u16 length prefix of its own,
+//    which redefines bytes version 1 wrote as a bare declaration set.
+constexpr uint8_t af_vote_options_blob_version = 2;
 
 // af_sreq_vote_options_data stream framing. The blob is pushed as
 // Begin -> Data* -> End over the ordered reliable channel, so no chunk index or
@@ -813,9 +816,6 @@ struct AfVoteCallParams
     uint8_t gametype = af_vote_gametype_none;
     uint8_t extend_minutes = af_vote_extend_default_minutes;
     std::vector<VoteMutatorInput> mutators;
-    // AF_VOTE_CALL_FLAG_MUTATORS_EXPLICIT: `mutators` is the caller's complete
-    // selection, empty included, and replaces whatever the session is running.
-    // False (a chat vote, which cannot name mutators) means "keep the session's set".
     bool mutators_explicit = false;
     bool preserve = true;
 };
@@ -921,6 +921,10 @@ void af_send_vote_state_update(rf::Player* player, uint8_t yes, uint8_t no, uint
 void af_send_vote_state_end(rf::Player* player, AfVoteResult result, bool passed,
                             std::string_view detail);
 void af_send_vote_options_data(rf::Player* player);
+// Push the mutator declaration set currently in force to one player / to every 1.4+
+// client. Called on join and whenever the active rules are (re)applied.
+void af_send_active_mutators(rf::Player* player);
+void af_send_active_mutators_to_all();
 
 // server -> client state (Pit + match ready system)
 void af_send_ready_prompt(rf::Player* player, uint8_t state); // 0/1/2 (see ReadyPromptPayload)

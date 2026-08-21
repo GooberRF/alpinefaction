@@ -236,6 +236,16 @@ std::optional<std::string> mutators_build_declarations_from_vote(
 // Human-readable labels of the declared mutators, joined with ", ".
 std::string mutators_join_labels(const std::vector<MutatorDeclaration>& declarations);
 
+// The same, minus the declarations `game_type` filters out at application time, so
+// a vote title names exactly what the vote puts in force.
+std::string mutators_join_labels_for_game_type(const std::vector<MutatorDeclaration>& declarations,
+                                               rf::NetGameType game_type);
+
+// Labels of the mutators these rules actually put in force, joined with ", ", or
+// nullopt when none of them applied. The one derivation every ManualRulesOverride
+// label line uses, so a game type retarget that drops a mutator drops its label too.
+std::optional<std::string> mutators_active_labels_string(const AlpineServerConfigRules& rules);
+
 // The game type a level runs under when nothing names one: its rotation entry's
 // type when it is in the rotation, else the type its filename prefix names, else
 // the base game type. The single answer validation and application both use.

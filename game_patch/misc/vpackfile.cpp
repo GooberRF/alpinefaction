@@ -479,7 +479,8 @@ bool vpackfile_supercede_allowed(const char* requested_filename, const char* sib
 static void vpackfile_add_to_lookup_table(rf::VPackfileEntry* entry)
 {
     std::string filename_str = string_to_lower(entry->name);
-    // A dedicated server has no use for waypoint files.
+    // alpinefaction.vpp mounts on dedicated servers too; its .awp entries would only
+    // bloat a lookup table a dedicated server never queries.
     if (rf::is_dedicated_server && filename_str.ends_with(".awp")) {
         return;
     }
@@ -678,6 +679,7 @@ static void vpackfile_init_new()
         rf::vpackfile_add("ui.vpp", nullptr);
     }
 
+    // Outside the dedicated server guard: dedis need af_level_quirks.tbl from it.
     load_alpinefaction_vpp();
     rf::vpackfile_add("tables.vpp", nullptr);
     addr_as_ref<int>(0x01BDB218) = 1;          // VPackfilesLoaded

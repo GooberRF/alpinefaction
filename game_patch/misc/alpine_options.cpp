@@ -851,8 +851,8 @@ void load_single_af_options_file(const std::string& file_name)
         const bool meta_found = meta_it != option_metadata.end();
 
         // Allow any af_client*.tbl file for options designated to af_client.tbl
-        bool is_af_client_variant = (meta_found && meta_it->second.filename == "af_client.tbl" &&
-                                     file_name.rfind("af_client", 0) == 0 && file_name.ends_with(".tbl"));
+        const bool is_af_client_variant = (meta_found && meta_it->second.filename == "af_client.tbl" &&
+                                           file_name.rfind("af_client", 0) == 0 && file_name.ends_with(".tbl"));
 
         if (meta_found &&
             (meta_it->second.filename == file_name || is_af_client_variant) &&

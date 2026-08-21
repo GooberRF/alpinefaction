@@ -356,6 +356,17 @@ std::vector<VoteTab> enabled_vote_tabs()
 // Panel state
 // ---------------------------------------------------------------------------
 
+// Who owns a numeric option's value. Unclaimed lets the panel's auto-default claim
+// it, AutoOwned lets that default keep following the game type, PlayerOwned means an
+// explicit source -- a baseline overlay, a saved vote, the player's own edit -- put
+// it there and the auto-default must never touch it again.
+enum class OptionValueOwner : uint8_t
+{
+    Unclaimed,
+    AutoOwned,
+    PlayerOwned,
+};
+
 struct PanelOptionValue
 {
     bool bool_value = false;
@@ -363,8 +374,7 @@ struct PanelOptionValue
     int32_t int_value = 0;
     float float_value = 0.0f;
 
-    // The last int value the panel filled in by itself.
-    std::optional<int32_t> auto_defaulted_int;
+    OptionValueOwner value_owner = OptionValueOwner::Unclaimed;
 };
 
 struct PanelMutatorSelection
@@ -653,13 +663,19 @@ void commit_numeric_text_input()
 
     PanelOptionValue& value = g_form.mutators[g_popup_mutator].options[g_popup_option];
     try {
+        // Re-stamped here as well as on focus gain: a baseline overlay (the Current /
+        // Base buttons) runs earlier in the same pass that releases this box, and it
+        // resets ownership, so a commit that did not claim the value would leave the
+        // typed number for the auto-default to overwrite on the next frame.
         if (schema.options[g_popup_option].type == MutatorOptionType::Int) {
             value.int_value = std::stoi(g_text_input_buffer);
+            value.value_owner = OptionValueOwner::PlayerOwned;
         }
         else {
             const float parsed = std::stof(g_text_input_buffer);
             if (std::isfinite(parsed)) {
                 value.float_value = parsed;
+                value.value_owner = OptionValueOwner::PlayerOwned;
             }
             else {
                 xlog::info("vote panel: non-finite option input '{}' ignored", g_text_input_buffer);
@@ -1223,6 +1239,7 @@ uint32_t schema_fingerprint(const VoteOptionsData& options)
 }
 
 std::string selected_level();
+void reset_gametype_selection();
 
 const std::vector<VoteMutatorDecl>& resolve_baseline(const VoteOptionsData& options, const std::string& level_string)
 {
@@ -1259,6 +1276,15 @@ void pin_mutator_baseline_context()
     g_form.mutators_baseline_revision = vote_active_mutators_revision();
 }
 
+// Pin the game type cycler's derivation context to the level now selected, so the
+// pre-selection stops re-deriving over what is in the form.
+void pin_gametype_context(bool is_match)
+{
+    g_form.gametype_key = selected_level();
+    g_form.gametype_key_match = is_match;
+    g_form.gametype_key_valid = true;
+}
+
 // Every mutator deselected and back on the schema (factory) defaults. Shared by
 // apply_baseline and the saved-vote load, which both need a clean slate first.
 void reset_mutators_to_defaults(const VoteOptionsData& options)
@@ -1276,10 +1302,7 @@ void reset_mutators_to_defaults(const VoteOptionsData& options)
             value.choice_index = option.default_choice;
             value.int_value = option.default_int;
             value.float_value = option.default_float;
-            // The number just stopped being whatever the panel last auto-filled, so
-            // the "player owns this" test has to be re-armed with it -- otherwise the
-            // stale marker reads as an edit and the auto default never applies again.
-            value.auto_defaulted_int.reset();
+            value.value_owner = OptionValueOwner::Unclaimed;
         }
     }
 }
@@ -1331,9 +1354,11 @@ void apply_baseline(const VoteOptionsData& options, const std::vector<VoteMutato
                         break;
                     case MutatorOptionType::Int:
                         value.int_value = declared.int_value;
+                        value.value_owner = OptionValueOwner::PlayerOwned;
                         break;
                     case MutatorOptionType::Float:
                         value.float_value = declared.float_value;
+                        value.value_owner = OptionValueOwner::PlayerOwned;
                         break;
                     default:
                         // String has no widget and no slot in PanelOptionValue, so
@@ -1358,7 +1383,6 @@ void build_form(const VoteOptionsData& options)
     g_form.level_selection.clear();
     g_form.manual_level = false;
     g_form.manual_level_name.clear();
-    g_form.gametype_index = 0;
     g_form.team_size = 4;
     g_form.extend_minutes = af_vote_extend_default_minutes;
     g_form.description_mutator = -1;
@@ -1388,8 +1412,7 @@ void build_form(const VoteOptionsData& options)
     apply_baseline(options, resolve_baseline(options, selected_level()));
     g_form.mutators_touched = false;
     pin_mutator_baseline_context();
-    g_form.gametype_touched = false;
-    g_form.gametype_key_valid = false;
+    reset_gametype_selection();
 }
 
 void ensure_form(const VoteOptionsData& options)
@@ -1402,8 +1425,8 @@ void ensure_form(const VoteOptionsData& options)
     }
 }
 
-// The level string sent on the wire. `allow_current` (Match) maps the leading
-// "Current level" row to the empty string the server reads as "keep the level".
+// The level string sent on the wire. A Match vote maps the leading "Current level"
+// row to the empty string the server reads as "keep the level".
 // Case-insensitive ordering for the level list.
 bool level_name_less(const std::string& a, const std::string& b)
 {
@@ -1433,20 +1456,44 @@ uint8_t selected_gametype(const VoteOptionsData& options, bool team_only)
     return gametypes[g_form.gametype_index]->id;
 }
 
+// A level's natural game type can sit OUTSIDE its own mask: the server falls back to
+// its base game type for a filename no prefix rule claims, so a wo-prefixed map on a
+// DM server comes back as DM with only the WO bit set. Preselecting that arms a vote
+// an enforcing server refuses (and hides the map behind the game type filter), so a
+// masked-out answer is swapped for the first type the mask does allow.
+uint8_t mask_allowed_gametype(const VoteOptionsData& options, const VoteLevelInfo& level,
+                              uint8_t derived, bool team_only)
+{
+    if (level.valid_gametype_mask == 0 || vote_level_allows_gametype(level, derived)) {
+        return derived;
+    }
+    for (const auto& gametype : options.gametypes) {
+        if (!vote_level_allows_gametype(level, gametype.id)) {
+            continue;
+        }
+        if (team_only && !gametype.is_team_type) {
+            continue;
+        }
+        return gametype.id;
+    }
+    return derived; // nothing the mask allows is offered here; leave it to the server
+}
+
 // The game type the selected level runs under when no override is voted: the
 // server's own answer, carried per level in the options blob; for a name the server
 // did not list, the same run-map and prefix rules the server would apply to it.
 // Falls back to what is running here for Match's "Current level" row.
-uint8_t default_gametype_for_level(const VoteOptionsData& options, const std::string& level_string)
+uint8_t default_gametype_for_level(const VoteOptionsData& options, const std::string& level_string,
+                                   bool team_only)
 {
     const auto running = rf::multi_get_game_type();
     if (!level_string.empty()) {
         const std::string wanted = normalize_level_filename(level_string);
-        // A level the server listed already carries the server's own resolution --
-        // run maps, its base game type, prefixes -- so nothing here second-guesses it.
+        // A level the server listed carries the server's own resolution -- run maps,
+        // its base game type, prefixes -- so only the mask check above revises it.
         for (const auto& entry : options.levels) {
             if (string_iequals(entry.filename, wanted)) {
-                return entry.natural_gametype;
+                return mask_allowed_gametype(options, entry, entry.natural_gametype, team_only);
             }
         }
         // Typed name the server never listed: mirror the server's resolution with
@@ -1454,8 +1501,7 @@ uint8_t default_gametype_for_level(const VoteOptionsData& options, const std::st
         if (is_known_run_level(wanted)) {
             return static_cast<uint8_t>(rf::NetGameType::NG_TYPE_RUN);
         }
-        if (multi_game_type_uses_any_level(running)
-            || multi_level_name_has_game_type_prefix(wanted, running)) {
+        if (multi_level_name_matches_game_type(wanted, running)) {
             return static_cast<uint8_t>(running);
         }
         if (auto from_prefix = multi_game_type_for_level_prefix(wanted)) {
@@ -1472,31 +1518,45 @@ uint8_t effective_gametype(const VoteOptionsData& options, bool team_only)
     if (chosen != af_vote_gametype_none) {
         return chosen;
     }
-    return default_gametype_for_level(options, selected_level());
+    return default_gametype_for_level(options, selected_level(), team_only);
 }
 
-// Cycler index of `game_type` when this vote offers it. When it does not -- a Match
-// on a level whose own game type is not a team type -- DM resolves to TeamDM, the
-// team form of the same thing; anything else leaves the cycler where it already is
-// rather than snapping to the first entry, which on Match is CTF and would filter
-// the level list down to maps the player never asked for.
-int gametype_cycler_index(const VoteOptionsData& options, bool team_only, uint8_t game_type)
+int gametype_index_in(const std::vector<const VoteGametypeInfo*>& gametypes, uint8_t game_type)
 {
-    const auto gametypes = selectable_gametypes(options, team_only);
     for (size_t i = 0; i < gametypes.size(); ++i) {
         if (gametypes[i]->id == game_type) {
             return static_cast<int>(i);
         }
     }
+    return -1;
+}
+
+// Cycler index of `game_type`, or -1 when this vote type does not offer it at all.
+int gametype_offer_index(const VoteOptionsData& options, bool team_only, uint8_t game_type)
+{
+    return gametype_index_in(selectable_gametypes(options, team_only), game_type);
+}
+
+// Cycler index of `game_type` when this vote offers it. When it does not -- a Match
+// on a level whose own game type is not a team type -- DM resolves to TeamDM, the
+// team form of the same thing; anything else leaves the cycler at `current_index`
+// rather than snapping to the first entry, which on Match is CTF and would filter
+// the level list down to maps the player never asked for.
+int gametype_cycler_index(const VoteOptionsData& options, bool team_only, uint8_t game_type,
+                          int current_index)
+{
+    const auto gametypes = selectable_gametypes(options, team_only);
+    if (const int index = gametype_index_in(gametypes, game_type); index >= 0) {
+        return index;
+    }
     if (game_type == static_cast<uint8_t>(rf::NG_TYPE_DM)) {
-        for (size_t i = 0; i < gametypes.size(); ++i) {
-            if (gametypes[i]->id == static_cast<uint8_t>(rf::NG_TYPE_TEAMDM)) {
-                return static_cast<int>(i);
-            }
+        const int team_dm = gametype_index_in(gametypes, static_cast<uint8_t>(rf::NG_TYPE_TEAMDM));
+        if (team_dm >= 0) {
+            return team_dm;
         }
     }
     const int count = static_cast<int>(gametypes.size());
-    return count > 0 ? std::clamp(g_form.gametype_index, 0, count - 1) : 0;
+    return count > 0 ? std::clamp(current_index, 0, count - 1) : 0;
 }
 
 // Snug width for the game type cycler: it only ever shows a short game type tag, so
@@ -1526,8 +1586,8 @@ bool mutator_offered(const VoteMutatorSchema& schema, uint8_t game_type)
 // enabling it without touching the number changes nothing. Each game type keeps its
 // own limit and the type is picked live here, so the default has to follow the
 // cycler instead of being fixed when the form is built.
-// Stops as soon as the player edits the field: the value is only replaced while it
-// still matches whatever the panel last put there.
+// Only ever writes a number no explicit source claimed: a baseline overlay, a saved
+// vote or the player's own edit takes the field away from it for good.
 void sync_score_limit_default(const VoteOptionsData& options, uint8_t game_type)
 {
     const VoteGametypeInfo* gametype = nullptr;
@@ -1553,11 +1613,11 @@ void sync_score_limit_default(const VoteOptionsData& options, uint8_t game_type)
                 continue;
             }
             PanelOptionValue& value = g_form.mutators[i].options[o];
-            if (value.auto_defaulted_int && value.int_value != *value.auto_defaulted_int) {
-                return; // the player owns this number now
+            if (value.value_owner == OptionValueOwner::PlayerOwned) {
+                return; // an explicit source owns this number
             }
             value.int_value = gametype->score_limit;
-            value.auto_defaulted_int = gametype->score_limit;
+            value.value_owner = OptionValueOwner::AutoOwned;
             return;
         }
         return;
@@ -1800,8 +1860,9 @@ void load_saved_vote_into_form(const SavedVote& vote, const VoteOptionsData& opt
         // selection would.
         const uint8_t wanted_gametype = vote.gametype != af_vote_gametype_none
             ? vote.gametype
-            : default_gametype_for_level(options, vote.level);
-        g_form.gametype_index = gametype_cycler_index(options, is_match, wanted_gametype);
+            : default_gametype_for_level(options, vote.level, is_match);
+        g_form.gametype_index =
+            gametype_cycler_index(options, is_match, wanted_gametype, g_form.gametype_index);
         // Exactly what do_form hands do_level_column.
         const uint8_t effective_gametype = selected_gametype(options, is_match);
 
@@ -1887,9 +1948,11 @@ void load_saved_vote_into_form(const SavedVote& vote, const VoteOptionsData& opt
                             break;
                         case MutatorOptionType::Int:
                             selection.options[o].int_value = value.int_value;
+                            selection.options[o].value_owner = OptionValueOwner::PlayerOwned;
                             break;
                         case MutatorOptionType::Float:
                             selection.options[o].float_value = value.float_value;
+                            selection.options[o].value_owner = OptionValueOwner::PlayerOwned;
                             break;
                         case MutatorOptionType::Choice:
                             for (size_t c = 0; c < option.choices.size(); ++c) {
@@ -1917,9 +1980,7 @@ void load_saved_vote_into_form(const SavedVote& vote, const VoteOptionsData& opt
     // does not re-derive over it. The cycler's Reset button un-pins it.
     if (vote.type == AfVoteType::Level || vote.type == AfVoteType::Match) {
         g_form.gametype_touched = true;
-        g_form.gametype_key = selected_level();
-        g_form.gametype_key_match = vote.type == AfVoteType::Match;
-        g_form.gametype_key_valid = true;
+        pin_gametype_context(vote.type == AfVoteType::Match);
     }
     g_level_cache.sel_valid = false;
 }
@@ -2248,8 +2309,6 @@ void send_vote_from_form(const VoteOptionsData& options)
             }
             params.gametype = selected_gametype(options, false);
             params.mutators = build_mutator_inputs(options, effective_gametype(options, false));
-            // The panel always submits its complete selection, so an empty one means
-            // "no mutators" rather than "keep whatever the session runs".
             params.mutators_explicit = true;
             break;
         }
@@ -2401,7 +2460,6 @@ void begin_save_from_form(const VoteOptionsData& options)
             vote.team_size = static_cast<uint8_t>(std::clamp(g_form.team_size, 1, 8));
         }
         vote.mutators = build_saved_mutators(options, effective_gametype(options, is_match));
-        // The panel always submits its complete selection, empty included.
         vote.mutators_explicit = true;
     }
 
@@ -2575,6 +2633,7 @@ void do_mutator_rows(PanelUi& ui, const Layout& lo, const VoteOptionsData& optio
                         // Marked on focus rather than on commit: the box owns the
                         // value from here, and it must not be re-derived underneath.
                         g_form.mutators_touched = true;
+                        value.value_owner = OptionValueOwner::PlayerOwned;
                         play_click_sound();
                     }
                     break;
@@ -2654,11 +2713,15 @@ void do_mutator_scroll_region(PanelUi& ui, const Layout& lo, const VoteOptionsDa
     }
 }
 
-// True when the stored level selection is still a level this server offers for
-// voting and still passes the typed name filter, and only the game type mask puts
-// it off the list. Read straight from the blob rather than from the display cache,
-// which by construction no longer holds it.
-bool selection_hidden_only_by_gametype(const VoteOptionsData& options, uint8_t gametype)
+// The stored level selection's own game type, when the selection is still a level
+// this server offers for voting, still passes the typed name filter, is off the list
+// purely because of the game type mask, and WOULD be back on the list under its own
+// game type. Nullopt in every other case -- including a name the blob no longer
+// lists and a level whose mask is empty, which no game type ever displays. Read
+// straight from the blob rather than from the display cache, which by construction
+// no longer holds it.
+std::optional<uint8_t> hidden_selection_natural_gametype(const VoteOptionsData& options,
+                                                         uint8_t gametype)
 {
     for (const auto& level : options.levels) {
         if (!string_iequals(level.filename, g_form.level_selection)) {
@@ -2670,15 +2733,15 @@ bool selection_hidden_only_by_gametype(const VoteOptionsData& options, uint8_t g
         const bool matches = gametype == af_vote_gametype_none
             ? vote_level_allows_default_gametype(level)
             : vote_level_allows_gametype(level, gametype);
-        if (!matches) {
-            return true;
+        if (!matches && vote_level_allows_default_gametype(level)) {
+            return level.natural_gametype;
         }
     }
-    return false;
+    return std::nullopt;
 }
 
 void do_level_column(PanelUi& ui, const Layout& lo, const VoteOptionsData& options, const Rect& col,
-                     bool allow_current, uint8_t gametype)
+                     bool is_match, uint8_t gametype)
 {
     const int header_h = rf::gr::get_font_height(lo.font);
     int y = col.y;
@@ -2728,6 +2791,22 @@ void do_level_column(PanelUi& ui, const Layout& lo, const VoteOptionsData& optio
 
     // Read after the checkbox so a toggle takes effect in the same pass.
     const bool filter_active = options.gametype_prefix_restricted || g_filter_gametype_local;
+
+    // The game type filter can hide the selected map; re-deriving the cycler puts it
+    // back on display. Hit-test pass only, like the pre-selection in do_form: moving
+    // the cycler between the two passes of one frame draws a list never hit-tested.
+    if (!ui.draw && filter_active && !g_form.gametype_touched && !g_form.manual_level
+        && !g_form.level_selection.empty()) {
+        if (const auto natural = hidden_selection_natural_gametype(options, gametype)) {
+            const int index = gametype_offer_index(options, is_match, *natural);
+            if (index >= 0) {
+                g_form.gametype_index = index;
+                pin_gametype_context(is_match);
+                gametype = *natural;
+            }
+        }
+    }
+
     // What the rows are actually filtered by. With the filter off the game type is
     // not consulted at all, so keying the cache on it would rebuild a byte-identical
     // list every time a level click re-derives the cycler.
@@ -2741,12 +2820,12 @@ void do_level_column(PanelUi& ui, const Layout& lo, const VoteOptionsData& optio
     LevelListCache& cache = g_level_cache;
     if (!cache.valid || cache.levels_fp != levels_fp || cache.filter_active != filter_active
         || cache.name_filter != g_level_filter_text
-        || cache.gametype != filter_gametype || cache.allow_current != allow_current) {
+        || cache.gametype != filter_gametype || cache.allow_current != is_match) {
         cache.levels_fp = levels_fp;
         cache.filter_active = filter_active;
         cache.name_filter = g_level_filter_text;
         cache.gametype = filter_gametype;
-        cache.allow_current = allow_current;
+        cache.allow_current = is_match;
         cache.gametype_hidden = 0;
         cache.not_allowed_hidden = 0;
         cache.name_filter_hidden = 0;
@@ -2789,14 +2868,14 @@ void do_level_column(PanelUi& ui, const Layout& lo, const VoteOptionsData& optio
 
         cache.items.clear();
         cache.items.reserve(levels.size() + 1);
-        if (allow_current) {
+        if (is_match) {
             // Pinned and always visible; the server adjudicates it at call time.
             cache.items.emplace_back("Current level");
         }
         for (auto& level : levels) {
             cache.items.push_back(std::move(level));
         }
-        cache.first_level_row = allow_current ? 1 : 0;
+        cache.first_level_row = is_match ? 1 : 0;
         cache.valid = true;
     }
 
@@ -2814,13 +2893,7 @@ void do_level_column(PanelUi& ui, const Layout& lo, const VoteOptionsData& optio
                [](const std::string& item) {
                    return string_iequals(item, g_form.level_selection);
                })
-            == cache.items.end()
-        // Not when the game type doing the hiding is the one the panel derived from
-        // this very level: that pre-selection exists to follow the player's pick, so
-        // letting it discard the pick inverts it. A game type the player cycled to
-        // themselves still drops it, as does a map that left the vote list.
-        && (g_form.gametype_touched || !filter_active
-            || !selection_hidden_only_by_gametype(options, gametype))) {
+            == cache.items.end()) {
         g_form.level_selection.clear();
         cache.sel_valid = false;
     }
@@ -2829,7 +2902,7 @@ void do_level_column(PanelUi& ui, const Layout& lo, const VoteOptionsData& optio
     // normalizes a voted name, so both resolve the same file), else the top
     // entry. The list is scrolled to whichever that lands on, since a default
     // sitting off-screen reads as no selection at all.
-    if (!allow_current && g_form.level_selection.empty() && level_row_count > 0) {
+    if (!is_match && g_form.level_selection.empty() && level_row_count > 0) {
         const std::string current =
             normalize_level_filename(std::string_view{rf::level.filename.c_str()});
         size_t row = static_cast<size_t>(cache.first_level_row);
@@ -2855,7 +2928,7 @@ void do_level_column(PanelUi& ui, const Layout& lo, const VoteOptionsData& optio
         cache.sel_row = -1;
         if (!g_form.manual_level) {
             if (g_form.level_selection.empty()) {
-                cache.sel_row = allow_current ? 0 : -1;
+                cache.sel_row = is_match ? 0 : -1;
             }
             else {
                 for (size_t i = cache.first_level_row; i < cache.items.size(); ++i) {
@@ -2895,7 +2968,7 @@ void do_level_column(PanelUi& ui, const Layout& lo, const VoteOptionsData& optio
         g_level_scroll_to_selection = false;
     }
 
-    if (!allow_current && level_row_count == 0) {
+    if (!is_match && level_row_count == 0) {
         // Nothing votable for this game type. Manual entry stays available and
         // unfiltered; CALL VOTE stays inert because the selection is empty.
         if (ui.draw) {
@@ -2919,7 +2992,7 @@ void do_level_column(PanelUi& ui, const Layout& lo, const VoteOptionsData& optio
             ui_listbox(ui, list, cache.items, cache.sel_row, g_form.level_scroll, lo.font);
         if (clicked >= 0) {
             g_form.level_selection =
-                (allow_current && clicked == 0) ? std::string{} : cache.items[clicked];
+                (is_match && clicked == 0) ? std::string{} : cache.items[clicked];
             g_form.manual_level = false;
             cache.sel_valid = false;
             play_click_sound();
@@ -2981,6 +3054,15 @@ bool do_close_button(PanelUi& ui, const Layout& lo)
     return false;
 }
 
+// A cycler hold belongs to the tab it was made on: Level and Match offer different
+// type sets. The index goes with the hold -- it indexes the OLD tab's list.
+void reset_gametype_selection()
+{
+    g_form.gametype_touched = false;
+    g_form.gametype_key_valid = false;
+    g_form.gametype_index = 0;
+}
+
 // Tab row across the top: "Saved" first, then one button per enabled vote type.
 int do_tab_row(PanelUi& ui, const Layout& lo, const std::vector<VoteTab>& tabs)
 {
@@ -3026,11 +3108,7 @@ int do_tab_row(PanelUi& ui, const Layout& lo, const std::vector<VoteTab>& tabs)
             if (!active) {
                 g_form.on_saved_tab = false;
                 if (g_form.type_index != i) {
-                    // A cycler hold belongs to the tab it was made on: Level and Match
-                    // offer different type sets, so carrying it over leaves the new tab
-                    // pinned to a choice the player never made there.
-                    g_form.gametype_touched = false;
-                    g_form.gametype_key_valid = false;
+                    reset_gametype_selection();
                 }
                 g_form.type_index = i;
                 g_form.mutator_scroll = 0.0f; // the section is rebuilt for the new type
@@ -3119,11 +3197,14 @@ void do_form(PanelUi& ui, const Layout& lo, const VoteOptionsData& options,
 
     int y = content_y;
 
-    const VoteTab& tab = tabs[g_form.type_index];
-    const VoteTypeInfo* selected = tab_selected_type(tab);
+    // Bounds-checked rather than indexed: the tab list can shrink between this
+    // frame's hit-test and draw passes, and only the hit-test pass clamps the index.
+    const VoteTab* tab_ptr = selected_tab(tabs);
+    const VoteTypeInfo* selected = tab_ptr ? tab_selected_type(*tab_ptr) : nullptr;
     if (!selected) {
         return;
     }
+    const VoteTab& tab = *tab_ptr;
     const AfVoteType type = selected->type;
     const int body_bottom = lo.cy + lo.ch;
 
@@ -3209,14 +3290,12 @@ void do_form(PanelUi& ui, const Layout& lo, const VoteOptionsData& options,
     // filtered by the selected game type, so moving it between the two passes of one
     // frame would draw a list that was never hit-tested.
     if (!ui.draw && !g_form.gametype_touched) {
-        std::string key = selected_level();
+        const std::string key = selected_level();
         if (!g_form.gametype_key_valid || key != g_form.gametype_key
             || is_match != g_form.gametype_key_match) {
-            g_form.gametype_index =
-                gametype_cycler_index(options, is_match, default_gametype_for_level(options, key));
-            g_form.gametype_key = std::move(key);
-            g_form.gametype_key_match = is_match;
-            g_form.gametype_key_valid = true;
+            g_form.gametype_index = gametype_cycler_index(options, is_match,
+                default_gametype_for_level(options, key, is_match), g_form.gametype_index);
+            pin_gametype_context(is_match);
         }
     }
 
@@ -3295,13 +3374,11 @@ void do_form(PanelUi& ui, const Layout& lo, const VoteOptionsData& options,
         // level again.
         const Rect reset{right_col.x + right_col.w - reset_w, ry, reset_w, lo.row_h};
         if (ui_button(ui, reset, "Reset", lo.font, gametype_count > 0) && gametype_count > 0) {
-            std::string key = selected_level();
-            g_form.gametype_index =
-                gametype_cycler_index(options, is_match, default_gametype_for_level(options, key));
+            g_form.gametype_index = gametype_cycler_index(options, is_match,
+                default_gametype_for_level(options, selected_level(), is_match),
+                g_form.gametype_index);
             g_form.gametype_touched = false;
-            g_form.gametype_key = std::move(key);
-            g_form.gametype_key_match = is_match;
-            g_form.gametype_key_valid = true;
+            pin_gametype_context(is_match);
             play_click_sound();
         }
 
@@ -3329,13 +3406,17 @@ void do_form(PanelUi& ui, const Layout& lo, const VoteOptionsData& options,
         const std::string current_label = fit_middle("Current", current_w, lo.font);
         const std::string base_label = fit_middle("Base", base_w, lo.font);
 
-        const Rect current{right_col.x + right_col.w - current_w, ry - 1, current_w, header_h + 2};
-        if (ui_button(ui, current, current_label.c_str(), lo.font)) {
-            apply_baseline(options, resolve_baseline(options, selected_level()));
-            g_form.mutators_touched = false;
+        const auto apply_and_pin = [&](const std::vector<VoteMutatorDecl>& baseline, bool touched) {
+            apply_baseline(options, baseline);
+            g_form.mutators_touched = touched;
             pin_mutator_baseline_context();
             g_form.mutator_scroll = 0.0f;
             play_click_sound();
+        };
+
+        const Rect current{right_col.x + right_col.w - current_w, ry - 1, current_w, header_h + 2};
+        if (ui_button(ui, current, current_label.c_str(), lo.font)) {
+            apply_and_pin(resolve_baseline(options, selected_level()), false);
         }
 
         // Disabled rather than applied as an empty set on a server whose blob predates
@@ -3343,11 +3424,7 @@ void do_form(PanelUi& ui, const Layout& lo, const VoteOptionsData& options,
         const Rect base{current.x - lo.gap - base_w, ry - 1, base_w, header_h + 2};
         if (ui_button(ui, base, base_label.c_str(), lo.font, options.base_mutator_decls_present)
             && options.base_mutator_decls_present) {
-            apply_baseline(options, options.base_mutator_decls);
-            g_form.mutators_touched = true;
-            pin_mutator_baseline_context();
-            g_form.mutator_scroll = 0.0f;
-            play_click_sound();
+            apply_and_pin(options.base_mutator_decls, true);
         }
         ry += header_h + lo.gap;
     }
@@ -3415,8 +3492,19 @@ void vote_panel_do(PanelUi& ui)
     if (mode == PanelMode::Form && options) {
         ensure_form(*options);
         tabs = enabled_vote_tabs();
-        if (!tabs.empty()) {
-            g_form.type_index = std::clamp(g_form.type_index, 0, static_cast<int>(tabs.size()) - 1);
+        // A blob refresh that disables a vote type shrinks the list under the form:
+        // that is as much a tab change as pressing a button, so it resets the cycler
+        // the same way. Hit-test pass only -- the refresh can land between this
+        // frame's two passes, and correcting in the draw pass would draw (and filter
+        // the level list by) a tab nothing hit-tested. The draw pass renders what was
+        // hit-tested; the correction lands on the next frame's hit-test pass.
+        if (!ui.draw && !tabs.empty()) {
+            const int clamped =
+                std::clamp(g_form.type_index, 0, static_cast<int>(tabs.size()) - 1);
+            if (clamped != g_form.type_index) {
+                g_form.type_index = clamped;
+                reset_gametype_selection();
+            }
         }
     }
 

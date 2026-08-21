@@ -45,7 +45,7 @@ Version 1.4.0 (Lupin): Not yet released
   - Servers describe their votable levels, game types, and mutator options to clients
   - `Level` and `Match` can now select a game type and any number of mutators (with their options) for the voted level
   - Add a vote panel for calling any vote the server allows, opened during gameplay with the bindable `Call Vote Menu` control (`F4` by default)
-  - The vote panel preselects the chosen level's game type and the server's currently active mutator set, with buttons to reset the game type and restore the `Base` or `Current` mutator set
+  - The vote panel pre-selects the chosen level's game type and the server's currently active mutator set, with buttons to reset the game type and restore the `Base` or `Current` mutator set
   - Vote HUD notification now shows live tally, time remaining, and whether you have already voted
 - Add FactionFiles-integrated multiplayer statistics tracking
   - Dedicated servers with a configured `fflink_gsk` report a gameplay event stream to FactionFiles
@@ -209,8 +209,8 @@ Version 1.4.0 (Lupin): Not yet released
 - Fix particle emitters created from `emitters.tbl` templates inheriting uninitialized UID and `Active Distance` values that could make their particles silently fail to spawn in rare cases
 - Fix spacebar (when bound to `Jump`) moving freelook camera upward when typing in chat
 - Fix crash risk when leaving a match or changing levels by keeping animation skeletons loaded while animation instances are still playing them, instead of unloading as soon as no character references them
-- Fix dedicated servers not loading `alpinefaction.vpp`, which prevented `af_level_quirks.tbl` from loading and left known run maps unrecognized by dedicated servers
-- Fix potential crash when an Alpine options tbl file contains an unrecognized option name
+- Fix dedicated servers not loading `alpinefaction.vpp`, which prevented `af_level_quirks.tbl` from loading and left known run maps unrecognized
+- Fix potential crash when an Alpine options `.tbl` file contains an unrecognized option name
 
 [@is-this-c](https://github.com/is-this-c)
 - Clear cached server config output after a shuffle of a server's rotation

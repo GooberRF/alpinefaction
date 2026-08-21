@@ -970,14 +970,22 @@ static std::string mutator_vote_detail(const MutatorDef& def, const MutatorDecla
     return *str;
 }
 
-std::string mutators_join_labels(const std::vector<MutatorDeclaration>& declarations)
+static std::string join_labels(const std::vector<MutatorDeclaration>& declarations,
+                               std::optional<rf::NetGameType> game_type)
 {
     std::string joined;
     for (const auto& decl : declarations) {
+        const MutatorDef* def = find_mutator_by_name(decl.name);
+        // Same availability test apply_mutators_from_toml runs, so the line can
+        // never name a mutator the game type is about to drop.
+        if (def && game_type
+            && !mutator_gametype_mask_allows(gametype_mask_for_req(def->gametype_req),
+                                             static_cast<uint8_t>(*game_type)))
+            continue;
+
         if (!joined.empty())
             joined += ", ";
 
-        const MutatorDef* def = find_mutator_by_name(decl.name);
         if (!def) {
             joined += decl.name;
             continue;
@@ -989,6 +997,17 @@ std::string mutators_join_labels(const std::vector<MutatorDeclaration>& declarat
             joined += std::format(" [{}]", detail);
     }
     return joined;
+}
+
+std::string mutators_join_labels(const std::vector<MutatorDeclaration>& declarations)
+{
+    return join_labels(declarations, std::nullopt);
+}
+
+std::string mutators_join_labels_for_game_type(const std::vector<MutatorDeclaration>& declarations,
+                                               rf::NetGameType game_type)
+{
+    return join_labels(declarations, game_type);
 }
 
 rf::NetGameType resolve_level_default_game_type(std::string_view level_filename)
@@ -1011,7 +1030,7 @@ rf::NetGameType resolve_level_default_game_type(std::string_view level_filename)
     // to the DM the prefix names. Only when the base cannot host it does the prefix
     // decide.
     const rf::NetGameType base_gt = g_alpine_server_config.base_rules.game_type;
-    if (multi_game_type_uses_any_level(base_gt) || multi_level_name_has_game_type_prefix(normalized, base_gt))
+    if (multi_level_name_matches_game_type(normalized, base_gt))
         return base_gt;
 
     if (auto from_prefix = multi_game_type_for_level_prefix(normalized))
@@ -1051,6 +1070,19 @@ AlpineServerConfigRules build_derived_server_rules(rf::NetGameType game_type,
     return rules;
 }
 
+std::optional<std::string> mutators_active_labels_string(const AlpineServerConfigRules& rules)
+{
+    std::string labels;
+    for (const auto& label : rules.mutators.active_labels) {
+        if (!labels.empty())
+            labels += ", ";
+        labels += label;
+    }
+    if (labels.empty())
+        return std::nullopt;
+    return labels;
+}
+
 ManualRulesOverride load_vote_rules_override(
     std::string_view level_filename, const std::vector<MutatorDeclaration>& mutators,
     std::optional<rf::NetGameType> gametype)
@@ -1061,15 +1093,8 @@ ManualRulesOverride load_vote_rules_override(
 
     ManualRulesOverride result;
     // Reported from what actually applied rather than from what was voted.
-    std::string labels;
-    for (const auto& label : rules.mutators.active_labels) {
-        if (!labels.empty())
-            labels += ", ";
-        labels += label;
-    }
+    result.mutator_labels = mutators_active_labels_string(rules);
     result.rules = std::move(rules);
-    if (!labels.empty())
-        result.mutator_labels = std::move(labels);
     return result;
 }
 

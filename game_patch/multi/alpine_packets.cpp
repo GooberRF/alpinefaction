@@ -1487,7 +1487,7 @@ static bool af_send_active_mutators_blob(rf::Player* player, const std::vector<u
     w.u8(static_cast<uint8_t>(af_server_req_type::af_sreq_active_mutators));
     w.bytes(decls.data(), decls.size());
     if (!w.ok) {
-        xlog::warn("af_send_active_mutators: {} bytes of declarations do not fit a packet", decls.size());
+        xlog::warn("af_send_active_mutators_blob: {} bytes of declarations do not fit a packet", decls.size());
         return false;
     }
 
@@ -1514,8 +1514,7 @@ void af_send_active_mutators_to_all()
     if (!rf::is_server) {
         return;
     }
-    // Built once: the blob is the same for every recipient, and building it walks
-    // the mutator registry.
+    // Built once: building it walks the mutator registry.
     std::vector<uint8_t> decls;
     server_vote_build_active_mutators_blob(decls);
 

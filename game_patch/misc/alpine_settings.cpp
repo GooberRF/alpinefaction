@@ -1605,7 +1605,7 @@ void alpine_player_settings_save(rf::Player* player)
     const std::vector<std::string>& unreadable_saved_votes = saved_votes_unparsed();
     if (!saved_votes.empty() || !unreadable_saved_votes.empty()) {
         file << "\n[SavedVotes]\n";
-        file << "; Format is SavedVote{N}=1|{Name}|{Type}|{Level}|{GameType}|{TeamSize}|{ExtendMinutes}|{Mutators}\n";
+        file << "; Format is SavedVote{N}=2|{Name}|{Type}|{Level}|{GameType}|{TeamSize}|{ExtendMinutes}|{Mutators}|{MutatorsExplicit}\n";
 
         for (size_t i = 0; i < saved_votes.size(); ++i) {
             file << "SavedVote" << i << "=" << saved_vote_encode(saved_votes[i]) << "\n";

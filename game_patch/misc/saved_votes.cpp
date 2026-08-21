@@ -33,12 +33,16 @@ constexpr size_t max_unparsed_lines = 50;
 // ---------------------------------------------------------------------------
 // One-line INI encoding
 //
-//   1|<name>|<type>|<level>|<gametype>|<team_size>|<extend_minutes>|<mutators>
+//   2|<name>|<type>|<level>|<gametype>|<team_size>|<extend_minutes>|<mutators>|<explicit>
 //
 // <mutators> is entries joined by ';', each `name` or `name:opt=Xval,opt=Xval`,
 // where the value's first character types it: b0/b1 bool, i<n> int, f<n> float,
-// c<label> choice. Every free-text field percent-encodes the separators plus any
+// c<label> choice. <explicit> is 0/1: whether <mutators> is the complete set the
+// vote installs. Every free-text field percent-encodes the separators plus any
 // control character, so a level or choice label containing one round-trips.
+//
+// Version 1 is the same line without <explicit>; it still loads, see
+// saved_vote_parse.
 // ---------------------------------------------------------------------------
 
 constexpr std::string_view reserved_chars = "%|;:,=";
@@ -338,8 +342,6 @@ const std::vector<std::string>& saved_votes_unparsed()
 
 std::string saved_vote_encode(const SavedVote& vote)
 {
-    // Version 2 appends the explicit-mutators field. Version 1 records still load;
-    // see saved_vote_parse.
     std::string out = "2|";
     out += encode_field(vote.name);
     out += '|';
@@ -533,14 +535,16 @@ bool saved_vote_parse(std::string_view encoded, SavedVote& out)
         }
     }
 
-    // Version 2 only. A version 1 record predates the field and keeps the meaning it
-    // was written with: inherit whatever set the session is running.
     if (fields.size() == 9) {
         unsigned long explicit_raw = 0;
         if (!parse_uint_field(fields[8], explicit_raw) || explicit_raw > 1) {
             return false;
         }
         vote.mutators_explicit = explicit_raw != 0;
+    }
+    else {
+        // Version 1 predates the field; reproduce what the build that wrote it did.
+        vote.mutators_explicit = !vote.mutators.empty() || vote.gametype != af_vote_gametype_none;
     }
 
     // A Level vote with no level could never be called, so it is rejected here
@@ -660,10 +664,6 @@ AfVoteCallParams saved_vote_build_params(const SavedVote& vote, const VoteOption
         case AfVoteType::Match: {
             params.level = vote.level;
             params.gametype = vote.gametype;
-            // An entry the panel saved records the complete selection, so an empty
-            // one means "no mutators" rather than "keep whatever the session runs".
-            // A record written before the field existed says nothing, and inheriting
-            // is what it meant.
             params.mutators_explicit = vote.mutators_explicit;
             if (vote.type == AfVoteType::Match) {
                 params.team_size = static_cast<uint8_t>(std::clamp<int>(vote.team_size, 1, 8));

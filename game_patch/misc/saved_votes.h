@@ -37,9 +37,8 @@ struct SavedVote
     uint8_t team_size = 4;
     uint8_t extend_minutes = af_vote_extend_default_minutes;
     std::vector<SavedVoteMutator> mutators;
-    // Whether `mutators` is the complete selection (replacing the session's set) or
-    // just what the panel happened to show. Absent from a record written before the
-    // field existed, which defaults to false -- the meaning those records had.
+    // A record written before this field existed derives it from whether that
+    // record named any mutators.
     bool mutators_explicit = false;
 };
 

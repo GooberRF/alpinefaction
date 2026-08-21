@@ -102,8 +102,10 @@ struct VoteOptionsData
     std::vector<VoteGametypeInfo> gametypes;
     std::vector<VoteMutatorSchema> mutators;
     std::vector<VoteLevelInfo> levels; // rotation order, then vote-allowed extras
-    // Mutators the server's base rules declare; the baseline for every level that
-    // does not carry its own. Empty for a server built before the blob carried it.
+    // Mutators the server's base rules declare. No longer the panel's pre-selection:
+    // that is the session's ACTIVE set (vote_active_mutators_get). This is what the
+    // panel's "Base" button applies, and the fallback baseline on a server too old to
+    // push an active set. Empty for a server built before the blob carried it.
     std::vector<VoteMutatorDecl> base_mutator_decls;
     // Whether the blob actually carried that section. An empty set is meaningful
     // ("base declares none"), so a consumer offering it as a choice has to tell that

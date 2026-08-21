@@ -486,7 +486,11 @@ bool parse_vote_options_blob(const uint8_t* data, size_t len, VoteOptionsData& o
     // else, so it never fails the blob: a blob from a server built before it existed
     // simply ends here. `present` is set only when the section genuinely parsed, so
     // "base runs nothing" stays distinct from "base unknown".
-    if (r.remaining() > 0) {
+    // Version-gated, not just length-gated: version 1 wrote these same bytes as a
+    // bare declaration set, so reading its first two bytes as the length prefix
+    // would be garbage. Such a blob leaves base_mutator_decls_present false, which
+    // is exactly "base unknown".
+    if (version >= 2 && r.remaining() > 0) {
         const uint16_t base_len = r.u16();
         if (!r.ok() || base_len > r.remaining()) {
             xlog::debug("vote options: truncated base mutator section; the vote panel will pre-select nothing");

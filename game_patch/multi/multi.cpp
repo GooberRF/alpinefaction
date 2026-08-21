@@ -31,6 +31,7 @@
 #include "../os/os.h"
 #include "../os/console.h"
 #include "../misc/misc.h"
+#include "../misc/alpine_options.h"
 #include "../misc/alpine_settings.h"
 #include "../misc/waypoints.h"
 #include "../rf/os/os.h"
@@ -249,11 +250,14 @@ void handle_levelm_param()
 }
 
 // Returns true if -awpgen was handled (caller should skip -levelm).
+// This is the first point at which the flag can be set: the engine parses the command
+// line after the patch DLL's init runs, so `found()` is still false back there.
 bool handle_awpgen_param()
 {
-    if (!get_awpgen_cmd_line_param().found()) {
+    if (rf::is_dedicated_server || !get_awpgen_cmd_line_param().found()) {
         return false;
     }
+    g_awpgen_mode = true;
 
     const char* arg = get_awpgen_cmd_line_param().get_arg();
     if (!arg || arg[0] == '\0') {
@@ -1087,8 +1091,8 @@ bool multi_level_name_has_game_type_prefix(std::string_view level_filename, rf::
 // carries no game type prefix at all. Derived from multi_game_type_prefix rather
 // than from a table of its own, so adding or removing a prefix there is all it
 // takes. Enum order decides the two prefixes two game types share (DM precedes
-// TeamDM, CTF precedes SAL) and keeps NG_TYPE_UNK — whose prefix is a fallback,
-// not its own — out of it.
+// TeamDM, CTF precedes SAL) and keeps NG_TYPE_UNK -- whose prefix is a fallback,
+// not its own -- out of it.
 //
 // The any-level game types are skipped: their nominal prefix is what THEIR levels
 // would be called, not something a filename can be identified by, so wooden_bridge
@@ -1130,6 +1134,27 @@ bool multi_level_name_matches_any_mp_prefix(const char* filename)
         || string_istarts_with(filename, "dc")
         || string_istarts_with(filename, "rev")
         || string_istarts_with(filename, "esc");
+}
+
+// The whole "can this game type be played on a level with this name?" question:
+// the strict prefix above, plus the quirks table's run maps and the any-level game
+// types' acceptance of every standard MP level. The vote gate and the vote blob's
+// per-level mask are both derived from here, so those two always agree.
+// resolve_level_default_game_type is NOT bound by it: a rotation entry's configured
+// game type is returned as-is, and a name no rule claims falls back to the base game
+// type -- so a natural game type CAN sit outside the mask advertised beside it.
+bool multi_level_name_matches_game_type(std::string_view level_filename, rf::NetGameType game_type)
+{
+    const std::string map_name = normalize_level_filename(level_filename);
+
+    if (game_type == rf::NG_TYPE_RUN && is_known_run_level(map_name)) {
+        return true;
+    }
+    if (multi_game_type_uses_any_level(game_type)
+        && multi_level_name_matches_any_mp_prefix(map_name.c_str())) {
+        return true;
+    }
+    return multi_level_name_has_game_type_prefix(map_name, game_type);
 }
 
 // A level name with ".rfl" appended when it is missing.
@@ -1478,7 +1503,6 @@ void multi_do_patch()
     get_awpgen_cmd_line_param();
     g_client_bot_launch_enabled = is_client_bot_requested_from_cmdline() || is_client_debugbot_requested_from_cmdline();
     g_client_bot_debug_render_enabled = is_client_debugbot_requested_from_cmdline();
-    g_awpgen_mode = get_awpgen_cmd_line_param().found();
     if (is_headless_mode()) {
         g_alpine_game_config.rendering_enabled = false;
         rf::sound_enabled = false;
