@@ -53,7 +53,7 @@ Most important:
 
 Multiplayer:
 * Increased (and configurable) tick rate
-* TOML-based `ADS` dedicated server configuration with per-level rules, on-demand reloading, rule presets, and on-the-fly game type switching
+* TOML-based `ADS` dedicated server configuration with per-level rules, on-demand reloading, and on-the-fly game type switching
 * "GunGame" game mode
 * Competitive match framework including "ready up" system and overtime
 * Improved gaussian distribution method for bullet spread

@@ -479,6 +479,10 @@ bool vpackfile_supercede_allowed(const char* requested_filename, const char* sib
 static void vpackfile_add_to_lookup_table(rf::VPackfileEntry* entry)
 {
     std::string filename_str = string_to_lower(entry->name);
+    // dedicated servers don't need .awp files.
+    if (rf::is_dedicated_server && filename_str.ends_with(".awp")) {
+        return;
+    }
     auto [it, inserted] = g_loopup_table.insert({filename_str, entry});
     if (!inserted) {
         ++g_num_name_collisions;
@@ -672,8 +676,9 @@ static void vpackfile_init_new()
     if (!rf::is_dedicated_server) {
         rf::vpackfile_add("music.vpp", nullptr);
         rf::vpackfile_add("ui.vpp", nullptr);
-        load_alpinefaction_vpp();
     }
+
+    load_alpinefaction_vpp();
     rf::vpackfile_add("tables.vpp", nullptr);
     addr_as_ref<int>(0x01BDB218) = 1;          // VPackfilesLoaded
     addr_as_ref<uint32_t>(0x01BDB210) = 10000; // NumFilesInVfs

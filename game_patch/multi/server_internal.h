@@ -940,12 +940,6 @@ struct AlpineServerConfigLevelEntry
 {
     std::string level_filename;
     AlpineServerConfigRules rule_overrides;
-    // The same rules re-resolved with every config-declared mutator stripped.
-    // Starting point for a level/match vote that carries mutators, so the voted
-    // mutators replace (rather than stack on) whatever the config declared while
-    // the rest of this level's rules — notably its game type — are preserved.
-    AlpineServerConfigRules rule_overrides_no_mutators;
-    std::vector<std::pair<std::filesystem::path, std::optional<std::string>>> applied_rules_preset_paths;
 };
 
 struct AlpineRconProfile
@@ -1031,8 +1025,9 @@ struct AlpineServerConfig
     // for a mutator applied via a level/match vote, so the voted mutator replaces
     // (rather than stacks on) any mutator the base rules declared.
     AlpineServerConfigRules base_rules_no_mutators;
-    std::vector<std::pair<std::filesystem::path, std::optional<std::string>>> base_rules_preset_paths;
-    std::map<std::string, std::filesystem::path> rules_preset_aliases;
+    // The operator's explicit base keys over struct defaults and NOTHING else. Rules
+    // for any other game type are built from this, so nothing can leak in.
+    AlpineServerConfigRules base_rules_keys_only;
     std::vector<AlpineServerConfigLevelEntry> levels;
 
     std::string printed_cfg{};
@@ -1073,11 +1068,11 @@ struct AlpineServerConfig
 struct ManualRulesOverride
 {
     AlpineServerConfigRules rules;
-    std::vector<std::pair<std::filesystem::path, std::optional<std::string>>> applied_preset_paths;
-    // Mutually exclusive: an override comes either from a named rules preset or
-    // from voted mutators, and the two are described differently to operators.
-    std::optional<std::string> preset_alias;
     std::optional<std::string> mutator_labels;
+    // The vote that installed this named a game type or submitted its own mutator
+    // set. A plain vote installs derived rules too, but arms no session set, so a
+    // rotation preserve vote after one carries nothing.
+    bool explicit_session = false;
 };
 
 struct MatchInfo
@@ -1134,6 +1129,18 @@ extern AFGameInfoFlags g_game_info_server_flags;
 extern std::string g_prev_level;
 extern bool g_is_overtime;
 extern MatchInfo g_match_info;
+// Set while rules are re-parsed or re-derived over a scope the config's own Full pass
+// already reported on; that pass is the one that reports problems.
+extern bool g_rules_parse_quiet;
+
+struct RulesParseQuietGuard
+{
+    bool previous;
+    RulesParseQuietGuard() : previous(g_rules_parse_quiet) { g_rules_parse_quiet = true; }
+    ~RulesParseQuietGuard() { g_rules_parse_quiet = previous; }
+    RulesParseQuietGuard(const RulesParseQuietGuard&) = delete;
+    RulesParseQuietGuard& operator=(const RulesParseQuietGuard&) = delete;
+};
 
 enum class UpcomingGameTypeSelection {
     Rotation,
@@ -1169,13 +1176,18 @@ void server_vote_handle_options_request(rf::Player* sender, bool has_cache, uint
 // discard a stream that was superseded mid-flight.
 const std::vector<uint8_t>& server_vote_get_options_blob(uint32_t& generation);
 void server_vote_invalidate_options_blob();
+// Rebuild the blob if invalid and report whether the bytes actually changed. The build
+// is content-addressed, so most invalidations answer false.
+bool server_vote_refresh_options_blob();
+// The mutator set currently in force, in the options blob's declaration-set encoding.
+// Session state, not config, so it is pushed separately from that blob.
+void server_vote_build_active_mutators_blob(std::vector<uint8_t>& blob);
 void vote_level_refresh_allowed_maps();
 // Push the current vote state to a player who joined while a vote is running.
 void server_vote_send_state_to_new_player(rf::Player* player);
 void handle_player_set_handicap(rf::Player* player, uint8_t amount);
 std::vector<rf::Player*> get_clients(bool include_browsers, bool include_bots);
 std::pair<bool, std::string> is_level_name_valid(std::string_view level_name_input);
-std::optional<ManualRulesOverride> load_rules_preset_alias(std::string_view preset_name);
 void set_manual_rules_override(ManualRulesOverride override_rules);
 void clear_manual_rules_override();
 void set_pending_rotation_preserve(PendingRotationPreserve pending);

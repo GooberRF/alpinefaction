@@ -32,6 +32,7 @@
 #include "../os/os.h"
 #include "../os/console.h"
 #include "../misc/misc.h"
+#include "../misc/alpine_options.h"
 #include "../misc/alpine_settings.h"
 #include "../misc/waypoints.h"
 #include "../rf/os/os.h"
@@ -250,11 +251,14 @@ void handle_levelm_param()
 }
 
 // Returns true if -awpgen was handled (caller should skip -levelm).
+// This is the first point at which the flag can be set: the engine parses the command
+// line after the patch DLL's init runs, so `found()` is still false back there.
 bool handle_awpgen_param()
 {
-    if (!get_awpgen_cmd_line_param().found()) {
+    if (rf::is_dedicated_server || !get_awpgen_cmd_line_param().found()) {
         return false;
     }
+    g_awpgen_mode = true;
 
     const char* arg = get_awpgen_cmd_line_param().get_arg();
     if (!arg || arg[0] == '\0') {
@@ -1059,6 +1063,44 @@ std::string_view multi_game_type_prefix(const rf::NetGameType game_type) {
     }
 }
 
+// Strictly the prefix: the any-level rule and the RUN level list are the caller's.
+static bool multi_level_name_has_game_type_prefix(std::string_view level_filename, rf::NetGameType game_type)
+{
+    // UNK has no prefix of its own; multi_game_type_prefix answers "dm" for it.
+    if (game_type == rf::NG_TYPE_UNK) {
+        return false;
+    }
+    if (string_istarts_with(level_filename, multi_game_type_prefix(game_type))) {
+        return true;
+    }
+    if ((game_type == rf::NG_TYPE_DM || game_type == rf::NG_TYPE_TEAMDM)
+        && string_istarts_with(level_filename, "pdm")) {
+        return true;
+    }
+    if ((game_type == rf::NG_TYPE_CTF || game_type == rf::NG_TYPE_SAL)
+        && string_istarts_with(level_filename, "pctf")) {
+        return true;
+    }
+    return false;
+}
+
+// The game type a level filename's prefix names, or nullopt when it carries none.
+// Enum order decides a shared prefix (DM before TeamDM, CTF before SAL). The any-level
+// game types are skipped - this direction only, they still ACCEPT any mp level.
+std::optional<rf::NetGameType> multi_game_type_for_level_prefix(std::string_view level_filename)
+{
+    for (int i = 0; i < static_cast<int>(rf::NG_TYPE_UNK); ++i) {
+        const auto game_type = static_cast<rf::NetGameType>(i);
+        if (multi_game_type_uses_any_level(game_type)) {
+            continue;
+        }
+        if (multi_level_name_has_game_type_prefix(level_filename, game_type)) {
+            return game_type;
+        }
+    }
+    return std::nullopt;
+}
+
 // Game types that have no dedicated level-name prefix of their own and are
 // played on any standard MP level.
 bool multi_game_type_uses_any_level(rf::NetGameType game_type)
@@ -1082,6 +1124,23 @@ bool multi_level_name_matches_any_mp_prefix(const char* filename)
         || string_istarts_with(filename, "dc")
         || string_istarts_with(filename, "rev")
         || string_istarts_with(filename, "esc");
+}
+
+// "Can this game type be played on a level with this name?" The vote gate and the
+// blob's per-level mask both derive from here. resolve_level_default_game_type is NOT
+// bound by it and can answer outside the mask.
+bool multi_level_name_matches_game_type(std::string_view level_filename, rf::NetGameType game_type)
+{
+    const std::string map_name = normalize_level_filename(level_filename);
+
+    if (game_type == rf::NG_TYPE_RUN && is_known_run_level(map_name)) {
+        return true;
+    }
+    if (multi_game_type_uses_any_level(game_type)
+        && multi_level_name_matches_any_mp_prefix(map_name.c_str())) {
+        return true;
+    }
+    return multi_level_name_has_game_type_prefix(map_name, game_type);
 }
 
 // A level name with ".rfl" appended when it is missing.
@@ -1431,7 +1490,6 @@ void multi_do_patch()
     get_awpgen_cmd_line_param();
     g_client_bot_launch_enabled = is_client_bot_requested_from_cmdline() || is_client_debugbot_requested_from_cmdline();
     g_client_bot_debug_render_enabled = is_client_debugbot_requested_from_cmdline();
-    g_awpgen_mode = get_awpgen_cmd_line_param().found();
     if (is_headless_mode()) {
         g_alpine_game_config.rendering_enabled = false;
         rf::sound_enabled = false;

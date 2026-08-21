@@ -45,6 +45,7 @@ Version 1.4.0 (Lupin): Not yet released
   - Servers describe their votable levels, game types, and mutator options to clients
   - `Level` and `Match` can now select a game type and any number of mutators (with their options) for the voted level
   - Add a vote panel for calling any vote the server allows, opened during gameplay with the bindable `Call Vote Menu` control (`F4` by default)
+  - The vote panel pre-selects the chosen level's game type and the server's currently active mutator set, with buttons to reset the game type and restore the `Base` or `Current` mutator set
   - Vote HUD notification now shows live tally, time remaining, and whether you have already voted
 - Add FactionFiles-integrated multiplayer statistics tracking
   - Dedicated servers with a configured `fflink_gsk` report a gameplay event stream to FactionFiles
@@ -114,6 +115,7 @@ Version 1.4.0 (Lupin): Not yet released
 - Add `spectate_cameras` console command to toggle showing camera meshes at static camera locations while free look spectating
 - Deprecated and removed legacy GunGame dedicated server config items now that `GG` is an actual gametype
 - Deprecated and removed legacy critical hits dedicated server config items now that it is a mutator
+- Deprecated and removed the `rules_presets` dedicated server config item and its `rules_preset_aliases` table
 - Default inactivity tracking for players in dedicated servers to `true`, but kicking inactive players to `false`
 - Add `-debug` command line switch to enable additional debug logging, intended to help identify long-standing netcode issues that are difficult to nail down.
 - Add automatic team balance option which handles unbalanced teams mid-game and stops players from switching teams if it would unbalance them
@@ -145,6 +147,8 @@ Version 1.4.0 (Lupin): Not yet released
 - Support af://demo/ID on the af protocol to play demos from FactionFiles
 - Set client netfps to 40, server default netfps to 40 (configurable)
 - Make color pickers in the level editor open at the current color instead of black
+- A voted level now derives its rules from the server's base rules plus the voted mutator set, rather than inheriting the rules of whichever rotation slot happens to name that level
+- `sv_gametype` against a level in the rotation now rebuilds the rules from the base rules for the new game type instead of retargeting the old game type's rules in place
 
 [@is-this-c](https://github.com/is-this-c)
 - Rewrite `VArray` to fix crashes due to MinGW
@@ -226,6 +230,8 @@ Version 1.4.0 (Lupin): Not yet released
 - Fix particle emitters created from `emitters.tbl` templates inheriting uninitialized UID and `Active Distance` values that could make their particles silently fail to spawn in rare cases
 - Fix spacebar (when bound to `Jump`) moving freelook camera upward when typing in chat
 - Fix crash risk when leaving a match or changing levels by keeping animation skeletons loaded while animation instances are still playing them, instead of unloading as soon as no character references them
+- Fix dedicated servers not loading `alpinefaction.vpp`, which prevented `af_level_quirks.tbl` from loading and left known run maps unrecognized
+- Fix potential crash when an Alpine options `.tbl` file contains an unrecognized option name
 
 [@is-this-c](https://github.com/is-this-c)
 - Clear cached server config output after a shuffle of a server's rotation

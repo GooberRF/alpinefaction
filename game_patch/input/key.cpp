@@ -524,9 +524,11 @@ CodeInjection controls_process_chat_menu_patch{
         const bool chat_menu_numeric_capture_active =
             get_chat_menu_is_active()
             && !rf::console::console_is_visible()
-            && !rf::multi_chat_is_say_visible();
+            && !rf::multi_chat_is_say_visible()
+            && !vote_panel_is_capturing_text();
         const bool waypoint_link_numeric_capture_active =
-            waypoints_utils_link_editor_text_input_active();
+            waypoints_utils_link_editor_text_input_active()
+            && !vote_panel_is_capturing_text();
 
         // Consume top-row number keys for active overlay input modes so they do
         // not trigger gameplay bindings.

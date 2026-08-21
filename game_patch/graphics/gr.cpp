@@ -618,10 +618,9 @@ ConsoleCommand2 pow2_tex_cmd{
 void evaluate_pow2tex(const rf::String& level_filename) {
     // if dbg_pow2tex is active, use manual override instead of level filename lookup
     if (!override_pow2tex) {
-        bool should_p2t_fix = false;
-
-        if (is_p2t_fix_level(level_filename)) {
-            should_p2t_fix = true;
+        const bool should_p2t_fix = is_p2t_fix_level(level_filename);
+        // Renderer-only, so a dedicated server has nothing to report.
+        if (!rf::is_dedicated_server && should_p2t_fix) {
             rf::console::print("Applying power of 2 texture fix to known affected level {}", level_filename);
         }
 
@@ -631,7 +630,7 @@ void evaluate_pow2tex(const rf::String& level_filename) {
     // Always sync D3D11 state with current p2t value at level load
     if (g_game_config.renderer == GameConfig::Renderer::d3d11) {
         gr::d3d11::set_pow2_tex_active(rf::gr::d3d::p2t != 0);
-        if (is_sky_fix_level(level_filename)) {
+        if (!rf::is_dedicated_server && is_sky_fix_level(level_filename)) {
             rf::console::print("Applying sky fix to known affected level {}", level_filename);
         }
     }

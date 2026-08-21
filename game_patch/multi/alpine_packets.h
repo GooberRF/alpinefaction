@@ -182,7 +182,10 @@ enum af_vote_end_flags : uint8_t
 // Repeated records in the blob are length-prefixed, so additions to the blob
 // are not compatibility breaking. This version should be incremented only if
 // the core format changes - like redefining a field or reordering/removing them.
-constexpr uint8_t af_vote_options_blob_version = 1;
+//
+// 2: the trailing base mutator section gained a u16 length prefix of its own,
+//    which redefines bytes version 1 wrote as a bare declaration set.
+constexpr uint8_t af_vote_options_blob_version = 2;
 
 // af_sreq_vote_options_data stream framing. The blob is pushed as
 // Begin -> Data* -> End over the ordered reliable channel, so no chunk index or
@@ -217,6 +220,15 @@ enum af_vote_level_flags : uint8_t
     // naming this level is rejected outright whatever game type is selected —
     // the blob still lists it (it is in the rotation) but it is not votable.
     AF_VOTE_LEVEL_FLAG_ALLOWED = 1 << 0,
+};
+
+// The optional trailing flags byte of a Level/Match vote call. Reserved bits are
+// ignored; an ABSENT byte means "explicit iff the vote named any mutator".
+enum af_vote_call_flags : uint8_t
+{
+    // `mutators` is the complete selection, empty included. Clear means "keep
+    // whatever set the session is running".
+    AF_VOTE_CALL_FLAG_MUTATORS_EXPLICIT = 1 << 0,
 };
 
 // The `baseline_kind` byte appended after a level entry's flags: which mutator
@@ -322,6 +334,7 @@ enum class af_server_req_type : uint8_t
     af_sreq_jetpack_state = 0x9,       // Alpine 1.4 (5 bytes: obj_handle, on)
     af_sreq_riot_shield_state = 0xA,   // Alpine 1.4 (20 bytes: obj_handle, life, impact_pos)
     af_sreq_award = 0xB,               // Alpine 1.4 (2 bytes: award_id, victim_player_id; 0xFF = no victim)
+    af_sreq_active_mutators = 0xC,     // Alpine 1.4 (variable: one declaration set, see blob_declaration_set)
 };
 
 struct ShouldGibPayload
@@ -801,6 +814,8 @@ struct AfVoteCallParams
     uint8_t gametype = af_vote_gametype_none;
     uint8_t extend_minutes = af_vote_extend_default_minutes;
     std::vector<VoteMutatorInput> mutators;
+    // False means "inherit the session's set", the legacy/chat-vote meaning.
+    bool mutators_explicit = false;
     bool preserve = true;
 };
 
@@ -911,6 +926,10 @@ void af_send_vote_state_update(rf::Player* player, uint8_t yes, uint8_t no, uint
 void af_send_vote_state_end(rf::Player* player, AfVoteResult result, bool passed,
                             std::string_view detail);
 void af_send_vote_options_data(rf::Player* player);
+// Push the mutator set currently in force. Called on join and whenever the active
+// rules are (re)applied.
+void af_send_active_mutators(rf::Player* player);
+void af_send_active_mutators_to_all();
 
 // server -> client state (Pit + match ready system)
 void af_send_ready_prompt(rf::Player* player, uint8_t state); // 0/1/2 (see ReadyPromptPayload)

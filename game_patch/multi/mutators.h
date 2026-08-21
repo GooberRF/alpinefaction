@@ -8,8 +8,6 @@
 #include <toml++/toml.hpp>
 #include "server_internal.h"
 
-struct AlpineServerConfigRules;
-
 namespace rf
 {
     struct Entity;
@@ -228,20 +226,34 @@ toml::array mutator_declarations_to_toml_array(const std::vector<MutatorDeclarat
 
 // Validate packet-supplied mutator selections against the registry and turn them
 // into declarations. Returns an error string on failure, std::nullopt on success.
+// `game_type` is the type the vote would actually run under; a mutator not valid for
+// it is rejected. Explicit wire selections only - an inherited set must keep crossing
+// game types.
 std::optional<std::string> mutators_build_declarations_from_vote(
-    const std::vector<VoteMutatorInput>& input, std::vector<MutatorDeclaration>& out);
+    const std::vector<VoteMutatorInput>& input, rf::NetGameType game_type,
+    std::vector<MutatorDeclaration>& out);
 
-// Human-readable labels of the declared mutators, joined with ", ".
-std::string mutators_join_labels(const std::vector<MutatorDeclaration>& declarations);
+// Labels of the declared mutators, joined with ", ". Passing a game type drops the
+// declarations it would filter out at application time.
+std::string mutators_join_labels(const std::vector<MutatorDeclaration>& declarations,
+                                 std::optional<rf::NetGameType> game_type = std::nullopt);
 
-// The rules `level_filename` would run with if no vote were involved: its
-// rotation entry's rules when it is in the rotation, otherwise the base rules —
-// in both cases with config-declared mutators stripped.
-const AlpineServerConfigRules& vote_natural_rules_for_level(std::string_view level_filename);
+// Labels of the mutators these rules actually put in force, or nullopt when none did.
+// Every ManualRulesOverride label line derives from here.
+std::optional<std::string> mutators_active_labels_string(const AlpineServerConfigRules& rules);
 
-// Build the rules a level/match vote should install: the voted level's natural
-// rules (above), optionally re-based on a voted game type plus that type's
-// defaults, then the voted mutators applied in MUTATOR_APPLY_ORDER.
-std::optional<ManualRulesOverride> load_vote_rules_override(
+// The game type a level runs under when nothing names one, in precedence order: its
+// rotation entry's type, else Run for a quirks-table run map, else the base type if it
+// can host the level, else the filename prefix's type, else the base type.
+rf::NetGameType resolve_level_default_game_type(std::string_view level_filename);
+
+// Rules for `game_type` built without inheriting any other game type's fields.
+// `mutators` is applied last, in MUTATOR_APPLY_ORDER.
+AlpineServerConfigRules build_derived_server_rules(rf::NetGameType game_type,
+                                                   const std::vector<MutatorDeclaration>& mutators);
+
+// Rules a level/match vote (or a manual level load) installs. `gametype` falls back
+// to resolve_level_default_game_type.
+ManualRulesOverride load_vote_rules_override(
     std::string_view level_filename, const std::vector<MutatorDeclaration>& mutators,
     std::optional<rf::NetGameType> gametype);

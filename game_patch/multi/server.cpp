@@ -3452,6 +3452,9 @@ void server_reliable_socket_ready(rf::Player* player)
 
     // bring a player who joined during a vote up to date (AF 1.4+ only)
     server_vote_send_state_to_new_player(player);
+    // the vote panel pre-selects the session's mutator set, which is not in the
+    // (config-derived) vote options blob
+    af_send_active_mutators(player);
 
     // alert alpine clients to the queued match on join
     if (g_match_info.pre_match_active && player->version_info.software == ClientSoftware::AlpineFaction) {

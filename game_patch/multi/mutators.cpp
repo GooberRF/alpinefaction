@@ -44,6 +44,7 @@
 #include "../main/main.h"
 #include "../hud/multi_spectate.h"
 #include "../misc/player.h"
+#include "../misc/alpine_options.h"
 #include "../misc/alpine_settings.h"
 
 // Spawn reserve for a no-clip "infinite ammo" weapon. Firing draws from reserve,
@@ -795,7 +796,7 @@ void apply_mutators_from_toml(const toml::array& mutators_arr, AlpineServerConfi
             def->apply(rules, it->second);
             labels.push_back(def->label);
         }
-        else {
+        else if (!g_rules_parse_quiet) {
             rf::console::print("  [WARN] mutator '{}' does nothing in this game type and was not applied\n", def->name);
         }
 
@@ -857,7 +858,8 @@ toml::array mutator_declarations_to_toml_array(const std::vector<MutatorDeclarat
 }
 
 std::optional<std::string> mutators_build_declarations_from_vote(
-    const std::vector<VoteMutatorInput>& input, std::vector<MutatorDeclaration>& out)
+    const std::vector<VoteMutatorInput>& input, rf::NetGameType game_type,
+    std::vector<MutatorDeclaration>& out)
 {
     out.clear();
 
@@ -869,6 +871,10 @@ std::optional<std::string> mutators_build_declarations_from_vote(
         }
         if (!seen_ids.insert(entry.mutator_id).second) {
             return std::format("mutator '{}' was selected more than once", info->label);
+        }
+        if (!mutator_gametype_mask_allows(info->valid_gametype_mask, static_cast<uint8_t>(game_type))) {
+            return std::format("mutator '{}' cannot be used in {}", info->label,
+                               multi_game_type_name_short(game_type));
         }
 
         MutatorDeclaration decl;
@@ -905,6 +911,11 @@ std::optional<std::string> mutators_build_declarations_from_vote(
                     decl.options[opt->name] = opt_in.int_value;
                     break;
                 case MutatorOptionType::Float:
+                    // Nothing downstream is prepared for a NaN or infinity off the wire.
+                    if (!std::isfinite(opt_in.float_value)) {
+                        return std::format("option '{}' of mutator '{}' has an out of range value",
+                                           opt->name, info->label);
+                    }
                     decl.options[opt->name] = opt_in.float_value;
                     break;
                 case MutatorOptionType::String:
@@ -957,14 +968,22 @@ static std::string mutator_vote_detail(const MutatorDef& def, const MutatorDecla
     return *str;
 }
 
-std::string mutators_join_labels(const std::vector<MutatorDeclaration>& declarations)
+static std::string join_labels(const std::vector<MutatorDeclaration>& declarations,
+                               std::optional<rf::NetGameType> game_type)
 {
     std::string joined;
     for (const auto& decl : declarations) {
+        const MutatorDef* def = find_mutator_by_name(decl.name);
+        // Same availability test apply_mutators_from_toml runs, so the line can never
+        // name a mutator the game type drops.
+        if (def && game_type
+            && !mutator_gametype_mask_allows(gametype_mask_for_req(def->gametype_req),
+                                             static_cast<uint8_t>(*game_type)))
+            continue;
+
         if (!joined.empty())
             joined += ", ";
 
-        const MutatorDef* def = find_mutator_by_name(decl.name);
         if (!def) {
             joined += decl.name;
             continue;
@@ -978,62 +997,100 @@ std::string mutators_join_labels(const std::vector<MutatorDeclaration>& declarat
     return joined;
 }
 
-const AlpineServerConfigRules& vote_natural_rules_for_level(std::string_view level_filename)
+std::string mutators_join_labels(const std::vector<MutatorDeclaration>& declarations,
+                                 std::optional<rf::NetGameType> game_type)
 {
-    for (const auto& entry : g_alpine_server_config.levels) {
-        if (string_iequals(entry.level_filename, level_filename))
-            return entry.rule_overrides_no_mutators;
-    }
-    // Not in the rotation: a manually named level runs on the base rules.
-    return g_alpine_server_config.base_rules_no_mutators;
+    return join_labels(declarations, game_type);
 }
 
-std::optional<ManualRulesOverride> load_vote_rules_override(
-    std::string_view level_filename, const std::vector<MutatorDeclaration>& mutators,
-    std::optional<rf::NetGameType> gametype)
+rf::NetGameType resolve_level_default_game_type(std::string_view level_filename)
 {
-    if (mutators.empty() && !gametype)
-        return std::nullopt;
+    const std::string normalized = normalize_level_filename(level_filename);
 
-    // Inheritance rule for a vote override, in layering order:
-    //   1. the rules the voted level would run with on its own — its rotation
-    //      entry's rules if it is in the rotation, otherwise the base rules —
-    //      with config-declared mutators stripped (voted mutators REPLACE
-    //      configured ones rather than stacking on them),
-    //   2. the voted game type and its gametype defaults, if one was voted,
-    //   3. the voted mutator declarations.
-    // Starting from the base rules instead (as this used to) silently dragged the
-    // base game type onto a level whose rotation entry overrides it, so adding a
-    // single mutator to a level vote could flip the whole game type.
-    AlpineServerConfigRules rules = vote_natural_rules_for_level(level_filename);
-
-    if (gametype && rules.game_type != *gametype) {
-        // Only re-derive the gametype defaults when the type actually CHANGES.
-        // apply_defaults_for_game_type() overwrites operator-configured rules
-        // (spawn loadout, pvp_damage_modifier, spawn_delay, ...), so explicitly
-        // voting the type a level already runs must behave the same as voting
-        // "Server default" rather than silently wiping the config. It also
-        // rebuilds the loadout and clears MutatorConfig, so mutators come after.
-        rules.game_type = *gametype;
-        apply_defaults_for_game_type(*gametype, rules);
+    for (const auto& entry : g_alpine_server_config.levels) {
+        if (string_iequals(entry.level_filename, normalized))
+            return entry.rule_overrides.game_type;
     }
 
+    // Run maps carry no prefix, so the quirks table is the only thing that identifies
+    // them. Behind the rotation lookup, which the operator meant.
+    if (is_known_run_level(normalized))
+        return rf::NetGameType::NG_TYPE_RUN;
+
+    // Ahead of the prefix scan: the base game type gets the level if it can host it,
+    // so a TeamDM server keeps TeamDM for dm07 rather than the prefix's DM.
+    const rf::NetGameType base_gt = g_alpine_server_config.base_rules.game_type;
+    if (multi_level_name_matches_game_type(normalized, base_gt))
+        return base_gt;
+
+    if (auto from_prefix = multi_game_type_for_level_prefix(normalized))
+        return *from_prefix;
+
+    return base_gt;
+}
+
+AlpineServerConfigRules build_derived_server_rules(rf::NetGameType game_type,
+                                                   const std::vector<MutatorDeclaration>& mutators)
+{
+    const auto& cfg = g_alpine_server_config;
+
+    // Nothing to derive: the fully layered base rules ARE the answer. Rebuilding would
+    // apply the mutators last and lose the keys-over-mutators layering.
+    if (game_type == cfg.base_rules.game_type && mutators == cfg.base_rules.mutators.declarations) {
+        return cfg.base_rules;
+    }
+
+    // Every runtime derivation replays a set the config parse already reported on.
+    const RulesParseQuietGuard quiet;
+
+    AlpineServerConfigRules rules;
+    if (game_type == cfg.base_rules.game_type) {
+        // The operator's keys already sit on this game type's defaults in parse order.
+        rules = cfg.base_rules_no_mutators;
+    }
+    else {
+        // Never from another game type's materialized rules: they carry fields
+        // apply_defaults_for_game_type does not claim back.
+        rules = cfg.base_rules_keys_only;
+        rules.game_type = game_type;
+        apply_defaults_for_game_type(game_type, rules);
+    }
+
+    // Applied AFTER the base keys, the reverse of the config parse: a voted layer has
+    // to win over what it was layered onto.
     if (!mutators.empty()) {
         const toml::array arr = mutator_declarations_to_toml_array(mutators);
         apply_mutators_from_toml(arr, rules);
     }
 
-    ManualRulesOverride result;
-    // Reported from what actually applied rather than from what was voted.
+    return rules;
+}
+
+std::optional<std::string> mutators_active_labels_string(const AlpineServerConfigRules& rules)
+{
     std::string labels;
     for (const auto& label : rules.mutators.active_labels) {
         if (!labels.empty())
             labels += ", ";
         labels += label;
     }
+    if (labels.empty())
+        return std::nullopt;
+    return labels;
+}
+
+ManualRulesOverride load_vote_rules_override(
+    std::string_view level_filename, const std::vector<MutatorDeclaration>& mutators,
+    std::optional<rf::NetGameType> gametype)
+{
+    const rf::NetGameType game_type = gametype.value_or(resolve_level_default_game_type(level_filename));
+
+    AlpineServerConfigRules rules = build_derived_server_rules(game_type, mutators);
+
+    ManualRulesOverride result;
+    // Reported from what actually applied rather than from what was voted.
+    result.mutator_labels = mutators_active_labels_string(rules);
     result.rules = std::move(rules);
-    if (!labels.empty())
-        result.mutator_labels = std::move(labels);
     return result;
 }
 
@@ -2619,7 +2676,7 @@ static void crits_play_fire_sound(const rf::Vector3& pos)
 // Defined with the rest of the telegraph below; the listen host drives them from the server side.
 static void crit_glow_add(int handle, const rf::gr::Color& color);
 static rf::gr::Color crit_glow_color_for(const rf::Player* pp);
-static void crits_flash_reticle();
+static void crits_flash_reticle(const rf::gr::Color& color);
 
 // The shooter's own client flashes its reticle for every crit fire event, whatever the weapon
 // class, so this goes out for hitscan, melee and the continuous window too - unlike the
@@ -2632,7 +2689,7 @@ static void crits_send_shot_to_shooter(rf::Player* shooter, int weapon_type)
         return;
     // A listen host's own packet would be discarded, so its flash is stamped directly.
     if (shooter == rf::local_player) {
-        crits_flash_reticle();
+        crits_flash_reticle(crit_glow_color_for(shooter));
     }
     else if (is_player_minimum_af_client_version(shooter, 1, 4, 0)) {
         af_send_crit_shot_packet(shooter->net_data->player_id,
@@ -2722,7 +2779,6 @@ static constexpr rf::gr::Color CRIT_GLOW_COLOR_NEUTRAL{255, 144, 32};
 // gives on the screen that fired it, so it covers every weapon class.
 static constexpr int64_t CRIT_RETICLE_FLASH_MS = 350;
 static constexpr int CRIT_RETICLE_FLASH_SIZE = 96; // ~3x the stock reticle bitmap
-static constexpr rf::gr::Color CRIT_RETICLE_FLASH_COLOR{255, 96, 32};
 static constexpr rf::gr::Mode CRIT_RETICLE_FLASH_MODE{
     rf::gr::TEXTURE_SOURCE_CLAMP,
     rf::gr::COLOR_SOURCE_VERTEX_TIMES_TEXTURE,
@@ -2731,7 +2787,14 @@ static constexpr rf::gr::Mode CRIT_RETICLE_FLASH_MODE{
     rf::gr::ZBUFFER_TYPE_NONE,
     rf::gr::FOG_NOT_ALLOWED,
 };
-static int64_t g_crit_reticle_flash_at = 0;
+// Colour resolved when the flash is stamped, not when it is drawn: a first person
+// spectator flashes in the shooter's colour rather than its own.
+struct CritReticleFlash
+{
+    int64_t at = 0;
+    rf::gr::Color color = CRIT_GLOW_COLOR_NEUTRAL;
+};
+static CritReticleFlash g_crit_reticle_flash;
 
 struct CritShotMarker
 {
@@ -2772,9 +2835,9 @@ static void crit_glow_add(int handle, const rf::gr::Color& color)
     g_crit_glows.push_back({handle, color});
 }
 
-static void crits_flash_reticle()
+static void crits_flash_reticle(const rf::gr::Color& color)
 {
-    g_crit_reticle_flash_at = timer::get_i64(1000);
+    g_crit_reticle_flash = {timer::get_i64(1000), color};
 }
 
 // The engine's own projectile head glow texture.
@@ -2803,7 +2866,7 @@ void crits_on_crit_shot(uint8_t shooter_player_id, uint8_t weapon_type)
     const bool spectating_shooter = !self && multi_spectate_is_first_person()
         && multi_spectate_get_target_player() == shooter;
     if (self || spectating_shooter)
-        crits_flash_reticle();
+        crits_flash_reticle(color);
 
     // Everything below telegraphs a projectile in flight; a hitscan, melee or flame crit has
     // none, and the flash above is its whole story. The shooter and anyone spectating it are
@@ -2896,16 +2959,16 @@ void crits_client_render()
 // HUD and never runs outside multiplayer gameplay.
 void crits_client_render_reticle_flash()
 {
-    if (!g_crit_reticle_flash_at || !g_alpine_game_config.crit_reticle_flash)
+    if (!g_crit_reticle_flash.at || !g_alpine_game_config.crit_reticle_flash)
         return;
-    const int64_t elapsed = timer::get_i64(1000) - g_crit_reticle_flash_at;
+    const int64_t elapsed = timer::get_i64(1000) - g_crit_reticle_flash.at;
     if (elapsed < 0 || elapsed >= CRIT_RETICLE_FLASH_MS) {
-        g_crit_reticle_flash_at = 0;
+        g_crit_reticle_flash = {};
         return;
     }
     const int glow_bitmap = crit_glow_bitmap();
     if (glow_bitmap < 0) {
-        g_crit_reticle_flash_at = 0;
+        g_crit_reticle_flash = {};
         return;
     }
     int bm_w = 0, bm_h = 0;
@@ -2916,8 +2979,8 @@ void crits_client_render_reticle_flash()
     const float fade = 1.0f - static_cast<float>(elapsed) / CRIT_RETICLE_FLASH_MS;
     const int x = (rf::gr::clip_width() - CRIT_RETICLE_FLASH_SIZE) / 2;
     const int y = (rf::gr::clip_height() - CRIT_RETICLE_FLASH_SIZE) / 2;
-    rf::gr::set_color(CRIT_RETICLE_FLASH_COLOR.red, CRIT_RETICLE_FLASH_COLOR.green,
-        CRIT_RETICLE_FLASH_COLOR.blue, static_cast<rf::ubyte>(fade * 255.0f));
+    const rf::gr::Color& color = g_crit_reticle_flash.color;
+    rf::gr::set_color(color.red, color.green, color.blue, static_cast<rf::ubyte>(fade * 255.0f));
     rf::gr::bitmap_scaled(glow_bitmap, x, y, CRIT_RETICLE_FLASH_SIZE, CRIT_RETICLE_FLASH_SIZE,
         0, 0, bm_w, bm_h, false, false, CRIT_RETICLE_FLASH_MODE);
 }
@@ -3121,7 +3184,7 @@ static void crits_reset()
     g_crit_shot_markers.clear();
     g_crit_glows.clear();
     g_crit_local_shots.clear();
-    g_crit_reticle_flash_at = 0;
+    g_crit_reticle_flash = {};
 }
 
 // The universal fire function: the listen host's own trigger, bots, and every remote
