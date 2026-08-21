@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <array>
+#include <bitset>
 #include <chrono>
 #include <deque>
 #include <format>
@@ -8,7 +9,9 @@
 #include <utility>
 #include <vector>
 #include <common/utils/list-utils.h>
+#include "../rf/collide.h"
 #include "../rf/entity.h"
+#include "../rf/geometry.h"
 #include "../rf/math/vector.h"
 #include "../rf/multi.h"
 #include "../rf/object.h"
@@ -18,10 +21,12 @@
 #include "../fflink/afstats_events.h"
 #include "../hud/hud.h"
 #include "../misc/alpine_settings.h"
+#include "../misc/player.h"
 #include "../os/console.h"
 #include "../sound/sound.h"
 #include "alpine_packets.h"
 #include "awards.h"
+#include "bagman.h"
 #include "demo/demo.h"
 #include "gametype.h"
 #include "kill_attribution.h"
@@ -93,6 +98,43 @@ bool is_riot_weapon(int weapon_type)
     return shield >= 0 && weapon_type == shield;
 }
 
+bool is_explosive_weapon(int weapon_type)
+{
+    return kill_attribution_is_valid_weapon_type(weapon_type)
+        && rf::weapon_types[weapon_type].damage_radius > 0.0f;
+}
+
+bool is_scoped_weapon(int weapon_type)
+{
+    if (!kill_attribution_is_valid_weapon_type(weapon_type)) {
+        return false;
+    }
+    return weapon_type == rf::sniper_rifle_weapon_type
+        || weapon_type == rf::rail_gun_weapon_type
+        || weapon_type == rf::scope_assault_rifle_weapon_type;
+}
+
+bool player_is_zoomed(const rf::Player* player)
+{
+    return player && (player->fpgun_data.zooming_in || player->fpgun_data.scanning_for_target);
+}
+
+// scanning_for_target is only reliable for weapons with scanners (ie. rail).
+bool player_scanner_engaged(const rf::Player* player, const rf::Entity* ep)
+{
+    return player && ep && player->fpgun_data.scanning_for_target
+        && rf::weapon_has_scanner(ep->ai.current_primary_weapon);
+}
+
+bool player_is_flag_carrier(rf::Player* player)
+{
+    if (rf::multi_get_game_type() == rf::NG_TYPE_CTF) {
+        return rf::multi_ctf_get_red_flag_player() == player ||
+        rf::multi_ctf_get_blue_flag_player() == player;
+    }
+    return gt_is_salvage() && salvage_get_carrier() == player;
+}
+
 // -------------------------------------------------------------------------
 // Per-player state. Indexed by player id, which the engine REUSES - see
 // awards_on_player_destroy.
@@ -109,6 +151,15 @@ constexpr float denied_base_radius = 5.0f;
 constexpr int area_denied_capture_milli = 98000;
 constexpr int64_t bag_check_window_ms = 1000;
 constexpr uint8_t nemesis_kills_needed = 5;
+constexpr int hat_trick_caps_needed = 3;
+constexpr int stonewall_kills_needed = 5;
+constexpr int clean_sweep_min_roster = 2;
+constexpr int64_t hazard_pay_hold_ms = 60000;
+constexpr int64_t censored_window_ms = 1000;
+constexpr int64_t x_ray_scanner_lockout_ms = 5000;
+constexpr int shotgun_volley_kills_needed = 2;
+constexpr float airshot_clearance = 1.6f;
+constexpr int award_trace_flags = rf::CF_ANY_HIT | rf::CF_PROCESS_INVISIBLE_FACES;
 // One detonation resolves all its deaths in a single frame, so the per-kill awards (Last Stand,
 // Riot Control, ...) would otherwise land once per victim. The same award within this window is one
 // achievement, not several. Kept to a few frames on purpose: kills a human lands in genuine quick
@@ -133,9 +184,25 @@ struct AwardPlayerState
     int streak = 0;
     // Flag Runner: this player stole the flag and has neither died nor dropped it since.
     bool clean_steal = false;
-    // Bag Check: when this player last took the bag.
+    // Bag Check: when this player last took the bag. Hazard Pay latches off the same run.
     bool has_bag_pickup = false;
     int64_t bag_pickup_ms = 0;
+    bool hazard_pay_granted = false;
+    // Hat Trick: captures since this life began.
+    int caps_this_life = 0;
+    // Stonewall: flag carriers killed this life.
+    int carrier_kills = 0;
+    // Clean Sweep: the enemies killed this life, and whether the sweep already paid out. A bitset,
+    // not a container: 256 of these live in a flat array, so the state may not heap-allocate.
+    std::bitset<rf::multi_max_player_id> kills_this_life;
+    bool clean_sweep_granted = false;
+    // Censored: when this player last put up a spray.
+    int64_t last_spray_ms = 0;
+    // X-Ray: when the rail scanner was last seen engaged.
+    int64_t last_scanner_ms = 0;
+    // 2fer: the shotgun volley being counted.
+    int64_t last_shotgun_kill_ms = 0;
+    int shotgun_volley_kills = 0;
     // Per-award repeat throttle; 0 = never granted.
     std::array<int64_t, award_id_count> last_grant_ms{};
 };
@@ -151,6 +218,9 @@ AwardPlayerState* state_for(const rf::Player* player)
     const int id = player_id_of(player);
     return id < 0 ? nullptr : &player_states()[id];
 }
+
+// First Blood: one per level.
+bool g_first_blood_claimed = false;
 
 // -------------------------------------------------------------------------
 // Nemesis (a status, not an award) and the Revenge award it enables.
@@ -539,6 +609,199 @@ void check_area_denied(rf::Player* killer, rf::Player* victim, int victim_team_r
     }
 }
 
+void check_airshot(rf::Player* killer, rf::Player* victim, int weapon_type, bool splash)
+{
+    if (splash || !is_explosive_weapon(weapon_type)) {
+        return;
+    }
+    rf::Entity* victim_ep = rf::entity_from_handle(victim->entity_handle);
+    if (!victim_ep || rf::entity_on_ground(victim_ep) || rf::entity_is_swimming(victim_ep)) {
+        return;
+    }
+
+    rf::Vector3 p0 = victim_ep->pos;
+    rf::Vector3 p1 = p0;
+    p1.y -= victim_ep->p_data.radius + airshot_clearance;
+    rf::GCollisionOutput collision{};
+    if (rf::collide_linesegment_level_solid(p0, p1, award_trace_flags, &collision)) {
+        return;
+    }
+    grant_award(killer, AwardId::airshot, victim);
+}
+
+// Roster membership, not aliveness.
+bool counts_toward_clean_sweep(rf::Player& player, int opposing_team)
+{
+    return player.team == opposing_team &&
+    !player.is_non_participant() &&
+    !player.is_spectator &&
+    !player_is_idle(&player);
+}
+
+void check_clean_sweep(rf::Player* killer, rf::Player* victim)
+{
+    if (!multi_is_team_game_type()) {
+        return;
+    }
+    AwardPlayerState* state = state_for(killer);
+    const int victim_id = player_id_of(victim);
+    if (!state || victim_id < 0) {
+        return;
+    }
+    state->kills_this_life.set(static_cast<size_t>(victim_id));
+    if (state->clean_sweep_granted) {
+        return;
+    }
+
+    const int opposing_team = killer->team == 0 ? 1 : 0;
+    int required = 0;
+    for (rf::Player& other : SinglyLinkedList{rf::player_list}) {
+        const int other_id = player_id_of(&other);
+        if (other_id < 0 || !counts_toward_clean_sweep(other, opposing_team)) {
+            continue;
+        }
+        ++required;
+        if (!state->kills_this_life.test(static_cast<size_t>(other_id))) {
+            return;
+        }
+    }
+    if (required < clean_sweep_min_roster) {
+        return;
+    }
+    state->clean_sweep_granted = true;
+    grant_award(killer, AwardId::clean_sweep, victim);
+}
+
+void check_quickdraw(rf::Player* killer, rf::Player* victim, int weapon_type, bool splash)
+{
+    if (splash || !is_scoped_weapon(weapon_type) || player_is_zoomed(killer)) {
+        return;
+    }
+    rf::Entity* victim_ep = rf::entity_from_handle(victim->entity_handle);
+    if (!victim_ep || !is_scoped_weapon(victim_ep->ai.current_primary_weapon)) {
+        return;
+    }
+    if (!player_is_zoomed(victim)) {
+        return;
+    }
+    grant_award(killer, AwardId::quickdraw, victim);
+}
+
+void check_stonewall(rf::Player* killer, rf::Player* victim)
+{
+    if (!player_is_flag_carrier(victim)) {
+        return;
+    }
+    AwardPlayerState* state = state_for(killer);
+    if (!state) {
+        return;
+    }
+    if (++state->carrier_kills >= stonewall_kills_needed) {
+        state->carrier_kills = 0;
+        grant_award(killer, AwardId::stonewall, victim);
+    }
+}
+
+void check_last_laugh(rf::Player* killer, rf::Player* victim, int weapon_type, int killer_entity_handle)
+{
+    rf::Entity* killer_ep = rf::entity_from_handle(killer_entity_handle);
+    if (!killer_ep) {
+        return;
+    }
+    // Exactly the state Last Stand excludes.
+    if (killer_ep->life > 0.0f && !rf::entity_is_dying(killer_ep)) {
+        return;
+    }
+    const int killer_id = player_id_of(killer);
+    const int victim_id = player_id_of(victim);
+    const bool own_fire = killer_id >= 0 && victim_id >= 0
+        && mutators_player_fire_igniter(static_cast<uint8_t>(victim_id)) == killer_id;
+    if (!is_explosive_weapon(weapon_type) && !own_fire) {
+        return;
+    }
+    grant_award(killer, AwardId::last_laugh, victim);
+}
+
+void check_depth_charge(rf::Player* killer, rf::Player* victim, int killer_entity_handle)
+{
+    rf::Entity* killer_ep = rf::entity_from_handle(killer_entity_handle);
+    rf::Entity* victim_ep = rf::entity_from_handle(victim->entity_handle);
+    if (!killer_ep || !victim_ep) {
+        return;
+    }
+    if (!(killer_ep->entity_flags & rf::EF_IN_WATER) || !(victim_ep->entity_flags & rf::EF_IN_WATER)) {
+        return;
+    }
+    grant_award(killer, AwardId::depth_charge, victim);
+}
+
+// The victim's spray stamp survives their death.
+void check_censored(rf::Player* killer, rf::Player* victim)
+{
+    const AwardPlayerState* state = state_for(victim);
+    if (!state || state->last_spray_ms == 0) {
+        return;
+    }
+    if (now_ms() - state->last_spray_ms <= censored_window_ms) {
+        grant_award(killer, AwardId::censored, victim);
+    }
+}
+
+// A shotgun volley is many projectiles, so the shot scope cannot group its kills - only their
+// arrival time can.
+void check_shotgun_volley(rf::Player* killer, rf::Player* victim, int weapon_type, bool splash)
+{
+    if (splash ||
+        !kill_attribution_is_valid_weapon_type(weapon_type) ||
+        weapon_type != rf::shotgun_weapon_type) {
+        return;
+    }
+    AwardPlayerState* state = state_for(killer);
+    if (!state) {
+        return;
+    }
+    const int64_t now = now_ms();
+    const bool same_volley = state->last_shotgun_kill_ms != 0
+        && now - state->last_shotgun_kill_ms <= award_repeat_window_ms;
+    state->shotgun_volley_kills = same_volley ? state->shotgun_volley_kills + 1 : 1;
+    state->last_shotgun_kill_ms = now;
+    if (state->shotgun_volley_kills == shotgun_volley_kills_needed) {
+        grant_award(killer, AwardId::twofer, victim);
+    }
+}
+
+void check_x_ray(rf::Player* attacker, rf::Player* victim, int weapon_type)
+{
+    if (!kill_attribution_is_valid_weapon_type(weapon_type)
+        || weapon_type != rf::rail_gun_weapon_type) {
+        return;
+    }
+    AwardPlayerState* state = state_for(attacker);
+    if (!state) {
+        return;
+    }
+    const int64_t now = now_ms();
+    if (state->last_scanner_ms != 0 && now - state->last_scanner_ms <= x_ray_scanner_lockout_ms) {
+        return;
+    }
+    // Only the Salvage and Bagman carriers are outlined through walls, so exclude them.
+    if ((gt_is_salvage() && salvage_get_carrier() == victim) || g_bagman_info.carrier == victim) {
+        return;
+    }
+    rf::Entity* attacker_ep = rf::entity_from_handle(attacker->entity_handle);
+    rf::Entity* victim_ep = rf::entity_from_handle(victim->entity_handle);
+    if (!attacker_ep || !victim_ep || player_scanner_engaged(attacker, attacker_ep)) {
+        return;
+    }
+    rf::Vector3 p0 = attacker_ep->eye_pos;
+    rf::Vector3 p1 = victim_ep->pos;
+    rf::GCollisionOutput collision{};
+    if (!rf::collide_linesegment_level_solid(p0, p1, award_trace_flags, &collision)) {
+        return; // the shot had a clean line, so nothing was shot through
+    }
+    grant_award(attacker, AwardId::x_ray, victim);
+}
+
 // Nemesis is a private status message pair, never an award; Revenge is the award for breaking one.
 void update_nemesis(rf::Player* killer, rf::Player* victim)
 {
@@ -621,7 +884,20 @@ constexpr std::array<AwardDisplay, award_id_count> award_display{{
     {"REVENGE!", "REVENGE ON {}!"},
     {"DOMINATING!", "DOMINATING {}!"},
     {"YOU'RE ON A RAMPAGE!", nullptr},
+    {"FIRST BLOOD!", nullptr},
+    {"HAT TRICK!", nullptr},
+    {"AIRSHOT!", nullptr},
+    {"CLEAN SWEEP!", nullptr},
+    {"QUICKDRAW!", nullptr},
+    {"STONEWALL!", nullptr},
+    {"LOCKDOWN!", nullptr},
+    {"HAZARD PAY!", nullptr},
+    {"LAST LAUGH!", nullptr},
+    {"X-RAY!", nullptr},
+    {"DEPTH CHARGE!", nullptr},
+    {"CENSORED!", nullptr},
 }};
+static_assert(award_display[award_id_count - 1].text != nullptr);
 
 constexpr int award_display_seconds = 3;
 // The notification slot fades for 500 ms after its 3 s, so the next award waits for both.
@@ -694,6 +970,10 @@ void awards_on_kill(rf::Player* victim, rf::Player* killer, int weapon_type, boo
         victim_state->hit_chain = 0;
         victim_state->shot_pending = false;
         victim_state->clean_steal = false;
+        victim_state->caps_this_life = 0;
+        victim_state->carrier_kills = 0;
+        victim_state->kills_this_life.reset();
+        victim_state->clean_sweep_granted = false;
     }
 
     sample_ctf_flag_homes();
@@ -745,12 +1025,25 @@ void awards_on_kill(rf::Player* victim, rf::Player* killer, int weapon_type, boo
         grant_award(killer, AwardId::toasty, victim);
     }
 
+    if (!g_first_blood_claimed) {
+        g_first_blood_claimed = true;
+        grant_award(killer, AwardId::first_blood, victim);
+    }
+
+    check_censored(killer, victim);
     check_riot_control(killer, victim, weapon_type);
     check_excellent(killer, victim);
     check_streak(killer, victim);
     check_last_stand(killer, victim, killer_entity_handle);
     check_capture_denied(killer, victim, victim_team);
     check_area_denied(killer, victim, victim_team);
+    check_airshot(killer, victim, weapon_type, splash);
+    check_clean_sweep(killer, victim);
+    check_quickdraw(killer, victim, weapon_type, splash);
+    check_stonewall(killer, victim);
+    check_last_laugh(killer, victim, weapon_type, killer_entity_handle);
+    check_depth_charge(killer, victim, killer_entity_handle);
+    check_shotgun_volley(killer, victim, weapon_type, splash);
     update_nemesis(killer, victim);
 }
 
@@ -792,6 +1085,24 @@ void awards_on_direct_hit(rf::Player* attacker, rf::Player* victim, int weapon_t
     ++state->hit_chain;
     if (state->hit_chain % 2 == 0) {
         grant_award(attacker, AwardId::impressive, victim);
+    }
+    check_x_ray(attacker, victim, weapon_type);
+}
+
+void awards_server_do_frame()
+{
+    if (!awards_tracking_active()) {
+        return;
+    }
+    const int64_t now = now_ms();
+    for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
+        AwardPlayerState* state = state_for(&player);
+        if (!state) {
+            continue;
+        }
+        if (player_scanner_engaged(&player, rf::entity_from_handle(player.entity_handle))) {
+            state->last_scanner_ms = now;
+        }
     }
 }
 
@@ -876,6 +1187,19 @@ void awards_on_ctf_flag_dropped(rf::Player* player)
     }
 }
 
+// Hat Trick, shared by the two modes that capture flags (CTF and SAL).
+static void awards_note_capture(rf::Player* player)
+{
+    AwardPlayerState* state = state_for(player);
+    if (!state) {
+        return;
+    }
+    if (++state->caps_this_life >= hat_trick_caps_needed) {
+        state->caps_this_life = 0;
+        grant_award(player, AwardId::hat_trick);
+    }
+}
+
 void awards_on_ctf_capture(rf::Player* player)
 {
     if (!awards_tracking_active()) {
@@ -886,6 +1210,7 @@ void awards_on_ctf_capture(rf::Player* player)
         state->clean_steal = false;
         grant_award(player, AwardId::flag_runner);
     }
+    awards_note_capture(player);
 }
 
 void awards_on_sal_flag_taken(rf::Player* player, bool from_spawn)
@@ -915,16 +1240,49 @@ void awards_on_sal_capture(rf::Player* player)
         state->clean_steal = false;
         grant_award(player, AwardId::flag_runner);
     }
+    awards_note_capture(player);
 }
 
 void awards_on_bagman_pickup(rf::Player* player)
+{
+    if (AwardPlayerState* state = state_for(player)) {
+        state->has_bag_pickup = true;
+        state->bag_pickup_ms = now_ms();
+        state->hazard_pay_granted = false;
+    }
+}
+
+void awards_on_bagman_drop(rf::Player* player)
+{
+    if (AwardPlayerState* state = state_for(player)) {
+        state->has_bag_pickup = false;
+        state->hazard_pay_granted = false;
+    }
+}
+
+void awards_on_bagman_hold_tick(rf::Player* carrier)
+{
+    if (!awards_tracking_active()) {
+        return;
+    }
+    AwardPlayerState* state = state_for(carrier);
+    if (!state || !state->has_bag_pickup || state->hazard_pay_granted) {
+        return;
+    }
+    if (now_ms() - state->bag_pickup_ms < hazard_pay_hold_ms) {
+        return;
+    }
+    state->hazard_pay_granted = true;
+    grant_award(carrier, AwardId::hazard_pay);
+}
+
+void awards_on_spray(rf::Player* player)
 {
     if (!awards_tracking_active()) {
         return;
     }
     if (AwardPlayerState* state = state_for(player)) {
-        state->has_bag_pickup = true;
-        state->bag_pickup_ms = now_ms();
+        state->last_spray_ms = now_ms();
     }
 }
 
@@ -952,12 +1310,17 @@ void awards_on_player_destroy(rf::Player* player)
         return;
     }
     player_states()[id] = AwardPlayerState{};
+    // The id is about to be handed to somebody else.
+    for (AwardPlayerState& state : player_states()) {
+        state.kills_this_life.reset(static_cast<size_t>(id));
+    }
     clear_nemesis_pairs_for(static_cast<uint8_t>(id));
 }
 
 void awards_level_init()
 {
     std::fill(player_states().begin(), player_states().end(), AwardPlayerState{});
+    g_first_blood_claimed = false;
     g_nemesis.clear();
     g_detonation_stack.clear();
     g_detonation_depth = 0;

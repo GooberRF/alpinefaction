@@ -31,9 +31,21 @@ enum class AwardId : uint8_t
     revenge = 13,
     dominating = 14,
     rampage = 15,
+    first_blood = 16,
+    hat_trick = 17,
+    airshot = 18,
+    clean_sweep = 19,
+    quickdraw = 20,
+    stonewall = 21,
+    lockdown = 22,
+    hazard_pay = 23,
+    last_laugh = 24,
+    x_ray = 25,
+    depth_charge = 26,
+    censored = 27,
 };
 
-constexpr uint8_t award_id_count = 16;
+constexpr uint8_t award_id_count = 28;
 
 // Wire sentinel for "this award has no opposing player", in the award packet's victim id.
 constexpr uint8_t award_no_victim = 0xFF;
@@ -42,8 +54,7 @@ void awards_do_patch();
 // Everything the module tracks is per level; nemesis pairs deliberately survive Pit/Wipeout round
 // boundaries, which do not reach here.
 void awards_level_init();
-// Player ids are reused, so a leaving player's state - including every nemesis pair it is part of -
-// has to go with it.
+// Player ids are reused, so we need to remove them from tracking.
 void awards_on_player_destroy(rf::Player* player);
 
 // -------------------------------------------------------------------------
@@ -54,6 +65,9 @@ void awards_on_player_destroy(rf::Player* player);
 // over the wire otherwise). Inert during pre-match. Exposed because a few awards are detected by
 // the gametype that owns the rule rather than by a condition in this module.
 void grant_award(rf::Player* recipient, AwardId id, rf::Player* victim = nullptr);
+
+// Server frame tick. Samples the per-player state that only exists as a live flag..
+void awards_server_do_frame();
 
 // Lethal transition, from entity_damage_hook. Runs for every death, killer included or not: the
 // victim-side resets (streak, sniper/rail chain) must fire on world deaths and suicides too.
@@ -98,7 +112,14 @@ void awards_on_sal_flag_dropped(rf::Player* player);
 void awards_on_sal_capture(rf::Player* player);
 
 void awards_on_bagman_pickup(rf::Player* player);
+// The bag left this player, however it left them: a Hazard Pay run only counts uninterrupted time.
+void awards_on_bagman_drop(rf::Player* player);
+// The carrier still holds the bag this frame, from bagman's server update.
+void awards_on_bagman_hold_tick(rf::Player* carrier);
 void awards_on_bagman_carrier_death(rf::Player* carrier, rf::Player* killer);
+
+// A spray the server actually accepted and applied.
+void awards_on_spray(rf::Player* player);
 
 // -------------------------------------------------------------------------
 // Client-side display

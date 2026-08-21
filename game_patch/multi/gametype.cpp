@@ -7,6 +7,7 @@
 #include <common/utils/list-utils.h>
 #include <common/version/version.h>
 #include "gametype.h"
+#include "awards.h"
 #include "bagman.h"
 #include "jetpack.h"
 #include "rounds.h"
@@ -1180,6 +1181,38 @@ static void esc_recalculate_stage_locks()
     }
 }
 
+// Lockdown: one team controls all control points (DC only).
+static void koth_maybe_grant_lockdown(const HillInfo& captured, HillOwner new_owner)
+{
+    if (!gt_is_dc() || !captured.trigger || !captured.handler) {
+        return;
+    }
+    int valid_hills = 0;
+    for (const HillInfo& hill : g_koth_info.hills) {
+        if (!hill.trigger || !hill.handler) {
+            continue;
+        }
+        if (hill.ownership != new_owner) {
+            return;
+        }
+        ++valid_hills;
+    }
+    if (valid_hills == 0) {
+        return;
+    }
+
+    const int capping_team = (new_owner == HillOwner::HO_Red) ? 0 : 1;
+    for (rf::Player& pl : SinglyLinkedList{rf::player_list}) {
+        if (pl.team != capping_team || !player_is_countable(pl)) {
+            continue;
+        }
+        if (!player_inside_hill_trigger(captured, pl)) {
+            continue;
+        }
+        grant_award(&pl, AwardId::lockdown);
+    }
+}
+
 static void koth_apply_ownership(HillInfo& h, HillOwner new_owner, bool announce = true, HillOwner scoring_team = HillOwner::HO_Neutral)
 {
     if (gt_is_rev() && new_owner == HillOwner::HO_Blue)
@@ -1222,8 +1255,9 @@ static void koth_apply_ownership(HillInfo& h, HillOwner new_owner, bool announce
 
         if (new_owner == HillOwner::HO_Red || new_owner == HillOwner::HO_Blue) {
             notify_capture_point_captured(h, new_owner);
+            koth_maybe_grant_lockdown(h, new_owner);
         }
-    
+
         if (announce) {
             //auto ids = on_capture_collect_player_ids_on_hill_for_team(h, new_owner);
             HillOwner reward_team = scoring_team;
