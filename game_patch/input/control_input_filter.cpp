@@ -72,7 +72,6 @@ FunHook<bool(rf::ControlConfig*, rf::ControlConfigAction)> control_is_control_do
     0x00430F40,
     [](rf::ControlConfig* ccp, rf::ControlConfigAction action) {
         if (action_is_vetoed(ccp, action)) {
-            // No drain needed: 0x00430F40 only makes plain global reads.
             return false;
         }
         // Deliberately no injection: bots drive fire through

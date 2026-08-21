@@ -227,7 +227,7 @@ toml::array mutator_declarations_to_toml_array(const std::vector<MutatorDeclarat
 // Validate packet-supplied mutator selections against the registry and turn them
 // into declarations. Returns an error string on failure, std::nullopt on success.
 // `game_type` is the type the vote would actually run under; a mutator not valid for
-// it is rejected. Explicit wire selections only -- an inherited set must keep crossing
+// it is rejected. Explicit wire selections only - an inherited set must keep crossing
 // game types.
 std::optional<std::string> mutators_build_declarations_from_vote(
     const std::vector<VoteMutatorInput>& input, rf::NetGameType game_type,

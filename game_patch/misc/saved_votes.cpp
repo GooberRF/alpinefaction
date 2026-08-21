@@ -276,17 +276,11 @@ std::string gate_level_for(const SavedVote& vote)
 }
 
 // The game type a Level/Match record resolves to AND the byte
-// saved_vote_build_params sends for it -- one function so the availability answer
+// saved_vote_build_params sends for it - one function so the availability answer
 // can only ever be about the bytes that actually go out. A record naming a type
 // keeps it; a record naming none is resolved through the same helpers the live
 // form's pre-selection uses, so a saved call and the equivalent live call are the
 // same packet.
-//
-// af_vote_gametype_none out means nothing here could resolve it: the level is not
-// in the blob AND the server is too old to have sent a base game type (or, for the
-// running level, the blob offered no team game type). The wire byte then stays none
-// and the server resolves it from its own config, which is the one state both ends
-// have to defer on.
 uint8_t effective_gametype_for(const SavedVote& vote, const VoteOptionsData& options)
 {
     if (vote.gametype != af_vote_gametype_none) {
@@ -642,15 +636,6 @@ SavedVoteAvailability saved_vote_check(const SavedVote& vote, const VoteOptionsD
     // The game type the server will resolve this vote to, and the byte
     // saved_vote_build_params sends for it -- the same derivation, so a record that
     // passes here is a record whose exact packet the server accepts.
-    //
-    // af_vote_gametype_none survives only when nothing could resolve it, and each
-    // check below treats that differently: the offered-type and Match team checks
-    // skip it explicitly, mutator_gametype_mask_allows lets a value past the mask's
-    // width through, but vote_level_allows_gametype REFUSES one. That last pair only
-    // meets when the level is listed, and a listed level always resolves to a real
-    // type (its own blob byte, or the running one for a Match on the current level)
-    // -- so it takes a blob that literally sent 0xFF as a level's natural game type
-    // to reach it, and greying the record out is then the honest answer.
     uint8_t effective_gametype = effective_gametype_for(vote, *options);
     // Nothing resolved it and the record follows the running level: the byte sent is
     // none, so the server resolves it from the level running there. Judged against

@@ -1916,13 +1916,7 @@ void append_text_from_count(std::string& field, const int count, const char ch)
     }
 }
 
-// These pumps are raw key reads, so the control veto does not cover them. Same gate
-// the digit capture in key.cpp uses: a focused vote panel box owns the keyboard.
-// Every key a pump would otherwise read is still CONSUMED here and discarded --
-// early-returning instead would leave the counters standing and flush a whole
-// typed level name into the field on the frame after the box loses focus.
-// The panel's own text arrives through the key ring (the 0x004306F0 hook), which
-// these per-scancode counters are no part of, so draining them costs it nothing.
+// These pumps are raw key reads, so the control veto does not cover them.
 bool drain_dialog_keys_while_panel_captures(const bool with_minus = false)
 {
     if (!vote_panel_is_capturing_text()) {

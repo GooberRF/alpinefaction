@@ -1640,8 +1640,9 @@ void multi_spectate_process_bind_input()
     // Still consume the numpad counters while an overlay owns input (so they don't queue up), but
     // don't act on them - the console/chat-say box reads the separate character buffer, and the
     // vote panel's own rows sit under the numpad keys whether or not a text box has focus.
-    const bool typing = rf::console::console_is_visible() || rf::multi_chat_is_say_visible()
-        || vote_panel_is_gameplay_overlay_active();
+    const bool typing = rf::console::console_is_visible() ||
+    rf::multi_chat_is_say_visible() ||
+    vote_panel_is_gameplay_overlay_active();
 
     if (rf::key_get_and_reset_down_counter(rf::KEY_PADENTER) > 0 && !typing) {
         g_spectate_bind_dialog_open = bindable && !g_spectate_bind_dialog_open;

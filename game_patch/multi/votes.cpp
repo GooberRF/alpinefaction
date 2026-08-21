@@ -582,11 +582,7 @@ static bool is_level_valid_for_vote_gametype(const std::string& level_name, rf::
     if (!g_alpine_server_config.vote_level.only_allow_gametype_prefix) {
         return true;
     }
-    // A level's own resolved default is always acceptable: it is what this server
-    // runs the level as, and resolve_level_default_game_type is not bound by the
-    // prefix rules (a rotation entry's configured type, or the base fallback for a
-    // name no prefix claims, can sit outside the mask). Refusing it would make the
-    // server reject its own configuration.
+    // A level's own resolved default is always acceptable.
     if (game_type == resolve_level_default_game_type(level_name)) {
         return true;
     }
@@ -1206,11 +1202,7 @@ struct VoteRotation : public Vote
 
     bool validate([[maybe_unused]] rf::Player* source) override
     {
-        // Preserve means "keep the rules a vote EXPLICITLY set for this session" —
-        // a named game type or a submitted mutator set — not "propagate whatever is
-        // running". A plain level vote installs derived rules but arms nothing, so a
-        // default-checked Next vote after one cannot stamp this level's configured
-        // game type onto the operator's next rotation entry.
+        // Preserve means "keep the rules a vote EXPLICITLY set for this session"
         if (!m_preserve || !g_manual_rules_override || !g_manual_rules_override->explicit_session) {
             return true;
         }
@@ -1882,23 +1874,14 @@ static void build_vote_options_blob(std::vector<uint8_t>& blob)
         const std::string& level = levels[i];
         blob_sized_u16(blob, [&] {
             blob_str(blob, level);
-            // Exactly what resolve_level_default_game_type answers, never corrected
-            // against the mask: a level's default can sit OUTSIDE its own mask (a
-            // rotation entry's configured type, or the base fallback for a name no
-            // prefix rule claims), and is_level_valid_for_vote_gametype accepts it
-            // there, so a corrected byte would advertise a type the server does not
-            // actually run this level as.
+            // Exactly what resolve_level_default_game_type answers.
             blob_u8(blob, static_cast<uint8_t>(resolve_level_default_game_type(level)));
             blob_u32(blob, build_level_valid_gametype_mask(level));
             // Derived from the SAME predicate the call-time gate uses, so the blob can
             // never advertise a level the server would refuse.
             blob_u8(blob, is_level_in_vote_allow_list(level) ? AF_VOTE_LEVEL_FLAG_ALLOWED : 0);
 
-            // Which mutator set the panel pre-selects for this level. A rotation
-            // entry's rules start life as a copy of the base rules, so an entry
-            // that declares nothing of its own compares equal to the base set and
-            // simply inherits it; an entry whose set differs -- including one that
-            // deliberately clears it -- carries its own.
+            // Which mutator set the panel pre-selects for this level.
             const std::vector<MutatorDeclaration>* level_decls = nullptr;
             for (const auto& entry : g_alpine_server_config.levels) {
                 // Same lookup as resolve_level_default_game_type: first match wins.
@@ -1918,19 +1901,12 @@ static void build_vote_options_blob(std::vector<uint8_t>& blob)
         });
     }
 
-    // The base mutator set, as a trailing section: every level that inherits
-    // (kind 0 above) pre-selects this, and so does a manually named level outside
-    // the rotation. Length-prefixed like every other repeated record, so a stray
-    // trailing byte cannot read as an empty set and a further section can still be
-    // appended after it.
+    // The base mutator set, as a trailing section.
     blob_sized_u16(blob, [&] {
         blob_declaration_set(blob, g_alpine_server_config.base_rules.mutators.declarations);
     });
 
-    // The base rules' game type: the fallback for a name nothing else claims, so a
-    // client can derive a manually typed level's type as this server will.
-    // Skip-tolerant in both directions, so it needs no FURTHER bump on top of the v2
-    // the u16 level section already required.
+    // The base rules' game type: the fallback for a name nothing else claims.
     blob_u8(blob, static_cast<uint8_t>(g_alpine_server_config.base_rules.game_type));
 }
 

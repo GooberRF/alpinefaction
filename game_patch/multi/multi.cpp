@@ -1086,7 +1086,7 @@ static bool multi_level_name_has_game_type_prefix(std::string_view level_filenam
 
 // The game type a level filename's prefix names, or nullopt when it carries none.
 // Enum order decides a shared prefix (DM before TeamDM, CTF before SAL). The any-level
-// game types are skipped -- this direction only, they still ACCEPT any mp level.
+// game types are skipped - this direction only, they still ACCEPT any mp level.
 std::optional<rf::NetGameType> multi_game_type_for_level_prefix(std::string_view level_filename)
 {
     for (int i = 0; i < static_cast<int>(rf::NG_TYPE_UNK); ++i) {
