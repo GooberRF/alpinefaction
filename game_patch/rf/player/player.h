@@ -14,6 +14,7 @@
 #include "../../os/os.h"
 #include "../../purefaction/pf_packets.h"
 #include "../multi.h"
+#include <limits>
 #include <map>
 
 constexpr float BOT_LEVEL_START_WAIT_TIME_SEC = 5.f;
@@ -76,9 +77,11 @@ struct AfstatsGameCounters {
     // cleared each time that event is emitted, so it averages the window, not the game.
     int64_t interval_ping_sum = 0;
     uint32_t interval_ping_samples = 0;
-    // Pongs the client answered in the current player_pings window. Never reported
-    // directly; zero over a whole window is what makes that window's ping report -1.
+    // Accepted pong measurements in the current player_pings window and the extremes of
+    // their raw round-trip times; zero pongs makes the window report all latencies as -1.
     uint32_t interval_pong_count = 0;
+    int interval_ping_min = std::numeric_limits<int>::max();
+    int interval_ping_max = -1;
 
     // Bookkeeping. The time accumulators above are advanced by sampling the
     // player's state on the sender pulse, so these mark where the last sample

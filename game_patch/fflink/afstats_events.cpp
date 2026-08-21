@@ -10,6 +10,7 @@
 #include <deque>
 #include <format>
 #include <iterator>
+#include <limits>
 #include <map>
 #include <mutex>
 #include <optional>
@@ -432,11 +433,15 @@ struct PlayerPing
 {
     std::string player;
     int ping = 0; // -1 = no pong arrived in the window; the sampled average is stale
+    int min = 0;  // raw per-pong round-trip extremes; -1 alongside ping
+    int max = 0;
+    uint32_t pongs = 0;
 };
 
 // A whole-server ping snapshot on a fixed window, so latency can be plotted over a
-// game. Each ping is the window's own average, never the running one avg_ping reports,
-// or -1 for a player who answered no pong in the window.
+// game. Each entry carries the window's own average (never the running one avg_ping
+// reports), the raw per-pong min/max, and the measurement count; a player who answered
+// no pong in the window reports all three latencies as -1.
 struct EvPlayerPings
 {
     std::vector<PlayerPing> players;
@@ -1141,15 +1146,19 @@ void emit_player_pings()
         if (c.interval_ping_samples > 0) {
             // A window with no pong means the client went quiet, so the frame-sampled
             // average is just the last known value repeated. Report the stall instead.
+            const bool measured = c.interval_pong_count > 0;
             ev.players.push_back(PlayerPing{
                 player.afstats_key,
-                c.interval_pong_count > 0
-                    ? static_cast<int>(c.interval_ping_sum / c.interval_ping_samples)
-                    : -1});
+                measured ? static_cast<int>(c.interval_ping_sum / c.interval_ping_samples) : -1,
+                measured ? c.interval_ping_min : -1,
+                measured ? c.interval_ping_max : -1,
+                c.interval_pong_count});
         }
         c.interval_ping_sum = 0;
         c.interval_ping_samples = 0;
         c.interval_pong_count = 0;
+        c.interval_ping_min = std::numeric_limits<int>::max();
+        c.interval_ping_max = -1;
     }
     if (ev.players.empty()) {
         return; // nobody to report on; an empty list is not an event
@@ -1482,7 +1491,11 @@ nlohmann::json event_to_json(const Event& e)
                 j["type"] = "player_pings";
                 auto players = nlohmann::json::array();
                 for (const auto& entry : p.players) {
-                    players.push_back(nlohmann::json{{"player", entry.player}, {"ping", entry.ping}});
+                    players.push_back(nlohmann::json{{"player", entry.player},
+                                                     {"ping", entry.ping},
+                                                     {"min", entry.min},
+                                                     {"max", entry.max},
+                                                     {"pongs", entry.pongs}});
                 }
                 j["players"] = std::move(players);
             }
@@ -2727,14 +2740,18 @@ void on_status(rf::Player* player, StatusKind kind, int value)
     push_event(std::move(ev));
 }
 
-void on_pong_received(rf::Player* player)
+void on_pong_received(rf::Player* player, int rtt_ms)
 {
     // Gated on the stats key exactly like the ping sampler, so the pong count covers
     // the same window the average it qualifies was taken over.
     if (!player || player->is_browser || player->afstats_key.empty()) {
         return;
     }
-    ++player->afstats_game.interval_pong_count;
+    auto& c = player->afstats_game;
+    const int rtt = std::max(rtt_ms, 0);
+    ++c.interval_pong_count;
+    c.interval_ping_min = std::min(c.interval_ping_min, rtt);
+    c.interval_ping_max = std::max(c.interval_ping_max, rtt);
 }
 
 void on_item_pickup(rf::Player* player, int item_type, const rf::Vector3& pos, int respawn_ms)

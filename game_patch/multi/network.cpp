@@ -1115,11 +1115,23 @@ FunHook<MultiIoPacketHandler> process_reload_request_packet_hook{
 FunHook<MultiIoPacketHandler> process_pong_packet_hook{
     0x00484D50,
     [](char* data, const rf::NetAddr& addr) {
+        if (!rf::is_server) {
+            process_pong_packet_hook.call_target(data, addr);
+            return;
+        }
+        
+        rf::Player* player = rf::multi_find_player_by_addr(addr);
+
+        // last_ping_time holds the outstanding ping's send time; AF's wrap fix defines
+        // exactly -1 as "none" (a wrapped negative stamp still measures).
+        const bool outstanding = player && player->net_data && player->net_data->stats.last_ping_time != -1;
+        
         process_pong_packet_hook.call_target(data, addr);
-        if (rf::is_server) {
-            if (rf::Player* player = rf::multi_find_player_by_addr(addr)) {
-                afstats::on_pong_received(player);
-            }
+        
+        if (outstanding && player->net_data->stats.last_ping_time == -1) {
+            const auto& stats = player->net_data->stats;
+            const int newest = stats.current_ping_idx >= 2 ? 1 : stats.current_ping_idx - 1;
+            afstats::on_pong_received(player, stats.ping_array[newest]);
         }
     },
 };
