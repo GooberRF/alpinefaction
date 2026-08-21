@@ -560,7 +560,7 @@ bool ui_hover(const PanelUi& ui, const Rect& r)
 }
 
 // String boxes (level filter, manual level name) edit their bound string live.
-// Numeric boxes (mutator Int/Float options) edit g_text_input_buffer and commit
+// Numeric boxes (mutator Int/Float options, Extend duration) edit g_text_input_buffer and commit
 // on ENTER / click-away / focus loss, or revert on ESC.
 
 // Defined below with the other widget helpers; needed here because the text
@@ -569,6 +569,7 @@ Rect ui_draw_rect(const PanelUi& ui, const Rect& r);
 
 constexpr uint32_t kTextInputLevelFilter = 1;
 constexpr uint32_t kTextInputManualLevel = 2;
+constexpr uint32_t kTextInputExtendMinutes = 3;
 
 uint32_t text_input_id_for_option(uint8_t mutator_id, uint8_t option_id)
 {
@@ -621,6 +622,11 @@ bool text_input_char_numeric(char c)
     return std::isdigit(static_cast<unsigned char>(c)) != 0 || c == '-' || c == '.';
 }
 
+bool text_input_char_digit(char c)
+{
+    return std::isdigit(static_cast<unsigned char>(c)) != 0;
+}
+
 // Parse-and-write for a numeric box. Re-validated before application.
 void commit_numeric_text_input()
 {
@@ -666,13 +672,34 @@ void commit_numeric_text_input()
     }
 }
 
+// Parse-and-write for Extend's duration box. Clamped here, exactly where the
+// popup this replaced clamped.
+void commit_extend_minutes_text_input()
+{
+    try {
+        g_form.extend_minutes = std::clamp(std::stoi(g_text_input_buffer),
+            static_cast<int>(af_vote_extend_min_minutes),
+            static_cast<int>(af_vote_extend_max_minutes));
+    }
+    catch (const std::exception& e) {
+        // Empty or out of int range: keep whatever was already selected.
+        xlog::info("vote panel: invalid extend duration '{}', reason: {}", g_text_input_buffer,
+            e.what());
+    }
+}
+
 // End the focused edit. String boxes edit live, so for them this only drops focus.
 void text_input_release_focus(bool commit)
 {
     if (g_text_input_focus == 0) {
         return;
     }
-    if (g_popup_mutator >= 0) { // a numeric box owns the write-back target
+    if (g_text_input_focus == kTextInputExtendMinutes) {
+        if (commit) {
+            commit_extend_minutes_text_input();
+        }
+    }
+    else if (g_popup_mutator >= 0) { // a numeric box owns the write-back target
         if (commit) {
             commit_numeric_text_input();
         }
@@ -1559,28 +1586,6 @@ std::vector<VoteMutatorInput> build_mutator_inputs(const VoteOptionsData& option
 }
 
 // ---------------------------------------------------------------------------
-// Popup text input (stock RF popup; gameseq_process drives it globally, so it
-// works over the gameplay overlay -- see rf::ui::popup_is_active, which is what
-// suppresses our own input handling while it is up)
-// ---------------------------------------------------------------------------
-
-// Extend's duration entry.
-void extend_minutes_popup_callback()
-{
-    char buffer[32] = "";
-    rf::ui::popup_get_input(buffer, sizeof(buffer));
-    try {
-        g_form.extend_minutes = std::clamp(std::stoi(buffer),
-            static_cast<int>(af_vote_extend_min_minutes),
-            static_cast<int>(af_vote_extend_max_minutes));
-    }
-    catch (const std::exception& e) {
-        // Non-numeric or out of int range: keep whatever was already selected.
-        xlog::info("vote panel: invalid extend duration '{}', reason: {}", buffer, e.what());
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Panel content
 // ---------------------------------------------------------------------------
 
@@ -2062,8 +2067,9 @@ void do_saved_preview(PanelUi& ui, const Layout& lo, const Rect& pane, const Vot
         index = g_saved_selected;
     }
 
-    const int btn_h = lo.row_h;
-    const int btn_w = std::min(pane.w, std::max(scaled(120.0f), lo.row_h * 4));
+    // EDIT is the saved tab's only action, so it is sized like the footer buttons.
+    const int btn_h = std::max(lo.row_h, scaled(40.0f));
+    const int btn_w = std::min(pane.w, std::max(scaled(120.0f), btn_h * 4));
     const Rect edit{pane.x, pane.y + pane.h - btn_h, btn_w, btn_h};
     const int body_bottom = edit.y - lo.gap;
 
@@ -2258,17 +2264,6 @@ void send_vote_from_form(const VoteOptionsData& options)
 
     // Sent the vote call.
     af_send_vote_call(params);
-
-    play_click_sound();
-    vote_panel_close();
-}
-
-// Calling a saved vote: the names it stores are resolved against the current
-// schema here, which is only sound because saved_vote_check has already refused
-// anything that does not resolve exactly.
-void send_saved_vote(const SavedVote& vote, const VoteOptionsData& options)
-{
-    af_send_vote_call(saved_vote_build_params(vote, options));
 
     play_click_sound();
     vote_panel_close();
@@ -3132,9 +3127,14 @@ void do_form(PanelUi& ui, const Layout& lo, const VoteOptionsData& options,
                 lo.font);
         }
         const Rect value_rect{lo.cx + label_w, y, value_w, lo.row_h};
-        const std::string value_text = std::format("{}", g_form.extend_minutes);
-        if (ui_button(ui, value_rect, value_text.c_str(), lo.font)) {
-            rf::ui::popup_message("Minutes to extend (1-60):", "", extend_minutes_popup_callback, 1);
+        // Inline edit, same idiom as the mutator Int/Float boxes.
+        const bool editing = g_text_input_focus == kTextInputExtendMinutes;
+        std::string display = std::format("{}", g_form.extend_minutes);
+        const TextInputResult res = ui_text_input(ui, value_rect, kTextInputExtendMinutes,
+            editing ? g_text_input_buffer : display, 2, text_input_char_digit, nullptr, lo.font);
+        if (res.gained_focus) {
+            g_text_input_buffer = std::format("{}", g_form.extend_minutes);
+            play_click_sound();
         }
         y += lo.row_h + lo.gap * 2;
 
@@ -3420,13 +3420,9 @@ void vote_panel_do(PanelUi& ui)
 
     bool can_send = false;
     bool can_save = false;
-    if (g_form.on_saved_tab) {
-        can_send = !vote_active && options != nullptr && g_saved_selected >= 0
-            && g_saved_selected < static_cast<int>(saved_votes_get().size())
-            && g_saved_selected < static_cast<int>(g_saved_availability.size())
-            && g_saved_availability[g_saved_selected].callable;
-    }
-    else if (options != nullptr) {
+    // A saved entry is called by loading it into the form with EDIT, so the saved
+    // tab leaves CALL VOTE greyed rather than sending whatever the form holds.
+    if (!g_form.on_saved_tab && options != nullptr) {
         can_send = !vote_active && vote_form_is_sendable(*options);
         // Saving is local, so it is deliberately NOT gated on vote_active; only
         // the three savable types offer it.
@@ -3439,12 +3435,7 @@ void vote_panel_do(PanelUi& ui)
 
     const Rect call{row_x, btn_y, btn_w, btn_h};
     if (ui_button(ui, call, "CALL VOTE", lo.font, can_send) && can_send) {
-        if (g_form.on_saved_tab) {
-            send_saved_vote(saved_votes_get()[static_cast<size_t>(g_saved_selected)], *options);
-        }
-        else {
-            send_vote_from_form(*options);
-        }
+        send_vote_from_form(*options);
         return;
     }
 
@@ -3539,8 +3530,8 @@ void vote_panel_gameplay_input()
     // Re-assert every frame; respawns and camera changes reset mouse mode.
     gameplay_overlay_apply_mouse(true);
 
-    // A stock popup (extend duration, saved-vote name) takes over input while
-    // it is up. gameseq_process passes no_input=1 to the state's own frame, but
+    // A stock popup (the saved-vote name prompt) takes over input while it is
+    // up. gameseq_process passes no_input=1 to the state's own frame, but
     // this gameplay pump runs outside that, so it has to check explicitly.
     if (rf::ui::popup_is_active()) {
         drain_bound_key_counters();
