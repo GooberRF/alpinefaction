@@ -1112,6 +1112,18 @@ FunHook<MultiIoPacketHandler> process_reload_request_packet_hook{
     },
 };
 
+FunHook<MultiIoPacketHandler> process_pong_packet_hook{
+    0x00484D50,
+    [](char* data, const rf::NetAddr& addr) {
+        process_pong_packet_hook.call_target(data, addr);
+        if (rf::is_server) {
+            if (rf::Player* player = rf::multi_find_player_by_addr(addr)) {
+                afstats::on_pong_received(player);
+            }
+        }
+    },
+};
+
 CodeInjection process_rcon_req_packet_injection{
     0x0046C536,
     [](auto& regs) {
@@ -3426,6 +3438,7 @@ void network_init()
     process_entity_create_packet_hook.install();
     process_reload_packet_hook.install();
     process_reload_request_packet_hook.install();
+    process_pong_packet_hook.install();
     entity_reload_packet_deny_sound_injection.install();
     process_entity_create_packet_injection.install(); // save char if server forces it
     process_entity_create_packet_injection2.install(); // reset char after server forced it

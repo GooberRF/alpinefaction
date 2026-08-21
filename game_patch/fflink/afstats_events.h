@@ -228,6 +228,10 @@ void on_damage_dealt(rf::Player* attacker, int weapon_type, float amount,
 // StatusKind::handicap.
 void on_status(rf::Player* player, StatusKind kind, int value = 0);
 
+// The server answered a client's ping with a pong. Drives the per-window pong counter,
+// which is never reported itself: a window that saw none reports its ping as -1.
+void on_pong_received(rf::Player* player);
+
 // A player picked an item up server-side. `respawn_ms` is 0 when it never respawns.
 void on_item_pickup(rf::Player* player, int item_type, const rf::Vector3& pos, int respawn_ms);
 

@@ -72,6 +72,13 @@ struct AfstatsGameCounters {
     int64_t time_idle_ms = 0;
     int64_t ping_sum = 0;
     uint32_t ping_samples = 0;
+    // The same, but only over the current player_pings window: sampled every frame and
+    // cleared each time that event is emitted, so it averages the window, not the game.
+    int64_t interval_ping_sum = 0;
+    uint32_t interval_ping_samples = 0;
+    // Pongs the client answered in the current player_pings window. Never reported
+    // directly; zero over a whole window is what makes that window's ping report -1.
+    uint32_t interval_pong_count = 0;
 
     // Bookkeeping. The time accumulators above are advanced by sampling the
     // player's state on the sender pulse, so these mark where the last sample

@@ -84,6 +84,8 @@ constexpr auto k_rate_limit_backoff = std::chrono::seconds(30);
 // well below RTT. A game_end flush is not client-floodable and deliberately bypasses this.
 constexpr auto k_min_post_interval = std::chrono::milliseconds(500);
 constexpr int64_t k_ping_sample_interval_ms = 10000;
+// Reporting window for player_pings. Each report averages only the window it closes.
+constexpr auto k_player_pings_interval = std::chrono::seconds(5);
 
 constexpr unsigned long k_connect_timeout_ms = 3000;
 constexpr unsigned long k_receive_timeout_ms = 5000;
@@ -426,13 +428,27 @@ struct EvTeamScoreChange
     int score = 0;
 };
 
+struct PlayerPing
+{
+    std::string player;
+    int ping = 0; // -1 = no pong arrived in the window; the sampled average is stale
+};
+
+// A whole-server ping snapshot on a fixed window, so latency can be plotted over a
+// game. Each ping is the window's own average, never the running one avg_ping reports,
+// or -1 for a player who answered no pong in the window.
+struct EvPlayerPings
+{
+    std::vector<PlayerPing> players;
+};
+
 using EventPayload =
     std::variant<EvServerHello, EvGap, EvPlayerJoin, EvPlayerRemediate, EvPlayerRename, EvPlayerLeave,
                  EvGameStart, EvGameEnd, EvKill, EvSpawn, EvDamage, EvAccuracy, EvStatus,
                  EvItemPickup, EvFlagEvent, EvPointEvent, EvBagmanEvent, EvGgLevelup, EvMatchStart,
                  EvMatchEnd, EvRoundStart, EvRoundEnd, EvVoteCalled, EvVoteEnded, EvGeomod,
                  EvClutterDestroyed, EvDetailBrushDestroyed, EvAward, EvPlayerScoreChange,
-                 EvTeamScoreChange>;
+                 EvTeamScoreChange, EvPlayerPings>;
 
 struct Event
 {
@@ -485,6 +501,9 @@ uint32_t g_round_index = 0;
 bool g_round_open = false;
 int64_t g_round_start_ms = 0;
 std::optional<GameEndType> g_pending_end_type;
+// When the next player_pings report is due. Armed at game start and disarmed at game
+// end, so the report never runs in the limbo gap between two games.
+std::optional<std::chrono::steady_clock::time_point> g_next_player_pings;
 
 std::deque<Event> g_queue;
 std::deque<PendingBatch> g_pending;
@@ -1024,6 +1043,12 @@ void sample_player_state(rf::Player* player)
         ++c.ping_samples;
         c.last_ping_sample_ms = now;
     }
+    // player_pings wants the window, not the game, so it samples every frame instead of
+    // sharing the coarse 10s sample above: frame-weighted is time-weighted here.
+    if (player->net_data) {
+        c.interval_ping_sum += player->net_data->ping;
+        ++c.interval_ping_samples;
+    }
 
     // Score and caps have no single writer to hook, so the change is detected here by
     // diffing the engine's own per-level numbers. A player with no stats key yet emits
@@ -1101,6 +1126,38 @@ std::vector<RosterEntry> build_roster(bool with_summary)
         roster.push_back(build_roster_entry(&player, with_summary));
     }
     return roster;
+}
+
+// Closes the current ping window: reports every tracked player who was sampled in it and
+// clears the accumulators for everyone walked, so the next window starts empty either way.
+void emit_player_pings()
+{
+    EvPlayerPings ev;
+    for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
+        if (player.is_browser || player.afstats_key.empty()) {
+            continue;
+        }
+        auto& c = player.afstats_game;
+        if (c.interval_ping_samples > 0) {
+            // A window with no pong means the client went quiet, so the frame-sampled
+            // average is just the last known value repeated. Report the stall instead.
+            ev.players.push_back(PlayerPing{
+                player.afstats_key,
+                c.interval_pong_count > 0
+                    ? static_cast<int>(c.interval_ping_sum / c.interval_ping_samples)
+                    : -1});
+        }
+        c.interval_ping_sum = 0;
+        c.interval_ping_samples = 0;
+        c.interval_pong_count = 0;
+    }
+    if (ev.players.empty()) {
+        return; // nobody to report on; an empty list is not an event
+    }
+    if constexpr (AFSTATS_VERIFICATION_LOGGING) {
+        xlog::warn("[afstats-ev] player_pings: {} players", ev.players.size());
+    }
+    push_event(std::move(ev));
 }
 
 // -------------------------------------------------------------------------
@@ -1420,6 +1477,14 @@ nlohmann::json event_to_json(const Event& e)
                 j["type"] = "team_score_change";
                 j["team"] = p.team;
                 j["score"] = p.score;
+            }
+            else if constexpr (std::is_same_v<T, EvPlayerPings>) {
+                j["type"] = "player_pings";
+                auto players = nlohmann::json::array();
+                for (const auto& entry : p.players) {
+                    players.push_back(nlohmann::json{{"player", entry.player}, {"ping", entry.ping}});
+                }
+                j["players"] = std::move(players);
             }
             else {
                 // Every variant alternative must have a branch above; a new event without
@@ -1937,6 +2002,7 @@ void reset_module_state()
     g_round_index = 0;
     g_round_open = false;
     g_pending_end_type.reset();
+    g_next_player_pings.reset();
     g_send_in_flight = false;
     g_paused_401 = false;
     g_paused_gssk.clear();
@@ -2178,6 +2244,7 @@ void emit_game_end(GameEndType end_type)
 
     g_game_open = false;
     g_pending_end_type.reset();
+    g_next_player_pings.reset();
 
     // Build immediately at game end so the website can show finished
     // games promptly instead of waiting out the pulse.
@@ -2414,6 +2481,8 @@ void on_game_start()
     // emit_game_end above; drop the latch regardless so the count starts clean.
     g_round_index = 0;
     g_round_open = false;
+    // Arms the ping report for this game; first fire is one window in.
+    g_next_player_pings = std::chrono::steady_clock::now() + k_player_pings_interval;
 
     for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
         if (!player.is_browser) {
@@ -2656,6 +2725,16 @@ void on_status(rf::Player* player, StatusKind kind, int value)
         xlog::warn("[afstats-ev] status kind {} for {}", ev.kind, player->name);
     }
     push_event(std::move(ev));
+}
+
+void on_pong_received(rf::Player* player)
+{
+    // Gated on the stats key exactly like the ping sampler, so the pong count covers
+    // the same window the average it qualifies was taken over.
+    if (!player || player->is_browser || player->afstats_key.empty()) {
+        return;
+    }
+    ++player->afstats_game.interval_pong_count;
 }
 
 void on_item_pickup(rf::Player* player, int item_type, const rf::Vector3& pos, int respawn_ms)
@@ -3061,6 +3140,12 @@ void do_frame_impl()
     }
     // Once per frame, not once per player: the team scores are per-team state.
     sample_team_scores();
+
+    // The ping window is only armed inside a game, so this cannot fire between games.
+    if (g_game_open && g_next_player_pings && now >= *g_next_player_pings) {
+        g_next_player_pings = now + k_player_pings_interval;
+        emit_player_pings();
+    }
 
     if (pulse_due) {
         g_next_pulse = now + g_pulse_interval;
