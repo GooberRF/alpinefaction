@@ -1769,10 +1769,12 @@ static uint32_t build_enabled_vote_mask()
     if (cfg.vote_kick.enabled) mask |= bit(AfVoteType::Kick);
     if (cfg.vote_level.enabled) mask |= bit(AfVoteType::Level);
     // VoteMatch::validate refuses every match on a server whose base game type is
-    // not a team type, and only a match vote can queue one, so neither type is
-    // advertised there rather than being offered and always rejected.
-    if (cfg.vote_match.enabled && multi_game_type_is_team_type(cfg.base_rules.game_type)) {
-        mask |= bit(AfVoteType::Match) | bit(AfVoteType::CancelMatch);
+    // not a team type, so Match is not advertised there rather than being offered
+    // and always rejected. CancelMatch stays advertised: a live match can outlast a
+    // config change to a non-team base type, and the vote panel is its only caller.
+    if (cfg.vote_match.enabled) {
+        if (multi_game_type_is_team_type(cfg.base_rules.game_type)) mask |= bit(AfVoteType::Match);
+        mask |= bit(AfVoteType::CancelMatch);
     }
     if (cfg.vote_extend.enabled) mask |= bit(AfVoteType::Extend);
     if (cfg.vote_restart.enabled) mask |= bit(AfVoteType::Restart);
