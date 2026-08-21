@@ -92,8 +92,9 @@ namespace rf
         Vector3 move_array[max_keyframes];
         uint32_t always_0_array[max_keyframes];
         uint16_t time_array[max_keyframes]; // 16-bit server ms ticks
-        uint32_t flags;    // bit 0: empty/unanchored (set by Clear, cleared when a sample
-                           // anchors interp_time), bit 1: updated this frame
+        uint32_t flags;    // bit 0: force re-anchor - the next keyframe insert re-anchors
+                           // interp_time and then clears this bit; Clear() zeroes the whole
+                           // word. bit 1: a sample was inserted this frame
         uint16_t interp_time; // evaluation time (16-bit server ms ticks)
         uint8_t pad_52e[2];
         uint32_t frame_time_us; // wall-clock stamp of the last frame advance (ms with AF's

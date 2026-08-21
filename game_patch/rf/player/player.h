@@ -400,7 +400,7 @@ namespace rf
     // PlayerNetData (reliable_socket = -1, buffers zeroed) and links it into player_list.
     static auto& player_allocate = addr_as_ref<Player*(bool is_local)>(0x004A3310);
     // Unlinks from player_list and frees net_data/stats/player. Closes net_data->reliable_socket
-    // if != -1 (demo recorder keeps -1 so this is a no-op for it).
+    // if != -1 (the demo recorder holds a real slot, which this releases).
     static auto& player_delete = addr_as_ref<void(Player* player)>(0x004A35C0);
 
     static auto& player_from_entity_handle = addr_as_ref<Player*(int entity_handle)>(0x004A3740);

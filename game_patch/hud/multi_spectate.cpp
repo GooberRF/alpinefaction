@@ -972,6 +972,12 @@ static int povcomp_bias_for(rf::Entity* entity)
 
 static void povcomp_interp_call(rf::Entity* entity, auto& hook)
 {
+    // povcomp only biases interp state during demo playback or while following a
+    // player in spectate; leave every other frame's interp untouched.
+    if (!demo_playback_active() && !multi_spectate_is_following_player()) {
+        hook.call_target(entity);
+        return;
+    }
     rf::ObjInterp* interp = entity->obj_interp;
     const int desired = interp ? povcomp_bias_for(entity) : 0;
     const uint16_t bias = desired > 0 ? povcomp_safe_bias(interp, desired) : 0;
@@ -1034,8 +1040,7 @@ static ConsoleCommand2 spectate_povcomp_cmd{
                                static_cast<int>(g_povcomp_applied_ms));
         }
     },
-    "Ping compensation while spectating a player - delays other players to match what "
-    "the spectated player saw when they aimed",
+    "Ping compensation while spectating a player",
     "spectate_povcomp [on|off|<delay ms>]",
 };
 
