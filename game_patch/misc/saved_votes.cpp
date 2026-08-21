@@ -232,6 +232,17 @@ const VoteMutatorSchema* find_mutator_schema(const VoteOptionsData& options, std
     return nullptr;
 }
 
+const VoteLevelInfo* find_level_info(const VoteOptionsData& options, std::string_view level)
+{
+    const std::string wanted = normalize_level_filename(level);
+    for (const auto& entry : options.levels) {
+        if (string_iequals(entry.filename, wanted)) {
+            return &entry;
+        }
+    }
+    return nullptr;
+}
+
 const VoteMutatorOptionSchema* find_option_schema(const VoteMutatorSchema& schema,
                                                   const SavedVoteOptionValue& value)
 {
@@ -576,7 +587,20 @@ SavedVoteAvailability saved_vote_check(const SavedVote& vote, const VoteOptionsD
         out.reasons.emplace_back("This vote type is disabled on this server");
     }
 
+    // The game type the server will gate this vote's mutators against: the record's
+    // own, or for a "Server default" record the level's natural type, which is the
+    // answer resolve_level_default_game_type gives the server there. A level the blob
+    // does not list leaves it unresolved, and af_vote_gametype_none sits past the
+    // mask's width, so the mutator check below then restricts nothing -- the same
+    // deferral to the server the level check makes.
+    uint8_t effective_gametype = vote.gametype;
+
     if (vote.type == AfVoteType::Level || vote.type == AfVoteType::Match) {
+        const VoteLevelInfo* found = find_level_info(*options, vote.level);
+        if (found && effective_gametype == af_vote_gametype_none) {
+            effective_gametype = found->natural_gametype;
+        }
+
         if (vote.level.empty()) {
             if (vote.type == AfVoteType::Level) {
                 out.reasons.emplace_back("No level is saved for this vote");
@@ -584,14 +608,6 @@ SavedVoteAvailability saved_vote_check(const SavedVote& vote, const VoteOptionsD
             // Match's empty level is the "current level" row: always valid.
         }
         else {
-            const std::string wanted = normalize_level_filename(vote.level);
-            const VoteLevelInfo* found = nullptr;
-            for (const auto& level : options->levels) {
-                if (string_iequals(level.filename, wanted)) {
-                    found = &level;
-                    break;
-                }
-            }
             // A level the blob does not list at all is still allowed: that is
             // exactly what the live form's manual entry does, and the server
             // adjudicates it at call time.
@@ -631,6 +647,12 @@ SavedVoteAvailability saved_vote_check(const SavedVote& vote, const VoteOptionsD
         const VoteMutatorSchema* schema = find_mutator_schema(*options, mutator.name);
         if (!schema) {
             out.reasons.push_back(std::format("Mutator '{}' is not available here", mutator.name));
+            continue;
+        }
+        // The gate mutators_build_declarations_from_vote applies at call time.
+        if (!mutator_gametype_mask_allows(schema->valid_gametype_mask, effective_gametype)) {
+            out.reasons.push_back(
+                std::format("Mutator '{}' cannot be used in this game type", mutator.name));
             continue;
         }
         for (const auto& value : mutator.values) {
