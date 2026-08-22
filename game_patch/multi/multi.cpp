@@ -324,7 +324,9 @@ FunHook<void()> multi_limbo_init{
             reset_local_gungame_order();
         }
 
-        if (!rf::player_list) {
+        // The virtual demo recorder is not a real player
+        if (!rf::player_list
+            || (rf::player_list == demo_record_recorder() && rf::player_list->next == rf::player_list)) {
             xlog::trace("Wait between levels shortened because server is empty");
             limbo_time = 100;
         }
