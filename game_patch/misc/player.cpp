@@ -22,6 +22,8 @@
 #include "../sound/sound.h"
 #include "../input/input.h"
 #include "../multi/multi.h"
+#include "../multi/demo/demo_ui.h"
+#include "../multi/demo/demo.h"
 #include "../multi/gametype.h"
 #include "../multi/server_internal.h"
 #include "../multi/bagman.h"
@@ -29,10 +31,13 @@
 #include "../multi/sprays.h"
 #include "../multi/pit.h"
 #include "../multi/gungame.h"
+#include "../multi/awards.h"
+#include "../multi/mutators.h"
 #include "../hud/multi_spectate.h"
 #include "../hud/hud_internal.h"
 #include "../hud/hud.h"
 #include "../multi/alpine_packets.h"
+#include "../fflink/afstats_events.h"
 #include "../hud/hud_world.h"
 #include <common/utils/list-utils.h>
 #include <common/version/version.h>
@@ -74,7 +79,11 @@ bool is_player_minimum_af_client_version(
         return false;
     }
 
-    if (player->version_info.software != ClientSoftware::AlpineFaction) {
+    // The demo listener runs the current AF build's code and reports its version,
+    // so AF version gates must treat it as an Alpine client - otherwise no
+    // AF-gated packet would ever reach the demo recorder.
+    if (player->version_info.software != ClientSoftware::AlpineFaction
+        && player->version_info.software != ClientSoftware::Observer) {
         return false;
     }
 
@@ -262,13 +271,23 @@ FunHook<rf::Player*(bool)> player_create_hook{
 FunHook<void(rf::Player*)> player_destroy_hook{
     0x004A35C0,
     [](rf::Player* player) {
+        // Must run before any other subsystem frees state: if the engine is deleting
+        // the virtual demo recorder, the demo module has to drop its raw pointer here
+        // or it dangles (C1). Cheap no-op when no recording is active.
+        demo_record_on_player_deleted(player);
         multi_spectate_on_destroy_player(player);
         bagman_on_player_disconnect(player);
         salvage_on_player_disconnect(player);
         sprays_on_player_destroyed(player);
         pit_on_player_disconnect(player);
         gungame_on_player_disconnect(player);
+        accuracy_stats_on_player_destroy(player);
+        awards_on_player_destroy(player);
+        mutators_on_player_destroy(player);
         if (rf::is_server) {
+            // Must run while PlayerAdditionalData is still alive, since the leave
+            // event carries the player's partial-game summary.
+            afstats::on_player_leave(player);
             remove_ready_player_silent(player);
             server_vote_on_player_leave(player);
             if (player->is_bot) {
@@ -517,6 +536,9 @@ CallHook<void __fastcall(rf::Timestamp*, int, int)> player_execute_action_timest
 FunHook<void(rf::Player*, rf::ControlConfigAction, bool)> player_execute_action_hook{
     0x004A6210,
     [](rf::Player* player, rf::ControlConfigAction action, bool was_pressed) {
+        if (demo_controls_ui_execute_action(action, was_pressed)) {
+            return; // demo playback controls (USE popup toggle, seek/pause keys)
+        }
         if (!multi_spectate_execute_action(action, was_pressed)) {
             player_execute_action_hook.call_target(player, action, was_pressed);
         }
@@ -926,6 +948,11 @@ void update_player_flashlight() {
 
 bool player_is_idle(const rf::Player* const player) {
     if (rf::is_server) {
+        // The demo recorder never spawns and never sends activity; its idle timer
+        // is never armed either, but keep the exemption explicit.
+        if (player->is_observer()) {
+            return false;
+        }
         // Check if the player's idle timer has elapsed
         const bool is_idle = player->idle.check_timer.valid()
             && player->idle.check_timer.elapsed();

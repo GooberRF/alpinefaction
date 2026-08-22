@@ -1,8 +1,12 @@
 set(SRCS
     AboutDlg.cpp
     AboutDlg.h
+    afd_header_reader.cpp
+    afd_header_reader.h
     CMakeLists.txt
     AlpineFactionLauncher.rc
+    demo_download.cpp
+    demo_download.h
     DownloadProgressDlg.cpp
     DownloadProgressDlg.h
     faction_files.h
@@ -48,6 +52,7 @@ setup_debug_info(AlpineFactionLauncher)
 target_compile_definitions(AlpineFactionLauncher PRIVATE XLOG_NO_MACROS)
 
 target_include_directories(AlpineFactionLauncher SYSTEM PRIVATE
+    ${CMAKE_SOURCE_DIR}/vendor
     ${CMAKE_SOURCE_DIR}/vendor/d3d8
     ${CMAKE_SOURCE_DIR}/vendor/win32xx
     ${CMAKE_SOURCE_DIR}/vendor/zlib

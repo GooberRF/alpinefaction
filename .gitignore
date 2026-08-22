@@ -3,6 +3,10 @@
 /research
 /out
 
+# Local build logs
+/_build_exit.txt
+/_build_release.log
+
 # Visual Studio
 *.sln
 *.VC.*

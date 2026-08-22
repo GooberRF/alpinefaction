@@ -38,6 +38,7 @@ struct AFGameInfoFlags
     bool saving_enabled         = false;
     bool gaussian_spread        = false;
     bool damage_notifications   = false;
+    bool stats_enabled          = false;
 
     uint32_t game_info_flags_to_uint32() const
     {
@@ -49,7 +50,8 @@ struct AFGameInfoFlags
                (static_cast<uint32_t>(match_mode)               << 5) |
                (static_cast<uint32_t>(saving_enabled)           << 6) |
                (static_cast<uint32_t>(gaussian_spread)          << 7) |
-               (static_cast<uint32_t>(damage_notifications)     << 8);
+               (static_cast<uint32_t>(damage_notifications)     << 8) |
+               (static_cast<uint32_t>(stats_enabled)            << 9);
     }
 };
 
@@ -187,34 +189,6 @@ struct SprayConfig
 {
     bool enabled = true;
     int cooldown_ms = 500;
-};
-
-struct CriticalHitsConfig
-{
-    bool enabled = false;
-    //int sound_id = 35; // hardcoded
-    //int rate_limit = 10; // hardcoded
-    uint32_t reward_duration = 1500;
-    float base_chance = 0.1f;
-    bool dynamic_scale = true;
-    float dynamic_damage_bonus_ceiling = 1200.0f;
-
-    // =============================================
-
-    void set_reward_duration(int new_ms)
-    {
-        reward_duration = std::clamp(new_ms, 50, 60000); // max 1 min
-    }
-
-    void set_base_chance(float in_value)
-    {
-        base_chance = std::clamp(in_value, 0.01f, 1.0f); // percentile
-    }
-
-    void set_damage_bonus_ceiling(float in_value)
-    {
-        dynamic_damage_bonus_ceiling = std::clamp(in_value, 100.0f, 100000.0f);
-    }
 };
 
 struct WeaponStayExemptionConfigOld
@@ -678,6 +652,9 @@ struct MutatorConfig
     float vampire_heal_ratio = 0.0f; // effective health granted per point of damage dealt
     bool hide_health_armor_pickups = false;
 
+    // Critical Hits: random crits rolled at fire time.
+    bool crits_enabled = false;
+
     // Super Drain: rot health/armor above the entity's max back down to it.
     bool super_drain_enabled = false;
 
@@ -779,7 +756,6 @@ struct AlpineServerConfigRules
     std::map<std::string, int> item_respawn_time_overrides;
     DelayedItemsConfig delayed_items;
     ForceCharacterConfig force_character;
-    CriticalHitsConfig critical_hits;
     bool gungame_rampage_rewards = true;
     std::vector<std::vector<std::string>> gungame_tiers; // uses built-in tiers if not specified
     std::string gungame_final_weapon = "Riot Stick";
@@ -964,12 +940,6 @@ struct AlpineServerConfigLevelEntry
 {
     std::string level_filename;
     AlpineServerConfigRules rule_overrides;
-    // The same rules re-resolved with every config-declared mutator stripped.
-    // Starting point for a level/match vote that carries mutators, so the voted
-    // mutators replace (rather than stack on) whatever the config declared while
-    // the rest of this level's rules — notably its game type — are preserved.
-    AlpineServerConfigRules rule_overrides_no_mutators;
-    std::vector<std::pair<std::filesystem::path, std::optional<std::string>>> applied_rules_preset_paths;
 };
 
 struct AlpineRconProfile
@@ -1017,6 +987,12 @@ struct AlpineServerConfig
     std::string fflink_gsk = "";
     std::vector<ServerBotConfig> bot_configs;
     bool upnp_enabled = false;
+    bool demo_auto_record = false;
+    bool demo_chat_record = true;
+    bool fflink_demo_upload = true;
+    int fflink_demo_max_mb = 100;
+    int fflink_demo_queue_max = 32;
+    bool fflink_demo_delete_after_send = false;
     bool require_client_mod = true;
     bool dynamic_rotation = false;
     bool gaussian_spread = true;
@@ -1049,8 +1025,9 @@ struct AlpineServerConfig
     // for a mutator applied via a level/match vote, so the voted mutator replaces
     // (rather than stacks on) any mutator the base rules declared.
     AlpineServerConfigRules base_rules_no_mutators;
-    std::vector<std::pair<std::filesystem::path, std::optional<std::string>>> base_rules_preset_paths;
-    std::map<std::string, std::filesystem::path> rules_preset_aliases;
+    // The operator's explicit base keys over struct defaults and NOTHING else. Rules
+    // for any other game type are built from this, so nothing can leak in.
+    AlpineServerConfigRules base_rules_keys_only;
     std::vector<AlpineServerConfigLevelEntry> levels;
 
     std::string printed_cfg{};
@@ -1091,11 +1068,11 @@ struct AlpineServerConfig
 struct ManualRulesOverride
 {
     AlpineServerConfigRules rules;
-    std::vector<std::pair<std::filesystem::path, std::optional<std::string>>> applied_preset_paths;
-    // Mutually exclusive: an override comes either from a named rules preset or
-    // from voted mutators, and the two are described differently to operators.
-    std::optional<std::string> preset_alias;
     std::optional<std::string> mutator_labels;
+    // The vote that installed this named a game type or submitted its own mutator
+    // set. A plain vote installs derived rules too, but arms no session set, so a
+    // rotation preserve vote after one carries nothing.
+    bool explicit_session = false;
 };
 
 struct MatchInfo
@@ -1150,7 +1127,20 @@ extern bool g_manually_loaded_level;
 extern std::string g_ads_config_name;
 extern AFGameInfoFlags g_game_info_server_flags;
 extern std::string g_prev_level;
+extern bool g_is_overtime;
 extern MatchInfo g_match_info;
+// Set while rules are re-parsed or re-derived over a scope the config's own Full pass
+// already reported on; that pass is the one that reports problems.
+extern bool g_rules_parse_quiet;
+
+struct RulesParseQuietGuard
+{
+    bool previous;
+    RulesParseQuietGuard() : previous(g_rules_parse_quiet) { g_rules_parse_quiet = true; }
+    ~RulesParseQuietGuard() { g_rules_parse_quiet = previous; }
+    RulesParseQuietGuard(const RulesParseQuietGuard&) = delete;
+    RulesParseQuietGuard& operator=(const RulesParseQuietGuard&) = delete;
+};
 
 enum class UpcomingGameTypeSelection {
     Rotation,
@@ -1186,13 +1176,18 @@ void server_vote_handle_options_request(rf::Player* sender, bool has_cache, uint
 // discard a stream that was superseded mid-flight.
 const std::vector<uint8_t>& server_vote_get_options_blob(uint32_t& generation);
 void server_vote_invalidate_options_blob();
+// Rebuild the blob if invalid and report whether the bytes actually changed. The build
+// is content-addressed, so most invalidations answer false.
+bool server_vote_refresh_options_blob();
+// The mutator set currently in force, in the options blob's declaration-set encoding.
+// Session state, not config, so it is pushed separately from that blob.
+void server_vote_build_active_mutators_blob(std::vector<uint8_t>& blob);
 void vote_level_refresh_allowed_maps();
 // Push the current vote state to a player who joined while a vote is running.
 void server_vote_send_state_to_new_player(rf::Player* player);
 void handle_player_set_handicap(rf::Player* player, uint8_t amount);
 std::vector<rf::Player*> get_clients(bool include_browsers, bool include_bots);
 std::pair<bool, std::string> is_level_name_valid(std::string_view level_name_input);
-std::optional<ManualRulesOverride> load_rules_preset_alias(std::string_view preset_name);
 void set_manual_rules_override(ManualRulesOverride override_rules);
 void clear_manual_rules_override();
 void set_pending_rotation_preserve(PendingRotationPreserve pending);
@@ -1207,6 +1202,9 @@ void update_pre_match_powerups(rf::Player* player);
 void start_match();
 void cancel_match();
 void start_pre_match();
+// The afstats::MatchState value describing the ready-up match system right now,
+// as a raw uint8 so this header stays free of the stats API. Read at round_start.
+uint8_t af_match_state_for_stats();
 void set_ready_status(rf::Player* player, bool is_ready);
 void remove_ready_player_silent(rf::Player* player);
 void toggle_ready_status(rf::Player* player);
@@ -1227,6 +1225,7 @@ void process_delayed_kicks();
 void kick_player_delayed(const rf::Player* player);
 bool ends_with(const rf::String& str, const std::string& suffix);
 const AlpineServerConfig& server_get_alpine_config();
+bool server_is_modded();
 rf::CmdLineParam& get_ads_cmd_line_param();
 rf::CmdLineParam& get_min_cmd_line_param();
 rf::CmdLineParam& get_log_cmd_line_param();
@@ -1241,3 +1240,13 @@ bool multi_set_gametype_alpine(std::string_view gametype_name);
 bool is_gametype_name_valid(std::string_view gametype_name);
 void launch_alpine_dedicated_server();
 std::string build_info_command_output();
+
+// Called once per melee swing counted as fired. entity_damage_hook spends the credit when that
+// swing's deferred projectile connects, so melee hits can never outrun melee swings. Keyed per
+// weapon, because accuracy buckets are.
+void melee_grant_hit_credit(rf::Player* attacker, int weapon_type);
+
+// The per-player accuracy ledgers are indexed by player id, which the engine reuses -- both must
+// be cleared on player destroy and on level load so a joiner cannot inherit them.
+void accuracy_stats_on_player_destroy(rf::Player* player);
+void accuracy_stats_level_init();

@@ -44,9 +44,11 @@ ControlInputInjection resolve_injection(rf::ControlConfig* ccp, rf::ControlConfi
 FunHook<bool(rf::ControlConfig*, rf::ControlConfigAction, bool*)> control_config_check_pressed_hook{
     0x0043D4F0,
     [](rf::ControlConfig* ccp, rf::ControlConfigAction action, bool* just_pressed) {
-        // A veto owns the action completely: the engine is not consulted and no
-        // injection can lift it.
+        // A veto owns the action completely: no injection can lift it. The engine is
+        // still called, for every veto participant, so the press is consumed rather
+        // than piling up and firing all at once when the veto lifts.
         if (action_is_vetoed(ccp, action)) {
+            control_input_filter_check_pressed_unfiltered(ccp, action, nullptr);
             if (just_pressed) {
                 *just_pressed = false;
             }

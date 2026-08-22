@@ -9,6 +9,9 @@
 
 void os_apply_patch();
 void frametime_render_ui();
+// Bottom y of the FPS/Speed/Ping counter stack (top-right, below the ammo HUD);
+// equals the stack's base y when no counter is visible.
+int frametime_hud_counter_stack_bottom_y();
 float get_maximum_fps();
 void apply_maximum_fps();
 bool cmdline_token_equals_ci(const wchar_t* token_begin, std::size_t token_len, const wchar_t* expected);

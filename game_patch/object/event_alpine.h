@@ -32,6 +32,7 @@
 #include "../rf/gr/gr_light.h"
 #include "../rf/glare.h"
 #include "../graphics/gr.h"
+#include "../graphics/weather.h"
 #include "../misc/level.h"
 #include "../misc/alpine_settings.h"
 #include "../multi/alpine_packets.h"
@@ -3112,4 +3113,22 @@ struct EventATXSetFrameTime : rf::Event
     }
 
     void turn_on() override;
+};
+
+// id 158 — Weather_Region_State: enable/disable the weather regions this event links to.
+struct EventWeatherRegionState : rf::Event
+{
+    void turn_on() override
+    {
+        for (const auto& linked_uid : this->links) {
+            weather_set_region_enabled(linked_uid, true);
+        }
+    }
+
+    void turn_off() override
+    {
+        for (const auto& linked_uid : this->links) {
+            weather_set_region_enabled(linked_uid, false);
+        }
+    }
 };

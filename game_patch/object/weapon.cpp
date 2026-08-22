@@ -15,6 +15,7 @@
 #include "../main/main.h"
 #include "../multi/multi.h"
 #include "../multi/kill_attribution.h"
+#include "../multi/mutators.h"
 #include "../misc/misc.h"
 #include "../misc/alpine_settings.h"
 #include "../input/rumble.h"
@@ -117,7 +118,10 @@ bool rocket_locked_reticle_is_customized(bool bighud) {
 FunHook<void(rf::Weapon*)> weapon_move_one_hook{
     0x004C69A0,
     [](rf::Weapon* weapon) {
+        // Covers fused and detonator-triggered explosions, which detonate from inside the mover.
+        // Constructed EVERY frame for EVERY live weapon, so the scope ctor must stay a pure lookup.
         SplashWeaponScope splash_scope{weapon};
+        const CritWeaponScope crit_scope{weapon};
         weapon_move_one_hook.call_target(weapon);
         auto& level_aabb_min = rf::level.geometry->bbox_min;
         auto& level_aabb_max = rf::level.geometry->bbox_max;
@@ -198,12 +202,16 @@ ConsoleCommand2 show_enemy_bullets_cmd{
     "Toggles visibility of enemy bullet impacts",
 };
 
+// 0x004C53A8 is also the Critical Hits mutator's weapon_hit_level detonation site, so it calls
+// crits_on_explosion from here rather than putting a second CallHook on the same address
+// (see crits_explosion_hook in multi/mutators.cpp).
 CallHook<void(rf::Vector3&, float, float, int, int)> weapon_hit_wall_obj_apply_radius_damage_hook{
     0x004C53A8,
     [](rf::Vector3& epicenter, float damage, float radius, int killer_handle, int damage_type) {
         auto& collide_out = *reinterpret_cast<rf::PCollisionOut*>(&epicenter);
         auto new_epicenter = epicenter + collide_out.hit_normal * 0.0001f;
-        weapon_hit_wall_obj_apply_radius_damage_hook.call_target(new_epicenter, damage, radius, killer_handle, damage_type);
+        const float crit_scale = crits_on_explosion(&new_epicenter, radius);
+        weapon_hit_wall_obj_apply_radius_damage_hook.call_target(new_epicenter, damage, radius * crit_scale, killer_handle, damage_type);
     },
 };
 

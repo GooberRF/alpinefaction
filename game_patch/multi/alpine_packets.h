@@ -43,6 +43,7 @@ enum class af_packet_type : uint8_t
     af_pit_roster = 0x61,               // Alpine 1.4
     af_gungame_order = 0x62,            // Alpine 1.4
     af_salvage_state = 0x63,            // Alpine 1.4
+    af_crit_shot = 0x64,                // Alpine 1.4
 };
 
 struct af_ping_location_req_packet
@@ -58,13 +59,29 @@ struct af_ping_location_packet
     RF_Vector pos;
 };
 
+enum af_damage_notify_flags : uint8_t
+{
+    AF_DAMAGE_NOTIFY_DIED = 1 << 0,
+    AF_DAMAGE_NOTIFY_CRIT = 1 << 1,
+};
+
 struct af_damage_notify_packet
 {
     RF_GamePacketHeader header;
     uint8_t player_id;
     uint16_t damage;
-    uint8_t flags;
+    uint8_t flags; // af_damage_notify_flags
 };
+
+// Critical Hits mutator, in-flight telegraph. Sent once per crit-rolled projectile fire
+// event; clients hold it as a short-lived marker for the weapon object that shot spawns.
+struct af_crit_shot_packet
+{
+    RF_GamePacketHeader header;
+    uint8_t shooter_player_id;
+    uint8_t weapon_type;
+};
+static_assert(sizeof(af_crit_shot_packet) == sizeof(RF_GamePacketHeader) + 2);
 
 struct af_obj_update // members of af_obj_update_packet
 {
@@ -94,6 +111,7 @@ enum class af_client_req_type : uint8_t
     af_req_vote_cancel = 0x8,  // Alpine 1.4 (no additional data)
     af_req_vote_options = 0x9, // Alpine 1.4 (5 bytes: flags + known_generation)
     af_req_jetpack_state = 0xA, // Alpine 1.4 (1 byte: on 0/1)
+    af_req_stats_pssk = 0xB,    // Alpine 1.4 (32 bytes: player stats session key, no NUL)
 };
 
 // Frozen wire constants, values can NEVER be reordered or changed.
@@ -164,7 +182,10 @@ enum af_vote_end_flags : uint8_t
 // Repeated records in the blob are length-prefixed, so additions to the blob
 // are not compatibility breaking. This version should be incremented only if
 // the core format changes - like redefining a field or reordering/removing them.
-constexpr uint8_t af_vote_options_blob_version = 1;
+//
+// 2: the trailing base mutator section gained a u16 length prefix of its own,
+//    which redefines bytes version 1 wrote as a bare declaration set.
+constexpr uint8_t af_vote_options_blob_version = 2;
 
 // af_sreq_vote_options_data stream framing. The blob is pushed as
 // Begin -> Data* -> End over the ordered reliable channel, so no chunk index or
@@ -199,6 +220,15 @@ enum af_vote_level_flags : uint8_t
     // naming this level is rejected outright whatever game type is selected —
     // the blob still lists it (it is in the rotation) but it is not votable.
     AF_VOTE_LEVEL_FLAG_ALLOWED = 1 << 0,
+};
+
+// The optional trailing flags byte of a Level/Match vote call. Reserved bits are
+// ignored; an ABSENT byte means "explicit iff the vote named any mutator".
+enum af_vote_call_flags : uint8_t
+{
+    // `mutators` is the complete selection, empty included. Clear means "keep
+    // whatever set the session is running".
+    AF_VOTE_CALL_FLAG_MUTATORS_EXPLICIT = 1 << 0,
 };
 
 // The `baseline_kind` byte appended after a level entry's flags: which mutator
@@ -270,9 +300,18 @@ struct JetpackStateReqPayload
     uint8_t on = 0;
 };
 
+// The player stats session key minted by FactionFiles for this join, handed to the
+// server so it can report this player's stats. Raw, not NUL terminated.
+struct StatsPsskPayload
+{
+    char pssk[32] = {};
+};
+static_assert(sizeof(StatsPsskPayload) == 32);
+
 using af_client_payload = std::variant<HandicapPayload, SprayReqPayload, CharacterPayload,
                                        ReadyReqPayload, PitQueueReqPayload, VoteCastReqPayload,
-                                       VoteOptionsReqPayload, JetpackStateReqPayload, std::monostate>;
+                                       VoteOptionsReqPayload, JetpackStateReqPayload,
+                                       StatsPsskPayload, std::monostate>;
 
 struct af_client_req_packet
 {
@@ -294,6 +333,8 @@ enum class af_server_req_type : uint8_t
     af_sreq_entity_on_fire = 0x8,      // Alpine 1.4 (5 bytes: obj_handle, on)
     af_sreq_jetpack_state = 0x9,       // Alpine 1.4 (5 bytes: obj_handle, on)
     af_sreq_riot_shield_state = 0xA,   // Alpine 1.4 (20 bytes: obj_handle, life, impact_pos)
+    af_sreq_award = 0xB,               // Alpine 1.4 (2 bytes: award_id, victim_player_id; 0xFF = no victim)
+    af_sreq_active_mutators = 0xC,     // Alpine 1.4 (variable: one declaration set, see blob_declaration_set)
 };
 
 struct ShouldGibPayload
@@ -391,9 +432,19 @@ struct RiotShieldStatePayload
 };
 static_assert(sizeof(RiotShieldStatePayload) == 20);
 
+// The client owns the text and the sound for each id, so only the id and the opposing player go
+// over the wire. Ids are the wire-frozen AwardId registry in awards.h; the victim id is there for
+// the awards whose callout names them, and is award_no_victim for the rest.
+struct AwardPayload
+{
+    uint8_t award_id = 0;
+    uint8_t victim_player_id = 0xFF; // award_no_victim
+};
+static_assert(sizeof(AwardPayload) == 2);
+
 using af_server_req_payload = std::variant<ShouldGibPayload, TeleportEntityPayload, SprayPayload,
                                            ReadyPromptPayload, PitQueueStatePayload, EntityOnFirePayload,
-                                           EntityJetpackPayload, RiotShieldStatePayload>;
+                                           EntityJetpackPayload, RiotShieldStatePayload, AwardPayload>;
 
 struct af_server_req_packet
 {
@@ -763,6 +814,8 @@ struct AfVoteCallParams
     uint8_t gametype = af_vote_gametype_none;
     uint8_t extend_minutes = af_vote_extend_default_minutes;
     std::vector<VoteMutatorInput> mutators;
+    // False means "inherit the session's set", the legacy/chat-vote meaning.
+    bool mutators_explicit = false;
     bool preserve = true;
 };
 
@@ -774,8 +827,15 @@ static void af_process_ping_location_req_packet(const void* data, size_t len, co
 void af_send_ping_location_packet_to_team(rf::Vector3* pos, uint8_t player_id, rf::ubyte team);
 void af_send_ping_location_packet_to_all(rf::Vector3* pos, uint8_t player_id);
 static void af_process_ping_location_packet(const void* data, size_t len, const rf::NetAddr& addr);
-void af_send_damage_notify_packet(uint8_t player_id, float damage, bool died, rf::Player* player);
+void af_send_damage_notify_packet(uint8_t player_id, float damage, bool died, bool crit, rf::Player* player);
+// Demo-recorder variant: same payload plus a trailing attacker id, so playback can
+// filter notifications down to the player currently being spectated. Live clients
+// never receive this form (their copy is implicitly "attacker = you").
+void af_send_damage_notify_packet_for_demo(uint8_t victim_id, float damage, bool died, bool crit,
+                                           uint8_t attacker_id, rf::Player* recorder);
 static void af_process_damage_notify_packet(const void* data, size_t len, const rf::NetAddr& addr);
+void af_send_crit_shot_packet(uint8_t shooter_player_id, uint8_t weapon_type, rf::Player* player);
+static void af_process_crit_shot_packet(const void* data, size_t len, const rf::NetAddr& addr);
 void af_send_obj_update_packet(rf::Player* player);
 static void af_process_obj_update_packet(const void* data, size_t len, const rf::NetAddr& addr);
 void af_send_client_req_packet(const af_client_req_packet& packet, bool is_reliable = false);
@@ -788,6 +848,8 @@ void af_send_entity_on_fire(uint32_t obj_handle, bool on, bool reliable = true);
 void af_send_jetpack_state_request(bool on);
 void af_send_jetpack_state(uint32_t obj_handle, bool on);
 void af_send_riot_shield_state(uint32_t obj_handle, float life, const rf::Vector3& impact_pos);
+void af_send_award(rf::Player* player, uint8_t award_id, uint8_t victim_player_id);
+void af_send_award_for_demo(rf::Player* recorder, uint8_t award_id, uint8_t victim_player_id, uint8_t earner_id);
 void af_send_teleport_entity_req(uint32_t obj_handle, const rf::Vector3& pos, const rf::Matrix3& orient, const rf::Vector3& vel);
 void af_send_spray_to_player(uint8_t player_id, uint16_t texture_id, const rf::Vector3& pos, const rf::Vector3& normal, uint8_t flags, rf::Player* player);
 void af_broadcast_spray(uint8_t player_id, uint16_t texture_id, const rf::Vector3& pos, const rf::Vector3& normal);
@@ -814,6 +876,7 @@ void af_send_just_died_info_packet(rf::Player* to_player, bool respawn_allowed, 
 static void af_process_just_died_info_packet(const void* data, size_t len, const rf::NetAddr& addr);
 void af_send_server_info_packet(rf::Player* player);
 void af_send_server_info_packet_to_all();
+uint32_t af_compute_server_info_flags();
 void af_reset_session_overrides_snapshot();
 static void af_process_server_info_packet(const void* data, size_t len, const rf::NetAddr&);
 void af_send_spectate_start_packet(const rf::Player* spectatee);
@@ -843,6 +906,7 @@ void af_send_server_cfg_request();
 void af_send_spray_request(uint16_t texture_id, const rf::Vector3& pos, const rf::Vector3& normal);
 void af_send_ready_request(uint8_t action);      // 0 = unready, 1 = ready, 2 = toggle
 void af_send_pit_queue_request(uint8_t action);  // 0 = leave, 1 = join, 2 = toggle
+void af_send_stats_pssk(const std::string& pssk);
 
 // vote system (client -> server)
 void af_send_vote_call(const AfVoteCallParams& params);
@@ -862,6 +926,10 @@ void af_send_vote_state_update(rf::Player* player, uint8_t yes, uint8_t no, uint
 void af_send_vote_state_end(rf::Player* player, AfVoteResult result, bool passed,
                             std::string_view detail);
 void af_send_vote_options_data(rf::Player* player);
+// Push the mutator set currently in force. Called on join and whenever the active
+// rules are (re)applied.
+void af_send_active_mutators(rf::Player* player);
+void af_send_active_mutators_to_all();
 
 // server -> client state (Pit + match ready system)
 void af_send_ready_prompt(rf::Player* player, uint8_t state); // 0/1/2 (see ReadyPromptPayload)

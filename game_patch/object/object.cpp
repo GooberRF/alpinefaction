@@ -29,6 +29,8 @@
 #include "../multi/alpine_packets.h"
 #include "../multi/gametype.h"
 #include "../multi/server_internal.h"
+#include "../multi/mutators.h"
+#include "../graphics/weather.h"
 #include "../misc/alpine_options.h"
 #include "../misc/misc.h"
 #include "../misc/achievements.h"
@@ -355,6 +357,9 @@ CodeInjection mover_process_post_patch{
                     if (auto* gas_region = gas_region_get_by_uid(linked_uid)) {
                         gas_region->pos = event->pos;
                     }
+
+                    // check for a weather region
+                    weather_move_region(linked_uid, event->pos);
                 }
             }
 
@@ -402,6 +407,9 @@ CodeInjection mover_process_post_patch{
                         gas_region->pos = event->pos;
                         gas_region->orient = event->orient;
                     }
+
+                    // check for a weather region
+                    weather_move_region(linked_uid, event->pos, event->orient);
                 }
             }
         }
@@ -428,6 +436,9 @@ FunHook<void(rf::Entity*)> entity_on_dead_hook{
 FunHook<void(rf::Object*)> obj_flag_dead_hook{
     0x0048AB40,
     [](rf::Object* objp) {
+        // Crit tags are keyed by object handle, which the engine recycles.
+        crits_on_object_dead(objp);
+
         if (objp->type == rf::OT_CLUTTER && !(objp->obj_flags & rf::OF_DELAYED_DELETE)) {
             rf::Clutter* cp = reinterpret_cast<rf::Clutter*>(objp);
 

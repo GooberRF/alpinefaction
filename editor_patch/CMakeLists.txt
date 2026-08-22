@@ -15,6 +15,8 @@ set(SRCS
     corona.h
     bag.cpp
     bag.h
+    weather_region.cpp
+    weather_region.h
     textures.cpp
     bitmap_loaders.cpp
     bitmap_loaders.h

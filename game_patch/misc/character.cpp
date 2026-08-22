@@ -51,6 +51,15 @@ static FunHook<void(rf::Skeleton*, bool)> skeleton_unlink_base_hook{
             if (sp->base_usage_count != 0) {
                 xlog::warn("Expected 0 base usages for skeleton '{}' but got {}", sp->mvf_filename, sp->base_usage_count);
             }
+            if (sp->instance_usage_count > 0) {
+                // A live animation instance still plays this skeleton (e.g. an entity
+                // mid-death-anim whose character was just deleted). Freeing now would leave
+                // the instance with a dangling pointer that is dereferenced every frame and
+                // written on instance teardown. Keep the entry (and its animation data)
+                // alive; skeleton_flush()/skeleton_close() reap it once instances are gone.
+                xlog::debug("Keeping skeleton '{}' alive: {} instance usages remain", sp->mvf_filename, sp->instance_usage_count);
+                return;
+            }
             xlog::trace("Unloading skeleton: {} (total {})", sp->mvf_filename, skeletons.size());
             skeleton_cleanup_one(sp);
             std::string key = string_to_lower(get_filename_without_ext(sp->mvf_filename));
@@ -70,19 +79,26 @@ static FunHook<void()> skeleton_init_hook{
 static FunHook<void()> skeleton_close_hook{
     0x00539DB0,
     []() {
-        for (auto& p : skeletons) {
-            auto& skeleton = p.second;
-            if (skeleton->base_usage_count > 0) {
+        auto it = skeletons.begin();
+        while (it != skeletons.end()) {
+            rf::Skeleton* sp = it->second.get();
+            if (sp->base_usage_count > 0) {
                 xlog::warn("Expected 0 base usages for skeleton '{}' but got {}",
-                    skeleton->mvf_filename, skeleton->base_usage_count);
+                    sp->mvf_filename, sp->base_usage_count);
             }
-            if (skeleton->instance_usage_count > 0) {
-                xlog::warn("Expected 0 instance usages for skeleton '{}' but got {}",
-                    skeleton->mvf_filename, skeleton->instance_usage_count);
+            if (sp->instance_usage_count > 0) {
+                // Same hazard as in skeleton_unlink_base_hook: a live animation instance
+                // still references this entry, so freeing it here would leave a dangling
+                // pointer. Keep it (and its animation data) alive; it is reaped by a
+                // later skeleton_flush()/close once the instance count drains.
+                xlog::warn("Keeping skeleton '{}' alive at close: {} instance usages remain",
+                    sp->mvf_filename, sp->instance_usage_count);
+                ++it;
+                continue;
             }
-            skeleton_cleanup_one(skeleton.get());
+            skeleton_cleanup_one(sp);
+            it = skeletons.erase(it);
         }
-        skeletons.clear();
     },
 };
 
@@ -91,7 +107,7 @@ static void skeleton_flush()
     auto it = skeletons.begin();
     while (it != skeletons.end()) {
         rf::Skeleton* sp = it->second.get();
-        if (sp->base_usage_count == 0) {
+        if (sp->base_usage_count == 0 && sp->instance_usage_count == 0) {
             xlog::trace("Unloading unused skeleton '{}'", sp->mvf_filename);
             skeleton_cleanup_one(sp);
             it = skeletons.erase(it);
@@ -226,6 +242,9 @@ static CodeInjection character_delete_character_injection{
     0x0051C981,
     [](auto& regs) {
         rf::Character* cp = regs.ebx;
+        // Character deletion mid-session is the main producer of zero-base skeletons;
+        // log it so dangling-animation reports can be correlated
+        xlog::debug("Deleting character '{}' ({} anims)", cp->name, cp->num_anims);
         for (int i = 0; i < cp->num_anims; ++i) {
             rf::skeleton_unlink_base(cp->animations[i], false);
         }
@@ -242,6 +261,33 @@ static FunHook<void()> character_level_init_hook{
     },
 };
 
+// Reimplementation of Skeleton::has_morph_vertices (0x0053A820) with failure handling.
+// Stock code lazily pages the skeleton in and dereferences animation_data
+// unconditionally; when the page-in fails (freed/reused pool entry after multiplayer
+// session churn - observed as a crash at 0x0053A825 during demo playback restarts)
+// it read through null. Treat "no data" as "no morph vertices" instead.
+static FunHook<bool __fastcall(rf::Skeleton*)> skeleton_has_morph_vertices_hook{
+    0x0053A820,
+    [](rf::Skeleton* sp) FASTCALL_LAMBDA -> bool {
+        if (!sp->animation_data) {
+            if (sp->mvf_filename[0] == '\0') {
+                return false; // freed/reset pool entry - nothing to page in
+            }
+            rf::skeleton_page_in(sp->mvf_filename, nullptr);
+        }
+        if (!sp->animation_data) {
+            static int warn_count = 0;
+            if (warn_count < 5) {
+                ++warn_count;
+                xlog::warn("Skeleton '{}' has no animation data - skipping morph", sp->mvf_filename);
+            }
+            return false;
+        }
+        // num_morph_vertices lives at +0x1C of the animation data block
+        return *reinterpret_cast<int*>(static_cast<char*>(sp->animation_data) + 0x1C) > 0;
+    },
+};
+
 void character_apply_patch()
 {
     // do not load fast_anims value from registry
@@ -255,4 +301,5 @@ void character_apply_patch()
     entity_create_prop_fix_hook.install();
     character_delete_character_injection.install();
     character_level_init_hook.install();
+    skeleton_has_morph_vertices_hook.install();
 }

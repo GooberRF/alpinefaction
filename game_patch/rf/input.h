@@ -118,6 +118,11 @@ namespace rf
     };
 
     static auto& mouse_get_pos = addr_as_ref<int(int &x, int &y, int &z)>(0x0051E450);
+    static auto& mouse_set_pos = addr_as_ref<void(int x, int y)>(0x0051E4B0);
+    // Moves the OS cursor (ClientToScreen + SetCursorPos) when the window is foreground.
+    // Unlike mouse_set_pos it has no already-at-position early-out against the internal
+    // position globals, which can be stale in windowed-mouse mode.
+    static auto& mouse_force_pos = addr_as_ref<void(int x, int y)>(0x0051DE60);
     static auto& mouse_get_delta = addr_as_ref<void(int& dx, int& dy, int& dz)>(0x0051E630);
     static auto& mouse_was_button_pressed = addr_as_ref<int(int btn_idx)>(0x0051E5D0);
     static auto& mouse_button_is_down = addr_as_ref<bool(int btn_idx)>(0x0051E530);

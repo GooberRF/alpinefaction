@@ -3,9 +3,12 @@
 #include <string_view>
 #include <utility>
 #include <xlog/xlog.h>
+#include <common/utils/string-utils.h>
 #include "vote_client.h"
 #include "alpine_packets.h"
+#include "multi.h"
 #include "../hud/hud.h"
+#include "../misc/alpine_options.h"
 #include "../misc/alpine_settings.h"
 #include "../os/os.h"
 #include "../rf/multi.h"
@@ -40,6 +43,10 @@ struct VoteOptionsCache
 
 VoteOptionsCache g_vote_options;
 std::optional<ActiveVoteState> g_active_vote;
+
+// Session mutator set pushed by the server (af_sreq_active_mutators).
+std::optional<std::vector<VoteMutatorDecl>> g_active_mutators;
+uint32_t g_active_mutators_revision = 0;
 
 // Retry interval while we have no blob at all. Once one is loaded a stale marker
 // costs exactly one request, so this only paces the initial fetch.
@@ -442,6 +449,8 @@ bool parse_vote_options_blob(const uint8_t* data, size_t len, VoteOptionsData& o
         VoteLevelInfo level;
         level.filename = body.str();
         level.natural_gametype = body.u8();
+        // Taken as sent: adding local knowledge would make the panel offer what a
+        // differently-configured server will refuse.
         level.valid_gametype_mask = body.u32();
         level.allowed_for_vote = (body.u8() & AF_VOTE_LEVEL_FLAG_ALLOWED) != 0;
         // Read the entry's own success BEFORE the appended baseline set below, so
@@ -474,12 +483,40 @@ bool parse_vote_options_blob(const uint8_t* data, size_t len, VoteOptionsData& o
         r.skip(body_len); // unconditional: the next entry starts here either way
     }
 
-    // The base mutator set, appended after the level section. Failing to read it
-    // costs the vote panel's pre-selection and nothing else, so it never fails the
-    // blob: a blob from a server built before it existed simply ends here.
-    if (r.remaining() > 0 && !parse_declaration_set(r, parsed.base_mutator_decls)) {
-        xlog::debug("vote options: unparseable base mutator set; the vote panel will pre-select nothing");
-        parsed.base_mutator_decls.clear();
+    // The base mutator set, appended after the level section behind its own u16 length.
+    // Never fails the blob: a server built before it existed simply ends here, and
+    // `present` stays false, keeping "base runs nothing" distinct from "base unknown".
+    // Version-gated, not just length-gated: version 1 wrote these bytes as a bare
+    // declaration set, so its first two are not a length prefix.
+    bool base_section_consumed = false;
+    if (version >= 2 && r.remaining() > 0) {
+        const uint16_t base_len = r.u16();
+        if (!r.ok() || base_len > r.remaining()) {
+            xlog::debug("vote options: truncated base mutator section; the vote panel will pre-select nothing");
+        }
+        else {
+            BlobReader body{r.cur(), base_len};
+            if (parse_declaration_set(body, parsed.base_mutator_decls) && body.ok()) {
+                parsed.base_mutator_decls_present = true;
+            }
+            else {
+                xlog::debug("vote options: unparseable base mutator set; the vote panel will pre-select nothing");
+                parsed.base_mutator_decls.clear();
+            }
+            r.skip(base_len);
+            base_section_consumed = true;
+        }
+    }
+
+    // The base rules' game type. Gated on having CONSUMED the section above, not on the
+    // version alone: only then is the read position known to sit at this byte.
+    if (base_section_consumed && r.remaining() > 0) {
+        const uint8_t base_game_type = r.u8();
+        // Range checked: `present` must never be set to something unanswerable.
+        if (r.ok() && base_game_type < static_cast<uint8_t>(rf::NG_TYPE_UNK)) {
+            parsed.base_game_type = base_game_type;
+            parsed.base_game_type_present = true;
+        }
     }
 
     // Anything left over is a section a newer server appended; ignored on purpose.
@@ -532,10 +569,39 @@ uint32_t vote_options_loaded_generation()
     return g_vote_options.loaded_generation;
 }
 
+const std::vector<VoteMutatorDecl>* vote_active_mutators_get()
+{
+    return g_active_mutators ? &*g_active_mutators : nullptr;
+}
+
+uint32_t vote_active_mutators_revision()
+{
+    return g_active_mutators_revision;
+}
+
+void vote_active_mutators_on_received(const uint8_t* data, size_t len)
+{
+    BlobReader r{data, len};
+    std::vector<VoteMutatorDecl> decls;
+    if (!parse_declaration_set(r, decls)) {
+        xlog::warn("vote options: unparseable active mutator set ({} bytes); keeping the previous one", len);
+        return;
+    }
+    // An empty set is meaningful: "the session runs no mutators".
+    g_active_mutators = std::move(decls);
+    ++g_active_mutators_revision;
+}
+
 bool vote_level_allows_gametype(const VoteLevelInfo& level, uint8_t game_type)
 {
     if (game_type >= 32) {
         return false;
+    }
+    // Mirrors is_level_valid_for_vote_gametype: the server accepts a level's own
+    // default even when it sits outside the prefix mask, so offering it here is
+    // what keeps "callable" and "accepted" the same answer.
+    if (game_type == level.natural_gametype) {
+        return true;
     }
     return (level.valid_gametype_mask & (1u << game_type)) != 0;
 }
@@ -543,6 +609,69 @@ bool vote_level_allows_gametype(const VoteLevelInfo& level, uint8_t game_type)
 bool vote_level_allows_default_gametype(const VoteLevelInfo& level)
 {
     return vote_level_allows_gametype(level, level.natural_gametype);
+}
+
+uint8_t vote_default_gametype_for_level(const VoteOptionsData& options, std::string_view level_string)
+{
+    const auto running = rf::multi_get_game_type();
+    if (level_string.empty()) {
+        return static_cast<uint8_t>(running);
+    }
+
+    const std::string wanted = normalize_level_filename(level_string);
+    // A listed level carries the server's own resolution, already reconciled with the
+    // mask sent beside it.
+    for (const auto& entry : options.levels) {
+        if (string_iequals(entry.filename, wanted)) {
+            return entry.natural_gametype;
+        }
+    }
+
+    // Unlisted name: mirror resolve_level_default_game_type step for step. A server too
+    // old to send a base game type leaves the running one standing in.
+    const rf::NetGameType base = options.base_game_type_present
+        ? static_cast<rf::NetGameType>(options.base_game_type)
+        : running;
+    if (is_known_run_level(wanted)) {
+        return static_cast<uint8_t>(rf::NetGameType::NG_TYPE_RUN);
+    }
+    if (multi_level_name_matches_game_type(wanted, base)) {
+        return static_cast<uint8_t>(base);
+    }
+    if (auto from_prefix = multi_game_type_for_level_prefix(wanted)) {
+        return static_cast<uint8_t>(*from_prefix);
+    }
+    return static_cast<uint8_t>(base);
+}
+
+uint8_t vote_match_current_level_gametype(const VoteOptionsData& options)
+{
+    const auto running = static_cast<uint8_t>(rf::multi_get_game_type());
+    const auto team_dm = static_cast<uint8_t>(rf::NG_TYPE_TEAMDM);
+
+    const VoteGametypeInfo* first_team = nullptr;
+    bool offers_team_dm = false;
+    for (const auto& entry : options.gametypes) {
+        if (!entry.is_team_type) {
+            continue; // a match cycler only offers team types
+        }
+        if (entry.id == running) {
+            return running;
+        }
+        if (entry.id == team_dm) {
+            offers_team_dm = true;
+        }
+        if (!first_team) {
+            first_team = &entry;
+        }
+    }
+
+    if (running == static_cast<uint8_t>(rf::NG_TYPE_DM) && offers_team_dm) {
+        return team_dm;
+    }
+    // Nothing offered at all leaves it to the server, exactly as an empty cycler
+    // makes the panel send "none".
+    return first_team ? first_team->id : af_vote_gametype_none;
 }
 
 bool vote_options_is_type_enabled(AfVoteType type)
@@ -804,6 +933,8 @@ void vote_client_reset()
     // Drops any partial stream along with the parsed cache: the accumulated bytes
     // belong to the server we just left.
     g_vote_options = VoteOptionsCache{};
+    g_active_mutators.reset();
+    g_active_mutators_revision = 0;
     // Also drop the HUD prompt: without this a vote left running on the server we
     // just left would keep its notification up across a reconnect elsewhere.
     remove_hud_vote_notification();

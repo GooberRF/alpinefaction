@@ -192,6 +192,23 @@ static auto& editor_vmesh_get_materials_array = addr_as_ref<void(EditorVMesh* vm
 
 // Bitmap load: loads a texture file, returns handle (or -1 on failure)
 static auto& bm_load = addr_as_ref<int(const char* filename, int path_id, int generate_mipmaps)>(0x004BBBF0);
+static auto& bm_get_filename = addr_as_ref<const char*(int bm_handle)>(0x004BDC60);
+static auto& bm_get_mipmap_info = addr_as_ref<void(int bm_handle, int* width, int* height,
+                                                  int* num_pixels_in_all_levels, int* mip_levels)>(0x004BCBD0);
+
+// Primitives CBitmapPreviewDialog::OnPaint (0x0044C1B0) uses to draw a texture straight into a
+// control's own window rather than through its device context.
+static auto& gr_get_max_width = addr_as_ref<int()>(0x004B8DC0);
+static auto& gr_get_max_height = addr_as_ref<int()>(0x004B8DD0);
+static auto& gr_set_viewport_wnd = addr_as_ref<void(HWND wnd)>(0x004B8E10);
+static auto& gr_set_clip = addr_as_ref<void(int x, int y, int w, int h)>(0x004B93E0);
+static auto& gr_clear = addr_as_ref<void()>(0x004B9570);
+static auto& gr_flip = addr_as_ref<void()>(0x004B95A0);
+static auto& gr_bitmap_scaled = addr_as_ref<char(int bm_handle, int dst_x, int dst_y, int dst_w, int dst_h,
+                                                 int src_x, int src_y, int src_w, int src_h,
+                                                 float unused1, float unused2, uint32_t mode)>(0x004B99D0);
+// Draw mode the stock bitmap preview passes to gr_bitmap_scaled.
+static auto& gr_bitmap_preview_mode = addr_as_ref<uint32_t>(0x0147D6A0);
 
 // character_mesh_load_action: __thiscall on mesh_data, loads .rfa file, returns action index
 using EditorCharMeshLoadActionFn = int(__thiscall*)(void* mesh_data, const char* rfa_filename, char is_state, char unused);
@@ -212,6 +229,19 @@ static auto& gr_set_bitmap = addr_as_ref<void(int bm_handle, int unk)>(0x004B97E
 static auto& gr_render_billboard = addr_as_ref<void(void* pos, int unk, float scale, float param)>(0x004CB360);
 static auto& draw_line_2d = addr_as_ref<uint32_t(const void* pt1, const void* pt2, uint32_t mode)>(0x004CB150);
 static auto& project_to_screen_2d = addr_as_ref<bool(const void* world_pos, float* out_x, float* out_y)>(0x004C6630);
+
+// Stock wireframe shape drawing — the routines gas regions and triggers use. Their line
+// segments go through the clipped 3D line drawer (0x004CB180), so edges survive near-plane
+// crossings that a raw project-and-draw pass loses. Colour comes from set_draw_color.
+// Box dimensions are full size; the routine halves them itself.
+static auto& draw_wireframe_sphere_3d = addr_as_ref<bool(const Vector3* center, float radius, uint32_t mode)>(0x004CB4F0);
+static auto& draw_wireframe_box_3d =
+    addr_as_ref<bool(const Vector3* center, const Matrix3* orient, const Vector3* dims, uint32_t mode)>(0x004CB840);
+// Draw mode the stock editor passes to the shape/line routines.
+inline uint32_t editor_line_mode()
+{
+    return *reinterpret_cast<uint32_t*>(0x0147d260);
+}
 
 // ─── Render Params ───────────────────────────────────────────────────────────
 
@@ -334,6 +364,8 @@ static auto& gr_cam_param = addr_as_ref<float>(0x014cf7e0);
 // ─── Misc ────────────────────────────────────────────────────────────────────
 
 static auto& generate_uid = addr_as_ref<int()>(0x00484230);
+// True if uid is already taken. Scans master objects, brush list, undo/redo stacks.
+static auto& is_uid_in_use = addr_as_ref<bool __cdecl(int uid)>(0x00484000);
 static auto& file_add_path = addr_as_ref<int __cdecl(const char* path, const char* exts, bool cd)>(0x004C3950);
 static auto& file_scan_path = addr_as_ref<void(int slot_index)>(0x004CF800);
 static auto& rf_alloc = addr_as_ref<void* __cdecl(size_t size)>(0x0052ee74);

@@ -31,8 +31,10 @@
 #include "../rf/ui.h"
 #include "gr.h"
 #include "gr_internal.h"
+#include "weather.h"
 #include "../misc/alpine_options.h"
 #include "../hud/multi_spectate.h"
+#include "../multi/demo/demo.h"
 #include "legacy/gr_d3d.h"
 #include "d3d11/gr_d3d11_hooks.h"
 
@@ -316,7 +318,7 @@ ConsoleCommand2 disable_rendering_cmd{
 FunHook<void(rf::Player*, int)> gameplay_render_frame_hook{
     0x00431A00,
     [](rf::Player* pp, int flags) {
-        if (is_headless_mode() || !g_alpine_game_config.rendering_enabled) {
+        if (is_headless_mode() || !g_alpine_game_config.rendering_enabled || demo_playback_is_seeking()) {
             return;
         }
 
@@ -328,7 +330,7 @@ FunHook<void(rf::Player*, int)> gameplay_render_frame_hook{
 FunHook<void()> gameplay_render_frame_pre_hook{
     0x00431820,
     []() {
-        if (is_headless_mode() || !g_alpine_game_config.rendering_enabled) {
+        if (is_headless_mode() || !g_alpine_game_config.rendering_enabled || demo_playback_is_seeking()) {
             return;
         }
 
@@ -356,6 +358,22 @@ FunHook<void()> explosion_do_frame_hook{
     []() {
         explosion_do_frame_hook.call_target();
         explosion_flash_lights_do_frame();
+    },
+};
+
+// Vclips (explosion sprites etc.) spawned during a demo seek burst barely age before the
+// seek ends and would all pop on screen at once afterwards. Failing the call here also
+// suppresses the flash lights the two CallHooks below add on success, and the particles
+// and explosions vclip_play_3d itself creates.
+FunHook<int(int index, rf::GRoom* src_room, rf::Vector3* src_pos, rf::Vector3* pos,
+    float radius, int parent_handle, rf::Vector3* dir, bool play_sound)> vclip_play_3d_hook{
+    0x004C16E0,
+    [](int index, rf::GRoom* src_room, rf::Vector3* src_pos, rf::Vector3* pos,
+        float radius, int parent_handle, rf::Vector3* dir, bool play_sound) {
+        if (demo_playback_in_seek_burst()) {
+            return -1;
+        }
+        return vclip_play_3d_hook.call_target(index, src_room, src_pos, pos, radius, parent_handle, dir, play_sound);
     },
 };
 
@@ -600,10 +618,9 @@ ConsoleCommand2 pow2_tex_cmd{
 void evaluate_pow2tex(const rf::String& level_filename) {
     // if dbg_pow2tex is active, use manual override instead of level filename lookup
     if (!override_pow2tex) {
-        bool should_p2t_fix = false;
-
-        if (is_p2t_fix_level(level_filename)) {
-            should_p2t_fix = true;
+        const bool should_p2t_fix = is_p2t_fix_level(level_filename);
+        // Renderer-only, so a dedicated server has nothing to report.
+        if (!rf::is_dedicated_server && should_p2t_fix) {
             rf::console::print("Applying power of 2 texture fix to known affected level {}", level_filename);
         }
 
@@ -613,7 +630,7 @@ void evaluate_pow2tex(const rf::String& level_filename) {
     // Always sync D3D11 state with current p2t value at level load
     if (g_game_config.renderer == GameConfig::Renderer::d3d11) {
         gr::d3d11::set_pow2_tex_active(rf::gr::d3d::p2t != 0);
-        if (is_sky_fix_level(level_filename)) {
+        if (!rf::is_dedicated_server && is_sky_fix_level(level_filename)) {
             rf::console::print("Applying sky fix to known affected level {}", level_filename);
         }
     }
@@ -678,6 +695,9 @@ void gr_apply_patch()
     // Lights
     gr_light_apply_patch();
 
+    // Plankton fix and weather regions
+    weather_apply_patch();
+
     if (!headless_bot_graphics_bypass) {
         const bool use_d3d11_renderer =
             g_game_config.renderer == GameConfig::Renderer::d3d11;
@@ -727,6 +747,7 @@ void gr_apply_patch()
     // Handle explosion dynamic light flashes
     vclip_init_hook.install();
     explosion_do_frame_hook.install();
+    vclip_play_3d_hook.install();
     vclip_play_3d_weapon_hook.install();
     vclip_play_3d_env_hook.install();
 

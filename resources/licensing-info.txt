@@ -92,6 +92,9 @@ soneproject:
 theplax:
 * af_spray1.ogg (CC-BY 4.0: https://freesound.org/s/657793/)
 
+LittleRobotSoundFactory:
+* af_award1.ogg (CC-BY 4.0: https://freesound.org/s/270404/)
+
 Drummyfish:
 * af-jetpack1skin1.tga and af-jetpack1.v3m (CC0: https://opengameart.org/content/oldschool-afps-weapons/)
 

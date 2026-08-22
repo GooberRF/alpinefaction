@@ -17,13 +17,17 @@
 #include "../misc/misc.h"
 #include "../misc/alpine_settings.h"
 #include "../misc/alpine_options.h"
+#include "../misc/vote_panel.h"
+#include "../misc/spray_picker.h"
 #include "../multi/multi.h"
 #include "../rf/player/player.h"
 #include "../rf/player/camera.h"
 #include "../rf/player/control_config.h"
+#include "../rf/os/console.h"
 #include "../rf/os/frametime.h"
 #include "player.h"
 #include "../hud/multi_spectate.h"
+#include "../hud/remote_server_cfg_ui.h"
 
 constexpr auto screen_shake_fps = 150.0f;
 static float g_camera_shake_factor = 0.6f;
@@ -182,6 +186,12 @@ CodeInjection camera_create_for_player_freelook_camera_patch{
     },
 };
 
+static bool freelook_wheel_captured_by_overlay()
+{
+    return vote_panel_is_gameplay_overlay_active() || spray_picker_is_open() ||
+        g_remote_server_cfg_popup.is_active();
+}
+
 CodeInjection free_camera_do_frame_patch{
     0x0040D9CC,
     [](auto& regs) {
@@ -200,7 +210,7 @@ CodeInjection free_camera_do_frame_patch{
                     auto* player = rf::local_player;
                     const int mouse_dz = rf::mouse_dz;
 
-                    if (mouse_dz != 0) {
+                    if (mouse_dz != 0 && !freelook_wheel_captured_by_overlay()) {
                         // normalize at 120.0 units per scroll notch
                         const float scroll_notches = static_cast<float>(mouse_dz) / 120.0f;
                         freelook_cam_accel_scale += freelook_accel_scroll_step * scroll_notches;
@@ -228,6 +238,10 @@ CodeInjection free_camera_do_frame_patch{
 CodeInjection freelook_camera_jump_vertical_patch{
     0x004A609C,
     [] (auto& regs) {
+        if (rf::console::console_is_visible() || rf::multi_chat_is_say_visible()) {
+            return;
+        }
+
         rf::Player* player = regs.edi;
         const bool jumped =
             rf::control_is_control_down(&player->settings.controls, rf::CC_ACTION_JUMP);
