@@ -263,7 +263,7 @@ namespace rf
     static auto& multi_get_game_type = addr_as_ref<NetGameType()>(0x00470770);
     static auto& multi_io_send = addr_as_ref<void(Player *player, const void *packet, int len)>(0x00479370);
     static auto& multi_io_send_reliable =
-        addr_as_ref<void(Player *player, const void *data, int len, int not_limbo)>(0x00479480);
+        addr_as_ref<void(Player *player, const void *data, int len, int require_in_game)>(0x00479480);
     static auto& multi_io_send_reliable_to_all =
         addr_as_ref<void(const void *data, int len, int a4)>(0x004795A0);
     static auto& multi_io_send_buffered_reliable_packets = addr_as_ref<void(Player *pp)>(0x004796C0);

@@ -2970,6 +2970,37 @@ CodeInjection send_state_info_injection{
     },
 };
 
+CodeInjection process_state_info_req_kick_between_levels_patch{
+    0x00481C12,
+    [] (auto& regs) {
+        rf::Player* const player = regs.ebx;
+        if (!is_player_minimum_af_client_version(player, 1, 4, 0)) {
+            return;
+        }
+
+        rf::send_state_info(player);
+
+        // `send_state_info` sets `NETPLAYER_STATE_IN_GAME`, but we set
+        // `NETPLAYER_STATE_WAITING` like `mp_change_level`.
+        constexpr int NETPLAYER_STATE_WAITING = 0x0;
+        player->net_data->state = NETPLAYER_STATE_WAITING;
+
+        const RF_GamePacketHeader enter_limbo{
+            .type = RF_GPT_ENTER_LIMBO,
+            .size = 0
+        };
+        rf::multi_io_send_reliable(
+            player,
+            &enter_limbo,
+            enter_limbo.size + sizeof(RF_GamePacketHeader),
+            FALSE
+        );
+
+        regs.esp += 0x8;
+        regs.eip = 0x00481C4B;
+    }
+};
+
 FunHook<void(rf::Player*)> send_players_packet_hook{
     0x00481C70,
     [](rf::Player *player) {
@@ -3528,6 +3559,7 @@ void network_init()
 
     // print join_req denial reasons
     check_access_for_new_player_hook.install();
+    process_state_info_req_kick_between_levels_patch.install();
     // Move our limbo check to `check_join_request_restrict_status`.
     AsmWriter{0x0047AE64}.nop(6);
 
