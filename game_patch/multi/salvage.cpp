@@ -60,7 +60,7 @@ constexpr int kSalClientBaseLookupRetryMs = 1000;
 // within this relative imbalance, i.e. |d_r - d_b| / mean(d_r, d_b).
 constexpr float kSalMaxCenterImbalance = 0.30f;
 constexpr float kSalMidpointGroundTraceDist = 32.0f;
-constexpr float kSalHardcodedSpawnClearRadius = 2.0f;
+constexpr float kSalSpawnClearRadius = 1.0f; // applies to the resolved spawn from any source
 // Green objective glow. Radii match what the stock game uses for
 // the equivalent lights: 4.0 for a CTF flag carrier, 3.0 (0x0059479C) for a
 // powerup/pickup sitting on the ground.
@@ -109,6 +109,8 @@ rf::Timestamp g_client_base_lookup_retry_timer;
 // pointer for the same reason (ctf_red_flag_item), but a handle also survives the
 // item dying under us — it simply stops resolving.
 int g_client_flag_item_handle = -1;
+
+int g_flag_rendered_frame = -1;
 
 // Resolved index of the $prop_flag prop point, cached per role: one slot for the
 // carrier's character mesh, one for the flag's own mesh. The lookup is a string
@@ -431,8 +433,8 @@ void resolve_base_positions()
     g_salvage_info.bases_known = red_found && blue_found;
 
     if (!g_salvage_info.bases_known) {
-        xlog::warn("salvage: level is missing a team base (red found: {}, blue found: {}); "
-            "captures cannot be scored", red_found, blue_found);
+        xlog::warn("salvage: level is missing a team base (red found: {}, blue found: {})",
+            red_found, blue_found);
     }
 }
 
@@ -505,7 +507,7 @@ const CenterCandidate* pick_best_candidate(const std::vector<CenterCandidate>& c
 }
 
 // Resolve the neutral flag's home. Bases must already be resolved.
-void resolve_flag_spawn()
+void resolve_flag_spawn_pos()
 {
     g_salvage_info.spawn_orient = rf::identity_matrix;
 
@@ -514,15 +516,6 @@ void resolve_flag_spawn()
         g_salvage_info.spawn_known = true;
         xlog::debug("salvage: flag spawn from hardcoded table at ({},{},{})",
             g_salvage_info.spawn_pos.x, g_salvage_info.spawn_pos.y, g_salvage_info.spawn_pos.z);
-        // Items on the override spot would sit inside the flag, remove them.
-        rf::Item* it = rf::item_list.next;
-        while (it && it != &rf::item_list) {
-            rf::Item* next = it->next;
-            if ((it->pos - g_salvage_info.spawn_pos).len() <= kSalHardcodedSpawnClearRadius) {
-                rf::obj_flag_dead(it);
-            }
-            it = next;
-        }
         return;
     }
 
@@ -541,9 +534,6 @@ void resolve_flag_spawn()
         xlog::info("salvage: flag spawn from {} '{}' (imbalance {:.2f}) at ({},{},{})",
             source, kSalCenterCandidateClasses[best->priority], best->imbalance,
             g_salvage_info.spawn_pos.x, g_salvage_info.spawn_pos.y, g_salvage_info.spawn_pos.z);
-        // The chosen powerup would sit inside the flag. Level-placed, so server-side
-        // only — see remove_level_ctf_flags.
-        rf::obj_flag_dead(best->item);
         return;
     }
 
@@ -563,6 +553,21 @@ void resolve_flag_spawn()
     g_salvage_info.spawn_orient = rf::level.player_start_orient;
     g_salvage_info.spawn_known = true;
     xlog::warn("salvage: could not resolve a map center; flag spawns at the player start position");
+}
+
+void resolve_flag_spawn()
+{
+    resolve_flag_spawn_pos();
+
+    // Items on the home spot would sit inside the flag, remove them.
+    rf::Item* it = rf::item_list.next;
+    while (it && it != &rf::item_list) {
+        rf::Item* next = it->next;
+        if ((it->pos - g_salvage_info.spawn_pos).len() <= kSalSpawnClearRadius) {
+            rf::obj_flag_dead(it);
+        }
+        it = next;
+    }
 }
 
 void enter_delayed_state(int delay_ms)
@@ -953,6 +958,30 @@ bool salvage_query_flag_outline(rf::VMesh** out_vmesh, rf::Vector3* out_pos, rf:
     return true;
 }
 
+bool salvage_flag_was_rendered_this_frame()
+{
+    return g_flag_rendered_frame == rf::frame_count;
+}
+
+void salvage_tick_flag_spin()
+{
+    if (!gt_is_salvage()) return;
+
+    const SalFlagState state = g_salvage_info.state;
+    if (state != SalFlagState::AtSpawn && state != SalFlagState::Dropped) return;
+
+    rf::Item* item = current_flag_item();
+    if (!item || !item->info) return;
+    if (!(item->info->flags & rf::IIF_SPINS_IN_MULTI)) return;
+
+    const float spin_rate = addr_as_ref<float>(0x005897A8);
+    const float two_pi = addr_as_ref<float>(0x005894AC);
+    item->spin_angle += spin_rate * rf::frametime;
+    if (item->spin_angle > two_pi) {
+        item->spin_angle -= two_pi;
+    }
+}
+
 void salvage_move_carried_flag()
 {
     if (!rf::is_multi || !gt_is_salvage()) return;
@@ -1049,14 +1078,15 @@ void salvage_update_dynamic_light()
 
 void salvage_force_state_sync_to(rf::Player* player)
 {
-    if (!gt_is_salvage()) return;
+    // Never advertise a spawn we do not have: clients would mark home at (0,0,0).
+    if (!gt_is_salvage() || !g_salvage_info.spawn_known) return;
 
     af_send_salvage_state_packet(player);
 }
 
 void salvage_broadcast_state()
 {
-    if (!gt_is_salvage() || !rf::is_server) return;
+    if (!gt_is_salvage() || !rf::is_server || !g_salvage_info.spawn_known) return;
     af_send_salvage_state_packet_to_all();
 }
 
@@ -1183,6 +1213,9 @@ void salvage_level_init_post()
 
     resolve_base_positions();
     remove_level_ctf_flags();
+    // Without both bases a capture is impossible, so no flag is ever spawned.
+    if (!g_salvage_info.bases_known) return;
+
     resolve_flag_spawn();
 
     enter_delayed_state(g_alpine_server_config_active_rules.salvage.flag_spawn_delay_ms);
@@ -1488,6 +1521,7 @@ CodeInjection item_render_hide_carried_flag_patch{
         if (!gt_is_salvage()) return;
         auto* item = reinterpret_cast<rf::Item*>(regs.esi.value);
         if (!salvage_is_flag_item(item)) return;
+        g_flag_rendered_frame = rf::frame_count;
         if (!flag_hidden_for_local_view()) return;
         regs.eip = 0x004590F6;
     },
