@@ -96,6 +96,7 @@ struct TouchpadState {
     float last_y = 0.0f;
 };
 static TouchpadState g_touchpad;
+static bool is_gamepad_controls_rebind_active();
 
 static float g_move_lx = 0.0f, g_move_ly = 0.0f;
 static float g_move_mag = 0.0f;
@@ -928,10 +929,18 @@ static void handle_gamepad_axis_motion(const SDL_GamepadAxisEvent& ev)
     }
 }
 
+static bool touchpad_input_blocked()
+{
+    if (!is_gamepad_controls_rebind_active()) return false;
+    g_touchpad.active = false;
+    return true;
+}
+
 static void handle_gamepad_touchpad_down(const SDL_GamepadTouchpadEvent& ev)
 {
     if (!is_gamepad_input_active() || !is_open_gamepad_id(ev.which)) return;
     if (ev.touchpad != 0 || ev.finger != 0) return;
+    if (touchpad_input_blocked()) return;
     if (g_message_log_close_cooldown > 0.0f) return;
     g_touchpad.active = true;
     g_touchpad.last_x = ev.x;
@@ -945,6 +954,7 @@ static void handle_gamepad_touchpad_motion(const SDL_GamepadTouchpadEvent& ev)
 {
     if (!is_gamepad_input_active() || !is_open_gamepad_id(ev.which)) return;
     if (ev.touchpad != 0 || ev.finger != 0) return;
+    if (touchpad_input_blocked()) return;
     if (!g_touchpad.active) return;
     float dx = ev.x - g_touchpad.last_x;
     float dy = ev.y - g_touchpad.last_y;
@@ -961,6 +971,7 @@ static void handle_gamepad_touchpad_up(const SDL_GamepadTouchpadEvent& ev)
 {
     if (!is_gamepad_input_active() || !is_open_gamepad_id(ev.which)) return;
     if (ev.touchpad != 0 || ev.finger != 0) return;
+    if (touchpad_input_blocked()) return;
     g_touchpad.active = false;
 }
 
