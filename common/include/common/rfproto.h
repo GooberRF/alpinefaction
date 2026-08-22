@@ -338,7 +338,7 @@ enum RF_LeftReason
     RF_LR_KICKED            = 0x02,
     RF_LR_DATA_INCOMPATIBLE = 0x04, // Note: received when PF wants to download map (?)
     RF_LR_BETWEEN_LEVELS    = 0x05,
-    RF_LR_EMPTY             = 0x06, // TODO: check if it's polish translation bug
+    RF_LR_TIMED_OUT_JOINING = 0x06,
     RF_LR_NO_LEVEL_FILE     = 0x07,
     // Note: other reasons shows the same message as RF_LR_UNKNOWN
 };
