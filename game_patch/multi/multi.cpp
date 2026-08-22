@@ -311,7 +311,7 @@ FunHook<void()> multi_limbo_init{
         }
 
         // don't let clients vote if the map has been played for less than 1 min
-        else if(rf::level.time >= 60.0f) {
+        else if (rf::level.time >= 60.0f && !demo_playback_active()) {
             multi_player_set_can_endgame_vote(true);
         }
 
