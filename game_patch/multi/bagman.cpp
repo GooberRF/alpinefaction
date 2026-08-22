@@ -47,6 +47,7 @@ constexpr int kScoreTickMs = 1000;
 constexpr int kBagPickupUnlockDelayMs = 500; // Delay after a bag is dropped before it can be picked up
 constexpr float kCarrierTickEffectiveHealth = 10.0f;
 constexpr float kCarrierKillEffectiveHealth = 50.0f;
+constexpr float kBagSpawnClearRadius = 1.0f;
 
 namespace
 {
@@ -78,7 +79,7 @@ constexpr BagHomeEntry kBagHomePositions[] = {
     { "ctf02.rfl", 0.25f, -22.80f, 0.11f },
     { "ctf03.rfl", 3.77f, -10.02f, -0.0f },
     { "ctf04.rfl", 40.0f, -3.46f, 0.0f },
-    { "ctf05.rfl", 2.0f, 1.16f, 8.0f },
+    { "ctf05.rfl", 2.0f, 1.16f, 5.0f },
     { "ctf06.rfl", 0.53f, 4.99f, 0.0f },
     { "ctf07.rfl", 8.50f, -5.0f, 22.0f },
     { "dmabruptdecayrc1.rfl", 15.54f, 2.50f, 11.0f },
@@ -297,6 +298,16 @@ void resolve_bag_spawn_from_placed_item()
         g_bagman_info.spawn_pos = rf::level.player_start_pos;
         g_bagman_info.spawn_orient = rf::level.player_start_orient;
         xlog::warn("bagman: no suitable item found in level; bag spawned at player start position");
+    }
+
+    // Items on the home spot would sit inside the bag, remove them.
+    rf::Item* it = rf::item_list.next;
+    while (it && it != &rf::item_list) {
+        rf::Item* next = it->next;
+        if ((it->pos - g_bagman_info.spawn_pos).len() <= kBagSpawnClearRadius) {
+            rf::obj_flag_dead(it);
+        }
+        it = next;
     }
 
     g_bagman_info.bag_pos = g_bagman_info.spawn_pos;
