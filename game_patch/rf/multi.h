@@ -363,6 +363,22 @@ namespace rf
     static auto& is_multi = addr_as_ref<bool>(0x0064ECB9);
     static auto& is_server = addr_as_ref<bool>(0x0064ECBA);
     static auto& is_dedicated_server = addr_as_ref<bool>(0x0064ECBB);
+    
+    struct MpCharacterInfo
+    {
+        int screen_name_id;
+        int entity_type;
+        int anim_entity_type;
+        char name[30];
+        char padding[2];
+        int image_handle;
+        char skin_name[16];
+        int custom_fpgun[64];
+    };
+    static_assert(sizeof(MpCharacterInfo) == 0x140);
+
+    constexpr int MAX_MP_CHARACTERS = 31;
+    static auto& mp_characters = addr_as_ref<MpCharacterInfo[MAX_MP_CHARACTERS]>(0x006C75A0);
     static auto& num_multi_characters = addr_as_ref<int>(0x006C9C60);
     static auto& simultaneous_ping = addr_as_ref<uint32_t>(0x00599CD8);
     static auto& tracker_addr = addr_as_ref<NetAddr>(0x006FC550);

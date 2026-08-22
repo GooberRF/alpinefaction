@@ -1225,6 +1225,7 @@ void process_delayed_kicks();
 void kick_player_delayed(const rf::Player* player);
 bool ends_with(const rf::String& str, const std::string& suffix);
 const AlpineServerConfig& server_get_alpine_config();
+bool server_is_modded();
 rf::CmdLineParam& get_ads_cmd_line_param();
 rf::CmdLineParam& get_min_cmd_line_param();
 rf::CmdLineParam& get_log_cmd_line_param();

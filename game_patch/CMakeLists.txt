@@ -212,6 +212,10 @@ set(SRCS
     fflink/fflink_session.h
     fflink/fflink_utils.cpp
     fflink/fflink_utils.h
+    fflink/tbl_overrides.cpp
+    fflink/tbl_overrides.h
+    fflink/tbl_overrides_baseline.cpp
+    fflink/tbl_overrides_baseline.h
     multi/multi_ban.cpp
     multi/bots/bot_alerts.cpp
     multi/bots/bot_alerts.h

@@ -4,6 +4,7 @@
 #include "fflink.h"
 #include "fflink_session.h"
 #include "fflink_utils.h"
+#include "tbl_overrides.h"
 
 namespace fflink {
 
@@ -13,6 +14,7 @@ void do_patch()
     afstats_client_do_patch();  // client-side: PSSK handshake + afstats_status cmd
     afstats::do_patch();        // server-side: event sender
     demo_upload_do_patch();     // server-side: demo upload queue
+    afstats::tbl_overrides_do_patch(); // server-side: tbl mod snapshot
 }
 
 void do_frame()

@@ -51,6 +51,7 @@
 #include "afstats_client.h"
 #include "fflink_session.h"
 #include "fflink_utils.h"
+#include "tbl_overrides.h"
 
 namespace afstats {
 
@@ -212,6 +213,7 @@ struct EvPlayerLeave
 struct EvGameStart
 {
     std::string tc_mod;
+    bool server_is_modded = false;
     std::string level_file;
     std::string level_name;
     uint8_t gametype = 0;
@@ -226,6 +228,7 @@ struct EvGameStart
     std::vector<MutatorRecord> mutators;
     std::vector<std::pair<std::string, SettingValue>> gametype_settings;
     std::vector<RosterEntry> roster;
+    nlohmann::json tbl_overrides;
 };
 
 struct EvGameEnd
@@ -1269,6 +1272,7 @@ nlohmann::json event_to_json(const Event& e)
             else if constexpr (std::is_same_v<T, EvGameStart>) {
                 j["type"] = "game_start";
                 j["tc_mod"] = p.tc_mod;
+                j["server_is_modded"] = p.server_is_modded;
                 j["level_file"] = p.level_file;
                 j["level_name"] = p.level_name;
                 j["gametype"] = p.gametype;
@@ -1280,6 +1284,9 @@ nlohmann::json event_to_json(const Event& e)
                 j["gi_flags"] = p.gi_flags;
                 j["match_state"] = p.match_state;
                 j["crits_enabled"] = p.crits_enabled;
+                if (!p.tbl_overrides.is_null()) {
+                    j["tbl_overrides"] = p.tbl_overrides;
+                }
 
                 auto mutators = nlohmann::json::array();
                 for (const auto& m : p.mutators) {
@@ -2513,6 +2520,7 @@ void on_game_start()
     EvGameStart ev;
     ev.tc_mod = rf::mod_param.found() ? sanitize_string(rf::mod_param.get_arg(), k_max_string_len)
                                       : std::string{};
+    ev.server_is_modded = server_is_modded();
     ev.level_file = sanitize_string(rf::level.filename.c_str(), k_max_string_len);
     ev.level_name = sanitize_string(rf::level.name.c_str(), k_max_string_len);
     ev.gametype = static_cast<uint8_t>(game_type);
@@ -2536,6 +2544,7 @@ void on_game_start()
     // Resolved, not declared: the mutators list above is what the config asked for; crits
     // rescale damage, so what FF needs is what the damage path itself reads.
     ev.crits_enabled = g_alpine_server_config_active_rules.mutators.crits_enabled;
+    ev.tbl_overrides = get_tbl_overrides();
     ev.roster = build_roster(false);
 
     if constexpr (AFSTATS_VERIFICATION_LOGGING) {
