@@ -144,8 +144,9 @@ constexpr int64_t riot_control_window_ms = 10000;
 constexpr int riot_control_kills_needed = 3;
 constexpr int massacre_kills_needed = 8;
 constexpr int64_t excellent_window_ms = 2000;
-constexpr int overkill_streak = 10;
 constexpr int unstoppable_streak_step = 10;
+constexpr float overkill_min_damage = 300.0f;
+constexpr float overkill_max_victim_life = 10.0f;
 constexpr float last_stand_life = 2.0f;
 constexpr float denied_base_radius = 5.0f;
 constexpr int area_denied_capture_milli = 98000;
@@ -179,7 +180,7 @@ struct AwardPlayerState
     // Excellent: the unconsumed half of a kill pair.
     bool has_last_kill = false;
     int64_t last_kill_ms = 0;
-    // Overkill / Unstoppable. Deliberately the module's own counter: the scoreboard and afstats
+    // Unstoppable. Deliberately the module's own counter: the scoreboard and afstats
     // counters are written by other paths with their own gating.
     int streak = 0;
     // Flag Runner: this player stole the flag and has neither died nor dropped it since.
@@ -444,11 +445,16 @@ void check_streak(rf::Player* killer, rf::Player* victim)
         return;
     }
     ++state->streak;
-    if (state->streak == overkill_streak) {
-        grant_award(killer, AwardId::overkill, victim);
-    }
-    else if (state->streak > overkill_streak && state->streak % unstoppable_streak_step == 0) {
+    if (state->streak % unstoppable_streak_step == 0) {
         grant_award(killer, AwardId::unstoppable, victim);
+    }
+}
+
+// Overkill: a hit big enough to have killed the victim many times over.
+void check_overkill(rf::Player* killer, rf::Player* victim, float damage, float victim_life, float victim_armor)
+{
+    if (victim_life <= overkill_max_victim_life && victim_armor <= 0.0f && damage >= overkill_min_damage) {
+        grant_award(killer, AwardId::overkill, victim);
     }
 }
 
@@ -958,7 +964,8 @@ ConsoleCommand2 awards_display_cmd{
 // -------------------------------------------------------------------------
 
 void awards_on_kill(rf::Player* victim, rf::Player* killer, int weapon_type, bool splash,
-                    int killer_entity_handle, int victim_team)
+                    int killer_entity_handle, int victim_team, float damage, float victim_life,
+                    float victim_armor)
 {
     if (!awards_tracking_active() || !victim) {
         return;
@@ -1034,6 +1041,7 @@ void awards_on_kill(rf::Player* victim, rf::Player* killer, int weapon_type, boo
     check_riot_control(killer, victim, weapon_type);
     check_excellent(killer, victim);
     check_streak(killer, victim);
+    check_overkill(killer, victim, damage, victim_life, victim_armor);
     check_last_stand(killer, victim, killer_entity_handle);
     check_capture_denied(killer, victim, victim_team);
     check_area_denied(killer, victim, victim_team);

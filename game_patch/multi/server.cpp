@@ -1824,7 +1824,7 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
             // from. Runs for every death, so the victim-side award resets cover world deaths and
             // suicides too.
             awards_on_kill(damaged_player, killer_player, weapon, damage_ctx.splash, killer_handle,
-                           victim_team_before_damage);
+                           victim_team_before_damage, damage, life_before, armor_before);
 
             // Arena's reload-on-kill is applied from on_player_kill, which the engine only runs
             // in its deferred death processing - too late for the shot that killed, whose clip
