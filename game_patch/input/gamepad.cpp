@@ -257,21 +257,26 @@ static void force_release_action_key(int action)
         rf::key_process_event(sc, 0, 0);
 }
 
-static void reset_gamepad_input_state()
+static void reset_gamepad_camera_state()
 {
     g_camera_gamepad_dx = 0.0f;
     g_camera_gamepad_dy = 0.0f;
-    memset(g_action_curr, 0, sizeof(g_action_curr));
-    g_move_lx = g_move_ly = 0.0f;
-    g_move_mag = 0.0f;
-    g_menu_nav = {};
-    g_rebind_pending_sc = -1;
     g_flickstick_was_in_flick_zone = false;
     g_flickstick_flick_progress    = 0.0f;
     g_flickstick_flick_size        = 0.0f;
     g_flickstick_prev_stick_angle  = 0.0f;
     memset(g_flickstick_turn_smooth_buf, 0, sizeof(g_flickstick_turn_smooth_buf));
     g_flickstick_turn_smooth_idx   = 0;
+}
+
+static void reset_gamepad_input_state()
+{
+    reset_gamepad_camera_state();
+    memset(g_action_curr, 0, sizeof(g_action_curr));
+    g_move_lx = g_move_ly = 0.0f;
+    g_move_mag = 0.0f;
+    g_menu_nav = {};
+    g_rebind_pending_sc = -1;
     g_menu_cursor_accum_x = 0.0f;
     g_menu_cursor_accum_y = 0.0f;
     g_gyro_menu_cursor_active = false;
@@ -772,7 +777,6 @@ static void disconnect_all_gamepads()
     for (auto*& slot : g_gamepads) {
         if (slot) { SDL_CloseGamepad(slot); slot = nullptr; }
     }
-    g_last_active_gamepad_id   = 0;
     g_motion_sensors_supported = false;
     g_rumble_supported         = false;
     g_trigger_rumble_supported = false;
@@ -828,7 +832,8 @@ static void handle_gamepad_button_down(const SDL_GamepadButtonEvent& ev)
             if (is_capsense_gripsense_rebind_blocked(SDL_GetGamepadFromID(ev.which), ev.button))
                 return;
             g_rebind_pending_sc = CTRL_GAMEPAD_SCAN_BASE + ev.button;
-            rf::key_process_event(static_cast<int>(CTRL_REBIND_SENTINEL), 1, 0);
+            rf::ui::options_controls_assign_binding(static_cast<int>(CTRL_REBIND_SENTINEL), -1);
+            rf::ui::options_controls_stop_waiting_for_key();
         }
         return;
     }
@@ -1274,19 +1279,17 @@ void consume_raw_gamepad_deltas(float& pitch_delta, float& yaw_delta)
     const bool has_player_entity = rf::local_player_entity && !rf::entity_is_dying(rf::local_player_entity);
     const bool freelook_camera_active = is_freelook_camera();
     const bool is_freelook = !has_player_entity && freelook_camera_active;
-    if (!is_gamepad_input_active() || !rf::keep_mouse_centered) {
-        reset_gamepad_input_state();
-        return;
-    }
-    if (!has_player_entity && !is_freelook) {
-        reset_gamepad_input_state();
+    
+    // Early exit: clear camera state when not in active gameplay
+    if (!is_gamepad_input_active() || !rf::keep_mouse_centered || (!has_player_entity && !is_freelook)) {
+        reset_gamepad_camera_state();
         return;
     }
 
-    // Suppress look input while viewing a security camera
+    // Suppress camera input while viewing a security camera
     if (rf::local_player && rf::local_player->view_from_handle != -1) {
         release_movement_keys();
-        reset_gamepad_input_state();
+        reset_gamepad_camera_state();
         return;
     }
 
