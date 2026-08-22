@@ -207,13 +207,12 @@ static bool is_menu_only_action(int action_idx)
     return action_idx == static_cast<int>(get_af_control(AlpineControlConfigAction::AF_ACTION_VOTE_YES))
         || action_idx == static_cast<int>(get_af_control(AlpineControlConfigAction::AF_ACTION_VOTE_NO))
         || action_idx == static_cast<int>(get_af_control(AlpineControlConfigAction::AF_ACTION_READY))
-        || action_idx == static_cast<int>(get_af_control(AlpineControlConfigAction::AF_ACTION_DROP_FLAG))
         || action_idx == static_cast<int>(get_af_control(AlpineControlConfigAction::AF_ACTION_CHAT_MENU))
         || action_idx == static_cast<int>(get_af_control(AlpineControlConfigAction::AF_ACTION_TAUNT_MENU))
         || action_idx == static_cast<int>(get_af_control(AlpineControlConfigAction::AF_ACTION_COMMAND_MENU))
-        || action_idx == static_cast<int>(get_af_control(AlpineControlConfigAction::AF_ACTION_PING_LOCATION))
         || action_idx == static_cast<int>(get_af_control(AlpineControlConfigAction::AF_ACTION_SPECTATE_MENU))
         || action_idx == static_cast<int>(get_af_control(AlpineControlConfigAction::AF_ACTION_REMOTE_SERVER_CFG))
+        || action_idx == static_cast<int>(get_af_control(AlpineControlConfigAction::AF_ACTION_VOTE_MENU))
         || action_idx == static_cast<int>(get_af_control(AlpineControlConfigAction::AF_ACTION_SPECTATE_ATTACH))
         || action_idx == static_cast<int>(get_af_control(AlpineControlConfigAction::AF_ACTION_SPECTATE_CHANGE_VIEW))
         || action_idx == static_cast<int>(get_af_control(AlpineControlConfigAction::AF_ACTION_SPECTATE_TOGGLE));
@@ -2196,9 +2195,9 @@ void gamepad_reset_to_defaults()
     g_button_map[SDL_GAMEPAD_BUTTON_WEST]           = rf::CC_ACTION_PREV_WEAPON;
     g_button_map[SDL_GAMEPAD_BUTTON_DPAD_LEFT]      = rf::CC_ACTION_HIDE_WEAPON;
     g_button_map[SDL_GAMEPAD_BUTTON_DPAD_RIGHT]     = rf::CC_ACTION_MESSAGES;
-    g_menu_button_map[SDL_GAMEPAD_BUTTON_DPAD_DOWN] = static_cast<int>(get_af_control(rf::AlpineControlConfigAction::AF_ACTION_CENTER_VIEW));
+    g_button_map[SDL_GAMEPAD_BUTTON_DPAD_DOWN]      = static_cast<int>(get_af_control(rf::AlpineControlConfigAction::AF_ACTION_CENTER_VIEW));
     g_menu_button_map[SDL_GAMEPAD_BUTTON_DPAD_RIGHT] = rf::CC_ACTION_MP_STATS;
-    g_menu_button_map[SDL_GAMEPAD_BUTTON_BACK]      = static_cast<int>(get_af_control(rf::AlpineControlConfigAction::AF_ACTION_SKIP_CUTSCENE));
+    g_button_map[SDL_GAMEPAD_BUTTON_BACK]           = static_cast<int>(get_af_control(rf::AlpineControlConfigAction::AF_ACTION_SKIP_CUTSCENE));
 
     // Spectator / multiplayer-only actions
     g_menu_button_map[SDL_GAMEPAD_BUTTON_EAST]      = static_cast<int>(get_af_control(rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_ATTACH));
