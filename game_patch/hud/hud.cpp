@@ -13,6 +13,7 @@
 #include "remote_server_cfg_ui.h"
 #include "../misc/alpine_settings.h"
 #include "../main/main.h"
+#include "../graphics/gr.h"
 #include "../os/console.h"
 #include "../rf/gr/gr_font.h"
 #include "../rf/hud.h"
@@ -304,7 +305,15 @@ std::string hud_fit_string(std::string_view str, int max_w, int* str_w_out, int 
     bool has_ellipsis = false;
     auto [str_w, str_h] = rf::gr::get_string_size(result, font_id);
     while (str_w > max_w) {
-        result = result.substr(0, result.size() - (has_ellipsis ? 4 : 1)) + "...";
+        if (has_ellipsis) {
+            result.erase(result.size() - 3);  // drop the "..." added last round
+        }
+        if (result.empty()) {
+            break;
+        }
+        // Step back one whole code point, never split a multi-byte character
+        result.erase(gr_last_code_point_offset(result));
+        result += "...";
         has_ellipsis = true;
         std::tie(str_w, str_h) = rf::gr::get_string_size(result, font_id);
     }
