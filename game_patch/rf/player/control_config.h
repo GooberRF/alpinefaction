@@ -58,7 +58,9 @@ namespace rf
         AF_ACTION_SPECTATE_CHANGE_VIEW = 0x11,
         AF_ACTION_SPRAY = 0x12,
         AF_ACTION_VOTE_MENU = 0x13,
-        _AF_ACTION_LAST_VARIANT = AF_ACTION_VOTE_MENU
+        AF_ACTION_CENTER_VIEW = 0x14,
+        AF_ACTION_GYRO_MODIFIER = 0x15,
+        _AF_ACTION_LAST_VARIANT = AF_ACTION_GYRO_MODIFIER
     };
 
     struct ControlConfigItem

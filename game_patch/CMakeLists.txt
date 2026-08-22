@@ -95,10 +95,19 @@ set(SRCS
     graphics/d3d11/gr_d3d11_outline.cpp
     graphics/d3d11/gr_d3d11_gamma.h
     graphics/d3d11/gr_d3d11_gamma.cpp
+    input/input.cpp
     input/input.h
     input/mouse.h
     input/mouse.cpp
     input/key.cpp
+    input/gamepad.cpp
+    input/gamepad.h
+    input/rumble.cpp
+    input/rumble.h
+    input/glyph.cpp
+    input/glyph.h
+    input/gyro.cpp
+    input/gyro.h
     input/control_input_filter.h
     input/control_input_filter.cpp
     hud/hud_colors.cpp
@@ -368,6 +377,8 @@ target_include_directories(AlpineFaction PRIVATE
     ${CMAKE_SOURCE_DIR}/vendor/xxhash
     ${CMAKE_SOURCE_DIR}/vendor/stb
     ${CMAKE_SOURCE_DIR}/vendor/freetype/include
+    ${CMAKE_SOURCE_DIR}/vendor/nlohmann
+    ${CMAKE_SOURCE_DIR}/vendor/gamepadmotionhelpers
 )
 
 if(NOT MSVC)
@@ -402,4 +413,14 @@ target_link_libraries(AlpineFaction
     freetype
     stb_vorbis
     stb_image
+    SDL3::SDL3
+    GamepadMotionHelpers
 )
+
+if(WIN32)
+    target_link_libraries(AlpineFaction
+        setupapi
+        imm32
+        cfgmgr32
+    )
+endif()
