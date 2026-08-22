@@ -2859,16 +2859,12 @@ CodeInjection client_update_rate_injection{
     0x0047E5D8,
     [] (auto& regs) {
         constexpr int interval = 1000 / CLIENT_NET_FPS;
-        auto& obj_update_timestamp = addr_as_ref<rf::TimestampRealtime>(0x006FB424);
-        int overshoot = obj_update_timestamp.time_since();
+        int overshoot = rf::send_obj_update_packet_timestamp.time_since();
         int& send_obj_update_interval = addr_as_ref<int>(regs.esp);
         send_obj_update_interval =
             (overshoot > 0 && overshoot < interval) ? interval - overshoot : interval;
     },
 };
-
-static auto& send_obj_update_packet = addr_as_ref<void __cdecl()>(0x0047E5B0);
-static auto& send_obj_update_packet_timestamp = addr_as_ref<rf::TimestampRealtime>(0x006FB424);
 
 // Continuous-fire state travels as level-sampled OUF_FIRE flags in obj_update, which is sent at the
 // top of the frame before input runs — a fire press would otherwise wait up to one tick duration plus a frame.
@@ -2877,8 +2873,8 @@ static auto& send_obj_update_packet_timestamp = addr_as_ref<rf::TimestampRealtim
 static void multi_force_fire_state_send()
 {
     if (rf::is_multi && !rf::is_server && !demo_playback_active()) {
-        send_obj_update_packet_timestamp.set(0);
-        send_obj_update_packet(); // re-arms the timestamp to the normal interval internally
+        rf::send_obj_update_packet_timestamp.set(0);
+        rf::send_obj_update_packet(); // re-arms the timestamp to the normal interval internally
     }
 }
 
