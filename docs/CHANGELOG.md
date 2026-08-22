@@ -232,6 +232,7 @@ Version 1.4.0 (Lupin): Not yet released
 - Fix crash risk when leaving a match or changing levels by keeping animation skeletons loaded while animation instances are still playing them, instead of unloading as soon as no character references them
 - Fix dedicated servers not loading `alpinefaction.vpp`, which prevented `af_level_quirks.tbl` from loading and left known run maps unrecognized
 - Fix potential crash when an Alpine options `.tbl` file contains an unrecognized option name
+- Fix crash when a non-player entity spawns while any weapon in `weapons.tbl` has a clip size of exactly 2
 
 [@is-this-c](https://github.com/is-this-c)
 - Clear cached server config output after a shuffle of a server's rotation

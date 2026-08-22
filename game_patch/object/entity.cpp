@@ -228,6 +228,21 @@ CodeInjection entity_render_weapon_in_hands_silencer_visibility_injection{
     },
 };
 
+CodeInjection entity_create_randomize_clip_ammo_fix{
+    0x00423713,
+    [](auto& regs) {
+        rf::Entity* ep = regs.esi;
+        for (int i = 0; i < rf::max_weapon_types; ++i) {
+            int clip_size = rf::weapon_types[i].clip_size;
+            if (clip_size > 2) {
+                std::uniform_int_distribution<int> dist(2, clip_size - 1);
+                ep->ai.clip_ammo[i] = dist(g_rng);
+            }
+        }
+        regs.eip = 0x00423745;
+    },
+};
+
 CodeInjection waypoints_read_lists_oob_fix{
     0x00468E54,
     [](auto& regs) {
@@ -718,6 +733,9 @@ void entity_do_patch()
 
     // Do not show glock with silencer in 3rd person view if current primary weapon is not a glock
     entity_render_weapon_in_hands_silencer_visibility_injection.install();
+
+    // Fix division by zero when randomizing AI clip ammo for weapons with clip size 2
+    entity_create_randomize_clip_ammo_fix.install();
 
     // Fix OOB writes in waypoint list read code
     waypoints_read_lists_oob_fix.install();
