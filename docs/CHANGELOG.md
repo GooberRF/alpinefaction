@@ -1,9 +1,9 @@
 ⚙️⛏ Alpine Faction Changelog ⛏⚙️
 ===================================
 
-Version 1.4.0 (Lupin): Not yet released
+Version 1.5.0: Not yet released
 --------------------------------
-### Major features
+
 [@AL2009man](https://github.com/AL2009man) & [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Controller Support
 > [!WARNING]
@@ -26,6 +26,14 @@ Version 1.4.0 (Lupin): Not yet released
   - Partial controller menu navigation support (Mouse controls are handled via Left Stick, Scrollbar are handled by Right Stick)
 - Additional Controller settings are available in `alpine_settings.ini` and/or console commands
 
+### Minor features, changes, and enhancements
+[@AL2009man](https://github.com/AL2009man)
+- Add `GamepadRawInput` option (via `alpine_settings.ini`) to enable RawInput driver for better handling of XInput controllers, while allowing Trigger Rumble/Impulse Trigger support.
+- Add the ability to scroll through Alpine Settings menu panels with the mouse wheel or right stick, enabling more options in the near future. As of this version: this only applies for Input settings panel 
+
+Version 1.4.0 (Lupin): Not yet released
+--------------------------------
+### Major features
 [@GooberRF](https://github.com/GooberRF)
 - Support Alpine Texture (ATX) declarative texture format in game and level editor
   - Fine tuned texture animation without being subject to VBM format limitations
@@ -96,10 +104,6 @@ Version 1.4.0 (Lupin): Not yet released
   - Register `.afd` file association in Windows registry to allow double clicking on demos to play them
 
 ### Minor features, changes, and enhancements
-[@AL2009man](https://github.com/AL2009man)
-- Add `GamepadRawInput` option (via `alpine_settings.ini`) to enable RawInput driver for better handling of XInput controllers, while allowing Trigger Rumble/Impulse Trigger support.
-- Add the ability to scroll through Alpine Settings menu panels with the mouse wheel or right stick, enabling more options in the near future. As of this version: this only applies for Input settings panel 
-
 [@GooberRF](https://github.com/GooberRF)
 - Support DDS texture format in level editor
 - Bump RFL version to 305
