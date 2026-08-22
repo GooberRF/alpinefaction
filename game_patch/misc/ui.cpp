@@ -295,6 +295,8 @@ static rf::ui::Checkbox ao_gyro_space_cbox;
 static rf::ui::Label ao_gyro_space_label;
 static rf::ui::Label ao_gyro_space_butlabel;
 static char ao_gyro_space_butlabel_text[12];
+static rf::ui::Checkbox ao_gyro_invert_x_cbox;
+static rf::ui::Label ao_gyro_invert_x_label;
 static rf::ui::Checkbox ao_gyro_invert_y_cbox;
 static rf::ui::Label ao_gyro_invert_y_label;
 static rf::ui::Checkbox ao_gyro_vehicle_cbox;
@@ -341,8 +343,14 @@ static rf::ui::Checkbox ao_joy_camera_cbox;
 static rf::ui::Label ao_joy_camera_label;
 static rf::ui::Label ao_joy_camera_butlabel;
 static char ao_joy_camera_butlabel_text[12];
+static rf::ui::Checkbox ao_joy_invert_x_cbox;
+static rf::ui::Label ao_joy_invert_x_label;
+static char ao_joy_invert_x_label_text[24];
 static rf::ui::Checkbox ao_joy_invert_y_cbox;
 static rf::ui::Label ao_joy_invert_y_label;
+static char ao_joy_invert_y_label_text[24];
+static rf::ui::Checkbox ao_flickstick_invert_cbox;
+static rf::ui::Label ao_flickstick_invert_label;
 static rf::ui::Checkbox ao_swap_sticks_cbox;
 static rf::ui::Label ao_swap_sticks_label;
 static rf::ui::Checkbox ao_flickstick_sweep_cbox;
@@ -1136,6 +1144,12 @@ void ao_gyro_invert_y_cbox_on_click(int x, int y) {
     ao_play_button_snd(g_alpine_game_config.gamepad_gyro_invert_y);
 }
 
+void ao_gyro_invert_x_cbox_on_click(int x, int y) {
+    g_alpine_game_config.gamepad_gyro_invert_x = !g_alpine_game_config.gamepad_gyro_invert_x;
+    ao_gyro_invert_x_cbox.checked = g_alpine_game_config.gamepad_gyro_invert_x;
+    ao_play_button_snd(g_alpine_game_config.gamepad_gyro_invert_x);
+}
+
 void ao_gyro_vehicle_cbox_on_click(int x, int y) {
     g_alpine_game_config.gamepad_gyro_vehicle_camera = !g_alpine_game_config.gamepad_gyro_vehicle_camera;
     ao_gyro_vehicle_cbox.checked = g_alpine_game_config.gamepad_gyro_vehicle_camera;
@@ -1312,6 +1326,18 @@ void ao_flickstick_smoothing_cbox_on_click_callback() {
 }
 void ao_flickstick_smoothing_cbox_on_click(int x, int y) {
     rf::ui::popup_message("Enter new flick stick smoothing value (0.0-1.0):", "", ao_flickstick_smoothing_cbox_on_click_callback, 1);
+}
+
+void ao_joy_invert_x_cbox_on_click(int x, int y) {
+    g_alpine_game_config.gamepad_joy_invert_x = !g_alpine_game_config.gamepad_joy_invert_x;
+    ao_joy_invert_x_cbox.checked = g_alpine_game_config.gamepad_joy_invert_x;
+    ao_play_button_snd(g_alpine_game_config.gamepad_joy_invert_x);
+}
+
+void ao_flickstick_invert_cbox_on_click(int x, int y) {
+    g_alpine_game_config.gamepad_flickstick_invert = !g_alpine_game_config.gamepad_flickstick_invert;
+    ao_flickstick_invert_cbox.checked = g_alpine_game_config.gamepad_flickstick_invert;
+    ao_play_button_snd(g_alpine_game_config.gamepad_flickstick_invert);
 }
 
 void ao_joy_invert_y_cbox_on_click(int x, int y) {
@@ -1946,7 +1972,11 @@ void alpine_options_panel_init() {
     alpine_options_panel_inputbox_init(
         &ao_look_deadzone_cbox, &ao_look_deadzone_label, &ao_look_deadzone_butlabel, &alpine_options_panel2, ao_look_deadzone_cbox_on_click, 112, 294, "Joy cam dz");
     alpine_options_panel_checkbox_init(
-        &ao_joy_invert_y_cbox, &ao_joy_invert_y_label, &alpine_options_panel2, ao_joy_invert_y_cbox_on_click, g_alpine_game_config.gamepad_joy_invert_y, 112, 384, "Joy cam Y-Invert");
+        &ao_joy_invert_x_cbox, &ao_joy_invert_x_label, &alpine_options_panel2, ao_joy_invert_x_cbox_on_click, g_alpine_game_config.gamepad_joy_invert_x, 112, 384, "Joy cam X-Invert");
+    alpine_options_panel_checkbox_init(
+        &ao_joy_invert_y_cbox, &ao_joy_invert_y_label, &alpine_options_panel2, ao_joy_invert_y_cbox_on_click, g_alpine_game_config.gamepad_joy_invert_y, 112, 414, "Joy cam Y-Invert");
+    alpine_options_panel_checkbox_init(
+        &ao_flickstick_invert_cbox, &ao_flickstick_invert_label, &alpine_options_panel2, ao_flickstick_invert_cbox_on_click, g_alpine_game_config.gamepad_flickstick_invert, 112, 384, "Flick Invert");
     alpine_options_panel_checkbox_init(
         &ao_swap_sticks_cbox, &ao_swap_sticks_label, &alpine_options_panel2, ao_swap_sticks_cbox_on_click, g_alpine_game_config.gamepad_swap_sticks, 112, 414, "Swap joysticks");
     alpine_options_panel_inputbox_init(
@@ -1958,9 +1988,13 @@ void alpine_options_panel_init() {
     alpine_options_panel_inputbox_init(
         &ao_gyro_sensitivity_cbox, &ao_gyro_sensitivity_label, &ao_gyro_sensitivity_butlabel, &alpine_options_panel2, ao_gyro_sensitivity_cbox_on_click, 280, 234, "Gyro sensitivity");
     alpine_options_panel_checkbox_init(
+        &ao_gyro_invert_x_cbox, &ao_gyro_invert_x_label,
+        &alpine_options_panel2, ao_gyro_invert_x_cbox_on_click,
+        g_alpine_game_config.gamepad_gyro_invert_x, 280, 264, "Gyro X-Invert");
+    alpine_options_panel_checkbox_init(
         &ao_gyro_invert_y_cbox, &ao_gyro_invert_y_label,
         &alpine_options_panel2, ao_gyro_invert_y_cbox_on_click,
-        g_alpine_game_config.gamepad_gyro_invert_y, 280, 264, "Gyro Y-Invert");
+        g_alpine_game_config.gamepad_gyro_invert_y, 280, 294, "Gyro Y-Invert");
     alpine_options_panel_checkbox_init(
         &ao_gyro_vehicle_cbox, &ao_gyro_vehicle_label,
         &alpine_options_panel2, ao_gyro_vehicle_cbox_on_click,
@@ -2345,6 +2379,8 @@ void alpine_options_panel_do_frame(int x)
     ao_gyro_modifier_mode_label.enabled    = gyro_enabled;
     ao_gyro_modifier_mode_butlabel.enabled = gyro_enabled;
 
+    ao_gyro_invert_x_cbox.enabled        = gyro_enabled;
+    ao_gyro_invert_x_label.enabled       = gyro_enabled;
     ao_gyro_invert_y_cbox.enabled        = gyro_enabled;
     ao_gyro_invert_y_label.enabled       = gyro_enabled;
     ao_gyro_vehicle_cbox.enabled         = gyro_enabled;
@@ -2405,6 +2441,7 @@ void alpine_options_panel_do_frame(int x)
         rc.add_inputbox(ao_gyro_smoothing_cbox, ao_gyro_smoothing_label, ao_gyro_smoothing_butlabel, gyro_enabled);
         rc.add_inputbox(ao_gyro_vh_mixer_cbox, ao_gyro_vh_mixer_label, ao_gyro_vh_mixer_butlabel, gyro_enabled);
         rc.add_inputbox(ao_gyro_space_cbox, ao_gyro_space_label, ao_gyro_space_butlabel, gyro_enabled);
+        rc.add_checkbox(ao_gyro_invert_x_cbox, ao_gyro_invert_x_label, gyro_enabled);
         rc.add_checkbox(ao_gyro_invert_y_cbox, ao_gyro_invert_y_label, gyro_enabled);
         rc.add_inputbox(ao_gyro_autocalibration_cbox, ao_gyro_autocalibration_label, ao_gyro_autocalibration_butlabel, gyro_hw);
         rc.add_inputbox(ao_rumble_intensity_cbox, ao_rumble_intensity_label, ao_rumble_intensity_butlabel);
@@ -2425,6 +2462,12 @@ void alpine_options_panel_do_frame(int x)
     snprintf(ao_joy_sensitivity_label_text, sizeof(ao_joy_sensitivity_label_text), "%s",
         flick_stick ? "Joy sens (misc)" : "Joy sensitivity");
     ao_joy_sensitivity_label.text          = ao_joy_sensitivity_label_text;
+    snprintf(ao_joy_invert_x_label_text, sizeof(ao_joy_invert_x_label_text), "%s",
+        flick_stick ? "Joy cam X-Invert (misc)" : "Joy cam X-Invert");
+    ao_joy_invert_x_label.text             = ao_joy_invert_x_label_text;
+    snprintf(ao_joy_invert_y_label_text, sizeof(ao_joy_invert_y_label_text), "%s",
+        flick_stick ? "Joy cam Y-Invert (misc)" : "Joy cam Y-Invert");
+    ao_joy_invert_y_label.text             = ao_joy_invert_y_label_text;
     ao_joy_sensitivity_cbox.enabled        = true;
     ao_joy_sensitivity_label.enabled       = true;
     ao_joy_sensitivity_butlabel.enabled    = true;
@@ -2443,8 +2486,12 @@ void alpine_options_panel_do_frame(int x)
     ao_flickstick_smoothing_cbox.enabled     = flick_stick;
     ao_flickstick_smoothing_label.enabled    = flick_stick;
     ao_flickstick_smoothing_butlabel.enabled = flick_stick;
-    ao_joy_invert_y_cbox.enabled           = !flick_stick;
-    ao_joy_invert_y_label.enabled          = !flick_stick;
+    ao_joy_invert_x_cbox.enabled           = true;
+    ao_joy_invert_x_label.enabled          = true;
+    ao_joy_invert_y_cbox.enabled           = true;
+    ao_joy_invert_y_label.enabled          = true;
+    ao_flickstick_invert_cbox.enabled      = flick_stick;
+    ao_flickstick_invert_label.enabled     = flick_stick;
     ao_swap_sticks_cbox.enabled            = true;
     ao_swap_sticks_label.enabled           = true;
 
@@ -2459,7 +2506,9 @@ void alpine_options_panel_do_frame(int x)
         lc.add_inputbox(ao_look_deadzone_cbox, ao_look_deadzone_label, ao_look_deadzone_butlabel, !flick_stick);
         lc.add_inputbox(ao_joy_scannersens_cbox, ao_joy_scannersens_label, ao_joy_scannersens_butlabel);
         lc.add_inputbox(ao_joy_scopesens_cbox, ao_joy_scopesens_label, ao_joy_scopesens_butlabel);
-        lc.add_checkbox(ao_joy_invert_y_cbox, ao_joy_invert_y_label, !flick_stick);
+        lc.add_checkbox(ao_flickstick_invert_cbox, ao_flickstick_invert_label, flick_stick);
+        lc.add_checkbox(ao_joy_invert_x_cbox, ao_joy_invert_x_label);
+        lc.add_checkbox(ao_joy_invert_y_cbox, ao_joy_invert_y_label);
         lc.add_checkbox(ao_swap_sticks_cbox, ao_swap_sticks_label);
     }
 

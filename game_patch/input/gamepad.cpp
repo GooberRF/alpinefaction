@@ -1218,6 +1218,9 @@ static void gamepad_apply_flickstick(SDL_GamepadAxis cam_x, SDL_GamepadAxis cam_
         auto warp_ease_out = [](float t) -> float { float f = 1.0f - t; return 1.0f - f * f; };
         yaw_delta += (warp_ease_out(this_t) - warp_ease_out(last_t)) * g_flickstick_flick_size;
     }
+
+    if (g_alpine_game_config.gamepad_flickstick_invert)
+        yaw_delta = -yaw_delta;
 }
 
 static void gamepad_apply_joystick(SDL_GamepadAxis cam_x, SDL_GamepadAxis cam_y, float cam_dz,
@@ -1226,13 +1229,14 @@ static void gamepad_apply_joystick(SDL_GamepadAxis cam_x, SDL_GamepadAxis cam_y,
     float rx, ry;
     get_axis_circular(cam_x, cam_y, cam_dz, rx, ry);
 
+    float joy_yaw_sign   = g_alpine_game_config.gamepad_joy_invert_x ? -1.0f : 1.0f;
     float joy_pitch_sign = g_alpine_game_config.gamepad_joy_invert_y ? 1.0f : -1.0f;
     // Reset flickstick state so switching back to flickstick always starts a fresh flick.
     g_flickstick_was_in_flick_zone = false;
     g_flickstick_flick_size        = 0.0f;
     memset(g_flickstick_turn_smooth_buf, 0, sizeof(g_flickstick_turn_smooth_buf));
     g_flickstick_turn_smooth_idx   = 0;
-    yaw_delta   =              rf::frametime * g_alpine_game_config.gamepad_joy_sensitivity * rx * zoom_sens;
+    yaw_delta   = joy_yaw_sign * rf::frametime * g_alpine_game_config.gamepad_joy_sensitivity * rx * zoom_sens;
     pitch_delta = joy_pitch_sign * rf::frametime * g_alpine_game_config.gamepad_joy_sensitivity * ry * zoom_sens;
 }
 
@@ -1269,6 +1273,8 @@ static void gamepad_apply_gyro(bool has_player_entity, float& yaw_delta, float& 
     float out_yaw   = -gyro_yaw   * sens * gyro_zoom_sens;
     float out_pitch =  gyro_pitch * sens * gyro_zoom_sens;
 
+    if (g_alpine_game_config.gamepad_gyro_invert_x)
+        out_yaw = -out_yaw;
     if (g_alpine_game_config.gamepad_gyro_invert_y)
         out_pitch = -out_pitch;
     gyro_apply_vh_mixer(out_pitch, out_yaw);
@@ -1470,11 +1476,12 @@ FunHook<void(rf::Entity*)> physics_simulate_entity_hook{
             constexpr float k_vehicle_dz_multiplier = 1.2f;
             float rx = get_axis(rot_x, rot_dz * k_vehicle_dz_multiplier);
             float ry = get_axis(rot_y, rot_dz * k_vehicle_dz_multiplier);
+            float joy_yaw_sign   = g_alpine_game_config.gamepad_joy_invert_x ? -1.0f : 1.0f;
             float joy_pitch_sign = g_alpine_game_config.gamepad_joy_invert_y ? 1.0f : -1.0f;
             // Normalize so that the default sensitivity (2.5) produces 1:1 vehicle scale.
             constexpr float k_default_sens = 2.5f;
             float joy_sens = g_alpine_game_config.gamepad_joy_sensitivity / k_default_sens;
-            entity->ai.ci.rot.y += std::clamp(rx * joy_sens, -1.0f, 1.0f);
+            entity->ai.ci.rot.y += std::clamp(joy_yaw_sign * rx * joy_sens, -1.0f, 1.0f);
             entity->ai.ci.rot.x += std::clamp(joy_pitch_sign * ry * joy_sens, -1.0f, 1.0f);
 
             // 1/90 scale: 90 deg/s gyro = full keyboard deflection at default sensitivity.
@@ -1491,8 +1498,9 @@ FunHook<void(rf::Entity*)> physics_simulate_entity_hook{
 
                 constexpr float gyro_to_rot = 1.0f / 90.0f;
                 float sens = g_alpine_game_config.gamepad_gyro_sensitivity / k_default_sens;
+                float yaw_sign = g_alpine_game_config.gamepad_gyro_invert_x ? -1.0f : 1.0f;
                 float pitch_sign = g_alpine_game_config.gamepad_gyro_invert_y ? -1.0f : 1.0f;
-                entity->ai.ci.rot.y += std::clamp(-gyro_yaw * gyro_to_rot * sens, -1.0f, 1.0f);
+                entity->ai.ci.rot.y += std::clamp(yaw_sign * -gyro_yaw * gyro_to_rot * sens, -1.0f, 1.0f);
                 entity->ai.ci.rot.x += std::clamp(pitch_sign * gyro_pitch * gyro_to_rot * sens, -1.0f, 1.0f);
             }
         }

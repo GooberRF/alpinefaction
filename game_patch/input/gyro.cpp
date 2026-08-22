@@ -314,6 +314,16 @@ ConsoleCommand2 gyro_invert_y_cmd{
     "gyro_invert_y [0|1]",
 };
 
+ConsoleCommand2 gyro_invert_x_cmd{
+    "gyro_invert_x",
+    [](std::optional<int> val) {
+        if (val) g_alpine_game_config.gamepad_gyro_invert_x = val.value() != 0;
+        rf::console::print("Gyro invert X: {}", g_alpine_game_config.gamepad_gyro_invert_x ? "on" : "off");
+    },
+    "Toggle Gyro X-axis invert",
+    "gyro_invert_x [0|1]",
+};
+
 ConsoleCommand2 gyro_tightening_cmd{
     "gyro_tightening",
     [](std::optional<float> val) {

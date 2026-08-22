@@ -206,6 +206,7 @@ struct AlpineGameSettings
     int gamepad_gyro_autocalibration_mode = 1; // 0=Off, 1=MenuOnly, 2=Always
     int gamepad_gyro_space = 3; // GyroSpace: Yaw=0  Roll=1  Local=2  Player=3  World=4
     int gamepad_gyro_modifier_mode = 0; // 0=Always, 1=HoldOff, 2=HoldOn, 3=Toggle
+    bool gamepad_gyro_invert_x = false;
     bool gamepad_gyro_invert_y = false;
     float gamepad_gyro_tightening = 8.0f;
     float gamepad_gyro_smoothing = 7.0f;
@@ -217,8 +218,10 @@ struct AlpineGameSettings
     float gamepad_flickstick_deadzone = 0.90f;
     float gamepad_flickstick_release_deadzone = 0.70f;
     float gamepad_flickstick_smoothing = 0.75f;    
+    bool gamepad_flickstick_invert = false;
     int gamepad_icon_override = 0; // 0=Auto, 1=Generic, 2=Xbox360, 3=XboxOne, 4=DS3, 5=DS4, 6=DualSense, 7=NintendoSwitch, 8=NintendoGameCube, 9=Steam
     int input_prompt_override = 0; // 0=Auto, 1=Controller, 2=Keyboard
+    bool gamepad_joy_invert_x = false;
     bool gamepad_joy_invert_y = false;
     bool gamepad_swap_sticks = false;
     float gamepad_rumble_intensity = 1.0f;

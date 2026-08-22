@@ -1209,6 +1209,10 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.gamepad_gyro_modifier_mode = std::clamp(std::stoi(settings["GamepadGyroModifierMode"]), 0, 3);
         processed_keys.insert("GamepadGyroModifierMode");
     }
+    if (settings.count("GamepadGyroInvertX")) {
+        g_alpine_game_config.gamepad_gyro_invert_x = std::stoi(settings["GamepadGyroInvertX"]) != 0;
+        processed_keys.insert("GamepadGyroInvertX");
+    }
     if (settings.count("GamepadGyroInvertY")) {
         g_alpine_game_config.gamepad_gyro_invert_y = std::stoi(settings["GamepadGyroInvertY"]) != 0;
         processed_keys.insert("GamepadGyroInvertY");
@@ -1237,6 +1241,10 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.gamepad_flickstick_smoothing = std::clamp(std::stof(settings["GamepadFlickstickSmoothing"]), 0.0f, 1.0f);
         processed_keys.insert("GamepadFlickstickSmoothing");
     }
+    if (settings.count("GamepadFlickstickInvert")) {
+        g_alpine_game_config.gamepad_flickstick_invert = std::stoi(settings["GamepadFlickstickInvert"]) != 0;
+        processed_keys.insert("GamepadFlickstickInvert");
+    }
     if (settings.count("GamepadFlickstickDeadzone")) {
         g_alpine_game_config.gamepad_flickstick_deadzone = std::clamp(std::stof(settings["GamepadFlickstickDeadzone"]), 0.0f, 0.9f);
         processed_keys.insert("GamepadFlickstickDeadzone");
@@ -1252,6 +1260,10 @@ bool alpine_player_settings_load(rf::Player* player)
     if (settings.count("InputPromptMode")) {
         g_alpine_game_config.input_prompt_override = std::clamp(std::stoi(settings["InputPromptMode"]), 0, 2);
         processed_keys.insert("InputPromptMode");
+    }
+    if (settings.count("GamepadJoyInvertX")) {
+        g_alpine_game_config.gamepad_joy_invert_x = std::stoi(settings["GamepadJoyInvertX"]) != 0;
+        processed_keys.insert("GamepadJoyInvertX");
     }
     if (settings.count("GamepadJoyInvertY")) {
         g_alpine_game_config.gamepad_joy_invert_y = std::stoi(settings["GamepadJoyInvertY"]) != 0;
@@ -1497,6 +1509,7 @@ void alpine_control_config_serialize(std::ofstream& file, const rf::ControlConfi
     file << "GamepadFlickstickDeadzone=" << g_alpine_game_config.gamepad_flickstick_deadzone << "\n";
     file << "GamepadFlickstickReleaseDeadzone=" << g_alpine_game_config.gamepad_flickstick_release_deadzone << "\n";
     file << "GamepadFlickstickSmoothing=" << g_alpine_game_config.gamepad_flickstick_smoothing << "\n";
+    file << "GamepadFlickstickInvert=" << g_alpine_game_config.gamepad_flickstick_invert << "\n";
     file << "GamepadGyroEnabled=" << g_alpine_game_config.gamepad_gyro_enabled << "\n";
     file << "GamepadGyroVehicleEnabled=" << g_alpine_game_config.gamepad_gyro_vehicle_camera << "\n";
     file << "GamepadGyroCameraSensitivity=" << g_alpine_game_config.gamepad_gyro_sensitivity << "\n";
@@ -1505,12 +1518,14 @@ void alpine_control_config_serialize(std::ofstream& file, const rf::ControlConfi
     file << "GamepadGyroAutocalibrationMode=" << g_alpine_game_config.gamepad_gyro_autocalibration_mode << "\n";
     file << "GamepadGyroSpace=" << g_alpine_game_config.gamepad_gyro_space << "\n";
     file << "GamepadGyroModifierMode=" << g_alpine_game_config.gamepad_gyro_modifier_mode << "\n";
+    file << "GamepadGyroInvertX=" << g_alpine_game_config.gamepad_gyro_invert_x << "\n";
     file << "GamepadGyroInvertY=" << g_alpine_game_config.gamepad_gyro_invert_y << "\n";
     file << "GamepadGyroTightening=" << g_alpine_game_config.gamepad_gyro_tightening << "\n";
     file << "GamepadGyroSmoothing=" << g_alpine_game_config.gamepad_gyro_smoothing << "\n";
     file << "GamepadGyroCursorSensitivity=" << g_alpine_game_config.gamepad_gyro_menu_cursor_sensitivity << "\n";
     file << "GamepadIconOverride=" << g_alpine_game_config.gamepad_icon_override << "\n";
     file << "InputPromptMode=" << g_alpine_game_config.input_prompt_override << "\n";
+    file << "GamepadJoyInvertX=" << g_alpine_game_config.gamepad_joy_invert_x << "\n";
     file << "GamepadJoyInvertY=" << g_alpine_game_config.gamepad_joy_invert_y << "\n";
     file << "GamepadSwapSticks=" << g_alpine_game_config.gamepad_swap_sticks << "\n";
     file << "GamepadRumble=" << g_alpine_game_config.gamepad_rumble_intensity << "\n";
