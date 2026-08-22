@@ -2873,6 +2873,13 @@ CodeInjection client_update_rate_injection{
 static void multi_force_fire_state_send()
 {
     if (rf::is_multi && !rf::is_server && !demo_playback_active()) {
+        // Rate-cap forced sends; a suppressed transition rides the next scheduled send
+        static int64_t last_forced_send_ms = 0;
+        const int64_t now_ms = timer::get_i64(1000);
+        if (now_ms - last_forced_send_ms < 1000 / CLIENT_NET_FPS) {
+            return;
+        }
+        last_forced_send_ms = now_ms;
         rf::send_obj_update_packet_timestamp.set(0);
         rf::send_obj_update_packet(); // re-arms the timestamp to the normal interval internally
     }
