@@ -2867,6 +2867,52 @@ CodeInjection client_update_rate_injection{
     },
 };
 
+static auto& send_obj_update_packet = addr_as_ref<void __cdecl()>(0x0047E5B0);
+static auto& send_obj_update_packet_timestamp = addr_as_ref<rf::TimestampRealtime>(0x006FB424);
+
+// Continuous-fire state travels as level-sampled OUF_FIRE flags in obj_update, which is sent at the
+// top of the frame before input runs — a fire press would otherwise wait up to one tick duration plus a frame.
+// Force a same-frame send on the on/off transition.
+// Note: elapsed() returns false for an invalid timestamp, so set(0), never invalidate().
+static void multi_force_fire_state_send()
+{
+    if (rf::is_multi && !rf::is_server && !demo_playback_active()) {
+        send_obj_update_packet_timestamp.set(0);
+        send_obj_update_packet(); // re-arms the timestamp to the normal interval internally
+    }
+}
+
+static bool is_local_entity(int entity_handle)
+{
+    return rf::local_player_entity && rf::local_player_entity->handle == entity_handle;
+}
+
+FunHook<void __cdecl(int, int, bool)> entity_turn_weapon_on_hook{
+    0x0041A870,
+    [](int entity_handle, int weapon_type, bool alt_fire) {
+        // called every frame while the trigger is held; only the off->on edge matters
+        bool was_on = rf::entity_weapon_is_on(entity_handle, weapon_type);
+        entity_turn_weapon_on_hook.call_target(entity_handle, weapon_type, alt_fire);
+        if (!was_on && is_local_entity(entity_handle)
+            && rf::weapon_is_on_off_weapon(weapon_type, alt_fire)
+            && rf::entity_weapon_is_on(entity_handle, weapon_type)) {
+            multi_force_fire_state_send();
+        }
+    },
+};
+
+FunHook<void __cdecl(int, int)> entity_turn_weapon_off_hook{
+    0x0041AE70,
+    [](int entity_handle, int weapon_type) {
+        bool was_on = rf::entity_weapon_is_on(entity_handle, weapon_type);
+        entity_turn_weapon_off_hook.call_target(entity_handle, weapon_type);
+        if (was_on && is_local_entity(entity_handle)
+            && !rf::entity_weapon_is_on(entity_handle, weapon_type)) {
+            multi_force_fire_state_send();
+        }
+    },
+};
+
 CodeInjection server_update_rate_injection{
     0x0047E891,
     [] (auto& regs) {
@@ -3541,6 +3587,10 @@ void network_init()
 
     // Make average obj_update send rate framerate-independent (deadline-based rescheduling)
     server_obj_update_schedule_injection.install();
+
+    // Send fire start/stop of continuous weapons same-frame instead of waiting for the next obj_update tick
+    entity_turn_weapon_on_hook.install();
+    entity_turn_weapon_off_hook.install();
 
     // Skip obj_update records that carry no new keyframe, so sv_netfps above the client send
     // rate doesn't flood receivers with duplicate keyframes that degrade interpolation
