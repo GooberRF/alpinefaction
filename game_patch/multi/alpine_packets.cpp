@@ -758,6 +758,7 @@ void serialize_payload(const VoteOptionsReqPayload& payload, std::byte* buf, siz
 void serialize_payload(const JetpackStateReqPayload& payload, std::byte* buf, size_t& offset)
 {
     buf[offset++] = static_cast<std::byte>(payload.on);
+    buf[offset++] = static_cast<std::byte>(payload.fuel_pct);
 }
 
 // af_req_stats_pssk
@@ -808,6 +809,7 @@ void serialize_payload(const EntityJetpackPayload& payload, std::byte* buf, size
     std::memcpy(buf + offset, &payload.obj_handle, sizeof(payload.obj_handle));
     offset += sizeof(payload.obj_handle);
     buf[offset++] = static_cast<std::byte>(payload.on);
+    buf[offset++] = static_cast<std::byte>(payload.fuel_pct);
 }
 
 // af_sreq_riot_shield_state
@@ -955,7 +957,7 @@ void af_send_ready_request(uint8_t action)
 
 // Jetpacks mutator: report that the local player's thrusters turned on or off.
 // Movement is clientside, so this is only for the visuals/audio on other clients.
-void af_send_jetpack_state_request(bool on)
+void af_send_jetpack_state_request(bool on, uint8_t fuel_pct)
 {
     if (!rf::is_multi || rf::is_server) {
         return;
@@ -965,7 +967,7 @@ void af_send_jetpack_state_request(bool on)
     packet.header.type = static_cast<uint8_t>(af_packet_type::af_client_req);
     packet.header.size = sizeof(uint8_t) + sizeof(JetpackStateReqPayload);
     packet.req_type = af_client_req_type::af_req_jetpack_state;
-    packet.payload = JetpackStateReqPayload{static_cast<uint8_t>(on ? 1 : 0)};
+    packet.payload = JetpackStateReqPayload{static_cast<uint8_t>(on ? 1 : 0), fuel_pct};
 
     af_send_client_req_packet(packet, true); // reliable
 }
@@ -1794,7 +1796,8 @@ static void af_process_client_req_packet(const void* data, size_t len, const rf:
                 return;
             }
             const bool on = bytes[offset] != 0;
-            jetpack_server_on_state_request(player, on);
+            const uint8_t fuel_pct = std::min<uint8_t>(bytes[offset + 1], 100);
+            jetpack_server_on_state_request(player, on, fuel_pct);
             break;
         }
         case af_client_req_type::af_req_ready: {
@@ -2102,7 +2105,7 @@ void af_send_award_for_demo(rf::Player* recorder, uint8_t award_id, uint8_t vict
 
 // Jetpacks mutator: relay a player's thrust state to everyone else.
 // The owner is skipped because it applies its own effects locally.
-void af_send_jetpack_state(uint32_t obj_handle, bool on)
+void af_send_jetpack_state(uint32_t obj_handle, bool on, uint8_t fuel_pct)
 {
     if (!rf::is_server) {
         return;
@@ -2112,7 +2115,7 @@ void af_send_jetpack_state(uint32_t obj_handle, bool on)
     packet.header.type = static_cast<uint8_t>(af_packet_type::af_server_req);
     packet.header.size = sizeof(uint8_t) + sizeof(EntityJetpackPayload);
     packet.req_type = af_server_req_type::af_sreq_jetpack_state;
-    packet.payload = EntityJetpackPayload{obj_handle, static_cast<uint8_t>(on ? 1 : 0)};
+    packet.payload = EntityJetpackPayload{obj_handle, static_cast<uint8_t>(on ? 1 : 0), fuel_pct};
 
     for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
         if (static_cast<uint32_t>(player.entity_handle) == obj_handle) {
@@ -2822,6 +2825,7 @@ static void af_process_server_req_packet(const void* data, size_t len, const rf:
             EntityJetpackPayload payload{};
             std::memcpy(&payload.obj_handle, bytes + offset, sizeof(payload.obj_handle));
             payload.on = bytes[offset + sizeof(payload.obj_handle)];
+            payload.fuel_pct = bytes[offset + sizeof(payload.obj_handle) + 1];
 
             rf::Object* remote_object = rf::obj_from_remote_handle(payload.obj_handle);
             if (!remote_object) {
@@ -2840,7 +2844,7 @@ static void af_process_server_req_packet(const void* data, size_t len, const rf:
                 return;
             }
 
-            jetpack_apply_entity_thrust(entity, payload.on != 0);
+            jetpack_on_remote_state(entity, payload.on != 0, payload.fuel_pct);
             break;
         }
         case af_server_req_type::af_sreq_riot_shield_state: {
