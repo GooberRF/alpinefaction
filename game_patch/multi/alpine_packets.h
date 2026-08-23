@@ -110,7 +110,7 @@ enum class af_client_req_type : uint8_t
     af_req_vote_cast = 0x7,    // Alpine 1.4 (1 byte: 0 = no, 1 = yes)
     af_req_vote_cancel = 0x8,  // Alpine 1.4 (no additional data)
     af_req_vote_options = 0x9, // Alpine 1.4 (5 bytes: flags + known_generation)
-    af_req_jetpack_state = 0xA, // Alpine 1.4 (1 byte: on 0/1)
+    af_req_jetpack_state = 0xA, // Alpine 1.4 (2 bytes: on 0/1, fuel_pct 0-100)
     af_req_stats_pssk = 0xB,    // Alpine 1.4 (32 bytes: player stats session key, no NUL)
 };
 
@@ -298,6 +298,7 @@ struct VoteOptionsReqPayload
 struct JetpackStateReqPayload
 {
     uint8_t on = 0;
+    uint8_t fuel_pct = 0; // 0-100, display only
 };
 
 // The player stats session key minted by FactionFiles for this join, handed to the
@@ -331,7 +332,7 @@ enum class af_server_req_type : uint8_t
     af_sreq_vote_options_data = 0x6,   // Alpine 1.4 (chunked vote-options blob)
     af_sreq_kill_info = 0x7,           // Alpine 1.4 (5 bytes: victim, killer, weapon, flags, damage_type)
     af_sreq_entity_on_fire = 0x8,      // Alpine 1.4 (5 bytes: obj_handle, on)
-    af_sreq_jetpack_state = 0x9,       // Alpine 1.4 (5 bytes: obj_handle, on)
+    af_sreq_jetpack_state = 0x9,       // Alpine 1.4 (6 bytes: obj_handle, on, fuel_pct)
     af_sreq_riot_shield_state = 0xA,   // Alpine 1.4 (20 bytes: obj_handle, life, impact_pos)
     af_sreq_award = 0xB,               // Alpine 1.4 (2 bytes: award_id, victim_player_id; 0xFF = no victim)
     af_sreq_active_mutators = 0xC,     // Alpine 1.4 (variable: one declaration set, see blob_declaration_set)
@@ -420,8 +421,9 @@ struct EntityJetpackPayload
 {
     uint32_t obj_handle = 0;
     uint8_t on = 0; // 1 = thrusting, 0 = idle
+    uint8_t fuel_pct = 0; // 0-100, display only
 };
-static_assert(sizeof(EntityJetpackPayload) == 5);
+static_assert(sizeof(EntityJetpackPayload) == 6);
 
 // Riot shield durability is server authoritative.
 struct RiotShieldStatePayload
@@ -845,8 +847,8 @@ void af_send_server_req_packet(const af_server_req_packet& packet, rf::Player* p
 void af_send_should_gib_req(uint32_t obj_handle);
 void af_send_kill_info(rf::Player* killed_player);
 void af_send_entity_on_fire(uint32_t obj_handle, bool on, bool reliable = true);
-void af_send_jetpack_state_request(bool on);
-void af_send_jetpack_state(uint32_t obj_handle, bool on);
+void af_send_jetpack_state_request(bool on, uint8_t fuel_pct);
+void af_send_jetpack_state(uint32_t obj_handle, bool on, uint8_t fuel_pct);
 void af_send_riot_shield_state(uint32_t obj_handle, float life, const rf::Vector3& impact_pos);
 void af_send_award(rf::Player* player, uint8_t award_id, uint8_t victim_player_id);
 void af_send_award_for_demo(rf::Player* recorder, uint8_t award_id, uint8_t victim_player_id, uint8_t earner_id);

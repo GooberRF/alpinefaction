@@ -118,6 +118,10 @@ bool demo_playback_paused();
 // True while the world simulation is frozen for demo pause (paused, in gameplay and
 // not seeking). The paused freelook camera drive keys on this.
 bool demo_playback_sim_frozen();
+// Multiplier that turns rf::frametime (wall clock, unaffected by the pause freeze) into
+// demo simulation time: 0 while frozen, the playback timescale while playing, 1 when no
+// demo is being played back. For viewer-side estimates that tick outside the sim frame.
+float demo_playback_sim_time_scale();
 // True once the demo reached its end (a seek can restart the session).
 bool demo_playback_finished();
 // Toggles pause; no-op unless playback is in the playing state.

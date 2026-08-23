@@ -2065,8 +2065,7 @@ bool handle_vote_command(std::string_view vote_args, rf::Player* sender)
     else if (vote_name == "restart" || vote_name == "rest") {
         params.type = AfVoteType::Restart;
     }
-    else if (vote_name == "extend") {
-        // params.extend_minutes already defaults to af_vote_extend_default_minutes.
+    else if (vote_name == "extend" || vote_name == "ext") {
         params.type = AfVoteType::Extend;
     }
     else {

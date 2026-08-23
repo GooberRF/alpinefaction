@@ -173,6 +173,7 @@ Version 1.4.0 (Lupin): Not yet released
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Improve netfps consistency by making the effective object update send rate match the target netfps on both servers and clients, instead of falling short by a frame rate dependent amount
 - Skip server object update records that carry no new movement keyframe, so `sv_netfps` values above the client send rate no longer degrade interpolation smoothness with duplicate keyframes
+- Reduce latency on continuous fire weapons by sending an object update immediately when one starts or stops firing instead of waiting for the next scheduled send
 - Add `spectate_povcomp` command for ping compensation while following a player in spectate mode - delays other players to approximate what the followed player saw when they aimed
 
 ### Bug fixes
@@ -232,6 +233,7 @@ Version 1.4.0 (Lupin): Not yet released
 - Fix crash risk when leaving a match or changing levels by keeping animation skeletons loaded while animation instances are still playing them, instead of unloading as soon as no character references them
 - Fix dedicated servers not loading `alpinefaction.vpp`, which prevented `af_level_quirks.tbl` from loading and left known run maps unrecognized
 - Fix potential crash when an Alpine options `.tbl` file contains an unrecognized option name
+- Fix crash when a non-player entity spawns while any weapon in `weapons.tbl` has a clip size of exactly 2
 
 [@is-this-c](https://github.com/is-this-c)
 - Clear cached server config output after a shuffle of a server's rotation

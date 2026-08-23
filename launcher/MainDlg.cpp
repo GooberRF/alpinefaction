@@ -466,18 +466,18 @@ bool MainDlg::ShouldShowWhatsNew()
 std::string MainDlg::FetchWhatsNewContent()
 {
     constexpr std::string_view content = R"(
-Thanks for updating, and welcome to Alpine Faction v1.3.0!
+Thanks for updating, and welcome to Alpine Faction v1.4.0!
 
 Highlights from this release are listed below. This is not a complete changelog.
 
-- New advanced multiplayer bots system
-- Realtime shadows and pixel lighting for meshes
-- New level autodownloader GUI
-- New FF Link workflow in launcher
-- Vastly improved spectator mode
-- Player outlines and footsteps
-- Expanded destruction capabilities for designers
-- Many stability and performance improvements
+- 6 new multiplayer gametypes
+- Demo (replay) record and playback
+- FactionFiles-integrated multiplayer statistics
+- Sprays
+- Server-configured (and votable) mutators
+- GUI panel for calling votes
+- Weather regions (rain and snow)
+- Many stability, performance, and netcode improvements
 
 If you run into issues, have questions, or just want to join the active community, click the Discord icon in the main launcher window to drop by the Red Faction Community Discord.
 )";

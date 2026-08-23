@@ -319,8 +319,10 @@ CodeInjection entity_drop_weapon_patch{
 CodeInjection entity_reload_current_primary_patch{
     0x00425506,
     [](auto& regs) {
+        const int weapon_type = regs.ebx;
         if ((rf::is_multi && gt_is_gungame()) ||
-            g_alpine_server_config_active_rules.weapon_infinite_magazines) {
+            (g_alpine_server_config_active_rules.weapon_infinite_magazines
+             && weapon_type != rf::shoulder_cannon_weapon_type)) {
             int current_reserve = regs.ecx;
             int used_ammo = regs.eax;
             regs.ecx = current_reserve + used_ammo; // negate the reload subtraction
@@ -1824,7 +1826,7 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
             // from. Runs for every death, so the victim-side award resets cover world deaths and
             // suicides too.
             awards_on_kill(damaged_player, killer_player, weapon, damage_ctx.splash, killer_handle,
-                           victim_team_before_damage);
+                           victim_team_before_damage, damage, life_before, armor_before);
 
             // Arena's reload-on-kill is applied from on_player_kill, which the engine only runs
             // in its deferred death processing - too late for the shot that killed, whose clip
@@ -4764,6 +4766,40 @@ void send_nonclip_ammo_sync(rf::Player* player, rf::Entity* entity, int weapon_t
     rf::multi_io_send_reliable(player, reinterpret_cast<uint8_t*>(&packet), sizeof(packet), 0);
 }
 
+static void server_topup_nonclip_ammo()
+{
+    if (!rf::is_server) return;
+    if (!gt_is_gungame() && !g_alpine_server_config_active_rules.weapon_infinite_magazines) return;
+    if (rf::gameseq_get_state() != rf::GameState::GS_GAMEPLAY) return;
+
+    for (rf::Player& p : SinglyLinkedList{rf::player_list}) {
+        if (p.is_browser) continue;
+
+        rf::Entity* ep = rf::entity_from_handle(p.entity_handle);
+        if (!ep || rf::entity_is_dying(ep)) continue;
+
+        int w = ep->ai.current_primary_weapon;
+        if (w == rf::remote_charge_det_weapon_type) {
+            w = rf::remote_charge_weapon_type; // the pair shares the charge ammo
+        }
+        // The no-clip featured weapon already has infinite ammo; its reserve is a pinned HUD value.
+        if (w >= 0 && w < rf::num_weapon_types && !rf::weapon_uses_clip(w)
+            && w != mutators_get_no_clip_weapon()) {
+            const rf::WeaponInfo& winfo = rf::weapon_types[w];
+            // Let the reserve DRAIN and refill it only once half spent, avoids
+            // huge reliable packet bursts with continuously firing no-clip weapons
+            // like the Jeep Gun.
+            if (winfo.ammo_type >= 0 && winfo.ammo_type < 32 && winfo.max_ammo > 0
+                && ep->ai.ammo[winfo.ammo_type] <= winfo.max_ammo / 2) {
+                ep->ai.ammo[winfo.ammo_type] = winfo.max_ammo;
+                if (&p != rf::local_player && !p.is_bot) {
+                    send_nonclip_ammo_sync(&p, ep, w);
+                }
+            }
+        }
+    }
+}
+
 void server_add_player_weapon(rf::Player* player, int weapon_type, bool full_ammo)
 {
     rf::WeaponInfo& winfo = rf::weapon_types[weapon_type];
@@ -5275,6 +5311,7 @@ void server_do_frame()
     pit_do_frame();
     wipeout_do_frame();
     gungame_do_frame();
+    server_topup_nonclip_ammo(); // after gungame's per-frame weapon grants
     salvage_do_frame();
     rounds_do_frame();
     auto_team_balance_do_frame();
