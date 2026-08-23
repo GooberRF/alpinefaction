@@ -30,14 +30,14 @@ void DownloadProgressDlg::UpdateProgress(unsigned bytes_received)
 {
     // Calculate progress percentage and update progress bar
     unsigned progress_percent =
-        static_cast<unsigned>((static_cast<float>(bytes_received) / static_cast<float>(m_file_size_kb * 1024)) * 100);
+        static_cast<unsigned>((static_cast<float>(bytes_received) / static_cast<float>(m_file_size_kb * 1000)) * 100);
 
     progress_percent = std::min(progress_percent, 100u); // Ensure it doesn't exceed 100%
 
     SendDlgItemMessage(IDC_PROGRESS_BAR, PBM_SETPOS, progress_percent, 0);
 
     // Update progress text
-    std::string progress_text = std::format("Progress: {} KB of {} KB", bytes_received / 1024, m_file_size_kb);
+    std::string progress_text = std::format("Progress: {} KB of {} KB", bytes_received / 1000, m_file_size_kb);
     SetDlgItemTextA(IDC_STATIC_PROGRESS, progress_text.c_str());
 }
 
