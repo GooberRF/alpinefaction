@@ -645,37 +645,6 @@ void gungame_do_frame()
             }
             g_order_sent.insert(&p);
         }
-
-        // "Effectively infinite" ammo for thrown (non-clip) weapons WITHOUT
-        // advertising a bogus 9999 count: keep the reserve topped at the REAL
-        // max_ammo. Clip weapons get the same feel from the reload-refund patch.
-        //
-        // Writing the server entity alone does NOT reach the owner: their ammo
-        // is client-simulated and af_obj_update excludes the owner from its own
-        // entity's updates (both send- and receive-side). So on each actual
-        // refill (reserve was below max) we send the owner a one-shot
-        // RF_GPT_RELOAD to resync — this fires at throw cadence, not per frame.
-        // af_obj_update still carries the topped value to OTHER clients' views.
-        rf::Entity* ep = rf::entity_from_handle(p.entity_handle);
-        if (ep && !rf::entity_is_dying(ep)) {
-            int w = ep->ai.current_primary_weapon;
-            if (w == rf::remote_charge_det_weapon_type) {
-                w = rf::remote_charge_weapon_type; // the pair shares the charge ammo
-            }
-            if (w >= 0 && w < rf::num_weapon_types && !rf::weapon_uses_clip(w)) {
-                const rf::WeaponInfo& winfo = rf::weapon_types[w];
-                // Let the reserve DRAIN and refill it only once half spent, avoids
-                // huge reliable packet bursts with continuously firing no-clip weapons
-                // like the Jeep Gun.
-                if (winfo.ammo_type >= 0 && winfo.ammo_type < 32 && winfo.max_ammo > 0
-                    && ep->ai.ammo[winfo.ammo_type] <= winfo.max_ammo / 2) {
-                    ep->ai.ammo[winfo.ammo_type] = winfo.max_ammo;
-                    if (&p != rf::local_player && !p.is_bot) {
-                        send_nonclip_ammo_sync(&p, ep, w);
-                    }
-                }
-            }
-        }
     }
 }
 
