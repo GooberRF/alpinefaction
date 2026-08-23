@@ -895,6 +895,13 @@ namespace
             g_ctx.reader.close();
             return false;
         }
+        // Verify demo filename.
+        if (const auto dot = header.level_filename.find_last_of('.');
+            dot != std::string::npos && header.level_filename.size() - dot > 14) {
+            rf::console::print("Cannot play demo: the level name is malformed");
+            g_ctx.reader.close();
+            return false;
+        }
         // Belt and braces for a future game mode that forgot to allocate a required_features
         // bit: an unknown netgame type would ride the join flow into undefined UI/scoring
         if (header.game_type < 0 || header.game_type >= rf::NG_TYPE_UNK) {

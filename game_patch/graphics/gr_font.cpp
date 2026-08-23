@@ -291,6 +291,7 @@ GrNewFont::GrNewFont(std::string_view name) :
     }
 
     TextureAtlasPacker atlas_packer;
+    std::unordered_set<wchar_t> packed_codepoints;
 
     for (auto codepoint : unicode_code_points) {
         error = FT_Load_Char(face, codepoint, FT_LOAD_BITMAP_METRICS_ONLY);
@@ -300,6 +301,7 @@ GrNewFont::GrNewFont(std::string_view name) :
         }
         FT_GlyphSlot slot = face->glyph;
         atlas_packer.add(slot->bitmap.width, slot->bitmap.rows, codepoint);
+        packed_codepoints.insert(codepoint);
     }
 
     atlas_packer.pack();
@@ -329,6 +331,14 @@ GrNewFont::GrNewFont(std::string_view name) :
             // of range operator[] read that does not throw and is not otherwise detectable.
             // A zero filled glyph draws nothing and advances the pen by nothing.
             xlog::error("FT_Load_Char failed for codepoint {:#x}: {}", codepoint, error);
+            glyphs_.push_back(GlyphInfo{});
+            continue;
+        }
+        if (!packed_codepoints.contains(codepoint)) {
+            // Metrics failed for this codepoint but the render succeeded, so no atlas slot
+            // was ever sized for it. Emit the same zero filled glyph as above rather than
+            // blitting into space reserved for another glyph.
+            xlog::error("Skipping codepoint {:#x}: no texture atlas slot was reserved", codepoint);
             glyphs_.push_back(GlyphInfo{});
             continue;
         }

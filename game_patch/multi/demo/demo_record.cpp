@@ -201,6 +201,8 @@ namespace
     void emit_snapshot()
     {
         rf::Player* recorder = g_state.recorder;
+        if (!recorder || !recorder->net_data)
+            return;
         // Re-assert per-segment invariants - the stock level-change flow mutates
         // per-player net flags/state (send_state_info below promotes state back to 2)
         recorder->net_data->flags |= rf::NPF_CLIENT_IS_LOADED;

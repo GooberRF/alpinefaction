@@ -138,7 +138,12 @@ namespace rf
         struct ChunkGuard {
             File& file;
             std::size_t& remaining;
-            ~ChunkGuard() { if (remaining > 0) file.seek(static_cast<int>(remaining), seek_cur); }
+            ~ChunkGuard()
+            {
+                if (remaining == 0) return;
+                if (remaining > 0x7fffffffu) file.seek(0, seek_end);
+                else file.seek(static_cast<int>(remaining), seek_cur);
+            }
         };
     };
 

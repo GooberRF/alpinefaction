@@ -520,7 +520,8 @@ namespace gr::d3d11
                 for (int vert_index = 0; vert_index < chunk.num_vecs; ++vert_index) {
                     int pos_vert_index = vert_index;
                     int pos_vert_offset = chunk.same_vertex_offsets[vert_index];
-                    if (pos_vert_offset > 0) {
+                    // Clamp the file-supplied back-reference so vert_index - offset can't go negative.
+                    if (pos_vert_offset > 0 && pos_vert_offset <= vert_index) {
                         pos_vert_index -= pos_vert_offset;
                     }
                     GpuCharacterVertex0& gpu_vert_0 = gpu_verts_0.emplace_back();
@@ -696,7 +697,8 @@ namespace gr::d3d11
             skeleton->morph(morphed_vecs.data(), chunk.num_vecs, time, chunk.orig_map, mesh->num_original_vecs);
             for (int vert_index = 0; vert_index < chunk.num_vecs; ++vert_index) {
                 int pos_vert_offset = chunk.same_vertex_offsets[vert_index];
-                if (pos_vert_offset > 0) {
+                // Clamp the file-supplied back-reference so vert_index - offset can't go negative.
+                if (pos_vert_offset > 0 && pos_vert_offset <= vert_index) {
                     morphed_vecs[vert_index] = morphed_vecs[vert_index - pos_vert_offset];
                 }
             }
@@ -759,7 +761,7 @@ namespace gr::d3d11
             for (int i = 0; i < ci->num_active_anims; ++i) {
                 const rf::CiAnimInfo& anim_info = ci->active_anims[i];
                 rf::Skeleton* skeleton = ci->base_character->animations[anim_info.anim_index];
-                if (skeleton->has_morph_vertices()) {
+                if (skeleton && skeleton->has_morph_vertices()) {
                     morphed = true;
                     render_cache->update_morphed_vertices_buffer(skeleton, anim_info.cur_time, render_context_);
                     break;
@@ -790,7 +792,7 @@ namespace gr::d3d11
             for (int i = 0; i < ci->num_active_anims; ++i) {
                 const rf::CiAnimInfo& anim_info = ci->active_anims[i];
                 rf::Skeleton* skeleton = ci->base_character->animations[anim_info.anim_index];
-                if (skeleton->has_morph_vertices()) {
+                if (skeleton && skeleton->has_morph_vertices()) {
                     morphed = true;
                     render_cache->update_morphed_vertices_buffer(skeleton, anim_info.cur_time, render_context_);
                     break;
@@ -1023,7 +1025,9 @@ namespace gr::d3d11
             // - FOG_ALLOWED
             // This information may be useful for simplifying shaders
             render_context_.set_cull_mode(b.double_sided ? D3D11_CULL_NONE : D3D11_CULL_BACK);
-            int texture = tex_handles[b.texture_index];
+            // Bounds-check the file-supplied texture index against the tex_handles array
+            constexpr int max_textures = std::extent_v<decltype(rf::VifMesh::tex_handles)>;
+            int texture = (b.texture_index >= 0 && b.texture_index < max_textures) ? tex_handles[b.texture_index] : -1;
 
             // Self-illumination from material emissive_factor (set at cache build time),
             // or force fullbright for COLOR_SOURCE_TEXTURE batches (no vertex color influence).

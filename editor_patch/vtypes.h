@@ -112,7 +112,12 @@ namespace rf
         struct ChunkGuard {
             File& file;
             std::size_t& remaining;
-            ~ChunkGuard() { if (remaining > 0) file.seek(static_cast<int>(remaining), seek_cur); }
+            ~ChunkGuard()
+            {
+                if (remaining == 0) return;
+                if (remaining > 0x7fffffffu) file.seek(0, seek_end);
+                else file.seek(static_cast<int>(remaining), seek_cur);
+            }
         };
     };
     static_assert(sizeof(File) == 0x114, "File size mismatch");
@@ -409,4 +414,21 @@ inline std::string read_rfl_string(rf::File& file, std::size_t& remaining)
     file.read(result.data(), len);
     remaining -= len;
     return result;
+}
+
+// Length limits for names read from untrusted level files.
+constexpr std::size_t rfl_name_max_len = 31;
+constexpr std::size_t rfl_ext_max_len = 14;
+constexpr std::size_t rfl_mesh_name_max_len = 64;
+constexpr std::size_t rfl_anim_name_max_len = 59;
+
+inline bool rfl_ext_over_long(const std::string& name)
+{
+    auto dot = name.rfind('.');
+    return dot != std::string::npos && name.size() - dot > rfl_ext_max_len;
+}
+
+inline bool rfl_name_over_long(const std::string& name)
+{
+    return name.size() > rfl_name_max_len || rfl_ext_over_long(name);
 }

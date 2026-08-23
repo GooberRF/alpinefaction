@@ -1924,6 +1924,10 @@ extern "C" DWORD AF_DLL_EXPORT Init([[maybe_unused]] void* unused)
     texture_name_buffer_overflow_injection1.install();
     texture_name_buffer_overflow_injection2.install();
 
+    // Bound file-supplied counts/sizes in the stock v3d/v3m/v3c mesh parser so a crafted
+    // mesh opened/imported in the editor can't heap-overflow it (mirrors game_patch guards)
+    apply_mesh_parser_hardening();
+
     // Increase face limit in g_boolean_find_all_pairs
     static void *found_faces_a[0x10000];
     static void *found_faces_b[0x10000];

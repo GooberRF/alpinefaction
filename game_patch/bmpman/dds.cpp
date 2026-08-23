@@ -119,9 +119,17 @@ int lock_dds_bitmap(rf::bm::BitmapEntry& bm_entry)
 
     // Load actual data
     bm_entry.locked_data = rf::rf_malloc(num_total_bytes);
+    if (!bm_entry.locked_data) {
+        xlog::error("Failed to allocate {} bytes for DDS surface {}", num_total_bytes, dds_filename);
+        return -1;
+    }
     file.read(bm_entry.locked_data, num_total_bytes);
     if (file.error()) {
         xlog::error("Unexpected EOF when reading {}", dds_filename);
+        // Free and null the partially-read buffer so the bitmap lock path reports failure
+        // (FORMAT_NONE) instead of uploading uninitialized heap memory as a renderable texture.
+        rf::rf_free(bm_entry.locked_data);
+        bm_entry.locked_data = nullptr;
         return -1;
     }
     return 0;

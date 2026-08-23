@@ -24,6 +24,7 @@
 #include "../rf/particle_emitter.h"
 #include "../rf/player/camera.h"
 #include "../rf/player/player.h"
+#include "../object/object.h"
 
 namespace
 {
@@ -800,6 +801,10 @@ void weather_load_chunk(rf::File& file, std::size_t chunk_len)
         if (!read_bytes(&region.snow_sprite_radius, sizeof(float))) return;
         std::string snow_bitmap = read_string();
         if (read_error) return;
+        if (snow_bitmap.size() >= max_bitmap_name) {
+            xlog::warn("[Weather] Ignoring over-long snow bitmap name on region uid {}", uid);
+            snow_bitmap.clear();
+        }
         if (!snow_bitmap.empty()) {
             region.snow_bitmap = std::move(snow_bitmap);
         }

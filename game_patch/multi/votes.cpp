@@ -784,23 +784,22 @@ struct VoteMatch : public Vote
             return false;
         }
 
-        if (m_level_name.empty()) {
-            m_level_name = rf::level.filename.c_str();
-        }
-        else {
-            auto [is_valid, normalized_name] = is_level_name_valid(m_level_name);
-            if (!is_valid) {
-                send_vote_reject_msg(
-                    "Invalid level specified! Try again, or omit level filename to use the current level.", source);
-                return false;
-            }
-            m_level_name = std::move(normalized_name);
-        }
+        const bool level_was_named = !m_level_name.empty();
+        m_level_name = level_was_named ? normalize_level_filename(m_level_name)
+                                       : std::string{rf::level.filename.c_str()};
 
         const rf::NetGameType effective_game_type =
             m_gametype.value_or(resolve_level_default_game_type(m_level_name));
 
         if (!is_level_allowed_for_vote(m_level_name, source, effective_game_type)) {
+            return false;
+        }
+
+        // Behind the allow-list gate: is_level_name_valid checksums the whole level
+        // file, which a name that was always going to be refused must not cost.
+        if (level_was_named && !is_level_name_valid(m_level_name).first) {
+            send_vote_reject_msg(
+                "Invalid level specified! Try again.", source);
             return false;
         }
 
@@ -1119,20 +1118,20 @@ struct VoteLevel : public Vote
 
     bool validate(rf::Player* source) override
     {
-        auto [is_valid, level_name] = is_level_name_valid(m_level_name);
-
-        if (!is_valid) {
-            auto msg = std::format("Cannot start vote: level {} is not available on the server!", level_name);
-            send_vote_reject_msg(msg, source);
-            return false;
-        }
-
-        m_level_name = std::move(level_name);
+        m_level_name = normalize_level_filename(m_level_name);
 
         const rf::NetGameType effective_game_type =
             m_gametype.value_or(resolve_level_default_game_type(m_level_name));
 
         if (!is_level_allowed_for_vote(m_level_name, source, effective_game_type)) {
+            return false;
+        }
+
+        // Behind the allow-list gate: is_level_name_valid checksums the whole level
+        // file, which a name that was always going to be refused must not cost.
+        if (!is_level_name_valid(m_level_name).first) {
+            auto msg = std::format("Cannot start vote: level {} is not available on the server!", m_level_name);
+            send_vote_reject_msg(msg, source);
             return false;
         }
 
