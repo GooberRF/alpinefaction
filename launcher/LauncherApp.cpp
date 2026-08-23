@@ -337,12 +337,12 @@ int LauncherApp::Run()
 
         // Locate <game>\demos\downloaded from the configured game executable.
         std::string demos_dir;
-        {
-            GameConfig cfg;
-            if (cfg.load() && !cfg.game_executable_path.value().empty()) {
-                std::filesystem::path exe(cfg.game_executable_path.value());
-                demos_dir = (exe.parent_path() / "demos" / "downloaded").string();
-            }
+        GameConfig cfg;
+        // load() returns false if any newly added key is not in the registry yet; the path value is the real signal
+        cfg.load();
+        if (!cfg.game_executable_path.value().empty()) {
+            std::filesystem::path exe(cfg.game_executable_path.value());
+            demos_dir = (exe.parent_path() / "demos" / "downloaded").string();
         }
         if (demos_dir.empty()) {
             MessageBoxA(nullptr,
@@ -441,7 +441,9 @@ int LauncherApp::Run()
         else {
             display.bytes = info.bytes;
         }
-        const int choice = show_demo_confirm_dialog(build_demo_confirm_text(display), !already_have);
+        const int choice = cfg.autoplay_af_demos
+            ? 1
+            : show_demo_confirm_dialog(build_demo_confirm_text(display), !already_have);
         if (choice == 0)
             return 0;
 
