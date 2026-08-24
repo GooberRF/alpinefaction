@@ -28,6 +28,7 @@ Rafalh:
 nick:
 * Extensive support and advice on virtually every aspect of the project
 * Being a firm sounding board for even the most outlandish and ambitious ideas
+* Code contributions
 
 natalie <webmistress@natalie.ee>:
 * Technical assistance and extensive advice
@@ -37,6 +38,12 @@ natalie <webmistress@natalie.ee>:
 * Assistance evaluating levels for `pow2tex` fix
 
 is-this-c:
+* Code contributions
+
+AL2009man:
+* Code contributions
+
+jyh9521:
 * Code contributions
 
 HeyItsDuke:
@@ -62,6 +69,8 @@ Beta testers:
 * ED BUNGHOLE
 * icesolate
 * DVL_IAC
+* OK
+* Willson
 * Everyone who tried a test build and provided feedback
 
 The entire Red Faction community:
