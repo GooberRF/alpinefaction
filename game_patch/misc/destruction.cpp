@@ -13,6 +13,7 @@
 #include <xlog/xlog.h>
 #include "../misc/alpine_options.h"
 #include "../misc/alpine_settings.h"
+#include "../graphics/weather.h"
 #include "../multi/multi.h"
 #include "../multi/server_internal.h"
 #include "../main/main.h"
@@ -2729,6 +2730,11 @@ FunHook<void(rf::GeomodParams*)> geomod_init_hook{
         }
 
         geomod_init_hook.call_target(params);
+
+        // The carve can open or close a roof over a blocked-by-geometry weather region.
+        if (rf::g_geomod_crater_solid) {
+            weather_notify_geomod(params->pos, params->scale * rf::g_geomod_crater_solid->bounding_sphere_radius);
+        }
 
         // Clear the modification flag at the start of each geomod.
         g_rf2_boolean_modified_detail = false;
