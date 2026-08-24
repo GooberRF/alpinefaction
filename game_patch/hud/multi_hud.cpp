@@ -72,8 +72,8 @@ struct ActiveHudNotification
 {
     HudNotificationType type = HudNotificationType::None;
     std::string text;
-    rf::TimestampRealtime expiry; // invalid for perpetual
-    rf::TimestampRealtime fade_start; // invalid while not fading
+    rf::Timestamp expiry; // invalid for perpetual
+    rf::Timestamp fade_start; // invalid while not fading
     bool fade_on_expire = false;
 };
 static ActiveHudNotification g_hud_notification;

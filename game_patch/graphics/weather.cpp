@@ -15,6 +15,7 @@
 #include "weather.h"
 #include "../main/main.h"
 #include "../misc/alpine_settings.h"
+#include "../multi/demo/demo.h"
 #include "../os/console.h"
 #include "../os/os.h"
 #include "../rf/bmpman.h"
@@ -1125,7 +1126,7 @@ void weather_render()
     }
 
     const rf::Matrix3 camera_orient = rf::camera_get_orient(camera);
-    const float dt = std::clamp(rf::frametime, 0.0f, max_frame_delta);
+    const float dt = std::clamp(rf::frametime, 0.0f, max_frame_delta) * demo_playback_sim_time_scale();
     int trace_budget = weather_column_trace_budget;
 
     for (std::size_t i = 0; i < g_weather_regions.size(); ++i) {

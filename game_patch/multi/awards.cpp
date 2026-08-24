@@ -1383,6 +1383,13 @@ void awards_client_on_award_received(uint8_t award_id, uint8_t victim_player_id)
     g_award_queue.push_back(std::move(queued));
 }
 
+void awards_client_reset()
+{
+    g_award_queue.clear();
+    g_award_slot_busy.invalidate();
+    hud_notification_remove(HudNotificationType::Award, true);
+}
+
 void awards_client_do_frame()
 {
     if (!rf::is_multi) {
@@ -1390,6 +1397,9 @@ void awards_client_do_frame()
         // must not fire over the menu.
         g_award_queue.clear();
         g_award_slot_busy.invalidate();
+        return;
+    }
+    if (demo_playback_sim_frozen()) {
         return;
     }
     if (g_award_queue.empty()) {

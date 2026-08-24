@@ -18,6 +18,7 @@
 #include "../multi.h"
 #include "../jetpack.h"
 #include "../alpine_packets.h"
+#include "../awards.h"
 #include "../../misc/misc.h"
 #include "../../misc/alpine_settings.h"
 #include "../../hud/multi_spectate.h"
@@ -781,6 +782,7 @@ namespace
         // The fuel estimate was advanced across the skipped time by nothing but the burst's
         // wall clock; drop it so the gauge waits for a fresh anchor instead of showing it.
         jetpack_reset_remote_fuel();
+        awards_client_reset();
         // Hold the overlay + mute until fresh obj_updates repopulate the rings, capped
         // by wall clock (the demo may be paused or at EOF and never deliver one)
         g_ctx.seek_settle = true;

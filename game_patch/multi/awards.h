@@ -132,3 +132,4 @@ void awards_on_spray(rf::Player* player);
 void awards_client_on_award_received(uint8_t award_id, uint8_t victim_player_id);
 // Drains the display queue, one award at a time. Ticked from the client frame.
 void awards_client_do_frame();
+void awards_client_reset();
