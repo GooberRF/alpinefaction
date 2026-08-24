@@ -60,8 +60,7 @@ int  gamepad_get_trigger_action(int trigger_idx);
 void gamepad_set_trigger_action(int trigger_idx, int action_idx);
 
 // rebind gamepad buttons/triggers
-void gamepad_apply_rebind();
-bool gamepad_has_pending_rebind(); // true if a gamepad button/trigger was captured for the current rebind
+void gamepad_apply_rebind(int16_t new_code);
 
 // Returns and clears any pending scroll delta produced by the right-stick menu scroll tick (+1=up, -1=down, 0=none)
 int gamepad_consume_menu_scroll();

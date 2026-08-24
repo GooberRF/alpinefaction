@@ -2887,15 +2887,13 @@ CodeInjection options_render_alpine_panel_patch{
             alpine_options_panel_do_frame(static_cast<int>(rf::ui::options_animated_offset));
         }
 
-        // Detect gamepad bind completion (falling edge of waiting_for_key).
+        // Falling edge of waiting_for_key: re-sync display codes and restore keyboard fields.
+        // A captured gamepad rebind is now applied synchronously when the input arrives; this
+        // still covers cancellation (waiting stopped with no rebind captured).
         static bool s_was_waiting_gamepad = false;
         bool now_waiting_gamepad = (index == 3) && rf::ui::options_controls_waiting_for_key;
 
         if (s_was_waiting_gamepad && !now_waiting_gamepad && g_ctrl_bind_view) {
-            if (gamepad_has_pending_rebind()) {
-                gamepad_apply_rebind();
-                gamepad_sync_bindings_from_scan_codes();
-            }
             restore_keyboard_fields();
             refresh_ctrl_gamepad_codes();
             hud_mark_bindings_dirty();

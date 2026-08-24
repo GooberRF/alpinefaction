@@ -59,7 +59,6 @@ static constexpr int k_action_count = 128;
 static bool g_action_prev[k_action_count] = {};
 static bool g_action_curr[k_action_count] = {};
 
-static int g_rebind_pending_sc = -1; // scan code captured during rebind, -1 = none pending
 static bool g_last_input_was_gamepad = false;
 static SDL_JoystickID g_last_active_gamepad_id = 0; // which controller last produced input
 
@@ -276,7 +275,6 @@ static void reset_gamepad_input_state()
     g_move_lx = g_move_ly = 0.0f;
     g_move_mag = 0.0f;
     g_menu_nav = {};
-    g_rebind_pending_sc = -1;
     g_menu_cursor_accum_x = 0.0f;
     g_menu_cursor_accum_y = 0.0f;
     g_gyro_menu_cursor_active = false;
@@ -539,6 +537,14 @@ static void sync_extra_actions_for_scancode(int16_t sc, bool down, int primary_a
     }
 }
 
+static void gamepad_capture_rebind(int16_t new_code)
+{
+    rf::ui::options_controls_assign_binding(static_cast<int>(CTRL_REBIND_SENTINEL), -1);
+    gamepad_apply_rebind(new_code);
+    gamepad_sync_bindings_from_scan_codes();
+    rf::ui::options_controls_stop_waiting_for_key();
+}
+
 static void handle_trigger_down(int trigger_idx, SDL_JoystickID which)
 {
     if (trigger_idx == 0) g_lt_was_down = true;
@@ -550,9 +556,7 @@ static void handle_trigger_down(int trigger_idx, SDL_JoystickID which)
     int16_t gp_sc = (trigger_idx == 0) ? static_cast<int16_t>(CTRL_GAMEPAD_LEFT_TRIGGER)
                                         : static_cast<int16_t>(CTRL_GAMEPAD_RIGHT_TRIGGER);
     if (ui_ctrl_bindings_view_active() && rf::ui::options_controls_waiting_for_key) {
-        g_rebind_pending_sc = gp_sc;
-        rf::ui::options_controls_assign_binding(static_cast<int>(CTRL_REBIND_SENTINEL), -1);
-        rf::ui::options_controls_stop_waiting_for_key();
+        gamepad_capture_rebind(gp_sc);
         return;
     }
 
@@ -831,9 +835,7 @@ static void handle_gamepad_button_down(const SDL_GamepadButtonEvent& ev)
             // TODO: when next major SDL3 release adds proper support for capsense/gripsense, remove this entirely 
             if (is_capsense_gripsense_rebind_blocked(SDL_GetGamepadFromID(ev.which), ev.button))
                 return;
-            g_rebind_pending_sc = CTRL_GAMEPAD_SCAN_BASE + ev.button;
-            rf::ui::options_controls_assign_binding(static_cast<int>(CTRL_REBIND_SENTINEL), -1);
-            rf::ui::options_controls_stop_waiting_for_key();
+            gamepad_capture_rebind(static_cast<int16_t>(CTRL_GAMEPAD_SCAN_BASE + ev.button));
         }
         return;
     }
@@ -2038,24 +2040,12 @@ void gamepad_sync_bindings_from_scan_codes()
     }
 }
 
-bool gamepad_has_pending_rebind()
+void gamepad_apply_rebind(int16_t new_code)
 {
-    return g_rebind_pending_sc >= 0;
-}
-
-void gamepad_apply_rebind()
-{
-    rf::key_process_event(static_cast<int>(CTRL_REBIND_SENTINEL), 0, 0);
-
-    if (!rf::local_player) {
-        g_rebind_pending_sc = -1;
+    if (!rf::local_player)
         return;
-    }
 
     auto& cc = rf::local_player->settings.controls;
-
-    auto new_code = g_rebind_pending_sc >= 0 ? static_cast<int16_t>(g_rebind_pending_sc) : int16_t{-1};
-    g_rebind_pending_sc = -1;
 
     for (int i = 0; i < cc.num_bindings; ++i) {
         if (cc.bindings[i].scan_codes[0] != CTRL_REBIND_SENTINEL)
