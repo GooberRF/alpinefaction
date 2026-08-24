@@ -246,8 +246,8 @@ ConsoleCommand2 gyro_modifier_mode_cmd{
         static const char* mode_names[] = {"Always", "Hold Off", "Hold On", "Toggle", "Touch On", "Touch Off"};
         rf::console::print("Gyro modifier mode: {} ({})", mode_names[mode], mode);
     },
-    "Set gyro modifier mode: 0=Always, 1=Hold Off, 2=Hold On, 3=Toggle, 4=Touch On, 5=Touch Off (default 0)",
-    "gyro_modifier_mode [0|1|2|3|4|5]",
+    "Set gyro modifier mode",
+    "gyro_modifier_mode <0|1|2|3|4|5> (valid values: 0=Always, 1=Hold Off, 2=Hold On, 3=Toggle, 4=Touch On, 5=Touch Off (default 0))",
 };
 
 ConsoleCommand2 gyro_autocalibration_cmd{
@@ -273,8 +273,8 @@ ConsoleCommand2 gyro_autocalibration_cmd{
 
         rf::console::print("Gyro autocalibration mode: {} ({})", mode_name, mode);
     },
-    "Set gyro auto-calibration mode: 0=Off, 1=Menu Only, 2=Always (default 2)",
-    "gyro_autocalibration [0|1|2]",
+    "Set gyro auto-calibration mode",
+    "gyro_autocalibration <0|1|2> (valid values: 0=Off, 1=Menu Only, 2=Always)",
 };
 
 ConsoleCommand2 gyro_reset_autocalibration_partial_cmd{
@@ -308,8 +308,8 @@ ConsoleCommand2 gyro_space_cmd{
         int s = g_alpine_game_config.gamepad_gyro_space;
         rf::console::print("Gyro space: {} ({})", s, gyro_space_names[s]);
     },
-    "Set gyro camera space: 0=Yaw 1=Roll 2=Local 3=Player 4=World",
-    "gyro_space [0-4]",
+    "Set gyro camera space",
+    "gyro_space <0-4> (valid values: 0=Yaw 1=Roll 2=Local 3=Player 4=World)",
 };
 
 ConsoleCommand2 gyro_invert_y_cmd{
@@ -319,7 +319,7 @@ ConsoleCommand2 gyro_invert_y_cmd{
         rf::console::print("Gyro invert Y: {}", g_alpine_game_config.gamepad_gyro_invert_y ? "on" : "off");
     },
     "Toggle Gyro Y-axis invert",
-    "gyro_invert_y [0|1]",
+    "gyro_invert_y <0|1>",
 };
 
 ConsoleCommand2 gyro_invert_x_cmd{
@@ -329,7 +329,7 @@ ConsoleCommand2 gyro_invert_x_cmd{
         rf::console::print("Gyro invert X: {}", g_alpine_game_config.gamepad_gyro_invert_x ? "on" : "off");
     },
     "Toggle Gyro X-axis invert",
-    "gyro_invert_x [0|1]",
+    "gyro_invert_x <0|1>",
 };
 
 ConsoleCommand2 gyro_tightening_cmd{
@@ -339,8 +339,8 @@ ConsoleCommand2 gyro_tightening_cmd{
         rf::console::print("Gyro tightening threshold: {:.1f}",
             g_alpine_game_config.gamepad_gyro_tightening);
     },
-    "Set gyro tightening threshold (0 = disabled, max 100)",
-    "gyro_tightening [value]",
+    "Set gyro tightening threshold",
+    "gyro_tightening <value> (valid range: 0.0 - 100.0)",
 };
 
 ConsoleCommand2 gyro_smoothing_cmd{
@@ -350,8 +350,8 @@ ConsoleCommand2 gyro_smoothing_cmd{
         rf::console::print("Gyro smoothing threshold: {:.1f}",
             g_alpine_game_config.gamepad_gyro_smoothing);
     },
-    "Set gyro soft-tier smoothing threshold (0 = disabled, max 100)",
-    "gyro_smoothing [value]",
+    "Set gyro smoothing threshold",
+    "gyro_smoothing <value> (valid range: 0.0 - 100.0)",
 };
 
 ConsoleCommand2 gyro_vh_cmd{
@@ -361,7 +361,7 @@ ConsoleCommand2 gyro_vh_cmd{
         rf::console::print("Gyro V/H output mixer: {}", g_alpine_game_config.gamepad_gyro_vh_mixer);
     },
     "Set gyro V/H output mixer (-100 = reduce vertical, 0 = 1:1, 100 = reduce horizontal)",
-    "gyro_vh_mixer [-100 to 100]",
+    "gyro_vh_mixer <-100 to 100>",
 };
 
 void gyro_apply_patch()

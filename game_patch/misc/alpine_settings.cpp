@@ -1189,7 +1189,7 @@ bool alpine_player_settings_load(rf::Player* player)
         processed_keys.insert("GamepadGyroVehicleEnabled");
     }
     if (settings.count("GamepadGyroCameraSensitivity")) {
-        g_alpine_game_config.gamepad_gyro_sensitivity = std::clamp(std::stof(settings["GamepadGyroCameraSensitivity"]), 0.0f, 30.0f);
+        g_alpine_game_config.gamepad_gyro_sensitivity = std::max(std::stof(settings["GamepadGyroCameraSensitivity"]), 0.0f);
         processed_keys.insert("GamepadGyroCameraSensitivity");
     }
     if (settings.count("GamepadGyroCursorSensitivity")) {

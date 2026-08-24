@@ -1573,8 +1573,8 @@ ConsoleCommand2 joy_sens_cmd{
         if (val) g_alpine_game_config.gamepad_joy_sensitivity = std::max(0.0f, val.value());
         rf::console::print("Gamepad sensitivity: {:.4f}", g_alpine_game_config.gamepad_joy_sensitivity);
     },
-    "Set gamepad look sensitivity (default 5.0)",
-    "joy_sens [value]",
+    "Set gamepad look sensitivity",
+    "joy_sens <value>",
 };
 
 ConsoleCommand2 swap_sticks_cmd{
@@ -1583,28 +1583,28 @@ ConsoleCommand2 swap_sticks_cmd{
         if (val) g_alpine_game_config.gamepad_swap_sticks = *val != 0;
         rf::console::print("Swap sticks: {}", g_alpine_game_config.gamepad_swap_sticks ? "enabled" : "disabled");
     },
-    "Swap left and right analog sticks (default 0)",
-    "joy_swap_sticks [0|1]",
+    "Swap left and right analog sticks",
+    "joy_swap_sticks <0|1>",
 };
 
 ConsoleCommand2 joy_move_deadzone_cmd{
     "joy_move_deadzone",
     [](std::optional<float> val) {
         if (val) g_alpine_game_config.gamepad_move_deadzone = std::clamp(val.value(), 0.0f, 0.9f);
-        rf::console::print("Gamepad move (left stick) deadzone: {:.2f}", g_alpine_game_config.gamepad_move_deadzone);
+        rf::console::print("Gamepad move deadzone: {:.2f}", g_alpine_game_config.gamepad_move_deadzone);
     },
-    "Set left stick deadzone 0.0-0.9 (default 0.25)",
-    "joy_move_deadzone [value]",
+    "Set movement stick deadzone",
+    "joy_move_deadzone <value> (valid range: 0.0 - 0.9)",
 };
 
 ConsoleCommand2 joy_look_deadzone_cmd{
     "joy_look_deadzone",
     [](std::optional<float> val) {
         if (val) g_alpine_game_config.gamepad_look_deadzone = std::clamp(val.value(), 0.0f, 0.9f);
-        rf::console::print("Gamepad look (right stick) deadzone: {:.2f}", g_alpine_game_config.gamepad_look_deadzone);
+        rf::console::print("Gamepad look deadzone: {:.2f}", g_alpine_game_config.gamepad_look_deadzone);
     },
-    "Set right stick deadzone 0.0-0.9 (default 0.15)",
-    "joy_look_deadzone [value]",
+    "Set look stick deadzone",
+    "joy_look_deadzone <value> (valid range: 0.0 - 0.9)",
 };
 
 ConsoleCommand2 joy_scope_sens_cmd{
@@ -1613,8 +1613,8 @@ ConsoleCommand2 joy_scope_sens_cmd{
         if (val) g_alpine_game_config.set_gamepad_scope_sens_mod(val.value());
         rf::console::print("Gamepad scope sensitivity modifier: {:.4f}", g_alpine_game_config.gamepad_scope_sensitivity_modifier);
     },
-    "Set gamepad scope sensitivity modifier (default 0.25)",
-    "joy_scope_sens [value]",
+    "Set gamepad scope sensitivity modifier",
+    "joy_scope_sens <value>",
 };
 
 ConsoleCommand2 joy_scanner_sens_cmd{
@@ -1623,8 +1623,8 @@ ConsoleCommand2 joy_scanner_sens_cmd{
         if (val) g_alpine_game_config.set_gamepad_scanner_sens_mod(val.value());
         rf::console::print("Gamepad scanner sensitivity modifier: {:.4f}", g_alpine_game_config.gamepad_scanner_sensitivity_modifier);
     },
-    "Set gamepad scanner sensitivity modifier (default 0.25)",
-    "joy_scanner_sens [value]",
+    "Set gamepad scanner sensitivity modifier",
+    "joy_scanner_sens <value>",
 };
 
 ConsoleCommand2 joy_flickstick_cmd{
@@ -1633,8 +1633,8 @@ ConsoleCommand2 joy_flickstick_cmd{
         if (val) g_alpine_game_config.gamepad_joy_camera = val.value() != 0;
         rf::console::print("Joy flick-stick: {}", g_alpine_game_config.gamepad_joy_camera ? "enabled" : "disabled");
     },
-    "Enable/disable flick-stick mode (default 0)",
-    "joy_flickstick [0|1]",
+    "Enable/disable flick-stick mode",
+    "joy_flickstick <0|1>",
 };
 
 ConsoleCommand2 joy_flickstick_sweep_cmd{
@@ -1643,8 +1643,8 @@ ConsoleCommand2 joy_flickstick_sweep_cmd{
         if (val) g_alpine_game_config.gamepad_flickstick_sweep = std::clamp(val.value(), 0.01f, 6.0f);
         rf::console::print("Gamepad flickstick sweep: {:.2f}", g_alpine_game_config.gamepad_flickstick_sweep);
     },
-    "Set flick-stick sweep sensitivity 0.01-6.0 (default 1.00)",
-    "joy_flickstick_sweep [value]",
+    "Set flick-stick sweep sensitivity",
+    "joy_flickstick_sweep <value> (valid range: 0.01 - 6.0)",
 };
 
 ConsoleCommand2 joy_flickstick_smoothing_cmd{
@@ -1653,8 +1653,8 @@ ConsoleCommand2 joy_flickstick_smoothing_cmd{
         if (val) g_alpine_game_config.gamepad_flickstick_smoothing = std::clamp(val.value(), 0.0f, 1.0f);
         rf::console::print("Gamepad flickstick smoothing: {:.2f}", g_alpine_game_config.gamepad_flickstick_smoothing);
     },
-    "Set flick-stick smoothing factor 0.0-1.0 (default 0.75)",
-    "joy_flickstick_smoothing [value]",
+    "Set flick-stick smoothing factor",
+    "joy_flickstick_smoothing <value> (valid range: 0.0 - 1.0)",
 };
 
 ConsoleCommand2 joy_flickstick_deadzone_cmd{
@@ -1663,8 +1663,8 @@ ConsoleCommand2 joy_flickstick_deadzone_cmd{
         if (val) g_alpine_game_config.gamepad_flickstick_deadzone = std::clamp(val.value(), 0.0f, 0.9f);
         rf::console::print("Gamepad flickstick deadzone: {:.2f}", g_alpine_game_config.gamepad_flickstick_deadzone);
     },
-    "Set flick-stick activation deadzone 0.0-0.9 (default 0.80)",
-    "joy_flickstick_deadzone [value]",
+    "Set flick-stick activation deadzone",
+    "joy_flickstick_deadzone <value> (valid range: 0.0 - 0.9)",
 };
 
 ConsoleCommand2 joy_flickstick_release_deadzone_cmd{
@@ -1673,8 +1673,8 @@ ConsoleCommand2 joy_flickstick_release_deadzone_cmd{
         if (val) g_alpine_game_config.gamepad_flickstick_release_deadzone = std::clamp(val.value(), 0.0f, 0.9f);
         rf::console::print("Gamepad flickstick release deadzone: {:.2f}", g_alpine_game_config.gamepad_flickstick_release_deadzone);
     },
-    "Set flick-stick release deadzone 0.0-0.9 (default 0.70)",
-    "joy_flickstick_release_deadzone [value]",
+    "Set flick-stick release deadzone",
+    "joy_flickstick_release_deadzone <value> (valid range: 0.0 - 0.9)",
 };
 
 ConsoleCommand2 joy_flickstick_allow_scoped_cmd{
@@ -1683,8 +1683,8 @@ ConsoleCommand2 joy_flickstick_allow_scoped_cmd{
         if (val) g_alpine_game_config.gamepad_flickstick_allow_scoped = val.value() != 0;
         rf::console::print("Joy flick-stick in scopes: {}", g_alpine_game_config.gamepad_flickstick_allow_scoped ? "enabled" : "disabled");
     },
-    "Allow flick-stick to be used when scoped (default 1)",
-    "joy_flickstick_allow_scoped [0|1]",
+    "Allow flick-stick to be used when scoped",
+    "joy_flickstick_allow_scoped <0|1>",
 };
 
 ConsoleCommand2 joy_rumble_cmd{
@@ -1693,8 +1693,8 @@ ConsoleCommand2 joy_rumble_cmd{
         if (val) g_alpine_game_config.gamepad_rumble_intensity = std::clamp(val.value(), 0.0f, 1.0f);
         rf::console::print("Gamepad rumble intensity: {:.2f}", g_alpine_game_config.gamepad_rumble_intensity);
     },
-    "Set gamepad rumble intensity 0.0-1.0 (default 1.0)",
-    "joy_rumble [value]",
+    "Set gamepad rumble intensity",
+    "joy_rumble <value> (valid range: 0.0 - 1.0)",
 };
 
 ConsoleCommand2 joy_rumble_triggers_cmd{
@@ -1708,8 +1708,8 @@ ConsoleCommand2 joy_rumble_triggers_cmd{
             g_alpine_game_config.gamepad_trigger_rumble_intensity = std::clamp(val.value(), 0.0f, 1.0f);
         rf::console::print("Trigger rumble intensity: {:.2f}", g_alpine_game_config.gamepad_trigger_rumble_intensity);
     },
-    "Set gamepad trigger rumble intensity 0.0-1.0 (default 1.0, if supported by controller)",
-    "joy_rumble_triggers [value]",
+    "Set gamepad trigger rumble intensity (if supported by controller)",
+    "joy_rumble_triggers <value> (valid range: 0.0 - 1.0)",
 };
 
 ConsoleCommand2 joy_rumble_weapon_cmd{
@@ -1718,8 +1718,8 @@ ConsoleCommand2 joy_rumble_weapon_cmd{
         if (val) g_alpine_game_config.gamepad_weapon_rumble_enabled = val.value() != 0;
         rf::console::print("Weapon rumble: {}", g_alpine_game_config.gamepad_weapon_rumble_enabled ? "enabled" : "disabled");
     },
-    "Enable/disable weapon rumble (default 1)",
-    "joy_rumble_weapon [0|1]",
+    "Enable/disable weapon rumble",
+    "joy_rumble_weapon <0|1>",
 };
 
 ConsoleCommand2 joy_rumble_environmental_cmd{
@@ -1728,8 +1728,8 @@ ConsoleCommand2 joy_rumble_environmental_cmd{
         if (val) g_alpine_game_config.gamepad_environmental_rumble_enabled = val.value() != 0;
         rf::console::print("Environmental rumble: {}", g_alpine_game_config.gamepad_environmental_rumble_enabled ? "enabled" : "disabled");
     },
-    "Enable/disable environmental rumble (default 1)",
-    "joy_rumble_environmental [0|1]",
+    "Enable/disable environmental rumble",
+    "joy_rumble_environmental <0|1>",
 };
 
 ConsoleCommand2 joy_rumble_when_primary_cmd{
@@ -1738,8 +1738,8 @@ ConsoleCommand2 joy_rumble_when_primary_cmd{
         if (val) g_alpine_game_config.gamepad_rumble_when_primary = val.value() != 0;
         rf::console::print("Gamepad rumble only when gamepad is primary input: {}", g_alpine_game_config.gamepad_rumble_when_primary ? "enabled" : "disabled");
     },
-    "Enable/disable rumble only when gamepad is the primary input device (default 1)",
-    "joy_rumble_when_primary [0|1]",
+    "Enable/disable rumble only when gamepad is the primary input device",
+    "joy_rumble_when_primary <0|1>",
 };
 
 ConsoleCommand2 joy_rumble_vibration_filter_cmd{
@@ -1747,11 +1747,11 @@ ConsoleCommand2 joy_rumble_vibration_filter_cmd{
     [](std::optional<int> val) {
         if (val) g_alpine_game_config.gamepad_rumble_vibration_filter = std::clamp(val.value(), 0, 2);
         auto mode_name = g_alpine_game_config.gamepad_rumble_vibration_filter == 0 ? "Off" : 
-                        g_alpine_game_config.gamepad_rumble_vibration_filter == 1 ? "Auto (reduces low-freq motor while gyro is active)" : "On (always reduce)";
+                        g_alpine_game_config.gamepad_rumble_vibration_filter == 1 ? "Auto (when gyro is active)" : "On";
         rf::console::print("Gamepad rumble vibration filter: {} ({})", g_alpine_game_config.gamepad_rumble_vibration_filter, mode_name);
     },
-    "Set vibration filter mode 0=Off, 1=Auto (default, low-freq motor while gyro is active), 2=On (reduces low-freq motor)",
-    "joy_rumble_vibration_filter [0|1|2]",
+    "Set vibration filter mode (reduces low-frequency rumble, best for gyro aiming)",
+    "joy_rumble_vibration_filter <0|1|2> (valid values: 0=Off, 1=Auto, 2=On)",
 };
 
 ConsoleCommand2 gyro_menu_cursor_sens_cmd{
@@ -1760,8 +1760,8 @@ ConsoleCommand2 gyro_menu_cursor_sens_cmd{
         if (val) g_alpine_game_config.gamepad_gyro_menu_cursor_sensitivity = std::clamp(val.value(), 0.0f, 30.0f);
         rf::console::print("Gyro menu cursor sensitivity: {:.4f}", g_alpine_game_config.gamepad_gyro_menu_cursor_sensitivity);
     },
-    "Set gyro cursor sensitivity for menus (0 = disabled, default 1.0)",
-    "gyro_menu_cursor_sens [value]",
+    "Set gyro cursor sensitivity for menus",
+    "gyro_menu_cursor_sens <value>",
 };
 
 ConsoleCommand2 gyro_camera_cmd{
@@ -1770,8 +1770,8 @@ ConsoleCommand2 gyro_camera_cmd{
         if (val) g_alpine_game_config.gamepad_gyro_enabled = val.value() != 0;
         rf::console::print("Gyro camera: {}", g_alpine_game_config.gamepad_gyro_enabled ? "enabled" : "disabled");
     },
-    "Enable/disable gyro camera (default 0)",
-    "gyro_camera [0|1]",
+    "Enable/disable gyro camera",
+    "gyro_camera <0|1>",
 };
 
 ConsoleCommand2 gyro_vehicle_camera_cmd{
@@ -1780,18 +1780,18 @@ ConsoleCommand2 gyro_vehicle_camera_cmd{
         if (val) g_alpine_game_config.gamepad_gyro_vehicle_camera = val.value() != 0;
         rf::console::print("Gyro camera for vehicles: {}", g_alpine_game_config.gamepad_gyro_vehicle_camera ? "enabled" : "disabled");
     },
-    "Enable/disable gyro camera while in vehicles (default 0)",
-    "gyro_vehicle_camera [0|1]",
+    "Enable/disable gyro camera while in vehicles",
+    "gyro_vehicle_camera <0|1>",
 };
 
 ConsoleCommand2 gyro_sens_cmd{
     "gyro_sens",
     [](std::optional<float> val) {
-        if (val) g_alpine_game_config.gamepad_gyro_sensitivity = std::clamp(val.value(), 0.0f, 30.0f);
+        if (val) g_alpine_game_config.gamepad_gyro_sensitivity = std::max(val.value(), 0.0f);
         rf::console::print("Gyro sensitivity: {:.4f}", g_alpine_game_config.gamepad_gyro_sensitivity);
     },
-    "Set gyro sensitivity 0-30 (default 2.5)",
-    "gyro_sens [value]",
+    "Set gyro sensitivity",
+    "gyro_sens <value>",
 };
 
 ConsoleCommand2 gyro_scope_sens_cmd{
@@ -1800,8 +1800,8 @@ ConsoleCommand2 gyro_scope_sens_cmd{
         if (val) g_alpine_game_config.set_gamepad_scope_gyro_sens_mod(val.value());
         rf::console::print("Gamepad scope gyro sensitivity modifier: {:.4f}", g_alpine_game_config.gamepad_scope_gyro_sensitivity_modifier);
     },
-    "Set gamepad scope gyro sensitivity modifier (default 0.25)",
-    "gyro_scope_sens [value]",
+    "Set gamepad scope gyro sensitivity modifier",
+    "gyro_scope_sens <value>",
 };
 
 ConsoleCommand2 gyro_scanner_sens_cmd{
@@ -1810,8 +1810,8 @@ ConsoleCommand2 gyro_scanner_sens_cmd{
         if (val) g_alpine_game_config.set_gamepad_scanner_gyro_sens_mod(val.value());
         rf::console::print("Gamepad scanner gyro sensitivity modifier: {:.4f}", g_alpine_game_config.gamepad_scanner_gyro_sensitivity_modifier);
     },
-    "Set gamepad scanner gyro sensitivity modifier (default 0.25)",
-    "gyro_scanner_sens [value]",
+    "Set gamepad scanner gyro sensitivity modifier",
+    "gyro_scanner_sens <value>",
 };
 
 ConsoleCommand2 input_prompts_cmd{
@@ -1823,8 +1823,8 @@ ConsoleCommand2 input_prompts_cmd{
         static const char* modes[] = {"Auto", "Controller", "Keyboard/Mouse"};
         rf::console::print("Input prompts: {} ({})", modes[g_alpine_game_config.input_prompt_override], g_alpine_game_config.input_prompt_override);
     },
-    "Set input prompt display: 0=Auto, 1=Controller, 2=Keyboard/Mouse",
-    "input_prompts [0|1|2]",
+    "Set input prompt display",
+    "input_prompts <0|1|2> (valid values: 0=Auto, 1=Controller, 2=Keyboard/Mouse)",
 };
 
 ConsoleCommand2 gamepad_prompts_cmd{
@@ -1840,8 +1840,8 @@ ConsoleCommand2 gamepad_prompts_cmd{
             icon_names[g_alpine_game_config.gamepad_icon_override],
             g_alpine_game_config.gamepad_icon_override);
     },
-    "Set gamepad button icon style: 0=Auto, 1=Generic, 2=Xbox 360 Controller, 3=Xbox Wireless Controller, 4=DualShock 3, 5=DualShock 4, 6=DualSense, 7=Nintendo Switch Controller, 8=Nintendo GameCube Controller, 9=Steam",
-    "gamepad_prompts [0-9]",
+    "Set gamepad button icon style",
+    "gamepad_prompts <0-9> (valid values: 0=Auto, 1=Generic, 2=Xbox 360, 3=Xbox One/Series, 4=DualShock 3, 5=DualShock 4, 6=DualSense, 7=Nintendo Switch, 8=Nintendo GameCube, 9=Steam)",
 };
 
 ConsoleCommand2 joy_reconnect_cmd{

@@ -270,7 +270,7 @@ static rf::ui::Checkbox ao_joy_sensitivity_cbox;
 static rf::ui::Label ao_joy_sensitivity_label;
 static rf::ui::Label ao_joy_sensitivity_butlabel;
 static char ao_joy_sensitivity_butlabel_text[9];
-static char ao_joy_sensitivity_label_text[17];
+static char ao_joy_sensitivity_label_text[32];
 static rf::ui::Checkbox ao_move_deadzone_cbox;
 static rf::ui::Label ao_move_deadzone_label;
 static rf::ui::Label ao_move_deadzone_butlabel;
@@ -1059,7 +1059,7 @@ void ao_joy_sensitivity_cbox_on_click_callback() {
     }
 }
 void ao_joy_sensitivity_cbox_on_click(int x, int y) {
-    rf::ui::popup_message("Enter new joy stick sensitivity value:", "", ao_joy_sensitivity_cbox_on_click_callback, 1);
+    rf::ui::popup_message("Enter new joy camera sensitivity value:", "", ao_joy_sensitivity_cbox_on_click_callback, 1);
 }
 
 void ao_move_deadzone_cbox_on_click_callback() {
@@ -1075,7 +1075,7 @@ void ao_move_deadzone_cbox_on_click_callback() {
     }
 }
 void ao_move_deadzone_cbox_on_click(int x, int y) {
-    rf::ui::popup_message("Enter new joy move deadzone value (0.0 - 0.9):", "", ao_move_deadzone_cbox_on_click_callback, 1);
+    rf::ui::popup_message("Enter new joy movement deadzone value (0.0 - 0.9):", "", ao_move_deadzone_cbox_on_click_callback, 1);
 }
 
 void ao_look_deadzone_cbox_on_click_callback() {
@@ -1091,7 +1091,7 @@ void ao_look_deadzone_cbox_on_click_callback() {
     }
 }
 void ao_look_deadzone_cbox_on_click(int x, int y) {
-    rf::ui::popup_message("Enter new joy look deadzone value (0.0 - 0.9):", "", ao_look_deadzone_cbox_on_click_callback, 1);
+    rf::ui::popup_message("Enter new joy camera deadzone value (0.0 - 0.9):", "", ao_look_deadzone_cbox_on_click_callback, 1);
 }
 
 void ao_gyro_sensitivity_cbox_on_click_callback() {
@@ -1100,14 +1100,14 @@ void ao_gyro_sensitivity_cbox_on_click_callback() {
     std::string str = str_buffer;
     try {
         float val = std::stof(str);
-        g_alpine_game_config.gamepad_gyro_sensitivity = std::clamp(val, 0.0f, 30.0f);
+        g_alpine_game_config.gamepad_gyro_sensitivity = std::max(val, 0.0f);
     }
     catch (const std::exception& e) {
         xlog::info("Invalid sensitivity input: '{}', reason: {}", str, e.what());
     }
 }
 void ao_gyro_sensitivity_cbox_on_click(int x, int y) {
-    rf::ui::popup_message("Enter new gyro sensitivity value (0.0-30.00):", "", ao_gyro_sensitivity_cbox_on_click_callback, 1);
+    rf::ui::popup_message("Enter new gyro sensitivity value:", "", ao_gyro_sensitivity_cbox_on_click_callback, 1);
 }
 
 void ao_gyro_autocalibration_cbox_on_click([[maybe_unused]] int x, [[maybe_unused]] int y) {
@@ -1958,7 +1958,7 @@ void alpine_options_panel_init() {
     alpine_options_panel_inputbox_init(
         &ao_joy_camera_cbox, &ao_joy_camera_label, &ao_joy_camera_butlabel, &alpine_options_panel2, ao_joy_camera_cbox_on_click, 112, 234, "Joy cam modes");
     alpine_options_panel_inputbox_init(
-        &ao_joy_sensitivity_cbox, &ao_joy_sensitivity_label, &ao_joy_sensitivity_butlabel, &alpine_options_panel2, ao_joy_sensitivity_cbox_on_click, 112, 234, "Joy sensitivity");
+        &ao_joy_sensitivity_cbox, &ao_joy_sensitivity_label, &ao_joy_sensitivity_butlabel, &alpine_options_panel2, ao_joy_sensitivity_cbox_on_click, 112, 234, "Joy cam sensitivity");
     alpine_options_panel_inputbox_init(
         &ao_flickstick_sweep_cbox, &ao_flickstick_sweep_label, &ao_flickstick_sweep_butlabel, &alpine_options_panel2, ao_flickstick_sweep_cbox_on_click, 112, 234, "Flick sweep");
     alpine_options_panel_inputbox_init(
@@ -1968,9 +1968,9 @@ void alpine_options_panel_init() {
     alpine_options_panel_inputbox_init(
         &ao_flickstick_smoothing_cbox, &ao_flickstick_smoothing_label, &ao_flickstick_smoothing_butlabel, &alpine_options_panel2, ao_flickstick_smoothing_cbox_on_click, 112, 354, "Flick smoothing");
     alpine_options_panel_inputbox_init(
-        &ao_move_deadzone_cbox, &ao_move_deadzone_label, &ao_move_deadzone_butlabel, &alpine_options_panel2, ao_move_deadzone_cbox_on_click, 112, 204, "Joy move dz");
+        &ao_move_deadzone_cbox, &ao_move_deadzone_label, &ao_move_deadzone_butlabel, &alpine_options_panel2, ao_move_deadzone_cbox_on_click, 112, 204, "Joy move deadzone");
     alpine_options_panel_inputbox_init(
-        &ao_look_deadzone_cbox, &ao_look_deadzone_label, &ao_look_deadzone_butlabel, &alpine_options_panel2, ao_look_deadzone_cbox_on_click, 112, 294, "Joy cam dz");
+        &ao_look_deadzone_cbox, &ao_look_deadzone_label, &ao_look_deadzone_butlabel, &alpine_options_panel2, ao_look_deadzone_cbox_on_click, 112, 294, "Joy cam deadzone");
     alpine_options_panel_checkbox_init(
         &ao_joy_invert_x_cbox, &ao_joy_invert_x_label, &alpine_options_panel2, ao_joy_invert_x_cbox_on_click, g_alpine_game_config.gamepad_joy_invert_x, 112, 384, "Joy cam X-Invert");
     alpine_options_panel_checkbox_init(
@@ -2458,9 +2458,9 @@ void alpine_options_panel_do_frame(int x)
 
      // toggle regular stick vs flick stick controls, then reflow left column Y positions to avoid dead space
     bool flick_stick = g_alpine_game_config.gamepad_joy_camera;
-    // Joy sensitivity is always shown: as "Joy sensitivity" in joystick mode, "Joy sens (misc)" in flick-stick mode.
+    // Joy cam sensitivity is always shown: as "Joy cam sensitivity" in joystick mode, "Joy cam sens (misc)" in flick-stick mode.
     snprintf(ao_joy_sensitivity_label_text, sizeof(ao_joy_sensitivity_label_text), "%s",
-        flick_stick ? "Joy sens (misc)" : "Joy sensitivity");
+        flick_stick ? "Joy cam sens (misc)" : "Joy cam sensitivity");
     ao_joy_sensitivity_label.text          = ao_joy_sensitivity_label_text;
     snprintf(ao_joy_invert_x_label_text, sizeof(ao_joy_invert_x_label_text), "%s",
         flick_stick ? "Joy cam X-Invert (misc)" : "Joy cam X-Invert");
