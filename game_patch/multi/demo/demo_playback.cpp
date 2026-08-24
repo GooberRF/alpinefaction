@@ -16,6 +16,7 @@
 #include "demo_internal.h"
 #include "../network.h"
 #include "../multi.h"
+#include "../jetpack.h"
 #include "../alpine_packets.h"
 #include "../../misc/misc.h"
 #include "../../misc/alpine_settings.h"
@@ -777,6 +778,9 @@ namespace
         cull_seek_death_leftovers();
         cull_seek_effect_leftovers();
         cull_seek_fire_latches();
+        // The fuel estimate was advanced across the skipped time by nothing but the burst's
+        // wall clock; drop it so the gauge waits for a fresh anchor instead of showing it.
+        jetpack_reset_remote_fuel();
         // Hold the overlay + mute until fresh obj_updates repopulate the rings, capped
         // by wall clock (the demo may be paused or at EOF and never deliver one)
         g_ctx.seek_settle = true;
@@ -1312,6 +1316,14 @@ bool demo_playback_paused()
 bool demo_playback_sim_frozen()
 {
     return g_ctx.pause_fx_applied;
+}
+
+float demo_playback_sim_time_scale()
+{
+    if (g_ctx.state == PlaybackState::inactive) {
+        return 1.0f;
+    }
+    return g_ctx.pause_fx_applied ? 0.0f : g_ctx.timescale;
 }
 
 bool demo_playback_finished()

@@ -150,6 +150,7 @@ Version 1.4.0 (Lupin): Not yet released
 - Add `r_weather` console command to toggle rendering of weather effects
 - Rework multiplayer accuracy statistics with one shared definition feeding the scoreboard and FactionFiles stats reporting
 - Support af://demo/ID on the af protocol to play demos from FactionFiles
+- Add an `Autoplay AF Demos` launcher option to skip the confirmation prompt and play `af://demo` links immediately
 - Set client netfps to 40, server default netfps to 40 (configurable)
 - Make color pickers in the level editor open at the current color instead of black
 - A voted level now derives its rules from the server's base rules plus the voted mutator set, rather than inheriting the rules of whichever rotation slot happens to name that level
@@ -284,6 +285,7 @@ Version 1.4.0 (Lupin): Not yet released
 - For `Refresh Selected`, re-enable `Get Servers` etc. immediately upon response instead of waiting for timeout
 - Disable weapon cycle selection, if `Mouse 3` is pressed
 - For `Run` games, rename `Score` column to `Deaths`, and compare `Loads` in `std::ranges::sort`
+- Report file sizes in the launcher as MB and KB (base 1000) to match their labels
 
 [@AL2009man](https://github.com/AL2009man)
 - Fix brief game freeze whenever an `Alt` key is pressed

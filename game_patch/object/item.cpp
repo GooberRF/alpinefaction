@@ -15,6 +15,7 @@
 #include "../rf/player/player.h"
 #include "../misc/achievements.h"
 #include "../misc/misc.h"
+#include "../multi/gametype.h"
 #include "../multi/mutators.h"
 #include "../multi/server.h"
 
@@ -37,12 +38,15 @@ int item_lookup_type(const char* name)
 FunHook<int(int, int, int, int)> item_touch_weapon_hook{
     0x0045A6D0,
     [](int entity_handle, int item_handle, int weapon_type, int count) {
-        // Exclude fusion from "weapon items give full ammo", but not from "infinite magazines"
-        const bool full_ammo_pickup =
-            server_weapon_items_give_full_ammo() && weapon_type != rf::shoulder_cannon_weapon_type;
+        // Exclude fusion from "weapon items give full ammo", and from "infinite magazines"
+        // everywhere except GunGame.
+        const bool not_fusion = weapon_type != rf::shoulder_cannon_weapon_type;
+        const bool full_ammo_pickup = server_weapon_items_give_full_ammo() && not_fusion;
+        const bool infinite_mag_top_up = server_weapon_infinite_magazines()
+            && (not_fusion || (rf::is_multi && gt_is_gungame()));
         // Infinite magazines is only meaningful if there is a magazine to reload from, so it
         // tops the weapon up.
-            if ((full_ammo_pickup || server_weapon_infinite_magazines())
+        if ((full_ammo_pickup || infinite_mag_top_up)
             && weapon_type >= 0 && weapon_type < rf::num_weapon_types) {
             rf::WeaponInfo& winfo = rf::weapon_types[weapon_type];
             count = winfo.max_ammo + winfo.clip_size;

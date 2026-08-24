@@ -9,6 +9,7 @@
 #include "multi.h"
 #include "server_internal.h"
 #include "alpine_packets.h"
+#include "demo/demo.h"
 #include "../rf/multi.h"
 #include "../rf/entity.h"
 #include "../rf/object.h"
@@ -55,7 +56,7 @@ constexpr const char* JETPACK_MESH_FILENAME = "af-jetpack1.v3m";
 // and the server's rebroadcast of it are limited to one send per interval per
 // player; whatever the limit holds back is settled by the per-frame flushes
 // below, so the wire always converges on the true state within one interval.
-constexpr int JETPACK_STATE_SYNC_INTERVAL_MS = 250;
+constexpr int JETPACK_STATE_SYNC_INTERVAL_MS = 100;
 
 // Discoverability. The gauge shows itself off for a moment on every spawn, and
 // a keybind hint offers itself under the reticle until the pack is first used.
@@ -96,6 +97,18 @@ struct JetpackEffectState
 // Keyed by entity handle. Holds an entry only while that entity is thrusting.
 std::unordered_map<int, JetpackEffectState> g_jetpack_effects;
 
+// Fuel estimate per remote entity, anchored by each on/off packet's fuel byte and
+// advanced locally at the shared burn/recharge rates. Display only.
+struct JetpackRemoteFuel
+{
+    float fuel = 1.0f;
+    bool thrusting = false;
+    rf::Timestamp recharge_delay;
+    bool gauge_was_full = true;
+    rf::TimestampRealtime gauge_fade;
+};
+std::unordered_map<int, JetpackRemoteFuel> g_jetpack_remote_fuel; // by entity handle
+
 // The `jetpack` console command, for single player only and purely for fun. Read
 // exclusively from the !is_multi branch of jetpacks_are_active, so it can never
 // influence a multiplayer game whatever it happens to be set to. Deliberately NOT
@@ -126,6 +139,7 @@ struct JetpackServerSyncState
     int last_handle = -1;
     bool last_broadcast = false;
     bool desired = false;
+    uint8_t desired_fuel = 100;
     rf::Timestamp cooldown;
 };
 
@@ -318,6 +332,39 @@ void jetpack_update_effects()
     }
 }
 
+void jetpack_update_remote_fuel()
+{
+    // Runs from rf_do_frame, outside the sim frame the demo pause freezes, so the
+    // estimate has to be scaled onto demo time by hand.
+    const float dt = rf::frametime * demo_playback_sim_time_scale();
+    for (auto it = g_jetpack_remote_fuel.begin(); it != g_jetpack_remote_fuel.end();) {
+        rf::Entity* ep = rf::entity_from_handle(it->first);
+        if (!ep || rf::entity_is_dying(ep)) {
+            it = g_jetpack_remote_fuel.erase(it);
+            continue;
+        }
+        auto& state = it->second;
+        if (state.thrusting) {
+            state.fuel = std::max(0.0f, state.fuel - dt / JETPACK_BURN_TIME_S);
+        }
+        else if (state.fuel < 1.0f
+            && (!state.recharge_delay.valid() || state.recharge_delay.elapsed())) {
+            state.fuel = std::min(1.0f, state.fuel + dt / JETPACK_RECHARGE_TIME_S);
+        }
+        if (state.fuel >= 1.0f) {
+            if (!state.gauge_was_full) {
+                state.gauge_fade.set(0);
+            }
+            state.gauge_was_full = true;
+        }
+        else {
+            state.gauge_was_full = false;
+            state.gauge_fade.invalidate();
+        }
+        ++it;
+    }
+}
+
 // True while the local sync layer is free to put another state on the wire.
 bool jetpack_sync_cooldown_clear()
 {
@@ -354,16 +401,17 @@ void jetpack_sync_local_thrust()
     }
 
     const bool on = g_jetpack_thrusting;
+    const uint8_t fuel_pct = static_cast<uint8_t>(std::clamp(g_jetpack_fuel, 0.0f, 1.0f) * 100.0f + 0.5f);
     if (rf::is_server) {
         // Listen host: nothing to request, relay to the other clients directly.
         // This is the host's own state, so it never goes through the server-side
         // rebroadcast throttle, which only tracks states asked for by clients.
         if (g_jetpack_local_entity_handle != -1) {
-            af_send_jetpack_state(static_cast<uint32_t>(g_jetpack_local_entity_handle), on);
+            af_send_jetpack_state(static_cast<uint32_t>(g_jetpack_local_entity_handle), on, fuel_pct);
         }
     }
     else {
-        af_send_jetpack_state_request(on);
+        af_send_jetpack_state_request(on, fuel_pct);
     }
     g_jetpack_sent_thrust = on;
     g_jetpack_sync_cooldown.set(JETPACK_STATE_SYNC_INTERVAL_MS);
@@ -409,20 +457,21 @@ void jetpack_server_rebase_entry(JetpackServerSyncState& state, int entity_handl
 // player's throttle. Answers false when there is no live entity to talk about,
 // which is the caller's cue to drop the entry rather than broadcast a stale
 // handle.
-bool jetpack_server_broadcast_state(rf::Player* player, JetpackServerSyncState& state, bool on)
+bool jetpack_server_broadcast_state(rf::Player* player, JetpackServerSyncState& state, bool on,
+    uint8_t fuel_pct)
 {
     rf::Entity* entity = player ? rf::entity_from_handle(player->entity_handle) : nullptr;
     if (!entity) {
         return false;
     }
-    af_send_jetpack_state(static_cast<uint32_t>(player->entity_handle), on);
+    af_send_jetpack_state(static_cast<uint32_t>(player->entity_handle), on, fuel_pct);
     // A listen host receives none of its own broadcasts — the receive path bails
     // out on a server — so this is the only thing that shows the host a remote
     // player's steam and engine noise. Deliberately here and not inside
     // af_send_jetpack_state: that is also called for the host's OWN state, which
     // has already applied its effects locally, and would double-apply.
     if (!rf::is_dedicated_server) {
-        jetpack_apply_entity_thrust(entity, on);
+        jetpack_on_remote_state(entity, on, fuel_pct);
     }
     state.last_handle = player->entity_handle;
     state.last_broadcast = on;
@@ -468,7 +517,7 @@ void jetpack_server_do_frame()
             continue;
         }
 
-        if (!jetpack_server_broadcast_state(player, state, state.desired)) {
+        if (!jetpack_server_broadcast_state(player, state, state.desired, state.desired_fuel)) {
             // No entity to attach the state to. Dropped silently: the client
             // sweeps its own effects, and a fresh entity starts off anyway.
             it = g_jetpack_server_sync.erase(it);
@@ -706,27 +755,6 @@ bool jetpack_solve_attachment(rf::Entity* ep, rf::VMesh* mesh, int mesh_prop_idx
     return true;
 }
 
-// Gates shared by every piece of jetpack HUD: all of it belongs to the living
-// local player and none of it survives a hidden HUD or a spectate view.
-bool jetpack_hud_is_visible()
-{
-    if (!jetpacks_are_active()) {
-        return false;
-    }
-    // multi_spectate_is_spectating() is trivially false in single player:
-    // multi_spectate_is_freelook() requires rf::is_multi, and the two mode flags
-    // behind it are only ever set from the multiplayer spectate entry paths and are
-    // cleared by multi_spectate_level_init on every level load.
-    if (is_hud_effectively_hidden() || multi_spectate_is_spectating()) {
-        return false;
-    }
-    if (!rf::local_player) {
-        return false;
-    }
-    rf::Entity* ep = rf::entity_from_handle(rf::local_player->entity_handle);
-    return ep && !rf::entity_is_dying(ep);
-}
-
 // Gauge alpha for this frame, or -1 when the gauge is fully hidden. Full alpha
 // whenever the tank is short or a spawn reveal is running, then a brief fade.
 int jetpack_gauge_alpha()
@@ -745,6 +773,23 @@ int jetpack_gauge_alpha()
     return 255 - (255 * elapsed) / JETPACK_GAUGE_FADE_MS;
 }
 
+// Gauge alpha for a spectated player, which has no spawn reveal of its own.
+int jetpack_remote_gauge_alpha(JetpackRemoteFuel& state)
+{
+    if (state.fuel < 1.0f) {
+        return 255;
+    }
+    if (!state.gauge_fade.valid()) {
+        return -1;
+    }
+    const int elapsed = state.gauge_fade.time_since();
+    if (elapsed >= JETPACK_GAUGE_FADE_MS) {
+        state.gauge_fade.invalidate();
+        return -1;
+    }
+    return 255 - (255 * elapsed) / JETPACK_GAUGE_FADE_MS;
+}
+
 // Shadow pass then main pass, so HUD text keeps its edges over bright geometry
 // (the technique multi_hud's big notification uses). `x` is the text center.
 void jetpack_draw_shadowed_string(int x, int y, const char* text, int font, int alpha_scale)
@@ -756,7 +801,7 @@ void jetpack_draw_shadowed_string(int x, int y, const char* text, int font, int 
     rf::gr::string_aligned(rf::gr::ALIGN_CENTER, x, y, text, font);
 }
 
-void jetpack_draw_fuel_gauge(int alpha_scale)
+void jetpack_draw_fuel_gauge(float fuel, int alpha_scale)
 {
     const bool big = g_alpine_game_config.big_hud;
     const int bar_w = big ? 16 : 10;
@@ -774,7 +819,7 @@ void jetpack_draw_fuel_gauge(int alpha_scale)
     hud_rect_border(x, y, bar_w, bar_h, border);
 
     const int inner_h = bar_h - 2 * border;
-    const int fill_h = static_cast<int>(inner_h * std::clamp(g_jetpack_fuel, 0.0f, 1.0f));
+    const int fill_h = static_cast<int>(inner_h * std::clamp(fuel, 0.0f, 1.0f));
     if (fill_h > 0) {
         rf::gr::set_color(255, 165, 0, static_cast<rf::ubyte>((220 * alpha_scale) / 255));
         rf::gr::rect(x + border, y + border + (inner_h - fill_h), bar_w - 2 * border, fill_h);
@@ -842,7 +887,27 @@ void jetpack_apply_entity_thrust(rf::Entity* ep, bool on)
     }
 }
 
-void jetpack_server_on_state_request(rf::Player* player, bool on)
+void jetpack_on_remote_state(rf::Entity* ep, bool on, uint8_t fuel_pct)
+{
+    jetpack_apply_entity_thrust(ep, on);
+    if (rf::is_dedicated_server || !ep) {
+        return;
+    }
+    // Same gates the effects use: no tracked entries for a server talking about
+    // entities or states that cannot be on screen.
+    if (!jetpacks_are_active() || rf::gameseq_get_state() != rf::GameState::GS_GAMEPLAY
+        || !rf::player_from_entity_handle(ep->handle)) {
+        return;
+    }
+    auto& state = g_jetpack_remote_fuel[ep->handle];
+    state.fuel = std::min<uint8_t>(fuel_pct, 100) / 100.0f;
+    state.thrusting = on;
+    if (!on) {
+        state.recharge_delay.set(JETPACK_RECHARGE_DELAY_MS);
+    }
+}
+
+void jetpack_server_on_state_request(rf::Player* player, bool on, uint8_t fuel_pct)
 {
     if (!rf::is_server || !player || !player->net_data) {
         return;
@@ -851,6 +916,7 @@ void jetpack_server_on_state_request(rf::Player* player, bool on)
     auto& state = g_jetpack_server_sync[player->net_data->player_id];
     jetpack_server_rebase_entry(state, player->entity_handle);
     state.desired = on;
+    state.desired_fuel = fuel_pct;
     if (state.desired == state.last_broadcast) {
         // The other clients already believe this, so a repeated request — or one
         // that flapped back inside the interval — costs no rebroadcast at all.
@@ -859,7 +925,7 @@ void jetpack_server_on_state_request(rf::Player* player, bool on)
     if (!state.cooldown.valid() || state.cooldown.elapsed()) {
         // Broadcast failures leave desired != last_broadcast, which is what makes
         // jetpack_server_do_frame retry or drop the entry.
-        jetpack_server_broadcast_state(player, state, on);
+        jetpack_server_broadcast_state(player, state, on, fuel_pct);
     }
 }
 
@@ -887,11 +953,13 @@ void jetpack_do_frame()
         // slots in the engine's fixed pool. Destroying an emitter is safe in all
         // of those states — the engine never returns one to the pool by itself.
         jetpack_destroy_all_effects();
+        g_jetpack_remote_fuel.clear();
     }
     else {
         jetpack_ensure_mesh_loaded();
         jetpack_update_local_player();
         jetpack_update_effects();
+        jetpack_update_remote_fuel();
     }
 
     // Settles a state the throttle held back, including the switch-off above, so
@@ -933,16 +1001,47 @@ void jetpack_render_attachment(rf::Entity* ep)
 
 void jetpack_render_hud()
 {
-    if (!jetpack_hud_is_visible()) {
+    if (!jetpacks_are_active() || is_hud_effectively_hidden()) {
         // Nothing is drawn this frame, so drop the hint ramp: it eases back in
         // from nothing once the HUD returns.
         g_jetpack_hint_fade = 0.0f;
         return;
     }
 
+    // First-person spectate and demo playback both follow through multi_spectate:
+    // the gauge tracks the viewed player's estimated fuel, the local-only overlays
+    // (spawn reveal, keybind hint) stay hidden.
+    if (multi_spectate_is_spectating()) {
+        g_jetpack_hint_fade = 0.0f;
+        if (!multi_spectate_is_first_person() || g_alpine_game_config.spectate_mode_minimal_ui) {
+            return;
+        }
+        rf::Player* target = multi_spectate_get_target_player();
+        rf::Entity* ep = target ? rf::entity_from_handle(target->entity_handle) : nullptr;
+        if (!ep || rf::entity_is_dying(ep)) {
+            return;
+        }
+        auto it = g_jetpack_remote_fuel.find(ep->handle);
+        if (it == g_jetpack_remote_fuel.end()) {
+            return; // no anchor yet; a full tank draws nothing anyway
+        }
+        const int alpha = jetpack_remote_gauge_alpha(it->second);
+        if (alpha >= 0) {
+            jetpack_draw_fuel_gauge(it->second.fuel, alpha);
+        }
+        return;
+    }
+
+    rf::Entity* ep = rf::local_player
+        ? rf::entity_from_handle(rf::local_player->entity_handle) : nullptr;
+    if (!ep || rf::entity_is_dying(ep)) {
+        g_jetpack_hint_fade = 0.0f;
+        return;
+    }
+
     const int gauge_alpha = jetpack_gauge_alpha();
     if (gauge_alpha >= 0) {
-        jetpack_draw_fuel_gauge(gauge_alpha);
+        jetpack_draw_fuel_gauge(g_jetpack_fuel, gauge_alpha);
     }
 
     // Ease the hint in and out rather than popping it on the frame the pack
@@ -955,6 +1054,11 @@ void jetpack_render_hud()
     if (g_jetpack_hint_fade > 0.0f) {
         jetpack_draw_thrust_hint(static_cast<int>(g_jetpack_hint_fade * 255.0f));
     }
+}
+
+void jetpack_reset_remote_fuel()
+{
+    g_jetpack_remote_fuel.clear();
 }
 
 void jetpack_level_init()
@@ -977,6 +1081,7 @@ void jetpack_level_init()
     g_jetpack_local_entity_handle = -1;
     jetpack_reset_local_sync();
     g_jetpack_server_sync.clear();
+    g_jetpack_remote_fuel.clear();
     jetpack_reset_local_state();
     // The keybind hint is level-scoped: it re-teaches once per level and retires
     // again after the player's first thrust. The fade has to be dropped too — the

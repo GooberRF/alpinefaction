@@ -3250,6 +3250,11 @@ void mutators_set_no_clip_weapon(int weapon_type)
     }
 }
 
+int mutators_get_no_clip_weapon()
+{
+    return g_no_clip_weapon;
+}
+
 // The engine derives clip_size from clip_size_multi whenever it enters MP weapon
 // mode (on join / mode transitions, sometimes after the server-info has already
 // been processed). Re-apply our override immediately afterward.

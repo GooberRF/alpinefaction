@@ -3420,9 +3420,15 @@ void vote_panel_do(PanelUi& ui)
 
     bool can_send = false;
     bool can_save = false;
-    // A saved entry is called by loading it into the form with EDIT, so the saved
-    // tab leaves CALL VOTE greyed rather than sending whatever the form holds.
-    if (!g_form.on_saved_tab && options != nullptr) {
+    // The saved tab sends the selected entry as saved.
+    if (g_form.on_saved_tab) {
+        const auto& store = saved_votes_get();
+        can_send = !vote_active && options != nullptr
+            && g_saved_selected >= 0 && g_saved_selected < static_cast<int>(store.size())
+            && g_saved_selected < static_cast<int>(g_saved_availability.size())
+            && g_saved_availability[g_saved_selected].callable;
+    }
+    else if (options != nullptr) {
         can_send = !vote_active && vote_form_is_sendable(*options);
         // Saving is local, so it is deliberately NOT gated on vote_active; only
         // the three savable types offer it.
@@ -3435,7 +3441,14 @@ void vote_panel_do(PanelUi& ui)
 
     const Rect call{row_x, btn_y, btn_w, btn_h};
     if (ui_button(ui, call, "CALL VOTE", lo.font, can_send) && can_send) {
-        send_vote_from_form(*options);
+        if (g_form.on_saved_tab) {
+            af_send_vote_call(saved_vote_build_params(saved_votes_get()[g_saved_selected], *options));
+            play_click_sound();
+            vote_panel_close();
+        }
+        else {
+            send_vote_from_form(*options);
+        }
         return;
     }
 
