@@ -728,7 +728,7 @@ namespace
         // Last: every remaining particle back to the pool (emitter records survive and
         // re-prime on their spawn timers)
         rf::particle_level_release();
-        explosion_flash_lights_level_init();
+        explosion_flash_lights_destroy_all();
     }
 
     // A burst that ends between a fire-ON and fire-OFF obj_update leaves the entity's
