@@ -199,6 +199,15 @@ void af_send_ping_location_req_packet(rf::Vector3* pos)
     af_send_packet(rf::local_player, packet_buf, sizeof(ping_location_req_packet), false);
 }
 
+// A NaN, infinity or absurd magnitude here would reach the world HUD projection on every
+// recipient. The bound is far outside any legitimate RF level.
+static bool af_ping_location_coords_sane(const rf::Vector3& pos)
+{
+    constexpr float kMaxCoordMagnitude = 100000.0f;
+    const auto ok = [](float v) { return std::isfinite(v) && std::fabs(v) <= kMaxCoordMagnitude; };
+    return ok(pos.x) && ok(pos.y) && ok(pos.z);
+}
+
 static void af_process_ping_location_req_packet(const void* data, size_t len, const rf::NetAddr& addr)
 {
     // Receive: server <- client
@@ -250,6 +259,18 @@ static void af_process_ping_location_req_packet(const void* data, size_t len, co
         return;
     }
 
+    // Each accepted request fans out to the whole team, so throttle per requester to deny
+    // line-rate amplification. Keyed by uint8 player id: bounded to <=256 entries.
+    constexpr int64_t kMinPingIntervalMs = 100;
+    static std::unordered_map<uint8_t, int64_t> last_ping_req_ms;
+    const uint8_t requester_id = player->net_data->player_id;
+    const int64_t now = timer::get_i64(1000);
+    auto req_it = last_ping_req_ms.find(requester_id);
+    if (req_it != last_ping_req_ms.end() && now - req_it->second < kMinPingIntervalMs) {
+        return;
+    }
+    last_ping_req_ms[requester_id] = now;
+
     std::memcpy(&ping_location_req_packet, data, sizeof(ping_location_req_packet));
 
     rf::Vector3 pos{
@@ -257,6 +278,10 @@ static void af_process_ping_location_req_packet(const void* data, size_t len, co
         ping_location_req_packet.pos.y,
         ping_location_req_packet.pos.z
     };
+
+    if (!af_ping_location_coords_sane(pos)) {
+        return;
+    }
 
     gt_is_run() ? af_send_ping_location_packet_to_all(&pos, player->net_data->player_id)
                 : af_send_ping_location_packet_to_team(&pos, player->net_data->player_id, player->team);
@@ -351,6 +376,10 @@ static void af_process_ping_location_packet(const void* data, size_t len, const 
         ping_location_packet.pos.y,
         ping_location_packet.pos.z
     };
+
+    if (!af_ping_location_coords_sane(pos)) {
+        return;
+    }
 
     add_location_ping_world_hud_sprite(pos, player->name, ping_location_packet.player_id);
 }
@@ -641,6 +670,12 @@ static void af_process_obj_update_packet(const void* data, size_t len, const rf:
         return;
     }
 
+    // Reject payloads that are not an exact multiple of the element size.
+    if (object_data_size % sizeof(af_obj_update) != 0) {
+        xlog::warn("Object update packet payload {} is not a multiple of {}", object_data_size, sizeof(af_obj_update));
+        return;
+    }
+
     // Calculate number of objects being updated
     size_t num_objects = object_data_size / sizeof(af_obj_update);
     if (num_objects == 0) {
@@ -675,8 +710,14 @@ static void af_process_obj_update_packet(const void* data, size_t len, const rf:
 
         // Only update ammo if the player's weapon matches the packet
         if (entity->ai.current_primary_weapon == obj_update.current_primary_weapon) {
-            entity->ai.clip_ammo[obj_update.current_primary_weapon] = obj_update.clip_ammo;
-            entity->ai.ammo[obj_update.ammo_type] = obj_update.reserve_ammo;
+            // Bounds-check the wire-supplied indices before writing into the fixed AiInfo
+            // arrays (clip_ammo[64], ammo[32]).
+            if (obj_update.current_primary_weapon < std::ssize(entity->ai.clip_ammo)) {
+                entity->ai.clip_ammo[obj_update.current_primary_weapon] = obj_update.clip_ammo;
+            }
+            if (obj_update.ammo_type < std::ssize(entity->ai.ammo)) {
+                entity->ai.ammo[obj_update.ammo_type] = obj_update.reserve_ammo;
+            }
 
             /* xlog::warn("Updated player {}, weapon {}, ammo type {}, clip {}, reserve {}", 
                         entity->name, obj_update.current_primary_weapon, obj_update.ammo_type, 
@@ -4716,7 +4757,12 @@ void af_process_server_msg_packet(
             return;
         }
         const char* text_ptr = static_cast<const char*>(data) + header_len;
-        const size_t text_len = len - header_len;
+        // Cap to the same budget the sender uses (build_hud_notification_packet) so the
+        // receiver asserts its own bound rather than trusting the transport buffer size.
+        constexpr size_t max_text_len = rf::max_packet_size
+            - sizeof(af_server_msg_packet)
+            - sizeof(af_hud_notification_prefix);
+        const size_t text_len = std::min(len - header_len, max_text_len);
         std::string text{text_ptr, text_len};
         hud_notification_show(std::move(text),
                               prefix.duration_seconds,

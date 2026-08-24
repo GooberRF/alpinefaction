@@ -1479,7 +1479,13 @@ void load_ads_server_config(std::string ads_config_name, bool allow_missing_leve
         return;
     }
 
-    const fs::path root_path = fs::weakly_canonical(fs::path(ads_config_name));
+    fs::path root_path;
+    try {
+        root_path = fs::weakly_canonical(fs::path(ads_config_name));
+    }
+    catch (const std::exception& err) {
+        rf::console::print("  [WARN] failed to canonicalize {}: {}\n", ads_config_name, err.what());
+    }
 
     // config pass
     apply_config_table_in_order(cfg, root, root_path.parent_path(), ParsePass::Core, allow_missing_levels);

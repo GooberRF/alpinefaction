@@ -252,7 +252,8 @@ FunHook<int(int, const rf::Vector3&, float, const rf::Vector3&, int)> snd_play_3
     [](int handle, const rf::Vector3& pos, float volume, const rf::Vector3&, int group) {
         xlog::trace("snd_play_3d {} {:.2f} {}", handle, volume, group);
 
-        if (!rf::sound_enabled || handle < 0) {
+        // Upper-bound guard
+        if (!rf::sound_enabled || handle < 0 || handle >= rf::g_num_sounds) {
             return -1;
         }
         if (rf::snd_load_hint(handle) != 0) {

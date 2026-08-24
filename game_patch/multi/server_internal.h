@@ -770,7 +770,9 @@ struct AlpineServerConfigRules
     // them, so the two must stay in step.
     static int stock_riot_stick_reserve()
     {
-        return rf::weapon_types[rf::riot_stick_weapon_type].clip_size_multi;
+        return rf::riot_stick_weapon_type >= 0
+            ? rf::weapon_types[rf::riot_stick_weapon_type].clip_size_multi
+            : 0;
     }
 
     int stock_spawn_weapon_reserve() const

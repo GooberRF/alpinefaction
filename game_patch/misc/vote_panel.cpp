@@ -3872,6 +3872,10 @@ void vote_panel_toggle_gameplay()
     clear_pending_save();
     g_saved_hovered = -1;
     g_level_cache.valid = false; // never show another blob's rows
+    // Re-default the level pick to the running level on every open.
+    g_form.level_selection.clear();
+    g_form.manual_level = false;
+    g_form.manual_level_name.clear();
     gameplay_overlay_apply_mouse(true);
     rf::snd_play(stock_sound_id::menu_select, 0, 0.0f, 1.0f);
 }

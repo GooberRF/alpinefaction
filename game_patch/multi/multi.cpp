@@ -208,7 +208,18 @@ void handle_url_param()
     }
 
     const std::string host_name = cm[1].str();
-    const uint16_t port = static_cast<uint16_t>(std::stoi(cm[2].str()));
+    unsigned long port_value = 0;
+    try {
+        port_value = std::stoul(cm[2].str());
+    }
+    catch (...) {
+        port_value = 0;
+    }
+    if (port_value < 1 || port_value > 65535) {
+        xlog::warn("Unsupported URL: {}", url);
+        return;
+    }
+    const uint16_t port = static_cast<uint16_t>(port_value);
     const std::string password = cm[3].str();
 
     rf::console::print("Connecting to {}:{}...", host_name, port);
@@ -814,7 +825,15 @@ bool multi_is_player_firing_too_fast(const rf::Player* const pp, const int weapo
 
 bool multi_is_weapon_fire_allowed_server_side(rf::Entity *ep, int weapon_type, bool alt_fire)
 {
+    if (weapon_type < 0 || weapon_type >= rf::num_weapon_types) {
+        return false;
+    }
+
     rf::Player* pp = rf::player_from_entity_handle(ep->handle);
+    if (!pp) {
+        // Entity is not owned by a player, so we cannot validate the fire; deny it.
+        return false;
+    }
     if (ep->ai.current_primary_weapon != weapon_type) {
         xlog::debug("Player {} attempted to fire unselected weapon {}", pp->name, weapon_type);
     }

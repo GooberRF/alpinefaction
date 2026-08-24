@@ -21,6 +21,9 @@ void DestroyDedMesh(DedMesh* mesh);
 // VMesh loading
 void mesh_load_vmesh(DedMesh* mesh);
 
+// Stock v3d/v3m/v3c parser overflow hardening
+void apply_mesh_parser_hardening();
+
 // Rendering (called from alpine_obj.cpp render hook)
 void mesh_render(CDedLevel* level);
 

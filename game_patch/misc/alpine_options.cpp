@@ -532,7 +532,7 @@ CallHook<void(rf::Entity*, float)> physics_calc_fall_damage_slam_hook{
         float damage_multiplier = get_option_or_default<float>(AlpineOptionID::FallDamageSlamMultiplier, 1.0f);
         float adjusted_rel_vel = rel_vel * damage_multiplier;
 
-        xlog::warn("New slam damage value is {}", adjusted_rel_vel);
+        xlog::trace("New slam damage value is {}", adjusted_rel_vel);
 
         physics_calc_fall_damage_slam_hook.call_target(entity, adjusted_rel_vel);
     }
@@ -545,7 +545,7 @@ CallHook<void(rf::Entity*, float)> physics_calc_fall_damage_land_hook{
         float damage_multiplier = get_option_or_default<float>(AlpineOptionID::FallDamageLandMultiplier, 1.0f);
         float adjusted_rel_vel = rel_vel * damage_multiplier;
 
-        xlog::warn("New land damage value is {}", adjusted_rel_vel);
+        xlog::trace("New land damage value is {}", adjusted_rel_vel);
 
         physics_calc_fall_damage_land_hook.call_target(entity, adjusted_rel_vel);
     }

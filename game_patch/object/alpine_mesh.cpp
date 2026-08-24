@@ -15,6 +15,7 @@
 #include "../rf/bmpman.h"
 #include "../rf/event.h"
 #include "../misc/level.h"
+#include "object.h"
 #include <common/utils/string-utils.h>
 
 // ─── Globals ────────────────────────────────────────────────────────────────
@@ -142,8 +143,16 @@ void alpine_mesh_load_chunk(rf::File& file, std::size_t chunk_len)
         if (read_error) return;
         info.mesh_filename = read_string();
         if (read_error) return;
+        if (info.mesh_filename.size() >= max_mesh_name) {
+            xlog::warn("[AlpineMesh] Ignoring over-long mesh filename on mesh uid {}", info.uid);
+            info.mesh_filename.clear();
+        }
         info.state_anim = read_string();
         if (read_error) return;
+        if (info.state_anim.size() >= max_anim_name || anim_ext_over_long(info.state_anim)) {
+            xlog::warn("[AlpineMesh] Ignoring over-long state animation name on mesh uid {}", info.uid);
+            info.state_anim.clear();
+        }
         // collision mode
         uint8_t collision_mode = 2;
         if (!read_bytes(&collision_mode, sizeof(collision_mode))) return;
@@ -156,6 +165,10 @@ void alpine_mesh_load_chunk(rf::File& file, std::size_t chunk_len)
             if (!read_bytes(&slot_id, sizeof(slot_id))) return;
             std::string tex = read_string();
             if (read_error) return;
+            if (tex.size() >= max_bitmap_name) {
+                xlog::warn("[AlpineMesh] Ignoring over-long texture override name (slot {})", slot_id);
+                tex.clear();
+            }
             if (!tex.empty()) {
                 info.texture_overrides.push_back({slot_id, std::move(tex)});
             }
@@ -175,6 +188,10 @@ void alpine_mesh_load_chunk(rf::File& file, std::size_t chunk_len)
                     if (!read_bytes(&cp.life, sizeof(float))) return;
                     cp.debris_filename = read_string();
                     if (read_error) return;
+                    if (cp.debris_filename.size() >= max_mesh_name) {
+                        xlog::warn("[AlpineMesh] Ignoring over-long debris filename on mesh uid {}", info.uid);
+                        cp.debris_filename.clear();
+                    }
                     cp.explosion_vclip = read_string();
                     if (read_error) return;
                     if (!read_bytes(&cp.explosion_radius, sizeof(float))) return;
@@ -185,9 +202,17 @@ void alpine_mesh_load_chunk(rf::File& file, std::size_t chunk_len)
                     // Corpse fields
                     if (remaining > 0 && !read_error) {
                         cp.corpse_filename = read_string();
+                        if (cp.corpse_filename.size() >= max_mesh_name) {
+                            xlog::warn("[AlpineMesh] Ignoring over-long corpse filename on mesh uid {}", info.uid);
+                            cp.corpse_filename.clear();
+                        }
                     }
                     if (remaining > 0 && !read_error) {
                         cp.corpse_state_anim = read_string();
+                        if (cp.corpse_state_anim.size() >= max_anim_name || anim_ext_over_long(cp.corpse_state_anim)) {
+                            xlog::warn("[AlpineMesh] Ignoring over-long corpse animation name on mesh uid {}", info.uid);
+                            cp.corpse_state_anim.clear();
+                        }
                     }
                     if (remaining >= 1) {
                         uint8_t col = 0;

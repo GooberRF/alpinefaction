@@ -22,6 +22,7 @@
 #include "../sound/sound.h"
 #include "../input/input.h"
 #include "../multi/multi.h"
+#include "../multi/network.h"
 #include "../multi/demo/demo_ui.h"
 #include "../multi/demo/demo.h"
 #include "../multi/gametype.h"
@@ -295,6 +296,8 @@ FunHook<void(rf::Player*)> player_destroy_hook{
             }
             if (player->net_data) {
                 g_select_weapon_done_timestamp[player->net_data->player_id].invalidate();
+                // Reset the rcon brute-force throttle/session for this address.
+                clear_rcon_state_for_addr(player->net_data->addr);
             }
         }
         // Before the engine frees this player, drop any dangling spectatee

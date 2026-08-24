@@ -22,8 +22,15 @@ namespace
         if (file.open(filename) != 0) {
             return false;
         }
+        
+        // 128MB filesize limit for JPG/PNG files
+        constexpr int max_texture_file_size = 128 * 1024 * 1024;
         const int file_size = file.size();
-        if (file_size <= 0) {
+        if (file_size <= 0 || file_size > max_texture_file_size) {
+            if (file_size > max_texture_file_size) {
+                xlog::warn("stb_image: '{}' rejected (declared size {} exceeds {}-byte cap)",
+                           filename, file_size, max_texture_file_size);
+            }
             file.close();
             return false;
         }

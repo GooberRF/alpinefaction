@@ -45,13 +45,15 @@ Version 1.4.0 (Lupin): Not yet released
   - Servers describe their votable levels, game types, and mutator options to clients
   - `Level` and `Match` can now select a game type and any number of mutators (with their options) for the voted level
   - Add a vote panel for calling any vote the server allows, opened during gameplay with the bindable `Call Vote Menu` control (`F4` by default)
+  - The `Restart`, `Next`, `Random`, and `Previous` rotation votes share a single `Rotation` tab, with a `Preserve current gametype and mutators` option to carry the voted rules onto the next level
+  - Add a `Saved` tab to name and store votes for later recall, persisted in `alpine_settings.ini`
   - The vote panel pre-selects the chosen level's game type and the server's currently active mutator set, with buttons to reset the game type and restore the `Base` or `Current` mutator set
   - Vote HUD notification now shows live tally, time remaining, and whether you have already voted
 - Add FactionFiles-integrated multiplayer statistics tracking
   - Dedicated servers with a configured `fflink_gsk` report a gameplay event stream to FactionFiles
   - Clients joining a stats-enabled server obtain a stats session key from FactionFiles and deliver it to the server, attributing their stats to their linked FactionFiles account (or anonymously to their game installation when unlinked)
   - Players on legacy clients can join and play normally, and are tracked per-connection without cross-session identity
-  - Auto recorded demos automatically upload to FactionFiles (`fflink_demo_upload`) and associate with game record
+  - Auto-recorded demos upload to FactionFiles (`fflink_demo_upload`) and associate with the game record
   - `afstats_status` console command shows the local stats session state
   - `sv_afstats_trace` console command logs outgoing report batches (with session keys redacted) on dedicated servers
 - Add multiplayer awards
@@ -84,10 +86,10 @@ Version 1.4.0 (Lupin): Not yet released
 - Add support for round-based game types
 - Add dedicated server config fields `max_rounds`, `round_time`, `post_round_time`, and `intermission_time`
 - Add dedicated server config fields `sal_cap_limit`, `sal_flag_spawn_delay`, `sal_flag_capture_respawn_delay`, and `sal_flag_return_time` for the Salvage game type
-- Require a matching `bot_shared_secret` for clients to join dedicated servers in bot mode, rejecting bot join requests when the server has no secret configured
-- Add HUD notification messages via `AF_SERVER_MSG_TYPE_HUD_NOTIFICATION` server message type
-- Add server-initiated HUD countdown via `AF_SERVER_MSG_TYPE_ROUND_COUNTDOWN` server message type
-- Add server-initiated custom sound play via `AF_SERVER_MSG_TYPE_PLAY_CUSTOM_SOUND` server message type
+- Add support for server-sent HUD notification messages
+- Add support for server-initiated HUD countdowns
+- Add support for server-initiated custom sound playback
+- Show a help notification for the game type when spawning into a new one, toggleable via the `Gametype Help` option
 - Add per-type object count next to each entry in the `Show In List` filter in the editor's Select Objects and Show/Hide Objects windows
 - Add `Sort` options (by name or by UID, with an optional `Group by type` toggle) to the editor's Select Objects and Show/Hide Objects windows
 - Add `camera4` console command for static camera in single player
@@ -105,7 +107,7 @@ Version 1.4.0 (Lupin): Not yet released
 - Require a fresh `Alt` press to kill an unresponsive process
 - Add mini scoreboard HUD element to FFA game types
 - Add `ui_minisb_dm` console command to toggle whether mini scoreboard is displayed in DM mode
-- Retain Glacier-specific chunks when RFLs loaded and re-saved in level editor
+- Retain Glacier-specific chunks when RFLs are loaded and re-saved in the level editor
 - Add `Attach Spectate Camera` control to toggle spectate between following a player and a detached free camera
 - Add `Change Spectate View` control to switch first/third person while following a player, or free look/static camera while detached
 - Add a middle mouse toggled orbit camera to third person spectate
@@ -117,7 +119,7 @@ Version 1.4.0 (Lupin): Not yet released
 - Deprecated and removed legacy critical hits dedicated server config items now that it is a mutator
 - Deprecated and removed the `rules_presets` dedicated server config item and its `rules_preset_aliases` table
 - Default inactivity tracking for players in dedicated servers to `true`, but kicking inactive players to `false`
-- Add `-debug` command line switch to enable additional debug logging, intended to help identify long-standing netcode issues that are difficult to nail down.
+- Add `-debug` command line switch to enable additional debug logging
 - Add automatic team balance option which handles unbalanced teams mid-game and stops players from switching teams if it would unbalance them
 - Rate limit spawn-denied notifications (Alpine restriction, anti-cheat, match in progress, respawn delay) to one message per 5 seconds per player so repeated spawn attempts no longer flood chat
 - Truncate over-long names from dedicated server config files when they are quoted in console warnings
@@ -131,9 +133,12 @@ Version 1.4.0 (Lupin): Not yet released
 - Add an `Asst` column to the scoreboard showing each player's assist count
 - Add `ui_assist_names` console command to toggle listing the players who assisted in kill messages
 - Add `ui_assist_highlight` console command to toggle highlighting of kill messages for kills you assisted
-- Show a label on the HUD indicating the name of the selected weapon if it has no FP mesh.
+- Add a `Session overrides` section to the dedicated server config display, listing the game type and mutators currently in force when a vote has changed them
+- Show a label on the HUD indicating the name of the selected weapon if it has no first person mesh
 - Tweak weapon values for some SP-intended weapon classes that are used in Weird Gun Game
 - Add dedicated server config field `add_installed_to_allowed_levels` to allow voting for every installed level whose filename matches a game type prefix, including levels installed while the server is running
+- Support a reduced set of `vote` chat commands for pre-1.4 clients, which cannot use the vote panel
+- Add a dedicated third person weapon mesh for the jeep gun in Gun Game
 - Do not allow `vote kick` targeting bots
 - Add dedicated server config field `spawn_loadout_blue` to give the blue team its own spawn loadout, with `spawn_loadout` applying to every player when it is not specified
 - Indicate in the dedicated server config printout whether the spawn loadout is granted by the loadout or by the stock spawn weapons, and list the red and blue team loadouts separately when both are configured
@@ -145,6 +150,7 @@ Version 1.4.0 (Lupin): Not yet released
 - Add `r_weather` console command to toggle rendering of weather effects
 - Rework multiplayer accuracy statistics with one shared definition feeding the scoreboard and FactionFiles stats reporting
 - Support af://demo/ID on the af protocol to play demos from FactionFiles
+- Add an `Autoplay AF Demos` launcher option to skip the confirmation prompt and play `af://demo` links immediately
 - Set client netfps to 40, server default netfps to 40 (configurable)
 - Make color pickers in the level editor open at the current color instead of black
 - A voted level now derives its rules from the server's base rules plus the voted mutator set, rather than inheriting the rules of whichever rotation slot happens to name that level
@@ -189,14 +195,50 @@ Version 1.4.0 (Lupin): Not yet released
 - Fix client crash when a bot targets a player whose name contains `$`
 - Fix crash when a collision query targets an object whose mesh failed to load
 - Fix skybox rendering issues with Direct3D 11 renderer on community level `ctf-stronghold.rfl`
-- Fix unbounded read when a request to play a sound above `g_num_sounds` is made
+- Fix animated (`atx`) textures sometimes failing to display after a level change
+- Fix out-of-bounds read when playing a 2D or 3D sound with an id past the last loaded sound
+- Fix dedicated server crash caused by player names or vote text containing printf-style format specifiers
+- Fix the player name loaded from `alpine_settings.ini` not being sanitized
+- Fix out-of-bounds texture and vertex reads when the Direct3D 11 renderer draws malformed meshes
+- Fix crash in the Direct3D 11 renderer when drawing a character whose animation morph data is not yet loaded
+- Fix heap overflows when loading malformed `v3m`/`v3c`/`v3d` meshes in the game and level editor
+- Fix out-of-bounds writes when loading or opening a level whose weather regions, coronas, or meshes reference an over-long bitmap, mesh, or (in the level editor) animation name
+- Fix the game and level editor hanging or exhausting memory when a level file declares an oversized Alpine object chunk
+- Fix out-of-bounds write when loading an `emitters.tbl` that defines more than 64 particle emitter types
+- Fix path traversal and out-of-bounds reads when extracting archives
+- Fix crash when loading a packfile that declares an invalid number of files
+- Fix uninitialized texture data being uploaded to the GPU when loading a truncated `dds` file
+- Fix unbounded client memory growth from streamed remote server config messages
+- Fix unbounded server memory growth from repeated `/save` commands using unique names
+- Fix missing size limit when autodownloading maps from FactionFiles
+- Fix `sv_loadconfig` being available to rcon profiles without full admin privileges
+- Fix rcon password authentication allowing unlimited rapid guess (brute force) attempts
+- Fix clients being able to join dedicated servers in bot mode without a matching `bot_shared_secret`, and reject bot joins entirely when the server has no secret configured
+- Fix unvalidated URL scheme handling when parsing FactionFiles download URLs
+- Fix demo upload tickets from FactionFiles not being validated before they are used in a request header
+- Fix arbitrary file overwrite via path traversal in the waypoint (`awp`) autodownloader
+- Fix a server-supplied level name containing path components escaping the waypoint, saved server info, and demo directories
+- Fix out-of-bounds reads/writes and crashes when a server sends object update, reload, entity create, or weapon fire packets with out-of-range weapon or ammo indices, a malformed record count, or an entity not owned by a player
+- Fix server crash when a player disconnects while being spectated by another player
+- Fix out-of-bounds reads in multiplayer packet handlers when a packet declares a size larger than the data actually received
+- Fix client crash when loading a malformed `dds` texture that declares oversized dimensions
+- Fix crash when loading an excessively large `png`, `jpg`, or `atx` texture
+- Fix out-of-bounds read when a packfile contains a malformed entry name
+- Fix crash from an oversized allocation when a packfile entry declares an implausibly large size
+- Fix out-of-bounds stack write in the level editor when a mesh or texture subdirectory path is too long
+- Fix the level editor packing textures from outside the textures directory when a level or mesh file references a texture by path
 - Fix camera angle snapping when switching between free look and third person camera modes
+- Fix crash on exit from a null pointer dereference when a bitmap is released after the bitmap system has been shut down
+- Fix the game failing to start when a value in `alpine_settings.ini` is malformed
+- Fix dedicated server crash when the path to a server config file cannot be resolved
 - Fix a server crash that could be triggered by a zero-length UDP packet in the packet receive pump
 - Fix overlapping decals rendering with the oldest on top instead of the newest
 - Fix crash on MinGW builds when launching a dedicated server
 - Fix server version checks comparing each version field independently, which would have rejected a future major version
-- Fix out of bounds read when applying level rules if the rotation shrank while a level was running
+- Fix out-of-bounds read when applying level rules if the rotation shrank while a level was running
 - Fix the remote server config display sometimes being treated as complete before all of its content had arrived
+- Fix disjointed reload deny sounds when the server refreshes the displayed ammo count for a weapon without a clip
+- Fix autodownloaded packfiles failing to load when the archive stores them under a directory path
 - Fix rcon feedback for the `info` command being cut off when the output exceeded a single packet
 - Fix damage to riot shields not being replicated to clients in multiplayer
 - Fix riot shield third person models being left behind when their holder disconnects
@@ -234,19 +276,23 @@ Version 1.4.0 (Lupin): Not yet released
 - Fix dedicated servers not loading `alpinefaction.vpp`, which prevented `af_level_quirks.tbl` from loading and left known run maps unrecognized
 - Fix potential crash when an Alpine options `.tbl` file contains an unrecognized option name
 - Fix crash when a non-player entity spawns while any weapon in `weapons.tbl` has a clip size of exactly 2
+- Fix a buffer overflow when opening a file whose name has an over-long extension
+- Fix the game failing to launch from an `rf://` link that specifies an out-of-range port
+- Fix location ping requests that carry invalid coordinates, or that are sent at an extremely high rate, being relayed to other players
 
 [@is-this-c](https://github.com/is-this-c)
 - Clear cached server config output after a shuffle of a server's rotation
 - For `Refresh Selected`, re-enable `Get Servers` etc. immediately upon response instead of waiting for timeout
 - Disable weapon cycle selection, if `Mouse 3` is pressed
 - For `Run` games, rename `Score` column to `Deaths`, and compare `Loads` in `std::ranges::sort`
+- Report file sizes in the launcher as MB and KB (base 1000) to match their labels
 
 [@AL2009man](https://github.com/AL2009man)
 - Fix brief game freeze whenever an `Alt` key is pressed
 
 [@jyh9521](https://github.com/jyh9521)
 - Fix crash on join for builds compiled on Windows systems using a Japanese, Chinese, or Korean locale
-- Fix crash when a HUD element requests an out of range TrueType font id
+- Fix crash when an out-of-range TrueType font id is requested
 - Fix TrueType fonts rendering the wrong glyphs when a character fails to load
 
 Version 1.3.0 (Bakeapple): Released Apr-22-2026
@@ -291,7 +337,7 @@ Version 1.3.0 (Bakeapple): Released Apr-22-2026
 - Support rcon profiles for dedicated servers
 - Support `info` command execution via rcon to display server information
 - Add `sv_checkmaps` console command to check all maps in server rotation against autodownloader database
-- Use unqiue user agents for clients vs. dedicated servers when communicating with FactionFiles autodownloader API
+- Use unique user agents for clients vs. dedicated servers when communicating with FactionFiles autodownloader API
 - Add `dbg_togglerendering` and `dbg_togglesound` commands, persist in `alpine_settings.ini`
 - Add `BackgroundMouse` to `alpine_settings.ini` to control whether mouse is hooked when process is in the background
 - Add `mp_character` console command to set multiplayer character by index

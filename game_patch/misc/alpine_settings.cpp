@@ -25,6 +25,7 @@
 #include <array>
 #include <fstream>
 #include <iostream>
+#include <stdexcept>
 #include <string>
 #include <sstream>
 #include <iomanip>
@@ -310,6 +311,11 @@ bool alpine_player_settings_load(rf::Player* player)
         if (player_name.length() > 31) {
             xlog::warn("PlayerName in {} is too long and has been truncated.", filename);
             player_name = player_name.substr(0, 31);
+        }
+
+        // Replace '%' with '_' to match the in-game name entry.
+        if (player_name.find('%') != std::string::npos) {
+            std::replace(player_name.begin(), player_name.end(), '%', '_');
         }
 
         player->name = player_name.c_str();
@@ -1711,7 +1717,18 @@ CallHook<void(rf::Player*)> player_settings_load_hook{
         }
 
         bool ff_link_prompt = true;
-        if (!alpine_player_settings_load(player)) {
+        bool settings_file_found = false;
+        try {
+            settings_file_found = alpine_player_settings_load(player);
+        }
+        catch (const std::exception& e) {
+            // A hand-edited or truncated value throws out of std::stoi/std::stof and would
+            // otherwise take down startup for good. The file exists, so keep compiled defaults
+            // for whatever came after the bad line instead of importing players.cfg over it.
+            xlog::error("Malformed value in Alpine Faction settings file: {}", e.what());
+            settings_file_found = true;
+        }
+        if (!settings_file_found) {
             xlog::warn("Alpine Faction settings file not found. Attempting to import legacy RF settings file.");
             player_settings_load_hook.call_target(player); // load players.cfg
 
@@ -1924,7 +1941,12 @@ ConsoleCommand2 shadow_frame_lag_cmd{
 ConsoleCommand2 load_settings_cmd{
     "dbg_loadsettings",
     []() {
-        alpine_player_settings_load(rf::local_player);
+        try {
+            alpine_player_settings_load(rf::local_player);
+        }
+        catch (const std::exception& e) {
+            xlog::error("Malformed value in Alpine Faction settings file: {}", e.what());
+        }
         rf::console::print("Loading settings file...");
     },
     "Force the game to read and apply player settings from config file",

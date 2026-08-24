@@ -238,6 +238,11 @@ CodeInjection entity_create_randomize_clip_ammo_fix{
                 std::uniform_int_distribution<int> dist(2, clip_size - 1);
                 ep->ai.clip_ammo[i] = dist(g_rng);
             }
+            else if (clip_size > 0) {
+                // Stock wrote 2 for clip size 1 (rand % -1 == 0, plus 2) and divided by zero at 2.
+                // Both must still write: nothing initializes clip_ammo before this loop.
+                ep->ai.clip_ammo[i] = 2;
+            }
         }
         regs.eip = 0x00423745;
     },

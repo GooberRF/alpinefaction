@@ -5,10 +5,11 @@
 #include <format>
 #include <cassert>
 #include <cctype>
+#include <stdexcept>
 
 struct ParsedUrl
 {
-    bool ssl;
+    bool ssl = false;
     std::string host;
     std::string resource;
 };
@@ -28,7 +29,9 @@ static ParsedUrl parse_http_url(std::string_view url)
         host_pos = http.size();
     }
     else {
-        assert(false);
+        // Reject unrecognized schemes instead of falling through with an uninitialized ssl flag
+        // and a misparsed host. Throwing here is caught by the download/HTTP callers.
+        throw std::runtime_error("unsupported URL scheme (expected http:// or https://)");
     }
 
     size_t resource_pos = url.find('/', host_pos);

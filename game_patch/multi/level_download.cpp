@@ -53,6 +53,19 @@ static bool is_vpp_filename(const char* filename)
     return string_iends_with(filename, ".vpp");
 }
 
+// Returns the final path component of an archive member name,
+// stripping any directory or drive-letter components.
+static const char* archive_member_basename(const char* name)
+{
+    const char* base = name;
+    for (const char* p = name; *p != '\0'; ++p) {
+        if (*p == '/' || *p == '\\' || *p == ':') {
+            base = p + 1;
+        }
+    }
+    return base;
+}
+
 static std::vector<std::string> unzip(const char* path, const char* output_dir,
     std::function<bool(const char*)> filename_filter)
 {
@@ -82,9 +95,15 @@ static std::vector<std::string> unzip(const char* path, const char* output_dir,
             break;
         }
 
+        // minizip does not NUL-terminate file_name when the stored name length >= the buffer size.
+        file_name[sizeof(file_name) - 1] = '\0';
+
         if (filename_filter(file_name)) {
-            xlog::trace("Unpacking {}", file_name);
-            auto output_path = std::format("{}\\{}", output_dir, file_name);
+            // Extract using only the basename. The filter is_vpp_filename
+            // guarantees a ".vpp" suffix, so the basename is always non-empty.
+            const char* safe_name = archive_member_basename(file_name);
+            xlog::trace("Unpacking {}", safe_name);
+            auto output_path = std::format("{}\\{}", output_dir, safe_name);
             std::ofstream file(output_path, std::ios_base::out | std::ios_base::binary);
             if (!file) {
                 xlog::error("Cannot open file: {}", output_path);
@@ -107,7 +126,8 @@ static std::vector<std::string> unzip(const char* path, const char* output_dir,
             file.close();
             unzCloseCurrentFile(archive);
 
-            extracted_files.emplace_back(file_name);
+            // Record the same basename the file was written under.
+            extracted_files.emplace_back(safe_name);
         }
 
         if (i + 1 < global_info.number_entry) {
@@ -191,7 +211,9 @@ static bool try_download_and_extract_awp(const std::string& rfl_filename,
     const FactionFilesClient::AwpInfo& awp_info, int max_retries = 1,
     const std::atomic<bool>* abort_flag = nullptr)
 {
-    auto awp_name = std::string{get_filename_without_ext(rfl_filename.c_str())} + ".awp";
+    // The level name is server-supplied. Reduce it to a bare basename.
+    const char* rfl_basename = archive_member_basename(rfl_filename.c_str());
+    auto awp_name = std::string{get_filename_without_ext(rfl_basename)} + ".awp";
     auto waypoint_dir = get_waypoint_dir();
     if (!waypoint_dir) {
         xlog::error("Failed to get waypoint directory for AWP extraction of {}", awp_name);

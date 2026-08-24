@@ -229,6 +229,9 @@ static int g_snow_bitmap_preview_handle = -1;
 static int weather_region_resolve_bitmap(const char* name)
 {
     if (!name || name[0] == '\0') return -1;
+    if (strlen(name) > rfl_name_max_len) return -1;
+    const char* ext = strrchr(name, '.');
+    if (ext && strlen(ext) > rfl_ext_max_len) return -1;
     rf::File file;
     if (!file.open(name)) return -1;
     file.close(); // rf::File has no destructor, so the probe leaks the OS handle otherwise
