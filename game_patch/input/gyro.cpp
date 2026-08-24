@@ -191,6 +191,8 @@ static bool g_gyro_toggle_prev_down = false;
 //   1 = HoldOff -> active while NOT held
 //   2 = HoldOn  -> active while held
 //   3 = Toggle  -> button press flips on/off (starts on)
+//   4 = TouchOn -> active while touchpad is touched (binding ignored)
+//   5 = TouchOff-> active while touchpad is NOT touched (binding ignored)
 bool gyro_modifier_is_active()
 {
     using namespace rf;
@@ -199,10 +201,16 @@ bool gyro_modifier_is_active()
 
     const auto action = get_af_control(AlpineControlConfigAction::AF_ACTION_GYRO_MODIFIER);
 
-    int mode = std::clamp(g_alpine_game_config.gamepad_gyro_modifier_mode, 0, 3);
+    int mode = std::clamp(g_alpine_game_config.gamepad_gyro_modifier_mode, 0, 5);
 
     if (mode == 0) // Always
         return true;
+
+    if (mode == 4) // Touch On
+        return gamepad_is_touchpad_touched();
+
+    if (mode == 5) // Touch Off
+        return !gamepad_is_touchpad_touched();
 
     if (!gyro_action_has_binding(action))
         return true; // no modifier bound — gyro always on
@@ -230,16 +238,16 @@ ConsoleCommand2 gyro_modifier_mode_cmd{
     "gyro_modifier_mode",
     [](std::optional<int> val) {
         if (val) {
-            g_alpine_game_config.gamepad_gyro_modifier_mode = std::clamp(val.value(), 0, 3);
+            g_alpine_game_config.gamepad_gyro_modifier_mode = std::clamp(val.value(), 0, 5);
             g_gyro_toggle_state = true;
             g_gyro_toggle_prev_down = false;
         }
         int mode = g_alpine_game_config.gamepad_gyro_modifier_mode;
-        static const char* mode_names[] = {"Always", "Hold Off", "Hold On", "Toggle"};
+        static const char* mode_names[] = {"Always", "Hold Off", "Hold On", "Toggle", "Touch On", "Touch Off"};
         rf::console::print("Gyro modifier mode: {} ({})", mode_names[mode], mode);
     },
-    "Set gyro modifier mode: 0=Always, 1=Hold Off, 2=Hold On, 3=Toggle (default 0)",
-    "gyro_modifier_mode [0|1|2|3]",
+    "Set gyro modifier mode: 0=Always, 1=Hold Off, 2=Hold On, 3=Toggle, 4=Touch On, 5=Touch Off (default 0)",
+    "gyro_modifier_mode [0|1|2|3|4|5]",
 };
 
 ConsoleCommand2 gyro_autocalibration_cmd{

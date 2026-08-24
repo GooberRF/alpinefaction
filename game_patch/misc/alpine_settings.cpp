@@ -1206,7 +1206,7 @@ bool alpine_player_settings_load(rf::Player* player)
         processed_keys.insert("GamepadGyroSpace");
     }
     if (settings.count("GamepadGyroModifierMode")) {
-        g_alpine_game_config.gamepad_gyro_modifier_mode = std::clamp(std::stoi(settings["GamepadGyroModifierMode"]), 0, 3);
+        g_alpine_game_config.gamepad_gyro_modifier_mode = std::clamp(std::stoi(settings["GamepadGyroModifierMode"]), 0, 5);
         processed_keys.insert("GamepadGyroModifierMode");
     }
     if (settings.count("GamepadGyroInvertX")) {

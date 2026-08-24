@@ -976,6 +976,11 @@ static void handle_gamepad_touchpad_up(const SDL_GamepadTouchpadEvent& ev)
     g_touchpad.active = false;
 }
 
+bool gamepad_is_touchpad_touched()
+{
+    return g_touchpad.active;
+}
+
 static void handle_gamepad_sensor_update(const SDL_GamepadSensorEvent& ev)
 {
     if (!g_motion_sensors_supported) return;
