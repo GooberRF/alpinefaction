@@ -3,6 +3,7 @@
 #include <cstring>
 #include <ctime>
 #include <format>
+#include <string_view>
 #include <utility>
 #include <zlib.h>
 #include <windows.h>
@@ -63,7 +64,10 @@ namespace
     // "<rf_root>\demos", optionally created. Empty on failure.
     std::string demos_dir(bool create)
     {
-        auto dir = std::format("{}\\demos", rf::root_path);
+        std::string_view root{rf::root_path};
+        while (!root.empty() && (root.back() == '\\' || root.back() == '/'))
+            root.remove_suffix(1);
+        auto dir = std::format("{}\\demos", root);
         if (dir.size() + 64 > rf::max_path_len) {
             xlog::error("demo path is too long!");
             return {};
