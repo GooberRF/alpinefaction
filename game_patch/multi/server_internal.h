@@ -1248,6 +1248,9 @@ std::string build_info_command_output();
 // weapon, because accuracy buckets are.
 void melee_grant_hit_credit(rf::Player* attacker, int weapon_type);
 
+// Combined accuracy/efficiency exclude flamethrower, riot stick, riot shield.
+bool accuracy_excluded_from_combined(int weapon_type);
+
 // The per-player accuracy ledgers are indexed by player id, which the engine reuses -- both must
 // be cleared on player destroy and on level load so a joiner cannot inherit them.
 void accuracy_stats_on_player_destroy(rf::Player* player);

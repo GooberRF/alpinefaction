@@ -1507,6 +1507,16 @@ static bool is_fire_tick_counted_weapon(int weapon_type)
         && rf::weapon_is_flamethrower(weapon_type);
 }
 
+bool accuracy_excluded_from_combined(int weapon_type)
+{
+    if (!kill_attribution_is_valid_weapon_type(weapon_type)) {
+        return false;
+    }
+    return rf::weapon_is_flamethrower(weapon_type) ||
+    weapon_type == rf::riot_stick_weapon_type ||
+    weapon_type == rf::riot_shield_weapon_type;
+}
+
 // One tick is the weapon's own fire wait, so the shot count tracks the engine's emission cadence
 // rather than an invented interval. Floored at 1 ms so a malformed table cannot divide by zero.
 static int fire_tick_ms(int weapon_type)
@@ -1925,7 +1935,8 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
 
             // Which ledger this weapon's shots, hits and damage belong to. The flame stream and
             // continuous melee are bucket-only; everything else reaches the overall counters too.
-            bool bucket_only_mode = kill_attribution_in_particle_damage();
+            bool bucket_only_mode = kill_attribution_in_particle_damage()
+                || accuracy_excluded_from_combined(stats_weapon);
             if (!bucket_only_mode && accuracy_melee) {
                 if (rf::Entity* kep = rf::entity_from_handle(killer_handle)) {
                     bucket_only_mode = rf::entity_weapon_is_on(kep->handle, stats_weapon);
@@ -1985,6 +1996,10 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
                 }
             }
 
+            // Novelty-weapon hits stay bucket-only in every mode, pairing with their fired side.
+            if (accuracy_excluded_from_combined(stats_weapon)) {
+                count_hit_bucket_only = true;
+            }
 
             // Efficiency numerator: effective damage this weapon put on somebody else. Not gated
             // on count_hit - every point that landed counts, whether or not the shot scored as a
@@ -3190,9 +3205,13 @@ CallHook<rf::Weapon*(int, int, rf::Vector3*, rf::Matrix3*, int, int)>
                 // dword's upper bytes are stack residue on the continuous-fire path.
                 const bool is_alt = (alt_fire & 0xFF) == 1;
                 const float potential = weapon_potential_damage(weapon_type, is_alt);
-                afstats::on_weapon_fired(pp, weapon_type, 1, afstats::CountScope::full, potential);
+                const bool excluded = accuracy_excluded_from_combined(weapon_type);
+                afstats::on_weapon_fired(pp, weapon_type, 1,
+                                         excluded ? afstats::CountScope::bucket_only
+                                                  : afstats::CountScope::full,
+                                         potential);
                 awards_on_weapon_fired(pp, weapon_type);
-                if (pp->stats) {
+                if (!excluded && pp->stats) {
                     auto* stats = static_cast<PlayerStatsNew*>(pp->stats);
                     stats->add_shots_fired(1.0f);
                     stats->add_damage_potential(potential);

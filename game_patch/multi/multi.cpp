@@ -902,9 +902,13 @@ FunHook<void(rf::Entity*, int, rf::Vector3&, rf::Matrix3&, bool)> multi_process_
                 const float potential = kill_attribution_is_valid_weapon_type(weapon_type)
                     ? rf::weapon_types[weapon_type].damage_multi
                     : 0.0f;
-                afstats::on_weapon_fired(pp, weapon_type, 1, afstats::CountScope::full, potential);
+                const bool excluded = accuracy_excluded_from_combined(weapon_type);
+                afstats::on_weapon_fired(pp, weapon_type, 1,
+                                         excluded ? afstats::CountScope::bucket_only
+                                                  : afstats::CountScope::full,
+                                         potential);
                 awards_on_weapon_fired(pp, weapon_type);
-                if (pp->stats) {
+                if (!excluded && pp->stats) {
                     auto* stats = static_cast<PlayerStatsNew*>(pp->stats);
                     stats->add_shots_fired(1.0f);
                     stats->add_damage_potential(potential);
