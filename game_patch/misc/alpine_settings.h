@@ -294,6 +294,7 @@ struct AlpineGameSettings
     bool autodl_download_awps = false;
     bool hide_chat = false;
     bool spectate_cinematic_mode = false;
+    bool controller_warning_shown = false;  // show Multiplayer Controller warning
 
     // MSAA anti-aliasing
     // 1 = disabled, 2/4/8 = MSAA level

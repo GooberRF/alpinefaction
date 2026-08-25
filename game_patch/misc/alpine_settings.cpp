@@ -1079,6 +1079,10 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.player_join_flash = std::stoi(settings["PlayerJoinFlash"]);
         processed_keys.insert("PlayerJoinFlash");
     }
+    if (settings.count("ControllerWarningShown")) {
+        g_alpine_game_config.controller_warning_shown = std::stoi(settings["ControllerWarningShown"]);
+        processed_keys.insert("ControllerWarningShown");
+    }
     if (settings.count("WorldHUDAltDamageIndicators")) {
         g_alpine_game_config.world_hud_alt_damage_indicators = std::stoi(settings["WorldHUDAltDamageIndicators"]);
         processed_keys.insert("WorldHUDAltDamageIndicators");
@@ -1848,6 +1852,7 @@ void alpine_player_settings_save(rf::Player* player)
     file << "DisableMultiCharacterLOD=" << g_alpine_game_config.multi_no_character_lod << "\n";
     file << "PlayerJoinBeep=" << g_alpine_game_config.player_join_beep << "\n";
     file << "PlayerJoinFlash=" << g_alpine_game_config.player_join_flash << "\n";
+    file << "ControllerWarningShown=" << g_alpine_game_config.controller_warning_shown << "\n";
     file << "WorldHUDAltDamageIndicators=" << g_alpine_game_config.world_hud_alt_damage_indicators << "\n";
     file << "DesiredHandicap=" << g_alpine_game_config.desired_handicap << "\n";
     file << "CPOutlineHeightScale=" << g_alpine_game_config.control_point_outline_height_scale << "\n";
