@@ -1890,6 +1890,14 @@ CodeInjection glass_sound_entry_injection{
                 fresh ? g_break_attr.damage_type : -1, *pos);
         }
 
+        // The broken brush can open a ceiling over a blocked-by-geometry weather region.
+        if (g_breaking_room) {
+            const rf::Vector3 room_center = (g_breaking_room->bbox_min + g_breaking_room->bbox_max) * 0.5f;
+            const float dx = g_breaking_room->bbox_max.x - g_breaking_room->bbox_min.x;
+            const float dz = g_breaking_room->bbox_max.z - g_breaking_room->bbox_min.z;
+            weather_notify_geomod(room_center, 0.5f * std::sqrt(dx * dx + dz * dz));
+        }
+
         auto* mat_cfg = get_material_config(g_breaking_material);
         if (mat_cfg && g_breaking_room) {
             auto* mat_state = get_material_state(g_breaking_material);

@@ -317,6 +317,8 @@ constexpr float weather_dim_min = 0.0f;
 constexpr float weather_dim_max = 999.0f;
 constexpr float weather_column_width_min = 0.25f;
 constexpr float weather_column_width_max = 8.0f;
+constexpr float weather_density_scale_min = 0.0f;
+constexpr float weather_density_scale_max = 2.0f;
 
 static void weather_region_set_dim_field(HWND hdlg, int idc, float value)
 {
@@ -561,7 +563,8 @@ static INT_PTR CALLBACK WeatherRegionDialogProc(HWND hdlg, UINT msg, WPARAM wp, 
             float height = weather_region_get_float_field(hdlg, IDC_WEATHER_HEIGHT);
             float depth = weather_region_get_float_field(hdlg, IDC_WEATHER_DEPTH);
             float radius = weather_region_get_float_field(hdlg, IDC_WEATHER_RADIUS);
-            float density_scale = weather_region_get_float_field(hdlg, IDC_WEATHER_DENSITY_SCALE);
+            float density_scale = std::clamp(weather_region_get_float_field(hdlg, IDC_WEATHER_DENSITY_SCALE),
+                weather_density_scale_min, weather_density_scale_max);
             float active_distance = weather_region_get_float_field(hdlg, IDC_WEATHER_ACTIVE_DISTANCE);
             float visible_distance = weather_region_get_float_field(hdlg, IDC_WEATHER_VISIBLE_DISTANCE);
             bool always_show_range = IsDlgButtonChecked(hdlg, IDC_WEATHER_ALWAYS_SHOW_RANGE) == BST_CHECKED;

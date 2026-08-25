@@ -60,7 +60,7 @@ constexpr float weather_max_visible_distance = 200.0f;
 constexpr float weather_column_width_min = 0.25f;
 constexpr float weather_column_width_max = 8.0f;
 constexpr int weather_column_max_cells_axis = 512;
-constexpr int weather_column_trace_budget = 128;
+constexpr int weather_column_trace_budget = 256;
 constexpr int weather_column_geomod_delay_frames = 30;
 
 constexpr int rain_count = 4096;
@@ -343,33 +343,20 @@ void weather_reset_states()
     g_weather_share_scale = 1.0f;
 }
 
-// The sim/wrap box is the camera box clipped to the region's enclosing AABB. Clipping on its own used
-// to fmod-compress a whole camera-box pool into whatever slab was left; the segment is now sized from
-// the clipped volume, so the density inside it is exactly what an unclipped pool used to deliver and no
-// particle is spent outside the region. Returns false when the two boxes do not meaningfully overlap.
 bool weather_make_box(const rf::Vector3& camera_pos, float half_x, float half_y, float half_z,
     const rf::Vector3& region_min, const rf::Vector3& region_max, WeatherBox& out)
 {
-    const rf::Vector3 box_min{
-        std::max(camera_pos.x - half_x, region_min.x),
-        std::max(camera_pos.y - half_y, region_min.y),
-        std::max(camera_pos.z - half_z, region_min.z),
+    auto slide_axis = [](float camera_axis, float half, float min_axis, float max_axis, float& center) {
+        const float fit = std::min(half, (max_axis - min_axis) * 0.5f);
+        center = std::clamp(camera_axis, min_axis + fit, max_axis - fit);
+        return fit;
     };
-    const rf::Vector3 box_max{
-        std::min(camera_pos.x + half_x, region_max.x),
-        std::min(camera_pos.y + half_y, region_max.y),
-        std::min(camera_pos.z + half_z, region_max.z),
-    };
-    if (box_max.x - box_min.x < weather_min_box_extent ||
-        box_max.y - box_min.y < weather_min_box_extent ||
-        box_max.z - box_min.z < weather_min_box_extent) {
-        return false;
-    }
-    out.center = (box_min + box_max) * 0.5f;
-    out.half_x = (box_max.x - box_min.x) * 0.5f;
-    out.half_y = (box_max.y - box_min.y) * 0.5f;
-    out.half_z = (box_max.z - box_min.z) * 0.5f;
-    return true;
+
+    out.half_x = slide_axis(camera_pos.x, half_x, region_min.x, region_max.x, out.center.x);
+    out.half_y = slide_axis(camera_pos.y, half_y, region_min.y, region_max.y, out.center.y);
+    out.half_z = slide_axis(camera_pos.z, half_z, region_min.z, region_max.z, out.center.z);
+    return out.half_x * 2.0f >= weather_min_box_extent && out.half_y * 2.0f >= weather_min_box_extent &&
+           out.half_z * 2.0f >= weather_min_box_extent;
 }
 
 // The draw filter. Box regions are oriented, so the test runs in region space: the orientation's
@@ -461,7 +448,7 @@ void weather_update_states(const rf::Vector3& camera_pos)
         // A sphere claims the particle share of its enclosing box on purpose: budgeting it by the
         // sphere's own volume would leave the same density looking thinner inside a sphere than a box.
         const float volume = state.box.half_x * state.box.half_y * state.box.half_z * 8.0f;
-        state.desired = density * std::clamp(region.density_scale, 0.0f, 1.0f) * volume;
+        state.desired = density * std::clamp(region.density_scale, 0.0f, 2.0f) * volume;
         state.active = true;
     }
 }
@@ -948,7 +935,7 @@ void weather_load_chunk(rf::File& file, std::size_t chunk_len)
         height = std::clamp(height, 0.0f, weather_max_dim);
         depth = std::clamp(depth, 0.0f, weather_max_dim);
         region.radius = std::clamp(region.radius, 0.0f, weather_max_dim);
-        region.density_scale = std::clamp(region.density_scale, 0.0f, 1.0f);
+        region.density_scale = std::clamp(region.density_scale, 0.0f, 2.0f);
         region.active_distance = std::clamp(region.active_distance, 0.0f, weather_max_active_distance);
         // Zero stays zero because it means auto; anything the mapper actually asked for gets a floor,
         // since a sub-metre sim box would wrap particles faster than they could be seen falling.
