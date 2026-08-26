@@ -31,13 +31,14 @@ Key Features
 Most important:
 * Fixes for critical security vulnerabilities
 * Direct3D 11 renderer with GPU accelerated realtime per-pixel lighting and full mesh shadows
-* Brand new `King of the Hill`, `Damage Control`, `Revolt`, `Escalation`, and `Run` multiplayer game types
+* Demo (replay) recording and playback
+* FactionFiles-integrated statistics platform (multiplayer) and achievements system (single player)
+* 11 brand new multiplayer game types: `King of the Hill`, `Damage Control`, `Revolt`, `Escalation`, `Run`, `Bagman`, `Team Bagman`, `Pit`, `Gun Game`, `Wipeout`, and `Salvage`
 * Advanced multiplayer bots system with headless bot clients, profile customization, and a fully integrated waypoint grid editor (with autogeneration for custom maps)
 * Multiplayer level auto-downloader (using API at https://autodl.factionfiles.com)
 * Fix for infamous submarine explosion bug (and other FPS-related issues)
 * Checkpoint autosaves at the start of each level
-* Fully integrated in-game achievements system
-* Optional account linking with `FactionFiles.com` to support achievement tracking and in-game level rating
+* Optional account linking with `FactionFiles.com` to support achievement tracking, multiplayer statistics, and in-game level rating
 * Access to `Install with Alpine Faction` on `FactionFiles.com` to streamline custom level and mod installation
 * Enemies explode into gibs when killed by explosives
 * Player headlamp (flashlight)
@@ -53,20 +54,21 @@ Most important:
 
 Multiplayer:
 * Increased (and configurable) tick rate
+* Many substantial netcode improvements
 * TOML-based `ADS` dedicated server configuration with per-level rules, on-demand reloading, and on-the-fly game type switching
-* "GunGame" game mode
 * Competitive match framework including "ready up" system and overtime
 * Improved gaussian distribution method for bullet spread
 * Damage feedback system including hit sounds, kill sounds, and visual damage number indicators
+* Sprays, awards, and assists
 * Radio messages and taunts
 * Visual indicators and nameplates in the world for objectives and teammates
 * Player outlines with per-team and enemy colors, plus optional team X-ray
 * Enemy and teammate footstep audio
 * Location pinging visible to teammates
-* Random critical hits (configurable)
-* First person and free camera spectate
+* First person, third person, and free camera spectate, with static cameras and spectator lag compensation
 * Improved scoreboard with splittable categories for spectators, bots, browsers, and idle players
-* Voting system for kicking players, changing levels, and changing game types
+* Server-configurable (and votable) mutators
+* Voting system with a GUI panel for calling votes - kick players, change levels or game types, toggle mutators
 * Server-configurable gibbing, weapon loadouts, spawn delays, delayed item spawns, etc.
 * Cheating prevention
 * Many server fixes, performance improvements, and customizable features
@@ -75,6 +77,7 @@ Multiplayer:
 Community development:
 * 60+ new event scripting objects for crafting advanced logic systems in maps, including events for gas regions, respawn points, capture points, mesh animation, fullscreen images, and gameplay rules
 * Support for gas regions
+* Support for weather regions (rain and snow)
 * Support for dynamic lights in maps
 * Support for using dynamic lights, particle emitters, and push regions with movers
 * Enhanced and more immersive skyboxes, including support for movers, meshes, and mesh pixel lighting in skyboxes
@@ -88,7 +91,9 @@ Community development:
 * Enhanced trigger options for multiplayer
 * Fixed support for events in multiplayer (removed requirement to use hacky workarounds)
 * Full color range lightmaps (removed lightmap clamping)
-* DDS texture support
+* Support for the Alpine Texture (`ATX`) declarative texture format for fine-tuned texture animation, scriptable via the event system
+* DDS texture support in both editor and game
+* PNG and JPG texture support in both editor and game
 * 8-bit greyscale TGA support in both editor and game
 * OGG audio support
 * Support for custom BIK videos and bluebeard.bty in mods

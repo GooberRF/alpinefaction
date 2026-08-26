@@ -363,7 +363,8 @@ struct AlpineGameSettings
         max_fps = std::clamp(fps_value, min_fps_limit, max_fps_limit);
     }
 
-    unsigned server_max_fps = 60u;
+    // server_max_fps default is 80
+    unsigned server_max_fps = 80u;
     void set_server_max_fps(unsigned fps_value)
     {
         server_max_fps = std::clamp(fps_value, min_fps_limit, max_fps_limit);

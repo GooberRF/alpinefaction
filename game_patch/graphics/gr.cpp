@@ -751,6 +751,20 @@ void gr_apply_patch()
     vclip_play_3d_weapon_hook.install();
     vclip_play_3d_env_hook.install();
 
+    // ---
+    // Render bolts steady instead of flickering: vanilla rolls a random
+    // brightness (10-100% of bolt color) and width (50-100% of thickness) for
+    // every bolt on every rendered frame. Collapse the random ranges to the
+    // constants the engine uses for its static bolt path (visible while the
+    // game is paused). Designer-controlled shape jitter is unaffected.
+    // ---
+    // Logic works, disabled until a mechanism to apply it on-demand by level designers exists
+    // Todo
+    //write_mem<u32>(0x00558090 + 1, 0x3F000000); // brightness max: 1.0 -> 0.5
+    //write_mem<u32>(0x00558095 + 1, 0x3F000000); // brightness min: 0.1 -> 0.5
+    //write_mem<u32>(0x0055815C + 1, 0x3F400000); // width max: 1.0 -> 0.75
+    //write_mem<u32>(0x00558161 + 1, 0x3F400000); // width min: 0.5 -> 0.75
+
     // Fix gr_rect_border not drawing left border
     AsmWriter{0x0050DF2D}.push(asm_regs::ebp).push(asm_regs::ebx);
 

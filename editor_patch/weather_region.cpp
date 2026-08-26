@@ -102,6 +102,9 @@ void weather_region_serialize_chunk(CDedLevel& level, rf::File& file)
         // per-region overrides, 0 meaning auto
         file.write<float>(region->active_distance);
         file.write<float>(region->visible_distance);
+        // per-column ceiling test
+        file.write<uint8_t>(region->block_by_geometry ? 1 : 0);
+        file.write<float>(region->column_width);
     }
 
     level.EndRflSection(file, start_pos);
@@ -199,6 +202,11 @@ void weather_region_deserialize_chunk(CDedLevel& level, rf::File& file, std::siz
         if (!read_bytes(&region->active_distance, sizeof(float))) { DestroyDedWeatherRegion(region); return; }
         if (!read_bytes(&region->visible_distance, sizeof(float))) { DestroyDedWeatherRegion(region); return; }
 
+        uint8_t block_by_geometry = 0;
+        if (!read_bytes(&block_by_geometry, sizeof(uint8_t))) { DestroyDedWeatherRegion(region); return; }
+        region->block_by_geometry = block_by_geometry != 0;
+        if (!read_bytes(&region->column_width, sizeof(float))) { DestroyDedWeatherRegion(region); return; }
+
         regions.push_back(region);
         level.master_objects.add(static_cast<DedObject*>(region));
     }
@@ -221,6 +229,9 @@ static int g_snow_bitmap_preview_handle = -1;
 static int weather_region_resolve_bitmap(const char* name)
 {
     if (!name || name[0] == '\0') return -1;
+    if (strlen(name) > rfl_name_max_len) return -1;
+    const char* ext = strrchr(name, '.');
+    if (ext && strlen(ext) > rfl_ext_max_len) return -1;
     rf::File file;
     if (!file.open(name)) return -1;
     file.close(); // rf::File has no destructor, so the probe leaks the OS handle otherwise
@@ -304,6 +315,10 @@ static uint8_t weather_region_get_color_field(HWND hdlg, int idc)
 constexpr float weather_dim_step = 0.02f;
 constexpr float weather_dim_min = 0.0f;
 constexpr float weather_dim_max = 999.0f;
+constexpr float weather_column_width_min = 0.25f;
+constexpr float weather_column_width_max = 8.0f;
+constexpr float weather_density_scale_min = 0.0f;
+constexpr float weather_density_scale_max = 2.0f;
 
 static void weather_region_set_dim_field(HWND hdlg, int idc, float value)
 {
@@ -439,11 +454,15 @@ static INT_PTR CALLBACK WeatherRegionDialogProc(HWND hdlg, UINT msg, WPARAM wp, 
         weather_region_set_float_field(hdlg, IDC_WEATHER_DENSITY_SCALE, region->density_scale);
         weather_region_set_float_field(hdlg, IDC_WEATHER_ACTIVE_DISTANCE, region->active_distance);
         weather_region_set_float_field(hdlg, IDC_WEATHER_VISIBLE_DISTANCE, region->visible_distance);
+        weather_region_set_float_field(hdlg, IDC_WEATHER_COLUMN_WIDTH, region->column_width);
 
         CheckDlgButton(hdlg, IDC_WEATHER_ALWAYS_SHOW_RANGE,
             region->always_show_range ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hdlg, IDC_WEATHER_INITIALLY_ENABLED,
             region->initially_enabled ? BST_CHECKED : BST_UNCHECKED);
+        CheckDlgButton(hdlg, IDC_WEATHER_BLOCK_BY_GEOMETRY,
+            region->block_by_geometry ? BST_CHECKED : BST_UNCHECKED);
+        EnableWindow(GetDlgItem(hdlg, IDC_WEATHER_COLUMN_WIDTH), region->block_by_geometry);
 
         SetDlgItemInt(hdlg, IDC_WEATHER_RAIN_COLOR_R, region->rain_color_r, FALSE);
         SetDlgItemInt(hdlg, IDC_WEATHER_RAIN_COLOR_G, region->rain_color_g, FALSE);
@@ -480,6 +499,12 @@ static INT_PTR CALLBACK WeatherRegionDialogProc(HWND hdlg, UINT msg, WPARAM wp, 
         case IDC_WEATHER_TYPE:
             if (HIWORD(wp) == CBN_SELCHANGE) {
                 weather_region_update_type_fields(hdlg);
+            }
+            break;
+        case IDC_WEATHER_BLOCK_BY_GEOMETRY:
+            if (HIWORD(wp) == BN_CLICKED) {
+                EnableWindow(GetDlgItem(hdlg, IDC_WEATHER_COLUMN_WIDTH),
+                    IsDlgButtonChecked(hdlg, IDC_WEATHER_BLOCK_BY_GEOMETRY) == BST_CHECKED);
             }
             break;
         case IDC_WEATHER_RAIN_COLOR_R:
@@ -538,11 +563,15 @@ static INT_PTR CALLBACK WeatherRegionDialogProc(HWND hdlg, UINT msg, WPARAM wp, 
             float height = weather_region_get_float_field(hdlg, IDC_WEATHER_HEIGHT);
             float depth = weather_region_get_float_field(hdlg, IDC_WEATHER_DEPTH);
             float radius = weather_region_get_float_field(hdlg, IDC_WEATHER_RADIUS);
-            float density_scale = weather_region_get_float_field(hdlg, IDC_WEATHER_DENSITY_SCALE);
+            float density_scale = std::clamp(weather_region_get_float_field(hdlg, IDC_WEATHER_DENSITY_SCALE),
+                weather_density_scale_min, weather_density_scale_max);
             float active_distance = weather_region_get_float_field(hdlg, IDC_WEATHER_ACTIVE_DISTANCE);
             float visible_distance = weather_region_get_float_field(hdlg, IDC_WEATHER_VISIBLE_DISTANCE);
             bool always_show_range = IsDlgButtonChecked(hdlg, IDC_WEATHER_ALWAYS_SHOW_RANGE) == BST_CHECKED;
             bool initially_enabled = IsDlgButtonChecked(hdlg, IDC_WEATHER_INITIALLY_ENABLED) == BST_CHECKED;
+            bool block_by_geometry = IsDlgButtonChecked(hdlg, IDC_WEATHER_BLOCK_BY_GEOMETRY) == BST_CHECKED;
+            float column_width = std::clamp(weather_region_get_float_field(hdlg, IDC_WEATHER_COLUMN_WIDTH),
+                weather_column_width_min, weather_column_width_max);
 
             uint8_t rain_r = weather_region_get_color_field(hdlg, IDC_WEATHER_RAIN_COLOR_R);
             uint8_t rain_g = weather_region_get_color_field(hdlg, IDC_WEATHER_RAIN_COLOR_G);
@@ -579,6 +608,8 @@ static INT_PTR CALLBACK WeatherRegionDialogProc(HWND hdlg, UINT msg, WPARAM wp, 
                 w->density_scale = density_scale;
                 w->active_distance = active_distance;
                 w->visible_distance = visible_distance;
+                w->block_by_geometry = block_by_geometry;
+                w->column_width = column_width;
                 w->always_show_range = always_show_range;
                 w->initially_enabled = initially_enabled;
                 w->rain_color_r = rain_r;
@@ -733,6 +764,8 @@ DedWeatherRegion* CloneWeatherRegionObject(DedWeatherRegion* source, bool add_to
     region->density_scale = source->density_scale;
     region->active_distance = source->active_distance;
     region->visible_distance = source->visible_distance;
+    region->block_by_geometry = source->block_by_geometry;
+    region->column_width = source->column_width;
     region->always_show_range = source->always_show_range;
     region->initially_enabled = source->initially_enabled;
     region->rain_color_r = source->rain_color_r;

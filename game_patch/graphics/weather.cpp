@@ -1,7 +1,9 @@
 #include <algorithm>
+#include <climits>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <random>
 #include <string>
 #include <vector>
@@ -13,9 +15,11 @@
 #include "weather.h"
 #include "../main/main.h"
 #include "../misc/alpine_settings.h"
+#include "../multi/demo/demo.h"
 #include "../os/console.h"
 #include "../os/os.h"
 #include "../rf/bmpman.h"
+#include "../rf/collide.h"
 #include "../rf/gameseq.h"
 #include "../rf/geometry.h"
 #include "../rf/gr/gr.h"
@@ -24,6 +28,7 @@
 #include "../rf/particle_emitter.h"
 #include "../rf/player/camera.h"
 #include "../rf/player/player.h"
+#include "../object/object.h"
 
 namespace
 {
@@ -49,6 +54,14 @@ constexpr float weather_max_streak_seconds = 10.0f;
 constexpr float weather_max_active_distance = 1000.0f;
 constexpr float weather_min_visible_distance = 4.0f;
 constexpr float weather_max_visible_distance = 200.0f;
+
+// The blocked-by-geometry ceiling cache. One downward trace per (x, z) column, filled lazily under a
+// per-frame budget shared by every region.
+constexpr float weather_column_width_min = 0.25f;
+constexpr float weather_column_width_max = 8.0f;
+constexpr int weather_column_max_cells_axis = 512;
+constexpr int weather_column_trace_budget = 256;
+constexpr int weather_column_geomod_delay_frames = 30;
 
 constexpr int rain_count = 4096;
 constexpr float rain_box_half_x = 26.0f;
@@ -134,6 +147,8 @@ struct WeatherRegion
     float density_scale = 1.0f;
     float active_distance = 0.0f;   // 0 = auto: the effective visible distance plus weather_activity_margin
     float visible_distance = 0.0f;  // 0 = auto: the type's own sim box half extent
+    bool block_by_geometry = false;
+    float column_width = 0.5f;
     rf::Color rain_color{170, 190, 215, 110};
     float rain_fall_speed = 14.0f;
     float rain_wind_x = 1.1f;
@@ -146,6 +161,15 @@ struct WeatherRegion
     float snow_sprite_radius = 0.035f;
     std::string snow_bitmap = "af_gbrsnowfl01.tga";
     int snow_bm_handle = -1;
+};
+
+// The grid is indexed by world column.
+struct WeatherColumnCell
+{
+    int32_t cx = INT_MIN;
+    int32_t cz = INT_MIN;
+    int32_t retrace_frame = 0;
+    float floor_y = 0.0f;
 };
 
 // Runtime state for one region, kept parallel to g_weather_regions. The arena segment is described by
@@ -163,6 +187,12 @@ struct WeatherRegionState
     bool active = false;
     bool wanted = false;
     bool seeded = false;
+    std::vector<WeatherColumnCell> columns;
+    int cols_x = 0;
+    int cols_z = 0;
+    float cell = 0.0f;
+    float region_top = 0.0f;
+    float region_bottom = 0.0f;
 };
 
 std::vector<WeatherRegion> g_weather_regions;
@@ -313,33 +343,20 @@ void weather_reset_states()
     g_weather_share_scale = 1.0f;
 }
 
-// The sim/wrap box is the camera box clipped to the region's enclosing AABB. Clipping on its own used
-// to fmod-compress a whole camera-box pool into whatever slab was left; the segment is now sized from
-// the clipped volume, so the density inside it is exactly what an unclipped pool used to deliver and no
-// particle is spent outside the region. Returns false when the two boxes do not meaningfully overlap.
 bool weather_make_box(const rf::Vector3& camera_pos, float half_x, float half_y, float half_z,
     const rf::Vector3& region_min, const rf::Vector3& region_max, WeatherBox& out)
 {
-    const rf::Vector3 box_min{
-        std::max(camera_pos.x - half_x, region_min.x),
-        std::max(camera_pos.y - half_y, region_min.y),
-        std::max(camera_pos.z - half_z, region_min.z),
+    auto slide_axis = [](float camera_axis, float half, float min_axis, float max_axis, float& center) {
+        const float fit = std::min(half, (max_axis - min_axis) * 0.5f);
+        center = std::clamp(camera_axis, min_axis + fit, max_axis - fit);
+        return fit;
     };
-    const rf::Vector3 box_max{
-        std::min(camera_pos.x + half_x, region_max.x),
-        std::min(camera_pos.y + half_y, region_max.y),
-        std::min(camera_pos.z + half_z, region_max.z),
-    };
-    if (box_max.x - box_min.x < weather_min_box_extent ||
-        box_max.y - box_min.y < weather_min_box_extent ||
-        box_max.z - box_min.z < weather_min_box_extent) {
-        return false;
-    }
-    out.center = (box_min + box_max) * 0.5f;
-    out.half_x = (box_max.x - box_min.x) * 0.5f;
-    out.half_y = (box_max.y - box_min.y) * 0.5f;
-    out.half_z = (box_max.z - box_min.z) * 0.5f;
-    return true;
+
+    out.half_x = slide_axis(camera_pos.x, half_x, region_min.x, region_max.x, out.center.x);
+    out.half_y = slide_axis(camera_pos.y, half_y, region_min.y, region_max.y, out.center.y);
+    out.half_z = slide_axis(camera_pos.z, half_z, region_min.z, region_max.z, out.center.z);
+    return out.half_x * 2.0f >= weather_min_box_extent && out.half_y * 2.0f >= weather_min_box_extent &&
+           out.half_z * 2.0f >= weather_min_box_extent;
 }
 
 // The draw filter. Box regions are oriented, so the test runs in region space: the orientation's
@@ -404,6 +421,8 @@ void weather_update_states(const rf::Vector3& camera_pos)
         rf::Vector3 region_min;
         rf::Vector3 region_max;
         weather_region_bounds(region, region_min, region_max);
+        state.region_top = region_max.y;
+        state.region_bottom = region_min.y;
 
         float density = 0.0f;
         float half_x = 0.0f;
@@ -429,7 +448,7 @@ void weather_update_states(const rf::Vector3& camera_pos)
         // A sphere claims the particle share of its enclosing box on purpose: budgeting it by the
         // sphere's own volume would leave the same density looking thinner inside a sphere than a box.
         const float volume = state.box.half_x * state.box.half_y * state.box.half_z * 8.0f;
-        state.desired = density * std::clamp(region.density_scale, 0.0f, 1.0f) * volume;
+        state.desired = density * std::clamp(region.density_scale, 0.0f, 2.0f) * volume;
         state.active = true;
     }
 }
@@ -602,6 +621,65 @@ bool weather_particle_drawn(const WeatherRegion& region, const rf::Vector3& pos,
     return weather_point_in_region(region, pos);
 }
 
+// Sized off the sim box rather than the region, so a huge region with a small visible distance still
+// only carries the columns the sim box can ever reach. The two spare rows absorb the box sliding
+// with the camera without ever aliasing a live column onto the one directly opposite it.
+void weather_column_grid_prepare(WeatherRegionState& state, const WeatherRegion& region)
+{
+    float density = 0.0f;
+    float half_x = 0.0f;
+    float half_y = 0.0f;
+    float half_z = 0.0f;
+    weather_region_sim(region, density, half_x, half_y, half_z);
+
+    const float span = half_x * 2.0f;
+    const float cell = std::max(region.column_width, span / (weather_column_max_cells_axis - 2));
+    const int cols = static_cast<int>(std::ceil(span / cell)) + 2;
+    if (state.columns.empty() || cols != state.cols_x || cell != state.cell) {
+        state.cols_x = cols;
+        state.cols_z = cols;
+        state.cell = cell;
+        state.columns.assign(static_cast<std::size_t>(cols) * cols, WeatherColumnCell{});
+    }
+}
+
+// The ceiling above one world column: one trace straight down the region's own height, cached.
+bool weather_column_floor(WeatherRegionState& state, float x, float z, int& budget, float& floor_y)
+{
+    const int32_t cx = static_cast<int32_t>(std::floor(x / state.cell));
+    const int32_t cz = static_cast<int32_t>(std::floor(z / state.cell));
+    const int mx = ((cx % state.cols_x) + state.cols_x) % state.cols_x;
+    const int mz = ((cz % state.cols_z) + state.cols_z) % state.cols_z;
+    WeatherColumnCell& slot = state.columns[mx + mz * state.cols_x];
+
+    const bool hit = slot.cx == cx && slot.cz == cz;
+    const bool needs_trace = !hit || (slot.retrace_frame != 0 && rf::frame_count >= slot.retrace_frame);
+    if (!needs_trace) {
+        floor_y = slot.floor_y;
+        return true;
+    }
+    if (budget <= 0) {
+        if (!hit) {
+            return false;
+        }
+        floor_y = slot.floor_y;
+        return true;
+    }
+
+    --budget;
+    rf::Vector3 p0{(cx + 0.5f) * state.cell, state.region_top, (cz + 0.5f) * state.cell};
+    rf::Vector3 p1{p0.x, state.region_bottom, p0.z};
+    rf::GCollisionOutput out{};
+    slot.cx = cx;
+    slot.cz = cz;
+    slot.retrace_frame = 0;
+    slot.floor_y = rf::collide_linesegment_level_solid(p0, p1, 0, &out)
+        ? out.hit_point.y
+        : -std::numeric_limits<float>::max();
+    floor_y = slot.floor_y;
+    return true;
+}
+
 int weather_region_bitmap(const std::string& name, int& handle)
 {
     if (handle == -1) {
@@ -611,7 +689,8 @@ int weather_region_bitmap(const std::string& name, int& handle)
 }
 
 void rain_do_frame(WeatherParticle* particles, int count, const WeatherBox& box, const WeatherRegion& region,
-    const rf::Vector3& camera_pos, bool has_surface, float surface_y, float dt)
+    WeatherRegionState& state, int& trace_budget, const rf::Vector3& camera_pos, bool has_surface,
+    float surface_y, float dt)
 {
     std::uniform_real_distribution<float> unit_dist{-1.0f, 1.0f};
 
@@ -639,6 +718,13 @@ void rain_do_frame(WeatherParticle* particles, int count, const WeatherBox& box,
         if (!weather_particle_drawn(region, particle.pos, has_surface, surface_y)) {
             continue;
         }
+        if (region.block_by_geometry) {
+            float floor_y = 0.0f;
+            if (!weather_column_floor(state, particle.pos.x, particle.pos.z, trace_budget, floor_y) ||
+                particle.pos.y < floor_y) {
+                continue;
+            }
+        }
 
         // Turn the streak into a quad that faces the camera while staying aligned with the fall vector.
         rf::Vector3 right = fall_dir.cross(camera_pos - particle.pos);
@@ -655,7 +741,8 @@ void rain_do_frame(WeatherParticle* particles, int count, const WeatherBox& box,
 }
 
 void snow_do_frame(WeatherParticle* particles, int count, const WeatherBox& box, WeatherRegion& region,
-    const rf::Matrix3& camera_orient, bool has_surface, float surface_y, float dt)
+    WeatherRegionState& state, int& trace_budget, const rf::Matrix3& camera_orient, bool has_surface,
+    float surface_y, float dt)
 {
     std::uniform_real_distribution<float> unit_dist{-1.0f, 1.0f};
 
@@ -678,6 +765,13 @@ void snow_do_frame(WeatherParticle* particles, int count, const WeatherBox& box,
 
         if (!weather_particle_drawn(region, particle.pos, has_surface, surface_y)) {
             continue;
+        }
+        if (region.block_by_geometry) {
+            float floor_y = 0.0f;
+            if (!weather_column_floor(state, particle.pos.x, particle.pos.z, trace_budget, floor_y) ||
+                particle.pos.y < floor_y) {
+                continue;
+            }
         }
 
         const float sin_a = std::sin(particle.angle);
@@ -754,6 +848,7 @@ void weather_load_chunk(rf::File& file, std::size_t chunk_len)
         int32_t uid = 0;
         uint8_t always_show_range = 0; // editor-only display flag
         uint8_t initially_enabled = 1;
+        uint8_t block_by_geometry = 0;
         int32_t shape = 0;
         int32_t type = 0;
         float width = 0.0f;
@@ -800,6 +895,10 @@ void weather_load_chunk(rf::File& file, std::size_t chunk_len)
         if (!read_bytes(&region.snow_sprite_radius, sizeof(float))) return;
         std::string snow_bitmap = read_string();
         if (read_error) return;
+        if (snow_bitmap.size() >= max_bitmap_name) {
+            xlog::warn("[Weather] Ignoring over-long snow bitmap name on region uid {}", uid);
+            snow_bitmap.clear();
+        }
         if (!snow_bitmap.empty()) {
             region.snow_bitmap = std::move(snow_bitmap);
         }
@@ -807,6 +906,8 @@ void weather_load_chunk(rf::File& file, std::size_t chunk_len)
         if (!read_bytes(&initially_enabled, sizeof(initially_enabled))) return;
         if (!read_bytes(&region.active_distance, sizeof(float))) return;
         if (!read_bytes(&region.visible_distance, sizeof(float))) return;
+        if (!read_bytes(&block_by_geometry, sizeof(block_by_geometry))) return;
+        if (!read_bytes(&region.column_width, sizeof(float))) return;
 
         region.uid = uid;
         region.enabled = initially_enabled != 0;
@@ -820,7 +921,7 @@ void weather_load_chunk(rf::File& file, std::size_t chunk_len)
             region.orient.uvec.x, region.orient.uvec.y, region.orient.uvec.z,
             region.orient.fvec.x, region.orient.fvec.y, region.orient.fvec.z,
             width, height, depth, region.radius, region.density_scale,
-            region.active_distance, region.visible_distance,
+            region.active_distance, region.visible_distance, region.column_width,
             region.rain_fall_speed, region.rain_wind_x, region.rain_wind_z,
             region.rain_streak_seconds, region.snow_fall_speed, region.snow_sway_amplitude,
             region.snow_sway_speed, region.snow_sprite_radius,
@@ -834,7 +935,7 @@ void weather_load_chunk(rf::File& file, std::size_t chunk_len)
         height = std::clamp(height, 0.0f, weather_max_dim);
         depth = std::clamp(depth, 0.0f, weather_max_dim);
         region.radius = std::clamp(region.radius, 0.0f, weather_max_dim);
-        region.density_scale = std::clamp(region.density_scale, 0.0f, 1.0f);
+        region.density_scale = std::clamp(region.density_scale, 0.0f, 2.0f);
         region.active_distance = std::clamp(region.active_distance, 0.0f, weather_max_active_distance);
         // Zero stays zero because it means auto; anything the mapper actually asked for gets a floor,
         // since a sub-metre sim box would wrap particles faster than they could be seen falling.
@@ -849,6 +950,8 @@ void weather_load_chunk(rf::File& file, std::size_t chunk_len)
         region.snow_sway_amplitude = std::clamp(region.snow_sway_amplitude, 0.0f, weather_max_dim);
         region.snow_sway_speed = std::clamp(region.snow_sway_speed, 0.0f, weather_max_speed);
         region.snow_sprite_radius = std::clamp(region.snow_sprite_radius, 0.0f, weather_max_dim);
+        region.column_width = std::clamp(region.column_width, weather_column_width_min, weather_column_width_max);
+        region.block_by_geometry = block_by_geometry != 0;
 
         // Dimensions are stored full-size in the file, matching how gas regions store theirs.
         region.half_extents = rf::Vector3{width * 0.5f, height * 0.5f, depth * 0.5f};
@@ -893,14 +996,27 @@ bool weather_set_region_enabled(int uid, bool enabled)
     return matched;
 }
 
+static void weather_drop_columns(std::size_t i)
+{
+    if (i >= g_weather_states.size()) {
+        return;
+    }
+    WeatherRegionState& state = g_weather_states[i];
+    state.columns.clear();
+    state.cols_x = 0;
+    state.cols_z = 0;
+    state.cell = 0.0f;
+}
+
 // Called by the Anchor_Marker events for each of their link UIDs, same as the other region types.
-// Bounds are derived per frame, so moving a region needs no cache invalidation.
+// Bounds are derived per frame; only the ceiling cache, traced against the old bounds, is dropped.
 bool weather_move_region(int uid, const rf::Vector3& pos)
 {
     bool matched = false;
-    for (auto& region : g_weather_regions) {
-        if (region.uid == uid) {
-            region.center = pos;
+    for (std::size_t i = 0; i < g_weather_regions.size(); ++i) {
+        if (g_weather_regions[i].uid == uid) {
+            g_weather_regions[i].center = pos;
+            weather_drop_columns(i);
             matched = true;
         }
     }
@@ -910,14 +1026,38 @@ bool weather_move_region(int uid, const rf::Vector3& pos)
 bool weather_move_region(int uid, const rf::Vector3& pos, const rf::Matrix3& orient)
 {
     bool matched = false;
-    for (auto& region : g_weather_regions) {
-        if (region.uid == uid) {
-            region.center = pos;
-            region.orient = orient;
+    for (std::size_t i = 0; i < g_weather_regions.size(); ++i) {
+        if (g_weather_regions[i].uid == uid) {
+            g_weather_regions[i].center = pos;
+            g_weather_regions[i].orient = orient;
+            weather_drop_columns(i);
             matched = true;
         }
     }
     return matched;
+}
+
+// A geomod can open or close a ceiling.
+void weather_notify_geomod(const rf::Vector3& pos, float radius)
+{
+    for (std::size_t i = 0; i < g_weather_regions.size() && i < g_weather_states.size(); ++i) {
+        if (!g_weather_regions[i].block_by_geometry) {
+            continue;
+        }
+        WeatherRegionState& state = g_weather_states[i];
+        const float reach = radius + state.cell;
+        const float reach_sq = reach * reach;
+        for (auto& slot : state.columns) {
+            if (slot.cx == INT_MIN || slot.retrace_frame != 0) {
+                continue;
+            }
+            const float dx = (slot.cx + 0.5f) * state.cell - pos.x;
+            const float dz = (slot.cz + 0.5f) * state.cell - pos.z;
+            if (dx * dx + dz * dz <= reach_sq) {
+                slot.retrace_frame = rf::frame_count + weather_column_geomod_delay_frames;
+            }
+        }
+    }
 }
 
 // Bitmap handles are name-deduped by bmpman and bmpman has no refcount, so releasing one here would
@@ -973,7 +1113,8 @@ void weather_render()
     }
 
     const rf::Matrix3 camera_orient = rf::camera_get_orient(camera);
-    const float dt = std::clamp(rf::frametime, 0.0f, max_frame_delta);
+    const float dt = std::clamp(rf::frametime, 0.0f, max_frame_delta) * demo_playback_sim_time_scale();
+    int trace_budget = weather_column_trace_budget;
 
     for (std::size_t i = 0; i < g_weather_regions.size(); ++i) {
         WeatherRegionState& state = g_weather_states[i];
@@ -983,14 +1124,18 @@ void weather_render()
         WeatherRegion& region = g_weather_regions[i];
         WeatherParticle* particles = g_weather_arena + state.offset;
 
+        if (region.block_by_geometry) {
+            weather_column_grid_prepare(state, region);
+        }
+
         switch (region.type) {
             case WeatherRegionType::rain:
-                rain_do_frame(particles, state.length, state.box, region, camera_pos, has_surface,
-                    surface_y, dt);
+                rain_do_frame(particles, state.length, state.box, region, state, trace_budget,
+                    camera_pos, has_surface, surface_y, dt);
                 break;
             case WeatherRegionType::snow:
-                snow_do_frame(particles, state.length, state.box, region, camera_orient, has_surface,
-                    surface_y, dt);
+                snow_do_frame(particles, state.length, state.box, region, state, trace_budget,
+                    camera_orient, has_surface, surface_y, dt);
                 break;
         }
     }

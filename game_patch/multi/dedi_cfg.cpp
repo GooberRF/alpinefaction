@@ -10,6 +10,7 @@
 #include <common/utils/string-utils.h>
 #include <xlog/xlog.h>
 #include <algorithm>
+#include <chrono>
 #include <cstring>
 #include <filesystem>
 #include <limits>
@@ -17,6 +18,7 @@
 #include <sstream>
 #include <numeric>
 #include <string_view>
+#include <thread>
 #include <vector>
 #include <windows.h>
 #include <winsock2.h>
@@ -1477,7 +1479,13 @@ void load_ads_server_config(std::string ads_config_name, bool allow_missing_leve
         return;
     }
 
-    const fs::path root_path = fs::weakly_canonical(fs::path(ads_config_name));
+    fs::path root_path;
+    try {
+        root_path = fs::weakly_canonical(fs::path(ads_config_name));
+    }
+    catch (const std::exception& err) {
+        rf::console::print("  [WARN] failed to canonicalize {}: {}\n", ads_config_name, err.what());
+    }
 
     // config pass
     apply_config_table_in_order(cfg, root, root_path.parent_path(), ParsePass::Core, allow_missing_levels);
@@ -2569,6 +2577,70 @@ void init_alpine_dedicated_server() {
     AsmWriter(0x004596BA).jmp(0x004596BC);
 }
 
+[[noreturn]] static void abort_launch_on_rejected_gsk(const std::string& last_error) {
+    const std::string_view reason = last_error.empty() ? std::string_view{"unknown_or_disabled_gsk"}
+                                                       : std::string_view{last_error};
+    const std::string detail = last_error.empty()
+        ? std::string{}
+        : std::format("Reason given by FactionFiles: {}\n", last_error);
+
+    xlog::error("[fflink] FATAL: FactionFiles rejected the configured fflink_gsk ({}); "
+                "server startup aborted", reason);
+
+    const std::string msg = std::format(
+        "\n"
+        "========================================================================\n"
+        "FATAL: FactionFiles rejected this server's stats key (fflink_gsk).\n"
+        "The key configured in {} is wrong.\n"
+        "{}"
+        "Player stats will NOT be tracked with this key.\n"
+        "Fix: set a valid fflink_gsk in your dedicated server config,\n"
+        "or remove fflink_gsk entirely to run without stats tracking.\n"
+        "Server startup aborted.\n"
+        "========================================================================\n\n",
+        g_ads_config_name, detail);
+
+    rf::console::print("{}", msg);
+
+    xlog::flush();
+
+    rf::console::do_critical_error();
+}
+
+// Launch path only. A hard rejection is an operator config error, so refuse to run a
+// server whose stats would silently go nowhere. Every other outcome launches as before.
+static void wait_for_fflink_session_or_abort() {
+    if (g_alpine_server_config.fflink_gsk.empty()) {
+        return;
+    }
+
+    auto state = fflink::snapshot_state();
+    // Nothing in flight: no exchange was started, or the local format check already
+    // rejected the key and printed its own error.
+    if (state.status == fflink::SessionStatus::none ||
+        state.status == fflink::SessionStatus::bad_gsk_format) {
+        return;
+    }
+
+    constexpr int poll_interval_ms = 100;
+    constexpr int max_wait_ms = 10000;
+    for (int waited_ms = 0;
+         state.status == fflink::SessionStatus::pending && waited_ms < max_wait_ms;
+         waited_ms += poll_interval_ms) {
+        std::this_thread::sleep_for(std::chrono::milliseconds{poll_interval_ms});
+        state = fflink::snapshot_state();
+    }
+
+    if (state.status == fflink::SessionStatus::rejected_by_server) {
+        abort_launch_on_rejected_gsk(state.last_error);
+    }
+    if (state.status == fflink::SessionStatus::pending) {
+        rf::console::print("FactionFiles session key exchange still pending; continuing startup.\n\n");
+    }
+    // valid: the exchange prints its own success line.
+    // failed: transient, already reported; the worker keeps retrying in the background.
+}
+
 void launch_alpine_dedicated_server() {
     if (g_ads_full_console_log) {
         console_start_server_log();
@@ -2616,6 +2688,7 @@ void launch_alpine_dedicated_server() {
 
     // Kick off FactionFiles session key exchange
     fflink::start_session_exchange();
+    wait_for_fflink_session_or_abort();
 }
 
 ConsoleCommand2 print_server_config_cmd{

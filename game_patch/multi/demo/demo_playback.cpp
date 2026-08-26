@@ -16,7 +16,9 @@
 #include "demo_internal.h"
 #include "../network.h"
 #include "../multi.h"
+#include "../jetpack.h"
 #include "../alpine_packets.h"
+#include "../awards.h"
 #include "../../misc/misc.h"
 #include "../../misc/alpine_settings.h"
 #include "../../hud/multi_spectate.h"
@@ -726,7 +728,7 @@ namespace
         // Last: every remaining particle back to the pool (emitter records survive and
         // re-prime on their spawn timers)
         rf::particle_level_release();
-        explosion_flash_lights_level_init();
+        explosion_flash_lights_destroy_all();
     }
 
     // A burst that ends between a fire-ON and fire-OFF obj_update leaves the entity's
@@ -777,6 +779,10 @@ namespace
         cull_seek_death_leftovers();
         cull_seek_effect_leftovers();
         cull_seek_fire_latches();
+        // The fuel estimate was advanced across the skipped time by nothing but the burst's
+        // wall clock; drop it so the gauge waits for a fresh anchor instead of showing it.
+        jetpack_reset_remote_fuel();
+        awards_client_reset();
         // Hold the overlay + mute until fresh obj_updates repopulate the rings, capped
         // by wall clock (the demo may be paused or at EOF and never deliver one)
         g_ctx.seek_settle = true;
@@ -892,6 +898,13 @@ namespace
         const auto& header = g_ctx.reader.header();
         if (header.level_filename.empty()) {
             rf::console::print("Cannot play demo: the file does not name its level");
+            g_ctx.reader.close();
+            return false;
+        }
+        // Verify demo filename.
+        if (const auto dot = header.level_filename.find_last_of('.');
+            dot != std::string::npos && header.level_filename.size() - dot > 14) {
+            rf::console::print("Cannot play demo: the level name is malformed");
             g_ctx.reader.close();
             return false;
         }
@@ -1305,6 +1318,14 @@ bool demo_playback_paused()
 bool demo_playback_sim_frozen()
 {
     return g_ctx.pause_fx_applied;
+}
+
+float demo_playback_sim_time_scale()
+{
+    if (g_ctx.state == PlaybackState::inactive) {
+        return 1.0f;
+    }
+    return g_ctx.pause_fx_applied ? 0.0f : g_ctx.timescale;
 }
 
 bool demo_playback_finished()

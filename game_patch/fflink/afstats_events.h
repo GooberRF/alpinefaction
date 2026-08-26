@@ -188,11 +188,7 @@ void on_award(rf::Player* player, uint8_t award_id, rf::Player* victim);
 // A player spawned server-side.
 void on_spawn(rf::Player* player, const rf::Vector3& pos);
 
-// Where a counted shot or hit is recorded. `full` is every weapon whose shots are discrete:
-// the weapon's accuracy bucket, the player's game summary, and (at the call site) the legacy
-// scoreboard counters. `bucket_only` is the time-sliced continuous modes -- flamethrower stream,
-// taser/drill - whose window shots are not comparable 1:1 with discrete ones, so they stay out of
-// the overall figures and live only in their per-weapon bucket.
+// Whether acc/eff info is recorded in full or only weapon bucket.
 enum class CountScope
 {
     full,

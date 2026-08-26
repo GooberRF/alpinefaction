@@ -67,9 +67,16 @@ static void register_custom_texture_subdirectories(void* texture_manager)
     auto* category_array = reinterpret_cast<VArray<TextureCategory*>*>(
         static_cast<char*>(texture_manager) + 0x7C);
 
+    constexpr size_t texture_dir_max_len = 255;
+
     for (const auto& dirname : subdirs) {
         std::string display_name = "Custom - " + dirname;
         std::string subdir_path = "user_maps\\textures\\" + dirname;
+
+        if (subdir_path.size() > texture_dir_max_len) {
+            xlog::warn("Skipping custom texture directory (path too long): '{}'", subdir_path);
+            continue;
+        }
 
         // Allocate and construct category object (matches stock FUN_004776b0 pattern)
         void* mem = rf_alloc(sizeof(TextureCategory));
@@ -473,6 +480,12 @@ CodeInjection vpp_texture_path_fix{
 static bool has_texture_extension(const char* filename)
 {
     if (!filename || !filename[0]) return false;
+    // Texture names come out of level and mesh files, which are shared content.
+    // Only bare filenames should be packable, not paths.
+    if (strpbrk(filename, "\\/:") != nullptr) {
+        xlog::warn("Refusing to pack texture with a path in its name: '{}'", filename);
+        return false;
+    }
     const char* ext = strrchr(filename, '.');
     if (!ext) return false;
     return (_stricmp(ext, ".tga") == 0 ||

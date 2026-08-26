@@ -179,6 +179,14 @@ void FactionFilesClient::download_map(const char* tmp_filename, const std::strin
         tmp_file.write(buf, num_bytes_read);
 
         total_bytes_read += num_bytes_read;
+
+        // Hard cap
+        constexpr unsigned max_map_download_size = 1024u * 1024u * 1024u;
+        if (total_bytes_read > max_map_download_size) {
+            xlog::warn("Map download exceeded max size ({} bytes), aborting", max_map_download_size);
+            throw std::runtime_error("download exceeded maximum size");
+        }
+
         auto time_diff = std::chrono::steady_clock::now() - download_start;
         auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(time_diff);
 

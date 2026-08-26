@@ -9,6 +9,7 @@
 #include "../rf/file/file.h"
 #include "../rf/bmpman.h"
 #include "../misc/level.h"
+#include "object.h"
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -96,6 +97,10 @@ void alpine_corona_load_chunk(rf::File& file, std::size_t chunk_len)
         if (!read_bytes(&info.color_a, sizeof(uint8_t))) return;
         info.corona_bitmap = read_string();
         if (read_error) return;
+        if (info.corona_bitmap.size() >= max_bitmap_name) {
+            xlog::warn("[AlpineCorona] Ignoring over-long corona bitmap name on corona uid {}", info.uid);
+            info.corona_bitmap.clear();
+        }
         if (!read_bytes(&info.cone_angle, sizeof(float))) return;
         if (!read_bytes(&info.intensity, sizeof(float))) return;
         if (!read_bytes(&info.radius_distance, sizeof(float))) return;
@@ -106,6 +111,10 @@ void alpine_corona_load_chunk(rf::File& file, std::size_t chunk_len)
         if (!info.volumetric_bitmap.empty()) {
             if (!read_bytes(&info.volumetric_height, sizeof(float))) return;
             if (!read_bytes(&info.volumetric_length, sizeof(float))) return;
+        }
+        if (info.volumetric_bitmap.size() >= max_bitmap_name) {
+            xlog::warn("[AlpineCorona] Ignoring over-long volumetric bitmap name on corona uid {}", info.uid);
+            info.volumetric_bitmap.clear();
         }
 
         // Create anchor clutter immediately so it exists before the stock link

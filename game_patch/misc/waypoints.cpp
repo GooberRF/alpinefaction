@@ -3974,9 +3974,20 @@ std::optional<std::string> get_waypoint_dir()
     return waypoints_path;
 }
 
+// Return the final path component of a name.
+static std::string_view strip_path_components(std::string_view name)
+{
+    auto pos = name.find_last_of("/\\:");
+    if (pos != std::string_view::npos) {
+        return name.substr(pos + 1);
+    }
+    return name;
+}
+
 std::filesystem::path get_waypoint_filename()
 {
-    std::filesystem::path map_name = std::string{get_filename_without_ext(rf::level.filename.c_str())};
+    std::filesystem::path map_name =
+        std::string{get_filename_without_ext(strip_path_components(rf::level.filename.c_str()))};
     auto waypoint_dir = get_waypoint_dir();
     if (!waypoint_dir) {
         return map_name.string() + ".awp";
@@ -3986,7 +3997,8 @@ std::filesystem::path get_waypoint_filename()
 
 static std::filesystem::path get_waypoint_filename_for_rfl(const std::string& rfl_filename)
 {
-    std::filesystem::path map_name = std::string{get_filename_without_ext(rfl_filename.c_str())};
+    std::filesystem::path map_name =
+        std::string{get_filename_without_ext(strip_path_components(rfl_filename))};
     auto waypoint_dir = get_waypoint_dir();
     if (!waypoint_dir) {
         return map_name.string() + ".awp";

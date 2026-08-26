@@ -770,7 +770,9 @@ struct AlpineServerConfigRules
     // them, so the two must stay in step.
     static int stock_riot_stick_reserve()
     {
-        return rf::weapon_types[rf::riot_stick_weapon_type].clip_size_multi;
+        return rf::riot_stick_weapon_type >= 0
+            ? rf::weapon_types[rf::riot_stick_weapon_type].clip_size_multi
+            : 0;
     }
 
     int stock_spawn_weapon_reserve() const
@@ -1245,6 +1247,9 @@ std::string build_info_command_output();
 // swing's deferred projectile connects, so melee hits can never outrun melee swings. Keyed per
 // weapon, because accuracy buckets are.
 void melee_grant_hit_credit(rf::Player* attacker, int weapon_type);
+
+// Combined accuracy/efficiency exclude flamethrower, riot stick, riot shield.
+bool accuracy_excluded_from_combined(int weapon_type);
 
 // The per-player accuracy ledgers are indexed by player id, which the engine reuses -- both must
 // be cleared on player destroy and on level load so a joiner cannot inherit them.

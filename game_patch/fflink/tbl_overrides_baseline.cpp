@@ -1,3 +1,4 @@
+#include <iterator>
 #include "tbl_overrides_baseline.h"
 
 namespace afstats::tbl {
@@ -48,7 +49,7 @@ const StockWeapon g_stock_weapons[] = {
     {"Fighter Rocket", 0.15f, 20, 0, 1, 200.0f, 200.0f, 0.0f, 0.0f, 15.0f, 8.0f, 1.0f, false, false, 0, 0.0f, false, 0.0f, 180.0f, 0.0f},
     {"APC Rocket", 0.15f, 15, 0, 1, 300.0f, 300.0f, 0.0f, 0.0f, 10.0f, 8.0f, 1.0f, false, false, 0, 0.0f, false, 0.0f, 180.0f, 0.0f},
 };
-const int g_num_stock_weapons = 44;
+const int g_num_stock_weapons = static_cast<int>(std::size(g_stock_weapons));
 
 static const StockSphere g_spheres_comp_tech[] = {{"csphere_0", 0.5f}, {"csphere_1", 1.0f}, {"csphere_2", 2.0f},};
 static const StockSphere g_spheres_eos[] = {{"csphere_0", 0.5f}, {"csphere_1", 1.0f}, {"csphere_2", 2.0f},};
@@ -93,6 +94,6 @@ const StockEntity g_stock_entities[] = {
     {"merc_grunt", g_spheres_merc_grunt, 3},
     {"masako", g_spheres_masako, 3},
 };
-const int g_num_stock_entities = 20;
+const int g_num_stock_entities = static_cast<int>(std::size(g_stock_entities));
 
 } // namespace afstats::tbl
