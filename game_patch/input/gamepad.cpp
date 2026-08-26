@@ -827,7 +827,7 @@ static void handle_gamepad_button_down(const SDL_GamepadButtonEvent& ev)
     set_last_input_gamepad(true, ev.which);
 
     if (ui_ctrl_bindings_view_active() && rf::ui::options_controls_waiting_for_key) {
-        if (ev.button == SDL_GAMEPAD_BUTTON_START) {
+        if (ev.button == SDL_GAMEPAD_BUTTON_START || ev.button == SDL_GAMEPAD_BUTTON_GUIDE) {
             menu_nav_inject_key(rf::KEY_ESC);
         } else {
             // Block Misc3-Misc6 (capsense/gripsense) from controller rebinding when using 
@@ -2018,7 +2018,7 @@ void gamepad_sync_bindings_from_scan_codes()
             else {
                 int offset = static_cast<int>(sc) - CTRL_GAMEPAD_SCAN_BASE;
                 if (offset >= 0 && offset < SDL_GAMEPAD_BUTTON_COUNT) {
-                    if (offset != SDL_GAMEPAD_BUTTON_START) { // Start is reserved, never rebindable
+                    if (offset != SDL_GAMEPAD_BUTTON_START && offset != SDL_GAMEPAD_BUTTON_GUIDE) { // START and GUIDE are reserved, never rebindable
                         if (menu_only)
                             g_menu_button_map[offset] = i;
                         else
