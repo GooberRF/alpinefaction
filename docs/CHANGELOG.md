@@ -5,7 +5,7 @@ Version 1.5.0 (TBD): Not yet released
 --------------------------------
 ### Minor features, changes, and enhancements
 [@is-this-c](https://github.com/is-this-c)
-- Allow a player to join right before limbo
+- Do not kick a player, if they joined right before limbo
 
 Version 1.4.0 (Lupin): Not yet released
 --------------------------------
