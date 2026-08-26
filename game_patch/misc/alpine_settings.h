@@ -95,9 +95,13 @@ struct AlpineGameSettings
     bool world_hud_hill_overdraw = true;
     bool world_hud_damage_numbers = true;
     bool world_hud_spectate_player_labels = false;
+    bool world_hud_demo_player_info = false;
+    bool world_hud_demo_spawns = false;
+    bool demo_powerup_timers = true;
     bool world_hud_team_player_labels = false;
     bool show_location_pings = true;
     bool play_hit_sounds = true;
+    bool show_awards = true;
 
     bool spray_display = true;
     int selected_spray_index = 0;
@@ -125,6 +129,7 @@ struct AlpineGameSettings
     bool show_gametype_help = true;
     bool show_mini_scoreboard_dm = true;
     bool multi_ricochet = false;
+    bool crit_reticle_flash = true;
     bool damage_screen_flash = true;
     bool spectate_damage_screen_flash = true;
     bool explosion_weapon_flash_lights = true;
@@ -146,6 +151,7 @@ struct AlpineGameSettings
         pixel_light_overbright = std::clamp(value, 0.0f, 3.0f);
     }
     bool show_glares = true;
+    bool weather = true;
     bool show_enemy_bullets = true;
     bool fps_counter = true;
     static constexpr int min_fps_counter_average_ms = 0;
@@ -159,6 +165,7 @@ struct AlpineGameSettings
     bool ping_display = true;
     bool spectate_mode_minimal_ui = false;
     bool spectate_show_camera_meshes = true; // draw camera meshes in free look
+    bool spectate_povcomp = true; // delay other players to match what the spectated player saw
     bool save_console_history = false; // checked before config loaded, must be false here
     bool screen_shake_force_off = false;
     bool display_target_player_names = true;
@@ -337,7 +344,7 @@ struct AlpineGameSettings
     }
 
     std::string multiplayer_tracker = "rfgt.factionfiles.com";
-    static constexpr size_t max_tracker_hostname_length = 200;
+    static constexpr size_t max_tracker_hostname_length = 63;
     void set_multiplayer_tracker(const std::string& tracker_hostname)
     {
         if (!tracker_hostname.empty() && tracker_hostname.length() <= max_tracker_hostname_length)
@@ -356,7 +363,8 @@ struct AlpineGameSettings
         max_fps = std::clamp(fps_value, min_fps_limit, max_fps_limit);
     }
 
-    unsigned server_max_fps = 60u;
+    // server_max_fps default is 80
+    unsigned server_max_fps = 80u;
     void set_server_max_fps(unsigned fps_value)
     {
         server_max_fps = std::clamp(fps_value, min_fps_limit, max_fps_limit);
@@ -365,7 +373,7 @@ struct AlpineGameSettings
     // server netfps default is 1/0.085 ~= 12
     static constexpr unsigned min_server_netfps = 12u;
     static constexpr unsigned max_server_netfps = 300u;
-    unsigned server_netfps = 30u;
+    unsigned server_netfps = 40u;
     void set_server_netfps(unsigned netfps_value)
     {
         server_netfps = std::clamp(netfps_value, min_server_netfps, max_server_netfps);

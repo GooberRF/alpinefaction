@@ -594,6 +594,107 @@ FONT 8, "MS Sans Serif", 0, 0, 0
     PUSHBUTTON      "Cancel", IDCANCEL, 200, 267, 50, 14
 }
 
+IDD_ALPINE_WEATHER_REGION_PROPERTIES DIALOGEX 0, 0, 274, 394
+STYLE DS_MODALFRAME | WS_CAPTION | WS_VISIBLE | WS_POPUP | WS_SYSMENU
+CAPTION "Weather Region Properties"
+FONT 8, "MS Sans Serif", 0, 0, 0
+{
+    LTEXT           "Script Name:", -1, 7, 11, 44, 8
+    EDITTEXT        IDC_WEATHER_SCRIPT_NAME, 60, 9, 130, 14, ES_AUTOHSCROLL
+
+    LTEXT           "Type:", -1, 7, 31, 44, 8
+    COMBOBOX        IDC_WEATHER_TYPE, 60, 29, 70, 60, CBS_DROPDOWNLIST | WS_TABSTOP
+    LTEXT           "Shape:", -1, 140, 31, 26, 8
+    COMBOBOX        IDC_WEATHER_SHAPE, 172, 29, 70, 60, CBS_DROPDOWNLIST | WS_TABSTOP
+
+    LTEXT           "Density Scale:", -1, 7, 51, 50, 8
+    EDITTEXT        IDC_WEATHER_DENSITY_SCALE, 60, 49, 50, 14, ES_AUTOHSCROLL
+    AUTOCHECKBOX    "Always show range", IDC_WEATHER_ALWAYS_SHOW_RANGE, 120, 52, 74, 10
+    AUTOCHECKBOX    "Initially enabled", IDC_WEATHER_INITIALLY_ENABLED, 198, 52, 68, 10
+
+    // Both are type independent and 0 means auto, so they share the row below Density Scale rather
+    // than living in either tuning group.
+    LTEXT           "Active Dist:", -1, 7, 71, 50, 8
+    EDITTEXT        IDC_WEATHER_ACTIVE_DISTANCE, 60, 69, 40, 14, ES_AUTOHSCROLL
+    LTEXT           "Visible Distance:", -1, 108, 71, 62, 8
+    EDITTEXT        IDC_WEATHER_VISIBLE_DISTANCE, 172, 69, 40, 14, ES_AUTOHSCROLL
+    LTEXT           "(0 = auto)", -1, 218, 71, 42, 8
+
+    // Column width only means anything while the geometry test is on, so it greys out with it.
+    AUTOCHECKBOX    "Blocked by geometry", IDC_WEATHER_BLOCK_BY_GEOMETRY, 7, 91, 90, 10
+    LTEXT           "Column Width:", -1, 108, 91, 62, 8
+    EDITTEXT        IDC_WEATHER_COLUMN_WIDTH, 172, 89, 40, 14, ES_AUTOHSCROLL
+
+    // Shape sizes follow the stock trigger/gas region convention: sphere above box, full width,
+    // Width/Depth/Height on one row, every field a 40x14 edit with an 11x14 spinner (RED dialog 209).
+    // Groups use a 7 DLU interior margin on both sides (content spans x 14..260) and 7 DLU below
+    // the last row; rows are pitched 20 apart starting 14 below the group top.
+    GROUPBOX        "Sphere Size", IDC_WEATHER_SPHERE_GROUP, 7, 108, 260, 35
+    LTEXT           "Radius:", -1, 14, 124, 27, 8
+    EDITTEXT        IDC_WEATHER_RADIUS, 43, 122, 40, 14, ES_AUTOHSCROLL
+    CONTROL         "Spin1", IDC_WEATHER_RADIUS_SPIN, UPDOWN_CLASS, UDS_ARROWKEYS, 83, 122, 11, 14
+
+    GROUPBOX        "Box Size", IDC_WEATHER_BOX_GROUP, 7, 149, 260, 35
+    LTEXT           "Width:", -1, 14, 165, 27, 8
+    EDITTEXT        IDC_WEATHER_WIDTH, 43, 163, 40, 14, ES_AUTOHSCROLL
+    CONTROL         "Spin2", IDC_WEATHER_WIDTH_SPIN, UPDOWN_CLASS, UDS_ARROWKEYS, 83, 163, 11, 14
+    LTEXT           "Depth:", -1, 97, 165, 27, 8
+    EDITTEXT        IDC_WEATHER_DEPTH, 126, 163, 40, 14, ES_AUTOHSCROLL
+    CONTROL         "Spin3", IDC_WEATHER_DEPTH_SPIN, UPDOWN_CLASS, UDS_ARROWKEYS, 166, 163, 11, 14
+    LTEXT           "Height:", -1, 180, 165, 27, 8
+    EDITTEXT        IDC_WEATHER_HEIGHT, 209, 163, 40, 14, ES_AUTOHSCROLL
+    CONTROL         "Spin4", IDC_WEATHER_HEIGHT_SPIN, UPDOWN_CLASS, UDS_ARROWKEYS, 249, 163, 11, 14
+
+    GROUPBOX        "Rain", IDC_WEATHER_RAIN_GROUP, 7, 190, 260, 75
+    LTEXT           "R:", -1, 14, 206, 8, 8
+    EDITTEXT        IDC_WEATHER_RAIN_COLOR_R, 24, 204, 24, 14, ES_NUMBER
+    LTEXT           "G:", -1, 54, 206, 8, 8
+    EDITTEXT        IDC_WEATHER_RAIN_COLOR_G, 64, 204, 24, 14, ES_NUMBER
+    LTEXT           "B:", -1, 94, 206, 8, 8
+    EDITTEXT        IDC_WEATHER_RAIN_COLOR_B, 104, 204, 24, 14, ES_NUMBER
+    LTEXT           "A:", -1, 134, 206, 8, 8
+    EDITTEXT        IDC_WEATHER_RAIN_COLOR_A, 144, 204, 24, 14, ES_NUMBER
+    CONTROL         "", IDC_WEATHER_RAIN_COLOR_PREVIEW, "Static", SS_OWNERDRAW | WS_BORDER, 176, 204, 24, 14
+    PUSHBUTTON      "Pick", IDC_WEATHER_RAIN_COLOR_CHANGE, 206, 204, 36, 14
+    LTEXT           "Fall Speed:", -1, 14, 226, 44, 8
+    EDITTEXT        IDC_WEATHER_RAIN_FALL_SPEED, 60, 224, 40, 14, ES_AUTOHSCROLL
+    LTEXT           "Streak Sec:", -1, 108, 226, 48, 8
+    EDITTEXT        IDC_WEATHER_RAIN_STREAK_SECONDS, 160, 224, 40, 14, ES_AUTOHSCROLL
+    LTEXT           "Wind X:", -1, 14, 246, 44, 8
+    EDITTEXT        IDC_WEATHER_RAIN_WIND_X, 60, 244, 40, 14, ES_AUTOHSCROLL
+    LTEXT           "Wind Z:", -1, 108, 246, 48, 8
+    EDITTEXT        IDC_WEATHER_RAIN_WIND_Z, 160, 244, 40, 14, ES_AUTOHSCROLL
+
+    GROUPBOX        "Snow", IDC_WEATHER_SNOW_GROUP, 7, 271, 260, 95
+    LTEXT           "R:", -1, 14, 287, 8, 8
+    EDITTEXT        IDC_WEATHER_SNOW_COLOR_R, 24, 285, 24, 14, ES_NUMBER
+    LTEXT           "G:", -1, 54, 287, 8, 8
+    EDITTEXT        IDC_WEATHER_SNOW_COLOR_G, 64, 285, 24, 14, ES_NUMBER
+    LTEXT           "B:", -1, 94, 287, 8, 8
+    EDITTEXT        IDC_WEATHER_SNOW_COLOR_B, 104, 285, 24, 14, ES_NUMBER
+    LTEXT           "A:", -1, 134, 287, 8, 8
+    EDITTEXT        IDC_WEATHER_SNOW_COLOR_A, 144, 285, 24, 14, ES_NUMBER
+    CONTROL         "", IDC_WEATHER_SNOW_COLOR_PREVIEW, "Static", SS_OWNERDRAW | WS_BORDER, 176, 285, 24, 14
+    PUSHBUTTON      "Pick", IDC_WEATHER_SNOW_COLOR_CHANGE, 206, 285, 36, 14
+    LTEXT           "Fall Speed:", -1, 14, 307, 44, 8
+    EDITTEXT        IDC_WEATHER_SNOW_FALL_SPEED, 60, 305, 40, 14, ES_AUTOHSCROLL
+    LTEXT           "Sprite Radius:", -1, 108, 307, 48, 8
+    EDITTEXT        IDC_WEATHER_SNOW_SPRITE_RADIUS, 160, 305, 40, 14, ES_AUTOHSCROLL
+    LTEXT           "Sway Amp:", -1, 14, 327, 44, 8
+    EDITTEXT        IDC_WEATHER_SNOW_SWAY_AMPLITUDE, 60, 325, 40, 14, ES_AUTOHSCROLL
+    LTEXT           "Sway Speed:", -1, 108, 327, 48, 8
+    EDITTEXT        IDC_WEATHER_SNOW_SWAY_SPEED, 160, 325, 40, 14, ES_AUTOHSCROLL
+    LTEXT           "Bitmap:", -1, 14, 347, 44, 8
+    EDITTEXT        IDC_WEATHER_SNOW_BITMAP, 60, 345, 100, 14, ES_AUTOHSCROLL
+    PUSHBUTTON      "Browse...", IDC_WEATHER_SNOW_BITMAP_BROWSE, 162, 345, 38, 14
+    // 49x49 preview, matching the stock particle emitter panel's bitmap preview placeholder;
+    // right edge sits on the group's interior margin, clear of the field column at x 200
+    CONTROL         "", IDC_WEATHER_SNOW_BITMAP_PREVIEW, "Static", SS_OWNERDRAW | WS_BORDER, 211, 305, 49, 49
+
+    DEFPUSHBUTTON   "OK", IDOK, 162, 373, 50, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 217, 373, 50, 14
+}
+
 // Face mode side panel (replaces stock dialog 178 with added Delete/Delete Ext./Split buttons)
 LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
 IDD_FACE_MODE_PANEL DIALOGEX 0, 0, 129, 314

@@ -1,3 +1,5 @@
+#include <algorithm>
+#include <iterator>
 #include <patch_common/FunHook.h>
 #include <patch_common/CallHook.h>
 #include <patch_common/AsmOpcodes.h>
@@ -6,6 +8,7 @@
 #include <common/utils/string-utils.h>
 #include <xlog/xlog.h>
 #include "../misc/misc.h"
+#include "../multi/demo/demo.h"
 #include "../rf/particle_emitter.h"
 #include "../rf/geometry.h"
 #include "../rf/multi.h"
@@ -60,7 +63,7 @@ CallHook<void(int, rf::ParticleCreateInfo&, rf::GRoom*, rf::Vector3*, int, rf::P
     [](int pool_id, rf::ParticleCreateInfo& pci, rf::GRoom* room, rf::Vector3 *a4, int parent_obj, rf::Particle** result, rf::ParticleEmitter* emitter) {
         // On AF levels, create particles only within the active distance
         // Applies to particle emitters placed in level file
-        if (!rf::is_server && !rf::is_dedicated_server && af_rfl_version(rf::level.version) && parent_obj == 0 && emitter->uid > 0) {
+        if (!rf::is_dedicated_server && af_rfl_version(rf::level.version) && parent_obj == 0 && emitter->uid > 0) {
             rf::Vector3 camera_pos = rf::camera_get_pos(rf::local_player->cam);
             float dist = camera_pos.distance_to(emitter->pos);
             if (emitter->active_distance != 0.0f && emitter->active_distance <= dist) {
@@ -75,6 +78,12 @@ FunHook<void(int, rf::ParticleCreateInfo&, rf::GRoom*, rf::Vector3*, int, rf::Pa
     0x00496840,
     [](int pool_id, rf::ParticleCreateInfo& pci, rf::GRoom* room, rf::Vector3 *a4, int parent_obj, rf::Particle** result, rf::ParticleEmitter* emitter) {
         bool damages_flag = pci.flags2 & 1;
+        // Particles spawned during a demo seek burst barely age before the seek ends and
+        // would all pop on screen at once afterwards - drop them (the post-seek cull in
+        // demo_playback.cpp is the backstop for effects created via other paths)
+        if (demo_playback_in_seek_burst()) {
+            return;
+        }
         // Do not create not damaging particles on a dedicated server
         if (damages_flag || !rf::is_dedicated_server) {
             particle_create_hook.call_target(pool_id, pci, room, a4, parent_obj, result, emitter);
@@ -135,6 +144,33 @@ CallHook<void(rf::ParticleEmitter*, const rf::Vector3*, const rf::Vector3*, floa
     },
 };
 
+// The stock emitters.tbl parser increments g_num_particle_emitter_types with no bound, so a tbl
+// with more than 64 "$Particle Emitter Type:" entries writes past the 64-slot template array.
+CodeInjection particle_emitter_types_load_cap{
+    0x00496F07,
+    [](auto& regs) {
+        if (regs.edi >= static_cast<int>(std::size(rf::g_particle_emitter_types))) {
+            rf::g_num_particle_emitter_types = regs.edi;
+            regs.eip = 0x00496F1A;
+        }
+    },
+};
+
+FunHook<void()> particle_emitter_types_load_hook{
+    0x00496DF0,
+    []() {
+        particle_emitter_types_load_hook.call_target();
+        // The tbl parser never writes uid or active_distance, so templates keep
+        // heap garbage that the level-emitter checks can mistake for real values.
+        const int num_types = std::min(rf::g_num_particle_emitter_types,
+            static_cast<int>(std::size(rf::g_particle_emitter_types)));
+        for (int i = 0; i < num_types; ++i) {
+            rf::g_particle_emitter_types[i]->uid = 0;
+            rf::g_particle_emitter_types[i]->active_distance = 0.0f;
+        }
+    },
+};
+
 void particle_do_patch()
 {
     // Make particle emitters placed in AF level files respect the Active Distance param
@@ -164,4 +200,10 @@ void particle_do_patch()
 
     // Improve sorting in respect to the liquid surface
     particle_emitter_g_portal_object_add_hook.install();
+
+    // Zero garbage uid/active_distance left in emitters.tbl templates by the parser
+    particle_emitter_types_load_hook.install();
+
+    // Bound the stock emitters.tbl parser to the 64-slot template array
+    particle_emitter_types_load_cap.install();
 }

@@ -475,6 +475,11 @@ namespace gr::d3d11
         if (vfx_queue_.empty()) {
             return;
         }
+        // Tick the spin when the flag was culled (the stock increment in item_render is
+        // skipped then) so the re-query below derives the orient from the new angle.
+        if (gt_is_salvage() && !salvage_flag_was_rendered_this_frame()) {
+            salvage_tick_flag_spin();
+        }
         // The salvage flag is the only thing that ever queues a .vfx outline, so an
         // entry the live query no longer backs is stale by definition — the flag was
         // taken, captured or destroyed between begin_frame() and here, and its
@@ -874,11 +879,14 @@ namespace gr::d3d11
         // salvage_move_carried_flag has already placed the carried flag.
         // A portal-culled item is never dispatched, so the cache can be stale; when it
         // no longer agrees with where the item is now, fall back to the queried pair.
+        // A culled flag at rest still agrees on position, so the cache is trusted at all
+        // only on a frame the engine actually drew the flag.
         constexpr float max_cached_transform_drift_sq = 1.0f;
+        const bool cache_fresh = salvage_flag_was_rendered_this_frame();
         auto chunk_transform = [&](int c, rf::Vector3* out_pos, rf::Matrix3* out_orient) {
             const rf::VfxSfxoRenderObj& render_obj = sfxo_instances[c];
             const rf::Vector3 drift = render_obj.render_pos - outline.pos;
-            if (drift.len_sq() <= max_cached_transform_drift_sq) {
+            if (cache_fresh && drift.len_sq() <= max_cached_transform_drift_sq) {
                 *out_pos = render_obj.render_pos;
                 *out_orient = render_obj.render_orient;
             }

@@ -9,7 +9,10 @@
 #include <xlog/xlog.h>
 #include "../rf/character.h"
 #include "../rf/crt.h"
+#include "../rf/entity.h"
 #include "../rf/os/os.h"
+#include "../rf/v3d.h"
+#include "../rf/vmesh.h"
 
 using SkeletonPool = MemPool<rf::Skeleton, 800>;
 static SkeletonPool skeleton_pool;
@@ -48,6 +51,15 @@ static FunHook<void(rf::Skeleton*, bool)> skeleton_unlink_base_hook{
             if (sp->base_usage_count != 0) {
                 xlog::warn("Expected 0 base usages for skeleton '{}' but got {}", sp->mvf_filename, sp->base_usage_count);
             }
+            if (sp->instance_usage_count > 0) {
+                // A live animation instance still plays this skeleton (e.g. an entity
+                // mid-death-anim whose character was just deleted). Freeing now would leave
+                // the instance with a dangling pointer that is dereferenced every frame and
+                // written on instance teardown. Keep the entry (and its animation data)
+                // alive; skeleton_flush()/skeleton_close() reap it once instances are gone.
+                xlog::debug("Keeping skeleton '{}' alive: {} instance usages remain", sp->mvf_filename, sp->instance_usage_count);
+                return;
+            }
             xlog::trace("Unloading skeleton: {} (total {})", sp->mvf_filename, skeletons.size());
             skeleton_cleanup_one(sp);
             std::string key = string_to_lower(get_filename_without_ext(sp->mvf_filename));
@@ -67,19 +79,26 @@ static FunHook<void()> skeleton_init_hook{
 static FunHook<void()> skeleton_close_hook{
     0x00539DB0,
     []() {
-        for (auto& p : skeletons) {
-            auto& skeleton = p.second;
-            if (skeleton->base_usage_count > 0) {
+        auto it = skeletons.begin();
+        while (it != skeletons.end()) {
+            rf::Skeleton* sp = it->second.get();
+            if (sp->base_usage_count > 0) {
                 xlog::warn("Expected 0 base usages for skeleton '{}' but got {}",
-                    skeleton->mvf_filename, skeleton->base_usage_count);
+                    sp->mvf_filename, sp->base_usage_count);
             }
-            if (skeleton->instance_usage_count > 0) {
-                xlog::warn("Expected 0 instance usages for skeleton '{}' but got {}",
-                    skeleton->mvf_filename, skeleton->instance_usage_count);
+            if (sp->instance_usage_count > 0) {
+                // Same hazard as in skeleton_unlink_base_hook: a live animation instance
+                // still references this entry, so freeing it here would leave a dangling
+                // pointer. Keep it (and its animation data) alive; it is reaped by a
+                // later skeleton_flush()/close once the instance count drains.
+                xlog::warn("Keeping skeleton '{}' alive at close: {} instance usages remain",
+                    sp->mvf_filename, sp->instance_usage_count);
+                ++it;
+                continue;
             }
-            skeleton_cleanup_one(skeleton.get());
+            skeleton_cleanup_one(sp);
+            it = skeletons.erase(it);
         }
-        skeletons.clear();
     },
 };
 
@@ -88,7 +107,7 @@ static void skeleton_flush()
     auto it = skeletons.begin();
     while (it != skeletons.end()) {
         rf::Skeleton* sp = it->second.get();
-        if (sp->base_usage_count == 0) {
+        if (sp->base_usage_count == 0 && sp->instance_usage_count == 0) {
             xlog::trace("Unloading unused skeleton '{}'", sp->mvf_filename);
             skeleton_cleanup_one(sp);
             it = skeletons.erase(it);
@@ -143,10 +162,89 @@ static int __fastcall character_load_animation(rf::Character *this_, int, const 
 
 static FunHook character_load_animation_hook{0x0051CC10, character_load_animation};
 
+// eos.v3c ships with its $prop_flag prop point missing the 180 degree yaw that every
+// other stock character bakes in, so anything hung off it — the CTF flag, the Bagman
+// bag, the jetpack — faces forward and clips through the character's back.
+// Gated on both the filename and the geometry: the name keeps any other mesh out of
+// reach, and the orientation test means a modified eos.v3c is left alone as long as
+// it doesn't have the same bug.
+constexpr const char* eos_prop_fix_mesh = "eos";
+constexpr const char* eos_prop_fix_point = "$prop_flag";
+
+// Prop point's local forward (+Z rotated by its quaternion). Stock characters land near
+// -1 on Z, eos at +1, so the sign carries the whole decision with a wide margin.
+static float prop_point_forward_z(const rf::Quaternion& q)
+{
+    return 1.0f - 2.0f * (q.x * q.x + q.y * q.y);
+}
+
+// Pre-multiply by a 180 degree yaw about Y, i.e. (0,1,0,0) * q. Maps eos.v3c's
+// quaternion exactly onto the value every other stock character carries.
+static void prop_point_yaw_180(rf::Quaternion& q)
+{
+    const rf::Quaternion in = q;
+    q.x = in.z;
+    q.y = in.w;
+    q.z = -in.x;
+    q.w = -in.y;
+}
+
+// Correct every LOD of one lod mesh.
+static void fix_prop_flag_in_lod_mesh(rf::VifLodMesh* lod_mesh, const char* mesh_name)
+{
+    if (!lod_mesh) return;
+    // Note: Only LOD 0 is consulted by the engine's character prop point lookup,
+    // but we correct every level so the data stays consistent.
+    for (int lod = 0; lod < lod_mesh->num_levels && lod < 3; ++lod) {
+        rf::VifMesh* mesh = lod_mesh->meshes[lod];
+        if (!mesh || !mesh->prop_points) continue;
+        for (int i = 0; i < mesh->num_prop_points; ++i) {
+            rf::VifPropPoint& pp = mesh->prop_points[i];
+            if (std::strcmp(pp.name, eos_prop_fix_point) != 0) continue;
+            if (prop_point_forward_z(pp.orient) <= 0.0f) continue;
+            prop_point_yaw_180(pp.orient);
+            xlog::debug("Corrected reversed {} on '{}' (lod {})", eos_prop_fix_point, mesh_name, lod);
+        }
+    }
+}
+
+static void fix_eos_prop_flag(rf::VMesh* vmesh)
+{
+    if (!vmesh || rf::vmesh_get_type(vmesh) != rf::MESH_TYPE_CHARACTER) return;
+    if (!string_iequals(get_filename_without_ext(vmesh->filename), eos_prop_fix_mesh)) return;
+
+    auto* ci = static_cast<rf::CharacterInstance*>(vmesh->instance);
+    if (!ci || !ci->base_character) return;
+    rf::Character* cp = ci->base_character;
+    if (cp->num_character_meshes < 1) return;
+
+    rf::CharacterMesh& cm = cp->character_meshes[0];
+    if (cm.mesh) {
+        fix_prop_flag_in_lod_mesh(cm.mesh->vu, vmesh->filename);
+    }
+}
+
+static FunHook<rf::Entity*(int, const char*, int, const rf::Vector3&, const rf::Matrix3&, int, int)>
+entity_create_prop_fix_hook{
+    0x00422360,
+    [](int entity_type, const char* name, int parent_handle, const rf::Vector3& pos,
+       const rf::Matrix3& orient, int create_flags, int mp_character) {
+        rf::Entity* ep = entity_create_prop_fix_hook.call_target(
+            entity_type, name, parent_handle, pos, orient, create_flags, mp_character);
+        if (ep) {
+            fix_eos_prop_flag(ep->vmesh);
+        }
+        return ep;
+    },
+};
+
 static CodeInjection character_delete_character_injection{
     0x0051C981,
     [](auto& regs) {
         rf::Character* cp = regs.ebx;
+        // Character deletion mid-session is the main producer of zero-base skeletons;
+        // log it so dangling-animation reports can be correlated
+        xlog::debug("Deleting character '{}' ({} anims)", cp->name, cp->num_anims);
         for (int i = 0; i < cp->num_anims; ++i) {
             rf::skeleton_unlink_base(cp->animations[i], false);
         }
@@ -163,6 +261,33 @@ static FunHook<void()> character_level_init_hook{
     },
 };
 
+// Reimplementation of Skeleton::has_morph_vertices (0x0053A820) with failure handling.
+// Stock code lazily pages the skeleton in and dereferences animation_data
+// unconditionally; when the page-in fails (freed/reused pool entry after multiplayer
+// session churn - observed as a crash at 0x0053A825 during demo playback restarts)
+// it read through null. Treat "no data" as "no morph vertices" instead.
+static FunHook<bool __fastcall(rf::Skeleton*)> skeleton_has_morph_vertices_hook{
+    0x0053A820,
+    [](rf::Skeleton* sp) FASTCALL_LAMBDA -> bool {
+        if (!sp->animation_data) {
+            if (sp->mvf_filename[0] == '\0') {
+                return false; // freed/reset pool entry - nothing to page in
+            }
+            rf::skeleton_page_in(sp->mvf_filename, nullptr);
+        }
+        if (!sp->animation_data) {
+            static int warn_count = 0;
+            if (warn_count < 5) {
+                ++warn_count;
+                xlog::warn("Skeleton '{}' has no animation data - skipping morph", sp->mvf_filename);
+            }
+            return false;
+        }
+        // num_morph_vertices lives at +0x1C of the animation data block
+        return *reinterpret_cast<int*>(static_cast<char*>(sp->animation_data) + 0x1C) > 0;
+    },
+};
+
 void character_apply_patch()
 {
     // do not load fast_anims value from registry
@@ -173,6 +298,8 @@ void character_apply_patch()
     skeleton_init_hook.install();
     skeleton_close_hook.install();
     character_load_animation_hook.install();
+    entity_create_prop_fix_hook.install();
     character_delete_character_injection.install();
     character_level_init_hook.install();
+    skeleton_has_morph_vertices_hook.install();
 }

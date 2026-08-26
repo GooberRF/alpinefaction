@@ -605,7 +605,6 @@ namespace rf
     static auto& g_geomod_texture_index = addr_as_ref<int>(0x00647C94);
     static auto& g_geomod_scale = addr_as_ref<float>(0x00648598);
     static auto& g_geomod_flags = addr_as_ref<uint8_t>(0x0064858C);       // bit 0x1=local, 0x8=driller
-    static auto& g_geomod_type_info = addr_as_ref<void*>(0x00646A20);     // geo type info (max_radius at +0x60)
     static auto& g_num_geomods_this_level = addr_as_ref<int>(0x00647C9C);
     static auto& g_geomod_separate_solids = addr_as_ref<bool>(0x00647C28);
 
@@ -623,6 +622,13 @@ namespace rf
     static auto& g_decal_destroy = addr_as_ref<void(GDecal*)>(0x004D6C50);
     static auto& geomod_create_rock_debris = addr_as_ref<int(Vector3* orientation, float scaled_radius,
         Vector3* source_dir, int texture, int room_ptr)>(0x0048FE30);
+    // Recycles every live glass shard back into the pool and re-resolves foley sounds/bitmaps
+    // (cached lookups). Does not touch broken-pane state (that lives in room/face data);
+    // safe to call mid-level.
+    static auto& glass_shard_level_init = addr_as_ref<void()>(0x00490F60);
+    // Recycles every live geomod debris rock back into the pool. Craters themselves are
+    // geometry and are unaffected; safe to call mid-level.
+    static auto& geomod_debris_level_init = addr_as_ref<void()>(0x0048F400);
 
     static auto& g_cache_clear = addr_as_ref<void()>(0x004F0B90);
     static auto& g_get_room_render_list = addr_as_ref<void(GRoom ***rooms, int *num_rooms)>(0x004D3330);

@@ -1,10 +1,14 @@
 #include <algorithm>
+#include <cmath>
+#include <deque>
 #include <format>
 #include <map>
 #include <optional>
+#include <random>
 #include <set>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 #include <vector>
 #include <patch_common/CallHook.h>
 #include <patch_common/CodeInjection.h>
@@ -18,15 +22,30 @@
 #include "kill.h"
 #include "kill_attribution.h"
 #include "alpine_packets.h"
+#include "server.h"
+#include "demo/demo.h"
+#include "../sound/sound.h"
 #include "../rf/weapon.h"
 #include "../rf/item.h"
 #include "../rf/entity.h"
 #include "../rf/ai.h"
 #include "../rf/multi.h"
 #include "../rf/gameseq.h"
+#include "../rf/level.h"
 #include "../rf/player/player.h"
+#include "../rf/player/control_config.h"
 #include "../rf/os/console.h"
 #include "../rf/os/timestamp.h"
+#include "../rf/physics.h"
+#include "../rf/gr/gr.h"
+#include "../rf/sound/sound.h"
+#include "../os/console.h"
+#include "../os/os.h"
+#include "../main/main.h"
+#include "../hud/multi_spectate.h"
+#include "../misc/player.h"
+#include "../misc/alpine_options.h"
+#include "../misc/alpine_settings.h"
 
 // Spawn reserve for a no-clip "infinite ammo" weapon. Firing draws from reserve,
 // but we suppress the per-shot decrement, so this is purely the (constant) number
@@ -52,6 +71,16 @@ static const char* mutator_weapon_name(int weapon_type)
     return rf::weapon_types[weapon_type].name.c_str();
 }
 
+// Prevent issues if a TC mod removes the `Riot Stick` class from weapons.tbl.
+static constexpr int MISSING_WEAPON_CLIP_SIZE = 1;
+
+static int mutator_weapon_clip_size_multi(int weapon_type)
+{
+    if (weapon_type < 0 || weapon_type >= rf::num_weapon_types)
+        return MISSING_WEAPON_CLIP_SIZE;
+    return rf::weapon_types[weapon_type].clip_size_multi;
+}
+
 // Locate the level pickups that grant the featured weapon so we can
 // redirect other pickups onto them.
 static void resolve_featured_items(MutatorConfig& m)
@@ -75,7 +104,6 @@ static void set_single_weapon_loadout(AlpineServerConfigRules& r, int weapon_typ
 {
     r.spawn_loadout.red_weapons.clear();
     r.spawn_loadout.blue_weapons.clear();
-    r.spawn_loadout.loadouts_active = true;
     r.spawn_loadout.add(mutator_weapon_name(weapon_type), reserve_ammo, false, true);
     r.default_player_weapon.set_weapon(mutator_weapon_name(weapon_type));
 }
@@ -104,6 +132,8 @@ static void apply_instagib(AlpineServerConfigRules& r, const toml::table& /*opts
     r.mutators.featured_weapon_index = rail;
     r.mutators.lock_to_featured_weapon = true;
     r.mutators.no_featured_reload = true;
+    // One Weapon applies before Instagib; drop its pickup redirect so the leftover state can never fire.
+    r.mutators.redirect_pickups_to_featured = false;
 
     // No pickups; no weapon drops.
     r.mutators.pickup_policy = PickupPolicy::HideAll;
@@ -123,7 +153,7 @@ static void apply_rails(AlpineServerConfigRules& r, const toml::table& opts)
         if (idx >= 0)
             featured = idx;
         else
-            rf::console::print("  [WARN] Rails mutator: unknown featured_weapon '{}', using rail gun\n",
+            rf::console::print("  [WARN] oneweapon mutator: unknown featured_weapon '{}', using rail gun\n",
                                clamp_for_console(*v));
     }
     const bool exclude_thrown = opts["exclude_thrown"].value_or(RAILS_DEFAULT_EXCLUDE_THROWN);
@@ -134,7 +164,7 @@ static void apply_rails(AlpineServerConfigRules& r, const toml::table& opts)
 
     // Spawn with the baton only; the featured weapon comes from redirected pickups.
     const int baton = rf::riot_stick_weapon_type;
-    set_single_weapon_loadout(r, baton, rf::weapon_types[baton].clip_size_multi);
+    set_single_weapon_loadout(r, baton, mutator_weapon_clip_size_multi(baton));
 
     r.mutators.featured_weapon_index = featured;
     r.mutators.redirect_pickups_to_featured = true;
@@ -168,8 +198,7 @@ static void apply_arena(AlpineServerConfigRules& r, const toml::table& /*opts*/)
     const int baton = rf::riot_stick_weapon_type;
     r.spawn_loadout.red_weapons.clear();
     r.spawn_loadout.blue_weapons.clear();
-    r.spawn_loadout.loadouts_active = true;
-    r.spawn_loadout.add("Riot Stick", rf::weapon_types[baton].clip_size_multi, false, true);
+    r.spawn_loadout.add("Riot Stick", mutator_weapon_clip_size_multi(baton), false, true);
     r.spawn_loadout.add("Assault Rifle", 999, false, true);
     r.default_player_weapon.set_weapon("Assault Rifle");
 
@@ -188,6 +217,7 @@ static void apply_arena(AlpineServerConfigRules& r, const toml::table& /*opts*/)
 
     // No pickups except weapons.
     r.mutators.pickup_policy = PickupPolicy::WeaponsOnly;
+    r.drop_weapons = false;
 }
 
 // Vampire: landing damage on another player heals the attacker for a fixed
@@ -209,6 +239,12 @@ static void apply_vampire(AlpineServerConfigRules& r, const toml::table& opts)
     // Composed with (not replacing) whatever pickup policy is in force.
     r.mutators.hide_health_armor_pickups =
         opts["hide_health_armor_pickups"].value_or(VAMPIRE_DEFAULT_HIDE_HEALTH_ARMOR);
+}
+
+// Critical Hits: random crits rolled at fire time.
+static void apply_crits(AlpineServerConfigRules& r, const toml::table& /*opts*/)
+{
+    r.mutators.crits_enabled = true;
 }
 
 // Super Drain: health and armor above the entity's normal max rot back down.
@@ -311,6 +347,24 @@ static void apply_low_gravity(AlpineServerConfigRules& r, const toml::table& /*o
     r.mutators.low_gravity_enabled = true;
 }
 
+// Skiing.
+static void apply_skiing(AlpineServerConfigRules& r, const toml::table& /*opts*/)
+{
+    r.mutators.skiing_enabled = true;
+}
+
+// Dodging.
+static void apply_dodging(AlpineServerConfigRules& r, const toml::table& /*opts*/)
+{
+    r.mutators.dodging_enabled = true;
+}
+
+// Pogo.
+static void apply_pogo(AlpineServerConfigRules& r, const toml::table& /*opts*/)
+{
+    r.mutators.pogo_enabled = true;
+}
+
 // Score Limit Override.
 static void apply_score_limit_override(AlpineServerConfigRules& r, const toml::table& opts)
 {
@@ -396,6 +450,7 @@ static const MutatorDef MUTATORS[] = {
     {MutatorId::Rails, "oneweapon", "One Weapon", 4, &apply_rails, RAILS_OPTIONS, std::size(RAILS_OPTIONS), MutatorGametypeReq::Any, nullptr, "featured_weapon"},
     {MutatorId::Arena, "arena", "Arena", 4, &apply_arena, nullptr, 0},
     {MutatorId::Vampire, "vampire", "Vampire", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_vampire, VAMPIRE_OPTIONS, std::size(VAMPIRE_OPTIONS)},
+    {MutatorId::Crits, "crits", "Critical Hits", 4, &apply_crits, nullptr, 0},
     {MutatorId::SuperDrain, "superdrain", "Super Drain", 4, &apply_super_drain, nullptr, 0},
     {MutatorId::Armored, "armored", "Armored", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_armored, nullptr, 0},
     {MutatorId::SuperRail, "superrail", "Super Rail", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_super_rail, nullptr, 0},
@@ -407,6 +462,9 @@ static const MutatorDef MUTATORS[] = {
     {MutatorId::DelayedSupers, "delayedsupers", "Delayed Supers", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_delayed_supers, nullptr, 0},
     {MutatorId::WeirdGunGame, "weirdgungame", "Weird Gun Game", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_weird_gungame, nullptr, 0, MutatorGametypeReq::GunGameOnly},
     {MutatorId::LowGravity, "lowgravity", "Low Gravity", 4, &apply_low_gravity, nullptr, 0},
+    {MutatorId::Skiing, "skiing", "Skiing", 4, &apply_skiing, nullptr, 0},
+    {MutatorId::Dodging, "dodging", "Dodging", 4, &apply_dodging, nullptr, 0},
+    {MutatorId::Pogo, "pogo", "Pogo", 4, &apply_pogo, nullptr, 0},
     {MutatorId::ScoreLimitOverride, "scorelimit", "Score Limit Override", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_score_limit_override, SCORE_LIMIT_OPTIONS, std::size(SCORE_LIMIT_OPTIONS), MutatorGametypeReq::HasScoreLimit, "Score Limit", "score_limit"},
     {MutatorId::IdealPlayerCountOverride, "idealplayers", "Ideal Player Count Override", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_ideal_player_count_override, IDEAL_PLAYERS_OPTIONS, std::size(IDEAL_PLAYERS_OPTIONS), MutatorGametypeReq::BotsSupported, "Ideal Players", "ideal_players"},
 };
@@ -414,6 +472,9 @@ static const MutatorDef MUTATORS[] = {
 // Hardcoded order in which simultaneously-active mutators are applied. Later
 // entries win where they overlap.
 static const MutatorId MUTATOR_APPLY_ORDER[] = {
+    MutatorId::Pogo,
+    MutatorId::Dodging,
+    MutatorId::Skiing,
     MutatorId::LowGravity,
     MutatorId::WeirdGunGame,
     MutatorId::HumansVsBots,
@@ -426,6 +487,7 @@ static const MutatorId MUTATOR_APPLY_ORDER[] = {
     MutatorId::Armored,
     MutatorId::SuperDrain,
     MutatorId::Vampire,
+    MutatorId::Crits,
     MutatorId::Arena,
     MutatorId::Rails,
     MutatorId::Instagib,
@@ -552,8 +614,8 @@ static const char* weapon_short_label(std::string_view display_name, std::string
     return nullptr;
 }
 
-// Weapons the Rails mutator can feature: anything a level pickup can grant.
-// Rails redirects every weapon/ammo pickup onto the featured weapon's own
+// Weapons the One Weapon mutator can feature: anything a level pickup can grant.
+// One Weapon redirects every weapon/ammo pickup onto the featured weapon's own
 // pickup, so a weapon without one would leave players stuck with the baton.
 // Not relevant in the stock game but could be in TC mods.
 static std::vector<MutatorOptionChoice> build_featured_weapon_choices()
@@ -744,7 +806,7 @@ void apply_mutators_from_toml(const toml::array& mutators_arr, AlpineServerConfi
             def->apply(rules, it->second);
             labels.push_back(def->label);
         }
-        else {
+        else if (!g_rules_parse_quiet) {
             rf::console::print("  [WARN] mutator '{}' does nothing in this game type and was not applied\n", def->name);
         }
 
@@ -806,7 +868,8 @@ toml::array mutator_declarations_to_toml_array(const std::vector<MutatorDeclarat
 }
 
 std::optional<std::string> mutators_build_declarations_from_vote(
-    const std::vector<VoteMutatorInput>& input, std::vector<MutatorDeclaration>& out)
+    const std::vector<VoteMutatorInput>& input, rf::NetGameType game_type,
+    std::vector<MutatorDeclaration>& out)
 {
     out.clear();
 
@@ -818,6 +881,10 @@ std::optional<std::string> mutators_build_declarations_from_vote(
         }
         if (!seen_ids.insert(entry.mutator_id).second) {
             return std::format("mutator '{}' was selected more than once", info->label);
+        }
+        if (!mutator_gametype_mask_allows(info->valid_gametype_mask, static_cast<uint8_t>(game_type))) {
+            return std::format("mutator '{}' cannot be used in {}", info->label,
+                               multi_game_type_name_short(game_type));
         }
 
         MutatorDeclaration decl;
@@ -854,6 +921,11 @@ std::optional<std::string> mutators_build_declarations_from_vote(
                     decl.options[opt->name] = opt_in.int_value;
                     break;
                 case MutatorOptionType::Float:
+                    // Nothing downstream is prepared for a NaN or infinity off the wire.
+                    if (!std::isfinite(opt_in.float_value)) {
+                        return std::format("option '{}' of mutator '{}' has an out of range value",
+                                           opt->name, info->label);
+                    }
                     decl.options[opt->name] = opt_in.float_value;
                     break;
                 case MutatorOptionType::String:
@@ -906,14 +978,22 @@ static std::string mutator_vote_detail(const MutatorDef& def, const MutatorDecla
     return *str;
 }
 
-std::string mutators_join_labels(const std::vector<MutatorDeclaration>& declarations)
+static std::string join_labels(const std::vector<MutatorDeclaration>& declarations,
+                               std::optional<rf::NetGameType> game_type)
 {
     std::string joined;
     for (const auto& decl : declarations) {
+        const MutatorDef* def = find_mutator_by_name(decl.name);
+        // Same availability test apply_mutators_from_toml runs, so the line can never
+        // name a mutator the game type drops.
+        if (def && game_type
+            && !mutator_gametype_mask_allows(gametype_mask_for_req(def->gametype_req),
+                                             static_cast<uint8_t>(*game_type)))
+            continue;
+
         if (!joined.empty())
             joined += ", ";
 
-        const MutatorDef* def = find_mutator_by_name(decl.name);
         if (!def) {
             joined += decl.name;
             continue;
@@ -927,62 +1007,100 @@ std::string mutators_join_labels(const std::vector<MutatorDeclaration>& declarat
     return joined;
 }
 
-const AlpineServerConfigRules& vote_natural_rules_for_level(std::string_view level_filename)
+std::string mutators_join_labels(const std::vector<MutatorDeclaration>& declarations,
+                                 std::optional<rf::NetGameType> game_type)
 {
-    for (const auto& entry : g_alpine_server_config.levels) {
-        if (string_iequals(entry.level_filename, level_filename))
-            return entry.rule_overrides_no_mutators;
-    }
-    // Not in the rotation: a manually named level runs on the base rules.
-    return g_alpine_server_config.base_rules_no_mutators;
+    return join_labels(declarations, game_type);
 }
 
-std::optional<ManualRulesOverride> load_vote_rules_override(
-    std::string_view level_filename, const std::vector<MutatorDeclaration>& mutators,
-    std::optional<rf::NetGameType> gametype)
+rf::NetGameType resolve_level_default_game_type(std::string_view level_filename)
 {
-    if (mutators.empty() && !gametype)
-        return std::nullopt;
+    const std::string normalized = normalize_level_filename(level_filename);
 
-    // Inheritance rule for a vote override, in layering order:
-    //   1. the rules the voted level would run with on its own — its rotation
-    //      entry's rules if it is in the rotation, otherwise the base rules —
-    //      with config-declared mutators stripped (voted mutators REPLACE
-    //      configured ones rather than stacking on them),
-    //   2. the voted game type and its gametype defaults, if one was voted,
-    //   3. the voted mutator declarations.
-    // Starting from the base rules instead (as this used to) silently dragged the
-    // base game type onto a level whose rotation entry overrides it, so adding a
-    // single mutator to a level vote could flip the whole game type.
-    AlpineServerConfigRules rules = vote_natural_rules_for_level(level_filename);
-
-    if (gametype && rules.game_type != *gametype) {
-        // Only re-derive the gametype defaults when the type actually CHANGES.
-        // apply_defaults_for_game_type() overwrites operator-configured rules
-        // (spawn loadout, pvp_damage_modifier, spawn_delay, ...), so explicitly
-        // voting the type a level already runs must behave the same as voting
-        // "Server default" rather than silently wiping the config. It also
-        // rebuilds the loadout and clears MutatorConfig, so mutators come after.
-        rules.game_type = *gametype;
-        apply_defaults_for_game_type(*gametype, rules);
+    for (const auto& entry : g_alpine_server_config.levels) {
+        if (string_iequals(entry.level_filename, normalized))
+            return entry.rule_overrides.game_type;
     }
 
+    // Run maps carry no prefix, so the quirks table is the only thing that identifies
+    // them. Behind the rotation lookup, which the operator meant.
+    if (is_known_run_level(normalized))
+        return rf::NetGameType::NG_TYPE_RUN;
+
+    // Ahead of the prefix scan: the base game type gets the level if it can host it,
+    // so a TeamDM server keeps TeamDM for dm07 rather than the prefix's DM.
+    const rf::NetGameType base_gt = g_alpine_server_config.base_rules.game_type;
+    if (multi_level_name_matches_game_type(normalized, base_gt))
+        return base_gt;
+
+    if (auto from_prefix = multi_game_type_for_level_prefix(normalized))
+        return *from_prefix;
+
+    return base_gt;
+}
+
+AlpineServerConfigRules build_derived_server_rules(rf::NetGameType game_type,
+                                                   const std::vector<MutatorDeclaration>& mutators)
+{
+    const auto& cfg = g_alpine_server_config;
+
+    // Nothing to derive: the fully layered base rules ARE the answer. Rebuilding would
+    // apply the mutators last and lose the keys-over-mutators layering.
+    if (game_type == cfg.base_rules.game_type && mutators == cfg.base_rules.mutators.declarations) {
+        return cfg.base_rules;
+    }
+
+    // Every runtime derivation replays a set the config parse already reported on.
+    const RulesParseQuietGuard quiet;
+
+    AlpineServerConfigRules rules;
+    if (game_type == cfg.base_rules.game_type) {
+        // The operator's keys already sit on this game type's defaults in parse order.
+        rules = cfg.base_rules_no_mutators;
+    }
+    else {
+        // Never from another game type's materialized rules: they carry fields
+        // apply_defaults_for_game_type does not claim back.
+        rules = cfg.base_rules_keys_only;
+        rules.game_type = game_type;
+        apply_defaults_for_game_type(game_type, rules);
+    }
+
+    // Applied AFTER the base keys, the reverse of the config parse: a voted layer has
+    // to win over what it was layered onto.
     if (!mutators.empty()) {
         const toml::array arr = mutator_declarations_to_toml_array(mutators);
         apply_mutators_from_toml(arr, rules);
     }
 
-    ManualRulesOverride result;
-    // Reported from what actually applied rather than from what was voted.
+    return rules;
+}
+
+std::optional<std::string> mutators_active_labels_string(const AlpineServerConfigRules& rules)
+{
     std::string labels;
     for (const auto& label : rules.mutators.active_labels) {
         if (!labels.empty())
             labels += ", ";
         labels += label;
     }
+    if (labels.empty())
+        return std::nullopt;
+    return labels;
+}
+
+ManualRulesOverride load_vote_rules_override(
+    std::string_view level_filename, const std::vector<MutatorDeclaration>& mutators,
+    std::optional<rf::NetGameType> gametype)
+{
+    const rf::NetGameType game_type = gametype.value_or(resolve_level_default_game_type(level_filename));
+
+    AlpineServerConfigRules rules = build_derived_server_rules(game_type, mutators);
+
+    ManualRulesOverride result;
+    // Reported from what actually applied rather than from what was voted.
+    result.mutator_labels = mutators_active_labels_string(rules);
     result.rules = std::move(rules);
-    if (!labels.empty())
-        result.mutator_labels = std::move(labels);
     return result;
 }
 
@@ -1008,6 +1126,12 @@ static bool is_standard_health_or_armor_item(const rf::ItemInfo& info)
 
 // Defined in the Flaming Enemies section below.
 static void flame_level_init();
+static void flame_multi_shutdown();
+
+// Defined in the Critical Hits section below.
+static void crits_reset();
+static float crit_radius_scale();
+static void crits_on_player_destroy(rf::Player* player);
 
 static constexpr float LOW_GRAVITY_VALUE = 5.8f;
 
@@ -1043,8 +1167,519 @@ void mutators_update_low_gravity()
     }
 }
 
+// Skiing parameters.
+static constexpr float SKI_ENTER_SPEED = 1.5f;          // engage above this
+static constexpr float SKI_EXIT_SPEED = 1.0f;           // disengage below this
+static constexpr float SKI_MIN_SLOPE = 0.15f;           // |n_xz| that counts as a slope
+static constexpr float SKI_TURN_RATE_DEG_PER_S = 90.0f; // carve rate, magnitude preserving
+static constexpr float SKI_FRICTION_PER_S = 0.05f;      // on slopes: near-frictionless
+static constexpr float SKI_FRICTION_FLAT_PER_S = 0.4f;  // level ground: long but finite glide
+static constexpr float SKI_SEPARATION_EPS = 0.5f;       // vn above this is a real convex break, not jitter
+static constexpr float SKI_RELEASE_PUSH = 0.75f;        // m/s off the face so collide-and-slide can't re-engage
+static constexpr float SKI_STRAFE_WISHSPEED_FRAC = 0.25f;
+static constexpr float SKI_STRAFE_ACCEL = 10.0f;
+
+// 0.5 is the engine's own standable threshold: the ground snap compares against
+// it at 0x004A0A82 and calls entity_make_freefall below it (constant 0x005893C0).
+static constexpr float SKI_MIN_WALKABLE_NY = 0.5f;
+
+// Dodging parameters. directional dodge from a double-tapped movement key,
+// or from  crouch+jump while holding one. Grounded only.
+static constexpr int DODGE_TAP_WINDOW_MS = 300;       // max gap between the two taps
+static constexpr int DODGE_COOLDOWN_MS = 750;         // between dodges
+static constexpr float DODGE_SPEED_FACTOR = 2.25f;    // burst speed as a factor of info->max_vel
+static constexpr float DODGE_VERTICAL_FACTOR = 0.5f;  // pop as a factor of the stock jump velocity
+
+// A manual freefall must arm the anti-restick window itself (real jumps get it from the
+// AF injection inside entity_jump); 64ms matches stock, and the dodge's pop clears the
+// falling probe's 0.1 reach at ~41ms.
+extern rf::Timestamp g_player_jump_timestamp;
+
+// `skifree` console command, single player only.
+static bool g_skifree_sp_enabled = false;
+
+// `pogo` console command, single player only.
+static bool g_pogo_sp_enabled = false;
+
+bool mutators_skiing_active()
+{
+    if (!rf::is_multi)
+        return g_skifree_sp_enabled;
+    if (rf::is_server)
+        return g_alpine_server_config_active_rules.mutators.skiing_enabled;
+    // Server informs the client via SIF_SKIING.
+    const auto& info = get_af_server_info();
+    return info.has_value() && info->skiing;
+}
+
+bool mutators_dodging_active()
+{
+    if (!rf::is_multi)
+        return g_skifree_sp_enabled;
+    if (rf::is_server)
+        return g_alpine_server_config_active_rules.mutators.dodging_enabled;
+    // Server informs the client via SIF_DODGING.
+    const auto& info = get_af_server_info();
+    return info.has_value() && info->dodging;
+}
+
+bool mutators_pogo_active()
+{
+    if (!rf::is_multi)
+        return g_pogo_sp_enabled;
+    if (rf::is_server)
+        return g_alpine_server_config_active_rules.mutators.pogo_enabled;
+    // Server informs the client via SIF_POGO.
+    const auto& info = get_af_server_info();
+    return info.has_value() && info->pogo;
+}
+
+static bool any_movement_mutator_active()
+{
+    return mutators_skiing_active() || mutators_dodging_active() || mutators_pogo_active();
+}
+
+static bool ski_held(rf::Entity* ep)
+{
+    if (!mutators_skiing_active() || ep != rf::local_player_entity || !rf::local_player)
+        return false;
+    if (rf::entity_is_dying(ep))
+        return false;
+    if (rf::entity_in_vehicle(ep) || rf::entity_is_swimming(ep) || rf::entity_is_climbing(ep))
+        return false;
+    if (rf::console::console_is_visible() || rf::multi_chat_is_say_visible())
+        return false;
+    return rf::control_is_control_down(&rf::local_player->settings.controls, rf::CC_ACTION_CROUCH);
+}
+
+static bool g_ski_engaged = false;
+
+// Below both thresholds stock crouch movement applies unchanged.
+static bool ski_ground_active(rf::Entity* ep)
+{
+    if (!ski_held(ep)) {
+        if (ep == rf::local_player_entity)
+            g_ski_engaged = false;
+        return false;
+    }
+    const auto& vel = ep->p_data.vel;
+    const float speed = std::sqrt(vel.x * vel.x + vel.z * vel.z);
+    const rf::Vector3& n = ep->p_data.collide_out.hit_normal;
+
+    if (speed > SKI_ENTER_SPEED || std::sqrt(n.x * n.x + n.z * n.z) > SKI_MIN_SLOPE)
+        g_ski_engaged = true;
+    else if (speed < SKI_EXIT_SPEED)
+        g_ski_engaged = false;
+    return g_ski_engaged;
+}
+
+// View basis flattened to XZ and combined before normalizing.
+// False when the combination degenerates (no input, or a straight-up view).
+static bool ski_view_dir(rf::Entity* ep, float fwd, float side, float& out_x, float& out_z)
+{
+    const rf::Vector3& f = ep->eye_orient.fvec;
+    const rf::Vector3& r = ep->eye_orient.rvec;
+    const float raw_x = f.x * fwd + r.x * side;
+    const float raw_z = f.z * fwd + r.z * side;
+    const float len = std::sqrt(raw_x * raw_x + raw_z * raw_z);
+    if (len <= 1e-4f)
+        return false;
+    out_x = raw_x / len;
+    out_z = raw_z / len;
+    return true;
+}
+
+// View+keys wish direction on the XZ plane. False when no input, when typing
+// (console/chat swallow movement keys), or when the flattened basis degenerates.
+static bool ski_wish_dir(rf::Entity* ep, float& out_x, float& out_z)
+{
+    if (!rf::local_player)
+        return false;
+    if (rf::console::console_is_visible() || rf::multi_chat_is_say_visible())
+        return false;
+
+    float fwd = 0.0f;
+    float side = 0.0f;
+    auto* controls = &rf::local_player->settings.controls;
+    if (rf::control_is_control_down(controls, rf::CC_ACTION_FORWARD))
+        fwd += 1.0f;
+    if (rf::control_is_control_down(controls, rf::CC_ACTION_BACKWARD))
+        fwd -= 1.0f;
+    if (rf::control_is_control_down(controls, rf::CC_ACTION_SLIDE_RIGHT))
+        side += 1.0f;
+    if (rf::control_is_control_down(controls, rf::CC_ACTION_SLIDE_LEFT))
+        side -= 1.0f;
+
+    return ski_view_dir(ep, fwd, side, out_x, out_z);
+}
+
+// Strafe gain, the one authority for the formula. The dot-cap limits speed
+// along the wish direction, so gain comes from steering across the velocity and
+// never from holding forward; the step rate uses the full max_vel.`along` is the
+// caller's already-computed dot of horizontal velocity with the wish direction.
+static void ski_strafe_gain(rf::Entity* ep, float dt, float wish_x, float wish_z, float along)
+{
+    if (dt <= 0.0f)
+        return;
+    const float add = SKI_STRAFE_WISHSPEED_FRAC * ep->info->max_vel - along;
+    if (add <= 0.0f)
+        return;
+    auto& vel = ep->p_data.vel;
+    const float step = std::min(SKI_STRAFE_ACCEL * ep->info->max_vel * dt, add);
+    vel.x += wish_x * step;
+    vel.z += wish_z * step;
+}
+
+static void ski_apply(rf::Entity* ep, float dt)
+{
+    auto& vel = ep->p_data.vel;
+    // Stock ground move reads this same field for its own slope projection
+    // and only inside its on-ground branch, so it is the ground
+    // contact normal and it is valid exactly when skiing needs it.
+    const rf::Vector3& n = ep->p_data.collide_out.hit_normal;
+
+    // Too steep to stand on: release instead of skiing it. Slope-following aims
+    // the velocity along the old surface.
+    if (!(n.y > SKI_MIN_WALKABLE_NY)) {
+        // The velocity still points down the approach slope into the space of
+        // this face and the first airborne step would slam into it and get
+        // slid down the face by the collision response. Strip only the inward
+        // component so the flight separates cleanly; tangential speed is kept.
+        const float vn = vel.x * n.x + vel.y * n.y + vel.z * n.z;
+        if (vn < 0.0f) {
+            vel.x -= n.x * vn;
+            vel.y -= n.y * vn;
+            vel.z -= n.z * vn;
+        }
+        // Stripping the inward component leaves the flight starting flush with
+        // the face, where any residual into-face motion re-engages the airborne
+        // collide-and-slide every frame and rides the player down it. A small
+        // outward impulse guarantees separation instead.
+        vel.x += n.x * SKI_RELEASE_PUSH;
+        vel.y += n.y * SKI_RELEASE_PUSH;
+        vel.z += n.z * SKI_RELEASE_PUSH;
+        rf::entity_make_freefall(ep);
+        return;
+    }
+
+    // Contact can push, never pull, but with a deadband.
+    // Only separation faster than the deadband is a real convex
+    // break; below it the small positive vn is projected away,
+    // which is bounded suction of at most SKI_SEPARATION_EPS.
+    const float vn = vel.x * n.x + vel.y * n.y + vel.z * n.z;
+    if (vn < SKI_SEPARATION_EPS) {
+        vel.x -= n.x * vn;
+        vel.y -= n.y * vn;
+        vel.z -= n.z * vn;
+
+        // Tangential gravity: g projected onto the plane. Flat ground
+        // (n_xz == 0) contributes nothing horizontally.
+        vel.x += rf::gravity * n.y * n.x * dt;
+        vel.y -= rf::gravity * (1.0f - n.y * n.y) * dt;
+        vel.z += rf::gravity * n.y * n.z * dt;
+    }
+    else {
+        // Surface receding underfoot; ground mode applies no gravity of its own,
+        // so start the fall now rather than floating until the probe lets go.
+        vel.y -= rf::gravity * dt;
+    }
+
+    float wish_x, wish_z;
+    const bool has_wish = ski_wish_dir(ep, wish_x, wish_z);
+    const float along = has_wish ? (vel.x * wish_x + vel.z * wish_z) : 0.0f;
+    const bool gaining = has_wish && along < SKI_STRAFE_WISHSPEED_FRAC * ep->info->max_vel;
+    const float speed = std::sqrt(vel.x * vel.x + vel.z * vel.z);
+
+    // The two mechanisms are adversaries, so they time-slice instead of stacking.
+    // Steering across the velocity holds the gain window open:
+    // accumulate and do NOT carve - the carve's auto-alignment is exactly what
+    // would close the window within a frame or two and starve the gain.
+    // Aim settled inside the cap cone.
+    if (gaining) {
+        ski_strafe_gain(ep, dt, wish_x, wish_z, along);
+    }
+    // Carve: rotate the horizontal velocity toward the wish direction at a fixed
+    // rate, preserving magnitude, so turning conserves speed and cannot pump it.
+    else if (has_wish && speed >= SKI_EXIT_SPEED) {
+        const float dir_x = vel.x / speed;
+        const float dir_z = vel.z / speed;
+        const float dot = std::clamp(dir_x * wish_x + dir_z * wish_z, -1.0f, 1.0f);
+        const float cross = dir_x * wish_z - dir_z * wish_x;
+        const float max_step = SKI_TURN_RATE_DEG_PER_S * (3.14159265f / 180.0f) * dt;
+        const float step = std::min(std::acos(dot), max_step) * (cross < 0.0f ? -1.0f : 1.0f);
+        const float cs = std::cos(step);
+        const float sn = std::sin(step);
+        vel.x = (dir_x * cs - dir_z * sn) * speed;
+        vel.z = (dir_x * sn + dir_z * cs) * speed;
+    }
+
+    // Applies to both modes: flat friction opposes idle wiggling, so a gain only
+    // pays off on a real line.
+    // Slopes glide nearly forever; level ground has to bleed off in a sane time.
+    const float friction = (std::sqrt(n.x * n.x + n.z * n.z) < SKI_MIN_SLOPE)
+        ? SKI_FRICTION_FLAT_PER_S
+        : SKI_FRICTION_PER_S;
+    const float keep = std::max(0.0f, 1.0f - friction * dt);
+    vel.x *= keep;
+    vel.z *= keep;
+    // vel.y follows the slope via the projection above, so it is not touched here.
+}
+
+struct DodgeKeyDef
+{
+    rf::ControlConfigAction control;
+    float fwd;
+    float side;
+};
+static const DodgeKeyDef DODGE_KEYS[] = {
+    {rf::CC_ACTION_FORWARD, 1.0f, 0.0f},
+    {rf::CC_ACTION_BACKWARD, -1.0f, 0.0f},
+    {rf::CC_ACTION_SLIDE_RIGHT, 0.0f, 1.0f},
+    {rf::CC_ACTION_SLIDE_LEFT, 0.0f, -1.0f},
+};
+static constexpr int DODGE_KEY_COUNT = static_cast<int>(std::size(DODGE_KEYS));
+
+static bool g_dodge_key_down[DODGE_KEY_COUNT] = {};
+static int64_t g_dodge_key_edge_ms[DODGE_KEY_COUNT] = {};
+static bool g_dodge_jump_down = false;
+static int64_t g_dodge_last_ms = 0;
+
+static void dodge_clear_input()
+{
+    for (int i = 0; i < DODGE_KEY_COUNT; ++i) {
+        g_dodge_key_down[i] = false;
+        g_dodge_key_edge_ms[i] = 0;
+    }
+    g_dodge_jump_down = false;
+}
+
+// entity_jump is unusable for this: it refuses outright while crouched and
+// hard-codes the full jump height, so its observable effects are replicated
+// here with the dodge's own velocities.
+static void dodge_execute(rf::Entity* ep, float dir_x, float dir_z, int64_t now)
+{
+    auto& vel = ep->p_data.vel;
+    const float burst = DODGE_SPEED_FACTOR * ep->info->max_vel;
+    const float along = vel.x * dir_x + vel.z * dir_z;
+    // Never rob momentum already heading that way, never hand a redirect the
+    // full carried speed.
+    const float speed = std::max(burst, along);
+
+    vel.x = dir_x * speed;
+    vel.z = dir_z * speed;
+    vel.y = DODGE_VERTICAL_FACTOR * rf::jump_velocity;
+
+    ep->entity_flags |= rf::EF_JUMP_START_ANIM;
+    const int snd = rf::foley_get_sound_handle_at(ep->info->jump_sound, 0);
+    if (snd >= 0)
+        rf::snd_play(snd, rf::SOUND_GROUP_EFFECTS, 0.0f, 1.0f);
+    rf::entity_make_freefall(ep);
+    g_player_jump_timestamp.set(64);
+    g_dodge_last_ms = now;
+}
+
+// True when a dodge fired this frame.
+static bool dodge_poll(rf::Entity* ep)
+{
+    const int64_t now = timer::get_i64(1000);
+
+    // Typing into chat must never dodge, and must not leave a half-armed
+    // tap behind either.
+    if (rf::console::console_is_visible() || rf::multi_chat_is_say_visible()) {
+        dodge_clear_input();
+        return false;
+    }
+    if (!rf::local_player || rf::entity_is_dying(ep) || rf::entity_in_vehicle(ep)
+        || rf::entity_is_swimming(ep) || rf::entity_is_climbing(ep)) {
+        dodge_clear_input();
+        return false;
+    }
+
+    auto* controls = &rf::local_player->settings.controls;
+    const bool ready = now - g_dodge_last_ms >= DODGE_COOLDOWN_MS;
+    bool fired = false;
+    float dir_x = 0.0f;
+    float dir_z = 0.0f;
+
+    for (int i = 0; i < DODGE_KEY_COUNT; ++i) {
+        const bool down = rf::control_is_control_down(controls, DODGE_KEYS[i].control);
+        const bool rising = down && !g_dodge_key_down[i];
+        g_dodge_key_down[i] = down;
+        if (!rising)
+            continue;
+        // Two rising edges inherently need a release between them, so this is a
+        // real double-tap. The direction is the tapped key's, not the currently
+        // held combination.
+        if (!fired && ready && now - g_dodge_key_edge_ms[i] < DODGE_TAP_WINDOW_MS
+            && ski_view_dir(ep, DODGE_KEYS[i].fwd, DODGE_KEYS[i].side, dir_x, dir_z)) {
+            g_dodge_key_edge_ms[i] = 0;
+            fired = true;
+            continue;
+        }
+        g_dodge_key_edge_ms[i] = now;
+    }
+
+    const bool jump_down = rf::control_is_control_down(controls, rf::CC_ACTION_JUMP);
+    const bool jump_rising = jump_down && !g_dodge_jump_down;
+    g_dodge_jump_down = jump_down;
+    // Stock entity_jump rejects the press while crouched.
+    // Eight directions come free from the held-key combination.
+    if (!fired && jump_rising && ready && rf::entity_is_crouching(ep)
+        && ski_wish_dir(ep, dir_x, dir_z))
+        fired = true;
+
+    if (fired)
+        dodge_execute(ep, dir_x, dir_z, now);
+    return fired;
+}
+
+// True when a pogo hop fired this frame.
+static bool pogo_poll(rf::Entity* ep)
+{
+    if (rf::console::console_is_visible() || rf::multi_chat_is_say_visible())
+        return false;
+    if (!rf::local_player || rf::entity_is_dying(ep) || rf::entity_in_vehicle(ep)
+        || rf::entity_is_swimming(ep) || rf::entity_is_climbing(ep))
+        return false;
+    if (!rf::control_is_control_down(&rf::local_player->settings.controls, rf::CC_ACTION_JUMP))
+        return false;
+
+    // entity_jump's own acceptance conditions, tested before the clamp below so it
+    // can never zero vel.y on a frame the jump would decline.
+    const int mode = ep->move_mode ? ep->move_mode->mode : -1;
+    if ((mode != 1 && mode != 2) || rf::entity_is_crouching(ep))
+        return false;
+
+    auto& vel = ep->p_data.vel;
+    // Stock subtracts downward velocity from the jump.
+    if (vel.y < 0.0f)
+        vel.y = 0.0f;
+    rf::entity_jump(ep);
+    return true;
+}
+
+// The client-side prediction replay
+static int g_move_replay_depth = 0;
+
+CallHook<void __cdecl(void*, int)> move_prediction_replay_hook{
+    0x00483A21,
+    [](void* work_list, int commit) {
+        ++g_move_replay_depth;
+        move_prediction_replay_hook.call_target(work_list, commit);
+        --g_move_replay_depth;
+    },
+};
+
+// Skiing is always the multiplayer on-ground case, which takes ground move's
+// rf::mp_ground_acceleration branch rather than the info->acceleration one, so
+// zeroing info->acceleration alone would do nothing; both divisors are zeroed.
+CallHook<void(rf::Entity*)> ski_ground_move_hook{
+    0x0049F8A2,
+    [](rf::Entity* ep) {
+        if (g_move_replay_depth > 0) {
+            ski_ground_move_hook.call_target(ep);
+            return;
+        }
+        // Grounded by construction.
+        if (mutators_dodging_active() && ep == rf::local_player_entity && dodge_poll(ep)) {
+            // Ground move still runs this frame.
+            float& info_accel = ep->info->acceleration;
+            const float saved_accel = info_accel;
+            const float saved_divisor = rf::mp_ground_acceleration;
+            info_accel = 0.0f;
+            rf::mp_ground_acceleration = 0.0f;
+            ski_ground_move_hook.call_target(ep);
+            info_accel = saved_accel;
+            rf::mp_ground_acceleration = saved_divisor;
+            return;
+        }
+
+        if (mutators_pogo_active() && ep == rf::local_player_entity && pogo_poll(ep)) {
+            float& info_accel = ep->info->acceleration;
+            const float saved_accel = info_accel;
+            const float saved_divisor = rf::mp_ground_acceleration;
+            info_accel = 0.0f;
+            rf::mp_ground_acceleration = 0.0f;
+            ski_ground_move_hook.call_target(ep);
+            info_accel = saved_accel;
+            rf::mp_ground_acceleration = saved_divisor;
+            return;
+        }
+
+        if (!ski_ground_active(ep)) {
+            ski_ground_move_hook.call_target(ep);
+            return;
+        }
+        const float dt = ep->p_data.frame_time_left;
+        const bool first_dispatch = (ep->p_data.flags & rf::PF_ACCEL_APPLIED) == 0;
+        float& info_accel = ep->info->acceleration;
+        const float saved_accel = info_accel;
+        const float saved_divisor = rf::mp_ground_acceleration;
+        info_accel = 0.0f;
+        rf::mp_ground_acceleration = 0.0f;
+        ski_ground_move_hook.call_target(ep);
+        info_accel = saved_accel;
+        rf::mp_ground_acceleration = saved_divisor;
+
+        if (first_dispatch)
+            ski_apply(ep, dt);
+    },
+};
+
+// Slam and rigid-body impact fall damage: immunity insingle player and multiplayer
+// when movement mutators are active. Note 0x004A0C28 (landing) fall damage is not
+// hooked, because we want it to still apply.
+CallHook<void __cdecl(rf::Entity*, float)> ski_fall_damage_hook{
+    {0x0049D4B6, 0x0049DE23, 0x0049DE39},
+    [](rf::Entity* ep, float impact) {
+        if (ep && ep == rf::local_player_entity && any_movement_mutator_active())
+            return;
+        ski_fall_damage_hook.call_target(ep, impact);
+    },
+};
+
+// Shared by multiple movement mutators to fix getting stuck in the floor.
+CallHook<void(rf::Entity*)> ski_air_move_hook{
+    0x0049F6AD,
+    [](rf::Entity* ep) {
+        if (g_move_replay_depth > 0 || !any_movement_mutator_active()
+            || ep != rf::local_player_entity) {
+            ski_air_move_hook.call_target(ep);
+            return;
+        }
+        auto& vel = ep->p_data.vel;
+        const float pre_speed = std::sqrt(vel.x * vel.x + vel.z * vel.z);
+
+        const bool custom = (ep->p_data.flags & rf::PF_USE_CUSTOM_MAX_VEL) != 0;
+        float& limit = custom ? ep->custom_max_vel : ep->info->max_vel;
+        const float saved_limit = limit;
+        if (pre_speed > limit)
+            limit = pre_speed;
+        ski_air_move_hook.call_target(ep);
+        limit = saved_limit;
+
+        // Direction from stock, magnitude floored.
+        // Only protects earned momentum; below run speed stock braking is untouched.
+        const float run_speed = ep->max_vel;
+        if (pre_speed > run_speed) {
+            const float post = std::sqrt(vel.x * vel.x + vel.z * vel.z);
+            if (post > 1e-4f && post < pre_speed) {
+                const float scale = pre_speed / post;
+                vel.x *= scale;
+                vel.z *= scale;
+            }
+        }
+    },
+};
+
 void mutators_on_multi_shutdown()
 {
+    g_ski_engaged = false;
+    dodge_clear_input();
+    g_dodge_last_ms = 0;
+    flame_multi_shutdown();
+    crits_reset();
+
     // Leaving multiplayer mid-level: single player must not inherit the override.
     mutators_update_low_gravity();
     if (g_low_gravity_applied) {
@@ -1053,11 +1688,63 @@ void mutators_on_multi_shutdown()
     }
 }
 
+ConsoleCommand2 skifree_cmd{
+    "skifree",
+    []() {
+        if (!(rf::level.flags & rf::LEVEL_LOADED)) {
+            rf::console::print("No level loaded!");
+            return;
+        }
+
+        if (rf::is_multi) {
+            rf::console::print("That command can't be used in multiplayer.");
+            return;
+        }
+
+        g_skifree_sp_enabled = !g_skifree_sp_enabled;
+        // A latched ski engage or a half-armed dodge tap from the previous enable
+        // window must not survive into the next one.
+        g_ski_engaged = false;
+        dodge_clear_input();
+        g_dodge_last_ms = 0;
+        rf::console::print("Skifree {}.", g_skifree_sp_enabled ? "enabled" : "disabled");
+    },
+    "",
+    "skifree",
+};
+
+ConsoleCommand2 pogo_cmd{
+    "pogo",
+    []() {
+        if (!(rf::level.flags & rf::LEVEL_LOADED)) {
+            rf::console::print("No level loaded!");
+            return;
+        }
+
+        if (rf::is_multi) {
+            rf::console::print("That command can't be used in multiplayer.");
+            return;
+        }
+
+        g_pogo_sp_enabled = !g_pogo_sp_enabled;
+        rf::console::print("Pogo {}.", g_pogo_sp_enabled ? "enabled" : "disabled");
+    },
+    "",
+    "pogo",
+};
+
 void mutators_level_init_post()
 {
     // Both sides: forget the previous level's fire bookkeeping. Its fire records died
     // with their parent entities; stale pointers here could alias new-level fires.
     flame_level_init();
+
+    // Crit tags key off object handles, which the next level reuses.
+    crits_reset();
+
+    // Both sides: input edges and the dodge cooldown must not cross a level change.
+    dodge_clear_input();
+    g_dodge_last_ms = 0;
 
     // Both sides. The incoming level has already set its own gravity, so the saved
     // value from the outgoing one is stale and must be dropped WITHOUT writing it.
@@ -1099,7 +1786,7 @@ void mutators_level_init_post()
     multi_hide_level_items(allowed, true);
 }
 
-// Thrown explosives (Remote Charges, Grenade) the Rails mutator can exempt from
+// Thrown explosives (Remote Charges, Grenade) the One Weapon mutator can exempt from
 // pickup replacement.
 static bool is_thrown_explosive_weapon(int weapon_type)
 {
@@ -1150,6 +1837,49 @@ bool mutators_should_deny_weapon_switch(int from_weapon, int to_weapon)
     return to_weapon != m.featured_weapon_index;
 }
 
+// Reset the killer's held clip to full. No reload packet is sent, so there's no reload
+// animation or pause, you just keep firing. Both reload-on-kill paths below write through
+// here so the deferred refill and the in-fire-call one can never disagree.
+static void frag_refill_current_clip(rf::Entity* ep)
+{
+    if (!ep)
+        return;
+
+    const int wt = ep->ai.current_primary_weapon;
+    if (wt < 0 || wt >= rf::num_weapon_types || !rf::weapon_uses_clip(wt))
+        return;
+
+    ep->ai.clip_ammo[wt] = rf::weapon_types[wt].clip_size;
+}
+
+// Reload-on-kill (Arena) race, server side.
+static bool g_pending_frag_refill = false;
+
+// Both gates live here, so a note can only exist on a server actually running the mutator.
+void mutators_note_pending_frag_refill()
+{
+    if (!rf::is_server || !g_alpine_server_config_active_rules.mutators.reload_weapon_on_kill)
+        return;
+    g_pending_frag_refill = true;
+}
+
+// entity_fire_weapon (0x00425830), immediately past the shot's clip decrement. There are two
+// decrement calls, 0x004267C6 and 0x004267DB, and the second is not an alternative: it runs
+// straight after the first for a double-blast shotgun blast (entity flag 0x1000), so a refill
+// placed between them would leave the clip one short. This site is past both.
+CodeInjection entity_fire_weapon_frag_refill_injection{
+    0x004267E3,
+    [](auto& regs) {
+        if (!g_pending_frag_refill)
+            return;
+        // Whatever is noted belongs to this call by construction, so it is spent here whether or
+        // not the refill lands - and a pierce that killed several players at once, having noted
+        // once per victim, is worth exactly one clip.
+        g_pending_frag_refill = false;
+        frag_refill_current_clip(static_cast<rf::Entity*>(regs.esi));
+    },
+};
+
 void mutators_on_player_frag(rf::Player* killer)
 {
     if (!killer)
@@ -1167,18 +1897,10 @@ void mutators_on_player_frag(rf::Player* killer)
     if (!rf::is_server && killer != rf::local_player)
         return;
 
-    rf::Entity* ep = rf::entity_from_handle(killer->entity_handle);
-    if (!ep)
-        return;
-
-    const int wt = ep->ai.current_primary_weapon;
-    if (wt < 0 || wt >= rf::num_weapon_types || !rf::weapon_uses_clip(wt))
-        return;
-
-    // Reset the clip to full directly, on both the server (authoritative) and the
-    // killer's own client. No reload packet is sent, so there's no reload animation
-    // or pause, you just keep firing.
-    ep->ai.clip_ammo[wt] = rf::weapon_types[wt].clip_size;
+    // The deferred refill still covers every kill, and is the only refill for the ones that do
+    // not resolve inside the killer's own fire call (a rocket detonating later, burn damage).
+    // For a kill the injection above already paid out, this is a no-op re-write of a full clip.
+    frag_refill_current_clip(rf::entity_from_handle(killer->entity_handle));
 }
 
 void mutators_on_pvp_damage(rf::Player* attacker, rf::Player* victim, float effective_damage)
@@ -1275,6 +1997,8 @@ static CallHook<bool(float, int, rf::GRoom*, rf::Vector3*, rf::Vector3*, int, in
         if (rf::is_server && g_alpine_server_config_active_rules.mutators.big_craters_enabled) {
             radius *= BIG_CRATERS_RADIUS_MULTIPLIER;
         }
+        // Critical Hits stacks on top of Big Craters by design (x2 * x1.5 = x3).
+        radius *= crit_radius_scale();
         return geomod_create_weapon_hook.call_target(radius, parent_handle, src_room, pos, hit_normal,
                                                      shape_index, flags);
     },
@@ -1300,6 +2024,11 @@ static constexpr int FLAME_DOT_TICK_MS = 500;
 static constexpr float FLAME_DOT_TICK_DAMAGE = 6.0f; // flat per-tick burn
 // A single explosive hit at least this big blows the fire out.
 static constexpr float FLAME_EXTINGUISH_EXPLOSIVE_DAMAGE = 20.0f;
+// Burn state is leased: the server pulses `on` on this cadence while a victim burns and
+// the client drops the visual when its lease runs out, so a dropped extinguish packet
+// cannot strand a fire. The lease must survive a couple of consecutive lost pulses.
+static constexpr int FLAME_LEASE_REFRESH_MS = 1000;
+static constexpr int FLAME_CLIENT_LEASE_MS = 3000;
 
 struct FlameVictimState
 {
@@ -1316,6 +2045,7 @@ struct FlameVictimState
     int entity_handle = -1; // the entity that was ignited; a respawn ends the burn
     rf::Timestamp burn_timeout;
     rf::Timestamp next_dot_tick;
+    rf::Timestamp next_lease_refresh;
 };
 
 // Keyed by victim player id. Server only.
@@ -1324,10 +2054,30 @@ static std::map<uint8_t, FlameVictimState> g_flame_states;
 // but they must neither ignite nor refresh a burn.
 static bool g_flame_dot_in_progress = false;
 
-// Fire records created by the mutator. The engine's own burn behavior in
-// entity_fire_update_all (self damage, spreading to nearby entities, panic anim
-// states) is suppressed for these.
-static std::set<rf::EntityFireInfo*> g_flame_managed_fires;
+// Fire records created by the mutator, each with its lease deadline. The engine's own
+// burn behavior in entity_fire_update_all (self damage, spreading to nearby entities,
+// panic anim states) is suppressed for these.
+static std::map<rf::EntityFireInfo*, rf::Timestamp> g_flame_managed_fires;
+
+// Stale state cannot leak through here: the flame_do_frame sweep erases a burn within a frame
+// of its owner dying, respawning or leaving, and mutators_on_player_destroy erases it on the
+// spot for a disconnect.
+int mutators_player_fire_igniter(uint8_t player_id)
+{
+    auto it = g_flame_states.find(player_id);
+    if (it == g_flame_states.end() || !it->second.on_fire || it->second.igniter_id == 0xFF) {
+        return -1;
+    }
+    return it->second.igniter_id;
+}
+
+void mutators_on_player_destroy(rf::Player* player)
+{
+    if (player && player->net_data) {
+        g_flame_states.erase(static_cast<uint8_t>(player->net_data->player_id));
+    }
+    crits_on_player_destroy(player);
+}
 
 void mutators_apply_entity_on_fire(rf::Entity* ep, bool on_fire)
 {
@@ -1336,21 +2086,21 @@ void mutators_apply_entity_on_fire(rf::Entity* ep, bool on_fire)
 
     if (on_fire) {
         if (ep->entity_fire_handle) {
-            // Already burning (e.g. a corpse lava ignite): adopt the existing fire
-            // so the engine's burn behavior stops driving it.
-            g_flame_managed_fires.insert(ep->entity_fire_handle);
+            // Already burning (e.g. a corpse lava ignite, or a lease refresh): adopt the
+            // existing fire so the engine's burn behavior stops driving it.
+            g_flame_managed_fires[ep->entity_fire_handle].set(FLAME_CLIENT_LEASE_MS);
             return;
         }
         rf::EntityFireInfo* fire = rf::entity_fire_create(ep->handle, -1);
         if (fire) {
             // entity_fire_create leaves storing the handle to its caller.
             ep->entity_fire_handle = fire;
-            g_flame_managed_fires.insert(fire);
+            g_flame_managed_fires[fire].set(FLAME_CLIENT_LEASE_MS);
         }
     }
     else if (ep->entity_fire_handle) {
         // Clears ep->entity_fire_handle itself; the destroy hook below drops it from
-        // the managed set.
+        // the managed map.
         rf::entity_fire_destroy(ep->entity_fire_handle, false);
     }
 }
@@ -1396,6 +2146,7 @@ static void flame_ignite(FlameVictimState& state, uint8_t igniter_id, rf::Entity
     state.windows.clear();
     state.burn_timeout.set(FLAME_BURN_TIMEOUT_MS);
     state.next_dot_tick.set(FLAME_DOT_TICK_MS);
+    state.next_lease_refresh.set(FLAME_LEASE_REFRESH_MS);
 
     af_send_entity_on_fire(static_cast<uint32_t>(ep->handle), true);
     if (!rf::is_dedicated_server) {
@@ -1552,6 +2303,12 @@ static void flame_level_init()
     g_flame_managed_fires.clear();
 }
 
+// The engine tears the fire pool down itself; only the references here must be dropped.
+static void flame_multi_shutdown()
+{
+    g_flame_managed_fires.clear();
+}
+
 static void flame_do_frame()
 {
     if (!g_alpine_server_config_active_rules.mutators.flaming_enemies_enabled
@@ -1597,6 +2354,13 @@ static void flame_do_frame()
             continue;
         }
 
+        // Renew the clients' visual lease. Unreliable by design: these are redundant,
+        // and the reliable channel silently drops sends when its window saturates.
+        if (state.next_lease_refresh.elapsed()) {
+            state.next_lease_refresh.set(FLAME_LEASE_REFRESH_MS);
+            af_send_entity_on_fire(static_cast<uint32_t>(state.entity_handle), true, false);
+        }
+
         if (state.next_dot_tick.elapsed()) {
             state.next_dot_tick.set(FLAME_DOT_TICK_MS);
 
@@ -1620,10 +2384,840 @@ static void flame_do_frame()
     }
 }
 
+// Managed clientside visual fires only burn out by themselves once handed off to a corpse,
+// so a lost extinguish packet would strand one. Drop any whose lease stopped being renewed.
+static void flame_client_do_frame()
+{
+    if (!rf::is_multi || g_flame_managed_fires.empty())
+        return;
+
+    std::vector<rf::EntityFireInfo*> expired;
+    for (const auto& [fire, lease] : g_flame_managed_fires) {
+        if (!fire->time_limited && lease.elapsed())
+            expired.push_back(fire);
+    }
+    // Destroying removes the entry via entity_fire_destroy_hook, so it cannot be done
+    // while iterating.
+    for (rf::EntityFireInfo* fire : expired) {
+        rf::entity_fire_destroy(fire, false);
+    }
+}
+
+
+// ============================================================================
+// Critical Hits
+// ============================================================================
+
+// Chance ramps linearly with the damage dealt in the trailing window,
+// capped at CRIT_RAMP_DAMAGE_CAP.
+static constexpr int64_t CRIT_RAMP_WINDOW_MS = 20000;
+static constexpr float CRIT_RAMP_DAMAGE_CAP = 800.0f;
+static constexpr float CRIT_RANGED_BASE_CHANCE = 0.02f;
+static constexpr float CRIT_RANGED_RAMP_CHANCE = 0.15f;
+static constexpr float CRIT_MELEE_BASE_CHANCE = 0.15f;
+static constexpr float CRIT_MELEE_RAMP_CHANCE = 0.45f;
+static constexpr float CRIT_DAMAGE_MULTIPLIER = 3.0f;
+// Continuous fire (flamethrower stream, taser).
+static constexpr int CRIT_CONTINUOUS_ROLL_INTERVAL_MS = 1000;
+static constexpr int64_t CRIT_CONTINUOUS_WINDOW_MS = 2000;
+// A melee swing's projectiles are created frames after its fire event;
+// the swing's roll waits this long for them.
+static constexpr int64_t CRIT_MELEE_PENDING_MS = 500;
+// A thrown weapon's roll waits out its windup ($Impact Delay) plus this much slack.
+static constexpr int64_t CRIT_DEFERRED_PENDING_SLACK_MS = 1000;
+// Scales both the geomod crater and the explosion damage radius of a crit shot.
+static constexpr float CRIT_CRATER_RADIUS_SCALE = 1.25f;
+
+struct CritPlayerState
+{
+    // (timestamp, damage) of recent damage dealt, trimmed to CRIT_RAMP_WINDOW_MS on read.
+    std::deque<std::pair<int64_t, float>> ramp;
+
+    // A deferred fire's roll (melee swing or thrown windup), waiting for the projectiles the
+    // engine creates frames later. Melee holds it for its whole window rather than consuming,
+    // so a swing that creates two impacts crits with both; a throw spends it on its release.
+    // Keyed by weapon too: only a creation of the weapon that was rolled for may spend it.
+    bool deferred_pending = false;
+    bool deferred_sounded = false;
+    int deferred_weapon_type = -1;
+    int64_t deferred_pending_until = 0;
+
+    bool continuous_firing = false;
+    int continuous_accum_ms = 0;
+    int64_t continuous_crit_until = 0;
+};
+
+// Server only, indexed by player id exactly like the accuracy ledgers in server.cpp. The engine
+// reuses ids, so an entry is wiped when its player is destroyed.
+static std::vector<CritPlayerState>& crit_players()
+{
+    static std::vector<CritPlayerState> states(rf::multi_max_player_id);
+    return states;
+}
+
+// Weapon object handles rolled as crits, for the projectiles and explosions that outlive
+// their fire frame. Only crit shots are inserted, so membership IS the tag.
+static std::unordered_set<int> g_crit_projectiles;
+
+// Leak backstop only: object handles are generation-checked, so evicting a stale tag can at
+// worst lose a crit, never mistag another weapon.
+static void crit_projectile_tag(int handle)
+{
+    if (g_crit_projectiles.size() >= 256)
+        g_crit_projectiles.erase(g_crit_projectiles.begin());
+    g_crit_projectiles.insert(handle);
+}
+
+struct CritFireState
+{
+    bool active = false;
+    bool crit = false;
+    // One af_crit_shot per fire event, not per projectile: a volley shares one roll.
+    bool shot_sent = false;
+    // Likewise one fire sound per fire event, whatever the volley's projectile count.
+    bool fire_sounded = false;
+    int shooter_handle = 0;
+};
+static CritFireState g_crit_fire;
+
+struct CritDamageState
+{
+    bool active = false;
+    bool crit = false;
+};
+static CritDamageState g_crit_damage;
+
+static bool crits_are_active()
+{
+    return rf::is_multi && rf::is_server
+        && g_alpine_server_config_active_rules.mutators.crits_enabled;
+}
+
+static CritPlayerState* crit_state_for(rf::Player* pp)
+{
+    if (!pp || !pp->net_data)
+        return nullptr;
+    std::vector<CritPlayerState>& states = crit_players();
+    const int player_id = pp->net_data->player_id;
+    if (player_id < 0 || player_id >= static_cast<int>(states.size()))
+        return nullptr;
+    return &states[player_id];
+}
+
+static void crit_ramp_trim(CritPlayerState& state, int64_t now)
+{
+    while (!state.ramp.empty() && now - state.ramp.front().first > CRIT_RAMP_WINDOW_MS)
+        state.ramp.pop_front();
+}
+
+static float crit_ramp_fraction(CritPlayerState& state, int64_t now)
+{
+    crit_ramp_trim(state, now);
+    float sum = 0.0f;
+    for (const auto& entry : state.ramp)
+        sum += entry.second;
+    return std::min(sum / CRIT_RAMP_DAMAGE_CAP, 1.0f);
+}
+
+// The continuous modes that produce no fire event of their own: Their crits come from a
+// window instead.
+static bool crit_weapon_uses_continuous_window(int weapon_type)
+{
+    return kill_attribution_is_valid_weapon_type(weapon_type)
+        && (rf::weapon_is_flamethrower(weapon_type) || rf::weapon_is_melee(weapon_type));
+}
+
+// Longest windup ($Impact Delay) either fire mode puts between the trigger and the projectile.
+static float crit_weapon_windup_seconds(int weapon_type)
+{
+    if (!kill_attribution_is_valid_weapon_type(weapon_type))
+        return 0.0f;
+    return std::max(rf::weapon_types[weapon_type].create_weapon_delay_seconds[0],
+                    rf::weapon_types[weapon_type].alt_create_weapon_delay_seconds[0]);
+}
+
+// One roll for one trigger pull. The Damage Amplifier suppresses rolls outright: it is
+// already RF's crit-boost state, and x4 amp on top of x3 crit is a x12 spike.
+static bool crits_roll(rf::Player* pp, int weapon_type)
+{
+    CritPlayerState* state = crit_state_for(pp);
+    if (!state)
+        return false;
+    // Bagman hands the carrier a rolling amp as the carry buff, not a pickup - blocking rolls
+    // on it would strip the carrier of crits for the whole carry.
+    if (!gt_is_bagman_any() && rf::multi_powerup_has_player(pp, 1)) // amp
+        return false;
+
+    const float ramp = crit_ramp_fraction(*state, timer::get_i64(1000));
+    // Same predicate the hold semantics use, so the shield and any modded melee weapon ride
+    // the melee curve rather than only the riot stick.
+    const bool melee = kill_attribution_is_valid_weapon_type(weapon_type)
+        && rf::weapon_is_melee(weapon_type);
+    const float chance = melee
+        ? CRIT_MELEE_BASE_CHANCE + CRIT_MELEE_RAMP_CHANCE * ramp
+        : CRIT_RANGED_BASE_CHANCE + CRIT_RANGED_RAMP_CHANCE * ramp;
+
+    std::uniform_real_distribution<float> dist(0.0f, 1.0f);
+    return dist(g_rng) < chance;
+}
+
+CritFireScope::CritFireScope(rf::Entity* ep)
+    : saved_active_(g_crit_fire.active), saved_crit_(g_crit_fire.crit),
+      saved_shot_sent_(g_crit_fire.shot_sent), saved_fire_sounded_(g_crit_fire.fire_sounded),
+      saved_shooter_handle_(g_crit_fire.shooter_handle)
+{
+    if (!crits_are_active() || !ep)
+        return;
+    // multi_process_remote_weapon_fire's scope is already open for this same trigger pull:
+    // rolling again here would roughly double the effective crit rate on remote hitscan.
+    if (saved_active_ && saved_shooter_handle_ == ep->handle)
+        return;
+
+    rf::Player* pp = rf::player_from_entity_handle(ep->handle);
+    if (!pp)
+        return;
+
+    const int weapon_type = ep->ai.current_primary_weapon;
+    // entity_process re-enters entity_fire_weapon while a continuous trigger is held,
+    // and the on state is set ONLY inside entity_fire_weapon - so it is false on the
+    // trigger pull and true on every repeat.
+    if (rf::entity_weapon_is_on(ep->handle, weapon_type)
+        && crit_weapon_uses_continuous_window(weapon_type)) {
+        return;
+    }
+
+    const bool crit = crits_roll(pp, weapon_type);
+    g_crit_fire = {true, crit, false, false, ep->handle};
+    owns_ = true;
+
+    // The engine's melee and thrown branches create no projectile here - entity_process makes
+    // them frames later - so those rolls are parked for the deferred creator instead of riding
+    // this scope. A remote human's throw creates inline instead, and that create clears the
+    // parked roll (crits_on_weapon_created) so one fire event can never spend it twice.
+    if (kill_attribution_is_valid_weapon_type(weapon_type)) {
+        const bool melee = rf::weapon_is_melee(weapon_type);
+        const float windup = crit_weapon_windup_seconds(weapon_type);
+        if (melee || windup > 0.0f) {
+            if (CritPlayerState* state = crit_state_for(pp)) {
+                state->deferred_pending = crit;
+                state->deferred_sounded = false;
+                state->deferred_weapon_type = weapon_type;
+                state->deferred_pending_until = timer::get_i64(1000)
+                    + (melee ? CRIT_MELEE_PENDING_MS
+                             : static_cast<int64_t>(windup * 1000.0f) + CRIT_DEFERRED_PENDING_SLACK_MS);
+            }
+        }
+    }
+}
+
+CritFireScope::~CritFireScope()
+{
+    if (owns_) {
+        g_crit_fire = {saved_active_, saved_crit_, saved_shot_sent_, saved_fire_sounded_,
+                       saved_shooter_handle_};
+    }
+}
+
+CritWeaponScope::CritWeaponScope(rf::Weapon* wp)
+    : saved_active_(g_crit_damage.active), saved_crit_(g_crit_damage.crit)
+{
+    if (!crits_are_active() || !wp)
+        return;
+    g_crit_damage = {true, g_crit_projectiles.count(wp->handle) != 0};
+}
+
+CritWeaponScope::~CritWeaponScope()
+{
+    g_crit_damage = {saved_active_, saved_crit_};
+}
+
+// A crit-tagged projectile announces its own detonation, whether or not it craters, damages
+// anyone, or just hits a wall. Driven from the three player-attributed call sites of
+// explosion_apply_radius_damage - the function itself opens on an x87 instruction and cannot be
+// hooked - all three of which run under CritWeaponScope. Each is the terminal detonation of one
+// weapon (the weapon is flagged dead on the way out), so one blast is one sound.
+float crits_on_explosion(const rf::Vector3* pos, float radius)
+{
+    // The radius gates it: weapon_hit_level makes this call for bullets too, with no blast.
+    if (!pos || !(radius > 0.0f) || !crits_are_active() || !g_crit_damage.active || !g_crit_damage.crit)
+        return 1.0f;
+    broadcast_sound_packet_3d(*pos, stock_sound_id::jolt_01);
+    return crit_radius_scale();
+}
+
+// The third site, 0x004C53A8 in weapon_hit_level, is already taken by weapon.cpp's
+// weapon_hit_wall_obj_apply_radius_damage_hook - two CallHooks on one address would fight over
+// it - so that one calls crits_on_explosion directly instead.
+CallHook<void(rf::Vector3*, float, float, int, int)> crits_explosion_hook{
+    {
+        0x004C62F5, // weapon_hit_obj, impact splash
+        0x004C6C94, // weapon_move_one, fuse / detonator / lifetime expiry
+    },
+    [](rf::Vector3* pos, float damage, float radius, int killer_handle, int damage_type) {
+        const float scale = crits_on_explosion(pos, radius);
+        crits_explosion_hook.call_target(pos, damage, radius * scale, killer_handle, damage_type);
+    },
+};
+
+// Only the weapons whose projectile flies long enough to be worth telegraphing: rockets,
+// grenades, remote charges, fusion. Bullets are covered by the impact/victim layer instead -
+// in the stock table 'undeviating' marks exactly them and no flying projectile carries it.
+static bool crit_weapon_is_projectile(int weapon_type)
+{
+    if (!kill_attribution_is_valid_weapon_type(weapon_type))
+        return false;
+    if (rf::weapon_types[weapon_type].flags2 & rf::WTF2_UNDEVIATING)
+        return false;
+    return !rf::weapon_is_melee(weapon_type);
+}
+
+// Every crit shot is audible where it was fired, whatever the weapon class: a bullet volley
+// or a melee swing reads as a crit even when it connects with nothing. Anchored to the point
+// where the shot materialises, because entity_fire_weapon can be entered and abort without
+// producing one (no ammo / weapon-select gate).
+static void crits_play_fire_sound(const rf::Vector3& pos)
+{
+    if (g_crit_fire.fire_sounded)
+        return;
+    g_crit_fire.fire_sounded = true;
+    broadcast_sound_packet_3d(pos, stock_sound_id::jolt_01);
+}
+
+// Defined with the rest of the telegraph below; the listen host drives them from the server side.
+static void crit_glow_add(int handle, const rf::gr::Color& color);
+static rf::gr::Color crit_glow_color_for(const rf::Player* pp);
+static void crits_flash_reticle(const rf::gr::Color& color);
+
+// The shooter's own client flashes its reticle for every crit fire event, whatever the weapon
+// class, so this goes out for hitscan, melee and the continuous window too - unlike the
+// all-players broadcast, which observers only need for the in-flight glow. Anyone spectating
+// the shooter is watching that same screen, so it is mailed the same event. Each caller is
+// already once-per-fire-event guarded.
+static void crits_send_shot_to_shooter(rf::Player* shooter, int weapon_type)
+{
+    if (!shooter || !shooter->net_data)
+        return;
+    // A listen host's own packet would be discarded, so its flash is stamped directly.
+    if (shooter == rf::local_player) {
+        crits_flash_reticle(crit_glow_color_for(shooter));
+    }
+    else if (is_player_minimum_af_client_version(shooter, 1, 4, 0)) {
+        af_send_crit_shot_packet(shooter->net_data->player_id,
+            static_cast<uint8_t>(weapon_type), shooter);
+    }
+
+    // A listen host cannot spectate, so every spectator here is a real client.
+    for (auto& player : SinglyLinkedList{rf::player_list}) {
+        if (!player.net_data || player.spectatee.value_or(nullptr) != shooter)
+            continue;
+        if (is_player_minimum_af_client_version(&player, 1, 4, 0)) {
+            af_send_crit_shot_packet(shooter->net_data->player_id,
+                static_cast<uint8_t>(weapon_type), &player);
+        }
+    }
+}
+
+// Sent from the tag-insertion path rather than the roll site, so it only ever goes out for
+// a shot that really was created and tagged. Once per fire event: a volley shares one roll,
+// and the lag-comp ghost is created at an unhooked site and never reaches here.
+static void crits_broadcast_shot(rf::Weapon* wp, int parent_handle)
+{
+    // shot_sent only means anything while its fire scope is open; a deferred creation runs
+    // after the scope closed and must not stamp the restored baseline state.
+    if (g_crit_fire.active && g_crit_fire.shot_sent)
+        return;
+    rf::Player* shooter = rf::player_from_entity_handle(parent_handle);
+    if (!shooter || !shooter->net_data)
+        return;
+    if (g_crit_fire.active)
+        g_crit_fire.shot_sent = true;
+
+    crits_send_shot_to_shooter(shooter, wp->info_index);
+
+    // Mirror to the demo recorder for every weapon class; playback filters by the spectated
+    // shooter. The projectile-only broadcast below excludes the recorder to avoid a duplicate.
+    demo_record_crit_shot(shooter->net_data->player_id, static_cast<uint8_t>(wp->info_index));
+
+    // Everyone else is told only about the shots worth telegraphing in flight.
+    if (!crit_weapon_is_projectile(wp->info_index))
+        return;
+
+    // A listen host is its own client, and a packet addressed to local_player is discarded, so
+    // the glow the packet would have produced there is added straight to the client container.
+    if (!rf::is_dedicated_server)
+        crit_glow_add(wp->handle, crit_glow_color_for(shooter));
+
+    const uint8_t shooter_id = shooter->net_data->player_id;
+    const uint8_t weapon_type = static_cast<uint8_t>(wp->info_index);
+    for (auto& player : SinglyLinkedList{rf::player_list}) {
+        if (!player.net_data || &player == rf::local_player || &player == shooter)
+            continue; // the shooter was mailed above, a listen host glowed it instead
+        if (player.spectatee.value_or(nullptr) == shooter)
+            continue; // spectating the shooter, so it was mailed above too
+        if (player.is_observer())
+            continue; // the demo recorder is mailed once above for every weapon class
+        if (is_player_minimum_af_client_version(&player, 1, 4, 0))
+            af_send_crit_shot_packet(shooter_id, weapon_type, &player);
+    }
+}
+
+// ============================================================================
+// Critical Hits - in-flight telegraph (client side)
+// ============================================================================
+//
+// Cosmetic only. Nothing below runs on a server or feeds back into damage or state.
+
+// How long after af_crit_shot a marker still claims a newly created projectile.
+static constexpr int64_t CRIT_SHOT_MARKER_MS = 250;
+// The local player's shot is predicted client side, so it already exists by the time the
+// packet lands and has to be found by looking back rather than waiting for a creation.
+static constexpr int64_t CRIT_SHOT_LOCAL_LOOKBACK_MS = 500;
+// A self marker instead covers the other ordering: the server hears a thrown fire and
+// broadcasts af_crit_shot while the thrower's own projectile is still a windup away. Parked
+// for weapons that have such a windup and no others.
+static constexpr int64_t CRIT_SHOT_SELF_MARKER_MS = 3000;
+// Every container below is fed by remote input, so every one of them is bounded.
+static constexpr std::size_t CRIT_CLIENT_MAX_MARKERS = 16;
+static constexpr std::size_t CRIT_CLIENT_MAX_GLOWS = 32;
+static constexpr std::size_t CRIT_CLIENT_MAX_LOCAL_SHOTS = 8;
+static constexpr float CRIT_GLOW_RADIUS_SCALE = 2.0f;
+static constexpr float CRIT_GLOW_MIN_RADIUS = 0.5f;
+static constexpr rf::gr::Color CRIT_GLOW_COLOR_RED{255, 64, 40};
+static constexpr rf::gr::Color CRIT_GLOW_COLOR_BLUE{64, 112, 255};
+static constexpr rf::gr::Color CRIT_GLOW_COLOR_NEUTRAL{255, 144, 32};
+// The shooter's own reticle flash: the only crit feedback a hitscan, melee or flame crit
+// gives on the screen that fired it, so it covers every weapon class.
+static constexpr int64_t CRIT_RETICLE_FLASH_MS = 350;
+static constexpr int CRIT_RETICLE_FLASH_SIZE = 96; // ~3x the stock reticle bitmap
+static constexpr rf::gr::Mode CRIT_RETICLE_FLASH_MODE{
+    rf::gr::TEXTURE_SOURCE_CLAMP,
+    rf::gr::COLOR_SOURCE_VERTEX_TIMES_TEXTURE,
+    rf::gr::ALPHA_SOURCE_VERTEX_TIMES_TEXTURE,
+    rf::gr::ALPHA_BLEND_ALPHA_ADDITIVE, // additive, but still faded by the vertex alpha
+    rf::gr::ZBUFFER_TYPE_NONE,
+    rf::gr::FOG_NOT_ALLOWED,
+};
+// Colour resolved when the flash is stamped, not when it is drawn: a first person
+// spectator flashes in the shooter's colour rather than its own.
+struct CritReticleFlash
+{
+    int64_t at = 0;
+    rf::gr::Color color = CRIT_GLOW_COLOR_NEUTRAL;
+};
+static CritReticleFlash g_crit_reticle_flash;
+
+struct CritShotMarker
+{
+    uint8_t shooter_player_id;
+    uint8_t weapon_type;
+    int64_t expiry;
+    rf::gr::Color color;
+};
+static std::deque<CritShotMarker> g_crit_shot_markers;
+
+struct CritGlow
+{
+    int handle;
+    // Resolved when the shot was marked: the shooter can change team or leave mid-flight.
+    rf::gr::Color color;
+};
+static std::deque<CritGlow> g_crit_glows;
+
+struct CritLocalShot
+{
+    int handle;
+    int weapon_type;
+    int64_t created;
+};
+static std::deque<CritLocalShot> g_crit_local_shots;
+
+static rf::gr::Color crit_glow_color_for(const rf::Player* pp)
+{
+    if (!pp || !multi_game_type_is_team_type(rf::multi_get_game_type()))
+        return CRIT_GLOW_COLOR_NEUTRAL;
+    return pp->team ? CRIT_GLOW_COLOR_BLUE : CRIT_GLOW_COLOR_RED;
+}
+
+static void crit_glow_add(int handle, const rf::gr::Color& color)
+{
+    if (g_crit_glows.size() >= CRIT_CLIENT_MAX_GLOWS)
+        g_crit_glows.pop_front();
+    g_crit_glows.push_back({handle, color});
+}
+
+static void crits_flash_reticle(const rf::gr::Color& color)
+{
+    g_crit_reticle_flash = {timer::get_i64(1000), color};
+}
+
+// The engine's own projectile head glow texture.
+static int crit_glow_bitmap()
+{
+    static const int bmh = rf::bm::load("glow01.tga", -1, true);
+    return bmh;
+}
+
+void crits_on_crit_shot(uint8_t shooter_player_id, uint8_t weapon_type)
+{
+    if (!rf::is_multi || rf::is_server)
+        return;
+
+    rf::Player* shooter = rf::multi_find_player_by_id(shooter_player_id);
+    if (!shooter)
+        return;
+
+    const int64_t now = timer::get_i64(1000);
+    const rf::gr::Color color = crit_glow_color_for(shooter);
+    std::erase_if(g_crit_shot_markers, [now](const CritShotMarker& m) { return now > m.expiry; });
+
+    const bool self = shooter == rf::local_player;
+    // A first-person spectator is looking through the shooter's eyes, so it gets the flash too -
+    // but nothing else below, which all belongs to the shooter's own predicted projectile.
+    const bool spectating_shooter = !self && multi_spectate_is_first_person()
+        && multi_spectate_get_target_player() == shooter;
+    if (self || spectating_shooter)
+        crits_flash_reticle(color);
+
+    // Everything below telegraphs a projectile in flight; a hitscan, melee or flame crit has
+    // none, and the flash above is its whole story. The shooter and anyone spectating it are
+    // mailed for every weapon class, so both reach here without one.
+    if (!crit_weapon_is_projectile(weapon_type))
+        return;
+
+    if (self) {
+        // Prediction already spawned the projectile, so it is claimed by looking back
+        // through the local shots instead of waiting for a creation that has been and gone.
+        for (auto it = g_crit_local_shots.rbegin(); it != g_crit_local_shots.rend(); ++it) {
+            if (it->weapon_type != weapon_type || now - it->created > CRIT_SHOT_LOCAL_LOOKBACK_MS)
+                continue;
+            const rf::Object* objp = rf::obj_from_handle(it->handle);
+            if (!objp || objp->type != rf::OT_WEAPON)
+                continue;
+            crit_glow_add(it->handle, color);
+            return;
+        }
+        // Not spawned yet: a thrown weapon's own projectile appears only when the windup
+        // ends, well after the server heard the fire - park a marker like a remote shooter's.
+        // An instant weapon has no such gap, so a late packet parking a self marker would
+        // only ever glow the NEXT, non-crit shot: the retro-scan above is its whole story.
+        if (!(crit_weapon_windup_seconds(weapon_type) > 0.0f))
+            return;
+    }
+
+    if (g_crit_shot_markers.size() >= CRIT_CLIENT_MAX_MARKERS)
+        g_crit_shot_markers.pop_front();
+    g_crit_shot_markers.push_back({shooter_player_id, weapon_type,
+        now + (self ? CRIT_SHOT_SELF_MARKER_MS : CRIT_SHOT_MARKER_MS), color});
+}
+
+static void crits_client_on_weapon_created(rf::Weapon* wp, int parent_handle)
+{
+    if (!rf::is_multi || !crit_weapon_is_projectile(wp->info_index))
+        return;
+
+    rf::Player* shooter = rf::player_from_entity_handle(parent_handle);
+    if (!shooter || !shooter->net_data)
+        return;
+
+    const int64_t now = timer::get_i64(1000);
+
+    if (shooter == rf::local_player) {
+        if (g_crit_local_shots.size() >= CRIT_CLIENT_MAX_LOCAL_SHOTS)
+            g_crit_local_shots.pop_front();
+        g_crit_local_shots.push_back({wp->handle, wp->info_index, now});
+        // No return: an af_crit_shot that raced ahead of a thrown windup parked a self marker.
+    }
+
+    for (auto it = g_crit_shot_markers.begin(); it != g_crit_shot_markers.end(); ++it) {
+        if (it->shooter_player_id != shooter->net_data->player_id
+            || it->weapon_type != wp->info_index || now > it->expiry) {
+            continue;
+        }
+        crit_glow_add(wp->handle, it->color);
+        g_crit_shot_markers.erase(it);
+        return;
+    }
+}
+
+void crits_client_render()
+{
+    if (g_crit_glows.empty())
+        return;
+
+    // Drawn the same way stock weapon_render draws it.
+    const int glow_bitmap = crit_glow_bitmap();
+    if (glow_bitmap < 0) {
+        g_crit_glows.clear();
+        return;
+    }
+
+    rf::gr::set_texture(glow_bitmap, -1);
+
+    std::erase_if(g_crit_glows, [](const CritGlow& glow) {
+        const rf::Object* objp = rf::obj_from_handle(glow.handle);
+        if (!objp || objp->type != rf::OT_WEAPON)
+            return true;
+        rf::Vector3 pos = objp->pos;
+        const float scale = std::max(objp->radius, CRIT_GLOW_MIN_RADIUS) * CRIT_GLOW_RADIUS_SCALE;
+        rf::gr::set_color(glow.color);
+        rf::gr::bitmap_3d_angle(&pos, 0.0f, scale, rf::gr::glow_3d_bitmap_mode);
+        return false;
+    });
+}
+
+// Drawn from the multiplayer HUD render path, so it lands over the world with the rest of the
+// HUD and never runs outside multiplayer gameplay.
+void crits_client_render_reticle_flash()
+{
+    if (!g_crit_reticle_flash.at || !g_alpine_game_config.crit_reticle_flash)
+        return;
+    const int64_t elapsed = timer::get_i64(1000) - g_crit_reticle_flash.at;
+    if (elapsed < 0 || elapsed >= CRIT_RETICLE_FLASH_MS) {
+        g_crit_reticle_flash = {};
+        return;
+    }
+    const int glow_bitmap = crit_glow_bitmap();
+    if (glow_bitmap < 0) {
+        g_crit_reticle_flash = {};
+        return;
+    }
+    int bm_w = 0, bm_h = 0;
+    rf::bm::get_dimensions(glow_bitmap, &bm_w, &bm_h);
+    if (bm_w <= 0 || bm_h <= 0)
+        return;
+
+    const float fade = 1.0f - static_cast<float>(elapsed) / CRIT_RETICLE_FLASH_MS;
+    const int x = (rf::gr::clip_width() - CRIT_RETICLE_FLASH_SIZE) / 2;
+    const int y = (rf::gr::clip_height() - CRIT_RETICLE_FLASH_SIZE) / 2;
+    const rf::gr::Color& color = g_crit_reticle_flash.color;
+    rf::gr::set_color(color.red, color.green, color.blue, static_cast<rf::ubyte>(fade * 255.0f));
+    rf::gr::bitmap_scaled(glow_bitmap, x, y, CRIT_RETICLE_FLASH_SIZE, CRIT_RETICLE_FLASH_SIZE,
+        0, 0, bm_w, bm_h, false, false, CRIT_RETICLE_FLASH_MODE);
+}
+
+ConsoleCommand2 crit_reticle_flash_cmd{
+    "mp_crit_flash",
+    []() {
+        g_alpine_game_config.crit_reticle_flash = !g_alpine_game_config.crit_reticle_flash;
+        rf::console::print("Crit reticle flashes are {}", g_alpine_game_config.crit_reticle_flash ? "enabled" : "disabled");
+    },
+    "Toggles the reticle flash shown when you fire a critical hit",
+};
+
+void crits_on_weapon_created(rf::Weapon* wp, int parent_handle)
+{
+    if (!wp)
+        return;
+    if (!rf::is_server) {
+        crits_client_on_weapon_created(wp, parent_handle);
+        return;
+    }
+    if (!crits_are_active())
+        return;
+    if (g_crit_fire.active && g_crit_fire.shooter_handle == parent_handle) {
+        // This fire event materialised inline, so any roll it parked for the deferred
+        // creator (a remote human's throw parks one) is void. Only its own weapon's, though:
+        // a pending roll for a different weapon belongs to a fire event that has not resolved.
+        CritPlayerState* state = crit_state_for(rf::player_from_entity_handle(parent_handle));
+        if (state && state->deferred_weapon_type == wp->info_index)
+            state->deferred_pending = false;
+        if (g_crit_fire.crit) {
+            crit_projectile_tag(wp->handle);
+            crits_play_fire_sound(wp->pos);
+            crits_broadcast_shot(wp, parent_handle);
+        }
+    }
+}
+
+void crits_on_deferred_created(rf::Weapon* wp, int parent_handle)
+{
+    if (!wp)
+        return;
+    if (!rf::is_server) {
+        // The thrower's own client creates its thrown weapons here, not at the fire sites.
+        crits_client_on_weapon_created(wp, parent_handle);
+        return;
+    }
+    if (!crits_are_active())
+        return;
+    CritPlayerState* state = crit_state_for(rf::player_from_entity_handle(parent_handle));
+    if (!state)
+        return;
+
+    const int64_t now = timer::get_i64(1000);
+
+    // Continuous melee (the riot stick's taser,) has no fire event of its own to roll for,
+    // Those zaps take the continuous window, not a swing's parked roll.
+    rf::Entity* ep = rf::entity_from_handle(parent_handle);
+    if (ep && rf::entity_weapon_is_on(ep->handle, wp->info_index)
+        && crit_weapon_uses_continuous_window(wp->info_index)) {
+        if (now < state->continuous_crit_until)
+            crit_projectile_tag(wp->handle);
+        return;
+    }
+
+    if (!state->deferred_pending || state->deferred_weapon_type != wp->info_index)
+        return;
+    if (now > state->deferred_pending_until) {
+        state->deferred_pending = false;
+        return;
+    }
+    // Melee is not consumed: one swing can create two impacts and both belong to its single
+    // roll. A throw releases one projectile, so its roll is spent.
+    crit_projectile_tag(wp->handle);
+    if (!rf::weapon_is_melee(wp->info_index))
+        state->deferred_pending = false;
+
+    // The deferred creation happens per fire event whether or not it connects - and a swing
+    // making two impacts still sounds and announces once.
+    if (!state->deferred_sounded) {
+        state->deferred_sounded = true;
+        broadcast_sound_packet_3d(wp->pos, stock_sound_id::jolt_01);
+        crits_broadcast_shot(wp, parent_handle);
+    }
+}
+
+void crits_on_object_dead(rf::Object* objp)
+{
+    if (!g_crit_projectiles.empty() && objp && objp->type == rf::OT_WEAPON)
+        g_crit_projectiles.erase(objp->handle);
+}
+
+void crits_on_continuous_fire_frame(rf::Player* pp, int weapon_type, bool weapon_on, int delta_ms)
+{
+    if (!crits_are_active())
+        return;
+    CritPlayerState* state = crit_state_for(pp);
+    if (!state)
+        return;
+
+    if (!(weapon_on && crit_weapon_uses_continuous_window(weapon_type))) {
+        state->continuous_firing = false;
+        return;
+    }
+
+    bool roll = false;
+    if (!state->continuous_firing) {
+        state->continuous_firing = true;
+        state->continuous_accum_ms = 0;
+        roll = true;
+    }
+    else {
+        state->continuous_accum_ms += delta_ms;
+        while (state->continuous_accum_ms >= CRIT_CONTINUOUS_ROLL_INTERVAL_MS) {
+            state->continuous_accum_ms -= CRIT_CONTINUOUS_ROLL_INTERVAL_MS;
+            roll = true;
+        }
+    }
+
+    if (roll && crits_roll(pp, weapon_type)) {
+        state->continuous_crit_until = timer::get_i64(1000) + CRIT_CONTINUOUS_WINDOW_MS;
+        // Once per arming, never per zap: the stream has no projectile to telegraph and the
+        // taser's zaps come out several times a second.
+        if (rf::Entity* ep = rf::entity_from_handle(pp->entity_handle))
+            broadcast_sound_packet_3d(ep->pos, stock_sound_id::jolt_01);
+        crits_send_shot_to_shooter(pp, weapon_type);
+    }
+}
+
+void crits_on_damage_dealt(rf::Player* attacker, float effective_damage)
+{
+    if (!crits_are_active() || !(effective_damage > 0.0f))
+        return;
+    CritPlayerState* state = crit_state_for(attacker);
+    if (!state)
+        return;
+    const int64_t now = timer::get_i64(1000);
+    state->ramp.emplace_back(now, effective_damage);
+    crit_ramp_trim(*state, now);
+}
+
+float crits_damage_multiplier(rf::Player* attacker, rf::Player* victim)
+{
+    if (!crits_are_active() || !attacker || !victim || attacker == victim)
+        return 1.0f;
+    // No friendly-fire crits.
+    if (multi_game_type_is_team_type(rf::multi_get_game_type()) && attacker->team == victim->team)
+        return 1.0f;
+
+    // The three sources are mutually exclusive in practice, but they are ORed rather than
+    // chained: a lag-comp ghost carries no tag of its own and only the fire scope knows it
+    // was a crit shot.
+    bool crit = g_crit_damage.active && g_crit_damage.crit;
+    if (!crit && g_crit_fire.active && g_crit_fire.crit) {
+        rf::Entity* attacker_ep = rf::entity_from_handle(attacker->entity_handle);
+        crit = attacker_ep && g_crit_fire.shooter_handle == attacker_ep->handle;
+    }
+    if (!crit && kill_attribution_in_particle_damage()) {
+        // The flame stream damages through the particle system, which names no weapon. That
+        // scope is also what keeps the Flaming Enemies burn DoT - same DT_FIRE damage type,
+        // applied from the frame loop - out of the crit window.
+        const CritPlayerState* state = crit_state_for(attacker);
+        crit = state && timer::get_i64(1000) < state->continuous_crit_until;
+    }
+    if (!crit)
+        return 1.0f;
+
+    // Same gate as the roll, re-checked at damage time: a crit tagged before the pickup - thrown
+    // remote charge, grenade in flight, armed continuous window - would otherwise stack x3 on the
+    // engine's x4 amp damage. Bagman is exempt for the same reason the roll exempts it.
+    if (!gt_is_bagman_any() && rf::multi_powerup_has_player(attacker, 1)) // amp
+        return 1.0f;
+
+    return CRIT_DAMAGE_MULTIPLIER;
+}
+
+// Read from the two weapon-detonation geomod call sites, which sit inside weapon_hit_level and
+// weapon_move_one - so the detonating projectile's tag is already published by CritWeaponScope.
+// Server only via crits_are_active(), and geomod_create itself returns early for multiplayer
+// clients, so the scaled radius reaches them in the boolean packet rather than being recomputed.
+static float crit_radius_scale()
+{
+    if (!crits_are_active() || !g_crit_damage.active || !g_crit_damage.crit)
+        return 1.0f;
+    return CRIT_CRATER_RADIUS_SCALE;
+}
+
+static void crits_on_player_destroy(rf::Player* player)
+{
+    // Whole-struct assignment, not a flag reset: the ramp deque has to go with it.
+    if (CritPlayerState* state = crit_state_for(player))
+        *state = CritPlayerState{};
+}
+
+static void crits_reset()
+{
+    std::fill(crit_players().begin(), crit_players().end(), CritPlayerState{});
+    g_crit_projectiles.clear();
+    g_crit_fire = {};
+    g_crit_damage = {};
+    g_crit_shot_markers.clear();
+    g_crit_glows.clear();
+    g_crit_local_shots.clear();
+    g_crit_reticle_flash = {};
+}
+
+// The universal fire function: the listen host's own trigger, bots, and every remote
+// non-thrown shot all arrive here, and one call is one trigger pull (its barrel and pellet
+// loops, and their lag-compensated resolution, all run inside it). The weapon type is not an
+// argument - it comes from the entity. All six arguments are typed to forward the pushed
+// dwords byte-for-byte; none of them is read.
+FunHook<void(rf::Entity*, int, int, rf::Weapon**, rf::Vector3*, rf::Matrix3*)>
+    entity_fire_weapon_hook{
+    0x00425830,
+    [](rf::Entity* ep, int a2, int alt_fire, rf::Weapon** out_weapon, rf::Vector3* pos,
+       rf::Matrix3* orient) {
+        const CritFireScope crit_scope{ep};
+        entity_fire_weapon_hook.call_target(ep, a2, alt_fire, out_weapon, pos, orient);
+    },
+};
+
 void mutators_do_frame()
 {
-    if (!rf::is_server)
+    if (!rf::is_server) {
+        flame_client_do_frame();
         return;
+    }
 
     super_drain_do_frame();
     flame_do_frame();
@@ -1654,6 +3248,11 @@ void mutators_set_no_clip_weapon(int weapon_type)
     if (weapon_type >= 0 && weapon_type < rf::num_weapon_types) {
         apply_no_clip_override(weapon_type);
     }
+}
+
+int mutators_get_no_clip_weapon()
+{
+    return g_no_clip_weapon;
 }
 
 // The engine derives clip_size from clip_size_multi whenever it enters MP weapon
@@ -1707,11 +3306,30 @@ void mutators_do_patch()
     entity_consume_ammo_on_fire_hook.install();
     entity_play_action_animation_hook.install();
 
+    // Arena reload-on-kill
+    entity_fire_weapon_frag_refill_injection.install();
+
     // Big Craters
     geomod_create_weapon_hook.install();
+
+    // Critical Hits
+    entity_fire_weapon_hook.install();
+    crits_explosion_hook.install();
 
     // Flaming Enemies
     entity_fire_destroy_hook.install();
     entity_fire_update_all_spread_damage_injection.install();
     entity_fire_update_all_self_damage_injection.install();
+
+    // Skiing
+    ski_ground_move_hook.install();
+    ski_fall_damage_hook.install();
+    ski_air_move_hook.install();
+    move_prediction_replay_hook.install();
+
+    // Single player `skifree` and `pogo` cheat commands
+    skifree_cmd.register_cmd();
+    pogo_cmd.register_cmd();
+
+    crit_reticle_flash_cmd.register_cmd();
 }

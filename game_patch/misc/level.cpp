@@ -18,6 +18,7 @@
 #include "../object/alpine_bag.h"
 #include "../object/mover.h"
 #include "../hud/hud_world.h"
+#include "../graphics/weather.h"
 
 static std::vector<GasRegionInfo> g_gas_regions;
 static std::vector<GasRegionTransition> g_gas_region_transitions;
@@ -113,6 +114,7 @@ CodeInjection level_load_init_patch{
         alpine_corona_clear_state();
         alpine_bag_clear_state();
         gas_region_clear_state();
+        weather_clear_regions();
         alpine_mover_clear_hold_open();
         hud_world_level_unload();
         set_headlamp_toggle_enabled(AlpineLevelProperties::instance().starts_with_headlamp);
@@ -151,6 +153,13 @@ CodeInjection level_load_chunk_patch{
         if (chunk_id == alpine_bag_chunk_id) {
             xlog::debug("[Level] Loading alpine bag chunk: len={}", chunk_len);
             alpine_bag_load_chunk(file, chunk_len);
+            regs.eip = 0x004608EF;
+        }
+
+        // handling for alpine weather region objects chunk
+        if (chunk_id == alpine_weather_region_chunk_id) {
+            xlog::debug("[Level] Loading alpine weather region chunk: len={}", chunk_len);
+            weather_load_chunk(file, chunk_len);
             regs.eip = 0x004608EF;
         }
 

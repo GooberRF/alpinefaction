@@ -13,6 +13,8 @@
 #include <common/utils/string-utils.h>
 #include <xlog/xlog.h>
 #include "../multi/multi.h"
+#include "../multi/demo/demo.h"
+#include "../multi/demo/demo_ui.h"
 #include "../multi/gametype.h"
 #include "../multi/bagman.h"
 #include "../multi/jetpack.h"
@@ -52,6 +54,7 @@
 #include "../misc/vote_panel.h"
 #include "../multi/network.h"
 #include "../multi/bots/bot_main.h"
+#include "../multi/mutators.h"
 #include "multi_spectate.h"
 
 static bool g_big_team_scores_hud = false;
@@ -69,8 +72,8 @@ struct ActiveHudNotification
 {
     HudNotificationType type = HudNotificationType::None;
     std::string text;
-    rf::TimestampRealtime expiry; // invalid for perpetual
-    rf::TimestampRealtime fade_start; // invalid while not fading
+    rf::Timestamp expiry; // invalid for perpetual
+    rf::Timestamp fade_start; // invalid while not fading
     bool fade_on_expire = false;
 };
 static ActiveHudNotification g_hud_notification;
@@ -472,6 +475,9 @@ static const ChatMenuList spectate_menu{
         {false, ChatMenuListName::Null, ChatMenuListType::Basic, "Follow killer", "spectate_followkiller"},
         {false, ChatMenuListName::Null, ChatMenuListType::Basic, "Minimal UI", "spectate_minui"},
         {false, ChatMenuListName::Null, ChatMenuListType::Basic, "Player labels", "spectate_playerlabels"},
+        {false, ChatMenuListName::Null, ChatMenuListType::DemoPlayback, "Player healthbars", "spectate_playerinfo"},
+        {false, ChatMenuListName::Null, ChatMenuListType::DemoPlayback, "Powerup timers", "spectate_powerups"},
+        {false, ChatMenuListName::Null, ChatMenuListType::DemoPlayback, "Spawn points", "spectate_spawns"},
     }
 };
 
@@ -557,6 +563,9 @@ bool is_element_valid(const ChatMenuElement& element) {
         return true;
     }
     if (element.type == ChatMenuListType::Map && g_level_chat_menu_present && !element.display_string.empty()) {
+        return true;
+    }
+    if (element.type == ChatMenuListType::DemoPlayback && demo_playback_active()) {
         return true;
     }
     return false;
@@ -1132,7 +1141,9 @@ void multi_hud_render_team_scores()
         size_t entry_count = 0;
         for (rf::Player& p : SinglyLinkedList{rf::player_list}) {
             if (!p.stats) continue;
-            if (p.is_browser) continue;
+            if (p.is_non_participant()) continue;
+            // The demo viewer is not part of the recorded match - no phantom row
+            if (demo_playback_active() && &p == rf::local_player) continue;
             if (entry_count >= kMaxEntries) break;
             entries[entry_count++] = &p;
         }
@@ -1147,7 +1158,7 @@ void multi_hud_render_team_scores()
         const auto entries_end = entries.begin() + entry_count;
         const auto local_it = std::find(entries.begin(), entries_end, rf::local_player);
         const auto local_rank_idx = std::distance(entries.begin(), local_it);
-        if (local_rank_idx >= 2) {
+        if (local_it != entries_end && local_rank_idx >= 2) {
             if (entry_count >= 1) display_rows[display_count++] = entries[0];
             if (entry_count >= 2) display_rows[display_count++] = entries[1];
             display_rows[display_count++] = rf::local_player;
@@ -1303,10 +1314,17 @@ void draw_respawn_timer_notification(bool can_respawn, bool force_respawn, int s
     g_draw_respawn_timer_can_respawn = can_respawn;
 }
 
+HudNotificationType hud_big_notification_current_type()
+{
+    return g_hud_big_notification.type;
+}
+
 void hud_notification_show(std::string text, int duration_seconds,
     HudNotificationType type, bool fade_on_expire)
 {
-    const bool big_slot = type == HudNotificationType::Rampage || type == HudNotificationType::GenericBig;
+    const bool big_slot = type == HudNotificationType::Rampage ||
+                          type == HudNotificationType::GenericBig ||
+                          type == HudNotificationType::Award;
     ActiveHudNotification& slot = big_slot ? g_hud_big_notification : g_hud_notification;
     slot.type = type;
     slot.text = std::move(text);
@@ -1321,7 +1339,9 @@ void hud_notification_show(std::string text, int duration_seconds,
 
 void hud_notification_remove(HudNotificationType type, bool instant)
 {
-    const bool big_slot_type = type == HudNotificationType::Rampage || type == HudNotificationType::GenericBig;
+    const bool big_slot_type = type == HudNotificationType::Rampage ||
+                               type == HudNotificationType::GenericBig ||
+                               type == HudNotificationType::Award;
     if ((big_slot_type || type == HudNotificationType::None)
         && g_hud_big_notification.type != HudNotificationType::None
         && (!big_slot_type || g_hud_big_notification.type == type)) {
@@ -1965,8 +1985,8 @@ CallHook<void(int *dx, int *dy, int *dz)> control_config_get_mouse_delta_hook{
             }
         }
 
-        // The vote panel overlay owns aiming while it is up.
-        if (vote_panel_is_gameplay_overlay_active()) {
+        // The vote panel / demo controls popup owns aiming while it is up.
+        if (vote_panel_is_gameplay_overlay_active() || demo_controls_ui_is_open()) {
             if (dx) {
                 *dx = 0;
             }
@@ -1976,7 +1996,8 @@ CallHook<void(int *dx, int *dy, int *dz)> control_config_get_mouse_delta_hook{
         }
 
         // If active, do not use mouse wheel scroll delta.
-        if ((g_remote_server_cfg_popup.is_active() || vote_panel_is_gameplay_overlay_active())
+        if ((g_remote_server_cfg_popup.is_active() || vote_panel_is_gameplay_overlay_active()
+             || demo_controls_ui_is_open())
             && dz) {
             *dz = 0;
         }
@@ -2036,8 +2057,8 @@ CodeInjection multi_hud_render_patch{
             }
         }
 
-        multi_hud_render_killfeed();
         jetpack_render_hud();
+        crits_client_render_reticle_flash();
     }
 };
 

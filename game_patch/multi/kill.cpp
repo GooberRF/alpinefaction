@@ -27,6 +27,8 @@
 #include "multi_private.h"
 #include "mutators.h"
 #include "alpine_packets.h"
+#include "demo/demo.h"
+#include "awards.h"
 #include "sprays.h"
 #include "gungame.h"
 #include "../misc/player.h"
@@ -115,6 +117,13 @@ FunHook<void()> multi_level_init_hook{
         // Drop kill attributions so a death at map end cannot decorate one on the next map.
         g_pending_kill_attributions.clear();
         kill_attribution_level_init();
+
+        // Melee hit credits and flamethrower windows are per-player-id and outlive nothing.
+        accuracy_stats_level_init();
+
+        // Award tracking, including the nemesis pairs - those survive Pit/Wipeout rounds, but
+        // never a level.
+        awards_level_init();
 
         // Stop allowing endgame votes after the next level starts
         multi_player_set_can_endgame_vote(false);
@@ -463,7 +472,11 @@ void on_player_kill(rf::Player* killed_player, rf::Player* killer_player)
         const bool score_from_kills = !gt_uses_custom_scoring();
         if (killer_player != killed_player) {
             if (score_from_kills) {
-                rf::player_add_score(killer_player, 1);
+                // No score for team kills for individual or team
+                const bool team_kill = multi_is_team_game_type() && killer_player->team == killed_player->team;
+                if (!team_kill) {
+                    rf::player_add_score(killer_player, 1);
+                }
             }
             killer_stats->inc_kills();
         }
@@ -486,6 +499,7 @@ void on_player_kill(rf::Player* killed_player, rf::Player* killer_player)
             mutators_on_player_frag(killer_player);
         }
 
+        demo_playback_note_player_activity(killer_player); // auto-follow candidate during playback
         multi_spectate_on_player_kill(killed_player, killer_player);
 
         if (gt_is_gungame() && killer_player != killed_player) {
@@ -552,6 +566,12 @@ void multi_kill_do_patch()
         .jmp(0x00420B03);
 
     // Change player stats structure
+    static_assert(sizeof(PlayerStatsNew) <= 127,
+                  "player_create allocates this struct through a `push imm8` at 0x004A33B5, so the "
+                  "size below is written into a single signed byte. Growth past 127 truncates "
+                  "silently and the engine keeps allocating the short block while every accessor "
+                  "reads the full struct. Replace the allocation site before significantly growing "
+                  "this struct.");
     write_mem<i8>(0x004A33B5 + 1, sizeof(PlayerStatsNew));
     multi_level_init_hook.install();
 

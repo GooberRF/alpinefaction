@@ -11,12 +11,14 @@
 #include <common/utils/string-utils.h>
 #include <common/rfproto.h>
 #include "bagman.h"
+#include "awards.h"
 #include "gametype.h"
 #include "kill.h"
 #include "multi.h"
 #include "server.h"
 #include "server_internal.h"
 #include "alpine_packets.h"
+#include "../fflink/afstats_events.h"
 #include "../rf/multi.h"
 #include "../rf/item.h"
 #include "../rf/entity.h"
@@ -45,6 +47,7 @@ constexpr int kScoreTickMs = 1000;
 constexpr int kBagPickupUnlockDelayMs = 500; // Delay after a bag is dropped before it can be picked up
 constexpr float kCarrierTickEffectiveHealth = 10.0f;
 constexpr float kCarrierKillEffectiveHealth = 50.0f;
+constexpr float kBagSpawnClearRadius = 1.0f;
 
 namespace
 {
@@ -76,7 +79,7 @@ constexpr BagHomeEntry kBagHomePositions[] = {
     { "ctf02.rfl", 0.25f, -22.80f, 0.11f },
     { "ctf03.rfl", 3.77f, -10.02f, -0.0f },
     { "ctf04.rfl", 40.0f, -3.46f, 0.0f },
-    { "ctf05.rfl", 2.0f, 1.16f, 8.0f },
+    { "ctf05.rfl", 2.0f, 1.16f, 5.0f },
     { "ctf06.rfl", 0.53f, 4.99f, 0.0f },
     { "ctf07.rfl", 8.50f, -5.0f, 22.0f },
     { "dmabruptdecayrc1.rfl", 15.54f, 2.50f, 11.0f },
@@ -297,6 +300,16 @@ void resolve_bag_spawn_from_placed_item()
         xlog::warn("bagman: no suitable item found in level; bag spawned at player start position");
     }
 
+    // Items on the home spot would sit inside the bag, remove them.
+    rf::Item* it = rf::item_list.next;
+    while (it && it != &rf::item_list) {
+        rf::Item* next = it->next;
+        if ((it->pos - g_bagman_info.spawn_pos).len() <= kBagSpawnClearRadius) {
+            rf::obj_flag_dead(it);
+        }
+        it = next;
+    }
+
     g_bagman_info.bag_pos = g_bagman_info.spawn_pos;
     g_bagman_info.spawn_known = true;
 }
@@ -315,7 +328,12 @@ void bagman_broadcast_state()
     af_send_bagman_state_packet_to_all();
 }
 
-int bagman_get_red_team_score() 
+int bagman_get_score_tick_ms()
+{
+    return kScoreTickMs;
+}
+
+int bagman_get_red_team_score()
 {
     return g_bagman_info.red_team_score;
 }
@@ -422,6 +440,7 @@ static rf::Player* find_player_with_bag_powerup()
 static void on_pickup(rf::Player* player)
 {
     rf::Entity* ep = alive_entity_for(player);
+    const BagState state_before = g_bagman_info.state;
 
     g_bagman_info.carrier = player;
     g_bagman_info.state = BagState::BS_Carried;
@@ -435,6 +454,11 @@ static void on_pickup(rf::Player* player)
     rf::multi_powerup_add(player, kPowerupTypeAmp, kCarrierAmpDurationMs);
 
     announce(std::format("{} has the bag!", player->name.c_str()));
+    afstats::on_bagman_pickup(player, g_bagman_info.bag_pos,
+        state_before == BagState::BS_Dropped ? afstats::BagmanFrom::dropped
+                                             : afstats::BagmanFrom::spawn);
+    // Bag Check counts from any pickup, spawn or dropped alike.
+    awards_on_bagman_pickup(player);
     bagman_broadcast_state();
 }
 
@@ -445,6 +469,8 @@ static void drop_bag_at_position(rf::Player* prev_carrier, const rf::Vector3& dr
     g_bagman_info.state = BagState::BS_Dropped;
     g_bagman_info.bag_pos = drop_pos;
     g_bagman_info.return_timer.set(g_alpine_server_config_active_rules.bagman.bag_return_time_ms);
+    afstats::on_bagman_event(afstats::BagmanEventKind::drop, prev_carrier, drop_pos);
+    awards_on_bagman_drop(prev_carrier);
 
     if (prev_carrier) {
         rf::multi_powerup_remove(prev_carrier, kPowerupTypeAmp);
@@ -481,6 +507,8 @@ static void drop_bag_from_entity(rf::Player* prev_carrier, rf::Entity* ep)
     rf::Vector3 drop_pos = ep ? ep->pos : g_bagman_info.bag_pos;
     rf::Matrix3 drop_orient = ep ? ep->orient : g_bagman_info.spawn_orient;
     spawn_bag_item(drop_pos, drop_orient);
+    afstats::on_bagman_event(afstats::BagmanEventKind::drop, prev_carrier, drop_pos);
+    awards_on_bagman_drop(prev_carrier);
 
     if (prev_carrier) {
         announce(std::format("{} dropped the bag!", prev_carrier->name.c_str()));
@@ -498,6 +526,7 @@ void bagman_play_return_sound()
 
 static void on_return()
 {
+    afstats::on_bagman_event(afstats::BagmanEventKind::ret, nullptr, g_bagman_info.spawn_pos);
     g_bagman_info.state = BagState::BS_At_Spawn;
     g_bagman_info.return_timer.invalidate();
     g_bagman_info.bag_respawn_retry_timer.invalidate();
@@ -540,22 +569,26 @@ void bagman_do_frame()
                 g_bagman_info.carrier_amp_refresh.set(kCarrierAmpRefreshIntervalMs);
             }
 
-            // Score tick during active gameplay
+            // Score tick during active gameplay. Hazard Pay shares the gate.
             if (rf::gameseq_get_state() == rf::GameState::GS_GAMEPLAY
-                && g_bagman_info.score_tick.elapsed()) {
-                rf::player_add_score(g_bagman_info.carrier, 1);
-                if (gt_is_tbag()) {
-                    if (g_bagman_info.carrier->team == 0) {
-                        g_bagman_info.red_team_score++;
-                    } else {
-                        g_bagman_info.blue_team_score++;
-                    }
-                }
-                apply_effective_health_reward(g_bagman_info.carrier, kCarrierTickEffectiveHealth);
-                g_bagman_info.score_tick.set(kScoreTickMs);
+                && !g_match_info.pre_match_active) {
+                awards_on_bagman_hold_tick(g_bagman_info.carrier);
 
-                // Broadcast immediately so clients see the score increment
-                bagman_broadcast_state();
+                if (g_bagman_info.score_tick.elapsed()) {
+                    rf::player_add_score(g_bagman_info.carrier, 1);
+                    if (gt_is_tbag()) {
+                        if (g_bagman_info.carrier->team == 0) {
+                            g_bagman_info.red_team_score++;
+                        } else {
+                            g_bagman_info.blue_team_score++;
+                        }
+                    }
+                    apply_effective_health_reward(g_bagman_info.carrier, kCarrierTickEffectiveHealth);
+                    g_bagman_info.score_tick.set(kScoreTickMs);
+
+                    // Broadcast immediately so clients see the score increment
+                    bagman_broadcast_state();
+                }
             }
         }
     } else {
@@ -566,6 +599,8 @@ void bagman_do_frame()
                 g_bagman_info.state = BagState::BS_At_Spawn;
                 spawn_bag_item(g_bagman_info.spawn_pos, g_bagman_info.spawn_orient);
                 announce("The bag is now available!");
+                afstats::on_bagman_event(afstats::BagmanEventKind::available, nullptr,
+                                         g_bagman_info.spawn_pos);
                 bagman_broadcast_state();
             }
             return;
@@ -651,6 +686,7 @@ void bagman_on_entity_will_die(rf::Entity* ep)
     if (killer && killer != player) {
         apply_effective_health_reward(killer, kCarrierKillEffectiveHealth);
     }
+    awards_on_bagman_carrier_death(player, killer);
 
     drop_bag_from_entity(player, ep);
 }
@@ -690,7 +726,8 @@ rf::Item* find_client_side_bag_pickup_item()
     if (g_bagman_info.bag_item_type < 0) return nullptr;
     rf::Item* it = rf::item_list.next;
     while (it && it != &rf::item_list) {
-        if (it->info_index == g_bagman_info.bag_item_type) {
+        if (it->info_index == g_bagman_info.bag_item_type &&
+            !(it->obj_flags & (rf::OF_DELAYED_DELETE | rf::OF_HIDDEN))) {
             return it;
         }
         it = it->next;

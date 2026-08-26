@@ -235,6 +235,20 @@ namespace rf
         WTF_TRACERS = 0x40000000,
         WTF_PIERCING = 0x80000000,
     };
+    enum WeaponTypeFlags2
+    {
+        WTF2_PIERCES_ALL = 0x1,
+        WTF2_RANDOM_BMP_ORIENT = 0x2,
+        WTF2_CYCLE_ALPHA = 0x4,
+        WTF2_NO_FIRE_THROUGH = 0x8,
+        WTF2_NO_WORLD_COLLIDE = 0x10,
+        WTF2_UNDEVIATING = 0x20,
+        WTF2_FLAME = 0x40,
+        WTF2_HAS_SCANNER = 0x80,
+        WTF2_DAMAGE_SELF = 0x100,
+        WTF2_HAS_PILOT_FLAME = 0x200,
+        WTF2_MULTI_MESH_COLLIDE = 0x400,
+    };
     struct Weapon : Object
     {
         Weapon *next;
@@ -267,12 +281,15 @@ namespace rf
         WS_LOOP_FIRE = 2,
     };
 
-    static auto& weapon_types = addr_as_ref<WeaponInfo[64]>(0x0085CD08);
+    constexpr int max_weapon_types = 64;
+
+    static auto& weapon_types = addr_as_ref<WeaponInfo[max_weapon_types]>(0x0085CD08);
     static auto& remote_charge_det_weapon_type = addr_as_ref<int>(0x0085CCE0);
     static auto& machine_pistol_special_weapon_type = addr_as_ref<int>(0x0085CD00);
     static auto& machine_pistol_weapon_type = addr_as_ref<int>(0x0085CCD8);
     static auto& num_weapon_types = addr_as_ref<int>(0x00872448);
     static auto& riot_stick_weapon_type = addr_as_ref<int>(0x00872468);
+    static auto& riot_shield_weapon_type = addr_as_ref<int>(0x0085CCE4);
     static auto& remote_charge_weapon_type = addr_as_ref<int>(0x0087210C);
     static auto& grenade_weapon_type = addr_as_ref<int>(0x00872118);
     static auto& shotgun_weapon_type = addr_as_ref<int>(0x00872108);

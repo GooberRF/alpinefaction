@@ -22,6 +22,7 @@ static int g_custom_sound_entry_start = -1;
 static int g_taunt_sound_start = -1;
 static int g_radmsg_sound_start = -1;
 static int g_spray_sound_id = -1;
+static int g_award_sound_id = -1;
 #ifdef DEBUG
 int g_sound_test = 0;
 #endif
@@ -251,7 +252,8 @@ FunHook<int(int, const rf::Vector3&, float, const rf::Vector3&, int)> snd_play_3
     [](int handle, const rf::Vector3& pos, float volume, const rf::Vector3&, int group) {
         xlog::trace("snd_play_3d {} {:.2f} {}", handle, volume, group);
 
-        if (!rf::sound_enabled || handle < 0) {
+        // Upper-bound guard
+        if (!rf::sound_enabled || handle < 0 || handle >= rf::g_num_sounds) {
             return -1;
         }
         if (rf::snd_load_hint(handle) != 0) {
@@ -497,6 +499,11 @@ int get_spray_sound_id()
     return g_spray_sound_id;
 }
 
+int get_award_sound_id()
+{
+    return g_award_sound_id;
+}
+
 void gamesound_parse_custom_sounds() 
 {
     // Record first custom sound ID
@@ -621,6 +628,7 @@ void gamesound_parse_custom_sounds()
         {"MP_TAUNT_73.wav", 10.0f, 1.0f, 1.0f},
         {"MP_TAUNT_74.wav", 10.0f, 1.0f, 1.0f},
         {"af_spray1.ogg", 10.0f, 1.0f, 1.0f},
+        {"af_award1.ogg", 10.0f, 1.0f, 1.0f},
     };
 
     for (const auto& sound : custom_sounds) 
@@ -636,6 +644,7 @@ void gamesound_parse_custom_sounds()
     g_taunt_sound_start = rf::snd_pc_find_by_name("MP_TAUNT_16.wav");
     g_radmsg_sound_start = rf::snd_pc_find_by_name("af_radmsg_000.ogg");
     g_spray_sound_id = rf::snd_pc_find_by_name("af_spray1.ogg");
+    g_award_sound_id = rf::snd_pc_find_by_name("af_award1.ogg");
 
     //xlog::warn("Custom sounds added, starting at ID {}. Taunts start at ID {}", g_custom_sound_entry_start, g_taunt_sound_start);
 }

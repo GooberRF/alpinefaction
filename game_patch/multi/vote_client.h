@@ -61,9 +61,8 @@ struct VoteMutatorDeclValue
     std::string string_value;
 };
 
-// One config-declared mutator. The panel pre-selects these so that submitting an
-// untouched vote reproduces what the level would run anyway (votes replace the
-// configured mutator set rather than stacking on it).
+// One declared mutator and its values: the shape of every declaration set the server
+// sends. A vote REPLACES the mutator set rather than stacking on it.
 struct VoteMutatorDecl
 {
     uint8_t mutator_id = 0;
@@ -73,7 +72,7 @@ struct VoteMutatorDecl
 struct VoteLevelInfo
 {
     std::string filename;
-    // Game type this level runs with when the vote picks "Server default".
+    // The level's own game type: what it runs under when a vote names none.
     uint8_t natural_gametype = 0; // rf::NetGameType
     // bit N (matching NetGameType N) = this level matches that game type's level
     // prefix rules.
@@ -100,16 +99,36 @@ struct VoteOptionsData
     std::vector<VoteGametypeInfo> gametypes;
     std::vector<VoteMutatorSchema> mutators;
     std::vector<VoteLevelInfo> levels; // rotation order, then vote-allowed extras
-    // Mutators the server's base rules declare; the baseline for every level that
-    // does not carry its own. Empty for a server built before the blob carried it.
+    // What the panel's "Base" button applies, and the baseline on a server too old to
+    // push an active set.
     std::vector<VoteMutatorDecl> base_mutator_decls;
+    // Whether the blob carried that section: "base declares none" is not "base unknown".
+    bool base_mutator_decls_present = false;
+    // The base rules' game type: the fallback for a name nothing else claims. Absent
+    // from a server built before the blob carried it.
+    uint8_t base_game_type = 0; // rf::NetGameType
+    bool base_game_type_present = false;
 };
 
-// Does this level match the given game type's level prefix rules? Whether that
-// is a hard restriction depends on VoteOptionsData::gametype_prefix_restricted.
+// Would the server accept this level voted with this game type? Its prefix rules,
+// plus the level's own default, which the server always accepts. Whether that is a
+// hard restriction depends on VoteOptionsData::gametype_prefix_restricted.
 bool vote_level_allows_gametype(const VoteLevelInfo& level, uint8_t game_type);
-// Same, for the "Server default" (no gametype override) selection.
+// Same, against the level's own game type, for a vote that names none.
 bool vote_level_allows_default_gametype(const VoteLevelInfo& level);
+
+// The game type a vote naming none resolves to: the level's own byte when the server
+// listed it, else its resolution order replayed against the blob's base game type. An
+// empty name answers with what is running here (Match's "current level"). The single
+// client-side answer, so the panel and the saved-vote check agree.
+uint8_t vote_default_gametype_for_level(const VoteOptionsData& options, std::string_view level_string);
+
+// The game type a Match vote on the CURRENT level resolves to: what the session is
+// running, put through the match game type cycler's team-only remap (DM becomes
+// TeamDM when the server offers it, otherwise the first team type offered; none when
+// it offers no team type at all). The single answer for both the panel's "Current
+// level" row and a saved Match record with no level, so both send the same byte.
+uint8_t vote_match_current_level_gametype(const VoteOptionsData& options);
 
 struct ActiveVoteState
 {
@@ -153,6 +172,13 @@ bool vote_options_is_type_enabled(AfVoteType type);
 // Ask the server for the blob if it isn't loaded (or went stale). Rate limited.
 void vote_options_request_if_needed();
 void vote_options_mark_stale();
+
+// --- active mutator set (af_sreq_active_mutators) ---
+// What the session is running right now. `nullptr` until the server sends one.
+const std::vector<VoteMutatorDecl>* vote_active_mutators_get();
+// Bumped on every push; 0 means nothing received yet.
+uint32_t vote_active_mutators_revision();
+void vote_active_mutators_on_received(const uint8_t* data, size_t len);
 
 // Blob stream (af_sreq_vote_options_data). Ordered reliable delivery, so Begin ->
 // Data* -> End arrive in that order; anything out of order is a protocol error and

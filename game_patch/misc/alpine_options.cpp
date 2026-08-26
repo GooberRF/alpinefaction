@@ -524,13 +524,15 @@ CallHook<int(const char*, int, bool)> ice_geo_crater_bm_load_hook {
 };
 
 // fall damage when impacting
+// engine splits the slam call site by rf::is_multi
+// (0x0049DE23 single player, 0x0049DE39 multiplayer)
 CallHook<void(rf::Entity*, float)> physics_calc_fall_damage_slam_hook{
-    0x0049DE39,
+    {0x0049DE23, 0x0049DE39},
     [](rf::Entity* entity, float rel_vel) {
         float damage_multiplier = get_option_or_default<float>(AlpineOptionID::FallDamageSlamMultiplier, 1.0f);
         float adjusted_rel_vel = rel_vel * damage_multiplier;
 
-        xlog::warn("New slam damage value is {}", adjusted_rel_vel);
+        xlog::trace("New slam damage value is {}", adjusted_rel_vel);
 
         physics_calc_fall_damage_slam_hook.call_target(entity, adjusted_rel_vel);
     }
@@ -543,7 +545,7 @@ CallHook<void(rf::Entity*, float)> physics_calc_fall_damage_land_hook{
         float damage_multiplier = get_option_or_default<float>(AlpineOptionID::FallDamageLandMultiplier, 1.0f);
         float adjusted_rel_vel = rel_vel * damage_multiplier;
 
-        xlog::warn("New land damage value is {}", adjusted_rel_vel);
+        xlog::trace("New land damage value is {}", adjusted_rel_vel);
 
         physics_calc_fall_damage_land_hook.call_target(entity, adjusted_rel_vel);
     }
@@ -846,12 +848,13 @@ void load_single_af_options_file(const std::string& file_name)
         }
 
         auto meta_it = option_metadata.find(option_name);
+        const bool meta_found = meta_it != option_metadata.end();
 
         // Allow any af_client*.tbl file for options designated to af_client.tbl
-        bool is_af_client_variant = (meta_it->second.filename == "af_client.tbl" &&
-                                     file_name.rfind("af_client", 0) == 0 && file_name.ends_with(".tbl"));
+        const bool is_af_client_variant = (meta_found && meta_it->second.filename == "af_client.tbl" &&
+                                           file_name.rfind("af_client", 0) == 0 && file_name.ends_with(".tbl"));
 
-        if (meta_it != option_metadata.end() &&
+        if (meta_found &&
             (meta_it->second.filename == file_name || is_af_client_variant) &&
             (!rf::is_dedicated_server || meta_it->second.apply_on_server)) {
             
@@ -864,7 +867,7 @@ void load_single_af_options_file(const std::string& file_name)
                 xlog::debug("Option ID {} marked as loaded", static_cast<std::size_t>(metadata.id));
             }
         }
-        else if (meta_it != option_metadata.end()) {
+        else if (meta_found) {
             if (meta_it->second.filename != file_name && !is_af_client_variant) {
                 xlog::warn("Option {} in {} skipped (wrong alpine tbl file)", option_name, file_name);
             }

@@ -20,6 +20,7 @@ void set_sound_enabled(bool enabled);
 int get_custom_sound_id(int custom_id);
 bool is_valid_custom_sound_id(int custom_id);
 int get_spray_sound_id();
+int get_award_sound_id();
 void play_local_sound_2d(uint16_t sound_id, int group, float volume);
 void play_local_sound_3d(uint16_t sound_id, rf::Vector3 pos, int group, float volume);
 void play_chat_sound(std::string_view msg, bool is_taunt);

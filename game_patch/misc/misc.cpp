@@ -22,6 +22,8 @@
 #include "../os/console.h"
 #include "../main/main.h"
 #include "../multi/multi.h"
+#include "../multi/demo/demo.h"
+#include "../multi/demo/demo_browser.h"
 #include "../multi/server.h"
 #include "../rf/gr/gr.h"
 #include "../rf/player/player.h"
@@ -30,10 +32,13 @@
 #include "../rf/os/os.h"
 #include "../rf/misc.h"
 #include "../rf/parse.h"
+#include "../rf/geometry.h"
 #include "../rf/vmesh.h"
 #include "../rf/level.h"
+#include "../rf/localize.h"
 #include "../rf/file/file.h"
 #include "../object/object.h"
+#include "../fflink/afstats_client.h"
 #include "waypoints.h"
 
 void achievements_apply_patch();
@@ -61,6 +66,7 @@ struct JoinMpGameData
 
 bool g_in_mp_game = false;
 bool g_jump_to_multi_server_list = false;
+bool g_jump_to_demo_browser = false;
 std::optional<JoinMpGameData> g_join_mp_game_seq_data;
 std::optional<std::string> g_levelm_filename;
 std::optional<rf::NetGameType> g_local_pending_game_type; // used for pending gt received from server. I don't like this being here, todo: refactor
@@ -130,6 +136,11 @@ void set_jump_to_multi_server_list(bool jump)
     g_jump_to_multi_server_list = jump;
 }
 
+void set_jump_to_demo_browser(bool jump)
+{
+    g_jump_to_demo_browser = jump;
+}
+
 void start_join_multi_game_sequence(const rf::NetAddr& addr, const std::string& password)
 {
     g_jump_to_multi_server_list = true;
@@ -178,7 +189,11 @@ FunHook<void(rf::GameState, rf::GameState)> rf_init_state_hook{
             && (old_state == rf::GS_END_GAME || old_state == rf::GS_NEW_LEVEL);
         if (exiting_game && g_in_mp_game) {
             g_in_mp_game = false;
-            g_jump_to_multi_server_list = true;
+            // Exiting demo playback lands on the demo browser (flag set by the demo
+            // system at teardown) instead of the multiplayer server list
+            if (!g_jump_to_demo_browser) {
+                g_jump_to_multi_server_list = true;
+            }
         }
 
         if (g_jump_to_multi_server_list) {
@@ -215,13 +230,41 @@ FunHook<void(rf::GameState, rf::GameState)> rf_init_state_hook{
                 }
             }
         }
+
+        // Same close-and-advance machinery as the server-list jump above, but landing
+        // on the Extras menu with the demo browser overlay open (demo playback exit)
+        if (g_jump_to_demo_browser) {
+            if (state == rf::GS_MAIN_MENU) {
+                set_sound_enabled(false);
+                // mainmenu_do_open_multi_menu performs this cleanup before leaving a
+                // post-game main menu; mainmenu_open_extras lacks it because the stock
+                // Extras button is never reachable with game state left behind
+                if (!addr_as_ref<bool>(0x0063C11C)) { // mainmenu "game beneath the menu" flag
+                    rf::game_shutdown();
+                }
+                AddrCaller{0x00443C70}.c_call(); // mainmenu_open_extras
+                rf::gameseq_close_state(state, old_state, false);
+                old_state = state;
+                state = rf::gameseq_process_deferred_change();
+                rf_init_state_hook.call_target(state, old_state);
+            }
+
+            if (state == rf::GS_EXTRAS_MENU) {
+                g_jump_to_demo_browser = false;
+                set_sound_enabled(true);
+                demo_browser_open();
+            }
+        }
+
+        // Deferred demo-playback restart (backward seek) once a menu state is reached
+        demo_playback_on_state_init(std::to_underlying(state));
     },
 };
 
 FunHook<bool(int)> rf_state_is_closed_hook{
     0x004B1DD0,
     [](int state) {
-        if (g_jump_to_multi_server_list)
+        if (g_jump_to_multi_server_list || g_jump_to_demo_browser)
             return true;
         return rf_state_is_closed_hook.call_target(state);
     },
@@ -233,6 +276,7 @@ FunHook<void()> multi_after_players_packet_hook{
         multi_after_players_packet_hook.call_target();
         g_in_mp_game = true;
         mp_send_handicap_request(false);
+        fflink::afstats_client_on_entered_game();
     },
 };
 
@@ -353,6 +397,76 @@ CodeInjection emitters_tbl_buffer_overflow_fix{
     },
 };
 
+// v3d/v3m/v3c mesh parser hardening
+// Cap the v3d top-level element counts so count*element_size cannot overflow 32 bits and
+// yield an undersized allocation.
+CodeInjection v3d_element_count_overflow_fix{
+    0x0053BA22,
+    [](auto& regs) {
+        constexpr int max_count = 0x800000; // 8,388,608 — headroom for high-poly meshes
+        const uintptr_t v3d = addr_as_ref<uintptr_t>(regs.ebp - 0x1D4);
+        for (int off : {0x48, 0x68, 0x70, 0x80, 0x78, 0x58, 0x60}) {
+            if (addr_as_ref<int>(v3d + off) > max_count) {
+                xlog::warn("Rejecting v3d mesh: element count at +0x{:x} exceeds {} (possible integer overflow)", off, max_count);
+                regs.eip = 0x0053B8F2;
+                return;
+            }
+        }
+    },
+};
+
+// A mesh with more SUBM chunks than declared overflows the array.
+CodeInjection v3d_submesh_count_overflow_fix{
+    0x0053C025,
+    [](auto& regs) {
+        const uintptr_t v3d = addr_as_ref<uintptr_t>(regs.ebp - 0x1D4);
+        const int submesh_index = addr_as_ref<int>(regs.ebp - 0x20);
+        const int num_meshes = addr_as_ref<int>(v3d + 0x48);
+        if (submesh_index >= num_meshes) {
+            xlog::warn("Truncating v3d mesh: more SUBM chunks than declared num_meshes ({})", num_meshes);
+            regs.eip = 0x0053C0BE;
+        }
+    },
+};
+
+CodeInjection v3d_csphere_count_overflow_fix{
+    0x0053C082,
+    [](auto& regs) {
+        const uintptr_t v3d = addr_as_ref<uintptr_t>(regs.ebp - 0x1D4);
+        const int csphere_index = addr_as_ref<int>(regs.ebp - 0x1C);
+        const int num_cspheres = addr_as_ref<int>(v3d + 0x60);
+        if (csphere_index >= num_cspheres) {
+            xlog::warn("Truncating v3d mesh: more CSPH chunks than declared num_cspheres ({})", num_cspheres);
+            regs.esp += 4;
+            regs.eip = 0x0053C0BE;
+        }
+    },
+};
+
+FunHook<int(int, void*, unsigned*)> vif_chunk_reader_hook{
+    0x00569920,
+    [](int param_1, void* param_2, unsigned* param_3) -> int {
+        const unsigned num_faces = static_cast<unsigned short>(param_3[2]);
+        const unsigned data_block_size = param_3[3];
+        if (static_cast<uint64_t>(num_faces) * 0x38 > data_block_size) {
+            xlog::warn("Rejecting mesh chunk: num_faces {} * 0x38 exceeds data_block_size {}", num_faces, data_block_size);
+            return 0;
+        }
+        return vif_chunk_reader_hook.call_target(param_1, param_2, param_3);
+    },
+};
+
+CodeInjection vif_chunk_tex_count_overflow_fix{
+    0x00569C79,
+    [](auto& regs) {
+        auto& num_textures = addr_as_ref<int>(regs.ebp + 0x3C);
+        if (num_textures > 7) {
+            xlog::warn("Clamping mesh texture count {} to 7", num_textures);
+            num_textures = 7;
+        }
+    },
+};
+
 FunHook<void(const char*, int)> lcl_add_message_bof_fix{
     0x004B0720,
     [](const char* str, int id) {
@@ -366,11 +480,22 @@ FunHook<void(const char*, int)> lcl_add_message_bof_fix{
     },
 };
 
+// stock strings.tbl has no entry 889, used as the left_game reason 6 suffix
+FunHook<void(int)> lcl_init_missing_string_fix{
+    0x004B08E0,
+    [](int lang_id) {
+        lcl_init_missing_string_fix.call_target(lang_id);
+        if (!rf::strings::array[889]) {
+            static char timed_out_joining[] = " timed out joining the game";
+            const_cast<char*&>(rf::strings::array[889]) = timed_out_joining;
+        }
+    },
+};
+
 CodeInjection glass_shard_level_init_fix{
     0x00435A90,
     []() {
-        auto glass_shard_level_init = addr_as_ref<void()>(0x00490F60);
-        glass_shard_level_init();
+        rf::glass_shard_level_init();
     },
 };
 
@@ -457,6 +582,19 @@ CodeInjection vfile_read_stack_corruption_fix{
     0x0052D0E0,
     [](auto& regs) {
         regs.esi = regs.eax;
+    },
+};
+
+FunHook<bool __fastcall(rf::File*, int, const char*, int)> file_find_ext_tail_guard_hook{
+    0x00523CE0,
+    [](rf::File* this_, int edx, const char* filename, int path_id) FASTCALL_LAMBDA -> bool {
+        if (filename) {
+            const char* dot = std::strrchr(filename, '.');
+            if (dot && std::strlen(dot) > max_file_ext_tail) {
+                return false;
+            }
+        }
+        return file_find_ext_tail_guard_hook.call_target(this_, edx, filename, path_id);
     },
 };
 
@@ -671,6 +809,14 @@ void misc_init()
     pc_multi_tbl_buffer_overflow_fix.install();
     emitters_tbl_buffer_overflow_fix.install();
     lcl_add_message_bof_fix.install();
+    lcl_init_missing_string_fix.install();
+
+    // Fix heap overflows in the stock v3d/v3m/v3c mesh parser
+    v3d_element_count_overflow_fix.install();
+    v3d_submesh_count_overflow_fix.install();
+    v3d_csphere_count_overflow_fix.install();
+    vif_chunk_reader_hook.install();
+    vif_chunk_tex_count_overflow_fix.install();
 
     // Fix killed glass restoration from a save file
     AsmWriter(0x0043604A).nop(5);
@@ -699,6 +845,9 @@ void misc_init()
 
     // Fix stack corruption when packfile has lower size than expected
     vfile_read_stack_corruption_fix.install();
+
+    // Reject over-long filename extensions that would overflow File::find's stack buffer
+    file_find_ext_tail_guard_hook.install();
 
     // Improve parse error message
     // For some reason RF replaces all characters with code lower than 0x20 (space) by character with code 0x16 (SYN)

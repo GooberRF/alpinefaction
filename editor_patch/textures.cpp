@@ -67,9 +67,16 @@ static void register_custom_texture_subdirectories(void* texture_manager)
     auto* category_array = reinterpret_cast<VArray<TextureCategory*>*>(
         static_cast<char*>(texture_manager) + 0x7C);
 
+    constexpr size_t texture_dir_max_len = 255;
+
     for (const auto& dirname : subdirs) {
         std::string display_name = "Custom - " + dirname;
         std::string subdir_path = "user_maps\\textures\\" + dirname;
+
+        if (subdir_path.size() > texture_dir_max_len) {
+            xlog::warn("Skipping custom texture directory (path too long): '{}'", subdir_path);
+            continue;
+        }
 
         // Allocate and construct category object (matches stock FUN_004776b0 pattern)
         void* mem = rf_alloc(sizeof(TextureCategory));
@@ -191,6 +198,21 @@ CodeInjection config_save_skip_custom_subdirs{
     }
 };
 
+// FUN_0041b7c0 (startup default-texture folder group build) indexes the folder-name
+// VString array at manager+0x88 with each category's path_handle. Custom subdirectory
+// categories store a VFS path slot there instead, which reads out of bounds.
+// Inject at 0x0041b9fa (EAX = TextureCategory** array element) and jump to the loop
+// increment at 0x0041bad7 to skip them.
+CodeInjection folder_group_build_skip_custom_subdirs{
+    0x0041b9fa,
+    [](auto& regs) {
+        auto* cat = *reinterpret_cast<TextureCategory**>(static_cast<int>(regs.eax));
+        if (strncmp(cat->name.c_str(), "Custom - ", 9) == 0) {
+            regs.eip = 0x0041bad7;
+        }
+    }
+};
+
 // FUN_004452f0 (texture mode sidebar) uses a fixed path_handle from [dialog+0x98] for all
 // custom categories. This is the root "Custom" directory handle. For our subdirectory categories
 // ("Custom - <dir>"), we need to use the selected category's own path_handle instead.
@@ -203,7 +225,15 @@ CodeInjection sidebar_custom_texture_path_injection{
         auto* panel = reinterpret_cast<TextureModePanel*>(static_cast<uintptr_t>(regs.esi));
         auto* cat_array = reinterpret_cast<VArray<TextureCategory*>*>(
             static_cast<char*>(panel->texture_manager) + 0x7C);
-        regs.edx = (*cat_array)[panel->category_index]->path_handle;
+        int path_handle = (*cat_array)[panel->category_index]->path_handle;
+        // A custom subdirectory whose VFS path failed to register (path table full)
+        // has path_handle == -1. This EDX value flows into the search's path-handle
+        // arg (FUN_004c3ec0 -> FUN_004c33d0), whose stock guard is `if (param_1 != 0)`:
+        // a negative handle passes that guard and indexes (&DAT_0156b110)[-3] out of
+        // bounds, then strlen's it -> crash. 0 is the stock "no path" sentinel that
+        // skips the prefix cleanly, so fall back to it (mirrors the handle>=0 guard in
+        // reload_custom_textures) — the category behaves as if it had no custom path.
+        regs.edx = (path_handle >= 0) ? path_handle : 0;
         // Original MOV EDX,[ESI+0x98] is 6 bytes; continue at next instruction
         regs.eip = 0x00445415;
     },
@@ -340,6 +370,10 @@ CodeInjection texture_refresh_all_iterate_custom_injection{
         for (int i = 0; i < cat_array->get_size(); i++) {
             TextureCategory* cat = (*cat_array)[i];
             if (std::strncmp(cat->name.c_str(), "Custom", 6) != 0) continue;
+            // A subdirectory whose VFS path failed to register has path_handle == -1;
+            // texture_browser_scan_path (0x004c3ec0) would index the path table out of
+            // bounds on a negative handle. Skip it (mirrors reload_custom_textures).
+            if (cat->path_handle < 0) continue;
 
             TextureListSentinel temp;
             temp.head = reinterpret_cast<TextureListNode*>(&temp);
@@ -363,6 +397,46 @@ CodeInjection texture_refresh_dedup_master_injection{
         dedup_master_by_name(&panel->master_list);
     }
 };
+
+// ─── Texture browser invocation ─────────────────────────────────────────────
+
+// CDedLevel holds one shared browser instance in dialog_panels[] (+0x444); the browser is
+// the entry at +0x4a0, which is what every stock browse handler reaches for.
+static_assert(offsetof(CDedLevel, dialog_panels) == 0x444);
+constexpr int texture_browser_panel_index = (0x4a0 - 0x444) / 4;
+
+// SetFolderByName takes the string by value and destroys it (MSVC callee-destroys), so the
+// buffer handed over must not be freed here.
+struct VStringByValue {
+    int max_len;
+    char* buf;
+};
+
+int texture_browser_pick(const char* folder, int current_bm)
+{
+    auto* level = CDedLevel::Get();
+    if (!level) return -1;
+
+    auto* panel = static_cast<TextureBrowserPanel*>(
+        level->dialog_panels[texture_browser_panel_index]);
+    if (!panel || !panel->preview) return -1;
+
+    if (folder && folder[0]) {
+        VString folder_name;
+        folder_name.assign_0(folder);
+        AddrCaller{0x004711c0}.this_call<int>(
+            panel, VStringByValue{folder_name.max_len, folder_name.buf});
+    }
+
+    panel->preview->bm_handle = current_bm;
+
+    // DoModal is CDialog vtable slot 46
+    auto** vtbl = *reinterpret_cast<void***>(panel);
+    auto do_modal = reinterpret_cast<int(__thiscall*)(void*)>(vtbl[0xb8 / 4]);
+    if (do_modal(panel) != IDOK) return -1;
+
+    return panel->preview->bm_handle;
+}
 
 // VPP packfile creation (FUN_004482c0) constructs custom texture paths by combining a
 // fixed base directory ("user_maps\textures\") with the bare filename via FUN_004b6ee0.
@@ -406,6 +480,12 @@ CodeInjection vpp_texture_path_fix{
 static bool has_texture_extension(const char* filename)
 {
     if (!filename || !filename[0]) return false;
+    // Texture names come out of level and mesh files, which are shared content.
+    // Only bare filenames should be packable, not paths.
+    if (strpbrk(filename, "\\/:") != nullptr) {
+        xlog::warn("Refusing to pack texture with a path in its name: '{}'", filename);
+        return false;
+    }
     const char* ext = strrchr(filename, '.');
     if (!ext) return false;
     return (_stricmp(ext, ".tga") == 0 ||
@@ -510,13 +590,14 @@ static void add_mesh_to_vpp_list(const char* filename)
     xlog::info("VPP: Added mesh file '{}'", full_path);
 }
 
-// Find a V3M/V3C mesh file on disk and add its referenced textures to the VPP pack list.
+// Find a mesh file on disk and add its referenced textures to the VPP pack list.
 static void add_mesh_textures_to_pack_list(void* temp_list, const char* filename)
 {
     std::string path = find_mesh_on_disk(filename);
     if (path.empty()) return;
 
-    auto tex_names = extract_v3d_texture_names(path.c_str());
+    auto tex_names = string_iends_with(path, ".vfx") ? extract_vfx_texture_names(path.c_str())
+                                                     : extract_v3d_texture_names(path.c_str());
     for (const auto& name : tex_names) {
         add_texture_to_pack_list(temp_list, name.c_str());
         xlog::info("VPP: Added texture '{}' from mesh '{}'", name, filename);
@@ -753,6 +834,7 @@ void ApplyTexturesPatches() {
     vpp_clear_log_injection.install();
     vpp_mesh_files_injection.install();
     config_save_skip_custom_subdirs.install();
+    folder_group_build_skip_custom_subdirs.install();
     texture_refresh_all_iterate_custom_injection.install();
     texture_refresh_dedup_master_injection.install();
 }

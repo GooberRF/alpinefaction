@@ -22,6 +22,7 @@ public:
 
 private:
     std::optional<int> prev_;
+    bool prev_hit_counted_ = false;
     bool active_ = false;
 };
 
@@ -45,6 +46,7 @@ struct DamageWeaponContext
 };
 
 constexpr int kill_attribution_hit_region_head = 2;
+constexpr int kill_attribution_hit_region_torso = 1;
 constexpr int kill_attribution_hit_region_legs = 0;
 
 void kill_attribution_do_patch();
@@ -54,6 +56,22 @@ DamageWeaponContext kill_attribution_get_damage_context();
 // Hit region from the most recent get_hit_region_multiplier call, but only if that call was
 // for `entity_handle`. -1 otherwise.
 int kill_attribution_get_hit_region(int entity_handle);
+
+// True while a projectile impact is being resolved: the damage was delivered by a real projectile,
+// not by a per-frame processor that happens to name a weapon.
+bool kill_attribution_in_projectile_impact();
+
+// True while a damaging particle is applying contact damage (the flamethrower stream). That damage
+// names no weapon, so this is the only thing distinguishing it from the burn processors.
+bool kill_attribution_in_particle_damage();
+
+// True while a SplashWeaponScope is open, i.e. inside one projectile's impact or detonation.
+bool kill_attribution_in_splash_scope();
+
+// Consume-once within the current SplashWeaponScope, so one detonation scores at most one accuracy
+// hit however many players it damages. Fails closed when no scope is open.
+bool kill_attribution_splash_hit_consume();
+
 
 // True when `weapon_type` is safe to use as an index into rf::weapon_types. Matters because
 // the index reaches display code over the wire, where nothing constrains it.

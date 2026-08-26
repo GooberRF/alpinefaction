@@ -397,7 +397,7 @@ namespace rf
         int bot_index;
         int mp_character_id;
         int powerup_light_handle;
-        int field_1488;
+        float custom_max_vel; // horizontal speed cap used instead of info->max_vel when p_data.flags & PF_USE_CUSTOM_MAX_VEL
         VMesh *respawn_vfx_handle;
         Timestamp field_1490;
     };
@@ -471,6 +471,10 @@ namespace rf
     static auto& entity_fire_init_bones = addr_as_ref<bool(EntityFireInfo *efi, Object *objp)>(0x0042EB20);
     static auto& entity_fire_create = addr_as_ref<EntityFireInfo*(int entity_handle, int killer_handle)>(0x0042E910);
     static auto& entity_fire_destroy = addr_as_ref<void(EntityFireInfo* fire, bool keep_linked)>(0x0042ED20);
+    // Head pointer of the circular burn-effect list iterated by entity_fire_update_all; null when
+    // empty. entity_fire_destroy(fire, false) unlinks and updates this head, so
+    // "while (entity_fire_list) entity_fire_destroy(entity_fire_list, false);" drains it safely.
+    static auto& entity_fire_list = addr_as_ref<EntityFireInfo*>(0x0062F770);
     static auto& entity_is_swimming = addr_as_ref<bool(Entity* ep)>(0x0042A0A0);
     static auto& entity_is_crouching = addr_as_ref<bool(Entity* ep)>(0x0040A130);
     static auto& entity_is_falling = addr_as_ref<bool(Entity* ep)>(0x0042A020);
@@ -480,6 +484,8 @@ namespace rf
     static auto& entity_is_flying = addr_as_ref<bool(Entity* ep)>(0x0042A060);
     static auto& entity_make_fly = addr_as_ref<void(Entity* ep)>(0x00428130);
     static auto& entity_make_run = addr_as_ref<void(Entity* ep)>(0x004280B0);
+    static auto& entity_jump = addr_as_ref<void(Entity* ep)>(0x004288B0);
+    static auto& jump_velocity = addr_as_ref<float>(0x0062F2C8);
     static auto& entity_on_ground = addr_as_ref<bool(Entity* ep)>(0x0042A0D0);
     static auto& entity_can_swim = addr_as_ref<bool(Entity* ep)>(0x00427FF0);
     static auto& entity_headlamp_turn_on = addr_as_ref<void(Entity* ep)>(0x00429560);

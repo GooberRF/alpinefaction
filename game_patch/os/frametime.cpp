@@ -169,6 +169,22 @@ static void frametime_render_ping_display(int y)
     rf::gr::string_aligned(rf::gr::ALIGN_RIGHT, value_anchor, y, text.c_str(), font_id);
 }
 
+int frametime_hud_counter_stack_bottom_y()
+{
+    int y = frametime_hud_counter_base_y();
+    const int line_gap = frametime_hud_counter_line_gap();
+    if (frametime_fps_counter_visible()) {
+        y += line_gap;
+    }
+    if (frametime_speed_meter_visible()) {
+        y += line_gap;
+    }
+    if (frametime_ping_display_visible()) {
+        y += line_gap;
+    }
+    return y;
+}
+
 void frametime_render_ui()
 {
     int y = frametime_hud_counter_base_y();

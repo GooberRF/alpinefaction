@@ -11,14 +11,17 @@
 #include <string>
 #include <thread>
 
-#include <json.hpp>
+#include <nlohmann/json.hpp>
 #include <xlog/xlog.h>
 
 #include <common/HttpRequest.h>
+#include <common/utils/list-utils.h>
 #include <common/version/version.h>
 
 #include "../multi/server_internal.h"
 #include "../os/console.h"
+#include "../rf/multi.h"
+#include "../rf/player/player.h"
 #include "fflink_utils.h"
 
 namespace fflink {
@@ -35,45 +38,16 @@ constexpr unsigned long k_receive_timeout_ms = 3000;
 // Backoff schedule for transient failures (seconds). After the last entry, entries continue using the last delay.
 constexpr int k_backoff_schedule_s[] = {5, 30, 120};
 
+// The session response is a small JSON object; cap the read so a broken or hostile
+// endpoint can't stream unbounded data into memory. Mirrors the cap the events and
+// player-stats clients already enforce. Past the cap the read throws and is classified
+// as a transient error, so the exchange simply retries.
+constexpr size_t k_max_response_bytes = 256 * 1024;
+
 std::mutex g_state_mutex;
 SessionState g_state;
 std::string g_gssk; // protected by g_state_mutex
 std::atomic<bool> g_exchange_in_flight{false};
-
-bool is_lower_hex_char(char c)
-{
-    return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
-}
-
-bool is_valid_gsk_format(std::string_view gsk)
-{
-    if (gsk.size() != 32) {
-        return false;
-    }
-    for (char c : gsk) {
-        if (!is_lower_hex_char(c)) {
-            return false;
-        }
-    }
-    return true;
-}
-
-bool is_valid_gssk_format(std::string_view gssk)
-{
-    if (gssk.size() != 32) {
-        return false;
-    }
-    for (char c : gssk) {
-        const bool ok =
-            (c >= '0' && c <= '9') ||
-            (c >= 'a' && c <= 'z') ||
-            (c >= 'A' && c <= 'Z');
-        if (!ok) {
-            return false;
-        }
-    }
-    return true;
-}
 
 void set_state(SessionStatus status, int server_id, std::string_view error_msg, std::string_view gssk)
 {
@@ -126,7 +100,14 @@ ExchangeOutcome do_one_exchange(const std::string& gsk)
 
         char buf[1024];
         std::ostringstream stream;
+        size_t total = 0;
         while (size_t n = req.read(buf, sizeof(buf))) {
+            total += n;
+            if (total > k_max_response_bytes) {
+                // The per-read receive timeout bounds how long any one read blocks; this
+                // byte cap bounds the total so a slow trickle can't grow unbounded either.
+                throw std::runtime_error("response exceeded size cap");
+            }
             stream.write(buf, n);
         }
         response = stream.str();
@@ -145,7 +126,8 @@ ExchangeOutcome do_one_exchange(const std::string& gsk)
         const std::string response_preview = sanitize_for_log(
             response.size() <= k_log_response_prefix
                 ? std::string_view{response}
-                : std::string_view{response}.substr(0, k_log_response_prefix));
+                : std::string_view{response}.substr(0, k_log_response_prefix),
+            k_log_response_prefix);
         const char* truncated = response.size() > k_log_response_prefix ? "...[truncated]" : "";
         xlog::info("[fflink] response body: {}{}", response_preview, truncated);
     };
@@ -174,7 +156,7 @@ ExchangeOutcome do_one_exchange(const std::string& gsk)
             auto j = nlohmann::json::parse(response);
             auto gssk = j.at("gssk").get<std::string>();
             const auto server_id = j.at("server_id").get<int>();
-            if (!is_valid_gssk_format(gssk)) {
+            if (!is_valid_stats_key_format(gssk)) {
                 throw std::runtime_error("gssk has invalid format");
             }
             out.kind = ExchangeOutcome::Kind::success;
@@ -227,8 +209,7 @@ void exchange_worker_impl(const std::string& gsk)
             xlog::info("[fflink] session established (server_id={})", outcome.server_id);
             set_state(SessionStatus::valid, outcome.server_id, "", outcome.gssk);
             enqueue_console_line(std::format(
-                "FactionFiles session established (server id {}, gssk={}).",
-                outcome.server_id, outcome.gssk));
+                "FactionFiles session established (server id {}).", outcome.server_id));
             g_exchange_in_flight.store(false, std::memory_order_release);
             return;
         }
@@ -350,6 +331,18 @@ std::string get_gssk()
     return g_gssk;
 }
 
+bool afstats_server_enabled()
+{
+    const auto& cfg = g_alpine_server_config;
+    if (cfg.fflink_gsk.empty() || !is_valid_gsk_format(cfg.fflink_gsk)) {
+        return false;
+    }
+    // Deliberately not "session valid": the exchange lands seconds after launch and
+    // may lapse during an FF outage, and a PSSK held across either is still useful.
+    const auto status = snapshot_state().status;
+    return status != SessionStatus::bad_gsk_format && status != SessionStatus::rejected_by_server;
+}
+
 namespace {
 
 const char* status_to_str(SessionStatus s)
@@ -375,6 +368,15 @@ ConsoleCommand2 sv_fflink_status_cmd{
         }
         if (!state.last_error.empty()) {
             rf::console::print("  Last error: {}", state.last_error);
+        }
+        if (rf::is_multi && rf::is_server) {
+            int with_pssk = 0;
+            for (const rf::Player& player : SinglyLinkedList{rf::player_list}) {
+                if (player.afstats_pssk) {
+                    ++with_pssk;
+                }
+            }
+            rf::console::print("  Connected players with a stats session key: {}", with_pssk);
         }
     },
     "Show the current FactionFiles server session link status.",

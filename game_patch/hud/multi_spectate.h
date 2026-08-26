@@ -9,8 +9,20 @@ namespace rf
     struct Camera;
 }
 
+// Snapshot of the user-visible spectate camera group, used by demo playback to
+// persist the camera across seeks/session restarts.
+struct SpectateCameraState
+{
+    bool attached = false;     // following a player (vs freelook/static)
+    bool third_person = false; // attached submode
+};
+
 void multi_spectate_set_target_player(rf::Player* player);
 rf::Player* multi_spectate_get_target_player();
+SpectateCameraState multi_spectate_get_camera_state();
+// Applies a remembered camera state: attaches to target, or enters freelook when
+// state.attached is false or target is unusable.
+void multi_spectate_apply_camera_state(const SpectateCameraState& state, rf::Player* target);
 void multi_spectate_appy_patch();
 void multi_spectate_after_full_game_init();
 void multi_spectate_level_init();
@@ -35,3 +47,4 @@ bool multi_spectate_execute_action(rf::ControlConfigAction action, bool was_pres
 void multi_spectate_process_bind_input();
 void multi_spectate_sync_crouch_anim();
 void multi_spectate_on_obj_update_fire(rf::Entity* entity, bool alt_fire);
+void multi_spectate_reset_action_anim_edge_state();

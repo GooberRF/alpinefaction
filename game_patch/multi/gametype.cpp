@@ -7,6 +7,7 @@
 #include <common/utils/list-utils.h>
 #include <common/version/version.h>
 #include "gametype.h"
+#include "awards.h"
 #include "bagman.h"
 #include "jetpack.h"
 #include "rounds.h"
@@ -17,10 +18,12 @@
 #include "multi.h"
 #include "mutators.h"
 #include "alpine_packets.h"
+#include "../fflink/afstats_events.h"
 #include "../hud/hud_internal.h"
 #include "../hud/multi_spectate.h"
 #include "../sound/sound.h"
 #include "../rf/os/timestamp.h"
+#include "../object/object.h"
 #include "../object/event_alpine.h"
 #include "../rf/entity.h"
 #include "../rf/gameseq.h"
@@ -313,7 +316,7 @@ const char* multi_gametype_help_text(rf::NetGameType game_type)
 
 bool gt_uses_custom_scoring()
 {
-    return gt_is_bagman_any() || gt_is_pit() || gt_is_wipeout();
+    return gt_is_bagman_any() || gt_is_pit();
 }
 
 bool gt_type_uses_rounds(rf::NetGameType game_type)
@@ -1068,6 +1071,27 @@ static void esc_apply_initial_ownerships()
     }
 }
 
+static uint8_t afstats_team_for_owner(HillOwner owner)
+{
+    switch (owner) {
+        case HillOwner::HO_Red:  return afstats::team_red;
+        case HillOwner::HO_Blue: return afstats::team_blue;
+        default:                 return afstats::team_none;
+    }
+}
+
+static std::vector<rf::Player*> players_from_ids(const std::vector<uint8_t>& ids)
+{
+    std::vector<rf::Player*> players;
+    players.reserve(ids.size());
+    for (uint8_t id : ids) {
+        if (rf::Player* p = rf::multi_find_player_by_id(id)) {
+            players.push_back(p);
+        }
+    }
+    return players;
+}
+
 static void server_maybe_broadcast_state(HillInfo& h, const Presence& pres)
 {
     const uint8_t prog_bucket = static_cast<uint8_t>(h.capture_progress / 5);
@@ -1082,6 +1106,23 @@ static void server_maybe_broadcast_state(HillInfo& h, const Presence& pres)
 
     if (!changed)
         return;
+
+    // Contest is a per-tick derived condition with nothing latched to hook, so the
+    // edge is taken against the same snapshot the network dedup already keeps.
+    const bool was_contested = h.net_last_red > 0 && h.net_last_blue > 0;
+    const bool is_contested = pres.red > 0 && pres.blue > 0;
+    if (was_contested != is_contested) {
+        afstats::on_point_event(h.hill_uid,
+            is_contested ? afstats::PointEventKind::contest_start
+                         : afstats::PointEventKind::contest_end,
+            afstats_team_for_owner(h.ownership), {},
+            h.lock_status != HillLockStatus::HLS_Available);
+    }
+    if (h.net_last_lock_status != h.lock_status) {
+        afstats::on_point_event(h.hill_uid, afstats::PointEventKind::lock_change,
+            afstats_team_for_owner(h.ownership), {},
+            h.lock_status != HillLockStatus::HLS_Available);
+    }
 
     af_send_koth_hill_state_packet_to_all(h, pres);
 
@@ -1140,6 +1181,38 @@ static void esc_recalculate_stage_locks()
     }
 }
 
+// Lockdown: one team controls all control points (DC only).
+static void koth_maybe_grant_lockdown(const HillInfo& captured, HillOwner new_owner)
+{
+    if (!gt_is_dc() || !captured.trigger || !captured.handler) {
+        return;
+    }
+    int valid_hills = 0;
+    for (const HillInfo& hill : g_koth_info.hills) {
+        if (!hill.trigger || !hill.handler) {
+            continue;
+        }
+        if (hill.ownership != new_owner) {
+            return;
+        }
+        ++valid_hills;
+    }
+    if (valid_hills == 0) {
+        return;
+    }
+
+    const int capping_team = (new_owner == HillOwner::HO_Red) ? 0 : 1;
+    for (rf::Player& pl : SinglyLinkedList{rf::player_list}) {
+        if (pl.team != capping_team || !player_is_countable(pl)) {
+            continue;
+        }
+        if (!player_inside_hill_trigger(captured, pl)) {
+            continue;
+        }
+        grant_award(&pl, AwardId::lockdown);
+    }
+}
+
 static void koth_apply_ownership(HillInfo& h, HillOwner new_owner, bool announce = true, HillOwner scoring_team = HillOwner::HO_Neutral)
 {
     if (gt_is_rev() && new_owner == HillOwner::HO_Blue)
@@ -1182,8 +1255,9 @@ static void koth_apply_ownership(HillInfo& h, HillOwner new_owner, bool announce
 
         if (new_owner == HillOwner::HO_Red || new_owner == HillOwner::HO_Blue) {
             notify_capture_point_captured(h, new_owner);
+            koth_maybe_grant_lockdown(h, new_owner);
         }
-    
+
         if (announce) {
             //auto ids = on_capture_collect_player_ids_on_hill_for_team(h, new_owner);
             HillOwner reward_team = scoring_team;
@@ -1195,6 +1269,15 @@ static void koth_apply_ownership(HillInfo& h, HillOwner new_owner, bool announce
                 ids = on_capture_collect_player_ids_on_hill_for_team(h, reward_team);
             const uint8_t uid8 = static_cast<uint8_t>(std::clamp(h.hill_uid, 0, 255));
             af_send_koth_hill_captured_packet_to_all(uid8, new_owner, ids);
+            afstats::on_point_event(h.hill_uid, afstats::PointEventKind::owner_change,
+                afstats_team_for_owner(new_owner), players_from_ids(ids),
+                h.lock_status != HillLockStatus::HLS_Available);
+        }
+        else {
+            // A silent flip (script/event driven) still changes ownership.
+            afstats::on_point_event(h.hill_uid, afstats::PointEventKind::owner_change,
+                afstats_team_for_owner(new_owner), {},
+                h.lock_status != HillLockStatus::HLS_Available);
         }
     }
 }
@@ -2037,6 +2120,12 @@ void multi_level_init_post_gametypes()
     // Mutator pickup suppression runs last so its policy applies on top of any
     // gametype-specific item handling.
     mutators_level_init_post();
+
+    // After everything above, so the round_start snapshot sees the level, the
+    // game type, the active rules and every gametype's own state as final.
+    if (rf::is_multi && rf::is_server) {
+        afstats::on_game_start();
+    }
 }
 
 // pre level being loaded
@@ -2051,6 +2140,7 @@ CodeInjection multi_level_init_gametypes_injection{
         pit_level_init();
         wipeout_level_init();
         gungame_level_init();
+        riot_shield_on_multi_level_init();
     },
 };
 

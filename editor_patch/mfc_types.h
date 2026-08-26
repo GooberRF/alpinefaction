@@ -144,7 +144,8 @@ enum class DedObjectType : int
     DED_MESH = 0x17,   // Alpine 1.3
     DED_NOTE = 0x18,   // Alpine 1.3
     DED_CORONA = 0x19, // Alpine 1.3
-    DED_BAG = 0x1A     // Alpine 1.4
+    DED_BAG = 0x1A,    // Alpine 1.4
+    DED_WEATHER_REGION = 0x1B // Alpine 1.4
 };
 
 struct Vector3
@@ -460,6 +461,46 @@ struct DedCorona : DedObject
     float volumetric_height = 1.6f;
     float volumetric_length = 3.2f;
     bool show_in_editor = false;       // not serialized — local editor toggle
+};
+
+enum class WeatherRegionShape : int
+{
+    box = 0,
+    sphere = 1,
+};
+
+enum class WeatherRegionType : int
+{
+    rain = 0,
+    snow = 1,
+};
+
+struct DedWeatherRegion : DedObject
+{
+    WeatherRegionShape shape = WeatherRegionShape::box;
+    WeatherRegionType weather_type = WeatherRegionType::rain;
+    float width = 10.0f;
+    float height = 10.0f;
+    float depth = 10.0f;
+    float radius = 5.0f;
+    float density_scale = 1.0f;
+    float active_distance = 0.0f;   // 0 = auto: visible distance plus the game's activity margin
+    float visible_distance = 0.0f;  // 0 = auto: the weather type's own sim box half extent
+    uint8_t rain_color_r = 170, rain_color_g = 190, rain_color_b = 215, rain_color_a = 110;
+    float rain_fall_speed = 14.0f;
+    float rain_wind_x = 1.1f;
+    float rain_wind_z = 0.4f;
+    float rain_streak_seconds = 0.035f;
+    uint8_t snow_color_r = 235, snow_color_g = 240, snow_color_b = 255, snow_color_a = 190;
+    float snow_fall_speed = 1.2f;
+    float snow_sway_amplitude = 0.55f;
+    float snow_sway_speed = 1.7f;
+    float snow_sprite_radius = 0.035f;
+    std::string snow_bitmap = "af_gbrsnowfl01.tga";
+    bool always_show_range = false;
+    bool initially_enabled = true;
+    bool block_by_geometry = false;
+    float column_width = 0.5f;
 };
 
 struct DedBoltEmitter : DedObject

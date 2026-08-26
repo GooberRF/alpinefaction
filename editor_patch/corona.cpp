@@ -152,6 +152,7 @@ void corona_deserialize_chunk(CDedLevel& level, rf::File& file, std::size_t chun
 
         // corona bitmap
         corona->corona_bitmap = read_rfl_string(file, remaining);
+        if (rfl_name_over_long(corona->corona_bitmap)) corona->corona_bitmap.clear();
 
         // float properties
         if (!read_bytes(&corona->cone_angle, sizeof(float))) { DestroyDedCorona(corona); return; }
@@ -166,6 +167,7 @@ void corona_deserialize_chunk(CDedLevel& level, rf::File& file, std::size_t chun
             if (!read_bytes(&corona->volumetric_height, sizeof(float))) { DestroyDedCorona(corona); return; }
             if (!read_bytes(&corona->volumetric_length, sizeof(float))) { DestroyDedCorona(corona); return; }
         }
+        if (rfl_name_over_long(corona->volumetric_bitmap)) corona->volumetric_bitmap.clear();
 
         coronas.push_back(corona);
         level.master_objects.add(static_cast<DedObject*>(corona));

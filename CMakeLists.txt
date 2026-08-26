@@ -73,6 +73,19 @@ macro(setup_debug_info target)
 endmacro()
 
 add_subdirectory(vendor)
+
+# Pin both charsets for Alpine Faction's own code. Sources are UTF-8; narrow string literals are Windows-1252,
+# because the .vf bitmap fonts are indexed by Windows-1252 byte value and several literals embed those bytes
+# directly (\x95 bullet, \xA6 chat prefix, ...). Without this the ordinary literal encoding follows the build
+# machine's system code page: on a DBCS locale such as 932 those bytes become invalid multi-byte sequences and
+# std::format throws std::format_error at runtime.
+# This is applied AFTER vendor/ so third-party code keeps its own charset settings.
+if(MSVC)
+    add_compile_options(/source-charset:utf-8 /execution-charset:windows-1252)
+else()
+    add_compile_options(-finput-charset=UTF-8 -fexec-charset=WINDOWS-1252)
+endif()
+
 add_subdirectory(launcher_common)
 add_subdirectory(launcher)
 add_subdirectory(common)

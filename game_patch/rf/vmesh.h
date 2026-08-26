@@ -126,8 +126,11 @@ namespace rf
         addr_as_ref<void(VMesh* vmesh, int prop_idx, Matrix3* entity_orient, Vector3* entity_pos,
                          Matrix3* out_orient, Vector3* out_pos)>(0x005034F0);
     static auto& vclip_lookup = addr_as_ref<int(const char* name)>(0x004C1D00);
+    // Returns 0 on success, -1 on failure (bad index, no free instance, culled)
     static auto& vclip_play_3d =
-        addr_as_ref<void(int index, GRoom* src_room, Vector3* src_pos, Vector3* pos, float radius,
+        addr_as_ref<int(int index, GRoom* src_room, Vector3* src_pos, Vector3* pos, float radius,
             int parent_handle, Vector3* dir, bool play_sound)>(0x004C16E0);
+    // Deletes every active vclip instance (vclip_delete_instance over the instance pool)
+    static auto& vclip_level_release = addr_as_ref<void()>(0x004C1250);
 
 }

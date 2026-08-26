@@ -22,6 +22,7 @@
 #include "../bmpman/bmpman.h"
 #include "../debug/debug.h"
 #include "../graphics/gr.h"
+#include "../graphics/weather.h"
 #include "../graphics/d3d11/gr_d3d11_mesh.h"
 #include "../hud/hud.h"
 #include "../hud/hud_world.h"
@@ -29,6 +30,7 @@
 #include "../hud/multi_spectate.h"
 #include "../object/object.h"
 #include "../multi/multi.h"
+#include "../multi/demo/demo.h"
 #include "../multi/gametype.h"
 #include "../multi/mutators.h"
 #include "../multi/bagman.h"
@@ -37,10 +39,12 @@
 #include "../multi/server.h"
 #include "../multi/server_internal.h"
 #include "../multi/alpine_packets.h"
+#include "../multi/awards.h"
 #include "../fflink/fflink.h"
 #include "../misc/misc.h"
 #include "../misc/achievements.h"
 #include "../misc/spray_picker.h"
+#include "../multi/demo/demo_browser.h"
 #include "../misc/alpine_options.h"
 #include "../misc/alpine_settings.h"
 #include "../misc/vpackfile.h"
@@ -158,6 +162,7 @@ FunHook<int()> rf_do_frame_hook{
         rf::os_poll();
         high_fps_update();
         server_do_frame();
+        riot_shield_do_frame();
         client_bot_do_frame();
         koth_do_frame();
         bagman_do_frame();
@@ -187,6 +192,8 @@ CodeInjection after_level_render_hook{
 #if !defined(NDEBUG) && defined(HAS_EXPERIMENTAL)
         experimental_render_in_game();
 #endif
+        weather_render();
+        crits_client_render();
         debug_render();
         waypoints_render_debug();
         client_bot_render_debug();
@@ -204,11 +211,14 @@ CodeInjection after_frame_render_hook{
             && state != rf::GS_NEW_LEVEL
             && state != rf::GS_MULTI_GETTING_STATE_INFO) {
             // Draw on top (after scene)
+            demo_playback_render_seek_overlay(); // first: covers the stale frame, UI below stays on top
             frametime_render_ui();
             achievement_system_do_frame();
+            awards_client_do_frame();
             fullscreen_overlay_do_frame();
             gas_region_transition_do_frame();
             spray_picker_render();
+            demo_browser_render();
 #if !defined(NDEBUG) && defined(HAS_EXPERIMENTAL)
             experimental_render();
 #endif
@@ -318,6 +328,8 @@ FunHook<void(bool)> level_init_post_hook{
         populate_fullscreen_overlay_events();
         reset_achievement_state_info();
         multi_level_init_post_gametypes();
+        // After gametype init so the demo snapshot includes koth/bagman/salvage/pit state
+        demo_server_on_level_init_post();
         // Multiplayer resets the jetpack from its own level-init injection.
         if (!rf::is_multi) {
             jetpack_level_init();

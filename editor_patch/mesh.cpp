@@ -3,12 +3,15 @@
 #include <commdlg.h>
 #include <cstdio>
 #include <cstring>
+#include <cstdint>
 #include <string>
 #include <algorithm>
 #include <cmath>
 #include <unordered_map>
 #include <xlog/xlog.h>
 #include <patch_common/MemUtils.h>
+#include <patch_common/CodeInjection.h>
+#include <patch_common/FunHook.h>
 #include "mesh.h"
 #include "mfc_types.h"
 #include "level.h"
@@ -380,11 +383,14 @@ void mesh_deserialize_chunk(CDedLevel& level, rf::File& file, std::size_t chunk_
         // script_name
         std::string sname = read_rfl_string(file, remaining);
         mesh->script_name.assign_0(sname.c_str());
-        // mesh_filename
+        // mesh_filename — VMesh::filename[65]; the extension is gated to v3m/v3c/vfx before the
+        // name reaches File::open, so only the name length needs bounding
         std::string mfname = read_rfl_string(file, remaining);
+        if (mfname.size() > rfl_mesh_name_max_len) mfname.clear();
         mesh->mesh_filename.assign_0(mfname.c_str());
-        // state_anim
+        // state_anim — .rfa loader's 60 byte name buffer, and the raw name reaches File::open
         std::string sanim = read_rfl_string(file, remaining);
+        if (sanim.size() > rfl_anim_name_max_len || rfl_ext_over_long(sanim)) sanim.clear();
         mesh->state_anim.assign_0(sanim.c_str());
         // collision mode
         uint8_t collision_mode = 2;
@@ -397,6 +403,7 @@ void mesh_deserialize_chunk(CDedLevel& level, rf::File& file, std::size_t chunk_
             uint8_t slot_id = 0;
             if (!read_bytes(&slot_id, sizeof(slot_id))) { DestroyDedMesh(mesh); return; }
             std::string tex = read_rfl_string(file, remaining);
+            if (rfl_name_over_long(tex)) tex.clear();
             if (!tex.empty()) {
                 mesh->texture_overrides.push_back({slot_id, std::move(tex)});
             }
@@ -559,6 +566,9 @@ static void mesh_dialog_update_state(HWND hdlg)
     // Collision: not applicable for VFX
     bool enable_collision = has_filename && !string_iequals(ext, "vfx");
     EnableWindow(GetDlgItem(hdlg, IDC_MESH_COLLISION_MODE), enable_collision);
+    if (has_filename && string_iequals(ext, "vfx")) {
+        SendMessageA(GetDlgItem(hdlg, IDC_MESH_COLLISION_MODE), CB_SETCURSEL, 0, 0);
+    }
 
     // Material overrides: enable/disable controls based on filename
     EnableWindow(GetDlgItem(hdlg, IDC_MESH_OVERRIDE_LIST), has_filename);
@@ -614,6 +624,9 @@ static void mesh_dialog_update_state(HWND hdlg)
         // Collision: not for vfx corpse meshes
         bool corpse_has_collision = has_corpse && !string_iequals(corpse_ext, "vfx");
         EnableWindow(GetDlgItem(hdlg, IDC_MESH_CLUTTER_CORPSE_COLLISION), corpse_has_collision);
+        if (has_corpse && string_iequals(corpse_ext, "vfx")) {
+            SendMessageA(GetDlgItem(hdlg, IDC_MESH_CLUTTER_CORPSE_COLLISION), CB_SETCURSEL, 0, 0);
+        }
 
         // Material: enabled whenever a corpse mesh is specified
         EnableWindow(GetDlgItem(hdlg, IDC_MESH_CLUTTER_CORPSE_MATERIAL), has_corpse);
@@ -1012,7 +1025,7 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
             bool force_clear_collision = !collision_enabled && filename_changed;
             int collision_sel = collision_enabled
                 ? static_cast<int>(SendMessageA(combo, CB_GETCURSEL, 0, 0))
-                : 2; // default: All
+                : 0; // VFX meshes do not support collision
             // "Undefined" is index 3 — only present in multi-select mode
             bool collision_changed = false;
             if (force_clear_collision) {
@@ -1098,8 +1111,14 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
 
                 {
                     HWND corpse_col = GetDlgItem(hdlg, IDC_MESH_CLUTTER_CORPSE_COLLISION);
-                    int sel = static_cast<int>(SendMessageA(corpse_col, CB_GETCURSEL, 0, 0));
-                    new_clutter.corpse_collision = (sel >= 0 && sel <= 2) ? static_cast<uint8_t>(sel) : 0;
+                    if (IsWindowEnabled(corpse_col)) {
+                        int sel = static_cast<int>(SendMessageA(corpse_col, CB_GETCURSEL, 0, 0));
+                        new_clutter.corpse_collision = (sel >= 0 && sel <= 2) ? static_cast<uint8_t>(sel) : 0;
+                    }
+                    else {
+                        // VFX meshes do not support collision
+                        new_clutter.corpse_collision = 0;
+                    }
                 }
 
                 {
@@ -1748,5 +1767,87 @@ void mesh_handle_delete_selection(CDedLevel* level)
             DeleteMeshObject(static_cast<DedMesh*>(obj));
         }
     }
+}
+
+// ─── Stock v3d/v3m/v3c mesh parser hardening (RED.exe) ───────────────────────
+// Cap the v3d top-level element counts so count*element_size cannot overflow 32 bits and
+// yield an undersized allocation.
+static CodeInjection red_v3d_element_count_overflow_fix{
+    0x004ef612,
+    [](auto& regs) {
+        constexpr int max_count = 0x800000; // 8,388,608 — headroom for high-poly meshes
+        const uintptr_t v3d = addr_as_ref<uintptr_t>(regs.ebp - 0x1D4);
+        for (int off : {0x48, 0x68, 0x70, 0x80, 0x78, 0x58, 0x60}) {
+            if (addr_as_ref<int>(v3d + off) > max_count) {
+                xlog::warn("Rejecting v3d mesh: element count at +0x{:x} exceeds {} (possible integer overflow)", off, max_count);
+                regs.eip = 0x004ef4e2;
+                return;
+            }
+        }
+    },
+};
+
+// A mesh with more SUBM chunks than declared overflows the array. On reaching the cap,
+// stop the chunk loop gracefully.
+static CodeInjection red_v3d_submesh_count_overflow_fix{
+    0x004efc15,
+    [](auto& regs) {
+        const uintptr_t v3d = addr_as_ref<uintptr_t>(regs.ebp - 0x1D4);
+        const int submesh_index = addr_as_ref<int>(regs.ebp - 0x20);
+        const int num_meshes = addr_as_ref<int>(v3d + 0x48);
+        if (submesh_index >= num_meshes) {
+            xlog::warn("Truncating v3d mesh: more SUBM chunks than declared num_meshes ({})", num_meshes);
+            regs.eip = 0x004efcae;
+        }
+    },
+};
+
+static CodeInjection red_v3d_csphere_count_overflow_fix{
+    0x004efc72,
+    [](auto& regs) {
+        const uintptr_t v3d = addr_as_ref<uintptr_t>(regs.ebp - 0x1D4);
+        const int csphere_index = addr_as_ref<int>(regs.ebp - 0x1C);
+        const int num_cspheres = addr_as_ref<int>(v3d + 0x60);
+        if (csphere_index >= num_cspheres) {
+            xlog::warn("Truncating v3d mesh: more CSPH chunks than declared num_cspheres ({})", num_cspheres);
+            regs.esp += 4;
+            regs.eip = 0x004efcae;
+        }
+    },
+};
+
+static FunHook<int(int, void*, unsigned*)> red_vif_chunk_reader_hook{
+    0x0050d640,
+    [](int param_1, void* param_2, unsigned* param_3) -> int {
+        const unsigned num_faces = static_cast<unsigned short>(param_3[2]);
+        const unsigned data_block_size = param_3[3];
+        if (static_cast<uint64_t>(num_faces) * 0x38 > data_block_size) {
+            xlog::warn("Rejecting mesh chunk: num_faces {} * 0x38 exceeds data_block_size {}", num_faces, data_block_size);
+            return 0;
+        }
+        return red_vif_chunk_reader_hook.call_target(param_1, param_2, param_3);
+    },
+};
+
+// The per-LOD texture loop writes num_textures entries into VifMesh::tex_ids[7] and
+// tex_handles[7] with no clamp; num_textures > 7 overflows them.
+static CodeInjection red_vif_chunk_tex_count_overflow_fix{
+    0x0050d999,
+    [](auto& regs) {
+        auto& num_textures = addr_as_ref<int>(regs.ebp + 0x3C);
+        if (num_textures > 7) {
+            xlog::warn("Clamping mesh texture count {} to 7", num_textures);
+            num_textures = 7;
+        }
+    },
+};
+
+void apply_mesh_parser_hardening()
+{
+    red_v3d_element_count_overflow_fix.install();
+    red_v3d_submesh_count_overflow_fix.install();
+    red_v3d_csphere_count_overflow_fix.install();
+    red_vif_chunk_reader_hook.install();
+    red_vif_chunk_tex_count_overflow_fix.install();
 }
 

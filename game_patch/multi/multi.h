@@ -23,6 +23,11 @@ struct PlayerStatsNew : rf::PlayerLevelStats
     float damage_received;
     float damage_given;
     float damage_given_current_life;
+    // Efficiency numerator/denominator. Deliberately NOT damage_given: that counts every weapon,
+    // while potential only accrues for weapons whose shots reach these counters, so pairing the two
+    // would compare a flame-inclusive numerator with a flame-exclusive denominator.
+    float efficiency_dealt;
+    float damage_potential;
 
     void inc_kills()
     {
@@ -55,6 +60,16 @@ struct PlayerStatsNew : rf::PlayerLevelStats
         num_shots_fired += add;
     }
 
+    void add_efficiency_dealt(float add)
+    {
+        efficiency_dealt += add;
+    }
+
+    void add_damage_potential(float add)
+    {
+        damage_potential += add;
+    }
+
     void add_damage_received(float damage)
     {
         damage_received += damage;
@@ -74,6 +89,16 @@ struct PlayerStatsNew : rf::PlayerLevelStats
         return 0;
     }
 
+    // Not clamped: over 100% is legitimate. One rocket's potential is its damage value, but its
+    // blast can deal that much to several players at once.
+    [[nodiscard]] float calc_efficiency() const
+    {
+        if (damage_potential > 0) {
+            return efficiency_dealt / damage_potential;
+        }
+        return 0;
+    }
+
     void clear()
     {
         num_kills = 0;
@@ -81,11 +106,14 @@ struct PlayerStatsNew : rf::PlayerLevelStats
         num_assists = 0;
         num_shots_hit = 0.0f;
         num_shots_fired = 0.0f;
+        efficiency_dealt = 0.0f;
+        damage_potential = 0.0f;
         current_streak = 0;
         max_streak = 0;
         damage_received = 0;
         damage_given = 0;
         damage_given_current_life = 0;
+        took_part_in_flag_capture = false;
     }
 };
 
@@ -122,6 +150,9 @@ struct AlpineFactionServerInfo
     bool super_drain = false;
     bool jetpacks = false;
     bool low_gravity = false;
+    bool skiing = false;
+    bool dodging = false;
+    bool pogo = false;
 };
 
 enum class AlpineRestrictVerdict : uint8_t
@@ -177,8 +208,14 @@ std::string_view multi_game_type_name(rf::NetGameType game_type);
 std::string_view multi_game_type_name_upper(rf::NetGameType game_type);
 std::string_view multi_game_type_name_short(rf::NetGameType game_type);
 std::string_view multi_game_type_prefix(rf::NetGameType game_type);
+// The inverse of multi_game_type_prefix: the game type a filename's prefix names.
+std::optional<rf::NetGameType> multi_game_type_for_level_prefix(std::string_view level_filename);
 bool multi_game_type_uses_any_level(rf::NetGameType game_type);
 bool multi_level_name_matches_any_mp_prefix(const char* filename);
+// Full acceptance test: the strict prefix, the quirks table's run maps and the
+// any-level game types. The predicate the vote gate and the vote blob's per-level
+// mask share; level default resolution can answer outside it (see multi.cpp).
+bool multi_level_name_matches_game_type(std::string_view level_filename, rf::NetGameType game_type);
 std::string normalize_level_filename(std::string_view name); // appends ".rfl" when it is missing
 [[nodiscard]] int multi_num_spawned_players();
 int get_semi_auto_fire_wait_override();

@@ -112,6 +112,10 @@ bool salvage_viewer_is_carrier_first_person();
 // no flag item yet, a state with no flag in the world, or the viewer is the carrier
 // looking out of their own eyes.
 bool salvage_query_flag_outline(rf::VMesh** out_vmesh, rf::Vector3* out_pos, rf::Matrix3* out_orient);
+// True when item_render drew the flag this frame; false means it was portal-culled and
+// its spin (and the engine's cached chunk transforms) went unadvanced.
+bool salvage_flag_was_rendered_this_frame();
+void salvage_tick_flag_spin();
 // Glues the carried flag item to the carrier's $prop_flag, the same alignment
 // stock CTF performs in multi_ctf_move_flags. Runs on both sides: the attachment
 // is local and derives entirely from the replicated carrier entity.

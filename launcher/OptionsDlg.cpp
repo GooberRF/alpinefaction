@@ -220,6 +220,11 @@ void OptionsDlg::OnBnClickedFFLinkAction()
         if (result == IDYES) {
             m_conf.fflink_username = "";
             m_conf.fflink_token = "";
+            // Reset the stats identity too: unlinking means the next stats-server join
+            // mints a fresh, unlinked PSK instead of continuing to present the one that
+            // FactionFiles associated with this account. It only becomes account-linked
+            // again if the player deliberately re-links later.
+            m_conf.afstats_psk = "";
             m_conf.save();
             UpdateFFLinkStatus();
 

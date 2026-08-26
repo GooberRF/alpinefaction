@@ -21,8 +21,10 @@
 #include "server.h"
 #include "server_internal.h"
 #include "alpine_packets.h"
+#include "demo/demo.h"
 #include "sprays.h"
 #include "kill_attribution.h"
+#include "awards.h"
 #include "multi.h"
 #include "network.h"
 #include "gametype.h"
@@ -46,6 +48,7 @@
 #include "../rf/math/matrix.h"
 #include "../rf/player/player.h"
 #include "../rf/os/frametime.h"
+#include "../object/object.h"
 #include "../rf/item.h"
 #include "../rf/gameseq.h"
 #include "../rf/misc.h"
@@ -56,8 +59,11 @@
 #include "../rf/entity.h"
 #include "../rf/os/os.h"
 #include "../rf/os/timer.h"
+#include "../rf/sound/sound.h"
 #include "../rf/level.h"
 #include "../rf/collide.h"
+#include "../fflink/afstats_events.h"
+#include "../fflink/fflink_session.h"
 
 // all commands that can be used by any rcon profiles
 // full_admin gives access to this entire list
@@ -313,8 +319,10 @@ CodeInjection entity_drop_weapon_patch{
 CodeInjection entity_reload_current_primary_patch{
     0x00425506,
     [](auto& regs) {
+        const int weapon_type = regs.ebx;
         if ((rf::is_multi && gt_is_gungame()) ||
-            g_alpine_server_config_active_rules.weapon_infinite_magazines) {
+            (g_alpine_server_config_active_rules.weapon_infinite_magazines
+             && weapon_type != rf::shoulder_cannon_weapon_type)) {
             int current_reserve = regs.ecx;
             int used_ammo = regs.eax;
             regs.ecx = current_reserve + used_ammo; // negate the reload subtraction
@@ -353,6 +361,8 @@ std::string build_player_info_line(rf::Player* player, bool new_join) {
         name += " (bot)";
     } else if (player_is_idle(player)) {
         name += " (idle)";
+    } else if (player->is_observer()) {
+        name += " (demo)";
     } else if (player->is_browser) {
         name += " (browser)";
     }
@@ -383,6 +393,14 @@ std::string build_player_info_line(rf::Player* player, bool new_join) {
     else if (player->version_info.software == ClientSoftware::Browser) {
         client_info = std::format(
             "RF Server Browser {}.{}.{}",
+            player->version_info.major,
+            player->version_info.minor,
+            player->version_info.patch
+        );
+    }
+    else if (player->version_info.software == ClientSoftware::Observer) {
+        client_info = std::format(
+            "Demo Listener {}.{}.{}",
             player->version_info.major,
             player->version_info.minor,
             player->version_info.patch
@@ -557,7 +575,11 @@ void handle_load_command(rf::Player* player, std::string_view save_name)
 void handle_player_set_handicap(rf::Player* player, uint8_t amount)
 {
     const uint8_t applied = static_cast<uint8_t>(std::clamp<int>(amount, 0, 99));
+    const bool changed = player->damage_handicap != applied;
     player->damage_handicap = applied;
+    if (changed) {
+        afstats::on_status(player, afstats::StatusKind::handicap, applied);
+    }
     rf::console::print("At their request, {} has been given a {}% damage reduction handicap.", player->name, applied);
     auto msg = std::format("At your request, you have been given a {}% damage reduction handicap.", applied);
     af_send_automated_chat_msg(msg, player);
@@ -631,6 +653,10 @@ void handle_whosready_command(rf::Player* player)
     }
 }
 
+// Set for exactly one multi_ctf_drop_flag call by handle_drop_flag_request. Every
+// other caller of that function (death, disconnect, kick) is a death drop.
+static bool g_ctf_drop_is_manual = false;
+
 static void handle_drop_flag_request(rf::Player* player)
 {
     const bool is_salvage = gt_is_salvage();
@@ -650,6 +676,7 @@ static void handle_drop_flag_request(rf::Player* player)
 
     // drop flag if held
     if (rf::multi_ctf_get_red_flag_player() == player || rf::multi_ctf_get_blue_flag_player() == player) {
+        g_ctf_drop_is_manual = true;
         rf::multi_ctf_drop_flag(player);
         rf::ctf_flag_cooldown_timestamp.set(750);
     }
@@ -683,12 +710,16 @@ static void send_private_message_with_stats(rf::Player* player)
 {
     auto* stats = static_cast<PlayerStatsNew*>(player->stats);
     int accuracy = static_cast<int>(stats->calc_accuracy() * 100.0f);
+    // Not clamped: a blast that catches several players legitimately exceeds 100%.
+    int efficiency = static_cast<int>(stats->calc_efficiency() * 100.0f);
     auto str = std::format(
         "PLAYER STATS\n"
         "Kills: {} - Deaths: {} - Max Streak: {}\n"
-        "Accuracy: {}% ({:.0f}/{:.0f}) - Damage Given: {:.0f} - Damage Taken: {:.0f}",
+        "Accuracy: {}% ({:.0f}/{:.0f}) - Efficiency: {}% ({:.0f}/{:.0f})\n"
+        "Damage Given: {:.0f} - Damage Taken: {:.0f}",
         stats->num_kills, stats->num_deaths, stats->max_streak,
         accuracy, stats->num_shots_hit, stats->num_shots_fired,
+        efficiency, stats->efficiency_dealt, stats->damage_potential,
         stats->damage_given, stats->damage_received);
     af_send_automated_chat_msg(str, player);
 }
@@ -733,7 +764,10 @@ CodeInjection multi_limbo_leave_pre_patch{
                 if (&p == rf::local_player)
                     continue;
 
-                if (static_cast<int>(p.version_info.max_rfl_ver) < ver && p.version_info.software != ClientSoftware::Browser) {
+                // Observers (browsers, demo recorder) are never kicked here: they don't
+                // load levels, and the recorder must survive level changes (a dangling
+                // g_state.recorder would crash the next demo segment).
+                if (static_cast<int>(p.version_info.max_rfl_ver) < ver && !p.is_non_participant()) {
                     auto server_msg = std::format("{} was kicked because they cannot load the upcoming level.", p.name);
                     rf::console::print("{}", server_msg); // remote-supplied name
 
@@ -742,7 +776,7 @@ CodeInjection multi_limbo_leave_pre_patch{
                 }
                 else if (get_upcoming_game_type() != rf::netgame.type &&
                     !(p.version_info.software == ClientSoftware::AlpineFaction && p.version_info.minor >= 2) &&
-                    p.version_info.software != ClientSoftware::Browser) {
+                    !p.is_non_participant()) {
                     auto server_msg = std::format("{} was kicked because their client does not support changing game type.", p.name);
                     rf::console::print("{}", server_msg); // remote-supplied name
 
@@ -989,6 +1023,7 @@ static void print_alpine_restrict_status_summary()
     rf::console::print("  Require stable AF build: {}", enforce_release ? "yes" : "no");
     rf::console::print("  Require D3D11: {}", require_d3d11 ? "yes" : "no");
 
+    const uint32_t alpine_v140_max_rfl = 305u;
     const uint32_t alpine_v130_max_rfl = 304u;
     const uint32_t alpine_v122_max_rfl = 303u;
     const uint32_t alpine_v120_max_rfl = 302u;
@@ -1001,11 +1036,12 @@ static void print_alpine_restrict_status_summary()
     };
 
     rf::console::print("Common test cases:");
-    rf::console::print("{}", describe_client("Alpine Faction 1.3.0 (D3D11)", ClientVersionInfoProfile{ClientSoftware::AlpineFaction, 1u, 3u, 0u, VERSION_TYPE_RELEASE, alpine_v130_max_rfl, true}));
-    rf::console::print("{}", describe_client("Alpine Faction 1.3.0 (D3D8)", ClientVersionInfoProfile{ClientSoftware::AlpineFaction, 1u, 3u, 0u, VERSION_TYPE_RELEASE, alpine_v130_max_rfl}));
+    rf::console::print("{}", describe_client("Alpine Faction 1.4.0 (D3D11)", ClientVersionInfoProfile{ClientSoftware::AlpineFaction, 1u, 4u, 0u, VERSION_TYPE_RELEASE, alpine_v140_max_rfl, true}));
+    rf::console::print("{}", describe_client("Alpine Faction 1.4.0 (D3D8)", ClientVersionInfoProfile{ClientSoftware::AlpineFaction, 1u, 4u, 0u, VERSION_TYPE_RELEASE, alpine_v140_max_rfl}));
+    rf::console::print("{}", describe_client("Alpine Faction 1.4.0-dev", ClientVersionInfoProfile{ClientSoftware::AlpineFaction, 1u, 4u, 0u, VERSION_TYPE_DEV, alpine_v140_max_rfl}));
+    rf::console::print("{}", describe_client("Alpine Faction 1.3.0", ClientVersionInfoProfile{ClientSoftware::AlpineFaction, 1u, 3u, 0u, VERSION_TYPE_RELEASE, alpine_v130_max_rfl}));
     rf::console::print("{}", describe_client("Alpine Faction 1.2.2", ClientVersionInfoProfile{ClientSoftware::AlpineFaction, 1u, 2u, 2u, VERSION_TYPE_RELEASE, alpine_v122_max_rfl}));
     rf::console::print("{}", describe_client("Alpine Faction 1.2.0", ClientVersionInfoProfile{ClientSoftware::AlpineFaction, 1u, 2u, 0u, VERSION_TYPE_RELEASE, alpine_v120_max_rfl}));
-    rf::console::print("{}", describe_client("Alpine Faction 1.2.0-dev", ClientVersionInfoProfile{ClientSoftware::AlpineFaction, 1u, 2u, 0u, VERSION_TYPE_DEV, alpine_v120_max_rfl}));
     rf::console::print("{}", describe_client("Alpine Faction 1.1.0", ClientVersionInfoProfile{ClientSoftware::AlpineFaction, 1u, 1u, 0u, VERSION_TYPE_RELEASE, alpine_v110_max_rfl}));
     rf::console::print("{}", describe_client("Dash Faction 1.9", ClientVersionInfoProfile{ClientSoftware::DashFaction, 1u, 9u, 0u, VERSION_TYPE_RELEASE, legacy_max_rfl}));
     rf::console::print("{}", describe_client("Pure Faction 3.0", ClientVersionInfoProfile{ClientSoftware::PureFaction, 3u, 0u, 0u, VERSION_TYPE_RELEASE, legacy_max_rfl}));
@@ -1237,15 +1273,394 @@ void send_sound_packet(
     rf::multi_io_send(target, &packet, sizeof(packet));
 }
 
+// The stock client handler (0x00471FF0) hands the packet position straight to snd_play_3d,
+// so a real position is a world sound at that point for every client, stock ones included.
+//
+// The packet is positional and the receiving client attenuates it against its own camera, so
+// every connected client gets it - dead, spectating and freelook included. The listen host plays
+// it directly instead of mailing it to itself, and the per-recipient rate floor bounds the cost.
+void broadcast_sound_packet_3d(const rf::Vector3& pos, int sound_id)
+{
+    constexpr int world_sound_rate_limit = 10; // per second, per recipient
+
+    RF_SoundPacket packet{};
+    packet.header.type = RF_GPT_SOUND;
+    packet.header.size = sizeof(packet) - sizeof(packet.header);
+    packet.sound_id = static_cast<uint16_t>(sound_id);
+    packet.pos.x = pos.x;
+    packet.pos.y = pos.y;
+    packet.pos.z = pos.z;
+
+    const int64_t now = timer::get_i64(1000);
+
+    for (auto& player : SinglyLinkedList{rf::player_list}) {
+        if (!player.net_data) {
+            continue;
+        }
+        if (player.last_world_sound_ms
+            && now - *player.last_world_sound_ms < 1000 / world_sound_rate_limit) {
+            continue;
+        }
+        player.last_world_sound_ms.emplace(now);
+        if (&player == rf::local_player) {
+            // Listen host: a packet addressed to itself is discarded, so it plays it directly.
+            rf::snd_play_3d(sound_id, pos, 1.0f, rf::Vector3{}, rf::SOUND_GROUP_EFFECTS);
+            continue;
+        }
+        rf::multi_io_send(&player, &packet, sizeof(packet));
+    }
+}
+
 void send_legacy_hit_sound_packet(rf::Player* const target) {
     // fallback for legacy clients
     send_sound_packet(target, target->last_hit_sound_ms, 10, stock_sound_id::beep_01);
 }
 
-// todo optimization: move this to a new flag on af_damage_notify packet
-void send_critical_hit_packet(rf::Player* target)
+// One lag-compensated projectile's whole flight, every pierced victim included, resolves inside a
+// single multi_lag_comp_weapon_fire call - so this scope caps a rail bolt at one hit.
+struct AccuracyShotState
 {
-    send_sound_packet(target, target->last_critical_sound_ms, 10, stock_sound_id::jolt_01); // rate limit 10/sec
+    bool active = false;
+    bool hit_counted = false;
+    int shooter_handle = -1;
+};
+static AccuracyShotState g_accuracy_shot;
+
+// RAII: an early return inside the hooked call must not leave the scope open. Restores rather
+// than clears, because these scopes nest.
+class AccuracyShotScope
+{
+public:
+    explicit AccuracyShotScope(rf::Entity* shooter)
+        : saved_(g_accuracy_shot)
+    {
+        g_accuracy_shot = {true, false, shooter ? shooter->handle : -1};
+    }
+    ~AccuracyShotScope() { g_accuracy_shot = saved_; }
+
+    AccuracyShotScope(const AccuracyShotScope&) = delete;
+    AccuracyShotScope& operator=(const AccuracyShotScope&) = delete;
+    AccuracyShotScope(AccuracyShotScope&&) = delete;
+    AccuracyShotScope& operator=(AccuracyShotScope&&) = delete;
+
+private:
+    AccuracyShotState saved_;
+};
+
+// Consume-once: true if this damage application may count as an accuracy hit.
+static bool accuracy_shot_scope_consume()
+{
+    if (!g_accuracy_shot.active) {
+        return true; // non-lag-comp weapons are single-hit by construction (stock tbl)
+    }
+    if (g_accuracy_shot.hit_counted) {
+        return false;
+    }
+    g_accuracy_shot.hit_counted = true;
+    return true;
+}
+
+// A melee hit only counts if a swing was counted as fired for it. Melee projectiles are deferred
+// and a swing can land more of them than it sent packets, so the ledger - not timing - is what
+// keeps hits from outrunning swings.
+//
+// Keyed by (player, WEAPON), because accuracy buckets are per weapon: a stick swing's late third
+// impact must never spend a credit granted by a riot shield swing, which would leave the stick
+// bucket at hit > fired even though the player's total was legal.
+struct MeleeHitCredits
+{
+    int weapon_type = -1;
+    int count = 0;
+    int64_t expires_at = 0;
+};
+
+// Covers the slowest deferred projectile of a swing (max stock impact delay 0.6s). One deadline
+// per player that each grant slides forward, so the cap is what actually bounds the backlog.
+constexpr int64_t melee_credit_lifetime_ms = 2000;
+constexpr int melee_credit_cap = 4;
+
+// Stock offers at most a riot stick and a riot shield; four slots leaves room for a modded table
+// without needing a map on a per-damage path.
+constexpr int melee_credit_slots = 4;
+using MeleeCreditSlots = std::array<MeleeHitCredits, melee_credit_slots>;
+
+static std::vector<MeleeCreditSlots>& melee_credits()
+{
+    static std::vector<MeleeCreditSlots> credits(rf::multi_max_player_id);
+    return credits;
+}
+
+static MeleeCreditSlots* melee_credit_slots_for(rf::Player* pp)
+{
+    if (!pp || !pp->net_data) {
+        return nullptr;
+    }
+    std::vector<MeleeCreditSlots>& credits = melee_credits();
+    const int player_id = pp->net_data->player_id;
+    if (player_id < 0 || player_id >= static_cast<int>(credits.size())) {
+        return nullptr;
+    }
+    return &credits[player_id];
+}
+
+// An expired slot drops its count but keeps pointing at its weapon; it is only re-pointed when a
+// grant needs a slot and none is free.
+static MeleeHitCredits* melee_credit_find(MeleeCreditSlots& slots, int weapon_type, int64_t now)
+{
+    for (MeleeHitCredits& slot : slots) {
+        if (slot.weapon_type == weapon_type) {
+            if (slot.count > 0 && now >= slot.expires_at) {
+                slot.count = 0;
+            }
+            return &slot;
+        }
+    }
+    return nullptr;
+}
+
+void melee_grant_hit_credit(rf::Player* pp, int weapon_type)
+{
+    MeleeCreditSlots* slots = melee_credit_slots_for(pp);
+    if (!slots || weapon_type < 0) {
+        return;
+    }
+    const int64_t now = timer::get_i64(1000);
+    MeleeHitCredits* credit = melee_credit_find(*slots, weapon_type, now);
+    if (!credit) {
+        // Take an unused or spent slot.
+        for (MeleeHitCredits& slot : *slots) {
+            if (slot.weapon_type < 0 || slot.count <= 0 || now >= slot.expires_at) {
+                credit = &slot;
+                break;
+            }
+        }
+        if (!credit) {
+            return;
+        }
+        *credit = MeleeHitCredits{weapon_type, 0, 0};
+    }
+    credit->count = std::min(credit->count + 1, melee_credit_cap);
+    credit->expires_at = now + melee_credit_lifetime_ms;
+}
+
+static bool melee_consume_hit_credit(rf::Player* pp, int weapon_type)
+{
+    MeleeCreditSlots* slots = melee_credit_slots_for(pp);
+    if (!slots || weapon_type < 0) {
+        return false;
+    }
+    MeleeHitCredits* credit = melee_credit_find(*slots, weapon_type, timer::get_i64(1000));
+    if (!credit || credit->count <= 0) {
+        return false;
+    }
+    --credit->count;
+    return true;
+}
+
+// What one shot of this weapon could deal, at multiplayer damage values - the efficiency
+// denominator. Alt fire has its own damage entry in the table, so the mode has to be passed in.
+static float weapon_potential_damage(int weapon_type, bool alt_fire)
+{
+    if (!kill_attribution_is_valid_weapon_type(weapon_type)) {
+        return 0.0f;
+    }
+    const rf::WeaponInfo& info = rf::weapon_types[weapon_type];
+    return alt_fire ? info.alt_damage_multi : info.damage_multi;
+}
+
+// Classified by blast radius, never by damage type. damage_radius is the field the engine itself
+// passes to the detonation's radius call, already resolved to the multiplayer value.
+static bool is_splash_capable_weapon(int weapon_type)
+{
+    return kill_attribution_is_valid_weapon_type(weapon_type)
+        && rf::weapon_types[weapon_type].damage_radius > 0.0f;
+}
+
+// The flamethrower stream damages through particles, not weapon objects, so it has no projectile
+// to count. It is counted in the engine's own unit instead: one shot per FIRE TICK of hold, where
+// a tick is the weapon's fire wait (0.10 s for the stock flamethrower). A tick whose flames damaged
+// another player is a hit. These are the only fired source for the stream, and they are recorded
+// bucket-only (see fire_tick_emit_fired).
+//
+// Fired is emitted when a tick OPENS, so T ms of hold emits floor(T/tick) + 1 shots. That extra
+// opening shot is deliberate: it is what guarantees hits <= fired.
+//
+// Known property, accepted: a short tap deflates: its flames land after the tick that paid for them
+// has rolled over, so the tap reads below 100%. The grace below recovers the final tick only. This
+// is a bucket-only per-weapon figure, so it never reaches an overall accuracy number.
+struct FireTickWindow
+{
+    bool open = false;
+    // A window opened by one weapon must never pay for another's hits.
+    int weapon_type = -1;
+    int accum_ms = 0;
+    bool hit_marked = false;
+    int64_t grace_until = 0;
+};
+
+// Only the flamethrower stream is tick-counted. Everything else that fires continuously has real
+// projectiles to count: bullet modes (machine pistol primary, AR alt) were always per-projectile,
+// and continuous melee (taser, drill) now counts its deferred projectiles at their creation site.
+static bool is_fire_tick_counted_weapon(int weapon_type)
+{
+    return kill_attribution_is_valid_weapon_type(weapon_type)
+        && rf::weapon_is_flamethrower(weapon_type);
+}
+
+bool accuracy_excluded_from_combined(int weapon_type)
+{
+    if (!kill_attribution_is_valid_weapon_type(weapon_type)) {
+        return false;
+    }
+    return rf::weapon_is_flamethrower(weapon_type) ||
+    weapon_type == rf::riot_stick_weapon_type ||
+    weapon_type == rf::riot_shield_weapon_type;
+}
+
+// One tick is the weapon's own fire wait, so the shot count tracks the engine's emission cadence
+// rather than an invented interval. Floored at 1 ms so a malformed table cannot divide by zero.
+static int fire_tick_ms(int weapon_type)
+{
+    if (!kill_attribution_is_valid_weapon_type(weapon_type)) {
+        return 1;
+    }
+    return std::max(1, rf::weapon_get_fire_wait_ms(weapon_type, false));
+}
+
+// How long a window stays open after release: makes taps cumulative and lets in-flight projectiles
+// mark the window that paid for them. From the weapon's projectile lifetime, clamped so a modded
+// table cannot hold one open indefinitely.
+static int64_t fire_tick_grace_ms(int weapon_type)
+{
+    float lifetime_seconds = 0.0f;
+    if (kill_attribution_is_valid_weapon_type(weapon_type)) {
+        lifetime_seconds = rf::weapon_types[weapon_type].lifetime_seconds;
+    }
+    return std::clamp<int64_t>(static_cast<int64_t>(lifetime_seconds * 1000.0f), 500, 3000);
+}
+
+static std::vector<FireTickWindow>& fire_tick_windows()
+{
+    static std::vector<FireTickWindow> windows(rf::multi_max_player_id);
+    return windows;
+}
+
+static FireTickWindow* fire_tick_window_for(rf::Player* pp)
+{
+    if (!pp || !pp->net_data) {
+        return nullptr;
+    }
+    std::vector<FireTickWindow>& windows = fire_tick_windows();
+    const int player_id = pp->net_data->player_id;
+    if (player_id < 0 || player_id >= static_cast<int>(windows.size())) {
+        return nullptr;
+    }
+    return &windows[player_id];
+}
+
+// Window shots land in the weapon's afstats accuracy bucket ONLY - not in the per-player summary,
+// and not in the legacy scoreboard counters. A time-slice shot is not comparable 1:1 with a
+// discrete one, so mixing them into an overall figure makes it unreadable; FF can weight or fold
+// the per-weapon buckets however it likes. The matching hit is excluded the same way, which keeps
+// the two overall counters identical.
+static void fire_tick_emit_fired(rf::Player* pp, int weapon_type)
+{
+    afstats::on_weapon_fired(pp, weapon_type, 1, afstats::CountScope::bucket_only,
+                             weapon_potential_damage(weapon_type, false));
+    awards_on_weapon_fired(pp, weapon_type);
+}
+
+// First contact of a window is its hit; later ones are already paid for. The weapon must match
+// the one the window was opened for.
+static bool fire_tick_mark_hit(rf::Player* attacker, int weapon_type)
+{
+    FireTickWindow* w = fire_tick_window_for(attacker);
+    if (!w || !w->open || w->weapon_type != weapon_type || w->hit_marked) {
+        return false;
+    }
+    w->hit_marked = true;
+    return true;
+}
+
+// Both per-player ledgers are indexed by player id, and the engine REUSES ids - clearing on
+// destroy is what stops a joining player inheriting the previous holder's credits or window.
+void accuracy_stats_on_player_destroy(rf::Player* player)
+{
+    if (!player || !player->net_data) {
+        return;
+    }
+    const int player_id = player->net_data->player_id;
+    if (player_id < 0 || player_id >= rf::multi_max_player_id) {
+        return;
+    }
+    melee_credits()[player_id] = MeleeCreditSlots{};
+    fire_tick_windows()[player_id] = FireTickWindow{};
+}
+
+void accuracy_stats_level_init()
+{
+    std::fill(melee_credits().begin(), melee_credits().end(), MeleeCreditSlots{});
+    std::fill(fire_tick_windows().begin(), fire_tick_windows().end(), FireTickWindow{});
+}
+
+// Accumulates continuous-fire hold time and emits the fired events. Runs once per frame per player
+// from server_do_frame, which ticks on dedicated servers.
+static void fire_ticks_do_frame()
+{
+    if (!rf::is_server || !rf::is_multi || !rf::player_list) {
+        return;
+    }
+    const int64_t now = timer::get_i64(1000);
+    static int64_t last_now = 0;
+    // Clamped: a level load or a hitch must not dump seconds of "hold" into every open window.
+    const int delta_ms =
+        last_now == 0 ? 0 : static_cast<int>(std::clamp<int64_t>(now - last_now, 0, 250));
+    last_now = now;
+
+    for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
+        FireTickWindow* w = fire_tick_window_for(&player);
+        if (!w) {
+            continue;
+        }
+        rf::Entity* ep = rf::entity_from_handle(player.entity_handle);
+        const int weapon_type = ep ? ep->ai.current_primary_weapon : -1;
+        // weapon_is_on is the server-side continuous-fire state - set for the flamethrower's
+        // stream and for continuous melee, never for the thrown canister (alt fire is not an
+        // on/off mode) nor for discrete swings. So this is exactly "holding a continuous
+        // trigger"; narrowing it to the tick-counted set is what makes it "time-counted".
+        const bool weapon_on = ep && kill_attribution_is_valid_weapon_type(weapon_type)
+            && rf::entity_weapon_is_on(ep->handle, weapon_type);
+        const bool firing = weapon_on && is_fire_tick_counted_weapon(weapon_type);
+
+        if (firing) {
+            // Switching weapons closes the old window rather than carrying it over.
+            if (w->open && w->weapon_type != weapon_type) {
+                *w = FireTickWindow{};
+            }
+            if (!w->open) {
+                w->open = true;
+                w->weapon_type = weapon_type;
+                w->accum_ms = 0;
+                w->hit_marked = false;
+                fire_tick_emit_fired(&player, weapon_type);
+            }
+            w->accum_ms += delta_ms;
+            const int tick_ms = fire_tick_ms(weapon_type);
+            while (w->accum_ms >= tick_ms) {
+                w->accum_ms -= tick_ms;
+                w->hit_marked = false;
+                fire_tick_emit_fired(&player, weapon_type);
+            }
+            w->grace_until = now + fire_tick_grace_ms(weapon_type);
+        }
+        else if (w->open && now >= w->grace_until) {
+            *w = FireTickWindow{};
+        }
+
+        // Critical Hits mutator: continuous fire produces no discrete fire event to roll for, so
+        // it rolls on its own cadence off the same state.
+        crits_on_continuous_fire_frame(&player, weapon_type, weapon_on, delta_ms);
+    }
 }
 
 FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
@@ -1254,6 +1669,7 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
         rf::Player* damaged_player = rf::player_from_entity_handle(damaged_ep->handle);
         rf::Player* killer_player = rf::player_from_entity_handle(killer_handle);
         bool is_pvp_damage = damaged_player && killer_player && damaged_player != killer_player;
+        bool crit_applied = false;
         if (rf::is_server && is_pvp_damage) {
             damage *= g_alpine_server_config_active_rules.pvp_damage_modifier;
 
@@ -1276,43 +1692,24 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
                 //xlog::debug("Applying handicap {}% ({}x multiplier) to damage, new damage: {}", player->damage_handicap, reduction, damage);
             }
 
-            // Check if this is a crit
-            if (g_alpine_server_config_active_rules.critical_hits.enabled) {
-                float base_chance = g_alpine_server_config_active_rules.critical_hits.base_chance;
-                float bonus_chance = 0.0f;
-
-                // calculate bonus chance
-                if (g_alpine_server_config_active_rules.critical_hits.dynamic_scale && killer_player->stats) {
-                    auto* killer_stats = static_cast<PlayerStatsNew*>(killer_player->stats);
-
-                    bonus_chance = 0.1f * std::min(killer_stats->damage_given_current_life /
-                        g_alpine_server_config_active_rules.critical_hits.dynamic_damage_bonus_ceiling, 1.0f);
-                }
-
-                float critical_hit_chance = base_chance + bonus_chance;
-                //xlog::debug("Critical hit chance: {:.2f}", critical_hit_chance);
-
-                std::uniform_real_distribution<float> dist_crit(0.0f, 1.0f);
-                float random_value = dist_crit(g_rng);
-                if (random_value < critical_hit_chance) {
-
-                    // Apply amp modifier to the critical hit
-                    damage *= (!rf::multi_powerup_has_player(killer_player, 1)) ? rf::g_multi_damage_modifier : 1.0f;
-
-                    // On a crit, add amp for a duration
-                    int amp_time_to_add = rf::multi_powerup_get_time_until(killer_player, 1) + g_alpine_server_config_active_rules.critical_hits.reward_duration;
-
-                    rf::multi_powerup_add(killer_player, 1, amp_time_to_add);
-
-                    // Notify with sound
-                    send_critical_hit_packet(killer_player);
-                }
+            // Critical Hits mutator: the roll happened at fire time; this is where the
+            // shot it belongs to is finally applied to a victim.
+            const float crit_multiplier = crits_damage_multiplier(killer_player, damaged_player);
+            if (crit_multiplier > 1.0f) {
+                damage *= crit_multiplier;
+                crit_applied = true;
             }
         }
 
         float life_before = damaged_ep->life;
         float armor_before = damaged_ep->armor;
         int damaged_ep_handle = damaged_ep->handle;
+        // A gib destroys the entity, so the death position has to be taken before
+        // damage is applied to still be available afterwards.
+        rf::Vector3 victim_pos_before_damage = damaged_ep->pos;
+        // The kill is judged against the team the victim had when the damage landed: death
+        // processing can move them (auto team balance), and awards must not see that.
+        const int victim_team_before_damage = damaged_player ? damaged_player->team : 0;
 
         float real_damage = entity_damage_hook.call_target(damaged_ep, damage, killer_handle, damage_type, killer_uid);
 
@@ -1357,6 +1754,13 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
 
         bool is_dead = damaged_ep ? damaged_ep->life <= 0.0f : true;
 
+        // Hoisted out of the lethal-blow block below: the stats stream needs the same
+        // weapon attribution for every damage application, not just the last one.
+        const DamageWeaponContext damage_ctx = kill_attribution_get_damage_context();
+        // A weapon type on the obj_damage call itself means a direct hit; splash damage
+        // only ever gets its weapon from the enclosing detonation context.
+        const bool direct_weapon_hit = damage_ctx.weapon_type >= 0 && !damage_ctx.splash;
+
         // Feed the combat chain that assists are computed from. Must run before the record
         // step below so the killing hit itself keeps the chain alive. Friendly fire in team
         // games never earns an assist.
@@ -1372,10 +1776,6 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
         // lethal transition: post-death corpse damage must not overwrite it.
         if (rf::is_multi && rf::is_server && damaged_player && damaged_player->net_data
             && is_dead && life_before > 0.0f) {
-            const DamageWeaponContext damage_ctx = kill_attribution_get_damage_context();
-            // A weapon type on the obj_damage call itself means a direct hit; splash damage
-            // only ever gets its weapon from the enclosing detonation context.
-            const bool direct_weapon_hit = damage_ctx.weapon_type >= 0 && !damage_ctx.splash;
             int weapon = damage_ctx.weapon_type;
             uint8_t kill_flags = damage_ctx.splash ? AF_KILL_FLAG_SPLASH : 0;
             if (weapon < 0 && killer_player && killer_player != damaged_player) {
@@ -1422,8 +1822,29 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
                 }
             }
 
+            // Same flags and assist list the af_kill_info packet is built from, so
+            // the stats stream and the in-game attribution can never disagree.
+            const rf::Vector3 victim_pos = damaged_ep ? damaged_ep->pos : victim_pos_before_damage;
+            const rf::Entity* killer_ep_for_pos = rf::entity_from_handle(killer_handle);
+            afstats::on_kill(damaged_player, killer_player, weapon, damage_type, kill_flags, assists,
+                             victim_pos, killer_ep_for_pos ? &killer_ep_for_pos->pos : nullptr);
+
             kill_attribution_record(killed_id, killer_id, weapon, kill_flags, damage_type,
                                     std::move(assists));
+
+            // Same resolved killer, weapon and splash decision the attribution above is built
+            // from. Runs for every death, so the victim-side award resets cover world deaths and
+            // suicides too.
+            awards_on_kill(damaged_player, killer_player, weapon, damage_ctx.splash, killer_handle,
+                           victim_team_before_damage, damage, life_before, armor_before);
+
+            // Arena's reload-on-kill is applied from on_player_kill, which the engine only runs
+            // in its deferred death processing - too late for the shot that killed, whose clip
+            // decrement has already happened by then.
+            if (killer_player && killer_player != damaged_player && g_accuracy_shot.active
+                && g_accuracy_shot.shooter_handle == killer_handle) {
+                mutators_note_pending_frag_refill();
+            }
         }
 
         // Cap damage to what was actually removed from the victim's health+armor (prevents overkill inflation)
@@ -1438,6 +1859,175 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
             }
         }
 
+        // Feeds the windowed damage/accuracy aggregates. Deliberately wider than the
+        // PvP block below: environmental deaths and self-damage are real damage the
+        // stream reports, with a null attacker where there is no player behind it.
+        if (rf::is_server && damaged_player && real_damage > 0.0f) {
+            int stats_weapon = damage_ctx.weapon_type;
+            if (stats_weapon < 0 && killer_player && killer_player != damaged_player) {
+                if (rf::Entity* killer_ep = rf::entity_from_handle(killer_handle)) {
+                    stats_weapon = killer_ep->ai.current_primary_weapon;
+                }
+            }
+            const bool stats_melee = kill_attribution_is_melee_weapon(stats_weapon);
+            int stats_hit_region = -1;
+            if (direct_weapon_hit && !stats_melee) {
+                // Hit region is projectile-measured, so melee stays out of region detection.
+                // The value is the engine's winning hit-SPHERE INDEX, not a closed enum:
+                // FUN_0042CE00 initializes the out-param to -1 and writes the winning sphere index
+                // bounded by the entity's sphere count, and stock player models carry
+                // exactly three spheres (0 legs, 1 torso, 2 head). An index from anything else is
+                // unknown, so it intentionally falls into the region-less bucket.
+                const int region = kill_attribution_get_hit_region(damaged_ep_handle);
+                if (region == kill_attribution_hit_region_legs
+                    || region == kill_attribution_hit_region_torso
+                    || region == kill_attribution_hit_region_head) {
+                    stats_hit_region = region;
+                }
+            }
+
+            // The one condition that drives both accuracy counters (afstats and the legacy
+            // scoreboard), so the two can never disagree. Each weapon class earns a hit its own
+            // way, but every class shares two rules: the damage has to have been delivered by a
+            // real projectile, and it has to have landed on somebody else.
+            //
+            // INVARIANT - every gate below fails CLOSED: count_hit starts false and is only set
+            // by a branch that positively established its case, so missing state can only ever
+            // under-count. That is what keeps hits <= fired by construction.
+            bool count_hit = false;
+            bool count_hit_bucket_only = false;
+            // "A projectile or a damaging particle delivered this damage", as opposed to a
+            // per-frame processor that merely names a weapon - the burn spread and the Flaming
+            // Enemies DoT are inside none of these scopes, which is what keeps them out.
+            const bool from_projectile = kill_attribution_in_projectile_impact()
+                || kill_attribution_in_splash_scope()
+                || kill_attribution_in_particle_damage()
+                || g_accuracy_shot.active;
+
+            // Self-damage never scores. Compared by ENTITY HANDLE, not Player pointer: the same
+            // physical self-hit was observed resolving to equal pointers on one damage application
+            // and unequal on another. Uses the handle captured before the call - the entity may
+            // have been freed inside it.
+            const bool self_damage = killer_handle == damaged_ep_handle
+                || (killer_player && killer_player == damaged_player);
+
+            // Overkill-capped damage on a corpse: real_damage was positive but nothing was left to
+            // remove. afstats refuses amount <= 0, so counting it here would diverge the two
+            // counters.
+            const bool scoreable_damage = effective_damage > 0.0f;
+
+            // Particle damage names no weapon, so fall back to what the attacker is holding.
+            // Unlike the stats_weapon fallback above this needs no killer != victim test, because
+            // it is only read after the self gate.
+            int accuracy_weapon = stats_weapon;
+            if (accuracy_weapon < 0) {
+                if (rf::Entity* kep = rf::entity_from_handle(killer_handle)) {
+                    accuracy_weapon = kep->ai.current_primary_weapon;
+                }
+            }
+
+            // rf::weapon_is_melee deliberately, NOT kill_attribution_is_melee_weapon: the fired
+            // side grants credits on the engine's WTF_MELEE branch, so the hit side must select on
+            // the same predicate or a modded table missing the flag would demand credits that are
+            // never granted. (The other predicate still drives kill flags and headshot exclusion.)
+            const bool accuracy_melee = kill_attribution_is_valid_weapon_type(stats_weapon)
+                && rf::weapon_is_melee(stats_weapon);
+
+            // Which ledger this weapon's shots, hits and damage belong to. The flame stream and
+            // continuous melee are bucket-only; everything else reaches the overall counters too.
+            bool bucket_only_mode = kill_attribution_in_particle_damage()
+                || accuracy_excluded_from_combined(stats_weapon);
+            if (!bucket_only_mode && accuracy_melee) {
+                if (rf::Entity* kep = rf::entity_from_handle(killer_handle)) {
+                    bucket_only_mode = rf::entity_weapon_is_on(kep->handle, stats_weapon);
+                }
+            }
+
+            if (killer_player && !self_damage && scoreable_damage && from_projectile) {
+                if (kill_attribution_in_particle_damage()) {
+                    // Flamethrower stream. Time-counted: first contact in an open window scores,
+                    // contact with no open window is dropped.
+                    if (is_fire_tick_counted_weapon(accuracy_weapon)) {
+                        count_hit = fire_tick_mark_hit(killer_player, accuracy_weapon);
+                        count_hit_bucket_only = true;
+                    }
+                }
+                else if (accuracy_melee) {
+                    // Melee splits by mode on ai.weapon_is_on, the same state that gates
+                    // entity_process's per-frame fire path. Sampled at damage time, so a projectile
+                    // landing across a transition can be routed to the other mode; both modes are
+                    // bounded by their own fired source, so that cannot inflate.
+                    rf::Entity* killer_ep = rf::entity_from_handle(killer_handle);
+                    if (!killer_ep) {
+                        // Attacker's entity already freed: fail closed, the credit ages out.
+                        count_hit = false;
+                    }
+                    else if (rf::entity_weapon_is_on(killer_ep->handle, stats_weapon)) {
+                        // Continuous melee (taser, drill): counted per projectile now, at the
+                        // deferred creator that makes them. Each zap projectile is single-victim
+                        // (riot stick is no_fire_through), so counting every damaging application
+                        // keeps hits <= fired structurally. Swing credits are untouched - those
+                        // are swings-only, and weapon_is_on is what separates the two modes.
+                        count_hit = true;
+                        count_hit_bucket_only = true;
+                    }
+                    else {
+                        // Discrete swing: must be backed by a counted swing. The credit is checked
+                        // before the shot latch so a refused credit cannot burn a latch melee never
+                        // needs anyway (melee is not lag-compensated, so the latch is a no-op here).
+                        count_hit = direct_weapon_hit
+                            && melee_consume_hit_credit(killer_player, stats_weapon)
+                            && accuracy_shot_scope_consume();
+                    }
+                }
+                else if (is_splash_capable_weapon(stats_weapon)) {
+                    // Any damage to another player counts, direct or blast, capped at one hit per
+                    // detonation. A projectile's direct contact and its blast share one scope and
+                    // one latch, so a squarely-hit canister is still one hit.
+                    count_hit = kill_attribution_splash_hit_consume();
+                }
+                else {
+                    // Bullets and other direct-only weapons; the rail cap keeps a pierced line to
+                    // one hit.
+                    count_hit = direct_weapon_hit && accuracy_shot_scope_consume();
+                    if (count_hit) {
+                        awards_on_direct_hit(killer_player, damaged_player, stats_weapon);
+                    }
+                }
+            }
+
+            // Novelty-weapon hits stay bucket-only in every mode, pairing with their fired side.
+            if (accuracy_excluded_from_combined(stats_weapon)) {
+                count_hit_bucket_only = true;
+            }
+
+            // Efficiency numerator: effective damage this weapon put on somebody else. Not gated
+            // on count_hit - every point that landed counts, whether or not the shot scored as a
+            // hit. Overkill is already capped out of effective_damage, so it wastes potential.
+            if (killer_player && !self_damage && scoreable_damage
+                && kill_attribution_is_valid_weapon_type(stats_weapon)) {
+                afstats::on_damage_dealt(killer_player, stats_weapon, effective_damage,
+                                         bucket_only_mode ? afstats::CountScope::bucket_only
+                                                          : afstats::CountScope::full);
+                if (!bucket_only_mode && killer_player->stats) {
+                    static_cast<PlayerStatsNew*>(killer_player->stats)
+                        ->add_efficiency_dealt(effective_damage);
+                }
+            }
+
+            const afstats::CountScope hit_scope = count_hit_bucket_only
+                ? afstats::CountScope::bucket_only
+                : afstats::CountScope::full;
+            afstats::on_damage(killer_player, damaged_player, stats_weapon, damage_type,
+                               effective_damage, count_hit, stats_hit_region, hit_scope);
+
+            // Paired with the afstats summary write by the identical condition, so the two overall
+            // counters can never diverge.
+            if (count_hit && !count_hit_bucket_only && killer_player->stats) {
+                static_cast<PlayerStatsNew*>(killer_player->stats)->add_shots_hit(1.0f);
+            }
+        }
+
         if (rf::is_server && is_pvp_damage && real_damage > 0.0f) {
 
             auto* killer_player_stats = static_cast<PlayerStatsNew*>(killer_player->stats);
@@ -1446,13 +2036,17 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
             auto* damaged_player_stats = static_cast<PlayerStatsNew*>(damaged_player->stats);
             damaged_player_stats->add_damage_received(effective_damage);
 
+            // Critical Hits mutator: recent damage dealt is what the crit chance ramps on
+            crits_on_damage_dealt(killer_player, effective_damage);
+
             // Vampire mutator
             mutators_on_pvp_damage(killer_player, damaged_player, effective_damage);
 
             // Flaming Enemies mutator: flamethrower fire damage may grant or refresh a burn
             mutators_on_flame_damage(killer_player, damaged_player, damage_type, real_damage);
 
-            if (g_alpine_server_config.damage_notification_config.enabled && damaged_player && killer_player) {
+            if (g_alpine_server_config.damage_notification_config.enabled && damaged_player && killer_player
+                && killer_player->net_data && damaged_player->net_data) {
                 if (!(!damaged_ep || rf::entity_is_dying(damaged_ep) || rf::player_is_dead(damaged_player))) {
 
                     // use new packet for clients that can process it (Alpine 1.1+)
@@ -1462,6 +2056,7 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
                             damaged_player->net_data->player_id,
                             effective_damage,
                             is_dead,
+                            crit_applied,
                             killer_player);
                     }
                     else if (g_alpine_server_config.damage_notification_config.support_legacy_clients) {
@@ -1481,10 +2076,20 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
                                     damaged_player->net_data->player_id,
                                     effective_damage,
                                     is_dead,
+                                    crit_applied,
                                     &player);
                             }
                         }
                     }
+
+                    // Mirror into the demo (attacker-tagged; playback filters to the
+                    // spectated player)
+                    demo_record_pvp_damage_notify(
+                        damaged_player->net_data->player_id,
+                        effective_damage,
+                        is_dead,
+                        crit_applied,
+                        killer_player->net_data->player_id);
                 }
             }
         }
@@ -1553,7 +2158,7 @@ CallHook<void(rf::Player*, int, int)> give_default_weapon_ammo_hook{
             ammo = rf::weapon_types[weapon_type].max_ammo;
         }
         // if not using loadouts, this adjusts spawn weapon reserve ammo to match our clip config
-        else if (rf::is_server && !g_alpine_server_config_active_rules.spawn_loadout.loadouts_active
+        else if (rf::is_server && !g_alpine_server_config_active_rules.spawn_loadout_is_active()
                  && g_alpine_server_config_active_rules.default_player_weapon.index >= 0) {
             ammo = rf::weapon_types[g_alpine_server_config_active_rules.default_player_weapon.index].clip_size_multi *
                    g_alpine_server_config_active_rules.default_player_weapon.num_clips;
@@ -1593,20 +2198,91 @@ FunHook<bool (const char*, int)> multi_is_level_matching_game_type_hook{
     },
 };
 
+// Mirrors player_add_weapon (0x004A4000), except the reserve ammo write is skipped for
+// weapons with no ammo type. That function indexes ai.ammo[ammo_type] unguarded, and the
+// Riot Shield's `$Ammo Type: ""` resolves to -1, which aliases AiInfo::current_secondary_weapon
+// and destroys its -1 "no secondary weapon" sentinel. Stock never hits this because it only
+// ever grants the spawn weapon through it; the engine's other two ammo writers both guard.
+void af_give_loadout_weapon(rf::Player* pp, int weapon_type, int reserve_ammo)
+{
+    if (!pp || weapon_type < 0 || weapon_type >= rf::num_weapon_types) {
+        return;
+    }
+    rf::AiInfo* ai = rf::player_get_ai(pp);
+    if (!ai) {
+        return;
+    }
+
+    const rf::WeaponInfo& wi = rf::weapon_types[weapon_type];
+    rf::ai_add_weapon(ai, weapon_type, -1);
+    if (wi.ammo_type >= 0 && wi.ammo_type < 32) {
+        // Clamped low as well as high: the reserve arrives from config or off the wire, and
+        // a negative one would stick until the player picked ammo up.
+        ai->ammo[wi.ammo_type] = std::clamp(reserve_ammo, 0, std::max(wi.max_ammo, 0));
+    }
+    ai->clip_ammo[weapon_type] = wi.clip_size;
+}
+
+// Stock reaches player_add_weapon for the spawn weapon too, so the guard has to live on the
+// function rather than only on our loadout call sites - `spawn_weapon = "riot shield"` with no
+// loadout entry took the stock path and reintroduced the phantom Remote Charge.
+FunHook<void(rf::Player*, int, int)> player_add_weapon_hook{
+    0x004A4000,
+    [](rf::Player* pp, int weapon_type, int ammo) {
+        if (weapon_type >= 0 && weapon_type < rf::num_weapon_types
+            && rf::weapon_types[weapon_type].ammo_type < 0) {
+            af_give_loadout_weapon(pp, weapon_type, ammo);
+            return;
+        }
+        player_add_weapon_hook.call_target(pp, weapon_type, ammo);
+    },
+};
+
+// red_weapons is everyone's loadout. A blue list is only consulted when one was actually
+// configured, so an operator who wants both teams alike states it once.
+const std::vector<WeaponLoadoutEntry>& spawn_loadout_for_player(rf::Player* pp)
+{
+    const auto& loadout = g_alpine_server_config_active_rules.spawn_loadout;
+    if (!loadout.blue_weapons.empty() && pp && pp->team == rf::TEAM_BLUE) {
+        return loadout.blue_weapons;
+    }
+    return loadout.red_weapons;
+}
+
+bool spawn_loadout_has_enabled_weapon(rf::Player* pp)
+{
+    const auto& list = spawn_loadout_for_player(pp);
+    return std::any_of(list.begin(), list.end(), [](auto const& e) { return e.enabled; });
+}
+
 // handle spawn loadouts (not legacy client compatible)
 CodeInjection player_create_entity_default_weapon_injection {
     0x004A43F6,
     [](auto& regs) {
+        rf::Player* player = regs.ebp;
         if (rf::is_server &&
-            g_alpine_server_config_active_rules.spawn_loadout.loadouts_active &&
-            !gt_is_gungame() // no loadouts when gungame is on
+            g_alpine_server_config_active_rules.spawn_loadout_is_active() &&
+            !gt_is_gungame() && // no loadouts when gungame is on
+            // Never take over the stock grant with nothing to hand out - that spawns
+            // the player with no weapons at all.
+            spawn_loadout_has_enabled_weapon(player)
             ) {
-            rf::Player* player = regs.ebp;
+            const int spawn_weapon = g_alpine_server_config_active_rules.default_player_weapon.index;
+            int last_granted = -1;
+            bool loadout_has_spawn_weapon = false;
 
-            for (auto const& e : g_alpine_server_config_active_rules.spawn_loadout.red_weapons) {
-                rf::player_add_weapon(player, e.index, e.reserve_ammo);
-                rf::player_set_default_primary(player, e.index);
+            for (auto const& e : spawn_loadout_for_player(player)) {
+                if (!e.enabled) {
+                    continue;
+                }
+                af_give_loadout_weapon(player, e.index, e.reserve_ammo);
+                loadout_has_spawn_weapon |= (e.index == spawn_weapon);
+                last_granted = e.index;
             }
+
+            // Spawn holding the configured spawn weapon, not whatever happens to sit last in
+            // the list.
+            rf::player_set_default_primary(player, loadout_has_spawn_weapon ? spawn_weapon : last_granted);
             regs.eip = 0x004A4481;
         }
     },
@@ -1635,7 +2311,9 @@ CodeInjection send_ping_time_wrap_fix{
         if (!io_stats.send_ping_packet_timestamp.valid() || io_stats.send_ping_packet_timestamp.elapsed()) {
             xlog::trace("sending ping");
             io_stats.send_ping_packet_timestamp.set(3000);
-            rf::multi_ping_player(player);
+            if (!player->is_observer()) { // recorder's phantom socket must not be pinged
+                rf::multi_ping_player(player);
+            }
             io_stats.last_ping_time = rf::timer::get(1000);
 
             // check if player is idle
@@ -1705,9 +2383,9 @@ std::vector<rf::Player*> get_clients(
     clients.reserve(32);
 
     for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
-        if ((player.is_browser && include_browsers)
+        if ((player.is_non_participant() && include_browsers)
             || (player.is_bot && include_bots)
-            || (!player.is_browser && !player.is_bot))
+            || (!player.is_non_participant() && !player.is_bot))
         {
             clients.push_back(&player);
         }
@@ -1774,6 +2452,10 @@ void start_match()
                                              g_match_info.ready_players_blue.end());
     g_match_info.ready_players_blue.clear();
 
+    afstats::on_match_start(g_match_info.team_size,
+        std::vector<rf::Player*>(g_match_info.active_match_players.begin(),
+                                 g_match_info.active_match_players.end()));
+
     for (rf::Player* player : get_clients(false, false)) {
         af_send_ready_prompt(player, 0); // match starting — pre-match no longer active
     }
@@ -1787,6 +2469,9 @@ void start_match()
 void cancel_match()
 {
     rf::console::print("Canceling match");
+    // Before load_next_level: the limbo it drives reaches the match-completed path
+    // with match_active still set, and the stream must report this as a cancel.
+    afstats::on_match_end(afstats::MatchResult::canceled, afstats::team_none, nullptr);
     if (g_match_info.match_active) {
         load_next_level(); // end the round if active match is canceled
     }
@@ -1857,6 +2542,22 @@ void start_pre_match()
             update_pre_match_powerups(player);
         }
     }
+}
+
+uint8_t af_match_state_for_stats()
+{
+    if (g_match_info.match_active) {
+        return static_cast<uint8_t>(afstats::MatchState::match_active);
+    }
+    // pre_match_queued counts as pre-match because of when this is read. The
+    // round_start stamp is taken from multi_level_init_post_gametypes, which the
+    // level-init injection runs BEFORE its own start_pre_match() call — so a
+    // pre-match that a match vote queued for this level load is still merely
+    // queued at stamp time, even though the round about to begin is ready-up play.
+    if (g_match_info.pre_match_active || g_match_info.pre_match_queued) {
+        return static_cast<uint8_t>(afstats::MatchState::pre_match);
+    }
+    return static_cast<uint8_t>(afstats::MatchState::none);
 }
 
 void add_ready_player(rf::Player* player)
@@ -2130,8 +2831,8 @@ void player_idle_check(rf::Player* const player) {
         // don't mark players as idle unless we're in gameplay
         return;
     } else if (player->version_info.software == ClientSoftware::Browser
-        || player->is_bot) {
-        return; // don't mark browsers or bots as idle
+        || player->is_observer() || player->is_bot) {
+        return; // don't mark browsers, the demo recorder, or bots as idle
     } else if (g_match_info.match_active || g_match_info.pre_match_active) {
         // don't mark players as idle during a match or pre-match
         return;
@@ -2179,6 +2880,12 @@ bool version_is_older(int aMaj, int aMin, int bMaj, int bMin)
 std::tuple<AlpineRestrictVerdict, std::string, bool> evaluate_alpine_restrict_status(
     const ClientVersionInfoProfile& info, const bool check_level_version)
 {
+    // The demo recorder is the server's own virtual player - client restrictions
+    // never apply to it (a hard reject would kick it mid-recording).
+    if (info.software == ClientSoftware::Observer) {
+        return {AlpineRestrictVerdict::ok, {}, false};
+    }
+
     const auto& cfg = g_alpine_server_config.alpine_restricted_config;
 
     const auto [auto_require_alpine, min_minor_version, hard_reject, require_release_version] = server_features_require_alpine_client();
@@ -2326,6 +3033,8 @@ static void assign_player_to_team(rf::Player* player, rf::ubyte new_team)
     }
 
     player->team = new_team;
+    afstats::on_status(player, new_team == rf::TEAM_BLUE ? afstats::StatusKind::team_blue
+                                                         : afstats::StatusKind::team_red);
 
     if (player->net_data) {
         rf::multi_send_team_change_packet(nullptr, player->net_data->player_id, new_team);
@@ -2358,7 +3067,7 @@ FunHook<void(rf::Player*)> multi_spawn_player_server_side_hook{
             // No forced character: honour the character the client reported.
             player->settings.multi_character = player->reported_multi_character;
         }
-        if (player->is_browser) {
+        if (player->is_non_participant()) {
             return;
         }
         if (player->is_spectator) {
@@ -2418,17 +3127,29 @@ FunHook<void(rf::Player*)> multi_spawn_player_server_side_hook{
                 if (gt_is_gungame()) {
                     gungame_on_player_spawn(player);
                 }
+                // Fresh entity, so any riot shield break suppression from the life
+                // that just ended can never apply to them again.
+                riot_shield_on_player_spawn(player);
+                afstats::on_spawn(player, ep->pos);
             }
 
             // inform newly spawned players of their loadout
             if (rf::is_server
-                && (g_alpine_server_config_active_rules.spawn_loadout.loadouts_active
+                && (g_alpine_server_config_active_rules.spawn_loadout_is_active()
                     // no loadouts when gungame is on
                     && !gt_is_gungame())
+                // Must match the spawn injection's condition: if it did not replace the
+                // stock grant, the client's own is correct and must not be reconciled away.
+                && spawn_loadout_has_enabled_weapon(player)
             ) {
+                const auto& loadout = spawn_loadout_for_player(player);
+
                 // Add each weapon in the loadout to the player on the server
-                for (auto const& e : g_alpine_server_config_active_rules.spawn_loadout.red_weapons) {
-                    rf::player_add_weapon(player, e.index, e.reserve_ammo);
+                for (auto const& e : loadout) {
+                    if (!e.enabled) {
+                        continue;
+                    }
+                    af_give_loadout_weapon(player, e.index, e.reserve_ammo);
 
                     // if remote charge, we also need to add the detonator
                     if (e.index == rf::remote_charge_weapon_type) {
@@ -2437,10 +3158,7 @@ FunHook<void(rf::Player*)> multi_spawn_player_server_side_hook{
                     }
                 }
 
-                af_send_just_spawned_loadout(
-                    player,
-                    g_alpine_server_config_active_rules.spawn_loadout.red_weapons
-                );
+                af_send_just_spawned_loadout(player, loadout);
             }
         }
 
@@ -2450,61 +3168,104 @@ FunHook<void(rf::Player*)> multi_spawn_player_server_side_hook{
     },
 };
 
-static float get_weapon_shot_stats_delta(rf::Weapon* wp)
-{
-    int num_projectiles = wp->info->num_projectiles;
-    rf::Entity* parent_ep = rf::entity_from_handle(wp->parent_handle);
-    if (parent_ep && parent_ep->entity_flags2 & 0x1000) { // EF2_SHOTGUN_DOUBLE_BULLET_UNK
-        num_projectiles *= 2;
-    }
-    return 1.0f / num_projectiles;
-}
-
-static void maybe_increment_weapon_hits_stat(int hit_obj_handle, rf::Weapon *wp)
-{
-    rf::Entity* attacker_ep = rf::entity_from_handle(wp->parent_handle);
-    if (!attacker_ep) {
-        return;
-    }
-
-    rf::Entity* hit_ep = rf::entity_from_handle(hit_obj_handle);
-    if (!hit_ep) {
-        return;
-    }
-
-    rf::Player* attacker_pp = rf::player_from_entity_handle(attacker_ep->handle);
-    rf::Player* hit_pp = rf::player_from_entity_handle(hit_ep->handle);
-    if (!attacker_pp || !hit_pp) {
-        return;
-    }
-
-    if (!multi_is_team_game_type() || attacker_pp->team != hit_pp->team) {
-        auto* stats = static_cast<PlayerStatsNew*>(attacker_pp->stats);
-        stats->add_shots_hit(get_weapon_shot_stats_delta(wp));
-        xlog::trace("hit a_ep {} wp {} h_ep {}", attacker_ep, wp, hit_ep);
-    }
-}
-
-FunHook<int(rf::LevelCollisionOut*, rf::Weapon*)> multi_lag_comp_handle_hit_hook{
-    0x0046F380,
-    [](rf::LevelCollisionOut *col_info, rf::Weapon *wp) {
-        if (rf::is_server) {
-            maybe_increment_weapon_hits_stat(col_info->obj_handle, wp);
-        }
-        return multi_lag_comp_handle_hit_hook.call_target(col_info, wp);
-    },
-};
-
+// Retained purely as the accuracy shot scope (see accuracy_shot_scope_consume) - the fired
+// counting that used to live here moved to weapon_fire_projectile_create_hook, which covers every
+// weapon instead of only the lag-compensated (bullet) ones. Save/restore rather than set/clear,
+// mirroring SplashWeaponScope.
 FunHook<void(rf::Entity*, rf::Weapon*)> multi_lag_comp_weapon_fire_hook{
     0x0046F7E0,
     [](rf::Entity *ep, rf::Weapon *wp) {
+        const AccuracyShotScope shot_scope{ep};
+        const AwardsShotScope award_shot_scope{ep, wp};
         multi_lag_comp_weapon_fire_hook.call_target(ep, wp);
-        rf::Player* pp = rf::player_from_entity_handle(ep->handle);
-        if (pp && pp->stats) {
-            auto* stats = static_cast<PlayerStatsNew*>(pp->stats);
-            stats->add_shots_fired(get_weapon_shot_stats_delta(wp));
-            xlog::trace("fired a_ep {} wp {}", ep, wp);
+    },
+};
+
+// One shot per real projectile created by a trigger pull, to both counters.
+//
+// Hooked at the CALL SITES, never on weapon_create itself: lag-compensated weapons create a second
+// ghost projectile per shot at 0x004266F8 for the rewind raycast, so a FunHook there double-counts
+// exactly the way PF's accuracy stat does. The two sites are mutually exclusive, so each projectile
+// is counted once, and counting per creation makes pellets and double blasts exact for free.
+// alt_fire is typed int so the pushed dword is forwarded byte-for-byte; the hook never reads it.
+// Anything that starts reading it MUST mask to the low byte and compare against 1: the engine
+// writes the flag as a byte and pushes the containing dword, leaving the upper 24 bits as stack
+// residue (a genuine alt shot was captured as 0xEE5EB801).
+CallHook<rf::Weapon*(int, int, rf::Vector3*, rf::Matrix3*, int, int)>
+    weapon_fire_projectile_create_hook{
+    {0x00426665, 0x0047D2DE},
+    [](int weapon_type, int parent_handle, rf::Vector3* pos, rf::Matrix3* orient,
+       int alt_fire, int a6) {
+        rf::Weapon* wp = weapon_fire_projectile_create_hook.call_target(
+            weapon_type, parent_handle, pos, orient, alt_fire, a6);
+        crits_on_weapon_created(wp, parent_handle);
+        if (wp && rf::is_server) {
+            if (rf::Player* pp = rf::player_from_entity_handle(parent_handle)) {
+                // Low byte compared against 1, matching the engine's own contract -- the pushed
+                // dword's upper bytes are stack residue on the continuous-fire path.
+                const bool is_alt = (alt_fire & 0xFF) == 1;
+                const float potential = weapon_potential_damage(weapon_type, is_alt);
+                const bool excluded = accuracy_excluded_from_combined(weapon_type);
+                afstats::on_weapon_fired(pp, weapon_type, 1,
+                                         excluded ? afstats::CountScope::bucket_only
+                                                  : afstats::CountScope::full,
+                                         potential);
+                awards_on_weapon_fired(pp, weapon_type);
+                if (!excluded && pp->stats) {
+                    auto* stats = static_cast<PlayerStatsNew*>(pp->stats);
+                    stats->add_shots_fired(1.0f);
+                    stats->add_damage_potential(potential);
+                }
+            }
         }
+        return wp;
+    },
+};
+
+// Continuous melee (riot stick alt taser, the drill) has real projectiles, but they are made by the
+// deferred creator rather than either site above: entity_turn_weapon_on re-arms the impact-delay
+// timestamps every frame while the trigger is held, and entity_process's creator emits one zap per
+// elapsed timestamp. Counting those is the honest unit for that mode.
+
+// The same site also creates discrete swing projectiles, which must NOT be counted here - swings
+// are counted once per fire packet. ai.weapon_is_on is what separates the two: it is set only for
+// the continuous mode. Bucket-only, like the flame stream (see fire_tick_emit_fired).
+//
+// Both sites drain the SAME pair of impact-delay timestamps (entity +0x4C0/+0x4C4) with
+// ai.current_primary_weapon, so between them they cover every deferred creation of a melee swing,
+// a taser/drill zap, and a thrown weapon's release (grenade / remote charge windup ending):
+// 0x0040956B is the entity-side creator (FUN_00409340, driven from entity_process, and it returns
+// early for the local player's entity), 0x004A28FA the local player's own (FUN_004A2700, so the
+// firing client and the listen host). Remote humans' throws create inline at 0x0047D2DE instead.
+//
+// 0x00426E5D is deliberately NOT here: it sits in the AI secondary-fire creator (FUN_00426CA0,
+// scheduled by the pending-shot queue in FUN_00409280) and fires ai.current_secondary_weapon,
+// which is a different weapon from the one any of the above rolled or counted for.
+CallHook<rf::Weapon*(int, int, rf::Vector3*, rf::Matrix3*, int, int)>
+    deferred_melee_create_hook{
+    {0x0040956B, 0x004A28FA},
+    [](int weapon_type, int parent_handle, rf::Vector3* pos, rf::Matrix3* orient,
+       int alt_fire, int a6) {
+        rf::Weapon* wp = deferred_melee_create_hook.call_target(
+            weapon_type, parent_handle, pos, orient, alt_fire, a6);
+        crits_on_deferred_created(wp, parent_handle);
+        if (wp && rf::is_server && kill_attribution_is_valid_weapon_type(weapon_type)
+            && rf::weapon_is_melee(weapon_type)) {
+            rf::Entity* ep = rf::entity_from_handle(parent_handle);
+            rf::Player* pp = rf::player_from_entity_handle(parent_handle);
+            if (ep && pp && rf::entity_weapon_is_on(ep->handle, weapon_type)) {
+                // alt_fire is a literal 0 at 0x0040956B but a runtime dword at 0x004A28FA - a
+                // byte flag written into a reused parameter slot (0x004A28AC/0x004A28B7) whose
+                // upper bytes are the caller's stack residue, exactly the hazard documented
+                // above - so it is not read: weapon_is_on, the same thing that identifies the
+                // zap, is what selects the alt damage value. Swing projectiles take no potential
+                // here; their swing paid for it at the packet site.
+                afstats::on_weapon_fired(pp, weapon_type, 1, afstats::CountScope::bucket_only,
+                                         weapon_potential_damage(weapon_type, true));
+                awards_on_weapon_fired(pp, weapon_type);
+            }
+        }
+        return wp;
     },
 };
 
@@ -2712,6 +3473,9 @@ void server_reliable_socket_ready(rf::Player* player)
 
     // bring a player who joined during a vote up to date (AF 1.4+ only)
     server_vote_send_state_to_new_player(player);
+    // the vote panel pre-selects the session's mutator set, which is not in the
+    // (config-derived) vote options blob
+    af_send_active_mutators(player);
 
     // alert alpine clients to the queued match on join
     if (g_match_info.pre_match_active && player->version_info.software == ClientSoftware::AlpineFaction) {
@@ -2726,7 +3490,8 @@ void server_reliable_socket_ready(rf::Player* player)
 
     // advertise AF to non-alpine clients if configured
     if (g_alpine_server_config.alpine_restricted_config.advertise_alpine) {
-        if (player->version_info.software != ClientSoftware::AlpineFaction) {
+        if (player->version_info.software != ClientSoftware::AlpineFaction
+            && player->version_info.software != ClientSoftware::Observer) {
             auto msg = std::format(
                 "Have you heard of Alpine Faction? It's a new patch with lots of new and modern features! This server encourages you to upgrade for the best player experience. Learn more at alpinefaction.com");
             af_send_automated_chat_msg(msg, player);
@@ -2763,7 +3528,7 @@ static int pick_weaker_team()
     int red_count = 0, blue_count = 0;
     int red_bots = 0, blue_bots = 0;
     for (const rf::Player& player : SinglyLinkedList{rf::player_list}) {
-        if (player.is_browser || player.is_spectator) {
+        if (player.is_non_participant() || player.is_spectator) {
             continue;
         }
         if (player.team == rf::TEAM_RED) {
@@ -2844,7 +3609,7 @@ FunHook<int()> pick_team_for_new_player_hook{
 static void hvb_sort_teams()
 {
     for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
-        if (player.is_browser || player.is_spectator) {
+        if (player.is_non_participant() || player.is_spectator) {
             continue;
         }
         assign_player_to_team(&player, hvb_team_for_player(&player));
@@ -2857,7 +3622,7 @@ static void balance_teams()
     std::vector<rf::Player*> bots;
 
     for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
-        if (player.is_browser || player.is_spectator) {
+        if (player.is_non_participant() || player.is_spectator) {
             continue;
         }
         if (player.is_bot) {
@@ -2974,7 +3739,7 @@ static void count_active_team_players(int& red, int& blue, const rf::Player* exc
     red = 0;
     blue = 0;
     for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
-        if (&player == exclude || player.is_browser || player.is_spectator || player_is_idle(&player)) {
+        if (&player == exclude || player.is_non_participant() || player.is_spectator || player_is_idle(&player)) {
             continue;
         }
         if (player.team == rf::TEAM_RED) {
@@ -3047,7 +3812,7 @@ static bool auto_team_balance_player_eligible(rf::Player* const player)
     if (!player) {
         return false;
     }
-    if (player->is_browser || player->is_spectator || player_is_idle(player)) {
+    if (player->is_non_participant() || player->is_spectator || player_is_idle(player)) {
         return false;
     }
     if (is_player_ready(player) || is_player_in_match(player)) {
@@ -3231,7 +3996,7 @@ bool auto_team_balance_blocks_team_change(rf::Player* player, int requested_team
     }
     // Browsers and spectators aren't active on a team, so their own team
     // selection can't unbalance the active roster.
-    if (player->is_browser || player->is_spectator) {
+    if (player->is_non_participant() || player->is_spectator) {
         return false;
     }
 
@@ -3546,6 +4311,10 @@ FunHook<void()> multi_check_for_round_end_hook{
                 af_broadcast_automated_chat_msg(msg);
             }
             else {
+                // time_up is a local, so the stats stream has to be told which
+                // limit fired before the level change unwinds it.
+                afstats::note_game_end_type(time_up ? afstats::GameEndType::time_limit
+                                                     : afstats::GameEndType::score_limit);
                 set_manually_loaded_level(false);
                 rf::multi_change_level(nullptr);
             }
@@ -4016,6 +4785,40 @@ void send_nonclip_ammo_sync(rf::Player* player, rf::Entity* entity, int weapon_t
     rf::multi_io_send_reliable(player, reinterpret_cast<uint8_t*>(&packet), sizeof(packet), 0);
 }
 
+static void server_topup_nonclip_ammo()
+{
+    if (!rf::is_server) return;
+    if (!gt_is_gungame() && !g_alpine_server_config_active_rules.weapon_infinite_magazines) return;
+    if (rf::gameseq_get_state() != rf::GameState::GS_GAMEPLAY) return;
+
+    for (rf::Player& p : SinglyLinkedList{rf::player_list}) {
+        if (p.is_browser) continue;
+
+        rf::Entity* ep = rf::entity_from_handle(p.entity_handle);
+        if (!ep || rf::entity_is_dying(ep)) continue;
+
+        int w = ep->ai.current_primary_weapon;
+        if (w == rf::remote_charge_det_weapon_type) {
+            w = rf::remote_charge_weapon_type; // the pair shares the charge ammo
+        }
+        // The no-clip featured weapon already has infinite ammo; its reserve is a pinned HUD value.
+        if (w >= 0 && w < rf::num_weapon_types && !rf::weapon_uses_clip(w)
+            && w != mutators_get_no_clip_weapon()) {
+            const rf::WeaponInfo& winfo = rf::weapon_types[w];
+            // Let the reserve DRAIN and refill it only once half spent, avoids
+            // huge reliable packet bursts with continuously firing no-clip weapons
+            // like the Jeep Gun.
+            if (winfo.ammo_type >= 0 && winfo.ammo_type < 32 && winfo.max_ammo > 0
+                && ep->ai.ammo[winfo.ammo_type] <= winfo.max_ammo / 2) {
+                ep->ai.ammo[winfo.ammo_type] = winfo.max_ammo;
+                if (&p != rf::local_player && !p.is_bot) {
+                    send_nonclip_ammo_sync(&p, ep, w);
+                }
+            }
+        }
+    }
+}
+
 void server_add_player_weapon(rf::Player* player, int weapon_type, bool full_ammo)
 {
     rf::WeaponInfo& winfo = rf::weapon_types[weapon_type];
@@ -4170,6 +4973,77 @@ CodeInjection dropped_red_flag_return_time_patch{
     },
 };
 
+// Every drop cause funnels through here: death, manual request, disconnect, kick.
+FunHook<void(rf::Player*)> multi_ctf_drop_flag_hook{
+    0x00473F40,
+    [](rf::Player* player) {
+        // get_*_flag_player() returns null when no one carries the flag, so without
+        // the player!=null guard a null drop would false-match and sample a phantom.
+        const bool had_red = player != nullptr && rf::multi_ctf_get_red_flag_player() == player;
+        const bool had_blue = player != nullptr && rf::multi_ctf_get_blue_flag_player() == player;
+        rf::Vector3 drop_pos{};
+        if (had_red) {
+            rf::multi_ctf_get_red_flag_pos(&drop_pos);
+        }
+        else if (had_blue) {
+            rf::multi_ctf_get_blue_flag_pos(&drop_pos);
+        }
+
+        multi_ctf_drop_flag_hook.call_target(player);
+
+        if (rf::is_server && (had_red || had_blue)) {
+            afstats::on_flag_event(g_ctf_drop_is_manual ? afstats::FlagEventKind::drop_manual
+                                                        : afstats::FlagEventKind::drop_death,
+                                   had_red ? afstats::team_red : afstats::team_blue, player,
+                                   drop_pos);
+            awards_on_ctf_flag_dropped(player);
+        }
+        g_ctf_drop_is_manual = false;
+    },
+};
+
+// The stolen-flag return timers are only checked here, and the return they drive
+// is the one flag transition with no player behind it.
+FunHook<void()> multi_ctf_do_frame_hook{
+    0x00472ED0,
+    []() {
+        // Pure observer: nothing here runs when stats are off. The position getters
+        // copy from globals (they do not dereference the flag items), and the
+        // in-base getters are null-guarded; still, only sample a side whose flag item
+        // exists so a one-flag level can never reach a getter with a null item.
+        // Salvage reports its own returns from salvage_do_frame.
+        const bool sampling = rf::is_server && fflink::afstats_server_enabled()
+            && rf::multi_get_game_type() == rf::NG_TYPE_CTF;
+        const bool sample_red = sampling && rf::ctf_red_flag_item != nullptr;
+        const bool sample_blue = sampling && rf::ctf_blue_flag_item != nullptr;
+        bool red_home_before = false;
+        bool blue_home_before = false;
+        rf::Vector3 red_pos{};
+        rf::Vector3 blue_pos{};
+        if (sample_red) {
+            red_home_before = rf::multi_ctf_is_red_flag_in_base();
+            rf::multi_ctf_get_red_flag_pos(&red_pos);
+        }
+        if (sample_blue) {
+            blue_home_before = rf::multi_ctf_is_blue_flag_in_base();
+            rf::multi_ctf_get_blue_flag_pos(&blue_pos);
+        }
+
+        multi_ctf_do_frame_hook.call_target();
+
+        // A touch return is reported from the touch dispatch, which runs outside this
+        // frame function, so anything that came home in here was the timer.
+        if (sample_red && !red_home_before && rf::multi_ctf_is_red_flag_in_base()) {
+            afstats::on_flag_event(afstats::FlagEventKind::return_timeout, afstats::team_red,
+                                   nullptr, red_pos);
+        }
+        if (sample_blue && !blue_home_before && rf::multi_ctf_is_blue_flag_in_base()) {
+            afstats::on_flag_event(afstats::FlagEventKind::return_timeout, afstats::team_blue,
+                                   nullptr, blue_pos);
+        }
+    },
+};
+
 CodeInjection sp_damage_calculation_patch{
     0x0041A373,
     [](auto& regs) {
@@ -4199,6 +5073,8 @@ void server_init()
 
     // Set CTF flag return time
     dropped_blue_flag_return_time_patch.install();
+    multi_ctf_drop_flag_hook.install();
+    multi_ctf_do_frame_hook.install();
     dropped_red_flag_return_time_patch.install();
 
     // SP-style damage calculations (ie. armour doesnt fully protect health)
@@ -4235,6 +5111,7 @@ void server_init()
     // Default player weapon class and ammo override
     player_create_entity_find_default_weapon_injection.install();
     give_default_weapon_ammo_hook.install();
+    player_add_weapon_hook.install();
 
     init_server_commands();
 
@@ -4278,11 +5155,12 @@ void server_init()
     // Support forcing player character
     multi_spawn_player_server_side_hook.install();
 
-    // Hook lag compensation functions to calculate accuracy only for weapons with bullets
-    // Note: weapons with bullets (projectiles) are created twice server-side so hooking weapon_create would
-    // be problematic (PF went this way and its accuracy stat is broken)
-    multi_lag_comp_handle_hit_hook.install();
+    // Accuracy: the legacy scoreboard/PF//stats counters and the afstats stream are fed from the
+    // same sites so they can never disagree. The lag comp fire hook counts nothing - it only
+    // scopes a projectile's flight so rail piercing awards at most one hit per bolt.
     multi_lag_comp_weapon_fire_hook.install();
+    weapon_fire_projectile_create_hook.install();
+    deferred_melee_create_hook.install();
 
     // Set lower bound of server max players clamp range to 1 (instead of 2)
     write_mem<i8>(0x0046DD4F + 1, 1);
@@ -4385,7 +5263,7 @@ static void bot_decommission_check() {
 
     const bool is_team_mode = multi_is_team_game_type();
     for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
-        if (player.is_browser) {
+        if (player.is_non_participant()) {
             continue;
         }
 
@@ -4446,19 +5324,26 @@ void server_do_frame()
 {
     bot_decommission_check();
     server_vote_do_frame();
+    fire_ticks_do_frame();
     match_do_frame();
     process_delayed_kicks();
     pit_do_frame();
     wipeout_do_frame();
     gungame_do_frame();
+    server_topup_nonclip_ammo(); // after gungame's per-frame weapon grants
     salvage_do_frame();
     rounds_do_frame();
     auto_team_balance_do_frame();
     mutators_do_frame();
+    awards_server_do_frame();
 }
 
 void server_on_limbo_state_enter()
 {
+    // First, while g_is_overtime, the level info and the scores still describe the
+    // round that just finished.
+    afstats::on_game_end();
+
     g_is_overtime = false;
     g_prev_level = rf::level.filename.c_str();
     server_vote_on_limbo_state_enter();
@@ -4482,11 +5367,11 @@ void server_on_limbo_state_enter()
         }
 
         if (&player != rf::local_player) {
-            if (ver > player.version_info.max_rfl_ver && player.version_info.software != ClientSoftware::Browser) {
+            if (ver > player.version_info.max_rfl_ver && !player.is_non_participant()) {
                 notify_for_upcoming_level_version_incompatible(&player);
             } else if (get_upcoming_game_type() != rf::netgame.type
                 && !(player.version_info.software == ClientSoftware::AlpineFaction && player.version_info.minor >= 2U)
-                && player.version_info.software != ClientSoftware::Browser) {
+                && !player.is_non_participant()) {
                 // only notify them if they CAN load the map, otherwise they can't play anyway so no point
                 notify_for_client_incompatible_with_switching_game_type(&player);
             }
@@ -4503,6 +5388,36 @@ void server_on_limbo_state_enter()
 bool server_is_saving_enabled()
 {
     return g_alpine_server_config_active_rules.saving_enabled;
+}
+
+bool server_demo_auto_record()
+{
+    return g_alpine_server_config.demo_auto_record;
+}
+
+bool server_demo_chat_record()
+{
+    return g_alpine_server_config.demo_chat_record;
+}
+
+bool server_fflink_demo_upload()
+{
+    return g_alpine_server_config.fflink_demo_upload;
+}
+
+int server_fflink_demo_max_mb()
+{
+    return g_alpine_server_config.fflink_demo_max_mb;
+}
+
+int server_fflink_demo_queue_max()
+{
+    return g_alpine_server_config.fflink_demo_queue_max;
+}
+
+bool server_fflink_demo_delete_after_send()
+{
+    return g_alpine_server_config.fflink_demo_delete_after_send;
 }
 
 bool server_allow_fullbright_meshes()
@@ -4613,7 +5528,7 @@ std::tuple<bool, int, bool, bool> server_features_require_alpine_client()
         min_minor_version = std::max(min_minor_version, 1);
     }
 
-    if (g_alpine_server_config_active_rules.spawn_loadout.loadouts_active) {
+    if (g_alpine_server_config_active_rules.spawn_loadout_is_active()) {
         requires_alpine = true;
         min_minor_version = std::max(min_minor_version, 2);
     }
@@ -4660,6 +5575,11 @@ std::tuple<bool, int, bool, bool> server_features_require_alpine_client()
 bool server_weapon_items_give_full_ammo()
 {
     return g_alpine_server_config_active_rules.weapon_items_give_full_ammo;
+}
+
+bool server_weapon_infinite_magazines()
+{
+    return g_alpine_server_config_active_rules.weapon_infinite_magazines;
 }
 
 const AlpineServerConfig& server_get_alpine_config()
@@ -4716,4 +5636,5 @@ void initialize_game_info_server_flags()
     g_game_info_server_flags.saving_enabled = server_is_saving_enabled();
     g_game_info_server_flags.gaussian_spread = server_gaussian_spread();
     g_game_info_server_flags.damage_notifications = server_has_damage_notifications();
+    g_game_info_server_flags.stats_enabled = fflink::afstats_server_enabled();
 }

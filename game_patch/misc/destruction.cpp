@@ -13,6 +13,7 @@
 #include <xlog/xlog.h>
 #include "../misc/alpine_options.h"
 #include "../misc/alpine_settings.h"
+#include "../graphics/weather.h"
 #include "../multi/multi.h"
 #include "../multi/server_internal.h"
 #include "../main/main.h"
@@ -28,6 +29,8 @@
 #include "../rf/player/player.h"
 #include "../rf/player/camera.h"
 #include "../os/console.h"
+#include "../fflink/afstats_events.h"
+#include "../fflink/fflink_session.h"
 #include "destruction.h"
 #include "level.h"
 #include "../sound/sound_foley.h"
@@ -225,6 +228,35 @@ BreakableMaterialState* get_material_state(rf::DetailMaterial mat)
 static rf::DetailMaterial g_breaking_material = rf::DetailMaterial::Glass;
 static rf::GRoom* g_breaking_room = nullptr;
 static bool g_breaking_from_explosion = false;
+
+// Best-effort attribution for the current detail-brush break, for the stats stream.
+// Set at the damage entry points -- exactly where g_breaking_from_explosion is -- and
+// read once at the server-side break commit (glass_sound). A damage-driven break
+// is synchronous within the damage call tree, so `capture_tick` (GetTickCount64, the same
+// source s_last_vfx_tick uses) stamped at the damage entry equals the tick at the commit.
+// The commit only trusts the attribution when the ticks match: a break that is NOT
+// damage-driven this frame (level logic reaching glass_sound directly, or a stale capture
+// from an earlier near-miss whose validate_destroy failed) reads a mismatched tick and is
+// reported with null attribution -- wrong attribution is worse than null. Reset on level load.
+struct BreakAttribution
+{
+    int killer_handle = -1;   // responsible entity handle; resolved to a player, null if not
+    int weapon_type = -1;     // TC-mod weapon id, or -1 when not in scope (radius path)
+    int damage_type = -1;     // stats registry value, or -1 (unknown)
+    uint64_t capture_tick = 0; // GetTickCount64 at the damage entry; break commit must match
+};
+static BreakAttribution g_break_attr;
+
+// The single predicate for both the capture sites and the commit site. Keeping them
+// identical is what makes the capture side safe to skip: when this is false nothing is
+// stamped, but nothing reads it either, and if it flips to true later the stale
+// capture_tick can no longer match so the first break is simply reported anonymously.
+// Gating the captures keeps the feature a strict no-op on a stats-disabled host and in
+// single player, where apply_radius_damage runs on every explosion.
+static bool afstats_break_attr_enabled()
+{
+    return rf::is_server && fflink::afstats_server_enabled();
+}
 
 // Per-room dedup: prevents multiple projectiles from creating effects on the same room
 // in the same frame (e.g., pistol creating two weapon entities per shot).
@@ -848,6 +880,7 @@ void reset_breakable_material_state()
     g_breaking_material = rf::DetailMaterial::Glass;
     g_breaking_room = nullptr;
     g_breaking_from_explosion = false;
+    g_break_attr = BreakAttribution{};
     s_last_vfx_room = nullptr;
     s_last_vfx_tick = 0;
     g_current_radius_damage_type = -1;
@@ -932,11 +965,22 @@ CodeInjection validate_destroy_vertex_count_fix{
     },
 };
 
-// Capture damage_type at entry of apply_radius_damage (0x00488dc0).
+// Capture damage_type at entry of apply_radius_damage (0x00488dc0). Also stashes the
+// radius blow's killer_handle and damage_type for the stats stream: the room
+// break happens deeper in this call (room_apply_radius_damage -> glass_kill) with neither
+// in scope. Stack: SUB ESP,0x18 has run but the four register pushes at 0x00488ded have
+// not, so the cdecl args killer_handle (arg 4) and damage_type (arg 5) sit at esp+0x28 and
+// esp+0x2C. The radius path carries no weapon type, so that stays null.
 CodeInjection capture_damage_type_injection{
     0x00488ded,
     [](auto& regs) {
         g_current_radius_damage_type = *reinterpret_cast<int*>(regs.esp + 0x2C);
+        if (afstats_break_attr_enabled()) {
+            g_break_attr.killer_handle = *reinterpret_cast<int*>(regs.esp + 0x28);
+            g_break_attr.weapon_type = -1;
+            g_break_attr.damage_type = g_current_radius_damage_type;
+            g_break_attr.capture_tick = GetTickCount64();
+        }
     },
 };
 
@@ -1822,10 +1866,41 @@ CodeInjection glass_kill_material_injection{
 CodeInjection glass_sound_entry_injection{
     0x00490c00,
     [](auto& regs) {
+        auto* pos = *reinterpret_cast<rf::Vector3**>(regs.esp + 4);
+
+        // Stats stream: one detail_brush_destroyed per committed break, for
+        // EVERY material (glass included). glass_sound is the sole point both break paths
+        // reach, and only after validate_destroy has succeeded, so it fires exactly once
+        // per kill. Server-side only: a client applying a received glass_kill packet also
+        // runs glass_sound, so gating on the deciding server avoids emitting the broadcast
+        // twice. material is g_breaking_material; the room uid and best-effort attribution
+        // come from the globals finalized above. Read before the non-glass shatter below,
+        // which frees the room's faces. on_detail_brush_destroyed self-gates on a
+        // stats-enabled server.
+        if (afstats_break_attr_enabled() && g_breaking_room && pos) {
+            // Trust the stashed attribution only when its damage entry landed on THIS tick:
+            // a break not driven by damage this frame (level logic reaching glass_sound, or a
+            // stale capture from an earlier near-miss) would otherwise inherit whoever last
+            // damaged glass. Wrong attribution is worse than null, so a tick mismatch reports
+            // the break as anonymous. material and room_uid are always fresh, so they stand.
+            const bool fresh = g_break_attr.capture_tick == GetTickCount64();
+            afstats::on_detail_brush_destroyed(
+                static_cast<uint8_t>(g_breaking_material), g_breaking_room->uid,
+                fresh ? g_break_attr.killer_handle : -1, fresh ? g_break_attr.weapon_type : -1,
+                fresh ? g_break_attr.damage_type : -1, *pos);
+        }
+
+        // The broken brush can open a ceiling over a blocked-by-geometry weather region.
+        if (g_breaking_room) {
+            const rf::Vector3 room_center = (g_breaking_room->bbox_min + g_breaking_room->bbox_max) * 0.5f;
+            const float dx = g_breaking_room->bbox_max.x - g_breaking_room->bbox_min.x;
+            const float dz = g_breaking_room->bbox_max.z - g_breaking_room->bbox_min.z;
+            weather_notify_geomod(room_center, 0.5f * std::sqrt(dx * dx + dz * dz));
+        }
+
         auto* mat_cfg = get_material_config(g_breaking_material);
         if (mat_cfg && g_breaking_room) {
             auto* mat_state = get_material_state(g_breaking_material);
-            auto* pos = *reinterpret_cast<rf::Vector3**>(regs.esp + 4);
 
             // Send glass_kill packet before face extraction frees the original faces
             if (rf::is_multi && rf::is_server) {
@@ -1868,6 +1943,16 @@ CodeInjection glass_decal_material_injection{
         // Check if the projectile's weapon type has a damage radius > 0.
         auto* weapon = reinterpret_cast<rf::Weapon*>(static_cast<void*>(regs.esi));
         g_breaking_from_explosion = (weapon && weapon->info && weapon->info->damage_radius > 0.0f);
+
+        // Stash direct-hit attribution for the stats stream: the shooter is the
+        // projectile's parent entity, and the weapon and its damage type come off the
+        // weapon info. Consumed at the server-side break commit (glass_sound).
+        if (weapon && afstats_break_attr_enabled()) {
+            g_break_attr.killer_handle = weapon->parent_handle;
+            g_break_attr.weapon_type = weapon->info_index;
+            g_break_attr.damage_type = weapon->info ? weapon->info->damage_type : -1;
+            g_break_attr.capture_tick = GetTickCount64();
+        }
 
         if (room->material_type != rf::DetailMaterial::Glass) {
             auto* proj = reinterpret_cast<uint8_t*>(static_cast<void*>(regs.esi));
@@ -2562,6 +2647,27 @@ FunHook<bool(float, int, rf::GRoom*, rf::Vector3*, rf::Vector3*, int, int)> geom
         rf::g_geomod_emitter_default_idx = saved_default_emitter;
         rf::g_geomod_emitter_driller_idx = saved_driller_emitter;
 
+        // Stats stream: one geomod event per confirmed carve, on both the
+        // classic and rf2-brush paths. geomod_create is the sole caller of the queue and
+        // returns early for MP clients, so this is a server-side-only choke point with no
+        // double-emit against the geomod broadcast. Attribution is best-effort: the source
+        // handle is a weapon whose parent is the shooter entity and whose info_index is the
+        // weapon type; other callers (level logic, etc.) fall back to null.
+        if (result && pos) {
+            rf::Player* shooter = nullptr;
+            int weapon_type = -1;
+            if (rf::Object* src = rf::obj_from_handle(parent_handle)) {
+                if (src->type == rf::OT_WEAPON) {
+                    weapon_type = static_cast<rf::Weapon*>(src)->info_index;
+                    shooter = rf::player_from_entity_handle(src->parent_handle);
+                }
+                else {
+                    shooter = rf::player_from_entity_handle(parent_handle);
+                }
+            }
+            afstats::on_geomod(*pos, radius, is_rf2_geomod, shooter, weapon_type);
+        }
+
         if (is_rf2_geomod) {
             rf::g_num_geomods_this_level = saved_crater_count;
             if (result) {
@@ -2632,6 +2738,11 @@ FunHook<void(rf::GeomodParams*)> geomod_init_hook{
         }
 
         geomod_init_hook.call_target(params);
+
+        // The carve can open or close a roof over a blocked-by-geometry weather region.
+        if (rf::g_geomod_crater_solid) {
+            weather_notify_geomod(params->pos, params->scale * rf::g_geomod_crater_solid->bounding_sphere_radius);
+        }
 
         // Clear the modification flag at the start of each geomod.
         g_rf2_boolean_modified_detail = false;

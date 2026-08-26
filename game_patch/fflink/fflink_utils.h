@@ -18,7 +18,17 @@ void enqueue_main_thread_task(std::function<void()> task);
 // Drain and run any pending main-thread tasks. MUST be called from the main thread.
 void drain_pending_main_thread_tasks();
 
-// Sanitize response strings before logging
-std::string sanitize_for_log(std::string_view in);
+// Sanitize response strings before logging. Replaces C0 controls and DEL, and hard
+// caps the result at max_len bytes so a network-sourced string can never be copied
+// unbounded into a log line or the fixed-size engine console ring. Truncation stops on
+// a UTF-8 sequence boundary so a multibyte codepoint is never left half-copied.
+std::string sanitize_for_log(std::string_view in, size_t max_len = 200);
+
+// GSK format: exactly 32 lowercase hex chars.
+bool is_valid_gsk_format(std::string_view gsk);
+
+// Session/stats key format: exactly 32 alphanumeric chars. Shared by the GSSK,
+// the player stats key (PSK) and the player stats session key (PSSK).
+bool is_valid_stats_key_format(std::string_view key);
 
 } // namespace fflink

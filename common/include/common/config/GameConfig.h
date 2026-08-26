@@ -75,11 +75,13 @@ struct GameConfig
     CfgVar<bool> allow_overwrite_game_files = false;
     CfgVar<bool> keep_launcher_open = true;
     CfgVar<bool> reduced_speed_in_background = false;
+    CfgVar<bool> autoplay_af_demos = false;
 
     // Internal
     CfgVar<std::string> alpine_faction_version{""};
     CfgVar<std::string> fflink_token{""};
     CfgVar<std::string> fflink_username{""};
+    CfgVar<std::string> afstats_psk{""};
     CfgVar<bool> suppress_first_launch_window = false;
     CfgVar<bool> suppress_ff_link_prompt = false;
 
