@@ -103,18 +103,24 @@ static const ButtonOverride ps5_overrides[] = {
 };
 
 static const ButtonOverride switchpro_overrides[] = {
-    {  4, "-"        },
-    {  5, "Home"     },
-    {  6, "+"        },
-    {  9, "L"        },
-    { 10, "R"        },
-    { 15, "Capture"  },
+    {  4, "-"       },
+    {  5, "Home"    },
+    {  6, "+"       },
+    {  9, "L"       },
+    { 10, "R"       },
+    { 12, "C"       },
+    { 15, "Capture" },
+    { 16, "GR"      },
+    { 19, "GL"      },
+    { 26, "ZL"      },
+    { 27, "ZR"      },
+};
+
+static const ButtonOverride joycon_overrides[] = {
     { 16, "Right SR" },
     { 17, "Left SL"  },
     { 18, "Right SL" },
     { 19, "Left SR"  },
-    { 26, "ZL"       },
-    { 27, "ZR"       },
 };
 
 static const ButtonOverride gamecube_overrides[] = {
@@ -211,6 +217,16 @@ static ControllerIconType sdl_type_to_icon(SDL_GamepadType type)
     }
 }
 
+static bool is_joycon_controller(SDL_Gamepad* ctrl)
+{
+    if (!ctrl)
+        return false;
+    SDL_GamepadType type = SDL_GetGamepadType(ctrl);
+    return type == SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_LEFT
+        || type == SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_RIGHT
+        || type == SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_PAIR;
+}
+
 // Returns true for controller families that use shared naming as their shared standard tier
 // (L1/R1/L2/R2/L3/R3 etc.) for buttons not covered by a platform-specific override.
 static bool uses_shared_glyphs(ControllerIconType type)
@@ -298,5 +314,12 @@ const char* gamepad_get_effective_display_name(ControllerIconType icon_pref, SDL
     } else {
         type = icon_pref;
     }
+
+    if (type == ControllerIconType::NintendoSwitch && is_joycon_controller(ctrl)) {
+        const char* result = search_overrides(joycon_overrides, button_idx);
+        if (result)
+            return result;
+    }
+
     return gamepad_get_button_display_name(type, button_idx);
 }
