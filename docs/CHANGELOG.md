@@ -3,9 +3,13 @@
 
 Version 1.5.0 (TBD): Not yet released
 --------------------------------
+### Major features
+
 ### Minor features, changes, and enhancements
 [@is-this-c](https://github.com/is-this-c)
 - Add `IoCursor` and `PacketBuilder`
+
+### Bug fixes
 
 Version 1.4.0 (Lupin): Released Aug-25-2026
 --------------------------------
