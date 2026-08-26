@@ -1576,7 +1576,7 @@ void af_send_vote_state_end(rf::Player* player, AfVoteResult result, bool passed
 // blob, not of the recipient, so a fan-out answers it once.
 static bool af_active_mutators_blob_fits(const std::vector<uint8_t>& decls)
 {
-    if (sizeof(RF_GamePacketHeader) + 1 + decls.size() <= rf::max_packet_size) {
+    if (sizeof(RF_GamePacketHeader) + 1 + decls.size() <= rf::MAX_PACKET_SIZE) {
         return true;
     }
     xlog::warn("af_send_active_mutators: {} bytes of declarations do not fit a packet", decls.size());
@@ -1589,7 +1589,7 @@ static void af_send_active_mutators_blob(rf::Player* player, const std::vector<u
         return;
     }
 
-    std::byte buf[rf::max_packet_size];
+    std::byte buf[rf::MAX_PACKET_SIZE];
     VoteWriter w{buf, sizeof(buf), sizeof(RF_GamePacketHeader)};
     w.u8(static_cast<uint8_t>(af_server_req_type::af_sreq_active_mutators));
     w.bytes(decls.data(), decls.size());
@@ -2133,7 +2133,7 @@ void af_send_award_for_demo(rf::Player* recorder, uint8_t award_id, uint8_t vict
     packet.req_type = af_server_req_type::af_sreq_award;
     packet.payload = AwardPayload{award_id, victim_player_id};
 
-    std::byte buf[rf::max_packet_size];
+    std::byte buf[rf::MAX_PACKET_SIZE];
     size_t offset = 0;
     std::memcpy(buf + offset, &packet.header, sizeof(packet.header));
     offset += sizeof(packet.header);
@@ -4494,7 +4494,7 @@ void af_send_server_console_msg(const std::string_view msg, rf::Player* player, 
         return;
     }
 
-    constexpr size_t max_len = rf::max_packet_size - sizeof(af_server_msg_packet);
+    constexpr size_t max_len = rf::MAX_PACKET_SIZE - sizeof(af_server_msg_packet);
     std::string_view remaining = msg;
     do {
         std::string_view chunk = remaining;
@@ -4759,7 +4759,7 @@ void af_process_server_msg_packet(
         const char* text_ptr = static_cast<const char*>(data) + header_len;
         // Cap to the same budget the sender uses (build_hud_notification_packet) so the
         // receiver asserts its own bound rather than trusting the transport buffer size.
-        constexpr size_t max_text_len = rf::max_packet_size
+        constexpr size_t max_text_len = rf::MAX_PACKET_SIZE
             - sizeof(af_server_msg_packet)
             - sizeof(af_hud_notification_prefix);
         const size_t text_len = std::min(len - header_len, max_text_len);
@@ -5335,7 +5335,7 @@ void af_send_player_info_response(const rf::NetAddr& addr)
     }
     entry_offsets[entry_count] = players_data_len; // sentinel
 
-    // Compute segment boundaries (each segment fits within max_packet_size)
+    // Compute segment boundaries (each segment fits within MAX_PACKET_SIZE)
     constexpr int header_size = static_cast<int>(sizeof(af_player_info_packet));
     constexpr int max_payload = static_cast<int>(rf::MAX_PACKET_SIZE) - header_size;
 

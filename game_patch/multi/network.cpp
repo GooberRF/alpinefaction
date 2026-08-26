@@ -1007,8 +1007,8 @@ FunHook<MultiIoPacketHandler> process_chat_line_packet_hook{
                 // The stock relay loop team-filters recipients, so the teamless demo
                 // recorder never gets team chat; mirror the wire packet (the handler
                 // only receives the body) tagged with the sender's team.
-                const size_t body_len = 2 + strnlen(msg, rf::max_packet_size - 3) + 1;
-                std::byte packet_buf[rf::max_packet_size];
+                const size_t body_len = 2 + strnlen(msg, rf::MAX_PACKET_SIZE - 3) + 1;
+                std::byte packet_buf[rf::MAX_PACKET_SIZE];
                 if (sizeof(RF_GamePacketHeader) + body_len <= sizeof(packet_buf)) {
                     RF_GamePacketHeader header{};
                     header.type = chat_line;

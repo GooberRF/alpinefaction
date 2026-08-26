@@ -1,6 +1,12 @@
 ⚙️⛏ Alpine Faction Changelog ⛏⚙️
 ===================================
 
+Version 1.5.0 (TBD): Not yet released
+--------------------------------
+### Minor features, changes, and enhancements
+[@is-this-c](https://github.com/is-this-c)
+- Add `IoCursor` and `PacketBuilder`
+
 Version 1.4.0 (Lupin): Released Aug-25-2026
 --------------------------------
 ### Major features
@@ -157,7 +163,6 @@ Version 1.4.0 (Lupin): Released Aug-25-2026
 - `sv_gametype` against a level in the rotation now rebuilds the rules from the base rules for the new game type instead of retargeting the old game type's rules in place
 
 [@is-this-c](https://github.com/is-this-c)
-- Add `IoCursor` and `PacketBuilder`
 - Rewrite `VArray` to fix crashes due to MinGW
 - Add `Anti-aliasing` option to `ADVANCED` options panel
 - Add `r_antialiasing_mode` console command to set anti-aliasing mode at run-time
