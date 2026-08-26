@@ -1,6 +1,14 @@
 ⚙️⛏ Alpine Faction Changelog ⛏⚙️
 ===================================
 
+Version 1.5.0 (TBD): Not yet released
+--------------------------------
+### Major features
+
+### Minor features, changes, and enhancements
+
+### Bug fixes
+
 Version 1.4.0 (Lupin): Released Aug-25-2026
 --------------------------------
 ### Major features
