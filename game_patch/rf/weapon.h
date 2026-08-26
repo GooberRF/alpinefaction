@@ -281,7 +281,9 @@ namespace rf
         WS_LOOP_FIRE = 2,
     };
 
-    static auto& weapon_types = addr_as_ref<WeaponInfo[64]>(0x0085CD08);
+    constexpr int max_weapon_types = 64;
+
+    static auto& weapon_types = addr_as_ref<WeaponInfo[max_weapon_types]>(0x0085CD08);
     static auto& remote_charge_det_weapon_type = addr_as_ref<int>(0x0085CCE0);
     static auto& machine_pistol_special_weapon_type = addr_as_ref<int>(0x0085CD00);
     static auto& machine_pistol_weapon_type = addr_as_ref<int>(0x0085CCD8);

@@ -13,6 +13,7 @@
 #include <xlog/xlog.h>
 #include "../misc/alpine_options.h"
 #include "../misc/alpine_settings.h"
+#include "../graphics/weather.h"
 #include "../multi/multi.h"
 #include "../multi/server_internal.h"
 #include "../main/main.h"
@@ -1889,6 +1890,14 @@ CodeInjection glass_sound_entry_injection{
                 fresh ? g_break_attr.damage_type : -1, *pos);
         }
 
+        // The broken brush can open a ceiling over a blocked-by-geometry weather region.
+        if (g_breaking_room) {
+            const rf::Vector3 room_center = (g_breaking_room->bbox_min + g_breaking_room->bbox_max) * 0.5f;
+            const float dx = g_breaking_room->bbox_max.x - g_breaking_room->bbox_min.x;
+            const float dz = g_breaking_room->bbox_max.z - g_breaking_room->bbox_min.z;
+            weather_notify_geomod(room_center, 0.5f * std::sqrt(dx * dx + dz * dz));
+        }
+
         auto* mat_cfg = get_material_config(g_breaking_material);
         if (mat_cfg && g_breaking_room) {
             auto* mat_state = get_material_state(g_breaking_material);
@@ -2729,6 +2738,11 @@ FunHook<void(rf::GeomodParams*)> geomod_init_hook{
         }
 
         geomod_init_hook.call_target(params);
+
+        // The carve can open or close a roof over a blocked-by-geometry weather region.
+        if (rf::g_geomod_crater_solid) {
+            weather_notify_geomod(params->pos, params->scale * rf::g_geomod_crater_solid->bounding_sphere_radius);
+        }
 
         // Clear the modification flag at the start of each geomod.
         g_rf2_boolean_modified_detail = false;

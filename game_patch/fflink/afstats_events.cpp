@@ -227,6 +227,7 @@ struct EvGameStart
     bool crits_enabled = false;
     std::vector<MutatorRecord> mutators;
     std::vector<std::pair<std::string, SettingValue>> gametype_settings;
+    server_config::ServerSettingsRecord server_settings;
     std::vector<RosterEntry> roster;
     nlohmann::json tbl_overrides;
 };
@@ -1306,6 +1307,44 @@ nlohmann::json event_to_json(const Event& e)
                     gametype_settings[key] = setting_to_json(value);
                 }
                 j["gametype_settings"] = std::move(gametype_settings);
+
+                auto dynamic_respawn_items = nlohmann::json::object();
+                for (const auto& [item_name, min_respawn_points] : p.server_settings.dynamic_respawn_items) {
+                    dynamic_respawn_items[item_name] = min_respawn_points;
+                }
+                nlohmann::json spawn_logic;
+                spawn_logic["respect_team_spawns"] = p.server_settings.spawn_respect_team_spawns;
+                spawn_logic["try_avoid_players"] = p.server_settings.spawn_try_avoid_players;
+                spawn_logic["always_avoid_last"] = p.server_settings.spawn_always_avoid_last;
+                spawn_logic["always_use_furthest"] = p.server_settings.spawn_always_use_furthest;
+                spawn_logic["only_avoid_enemies"] = p.server_settings.spawn_only_avoid_enemies;
+                spawn_logic["dynamic_respawns"] = p.server_settings.spawn_dynamic_respawns;
+                spawn_logic["dynamic_respawn_items"] = std::move(dynamic_respawn_items);
+
+                nlohmann::json spawn_protection;
+                spawn_protection["enabled"] = p.server_settings.spawn_protection_enabled;
+                spawn_protection["duration_ms"] = p.server_settings.spawn_protection_duration_ms;
+                spawn_protection["use_powerup"] = p.server_settings.spawn_protection_use_powerup;
+
+                nlohmann::json force_character;
+                force_character["enabled"] = p.server_settings.force_character_enabled;
+                force_character["character_index"] = p.server_settings.force_character_index;
+                force_character["character"] = p.server_settings.force_character_name;
+
+                nlohmann::json server_settings;
+                server_settings["pvp_damage_modifier"] = p.server_settings.pvp_damage_modifier;
+                server_settings["click_limiter_cooldown_ms"] = p.server_settings.click_limiter_cooldown_ms;
+                server_settings["use_sp_damage_calculation"] = p.server_settings.use_sp_damage_calculation;
+                server_settings["flag_dropping"] = p.server_settings.flag_dropping;
+                server_settings["flag_captures_while_stolen"] = p.server_settings.flag_captures_while_stolen;
+                server_settings["drop_amps"] = p.server_settings.drop_amps;
+                server_settings["drop_weapons"] = p.server_settings.drop_weapons;
+                server_settings["weapon_items_give_full_ammo"] = p.server_settings.weapon_items_give_full_ammo;
+                server_settings["weapon_infinite_magazines"] = p.server_settings.weapon_infinite_magazines;
+                server_settings["spawn_logic"] = std::move(spawn_logic);
+                server_settings["spawn_protection"] = std::move(spawn_protection);
+                server_settings["force_character"] = std::move(force_character);
+                j["server_settings"] = std::move(server_settings);
 
                 auto roster = nlohmann::json::array();
                 for (const auto& entry : p.roster) {
@@ -2541,6 +2580,7 @@ void on_game_start()
     ev.match_state = config.match_state;
     ev.mutators = std::move(config.mutators);
     ev.gametype_settings = std::move(config.gametype_settings);
+    ev.server_settings = server_config::capture_server_settings();
     // Resolved, not declared: the mutators list above is what the config asked for; crits
     // rescale damage, so what FF needs is what the damage path itself reads.
     ev.crits_enabled = g_alpine_server_config_active_rules.mutators.crits_enabled;

@@ -659,7 +659,14 @@ void riot_shield_apply_remote_state(rf::Entity* ep, float life, const rf::Vector
     // clutter_damage only reads hit_point out of the collision (to place the
     // impact decal) and tolerates a null pointer, but we have a real position.
     rf::PCollisionOut collide_out{};
-    collide_out.hit_point = impact_pos;
+    // impact_pos comes straight off the wire like life. Validate it.
+    collide_out.hit_point = (
+        std::isfinite(impact_pos.x) &&
+        std::isfinite(impact_pos.y) &&
+        std::isfinite(impact_pos.z)
+    )
+    ? impact_pos
+    : ep->pos;
     collide_out.obj_handle = -1;
 
     rf::Player* holder = rf::player_from_entity_handle(ep->handle);

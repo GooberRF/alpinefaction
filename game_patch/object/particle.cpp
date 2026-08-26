@@ -1,3 +1,5 @@
+#include <algorithm>
+#include <iterator>
 #include <patch_common/FunHook.h>
 #include <patch_common/CallHook.h>
 #include <patch_common/AsmOpcodes.h>
@@ -142,13 +144,27 @@ CallHook<void(rf::ParticleEmitter*, const rf::Vector3*, const rf::Vector3*, floa
     },
 };
 
+// The stock emitters.tbl parser increments g_num_particle_emitter_types with no bound, so a tbl
+// with more than 64 "$Particle Emitter Type:" entries writes past the 64-slot template array.
+CodeInjection particle_emitter_types_load_cap{
+    0x00496F07,
+    [](auto& regs) {
+        if (regs.edi >= static_cast<int>(std::size(rf::g_particle_emitter_types))) {
+            rf::g_num_particle_emitter_types = regs.edi;
+            regs.eip = 0x00496F1A;
+        }
+    },
+};
+
 FunHook<void()> particle_emitter_types_load_hook{
     0x00496DF0,
     []() {
         particle_emitter_types_load_hook.call_target();
         // The tbl parser never writes uid or active_distance, so templates keep
-        // heap garbage that the level-emitter checks can mistake for real values
-        for (int i = 0; i < rf::g_num_particle_emitter_types; ++i) {
+        // heap garbage that the level-emitter checks can mistake for real values.
+        const int num_types = std::min(rf::g_num_particle_emitter_types,
+            static_cast<int>(std::size(rf::g_particle_emitter_types)));
+        for (int i = 0; i < num_types; ++i) {
             rf::g_particle_emitter_types[i]->uid = 0;
             rf::g_particle_emitter_types[i]->active_distance = 0.0f;
         }
@@ -187,4 +203,7 @@ void particle_do_patch()
 
     // Zero garbage uid/active_distance left in emitters.tbl templates by the parser
     particle_emitter_types_load_hook.install();
+
+    // Bound the stock emitters.tbl parser to the 64-slot template array
+    particle_emitter_types_load_cap.install();
 }

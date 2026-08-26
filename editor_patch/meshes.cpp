@@ -14,6 +14,7 @@
 
 static const char* const MESH_EXTENSIONS = ".v3m .v3c .vfx .rfa";
 static constexpr int MESH_SUBDIR_MAX_DEPTH = 8;
+static constexpr size_t MESH_DIR_MAX_LEN = 255;
 
 // VFS slots returned by file_add_path, rescanned on reload
 static std::vector<int> g_mesh_path_slots;
@@ -68,6 +69,11 @@ static void collect_subdirs_recursive(const std::string& exe_dir, const std::str
 
     for (const auto& name : names) {
         std::string sub_rel = rel_dir + "\\" + name;
+        // Skipping the subtree too: anything below it is longer still.
+        if (sub_rel.size() > MESH_DIR_MAX_LEN) {
+            xlog::warn("Skipping mesh directory (path too long): '{}'", sub_rel);
+            continue;
+        }
         out.push_back(sub_rel);
         collect_subdirs_recursive(exe_dir, sub_rel, depth + 1, out);
     }
@@ -91,6 +97,13 @@ static void register_mesh_dir(const std::string& rel_dir)
     // push at each call site: a dir left out of this set would have its search entry
     // re-appended on every reload_custom_meshes.
     if (!g_registered_mesh_dirs.insert(rel_dir).second) return;
+
+    // Every caller is already bounded, but this is the last point before the unchecked
+    // strcpy inside file_add_path.
+    if (rel_dir.size() > MESH_DIR_MAX_LEN) {
+        xlog::warn("Refusing to register mesh path (too long): '{}'", rel_dir);
+        return;
+    }
 
     int slot = file_add_path(rel_dir.c_str(), MESH_EXTENSIONS, false);
     if (slot >= 0) {

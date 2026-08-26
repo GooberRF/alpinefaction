@@ -254,6 +254,8 @@ static rf::ui::Checkbox ao_unclamplights_cbox;
 static rf::ui::Label ao_unclamplights_label;
 static rf::ui::Checkbox ao_bombrng_cbox;
 static rf::ui::Label ao_bombrng_label;
+static rf::ui::Checkbox ao_awards_cbox;
+static rf::ui::Label ao_awards_label;
 static rf::ui::Checkbox ao_exposuredamage_cbox;
 static rf::ui::Label ao_exposuredamage_label;
 static rf::ui::Checkbox ao_painsounds_cbox;
@@ -1024,6 +1026,12 @@ void ao_exposuredamage_cbox_on_click(int x, int y) {
     g_alpine_game_config.apply_exposure_damage = !g_alpine_game_config.apply_exposure_damage;
     ao_exposuredamage_cbox.checked = g_alpine_game_config.apply_exposure_damage;
     ao_play_button_snd(g_alpine_game_config.apply_exposure_damage);
+}
+
+void ao_awards_cbox_on_click(int x, int y) {
+    g_alpine_game_config.show_awards = !g_alpine_game_config.show_awards;
+    ao_awards_cbox.checked = g_alpine_game_config.show_awards;
+    ao_play_button_snd(g_alpine_game_config.show_awards);
 }
 
 void ao_painsounds_cbox_on_click(int x, int y) {
@@ -2055,6 +2063,8 @@ void alpine_options_panel_init() {
         &ao_painsounds_cbox, &ao_painsounds_label, &alpine_options_panel3, ao_painsounds_cbox_on_click, g_alpine_game_config.entity_pain_sounds, 112, 174, "Pain sounds");
     alpine_options_panel_checkbox_init(
         &ao_geochunk_cbox, &ao_geochunk_label, &alpine_options_panel3, ao_geochunk_cbox_on_click, g_alpine_game_config.geo_chunk_physics, 112, 204, "Geo chunks");
+    alpine_options_panel_checkbox_init(
+        &ao_awards_cbox, &ao_awards_label, &alpine_options_panel3, ao_awards_cbox_on_click, g_alpine_game_config.show_awards, 112, 234, "Award visuals");
 
     alpine_options_panel_checkbox_init(
         &ao_teamrad_cbox, &ao_teamrad_label, &alpine_options_panel3, ao_teamrad_cbox_on_click, g_alpine_game_config.play_team_rad_msg_sounds, 280, 54, "Team radio msgs");

@@ -199,4 +199,40 @@ ServerConfigSnapshot capture_server_config_snapshot()
     return snapshot;
 }
 
+ServerSettingsRecord capture_server_settings()
+{
+    const auto& rules = g_alpine_server_config_active_rules;
+    const NewSpawnLogicConfig& spawn_logic = rules.spawn_logic;
+
+    ServerSettingsRecord record;
+    record.pvp_damage_modifier = static_cast<double>(rules.pvp_damage_modifier);
+    record.click_limiter_cooldown_ms =
+        static_cast<int64_t>(g_alpine_server_config.click_limiter_config.cooldown);
+    record.use_sp_damage_calculation = g_alpine_server_config.use_sp_damage_calculation;
+    record.flag_dropping = rules.flag_dropping;
+    record.flag_captures_while_stolen = rules.flag_captures_while_stolen;
+    record.drop_amps = rules.drop_amps;
+    record.drop_weapons = rules.drop_weapons;
+    record.weapon_items_give_full_ammo = rules.weapon_items_give_full_ammo;
+    record.weapon_infinite_magazines = rules.weapon_infinite_magazines;
+    record.spawn_protection_enabled = rules.spawn_protection.enabled;
+    record.spawn_protection_duration_ms = static_cast<int64_t>(rules.spawn_protection.duration);
+    record.spawn_protection_use_powerup = rules.spawn_protection.use_powerup;
+    record.force_character_enabled = rules.force_character.enabled;
+    record.force_character_index = static_cast<int64_t>(rules.force_character.character_index);
+    record.force_character_name = sanitize_string(rules.force_character.character_name, k_max_string_len);
+    record.spawn_respect_team_spawns = spawn_logic.respect_team_spawns;
+    record.spawn_try_avoid_players = spawn_logic.try_avoid_players;
+    record.spawn_always_avoid_last = spawn_logic.always_avoid_last;
+    record.spawn_always_use_furthest = spawn_logic.always_use_furthest;
+    record.spawn_only_avoid_enemies = spawn_logic.only_avoid_enemies;
+    record.spawn_dynamic_respawns = spawn_logic.dynamic_respawns;
+    for (const NewSpawnLogicRespawnItemConfig& item : spawn_logic.dynamic_respawn_items) {
+        // Item names are operator-authored config, so they go through sanitize_string.
+        record.dynamic_respawn_items.emplace_back(sanitize_string(item.item_name, k_max_string_len),
+                                                  static_cast<int64_t>(item.min_respawn_points));
+    }
+    return record;
+}
+
 } // namespace server_config

@@ -25,7 +25,9 @@ namespace rf
 
         bool has_morph_vertices() const
         {
-            return AddrCaller{0x0053A820}.this_call<bool>(this);
+            // Fix null reference crash when referencing unloaded skeletons.
+            const int* morph_data = AddrCaller{0x00539DF0}.this_call<const int*>(this);
+            return morph_data != nullptr && morph_data[7] > 0;
         }
 
         void morph(rf::Vector3 *morphed_vecs, int num_vecs, int time, short *orig_vecs_map, int num_orig_vecs) const

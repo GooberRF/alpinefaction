@@ -31,6 +31,35 @@ struct ServerConfigSnapshot
     std::vector<std::pair<std::string, SettingValue>> gametype_settings;
 };
 
+// Server settings reported by afstats only; deliberately outside ServerConfigSnapshot so the
+// demo recorder's binary block and its version are untouched. Initializers mirror the real
+// config defaults, so a default-constructed record equals a default server config.
+struct ServerSettingsRecord
+{
+    double pvp_damage_modifier = 1.0;
+    int64_t click_limiter_cooldown_ms = 90;
+    bool use_sp_damage_calculation = false;
+    bool flag_dropping = true;
+    bool flag_captures_while_stolen = false;
+    bool drop_amps = false;
+    bool drop_weapons = true;
+    bool weapon_items_give_full_ammo = false;
+    bool weapon_infinite_magazines = false;
+    bool spawn_respect_team_spawns = true;
+    bool spawn_try_avoid_players = true;
+    bool spawn_always_avoid_last = false;
+    bool spawn_always_use_furthest = false;
+    bool spawn_only_avoid_enemies = false;
+    bool spawn_dynamic_respawns = false;
+    std::vector<std::pair<std::string, int64_t>> dynamic_respawn_items;
+    bool spawn_protection_enabled = false;
+    int64_t spawn_protection_duration_ms = 1500;
+    bool spawn_protection_use_powerup = false;
+    bool force_character_enabled = false;
+    int64_t force_character_index = 0;
+    std::string force_character_name = "enviro_parker";
+};
+
 // Byte cap for operator-authored strings (mutator names, option keys, string values).
 constexpr size_t k_max_string_len = 64;
 
@@ -41,5 +70,8 @@ std::string sanitize_string(std::string_view in, size_t max_len);
 
 // Fills every field from current server state. Server-side only (reads live netgame/config).
 ServerConfigSnapshot capture_server_config_snapshot();
+
+// Same, for the settings afstats reports on game_start. Server-side only.
+ServerSettingsRecord capture_server_settings();
 
 } // namespace server_config

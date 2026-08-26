@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdint>
+
 namespace rf
 {
     struct Entity;
@@ -16,15 +18,21 @@ namespace rf
 bool jetpacks_are_active();
 void jetpack_level_init();
 void jetpack_do_frame();
+// Drops every viewer-side fuel estimate, so the spectate gauge waits for a fresh anchor.
+void jetpack_reset_remote_fuel();
 
 // Start or stop the visual/audible thruster effects on any entity, local or
 // remote. Safe to call redundantly.
 void jetpack_apply_entity_thrust(rf::Entity* ep, bool on);
 
+// Remote thrust transition with the owner's reported fuel: drives the effects and
+// anchors the viewer-side fuel estimate behind the spectate/demo gauge.
+void jetpack_on_remote_state(rf::Entity* ep, bool on, uint8_t fuel_pct);
+
 // Server side of a client's thrust state report. Rebroadcasts at most one state
 // per player per throttle interval; identical repeats cost nothing, and anything
 // held back is settled by the flush in jetpack_do_frame.
-void jetpack_server_on_state_request(rf::Player* player, bool on);
+void jetpack_server_on_state_request(rf::Player* player, bool on, uint8_t fuel_pct);
 
 // Draws the cosmetic pack on an entity's back.
 void jetpack_render_attachment(rf::Entity* ep);

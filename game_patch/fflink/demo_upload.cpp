@@ -405,6 +405,13 @@ bool request_ticket(const std::string& gssk, const std::string& session, uint32_
                 out_fail = {OutcomeKind::definitive, "ticket missing ticket/upload_url or non-https url", {}};
                 return false;
             }
+            // The ticket goes into an Authorization header, restrict to printable non-space ASCII.
+            if (out_ticket.ticket.size() > 4096
+                || std::any_of(out_ticket.ticket.begin(), out_ticket.ticket.end(),
+                               [](unsigned char c) { return c < 0x21 || c > 0x7E; })) {
+                out_fail = {OutcomeKind::definitive, "ticket has invalid length or characters", {}};
+                return false;
+            }
             return true;
         }
         catch (const std::exception&) {

@@ -86,18 +86,6 @@ bool is_sniper_or_rail(int weapon_type)
     return weapon_type == rf::sniper_rifle_weapon_type || weapon_type == rf::rail_gun_weapon_type;
 }
 
-bool is_riot_weapon(int weapon_type)
-{
-    if (!kill_attribution_is_valid_weapon_type(weapon_type)) {
-        return false;
-    }
-    if (rf::weapon_is_riot_stick(weapon_type)) {
-        return true;
-    }
-    const int shield = kill_attribution_riot_shield_type();
-    return shield >= 0 && weapon_type == shield;
-}
-
 bool is_explosive_weapon(int weapon_type)
 {
     return kill_attribution_is_valid_weapon_type(weapon_type)
@@ -140,12 +128,12 @@ bool player_is_flag_carrier(rf::Player* player)
 // awards_on_player_destroy.
 // -------------------------------------------------------------------------
 
-constexpr int64_t riot_control_window_ms = 10000;
-constexpr int riot_control_kills_needed = 3;
 constexpr int massacre_kills_needed = 8;
-constexpr int64_t excellent_window_ms = 2000;
-constexpr int overkill_streak = 10;
+constexpr int64_t excellent_window_ms = 3000;
+constexpr int excellent_kills_needed = 3;
 constexpr int unstoppable_streak_step = 10;
+constexpr float overkill_min_damage = 300.0f;
+constexpr float overkill_max_victim_life = 10.0f;
 constexpr float last_stand_life = 2.0f;
 constexpr float denied_base_radius = 5.0f;
 constexpr int area_denied_capture_milli = 98000;
@@ -168,18 +156,18 @@ constexpr int64_t award_repeat_window_ms = 50;
 
 struct AwardPlayerState
 {
-    // Riot Control: timestamps of the recent riot stick / riot shield kills. A fixed window on
-    // purpose: 256 of these live in a flat array, so the state may not heap-allocate.
-    std::array<int64_t, riot_control_kills_needed> riot_kills{};
-    int riot_kill_count = 0;
+    // Riot Control: which halves of the stick+shield pair have landed this life.
+    bool riot_stick_kill = false;
+    bool riot_shield_kill = false;
     // Impressive: a sniper/rail shot is in flight, and the length of the current consecutive-hit
     // chain.
     bool shot_pending = false;
     int hit_chain = 0;
-    // Excellent: the unconsumed half of a kill pair.
-    bool has_last_kill = false;
-    int64_t last_kill_ms = 0;
-    // Overkill / Unstoppable. Deliberately the module's own counter: the scoreboard and afstats
+    // Excellent: timestamps of the recent kills. A fixed window on purpose: 256 of these live in
+    // a flat array, so the state may not heap-allocate.
+    std::array<int64_t, excellent_kills_needed> excellent_kills{};
+    int excellent_kill_count = 0;
+    // Unstoppable. Deliberately the module's own counter: the scoreboard and afstats
     // counters are written by other paths with their own gating.
     int streak = 0;
     // Flag Runner: this player stole the flag and has neither died nor dropped it since.
@@ -394,28 +382,27 @@ namespace
 
 void check_riot_control(rf::Player* killer, rf::Player* victim, int weapon_type)
 {
-    if (!is_riot_weapon(weapon_type)) {
+    if (!kill_attribution_is_valid_weapon_type(weapon_type)) {
         return;
     }
     AwardPlayerState* state = state_for(killer);
     if (!state) {
         return;
     }
-    const int64_t now = now_ms();
-    // Compact the window in place, dropping anything older than 10 s (and, should the window
-    // somehow be full, the oldest entry - it can never matter which, a grant empties it).
-    int kept = 0;
-    for (int i = 0; i < state->riot_kill_count; ++i) {
-        if (now - state->riot_kills[i] <= riot_control_window_ms
-            && kept < riot_control_kills_needed - 1) {
-            state->riot_kills[kept++] = state->riot_kills[i];
-        }
+    const int shield = kill_attribution_riot_shield_type();
+    if (rf::weapon_is_riot_stick(weapon_type)) {
+        state->riot_stick_kill = true;
     }
-    state->riot_kills[kept++] = now;
-    state->riot_kill_count = kept;
-    if (state->riot_kill_count >= riot_control_kills_needed) {
-        // Cleared, not trimmed: the next award needs three fresh kills.
-        state->riot_kill_count = 0;
+    else if (shield >= 0 && weapon_type == shield) {
+        state->riot_shield_kill = true;
+    }
+    else {
+        return;
+    }
+    if (state->riot_stick_kill && state->riot_shield_kill) {
+        // Cleared, not kept: the next award needs a fresh pair.
+        state->riot_stick_kill = false;
+        state->riot_shield_kill = false;
         grant_award(killer, AwardId::riot_control, victim);
     }
 }
@@ -427,14 +414,22 @@ void check_excellent(rf::Player* killer, rf::Player* victim)
         return;
     }
     const int64_t now = now_ms();
-    if (state->has_last_kill && now - state->last_kill_ms <= excellent_window_ms) {
-        // Pairs: the first kill is consumed, so three fast kills are one award.
-        state->has_last_kill = false;
-        grant_award(killer, AwardId::excellent, victim);
-        return;
+    // Compact the window in place, dropping anything older than 3 s (and, should the window
+    // somehow be full, the oldest entry - it can never matter which, a grant empties it).
+    int kept = 0;
+    for (int i = 0; i < state->excellent_kill_count; ++i) {
+        if (now - state->excellent_kills[i] <= excellent_window_ms
+            && kept < excellent_kills_needed - 1) {
+            state->excellent_kills[kept++] = state->excellent_kills[i];
+        }
     }
-    state->has_last_kill = true;
-    state->last_kill_ms = now;
+    state->excellent_kills[kept++] = now;
+    state->excellent_kill_count = kept;
+    if (state->excellent_kill_count >= excellent_kills_needed) {
+        // Cleared, not trimmed: the next award needs three fresh kills.
+        state->excellent_kill_count = 0;
+        grant_award(killer, AwardId::excellent, victim);
+    }
 }
 
 void check_streak(rf::Player* killer, rf::Player* victim)
@@ -444,11 +439,16 @@ void check_streak(rf::Player* killer, rf::Player* victim)
         return;
     }
     ++state->streak;
-    if (state->streak == overkill_streak) {
-        grant_award(killer, AwardId::overkill, victim);
-    }
-    else if (state->streak > overkill_streak && state->streak % unstoppable_streak_step == 0) {
+    if (state->streak % unstoppable_streak_step == 0) {
         grant_award(killer, AwardId::unstoppable, victim);
+    }
+}
+
+// Overkill: a hit big enough to have killed the victim many times over.
+void check_overkill(rf::Player* killer, rf::Player* victim, float damage, float victim_life, float victim_armor)
+{
+    if (victim_life <= overkill_max_victim_life && victim_armor <= 0.0f && damage >= overkill_min_damage) {
+        grant_award(killer, AwardId::overkill, victim);
     }
 }
 
@@ -905,10 +905,7 @@ constexpr int award_slot_hold_ms = award_display_seconds * 1000 + 500;
 // A burst of awards is worth showing; an unbounded backlog is not.
 constexpr size_t award_queue_cap = 8;
 
-// Excellent and Impressive are the common ones, and they ride along with the rarer awards often
-// enough to drown them out - a 2fer always earns an excellent too. They are demoted for LOCAL
-// DISPLAY ONLY: the server still grants them and the stats stream still records them, they just
-// yield the callout whenever anything else wants it.
+// Excellent and Impressive are the common ones, suppress if they overlap.
 bool is_low_priority_award(uint8_t award_id)
 {
     return award_id == static_cast<uint8_t>(AwardId::excellent)
@@ -958,7 +955,8 @@ ConsoleCommand2 awards_display_cmd{
 // -------------------------------------------------------------------------
 
 void awards_on_kill(rf::Player* victim, rf::Player* killer, int weapon_type, bool splash,
-                    int killer_entity_handle, int victim_team)
+                    int killer_entity_handle, int victim_team, float damage, float victim_life,
+                    float victim_armor)
 {
     if (!awards_tracking_active() || !victim) {
         return;
@@ -974,6 +972,8 @@ void awards_on_kill(rf::Player* victim, rf::Player* killer, int weapon_type, boo
         victim_state->carrier_kills = 0;
         victim_state->kills_this_life.reset();
         victim_state->clean_sweep_granted = false;
+        victim_state->riot_stick_kill = false;
+        victim_state->riot_shield_kill = false;
     }
 
     sample_ctf_flag_homes();
@@ -1034,6 +1034,7 @@ void awards_on_kill(rf::Player* victim, rf::Player* killer, int weapon_type, boo
     check_riot_control(killer, victim, weapon_type);
     check_excellent(killer, victim);
     check_streak(killer, victim);
+    check_overkill(killer, victim, damage, victim_life, victim_armor);
     check_last_stand(killer, victim, killer_entity_handle);
     check_capture_denied(killer, victim, victim_team);
     check_area_denied(killer, victim, victim_team);
@@ -1382,6 +1383,13 @@ void awards_client_on_award_received(uint8_t award_id, uint8_t victim_player_id)
     g_award_queue.push_back(std::move(queued));
 }
 
+void awards_client_reset()
+{
+    g_award_queue.clear();
+    g_award_slot_busy.invalidate();
+    hud_notification_remove(HudNotificationType::Award, true);
+}
+
 void awards_client_do_frame()
 {
     if (!rf::is_multi) {
@@ -1389,6 +1397,9 @@ void awards_client_do_frame()
         // must not fire over the menu.
         g_award_queue.clear();
         g_award_slot_busy.invalidate();
+        return;
+    }
+    if (demo_playback_sim_frozen()) {
         return;
     }
     if (g_award_queue.empty()) {

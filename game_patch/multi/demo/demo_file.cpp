@@ -3,6 +3,7 @@
 #include <cstring>
 #include <ctime>
 #include <format>
+#include <string_view>
 #include <utility>
 #include <zlib.h>
 #include <windows.h>
@@ -63,7 +64,10 @@ namespace
     // "<rf_root>\demos", optionally created. Empty on failure.
     std::string demos_dir(bool create)
     {
-        auto dir = std::format("{}\\demos", rf::root_path);
+        std::string_view root{rf::root_path};
+        while (!root.empty() && (root.back() == '\\' || root.back() == '/'))
+            root.remove_suffix(1);
+        auto dir = std::format("{}\\demos", root);
         if (dir.size() + 64 > rf::max_path_len) {
             xlog::error("demo path is too long!");
             return {};
@@ -392,11 +396,16 @@ bool DemoFileReader::rewind_to_records()
     return true;
 }
 
-std::string demo_file_build_new_path(const std::string& map_name)
+std::string demo_file_build_new_path(const std::string& map_name_in)
 {
     auto dir = demos_dir(true);
     if (dir.empty())
         return {};
+    // map_name_in is a level filename with only its extension stripped, so it could still
+    // carry directory components; keep the generated demo inside <rf_root>\demos.
+    std::string map_name = map_name_in;
+    if (map_name.find_first_of("\\/:") != std::string::npos || has_parent_dir_component(map_name))
+        map_name = "demo";
     std::time_t now = std::time(nullptr);
     std::tm* tm_buf = std::localtime(&now);
     char timestamp[32];

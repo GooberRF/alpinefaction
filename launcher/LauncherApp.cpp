@@ -146,7 +146,7 @@ std::wstring build_demo_confirm_text(const DemoDisplayInfo& info)
     }
     if (info.bytes > 0) {
         char sizebuf[32];
-        const double mb = static_cast<double>(info.bytes) / (1024.0 * 1024.0);
+        const double mb = static_cast<double>(info.bytes) / (1000.0 * 1000.0);
         if (mb < 0.05)
             std::snprintf(sizebuf, sizeof(sizebuf), "%.2f MB", std::max(mb, 0.01));
         else
@@ -266,7 +266,7 @@ int LauncherApp::Run()
             file_info->file_type == "mod_tc" || file_info->file_type == "mod_clientside" ? "mod?" : "level?";
 
         std::string message = "File Name: " + file_info->name + "\n" + "Author: " + file_info->author + "\n" +
-            "Size: " + std::to_string(file_info->size_in_bytes / 1024) + " KB\n\n" +
+            "Size: " + std::to_string(file_info->size_in_bytes / 1000) + " KB\n\n" +
             "Are you sure you want to install this " + file_type_string;
 
         // Show confirmation dialog
@@ -279,7 +279,7 @@ int LauncherApp::Run()
         }
 
         // Show the progress dialog
-        DownloadProgressDlg progressDlg(file_id, file_info->name, file_info->size_in_bytes / 1024);
+        DownloadProgressDlg progressDlg(file_id, file_info->name, file_info->size_in_bytes / 1000);
 
         bool download_success = false; // Track download result
 
@@ -337,12 +337,12 @@ int LauncherApp::Run()
 
         // Locate <game>\demos\downloaded from the configured game executable.
         std::string demos_dir;
-        {
-            GameConfig cfg;
-            if (cfg.load() && !cfg.game_executable_path.value().empty()) {
-                std::filesystem::path exe(cfg.game_executable_path.value());
-                demos_dir = (exe.parent_path() / "demos" / "downloaded").string();
-            }
+        GameConfig cfg;
+        // load() returns false if any newly added key is not in the registry yet; the path value is the real signal
+        cfg.load();
+        if (!cfg.game_executable_path.value().empty()) {
+            std::filesystem::path exe(cfg.game_executable_path.value());
+            demos_dir = (exe.parent_path() / "demos" / "downloaded").string();
         }
         if (demos_dir.empty()) {
             MessageBoxA(nullptr,
@@ -441,12 +441,14 @@ int LauncherApp::Run()
         else {
             display.bytes = info.bytes;
         }
-        const int choice = show_demo_confirm_dialog(build_demo_confirm_text(display), !already_have);
+        const int choice = cfg.autoplay_af_demos
+            ? 1
+            : show_demo_confirm_dialog(build_demo_confirm_text(display), !already_have);
         if (choice == 0)
             return 0;
 
         if (!already_have) {
-            DownloadProgressDlg progressDlg(0, display_name, static_cast<size_t>(info.bytes / 1024));
+            DownloadProgressDlg progressDlg(0, display_name, static_cast<size_t>(info.bytes / 1000));
             DemoDownloader::DownloadStatus dstatus = DemoDownloader::DownloadStatus::network_error;
             const std::string url = info.download_url;
             const uint64_t expected = info.bytes;

@@ -86,6 +86,10 @@ namespace
         // Release every child handle this controller owns.
         ~AtxController()
         {
+            // Prevent a crash on tear down.
+            if (!rf::bm::bitmaps) {
+                return;
+            }
             for (auto& f : frames) {
                 if (f.bm_handle >= 0) {
                     if (f.locked_pixels || f.locked_palette) {
@@ -154,8 +158,15 @@ namespace
         if (file.open(filename) != 0) {
             return false;
         }
+
+        // 16MB ATX filesize limit
+        constexpr int max_atx_file_size = 16 * 1024 * 1024;
         const int file_size = file.size();
-        if (file_size <= 0) {
+        if (file_size <= 0 || file_size > max_atx_file_size) {
+            if (file_size > max_atx_file_size) {
+                xlog::warn("atx: '{}' rejected (declared size {} exceeds {}-byte cap)",
+                           filename, file_size, max_atx_file_size);
+            }
             file.close();
             return false;
         }
@@ -484,10 +495,21 @@ rf::bm::Format lock_atx_bitmap(rf::bm::BitmapEntry& bm_entry, void** pixels_out,
     *pixels_out = nullptr;
     *palette_out = nullptr;
 
-    auto it = g_controllers.find(key_from_bm_name(bm_entry.name));
+    const std::string key = key_from_bm_name(bm_entry.name);
+    auto it = g_controllers.find(key);
     if (it == g_controllers.end()) {
-        xlog::warn("ATX: lock for unknown '{}'", bm_entry.name);
-        return rf::bm::FORMAT_NONE;
+        if (g_failed.contains(key)) {
+            return rf::bm::FORMAT_NONE;
+        }
+        const std::string atx_filename = key + ".atx";
+        auto rebuilt = parse_and_load(atx_filename.c_str());
+        if (!rebuilt) {
+            xlog::warn("ATX: could not rebuild controller for '{}' (from {})", bm_entry.name, atx_filename);
+            g_failed.insert(key);
+            return rf::bm::FORMAT_NONE;
+        }
+        xlog::trace("ATX: rebuilt orphaned controller for '{}'", bm_entry.name);
+        it = g_controllers.emplace(key, std::move(rebuilt)).first;
     }
     AtxController& c = *it->second;
     // Insertions are idempotent. We track every bm_handle that locks this controller so

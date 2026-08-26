@@ -605,7 +605,6 @@ namespace rf
     static auto& g_geomod_texture_index = addr_as_ref<int>(0x00647C94);
     static auto& g_geomod_scale = addr_as_ref<float>(0x00648598);
     static auto& g_geomod_flags = addr_as_ref<uint8_t>(0x0064858C);       // bit 0x1=local, 0x8=driller
-    static auto& g_geomod_type_info = addr_as_ref<void*>(0x00646A20);     // geo type info (max_radius at +0x60)
     static auto& g_num_geomods_this_level = addr_as_ref<int>(0x00647C9C);
     static auto& g_geomod_separate_solids = addr_as_ref<bool>(0x00647C28);
 

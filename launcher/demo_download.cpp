@@ -10,6 +10,8 @@
 // The download URL comes from the response.
 static const char demo_resolve_base_url[] = "https://autodl.factionfiles.com/aflauncher/v1/demo.php?id=";
 
+static constexpr size_t max_resolve_response_bytes = 256 * 1024;
+
 DemoDownloader::DemoDownloader() : session_(AF_USER_AGENT_SUFFIX("DemoDownload"))
 {
     session_.set_connect_timeout(3000);
@@ -43,10 +45,14 @@ DemoDownloader::ResolveStatus DemoDownloader::resolve(const std::string& game_id
         status = req.send_no_check();
         std::stringstream ss;
         char buf[4096];
+        size_t received = 0;
         while (true) {
             size_t n = req.read(buf, sizeof(buf));
             if (n == 0)
                 break;
+            received += n;
+            if (received > max_resolve_response_bytes)
+                return ResolveStatus::server_error;
             ss.write(buf, static_cast<std::streamsize>(n));
         }
         body = ss.str();

@@ -596,7 +596,9 @@ bool saved_vote_parse(std::string_view encoded, SavedVote& out)
         if (!parse_uint_field(fields[8], explicit_raw) || explicit_raw > 1) {
             return false;
         }
-        vote.mutators_explicit = explicit_raw != 0;
+        // A hand-edited 0 alongside a named mutator list would have the server
+        // discard the list; naming mutators is what makes a record explicit.
+        vote.mutators_explicit = explicit_raw != 0 || !vote.mutators.empty();
     }
     else {
         // Version 1 predates the field: same fallback the wire gives a call with no

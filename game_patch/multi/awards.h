@@ -72,9 +72,11 @@ void awards_server_do_frame();
 // Lethal transition, from entity_damage_hook. Runs for every death, killer included or not: the
 // victim-side resets (streak, sniper/rail chain) must fire on world deaths and suicides too.
 // `victim_team` is the team the victim had when the damage landed - death processing can move
-// them (auto team balance) before this runs.
+// them (auto team balance) before this runs. `damage` is the killing event's post-modifier damage;
+// `victim_life` and `victim_armor` are the victim's values from before that hit landed.
 void awards_on_kill(rf::Player* victim, rf::Player* killer, int weapon_type, bool splash,
-                    int killer_entity_handle, int victim_team);
+                    int killer_entity_handle, int victim_team, float damage, float victim_life,
+                    float victim_armor);
 
 // Any counted shot leaving a player's weapon, from the afstats fired sites.
 void awards_on_weapon_fired(rf::Player* player, int weapon_type);
@@ -130,3 +132,4 @@ void awards_on_spray(rf::Player* player);
 void awards_client_on_award_received(uint8_t award_id, uint8_t victim_player_id);
 // Drains the display queue, one award at a time. Ticked from the client frame.
 void awards_client_do_frame();
+void awards_client_reset();

@@ -14,11 +14,21 @@
 
 namespace
 {
+    // Keep only the basename so a crafted level name can't escape the \saved\ directory.
+    std::string_view strip_path_components(std::string_view name)
+    {
+        auto pos = name.find_last_of("/\\:");
+        if (pos != std::string_view::npos) {
+            return name.substr(pos + 1);
+        }
+        return name;
+    }
+
     // Build "<RF root>\saved\<map>_saved.afl". Returns empty if no level is loaded or the path is too
     // long. When create_dir is set, the \saved\ directory is created if missing (used for writing).
     std::string saved_info_path(bool create_dir)
     {
-        std::string map = std::string{get_filename_without_ext(rf::level.filename.c_str())};
+        std::string map = std::string{get_filename_without_ext(strip_path_components(rf::level.filename.c_str()))};
         if (map.empty())
             return {};
         auto dir = std::format("{}\\saved", rf::root_path);
