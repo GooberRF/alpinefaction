@@ -1,7 +1,7 @@
 ⚙️⛏ Alpine Faction Changelog ⛏⚙️
 ===================================
 
-Version 1.4.0 (Lupin): Not yet released
+Version 1.4.0 (Lupin): Released Aug-25-2026
 --------------------------------
 ### Major features
 [@GooberRF](https://github.com/GooberRF)
