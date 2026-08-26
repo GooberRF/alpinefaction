@@ -3,9 +3,13 @@
 
 Version 1.5.0 (TBD): Not yet released
 --------------------------------
+### Major features
+
 ### Minor features, changes, and enhancements
 [@is-this-c](https://github.com/is-this-c)
 - Do not kick a player, if they joined right before limbo
+
+### Bug fixes
 
 Version 1.4.0 (Lupin): Released Aug-25-2026
 --------------------------------
