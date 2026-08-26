@@ -6,6 +6,8 @@ Version 1.5.0 (TBD): Not yet released
 ### Major features
 
 ### Minor features, changes, and enhancements
+[@GooberRF](https://github.com/GooberRF)
+- Restore cut first person weapon aim sway, toggleable with `cl_weaponsway`
 
 ### Bug fixes
 
