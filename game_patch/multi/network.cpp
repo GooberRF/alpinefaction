@@ -2974,7 +2974,7 @@ CodeInjection process_state_info_req_between_levels_patch{
     0x00481C12,
     [] (auto& regs) {
         rf::Player* const player = regs.ebx;
-        if (is_player_minimum_af_client_version(player, 1, 4, 0)) {
+        if (regs.al && is_player_minimum_af_client_version(player, 1, 4, 0)) {
             rf::send_state_info(player);
 
             // Set `NETPLAYER_STATE_WAITING` like `mp_change_level`.
@@ -2992,8 +2992,11 @@ CodeInjection process_state_info_req_between_levels_patch{
 
             regs.esp += 0x8;
             regs.eip = 0x00481C4B;
+        } else {
+            regs.eip = regs.al ? 0x00481C31 : 0x00481C53;
         }
-    }
+    },
+    false
 };
 
 FunHook<void(rf::Player*)> send_players_packet_hook{
