@@ -32,18 +32,17 @@ Version 1.5.0 (TBD): Not yet released
 - Additional Controller settings are available in `alpine_settings.ini` and/or console commands
 
 ### Minor features, changes, and enhancements
+[@GooberRF](https://github.com/GooberRF)
+- Notify players in a server that is recording demos
+- Restore cut first person weapon aim sway, toggleable with `cl_weaponsway`
+
 [@AL2009man](https://github.com/AL2009man)
 - Add `GamepadRawInput` option (via `alpine_settings.ini`) to enable RawInput driver for better handling of XInput controllers, while allowing Trigger Rumble/Impulse Trigger support.
 - Add the ability to scroll through Alpine Settings menu panels with the mouse wheel or right stick, enabling more options in the near future. As of this version: this only applies for Input settings panel 
-
-
-### Minor features, changes, and enhancements
-[@AL2009man](https://github.com/AL2009man)
-- Add `GamepadRawInput` option (via `alpine_settings.ini`) to enable RawInput driver for better handling of XInput controllers, while allowing Trigger Rumble/Impulse Trigger support.
-- Add the ability to scroll through Alpine Settings menu panels with the mouse wheel or right stick, enabling more options in the near future. As of this version: this only applies for Input settings panel 
-
 
 ### Bug fixes
+[@GooberRF](https://github.com/GooberRF)
+- Fix phantom visual flag mesh being visible after Salvage flag is picked up on rare occasions
 
 
 Version 1.4.0 (Lupin): Released Aug-25-2026

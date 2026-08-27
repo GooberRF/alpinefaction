@@ -18,6 +18,7 @@
 #include "../alpine_packets.h"
 #include "../../fflink/afstats_events.h"
 #include "../../fflink/demo_upload.h"
+#include "../../fflink/fflink_session.h"
 #include "../../misc/alpine_settings.h"
 #include "../../os/os.h"
 #include "../../rf/multi.h"
@@ -381,6 +382,10 @@ namespace
                 }
                 g_state.stopped_by_command = false;
                 start_recording(false);
+                if (g_state.writer.is_open()) {
+                    af_broadcast_automated_chat_msg(std::string("This server started recording a demo")
+                        + (server_demo_chat_record() ? "" : " (excluding chat)") + ".");
+                }
                 // Note: a demo started mid-level begins with a full state snapshot;
                 // chat/kills from before the start are not in the file.
             }
@@ -392,6 +397,26 @@ namespace
 bool demo_record_active()
 {
     return g_state.writer.is_open();
+}
+
+std::string demo_record_join_notice()
+{
+    const bool active = g_state.writer.is_open();
+    const bool automatic = active ? g_state.auto_started
+                                  : (server_demo_auto_record() && !g_state.stopped_by_command);
+    if (!active && !automatic) {
+        return {};
+    }
+    std::string msg = automatic ? "This server is recording demos"
+                                : "This server is recording a demo";
+    if (!server_demo_chat_record()) {
+        msg += " (excluding chat)";
+    }
+    if (automatic && server_fflink_demo_upload() && fflink::afstats_server_enabled()) {
+        msg += ", and uploading them to FactionFiles to be available through MP Stats";
+    }
+    msg += '.';
+    return msg;
 }
 
 rf::Player* demo_record_recorder()

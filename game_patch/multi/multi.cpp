@@ -569,7 +569,7 @@ void multi_hide_level_items(const std::vector<int>& allowed_item_type_indices, b
         }
 
         if (is_dropped) {
-            rf::send_item_apply_packet(nullptr, it->handle, 0, -1, -1, -1);
+            rf::send_item_apply_packet(nullptr, it->handle, -1, -1, -1, -1);
             rf::obj_flag_dead(it);
         }
         else {

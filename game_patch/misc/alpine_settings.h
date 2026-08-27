@@ -232,6 +232,7 @@ struct AlpineGameSettings
     bool gamepad_rumble_when_primary = true; // disable rumble when keyboard/mouse was last used
     bool scoreboard_anim = true;
     bool legacy_bob = false;
+    bool weapon_sway = false;
     bool scoreboard_split_simple = true;
     bool scoreboard_split_spectators = true;
     bool scoreboard_split_bots = false;
