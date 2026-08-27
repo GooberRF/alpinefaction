@@ -3471,6 +3471,11 @@ void server_reliable_socket_ready(rf::Player* player)
         }
     }
 
+    // notify joining players that demos are being recorded
+    if (const std::string notice = demo_record_join_notice(); !notice.empty()) {
+        af_send_automated_chat_msg(notice, player);
+    }
+
     // bring a player who joined during a vote up to date (AF 1.4+ only)
     server_vote_send_state_to_new_player(player);
     // the vote panel pre-selects the session's mutator set, which is not in the
