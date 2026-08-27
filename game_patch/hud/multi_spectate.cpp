@@ -336,8 +336,11 @@ void multi_spectate_set_target_player(rf::Player* player)
     player->weapon_mesh_handle = nullptr;
     rf::Entity* entity = rf::entity_from_handle(player->entity_handle);
     if (entity) {
-        // make sure weapon mesh is loaded now
-        rf::player_fpgun_set_state(player, entity->ai.current_primary_weapon);
+        // make sure weapon mesh is loaded now (bounded)
+        const int weapon_type = entity->ai.current_primary_weapon;
+        if (weapon_type >= 0 && weapon_type < rf::num_weapon_types) {
+            rf::player_fpgun_set_state(player, weapon_type);
+        }
         xlog::trace("FpgunMesh {}", player->weapon_mesh_handle);
 
         // Hide target player from camera
@@ -476,7 +479,13 @@ static void spectate_apply_player_view_mode()
         g_spectate_mode_target->fpgun_data.fpgun_weapon_type = -1;
         g_spectate_mode_target->weapon_mesh_handle = nullptr;
         if (entity) {
-            rf::player_fpgun_set_state(g_spectate_mode_target, entity->ai.current_primary_weapon);
+            // The target is remote, so current_primary_weapon comes off the wire. player_fpgun_set_state
+            // indexes its state table by weapon type with no bounds check of its own, and we NOP out its
+            // local-player guard for spectate, so bound it here.
+            const int weapon_type = entity->ai.current_primary_weapon;
+            if (weapon_type >= 0 && weapon_type < rf::num_weapon_types) {
+                rf::player_fpgun_set_state(g_spectate_mode_target, weapon_type);
+            }
             entity->local_player = g_spectate_mode_target;
         }
         player_fpgun_set_player(g_spectate_mode_target);
@@ -1246,6 +1255,15 @@ void multi_spectate_on_player_kill(rf::Player* victim, rf::Player* killer)
 
 void multi_spectate_on_destroy_player(rf::Player* player)
 {
+    if (rf::is_server) {
+        // Server side, `spectatee` is a raw pointer to the player being freed.
+        for (rf::Player& p : SinglyLinkedList{rf::player_list}) {
+            if (p.spectatee.value_or(nullptr) == player) {
+                p.spectatee = nullptr;
+            }
+        }
+    }
+
     if (player != rf::local_player) {
         // Drop any numpad binds pointing at the leaving player so they can't dangle.
         for (int i = 0; i < k_spectate_numpad_count; ++i) {

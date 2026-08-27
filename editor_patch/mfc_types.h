@@ -499,6 +499,8 @@ struct DedWeatherRegion : DedObject
     std::string snow_bitmap = "af_gbrsnowfl01.tga";
     bool always_show_range = false;
     bool initially_enabled = true;
+    bool block_by_geometry = false;
+    float column_width = 0.5f;
 };
 
 struct DedBoltEmitter : DedObject

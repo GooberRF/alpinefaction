@@ -306,4 +306,5 @@ void send_queues_rel_add_packet(int socket_id, const uint8_t* data, size_t len);
 void network_debug_apply_patches();
 bool try_to_auto_forward_port(int port);
 void clear_rcon_profile_sessions();
+void clear_rcon_state_for_addr(const rf::NetAddr& addr);
 void multi_disconnect_from_server();

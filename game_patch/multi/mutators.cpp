@@ -71,6 +71,16 @@ static const char* mutator_weapon_name(int weapon_type)
     return rf::weapon_types[weapon_type].name.c_str();
 }
 
+// Prevent issues if a TC mod removes the `Riot Stick` class from weapons.tbl.
+static constexpr int MISSING_WEAPON_CLIP_SIZE = 1;
+
+static int mutator_weapon_clip_size_multi(int weapon_type)
+{
+    if (weapon_type < 0 || weapon_type >= rf::num_weapon_types)
+        return MISSING_WEAPON_CLIP_SIZE;
+    return rf::weapon_types[weapon_type].clip_size_multi;
+}
+
 // Locate the level pickups that grant the featured weapon so we can
 // redirect other pickups onto them.
 static void resolve_featured_items(MutatorConfig& m)
@@ -154,7 +164,7 @@ static void apply_rails(AlpineServerConfigRules& r, const toml::table& opts)
 
     // Spawn with the baton only; the featured weapon comes from redirected pickups.
     const int baton = rf::riot_stick_weapon_type;
-    set_single_weapon_loadout(r, baton, rf::weapon_types[baton].clip_size_multi);
+    set_single_weapon_loadout(r, baton, mutator_weapon_clip_size_multi(baton));
 
     r.mutators.featured_weapon_index = featured;
     r.mutators.redirect_pickups_to_featured = true;
@@ -188,7 +198,7 @@ static void apply_arena(AlpineServerConfigRules& r, const toml::table& /*opts*/)
     const int baton = rf::riot_stick_weapon_type;
     r.spawn_loadout.red_weapons.clear();
     r.spawn_loadout.blue_weapons.clear();
-    r.spawn_loadout.add("Riot Stick", rf::weapon_types[baton].clip_size_multi, false, true);
+    r.spawn_loadout.add("Riot Stick", mutator_weapon_clip_size_multi(baton), false, true);
     r.spawn_loadout.add("Assault Rifle", 999, false, true);
     r.default_player_weapon.set_weapon("Assault Rifle");
 
@@ -3238,6 +3248,11 @@ void mutators_set_no_clip_weapon(int weapon_type)
     if (weapon_type >= 0 && weapon_type < rf::num_weapon_types) {
         apply_no_clip_override(weapon_type);
     }
+}
+
+int mutators_get_no_clip_weapon()
+{
+    return g_no_clip_weapon;
 }
 
 // The engine derives clip_size from clip_size_multi whenever it enters MP weapon

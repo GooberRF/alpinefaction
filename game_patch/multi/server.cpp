@@ -319,8 +319,10 @@ CodeInjection entity_drop_weapon_patch{
 CodeInjection entity_reload_current_primary_patch{
     0x00425506,
     [](auto& regs) {
+        const int weapon_type = regs.ebx;
         if ((rf::is_multi && gt_is_gungame()) ||
-            g_alpine_server_config_active_rules.weapon_infinite_magazines) {
+            (g_alpine_server_config_active_rules.weapon_infinite_magazines
+             && weapon_type != rf::shoulder_cannon_weapon_type)) {
             int current_reserve = regs.ecx;
             int used_ammo = regs.eax;
             regs.ecx = current_reserve + used_ammo; // negate the reload subtraction
@@ -1505,6 +1507,16 @@ static bool is_fire_tick_counted_weapon(int weapon_type)
         && rf::weapon_is_flamethrower(weapon_type);
 }
 
+bool accuracy_excluded_from_combined(int weapon_type)
+{
+    if (!kill_attribution_is_valid_weapon_type(weapon_type)) {
+        return false;
+    }
+    return rf::weapon_is_flamethrower(weapon_type) ||
+    weapon_type == rf::riot_stick_weapon_type ||
+    weapon_type == rf::riot_shield_weapon_type;
+}
+
 // One tick is the weapon's own fire wait, so the shot count tracks the engine's emission cadence
 // rather than an invented interval. Floored at 1 ms so a malformed table cannot divide by zero.
 static int fire_tick_ms(int weapon_type)
@@ -1824,7 +1836,7 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
             // from. Runs for every death, so the victim-side award resets cover world deaths and
             // suicides too.
             awards_on_kill(damaged_player, killer_player, weapon, damage_ctx.splash, killer_handle,
-                           victim_team_before_damage);
+                           victim_team_before_damage, damage, life_before, armor_before);
 
             // Arena's reload-on-kill is applied from on_player_kill, which the engine only runs
             // in its deferred death processing - too late for the shot that killed, whose clip
@@ -1923,7 +1935,8 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
 
             // Which ledger this weapon's shots, hits and damage belong to. The flame stream and
             // continuous melee are bucket-only; everything else reaches the overall counters too.
-            bool bucket_only_mode = kill_attribution_in_particle_damage();
+            bool bucket_only_mode = kill_attribution_in_particle_damage()
+                || accuracy_excluded_from_combined(stats_weapon);
             if (!bucket_only_mode && accuracy_melee) {
                 if (rf::Entity* kep = rf::entity_from_handle(killer_handle)) {
                     bucket_only_mode = rf::entity_weapon_is_on(kep->handle, stats_weapon);
@@ -1983,6 +1996,10 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
                 }
             }
 
+            // Novelty-weapon hits stay bucket-only in every mode, pairing with their fired side.
+            if (accuracy_excluded_from_combined(stats_weapon)) {
+                count_hit_bucket_only = true;
+            }
 
             // Efficiency numerator: effective damage this weapon put on somebody else. Not gated
             // on count_hit - every point that landed counts, whether or not the shot scored as a
@@ -3188,9 +3205,13 @@ CallHook<rf::Weapon*(int, int, rf::Vector3*, rf::Matrix3*, int, int)>
                 // dword's upper bytes are stack residue on the continuous-fire path.
                 const bool is_alt = (alt_fire & 0xFF) == 1;
                 const float potential = weapon_potential_damage(weapon_type, is_alt);
-                afstats::on_weapon_fired(pp, weapon_type, 1, afstats::CountScope::full, potential);
+                const bool excluded = accuracy_excluded_from_combined(weapon_type);
+                afstats::on_weapon_fired(pp, weapon_type, 1,
+                                         excluded ? afstats::CountScope::bucket_only
+                                                  : afstats::CountScope::full,
+                                         potential);
                 awards_on_weapon_fired(pp, weapon_type);
-                if (pp->stats) {
+                if (!excluded && pp->stats) {
                     auto* stats = static_cast<PlayerStatsNew*>(pp->stats);
                     stats->add_shots_fired(1.0f);
                     stats->add_damage_potential(potential);
@@ -4764,6 +4785,40 @@ void send_nonclip_ammo_sync(rf::Player* player, rf::Entity* entity, int weapon_t
     rf::multi_io_send_reliable(player, reinterpret_cast<uint8_t*>(&packet), sizeof(packet), 0);
 }
 
+static void server_topup_nonclip_ammo()
+{
+    if (!rf::is_server) return;
+    if (!gt_is_gungame() && !g_alpine_server_config_active_rules.weapon_infinite_magazines) return;
+    if (rf::gameseq_get_state() != rf::GameState::GS_GAMEPLAY) return;
+
+    for (rf::Player& p : SinglyLinkedList{rf::player_list}) {
+        if (p.is_browser) continue;
+
+        rf::Entity* ep = rf::entity_from_handle(p.entity_handle);
+        if (!ep || rf::entity_is_dying(ep)) continue;
+
+        int w = ep->ai.current_primary_weapon;
+        if (w == rf::remote_charge_det_weapon_type) {
+            w = rf::remote_charge_weapon_type; // the pair shares the charge ammo
+        }
+        // The no-clip featured weapon already has infinite ammo; its reserve is a pinned HUD value.
+        if (w >= 0 && w < rf::num_weapon_types && !rf::weapon_uses_clip(w)
+            && w != mutators_get_no_clip_weapon()) {
+            const rf::WeaponInfo& winfo = rf::weapon_types[w];
+            // Let the reserve DRAIN and refill it only once half spent, avoids
+            // huge reliable packet bursts with continuously firing no-clip weapons
+            // like the Jeep Gun.
+            if (winfo.ammo_type >= 0 && winfo.ammo_type < 32 && winfo.max_ammo > 0
+                && ep->ai.ammo[winfo.ammo_type] <= winfo.max_ammo / 2) {
+                ep->ai.ammo[winfo.ammo_type] = winfo.max_ammo;
+                if (&p != rf::local_player && !p.is_bot) {
+                    send_nonclip_ammo_sync(&p, ep, w);
+                }
+            }
+        }
+    }
+}
+
 void server_add_player_weapon(rf::Player* player, int weapon_type, bool full_ammo)
 {
     rf::WeaponInfo& winfo = rf::weapon_types[weapon_type];
@@ -5275,6 +5330,7 @@ void server_do_frame()
     pit_do_frame();
     wipeout_do_frame();
     gungame_do_frame();
+    server_topup_nonclip_ammo(); // after gungame's per-frame weapon grants
     salvage_do_frame();
     rounds_do_frame();
     auto_team_balance_do_frame();

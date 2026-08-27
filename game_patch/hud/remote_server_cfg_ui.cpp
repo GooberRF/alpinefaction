@@ -51,6 +51,23 @@ void RemoteServerCfgPopup::add_content(
     this Self& self,
     const std::string_view content
 ) {
+    // Cap accumulated content.
+    constexpr size_t kMaxLines = 16384;
+    constexpr size_t kMaxPartialLine = 8192;
+
+    // Replace the last line with a visible marker so a truncated config never looks complete to the user.
+    constexpr std::string_view kTruncMarker = "[content truncated - output too large to display in full]";
+    const auto mark_truncated = [&] {
+        if (!self.lines.empty()) {
+            self.lines.back() = std::string{kTruncMarker};
+        }
+    };
+
+    if (self.lines.size() >= kMaxLines) {
+        mark_truncated();
+        return; // already at capacity; drop further content
+    }
+
     size_t i = 0;
     const size_t len = content.size();
 
@@ -66,10 +83,19 @@ void RemoteServerCfgPopup::add_content(
         }
 
         self.partial_line += fragment;
+        if (self.partial_line.size() > kMaxPartialLine) {
+            self.partial_line.resize(kMaxPartialLine); // bound a single unbroken line
+            self.partial_line += " [line truncated]"; // show this specific line was cut
+        }
         self.add_line(self.partial_line);
 
         if (complete && !self.partial_line.empty()) {
             self.partial_line.clear();
+        }
+
+        if (self.lines.size() >= kMaxLines) {
+            mark_truncated();
+            break; // reached capacity mid-stream
         }
 
         i = complete ? new_line + 1 : len;

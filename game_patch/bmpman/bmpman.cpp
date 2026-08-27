@@ -235,11 +235,19 @@ FunHook<void(int)> bm_unlock_hook{
 FunHook<void(int)> bm_free_entry_hook{
     0x0050F240,
     [](int bm_index) {
+        // Avoid a crash when exiting the game and attempting to free bitmaps already freed.
+        if (!rf::bm::bitmaps) {
+            return;
+        }
         auto& bm_entry = rf::bm::bitmaps[bm_index];
         if (bm_entry.bm_type == rf::bm::TYPE_ATX) {
             atx_free(bm_entry);
         }
         bm_entry.dynamic = false;
+
+        if (!bm_entry.prev || !bm_entry.next) {
+            return;
+        }
         bm_free_entry_hook.call_target(bm_index);
     },
 };

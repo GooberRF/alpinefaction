@@ -104,6 +104,22 @@ StashedPacket g_join_request_stashed;
 std::optional<int> g_conn_rate_stashed; // currently only used for detecting RFSB 5.1.6
 static const uint8_t* g_rx_base = nullptr;
 static size_t g_rx_len = 0;
+
+// True datagram-remaining length for the stock sub-packet currently being dispatched.
+static const uint8_t* g_cur_subpkt_data = nullptr;
+static size_t g_cur_subpkt_remaining = 0;
+
+// Report the true datagram-remaining byte count for a stock handler's payload pointer.
+// Returns false (leaving out_remaining untouched) if the pointer doesn't match the current
+// dispatch, i.e. no trustworthy remaining length is available for this call.
+static bool multi_io_subpacket_remaining(const void* data, size_t& out_remaining)
+{
+    if (g_cur_subpkt_data && data == static_cast<const void*>(g_cur_subpkt_data)) {
+        out_remaining = g_cur_subpkt_remaining;
+        return true;
+    }
+    return false;
+}
 static std::unordered_map<uint64_t, AfGiReqSeen> g_af_gi_req_seen;
 static std::unordered_map<uint64_t, RconAccessEntry> g_rcon_access_by_addr;
 
@@ -408,6 +424,12 @@ static void send_rcon_feedback(const rf::NetAddr& addr, std::string_view msg)
     }
 }
 
+static bool is_full_admin_only_rcon_command(std::string_view command)
+{
+    // Commands powerful enough that delegating them to a non-full_admin profile would allow privilege escalation.
+    return string_iequals(command, "sv_loadconfig");
+}
+
 static bool is_rcon_command_allowed_for_profile(const AlpineRconProfile& profile, std::string_view command)
 {
     if (!is_rcon_command_masterlisted(command)) {
@@ -416,6 +438,11 @@ static bool is_rcon_command_allowed_for_profile(const AlpineRconProfile& profile
 
     if (profile.full_admin) {
         return true;
+    }
+
+    // Block delegation of full_admin-only commands to limited profiles even if they appear in allowed_commands.
+    if (is_full_admin_only_rcon_command(command)) {
+        return false;
     }
 
     for (const auto& allowed : profile.allowed_commands) {
@@ -439,12 +466,26 @@ static RconPasswordLookup lookup_rcon_password(std::string_view password)
     return {};
 }
 
+// Per-connection rcon brute-force throttle.
+static std::unordered_map<uint64_t, int> g_rcon_failed_attempts_by_addr;
+static constexpr int kRconMaxFailedAttempts = 16;
+
 void clear_rcon_profile_sessions()
 {
     for (const auto& [key, entry] : g_rcon_access_by_addr) {
         set_rcon_holder_flag(addr_from_key(key), false);
     }
     g_rcon_access_by_addr.clear();
+    g_rcon_failed_attempts_by_addr.clear();
+}
+
+void clear_rcon_state_for_addr(const rf::NetAddr& addr)
+{
+    const uint64_t key = addr_key(addr);
+    g_rcon_failed_attempts_by_addr.erase(key);
+    if (g_rcon_access_by_addr.erase(key) != 0) {
+        set_rcon_holder_flag(addr, false);
+    }
 }
 
 static RconCommandCheckResult check_rcon_command_for_addr(const rf::NetAddr& addr, std::string_view command)
@@ -472,13 +513,19 @@ static RconCommandCheckResult check_rcon_command_for_addr(const rf::NetAddr& add
                                                                  : RconCommandCheckResult::ProfileDenied;
 }
 
-static std::optional<std::string_view> extract_rcon_payload_from_packet(const char* data)
+static std::optional<std::string_view> extract_rcon_payload_from_packet(const char* data, size_t max_len)
 {
     if (!data) {
         return std::nullopt;
     }
 
-    return std::string_view{data, std::strlen(data)};
+    // Bound the scan.
+    const size_t len = strnlen(data, max_len);
+    if (len == max_len) {
+        return std::nullopt;
+    }
+
+    return std::string_view{data, len};
 }
 
 static void handle_rcon_request_packet(const uint8_t* pkt, size_t len, const rf::NetAddr& addr)
@@ -500,14 +547,35 @@ static void handle_rcon_request_packet(const uint8_t* pkt, size_t len, const rf:
         return;
     }
 
+    const uint64_t attempt_key = addr_key(addr);
+    // Non-inserting lookup: querying the throttle must not create a map entry for the address.
+    const auto attempt_it = g_rcon_failed_attempts_by_addr.find(attempt_key);
+    if (attempt_it != g_rcon_failed_attempts_by_addr.end() && attempt_it->second >= kRconMaxFailedAttempts) {
+        send_rcon_feedback(addr, "Too many failed rcon attempts; reconnect to try again.");
+        return;
+    }
+
     const auto lookup = lookup_rcon_password(password);
     if (!lookup.profile_index) {
+        // A wrong password from an address that already holds an authenticated rcon session is not
+        // a legitimate re-auth. Do not revoke the live session or count it toward the lockout.
+        if (g_rcon_access_by_addr.find(attempt_key) != g_rcon_access_by_addr.end()) {
+            rf::console::print("{} sent an incorrect rcon password while already holding rcon access; ignoring.", rcon_player_name(addr));
+            return;
+        }
+        const int failures = ++g_rcon_failed_attempts_by_addr[attempt_key];
         g_rcon_access_by_addr.erase(addr_key(addr));
         set_rcon_holder_flag(addr, false);
         rf::console::print("{} requested rcon with password '{}', DENIED because the password is not correct for any profile.", rcon_player_name(addr), password);
+        if (failures == kRconMaxFailedAttempts) {
+            rf::console::print("{} reached {} failed rcon password attempts and is now locked out of rcon until they reconnect.", rcon_player_name(addr), kRconMaxFailedAttempts);
+        }
         send_rcon_feedback(addr, "Rcon access denied: wrong password.");
         return;
     }
+
+    // Successful authentication: reset the brute-force throttle for this connection.
+    g_rcon_failed_attempts_by_addr.erase(attempt_key);
 
     const uint64_t key = addr_key(addr);
     // ensure a client can only hold a single rcon profile at a time
@@ -586,6 +654,11 @@ FunHook<MultiIoPacketHandler> process_game_info_packet_hook{
         // Read payload length from the sub-packet header immediately before the payload
         uint16_t payload_len;
         std::memcpy(&payload_len, data - 2, sizeof(payload_len));
+        // Validate header.size against both the total datagram length and the bytes remaining after.
+        size_t subpkt_remaining;
+        if (multi_io_subpacket_remaining(data, subpkt_remaining) && subpkt_remaining < payload_len) {
+            payload_len = static_cast<uint16_t>(subpkt_remaining);
+        }
         const uint8_t* end = payload + payload_len;
 
         if (payload_len < 1) { clear_extra(); return; }
@@ -901,6 +974,14 @@ void handle_sound_msg(const std::string_view msg) {
 FunHook<MultiIoPacketHandler> process_chat_line_packet_hook{
     0x00444860,
     [] (char* const data, const rf::NetAddr& addr) {
+        // string scan must not run past the datagram length.
+        size_t remaining;
+        if (multi_io_subpacket_remaining(data, remaining)
+            && (remaining < 3 || !std::memchr(data + 2, '\0', remaining - 2))) {
+            xlog::warn("Dropping malformed chat_line packet from {}", addr);
+            return;
+        }
+
         const char* const msg = data + 2;
 
         // server-side and client-side
@@ -1044,18 +1125,50 @@ FunHook<MultiIoPacketHandler> process_entity_create_packet_hook{
         // Temporary change default player weapon to the weapon type from the received packet
         // Created entity always receives Default Player Weapon (from game.tbl) and if server has it overriden
         // player weapons would be in inconsistent state with server without this change.
-        size_t name_size = strlen(data) + 1;
-        char player_id = data[name_size + 58];
-        // Check if this is not NPC
-        if (player_id != '\xFF') {
-            int weapon_type;
-            std::memcpy(&weapon_type, data + name_size + 63, sizeof(weapon_type));
-            auto old_default_player_weapon = rf::default_player_weapon;
-            rf::default_player_weapon = rf::weapon_types[weapon_type].name;
-            process_entity_create_packet_hook.call_target(data, addr);
-            rf::default_player_weapon = old_default_player_weapon;
+        size_t remaining;
+        const bool have_remaining = multi_io_subpacket_remaining(data, remaining);
+
+        size_t name_len;
+        bool name_terminated;
+        if (have_remaining) {
+            const void* nul = std::memchr(data, '\0', remaining);
+            name_terminated = nul != nullptr;
+            name_len = name_terminated ? static_cast<size_t>(static_cast<const char*>(nul) - data) : remaining;
         }
         else {
+            // No trustworthy remaining length for this call: preserve prior behavior.
+            name_len = std::strlen(data);
+            name_terminated = true;
+        }
+        const size_t name_size = name_len + 1;
+
+        // Alpine's override reads data[name_size + 58] and data[name_size + 63 .. +66].
+        const bool fields_fit =
+            !have_remaining || (name_terminated && name_size + 63 + sizeof(int) <= remaining);
+
+        if (name_terminated && fields_fit) {
+            char player_id = data[name_size + 58];
+            // Check if this is not NPC
+            if (player_id != '\xFF') {
+                int weapon_type;
+                std::memcpy(&weapon_type, data + name_size + 63, sizeof(weapon_type));
+                // Bounds-check the wire-supplied weapon_type before indexing rf::weapon_types[64].
+                if (weapon_type >= 0 && weapon_type < rf::num_weapon_types) {
+                    auto old_default_player_weapon = rf::default_player_weapon;
+                    rf::default_player_weapon = rf::weapon_types[weapon_type].name;
+                    process_entity_create_packet_hook.call_target(data, addr);
+                    rf::default_player_weapon = old_default_player_weapon;
+                }
+                else {
+                    process_entity_create_packet_hook.call_target(data, addr);
+                }
+            }
+            else {
+                process_entity_create_packet_hook.call_target(data, addr);
+            }
+        }
+        else {
+            // Malformed/oversized name for the override: run the stock handler without it.
             process_entity_create_packet_hook.call_target(data, addr);
         }
     },
@@ -1065,9 +1178,23 @@ FunHook<MultiIoPacketHandler> process_reload_packet_hook{
     0x00485AB0,
     [](char* data, const rf::NetAddr& addr) {
         if (!rf::is_server) { // client-side
+            // Validate against both the total datagram length and the bytes remaining after.
+            size_t remaining;
+            if (multi_io_subpacket_remaining(data, remaining) && remaining < 16) {
+                xlog::warn("Dropping truncated reload packet ({} bytes remaining)", remaining);
+                return;
+            }
             // Update clip_size and max_ammo if received values are greater than values from local weapons.tbl
             int weapon_type, ammo, clip_ammo;
             std::memcpy(&weapon_type, data + 4, sizeof(weapon_type));
+
+            // Bounds-check the wire-supplied weapon_type before indexing rf::weapon_types[64].
+            // Drop the packet entirely (do not run the stock handler, which also has the same vuln).
+            if (weapon_type < 0 || weapon_type >= rf::num_weapon_types) {
+                xlog::warn("Dropping reload packet with out-of-range weapon_type {}", weapon_type);
+                return;
+            }
+
             std::memcpy(&ammo, data + 8, sizeof(ammo));
             std::memcpy(&clip_ammo, data + 12, sizeof(clip_ammo));
 
@@ -1102,6 +1229,11 @@ FunHook<MultiIoPacketHandler> process_reload_request_packet_hook{
         if (!rf::is_server) {
             return;
         }
+        // Validate against bytes remaining after.
+        size_t remaining;
+        if (multi_io_subpacket_remaining(data, remaining) && remaining < sizeof(int)) {
+            return;
+        }
         rf::Player* pp = rf::multi_find_player_by_addr(addr);
         int weapon_type;
         std::memcpy(&weapon_type, data, sizeof(weapon_type));
@@ -1130,6 +1262,11 @@ FunHook<MultiIoPacketHandler> process_pong_packet_hook{
         
         if (outstanding && player->net_data->stats.last_ping_time == -1) {
             const auto& stats = player->net_data->stats;
+            // Only the recording branch of 0x0047CB80 advances the index; a reset without a
+            // recorded sample leaves it at 0, which would index ping_array[-1].
+            if (stats.current_ping_idx <= 0) {
+                return;
+            }
             const int newest = stats.current_ping_idx >= 2 ? 1 : stats.current_ping_idx - 1;
             afstats::on_pong_received(player, stats.ping_array[newest]);
         }
@@ -1151,7 +1288,10 @@ CodeInjection process_rcon_req_packet_injection{
         const auto* data = addr_as_ref<const char*>(stack_frame + 0x110);
 
         if (addr && data) {
-            if (const auto payload = extract_rcon_payload_from_packet(data)) {
+            size_t remaining;
+            constexpr size_t rcon_payload_scan_cap = 512; // > any real datagram; used only if the sub-packet length is unavailable
+            const size_t max_len = multi_io_subpacket_remaining(data, remaining) ? remaining : rcon_payload_scan_cap;
+            if (const auto payload = extract_rcon_payload_from_packet(data, max_len)) {
                 handle_rcon_request_packet(reinterpret_cast<const uint8_t*>(payload->data()), payload->size() + 1, *addr);
             }
         }
@@ -1173,7 +1313,10 @@ CodeInjection process_rcon_packet_injection{
         const auto* data = addr_as_ref<const char*>(stack_frame + 0x414);
 
         if (addr && data) {
-            const auto payload = extract_rcon_payload_from_packet(data);
+            size_t remaining;
+            constexpr size_t rcon_payload_scan_cap = 512; // > any real datagram; used only if the sub-packet length is unavailable
+            const size_t max_len = multi_io_subpacket_remaining(data, remaining) ? remaining : rcon_payload_scan_cap;
+            const auto payload = extract_rcon_payload_from_packet(data, max_len);
 
             if (payload) { // early return for failures todo
                 const auto [cmd, remainder] = split_once_whitespace(*payload);
@@ -1224,7 +1367,11 @@ CodeInjection process_obj_update_check_flags_injection{
             bool valid = true;
             if (rf::is_server) {
                 // server-side
-                if (ep && ep->handle != pp->entity_handle) {
+                if (!pp) {
+                    // No player associated with this update; reject rather than dereference pp below.
+                    valid = false;
+                }
+                else if (ep && ep->handle != pp->entity_handle) {
                     xlog::trace("Invalid obj_update entity {:x} {:x} {}", ep->handle, pp->entity_handle,
                         pp->name.c_str());
                     valid = false;
@@ -1697,6 +1844,11 @@ FunHook<MultiIoPacketHandler> process_ctf_flag_dropped_packet_hook{
         }
 
         RFCtfFlagDroppedPacket packet{};
+        // Bound the copy to the bytes actually remaining for this sub-packet.
+        size_t remaining;
+        if (multi_io_subpacket_remaining(data, remaining) && remaining < sizeof(packet)) {
+            return;
+        }
         std::memcpy(&packet, data, sizeof(packet));
         waypoints_on_ctf_flag_dropped_packet(packet.is_red == 1, packet.get_flag_position());
     },
@@ -1711,6 +1863,10 @@ FunHook<MultiIoPacketHandler> process_ctf_flag_returned_packet_hook{
         }
 
         RFCtfFlagSingleTeamPacket packet{};
+        size_t remaining;
+        if (multi_io_subpacket_remaining(data, remaining) && remaining < sizeof(packet)) {
+            return;
+        }
         std::memcpy(&packet, data, sizeof(packet));
         waypoints_on_ctf_flag_returned_packet(packet.is_red == 1);
     },
@@ -1725,6 +1881,10 @@ FunHook<MultiIoPacketHandler> process_ctf_flag_captured_packet_hook{
         }
 
         RFCtfFlagSingleTeamPacket packet{};
+        size_t remaining;
+        if (multi_io_subpacket_remaining(data, remaining) && remaining < sizeof(packet)) {
+            return;
+        }
         std::memcpy(&packet, data, sizeof(packet));
         waypoints_on_ctf_flag_captured_packet(packet.is_red == 1);
     },
@@ -1739,6 +1899,10 @@ FunHook<MultiIoPacketHandler> process_ctf_flag_picked_up_packet_hook{
         }
 
         RFCtfFlagPickedUpPacket packet{};
+        size_t remaining;
+        if (multi_io_subpacket_remaining(data, remaining) && remaining < sizeof(packet)) {
+            return;
+        }
         std::memcpy(&packet, data, sizeof(packet));
         waypoints_on_ctf_flag_picked_up_packet(packet.picker_player_id);
     },
@@ -1949,6 +2113,11 @@ FunHook<MultiIoPacketHandler> process_join_accept_unsupported_gt_guard{
         if (data) {
             uint16_t payload_len = 0;
             std::memcpy(&payload_len, data - 2, sizeof(payload_len));
+            // Clamp header.size to the bytes actually remaining in the datagram.
+            size_t subpkt_remaining;
+            if (multi_io_subpacket_remaining(data, subpkt_remaining) && subpkt_remaining < payload_len) {
+                payload_len = static_cast<uint16_t>(subpkt_remaining);
+            }
 
             const uint8_t* payload = reinterpret_cast<const uint8_t*>(data);
             const uint8_t* end = payload + payload_len;
@@ -1991,6 +2160,11 @@ CodeInjection process_join_accept_injection{
         RF_GamePacketHeader hdr;
         std::memcpy(&hdr, payload - sizeof(RF_GamePacketHeader), sizeof(hdr));
         size_t payload_len = hdr.size;
+        // Clamp hdr.size to the bytes actually remaining in the datagram.
+        size_t subpkt_remaining;
+        if (multi_io_subpacket_remaining(payload, subpkt_remaining) && subpkt_remaining < payload_len) {
+            payload_len = subpkt_remaining;
+        }
         size_t ext_offset = static_cast<size_t>(regs.esi) + 5;
 
         JoinAcceptAf af_result = parse_join_accept_af_ext(payload, payload_len, ext_offset, ext_data);
@@ -2859,11 +3033,60 @@ CodeInjection client_update_rate_injection{
     0x0047E5D8,
     [] (auto& regs) {
         constexpr int interval = 1000 / CLIENT_NET_FPS;
-        auto& obj_update_timestamp = addr_as_ref<rf::TimestampRealtime>(0x006FB424);
-        int overshoot = obj_update_timestamp.time_since();
+        int overshoot = rf::send_obj_update_packet_timestamp.time_since();
         int& send_obj_update_interval = addr_as_ref<int>(regs.esp);
         send_obj_update_interval =
             (overshoot > 0 && overshoot < interval) ? interval - overshoot : interval;
+    },
+};
+
+// Continuous-fire state travels as level-sampled OUF_FIRE flags in obj_update, which is sent at the
+// top of the frame before input runs — a fire press would otherwise wait up to one tick duration plus a frame.
+// Force a same-frame send on the on/off transition.
+// Note: elapsed() returns false for an invalid timestamp, so set(0), never invalidate().
+static void multi_force_fire_state_send()
+{
+    if (rf::is_multi && !rf::is_server && !demo_playback_active()) {
+        // Rate-cap forced sends; a suppressed transition rides the next scheduled send
+        static int64_t last_forced_send_ms = 0;
+        const int64_t now_ms = timer::get_i64(1000);
+        if (now_ms - last_forced_send_ms < 1000 / CLIENT_NET_FPS) {
+            return;
+        }
+        last_forced_send_ms = now_ms;
+        rf::send_obj_update_packet_timestamp.set(0);
+        rf::send_obj_update_packet(); // re-arms the timestamp to the normal interval internally
+    }
+}
+
+static bool is_local_entity(int entity_handle)
+{
+    return rf::local_player_entity && rf::local_player_entity->handle == entity_handle;
+}
+
+FunHook<void __cdecl(int, int, bool)> entity_turn_weapon_on_hook{
+    0x0041A870,
+    [](int entity_handle, int weapon_type, bool alt_fire) {
+        // called every frame while the trigger is held; only the off->on edge matters
+        bool was_on = rf::entity_weapon_is_on(entity_handle, weapon_type);
+        entity_turn_weapon_on_hook.call_target(entity_handle, weapon_type, alt_fire);
+        if (!was_on && is_local_entity(entity_handle)
+            && rf::weapon_is_on_off_weapon(weapon_type, alt_fire)
+            && rf::entity_weapon_is_on(entity_handle, weapon_type)) {
+            multi_force_fire_state_send();
+        }
+    },
+};
+
+FunHook<void __cdecl(int, int)> entity_turn_weapon_off_hook{
+    0x0041AE70,
+    [](int entity_handle, int weapon_type) {
+        bool was_on = rf::entity_weapon_is_on(entity_handle, weapon_type);
+        entity_turn_weapon_off_hook.call_target(entity_handle, weapon_type);
+        if (was_on && is_local_entity(entity_handle)
+            && !rf::entity_weapon_is_on(entity_handle, weapon_type)) {
+            multi_force_fire_state_send();
+        }
     },
 };
 
@@ -3098,6 +3321,15 @@ static bool parse_af_gi_req_tail(const uint8_t* pkt, size_t datalen, uint8_t& ou
     return true;
 }
 
+// Clear the sub-packet stash the instant the handler dispatch returns.
+CodeInjection multi_io_subpacket_clear_injection{
+    0x00479194,
+    [](auto&) {
+        g_cur_subpkt_data = nullptr;
+        g_cur_subpkt_remaining = 0;
+    },
+};
+
 bool packet_check_whitelist(const int packet_type) {
     bool allowed = false;
     if (rf::is_server) {
@@ -3125,10 +3357,30 @@ CodeInjection multi_io_process_packets_injection{
         xlog::trace("Processing packet 0x{:x}", packet_ty);
 
         const size_t off = regs.ebp;
-        const size_t len = regs.edi;
         const uint8_t* const base = regs.ecx;
         const uint32_t stack_frame = static_cast<uint32_t>(regs.esp) + 0x1C;
         const rf::NetAddr& addr = *addr_as_ref<const rf::NetAddr*>(stack_frame + 0xC);
+
+        // Validate against bytes remaining.
+        const int total_len = addr_as_ref<int>(stack_frame + 0x8);
+        int len_clamped = static_cast<int>(regs.edi);
+        if (total_len > static_cast<int>(off)) {
+            // Clamp the declared length down to the bytes actually remaining in the datagram.
+            if (total_len - static_cast<int>(off) < len_clamped) {
+                len_clamped = total_len - static_cast<int>(off);
+            }
+        }
+        else {
+            // Report no bytes remaining so nothing downstream reads past the datagram.
+            len_clamped = 0;
+        }
+        const size_t len = static_cast<size_t>(len_clamped);
+
+        // Stash this sub-packet's payload pointer (base + off + 3, past the 3-byte header)
+        // and the bytes actually remaining in the datagram for it (len is header.size + 3
+        // already clamped to total_len - off above; drop the 3 header bytes).
+        g_cur_subpkt_data = base + off + 3;
+        g_cur_subpkt_remaining = (len_clamped > 3) ? static_cast<size_t>(len_clamped - 3) : 0;
 
         if (packet_ty > 0x37
             || packet_ty == static_cast<int>(pf_packet_type::player_stats))
@@ -3572,6 +3824,10 @@ void network_init()
     // Make average obj_update send rate framerate-independent (deadline-based rescheduling)
     server_obj_update_schedule_injection.install();
 
+    // Send fire start/stop of continuous weapons same-frame instead of waiting for the next obj_update tick
+    entity_turn_weapon_on_hook.install();
+    entity_turn_weapon_off_hook.install();
+
     // Skip obj_update records that carry no new keyframe, so sv_netfps above the client send
     // rate doesn't flood receivers with duplicate keyframes that degrade interpolation
     pack_obj_update_data_hook.install();
@@ -3609,6 +3865,7 @@ void network_init()
     // Support custom packet types and packet filtering.
     AsmWriter{0x0047916D}.nop(2);
     multi_io_process_packets_injection.install();
+    multi_io_subpacket_clear_injection.install();
     multi_io_stats_add_hook.install();
     process_unreliable_game_packets_hook.install();
 
