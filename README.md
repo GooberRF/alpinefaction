@@ -160,6 +160,10 @@ Building
 
 See [docs/BUILDING.md](docs/BUILDING.md) for information about building Alpine Faction from source.
 
+Terms of Use
+------------
+Alpine Faction is provided as-is. Installing or using it means you agree to the terms and notices in [resources/terms.txt](resources/terms.txt).
+
 License
 -------
 Alpine Faction's source code is licensed under Mozilla Public License 2.0. See [LICENSE.txt](LICENSE.txt).
