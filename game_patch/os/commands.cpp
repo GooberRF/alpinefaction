@@ -50,6 +50,17 @@ ConsoleCommand2 console_history_cmd{
     "Toggles whether console history persists between game launches",
 };
 
+ConsoleCommand2 console_color_cmd{
+    "ui_con_color",
+    [](std::optional<std::string> color_opt) {
+        handle_required_color_command(color_opt, "Console background color", g_alpine_game_config.console_color,
+                                      0x274E69C0);
+        apply_console_color_setting();
+    },
+    "Set the console background color",
+    "ui_con_color <RRGGBB|RRGGBBAA|clear>",
+};
+
 ConsoleCommand2 vli_cmd{
     "vli",
     []() {
@@ -615,6 +626,7 @@ void console_commands_init()
     pcollide_cmd.register_cmd();
     dot_cmd.register_cmd();
     console_history_cmd.register_cmd();
+    console_color_cmd.register_cmd();
     vli_cmd.register_cmd();
     monitor_resolution_scale_cmd.register_cmd();
     fast_anim_cmd.register_cmd();

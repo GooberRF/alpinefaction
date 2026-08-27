@@ -250,12 +250,12 @@ static void warn_outlines_if_not_d3d11()
     }
 }
 
-// helper for always-set (non-optional) color commands
-static void handle_required_color_command(
+// helper for always-set (non-optional) color commands (declared in console.h)
+void handle_required_color_command(
     const std::optional<std::string>& input,
     const std::string& label,
     uint32_t& target,
-    std::optional<uint32_t> default_value = std::nullopt)
+    std::optional<uint32_t> default_value)
 {
     if (!input) {
         auto [r, g, b, a] = extract_color_components(target);

@@ -332,6 +332,15 @@ void apply_console_history_setting() {
     rf::console::console_keep_history = g_alpine_game_config.save_console_history;
 }
 
+void apply_console_color_setting() {
+    auto [r, g, b, a] = extract_color_components(g_alpine_game_config.console_color);
+    write_mem<u32>(0x005098D1, a);
+    write_mem<u8>(0x005098D6, b);
+    write_mem<u8>(0x005098D8, g);
+    write_mem<u8>(0x005098DA, r);
+    rf::console::background_color.set(r, g, b, a);
+}
+
 extern void console_commands_apply_patches();
 extern void console_auto_complete_apply_patches();
 extern void console_commands_init();
@@ -342,11 +351,7 @@ void console_apply_patches()
     write_mem_ptr(0x004B2534, "-- " PRODUCT_NAME " Initializing --\n");
 
     // Console background color
-    constexpr rf::Color console_color{0x27, 0x4E, 0x69, 0xC0};
-    write_mem<u32>(0x005098D1, console_color.alpha);
-    write_mem<u8>(0x005098D6, console_color.blue);
-    write_mem<u8>(0x005098D8, console_color.green);
-    write_mem<u8>(0x005098DA, console_color.red);
+    apply_console_color_setting();
 
     // Support unsigned hexadecimal arguments.
     AsmWriter{0x0050B0B0}.call(std::strtoul);

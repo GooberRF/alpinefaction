@@ -17,6 +17,9 @@ void console_register_command(rf::console::Command* cmd);
 rf::Player* find_best_matching_player(const char* name);
 void console_start_server_log();
 void console_run_script(const char* filename);
+// Shared handler for console commands setting an always-set color (defined in hud/hud_colors.cpp)
+void handle_required_color_command(const std::optional<std::string>& input, const std::string& label,
+                                   uint32_t& target, std::optional<uint32_t> default_value = std::nullopt);
 
 class DcInvalidArgTypeError : public std::exception
 {};
