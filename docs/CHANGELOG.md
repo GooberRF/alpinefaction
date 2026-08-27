@@ -10,6 +10,8 @@ Version 1.5.0 (TBD): Not yet released
 - Restore cut first person weapon aim sway, toggleable with `cl_weaponsway`
 
 ### Bug fixes
+[@GooberRF](https://github.com/GooberRF)
+- Fix phantom visual flag mesh being visible after Salvage flag is picked up on rare occasions
 
 Version 1.4.0 (Lupin): Released Aug-25-2026
 --------------------------------
