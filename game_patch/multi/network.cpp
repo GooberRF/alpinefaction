@@ -3196,28 +3196,33 @@ CodeInjection send_state_info_injection{
 CodeInjection process_state_info_req_between_levels_patch{
     0x00481C12,
     [] (auto& regs) {
-        rf::Player* const player = regs.ebx;
-        if (regs.al && is_player_minimum_af_client_version(player, 1, 4, 0)) {
-            rf::send_state_info(player);
+        if (regs.al) {
+            rf::Player* const player = regs.ebx;
+            if (is_player_minimum_af_client_version(player, 1, 4, 0)) {
+                rf::send_state_info(player);
 
-            // Set `NETPLAYER_STATE_WAITING` like `mp_change_level`.
-            constexpr int NETPLAYER_STATE_WAITING = 0x0;
-            player->net_data->state = NETPLAYER_STATE_WAITING;
+                // Set `NETPLAYER_STATE_WAITING` like `mp_change_level`.
+                constexpr int NETPLAYER_STATE_WAITING = 0x0;
+                player->net_data->state = NETPLAYER_STATE_WAITING;
 
-            const RF_GamePacketHeader enter_limbo_packet =
-                {.type = RF_GPT_ENTER_LIMBO, .size = 0};
-            rf::multi_io_send_reliable(
-                player,
-                &enter_limbo_packet,
-                enter_limbo_packet.size + sizeof(RF_GamePacketHeader),
-                FALSE
-            );
+                const RF_GamePacketHeader enter_limbo_packet =
+                    {.type = RF_GPT_ENTER_LIMBO, .size = 0};
+                rf::multi_io_send_reliable(
+                    player,
+                    &enter_limbo_packet,
+                    enter_limbo_packet.size + sizeof(RF_GamePacketHeader),
+                    FALSE
+                );
 
-            regs.esp += 0x8;
-            regs.eip = 0x00481C4B;
+                regs.eip = 0x00481C4B;
+            } else {
+                regs.eip = 0x00481C31;
+            }
         } else {
-            regs.eip = regs.al ? 0x00481C31 : 0x00481C53;
+            regs.eip = 0x00481C53;
         }
+
+        regs.esp += 0x8;
     },
     false
 };
