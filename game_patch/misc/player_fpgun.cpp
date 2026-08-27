@@ -8,6 +8,7 @@
 #include "../multi/gametype.h"
 #include "../rf/player/player.h"
 #include "../rf/player/camera.h"
+#include "../rf/os/frametime.h"
 #include "../rf/sound/sound.h"
 #include "../rf/vmesh.h"
 #include "../rf/weapon.h"
@@ -212,6 +213,104 @@ CodeInjection player_fpgun_skip_premature_idle_injection{
             regs.eip = 0x004AA423;
         }
     },
+};
+
+static constexpr float sway_cam_jump_dist = 3.0f;
+static constexpr float sway_scale = 0.008f;
+static constexpr float sway_max = 0.07f;
+static constexpr float sway_smooth_tau = 0.07f;
+
+// Removed grenade / remote charge / detonator exemptions from the stock gate.
+static FunHook<bool(rf::Player*)> player_fpgun_sway_enabled_hook{
+    0x004AB100,
+    [](rf::Player* player) {
+        if (player != rf::local_player) {
+            return false;
+        }
+        if (!rf::entity_from_handle(player->entity_handle)) {
+            return false;
+        }
+        if (!g_alpine_game_config.weapon_sway) {
+            return false;
+        }
+        return !rf::player_fpgun_action_anim_is_playing(player, rf::WA_RELOAD) &&
+               !rf::player_fpgun_action_anim_is_playing(player, rf::WA_CUSTOM_START) &&
+               !rf::player_fpgun_action_anim_is_playing(player, rf::WA_CUSTOM_LEAVE);
+    },
+};
+
+// Refreshes old_cam_pos/old_cam_orient after sway block, so on entry they still hold
+// the previous frame's values.
+static FunHook<void(rf::Player*)> player_fpgun_process_hook{
+    0x004AA6D0,
+    [](rf::Player* player) {
+        if (player != rf::local_player) {
+            player_fpgun_process_hook.call_target(player);
+            return;
+        }
+
+        auto& fpgun_data = player->fpgun_data;
+        if (!player->cam ||
+            rf::camera_get_mode(*player->cam) != rf::CAMERA_FIRST_PERSON ||
+            !g_alpine_game_config.weapon_sway) {
+            fpgun_data.goal_sway_xrot = 0.0f;
+            fpgun_data.goal_sway_yrot = 0.0f;
+            player->sway_pitch_vel = 0.0f;
+            player->sway_yaw_vel = 0.0f;
+            player_fpgun_process_hook.call_target(player);
+            return;
+        }
+
+        const rf::Matrix3 cam_orient = rf::camera_get_orient(player->cam);
+        const rf::Vector3 cam_pos = rf::camera_get_pos(player->cam);
+        const float dt = rf::frametime;
+
+        if (dt <= 0.0f ||
+            (cam_pos - fpgun_data.old_cam_pos).len_sq() > sway_cam_jump_dist * sway_cam_jump_dist ||
+            cam_orient.fvec.dot_prod(fpgun_data.old_cam_orient.fvec) < 0.5f) {
+            fpgun_data.goal_sway_xrot = 0.0f;
+            fpgun_data.goal_sway_yrot = 0.0f;
+            fpgun_data.cur_sway_xrot = 0.0f;
+            fpgun_data.cur_sway_yrot = 0.0f;
+            player->sway_pitch_vel = 0.0f;
+            player->sway_yaw_vel = 0.0f;
+            player_fpgun_process_hook.call_target(player);
+            return;
+        }
+
+        auto yaw_of = [](const rf::Vector3& fvec) { return std::atan2(fvec.x, fvec.z); };
+        auto pitch_of = [](const rf::Vector3& fvec) { return std::asin(std::clamp(-fvec.y, -1.0f, 1.0f)); };
+        auto ang_vel = [dt](float cur, float prev) {
+            return std::remainder(cur - prev, 2.0f * std::numbers::pi_v<float>) / dt;
+        };
+
+        const rf::Vector3& old_fvec = fpgun_data.old_cam_orient.fvec;
+        const float pitch_vel = ang_vel(pitch_of(cam_orient.fvec), pitch_of(old_fvec));
+        const float yaw_vel = ang_vel(yaw_of(cam_orient.fvec), yaw_of(old_fvec));
+
+        // The stock rate limiter only clips large slews, so per-frame mouse quantization has to be
+        // filtered here or it reaches the gun unchanged.
+        const float alpha = 1.0f - std::exp(-dt / sway_smooth_tau);
+        player->sway_pitch_vel += (pitch_vel - player->sway_pitch_vel) * alpha;
+        player->sway_yaw_vel += (yaw_vel - player->sway_yaw_vel) * alpha;
+
+        // Positive xrot tilts the fpgun up and positive yrot swings it left, while positive pitch
+        // is downward, so matching the turn rate sign makes the gun trail the view.
+        fpgun_data.goal_sway_xrot = std::clamp(player->sway_pitch_vel * sway_scale, -sway_max, sway_max);
+        fpgun_data.goal_sway_yrot = std::clamp(player->sway_yaw_vel * sway_scale, -sway_max, sway_max);
+
+        player_fpgun_process_hook.call_target(player);
+    },
+};
+
+ConsoleCommand2 weapon_sway_cmd{
+    "cl_weaponsway",
+    []() {
+        g_alpine_game_config.weapon_sway = !g_alpine_game_config.weapon_sway;
+        rf::console::print("Weapon aim sway: {}",
+            g_alpine_game_config.weapon_sway ? "enabled" : "disabled");
+    },
+    "Toggle first person weapon aim sway",
 };
 
 ConsoleCommand2 legacy_bob_cmd{
@@ -448,6 +547,11 @@ void player_fpgun_do_patch()
     // Allow customizing fpgun fov
     player_fpgun_render_gr_setup_3d_hook.install();
     fpgun_fov_scale_cmd.register_cmd();
+
+    // Weapon aim sway
+    player_fpgun_process_hook.install();
+    player_fpgun_sway_enabled_hook.install();
+    weapon_sway_cmd.register_cmd();
 
     // Do not cull entities too early.
     player_fpgun_render_ir_cull_patch_1.install();
