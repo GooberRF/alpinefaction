@@ -192,6 +192,12 @@ Version 1.4.0 (Lupin): Released Aug-25-2026
 - Reduce latency on continuous fire weapons by sending an object update immediately when one starts or stops firing instead of waiting for the next scheduled send
 - Add `spectate_povcomp` command for ping compensation while following a player in spectate mode - delays other players to approximate what the followed player saw when they aimed
 
+[@jyh9521](https://github.com/jyh9521)
+- Render text as UTF-8, so TrueType fonts can display non-Latin scripts
+  - Glyphs are rasterized on demand instead of up front, so a large character set does not cost hundreds of megabytes
+  - Line breaking and truncation happen on code point boundaries, including the usual CJK rules
+  - General purpose `.vf` bitmap fonts resolve to their TrueType equivalents
+
 ### Bug fixes
 [@GooberRF](https://github.com/GooberRF)
 - Fix team balance not properly randomizing the distribution order of equal-scoring human players
