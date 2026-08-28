@@ -6,8 +6,12 @@ Version 1.5.0 (TBD): Not yet released
 ### Major features
 
 ### Minor features, changes, and enhancements
+[@GooberRF](https://github.com/GooberRF)
+- Raise level editor per-room and per-mesh render vertex limit from 8000 to 32768
 
 ### Bug fixes
+[@GooberRF](https://github.com/GooberRF)
+- Fix level editor crashing without an error message when drawing a room or mesh containing more than 8000 vertices
 
 Version 1.4.0 (Lupin): Released Aug-25-2026
 --------------------------------

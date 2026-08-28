@@ -9,6 +9,7 @@
 #include <d3d8.h>
 #include <algorithm>
 #include <cmath>
+#include <initializer_list>
 #include "vtypes.h"
 #include "alpine_obj.h"
 
@@ -32,6 +33,33 @@ static char* pool_cursor_snapshot = nullptr;
 static constexpr int max_detail_rooms = 8192;
 static void* detail_room_list[max_detail_rooms];
 static int detail_room_count;
+
+// RED transforms each room into parallel per-vertex arrays hardcoded to 8000 entries, and the
+// per-vertex loops have no bounds check: a bigger room runs the 20-byte screen vert array off the
+// top of FUN_00502040's stack frame and smashes its callers. 32768 is the int16 index ceiling.
+static constexpr int max_room_render_verts = 0x8000;
+static u8 room_vert_flags[max_room_render_verts];              // stack, frame+0x98c
+alignas(16) static u8 room_screen_verts[max_room_render_verts * 20];  // stack, frame+0x51cc
+alignas(16) static u8 room_xformed_verts[max_room_render_verts * 12]; // static, 0x01a85500
+static u8 shared_vert_flags[max_room_render_verts];             // static, 0x01ab4354
+
+// Same pattern in the v3d mesh LOD renderers (FUN_00505c60 / FUN_00506830), which also share
+// room_xformed_verts and shared_vert_flags. Mesh chunk vertex counts are u16.
+alignas(16) static u8 mesh_verts_a[max_room_render_verts * 12]; // static, 0x01a520b0
+static u8 mesh_vert_flags[max_room_render_verts];               // static, 0x01a697b0
+alignas(16) static u8 mesh_verts_d[max_room_render_verts * 12]; // static, 0x01a6de00
+alignas(16) static u8 mesh_verts_c[max_room_render_verts * 12]; // static, 0x01a9cc00
+static u8 mesh_vert_rgb[max_room_render_verts * 3];             // static, 0x01ab6294
+
+// Repoint references to a relocated static array. Sites are operand addresses; the field offset
+// the instruction uses is recovered from its current value rather than repeated per site.
+static void repoint_array_refs(std::initializer_list<uintptr_t> sites, uintptr_t old_base,
+                               const u8* new_base)
+{
+    for (uintptr_t operand : sites) {
+        write_mem_ptr(operand, new_base + (addr_as_ref<u32>(operand) - old_base));
+    }
+}
 
 namespace red
 {
@@ -512,6 +540,63 @@ void ApplyGraphicsPatches()
     write_mem_ptr(0x0049c026, editor_geo_vertex_chain);
     write_mem_ptr(0x0049c034, editor_geo_vertex_chain);
     write_mem_ptr(0x0049c226, editor_geo_vertex_chain);
+
+    // Point the level renderer's per-vertex loops at the relocated arrays (FUN_00502040). Four
+    // sites are a byte shorter as an absolute form, so they pass an end address to be padded.
+    using namespace asm_regs;
+    AsmWriter(0x005021f4, 0x005021fb).lea(edi, room_vert_flags);
+    AsmWriter(0x005022c1).cmp_byte(*(ecx * 1 + room_vert_flags), 0);
+    AsmWriter(0x005022c9).lea(ecx, *(ecx * 1 + room_vert_flags));
+    AsmWriter(0x005024cf).cmp_byte(*(ecx * 1 + room_vert_flags), 0);
+    AsmWriter(0x005024d7).lea(ecx, *(ecx * 1 + room_vert_flags));
+    AsmWriter(0x00502785).mov(al, *(ecx * 1 + room_vert_flags));
+    AsmWriter(0x005028ea).mov(cl, *(eax * 1 + room_vert_flags));
+    AsmWriter(0x00502c8b, 0x00502c92).lea(edi, room_vert_flags);
+    AsmWriter(0x00502ccf).mov_byte(*(edi * 1 + room_vert_flags), 0);
+    AsmWriter(0x00502d2a).mov(dl, *(ecx * 1 + room_vert_flags));
+    AsmWriter(0x00502dc5).mov(dl, *(ecx * 1 + room_vert_flags));
+    AsmWriter(0x0050277a, 0x00502781).lea(edi, room_screen_verts + 0x10);
+    AsmWriter(0x005028e3, 0x005028ea).lea(esi, room_screen_verts + 4);
+    AsmWriter(0x00502d43).lea(edi, *(edx * 4 + room_screen_verts));
+    AsmWriter(0x00502d4a).mov(dl, *(edx * 4 + room_screen_verts + 0x11));
+    AsmWriter(0x00502dda).lea(edi, *(edx * 4 + room_screen_verts));
+    AsmWriter(0x00502de1).mov(edx, *(edx * 4 + room_screen_verts));
+    AsmWriter(0x00503912).lea(esi, *(ecx * 4 + room_screen_verts));
+    AsmWriter(0x00503919).mov(cl, *(ecx * 4 + room_screen_verts + 0x11));
+    AsmWriter(0x005039e8).mov(al, *(edx * 4 + room_screen_verts + 0x11));
+    AsmWriter(0x00503c4d).mov(ecx, *(edx * 4 + room_screen_verts));
+    AsmWriter(0x00503c54).lea(eax, *(edx * 4 + room_screen_verts));
+
+    // Statics, shared between the level and mesh renderers
+    repoint_array_refs({0x0050275b, 0x00502f35, 0x005039c1, 0x0050588d, 0x005060d5, 0x005063fa,
+                        0x00506bdc, 0x00507462},
+                       0x01a85500, room_xformed_verts);
+    repoint_array_refs({0x00502d55, 0x00502ead, 0x00502ebe, 0x00502f49, 0x00505f84, 0x00505f8c,
+                        0x005060ae, 0x005060cd, 0x00506187, 0x005062f3, 0x00506305, 0x00506317,
+                        0x00506332, 0x00506338, 0x00506341, 0x00506378, 0x0050637e, 0x00506387,
+                        0x00506412, 0x00506c1b, 0x00506c27, 0x00506c3f, 0x00507073, 0x00507090,
+                        0x00507164, 0x005072d4, 0x005072e6, 0x005072f8, 0x00507317, 0x00507320,
+                        0x00507326, 0x005073e1, 0x005073ea, 0x005073f0, 0x0050747a},
+                       0x01ab4354, shared_vert_flags);
+    repoint_array_refs({0x0050582d, 0x00505f54, 0x00506c6e, 0x00506cf7, 0x00506d09, 0x00506d0f,
+                        0x00506ed9, 0x00506edf, 0x00506eee, 0x00506ef4, 0x00506f41, 0x00506f4d,
+                        0x00506f53, 0x00506f5f, 0x00506f71, 0x00506fb0, 0x00506fbc, 0x00506fc2,
+                        0x00506fd2, 0x00506fde, 0x00507000, 0x00507026, 0x00507048, 0x0050704e,
+                        0x00507063, 0x005070a1, 0x005070b3, 0x005070d3, 0x005070ed, 0x00507105,
+                        0x0050714d, 0x005071a5, 0x005071b1, 0x005071cd},
+                       0x01a520b0, mesh_verts_a);
+    repoint_array_refs({0x00505fa6, 0x005060f5, 0x00506c68, 0x005070c7},
+                       0x01a697b0, mesh_vert_flags);
+    repoint_array_refs({0x005058bd, 0x00506bf0, 0x00506c21, 0x00506f95, 0x00507353, 0x00507363,
+                        0x00507385, 0x00507395, 0x005073b5},
+                       0x01a6de00, mesh_verts_d);
+    repoint_array_refs({0x0050585d, 0x00506be8, 0x00506cff, 0x00506d15, 0x00506f03, 0x00506f09,
+                        0x00506f1f, 0x00506f25, 0x00506f65, 0x00506f77, 0x00506f87, 0x00506f9e,
+                        0x00507170, 0x0050718e},
+                       0x01a9cc00, mesh_verts_c);
+    repoint_array_refs({0x00505f4f, 0x00505f63, 0x00505ffc, 0x00506444, 0x00506bd1, 0x00506cc3,
+                        0x005074b1},
+                       0x01ab6294, mesh_vert_rgb);
 
     // Restore render state after D3D device Reset()
     gr_d3d_device_reset_state_recovery.install();
