@@ -54,6 +54,7 @@ class GrNewFont
 {
 public:
     GrNewFont(std::string_view name);
+    void draw_into_bitmap(int x, int y, int bm_handle, std::string_view text) const;
     void draw(int x, int y, std::string_view text, rf::gr::Mode state) const;
     void draw_aligned(rf::gr::TextAlignment align, int x, int y, std::string_view text, rf::gr::Mode state) const;
     void get_size(int* w, int* h, std::string_view text) const;
@@ -372,6 +373,41 @@ GrNewFont::GrNewFont(std::string_view name) :
     rf::gr::tcache_add_ref(bitmap_);
 }
 
+void GrNewFont::draw_into_bitmap(
+    const int x,
+    const int y,
+    const int bm_handle,
+    const std::string_view text
+) const {
+    int bm_w = 0, bm_h = 0;
+    rf::bm::get_dimensions(bm_handle, &bm_w, &bm_h);
+
+    int pen_x = x;
+    const int pen_y = y + baseline_y_;
+    for (const char ch : text) {
+        const int glyph_idx = char_map_[static_cast<uint8_t>(ch)];
+        if (glyph_idx != -1) {
+            const GlyphInfo& glyph_info = glyphs_[glyph_idx];
+            if (glyph_info.bm_w) {
+                bm_copy(
+                    pen_x + glyph_info.x,
+                    pen_y + glyph_info.y,
+                    bm_handle,
+                    glyph_info.bm_x,
+                    glyph_info.bm_y,
+                    glyph_info.bm_w,
+                    glyph_info.bm_h,
+                    bitmap_
+                );
+            }
+            pen_x += glyph_info.advance_x;
+            if (pen_x + glyph_info.x >= bm_w) {
+                break;
+            }
+        }
+    }
+}
+
 void GrNewFont::draw(int x, int y, std::string_view text, rf::gr::Mode state) const
 {
     if (x == rf::gr::center_x) {
@@ -545,6 +581,43 @@ FunHook<int(int)> gr_get_font_height_hook{
     },
 };
 
+FunHook<void(int, int, int, const char*, int)> gr_string_render_into_bitmap_hook{
+    0x005203A0,
+    [] (
+        const int x,
+        const int y,
+        const int bm_handle,
+        const char* const text,
+        int font_num
+    ) {
+        if (font_num == -1) {
+            font_num = g_default_font_id;
+        }
+        if (font_num & ttf_font_flag) {
+            const unsigned idx = static_cast<unsigned>(font_num & ~ttf_font_flag);
+            if (idx >= g_fonts.size()) {
+                if (report_bad_font_id_once(font_num)) {
+                    xlog::error(
+                        "gr_string_render_into_bitmap_hook: bad TTF font id {:#x} (have {})",
+                        font_num,
+                        g_fonts.size()
+                    );
+                }
+            } else {
+                g_fonts[idx].draw_into_bitmap(x, y, bm_handle, text);
+            }
+        } else {
+            gr_string_render_into_bitmap_hook.call_target(
+                x,
+                y,
+                bm_handle,
+                text,
+                font_num
+            );
+        }
+    },
+};
+
 FunHook<void(int, int, const char*, int, rf::gr::Mode)> gr_string_hook{
     0x0051FEB0,
     [](int x, int y, const char *text, int font_num, rf::gr::Mode mode) {
@@ -645,6 +718,7 @@ void gr_font_apply_patch()
     gr_init_font_hook.install();
     gr_set_default_font_hook.install();
     gr_get_font_height_hook.install();
+    gr_string_render_into_bitmap_hook.install();
     gr_string_hook.install();
     gr_get_string_size_hook.install();
     init_freetype_lib();

@@ -11,6 +11,8 @@
 #include "atx.h"
 #include "dds.h"
 #include "stb_image_loader.h"
+#include "../misc/misc.h"
+#include "bmpman.h"
 
 int bm_calculate_pitch(int w, rf::bm::Format format)
 {
@@ -334,6 +336,69 @@ void bm_change_format(int bm_handle, rf::bm::Format format)
         rf::gr::mark_texture_dirty(bm_handle);
         bm.format = format;
     }
+}
+
+bool bm_copy(
+    const int dst_x,
+    const int dst_y,
+    const int dst_bm_handle,
+    const int src_x,
+    const int src_y,
+    const int w,
+    const int h,
+    const int src_bm_handle)
+{
+    rf::gr::LockInfo src_lock{};
+    if (!rf::gr::lock(src_bm_handle, 0, &src_lock, rf::gr::LOCK_READ_ONLY)) {
+        return false;
+    }
+
+    rf::gr::LockInfo dst_lock{};
+    if (!rf::gr::lock(dst_bm_handle, 0, &dst_lock, rf::gr::LOCK_WRITE_ONLY)) {
+        rf::gr::unlock(&src_lock);
+        return false;
+    }
+
+    ScopeGuard guard{[&] {
+        rf::gr::unlock(&dst_lock);
+        rf::gr::unlock(&src_lock);
+    }};
+
+    if (w <= 0
+        || h <= 0
+        || src_x < 0
+        || src_y < 0
+        || dst_x < 0
+        || dst_y < 0
+        || src_lock.w - src_x < w
+        || src_lock.h - src_y < h
+        || dst_lock.w - dst_x < w
+        || dst_lock.h - dst_y < h) {
+        return false;
+    }
+
+    uint8_t* const dst_ptr = dst_lock.data
+        + dst_x
+        * bm_bytes_per_pixel(dst_lock.format)
+        + dst_y
+        * dst_lock.stride_in_bytes;
+
+    const uint8_t* const src_ptr = src_lock.data
+        + src_x
+        * bm_bytes_per_pixel(src_lock.format)
+        + src_y
+        * src_lock.stride_in_bytes;
+
+    return bm_convert_format(
+        dst_ptr,
+        dst_lock.format,
+        src_ptr,
+        src_lock.format,
+        w,
+        h,
+        dst_lock.stride_in_bytes,
+        src_lock.stride_in_bytes
+    );
 }
 
 void bm_apply_patch()
