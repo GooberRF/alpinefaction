@@ -180,28 +180,28 @@ static bool gyro_action_has_binding(rf::ControlConfigAction action)
         || gamepad_get_trigger_for_action(idx) >= 0;
 }
 
-// Toggle state for Gyro Modifier binding.
+// Toggle state for Gyro Ratcheting binding.
 static bool g_gyro_toggle_state = true;
 static bool g_gyro_toggle_prev_down = false;
 
 // Returns whether gyro input should be applied this frame.
-// If Gyro Modifier is unbound -> always active.
-// Behavior while bound is determined by gamepad_gyro_modifier_mode:
+// If Gyro Ratcheting is unbound -> always active.
+// Behavior while bound is determined by the Gyro Ratchet setting:
 //   0 = Always  -> always active regardless of binding
 //   1 = HoldOff -> active while NOT held
 //   2 = HoldOn  -> active while held
 //   3 = Toggle  -> button press flips on/off (starts on)
 //   4 = TouchOn -> active while touchpad is touched (binding ignored)
 //   5 = TouchOff-> active while touchpad is NOT touched (binding ignored)
-bool gyro_modifier_is_active()
+bool gyro_ratcheting_is_active()
 {
     using namespace rf;
 
     if (!local_player) return true;
 
-    const auto action = get_af_control(AlpineControlConfigAction::AF_ACTION_GYRO_MODIFIER);
+    const auto action = get_af_control(AlpineControlConfigAction::AF_ACTION_GYRO_RATCHETING);
 
-    int mode = std::clamp(g_alpine_game_config.gamepad_gyro_modifier_mode, 0, 5);
+    int mode = std::clamp(g_alpine_game_config.gamepad_gyro_ratcheting, 0, 5);
 
     if (mode == 0) // Always
         return true;
@@ -234,20 +234,20 @@ bool gyro_modifier_is_active()
     return down; // HoldOn (mode == 2)
 }
 
-ConsoleCommand2 gyro_modifier_mode_cmd{
-    "gyro_modifier_mode",
+ConsoleCommand2 gyro_ratcheting_cmd{
+    "gyro_ratcheting",
     [](std::optional<int> val) {
         if (val) {
-            g_alpine_game_config.gamepad_gyro_modifier_mode = std::clamp(val.value(), 0, 5);
+            g_alpine_game_config.gamepad_gyro_ratcheting = std::clamp(val.value(), 0, 5);
             g_gyro_toggle_state = true;
             g_gyro_toggle_prev_down = false;
         }
-        int mode = g_alpine_game_config.gamepad_gyro_modifier_mode;
+        int mode = g_alpine_game_config.gamepad_gyro_ratcheting;
         static const char* mode_names[] = {"Always", "Hold Off", "Hold On", "Toggle", "Touch On", "Touch Off"};
-        rf::console::print("Gyro modifier mode: {} ({})", mode_names[mode], mode);
+        rf::console::print("Gyro ratcheting mode: {} ({})", mode_names[mode], mode);
     },
-    "Set gyro modifier mode",
-    "gyro_modifier_mode <0|1|2|3|4|5> (valid values: 0=Always, 1=Hold Off, 2=Hold On, 3=Toggle, 4=Touch On, 5=Touch Off (default 0))",
+    "Set gyro ratcheting mode",
+    "gyro_ratcheting <0|1|2|3|4|5> (valid values: 0=Always, 1=Hold Off, 2=Hold On, 3=Toggle, 4=Touch On, 5=Touch Off)",
 };
 
 ConsoleCommand2 gyro_autocalibration_cmd{
@@ -370,7 +370,7 @@ void gyro_apply_patch()
     g_motion.Settings.StillnessCalibrationEaseInTime  = 1.5f; // default 3.0
 
     gyro_update_calibration_mode();
-    gyro_modifier_mode_cmd.register_cmd();
+    gyro_ratcheting_cmd.register_cmd();
     gyro_autocalibration_cmd.register_cmd();
     gyro_reset_autocalibration_partial_cmd.register_cmd();
     gyro_reset_autocalibration_full_cmd.register_cmd();

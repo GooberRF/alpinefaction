@@ -359,8 +359,8 @@ CodeInjection control_config_init_patch{
                                        rf::AlpineControlConfigAction::AF_ACTION_VOTE_MENU);
         alpine_control_config_add_item(ccp, "Center View", false, -1, -1, -1,
                                        rf::AlpineControlConfigAction::AF_ACTION_CENTER_VIEW);
-        alpine_control_config_add_item(ccp, "Gyro Modifier", false, -1, -1, -1,
-                                       rf::AlpineControlConfigAction::AF_ACTION_GYRO_MODIFIER);
+        alpine_control_config_add_item(ccp, "Gyro Ratcheting", false, -1, -1, -1,
+                                       rf::AlpineControlConfigAction::AF_ACTION_GYRO_RATCHETING);
 
         // Only reset gamepad defaults if settings were not loaded (first run / no settings file).
         // If the user's settings file was already loaded, skip this reset to preserve saved bindings.

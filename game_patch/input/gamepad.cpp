@@ -1360,7 +1360,7 @@ void consume_raw_gamepad_deltas(float& pitch_delta, float& yaw_delta)
         && g_motion_sensors_supported
         && g_alpine_game_config.gamepad_gyro_enabled
         && g_alpine_game_config.gamepad_gyro_sensitivity > 0.0f
-        && gyro_modifier_is_active();
+        && gyro_ratcheting_is_active();
 
     if (allow_gyro)
         gamepad_apply_gyro(has_player_entity, yaw_delta, pitch_delta);
@@ -1496,7 +1496,7 @@ FunHook<void(rf::Entity*)> physics_simulate_entity_hook{
             if (g_motion_sensors_supported && g_alpine_game_config.gamepad_gyro_enabled
                 && g_alpine_game_config.gamepad_gyro_vehicle_camera
                 && g_alpine_game_config.gamepad_gyro_sensitivity > 0.0f
-                && gyro_modifier_is_active()) {
+                && gyro_ratcheting_is_active()) {
                 float gyro_pitch, gyro_yaw;
                 gyro_get_axis_orientation(gyro_pitch, gyro_yaw);
                 gyro_apply_smoothing(gyro_pitch, gyro_yaw);

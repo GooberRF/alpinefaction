@@ -28,5 +28,5 @@ void gyro_apply_tightening(float& pitch_dps, float& yaw_dps);
 void gyro_apply_smoothing(float& pitch_dps, float& yaw_dps);
 void gyro_apply_vh_mixer(float& pitch_dps, float& yaw_dps);
 const char* gyro_get_space_name(int space);
-bool gyro_modifier_is_active();
+bool gyro_ratcheting_is_active();
 void gyro_apply_patch();

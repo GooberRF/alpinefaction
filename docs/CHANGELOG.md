@@ -22,8 +22,8 @@ Version 1.5.0 (TBD): Not yet released
     - Gyro Space orientation support
       - Yaw, Roll, Local Space, Player Space, World Space
     - Gyro Autocalibration system 
-    - Gyro Modifier / Gyro Ratcheting support 
-      - most modes requires `Gyro Modifier` action to be bound
+    - Gyro Ratcheting support 
+      - most modes requires `Gyro Ratcheting` action to be bound
   - Flick Stick support
     - Best paired with Gyro Aiming or Mixed Input
   - Simultaneous Controller+Keyboard/Mouse / Mixed Input support
