@@ -11,6 +11,9 @@ Version 1.5.0 (TBD): Not yet released
 - Restore cut first person weapon aim sway, toggleable with `cl_weaponsway`
 - Add terms of use and notices document to installer
 
+[@is-this-c](https://github.com/is-this-c)
+- Allow TrueType fonts to be rendered into bitmaps with mipmaps
+
 ### Bug fixes
 [@GooberRF](https://github.com/GooberRF)
 - Fix phantom visual flag mesh being visible after Salvage flag is picked up on rare occasions

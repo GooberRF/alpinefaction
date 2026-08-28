@@ -246,6 +246,7 @@ FunHook<void(int)> bm_free_entry_hook{
             atx_free(bm_entry);
         }
         bm_entry.dynamic = false;
+        bm_entry.user_mipmap = false;
 
         if (!bm_entry.prev || !bm_entry.next) {
             return;
@@ -325,6 +326,16 @@ bool bm_is_dynamic(int bm_handle)
 {
     int bm_index = rf::bm::get_cache_slot(bm_handle);
     return rf::bm::bitmaps[bm_index].dynamic;
+}
+
+void bm_set_user_mipmap(const int bm_handle, const bool mipmap) {
+    const int bm_index = rf::bm::get_cache_slot(bm_handle);
+    rf::bm::bitmaps[bm_index].user_mipmap = mipmap;
+}
+
+bool bm_is_user_mipmap(const int bm_handle) {
+    const int bm_index = rf::bm::get_cache_slot(bm_handle);
+    return rf::bm::bitmaps[bm_index].user_mipmap;
 }
 
 void bm_change_format(int bm_handle, rf::bm::Format format)

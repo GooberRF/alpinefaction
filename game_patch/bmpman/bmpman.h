@@ -15,6 +15,8 @@ int bm_load_if_exists(const char* name, int unk, bool generate_mipmaps);
 
 void bm_set_dynamic(int bm_handle, bool dynamic);
 bool bm_is_dynamic(int bm_handle);
+void bm_set_user_mipmap(int bm_handle, bool force_mipmap);
+bool bm_is_user_mipmap(int bm_handle);
 void bm_change_format(int bm_handle, rf::bm::Format format);
 void bm_apply_patch();
 bool bm_is_compressed_format(rf::bm::Format format);
