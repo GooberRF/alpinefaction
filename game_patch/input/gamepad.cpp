@@ -1577,6 +1577,26 @@ ConsoleCommand2 joy_sens_cmd{
     "joy_sens <value>",
 };
 
+ConsoleCommand2 joy_camera_invert_x_cmd{
+    "joy_camera_invert_x",
+    [](std::optional<int> val) {
+        if (val) g_alpine_game_config.gamepad_joy_invert_x = val.value() != 0;
+        rf::console::print("Joy invert X: {}", g_alpine_game_config.gamepad_joy_invert_x ? "on" : "off");
+    },
+    "Toggle Joystick Camera X-axis invert",
+    "joy_camera_invert_x <0|1>",
+};
+
+ConsoleCommand2 joy_camera_invert_y_cmd{
+    "joy_camera_invert_y",
+    [](std::optional<int> val) {
+        if (val) g_alpine_game_config.gamepad_joy_invert_y = val.value() != 0;
+        rf::console::print("Joy invert Y: {}", g_alpine_game_config.gamepad_joy_invert_y ? "on" : "off");
+    },
+    "Toggle Joystick Camera Y-axis invert",
+    "joy_camera_invert_y <0|1>",
+};
+
 ConsoleCommand2 swap_sticks_cmd{
     "joy_swap_sticks",
     [](std::optional<float> val) {
@@ -1597,14 +1617,14 @@ ConsoleCommand2 joy_move_deadzone_cmd{
     "joy_move_deadzone <value> (valid range: 0.0 - 0.9)",
 };
 
-ConsoleCommand2 joy_look_deadzone_cmd{
-    "joy_look_deadzone",
+ConsoleCommand2 joy_camera_deadzone_cmd{
+    "joy_camera_deadzone",
     [](std::optional<float> val) {
         if (val) g_alpine_game_config.gamepad_look_deadzone = std::clamp(val.value(), 0.0f, 0.9f);
         rf::console::print("Gamepad look deadzone: {:.2f}", g_alpine_game_config.gamepad_look_deadzone);
     },
-    "Set look stick deadzone",
-    "joy_look_deadzone <value> (valid range: 0.0 - 0.9)",
+    "Set camera stick deadzone",
+    "joy_camera_deadzone <value> (valid range: 0.0 - 0.9)",
 };
 
 ConsoleCommand2 joy_scope_sens_cmd{
@@ -1647,13 +1667,23 @@ ConsoleCommand2 joy_flickstick_sweep_cmd{
     "joy_flickstick_sweep <value> (valid range: 0.01 - 6.0)",
 };
 
+ConsoleCommand2 joy_flickstick_invert_cmd{
+    "joy_flickstick_invert",
+    [](std::optional<int> val) {
+        if (val) g_alpine_game_config.gamepad_flickstick_invert = val.value() != 0;
+        rf::console::print("Flickstick invert: {}", g_alpine_game_config.gamepad_flickstick_invert ? "on" : "off");
+    },
+    "Toggle flick stick invert",
+    "joy_flickstick_invert <0|1>",
+};
+
 ConsoleCommand2 joy_flickstick_smoothing_cmd{
     "joy_flickstick_smoothing",
     [](std::optional<float> val) {
         if (val) g_alpine_game_config.gamepad_flickstick_smoothing = std::clamp(val.value(), 0.0f, 1.0f);
         rf::console::print("Gamepad flickstick smoothing: {:.2f}", g_alpine_game_config.gamepad_flickstick_smoothing);
     },
-    "Set flick-stick smoothing factor",
+    "Set flick stick smoothing factor",
     "joy_flickstick_smoothing <value> (valid range: 0.0 - 1.0)",
 };
 
@@ -1663,7 +1693,7 @@ ConsoleCommand2 joy_flickstick_deadzone_cmd{
         if (val) g_alpine_game_config.gamepad_flickstick_deadzone = std::clamp(val.value(), 0.0f, 0.9f);
         rf::console::print("Gamepad flickstick deadzone: {:.2f}", g_alpine_game_config.gamepad_flickstick_deadzone);
     },
-    "Set flick-stick activation deadzone",
+    "Set flick stick activation deadzone",
     "joy_flickstick_deadzone <value> (valid range: 0.0 - 0.9)",
 };
 
@@ -1673,7 +1703,7 @@ ConsoleCommand2 joy_flickstick_release_deadzone_cmd{
         if (val) g_alpine_game_config.gamepad_flickstick_release_deadzone = std::clamp(val.value(), 0.0f, 0.9f);
         rf::console::print("Gamepad flickstick release deadzone: {:.2f}", g_alpine_game_config.gamepad_flickstick_release_deadzone);
     },
-    "Set flick-stick release deadzone",
+    "Set flick stick release deadzone",
     "joy_flickstick_release_deadzone <value> (valid range: 0.0 - 0.9)",
 };
 
@@ -1683,7 +1713,7 @@ ConsoleCommand2 joy_flickstick_allow_scoped_cmd{
         if (val) g_alpine_game_config.gamepad_flickstick_allow_scoped = val.value() != 0;
         rf::console::print("Joy flick-stick in scopes: {}", g_alpine_game_config.gamepad_flickstick_allow_scoped ? "enabled" : "disabled");
     },
-    "Allow flick-stick to be used when scoped",
+    "Allow flick stick to be used when scoped",
     "joy_flickstick_allow_scoped <0|1>",
 };
 
@@ -2226,13 +2256,16 @@ void gamepad_apply_patch()
     mouse_was_button_pressed_hook.install();
     joy_sens_cmd.register_cmd();
     joy_move_deadzone_cmd.register_cmd();
-    joy_look_deadzone_cmd.register_cmd();
+    joy_camera_deadzone_cmd.register_cmd();
     joy_scope_sens_cmd.register_cmd();
     joy_scanner_sens_cmd.register_cmd();
+    joy_camera_invert_x_cmd.register_cmd();
+    joy_camera_invert_y_cmd.register_cmd();
     gyro_scope_sens_cmd.register_cmd();
     gyro_scanner_sens_cmd.register_cmd();
     joy_flickstick_cmd.register_cmd();
     joy_flickstick_sweep_cmd.register_cmd();
+    joy_flickstick_invert_cmd.register_cmd();
     joy_flickstick_smoothing_cmd.register_cmd();
     joy_flickstick_deadzone_cmd.register_cmd();
     joy_flickstick_release_deadzone_cmd.register_cmd();

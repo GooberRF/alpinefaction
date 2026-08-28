@@ -376,6 +376,7 @@ void gyro_apply_patch()
     gyro_reset_autocalibration_full_cmd.register_cmd();
     gyro_space_cmd.register_cmd();
     gyro_invert_y_cmd.register_cmd();
+    gyro_invert_x_cmd.register_cmd();
     gyro_tightening_cmd.register_cmd();
     gyro_smoothing_cmd.register_cmd();
     gyro_vh_cmd.register_cmd();
