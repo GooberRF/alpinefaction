@@ -65,6 +65,16 @@ namespace rf::console
         output(s.c_str(), nullptr);
     }
 
+    template <typename... Args>
+    inline void print(
+        const rf::gr::Color& color,
+        const std::format_string<Args...> fmt,
+        Args&&... args
+    ) {
+        const std::string s = std::format(fmt, std::forward<Args>(args)...);
+        output(s.c_str(), &color);
+    }
+
     //static auto& commands = addr_as_ref<ConsoleCommand*[30]>(0x01775530);
     static auto& num_commands = addr_as_ref<int>(0x0177567C);
 
