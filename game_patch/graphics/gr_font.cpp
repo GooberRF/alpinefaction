@@ -623,7 +623,7 @@ int gr_fit_string(
         return text_w;
     }
 
-    while (text_w + suffix_w > max_width && !text.empty()) {
+    while ((text_w + suffix_w > max_width || text.back() == ' ') && !text.empty()) {
         const auto [last_w, last_h] = rf::gr::get_char_size(text.back(), font_id);
         text_w -= last_w;
         text.pop_back();
