@@ -44,7 +44,7 @@ FunHook<int(rf::GSolid*, rf::GRoom*)> geo_cache_prepare_room_hook{
     [](rf::GSolid* solid, rf::GRoom* room) {
         int ret = geo_cache_prepare_room_hook.call_target(solid, room);
         if (ret == 0 && room->geo_cache) {
-            int num_verts = struct_field_ref<int>(room->geo_cache, 4);
+            int num_verts = room->geo_cache->num_vertices;
             if (num_verts > 8000) {
                 static int once = 0;
                 if (!(once++))
@@ -216,6 +216,18 @@ CodeInjection face_scroll_fix{
         auto& texture_movers = solid->texture_movers;
         for (auto& tm : texture_movers) {
             tm->update_solid(solid);
+        }
+    },
+};
+
+// D3D11 scrolls texture-mover faces in the vertex shader (pan_speed * time), so the
+// stock CPU-side UV accumulation would be applied a second time whenever a room
+// render cache is rebuilt.
+CallHook<void __fastcall(rf::GTextureMover*, int, float)> texture_mover_process_hook{
+    0x004E617D,
+    [](rf::GTextureMover* mover, int edx, float dt) {
+        if (!is_d3d11()) {
+            texture_mover_process_hook.call_target(mover, edx, dt);
         }
     },
 };
@@ -725,6 +737,7 @@ void g_solid_do_patch()
 
     // Fix face scroll in levels after version 0xB4
     face_scroll_fix.install();
+    texture_mover_process_hook.install();
 
     // Fix faces with "fullbright" flag having randomly generated lightmaps applied after geomod
     ingame_add_lightmap_to_face_fullbright_fix.install();

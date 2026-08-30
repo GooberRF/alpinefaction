@@ -1011,9 +1011,7 @@ static void invalidate_room_rendering(rf::GRoom* room)
             }
         }
         if (valid && parent->geo_cache) {
-            auto* state_ptr = reinterpret_cast<int*>(
-                reinterpret_cast<char*>(parent->geo_cache) + 0x20);
-            *state_ptr = 2; // triggers cache rebuild
+            parent->geo_cache->state = 2; // triggers cache rebuild
         }
     }
 
@@ -2069,7 +2067,7 @@ CodeInjection glass_shards_entry_injection{
 // For opaque detail rooms (new for Alpine), the parent room's RoomRenderCache includes
 // detail room faces baked in (via GRenderCacheBuilder::add_room recursion). We must:
 //
-// 1. Invalidate parent room's render cache: set state_ (offset 0x20 in GCache) to 2.
+// 1. Invalidate parent room's render cache: set GCache::state to 2.
 //    This triggers a cache rebuild on the next render frame. The rebuild calls add_room,
 //    which iterates detail_rooms — the destroyed room has empty face_list, so no faces
 //    are added. Works for both D3D11 (RoomRenderCache) and D3D9 (stock GCache).
@@ -2096,9 +2094,7 @@ CodeInjection process_destroy_cleanup_injection{
                     }
                 }
                 if (valid && parent->geo_cache) {
-                    auto* state_ptr = reinterpret_cast<int*>(
-                        reinterpret_cast<char*>(parent->geo_cache) + 0x20);
-                    *state_ptr = 2;
+                    parent->geo_cache->state = 2;
                 }
             }
 
@@ -2138,9 +2134,7 @@ CodeInjection pregame_glass_render_cleanup_injection{
                     if (!r || r->is_detail || !r->geo_cache) continue;
                     for (auto* dr : r->detail_rooms) {
                         if (dr == room) {
-                            auto* state_ptr = reinterpret_cast<int*>(
-                                reinterpret_cast<char*>(r->geo_cache) + 0x20);
-                            *state_ptr = 2; // mark dirty — rebuilt on next render
+                            r->geo_cache->state = 2; // mark dirty — rebuilt on next render
                             break;
                         }
                     }
@@ -2849,9 +2843,10 @@ FunHook<int()> boolean_iterate_hook{
 // Invalidate render caches after RF2-style boolean modifies detail room faces.
 // D3D9: Call stock g_render_cache_clear — parent room caches include detail room
 //       faces via recursive geo_cache_prepare_room, so clearing forces a rebuild.
-// D3D11: Invalidate surgically — null detail room caches (lazily recreated) and
-//        mark normal room caches as invalid (state_ = 2 at offset 0x20 triggers
-//        rebuild on next render). We CANNOT call the full clear_cache() because
+// D3D11: Null the carved detail room's cache and invalidate only the normal rooms
+//        that embed it (state = 2 triggers rebuild on next render).
+//        Rebuilding every room is a whole-level rebuild per crater and re-bakes the
+//        accumulated scrolled UVs. We CANNOT call the full clear_cache() because
 //        destroying and recreating all RoomRenderCache objects causes a freeze.
 static void invalidate_rf2_render_caches()
 {
@@ -2869,16 +2864,24 @@ static void invalidate_rf2_render_caches()
         return;
     }
 
+    rf::GRoom* target = g_rf2_target_detail_room;
+    if (!target)
+        return;
+
+    target->geo_cache = nullptr;
+
+    // Normal rooms embed the detail room's faces in their own cache
+    // (GRenderCacheBuilder::add_room recurses into detail_rooms), and the stock
+    // boolean never marks them because their own faces weren't modified.
     for (int i = 0; i < solid->all_rooms.size(); i++) {
         rf::GRoom* room = solid->all_rooms[i];
-        if (!room || !room->geo_cache)
+        if (!room || room->is_detail || !room->geo_cache)
             continue;
-        if (room->is_detail) {
-            room->geo_cache = nullptr;
-        } else {
-            auto* state = reinterpret_cast<int*>(
-                reinterpret_cast<char*>(room->geo_cache) + 0x20);
-            *state = 2;
+        for (rf::GRoom* detail_room : room->detail_rooms) {
+            if (detail_room == target) {
+                room->geo_cache->state = 2;
+                break;
+            }
         }
     }
 }
