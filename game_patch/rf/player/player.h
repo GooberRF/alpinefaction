@@ -125,6 +125,10 @@ struct PlayerAdditionalData {
     std::optional<pf_pure_status> received_pf_status{};
     bool is_muted = false;
 
+    // Smoothed view angular velocity feeding fpgun aim sway, in rad/s.
+    float sway_pitch_vel = 0.0f;
+    float sway_yaw_vel = 0.0f;
+
     // Server-side variables.
     bool in_grace_period = true;
     ClientVersionInfoProfile version_info{};

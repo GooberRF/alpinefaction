@@ -174,6 +174,7 @@ struct AlpineGameSettings
     bool direct_input = true;
     bool scoreboard_anim = true;
     bool legacy_bob = false;
+    bool weapon_sway = false;
     bool scoreboard_split_simple = true;
     bool scoreboard_split_spectators = true;
     bool scoreboard_split_bots = false;

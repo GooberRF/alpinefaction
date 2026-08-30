@@ -6,10 +6,17 @@ Version 1.5.0 (TBD): Not yet released
 ### Major features
 
 ### Minor features, changes, and enhancements
+[@GooberRF](https://github.com/GooberRF)
+- Notify players in a server that is recording demos
+- Restore cut first person weapon aim sway, toggleable with `cl_weaponsway`
+- Add terms of use and notices document to installer
+
 [@is-this-c](https://github.com/is-this-c)
 - Add `IoCursor` and `PacketBuilder`
 
 ### Bug fixes
+[@GooberRF](https://github.com/GooberRF)
+- Fix phantom visual flag mesh being visible after Salvage flag is picked up on rare occasions
 
 Version 1.4.0 (Lupin): Released Aug-25-2026
 --------------------------------

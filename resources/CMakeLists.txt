@@ -321,4 +321,12 @@ add_custom_command(
 )
 add_custom_target(LicensingInfoTxt ALL DEPENDS ${CMAKE_BINARY_DIR}/bin/licensing-info.txt)
 
+# Copy terms.txt
+add_custom_command(
+    OUTPUT ${CMAKE_BINARY_DIR}/bin/terms.txt
+    COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_SOURCE_DIR}/terms.txt ${CMAKE_BINARY_DIR}/bin/terms.txt
+    MAIN_DEPENDENCY ${CMAKE_CURRENT_SOURCE_DIR}/terms.txt
+)
+add_custom_target(TermsTxt ALL DEPENDS ${CMAKE_BINARY_DIR}/bin/terms.txt)
+
 add_subdirectory(shaders)
