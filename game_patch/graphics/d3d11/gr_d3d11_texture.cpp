@@ -154,6 +154,13 @@ namespace gr::d3d11
         constexpr UINT required_support =
             D3D11_FORMAT_SUPPORT_RENDER_TARGET | D3D11_FORMAT_SUPPORT_MIP_AUTOGEN;
         if ((format_support & required_support) != required_support) {
+            if (rf::bm::get_type(bm_handle) == rf::bm::TYPE_USER) {
+                xlog::warn(
+                    "Auto-mip not supported for user format {}, falling back to single mip",
+                    static_cast<int>(fmt)
+                );
+                return create_texture(bm_handle, fmt, w, h, bits, pal, 1, false, w, h);
+            }
             bool has_alpha = dxgi_format == DXGI_FORMAT_B5G5R5A1_UNORM
                 || dxgi_format == DXGI_FORMAT_B4G4R4A4_UNORM
                 || dxgi_format == DXGI_FORMAT_B8G8R8A8_UNORM;
@@ -180,18 +187,21 @@ namespace gr::d3d11
             return create_texture(bm_handle, fmt, w, h, bits, pal, 1, false, w, h);
         }
 
-        std::unique_ptr<rf::ubyte[]> converted_bits;
-        rf::ubyte* upload_bits = bits;
-        int upload_pitch = bm_calculate_pitch(w, fmt);
-        if (fmt != supported_fmt) {
-            int dst_pitch = bm_calculate_pitch(w, supported_fmt);
-            converted_bits = std::make_unique<rf::ubyte[]>(dst_pitch * h);
-            ::bm_convert_format(converted_bits.get(), supported_fmt, bits, fmt, w, h, dst_pitch, upload_pitch, pal);
-            upload_bits = converted_bits.get();
-            upload_pitch = dst_pitch;
-        }
+        // Only convert and upload, if we have pixel data.
+        if (bits) {
+            std::unique_ptr<rf::ubyte[]> converted_bits;
+            rf::ubyte* upload_bits = bits;
+            int upload_pitch = bm_calculate_pitch(w, fmt);
+            if (fmt != supported_fmt) {
+                int dst_pitch = bm_calculate_pitch(w, supported_fmt);
+                converted_bits = std::make_unique<rf::ubyte[]>(dst_pitch * h);
+                ::bm_convert_format(converted_bits.get(), supported_fmt, bits, fmt, w, h, dst_pitch, upload_pitch, pal);
+                upload_bits = converted_bits.get();
+                upload_pitch = dst_pitch;
+            }
 
-        device_context_->UpdateSubresource(d3d_texture, 0, nullptr, upload_bits, upload_pitch, 0);
+            device_context_->UpdateSubresource(d3d_texture, 0, nullptr, upload_bits, upload_pitch, 0);
+        }
 
         ComPtr<ID3D11ShaderResourceView> srv;
         hr = device_->CreateShaderResourceView(d3d_texture, nullptr, &srv);
@@ -199,59 +209,10 @@ namespace gr::d3d11
             xlog::warn("Auto-mip SRV creation failed ({}x{}), falling back to single mip", w, h);
             return create_texture(bm_handle, fmt, w, h, bits, pal, 1, false, w, h);
         }
-        device_context_->GenerateMips(srv);
 
-        Texture texture{bm_handle, dxgi_format, {}};
-        texture.gpu_texture = std::move(d3d_texture);
-        texture.shader_resource_view = std::move(srv);
-        return texture;
-    }
-
-    TextureManager::Texture TextureManager::create_user_texture_auto_mips(
-        const int bm_handle,
-        const rf::bm::Format fmt,
-        const int w,
-        const int h
-    ) {
-        // Same format negotiation as create_texture_auto_mips: GenerateMips requires
-        // RENDER_TARGET + MIP_AUTOGEN, so fall back to 8888 when the narrower format
-        // lacks that combination on this driver.
-        auto dxgi_format = get_supported_texture_format(fmt).first;
-        UINT format_support = 0;
-        device_->CheckFormatSupport(dxgi_format, &format_support);
-        constexpr UINT required_support =
-            D3D11_FORMAT_SUPPORT_RENDER_TARGET | D3D11_FORMAT_SUPPORT_MIP_AUTOGEN;
-        if ((format_support & required_support) != required_support) {
-            bool has_alpha = dxgi_format == DXGI_FORMAT_B5G5R5A1_UNORM
-                || dxgi_format == DXGI_FORMAT_B4G4R4A4_UNORM
-                || dxgi_format == DXGI_FORMAT_B8G8R8A8_UNORM;
-            dxgi_format = has_alpha ? DXGI_FORMAT_B8G8R8A8_UNORM : DXGI_FORMAT_B8G8R8X8_UNORM;
-        }
-
-        CD3D11_TEXTURE2D_DESC desc{
-            dxgi_format,
-            static_cast<UINT>(w),
-            static_cast<UINT>(h),
-            1, // arraySize
-            0, // mipLevels = full chain
-            D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET,
-            D3D11_USAGE_DEFAULT,
-            0,
-        };
-        desc.MiscFlags = D3D11_RESOURCE_MISC_GENERATE_MIPS;
-
-        ComPtr<ID3D11Texture2D> d3d_texture;
-        HRESULT hr = device_->CreateTexture2D(&desc, nullptr, &d3d_texture);
-        if (FAILED(hr)) {
-            xlog::warn("User mip-mapped texture creation failed ({}x{}), falling back to single mip", w, h);
-            return create_texture(bm_handle, fmt, w, h, nullptr, nullptr, 1, false);
-        }
-
-        ComPtr<ID3D11ShaderResourceView> srv;
-        hr = device_->CreateShaderResourceView(d3d_texture, nullptr, &srv);
-        if (FAILED(hr)) {
-            xlog::warn("User mip-mapped SRV creation failed ({}x{}), falling back to single mip", w, h);
-            return create_texture(bm_handle, fmt, w, h, nullptr, nullptr, 1, false);
+        // Only generate mips initially, if we uploaded data.
+        if (bits) {
+            device_context_->GenerateMips(srv);
         }
 
         Texture texture{bm_handle, dxgi_format, {}};
@@ -340,7 +301,7 @@ namespace gr::d3d11
         if (rf::bm::get_type(bm_handle) == rf::bm::TYPE_USER) {
             xlog::trace("Creating user bitmap texture: handle {}", bm_handle);
             if (bm_is_user_mipmap(bm_handle) && !staging) {
-                return create_user_texture_auto_mips(bm_handle, fmt, w, h);
+                return create_texture_auto_mips(bm_handle, fmt, w, h, nullptr, nullptr);
             }
             auto texture = create_texture(bm_handle, fmt, w, h, nullptr, nullptr, 1, staging);
             return texture;
@@ -628,6 +589,9 @@ namespace gr::d3d11
 
     void TextureManager::unlock(rf::gr::LockInfo *lock)
     {
+        if (!lock) {
+            return;
+        }
         xlog::trace("unlocking texture: handle {} format {} size {}x{} data {}", lock->bm_handle, lock->format, lock->w, lock->h, lock->data);
         Texture& texture = get_or_load_texture(lock->bm_handle, true);
         if (texture.cpu_texture) {
@@ -636,8 +600,14 @@ namespace gr::d3d11
                 device_context_->CopySubresourceRegion(texture.gpu_texture, 0, 0, 0, 0, texture.cpu_texture, 0, nullptr);
                 // Rebuild lower mips after the write (only mip 0 is written via gr::lock).
                 if (bm_is_user_mipmap(lock->bm_handle)) {
-                    if (ID3D11ShaderResourceView* srv = texture.get_or_create_texture_view(device_, device_context_)) {
-                        device_context_->GenerateMips(srv);
+                    D3D11_TEXTURE2D_DESC desc{};
+                    texture.gpu_texture->GetDesc(&desc);
+                    if (desc.MiscFlags & D3D11_RESOURCE_MISC_GENERATE_MIPS) {
+                        ID3D11ShaderResourceView* srv =
+                            texture.get_or_create_texture_view(device_, device_context_);
+                        if (srv) {
+                            device_context_->GenerateMips(srv);
+                        }
                     }
                 }
             }

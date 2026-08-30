@@ -17,6 +17,7 @@
 #include "../bmpman/bmpman.h"
 
 #include <ft2build.h>
+#include <common/scope_guard.h>
 #include FT_FREETYPE_H
 
 struct ParsedFontName
@@ -379,8 +380,23 @@ void GrNewFont::draw_into_bitmap(
     const int bm_handle,
     const std::string_view text
 ) const {
-    int bm_w = 0, bm_h = 0;
-    rf::bm::get_dimensions(bm_handle, &bm_w, &bm_h);
+    if (text.empty() || bm_handle < 0 || bitmap_ == bm_handle) {
+        return;
+    }
+
+    rf::gr::LockInfo src_lock{};
+    if (!rf::gr::lock(bitmap_, 0, &src_lock, rf::gr::LOCK_READ_ONLY)) {
+        return;
+    }
+
+    ScopeGuard src_guard{[&] { rf::gr::unlock(&src_lock); }};
+
+    rf::gr::LockInfo dst_lock{};
+    if (!rf::gr::lock(bm_handle, 0, &dst_lock, rf::gr::LOCK_READ_ONLY_WRITE)) {
+        return;
+    }
+
+    ScopeGuard dst_guard{[&] { rf::gr::unlock(&dst_lock); }};
 
     int pen_x = x;
     const int pen_y = y + baseline_y_;
@@ -389,19 +405,19 @@ void GrNewFont::draw_into_bitmap(
         if (glyph_idx != -1) {
             const GlyphInfo& glyph_info = glyphs_[glyph_idx];
             if (glyph_info.bm_w) {
-                bm_copy(
+                bm_copy_pixels(
+                    dst_lock,
                     pen_x + glyph_info.x,
                     pen_y + glyph_info.y,
-                    bm_handle,
+                    src_lock,
                     glyph_info.bm_x,
                     glyph_info.bm_y,
                     glyph_info.bm_w,
-                    glyph_info.bm_h,
-                    bitmap_
+                    glyph_info.bm_h
                 );
             }
             pen_x += glyph_info.advance_x;
-            if (pen_x + glyph_info.x >= bm_w) {
+            if (pen_x >= dst_lock.w) {
                 break;
             }
         }

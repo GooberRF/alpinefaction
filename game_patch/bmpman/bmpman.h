@@ -5,6 +5,7 @@
 
 namespace rf::gr {
     struct Color;
+    struct LockInfo;
 }
 
 // rf::bm::load never fails: a missing file gets a generated 32x32 checkerboard
@@ -15,7 +16,7 @@ int bm_load_if_exists(const char* name, int unk, bool generate_mipmaps);
 
 void bm_set_dynamic(int bm_handle, bool dynamic);
 bool bm_is_dynamic(int bm_handle);
-void bm_set_user_mipmap(int bm_handle, bool force_mipmap);
+void bm_set_user_mipmap(int bm_handle, bool mipmap);
 bool bm_is_user_mipmap(int bm_handle);
 void bm_change_format(int bm_handle, rf::bm::Format format);
 void bm_apply_patch();
@@ -27,15 +28,25 @@ rf::gr::Color bm_get_pixel(uint8_t* data, rf::bm::Format format, int stride_in_b
 size_t bm_calculate_total_bytes(int w, int h, rf::bm::Format format);
 int bm_calculate_pitch(int w, rf::bm::Format format);
 int bm_calculate_rows(int h, rf::bm::Format format);
-bool bm_copy(
+bool bm_copy_pixels(
+    const rf::gr::LockInfo& dst_lock,
     int dst_x,
     int dst_y,
-    int dst_bm_handle,
+    const rf::gr::LockInfo& src_lock,
     int src_x,
     int src_y,
     int w,
-    int h,
-    int src_bm_handle
+    int h
+);
+bool bm_copy(
+    int dst_handle,
+    int dst_x,
+    int dst_y,
+    int src_handle,
+    int src_x,
+    int src_y,
+    int w,
+    int h
 );
 
 inline int bm_bytes_per_pixel(rf::bm::Format format)

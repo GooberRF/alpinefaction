@@ -12,7 +12,7 @@ Version 1.5.0 (TBD): Not yet released
 - Add terms of use and notices document to installer
 
 [@is-this-c](https://github.com/is-this-c)
-- Allow TrueType fonts to be rendered into bitmaps with mipmaps
+- Allow TrueType fonts to be rendered into bitmaps with mipmaps (D3D11 only)
 
 ### Bug fixes
 [@GooberRF](https://github.com/GooberRF)
