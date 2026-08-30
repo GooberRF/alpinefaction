@@ -162,7 +162,6 @@ namespace gr::d3d11
 
         Texture create_texture(int bm_handle, rf::bm::Format fmt, int w, int h, rf::ubyte* bits, rf::ubyte* pal, int mip_levels, bool staging, int src_w = 0, int src_h = 0);
         Texture create_texture_auto_mips(int bm_handle, rf::bm::Format fmt, int w, int h, rf::ubyte* bits, rf::ubyte* pal);
-        Texture create_user_texture_auto_mips(int bm_handle, rf::bm::Format fmt, int w, int h);
         Texture create_render_target(int bm_handle, int w, int h);
         Texture load_texture(int bm_handle, bool staging);
         std::pair<DXGI_FORMAT, rf::bm::Format> determine_supported_texture_format(rf::bm::Format fmt);

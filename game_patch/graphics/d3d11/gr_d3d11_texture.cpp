@@ -156,7 +156,7 @@ namespace gr::d3d11
         if ((format_support & required_support) != required_support) {
             if (rf::bm::get_type(bm_handle) == rf::bm::TYPE_USER) {
                 xlog::warn(
-                    "Auto-mip not supported for user format {}, falling back to single mip",
+                    "Auto-mip is not supported for user bitmaps that are format {}",
                     static_cast<int>(fmt)
                 );
                 return create_texture(bm_handle, fmt, w, h, bits, pal, 1, false, w, h);
@@ -598,7 +598,7 @@ namespace gr::d3d11
             device_context_->Unmap(texture.cpu_texture, 0);
             if (lock->mode != rf::gr::LOCK_READ_ONLY && texture.gpu_texture) {
                 device_context_->CopySubresourceRegion(texture.gpu_texture, 0, 0, 0, 0, texture.cpu_texture, 0, nullptr);
-                // Rebuild lower mips after the write (only mip 0 is written via gr::lock).
+                // We need to rebuild mips.
                 if (bm_is_user_mipmap(lock->bm_handle)) {
                     D3D11_TEXTURE2D_DESC desc{};
                     texture.gpu_texture->GetDesc(&desc);
