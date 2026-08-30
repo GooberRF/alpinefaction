@@ -2,7 +2,11 @@
 
 #include <xlog/xlog.h>
 #include "../rf/bmpman.h"
-#include "../rf/gr/gr.h"
+
+namespace rf::gr {
+    struct Color;
+    struct LockInfo;
+}
 
 // rf::bm::load never fails: a missing file gets a generated 32x32 checkerboard
 // placeholder with a real handle, so "handle != -1" is not a presence test. Probe
@@ -12,16 +16,38 @@ int bm_load_if_exists(const char* name, int unk, bool generate_mipmaps);
 
 void bm_set_dynamic(int bm_handle, bool dynamic);
 bool bm_is_dynamic(int bm_handle);
+void bm_set_user_mipmap(int bm_handle, bool mipmap);
+bool bm_is_user_mipmap(int bm_handle);
 void bm_change_format(int bm_handle, rf::bm::Format format);
 void bm_apply_patch();
 bool bm_is_compressed_format(rf::bm::Format format);
 bool bm_convert_format(void* dst_bits_ptr, rf::bm::Format dst_fmt, const void* src_bits_ptr,
                        rf::bm::Format src_fmt, int width, int height, int dst_pitch, int src_pitch,
                        const uint8_t* palette = nullptr);
-rf::Color bm_get_pixel(uint8_t* data, rf::bm::Format format, int stride_in_bytes, int x, int y);
+rf::gr::Color bm_get_pixel(uint8_t* data, rf::bm::Format format, int stride_in_bytes, int x, int y);
 size_t bm_calculate_total_bytes(int w, int h, rf::bm::Format format);
 int bm_calculate_pitch(int w, rf::bm::Format format);
 int bm_calculate_rows(int h, rf::bm::Format format);
+bool bm_copy_pixels(
+    const rf::gr::LockInfo& dst_lock,
+    int dst_x,
+    int dst_y,
+    const rf::gr::LockInfo& src_lock,
+    int src_x,
+    int src_y,
+    int w,
+    int h
+);
+bool bm_copy(
+    int dst_handle,
+    int dst_x,
+    int dst_y,
+    int src_handle,
+    int src_x,
+    int src_y,
+    int w,
+    int h
+);
 
 inline int bm_bytes_per_pixel(rf::bm::Format format)
 {

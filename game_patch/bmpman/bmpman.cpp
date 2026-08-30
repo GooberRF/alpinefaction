@@ -5,12 +5,14 @@
 #include <xlog/xlog.h>
 #include <common/utils/string-utils.h>
 #include <common/bitmap/formats.h>
+#include <common/scope_guard.h>
 #include "../graphics/gr.h"
 #include "../rf/file/file.h"
 #include "../misc/vpackfile.h"
 #include "atx.h"
 #include "dds.h"
 #include "stb_image_loader.h"
+#include "bmpman.h"
 
 int bm_calculate_pitch(int w, rf::bm::Format format)
 {
@@ -244,6 +246,7 @@ FunHook<void(int)> bm_free_entry_hook{
             atx_free(bm_entry);
         }
         bm_entry.dynamic = false;
+        bm_entry.user_mipmap = false;
 
         if (!bm_entry.prev || !bm_entry.next) {
             return;
@@ -325,6 +328,19 @@ bool bm_is_dynamic(int bm_handle)
     return rf::bm::bitmaps[bm_index].dynamic;
 }
 
+void bm_set_user_mipmap(const int bm_handle, const bool mipmap) {
+    const int bm_index = rf::bm::get_cache_slot(bm_handle);
+    if (rf::bm::bitmaps[bm_index].user_mipmap != mipmap) {
+        rf::bm::bitmaps[bm_index].user_mipmap = mipmap;
+        rf::gr::mark_texture_dirty(bm_handle);
+    }
+}
+
+bool bm_is_user_mipmap(const int bm_handle) {
+    const int bm_index = rf::bm::get_cache_slot(bm_handle);
+    return rf::bm::bitmaps[bm_index].user_mipmap;
+}
+
 void bm_change_format(int bm_handle, rf::bm::Format format)
 {
     int bm_idx = rf::bm::get_cache_slot(bm_handle);
@@ -334,6 +350,126 @@ void bm_change_format(int bm_handle, rf::bm::Format format)
         rf::gr::mark_texture_dirty(bm_handle);
         bm.format = format;
     }
+}
+
+bool bm_copy_pixels(
+    const rf::gr::LockInfo& dst_lock,
+    int dst_x,
+    int dst_y,
+    const rf::gr::LockInfo& src_lock,
+    int src_x,
+    int src_y,
+    int w,
+    int h
+) {
+    if (!dst_lock.data
+        || !src_lock.data
+        || dst_lock.bm_handle == src_lock.bm_handle
+        || w <= 0
+        || h <= 0)
+    {
+        return false;
+    }
+
+    // Clip against left and top edges cleanly.
+    if (src_x < 0) {
+        const int shift = -src_x;
+        w -= shift;
+        dst_x += shift;
+        src_x = 0;
+    }
+    if (dst_x < 0) {
+        const int shift = -dst_x;
+        w -= shift;
+        src_x += shift;
+        dst_x = 0;
+    }
+
+    // Clip against right and bottom edges.
+    if (src_x + w > src_lock.w) {
+        w = src_lock.w - src_x;
+    }
+    if (src_y + h > src_lock.h) {
+        h = src_lock.h - src_y;
+    }
+    if (dst_x + w > dst_lock.w) {
+        w = dst_lock.w - dst_x;
+    }
+    if (dst_y + h > dst_lock.h) {
+        h = dst_lock.h - dst_y;
+    }
+
+    if (w <= 0 || h <= 0) {
+        return false;
+    }
+
+    // Compute pointer offsets using bm_bytes_per_pixel AFTER clipping.
+    const uint8_t* src_ptr = src_lock.data 
+        + (src_x * bm_bytes_per_pixel(src_lock.format)) 
+        + (src_y * src_lock.stride_in_bytes);
+
+    uint8_t* dst_ptr = dst_lock.data 
+        + (dst_x * bm_bytes_per_pixel(dst_lock.format)) 
+        + (dst_y * dst_lock.stride_in_bytes);
+
+    // Row-by-row transfer.
+    for (int row = 0; row < h; ++row) {
+        bm_convert_format(
+            dst_ptr,
+            dst_lock.format,
+            src_ptr,
+            src_lock.format,
+            w,
+            1,
+            dst_lock.stride_in_bytes,
+            src_lock.stride_in_bytes,
+            nullptr
+        );
+        src_ptr += src_lock.stride_in_bytes;
+        dst_ptr += dst_lock.stride_in_bytes;
+    }
+
+    return true;
+}
+
+bool bm_copy(
+    const int dst_handle,
+    const int dst_x,
+    const int dst_y,
+    const int src_handle,
+    const int src_x,
+    const int src_y,
+    const int w,
+    const int h
+) {
+    if (src_handle == dst_handle) {
+        return false;
+    }
+
+    rf::gr::LockInfo src_lock{};
+    if (!rf::gr::lock(src_handle, 0, &src_lock, rf::gr::LOCK_READ_ONLY)) {
+        return false;
+    }
+
+    ScopeGuard src_guard{[&] { rf::gr::unlock(&src_lock); }};
+
+    rf::gr::LockInfo dst_lock{};
+    if (!rf::gr::lock(dst_handle, 0, &dst_lock, rf::gr::LOCK_READ_ONLY_WRITE)) {
+        return false;
+    }
+
+    ScopeGuard dst_guard{[&] { rf::gr::unlock(&dst_lock); }};
+
+    return bm_copy_pixels(
+        dst_lock,
+        dst_x,
+        dst_y,
+        src_lock,
+        src_x,
+        src_y,
+        w,
+        h
+    );
 }
 
 void bm_apply_patch()

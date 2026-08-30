@@ -12,6 +12,9 @@ Version 1.5.0 (TBD): Not yet released
 - Add terms of use and notices document to installer
 - Add compatibility table (lightmap clamp floor) for `dm-halloween.rfl`
 
+[@is-this-c](https://github.com/is-this-c)
+- Allow TrueType fonts to be rendered into bitmaps with mipmaps (D3D11 only)
+
 ### Bug fixes
 [@GooberRF](https://github.com/GooberRF)
 - Fix phantom visual flag mesh being visible after Salvage flag is picked up on rare occasions
