@@ -10,6 +10,7 @@ Version 1.5.0 (TBD): Not yet released
 - Notify players in a server that is recording demos
 - Restore cut first person weapon aim sway, toggleable with `cl_weaponsway`
 - Add terms of use and notices document to installer
+- Add compatibility table (lightmap clamp floor) for `dm-halloween.rfl`
 
 ### Bug fixes
 [@GooberRF](https://github.com/GooberRF)
