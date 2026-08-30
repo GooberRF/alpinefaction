@@ -225,7 +225,7 @@ CodeInjection face_scroll_fix{
 // render cache is rebuilt.
 CallHook<void __fastcall(rf::GTextureMover*, int, float)> texture_mover_process_hook{
     0x004E617D,
-    [](rf::GTextureMover* mover, int edx, float dt) {
+    [](rf::GTextureMover* mover, int edx, float dt) FASTCALL_LAMBDA {
         if (!is_d3d11()) {
             texture_mover_process_hook.call_target(mover, edx, dt);
         }
