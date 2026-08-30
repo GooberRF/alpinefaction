@@ -7,6 +7,12 @@
 #include "../rf/collide.h"
 #include "../rf/player/camera.h"
 #include "debug_internal.h"
+#include "../rf/physics.h"
+#include "../rf/vmesh.h"
+#include <common/utils/list-utils.h>
+#include <xlog/xlog.h>
+#include <algorithm>
+#include <format>
 
 std::optional<float> g_target_rotate_speed;
 
@@ -165,6 +171,40 @@ ConsoleCommand2 dbg_ai_pause_cmd{
     },
 };
 
+// Debug: per-entity origin/eye/eye-tag/csphere heights above the floor
+ConsoleCommand2 dbg_eye_heights_cmd{
+    "d_eye_heights",
+    []() {
+        for (auto& ep : DoublyLinkedList{rf::entity_list}) {
+            rf::Vector3 p0 = ep.pos;
+            rf::Vector3 p1 = ep.pos - rf::Vector3{0.0f, 5.0f, 0.0f};
+            rf::PCollisionOut col{};
+            col.obj_handle = -1;
+            float floor = rf::collide_linesegment_world(p0, p1, rf::CF_ANY_HIT, &col) ? col.hit_point.y : ep.pos.y - 5.0f;
+            float tag_y = 0.0f;
+            if (ep.vmesh && ep.info2->eye_tag >= 0) {
+                rf::Matrix3 o;
+                rf::Vector3 t;
+                rf::vmesh_get_prop_point_transform(ep.vmesh, ep.info2->eye_tag, &ep.orient, &ep.pos, &o, &t);
+                tag_y = t.y - floor;
+            }
+            float bottom = 0.0f;
+            for (int i = 0; i < ep.info2->collision_spheres.size(); ++i) {
+                const auto& cs = ep.info2->collision_spheres[i];
+                bottom = std::min(bottom, cs.center.y - cs.radius);
+            }
+            std::string line = std::format(
+                "{} [{}] local={} origin={:.3f} eye_pos={:.3f} eye_tag_now={:.3f} sphere_bottom={:.3f} anim={}",
+                ep.name, ep.info2->name, &ep == rf::local_player_entity, ep.pos.y - floor, ep.eye_pos.y - floor,
+                tag_y, ep.pos.y + bottom - floor, ep.current_state_anim);
+            rf::console::print("{}", line);
+            xlog::info("d_eye_heights: {}", line);
+        }
+    },
+    "Print entity origin/eye/csphere heights above the floor under them",
+    "d_eye_heights"
+};
+
 const char* get_obj_type_name(rf::Object& obj)
 {
     switch (obj.type) {
@@ -246,6 +286,7 @@ void register_obj_debug_commands()
     dbg_entity_action_cmd.register_cmd();
     dbg_spin_cmd.register_cmd();
     dbg_ai_pause_cmd.register_cmd();
+    dbg_eye_heights_cmd.register_cmd();
 }
 
 void render_obj_debug_ui()

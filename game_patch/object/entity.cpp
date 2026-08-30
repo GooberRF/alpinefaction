@@ -4,9 +4,11 @@
 #include <patch_common/AsmWriter.h>
 #include <cstring>
 #include <string>
+#include <unordered_map>
 #include <xlog/xlog.h>
 #include "../misc/achievements.h"
 #include "../misc/alpine_settings.h"
+#include "../misc/player.h"
 #include "../os/console.h"
 #include "../rf/gr/gr_light.h"
 #include "../rf/entity.h"
@@ -681,6 +683,72 @@ CodeInjection clear_stale_movement_input_injection{
     },
 };
 
+// Stock samples EntityInfo::local_eye_offset from the "stand" pose, but armed entities idle in "attack_stand",
+// which sits ~9cm lower on the miner1/merc skeletons. Resample after stock init so hitboxes stay stock.
+static auto& entity_can_crouch = addr_as_ref<bool(rf::Entity*)>(0x00428010);
+static auto& entity_is_humanoid = addr_as_ref<bool(rf::Entity*)>(0x0040A150);
+constexpr int EIF_MESH_DATA_INITIALIZED = 0x40000000;
+// stock eye Y minus corrected eye Y, per entity type (for pre-1.5 clients on the server rewind path)
+static std::unordered_map<rf::EntityInfo*, float> g_legacy_eye_offset_delta_y;
+
+FunHook<void(rf::Entity*)> entity_info_setup_bone_damage_modifiers_hook{
+    0x00423B90,
+    [](rf::Entity* ep) {
+        rf::EntityInfo* info = ep->info2;
+        bool was_initialized = info->flags & EIF_MESH_DATA_INITIALIZED;
+        entity_info_setup_bone_damage_modifiers_hook.call_target(ep);
+        if (was_initialized || !ep->vmesh || info->eye_tag < 0 || !entity_can_crouch(ep)) {
+            return;
+        }
+        int idx = rf::ENTITY_STATE_ATTACK_STAND;
+        if (ep->state_anims[idx].vmesh_anim_index < 0) {
+            idx = rf::ENTITY_STATE_STAND;
+        }
+        int anim = ep->state_anims[idx].vmesh_anim_index;
+        if (anim < 0) {
+            return;
+        }
+        rf::vmesh_reset_actions(ep->vmesh);
+        rf::vmesh_set_action_weight(ep->vmesh, anim, 1.0f);
+        rf::vmesh_process(ep->vmesh, 1.0f, 0, nullptr, nullptr, 1);
+        rf::Matrix3 identity;
+        identity.make_identity();
+        rf::Vector3 zero{};
+        rf::Matrix3 out_orient;
+        rf::Vector3 eye;
+        rf::vmesh_get_prop_point_transform(ep->vmesh, info->eye_tag, &identity, &zero, &out_orient, &eye);
+        // restore stock pose
+        rf::vmesh_reset_actions(ep->vmesh);
+        if (ep->state_anims[0].vmesh_anim_index >= 0) {
+            rf::vmesh_set_action_weight(ep->vmesh, ep->state_anims[0].vmesh_anim_index, 1.0f);
+        }
+        rf::vmesh_process(ep->vmesh, 0.2f, 0, nullptr, nullptr, 1);
+        if (entity_is_humanoid(ep)) {
+            eye.x = 0.0f;
+            eye.z = 0.0f;
+        }
+        g_legacy_eye_offset_delta_y[info] = info->local_eye_offset.y - eye.y;
+        xlog::info("eye offset resample: type {} state={} stock y={} resampled y={}", info->name, idx,
+                   info->local_eye_offset.y, eye.y);
+        info->local_eye_offset = eye;
+    },
+};
+
+// Server: burst follow-up rounds have no packet pos, so the shooter's eye_pos is rebuilt from local_eye_offset.
+// Pre-1.5 clients still fire from the stock eye height; reproduce it for them. Orient is yaw-only, so y-only.
+CallHook<void(rf::Entity*)> lag_comp_shooter_eye_pos_legacy_client_hook{
+    0x004264C3,
+    [](rf::Entity* ep) {
+        lag_comp_shooter_eye_pos_legacy_client_hook.call_target(ep);
+        if (ep->local_player && !is_player_minimum_af_client_version(ep->local_player, 1, 5, 0)) {
+            auto it = g_legacy_eye_offset_delta_y.find(ep->info2);
+            if (it != g_legacy_eye_offset_delta_y.end()) {
+                ep->eye_pos.y += it->second;
+            }
+        }
+    },
+};
+
 void entity_do_patch()
 {
     //player_create_entity_patch.install(); // force team skin experiment
@@ -761,6 +829,10 @@ void entity_do_patch()
 
     // Cancel movement input when escape menu is open in multiplayer
     clear_stale_movement_input_injection.install();
+
+    // Fix MP camera height on miner1/merc skeletons (eye offset sampled from wrong idle pose)
+    entity_info_setup_bone_damage_modifiers_hook.install();
+    lag_comp_shooter_eye_pos_legacy_client_hook.install();
 
     // Commands
     sp_exposuredamage_cmd.register_cmd();
