@@ -598,7 +598,7 @@ namespace gr::d3d11
             device_context_->Unmap(texture.cpu_texture, 0);
             if (lock->mode != rf::gr::LOCK_READ_ONLY && texture.gpu_texture) {
                 device_context_->CopySubresourceRegion(texture.gpu_texture, 0, 0, 0, 0, texture.cpu_texture, 0, nullptr);
-                // We need to rebuild mips.
+                // We need to rebuild each mip level.
                 if (bm_is_user_mipmap(lock->bm_handle)) {
                     D3D11_TEXTURE2D_DESC desc{};
                     texture.gpu_texture->GetDesc(&desc);
