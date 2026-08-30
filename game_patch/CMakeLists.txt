@@ -1,4 +1,4 @@
-file(GLOB EXPERIMENTAL_SRCS experimental/*.cpp experimental/*.h)
+file(GLOB_RECURSE EXPERIMENTAL_SRCS experimental/*.cpp experimental/*.h)
 
 set(SRCS
     main/main.cpp

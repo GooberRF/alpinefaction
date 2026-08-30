@@ -17,6 +17,9 @@ Version 1.5.0 (TBD): Not yet released
 - Fix phantom visual flag mesh being visible after Salvage flag is picked up on rare occasions
 - Fix scrolling textures jumping forward when the Direct3D 11 renderer rebuilds a room's render cache, most visibly after a brush-based geomod crater
 
+[@is-this-c](https://github.com/is-this-c)
+- Let `Caps Lock` capitalize
+
 Version 1.4.0 (Lupin): Released Aug-25-2026
 --------------------------------
 ### Major features
