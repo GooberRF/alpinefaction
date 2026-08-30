@@ -167,7 +167,8 @@ struct AlpineGameSettings
     bool spectate_show_camera_meshes = true; // draw camera meshes in free look
     bool spectate_povcomp = true; // delay other players to match what the spectated player saw
     bool save_console_history = false; // checked before config loaded, must be false here
-    uint32_t console_color = 0x274E69C0; // console background color (RRGGBBAA)
+    static constexpr uint32_t default_console_color = 0x274E69C0; // RRGGBBAA
+    uint32_t console_color = default_console_color;
     bool screen_shake_force_off = false;
     bool display_target_player_names = true;
     bool verbose_time_left_display = true;
