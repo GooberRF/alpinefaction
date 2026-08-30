@@ -406,6 +406,14 @@ bool alpine_player_settings_load(rf::Player* player)
         apply_console_history_setting();
         processed_keys.insert("SaveConsoleHistory");
     }
+    if (settings.count("ConsoleColor")) {
+        auto c = parse_hex_color_string(settings["ConsoleColor"]);
+        if (c) {
+            g_alpine_game_config.console_color = *c;
+            apply_console_color_setting();
+        }
+        processed_keys.insert("ConsoleColor");
+    }
     if (settings.count("AlpineBranding")) {
         g_alpine_game_config.af_branding = std::stoi(settings["AlpineBranding"]);
         processed_keys.insert("AlpineBranding");
@@ -1417,6 +1425,7 @@ void alpine_player_settings_save(rf::Player* player)
     file << "ShowSpeed=" << g_alpine_game_config.speed_display << "\n";
     file << "FPSCounterAverageMs=" << g_alpine_game_config.fps_counter_average_ms << "\n";
     file << "SaveConsoleHistory=" << g_alpine_game_config.save_console_history << "\n";
+    file << "ConsoleColor=" << format_hex_color_string(g_alpine_game_config.console_color) << "\n";
     file << "AlpineBranding=" << g_alpine_game_config.af_branding << "\n";
     file << "SeasonalEffect=" << g_alpine_game_config.seasonal_effect << "\n";
     file << "RealArmorValues=" << g_alpine_game_config.real_armor_values << "\n";

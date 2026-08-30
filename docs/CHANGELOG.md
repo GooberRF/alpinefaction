@@ -12,6 +12,9 @@ Version 1.5.0 (TBD): Not yet released
 - Add terms of use and notices document to installer
 - Add compatibility table (lightmap clamp floor) for `dm-halloween.rfl`
 
+[@nickalreadyinuse](https://github.com/nickalreadyinuse)
+- Add `ui_color_console` console command to set the console background color
+
 ### Bug fixes
 [@GooberRF](https://github.com/GooberRF)
 - Fix phantom visual flag mesh being visible after Salvage flag is picked up on rare occasions
