@@ -23,6 +23,10 @@ Version 1.5.0 (TBD): Not yet released
 [@is-this-c](https://github.com/is-this-c)
 - Let `Caps Lock` capitalize
 
+[@nickalreadyinuse](https://github.com/nickalreadyinuse)
+- Fix first person camera height on miner1 and merc based skeletons, which caused other players to appear shorter than you in multiplayer (stock bug since 1.2)
+  - Servers keep firing origins consistent for clients on older Alpine Faction versions
+
 Version 1.4.0 (Lupin): Released Aug-25-2026
 --------------------------------
 ### Major features
