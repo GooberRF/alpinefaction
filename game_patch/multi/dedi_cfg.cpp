@@ -2138,13 +2138,13 @@ void print_alpine_dedicated_server_config_info(std::string& output, bool verbose
     std::format_to(iter, "  Levels in rotation:                    {}\n", cfg.levels.size());
     std::format_to(iter, "  Dynamic rotation:                      {}\n", cfg.dynamic_rotation);
     std::format_to(iter, "  Demos:\n");
-    std::format_to(iter, "    Auto-record:                         {}\n", cfg.demo_auto_record);
     std::format_to(iter, "    Include chat:                        {}\n", cfg.demo_chat_record);
-    std::format_to(iter, "    Upload to FactionFiles:              {}\n", cfg.fflink_demo_upload);
+    std::format_to(iter, "    Auto-record:                         {}\n", cfg.demo_auto_record);
+    std::format_to(iter, "      Upload to FactionFiles:            {}\n", cfg.fflink_demo_upload);
     if (cfg.fflink_demo_upload) {
-        std::format_to(iter, "      Max size:                          {} MiB\n", cfg.fflink_demo_max_mb);
-        std::format_to(iter, "      Max queue:                         {}\n", cfg.fflink_demo_queue_max);
-        std::format_to(iter, "      Delete after send:                 {}\n", cfg.fflink_demo_delete_after_send);
+        std::format_to(iter, "        Max size:                        {} MiB\n", cfg.fflink_demo_max_mb);
+        std::format_to(iter, "        Max queue:                       {}\n", cfg.fflink_demo_queue_max);
+        std::format_to(iter, "        Delete after send:               {}\n", cfg.fflink_demo_delete_after_send);
     }
 
     if (rf::mod_param.found()) {
