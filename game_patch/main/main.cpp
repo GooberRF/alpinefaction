@@ -589,6 +589,7 @@ extern "C" DWORD __declspec(dllexport) Init([[maybe_unused]] void* unused)
     level_init_post_hook.install();
 
     // Init modules
+    exception_logger_init();
     console_apply_patches();
     gr_apply_patch();
     bm_apply_patch();
