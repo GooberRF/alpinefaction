@@ -230,6 +230,7 @@ struct AlpineGameSettings
     float gamepad_trigger_rumble_intensity = 0.5f;
     int gamepad_rumble_vibration_filter = 1; // 0=Off, 1=Auto (reduce low-freq when gyro is active), 2=On (always reduce low-freq)
     bool gamepad_rumble_when_primary = true; // disable rumble when keyboard/mouse was last used
+    bool gamepad_lightbar_effects = false; // health-indicator LED (green/orange/red/bleedout-white), if supported
     bool scoreboard_anim = true;
     bool legacy_bob = false;
     bool weapon_sway = false;

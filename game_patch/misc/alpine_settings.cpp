@@ -1311,6 +1311,10 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.gamepad_rumble_when_primary = std::stoi(settings["GamepadRumbleWhenPrimary"]) != 0;
         processed_keys.insert("GamepadRumbleWhenPrimary");
     }
+    if (settings.count("GamepadLightbarEffect")) {
+        g_alpine_game_config.gamepad_lightbar_effects = std::stoi(settings["GamepadLightbarEffect"]) != 0;
+        processed_keys.insert("GamepadLightbarEffect");
+    }
     // Per-button gamepad bindings
     for (int b = 0; b < gamepad_get_button_count(); ++b) {
         std::string key = "GamepadBtn_" + std::to_string(b);
@@ -1548,6 +1552,7 @@ void alpine_control_config_serialize(std::ofstream& file, const rf::ControlConfi
     file << "GamepadTriggerRumble=" << g_alpine_game_config.gamepad_trigger_rumble_intensity << "\n";
     file << "GamepadRumbleVibrationFilter=" << g_alpine_game_config.gamepad_rumble_vibration_filter << "\n";
     file << "GamepadRumbleWhenPrimary=" << g_alpine_game_config.gamepad_rumble_when_primary << "\n";
+    file << "GamepadLightbarEffect=" << g_alpine_game_config.gamepad_lightbar_effects << "\n";
 
     file << "\n[ActionBinds]\n";
     file << "; Format is Bind:{Name}={ID},{ScanCode0},{ScanCode1},{MouseButtonID},{GamepadScanCode},{GamepadScanCodeAlt}\n";

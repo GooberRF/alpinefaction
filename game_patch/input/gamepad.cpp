@@ -33,6 +33,7 @@ static SDL_Gamepad* g_gamepads[k_max_gamepads] = {};
 static bool g_motion_sensors_supported = false;
 static bool g_rumble_supported         = false;
 static bool g_trigger_rumble_supported = false;
+static bool g_led_supported            = false;
 
 static float g_camera_gamepad_dx = 0.0f;
 static float g_camera_gamepad_dy = 0.0f;
@@ -390,6 +391,20 @@ static bool try_enable_gamepad_trigger_rumble(SDL_Gamepad* gp)
     return true;
 }
 
+static bool try_enable_gamepad_led(SDL_Gamepad* gp)
+{
+    if (!gp) return false;
+
+    if (!SDL_GetBooleanProperty(SDL_GetGamepadProperties(gp), SDL_PROP_GAMEPAD_CAP_RGB_LED_BOOLEAN, false)) {
+        xlog::info("Lightbar is not supported");
+        return false;
+    }
+
+    xlog::info("Lightbar is supported");
+    g_led_supported = true;
+    return true;
+}
+
 static void try_open_gamepad(SDL_JoystickID id)
 {
     SDL_Gamepad* gp = SDL_OpenGamepad(id);
@@ -402,6 +417,7 @@ static void try_open_gamepad(SDL_JoystickID id)
     add_to_gamepad_list(gp);
     if (!g_rumble_supported)         try_enable_gamepad_rumble(gp);
     if (!g_trigger_rumble_supported) try_enable_gamepad_trigger_rumble(gp);
+    if (!g_led_supported)            try_enable_gamepad_led(gp);
     try_enable_gamepad_sensors(gp);
 }
 
@@ -784,6 +800,7 @@ static void disconnect_all_gamepads()
     g_motion_sensors_supported = false;
     g_rumble_supported         = false;
     g_trigger_rumble_supported = false;
+    g_led_supported            = false;
     release_all_gamepad_inputs();
 }
 
@@ -807,6 +824,7 @@ static void handle_gamepad_removed(const SDL_GamepadDeviceEvent& ev)
         g_motion_sensors_supported = false;
         g_rumble_supported         = false;
         g_trigger_rumble_supported = false;
+        g_led_supported            = false;
         return;
     }
 
@@ -1139,6 +1157,62 @@ static void gamepad_do_menu_frame()
     menu_nav_tick_scroll();
 }
 
+// Health-indicator LED thresholds/colors, expressed as a percentage of max life.
+static constexpr float k_led_red_threshold    = 20.0f; // at/below -> red
+static constexpr float k_led_orange_threshold = 30.0f; // at/below -> orange
+// Rust-orange used while a menu/pause overlay is up, matching the game's Mars color palette.
+static constexpr uint8_t k_led_menu_color[3] = {180, 60, 0};
+
+static void gamepad_set_led(uint8_t r, uint8_t g, uint8_t b)
+{
+    if (!g_led_supported)
+        return;
+    for (auto* gp : g_gamepads)
+        if (gp) SDL_SetGamepadLED(gp, r, g, b);
+}
+
+// Returns current health as a percentage of max life, or -1.0f if unavailable.
+static float get_local_player_health_pct()
+{
+    auto* ep = rf::local_player_entity;
+    if (!ep || !ep->info || ep->info->max_life <= 0.0f)
+        return -1.0f;
+    return std::clamp(ep->life / ep->info->max_life * 100.0f, 0.0f, 100.0f);
+}
+
+// Drives the gamepad LED from local player health while in gameplay:
+// green (>30%), orange (21-30%), red (1-20%), off (0% / dead, until a menu appears).
+// Outside of active gameplay (menus, limbo, etc.) the LED shows the menu color instead.
+static void gamepad_led_do_frame()
+{
+    if (!g_led_supported || !g_alpine_game_config.gamepad_lightbar_effects)
+        return;
+
+    if (rf::gameseq_get_state() != rf::GS_GAMEPLAY || !rf::keep_mouse_centered) {
+        gamepad_set_led(k_led_menu_color[0], k_led_menu_color[1], k_led_menu_color[2]);
+        return;
+    }
+
+    auto* ep = rf::local_player_entity;
+    if (!ep || rf::entity_is_dying(ep)) {
+        gamepad_set_led(0, 0, 0);
+        return;
+    }
+
+    float pct = get_local_player_health_pct();
+    if (pct < 0.0f)
+        return;
+
+    if (pct <= 0.0f)
+        gamepad_set_led(0, 0, 0);
+    else if (pct <= k_led_red_threshold)
+        gamepad_set_led(200, 0, 0);
+    else if (pct <= k_led_orange_threshold)
+        gamepad_set_led(255, 140, 0);
+    else
+        gamepad_set_led(0, 220, 0);
+}
+
 void gamepad_do_frame()
 {
     memcpy(g_action_prev, g_action_curr, sizeof(g_action_curr));
@@ -1163,8 +1237,10 @@ void gamepad_do_frame()
 
     g_local_player_body_vmesh = rf::local_player ? rf::get_player_entity_parent_vmesh(rf::local_player) : nullptr;
 
-    if (gamepad_any_open())
+    if (gamepad_any_open()) {
         rumble_do_frame();
+        gamepad_led_do_frame();
+    }
 }
 
 // Flick stick is based on GyroWiki documents
@@ -1784,6 +1860,24 @@ ConsoleCommand2 joy_rumble_vibration_filter_cmd{
     "joy_rumble_vibration_filter <0|1|2> (valid values: 0=Off, 1=Auto, 2=On)",
 };
 
+ConsoleCommand2 joy_led_cmd{
+    "joy_led",
+    [](std::optional<int> val) {
+        if (!g_led_supported) {
+            rf::console::print("Value blocked, gamepad does not support lightbar");
+            return;
+        }
+        if (val) {
+            g_alpine_game_config.gamepad_lightbar_effects = val.value() != 0;
+        }
+        rf::console::print("Gamepad lightbar health indicator: {}", g_alpine_game_config.gamepad_lightbar_effects ? "enabled" : "disabled");
+        if (val && !g_alpine_game_config.gamepad_lightbar_effects)
+            rf::console::print("Restart game or use \"joy_reset\" cmd to take effect");
+    },
+    "Enable/disable the gamepad lightbar health indicator",
+    "joy_led <0|1>",
+};
+
 ConsoleCommand2 gyro_menu_cursor_sens_cmd{
     "gyro_menu_cursor_sens",
     [](std::optional<float> val) {
@@ -2276,6 +2370,7 @@ void gamepad_apply_patch()
     joy_rumble_environmental_cmd.register_cmd();
     joy_rumble_when_primary_cmd.register_cmd();
     joy_rumble_vibration_filter_cmd.register_cmd();
+    joy_led_cmd.register_cmd();
     gyro_sens_cmd.register_cmd();
     gyro_menu_cursor_sens_cmd.register_cmd();
     gyro_camera_cmd.register_cmd();
