@@ -4,6 +4,7 @@
 #include <patch_common/AsmWriter.h>
 #include <cstring>
 #include <string>
+#include <unordered_map>
 #include <xlog/xlog.h>
 #include "../misc/achievements.h"
 #include "../misc/alpine_settings.h"
@@ -17,6 +18,7 @@
 #include "../rf/player/player.h"
 #include "../rf/particle_emitter.h"
 #include "../rf/os/frametime.h"
+#include "../rf/os/timer.h"
 #include "../rf/os/os.h"
 #include "../rf/sound/sound.h"
 #include "../rf/object.h"
@@ -204,6 +206,56 @@ CodeInjection multi_obj_interp_add_restore_orient{
         entity->p_data.orient = interp_saved_orient;
         entity->p_data.next_orient = interp_saved_next_orient;
         regs.eip = 0x00483ACF;
+    },
+};
+
+// Regulate FPS-dependent "head jumping" in MP: the entity-vs-entity collision response
+// applies a fixed velocity kick per event with no dt scaling, and overlapping entities
+// generate one event per frame, so launch velocity scales with client FPS. Rate-limit
+// the response per entity; TOI/movement clamping in the collide pass is unaffected.
+static constexpr int entity_collision_response_interval_ms = 1000 / 60;
+static std::unordered_map<int, int> entity_collision_response_last_ms;
+
+FunHook<void(rf::Entity*)> physics_resolve_entity_collision_hook{
+    0x0049D7E0,
+    [](rf::Entity* ep) {
+        if (rf::is_multi && ep->p_data.collide_out.inv_mass > 0.0f && !ep->p_data.collide_out.is_liquid
+            && rf::entity_from_handle(ep->p_data.collide_out.obj_handle)) {
+            // wall-clock ms; frametime_total_milliseconds stalls above 1000 FPS (per-frame int truncation)
+            int now = rf::timer::get(1000);
+            auto [it, inserted] = entity_collision_response_last_ms.try_emplace(ep->handle, now);
+            if (!inserted) {
+                if (now - it->second < entity_collision_response_interval_ms) {
+                    return;
+                }
+                it->second = now;
+            }
+        }
+        physics_resolve_entity_collision_hook.call_target(ep);
+    },
+};
+
+// Rate-limit the landing sound in entity_land (0x00419830): at high FPS entities flap
+// between falling and grounded on ramps and jump pads, spamming landing sounds. Skips
+// only the sound block (jump to the engine's own post-sound label); state transitions
+// still run. Must be much longer than the flap period (5-30 ms) to actually silence the
+// spam; real jump/land cycles are ~700 ms so 250 ms never eats a legitimate sound.
+static constexpr int entity_land_sound_interval_ms = 250;
+static std::unordered_map<int, int> entity_land_sound_last_ms;
+
+CodeInjection entity_land_sound_rate_limit{
+    0x0041986E,
+    [](auto& regs) {
+        rf::Entity* ep = regs.esi;
+        int now = rf::timer::get(1000);
+        auto [it, inserted] = entity_land_sound_last_ms.try_emplace(ep->handle, now);
+        if (!inserted) {
+            if (now - it->second < entity_land_sound_interval_ms) {
+                regs.eip = 0x00419901;
+                return;
+            }
+            it->second = now;
+        }
     },
 };
 
@@ -724,6 +776,12 @@ void entity_do_patch()
     // from entity->info, but on MP clients info may lack crouch data. Use info2 instead,
     // which has correct data and is already used by entity_crouch.
     AsmWriter(0x00428A7A).mov(asm_regs::ecx, *(asm_regs::edi + 0x29C));
+
+    // Regulate FPS-dependent head-jump launch velocity in multiplayer
+    physics_resolve_entity_collision_hook.install();
+
+    // Stop landing-sound spam from falling/grounded flapping on ramps at high FPS
+    entity_land_sound_rate_limit.install();
 
     // Fix RF bug: multi_obj_interp_add corrupts pd->orient
     multi_obj_interp_add_save_orient.install();
