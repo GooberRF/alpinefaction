@@ -14,6 +14,7 @@ Version 1.5.0 (TBD): Not yet released
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Add `ui_color_console` console command to set the console background color
+- FPS independent head jumping and landing sound spam fix
 
 ### Bug fixes
 [@GooberRF](https://github.com/GooberRF)
