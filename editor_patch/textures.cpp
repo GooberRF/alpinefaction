@@ -173,9 +173,20 @@ static int __cdecl permissive_texture_browser_validator(void* entry)
     return browser_extension_allowed(ext) ? 1 : 0;
 }
 
+static int __cdecl filtered_texture_browser_validator(void* entry)
+{
+    if (!permissive_texture_browser_validator(entry)) return 0;
+
+    auto& texture_browser_filter = addr_as_ref<char[256]>(0x006ca408);
+    if (!texture_browser_filter[0]) return 1;
+
+    const char* filename = static_cast<const char*>(entry) + 8;
+    return string_icontains(filename, static_cast<const char*>(texture_browser_filter)) ? 1 : 0;
+}
+
 FunHook<int __cdecl(void*)> texture_browser_validator_hook{
     0x00470330,
-    permissive_texture_browser_validator
+    filtered_texture_browser_validator
 };
 
 FunHook<int __cdecl(void*)> texture_sidebar_validator_hook{

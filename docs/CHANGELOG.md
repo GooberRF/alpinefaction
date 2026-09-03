@@ -21,6 +21,7 @@ Version 1.5.0 (TBD): Not yet released
 [@GooberRF](https://github.com/GooberRF)
 - Fix phantom visual flag mesh being visible after Salvage flag is picked up on rare occasions
 - Fix scrolling textures jumping forward when the Direct3D 11 renderer rebuilds a room's render cache, most visibly after a brush-based geomod crater
+- Fix filter box in the level editor texture browser not filtering the texture list by partial filename
 
 [@is-this-c](https://github.com/is-this-c)
 - Let `Caps Lock` capitalize
