@@ -283,6 +283,11 @@ static void reset_gamepad_input_state()
     g_pending_scroll_delta = 0;
 }
 
+static float gamepad_get_axis(SDL_Gamepad* gp, SDL_GamepadAxis axis)
+{
+    return SDL_GetGamepadAxis(gp, axis) / static_cast<float>(SDL_JOYSTICK_AXIS_MAX);
+}
+
 // Normalize an axis value, strip the deadzone band, and rescale the remainder to [-1, 1].
 // Per-axis (cross-shaped) deadzone: each axis is independently deadzoned and rescaled.
 static float get_axis(SDL_GamepadAxis axis, float deadzone)
@@ -290,7 +295,7 @@ static float get_axis(SDL_GamepadAxis axis, float deadzone)
     float best = 0.0f;
     for (auto* gp : g_gamepads) {
         if (!gp) continue;
-        float v = SDL_GetGamepadAxis(gp, axis) / static_cast<float>(SDL_JOYSTICK_AXIS_MAX);
+        float v = gamepad_get_axis(gp, axis);
         if (v >  deadzone) v = (v - deadzone) / (1.0f - deadzone);
         else if (v < -deadzone) v = (v + deadzone) / (1.0f - deadzone);
         else v = 0.0f;
@@ -306,8 +311,8 @@ static void get_axis_circular(SDL_GamepadAxis axis_x, SDL_GamepadAxis axis_y, fl
     float best_x = 0.0f, best_y = 0.0f, best_mag = 0.0f;
     for (auto* gp : g_gamepads) {
         if (!gp) continue;
-        float raw_x = SDL_GetGamepadAxis(gp, axis_x) / static_cast<float>(SDL_JOYSTICK_AXIS_MAX);
-        float raw_y = SDL_GetGamepadAxis(gp, axis_y) / static_cast<float>(SDL_JOYSTICK_AXIS_MAX);
+        float raw_x = gamepad_get_axis(gp, axis_x);
+        float raw_y = gamepad_get_axis(gp, axis_y);
         float mag = std::hypot(raw_x, raw_y);
         float remapped = (mag > deadzone) ? (mag - deadzone) / (1.0f - deadzone) : 0.0f;
         if (remapped > best_mag) {
@@ -319,6 +324,16 @@ static void get_axis_circular(SDL_GamepadAxis axis_x, SDL_GamepadAxis axis_y, fl
     }
     out_x = best_x;
     out_y = best_y;
+}
+
+// Get the appropriate stick axes and deadzone based on whether it's the camera stick or not.
+static void get_stick_axes(bool is_camera_stick, SDL_GamepadAxis& out_x, SDL_GamepadAxis& out_y, float& out_deadzone)
+{
+    bool swap = g_alpine_game_config.gamepad_swap_sticks;
+    bool use_right = is_camera_stick != swap;
+    out_x = use_right ? SDL_GAMEPAD_AXIS_RIGHTX : SDL_GAMEPAD_AXIS_LEFTX;
+    out_y = use_right ? SDL_GAMEPAD_AXIS_RIGHTY : SDL_GAMEPAD_AXIS_LEFTY;
+    out_deadzone = use_right ? g_alpine_game_config.gamepad_look_deadzone : g_alpine_game_config.gamepad_move_deadzone;
 }
 
 static float wrap_angle_pi(float a)
@@ -345,7 +360,7 @@ static bool try_enable_gamepad_sensors(SDL_Gamepad* gp)
 
     if (!SDL_GamepadHasSensor(gp, SDL_SENSOR_GYRO) ||
         !SDL_GamepadHasSensor(gp, SDL_SENSOR_ACCEL)) {
-        xlog::info("Motion sensors are not supported");
+        xlog::info("Motion sensors is not supported");
         return false;
     }
 
@@ -355,7 +370,7 @@ static bool try_enable_gamepad_sensors(SDL_Gamepad* gp)
         return false;
     }
 
-    xlog::info("Motion sensors are supported");
+    xlog::info("Motion sensors is supported");
     if (!g_motion_sensors_supported) {
         g_motion_sensors_supported = true;
         gyro_reset_full();
@@ -363,45 +378,18 @@ static bool try_enable_gamepad_sensors(SDL_Gamepad* gp)
     return true;
 }
 
-static bool try_enable_gamepad_rumble(SDL_Gamepad* gp)
+// Shared boolean probe for  gamepad capabilities (rumble, trigger rumble, LED).
+static bool try_enable_gamepad_capability(SDL_Gamepad* gp, const char* prop_name, const char* label, bool& out_supported)
 {
     if (!gp) return false;
 
-    if (!SDL_GetBooleanProperty(SDL_GetGamepadProperties(gp), SDL_PROP_GAMEPAD_CAP_RUMBLE_BOOLEAN, false)) {
-        xlog::info("Rumble is not supported");
+    if (!SDL_GetBooleanProperty(SDL_GetGamepadProperties(gp), prop_name, false)) {
+        xlog::info("{} is not supported", label);
         return false;
     }
 
-    xlog::info("Rumble is supported");
-    g_rumble_supported = true;
-    return true;
-}
-
-static bool try_enable_gamepad_trigger_rumble(SDL_Gamepad* gp)
-{
-    if (!gp) return false;
-
-    if (!SDL_GetBooleanProperty(SDL_GetGamepadProperties(gp), SDL_PROP_GAMEPAD_CAP_TRIGGER_RUMBLE_BOOLEAN, false)) {
-        xlog::info("Trigger rumble is not supported");
-        return false;
-    }
-
-    xlog::info("Trigger rumble is supported");
-    g_trigger_rumble_supported = true;
-    return true;
-}
-
-static bool try_enable_gamepad_led(SDL_Gamepad* gp)
-{
-    if (!gp) return false;
-
-    if (!SDL_GetBooleanProperty(SDL_GetGamepadProperties(gp), SDL_PROP_GAMEPAD_CAP_RGB_LED_BOOLEAN, false)) {
-        xlog::info("Lightbar is not supported");
-        return false;
-    }
-
-    xlog::info("Lightbar is supported");
-    g_led_supported = true;
+    xlog::info("{} is supported", label);
+    out_supported = true;
     return true;
 }
 
@@ -415,9 +403,12 @@ static void try_open_gamepad(SDL_JoystickID id)
 
     xlog::info("Gamepad connected: {}", SDL_GetGamepadName(gp));
     add_to_gamepad_list(gp);
-    if (!g_rumble_supported)         try_enable_gamepad_rumble(gp);
-    if (!g_trigger_rumble_supported) try_enable_gamepad_trigger_rumble(gp);
-    if (!g_led_supported)            try_enable_gamepad_led(gp);
+    if (!g_rumble_supported)
+        try_enable_gamepad_capability(gp, SDL_PROP_GAMEPAD_CAP_RUMBLE_BOOLEAN, "Rumble", g_rumble_supported);
+    if (!g_trigger_rumble_supported)
+        try_enable_gamepad_capability(gp, SDL_PROP_GAMEPAD_CAP_TRIGGER_RUMBLE_BOOLEAN, "Trigger rumble", g_trigger_rumble_supported);
+    if (!g_led_supported)
+        try_enable_gamepad_capability(gp, SDL_PROP_GAMEPAD_CAP_RGB_LED_BOOLEAN, "Lightbar", g_led_supported);
     try_enable_gamepad_sensors(gp);
 }
 
@@ -754,10 +745,9 @@ static void update_stick_movement()
         return;
     }
 
-    SDL_GamepadAxis mov_x = g_alpine_game_config.gamepad_swap_sticks ? SDL_GAMEPAD_AXIS_RIGHTX : SDL_GAMEPAD_AXIS_LEFTX;
-    SDL_GamepadAxis mov_y = g_alpine_game_config.gamepad_swap_sticks ? SDL_GAMEPAD_AXIS_RIGHTY : SDL_GAMEPAD_AXIS_LEFTY;
-    float mov_dz          = g_alpine_game_config.gamepad_swap_sticks ? g_alpine_game_config.gamepad_look_deadzone
-                                                                      : g_alpine_game_config.gamepad_move_deadzone;
+    SDL_GamepadAxis mov_x, mov_y;
+    float mov_dz;
+    get_stick_axes(false, mov_x, mov_y, mov_dz);
 
     // Cross-shaped deadzone for movement; slightly enlarged to tighten the neutral zone.
     constexpr float k_movement_dz_multiplier = 1.1f;
@@ -792,15 +782,20 @@ static void release_all_gamepad_inputs()
     reset_gamepad_input_state();
 }
 
+static void reset_gamepad_capability_flags()
+{
+    g_motion_sensors_supported = false;
+    g_rumble_supported         = false;
+    g_trigger_rumble_supported = false;
+    g_led_supported            = false;
+}
+
 static void disconnect_all_gamepads()
 {
     for (auto*& slot : g_gamepads) {
         if (slot) { SDL_CloseGamepad(slot); slot = nullptr; }
     }
-    g_motion_sensors_supported = false;
-    g_rumble_supported         = false;
-    g_trigger_rumble_supported = false;
-    g_led_supported            = false;
+    reset_gamepad_capability_flags();
     release_all_gamepad_inputs();
 }
 
@@ -821,10 +816,7 @@ static void handle_gamepad_removed(const SDL_GamepadDeviceEvent& ev)
     release_all_gamepad_inputs();
 
     if (!gamepad_any_open()) {
-        g_motion_sensors_supported = false;
-        g_rumble_supported         = false;
-        g_trigger_rumble_supported = false;
-        g_led_supported            = false;
+        reset_gamepad_capability_flags();
         return;
     }
 
@@ -1253,8 +1245,8 @@ static void gamepad_apply_flickstick(SDL_GamepadAxis cam_x, SDL_GamepadAxis cam_
 
     // Raw axes — no deadzone remapping to avoid quadrant snapping in the angle math.
     auto* primary_gp = gamepad_get_primary();
-    float rx = primary_gp ? SDL_GetGamepadAxis(primary_gp, cam_x) / static_cast<float>(SDL_JOYSTICK_AXIS_MAX) : 0.0f;
-    float ry = primary_gp ? SDL_GetGamepadAxis(primary_gp, cam_y) / static_cast<float>(SDL_JOYSTICK_AXIS_MAX) : 0.0f;
+    float rx = primary_gp ? gamepad_get_axis(primary_gp, cam_x) : 0.0f;
+    float ry = primary_gp ? gamepad_get_axis(primary_gp, cam_y) : 0.0f;
 
     float stick_mag      = std::hypot(rx, ry);
     bool  in_flick_zone  = stick_mag >  g_alpine_game_config.gamepad_flickstick_deadzone;
@@ -1323,6 +1315,28 @@ static void gamepad_apply_joystick(SDL_GamepadAxis cam_x, SDL_GamepadAxis cam_y,
     pitch_delta = joy_pitch_sign * rf::frametime * g_alpine_game_config.gamepad_joy_sensitivity * ry * zoom_sens;
 }
 
+// Shared zoom-based sensitivity scaling for scanning/scoped weapons (joystick and gyro camera input).
+static float compute_zoom_sensitivity_scale(bool has_player_entity, float scanner_sens_value,
+                                            float scope_sens_value, float scope_dynamic_sens_value)
+{
+    if (!has_player_entity)
+        return 1.0f;
+
+    if (rf::local_player->fpgun_data.scanning_for_target)
+        return scanner_sens_value;
+
+    float zoom = rf::local_player->fpgun_data.zoom_factor;
+    if (zoom <= 1.0f)
+        return 1.0f;
+
+    if (g_alpine_game_config.scope_static_sensitivity)
+        return scope_sens_value;
+
+    constexpr float zoom_scale = 30.0f;
+    float divisor = (zoom - 1.0f) * scope_dynamic_sens_value * zoom_scale;
+    return divisor > 1.0f ? 1.0f / divisor : 1.0f;
+}
+
 static void gamepad_apply_gyro(bool has_player_entity, float& yaw_delta, float& pitch_delta)
 {
     float gyro_pitch, gyro_yaw;
@@ -1333,25 +1347,9 @@ static void gamepad_apply_gyro(bool has_player_entity, float& yaw_delta, float& 
     constexpr float deg2rad = 3.14159265f / 180.0f;
     float sens = g_alpine_game_config.gamepad_gyro_sensitivity * deg2rad * rf::frametime;
 
-    float gyro_zoom_sens = 1.0f;
-    if (has_player_entity) {
-        if (rf::local_player->fpgun_data.scanning_for_target) {
-            gyro_zoom_sens *= g_gamepad_scanner_gyro_sensitivity_value;
-        } else {
-            float zoom = rf::local_player->fpgun_data.zoom_factor;
-            if (zoom > 1.0f) {
-                if (g_alpine_game_config.scope_static_sensitivity) {
-                    gyro_zoom_sens *= g_gamepad_scope_gyro_sensitivity_value;
-                } else {
-                    constexpr float zoom_scale = 30.0f;
-                    float divisor = (zoom - 1.0f) * g_gamepad_scope_gyro_applied_dynamic_sensitivity_value * zoom_scale;
-                    if (divisor > 1.0f) {
-                        gyro_zoom_sens /= divisor;
-                    }
-                }
-            }
-        }
-    }
+    float gyro_zoom_sens = compute_zoom_sensitivity_scale(has_player_entity,
+        g_gamepad_scanner_gyro_sensitivity_value, g_gamepad_scope_gyro_sensitivity_value,
+        g_gamepad_scope_gyro_applied_dynamic_sensitivity_value);
 
     float out_yaw   = -gyro_yaw   * sens * gyro_zoom_sens;
     float out_pitch =  gyro_pitch * sens * gyro_zoom_sens;
@@ -1392,35 +1390,18 @@ void consume_raw_gamepad_deltas(float& pitch_delta, float& yaw_delta)
         return;
     }
 
-    SDL_GamepadAxis cam_x = g_alpine_game_config.gamepad_swap_sticks ? SDL_GAMEPAD_AXIS_LEFTX  : SDL_GAMEPAD_AXIS_RIGHTX;
-    SDL_GamepadAxis cam_y = g_alpine_game_config.gamepad_swap_sticks ? SDL_GAMEPAD_AXIS_LEFTY  : SDL_GAMEPAD_AXIS_RIGHTY;
-    float cam_dz          = g_alpine_game_config.gamepad_swap_sticks ? g_alpine_game_config.gamepad_move_deadzone
-                                                                       : g_alpine_game_config.gamepad_look_deadzone;
+    SDL_GamepadAxis cam_x, cam_y;
+    float cam_dz;
+    get_stick_axes(true, cam_x, cam_y, cam_dz);
 
     bool is_scoped_or_scanning = has_player_entity
         && (rf::player_fpgun_is_zoomed(rf::local_player) || rf::local_player->fpgun_data.scanning_for_target);
 
     update_gamepad_scoped_sensitivities();
 
-    float gamepad_zoom_sens = 1.0f;
-    if (has_player_entity) {
-        if (rf::local_player->fpgun_data.scanning_for_target) {
-            gamepad_zoom_sens *= g_gamepad_scanner_sensitivity_value;
-        } else {
-            float zoom = rf::local_player->fpgun_data.zoom_factor;
-            if (zoom > 1.0f) {
-                if (g_alpine_game_config.scope_static_sensitivity) {
-                    gamepad_zoom_sens *= g_gamepad_scope_sensitivity_value;
-                } else {
-                    constexpr float zoom_scale = 30.0f;
-                    float divisor = (zoom - 1.0f) * g_gamepad_scope_applied_dynamic_sensitivity_value * zoom_scale;
-                    if (divisor > 1.0f) {
-                        gamepad_zoom_sens /= divisor;
-                    }
-                }
-            }
-        }
-    }
+    float gamepad_zoom_sens = compute_zoom_sensitivity_scale(has_player_entity,
+        g_gamepad_scanner_sensitivity_value, g_gamepad_scope_sensitivity_value,
+        g_gamepad_scope_applied_dynamic_sensitivity_value);
 
     bool allow_flickstick = g_alpine_game_config.gamepad_joy_camera && !freelook_camera_active
         && (!is_scoped_or_scanning || g_alpine_game_config.gamepad_flickstick_allow_scoped);
@@ -1552,10 +1533,9 @@ FunHook<void(rf::Entity*)> physics_simulate_entity_hook{
 
         // Inject stick + gyro into vehicle rotation (ci.rot, range ±1.0 like keyboard input).
         if (is_gamepad_input_active() && is_local_player_vehicle(entity)) {
-            SDL_GamepadAxis rot_x = g_alpine_game_config.gamepad_swap_sticks ? SDL_GAMEPAD_AXIS_LEFTX  : SDL_GAMEPAD_AXIS_RIGHTX;
-            SDL_GamepadAxis rot_y = g_alpine_game_config.gamepad_swap_sticks ? SDL_GAMEPAD_AXIS_LEFTY  : SDL_GAMEPAD_AXIS_RIGHTY;
-            float rot_dz          = g_alpine_game_config.gamepad_swap_sticks ? g_alpine_game_config.gamepad_move_deadzone
-                                                                              : g_alpine_game_config.gamepad_look_deadzone;
+            SDL_GamepadAxis rot_x, rot_y;
+            float rot_dz;
+            get_stick_axes(true, rot_x, rot_y, rot_dz);
             constexpr float k_vehicle_dz_multiplier = 1.2f;
             float rx = get_axis(rot_x, rot_dz * k_vehicle_dz_multiplier);
             float ry = get_axis(rot_y, rot_dz * k_vehicle_dz_multiplier);
