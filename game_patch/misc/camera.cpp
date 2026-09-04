@@ -429,9 +429,9 @@ static void apply_camera_reset_to_horizon(rf::Entity* entity, float& pitch_delta
         s_camera_resetting = false;
 }
 
-// Applies raw/modern mouse deltas and linear pitch correction at the entity
+// Applies camera deltas and linear pitch correction at the entity
 // control injection point. For the player entity, this is where accumulated raw
-// mouse deltas are consumed (freelook camera deltas are consumed earlier in
+// mouse and gamepad deltas are consumed (freelook camera deltas are consumed earlier in
 // mouse_get_delta_hook since the freelook camera has a separate control path).
 CodeInjection linear_pitch_patch{
     0x0049DEC9,
@@ -453,7 +453,7 @@ CodeInjection linear_pitch_patch{
             yaw_delta += mouse_yaw;
         }
 
-        // Add gamepad rotation deltas to the game's computed deltas
+        // Consumes accumulated raw gamepad deltas
         if (!is_freelook_camera()) {
             float gamepad_pitch = 0.0f, gamepad_yaw = 0.0f;
             consume_raw_gamepad_deltas(gamepad_pitch, gamepad_yaw);
