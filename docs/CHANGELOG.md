@@ -11,7 +11,7 @@ Version 1.5.0 (TBD): Not yet released
 - Restore cut first person weapon aim sway, toggleable with `cl_weaponsway`
 
 [@is-this-c](https://github.com/is-this-c)
-- Do not kick a player, if they joined right before limbo
+- Do not kick a player, if their join completes right before limbo
 
 ### Bug fixes
 [@GooberRF](https://github.com/GooberRF)
