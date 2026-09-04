@@ -3442,7 +3442,7 @@ static void broadcast_name_change(rf::Player* player)
     offset += safe_name_len;
     buf[offset++] = '\0';
 
-    rf::multi_io_send_reliable_to_all(buf, static_cast<int>(offset), 0);
+    rf::multi_io_send_reliable_to_all(buf, static_cast<int>(offset), false);
 }
 
 static void send_bot_config_with_identity(rf::Player* player, const ServerBotConfig& config, int slot)
@@ -4821,7 +4821,7 @@ void send_nonclip_ammo_sync(rf::Player* player, rf::Entity* entity, int weapon_t
     packet.weapon = weapon_type;
     packet.ammo = entity->ai.clip_ammo[weapon_type];
     packet.clip_ammo = (winfo.ammo_type >= 0 && winfo.ammo_type < 32) ? entity->ai.ammo[winfo.ammo_type] : 0;
-    rf::multi_io_send_reliable(player, reinterpret_cast<uint8_t*>(&packet), sizeof(packet), 0);
+    rf::multi_io_send_reliable(player, reinterpret_cast<uint8_t*>(&packet), sizeof(packet), false);
 }
 
 static void server_topup_nonclip_ammo()

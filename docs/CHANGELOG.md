@@ -17,6 +17,9 @@ Version 1.5.0 (TBD): Not yet released
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Add `ui_color_console` console command to set the console background color
 
+[@is-this-c](https://github.com/is-this-c)
+- Do not kick a player, if they join right before limbo
+
 ### Bug fixes
 [@GooberRF](https://github.com/GooberRF)
 - Fix phantom visual flag mesh being visible after Salvage flag is picked up on rare occasions
