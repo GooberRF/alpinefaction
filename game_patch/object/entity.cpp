@@ -2,6 +2,7 @@
 #include <patch_common/FunHook.h>
 #include <patch_common/CallHook.h>
 #include <patch_common/AsmWriter.h>
+#include <patch_common/MemUtils.h>
 #include <cstdint>
 #include <cstring>
 #include <string>
@@ -211,29 +212,32 @@ CodeInjection multi_obj_interp_add_restore_orient{
     },
 };
 
-// The stock entity-vs-entity collision response applies a fixed velocity kick per event
-// with no dt scaling, so "head jumping" launch velocity scales with client FPS.
-// Rate-limit the response per entity in multiplayer.
-static constexpr int entity_collision_response_interval_ms = 1000 / 60;
-static std::unordered_map<int, int64_t> g_entity_collision_response_last_ms;
+static constexpr int entity_collision_push_interval_ms = 1000 / 60;
+static std::unordered_map<int, int64_t> g_entity_collision_push_last_ms;
 
-FunHook<void(rf::Entity*)> physics_resolve_entity_collision_hook{
-    0x0049D7E0,
-    [](rf::Entity* ep) {
-        if (ep && rf::is_multi && ep->p_data.collide_out.inv_mass > 0.0f && !ep->p_data.collide_out.is_liquid
-            && rf::entity_from_handle(ep->p_data.collide_out.obj_handle)) {
-            const int64_t now = timer::get_i64(1000);
-            auto [it, inserted] = g_entity_collision_response_last_ms.try_emplace(ep->handle, now);
-            if (!inserted) {
-                if (now - it->second < entity_collision_response_interval_ms) {
-                    return;
-                }
-                it->second = (now - it->second >= 2 * entity_collision_response_interval_ms)
-                                 ? now
-                                 : it->second + entity_collision_response_interval_ms;
-            }
+// Stock kick on entity-vs-object contact is n * 1.05 * (max(0, (other_vel - local_vel).n) - min(0, vel.n)).
+// The closing term cancels the velocity that caused the contact, so it cannot repeat; the other-object
+// term is re-applied in full on every contact sub-step during contact, so its total scales with FPS.
+// Rate-limit only that term to 60 Hz by zeroing its dot product before max(0, x).
+CodeInjection entity_collision_push_rate_limit{
+    0x0049DDBB,
+    [](auto& regs) {
+        rf::Entity* ep = regs.esi;
+        if (!rf::is_multi || !rf::entity_from_handle(ep->p_data.collide_out.obj_handle)) {
+            return;
         }
-        physics_resolve_entity_collision_hook.call_target(ep);
+        const int64_t now = timer::get_i64(1000);
+        auto [it, inserted] = g_entity_collision_push_last_ms.try_emplace(ep->handle, now);
+        if (inserted) {
+            return;
+        }
+        if (now - it->second < entity_collision_push_interval_ms) {
+            addr_as_ref<float>(regs.esp + 4) = 0.0f;
+            return;
+        }
+        it->second = (now - it->second >= 2 * entity_collision_push_interval_ms)
+                         ? now
+                         : it->second + entity_collision_push_interval_ms;
     },
 };
 
@@ -259,13 +263,13 @@ CallHook<int(rf::Object*, rf::Vector3, int, float, float)> entity_land_emit_soun
 
 void entity_rate_limit_on_entity_delete(int handle)
 {
-    g_entity_collision_response_last_ms.erase(handle);
+    g_entity_collision_push_last_ms.erase(handle);
     g_entity_land_sound_last_ms.erase(handle);
 }
 
 void entity_rate_limit_clear()
 {
-    g_entity_collision_response_last_ms.clear();
+    g_entity_collision_push_last_ms.clear();
     g_entity_land_sound_last_ms.clear();
 }
 
@@ -920,7 +924,7 @@ void entity_do_patch()
     AsmWriter(0x00428A7A).mov(asm_regs::ecx, *(asm_regs::edi + 0x29C));
 
     // Regulate FPS-dependent head-jump launch velocity in multiplayer
-    physics_resolve_entity_collision_hook.install();
+    entity_collision_push_rate_limit.install();
 
     // Stop landing-sound spam from falling/grounded flapping on ramps at high FPS
     entity_land_emit_sound_hook.install();
