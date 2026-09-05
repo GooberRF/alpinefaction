@@ -6,6 +6,7 @@
 #include <optional>
 #include <GamepadMotion.hpp>
 #include <xlog/xlog.h>
+#include <common/utils/string-utils.h>
 #include "../os/console.h"
 #include "../misc/alpine_settings.h"
 #include "../rf/player/player.h"
@@ -277,25 +278,36 @@ ConsoleCommand2 gyro_autocalibration_cmd{
     "gyro_autocalibration <0|1|2> (valid values: 0=Off, 1=Menu Only, 2=Always)",
 };
 
-ConsoleCommand2 gyro_reset_autocalibration_partial_cmd{
-    "gyro_reset_autocalibration_partial",
-    [](std::optional<int>) {
-        g_motion.SetAutoCalibrationConfidence(0.0f);
-        gyro_update_calibration_mode();
-        rf::console::print("Gyro auto-calibration partial reset (offset preserved)");
-    },
-    "Reset gyro auto-calibration confidence (preserves offset)",
-};
+static void gyro_reset_autocalibration_partial_cmd()
+{
+    g_motion.SetAutoCalibrationConfidence(0.0f);
+    gyro_update_calibration_mode();
+    rf::console::print("Gyro auto-calibration reset (offset will be preserved)");
+}
 
-ConsoleCommand2 gyro_reset_autocalibration_full_cmd{
-    "gyro_reset_autocalibration_full",
-    [](std::optional<int>) {
-        g_motion.ResetContinuousCalibration();
-        g_motion.ResetMotion();
-        gyro_update_calibration_mode();
-        rf::console::print("Gyro auto-calibration full reset");
+static void gyro_reset_autocalibration_full_cmd()
+{
+    g_motion.ResetContinuousCalibration();
+    g_motion.ResetMotion();
+    gyro_update_calibration_mode();
+    rf::console::print("Gyro auto-calibration resets");
+}
+
+ConsoleCommand2 gyro_reset_cmd{
+    "gyro_reset",
+    [](std::optional<std::string> mode) {
+        if (mode && string_to_lower(*mode) == "partial") {
+            gyro_reset_autocalibration_partial_cmd();
+        }
+        else if (mode && string_to_lower(*mode) == "full") {
+            gyro_reset_autocalibration_full_cmd();
+        }
+        else {
+            rf::console::print("Usage: gyro_reset <partial> (preserves calibrated offset) or <full> (resets calibrated offset)");
+        }
     },
-    "Reset gyro auto-calibration confidence and clear offset",
+    "Reset gyro auto-calibration",
+    "gyro_reset <partial|full> (partial preserves calibrated offset, full resets calibrated offset)",
 };
 
 ConsoleCommand2 gyro_space_cmd{
@@ -372,8 +384,7 @@ void gyro_apply_patch()
     gyro_update_calibration_mode();
     gyro_ratcheting_cmd.register_cmd();
     gyro_autocalibration_cmd.register_cmd();
-    gyro_reset_autocalibration_partial_cmd.register_cmd();
-    gyro_reset_autocalibration_full_cmd.register_cmd();
+    gyro_reset_cmd.register_cmd();
     gyro_space_cmd.register_cmd();
     gyro_invert_y_cmd.register_cmd();
     gyro_invert_x_cmd.register_cmd();

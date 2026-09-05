@@ -34,6 +34,7 @@ static bool g_motion_sensors_supported = false;
 static bool g_rumble_supported         = false;
 static bool g_trigger_rumble_supported = false;
 static bool g_led_supported            = false;
+static bool g_touchpad_supported        = false;
 
 static float g_camera_gamepad_dx = 0.0f;
 static float g_camera_gamepad_dy = 0.0f;
@@ -393,6 +394,20 @@ static bool try_enable_gamepad_capability(SDL_Gamepad* gp, const char* prop_name
     return true;
 }
 
+static bool try_enable_gamepad_touchpad(SDL_Gamepad* gp, bool& out_supported)
+{
+    if (!gp) return false;
+
+    if (SDL_GetNumGamepadTouchpads(gp) <= 0) {
+        xlog::info("Touchpad is not supported");
+        return false;
+    }
+
+    xlog::info("Touchpad is supported");
+    out_supported = true;
+    return true;
+}
+
 static void try_open_gamepad(SDL_JoystickID id)
 {
     SDL_Gamepad* gp = SDL_OpenGamepad(id);
@@ -409,6 +424,8 @@ static void try_open_gamepad(SDL_JoystickID id)
         try_enable_gamepad_capability(gp, SDL_PROP_GAMEPAD_CAP_TRIGGER_RUMBLE_BOOLEAN, "Trigger rumble", g_trigger_rumble_supported);
     if (!g_led_supported)
         try_enable_gamepad_capability(gp, SDL_PROP_GAMEPAD_CAP_RGB_LED_BOOLEAN, "Lightbar", g_led_supported);
+    if (!g_touchpad_supported)
+        try_enable_gamepad_touchpad(gp, g_touchpad_supported);
     try_enable_gamepad_sensors(gp);
 }
 
@@ -788,6 +805,7 @@ static void reset_gamepad_capability_flags()
     g_rumble_supported         = false;
     g_trigger_rumble_supported = false;
     g_led_supported            = false;
+    g_touchpad_supported       = false;
 }
 
 static void disconnect_all_gamepads()
@@ -1948,7 +1966,7 @@ ConsoleCommand2 gamepad_prompts_cmd{
     "gamepad_prompts <0-9> (valid values: 0=Auto, 1=Generic, 2=Xbox 360, 3=Xbox One/Series, 4=DualShock 3, 5=DualShock 4, 6=DualSense, 7=Nintendo Switch, 8=Nintendo GameCube, 9=Steam)",
 };
 
-ConsoleCommand2 joy_reconnect_cmd{
+ConsoleCommand2 joy_reset_cmd{
     "joy_reset",
     [](std::optional<int>) {
         if (!gamepad_any_open()) {
@@ -2358,7 +2376,7 @@ void gamepad_apply_patch()
     input_prompts_cmd.register_cmd();
     gamepad_prompts_cmd.register_cmd();
     swap_sticks_cmd.register_cmd();
-    joy_reconnect_cmd.register_cmd();
+    joy_reset_cmd.register_cmd();
     gyro_apply_patch();
 }
 
