@@ -74,6 +74,7 @@ add_packfile(alpinefaction.vpp
     tables/CTF_EuropaOneOutpost_info.tbl
     tables/dm-SpecialForces_info.tbl
     tables/Dm-NukeTown2050_info.tbl
+    tables/dm-halloween_info.tbl
     tables/DM-Catan-Hill_info.tbl
     tables/DM-Catan-Mountain_info.tbl
     tables/DM-Catan-Field_info.tbl
@@ -320,5 +321,13 @@ add_custom_command(
     MAIN_DEPENDENCY ${CMAKE_CURRENT_SOURCE_DIR}/licensing-info.txt
 )
 add_custom_target(LicensingInfoTxt ALL DEPENDS ${CMAKE_BINARY_DIR}/bin/licensing-info.txt)
+
+# Copy terms.txt
+add_custom_command(
+    OUTPUT ${CMAKE_BINARY_DIR}/bin/terms.txt
+    COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_SOURCE_DIR}/terms.txt ${CMAKE_BINARY_DIR}/bin/terms.txt
+    MAIN_DEPENDENCY ${CMAKE_CURRENT_SOURCE_DIR}/terms.txt
+)
+add_custom_target(TermsTxt ALL DEPENDS ${CMAKE_BINARY_DIR}/bin/terms.txt)
 
 add_subdirectory(shaders)

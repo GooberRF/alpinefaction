@@ -303,9 +303,10 @@ static void apply_gibbing(AlpineServerConfigRules& r, const toml::table& /*opts*
 }
 
 // Jetpacks: every player wears a jetpack and can thrust upward in midair.
-static void apply_jetpacks(AlpineServerConfigRules& r, const toml::table& /*opts*/)
+static void apply_jetpacks(AlpineServerConfigRules& r, const toml::table& opts)
 {
     r.mutators.jetpacks_enabled = true;
+    r.mutators.jetpack_explode = opts["explode"].value_or(false);
 }
 
 // Humans vs. Bots: in a team game type, bots are held on Blue and humans on Red.
@@ -410,6 +411,10 @@ static const MutatorOptionDef VAMPIRE_OPTIONS[] = {
     {1, "full_lifesteal", "Full lifesteal", MutatorOptionType::Bool},
 };
 
+static const MutatorOptionDef JETPACKS_OPTIONS[] = {
+    {0, "explode", "Jetpacks explode", MutatorOptionType::Bool},
+};
+
 static const MutatorOptionDef SCORE_LIMIT_OPTIONS[] = {
     {0, "score_limit", "Score limit", MutatorOptionType::Int},
 };
@@ -457,7 +462,7 @@ static const MutatorDef MUTATORS[] = {
     {MutatorId::BigCraters, "bigcraters", "Big Craters", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_big_craters, nullptr, 0},
     {MutatorId::FlamingEnemies, "flamingenemies", "Flaming Enemies", 4, &apply_flaming_enemies, nullptr, 0},
     {MutatorId::Gibbing, "gibbing", "Gibbing", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_gibbing, nullptr, 0},
-    {MutatorId::Jetpacks, "jetpacks", "Jetpacks", 4, &apply_jetpacks, nullptr, 0},
+    {MutatorId::Jetpacks, "jetpacks", "Jetpacks", 4, &apply_jetpacks, JETPACKS_OPTIONS, std::size(JETPACKS_OPTIONS)},
     {MutatorId::HumansVsBots, "humansvsbots", "Humans vs. Bots", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_humans_vs_bots, nullptr, 0, MutatorGametypeReq::TeamOnly},
     {MutatorId::DelayedSupers, "delayedsupers", "Delayed Supers", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_delayed_supers, nullptr, 0},
     {MutatorId::WeirdGunGame, "weirdgungame", "Weird Gun Game", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_weird_gungame, nullptr, 0, MutatorGametypeReq::GunGameOnly},

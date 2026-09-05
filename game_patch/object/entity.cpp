@@ -2,12 +2,17 @@
 #include <patch_common/FunHook.h>
 #include <patch_common/CallHook.h>
 #include <patch_common/AsmWriter.h>
+#include <patch_common/MemUtils.h>
+#include <cstdint>
 #include <cstring>
 #include <string>
+#include <unordered_map>
+#include <vector>
 #include <xlog/xlog.h>
 #include "../misc/achievements.h"
 #include "../misc/alpine_settings.h"
 #include "../os/console.h"
+#include "../os/os.h"
 #include "../rf/gr/gr_light.h"
 #include "../rf/entity.h"
 #include "../rf/event.h"
@@ -207,6 +212,67 @@ CodeInjection multi_obj_interp_add_restore_orient{
     },
 };
 
+static constexpr int entity_collision_push_interval_ms = 1000 / 60;
+static std::unordered_map<int, int64_t> g_entity_collision_push_last_ms;
+
+// Stock kick on entity-vs-object contact is n * 1.05 * (max(0, (other_vel - local_vel).n) - min(0, vel.n)).
+// The closing term cancels the velocity that caused the contact, so it cannot repeat; the other-object
+// term is re-applied in full on every contact sub-step during contact, so its total scales with FPS.
+// Rate-limit only that term to 60 Hz by zeroing its dot product before max(0, x).
+CodeInjection entity_collision_push_rate_limit{
+    0x0049DDBB,
+    [](auto& regs) {
+        rf::Entity* ep = regs.esi;
+        if (!rf::is_multi || !rf::entity_from_handle(ep->p_data.collide_out.obj_handle)) {
+            return;
+        }
+        const int64_t now = timer::get_i64(1000);
+        auto [it, inserted] = g_entity_collision_push_last_ms.try_emplace(ep->handle, now);
+        if (inserted) {
+            return;
+        }
+        if (now - it->second < entity_collision_push_interval_ms) {
+            addr_as_ref<float>(regs.esp + 4) = 0.0f;
+            return;
+        }
+        it->second = (now - it->second >= 2 * entity_collision_push_interval_ms)
+                         ? now
+                         : it->second + entity_collision_push_interval_ms;
+    },
+};
+
+// At high FPS entities flap between falling and grounded on ramps and jump pads, which
+// spams the landing sound. Only the sound call itself is suppressed.
+static constexpr int entity_land_sound_interval_ms = 250;
+static std::unordered_map<int, int64_t> g_entity_land_sound_last_ms;
+
+CallHook<int(rf::Object*, rf::Vector3, int, float, float)> entity_land_emit_sound_hook{
+    0x004198E2,
+    [](rf::Object* objp, rf::Vector3 pos, int sound_handle, float vol_scale, float pan) -> int {
+        const int64_t now = timer::get_i64(1000);
+        auto [it, inserted] = g_entity_land_sound_last_ms.try_emplace(objp->handle, now);
+        if (!inserted) {
+            if (now - it->second < entity_land_sound_interval_ms) {
+                return -1;
+            }
+            it->second = now;
+        }
+        return entity_land_emit_sound_hook.call_target(objp, pos, sound_handle, vol_scale, pan);
+    },
+};
+
+void entity_rate_limit_on_entity_delete(int handle)
+{
+    g_entity_collision_push_last_ms.erase(handle);
+    g_entity_land_sound_last_ms.erase(handle);
+}
+
+void entity_rate_limit_clear()
+{
+    g_entity_collision_push_last_ms.clear();
+    g_entity_land_sound_last_ms.clear();
+}
+
 CodeInjection entity_process_post_hidden_injection{
     0x0041E4C8,
     [](auto& regs) {
@@ -343,6 +409,125 @@ void entity_set_gib_flag(rf::Entity* ep) {
     ep->entity_flags |= rf::EntityFlags::EF_GIB_ON_DEATH;
 }
 
+// Client-side flame on gib chunks. particle_emitter_create never links an emitter into an
+// engine-ticked list, so - like the engine's own on-fire effect - these are ours to update
+// and destroy by hand.
+constexpr const char* GIB_FLAME_EMITTER_TYPE_NAME = "humanoid fire 1";
+constexpr int GIB_FLAME_ON_MS = 500;
+// After the emitter stops spawning it is kept alive long enough for the last particles
+// (max_life 0.85 s) to fade out on their own.
+constexpr int GIB_FLAME_LINGER_MS = 1000;
+constexpr float GIB_FLAME_PARTICLE_RADIUS_SCALE = 0.5f;
+constexpr int GIB_FLAME_MAX_PER_DEATH = 10; // max flaming gibs from a single death
+constexpr int GIB_FLAME_MAX_TOTAL = 40; // max flaming gibs at once
+
+struct GibFlame
+{
+    int debris_handle;
+    rf::ParticleEmitter* emitter;
+    rf::Timestamp off_at;
+    rf::Timestamp destroy_at;
+};
+
+static std::vector<GibFlame> g_gib_flames;
+// -2 = not looked up yet, -1 = the engine has no such emitter type.
+static int g_gib_flame_emitter_type_idx = -2;
+
+static bool gib_flame_emitter_type(rf::ParticleEmitterType* out)
+{
+    if (g_gib_flame_emitter_type_idx == -2) {
+        g_gib_flame_emitter_type_idx = rf::particle_emitter_type_lookup(GIB_FLAME_EMITTER_TYPE_NAME);
+        if (g_gib_flame_emitter_type_idx < 0) {
+            xlog::warn("gib flames: particle emitter type '{}' not found", GIB_FLAME_EMITTER_TYPE_NAME);
+        }
+    }
+    if (g_gib_flame_emitter_type_idx < 0) {
+        return false;
+    }
+    *out = *rf::g_particle_emitter_types[g_gib_flame_emitter_type_idx];
+
+    // The humanoid fire template burns whatever walks through it; a decorative chunk
+    // flame must not.
+    out->particle_flags2 &= ~rf::PTF2_DAMAGES;
+
+    // "humanoid fire 1" is a continuous emitter (one particle per emitter per frame, fps-coupled);
+    // at gib counts that overwhelms the fixed particle pools. Let the template's own
+    // 0.05-0.075 s spawn delay govern instead.
+    out->flags &= ~rf::PEF_CONTINOUS;
+    out->min_pradius *= GIB_FLAME_PARTICLE_RADIUS_SCALE;
+    out->max_pradius *= GIB_FLAME_PARTICLE_RADIUS_SCALE;
+    return true;
+}
+
+static void gib_flame_attach(rf::Debris* gib)
+{
+    if (g_gib_flames.size() >= static_cast<size_t>(GIB_FLAME_MAX_TOTAL)) {
+        return;
+    }
+
+    rf::ParticleEmitterType type{};
+    if (!gib_flame_emitter_type(&type)) {
+        return;
+    }
+
+    // Parented at a zero local offset, so get_pos_and_dir carries the flame with the
+    // chunk and nothing has to be repositioned per frame.
+    rf::Vector3 zero{};
+    rf::ParticleEmitter* em = rf::particle_emitter_create(gib->handle, type, gib->room, zero, false);
+    if (!em) {
+        return;
+    }
+    em->pos = zero;
+    em->dir = rf::Vector3{0.0f, 1.0f, 0.0f};
+    em->room = gib->room;
+    em->activate();
+
+    GibFlame flame;
+    flame.debris_handle = gib->handle;
+    flame.emitter = em;
+    flame.off_at.set(GIB_FLAME_ON_MS);
+    flame.destroy_at.set(GIB_FLAME_ON_MS + GIB_FLAME_LINGER_MS);
+    g_gib_flames.push_back(flame);
+}
+
+static void gib_flames_do_frame()
+{
+    for (auto it = g_gib_flames.begin(); it != g_gib_flames.end();) {
+        rf::Object* objp = rf::obj_from_handle(it->debris_handle);
+        if (!objp || objp->type != rf::OT_DEBRIS || it->destroy_at.elapsed()) {
+            it->emitter->destroy();
+            it = g_gib_flames.erase(it);
+            continue;
+        }
+        if (it->emitter->active && it->off_at.elapsed()) {
+            it->emitter->active = false;
+        }
+        it->emitter->update();
+        ++it;
+    }
+}
+
+// Emitter records survive a level unload, so anything still tracked has to be handed back
+// explicitly.
+void gib_flames_level_init()
+{
+    for (auto& flame : g_gib_flames) {
+        flame.emitter->destroy();
+    }
+    g_gib_flames.clear();
+    g_gib_flame_emitter_type_idx = -2;
+}
+
+// The engine's only call to entity_fire_update_all, inside the level sim frame - so the
+// gib flames inherit its pause and menu behaviour.
+CallHook<void()> entity_fire_update_all_call_hook{
+    0x00433417,
+    []() {
+        entity_fire_update_all_call_hook.call_target();
+        gib_flames_do_frame();
+    },
+};
+
 FunHook<void(int)> entity_blood_throw_gibs_hook{
     0x0042E3C0,
     [](int handle) {
@@ -437,6 +622,9 @@ FunHook<void(int)> entity_blood_throw_gibs_hook{
             rf::Debris* gib = rf::debris_create(objp->handle, gib_filename, 0.3f, &debris_info, 0, -1.0f);
             if (gib) {
                 gib->obj_flags |= rf::OF_INVULNERABLE;
+                if (g_alpine_game_config.gib_flames && i < GIB_FLAME_MAX_PER_DEATH) {
+                    gib_flame_attach(gib);
+                }
             }
         }
     }
@@ -499,6 +687,16 @@ ConsoleCommand2 cl_giblifetimems_cmd{
     },
     "Set gib lifetime in milliseconds.",
     "cl_giblifetimems [milliseconds]"
+};
+
+ConsoleCommand2 cl_gibflames_cmd{
+    "cl_gibflames",
+    []() {
+        g_alpine_game_config.gib_flames = !g_alpine_game_config.gib_flames;
+        rf::console::print("Flaming gib chunks are {}",
+            g_alpine_game_config.gib_flames ? "enabled" : "disabled");
+    },
+    "Toggle flames on gib chunks",
 };
 
 // makes some entities red - unfinished
@@ -725,6 +923,12 @@ void entity_do_patch()
     // which has correct data and is already used by entity_crouch.
     AsmWriter(0x00428A7A).mov(asm_regs::ecx, *(asm_regs::edi + 0x29C));
 
+    // Regulate FPS-dependent head-jump launch velocity in multiplayer
+    entity_collision_push_rate_limit.install();
+
+    // Stop landing-sound spam from falling/grounded flapping on ramps at high FPS
+    entity_land_emit_sound_hook.install();
+
     // Fix RF bug: multi_obj_interp_add corrupts pd->orient
     multi_obj_interp_add_save_orient.install();
     multi_obj_interp_add_restore_orient.install();
@@ -754,6 +958,7 @@ void entity_do_patch()
 
 	// Restore cut stock game feature for entities and corpses exploding into chunks
 	entity_blood_throw_gibs_hook.install();
+    entity_fire_update_all_call_hook.install();
 
     // Footstep fix: inject trigger frames for attack_run animations and mute dying entities
     evaluate_footsteps();
@@ -768,6 +973,7 @@ void entity_do_patch()
     cl_gibchunks_cmd.register_cmd();
     cl_gibvelocityscale_cmd.register_cmd();
     cl_giblifetimems_cmd.register_cmd();
+    cl_gibflames_cmd.register_cmd();
     cl_painsounds_cmd.register_cmd();
     cl_footsteps_cmd.register_cmd();
 }

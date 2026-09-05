@@ -335,14 +335,20 @@ namespace
         },
     };
 
-    FunHook<void(rf::Player*, const void*, int, int)> multi_io_send_reliable_hook{
+    FunHook<void(rf::Player*, const void*, int, bool)> multi_io_send_reliable_hook{
         0x00479480,
-        [](rf::Player* player, const void* data, int len, int not_limbo) {
+        [] (
+            rf::Player* const player,
+            const void* const data,
+            const int len,
+            const bool require_in_game
+        ) {
             if (player && player->is_observer()) {
                 capture_packet(data, len, DEMO_PKT_RELIABLE);
-                return;
+            } else {
+                multi_io_send_reliable_hook
+                    .call_target(player, data, len, require_in_game);
             }
-            multi_io_send_reliable_hook.call_target(player, data, len, not_limbo);
         },
     };
 

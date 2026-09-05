@@ -35,6 +35,16 @@ Version 1.5.0 (TBD): Not yet released
 [@GooberRF](https://github.com/GooberRF)
 - Notify players in a server that is recording demos
 - Restore cut first person weapon aim sway, toggleable with `cl_weaponsway`
+- Add terms of use and notices document to installer
+- Add compatibility table (lightmap clamp floor) for `dm-halloween.rfl`
+- Add flames to gib chunks thrown by exploding entities, toggleable with `cl_gibflames`
+- Add `Jetpacks explode` option to the Jetpacks mutator
+
+[@nickalreadyinuse](https://github.com/nickalreadyinuse)
+- Add `ui_color_console` console command to set the console background color
+
+[@is-this-c](https://github.com/is-this-c)
+- Do not kick a player, if they join right before limbo
 
 [@AL2009man](https://github.com/AL2009man)
 - Add `GamepadRawInput` option (via `alpine_settings.ini`) to enable RawInput driver for better handling of XInput controllers, while allowing Trigger Rumble/Impulse Trigger support.
@@ -43,6 +53,15 @@ Version 1.5.0 (TBD): Not yet released
 ### Bug fixes
 [@GooberRF](https://github.com/GooberRF)
 - Fix phantom visual flag mesh being visible after Salvage flag is picked up on rare occasions
+- Fix scrolling textures jumping forward when the Direct3D 11 renderer rebuilds a room's render cache, most visibly after a brush-based geomod crater
+- Fix filter box in the level editor texture browser not filtering the texture list by partial filename
+
+[@is-this-c](https://github.com/is-this-c)
+- Let `Caps Lock` capitalize
+
+[@nickalreadyinuse](https://github.com/nickalreadyinuse)
+- Cap FPS-dependent launch velocity when head jumping
+- Fix landing sound spam on ramps and jump pads at high FPS
 
 
 Version 1.4.0 (Lupin): Released Aug-25-2026

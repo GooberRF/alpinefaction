@@ -570,7 +570,7 @@ namespace gr::d3d11
 
     inline bool RoomRenderCache::invalid() const
     {
-        static_assert(offsetof(RoomRenderCache, state_) == 0x20, "Bad state_ offset");
+        static_assert(offsetof(RoomRenderCache, state_) == offsetof(rf::GCache, state), "Bad state_ offset");
         if (state_ != 0) {
             xlog::trace("room {} state {}", room_->room_index, state_);
         }

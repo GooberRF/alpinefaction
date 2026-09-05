@@ -29,9 +29,9 @@ ConsoleCommand2 dot_cmd{
             if (string_icontains(cmd->name, pattern)
                 || (cmd->help && string_icontains(cmd->help, pattern))) {
                 if (cmd->help) {
-                    rf::console::print("{} - {}", cmd->name, cmd->help);
+                    rf::console::print(" {} - {}", cmd->name, cmd->help);
                 } else {
-                    rf::console::print("{}", cmd->name);
+                    rf::console::print(" {}", cmd->name);
                 }
             }
         }
