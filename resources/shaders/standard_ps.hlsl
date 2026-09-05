@@ -102,6 +102,32 @@ cbuffer GasRegionBuffer : register(b4)
 
 #endif
 
+struct CausticVolume
+{
+    float3 bbox_min;  float surface_y;
+    float3 bbox_max;  float _cpad0;
+    float3 color;     float _cpad1;
+};
+
+#define MAX_CAUSTIC_VOLUMES 16
+
+cbuffer CausticsBuffer : register(b5)
+{
+    int   num_caustic_volumes;
+    float caustic_time;
+    float caustic_intensity;
+    float caustic_scale;
+    float caustic_speed;
+    float caustic_floor;
+    float caustic_exponent;
+    float caustic_depth_fade;
+    float caustic_above_water;
+    float caustic_drift;
+    float caustic_wall_stretch;
+    float _caustic_hdr_pad;
+    CausticVolume caustic_volumes[MAX_CAUSTIC_VOLUMES];
+};
+
 Texture2D tex0;
 Texture2D tex1;
 Texture2D shadow_map : register(t2);
@@ -109,6 +135,8 @@ SamplerState samp0;
 SamplerState samp1;
 SamplerComparisonState shadow_sampler : register(s2);
 SamplerState shadow_depth_sampler : register(s3);
+Texture2DArray caustic_tex : register(t3);
+SamplerState   caustic_samp : register(s4);
 
 // Poisson disk offsets for multi-tap PCF (up to 15 extra taps beyond center = 16 max)
 static const float2 pcf_offsets[15] = {
@@ -155,6 +183,18 @@ float3 apply_colorblind(float3 color)
         );
     }
     return mul(color, mat);
+}
+
+// One triplanar plane: two drifting layers, each blended across two animation frames.
+float caustic_sample_plane(float2 p, float2 drift, float s0, float s1, float sf)
+{
+    float2 uv_a = p * caustic_scale + drift;
+    float2 uv_b = float2(-p.y, p.x) * caustic_scale * 0.61f - drift * 0.8f;
+    float ca = lerp(caustic_tex.Sample(caustic_samp, float3(uv_a, s0)).r,
+                    caustic_tex.Sample(caustic_samp, float3(uv_a, s1)).r, sf);
+    float cb = lerp(caustic_tex.Sample(caustic_samp, float3(uv_b, s0)).r,
+                    caustic_tex.Sample(caustic_samp, float3(uv_b, s1)).r, sf);
+    return (ca + cb) * 0.5f;
 }
 
 float4 main(VsOutput input) : SV_TARGET
@@ -294,6 +334,39 @@ float4 main(VsOutput input) : SV_TARGET
     if (emissive_override > 0.5f) {
         target.rgb = tex0_color.rgb * current_color.rgb;
         light_color = float3(1.0f, 1.0f, 1.0f);
+    }
+
+    if (num_caustic_volumes > 0 && emissive_override < 0.5f && disable_textures < 0.5f
+        && dot(input.norm, input.norm) > 0.0f) {
+        float3 wp = input.world_pos_and_depth.xyz;
+        float  mask = 0.0f, depth = 0.0f;
+        float3 tint = float3(1, 1, 1);
+        for (int ci = 0; ci < num_caustic_volumes; ++ci) {
+            CausticVolume v = caustic_volumes[ci];
+            bool inside = all(wp >= v.bbox_min - 0.05f) && all(wp <= v.bbox_max + 0.05f)
+                          && wp.y < v.surface_y - 0.02f;
+            if (inside && mask == 0.0f) { mask = 1.0f; depth = v.surface_y - wp.y; tint = v.color; }
+        }
+        // Sampled outside the per-pixel branch so implicit derivatives stay valid.
+        float  slice = frac(caustic_time * caustic_speed) * 16.0f;
+        float  s0 = floor(slice), s1 = fmod(s0 + 1.0f, 16.0f), sf = slice - s0;
+        float2 drift = caustic_time * caustic_drift * float2(1.0f, 0.7f);
+        // Triplanar: XZ for floors/ceilings, ZY and XY for walls, with the wall
+        // planes squeezed vertically so their pattern reads as elongated streaks.
+        float3 tw = abs(input.norm);
+        tw = pow(tw, 4.0f);
+        tw /= max(tw.x + tw.y + tw.z, 1e-4f);
+        float  wall_y = wp.y * caustic_wall_stretch;
+        float  c_xz = caustic_sample_plane(wp.xz, drift, s0, s1, sf);
+        float  c_zy = caustic_sample_plane(float2(wp.z, wall_y), drift, s0, s1, sf);
+        float  c_xy = caustic_sample_plane(float2(wp.x, wall_y), drift, s0, s1, sf);
+        float  c_mix = c_xz * tw.y + c_zy * tw.x + c_xy * tw.z;
+        float  c = saturate((c_mix - caustic_floor) / max(1.0f - caustic_floor, 0.001f));
+        c = pow(c, caustic_exponent);
+        float atten  = saturate(1.0f - depth / max(caustic_depth_fade, 0.01f));
+        float facing = saturate(input.norm.y) * 0.75f + 0.25f;
+        float lit    = saturate(dot(light_color, float3(0.2126f, 0.7152f, 0.0722f)) * 2.0f);
+        light_color += tint * (c * caustic_intensity * caustic_above_water * atten * facing * lit * mask);
     }
 
     target.rgb *= light_color;

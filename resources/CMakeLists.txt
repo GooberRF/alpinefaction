@@ -275,6 +275,22 @@ add_packfile(alpinefaction.vpp
     images/dec_af_csp09.tga
     images/dec_af_csp10.tga
     images/af-jetpack1skin1.tga
+    images/caustics/af_caust00.png
+    images/caustics/af_caust01.png
+    images/caustics/af_caust02.png
+    images/caustics/af_caust03.png
+    images/caustics/af_caust04.png
+    images/caustics/af_caust05.png
+    images/caustics/af_caust06.png
+    images/caustics/af_caust07.png
+    images/caustics/af_caust08.png
+    images/caustics/af_caust09.png
+    images/caustics/af_caust10.png
+    images/caustics/af_caust11.png
+    images/caustics/af_caust12.png
+    images/caustics/af_caust13.png
+    images/caustics/af_caust14.png
+    images/caustics/af_caust15.png
 
     fonts/biggerfont.vf
     fonts/regularfont.ttf

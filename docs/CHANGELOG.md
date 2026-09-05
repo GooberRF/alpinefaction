@@ -13,6 +13,7 @@ Version 1.5.0 (TBD): Not yet released
 - Add compatibility table (lightmap clamp floor) for `dm-halloween.rfl`
 - Add flames to gib chunks thrown by exploding entities, toggleable with `cl_gibflames`
 - Add `Jetpacks explode` option to the Jetpacks mutator
+- Add animated underwater caustics on submerged geometry and meshes, toggleable with `r_caustics` (Direct3D 11 renderer only)
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Add `ui_color_console` console command to set the console background color

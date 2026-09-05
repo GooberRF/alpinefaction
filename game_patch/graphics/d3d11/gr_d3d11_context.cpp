@@ -29,7 +29,8 @@ namespace gr::d3d11
         render_mode_cbuffer_{device_},
         per_frame_buffer_{device_},
         texture_scale_cbuffer_{device_},
-        gas_region_buffer_{device_}
+        gas_region_buffer_{device_},
+        caustics_renderer_{device_}
     {
         bind_cbuffers();
     }
@@ -54,6 +55,10 @@ namespace gr::d3d11
         // Gas region buffer at b4 (b3 is used by shadow renderer)
         ID3D11Buffer* gas_cbuffer = gas_region_buffer_;
         device_context_->PSSetConstantBuffers(4, 1, &gas_cbuffer);
+
+        // Caustics buffer at b5
+        ID3D11Buffer* caustics_cbuffer = caustics_renderer_;
+        device_context_->PSSetConstantBuffers(5, 1, &caustics_cbuffer);
     }
 
     void RenderContext::clear()
