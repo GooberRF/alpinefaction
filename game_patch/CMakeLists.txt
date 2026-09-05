@@ -377,7 +377,6 @@ target_include_directories(AlpineFaction PRIVATE
     ${CMAKE_SOURCE_DIR}/vendor/xxhash
     ${CMAKE_SOURCE_DIR}/vendor/stb
     ${CMAKE_SOURCE_DIR}/vendor/freetype/include
-    ${CMAKE_SOURCE_DIR}/vendor/nlohmann
     ${CMAKE_SOURCE_DIR}/vendor/gamepadmotionhelpers
 )
 
@@ -416,11 +415,3 @@ target_link_libraries(AlpineFaction
     SDL3::SDL3
     GamepadMotionHelpers
 )
-
-if(WIN32)
-    target_link_libraries(AlpineFaction
-        setupapi
-        imm32
-        cfgmgr32
-    )
-endif()

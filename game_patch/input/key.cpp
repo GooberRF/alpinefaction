@@ -226,24 +226,24 @@ FunHook<rf::Key()> key_get_hook{
         rf::os_poll();
 
         const rf::Key key = key_get_hook.call_target();
-        const int bink_handle = addr_as_ref<int>(0x018871E4);
 
         if (rf::close_app_req) {
-            return bink_handle ? rf::KEY_ESC : rf::KEY_NONE;
+            goto MAYBE_CANCEL_BINK;
         }
 
         if ((key & rf::KEY_MASK) == rf::KEY_ESC
-            && (key & rf::KEY_SHIFTED)
+            && key & rf::KEY_SHIFTED
             && g_alpine_game_config.quick_exit) {
             rf::gameseq_set_state(rf::GameState::GS_QUITING, false);
+        MAYBE_CANCEL_BINK:
             // If we are playing a video, cancel it.
+            const int bink_handle = addr_as_ref<int>(0x018871E4);
             return bink_handle ? rf::KEY_ESC : rf::KEY_NONE;
         }
 
+        // Also allow a Gamepad's Start button to cancel a playing video.
+        const int bink_handle = addr_as_ref<int>(0x018871E4);
         if (bink_handle) {
-            if ((key & rf::KEY_MASK) == rf::KEY_ESC) {
-                return rf::KEY_ESC;
-            }
             SDL_PumpEvents();
             SDL_Event sdl_ev;
             while (SDL_PeepEvents(&sdl_ev, 1, SDL_GETEVENT,
