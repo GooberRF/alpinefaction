@@ -29,6 +29,10 @@ Version 1.5.0 (TBD): Not yet released
 [@is-this-c](https://github.com/is-this-c)
 - Let `Caps Lock` capitalize
 
+[@nickalreadyinuse](https://github.com/nickalreadyinuse)
+- Cap FPS-dependent launch velocity when head jumping
+- Fix landing sound spam on ramps and jump pads at high FPS
+
 Version 1.4.0 (Lupin): Released Aug-25-2026
 --------------------------------
 ### Major features
