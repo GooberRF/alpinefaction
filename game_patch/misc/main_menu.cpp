@@ -27,6 +27,7 @@
 #include "../graphics/gr.h"
 #include "../os/os.h"
 #include "../input/input.h"
+#include "../input/gamepad.h"
 #include "misc.h"
 #include "alpine_settings.h"
 #include "../multi/network.h"
@@ -594,6 +595,11 @@ CodeInjection options_do_frame_patch{
                     break;
                 }
             }
+        } else {
+            // Options menu has closed — restore keyboard scan codes if the
+            // controller bindings view was still active.
+            if (ui_ctrl_bindings_view_active())
+                ui_ctrl_bindings_view_reset();
         }
     },
 };
@@ -653,6 +659,48 @@ CodeInjection message_log_do_frame_patch{
     },
 };
 
+FunHook<void()> on_mult_btn_click_hook{
+    0x00443C20,
+    []() {
+        // Show controller warning once if a gamepad is connected and MULT is clicked
+        if (!g_alpine_game_config.controller_warning_shown && gamepad_any_open()) {
+            // Determine which message to show based on gamepad capabilities
+            bool show_warning = true;
+            const char* warning_message;
+            
+            if (gamepad_is_motionsensors_supported() && g_alpine_game_config.gamepad_gyro_enabled) {
+                // Gyro available and enabled - no warning needed
+                show_warning = false;
+            } else if (gamepad_is_motionsensors_supported()) {
+                // Gyro available but not enabled
+                warning_message = "Controller with gyroscopic function (can be enabled via Options > Advanced > Input > Gyro Aiming) or using Simultaneous controller+keyboard/mouse inputs (Mixed Input) is recommended.";
+            } else {
+                // Controller doesn't have gyro
+                warning_message = "Controller with gyroscopic function or using Simultaneous controller+keyboard/mouse inputs (Mixed Input) is recommended.";
+            }
+            
+            if (show_warning) {
+                // Set flag ONLY when showing the warning
+                g_alpine_game_config.controller_warning_shown = true;
+                rf::ui::popup_message(
+                    "Controller Detected",
+                    warning_message,
+                    []() {
+                        on_mult_btn_click_hook.call_target();
+                    },
+                    false
+                );
+            } else {
+                // Gyro enabled - proceed without warning
+                on_mult_btn_click_hook.call_target();
+            }
+        }
+        else {
+            on_mult_btn_click_hook.call_target();
+        }
+    }
+};
+
 void apply_main_menu_patches()
 {
     // Main menu init
@@ -662,6 +710,9 @@ void apply_main_menu_patches()
     UiLabel_create2_version_label_hook.install();
     main_menu_process_mouse_hook.install();
     main_menu_render_hook.install();
+
+    // Show controller warning when Multiplayer (MULT) button is clicked
+    on_mult_btn_click_hook.install();
 
     // Put not responding servers at the bottom of server list
     server_list_cmp_func_hook.install();
