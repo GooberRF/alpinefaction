@@ -174,6 +174,161 @@ static void remove_from_gamepad_list(SDL_JoystickID id)
     }
 }
 
+static bool try_enable_gamepad_sensors(SDL_Gamepad* gp)
+{
+    if (!gp) return false;
+
+    if (!SDL_GamepadHasSensor(gp, SDL_SENSOR_GYRO) ||
+        !SDL_GamepadHasSensor(gp, SDL_SENSOR_ACCEL)) {
+        xlog::info("Motion sensors is not supported");
+        return false;
+    }
+
+    if (!SDL_SetGamepadSensorEnabled(gp, SDL_SENSOR_GYRO,  true) ||
+        !SDL_SetGamepadSensorEnabled(gp, SDL_SENSOR_ACCEL, true)) {
+        xlog::warn("Failed to enable motion sensors: {}", SDL_GetError());
+        return false;
+    }
+
+    xlog::info("Motion sensors is supported");
+    if (!g_motion_sensors_supported) {
+        g_motion_sensors_supported = true;
+        gyro_reset_full();
+    }
+    return true;
+}
+
+// Shared boolean probe for  gamepad capabilities (rumble, trigger rumble, LED).
+static bool try_enable_gamepad_capability(SDL_Gamepad* gp, const char* prop_name, const char* label, bool& out_supported)
+{
+    if (!gp) return false;
+
+    if (!SDL_GetBooleanProperty(SDL_GetGamepadProperties(gp), prop_name, false)) {
+        xlog::info("{} is not supported", label);
+        return false;
+    }
+
+    xlog::info("{} is supported", label);
+    out_supported = true;
+    return true;
+}
+
+static bool try_enable_gamepad_touchpad(SDL_Gamepad* gp, bool& out_supported)
+{
+    if (!gp) return false;
+
+    if (SDL_GetNumGamepadTouchpads(gp) <= 0) {
+        xlog::info("Touchpad is not supported");
+        return false;
+    }
+
+    xlog::info("Touchpad is supported");
+    out_supported = true;
+    return true;
+}
+
+static void try_open_gamepad(SDL_JoystickID id)
+{
+    SDL_Gamepad* gp = SDL_OpenGamepad(id);
+    if (!gp) {
+        xlog::warn("Failed to open gamepad: {}", SDL_GetError());
+        return;
+    }
+
+    xlog::info("Gamepad connected: {}", SDL_GetGamepadName(gp));
+    add_to_gamepad_list(gp);
+    if (!g_rumble_supported)
+        try_enable_gamepad_capability(gp, SDL_PROP_GAMEPAD_CAP_RUMBLE_BOOLEAN, "Rumble", g_rumble_supported);
+    if (!g_trigger_rumble_supported)
+        try_enable_gamepad_capability(gp, SDL_PROP_GAMEPAD_CAP_TRIGGER_RUMBLE_BOOLEAN, "Trigger rumble", g_trigger_rumble_supported);
+    if (!g_led_supported)
+        try_enable_gamepad_capability(gp, SDL_PROP_GAMEPAD_CAP_RGB_LED_BOOLEAN, "Lightbar", g_led_supported);
+    if (!g_touchpad_supported)
+        try_enable_gamepad_touchpad(gp, g_touchpad_supported);
+    try_enable_gamepad_sensors(gp);
+}
+
+void gamepad_rumble(uint16_t low_freq, uint16_t high_freq, uint32_t duration_ms, bool ignore_filter)
+{
+    if (!gamepad_any_open() || !g_rumble_supported)
+        return;
+    if (g_alpine_game_config.gamepad_rumble_when_primary && !g_last_input_was_gamepad)
+        return;
+    if (g_alpine_game_config.gamepad_rumble_intensity <= 0.0f)
+        return;
+    low_freq = static_cast<uint16_t>(low_freq * g_alpine_game_config.gamepad_rumble_intensity);
+    high_freq = static_cast<uint16_t>(high_freq * g_alpine_game_config.gamepad_rumble_intensity);
+    if (!ignore_filter) {
+        int filter_mode = g_alpine_game_config.gamepad_rumble_vibration_filter;
+        if (filter_mode == 2 || (filter_mode == 1 && g_motion_sensors_supported && g_alpine_game_config.gamepad_gyro_enabled))
+            low_freq = static_cast<uint16_t>(low_freq * 0.02f);
+    }
+    for (auto* gp : g_gamepads)
+        if (gp) SDL_RumbleGamepad(gp, low_freq, high_freq, duration_ms);
+}
+
+void gamepad_play_rumble(const RumbleEffect& effect, bool is_alt_fire)
+{
+    if (!gamepad_any_open())
+        return;
+
+    // No trigger motor requested — plain body rumble.
+    if (!effect.trigger_motor || g_alpine_game_config.gamepad_trigger_rumble_intensity <= 0.0f) {
+        gamepad_rumble(effect.lo_motor, effect.hi_motor, effect.duration_ms);
+        return;
+    }
+
+    constexpr int primary_idx   = static_cast<int>(rf::CC_ACTION_PRIMARY_ATTACK);
+    constexpr int secondary_idx = static_cast<int>(rf::CC_ACTION_SECONDARY_ATTACK);
+
+    // Resolve which trigger (if any) each fire action is bound to.
+    // g_trigger_action[0] = Left Trigger,  g_trigger_action[1] = Right Trigger.
+    bool primary_on_lt   = g_trigger_action[0] == primary_idx;
+    bool primary_on_rt   = g_trigger_action[1] == primary_idx;
+    bool secondary_on_lt = g_trigger_action[0] == secondary_idx;
+    bool secondary_on_rt = g_trigger_action[1] == secondary_idx;
+
+    // Check which fire action is active this frame or was active last frame.
+    bool primary_active   = primary_idx   < k_action_count && (g_action_curr[primary_idx]   || g_action_prev[primary_idx]);
+    bool secondary_active;
+    if (is_alt_fire && (secondary_on_lt || secondary_on_rt)) {
+        // Alt-fire confirmed by next_fire_secondary advancement: the secondary attack action
+        // is responsible regardless of current button state.
+        secondary_active = true;
+    } else {
+        secondary_active = secondary_idx < k_action_count && (g_action_curr[secondary_idx] || g_action_prev[secondary_idx]);
+    }
+
+    bool use_lt = (primary_active && primary_on_lt) || (secondary_active && secondary_on_lt);
+    bool use_rt = (primary_active && primary_on_rt) || (secondary_active && secondary_on_rt);
+
+    if (!use_lt && !use_rt) {
+        // No fire action is bound to a trigger — fall back to standard body rumble.
+        gamepad_rumble(effect.lo_motor, effect.hi_motor, effect.duration_ms);
+        return;
+    }
+
+    // Route to the trigger motor(s) matching the active fire binding.
+    uint16_t lt_motor = use_lt ? static_cast<uint16_t>(effect.trigger_motor * g_alpine_game_config.gamepad_trigger_rumble_intensity) : 0;
+    uint16_t rt_motor = use_rt ? static_cast<uint16_t>(effect.trigger_motor * g_alpine_game_config.gamepad_trigger_rumble_intensity) : 0;
+    bool triggered = false;
+    for (auto* gp : g_gamepads)
+        if (gp && SDL_RumbleGamepadTriggers(gp, lt_motor, rt_motor, effect.duration_ms))
+            triggered = true;
+    if (!triggered)
+        gamepad_rumble(effect.lo_motor, effect.hi_motor, effect.duration_ms);
+}
+
+void gamepad_stop_rumble()
+{
+    for (auto* gp : g_gamepads) {
+        if (!gp) continue;
+        SDL_RumbleGamepad(gp, 0, 0, 0);
+        if (g_trigger_rumble_supported)
+            SDL_RumbleGamepadTriggers(gp, 0, 0, 0);
+    }
+}
+
 static bool is_gamepad_input_active()
 {
     return gamepad_any_open() && rf::is_main_wnd_active;
@@ -353,80 +508,6 @@ static bool action_is_down(rf::ControlConfigAction action)
 {
     int i = static_cast<int>(action);
     return i >= 0 && i < k_action_count && g_action_curr[i];
-}
-
-static bool try_enable_gamepad_sensors(SDL_Gamepad* gp)
-{
-    if (!gp) return false;
-
-    if (!SDL_GamepadHasSensor(gp, SDL_SENSOR_GYRO) ||
-        !SDL_GamepadHasSensor(gp, SDL_SENSOR_ACCEL)) {
-        xlog::info("Motion sensors is not supported");
-        return false;
-    }
-
-    if (!SDL_SetGamepadSensorEnabled(gp, SDL_SENSOR_GYRO,  true) ||
-        !SDL_SetGamepadSensorEnabled(gp, SDL_SENSOR_ACCEL, true)) {
-        xlog::warn("Failed to enable motion sensors: {}", SDL_GetError());
-        return false;
-    }
-
-    xlog::info("Motion sensors is supported");
-    if (!g_motion_sensors_supported) {
-        g_motion_sensors_supported = true;
-        gyro_reset_full();
-    }
-    return true;
-}
-
-// Shared boolean probe for  gamepad capabilities (rumble, trigger rumble, LED).
-static bool try_enable_gamepad_capability(SDL_Gamepad* gp, const char* prop_name, const char* label, bool& out_supported)
-{
-    if (!gp) return false;
-
-    if (!SDL_GetBooleanProperty(SDL_GetGamepadProperties(gp), prop_name, false)) {
-        xlog::info("{} is not supported", label);
-        return false;
-    }
-
-    xlog::info("{} is supported", label);
-    out_supported = true;
-    return true;
-}
-
-static bool try_enable_gamepad_touchpad(SDL_Gamepad* gp, bool& out_supported)
-{
-    if (!gp) return false;
-
-    if (SDL_GetNumGamepadTouchpads(gp) <= 0) {
-        xlog::info("Touchpad is not supported");
-        return false;
-    }
-
-    xlog::info("Touchpad is supported");
-    out_supported = true;
-    return true;
-}
-
-static void try_open_gamepad(SDL_JoystickID id)
-{
-    SDL_Gamepad* gp = SDL_OpenGamepad(id);
-    if (!gp) {
-        xlog::warn("Failed to open gamepad: {}", SDL_GetError());
-        return;
-    }
-
-    xlog::info("Gamepad connected: {}", SDL_GetGamepadName(gp));
-    add_to_gamepad_list(gp);
-    if (!g_rumble_supported)
-        try_enable_gamepad_capability(gp, SDL_PROP_GAMEPAD_CAP_RUMBLE_BOOLEAN, "Rumble", g_rumble_supported);
-    if (!g_trigger_rumble_supported)
-        try_enable_gamepad_capability(gp, SDL_PROP_GAMEPAD_CAP_TRIGGER_RUMBLE_BOOLEAN, "Trigger rumble", g_trigger_rumble_supported);
-    if (!g_led_supported)
-        try_enable_gamepad_capability(gp, SDL_PROP_GAMEPAD_CAP_RGB_LED_BOOLEAN, "Lightbar", g_led_supported);
-    if (!g_touchpad_supported)
-        try_enable_gamepad_touchpad(gp, g_touchpad_supported);
-    try_enable_gamepad_sensors(gp);
 }
 
 static void menu_nav_inject_key(int key)
@@ -2386,87 +2467,6 @@ static void gamepad_msg_handler(UINT msg, WPARAM w_param, LPARAM)
         return;
     // Focus lost: release all gamepad input so nothing stays held while unfocused.
     release_all_gamepad_inputs();
-}
-
-void gamepad_rumble(uint16_t low_freq, uint16_t high_freq, uint32_t duration_ms, bool ignore_filter)
-{
-    if (!gamepad_any_open() || !g_rumble_supported)
-        return;
-    if (g_alpine_game_config.gamepad_rumble_when_primary && !g_last_input_was_gamepad)
-        return;
-    if (g_alpine_game_config.gamepad_rumble_intensity <= 0.0f)
-        return;
-    low_freq = static_cast<uint16_t>(low_freq * g_alpine_game_config.gamepad_rumble_intensity);
-    high_freq = static_cast<uint16_t>(high_freq * g_alpine_game_config.gamepad_rumble_intensity);
-    if (!ignore_filter) {
-        int filter_mode = g_alpine_game_config.gamepad_rumble_vibration_filter;
-        if (filter_mode == 2 || (filter_mode == 1 && g_motion_sensors_supported && g_alpine_game_config.gamepad_gyro_enabled))
-            low_freq = static_cast<uint16_t>(low_freq * 0.02f);
-    }
-    for (auto* gp : g_gamepads)
-        if (gp) SDL_RumbleGamepad(gp, low_freq, high_freq, duration_ms);
-}
-
-void gamepad_play_rumble(const RumbleEffect& effect, bool is_alt_fire)
-{
-    if (!gamepad_any_open())
-        return;
-
-    // No trigger motor requested — plain body rumble.
-    if (!effect.trigger_motor || g_alpine_game_config.gamepad_trigger_rumble_intensity <= 0.0f) {
-        gamepad_rumble(effect.lo_motor, effect.hi_motor, effect.duration_ms);
-        return;
-    }
-
-    constexpr int primary_idx   = static_cast<int>(rf::CC_ACTION_PRIMARY_ATTACK);
-    constexpr int secondary_idx = static_cast<int>(rf::CC_ACTION_SECONDARY_ATTACK);
-
-    // Resolve which trigger (if any) each fire action is bound to.
-    // g_trigger_action[0] = Left Trigger,  g_trigger_action[1] = Right Trigger.
-    bool primary_on_lt   = g_trigger_action[0] == primary_idx;
-    bool primary_on_rt   = g_trigger_action[1] == primary_idx;
-    bool secondary_on_lt = g_trigger_action[0] == secondary_idx;
-    bool secondary_on_rt = g_trigger_action[1] == secondary_idx;
-
-    // Check which fire action is active this frame or was active last frame.
-    bool primary_active   = primary_idx   < k_action_count && (g_action_curr[primary_idx]   || g_action_prev[primary_idx]);
-    bool secondary_active;
-    if (is_alt_fire && (secondary_on_lt || secondary_on_rt)) {
-        // Alt-fire confirmed by next_fire_secondary advancement: the secondary attack action
-        // is responsible regardless of current button state.
-        secondary_active = true;
-    } else {
-        secondary_active = secondary_idx < k_action_count && (g_action_curr[secondary_idx] || g_action_prev[secondary_idx]);
-    }
-
-    bool use_lt = (primary_active && primary_on_lt) || (secondary_active && secondary_on_lt);
-    bool use_rt = (primary_active && primary_on_rt) || (secondary_active && secondary_on_rt);
-
-    if (!use_lt && !use_rt) {
-        // No fire action is bound to a trigger — fall back to standard body rumble.
-        gamepad_rumble(effect.lo_motor, effect.hi_motor, effect.duration_ms);
-        return;
-    }
-
-    // Route to the trigger motor(s) matching the active fire binding.
-    uint16_t lt_motor = use_lt ? static_cast<uint16_t>(effect.trigger_motor * g_alpine_game_config.gamepad_trigger_rumble_intensity) : 0;
-    uint16_t rt_motor = use_rt ? static_cast<uint16_t>(effect.trigger_motor * g_alpine_game_config.gamepad_trigger_rumble_intensity) : 0;
-    bool triggered = false;
-    for (auto* gp : g_gamepads)
-        if (gp && SDL_RumbleGamepadTriggers(gp, lt_motor, rt_motor, effect.duration_ms))
-            triggered = true;
-    if (!triggered)
-        gamepad_rumble(effect.lo_motor, effect.hi_motor, effect.duration_ms);
-}
-
-void gamepad_stop_rumble()
-{
-    for (auto* gp : g_gamepads) {
-        if (!gp) continue;
-        SDL_RumbleGamepad(gp, 0, 0, 0);
-        if (g_trigger_rumble_supported)
-            SDL_RumbleGamepadTriggers(gp, 0, 0, 0);
-    }
 }
 
 void gamepad_sdl_init()
