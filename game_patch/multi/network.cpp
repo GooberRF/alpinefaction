@@ -3022,11 +3022,11 @@ void send_chat_line_packet(const std::string_view msg, rf::Player* target, rf::P
     std::strncpy(packet_msg, msg.data(), len);
     packet_msg[len] = '\0';
     if (target == nullptr && rf::is_server) {
-        rf::multi_io_send_reliable_to_all(buf, packet.header.size + sizeof(packet.header), 0);
+        rf::multi_io_send_reliable_to_all(buf, packet.header.size + sizeof(packet.header), false);
         rf::console::print("Server: {}", msg);
     }
     else {
-        rf::multi_io_send_reliable(target, buf, packet.header.size + sizeof(packet.header), 0);
+        rf::multi_io_send_reliable(target, buf, packet.header.size + sizeof(packet.header), false);
     }
 }
 
@@ -3192,6 +3192,29 @@ CodeInjection send_state_info_injection{
         trigger_send_state_info(player);
         sprays_force_state_sync_to(player);
     },
+};
+
+CodeInjection process_state_info_req_between_levels_patch{
+    0x00481C03,
+    [] (auto& regs) {
+        rf::Player* const player = regs.ebx;
+        rf::send_state_info(player);
+
+        // Set `NETPLAYER_STATE_WAITING` like `mp_change_level`.
+        player->net_data->state = rf::NETPLAYER_STATE_WAITING;
+
+        const RF_GamePacketHeader enter_limbo_packet =
+            {.type = RF_GPT_ENTER_LIMBO, .size = 0};
+        rf::multi_io_send_reliable(
+            player,
+            &enter_limbo_packet,
+            enter_limbo_packet.size + sizeof(RF_GamePacketHeader),
+            false
+        );
+
+        regs.eip = 0x00481C4B;
+    },
+    false
 };
 
 FunHook<void(rf::Player*)> send_players_packet_hook{
@@ -3779,8 +3802,10 @@ void network_init()
     bot_shared_secret_cmd.register_cmd();
     disconnect_cmd.register_cmd();
 
-    // print join_req denial reasons
+    // Print join denials.
     check_access_for_new_player_hook.install();
+    // Do not kick a player, if they join right before limbo.
+    process_state_info_req_between_levels_patch.install();
     // Move our limbo check to `check_join_request_restrict_status`.
     AsmWriter{0x0047AE64}.nop(6);
 

@@ -1663,6 +1663,26 @@ static void fire_ticks_do_frame()
     }
 }
 
+// Jetpacks back-kill gib: the killer stands inside a 120-degree cone directly behind the
+// victim's body facing, judged in the horizontal plane.
+static bool entity_killed_from_behind(rf::Entity* victim, int killer_handle)
+{
+    rf::Entity* killer = rf::entity_from_handle(killer_handle);
+    if (!killer || killer == victim) {
+        return false;
+    }
+    rf::Vector3 to_victim = victim->pos - killer->pos;
+    to_victim.y = 0.0f;
+    rf::Vector3 facing = victim->orient.fvec;
+    facing.y = 0.0f;
+    if (to_victim.len_sq() < 1e-4f || facing.len_sq() < 1e-4f) {
+        return false;
+    }
+    to_victim.normalize();
+    facing.normalize();
+    return to_victim.dot_prod(facing) > 0.5f;
+}
+
 FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
     0x0041A350,
     [](rf::Entity* damaged_ep, float damage, int killer_handle, int damage_type, int killer_uid) {
@@ -1716,6 +1736,13 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
         // Re-fetch pointer: entity may have been destroyed during damage processing, making the original pointer dangling
         damaged_ep = rf::entity_from_handle(damaged_ep_handle);
 
+        // Hoisted out of the lethal-blow block below: the stats stream needs the same
+        // weapon attribution for every damage application, not just the last one.
+        const DamageWeaponContext damage_ctx = kill_attribution_get_damage_context();
+        // A weapon type on the obj_damage call itself means a direct hit; splash damage
+        // only ever gets its weapon from the enclosing detonation context.
+        const bool direct_weapon_hit = damage_ctx.weapon_type >= 0 && !damage_ctx.splash;
+
         // should entity gib?
         bool did_gib = false;
         if (damaged_ep) {
@@ -1731,13 +1758,27 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
                     entity_set_gib_flag(damaged_ep);
                 }
             }
-            else if (rf::is_server && g_alpine_server_config_active_rules.gibbing.enabled) { // MP gibbing
-                const auto& gibbing = g_alpine_server_config_active_rules.gibbing;
-                if (damaged_ep->life < 0.0f &&                      // dead
+            else if (rf::is_server) { // MP gibbing
+                const auto& rules = g_alpine_server_config_active_rules;
+                const auto& gibbing = rules.gibbing;
+                const bool overkill_gib =
+                    gibbing.enabled &&
                     damage > gibbing.damage_threshold &&            // big damage (default 100.0)
-                    (gibbing.all_damage || damage_type == 3) &&     // explosive
+                    (gibbing.all_damage || damage_type == 3);       // explosive
+                const bool jetpack_explode_gib =
+                    rules.mutators.jetpacks_enabled &&
+                    rules.mutators.jetpack_explode &&
+                    // the jetpack was shot
+                    ((direct_weapon_hit &&
+                      !kill_attribution_is_melee_weapon(damage_ctx.weapon_type) &&
+                      kill_attribution_get_hit_region(damaged_ep_handle) == kill_attribution_hit_region_torso &&
+                      entity_killed_from_behind(damaged_ep, killer_handle))
+                     // or a fire damage death
+                     || damage_type == rf::DT_FIRE);
+                if (damaged_ep->life < 0.0f &&                      // dead
                     damaged_ep->material == 3 &&                    // flesh
-                    !(damaged_ep->entity_flags & rf::EF_DYING))
+                    !(damaged_ep->entity_flags & rf::EF_DYING) &&
+                    (overkill_gib || jetpack_explode_gib))
                 {
                     entity_set_gib_flag(damaged_ep);
                     af_send_should_gib_req(static_cast<uint32_t>(damaged_ep->handle));
@@ -1753,13 +1794,6 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
         }
 
         bool is_dead = damaged_ep ? damaged_ep->life <= 0.0f : true;
-
-        // Hoisted out of the lethal-blow block below: the stats stream needs the same
-        // weapon attribution for every damage application, not just the last one.
-        const DamageWeaponContext damage_ctx = kill_attribution_get_damage_context();
-        // A weapon type on the obj_damage call itself means a direct hit; splash damage
-        // only ever gets its weapon from the enclosing detonation context.
-        const bool direct_weapon_hit = damage_ctx.weapon_type >= 0 && !damage_ctx.splash;
 
         // Feed the combat chain that assists are computed from. Must run before the record
         // step below so the killing hit itself keeps the chain alive. Friendly fire in team
@@ -3408,7 +3442,7 @@ static void broadcast_name_change(rf::Player* player)
     offset += safe_name_len;
     buf[offset++] = '\0';
 
-    rf::multi_io_send_reliable_to_all(buf, static_cast<int>(offset), 0);
+    rf::multi_io_send_reliable_to_all(buf, static_cast<int>(offset), false);
 }
 
 static void send_bot_config_with_identity(rf::Player* player, const ServerBotConfig& config, int slot)
@@ -4787,7 +4821,7 @@ void send_nonclip_ammo_sync(rf::Player* player, rf::Entity* entity, int weapon_t
     packet.weapon = weapon_type;
     packet.ammo = entity->ai.clip_ammo[weapon_type];
     packet.clip_ammo = (winfo.ammo_type >= 0 && winfo.ammo_type < 32) ? entity->ai.ammo[winfo.ammo_type] : 0;
-    rf::multi_io_send_reliable(player, reinterpret_cast<uint8_t*>(&packet), sizeof(packet), 0);
+    rf::multi_io_send_reliable(player, reinterpret_cast<uint8_t*>(&packet), sizeof(packet), false);
 }
 
 static void server_topup_nonclip_ammo()

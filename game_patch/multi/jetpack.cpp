@@ -81,10 +81,6 @@ constexpr float JETPACK_EXHAUST_OFFSET_X = 0.0f;
 constexpr float JETPACK_EXHAUST_OFFSET_Y = 0.4f;
 constexpr float JETPACK_EXHAUST_OFFSET_Z = -0.35f;
 
-// $particle flags "damages" in emitters.tbl. "pipesteam" sets it, which would
-// make the exhaust hurt whoever walks through it.
-constexpr int PARTICLE_FLAG2_DAMAGES = 0x1;
-
 namespace
 {
 
@@ -199,7 +195,7 @@ bool jetpack_exhaust_emitter_type(rf::ParticleEmitterType* out)
 
     // The steam is decoration only; it must never damage an entity that flies
     // through it. Everything else the table asks for is kept.
-    out->particle_flags2 &= ~PARTICLE_FLAG2_DAMAGES;
+    out->particle_flags2 &= ~rf::PTF2_DAMAGES;
     return true;
 }
 

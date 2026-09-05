@@ -667,6 +667,9 @@ struct MutatorConfig
     // Jetpacks: every player wears a jetpack; holding jump while falling thrusts.
     bool jetpacks_enabled = false;
 
+    // Jetpacks: a direct shot in the back or burning to death gibs the victim.
+    bool jetpack_explode = false;
+
     // Humans vs. Bots: bots always play on Blue, humans always on Red.
     bool humans_vs_bots_enabled = false;
 

@@ -216,6 +216,7 @@ struct AlpineGameSettings
     {
         gib_lifetime_ms = std::clamp(lifetime_ms, min_gib_lifetime_ms, max_gib_lifetime_ms);
     }
+    bool gib_flames = true;
     bool real_armor_values = false;
     bool always_show_spectators = false;
     RemoteServerCfgPopup::DisplayMode remote_server_cfg_display_mode =
