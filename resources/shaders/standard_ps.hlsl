@@ -186,14 +186,19 @@ float3 apply_colorblind(float3 color)
 }
 
 // One triplanar plane: two drifting layers, each blended across two animation frames.
-float caustic_sample_plane(float2 p, float2 drift, float s0, float s1, float sf)
+float caustic_sample_plane(float2 p, float2 drift, float s0, float s1, float sf,
+                           float2 dpdx, float2 dpdy)
 {
     float2 uv_a = p * caustic_scale + drift;
     float2 uv_b = float2(-p.y, p.x) * caustic_scale * 0.61f - drift * 0.8f;
-    float ca = lerp(caustic_tex.Sample(caustic_samp, float3(uv_a, s0)).r,
-                    caustic_tex.Sample(caustic_samp, float3(uv_a, s1)).r, sf);
-    float cb = lerp(caustic_tex.Sample(caustic_samp, float3(uv_b, s0)).r,
-                    caustic_tex.Sample(caustic_samp, float3(uv_b, s1)).r, sf);
+    float2 ga_x = dpdx * caustic_scale;
+    float2 ga_y = dpdy * caustic_scale;
+    float2 gb_x = float2(-dpdx.y, dpdx.x) * caustic_scale * 0.61f;
+    float2 gb_y = float2(-dpdy.y, dpdy.x) * caustic_scale * 0.61f;
+    float ca = lerp(caustic_tex.SampleGrad(caustic_samp, float3(uv_a, s0), ga_x, ga_y).r,
+                    caustic_tex.SampleGrad(caustic_samp, float3(uv_a, s1), ga_x, ga_y).r, sf);
+    float cb = lerp(caustic_tex.SampleGrad(caustic_samp, float3(uv_b, s0), gb_x, gb_y).r,
+                    caustic_tex.SampleGrad(caustic_samp, float3(uv_b, s1), gb_x, gb_y).r, sf);
     return (ca + cb) * 0.5f;
 }
 
@@ -347,7 +352,6 @@ float4 main(VsOutput input) : SV_TARGET
                           && wp.y < v.surface_y - 0.02f;
             if (inside && mask == 0.0f) { mask = 1.0f; depth = v.surface_y - wp.y; tint = v.color; }
         }
-        // Sampled outside the per-pixel branch so implicit derivatives stay valid.
         float  slice = frac(caustic_time * caustic_speed) * 16.0f;
         float  s0 = floor(slice), s1 = fmod(s0 + 1.0f, 16.0f), sf = slice - s0;
         float2 drift = caustic_time * caustic_drift * float2(1.0f, 0.7f);
@@ -357,16 +361,31 @@ float4 main(VsOutput input) : SV_TARGET
         tw = pow(tw, 4.0f);
         tw /= max(tw.x + tw.y + tw.z, 1e-4f);
         float  wall_y = wp.y * caustic_wall_stretch;
-        float  c_xz = caustic_sample_plane(wp.xz, drift, s0, s1, sf);
-        float  c_zy = caustic_sample_plane(float2(wp.z, wall_y), drift, s0, s1, sf);
-        float  c_xy = caustic_sample_plane(float2(wp.x, wall_y), drift, s0, s1, sf);
-        float  c_mix = c_xz * tw.y + c_zy * tw.x + c_xy * tw.z;
-        float  c = saturate((c_mix - caustic_floor) / max(1.0f - caustic_floor, 0.001f));
-        c = pow(c, caustic_exponent);
-        float atten  = saturate(1.0f - depth / max(caustic_depth_fade, 0.01f));
-        float facing = saturate(input.norm.y) * 0.75f + 0.25f;
-        float lit    = saturate(dot(light_color, float3(0.2126f, 0.7152f, 0.0722f)) * 2.0f);
-        light_color += tint * (c * caustic_intensity * caustic_above_water * atten * facing * lit * mask);
+        float2 p_xz = wp.xz;
+        float2 p_zy = float2(wp.z, wall_y);
+        float2 p_xy = float2(wp.x, wall_y);
+        // Differentiate the interpolated world position itself rather than the derived plane
+        // coordinates: the operand is then quad-valid in every lane even where the branch
+        // below is divergent. caustic_wall_stretch is uniform, so this is the same value.
+        float3 dwp_x = ddx(input.world_pos_and_depth.xyz);
+        float3 dwp_y = ddy(input.world_pos_and_depth.xyz);
+        float2 dxz_x = dwp_x.xz, dxz_y = dwp_y.xz;
+        float2 dzy_x = float2(dwp_x.z, dwp_x.y * caustic_wall_stretch);
+        float2 dzy_y = float2(dwp_y.z, dwp_y.y * caustic_wall_stretch);
+        float2 dxy_x = float2(dwp_x.x, dwp_x.y * caustic_wall_stretch);
+        float2 dxy_y = float2(dwp_y.x, dwp_y.y * caustic_wall_stretch);
+        [branch] if (mask > 0.0f) {
+            float  c_xz = caustic_sample_plane(p_xz, drift, s0, s1, sf, dxz_x, dxz_y);
+            float  c_zy = caustic_sample_plane(p_zy, drift, s0, s1, sf, dzy_x, dzy_y);
+            float  c_xy = caustic_sample_plane(p_xy, drift, s0, s1, sf, dxy_x, dxy_y);
+            float  c_mix = c_xz * tw.y + c_zy * tw.x + c_xy * tw.z;
+            float  c = saturate((c_mix - caustic_floor) / max(1.0f - caustic_floor, 0.001f));
+            c = pow(c, caustic_exponent);
+            float atten  = saturate(1.0f - depth / max(caustic_depth_fade, 0.01f));
+            float facing = saturate(input.norm.y) * 0.75f + 0.25f;
+            float lit    = saturate(dot(light_color, float3(0.2126f, 0.7152f, 0.0722f)) * 2.0f);
+            light_color += tint * (c * caustic_intensity * caustic_above_water * atten * facing * lit);
+        }
     }
 
     target.rgb *= light_color;
