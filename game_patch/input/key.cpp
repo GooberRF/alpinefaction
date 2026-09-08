@@ -94,6 +94,8 @@ FunHook<int(int16_t)> key_to_ascii_hook{
         if (key & rf::KEY_CTRLED) {
             key_state[VK_CONTROL] = 0x80;
         }
+        // HACKFIX.  Must be set for `ToUnicode` to produce capitalized letters.
+        key_state[VK_CAPITAL] = GetKeyState(VK_CAPITAL) & 1;
         int scan_code = key & 0x7F;
         auto vk = MapVirtualKeyA(scan_code, MAPVK_VSC_TO_VK);
         WCHAR unicode_chars[3];

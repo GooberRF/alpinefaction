@@ -1591,7 +1591,8 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
         rules.mutators.hide_health_armor_pickups != b.mutators.hide_health_armor_pickups ||
         rules.mutators.featured_weapon_index != b.mutators.featured_weapon_index ||
         rules.mutators.redirect_exclude_thrown != b.mutators.redirect_exclude_thrown ||
-        rules.mutators.crits_enabled != b.mutators.crits_enabled;
+        rules.mutators.crits_enabled != b.mutators.crits_enabled ||
+        rules.mutators.jetpack_explode != b.mutators.jetpack_explode;
 
     if (base || mutators_changed) {
         std::string joined;
@@ -1617,6 +1618,11 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
                            rules.mutators.hide_health_armor_pickups);
             std::format_to(iter, "    Full lifesteal:                      {}\n",
                            rules.mutators.vampire_heal_ratio >= 1.0f);
+        }
+        // Jetpacks options
+        if (rules.mutators.jetpacks_enabled) {
+            std::format_to(iter, "    Jetpacks explode:                    {}\n",
+                           rules.mutators.jetpack_explode);
         }
     }
 
@@ -2137,12 +2143,15 @@ void print_alpine_dedicated_server_config_info(std::string& output, bool verbose
     std::format_to(iter, "  Max players:                           {}\n", netgame.max_players);
     std::format_to(iter, "  Levels in rotation:                    {}\n", cfg.levels.size());
     std::format_to(iter, "  Dynamic rotation:                      {}\n", cfg.dynamic_rotation);
-    std::format_to(iter, "  Demo auto record:                      {}\n", cfg.demo_auto_record);
-    std::format_to(iter, "  Demo chat record:                      {}\n", cfg.demo_chat_record);
-    std::format_to(iter, "  FactionFiles demo upload:              {}\n", cfg.fflink_demo_upload);
-    std::format_to(iter, "  FactionFiles demo max MB:              {}\n", cfg.fflink_demo_max_mb);
-    std::format_to(iter, "  FactionFiles demo queue max:           {}\n", cfg.fflink_demo_queue_max);
-    std::format_to(iter, "  FactionFiles demo delete after send:   {}\n", cfg.fflink_demo_delete_after_send);
+    std::format_to(iter, "  Demos:\n");
+    std::format_to(iter, "    Include chat:                        {}\n", cfg.demo_chat_record);
+    std::format_to(iter, "    Auto-record:                         {}\n", cfg.demo_auto_record);
+    std::format_to(iter, "      Upload to FactionFiles:            {}\n", cfg.fflink_demo_upload);
+    if (cfg.fflink_demo_upload) {
+        std::format_to(iter, "        Max size:                        {} MiB\n", cfg.fflink_demo_max_mb);
+        std::format_to(iter, "        Max queue:                       {}\n", cfg.fflink_demo_queue_max);
+        std::format_to(iter, "        Delete after send:               {}\n", cfg.fflink_demo_delete_after_send);
+    }
 
     if (rf::mod_param.found()) {
         std::format_to(iter, "  TC mod loaded:                         {}\n", rf::mod_param.get_arg());

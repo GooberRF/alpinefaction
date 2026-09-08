@@ -237,9 +237,7 @@ void kill_current_flag_item()
 {
     rf::Item* item = item_from_handle_or_null(g_salvage_info.flag_item_handle);
     if (item) {
-        // entity_handle = 0 tells clients the item just goes away rather than
-        // being consumed by a player. obj_flag_dead alone is server-only.
-        rf::send_item_apply_packet(nullptr, item->handle, 0, -1, -1, -1);
+        rf::send_item_apply_packet(nullptr, item->handle, -1, -1, -1, -1);
         rf::obj_flag_dead(item);
         // item_create re-pointed the engine's red flag global at our neutral flag;
         // don't leave it dangling at a dead object.

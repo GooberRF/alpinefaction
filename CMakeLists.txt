@@ -1,5 +1,5 @@
-# CMake 3.15 is required for CMAKE_MSVC_RUNTIME_LIBRARY.
-cmake_minimum_required(VERSION 3.15)
+# CMake 3.20 is required for `cxx_std_23`.
+cmake_minimum_required(VERSION 3.20)
 project(AlpineFaction)
 
 if(NOT "${CMAKE_SIZEOF_VOID_P}" STREQUAL "4")

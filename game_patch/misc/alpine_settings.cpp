@@ -340,6 +340,10 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.set_gib_lifetime_ms(std::stoi(settings["GibLifetimeMs"]));
         processed_keys.insert("GibLifetimeMs");
     }
+    if (settings.count("GibFlames")) {
+        g_alpine_game_config.gib_flames = std::stoi(settings["GibFlames"]);
+        processed_keys.insert("GibFlames");
+    }
 
     if (settings.count("ShowFPGun")) {
         player->settings.render_fpgun = std::stoi(settings["ShowFPGun"]);
@@ -406,6 +410,14 @@ bool alpine_player_settings_load(rf::Player* player)
         apply_console_history_setting();
         processed_keys.insert("SaveConsoleHistory");
     }
+    if (settings.count("ConsoleColor")) {
+        auto c = parse_hex_color_string(settings["ConsoleColor"]);
+        if (c) {
+            g_alpine_game_config.console_color = *c;
+            apply_console_color_setting();
+        }
+        processed_keys.insert("ConsoleColor");
+    }
     if (settings.count("AlpineBranding")) {
         g_alpine_game_config.af_branding = std::stoi(settings["AlpineBranding"]);
         processed_keys.insert("AlpineBranding");
@@ -437,6 +449,10 @@ bool alpine_player_settings_load(rf::Player* player)
     if (settings.count("LegacyBob")) {
         g_alpine_game_config.legacy_bob = std::stoi(settings["LegacyBob"]);
         processed_keys.insert("LegacyBob");
+    }
+    if (settings.count("WeaponSway")) {
+        g_alpine_game_config.weapon_sway = std::stoi(settings["WeaponSway"]);
+        processed_keys.insert("WeaponSway");
     }
 
     // Load weapon autoswitch priority
@@ -547,6 +563,10 @@ bool alpine_player_settings_load(rf::Player* player)
     if (settings.count("Weather")) {
         g_alpine_game_config.weather = std::stoi(settings["Weather"]);
         processed_keys.insert("Weather");
+    }
+    if (settings.count("Caustics")) {
+        g_alpine_game_config.caustics = std::stoi(settings["Caustics"]);
+        processed_keys.insert("Caustics");
     }
     if (settings.count("MeshLightingMode")) {
         g_alpine_game_config.mesh_lighting_mode = std::clamp(std::stoi(settings["MeshLightingMode"]), 0, 2);
@@ -1397,6 +1417,7 @@ void alpine_player_settings_save(rf::Player* player)
     file << "GibChunkCount=" << g_alpine_game_config.gib_chunk_count << "\n";
     file << "GibVelocityScale=" << g_alpine_game_config.gib_velocity_scale << "\n";
     file << "GibLifetimeMs=" << g_alpine_game_config.gib_lifetime_ms << "\n";
+    file << "GibFlames=" << g_alpine_game_config.gib_flames << "\n";
     file << "ShowFPGun=" << player->settings.render_fpgun << "\n";
     file << "AutoswitchWeapons=" << player->settings.autoswitch_weapons << "\n";
     file << "NeverAutoswitchExplosives=" << player->settings.dont_autoswitch_to_explosives << "\n";
@@ -1413,6 +1434,7 @@ void alpine_player_settings_save(rf::Player* player)
     file << "ShowSpeed=" << g_alpine_game_config.speed_display << "\n";
     file << "FPSCounterAverageMs=" << g_alpine_game_config.fps_counter_average_ms << "\n";
     file << "SaveConsoleHistory=" << g_alpine_game_config.save_console_history << "\n";
+    file << "ConsoleColor=" << format_hex_color_string(g_alpine_game_config.console_color) << "\n";
     file << "AlpineBranding=" << g_alpine_game_config.af_branding << "\n";
     file << "SeasonalEffect=" << g_alpine_game_config.seasonal_effect << "\n";
     file << "RealArmorValues=" << g_alpine_game_config.real_armor_values << "\n";
@@ -1420,6 +1442,7 @@ void alpine_player_settings_save(rf::Player* player)
     file << "AutoswitchFireWait=" << g_alpine_game_config.suppress_autoswitch_fire_wait << "\n";
     file << "AlwaysAutoswitchEmpty=" << g_alpine_game_config.always_autoswitch_empty << "\n";
     file << "LegacyBob=" << g_alpine_game_config.legacy_bob << "\n";
+    file << "WeaponSway=" << g_alpine_game_config.weapon_sway << "\n";
 
     // Autoswitch priority
     file << "WeaponAutoswitchPriority=";
@@ -1463,6 +1486,7 @@ void alpine_player_settings_save(rf::Player* player)
     file << "DisableMuzzleFlashLights=" << g_alpine_game_config.try_disable_muzzle_flash_lights << "\n";
     file << "ShowGlares=" << g_alpine_game_config.show_glares << "\n";
     file << "Weather=" << g_alpine_game_config.weather << "\n";
+    file << "Caustics=" << g_alpine_game_config.caustics << "\n";
     file << "MeshLightingMode=" << g_alpine_game_config.mesh_lighting_mode << "\n";
     file << "DynamicLightNdotL=" << g_alpine_game_config.dynamic_light_ndotl << "\n";
     file << "PixelLightOverbright=" << g_alpine_game_config.pixel_light_overbright << "\n";

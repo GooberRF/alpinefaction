@@ -740,16 +740,19 @@ CallHook<void(rf::Player*, int, bool, bool)> fpgun_riot_shield_break_switch_weap
 
 // Stock entity_delete never touches riot_shield_handle, so an unbroken shield outlives
 // its holder - in multiplayer that leaves one floating wherever they died or left.
-FunHook<void(rf::Entity*)> entity_delete_riot_shield_hook{
+FunHook<void(rf::Entity*)> entity_delete_hook{
     0x00424F40,
     [](rf::Entity* ep) {
-        if (rf::is_multi && ep) {
-            // Silent removal, no shatter debris: the shield did not break.
-            riot_shield_remove_silently(ep);
-            g_shield_break_pending.erase(ep->handle);
+        if (ep) {
+            entity_rate_limit_on_entity_delete(ep->handle);
+            if (rf::is_multi) {
+                // Silent removal, no shatter debris: the shield did not break.
+                riot_shield_remove_silently(ep);
+                g_shield_break_pending.erase(ep->handle);
+            }
         }
 
-        entity_delete_riot_shield_hook.call_target(ep);
+        entity_delete_hook.call_target(ep);
     },
 };
 
@@ -932,7 +935,7 @@ void object_do_patch()
     gameplay_render_hide_spectate_riot_shield_injection.install();
     gameplay_render_unhide_spectate_riot_shield_injection.install();
     entity_process_create_riot_shield_hook.install();
-    entity_delete_riot_shield_hook.install();
+    entity_delete_hook.install();
     fpgun_riot_shield_break_switch_weapon_hook.install();
 
     // Deregister collision for hidden objects in v304+ levels

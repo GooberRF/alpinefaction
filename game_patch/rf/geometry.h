@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include "math/vector.h"
 #include "math/matrix.h"
 #include "math/plane.h"
@@ -202,6 +203,23 @@ namespace rf
         }
     };
     static_assert(sizeof(GSolid) == 0x378);
+
+    // Stock (D3D9) room render cache header.
+    struct GCache
+    {
+        void* vertices;        // num_vertices * Vector3
+        int num_vertices;
+        int field_8;
+        void* field_c;
+        void* field_10;
+        void* batches;         // 0x50-byte entries
+        short num_batches;
+        short field_1a;
+        int field_1c;
+        int state;             // 0 = valid, 1 = touched by boolean (0x004DDA88), 2 = rebuild on next render
+    };
+    static_assert(sizeof(GCache) == 0x24);
+    static_assert(offsetof(GCache, state) == 0x20);
 
     struct GRoom
     {

@@ -65,6 +65,16 @@ namespace rf::console
         output(s.c_str(), nullptr);
     }
 
+    template <typename... Args>
+    inline void print(
+        const rf::gr::Color& color,
+        const std::format_string<Args...> fmt,
+        Args&&... args
+    ) {
+        const std::string s = std::format(fmt, std::forward<Args>(args)...);
+        output(s.c_str(), &color);
+    }
+
     //static auto& commands = addr_as_ref<ConsoleCommand*[30]>(0x01775530);
     static auto& num_commands = addr_as_ref<int>(0x0177567C);
 
@@ -85,4 +95,5 @@ namespace rf::console
     static auto& history_max_index = addr_as_ref<int>(0x005A4030);
     static auto& console_is_visible = addr_as_ref<bool()>(0x0050B520);
     static auto& console_keep_history = addr_as_ref<bool>(0x005A402C);
+    static auto& background_color = addr_as_ref<Color>(0x017751DC);
 }

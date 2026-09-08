@@ -29,7 +29,7 @@ FunHook<rf::ParticleEmitter*(int, rf::ParticleEmitterType&, rf::GRoom*, rf::Vect
 
             // hackfixes for specific particle emitters which don't render properly with the spawn delay fix
             if (type.uid == 23616 && string_iequals(rf::level.filename, "dm-birthday.rfl")) {
-                new_type.particle_flags &= ~0x4;    // turn off fade
+                new_type.particle_flags &= ~rf::PTF_CLR_CHANGE;    // turn off fade
                 new_type.min_spawn_delay = 1.0f;    // set spawn delay to 1 sec
                 new_type.max_spawn_delay = 1.0f;
                 new_type.min_life_secs = 1.0f;      // set decay to 1 sec
@@ -77,7 +77,7 @@ CallHook<void(int, rf::ParticleCreateInfo&, rf::GRoom*, rf::Vector3*, int, rf::P
 FunHook<void(int, rf::ParticleCreateInfo&, rf::GRoom*, rf::Vector3*, int, rf::Particle**, rf::ParticleEmitter*)> particle_create_hook{
     0x00496840,
     [](int pool_id, rf::ParticleCreateInfo& pci, rf::GRoom* room, rf::Vector3 *a4, int parent_obj, rf::Particle** result, rf::ParticleEmitter* emitter) {
-        bool damages_flag = pci.flags2 & 1;
+        bool damages_flag = pci.flags2 & rf::PTF2_DAMAGES;
         // Particles spawned during a demo seek burst barely age before the seek ends and
         // would all pop on screen at once afterwards - drop them (the post-seek cull in
         // demo_playback.cpp is the backstop for effects created via other paths)

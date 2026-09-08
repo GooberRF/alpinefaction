@@ -152,6 +152,7 @@ struct AlpineGameSettings
     }
     bool show_glares = true;
     bool weather = true;
+    bool caustics = true;
     bool show_enemy_bullets = true;
     bool fps_counter = true;
     static constexpr int min_fps_counter_average_ms = 0;
@@ -167,6 +168,8 @@ struct AlpineGameSettings
     bool spectate_show_camera_meshes = true; // draw camera meshes in free look
     bool spectate_povcomp = true; // delay other players to match what the spectated player saw
     bool save_console_history = false; // checked before config loaded, must be false here
+    static constexpr uint32_t default_console_color = 0x274E69C0; // RRGGBBAA
+    uint32_t console_color = default_console_color;
     bool screen_shake_force_off = false;
     bool display_target_player_names = true;
     bool verbose_time_left_display = true;
@@ -174,6 +177,7 @@ struct AlpineGameSettings
     bool direct_input = true;
     bool scoreboard_anim = true;
     bool legacy_bob = false;
+    bool weapon_sway = false;
     bool scoreboard_split_simple = true;
     bool scoreboard_split_spectators = true;
     bool scoreboard_split_bots = false;
@@ -213,6 +217,7 @@ struct AlpineGameSettings
     {
         gib_lifetime_ms = std::clamp(lifetime_ms, min_gib_lifetime_ms, max_gib_lifetime_ms);
     }
+    bool gib_flames = true;
     bool real_armor_values = false;
     bool always_show_spectators = false;
     RemoteServerCfgPopup::DisplayMode remote_server_cfg_display_mode =
@@ -456,6 +461,7 @@ void update_scanner_sensitivity();
 void recalc_mesh_static_lighting();
 void apply_show_enemy_bullets();
 void apply_console_history_setting();
+void apply_console_color_setting();
 void build_time_left_string_format();
 void gr_update_texture_filtering();
 void set_play_sound_events_volume_scale();

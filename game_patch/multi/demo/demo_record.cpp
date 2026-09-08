@@ -18,6 +18,7 @@
 #include "../alpine_packets.h"
 #include "../../fflink/afstats_events.h"
 #include "../../fflink/demo_upload.h"
+#include "../../fflink/fflink_session.h"
 #include "../../misc/alpine_settings.h"
 #include "../../os/os.h"
 #include "../../rf/multi.h"
@@ -334,14 +335,20 @@ namespace
         },
     };
 
-    FunHook<void(rf::Player*, const void*, int, int)> multi_io_send_reliable_hook{
+    FunHook<void(rf::Player*, const void*, int, bool)> multi_io_send_reliable_hook{
         0x00479480,
-        [](rf::Player* player, const void* data, int len, int not_limbo) {
+        [] (
+            rf::Player* const player,
+            const void* const data,
+            const int len,
+            const bool require_in_game
+        ) {
             if (player && player->is_observer()) {
                 capture_packet(data, len, DEMO_PKT_RELIABLE);
-                return;
+            } else {
+                multi_io_send_reliable_hook
+                    .call_target(player, data, len, require_in_game);
             }
-            multi_io_send_reliable_hook.call_target(player, data, len, not_limbo);
         },
     };
 
@@ -381,6 +388,10 @@ namespace
                 }
                 g_state.stopped_by_command = false;
                 start_recording(false);
+                if (g_state.writer.is_open()) {
+                    af_broadcast_automated_chat_msg(std::string("This server started recording a demo")
+                        + (server_demo_chat_record() ? "" : " (excluding chat)") + ".");
+                }
                 // Note: a demo started mid-level begins with a full state snapshot;
                 // chat/kills from before the start are not in the file.
             }
@@ -392,6 +403,26 @@ namespace
 bool demo_record_active()
 {
     return g_state.writer.is_open();
+}
+
+std::string demo_record_join_notice()
+{
+    const bool active = g_state.writer.is_open();
+    const bool automatic = active ? g_state.auto_started
+                                  : (server_demo_auto_record() && !g_state.stopped_by_command);
+    if (!active && !automatic) {
+        return {};
+    }
+    std::string msg = automatic ? "This server is recording demos"
+                                : "This server is recording a demo";
+    if (!server_demo_chat_record()) {
+        msg += " (excluding chat)";
+    }
+    if (automatic && server_fflink_demo_upload() && fflink::afstats_server_enabled()) {
+        msg += ", and uploading them to FactionFiles to be available through MP Stats";
+    }
+    msg += '.';
+    return msg;
 }
 
 rf::Player* demo_record_recorder()

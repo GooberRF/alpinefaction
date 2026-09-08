@@ -338,6 +338,17 @@ ConsoleCommand2 r_outlines_color_team_cmd{
     "r_outlines_color_team <RRGGBB|RRGGBBAA|clear>",
 };
 
+ConsoleCommand2 console_color_cmd{
+    "ui_color_console",
+    [](std::optional<std::string> color_opt) {
+        handle_required_color_command(color_opt, "Console background color", g_alpine_game_config.console_color,
+                                      AlpineGameSettings::default_console_color);
+        apply_console_color_setting();
+    },
+    "Set the console background color",
+    "ui_color_console <RRGGBB|RRGGBBAA|clear>",
+};
+
 void hud_colors_apply_patch()
 {
     sniper_scope_color_cmd.register_cmd();
@@ -357,4 +368,5 @@ void hud_colors_apply_patch()
     r_outlines_color_team_b_cmd.register_cmd();
     r_outlines_color_enemy_cmd.register_cmd();
     r_outlines_color_team_cmd.register_cmd();
+    console_color_cmd.register_cmd();
 }

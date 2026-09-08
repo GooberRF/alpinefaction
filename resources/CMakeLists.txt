@@ -74,6 +74,7 @@ add_packfile(alpinefaction.vpp
     tables/CTF_EuropaOneOutpost_info.tbl
     tables/dm-SpecialForces_info.tbl
     tables/Dm-NukeTown2050_info.tbl
+    tables/dm-halloween_info.tbl
     tables/DM-Catan-Hill_info.tbl
     tables/DM-Catan-Mountain_info.tbl
     tables/DM-Catan-Field_info.tbl
@@ -274,6 +275,22 @@ add_packfile(alpinefaction.vpp
     images/dec_af_csp09.tga
     images/dec_af_csp10.tga
     images/af-jetpack1skin1.tga
+    images/caustics/af_caust00.png
+    images/caustics/af_caust01.png
+    images/caustics/af_caust02.png
+    images/caustics/af_caust03.png
+    images/caustics/af_caust04.png
+    images/caustics/af_caust05.png
+    images/caustics/af_caust06.png
+    images/caustics/af_caust07.png
+    images/caustics/af_caust08.png
+    images/caustics/af_caust09.png
+    images/caustics/af_caust10.png
+    images/caustics/af_caust11.png
+    images/caustics/af_caust12.png
+    images/caustics/af_caust13.png
+    images/caustics/af_caust14.png
+    images/caustics/af_caust15.png
 
     fonts/biggerfont.vf
     fonts/regularfont.ttf
@@ -320,5 +337,13 @@ add_custom_command(
     MAIN_DEPENDENCY ${CMAKE_CURRENT_SOURCE_DIR}/licensing-info.txt
 )
 add_custom_target(LicensingInfoTxt ALL DEPENDS ${CMAKE_BINARY_DIR}/bin/licensing-info.txt)
+
+# Copy terms.txt
+add_custom_command(
+    OUTPUT ${CMAKE_BINARY_DIR}/bin/terms.txt
+    COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_SOURCE_DIR}/terms.txt ${CMAKE_BINARY_DIR}/bin/terms.txt
+    MAIN_DEPENDENCY ${CMAKE_CURRENT_SOURCE_DIR}/terms.txt
+)
+add_custom_target(TermsTxt ALL DEPENDS ${CMAKE_BINARY_DIR}/bin/terms.txt)
 
 add_subdirectory(shaders)

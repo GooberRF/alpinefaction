@@ -35,6 +35,8 @@ void demo_record_server_do_frame();
 void demo_record_on_player_deleted(rf::Player* player);
 // True while a demo file is being written.
 bool demo_record_active();
+// Chat line notifying on demo recording to a joining player; empty when nothing.
+std::string demo_record_join_notice();
 // The virtual recorder Player*, or null when not recording. Used by the netgame_update
 // broadcast hook to deliver a targeted full-roster update to the recorder for capture.
 rf::Player* demo_record_recorder();
