@@ -2348,7 +2348,7 @@ CodeInjection send_ping_time_wrap_fix{
             if (!player->is_observer()) { // recorder's phantom socket must not be pinged
                 rf::multi_ping_player(player);
             }
-            io_stats.last_ping_time = rf::timer::get(1000);
+            io_stats.last_ping_time = static_cast<int>(timer::get_i64(1000));
 
             // check if player is idle
             player_idle_check(player);
@@ -2873,7 +2873,7 @@ void player_idle_check(rf::Player* const player) {
     }
 
     // Use unsigned delta to handle timer wrap correctly (~25 days)
-    const uint32_t time_since_join = static_cast<uint32_t>(rf::timer::get(1000))
+    const uint32_t time_since_join = static_cast<uint32_t>(rf::timer::get_i64(1000))
         - static_cast<uint32_t>(player->net_data->join_time_ms);
     if (player->in_grace_period
         && time_since_join < inactivity_cfg.new_player_grace_ms) {
