@@ -1,14 +1,17 @@
+#include <algorithm>
 #include <cassert>
 #include <dxgi1_4.h>
 #include <dxgi1_5.h>
 #include <xlog/xlog.h>
 #include "../../rf/gr/gr.h"
 #include "../../rf/v3d.h"
+#include "../../rf/gameseq.h"
 #include "../../rf/os/frametime.h"
 #include "../../rf/os/os.h"
 #include "../../bmpman/bmpman.h"
 #include "../../main/main.h"
 #include "../../misc/alpine_settings.h"
+#include "../../os/os.h"
 #include "../gr.h"
 #include "gr_d3d11.h"
 #include "gr_d3d11_context.h"
@@ -21,10 +24,25 @@
 #include "gr_d3d11_entity_shadow.h"
 #include "gr_d3d11_outline.h"
 #include "gr_d3d11_gamma.h"
+#include "gr_d3d11_scenefx.h"
 
 namespace gr::d3d11
 {
     constexpr DXGI_FORMAT swap_chain_format = DXGI_FORMAT_B8G8R8A8_UNORM;
+
+    // Post-pass viewport in render-target pixels, inset half a texel so clamped samples stay on
+    // texel centres inside the 3D clip.
+    static std::array<float, 4> current_viewport_rect()
+    {
+        const float left = static_cast<float>(rf::gr::screen.clip_left + rf::gr::screen.offset_x);
+        const float top = static_cast<float>(rf::gr::screen.clip_top + rf::gr::screen.offset_y);
+        return {
+            left + 0.5f,
+            top + 0.5f,
+            left + rf::gr::screen.clip_width - 0.5f,
+            top + rf::gr::screen.clip_height - 0.5f,
+        };
+    }
 
     Renderer::Renderer(HWND hwnd) : hwnd_{hwnd}, d3d11_lib_{L"d3d11.dll"}
     {
@@ -59,6 +77,7 @@ namespace gr::d3d11
         entity_shadow_renderer_ = std::make_unique<EntityShadowRenderer>(device_, *shader_manager_, *mesh_renderer_);
         outline_renderer_ = std::make_unique<OutlineRenderer>(device_, *shader_manager_, *state_manager_, *render_context_);
         gamma_pass_ = std::make_unique<GammaPass>(device_, *shader_manager_);
+        scene_post_pass_ = std::make_unique<ScenePostPass>(device_, *shader_manager_);
 
         // Flush pending outlines before each dyn_geo draw. This ensures outlines
         // render behind transparent effects (smoke, particles, explosions) that are
@@ -415,6 +434,36 @@ namespace gr::d3d11
         DF_GR_D3D11_CHECK_HR(
             device_->CreateShaderResourceView(scene_texture_, nullptr, &scene_texture_srv_)
         );
+
+        // The post pass's scene copy is allocated on demand, so drop it here and let the next
+        // distort frame rebuild it at the new size.
+        postfx_source_srv_.release();
+        postfx_source_.release();
+        rt_width_ = desc.Width;
+        rt_height_ = desc.Height;
+    }
+
+    bool Renderer::ensure_postfx_source()
+    {
+        if (postfx_source_) {
+            return true;
+        }
+        if (!back_buffer_) {
+            return false;
+        }
+        // Scene copy the post pass samples from. It writes back into the scene render target, so
+        // the read and the write cannot be the same resource; also the MSAA resolve destination.
+        D3D11_TEXTURE2D_DESC desc;
+        back_buffer_->GetDesc(&desc);
+        desc.SampleDesc.Count = 1;
+        desc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+        DF_GR_D3D11_CHECK_HR(
+            device_->CreateTexture2D(&desc, nullptr, &postfx_source_)
+        );
+        DF_GR_D3D11_CHECK_HR(
+            device_->CreateShaderResourceView(postfx_source_, nullptr, &postfx_source_srv_)
+        );
+        return true;
     }
 
     void Renderer::init_depth_stencil_buffer(const uint32_t sample_count)
@@ -843,6 +892,16 @@ namespace gr::d3d11
         if (render_target_bm_handle_ != -1) {
             texture_manager_->finish_render_target(render_target_bm_handle_);
         }
+        // Render-to-texture passes (monitors, rail/IR scanner) draw the world from their own
+        // camera, so the player-camera liquid state in b6 has to stand down for their duration.
+        if ((bm_handle != -1) != (render_target_bm_handle_ != -1)) {
+            if (bm_handle != -1) {
+                render_context_->suspend_liquid_fx();
+            }
+            else {
+                render_context_->resume_liquid_fx();
+            }
+        }
         render_target_bm_handle_ = bm_handle;
         return true;
     }
@@ -886,6 +945,12 @@ namespace gr::d3d11
         // outlines to be queued (and potentially flushed) into the scanner texture.
         if (render_target_bm_handle_ == -1) {
             outline_renderer_->begin_frame();
+            // Same once-per-frame rule as begin_frame: the fpgun's setup_3d must not overwrite
+            // the scene camera the fog and the post pass are evaluated against.
+            if (liquid_update_frame_ != rf::frame_count) {
+                liquid_update_frame_ = rf::frame_count;
+                render_context_->update_liquid_fx(proj, rf::gr::eye_pos, rf::gr::eye_matrix);
+            }
         }
     }
 
@@ -952,6 +1017,200 @@ namespace gr::d3d11
         entity_shadow_renderer_->bind_shadow_resources(context_);
     }
 
+    void Renderer::trigger_damage_vignette(unsigned dir_mask)
+    {
+        const unsigned mask = dir_mask & 0xF;
+        if (mask == 0 || mask == 0xF) {
+            damage_vignette_.radial = 1.0f;
+            damage_vignette_.radial_frame = rf::frame_count;
+            return;
+        }
+        // The stock red flash fires immediately before the directional indicator call on both
+        // the SP and MP paths (0x0047E4E2 then 0x0047E4FC), and only when the mask is non-zero.
+        // The flash arms a radial hit; when the indicator lands in the same frame the edges take
+        // over instead of stacking on top of it.
+        if (damage_vignette_.radial_frame == rf::frame_count) {
+            damage_vignette_.radial = 0.0f;
+        }
+        if (mask & 1) damage_vignette_.edges[0] = 1.0f; // front
+        if (mask & 2) damage_vignette_.edges[1] = 1.0f; // left
+        if (mask & 4) damage_vignette_.edges[2] = 1.0f; // back
+        if (mask & 8) damage_vignette_.edges[3] = 1.0f; // right
+    }
+
+    bool Renderer::liquid_background_color(rf::Vector3& out) const
+    {
+        return render_context_->liquid_background_color(out);
+    }
+
+    int Renderer::liquid_mode() const
+    {
+        return render_context_->liquid_state().mode;
+    }
+
+    void Renderer::set_sky_room(bool sky_room)
+    {
+        render_context_->set_sky_room(sky_room);
+    }
+
+    void Renderer::set_draw_room_uid(int room_uid)
+    {
+        render_context_->set_draw_room_uid(room_uid);
+    }
+
+    void Renderer::run_damage_vignette_pass()
+    {
+        // The option can go off mid-decay, and the trigger hooks stop feeding it rather than
+        // clearing it, so drop whatever is left instead of letting it linger.
+        if (g_alpine_game_config.damage_flash != 2) {
+            damage_vignette_ = {};
+            return;
+        }
+
+        // Once per frame: split screen calls screen_flash_render for each player
+        if (damage_vignette_decay_frame_ != rf::frame_count) {
+            damage_vignette_decay_frame_ = rf::frame_count;
+            // Same decay rate and pause behaviour as the stock screen flash (0x004163C0)
+            if (!rf::game_paused) {
+                const float step = rf::frametime * scenefx_damage_decay_per_sec;
+                for (float& edge : damage_vignette_.edges) {
+                    edge = std::max(edge - step, 0.0f);
+                }
+                damage_vignette_.radial = std::max(damage_vignette_.radial - step, 0.0f);
+            }
+        }
+
+        if (render_target_bm_handle_ != -1 || !damage_vignette_.active()) {
+            return;
+        }
+
+        SceneFxBufferData data{};
+        data.rt_size = {static_cast<float>(rt_width_), static_cast<float>(rt_height_)};
+        data.viewport_rect = current_viewport_rect();
+        // Overlay only, no liquid flags: the camera fields just have to stay finite
+        data.proj_sx = 1.0f;
+        data.proj_sy = 1.0f;
+        data.near_dist = scenefx_near_dist;
+        data.damage_edges = {
+            damage_vignette_.edges[0],
+            damage_vignette_.edges[1],
+            damage_vignette_.edges[2],
+            damage_vignette_.edges[3],
+        };
+        data.damage = {1.0f, 0.0f, 0.0f, damage_vignette_.radial};
+        data.flags = static_cast<float>(scenefx_flag_damage);
+
+        // Drains the batched HUD so the vignette composites on top of it, exactly where the
+        // stock flash lands.
+        dyn_geo_renderer_->flush();
+        render_context_->set_clip();
+        scene_post_pass_->render(context_, nullptr, default_render_target_view_, data);
+
+        render_context_->invalidate_cached_state();
+        render_context_->set_render_target(default_render_target_view_, depth_stencil_view_);
+        render_context_->set_clip();
+    }
+
+    void Renderer::run_scene_post_pass()
+    {
+        // Monitors and the rail/IR scanner render to textures before this point
+        if (render_target_bm_handle_ != -1) {
+            return;
+        }
+
+        const LiquidState& liquid = render_context_->liquid_state();
+
+        // The camera the main scene was rendered from. player_render (the fpgun) runs its own
+        // gr_setup_3d just before this hook, so rf::gr::eye_* and the context projection are
+        // the weapon FOV by now.
+        const Projection& proj = outline_renderer_->scene_projection();
+        const rf::Vector3& eye_pos = outline_renderer_->scene_eye_pos();
+        const rf::Matrix3& eye_orient = outline_renderer_->scene_eye_orient();
+
+        // The top edge of the near plane sits near_dist / proj_sy above the eye (view_y at
+        // ndc_y = 1), so the liquid can still cover part of the screen with the eye above the
+        // surface. Keep the pass alive until the whole near plane is clear of it.
+        const float proj_sy = proj.scale_y();
+        const float near_extent = (proj_sy > 0.0f ? scenefx_near_dist / proj_sy : 0.0f)
+            + scenefx_waterline_band;
+        const bool liquid_active = g_alpine_game_config.underwater_fx >= 2
+            && liquid.mode != 0
+            && eye_pos.y < liquid.surface_y + near_extent;
+
+        if (!liquid_active) {
+            return;
+        }
+
+        const bool distort = g_alpine_game_config.underwater_fx >= 3 && ensure_postfx_source();
+
+        SceneFxBufferData data{};
+        data.rt_size = {static_cast<float>(rt_width_), static_cast<float>(rt_height_)};
+        if (distort) {
+            // Wrapped hourly: the shader takes time as a float, and an unbounded ms count loses
+            // the resolution the wobble needs after a few hours of uptime.
+            data.time = static_cast<float>(timer::get_i64(1000) % 3600000) / 1000.0f;
+        }
+        data.distort_amp = scenefx_distort_amp;
+        data.distort_freq = scenefx_distort_freq;
+        data.distort_speed = scenefx_distort_speed;
+        data.eye_pos = {eye_pos.x, eye_pos.y, eye_pos.z};
+        data.surface_y = liquid.surface_y;
+        data.cam_right = {eye_orient.rvec.x, eye_orient.rvec.y, eye_orient.rvec.z};
+        data.cam_up = {eye_orient.uvec.x, eye_orient.uvec.y, eye_orient.uvec.z};
+        data.cam_fwd = {eye_orient.fvec.x, eye_orient.fvec.y, eye_orient.fvec.z};
+        data.proj_sx = proj.scale_x();
+        data.proj_sy = proj_sy;
+        data.near_dist = scenefx_near_dist;
+
+        data.viewport_rect = current_viewport_rect();
+
+        // Replaces the stock pre-HUD rect (skipped at 0x004328FD), so the tint has to use the
+        // room's own color and alpha.
+        unsigned flags = scenefx_flag_liquid_tint | scenefx_flag_liquid_vignette;
+        data.tint = {
+            liquid.blended_color.x,
+            liquid.blended_color.y,
+            liquid.blended_color.z,
+            liquid.blended_alpha,
+        };
+        data.vignette = {
+            liquid.blended_color.x * scenefx_vignette_darken,
+            liquid.blended_color.y * scenefx_vignette_darken,
+            liquid.blended_color.z * scenefx_vignette_darken,
+            scenefx_vignette_strength,
+        };
+        if (distort) {
+            flags |= scenefx_flag_distort;
+        }
+        data.flags = static_cast<float>(flags);
+
+        // Both modes draw over the finished scene, so drain pending 2D geometry first
+        dyn_geo_renderer_->flush();
+        render_context_->set_clip();
+
+        if (distort) {
+            // CopyResource forbids the source being bound as a render target, and without MSAA
+            // scene_texture_ is exactly that.
+            context_->OMSetRenderTargets(0, nullptr, nullptr);
+            if (msaa_render_target_) {
+                context_->ResolveSubresource(postfx_source_, 0, msaa_render_target_, 0, swap_chain_format);
+            }
+            else {
+                context_->CopyResource(postfx_source_, scene_texture_);
+            }
+            scene_post_pass_->render(context_, postfx_source_srv_, default_render_target_view_, data);
+        }
+        else {
+            scene_post_pass_->render(context_, nullptr, default_render_target_view_, data);
+        }
+
+        liquid_tint_drawn_frame_ = rf::frame_count;
+
+        render_context_->invalidate_cached_state();
+        render_context_->set_render_target(default_render_target_view_, depth_stencil_view_);
+        render_context_->set_clip();
+    }
+
     void Renderer::clear_solid_cache()
     {
         solid_renderer_->clear_cache();
@@ -964,6 +1223,7 @@ namespace gr::d3d11
 
     void Renderer::render_v3d_vif(rf::VifLodMesh *lod_mesh, int lod_index, const rf::Vector3& pos, const rf::Matrix3& orient, const rf::MeshRenderParams& params, bool skip_ambient_cache)
     {
+        render_context_->set_draw_room_uid(object_room_uid_);
         dyn_geo_renderer_->flush();
         mesh_renderer_->render_v3d_vif(lod_mesh, lod_index, pos, orient, params, skip_ambient_cache);
 
@@ -993,6 +1253,7 @@ namespace gr::d3d11
 
     void Renderer::render_character_vif(rf::VifLodMesh *lod_mesh, int lod_index, const rf::Vector3& pos, const rf::Matrix3& orient, const rf::CharacterInstance *ci, const rf::MeshRenderParams& params, bool skip_ambient_cache)
     {
+        render_context_->set_draw_room_uid(object_room_uid_);
         dyn_geo_renderer_->flush();
         mesh_renderer_->render_character_vif(lod_mesh, lod_index, pos, orient, ci, params, skip_ambient_cache);
 
@@ -1054,6 +1315,9 @@ namespace gr::d3d11
     void Renderer::flush_caches()
     {
         mesh_renderer_->flush_caches();
+        // Runs from level_page_out_injection, so it is also the level-change hook: a hit taken
+        // just before a level switch must not bleed into the next one.
+        damage_vignette_ = {};
     }
 
     void Renderer::reset_static_vertex_color_tracking()

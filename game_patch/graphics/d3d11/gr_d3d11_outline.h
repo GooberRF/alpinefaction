@@ -100,6 +100,13 @@ namespace gr::d3d11
             rf::VifLodMesh* lod_mesh, int lod_index,
             const rf::Vector3& pos, const rf::Matrix3& orient);
 
+        // The main-scene camera saved at begin_frame. Anything drawn after the fpgun has to
+        // use these: the fpgun's own gr_setup_3d has already overwritten the engine globals
+        // and the render context's projection by then.
+        const Projection& scene_projection() const { return saved_projection_; }
+        const rf::Vector3& scene_eye_pos() const { return saved_eye_pos_; }
+        const rf::Matrix3& scene_eye_orient() const { return saved_eye_orient_; }
+
     private:
         void queue_unrendered_xray_outlines();
         void refresh_vfx_transforms();

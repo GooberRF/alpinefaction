@@ -13,7 +13,8 @@ Version 1.5.0 (TBD): Not yet released
 - Add compatibility table (lightmap clamp floor) for `dm-halloween.rfl`
 - Add flames to gib chunks thrown by exploding entities, toggleable with `cl_gibflames`
 - Add `Jetpacks explode` option to the Jetpacks mutator
-- Add animated underwater caustics on submerged geometry and meshes, toggleable with `r_caustics` (Direct3D 11 renderer only)
+- Add underwater rendering effects — animated caustics, depth-based water fog with a waterline, screen tint/vignette and distortion — with quality levels 0-3 via `r_underwater` (Direct3D 11 renderer only)
+- Add edge-vignette damage feedback as `cl_damageflash 2` (Direct3D 11 renderer only); `cl_damageflash` is now a level: 0 off, 1 screen flash, 2 vignette
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Add `ui_color_console` console command to set the console background color

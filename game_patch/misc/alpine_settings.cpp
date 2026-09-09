@@ -362,7 +362,7 @@ bool alpine_player_settings_load(rf::Player* player)
         processed_keys.insert("ToggleCrouch");
     }
     if (settings.count("DamageScreenFlash")) {
-        g_alpine_game_config.damage_screen_flash = std::stoi(settings["DamageScreenFlash"]);
+        g_alpine_game_config.set_damage_flash(std::stoi(settings["DamageScreenFlash"]));
         processed_keys.insert("DamageScreenFlash");
     }
     if (settings.count("SpectateDamageScreenFlash")) {
@@ -564,9 +564,9 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.weather = std::stoi(settings["Weather"]);
         processed_keys.insert("Weather");
     }
-    if (settings.count("Caustics")) {
-        g_alpine_game_config.caustics = std::stoi(settings["Caustics"]);
-        processed_keys.insert("Caustics");
+    if (settings.count("UnderwaterFx")) {
+        g_alpine_game_config.set_underwater_fx(std::stoi(settings["UnderwaterFx"]));
+        processed_keys.insert("UnderwaterFx");
     }
     if (settings.count("MeshLightingMode")) {
         g_alpine_game_config.mesh_lighting_mode = std::clamp(std::stoi(settings["MeshLightingMode"]), 0, 2);
@@ -1422,7 +1422,7 @@ void alpine_player_settings_save(rf::Player* player)
     file << "AutoswitchWeapons=" << player->settings.autoswitch_weapons << "\n";
     file << "NeverAutoswitchExplosives=" << player->settings.dont_autoswitch_to_explosives << "\n";
     file << "ToggleCrouch=" << player->settings.toggle_crouch << "\n";
-    file << "DamageScreenFlash=" << g_alpine_game_config.damage_screen_flash << "\n";
+    file << "DamageScreenFlash=" << g_alpine_game_config.damage_flash << "\n";
     file << "SpectateDamageScreenFlash=" << g_alpine_game_config.spectate_damage_screen_flash << "\n";
     file << "ExplosionFlashLightsWeapons=" << g_alpine_game_config.explosion_weapon_flash_lights << "\n";
     file << "ExplosionFlashLightsEnv=" << g_alpine_game_config.explosion_env_flash_lights << "\n";
@@ -1486,7 +1486,7 @@ void alpine_player_settings_save(rf::Player* player)
     file << "DisableMuzzleFlashLights=" << g_alpine_game_config.try_disable_muzzle_flash_lights << "\n";
     file << "ShowGlares=" << g_alpine_game_config.show_glares << "\n";
     file << "Weather=" << g_alpine_game_config.weather << "\n";
-    file << "Caustics=" << g_alpine_game_config.caustics << "\n";
+    file << "UnderwaterFx=" << g_alpine_game_config.underwater_fx << "\n";
     file << "MeshLightingMode=" << g_alpine_game_config.mesh_lighting_mode << "\n";
     file << "DynamicLightNdotL=" << g_alpine_game_config.dynamic_light_ndotl << "\n";
     file << "PixelLightOverbright=" << g_alpine_game_config.pixel_light_overbright << "\n";

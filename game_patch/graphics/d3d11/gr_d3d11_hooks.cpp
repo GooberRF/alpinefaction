@@ -486,6 +486,10 @@ namespace gr::d3d11
             skip_mesh_light_gather = false;
             renderer->clear_mesh_lights();
         }
+
+        // Covers the meshes above as well as the sky solid; the world pass clears it again
+        renderer->set_sky_room(false);
+        renderer->set_draw_room_uid(-1);
     }
 
     void render_v3d_vif(rf::VifLodMesh *lod_mesh, [[maybe_unused]] rf::VifMesh *mesh, const rf::Vector3& pos, const rf::Matrix3& orient, int lod_index, const rf::MeshRenderParams& params)
@@ -558,8 +562,7 @@ namespace gr::d3d11
 
         if (lod_mesh && lod_index >= 0 && lod_index < lod_mesh->num_levels) {
             // Gather nearby lights (both static and dynamic) so the pixel shader can
-            // compute per-pixel N·L lighting for this character mesh.
-            // Skip when using vertex lighting — the old path doesn't need gathered lights.
+            // compute per-pixel N.L lighting for this character mesh.
             bool is_first_person = (params.flags & rf::MeshRenderFlags::MRF_FIRST_PERSON) != 0;
             bool lights_gathered = false;
             if (!use_vertex_lighting && rf::level.geometry && !skip_mesh_light_gather) {
@@ -598,7 +601,7 @@ namespace gr::d3d11
                     float ambient_g = static_cast<float>(params.ambient_color.green);
                     float ambient_b = static_cast<float>(params.ambient_color.blue);
 
-                    // White ambient means no lightmap data — guess from level ambient
+                    // White ambient means no lightmap data - guess from level ambient
                     if (ambient_r == 255 && ambient_g == 255 && ambient_b == 255) {
                         ambient_r = static_cast<float>(rf::level.ambient_light.red) + 64.0f;
                         ambient_g = static_cast<float>(rf::level.ambient_light.green) + 64.0f;
@@ -611,7 +614,7 @@ namespace gr::d3d11
                     base_color.green = static_cast<rf::ubyte>(std::clamp(ambient_g * scale + bias, 0.0f, 255.0f));
                     base_color.blue = static_cast<rf::ubyte>(std::clamp(ambient_b * scale + bias, 0.0f, 255.0f));
                 }
-                // else: enhanced lighting uses neutral white — shader handles all lighting
+                // else: enhanced lighting uses neutral white - shader handles all lighting
 
                 bool color_changed =
                     scratch_vertex_colors.last_color.red != base_color.red ||
@@ -712,6 +715,113 @@ namespace gr::d3d11
         return renderer->poly(nv, vertices, vertex_attributes, mode, constant_sw, sw);
     }
 
+    static void scene_post_pass()
+    {
+        if (renderer) {
+            renderer->run_scene_post_pass();
+        }
+    }
+
+    bool trigger_damage_vignette(unsigned dir_mask)
+    {
+        if (!renderer) {
+            return false;
+        }
+        renderer->trigger_damage_vignette(dir_mask);
+        return true;
+    }
+
+    // gr_fog_set(0, 0,0,0, -1, -1) turning fog off for the 2D phase, straight after the fpgun
+    // draw and its gr_flush: the last point in gameplay_render_frame where the 3D scene is
+    // complete. Reached unconditionally once per call on the main path.
+    static CallHook<void(int, int, int, int, float, float)> gameplay_render_frame_fog_off_hook{
+        0x00432879,
+        [](int enabled, int r, int g, int b, float fog_near, float fog_far) {
+            scene_post_pass();
+            gameplay_render_frame_fog_off_hook.call_target(enabled, r, g, b, fog_near, fog_far);
+        },
+    };
+
+    // screen_flash_render, after the HUD, MP HUD and net stats.
+    static CallHook<void(rf::Player*)> screen_flash_render_hook{
+        0x00432C7C,
+        [](rf::Player* pp) {
+            screen_flash_render_hook.call_target(pp);
+            if (renderer) {
+                renderer->run_damage_vignette_pass();
+            }
+        },
+    };
+
+    // Stock clamps the far clip to liquid_visibility while submerged, hidden by its fog being
+    // fully opaque there; the exponential fog is not, so the clip would show. Skipping the call
+    // leaves the default_wfar baseline set unconditionally earlier in the frame (0x00431AF4).
+    static CallHook<void(float)> gameplay_render_frame_liquid_far_clip_hook{
+        0x00431D3F,
+        [](float far_clip) {
+            if (g_alpine_game_config.underwater_fx >= 2) {
+                return;
+            }
+            gameplay_render_frame_liquid_far_clip_hook.call_target(far_clip);
+        },
+    };
+
+    // Stock sets fog far to liquid_visibility while submerged. The underwater model has its own
+    // range in b6, but draws it cannot handle (sprites without depth) still use the b0 linear fog
+    // and would go solid at that distance, so widen it to the normal view distance.
+    static CallHook<void(int, int, int, int, float, float)> gameplay_render_frame_liquid_fog_hook{
+        0x00431D6A,
+        [](int enabled, int r, int g, int b, float fog_near, float fog_far) {
+            if (g_alpine_game_config.underwater_fx >= 2) {
+                fog_far = std::max(fog_far, rf::gr::default_wfar);
+            }
+            gameplay_render_frame_liquid_fog_hook.call_target(enabled, r, g, b, fog_near, fog_far);
+        },
+    };
+
+    // Colour of the opaque background rect stock draws behind the world while submerged. Match
+    // the depth-darkened colour the underwater fog converges to, or the far clip shows as an edge.
+    static CallHook<void(int, int, int, int)> gameplay_render_frame_liquid_bg_color_hook{
+        0x00431D8F,
+        [](int r, int g, int b, int a) {
+            rf::Vector3 col;
+            if (g_alpine_game_config.underwater_fx >= 2 && renderer && renderer->liquid_background_color(col)) {
+                r = std::clamp(static_cast<int>(col.x * 255.0f + 0.5f), 0, 255);
+                g = std::clamp(static_cast<int>(col.y * 255.0f + 0.5f), 0, 255);
+                b = std::clamp(static_cast<int>(col.z * 255.0f + 0.5f), 0, 255);
+            }
+            gameplay_render_frame_liquid_bg_color_hook.call_target(r, g, b, a);
+        },
+    };
+
+    // Stock pre-HUD fullscreen liquid tint. The post pass draws the same color and alpha per
+    // pixel instead, so drop the rect only when it actually did so this frame.
+    static CallHook<void(int, int, int, int, int)> gameplay_render_frame_liquid_tint_hook{
+        0x004328FD,
+        [](int x, int y, int w, int h, int mode) {
+            if (renderer && renderer->render_target_bm_handle() == -1
+                && renderer->liquid_tint_drawn_this_frame()) {
+                return;
+            }
+            gameplay_render_frame_liquid_tint_hook.call_target(x, y, w, h, mode);
+        },
+    };
+
+    // g_render_room_objects draws every room-placed object mesh, once per visible room, so it
+    // is where a mesh learns its room.
+    static FunHook<void(rf::GRoom*, rf::GSolid*, int, void*)> g_render_room_objects_hook{
+        0x004D3C40,
+        [](rf::GRoom* room, rf::GSolid* solid, int num_objects, void* portal_objects) {
+            if (renderer) {
+                renderer->set_object_room_uid(room && !room->is_detail ? room->uid : -1);
+            }
+            g_render_room_objects_hook.call_target(room, solid, num_objects, portal_objects);
+            if (renderer) {
+                renderer->set_object_room_uid(-1);
+            }
+        },
+    };
+
     static CodeInjection g_render_room_objects_render_liquid_injection{
         0x004D4106,
         [](auto& regs) {
@@ -731,6 +841,12 @@ namespace gr::d3d11
             float zn = 0.1f; // static near plane (RF uses: zm / matrix_scale.z)
             zm = 1.0f; // let's not use zm at all to simplify software projections
             float zf = rf::level.distance_fog_far_clip > 0.0f ? rf::level.distance_fog_far_clip : 1700.0f;
+            // Levels with short distance fog rely on it saturating at the far plane where depth
+            // clipping cuts triangles. Submerged, the liquid fog replaces it, so push the plane
+            // out to the engine's cull distance where the underwater far fade covers it.
+            if (g_alpine_game_config.underwater_fx >= 2 && renderer->liquid_mode() != 0) {
+                zf = std::max(zf, rf::gr::default_wfar);
+            }
             renderer->setup_3d(Projection{sx, sy, zn, zf});
         },
     };
@@ -976,6 +1092,13 @@ void gr_d3d11_apply_patch()
 {
     using namespace gr::d3d11;
 
+    gameplay_render_frame_fog_off_hook.install();
+    gameplay_render_frame_liquid_tint_hook.install();
+    gameplay_render_frame_liquid_far_clip_hook.install();
+    gameplay_render_frame_liquid_fog_hook.install();
+    gameplay_render_frame_liquid_bg_color_hook.install();
+    screen_flash_render_hook.install();
+    g_render_room_objects_hook.install();
     g_render_room_objects_render_liquid_injection.install();
     gr_d3d_setup_3d_injection.install();
     gr_d3d_setup_fustrum_injection.install();

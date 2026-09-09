@@ -36,6 +36,7 @@ namespace gr::d3d11
         shadow_debug,
         outline,
         gamma,
+        scenefx,
     };
 
     inline const char* get_vertex_shader_filename(VertexShaderId vertex_shader_id)
@@ -99,6 +100,8 @@ namespace gr::d3d11
                 return "outline_ps.bin";
             case PixelShaderId::gamma:
                 return "gamma_ps.bin";
+            case PixelShaderId::scenefx:
+                return "scenefx_ps.bin";
             default:
                 return nullptr;
         }

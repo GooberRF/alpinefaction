@@ -614,14 +614,20 @@ ConsoleCommand2 pow2_tex_cmd{
     "Manual debug override for power of 2 texture enforcement. Only affects new level loads. If you don't know what this does, do not use this command.",
 };
 
-ConsoleCommand2 caustics_cmd{
-    "r_caustics",
-    []() {
-        g_alpine_game_config.caustics = !g_alpine_game_config.caustics;
-        rf::console::print("Underwater caustics are {}",
-            g_alpine_game_config.caustics ? "enabled" : "disabled");
+ConsoleCommand2 underwater_fx_cmd{
+    "r_underwater",
+    [](std::optional<int> level_opt) {
+        if (level_opt) {
+            g_alpine_game_config.set_underwater_fx(level_opt.value());
+        }
+        rf::console::print(
+            "Underwater effects level is {} (Direct3D 11 renderer only, 0 = stock)",
+            g_alpine_game_config.underwater_fx
+        );
     },
-    "Toggle underwater caustics rendering (D3D11 only)",
+    "Sets the underwater effects level: 0 stock, 1 caustics, 2 + fog/tint/vignette, 3 + distortion "
+    "(Direct3D 11 renderer only)",
+    "r_underwater <0-3>",
 };
 
 // checked during level load
@@ -795,7 +801,7 @@ void gr_apply_patch()
     precache_rooms_cmd.register_cmd();
     disable_rendering_cmd.register_cmd();
     pow2_tex_cmd.register_cmd();
-    caustics_cmd.register_cmd();
+    underwater_fx_cmd.register_cmd();
 
     // Fix `rf::gr::text_2d_mode`.
     AsmWriter{0x0050BB40}.push<int8_t>(rf::gr::FOG_NOT_ALLOWED);

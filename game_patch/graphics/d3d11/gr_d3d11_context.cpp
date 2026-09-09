@@ -30,7 +30,8 @@ namespace gr::d3d11
         per_frame_buffer_{device_},
         texture_scale_cbuffer_{device_},
         gas_region_buffer_{device_},
-        caustics_renderer_{device_}
+        caustics_renderer_{device_},
+        liquid_fx_renderer_{device_}
     {
         bind_cbuffers();
     }
@@ -59,6 +60,10 @@ namespace gr::d3d11
         // Caustics buffer at b5
         ID3D11Buffer* caustics_cbuffer = caustics_renderer_;
         device_context_->PSSetConstantBuffers(5, 1, &caustics_cbuffer);
+
+        // Liquid buffer at b6
+        ID3D11Buffer* liquid_cbuffer = liquid_fx_renderer_;
+        device_context_->PSSetConstantBuffers(6, 1, &liquid_cbuffer);
     }
 
     void RenderContext::clear()
@@ -324,8 +329,10 @@ namespace gr::d3d11
         float pixel_light_overbright;
         float emissive_override;
         float gas_fog_allowed;
-        float _pad[2];
+        float sky_room;
+        float draw_room_uid;
     };
+    static_assert(sizeof(RenderModeBufferData) == 80);
     static_assert(sizeof(RenderModeBufferData) % 16 == 0);
 
     RenderModeBuffer::RenderModeBuffer(ID3D11Device* device)
@@ -573,6 +580,8 @@ namespace gr::d3d11
         data.pixel_light_overbright = g_level_pixel_light_overbright;
         data.emissive_override = current_emissive_override_ ? 1.0f : 0.0f;
         data.gas_fog_allowed = current_fog_allowed_ ? 1.0f : 0.0f;
+        data.sky_room = current_sky_room_ ? 1.0f : 0.0f;
+        data.draw_room_uid = static_cast<float>(current_draw_room_uid_);
 
         D3D11_MAPPED_SUBRESOURCE mapped_subres;
         DF_GR_D3D11_CHECK_HR(

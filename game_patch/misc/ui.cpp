@@ -876,9 +876,11 @@ void ao_locpings_cbox_on_click(int x, int y) {
 }
 
 void ao_redflash_cbox_on_click(int x, int y) {
-    g_alpine_game_config.damage_screen_flash = !g_alpine_game_config.damage_screen_flash;
-    ao_redflash_cbox.checked = g_alpine_game_config.damage_screen_flash;
-    ao_play_button_snd(g_alpine_game_config.damage_screen_flash);
+    // Checkbox only spans off/on; cl_damageflash 2 (vignette) reads as checked and toggles to off
+    bool enable = g_alpine_game_config.damage_flash == 0;
+    g_alpine_game_config.set_damage_flash(enable ? 1 : 0);
+    ao_redflash_cbox.checked = enable;
+    ao_play_button_snd(enable);
 }
 
 void ao_deathbars_cbox_on_click(int x, int y) {
@@ -1284,7 +1286,7 @@ void alpine_options_panel_init() {
     alpine_options_panel_checkbox_init(
         &ao_showping_cbox, &ao_showping_label, &alpine_options_panel1, ao_showping_cbox_on_click, g_alpine_game_config.ping_display, 112, 144, "Show ping");
     alpine_options_panel_checkbox_init(
-        &ao_redflash_cbox, &ao_redflash_label, &alpine_options_panel1, ao_redflash_cbox_on_click, g_alpine_game_config.damage_screen_flash, 112, 174, "Damage flash");
+        &ao_redflash_cbox, &ao_redflash_label, &alpine_options_panel1, ao_redflash_cbox_on_click, g_alpine_game_config.damage_flash >= 1, 112, 174, "Damage flash");
     alpine_options_panel_checkbox_init(
         &ao_deathbars_cbox, &ao_deathbars_label, &alpine_options_panel1, ao_deathbars_cbox_on_click, g_alpine_game_config.death_bars, 112, 204, "Death bars");
     alpine_options_panel_checkbox_init(

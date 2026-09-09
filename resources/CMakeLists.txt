@@ -328,6 +328,7 @@ add_packfile(alpinefaction.vpp
     outline_ps:${CMAKE_BINARY_DIR}/shaders/outline_ps.bin
     gamma_vs:${CMAKE_BINARY_DIR}/shaders/gamma_vs.bin
     gamma_ps:${CMAKE_BINARY_DIR}/shaders/gamma_ps.bin
+    scenefx_ps:${CMAKE_BINARY_DIR}/shaders/scenefx_ps.bin
 )
 
 # Copy licensing-info.txt

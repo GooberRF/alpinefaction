@@ -15,4 +15,5 @@ namespace gr::d3d11 {
     bool supports_sample_count(uint32_t sample_count);
     void flush_frame_buffers();
     void flush_outlines_before_fpgun();
+    bool trigger_damage_vignette(unsigned dir_mask);
 }

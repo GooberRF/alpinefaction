@@ -12,6 +12,7 @@
 #include "../../rf/gr/gr.h"
 #include "gr_d3d11_mesh.h"
 #include "gr_d3d11_caustics.h"
+#include "gr_d3d11_liquid.h"
 
 namespace gr::d3d11
 {
@@ -127,6 +128,26 @@ namespace gr::d3d11
             }
         }
 
+        // Not part of update()'s change detection: the sky room is a scoped property of the draw
+        // sequence, not of the render mode, so it uploads on its own.
+        void set_sky_room(bool sky_room, ID3D11DeviceContext* device_context)
+        {
+            if (current_sky_room_ != sky_room) {
+                current_sky_room_ = sky_room;
+                update_buffer(device_context);
+            }
+        }
+
+        // Room the current draw belongs to, or -1 when it has none. Same reasoning as
+        // set_sky_room: a property of the draw sequence, uploaded on its own.
+        void set_draw_room_uid(int room_uid, ID3D11DeviceContext* device_context)
+        {
+            if (current_draw_room_uid_ != room_uid) {
+                current_draw_room_uid_ = room_uid;
+                update_buffer(device_context);
+            }
+        }
+
     private:
         void update_buffer(ID3D11DeviceContext* device_context);
 
@@ -144,6 +165,8 @@ namespace gr::d3d11
         float current_dynamic_light_ndotl_ = 0.0f;
         float current_pixel_light_overbright_ = 0.5f;
         float current_alpha_test_threshold_ = 1.0f / 255.0f;
+        bool current_sky_room_ = false;
+        int current_draw_room_uid_ = -1;
     };
 
     class PerFrameBuffer
@@ -437,6 +460,32 @@ namespace gr::d3d11
             caustics_renderer_.update(device_context_);
         }
 
+        void update_liquid_fx(const Projection& projection, const rf::Vector3& eye_pos,
+                              const rf::Matrix3& eye_orient)
+        {
+            liquid_fx_renderer_.update(device_context_, projection, eye_pos, eye_orient);
+        }
+
+        const LiquidState& liquid_state() const
+        {
+            return liquid_fx_renderer_.state();
+        }
+
+        bool liquid_background_color(rf::Vector3& out) const
+        {
+            return liquid_fx_renderer_.background_color(out);
+        }
+
+        void suspend_liquid_fx()
+        {
+            liquid_fx_renderer_.write_disabled(device_context_);
+        }
+
+        void resume_liquid_fx()
+        {
+            liquid_fx_renderer_.rewrite(device_context_);
+        }
+
         bool has_gas_regions() const
         {
             return gas_region_buffer_.has_gas_regions();
@@ -445,6 +494,21 @@ namespace gr::d3d11
         void fog_set()
         {
             render_mode_cbuffer_.handle_fog_change();
+        }
+
+        // Sky rooms are drawn at their authored world location with the camera translated into
+        // them, so their fragments carry world positions that mean nothing to the caustics and
+        // liquid volume tests.
+        void set_sky_room(bool sky_room)
+        {
+            render_mode_cbuffer_.set_sky_room(sky_room, device_context_);
+        }
+
+        // Lets the caustics test match a fragment to its own room instead of trusting a room
+        // AABB, which routinely overshoots into dry neighbours.
+        void set_draw_room_uid(int room_uid)
+        {
+            render_mode_cbuffer_.set_draw_room_uid(room_uid, device_context_);
         }
 
         void set_vertex_buffer(ID3D11Buffer* vertex_buffer, UINT stride, UINT slot = 0)
@@ -618,6 +682,7 @@ namespace gr::d3d11
         TextureScaleBuffer texture_scale_cbuffer_;
         GasRegionBuffer gas_region_buffer_;
         CausticsRenderer caustics_renderer_;
+        LiquidFxRenderer liquid_fx_renderer_;
 
         ID3D11RenderTargetView* render_target_view_ = nullptr;
         ID3D11DepthStencilView* depth_stencil_view_ = nullptr;

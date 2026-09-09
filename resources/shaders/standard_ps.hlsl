@@ -23,6 +23,8 @@ cbuffer RenderModeBuffer : register(b0)
     float pixel_light_overbright;
     float emissive_override;
     float gas_fog_allowed;
+    float sky_room;             // sky fragments carry authored, not viewed, world positions
+    float draw_room_uid;        // room this draw belongs to, -1 when it has none
 };
 
 struct PointLight {
@@ -105,7 +107,7 @@ cbuffer GasRegionBuffer : register(b4)
 struct CausticVolume
 {
     float3 bbox_min;  float surface_y;
-    float3 bbox_max;  float _cpad0;
+    float3 bbox_max;  float room_uid;
     float3 color;     float _cpad1;
 };
 
@@ -126,6 +128,31 @@ cbuffer CausticsBuffer : register(b5)
     float caustic_wall_stretch;
     float _caustic_hdr_pad;
     CausticVolume caustic_volumes[MAX_CAUSTIC_VOLUMES];
+};
+
+#define MAX_LIQUID_VOLUMES 8
+
+// One liquid room. The box arrives pre-expanded and already capped at the surface plane.
+struct LiquidVolume
+{
+    float3 bbox_min; float surface_y;
+    float3 bbox_max; float _pad;
+};
+
+cbuffer LiquidBuffer : register(b6)
+{
+    float3 liq_eye_pos;        float liq_mode;         // 0 none, else GRoom::liquid_type
+    float3 liq_cam_right;      float liq_proj_sx;
+    float3 liq_cam_up;         float liq_proj_sy;
+    float3 liq_cam_forward;    float liq_viewport_w;
+    float  liq_viewport_h;     float liq_surface_y;
+    float  liq_visibility;     float liq_eye_under;
+    float3 liq_color;          float liq_alpha;
+    float3 liq_over_fog_color; float liq_over_fog_far;
+    float4 liq_params;         // sigma_k, absorb_hi, absorb_lo, depth_darken
+    float  liq_far_clip;       float liq_num_volumes;  // far plane the fade targets, volume count
+    float  liq_dark_surface_y; float _liq_pad0;        // blended surface, depth darkening only
+    LiquidVolume liq_volumes[MAX_LIQUID_VOLUMES];
 };
 
 Texture2D tex0;
@@ -156,6 +183,20 @@ static const float2 pcf_offsets[15] = {
     float2( 0.891f, -0.546f),
     float2(-0.428f,  0.882f),
 };
+
+// World position of a pre-transformed fragment, from its screen position and view depth.
+// The camera header (eye/right/up/forward/proj scale/viewport) is passed in because b4 and b6
+// each carry their own copy and b4 does not exist in the no-gas permutation.
+float3 reconstruct_world_pos(float2 screen_pos, float depth, float3 eye,
+                             float3 cam_right, float3 cam_up, float3 cam_forward,
+                             float proj_sx, float proj_sy, float viewport_w, float viewport_h)
+{
+    float ndc_x = (screen_pos.x / viewport_w) * 2.0f - 1.0f;
+    float ndc_y = (screen_pos.y / viewport_h) * -2.0f + 1.0f;
+    float view_x = ndc_x * depth / proj_sx;
+    float view_y = ndc_y * depth / proj_sy;
+    return eye + cam_right * view_x + cam_up * view_y + cam_forward * depth;
+}
 
 float3 apply_colorblind(float3 color)
 {
@@ -350,14 +391,18 @@ float4 main(VsOutput input) : SV_TARGET
     }
 
     if (num_caustic_volumes > 0 && emissive_override < 0.5f && disable_textures < 0.5f
-        && dot(input.norm, input.norm) > 0.0f) {
+        && sky_room < 0.5f && dot(input.norm, input.norm) > 0.0f) {
         float3 wp = input.world_pos_and_depth.xyz;
         float  mask = 0.0f, depth = 0.0f;
         float3 tint = float3(1, 1, 1);
         for (int ci = 0; ci < num_caustic_volumes; ++ci) {
             CausticVolume v = caustic_volumes[ci];
-            bool inside = all(wp >= v.bbox_min - 0.05f) && all(wp <= v.bbox_max + 0.05f)
-                          && wp.y < v.surface_y - 0.02f;
+            // A room AABB routinely overshoots into dry neighbours, so prefer matching the
+            // fragment's own room and fall back to the box only when the draw has no room.
+            bool in_volume = draw_room_uid >= 0.0f
+                ? abs(v.room_uid - draw_room_uid) < 0.5f
+                : (all(wp >= v.bbox_min - 0.05f) && all(wp <= v.bbox_max + 0.05f));
+            bool inside = in_volume && wp.y < v.surface_y - 0.02f;
             if (inside && mask == 0.0f) { mask = 1.0f; depth = v.surface_y - wp.y; tint = v.color; }
         }
         float  slice = frac(caustic_time * caustic_speed) * 16.0f;
@@ -484,32 +529,113 @@ float4 main(VsOutput input) : SV_TARGET
 
     target.rgb = saturate(target.rgb);
 
-    float fog = saturate(input.world_pos_and_depth.w / fog_far);
-    target.rgb = fog * fog_color + (1 - fog) * target.rgb;
+    // Detect pre-transformed vertices via dummy normal (transformed_vs outputs norm=(0,0,0)).
+    // For those, world position has to be reconstructed from screen position and depth.
+    bool is_pretransformed = dot(input.norm, input.norm) == 0.0f;
+    bool can_reconstruct = is_pretransformed && input.world_pos_and_depth.w > 0.0f;
+
+    [branch] if (liq_mode > 0.5f && (!is_pretransformed || can_reconstruct)) {
+        float3 liq_pixel_pos = can_reconstruct
+            ? reconstruct_world_pos(input.pos.xy, input.world_pos_and_depth.w, liq_eye_pos,
+                                    liq_cam_right, liq_cam_up, liq_cam_forward,
+                                    liq_proj_sx, liq_proj_sy, liq_viewport_w, liq_viewport_h)
+            : input.world_pos_and_depth.xyz;
+
+        // Lengths stay on the engine's view-depth metric so a fully dry fragment is fogged
+        // exactly like stock; only the fraction comes from the geometric clip.
+        float seg_len = max(input.world_pos_and_depth.w, 0.0f);
+        float under_len;
+
+        if (sky_room > 0.5f) {
+            // The sky room is drawn at its authored location with the camera translated into it,
+            // so liq_pixel_pos means nothing here. Measure the real view ray against the surface.
+            float2 ndc = float2(input.pos.x / liq_viewport_w * 2.0f - 1.0f,
+                                input.pos.y / liq_viewport_h * -2.0f + 1.0f);
+            float3 dir = normalize(liq_cam_forward
+                + liq_cam_right * (ndc.x / liq_proj_sx)
+                + liq_cam_up * (ndc.y / liq_proj_sy));
+            float under_depth = 0.0f;
+            if (liq_eye_under > 0.5f) {
+                float t_surf = dir.y > 1e-4f ? (liq_surface_y - liq_eye_pos.y) / dir.y : 1e9f;
+                under_depth = t_surf * dot(dir, liq_cam_forward);
+            }
+            under_len = min(seg_len, max(under_depth, 0.0f));
+        }
+        else {
+            // Clip the eye->pixel segment against every nearby liquid room of the camera room's
+            // type, each capped at its own surface plane. Rooms do not overlap, so the segments
+            // add. A single box would end the fogged length at the camera room's walls and step
+            // at every boundary; without any box the surface plane would extend level-wide.
+            float3 seg_vec = liq_pixel_pos - liq_eye_pos;
+            float geo_len = length(seg_vec);
+            float3 seg_dir = seg_vec / max(geo_len, 1e-6f);
+            float3 dir_sign = (seg_dir >= 0.0f) ? 1.0f : -1.0f;
+            float3 safe_dir = dir_sign * max(abs(seg_dir), 1e-8f);
+            float3 inv_dir = 1.0f / safe_dir;
+
+            float under_len_geo = 0.0f;
+            int vol_count = min((int)liq_num_volumes, MAX_LIQUID_VOLUMES);
+            for (int vi = 0; vi < vol_count; ++vi) {
+                float3 t0 = (liq_volumes[vi].bbox_min - liq_eye_pos) * inv_dir;
+                float3 t1 = (liq_volumes[vi].bbox_max - liq_eye_pos) * inv_dir;
+                float3 tmin_v = min(t0, t1);
+                float3 tmax_v = max(t0, t1);
+                float t_enter = max(max(tmin_v.x, tmin_v.y), max(tmin_v.z, 0.0f));
+                float t_exit = min(min(tmax_v.x, tmax_v.y), min(tmax_v.z, geo_len));
+                under_len_geo += max(t_exit - t_enter, 0.0f);
+            }
+            under_len = seg_len * saturate(under_len_geo / max(geo_len, 1e-6f));
+        }
+        float over_len = seg_len - under_len;
+
+        // Above-surface part: stock linear fog. While submerged the level fog has been replaced
+        // by the liquid fog in b0, so the level values come from b6 instead.
+        float3 over_color = liq_eye_under > 0.5f ? liq_over_fog_color : fog_color;
+        float over_far = liq_eye_under > 0.5f ? liq_over_fog_far : fog_far;
+        float over_fog = fog_far < 1e30f ? saturate(over_len / over_far) : 0.0f;
+
+        // Below-surface part: per-channel Beer-Lambert, dominant channels of the liquid color
+        // surviving longest, in-scatter darkened with depth below the surface.
+        float sigma = liq_params.x / max(liq_visibility, 1.0f);
+        float3 sigma_rgb = sigma * lerp(liq_params.y, liq_params.z, saturate(liq_color));
+        float3 transmittance = exp(-under_len * sigma_rgb);
+
+        // Converge to the in-scatter colour before the engine's frustum plane cuts the geometry,
+        // so the far clip reads as fog rather than an edge. The background rect behind it is set
+        // to the same colour. Above water the far plane behaves as stock.
+        if (liq_eye_under > 0.5f) {
+            transmittance *= 1.0f - smoothstep(0.7f * liq_far_clip, 0.97f * liq_far_clip, seg_len);
+        }
+
+        float pix_y = sky_room > 0.5f ? liq_eye_pos.y : liq_pixel_pos.y;
+        float depth_below = max(liq_dark_surface_y - min(liq_eye_pos.y, pix_y), 0.0f);
+        float3 inscatter = liq_color * exp(-depth_below * liq_params.w);
+
+        // Dimming always applies so anything behind liquid reads as occluded; color is only
+        // added where the draw mode allows fog, as in the gas block below.
+        target.rgb *= (1.0f - over_fog) * transmittance;
+        if (gas_fog_allowed > 0.5f) {
+            target.rgb += over_color * over_fog * transmittance + inscatter * (1.0f - transmittance);
+        }
+    }
+    else {
+        float fog = saturate(input.world_pos_and_depth.w / fog_far);
+        target.rgb = fog * fog_color + (1 - fog) * target.rgb;
+    }
 
     // Gas region volumetric fog — per-region compositing (Beer-Lambert)
-    // Detect pre-transformed vertices via dummy normal (transformed_vs outputs norm=(0,0,0)).
-    // For those, reconstruct world pos from depth (particles, sprites, dynamic decals, etc.).
     // Transmittance (dimming) is always applied so sprites behind gas appear occluded.
     // Gas color accumulation is only added when fog is allowed, to avoid artifacts with
     // additive blending (e.g. muzzle flash) where the background already contains the gas color.
 #if MAX_GAS_REGIONS > 0
     float3 gas_world_pos = input.world_pos_and_depth.xyz;
-    bool is_pretransformed = dot(input.norm, input.norm) == 0.0f;
-    bool can_reconstruct = is_pretransformed && input.world_pos_and_depth.w > 0.0f;
     int gas_count = min(num_gas_regions, MAX_GAS_REGIONS);
     if (gas_count > 0 && (!is_pretransformed || can_reconstruct)) {
         // Reconstruct world position for pre-transformed vertices (dynamic decals, etc.)
         if (can_reconstruct) {
-            float depth = input.world_pos_and_depth.w;
-            float ndc_x = (input.pos.x / gas_viewport_w) * 2.0f - 1.0f;
-            float ndc_y = (input.pos.y / gas_viewport_h) * -2.0f + 1.0f;
-            float view_x = ndc_x * depth / gas_proj_sx;
-            float view_y = ndc_y * depth / gas_proj_sy;
-            gas_world_pos = gas_eye_pos
-                + gas_cam_right * view_x
-                + gas_cam_up * view_y
-                + gas_cam_forward * depth;
+            gas_world_pos = reconstruct_world_pos(input.pos.xy, input.world_pos_and_depth.w, gas_eye_pos,
+                                                  gas_cam_right, gas_cam_up, gas_cam_forward,
+                                                  gas_proj_sx, gas_proj_sy, gas_viewport_w, gas_viewport_h);
         }
         float3 ray_origin = gas_eye_pos;
         float3 to_pixel = gas_world_pos - ray_origin;

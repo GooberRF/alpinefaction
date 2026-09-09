@@ -677,6 +677,7 @@ namespace gr::d3d11
 
         for (int i = 0; i < num_rooms; ++i) {
             rf::GRoom* room = rooms[i];
+            render_context_.set_draw_room_uid(room->is_detail ? -1 : room->uid);
             for (rf::GFace& face: room->face_list) {
                 if (should_render_face(&face) && !face.attributes.is_see_thru()) {
                     render_face_dynamic_decals(&face);
@@ -684,11 +685,13 @@ namespace gr::d3d11
             }
             for (rf::GRoom* detail_room : room->detail_rooms) {
                 if (detail_room->room_to_render_with == room) {
+                    render_context_.set_draw_room_uid(-1);
                     for (rf::GFace& face: detail_room->face_list) {
                         if (should_render_face(&face) && !face.attributes.is_see_thru()) {
                             render_face_dynamic_decals(&face);
                         }
                     }
+                    render_context_.set_draw_room_uid(room->is_detail ? -1 : room->uid);
                 }
             }
         }
@@ -735,6 +738,7 @@ namespace gr::d3d11
 
     void SolidRenderer::render_room_faces(rf::GSolid* solid, rf::GRoom* room, FaceRenderType render_type)
     {
+        render_context_.set_draw_room_uid(room->is_detail ? -1 : room->uid);
         auto cache = get_or_create_normal_room_cache(solid, room);
         cache->render(render_type, device_, render_context_);
     }
@@ -754,6 +758,9 @@ namespace gr::d3d11
 
     void SolidRenderer::render_detail(rf::GSolid* solid, rf::GRoom* room, bool alpha)
     {
+        // A detail brush sits inside whatever normal room contains it, so its own uid would not
+        // match the water room's; fall back to the bbox test.
+        render_context_.set_draw_room_uid(-1);
         GRenderCache* cache = get_or_create_detail_room_cache(solid, room);
         if (!cache) return;
         FaceRenderType render_type = alpha ? FaceRenderType::alpha : FaceRenderType::opaque;
@@ -827,6 +834,7 @@ namespace gr::d3d11
         RenderContext::ScopedPicmipActive picmip_scope{render_context_, true};
 
         xlog::trace("Rendering sky room {} cache {}", room->room_index, room->geo_cache);
+        render_context_.set_sky_room(true);
         render_context_.update_lights(true);
 
         // Compute sky room transform: maps world coords to camera-relative coords
@@ -873,6 +881,7 @@ namespace gr::d3d11
         RenderContext::ScopedPicmipActive picmip_scope{render_context_, true};
 
         xlog::trace("Rendering movable solid {}", solid);
+        render_context_.set_draw_room_uid(-1);
         // Upload gathered lights so the pixel shader can apply point lighting to movers
         render_context_.update_lights();
         GRenderCache* cache = get_or_create_movable_solid_cache(solid);
@@ -938,6 +947,8 @@ namespace gr::d3d11
         RenderContext::ScopedPicmipActive picmip_scope{render_context_, true};
 
         xlog::trace("Rendering level solid");
+        render_context_.set_sky_room(false);
+        render_context_.set_draw_room_uid(-1);
         rf::gr::light_filter_set_solid(solid, 1, 0);
         render_context_.update_lights();
 

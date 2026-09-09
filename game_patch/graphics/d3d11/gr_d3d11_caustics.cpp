@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstddef>
 #include <cstring>
 #include <format>
 #include <string>
@@ -37,6 +38,8 @@ namespace gr::d3d11
         // Liquid colors left at (or near) black would kill the effect entirely
         constexpr float caustics_min_tint = 0.35f;
 
+        constexpr int liquid_type_water = 1;
+
         float aabb_distance(const rf::Vector3& bbox_min, const rf::Vector3& bbox_max, const rf::Vector3& p)
         {
             float dx = std::max({bbox_min.x - p.x, 0.0f, p.x - bbox_max.x});
@@ -52,13 +55,14 @@ namespace gr::d3d11
             float surface_y;
             rf::Color color;
             float dist;
+            int room_uid;
         };
     }
 
     struct alignas(16) CausticVolumeGPUData
     {
         std::array<float, 3> bbox_min; float surface_y;
-        std::array<float, 3> bbox_max; float _pad0;
+        std::array<float, 3> bbox_max; float room_uid;
         std::array<float, 3> color;    float _pad1;
     };
     static_assert(sizeof(CausticVolumeGPUData) == 48);
@@ -73,6 +77,7 @@ namespace gr::d3d11
     };
     static_assert(sizeof(CausticsBufferData) == 816);
     static_assert(sizeof(CausticsBufferData) % 16 == 0);
+    static_assert(offsetof(CausticsBufferData, volumes) == 48);
 
     CausticsRenderer::CausticsRenderer(ID3D11Device* device) : device_{device}
     {
@@ -91,7 +96,7 @@ namespace gr::d3d11
         DF_GR_D3D11_CHECK_HR(
             device_context->Map(buffer_, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped_subres)
         );
-        std::memset(mapped_subres.pData, 0, sizeof(int) * 4);
+        std::memset(mapped_subres.pData, 0, sizeof(CausticsBufferData));
         device_context->Unmap(buffer_, 0);
     }
 
@@ -231,7 +236,7 @@ namespace gr::d3d11
 
     void CausticsRenderer::update(ID3D11DeviceContext* device_context)
     {
-        if (!g_alpine_game_config.caustics || build_failed_ || !rf::level.geometry) {
+        if (g_alpine_game_config.underwater_fx < 1 || build_failed_ || !rf::level.geometry) {
             write_disabled(device_context);
             return;
         }
@@ -245,7 +250,8 @@ namespace gr::d3d11
         auto& all_rooms = rf::level.geometry->all_rooms;
         for (int i = 0; i < all_rooms.size(); ++i) {
             rf::GRoom* room = all_rooms[i];
-            if (!room || room->uid < 0 || !room->contains_liquid || room->liquid_type != 1) {
+            if (!room || room->uid < 0 || !room->contains_liquid
+                || room->liquid_type != liquid_type_water) {
                 continue;
             }
             float dist = aabb_distance(room->bbox_min, room->bbox_max, eye_pos);
@@ -266,6 +272,7 @@ namespace gr::d3d11
                 room->bbox_min.y + room->liquid_depth,
                 room->liquid_color,
                 dist,
+                room->uid,
             };
             num_candidates = std::min(num_candidates + 1, max_caustic_volumes);
         }
@@ -304,6 +311,7 @@ namespace gr::d3d11
             dst.bbox_min = {src.bbox_min.x, src.bbox_min.y, src.bbox_min.z};
             dst.bbox_max = {src.bbox_max.x, src.bbox_max.y, src.bbox_max.z};
             dst.surface_y = src.surface_y;
+            dst.room_uid = static_cast<float>(src.room_uid);
             dst.color = {
                 std::max(src.color.red / 255.0f, caustics_min_tint),
                 std::max(src.color.green / 255.0f, caustics_min_tint),
@@ -314,7 +322,7 @@ namespace gr::d3d11
         rf::Camera* cam = rf::local_player ? rf::local_player->cam : nullptr;
         rf::GRoom* cam_room = cam && cam->camera_entity ? rf::camera_get_room(cam) : nullptr;
         bool underwater = false;
-        if (cam_room && cam_room->contains_liquid && cam_room->liquid_type == 1) {
+        if (cam_room && cam_room->contains_liquid && cam_room->liquid_type == liquid_type_water) {
             underwater = rf::camera_get_pos(cam).y <= cam_room->bbox_min.y + cam_room->liquid_depth;
         }
         data.caustic_above_water = underwater ? 1.0f : caustic_above_water;
