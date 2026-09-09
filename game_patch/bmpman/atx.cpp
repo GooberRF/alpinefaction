@@ -66,6 +66,9 @@ namespace
         bool playing = true;
         float time_in_frame_s = 0.0f;
 
+        // FORMAT_RENDER_TARGET bitmap displayed instead of the current frame, or -1.
+        int live_feed_bm = -1;
+
         // Every bm cache entry currently backed by this controller. Multiple entries can
         // co-exist when the same ATX is referenced under different extensions in one level
         // (e.g. brushes via .tga, meshes via .dds), each producing a separate bm_handle that
@@ -128,6 +131,10 @@ namespace
     // to this name (each retry would log spam and could re-disturb the bm cache).
     std::unordered_set<std::string> g_failed;
 
+    // bm entries whose cached shape a rebuilt controller could not satisfy. Kept per handle so
+    // one stale entry can't take the whole texture name down with it.
+    std::unordered_set<int> g_failed_handles;
+
     // Hot-path lookup: bm_handle → controller. Populated lazily on first lock/material query so
     // bm_get_material_idx_hook (called for every footstep/impact/decal — many per frame) can
     // avoid a `to_lower` heap allocation + name-keyed map lookup per call. Cleared on
@@ -142,14 +149,14 @@ namespace
 
     // String helpers come from common/utils/string-utils.h (string_to_lower, string_iends_with).
 
+    // Basename, lowercased, with a recognized texture extension removed — the same strip the
+    // supersede probes use, so the key a texture registers under is the key it is found under.
     std::string handle_from_filename(const char* filename)
     {
-        std::string s = filename;
+        std::string_view s{filename};
         auto last_slash = s.find_last_of("/\\");
-        if (last_slash != std::string::npos) s = s.substr(last_slash + 1);
-        auto dot = s.find_last_of('.');
-        if (dot != std::string::npos) s.resize(dot);
-        return string_to_lower(s);
+        if (last_slash != std::string_view::npos) s = s.substr(last_slash + 1);
+        return string_to_lower(std::string{bm_strip_texture_ext(s)});
     }
 
     bool read_atx_text(const char* filename, std::string& content_out)
@@ -187,6 +194,10 @@ namespace
 
     void dirty_atx(AtxController& c)
     {
+        // Dirtying only drops the texture; the render context still holds the handle pair
+        // that selected it, so it has to be told the answer moved. Two int writes, and doing
+        // it here covers every caller rather than each remembering to.
+        gr_invalidate_texture_cache();
         // Mark every bm_handle that maps to this controller. Without this, only the
         // most-recently-locked handle would re-upload to the GPU, freezing animation on any
         // other in-world instance that references this ATX through a different extension.
@@ -197,7 +208,7 @@ namespace
 
     AtxController* get_by_handle(const std::string& handle)
     {
-        auto it = g_controllers.find(string_to_lower(handle));
+        auto it = g_controllers.find(handle_from_filename(handle.c_str()));
         return it == g_controllers.end() ? nullptr : it->second.get();
     }
 
@@ -456,6 +467,14 @@ namespace
     }
 } // namespace
 
+int atx_detail::g_live_feed_count = 0;
+
+int atx_detail::lookup_live_feed(int bm_handle)
+{
+    auto it = g_by_handle.find(bm_handle);
+    return it == g_by_handle.end() ? -1 : it->second->live_feed_bm;
+}
+
 rf::bm::Type read_atx_header(const char* atx_filename, int* width_out, int* height_out,
     rf::bm::Format* format_out, int* num_levels_out, int* num_frames_out)
 {
@@ -495,6 +514,10 @@ rf::bm::Format lock_atx_bitmap(rf::bm::BitmapEntry& bm_entry, void** pixels_out,
     *pixels_out = nullptr;
     *palette_out = nullptr;
 
+    if (g_failed_handles.contains(bm_entry.handle)) {
+        return rf::bm::FORMAT_NONE;
+    }
+
     const std::string key = key_from_bm_name(bm_entry.name);
     auto it = g_controllers.find(key);
     if (it == g_controllers.end()) {
@@ -506,6 +529,22 @@ rf::bm::Format lock_atx_bitmap(rf::bm::BitmapEntry& bm_entry, void** pixels_out,
         if (!rebuilt) {
             xlog::warn("ATX: could not rebuild controller for '{}' (from {})", bm_entry.name, atx_filename);
             g_failed.insert(key);
+            return rf::bm::FORMAT_NONE;
+        }
+        // The uploader takes both its size and its row stride from the surviving bm entry, but
+        // the pages this lock hands back are packed at the controller's width. Any difference in
+        // dimensions therefore shears every row and misplaces each mip, so dimensions have to
+        // match exactly — a longer mip chain at equal dimensions is still a valid prefix.
+        if (rebuilt->width != bm_entry.width || rebuilt->height != bm_entry.height ||
+            rebuilt->num_levels < bm_entry.num_levels || rebuilt->format != bm_entry.format) {
+            xlog::error("ATX: rebuilt controller for '{}' is {}x{} fmt={} mips={}, which does not "
+                        "match the cached bitmap's {}x{} fmt={} mips={}", bm_entry.name,
+                        rebuilt->width, rebuilt->height, static_cast<int>(rebuilt->format),
+                        rebuilt->num_levels, bm_entry.width, bm_entry.height,
+                        static_cast<int>(bm_entry.format), bm_entry.num_levels);
+            // Poisons this one entry, not the name: a fresh load of the same texture, and every
+            // event entry point, must still work for the rest of the level.
+            g_failed_handles.insert(bm_entry.handle);
             return rf::bm::FORMAT_NONE;
         }
         xlog::trace("ATX: rebuilt orphaned controller for '{}'", bm_entry.name);
@@ -595,14 +634,13 @@ void atx_do_frame()
         const int n = static_cast<int>(c.frames.size());
 
         float ft_s = frame_time_for(c, c.current_frame) / 1000.0f;
-        // Guard against a malicious 0 — frame_time_for already clamps to >=1ms via parse-time validation,
-        // but defensively skip if it ever drops to 0 to avoid an infinite loop.
+        
         if (ft_s <= 0.0f) continue;
 
         // Cap inner-loop iterations to two full cycles. After a long stall (level transition,
         // alt-tab) `dt_s` could be huge, and a tight `frame_time_ms` would otherwise loop
-        // thousands of times here. Two cycles is enough to land on the right frame for any
-        // mode (Loop wraps once, PingPong needs at most 2*(n-1) advances to return to phase).
+        // thousands of times here. 2n advances is enough to land on the right frame for any
+        // mode (Loop wraps once, PingPong needs at most 2*(n-1) to return to phase).
         // If we hit the cap, drop the leftover accumulated time so we don't carry the deficit.
         const int max_advances = std::max(2, n * 2);
         int advances = 0;
@@ -618,7 +656,6 @@ void atx_do_frame()
                     c.current_frame = (c.current_frame + 1) % n;
                     break;
                 case AtxAnimationMode::PingPong:
-                    if (n == 1) break;
                     c.current_frame += c.direction;
                     if (c.current_frame >= n - 1) {
                         c.current_frame = n - 1;
@@ -659,6 +696,18 @@ void atx_level_reset()
     g_controllers.clear();
     g_by_handle.clear();
     g_failed.clear();
+    g_failed_handles.clear();
+    atx_detail::g_live_feed_count = 0;
+}
+
+std::string atx_canonical_handle(const std::string& handle)
+{
+    return handle_from_filename(handle.c_str());
+}
+
+bool atx_has_controller(const std::string& handle)
+{
+    return get_by_handle(handle) != nullptr;
 }
 
 // Each event entry point requires the controller to already exist (i.e. the texture has been
@@ -717,5 +766,36 @@ bool atx_set_frame_time(const std::string& handle, int frame_time_ms)
         return false;
     }
     c->base_frame_time_ms = std::max(1, frame_time_ms);
+    return true;
+}
+
+bool atx_set_live_feed(const std::string& handle, int bm_handle)
+{
+    AtxController* c = get_by_handle(handle);
+    if (!c) {
+        xlog::warn("Display_Projection: ATX '{}' not loaded — texture must be referenced by the "
+                   "level before this event fires", handle);
+        return false;
+    }
+    if (c->live_feed_bm >= 0 && c->live_feed_bm != bm_handle) {
+        xlog::warn("ATX '{}': live feed bm {} replaced by bm {}", handle, c->live_feed_bm, bm_handle);
+    }
+    else if (c->live_feed_bm < 0) {
+        ++atx_detail::g_live_feed_count;
+    }
+    c->live_feed_bm = bm_handle;
+    dirty_atx(*c);
+    return true;
+}
+
+bool atx_clear_live_feed(const std::string& handle, int expected_bm)
+{
+    AtxController* c = get_by_handle(handle);
+    if (!c || c->live_feed_bm < 0 || c->live_feed_bm != expected_bm) {
+        return false;
+    }
+    c->live_feed_bm = -1;
+    --atx_detail::g_live_feed_count;
+    dirty_atx(*c);
     return true;
 }

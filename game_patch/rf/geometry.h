@@ -201,6 +201,13 @@ namespace rf
         {
             return AddrCaller{0x004CD970}.this_call<GRoom*>(this, hint, pos1, pos2, param4);
         }
+
+        // Put every room's last-rendered-frame markers back to -1 so a following pass over the
+        // same solid doesn't skip rooms an earlier one already drew.
+        void reset_room_render_frames()
+        {
+            AddrCaller{0x004D2E10}.this_call(this);
+        }
     };
     static_assert(sizeof(GSolid) == 0x378);
 
@@ -638,6 +645,8 @@ namespace rf
     static auto& geomod_push_nearby_entities = addr_as_ref<bool(Vector3* pos)>(0x004C0160);
     static auto& g_decal_add = addr_as_ref<GDecal*(GDecalCreateInfo* dci)>(0x004D52E0);
     static auto& g_decal_destroy = addr_as_ref<void(GDecal*)>(0x004D6C50);
+    static auto& g_decal_pass_list_a = addr_as_ref<VArray<GDecal*>>(0x009BB6F0);
+    static auto& g_decal_pass_list_b = addr_as_ref<VArray<GDecal*>>(0x009C2F00);
     static auto& geomod_create_rock_debris = addr_as_ref<int(Vector3* orientation, float scaled_radius,
         Vector3* source_dir, int texture, int room_ptr)>(0x0048FE30);
     // Recycles every live glass shard back into the pool and re-resolves foley sounds/bitmaps
@@ -653,10 +662,17 @@ namespace rf
 
     static auto& find_room = addr_as_ref<GRoom*(GSolid* solid, const Vector3* pos)>(0x004E1630);
 
+    static auto& g_solid_portal_render =
+        addr_as_ref<void(GSolid* solid, GRoom* eye_room, int flags, const Matrix3* sky_rotation)>(0x004D45D0);
+
     // Sky room rendering globals (set by stock engine before sky room render call)
     static auto& sky_room_center = addr_as_ref<Vector3>(0x0088FB10);
     static auto& sky_room_offset = addr_as_ref<Vector3>(0x0087BB00);
     static auto& sky_room_orient = addr_as_ref<Matrix3*>(0x009BB56C);
+    static auto& sky_room_rotation_axis = addr_as_ref<char>(0x0064601E);
+    static auto& sky_room_rotation_rate = addr_as_ref<float>(0x00646020);
+    static auto& sky_room_rotation_angle = addr_as_ref<float>(0x00646024);
+    static auto& sky_room_rotation = addr_as_ref<Matrix3>(0x00646028);
 
     static auto& g_solid_load_v3d_embedded = addr_as_ref<GSolid*(const char*)>(0x00586E70);
     static auto& g_solid_load_v3d = addr_as_ref<GSolid*(const char*)>(0x00586F5C);

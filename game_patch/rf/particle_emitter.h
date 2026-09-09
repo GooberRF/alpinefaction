@@ -227,8 +227,21 @@ struct BoltEmitter
     Timestamp spawn_timer;
     float source_dir_mag;
     float target_dir_mag;
+
+    // returns room && room->visited_this_frame
+    bool should_render()
+    {
+        return AddrCaller{0x0048D620}.this_call<bool>(this);
+    }
+
+    void render(const Vector3* eye_pos)
+    {
+        AddrCaller{0x0048D4B0}.this_call(this, eye_pos);
+    }
 };
 static_assert(sizeof(BoltEmitter) == 0x18C);
+
+static auto& bolt_emitter_list = addr_as_ref<VArray<BoltEmitter*>>(0x0064608C);
 
 static auto& level_get_particle_emitter_from_uid = addr_as_ref<ParticleEmitter*(int uid)>(0x0045D630);
 static auto& level_get_bolt_emitter_from_uid = addr_as_ref<BoltEmitter*(int uid)>(0x0045D680);

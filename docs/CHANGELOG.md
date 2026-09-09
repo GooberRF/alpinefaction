@@ -11,6 +11,7 @@ Version 1.5.0 (TBD): Not yet released
 - Restore cut first person weapon aim sway, toggleable with `cl_weaponsway`
 - Add terms of use and notices document to installer
 - Add compatibility table (lightmap clamp floor) for `dm-halloween.rfl`
+- Add `Display_Projection` event and `Projection Camera` object for rendering live camera views onto ATX textures
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Add `ui_color_console` console command to set the console background color
@@ -19,6 +20,7 @@ Version 1.5.0 (TBD): Not yet released
 [@GooberRF](https://github.com/GooberRF)
 - Fix phantom visual flag mesh being visible after Salvage flag is picked up on rare occasions
 - Fix scrolling textures jumping forward when the Direct3D 11 renderer rebuilds a room's render cache, most visibly after a brush-based geomod crater
+- Fix deleting an Alpine object in the level editor leaving a stale reference to it in any moving group it belonged to
 
 [@is-this-c](https://github.com/is-this-c)
 - Let `Caps Lock` capitalize

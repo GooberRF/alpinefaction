@@ -46,11 +46,54 @@ void atx_do_frame();
 // Drop all controllers and release child handles. Called at level load to reset state.
 void atx_level_reset();
 
-// Event control entry points. `handle` is the .atx filename without extension (case-insensitive).
-// Returns false (with a warning) when the controller hasn't been loaded yet — these entry
-// points do NOT lazy-load. The texture must be referenced through the bm system at least once
-// before any event can manipulate it, otherwise frame changes wouldn't reach a GPU surface anyway.
+// Canonical registry key for an event-supplied handle: path dropped, lowercased, and a
+// recognized texture extension removed. Events may name a texture any way it appears in the
+// level ("screen01", "screen01.tga", …). Re-applying it is a no-op for every name except one
+// whose basename itself ends in a texture extension ("x.tga.tga"), which strips twice.
+std::string atx_canonical_handle(const std::string& handle);
+// True if that texture has been referenced through the bm system and has a controller. Silent —
+// callers that want a diagnostic emit their own.
+bool atx_has_controller(const std::string& handle);
+
+// Event control entry points. `handle` is any spelling of the texture name (see
+// atx_canonical_handle). Each returns false, with a warning, when the controller hasn't been
+// loaded yet — they do NOT lazy-load. The texture must be referenced through the bm system at
+// least once, otherwise frame changes wouldn't reach a GPU surface anyway.
 bool atx_set_frame(const std::string& handle, int frame_index);
 bool atx_play(const std::string& handle);
 bool atx_pause(const std::string& handle);
 bool atx_set_frame_time(const std::string& handle, int frame_time_ms);
+
+// Live scene feed (Display_Projection). `bm_handle` is a FORMAT_RENDER_TARGET bitmap that the
+// scene capture renders into. A render target has no CPU-lockable pixels, so the feed can't go
+// through the lock-forwarding upload path — the D3D11 renderer instead swaps the bound texture
+// at draw time via atx_lookup_live_feed. Normal frame playback keeps ticking underneath and
+// takes over again on clear.
+bool atx_set_live_feed(const std::string& handle, int bm_handle);
+// Clears only if the controller's feed is still `expected_bm`, so one projector shutting down
+// can't drop a feed another projector has since set on the same ATX.
+bool atx_clear_live_feed(const std::string& handle, int expected_bm);
+
+namespace atx_detail
+{
+    // Controllers with a live feed — non-zero for as long as any projection is on. The common
+    // case is none at all, which is what lets the per-draw resolve and the renderer's texture
+    // cache invalidation both early-out.
+    extern int g_live_feed_count;
+    int lookup_live_feed(int bm_handle);
+}
+
+// True while any ATX is showing a live feed.
+inline bool atx_any_live_feed()
+{
+    return atx_detail::g_live_feed_count > 0;
+}
+
+// Called per draw from the D3D11 texture manager. Returns -1 when the handle has no feed.
+inline int atx_lookup_live_feed(int bm_handle)
+{
+    if (atx_detail::g_live_feed_count == 0) {
+        return -1;
+    }
+    return atx_detail::lookup_live_feed(bm_handle);
+}

@@ -1339,6 +1339,7 @@ void DeleteMeshObject(DedMesh* mesh)
     if (it != meshes.end()) {
         meshes.erase(it);
     }
+    alpine_remove_from_groups(level, static_cast<DedObject*>(mesh));
     // Remove from master objects list
     level->master_objects.remove_by_value(static_cast<DedObject*>(mesh));
     DestroyDedMesh(mesh);

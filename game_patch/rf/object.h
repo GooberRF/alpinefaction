@@ -268,6 +268,7 @@ namespace rf
     static auto& obj_collision_deregister = addr_as_ref<void(Object* obj)>(0x0048C9F0);
     static auto& obj_lookup_from_uid = addr_as_ref<Object*(int uid)>(0x0048A4A0);
     static auto& obj_from_handle = addr_as_ref<Object*(int handle)>(0x0040A0E0);
+    static auto& obj_reset_render_flags = addr_as_ref<void()>(0x00488200);
     static auto& obj_from_remote_handle = addr_as_ref<Object*(int handle)>(0x00484B00); // from server handle
     static auto& obj_delete_mesh = addr_as_ref<void(Object* obj)>(0x00489FC0);
     static auto& obj_create_mesh = addr_as_ref<VMesh*(Object* obj, const char* filename, VMeshType type)>(0x00489FE0);

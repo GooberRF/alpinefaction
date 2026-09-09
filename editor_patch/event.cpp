@@ -35,7 +35,7 @@
 
 // Custom event support
 constexpr int original_event_count = 89;
-constexpr int new_event_count = 60; // must be 1 higher than actual count
+constexpr int new_event_count = 61; // must be 1 higher than actual count
 constexpr int total_event_count = original_event_count + new_event_count;
 std::unique_ptr<const char*[]> extended_event_names; // array to hold original + additional event names
 
@@ -100,6 +100,7 @@ const char* additional_event_names[new_event_count] = {
     "ATX_Pause",
     "ATX_Set_Frame_Time",
     "Weather_Region_State",
+    "Display_Projection",
     "_dummy"
 };
 
@@ -792,6 +793,16 @@ std::map<AlpineDedEventID, FieldConfig> eventFieldConfigs = {
         {
             {FIELD_STR1, "ATX handle (str1):"},
             {FIELD_INT1, "Frame time ms (int1):"}
+        }
+    }},
+    {AlpineDedEventID::Display_Projection, {
+        {FIELD_STR1, FIELD_INT1, FIELD_INT2, FIELD_FLOAT1, FIELD_FLOAT2},
+        {
+            {FIELD_STR1, "ATX handle (str1):"},
+            {FIELD_INT1, "Render width (int1):"},
+            {FIELD_INT2, "Render height (int2):"},
+            {FIELD_FLOAT1, "FOV degrees (float1):"},
+            {FIELD_FLOAT2, "Update interval (float2):"}
         }
     }},
 };

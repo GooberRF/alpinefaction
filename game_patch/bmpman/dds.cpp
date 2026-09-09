@@ -74,7 +74,7 @@ int lock_dds_bitmap(rf::bm::BitmapEntry& bm_entry)
     bm_entry.locked_palette = nullptr;
 
     rf::File file;
-    std::string filename_without_ext{get_filename_without_ext(bm_entry.name)};
+    std::string filename_without_ext{bm_strip_texture_ext(bm_entry.name)};
     auto dds_filename = filename_without_ext + ".dds";
 
     xlog::trace("Locking DDS: {}", dds_filename);

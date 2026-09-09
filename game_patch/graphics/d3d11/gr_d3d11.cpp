@@ -22,6 +22,8 @@
 #include "gr_d3d11_outline.h"
 #include "gr_d3d11_gamma.h"
 
+extern void monitor_refresh_all();
+
 namespace gr::d3d11
 {
     constexpr DXGI_FORMAT swap_chain_format = DXGI_FORMAT_B8G8R8A8_UNORM;
@@ -504,6 +506,8 @@ namespace gr::d3d11
             init_depth_stencil_buffer(1);
         }
         texture_manager_->flush_render_targets();
+        // Their targets are gone, but MF_BM_RENDERED is still latched from the last render.
+        monitor_refresh_all();
         render_context_
             ->set_render_target(default_render_target_view_, depth_stencil_view_);
     }
@@ -844,7 +848,23 @@ namespace gr::d3d11
             texture_manager_->finish_render_target(render_target_bm_handle_);
         }
         render_target_bm_handle_ = bm_handle;
+        texture_manager_->set_active_render_target(bm_handle);
+        // Only a live ATX feed makes a handle's SRV depend on the bound target, so with no feed
+        // active this would just force redundant rebinds on every monitor/scanner switch.
+        if (atx_any_live_feed()) {
+            render_context_->invalidate_texture_cache();
+        }
         return true;
+    }
+
+    int Renderer::render_target_generation()
+    {
+        return texture_manager_->render_target_generation();
+    }
+
+    void Renderer::invalidate_texture_cache()
+    {
+        render_context_->invalidate_texture_cache();
     }
 
     rf::bm::Format Renderer::read_back_buffer([[maybe_unused]] int x, [[maybe_unused]] int y, int w, int h, rf::ubyte *data)

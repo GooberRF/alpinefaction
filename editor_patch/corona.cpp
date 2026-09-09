@@ -426,6 +426,7 @@ void DeleteCoronaObject(DedCorona* corona)
     if (it != coronas.end()) {
         coronas.erase(it);
     }
+    alpine_remove_from_groups(level, static_cast<DedObject*>(corona));
     level->master_objects.remove_by_value(static_cast<DedObject*>(corona));
     DestroyDedCorona(corona);
 }
