@@ -3178,7 +3178,7 @@ CodeInjection obj_interp_too_fast_fix{
     0x00483C3B,
     [] (auto& regs) {
         // Make all calculations on milliseconds instead of using microseconds and rounding them up
-        const int now = rf::timer::get(1000);
+        const int now = static_cast<int>(timer::get_i64(1000));
         const int frame_time_us = regs.ebp;
         regs.eax = now - frame_time_us;
         regs.edi = now;
