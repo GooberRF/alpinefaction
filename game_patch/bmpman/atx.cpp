@@ -206,10 +206,18 @@ namespace
         }
     }
 
+    // Registry lookup with no transformation. The argument must already be a canonical key.
+    AtxController* find_by_key(const std::string& canonical_key)
+    {
+        auto it = g_controllers.find(canonical_key);
+        return it == g_controllers.end() ? nullptr : it->second.get();
+    }
+
+    // The canonicalizing entry, for raw strings straight off a mapper-authored field. This is the
+    // only place a lookup transforms its argument, so no path can strip twice.
     AtxController* get_by_handle(const std::string& handle)
     {
-        auto it = g_controllers.find(handle_from_filename(handle.c_str()));
-        return it == g_controllers.end() ? nullptr : it->second.get();
+        return find_by_key(handle_from_filename(handle.c_str()));
     }
 
     // Map a bm_entry name (which may carry any extension or none, depending on what the caller
@@ -705,9 +713,10 @@ std::string atx_canonical_handle(const std::string& handle)
     return handle_from_filename(handle.c_str());
 }
 
-bool atx_has_controller(const std::string& handle)
+// Takes a canonical key (atx_canonical_handle output), not a raw handle.
+bool atx_has_controller(const std::string& canonical_key)
 {
-    return get_by_handle(handle) != nullptr;
+    return find_by_key(canonical_key) != nullptr;
 }
 
 // Each event entry point requires the controller to already exist (i.e. the texture has been
@@ -769,16 +778,16 @@ bool atx_set_frame_time(const std::string& handle, int frame_time_ms)
     return true;
 }
 
-bool atx_set_live_feed(const std::string& handle, int bm_handle)
+// Takes a canonical key (atx_canonical_handle output), not a raw handle.
+bool atx_set_live_feed(const std::string& canonical_key, int bm_handle)
 {
-    AtxController* c = get_by_handle(handle);
+    AtxController* c = find_by_key(canonical_key);
     if (!c) {
-        xlog::warn("Display_Projection: ATX '{}' not loaded — texture must be referenced by the "
-                   "level before this event fires", handle);
+        xlog::warn("Display_Projection: ATX '{}' not loaded", canonical_key);
         return false;
     }
     if (c->live_feed_bm >= 0 && c->live_feed_bm != bm_handle) {
-        xlog::warn("ATX '{}': live feed bm {} replaced by bm {}", handle, c->live_feed_bm, bm_handle);
+        xlog::warn("ATX '{}': live feed bm {} replaced by bm {}", canonical_key, c->live_feed_bm, bm_handle);
     }
     else if (c->live_feed_bm < 0) {
         ++atx_detail::g_live_feed_count;
@@ -788,9 +797,10 @@ bool atx_set_live_feed(const std::string& handle, int bm_handle)
     return true;
 }
 
-bool atx_clear_live_feed(const std::string& handle, int expected_bm)
+// Takes a canonical key (atx_canonical_handle output), not a raw handle.
+bool atx_clear_live_feed(const std::string& canonical_key, int expected_bm)
 {
-    AtxController* c = get_by_handle(handle);
+    AtxController* c = find_by_key(canonical_key);
     if (!c || c->live_feed_bm < 0 || c->live_feed_bm != expected_bm) {
         return false;
     }
