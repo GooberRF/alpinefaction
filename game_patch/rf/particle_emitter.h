@@ -23,6 +23,34 @@ enum ParticleEmitterFlags
     PEF_ACCEL_WITH_PARENT = 0x80,
 };
 
+enum ParticleFlags : unsigned
+{
+    PTF_GLOW = 0x2,
+    PTF_CLR_CHANGE = 0x4,
+    PTF_GRAVITY = 0x8,
+    PTF_COLLIDE = 0x10,
+    PTF_ACCELERATE = 0x40,
+    PTF_EXPLODE = 0x80,
+    PTF_LOOP = 0x100,
+    PTF_RANDOM_ORIENT = 0x200,
+    PTF_COLLIDE_LIQUID = 0x400,
+    PTF_COLLIDE_AND_DIE = 0x800,
+    PTF_NO_Z_CHECK = 0x2000,
+    PTF_VEL_STRETCH = 0x4000,
+    PTF_BOUNCINESS_MASK = 0x000F0000, // $bounciness 0-15 << 16
+    PTF_STICKINESS_MASK = 0x00F00000, // $stickiness 0-15 << 20
+    PTF_SWIRLINESS_MASK = 0x0F000000, // $swirliness 0-15 << 24
+    PTF_WIND = 0xF0000000,
+};
+
+enum ParticleFlags2
+{
+    PTF2_DAMAGES = 0x1,
+    PTF2_HOLD_LAST_FRAME = 0x4,
+    PTF2_FIRE_DAMAGE = 0x8,
+    PTF2_DAMAGE_FACTOR_MASK = 0xF000, // $damage_factor 0-15 << 12
+};
+
 struct ParticleEmitterType
 {
     int uid;

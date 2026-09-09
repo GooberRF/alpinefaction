@@ -629,6 +629,16 @@ ConsoleCommand2 pow2_tex_cmd{
     "Manual debug override for power of 2 texture enforcement. Only affects new level loads. If you don't know what this does, do not use this command.",
 };
 
+ConsoleCommand2 caustics_cmd{
+    "r_caustics",
+    []() {
+        g_alpine_game_config.caustics = !g_alpine_game_config.caustics;
+        rf::console::print("Underwater caustics are {}",
+            g_alpine_game_config.caustics ? "enabled" : "disabled");
+    },
+    "Toggle underwater caustics rendering (D3D11 only)",
+};
+
 // checked during level load
 void evaluate_pow2tex(const rf::String& level_filename) {
     // if dbg_pow2tex is active, use manual override instead of level filename lookup
@@ -803,6 +813,7 @@ void gr_apply_patch()
     precache_rooms_cmd.register_cmd();
     disable_rendering_cmd.register_cmd();
     pow2_tex_cmd.register_cmd();
+    caustics_cmd.register_cmd();
 
     // Fix `rf::gr::text_2d_mode`.
     AsmWriter{0x0050BB40}.push<int8_t>(rf::gr::FOG_NOT_ALLOWED);

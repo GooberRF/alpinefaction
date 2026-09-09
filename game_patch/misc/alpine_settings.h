@@ -152,6 +152,7 @@ struct AlpineGameSettings
     }
     bool show_glares = true;
     bool weather = true;
+    bool caustics = true;
     bool show_enemy_bullets = true;
     bool fps_counter = true;
     static constexpr int min_fps_counter_average_ms = 0;
@@ -216,6 +217,7 @@ struct AlpineGameSettings
     {
         gib_lifetime_ms = std::clamp(lifetime_ms, min_gib_lifetime_ms, max_gib_lifetime_ms);
     }
+    bool gib_flames = true;
     bool real_armor_values = false;
     bool always_show_spectators = false;
     RemoteServerCfgPopup::DisplayMode remote_server_cfg_display_mode =

@@ -1591,7 +1591,8 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
         rules.mutators.hide_health_armor_pickups != b.mutators.hide_health_armor_pickups ||
         rules.mutators.featured_weapon_index != b.mutators.featured_weapon_index ||
         rules.mutators.redirect_exclude_thrown != b.mutators.redirect_exclude_thrown ||
-        rules.mutators.crits_enabled != b.mutators.crits_enabled;
+        rules.mutators.crits_enabled != b.mutators.crits_enabled ||
+        rules.mutators.jetpack_explode != b.mutators.jetpack_explode;
 
     if (base || mutators_changed) {
         std::string joined;
@@ -1617,6 +1618,11 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
                            rules.mutators.hide_health_armor_pickups);
             std::format_to(iter, "    Full lifesteal:                      {}\n",
                            rules.mutators.vampire_heal_ratio >= 1.0f);
+        }
+        // Jetpacks options
+        if (rules.mutators.jetpacks_enabled) {
+            std::format_to(iter, "    Jetpacks explode:                    {}\n",
+                           rules.mutators.jetpack_explode);
         }
     }
 

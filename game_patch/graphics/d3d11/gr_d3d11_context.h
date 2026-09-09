@@ -11,6 +11,7 @@
 #include "../../misc/alpine_settings.h"
 #include "../../rf/gr/gr.h"
 #include "gr_d3d11_mesh.h"
+#include "gr_d3d11_caustics.h"
 
 namespace gr::d3d11
 {
@@ -444,6 +445,7 @@ namespace gr::d3d11
         {
             per_frame_buffer_.update(device_context_);
             gas_region_buffer_.update(device_context_, projection_);
+            caustics_renderer_.update(device_context_);
         }
 
         bool has_gas_regions() const
@@ -626,6 +628,7 @@ namespace gr::d3d11
         PerFrameBuffer per_frame_buffer_;
         TextureScaleBuffer texture_scale_cbuffer_;
         GasRegionBuffer gas_region_buffer_;
+        CausticsRenderer caustics_renderer_;
 
         ID3D11RenderTargetView* render_target_view_ = nullptr;
         ID3D11DepthStencilView* depth_stencil_view_ = nullptr;
