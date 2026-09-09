@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <cmath>
 #include <string>
 #include <unordered_set>
 #include <vector>
@@ -271,8 +272,10 @@ bool projector_activate(int event_uid, int camera_handle, const std::string& atx
         return false;
     }
 
+    const float interval_capped = std::isfinite(interval_s) ? std::clamp(interval_s, 0.0f, 3600.0f) : 0.0f;
+
     Projector updated{event_uid, camera_handle, target_bm, handle_key, fov,
-                      static_cast<int64_t>(std::max(0.0f, interval_s) * 1000.0f), 0, w, h,
+                      static_cast<int64_t>(interval_capped * 1000.0f), 0, w, h,
                       false, false, false, false, gr_render_target_generation()};
 
     if (existing) {

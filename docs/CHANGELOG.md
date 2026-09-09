@@ -11,7 +11,7 @@ Version 1.5.0 (TBD): Not yet released
 - Restore cut first person weapon aim sway, toggleable with `cl_weaponsway`
 - Add terms of use and notices document to installer
 - Add compatibility table (lightmap clamp floor) for `dm-halloween.rfl`
-- Add `Display_Projection` event and `Projection Camera` object for rendering live camera views onto ATX textures
+- Add `Display_Projection` event and `Projection Camera` object for rendering live camera views onto ATX textures (Direct3D 11 renderer only)
 - Add flames to gib chunks thrown by exploding entities, toggleable with `cl_gibflames`
 - Add `Jetpacks explode` option to the Jetpacks mutator
 - Add animated underwater caustics on submerged geometry and meshes, toggleable with `r_caustics` (Direct3D 11 renderer only)

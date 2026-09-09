@@ -802,7 +802,7 @@ std::map<AlpineDedEventID, FieldConfig> eventFieldConfigs = {
             {FIELD_INT1, "Render width (int1):"},
             {FIELD_INT2, "Render height (int2):"},
             {FIELD_FLOAT1, "FOV degrees (float1):"},
-            {FIELD_FLOAT2, "Update interval (float2):"}
+            {FIELD_FLOAT2, "Update interval seconds (float2):"}
         }
     }},
 };
