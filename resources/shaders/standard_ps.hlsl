@@ -590,7 +590,7 @@ float4 main(VsOutput input) : SV_TARGET
             float3 seg_vec = liq_pixel_pos - liq_eye_pos;
             float geo_len = length(seg_vec);
             float3 seg_dir = seg_vec / max(geo_len, 1e-6f);
-            float3 dir_sign = (seg_dir >= 0.0f) ? float3(1, 1, 1) : float3(-1, -1, -1);
+            float3 dir_sign = step(float3(0, 0, 0), seg_dir) * 2.0f - 1.0f;
             float3 safe_dir = dir_sign * max(abs(seg_dir), float3(1e-8f, 1e-8f, 1e-8f));
             float3 inv_dir = 1.0f / safe_dir;
 
