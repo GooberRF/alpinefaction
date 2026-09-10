@@ -429,7 +429,7 @@ struct DedMesh : DedObject
 {
     VString mesh_filename;          // .v3m / .v3c / .vfx path
     VString state_anim;             // animation name (for .v3c skeletal meshes)
-    uint8_t collision_mode;         // 0=None, 1=Only Weapons, 2=All
+    uint8_t collision_mode;         // 0=None, 1=Only Weapons, 2=All, 3=Brush
     bool vmesh_load_failed;         // true if vmesh load was attempted and failed
     char padding_mesh[2];
     std::vector<EditorTextureOverride> texture_overrides;
