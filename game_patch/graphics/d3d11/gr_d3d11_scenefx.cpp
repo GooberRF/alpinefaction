@@ -38,16 +38,19 @@ namespace gr::d3d11
         rt_blend.SrcBlendAlpha = D3D11_BLEND_ONE;
         rt_blend.DestBlendAlpha = D3D11_BLEND_INV_SRC_ALPHA;
         rt_blend.BlendOpAlpha = D3D11_BLEND_OP_ADD;
-        // Colour only: the scene's alpha channel is not ours to touch
         rt_blend.RenderTargetWriteMask =
             D3D11_COLOR_WRITE_ENABLE_RED | D3D11_COLOR_WRITE_ENABLE_GREEN | D3D11_COLOR_WRITE_ENABLE_BLUE;
         DF_GR_D3D11_CHECK_HR(device_->CreateBlendState(&blend_desc, &overlay_blend_state_));
 
-        // The distort path replaces the frame, but the scene's alpha channel is still not ours
+        // Colour only in both states: the scene's alpha channel is not ours to touch
         CD3D11_BLEND_DESC opaque_desc{D3D11_DEFAULT};
         opaque_desc.RenderTarget[0].RenderTargetWriteMask =
             D3D11_COLOR_WRITE_ENABLE_RED | D3D11_COLOR_WRITE_ENABLE_GREEN | D3D11_COLOR_WRITE_ENABLE_BLUE;
         DF_GR_D3D11_CHECK_HR(device_->CreateBlendState(&opaque_desc, &distort_blend_state_));
+
+        CD3D11_RASTERIZER_DESC rast_desc{D3D11_DEFAULT};
+        rast_desc.CullMode = D3D11_CULL_NONE;
+        DF_GR_D3D11_CHECK_HR(device_->CreateRasterizerState(&rast_desc, &rasterizer_state_));
 
         CD3D11_DEPTH_STENCIL_DESC ds_desc{D3D11_DEFAULT};
         ds_desc.DepthEnable = FALSE;
@@ -84,12 +87,13 @@ namespace gr::d3d11
         context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
         ID3D11BlendState* blend_state = scene_srv ? distort_blend_state_.get() : overlay_blend_state_.get();
+        context->RSSetState(rasterizer_state_);
         context->OMSetBlendState(blend_state, nullptr, 0xffffffff);
         context->OMSetDepthStencilState(depth_off_state_, 0);
 
         context->Draw(3, 0);
 
-        // Unbind the scene copy so the next frame can write it again
+        // Unbind so the next frame can write it again
         ID3D11ShaderResourceView* null_srv = nullptr;
         context->PSSetShaderResources(0, 1, &null_srv);
     }

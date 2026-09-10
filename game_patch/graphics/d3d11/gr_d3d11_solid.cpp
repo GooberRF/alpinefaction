@@ -677,7 +677,6 @@ namespace gr::d3d11
 
         for (int i = 0; i < num_rooms; ++i) {
             rf::GRoom* room = rooms[i];
-            render_context_.set_draw_room_uid(room->is_detail ? -1 : room->uid);
             for (rf::GFace& face: room->face_list) {
                 if (should_render_face(&face) && !face.attributes.is_see_thru()) {
                     render_face_dynamic_decals(&face);
@@ -685,13 +684,11 @@ namespace gr::d3d11
             }
             for (rf::GRoom* detail_room : room->detail_rooms) {
                 if (detail_room->room_to_render_with == room) {
-                    render_context_.set_draw_room_uid(-1);
                     for (rf::GFace& face: detail_room->face_list) {
                         if (should_render_face(&face) && !face.attributes.is_see_thru()) {
                             render_face_dynamic_decals(&face);
                         }
                     }
-                    render_context_.set_draw_room_uid(room->is_detail ? -1 : room->uid);
                 }
             }
         }

@@ -92,6 +92,7 @@ namespace gr::d3d11
 
     void CausticsRenderer::write_disabled(ID3D11DeviceContext* device_context)
     {
+        active_ = false;
         D3D11_MAPPED_SUBRESOURCE mapped_subres;
         DF_GR_D3D11_CHECK_HR(
             device_context->Map(buffer_, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped_subres)
@@ -333,6 +334,8 @@ namespace gr::d3d11
         );
         std::memcpy(mapped_subres.pData, &data, sizeof(data));
         device_context->Unmap(buffer_, 0);
+
+        active_ = true;
 
         ID3D11ShaderResourceView* srv = srv_;
         device_context->PSSetShaderResources(3, 1, &srv);

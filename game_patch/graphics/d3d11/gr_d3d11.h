@@ -36,7 +36,6 @@ namespace gr::d3d11
     class EntityShadowRenderer;
     class OutlineRenderer;
     class GammaPass;
-    class ScenePostPass;
 
     class Renderer
     {
@@ -98,22 +97,34 @@ namespace gr::d3d11
         void flush_frame_buffers();
         bool supports_exclusive_fullscreen() const;
         void run_scene_post_pass();
+        // Same predicate run_scene_post_pass uses, so the reticle deferral cannot disagree with it
+        bool liquid_post_pass_pending() const;
+
+        void defer_reticle(rf::Player* pp)
+        {
+            deferred_reticle_player_ = pp;
+        }
+
+        rf::Player* take_deferred_reticle()
+        {
+            rf::Player* pp = deferred_reticle_player_;
+            deferred_reticle_player_ = nullptr;
+            return pp;
+        }
+
         void run_damage_vignette_pass();
         void trigger_damage_vignette(unsigned dir_mask);
         bool liquid_background_color(rf::Vector3& out) const;
-        int liquid_mode() const;
         void set_sky_room(bool sky_room);
         void set_draw_room_uid(int room_uid);
 
-        // Room whose object dispatch is currently running, -1 outside it. Meshes drawn from
-        // there belong to that room; anything else (fpgun, sky objects) keeps the bbox fallback.
+        // Room whose object dispatch is running, -1 outside it (fpgun, sky objects)
         void set_object_room_uid(int room_uid)
         {
             object_room_uid_ = room_uid;
         }
 
-        // The tint hook at 0x004328FD runs after the post pass in the same frame, so this says
-        // whether the pass really replaced the stock rect rather than guessing from the option.
+        // The tint hook at 0x004328FD runs after the post pass in the same frame
         bool liquid_tint_drawn_this_frame() const
         {
             return liquid_tint_drawn_frame_ == rf::frame_count;
@@ -166,6 +177,7 @@ namespace gr::d3d11
         int damage_vignette_decay_frame_ = -1;
         int object_room_uid_ = -1;
         int liquid_update_frame_ = -1;
+        rf::Player* deferred_reticle_player_ = nullptr;
         int render_target_bm_handle_ = -1;
         bool skip_gamma_pass_ = false;
         bool low_frame_latency_ = false;
@@ -206,6 +218,16 @@ namespace gr::d3d11
                 ); \
             } \
         ); \
+    }
+
+    // Viewport origin in render-target pixels. Single source for RenderContext::set_clip() and
+    // every screen-space reconstruction, which must agree on it.
+    static inline std::array<float, 2> viewport_origin()
+    {
+        return {
+            static_cast<float>(rf::gr::screen.clip_left + rf::gr::screen.offset_x),
+            static_cast<float>(rf::gr::screen.clip_top + rf::gr::screen.offset_y),
+        };
     }
 
     static inline int pack_color(const rf::Color& color)

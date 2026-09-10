@@ -17,6 +17,12 @@ namespace gr::d3d11
 
         void update(ID3D11DeviceContext* device_context);
 
+        // Volumes were uploaded this frame, so the shader's caustics block can run
+        bool active() const
+        {
+            return active_;
+        }
+
         operator ID3D11Buffer*() const
         {
             return buffer_;
@@ -33,5 +39,6 @@ namespace gr::d3d11
         ComPtr<ID3D11SamplerState> sampler_;
         bool build_attempted_ = false;
         bool build_failed_ = false;
+        bool active_ = false;
     };
 }

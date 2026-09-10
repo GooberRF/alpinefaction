@@ -34,8 +34,9 @@ namespace gr::d3d11
     // texel centres inside the 3D clip.
     static std::array<float, 4> current_viewport_rect()
     {
-        const float left = static_cast<float>(rf::gr::screen.clip_left + rf::gr::screen.offset_x);
-        const float top = static_cast<float>(rf::gr::screen.clip_top + rf::gr::screen.offset_y);
+        const auto origin = viewport_origin();
+        const float left = origin[0];
+        const float top = origin[1];
         return {
             left + 0.5f,
             top + 0.5f,
@@ -451,8 +452,7 @@ namespace gr::d3d11
         if (!back_buffer_) {
             return false;
         }
-        // Scene copy the post pass samples from. It writes back into the scene render target, so
-        // the read and the write cannot be the same resource; also the MSAA resolve destination.
+        // Read and write cannot be the same resource; also the MSAA resolve destination
         D3D11_TEXTURE2D_DESC desc;
         back_buffer_->GetDesc(&desc);
         desc.SampleDesc.Count = 1;
@@ -938,19 +938,20 @@ namespace gr::d3d11
 
     void Renderer::setup_3d(Projection proj)
     {
+        // Once per frame: the fpgun's setup_3d must not overwrite the scene camera. Returns the
+        // projection to apply, so the widened far plane reaches begin_frame and the frustum setup.
+        if (render_target_bm_handle_ == -1 && liquid_update_frame_ != rf::frame_count) {
+            liquid_update_frame_ = rf::frame_count;
+            proj = render_context_->update_liquid_fx(proj, rf::gr::eye_pos, rf::gr::eye_matrix);
+        }
         render_context_->update_view_proj_transform(proj);
-        // Only initialize outlines when rendering to the back buffer.
+        // Only initialize outlines when rendering to the back buffer, and only after the
+        // projection is applied: begin_frame saves render_context_->projection() as the scene's.
         // The rail gun scanner calls setup_3d while rendering to a small texture;
         // running begin_frame there would save the wrong projection and cause
         // outlines to be queued (and potentially flushed) into the scanner texture.
         if (render_target_bm_handle_ == -1) {
             outline_renderer_->begin_frame();
-            // Same once-per-frame rule as begin_frame: the fpgun's setup_3d must not overwrite
-            // the scene camera the fog and the post pass are evaluated against.
-            if (liquid_update_frame_ != rf::frame_count) {
-                liquid_update_frame_ = rf::frame_count;
-                render_context_->update_liquid_fx(proj, rf::gr::eye_pos, rf::gr::eye_matrix);
-            }
         }
     }
 
@@ -1025,27 +1026,28 @@ namespace gr::d3d11
             damage_vignette_.radial_frame = rf::frame_count;
             return;
         }
-        // The stock red flash fires immediately before the directional indicator call on both
-        // the SP and MP paths (0x0047E4E2 then 0x0047E4FC), and only when the mask is non-zero.
-        // The flash arms a radial hit; when the indicator lands in the same frame the edges take
-        // over instead of stacking on top of it.
+        // The flash arms a radial hit just before the indicator call (0x0047E4E2 then 0x0047E4FC);
+        // edges replace it rather than stacking on it.
         if (damage_vignette_.radial_frame == rf::frame_count) {
             damage_vignette_.radial = 0.0f;
         }
-        if (mask & 1) damage_vignette_.edges[0] = 1.0f; // front
-        if (mask & 2) damage_vignette_.edges[1] = 1.0f; // left
-        if (mask & 4) damage_vignette_.edges[2] = 1.0f; // back
-        if (mask & 8) damage_vignette_.edges[3] = 1.0f; // right
+        if (mask & 1) {
+            damage_vignette_.edges[0] = 1.0f; // front
+        }
+        if (mask & 2) {
+            damage_vignette_.edges[1] = 1.0f; // left
+        }
+        if (mask & 4) {
+            damage_vignette_.edges[2] = 1.0f; // back
+        }
+        if (mask & 8) {
+            damage_vignette_.edges[3] = 1.0f; // right
+        }
     }
 
     bool Renderer::liquid_background_color(rf::Vector3& out) const
     {
         return render_context_->liquid_background_color(out);
-    }
-
-    int Renderer::liquid_mode() const
-    {
-        return render_context_->liquid_state().mode;
     }
 
     void Renderer::set_sky_room(bool sky_room)
@@ -1060,8 +1062,7 @@ namespace gr::d3d11
 
     void Renderer::run_damage_vignette_pass()
     {
-        // The option can go off mid-decay, and the trigger hooks stop feeding it rather than
-        // clearing it, so drop whatever is left instead of letting it linger.
+        // The option can go off mid-decay; the trigger hooks only stop feeding it
         if (g_alpine_game_config.damage_flash != 2) {
             damage_vignette_ = {};
             return;
@@ -1091,12 +1092,7 @@ namespace gr::d3d11
         data.proj_sx = 1.0f;
         data.proj_sy = 1.0f;
         data.near_dist = scenefx_near_dist;
-        data.damage_edges = {
-            damage_vignette_.edges[0],
-            damage_vignette_.edges[1],
-            damage_vignette_.edges[2],
-            damage_vignette_.edges[3],
-        };
+        data.damage_edges = damage_vignette_.edges;
         data.damage = {1.0f, 0.0f, 0.0f, damage_vignette_.radial};
         data.flags = static_cast<float>(scenefx_flag_damage);
 
@@ -1111,35 +1107,37 @@ namespace gr::d3d11
         render_context_->set_clip();
     }
 
-    void Renderer::run_scene_post_pass()
+    bool Renderer::liquid_post_pass_pending() const
     {
         // Monitors and the rail/IR scanner render to textures before this point
-        if (render_target_bm_handle_ != -1) {
+        if (render_target_bm_handle_ != -1 || g_alpine_game_config.underwater_fx < 2) {
+            return false;
+        }
+        const LiquidState& liquid = render_context_->liquid_state();
+        if (liquid.mode == 0) {
+            return false;
+        }
+        // The near plane reaches near_dist / proj_sy above the eye, so liquid can still cover
+        // part of the screen with the eye itself above the surface.
+        const float proj_sy = outline_renderer_->scene_projection().scale_y();
+        const float near_extent = (proj_sy > 0.0f ? scenefx_near_dist / proj_sy : 0.0f)
+            + scenefx_waterline_band;
+        return outline_renderer_->scene_eye_pos().y < liquid.surface_y + near_extent;
+    }
+
+    void Renderer::run_scene_post_pass()
+    {
+        if (!liquid_post_pass_pending()) {
             return;
         }
 
         const LiquidState& liquid = render_context_->liquid_state();
 
-        // The camera the main scene was rendered from. player_render (the fpgun) runs its own
-        // gr_setup_3d just before this hook, so rf::gr::eye_* and the context projection are
-        // the weapon FOV by now.
+        // rf::gr::eye_* and the context projection are the fpgun's by the time this hook runs
         const Projection& proj = outline_renderer_->scene_projection();
         const rf::Vector3& eye_pos = outline_renderer_->scene_eye_pos();
         const rf::Matrix3& eye_orient = outline_renderer_->scene_eye_orient();
-
-        // The top edge of the near plane sits near_dist / proj_sy above the eye (view_y at
-        // ndc_y = 1), so the liquid can still cover part of the screen with the eye above the
-        // surface. Keep the pass alive until the whole near plane is clear of it.
         const float proj_sy = proj.scale_y();
-        const float near_extent = (proj_sy > 0.0f ? scenefx_near_dist / proj_sy : 0.0f)
-            + scenefx_waterline_band;
-        const bool liquid_active = g_alpine_game_config.underwater_fx >= 2
-            && liquid.mode != 0
-            && eye_pos.y < liquid.surface_y + near_extent;
-
-        if (!liquid_active) {
-            return;
-        }
 
         const bool distort = g_alpine_game_config.underwater_fx >= 3 && ensure_postfx_source();
 
@@ -1223,8 +1221,8 @@ namespace gr::d3d11
 
     void Renderer::render_v3d_vif(rf::VifLodMesh *lod_mesh, int lod_index, const rf::Vector3& pos, const rf::Matrix3& orient, const rf::MeshRenderParams& params, bool skip_ambient_cache)
     {
-        render_context_->set_draw_room_uid(object_room_uid_);
         dyn_geo_renderer_->flush();
+        render_context_->set_draw_room_uid(object_room_uid_);
         mesh_renderer_->render_v3d_vif(lod_mesh, lod_index, pos, orient, params, skip_ambient_cache);
 
         // Skip outline queuing when rendering to a texture (e.g. rail gun scanner).
@@ -1253,8 +1251,8 @@ namespace gr::d3d11
 
     void Renderer::render_character_vif(rf::VifLodMesh *lod_mesh, int lod_index, const rf::Vector3& pos, const rf::Matrix3& orient, const rf::CharacterInstance *ci, const rf::MeshRenderParams& params, bool skip_ambient_cache)
     {
-        render_context_->set_draw_room_uid(object_room_uid_);
         dyn_geo_renderer_->flush();
+        render_context_->set_draw_room_uid(object_room_uid_);
         mesh_renderer_->render_character_vif(lod_mesh, lod_index, pos, orient, ci, params, skip_ambient_cache);
 
         // Skip outline queuing when rendering to a texture (e.g. rail gun scanner).
@@ -1315,8 +1313,7 @@ namespace gr::d3d11
     void Renderer::flush_caches()
     {
         mesh_renderer_->flush_caches();
-        // Runs from level_page_out_injection, so it is also the level-change hook: a hit taken
-        // just before a level switch must not bleed into the next one.
+        // Runs from level_page_out_injection, so it doubles as the level-change reset
         damage_vignette_ = {};
     }
 

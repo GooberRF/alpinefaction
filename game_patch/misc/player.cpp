@@ -648,7 +648,8 @@ FunHook<void(rf::Player*, unsigned)> player_start_hud_damage_indicators_hook{
     0x004A5AF0,
     [](rf::Player* pp, unsigned dir_mask) {
         player_start_hud_damage_indicators_hook.call_target(pp, dir_mask);
-        if (pp == rf::local_player && g_alpine_game_config.damage_flash == 2) {
+        // Stock is a no-op for mask 0; only player_damage_feedback's explicit 0 means "radial".
+        if (pp == rf::local_player && g_alpine_game_config.damage_flash == 2 && (dir_mask & 0xF) != 0) {
             gr::d3d11::trigger_damage_vignette(dir_mask);
         }
     },

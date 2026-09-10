@@ -460,10 +460,10 @@ namespace gr::d3d11
             caustics_renderer_.update(device_context_);
         }
 
-        void update_liquid_fx(const Projection& projection, const rf::Vector3& eye_pos,
-                              const rf::Matrix3& eye_orient)
+        Projection update_liquid_fx(const Projection& projection, const rf::Vector3& eye_pos,
+                                    const rf::Matrix3& eye_orient)
         {
-            liquid_fx_renderer_.update(device_context_, projection, eye_pos, eye_orient);
+            return liquid_fx_renderer_.update(device_context_, projection, eye_pos, eye_orient);
         }
 
         const LiquidState& liquid_state() const
@@ -499,8 +499,14 @@ namespace gr::d3d11
         // Sky rooms are drawn at their authored world location with the camera translated into
         // them, so their fragments carry world positions that mean nothing to the caustics and
         // liquid volume tests.
+        // Skipping the cache write as well as the upload keeps the cache and the buffer in step,
+        // so the first differing call after these become live uploads correctly.
         void set_sky_room(bool sky_room)
         {
+            // Also read by the liquid block's sky-ray branch, which runs without caustics
+            if (g_alpine_game_config.underwater_fx < 2 && !caustics_renderer_.active()) {
+                return;
+            }
             render_mode_cbuffer_.set_sky_room(sky_room, device_context_);
         }
 
@@ -508,6 +514,9 @@ namespace gr::d3d11
         // AABB, which routinely overshoots into dry neighbours.
         void set_draw_room_uid(int room_uid)
         {
+            if (g_alpine_game_config.underwater_fx < 1 || !caustics_renderer_.active()) {
+                return;
+            }
             render_mode_cbuffer_.set_draw_room_uid(room_uid, device_context_);
         }
 

@@ -16,6 +16,7 @@
 #include "../../rf/geometry.h"
 #include "../../rf/mover.h"
 #include "../../rf/object.h"
+#include "../../rf/player/player.h"
 #include "../../rf/vmesh.h"
 #include "../../bmpman/bmpman.h"
 #include "../../main/main.h"
@@ -24,6 +25,7 @@
 #include "../../os/console.h"
 #include "../gr.h"
 #include "gr_d3d11.h"
+#include "gr_d3d11_liquid.h"
 #include "gr_d3d11_mesh.h"
 
 void gr_light_use_static(bool use_static);
@@ -562,7 +564,8 @@ namespace gr::d3d11
 
         if (lod_mesh && lod_index >= 0 && lod_index < lod_mesh->num_levels) {
             // Gather nearby lights (both static and dynamic) so the pixel shader can
-            // compute per-pixel N.L lighting for this character mesh.
+            // compute per-pixel N·L lighting for this character mesh.
+            // Skip when using vertex lighting — the old path doesn't need gathered lights.
             bool is_first_person = (params.flags & rf::MeshRenderFlags::MRF_FIRST_PERSON) != 0;
             bool lights_gathered = false;
             if (!use_vertex_lighting && rf::level.geometry && !skip_mesh_light_gather) {
@@ -601,7 +604,7 @@ namespace gr::d3d11
                     float ambient_g = static_cast<float>(params.ambient_color.green);
                     float ambient_b = static_cast<float>(params.ambient_color.blue);
 
-                    // White ambient means no lightmap data - guess from level ambient
+                    // White ambient means no lightmap data — guess from level ambient
                     if (ambient_r == 255 && ambient_g == 255 && ambient_b == 255) {
                         ambient_r = static_cast<float>(rf::level.ambient_light.red) + 64.0f;
                         ambient_g = static_cast<float>(rf::level.ambient_light.green) + 64.0f;
@@ -614,7 +617,7 @@ namespace gr::d3d11
                     base_color.green = static_cast<rf::ubyte>(std::clamp(ambient_g * scale + bias, 0.0f, 255.0f));
                     base_color.blue = static_cast<rf::ubyte>(std::clamp(ambient_b * scale + bias, 0.0f, 255.0f));
                 }
-                // else: enhanced lighting uses neutral white - shader handles all lighting
+                // else: enhanced lighting uses neutral white — shader handles all lighting
 
                 bool color_changed =
                     scratch_vertex_colors.last_color.red != base_color.red ||
@@ -731,6 +734,22 @@ namespace gr::d3d11
         return true;
     }
 
+    // reticle is drawn before the fpgun and so before the post pass.
+    // Defer it past the pass, matching the rest of the HUD.
+    static CallHook<void(rf::Player*)> hud_weapons_render_reticle_hook{
+        0x00432857,
+        [](rf::Player* pp) {
+            if (renderer) {
+                renderer->take_deferred_reticle();
+                if (renderer->liquid_post_pass_pending()) {
+                    renderer->defer_reticle(pp);
+                    return;
+                }
+            }
+            hud_weapons_render_reticle_hook.call_target(pp);
+        },
+    };
+
     // gr_fog_set(0, 0,0,0, -1, -1) turning fog off for the 2D phase, straight after the fpgun
     // draw and its gr_flush: the last point in gameplay_render_frame where the 3D scene is
     // complete. Reached unconditionally once per call on the main path.
@@ -739,6 +758,12 @@ namespace gr::d3d11
         [](int enabled, int r, int g, int b, float fog_near, float fog_far) {
             scene_post_pass();
             gameplay_render_frame_fog_off_hook.call_target(enabled, r, g, b, fog_near, fog_far);
+            // After fog-off, so the deferred reticle cannot pick up the liquid fog
+            if (renderer) {
+                if (rf::Player* pp = renderer->take_deferred_reticle()) {
+                    hud_weapons_render_reticle_hook.call_target(pp);
+                }
+            }
         },
     };
 
@@ -747,20 +772,22 @@ namespace gr::d3d11
         0x00432C7C,
         [](rf::Player* pp) {
             screen_flash_render_hook.call_target(pp);
-            if (renderer) {
+            // Split screen calls this per local player; the vignette state is only ever fed for
+            // rf::local_player, so it must composite once, for that player's pass.
+            if (renderer && pp == rf::local_player) {
                 renderer->run_damage_vignette_pass();
             }
         },
     };
 
     // Stock clamps the far clip to liquid_visibility while submerged, hidden by its fog being
-    // fully opaque there; the exponential fog is not, so the clip would show. Skipping the call
-    // leaves the default_wfar baseline set unconditionally earlier in the frame (0x00431AF4).
+    // fully opaque there; the exponential fog is not, so the clip would show. Widen it instead of
+    // dropping it, so murky water still culls close and clear water reaches the stock baseline.
     static CallHook<void(float)> gameplay_render_frame_liquid_far_clip_hook{
         0x00431D3F,
         [](float far_clip) {
             if (g_alpine_game_config.underwater_fx >= 2) {
-                return;
+                far_clip = liquid_far_clip(far_clip);
             }
             gameplay_render_frame_liquid_far_clip_hook.call_target(far_clip);
         },
@@ -768,12 +795,12 @@ namespace gr::d3d11
 
     // Stock sets fog far to liquid_visibility while submerged. The underwater model has its own
     // range in b6, but draws it cannot handle (sprites without depth) still use the b0 linear fog
-    // and would go solid at that distance, so widen it to the normal view distance.
+    // and would go solid at that distance, so widen it to the same range the far clip uses.
     static CallHook<void(int, int, int, int, float, float)> gameplay_render_frame_liquid_fog_hook{
         0x00431D6A,
         [](int enabled, int r, int g, int b, float fog_near, float fog_far) {
             if (g_alpine_game_config.underwater_fx >= 2) {
-                fog_far = std::max(fog_far, rf::gr::default_wfar);
+                fog_far = liquid_far_clip(fog_far);
             }
             gameplay_render_frame_liquid_fog_hook.call_target(enabled, r, g, b, fog_near, fog_far);
         },
@@ -786,9 +813,14 @@ namespace gr::d3d11
         [](int r, int g, int b, int a) {
             rf::Vector3 col;
             if (g_alpine_game_config.underwater_fx >= 2 && renderer && renderer->liquid_background_color(col)) {
-                r = std::clamp(static_cast<int>(col.x * 255.0f + 0.5f), 0, 255);
-                g = std::clamp(static_cast<int>(col.y * 255.0f + 0.5f), 0, 255);
-                b = std::clamp(static_cast<int>(col.z * 255.0f + 0.5f), 0, 255);
+                // Clamp before scaling: the cast is UB outside int range, and !(x > 0) also
+                // catches NaN.
+                auto to_byte = [](float x) {
+                    return static_cast<int>((x > 0.0f ? std::min(x, 1.0f) : 0.0f) * 255.0f + 0.5f);
+                };
+                r = to_byte(col.x);
+                g = to_byte(col.y);
+                b = to_byte(col.z);
             }
             gameplay_render_frame_liquid_bg_color_hook.call_target(r, g, b, a);
         },
@@ -841,12 +873,6 @@ namespace gr::d3d11
             float zn = 0.1f; // static near plane (RF uses: zm / matrix_scale.z)
             zm = 1.0f; // let's not use zm at all to simplify software projections
             float zf = rf::level.distance_fog_far_clip > 0.0f ? rf::level.distance_fog_far_clip : 1700.0f;
-            // Levels with short distance fog rely on it saturating at the far plane where depth
-            // clipping cuts triangles. Submerged, the liquid fog replaces it, so push the plane
-            // out to the engine's cull distance where the underwater far fade covers it.
-            if (g_alpine_game_config.underwater_fx >= 2 && renderer->liquid_mode() != 0) {
-                zf = std::max(zf, rf::gr::default_wfar);
-            }
             renderer->setup_3d(Projection{sx, sy, zn, zf});
         },
     };
@@ -1092,6 +1118,7 @@ void gr_d3d11_apply_patch()
 {
     using namespace gr::d3d11;
 
+    hud_weapons_render_reticle_hook.install();
     gameplay_render_frame_fog_off_hook.install();
     gameplay_render_frame_liquid_tint_hook.install();
     gameplay_render_frame_liquid_far_clip_hook.install();

@@ -401,9 +401,11 @@ namespace gr::d3d11
         std::array<float, 3> cam_right;   float proj_scale_x;      // 1 float4
         std::array<float, 3> cam_up;      float proj_scale_y;      // 1 float4
         std::array<float, 3> cam_forward; float viewport_w;        // 1 float4
-        float viewport_h; float _header_pad[3];                     // 1 float4
+        float viewport_h; float viewport_x; float viewport_y; float _header_pad;  // 1 float4
         GasRegionGPUData regions[GasRegionBuffer::max_gas_regions];
     };
+    static_assert(offsetof(GasRegionBufferData, regions) == 80);
+    static_assert(sizeof(GasRegionBufferData) == 80 + sizeof(GasRegionGPUData) * GasRegionBuffer::max_gas_regions);
     static_assert(sizeof(GasRegionBufferData) % 16 == 0);
 
     GasRegionBuffer::GasRegionBuffer(ID3D11Device* device)
@@ -452,6 +454,9 @@ namespace gr::d3d11
         data.cam_forward = {m.fvec.x, m.fvec.y, m.fvec.z};
         data.proj_scale_x = projection.scale_x();
         data.proj_scale_y = projection.scale_y();
+        const auto origin = viewport_origin();
+        data.viewport_x = origin[0];
+        data.viewport_y = origin[1];
         data.viewport_w = static_cast<float>(rf::gr::screen.clip_width);
         data.viewport_h = static_cast<float>(rf::gr::screen.clip_height);
 

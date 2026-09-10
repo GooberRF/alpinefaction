@@ -9,7 +9,6 @@
 #include "../../rf/geometry.h"
 #include "../../rf/gr/gr.h"
 #include "../../rf/level.h"
-#include "../../rf/misc.h"
 #include "../../rf/player/camera.h"
 #include "../../rf/player/player.h"
 
@@ -17,24 +16,19 @@ namespace gr::d3d11
 {
     namespace
     {
-        // Underwater fog tunables. sigma_k / liquid_visibility is the base extinction in 1/world unit;
-        // absorb_hi/lo scale it per channel (dark channels of the liquid color die first); depth_darken
-        // is the in-scatter falloff with depth below the surface, also in 1/world unit.
+        // -> liq_params.xyzw: extinction per unit, per-channel absorb hi/lo, in-scatter depth falloff
         constexpr float liquid_sigma_k = 3.0f;
         constexpr float liquid_absorb_hi = 1.6f;
         constexpr float liquid_absorb_lo = 0.7f;
         constexpr float liquid_depth_darken = 0.04f;
 
-        // Colour/visibility cross-fade when the camera moves between liquid rooms
         constexpr float liquid_blend_tau = 0.35f;
         constexpr float liquid_blend_max_dt = 0.1f;
 
-        // Slack on the uploaded volume boxes so adjacent rooms leave no seam
+        // slack so adjacent rooms leave no seam; the top face is contracted instead (liquid_surface_epsilon)
         constexpr float liquid_box_epsilon = 0.05f;
 
-        // The top face instead sits just below the surface, so the liquid surface polygon itself
-        // is outside the volume: inside it, a grazing ray picks up a real path length and tints
-        // an opaque surface (very visible on lava, whose visibility is short)
+        // Keeps the liquid surface polygon outside the volume, so a grazing ray cannot tint it
         constexpr float liquid_surface_epsilon = 0.01f;
 
         float aabb_distance(const rf::Vector3& bbox_min, const rf::Vector3& bbox_max, const rf::Vector3& p)
@@ -73,12 +67,17 @@ namespace gr::d3d11
         );
         std::memcpy(mapped_subres.pData, &data, sizeof(data));
         device_context->Unmap(buffer_, 0);
+        disabled_uploaded_ = false;
     }
 
     void LiquidFxRenderer::write_disabled(ID3D11DeviceContext* device_context)
     {
+        if (disabled_uploaded_) {
+            return;
+        }
         LiquidBufferData disabled{};
         upload(device_context, disabled);
+        disabled_uploaded_ = true;
     }
 
     void LiquidFxRenderer::rewrite(ID3D11DeviceContext* device_context)
@@ -111,40 +110,45 @@ namespace gr::d3d11
         state_.blended_over_fog_far = state_.over_fog_far;
     }
 
-    void LiquidFxRenderer::update(ID3D11DeviceContext* device_context, const Projection& projection,
-                                  const rf::Vector3& eye_pos, const rf::Matrix3& eye_orient)
+    Projection LiquidFxRenderer::update(ID3D11DeviceContext* device_context, const Projection& projection,
+                                        const rf::Vector3& eye_pos, const rf::Matrix3& eye_orient)
     {
         const int prev_mode = state_.mode;
         eye_pos_ = eye_pos;
 
+        if (!rf::level.geometry) {
+            state_ = LiquidState{};
+            data_ = {};
+            write_disabled(device_context);
+            return projection;
+        }
+
         rf::Camera* cam = rf::local_player ? rf::local_player->cam : nullptr;
         rf::GRoom* cam_room = cam && cam->camera_entity ? rf::camera_get_room(cam) : nullptr;
         if (cam_room && cam_room->contains_liquid) {
-            state_.mode = cam_room->liquid_type;
-            state_.room_uid = cam_room->uid;
+            // Keeps mode != 0 in step with the shader's liq_mode > 0.5
+            state_.mode = cam_room->liquid_type > 0 ? cam_room->liquid_type : 0;
             state_.surface_y = cam_room->bbox_min.y + cam_room->liquid_depth;
-            state_.bbox_min = cam_room->bbox_min;
-            state_.bbox_max = cam_room->bbox_max;
             state_.color = {
                 cam_room->liquid_color.red / 255.0f,
                 cam_room->liquid_color.green / 255.0f,
                 cam_room->liquid_color.blue / 255.0f,
             };
-            state_.alpha = cam_room->liquid_alpha / 255.0f;
+            // liquid_alpha is mapper data; the colour bytes cannot exceed 255, and liquid_depth
+            // only shifts the plane, so neither needs a bound.
+            state_.alpha = std::clamp(cam_room->liquid_alpha, 0, 255) / 255.0f;
+            // Zero/negative/NaN are handled downstream by liquid_far_clip and the shader's max()
             state_.visibility = cam_room->liquid_visibility;
             // <= matches GRoom::liquid_contains_point (0x004CE080)
             state_.eye_under = eye_pos.y <= state_.surface_y;
         }
         else {
-            // Nothing may survive the room we left: a respawn or teleport out of water must not
-            // leave a stale surface plane, tint or under-water edge behind.
             state_ = LiquidState{};
         }
 
-        // Level distance fog for the above-surface part of a submerged view. Taken from the level
-        // rather than rf::gr::screen because the liquid fog has replaced it there by the time the
-        // scene draws; the enable test mirrors 0x004321C4.
-        if (rf::level.distance_fog_far_clip > 0.0f && !rf::level.has_skyroom) {
+        // Level fog for the above-surface part of a submerged view; the liquid fog has replaced
+        // it in rf::gr::screen by the time the scene draws. Enable test mirrors 0x004318C0.
+        if (rf::level.distance_fog_far_clip > 0.0f) {
             state_.over_fog_color = {
                 rf::level.distance_fog_color.red / 255.0f,
                 rf::level.distance_fog_color.green / 255.0f,
@@ -157,11 +161,21 @@ namespace gr::d3d11
             state_.over_fog_far = 0.0f;
         }
 
-        // Cross-fade into the new room's look. Entering liquid from dry snaps, because there is
-        // nothing meaningful to fade from; leaving it needs nothing, the reset above covers it.
+        // Submerged, a level far clip shorter than the engine's cull distance depth-clips geometry
+        // into a hole instead of fogging it out. Decided here so far_clip below targets it.
+        Projection out_projection = projection;
+        if (g_alpine_game_config.underwater_fx >= 2 && state_.eye_under
+            && std::isfinite(rf::gr::default_wfar)
+            && projection.z_far() < rf::gr::default_wfar
+            && rf::gr::default_wfar > projection.z_near()) {
+            out_projection = Projection{projection.scale_x(), projection.scale_y(),
+                                        projection.z_near(), rf::gr::default_wfar};
+        }
+
+        // Entering liquid from dry snaps: there is nothing meaningful to fade from.
         const int64_t now_ms = timer::get_i64(1000);
         const float dt = last_update_ms_ >= 0
-            ? std::min(static_cast<float>(now_ms - last_update_ms_) / 1000.0f, liquid_blend_max_dt)
+            ? std::clamp(static_cast<float>(now_ms - last_update_ms_) / 1000.0f, 0.0f, liquid_blend_max_dt)
             : 0.0f;
         last_update_ms_ = now_ms;
         if (state_.mode != 0) {
@@ -184,14 +198,17 @@ namespace gr::d3d11
                     mix(state_.blended_over_fog_color.y, state_.over_fog_color.y),
                     mix(state_.blended_over_fog_color.z, state_.over_fog_color.z),
                 };
-                state_.blended_over_fog_far = mix(state_.blended_over_fog_far, state_.over_fog_far);
+                // Easing toward 0 would pass through arbitrarily short fog ranges
+                state_.blended_over_fog_far = state_.over_fog_far > 0.0f
+                    ? mix(state_.blended_over_fog_far, state_.over_fog_far)
+                    : 0.0f;
             }
         }
 
         if (g_alpine_game_config.underwater_fx < 2 || state_.mode == 0) {
             data_ = {};
-            rewrite(device_context);
-            return;
+            write_disabled(device_context);
+            return out_projection;
         }
 
         LiquidBufferData data{};
@@ -201,8 +218,11 @@ namespace gr::d3d11
         data.cam_right = {eye_orient.rvec.x, eye_orient.rvec.y, eye_orient.rvec.z};
         data.cam_up = {eye_orient.uvec.x, eye_orient.uvec.y, eye_orient.uvec.z};
         data.cam_forward = {eye_orient.fvec.x, eye_orient.fvec.y, eye_orient.fvec.z};
-        data.proj_sx = projection.scale_x();
-        data.proj_sy = projection.scale_y();
+        data.proj_sx = out_projection.scale_x();
+        data.proj_sy = out_projection.scale_y();
+        const auto origin = viewport_origin();
+        data.viewport_x = origin[0];
+        data.viewport_y = origin[1];
         data.viewport_w = static_cast<float>(rf::gr::screen.clip_width);
         data.viewport_h = static_cast<float>(rf::gr::screen.clip_height);
 
@@ -210,22 +230,19 @@ namespace gr::d3d11
         data.visibility = state_.blended_visibility;
         data.eye_under = state_.eye_under ? 1.0f : 0.0f;
         data.color = {state_.blended_color.x, state_.blended_color.y, state_.blended_color.z};
-        data.alpha = state_.blended_alpha;
         data.over_fog_color = {
             state_.blended_over_fog_color.x,
             state_.blended_over_fog_color.y,
             state_.blended_over_fog_color.z,
         };
-        data.over_fog_far = state_.blended_over_fog_far > 0.0f
+        data.over_fog_far = state_.blended_over_fog_far > 1e-3f
             ? state_.blended_over_fog_far
             : std::numeric_limits<float>::infinity();
         data.params = {liquid_sigma_k, liquid_absorb_hi, liquid_absorb_lo, liquid_depth_darken};
         data.dark_surface_y = state_.blended_surface_y;
-        // Nearest of the two far planes: the engine's room/object cull (gr_set_far_clip
-        // 0x00518060) and the projection plane DepthClipEnable cuts triangles at. The shader
-        // fades to the in-scatter colour before it so neither cut is visible.
-        const float engine_far = rf::gr_use_far_clip ? rf::gr_far_clip_dist : rf::gr::default_wfar;
-        data.far_clip = std::min(engine_far, projection.z_far());
+        // Nearest of the room/object cull and the depth-clip plane. Recomputed rather than read
+        // from gr_far_clip_dist, which 0x00431D3F only sets later in the frame.
+        data.far_clip = std::min(liquid_far_clip(state_.visibility), out_projection.z_far());
 
         // Every nearby liquid room of the camera room's type, nearest first with the camera room
         // pinned to slot 0. The shader sums the ray's time through all of them, so the fogged
@@ -242,7 +259,7 @@ namespace gr::d3d11
                         || room->liquid_type != state_.mode) {
                         continue;
                     }
-                    float dist = aabb_distance(room->bbox_min, room->bbox_max, rf::gr::eye_pos);
+                    float dist = aabb_distance(room->bbox_min, room->bbox_max, eye_pos);
                     if (dist > data.far_clip) {
                         continue;
                     }
@@ -274,11 +291,11 @@ namespace gr::d3d11
                 std::min(room_surface_y, room->bbox_max.y) - liquid_surface_epsilon,
                 room->bbox_max.z + liquid_box_epsilon,
             };
-            dst.surface_y = room_surface_y;
         }
         data.num_volumes = static_cast<float>(num_volumes);
 
         data_ = data;
         rewrite(device_context);
+        return out_projection;
     }
 }

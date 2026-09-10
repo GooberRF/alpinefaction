@@ -54,7 +54,7 @@ float4 main(float4 pos : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET
         // Every band reaches 0 at mid-screen, and the side bands are scaled by the viewport
         // aspect so they are the same width in pixels as the top and bottom ones.
         float2 vp = viewport_rect.zw - viewport_rect.xy;
-        float band_x = min(0.5f * vp.y / max(vp.x, 1.0f), 0.5f);
+        float band_x = min(0.5f * max(vp.y, 1.0f) / max(vp.x, 1.0f), 0.5f);
         damage_mask = saturate(
             damage_edges.x * smoothstep(0.5f, 0.0f, uv.y) +
             damage_edges.y * smoothstep(band_x, 0.0f, uv.x) +
@@ -67,7 +67,8 @@ float4 main(float4 pos : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET
         float2 offset = under * distort_amp * float2(
             sin(uv.y * distort_freq + time * distort_speed),
             sin(uv.x * distort_freq * 0.8f + time * distort_speed * 1.1f));
-        float2 sample_px = clamp(pos.xy + offset * rt_size, viewport_rect.xy, viewport_rect.zw);
+        float2 vp_size = viewport_rect.zw - viewport_rect.xy;
+        float2 sample_px = clamp(pos.xy + offset * vp_size, viewport_rect.xy, viewport_rect.zw);
         float3 col = scene_texture.Sample(point_sampler, sample_px / rt_size).rgb;
         if ((fl & FLAG_LIQUID_TINT) != 0u) {
             col = lerp(col, tint.rgb, tint.a * under);

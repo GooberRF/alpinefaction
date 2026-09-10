@@ -98,7 +98,7 @@ cbuffer GasRegionBuffer : register(b4)
     float3 gas_cam_right;   float gas_proj_sx;
     float3 gas_cam_up;      float gas_proj_sy;
     float3 gas_cam_forward; float gas_viewport_w;
-    float gas_viewport_h;   float3 _gas_header_pad;
+    float gas_viewport_h;   float gas_viewport_x; float gas_viewport_y; float _gas_header_pad;
     GasRegionData gas_regions[MAX_GAS_REGIONS];
 };
 
@@ -135,23 +135,23 @@ cbuffer CausticsBuffer : register(b5)
 // One liquid room. The box arrives pre-expanded and already capped at the surface plane.
 struct LiquidVolume
 {
-    float3 bbox_min; float surface_y;
-    float3 bbox_max; float _pad;
+    float3 bbox_min; float _pad0;
+    float3 bbox_max; float _pad1;
 };
 
 cbuffer LiquidBuffer : register(b6)
 {
-    float3 liq_eye_pos;        float liq_mode;         // 0 none, else GRoom::liquid_type
+    float3 liq_eye_pos;        float liq_mode;         // 0 disables the block; nonzero is not inspected
     float3 liq_cam_right;      float liq_proj_sx;
     float3 liq_cam_up;         float liq_proj_sy;
     float3 liq_cam_forward;    float liq_viewport_w;
     float  liq_viewport_h;     float liq_surface_y;
     float  liq_visibility;     float liq_eye_under;
-    float3 liq_color;          float liq_alpha;
+    float3 liq_color;          float liq_viewport_x;
     float3 liq_over_fog_color; float liq_over_fog_far;
     float4 liq_params;         // sigma_k, absorb_hi, absorb_lo, depth_darken
     float  liq_far_clip;       float liq_num_volumes;  // far plane the fade targets, volume count
-    float  liq_dark_surface_y; float _liq_pad0;        // blended surface, depth darkening only
+    float  liq_dark_surface_y; float liq_viewport_y;   // blended surface, depth darkening only
     LiquidVolume liq_volumes[MAX_LIQUID_VOLUMES];
 };
 
@@ -184,17 +184,37 @@ static const float2 pcf_offsets[15] = {
     float2(-0.428f,  0.882f),
 };
 
+// One medium over the fragment: dim by its transmittance, then add its in-scatter where the
+// draw mode allows fog. Apply the farther medium first so each in-scatter is dimmed by the
+// medium in front of it.
+float3 apply_medium(float3 c, float3 medium_t, float3 in_scatter, bool add_scatter)
+{
+    c *= medium_t;
+    if (add_scatter) {
+        c += in_scatter * (float3(1.0f, 1.0f, 1.0f) - medium_t);
+    }
+    return c;
+}
+
+// SV_POSITION is render-target space, so the viewport origin has to come off first.
+float2 screen_to_ndc(float2 screen_pos, float viewport_x, float viewport_y,
+                     float viewport_w, float viewport_h)
+{
+    return float2(((screen_pos.x - viewport_x) / viewport_w) * 2.0f - 1.0f,
+                  ((screen_pos.y - viewport_y) / viewport_h) * -2.0f + 1.0f);
+}
+
 // World position of a pre-transformed fragment, from its screen position and view depth.
 // The camera header (eye/right/up/forward/proj scale/viewport) is passed in because b4 and b6
 // each carry their own copy and b4 does not exist in the no-gas permutation.
 float3 reconstruct_world_pos(float2 screen_pos, float depth, float3 eye,
                              float3 cam_right, float3 cam_up, float3 cam_forward,
-                             float proj_sx, float proj_sy, float viewport_w, float viewport_h)
+                             float proj_sx, float proj_sy,
+                             float viewport_x, float viewport_y, float viewport_w, float viewport_h)
 {
-    float ndc_x = (screen_pos.x / viewport_w) * 2.0f - 1.0f;
-    float ndc_y = (screen_pos.y / viewport_h) * -2.0f + 1.0f;
-    float view_x = ndc_x * depth / proj_sx;
-    float view_y = ndc_y * depth / proj_sy;
+    float2 ndc = screen_to_ndc(screen_pos, viewport_x, viewport_y, viewport_w, viewport_h);
+    float view_x = ndc.x * depth / proj_sx;
+    float view_y = ndc.y * depth / proj_sy;
     return eye + cam_right * view_x + cam_up * view_y + cam_forward * depth;
 }
 
@@ -538,7 +558,8 @@ float4 main(VsOutput input) : SV_TARGET
         float3 liq_pixel_pos = can_reconstruct
             ? reconstruct_world_pos(input.pos.xy, input.world_pos_and_depth.w, liq_eye_pos,
                                     liq_cam_right, liq_cam_up, liq_cam_forward,
-                                    liq_proj_sx, liq_proj_sy, liq_viewport_w, liq_viewport_h)
+                                    liq_proj_sx, liq_proj_sy,
+                                    liq_viewport_x, liq_viewport_y, liq_viewport_w, liq_viewport_h)
             : input.world_pos_and_depth.xyz;
 
         // Lengths stay on the engine's view-depth metric so a fully dry fragment is fogged
@@ -549,8 +570,8 @@ float4 main(VsOutput input) : SV_TARGET
         if (sky_room > 0.5f) {
             // The sky room is drawn at its authored location with the camera translated into it,
             // so liq_pixel_pos means nothing here. Measure the real view ray against the surface.
-            float2 ndc = float2(input.pos.x / liq_viewport_w * 2.0f - 1.0f,
-                                input.pos.y / liq_viewport_h * -2.0f + 1.0f);
+            float2 ndc = screen_to_ndc(input.pos.xy, liq_viewport_x, liq_viewport_y,
+                                       liq_viewport_w, liq_viewport_h);
             float3 dir = normalize(liq_cam_forward
                 + liq_cam_right * (ndc.x / liq_proj_sx)
                 + liq_cam_up * (ndc.y / liq_proj_sy));
@@ -569,8 +590,8 @@ float4 main(VsOutput input) : SV_TARGET
             float3 seg_vec = liq_pixel_pos - liq_eye_pos;
             float geo_len = length(seg_vec);
             float3 seg_dir = seg_vec / max(geo_len, 1e-6f);
-            float3 dir_sign = (seg_dir >= 0.0f) ? 1.0f : -1.0f;
-            float3 safe_dir = dir_sign * max(abs(seg_dir), 1e-8f);
+            float3 dir_sign = (seg_dir >= 0.0f) ? float3(1, 1, 1) : float3(-1, -1, -1);
+            float3 safe_dir = dir_sign * max(abs(seg_dir), float3(1e-8f, 1e-8f, 1e-8f));
             float3 inv_dir = 1.0f / safe_dir;
 
             float under_len_geo = 0.0f;
@@ -592,19 +613,20 @@ float4 main(VsOutput input) : SV_TARGET
         // by the liquid fog in b0, so the level values come from b6 instead.
         float3 over_color = liq_eye_under > 0.5f ? liq_over_fog_color : fog_color;
         float over_far = liq_eye_under > 0.5f ? liq_over_fog_far : fog_far;
-        float over_fog = fog_far < 1e30f ? saturate(over_len / over_far) : 0.0f;
+        float over_fog = over_far < 1e30f ? saturate(over_len / over_far) : 0.0f;
 
         // Below-surface part: per-channel Beer-Lambert, dominant channels of the liquid color
         // surviving longest, in-scatter darkened with depth below the surface.
         float sigma = liq_params.x / max(liq_visibility, 1.0f);
-        float3 sigma_rgb = sigma * lerp(liq_params.y, liq_params.z, saturate(liq_color));
+        float3 sigma_rgb = sigma * lerp(liq_params.yyy, liq_params.zzz, saturate(liq_color));
         float3 transmittance = exp(-under_len * sigma_rgb);
 
         // Converge to the in-scatter colour before the engine's frustum plane cuts the geometry,
         // so the far clip reads as fog rather than an edge. The background rect behind it is set
         // to the same colour. Above water the far plane behaves as stock.
         if (liq_eye_under > 0.5f) {
-            transmittance *= 1.0f - smoothstep(0.7f * liq_far_clip, 0.97f * liq_far_clip, seg_len);
+            float fade_far = max(liq_far_clip, 1.0f);
+            transmittance *= 1.0f - smoothstep(0.7f * fade_far, 0.97f * fade_far, seg_len);
         }
 
         float pix_y = sky_room > 0.5f ? liq_eye_pos.y : liq_pixel_pos.y;
@@ -613,9 +635,15 @@ float4 main(VsOutput input) : SV_TARGET
 
         // Dimming always applies so anything behind liquid reads as occluded; color is only
         // added where the draw mode allows fog, as in the gas block below.
-        target.rgb *= (1.0f - over_fog) * transmittance;
-        if (gas_fog_allowed > 0.5f) {
-            target.rgb += over_color * over_fog * transmittance + inscatter * (1.0f - transmittance);
+        bool add_scatter = gas_fog_allowed > 0.5f;
+        float3 over_t = float3(1.0f, 1.0f, 1.0f) * (1.0f - over_fog);
+        if (liq_eye_under > 0.5f) {
+            target.rgb = apply_medium(target.rgb, over_t, over_color, add_scatter);
+            target.rgb = apply_medium(target.rgb, transmittance, inscatter, add_scatter);
+        }
+        else {
+            target.rgb = apply_medium(target.rgb, transmittance, inscatter, add_scatter);
+            target.rgb = apply_medium(target.rgb, over_t, over_color, add_scatter);
         }
     }
     else {
@@ -635,7 +663,9 @@ float4 main(VsOutput input) : SV_TARGET
         if (can_reconstruct) {
             gas_world_pos = reconstruct_world_pos(input.pos.xy, input.world_pos_and_depth.w, gas_eye_pos,
                                                   gas_cam_right, gas_cam_up, gas_cam_forward,
-                                                  gas_proj_sx, gas_proj_sy, gas_viewport_w, gas_viewport_h);
+                                                  gas_proj_sx, gas_proj_sy,
+                                                  gas_viewport_x, gas_viewport_y,
+                                                  gas_viewport_w, gas_viewport_h);
         }
         float3 ray_origin = gas_eye_pos;
         float3 to_pixel = gas_world_pos - ray_origin;

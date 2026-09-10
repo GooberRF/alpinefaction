@@ -28,7 +28,7 @@ namespace gr::d3d11
     // Screen-edge damage feedback, decayed per frame by the renderer.
     struct DamageVignetteState
     {
-        float edges[4] = {};   // top, left, bottom, right
+        std::array<float, 4> edges{};   // top, left, bottom, right
         float radial = 0.0f;
         int radial_frame = -1; // frame the radial hit was armed, so a directional mask can replace it
 
@@ -43,8 +43,6 @@ namespace gr::d3d11
     constexpr unsigned scenefx_flag_liquid_vignette = 4;
     constexpr unsigned scenefx_flag_damage = 8;
 
-    // Tunables live here rather than in the .cpp because Renderer::run_scene_post_pass fills
-    // the buffer and the activity test needs the same near plane the shader reconstructs with.
     constexpr float scenefx_distort_amp = 0.002f;
     constexpr float scenefx_distort_freq = 14.0f;
     constexpr float scenefx_distort_speed = 1.6f;
@@ -52,9 +50,7 @@ namespace gr::d3d11
     constexpr float scenefx_vignette_strength = 0.7f;
     // Stock screen-flash decay rate, rescaled from 0-255 to 0-1
     constexpr float scenefx_damage_decay_per_sec = 170.0f / 255.0f;
-    // Must match the shader's waterline_band and gr_d3d_setup_3d_injection's near plane. The mask
-    // these build is a near-plane test, not the geometry-depth split Phase A's fog uses; the two
-    // agree at the waterline because both are evaluated per pixel from the same camera.
+    // Must match the shader's waterline_band and gr_d3d_setup_3d_injection's near plane
     constexpr float scenefx_waterline_band = 0.02f;
     constexpr float scenefx_near_dist = 0.1f;
 
@@ -76,6 +72,7 @@ namespace gr::d3d11
         ComPtr<ID3D11SamplerState> point_sampler_;
         ComPtr<ID3D11BlendState> overlay_blend_state_;
         ComPtr<ID3D11BlendState> distort_blend_state_;
+        ComPtr<ID3D11RasterizerState> rasterizer_state_;
         ComPtr<ID3D11DepthStencilState> depth_off_state_;
     };
 }
