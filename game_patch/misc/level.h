@@ -223,7 +223,7 @@ struct AlpineMeshInfo {
     std::string script_name;
     std::string mesh_filename;
     std::string state_anim;
-    uint8_t collision_mode = 2;     // 0=None, 1=Only Weapons, 2=All
+    uint8_t collision_mode = 2;     // 0=None, 1=Only Weapons, 2=All, 3=Brush
     std::vector<MeshTextureOverride> texture_overrides;
     int material = 0;               // material type for impact sounds
     MeshClutterInfo clutter;
@@ -235,7 +235,26 @@ void alpine_mesh_do_frame();
 void alpine_mesh_clear_state();
 
 // Mesh event helpers
-namespace rf { struct Object; }
+namespace rf { struct Object; struct PhysicsData; }
+bool alpine_mesh_is_collision_mesh(rf::Object* objp);
+void alpine_mesh_free_collision_solid(int obj_handle);
+bool alpine_mesh_has_collision_solids();
+
+// One world-space contact against a mode-3 mesh solid.
+struct AlpineMeshContact {
+    rf::Vector3 hit_point;
+    rf::Vector3 hit_normal;
+    rf::Vector3 vel;        // carry velocity of the hit mesh (mover member); {0,0,0} for static
+    float fraction;
+    int material;
+    int obj_handle;         // handle of the hit mesh (mover member) so riders can latch; -1 for static
+};
+
+// Sweep one collision sphere against every mode-3 mesh solid, skipping the mesh that owns
+// self_pd. Returns the closest hit strictly nearer than max_fraction.
+bool alpine_mesh_collide_sphere_world(const rf::Vector3& start, const rf::Vector3& end, float radius,
+                                      const rf::PhysicsData* self_pd, float max_fraction,
+                                      AlpineMeshContact& contact);
 const std::string* alpine_mesh_get_corpse_filename(int handle);
 bool alpine_mesh_spawn_corpse(rf::Object* obj);
 void alpine_mesh_animate(rf::Object* obj, int type, const std::string& anim_filename, float blend_weight);

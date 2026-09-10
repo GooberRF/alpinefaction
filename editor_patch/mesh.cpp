@@ -395,7 +395,7 @@ void mesh_deserialize_chunk(CDedLevel& level, rf::File& file, std::size_t chunk_
         // collision mode
         uint8_t collision_mode = 2;
         if (!read_bytes(&collision_mode, sizeof(collision_mode))) { DestroyDedMesh(mesh); return; }
-        mesh->collision_mode = (collision_mode <= 2) ? collision_mode : 2;
+        mesh->collision_mode = (collision_mode <= 3) ? collision_mode : 2;
         // texture overrides: count + (slot_id, filename) pairs
         uint8_t num_overrides = 0;
         if (!read_bytes(&num_overrides, sizeof(num_overrides))) { DestroyDedMesh(mesh); return; }
@@ -465,6 +465,8 @@ static CDedLevel* g_current_level = nullptr;
 // Sentinel strings for multi-selection fields with differing values
 static const char* const MULTIPLE_STR = "<multiple>";
 static const int MULTIPLE_COLLISION = -1;
+// Combo index of the "Undefined" entry appended only in multi-select mode
+static const int UNDEFINED_COLLISION_INDEX = 4;
 
 // Track initial dialog values to detect user changes
 static std::string g_init_script_name;
@@ -822,9 +824,10 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
             SendMessageA(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>("None"));
             SendMessageA(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>("Only Weapons"));
             SendMessageA(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>("All"));
+            SendMessageA(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>("Brush"));
             if (g_init_collision_mode == MULTIPLE_COLLISION) {
                 SendMessageA(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>("Undefined"));
-                SendMessageA(combo, CB_SETCURSEL, 3, 0); // "Undefined"
+                SendMessageA(combo, CB_SETCURSEL, UNDEFINED_COLLISION_INDEX, 0);
             } else {
                 SendMessageA(combo, CB_SETCURSEL, g_init_collision_mode, 0);
             }
@@ -1026,7 +1029,6 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
             int collision_sel = collision_enabled
                 ? static_cast<int>(SendMessageA(combo, CB_GETCURSEL, 0, 0))
                 : 0; // VFX meshes do not support collision
-            // "Undefined" is index 3 — only present in multi-select mode
             bool collision_changed = false;
             if (force_clear_collision) {
                 collision_changed = true;
@@ -1034,7 +1036,7 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
                 // Disabled but filename unchanged — don't touch
                 collision_changed = false;
             } else if (g_init_collision_mode == MULTIPLE_COLLISION) {
-                collision_changed = (collision_sel != 3); // changed from "Undefined"
+                collision_changed = (collision_sel != UNDEFINED_COLLISION_INDEX);
             } else {
                 collision_changed = (collision_sel != g_init_collision_mode);
             }
@@ -1153,7 +1155,7 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
                 if (script_changed) mesh->script_name.assign_0(buf);
                 if (filename_changed) mesh->mesh_filename.assign_0(fname_buf);
                 if (anim_changed) mesh->state_anim.assign_0(anim_buf);
-                if (collision_changed && collision_sel >= 0 && collision_sel <= 2) {
+                if (collision_changed && collision_sel >= 0 && collision_sel <= 3) {
                     mesh->collision_mode = static_cast<uint8_t>(collision_sel);
                 }
                 if (overrides_changed) {

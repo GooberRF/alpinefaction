@@ -18,6 +18,8 @@
 #include "../rf/level.h"
 #include "../rf/particle_emitter.h"
 #include "../rf/geometry.h"
+#include "../rf/collide.h"
+#include "../rf/vmesh.h"
 #include "../rf/math/ix.h"
 #include "../rf/gameseq.h"
 #include "../rf/entity.h"
@@ -297,11 +299,163 @@ FunHook<bool(rf::VMesh*, rf::VMeshCollisionInput*, rf::VMeshCollisionOutput*, bo
     },
 };
 
+FunHook<bool(rf::Object*, rf::Object*)> collide_object_object_mesh_hook{
+    0x0049AFE0,
+    [](rf::Object* objp, rf::Object* mesh_objp) {
+        // Mode-3 meshes are collided as static world geometry inside collide_object_world and
+        // collide_spheres_world, so the object pair path must not generate a second response.
+        // Projectiles are the exception: they stay on the vmesh test so impacts and
+        // destructible-mesh damage keep being attributed to the mesh object.
+        const bool bypass = objp->type != rf::OT_WEAPON && alpine_mesh_is_collision_mesh(mesh_objp);
+        if (bypass) {
+            return false;
+        }
+        return collide_object_object_mesh_hook.call_target(objp, mesh_objp);
+    },
+};
+
+// Mode 3 (brush) mesh collision
+static void mesh_world_fill_contact(rf::PCollisionOut& out, const AlpineMeshContact& contact)
+{
+    out.hit_point = contact.hit_point;
+    out.hit_normal = contact.hit_normal;
+    out.hit_time = contact.fraction;
+    out.material = contact.material;
+    out.inv_mass = 0.0f;
+    out.vel = contact.vel;
+    out.obj_handle = contact.obj_handle;
+    out.bitmap_handle = -1;
+    out.is_liquid = 0;
+    out.hit_face = nullptr;
+    out.hit_face_v3d = nullptr;
+}
+
+// Contacts whose hit_time is within this of the nearest are treated as a tie when picking the
+// representative rideable handle/vel (matches the push-hook blend tolerance).
+constexpr float mesh_world_tie_tol = 0.01f;
+
+static void mesh_world_aggregate_contacts(rf::Object* objp)
+{
+    rf::Vector3 sum_point{0.0f, 0.0f, 0.0f};
+    rf::Vector3 sum_normal{0.0f, 0.0f, 0.0f};
+    float min_time = 1.0f;
+    // src = index whose vel/obj_handle represents the aggregate.
+    int src = 0;
+    for (int i = 0; i < rf::g_world_contact_count; i++) {
+        const float t = rf::g_world_contacts[i].hit_time;
+        min_time = std::min(min_time, t);
+        sum_normal += rf::g_world_contacts[i].hit_normal;
+        sum_point += rf::g_world_contacts[i].hit_point;
+        if (i > 0) {
+            const float src_t = rf::g_world_contacts[src].hit_time;
+            if (t < src_t - mesh_world_tie_tol) {
+                src = i;
+            }
+            else if (t <= src_t + mesh_world_tie_tol && rf::g_world_contacts[src].obj_handle == -1
+                     && rf::g_world_contacts[i].obj_handle != -1) {
+                src = i;
+            }
+        }
+    }
+    if (rf::g_world_contact_count > 1) {
+        sum_normal.normalize_safe();
+        sum_point /= static_cast<float>(rf::g_world_contact_count);
+    }
+
+    rf::PCollisionOut& out = objp->p_data.collide_out;
+    out.hit_point = sum_point;
+    out.hit_normal = sum_normal;
+    out.hit_normal.normalize_safe();
+    out.hit_time = min_time;
+    out.material = rf::g_world_contacts[0].material;
+    out.inv_mass = 0.0f;
+    out.vel = rf::g_world_contacts[src].vel;
+    out.obj_handle = rf::g_world_contacts[src].obj_handle;
+    out.bitmap_handle = rf::g_world_contacts[0].bitmap_handle;
+    out.is_liquid = rf::g_world_contacts[0].is_liquid;
+    out.hit_face = rf::g_world_contacts[0].hit_face;
+    out.hit_face_v3d = nullptr;
+}
+
+FunHook<char(rf::Object*)> collide_object_world_hook{
+    0x0049BB70,
+    [](rf::Object* objp) -> char {
+        if (!objp || !alpine_mesh_has_collision_solids()) {
+            return collide_object_world_hook.call_target(objp);
+        }
+        char result = collide_object_world_hook.call_target(objp);
+        // Stock bails before touching the contact set when world collision is off, in which
+        // case it still holds another object's contacts. Projectiles keep the object pair path.
+        if (!(objp->p_data.flags & rf::PF_COLLIDE_WORLD) || objp->type == rf::OT_WEAPON) {
+            return result;
+        }
+
+        // Contacts within this much of the best one are blended instead of replacing it
+        constexpr float tolerance = 0.01f;
+
+        bool added = false;
+        for (const rf::PCollisionSphere& csphere : objp->p_data.cspheres) {
+            const rf::Vector3 start = objp->p_data.pos + objp->p_data.orient.transform_vector(csphere.center);
+            const rf::Vector3 end =
+                objp->p_data.next_pos + objp->p_data.next_orient.transform_vector(csphere.center);
+            // g_world_contacts[0].hit_time doubles as the stock best-so-far accumulator and
+            // holds the incoming p_data.collide_out.hit_time while the set is empty
+            const float best = rf::g_world_contacts[0].hit_time;
+            const float max_fraction = std::min(1.0f, best + tolerance);
+
+            AlpineMeshContact contact;
+            const bool got = alpine_mesh_collide_sphere_world(start, end, csphere.radius, &objp->p_data,
+                                                              max_fraction, contact);
+
+            if (got) {
+                if (contact.fraction - best < -tolerance || rf::g_world_contact_count == 0) {
+                    mesh_world_fill_contact(rf::g_world_contacts[0], contact);
+                    rf::g_world_contact_count = 1;
+                    added = true;
+                }
+                else if (rf::g_world_contact_count > 0 && rf::g_world_contact_count < rf::world_contact_max) {
+                    mesh_world_fill_contact(rf::g_world_contacts[rf::g_world_contact_count], contact);
+                    ++rf::g_world_contact_count;
+                    added = true;
+                }
+            }
+        }
+
+        if (added) {
+            mesh_world_aggregate_contacts(objp);
+        }
+        return added ? static_cast<char>(1) : result;
+    },
+};
+
+FunHook<char(rf::Vector3*, rf::Vector3*, rf::PhysicsData*, rf::PCollisionOut*)> collide_spheres_world_hook{
+    0x00499ED0,
+    [](rf::Vector3* p0, rf::Vector3* p1, rf::PhysicsData* pd, rf::PCollisionOut* out) -> char {
+        if (!alpine_mesh_has_collision_solids()) {
+            return collide_spheres_world_hook.call_target(p0, p1, pd, out);
+        }
+        char result = collide_spheres_world_hook.call_target(p0, p1, pd, out);
+
+        for (const rf::PCollisionSphere& csphere : pd->cspheres) {
+            const rf::Vector3 offset = pd->orient.transform_vector(csphere.center);
+            const float best = out->hit_time;
+            AlpineMeshContact contact;
+            const bool got = alpine_mesh_collide_sphere_world(*p0 + offset, *p1 + offset, csphere.radius, pd, best, contact);
+            if (got) {
+                mesh_world_fill_contact(*out, contact);
+                result = 1;
+            }
+        }
+        return result;
+    },
+};
+
 FunHook<void(rf::Object*)> obj_delete_mesh_hook{
     0x00489FC0,
     [](rf::Object* objp) {
         obj_delete_mesh_hook.call_target(objp);
         obj_mesh_lighting_free_one(objp);
+        alpine_mesh_free_collision_solid(objp->handle);
     },
 };
 
@@ -1011,6 +1165,11 @@ void object_do_patch()
 
     // Skip vmesh_collide when the mesh is invalid (fix crash from null deref)
     vmesh_collide_hook.install();
+
+    // Mode 3 (brush) mesh collision, and improved mesh collision
+    collide_object_object_mesh_hook.install();
+    collide_object_world_hook.install();
+    collide_spheres_world_hook.install();
 
     // Optimize Object::find_room function
     object_find_room_optimization.install();
