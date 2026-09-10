@@ -255,6 +255,7 @@ add_packfile(alpinefaction.vpp
     images/Icon_AFCorona.tga
     images/Icon_AFBag.tga
     images/Icon_AFWeather.tga
+    images/Icon_AFProjection.tga
     images/af_gbrsnowfl01.tga
     images/radar_dish.tga
     images/score_aflogo.tga
@@ -275,6 +276,22 @@ add_packfile(alpinefaction.vpp
     images/dec_af_csp09.tga
     images/dec_af_csp10.tga
     images/af-jetpack1skin1.tga
+    images/caustics/af_caust00.png
+    images/caustics/af_caust01.png
+    images/caustics/af_caust02.png
+    images/caustics/af_caust03.png
+    images/caustics/af_caust04.png
+    images/caustics/af_caust05.png
+    images/caustics/af_caust06.png
+    images/caustics/af_caust07.png
+    images/caustics/af_caust08.png
+    images/caustics/af_caust09.png
+    images/caustics/af_caust10.png
+    images/caustics/af_caust11.png
+    images/caustics/af_caust12.png
+    images/caustics/af_caust13.png
+    images/caustics/af_caust14.png
+    images/caustics/af_caust15.png
 
     fonts/biggerfont.vf
     fonts/regularfont.ttf
@@ -312,6 +329,7 @@ add_packfile(alpinefaction.vpp
     outline_ps:${CMAKE_BINARY_DIR}/shaders/outline_ps.bin
     gamma_vs:${CMAKE_BINARY_DIR}/shaders/gamma_vs.bin
     gamma_ps:${CMAKE_BINARY_DIR}/shaders/gamma_ps.bin
+    scenefx_ps:${CMAKE_BINARY_DIR}/shaders/scenefx_ps.bin
 )
 
 # Copy licensing-info.txt

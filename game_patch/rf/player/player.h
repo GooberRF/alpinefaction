@@ -409,6 +409,7 @@ namespace rf
 
     static auto& player_list = addr_as_ref<Player*>(0x007C75CC);
     static auto& local_player = addr_as_ref<Player*>(0x007C75D4);
+    static auto& render_player = addr_as_ref<Player*>(0x007C763C); // player whose view is being rendered.
 
     // Allocates the Player (Alpine-extended size via patch at 0x004A3329) together with its
     // PlayerNetData (reliable_socket = -1, buffers zeroed) and links it into player_list.

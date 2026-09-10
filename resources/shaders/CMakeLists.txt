@@ -1,8 +1,10 @@
 
 if (CMAKE_HOST_SYSTEM_NAME STREQUAL "Windows")
     set(SHADER_COMPILER shader_compiler)
+    set(SHADER_HOST_DEFS)
 else()
     set(SHADER_COMPILER wine ${CMAKE_BINARY_DIR}/bin/shader_compiler.exe)
+    set(SHADER_HOST_DEFS -DARRAY_GRAD_FLOAT3)
 endif()
 
 function(add_shader TARGET_NAME SRC_FILE TARGET_LEVEL)
@@ -10,7 +12,7 @@ function(add_shader TARGET_NAME SRC_FILE TARGET_LEVEL)
     file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/shaders")
     add_custom_command(
         OUTPUT ${SHADER_OUTPUT}
-        COMMAND ${SHADER_COMPILER} -O3 -t ${TARGET_LEVEL} ${ARGN} ${CMAKE_CURRENT_SOURCE_DIR}/${SRC_FILE} -o ${SHADER_OUTPUT}
+        COMMAND ${SHADER_COMPILER} -O3 -t ${TARGET_LEVEL} ${SHADER_HOST_DEFS} ${ARGN} ${CMAKE_CURRENT_SOURCE_DIR}/${SRC_FILE} -o ${SHADER_OUTPUT}
         MAIN_DEPENDENCY ${CMAKE_CURRENT_SOURCE_DIR}/${SRC_FILE}
     )
     add_custom_target(${TARGET_NAME} ALL DEPENDS ${SHADER_OUTPUT})
@@ -34,3 +36,5 @@ add_shader(outline_ps outline_ps.hlsl ps_4_0)
 
 add_shader(gamma_vs gamma_vs.hlsl vs_4_0)
 add_shader(gamma_ps gamma_ps.hlsl ps_4_0)
+
+add_shader(scenefx_ps scenefx_ps.hlsl ps_4_0)

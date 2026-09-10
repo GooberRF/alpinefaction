@@ -62,6 +62,8 @@ set(SRCS
     graphics/gr_light.cpp
     graphics/weather.cpp
     graphics/weather.h
+    graphics/scene_capture.cpp
+    graphics/scene_capture.h
     graphics/legacy/gr_d3d.cpp
     graphics/legacy/gr_d3d_texture.cpp
     graphics/legacy/gr_d3d_capture.cpp
@@ -87,6 +89,10 @@ set(SRCS
     graphics/d3d11/gr_d3d11_mesh.h
     graphics/d3d11/gr_d3d11_entity_shadow.cpp
     graphics/d3d11/gr_d3d11_entity_shadow.h
+    graphics/d3d11/gr_d3d11_caustics.cpp
+    graphics/d3d11/gr_d3d11_caustics.h
+    graphics/d3d11/gr_d3d11_liquid.cpp
+    graphics/d3d11/gr_d3d11_liquid.h
     graphics/d3d11/gr_d3d11_vertex.h
     graphics/d3d11/gr_d3d11_buffer.h
     graphics/d3d11/gr_d3d11_hooks.cpp
@@ -95,6 +101,8 @@ set(SRCS
     graphics/d3d11/gr_d3d11_outline.cpp
     graphics/d3d11/gr_d3d11_gamma.h
     graphics/d3d11/gr_d3d11_gamma.cpp
+    graphics/d3d11/gr_d3d11_scenefx.h
+    graphics/d3d11/gr_d3d11_scenefx.cpp
     input/input.h
     input/mouse.h
     input/mouse.cpp
@@ -299,6 +307,8 @@ set(SRCS
     object/alpine_corona.h
     object/alpine_bag.cpp
     object/alpine_bag.h
+    object/alpine_projection_camera.cpp
+    object/alpine_projection_camera.h
     object/clock.cpp
     misc/achievements.h
     misc/achievements.cpp

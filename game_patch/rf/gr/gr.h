@@ -387,6 +387,8 @@ namespace rf::gr
     static auto& set_alpha = addr_as_ref<void(ubyte a)>(0x0050D030);
     static auto& read_backbuffer = addr_as_ref<int(int x, int y, int w, int h, void* buffer)>(0x0050DFF0);
     static auto& clear = addr_as_ref<void()>(0x0050CDF0);
+    static auto& setup_3d = addr_as_ref<void(const Matrix3* orient, const Vector3* pos, float fov, int zbuffer, int z_scale)>(0x00517EB0);
+    static auto& flush = addr_as_ref<void()>(0x0050E4B0);
     static auto& cull_sphere = addr_as_ref<bool(const Vector3& pos, float radius)>(0x005186A0);
     static auto& set_texture_mip_filter = addr_as_ref<void(bool linear)>(0x0050E830);
     static auto& lock = addr_as_ref<bool(int bm_handle, int section, LockInfo* lock, LockMode mode)>(0x0050E2E0);
@@ -412,6 +414,8 @@ namespace rf::gr
     static auto& project_vertex = addr_as_ref<ubyte (Vertex *p)>(0x00518440);
     static auto& show_lightmaps = *reinterpret_cast<bool*>(0x009BB5A4);
     static auto& light_set_ambient = addr_as_ref<void(float r, float g, float b)>(0x004D8CE0);
+    static auto& light_frame_begin = addr_as_ref<void()>(0x004D8050); // empty in the retail build
+    static auto& light_filter_for_camera = addr_as_ref<void()>(0x005174D0);
     static auto& line_arrow = addr_as_ref<void(float x1, float y1, float z1, float x2, float y2, float z2, int r, int g, int b)>(0x00516AD0);
     static auto& cursor_3d = addr_as_ref<void(Vector3* pos, Matrix3* orient, float scale)>(0x00516B10);
     static auto& string_render_into_bitmap = addr_as_ref<void(int x, int y, int bm_handle, const char* s, int font)>(0x005203A0);

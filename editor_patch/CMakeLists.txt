@@ -19,6 +19,8 @@ set(SRCS
     bag.h
     weather_region.cpp
     weather_region.h
+    projection_camera.cpp
+    projection_camera.h
     textures.cpp
     bitmap_loaders.cpp
     bitmap_loaders.h

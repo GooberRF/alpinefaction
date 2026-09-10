@@ -11,17 +11,35 @@ Version 1.5.0 (TBD): Not yet released
 - Restore cut first person weapon aim sway, toggleable with `cl_weaponsway`
 - Add terms of use and notices document to installer
 - Add compatibility table (lightmap clamp floor) for `dm-halloween.rfl`
+- Add `Display_Projection` event and `Projection Camera` object for rendering live camera views onto ATX textures (Direct3D 11 renderer only)
+- Add flames to gib chunks thrown by exploding entities, toggleable with `cl_gibflames`
+- Add `Jetpacks explode` option to the Jetpacks mutator
+- Add underwater rendering effects — animated caustics, depth-based water fog with a waterline, screen tint/vignette and distortion — with quality levels 0-3 via `r_underwater` (Direct3D 11 renderer only)
+- Extend view distance while submerged at `r_underwater` 2 or higher, up to 4x the liquid visibility, with the extension capped at the normal far clip
+- Add edge-vignette damage feedback as `cl_damageflash 2` (Direct3D 11 renderer only); `cl_damageflash` is now a level: 0 off, 1 screen flash, 2 vignette
+- Add `Brush` collision mode for Alpine Mesh objects
+- Raise level editor per-room and per-mesh render vertex limit from 8000 to 32768
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Add `ui_color_console` console command to set the console background color
+
+[@is-this-c](https://github.com/is-this-c)
+- Do not kick a player, if they join right before limbo
 
 ### Bug fixes
 [@GooberRF](https://github.com/GooberRF)
 - Fix phantom visual flag mesh being visible after Salvage flag is picked up on rare occasions
 - Fix scrolling textures jumping forward when the Direct3D 11 renderer rebuilds a room's render cache, most visibly after a brush-based geomod crater
+- Fix deleting an Alpine object in the level editor leaving a stale reference to it in any moving group it belonged to
+- Fix filter box in the level editor texture browser not filtering the texture list by partial filename
+- Fix level editor crashing without an error message when drawing a room or mesh containing more than 8000 vertices
 
 [@is-this-c](https://github.com/is-this-c)
 - Let `Caps Lock` capitalize
+
+[@nickalreadyinuse](https://github.com/nickalreadyinuse)
+- Cap FPS-dependent launch velocity when head jumping
+- Fix landing sound spam on ramps and jump pads at high FPS
 
 Version 1.4.0 (Lupin): Released Aug-25-2026
 --------------------------------

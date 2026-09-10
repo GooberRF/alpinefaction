@@ -21,7 +21,7 @@ void pf_send_reliable_packet(rf::Player* player, const void* data, int len)
     // buffer before sending
     rf::multi_io_send_buffered_reliable_packets(player);
     // Buffer data in a reliable packet
-    rf::multi_io_send_reliable(player, data, len, 0);
+    rf::multi_io_send_reliable(player, data, len, false);
     // RF stops reading reliable packets after encountering the first unknown type so flush buffer after sending
     rf::multi_io_send_buffered_reliable_packets(player);
 #else // unreliable

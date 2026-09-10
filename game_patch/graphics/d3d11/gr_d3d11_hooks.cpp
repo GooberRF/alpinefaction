@@ -16,6 +16,7 @@
 #include "../../rf/geometry.h"
 #include "../../rf/mover.h"
 #include "../../rf/object.h"
+#include "../../rf/player/player.h"
 #include "../../rf/vmesh.h"
 #include "../../bmpman/bmpman.h"
 #include "../../main/main.h"
@@ -24,6 +25,7 @@
 #include "../../os/console.h"
 #include "../gr.h"
 #include "gr_d3d11.h"
+#include "gr_d3d11_liquid.h"
 #include "gr_d3d11_mesh.h"
 
 void gr_light_use_static(bool use_static);
@@ -486,6 +488,10 @@ namespace gr::d3d11
             skip_mesh_light_gather = false;
             renderer->clear_mesh_lights();
         }
+
+        // Covers the meshes above as well as the sky solid; the world pass clears it again
+        renderer->set_sky_room(false);
+        renderer->set_draw_room_uid(-1);
     }
 
     void render_v3d_vif(rf::VifLodMesh *lod_mesh, [[maybe_unused]] rf::VifMesh *mesh, const rf::Vector3& pos, const rf::Matrix3& orient, int lod_index, const rf::MeshRenderParams& params)
@@ -656,9 +662,21 @@ namespace gr::d3d11
         renderer->fog_set();
     }
 
+    int render_target_generation()
+    {
+        return renderer ? renderer->render_target_generation() : 0;
+    }
+
+    void invalidate_texture_cache()
+    {
+        if (renderer) {
+            renderer->invalidate_texture_cache();
+        }
+    }
+
     bool set_render_target(int bm_handle)
     {
-        return renderer->set_render_target(bm_handle);
+        return renderer && renderer->set_render_target(bm_handle);
     }
 
     void flush_outlines_before_fpgun()
@@ -711,6 +729,142 @@ namespace gr::d3d11
     {
         return renderer->poly(nv, vertices, vertex_attributes, mode, constant_sw, sw);
     }
+
+    static void scene_post_pass()
+    {
+        if (renderer) {
+            renderer->run_scene_post_pass();
+        }
+    }
+
+    bool trigger_damage_vignette(unsigned dir_mask)
+    {
+        if (!renderer) {
+            return false;
+        }
+        renderer->trigger_damage_vignette(dir_mask);
+        return true;
+    }
+
+    // reticle is drawn before the fpgun and so before the post pass.
+    // Defer it past the pass, matching the rest of the HUD.
+    static CallHook<void(rf::Player*)> hud_weapons_render_reticle_hook{
+        0x00432857,
+        [](rf::Player* pp) {
+            if (renderer) {
+                renderer->take_deferred_reticle();
+                if (renderer->liquid_post_pass_pending()) {
+                    renderer->defer_reticle(pp);
+                    return;
+                }
+            }
+            hud_weapons_render_reticle_hook.call_target(pp);
+        },
+    };
+
+    // gr_fog_set(0, 0,0,0, -1, -1) turning fog off for the 2D phase, straight after the fpgun
+    // draw and its gr_flush: the last point in gameplay_render_frame where the 3D scene is
+    // complete. Reached unconditionally once per call on the main path.
+    static CallHook<void(int, int, int, int, float, float)> gameplay_render_frame_fog_off_hook{
+        0x00432879,
+        [](int enabled, int r, int g, int b, float fog_near, float fog_far) {
+            scene_post_pass();
+            gameplay_render_frame_fog_off_hook.call_target(enabled, r, g, b, fog_near, fog_far);
+            // After fog-off, so the deferred reticle cannot pick up the liquid fog
+            if (renderer) {
+                if (rf::Player* pp = renderer->take_deferred_reticle()) {
+                    hud_weapons_render_reticle_hook.call_target(pp);
+                }
+            }
+        },
+    };
+
+    // screen_flash_render, after the HUD, MP HUD and net stats.
+    static CallHook<void(rf::Player*)> screen_flash_render_hook{
+        0x00432C7C,
+        [](rf::Player* pp) {
+            screen_flash_render_hook.call_target(pp);
+            // Split screen calls this per local player; the vignette state is only ever fed for
+            // rf::local_player, so it must composite once, for that player's pass.
+            if (renderer && pp == rf::local_player) {
+                renderer->run_damage_vignette_pass();
+            }
+        },
+    };
+
+    // Stock clamps the far clip to liquid_visibility while submerged, hidden by its fog being
+    // fully opaque there; the exponential fog is not, so the clip would show. Widen it instead of
+    // dropping it, so murky water still culls close and clear water reaches the stock baseline.
+    static CallHook<void(float)> gameplay_render_frame_liquid_far_clip_hook{
+        0x00431D3F,
+        [](float far_clip) {
+            if (g_alpine_game_config.underwater_fx >= 2) {
+                far_clip = liquid_far_clip(far_clip);
+            }
+            gameplay_render_frame_liquid_far_clip_hook.call_target(far_clip);
+        },
+    };
+
+    // Stock sets fog far to liquid_visibility while submerged. The underwater model has its own
+    // range in b6, but draws it cannot handle (sprites without depth) still use the b0 linear fog
+    // and would go solid at that distance, so widen it to the same range the far clip uses.
+    static CallHook<void(int, int, int, int, float, float)> gameplay_render_frame_liquid_fog_hook{
+        0x00431D6A,
+        [](int enabled, int r, int g, int b, float fog_near, float fog_far) {
+            if (g_alpine_game_config.underwater_fx >= 2) {
+                fog_far = liquid_far_clip(fog_far);
+            }
+            gameplay_render_frame_liquid_fog_hook.call_target(enabled, r, g, b, fog_near, fog_far);
+        },
+    };
+
+    // Colour of the opaque background rect stock draws behind the world while submerged. Match
+    // the depth-darkened colour the underwater fog converges to, or the far clip shows as an edge.
+    static CallHook<void(int, int, int, int)> gameplay_render_frame_liquid_bg_color_hook{
+        0x00431D8F,
+        [](int r, int g, int b, int a) {
+            rf::Vector3 col;
+            if (g_alpine_game_config.underwater_fx >= 2 && renderer && renderer->liquid_background_color(col)) {
+                // Clamp before scaling: the cast is UB outside int range, and !(x > 0) also
+                // catches NaN.
+                auto to_byte = [](float x) {
+                    return static_cast<int>((x > 0.0f ? std::min(x, 1.0f) : 0.0f) * 255.0f + 0.5f);
+                };
+                r = to_byte(col.x);
+                g = to_byte(col.y);
+                b = to_byte(col.z);
+            }
+            gameplay_render_frame_liquid_bg_color_hook.call_target(r, g, b, a);
+        },
+    };
+
+    // Stock pre-HUD fullscreen liquid tint. The post pass draws the same color and alpha per
+    // pixel instead, so drop the rect only when it actually did so this frame.
+    static CallHook<void(int, int, int, int, int)> gameplay_render_frame_liquid_tint_hook{
+        0x004328FD,
+        [](int x, int y, int w, int h, int mode) {
+            if (renderer && renderer->render_target_bm_handle() == -1
+                && renderer->liquid_tint_drawn_this_frame()) {
+                return;
+            }
+            gameplay_render_frame_liquid_tint_hook.call_target(x, y, w, h, mode);
+        },
+    };
+
+    // g_render_room_objects draws every room-placed object mesh, once per visible room, so it
+    // is where a mesh learns its room.
+    static FunHook<void(rf::GRoom*, rf::GSolid*, int, void*)> g_render_room_objects_hook{
+        0x004D3C40,
+        [](rf::GRoom* room, rf::GSolid* solid, int num_objects, void* portal_objects) {
+            if (renderer) {
+                renderer->set_object_room_uid(room && !room->is_detail ? room->uid : -1);
+            }
+            g_render_room_objects_hook.call_target(room, solid, num_objects, portal_objects);
+            if (renderer) {
+                renderer->set_object_room_uid(-1);
+            }
+        },
+    };
 
     static CodeInjection g_render_room_objects_render_liquid_injection{
         0x004D4106,
@@ -976,6 +1130,14 @@ void gr_d3d11_apply_patch()
 {
     using namespace gr::d3d11;
 
+    hud_weapons_render_reticle_hook.install();
+    gameplay_render_frame_fog_off_hook.install();
+    gameplay_render_frame_liquid_tint_hook.install();
+    gameplay_render_frame_liquid_far_clip_hook.install();
+    gameplay_render_frame_liquid_fog_hook.install();
+    gameplay_render_frame_liquid_bg_color_hook.install();
+    screen_flash_render_hook.install();
+    g_render_room_objects_hook.install();
     g_render_room_objects_render_liquid_injection.install();
     gr_d3d_setup_3d_injection.install();
     gr_d3d_setup_fustrum_injection.install();

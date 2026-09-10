@@ -11,6 +11,8 @@
 #include "../../misc/alpine_settings.h"
 #include "../../rf/gr/gr.h"
 #include "gr_d3d11_mesh.h"
+#include "gr_d3d11_caustics.h"
+#include "gr_d3d11_liquid.h"
 
 namespace gr::d3d11
 {
@@ -127,6 +129,26 @@ namespace gr::d3d11
             }
         }
 
+        // Not part of update()'s change detection: the sky room is a scoped property of the draw
+        // sequence, not of the render mode, so it uploads on its own.
+        void set_sky_room(bool sky_room, ID3D11DeviceContext* device_context)
+        {
+            if (current_sky_room_ != sky_room) {
+                current_sky_room_ = sky_room;
+                update_buffer(device_context);
+            }
+        }
+
+        // Room the current draw belongs to, or -1 when it has none. Same reasoning as
+        // set_sky_room: a property of the draw sequence, uploaded on its own.
+        void set_draw_room_uid(int room_uid, ID3D11DeviceContext* device_context)
+        {
+            if (current_draw_room_uid_ != room_uid) {
+                current_draw_room_uid_ = room_uid;
+                update_buffer(device_context);
+            }
+        }
+
     private:
         void update_buffer(ID3D11DeviceContext* device_context);
 
@@ -144,6 +166,8 @@ namespace gr::d3d11
         float current_dynamic_light_ndotl_ = 0.0f;
         float current_pixel_light_overbright_ = 0.5f;
         float current_alpha_test_threshold_ = 1.0f / 255.0f;
+        bool current_sky_room_ = false;
+        int current_draw_room_uid_ = -1;
     };
 
     class PerFrameBuffer
@@ -242,7 +266,10 @@ namespace gr::d3d11
                     // Combined lookup: get SRV and UV scale in a single cache access
                     auto [srv, u_scale, v_scale] = texture_manager_.lookup_texture_with_scale(tex_handle0);
                     ID3D11ShaderResourceView* shader_resources[] = {
-                        srv ? srv : texture_manager_.get_white_texture(),
+                        // Same split get_diffuse_texture_view makes below: an unbound handle is
+                        // an untextured draw (TEXTURE_SOURCE_NONE) and wants white, while a real
+                        // handle that failed to load stays null.
+                        srv ? srv : (tex_handle0 < 0 ? texture_manager_.get_white_texture() : nullptr),
                         get_lightmap_texture_view(tex_handle1),
                     };
                     device_context_->PSSetShaderResources(0, std::size(shader_resources), shader_resources);
@@ -259,6 +286,14 @@ namespace gr::d3d11
                     device_context_->PSSetShaderResources(0, std::size(shader_resources), shader_resources);
                 }
             }
+        }
+
+        // A bm handle's SRV depends on which render target is bound — an ATX whose live feed is
+        // the current target has to resolve back to its own texture — so the cached handle pair
+        // stops being a valid answer the moment the target changes.
+        void invalidate_texture_cache()
+        {
+            current_tex_handles_ = {-2, -2};
         }
 
         void set_suppress_texture_uv_scale(bool suppress)
@@ -434,6 +469,33 @@ namespace gr::d3d11
         {
             per_frame_buffer_.update(device_context_);
             gas_region_buffer_.update(device_context_, projection_);
+            caustics_renderer_.update(device_context_);
+        }
+
+        Projection update_liquid_fx(const Projection& projection, const rf::Vector3& eye_pos,
+                                    const rf::Matrix3& eye_orient)
+        {
+            return liquid_fx_renderer_.update(device_context_, projection, eye_pos, eye_orient);
+        }
+
+        const LiquidState& liquid_state() const
+        {
+            return liquid_fx_renderer_.state();
+        }
+
+        bool liquid_background_color(rf::Vector3& out) const
+        {
+            return liquid_fx_renderer_.background_color(out);
+        }
+
+        void suspend_liquid_fx()
+        {
+            liquid_fx_renderer_.write_disabled(device_context_);
+        }
+
+        void resume_liquid_fx()
+        {
+            liquid_fx_renderer_.rewrite(device_context_);
         }
 
         bool has_gas_regions() const
@@ -444,6 +506,30 @@ namespace gr::d3d11
         void fog_set()
         {
             render_mode_cbuffer_.handle_fog_change();
+        }
+
+        // Sky rooms are drawn at their authored world location with the camera translated into
+        // them, so their fragments carry world positions that mean nothing to the caustics and
+        // liquid volume tests.
+        // Skipping the cache write as well as the upload keeps the cache and the buffer in step,
+        // so the first differing call after these become live uploads correctly.
+        void set_sky_room(bool sky_room)
+        {
+            // Also read by the liquid block's sky-ray branch, which runs without caustics
+            if (g_alpine_game_config.underwater_fx < 2 && !caustics_renderer_.active()) {
+                return;
+            }
+            render_mode_cbuffer_.set_sky_room(sky_room, device_context_);
+        }
+
+        // Lets the caustics test match a fragment to its own room instead of trusting a room
+        // AABB, which routinely overshoots into dry neighbours.
+        void set_draw_room_uid(int room_uid)
+        {
+            if (g_alpine_game_config.underwater_fx < 1 || !caustics_renderer_.active()) {
+                return;
+            }
+            render_mode_cbuffer_.set_draw_room_uid(room_uid, device_context_);
         }
 
         void set_vertex_buffer(ID3D11Buffer* vertex_buffer, UINT stride, UINT slot = 0)
@@ -616,6 +702,8 @@ namespace gr::d3d11
         PerFrameBuffer per_frame_buffer_;
         TextureScaleBuffer texture_scale_cbuffer_;
         GasRegionBuffer gas_region_buffer_;
+        CausticsRenderer caustics_renderer_;
+        LiquidFxRenderer liquid_fx_renderer_;
 
         ID3D11RenderTargetView* render_target_view_ = nullptr;
         ID3D11DepthStencilView* depth_stencil_view_ = nullptr;

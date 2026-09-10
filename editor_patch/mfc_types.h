@@ -145,7 +145,9 @@ enum class DedObjectType : int
     DED_NOTE = 0x18,   // Alpine 1.3
     DED_CORONA = 0x19, // Alpine 1.3
     DED_BAG = 0x1A,    // Alpine 1.4
-    DED_WEATHER_REGION = 0x1B // Alpine 1.4
+    DED_WEATHER_REGION = 0x1B, // Alpine 1.4
+    // 0x1C is reserved
+    DED_PROJECTION_CAMERA = 0x1D // Alpine 1.5
 };
 
 struct Vector3
@@ -356,7 +358,7 @@ static constexpr uintptr_t ded_object_vtbl_addr = 0x55712C;
 struct DedObject
 {
     void* vtbl;
-    VString field_4;
+    VString field_4; // unsure what this is
     void* vmesh;
     int field_10;
     Vector3 pos;
@@ -429,7 +431,7 @@ struct DedMesh : DedObject
 {
     VString mesh_filename;          // .v3m / .v3c / .vfx path
     VString state_anim;             // animation name (for .v3c skeletal meshes)
-    uint8_t collision_mode;         // 0=None, 1=Only Weapons, 2=All
+    uint8_t collision_mode;         // 0=None, 1=Only Weapons, 2=All, 3=Brush
     bool vmesh_load_failed;         // true if vmesh load was attempted and failed
     char padding_mesh[2];
     std::vector<EditorTextureOverride> texture_overrides;
@@ -502,6 +504,11 @@ struct DedWeatherRegion : DedObject
     bool initially_enabled = true;
     bool block_by_geometry = false;
     float column_width = 0.5f;
+};
+
+struct DedProjectionCamera : DedObject
+{
+    // All projection settings live on the linked Display_Projection event.
 };
 
 struct DedBoltEmitter : DedObject

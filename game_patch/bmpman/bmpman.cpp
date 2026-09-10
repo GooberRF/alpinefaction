@@ -3,6 +3,7 @@
 #include <patch_common/CodeInjection.h>
 #include <patch_common/AsmWriter.h>
 #include <xlog/xlog.h>
+#include <cstring>
 #include <common/utils/string-utils.h>
 #include <common/bitmap/formats.h>
 #include "../graphics/gr.h"
@@ -75,6 +76,21 @@ bool bm_is_compressed_format(rf::bm::Format format)
     }
 }
 
+// Everything bm_read_header_hook can resolve a texture from, in its own precedence order.
+static constexpr const char* g_texture_extensions[] = {
+    ".atx", ".dds", ".png", ".jpg", ".jpeg", ".vbm", ".tga", ".pcx", ".vaf", ".m2v",
+};
+
+std::string_view bm_strip_texture_ext(std::string_view filename)
+{
+    for (const char* ext : g_texture_extensions) {
+        if (string_iends_with(filename, ext)) {
+            return filename.substr(0, filename.size() - std::strlen(ext));
+        }
+    }
+    return filename;
+}
+
 FunHook<rf::bm::Type(const char*, int*, int*, rf::bm::Format*, int*, int*, int*, int*, int*, int*, int)>
 bm_read_header_hook{
     0x0050FCB0,
@@ -89,7 +105,7 @@ bm_read_header_hook{
         *total_bytes_m2v_out = -1;
         *vbm_ver_out = 1;
 
-        std::string filename_without_ext{get_filename_without_ext(filename)};
+        std::string filename_without_ext{bm_strip_texture_ext(filename)};
 
         // ATX supercedes DDS, PNG, JPG, VBM, and TGA. Each candidate sibling is gated by
         // vpackfile_supercede_allowed so user_maps content can't override stock when the
