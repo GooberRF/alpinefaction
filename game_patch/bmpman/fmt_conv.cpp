@@ -39,7 +39,7 @@ bool bm_convert_format(void* dst_bits_ptr, rf::bm::Format dst_fmt, const void* s
     }
 }
 
-rf::Color bm_get_pixel(uint8_t* data, rf::bm::Format format, int stride_in_bytes, int x, int y)
+rf::gr::Color bm_get_pixel(uint8_t* data, rf::bm::Format format, int stride_in_bytes, int x, int y)
 {
     if (bm_is_compressed_format(format)) {
         constexpr int block_w = 4;

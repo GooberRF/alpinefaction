@@ -22,6 +22,7 @@
 #include "../rf/player/camera.h"
 #include "../rf/entity.h"
 #include "../rf/bmpman.h"
+#include "../bmpman/bmpman.h"
 #include "../rf/multi.h"
 #include "../rf/gameseq.h"
 #include "../rf/level.h"
@@ -373,6 +374,10 @@ static NameLabelTex& ensure_hill_name_tex(const HillInfo& h, int font)
 
         slot.bm = rf::bm::create(rf::bm::FORMAT_4444_ARGB, bw, bh);
 
+        // The label is drawn at a range of on-screen sizes, so generate a mip chain
+        // like disk-loaded textures do to avoid shimmering when minified.
+        bm_set_user_mipmap(slot.bm, g_alpine_game_config.big_hud);
+
         // keep resident
         rf::bm::texture_add_ref(slot.bm);
 
@@ -524,8 +529,9 @@ static void render_koth_icon_for_hill(const HillInfo& h, WorldHUDRenderMode rm)
     }
 
     // hill name label
-    //const int font = get_world_hud_font(g_alpine_game_config.world_hud_text_scale);
-    const int font = 0;
+    const int font = g_alpine_game_config.big_hud
+        ? rf::gr::load_font("boldfont.ttf:56")
+        : 0;
     NameLabelTex& lbl = ensure_hill_name_tex(h, font);
 
     const float text_h_world = ring_scale * 0.55f;
