@@ -2,6 +2,7 @@
 
 void debug_apply_patches();
 void debug_init();
+void exception_logger_init();
 void debug_cleanup();
 void debug_render();
 void debug_render_ui();
