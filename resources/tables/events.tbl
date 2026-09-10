@@ -430,6 +430,9 @@ $RFE Level1:      "AF_General"
 $Event Name:      "Weather_Region_State"
 $RFE Level1:      "AF_General"
 
+$Event Name:      "Display_Projection"
+$RFE Level1:      "AF_General"
+
 #End
 
 // ------------------------------------------------

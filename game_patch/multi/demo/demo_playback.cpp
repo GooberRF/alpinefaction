@@ -585,7 +585,7 @@ namespace
     // resumes exactly where it stopped.
     void rebase_interp_clocks_after_freeze()
     {
-        const auto now_ms = static_cast<uint32_t>(rf::timer::get(1000));
+        const auto now_ms = static_cast<uint32_t>(timer::get_i64(1000));
         for (rf::Object* obj = rf::object_list.next_obj; obj != &rf::object_list; obj = obj->next_obj) {
             if (rf::ObjInterp* interp = obj->obj_interp) {
                 interp->frame_time_us = now_ms;

@@ -810,6 +810,7 @@ void DeleteWeatherRegionObject(DedWeatherRegion* weather_region)
     if (it != regions.end()) {
         regions.erase(it);
     }
+    alpine_remove_from_groups(level, static_cast<DedObject*>(weather_region));
     level->master_objects.remove_by_value(static_cast<DedObject*>(weather_region));
     DestroyDedWeatherRegion(weather_region);
 }

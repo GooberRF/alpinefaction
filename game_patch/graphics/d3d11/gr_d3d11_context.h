@@ -265,7 +265,10 @@ namespace gr::d3d11
                     // Combined lookup: get SRV and UV scale in a single cache access
                     auto [srv, u_scale, v_scale] = texture_manager_.lookup_texture_with_scale(tex_handle0);
                     ID3D11ShaderResourceView* shader_resources[] = {
-                        srv ? srv : texture_manager_.get_white_texture(),
+                        // Same split get_diffuse_texture_view makes below: an unbound handle is
+                        // an untextured draw (TEXTURE_SOURCE_NONE) and wants white, while a real
+                        // handle that failed to load stays null.
+                        srv ? srv : (tex_handle0 < 0 ? texture_manager_.get_white_texture() : nullptr),
                         get_lightmap_texture_view(tex_handle1),
                     };
                     device_context_->PSSetShaderResources(0, std::size(shader_resources), shader_resources);
@@ -282,6 +285,14 @@ namespace gr::d3d11
                     device_context_->PSSetShaderResources(0, std::size(shader_resources), shader_resources);
                 }
             }
+        }
+
+        // A bm handle's SRV depends on which render target is bound — an ATX whose live feed is
+        // the current target has to resolve back to its own texture — so the cached handle pair
+        // stops being a valid answer the moment the target changes.
+        void invalidate_texture_cache()
+        {
+            current_tex_handles_ = {-2, -2};
         }
 
         void set_suppress_texture_uv_scale(bool suppress)

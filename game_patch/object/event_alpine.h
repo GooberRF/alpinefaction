@@ -3132,3 +3132,38 @@ struct EventWeatherRegionState : rf::Event
         }
     }
 };
+
+// id 159 — Display_Projection: render the scene from the linked Projection Camera object.
+struct EventDisplayProjection : rf::Event
+{
+    char padding_align[3];
+    int render_width = 256;
+    int render_height = 256;
+    float fov = 50.0f;
+    float update_interval = 0.0f;
+    std::string handle;
+
+    void register_variable_handlers() override
+    {
+        rf::Event::register_variable_handlers();
+        auto& handlers = variable_handler_storage[this];
+        handlers[SetVarOpts::str1] = [](rf::Event* event, const std::string& value) {
+            static_cast<EventDisplayProjection*>(event)->handle = value;
+        };
+        handlers[SetVarOpts::int1] = [](rf::Event* event, const std::string& value) {
+            static_cast<EventDisplayProjection*>(event)->render_width = std::stoi(value);
+        };
+        handlers[SetVarOpts::int2] = [](rf::Event* event, const std::string& value) {
+            static_cast<EventDisplayProjection*>(event)->render_height = std::stoi(value);
+        };
+        handlers[SetVarOpts::float1] = [](rf::Event* event, const std::string& value) {
+            static_cast<EventDisplayProjection*>(event)->fov = std::stof(value);
+        };
+        handlers[SetVarOpts::float2] = [](rf::Event* event, const std::string& value) {
+            static_cast<EventDisplayProjection*>(event)->update_interval = std::stof(value);
+        };
+    }
+
+    void turn_on() override;
+    void turn_off() override;
+};

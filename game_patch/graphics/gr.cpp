@@ -32,6 +32,7 @@
 #include "gr.h"
 #include "gr_internal.h"
 #include "weather.h"
+#include "scene_capture.h"
 #include "../misc/alpine_options.h"
 #include "../hud/multi_spectate.h"
 #include "../multi/demo/demo.h"
@@ -449,8 +450,22 @@ bool gr_set_render_target(int bm_handle)
     return false;
 }
 
-// Drain the queued .vfx x-ray outlines (the salvage flag) now, so they land under the
-// first-person weapon instead of over it.
+int gr_render_target_generation()
+{
+    if (rf::gr::screen.mode == rf::gr::DIRECT3D && is_d3d11()) {
+        return gr::d3d11::render_target_generation();
+    }
+    return 0;
+}
+
+// Drop the renderer's cached texture-handle pair; see the declaration in gr.h.
+void gr_invalidate_texture_cache()
+{
+    if (rf::gr::screen.mode == rf::gr::DIRECT3D && is_d3d11()) {
+        gr::d3d11::invalidate_texture_cache();
+    }
+}
+
 void gr_flush_outlines_before_fpgun()
 {
     if (rf::gr::screen.mode == rf::gr::DIRECT3D && is_d3d11()) {
@@ -713,6 +728,9 @@ void gr_apply_patch()
 
     // Plankton fix and weather regions
     weather_apply_patch();
+
+    // Display_Projection scene capture
+    scene_capture_apply_patch();
 
     if (!headless_bot_graphics_bypass) {
         const bool use_d3d11_renderer =

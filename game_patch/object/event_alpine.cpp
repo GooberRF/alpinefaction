@@ -8,6 +8,8 @@
 #include <unordered_set>
 #include "event_alpine.h"
 #include "../bmpman/atx.h"
+#include "../graphics/scene_capture.h"
+#include "alpine_projection_camera.h"
 #include "../hud/hud_world.h"
 #include "../misc/misc.h"
 #include "../misc/level.h"
@@ -106,6 +108,7 @@ FunHook<int(const rf::String* name)> event_lookup_type_hook{
                 {"ATX_Pause", 156},
                 {"ATX_Set_Frame_Time", 157},
                 {"Weather_Region_State", 158},
+                {"Display_Projection", 159},
             };
 
             auto it = custom_event_ids.find(name->c_str());
@@ -190,6 +193,7 @@ FunHook<rf::Event*(int event_type)> event_allocate_hook{
                 {156, []() { return new EventATXPause(); }},
                 {157, []() { return new EventATXSetFrameTime(); }},
                 {158, []() { return new EventWeatherRegionState(); }},
+                {159, []() { return new EventDisplayProjection(); }},
             };
 
             // find type and allocate
@@ -279,6 +283,7 @@ FunHook<void(rf::Event*)> event_deallocate_hook{
                 {156, [](rf::Event* e) { delete static_cast<EventATXPause*>(e); }},
                 {157, [](rf::Event* e) { delete static_cast<EventATXSetFrameTime*>(e); }},
                 {158, [](rf::Event* e) { delete static_cast<EventWeatherRegionState*>(e); }},
+                {159, [](rf::Event* e) { delete static_cast<EventDisplayProjection*>(e); }},
             };
 
             // find type and deallocate
@@ -338,7 +343,8 @@ bool is_forward_exempt(rf::EventType event_type) {
         rf::EventType::ATX_Play,
         rf::EventType::ATX_Pause,
         rf::EventType::ATX_Set_Frame_Time,
-        rf::EventType::Weather_Region_State
+        rf::EventType::Weather_Region_State,
+        rf::EventType::Display_Projection
     };
 
     // AF_Heal should be forward exempt, but this was missed when AF_Heal was added in RFL v300
@@ -924,6 +930,21 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
             return event;
         }
     },
+    // Display_Projection
+    {
+        rf::EventType::Display_Projection, [](const EventCreateParams& params) {
+            auto* base_event = rf::event_create(params.pos, std::to_underlying(rf::EventType::Display_Projection));
+            auto* event = dynamic_cast<EventDisplayProjection*>(base_event);
+            if (event) {
+                event->handle = params.str1;
+                event->render_width = params.int1;
+                event->render_height = params.int2;
+                event->fov = params.float1;
+                event->update_interval = params.float2;
+            }
+            return event;
+        }
+    },
     // Resize_Gas_Region
     {
         rf::EventType::Resize_Gas_Region, [](const EventCreateParams& params) {
@@ -1024,6 +1045,51 @@ void EventATXSetFrameTime::turn_on()
         return;
     }
     atx_set_frame_time(handle, frame_time_ms);
+}
+
+void EventDisplayProjection::turn_on()
+{
+    if (handle.empty()) {
+        xlog::warn("[Display_Projection] uid={} called with empty ATX handle", this->uid);
+        return;
+    }
+    if (rf::is_dedicated_server) {
+        return;
+    }
+    if (!is_d3d11()) {
+        static bool warned = false;
+        if (!warned) {
+            warned = true;
+            xlog::warn("[Display_Projection] requires the Direct3D 11 renderer.");
+        }
+        return;
+    }
+
+    rf::Object* camera = nullptr;
+    for (const int link_handle : this->links) {
+        if (!alpine_projection_camera_is_camera(link_handle)) {
+            continue;
+        }
+        if (rf::Object* obj = rf::obj_from_handle(link_handle)) {
+            camera = obj;
+            break;
+        }
+    }
+    if (!camera) {
+        xlog::warn("[Display_Projection] uid={} is not linked to a Projection Camera object", this->uid);
+        return;
+    }
+
+    // A blank editor field stores 0, so an unset size means "default", not "smallest allowed".
+    const int w = std::clamp(render_width > 0 ? render_width : 256, 16, 2048);
+    const int h = std::clamp(render_height > 0 ? render_height : 256, 16, 2048);
+    const float capture_fov = fov > 0.0f ? std::clamp(fov, 1.0f, 179.0f) : 50.0f;
+    projector_activate(this->uid, camera->handle, handle, capture_fov, update_interval, w, h);
+}
+
+void EventDisplayProjection::turn_off()
+{
+    projector_deactivate(this->uid);
 }
 
 // set p_data orient for Anchor_Marker_Orient when event is created (required for use in moving groups)

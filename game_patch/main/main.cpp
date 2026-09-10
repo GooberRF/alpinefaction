@@ -23,6 +23,7 @@
 #include "../debug/debug.h"
 #include "../graphics/gr.h"
 #include "../graphics/weather.h"
+#include "../graphics/scene_capture.h"
 #include "../graphics/d3d11/gr_d3d11_mesh.h"
 #include "../hud/hud.h"
 #include "../hud/hud_world.h"
@@ -234,6 +235,7 @@ FunHook<int(rf::String&, rf::String&, char*)> level_load_hook{
         xlog::info("Loading level: {}", level_filename);
         evaluate_pow2tex(level_filename);
         waypoints_level_reset();
+        projector_clear_all();
         atx_level_reset();
         alpine_camera_clear_static_mode();
         if (!save_filename.empty())

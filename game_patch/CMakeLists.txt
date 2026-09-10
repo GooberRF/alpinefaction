@@ -62,6 +62,8 @@ set(SRCS
     graphics/gr_light.cpp
     graphics/weather.cpp
     graphics/weather.h
+    graphics/scene_capture.cpp
+    graphics/scene_capture.h
     graphics/legacy/gr_d3d.cpp
     graphics/legacy/gr_d3d_texture.cpp
     graphics/legacy/gr_d3d_capture.cpp
@@ -305,6 +307,8 @@ set(SRCS
     object/alpine_corona.h
     object/alpine_bag.cpp
     object/alpine_bag.h
+    object/alpine_projection_camera.cpp
+    object/alpine_projection_camera.h
     object/clock.cpp
     misc/achievements.h
     misc/achievements.cpp

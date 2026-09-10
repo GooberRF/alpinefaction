@@ -19,6 +19,7 @@
 #include "corona.h"
 #include "bag.h"
 #include "weather_region.h"
+#include "projection_camera.h"
 
 // Forward declarations
 int get_level_rfl_version();
@@ -199,6 +200,10 @@ CodeInjection CDedLevel_LoadLevel_patch2{
                 }
                 if (chunk_id == alpine_weather_region_chunk_id) {
                     weather_region_deserialize_chunk(level, file, chunk_size);
+                    regs.eip = 0x0043090C;
+                }
+                if (chunk_id == alpine_projection_camera_chunk_id) {
+                    projection_camera_deserialize_chunk(level, file, chunk_size);
                     regs.eip = 0x0043090C;
                 }
             }
@@ -780,7 +785,8 @@ CodeInjection skip_alpine_objects_bounds_check{
             obj->type == DedObjectType::DED_NOTE ||
             obj->type == DedObjectType::DED_CORONA ||
             obj->type == DedObjectType::DED_GAS_REGION ||
-            obj->type == DedObjectType::DED_WEATHER_REGION) {
+            obj->type == DedObjectType::DED_WEATHER_REGION ||
+            obj->type == DedObjectType::DED_PROJECTION_CAMERA) {
             regs.eip = 0x0041dcfa;
         }
     },
@@ -838,6 +844,9 @@ CodeInjection CDedLevel_SaveLevel_patch{
 
         // Write weather region objects chunk
         weather_region_serialize_chunk(level, file);
+
+        // Write projection camera objects chunk
+        projection_camera_serialize_chunk(level, file);
 
         // Re-write any Glacier chunks
         retained_chunks_serialize(level, file);

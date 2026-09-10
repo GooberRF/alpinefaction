@@ -176,6 +176,7 @@ void DeleteBagObject(DedBag* bag)
     if (it != bags.end()) {
         bags.erase(it);
     }
+    alpine_remove_from_groups(level, static_cast<DedObject*>(bag));
     level->master_objects.remove_by_value(static_cast<DedObject*>(bag));
     destroy_ded_bag(bag);
 }

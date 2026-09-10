@@ -662,9 +662,21 @@ namespace gr::d3d11
         renderer->fog_set();
     }
 
+    int render_target_generation()
+    {
+        return renderer ? renderer->render_target_generation() : 0;
+    }
+
+    void invalidate_texture_cache()
+    {
+        if (renderer) {
+            renderer->invalidate_texture_cache();
+        }
+    }
+
     bool set_render_target(int bm_handle)
     {
-        return renderer->set_render_target(bm_handle);
+        return renderer && renderer->set_render_target(bm_handle);
     }
 
     void flush_outlines_before_fpgun()
