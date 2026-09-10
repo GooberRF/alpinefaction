@@ -2,13 +2,17 @@
 #include <patch_common/FunHook.h>
 #include <patch_common/CallHook.h>
 #include <patch_common/AsmWriter.h>
+#include <patch_common/MemUtils.h>
+#include <cstdint>
 #include <cstring>
 #include <string>
+#include <unordered_map>
 #include <vector>
 #include <xlog/xlog.h>
 #include "../misc/achievements.h"
 #include "../misc/alpine_settings.h"
 #include "../os/console.h"
+#include "../os/os.h"
 #include "../rf/gr/gr_light.h"
 #include "../rf/entity.h"
 #include "../rf/event.h"
@@ -207,6 +211,67 @@ CodeInjection multi_obj_interp_add_restore_orient{
         regs.eip = 0x00483ACF;
     },
 };
+
+static constexpr int entity_collision_push_interval_ms = 1000 / 60;
+static std::unordered_map<int, int64_t> g_entity_collision_push_last_ms;
+
+// Stock kick on entity-vs-object contact is n * 1.05 * (max(0, (other_vel - local_vel).n) - min(0, vel.n)).
+// The closing term cancels the velocity that caused the contact, so it cannot repeat; the other-object
+// term is re-applied in full on every contact sub-step during contact, so its total scales with FPS.
+// Rate-limit only that term to 60 Hz by zeroing its dot product before max(0, x).
+CodeInjection entity_collision_push_rate_limit{
+    0x0049DDBB,
+    [](auto& regs) {
+        rf::Entity* ep = regs.esi;
+        if (!rf::is_multi || !rf::entity_from_handle(ep->p_data.collide_out.obj_handle)) {
+            return;
+        }
+        const int64_t now = timer::get_i64(1000);
+        auto [it, inserted] = g_entity_collision_push_last_ms.try_emplace(ep->handle, now);
+        if (inserted) {
+            return;
+        }
+        if (now - it->second < entity_collision_push_interval_ms) {
+            addr_as_ref<float>(regs.esp + 4) = 0.0f;
+            return;
+        }
+        it->second = (now - it->second >= 2 * entity_collision_push_interval_ms)
+                         ? now
+                         : it->second + entity_collision_push_interval_ms;
+    },
+};
+
+// At high FPS entities flap between falling and grounded on ramps and jump pads, which
+// spams the landing sound. Only the sound call itself is suppressed.
+static constexpr int entity_land_sound_interval_ms = 250;
+static std::unordered_map<int, int64_t> g_entity_land_sound_last_ms;
+
+CallHook<int(rf::Object*, rf::Vector3, int, float, float)> entity_land_emit_sound_hook{
+    0x004198E2,
+    [](rf::Object* objp, rf::Vector3 pos, int sound_handle, float vol_scale, float pan) -> int {
+        const int64_t now = timer::get_i64(1000);
+        auto [it, inserted] = g_entity_land_sound_last_ms.try_emplace(objp->handle, now);
+        if (!inserted) {
+            if (now - it->second < entity_land_sound_interval_ms) {
+                return -1;
+            }
+            it->second = now;
+        }
+        return entity_land_emit_sound_hook.call_target(objp, pos, sound_handle, vol_scale, pan);
+    },
+};
+
+void entity_rate_limit_on_entity_delete(int handle)
+{
+    g_entity_collision_push_last_ms.erase(handle);
+    g_entity_land_sound_last_ms.erase(handle);
+}
+
+void entity_rate_limit_clear()
+{
+    g_entity_collision_push_last_ms.clear();
+    g_entity_land_sound_last_ms.clear();
+}
 
 CodeInjection entity_process_post_hidden_injection{
     0x0041E4C8,
@@ -857,6 +922,12 @@ void entity_do_patch()
     // from entity->info, but on MP clients info may lack crouch data. Use info2 instead,
     // which has correct data and is already used by entity_crouch.
     AsmWriter(0x00428A7A).mov(asm_regs::ecx, *(asm_regs::edi + 0x29C));
+
+    // Regulate FPS-dependent head-jump launch velocity in multiplayer
+    entity_collision_push_rate_limit.install();
+
+    // Stop landing-sound spam from falling/grounded flapping on ramps at high FPS
+    entity_land_emit_sound_hook.install();
 
     // Fix RF bug: multi_obj_interp_add corrupts pd->orient
     multi_obj_interp_add_save_orient.install();

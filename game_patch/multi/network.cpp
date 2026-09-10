@@ -65,6 +65,7 @@
 #include "../misc/waypoints.h"
 #include "../object/object.h"
 #include "../graphics/weather.h"
+#include "../graphics/scene_capture.h"
 #include "../os/console.h"
 #include "../purefaction/pf.h"
 #include "../sound/sound.h"
@@ -2948,7 +2949,9 @@ FunHook<void()> multi_stop_hook{
         gungame_on_multi_shutdown(); // put the Jeep Gun mesh + damage back to weapons.tbl
         mutators_on_multi_shutdown(); // put the level's own gravity back
         weather_clear_regions(); // weather regions belong to the level being left
+        projector_clear_all(); // Display_Projection feeds and their render targets are level-scoped
         riot_shield_on_multi_level_init(); // drop any pending riot shield break suppressions
+        entity_rate_limit_clear(); // drop per-entity collision/landing-sound rate limit state
         afstats::on_shutdown(); // best-effort final flush of the stats event stream
         fflink::afstats_client_reset(); // a stats session key is only ever valid for the join it was minted for
         g_sent_obj_update_ticks.clear(); // drop per-recipient obj_update keyframe-dedup state from the session being left
@@ -3177,7 +3180,7 @@ CodeInjection obj_interp_too_fast_fix{
     0x00483C3B,
     [] (auto& regs) {
         // Make all calculations on milliseconds instead of using microseconds and rounding them up
-        const int now = rf::timer::get(1000);
+        const int now = static_cast<int>(timer::get_i64(1000));
         const int frame_time_us = regs.ebp;
         regs.eax = now - frame_time_us;
         regs.edi = now;

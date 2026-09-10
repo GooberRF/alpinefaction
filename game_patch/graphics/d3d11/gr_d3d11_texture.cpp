@@ -248,6 +248,15 @@ namespace gr::d3d11
             );
         }
 
+        // Fresh VRAM holds whatever was there before, and a render target is only written when
+        // its owner next renders — which for a throttled camera can be a whole interval away, and
+        // for a monitor not until its next update. Start both surfaces black.
+        const float black[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+        device_context_->ClearRenderTargetView(render_target_view, black);
+        if (gpu_ms_texture) {
+            device_context_->ResolveSubresource(gpu_ss_texture, 0, gpu_ms_texture, 0, tex_desc.Format);
+        }
+
         Texture texture{
             bm_handle,
             tex_desc.Format,
@@ -367,6 +376,8 @@ namespace gr::d3d11
     {
         xlog::trace("Flushing texture cache");
         if (force) {
+            // Cheaper than counting them, and a spurious bump only costs one extra re-render.
+            ++render_target_generation_;
             texture_cache_.clear();
         }
         else {
@@ -378,6 +389,9 @@ namespace gr::d3d11
                 }
                 else if (texture.ref_count <= 0) {
                     xlog::trace("Flushing texture: handle {}", texture.bm_handle);
+                    if (texture.render_target_view) {
+                        ++render_target_generation_;
+                    }
                     it = texture_cache_.erase(it);
                     continue;
                 }
@@ -435,6 +449,9 @@ namespace gr::d3d11
             --texture.ref_count;
             if (texture.ref_count <= 0) {
                 xlog::trace("Flushing texture after ref removal: handle {}", texture.bm_handle);
+                if (texture.render_target_view) {
+                    ++render_target_generation_;
+                }
                 texture_cache_.erase(it);
             }
         }
@@ -443,7 +460,14 @@ namespace gr::d3d11
     void TextureManager::mark_dirty(int bm_handle)
     {
         int bm_index = rf::bm::get_cache_slot(bm_handle);
-        texture_cache_.erase(bm_index);
+        auto it = texture_cache_.find(bm_index);
+        if (it == texture_cache_.end()) {
+            return;
+        }
+        if (it->second.render_target_view) {
+            ++render_target_generation_;
+        }
+        texture_cache_.erase(it);
     }
 
     std::pair<DXGI_FORMAT, rf::bm::Format> TextureManager::determine_supported_texture_format(rf::bm::Format fmt)
@@ -655,7 +679,12 @@ namespace gr::d3d11
         xlog::trace("Creating GPU texture for {}", rf::bm::get_filename(bm_handle));
 
         if (!cpu_texture) {
-            xlog::warn("Both GPU and CPU textures are missing");
+            // A texture that failed to load is retried on every draw that samples it, so say so
+            // once rather than once per draw for the rest of the level.
+            if (!warned_missing) {
+                warned_missing = true;
+                xlog::warn("Both GPU and CPU textures are missing for {}", rf::bm::get_filename(bm_handle));
+            }
             return;
         }
 

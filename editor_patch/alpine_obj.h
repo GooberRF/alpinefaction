@@ -13,6 +13,20 @@ void ApplyAlpineObjectPatches();
 void alpine_select_objects(CDedLevel* level);
 void alpine_hide_objects(CDedLevel* level);
 
+inline void alpine_remove_from_groups(CDedLevel* level, DedObject* obj)
+{
+    auto& mg = level->moving_groups;
+    for (int i = 0; i < mg.size; i++) {
+        auto* group = mg[i];
+        if (!group) continue;
+        for (int j = group->objects.size - 1; j >= 0; j--) {
+            if (group->objects[j] == obj) {
+                group->objects.remove_at(j);
+            }
+        }
+    }
+}
+
 // ─── Shared selection helper ────────────────────────────────────────────────
 
 inline bool is_object_selected(CDedLevel* level, DedObject* obj)

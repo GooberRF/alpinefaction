@@ -14,6 +14,7 @@ constexpr int alpine_mesh_chunk_id = 0x0AFBAE01;
 constexpr int alpine_corona_chunk_id = 0x0AFBAE03;
 constexpr int alpine_bag_chunk_id = 0x0AFBAE04;
 constexpr int alpine_weather_region_chunk_id = 0x0AFBAE06;
+constexpr int alpine_projection_camera_chunk_id = 0x0AFBAE08;
 
 // should match structure in editor_patch\level.h
 struct AlpineLevelProperties
@@ -228,6 +229,7 @@ struct AlpineMeshInfo {
     MeshClutterInfo clutter;
 };
 
+void level_shutdown();
 void alpine_mesh_load_chunk(rf::File& file, std::size_t chunk_len);
 void alpine_mesh_do_frame();
 void alpine_mesh_clear_state();

@@ -32,6 +32,7 @@
 #include "gr.h"
 #include "gr_internal.h"
 #include "weather.h"
+#include "scene_capture.h"
 #include "../misc/alpine_options.h"
 #include "../hud/multi_spectate.h"
 #include "../multi/demo/demo.h"
@@ -449,8 +450,22 @@ bool gr_set_render_target(int bm_handle)
     return false;
 }
 
-// Drain the queued .vfx x-ray outlines (the salvage flag) now, so they land under the
-// first-person weapon instead of over it.
+int gr_render_target_generation()
+{
+    if (rf::gr::screen.mode == rf::gr::DIRECT3D && is_d3d11()) {
+        return gr::d3d11::render_target_generation();
+    }
+    return 0;
+}
+
+// Drop the renderer's cached texture-handle pair; see the declaration in gr.h.
+void gr_invalidate_texture_cache()
+{
+    if (rf::gr::screen.mode == rf::gr::DIRECT3D && is_d3d11()) {
+        gr::d3d11::invalidate_texture_cache();
+    }
+}
+
 void gr_flush_outlines_before_fpgun()
 {
     if (rf::gr::screen.mode == rf::gr::DIRECT3D && is_d3d11()) {
@@ -614,6 +629,16 @@ ConsoleCommand2 pow2_tex_cmd{
     "Manual debug override for power of 2 texture enforcement. Only affects new level loads. If you don't know what this does, do not use this command.",
 };
 
+ConsoleCommand2 caustics_cmd{
+    "r_caustics",
+    []() {
+        g_alpine_game_config.caustics = !g_alpine_game_config.caustics;
+        rf::console::print("Underwater caustics are {}",
+            g_alpine_game_config.caustics ? "enabled" : "disabled");
+    },
+    "Toggle underwater caustics rendering (D3D11 only)",
+};
+
 // checked during level load
 void evaluate_pow2tex(const rf::String& level_filename) {
     // if dbg_pow2tex is active, use manual override instead of level filename lookup
@@ -697,6 +722,9 @@ void gr_apply_patch()
 
     // Plankton fix and weather regions
     weather_apply_patch();
+
+    // Display_Projection scene capture
+    scene_capture_apply_patch();
 
     if (!headless_bot_graphics_bypass) {
         const bool use_d3d11_renderer =
@@ -785,6 +813,7 @@ void gr_apply_patch()
     precache_rooms_cmd.register_cmd();
     disable_rendering_cmd.register_cmd();
     pow2_tex_cmd.register_cmd();
+    caustics_cmd.register_cmd();
 
     // Fix `rf::gr::text_2d_mode`.
     AsmWriter{0x0050BB40}.push<int8_t>(rf::gr::FOG_NOT_ALLOWED);
