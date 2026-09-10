@@ -332,6 +332,13 @@ void mesh_serialize_chunk(CDedLevel& level, rf::File& file)
         }
     }
 
+    // Per-object flags appended after every record, not inside one: a record is variable length
+    // and carries no version, so a reader that predates a field can only tell it apart by finding
+    // it at the end of the chunk.
+    for (auto* mesh : meshes) {
+        file.write<uint8_t>(mesh->no_shadow_cast ? 1 : 0);
+    }
+
     level.EndRflSection(file, start_pos);
 }
 
@@ -356,6 +363,9 @@ void mesh_deserialize_chunk(CDedLevel& level, rf::File& file, std::size_t chunk_
     uint32_t count = 0;
     if (!read_bytes(&count, sizeof(count))) return;
     if (count > 10000) count = 10000;
+
+    const std::size_t first_mesh = meshes.size();
+    uint32_t loaded = 0;
 
     for (uint32_t i = 0; i < count; i++) {
         auto* mesh = new DedMesh();
@@ -452,8 +462,19 @@ void mesh_deserialize_chunk(CDedLevel& level, rf::File& file, std::size_t chunk_
         mesh->vmesh_load_failed = false;
 
         meshes.push_back(mesh);
+        loaded++;
         // Add to master objects list so stock link validation (FUN_00483920) finds this mesh
         level.master_objects.add(static_cast<DedObject*>(mesh));
+    }
+
+    // Trailing per-object flag block; absent in chunks written before it existed, which leaves
+    // every object at the default.
+    if (loaded == count && remaining >= count) {
+        for (uint32_t i = 0; i < count; i++) {
+            uint8_t flags = 0;
+            if (!read_bytes(&flags, sizeof(flags))) return;
+            meshes[first_mesh + i]->no_shadow_cast = (flags != 0);
+        }
     }
 }
 
@@ -474,6 +495,7 @@ static int g_init_collision_mode;
 static std::vector<EditorTextureOverride> g_init_overrides;
 static bool g_init_overrides_multiple = false; // true if selected meshes have differing overrides
 static int g_init_simulate = 0; // 0=unchecked, 1=checked, -1=indeterminate (mixed)
+static int g_init_no_shadow_cast = 0;
 static int g_init_material = 0;
 static bool g_init_material_multiple = false;
 static int g_init_is_clutter = 0; // 0=unchecked, 1=checked, -1=indeterminate
@@ -647,6 +669,7 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
         bool all_same_anim = true, all_same_collision = true;
         bool all_same_overrides = true;
         bool all_same_simulate = true;
+        bool all_same_no_shadow_cast = true;
         bool all_same_material = true;
         bool all_same_is_clutter = true;
         bool all_same_clutter = true;
@@ -658,6 +681,7 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
             if (strcmp(m->state_anim.c_str(), first->state_anim.c_str()) != 0) all_same_anim = false;
             if (m->collision_mode != first->collision_mode) all_same_collision = false;
             if (m->simulate_in_editor != first->simulate_in_editor) all_same_simulate = false;
+            if (m->no_shadow_cast != first->no_shadow_cast) all_same_no_shadow_cast = false;
             if (m->material != first->material) all_same_material = false;
             if (m->clutter_props.is_clutter != first->clutter_props.is_clutter) all_same_is_clutter = false;
             if (m->texture_overrides.size() != first->texture_overrides.size()) {
@@ -701,6 +725,7 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
         g_init_overrides_multiple = !all_same_overrides;
         g_init_overrides = all_same_overrides ? first->texture_overrides : std::vector<EditorTextureOverride>{};
         g_init_simulate = all_same_simulate ? (first->simulate_in_editor ? 1 : 0) : -1;
+        g_init_no_shadow_cast = all_same_no_shadow_cast ? (first->no_shadow_cast ? 1 : 0) : -1;
         g_init_material = all_same_material ? first->material : -1;
         g_init_material_multiple = !all_same_material;
         g_init_is_clutter = all_same_is_clutter ? (first->clutter_props.is_clutter ? 1 : 0) : -1;
@@ -714,6 +739,11 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
             SendDlgItemMessage(hdlg, IDC_MESH_SIMULATE, BM_SETCHECK, BST_INDETERMINATE, 0);
         } else {
             CheckDlgButton(hdlg, IDC_MESH_SIMULATE, g_init_simulate ? BST_CHECKED : BST_UNCHECKED);
+        }
+        if (g_init_no_shadow_cast < 0) {
+            SendDlgItemMessage(hdlg, IDC_MESH_NO_SHADOW_CAST, BM_SETCHECK, BST_INDETERMINATE, 0);
+        } else {
+            CheckDlgButton(hdlg, IDC_MESH_NO_SHADOW_CAST, g_init_no_shadow_cast ? BST_CHECKED : BST_UNCHECKED);
         }
 
         // Material combo box (independent of clutter)
@@ -1065,6 +1095,10 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
             bool simulate_changed = (simulate_check != BST_INDETERMINATE) &&
                 ((g_init_simulate < 0) || (simulate_check != g_init_simulate));
 
+            int no_shadow_cast_check = static_cast<int>(IsDlgButtonChecked(hdlg, IDC_MESH_NO_SHADOW_CAST));
+            bool no_shadow_cast_changed = (no_shadow_cast_check != BST_INDETERMINATE) &&
+                ((g_init_no_shadow_cast < 0) || (no_shadow_cast_check != g_init_no_shadow_cast));
+
             // Check material combo
             int material_sel = static_cast<int>(SendDlgItemMessage(hdlg, IDC_MESH_MATERIAL, CB_GETCURSEL, 0, 0));
             bool material_changed = false;
@@ -1161,6 +1195,9 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
                 }
                 if (simulate_changed) {
                     mesh->simulate_in_editor = (simulate_check == BST_CHECKED);
+                }
+                if (no_shadow_cast_changed) {
+                    mesh->no_shadow_cast = (no_shadow_cast_check == BST_CHECKED);
                 }
                 if (material_changed && material_sel >= 0 && material_sel <= 9) {
                     mesh->material = material_sel;
@@ -1310,6 +1347,7 @@ DedMesh* CloneMeshObject(DedMesh* source, bool add_to_level)
     mesh->simulate_in_editor = source->simulate_in_editor;
     mesh->material = source->material;
     mesh->clutter_props = source->clutter_props;
+    mesh->no_shadow_cast = source->no_shadow_cast;
 
     // Generate new UID
     mesh->uid = generate_uid();

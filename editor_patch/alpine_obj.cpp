@@ -2000,6 +2000,13 @@ CodeInjection alpine_group_save_hook{
                     flags |= 1;
                 }
 
+                // Check no shadow cast
+                if (std::find(props.no_shadow_cast_brush_uids.begin(),
+                              props.no_shadow_cast_brush_uids.end(), uid)
+                    != props.no_shadow_cast_brush_uids.end()) {
+                    flags |= 4;
+                }
+
                 // Check breakable
                 auto bit = std::find(props.breakable_brush_uids.begin(),
                                      props.breakable_brush_uids.end(), uid);
@@ -2298,6 +2305,13 @@ CodeInjection alpine_group_load_hook{
                                           props.geoable_brush_uids.end(), uid)
                                 == props.geoable_brush_uids.end()) {
                                 props.geoable_brush_uids.push_back(uid);
+                            }
+                        }
+                        if (bge.flags & 4) { // no shadow cast
+                            if (std::find(props.no_shadow_cast_brush_uids.begin(),
+                                          props.no_shadow_cast_brush_uids.end(), uid)
+                                == props.no_shadow_cast_brush_uids.end()) {
+                                props.no_shadow_cast_brush_uids.push_back(uid);
                             }
                         }
                         if (bge.flags & 2) { // breakable

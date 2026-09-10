@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cmath>
 #include <string>
 #include <vector>
 #include <unordered_set>
@@ -14,6 +15,17 @@ constexpr int alpine_mesh_chunk_id = 0x0AFBAE01;
 constexpr int alpine_corona_chunk_id = 0x0AFBAE03;
 constexpr int alpine_bag_chunk_id = 0x0AFBAE04;
 constexpr int alpine_weather_region_chunk_id = 0x0AFBAE06;
+
+// Unit vector pointing TOWARD the sun. The light travel direction is its negation.
+// should match helper in editor_patch\level.h
+inline rf::Vector3 alpine_sun_to_light_dir(float yaw_deg, float pitch_deg)
+{
+    constexpr float deg_to_rad = 3.14159265358979f / 180.0f;
+    const float yaw = yaw_deg * deg_to_rad;
+    const float pitch = pitch_deg * deg_to_rad;
+    const float cp = std::cos(pitch);
+    return {cp * std::sin(yaw), std::sin(pitch), cp * std::cos(yaw)};
+}
 
 // should match structure in editor_patch\level.h
 struct AlpineLevelProperties
@@ -36,6 +48,29 @@ struct AlpineLevelProperties
     std::vector<int32_t> breakable_room_uids;
     std::vector<uint8_t> breakable_materials;
     std::vector<int32_t> hold_open_keyframe_uids; // first keyframe UIDs of movers with "Hold Open"
+    // v5
+    bool enable_sun = false;
+    float sun_yaw = 0.0f;   // degrees
+    float sun_pitch = 90.0f; // degrees above horizon, 90 = zenith
+    uint8_t sun_color_r = 255, sun_color_g = 255, sun_color_b = 255, sun_color_a = 255;
+    float sun_intensity = 1.0f;
+    float sun_spread_angle = 0.0f; // degrees, penumbra half-angle for baked soft shadows
+    bool sun_cast_baked_shadows = true;
+    bool sun_affects_meshes = true;
+    uint8_t sun_mesh_mode = 0; // 0 = scale by sampled lightmap luminance, 1 = apply everywhere
+    bool sun_drives_shadowmap_dir = true;
+    bool legacy_lighting = false;   // editor-side bake switch, no effect in game
+    bool highres_lightmaps = false; // editor-side bake switch, no effect in game
+    bool sun_liquid_occludes = true; // editor-side bake switch, no effect in game
+    bool invisible_faces_occlude = false; // editor-side bake switch, no effect in game
+    bool alpha_faces_occlude = false; // editor-side bake switch, no effect in game
+    // no_shadow_cast_brush_uids is editor-only (bake occluder exclusion); read and discarded
+    bool meshes_occlude = false; // editor-side bake switch, no effect in game
+
+    rf::Vector3 sun_to_light_dir() const
+    {
+        return alpine_sun_to_light_dir(sun_yaw, sun_pitch);
+    }
 
     static AlpineLevelProperties& instance()
     {
@@ -169,6 +204,69 @@ struct AlpineLevelProperties
                 hold_open_keyframe_uids[i] = uid;
             }
             xlog::debug("[AlpineLevelProps] hold_open count={}", ho_count);
+        }
+
+        if (version >= 5) {
+            std::uint8_t u8 = 0;
+            if (!read_bytes(&u8, sizeof(u8)))
+                return;
+            enable_sun = (u8 != 0);
+            if (!read_bytes(&sun_yaw, sizeof(sun_yaw)))
+                return;
+            if (!read_bytes(&sun_pitch, sizeof(sun_pitch)))
+                return;
+            if (!read_bytes(&sun_color_r, sizeof(sun_color_r)))
+                return;
+            if (!read_bytes(&sun_color_g, sizeof(sun_color_g)))
+                return;
+            if (!read_bytes(&sun_color_b, sizeof(sun_color_b)))
+                return;
+            if (!read_bytes(&sun_color_a, sizeof(sun_color_a)))
+                return;
+            if (!read_bytes(&sun_intensity, sizeof(sun_intensity)))
+                return;
+            if (!read_bytes(&sun_spread_angle, sizeof(sun_spread_angle)))
+                return;
+            if (!read_bytes(&u8, sizeof(u8)))
+                return;
+            sun_cast_baked_shadows = (u8 != 0);
+            if (!read_bytes(&u8, sizeof(u8)))
+                return;
+            sun_affects_meshes = (u8 != 0);
+            if (!read_bytes(&sun_mesh_mode, sizeof(sun_mesh_mode)))
+                return;
+            if (!read_bytes(&u8, sizeof(u8)))
+                return;
+            sun_drives_shadowmap_dir = (u8 != 0);
+            if (!read_bytes(&u8, sizeof(u8)))
+                return;
+            legacy_lighting = (u8 != 0);
+            if (!read_bytes(&u8, sizeof(u8)))
+                return;
+            highres_lightmaps = (u8 != 0);
+            if (!read_bytes(&u8, sizeof(u8)))
+                return;
+            sun_liquid_occludes = (u8 != 0);
+            if (!read_bytes(&u8, sizeof(u8)))
+                return;
+            invisible_faces_occlude = (u8 != 0);
+            if (!read_bytes(&u8, sizeof(u8)))
+                return;
+            alpha_faces_occlude = (u8 != 0);
+            uint32_t nsc_count = 0;
+            if (!read_bytes(&nsc_count, sizeof(nsc_count)))
+                return;
+            if (nsc_count > 10000) nsc_count = 10000;
+            for (uint32_t i = 0; i < nsc_count; i++) {
+                int32_t brush_uid = 0; // editor-only, skip
+                if (!read_bytes(&brush_uid, sizeof(brush_uid)))
+                    return;
+            }
+            if (!read_bytes(&u8, sizeof(u8)))
+                return;
+            meshes_occlude = (u8 != 0);
+            xlog::debug("[AlpineLevelProps] enable_sun {} yaw {} pitch {} intensity {} no_shadow_cast {}",
+                enable_sun, sun_yaw, sun_pitch, sun_intensity, nsc_count);
         }
     }
 };

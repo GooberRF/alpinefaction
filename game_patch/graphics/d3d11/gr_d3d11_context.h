@@ -72,7 +72,8 @@ namespace gr::d3d11
     {
     public:
         LightsBuffer(ID3D11Device* device);
-        void update(ID3D11DeviceContext* device_context, bool force_neutral = false, const float* ambient_override = nullptr);
+        void update(ID3D11DeviceContext* device_context, bool force_neutral = false, const float* ambient_override = nullptr,
+            float sun_scale = 0.0f);
 
         operator ID3D11Buffer*() const
         {
@@ -533,9 +534,9 @@ namespace gr::d3d11
             }
         }
 
-        void update_lights(bool force_neutral = false, const float* ambient_override = nullptr)
+        void update_lights(bool force_neutral = false, const float* ambient_override = nullptr, float sun_scale = 0.0f)
         {
-            lights_buffer_.update(device_context_, force_neutral, ambient_override);
+            lights_buffer_.update(device_context_, force_neutral, ambient_override, sun_scale);
         }
 
         void draw_indexed(int index_count, int index_start_location, int base_vertex_location)

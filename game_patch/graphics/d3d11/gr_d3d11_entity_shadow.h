@@ -62,10 +62,13 @@ namespace gr::d3d11
         static constexpr float shadow_projection_fade_start = 1.0f;
         static constexpr float shadow_projection_fade_end = 3.0f;
 
-        // Static light direction (nearly overhead, slight offset)
-        static constexpr float light_dir_x = 0.15f;
-        static constexpr float light_dir_y = -1.0f;
-        static constexpr float light_dir_z = 0.1f;
+        // Default light direction (nearly overhead, slight offset)
+        static constexpr float default_light_dir_x = 0.15f;
+        static constexpr float default_light_dir_y = -1.0f;
+        static constexpr float default_light_dir_z = 0.1f;
+
+        // Normalized travel direction of the shadow-casting light for the current frame
+        static void get_light_dir(float& x, float& y, float& z);
 
         EntityShadowRenderer(ID3D11Device* device, ShaderManager& shader_manager, MeshRenderer& mesh_renderer);
         ~EntityShadowRenderer();

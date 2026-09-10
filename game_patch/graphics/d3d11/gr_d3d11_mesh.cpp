@@ -19,6 +19,7 @@
 #include "../../misc/alpine_settings.h"
 #include "../../misc/alpine_options.h"
 #include "../../rf/level.h"
+#include "../gr.h"
 #include "gr_d3d11.h"
 #include "gr_d3d11_mesh.h"
 #include "gr_d3d11_context.h"
@@ -943,21 +944,21 @@ namespace gr::d3d11
                     if (!skip_ambient_cache) {
                         entity_ambient_cache[&params] = {mesh_ambient[0], mesh_ambient[1], mesh_ambient[2]};
                     }
-                    render_context_.update_lights(false, mesh_ambient);
+                    render_context_.update_lights(false, mesh_ambient, gr_sun_get_mesh_scale(mesh_ambient));
                 } else {
                     if (!skip_ambient_cache) {
                         auto it = entity_ambient_cache.find(&params);
                         if (it != entity_ambient_cache.end()) {
-                            render_context_.update_lights(false, it->second.data());
+                            render_context_.update_lights(false, it->second.data(), gr_sun_get_mesh_scale(it->second.data()));
                         } else {
-                            render_context_.update_lights();
+                            render_context_.update_lights(false, nullptr, gr_sun_get_mesh_scale(nullptr));
                         }
                     } else {
-                        render_context_.update_lights();
+                        render_context_.update_lights(false, nullptr, gr_sun_get_mesh_scale(nullptr));
                     }
                 }
             } else {
-                render_context_.update_lights();
+                render_context_.update_lights(false, nullptr, gr_sun_get_mesh_scale(nullptr));
             }
         } else {
             render_context_.update_lights();

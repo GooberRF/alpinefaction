@@ -21,6 +21,7 @@
 #include "../../rf/multi.h"
 #include "../../rf/os/frametime.h"
 #include "../../misc/alpine_settings.h"
+#include "../gr.h"
 #include "../../hud/multi_spectate.h"
 #include "../../multi/salvage.h"
 
@@ -287,14 +288,26 @@ namespace gr::d3d11
         xlog::info("Shadow map resized: {}x{}", current_resolution_, current_resolution_);
     }
 
+    void EntityShadowRenderer::get_light_dir(float& x, float& y, float& z)
+    {
+        x = default_light_dir_x;
+        y = default_light_dir_y;
+        z = default_light_dir_z;
+        const SunLightState sun = gr_get_sun_state();
+        if (sun.enabled && sun.drives_shadowmap_dir && sun.travel_dir.y < 0.0f) {
+            x = sun.travel_dir.x;
+            y = sun.travel_dir.y;
+            z = sun.travel_dir.z;
+        }
+        normalize_vec3(x, y, z);
+    }
+
     void EntityShadowRenderer::build_shadow_view_proj(ID3D11DeviceContext* context, const rf::Vector3& camera_pos)
     {
         current_camera_pos_ = camera_pos;
 
-        float ld_x = light_dir_x;
-        float ld_y = light_dir_y;
-        float ld_z = light_dir_z;
-        normalize_vec3(ld_x, ld_y, ld_z);
+        float ld_x, ld_y, ld_z;
+        get_light_dir(ld_x, ld_y, ld_z);
 
         float up_x = 0.0f, up_y = 1.0f, up_z = 0.0f;
         if (std::abs(ld_y) > 0.99f) {
@@ -316,6 +329,11 @@ namespace gr::d3d11
         float fade_end = shadow_distance_presets[dist_preset].fade_end;
         float extent = fade_end * 1.2f;
         float depth_range = fade_end * 4.0f;
+
+        // Oblique sun angles project casters much further across the map, so widen the
+        // ortho footprint rather than clamping the direction (the PS must see the same one)
+        float oblique_scale = std::clamp(0.30f / std::max(std::abs(ld_y), 0.0001f), 1.0f, 3.0f);
+        extent *= oblique_scale;
 
         // Snap the shadow frustum center to texel boundaries to prevent shadow swimming
         // World-space size of one shadow map texel
@@ -787,8 +805,8 @@ namespace gr::d3d11
         }
 
         // Compute normalized light direction for PS normal bias
-        float ld_x = light_dir_x, ld_y = light_dir_y, ld_z = light_dir_z;
-        normalize_vec3(ld_x, ld_y, ld_z);
+        float ld_x, ld_y, ld_z;
+        get_light_dir(ld_x, ld_y, ld_z);
 
         int dist_preset = std::clamp(g_alpine_game_config.shadow_distance, 0, num_shadow_distance_presets - 1);
 

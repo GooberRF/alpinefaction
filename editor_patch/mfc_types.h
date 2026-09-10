@@ -436,6 +436,7 @@ struct DedMesh : DedObject
     bool simulate_in_editor = false;   // v3c only: play animation continuously instead of freezing frame 0
     int material = 0;                  // material type for impact sounds (0=default, applies to all meshes)
     MeshClutterProps clutter_props;
+    bool no_shadow_cast = false;       // excluded from the lightmap bake's mesh occluders
 };
 
 struct DedNote : DedObject

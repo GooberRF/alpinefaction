@@ -47,6 +47,10 @@ cbuffer LightsBuffer : register(b1)
     float3 ambient_light;
     float num_point_lights;
     PointLight point_lights[MAX_POINT_LIGHTS];
+    float3 sun_travel_dir;  // direction the sunlight travels
+    float sun_scale;        // 0 = no sun term (all world/solid passes)
+    float3 sun_color;       // premultiplied by sun intensity
+    float _sun_pad;
 };
 
 cbuffer TextureScaleBuffer : register(b2)
@@ -175,6 +179,9 @@ float4 main(VsOutput input) : SV_TARGET
         } else {
             // Static meshes: use baked lightmap
             light_color *= 2;
+        }
+        if (sun_scale > 0.0f) {
+            light_color += sun_color * sun_scale * saturate(dot(input.norm, -sun_travel_dir));
         }
         float3 pixel_pos = input.world_pos_and_depth.xyz;
         for (int i = 0; i < num_point_lights; ++i) {

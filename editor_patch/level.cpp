@@ -434,6 +434,31 @@ static void compute_breakable_room_uids(CDedLevel& level, AlpineLevelProperties&
     }
 }
 
+// Drop no-shadow-cast entries whose brush no longer exists, mirroring the geoable prune above,
+// and entries whose brush has since stopped being eligible (converted to air, un-detailed, taken
+// out of a moving group), which the checkbox no longer offers and the bake could not honour.
+// No compiled-room mapping is needed: the bake resolves these brushes to occluder faces by
+// face_id and the game never reads the list.
+static void prune_no_shadow_cast_brush_uids(CDedLevel& level, AlpineLevelProperties& props)
+{
+    if (props.no_shadow_cast_brush_uids.empty()) return;
+
+    std::unordered_set<int32_t> keep_uids;
+    BrushNode* node = level.brush_list;
+    if (node) {
+        do {
+            if (no_shadow_cast_eligible(*node)) {
+                keep_uids.insert(node->uid);
+            }
+            node = node->next;
+        } while (node && node != level.brush_list);
+    }
+    auto& uids = props.no_shadow_cast_brush_uids;
+    uids.erase(std::remove_if(uids.begin(), uids.end(),
+        [&keep_uids](int32_t uid) { return keep_uids.find(uid) == keep_uids.end(); }),
+        uids.end());
+}
+
 // ─── Geoable room isolation ───────────────────────────────────────────────────
 // During geometry building, the room builder (FUN_00485990) flood-fills adjacent
 // coplanar faces into the same GRoom. This merges geoable and non-geoable detail
@@ -799,6 +824,7 @@ CodeInjection CDedLevel_SaveLevel_patch{
         auto& alpine_level_props = level.GetAlpineLevelProperties();
         compute_geoable_room_uids(level, alpine_level_props);
         compute_breakable_room_uids(level, alpine_level_props);
+        prune_no_shadow_cast_brush_uids(level, alpine_level_props);
 
         // Scrub hold_open_keyframe_uids: remove entries that don't match any
         // moving group's first keyframe (e.g. deleted movers, UID changes from undo)
@@ -844,6 +870,57 @@ CodeInjection CDedLevel_SaveLevel_patch{
     },
 };
 
+// Fill the sun yaw/pitch edit fields from the 3D viewport camera. The camera is aimed
+// ALONG the sun's rays (at the ground), so to-sun is the NEGATED camera forward vector.
+static void set_sun_angles_from_camera(HWND hdlg)
+{
+    auto* viewport = get_active_viewport();
+    if (!viewport || !viewport->view_data) {
+        return;
+    }
+
+    const Vector3& fwd = viewport->view_data->camera_orient.fvec;
+    float len = std::sqrt(fwd.x * fwd.x + fwd.y * fwd.y + fwd.z * fwd.z);
+    if (!std::isfinite(len) || len <= 0.0f) {
+        return;
+    }
+    float x = -fwd.x / len;
+    float y = -fwd.y / len;
+    float z = -fwd.z / len;
+
+    constexpr float rad_to_deg = 180.0f / 3.14159265358979f;
+    float yaw = std::atan2(x, z) * rad_to_deg;
+    yaw = std::fmod(yaw, 360.0f);
+    if (yaw < 0.0f) {
+        yaw += 360.0f;
+    }
+    // Aiming above the horizon keeps the heading and parks the sun on the horizon.
+    float pitch = std::clamp(std::asin(std::clamp(y, -1.0f, 1.0f)) * rad_to_deg, 0.0f, 90.0f);
+
+    char buffer[32];
+    std::snprintf(buffer, sizeof(buffer), "%.1f", yaw);
+    SetDlgItemTextA(hdlg, IDC_SUN_YAW, buffer);
+    std::snprintf(buffer, sizeof(buffer), "%.1f", pitch);
+    SetDlgItemTextA(hdlg, IDC_SUN_PITCH, buffer);
+}
+
+static WNDPROC g_level_dlg_orig_wndproc = nullptr;
+
+static LRESULT CALLBACK LevelDialogSubclassProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
+{
+    WNDPROC orig = g_level_dlg_orig_wndproc;
+    if (msg == WM_COMMAND && LOWORD(wparam) == IDC_SUN_SET_FROM_CAMERA && HIWORD(wparam) == BN_CLICKED) {
+        set_sun_angles_from_camera(hwnd);
+        return 0;
+    }
+    if (msg == WM_NCDESTROY) {
+        SetWindowLongPtrA(hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(orig));
+        g_level_dlg_orig_wndproc = nullptr;
+        return CallWindowProcA(orig, hwnd, msg, wparam, lparam);
+    }
+    return CallWindowProcA(orig, hwnd, msg, wparam, lparam);
+}
+
 // load AlpineLevelProperties settings when opening level properties dialog
 CodeInjection CLevelDialog_OnInitDialog_patch{
     0x004676C0,
@@ -862,8 +939,58 @@ CodeInjection CLevelDialog_OnInitDialog_patch{
         std::snprintf(buffer, sizeof(buffer), "%.3f", alpine_level_props.static_mesh_ambient_light_modifier);
         SetDlgItemTextA(hdlg, IDC_MESH_AMBIENT_LIGHT_MODIFIER, buffer);
         CheckDlgButton(hdlg, IDC_RF2_STYLE_GEOMOD, alpine_level_props.rf2_style_geomod ? BST_CHECKED : BST_UNCHECKED);
+        CheckDlgButton(hdlg, IDC_LEGACY_LIGHTING, alpine_level_props.legacy_lighting ? BST_CHECKED : BST_UNCHECKED);
+        CheckDlgButton(hdlg, IDC_HIGHRES_LIGHTMAPS, alpine_level_props.highres_lightmaps ? BST_CHECKED : BST_UNCHECKED);
+        CheckDlgButton(hdlg, IDC_INVISIBLE_FACES_OCCLUDE, alpine_level_props.invisible_faces_occlude ? BST_CHECKED : BST_UNCHECKED);
+        CheckDlgButton(hdlg, IDC_ALPHA_FACES_OCCLUDE, alpine_level_props.alpha_faces_occlude ? BST_CHECKED : BST_UNCHECKED);
+        CheckDlgButton(hdlg, IDC_MESHES_OCCLUDE, alpine_level_props.meshes_occlude ? BST_CHECKED : BST_UNCHECKED);
+
+        CheckDlgButton(hdlg, IDC_SUN_ENABLE, alpine_level_props.enable_sun ? BST_CHECKED : BST_UNCHECKED);
+        std::snprintf(buffer, sizeof(buffer), "%.3f", alpine_level_props.sun_yaw);
+        SetDlgItemTextA(hdlg, IDC_SUN_YAW, buffer);
+        std::snprintf(buffer, sizeof(buffer), "%.3f", alpine_level_props.sun_pitch);
+        SetDlgItemTextA(hdlg, IDC_SUN_PITCH, buffer);
+        std::snprintf(buffer, sizeof(buffer), "%.3f", alpine_level_props.sun_intensity);
+        SetDlgItemTextA(hdlg, IDC_SUN_INTENSITY, buffer);
+        std::snprintf(buffer, sizeof(buffer), "%.3f", alpine_level_props.sun_spread_angle);
+        SetDlgItemTextA(hdlg, IDC_SUN_SPREAD_ANGLE, buffer);
+        SetDlgItemInt(hdlg, IDC_SUN_COLOR_R, alpine_level_props.sun_color_r, FALSE);
+        SetDlgItemInt(hdlg, IDC_SUN_COLOR_G, alpine_level_props.sun_color_g, FALSE);
+        SetDlgItemInt(hdlg, IDC_SUN_COLOR_B, alpine_level_props.sun_color_b, FALSE);
+        CheckDlgButton(hdlg, IDC_SUN_CAST_BAKED_SHADOWS, alpine_level_props.sun_cast_baked_shadows ? BST_CHECKED : BST_UNCHECKED);
+        CheckDlgButton(hdlg, IDC_SUN_AFFECTS_MESHES, alpine_level_props.sun_affects_meshes ? BST_CHECKED : BST_UNCHECKED);
+        CheckDlgButton(hdlg, IDC_SUN_MESH_MODE_SCALE, alpine_level_props.sun_mesh_mode == 0 ? BST_CHECKED : BST_UNCHECKED);
+        CheckDlgButton(hdlg, IDC_SUN_DRIVES_SHADOWMAP_DIR, alpine_level_props.sun_drives_shadowmap_dir ? BST_CHECKED : BST_UNCHECKED);
+        CheckDlgButton(hdlg, IDC_SUN_LIQUID_OCCLUDES, alpine_level_props.sun_liquid_occludes ? BST_CHECKED : BST_UNCHECKED);
+
+        if (reinterpret_cast<WNDPROC>(GetWindowLongPtrA(hdlg, GWLP_WNDPROC)) != LevelDialogSubclassProc) {
+            g_level_dlg_orig_wndproc = reinterpret_cast<WNDPROC>(
+                SetWindowLongPtrA(hdlg, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(LevelDialogSubclassProc)));
+        }
     },
 };
+
+static bool read_dlg_float(HWND hdlg, int id, float& out, float min_value, float max_value)
+{
+    char buffer[64] = {};
+    GetDlgItemTextA(hdlg, id, buffer, static_cast<int>(sizeof(buffer)));
+    char* end = nullptr;
+    float value = std::strtof(buffer, &end);
+    if (end == buffer || !std::isfinite(value)) {
+        return false;
+    }
+    out = std::clamp(value, min_value, max_value);
+    return true;
+}
+
+static void read_dlg_color_channel(HWND hdlg, int id, uint8_t& out)
+{
+    BOOL translated = FALSE;
+    UINT value = GetDlgItemInt(hdlg, id, &translated, FALSE);
+    if (translated) {
+        out = static_cast<uint8_t>(std::min<UINT>(value, 255));
+    }
+}
 
 // save AlpineLevelProperties settings when closing level properties dialog
 CodeInjection CLevelDialog_OnOK_patch{
@@ -886,6 +1013,32 @@ CodeInjection CLevelDialog_OnOK_patch{
             alpine_level_props.static_mesh_ambient_light_modifier = modifier;
         }
         alpine_level_props.rf2_style_geomod = IsDlgButtonChecked(hdlg, IDC_RF2_STYLE_GEOMOD) == BST_CHECKED;
+        alpine_level_props.legacy_lighting = IsDlgButtonChecked(hdlg, IDC_LEGACY_LIGHTING) == BST_CHECKED;
+        alpine_level_props.highres_lightmaps = IsDlgButtonChecked(hdlg, IDC_HIGHRES_LIGHTMAPS) == BST_CHECKED;
+        alpine_level_props.invisible_faces_occlude = IsDlgButtonChecked(hdlg, IDC_INVISIBLE_FACES_OCCLUDE) == BST_CHECKED;
+        alpine_level_props.alpha_faces_occlude = IsDlgButtonChecked(hdlg, IDC_ALPHA_FACES_OCCLUDE) == BST_CHECKED;
+        alpine_level_props.meshes_occlude = IsDlgButtonChecked(hdlg, IDC_MESHES_OCCLUDE) == BST_CHECKED;
+
+        alpine_level_props.enable_sun = IsDlgButtonChecked(hdlg, IDC_SUN_ENABLE) == BST_CHECKED;
+        float yaw = alpine_level_props.sun_yaw;
+        if (read_dlg_float(hdlg, IDC_SUN_YAW, yaw, -FLT_MAX, FLT_MAX)) {
+            yaw = std::fmod(yaw, 360.0f);
+            if (yaw < 0.0f) {
+                yaw += 360.0f;
+            }
+            alpine_level_props.sun_yaw = yaw;
+        }
+        read_dlg_float(hdlg, IDC_SUN_PITCH, alpine_level_props.sun_pitch, 0.0f, 90.0f);
+        read_dlg_float(hdlg, IDC_SUN_INTENSITY, alpine_level_props.sun_intensity, 0.0f, 10.0f);
+        read_dlg_float(hdlg, IDC_SUN_SPREAD_ANGLE, alpine_level_props.sun_spread_angle, 0.0f, 45.0f);
+        read_dlg_color_channel(hdlg, IDC_SUN_COLOR_R, alpine_level_props.sun_color_r);
+        read_dlg_color_channel(hdlg, IDC_SUN_COLOR_G, alpine_level_props.sun_color_g);
+        read_dlg_color_channel(hdlg, IDC_SUN_COLOR_B, alpine_level_props.sun_color_b);
+        alpine_level_props.sun_cast_baked_shadows = IsDlgButtonChecked(hdlg, IDC_SUN_CAST_BAKED_SHADOWS) == BST_CHECKED;
+        alpine_level_props.sun_affects_meshes = IsDlgButtonChecked(hdlg, IDC_SUN_AFFECTS_MESHES) == BST_CHECKED;
+        alpine_level_props.sun_mesh_mode = IsDlgButtonChecked(hdlg, IDC_SUN_MESH_MODE_SCALE) == BST_CHECKED ? 0 : 1;
+        alpine_level_props.sun_drives_shadowmap_dir = IsDlgButtonChecked(hdlg, IDC_SUN_DRIVES_SHADOWMAP_DIR) == BST_CHECKED;
+        alpine_level_props.sun_liquid_occludes = IsDlgButtonChecked(hdlg, IDC_SUN_LIQUID_OCCLUDES) == BST_CHECKED;
     },
 };
 
