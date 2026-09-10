@@ -408,7 +408,7 @@ FunHook<char(rf::Object*)> collide_object_world_hook{
                                                               max_fraction, contact);
 
             if (got) {
-                if (contact.fraction - best < -tolerance) {
+                if (contact.fraction - best < -tolerance || rf::g_world_contact_count == 0) {
                     mesh_world_fill_contact(rf::g_world_contacts[0], contact);
                     rf::g_world_contact_count = 1;
                     added = true;
