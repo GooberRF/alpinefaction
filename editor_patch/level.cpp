@@ -10,6 +10,9 @@
 #include <cstdlib>
 #include <unordered_map>
 #include <unordered_set>
+#include <windows.h>
+#include <commdlg.h>
+#include <commctrl.h>
 #include "level.h"
 #include "vtypes.h"
 #include "mfc_types.h"
@@ -917,6 +920,77 @@ static void set_sun_angles_from_camera(HWND hdlg)
     SetDlgItemTextA(hdlg, IDC_SUN_PITCH, buffer);
 }
 
+// Default RGB values for sunlight.
+static uint8_t g_sun_color_r = 255;
+static uint8_t g_sun_color_g = 255;
+static uint8_t g_sun_color_b = 255;
+
+static void update_sun_color_controls(HWND hdlg)
+{
+    SendDlgItemMessageA(hdlg, IDC_SUN_COLOR_SWATCH, LVM_SETBKCOLOR, 0,
+        static_cast<LPARAM>(RGB(g_sun_color_r, g_sun_color_g, g_sun_color_b)));
+    InvalidateRect(GetDlgItem(hdlg, IDC_SUN_COLOR_SWATCH), nullptr, TRUE);
+    char buffer[32];
+    std::snprintf(buffer, sizeof(buffer), "<%d, %d, %d>", g_sun_color_r, g_sun_color_g, g_sun_color_b);
+    SetDlgItemTextA(hdlg, IDC_SUN_COLOR_VALUE, buffer);
+}
+
+static bool parse_color_text(const char* text, uint8_t& r, uint8_t& g, uint8_t& b)
+{
+    long values[3] = {};
+    const char* p = text;
+    while (*p == ' ' || *p == '\t') {
+        ++p;
+    }
+    if (*p == '<') {
+        ++p;
+    }
+    for (int i = 0; i < 3; ++i) {
+        while (*p == ' ' || *p == '\t' || (i > 0 && *p == ',')) {
+            ++p;
+        }
+        char* end = nullptr;
+        long value = std::strtol(p, &end, 10);
+        if (end == p || value < 0 || value > 255) {
+            return false;
+        }
+        values[i] = value;
+        p = end;
+    }
+    r = static_cast<uint8_t>(values[0]);
+    g = static_cast<uint8_t>(values[1]);
+    b = static_cast<uint8_t>(values[2]);
+    return true;
+}
+
+// Leaves r/g/b untouched unless all three components parse.
+static bool read_sun_color_text(HWND hdlg, uint8_t& r, uint8_t& g, uint8_t& b)
+{
+    char buffer[64] = {};
+    GetDlgItemTextA(hdlg, IDC_SUN_COLOR_VALUE, buffer, static_cast<int>(sizeof(buffer)));
+    return parse_color_text(buffer, r, g, b);
+}
+
+static void pick_sun_color(HWND hdlg)
+{
+    // Every stock picker overwrites the array MFC's CColorDialog ctor installs (0x0052d497) with
+    // CMainFrame::custom_colors, so going through that field is what shares swatches with them.
+    static COLORREF fallback_custom_colors[16] = {};
+
+    CHOOSECOLORA cc = {};
+    cc.lStructSize = sizeof(cc);
+    cc.hwndOwner = hdlg;
+    cc.rgbResult = RGB(g_sun_color_r, g_sun_color_g, g_sun_color_b);
+    cc.lpCustColors = g_main_frame ? g_main_frame->custom_colors : fallback_custom_colors;
+    cc.Flags = CC_RGBINIT | CC_FULLOPEN;
+    if (ChooseColorA(&cc)) {
+        g_sun_color_r = GetRValue(cc.rgbResult);
+        g_sun_color_g = GetGValue(cc.rgbResult);
+        g_sun_color_b = GetBValue(cc.rgbResult);
+        update_sun_color_controls(hdlg);
+    }
+}
+
 static WNDPROC g_level_dlg_orig_wndproc = nullptr;
 
 static LRESULT CALLBACK LevelDialogSubclassProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
@@ -924,6 +998,15 @@ static LRESULT CALLBACK LevelDialogSubclassProc(HWND hwnd, UINT msg, WPARAM wpar
     WNDPROC orig = g_level_dlg_orig_wndproc;
     if (msg == WM_COMMAND && LOWORD(wparam) == IDC_SUN_SET_FROM_CAMERA && HIWORD(wparam) == BN_CLICKED) {
         set_sun_angles_from_camera(hwnd);
+        return 0;
+    }
+    if (msg == WM_COMMAND && LOWORD(wparam) == IDC_SUN_COLOR_CHANGE && HIWORD(wparam) == BN_CLICKED) {
+        pick_sun_color(hwnd);
+        return 0;
+    }
+    if (msg == WM_COMMAND && LOWORD(wparam) == IDC_SUN_COLOR_VALUE && HIWORD(wparam) == EN_KILLFOCUS) {
+        read_sun_color_text(hwnd, g_sun_color_r, g_sun_color_g, g_sun_color_b);
+        update_sun_color_controls(hwnd);
         return 0;
     }
     if (msg == WM_NCDESTROY) {
@@ -967,9 +1050,10 @@ CodeInjection CLevelDialog_OnInitDialog_patch{
         SetDlgItemTextA(hdlg, IDC_SUN_INTENSITY, buffer);
         std::snprintf(buffer, sizeof(buffer), "%.3f", alpine_level_props.sun_spread_angle);
         SetDlgItemTextA(hdlg, IDC_SUN_SPREAD_ANGLE, buffer);
-        SetDlgItemInt(hdlg, IDC_SUN_COLOR_R, alpine_level_props.sun_color_r, FALSE);
-        SetDlgItemInt(hdlg, IDC_SUN_COLOR_G, alpine_level_props.sun_color_g, FALSE);
-        SetDlgItemInt(hdlg, IDC_SUN_COLOR_B, alpine_level_props.sun_color_b, FALSE);
+        g_sun_color_r = alpine_level_props.sun_color_r;
+        g_sun_color_g = alpine_level_props.sun_color_g;
+        g_sun_color_b = alpine_level_props.sun_color_b;
+        update_sun_color_controls(hdlg);
         CheckDlgButton(hdlg, IDC_SUN_CAST_BAKED_SHADOWS, alpine_level_props.sun_cast_baked_shadows ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hdlg, IDC_SUN_AFFECTS_MESHES, alpine_level_props.sun_affects_meshes ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hdlg, IDC_SUN_MESH_MODE_SCALE, alpine_level_props.sun_mesh_mode == 0 ? BST_CHECKED : BST_UNCHECKED);
@@ -994,15 +1078,6 @@ static bool read_dlg_float(HWND hdlg, int id, float& out, float min_value, float
     }
     out = std::clamp(value, min_value, max_value);
     return true;
-}
-
-static void read_dlg_color_channel(HWND hdlg, int id, uint8_t& out)
-{
-    BOOL translated = FALSE;
-    UINT value = GetDlgItemInt(hdlg, id, &translated, FALSE);
-    if (translated) {
-        out = static_cast<uint8_t>(std::min<UINT>(value, 255));
-    }
 }
 
 // save AlpineLevelProperties settings when closing level properties dialog
@@ -1044,9 +1119,10 @@ CodeInjection CLevelDialog_OnOK_patch{
         read_dlg_float(hdlg, IDC_SUN_PITCH, alpine_level_props.sun_pitch, 0.0f, 90.0f);
         read_dlg_float(hdlg, IDC_SUN_INTENSITY, alpine_level_props.sun_intensity, 0.0f, 10.0f);
         read_dlg_float(hdlg, IDC_SUN_SPREAD_ANGLE, alpine_level_props.sun_spread_angle, 0.0f, 45.0f);
-        read_dlg_color_channel(hdlg, IDC_SUN_COLOR_R, alpine_level_props.sun_color_r);
-        read_dlg_color_channel(hdlg, IDC_SUN_COLOR_G, alpine_level_props.sun_color_g);
-        read_dlg_color_channel(hdlg, IDC_SUN_COLOR_B, alpine_level_props.sun_color_b);
+        read_sun_color_text(hdlg, g_sun_color_r, g_sun_color_g, g_sun_color_b);
+        alpine_level_props.sun_color_r = g_sun_color_r;
+        alpine_level_props.sun_color_g = g_sun_color_g;
+        alpine_level_props.sun_color_b = g_sun_color_b;
         alpine_level_props.sun_cast_baked_shadows = IsDlgButtonChecked(hdlg, IDC_SUN_CAST_BAKED_SHADOWS) == BST_CHECKED;
         alpine_level_props.sun_affects_meshes = IsDlgButtonChecked(hdlg, IDC_SUN_AFFECTS_MESHES) == BST_CHECKED;
         alpine_level_props.sun_mesh_mode = IsDlgButtonChecked(hdlg, IDC_SUN_MESH_MODE_SCALE) == BST_CHECKED ? 0 : 1;

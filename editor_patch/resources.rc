@@ -169,12 +169,10 @@ FONT 8, "MS Sans Serif"
     EDITTEXT        IDC_SUN_INTENSITY, 172, 448, 34, 14, ES_AUTOHSCROLL
     LTEXT           "Spread:", -1, 212, 450, 28, 8
     EDITTEXT        IDC_SUN_SPREAD_ANGLE, 242, 448, 34, 14, ES_AUTOHSCROLL
-    LTEXT           "Color R:", -1, 13, 468, 28, 8
-    EDITTEXT        IDC_SUN_COLOR_R, 43, 466, 28, 14, ES_NUMBER
-    LTEXT           "G:", -1, 77, 468, 8, 8
-    EDITTEXT        IDC_SUN_COLOR_G, 87, 466, 28, 14, ES_NUMBER
-    LTEXT           "B:", -1, 121, 468, 8, 8
-    EDITTEXT        IDC_SUN_COLOR_B, 131, 466, 28, 14, ES_NUMBER
+    LTEXT           "Color:", -1, 13, 469, 22, 8
+    CONTROL         "List1", IDC_SUN_COLOR_SWATCH, WC_LISTVIEW, WS_BORDER | LVS_NOSCROLL | LVS_ICON, 43, 466, 40, 14, WS_EX_STATICEDGE
+    PUSHBUTTON      "Change color", IDC_SUN_COLOR_CHANGE, 89, 466, 50, 14
+    EDITTEXT        IDC_SUN_COLOR_VALUE, 145, 466, 57, 14, ES_AUTOHSCROLL
     AUTOCHECKBOX    "Casts shadows (lightmaps)", IDC_SUN_CAST_BAKED_SHADOWS, 13, 484, 120, 10
     AUTOCHECKBOX    "Affects mesh lighting", IDC_SUN_AFFECTS_MESHES, 148, 484, 130, 10
     AUTOCHECKBOX    "Scale mesh sunlight by lightmaps", IDC_SUN_MESH_MODE_SCALE, 13, 496, 130, 10

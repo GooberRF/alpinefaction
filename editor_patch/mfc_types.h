@@ -810,7 +810,7 @@ struct CMainFrame : CFrameWnd
     float camera_speed_allowed_values[6];
     int camera_speed_index;
     float grid_brightness;
-    int custom_colors[16];
+    COLORREF custom_colors[16];
     int favorite_textures[8];
     bool play_no_tnl;
     char padding_tail[3];
@@ -835,6 +835,7 @@ struct CMainFrame : CFrameWnd
     }
 };
 static_assert(sizeof(CMainFrame) == 0x550);
+static_assert(offsetof(CMainFrame, custom_colors) == 0x4E8, "custom_colors offset mismatch!");
 
 static auto& g_main_frame = addr_as_ref<CMainFrame*>(0x006F9E68);
 static auto& g_maximized_viewport = addr_as_ref<int>(0x0057B9C0);
