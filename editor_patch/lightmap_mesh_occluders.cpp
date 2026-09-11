@@ -530,7 +530,9 @@ bool vfx_read_mesh(VfxReader& r, std::uint32_t version, VfxMesh& m)
         }
         VfxStage key = has_frame0_trs ? frame0 : VfxStage{};
         const std::int32_t num_translation = r.s4();
-        if (r.bad() || num_translation < 0) {
+        // 4 byte time, a vec3 and 24 bytes of tangents per key
+        if (r.bad() || num_translation < 0 ||
+            !r.fits(static_cast<std::uint64_t>(num_translation) * 40)) {
             return false;
         }
         for (std::int32_t i = 0; i < num_translation; i++) {
@@ -542,7 +544,9 @@ bool vfx_read_mesh(VfxReader& r, std::uint32_t version, VfxMesh& m)
             r.take(24);
         }
         const std::int32_t num_rotation = r.s4();
-        if (r.bad() || num_rotation < 0) {
+        // 4 byte time, a quaternion and 20 bytes of tangents per key
+        if (r.bad() || num_rotation < 0 ||
+            !r.fits(static_cast<std::uint64_t>(num_rotation) * 40)) {
             return false;
         }
         for (std::int32_t i = 0; i < num_rotation; i++) {
@@ -555,7 +559,7 @@ bool vfx_read_mesh(VfxReader& r, std::uint32_t version, VfxMesh& m)
             r.take(20);
         }
         const std::int32_t num_scale = r.s4();
-        if (r.bad() || num_scale < 0) {
+        if (r.bad() || num_scale < 0 || !r.fits(static_cast<std::uint64_t>(num_scale) * 40)) {
             return false;
         }
         for (std::int32_t i = 0; i < num_scale; i++) {

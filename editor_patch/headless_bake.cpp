@@ -200,6 +200,17 @@ bool path_is_bake_input(const char* path)
     return !*a && !*b;
 }
 
+// spelling is not identity, do not save over input
+std::string canonical_path(const std::string& path)
+{
+    char buf[MAX_PATH];
+    const DWORD len = GetFullPathNameA(path.c_str(), static_cast<DWORD>(sizeof(buf)), buf, nullptr);
+    if (len == 0 || len >= sizeof(buf)) {
+        return path;
+    }
+    return buf;
+}
+
 char __fastcall CDedDoc_LoadSaveLevel_new(void* self, int edx, const char* path, int is_load,
                                           int is_autosave);
 FunHook<char __fastcall(void*, int, const char*, int, int)> CDedDoc_LoadSaveLevel_hook{
@@ -287,7 +298,8 @@ void ApplyHeadlessBakePatches()
     if (g_output_path.empty()) {
         g_init_error = "-bake requires -bakeout <output.rfl>";
     }
-    else if (_stricmp(g_input_path.c_str(), g_output_path.c_str()) == 0) {
+    else if (_stricmp(canonical_path(g_input_path).c_str(),
+                      canonical_path(g_output_path).c_str()) == 0) {
         g_init_error = "-bakeout must differ from the -bake input";
     }
     else if (GetFileAttributesA(g_input_path.c_str()) == INVALID_FILE_ATTRIBUTES) {
