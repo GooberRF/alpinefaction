@@ -178,9 +178,7 @@ struct EditorMeshMaterial {
 };
 static_assert(sizeof(EditorMeshMaterial) == 0xC8, "EditorMeshMaterial size mismatch");
 
-// ─── Editor v3d runtime geometry ─────────────────────────────────────────────
-// RED's copy of the loaded .v3d/.v3c structures (game_patch\rf\v3d.h is the game-side
-// definition; RED's VifLodMesh/VifMesh lack Alpine's render_cache tail, hence 0x44/0x4C).
+// Editor v3d runtime geometry
 
 struct EditorVifFace
 {

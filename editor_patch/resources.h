@@ -290,7 +290,7 @@
 // Alpine extension
 #define IDC_KF_HOLD_OPEN            2050
 
-// Level Properties sunlight group (2007..2019 are already taken by other dialogs)
+// Level Properties sunlight group
 #define IDC_SUN_ENABLE 2060
 #define IDC_SUN_YAW 2061
 #define IDC_SUN_PITCH 2062

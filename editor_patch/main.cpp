@@ -193,7 +193,7 @@ static void apply_geoable_to_selected_brushes(int new_state)
     } while (node != level->brush_list);
 }
 
-// ===== Brush "No shadow cast" support =====
+// "No shadow cast"
 
 // Structural brushes lose their identity to CSG, so the flag is offered only for the brushes
 // no_shadow_cast_eligible() accepts and never written for any other selected brush.

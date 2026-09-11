@@ -752,8 +752,6 @@ static_assert(sizeof(CDocument) == 0x50);
 
 struct CDedDoc : CDocument
 {
-    // FUN_0041CCE0: load (is_load != 0) or save the level behind the document, __thiscall RET 0xC.
-    // Returns 0 on failure. is_autosave selects the autosave path/name handling.
     char LoadSaveLevel(const char* path, int is_load, int is_autosave)
     {
         return AddrCaller{0x0041CCE0}.this_call<char>(this, path, is_load, is_autosave);
@@ -826,9 +824,6 @@ struct CMainFrame : CFrameWnd
         AddrCaller{0x00447670}.this_call(this);
     }
 
-    // FUN_00449680: the Calculate Lighting menu handler. It rebuilds the lightmap surfaces
-    // (0x00448CA0) before baking (0x00448F20); calling the bake alone leaves the surfaces from the
-    // last build, so mover solids never get any.
     void OnCalculateLighting()
     {
         AddrCaller{0x00449680}.this_call(this);

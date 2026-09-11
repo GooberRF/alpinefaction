@@ -18,10 +18,7 @@
 #include "level.h"
 #include "lightmap_mesh_occluders.h"
 
-
-// High resolution lightmaps: 256x256 atlas pages, 254 texel fragments and 4x base density.
-// The fragment cap is 254 rather than the 255 the u8 surface rect allows because FUN_004a5f60
-// reserves w + 2*border columns in a page and the u8 x/y fields cap a page at 256 texels.
+// High resolution lightmaps
 static constexpr int lm_stock_page_size = 128;
 static constexpr int lm_highres_page_size = 256;
 static constexpr int lm_stock_fragment_max = 64;
@@ -35,8 +32,6 @@ static void* shadow_mask_ptrs[max_shadow_masks];
 static std::unique_ptr<uint8_t[]> shadow_mask_pool;
 static int shadow_mask_texels = 0;
 
-// The scanline rasteriser FUN_004abed0 clamps a span's right edge to w inclusive, so it can
-// store one byte past w*h; every entry carries a spare byte for that.
 static bool shadow_mask_reserve(int texels)
 {
     if (texels <= shadow_mask_texels) {
@@ -107,17 +102,7 @@ static bool alpha_faces_occlude_active()
 }
 
 // Which compiled faces belong to a brush flagged "No shadow cast".
-//
-// CSG carries a source brush face's id (GFace +0x38) onto every compiled fragment it produces,
-// which is what the geoable brush -> room mapping already relies on (level.cpp
-// find_room_by_face_ids). The id alone is NOT enough: RED's brush clone copies a source brush's
-// GFace records verbatim, so a pasted brush shares its face ids with the original - on
-// dmabruptdecayrc2 crate uid 11143 carries ids 6888-6893, which also sit on a wall thirty units
-// away. Each candidate must therefore also land inside the flagged brush's own bounds. Those are
-// taken as pos +/- the geometry's local radius, which needs no assumption about how the brush's
-// orientation matrix composes. A brush's own geometry is in brush local space and so is a mover
-// solid built from it (measured: a mover's compiled planes are the brush's local planes
-// unchanged), while the static solid is in world space.
+// CSG carries a source brush face's id (GFace +0x38) onto every compiled fragment it produces.
 struct NoShadowCastBrush {
     Vector3 pos;
     float radius;
@@ -228,12 +213,7 @@ CodeInjection lightmap_light_limit_injection{
     [](auto& regs) {
         int light_count = regs.edi;
 
-        // Grow the shadow mask pool to whatever this surface needs; a fragment that cannot be
-        // covered (bad dimensions or out of memory) still takes the stock pink fill fallback.
-        // The reservation is width * max(width, height), not width * height: the per-texel
-        // rasteriser FUN_004ae050 bounds BOTH of its loops with the width at 0x004ae334 and
-        // 0x004ae348, so it stores width^2 bytes. Stock's 4096 byte entries hid that because a
-        // stock fragment is at most 64 wide.
+        // Grow the shadow mask pool to whatever this surface needs
         int width = *reinterpret_cast<int*>(regs.esi + 0x18);
         int height = *reinterpret_cast<int*>(regs.esi + 0x1c);
         if (width <= 0 || height <= 0 || width > lm_highres_page_size ||
@@ -245,23 +225,19 @@ CodeInjection lightmap_light_limit_injection{
             regs.eip = 0x004AC9E4; // pink fill safety fallback
         }
         else if (light_count >= max_shadow_masks) {
+            xlog::warn("Lightmap: {} lights affect the surface at 0x{:x}, exceeding the {} shadow "
+                       "mask limit! Falling back to pink fill",
+                       light_count, static_cast<uintptr_t>(regs.esi), max_shadow_masks);
             regs.eip = 0x004AC9E4; // pink fill safety fallback
         }
         else {
             regs.eip = 0x004AC611; // normal lightmap processing
         }
     },
-    // no trampoline: the 5 byte window is "CMP EDI,0x40" plus the first two bytes of the JGE
-    // behind it, which cannot be relocated; every path above sets eip
+    // no trampoline: cannot be relocated; every path above sets eip
     false,
 };
 
-// FUN_004a6510 takes the pixel buffer of a new lightmap page straight from FUN_0052ee74 and never
-// initialises it. Nothing ever writes the gap FUN_004a5f60 reserves between fragments - the fills
-// in FUN_004ac470 and the ring copy FUN_004abad0 both stay inside a surface's own rect - so those
-// texels reach the saved RFL as whatever the heap block last held, which is what made two bakes of
-// one level differ. Replaces "MOV ECX,[ESI+8]; MOV EDX,[ESI+4]" (the JMP at 0x004a653b lands on the
-// injection itself); ESP+0x14 is the caller supplied buffer, which is borrowed, not allocated.
 CodeInjection lightmap_page_clear_injection{
     0x004a6540,
     [](auto& regs) {
@@ -320,8 +296,7 @@ CodeInjection lightmap_cross_room_blend_injection{
             regs.eip = 0x004ab07c; // skip blending
         }
     },
-    // no trampoline: the 5 byte window is "CMP EDX,ESI" plus the first three bytes of the JNZ
-    // behind it, which cannot be relocated; every path above sets eip
+    // no trampoline: cannot be relocated; every path above sets eip
     false,
 };
 
@@ -616,14 +591,10 @@ CodeInjection lightmap_per_texel_ambient_fill_injection{
 };
 
 // Per-texel ambient fill for the no-lights path in FUN_004ac470.
-// Replaces the uniform byte fill at 0x004ac563-0x004ac603. Stock resolves one ambient colour for
-// the whole surface (room ambient if the room defines one, otherwise the global ambient) into the
-// three frame slots read below, converts it with __ftol(a * 128.0) and stores the low byte with no
-// clamp; that is reproduced exactly whenever the per-texel path is not taken.
 CodeInjection lightmap_per_texel_ambient_nolights_injection{
     0x004ac563, // FLD [ESP+0x78] — start of ambient byte conversion
     [](auto& regs) {
-        // NOTE: no trampoline (SubHook can't decode FPU opcode 0xD8 at 0x4ac567).
+        // NOTE: no trampoline.
         // Every code path MUST set regs.eip before returning.
         regs.eip = 0x004aca40;
 
@@ -673,39 +644,7 @@ CodeInjection lightmap_per_texel_ambient_nolights_injection{
     false, // no trampoline: the injection fully replaces the fill
 };
 
-// ============================================================
 // Ray traced shadow masks
-// ============================================================
-// Stock builds a shadow mask by projecting each occluder polygon from the light position onto the
-// receiving fragment's plane and rasterising it (FUN_004ae360). The projection is clipped against a
-// six plane frustum whose four side planes run through the light position and the fragment corners;
-// with the sun's virtual origin 5000 units away those planes carry roughly 0.1 world units of
-// cancellation error, which is a large fraction of a small fragment's width, so whole occluders get
-// clipped away and their shadow is never rasterised at all. Measured on the sun2 rebake the leak
-// rate tracks the fragment size exactly: 44.8% of the in-face texels on fragments under one world
-// unit across, 0.04% on fragments 16 units and larger.
-//
-// The projector is bypassed for every light of a fixed pipeline bake, and for the sun in a legacy
-// one: the mask is traced per texel against a BVH over the solid's eligible faces. Legacy is only
-// promised to be byte-identical to stock for STOCK content, and the sun is not stock, so it takes
-// the deterministic tracer there too rather than masquerading as a point light 5000 units away.
-//
-// Per-ray eligibility, as skip_flags/oneside_flags in OccQuery (build() drops portals, has-alpha
-// 0x40 faces and the faces of "No shadow cast" brushes outright, and a surface never shadows
-// itself):
-//   show sky 0x1      occludes every light but the sun, which is what enters through it
-//   liquid 0x4        sun only, per "Water blocks sunlight"; never occludes another light
-//   invisible 0x2000  one-sided, per "Invisible faces block light"; else transparent
-//   alpha textured    per "Alpha-textured faces block light"; off by default, which is what stock
-//                     does (FUN_004bcc60) - but never for the two classes above, whose own
-//                     property decides them
-// Deliberate deviation under legacy: stock walks the receiving surface's own room face list when
-// the surface has a room, the tracer always has the whole solid - it can only add occluders.
-
-// Origin lift and ray trims: the sample point is pushed 0.02 off the receiving plane and hits
-// closer than 0.01 are ignored. A hit still inside a 0.05 band of the receiving plane counts as
-// the surface's own geometry only when it is parallel to it - as a blanket minimum ray distance
-// the band also swallowed thin geometry standing on the surface.
 static constexpr float lm_ray_lift = 0.02f;
 static constexpr float lm_ray_eps = 0.01f;
 static constexpr float lm_ray_band = 0.05f;
@@ -794,9 +733,7 @@ private:
     std::vector<OccNode> nodes_;
 };
 
-// A fan from vertex 0 only reproduces a convex polygon. CSG leaves plenty of non-convex faces
-// behind (205 eligible occluders on sun2.rfl), and a fan over one of those both invents shadow
-// casters outside the face and drops parts of it, so the loop is ear clipped in its own plane.
+// A fan from vertex 0 only reproduces a convex polygon.
 int triangulate_face(const Vec3f* v, int n, int* out)
 {
     if (n < 3 || n > occ_max_face_verts) {
@@ -892,9 +829,6 @@ int triangulate_face(const Vec3f* v, int n, int* out)
 }
 
 // Fills in everything the traversal derives from a triangle's corners; false for a degenerate one.
-// A non-finite corner is rejected outright: it would otherwise reach the BVH with a NaN bound, and
-// every comparison the split and the slab test make against a NaN is false, so it would neither
-// sort nor cull. The length test is written so that a NaN fails it too.
 bool occ_make_tri(const Vec3f& a, const Vec3f& b, const Vec3f& c, OccTri& t)
 {
     for (const Vec3f* v : {&a, &b, &c}) {
@@ -1200,21 +1134,9 @@ static void* g_sun_light_ptr = nullptr;
 static float g_sun_spread_angle = 0.0f;
 
 // Set for exactly as long as one of the two Calculate Lighting commands is running.
-//
-// RED also relights a single surface from the viewport (FUN_004e85a0 -> FUN_0049a700 ->
-// FUN_004ac470(surface, 1)), and that path reaches FUN_004ae360 - and so the ray caster - with no
-// command around it at all. Nothing there ever ends, so a GSolid keyed cache built from it is
-// never dropped and outlives the geometry Build Geometry frees under it, and every repaint pays
-// for the BVH. The caches are therefore built only inside a bake, which puts live relight back on
-// the stock projector exactly as a Legacy lighting level is, and bounds every cache by the
-// command that made it.
 static bool g_bake_active = false;
 
-// One cache per GSolid; the bake walks the static solid and every mover solid in turn and each
-// keeps its own coordinate space, so occluders are never shared between them. Both halves are
-// built in a single pass over the solid's face list, which is the only reason the per-surface
-// lookups below are not quadratic in the level size. Dropped by the two Calculate Lighting hooks
-// so nothing outlives a bake.
+// One cache per GSolid. Does not outlive a bake.
 struct SolidCache {
     OccluderTree tree;
     bool tree_built = false;
@@ -1513,26 +1435,9 @@ static bool lightmap_raycast_mask(uintptr_t solid, uintptr_t surface, uintptr_t 
     return true;
 }
 
-// ============================================================
-// Alpine directional sunlight - lightmap bake contribution
-// ============================================================
-// A type 1 (directional) gr light is created for the duration of the two
-// "Calculate Lighting" commands and destroyed again when they return, so the
-// sun never outlives the bake and never shows up in the live editor lighting.
-//
-// Stock per-lumel accumulation (FUN_004894c0 case 1) is
-//   f = 0.25 (DAT_0057c974) * dot(light->vec, texel_normal)
-// with no attenuation, so intensity is pre-multiplied by 4 to compensate.
-
+// Alpine directional sunlight
 static constexpr float sun_deg_to_rad = 3.14159265358979f / 180.0f;
-
-// Distance of the virtual projection origin used to turn the directional light
-// into something FUN_004ae360 (which projects occluders from a point) can bake.
 static constexpr float sun_origin_distance = 5000.0f;
-
-// Soft shadow sampling: on-axis origin plus a 3 point ring at 90/210/330 degrees
-// on the disc of radius tan(spread) * sun_origin_distance perpendicular to the sun.
-// Fixed offsets, no RNG - bakes must be reproducible.
 static constexpr int sun_spread_samples = 4;
 
 static void sun_light_create()
@@ -1668,13 +1573,7 @@ CodeInjection sun_face_light_dedup_injection{
     false, // no trampoline: the injection fully replaces the 6 byte block
 };
 
-// RF levels are sealed shells whose openings are faces flagged show sky (0x1). The stock
-// occluder filter inside FUN_004ae360 only rejects liquid/see-thru (0x44), invisible (0x2000)
-// and portals (+0x34), so the virtual sun origin outside the shell projects every sky face as
-// an occluder and shadows practically the whole level. Sky faces are where the sun enters, so
-// they are skipped while our sun light's mask is built; other lights keep stock behaviour.
-// Replaces "MOV EAX,[ESI+0x28]; TEST AL,0x44" (exactly 5 bytes) - ESI is the candidate face and
-// [EBP+0x10] is the Light* parameter, both live for the whole occluder loop.
+// Skip show sky faces for sunlight calculation.
 CodeInjection sun_sky_occluder_skip_injection{
     0x004aed36,
     [](auto& regs) {
@@ -1716,14 +1615,7 @@ static FunHook<void __cdecl(uintptr_t, uintptr_t, uintptr_t, char, uint8_t*)> su
     0x004ae360, sun_shadow_mask_new};
 
 // The stock projector is replaced by the per texel trace above for every light of a fixed pipeline
-// bake and for the sun in a legacy one. What is left below is the sun's masquerade, now reachable
-// only when the tracer cannot run at all (unusable fragment dimensions or no occluders indexed):
-// FUN_004ae360 projects occluders from light->vec treated as a world position, and rejects
-// faces outside the light bbox (vec +/- rad_2). For the sun, vec is a direction and rad_2 is 0,
-// so both are temporarily replaced with a virtual origin far along the to-sun vector and an
-// effectively infinite radius. That drives the stock projector well outside its design envelope -
-// at 5000 units its float32 frustum planes drop whole occluders, and two bakes of one level do not
-// agree - so the warning below is the signal that a bake fell back onto it.
+// bake and for the sun in a legacy one.
 static void __cdecl sun_shadow_mask_new(uintptr_t solid, uintptr_t surface, uintptr_t light,
                                         char debug, uint8_t* mask)
 {
@@ -1824,9 +1716,7 @@ static void __cdecl sun_shadow_mask_new(uintptr_t solid, uintptr_t surface, uint
     rad_2 = saved_rad_2;
 }
 
-// ============================================================
 // Lightmap bake accuracy fixes
-// ============================================================
 
 // Per-texel float accumulation buffers shared by the whole lightmap pipeline.
 static constexpr int lm_accum_texels = 65536;
@@ -2226,24 +2116,9 @@ CodeInjection lightmap_alpha_texture_occluder_injection{
     false, // no trampoline: the injection fully replaces the 6 byte block
 };
 
-// ============================================================
 // High resolution lightmaps
-// ============================================================
-// FUN_004a9d30 sizes a fragment as round(extent * pixels_per_meter), clamps each axis to 64 and
-// then asks FUN_004a5f60 for room in a 128x128 page. All three numbers are widened together: the
-// incoming pixels_per_meter argument x4, the clamp to 254 and the page dimension global to 256.
-// Everything downstream of that already reads the page's own w/h and the surface's own w/h, and
-// both the RFL container (i32 page w/h, u8 surface rect) and both loaders (RED FUN_004a2c30 /
-// FUN_004a3c80, RF FUN_004ed1c0 / FUN_004ee210) take the dimensions from the file.
-// Fragment sizes are decided when geometry is built, so toggling this needs a Build Geometry.
-
-// The clamp rescale reads its 64.0f through FDIVR at 0x004aa06f and 0x004aa08d; both operands are
-// re-pointed here so the pooled 0x0055c888 constant stays untouched.
 static float g_lm_fragment_max_f = static_cast<float>(lm_stock_fragment_max);
 
-// Replaces "MOV EBP,[ESP+0x94]" (exactly 7 bytes) just after the SEH prologue, where ESP+0x9c is
-// the pixels_per_meter argument. x4 is exact in binary floating point, so the only difference
-// from stock is the exponent.
 CodeInjection lightmap_highres_setup_injection{
     0x004a9d49,
     [](auto& regs) {
@@ -2261,9 +2136,6 @@ CodeInjection lightmap_highres_setup_injection{
     false, // no trampoline: the injection fully replaces the 7 byte load
 };
 
-// Replaces "CMP EAX,ECX; MOV [ESP+0x30],EAX" (6 bytes) ahead of the width clamp. EAX is the
-// fragment width, ECX carries the cap into both the width and the height clamp, and the two
-// stock x87 rescale blocks are left to do the arithmetic so the off case stays byte-identical.
 CodeInjection lightmap_fragment_clamp_injection{
     0x004aa060,
     [](auto& regs) {
@@ -2278,10 +2150,6 @@ CodeInjection lightmap_fragment_clamp_injection{
     false, // no trampoline: the injection fully replaces the 6 byte block
 };
 
-// FUN_004ab0d0 alloca()s 4*(wA*hA) + 4*(wB*hB) bytes (0x004ab112/0x004ab122/0x004ab131/0x004ab140)
-// on RED's 1 MB thread stack. Stock fragments cap that at 32 KB; 254x254 pairs need 504 KB, which
-// fits in practice but is not something to take on trust, so the seam blend is skipped rather
-// than overflowing the stack. Stock sizes never reach the limit, so the off case is unaffected.
 static std::size_t lightmap_stack_headroom()
 {
     MEMORY_BASIC_INFORMATION mbi{};
@@ -2297,14 +2165,6 @@ static void __cdecl lightmap_blend_surfaces_new(void** a, void** b, void* p3, vo
 static FunHook<void __cdecl(void**, void**, void*, void*, void*)> lightmap_blend_surfaces_hook{
     0x004ab0d0, lightmap_blend_surfaces_new};
 
-// FUN_004ab0d0 mixes a fixed 7/16 of the neighbouring fragment into the ring 1 texels along a
-// shared edge and applies no test at all to the angle between the two surfaces, so where the
-// junction is a real crease between a sunlit face and one turned away from the sun it stamps a
-// one texel band of foreign light along the polygon boundary - a hard line drawn on geometry
-// whose own lighting is flat. Measured on the four sun2 bakes that is 240 to 349 bands per level,
-// median contrast 44 bytes and up to 121, and three quarters of them sit on junctions of 45
-// degrees or more. Only junctions the geometry means to look continuous are blended; a crease
-// keeps the lighting break it is entitled to.
 static constexpr float lm_blend_min_cos = 0.70710678f; // 45 degrees
 
 static bool lightmap_surfaces_are_smooth_neighbours(const void* surf_a, const void* surf_b)
@@ -2342,22 +2202,9 @@ static bool lightmap_blend_edge_is_new(const int* surf_a, const int* surf_b, con
     return true;
 }
 
-// Stock addresses a texel as ftol(lm_dim * uv + 0.5) - start (0x004ab450 / 0x004ab480), which
-// rounds at texel BOUNDARIES instead of flooring into the texel that contains the sample, so the
-// run of texels it stamps sits half a texel off the border texels it means to reach. Measured on
-// the sun2_nowater bake that misses 32% of the border texels along the gate-eligible edges and
-// stamps interior texels in their place; on a diagonal boundary the surviving stamps are an
-// intermittent dotted band of half-blended texels rather than a line. The walk is redone below:
-// the same shared edge, floored addressing, every texel the edge crosses, and the neighbour's
-// value averaged over the part of the edge inside each texel instead of whichever sample arrived
-// first. The 9:7 mix and the ring 1 clamp are stock's (0x004ab5c2 / 0x004ab64e, 0x004ab4d7), and
-// stock already writes both sides, so the reconciliation stays symmetric.
 static constexpr float lm_blend_own = 9.0f / 16.0f;
 static constexpr float lm_blend_other = 7.0f / 16.0f;
 static constexpr float lm_blend_samples_per_texel = 128.0f;
-// The walk is 128 samples per texel of the longer projection of the edge; the floor only binds for
-// an edge a small fraction of a texel long, where it is what keeps a sub-texel crossing from
-// resting on one or two samples.
 static constexpr int lm_blend_min_samples = 8;
 
 struct BlendSide {
@@ -2371,12 +2218,7 @@ struct BlendSide {
 };
 
 // The blended value of each texel is mixed from the neighbour and from what this surface held
-// before the edge, so the snapshot has to be the page as it stands. A surface shares a boundary
-// with as many neighbours as the geometry gives it, and re-copying its whole fragment for each of
-// them was the pass's dominant cost, so the snapshots are kept for the length of one pass instead.
-// blend_side_apply writes every byte it changes into the snapshot as well, which keeps a cached
-// snapshot equal to the page at all times - an entry can therefore be dropped and rebuilt at any
-// point without changing a single output byte, which is what makes the budget below safe.
+// before the edge, so the snapshot has to be the page as it stands.
 struct BlendAccum {
     std::vector<float> sum;
     std::vector<int> count;
@@ -2587,8 +2429,6 @@ static bool lightmap_blend_edge(uintptr_t surf_a, uintptr_t surf_b, const float*
     if (surf_a == surf_b) {
         return true; // stock pre-filters this, and there is nothing for the stock blend to do either
     }
-    // the blend pass is serial (FUN_004aabf0 -> FUN_004aae80 -> here on the bake thread), so the
-    // scratch buffers are kept across calls rather than reallocated per edge
     if (g_blend_sides_bytes > lm_blend_cache_budget) {
         blend_sides_clear();
     }
@@ -2645,8 +2485,6 @@ static void __cdecl lightmap_blend_surfaces_new(void** a, void** b, void* p3, vo
         if (!lightmap_surfaces_are_smooth_neighbours(surf_a, surf_b)) {
             return;
         }
-        // arguments 3 and 5 carry the receiving surface's two edge vertex nodes; FUN_004ab0d0 reads
-        // the world position behind each of them (0x004ab249 / 0x004ab257) and nothing else
         try {
             const auto* p_0 = *reinterpret_cast<const float**>(p3);
             const auto* p_1 = *reinterpret_cast<const float**>(p5);
@@ -2713,21 +2551,9 @@ CodeInjection lightmap_blend_pair_dedup_injection{
     false, // no trampoline: the injection fully replaces the 5 byte block
 };
 
-// FUN_004aae80 gathers the vertex loop of the face it is matching into [ESP+0x44], whose frame only
-// reaches the return address at [ESP+0xc4] - 32 pointers - while the walk at 0x004aaeda has no bound
-// at all. A 35 vertex face therefore overwrites the return address and both incoming arguments with
-// vertex node pointers, after which the entry list pointer and its count are garbage and the pair
-// loop walks off into unrelated memory (dmabruptdecayrc2.rfl, read of 0x68 at 0x004aaf0a). Stock
-// only ever reached the pass with surfaces that carry smoothing groups, so the fixed pipeline's
-// force_should_smooth is what makes it common, but the overflow is stock's and is not gated here.
-// The loop is relocated to a buffer large enough for any face: the write at 0x004aaecb, the base at
-// 0x004aaf9b and the indexed read at 0x004aafe1 are the only three sites that touch it.
 static constexpr int lm_max_face_verts = 4096;
 static uintptr_t g_face_vert_nodes[lm_max_face_verts];
 
-// Replaces "MOV EAX,[EAX]; MOV ECX,[EAX+0x40]" (exactly 5 bytes) and the whole store loop behind it.
-// A face with no vertex list takes stock's JZ, which leaves the count slot holding the previous
-// face's value; that is reproduced by returning without writing it.
 CodeInjection lightmap_blend_face_verts_injection{
     0x004aaecb,
     [](auto& regs) {
@@ -2793,9 +2619,7 @@ CodeInjection lightmap_blend_face_vert_index_injection{
     false, // no trampoline: the injection fully replaces the 8 byte block
 };
 
-// ============================================================
 // Cross-room surface merging
-// ============================================================
 // A portal brush splitting a face puts the fragments in different rooms, and the stock surface
 // group flood fill (FUN_004aa610) treats the room pointer as a hard boundary, so the fragments get
 // independent lightmaps and a visible seam. The six sites below are always-installed injections
@@ -2890,8 +2714,6 @@ void ApplyLightmapPatches()
     shadow_mask_reserve(0x1000);
 
     // Replace light handle-to-pointer with bounds-checked version
-    // Prevents corruption on handle=-1, which occurs when trying to add/edit lights after max_scene_lights
-    // Original: ptr = pool_base + handle * 0x10C (no validation)
     light_handle_to_pointer_injection.install();
 
     // Replace the >= 64 limit check with new limit

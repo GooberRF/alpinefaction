@@ -4,9 +4,7 @@
 #include "mfc_types.h"
 
 // One world-space LOD0 triangle of an Alpine mesh object, ready to enter the bake's occluder
-// tree. uid names the object that produced it so a later per-object filter has something to
-// select on; alpha marks a triangle whose chunk texture carries an alpha channel, which is the
-// class the level's "Alpha-textured faces block light" property governs.
+// tree.
 struct MeshOccluderTri
 {
     Vector3 v0, v1, v2;

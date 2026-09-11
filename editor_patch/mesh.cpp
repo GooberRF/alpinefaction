@@ -332,12 +332,7 @@ void mesh_serialize_chunk(CDedLevel& level, rf::File& file)
         }
     }
 
-    // Per-object flags appended after every record, not inside one: a record is variable length
-    // and carries no version, so a reader that predates a field can only tell it apart by finding
-    // it at the end of the chunk.
-    // One-shot positional block: the reader detects it as `loaded == count && remaining >= count`,
-    // so any future trailing addition must go BEFORE this loop, or both sides must switch to
-    // addressing this block from chunk_end - count.
+    // Per-object flags appended after every record.
     for (auto* mesh : meshes) {
         file.write<uint8_t>(mesh->no_shadow_cast ? 1 : 0);
     }
@@ -470,8 +465,7 @@ void mesh_deserialize_chunk(CDedLevel& level, rf::File& file, std::size_t chunk_
         level.master_objects.add(static_cast<DedObject*>(mesh));
     }
 
-    // Trailing per-object flag block; absent in chunks written before it existed, which leaves
-    // every object at the default.
+    // Trailing per-object flag block; absent in chunks written before it existed.
     if (loaded == count && remaining >= count) {
         for (uint32_t i = 0; i < count; i++) {
             uint8_t flags = 0;

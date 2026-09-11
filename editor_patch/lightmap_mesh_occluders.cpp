@@ -14,16 +14,6 @@
 #include "mesh.h"
 #include "vtypes.h"
 
-// ============================================================
-// Alpine mesh objects as bake occluders
-// ============================================================
-// .v3m/.v3c geometry is read from the structures the engine already built (FUN_004bfed0 /
-// FUN_004cc640 / FUN_00507890: every submesh of a v3m, character mesh 0 of a v3c, LOD level 0
-// of each); .vfx geometry is read from the file, because nothing in the runtime holds its
-// untransformed mesh sections. A v3c contributes its bind pose (chunk vertices are model space
-// and the skinning matrices only exist on the instance) and a vfx its frame 0, so an animating
-// object casts the shadow of its rest shape.
-
 namespace
 {
 
@@ -114,14 +104,7 @@ bool collect_v3c(EditorVMesh* vmesh, MeshGeom& out)
     return true;
 }
 
-// ------------------------------------------------------------
 // .vfx frame 0 mesh sections
-// ------------------------------------------------------------
-// Field order follows research/formats/vfx.ksy, which the RED loader FUN_004fcce0 /
-// FUN_004f9290 matches field for field. Only sfxo (mesh) and matl (material) sections are read;
-// particles, emitters, lights, chains, spacewarps, cameras, selsets and dummies are skipped by
-// section length, and facing / facing_rod meshes are billboards with no fixed shape to cast.
-// Every read is bounded against the section it lives in - a .vfx is untrusted input.
 
 constexpr std::uint32_t vfx_signature = 0x58465356;   // "VSFX"
 constexpr std::uint32_t vfx_section_mesh = 0x4f584653; // "sfxo"
@@ -530,9 +513,7 @@ bool vfx_read_mesh(VfxReader& r, std::uint32_t version, VfxMesh& m)
             return false;
         }
         // What a frame reads depends only on whether it is frame 0, so once one consumes nothing
-        // every later one consumes nothing too and the count is only a loop bound. A keyframed
-        // 4.5+ mesh legitimately stores nothing per frame, and its num_frames comes straight out
-        // of the file, so this is the difference between finishing and running for hours.
+        // every later one consumes nothing too and the count is only a loop bound.
         if (r.pos() == frame_at) {
             break;
         }
