@@ -260,7 +260,7 @@ static void alpine_mesh_create_object(const AlpineMeshInfo& info);
 
 // ─── Chunk Loading ──────────────────────────────────────────────────────────
 
-void alpine_mesh_load_chunk(rf::File& file, std::size_t chunk_len)
+void alpine_mesh_load_chunk(rf::File& file, std::size_t chunk_len, int content_version)
 {
     std::size_t remaining = chunk_len;
 
@@ -412,10 +412,8 @@ void alpine_mesh_load_chunk(rf::File& file, std::size_t chunk_len)
         loaded++;
     }
 
-    // Trailing per-object flag block written by the editor (currently only "no shadow cast",
-    // which the bake consumes and the game does not). Consumed for byte parity so anything
-    // appended after it still lines up.
-    if (loaded == count && remaining >= count) {
+    // Trailing per-object flag block, added in rfl v306.
+    if (content_version >= 306 && loaded == count && remaining >= count) {
         for (uint32_t i = 0; i < count; i++) {
             uint8_t flags = 0;
             if (!read_bytes(&flags, sizeof(flags))) return;

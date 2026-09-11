@@ -189,7 +189,7 @@ CodeInjection CDedLevel_LoadLevel_patch2{
             // Mesh and note chunks were introduced in rfl v304
             if (file.check_version(304)) {
                 if (chunk_id == alpine_mesh_chunk_id) {
-                    mesh_deserialize_chunk(level, file, chunk_size);
+                    mesh_deserialize_chunk(level, file, chunk_size, file.get_version());
                     regs.eip = 0x0043090C;
                 }
                 if (chunk_id == alpine_note_chunk_id) {

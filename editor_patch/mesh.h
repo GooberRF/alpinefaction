@@ -6,7 +6,7 @@
 
 // Mesh serialization (called from level.cpp injection points)
 void mesh_serialize_chunk(CDedLevel& level, rf::File& file);
-void mesh_deserialize_chunk(CDedLevel& level, rf::File& file, std::size_t chunk_len);
+void mesh_deserialize_chunk(CDedLevel& level, rf::File& file, std::size_t chunk_len, int content_version);
 
 // Mesh property dialog
 void ShowMeshPropertiesDialog(DedMesh* mesh);

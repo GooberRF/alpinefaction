@@ -391,7 +391,7 @@ struct AlpineMeshInfo {
 };
 
 void level_shutdown();
-void alpine_mesh_load_chunk(rf::File& file, std::size_t chunk_len);
+void alpine_mesh_load_chunk(rf::File& file, std::size_t chunk_len, int content_version);
 void alpine_mesh_do_frame();
 void alpine_mesh_clear_state();
 

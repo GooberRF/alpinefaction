@@ -332,7 +332,7 @@ void mesh_serialize_chunk(CDedLevel& level, rf::File& file)
         }
     }
 
-    // Per-object flags appended after every record.
+    // Per-object flag block appended after the last record; read back only from rfl v306+.
     for (auto* mesh : meshes) {
         file.write<uint8_t>(mesh->no_shadow_cast ? 1 : 0);
     }
@@ -340,7 +340,7 @@ void mesh_serialize_chunk(CDedLevel& level, rf::File& file)
     level.EndRflSection(file, start_pos);
 }
 
-void mesh_deserialize_chunk(CDedLevel& level, rf::File& file, std::size_t chunk_len)
+void mesh_deserialize_chunk(CDedLevel& level, rf::File& file, std::size_t chunk_len, int content_version)
 {
     auto& meshes = level.GetAlpineLevelProperties().mesh_objects;
     std::size_t remaining = chunk_len;
@@ -465,8 +465,8 @@ void mesh_deserialize_chunk(CDedLevel& level, rf::File& file, std::size_t chunk_
         level.master_objects.add(static_cast<DedObject*>(mesh));
     }
 
-    // Trailing per-object flag block; absent in chunks written before it existed.
-    if (loaded == count && remaining >= count) {
+    // Trailing per-object flag block, added in rfl v306.
+    if (content_version >= 306 && loaded == count && remaining >= count) {
         for (uint32_t i = 0; i < count; i++) {
             uint8_t flags = 0;
             if (!read_bytes(&flags, sizeof(flags))) return;

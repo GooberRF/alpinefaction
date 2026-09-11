@@ -62,6 +62,11 @@ namespace rf
             return AddrCaller{0x004D0030}.this_call<int>(this, unk1, unk2);
         }
 
+        [[nodiscard]] int get_version() const
+        {
+            return AddrCaller{0x004CF680}.this_call<int>(this);
+        }
+
         [[nodiscard]] bool check_version(int min_ver) const
         {
             return AddrCaller{0x004CF650}.this_call<bool>(this, min_ver);

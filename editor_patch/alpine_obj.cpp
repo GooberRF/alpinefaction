@@ -10,6 +10,7 @@
 #include <string>
 #include <xlog/xlog.h>
 #include <common/utils/string-utils.h>
+#include <common/version/version.h>
 #include <patch_common/CodeInjection.h>
 #include <patch_common/FunHook.h>
 #include <patch_common/AsmWriter.h>
@@ -2196,7 +2197,9 @@ CodeInjection alpine_group_load_hook{
             if (chunk_size < 0 || chunk_size > 10000000) break;
 
             if (chunk_id == alpine_mesh_chunk_id) {
-                mesh_deserialize_chunk(*level, *file, chunk_size);
+                // .rfg has no version discipline yet (stock RED stamps 200 in its own space), so
+                // group content is treated as current-content; trailing blocks are length-checked.
+                mesh_deserialize_chunk(*level, *file, chunk_size, MAXIMUM_RFL_VERSION);
             }
             else if (chunk_id == alpine_note_chunk_id) {
                 note_deserialize_chunk(*level, *file, chunk_size);
