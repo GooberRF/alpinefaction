@@ -445,11 +445,7 @@ static void compute_breakable_room_uids(CDedLevel& level, AlpineLevelProperties&
     }
 }
 
-// Drop no-shadow-cast entries whose brush no longer exists, mirroring the geoable prune above,
-// and entries whose brush has since stopped being eligible (converted to air, un-detailed, taken
-// out of a moving group), which the checkbox no longer offers and the bake could not honour.
-// No compiled-room mapping is needed: the bake resolves these brushes to occluder faces by
-// face_id and the game never reads the list.
+// Drop no-shadow-cast entries whose brush no longer exists.
 static void prune_no_shadow_cast_brush_uids(CDedLevel& level, AlpineLevelProperties& props)
 {
     if (props.no_shadow_cast_brush_uids.empty()) return;

@@ -35,6 +35,7 @@ Version 1.5.0 (TBD): Not yet released
 - Raise level editor per-room and per-mesh render vertex limit from 8000 to 32768
 - Add `-bake in.rfl -bakeout out.rfl` launcher command line switches to calculate a level's lighting without user interaction, writing the result to a new level file and progress to a log beside it
 - Add `High-resolution lightmaps` level property, used in lightmap bake in level editor
+- Deprecate and remove `-smoothlights` level editor switch
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Add `ui_color_console` console command to set the console background color

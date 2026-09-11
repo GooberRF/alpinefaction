@@ -437,10 +437,6 @@ struct AlpineLevelProperties
         return alpine_sun_to_light_dir(sun_yaw, sun_pitch);
     }
 
-    // The properties dialog constrains these on the way in, but a chunk can come from anywhere and
-    // its floats go straight into the bake and, on the game side, into a GPU constant buffer. A
-    // NaN survives every comparison the bake makes about a light, so it has to stop at the reader.
-    // The ranges are the dialog's own (level.cpp OnApply).
     void SanitizeSunProperties()
     {
         const float yaw_in = sun_yaw, pitch_in = sun_pitch;
@@ -1084,10 +1080,7 @@ struct CDedLevel
 static_assert(sizeof(CDedLevel) == 0x608);
 
 // "No shadow cast" is resolved back to a brush through the face ids CSG carried onto the compiled
-// geometry, so it can only mean anything for a brush whose geometry survives CSG as its own thing:
-// a solid detail brush, or a solid brush of a moving group, which the bake traces as its own
-// brush-local solid (0x00449044 reads BrushNode::geometry for every GroupEntry::brushes member of a
-// moving group). RED does not set the detail bit on mover brushes, so the two tests are separate.
+// geometry, so it can only mean anything for a brush whose geometry survives CSG as its own thing.
 // The moving group membership is the same for every brush, so a caller walking the brush list
 // gathers it once instead of rescanning every group for each brush.
 inline std::unordered_set<int32_t> collect_moving_group_brush_uids()

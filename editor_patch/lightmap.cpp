@@ -81,14 +81,6 @@ static bool bake_fixes_active()
     return level && !level->GetAlpineLevelProperties().legacy_lighting;
 }
 
-// -smoothlights forces the cross-room surface merging on even for legacy levels.
-static bool g_force_smooth_lights = false;
-
-static bool smooth_lights_active()
-{
-    return g_force_smooth_lights || bake_fixes_active();
-}
-
 // Independent of Legacy lighting: a legacy level can still be baked at high resolution.
 static bool highres_lightmaps_active()
 {
@@ -306,7 +298,7 @@ CodeInjection lightmap_cross_room_blend_injection{
             regs.eip = 0x004aaf18;
             return;
         }
-        if (!smooth_lights_active()) {
+        if (!bake_fixes_active()) {
             regs.eip = 0x004ab07c;
             return;
         }
@@ -355,7 +347,7 @@ CodeInjection lightmap_apply_room_ambient_injection{
     [](auto& regs) {
         // ECX at FUN_004aabf0 entry is the GSolid used for lightmap calculation.
         s_ambient_room_count = 0;
-        if (!smooth_lights_active()) return;
+        if (!bake_fixes_active()) return;
         uintptr_t gsolid = regs.ecx;
         if (!gsolid) return;
 
@@ -659,7 +651,7 @@ CodeInjection lightmap_per_texel_ambient_nolights_injection{
         const int ystart = *reinterpret_cast<int*>(surface + 0x14);
 
         SurfaceUVParams p;
-        const bool per_texel = smooth_lights_active() && s_ambient_room_count > 0 &&
+        const bool per_texel = bake_fixes_active() && s_ambient_room_count > 0 &&
                                init_surface_uv_params(surface, p);
         const float scale = lm_read_const(0x0055c870); // 128.0
 
@@ -2802,13 +2794,13 @@ CodeInjection lightmap_blend_face_vert_index_injection{
 };
 
 // ============================================================
-// Cross-room surface merging (the former -smoothlights patches)
+// Cross-room surface merging
 // ============================================================
 // A portal brush splitting a face puts the fragments in different rooms, and the stock surface
 // group flood fill (FUN_004aa610) treats the room pointer as a hard boundary, so the fragments get
-// independent lightmaps and a visible seam. The six sites below used to be static byte patches
-// installed only for -smoothlights; each is now an always-installed injection that reproduces the
-// stock branch exactly whenever smooth_lights_active() is false.
+// independent lightmaps and a visible seam. The six sites below are always-installed injections
+// that merge across the boundary on the fixed pipeline and reproduce the stock branch exactly
+// whenever bake_fixes_active() is false.
 
 // FUN_004aa610 candidate filter: stock rejects a coplanar neighbour whose face+0x44 room pointer
 // differs from the seed face's. Replaces "MOV EAX,[ESP+0x30]; MOV ECX,[ESP+0x14]" (8 bytes).
@@ -2824,7 +2816,7 @@ CodeInjection lightmap_group_cross_room_injection{
         regs.ecx = seed_index;
         regs.edx = candidate_room;
         const bool same_room = candidate_room == *reinterpret_cast<uintptr_t*>(seed_base + seed_index);
-        regs.eip = (same_room || smooth_lights_active()) ? 0x004aa809 : 0x004aa835;
+        regs.eip = (same_room || bake_fixes_active()) ? 0x004aa809 : 0x004aa835;
     },
     false, // no trampoline: the injection fully replaces the 8 byte block
 };
@@ -2836,7 +2828,7 @@ CodeInjection lightmap_force_should_smooth_injection{
     0x004a9d9d,
     [](auto& regs) {
         *reinterpret_cast<std::uint8_t*>(static_cast<uintptr_t>(regs.esi) + 9) =
-            smooth_lights_active() ? 1u : 0u;
+            bake_fixes_active() ? 1u : 0u;
         regs.ebx = 0;
         regs.eip = 0x004a9da3;
     },
@@ -2853,7 +2845,7 @@ CodeInjection lightmap_global_lights_shadow_injection{
     [](auto& regs) {
         regs.ecx = *reinterpret_cast<int*>(static_cast<uintptr_t>(regs.esi) + 0x68);
         regs.eax = 0;
-        regs.eip = smooth_lights_active() ? 0x004ac4c1 : 0x004ac4ae;
+        regs.eip = bake_fixes_active() ? 0x004ac4c1 : 0x004ac4ae;
     },
     false, // no trampoline: the injection fully replaces the 5 byte block
 };
@@ -2864,7 +2856,7 @@ CodeInjection lightmap_global_lights_vertex_injection{
     [](auto& regs) {
         regs.eax = *reinterpret_cast<int*>(static_cast<uintptr_t>(regs.esi) + 0x68);
         regs.ebp = 0;
-        regs.eip = smooth_lights_active() ? 0x004aca6f : 0x004aca58;
+        regs.eip = bake_fixes_active() ? 0x004aca6f : 0x004aca58;
     },
     false, // no trampoline: the injection fully replaces the 5 byte block
 };
@@ -2875,7 +2867,7 @@ CodeInjection lightmap_global_faces_shadow_injection{
     0x004ae6fc,
     [](auto& regs) {
         *reinterpret_cast<std::uint32_t*>(static_cast<uintptr_t>(regs.esp) + 0x8f8) = 0;
-        regs.eip = smooth_lights_active() ? 0x004ae803 : 0x004ae707;
+        regs.eip = bake_fixes_active() ? 0x004ae803 : 0x004ae707;
     },
     false, // no trampoline: the injection fully replaces the 11 byte store
 };
@@ -2886,7 +2878,7 @@ CodeInjection lightmap_global_faces_lumel_injection{
     [](auto& regs) {
         *reinterpret_cast<std::uint32_t*>(static_cast<uintptr_t>(regs.esp) + 0x28c) =
             static_cast<std::uint32_t>(static_cast<int>(regs.ebx));
-        regs.eip = smooth_lights_active() ? 0x004ad262 : 0x004ad216;
+        regs.eip = bake_fixes_active() ? 0x004ad262 : 0x004ad216;
     },
     false, // no trampoline: the injection fully replaces the 7 byte store
 };
@@ -2978,11 +2970,7 @@ void ApplyLightmapPatches()
     write_mem_ptr(0x004aa06f + 2, &g_lm_fragment_max_f);
     write_mem_ptr(0x004aa08d + 2, &g_lm_fragment_max_f);
 
-    // Cross-room surface merging. Default on, off for Legacy lighting levels; -smoothlights forces
-    // it on for those too. GetCommandLineA() is used instead of argv/argc because this runs during
-    // DLL init, before the CRT has populated argv/argc at their fixed addresses.
-    g_force_smooth_lights = std::strstr(GetCommandLineA(), "-smoothlights") != nullptr;
-
+    // Cross-room surface merging, inert when the level sets Legacy lighting
     lightmap_group_cross_room_injection.install();
     lightmap_force_should_smooth_injection.install();
     lightmap_global_lights_shadow_injection.install();
