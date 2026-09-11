@@ -4,6 +4,19 @@
 Version 1.5.0 (TBD): Not yet released
 --------------------------------
 ### Major features
+[@GooberRF](https://github.com/GooberRF)
+- Add ray cast lightmap baking to level editor (disabled with `Legacy lighting` level properties setting)
+  - Add `Invisible faces block light` and `Alpha-textured faces block light` level properties to control whether those faces occlude baked light
+  - Add `No shadow cast` brush property for solid detail brushes and movers
+  - Add `Meshes block light` level property to make Alpine Mesh objects cast baked shadows, using their most detailed mesh at bind pose or frame 0
+  - Add `No shadow cast` checkbox to Alpine Mesh object properties to exclude individual objects
+  - The level editor's live relight preview when a light is moved or edited still uses the stock lighting path; run `Calculate Lighting` to see the reworked result
+- Add per-level directional sunlight, configured in the `Sunlight` section of Level Properties in the level editor
+  - `Directional sunlight` checkbox, with `Yaw`, `Pitch`, `Intensity`, `Spread` (soft shadow angle) and `Color` fields, plus a `Set from camera` button that takes the sun direction from the perspective viewport
+  - `Casts shadows (lightmaps)` bakes the sun into the level's lightmaps with ray traced shadows
+  - `Affects mesh lighting` lights meshes and entities per pixel from the sun direction, with `Scale mesh sunlight by lightmaps` to keep sunlight out of unlit interiors (Direct3D 11 renderer only)
+  - `Aligns dynamic shadows` points entity shadows along the sun instead of the fixed default direction (Direct3D 11 renderer only)
+  - `Water blocks sunlight` stops sun rays at liquid surfaces during the bake
 
 ### Minor features, changes, and enhancements
 [@GooberRF](https://github.com/GooberRF)
@@ -19,6 +32,8 @@ Version 1.5.0 (TBD): Not yet released
 - Add edge-vignette damage feedback as `cl_damageflash 2` (Direct3D 11 renderer only); `cl_damageflash` is now a level: 0 off, 1 screen flash, 2 vignette
 - Add `Brush` collision mode for Alpine Mesh objects
 - Raise level editor per-room and per-mesh render vertex limit from 8000 to 32768
+- Add `-bake in.rfl -bakeout out.rfl` launcher command line switches to calculate a level's lighting without user interaction, writing the result to a new level file and progress to a log beside it
+- Add `High-resolution lightmaps` level property, used in lightmap bake in level editor
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Add `ui_color_console` console command to set the console background color
@@ -33,6 +48,11 @@ Version 1.5.0 (TBD): Not yet released
 - Fix deleting an Alpine object in the level editor leaving a stale reference to it in any moving group it belonged to
 - Fix filter box in the level editor texture browser not filtering the texture list by partial filename
 - Fix level editor crashing without an error message when drawing a room or mesh containing more than 8000 vertices
+- Fix level editor crashing while calculating lighting for a level containing a smoothed face with more than 32 vertices
+- Lightmap baking fixes in the level editor, based on the `Glacier` level editor (disabled with `Legacy lighting` level properties setting)
+  - Fix grey speckling on smoothed faces and the dark edges around lightmap fragments
+  - Fix several accuracy issues on face edges that resulted in dark bands and splotches along polygon boundaries
+  - Blend coplanar surfaces across room boundaries
 
 [@is-this-c](https://github.com/is-this-c)
 - Let `Caps Lock` capitalize

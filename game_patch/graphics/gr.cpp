@@ -594,14 +594,6 @@ CodeInjection gr_d3d_render_lod_vif_injection{
     },
 };
 
-struct SunOverride
-{
-    float yaw;
-    float pitch;
-    std::optional<float> intensity;
-};
-static std::optional<SunOverride> g_sun_override;
-
 SunLightState gr_get_sun_state()
 {
     SunLightState state;
@@ -610,21 +602,18 @@ SunLightState gr_get_sun_state()
     }
 
     const auto& props = AlpineLevelProperties::instance();
-    bool enabled = props.enable_sun;
-    float yaw = props.sun_yaw;
-    float pitch = props.sun_pitch;
-    float intensity = props.sun_intensity;
-    if (g_sun_override) {
-        enabled = true;
-        yaw = g_sun_override->yaw;
-        pitch = g_sun_override->pitch;
-        if (g_sun_override->intensity) {
-            intensity = g_sun_override->intensity.value();
-        }
-    }
-    if (!enabled) {
+    if (!props.enable_sun) {
         return state;
     }
+    // the chunk reader already constrains these, but this is the last thing between a level
+    // property and a constant buffer, and a NaN direction takes a whole frame of lighting with it
+    if (!std::isfinite(props.sun_yaw) || !std::isfinite(props.sun_pitch)) {
+        return state;
+    }
+    const float yaw = props.sun_yaw;
+    const float pitch = props.sun_pitch;
+    const float intensity =
+        std::isfinite(props.sun_intensity) ? std::clamp(props.sun_intensity, 0.0f, 10.0f) : 0.0f;
 
     state.enabled = true;
     state.affects_meshes = props.sun_affects_meshes;
@@ -652,29 +641,10 @@ float gr_sun_get_mesh_scale(const float* ambient)
         rf::gr::light_get_ambient(&global_ambient[0], &global_ambient[1], &global_ambient[2]);
         ambient = global_ambient;
     }
-    // 0.5 is lightmap-neutral under the modulate-2x convention, so it maps to full sun
+    // an ambient luminance of 0.5 and up takes full sunlight, anything darker scales down with it
     float luminance = ambient[0] * 0.299f + ambient[1] * 0.587f + ambient[2] * 0.114f;
     return std::clamp(luminance * 2.0f, 0.0f, 1.0f);
 }
-
-ConsoleCommand2 sun_override_cmd{
-    "sun_override",
-    [](std::optional<float> yaw_opt, std::optional<float> pitch_opt, std::optional<float> intensity_opt) {
-        if (yaw_opt && pitch_opt) {
-            g_sun_override = SunOverride{yaw_opt.value(), pitch_opt.value(), intensity_opt};
-        }
-        else {
-            g_sun_override.reset();
-        }
-        const SunLightState sun = gr_get_sun_state();
-        rf::console::print("Sun override: {}", g_sun_override ? "on" : "off");
-        rf::console::print("Sun: {}, travel dir {:.3f} {:.3f} {:.3f}, color {:.3f} {:.3f} {:.3f}",
-            sun.enabled ? "enabled" : "disabled", sun.travel_dir.x, sun.travel_dir.y, sun.travel_dir.z,
-            sun.color[0], sun.color[1], sun.color[2]);
-    },
-    "Override the level directional sunlight direction and intensity for testing. No arguments clears the override.",
-    "sun_override [yaw] [pitch] [intensity]",
-};
 
 // Power of 2 texture enforcement
 // Access p2t flag directly to avoid pulling in D3D8 types from gr_direct3d.h
@@ -903,7 +873,6 @@ void gr_apply_patch()
     precache_rooms_cmd.register_cmd();
     disable_rendering_cmd.register_cmd();
     pow2_tex_cmd.register_cmd();
-    sun_override_cmd.register_cmd();
     underwater_fx_cmd.register_cmd();
 
     // Fix `rf::gr::text_2d_mode`.

@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <cmath>
 #include <map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 #include <string>
@@ -436,6 +437,38 @@ struct AlpineLevelProperties
         return alpine_sun_to_light_dir(sun_yaw, sun_pitch);
     }
 
+    // The properties dialog constrains these on the way in, but a chunk can come from anywhere and
+    // its floats go straight into the bake and, on the game side, into a GPU constant buffer. A
+    // NaN survives every comparison the bake makes about a light, so it has to stop at the reader.
+    // The ranges are the dialog's own (level.cpp OnApply).
+    void SanitizeSunProperties()
+    {
+        const float yaw_in = sun_yaw, pitch_in = sun_pitch;
+        const float intensity_in = sun_intensity, spread_in = sun_spread_angle;
+        const uint8_t mesh_mode_in = sun_mesh_mode;
+
+        sun_yaw = std::isfinite(sun_yaw) ? std::fmod(sun_yaw, 360.0f) : 0.0f;
+        if (sun_yaw < 0.0f) {
+            sun_yaw += 360.0f;
+        }
+        sun_pitch = std::clamp(std::isfinite(sun_pitch) ? sun_pitch : 90.0f, 0.0f, 90.0f);
+        sun_intensity = std::clamp(std::isfinite(sun_intensity) ? sun_intensity : 1.0f, 0.0f, 10.0f);
+        sun_spread_angle =
+            std::clamp(std::isfinite(sun_spread_angle) ? sun_spread_angle : 0.0f, 0.0f, 45.0f);
+        if (sun_mesh_mode > 1) {
+            sun_mesh_mode = 0;
+        }
+
+        if (!(yaw_in == sun_yaw) || !(pitch_in == sun_pitch) ||
+            !(intensity_in == sun_intensity) || !(spread_in == sun_spread_angle) ||
+            mesh_mode_in != sun_mesh_mode) {
+            xlog::warn("[AlpineLevelProps] out of range sunlight properties corrected: yaw {} -> {}, "
+                       "pitch {} -> {}, intensity {} -> {}, spread {} -> {}, mesh mode {} -> {}",
+                       yaw_in, sun_yaw, pitch_in, sun_pitch, intensity_in, sun_intensity, spread_in,
+                       sun_spread_angle, mesh_mode_in, sun_mesh_mode);
+        }
+    }
+
     // defaults for existing levels, overwritten for maps with these fields in their alpine level props chunk
     // relevant for maps without alpine level props and maps with older alpine level props versions
     // should always match stock game behaviour
@@ -583,6 +616,13 @@ struct AlpineLevelProperties
 
         rf::File::ChunkGuard chunk_guard{file, remaining};
 
+        // Runs on every one of this function's many early returns, so a chunk that stops half way
+        // through the sun fields still leaves usable values behind.
+        struct SanitizeGuard {
+            AlpineLevelProperties* props;
+            ~SanitizeGuard() { props->SanitizeSunProperties(); }
+        } sanitize_guard{this};
+
         auto read_bytes = [&](void* dst, std::size_t n) -> bool {
             if (remaining < n)
                 return false;
@@ -592,6 +632,21 @@ struct AlpineLevelProperties
                 return false;
             }
             remaining -= n;
+            return true;
+        };
+
+        // A count larger than the cap still describes that many entries in the file, so the
+        // surplus has to be consumed or every field behind it is read from the wrong offset.
+        auto skip_entries = [&](std::uint32_t surplus, std::size_t entry_size) -> bool {
+            std::uint64_t bytes = static_cast<std::uint64_t>(surplus) * entry_size;
+            std::uint8_t scratch[256];
+            while (bytes > 0) {
+                const std::size_t step =
+                    static_cast<std::size_t>(std::min<std::uint64_t>(bytes, sizeof(scratch)));
+                if (!read_bytes(scratch, step))
+                    return false;
+                bytes -= step;
+            }
             return true;
         };
 
@@ -649,6 +704,7 @@ struct AlpineLevelProperties
             std::uint32_t count = 0;
             if (!read_bytes(&count, sizeof(count)))
                 return;
+            std::uint32_t count_surplus = count > 10000 ? count - 10000 : 0;
             if (count > 10000) count = 10000;
             geoable_brush_uids.resize(count);
             geoable_room_uids.resize(count);
@@ -662,12 +718,15 @@ struct AlpineLevelProperties
                     return;
                 geoable_room_uids[i] = room_uid;
             }
+            if (!skip_entries(count_surplus, 8))
+                return;
             xlog::debug("[AlpineLevelProps] geoable entries count={}", count);
 
             // Breakable material entries as (brush_uid, room_uid, material) triples
             std::uint32_t bcount = 0;
             if (!read_bytes(&bcount, sizeof(bcount)))
                 return;
+            std::uint32_t bcount_surplus = bcount > 10000 ? bcount - 10000 : 0;
             if (bcount > 10000) bcount = 10000;
             breakable_brush_uids.resize(bcount);
             breakable_room_uids.resize(bcount);
@@ -686,11 +745,14 @@ struct AlpineLevelProperties
                     return;
                 breakable_materials[i] = mat;
             }
+            if (!skip_entries(bcount_surplus, 9))
+                return;
 
             // Hold open first-keyframe UIDs
             std::uint32_t ho_count = 0;
             if (!read_bytes(&ho_count, sizeof(ho_count)))
                 return;
+            std::uint32_t ho_surplus = ho_count > 10000 ? ho_count - 10000 : 0;
             if (ho_count > 10000) ho_count = 10000;
             hold_open_keyframe_uids.resize(ho_count);
             for (std::uint32_t i = 0; i < ho_count; i++) {
@@ -699,6 +761,8 @@ struct AlpineLevelProperties
                     return;
                 hold_open_keyframe_uids[i] = uid;
             }
+            if (!skip_entries(ho_surplus, 4))
+                return;
         }
 
         if (version >= 5) {
@@ -751,12 +815,15 @@ struct AlpineLevelProperties
             std::uint32_t nsc_count = 0;
             if (!read_bytes(&nsc_count, sizeof(nsc_count)))
                 return;
+            std::uint32_t nsc_surplus = nsc_count > 10000 ? nsc_count - 10000 : 0;
             if (nsc_count > 10000) nsc_count = 10000;
             no_shadow_cast_brush_uids.resize(nsc_count);
             for (std::uint32_t i = 0; i < nsc_count; i++) {
                 if (!read_bytes(&no_shadow_cast_brush_uids[i], sizeof(int32_t)))
                     return;
             }
+            if (!skip_entries(nsc_surplus, 4))
+                return;
             if (!read_bytes(&u8, sizeof(u8)))
                 return;
             meshes_occlude = (u8 != 0);
@@ -1021,17 +1088,14 @@ static_assert(sizeof(CDedLevel) == 0x608);
 // a solid detail brush, or a solid brush of a moving group, which the bake traces as its own
 // brush-local solid (0x00449044 reads BrushNode::geometry for every GroupEntry::brushes member of a
 // moving group). RED does not set the detail bit on mover brushes, so the two tests are separate.
-inline bool no_shadow_cast_eligible(const BrushNode& brush)
+// The moving group membership is the same for every brush, so a caller walking the brush list
+// gathers it once instead of rescanning every group for each brush.
+inline std::unordered_set<int32_t> collect_moving_group_brush_uids()
 {
-    if (brush.brush_type != BRUSH_TYPE_SOLID) {
-        return false;
-    }
-    if (brush.is_detail) {
-        return true;
-    }
+    std::unordered_set<int32_t> uids;
     auto* level = CDedLevel::Get();
     if (!level) {
-        return false;
+        return uids;
     }
     for (int i = 0; i < level->moving_groups.size; i++) {
         const GroupEntry* group = level->moving_groups[i];
@@ -1040,12 +1104,21 @@ inline bool no_shadow_cast_eligible(const BrushNode& brush)
         }
         for (int j = 0; j < group->brushes.size; j++) {
             const BrushNode* member = group->brushes[j];
-            if (member && member->uid == brush.uid) {
-                return true;
+            if (member) {
+                uids.insert(member->uid);
             }
         }
     }
-    return false;
+    return uids;
+}
+
+inline bool no_shadow_cast_eligible(const BrushNode& brush,
+                                    const std::unordered_set<int32_t>& mover_brush_uids)
+{
+    if (brush.brush_type != BRUSH_TYPE_SOLID) {
+        return false;
+    }
+    return brush.is_detail || mover_brush_uids.count(brush.uid) != 0;
 }
 
 // GRoom UID counter (RED.exe global, starts at 0x7FFFFFFF, decrements on each GRoom construction)

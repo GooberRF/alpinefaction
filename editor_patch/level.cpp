@@ -24,6 +24,7 @@
 // Forward declarations
 int get_level_rfl_version();
 void set_initial_level_rfl_version();
+void lightmap_reset_level_state();
 
 // Global AlpineLevelProperties — kept separate from CDedLevel allocation to avoid
 // stock code overwriting it (the stock rfg group loader writes to CDedLevel fields
@@ -92,6 +93,7 @@ void __fastcall CDedLevel_DeleteContents_hooked(CDedLevel* level, void* edx_unus
 
     // Now stock code is done. Free the Alpine objects properly.
     props.LoadDefaults();
+    lightmap_reset_level_state();
 }
 
 // load default AlpineLevelProperties values
@@ -99,6 +101,7 @@ CodeInjection CDedLevel_LoadLevel_patch1{
     0x0042F136,
     []() {
         CDedLevel::Get()->GetAlpineLevelProperties().LoadDefaults();
+        lightmap_reset_level_state();
     },
 };
 
@@ -449,10 +452,11 @@ static void prune_no_shadow_cast_brush_uids(CDedLevel& level, AlpineLevelPropert
     if (props.no_shadow_cast_brush_uids.empty()) return;
 
     std::unordered_set<int32_t> keep_uids;
+    const std::unordered_set<int32_t> mover_brush_uids = collect_moving_group_brush_uids();
     BrushNode* node = level.brush_list;
     if (node) {
         do {
-            if (no_shadow_cast_eligible(*node)) {
+            if (no_shadow_cast_eligible(*node, mover_brush_uids)) {
                 keep_uids.insert(node->uid);
             }
             node = node->next;

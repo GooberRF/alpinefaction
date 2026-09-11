@@ -1,5 +1,6 @@
 #include <windows.h>
 #include <shellapi.h>
+#include <cctype>
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
@@ -46,6 +47,10 @@ ViewCamera g_view_cameras[viewport_count];
 
 bool g_active = false;
 bool g_bake_started = false;
+// CDedDoc keeps its document object whether or not the level behind it parsed, so "the doc is
+// there" is not evidence that anything loaded; the load's own return value is.
+bool g_load_reported = false;
+bool g_load_ok = false;
 std::string g_input_path;
 std::string g_output_path;
 std::string g_log_path;
@@ -157,6 +162,14 @@ void run_bake()
         bake_log("error: level did not load");
         bake_finish(2);
     }
+    if (!g_load_reported) {
+        bake_log(std::format("error: {} was never opened", g_input_path));
+        bake_finish(2);
+    }
+    if (!g_load_ok) {
+        bake_log(std::format("error: {} failed to load", g_input_path));
+        bake_finish(2);
+    }
     bake_log(std::format("loaded {}", g_input_path));
 
     DWORD bake_begin = GetTickCount();
@@ -181,6 +194,30 @@ void run_bake()
     bake_finish(0);
 }
 
+// the launcher escapes its arguments by doubling every backslash and Win32 collapses those runs, so
+// the path RED opens is not the string the command line carried
+bool path_is_bake_input(const char* path)
+{
+    auto take = [](const char*& p) {
+        const auto c = static_cast<unsigned char>(*p++);
+        if (c == '\\' || c == '/') {
+            while (*p == '\\' || *p == '/') {
+                ++p;
+            }
+            return static_cast<int>('\\');
+        }
+        return std::tolower(c);
+    };
+    const char* a = path;
+    const char* b = g_input_path.c_str();
+    while (*a && *b) {
+        if (take(a) != take(b)) {
+            return false;
+        }
+    }
+    return !*a && !*b;
+}
+
 char __fastcall CDedDoc_LoadSaveLevel_new(void* self, int edx, const char* path, int is_load,
                                           int is_autosave);
 FunHook<char __fastcall(void*, int, const char*, int, int)> CDedDoc_LoadSaveLevel_hook{
@@ -190,8 +227,13 @@ char __fastcall CDedDoc_LoadSaveLevel_new(void* self, int edx, const char* path,
                                           int is_autosave)
 {
     char result = CDedDoc_LoadSaveLevel_hook.call_target(self, edx, path, is_load, is_autosave);
-    if (is_load && result) {
-        capture_view_cameras();
+    // only the load of the level named on the command line decides the bake's fate
+    if (is_load && !is_autosave && path && path_is_bake_input(path)) {
+        g_load_reported = true;
+        g_load_ok = result != 0;
+        if (result) {
+            capture_view_cameras();
+        }
     }
     return result;
 }

@@ -259,6 +259,9 @@ CodeInjection lightmap_light_limit_injection{
             regs.eip = 0x004AC611; // normal lightmap processing
         }
     },
+    // no trampoline: the 5 byte window is "CMP EDI,0x40" plus the first two bytes of the JGE
+    // behind it, which cannot be relocated; every path above sets eip
+    false,
 };
 
 // FUN_004a6510 takes the pixel buffer of a new lightmap page straight from FUN_0052ee74 and never
@@ -325,6 +328,9 @@ CodeInjection lightmap_cross_room_blend_injection{
             regs.eip = 0x004ab07c; // skip blending
         }
     },
+    // no trampoline: the 5 byte window is "CMP EDX,ESI" plus the first three bytes of the JNZ
+    // behind it, which cannot be relocated; every path above sets eip
+    false,
 };
 
 // Per-texel room ambient data, populated at FUN_004aabf0 entry and used by the
@@ -755,10 +761,12 @@ struct OccTri {
     unsigned flags;
 };
 
+// A node build_range never got to finish (bad_alloc deeper in the recursion) has to read as an
+// internal node with no children, not as a leaf over triangle 0 and not as a child index of 0.
 struct OccNode {
-    Vec3f bmin, bmax;
-    int start, count; // count > 0 marks a leaf
-    int left, right;  // build_range lays the left subtree out between them, so both are stored
+    Vec3f bmin{}, bmax{};
+    int start = 0, count = 0; // count > 0 marks a leaf
+    int left = -1, right = -1; // build_range lays the left subtree out between them, so both are stored
 };
 
 constexpr int occ_leaf_size = 8;
@@ -782,6 +790,13 @@ class OccluderTree
 public:
     bool build(uintptr_t solid, const NoShadowCastFilter& no_shadow_cast, bool local_space);
     bool empty() const { return tris_.empty(); }
+    void clear()
+    {
+        tris_.clear();
+        order_.clear();
+        nodes_.clear();
+        skipped_faces_ = 0;
+    }
     int skipped_faces() const { return skipped_faces_; }
     bool occluded(const OccQuery& q) const;
 
@@ -892,14 +907,22 @@ int triangulate_face(const Vec3f* v, int n, int* out)
 }
 
 // Fills in everything the traversal derives from a triangle's corners; false for a degenerate one.
+// A non-finite corner is rejected outright: it would otherwise reach the BVH with a NaN bound, and
+// every comparison the split and the slab test make against a NaN is false, so it would neither
+// sort nor cull. The length test is written so that a NaN fails it too.
 bool occ_make_tri(const Vec3f& a, const Vec3f& b, const Vec3f& c, OccTri& t)
 {
+    for (const Vec3f* v : {&a, &b, &c}) {
+        if (!std::isfinite(v->x) || !std::isfinite(v->y) || !std::isfinite(v->z)) {
+            return false;
+        }
+    }
     t.v0 = a;
     t.e1 = vsub(b, a);
     t.e2 = vsub(c, a);
     t.normal = vcross(t.e1, t.e2);
     const float len = std::sqrt(vdot(t.normal, t.normal));
-    if (len < 1e-12f) {
+    if (!(len >= 1e-12f) || !std::isfinite(len)) {
         return false;
     }
     t.normal = {t.normal.x / len, t.normal.y / len, t.normal.z / len};
@@ -923,7 +946,9 @@ bool OccluderTree::build(uintptr_t solid, const NoShadowCastFilter& no_shadow_ca
     int guard = 0;
     for (uintptr_t face = *reinterpret_cast<uintptr_t*>(solid + 0x70); face && guard < max_faces;
          face = *reinterpret_cast<uintptr_t*>(face + 0x54), guard++) {
-        unsigned flags = *reinterpret_cast<unsigned*>(face + 0x28);
+        // the engine's face flags are the 16 bit RFL word, so the synthetic bits below own
+        // everything above it; masking keeps a stray high bit out of the alpha texture test
+        unsigned flags = *reinterpret_cast<unsigned*>(face + 0x28) & 0xffffu;
         if (flags & 0x40u) {
             continue;
         }
@@ -952,8 +977,13 @@ bool OccluderTree::build(uintptr_t solid, const NoShadowCastFilter& no_shadow_ca
         const auto* face_normal = reinterpret_cast<const float*>(face);
         Vec3f verts[occ_max_face_verts];
         int n = 0;
+        bool truncated = false;
         const uintptr_t head = *reinterpret_cast<uintptr_t*>(face + 0x40);
-        for (uintptr_t node = head; node && n < occ_max_face_verts;) {
+        for (uintptr_t node = head; node;) {
+            if (n == occ_max_face_verts) {
+                truncated = true;
+                break;
+            }
             auto* pos = *reinterpret_cast<const float**>(node);
             if (!pos) {
                 break;
@@ -962,6 +992,15 @@ bool OccluderTree::build(uintptr_t solid, const NoShadowCastFilter& no_shadow_ca
             node = *reinterpret_cast<uintptr_t*>(node + 0x14);
             if (node == head) {
                 break;
+            }
+        }
+        if (truncated) {
+            static bool warned = false;
+            if (!warned) {
+                warned = true;
+                xlog::warn("Lightmap: a face has more than {} vertices, only the first {} of them "
+                           "cast a baked shadow",
+                           occ_max_face_verts, occ_max_face_verts);
             }
         }
         int fan[(occ_max_face_verts - 2) * 3];
@@ -1048,6 +1087,14 @@ int OccluderTree::build_range(int begin, int end, int depth)
                      [&](int a, int b) {
                          const float ca = (&tris_[a].centroid.x)[axis];
                          const float cb = (&tris_[b].centroid.x)[axis];
+                         // occ_make_tri rejects non-finite corners, so a NaN centroid cannot get
+                         // here; ordering them last anyway keeps this a strict weak ordering
+                         // whatever reaches it, which nth_element needs to stay in bounds
+                         const bool na = std::isnan(ca);
+                         const bool nb = std::isnan(cb);
+                         if (na || nb) {
+                             return na == nb ? a < b : nb;
+                         }
                          return ca != cb ? ca < cb : a < b;
                      });
     nodes_[self].start = 0;
@@ -1078,10 +1125,15 @@ bool OccluderTree::occluded(const OccQuery& qy) const
     const float inv[3] = {safe_inv(d.x), safe_inv(d.y), safe_inv(d.z)};
     const float org[3] = {o.x, o.y, o.z};
     int stack[occ_max_depth * 2 + 8];
+    constexpr int stack_size = static_cast<int>(sizeof(stack) / sizeof(stack[0]));
     int sp = 0;
     stack[sp++] = 0;
     while (sp > 0) {
-        const OccNode& nd = nodes_[stack[--sp]];
+        const int node_index = stack[--sp];
+        if (node_index < 0 || static_cast<std::size_t>(node_index) >= nodes_.size()) {
+            continue;
+        }
+        const OccNode& nd = nodes_[node_index];
         float t0 = qy.tmin, t1 = qy.tmax;
         const float* lo = &nd.bmin.x;
         const float* hi = &nd.bmax.x;
@@ -1144,8 +1196,14 @@ bool OccluderTree::occluded(const OccQuery& qy) const
             }
         }
         else {
-            stack[sp++] = nd.left;
-            stack[sp++] = nd.right;
+            // a build that ran out of memory leaves -1 children behind; without this the walk
+            // would push them and come back around to node 0 for ever
+            if (nd.left >= 0 && sp < stack_size) {
+                stack[sp++] = nd.left;
+            }
+            if (nd.right >= 0 && sp < stack_size) {
+                stack[sp++] = nd.right;
+            }
         }
     }
     return false;
@@ -1156,6 +1214,17 @@ bool OccluderTree::occluded(const OccQuery& qy) const
 static int g_sun_light_handle = -1;
 static void* g_sun_light_ptr = nullptr;
 static float g_sun_spread_angle = 0.0f;
+
+// Set for exactly as long as one of the two Calculate Lighting commands is running.
+//
+// RED also relights a single surface from the viewport (FUN_004e85a0 -> FUN_0049a700 ->
+// FUN_004ac470(surface, 1)), and that path reaches FUN_004ae360 - and so the ray caster - with no
+// command around it at all. Nothing there ever ends, so a GSolid keyed cache built from it is
+// never dropped and outlives the geometry Build Geometry frees under it, and every repaint pays
+// for the BVH. The caches are therefore built only inside a bake, which puts live relight back on
+// the stock projector exactly as a Legacy lighting level is, and bounds every cache by the
+// command that made it.
+static bool g_bake_active = false;
 
 // One cache per GSolid; the bake walks the static solid and every mover solid in turn and each
 // keeps its own coordinate space, so occluders are never shared between them. Both halves are
@@ -1172,7 +1241,7 @@ static std::unordered_map<uintptr_t, std::unique_ptr<SolidCache>> g_solid_cache;
 
 static SolidCache* lightmap_solid_cache(uintptr_t solid)
 {
-    if (!solid) {
+    if (!solid || !g_bake_active) {
         return nullptr;
     }
     auto it = g_solid_cache.find(solid);
@@ -1217,6 +1286,10 @@ static const OccluderTree* lightmap_occluder_tree(uintptr_t solid)
                         cache->tree.skipped_faces());
         }
         catch (...) {
+            // build() leaves the triangle list populated and the node array half written, which
+            // reads as a usable tree; drop it so empty() reports it and the stock projector, which
+            // the message promises, is what actually runs
+            cache->tree.clear();
             xlog::error("Lightmap: out of memory building the occluder tree, falling back to the "
                         "stock shadow projector");
         }
@@ -1285,7 +1358,7 @@ static void sun_cone_directions(const Vec3f& axis, float spread_deg, Vec3f* out,
     Vec3f up = std::abs(axis.y) < 0.9f ? Vec3f{0.0f, 1.0f, 0.0f} : Vec3f{1.0f, 0.0f, 0.0f};
     Vec3f u = vcross(up, axis);
     float len = std::sqrt(vdot(u, u));
-    if (len < 1e-6f) {
+    if (!(len >= 1e-6f)) {
         return;
     }
     u = {u.x / len, u.y / len, u.z / len};
@@ -1358,7 +1431,7 @@ static bool lightmap_raycast_mask(uintptr_t solid, uintptr_t surface, uintptr_t 
     if (light_type == 1) {
         Vec3f axis{vec[0], vec[1], vec[2]};
         const float len = std::sqrt(vdot(axis, axis));
-        if (len < 1e-6f) {
+        if (!(len >= 1e-6f)) {
             return false;
         }
         axis = {axis.x / len, axis.y / len, axis.z / len};
@@ -1398,7 +1471,7 @@ static bool lightmap_raycast_mask(uintptr_t solid, uintptr_t surface, uintptr_t 
                         const float* target = k == 0 ? vec : vec_end;
                         Vec3f d{target[0] - origin.x, target[1] - origin.y, target[2] - origin.z};
                         const float len = std::sqrt(vdot(d, d));
-                        if (len < 1e-4f) {
+                        if (!(len >= 1e-4f)) {
                             taken++;
                             lit++;
                             continue;
@@ -1516,22 +1589,49 @@ static void sun_light_destroy()
     g_sun_spread_angle = 0.0f;
 }
 
+// Brackets one Calculate Lighting command: the scene light, the caches and the reporting all
+// belong to it and none of them may survive it, including when the bake below unwinds.
+class BakeScope
+{
+public:
+    BakeScope()
+    {
+        sun_light_create();
+        lightmap_release_occluders();
+        g_no_shadow_cast_dropped.clear();
+        g_occluder_tree_built = false;
+        g_bake_active = true;
+    }
+    ~BakeScope()
+    {
+        g_bake_active = false;
+        // a throw here during an unwind would end the process, and the caches below still have to go
+        try {
+            no_shadow_cast_report();
+            if (g_occluder_tree_built) {
+                lightmap_mesh_occluder_report();
+            }
+        }
+        catch (...) {
+        }
+        try {
+            lightmap_release_occluders();
+            sun_light_destroy();
+        }
+        catch (...) {
+        }
+    }
+    BakeScope(const BakeScope&) = delete;
+    BakeScope& operator=(const BakeScope&) = delete;
+};
+
 static void __fastcall lighting_calc_shadows_new(void* self);
 static FunHook<void __fastcall(void*)> lighting_calc_shadows_hook{0x00448f20, lighting_calc_shadows_new};
 
 static void __fastcall lighting_calc_shadows_new(void* self)
 {
-    sun_light_create();
-    lightmap_release_occluders();
-    g_no_shadow_cast_dropped.clear();
-    g_occluder_tree_built = false;
+    BakeScope bake;
     lighting_calc_shadows_hook.call_target(self);
-    no_shadow_cast_report();
-    if (g_occluder_tree_built) {
-        lightmap_mesh_occluder_report();
-    }
-    lightmap_release_occluders();
-    sun_light_destroy();
 }
 
 static void __fastcall lighting_calc_no_shadows_new(void* self);
@@ -1539,17 +1639,22 @@ static FunHook<void __fastcall(void*)> lighting_calc_no_shadows_hook{0x004492d0,
 
 static void __fastcall lighting_calc_no_shadows_new(void* self)
 {
-    sun_light_create();
-    lightmap_release_occluders();
+    BakeScope bake;
+    lighting_calc_no_shadows_hook.call_target(self);
+}
+
+static void lightmap_blend_reset();
+
+// Build Geometry frees the GSolid the caches are keyed by, and a level load frees the whole level;
+// the bake bracket already means nothing survives to see either, but the ambient snapshot is only
+// rebuilt by a batch pass and would otherwise describe the previous level.
+void lightmap_reset_level_state()
+{
+    s_ambient_room_count = 0;
     g_no_shadow_cast_dropped.clear();
     g_occluder_tree_built = false;
-    lighting_calc_no_shadows_hook.call_target(self);
-    no_shadow_cast_report();
-    if (g_occluder_tree_built) {
-        lightmap_mesh_occluder_report();
-    }
     lightmap_release_occluders();
-    sun_light_destroy();
+    lightmap_blend_reset();
 }
 
 // Stock face light gathering adds type 1 lights unconditionally, once per room, so a
@@ -1569,7 +1674,10 @@ CodeInjection sun_face_light_dedup_injection{
                 }
             }
         }
+        // 0x00488810 stores into face_light_list without bounding the index; the light pool it
+        // walks cannot exceed max_scene_lights entries, so the clamp is only a backstop
         int count = duplicate ? index : index + 1;
+        count = std::clamp(count, 0, max_scene_lights);
         *reinterpret_cast<int*>(0x007432ec) = count;
         regs.eax = count;
         regs.eip = 0x004889a8;
@@ -1610,7 +1718,7 @@ static Vector3 sun_cross(const Vector3& a, const Vector3& b)
 static bool sun_normalize(Vector3& v)
 {
     float len = std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
-    if (len < 1e-6f) {
+    if (!(len >= 1e-6f)) {
         return false;
     }
     v.x /= len;
@@ -1637,7 +1745,10 @@ static void __cdecl sun_shadow_mask_new(uintptr_t solid, uintptr_t surface, uint
                                         char debug, uint8_t* mask)
 {
     const bool is_sun = g_sun_light_ptr && reinterpret_cast<void*>(light) == g_sun_light_ptr;
-    if ((bake_fixes_active() || is_sun) && lightmap_raycast_mask(solid, surface, light, mask)) {
+    // outside a bake this is RED's viewport relight of a single surface, which gets the stock
+    // projector: the tracer's caches are only meaningful for as long as the command that built them
+    if (g_bake_active && (bake_fixes_active() || is_sun) &&
+        lightmap_raycast_mask(solid, surface, light, mask)) {
         return;
     }
     if (!is_sun) {
@@ -1735,6 +1846,7 @@ static void __cdecl sun_shadow_mask_new(uintptr_t solid, uintptr_t surface, uint
 // ============================================================
 
 // Per-texel float accumulation buffers shared by the whole lightmap pipeline.
+static constexpr int lm_accum_texels = 65536;
 static auto* const lm_accum_r = reinterpret_cast<float*>(0x0138a620);
 static auto* const lm_accum_g = reinterpret_cast<float*>(0x0140ac20);
 static auto* const lm_accum_b = reinterpret_cast<float*>(0x0134a620);
@@ -1813,7 +1925,10 @@ CodeInjection lightmap_texel_convert_injection{
         const int width = *reinterpret_cast<int*>(surface + 0x18);
         const int height = *reinterpret_cast<int*>(surface + 0x1c);
         auto* buf = reinterpret_cast<std::uint8_t*>(*reinterpret_cast<uintptr_t*>(lm + 0xc));
-        if (width <= 0 || height <= 0 || !buf) {
+        // the accumulators this reads are 65536 floats, the same bound every other consumer of a
+        // fragment's dimensions checks
+        if (width <= 0 || height <= 0 || width > lm_highres_page_size ||
+            height > lm_highres_page_size || width * height > lm_accum_texels || !buf) {
             return;
         }
         const int stride = *reinterpret_cast<int*>(lm + 4);
@@ -2074,7 +2189,9 @@ CodeInjection lightmap_border_duplicate_skip_injection{
     [](auto& regs) {
         regs.eax = *reinterpret_cast<int*>(static_cast<uintptr_t>(regs.esi) + 0x18);
         regs.ecx = 0;
-        if (!bake_fixes_active()) {
+        // the gutter fill needs the solid's face index, which only a bake builds; viewport relight
+        // keeps the stock ring copy rather than leaving the ring unwritten
+        if (!bake_fixes_active() || !g_bake_active) {
             regs.eip = 0x004adc3c;
             return;
         }
@@ -2256,6 +2373,10 @@ static bool lightmap_blend_edge_is_new(const int* surf_a, const int* surf_b, con
 static constexpr float lm_blend_own = 9.0f / 16.0f;
 static constexpr float lm_blend_other = 7.0f / 16.0f;
 static constexpr float lm_blend_samples_per_texel = 128.0f;
+// The walk is 128 samples per texel of the longer projection of the edge; the floor only binds for
+// an edge a small fraction of a texel long, where it is what keeps a sub-texel crossing from
+// resting on one or two samples.
+static constexpr int lm_blend_min_samples = 8;
 
 struct BlendSide {
     std::uint8_t* page = nullptr;
@@ -2265,10 +2386,25 @@ struct BlendSide {
     float scale_x = 0.0f, scale_y = 0.0f, add_x = 0.0f, add_y = 0.0f;
     int dropped = 0, u_coeff = 0;
     std::vector<std::uint8_t> snap;
+};
+
+// The blended value of each texel is mixed from the neighbour and from what this surface held
+// before the edge, so the snapshot has to be the page as it stands. A surface shares a boundary
+// with as many neighbours as the geometry gives it, and re-copying its whole fragment for each of
+// them was the pass's dominant cost, so the snapshots are kept for the length of one pass instead.
+// blend_side_apply writes every byte it changes into the snapshot as well, which keeps a cached
+// snapshot equal to the page at all times - an entry can therefore be dropped and rebuilt at any
+// point without changing a single output byte, which is what makes the budget below safe.
+struct BlendAccum {
     std::vector<float> sum;
     std::vector<int> count;
     std::vector<int> touched;
 };
+
+static std::unordered_map<uintptr_t, BlendSide> g_blend_sides;
+static std::size_t g_blend_sides_bytes = 0;
+static BlendAccum g_blend_accum[2];
+static constexpr std::size_t lm_blend_cache_budget = 64u << 20;
 
 static bool blend_side_init(BlendSide& s, uintptr_t surface)
 {
@@ -2298,17 +2434,76 @@ static bool blend_side_init(BlendSide& s, uintptr_t surface)
 
     const std::size_t texels = static_cast<std::size_t>(s.w) * s.h;
     s.snap.resize(texels * 3);
-    if (s.count.size() < texels) {
-        s.sum.assign(texels * 3, 0.0f);
-        s.count.assign(texels, 0);
-    }
-    s.touched.clear();
     for (int row = 0; row < s.h; row++) {
         std::memcpy(&s.snap[static_cast<std::size_t>(row) * s.w * 3],
                     s.page + (static_cast<std::size_t>(s.ystart + row) * s.stride + s.xstart) * 3,
                     static_cast<std::size_t>(s.w) * 3);
     }
     return true;
+}
+
+static BlendSide* blend_side_get(uintptr_t surface)
+{
+    auto it = g_blend_sides.find(surface);
+    if (it != g_blend_sides.end()) {
+        return &it->second;
+    }
+    BlendSide side;
+    if (!blend_side_init(side, surface)) {
+        return nullptr;
+    }
+    BlendSide& entry = g_blend_sides.emplace(surface, std::move(side)).first->second;
+    g_blend_sides_bytes += entry.snap.size();
+    return &entry;
+}
+
+// Anything that writes a surface's texels outside blend_side_apply - the stock blend below - makes
+// that surface's snapshot stale.
+static void blend_side_drop(uintptr_t surface)
+{
+    auto it = g_blend_sides.find(surface);
+    if (it != g_blend_sides.end()) {
+        g_blend_sides_bytes -= std::min(g_blend_sides_bytes, it->second.snap.size());
+        g_blend_sides.erase(it);
+    }
+}
+
+static void blend_sides_clear()
+{
+    g_blend_sides.clear();
+    g_blend_sides_bytes = 0;
+}
+
+static void blend_accum_prepare(BlendAccum& a, const BlendSide& s)
+{
+    const std::size_t texels = static_cast<std::size_t>(s.w) * s.h;
+    if (a.count.size() < texels) {
+        a.sum.assign(texels * 3, 0.0f);
+        a.count.assign(texels, 0);
+    }
+}
+
+// An edge that threw part way through leaves accumulated neighbour values behind; they belong to
+// nothing and must not reach the next edge's average.
+static void blend_accum_discard(BlendAccum& a)
+{
+    for (int index : a.touched) {
+        if (index < 0 || static_cast<std::size_t>(index) >= a.count.size()) {
+            continue;
+        }
+        a.count[index] = 0;
+        float* acc = &a.sum[static_cast<std::size_t>(index) * 3];
+        acc[0] = acc[1] = acc[2] = 0.0f;
+    }
+    a.touched.clear();
+}
+
+static void lightmap_blend_reset()
+{
+    g_blend_edges.clear();
+    blend_sides_clear();
+    blend_accum_discard(g_blend_accum[0]);
+    blend_accum_discard(g_blend_accum[1]);
 }
 
 // The inverse of texel_to_world: page pixel coordinates of a world position, exact for any point
@@ -2371,46 +2566,61 @@ static void blend_side_sample(const BlendSide& s, float x, float y, float* out)
     }
 }
 
-static void blend_side_add(BlendSide& s, int index, const float* other)
+static void blend_side_add(BlendAccum& a, int index, const float* other)
 {
-    if (s.count[index] == 0) {
-        s.touched.push_back(index);
+    if (a.count[index] == 0) {
+        a.touched.push_back(index);
     }
-    s.count[index]++;
-    float* dst = &s.sum[static_cast<std::size_t>(index) * 3];
+    a.count[index]++;
+    float* dst = &a.sum[static_cast<std::size_t>(index) * 3];
     dst[0] += other[0];
     dst[1] += other[1];
     dst[2] += other[2];
 }
 
-static void blend_side_apply(BlendSide& s)
+static void blend_side_apply(BlendSide& s, BlendAccum& a)
 {
-    for (int index : s.touched) {
-        const float inv = 1.0f / static_cast<float>(s.count[index]);
+    for (int index : a.touched) {
+        const float inv = 1.0f / static_cast<float>(a.count[index]);
         std::uint8_t* dst =
             s.page + (static_cast<std::size_t>(s.ystart + index / s.w) * s.stride + s.xstart +
                       index % s.w) * 3;
-        float* acc = &s.sum[static_cast<std::size_t>(index) * 3];
-        const std::uint8_t* own = &s.snap[static_cast<std::size_t>(index) * 3];
+        float* acc = &a.sum[static_cast<std::size_t>(index) * 3];
+        std::uint8_t* own = &s.snap[static_cast<std::size_t>(index) * 3];
         for (int c = 0; c < 3; c++) {
             const int v = static_cast<int>(static_cast<float>(own[c]) * lm_blend_own +
                                            acc[c] * inv * lm_blend_other + 0.5f);
-            dst[c] = static_cast<std::uint8_t>(std::min(std::max(v, 0), 255));
+            const auto out = static_cast<std::uint8_t>(std::min(std::max(v, 0), 255));
+            dst[c] = out;
+            own[c] = out;
             acc[c] = 0.0f;
         }
-        s.count[index] = 0;
+        a.count[index] = 0;
     }
-    s.touched.clear();
+    a.touched.clear();
 }
 
 static bool lightmap_blend_edge(uintptr_t surf_a, uintptr_t surf_b, const float* p0, const float* p1)
 {
+    if (surf_a == surf_b) {
+        return true; // stock pre-filters this, and there is nothing for the stock blend to do either
+    }
     // the blend pass is serial (FUN_004aabf0 -> FUN_004aae80 -> here on the bake thread), so the
     // scratch buffers are kept across calls rather than reallocated per edge
-    static BlendSide a, b;
-    if (!blend_side_init(a, surf_a) || !blend_side_init(b, surf_b)) {
+    if (g_blend_sides_bytes > lm_blend_cache_budget) {
+        blend_sides_clear();
+    }
+    BlendSide* pa = blend_side_get(surf_a);
+    BlendSide* pb = blend_side_get(surf_b);
+    if (!pa || !pb) {
         return false;
     }
+    BlendSide& a = *pa;
+    BlendSide& b = *pb;
+    BlendAccum& acc_a = g_blend_accum[0];
+    BlendAccum& acc_b = g_blend_accum[1];
+    blend_accum_prepare(acc_a, a);
+    blend_accum_prepare(acc_b, b);
     float ax0, ay0, ax1, ay1, bx0, by0, bx1, by1;
     blend_world_to_page(a, p0, ax0, ay0);
     blend_world_to_page(a, p1, ax1, ay1);
@@ -2422,7 +2632,7 @@ static bool lightmap_blend_edge(uintptr_t surf_a, uintptr_t surf_b, const float*
         return false;
     }
     int steps = static_cast<int>(ext * lm_blend_samples_per_texel) + 1;
-    steps = std::min(std::max(steps, 256), 1 << 16);
+    steps = std::min(std::max(steps, lm_blend_min_samples), 1 << 16);
     for (int k = 0; k <= steps; k++) {
         const float t = static_cast<float>(k) / static_cast<float>(steps);
         const float ax = ax0 + (ax1 - ax0) * t;
@@ -2437,11 +2647,11 @@ static bool lightmap_blend_edge(uintptr_t surf_a, uintptr_t surf_b, const float*
         float sa[3], sb[3];
         blend_side_sample(a, ax, ay, sa);
         blend_side_sample(b, bx, by, sb);
-        blend_side_add(a, ia, sb);
-        blend_side_add(b, ib, sa);
+        blend_side_add(acc_a, ia, sb);
+        blend_side_add(acc_b, ib, sa);
     }
-    blend_side_apply(a);
-    blend_side_apply(b);
+    blend_side_apply(a, acc_a);
+    blend_side_apply(b, acc_b);
     return true;
 }
 
@@ -2467,8 +2677,13 @@ static void __cdecl lightmap_blend_surfaces_new(void** a, void** b, void* p3, vo
             }
         }
         catch (...) {
+            blend_accum_discard(g_blend_accum[0]);
+            blend_accum_discard(g_blend_accum[1]);
         }
     }
+    // the stock blend writes both surfaces' texels behind the snapshots' back
+    blend_side_drop(reinterpret_cast<uintptr_t>(*a));
+    blend_side_drop(reinterpret_cast<uintptr_t>(*b));
     const std::size_t need =
         4u * static_cast<std::size_t>(surf_a[6]) * static_cast<std::size_t>(surf_a[7]) +
         4u * static_cast<std::size_t>(surf_b[6]) * static_cast<std::size_t>(surf_b[7]);
@@ -2493,8 +2708,10 @@ static FunHook<void __cdecl(void*, int)> lightmap_blend_pass_hook{0x004aae80, li
 static void __cdecl lightmap_blend_pass_new(void* entries, int count)
 {
     g_blend_edges.clear();
+    blend_sides_clear();
     lightmap_blend_pass_hook.call_target(entries, count);
     g_blend_edges.clear();
+    blend_sides_clear();
 }
 
 // Skips the per-pair done list scan at 0x004aaf29-0x004aaf56 so every shared edge of a pair reaches

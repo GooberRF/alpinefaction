@@ -308,6 +308,11 @@ namespace gr::d3d11
 
         float ld_x, ld_y, ld_z;
         get_light_dir(ld_x, ld_y, ld_z);
+        // the pixel shader has to bias along the direction this matrix was built from, and the map
+        // is kept across frames that never rebuild it, so the direction is kept with it
+        shadow_light_dir_[0] = ld_x;
+        shadow_light_dir_[1] = ld_y;
+        shadow_light_dir_[2] = ld_z;
 
         float up_x = 0.0f, up_y = 1.0f, up_z = 0.0f;
         if (std::abs(ld_y) > 0.99f) {
@@ -329,11 +334,6 @@ namespace gr::d3d11
         float fade_end = shadow_distance_presets[dist_preset].fade_end;
         float extent = fade_end * 1.2f;
         float depth_range = fade_end * 4.0f;
-
-        // Oblique sun angles project casters much further across the map, so widen the
-        // ortho footprint rather than clamping the direction (the PS must see the same one)
-        float oblique_scale = std::clamp(0.30f / std::max(std::abs(ld_y), 0.0001f), 1.0f, 3.0f);
-        extent *= oblique_scale;
 
         // Snap the shadow frustum center to texel boundaries to prevent shadow swimming
         // World-space size of one shadow map texel
@@ -804,10 +804,6 @@ namespace gr::d3d11
             shadows_active = false;
         }
 
-        // Compute normalized light direction for PS normal bias
-        float ld_x, ld_y, ld_z;
-        get_light_dir(ld_x, ld_y, ld_z);
-
         int dist_preset = std::clamp(g_alpine_game_config.shadow_distance, 0, num_shadow_distance_presets - 1);
 
         ShadowConstantBuffer data{};
@@ -816,9 +812,10 @@ namespace gr::d3d11
         data.shadow_fade_start = shadow_distance_presets[dist_preset].fade_start;
         data.shadow_fade_end = shadow_distance_presets[dist_preset].fade_end;
         data.shadow_enabled = shadows_active ? 1.0f : 0.0f;
-        data.shadow_light_dir[0] = ld_x;
-        data.shadow_light_dir[1] = ld_y;
-        data.shadow_light_dir[2] = ld_z;
+        // the direction shadow_vp_matrix_ was built from, not whatever it is now
+        data.shadow_light_dir[0] = shadow_light_dir_[0];
+        data.shadow_light_dir[1] = shadow_light_dir_[1];
+        data.shadow_light_dir[2] = shadow_light_dir_[2];
         data.shadow_normal_offset = 0.08f;
         data.shadow_texel_size = 1.0f / static_cast<float>(current_resolution_);
         data.shadow_depth_range = current_depth_range_;

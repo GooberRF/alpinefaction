@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <cmath>
 #include <string>
 #include <vector>
@@ -73,6 +74,37 @@ struct AlpineLevelProperties
         return alpine_sun_to_light_dir(sun_yaw, sun_pitch);
     }
 
+    // should match SanitizeSunProperties in editor_patch\level.h
+    // A level file can carry anything; these floats end up in the lights constant buffer and in the
+    // shadow map direction, where a NaN passes every test that would otherwise reject it.
+    void sanitize_sun_properties()
+    {
+        const float yaw_in = sun_yaw, pitch_in = sun_pitch;
+        const float intensity_in = sun_intensity, spread_in = sun_spread_angle;
+        const uint8_t mesh_mode_in = sun_mesh_mode;
+
+        sun_yaw = std::isfinite(sun_yaw) ? std::fmod(sun_yaw, 360.0f) : 0.0f;
+        if (sun_yaw < 0.0f) {
+            sun_yaw += 360.0f;
+        }
+        sun_pitch = std::clamp(std::isfinite(sun_pitch) ? sun_pitch : 90.0f, 0.0f, 90.0f);
+        sun_intensity = std::clamp(std::isfinite(sun_intensity) ? sun_intensity : 1.0f, 0.0f, 10.0f);
+        sun_spread_angle =
+            std::clamp(std::isfinite(sun_spread_angle) ? sun_spread_angle : 0.0f, 0.0f, 45.0f);
+        if (sun_mesh_mode > 1) {
+            sun_mesh_mode = 0;
+        }
+
+        if (!(yaw_in == sun_yaw) || !(pitch_in == sun_pitch) ||
+            !(intensity_in == sun_intensity) || !(spread_in == sun_spread_angle) ||
+            mesh_mode_in != sun_mesh_mode) {
+            xlog::warn("[AlpineLevelProps] out of range sunlight properties corrected: yaw {} -> {}, "
+                       "pitch {} -> {}, intensity {} -> {}, spread {} -> {}, mesh mode {} -> {}",
+                       yaw_in, sun_yaw, pitch_in, sun_pitch, intensity_in, sun_intensity, spread_in,
+                       sun_spread_angle, mesh_mode_in, sun_mesh_mode);
+        }
+    }
+
     static AlpineLevelProperties& instance()
     {
         static AlpineLevelProperties instance;
@@ -85,6 +117,13 @@ struct AlpineLevelProperties
 
         rf::File::ChunkGuard chunk_guard{file, remaining};
 
+        // Runs on every one of this function's many early returns, so a chunk that stops half way
+        // through the sun fields still leaves usable values behind.
+        struct SanitizeGuard {
+            AlpineLevelProperties* props;
+            ~SanitizeGuard() { props->sanitize_sun_properties(); }
+        } sanitize_guard{this};
+
         auto read_bytes = [&](void* dst, std::size_t n) -> bool {
             if (remaining < n)
                 return false;
@@ -94,6 +133,21 @@ struct AlpineLevelProperties
                 return false;
             }
             remaining -= n;
+            return true;
+        };
+
+        // A count larger than the cap still describes that many entries in the file, so the
+        // surplus has to be consumed or every field behind it is read from the wrong offset.
+        auto skip_entries = [&](uint32_t surplus, std::size_t entry_size) -> bool {
+            std::uint64_t bytes = static_cast<std::uint64_t>(surplus) * entry_size;
+            std::uint8_t scratch[256];
+            while (bytes > 0) {
+                const std::size_t step =
+                    static_cast<std::size_t>(std::min<std::uint64_t>(bytes, sizeof(scratch)));
+                if (!read_bytes(scratch, step))
+                    return false;
+                bytes -= step;
+            }
             return true;
         };
 
@@ -152,6 +206,7 @@ struct AlpineLevelProperties
             uint32_t count = 0;
             if (!read_bytes(&count, sizeof(count)))
                 return;
+            uint32_t count_surplus = count > 10000 ? count - 10000 : 0;
             if (count > 10000) count = 10000;
             geoable_room_uids.resize(count);
             for (uint32_t i = 0; i < count; i++) {
@@ -164,6 +219,8 @@ struct AlpineLevelProperties
                 geoable_room_uids[i] = room_uid;
                 xlog::debug("[AlpineLevelProps] geoable entry: brush_uid={} room_uid={}", brush_uid, room_uid);
             }
+            if (!skip_entries(count_surplus, 8))
+                return;
             xlog::debug("[AlpineLevelProps] geoable_room_uids count={}", count);
 
             // Breakable material entries as (brush_uid, room_uid, material) triples
@@ -173,6 +230,7 @@ struct AlpineLevelProperties
                 return;
             }
             xlog::trace("[AlpineLevelProps] GAME: breakable count raw={}", bcount);
+            uint32_t bcount_surplus = bcount > 10000 ? bcount - 10000 : 0;
             if (bcount > 10000) bcount = 10000;
             breakable_room_uids.resize(bcount);
             breakable_materials.resize(bcount);
@@ -190,12 +248,15 @@ struct AlpineLevelProperties
                 breakable_materials[i] = mat;
                 xlog::trace("[AlpineLevelProps] GAME: breakable[{}] brush_uid={} room_uid={} material={}", i, brush_uid, room_uid, mat);
             }
+            if (!skip_entries(bcount_surplus, 9))
+                return;
             xlog::trace("[AlpineLevelProps] GAME: total breakable entries loaded={}", bcount);
 
             // Hold open first-keyframe UIDs
             uint32_t ho_count = 0;
             if (!read_bytes(&ho_count, sizeof(ho_count)))
                 return;
+            uint32_t ho_surplus = ho_count > 10000 ? ho_count - 10000 : 0;
             if (ho_count > 10000) ho_count = 10000;
             hold_open_keyframe_uids.resize(ho_count);
             for (uint32_t i = 0; i < ho_count; i++) {
@@ -204,6 +265,8 @@ struct AlpineLevelProperties
                     return;
                 hold_open_keyframe_uids[i] = uid;
             }
+            if (!skip_entries(ho_surplus, 4))
+                return;
             xlog::debug("[AlpineLevelProps] hold_open count={}", ho_count);
         }
 
@@ -257,12 +320,15 @@ struct AlpineLevelProperties
             uint32_t nsc_count = 0;
             if (!read_bytes(&nsc_count, sizeof(nsc_count)))
                 return;
+            uint32_t nsc_surplus = nsc_count > 10000 ? nsc_count - 10000 : 0;
             if (nsc_count > 10000) nsc_count = 10000;
             for (uint32_t i = 0; i < nsc_count; i++) {
                 int32_t brush_uid = 0; // editor-only, skip
                 if (!read_bytes(&brush_uid, sizeof(brush_uid)))
                     return;
             }
+            if (!skip_entries(nsc_surplus, 4))
+                return;
             if (!read_bytes(&u8, sizeof(u8)))
                 return;
             meshes_occlude = (u8 != 0);

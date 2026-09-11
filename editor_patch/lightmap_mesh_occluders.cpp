@@ -156,16 +156,23 @@ public:
 
     bool bad() const { return bad_; }
     std::size_t pos() const { return pos_; }
+    std::size_t remaining() const { return bad_ ? 0 : end_ - pos_; }
 
-    bool take(std::size_t n)
+    // 64 bit: a count x stride product taken from the file overflows a 32 bit size_t long before it
+    // exceeds the section, and a wrapped product would pass this test and then be read past the end
+    bool take(std::uint64_t n)
     {
-        if (bad_ || n > end_ - pos_) {
+        if (bad_ || n > static_cast<std::uint64_t>(end_ - pos_)) {
             bad_ = true;
             return false;
         }
-        pos_ += n;
+        pos_ += static_cast<std::size_t>(n);
         return true;
     }
+
+    // Whether a count x stride worth of bytes is still in the section, without consuming them or
+    // marking the reader bad; used to bound a count before it sizes a container.
+    bool fits(std::uint64_t n) const { return !bad_ && n <= static_cast<std::uint64_t>(end_ - pos_); }
 
     std::int32_t s4()
     {
@@ -337,7 +344,7 @@ void vfx_skip_mesh_material_old(VfxReader& r, std::uint32_t version, int num_fra
         r.strz();
     }
     if (type == 1 && num_frames > 0) {
-        r.take(static_cast<std::size_t>(num_frames) * 4);
+        r.take(static_cast<std::uint64_t>(num_frames) * 4);
     }
     if (type == 2) {
         r.take(12);
@@ -379,19 +386,21 @@ bool vfx_read_mesh(VfxReader& r, std::uint32_t version, VfxMesh& m)
     r.strz();  // parent_name; the engine never composes parent transforms, so neither do we
     r.take(1); // save_parent
     const std::int32_t num_vertices = r.s4();
-    if (r.bad() || num_vertices < 0) {
+    // every count is bounded against the bytes the section still holds before it multiplies or
+    // sizes anything: a .vfx is untrusted input and these are plain file int32s
+    if (r.bad() || num_vertices < 0 || !r.fits(static_cast<std::uint64_t>(num_vertices) * 6)) {
         return false;
     }
     if (version < 0x3000a) {
-        r.take(static_cast<std::size_t>(num_vertices) * 12);
+        r.take(static_cast<std::uint64_t>(num_vertices) * 12);
     }
     const std::int32_t num_faces = r.s4();
-    if (r.bad() || num_faces < 0) {
+    const std::size_t face_size = 12 + (version < 0x3000d ? 24u : 0u) + 36 + 12 + 12 + 4 + 4 + 4 + 12;
+    if (r.bad() || num_faces < 0 || !r.fits(static_cast<std::uint64_t>(num_faces) * face_size)) {
         return false;
     }
-    const std::size_t face_size = 12 + (version < 0x3000d ? 24u : 0u) + 36 + 12 + 12 + 4 + 4 + 4 + 12;
     const std::size_t faces_at = r.pos();
-    if (!r.take(static_cast<std::size_t>(num_faces) * face_size)) {
+    if (!r.take(static_cast<std::uint64_t>(num_faces) * face_size)) {
         return false;
     }
     m.faces.reserve(static_cast<std::size_t>(num_faces) * 3);
@@ -419,10 +428,18 @@ bool vfx_read_mesh(VfxReader& r, std::uint32_t version, VfxMesh& m)
     else {
         start_frame = r.s4();
         end_frame = r.s4();
-        num_frames = version >= 0x3000c ? end_frame - start_frame + 1 : end_frame - start_frame;
+        // both are plain file int32s, so the span is taken in 64 bit rather than overflowing
+        const std::int64_t span = static_cast<std::int64_t>(end_frame) -
+                                  static_cast<std::int64_t>(start_frame) +
+                                  (version >= 0x3000c ? 1 : 0);
+        if (span < 0 || span > 0x7fffffff) {
+            return false;
+        }
+        num_frames = static_cast<std::int32_t>(span);
     }
     const std::int32_t num_materials = r.s4();
-    if (r.bad() || num_materials < 0) {
+    // the old form reads at least the 4 byte type per material, the new form exactly 4
+    if (r.bad() || num_materials < 0 || !r.fits(static_cast<std::uint64_t>(num_materials) * 4)) {
         return false;
     }
     if (version >= 0x40000) {
@@ -432,10 +449,8 @@ bool vfx_read_mesh(VfxReader& r, std::uint32_t version, VfxMesh& m)
         }
     }
     else {
-        const std::int32_t mat_frames =
-            version >= 0x3000c ? end_frame - start_frame + 1 : end_frame - start_frame;
         for (std::int32_t i = 0; i < num_materials; i++) {
-            vfx_skip_mesh_material_old(r, version, mat_frames);
+            vfx_skip_mesh_material_old(r, version, num_frames);
         }
     }
     r.take(16); // bounding sphere
@@ -451,7 +466,9 @@ bool vfx_read_mesh(VfxReader& r, std::uint32_t version, VfxMesh& m)
         r.take(8);
     }
     const std::int32_t num_face_vertices = r.s4();
-    if (r.bad() || num_face_vertices < 0) {
+    // 16 bytes plus a 4 byte adjacency count per entry, at a minimum
+    if (r.bad() || num_face_vertices < 0 ||
+        !r.fits(static_cast<std::uint64_t>(num_face_vertices) * 20)) {
         return false;
     }
     for (std::int32_t i = 0; i < num_face_vertices; i++) {
@@ -460,7 +477,7 @@ bool vfx_read_mesh(VfxReader& r, std::uint32_t version, VfxMesh& m)
         if (r.bad() || adjacent < 0) {
             return false;
         }
-        r.take(static_cast<std::size_t>(adjacent) * 4);
+        r.take(static_cast<std::uint64_t>(adjacent) * 4);
     }
     bool is_keyframed = false;
     if (version >= 0x30009) {
@@ -473,15 +490,21 @@ bool vfx_read_mesh(VfxReader& r, std::uint32_t version, VfxMesh& m)
     VfxStage frame0{};
     bool has_frame0_trs = false;
     for (std::int32_t frame = 0; frame < num_frames; frame++) {
+        const std::size_t frame_at = r.pos();
         const bool has_geometry = morph || frame == 0;
         if (has_geometry) {
             const Vector3 center = r.vec3();
             const Vector3 mult = r.vec3();
             const std::size_t at = r.pos();
-            if (!r.take(static_cast<std::size_t>(num_vertices) * 6)) {
+            if (!r.take(static_cast<std::uint64_t>(num_vertices) * 6)) {
                 return false;
             }
             if (frame == 0) {
+                if (!std::isfinite(center.x) || !std::isfinite(center.y) ||
+                    !std::isfinite(center.z) || !std::isfinite(mult.x) || !std::isfinite(mult.y) ||
+                    !std::isfinite(mult.z)) {
+                    return false;
+                }
                 m.positions.resize(static_cast<std::size_t>(num_vertices));
                 for (std::int32_t v = 0; v < num_vertices; v++) {
                     std::int16_t raw[3];
@@ -498,7 +521,7 @@ bool vfx_read_mesh(VfxReader& r, std::uint32_t version, VfxMesh& m)
             r.take(12);
         }
         if ((dump_uvs || frame == 0) && version >= 0x3000d) {
-            r.take(static_cast<std::size_t>(num_faces) * 24);
+            r.take(static_cast<std::uint64_t>(num_faces) * 24);
         }
         if (!morph && (!is_keyframed || (version < 0x3000e && frame == 0))) {
             const Vector3 t = r.vec3();
@@ -520,6 +543,13 @@ bool vfx_read_mesh(VfxReader& r, std::uint32_t version, VfxMesh& m)
         }
         if (r.bad()) {
             return false;
+        }
+        // What a frame reads depends only on whether it is frame 0, so once one consumes nothing
+        // every later one consumes nothing too and the count is only a loop bound. A keyframed
+        // 4.5+ mesh legitimately stores nothing per frame, and its num_frames comes straight out
+        // of the file, so this is the difference between finishing and running for hours.
+        if (r.pos() == frame_at) {
+            break;
         }
     }
 

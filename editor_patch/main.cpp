@@ -203,8 +203,9 @@ static bool selection_has_no_shadow_cast_eligible()
     if (!level) return false;
     BrushNode* node = level->brush_list;
     if (!node) return false;
+    const std::unordered_set<int32_t> mover_brush_uids = collect_moving_group_brush_uids();
     do {
-        if (node->state == BRUSH_STATE_SELECTED && no_shadow_cast_eligible(*node))
+        if (node->state == BRUSH_STATE_SELECTED && no_shadow_cast_eligible(*node, mover_brush_uids))
             return true;
         node = node->next;
     } while (node != level->brush_list);
@@ -221,8 +222,9 @@ static int compute_no_shadow_cast_state_from_selected()
     if (!node) return BST_UNCHECKED;
     int num_eligible = 0;
     int num_flagged = 0;
+    const std::unordered_set<int32_t> mover_brush_uids = collect_moving_group_brush_uids();
     do {
-        if (node->state == BRUSH_STATE_SELECTED && no_shadow_cast_eligible(*node)) {
+        if (node->state == BRUSH_STATE_SELECTED && no_shadow_cast_eligible(*node, mover_brush_uids)) {
             num_eligible++;
             if (std::find(props.no_shadow_cast_brush_uids.begin(),
                           props.no_shadow_cast_brush_uids.end(), node->uid)
@@ -248,8 +250,9 @@ static void apply_no_shadow_cast_to_selected_brushes(int new_state)
 
     BrushNode* node = level->brush_list;
     if (!node) return;
+    const std::unordered_set<int32_t> mover_brush_uids = collect_moving_group_brush_uids();
     do {
-        if (node->state == BRUSH_STATE_SELECTED && no_shadow_cast_eligible(*node)) {
+        if (node->state == BRUSH_STATE_SELECTED && no_shadow_cast_eligible(*node, mover_brush_uids)) {
             auto it = std::find(props.no_shadow_cast_brush_uids.begin(),
                                 props.no_shadow_cast_brush_uids.end(), node->uid);
             if (new_state == BST_CHECKED) {

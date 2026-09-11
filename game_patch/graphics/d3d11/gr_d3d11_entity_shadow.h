@@ -134,8 +134,9 @@ namespace gr::d3d11
         ComPtr<ID3D11Buffer> vfx_shadow_vb_;
         int vfx_shadow_vb_capacity_ = 0;
 
-        // Cached shadow VP matrix for the current frame
+        // Cached shadow VP matrix for the current frame, and the light direction it was built from
         GpuMatrix4x4 shadow_vp_matrix_;
+        float shadow_light_dir_[3] = {default_light_dir_x, default_light_dir_y, default_light_dir_z};
         rf::Vector3 current_camera_pos_;
         float current_depth_range_ = 200.0f;
 

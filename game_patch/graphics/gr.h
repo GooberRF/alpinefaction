@@ -21,7 +21,7 @@ int gr_fit_string(std::string& text, int max_width, int font_id = -1, std::strin
 void explosion_flash_lights_level_init();
 void explosion_flash_lights_destroy_all();
 
-// Per-level directional sunlight (AlpineLevelProperties v5) with the sun_override dev command applied
+// Per-level directional sunlight (AlpineLevelProperties v5)
 struct SunLightState
 {
     bool enabled = false;
