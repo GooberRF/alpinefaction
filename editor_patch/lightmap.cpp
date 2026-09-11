@@ -359,17 +359,12 @@ CodeInjection lightmap_apply_room_ambient_injection{
         uintptr_t gsolid = regs.ecx;
         if (!gsolid) return;
 
-        // Room linker list comes from the editor state
-        auto get_editor_state = reinterpret_cast<uintptr_t (*)()>(0x004835f0);
-        uintptr_t editor_state = get_editor_state();
-        if (!editor_state) return;
+        auto* level = CDedLevel::Get();
+        if (!level) return;
 
-        // Room linker VArray at editor_state+0x3e8: {count: int, capacity: int, data: ptr}
-        uintptr_t room_linker_list = editor_state + 0x3e8;
-        int linker_count = *reinterpret_cast<int*>(room_linker_list);
-        if (linker_count <= 0) return;
-        uintptr_t linker_data = *reinterpret_cast<uintptr_t*>(room_linker_list + 8);
-        if (!linker_data) return;
+        // Room linkers are the room effect objects
+        const auto& room_linkers = level->room_effects;
+        if (room_linkers.size <= 0 || !room_linkers.data_ptr) return;
 
         // GSolid::all_rooms VArray at GSolid+0x90, surfaces VArray at GSolid+0xC0.
         // The BSP spatial lookup and GRoom bounding boxes don't reliably match surface
@@ -410,14 +405,13 @@ CodeInjection lightmap_apply_room_ambient_injection{
             }
         }
 
-        for (int i = 0; i < linker_count; i++) {
-            uintptr_t brush = *reinterpret_cast<uintptr_t*>(linker_data + i * 4);
-            if (!brush) continue;
+        for (int i = 0; i < room_linkers.size; i++) {
+            auto* linker = static_cast<DedRoomEffect*>(room_linkers.data_ptr[i]);
+            if (!linker) continue;
 
-            int type = *reinterpret_cast<int*>(brush + 0x94);
-            if (type != 3) continue; // only ambient linkers
+            if (linker->effect_type != 3) continue; // only ambient linkers
 
-            auto* pos = reinterpret_cast<const float*>(brush + 0x14);
+            const Vector3& pos = linker->pos;
 
             // Find the smallest room bbox containing the linker position.
             // Multiple room bboxes may overlap (adjacent rooms share boundaries, and
@@ -429,9 +423,9 @@ CodeInjection lightmap_apply_room_ambient_injection{
                 auto& bb = room_bboxes[ridx];
                 if (!bb.valid) continue;
                 if (ridx >= room_count) continue;
-                if (pos[0] >= bb.mn[0] && pos[0] <= bb.mx[0] &&
-                    pos[1] >= bb.mn[1] && pos[1] <= bb.mx[1] &&
-                    pos[2] >= bb.mn[2] && pos[2] <= bb.mx[2]) {
+                if (pos.x >= bb.mn[0] && pos.x <= bb.mx[0] &&
+                    pos.y >= bb.mn[1] && pos.y <= bb.mx[1] &&
+                    pos.z >= bb.mn[2] && pos.z <= bb.mx[2]) {
                     float vol = (bb.mx[0] - bb.mn[0]) *
                                 (bb.mx[1] - bb.mn[1]) *
                                 (bb.mx[2] - bb.mn[2]);
@@ -445,8 +439,7 @@ CodeInjection lightmap_apply_room_ambient_injection{
                 uintptr_t room = *reinterpret_cast<uintptr_t*>(room_elements + best_ridx * 4);
                 if (room) {
                     *reinterpret_cast<uint8_t*>(room + 0x45) = 1;
-                    *reinterpret_cast<uint32_t*>(room + 0x46) =
-                        *reinterpret_cast<uint32_t*>(brush + 0x98);
+                    *reinterpret_cast<uint32_t*>(room + 0x46) = linker->ambient_color;
                 }
             }
         }
@@ -967,8 +960,7 @@ bool OccluderTree::build(uintptr_t solid, const NoShadowCastFilter& no_shadow_ca
         const int bitmap = *reinterpret_cast<int*>(face + 0x30);
         // liquid and invisible faces answer to their own level property, so the stock rejection
         // never gets to overrule it - a water texture is alpha capable practically by definition
-        if (!(flags & 0x2004u) && bitmap != -1 &&
-            AddrCaller{0x004bcc60}.c_call<char>(bitmap) != 0) {
+        if (!(flags & 0x2004u) && bitmap != -1 && bm_has_alpha(bitmap) != 0) {
             flags |= lm_occ_alpha_texture;
         }
         const int surf_id = *reinterpret_cast<std::int16_t*>(face + 0x36);
@@ -1564,8 +1556,7 @@ static void sun_light_create()
 
     Vector3 dir = props.sun_to_light_dir();
     constexpr float inv255 = 1.0f / 255.0f;
-    // light_create_directional(dir, intensity, r, g, b, dynamic, shadow_condition, atten_algo)
-    int handle = AddrCaller{0x00487950}.c_call<int>(
+    int handle = light_create_directional(
         &dir, props.sun_intensity * 4.0f, props.sun_color_r * inv255, props.sun_color_g * inv255,
         props.sun_color_b * inv255, 0, props.sun_cast_baked_shadows ? 1 : 0, 0);
     if (handle < 0 || handle >= max_scene_lights) {
@@ -1583,7 +1574,7 @@ static void sun_light_destroy()
     if (g_sun_light_handle < 0) {
         return;
     }
-    AddrCaller{0x00487d40}.c_call(g_sun_light_handle, 0);
+    light_free(g_sun_light_handle, 0);
     g_sun_light_handle = -1;
     g_sun_light_ptr = nullptr;
     g_sun_spread_angle = 0.0f;
@@ -1982,9 +1973,8 @@ static void lightmap_smooth_grey_fallback(BaseCodeInjection::Regs& regs, std::ui
     else {
         Vector3 pos{};
         texel_to_world(p, col, row, pos.x, pos.y, pos.z);
-        // FUN_004894c0 adds each light's contribution to the already seeded ambient
-        AddrCaller{0x004894c0}.c_call(p_r, p_g, p_b, &pos, surface + 0x6c, masks, texel_index,
-                                      surface + 9);
+        light_accum_at_texel(p_r, p_g, p_b, &pos, reinterpret_cast<const Vector3*>(surface + 0x6c),
+                             masks, texel_index, reinterpret_cast<const void*>(surface + 9));
         if (*p_r < 0.0f) *p_r = 0.0f;
         if (*p_g < 0.0f) *p_g = 0.0f;
         if (*p_b < 0.0f) *p_b = 0.0f;

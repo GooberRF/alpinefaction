@@ -399,8 +399,9 @@ static_assert(sizeof(DedEvent) == 0xC4, "DedEvent size mismatch");
 
 struct DedRoomEffect : DedObject
 {
-    int effect_type;                   // 0x94 — 2 = Liquid Room
-    char pad_98[0xA8 - 0x98];
+    int effect_type;                   // 0x94 — 2 = Liquid Room, 3 = Ambient Light
+    uint32_t ambient_color;            // 0x98 — ambient color for effect_type 3
+    char pad_9C[0xA8 - 0x9C];
     VString liquid_bitmap;             // 0xA8 — liquid surface texture filename
     char pad_B0[0xD4 - 0xB0];
 };
@@ -749,6 +750,17 @@ struct CDocument
 };
 static_assert(sizeof(CDocument) == 0x50);
 
+struct CDedDoc : CDocument
+{
+    // FUN_0041CCE0: load (is_load != 0) or save the level behind the document, __thiscall RET 0xC.
+    // Returns 0 on failure. is_autosave selects the autosave path/name handling.
+    char LoadSaveLevel(const char* path, int is_load, int is_autosave)
+    {
+        return AddrCaller{0x0041CCE0}.this_call<char>(this, path, is_load, is_autosave);
+    }
+};
+static_assert(sizeof(CDedDoc) == sizeof(CDocument));
+
 struct VFile
 {
     int DirId;
@@ -784,7 +796,7 @@ struct CMainFrame : CFrameWnd
 {
     void* views[4];
     void* unk_view;
-    CDocument* doc;
+    CDedDoc* doc;
     VString field_D4;
     char dialog_bar[0x88]; // CDialogBar
     char status_bar[0x7C]; // CStatusBar
@@ -812,6 +824,14 @@ struct CMainFrame : CFrameWnd
     void RestoreAllViewports()
     {
         AddrCaller{0x00447670}.this_call(this);
+    }
+
+    // FUN_00449680: the Calculate Lighting menu handler. It rebuilds the lightmap surfaces
+    // (0x00448CA0) before baking (0x00448F20); calling the bake alone leaves the surfaces from the
+    // last build, so mover solids never get any.
+    void OnCalculateLighting()
+    {
+        AddrCaller{0x00449680}.this_call(this);
     }
 };
 static_assert(sizeof(CMainFrame) == 0x550);

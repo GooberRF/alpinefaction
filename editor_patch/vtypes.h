@@ -178,6 +178,135 @@ struct EditorMeshMaterial {
 };
 static_assert(sizeof(EditorMeshMaterial) == 0xC8, "EditorMeshMaterial size mismatch");
 
+// ─── Editor v3d runtime geometry ─────────────────────────────────────────────
+// RED's copy of the loaded .v3d/.v3c structures (game_patch\rf\v3d.h is the game-side
+// definition; RED's VifLodMesh/VifMesh lack Alpine's render_cache tail, hence 0x44/0x4C).
+
+struct EditorVifFace
+{
+    uint16_t vindex1;
+    uint16_t vindex2;
+    uint16_t vindex3;
+    uint16_t flags;
+};
+static_assert(sizeof(EditorVifFace) == 0x8);
+
+struct EditorVifChunk
+{
+    int mode;
+    Vector3* vecs;
+    Vector3* norms;
+    void* uvs;
+    Plane* face_planes;
+    EditorVifFace* faces;
+    int16_t* same_vertex_offsets;
+    void* wi;
+    int texture_idx;
+    int16_t* orig_map;
+    uint16_t num_vecs;
+    uint16_t num_faces;
+    uint16_t vecs_alloc;
+    uint16_t faces_alloc;
+    uint16_t uvs_alloc;
+    uint16_t wi_alloc;
+    uint16_t same_vertex_offsets_alloc;
+};
+static_assert(sizeof(EditorVifChunk) == 0x38);
+static_assert(offsetof(EditorVifChunk, vecs) == 0x04);
+static_assert(offsetof(EditorVifChunk, faces) == 0x14);
+static_assert(offsetof(EditorVifChunk, texture_idx) == 0x20);
+static_assert(offsetof(EditorVifChunk, num_vecs) == 0x28);
+static_assert(offsetof(EditorVifChunk, num_faces) == 0x2A);
+
+struct EditorVifMesh
+{
+    int data_block_size;
+    void* data_block;
+    EditorVifChunk* chunks;
+    uint16_t num_chunks;
+    void* prop_points;
+    int num_prop_points;
+    uint8_t tex_ids[7];
+    int tex_handles[7];
+    int num_texture_handles;
+    int flags;
+    int num_original_vecs;
+    int unk_field_from_v3d_file;
+};
+static_assert(sizeof(EditorVifMesh) == 0x4C);
+static_assert(offsetof(EditorVifMesh, chunks) == 0x08);
+static_assert(offsetof(EditorVifMesh, num_chunks) == 0x0C);
+static_assert(offsetof(EditorVifMesh, tex_handles) == 0x20);
+static_assert(offsetof(EditorVifMesh, num_texture_handles) == 0x3C);
+
+struct EditorVifLodMesh
+{
+    int num_levels;
+    EditorVifMesh* meshes[3];
+    float distances[3];
+    Vector3 center;
+    float radius;
+    Vector3 bbox_min;
+    Vector3 bbox_max;
+};
+static_assert(sizeof(EditorVifLodMesh) == 0x44);
+static_assert(offsetof(EditorVifLodMesh, meshes) == 0x04);
+
+struct EditorV3dMesh
+{
+    char name[65];
+    char parent_name[65];
+    int num_materials;
+    EditorMeshMaterial* materials;
+    EditorVifLodMesh* lod_mesh;
+};
+static_assert(sizeof(EditorV3dMesh) == 0x90);
+static_assert(offsetof(EditorV3dMesh, lod_mesh) == 0x8C);
+
+struct EditorV3d
+{
+    char v3d_filename[65];
+    int version;
+    int num_meshes;
+    EditorV3dMesh* meshes;
+    int num_lod_meshes;
+    void* lod_meshes;
+    int num_navpoints;
+    void* navpoints;
+    int num_cspheres;
+    void* cspheres;
+    int total_vertices_count;
+    int unk_vertices_array;
+    int total_triangles_count;
+    int unk_triangle_array;
+    int num_mesh_materials;
+    EditorMeshMaterial* mesh_materials;
+    int hdr_field_14;
+    int unk_array_hdr_field_14;
+    int field_88;
+    int flags;
+};
+static_assert(sizeof(EditorV3d) == 0x90);
+static_assert(offsetof(EditorV3d, num_meshes) == 0x48);
+static_assert(offsetof(EditorV3d, meshes) == 0x4C);
+
+struct EditorCharacterMesh
+{
+    EditorV3d v3d_file;
+    EditorV3dMesh* mesh;
+};
+static_assert(sizeof(EditorCharacterMesh) == 0x94);
+
+// .v3c character; only the mesh table at the tail is mirrored
+struct EditorCharacter
+{
+    uint8_t pad_00[0x19BC];
+    int num_character_meshes;
+    EditorCharacterMesh character_meshes[1];
+};
+static_assert(offsetof(EditorCharacter, num_character_meshes) == 0x19BC);
+static_assert(offsetof(EditorCharacter, character_meshes) == 0x19C0);
+
 struct EditorRenderParams; // forward declaration for vmesh_render
 
 // VMesh factory functions
@@ -200,6 +329,8 @@ static auto& bm_load = addr_as_ref<int(const char* filename, int path_id, int ge
 static auto& bm_get_filename = addr_as_ref<const char*(int bm_handle)>(0x004BDC60);
 static auto& bm_get_mipmap_info = addr_as_ref<void(int bm_handle, int* width, int* height,
                                                   int* num_pixels_in_all_levels, int* mip_levels)>(0x004BCBD0);
+// Nonzero when the bitmap's pixel format carries alpha (formats 4, 5 and 7).
+static auto& bm_has_alpha = addr_as_ref<char __cdecl(int bm_handle)>(0x004BCC60);
 
 // Primitives CBitmapPreviewDialog::OnPaint (0x0044C1B0) uses to draw a texture straight into a
 // control's own window rather than through its device context.
@@ -365,6 +496,18 @@ static auto& ed_view_mat = addr_as_ref<float[9]>(0x0158ef58); // row-major 3x3
 
 // Billboard camera parameter (used as depth sort / z-bias)
 static auto& gr_cam_param = addr_as_ref<float>(0x014cf7e0);
+
+// ─── Lighting ────────────────────────────────────────────────────────────────
+
+// Type 1 (directional) scene light; returns the light handle.
+static auto& light_create_directional =
+    addr_as_ref<int __cdecl(const Vector3* dir, float intensity, float r, float g, float b,
+                            int is_dynamic, int shadow_condition, int atten_algo)>(0x00487950);
+static auto& light_free = addr_as_ref<void __cdecl(int light_handle, int unk)>(0x00487D40);
+// Stock per-lumel accumulator: adds every scene light's contribution to the already seeded r/g/b.
+static auto& light_accum_at_texel =
+    addr_as_ref<void __cdecl(float* r, float* g, float* b, const Vector3* pos, const Vector3* normal,
+                             void* masks, int texel_index, const void* smooth_flag)>(0x004894C0);
 
 // ─── Misc ────────────────────────────────────────────────────────────────────
 

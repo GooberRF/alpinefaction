@@ -11,36 +11,22 @@
 #include <patch_common/FunHook.h>
 #include <xlog/xlog.h>
 #include "headless_bake.h"
-
-void* GetMainFrame();
+#include "level.h"
+#include "vtypes.h"
 
 namespace
 {
 
-// RED.exe IAT slot for USER32!MessageBoxA (call sites 0x0041CD58, 0x0041CD9B)
-constexpr uintptr_t messageboxa_iat = 0x005545F4;
-
-// CDedDoc::LoadSaveLevel(this, path, is_load, is_autosave), __thiscall, RET 0xC
-constexpr uintptr_t doc_load_save_level = 0x0041CCE0;
-
-// CMainFrame::OnCalculateLightingCmd (shadowed variant), __thiscall. This is the menu handler,
-// which rebuilds the lightmap surfaces (0x00448CA0) before baking (0x00448F20); calling the bake
-// alone leaves the surfaces from the last build, so mover solids never get any.
-constexpr uintptr_t calculate_lighting_cmd = 0x00449680;
-
 constexpr int max_suppressed_dialogs = 50;
 
-// CMainFrame holds its four viewports at +0xbc (FUN_004835b0) and each keeps its camera in the
-// EditorViewData at +0x54: orientation at +0x04, position at +0x28. Painting the perspective one
-// re-orthonormalises that matrix, and the level info section stores all four, so how many frames a
-// bake happened to paint changed the saved file by an ULP. Captured from the freshly loaded level
-// and put back before the save.
-constexpr uintptr_t editor_app = 0x006F9DA0;
+// Painting the perspective viewport re-orthonormalises its camera matrix, and the level info
+// section stores all four cameras, so how many frames a bake happened to paint changed the saved
+// file by an ULP. Captured from the freshly loaded level and put back before the save.
 constexpr int viewport_count = 4;
 
 struct ViewCamera {
-    float orient[9];
-    float pos[3];
+    Matrix3 orient;
+    Vector3 pos;
     bool valid;
 };
 ViewCamera g_view_cameras[viewport_count];
@@ -85,28 +71,24 @@ void bake_log(std::string_view line)
     std::fclose(f);
 }
 
-float* view_camera(int index)
+EditorViewData* view_camera(int index)
 {
-    auto* main_frame = struct_field_ref<std::byte*>(reinterpret_cast<void*>(editor_app), 0xC8);
+    auto* main_frame = static_cast<CMainFrame*>(GetMainFrame());
     if (!main_frame) {
         return nullptr;
     }
-    auto* viewport = struct_field_ref<std::byte*>(main_frame, 0xbc + index * 4);
-    if (!viewport) {
-        return nullptr;
-    }
-    auto* view_data = struct_field_ref<std::byte*>(viewport, 0x54);
-    return view_data ? reinterpret_cast<float*>(view_data + 4) : nullptr;
+    auto* viewport = static_cast<EditorViewport*>(main_frame->views[index]);
+    return viewport ? viewport->view_data : nullptr;
 }
 
 void capture_view_cameras()
 {
     for (int i = 0; i < viewport_count; ++i) {
-        const float* camera = view_camera(i);
-        g_view_cameras[i].valid = camera != nullptr;
-        if (camera) {
-            std::memcpy(g_view_cameras[i].orient, camera, sizeof(g_view_cameras[i].orient));
-            std::memcpy(g_view_cameras[i].pos, camera + 9, sizeof(g_view_cameras[i].pos));
+        const EditorViewData* view = view_camera(i);
+        g_view_cameras[i].valid = view != nullptr;
+        if (view) {
+            g_view_cameras[i].orient = view->camera_orient;
+            g_view_cameras[i].pos = view->camera_pos;
         }
     }
 }
@@ -114,10 +96,10 @@ void capture_view_cameras()
 void restore_view_cameras()
 {
     for (int i = 0; i < viewport_count; ++i) {
-        float* camera = g_view_cameras[i].valid ? view_camera(i) : nullptr;
-        if (camera) {
-            std::memcpy(camera, g_view_cameras[i].orient, sizeof(g_view_cameras[i].orient));
-            std::memcpy(camera + 9, g_view_cameras[i].pos, sizeof(g_view_cameras[i].pos));
+        EditorViewData* view = g_view_cameras[i].valid ? view_camera(i) : nullptr;
+        if (view) {
+            view->camera_orient = g_view_cameras[i].orient;
+            view->camera_pos = g_view_cameras[i].pos;
         }
     }
 }
@@ -156,8 +138,8 @@ void run_bake()
         bake_finish(1);
     }
 
-    void* main_frame = GetMainFrame();
-    void* doc = main_frame ? struct_field_ref<void*>(main_frame, 0xD0) : nullptr;
+    auto* main_frame = static_cast<CMainFrame*>(GetMainFrame());
+    CDedDoc* doc = main_frame ? main_frame->doc : nullptr;
     if (!doc) {
         bake_log("error: level did not load");
         bake_finish(2);
@@ -174,12 +156,12 @@ void run_bake()
 
     DWORD bake_begin = GetTickCount();
     bake_log("baking");
-    AddrCaller{calculate_lighting_cmd}.this_call(main_frame);
+    main_frame->OnCalculateLighting();
     bake_log(std::format("baked in {:.1f}s", (GetTickCount() - bake_begin) / 1000.0));
 
     DWORD save_begin = GetTickCount();
     restore_view_cameras();
-    if (!AddrCaller{doc_load_save_level}.this_call<char>(doc, g_output_path.c_str(), 0, 0)) {
+    if (!doc->LoadSaveLevel(g_output_path.c_str(), 0, 0)) {
         bake_log(std::format("error: failed to save {}", g_output_path));
         bake_finish(4);
     }
@@ -221,7 +203,7 @@ bool path_is_bake_input(const char* path)
 char __fastcall CDedDoc_LoadSaveLevel_new(void* self, int edx, const char* path, int is_load,
                                           int is_autosave);
 FunHook<char __fastcall(void*, int, const char*, int, int)> CDedDoc_LoadSaveLevel_hook{
-    doc_load_save_level, CDedDoc_LoadSaveLevel_new};
+    0x0041CCE0, CDedDoc_LoadSaveLevel_new}; // CDedDoc::LoadSaveLevel
 
 char __fastcall CDedDoc_LoadSaveLevel_new(void* self, int edx, const char* path, int is_load,
                                           int is_autosave)
@@ -314,7 +296,8 @@ void ApplyHeadlessBakePatches()
 
     bake_log(std::format("started in={} out={}", g_input_path, g_output_path));
 
-    write_mem_ptr(messageboxa_iat, &MessageBoxA_headless);
+    // RED.exe IAT slot for USER32!MessageBoxA (call sites 0x0041CD58, 0x0041CD9B)
+    write_mem_ptr(0x005545F4, &MessageBoxA_headless);
     CDedDoc_LoadSaveLevel_hook.install();
     CEditorApp_OnIdle_hook.install();
 }

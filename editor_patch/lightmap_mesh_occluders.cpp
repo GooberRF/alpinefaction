@@ -49,83 +49,68 @@ std::vector<std::pair<int, std::string>> g_all_alpha_objects;
 
 bool bitmap_has_alpha(int handle)
 {
-    return handle != -1 && AddrCaller{0x004bcc60}.c_call<char>(handle) != 0;
+    return handle != -1 && bm_has_alpha(handle) != 0;
 }
 
-// VifLodMesh +0x00 num_levels, +0x04 meshes[3]; VifMesh +0x08 chunks, +0x0c num_chunks,
-// +0x20 tex_handles[7], +0x3c num_texture_handles; VifChunk stride 0x38 with +0x04 vecs,
-// +0x14 faces (u16 i0/i1/i2 + u16 flags), +0x20 texture_idx, +0x28 num_vecs, +0x2a num_faces.
 // The double-sided face flag 0x20 is deliberately ignored: a mesh occluder blocks either way.
-void collect_lod0(const void* lod_mesh, MeshGeom& out)
+void collect_lod0(const EditorVifLodMesh* lod, MeshGeom& out)
 {
-    const auto lod = reinterpret_cast<uintptr_t>(lod_mesh);
-    if (!lod || *reinterpret_cast<const int*>(lod) <= 0) {
+    if (!lod || lod->num_levels <= 0) {
         return;
     }
-    const auto vm = *reinterpret_cast<const uintptr_t*>(lod + 4);
-    if (!vm) {
+    const EditorVifMesh* vm = lod->meshes[0];
+    if (!vm || !vm->chunks) {
         return;
     }
-    const int num_chunks = *reinterpret_cast<const std::uint16_t*>(vm + 0x0c);
-    const auto chunks = *reinterpret_cast<const uintptr_t*>(vm + 0x08);
-    const auto* tex_handles = reinterpret_cast<const int*>(vm + 0x20);
-    const int num_tex = *reinterpret_cast<const int*>(vm + 0x3c);
-    if (!chunks) {
-        return;
-    }
-    for (int c = 0; c < num_chunks; c++) {
-        const uintptr_t chunk = chunks + static_cast<uintptr_t>(c) * 0x38;
-        const auto* vecs = *reinterpret_cast<const Vector3* const*>(chunk + 0x04);
-        const auto* faces = *reinterpret_cast<const std::uint16_t* const*>(chunk + 0x14);
-        const int tex_idx = *reinterpret_cast<const int*>(chunk + 0x20);
-        const int num_vecs = *reinterpret_cast<const std::uint16_t*>(chunk + 0x28);
-        const int num_faces = *reinterpret_cast<const std::uint16_t*>(chunk + 0x2a);
+    for (int c = 0; c < vm->num_chunks; c++) {
+        const EditorVifChunk& chunk = vm->chunks[c];
+        const Vector3* vecs = chunk.vecs;
+        const EditorVifFace* faces = chunk.faces;
+        const int num_vecs = chunk.num_vecs;
+        const int num_faces = chunk.num_faces;
         if (!vecs || !faces || num_vecs <= 0 || num_faces <= 0) {
             continue;
         }
-        const bool alpha = tex_idx >= 0 && tex_idx < num_tex && tex_idx < 7 &&
-                           bitmap_has_alpha(tex_handles[tex_idx]);
+        const bool alpha = chunk.texture_idx >= 0 && chunk.texture_idx < vm->num_texture_handles &&
+                           chunk.texture_idx < 7 &&
+                           bitmap_has_alpha(vm->tex_handles[chunk.texture_idx]);
         for (int f = 0; f < num_faces; f++) {
-            const std::uint16_t* idx = faces + static_cast<std::size_t>(f) * 4;
-            if (idx[0] >= num_vecs || idx[1] >= num_vecs || idx[2] >= num_vecs) {
+            const EditorVifFace& face = faces[f];
+            if (face.vindex1 >= num_vecs || face.vindex2 >= num_vecs || face.vindex3 >= num_vecs) {
                 continue;
             }
-            out.tris.push_back({vecs[idx[0]], vecs[idx[1]], vecs[idx[2]], alpha});
+            out.tris.push_back({vecs[face.vindex1], vecs[face.vindex2], vecs[face.vindex3], alpha});
         }
     }
 }
 
 bool collect_v3m(EditorVMesh* vmesh, MeshGeom& out)
 {
-    const auto v3d = reinterpret_cast<uintptr_t>(vmesh->instance);
+    const auto* v3d = static_cast<const EditorV3d*>(vmesh->instance);
     if (!v3d) {
         return false;
     }
-    const int num_submeshes = *reinterpret_cast<const int*>(v3d + 0x48);
-    const auto submeshes = *reinterpret_cast<const uintptr_t*>(v3d + 0x4c);
-    if (num_submeshes <= 0 || !submeshes) {
+    if (v3d->num_meshes <= 0 || !v3d->meshes) {
         return false;
     }
-    for (int i = 0; i < num_submeshes; i++) {
-        const uintptr_t sub = submeshes + static_cast<uintptr_t>(i) * 0x90;
-        collect_lod0(*reinterpret_cast<const void* const*>(sub + 0x8c), out);
+    for (int i = 0; i < v3d->num_meshes; i++) {
+        collect_lod0(v3d->meshes[i].lod_mesh, out);
     }
     return true;
 }
 
-// Character +0x19bc num_character_meshes, +0x19c0 array of 0x94 byte entries whose +0x90 is the
-// V3dMesh; only one of them is ever drawn and FUN_004c03f0 defaults to entry 0.
+// Only one character mesh is ever drawn and FUN_004c03f0 defaults to entry 0.
 bool collect_v3c(EditorVMesh* vmesh, MeshGeom& out)
 {
-    const auto character = reinterpret_cast<uintptr_t>(vmesh->mesh);
-    if (!character || *reinterpret_cast<const int*>(character + 0x19bc) <= 0) {
+    const auto* character = static_cast<const EditorCharacter*>(vmesh->mesh);
+    if (!character || character->num_character_meshes <= 0) {
         return false;
     }
-    const auto v3d_mesh = *reinterpret_cast<const uintptr_t*>(character + 0x19c0 + 0x90);
+    const EditorV3dMesh* v3d_mesh = character->character_meshes[0].mesh;
     if (!v3d_mesh) {
         return false;
     }
-    collect_lod0(*reinterpret_cast<const void* const*>(v3d_mesh + 0x8c), out);
+    collect_lod0(v3d_mesh->lod_mesh, out);
     return true;
 }
 

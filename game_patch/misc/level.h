@@ -54,10 +54,12 @@ struct AlpineLevelProperties
     bool enable_sun = false;
     float sun_yaw = 0.0f;   // degrees
     float sun_pitch = 90.0f; // degrees above horizon, 90 = zenith
-    uint8_t sun_color_r = 255, sun_color_g = 255, sun_color_b = 255, sun_color_a = 255;
+    uint8_t sun_color_r = 255, sun_color_g = 255, sun_color_b = 255;
+    uint8_t sun_color_a = 255; // editor-side bake parameter, no effect in game
     float sun_intensity = 1.0f;
-    float sun_spread_angle = 0.0f; // degrees, penumbra half-angle for baked soft shadows
-    bool sun_cast_baked_shadows = true;
+    // degrees, penumbra half-angle for baked soft shadows; editor-side bake parameter, no effect in game
+    float sun_spread_angle = 0.0f;
+    bool sun_cast_baked_shadows = true; // editor-side bake parameter, no effect in game
     bool sun_affects_meshes = true;
     uint8_t sun_mesh_mode = 0; // 0 = scale by sampled lightmap luminance, 1 = apply everywhere
     bool sun_drives_shadowmap_dir = true;
@@ -68,11 +70,6 @@ struct AlpineLevelProperties
     bool alpha_faces_occlude = false; // editor-side bake switch, no effect in game
     // no_shadow_cast_brush_uids is editor-only (bake occluder exclusion); read and discarded
     bool meshes_occlude = false; // editor-side bake switch, no effect in game
-
-    rf::Vector3 sun_to_light_dir() const
-    {
-        return alpine_sun_to_light_dir(sun_yaw, sun_pitch);
-    }
 
     // should match SanitizeSunProperties in editor_patch\level.h
     // A level file can carry anything; these floats end up in the lights constant buffer and in the

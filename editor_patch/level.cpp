@@ -911,9 +911,9 @@ static void set_sun_angles_from_camera(HWND hdlg)
     float pitch = std::clamp(std::asin(std::clamp(y, -1.0f, 1.0f)) * rad_to_deg, 0.0f, 90.0f);
 
     char buffer[32];
-    std::snprintf(buffer, sizeof(buffer), "%.1f", yaw);
+    std::snprintf(buffer, sizeof(buffer), "%.3f", yaw);
     SetDlgItemTextA(hdlg, IDC_SUN_YAW, buffer);
-    std::snprintf(buffer, sizeof(buffer), "%.1f", pitch);
+    std::snprintf(buffer, sizeof(buffer), "%.3f", pitch);
     SetDlgItemTextA(hdlg, IDC_SUN_PITCH, buffer);
 }
 
