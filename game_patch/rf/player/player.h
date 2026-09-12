@@ -14,6 +14,7 @@
 #include "../../os/os.h"
 #include "../../purefaction/pf_packets.h"
 #include "../multi.h"
+#include "../../multi/obj_update_delta.h"
 #include <limits>
 #include <map>
 
@@ -132,6 +133,8 @@ struct PlayerAdditionalData {
     // Server-side variables.
     bool in_grace_period = true;
     ClientVersionInfoProfile version_info{};
+    bool delta_obj_update = false; // client asked for af_obj_update_delta at join
+    obj_update_delta::Sender delta_sender{};
     std::optional<std::chrono::steady_clock::time_point> death_time{};
     std::optional<std::chrono::steady_clock::time_point> spectate_start_time{};
 

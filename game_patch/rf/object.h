@@ -97,8 +97,7 @@ namespace rf
                            // word. bit 1: a sample was inserted this frame
         uint16_t interp_time; // evaluation time (16-bit server ms ticks)
         uint8_t pad_52e[2];
-        uint32_t frame_time_us; // wall-clock stamp of the last frame advance (ms with AF's
-                                // obj_interp_too_fast_fix; stock stored µs)
+        uint32_t frame_time_us; // wall-clock timer_get(1000000) stamp of the last frame advance
         uint32_t num; // stored keyframes (0-20)
         uint32_t last_update_time; // wall-clock timer_get(1000) stamp of the newest sample's
                                    // arrival; -1 = no sample yet (set by Clear)

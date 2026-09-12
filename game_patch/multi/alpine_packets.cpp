@@ -26,6 +26,7 @@
 #include "server.h"
 #include "../hud/hud_world.h"
 #include "alpine_packets.h"
+#include "obj_update_delta.h"
 #include "awards.h"
 #include "sprays.h"
 #include "kill.h"
@@ -173,6 +174,14 @@ bool af_process_packet(
         }
         case af_packet_type::af_crit_shot: {
             af_process_crit_shot_packet(data, static_cast<size_t>(len), addr);
+            return true;
+        }
+        case af_packet_type::af_obj_update_delta: {
+            af_process_obj_update_delta_packet(data, static_cast<size_t>(len), addr);
+            return true;
+        }
+        case af_packet_type::af_obj_update_ack: {
+            af_process_obj_update_ack_packet(data, static_cast<size_t>(len), addr);
             return true;
         }
         default:
@@ -708,24 +717,71 @@ static void af_process_obj_update_packet(const void* data, size_t len, const rf:
             continue;
         }
 
-        // Only update ammo if the player's weapon matches the packet
-        if (entity->ai.current_primary_weapon == obj_update.current_primary_weapon) {
-            // Bounds-check the wire-supplied indices before writing into the fixed AiInfo
-            // arrays (clip_ammo[64], ammo[32]).
-            if (obj_update.current_primary_weapon < std::ssize(entity->ai.clip_ammo)) {
-                entity->ai.clip_ammo[obj_update.current_primary_weapon] = obj_update.clip_ammo;
-            }
-            if (obj_update.ammo_type < std::ssize(entity->ai.ammo)) {
-                entity->ai.ammo[obj_update.ammo_type] = obj_update.reserve_ammo;
-            }
-
-            /* xlog::warn("Updated player {}, weapon {}, ammo type {}, clip {}, reserve {}", 
-                        entity->name, obj_update.current_primary_weapon, obj_update.ammo_type, 
-                        obj_update.clip_ammo, obj_update.reserve_ammo);*/
-        } else {
-            //xlog::warn("Did not update player {} because packet weapon {}, their weapon {}", entity->name, obj_update.current_primary_weapon, entity->ai.current_primary_weapon);
-        }
+        af_apply_remote_ammo(entity, obj_update.current_primary_weapon, obj_update.ammo_type, obj_update.clip_ammo,
+                             obj_update.reserve_ammo);
     }
+}
+
+void af_apply_remote_ammo(rf::Entity* entity, uint8_t weapon, uint8_t ammo_type, uint16_t clip, uint16_t reserve)
+{
+    // Only update ammo if the player's weapon matches the packet
+    if (entity->ai.current_primary_weapon != weapon) {
+        return;
+    }
+    // Bounds-check the wire-supplied indices before writing into the fixed AiInfo
+    // arrays (clip_ammo[64], ammo[32]).
+    if (weapon < std::ssize(entity->ai.clip_ammo)) {
+        entity->ai.clip_ammo[weapon] = clip;
+    }
+    if (ammo_type < std::ssize(entity->ai.ammo)) {
+        entity->ai.ammo[ammo_type] = reserve;
+    }
+}
+
+// Delta-compressed obj_update stream: codec and rings live in obj_update_delta.cpp
+static void af_process_obj_update_delta_packet(const void* data, size_t len, const rf::NetAddr& addr)
+{
+    // Receive: client <- server
+    if (!rf::is_multi || rf::is_server || len < sizeof(RF_GamePacketHeader)) {
+        return;
+    }
+    RF_GamePacketHeader header;
+    std::memcpy(&header, data, sizeof(header));
+    if (len != sizeof(header) + header.size) {
+        xlog::warn("af_obj_update_delta packet has unexpected size! Expected {}, got {}", sizeof(header) + header.size, len);
+        return;
+    }
+    obj_update_delta::client_receive(static_cast<const uint8_t*>(data) + sizeof(header), header.size, addr);
+}
+
+void af_send_obj_update_ack_packet()
+{
+    // Send: client -> server, once per own obj_update send
+    if (!rf::is_multi || rf::is_server) {
+        return;
+    }
+    af_obj_update_ack_packet packet{};
+    if (!obj_update_delta::client_build_ack(packet.newest_seq, packet.bits)) {
+        return;
+    }
+    packet.header.type = static_cast<uint8_t>(af_packet_type::af_obj_update_ack);
+    packet.header.size = sizeof(packet) - sizeof(packet.header);
+    af_send_packet(rf::local_player, &packet, sizeof(packet), false);
+}
+
+static void af_process_obj_update_ack_packet(const void* data, size_t len, const rf::NetAddr& addr)
+{
+    // Receive: server <- client
+    if (!rf::is_server || len != sizeof(af_obj_update_ack_packet)) {
+        return;
+    }
+    rf::Player* player = rf::multi_find_player_by_addr(addr);
+    if (!player || !player->delta_obj_update) {
+        return;
+    }
+    af_obj_update_ack_packet packet;
+    std::memcpy(&packet, data, sizeof(packet));
+    obj_update_delta::server_on_ack(player, packet.newest_seq, packet.bits);
 }
 
 // client requests

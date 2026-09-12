@@ -15,6 +15,7 @@
 #include "demo_file.h"
 #include "demo_internal.h"
 #include "../network.h"
+#include "../obj_interp_history.h"
 #include "../multi.h"
 #include "../jetpack.h"
 #include "../alpine_packets.h"
@@ -301,7 +302,8 @@ namespace
         // post-seek suppression (overlay + mute) can end this frame
         if (!fast_forward && g_ctx.seek_settle
             && (packet_type == RF_GPT_OBJECT_UPDATE
-                || packet_type == static_cast<uint8_t>(af_packet_type::af_obj_update))) {
+                || packet_type == static_cast<uint8_t>(af_packet_type::af_obj_update)
+                || packet_type == static_cast<uint8_t>(af_packet_type::af_obj_update_delta))) {
             g_ctx.seek_obj_update_seen = true;
         }
         std::optional<rf::ubyte> saved_local_team;
@@ -570,9 +572,9 @@ namespace
     }
 
     // The interp rings run on wall-clock time, which the pause freeze cannot stop:
-    // the per-frame advance (multi_obj_interp_update @ 0x00483BE0) steps interp_time
-    // by the timer delta since frame_time_us (timer_get(1000) ms as patched by
-    // obj_interp_too_fast_fix), and sample insertion (ObjInterp::set_next_pos_orient
+    // the per-frame advance (obj_interp_frame_advance_hook on 0x00483BE0) steps interp_time
+    // by the timer delta since frame_time_us (timer_get(1000000) us), and sample
+    // insertion (ObjInterp::set_next_pos_orient
     // @ 0x00483360) records the timer_get(1000) gap since last_update_time into
     // arrive_time_diff - whose 20-entry average is the physics-extrapolation step
     // and re-anchor headroom for every later sample. The freeze stops the sim and
@@ -586,9 +588,10 @@ namespace
     void rebase_interp_clocks_after_freeze()
     {
         const auto now_ms = static_cast<uint32_t>(timer::get_i64(1000));
+        const auto now_us = static_cast<uint32_t>(timer::get_i64(1000000));
         for (rf::Object* obj = rf::object_list.next_obj; obj != &rf::object_list; obj = obj->next_obj) {
             if (rf::ObjInterp* interp = obj->obj_interp) {
-                interp->frame_time_us = now_ms;
+                interp->frame_time_us = now_us;
                 if (interp->last_update_time != static_cast<uint32_t>(-1)) { // -1 = no sample yet (Clear)
                     interp->last_update_time = now_ms;
                 }
@@ -1019,24 +1022,17 @@ namespace
     // that far in the past while following a player, so the crosshair lines up with
     // targets the way the shooter saw them - the same rewind the server's lag
     // compensation applied when it validated their hits. The ring holds real recorded
-    // history (20 keyframes, ~633ms at 30 netfps), so this stays smooth, unlike the
-    // considered alternative of extrapolating the POV camera forward by ping, which
-    // predicts beyond the recorded data and jitters exactly where the viewer is looking.
-    // Projectiles/corpses/movers are not biased: tracers must leave the (un-delayed) POV
-    // muzzle, and alignment only matters against players.
-
+    // history (the engine's 20 keyframes plus AF's deeper obj_interp_history, ~1s+), so
+    // this stays smooth.
     bool g_povcomp_enabled = true;
     int g_povcomp_override_ms = -1; // >= 0: fixed delay instead of ping-derived
 
-    constexpr int povcomp_max_ms = 450; // interp ring depth bounds usable delay anyway
+    constexpr int povcomp_max_ms = 1000; // obj_interp_history depth bounds usable delay anyway
     constexpr float povcomp_slew_ms_per_s = 300.0f;
 
-    // Downstream latency to the followed player + their client's interp buffer.
-    // ObjInterp::set_next_pos_orient anchors interp_time at 2.2x the average
-    // sample-arrival interval behind the newest keyframe (flt_59F50C), so the
-    // recorded client viewed remote entities ~ping + 2.2 * update interval in
-    // the past relative to the server timeline the demo is recorded on.
-    constexpr float povcomp_interp_headroom = 2.2f;
+    // Downstream latency to the followed player + their client's interp buffer: the
+    // recorded client viewed remote entities ~ping + interp delay in the past relative
+    // to the server timeline the demo is recorded on (its jitter is unknown, assume 0).
 
     int povcomp_desired_ms()
     {
@@ -1051,7 +1047,7 @@ namespace
         if (desired < 0) {
             const uint32_t netfps = std::max(g_ctx.reader.header().server_netfps, 1u);
             const float interval_ms = 1000.0f / static_cast<float>(netfps);
-            desired = target->net_data->ping + static_cast<int>(povcomp_interp_headroom * interval_ms);
+            desired = target->net_data->ping + static_cast<int>(obj_interp_target_delay_ms(interval_ms, 0.0f));
         }
         return std::clamp(desired, 0, povcomp_max_ms);
     }

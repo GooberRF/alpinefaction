@@ -1245,6 +1245,14 @@ static void apply_known_key_in_order(AlpineServerConfig& cfg, const std::string&
         if (auto v = node.value<bool>())
             cfg.allow_outlines_xray = *v;
     }
+    else if (key == "projectile_lag_comp") {
+        if (auto v = node.value<bool>())
+            cfg.projectile_lag_comp = *v;
+    }
+    else if (key == "projectile_lag_comp_max_ms") {
+        if (auto v = node.value<int64_t>())
+            cfg.projectile_lag_comp_max_ms = std::clamp(static_cast<int>(*v), 50, 500);
+    }
 }
 
 // apply base config toml tables
@@ -2136,10 +2144,10 @@ void print_alpine_dedicated_server_config_info(std::string& output, bool verbose
     } else {
         std::format_to(iter, "  Uptime:                                {}\n", g_process_startup_time);
     }
-    if (rf::is_dedicated_server) {
-        std::format_to(iter, "  Target FPS:                            {}\n", g_alpine_game_config.server_max_fps);
-    }
-    std::format_to(iter, "  Net FPS:                               {}\n", g_alpine_game_config.server_netfps);
+    std::format_to(iter, "  Bandwidth:                             {} ({} netfps, {} fps)\n",
+                   g_alpine_game_config.net_rate_name(g_alpine_game_config.server_netfps),
+                   g_alpine_game_config.server_netfps,
+                   g_alpine_game_config.net_rate_server_fps(g_alpine_game_config.server_netfps));
     std::format_to(iter, "  Max players:                           {}\n", netgame.max_players);
     std::format_to(iter, "  Levels in rotation:                    {}\n", cfg.levels.size());
     std::format_to(iter, "  Dynamic rotation:                      {}\n", cfg.dynamic_rotation);
@@ -2199,6 +2207,10 @@ void print_alpine_dedicated_server_config_info(std::string& output, bool verbose
     std::format_to(iter, "  SP-style damage calculation:           {}\n", cfg.use_sp_damage_calculation);
     std::format_to(iter, "  Allow outlines:                        {}\n", cfg.allow_outlines);
     std::format_to(iter, "  Allow outlines xray:                   {}\n", cfg.allow_outlines_xray);
+    std::format_to(iter, "  Projectile lag compensation:           {}\n", cfg.projectile_lag_comp);
+    if (cfg.projectile_lag_comp) {
+        std::format_to(iter, "    Max compensation:                    {}ms\n", cfg.projectile_lag_comp_max_ms);
+    }
 
     // inactivity
     std::format_to(iter, "  Identify inactive players:             {}\n", cfg.inactivity_config.enabled);

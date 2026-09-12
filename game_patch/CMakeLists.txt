@@ -161,6 +161,8 @@ set(SRCS
     multi/salvage.cpp
     multi/sprays.h
     multi/sprays.cpp
+    multi/netmeter.h
+    multi/netmeter.cpp
     multi/mutators.h
     multi/mutators.cpp
     multi/kill.cpp
@@ -206,6 +208,12 @@ set(SRCS
     multi/endgame_votes.h
     multi/faction_files.cpp
     multi/faction_files.h
+    multi/projectile_lag_comp.cpp
+    multi/projectile_lag_comp.h
+    multi/obj_interp_history.cpp
+    multi/obj_interp_history.h
+    multi/obj_update_delta.cpp
+    multi/obj_update_delta.h
     fflink/afstats_client.cpp
     fflink/afstats_client.h
     fflink/afstats_events.cpp

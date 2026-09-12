@@ -58,6 +58,18 @@ namespace rf
     static auto& net_port = addr_as_ref<unsigned short>(0x01B587D4);
     static const auto& net_stats_update = addr_as_ref<void()>(0x00528580);
     static const auto& net_stats_add = addr_as_ref<void(int, int, int, int)>(0x005286A0);
+    // psnet stats: 30 one-second slots of bytes per (payload | header-approx, recv | send,
+    // unreliable | reliable); net_stats_slot is the slot being accumulated (capped at 29, the
+    // arrays shift down once a second after that), so slot - 1 is the last complete second
+    static auto& net_stats_slot = addr_as_ref<int>(0x01B46ED8);
+    static auto& net_stats_recv_unrel = addr_as_ref<int[30]>(0x01B46EDC);
+    static auto& net_stats_recv_rel = addr_as_ref<int[30]>(0x01B46DE8);
+    static auto& net_stats_recv_hdr_unrel = addr_as_ref<int[30]>(0x01B46E60);
+    static auto& net_stats_recv_hdr_rel = addr_as_ref<int[30]>(0x01B46CF0);
+    static auto& net_stats_send_unrel = addr_as_ref<int[30]>(0x01B47970);
+    static auto& net_stats_send_rel = addr_as_ref<int[30]>(0x01B46C78);
+    static auto& net_stats_send_hdr_unrel = addr_as_ref<int[30]>(0x01B478F8);
+    static auto& net_stats_send_hdr_rel = addr_as_ref<int[30]>(0x01B46D70);
     static const auto& net_packet_queue_push =
         addr_as_ref<void(void*, const void*, int, const NetAddr*)>(0x00528950);
     static auto& net_packet_queues = addr_as_ref<uint8_t[3][0x1050C]>(0x01B15950);
@@ -283,6 +295,7 @@ namespace rf
     static auto& multi_server_flags = addr_as_ref<NetGameFlags>(0x0064EC40);
     static auto& multi_game_type = addr_as_ref<int>(0x0064EC3C);
     static auto& multi_level_switch_queued = addr_as_ref<int>(0x0064EC64);
+    static auto& multi_server_addr = addr_as_ref<NetAddr>(0x0064EC5C); // client: address of the joined server
     static auto& ctf_flag_cooldown_timestamp = addr_as_ref<Timestamp>(0x006C74F4);
     static auto& multi_ctf_drop_flag = addr_as_ref<void(Player* pp)>(0x00473F40);
     static auto& multi_ctf_get_red_team_score = addr_as_ref<uint8_t()>(0x00475020);
@@ -339,6 +352,8 @@ namespace rf
     static auto& send_obj_kill_packet = addr_as_ref<void(Entity* killed_entity, Item* item, int* a3)>(0x0047E8C0);
     static auto& send_obj_update_packet = addr_as_ref<void()>(0x0047E5B0); // client -> server
     static auto& send_obj_update_packet_timestamp = addr_as_ref<TimestampRealtime>(0x006FB424);
+    // data points past the 3-byte header; reads records until the 0xFFFFFFFF terminator
+    static auto& process_obj_update_packet = addr_as_ref<void(char* data, const NetAddr& addr)>(0x0047DF90);
     static auto& send_item_create_packet = addr_as_ref<void(Item* item, Player* recipient, int16_t level_item_index)>(0x00479A20);
     static auto& send_item_apply_packet = addr_as_ref<void(Player* to, int item_handle, int entity_handle, int weapon, int ammo, int clip_ammo)>(0x00479810);
     static auto& send_respawn_req_packet = addr_as_ref<void(uint32_t multi_character, uint8_t player_id)>(0x004809D0); // client -> server

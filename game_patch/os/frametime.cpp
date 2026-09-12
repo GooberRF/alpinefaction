@@ -12,6 +12,8 @@
 #include "../rf/entity.h"
 #include "../rf/os/frametime.h"
 #include "../multi/multi.h"
+#include "../multi/network.h"
+#include "../multi/netmeter.h"
 #include "../main/main.h"
 #include "../misc/alpine_settings.h"
 #include "../hud/hud.h"
@@ -169,6 +171,39 @@ static void frametime_render_ping_display(int y)
     rf::gr::string_aligned(rf::gr::ALIGN_RIGHT, value_anchor, y, text.c_str(), font_id);
 }
 
+static bool frametime_netmeter_visible()
+{
+    return netmeter_enabled() && !is_hud_effectively_hidden() && rf::is_multi && !rf::is_server;
+}
+
+static void frametime_render_netmeter(int y)
+{
+    const NetMeterStats stats = netmeter_get_stats();
+    rf::gr::set_color(0, 255, 0, 255);
+    const int value_anchor = rf::gr::screen_width() - 20;
+    const int label_offset = g_alpine_game_config.big_hud ? 125 : 65;
+    const int line_gap = frametime_hud_counter_line_gap();
+    int font_id = hud_get_default_font();
+
+    auto draw_row = [&](int row_y, const char* label, float value) {
+        auto text = std::format("{:7.1f}", value);
+        rf::gr::string_aligned(rf::gr::ALIGN_RIGHT, value_anchor - label_offset, row_y, label, font_id);
+        rf::gr::string_aligned(rf::gr::ALIGN_RIGHT, value_anchor, row_y, text.c_str(), font_id);
+    };
+    draw_row(y, "Net In:", stats.in_rate);
+    draw_row(y + line_gap, "Jitter:", stats.in_jitter);
+    draw_row(y + 2 * line_gap, "Max Gap:", stats.in_max_gap);
+    draw_row(y + 3 * line_gap, "Loss %:", stats.in_loss);
+    draw_row(y + 4 * line_gap, "Stale:", stats.in_stale);
+    draw_row(y + 5 * line_gap, "Net Out:", stats.out_rate);
+    draw_row(y + 6 * line_gap, "Jitter:", stats.out_jitter);
+    draw_row(y + 7 * line_gap, "Interp:", stats.interp_delay);
+    draw_row(y + 8 * line_gap, "In KB/s:", stats.in_kbps);
+    draw_row(y + 9 * line_gap, "Out KB/s:", stats.out_kbps);
+}
+
+static constexpr int netmeter_rows = 10;
+
 int frametime_hud_counter_stack_bottom_y()
 {
     int y = frametime_hud_counter_base_y();
@@ -181,6 +216,9 @@ int frametime_hud_counter_stack_bottom_y()
     }
     if (frametime_ping_display_visible()) {
         y += line_gap;
+    }
+    if (frametime_netmeter_visible()) {
+        y += netmeter_rows * line_gap;
     }
     return y;
 }
@@ -200,6 +238,10 @@ void frametime_render_ui()
     }
     if (frametime_ping_display_visible()) {
         frametime_render_ping_display(y);
+        y += line_gap;
+    }
+    if (frametime_netmeter_visible()) {
+        frametime_render_netmeter(y);
     }
 
     frametime_render_graph();
@@ -274,7 +316,8 @@ void apply_maximum_fps()
     unsigned max_fps;
 
     if (rf::is_dedicated_server) {
-        max_fps = g_alpine_game_config.server_max_fps;
+        // Tied to the net rate tier so the send interval divides the frame (see sv_bandwidth)
+        max_fps = g_alpine_game_config.net_rate_server_fps(g_alpine_game_config.server_netfps);
     }
     else if (rf::is_multi) {
         const auto& server_info_opt = get_af_server_info();
@@ -308,12 +351,8 @@ ConsoleCommand2 max_fps_cmd{
     [] (const std::optional<int> limit_opt) {
         if (limit_opt) {
             if (rf::is_dedicated_server) {
-                const unsigned int old_v = g_alpine_game_config.server_max_fps;
-                g_alpine_game_config.set_server_max_fps(*limit_opt);
-                if (g_alpine_game_config.server_max_fps != old_v) {
-                    g_alpine_server_config.printed_cfg.clear();
-                    g_alpine_server_config.signal_cfg_changed = true;
-                }
+                rf::console::print("maxfps follows sv_bandwidth on dedicated servers (currently {})",
+                                   g_alpine_game_config.net_rate_server_fps(g_alpine_game_config.server_netfps));
             } else {
                 g_alpine_game_config.set_max_fps(*limit_opt);
             }

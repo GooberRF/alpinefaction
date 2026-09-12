@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <iterator>
 #include <optional>
 #include "../rf/os/timestamp.h"
 #include "../hud/hud.h"
@@ -174,6 +175,7 @@ struct AlpineGameSettings
     }
     bool speed_display = false;
     bool ping_display = true;
+    bool netmeter_display = false;
     bool spectate_mode_minimal_ui = false;
     bool spectate_show_camera_meshes = true; // draw camera meshes in free look
     bool spectate_povcomp = true; // delay other players to match what the spectated player saw
@@ -368,6 +370,9 @@ struct AlpineGameSettings
             multiplayer_tracker = "rfgt.factionfiles.com";
     }
 
+    // Client obj_update send rate, fixed (the stock `rate` command is deprecated)
+    static constexpr unsigned client_net_rate = 40u;
+
     // max_fps default is 120
     static constexpr unsigned min_fps_limit = 1u;
     static constexpr unsigned max_fps_limit = 100000u;
@@ -378,20 +383,42 @@ struct AlpineGameSettings
         max_fps = std::clamp(fps_value, min_fps_limit, max_fps_limit);
     }
 
-    // server_max_fps default is 80
-    unsigned server_max_fps = 80u;
+    // Net rate tiers. Each tier's send interval is a whole number of ms that divides the server
+    // frame at that tier's fps, so ticks are never truncated or bunched. sv_bandwidth toggles
+    // between them; high matches 1.4 (40 net updates/s at 80 fps).
+    static constexpr unsigned net_rate_tiers[] = {20u, 40u};
+    // Dedicated server fps per tier: the send interval is two frames either way
+    static unsigned net_rate_server_fps(unsigned netfps)
+    {
+        return netfps <= 20u ? 40u : 80u;
+    }
+    // Anything that is not exactly a tier (a pre-1.5 ServerNetFPS of 60, 100, ...) becomes high:
+    // operators should start there and only step down if the host cannot keep up
+    static unsigned snap_net_rate(unsigned netfps)
+    {
+        for (unsigned tier : net_rate_tiers) {
+            if (tier == netfps)
+                return tier;
+        }
+        return net_rate_tiers[std::size(net_rate_tiers) - 1];
+    }
+    static const char* net_rate_name(unsigned netfps)
+    {
+        return netfps <= 20u ? "low" : "high";
+    }
+
+    // Listen servers only; dedicated servers run at net_rate_server_fps(server_netfps)
+    unsigned server_max_fps = 100u;
     void set_server_max_fps(unsigned fps_value)
     {
         server_max_fps = std::clamp(fps_value, min_fps_limit, max_fps_limit);
     }
 
-    // server netfps default is 1/0.085 ~= 12
-    static constexpr unsigned min_server_netfps = 12u;
-    static constexpr unsigned max_server_netfps = 300u;
+    // Server send rate, always one of net_rate_tiers
     unsigned server_netfps = 40u;
     void set_server_netfps(unsigned netfps_value)
     {
-        server_netfps = std::clamp(netfps_value, min_server_netfps, max_server_netfps);
+        server_netfps = snap_net_rate(netfps_value);
     }
 
     int desired_handicap = 0;

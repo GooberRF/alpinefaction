@@ -31,6 +31,7 @@
 #include "../misc/player.h"
 #include "../misc/alpine_settings.h"
 #include "../multi/gametype.h"
+#include "../multi/obj_interp_history.h"
 #include "../multi/saved_info.h"
 #include <common/config/BuildConfig.h>
 #include <xlog/xlog.h>
@@ -883,8 +884,9 @@ static void spectate_delete_current_dropped_camera()
 // saw at T - (their ping + their client's interp delay). Realign by evaluating every
 // other player entity's interp ring that far in the past, so the crosshair lines up with
 // targets the way the shooter saw them - the same rewind the server's lag compensation
-// applied when it validated their hits. The ring holds real received history (20
-// keyframes, ~500ms at 40 netfps), so this stays smooth. Projectiles/corpses/
+// applied when it validated their hits. The ring holds real received history (the
+// engine's 20 keyframes plus AF's deeper obj_interp_history, ~1s+), so this stays
+// smooth. Projectiles/corpses/
 // movers are not biased: tracers must leave the (un-delayed) POV muzzle, and alignment
 // only matters against players.
 //
@@ -894,13 +896,8 @@ static int g_povcomp_override_ms = -1; // >= 0: fixed delay instead of ping-deri
 // frame so the world glides on target/ping changes
 static float g_povcomp_applied_ms = 0.0f;
 
-constexpr int povcomp_max_ms = 450; // interp ring depth bounds usable delay anyway
+constexpr int povcomp_max_ms = 1000; // obj_interp_history depth bounds usable delay anyway
 constexpr float povcomp_slew_ms_per_s = 300.0f;
-
-// The engine anchors each ring's interp_time at 2.2x the average sample-arrival interval
-// behind the newest keyframe (flt_59F50C), so the target's client viewed remote entities
-// ~ping + 2.2 * update interval in the past relative to the server timeline.
-constexpr float povcomp_interp_headroom = 2.2f;
 
 static int povcomp_desired_ms()
 {
@@ -914,15 +911,15 @@ static int povcomp_desired_ms()
         return 0;
     int desired = g_povcomp_override_ms;
     if (desired < 0) {
-        // The server's netfps isn't known client-side; the measured average arrival
-        // interval of the target's own ring is the same cadence their client observed
-        float interval_ms = 25.0f; // fallback: netfps 40
+        // The target's client viewed remote entities ~ping + interp delay in the past. The
+        // server's netfps isn't known client-side; the target's own ring sees the same
+        // cadence and jitter their client observed
+        float delay_ms = obj_interp_target_delay_ms(25.0f, 0.0f); // fallback: netfps 40
         rf::Entity* target_entity = rf::entity_from_handle(target->entity_handle);
         if (target_entity && target_entity->obj_interp && target_entity->obj_interp->num_frames() >= 2) {
-            interval_ms = std::clamp(target_entity->obj_interp->arrive_time_avg_diff,
-                                     1000.0f / 300.0f, 1000.0f / 12.0f);
+            delay_ms = obj_interp_target_delay_ms(target_entity->obj_interp);
         }
-        desired = target->net_data->ping + static_cast<int>(povcomp_interp_headroom * interval_ms);
+        desired = target->net_data->ping + static_cast<int>(delay_ms);
     }
     return std::clamp(desired, 0, povcomp_max_ms);
 }
@@ -947,21 +944,21 @@ static void povcomp_do_frame()
     }
 }
 
-// Clamp the bias so the biased evaluation time stays within the ring's recorded
-// span. interp_time and time_array are 16-bit server ms ticks; blind subtraction
-// near a numeric wrap would read as ~65s in the future and trip determine_frame's
-// 5000ms staleness cutoff. time_array[0] is always the oldest sample (insertion
-// shifts the arrays down when full). Returns 0 when biasing is unsafe this frame.
-static uint16_t povcomp_safe_bias(rf::ObjInterp* interp, int desired_ms)
+// Clamp the bias so the biased evaluation time stays within the recorded span: the
+// engine ring's 20 keyframes or AF's deeper obj_interp_history, whichever reaches
+// further back (the engine's tick evaluators read the history for ticks older than
+// the ring). interp_time and ticks are 16-bit server ms ticks, so compare via a
+// signed 16-bit difference. Returns 0 when biasing is unsafe this frame.
+static uint16_t povcomp_safe_bias(rf::ObjInterp* interp, const rf::Entity* entity, int desired_ms)
 {
     // flags bit 0 = ring empty/unanchored: set by Clear(), cleared once a sample
     // anchors interp_time (frame_start skips processing while it is set)
     if ((interp->flags & 1) != 0 || interp->num < 2)
         return 0; // ring unusable; the stock path holds the current pos anyway
-    const auto avail = static_cast<uint16_t>(interp->interp_time - interp->time_array[0]);
-    if (avail > 0x1388)
+    const int avail = static_cast<int16_t>(static_cast<uint16_t>(interp->interp_time - obj_interp_oldest_tick(entity)));
+    if (avail <= 0)
         return 0; // stale/wrapped ring - leave it to the stock staleness handling
-    return static_cast<uint16_t>(std::min<int>(desired_ms, avail));
+    return static_cast<uint16_t>(std::min(desired_ms, avail));
 }
 
 static int povcomp_bias_for(rf::Entity* entity)
@@ -981,6 +978,7 @@ static int povcomp_bias_for(rf::Entity* entity)
 
 static void povcomp_interp_call(rf::Entity* entity, auto& hook)
 {
+    ObjInterpFrameEval frame_eval; // the tick evaluators add the playout clock's sub-ms part
     // povcomp only biases interp state during demo playback or while following a
     // player in spectate; leave every other frame's interp untouched.
     if (!demo_playback_active() && !multi_spectate_is_following_player()) {
@@ -989,7 +987,7 @@ static void povcomp_interp_call(rf::Entity* entity, auto& hook)
     }
     rf::ObjInterp* interp = entity->obj_interp;
     const int desired = interp ? povcomp_bias_for(entity) : 0;
-    const uint16_t bias = desired > 0 ? povcomp_safe_bias(interp, desired) : 0;
+    const uint16_t bias = desired > 0 ? povcomp_safe_bias(interp, entity, desired) : 0;
     if (bias == 0) {
         hook.call_target(entity);
         return;

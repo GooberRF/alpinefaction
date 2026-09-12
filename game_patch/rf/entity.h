@@ -477,6 +477,8 @@ namespace rf
     static auto& entity_fire_list = addr_as_ref<EntityFireInfo*>(0x0062F770);
     static auto& entity_is_swimming = addr_as_ref<bool(Entity* ep)>(0x0042A0A0);
     static auto& entity_is_crouching = addr_as_ref<bool(Entity* ep)>(0x0040A130);
+    static auto& entity_crouch = addr_as_ref<void(Entity* ep)>(0x004289D0);
+    static auto& entity_maybe_stop_crouching = addr_as_ref<bool(Entity* ep)>(0x00428A60);
     static auto& entity_is_falling = addr_as_ref<bool(Entity* ep)>(0x0042A020);
     static auto& entity_is_climbing = addr_as_ref<bool(Entity* ep)>(0x0042D8B0);
     static auto& entity_is_running = addr_as_ref<bool(Entity* ep)>(0x00429FF0);

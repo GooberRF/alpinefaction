@@ -21,6 +21,7 @@
 #include "server.h"
 #include "server_internal.h"
 #include "alpine_packets.h"
+#include "obj_update_delta.h"
 #include "demo/demo.h"
 #include "sprays.h"
 #include "kill_attribution.h"
@@ -64,6 +65,8 @@
 #include "../rf/collide.h"
 #include "../fflink/afstats_events.h"
 #include "../fflink/fflink_session.h"
+#include "projectile_lag_comp.h"
+#include "obj_interp_history.h"
 
 // all commands that can be used by any rcon profiles
 // full_admin gives access to this entire list
@@ -86,6 +89,7 @@ const std::vector<std::string> g_rcon_cmd_masterlist = {
     "sv_fraglimit",
     "sv_gametype",
     "sv_netfps",
+    "sv_bandwidth",
     "gt",
     "sv_geolimit",
     "sv_pass",
@@ -470,7 +474,9 @@ std::string build_info_command_output() {
         framerate_line = std::format("Framerate: {:.3f} | FPS: {:.0f} ({} max) | NetFPS: {}\n",
             rf::frametime,
             rf::current_fps,
-            rf::is_dedicated_server ? g_alpine_game_config.server_max_fps : g_alpine_game_config.max_fps,
+            rf::is_dedicated_server
+                ? g_alpine_game_config.net_rate_server_fps(g_alpine_game_config.server_netfps)
+                : g_alpine_game_config.max_fps,
             g_alpine_game_config.server_netfps
         );
     }
@@ -3233,6 +3239,13 @@ CallHook<rf::Weapon*(int, int, rf::Vector3*, rf::Matrix3*, int, int)>
         rf::Weapon* wp = weapon_fire_projectile_create_hook.call_target(
             weapon_type, parent_handle, pos, orient, alt_fire, a6);
         crits_on_weapon_created(wp, parent_handle);
+        if (wp) {
+            // Advance projectile weapons to compensate for network delay (server: the shooter's
+            // half ping; client: own + shooter half ping for fire relayed by the server). Done
+            // here, not in multi_lag_comp_weapon_fire_hook: the engine only calls that for
+            // WTF2_STOCK_LAG_COMP weapons, and with the ghost projectile rather than this real one.
+            projectile_lag_comp_advance_weapon(rf::entity_from_handle(parent_handle), wp);
+        }
         if (wp && rf::is_server) {
             if (rf::Player* pp = rf::player_from_entity_handle(parent_handle)) {
                 // Low byte compared against 1, matching the engine's own contract -- the pushed
@@ -3545,6 +3558,11 @@ void server_reliable_socket_ready(rf::Player* player)
 CodeInjection multi_level_init_injection{
     0x0046E450,
     [](auto& regs) {
+        // Both sides: object handles are reused across levels, so a stale client-side keyframe
+        // history would otherwise be read for ticks older than the fresh ring
+        projectile_lag_comp_on_level_init();
+        obj_interp_history_clear_all();
+        obj_update_delta::on_level_init();
         if (rf::is_server) {
             if (g_alpine_server_config.dynamic_rotation
                 && rf::netgame.current_level_index == rf::netgame.levels.size() - 1
@@ -5220,6 +5238,13 @@ void server_init()
     get_log_cmd_line_param();
     get_nodl_cmd_line_param();
 
+    // Projectile lag compensation hooks
+    projectile_lag_comp_init();
+
+    // Keyframe history deeper than ObjInterp's 20 frames, so hitscan lag comp and spectate/demo
+    // povcomp reach ~500 ms at any netfps
+    obj_interp_history_init();
+
     // console commands
     sv_game_type_cmd.register_cmd();
     gt_cmd.register_cmd();
@@ -5375,6 +5400,7 @@ void server_do_frame()
     auto_team_balance_do_frame();
     mutators_do_frame();
     awards_server_do_frame();
+    projectile_lag_comp_record_positions();
 }
 
 void server_on_limbo_state_enter()

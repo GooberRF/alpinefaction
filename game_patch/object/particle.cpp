@@ -196,6 +196,7 @@ void particle_do_patch()
 
     // Fix cull radius calculation for particle emitters
     particle_emitter_update_cull_radius_injection.install();
+
     AsmWriter{0x00495216}.jmp(0x0049525B);
 
     // Improve sorting in respect to the liquid surface

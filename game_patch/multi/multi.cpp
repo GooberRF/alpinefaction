@@ -721,6 +721,30 @@ void multi_turn_weapon_on(rf::Entity* ep, rf::Player* pp, bool alt_fire)
     }
 }
 
+// Riot stick alt fire (taser) zaps by re-arming ai.create_weapon_delay_timestamps inside
+// entity_turn_weapon_on, and the deferred creator (ai_maybe_create_delay_weapon /
+// player_do_frame) emits one zap per elapsed timestamp. For the local trigger that call is
+// gated by ai.next_fire_primary (alt fire wait, 0.5 s stock), but in multiplayer every
+// obj_update with OUF_FIRE also calls entity_turn_weapon_on (multi_turn_weapon_on), so on the
+// server the re-arm cadence - and the zap rate - became min(server fps, client send rate)
+// instead of 1 / alt_fire_wait. Apply the same fire-wait gate to the riot stick block itself so
+// every caller is limited: skip straight to the flamethrower check at 0x0041ABF7 while the
+// fire-wait timer set by the previous zap is still pending.
+CodeInjection entity_turn_weapon_on_riot_stick_fire_wait_injection{
+    0x0041AAD3,
+    [](auto& regs) {
+        if (!rf::is_multi) {
+            return;
+        }
+        rf::Entity* ep = regs.esi;
+        int weapon_type = regs.ebp;
+        if (rf::weapon_is_riot_stick(weapon_type) && ep->ai.next_fire_primary.valid()
+            && !ep->ai.next_fire_primary.elapsed()) {
+            regs.eip = 0x0041ABF7;
+        }
+    },
+};
+
 void multi_turn_weapon_off(rf::Entity* ep)
 {
     auto current_primary_weapon = ep->ai.current_primary_weapon;
@@ -1486,6 +1510,7 @@ void multi_do_patch()
 
     // Set custom listen server settings based on gametype
     multi_customize_listen_server_settings_patch.install();
+    entity_turn_weapon_on_riot_stick_fire_wait_injection.install();
 
     multi_kill_do_patch();
     kill_attribution_do_patch();

@@ -153,6 +153,9 @@ struct AlpineFactionServerInfo
     bool skiing = false;
     bool dodging = false;
     bool pogo = false;
+    bool projectile_lag_comp = false;
+    int server_netfps = 0; // 0: unknown (older server)
+    bool delta_obj_update = false;
 };
 
 enum class AlpineRestrictVerdict : uint8_t

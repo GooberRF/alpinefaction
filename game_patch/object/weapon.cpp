@@ -16,6 +16,7 @@
 #include "../multi/multi.h"
 #include "../multi/kill_attribution.h"
 #include "../multi/mutators.h"
+#include "../multi/projectile_lag_comp.h"
 #include "../misc/misc.h"
 #include "../misc/alpine_settings.h"
 
@@ -210,7 +211,13 @@ CallHook<void(rf::Vector3&, float, float, int, int)> weapon_hit_wall_obj_apply_r
         auto& collide_out = *reinterpret_cast<rf::PCollisionOut*>(&epicenter);
         auto new_epicenter = epicenter + collide_out.hit_normal * 0.0001f;
         const float crit_scale = crits_on_explosion(&new_epicenter, radius);
+        // This is the projectile-detonates-on-world-geometry apply_radius_damage call site; the
+        // other player-attributed sites get their rewind from hooks in multi/projectile_lag_comp.cpp
+        const bool rewound = projectile_lag_comp_rewind_for_killer(killer_handle);
         weapon_hit_wall_obj_apply_radius_damage_hook.call_target(new_epicenter, damage, radius * crit_scale, killer_handle, damage_type);
+        if (rewound) {
+            restore_entities_after_projectile();
+        }
     },
 };
 
