@@ -51,6 +51,11 @@ bool AlpineCoreConfig::load(const std::string& filename)
         processed.insert("D3D11_SkipGammaPass");
     }
 
+    if (settings.count("GamepadRawInput")) {
+        gamepad_rawinput_enabled = string_to_bool(settings["GamepadRawInput"]);
+        processed.insert("GamepadRawInput");
+    }
+
     for (const auto& [key, value] : settings) {
         if (!processed.contains(key) && key.rfind("AFCC", 0) == std::string::npos) {
             orphaned_lines.push_back(key + "=" + value);
@@ -97,6 +102,7 @@ void AlpineCoreConfig::save(const std::string& filename) const
 
     file << "\n[Configuration]\n";
     file << "VerticalSync=" << bool_to_string(vsync) << "\n";
+    file << "GamepadRawInput=" << bool_to_string(gamepad_rawinput_enabled) << "\n";
 
     file << "\n[Experimental]\n";
     file << "; These settings may cause crashes or other drawbacks on certain system configurations.\n";
