@@ -1,0 +1,103 @@
+# Subtitles for the in-engine cutscenes.
+#
+# Each scene streams one pre-mixed track, so these are timed phrases rather than
+# one entry per sound. Times are milliseconds from the start of the track.
+#
+# Transcribed from the audio - the game ships no text for these scenes - so
+# corrections are welcome.
+
+[[track]]
+name = "rfcs_02_finalmix.wav"
+lines = [
+    { start =      0, end =   2140, text = "Stop. Don't shoot. I can help you." },
+    { start =   4080, end =   5260, text = "You're Gryphon, right?" },
+    { start =   6360, end =   8240, text = "Deputy Administrator Gryphon? Yes." },
+    { start =   8240, end =  10720, text = "Why do I need your help? I'm the one with the gun." },
+    { start =  10940, end =  14340, text = "I have vital information. You must take me to Eos." },
+    { start =  14720, end =  16360, text = "What do you know about Eos?" },
+    { start =  16740, end =  20480, text = "Ultor knows all about her. They set this whole thing up." },
+    { start =  21440, end =  22800, text = "You must take me to her." },
+    { start =  23360, end =  25280, text = "What do you mean they set this whole thing up?" },
+    { start =  25660, end =  28120, text = "No time to explain. Take me to Eos." },
+    { start =  28120, end =  30100, text = "I'll tell her everything I know." },
+    { start =  30150, end =  31420, text = "Explain it to me first." },
+    { start =  32520, end =  36520, text = "I'll tell you what I can on the way, but more guards are going to show up soon." },
+    { start =  40080, end =  44500, text = "I'm right behind you. Betray me or try to run, and you'll be the first to die." },
+    { start =  45300, end =  49120, text = "Put that gun away. If the guards see you with it, we're both dead." },
+]
+
+[[track]]
+name = "rfcs_03_finalmix.wav"
+lines = [
+    { start =   3740, end =   8480, text = "Yeah, yeah, Parker, great job. You can pose for pictures later. We gotta keep moving." },
+    { start =  10560, end =  15600, text = "Shut up, Weasel! If Eos didn't want you, you'd be dead by now. I'll decide when it's time to go." },
+    { start =  19940, end =  21180, text = "Okay, let's go." },
+    { start =  23540, end =  26000, text = "Hoof it! I'm not carrying your sorry butt anymore." },
+    { start =  34620, end =  40080, text = "Parker! Gryphon! Over here! We're here to take Gryphon to Eos." },
+    { start =  41320, end =  42180, text = "Thank God." },
+    { start =  43460, end =  46980, text = "Well, whatever. Let's get moving before security shows up." },
+    { start =  51360, end =  55380, text = "And not you, Parker. Just the weasel here. Eos will contact you." },
+    { start =  60000, end =  67780, text = "Well, thanks Parker, and good luck. And hey, don't you start calling me Weasel too." },
+    { start =  70540, end =  72460, text = "Great. Screwed again." },
+]
+
+[[track]]
+name = "rfcs_04_finalmix.wav"
+lines = [
+    { start =      0, end =   8800, text = "Parker, how nice to see you. I must thank you for starting this little diversion. It has made my work so much easier." },
+    { start =   9900, end =  11900, text = "What's that mean, you half-human freak?" },
+    { start =  12340, end =  23720, text = "These troubles have given me the perfect excuse to accelerate my experiments. Who will notice a few more vanished miners in all this confusion?" },
+    { start =  24860, end =  27720, text = "To hell with orders! Die, Capek!" },
+    { start =  32460, end =  37820, text = "Congratulations, Parker. You were the first to see my nanotech shield in action." },
+    { start =  40140, end =  46980, text = "Now I must return to my work. Enjoy what little time you have left, you and your friends." },
+]
+
+[[track]]
+name = "rfcs_05_finalmix.wav"
+lines = [
+    { start =   2800, end =   4960, text = "Parker, stop! Don't kill him!" },
+    { start =   8420, end =  11420, text = "Don't kill him? He's killed hundreds of miners." },
+    { start =  12720, end =  15720, text = "And hundreds more will die unless we find a cure for the plague." },
+    { start =  18440, end =  24040, text = "We can't save the miners who are dead already, but we might save those who are dying. He's their only hope." },
+    { start =  27520, end =  30220, text = "Hope? Who has hope?" },
+    { start =  33520, end =  37500, text = "If you have hope, you just don't understand yet." },
+    { start =  40100, end =  43460, text = "My work... all gone." },
+    { start =  44320, end =  47580, text = "Capek, the plague, there's got to be a cure." },
+    { start =  48440, end =  49400, text = "Simple, really." },
+    { start =  50460, end =  51820, text = "Stop the replicators." },
+    { start =  51820, end =  56180, text = "But how? How do you stop them?" },
+    { start =  56880, end =  58500, text = "Antidote, of course." },
+    { start =  58500, end =  61720, text = "Come on, Eos. Let's finish him and get out of here." },
+    { start =  61980, end =  65900, text = "We need that antidote, Parker. If you're not going to help, shut up." },
+    { start =  67380, end =  68800, text = "Where is the antidote?" },
+    { start =  70420, end =  75320, text = "Why help you? Hope you all die." },
+    { start =  77880, end =  78280, text = "Damn!" },
+    { start =  80720, end =  85000, text = "The formula's got to be in his computer files. Maybe Hendrix can help." },
+    { start =  86400, end =  90480, text = "Parker, you've got to get out of here. One of us has to live through this." },
+    { start =  90680, end =  92260, text = "No! I'm not gonna leave!" },
+    { start =  92340, end =  98880, text = "No time to argue. Go out the way I came in. If I don't make it, you must tell people there's a cure for the plague." },
+]
+
+[[track]]
+name = "rfcs_06_finalmix.wav"
+lines = [
+    { start =   3320, end =   5680, text = "Sure hope this works." },
+    { start =  11640, end =  13700, text = "Come on, come on..." },
+    { start =  14700, end =  16240, text = "Hold it right there!" },
+]
+
+[[track]]
+name = "rfcs_07_finalmix.wav"
+lines = [
+    { start =   4120, end =   6100, text = "Mom said I'd come to a bad end." },
+    { start =   7000, end =   8000, text = "This one's for you, Mom." },
+    { start =  14480, end =  16540, text = "Manual launch override engaged." },
+    { start =  17060, end =  18660, text = "Thirty seconds until launch." },
+]
+
+[[track]]
+name = "rfcs_09_finalmix.wav"
+lines = [
+    { start =   6060, end =  10680, text = "Escape pod number two, detaching in five seconds." },
+    { start =  11420, end =  15880, text = "Four, three, two, one, detach." },
+]
