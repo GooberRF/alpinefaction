@@ -107,6 +107,9 @@ LittleRobotSoundFactory:
 Drummyfish:
 * af-jetpack1skin1.tga and af-jetpack1.v3m (CC0: https://opengameart.org/content/oldschool-afps-weapons/)
 
+leeor_net:
+* af_caust00.png - af_caust15.png (CC0: https://opengameart.org/content/water-caustics-effect-small/)
+
 ###############################################################################
 ## stb_image, stb_vorbis
 ###############################################################################

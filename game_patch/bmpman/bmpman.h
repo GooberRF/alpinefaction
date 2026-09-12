@@ -1,5 +1,6 @@
 #pragma once
 
+#include <string_view>
 #include <xlog/xlog.h>
 #include "../rf/bmpman.h"
 #include "../rf/gr/gr.h"
@@ -9,6 +10,13 @@
 // the VFS first when the caller wants a genuine "not installed" answer (-1).
 // Defined in misc/game.cpp.
 int bm_load_if_exists(const char* name, int unk, bool generate_mipmaps);
+
+// Drops a trailing extension only when bm can actually resolve a texture from it, so a name
+// like "mon.01" keeps its last segment. The game's supersede probes, ATX registry key and ATX
+// lookups all go through this — they have to agree or a texture registers under one key and is
+// looked up under another. Path and case are left alone. The editor keeps its own narrower
+// supersede list, because RED's loader chain is not this one.
+std::string_view bm_strip_texture_ext(std::string_view filename);
 
 void bm_set_dynamic(int bm_handle, bool dynamic);
 bool bm_is_dynamic(int bm_handle);

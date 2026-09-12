@@ -18,7 +18,9 @@
 #include "../main/main.h"
 #include "../multi/multi.h"
 #include "../misc/alpine_settings.h"
+#include "../misc/level.h"
 #include "../rf/gr/gr.h"
+#include "../rf/gr/gr_light.h"
 #include "../rf/gameseq.h"
 #include "../rf/level.h"
 #include "../rf/geometry.h"
@@ -32,6 +34,7 @@
 #include "gr.h"
 #include "gr_internal.h"
 #include "weather.h"
+#include "scene_capture.h"
 #include "../misc/alpine_options.h"
 #include "../hud/multi_spectate.h"
 #include "../multi/demo/demo.h"
@@ -449,8 +452,22 @@ bool gr_set_render_target(int bm_handle)
     return false;
 }
 
-// Drain the queued .vfx x-ray outlines (the salvage flag) now, so they land under the
-// first-person weapon instead of over it.
+int gr_render_target_generation()
+{
+    if (rf::gr::screen.mode == rf::gr::DIRECT3D && is_d3d11()) {
+        return gr::d3d11::render_target_generation();
+    }
+    return 0;
+}
+
+// Drop the renderer's cached texture-handle pair; see the declaration in gr.h.
+void gr_invalidate_texture_cache()
+{
+    if (rf::gr::screen.mode == rf::gr::DIRECT3D && is_d3d11()) {
+        gr::d3d11::invalidate_texture_cache();
+    }
+}
+
 void gr_flush_outlines_before_fpgun()
 {
     if (rf::gr::screen.mode == rf::gr::DIRECT3D && is_d3d11()) {
@@ -577,6 +594,58 @@ CodeInjection gr_d3d_render_lod_vif_injection{
     },
 };
 
+SunLightState gr_get_sun_state()
+{
+    SunLightState state;
+    if (!(rf::level.flags & rf::LEVEL_LOADED)) {
+        return state;
+    }
+
+    const auto& props = AlpineLevelProperties::instance();
+    if (!props.enable_sun) {
+        return state;
+    }
+    // the chunk reader already constrains these, but this is the last thing between a level
+    // property and a constant buffer, and a NaN direction takes a whole frame of lighting with it
+    if (!std::isfinite(props.sun_yaw) || !std::isfinite(props.sun_pitch)) {
+        return state;
+    }
+    const float yaw = props.sun_yaw;
+    const float pitch = props.sun_pitch;
+    const float intensity =
+        std::isfinite(props.sun_intensity) ? std::clamp(props.sun_intensity, 0.0f, 10.0f) : 0.0f;
+
+    state.enabled = true;
+    state.affects_meshes = props.sun_affects_meshes;
+    state.drives_shadowmap_dir = props.sun_drives_shadowmap_dir;
+    state.mesh_mode = props.sun_mesh_mode;
+    rf::Vector3 to_sun = alpine_sun_to_light_dir(yaw, pitch);
+    state.travel_dir = {-to_sun.x, -to_sun.y, -to_sun.z};
+    state.color[0] = props.sun_color_r / 255.0f * intensity;
+    state.color[1] = props.sun_color_g / 255.0f * intensity;
+    state.color[2] = props.sun_color_b / 255.0f * intensity;
+    return state;
+}
+
+float gr_sun_get_mesh_scale(const float* ambient)
+{
+    const SunLightState sun = gr_get_sun_state();
+    if (!sun.enabled || !sun.affects_meshes) {
+        return 0.0f;
+    }
+    if (sun.mesh_mode != 0) {
+        return 1.0f;
+    }
+    float global_ambient[3];
+    if (!ambient) {
+        rf::gr::light_get_ambient(&global_ambient[0], &global_ambient[1], &global_ambient[2]);
+        ambient = global_ambient;
+    }
+    // an ambient luminance of 0.5 and up takes full sunlight, anything darker scales down with it
+    float luminance = ambient[0] * 0.299f + ambient[1] * 0.587f + ambient[2] * 0.114f;
+    return std::clamp(luminance * 2.0f, 0.0f, 1.0f);
+}
+
 // Power of 2 texture enforcement
 // Access p2t flag directly to avoid pulling in D3D8 types from gr_direct3d.h
 namespace rf::gr::d3d {
@@ -612,6 +681,22 @@ ConsoleCommand2 pow2_tex_cmd{
         }
     },
     "Manual debug override for power of 2 texture enforcement. Only affects new level loads. If you don't know what this does, do not use this command.",
+};
+
+ConsoleCommand2 underwater_fx_cmd{
+    "r_underwater",
+    [](std::optional<int> level_opt) {
+        if (level_opt) {
+            g_alpine_game_config.set_underwater_fx(level_opt.value());
+        }
+        rf::console::print(
+            "Underwater effects level is {} (Direct3D 11 renderer only, 0 = stock)",
+            g_alpine_game_config.underwater_fx
+        );
+    },
+    "Sets the underwater effects level: 0 stock, 1 caustics, 2 + fog/tint/vignette, 3 + distortion "
+    "(Direct3D 11 renderer only)",
+    "r_underwater <0-3>",
 };
 
 // checked during level load
@@ -697,6 +782,9 @@ void gr_apply_patch()
 
     // Plankton fix and weather regions
     weather_apply_patch();
+
+    // Display_Projection scene capture
+    scene_capture_apply_patch();
 
     if (!headless_bot_graphics_bypass) {
         const bool use_d3d11_renderer =
@@ -785,6 +873,7 @@ void gr_apply_patch()
     precache_rooms_cmd.register_cmd();
     disable_rendering_cmd.register_cmd();
     pow2_tex_cmd.register_cmd();
+    underwater_fx_cmd.register_cmd();
 
     // Fix `rf::gr::text_2d_mode`.
     AsmWriter{0x0050BB40}.push<int8_t>(rf::gr::FOG_NOT_ALLOWED);

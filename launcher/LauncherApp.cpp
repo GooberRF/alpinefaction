@@ -565,10 +565,17 @@ int LauncherApp::Run()
             "-demo file   Starts game immediately and plays specified demo file\n"
             "-play-demo file  Shows demo info and asks before playing it\n"
             "-editor      Starts level editor immediately\n"
+            "-bake in.rfl -bakeout out.rfl  Bakes lighting for in.rfl in the editor, writes the result to out.rfl and exits; progress goes to out.rfl.log\n"
             "-exe-path     Override patched executable file location\n"
             "args...      Additional arguments passed to game or editor\n",
             "Alpine Faction Launcher Help", MB_OK | MB_ICONINFORMATION);
         return 0;
+    }
+
+    if (m_cmd_line_info.HasBadBakeArg()) {
+        Message(nullptr, "-bake requires an input level: -bake in.rfl -bakeout out.rfl",
+            "Alpine Faction Launcher", MB_OK | MB_ICONERROR);
+        return 1;
     }
 
     // Migrate config from old version

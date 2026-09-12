@@ -1,7 +1,9 @@
 #pragma once
 
 #include <cstdint>
+#include <cmath>
 #include <map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 #include <string>
@@ -14,6 +16,7 @@
 void DestroyDedMesh(DedMesh* mesh);
 void DestroyDedCorona(DedCorona* corona);
 void DestroyDedWeatherRegion(DedWeatherRegion* weather_region);
+void DestroyDedProjectionCamera(DedProjectionCamera* camera);
 
 constexpr int alpine_props_chunk_id = 0x0AFBA5ED;
 constexpr int alpine_mesh_chunk_id = 0x0AFBAE01;
@@ -22,6 +25,7 @@ constexpr int alpine_corona_chunk_id = 0x0AFBAE03;
 constexpr int alpine_bag_chunk_id = 0x0AFBAE04;
 constexpr int alpine_brush_group_chunk_id = 0x0AFBAE05; // brush metadata in .rfg group files only
 constexpr int alpine_weather_region_chunk_id = 0x0AFBAE06;
+constexpr int alpine_projection_camera_chunk_id = 0x0AFBAE08;
 
 // Glacier saves new RFL chunks for its own purposes (metadata). Alpine Faction can
 // neither read nor parse these, but AlpineEditor retains them verbatim on load and
@@ -44,7 +48,7 @@ struct RetainedRflChunk {
 #pragma pack(push, 1)
 struct BrushGroupEntry {
     uint32_t brush_index;
-    uint8_t flags;      // bit 0 = geoable, bit 1 = breakable
+    uint8_t flags;      // bit 0 = geoable, bit 1 = breakable, bit 2 = no shadow cast
     uint8_t material;   // breakable material byte (bits 0-6 = material, bit 7 = no_debris)
 };
 #pragma pack(pop)
@@ -355,6 +359,17 @@ static_assert(offsetof(BrushNode, state) == 0x48);
 static_assert(offsetof(BrushNode, next) == 0x4C);
 static_assert(offsetof(BrushNode, prev) == 0x50);
 
+// Unit vector pointing TOWARD the sun. The light travel direction is its negation.
+// should match helper in game_patch\misc\level.h
+inline Vector3 alpine_sun_to_light_dir(float yaw_deg, float pitch_deg)
+{
+    constexpr float deg_to_rad = 3.14159265358979f / 180.0f;
+    const float yaw = yaw_deg * deg_to_rad;
+    const float pitch = pitch_deg * deg_to_rad;
+    const float cp = std::cos(pitch);
+    return {cp * std::sin(yaw), std::sin(pitch), cp * std::cos(yaw)};
+}
+
 // should match structure in game_patch\misc\level.h
 struct AlpineLevelProperties
 {
@@ -375,6 +390,24 @@ struct AlpineLevelProperties
     std::vector<int32_t> breakable_room_uids; // computed at save time, parallel to breakable_brush_uids
     std::vector<uint8_t> breakable_materials;  // material type per entry
     std::vector<int32_t> hold_open_keyframe_uids; // first keyframe UIDs of moving groups with "Hold Open"
+    // v5
+    bool enable_sun = false;
+    float sun_yaw = 0.0f;   // degrees
+    float sun_pitch = 90.0f; // degrees above horizon, 90 = zenith
+    uint8_t sun_color_r = 255, sun_color_g = 255, sun_color_b = 255, sun_color_a = 255;
+    float sun_intensity = 1.0f;
+    float sun_spread_angle = 0.0f; // degrees, penumbra half-angle for baked soft shadows
+    bool sun_cast_baked_shadows = true;
+    bool sun_affects_meshes = true;
+    uint8_t sun_mesh_mode = 0; // 0 = scale by sampled lightmap luminance, 1 = apply everywhere
+    bool sun_drives_shadowmap_dir = true;
+    bool legacy_lighting = false;   // 1 = bake with the byte-identical stock pipeline
+    bool highres_lightmaps = false; // 256x256 pages, 254 texel fragments, 4x density; needs a Build Geometry
+    bool sun_liquid_occludes = true; // liquid surfaces block sun rays during the bake
+    bool invisible_faces_occlude = false; // invisible faces block light hitting their front side
+    bool alpha_faces_occlude = false; // alpha textured faces block light; stock skips them entirely
+    std::vector<int32_t> no_shadow_cast_brush_uids; // brushes whose faces never occlude a baked ray
+    bool meshes_occlude = false; // alpine mesh objects cast baked shadows
 
     // Alpine mesh objects (stored separately from stock object VArrays)
     std::vector<DedMesh*> mesh_objects;
@@ -391,10 +424,46 @@ struct AlpineLevelProperties
     // Alpine weather region objects
     std::vector<DedWeatherRegion*> weather_region_objects;
 
+    // Alpine projection camera objects
+    std::vector<DedProjectionCamera*> projection_camera_objects;
+
     // Retained Glacier RFL sections (0x6ED-prefixed IDs).
     std::vector<RetainedRflChunk> retained_chunks;
 
-    static constexpr std::uint32_t current_alpine_chunk_version = 4u;
+    static constexpr std::uint32_t current_alpine_chunk_version = 5u;
+
+    Vector3 sun_to_light_dir() const
+    {
+        return alpine_sun_to_light_dir(sun_yaw, sun_pitch);
+    }
+
+    void SanitizeSunProperties()
+    {
+        const float yaw_in = sun_yaw, pitch_in = sun_pitch;
+        const float intensity_in = sun_intensity, spread_in = sun_spread_angle;
+        const uint8_t mesh_mode_in = sun_mesh_mode;
+
+        sun_yaw = std::isfinite(sun_yaw) ? std::fmod(sun_yaw, 360.0f) : 0.0f;
+        if (sun_yaw < 0.0f) {
+            sun_yaw += 360.0f;
+        }
+        sun_pitch = std::clamp(std::isfinite(sun_pitch) ? sun_pitch : 90.0f, 0.0f, 90.0f);
+        sun_intensity = std::clamp(std::isfinite(sun_intensity) ? sun_intensity : 1.0f, 0.0f, 10.0f);
+        sun_spread_angle =
+            std::clamp(std::isfinite(sun_spread_angle) ? sun_spread_angle : 0.0f, 0.0f, 45.0f);
+        if (sun_mesh_mode > 1) {
+            sun_mesh_mode = 0;
+        }
+
+        if (!(yaw_in == sun_yaw) || !(pitch_in == sun_pitch) ||
+            !(intensity_in == sun_intensity) || !(spread_in == sun_spread_angle) ||
+            mesh_mode_in != sun_mesh_mode) {
+            xlog::warn("[AlpineLevelProps] out of range sunlight properties corrected: yaw {} -> {}, "
+                       "pitch {} -> {}, intensity {} -> {}, spread {} -> {}, mesh mode {} -> {}",
+                       yaw_in, sun_yaw, pitch_in, sun_pitch, intensity_in, sun_intensity, spread_in,
+                       sun_spread_angle, mesh_mode_in, sun_mesh_mode);
+        }
+    }
 
     // defaults for existing levels, overwritten for maps with these fields in their alpine level props chunk
     // relevant for maps without alpine level props and maps with older alpine level props versions
@@ -413,6 +482,26 @@ struct AlpineLevelProperties
         breakable_room_uids.clear();
         breakable_materials.clear();
         hold_open_keyframe_uids.clear();
+        enable_sun = false;
+        sun_yaw = 0.0f;
+        sun_pitch = 90.0f;
+        sun_color_r = 255;
+        sun_color_g = 255;
+        sun_color_b = 255;
+        sun_color_a = 255;
+        sun_intensity = 1.0f;
+        sun_spread_angle = 0.0f;
+        sun_cast_baked_shadows = true;
+        sun_affects_meshes = true;
+        sun_mesh_mode = 0;
+        sun_drives_shadowmap_dir = true;
+        legacy_lighting = false;
+        highres_lightmaps = false;
+        sun_liquid_occludes = true;
+        invisible_faces_occlude = false;
+        alpha_faces_occlude = false;
+        no_shadow_cast_brush_uids.clear();
+        meshes_occlude = false;
         for (auto* m : mesh_objects) {
             DestroyDedMesh(m);
         }
@@ -443,6 +532,11 @@ struct AlpineLevelProperties
             DestroyDedWeatherRegion(w);
         }
         weather_region_objects.clear();
+
+        for (auto* c : projection_camera_objects) {
+            DestroyDedProjectionCamera(c);
+        }
+        projection_camera_objects.clear();
 
         retained_chunks.clear();
     }
@@ -485,6 +579,31 @@ struct AlpineLevelProperties
         for (std::uint32_t i = 0; i < ho_count; i++) {
             file.write<int32_t>(hold_open_keyframe_uids[i]);
         }
+        // v5
+        file.write<std::uint8_t>(enable_sun ? 1u : 0u);
+        file.write<float>(sun_yaw);
+        file.write<float>(sun_pitch);
+        file.write<std::uint8_t>(sun_color_r);
+        file.write<std::uint8_t>(sun_color_g);
+        file.write<std::uint8_t>(sun_color_b);
+        file.write<std::uint8_t>(sun_color_a);
+        file.write<float>(sun_intensity);
+        file.write<float>(sun_spread_angle);
+        file.write<std::uint8_t>(sun_cast_baked_shadows ? 1u : 0u);
+        file.write<std::uint8_t>(sun_affects_meshes ? 1u : 0u);
+        file.write<std::uint8_t>(sun_mesh_mode);
+        file.write<std::uint8_t>(sun_drives_shadowmap_dir ? 1u : 0u);
+        file.write<std::uint8_t>(legacy_lighting ? 1u : 0u);
+        file.write<std::uint8_t>(highres_lightmaps ? 1u : 0u);
+        file.write<std::uint8_t>(sun_liquid_occludes ? 1u : 0u);
+        file.write<std::uint8_t>(invisible_faces_occlude ? 1u : 0u);
+        file.write<std::uint8_t>(alpha_faces_occlude ? 1u : 0u);
+        std::uint32_t nsc_count = static_cast<std::uint32_t>(no_shadow_cast_brush_uids.size());
+        file.write<std::uint32_t>(nsc_count);
+        for (std::uint32_t i = 0; i < nsc_count; i++) {
+            file.write<int32_t>(no_shadow_cast_brush_uids[i]);
+        }
+        file.write<std::uint8_t>(meshes_occlude ? 1u : 0u);
     }
 
     void Deserialize(rf::File& file, std::size_t chunk_len)
@@ -492,6 +611,13 @@ struct AlpineLevelProperties
         std::size_t remaining = chunk_len;
 
         rf::File::ChunkGuard chunk_guard{file, remaining};
+
+        // Runs on every one of this function's many early returns, so a chunk that stops half way
+        // through the sun fields still leaves usable values behind.
+        struct SanitizeGuard {
+            AlpineLevelProperties* props;
+            ~SanitizeGuard() { props->SanitizeSunProperties(); }
+        } sanitize_guard{this};
 
         auto read_bytes = [&](void* dst, std::size_t n) -> bool {
             if (remaining < n)
@@ -502,6 +628,21 @@ struct AlpineLevelProperties
                 return false;
             }
             remaining -= n;
+            return true;
+        };
+
+        // A count larger than the cap still describes that many entries in the file, so the
+        // surplus has to be consumed or every field behind it is read from the wrong offset.
+        auto skip_entries = [&](std::uint32_t surplus, std::size_t entry_size) -> bool {
+            std::uint64_t bytes = static_cast<std::uint64_t>(surplus) * entry_size;
+            std::uint8_t scratch[256];
+            while (bytes > 0) {
+                const std::size_t step =
+                    static_cast<std::size_t>(std::min<std::uint64_t>(bytes, sizeof(scratch)));
+                if (!read_bytes(scratch, step))
+                    return false;
+                bytes -= step;
+            }
             return true;
         };
 
@@ -559,6 +700,7 @@ struct AlpineLevelProperties
             std::uint32_t count = 0;
             if (!read_bytes(&count, sizeof(count)))
                 return;
+            std::uint32_t count_surplus = count > 10000 ? count - 10000 : 0;
             if (count > 10000) count = 10000;
             geoable_brush_uids.resize(count);
             geoable_room_uids.resize(count);
@@ -572,12 +714,15 @@ struct AlpineLevelProperties
                     return;
                 geoable_room_uids[i] = room_uid;
             }
+            if (!skip_entries(count_surplus, 8))
+                return;
             xlog::debug("[AlpineLevelProps] geoable entries count={}", count);
 
             // Breakable material entries as (brush_uid, room_uid, material) triples
             std::uint32_t bcount = 0;
             if (!read_bytes(&bcount, sizeof(bcount)))
                 return;
+            std::uint32_t bcount_surplus = bcount > 10000 ? bcount - 10000 : 0;
             if (bcount > 10000) bcount = 10000;
             breakable_brush_uids.resize(bcount);
             breakable_room_uids.resize(bcount);
@@ -596,11 +741,14 @@ struct AlpineLevelProperties
                     return;
                 breakable_materials[i] = mat;
             }
+            if (!skip_entries(bcount_surplus, 9))
+                return;
 
             // Hold open first-keyframe UIDs
             std::uint32_t ho_count = 0;
             if (!read_bytes(&ho_count, sizeof(ho_count)))
                 return;
+            std::uint32_t ho_surplus = ho_count > 10000 ? ho_count - 10000 : 0;
             if (ho_count > 10000) ho_count = 10000;
             hold_open_keyframe_uids.resize(ho_count);
             for (std::uint32_t i = 0; i < ho_count; i++) {
@@ -609,6 +757,74 @@ struct AlpineLevelProperties
                     return;
                 hold_open_keyframe_uids[i] = uid;
             }
+            if (!skip_entries(ho_surplus, 4))
+                return;
+        }
+
+        if (version >= 5) {
+            std::uint8_t u8 = 0;
+            if (!read_bytes(&u8, sizeof(u8)))
+                return;
+            enable_sun = (u8 != 0);
+            if (!read_bytes(&sun_yaw, sizeof(sun_yaw)))
+                return;
+            if (!read_bytes(&sun_pitch, sizeof(sun_pitch)))
+                return;
+            if (!read_bytes(&sun_color_r, sizeof(sun_color_r)))
+                return;
+            if (!read_bytes(&sun_color_g, sizeof(sun_color_g)))
+                return;
+            if (!read_bytes(&sun_color_b, sizeof(sun_color_b)))
+                return;
+            if (!read_bytes(&sun_color_a, sizeof(sun_color_a)))
+                return;
+            if (!read_bytes(&sun_intensity, sizeof(sun_intensity)))
+                return;
+            if (!read_bytes(&sun_spread_angle, sizeof(sun_spread_angle)))
+                return;
+            if (!read_bytes(&u8, sizeof(u8)))
+                return;
+            sun_cast_baked_shadows = (u8 != 0);
+            if (!read_bytes(&u8, sizeof(u8)))
+                return;
+            sun_affects_meshes = (u8 != 0);
+            if (!read_bytes(&sun_mesh_mode, sizeof(sun_mesh_mode)))
+                return;
+            if (!read_bytes(&u8, sizeof(u8)))
+                return;
+            sun_drives_shadowmap_dir = (u8 != 0);
+            if (!read_bytes(&u8, sizeof(u8)))
+                return;
+            legacy_lighting = (u8 != 0);
+            if (!read_bytes(&u8, sizeof(u8)))
+                return;
+            highres_lightmaps = (u8 != 0);
+            if (!read_bytes(&u8, sizeof(u8)))
+                return;
+            sun_liquid_occludes = (u8 != 0);
+            if (!read_bytes(&u8, sizeof(u8)))
+                return;
+            invisible_faces_occlude = (u8 != 0);
+            if (!read_bytes(&u8, sizeof(u8)))
+                return;
+            alpha_faces_occlude = (u8 != 0);
+            std::uint32_t nsc_count = 0;
+            if (!read_bytes(&nsc_count, sizeof(nsc_count)))
+                return;
+            std::uint32_t nsc_surplus = nsc_count > 10000 ? nsc_count - 10000 : 0;
+            if (nsc_count > 10000) nsc_count = 10000;
+            no_shadow_cast_brush_uids.resize(nsc_count);
+            for (std::uint32_t i = 0; i < nsc_count; i++) {
+                if (!read_bytes(&no_shadow_cast_brush_uids[i], sizeof(int32_t)))
+                    return;
+            }
+            if (!skip_entries(nsc_surplus, 4))
+                return;
+            if (!read_bytes(&u8, sizeof(u8)))
+                return;
+            meshes_occlude = (u8 != 0);
+            xlog::debug("[AlpineLevelProps] enable_sun {} yaw {} pitch {} intensity {} no_shadow_cast {}",
+                enable_sun, sun_yaw, sun_pitch, sun_intensity, nsc_count);
         }
     }
 };
@@ -862,6 +1078,41 @@ struct CDedLevel
     }
 };
 static_assert(sizeof(CDedLevel) == 0x608);
+
+// "No shadow cast" is resolved back to a brush through the face ids CSG carried onto the compiled
+// geometry, so it can only mean anything for a brush whose geometry survives CSG as its own thing.
+// The moving group membership is the same for every brush, so a caller walking the brush list
+// gathers it once instead of rescanning every group for each brush.
+inline std::unordered_set<int32_t> collect_moving_group_brush_uids()
+{
+    std::unordered_set<int32_t> uids;
+    auto* level = CDedLevel::Get();
+    if (!level) {
+        return uids;
+    }
+    for (int i = 0; i < level->moving_groups.size; i++) {
+        const GroupEntry* group = level->moving_groups[i];
+        if (!group || !group->is_moving_group()) {
+            continue;
+        }
+        for (int j = 0; j < group->brushes.size; j++) {
+            const BrushNode* member = group->brushes[j];
+            if (member) {
+                uids.insert(member->uid);
+            }
+        }
+    }
+    return uids;
+}
+
+inline bool no_shadow_cast_eligible(const BrushNode& brush,
+                                    const std::unordered_set<int32_t>& mover_brush_uids)
+{
+    if (brush.brush_type != BRUSH_TYPE_SOLID) {
+        return false;
+    }
+    return brush.is_detail || mover_brush_uids.count(brush.uid) != 0;
+}
 
 // GRoom UID counter (RED.exe global, starts at 0x7FFFFFFF, decrements on each GRoom construction)
 // Final compiled rooms in all_rooms are clones that skip the constructor and get uid=-1;

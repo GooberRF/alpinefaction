@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include "math/plane.h"
 #include "math/quaternion.h"
 #include "gr/gr.h"
@@ -46,6 +47,7 @@ namespace rf
         VifLodMesh *vu;
     };
     static_assert(sizeof(V3dMesh) == 0x90);
+    static_assert(offsetof(V3dMesh, vu) == 0x8C);
 
     struct WeightIndexArray
     {
@@ -107,6 +109,12 @@ namespace rf
 #ifdef ALPINE_FACTION
         void *render_cache;
 #endif
+    };
+    static_assert(offsetof(VifMesh, flags) == 0x40);
+
+    enum V3dLodFlags : uint8_t
+    {
+        V3D_LOD_COLLIDE_MOST_DETAILED = 0x10,
     };
 
     constexpr int VIF_FACE_DOUBLE_SIDED = 0x20;

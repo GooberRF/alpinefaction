@@ -2,12 +2,15 @@
 
 #include <source_location>
 #include <concepts>
+#include <cstdint>
 #include <d3d11.h>
 #include <common/ComPtr.h>
 #include <common/DynamicLinkLibrary.h>
 #include <xlog/xlog.h>
 #include "../../rf/gr/gr.h"
+#include "../../rf/os/frametime.h"
 #include "gr_d3d11_transform.h"
+#include "gr_d3d11_scenefx.h"
 
 namespace rf
 {
@@ -18,6 +21,7 @@ namespace rf
     struct MeshMaterial;
     struct MeshRenderParams;
     struct CharacterInstance;
+    struct Player;
 }
 
 namespace gr::d3d11
@@ -61,6 +65,8 @@ namespace gr::d3d11
         void unlock(rf::gr::LockInfo *lock);
         void get_texel(int bm_handle, float u, float v, rf::gr::Color *clr);
         bool set_render_target(int bm_handle);
+        void invalidate_texture_cache();
+        int render_target_generation();
         rf::bm::Format read_back_buffer(int x, int y, int w, int h, rf::ubyte *data);
         void tmapper(int nv, const rf::gr::Vertex **vertices, int vertex_attributes, rf::gr::Mode mode);
         void line_3d(const rf::gr::Vertex& v0, const rf::gr::Vertex& v1, rf::gr::Mode mode);
@@ -92,6 +98,44 @@ namespace gr::d3d11
         uint32_t get_sample_count() const;
         void flush_frame_buffers();
         bool supports_exclusive_fullscreen() const;
+        void run_scene_post_pass();
+        // Same predicate run_scene_post_pass uses, so the reticle deferral cannot disagree with it
+        bool liquid_post_pass_pending() const;
+
+        void defer_reticle(rf::Player* pp)
+        {
+            deferred_reticle_player_ = pp;
+        }
+
+        rf::Player* take_deferred_reticle()
+        {
+            rf::Player* pp = deferred_reticle_player_;
+            deferred_reticle_player_ = nullptr;
+            return pp;
+        }
+
+        void run_damage_vignette_pass();
+        void trigger_damage_vignette(unsigned dir_mask);
+        bool liquid_background_color(rf::Vector3& out) const;
+        void set_sky_room(bool sky_room);
+        void set_draw_room_uid(int room_uid);
+
+        // Room whose object dispatch is running, -1 outside it (fpgun, sky objects)
+        void set_object_room_uid(int room_uid)
+        {
+            object_room_uid_ = room_uid;
+        }
+
+        // The tint hook at 0x004328FD runs after the post pass in the same frame
+        bool liquid_tint_drawn_this_frame() const
+        {
+            return liquid_tint_drawn_frame_ == rf::frame_count;
+        }
+
+        int render_target_bm_handle() const
+        {
+            return render_target_bm_handle_;
+        }
 
     private:
         void init_device();
@@ -100,6 +144,7 @@ namespace gr::d3d11
         void init_scene_texture();
         void init_depth_stencil_buffer(const uint32_t sample_count);
         void flush_outlines_before_2d();
+        bool ensure_postfx_source();
 
         HWND hwnd_;
         DynamicLinkLibrary d3d11_lib_;
@@ -110,6 +155,8 @@ namespace gr::d3d11
         ComPtr<ID3D11RenderTargetView> back_buffer_rtv_;
         ComPtr<ID3D11Texture2D> scene_texture_;
         ComPtr<ID3D11ShaderResourceView> scene_texture_srv_;
+        ComPtr<ID3D11Texture2D> postfx_source_;
+        ComPtr<ID3D11ShaderResourceView> postfx_source_srv_;
         ComPtr<ID3D11Texture2D> msaa_render_target_;
         ComPtr<ID3D11Texture2D> default_render_target_;
         ComPtr<ID3D11RenderTargetView> default_render_target_view_;
@@ -124,6 +171,15 @@ namespace gr::d3d11
         std::unique_ptr<EntityShadowRenderer> entity_shadow_renderer_;
         std::unique_ptr<OutlineRenderer> outline_renderer_;
         std::unique_ptr<GammaPass> gamma_pass_;
+        std::unique_ptr<ScenePostPass> scene_post_pass_;
+        DamageVignetteState damage_vignette_;
+        UINT rt_width_ = 0;
+        UINT rt_height_ = 0;
+        int liquid_tint_drawn_frame_ = -1;
+        int damage_vignette_decay_frame_ = -1;
+        int object_room_uid_ = -1;
+        int liquid_update_frame_ = -1;
+        rf::Player* deferred_reticle_player_ = nullptr;
         int render_target_bm_handle_ = -1;
         bool skip_gamma_pass_ = false;
         bool low_frame_latency_ = false;
@@ -164,6 +220,16 @@ namespace gr::d3d11
                 ); \
             } \
         ); \
+    }
+
+    // Viewport origin in render-target pixels. Single source for RenderContext::set_clip() and
+    // every screen-space reconstruction, which must agree on it.
+    static inline std::array<float, 2> viewport_origin()
+    {
+        return {
+            static_cast<float>(rf::gr::screen.clip_left + rf::gr::screen.offset_x),
+            static_cast<float>(rf::gr::screen.clip_top + rf::gr::screen.offset_y),
+        };
     }
 
     static inline int pack_color(const rf::Color& color)

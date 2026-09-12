@@ -10,6 +10,9 @@
 #include <cstdlib>
 #include <unordered_map>
 #include <unordered_set>
+#include <windows.h>
+#include <commdlg.h>
+#include <commctrl.h>
 #include "level.h"
 #include "vtypes.h"
 #include "mfc_types.h"
@@ -19,10 +22,12 @@
 #include "corona.h"
 #include "bag.h"
 #include "weather_region.h"
+#include "projection_camera.h"
 
 // Forward declarations
 int get_level_rfl_version();
 void set_initial_level_rfl_version();
+void lightmap_reset_level_state();
 
 // Global AlpineLevelProperties — kept separate from CDedLevel allocation to avoid
 // stock code overwriting it (the stock rfg group loader writes to CDedLevel fields
@@ -91,6 +96,7 @@ void __fastcall CDedLevel_DeleteContents_hooked(CDedLevel* level, void* edx_unus
 
     // Now stock code is done. Free the Alpine objects properly.
     props.LoadDefaults();
+    lightmap_reset_level_state();
 }
 
 // load default AlpineLevelProperties values
@@ -98,6 +104,7 @@ CodeInjection CDedLevel_LoadLevel_patch1{
     0x0042F136,
     []() {
         CDedLevel::Get()->GetAlpineLevelProperties().LoadDefaults();
+        lightmap_reset_level_state();
     },
 };
 
@@ -182,7 +189,7 @@ CodeInjection CDedLevel_LoadLevel_patch2{
             // Mesh and note chunks were introduced in rfl v304
             if (file.check_version(304)) {
                 if (chunk_id == alpine_mesh_chunk_id) {
-                    mesh_deserialize_chunk(level, file, chunk_size);
+                    mesh_deserialize_chunk(level, file, chunk_size, file.get_version());
                     regs.eip = 0x0043090C;
                 }
                 if (chunk_id == alpine_note_chunk_id) {
@@ -199,6 +206,10 @@ CodeInjection CDedLevel_LoadLevel_patch2{
                 }
                 if (chunk_id == alpine_weather_region_chunk_id) {
                     weather_region_deserialize_chunk(level, file, chunk_size);
+                    regs.eip = 0x0043090C;
+                }
+                if (chunk_id == alpine_projection_camera_chunk_id) {
+                    projection_camera_deserialize_chunk(level, file, chunk_size);
                     regs.eip = 0x0043090C;
                 }
             }
@@ -432,6 +443,28 @@ static void compute_breakable_room_uids(CDedLevel& level, AlpineLevelProperties&
             xlog::debug("[Breakable] brush uid={} has no matching detail room", brush_uid);
         }
     }
+}
+
+// Drop no-shadow-cast entries whose brush no longer exists.
+static void prune_no_shadow_cast_brush_uids(CDedLevel& level, AlpineLevelProperties& props)
+{
+    if (props.no_shadow_cast_brush_uids.empty()) return;
+
+    std::unordered_set<int32_t> keep_uids;
+    const std::unordered_set<int32_t> mover_brush_uids = collect_moving_group_brush_uids();
+    BrushNode* node = level.brush_list;
+    if (node) {
+        do {
+            if (no_shadow_cast_eligible(*node, mover_brush_uids)) {
+                keep_uids.insert(node->uid);
+            }
+            node = node->next;
+        } while (node && node != level.brush_list);
+    }
+    auto& uids = props.no_shadow_cast_brush_uids;
+    uids.erase(std::remove_if(uids.begin(), uids.end(),
+        [&keep_uids](int32_t uid) { return keep_uids.find(uid) == keep_uids.end(); }),
+        uids.end());
 }
 
 // ─── Geoable room isolation ───────────────────────────────────────────────────
@@ -780,7 +813,8 @@ CodeInjection skip_alpine_objects_bounds_check{
             obj->type == DedObjectType::DED_NOTE ||
             obj->type == DedObjectType::DED_CORONA ||
             obj->type == DedObjectType::DED_GAS_REGION ||
-            obj->type == DedObjectType::DED_WEATHER_REGION) {
+            obj->type == DedObjectType::DED_WEATHER_REGION ||
+            obj->type == DedObjectType::DED_PROJECTION_CAMERA) {
             regs.eip = 0x0041dcfa;
         }
     },
@@ -799,6 +833,7 @@ CodeInjection CDedLevel_SaveLevel_patch{
         auto& alpine_level_props = level.GetAlpineLevelProperties();
         compute_geoable_room_uids(level, alpine_level_props);
         compute_breakable_room_uids(level, alpine_level_props);
+        prune_no_shadow_cast_brush_uids(level, alpine_level_props);
 
         // Scrub hold_open_keyframe_uids: remove entries that don't match any
         // moving group's first keyframe (e.g. deleted movers, UID changes from undo)
@@ -839,10 +874,147 @@ CodeInjection CDedLevel_SaveLevel_patch{
         // Write weather region objects chunk
         weather_region_serialize_chunk(level, file);
 
+        // Write projection camera objects chunk
+        projection_camera_serialize_chunk(level, file);
+
         // Re-write any Glacier chunks
         retained_chunks_serialize(level, file);
     },
 };
+
+// Fill the sun yaw/pitch edit fields from the 3D viewport camera. The camera is aimed
+// ALONG the sun's rays (at the ground), so to-sun is the NEGATED camera forward vector.
+static void set_sun_angles_from_camera(HWND hdlg)
+{
+    auto* viewport = get_active_viewport();
+    if (!viewport || !viewport->view_data) {
+        return;
+    }
+
+    const Vector3& fwd = viewport->view_data->camera_orient.fvec;
+    float len = std::sqrt(fwd.x * fwd.x + fwd.y * fwd.y + fwd.z * fwd.z);
+    if (!std::isfinite(len) || len <= 0.0f) {
+        return;
+    }
+    float x = -fwd.x / len;
+    float y = -fwd.y / len;
+    float z = -fwd.z / len;
+
+    constexpr float rad_to_deg = 180.0f / 3.14159265358979f;
+    float yaw = std::atan2(x, z) * rad_to_deg;
+    yaw = std::fmod(yaw, 360.0f);
+    if (yaw < 0.0f) {
+        yaw += 360.0f;
+    }
+    // Aiming above the horizon keeps the heading and parks the sun on the horizon.
+    float pitch = std::clamp(std::asin(std::clamp(y, -1.0f, 1.0f)) * rad_to_deg, 0.0f, 90.0f);
+
+    char buffer[32];
+    std::snprintf(buffer, sizeof(buffer), "%.3f", yaw);
+    SetDlgItemTextA(hdlg, IDC_SUN_YAW, buffer);
+    std::snprintf(buffer, sizeof(buffer), "%.3f", pitch);
+    SetDlgItemTextA(hdlg, IDC_SUN_PITCH, buffer);
+}
+
+// Default RGB values for sunlight.
+static uint8_t g_sun_color_r = 255;
+static uint8_t g_sun_color_g = 255;
+static uint8_t g_sun_color_b = 255;
+
+static void update_sun_color_controls(HWND hdlg)
+{
+    // a null HWND would send InvalidateRect at every window on the desktop
+    if (HWND swatch = GetDlgItem(hdlg, IDC_SUN_COLOR_SWATCH)) {
+        SendMessageA(swatch, LVM_SETBKCOLOR, 0,
+            static_cast<LPARAM>(RGB(g_sun_color_r, g_sun_color_g, g_sun_color_b)));
+        InvalidateRect(swatch, nullptr, TRUE);
+    }
+    char buffer[32];
+    std::snprintf(buffer, sizeof(buffer), "<%d, %d, %d>", g_sun_color_r, g_sun_color_g, g_sun_color_b);
+    SetDlgItemTextA(hdlg, IDC_SUN_COLOR_VALUE, buffer);
+}
+
+static bool parse_color_text(const char* text, uint8_t& r, uint8_t& g, uint8_t& b)
+{
+    long values[3] = {};
+    const char* p = text;
+    while (*p == ' ' || *p == '\t') {
+        ++p;
+    }
+    if (*p == '<') {
+        ++p;
+    }
+    for (int i = 0; i < 3; ++i) {
+        while (*p == ' ' || *p == '\t' || (i > 0 && *p == ',')) {
+            ++p;
+        }
+        char* end = nullptr;
+        long value = std::strtol(p, &end, 10);
+        if (end == p || value < 0 || value > 255) {
+            return false;
+        }
+        values[i] = value;
+        p = end;
+    }
+    r = static_cast<uint8_t>(values[0]);
+    g = static_cast<uint8_t>(values[1]);
+    b = static_cast<uint8_t>(values[2]);
+    return true;
+}
+
+// Leaves r/g/b untouched unless all three components parse.
+static bool read_sun_color_text(HWND hdlg, uint8_t& r, uint8_t& g, uint8_t& b)
+{
+    char buffer[64] = {};
+    GetDlgItemTextA(hdlg, IDC_SUN_COLOR_VALUE, buffer, static_cast<int>(sizeof(buffer)));
+    return parse_color_text(buffer, r, g, b);
+}
+
+static void pick_sun_color(HWND hdlg)
+{
+    // Every stock picker overwrites the array MFC's CColorDialog ctor installs (0x0052d497) with
+    // CMainFrame::custom_colors, so going through that field is what shares swatches with them.
+    static COLORREF fallback_custom_colors[16] = {};
+
+    CHOOSECOLORA cc = {};
+    cc.lStructSize = sizeof(cc);
+    cc.hwndOwner = hdlg;
+    cc.rgbResult = RGB(g_sun_color_r, g_sun_color_g, g_sun_color_b);
+    cc.lpCustColors = g_main_frame ? g_main_frame->custom_colors : fallback_custom_colors;
+    cc.Flags = CC_RGBINIT | CC_FULLOPEN;
+    if (ChooseColorA(&cc)) {
+        g_sun_color_r = GetRValue(cc.rgbResult);
+        g_sun_color_g = GetGValue(cc.rgbResult);
+        g_sun_color_b = GetBValue(cc.rgbResult);
+        update_sun_color_controls(hdlg);
+    }
+}
+
+static WNDPROC g_level_dlg_orig_wndproc = nullptr;
+
+static LRESULT CALLBACK LevelDialogSubclassProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
+{
+    WNDPROC orig = g_level_dlg_orig_wndproc;
+    if (msg == WM_COMMAND && LOWORD(wparam) == IDC_SUN_SET_FROM_CAMERA && HIWORD(wparam) == BN_CLICKED) {
+        set_sun_angles_from_camera(hwnd);
+        return 0;
+    }
+    if (msg == WM_COMMAND && LOWORD(wparam) == IDC_SUN_COLOR_CHANGE && HIWORD(wparam) == BN_CLICKED) {
+        pick_sun_color(hwnd);
+        return 0;
+    }
+    if (msg == WM_COMMAND && LOWORD(wparam) == IDC_SUN_COLOR_VALUE && HIWORD(wparam) == EN_KILLFOCUS) {
+        read_sun_color_text(hwnd, g_sun_color_r, g_sun_color_g, g_sun_color_b);
+        update_sun_color_controls(hwnd);
+        return 0;
+    }
+    if (msg == WM_NCDESTROY) {
+        SetWindowLongPtrA(hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(orig));
+        g_level_dlg_orig_wndproc = nullptr;
+        return CallWindowProcA(orig, hwnd, msg, wparam, lparam);
+    }
+    return CallWindowProcA(orig, hwnd, msg, wparam, lparam);
+}
 
 // load AlpineLevelProperties settings when opening level properties dialog
 CodeInjection CLevelDialog_OnInitDialog_patch{
@@ -862,8 +1034,50 @@ CodeInjection CLevelDialog_OnInitDialog_patch{
         std::snprintf(buffer, sizeof(buffer), "%.3f", alpine_level_props.static_mesh_ambient_light_modifier);
         SetDlgItemTextA(hdlg, IDC_MESH_AMBIENT_LIGHT_MODIFIER, buffer);
         CheckDlgButton(hdlg, IDC_RF2_STYLE_GEOMOD, alpine_level_props.rf2_style_geomod ? BST_CHECKED : BST_UNCHECKED);
+        CheckDlgButton(hdlg, IDC_LEGACY_LIGHTING, alpine_level_props.legacy_lighting ? BST_CHECKED : BST_UNCHECKED);
+        CheckDlgButton(hdlg, IDC_HIGHRES_LIGHTMAPS, alpine_level_props.highres_lightmaps ? BST_CHECKED : BST_UNCHECKED);
+        CheckDlgButton(hdlg, IDC_INVISIBLE_FACES_OCCLUDE, alpine_level_props.invisible_faces_occlude ? BST_CHECKED : BST_UNCHECKED);
+        CheckDlgButton(hdlg, IDC_ALPHA_FACES_OCCLUDE, alpine_level_props.alpha_faces_occlude ? BST_CHECKED : BST_UNCHECKED);
+        CheckDlgButton(hdlg, IDC_MESHES_OCCLUDE, alpine_level_props.meshes_occlude ? BST_CHECKED : BST_UNCHECKED);
+
+        CheckDlgButton(hdlg, IDC_SUN_ENABLE, alpine_level_props.enable_sun ? BST_CHECKED : BST_UNCHECKED);
+        std::snprintf(buffer, sizeof(buffer), "%.3f", alpine_level_props.sun_yaw);
+        SetDlgItemTextA(hdlg, IDC_SUN_YAW, buffer);
+        std::snprintf(buffer, sizeof(buffer), "%.3f", alpine_level_props.sun_pitch);
+        SetDlgItemTextA(hdlg, IDC_SUN_PITCH, buffer);
+        std::snprintf(buffer, sizeof(buffer), "%.3f", alpine_level_props.sun_intensity);
+        SetDlgItemTextA(hdlg, IDC_SUN_INTENSITY, buffer);
+        std::snprintf(buffer, sizeof(buffer), "%.3f", alpine_level_props.sun_spread_angle);
+        SetDlgItemTextA(hdlg, IDC_SUN_SPREAD_ANGLE, buffer);
+        g_sun_color_r = alpine_level_props.sun_color_r;
+        g_sun_color_g = alpine_level_props.sun_color_g;
+        g_sun_color_b = alpine_level_props.sun_color_b;
+        update_sun_color_controls(hdlg);
+        CheckDlgButton(hdlg, IDC_SUN_CAST_BAKED_SHADOWS, alpine_level_props.sun_cast_baked_shadows ? BST_CHECKED : BST_UNCHECKED);
+        CheckDlgButton(hdlg, IDC_SUN_AFFECTS_MESHES, alpine_level_props.sun_affects_meshes ? BST_CHECKED : BST_UNCHECKED);
+        CheckDlgButton(hdlg, IDC_SUN_MESH_MODE_SCALE, alpine_level_props.sun_mesh_mode == 0 ? BST_CHECKED : BST_UNCHECKED);
+        CheckDlgButton(hdlg, IDC_SUN_DRIVES_SHADOWMAP_DIR, alpine_level_props.sun_drives_shadowmap_dir ? BST_CHECKED : BST_UNCHECKED);
+        CheckDlgButton(hdlg, IDC_SUN_LIQUID_OCCLUDES, alpine_level_props.sun_liquid_occludes ? BST_CHECKED : BST_UNCHECKED);
+
+        if (reinterpret_cast<WNDPROC>(GetWindowLongPtrA(hdlg, GWLP_WNDPROC)) != LevelDialogSubclassProc) {
+            g_level_dlg_orig_wndproc = reinterpret_cast<WNDPROC>(
+                SetWindowLongPtrA(hdlg, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(LevelDialogSubclassProc)));
+        }
     },
 };
+
+static bool read_dlg_float(HWND hdlg, int id, float& out, float min_value, float max_value)
+{
+    char buffer[64] = {};
+    GetDlgItemTextA(hdlg, id, buffer, static_cast<int>(sizeof(buffer)));
+    char* end = nullptr;
+    float value = std::strtof(buffer, &end);
+    if (end == buffer || !std::isfinite(value)) {
+        return false;
+    }
+    out = std::clamp(value, min_value, max_value);
+    return true;
+}
 
 // save AlpineLevelProperties settings when closing level properties dialog
 CodeInjection CLevelDialog_OnOK_patch{
@@ -886,6 +1100,33 @@ CodeInjection CLevelDialog_OnOK_patch{
             alpine_level_props.static_mesh_ambient_light_modifier = modifier;
         }
         alpine_level_props.rf2_style_geomod = IsDlgButtonChecked(hdlg, IDC_RF2_STYLE_GEOMOD) == BST_CHECKED;
+        alpine_level_props.legacy_lighting = IsDlgButtonChecked(hdlg, IDC_LEGACY_LIGHTING) == BST_CHECKED;
+        alpine_level_props.highres_lightmaps = IsDlgButtonChecked(hdlg, IDC_HIGHRES_LIGHTMAPS) == BST_CHECKED;
+        alpine_level_props.invisible_faces_occlude = IsDlgButtonChecked(hdlg, IDC_INVISIBLE_FACES_OCCLUDE) == BST_CHECKED;
+        alpine_level_props.alpha_faces_occlude = IsDlgButtonChecked(hdlg, IDC_ALPHA_FACES_OCCLUDE) == BST_CHECKED;
+        alpine_level_props.meshes_occlude = IsDlgButtonChecked(hdlg, IDC_MESHES_OCCLUDE) == BST_CHECKED;
+
+        alpine_level_props.enable_sun = IsDlgButtonChecked(hdlg, IDC_SUN_ENABLE) == BST_CHECKED;
+        float yaw = alpine_level_props.sun_yaw;
+        if (read_dlg_float(hdlg, IDC_SUN_YAW, yaw, -FLT_MAX, FLT_MAX)) {
+            yaw = std::fmod(yaw, 360.0f);
+            if (yaw < 0.0f) {
+                yaw += 360.0f;
+            }
+            alpine_level_props.sun_yaw = yaw;
+        }
+        read_dlg_float(hdlg, IDC_SUN_PITCH, alpine_level_props.sun_pitch, 0.0f, 90.0f);
+        read_dlg_float(hdlg, IDC_SUN_INTENSITY, alpine_level_props.sun_intensity, 0.0f, 10.0f);
+        read_dlg_float(hdlg, IDC_SUN_SPREAD_ANGLE, alpine_level_props.sun_spread_angle, 0.0f, 45.0f);
+        read_sun_color_text(hdlg, g_sun_color_r, g_sun_color_g, g_sun_color_b);
+        alpine_level_props.sun_color_r = g_sun_color_r;
+        alpine_level_props.sun_color_g = g_sun_color_g;
+        alpine_level_props.sun_color_b = g_sun_color_b;
+        alpine_level_props.sun_cast_baked_shadows = IsDlgButtonChecked(hdlg, IDC_SUN_CAST_BAKED_SHADOWS) == BST_CHECKED;
+        alpine_level_props.sun_affects_meshes = IsDlgButtonChecked(hdlg, IDC_SUN_AFFECTS_MESHES) == BST_CHECKED;
+        alpine_level_props.sun_mesh_mode = IsDlgButtonChecked(hdlg, IDC_SUN_MESH_MODE_SCALE) == BST_CHECKED ? 0 : 1;
+        alpine_level_props.sun_drives_shadowmap_dir = IsDlgButtonChecked(hdlg, IDC_SUN_DRIVES_SHADOWMAP_DIR) == BST_CHECKED;
+        alpine_level_props.sun_liquid_occludes = IsDlgButtonChecked(hdlg, IDC_SUN_LIQUID_OCCLUDES) == BST_CHECKED;
     },
 };
 

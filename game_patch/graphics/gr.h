@@ -10,6 +10,8 @@ void evaluate_lightmaps_only();
 int gr_font_get_default();
 void gr_font_set_default(int font_id);
 bool gr_set_render_target(int bm_handle);
+void gr_invalidate_texture_cache();
+int gr_render_target_generation();
 void gr_flush_outlines_before_fpgun();
 bool gr_is_texture_format_supported(rf::bm::Format format);
 void gr_bitmap_scaled_float(int bitmap_handle, float x, float y, float w, float h, float sx, float sy, float sw, float sh, bool flip_x, bool flip_y, rf::gr::Mode mode);
@@ -18,6 +20,19 @@ bool gr_3d_bitmap_oriented_wh(const rf::Vector3* pnt, const rf::Matrix3* M, floa
 int gr_fit_string(std::string& text, int max_width, int font_id = -1, std::string_view suffix = "-");
 void explosion_flash_lights_level_init();
 void explosion_flash_lights_destroy_all();
+
+// Per-level directional sunlight (AlpineLevelProperties v5)
+struct SunLightState
+{
+    bool enabled = false;
+    bool affects_meshes = true;
+    bool drives_shadowmap_dir = true;
+    int mesh_mode = 0;
+    rf::Vector3 travel_dir{0.0f, -1.0f, 0.0f}; // direction the light travels
+    float color[3] = {0.0f, 0.0f, 0.0f};       // premultiplied by sun intensity
+};
+SunLightState gr_get_sun_state();
+float gr_sun_get_mesh_scale(const float* ambient);
 
 bool gr_is_antialiasing_err();
 bool gr_supports_sample_count(uint32_t sample_count);

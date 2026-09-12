@@ -155,7 +155,12 @@ struct AlpineGameSettings
     bool show_mini_scoreboard_dm = true;
     bool multi_ricochet = false;
     bool crit_reticle_flash = true;
-    bool damage_screen_flash = true;
+    // 0=off, 1=stock red screen flash, 2=screen-edge vignette (d3d11 only)
+    int damage_flash = 1;
+    void set_damage_flash(int value)
+    {
+        damage_flash = std::clamp(value, 0, 2);
+    }
     bool spectate_damage_screen_flash = true;
     bool explosion_weapon_flash_lights = true;
     bool explosion_env_flash_lights = true;
@@ -177,6 +182,12 @@ struct AlpineGameSettings
     }
     bool show_glares = true;
     bool weather = true;
+    // 0=stock, 1=caustics, 2=+fog/waterline/tint/vignette, 3=+screen distortion (d3d11 only)
+    int underwater_fx = 3;
+    void set_underwater_fx(int value)
+    {
+        underwater_fx = std::clamp(value, 0, 3);
+    }
     bool show_enemy_bullets = true;
     bool fps_counter = true;
     static constexpr int min_fps_counter_average_ms = 0;

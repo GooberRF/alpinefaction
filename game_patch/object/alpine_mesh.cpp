@@ -8,6 +8,7 @@
 #include "../rf/object.h"
 #include "../rf/clutter.h"
 #include "../rf/vmesh.h"
+#include "../rf/v3d.h"
 #include "../rf/level.h"
 #include "../rf/file/file.h"
 #include "../rf/geometry.h"
@@ -72,6 +73,178 @@ static uint64_t tex_key_handle(int handle) {
     return static_cast<uint64_t>(static_cast<uint32_t>(handle)) << 32;
 }
 
+// brush collision meshes
+static std::unordered_map<int, rf::VMesh*> g_mesh_collision_meshes;
+
+// Register a mode-3 mesh. Static (.v3m) only; v3c/vfx warn and fall back to mode "All".
+static void alpine_mesh_register_collision_mesh(rf::Object* objp)
+{
+    if (!objp->vmesh || objp->vmesh->type != rf::MESH_TYPE_STATIC || !objp->vmesh->instance) {
+        xlog::warn("[AlpineMesh] Collision mode Brush requires a static (.v3m) mesh; uid {} falls back to All",
+                   objp->uid);
+        return;
+    }
+    g_mesh_collision_meshes[objp->handle] = objp->vmesh;
+    xlog::debug("[AlpineMesh] Registered mode-3 collision mesh for uid {} handle {}", objp->uid, objp->handle);
+}
+
+bool alpine_mesh_is_collision_mesh(rf::Object* objp)
+{
+    if (!objp) {
+        return false;
+    }
+    auto it = g_mesh_collision_meshes.find(objp->handle);
+    return it != g_mesh_collision_meshes.end() && it->second == objp->vmesh;
+}
+
+void alpine_mesh_free_collision_solid(int obj_handle)
+{
+    g_mesh_collision_meshes.erase(obj_handle);
+}
+
+bool alpine_mesh_has_collision_solids()
+{
+    return !g_mesh_collision_meshes.empty();
+}
+
+// force LOD0 for brush-type collision meshes
+namespace {
+constexpr int k_max_lod0_submeshes = 64;
+struct MeshLod0Guard {
+    int count = 0;
+    rf::VifMesh* lods[k_max_lod0_submeshes];
+    int saved[k_max_lod0_submeshes];
+};
+
+void mesh_force_lod0_begin(rf::VMesh* vmesh, MeshLod0Guard& guard)
+{
+    guard.count = 0;
+    if (!vmesh) return;
+    auto* v3d = static_cast<rf::V3d*>(vmesh->instance);
+    if (!v3d || v3d->num_meshes < 1 || !v3d->meshes) return;
+    // Submeshes beyond the cap collide at their least-detailed LOD (rare).
+    for (int i = 0; i < v3d->num_meshes && guard.count < k_max_lod0_submeshes; ++i) {
+        rf::VifLodMesh* lod_mesh = v3d->meshes[i].vu;
+        if (!lod_mesh || lod_mesh->num_levels < 1) continue;
+        // VifLodMesh::meshes is a fixed [3]; never index past it (malformed v3d may claim more).
+        int levels = lod_mesh->num_levels;
+        if (levels > 3) levels = 3;
+        // lod_table[count] in the raw pointer array == meshes[count - 1]: the least-detailed lod.
+        rf::VifMesh* least_lod = lod_mesh->meshes[levels - 1];
+        if (!least_lod) continue;
+        guard.lods[guard.count] = least_lod;
+        guard.saved[guard.count] = least_lod->flags;
+        least_lod->flags |= rf::V3D_LOD_COLLIDE_MOST_DETAILED;
+        ++guard.count;
+    }
+}
+
+void mesh_force_lod0_end(const MeshLod0Guard& guard)
+{
+    for (int i = 0; i < guard.count; ++i) {
+        guard.lods[i]->flags = guard.saved[i];
+    }
+}
+} // namespace
+
+// Sweep one world-space collision sphere against every mode-3 mesh.
+bool alpine_mesh_collide_sphere_world(const rf::Vector3& start, const rf::Vector3& end, float radius,
+                                      const rf::PhysicsData* self_pd,
+                                      float max_fraction, AlpineMeshContact& contact)
+{
+    if (g_mesh_collision_meshes.empty()) {
+        return false;
+    }
+
+    const rf::Vector3 sweep_min{std::min(start.x, end.x) - radius, std::min(start.y, end.y) - radius,
+                                std::min(start.z, end.z) - radius};
+    const rf::Vector3 sweep_max{std::max(start.x, end.x) + radius, std::max(start.y, end.y) + radius,
+                                std::max(start.z, end.z) + radius};
+    const rf::Vector3 seg = end - start;
+
+    bool hit = false;
+    float best = max_fraction;
+
+    for (auto& [handle, stored_vmesh] : g_mesh_collision_meshes) {
+        auto* mesh_objp = static_cast<rf::Object*>(rf::obj_from_handle(handle));
+        if (!mesh_objp || !mesh_objp->vmesh || mesh_objp->vmesh != stored_vmesh) {
+            continue;
+        }
+        if (self_pd == &mesh_objp->p_data) {
+            continue;
+        }
+        if (!rf::bbox_intersect(sweep_min, sweep_max, mesh_objp->p_data.bbox_min, mesh_objp->p_data.bbox_max)) {
+            continue;
+        }
+        // Standalone/static meshes have parent_handle == 0; mover-group members carry the
+        // mover's (nonzero) handle.
+        const bool moving = mesh_objp->parent_handle != 0;
+
+        rf::VMeshCollisionInput vin;
+        const rf::Matrix3* normal_basis; // rotates the mesh-space hit normal back to world
+        if (moving) {
+            // Transform the entity sweep into the mesh's moving frame.
+            const rf::Vector3& pos0 = mesh_objp->p_data.pos;
+            const rf::Matrix3& orient0 = mesh_objp->p_data.orient;
+            const rf::Vector3& pos1 = mesh_objp->p_data.next_pos;
+            const rf::Matrix3& orient1 = mesh_objp->p_data.next_orient;
+
+            const rf::Vector3 w0 = start - pos0;
+            const rf::Vector3 start_local{orient0.rvec.dot_prod(w0), orient0.uvec.dot_prod(w0),
+                                          orient0.fvec.dot_prod(w0)};
+            const rf::Vector3 w1 = end - pos1;
+            const rf::Vector3 end_local{orient1.rvec.dot_prod(w1), orient1.uvec.dot_prod(w1),
+                                        orient1.fvec.dot_prod(w1)};
+
+            vin.mesh_pos = {0.0f, 0.0f, 0.0f};
+            vin.mesh_orient = rf::identity_matrix;
+            vin.start_pos = start_local;
+            vin.dir = end_local - start_local;
+            // Rotate the mesh-space normal back with the end pose. For one-frame rotation
+            // this is an acceptable approximation of the mid-sweep orientation.
+            normal_basis = &mesh_objp->p_data.next_orient;
+        }
+        else {
+            vin.mesh_pos = mesh_objp->p_data.pos;
+            vin.mesh_orient = mesh_objp->p_data.orient;
+            vin.start_pos = start;
+            vin.dir = seg;
+            normal_basis = &mesh_objp->p_data.orient;
+        }
+        vin.radius = radius;
+        vin.flags = 0;
+
+        rf::VMeshCollisionOutput vout;
+        // Force LOD0 for this Brush mesh's collision only. Restored immediately after the call so
+        // no other object sees the flag.
+        MeshLod0Guard lod0_guard;
+        mesh_force_lod0_begin(mesh_objp->vmesh, lod0_guard);
+        const bool mesh_hit = rf::vmesh_collide(mesh_objp->vmesh, &vin, &vout, true);
+        mesh_force_lod0_end(lod0_guard);
+        const bool accepted = mesh_hit && vout.fraction < best;
+
+        if (!accepted) {
+            continue;
+        }
+        best = vout.fraction;
+        hit = true;
+        contact.fraction = vout.fraction;
+        contact.hit_point = start + seg * vout.fraction;
+        contact.hit_normal = normal_basis->transform_vector(vout.hit_normal);
+        contact.material = mesh_objp->material;
+        if (moving) {
+            contact.vel = mesh_objp->p_data.vel;
+            contact.obj_handle = mesh_objp->handle;
+        }
+        else {
+            contact.vel = {0.0f, 0.0f, 0.0f};
+            contact.obj_handle = -1;
+        }
+    }
+
+    return hit;
+}
+
 // ─── VMesh Type Detection ───────────────────────────────────────────────────
 
 static rf::VMeshType determine_vmesh_type(const std::string& filename)
@@ -87,7 +260,7 @@ static void alpine_mesh_create_object(const AlpineMeshInfo& info);
 
 // ─── Chunk Loading ──────────────────────────────────────────────────────────
 
-void alpine_mesh_load_chunk(rf::File& file, std::size_t chunk_len)
+void alpine_mesh_load_chunk(rf::File& file, std::size_t chunk_len, int content_version)
 {
     std::size_t remaining = chunk_len;
 
@@ -119,6 +292,8 @@ void alpine_mesh_load_chunk(rf::File& file, std::size_t chunk_len)
     uint32_t count = 0;
     if (!read_bytes(&count, sizeof(count))) return;
     if (count > 10000) count = 10000;
+
+    uint32_t loaded = 0;
 
     for (uint32_t i = 0; i < count; i++) {
         AlpineMeshInfo info;
@@ -156,7 +331,7 @@ void alpine_mesh_load_chunk(rf::File& file, std::size_t chunk_len)
         // collision mode
         uint8_t collision_mode = 2;
         if (!read_bytes(&collision_mode, sizeof(collision_mode))) return;
-        info.collision_mode = (collision_mode <= 2) ? collision_mode : 2;
+        info.collision_mode = (collision_mode <= 3) ? collision_mode : 2;
         // texture overrides: count + (slot_id, filename) pairs
         uint8_t num_overrides = 0;
         if (!read_bytes(&num_overrides, sizeof(num_overrides))) return;
@@ -234,6 +409,15 @@ void alpine_mesh_load_chunk(rf::File& file, std::size_t chunk_len)
         // resolver runs. This lets the stock resolver convert event→mesh link UIDs
         // to handles automatically, just like any other object type.
         alpine_mesh_create_object(info);
+        loaded++;
+    }
+
+    // Trailing per-object flag block, added in rfl v306.
+    if (content_version >= 306 && loaded == count && remaining >= count) {
+        for (uint32_t i = 0; i < count; i++) {
+            uint8_t flags = 0;
+            if (!read_bytes(&flags, sizeof(flags))) return;
+        }
     }
 }
 
@@ -440,6 +624,10 @@ static void alpine_mesh_create_object(const AlpineMeshInfo& info)
         }
 
         rf::obj_collision_register(obj);
+
+        if (info.collision_mode == 3) {
+            alpine_mesh_register_collision_mesh(obj);
+        }
     }
 
     // Apply texture overrides
@@ -595,6 +783,7 @@ void alpine_mesh_clear_state()
     g_event_animated_meshes.clear();
     g_alpine_corpse_data.clear();
     g_original_tex_handles.clear();
+    g_mesh_collision_meshes.clear();
     // Free per-mesh ClutterInfo objects
     for (auto* ci : g_mesh_clutter_infos) {
         delete ci;
@@ -929,6 +1118,7 @@ void alpine_mesh_set_collision(rf::Object* obj, int collision_type)
     }
 
     // Deregister existing collision pairs and clear flags
+    alpine_mesh_free_collision_solid(obj->handle);
     rf::obj_collision_deregister(obj);
     obj->obj_flags = static_cast<rf::ObjectFlags>(
         static_cast<int>(obj->obj_flags) & ~static_cast<int>(rf::OF_WEAPON_ONLY_COLLIDE)

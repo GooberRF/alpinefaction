@@ -12,6 +12,7 @@
 #include "../rf/input.h"
 #include "../rf/collide.h"
 #include "../rf/gr/gr_light.h"
+#include "../graphics/d3d11/gr_d3d11_hooks.h"
 #include "../rf/os/os.h"
 #include "../rf/os/frametime.h"
 #include "../rf/gameseq.h"
@@ -618,22 +619,52 @@ FunHook<void()> players_do_frame_hook{
     },
 };
 
+// Stock 0x004A7520 is exactly local_screen_flash(local_player, 255, 0, 0, 128), so the fallback
+// here is what every caller drew before.
+void player_damage_feedback()
+{
+    if (g_alpine_game_config.damage_flash == 0) {
+        return;
+    }
+    // Mask 0 arms a radial hit. The directional indicator call that follows on both the SP and
+    // MP damage paths converts it to screen edges when it lands in the same frame. Falls back to
+    // the flash when the vignette has no D3D11 renderer to draw on.
+    if (g_alpine_game_config.damage_flash == 2 && gr::d3d11::trigger_damage_vignette(0)) {
+        return;
+    }
+    rf::local_screen_flash(rf::local_player, 255, 0, 0, 128);
+}
+
 FunHook<void()> player_do_damage_screen_flash_hook{
     0x004A7520,
     []() {
-        if (g_alpine_game_config.damage_screen_flash) {
-            player_do_damage_screen_flash_hook.call_target();
+        player_damage_feedback();
+    },
+};
+
+// Sets Player::flags bits 13-16 from a 4-way front/left/back/right mask. Only fires for the
+// local player with a non-zero mask, so it is the directional feed for the vignette.
+FunHook<void(rf::Player*, unsigned)> player_start_hud_damage_indicators_hook{
+    0x004A5AF0,
+    [](rf::Player* pp, unsigned dir_mask) {
+        player_start_hud_damage_indicators_hook.call_target(pp, dir_mask);
+        // Stock is a no-op for mask 0; only player_damage_feedback's explicit 0 means "radial".
+        if (pp == rf::local_player && g_alpine_game_config.damage_flash == 2 && (dir_mask & 0xF) != 0) {
+            gr::d3d11::trigger_damage_vignette(dir_mask);
         }
     },
 };
 
 ConsoleCommand2 damage_screen_flash_cmd{
     "cl_damageflash",
-    []() {
-        g_alpine_game_config.damage_screen_flash = !g_alpine_game_config.damage_screen_flash;
-        rf::console::print("Damage screen flash effect is {}", g_alpine_game_config.damage_screen_flash ? "enabled" : "disabled");
+    [](std::optional<int> level_opt) {
+        if (level_opt) {
+            g_alpine_game_config.set_damage_flash(level_opt.value());
+        }
+        rf::console::print("Damage feedback level is {}", g_alpine_game_config.damage_flash);
     },
-    "Toggle damage screen flash effect",
+    "Damage feedback: 0 off, 1 screen flash, 2 edge vignette (D3D11 only)",
+    "cl_damageflash <0-2>",
 };
 
 ConsoleCommand2 spectate_damage_screen_flash_cmd{
@@ -1056,6 +1087,9 @@ void player_do_patch()
 
     // Support disabling of damage screen flash effect
     player_do_damage_screen_flash_hook.install();
+
+    // Directional feed for the damage vignette
+    player_start_hud_damage_indicators_hook.install();
 
     // Stretch driller cockpit when using a wide-screen
     player_cockpit_vmesh_render_hook.install();

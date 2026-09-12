@@ -21,6 +21,7 @@
 #include "../../rf/multi.h"
 #include "../../rf/os/frametime.h"
 #include "../../misc/alpine_settings.h"
+#include "../gr.h"
 #include "../../hud/multi_spectate.h"
 #include "../../multi/salvage.h"
 
@@ -287,14 +288,31 @@ namespace gr::d3d11
         xlog::info("Shadow map resized: {}x{}", current_resolution_, current_resolution_);
     }
 
+    void EntityShadowRenderer::get_light_dir(float& x, float& y, float& z)
+    {
+        x = default_light_dir_x;
+        y = default_light_dir_y;
+        z = default_light_dir_z;
+        const SunLightState sun = gr_get_sun_state();
+        if (sun.enabled && sun.drives_shadowmap_dir && sun.travel_dir.y < 0.0f) {
+            x = sun.travel_dir.x;
+            y = sun.travel_dir.y;
+            z = sun.travel_dir.z;
+        }
+        normalize_vec3(x, y, z);
+    }
+
     void EntityShadowRenderer::build_shadow_view_proj(ID3D11DeviceContext* context, const rf::Vector3& camera_pos)
     {
         current_camera_pos_ = camera_pos;
 
-        float ld_x = light_dir_x;
-        float ld_y = light_dir_y;
-        float ld_z = light_dir_z;
-        normalize_vec3(ld_x, ld_y, ld_z);
+        float ld_x, ld_y, ld_z;
+        get_light_dir(ld_x, ld_y, ld_z);
+        // the pixel shader has to bias along the direction this matrix was built from, and the map
+        // is kept across frames that never rebuild it, so the direction is kept with it
+        shadow_light_dir_[0] = ld_x;
+        shadow_light_dir_[1] = ld_y;
+        shadow_light_dir_[2] = ld_z;
 
         float up_x = 0.0f, up_y = 1.0f, up_z = 0.0f;
         if (std::abs(ld_y) > 0.99f) {
@@ -786,10 +804,6 @@ namespace gr::d3d11
             shadows_active = false;
         }
 
-        // Compute normalized light direction for PS normal bias
-        float ld_x = light_dir_x, ld_y = light_dir_y, ld_z = light_dir_z;
-        normalize_vec3(ld_x, ld_y, ld_z);
-
         int dist_preset = std::clamp(g_alpine_game_config.shadow_distance, 0, num_shadow_distance_presets - 1);
 
         ShadowConstantBuffer data{};
@@ -798,9 +812,10 @@ namespace gr::d3d11
         data.shadow_fade_start = shadow_distance_presets[dist_preset].fade_start;
         data.shadow_fade_end = shadow_distance_presets[dist_preset].fade_end;
         data.shadow_enabled = shadows_active ? 1.0f : 0.0f;
-        data.shadow_light_dir[0] = ld_x;
-        data.shadow_light_dir[1] = ld_y;
-        data.shadow_light_dir[2] = ld_z;
+        // the direction shadow_vp_matrix_ was built from, not whatever it is now
+        data.shadow_light_dir[0] = shadow_light_dir_[0];
+        data.shadow_light_dir[1] = shadow_light_dir_[1];
+        data.shadow_light_dir[2] = shadow_light_dir_[2];
         data.shadow_normal_offset = 0.08f;
         data.shadow_texel_size = 1.0f / static_cast<float>(current_resolution_);
         data.shadow_depth_range = current_depth_range_;

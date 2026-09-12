@@ -39,6 +39,7 @@
 #include "geometry.h"
 #include "textures.h"
 #include "meshes.h"
+#include "headless_bake.h"
 
 #define LAUNCHER_FILENAME "AlpineFactionLauncher.exe"
 HMODULE g_module;
@@ -126,6 +127,9 @@ CodeInjection CEditorApp_InitInstance_open_level_injection{
                 }
             }
         }
+        if (!level_param && headless_bake_active()) {
+            level_param = headless_bake_input_path();
+        }
         if (level_param) {
             OpenLevel(level_param);
         }
@@ -187,6 +191,93 @@ static void apply_geoable_to_selected_brushes(int new_state)
         }
         node = node->next;
     } while (node != level->brush_list);
+}
+
+// "No shadow cast"
+
+// Structural brushes lose their identity to CSG, so the flag is offered only for the brushes
+// no_shadow_cast_eligible() accepts and never written for any other selected brush.
+static bool selection_has_no_shadow_cast_eligible()
+{
+    auto* level = CDedLevel::Get();
+    if (!level) return false;
+    BrushNode* node = level->brush_list;
+    if (!node) return false;
+    const std::unordered_set<int32_t> mover_brush_uids = collect_moving_group_brush_uids();
+    do {
+        if (node->state == BRUSH_STATE_SELECTED && no_shadow_cast_eligible(*node, mover_brush_uids))
+            return true;
+        node = node->next;
+    } while (node && node != level->brush_list);
+    return false;
+}
+
+static int compute_no_shadow_cast_state_from_selected()
+{
+    auto* level = CDedLevel::Get();
+    if (!level) return BST_UNCHECKED;
+    auto& props = level->GetAlpineLevelProperties();
+
+    BrushNode* node = level->brush_list;
+    if (!node) return BST_UNCHECKED;
+    int num_eligible = 0;
+    int num_flagged = 0;
+    const std::unordered_set<int32_t> mover_brush_uids = collect_moving_group_brush_uids();
+    do {
+        if (node->state == BRUSH_STATE_SELECTED && no_shadow_cast_eligible(*node, mover_brush_uids)) {
+            num_eligible++;
+            if (std::find(props.no_shadow_cast_brush_uids.begin(),
+                          props.no_shadow_cast_brush_uids.end(), node->uid)
+                != props.no_shadow_cast_brush_uids.end()) {
+                num_flagged++;
+            }
+        }
+        node = node->next;
+    } while (node && node != level->brush_list);
+
+    if (num_eligible == 0 || num_flagged == 0) return BST_UNCHECKED;
+    if (num_flagged == num_eligible) return BST_CHECKED;
+    return BST_INDETERMINATE;
+}
+
+static void apply_no_shadow_cast_to_selected_brushes(int new_state)
+{
+    if (new_state == BST_INDETERMINATE) return;
+
+    auto* level = CDedLevel::Get();
+    if (!level) return;
+    auto& props = level->GetAlpineLevelProperties();
+
+    BrushNode* node = level->brush_list;
+    if (!node) return;
+    const std::unordered_set<int32_t> mover_brush_uids = collect_moving_group_brush_uids();
+    do {
+        if (node->state == BRUSH_STATE_SELECTED && no_shadow_cast_eligible(*node, mover_brush_uids)) {
+            auto it = std::find(props.no_shadow_cast_brush_uids.begin(),
+                                props.no_shadow_cast_brush_uids.end(), node->uid);
+            if (new_state == BST_CHECKED) {
+                if (it == props.no_shadow_cast_brush_uids.end()) {
+                    props.no_shadow_cast_brush_uids.push_back(node->uid);
+                }
+            } else {
+                if (it != props.no_shadow_cast_brush_uids.end()) {
+                    props.no_shadow_cast_brush_uids.erase(it);
+                }
+            }
+        }
+        node = node->next;
+    } while (node && node != level->brush_list);
+}
+
+static void init_no_shadow_cast_checkbox(HWND hdlg)
+{
+    HWND ctrl = GetDlgItem(hdlg, IDC_NO_SHADOW_CAST);
+    if (!ctrl) return;
+
+    bool enabled = selection_has_no_shadow_cast_eligible();
+    EnableWindow(ctrl, enabled ? TRUE : FALSE);
+    CheckDlgButton(hdlg, IDC_NO_SHADOW_CAST,
+                   enabled ? compute_no_shadow_cast_state_from_selected() : BST_UNCHECKED);
 }
 
 // Returns true if at least one selected brush is a breakable detail brush (is_detail && life != -1)
@@ -430,6 +521,14 @@ static LRESULT CALLBACK BrushPanelSubclassProc(HWND hwnd, UINT msg, WPARAM wPara
         int state = IsDlgButtonChecked(hwnd, IDC_NO_DEBRIS);
         apply_no_debris_to_selected_brushes(state);
     }
+    if (msg == WM_COMMAND && LOWORD(wParam) == IDC_NO_SHADOW_CAST) {
+        int state = IsDlgButtonChecked(hwnd, IDC_NO_SHADOW_CAST);
+        if (state == BST_INDETERMINATE) {
+            state = BST_UNCHECKED;
+            CheckDlgButton(hwnd, IDC_NO_SHADOW_CAST, BST_UNCHECKED);
+        }
+        apply_no_shadow_cast_to_selected_brushes(state);
+    }
     if (msg == WM_COMMAND && LOWORD(wParam) == 1215) {
         // Auto-uncheck Is Geoable when Is Detail is no longer checked
         if (IsDlgButtonChecked(hwnd, 1215) != BST_CHECKED) {
@@ -439,6 +538,7 @@ static LRESULT CALLBACK BrushPanelSubclassProc(HWND hwnd, UINT msg, WPARAM wPara
         // Refresh material combo and no_debris enable state when detail flag changes
         init_material_combo(hwnd);
         init_no_debris_checkbox(hwnd);
+        init_no_shadow_cast_checkbox(hwnd);
     }
     return CallWindowProcA(g_brush_panel_orig_wndproc, hwnd, msg, wParam, lParam);
 }
@@ -460,6 +560,9 @@ static LRESULT CALLBACK BrushPropsSubclassProc(HWND hwnd, UINT msg, WPARAM wPara
         // Apply no_debris checkbox
         int nd_state = IsDlgButtonChecked(hwnd, IDC_NO_DEBRIS);
         apply_no_debris_to_selected_brushes(nd_state);
+        // Apply no shadow cast checkbox
+        int nsc_state = IsDlgButtonChecked(hwnd, IDC_NO_SHADOW_CAST);
+        apply_no_shadow_cast_to_selected_brushes(nsc_state);
     }
     if (msg == WM_COMMAND && LOWORD(wParam) == IDC_IS_GEOABLE) {
         int state = IsDlgButtonChecked(hwnd, IDC_IS_GEOABLE);
@@ -485,6 +588,7 @@ static LRESULT CALLBACK BrushPropsSubclassProc(HWND hwnd, UINT msg, WPARAM wPara
         // Refresh material combo and no_debris enable state when detail flag changes
         init_material_combo(hwnd);
         init_no_debris_checkbox(hwnd);
+        init_no_shadow_cast_checkbox(hwnd);
     }
     if (msg == WM_NCDESTROY) {
         SetWindowLongPtrA(hwnd, GWLP_WNDPROC,
@@ -503,6 +607,7 @@ static LRESULT CALLBACK BrushPropsMsgHookProc(int nCode, WPARAM wParam, LPARAM l
         if (msg->message == WM_INITDIALOG && GetDlgItem(msg->hwnd, IDC_IS_GEOABLE)) {
             int state = compute_geoable_state_from_selected();
             CheckDlgButton(msg->hwnd, IDC_IS_GEOABLE, state);
+            init_no_shadow_cast_checkbox(msg->hwnd);
             init_material_combo(msg->hwnd);
             init_no_debris_checkbox(msg->hwnd);
             g_brush_props_orig_wndproc = reinterpret_cast<WNDPROC>(
@@ -663,6 +768,7 @@ void __fastcall brush_mode_handle_selection_new(void* self)
     if (hdlg && GetDlgItem(hdlg, IDC_IS_GEOABLE)) {
         int state = compute_geoable_state_from_selected();
         CheckDlgButton(hdlg, IDC_IS_GEOABLE, state);
+        init_no_shadow_cast_checkbox(hdlg);
         init_material_combo(hdlg);
         init_no_debris_checkbox(hdlg);
         // Subclass panel for Is Geoable click handling (once per HWND)
@@ -1070,7 +1176,7 @@ static bool is_edit_key_held()
 CodeInjection autosave_defer_during_edit_injection{
     0x00483061,
     [](auto& regs) {
-        if (is_edit_key_held()) {
+        if (headless_bake_active() || is_edit_key_held()) {
             regs.eip = 0x004831B4; // defer autosave until the text tick we are not in an edit operation
         }
         else {
@@ -1525,7 +1631,7 @@ CodeInjection CDedLevel_CloneObject_injection{
     },
 };
 
-// Copy geoable and breakable material alpine properties from old_uid to new_uid.
+// Copy geoable, no-shadow-cast and breakable material alpine properties from old_uid to new_uid.
 // Used when a brush is duplicated or pasted with a new UID.
 static void copy_alpine_brush_props(int old_uid, int new_uid)
 {
@@ -1538,6 +1644,13 @@ static void copy_alpine_brush_props(int old_uid, int new_uid)
                   props.geoable_brush_uids.end(), old_uid)
         != props.geoable_brush_uids.end()) {
         props.geoable_brush_uids.push_back(new_uid);
+    }
+
+    // Copy no shadow cast property
+    if (std::find(props.no_shadow_cast_brush_uids.begin(),
+                  props.no_shadow_cast_brush_uids.end(), old_uid)
+        != props.no_shadow_cast_brush_uids.end()) {
+        props.no_shadow_cast_brush_uids.push_back(new_uid);
     }
 
     // Copy breakable material property
@@ -1710,6 +1823,12 @@ CodeInjection disable_splash_screen_on_load_level {
     [](auto& regs) {
         static auto& argv = addr_as_ref<char**>(0x01DBF8E4);
         static auto& argc = addr_as_ref<int>(0x01DBF8E0);
+
+        if (headless_bake_active()) {
+            g_skip_legacy_level_warning = true;
+            regs.eip = 0x0048268E;
+        }
+
         for (int i = 1; i < argc; ++i) {
             std::string_view arg = argv[i];
 
@@ -1968,6 +2087,9 @@ extern "C" DWORD AF_DLL_EXPORT Init([[maybe_unused]] void* unused)
 
     // Open the color picker on the current color instead of black
     CColorDialog_ct_seed_current_color.install();
+
+    // Headless "-bake <in.rfl> -bakeout <out.rfl>" lighting bake
+    ApplyHeadlessBakePatches();
 
     return 1; // success
 }

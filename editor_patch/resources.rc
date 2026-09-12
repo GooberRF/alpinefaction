@@ -100,7 +100,7 @@ FONT 8, "MS Sans Serif", 0, 0, 1
 }
 
 LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
-IDD_LEVEL_PROPERTIES DIALOGEX 0, 0, 298, 362
+IDD_LEVEL_PROPERTIES DIALOGEX 0, 0, 298, 530
 STYLE DS_MODALFRAME | DS_SETFONT | WS_CAPTION | WS_VISIBLE | WS_POPUP | WS_SYSMENU
 CAPTION "Level Properties"
 FONT 8, "MS Sans Serif"
@@ -144,7 +144,7 @@ FONT 8, "MS Sans Serif"
     DEFPUSHBUTTON   "OK", IDOK, 241, 7, 50, 14
     PUSHBUTTON      "Cancel", IDCANCEL, 241, 24, 50, 14
 
-    GROUPBOX        "Advanced Options", -1, 7, 268, 284, 90
+    GROUPBOX        "Advanced Options", -1, 7, 268, 284, 150
     AUTOCHECKBOX    "Legacy Cyclic_Timer events", IDC_LEGACY_CYCLIC_TIMERS, 13, 280, 175, 10
     AUTOCHECKBOX    "Legacy movers", IDC_LEGACY_MOVERS, 13, 292, 175, 10
     AUTOCHECKBOX    "Player starts with headlamp", IDC_STARTS_WITH_HEADLAMP, 13, 304, 175, 10
@@ -152,6 +152,32 @@ FONT 8, "MS Sans Serif"
     LTEXT           "New scale value:", -1, 30, 331, 120, 8
     EDITTEXT        IDC_MESH_AMBIENT_LIGHT_MODIFIER, 90, 328, 30, 14, ES_AUTOHSCROLL
     AUTOCHECKBOX    "Brush-based geomod (RF2-style)", IDC_RF2_STYLE_GEOMOD, 13, 344, 200, 10
+    AUTOCHECKBOX    "Legacy lighting", IDC_LEGACY_LIGHTING, 13, 356, 200, 10
+    AUTOCHECKBOX    "High-resolution lightmaps", IDC_HIGHRES_LIGHTMAPS, 13, 368, 200, 10
+    AUTOCHECKBOX    "Invisible faces block light", IDC_INVISIBLE_FACES_OCCLUDE, 13, 380, 200, 10
+    AUTOCHECKBOX    "Alpha-textured faces block light", IDC_ALPHA_FACES_OCCLUDE, 13, 392, 200, 10
+    AUTOCHECKBOX    "Meshes block light", IDC_MESHES_OCCLUDE, 13, 404, 200, 10
+
+    GROUPBOX        "Sunlight", -1, 7, 422, 284, 100
+    AUTOCHECKBOX    "Enable directional sunlight", IDC_SUN_ENABLE, 13, 434, 160, 10
+    PUSHBUTTON      "Set from camera", IDC_SUN_SET_FROM_CAMERA, 178, 431, 70, 14
+    LTEXT           "Yaw:", -1, 13, 450, 18, 8
+    EDITTEXT        IDC_SUN_YAW, 34, 448, 34, 14, ES_AUTOHSCROLL
+    LTEXT           "Pitch:", -1, 74, 450, 21, 8
+    EDITTEXT        IDC_SUN_PITCH, 97, 448, 34, 14, ES_AUTOHSCROLL
+    LTEXT           "Intensity:", -1, 137, 450, 33, 8
+    EDITTEXT        IDC_SUN_INTENSITY, 172, 448, 34, 14, ES_AUTOHSCROLL
+    LTEXT           "Spread:", -1, 212, 450, 28, 8
+    EDITTEXT        IDC_SUN_SPREAD_ANGLE, 242, 448, 34, 14, ES_AUTOHSCROLL
+    LTEXT           "Color:", -1, 13, 469, 22, 8
+    CONTROL         "List1", IDC_SUN_COLOR_SWATCH, WC_LISTVIEW, WS_BORDER | LVS_NOSCROLL | LVS_ICON, 43, 466, 40, 14, WS_EX_STATICEDGE
+    PUSHBUTTON      "Change color", IDC_SUN_COLOR_CHANGE, 89, 466, 50, 14
+    EDITTEXT        IDC_SUN_COLOR_VALUE, 145, 466, 57, 14, ES_AUTOHSCROLL
+    AUTOCHECKBOX    "Casts shadows (lightmaps)", IDC_SUN_CAST_BAKED_SHADOWS, 13, 484, 120, 10
+    AUTOCHECKBOX    "Affects mesh lighting", IDC_SUN_AFFECTS_MESHES, 148, 484, 130, 10
+    AUTOCHECKBOX    "Scale mesh sunlight by lightmaps", IDC_SUN_MESH_MODE_SCALE, 13, 496, 130, 10
+    AUTOCHECKBOX    "Aligns dynamic shadows", IDC_SUN_DRIVES_SHADOWMAP_DIR, 148, 496, 130, 10
+    AUTOCHECKBOX    "Water blocks sunlight", IDC_SUN_LIQUID_OCCLUDES, 13, 508, 130, 10
 }
 
 LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
@@ -405,6 +431,7 @@ FONT 8, "MS Sans Serif", 0, 0, 0
     LTEXT           "Use + to add, - to remove selected.", -1, 14, 194, 246, 8
 
     AUTOCHECKBOX    "Destructible", IDC_MESH_IS_CLUTTER, 7, 212, 60, 10
+    AUTO3STATE      "No shadow cast", IDC_MESH_NO_SHADOW_CAST, 90, 212, 74, 10
 
     GROUPBOX        "Destructible Properties", IDC_MESH_CLUTTER_GROUP, 7, 224, 260, 190
 
@@ -466,7 +493,7 @@ FONT 8, "MS Sans Serif", 0, 0, 0
 
 // Brush mode side panel (replaces stock dialog 205 with added "Is Geoable" checkbox)
 LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
-IDD_BRUSH_MODE_PANEL DIALOGEX 0, 0, 129, 355
+IDD_BRUSH_MODE_PANEL DIALOGEX 0, 0, 129, 365
 STYLE DS_SETFONT | WS_CHILD | WS_VISIBLE | WS_BORDER
 EXSTYLE WS_EX_CLIENTEDGE | WS_EX_CONTROLPARENT
 FONT 8, "MS Sans Serif"
@@ -491,22 +518,23 @@ FONT 8, "MS Sans Serif"
     PUSHBUTTON      "Mirror", IDC_BRUSH_MIRROR, 9, 233, 50, 14
     PUSHBUTTON      "To Mesh", IDC_BRUSH_CONVERT, 67, 233, 50, 14
     GROUPBOX        "Brush Operations", -1, 4, 136, 121, 118
-    GROUPBOX        "Brush Properties", -1, 4, 259, 121, 94
+    GROUPBOX        "Brush Properties", -1, 4, 259, 121, 104
     AUTO3STATE      "Is Portal", 1214, 10, 270, 41, 10
     AUTO3STATE      "Is Detail", 1215, 10, 279, 41, 10
     AUTO3STATE      "Is Geoable", IDC_IS_GEOABLE, 10, 289, 54, 10
     AUTOCHECKBOX    "Emits Steam", 1608, 10, 299, 58, 8
     AUTOCHECKBOX    "No Debris", IDC_NO_DEBRIS, 10, 309, 50, 8
-    LTEXT           "Life (-1 = infinite):", -1, 10, 323, 56, 8
-    CONTROL         "", 1603, "Static", SS_LEFT | WS_CHILD | WS_VISIBLE | WS_GROUP, 67, 320, 52, 14, WS_EX_CLIENTEDGE
-    LTEXT           "Material:", IDC_MATERIAL_LABEL, 10, 339, 32, 8
-    COMBOBOX        IDC_MATERIAL_COMBO, 67, 336, 52, 40, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    AUTO3STATE      "No shadow cast", IDC_NO_SHADOW_CAST, 10, 319, 66, 8
+    LTEXT           "Life (-1 = infinite):", -1, 10, 333, 56, 8
+    CONTROL         "", 1603, "Static", SS_LEFT | WS_CHILD | WS_VISIBLE | WS_GROUP, 67, 330, 52, 14, WS_EX_CLIENTEDGE
+    LTEXT           "Material:", IDC_MATERIAL_LABEL, 10, 349, 32, 8
+    COMBOBOX        IDC_MATERIAL_COMBO, 67, 346, 52, 40, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
     PUSHBUTTON      "Update", 1523, 69, 270, 50, 14
 }
 
 // Brush properties popup (replaces stock dialog 270 with added "Is Geoable" checkbox)
 LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
-IDD_BRUSH_PROPERTIES DIALOGEX 0, 0, 183, 99
+IDD_BRUSH_PROPERTIES DIALOGEX 0, 0, 183, 110
 STYLE DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_VISIBLE | WS_CAPTION | WS_SYSMENU
 CAPTION "Brush Properties"
 FONT 8, "MS Sans Serif"
@@ -516,11 +544,12 @@ FONT 8, "MS Sans Serif"
     AUTO3STATE      "Is Geoable", IDC_IS_GEOABLE, 7, 29, 54, 10
     AUTOCHECKBOX    "Emits Steam", 1608, 7, 40, 58, 8
     AUTOCHECKBOX    "No Debris", IDC_NO_DEBRIS, 7, 50, 50, 8
-    LTEXT           "Life:", -1, 7, 67, 14, 8
-    CONTROL         "", 1603, "Static", SS_LEFT | WS_CHILD | WS_VISIBLE | WS_GROUP, 40, 64, 52, 14, WS_EX_CLIENTEDGE
-    LTEXT           "(-1 = infinite)", -1, 96, 67, 52, 8
-    LTEXT           "Material:", IDC_MATERIAL_LABEL, 7, 83, 30, 8
-    COMBOBOX        IDC_MATERIAL_COMBO, 40, 80, 52, 40, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    AUTO3STATE      "No shadow cast", IDC_NO_SHADOW_CAST, 7, 60, 66, 8
+    LTEXT           "Life:", -1, 7, 77, 14, 8
+    CONTROL         "", 1603, "Static", SS_LEFT | WS_CHILD | WS_VISIBLE | WS_GROUP, 40, 74, 52, 14, WS_EX_CLIENTEDGE
+    LTEXT           "(-1 = infinite)", -1, 96, 77, 52, 8
+    LTEXT           "Material:", IDC_MATERIAL_LABEL, 7, 93, 30, 8
+    COMBOBOX        IDC_MATERIAL_COMBO, 40, 90, 52, 40, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
     DEFPUSHBUTTON   "OK", IDOK, 126, 7, 50, 14
     PUSHBUTTON      "Cancel", IDCANCEL, 126, 24, 50, 14
 }

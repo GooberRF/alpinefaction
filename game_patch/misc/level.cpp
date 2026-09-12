@@ -16,9 +16,11 @@
 #include "../multi/server.h"
 #include "../object/alpine_corona.h"
 #include "../object/alpine_bag.h"
+#include "../object/alpine_projection_camera.h"
 #include "../object/mover.h"
 #include "../hud/hud_world.h"
 #include "../graphics/weather.h"
+#include "../graphics/scene_capture.h"
 
 static std::vector<GasRegionInfo> g_gas_regions;
 static std::vector<GasRegionTransition> g_gas_region_transitions;
@@ -113,11 +115,30 @@ CodeInjection level_load_init_patch{
         alpine_mesh_clear_state();
         alpine_corona_clear_state();
         alpine_bag_clear_state();
+        alpine_projection_camera_clear_state();
         gas_region_clear_state();
         weather_clear_regions();
+        projector_clear_all();
         alpine_mover_clear_hold_open();
         hud_world_level_unload();
         set_headlamp_toggle_enabled(AlpineLevelProperties::instance().starts_with_headlamp);
+    },
+};
+
+void level_shutdown()
+{
+    weather_clear_regions();
+    projector_clear_all();
+}
+
+// Reached from quit-to-menu and leaving for the multiplayer menu (via game_shutdown), the
+// level to level transition, a failed load, and game exit — always before the engine
+// releases the level's bitmaps and while the renderer is still up.
+FunHook<void()> level_close_hook{
+    0x0045C880,
+    [] {
+        level_shutdown();
+        level_close_hook.call_target();
     },
 };
 
@@ -138,7 +159,7 @@ CodeInjection level_load_chunk_patch{
         // handling for alpine mesh objects chunk
         if (chunk_id == alpine_mesh_chunk_id) {
             xlog::debug("[Level] Loading alpine mesh chunk: len={}", chunk_len);
-            alpine_mesh_load_chunk(file, chunk_len);
+            alpine_mesh_load_chunk(file, chunk_len, file.get_version());
             regs.eip = 0x004608EF;
         }
 
@@ -160,6 +181,13 @@ CodeInjection level_load_chunk_patch{
         if (chunk_id == alpine_weather_region_chunk_id) {
             xlog::debug("[Level] Loading alpine weather region chunk: len={}", chunk_len);
             weather_load_chunk(file, chunk_len);
+            regs.eip = 0x004608EF;
+        }
+
+        // handling for alpine projection camera objects chunk
+        if (chunk_id == alpine_projection_camera_chunk_id) {
+            xlog::debug("[Level] Loading alpine projection camera chunk: len={}", chunk_len);
+            alpine_projection_camera_load_chunk(file, chunk_len);
             regs.eip = 0x004608EF;
         }
 
@@ -434,6 +462,9 @@ void level_apply_patch()
     // Load new rfl chunks
     level_load_init_patch.install();
     level_load_chunk_patch.install();
+
+    // Release level scoped module state when the engine tears the level down
+    level_close_hook.install();
 
     // Load MP respawns
     level_read_mp_respawns_hook.install();

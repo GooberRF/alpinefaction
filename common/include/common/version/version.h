@@ -47,7 +47,8 @@
 // 303 = Alpine 1.2.2
 // 304 = Alpine 1.3.0
 // 305 = Alpine 1.4.0
-#define MAXIMUM_RFL_VERSION    305
+// 306 = Alpine 1.5.0
+#define MAXIMUM_RFL_VERSION    306
 
 // clang-format on
 

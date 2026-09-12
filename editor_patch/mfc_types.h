@@ -145,7 +145,9 @@ enum class DedObjectType : int
     DED_NOTE = 0x18,   // Alpine 1.3
     DED_CORONA = 0x19, // Alpine 1.3
     DED_BAG = 0x1A,    // Alpine 1.4
-    DED_WEATHER_REGION = 0x1B // Alpine 1.4
+    DED_WEATHER_REGION = 0x1B, // Alpine 1.4
+    // 0x1C is reserved
+    DED_PROJECTION_CAMERA = 0x1D // Alpine 1.5
 };
 
 struct Vector3
@@ -356,7 +358,7 @@ static constexpr uintptr_t ded_object_vtbl_addr = 0x55712C;
 struct DedObject
 {
     void* vtbl;
-    VString field_4;
+    VString field_4; // unsure what this is
     void* vmesh;
     int field_10;
     Vector3 pos;
@@ -397,8 +399,9 @@ static_assert(sizeof(DedEvent) == 0xC4, "DedEvent size mismatch");
 
 struct DedRoomEffect : DedObject
 {
-    int effect_type;                   // 0x94 — 2 = Liquid Room
-    char pad_98[0xA8 - 0x98];
+    int effect_type;                   // 0x94 — 2 = Liquid Room, 3 = Ambient Light
+    uint32_t ambient_color;            // 0x98 — ambient color for effect_type 3
+    char pad_9C[0xA8 - 0x9C];
     VString liquid_bitmap;             // 0xA8 — liquid surface texture filename
     char pad_B0[0xD4 - 0xB0];
 };
@@ -429,13 +432,14 @@ struct DedMesh : DedObject
 {
     VString mesh_filename;          // .v3m / .v3c / .vfx path
     VString state_anim;             // animation name (for .v3c skeletal meshes)
-    uint8_t collision_mode;         // 0=None, 1=Only Weapons, 2=All
+    uint8_t collision_mode;         // 0=None, 1=Only Weapons, 2=All, 3=Brush
     bool vmesh_load_failed;         // true if vmesh load was attempted and failed
     char padding_mesh[2];
     std::vector<EditorTextureOverride> texture_overrides;
     bool simulate_in_editor = false;   // v3c only: play animation continuously instead of freezing frame 0
     int material = 0;                  // material type for impact sounds (0=default, applies to all meshes)
     MeshClutterProps clutter_props;
+    bool no_shadow_cast = false;       // excluded from the lightmap bake's mesh occluders
 };
 
 struct DedNote : DedObject
@@ -501,6 +505,11 @@ struct DedWeatherRegion : DedObject
     bool initially_enabled = true;
     bool block_by_geometry = false;
     float column_width = 0.5f;
+};
+
+struct DedProjectionCamera : DedObject
+{
+    // All projection settings live on the linked Display_Projection event.
 };
 
 struct DedBoltEmitter : DedObject
@@ -741,6 +750,15 @@ struct CDocument
 };
 static_assert(sizeof(CDocument) == 0x50);
 
+struct CDedDoc : CDocument
+{
+    char LoadSaveLevel(const char* path, int is_load, int is_autosave)
+    {
+        return AddrCaller{0x0041CCE0}.this_call<char>(this, path, is_load, is_autosave);
+    }
+};
+static_assert(sizeof(CDedDoc) == sizeof(CDocument));
+
 struct VFile
 {
     int DirId;
@@ -776,7 +794,7 @@ struct CMainFrame : CFrameWnd
 {
     void* views[4];
     void* unk_view;
-    CDocument* doc;
+    CDedDoc* doc;
     VString field_D4;
     char dialog_bar[0x88]; // CDialogBar
     char status_bar[0x7C]; // CStatusBar
@@ -790,7 +808,7 @@ struct CMainFrame : CFrameWnd
     float camera_speed_allowed_values[6];
     int camera_speed_index;
     float grid_brightness;
-    int custom_colors[16];
+    COLORREF custom_colors[16];
     int favorite_textures[8];
     bool play_no_tnl;
     char padding_tail[3];
@@ -805,8 +823,14 @@ struct CMainFrame : CFrameWnd
     {
         AddrCaller{0x00447670}.this_call(this);
     }
+
+    void OnCalculateLighting()
+    {
+        AddrCaller{0x00449680}.this_call(this);
+    }
 };
 static_assert(sizeof(CMainFrame) == 0x550);
+static_assert(offsetof(CMainFrame, custom_colors) == 0x4E8, "custom_colors offset mismatch!");
 
 static auto& g_main_frame = addr_as_ref<CMainFrame*>(0x006F9E68);
 static auto& g_maximized_viewport = addr_as_ref<int>(0x0057B9C0);

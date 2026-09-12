@@ -46,3 +46,4 @@ void ping_looked_at_location();
 void fpgun_play_random_idle_anim();
 void set_headlamp_toggle_enabled(bool enabled);
 bool player_is_idle(const rf::Player* player);
+void player_damage_feedback();

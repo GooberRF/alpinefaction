@@ -404,6 +404,7 @@ void DeleteNoteObject(DedNote* note)
     if (it != notes.end()) {
         notes.erase(it);
     }
+    alpine_remove_from_groups(level, static_cast<DedObject*>(note));
     level->master_objects.remove_by_value(static_cast<DedObject*>(note));
     destroy_ded_note(note);
 }

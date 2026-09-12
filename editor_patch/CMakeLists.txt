@@ -5,6 +5,8 @@ set(SRCS
     event.cpp
     geometry.cpp
     graphics.cpp
+    headless_bake.cpp
+    headless_bake.h
     mesh_export.cpp
     main.cpp
     mesh.cpp
@@ -17,6 +19,8 @@ set(SRCS
     bag.h
     weather_region.cpp
     weather_region.h
+    projection_camera.cpp
+    projection_camera.h
     textures.cpp
     bitmap_loaders.cpp
     bitmap_loaders.h
@@ -30,6 +34,8 @@ set(SRCS
     resources.h
     level.cpp
     lightmap.cpp
+    lightmap_mesh_occluders.cpp
+    lightmap_mesh_occluders.h
 )
 source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${SRCS})
 

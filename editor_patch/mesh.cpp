@@ -332,10 +332,15 @@ void mesh_serialize_chunk(CDedLevel& level, rf::File& file)
         }
     }
 
+    // Per-object flag block appended after the last record; read back only from rfl v306+.
+    for (auto* mesh : meshes) {
+        file.write<uint8_t>(mesh->no_shadow_cast ? 1 : 0);
+    }
+
     level.EndRflSection(file, start_pos);
 }
 
-void mesh_deserialize_chunk(CDedLevel& level, rf::File& file, std::size_t chunk_len)
+void mesh_deserialize_chunk(CDedLevel& level, rf::File& file, std::size_t chunk_len, int content_version)
 {
     auto& meshes = level.GetAlpineLevelProperties().mesh_objects;
     std::size_t remaining = chunk_len;
@@ -356,6 +361,9 @@ void mesh_deserialize_chunk(CDedLevel& level, rf::File& file, std::size_t chunk_
     uint32_t count = 0;
     if (!read_bytes(&count, sizeof(count))) return;
     if (count > 10000) count = 10000;
+
+    const std::size_t first_mesh = meshes.size();
+    uint32_t loaded = 0;
 
     for (uint32_t i = 0; i < count; i++) {
         auto* mesh = new DedMesh();
@@ -395,7 +403,7 @@ void mesh_deserialize_chunk(CDedLevel& level, rf::File& file, std::size_t chunk_
         // collision mode
         uint8_t collision_mode = 2;
         if (!read_bytes(&collision_mode, sizeof(collision_mode))) { DestroyDedMesh(mesh); return; }
-        mesh->collision_mode = (collision_mode <= 2) ? collision_mode : 2;
+        mesh->collision_mode = (collision_mode <= 3) ? collision_mode : 2;
         // texture overrides: count + (slot_id, filename) pairs
         uint8_t num_overrides = 0;
         if (!read_bytes(&num_overrides, sizeof(num_overrides))) { DestroyDedMesh(mesh); return; }
@@ -452,8 +460,18 @@ void mesh_deserialize_chunk(CDedLevel& level, rf::File& file, std::size_t chunk_
         mesh->vmesh_load_failed = false;
 
         meshes.push_back(mesh);
+        loaded++;
         // Add to master objects list so stock link validation (FUN_00483920) finds this mesh
         level.master_objects.add(static_cast<DedObject*>(mesh));
+    }
+
+    // Trailing per-object flag block, added in rfl v306.
+    if (content_version >= 306 && loaded == count && remaining >= count) {
+        for (uint32_t i = 0; i < count; i++) {
+            uint8_t flags = 0;
+            if (!read_bytes(&flags, sizeof(flags))) return;
+            meshes[first_mesh + i]->no_shadow_cast = (flags != 0);
+        }
     }
 }
 
@@ -465,6 +483,8 @@ static CDedLevel* g_current_level = nullptr;
 // Sentinel strings for multi-selection fields with differing values
 static const char* const MULTIPLE_STR = "<multiple>";
 static const int MULTIPLE_COLLISION = -1;
+// Combo index of the "Undefined" entry appended only in multi-select mode
+static const int UNDEFINED_COLLISION_INDEX = 4;
 
 // Track initial dialog values to detect user changes
 static std::string g_init_script_name;
@@ -474,6 +494,7 @@ static int g_init_collision_mode;
 static std::vector<EditorTextureOverride> g_init_overrides;
 static bool g_init_overrides_multiple = false; // true if selected meshes have differing overrides
 static int g_init_simulate = 0; // 0=unchecked, 1=checked, -1=indeterminate (mixed)
+static int g_init_no_shadow_cast = 0;
 static int g_init_material = 0;
 static bool g_init_material_multiple = false;
 static int g_init_is_clutter = 0; // 0=unchecked, 1=checked, -1=indeterminate
@@ -647,6 +668,7 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
         bool all_same_anim = true, all_same_collision = true;
         bool all_same_overrides = true;
         bool all_same_simulate = true;
+        bool all_same_no_shadow_cast = true;
         bool all_same_material = true;
         bool all_same_is_clutter = true;
         bool all_same_clutter = true;
@@ -658,6 +680,7 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
             if (strcmp(m->state_anim.c_str(), first->state_anim.c_str()) != 0) all_same_anim = false;
             if (m->collision_mode != first->collision_mode) all_same_collision = false;
             if (m->simulate_in_editor != first->simulate_in_editor) all_same_simulate = false;
+            if (m->no_shadow_cast != first->no_shadow_cast) all_same_no_shadow_cast = false;
             if (m->material != first->material) all_same_material = false;
             if (m->clutter_props.is_clutter != first->clutter_props.is_clutter) all_same_is_clutter = false;
             if (m->texture_overrides.size() != first->texture_overrides.size()) {
@@ -701,6 +724,7 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
         g_init_overrides_multiple = !all_same_overrides;
         g_init_overrides = all_same_overrides ? first->texture_overrides : std::vector<EditorTextureOverride>{};
         g_init_simulate = all_same_simulate ? (first->simulate_in_editor ? 1 : 0) : -1;
+        g_init_no_shadow_cast = all_same_no_shadow_cast ? (first->no_shadow_cast ? 1 : 0) : -1;
         g_init_material = all_same_material ? first->material : -1;
         g_init_material_multiple = !all_same_material;
         g_init_is_clutter = all_same_is_clutter ? (first->clutter_props.is_clutter ? 1 : 0) : -1;
@@ -714,6 +738,11 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
             SendDlgItemMessage(hdlg, IDC_MESH_SIMULATE, BM_SETCHECK, BST_INDETERMINATE, 0);
         } else {
             CheckDlgButton(hdlg, IDC_MESH_SIMULATE, g_init_simulate ? BST_CHECKED : BST_UNCHECKED);
+        }
+        if (g_init_no_shadow_cast < 0) {
+            SendDlgItemMessage(hdlg, IDC_MESH_NO_SHADOW_CAST, BM_SETCHECK, BST_INDETERMINATE, 0);
+        } else {
+            CheckDlgButton(hdlg, IDC_MESH_NO_SHADOW_CAST, g_init_no_shadow_cast ? BST_CHECKED : BST_UNCHECKED);
         }
 
         // Material combo box (independent of clutter)
@@ -822,9 +851,10 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
             SendMessageA(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>("None"));
             SendMessageA(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>("Only Weapons"));
             SendMessageA(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>("All"));
+            SendMessageA(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>("Brush"));
             if (g_init_collision_mode == MULTIPLE_COLLISION) {
                 SendMessageA(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>("Undefined"));
-                SendMessageA(combo, CB_SETCURSEL, 3, 0); // "Undefined"
+                SendMessageA(combo, CB_SETCURSEL, UNDEFINED_COLLISION_INDEX, 0);
             } else {
                 SendMessageA(combo, CB_SETCURSEL, g_init_collision_mode, 0);
             }
@@ -1026,7 +1056,6 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
             int collision_sel = collision_enabled
                 ? static_cast<int>(SendMessageA(combo, CB_GETCURSEL, 0, 0))
                 : 0; // VFX meshes do not support collision
-            // "Undefined" is index 3 — only present in multi-select mode
             bool collision_changed = false;
             if (force_clear_collision) {
                 collision_changed = true;
@@ -1034,7 +1063,7 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
                 // Disabled but filename unchanged — don't touch
                 collision_changed = false;
             } else if (g_init_collision_mode == MULTIPLE_COLLISION) {
-                collision_changed = (collision_sel != 3); // changed from "Undefined"
+                collision_changed = (collision_sel != UNDEFINED_COLLISION_INDEX);
             } else {
                 collision_changed = (collision_sel != g_init_collision_mode);
             }
@@ -1064,6 +1093,10 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
             int simulate_check = static_cast<int>(IsDlgButtonChecked(hdlg, IDC_MESH_SIMULATE));
             bool simulate_changed = (simulate_check != BST_INDETERMINATE) &&
                 ((g_init_simulate < 0) || (simulate_check != g_init_simulate));
+
+            int no_shadow_cast_check = static_cast<int>(IsDlgButtonChecked(hdlg, IDC_MESH_NO_SHADOW_CAST));
+            bool no_shadow_cast_changed = (no_shadow_cast_check != BST_INDETERMINATE) &&
+                ((g_init_no_shadow_cast < 0) || (no_shadow_cast_check != g_init_no_shadow_cast));
 
             // Check material combo
             int material_sel = static_cast<int>(SendDlgItemMessage(hdlg, IDC_MESH_MATERIAL, CB_GETCURSEL, 0, 0));
@@ -1153,7 +1186,7 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
                 if (script_changed) mesh->script_name.assign_0(buf);
                 if (filename_changed) mesh->mesh_filename.assign_0(fname_buf);
                 if (anim_changed) mesh->state_anim.assign_0(anim_buf);
-                if (collision_changed && collision_sel >= 0 && collision_sel <= 2) {
+                if (collision_changed && collision_sel >= 0 && collision_sel <= 3) {
                     mesh->collision_mode = static_cast<uint8_t>(collision_sel);
                 }
                 if (overrides_changed) {
@@ -1161,6 +1194,9 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
                 }
                 if (simulate_changed) {
                     mesh->simulate_in_editor = (simulate_check == BST_CHECKED);
+                }
+                if (no_shadow_cast_changed) {
+                    mesh->no_shadow_cast = (no_shadow_cast_check == BST_CHECKED);
                 }
                 if (material_changed && material_sel >= 0 && material_sel <= 9) {
                     mesh->material = material_sel;
@@ -1310,6 +1346,7 @@ DedMesh* CloneMeshObject(DedMesh* source, bool add_to_level)
     mesh->simulate_in_editor = source->simulate_in_editor;
     mesh->material = source->material;
     mesh->clutter_props = source->clutter_props;
+    mesh->no_shadow_cast = source->no_shadow_cast;
 
     // Generate new UID
     mesh->uid = generate_uid();
@@ -1339,6 +1376,7 @@ void DeleteMeshObject(DedMesh* mesh)
     if (it != meshes.end()) {
         meshes.erase(it);
     }
+    alpine_remove_from_groups(level, static_cast<DedObject*>(mesh));
     // Remove from master objects list
     level->master_objects.remove_by_value(static_cast<DedObject*>(mesh));
     DestroyDedMesh(mesh);
