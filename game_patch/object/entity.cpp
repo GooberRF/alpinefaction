@@ -7,6 +7,7 @@
 #include <cstring>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 #include <xlog/xlog.h>
 #include "../misc/achievements.h"
@@ -879,6 +880,36 @@ CodeInjection clear_stale_movement_input_injection{
     },
 };
 
+// entity_set_next_state_anim(Entity*, int state, float transition_time) (0x0042A580), just after the state
+// index has been validated: ecx = ep, edx = state, esi/edi popped, so [esp+0xC] = transition_time.
+// Stock has no "already there" guard. Requesting the current state restarts a crossfade of that anim into
+// itself, and requesting it while a blend away from it is in flight leaves current == next stuck at ~50%
+// weight (the mirrored-elapsed swap re-arms every frame) or drops the incoming anim outright, then snaps.
+// entity_update_state_anim's crouch branch requests its state every frame with no entity_is_in_state_anim
+// check, so a crouched remote player whose interpolated speed dips through the 0.01 crouch-walk threshold
+// (every strafe reversal, and more of them arrive at high netfps) flashes crouch idle and snaps back.
+// Redundant requests are ignored; a request for the outgoing anim reverses the blend in place at the
+// mirrored weight, so the crossfade stays continuous.
+CodeInjection entity_set_next_state_anim_guard{
+    0x0042A5BC,
+    [](auto& regs) {
+        rf::Entity* ep = regs.ecx;
+        const int state = regs.edx;
+        const bool blending = ep->total_transition_time != 0.0f;
+        if (state == (blending ? ep->next_state_anim : ep->current_state_anim)) {
+            regs.eip = 0x0042A64E; // already there, or already heading there
+        }
+        else if (blending && state == ep->current_state_anim) {
+            const float transition_time = *reinterpret_cast<float*>(regs.esp + 0xC);
+            const float frac = ep->elapsed_transition_time / ep->total_transition_time;
+            std::swap(ep->current_state_anim, ep->next_state_anim);
+            ep->total_transition_time = transition_time;
+            ep->elapsed_transition_time = (1.0f - frac) * transition_time;
+            regs.eip = 0x0042A64E;
+        }
+    },
+};
+
 void entity_do_patch()
 {
     //player_create_entity_patch.install(); // force team skin experiment
@@ -888,6 +919,9 @@ void entity_do_patch()
 
     // Fix player being stuck to ground when jumping, especially when FPS is greater than 200
     stuck_to_ground_when_jumping_fix.install();
+
+    // Ignore redundant state anim requests and reverse in-flight crossfades instead of restarting them
+    entity_set_next_state_anim_guard.install();
     stuck_to_ground_when_using_jump_pad_fix.install();
     stuck_to_ground_fix.install();
 
