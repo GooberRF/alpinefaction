@@ -208,7 +208,7 @@ static bool selection_has_no_shadow_cast_eligible()
         if (node->state == BRUSH_STATE_SELECTED && no_shadow_cast_eligible(*node, mover_brush_uids))
             return true;
         node = node->next;
-    } while (node != level->brush_list);
+    } while (node && node != level->brush_list);
     return false;
 }
 
@@ -233,7 +233,7 @@ static int compute_no_shadow_cast_state_from_selected()
             }
         }
         node = node->next;
-    } while (node != level->brush_list);
+    } while (node && node != level->brush_list);
 
     if (num_eligible == 0 || num_flagged == 0) return BST_UNCHECKED;
     if (num_flagged == num_eligible) return BST_CHECKED;
@@ -266,7 +266,7 @@ static void apply_no_shadow_cast_to_selected_brushes(int new_state)
             }
         }
         node = node->next;
-    } while (node != level->brush_list);
+    } while (node && node != level->brush_list);
 }
 
 static void init_no_shadow_cast_checkbox(HWND hdlg)

@@ -104,7 +104,7 @@ void restore_view_cameras()
     }
 }
 
-void bake_finish(int code)
+[[noreturn]] void bake_finish(int code)
 {
     bake_log(std::format("done rc={}", code));
     ExitProcess(static_cast<UINT>(code));
@@ -176,8 +176,17 @@ void run_bake()
     bake_finish(0);
 }
 
-// the launcher escapes its arguments by doubling every backslash and Win32 collapses those runs, so
-// the path RED opens is not the string the command line carried
+// spelling is not identity, do not save over input
+std::string canonical_path(const std::string& path)
+{
+    char buf[MAX_PATH];
+    const DWORD len = GetFullPathNameA(path.c_str(), static_cast<DWORD>(sizeof(buf)), buf, nullptr);
+    if (len == 0 || len >= sizeof(buf)) {
+        return path;
+    }
+    return buf;
+}
+
 bool path_is_bake_input(const char* path)
 {
     auto take = [](const char*& p) {
@@ -190,7 +199,8 @@ bool path_is_bake_input(const char* path)
         }
         return std::tolower(c);
     };
-    const char* a = path;
+    const std::string canonical = canonical_path(path);
+    const char* a = canonical.c_str();
     const char* b = g_input_path.c_str();
     while (*a && *b) {
         if (take(a) != take(b)) {
@@ -198,17 +208,6 @@ bool path_is_bake_input(const char* path)
         }
     }
     return !*a && !*b;
-}
-
-// spelling is not identity, do not save over input
-std::string canonical_path(const std::string& path)
-{
-    char buf[MAX_PATH];
-    const DWORD len = GetFullPathNameA(path.c_str(), static_cast<DWORD>(sizeof(buf)), buf, nullptr);
-    if (len == 0 || len >= sizeof(buf)) {
-        return path;
-    }
-    return buf;
 }
 
 char __fastcall CDedDoc_LoadSaveLevel_new(void* self, int edx, const char* path, int is_load,
@@ -288,22 +287,26 @@ void ApplyHeadlessBakePatches()
     if (!g_active) {
         return;
     }
+    g_input_path = canonical_path(g_input_path);
 
     g_start_ticks = GetTickCount();
     if (!g_output_path.empty()) {
         g_log_path = g_output_path + ".log";
-        DeleteFileA(g_log_path.c_str());
     }
 
     if (g_output_path.empty()) {
         g_init_error = "-bake requires -bakeout <output.rfl>";
     }
-    else if (_stricmp(canonical_path(g_input_path).c_str(),
-                      canonical_path(g_output_path).c_str()) == 0) {
+    else if (_stricmp(g_input_path.c_str(), canonical_path(g_output_path).c_str()) == 0) {
         g_init_error = "-bakeout must differ from the -bake input";
     }
     else if (GetFileAttributesA(g_input_path.c_str()) == INVALID_FILE_ATTRIBUTES) {
         g_init_error = std::format("input {} not found", g_input_path);
+    }
+
+    // a rejected run appends to whatever log is there instead of destroying the last good one
+    if (g_init_error.empty()) {
+        DeleteFileA(g_log_path.c_str());
     }
 
     bake_log(std::format("started in={} out={}", g_input_path, g_output_path));

@@ -923,9 +923,12 @@ static uint8_t g_sun_color_b = 255;
 
 static void update_sun_color_controls(HWND hdlg)
 {
-    SendDlgItemMessageA(hdlg, IDC_SUN_COLOR_SWATCH, LVM_SETBKCOLOR, 0,
-        static_cast<LPARAM>(RGB(g_sun_color_r, g_sun_color_g, g_sun_color_b)));
-    InvalidateRect(GetDlgItem(hdlg, IDC_SUN_COLOR_SWATCH), nullptr, TRUE);
+    // a null HWND would send InvalidateRect at every window on the desktop
+    if (HWND swatch = GetDlgItem(hdlg, IDC_SUN_COLOR_SWATCH)) {
+        SendMessageA(swatch, LVM_SETBKCOLOR, 0,
+            static_cast<LPARAM>(RGB(g_sun_color_r, g_sun_color_g, g_sun_color_b)));
+        InvalidateRect(swatch, nullptr, TRUE);
+    }
     char buffer[32];
     std::snprintf(buffer, sizeof(buffer), "<%d, %d, %d>", g_sun_color_r, g_sun_color_g, g_sun_color_b);
     SetDlgItemTextA(hdlg, IDC_SUN_COLOR_VALUE, buffer);

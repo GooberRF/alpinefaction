@@ -572,6 +572,12 @@ int LauncherApp::Run()
         return 0;
     }
 
+    if (m_cmd_line_info.HasBadBakeArg()) {
+        Message(nullptr, "-bake requires an input level: -bake in.rfl -bakeout out.rfl",
+            "Alpine Faction Launcher", MB_OK | MB_ICONERROR);
+        return 1;
+    }
+
     // Migrate config from old version
     MigrateConfig();
 

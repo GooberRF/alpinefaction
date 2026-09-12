@@ -431,7 +431,7 @@ FONT 8, "MS Sans Serif", 0, 0, 0
     LTEXT           "Use + to add, - to remove selected.", -1, 14, 194, 246, 8
 
     AUTOCHECKBOX    "Destructible", IDC_MESH_IS_CLUTTER, 7, 212, 60, 10
-    AUTOCHECKBOX    "No shadow cast", IDC_MESH_NO_SHADOW_CAST, 90, 212, 74, 10
+    AUTO3STATE      "No shadow cast", IDC_MESH_NO_SHADOW_CAST, 90, 212, 74, 10
 
     GROUPBOX        "Destructible Properties", IDC_MESH_CLUTTER_GROUP, 7, 224, 260, 190
 

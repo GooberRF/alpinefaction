@@ -598,7 +598,14 @@ bool collect_vfx(const char* filename, MeshGeom& out, int uid)
             xlog::warn("[MeshOccluders] object {}: '{}' is empty", uid, filename);
             return false;
         }
-        buffer.resize(static_cast<std::size_t>(size));
+        // rf::File has no destructor, so a throw here would strand an engine file slot
+        try {
+            buffer.resize(static_cast<std::size_t>(size));
+        }
+        catch (...) {
+            file.close();
+            throw;
+        }
         const int got = file.read(buffer.data(), buffer.size());
         file.close();
         if (got != size) {

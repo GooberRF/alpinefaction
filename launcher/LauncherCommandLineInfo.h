@@ -45,8 +45,18 @@ public:
                     has_level_arg = true;
                     value_expected = true;
                 }
-                else if (arg == "-bake" || arg == "-bakeout") {
-                    has_bake_arg = true;
+                // only -bake with a path implies the editor; a bare one must not open an editor
+                // that would silently never bake
+                else if (arg == "-bake") {
+                    if (i + 1 < args.size()) {
+                        has_bake_arg = true;
+                        value_expected = true;
+                    }
+                    else {
+                        m_bad_bake_arg = true;
+                    }
+                }
+                else if (arg == "-bakeout") {
                     value_expected = true;
                 }
                 else if (arg == "-dedicated" || arg == "-ads") {
@@ -109,6 +119,11 @@ public:
         return m_help;
     }
 
+    [[nodiscard]] bool HasBadBakeArg() const
+    {
+        return m_bad_bake_arg;
+    }
+
     [[nodiscard]] bool HasAFFlag() const
     {
         return m_aflink_arg.has_value() || m_afdownload_arg.has_value() || m_afdemo_arg.has_value();
@@ -166,6 +181,7 @@ private:
     bool m_game = false;
     bool m_editor = false;
     bool m_help = false;
+    bool m_bad_bake_arg = false;
     std::optional<std::string> m_afdownload_arg;
     std::optional<std::string> m_aflink_arg;
     std::optional<std::string> m_afdemo_arg;
