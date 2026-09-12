@@ -266,6 +266,30 @@ namespace rf
     static auto& obj_create = addr_as_ref<Object*(int type, int sub_type, int parent, ObjectCreateInfo* oci, int flags, GRoom* room)>(0x00486DA0);
     static auto& obj_collision_register = addr_as_ref<void(Object* obj)>(0x0048C9A0);
     static auto& obj_collision_deregister = addr_as_ref<void(Object* obj)>(0x0048C9F0);
+
+    struct ObjCollisionPair
+    {
+        ObjCollisionPair* next;
+        Object* a;
+        Object* b;
+        uint32_t flags;
+    };
+    static_assert(sizeof(ObjCollisionPair) == 0x10);
+
+    struct ObjCollisionPairList
+    {
+        ObjCollisionPair* head;
+        int count;
+
+        void push(ObjCollisionPair* node)
+        {
+            AddrCaller{0x0048CC70}.this_call(this, node);
+        }
+    };
+    static_assert(sizeof(ObjCollisionPairList) == 0x8);
+
+    static auto& obj_collision_pair_free_list = addr_as_ref<ObjCollisionPairList>(0x0075DB30);
+    static auto& obj_collision_pair_active_list = addr_as_ref<ObjCollisionPairList>(0x0073DB28);
     static auto& obj_lookup_from_uid = addr_as_ref<Object*(int uid)>(0x0048A4A0);
     static auto& obj_from_handle = addr_as_ref<Object*(int handle)>(0x0040A0E0);
     static auto& obj_reset_render_flags = addr_as_ref<void()>(0x00488200);

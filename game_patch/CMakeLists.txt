@@ -302,6 +302,8 @@ set(SRCS
     object/monitor.cpp
     object/particle.cpp
     object/obj_light.cpp
+    object/obj_collision.cpp
+    object/obj_collision.h
     object/alpine_mesh.cpp
     object/alpine_corona.cpp
     object/alpine_corona.h
