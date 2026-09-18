@@ -12,6 +12,7 @@ class AlpineCoreConfig
 public:
     // Configurable fields
     bool vsync = false;
+    bool gamepad_rawinput_enabled = false;
 
     // Experimental settings
     bool low_frame_latency = false;
