@@ -216,7 +216,7 @@ struct AlpineGameSettings
     bool gamepad_gyro_enabled = false;
     float gamepad_gyro_sensitivity = 2.5f;
     bool gamepad_gyro_vehicle_camera = false;
-    int gamepad_gyro_autocalibration_mode = 1; // 0=Off, 1=MenuOnly, 2=Always
+    int gamepad_gyro_autocalibration_mode = 1; // 0=Off, 1=OnlyInMenu, 2=Always
     int gamepad_gyro_space = 3; // GyroSpace: Yaw=0  Roll=1  Local=2  Player=3  World=4
     int gamepad_gyro_ratcheting = 0; // 0=Always, 1=HoldOff, 2=HoldOn, 3=Toggle, 4=TouchOn, 5=TouchOff
     bool gamepad_gyro_invert_x = false;

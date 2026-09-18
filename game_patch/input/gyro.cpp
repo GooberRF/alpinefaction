@@ -19,27 +19,28 @@ static float g_smooth_yaw_prev   = 0.0f;
 void gyro_update_calibration_mode()
 {
     using CM = GamepadMotionHelpers::CalibrationMode;
-    int mode = std::clamp(g_alpine_game_config.gamepad_gyro_autocalibration_mode, 0, 2);
+    auto calibrationMode = static_cast<GyroAutocalibrationMode>(
+        std::clamp(g_alpine_game_config.gamepad_gyro_autocalibration_mode, 0, 2));
 
     // Autocalibration should only run when gyro input is in use (gameplay camera or menu cursor).
     bool gyro_active = gamepad_is_motionsensors_supported()
         && (g_alpine_game_config.gamepad_gyro_enabled
             || g_alpine_game_config.gamepad_gyro_menu_cursor_sensitivity > 0.0f);
     if (!gyro_active) {
-        mode = 0; // force manual calibration when no gyro feature is active
+        calibrationMode = GyroAutocalibrationMode::Off;
     }
 
     CM desired;
-    switch (mode) {
-    case 1: // Menu Only — only calibrate when not in gameplay
+    switch (calibrationMode) {
+    case GyroAutocalibrationMode::MenuOnly: // Only calibrate when in the menu
         desired = rf::gameseq_in_gameplay()
             ? CM::Manual
             : (CM::Stillness);
         break;
-    case 2: // Always - will try to calibrate whenever possible
+    case GyroAutocalibrationMode::Always: // Always calibrate whenever possible
         desired = CM::Stillness | CM::SensorFusion;
         break;
-    default: // Off - disable auto calibration
+    default: // Disables Auto-calibration
         desired = CM::Manual;
         break;
     }
@@ -47,8 +48,14 @@ void gyro_update_calibration_mode()
     if (desired == g_last_calibration_mode)
         return;
     g_last_calibration_mode = desired;
-
+    
+    // Preserve the current auto-calibration confidence across mode switches.
+    float confidence = g_motion.GetAutoCalibrationConfidence();
+    if (calibrationMode == GyroAutocalibrationMode::Always) {
+        confidence = 0.0f; // Always: learn aggressively, ignore Mode 1's inherited confidence.
+    }
     g_motion.SetCalibrationMode(desired);
+    g_motion.SetAutoCalibrationConfidence(confidence);
 }
 
 void gyro_reset()
@@ -265,7 +272,7 @@ ConsoleCommand2 gyro_autocalibration_cmd{
             mode_name = "Off";
             break;
         case 1:
-            mode_name = "Menu Only";
+            mode_name = "Only in Menu";
             break;
         case 2:
             mode_name = "Always";
@@ -275,7 +282,7 @@ ConsoleCommand2 gyro_autocalibration_cmd{
         rf::console::print("Gyro autocalibration mode: {} ({})", mode_name, mode);
     },
     "Set gyro auto-calibration mode",
-    "gyro_autocalibration <0|1|2> (valid values: 0=Off, 1=Menu Only, 2=Always)",
+    "gyro_autocalibration <0|1|2> (valid values: 0=Off, 1=Only in Menu, 2=Always)",
 };
 
 static void gyro_reset_autocalibration_partial_cmd()
