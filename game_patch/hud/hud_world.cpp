@@ -372,17 +372,16 @@ static NameLabelTex& ensure_hill_name_tex(const HillInfo& h, int font)
             slot.bm = -1;
         }
 
-        slot.bm = rf::bm::create(rf::bm::FORMAT_4444_ARGB, bw, bh);
+        slot.bm = rf::bm::create(rf::bm::FORMAT_8888_ARGB, bw, bh);
 
-        // The label is drawn at a range of on-screen sizes, so generate a mip chain
-        // like disk-loaded textures do to avoid shimmering when minified.
-        bm_set_user_mipmap(slot.bm, g_alpine_game_config.big_hud);
+        // Mip chain so the label stays stable when minified.
+        bm_set_user_mipmap(slot.bm, true);
 
         // keep resident
         rf::bm::texture_add_ref(slot.bm);
 
-        // clear on GPU path
-        rf::bm::clear_user_bitmap(slot.bm);
+        // Transparent white so filtering and mips never bleed black into glyph edges.
+        bm_fill(slot.bm, 0x00FFFFFFu);
 
         // render name text
         rf::gr::set_color(255, 255, 255, 255);
@@ -529,9 +528,8 @@ static void render_koth_icon_for_hill(const HillInfo& h, WorldHUDRenderMode rm)
     }
 
     // hill name label
-    const int font = g_alpine_game_config.big_hud
-        ? rf::gr::load_font("boldfont.ttf:56")
-        : 0;
+    // Texture resolution for the world-space quad, not a screen size; mips handle distance.
+    static const int font = rf::gr::load_font("boldfont.ttf:56");
     NameLabelTex& lbl = ensure_hill_name_tex(h, font);
 
     const float text_h_world = ring_scale * 0.55f;

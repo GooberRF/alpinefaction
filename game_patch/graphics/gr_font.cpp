@@ -1,7 +1,9 @@
+#include <algorithm>
 #include <memory>
 #include <unordered_map>
 #include <unordered_set>
 #include <cstddef>
+#include <cstdint>
 #include <exception>
 #include <cctype>
 #include <stdexcept>
@@ -10,6 +12,7 @@
 #include <patch_common/CodeInjection.h>
 #include <patch_common/AsmWriter.h>
 #include <common/utils/string-utils.h>
+#include <common/scope_guard.h>
 #include "../rf/gr/gr_font.h"
 #include "../rf/bmpman.h"
 #include "../rf/multi.h"
@@ -17,7 +20,6 @@
 #include "../bmpman/bmpman.h"
 
 #include <ft2build.h>
-#include <common/scope_guard.h>
 #include FT_FREETYPE_H
 
 struct ParsedFontName
@@ -374,12 +376,8 @@ GrNewFont::GrNewFont(std::string_view name) :
     rf::gr::tcache_add_ref(bitmap_);
 }
 
-void GrNewFont::draw_into_bitmap(
-    const int x,
-    const int y,
-    const int bm_handle,
-    const std::string_view text
-) const {
+void GrNewFont::draw_into_bitmap(int x, int y, int bm_handle, std::string_view text) const
+{
     if (text.empty() || bm_handle < 0 || bitmap_ == bm_handle) {
         return;
     }
@@ -400,21 +398,13 @@ void GrNewFont::draw_into_bitmap(
 
     int pen_x = x;
     const int pen_y = y + baseline_y_;
-    for (const char ch : text) {
+    for (char ch : text) {
         const int glyph_idx = char_map_[static_cast<uint8_t>(ch)];
         if (glyph_idx != -1) {
             const GlyphInfo& glyph_info = glyphs_[glyph_idx];
             if (glyph_info.bm_w) {
-                bm_copy_pixels(
-                    dst_lock,
-                    pen_x + glyph_info.x,
-                    pen_y + glyph_info.y,
-                    src_lock,
-                    glyph_info.bm_x,
-                    glyph_info.bm_y,
-                    glyph_info.bm_w,
-                    glyph_info.bm_h
-                );
+                bm_blend_pixels(dst_lock, pen_x + glyph_info.x, pen_y + glyph_info.y, src_lock, glyph_info.bm_x,
+                                glyph_info.bm_y, glyph_info.bm_w, glyph_info.bm_h);
             }
             pen_x += glyph_info.advance_x;
             if (pen_x >= dst_lock.w) {
@@ -599,13 +589,7 @@ FunHook<int(int)> gr_get_font_height_hook{
 
 FunHook<void(int, int, int, const char*, int)> gr_string_render_into_bitmap_hook{
     0x005203A0,
-    [] (
-        const int x,
-        const int y,
-        const int bm_handle,
-        const char* const text,
-        int font_num
-    ) {
+    [](int x, int y, int bm_handle, const char* text, int font_num) {
         if (font_num == -1) {
             font_num = g_default_font_id;
         }
@@ -613,23 +597,16 @@ FunHook<void(int, int, int, const char*, int)> gr_string_render_into_bitmap_hook
             const unsigned idx = static_cast<unsigned>(font_num & ~ttf_font_flag);
             if (idx >= g_fonts.size()) {
                 if (report_bad_font_id_once(font_num)) {
-                    xlog::error(
-                        "gr_string_render_into_bitmap_hook: bad TTF font id {:#x} (have {})",
-                        font_num,
-                        g_fonts.size()
-                    );
+                    xlog::error("gr_string_render_into_bitmap_hook: bad TTF font id {:#x} (have {})", font_num,
+                                g_fonts.size());
                 }
-            } else {
+            }
+            else {
                 g_fonts[idx].draw_into_bitmap(x, y, bm_handle, text);
             }
-        } else {
-            gr_string_render_into_bitmap_hook.call_target(
-                x,
-                y,
-                bm_handle,
-                text,
-                font_num
-            );
+        }
+        else {
+            gr_string_render_into_bitmap_hook.call_target(x, y, bm_handle, text, font_num);
         }
     },
 };

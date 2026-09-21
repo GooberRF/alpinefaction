@@ -154,13 +154,6 @@ namespace gr::d3d11
         constexpr UINT required_support =
             D3D11_FORMAT_SUPPORT_RENDER_TARGET | D3D11_FORMAT_SUPPORT_MIP_AUTOGEN;
         if ((format_support & required_support) != required_support) {
-            if (rf::bm::get_type(bm_handle) == rf::bm::TYPE_USER) {
-                xlog::warn(
-                    "Auto-mip is not supported for user bitmaps that are format {}",
-                    static_cast<int>(fmt)
-                );
-                return create_texture(bm_handle, fmt, w, h, bits, pal, 1, false, w, h);
-            }
             bool has_alpha = dxgi_format == DXGI_FORMAT_B5G5R5A1_UNORM
                 || dxgi_format == DXGI_FORMAT_B4G4R4A4_UNORM
                 || dxgi_format == DXGI_FORMAT_B8G8R8A8_UNORM;
@@ -187,7 +180,6 @@ namespace gr::d3d11
             return create_texture(bm_handle, fmt, w, h, bits, pal, 1, false, w, h);
         }
 
-        // Only convert and upload, if we have pixel data.
         if (bits) {
             std::unique_ptr<rf::ubyte[]> converted_bits;
             rf::ubyte* upload_bits = bits;
@@ -210,7 +202,6 @@ namespace gr::d3d11
             return create_texture(bm_handle, fmt, w, h, bits, pal, 1, false, w, h);
         }
 
-        // Only generate mips initially, if we uploaded data.
         if (bits) {
             device_context_->GenerateMips(srv);
         }
@@ -300,7 +291,7 @@ namespace gr::d3d11
 
         if (rf::bm::get_type(bm_handle) == rf::bm::TYPE_USER) {
             xlog::trace("Creating user bitmap texture: handle {}", bm_handle);
-            if (bm_is_user_mipmap(bm_handle) && !staging) {
+            if (bm_is_user_mipmap(bm_handle)) {
                 return create_texture_auto_mips(bm_handle, fmt, w, h, nullptr, nullptr);
             }
             auto texture = create_texture(bm_handle, fmt, w, h, nullptr, nullptr, 1, staging);
@@ -598,13 +589,12 @@ namespace gr::d3d11
             device_context_->Unmap(texture.cpu_texture, 0);
             if (lock->mode != rf::gr::LOCK_READ_ONLY && texture.gpu_texture) {
                 device_context_->CopySubresourceRegion(texture.gpu_texture, 0, 0, 0, 0, texture.cpu_texture, 0, nullptr);
-                // We need to rebuild each mip level.
+                // The copy above only refreshes mip 0, so the rest of the chain is now stale.
                 if (bm_is_user_mipmap(lock->bm_handle)) {
                     D3D11_TEXTURE2D_DESC desc{};
                     texture.gpu_texture->GetDesc(&desc);
                     if (desc.MiscFlags & D3D11_RESOURCE_MISC_GENERATE_MIPS) {
-                        ID3D11ShaderResourceView* srv =
-                            texture.get_or_create_texture_view(device_, device_context_);
+                        ID3D11ShaderResourceView* srv = texture.get_or_create_texture_view(device_, device_context_);
                         if (srv) {
                             device_context_->GenerateMips(srv);
                         }

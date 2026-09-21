@@ -16,6 +16,8 @@ int bm_load_if_exists(const char* name, int unk, bool generate_mipmaps);
 
 void bm_set_dynamic(int bm_handle, bool dynamic);
 bool bm_is_dynamic(int bm_handle);
+// The GPU texture may be promoted to 8888; write text into such bitmaps with TTF fonts only
+// (the stock font blit needs equal lock formats).
 void bm_set_user_mipmap(int bm_handle, bool mipmap);
 bool bm_is_user_mipmap(int bm_handle);
 void bm_change_format(int bm_handle, rf::bm::Format format);
@@ -28,26 +30,10 @@ rf::gr::Color bm_get_pixel(uint8_t* data, rf::bm::Format format, int stride_in_b
 size_t bm_calculate_total_bytes(int w, int h, rf::bm::Format format);
 int bm_calculate_pitch(int w, rf::bm::Format format);
 int bm_calculate_rows(int h, rf::bm::Format format);
-bool bm_copy_pixels(
-    const rf::gr::LockInfo& dst_lock,
-    int dst_x,
-    int dst_y,
-    const rf::gr::LockInfo& src_lock,
-    int src_x,
-    int src_y,
-    int w,
-    int h
-);
-bool bm_copy(
-    int dst_handle,
-    int dst_x,
-    int dst_y,
-    int src_handle,
-    int src_x,
-    int src_y,
-    int w,
-    int h
-);
+// Reads dst, so it must hold initialised pixels (lock with LOCK_READ_ONLY_WRITE).
+bool bm_blend_pixels(const rf::gr::LockInfo& dst_lock, int dst_x, int dst_y, const rf::gr::LockInfo& src_lock,
+                     int src_x, int src_y, int w, int h);
+bool bm_fill(int bm_handle, uint32_t argb);
 
 inline int bm_bytes_per_pixel(rf::bm::Format format)
 {

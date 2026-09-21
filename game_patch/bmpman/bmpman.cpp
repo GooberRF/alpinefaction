@@ -1,4 +1,6 @@
 #include <cassert>
+#include <algorithm>
+#include <vector>
 #include <patch_common/FunHook.h>
 #include <patch_common/CodeInjection.h>
 #include <patch_common/AsmWriter.h>
@@ -328,16 +330,18 @@ bool bm_is_dynamic(int bm_handle)
     return rf::bm::bitmaps[bm_index].dynamic;
 }
 
-void bm_set_user_mipmap(const int bm_handle, const bool mipmap) {
-    const int bm_index = rf::bm::get_cache_slot(bm_handle);
+void bm_set_user_mipmap(int bm_handle, bool mipmap)
+{
+    int bm_index = rf::bm::get_cache_slot(bm_handle);
     if (rf::bm::bitmaps[bm_index].user_mipmap != mipmap) {
         rf::bm::bitmaps[bm_index].user_mipmap = mipmap;
         rf::gr::mark_texture_dirty(bm_handle);
     }
 }
 
-bool bm_is_user_mipmap(const int bm_handle) {
-    const int bm_index = rf::bm::get_cache_slot(bm_handle);
+bool bm_is_user_mipmap(int bm_handle)
+{
+    int bm_index = rf::bm::get_cache_slot(bm_handle);
     return rf::bm::bitmaps[bm_index].user_mipmap;
 }
 
@@ -352,79 +356,135 @@ void bm_change_format(int bm_handle, rf::bm::Format format)
     }
 }
 
-bool bm_copy_pixels(
-    const rf::gr::LockInfo& dst_lock,
-    int dst_x,
-    int dst_y,
-    const rf::gr::LockInfo& src_lock,
-    int src_x,
-    int src_y,
-    int w,
-    int h
-) {
-    if (!dst_lock.data
-        || !src_lock.data
-        || dst_lock.bm_handle == src_lock.bm_handle
-        || w <= 0
-        || h <= 0)
-    {
+// Uncompressed, non-paletted formats bm_bytes_per_pixel and bm_convert_format agree on.
+static bool bm_is_blit_format(rf::bm::Format f)
+{
+    switch (f) {
+        case rf::bm::FORMAT_8888_ARGB:
+        case rf::bm::FORMAT_888_RGB:
+        case rf::bm::FORMAT_565_RGB:
+        case rf::bm::FORMAT_1555_ARGB:
+        case rf::bm::FORMAT_4444_ARGB:
+        case rf::bm::FORMAT_8_ALPHA:
+            return true;
+        default:
+            return false;
+    }
+}
+
+static bool bm_clip_copy_rect(const rf::gr::LockInfo& dst_lock, int& dst_x, int& dst_y,
+                              const rf::gr::LockInfo& src_lock, int& src_x, int& src_y, int& w, int& h)
+{
+    if (!dst_lock.data || !src_lock.data || dst_lock.bm_handle == src_lock.bm_handle
+        || !bm_is_blit_format(dst_lock.format) || !bm_is_blit_format(src_lock.format) || w <= 0 || h <= 0) {
         return false;
     }
 
-    // Clip against left and top edges cleanly.
-    if (src_x < 0) {
-        const int shift = -src_x;
-        w -= shift;
-        dst_x += shift;
-        src_x = 0;
+    int64_t sx = src_x;
+    int64_t sy = src_y;
+    int64_t dx = dst_x;
+    int64_t dy = dst_y;
+    int64_t cw = w;
+    int64_t ch = h;
+    const int64_t src_w = src_lock.w;
+    const int64_t src_h = src_lock.h;
+    const int64_t dst_w = dst_lock.w;
+    const int64_t dst_h = dst_lock.h;
+
+    if (sx < 0) {
+        const int64_t shift = -sx;
+        cw -= shift;
+        dx += shift;
+        sx = 0;
     }
-    if (dst_x < 0) {
-        const int shift = -dst_x;
-        w -= shift;
-        src_x += shift;
-        dst_x = 0;
+    if (dx < 0) {
+        const int64_t shift = -dx;
+        cw -= shift;
+        sx += shift;
+        dx = 0;
+    }
+    if (sy < 0) {
+        const int64_t shift = -sy;
+        ch -= shift;
+        dy += shift;
+        sy = 0;
+    }
+    if (dy < 0) {
+        const int64_t shift = -dy;
+        ch -= shift;
+        sy += shift;
+        dy = 0;
     }
 
-    // Clip against right and bottom edges.
-    if (src_x + w > src_lock.w) {
-        w = src_lock.w - src_x;
-    }
-    if (src_y + h > src_lock.h) {
-        h = src_lock.h - src_y;
-    }
-    if (dst_x + w > dst_lock.w) {
-        w = dst_lock.w - dst_x;
-    }
-    if (dst_y + h > dst_lock.h) {
-        h = dst_lock.h - dst_y;
-    }
+    cw = std::min({cw, src_w - sx, dst_w - dx});
+    ch = std::min({ch, src_h - sy, dst_h - dy});
 
-    if (w <= 0 || h <= 0) {
+    if (cw <= 0 || ch <= 0) {
         return false;
     }
 
-    // Compute pointer offsets using bm_bytes_per_pixel AFTER clipping.
-    const uint8_t* src_ptr = src_lock.data 
-        + (src_x * bm_bytes_per_pixel(src_lock.format)) 
+    src_x = static_cast<int>(sx);
+    src_y = static_cast<int>(sy);
+    dst_x = static_cast<int>(dx);
+    dst_y = static_cast<int>(dy);
+    w = static_cast<int>(cw);
+    h = static_cast<int>(ch);
+    return true;
+}
+
+bool bm_blend_pixels(const rf::gr::LockInfo& dst_lock, int dst_x, int dst_y, const rf::gr::LockInfo& src_lock,
+                     int src_x, int src_y, int w, int h)
+{
+    if (!bm_clip_copy_rect(dst_lock, dst_x, dst_y, src_lock, src_x, src_y, w, h)) {
+        return false;
+    }
+
+    const uint8_t* src_ptr = src_lock.data + (src_x * bm_bytes_per_pixel(src_lock.format))
         + (src_y * src_lock.stride_in_bytes);
-
-    uint8_t* dst_ptr = dst_lock.data 
-        + (dst_x * bm_bytes_per_pixel(dst_lock.format)) 
+    uint8_t* dst_ptr = dst_lock.data + (dst_x * bm_bytes_per_pixel(dst_lock.format))
         + (dst_y * dst_lock.stride_in_bytes);
 
-    // Row-by-row transfer.
-    for (int row = 0; row < h; ++row) {
-        bm_convert_format(
-            dst_ptr,
-            dst_lock.format,
-            src_ptr,
-            src_lock.format,
-            w,
-            1,
-            dst_lock.stride_in_bytes,
-            src_lock.stride_in_bytes,
-            nullptr
-        );
+    std::vector<uint32_t> scratch_src(static_cast<size_t>(w));
+    std::vector<uint32_t> scratch_dst(static_cast<size_t>(w));
+
+    for (int y = 0; y < h; ++y) {
+        if (!bm_convert_format(scratch_src.data(), rf::bm::FORMAT_8888_ARGB, src_ptr, src_lock.format, w, 1, w * 4,
+                               src_lock.stride_in_bytes, nullptr)) {
+            return false;
+        }
+        if (!bm_convert_format(scratch_dst.data(), rf::bm::FORMAT_8888_ARGB, dst_ptr, dst_lock.format, w, 1, w * 4,
+                               dst_lock.stride_in_bytes, nullptr)) {
+            return false;
+        }
+
+        for (size_t i = 0; i < scratch_src.size(); ++i) {
+            const uint32_t s = scratch_src[i];
+            const int sa = static_cast<int>((s >> 24) & 0xFF);
+            const uint32_t d = scratch_dst[i];
+            const int da = static_cast<int>((d >> 24) & 0xFF);
+            if (sa == 0) {
+                if (da == 0) {
+                    scratch_dst[i] = s & 0x00FFFFFFu;
+                }
+                continue;
+            }
+            const int da_weighted = da * (255 - sa) / 255;
+            const int out_a = sa + da_weighted;
+            uint32_t out = static_cast<uint32_t>(out_a) << 24;
+            for (int shift = 16; shift >= 0; shift -= 8) {
+                const int sc = static_cast<int>((s >> shift) & 0xFF);
+                const int dc = static_cast<int>((d >> shift) & 0xFF);
+                const int oc = (sc * sa + dc * da_weighted) / out_a;
+                out |= static_cast<uint32_t>(oc) << shift;
+            }
+            scratch_dst[i] = out;
+        }
+
+        if (!bm_convert_format(dst_ptr, dst_lock.format, scratch_dst.data(), rf::bm::FORMAT_8888_ARGB, w, 1,
+                               dst_lock.stride_in_bytes, w * 4, nullptr)) {
+            return false;
+        }
+
         src_ptr += src_lock.stride_in_bytes;
         dst_ptr += dst_lock.stride_in_bytes;
     }
@@ -432,44 +492,23 @@ bool bm_copy_pixels(
     return true;
 }
 
-bool bm_copy(
-    const int dst_handle,
-    const int dst_x,
-    const int dst_y,
-    const int src_handle,
-    const int src_x,
-    const int src_y,
-    const int w,
-    const int h
-) {
-    if (src_handle == dst_handle) {
+bool bm_fill(int bm_handle, uint32_t argb)
+{
+    rf::gr::LockInfo lock{};
+    if (!rf::gr::lock(bm_handle, 0, &lock, rf::gr::LOCK_READ_ONLY_WRITE)) {
         return false;
     }
 
-    rf::gr::LockInfo src_lock{};
-    if (!rf::gr::lock(src_handle, 0, &src_lock, rf::gr::LOCK_READ_ONLY)) {
+    ScopeGuard lock_guard{[&] { rf::gr::unlock(&lock); }};
+
+    if (!bm_is_blit_format(lock.format) || lock.w <= 0 || lock.h <= 0) {
         return false;
     }
 
-    ScopeGuard src_guard{[&] { rf::gr::unlock(&src_lock); }};
-
-    rf::gr::LockInfo dst_lock{};
-    if (!rf::gr::lock(dst_handle, 0, &dst_lock, rf::gr::LOCK_READ_ONLY_WRITE)) {
-        return false;
-    }
-
-    ScopeGuard dst_guard{[&] { rf::gr::unlock(&dst_lock); }};
-
-    return bm_copy_pixels(
-        dst_lock,
-        dst_x,
-        dst_y,
-        src_lock,
-        src_x,
-        src_y,
-        w,
-        h
-    );
+    // Source pitch 0 makes every destination row read the same scratch row.
+    std::vector<uint32_t> row(static_cast<size_t>(lock.w), argb);
+    return bm_convert_format(lock.data, lock.format, row.data(), rf::bm::FORMAT_8888_ARGB,
+                             lock.w, lock.h, lock.stride_in_bytes, 0, nullptr);
 }
 
 void bm_apply_patch()
