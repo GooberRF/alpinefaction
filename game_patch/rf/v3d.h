@@ -47,6 +47,8 @@ namespace rf
         VifLodMesh *vu;
     };
     static_assert(sizeof(V3dMesh) == 0x90);
+    static_assert(offsetof(V3dMesh, num_materials) == 0x84);
+    static_assert(offsetof(V3dMesh, materials) == 0x88);
     static_assert(offsetof(V3dMesh, vu) == 0x8C);
 
     struct WeightIndexArray
@@ -132,6 +134,7 @@ namespace rf
         void *render_cache;
 #endif
     };
+    static_assert(offsetof(VifLodMesh, meshes) == 0x4);
 
     struct MeshRenderParams
     {

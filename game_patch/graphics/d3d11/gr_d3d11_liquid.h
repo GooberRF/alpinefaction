@@ -13,7 +13,11 @@
 
 namespace gr::d3d11
 {
-    constexpr int max_liquid_volumes = 8;
+    class ShaderManager;
+
+    // Matches the caustics gather: the cull bound now reaches the engine far clip above water and
+    // collects from the whole level, so long water bodies routinely span more than eight rooms.
+    constexpr int max_liquid_volumes = 16;
 
     // Never below stock's value, and only up to gr::default_wfar, which the engine reloads each
     // frame. Zero/negative/NaN pass through to the engine's own handling.
@@ -46,9 +50,11 @@ namespace gr::d3d11
         std::array<float, 4> params;
         float far_clip; float num_volumes; float dark_surface_y; float viewport_y;
         LiquidVolumeGPUData volumes[max_liquid_volumes];
+        float depth_sz; float depth_tz; float depth_mode; float _pad2;
     };
-    static_assert(sizeof(LiquidBufferData) == 400);
+    static_assert(sizeof(LiquidBufferData) == 160 + 32 * max_liquid_volumes);
     static_assert(offsetof(LiquidBufferData, volumes) == 144);
+    static_assert(offsetof(LiquidBufferData, depth_sz) == 144 + 32 * max_liquid_volumes);
     static_assert(sizeof(LiquidBufferData) % 16 == 0);
 
     struct LiquidState
@@ -59,6 +65,7 @@ namespace gr::d3d11
         float alpha = 0.0f;
         float visibility = 1.0f;
         bool eye_under = false;
+        bool eye_room_liquid = false;   // the camera's own room holds the liquid, not a room it can see into
         rf::Vector3 over_fog_color{0.0f, 0.0f, 0.0f};
         float over_fog_far = 0.0f;  // <= 0 means the level applies no distance fog
 
@@ -71,6 +78,44 @@ namespace gr::d3d11
         float blended_over_fog_far = 0.0f;
     };
 
+    class SceneDepthCapture
+    {
+    public:
+        void reset(ID3D11Device* device, ID3D11DeviceContext* device_context, ID3D11Texture2D* depth_texture);
+        // Allocates the full-size copy on first use; levels without liquid never pay for it
+        bool ensure(ID3D11Device* device, ID3D11DeviceContext* device_context, ShaderManager& shader_manager);
+        // True when the multisampled resolve pass ran and left its own state on the pipeline
+        bool capture(ID3D11DeviceContext* device_context);
+
+        // 0 none, 1 Texture2D, matching LiquidBufferData::depth_mode
+        float mode() const
+        {
+            return copy_srv_ ? 1.0f : 0.0f;
+        }
+
+    private:
+        void bind(ID3D11DeviceContext* device_context);
+        bool create_resolve_objects(ID3D11Device* device, ShaderManager& shader_manager);
+        void release_copy();
+
+        ComPtr<ID3D11Texture2D> depth_texture_;
+        ComPtr<ID3D11Texture2D> copy_texture_;
+        ComPtr<ID3D11ShaderResourceView> copy_srv_;
+        ComPtr<ID3D11Texture2D> stand_in_texture_;
+        ComPtr<ID3D11ShaderResourceView> stand_in_srv_;
+        // Multisampled resolve path only
+        ComPtr<ID3D11DepthStencilView> copy_dsv_;
+        ComPtr<ID3D11ShaderResourceView> depth_srv_;
+        ComPtr<ID3D11VertexShader> resolve_vs_;
+        ComPtr<ID3D11PixelShader> resolve_ps_;
+        ComPtr<ID3D11DepthStencilState> resolve_depth_state_;
+        ComPtr<ID3D11RasterizerState> resolve_rasterizer_state_;
+        D3D11_TEXTURE2D_DESC depth_desc_{};
+        bool multisampled_ = false;
+        bool resolve_capable_ = false;
+        bool copy_failed_ = false;
+    };
+
     class LiquidFxRenderer
     {
     public:
@@ -79,7 +124,8 @@ namespace gr::d3d11
         // Must be given the main scene's camera, not the globals at flip time. Returns the
         // projection to apply: submerged, the far plane is widened to the engine's cull distance.
         Projection update(ID3D11DeviceContext* device_context, const Projection& projection,
-                          const rf::Vector3& eye_pos, const rf::Matrix3& eye_orient);
+                          const rf::Vector3& eye_pos, const rf::Matrix3& eye_orient,
+                          float scene_depth_mode);
 
         // b6 must not stay live while the engine renders from another camera into a texture
         void write_disabled(ID3D11DeviceContext* device_context);

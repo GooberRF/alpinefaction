@@ -345,8 +345,10 @@ namespace gr::d3d11
         float gas_fog_allowed;
         float sky_room;
         float draw_room_uid;
+        float liquid_surface;
+        std::array<float, 3> _pad;
     };
-    static_assert(sizeof(RenderModeBufferData) == 80);
+    static_assert(sizeof(RenderModeBufferData) == 96);
     static_assert(sizeof(RenderModeBufferData) % 16 == 0);
 
     RenderModeBuffer::RenderModeBuffer(ID3D11Device* device)
@@ -601,6 +603,7 @@ namespace gr::d3d11
         data.gas_fog_allowed = current_fog_allowed_ ? 1.0f : 0.0f;
         data.sky_room = current_sky_room_ ? 1.0f : 0.0f;
         data.draw_room_uid = static_cast<float>(current_draw_room_uid_);
+        data.liquid_surface = current_liquid_surface_ ? 1.0f : 0.0f;
 
         D3D11_MAPPED_SUBRESOURCE mapped_subres;
         DF_GR_D3D11_CHECK_HR(

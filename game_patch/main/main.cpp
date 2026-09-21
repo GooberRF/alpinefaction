@@ -172,6 +172,7 @@ FunHook<int()> rf_do_frame_hook{
         hud_pit_queue_auto_spectate();  // client-side Pit auto-spectate
         gungame_client_do_frame();      // client-side Gun Game level-up notification watcher
         alpine_mesh_do_frame();
+        item_do_frame();
         atx_do_frame();
         fflink::do_frame();
         int result = rf_do_frame_hook.call_target();

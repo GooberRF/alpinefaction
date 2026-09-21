@@ -149,6 +149,15 @@ namespace gr::d3d11
             }
         }
 
+        // Liquid surface pass. Same reasoning again: scoped to the draw sequence, not the mode.
+        void set_liquid_surface(bool liquid_surface, ID3D11DeviceContext* device_context)
+        {
+            if (current_liquid_surface_ != liquid_surface) {
+                current_liquid_surface_ = liquid_surface;
+                update_buffer(device_context);
+            }
+        }
+
     private:
         void update_buffer(ID3D11DeviceContext* device_context);
 
@@ -168,6 +177,7 @@ namespace gr::d3d11
         float current_alpha_test_threshold_ = 1.0f / 255.0f;
         bool current_sky_room_ = false;
         int current_draw_room_uid_ = -1;
+        bool current_liquid_surface_ = false;
     };
 
     class PerFrameBuffer
@@ -473,9 +483,10 @@ namespace gr::d3d11
         }
 
         Projection update_liquid_fx(const Projection& projection, const rf::Vector3& eye_pos,
-                                    const rf::Matrix3& eye_orient)
+                                    const rf::Matrix3& eye_orient, float scene_depth_mode)
         {
-            return liquid_fx_renderer_.update(device_context_, projection, eye_pos, eye_orient);
+            return liquid_fx_renderer_.update(device_context_, projection, eye_pos, eye_orient,
+                                              scene_depth_mode);
         }
 
         const LiquidState& liquid_state() const
@@ -530,6 +541,15 @@ namespace gr::d3d11
                 return;
             }
             render_mode_cbuffer_.set_draw_room_uid(room_uid, device_context_);
+        }
+
+        // Marks the liquid surface pass, which the shader gives its own distance opacity.
+        void set_liquid_surface(bool liquid_surface)
+        {
+            if (liquid_surface && g_alpine_game_config.underwater_fx < 2) {
+                return;
+            }
+            render_mode_cbuffer_.set_liquid_surface(liquid_surface, device_context_);
         }
 
         void set_vertex_buffer(ID3D11Buffer* vertex_buffer, UINT stride, UINT slot = 0)
@@ -651,9 +671,7 @@ namespace gr::d3d11
             current_blend_state_ = nullptr;
             current_depth_stencil_state_ = nullptr;
             current_rasterizer_state_ = nullptr;
-            zbias_ = 0;
             zbias_changed_ = true;
-            depth_clip_enabled_ = true;
             depth_clip_enabled_changed_ = true;
             // Re-bind RenderContext's own constant buffers (restores b1 VP after shadow pass etc.)
             bind_cbuffers();

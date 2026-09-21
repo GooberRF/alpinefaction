@@ -38,3 +38,5 @@ add_shader(gamma_vs gamma_vs.hlsl vs_4_0)
 add_shader(gamma_ps gamma_ps.hlsl ps_4_0)
 
 add_shader(scenefx_ps scenefx_ps.hlsl ps_4_0)
+
+add_shader(depth_resolve_ps depth_resolve_ps.hlsl ps_4_1)

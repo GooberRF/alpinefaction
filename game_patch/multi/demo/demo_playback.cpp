@@ -9,7 +9,6 @@
 #include <common/rfproto.h>
 #include <common/utils/list-utils.h>
 #include <xlog/xlog.h>
-#include <patch_common/CallHook.h>
 #include <patch_common/FunHook.h>
 #include "demo.h"
 #include "demo_file.h"
@@ -689,17 +688,6 @@ namespace
                 frametime = 0.0f;
             }
             vmesh_process_hook.call_target(vmesh, frametime, increment_only, pos, orient, lod_level);
-        },
-    };
-
-    // Rotating items spin in item_render (render path, not the sim), advancing their
-    // angle by rf::frametime unless the engine's own pause flag is set. That flag can't
-    // be set for demo pause (controls_read/controls_process gate ALL input on it - the
-    // unpause key would stop working), so answer "paused" at this one call site instead.
-    CallHook<bool()> item_render_game_is_paused_hook{
-        0x0045906A,
-        []() {
-            return item_render_game_is_paused_hook.call_target() || g_ctx.pause_fx_applied;
         },
     };
 
@@ -1746,7 +1734,6 @@ void demo_playback_do_patch()
     psnet_rel_connect_to_server_hook.install();
     gameplay_sim_frame_hook.install();
     vmesh_process_hook.install();
-    item_render_game_is_paused_hook.install();
 
     demo_play_cmd.register_cmd();
     demo_stop_cmd.register_cmd();

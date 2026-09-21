@@ -90,6 +90,9 @@ namespace rf
         int root;
     };
     static_assert(sizeof(Character) == 0x1A58);
+    static_assert(offsetof(Character, flags) == 0x44);
+    static_assert(offsetof(Character, num_bones) == 0x48);
+    static_assert(offsetof(Character, num_tags) == 0x12B8);
 
     struct CharacterInstance
     {
@@ -119,6 +122,8 @@ namespace rf
         CharacterInstance *next;
         CharacterInstance *prev;
     };
+
+    static auto& base_characters = addr_as_ref<Character[64]>(0x0181BDC0);
 
     static auto& g_fast_animations = addr_as_ref<bool>(0x005A4459);
 

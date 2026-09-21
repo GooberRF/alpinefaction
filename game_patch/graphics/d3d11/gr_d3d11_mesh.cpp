@@ -882,7 +882,7 @@ namespace gr::d3d11
         if (!ir_scanner) {
             if (use_vtx_lighting) {
                 // Old (master) vertex lighting: approximate lighting via mode color
-                if (is_character_mesh) {
+                if (is_character_mesh || is_fp_weapon) {
                     color = add_clamped(params.ambient_color, {224, 224, 224, 224});
                 } else {
                     if (params.flags & rf::MeshRenderFlags::MRF_CUSTOM_AMBIENT_COLOR) {
@@ -1045,7 +1045,9 @@ namespace gr::d3d11
                 self_illum = 1.0f;
             }
 
-            render_context_.set_mode(forced_mode.value_or(b.mode), color, false, gpu_dynamic_lighting, self_illum, !is_character_mesh, emissive);
+            // Static-mesh light scale is skipped for first person meshes too: fpguns are character meshes, and
+            // static fpgun attachments (silencer) must match them
+            render_context_.set_mode(forced_mode.value_or(b.mode), color, false, gpu_dynamic_lighting, self_illum, !is_character_mesh && !is_fp_weapon, emissive);
             render_context_.set_textures(texture, -1);
             render_context_.draw_indexed(b.num_indices, b.start_index, b.base_vertex);
         }

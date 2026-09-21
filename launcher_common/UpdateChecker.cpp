@@ -14,7 +14,7 @@
 // 7 = 1.2.2 (Willow)
 // 8 = 1.3.0 (Bakeapple)
 // 9 = 1.4.0 (Lupin)
-// 10 = TBD
+// 10 = 1.5.0 (Trillium)
 
 bool UpdateChecker::CheckForUpdates()
 {

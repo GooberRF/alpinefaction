@@ -288,6 +288,100 @@ static FunHook<bool __fastcall(rf::Skeleton*)> skeleton_has_morph_vertices_hook{
     },
 };
 
+static_assert(offsetof(rf::Character, character_meshes) + offsetof(rf::CharacterMesh, mesh) == 0x1A50);
+
+static std::string_view character_name(const rf::Character* cp)
+{
+    std::string_view name{cp->name, std::size(cp->name)};
+    return name.substr(0, name.find('\0'));
+}
+
+// A reaped slot has an empty name, so the slot index carries the diagnosis
+static int character_slot_index(const rf::Character* cp)
+{
+    const auto base = reinterpret_cast<uintptr_t>(&rf::base_characters[0]);
+    const auto addr = reinterpret_cast<uintptr_t>(cp);
+    if (addr < base) {
+        return -1;
+    }
+    const uintptr_t offset = addr - base;
+    if (offset % sizeof(rf::Character) != 0 || offset / sizeof(rf::Character) >= std::size(rf::base_characters)) {
+        return -1;
+    }
+    return static_cast<int>(offset / sizeof(rf::Character));
+}
+
+static bool character_lod0_mesh_missing(const rf::Character* cp)
+{
+    if (cp->num_character_meshes < 1) {
+        return true;
+    }
+    const rf::V3dMesh* mesh = cp->character_meshes[0].mesh;
+    if (!mesh) {
+        return true;
+    }
+    const rf::VifLodMesh* lod_mesh = mesh->vu;
+    return !lod_mesh || lod_mesh->num_levels < 1 || !lod_mesh->meshes[0];
+}
+
+static void warn_lod0_mesh_missing(const rf::Character* cp, int& warn_count, const char* outcome)
+{
+    if (warn_count >= 5) {
+        return;
+    }
+    ++warn_count;
+    xlog::warn("Character slot {} '{}' has no LOD0 mesh (bones {}, tags {}, flags {:#x}) - {}",
+        character_slot_index(cp), character_name(cp), cp->num_bones, cp->num_tags, cp->flags, outcome);
+}
+
+static CodeInjection character_prop_transform_null_mesh_injection{
+    0x0051B35B,
+    [](auto& regs) {
+        rf::Character* cp = regs.edx;
+        if (character_lod0_mesh_missing(cp)) {
+            static int warn_count = 0;
+            warn_lod0_mesh_missing(cp, warn_count, "returning identity transform");
+            regs.eip = 0x0051B371;
+        }
+    },
+};
+
+static CodeInjection character_prop_lookup_null_mesh_injection{
+    0x0051D626,
+    [](auto& regs) {
+        rf::Character* cp = regs.esi;
+        if (character_lod0_mesh_missing(cp)) {
+            static int warn_count = 0;
+            warn_lod0_mesh_missing(cp, warn_count, "prop point lookup failed");
+            regs.eip = 0x0051D686;
+        }
+    },
+};
+
+// vu is the witness that num_materials/materials were written at all: V3dMesh's ctor zeroes
+// only vu, and a pre-v7 VU chunk makes the submesh loader bail before it fills either field.
+static bool character_mesh_materials_missing(const rf::V3dMesh* mesh)
+{
+    return !mesh || !mesh->vu || (mesh->num_materials > 0 && !mesh->materials);
+}
+
+static CodeInjection character_mesh_page_in_null_mesh_injection{
+    0x004AEADD,
+    [](auto& regs) {
+        rf::V3dMesh* mesh = regs.eax;
+        if (character_mesh_materials_missing(mesh)) {
+            static int warn_count = 0;
+            if (warn_count < 5) {
+                ++warn_count;
+                rf::Character* cp = regs.ecx;
+                xlog::warn("Character slot {} '{}' has no mesh materials (bones {}, tags {}, flags {:#x}) - skipping texture page in",
+                    character_slot_index(cp), character_name(cp), cp->num_bones, cp->num_tags, cp->flags);
+            }
+            regs.eip = 0x004AEB15;
+        }
+    },
+};
+
 void character_apply_patch()
 {
     // do not load fast_anims value from registry
@@ -302,4 +396,7 @@ void character_apply_patch()
     character_delete_character_injection.install();
     character_level_init_hook.install();
     skeleton_has_morph_vertices_hook.install();
+    character_prop_transform_null_mesh_injection.install();
+    character_prop_lookup_null_mesh_injection.install();
+    character_mesh_page_in_null_mesh_injection.install();
 }

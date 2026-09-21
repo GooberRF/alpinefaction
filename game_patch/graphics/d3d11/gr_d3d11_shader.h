@@ -37,6 +37,7 @@ namespace gr::d3d11
         outline,
         gamma,
         scenefx,
+        depth_resolve,
     };
 
     inline const char* get_vertex_shader_filename(VertexShaderId vertex_shader_id)
@@ -102,6 +103,8 @@ namespace gr::d3d11
                 return "gamma_ps.bin";
             case PixelShaderId::scenefx:
                 return "scenefx_ps.bin";
+            case PixelShaderId::depth_resolve:
+                return "depth_resolve_ps.bin";
             default:
                 return nullptr;
         }

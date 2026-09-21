@@ -487,19 +487,46 @@ namespace gr::d3d11
         depth_stencil_desc.Usage = D3D11_USAGE_DEFAULT;
         depth_stencil_desc.BindFlags = D3D11_BIND_DEPTH_STENCIL;
 
+        // A multisampled depth buffer the liquid pass can resolve out of.
         ComPtr<ID3D11Texture2D> depth_stencil;
-        DF_GR_D3D11_CHECK_HR(
-            device_->CreateTexture2D(&depth_stencil_desc, nullptr, &depth_stencil)
-        );
+        bool msaa_depth_readable = false;
+        if (use_msaa && device_->GetFeatureLevel() >= D3D_FEATURE_LEVEL_10_1) {
+            D3D11_TEXTURE2D_DESC readable_desc = depth_stencil_desc;
+            readable_desc.Format = DXGI_FORMAT_R24G8_TYPELESS;
+            readable_desc.BindFlags |= D3D11_BIND_SHADER_RESOURCE;
+            msaa_depth_readable =
+                SUCCEEDED(device_->CreateTexture2D(&readable_desc, nullptr, &depth_stencil));
+        }
 
         D3D11_DEPTH_STENCIL_VIEW_DESC view_desc{};
         view_desc.ViewDimension = use_msaa
             ? D3D11_DSV_DIMENSION_TEXTURE2DMS
             : D3D11_DSV_DIMENSION_TEXTURE2D;
+        if (msaa_depth_readable) {
+            // A typeless resource has no view format to inherit
+            view_desc.Format = DXGI_FORMAT_D24_UNORM_S8_UINT;
+            const HRESULT hr =
+                device_->CreateDepthStencilView(depth_stencil, &view_desc, &depth_stencil_view_);
+            if (FAILED(hr)) {
+                // The depth buffer itself must not be lost over this, so drop the readable form
+                xlog::warn("Failed to create a depth stencil view on the readable depth buffer: {:x}",
+                           static_cast<uint32_t>(hr));
+                depth_stencil.release();
+                msaa_depth_readable = false;
+                view_desc.Format = DXGI_FORMAT_UNKNOWN;
+            }
+        }
 
-        DF_GR_D3D11_CHECK_HR(
-            device_->CreateDepthStencilView(depth_stencil, &view_desc, &depth_stencil_view_)
-        );
+        if (!msaa_depth_readable) {
+            DF_GR_D3D11_CHECK_HR(
+                device_->CreateTexture2D(&depth_stencil_desc, nullptr, &depth_stencil)
+            );
+            DF_GR_D3D11_CHECK_HR(
+                device_->CreateDepthStencilView(depth_stencil, &view_desc, &depth_stencil_view_)
+            );
+        }
+
+        scene_depth_.reset(device_, context_, depth_stencil);
     }
 
     bool Renderer::supports_sample_count(const uint32_t sample_count) {
@@ -962,7 +989,18 @@ namespace gr::d3d11
         // projection to apply, so the widened far plane reaches begin_frame and the frustum setup.
         if (render_target_bm_handle_ == -1 && liquid_update_frame_ != rf::frame_count) {
             liquid_update_frame_ = rf::frame_count;
-            proj = render_context_->update_liquid_fx(proj, rf::gr::eye_pos, rf::gr::eye_matrix);
+            // The depth copy is only worth allocating where a liquid surface will read it. The
+            // state still holds last frame's answer here, so the frame a liquid room first comes
+            // into range runs without the clamp; the buffer is ready from the next one on.
+            const LiquidState& prev = render_context_->liquid_state();
+            const bool want_depth = g_alpine_game_config.underwater_fx >= 2
+                && prev.mode != 0 && !prev.eye_under
+                && scene_depth_.ensure(device_, context_, *shader_manager_);
+            // The capture gate reads this so it can only run when the frame's uploaded
+            // depth_mode is non-zero — prev state makes re-deriving it later disagree.
+            scene_depth_wanted_ = want_depth;
+            proj = render_context_->update_liquid_fx(proj, rf::gr::eye_pos, rf::gr::eye_matrix,
+                                                    want_depth ? scene_depth_.mode() : 0.0f);
         }
         render_context_->update_view_proj_transform(proj);
         // Only initialize outlines when rendering to the back buffer, and only after the
@@ -1031,6 +1069,21 @@ namespace gr::d3d11
         // contaminating outline colors.
         outline_renderer_->flush(*mesh_renderer_);
         dyn_geo_renderer_->flush();
+        // Snapshot the depth buffer once, before the first surface of the frame reads it: the
+        // world, its objects and the outlines are all in by now, and taking it here keeps a
+        // surface from bounding its own column on a surface drawn earlier this frame.
+        if (scene_depth_wanted_ && render_target_bm_handle_ == -1
+            && scene_depth_frame_ != rf::frame_count) {
+            scene_depth_frame_ = rf::frame_count;
+            if (scene_depth_.capture(context_)) {
+                // The multisampled resolve drew with its own pipeline state. Only reachable with
+                // the back buffer as the target, so the default view is the one to come back to.
+                render_context_->invalidate_cached_state();
+                render_context_->set_render_target(default_render_target_view_, depth_stencil_view_);
+                render_context_->set_clip();
+                render_context_->set_cull_mode(D3D11_CULL_BACK);
+            }
+        }
         // Disable shadows for liquid surfaces — shadows pass through water/lava
         // and land on the solid geometry below
         entity_shadow_renderer_->disable_shadow_rendering(context_);
@@ -1134,7 +1187,9 @@ namespace gr::d3d11
             return false;
         }
         const LiquidState& liquid = render_context_->liquid_state();
-        if (liquid.mode == 0) {
+        // The overlay is about the liquid the camera is standing in; a room it can only see into
+        // still feeds the fog volumes but must not put a waterline on the screen.
+        if (liquid.mode == 0 || !liquid.eye_room_liquid) {
             return false;
         }
         // The near plane reaches near_dist / proj_sy above the eye, so liquid can still cover

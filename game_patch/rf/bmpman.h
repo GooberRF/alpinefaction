@@ -73,6 +73,7 @@ namespace rf::bm
         ubyte cached_material_idx;
 #ifdef ALPINE_FACTION
         bool dynamic;
+        bool user_mipmap;
 #endif
         int total_bytes_for_all_levels;
         int file_open_unk_arg;

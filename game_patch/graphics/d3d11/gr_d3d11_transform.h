@@ -80,6 +80,8 @@ namespace gr::d3d11
 
         float scale_x() const { return sx_; }
         float scale_y() const { return sy_; }
+        float scale_z() const { return sz_; }
+        float translate_z() const { return tz_; }
     };
 
     inline GpuMatrix4x4 build_identity_matrix()

@@ -25,6 +25,7 @@ cbuffer RenderModeBuffer : register(b0)
     float gas_fog_allowed;
     float sky_room;             // sky fragments carry authored, not viewed, world positions
     float draw_room_uid;        // room this draw belongs to, -1 when it has none
+    float liquid_surface;       // this draw is the liquid surface pass
 };
 
 struct PointLight {
@@ -134,7 +135,7 @@ cbuffer CausticsBuffer : register(b5)
     CausticVolume caustic_volumes[MAX_CAUSTIC_VOLUMES];
 };
 
-#define MAX_LIQUID_VOLUMES 8
+#define MAX_LIQUID_VOLUMES 16
 
 // One liquid room. The box arrives pre-expanded and already capped at the surface plane.
 struct LiquidVolume
@@ -157,6 +158,8 @@ cbuffer LiquidBuffer : register(b6)
     float  liq_far_clip;       float liq_num_volumes;  // far plane the fade targets, volume count
     float  liq_dark_surface_y; float liq_viewport_y;   // blended surface, depth darkening only
     LiquidVolume liq_volumes[MAX_LIQUID_VOLUMES];
+    float  liq_depth_sz;       float liq_depth_tz;     // view z = tz / (device depth - sz)
+    float  liq_depth_mode;     float _liq_pad2;        // 0 none, 1 Texture2D
 };
 
 Texture2D tex0;
@@ -168,6 +171,8 @@ SamplerComparisonState shadow_sampler : register(s2);
 SamplerState shadow_depth_sampler : register(s3);
 Texture2DArray caustic_tex : register(t3);
 SamplerState   caustic_samp : register(s4);
+// Copy of the scene depth buffer, for the liquid surface pass only.
+Texture2D<float> scene_depth : register(t6);
 
 // Poisson disk offsets for multi-tap PCF (up to 15 extra taps beyond center = 16 max)
 static const float2 pcf_offsets[15] = {
@@ -573,6 +578,10 @@ float4 main(VsOutput input) : SV_TARGET
         // exactly like stock; only the fraction comes from the geometric clip.
         float seg_len = max(input.world_pos_and_depth.w, 0.0f);
         float under_len;
+        // Liquid surface pass only: the water column behind the fragment and the view depth where
+        // that column ends, on the same metric as seg_len.
+        float behind_len = 0.0f;
+        float behind_end = 0.0f;
 
         if (sky_room > 0.5f) {
             // The sky room is drawn at its authored location with the camera translated into it,
@@ -613,6 +622,38 @@ float4 main(VsOutput input) : SV_TARGET
                 under_len_geo += max(t_exit - t_enter, 0.0f);
             }
             under_len = seg_len * saturate(under_len_geo / max(geo_len, 1e-6f));
+
+            // A liquid surface seen from above stands in front of water that nothing else draws:
+            // past the far clip, past the rooms the engine culled, past the volume list. Walk the
+            // same slabs on from the fragment to the far clip so the surface can carry it. The
+            // volumes are room boxes and know nothing about what is inside them, so the walk stops
+            // at the scene depth as well: a pool floor a few metres down ends the column there
+            // instead of letting the box run on and turn the surface opaque over it.
+            [branch] if (liquid_surface > 0.5f && liq_eye_under < 0.5f) {
+                float scene_dist = 1e9f;
+                [branch] if (liq_depth_mode > 0.5f) {
+                    float device_depth = scene_depth.Load(int3(int2(input.pos.xy), 0));
+                    // Reversed-Z: an untouched pixel reads 0 and unprojects to the far plane
+                    scene_dist = liq_depth_tz / max(device_depth - liq_depth_sz, 1e-6f);
+                }
+                float view_per_geo = seg_len / max(geo_len, 1e-6f);
+                float geo_end = min(max(liq_far_clip, 1.0f), scene_dist) / max(view_per_geo, 1e-4f);
+                float behind_geo = 0.0f;
+                float end_geo = 0.0f;
+                for (int bi = 0; bi < vol_count; ++bi) {
+                    float3 bt0 = (liq_volumes[bi].bbox_min - liq_eye_pos) * inv_dir;
+                    float3 bt1 = (liq_volumes[bi].bbox_max - liq_eye_pos) * inv_dir;
+                    float3 btmin_v = min(bt0, bt1);
+                    float3 btmax_v = max(bt0, bt1);
+                    float bt_enter = max(max(btmin_v.x, btmin_v.y), max(btmin_v.z, geo_len));
+                    float bt_exit = min(min(btmax_v.x, btmax_v.y), min(btmax_v.z, geo_end));
+                    float bt_len = max(bt_exit - bt_enter, 0.0f);
+                    behind_geo += bt_len;
+                    end_geo = max(end_geo, bt_len > 0.0f ? bt_exit : 0.0f);
+                }
+                behind_len = behind_geo * view_per_geo;
+                behind_end = end_geo * view_per_geo;
+            }
         }
         float over_len = seg_len - under_len;
 
@@ -635,10 +676,36 @@ float4 main(VsOutput input) : SV_TARGET
             float fade_far = max(liq_far_clip, 1.0f);
             transmittance *= 1.0f - smoothstep(0.7f * fade_far, 0.97f * fade_far, seg_len);
         }
+        else if (over_far < 1e30f) {
+            // Dry, the background behind the clip is the level fog colour, but a pixel that got
+            // here mostly through water accrued almost no over_len and never reaches it. Bring the
+            // water-derived part of the pixel to the background before the cut; a dry pixel has
+            // none and is left exactly as stock.
+            float fade_far = max(liq_far_clip, 1.0f);
+            float water_frac = 1.0f - exp(-under_len * sigma);
+            over_fog = max(over_fog, water_frac * smoothstep(0.7f * fade_far, 0.97f * fade_far, seg_len));
+        }
 
         float pix_y = sky_room > 0.5f ? liq_eye_pos.y : liq_pixel_pos.y;
         float depth_below = max(liq_dark_surface_y - min(liq_eye_pos.y, pix_y), 0.0f);
         float3 inscatter = liq_color * exp(-depth_below * liq_params.w);
+
+        // Distance opacity for the column the surface carries. It stays out of the way until the
+        // column has taken half the light on its own, so shallow and near water keeps its authored
+        // alpha, and goes to full where the column is still running at the far clip - the one place
+        // the cut edge can show. Authored alpha is the floor: this composites the column behind the
+        // surface over it, so opacity only ever climbs. The length term needs the scene depth to be
+        // honest about where the column ends, so without it only the far-clip term survives.
+        [branch] if (liquid_surface > 0.5f && behind_len > 0.0f) {
+            float fade_far = max(liq_far_clip, 1.0f);
+            float column = liq_depth_mode > 0.5f ? 1.0f - exp(-behind_len * sigma) : 0.0f;
+            float murk = max(saturate((column - 0.5f) * 2.0f),
+                             smoothstep(0.7f * fade_far, 0.97f * fade_far, behind_end));
+            float src_a = target.a;
+            float out_a = src_a + (1.0f - src_a) * murk;
+            target.rgb = (target.rgb * src_a + inscatter * (murk * (1.0f - src_a))) / max(out_a, 1e-4f);
+            target.a = out_a;
+        }
 
         // Dimming always applies so anything behind liquid reads as occluded; color is only
         // added where the draw mode allows fog, as in the gas block below.

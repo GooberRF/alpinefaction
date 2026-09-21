@@ -10,6 +10,7 @@
 #include "../../rf/gr/gr.h"
 #include "../../rf/os/frametime.h"
 #include "gr_d3d11_transform.h"
+#include "gr_d3d11_liquid.h"
 #include "gr_d3d11_scenefx.h"
 
 namespace rf
@@ -161,6 +162,7 @@ namespace gr::d3d11
         ComPtr<ID3D11Texture2D> default_render_target_;
         ComPtr<ID3D11RenderTargetView> default_render_target_view_;
         ComPtr<ID3D11DepthStencilView> depth_stencil_view_;
+        SceneDepthCapture scene_depth_;
         std::unique_ptr<StateManager> state_manager_;
         std::unique_ptr<ShaderManager> shader_manager_;
         std::unique_ptr<TextureManager> texture_manager_;
@@ -179,6 +181,8 @@ namespace gr::d3d11
         int damage_vignette_decay_frame_ = -1;
         int object_room_uid_ = -1;
         int liquid_update_frame_ = -1;
+        int scene_depth_frame_ = -1;
+        bool scene_depth_wanted_ = false;
         rf::Player* deferred_reticle_player_ = nullptr;
         int render_target_bm_handle_ = -1;
         bool skip_gamma_pass_ = false;

@@ -934,8 +934,12 @@ namespace gr::d3d11
         // Liquid surfaces; picmip applies.
         RenderContext::ScopedPicmipActive picmip_scope{render_context_, true};
 
+        // determine_face_mode gives every liquid batch alpha_detail_fullbright_mode, so the pass is
+        // always alpha blended with fog allowed - what the shader's distance opacity assumes.
+        render_context_.set_liquid_surface(true);
         before_render(rf::zero_vector, rf::identity_matrix);
         render_room_faces(solid, room, FaceRenderType::liquid);
+        render_context_.set_liquid_surface(false);
     }
 
     void SolidRenderer::render_solid(rf::GSolid* solid, rf::GRoom** rooms, int num_rooms)

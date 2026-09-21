@@ -961,25 +961,6 @@ bool salvage_flag_was_rendered_this_frame()
     return g_flag_rendered_frame == rf::frame_count;
 }
 
-void salvage_tick_flag_spin()
-{
-    if (!gt_is_salvage()) return;
-
-    const SalFlagState state = g_salvage_info.state;
-    if (state != SalFlagState::AtSpawn && state != SalFlagState::Dropped) return;
-
-    rf::Item* item = current_flag_item();
-    if (!item || !item->info) return;
-    if (!(item->info->flags & rf::IIF_SPINS_IN_MULTI)) return;
-
-    const float spin_rate = addr_as_ref<float>(0x005897A8);
-    const float two_pi = addr_as_ref<float>(0x005894AC);
-    item->spin_angle += spin_rate * rf::frametime;
-    if (item->spin_angle > two_pi) {
-        item->spin_angle -= two_pi;
-    }
-}
-
 void salvage_move_carried_flag()
 {
     if (!rf::is_multi || !gt_is_salvage()) return;

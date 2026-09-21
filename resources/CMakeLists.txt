@@ -330,6 +330,7 @@ add_packfile(alpinefaction.vpp
     gamma_vs:${CMAKE_BINARY_DIR}/shaders/gamma_vs.bin
     gamma_ps:${CMAKE_BINARY_DIR}/shaders/gamma_ps.bin
     scenefx_ps:${CMAKE_BINARY_DIR}/shaders/scenefx_ps.bin
+    depth_resolve_ps:${CMAKE_BINARY_DIR}/shaders/depth_resolve_ps.bin
 )
 
 # Copy licensing-info.txt

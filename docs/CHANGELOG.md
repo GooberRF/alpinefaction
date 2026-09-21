@@ -1,7 +1,7 @@
 ⚙️⛏ Alpine Faction Changelog ⛏⚙️
 ===================================
 
-Version 1.5.0 (TBD): Not yet released
+Version 1.5.0 (Trillium): Not yet released
 --------------------------------
 ### Major features
 [@GooberRF](https://github.com/GooberRF)
@@ -56,6 +56,9 @@ Version 1.5.0 (TBD): Not yet released
 [@is-this-c](https://github.com/is-this-c)
 - Do not kick a player, if they join right before limbo
 
+[@is-this-c](https://github.com/is-this-c)
+- Allow TrueType fonts to be rendered into bitmaps with mipmaps (D3D11 only)
+
 ### Bug fixes
 [@GooberRF](https://github.com/GooberRF)
 - Fix phantom visual flag mesh being visible after Salvage flag is picked up on rare occasions
@@ -78,6 +81,8 @@ Version 1.5.0 (TBD): Not yet released
 - Fix the fusion not being in-scope for the `Delayed Supers` mutator
 - Fix `Set_Light_Color` discarding the intensity of the lights it links to
 - Fix level editor packfile creation to include the frames and alpha mask of ATX textures used on faces and decals, and to include `.atx` files referenced by a legacy texture name
+- Fix crash when a bone, tag, or prop point is queried on a character whose mesh file contains no submeshes, or when such a character's weapon or textures are preloaded for rendering
+- Fix items not rotating correctly when out of view or when viewed through a Projection Camera
 
 [@is-this-c](https://github.com/is-this-c)
 - Let `Caps Lock` capitalize
@@ -85,6 +90,9 @@ Version 1.5.0 (TBD): Not yet released
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Cap FPS-dependent launch velocity when head jumping
 - Fix landing sound spam on ramps and jump pads at high FPS
+- Fix reload animation playing in third person for other players when client tries to reload with a full clip/magazine
+- Fix lighting for pistol silencer and remote charge detonator
+- Fix third-person crouch animations on remote players flickering and snapping
 
 Version 1.4.0 (Lupin): Released Aug-25-2026
 --------------------------------

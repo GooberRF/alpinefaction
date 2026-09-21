@@ -939,8 +939,12 @@ namespace gr::d3d11
         0x0051C4C0,
         [] (auto& regs) {
             rf::CharacterInstance* ci = regs.ecx;
-            if (renderer) {
-                renderer->page_in_character_mesh(ci->base_character->character_meshes[0].mesh->vu);
+            if (!renderer || !ci->base_character || ci->base_character->num_character_meshes < 1) {
+                return;
+            }
+            rf::V3dMesh* mesh = ci->base_character->character_meshes[0].mesh;
+            if (mesh && mesh->vu) {
+                renderer->page_in_character_mesh(mesh->vu);
             }
         },
     };
