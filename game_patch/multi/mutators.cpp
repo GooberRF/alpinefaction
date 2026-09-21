@@ -322,7 +322,7 @@ static const char* const DELAYED_SUPERS_ITEMS[] = {
     "Multi Super Armor",
     "Multi Invulnerability",
     "Multi Damage Amplifier",
-    "shoulder_cannon",
+    "shoulder cannon",
 };
 
 static void apply_delayed_supers(AlpineServerConfigRules& r, const toml::table& /*opts*/)

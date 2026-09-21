@@ -57,6 +57,10 @@ BreakableMaterialState* get_material_state(rf::DetailMaterial mat);
 
 void destruction_do_patch();
 void destruction_level_cleanup();
+void destruction_level_init_post();
+bool brush_is_destroyed(int brush_uid);
+bool brush_is_tracked(int brush_uid);
+bool brush_uid_is_breakable(int brush_uid);
 void apply_geoable_flags();
 void apply_breakable_materials();
 void g_solid_set_rf2_geo_limit(int limit);

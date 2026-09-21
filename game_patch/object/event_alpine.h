@@ -6,8 +6,10 @@
 #include <optional>
 #include <cstddef>
 #include <cstdint>
+#include <cmath>
 #include <functional>
 #include <algorithm>
+#include <unordered_set>
 #include <common/utils/list-utils.h>
 #include "../hud/hud_world.h"
 #include "../rf/event.h"
@@ -34,6 +36,7 @@
 #include "../graphics/gr.h"
 #include "../graphics/weather.h"
 #include "../misc/level.h"
+#include "../misc/destruction.h"
 #include "../misc/alpine_settings.h"
 #include "../multi/alpine_packets.h"
 
@@ -2148,12 +2151,29 @@ struct EventSetLightColor : rf::Event
                 color = rf::Color::from_rgb_string(light_color);
             }
 
+            const float hue_r = static_cast<float>(color.red) / 255.0f;
+            const float hue_g = static_cast<float>(color.green) / 255.0f;
+            const float hue_b = static_cast<float>(color.blue) / 255.0f;
+
             for (const auto& linked_uid : this->links) {
-                if (auto* light = static_cast<rf::gr::Light*>(rf::gr::light_get_from_handle(rf::gr::level_get_light_handle_from_uid(linked_uid)))) {
-                    light->r = static_cast<float>(color.red) / 255.0f;
-                    light->g = static_cast<float>(color.green) / 255.0f;
-                    light->b = static_cast<float>(color.blue) / 255.0f;
+                auto* level_light = rf::gr::level_light_lookup_from_uid(linked_uid);
+                if (!level_light) {
+                    continue;
                 }
+                // light_get_from_handle is pure arithmetic, so a bad handle must be rejected here
+                const int light_handle = level_light->gr_light_handle;
+                if (light_handle < 0) {
+                    continue;
+                }
+                // Runtime light channels are hue premultiplied by intensity, and flickering lights
+                // re-derive them from the level light hue, so both must be updated.
+                level_light->hue_r = hue_r;
+                level_light->hue_g = hue_g;
+                level_light->hue_b = hue_b;
+                // a light caught mid fade snaps to its state intensity until the next fade step
+                const float intensity =
+                    level_light->is_on ? level_light->on_intensity : level_light->off_intensity;
+                rf::gr::light_set_color(light_handle, intensity, hue_r, hue_g, hue_b);
             }
         }
         catch (const std::exception& e) {
@@ -2541,9 +2561,22 @@ struct EventMeshAnimate : rf::Event
             int link_handle = this->links[i];
             Object* obj = rf::obj_from_handle(link_handle);
             if (obj) {
-                alpine_mesh_animate(obj, animate_type, anim_filename, blend_weight);
+                // resume in place if this mesh is paused on the same animation, otherwise (re)start it
+                if (!alpine_mesh_resume_anim(obj, animate_type, anim_filename)) {
+                    alpine_mesh_animate(obj, animate_type, anim_filename, blend_weight);
+                }
             } else {
                 xlog::warn("[EventMeshAnimate] link[{}]: handle={} -> NULL (stale handle!)", i, link_handle);
+            }
+        }
+    }
+
+    void turn_off() override
+    {
+        xlog::debug("[EventMeshAnimate] turn_off: uid={} links={}", this->uid, this->links.size());
+        for (const auto& link_handle : this->links) {
+            if (Object* obj = rf::obj_from_handle(link_handle)) {
+                alpine_mesh_pause_anim(obj);
             }
         }
     }
@@ -3166,4 +3199,108 @@ struct EventDisplayProjection : rf::Event
 
     void turn_on() override;
     void turn_off() override;
+};
+
+// id 160 — Climbing_Region_State: enable/disable the climbing regions this event links to.
+struct EventClimbingRegionState : rf::Event
+{
+    void turn_on() override
+    {
+        for (const auto& linked_uid : this->links) {
+            climb_region_set_enabled(linked_uid, true);
+        }
+    }
+
+    void turn_off() override
+    {
+        for (const auto& linked_uid : this->links) {
+            climb_region_set_enabled(linked_uid, false);
+        }
+    }
+};
+
+// id 161 — When_Destroyed: fires when the destructible detail brushes it links to are destroyed.
+// Brush links stay raw UIDs.
+struct EventWhenDestroyed : rf::Event
+{
+    bool any_dead = false;
+    bool fired_all = false;
+    std::unordered_set<int> fired_uids;
+
+    void register_variable_handlers() override
+    {
+        rf::Event::register_variable_handlers();
+
+        auto& handlers = variable_handler_storage[this];
+        handlers[SetVarOpts::bool1] = [](rf::Event* event, const std::string& value) {
+            static_cast<EventWhenDestroyed*>(event)->any_dead = (value == "true");
+        };
+    }
+
+    void turn_on() override
+    {
+        // only allow this event to fire when a brush it links to is destroyed
+        if (!this->links.contains(this->trigger_handle)) {
+            return;
+        }
+
+        // any_dead = true
+        if (any_dead) {
+            if (!fired_uids.insert(this->trigger_handle).second) {
+                return; // already fired for this brush
+            }
+            activate_links(this->trigger_handle, this->triggered_by_handle, true);
+            return;
+        }
+
+        // any_dead = false
+        if (fired_all) {
+            return;
+        }
+
+        bool all_destroyed = std::all_of(this->links.begin(), this->links.end(), [](int link_handle) {
+            // Only watched brushes gate the event.
+            return !brush_is_tracked(link_handle) || brush_is_destroyed(link_handle);
+        });
+
+        if (!all_destroyed) {
+            return;
+        }
+
+        fired_all = true;
+        activate_links(this->trigger_handle, this->triggered_by_handle, true);
+    }
+
+    void do_activate_links(int trigger_handle, int triggered_by_handle, bool on) override
+    {
+        for (int link_handle : this->links) {
+            if (brush_uid_is_breakable(link_handle)) {
+                continue; // a brush, never an activation target — mapped or not
+            }
+
+            Object* obj = rf::obj_from_handle(link_handle);
+            if (!obj) {
+                continue;
+            }
+
+            switch (obj->type) {
+                case rf::OT_MOVER: {
+                    rf::mover_activate_from_trigger(obj->handle, -1, -1);
+                    break;
+                }
+                case rf::OT_TRIGGER: {
+                    rf::Trigger* trigger = static_cast<rf::Trigger*>(obj);
+                    rf::trigger_enable(trigger);
+                    break;
+                }
+                case rf::OT_EVENT: {
+                    // Note can't use activate because it isn't allocated for stock events
+                    rf::event_signal_on(link_handle, -1, -1);
+                    break;
+                }
+                default:
+                    break;
+            }
+        }
+    }
 };

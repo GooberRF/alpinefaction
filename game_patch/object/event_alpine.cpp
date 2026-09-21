@@ -109,6 +109,8 @@ FunHook<int(const rf::String* name)> event_lookup_type_hook{
                 {"ATX_Set_Frame_Time", 157},
                 {"Weather_Region_State", 158},
                 {"Display_Projection", 159},
+                {"Climbing_Region_State", 160},
+                {"When_Destroyed", 161},
             };
 
             auto it = custom_event_ids.find(name->c_str());
@@ -194,6 +196,8 @@ FunHook<rf::Event*(int event_type)> event_allocate_hook{
                 {157, []() { return new EventATXSetFrameTime(); }},
                 {158, []() { return new EventWeatherRegionState(); }},
                 {159, []() { return new EventDisplayProjection(); }},
+                {160, []() { return new EventClimbingRegionState(); }},
+                {161, []() { return new EventWhenDestroyed(); }},
             };
 
             // find type and allocate
@@ -284,6 +288,8 @@ FunHook<void(rf::Event*)> event_deallocate_hook{
                 {157, [](rf::Event* e) { delete static_cast<EventATXSetFrameTime*>(e); }},
                 {158, [](rf::Event* e) { delete static_cast<EventWeatherRegionState*>(e); }},
                 {159, [](rf::Event* e) { delete static_cast<EventDisplayProjection*>(e); }},
+                {160, [](rf::Event* e) { delete static_cast<EventClimbingRegionState*>(e); }},
+                {161, [](rf::Event* e) { delete static_cast<EventWhenDestroyed*>(e); }},
             };
 
             // find type and deallocate
@@ -344,7 +350,9 @@ bool is_forward_exempt(rf::EventType event_type) {
         rf::EventType::ATX_Pause,
         rf::EventType::ATX_Set_Frame_Time,
         rf::EventType::Weather_Region_State,
-        rf::EventType::Display_Projection
+        rf::EventType::Display_Projection,
+        rf::EventType::Climbing_Region_State,
+        rf::EventType::When_Destroyed
     };
 
     // AF_Heal should be forward exempt, but this was missed when AF_Heal was added in RFL v300
@@ -955,6 +963,17 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
                 event->sphere_radius = params.float1;
                 event->box_dimensions = params.str1;
                 event->transition_time = std::max(0.0f, params.float2);
+            }
+            return event;
+        }
+    },
+    // When_Destroyed
+    {
+        rf::EventType::When_Destroyed, [](const EventCreateParams& params) {
+            auto* base_event = rf::event_create(params.pos, std::to_underlying(rf::EventType::When_Destroyed));
+            auto* event = dynamic_cast<EventWhenDestroyed*>(base_event);
+            if (event) {
+                event->any_dead = params.bool1;
             }
             return event;
         }

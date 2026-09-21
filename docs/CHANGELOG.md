@@ -31,6 +31,7 @@ Version 1.5.0 (TBD): Not yet released
 - Extend view distance while submerged at `r_underwater` 2 or higher, up to 4x the liquid visibility, with the extension capped at the normal far clip
 - Add edge-vignette damage feedback as `cl_damageflash 2` (Direct3D 11 renderer only); `cl_damageflash` is now a level: 0 off, 1 screen flash, 2 vignette
 - Add `Brush` collision mode for Alpine Mesh objects
+- Add `Brush Geo` source selection for Alpine Mesh objects using `Brush` collision — collide against the mesh's highest LOD, its lowest LOD, or a separate static (.v3m) collision mesh
 - Raise level editor per-room and per-mesh render vertex limit from 8000 to 32768
 - Add `-bake in.rfl -bakeout out.rfl` launcher command line switches to calculate a level's lighting without user interaction, writing the result to a new level file and progress to a log beside it
 - Add `High-resolution lightmaps` level property, used in lightmap bake in level editor
@@ -43,6 +44,10 @@ Version 1.5.0 (TBD): Not yet released
 - Make a mesh exported from a brush in the level editor immediately usable as a `Mesh` object
 - Add a mesh browser to the level editor for picking meshes and animations for `Mesh` objects
 - Add a new and modern color picker to the level editor
+- Turning off `Mesh_Animate` now pauses the animation playing on the meshes it links to, and turning it back on with the same animation and type resumes it from the frozen pose
+- Add `Climbing_Region_State` event to enable and disable the climbing regions it links to, and support moving climbing regions with `Anchor_Marker` and `Anchor_Marker_Orient`
+- Add `When_Destroyed` event, which activates its links when the destructible detail brushes it links to are destroyed, with an `Activate when any dead` option
+- Support linking events and triggers to detail brushes in the level editor, either by selecting the object and the brushes and using Link, or by entering the brush UID in the Links dialog
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Add `ui_color_console` console command to set the console background color
@@ -69,6 +74,9 @@ Version 1.5.0 (TBD): Not yet released
 - Fix level editor crashing when a Weather Region's snow `Bitmap` names a loose file instead of one inside a packfile
 - Fix a one frame flash to the default pose each time an animation loops on a mesh being simulated in the level editor
 - Update Weather Region bounds in viewport live when values are changed
+- Fix the fusion not being in-scope for the `Delayed Supers` mutator
+- Fix `Set_Light_Color` discarding the intensity of the lights it links to, dimming any light with an intensity above 1 and reverting on the next flicker or fade
+- Fix level editor packfile creation to include the frames and alpha mask of ATX textures used on faces and decals, and to include `.atx` files referenced by a legacy texture name
 
 [@is-this-c](https://github.com/is-this-c)
 - Let `Caps Lock` capitalize

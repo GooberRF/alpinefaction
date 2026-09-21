@@ -452,10 +452,15 @@ static void apply_no_debris_to_selected_brushes(int new_state)
                                 props.breakable_brush_uids.end(), node->uid);
             if (it != props.breakable_brush_uids.end()) {
                 auto idx = std::distance(props.breakable_brush_uids.begin(), it);
-                if (new_state == BST_CHECKED) {
-                    props.breakable_materials[idx] |= 0x80;
-                } else {
-                    props.breakable_materials[idx] &= 0x7F;
+                // Glass rows exist only to carry the brush UID -> room UID mapping, and the
+                // checkbox is disabled for Glass anyway; matching the mat > 0 rule the checkbox
+                // state is computed from keeps a mixed selection from flagging one.
+                if ((props.breakable_materials[idx] & 0x7F) != 0) {
+                    if (new_state == BST_CHECKED) {
+                        props.breakable_materials[idx] |= 0x80;
+                    } else {
+                        props.breakable_materials[idx] &= 0x7F;
+                    }
                 }
             }
         }
