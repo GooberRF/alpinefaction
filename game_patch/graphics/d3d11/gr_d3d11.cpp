@@ -21,6 +21,7 @@
 #include "gr_d3d11_dynamic_geometry.h"
 #include "gr_d3d11_solid.h"
 #include "gr_d3d11_mesh.h"
+#include "gr_d3d11_vfx.h"
 #include "gr_d3d11_entity_shadow.h"
 #include "gr_d3d11_outline.h"
 #include "gr_d3d11_gamma.h"
@@ -77,6 +78,7 @@ namespace gr::d3d11
         dyn_geo_renderer_ = std::make_unique<DynamicGeometryRenderer>(device_, *shader_manager_, *render_context_);
         solid_renderer_ = std::make_unique<SolidRenderer>(device_, *shader_manager_, *state_manager_, *dyn_geo_renderer_, *render_context_);
         mesh_renderer_ = std::make_unique<MeshRenderer>(device_, *shader_manager_, *state_manager_, *render_context_);
+        vfx_renderer_ = std::make_unique<VfxMeshRenderer>(device_, *shader_manager_, *render_context_);
         entity_shadow_renderer_ = std::make_unique<EntityShadowRenderer>(device_, *shader_manager_, *mesh_renderer_);
         outline_renderer_ = std::make_unique<OutlineRenderer>(device_, *shader_manager_, *state_manager_, *render_context_);
         gamma_pass_ = std::make_unique<GammaPass>(device_, *shader_manager_);
@@ -1340,6 +1342,14 @@ namespace gr::d3d11
         }
 
         outline_renderer_->maybe_queue_bag_outline(lod_mesh, lod_index, pos, orient);
+    }
+
+    void Renderer::render_vfx(rf::VfxSfxoRenderObj* obj, float frame)
+    {
+        // Keep ordering against gr_poly-drawn geometry (billboard vfx chunks, particles)
+        dyn_geo_renderer_->flush();
+        render_context_->set_draw_room_uid(object_room_uid_);
+        vfx_renderer_->render(obj, frame);
     }
 
     void Renderer::render_character_vif(rf::VifLodMesh *lod_mesh, int lod_index, const rf::Vector3& pos, const rf::Matrix3& orient, const rf::CharacterInstance *ci, const rf::MeshRenderParams& params, bool skip_ambient_cache)

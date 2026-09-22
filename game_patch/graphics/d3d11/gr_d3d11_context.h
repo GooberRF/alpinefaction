@@ -650,6 +650,11 @@ namespace gr::d3d11
             device_context_->DrawIndexed(index_count, index_start_location, base_vertex_location);
         }
 
+        void draw(int vertex_count, int start_vertex_location)
+        {
+            device_context_->Draw(vertex_count, start_vertex_location);
+        }
+
         const Projection& projection() const
         {
             return projection_;
