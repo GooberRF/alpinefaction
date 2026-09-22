@@ -447,6 +447,12 @@ namespace rf
     };
 
     static auto& entity_from_handle = addr_as_ref<Entity*(int handle)>(0x00426FC0);
+    // Blood splatter decal thrown from a flesh impact (weapon_hit_obj flesh branch)
+    static auto& entity_blood_maybe_splatter =
+        addr_as_ref<void(float damage, Vector3* hit_point, Vector3* dir)>(0x0042E1C0);
+    // Blood particle + explosion puff at a flesh impact point (weapon_hit_obj flesh branch)
+    static auto& entity_blood_do_hit_effect =
+        addr_as_ref<void(Vector3* hit_point, GRoom* room, Vector3* victim_pos, float damage)>(0x0042E3D0);
     static auto& entity_lookup_type = addr_as_ref<int(const char* name)>(0x004251C0);
     static auto& entity_create =
         addr_as_ref<Entity*(int entity_type, const char* name, int parent_handle, const Vector3& pos,

@@ -487,6 +487,10 @@ static void af_process_damage_notify_packet(const void* data, size_t len, const 
     add_damage_notify_world_hud_string(entity->pos, damage_notify_packet.player_id, damage_notify_packet.damage,
                                        died, crit);
     play_local_hit_sound(died);
+    // Spectators and demo playback never park local impacts - their instant FX already played
+    if (!multi_spectate_is_spectating() && !demo_playback_active()) {
+        confirmed_hit_fx_on_damage_notify(entity);
+    }
 }
 
 void af_send_crit_shot_packet(uint8_t shooter_player_id, uint8_t weapon_type, rf::Player* player)
@@ -3836,6 +3840,8 @@ uint32_t af_compute_server_info_flags()
         af |= af_server_info_flags::SIF_DODGING;
     if (g_alpine_server_config_active_rules.mutators.pogo_enabled)
         af |= af_server_info_flags::SIF_POGO;
+    if (g_alpine_server_config.damage_notification_config.enabled)
+        af |= af_server_info_flags::SIF_DAMAGE_NOTIFICATIONS;
     return af;
 }
 
@@ -3971,6 +3977,7 @@ static void decode_af_server_info_flags(const af_server_info_packet& pkt, Alpine
     server_info.skiing = (pkt.af_flags & af_server_info_flags::SIF_SKIING) != 0;
     server_info.dodging = (pkt.af_flags & af_server_info_flags::SIF_DODGING) != 0;
     server_info.pogo = (pkt.af_flags & af_server_info_flags::SIF_POGO) != 0;
+    server_info.damage_notifications = (pkt.af_flags & af_server_info_flags::SIF_DAMAGE_NOTIFICATIONS) != 0;
 }
 
 // Apply af_server_info_packet flags to the local server info (for listen server host)

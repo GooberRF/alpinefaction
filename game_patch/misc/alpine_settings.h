@@ -102,6 +102,7 @@ struct AlpineGameSettings
     bool world_hud_team_player_labels = false;
     bool show_location_pings = true;
     bool play_hit_sounds = true;
+    bool confirmed_hit_fx = true;
     bool show_awards = true;
 
     bool spray_display = true;

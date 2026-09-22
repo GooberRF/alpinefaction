@@ -3,7 +3,9 @@
 #include <patch_common/CallHook.h>
 #include <patch_common/CodeInjection.h>
 #include <patch_common/ShortTypes.h>
+#include <algorithm>
 #include <array>
+#include <deque>
 #include <xlog/xlog.h>
 #include "../multi/server.h"
 #include "../rf/player/player.h"
@@ -18,6 +20,7 @@
 #include "../multi/mutators.h"
 #include "../misc/misc.h"
 #include "../misc/alpine_settings.h"
+#include "../os/os.h"
 
 static std::array<uint8_t, 64U> weapon_reticle_custom_mask{}; // bit 0 = _0, bit 1 = _1
 static std::pair<bool, bool> rocket_locked_custom_reticle = {false, false};
@@ -212,6 +215,153 @@ CallHook<void(rf::Vector3&, float, float, int, int)> weapon_hit_wall_obj_apply_r
         const float crit_scale = crits_on_explosion(&new_epicenter, radius);
         weapon_hit_wall_obj_apply_radius_damage_hook.call_target(new_epicenter, damage, radius * crit_scale, killer_handle, damage_type);
     },
+};
+
+// Server-confirmed hit FX: when the local player's projectile hits another player, park the
+// impact FX (blood, vclip, foley sound) instead of playing them immediately, then replay them
+// when the server confirms the hit via af_damage_notify. Markers for hits the server rejects
+// (lag compensation disagreement) expire silently.
+struct ConfirmedHitMarker
+{
+    int victim_handle;
+    rf::Vector3 hit_point;
+    rf::Vector3 hit_normal;
+    rf::Vector3 dir;
+    int weapon_type;
+    int parent_handle;
+    int impact_sound; // sound handle resolved at park time, -1 = none
+    bool impact_vclip;
+    int64_t expiry;
+};
+static std::deque<ConfirmedHitMarker> g_confirmed_hit_markers;
+static constexpr size_t confirmed_hit_max_markers = 32;
+static constexpr int64_t confirmed_hit_marker_ms = 500; // povcomp_max_ms (450) + margin
+
+static bool confirmed_hit_fx_should_park(rf::Weapon* wp, rf::Object* victim)
+{
+    if (!rf::is_multi || rf::is_server || !g_alpine_game_config.confirmed_hit_fx) {
+        return false;
+    }
+    // without server damage notifications no confirmation ever arrives - keep stock instant FX
+    const auto& server_info = get_af_server_info();
+    if (!server_info || !server_info->damage_notifications) {
+        return false;
+    }
+    if (!rf::local_player || wp->parent_handle != rf::local_player->entity_handle) {
+        return false;
+    }
+    // only the flesh FX branch of weapon_hit_obj is deferred, and only for living player victims
+    if (victim->type != rf::OT_ENTITY || victim->material != 3) {
+        return false;
+    }
+    rf::Entity* ep = rf::entity_from_handle(victim->handle);
+    if (!ep || rf::entity_is_dying(ep) || !rf::player_from_entity_handle(victim->handle)) {
+        return false;
+    }
+    // melee/sticky/remote charge/flamethrower and the riot stick special sound path keep stock FX
+    if (wp->info->flags & (rf::WTF_MELEE | rf::WTF_STICKY | rf::WTF_REMOTE_CHARGE)) {
+        return false;
+    }
+    if (wp->info_index == rf::flamethrower_weapon_type || (wp->weapon_flags & 0x8)) {
+        return false;
+    }
+    return true;
+}
+
+// FX block of weapon_hit_obj (0x004C59F0). At this address ESI = weapon and EBX = hit object on
+// both the client path (jump from 0x004C5CE3) and the server path (EBX reload at 0x004C62FA).
+CodeInjection weapon_hit_obj_confirmed_hit_fx_injection{
+    0x004C6301,
+    [](auto& regs) {
+        rf::Weapon* wp = regs.esi;
+        rf::Object* victim = regs.ebx;
+        if (!confirmed_hit_fx_should_park(wp, victim)) {
+            return;
+        }
+        // resolve the impact foley sound like the stock selection at 0x004C6463
+        int material = std::clamp(wp->p_data.collide_out.material, 0, 9);
+        int sound = rf::foley_get_sound_handle(wp->info->impact_foley_id[material]);
+        if (sound == -1) {
+            sound = rf::foley_get_sound_handle(wp->info->impact_foley_id[0]);
+        }
+        if (g_confirmed_hit_markers.size() >= confirmed_hit_max_markers) {
+            g_confirmed_hit_markers.pop_front();
+        }
+        g_confirmed_hit_markers.push_back({
+            victim->handle,
+            wp->p_data.collide_out.hit_point,
+            wp->p_data.collide_out.hit_normal,
+            wp->orient.fvec,
+            wp->info_index,
+            wp->parent_handle,
+            sound,
+            wp->info->crater_radius > addr_as_ref<float>(0x005893F8), // stock flesh vclip gate
+            timer::get_i64(1000) + confirmed_hit_marker_ms,
+        });
+        regs.eip = 0x004C655D; // skip the FX block to the epilogue; FX replayed on confirmation
+    },
+};
+
+void confirmed_hit_fx_on_damage_notify(rf::Entity* victim)
+{
+    if (!g_alpine_game_config.confirmed_hit_fx || rf::entity_is_local_player(victim)) {
+        return;
+    }
+    const auto& server_info = get_af_server_info();
+    if (!server_info || !server_info->damage_notifications) {
+        return;
+    }
+
+    const int64_t now = timer::get_i64(1000);
+    std::erase_if(g_confirmed_hit_markers, [now](const ConfirmedHitMarker& m) { return now > m.expiry; });
+
+    for (auto it = g_confirmed_hit_markers.begin(); it != g_confirmed_hit_markers.end(); ++it) {
+        if (it->victim_handle != victim->handle) {
+            continue;
+        }
+        ConfirmedHitMarker m = *it;
+        g_confirmed_hit_markers.erase(it);
+        // mirror the stock flesh FX block of weapon_hit_obj (0x004C6321); the multi client path
+        // always passes damage 0.0 there, so replaying with 0.0 matches stock visuals
+        rf::entity_blood_maybe_splatter(0.0f, &m.hit_point, &m.dir);
+        rf::entity_blood_do_hit_effect(&m.hit_point, victim->room, &victim->pos, 0.0f);
+        if (m.impact_vclip) {
+            rf::weapon_create_impact_vclip(m.weapon_type, reinterpret_cast<int>(victim->room), nullptr,
+                                           &m.hit_point, &m.hit_normal, m.parent_handle);
+        }
+        if (m.impact_sound != -1) {
+            rf::snd_play_3d(m.impact_sound, m.hit_point, 1.0f, rf::Vector3{}, 0);
+        }
+        return;
+    }
+
+    // No parked impact (very high ping, or a hit this client never predicted): approximate at the
+    // victim's current position so the confirmed hit still shows blood
+    rf::Entity* local_entity = rf::local_player ? rf::entity_from_handle(rf::local_player->entity_handle) : nullptr;
+    if (!local_entity) {
+        return;
+    }
+    rf::Vector3 dir = victim->pos - local_entity->pos;
+    dir.normalize_safe();
+    rf::entity_blood_maybe_splatter(0.0f, &victim->pos, &dir);
+    rf::entity_blood_do_hit_effect(&victim->pos, victim->room, &victim->pos, 0.0f);
+    int weapon_type = local_entity->ai.current_primary_weapon;
+    if (weapon_type >= 0 && weapon_type < rf::num_weapon_types) {
+        int sound = rf::foley_get_sound_handle(rf::weapon_types[weapon_type].impact_foley_id[3]); // flesh
+        if (sound != -1) {
+            rf::snd_play_3d(sound, victim->pos, 1.0f, rf::Vector3{}, 0);
+        }
+    }
+}
+
+ConsoleCommand2 confirmed_hits_cmd{
+    "cl_confirmedhits",
+    []() {
+        g_alpine_game_config.confirmed_hit_fx = !g_alpine_game_config.confirmed_hit_fx;
+        rf::console::print("Server-confirmed hit effects are {}",
+                           g_alpine_game_config.confirmed_hit_fx ? "enabled" : "disabled");
+    },
+    "Toggles whether blood and impact effects on other players are delayed until the server confirms the hit",
 };
 
 ConsoleCommand2 multi_ricochet_cmd{
@@ -417,8 +567,12 @@ void apply_weapon_patches()
     // Fix rockets not making damage after hitting a detail brush
     weapon_hit_wall_obj_apply_radius_damage_hook.install();
 
+    // Delay blood/impact FX on other players until the server confirms the hit
+    weapon_hit_obj_confirmed_hit_fx_injection.install();
+
     // commands
     multi_ricochet_cmd.register_cmd();
+    confirmed_hits_cmd.register_cmd();
     show_enemy_bullets_cmd.register_cmd();
     gaussian_spread_cmd.register_cmd();
     unlimited_semi_auto_cmd.register_cmd();

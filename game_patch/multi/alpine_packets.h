@@ -646,6 +646,7 @@ enum af_server_info_flags : uint32_t {
     SIF_SKIING = 1u << 25,
     SIF_POGO = 1u << 26,
     SIF_DODGING = 1u << 27,
+    SIF_DAMAGE_NOTIFICATIONS = 1u << 28,
 };
 
 // Subset of `rf::NetGameFlags`.

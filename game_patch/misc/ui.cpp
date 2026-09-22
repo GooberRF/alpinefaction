@@ -122,6 +122,8 @@ static rf::ui::Checkbox ao_staticscope_cbox;
 static rf::ui::Label ao_staticscope_label;
 static rf::ui::Checkbox ao_hitsounds_cbox;
 static rf::ui::Label ao_hitsounds_label;
+static rf::ui::Checkbox ao_confirmedhits_cbox;
+static rf::ui::Label ao_confirmedhits_label;
 static rf::ui::Checkbox ao_taunts_cbox;
 static rf::ui::Label ao_taunts_label;
 static rf::ui::Checkbox ao_teamrad_cbox;
@@ -759,6 +761,12 @@ void ao_hitsounds_cbox_on_click(int x, int y) {
     ao_play_button_snd(g_alpine_game_config.play_hit_sounds);
 }
 
+void ao_confirmedhits_cbox_on_click(int x, int y) {
+    g_alpine_game_config.confirmed_hit_fx = !g_alpine_game_config.confirmed_hit_fx;
+    ao_confirmedhits_cbox.checked = g_alpine_game_config.confirmed_hit_fx;
+    ao_play_button_snd(g_alpine_game_config.confirmed_hit_fx);
+}
+
 void ao_taunts_cbox_on_click(int x, int y) {
     g_alpine_game_config.play_taunt_sounds = !g_alpine_game_config.play_taunt_sounds;
     ao_taunts_cbox.checked = g_alpine_game_config.play_taunt_sounds;
@@ -1362,6 +1370,8 @@ void alpine_options_panel_init() {
         &ao_exposuredamage_cbox, &ao_exposuredamage_label, &alpine_options_panel3, ao_exposuredamage_cbox_on_click, g_alpine_game_config.apply_exposure_damage, 280, 174, "Exposure damage");
     alpine_options_panel_checkbox_init(
         &ao_gthelp_cbox, &ao_gthelp_label, &alpine_options_panel3, ao_gthelp_cbox_on_click, g_alpine_game_config.show_gametype_help, 280, 204, "Gametype Help");
+    alpine_options_panel_checkbox_init(
+        &ao_confirmedhits_cbox, &ao_confirmedhits_label, &alpine_options_panel3, ao_confirmedhits_cbox_on_click, g_alpine_game_config.confirmed_hit_fx, 280, 234, "Confirmed hits");
 
     // fflink text (panel3)
     std::string fflink_username = g_game_config.fflink_username.value();

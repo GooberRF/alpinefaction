@@ -153,6 +153,7 @@ struct AlpineFactionServerInfo
     bool skiing = false;
     bool dodging = false;
     bool pogo = false;
+    bool damage_notifications = false;
 };
 
 enum class AlpineRestrictVerdict : uint8_t

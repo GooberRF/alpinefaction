@@ -1,6 +1,12 @@
 #pragma once
 
+namespace rf
+{
+    struct Entity;
+}
+
 void cutscene_apply_patches();
+void confirmed_hit_fx_on_damage_notify(rf::Entity* victim);
 void apply_event_patches();
 void apply_alpine_events();
 void glare_patches_patches();

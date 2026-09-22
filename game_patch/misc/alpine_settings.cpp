@@ -1004,6 +1004,10 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.play_hit_sounds = std::stoi(settings["PlayHitsounds"]);
         processed_keys.insert("PlayHitsounds");
     }
+    if (settings.count("ConfirmedHitFX")) {
+        g_alpine_game_config.confirmed_hit_fx = std::stoi(settings["ConfirmedHitFX"]);
+        processed_keys.insert("ConfirmedHitFX");
+    }
     if (settings.count("ShowAwards")) {
         g_alpine_game_config.show_awards = std::stoi(settings["ShowAwards"]);
         processed_keys.insert("ShowAwards");
@@ -1616,6 +1620,7 @@ void alpine_player_settings_save(rf::Player* player)
     file << "WorldHUDTeamLabels=" << g_alpine_game_config.world_hud_team_player_labels << "\n";
     file << "ShowLocationPings=" << g_alpine_game_config.show_location_pings << "\n";
     file << "PlayHitsounds=" << g_alpine_game_config.play_hit_sounds << "\n";
+    file << "ConfirmedHitFX=" << g_alpine_game_config.confirmed_hit_fx << "\n";
     file << "ShowAwards=" << g_alpine_game_config.show_awards << "\n";
     file << "SprayDisplay=" << g_alpine_game_config.spray_display << "\n";
     file << "SpraySelection=" << g_alpine_game_config.selected_spray_index << "\n";
