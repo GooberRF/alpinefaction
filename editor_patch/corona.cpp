@@ -217,6 +217,8 @@ struct CoronaPreview
     float radius_scale = 1.0f;
     float volumetric_height = 0.0f;
     float volumetric_length = 0.0f;
+    int bitmap = -1;
+    int volumetric_bitmap = -1;
 };
 static CoronaPreview g_corona_preview;
 
@@ -258,6 +260,17 @@ static void corona_capture_preview(HWND hdlg)
         corona_clamp_field(hdlg, IDC_CORONA_VOLUMETRIC_HEIGHT, 0.0f, corona_max_volumetric);
     g_corona_preview.volumetric_length =
         corona_clamp_field(hdlg, IDC_CORONA_VOLUMETRIC_LENGTH, 0.0f, corona_max_volumetric);
+}
+
+// Resolved rather than loaded by name, so a half typed name never leaves a placeholder in bm_load's
+// cache; an unresolved name draws nothing, as it would in game.
+static void corona_capture_preview_bitmaps(HWND hdlg)
+{
+    char buf[256] = {};
+    GetDlgItemTextA(hdlg, IDC_CORONA_BITMAP, buf, sizeof(buf));
+    g_corona_preview.bitmap = alpine_dlg_resolve_bitmap(buf);
+    GetDlgItemTextA(hdlg, IDC_CORONA_VOLUMETRIC_BITMAP, buf, sizeof(buf));
+    g_corona_preview.volumetric_bitmap = alpine_dlg_resolve_bitmap(buf);
 }
 
 static void corona_refresh_preview(HWND hdlg)
@@ -313,6 +326,7 @@ static INT_PTR CALLBACK CoronaDialogProc(HWND hdlg, UINT msg, WPARAM wp, LPARAM 
                             0.1f, 0.0f, corona_max_volumetric, 2);
 
         corona_capture_preview(hdlg);
+        corona_capture_preview_bitmaps(hdlg);
         g_corona_preview.active = true;
 
         return TRUE;
@@ -337,6 +351,13 @@ static INT_PTR CALLBACK CoronaDialogProc(HWND hdlg, UINT msg, WPARAM wp, LPARAM 
             break;
         case IDC_CORONA_SHOW_IN_EDITOR:
             if (HIWORD(wp) == BN_CLICKED) {
+                corona_refresh_preview(hdlg);
+            }
+            break;
+        case IDC_CORONA_BITMAP:
+        case IDC_CORONA_VOLUMETRIC_BITMAP:
+            if (HIWORD(wp) == EN_CHANGE && g_corona_preview.active) {
+                corona_capture_preview_bitmaps(hdlg);
                 corona_refresh_preview(hdlg);
             }
             break;
@@ -584,18 +605,20 @@ void corona_render(CDedLevel* level)
 
         if (show_in_editor) {
             // Show corona bitmap with additive blending (no icon)
-            if (!corona->corona_bitmap.empty()) {
-                int bm_handle = bm_load(corona->corona_bitmap.c_str(), -1, 1);
-                if (bm_handle >= 0) {
-                    set_draw_color(color_r, color_g, color_b, 255);
-                    gr_set_bitmap(bm_handle, -1);
-                    render_additive_billboard(&corona->pos, radius_scale * 0.5f, cam_param);
-                }
+            const int bm_handle = preview ? g_corona_preview.bitmap
+                : corona->corona_bitmap.empty() ? -1
+                : bm_load(corona->corona_bitmap.c_str(), -1, 1);
+            if (bm_handle >= 0) {
+                set_draw_color(color_r, color_g, color_b, 255);
+                gr_set_bitmap(bm_handle, -1);
+                render_additive_billboard(&corona->pos, radius_scale * 0.5f, cam_param);
             }
 
             // Show volumetric bitmap as axial billboard along forward vector
-            if (!corona->volumetric_bitmap.empty() && vol_length > 0.0f) {
-                int vol_handle = bm_load(corona->volumetric_bitmap.c_str(), -1, 1);
+            if (vol_length > 0.0f) {
+                const int vol_handle = preview ? g_corona_preview.volumetric_bitmap
+                    : corona->volumetric_bitmap.empty() ? -1
+                    : bm_load(corona->volumetric_bitmap.c_str(), -1, 1);
                 if (vol_handle >= 0) {
                     set_draw_color(color_r, color_g, color_b, 128);
                     gr_set_bitmap(vol_handle, -1);

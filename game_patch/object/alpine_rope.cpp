@@ -1395,10 +1395,10 @@ void rope_light_release(RopeFxInstance& inst)
 // position beyond the vec itself - it leaves room 0 and stores radius squared, both independent of
 // where the light sits - and the D3D11 gather reads Light::vec live. What a create or a delete does
 // change is the light cache: both bump the key gr_light_find_all_by_gsolid (0x004D9870) tests, and
-// both end by dropping the current filter results, so an in-place move does exactly the same two
-// things.
+// both end by dropping the current filter results. An in-place move needs the same two steps, done
+// once by the caller after all of a rope's lights have moved (see rope_light_invalidate_cache).
 // False when the pool entry is no longer ours, which is the caller's cue to create the light again.
-bool rope_light_move(int handle, const rf::Vector3& pos)
+bool rope_light_move(int handle, const rf::Vector3& pos, bool& moved)
 {
     rf::gr::Light* light = rf::gr::light_get_from_handle(handle);
     if (!light || light->type == rf::gr::LT_NONE) {
@@ -1406,10 +1406,15 @@ bool rope_light_move(int handle, const rf::Vector3& pos)
     }
     if (light->vec != pos) {
         light->vec = pos;
-        ++rf::gr::light_cache_key;
-        rf::gr::light_filter_reset();
+        moved = true;
     }
     return true;
+}
+
+void rope_light_invalidate_cache()
+{
+    ++rf::gr::light_cache_key;
+    rf::gr::light_filter_reset();
 }
 
 // Level-init only: bm::load pulls in the bitmap system, which must never happen from a render or
@@ -1569,6 +1574,7 @@ void rope_fx_update(AlpineRope& rope, bool on, int64_t now_ms)
     build_deco_xforms(rope, make_sway_paint(rope, now_ms), inv_total);
 
     const bool lights_on = rope_fx_lights_enabled();
+    bool lights_moved = false;
 
     for (std::size_t i = 0; i < deco.fx_inst.size(); ++i) {
         RopeFxInstance& inst = deco.fx_inst[i];
@@ -1629,7 +1635,7 @@ void rope_fx_update(AlpineRope& rope, bool on, int64_t now_ms)
         if (fx && fx->has_light() && lights_on) {
             // Created once and then moved in place: nothing light_create_point derives from the
             // position outlives the vec write, so a rebuild per frame would buy nothing.
-            if (inst.light_handle < 0 || !rope_light_move(inst.light_handle, xform.pos)) {
+            if (inst.light_handle < 0 || !rope_light_move(inst.light_handle, xform.pos, lights_moved)) {
                 // A refused create is latched: the pool is a fixed free list, so a rope whose
                 // effects refresh every frame would otherwise re-ask for the whole level.
                 if (!inst.light_failed) {
@@ -1645,6 +1651,11 @@ void rope_fx_update(AlpineRope& rope, bool on, int64_t now_ms)
         else {
             rope_light_release(inst);
         }
+    }
+
+    // Nothing queries lights inside the loop, so one invalidation covers every move above.
+    if (lights_moved) {
+        rope_light_invalidate_cache();
     }
 
     rope.fx_dirty = false;

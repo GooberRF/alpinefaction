@@ -2400,6 +2400,57 @@ CodeInjection alpine_group_pre_load_hook{
     },
 };
 
+// Rope and bolt emitter targets are uid references outside the links array, which stock's own
+// fixup never touches — stock bolts keep a stale target on a colliding import. Stock renumberings
+// come from the table the importer leaves on the level; a target in neither map was not
+// renumbered, so it still names the right object.
+static void remap_imported_emitter_targets(CDedLevel* level, const std::map<int, int>& alpine_uid_map,
+                                           std::size_t rope_emitter_start)
+{
+    std::map<int, int> stock_uid_map;
+    const auto& old_uids = level->import_renumbered_old_uids;
+    const auto& new_uids = level->import_renumbered_new_uids;
+    for (int k = 0; k < std::min(old_uids.size, new_uids.size); k++)
+        stock_uid_map[old_uids.data_ptr[k]] = new_uids.data_ptr[k];
+
+    int remapped = 0;
+    auto remap_target = [&](int& target_uid) {
+        if (target_uid == -1)
+            return;
+        if (auto it = alpine_uid_map.find(target_uid); it != alpine_uid_map.end()) {
+            target_uid = it->second;
+            remapped++;
+        }
+        else if (auto it2 = stock_uid_map.find(target_uid); it2 != stock_uid_map.end()) {
+            target_uid = it2->second;
+            remapped++;
+        }
+    };
+
+    auto& ropes = level->GetAlpineLevelProperties().rope_emitter_objects;
+    for (auto i = rope_emitter_start; i < ropes.size(); i++)
+        remap_target(ropes[i]->target_uid);
+
+    // Stock's import deselects everything and then selects each object it loads, and the hook adds
+    // Alpine objects only afterwards, so the selection is exactly this import's stock objects.
+    int bolts = 0;
+    for (int k = 0; k < level->selection.size; k++) {
+        DedObject* obj = level->selection.data_ptr[k];
+        if (!obj || obj->type != DedObjectType::DED_BOLT_EMITTER)
+            continue;
+        auto* bolt = static_cast<DedBoltEmitter*>(obj);
+        remap_target(bolt->target_uid);
+        // Always: the runtime bolt the viewport draws also finds its own position by the bolt's uid,
+        // which stock's renumbering changed without telling it.
+        bolt->sync_preview();
+        bolts++;
+    }
+
+    if (remapped || bolts)
+        xlog::info("[AlpineObj] Group import: {} stock uid(s) renumbered, {} emitter target(s) remapped, "
+                   "{} bolt emitter preview(s) resynced", stock_uid_map.size(), remapped, bolts);
+}
+
 // Load hook: read Alpine object chunks after stock data.
 // At 0x0041d2e4: ESI = CDocument*, stock deserialization done.
 // Stock group load (FUN_00438340) deselects all, loads objects, selects each loaded
@@ -2528,8 +2579,11 @@ CodeInjection alpine_group_load_hook{
             !weather_regions_loaded &&
             !projection_cameras_loaded &&
             !rope_emitters_loaded &&
-            !has_brush_props)
+            !has_brush_props) {
+            // A stock-only group can carry bolt emitters.
+            remap_imported_emitter_targets(level, {}, rope_emitter_start);
             return;
+        }
 
         // Assign new unique UIDs to imported Alpine objects (group import must not
         // reuse UIDs from the file — stock FUN_004365c0 does the same for stock types).
@@ -2590,25 +2644,7 @@ CodeInjection alpine_group_load_hook{
             }
         }
 
-        // A rope's far anchor is a UID reference outside the links array. The map only carries
-        // Alpine renumberings — stock's importer renumbers stock objects into arrays this hook
-        // cannot reach — so a target that is not in the map is reported, not guessed. Reported
-        // whether or not something in the level happens to carry that uid: a stock object the
-        // importer renumbered has left its old uid free for anything, so a uid that still resolves
-        // may be resolving to a pre-existing object that was never the rope's target.
-        for (auto i = rope_emitter_start; i < props.rope_emitter_objects.size(); i++) {
-            auto* rope = props.rope_emitter_objects[i];
-            if (rope->target_uid == -1)
-                continue;
-            auto it = alpine_uid_map_raw.find(rope->target_uid);
-            if (it != alpine_uid_map_raw.end()) {
-                rope->target_uid = it->second;
-                continue;
-            }
-            xlog::warn("[AlpineObj] Imported rope uid={} targets uid {}, which this import did not "
-                       "renumber: the target may not have survived the import, or may now point at "
-                       "a pre-existing object", rope->uid, rope->target_uid);
-        }
+        remap_imported_emitter_targets(level, alpine_uid_map_raw, rope_emitter_start);
 
         // Add newly loaded Alpine objects to the selection so they move with the
         // other stock objects when the user places the imported group.

@@ -1069,7 +1069,12 @@ struct CDedLevel
 
     // --- selection ---
     VArray<DedObject*> selection;                 // +0x298
-    char _pad_2A4[0x2E0 - 0x2A4];                // +0x2A4
+    char _pad_2A4[0x2B0 - 0x2A4];                // +0x2A4
+    // Group import (FUN_00438340) clears these, then FUN_004365c0 records each uid it renumbers on
+    // a collision: old uid here, new uid at the same index below. Left filled until the next import.
+    VArray<int> import_renumbered_old_uids;       // +0x2B0
+    VArray<int> import_renumbered_new_uids;       // +0x2BC
+    char _pad_2C8[0x2E0 - 0x2C8];                // +0x2C8
     VArray<DedObject*> master_objects;            // +0x2E0 (all DedObjects, searched by FUN_00483920 for link validation)
     char _pad_2EC[0x340 - 0x2EC];                // +0x2EC
 

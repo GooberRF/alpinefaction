@@ -626,9 +626,19 @@ struct DedRopeEmitter : DedObject
 
 struct DedBoltEmitter : DedObject
 {
-    char pad_94[0xC4 - 0x94];
+    char pad_94[0x98 - 0x94];
+    int target_uid;                    // 0x98 — -1 when unset
+    char pad_9C[0xC4 - 0x9C];
     VString bitmap;                    // 0xC4 — bolt texture filename
     char pad_CC[0xD4 - 0xCC];
+
+    // Copies every field, the bolt's own uid and its target included, into the runtime bolt the
+    // viewport draws (+0x94), which looks both endpoints up by those uids every frame.
+    // The properties dialog runs this on close; a field changed anywhere else must run it too.
+    void sync_preview()
+    {
+        AddrCaller{0x0044D0D0}.this_call(this);
+    }
 };
 static_assert(sizeof(DedBoltEmitter) == 0xD4, "DedBoltEmitter size mismatch");
 
