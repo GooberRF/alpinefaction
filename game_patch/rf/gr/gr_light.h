@@ -119,6 +119,12 @@ namespace rf::gr
 
     static auto& num_relevant_lights = addr_as_ref<int>(0x00C9687C);
 
+    // Bumped by light_create_point, light_delete and the light property setters (not light_alloc,
+    // which only resets the filter). gr_light_find_all_by_gsolid (0x004D9870) caches its per-solid
+    // light list under this key, so anything that changes a light in place must bump it and then
+    // call light_filter_reset.
+    static auto& light_cache_key = addr_as_ref<int>(0x00C96874);
+
     // static auto& relevant_lights = addr_as_ref<Light*[1100]>(0x00C4D588)
     // Defined in graphics/gr_light.cpp. Replaces above from stock game.
     // max_relevant_lights should be the same value as max_scene_lights in graphics/gr_light.cpp.

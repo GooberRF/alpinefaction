@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <string>
 #include <vector>
 #include <unordered_set>
@@ -17,6 +18,62 @@ constexpr int alpine_corona_chunk_id = 0x0AFBAE03;
 constexpr int alpine_bag_chunk_id = 0x0AFBAE04;
 constexpr int alpine_weather_region_chunk_id = 0x0AFBAE06;
 constexpr int alpine_projection_camera_chunk_id = 0x0AFBAE08;
+constexpr int alpine_rope_emitter_chunk_id = 0x0AFBAE0A;
+
+// Bounds checked reader for the alpine RFL chunks. Bind it to the same `remaining` counter as the
+// rf::File::ChunkGuard that guards the chunk, so the guard still skips whatever went unread.
+struct AlpineChunkReader
+{
+    rf::File& file;
+    std::size_t& remaining;
+    bool read_error = false;
+
+    bool read_bytes(void* dst, std::size_t n)
+    {
+        if (remaining < n) {
+            read_error = true;
+            return false;
+        }
+        int got = file.read(dst, n);
+        if (got != static_cast<int>(n) || file.error()) {
+            if (got > 0) remaining -= got;
+            read_error = true;
+            return false;
+        }
+        remaining -= n;
+        return true;
+    }
+
+    // Length prefixed string. `out` is empty on every failure path, so callers that ignore the
+    // result still see the same value the returns-string readers used to hand back.
+    bool read_string(std::string& out)
+    {
+        out.clear();
+        uint16_t len = 0;
+        if (!read_bytes(&len, sizeof(len))) {
+            return false;
+        }
+        if (len == 0) {
+            return true;
+        }
+        // Bounds first: a bogus 64 KB length prefix must not allocate before it is known to fit.
+        if (remaining < len) {
+            read_error = true;
+            return false;
+        }
+        out.assign(len, '\0');
+        if (!read_bytes(out.data(), len)) {
+            out.clear();
+            return false;
+        }
+        return true;
+    }
+
+    bool failed() const
+    {
+        return read_error;
+    }
+};
 
 // Unit vector pointing TOWARD the sun. The light travel direction is its negation.
 // should match helper in editor_patch\level.h
@@ -121,17 +178,7 @@ struct AlpineLevelProperties
             ~SanitizeGuard() { props->sanitize_sun_properties(); }
         } sanitize_guard{this};
 
-        auto read_bytes = [&](void* dst, std::size_t n) -> bool {
-            if (remaining < n)
-                return false;
-            int got = file.read(dst, n);
-            if (got != static_cast<int>(n) || file.error()) {
-                if (got > 0) remaining -= got;
-                return false;
-            }
-            remaining -= n;
-            return true;
-        };
+        AlpineChunkReader reader{file, remaining};
 
         // A count larger than the cap still describes that many entries in the file, so the
         // surplus has to be consumed or every field behind it is read from the wrong offset.
@@ -141,7 +188,7 @@ struct AlpineLevelProperties
             while (bytes > 0) {
                 const std::size_t step =
                     static_cast<std::size_t>(std::min<std::uint64_t>(bytes, sizeof(scratch)));
-                if (!read_bytes(scratch, step))
+                if (!reader.read_bytes(scratch, step))
                     return false;
                 bytes -= step;
             }
@@ -150,7 +197,7 @@ struct AlpineLevelProperties
 
         // version
         std::uint32_t version = 0;
-        if (!read_bytes(&version, sizeof(version))) {
+        if (!reader.read_bytes(&version, sizeof(version))) {
             xlog::warn("[AlpineLevelProps] chunk too small for version header (len={})", chunk_len);
             return;
         }
@@ -163,7 +210,7 @@ struct AlpineLevelProperties
 
         if (version >= 1) {
             std::uint8_t u8 = 0;
-            if (!read_bytes(&u8, sizeof(u8)))
+            if (!reader.read_bytes(&u8, sizeof(u8)))
                 return;
             legacy_cyclic_timers = (u8 != 0);
             xlog::debug("[AlpineLevelProps] legacy_cyclic_timers {}", legacy_cyclic_timers);
@@ -171,11 +218,11 @@ struct AlpineLevelProperties
 
         if (version >= 2) {
             std::uint8_t u8 = 0;
-            if (!read_bytes(&u8, sizeof(u8)))
+            if (!reader.read_bytes(&u8, sizeof(u8)))
                 return;
             legacy_movers = (u8 != 0);
             xlog::debug("[AlpineLevelProps] legacy_movers {}", legacy_movers);
-            if (!read_bytes(&u8, sizeof(u8)))
+            if (!reader.read_bytes(&u8, sizeof(u8)))
                 return;
             starts_with_headlamp = (u8 != 0);
             xlog::debug("[AlpineLevelProps] starts_with_headlamp {}", starts_with_headlamp);
@@ -183,35 +230,35 @@ struct AlpineLevelProperties
 
         if (version >= 3) {
             std::uint8_t u8 = 0;
-            if (!read_bytes(&u8, sizeof(u8)))
+            if (!reader.read_bytes(&u8, sizeof(u8)))
                 return;
             override_static_mesh_ambient_light_modifier = (u8 != 0);
             xlog::debug("[AlpineLevelProps] override_static_mesh_ambient_light_modifier {}", override_static_mesh_ambient_light_modifier);
-            if (!read_bytes(&static_mesh_ambient_light_modifier, sizeof(static_mesh_ambient_light_modifier)))
+            if (!reader.read_bytes(&static_mesh_ambient_light_modifier, sizeof(static_mesh_ambient_light_modifier)))
                 return;
             xlog::debug("[AlpineLevelProps] static_mesh_ambient_light_modifier {}", static_mesh_ambient_light_modifier);
         }
 
         if (version >= 4) {
             std::uint8_t u8 = 0;
-            if (!read_bytes(&u8, sizeof(u8)))
+            if (!reader.read_bytes(&u8, sizeof(u8)))
                 return;
             rf2_style_geomod = (u8 != 0);
             xlog::debug("[AlpineLevelProps] rf2_style_geomod {}", rf2_style_geomod);
 
             // Geoable entries as (brush_uid, room_uid) pairs
             uint32_t count = 0;
-            if (!read_bytes(&count, sizeof(count)))
+            if (!reader.read_bytes(&count, sizeof(count)))
                 return;
             uint32_t count_surplus = count > 10000 ? count - 10000 : 0;
             if (count > 10000) count = 10000;
             geoable_room_uids.resize(count);
             for (uint32_t i = 0; i < count; i++) {
                 int32_t brush_uid = 0; // editor-only, skip
-                if (!read_bytes(&brush_uid, sizeof(brush_uid)))
+                if (!reader.read_bytes(&brush_uid, sizeof(brush_uid)))
                     return;
                 int32_t room_uid = 0;
-                if (!read_bytes(&room_uid, sizeof(room_uid)))
+                if (!reader.read_bytes(&room_uid, sizeof(room_uid)))
                     return;
                 geoable_room_uids[i] = room_uid;
                 xlog::debug("[AlpineLevelProps] geoable entry: brush_uid={} room_uid={}", brush_uid, room_uid);
@@ -222,7 +269,7 @@ struct AlpineLevelProperties
 
             // Breakable material entries as (brush_uid, room_uid, material) triples
             uint32_t bcount = 0;
-            if (!read_bytes(&bcount, sizeof(bcount))) {
+            if (!reader.read_bytes(&bcount, sizeof(bcount))) {
                 xlog::warn("[AlpineLevelProps] GAME: failed to read breakable count (remaining={})", remaining);
                 return;
             }
@@ -233,14 +280,14 @@ struct AlpineLevelProperties
             breakable_materials.resize(bcount);
             for (uint32_t i = 0; i < bcount; i++) {
                 int32_t brush_uid = 0; // editor-only, skip
-                if (!read_bytes(&brush_uid, sizeof(brush_uid)))
+                if (!reader.read_bytes(&brush_uid, sizeof(brush_uid)))
                     return;
                 int32_t room_uid = 0;
-                if (!read_bytes(&room_uid, sizeof(room_uid)))
+                if (!reader.read_bytes(&room_uid, sizeof(room_uid)))
                     return;
                 breakable_room_uids[i] = room_uid;
                 uint8_t mat = 0;
-                if (!read_bytes(&mat, sizeof(mat)))
+                if (!reader.read_bytes(&mat, sizeof(mat)))
                     return;
                 breakable_materials[i] = mat;
                 xlog::trace("[AlpineLevelProps] GAME: breakable[{}] brush_uid={} room_uid={} material={}", i, brush_uid, room_uid, mat);
@@ -251,14 +298,14 @@ struct AlpineLevelProperties
 
             // Hold open first-keyframe UIDs
             uint32_t ho_count = 0;
-            if (!read_bytes(&ho_count, sizeof(ho_count)))
+            if (!reader.read_bytes(&ho_count, sizeof(ho_count)))
                 return;
             uint32_t ho_surplus = ho_count > 10000 ? ho_count - 10000 : 0;
             if (ho_count > 10000) ho_count = 10000;
             hold_open_keyframe_uids.resize(ho_count);
             for (uint32_t i = 0; i < ho_count; i++) {
                 int32_t uid = 0;
-                if (!read_bytes(&uid, sizeof(uid)))
+                if (!reader.read_bytes(&uid, sizeof(uid)))
                     return;
                 hold_open_keyframe_uids[i] = uid;
             }
@@ -269,64 +316,64 @@ struct AlpineLevelProperties
 
         if (version >= 5) {
             std::uint8_t u8 = 0;
-            if (!read_bytes(&u8, sizeof(u8)))
+            if (!reader.read_bytes(&u8, sizeof(u8)))
                 return;
             enable_sun = (u8 != 0);
-            if (!read_bytes(&sun_yaw, sizeof(sun_yaw)))
+            if (!reader.read_bytes(&sun_yaw, sizeof(sun_yaw)))
                 return;
-            if (!read_bytes(&sun_pitch, sizeof(sun_pitch)))
+            if (!reader.read_bytes(&sun_pitch, sizeof(sun_pitch)))
                 return;
-            if (!read_bytes(&sun_color_r, sizeof(sun_color_r)))
+            if (!reader.read_bytes(&sun_color_r, sizeof(sun_color_r)))
                 return;
-            if (!read_bytes(&sun_color_g, sizeof(sun_color_g)))
+            if (!reader.read_bytes(&sun_color_g, sizeof(sun_color_g)))
                 return;
-            if (!read_bytes(&sun_color_b, sizeof(sun_color_b)))
+            if (!reader.read_bytes(&sun_color_b, sizeof(sun_color_b)))
                 return;
-            if (!read_bytes(&sun_color_a, sizeof(sun_color_a)))
+            if (!reader.read_bytes(&sun_color_a, sizeof(sun_color_a)))
                 return;
-            if (!read_bytes(&sun_intensity, sizeof(sun_intensity)))
+            if (!reader.read_bytes(&sun_intensity, sizeof(sun_intensity)))
                 return;
-            if (!read_bytes(&sun_spread_angle, sizeof(sun_spread_angle)))
+            if (!reader.read_bytes(&sun_spread_angle, sizeof(sun_spread_angle)))
                 return;
-            if (!read_bytes(&u8, sizeof(u8)))
+            if (!reader.read_bytes(&u8, sizeof(u8)))
                 return;
             sun_cast_baked_shadows = (u8 != 0);
-            if (!read_bytes(&u8, sizeof(u8)))
+            if (!reader.read_bytes(&u8, sizeof(u8)))
                 return;
             sun_affects_meshes = (u8 != 0);
-            if (!read_bytes(&sun_mesh_mode, sizeof(sun_mesh_mode)))
+            if (!reader.read_bytes(&sun_mesh_mode, sizeof(sun_mesh_mode)))
                 return;
-            if (!read_bytes(&u8, sizeof(u8)))
+            if (!reader.read_bytes(&u8, sizeof(u8)))
                 return;
             sun_drives_shadowmap_dir = (u8 != 0);
-            if (!read_bytes(&u8, sizeof(u8)))
+            if (!reader.read_bytes(&u8, sizeof(u8)))
                 return;
             legacy_lighting = (u8 != 0);
-            if (!read_bytes(&u8, sizeof(u8)))
+            if (!reader.read_bytes(&u8, sizeof(u8)))
                 return;
             highres_lightmaps = (u8 != 0);
-            if (!read_bytes(&u8, sizeof(u8)))
+            if (!reader.read_bytes(&u8, sizeof(u8)))
                 return;
             sun_liquid_occludes = (u8 != 0);
-            if (!read_bytes(&u8, sizeof(u8)))
+            if (!reader.read_bytes(&u8, sizeof(u8)))
                 return;
             invisible_faces_occlude = (u8 != 0);
-            if (!read_bytes(&u8, sizeof(u8)))
+            if (!reader.read_bytes(&u8, sizeof(u8)))
                 return;
             alpha_faces_occlude = (u8 != 0);
             uint32_t nsc_count = 0;
-            if (!read_bytes(&nsc_count, sizeof(nsc_count)))
+            if (!reader.read_bytes(&nsc_count, sizeof(nsc_count)))
                 return;
             uint32_t nsc_surplus = nsc_count > 10000 ? nsc_count - 10000 : 0;
             if (nsc_count > 10000) nsc_count = 10000;
             for (uint32_t i = 0; i < nsc_count; i++) {
                 int32_t brush_uid = 0; // editor-only, skip
-                if (!read_bytes(&brush_uid, sizeof(brush_uid)))
+                if (!reader.read_bytes(&brush_uid, sizeof(brush_uid)))
                     return;
             }
             if (!skip_entries(nsc_surplus, 4))
                 return;
-            if (!read_bytes(&u8, sizeof(u8)))
+            if (!reader.read_bytes(&u8, sizeof(u8)))
                 return;
             meshes_occlude = (u8 != 0);
             xlog::debug("[AlpineLevelProps] enable_sun {} yaw {} pitch {} intensity {} no_shadow_cast {}",
@@ -432,10 +479,13 @@ struct AlpineCoronaInfo {
     uint8_t color_r = 255, color_g = 255, color_b = 255, color_a = 255;
     std::string corona_bitmap;
     float cone_angle = 0.0f;         // degrees (multiplied by 0.5 at creation, matching effects.tbl)
+    // Stock authoring factors, not distances, matching DedCorona and rope_curve.h's deco_fx
+    // defaults. Every field below is read unconditionally, so these only stand in for a malformed
+    // chunk - prevention rather than a behaviour change for valid files.
     float intensity = 1.0f;
-    float radius_distance = 100.0f;
-    float radius_scale = 1.0f;
-    float diminish_distance = 200.0f;
+    float radius_distance = 0.6f;
+    float radius_scale = 0.8f;
+    float diminish_distance = -0.05f;
     std::string volumetric_bitmap;
     float volumetric_height = 0.0f;
     float volumetric_length = 0.0f;

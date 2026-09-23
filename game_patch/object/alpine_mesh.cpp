@@ -16,6 +16,7 @@
 #include "../rf/bmpman.h"
 #include "../rf/event.h"
 #include "../misc/level.h"
+#include "alpine_obj_common.h"
 #include "object.h"
 #include <common/utils/string-utils.h>
 
@@ -266,31 +267,10 @@ void alpine_mesh_load_chunk(rf::File& file, std::size_t chunk_len, int content_v
 
     rf::File::ChunkGuard chunk_guard{file, remaining};
 
-    bool read_error = false;
-
-    auto read_bytes = [&](void* dst, std::size_t n) -> bool {
-        if (remaining < n) { read_error = true; return false; }
-        int got = file.read(dst, n);
-        if (got != static_cast<int>(n) || file.error()) {
-            if (got > 0) remaining -= got;
-            read_error = true;
-            return false;
-        }
-        remaining -= n;
-        return true;
-    };
-
-    auto read_string = [&]() -> std::string {
-        uint16_t len = 0;
-        if (!read_bytes(&len, sizeof(len))) return "";
-        if (len == 0) return "";
-        std::string result(len, '\0');
-        if (!read_bytes(result.data(), len)) return "";
-        return result;
-    };
+    AlpineChunkReader reader{file, remaining};
 
     uint32_t count = 0;
-    if (!read_bytes(&count, sizeof(count))) return;
+    if (!reader.read_bytes(&count, sizeof(count))) return;
     if (count > 10000) count = 10000;
 
     uint32_t loaded = 0;
@@ -298,48 +278,45 @@ void alpine_mesh_load_chunk(rf::File& file, std::size_t chunk_len, int content_v
     for (uint32_t i = 0; i < count; i++) {
         AlpineMeshInfo info;
 
-        if (!read_bytes(&info.uid, sizeof(info.uid))) return;
+        if (!reader.read_bytes(&info.uid, sizeof(info.uid))) return;
         // pos
-        if (!read_bytes(&info.pos.x, sizeof(float))) return;
-        if (!read_bytes(&info.pos.y, sizeof(float))) return;
-        if (!read_bytes(&info.pos.z, sizeof(float))) return;
+        if (!reader.read_bytes(&info.pos.x, sizeof(float))) return;
+        if (!reader.read_bytes(&info.pos.y, sizeof(float))) return;
+        if (!reader.read_bytes(&info.pos.z, sizeof(float))) return;
         // orient (3x3 row-major)
-        if (!read_bytes(&info.orient.rvec.x, sizeof(float))) return;
-        if (!read_bytes(&info.orient.rvec.y, sizeof(float))) return;
-        if (!read_bytes(&info.orient.rvec.z, sizeof(float))) return;
-        if (!read_bytes(&info.orient.uvec.x, sizeof(float))) return;
-        if (!read_bytes(&info.orient.uvec.y, sizeof(float))) return;
-        if (!read_bytes(&info.orient.uvec.z, sizeof(float))) return;
-        if (!read_bytes(&info.orient.fvec.x, sizeof(float))) return;
-        if (!read_bytes(&info.orient.fvec.y, sizeof(float))) return;
-        if (!read_bytes(&info.orient.fvec.z, sizeof(float))) return;
+        if (!reader.read_bytes(&info.orient.rvec.x, sizeof(float))) return;
+        if (!reader.read_bytes(&info.orient.rvec.y, sizeof(float))) return;
+        if (!reader.read_bytes(&info.orient.rvec.z, sizeof(float))) return;
+        if (!reader.read_bytes(&info.orient.uvec.x, sizeof(float))) return;
+        if (!reader.read_bytes(&info.orient.uvec.y, sizeof(float))) return;
+        if (!reader.read_bytes(&info.orient.uvec.z, sizeof(float))) return;
+        if (!reader.read_bytes(&info.orient.fvec.x, sizeof(float))) return;
+        if (!reader.read_bytes(&info.orient.fvec.y, sizeof(float))) return;
+        if (!reader.read_bytes(&info.orient.fvec.z, sizeof(float))) return;
         // strings
-        info.script_name = read_string();
-        if (read_error) return;
-        info.mesh_filename = read_string();
-        if (read_error) return;
+        if (!reader.read_string(info.script_name)) return;
+        if (!reader.read_string(info.mesh_filename)) return;
         if (info.mesh_filename.size() >= max_mesh_name) {
             xlog::warn("[AlpineMesh] Ignoring over-long mesh filename on mesh uid {}", info.uid);
             info.mesh_filename.clear();
         }
-        info.state_anim = read_string();
-        if (read_error) return;
+        if (!reader.read_string(info.state_anim)) return;
         if (info.state_anim.size() >= max_anim_name || anim_ext_over_long(info.state_anim)) {
             xlog::warn("[AlpineMesh] Ignoring over-long state animation name on mesh uid {}", info.uid);
             info.state_anim.clear();
         }
         // collision mode
         uint8_t collision_mode = 2;
-        if (!read_bytes(&collision_mode, sizeof(collision_mode))) return;
+        if (!reader.read_bytes(&collision_mode, sizeof(collision_mode))) return;
         info.collision_mode = (collision_mode <= 3) ? collision_mode : 2;
         // texture overrides: count + (slot_id, filename) pairs
         uint8_t num_overrides = 0;
-        if (!read_bytes(&num_overrides, sizeof(num_overrides))) return;
+        if (!reader.read_bytes(&num_overrides, sizeof(num_overrides))) return;
         for (uint8_t oi = 0; oi < num_overrides; oi++) {
             uint8_t slot_id = 0;
-            if (!read_bytes(&slot_id, sizeof(slot_id))) return;
-            std::string tex = read_string();
-            if (read_error) return;
+            if (!reader.read_bytes(&slot_id, sizeof(slot_id))) return;
+            std::string tex;
+            if (!reader.read_string(tex)) return;
             if (tex.size() >= max_bitmap_name) {
                 xlog::warn("[AlpineMesh] Ignoring over-long texture override name (slot {})", slot_id);
                 tex.clear();
@@ -352,38 +329,36 @@ void alpine_mesh_load_chunk(rf::File& file, std::size_t chunk_len, int content_v
         int32_t mat = 0;
 
         // clutter properties
-        if (remaining >= sizeof(int32_t) && read_bytes(&mat, sizeof(mat))) {
+        if (remaining >= sizeof(int32_t) && reader.read_bytes(&mat, sizeof(mat))) {
             info.material = (mat >= 0 && mat <= 9) ? mat : 0;
 
             uint8_t is_clutter_flag = 0;
-            if (remaining >= 1 && read_bytes(&is_clutter_flag, sizeof(is_clutter_flag))) {
+            if (remaining >= 1 && reader.read_bytes(&is_clutter_flag, sizeof(is_clutter_flag))) {
                 info.clutter.is_clutter = (is_clutter_flag != 0);
                 if (info.clutter.is_clutter) {
                     auto& cp = info.clutter;
-                    if (!read_bytes(&cp.life, sizeof(float))) return;
-                    cp.debris_filename = read_string();
-                    if (read_error) return;
+                    if (!reader.read_bytes(&cp.life, sizeof(float))) return;
+                    if (!reader.read_string(cp.debris_filename)) return;
                     if (cp.debris_filename.size() >= max_mesh_name) {
                         xlog::warn("[AlpineMesh] Ignoring over-long debris filename on mesh uid {}", info.uid);
                         cp.debris_filename.clear();
                     }
-                    cp.explosion_vclip = read_string();
-                    if (read_error) return;
-                    if (!read_bytes(&cp.explosion_radius, sizeof(float))) return;
-                    if (!read_bytes(&cp.debris_velocity, sizeof(float))) return;
+                    if (!reader.read_string(cp.explosion_vclip)) return;
+                    if (!reader.read_bytes(&cp.explosion_radius, sizeof(float))) return;
+                    if (!reader.read_bytes(&cp.debris_velocity, sizeof(float))) return;
                     for (int di = 0; di < 11; di++) {
-                        if (!read_bytes(&cp.damage_type_factors[di], sizeof(float))) return;
+                        if (!reader.read_bytes(&cp.damage_type_factors[di], sizeof(float))) return;
                     }
                     // Corpse fields
-                    if (remaining > 0 && !read_error) {
-                        cp.corpse_filename = read_string();
+                    if (remaining > 0 && !reader.failed()) {
+                        reader.read_string(cp.corpse_filename);
                         if (cp.corpse_filename.size() >= max_mesh_name) {
                             xlog::warn("[AlpineMesh] Ignoring over-long corpse filename on mesh uid {}", info.uid);
                             cp.corpse_filename.clear();
                         }
                     }
-                    if (remaining > 0 && !read_error) {
-                        cp.corpse_state_anim = read_string();
+                    if (remaining > 0 && !reader.failed()) {
+                        reader.read_string(cp.corpse_state_anim);
                         if (cp.corpse_state_anim.size() >= max_anim_name || anim_ext_over_long(cp.corpse_state_anim)) {
                             xlog::warn("[AlpineMesh] Ignoring over-long corpse animation name on mesh uid {}", info.uid);
                             cp.corpse_state_anim.clear();
@@ -391,13 +366,13 @@ void alpine_mesh_load_chunk(rf::File& file, std::size_t chunk_len, int content_v
                     }
                     if (remaining >= 1) {
                         uint8_t col = 0;
-                        if (read_bytes(&col, sizeof(uint8_t))) {
+                        if (reader.read_bytes(&col, sizeof(uint8_t))) {
                             cp.corpse_collision = col;
                         }
                     }
                     if (remaining >= 1) {
                         int8_t mat = -1;
-                        if (read_bytes(&mat, sizeof(int8_t))) {
+                        if (reader.read_bytes(&mat, sizeof(int8_t))) {
                             cp.corpse_material = mat;
                         }
                     }
@@ -416,7 +391,7 @@ void alpine_mesh_load_chunk(rf::File& file, std::size_t chunk_len, int content_v
     if (content_version >= 306 && loaded == count && remaining >= count) {
         for (uint32_t i = 0; i < count; i++) {
             uint8_t flags = 0;
-            if (!read_bytes(&flags, sizeof(flags))) return;
+            if (!reader.read_bytes(&flags, sizeof(flags))) return;
         }
     }
 }
@@ -557,23 +532,7 @@ static void alpine_mesh_create_object(const AlpineMeshInfo& info)
         clutter->info = &rf::get_dummy_clutter_info();
     }
 
-    clutter->info_index = -1;
-    clutter->corpse_index = -1;
-    clutter->sound_handle = -1;
-    clutter->delayed_kill_sound = -1;
-    clutter->dmg_type_that_killed_me = 0;
-    clutter->corpse_vmesh_handle = nullptr;
-    clutter->current_skin_index = 0;
-    clutter->already_spawned_glass = false;
-    clutter->use_sound = -1;
-    clutter->killable_index = 0xFFFF; // default: not killable
-    *reinterpret_cast<int*>(reinterpret_cast<uint8_t*>(clutter) + 0x2D0) = -1;
-
-    clutter->prev = rf::clutter_list_tail;
-    clutter->next = reinterpret_cast<rf::Clutter*>(&rf::clutter_list);
-    rf::clutter_list_tail->next = clutter;
-    rf::clutter_list_tail = clutter;
-    rf::clutter_count++;
+    alpine_init_anchor_clutter(clutter);
 
     obj->uid = info.uid;
     if (!info.script_name.empty()) {
@@ -843,24 +802,7 @@ bool alpine_mesh_spawn_corpse(rf::Object* obj)
 
     // Use shared dummy info — corpse is always invulnerable
     corpse_clutter->info = &rf::get_dummy_clutter_info();
-    corpse_clutter->info_index = -1;
-    corpse_clutter->corpse_index = -1;
-    corpse_clutter->sound_handle = -1;
-    corpse_clutter->delayed_kill_sound = -1;
-    corpse_clutter->dmg_type_that_killed_me = 0;
-    corpse_clutter->corpse_vmesh_handle = nullptr;
-    corpse_clutter->current_skin_index = 0;
-    corpse_clutter->already_spawned_glass = false;
-    corpse_clutter->use_sound = -1;
-    corpse_clutter->killable_index = 0xFFFF;
-    *reinterpret_cast<int*>(reinterpret_cast<uint8_t*>(corpse_clutter) + 0x2D0) = -1;
-
-    // Insert into clutter linked list
-    corpse_clutter->prev = rf::clutter_list_tail;
-    corpse_clutter->next = reinterpret_cast<rf::Clutter*>(&rf::clutter_list);
-    rf::clutter_list_tail->next = corpse_clutter;
-    rf::clutter_list_tail = corpse_clutter;
-    rf::clutter_count++;
+    alpine_init_anchor_clutter(corpse_clutter);
 
     // Invulnerable with positive life
     corpse_obj->life = 100.0f;

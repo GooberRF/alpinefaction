@@ -4,6 +4,10 @@ set(SRCS
     alpine_color_picker.h
     alpine_obj.cpp
     alpine_obj.h
+    alpine_spinner.cpp
+    alpine_spinner.h
+    brush_import.cpp
+    brush_import.h
     event.cpp
     file_dialogs.cpp
     file_dialogs.h
@@ -27,6 +31,8 @@ set(SRCS
     weather_region.h
     projection_camera.cpp
     projection_camera.h
+    rope_emitter.cpp
+    rope_emitter.h
     textures.cpp
     bitmap_loaders.cpp
     bitmap_loaders.h
@@ -67,6 +73,7 @@ target_link_libraries(AlpineEditor
     Common
     Xlog
     CrashHandlerStub
+    comctl32
     shlwapi
     ole32
     shell32

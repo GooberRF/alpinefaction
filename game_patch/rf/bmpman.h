@@ -88,6 +88,9 @@ namespace rf::bm
     static auto& get_format = addr_as_ref<Format(int bm_handle)>(0x005106F0);
     static auto& get_type = addr_as_ref<Type(int bm_handle)>(0x0050F350);
     static auto& get_cache_slot = addr_as_ref<int(int bm_handle)>(0x0050F440);
+    // Handle to cache slot WITHOUT resolving an animated bitmap's current frame, which
+    // get_cache_slot does for an animated head entry. Frame k of such a head lives at slot + 1 + k.
+    static auto& handle_to_index = addr_as_ref<int(int bm_handle)>(0x0050EEE0);
     static auto& release = addr_as_ref<void(int bm_handle)>(0x00511960);
     static auto& clear_user_bitmap = addr_as_ref<void(int bm_handle)>(0x00511C30);
     static auto& texture_add_ref = addr_as_ref<void(int bm_handle)>(0x0050E850);
@@ -102,4 +105,9 @@ namespace rf::bm
     static auto& bm_set_resolution_level_for_all = addr_as_ref<void(int level)>(0x0050EF10);
 
     static auto& bitmaps = addr_as_ref<BitmapEntry*>(0x017C80C4);
+
+    // Slot count handle_to_index (0x0050EEE0) reduces a non-user handle against - it returns
+    // `handle % this`, and bm_get_cache_slot (0x0050F440) indexes `bitmaps` with the result, so the
+    // table is exactly this many entries. The bound for walking an animated head's frame slots.
+    static auto& num_cache_slots = addr_as_ref<int>(0x005A4554);
 }

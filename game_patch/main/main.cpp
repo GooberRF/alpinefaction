@@ -54,6 +54,7 @@
 #include "../misc/waypoints.h"
 #include "../misc/level.h"
 #include "../object/alpine_corona.h"
+#include "../object/alpine_rope.h"
 #include "../input/input.h"
 #include "../rf/gr/gr.h"
 #include "../rf/multi.h"
@@ -172,6 +173,7 @@ FunHook<int()> rf_do_frame_hook{
         hud_pit_queue_auto_spectate();  // client-side Pit auto-spectate
         gungame_client_do_frame();      // client-side Gun Game level-up notification watcher
         alpine_mesh_do_frame();
+        alpine_rope_do_frame();
         item_do_frame();
         atx_do_frame();
         fflink::do_frame();
@@ -195,6 +197,7 @@ CodeInjection after_level_render_hook{
         experimental_render_in_game();
 #endif
         weather_render();
+        alpine_rope_render();
         crits_client_render();
         debug_render();
         waypoints_render_debug();
@@ -324,6 +327,9 @@ FunHook<void(bool)> level_init_post_hook{
 
         // Create corona objects (clutter + glare pairs) now that geometry is loaded
         alpine_corona_create_all();
+
+        // Ropes resolve their target uids here, once every level object exists
+        alpine_rope_level_init();
 
         apply_maximum_fps(); // set maximum FPS based on game state
         process_queued_spawn_points_from_items();
@@ -607,6 +613,7 @@ extern "C" DWORD __declspec(dllexport) Init([[maybe_unused]] void* unused)
     multi_spectate_appy_patch();
     high_fps_init();
     object_do_patch();
+    alpine_rope_apply_patch();
     misc_init();
     server_init();
     dedi_cfg_init();

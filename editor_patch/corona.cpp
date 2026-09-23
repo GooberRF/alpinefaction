@@ -9,6 +9,7 @@
 #include <cmath>
 #include <xlog/xlog.h>
 #include "alpine_color_picker.h"
+#include "alpine_spinner.h"
 #include "corona.h"
 #include "level.h"
 #include "resources.h"
@@ -195,6 +196,77 @@ static float corona_get_float_field(HWND hdlg, int idc)
     return static_cast<float>(atof(buf));
 }
 
+// Authoring ranges. They bound what an arrow click or a drag can reach, and since the commit path
+// holds itself to the same numbers, they bound what a typed value can store as well.
+constexpr float corona_max_cone_angle = 360.0f;
+constexpr float corona_max_intensity = 1000.0f;
+constexpr float corona_max_radius_distance = 10000.0f;
+constexpr float corona_max_radius_scale = 1000.0f;
+constexpr float corona_max_diminish_distance = 100000.0f;
+constexpr float corona_max_volumetric = 1000.0f;
+
+// ─── Live viewport preview ──────────────────────────────────────────────────
+// Everything corona_render actually draws with, staged while the dialog is open so the viewport
+// tracks the fields. Nothing here reaches a corona object: only IDOK writes.
+
+struct CoronaPreview
+{
+    bool active = false;
+    bool show_in_editor = false;
+    uint8_t r = 255, g = 255, b = 255;
+    float radius_scale = 1.0f;
+    float volumetric_height = 0.0f;
+    float volumetric_length = 0.0f;
+};
+static CoronaPreview g_corona_preview;
+
+// One clamp for both paths: a half typed field must not reach the renderer as a NaN or a negative
+// size, and IDOK stores exactly what the preview drew.
+static float corona_clamp_field(HWND hdlg, int idc, float min_v, float max_v)
+{
+    const float v = corona_get_float_field(hdlg, idc);
+    if (!std::isfinite(v)) return 0.0f;
+    return std::clamp(v, min_v, max_v);
+}
+
+// The commit path adds one thing to that clamp: when it actually moves the typed value, the object
+// stores something the field on screen does not show, and nothing else in the dialog says so.
+static float corona_commit_field(HWND hdlg, int idc, float min_v, float max_v, const char* label)
+{
+    const float raw = corona_get_float_field(hdlg, idc);
+    const float value = corona_clamp_field(hdlg, idc, min_v, max_v);
+    if (!(raw == value)) { // a NaN fails this too, which is the point
+        xlog::warn("[AlpineCorona] {} {} is outside {}..{}, storing {}", label, raw, min_v, max_v,
+                   value);
+    }
+    return value;
+}
+
+static void corona_capture_preview(HWND hdlg)
+{
+    g_corona_preview.show_in_editor =
+        IsDlgButtonChecked(hdlg, IDC_CORONA_SHOW_IN_EDITOR) == BST_CHECKED;
+    g_corona_preview.r = static_cast<uint8_t>(
+        std::min(GetDlgItemInt(hdlg, IDC_CORONA_COLOR_R, nullptr, FALSE), 255u));
+    g_corona_preview.g = static_cast<uint8_t>(
+        std::min(GetDlgItemInt(hdlg, IDC_CORONA_COLOR_G, nullptr, FALSE), 255u));
+    g_corona_preview.b = static_cast<uint8_t>(
+        std::min(GetDlgItemInt(hdlg, IDC_CORONA_COLOR_B, nullptr, FALSE), 255u));
+    g_corona_preview.radius_scale =
+        corona_clamp_field(hdlg, IDC_CORONA_RADIUS_SCALE, 0.0f, corona_max_radius_scale);
+    g_corona_preview.volumetric_height =
+        corona_clamp_field(hdlg, IDC_CORONA_VOLUMETRIC_HEIGHT, 0.0f, corona_max_volumetric);
+    g_corona_preview.volumetric_length =
+        corona_clamp_field(hdlg, IDC_CORONA_VOLUMETRIC_LENGTH, 0.0f, corona_max_volumetric);
+}
+
+static void corona_refresh_preview(HWND hdlg)
+{
+    if (!g_corona_preview.active) return;
+    corona_capture_preview(hdlg);
+    redraw_all_viewports();
+}
+
 static INT_PTR CALLBACK CoronaDialogProc(HWND hdlg, UINT msg, WPARAM wp, LPARAM lp)
 {
     switch (msg) {
@@ -224,6 +296,25 @@ static INT_PTR CALLBACK CoronaDialogProc(HWND hdlg, UINT msg, WPARAM wp, LPARAM 
 
         CheckDlgButton(hdlg, IDC_CORONA_SHOW_IN_EDITOR, corona->show_in_editor ? BST_CHECKED : BST_UNCHECKED);
 
+        alpine_spinner_init(hdlg, IDC_CORONA_CONE_ANGLE, IDC_CORONA_CONE_ANGLE_SPIN,
+                            1.0f, 0.0f, corona_max_cone_angle, 1);
+        alpine_spinner_init(hdlg, IDC_CORONA_INTENSITY, IDC_CORONA_INTENSITY_SPIN,
+                            0.05f, 0.0f, corona_max_intensity, 2);
+        alpine_spinner_init(hdlg, IDC_CORONA_RADIUS_DISTANCE, IDC_CORONA_RADIUS_DISTANCE_SPIN,
+                            0.1f, 0.0f, corona_max_radius_distance, 2);
+        alpine_spinner_init(hdlg, IDC_CORONA_RADIUS_SCALE, IDC_CORONA_RADIUS_SCALE_SPIN,
+                            0.1f, 0.0f, corona_max_radius_scale, 2);
+        // Signed, and stock authoring values sit within a tenth of zero, so it steps finer.
+        alpine_spinner_init(hdlg, IDC_CORONA_DIMINISH_DISTANCE, IDC_CORONA_DIMINISH_DISTANCE_SPIN,
+                            0.05f, -corona_max_diminish_distance, corona_max_diminish_distance, 2);
+        alpine_spinner_init(hdlg, IDC_CORONA_VOLUMETRIC_HEIGHT, IDC_CORONA_VOLUMETRIC_HEIGHT_SPIN,
+                            0.1f, 0.0f, corona_max_volumetric, 2);
+        alpine_spinner_init(hdlg, IDC_CORONA_VOLUMETRIC_LENGTH, IDC_CORONA_VOLUMETRIC_LENGTH_SPIN,
+                            0.1f, 0.0f, corona_max_volumetric, 2);
+
+        corona_capture_preview(hdlg);
+        g_corona_preview.active = true;
+
         return TRUE;
     }
     case WM_COMMAND:
@@ -234,6 +325,19 @@ static INT_PTR CALLBACK CoronaDialogProc(HWND hdlg, UINT msg, WPARAM wp, LPARAM 
             // Refresh color preview when RGB fields change
             if (HIWORD(wp) == EN_CHANGE) {
                 InvalidateRect(GetDlgItem(hdlg, IDC_CORONA_COLOR_PREVIEW), nullptr, TRUE);
+                corona_refresh_preview(hdlg);
+            }
+            break;
+        case IDC_CORONA_RADIUS_SCALE:
+        case IDC_CORONA_VOLUMETRIC_HEIGHT:
+        case IDC_CORONA_VOLUMETRIC_LENGTH:
+            if (HIWORD(wp) == EN_CHANGE) {
+                corona_refresh_preview(hdlg);
+            }
+            break;
+        case IDC_CORONA_SHOW_IN_EDITOR:
+            if (HIWORD(wp) == BN_CLICKED) {
+                corona_refresh_preview(hdlg);
             }
             break;
         case IDC_CORONA_COLOR_CHANGE: {
@@ -256,13 +360,26 @@ static INT_PTR CALLBACK CoronaDialogProc(HWND hdlg, UINT msg, WPARAM wp, LPARAM 
             char vol_buf[256] = {};
             GetDlgItemTextA(hdlg, IDC_CORONA_VOLUMETRIC_BITMAP, vol_buf, sizeof(vol_buf));
 
-            float cone_angle = corona_get_float_field(hdlg, IDC_CORONA_CONE_ANGLE);
-            float intensity = corona_get_float_field(hdlg, IDC_CORONA_INTENSITY);
-            float radius_distance = corona_get_float_field(hdlg, IDC_CORONA_RADIUS_DISTANCE);
-            float radius_scale = corona_get_float_field(hdlg, IDC_CORONA_RADIUS_SCALE);
-            float diminish_distance = corona_get_float_field(hdlg, IDC_CORONA_DIMINISH_DISTANCE);
-            float vol_height = corona_get_float_field(hdlg, IDC_CORONA_VOLUMETRIC_HEIGHT);
-            float vol_length = corona_get_float_field(hdlg, IDC_CORONA_VOLUMETRIC_LENGTH);
+            // Committed through the same ranges the spinners and the live preview already hold
+            // themselves to, so a typed extreme no longer reaches the object where an arrow click
+            // could not. Diminish distance is the one signed field.
+            float cone_angle = corona_commit_field(hdlg, IDC_CORONA_CONE_ANGLE, 0.0f,
+                                                   corona_max_cone_angle, "cone angle");
+            float intensity = corona_commit_field(hdlg, IDC_CORONA_INTENSITY, 0.0f,
+                                                  corona_max_intensity, "intensity");
+            float radius_distance =
+                corona_commit_field(hdlg, IDC_CORONA_RADIUS_DISTANCE, 0.0f,
+                                    corona_max_radius_distance, "radius distance");
+            float radius_scale = corona_commit_field(hdlg, IDC_CORONA_RADIUS_SCALE, 0.0f,
+                                                     corona_max_radius_scale, "radius scale");
+            float diminish_distance =
+                corona_commit_field(hdlg, IDC_CORONA_DIMINISH_DISTANCE,
+                                    -corona_max_diminish_distance, corona_max_diminish_distance,
+                                    "diminish distance");
+            float vol_height = corona_commit_field(hdlg, IDC_CORONA_VOLUMETRIC_HEIGHT, 0.0f,
+                                                   corona_max_volumetric, "volumetric height");
+            float vol_length = corona_commit_field(hdlg, IDC_CORONA_VOLUMETRIC_LENGTH, 0.0f,
+                                                   corona_max_volumetric, "volumetric length");
 
             uint8_t r = static_cast<uint8_t>(std::min(GetDlgItemInt(hdlg, IDC_CORONA_COLOR_R, nullptr, FALSE), 255u));
             uint8_t g = static_cast<uint8_t>(std::min(GetDlgItemInt(hdlg, IDC_CORONA_COLOR_G, nullptr, FALSE), 255u));
@@ -292,6 +409,9 @@ static INT_PTR CALLBACK CoronaDialogProc(HWND hdlg, UINT msg, WPARAM wp, LPARAM 
             EndDialog(hdlg, IDCANCEL);
             return TRUE;
         }
+        break;
+    case WM_NOTIFY:
+        if (alpine_spinner_handle_notify(hdlg, lp)) return TRUE;
         break;
     case WM_DRAWITEM: {
         // Draw color preview swatch (SS_OWNERDRAW static control)
@@ -330,6 +450,8 @@ void ShowCoronaPropertiesDialog(CDedLevel* level)
             CoronaDialogProc,
             0
         );
+        // Objects are only written by IDOK, so a cancelled dialog has nothing to restore.
+        g_corona_preview.active = false;
     }
 
     g_selected_coronas.clear();
@@ -437,42 +559,61 @@ void corona_render(CDedLevel* level)
 
     float cam_param = gr_cam_param;
 
+    // Selection membership, so a multi-select previews on every corona the dialog will write to.
+    const bool preview_all = g_corona_preview.active && !g_selected_coronas.empty();
+
     for (auto* corona : coronas) {
         if (corona->hidden_in_editor) continue;
 
         bool selected = is_object_selected(level, corona);
 
-        if (corona->show_in_editor) {
+        const bool preview = preview_all &&
+            std::find(g_selected_coronas.begin(), g_selected_coronas.end(), corona) !=
+                g_selected_coronas.end();
+
+        const uint8_t color_r = preview ? g_corona_preview.r : corona->color_r;
+        const uint8_t color_g = preview ? g_corona_preview.g : corona->color_g;
+        const uint8_t color_b = preview ? g_corona_preview.b : corona->color_b;
+        const float radius_scale = preview ? g_corona_preview.radius_scale : corona->radius_scale;
+        const float vol_height = preview ? g_corona_preview.volumetric_height
+                                         : corona->volumetric_height;
+        const float vol_length = preview ? g_corona_preview.volumetric_length
+                                         : corona->volumetric_length;
+        const bool show_in_editor = preview ? g_corona_preview.show_in_editor
+                                            : corona->show_in_editor;
+
+        if (show_in_editor) {
             // Show corona bitmap with additive blending (no icon)
             if (!corona->corona_bitmap.empty()) {
                 int bm_handle = bm_load(corona->corona_bitmap.c_str(), -1, 1);
                 if (bm_handle >= 0) {
-                    set_draw_color(corona->color_r, corona->color_g, corona->color_b, 255);
+                    set_draw_color(color_r, color_g, color_b, 255);
                     gr_set_bitmap(bm_handle, -1);
-                    render_additive_billboard(&corona->pos, corona->radius_scale * 0.5f, cam_param);
+                    render_additive_billboard(&corona->pos, radius_scale * 0.5f, cam_param);
                 }
             }
 
             // Show volumetric bitmap as axial billboard along forward vector
-            if (!corona->volumetric_bitmap.empty() && corona->volumetric_length > 0.0f) {
+            if (!corona->volumetric_bitmap.empty() && vol_length > 0.0f) {
                 int vol_handle = bm_load(corona->volumetric_bitmap.c_str(), -1, 1);
                 if (vol_handle >= 0) {
-                    set_draw_color(corona->color_r, corona->color_g, corona->color_b, 128);
+                    set_draw_color(color_r, color_g, color_b, 128);
                     gr_set_bitmap(vol_handle, -1);
                     render_additive_axial_quad(
                         corona->pos, corona->orient,
-                        corona->volumetric_length, corona->volumetric_height,
+                        vol_length, vol_height,
                         cam_param);
                 }
             }
         }
         else {
-            // Show icon sprite (no corona bitmap)
-            if (selected) {
+            // Show icon sprite (no corona bitmap). While the dialog is open the staged tint wins
+            // over the selection red, which is the only way a color edit is visible at all.
+            if (selected && !preview) {
                 set_draw_color(0xff, 0x00, 0x00, 0xff);
             }
             else {
-                set_draw_color(corona->color_r, corona->color_g, corona->color_b, 0xff);
+                set_draw_color(color_r, color_g, color_b, 0xff);
             }
 
             if (g_corona_icon_handle >= 0) {
@@ -484,7 +625,7 @@ void corona_render(CDedLevel* level)
 
         // Always draw direction arrow (cyan) along forward vector (min 1m, or volumetric length)
         {
-            float len = std::max(corona->volumetric_length, 1.0f);
+            float len = std::max(vol_length, 1.0f);
             draw_3d_arrow(
                 corona->pos.x, corona->pos.y, corona->pos.z,
                 corona->pos.x + corona->orient.fvec.x * len,

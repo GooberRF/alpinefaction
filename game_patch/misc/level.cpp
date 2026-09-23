@@ -17,6 +17,7 @@
 #include "../object/alpine_corona.h"
 #include "../object/alpine_bag.h"
 #include "../object/alpine_projection_camera.h"
+#include "../object/alpine_rope.h"
 #include "../object/mover.h"
 #include "../hud/hud_world.h"
 #include "../graphics/weather.h"
@@ -116,6 +117,7 @@ CodeInjection level_load_init_patch{
         alpine_corona_clear_state();
         alpine_bag_clear_state();
         alpine_projection_camera_clear_state();
+        alpine_rope_clear_state();
         gas_region_clear_state();
         weather_clear_regions();
         projector_clear_all();
@@ -129,6 +131,7 @@ void level_shutdown()
 {
     weather_clear_regions();
     projector_clear_all();
+    alpine_rope_clear_state();
 }
 
 // Reached from quit-to-menu and leaving for the multiplayer menu (via game_shutdown), the
@@ -188,6 +191,13 @@ CodeInjection level_load_chunk_patch{
         if (chunk_id == alpine_projection_camera_chunk_id) {
             xlog::debug("[Level] Loading alpine projection camera chunk: len={}", chunk_len);
             alpine_projection_camera_load_chunk(file, chunk_len);
+            regs.eip = 0x004608EF;
+        }
+
+        // handling for alpine rope objects chunk
+        if (chunk_id == alpine_rope_emitter_chunk_id) {
+            xlog::debug("[Level] Loading alpine rope chunk: len={}", chunk_len);
+            alpine_rope_load_chunk(file, chunk_len);
             regs.eip = 0x004608EF;
         }
 

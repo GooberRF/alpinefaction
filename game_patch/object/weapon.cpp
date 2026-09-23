@@ -18,6 +18,7 @@
 #include "../multi/mutators.h"
 #include "../misc/misc.h"
 #include "../misc/alpine_settings.h"
+#include "alpine_rope.h"
 
 static std::array<uint8_t, 64U> weapon_reticle_custom_mask{}; // bit 0 = _0, bit 1 = _1
 static std::pair<bool, bool> rocket_locked_custom_reticle = {false, false};
@@ -210,6 +211,7 @@ CallHook<void(rf::Vector3&, float, float, int, int)> weapon_hit_wall_obj_apply_r
         auto& collide_out = *reinterpret_cast<rf::PCollisionOut*>(&epicenter);
         auto new_epicenter = epicenter + collide_out.hit_normal * 0.0001f;
         const float crit_scale = crits_on_explosion(&new_epicenter, radius);
+        alpine_rope_apply_explosion(new_epicenter, radius * crit_scale, damage);
         weapon_hit_wall_obj_apply_radius_damage_hook.call_target(new_epicenter, damage, radius * crit_scale, killer_handle, damage_type);
     },
 };

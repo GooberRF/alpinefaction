@@ -109,6 +109,7 @@ FunHook<int(const rf::String* name)> event_lookup_type_hook{
                 {"ATX_Set_Frame_Time", 157},
                 {"Weather_Region_State", 158},
                 {"Display_Projection", 159},
+                {"Rope_State", 160},
             };
 
             auto it = custom_event_ids.find(name->c_str());
@@ -194,6 +195,7 @@ FunHook<rf::Event*(int event_type)> event_allocate_hook{
                 {157, []() { return new EventATXSetFrameTime(); }},
                 {158, []() { return new EventWeatherRegionState(); }},
                 {159, []() { return new EventDisplayProjection(); }},
+                {160, []() { return new EventRopeState(); }},
             };
 
             // find type and allocate
@@ -284,6 +286,7 @@ FunHook<void(rf::Event*)> event_deallocate_hook{
                 {157, [](rf::Event* e) { delete static_cast<EventATXSetFrameTime*>(e); }},
                 {158, [](rf::Event* e) { delete static_cast<EventWeatherRegionState*>(e); }},
                 {159, [](rf::Event* e) { delete static_cast<EventDisplayProjection*>(e); }},
+                {160, [](rf::Event* e) { delete static_cast<EventRopeState*>(e); }},
             };
 
             // find type and deallocate
@@ -344,7 +347,8 @@ bool is_forward_exempt(rf::EventType event_type) {
         rf::EventType::ATX_Pause,
         rf::EventType::ATX_Set_Frame_Time,
         rf::EventType::Weather_Region_State,
-        rf::EventType::Display_Projection
+        rf::EventType::Display_Projection,
+        rf::EventType::Rope_State
     };
 
     // AF_Heal should be forward exempt, but this was missed when AF_Heal was added in RFL v300

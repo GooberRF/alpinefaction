@@ -11,6 +11,7 @@
 #include <vector>
 #include <xlog/xlog.h>
 #include "alpine_color_picker.h"
+#include "alpine_spinner.h"
 #include "weather_region.h"
 #include "level.h"
 #include "resources.h"
@@ -263,64 +264,6 @@ static void weather_region_refresh_dims_preview(HWND hdlg)
 static std::string g_snow_bitmap_preview_name;
 static int g_snow_bitmap_preview_handle = -1;
 
-// Names that aren't on disk or in a vpp stay at -1 rather than going through bm_load, which
-// would manufacture (and permanently cache) a placeholder entry for every half-typed name.
-// A -1 handle takes the same empty-preview path the stock panel uses when nothing is selected.
-static int weather_region_resolve_bitmap(const char* name)
-{
-    if (!name || name[0] == '\0') return -1;
-    if (strlen(name) > rfl_name_max_len) return -1;
-    const char* ext = strrchr(name, '.');
-    if (ext && strlen(ext) > rfl_ext_max_len) return -1;
-    // open (0x004CF9A0) locates the file without opening a stream, so no close belongs here:
-    // close (0x004CFF60) would index the open file table at slot -1 (the constructor's value).
-    rf::File file;
-    if (!file.open(name)) return -1;
-    return bm_load(name, -1, 1);
-}
-
-// Mirrors CBitmapPreviewDialog::OnPaint (0x0044C1B0): the editor renderer draws into the
-// control's own window, letterboxed so the texture keeps its aspect ratio.
-static void weather_region_draw_bitmap_preview(HWND ctrl, const RECT& rc, int bm_handle)
-{
-    int w = std::min<int>(rc.right - rc.left, gr_get_max_width());
-    int h = std::min<int>(rc.bottom - rc.top, gr_get_max_height());
-    if (w <= 0 || h <= 0) return;
-
-    gr_set_viewport_wnd(ctrl);
-
-    if (bm_handle < 0) {
-        gr_set_clip(0, 0, w, h);
-        gr_clear();
-        gr_flip();
-        return;
-    }
-
-    for (int pass = 0; pass < 2; pass++) {
-        gr_set_clip(0, 0, w, h);
-        gr_clear();
-
-        int src_w = 0, src_h = 0, num_pixels = 0, mip_levels = 0;
-        bm_get_mipmap_info(bm_handle, &src_w, &src_h, &num_pixels, &mip_levels);
-        if (src_w <= 0 || src_h <= 0) break;
-
-        int dst_x = 0, dst_y = 0, dst_w = w, dst_h = h;
-        if (src_h > src_w) {
-            dst_w = static_cast<int>(std::lround(static_cast<float>(h) / src_h * src_w));
-            dst_x = static_cast<int>(std::lround((w - dst_w) * 0.5f));
-        }
-        else if (src_w > src_h) {
-            dst_h = static_cast<int>(std::lround(static_cast<float>(w) / src_w * src_h));
-            dst_y = static_cast<int>(std::lround((h - dst_h) * 0.5f));
-        }
-
-        gr_bitmap_scaled(bm_handle, dst_x, dst_y, dst_w, dst_h, 0, 0, src_w, src_h,
-                         0.0f, 0.0f, gr_bitmap_preview_mode);
-    }
-
-    gr_flip();
-}
-
 static void weather_region_update_bitmap_preview(HWND hdlg, bool force)
 {
     char buf[256] = {};
@@ -328,7 +271,7 @@ static void weather_region_update_bitmap_preview(HWND hdlg, bool force)
     if (!force && g_snow_bitmap_preview_name == buf) return;
 
     g_snow_bitmap_preview_name = buf;
-    g_snow_bitmap_preview_handle = weather_region_resolve_bitmap(buf);
+    g_snow_bitmap_preview_handle = alpine_dlg_resolve_bitmap(buf);
     InvalidateRect(GetDlgItem(hdlg, IDC_WEATHER_SNOW_BITMAP_PREVIEW), nullptr, TRUE);
 }
 
@@ -368,28 +311,10 @@ static void weather_region_set_dim_field(HWND hdlg, int idc, float value)
     SetDlgItemTextA(hdlg, idc, buf);
 }
 
-static int weather_region_spin_field(int idc_spin)
-{
-    switch (idc_spin) {
-    case IDC_WEATHER_WIDTH_SPIN: return IDC_WEATHER_WIDTH;
-    case IDC_WEATHER_DEPTH_SPIN: return IDC_WEATHER_DEPTH;
-    case IDC_WEATHER_HEIGHT_SPIN: return IDC_WEATHER_HEIGHT;
-    case IDC_WEATHER_RADIUS_SPIN: return IDC_WEATHER_RADIUS;
-    default: return 0;
-    }
-}
-
-// The spinner never moves itself (UDN_DELTAPOS is refused), so its own range only has to be wide
-// enough that both arrows always report a delta. Accel matches stock: 1 unit, 10 while held.
 static void weather_region_init_spinner(HWND hdlg, int idc_edit, int idc_spin)
 {
-    HWND spin = GetDlgItem(hdlg, idc_spin);
-    if (!spin) return;
-    SendMessage(spin, UDM_SETRANGE32, static_cast<WPARAM>(-0x10000), static_cast<LPARAM>(0x10000));
-    SendMessage(spin, UDM_SETPOS32, 0, 0);
-    UDACCEL accel[2] = {{0, 1}, {1, 10}};
-    SendMessage(spin, UDM_SETACCEL, 2, reinterpret_cast<LPARAM>(accel));
-    SendMessage(spin, UDM_SETBUDDY, reinterpret_cast<WPARAM>(GetDlgItem(hdlg, idc_edit)), 0);
+    alpine_spinner_init(hdlg, idc_edit, idc_spin, weather_dim_step, weather_dim_min,
+                        weather_dim_max, 2);
 }
 
 // Only the fields the selected shape uses stay enabled.
@@ -685,22 +610,14 @@ static INT_PTR CALLBACK WeatherRegionDialogProc(HWND hdlg, UINT msg, WPARAM wp, 
             return TRUE;
         }
         break;
-    case WM_NOTIFY: {
-        auto* nm = reinterpret_cast<NMHDR*>(lp);
-        if (!nm || nm->code != UDN_DELTAPOS) break;
-        int idc_edit = weather_region_spin_field(static_cast<int>(nm->idFrom));
-        if (!idc_edit) break;
-        float value = weather_region_get_float_field(hdlg, idc_edit) +
-            reinterpret_cast<NMUPDOWN*>(lp)->iDelta * weather_dim_step;
-        weather_region_set_dim_field(hdlg, idc_edit, std::clamp(value, weather_dim_min, weather_dim_max));
-        SetWindowLongPtr(hdlg, DWLP_MSGRESULT, 1); // refuse the spinner's own position change
-        return TRUE;
-    }
+    case WM_NOTIFY:
+        if (alpine_spinner_handle_notify(hdlg, lp)) return TRUE;
+        break;
     case WM_DRAWITEM: {
         auto* dis = reinterpret_cast<DRAWITEMSTRUCT*>(lp);
         if (!dis) break;
         if (dis->CtlID == IDC_WEATHER_SNOW_BITMAP_PREVIEW) {
-            weather_region_draw_bitmap_preview(dis->hwndItem, dis->rcItem, g_snow_bitmap_preview_handle);
+            alpine_dlg_draw_bitmap_preview(dis->hwndItem, dis->rcItem, g_snow_bitmap_preview_handle);
             return TRUE;
         }
         int idc_r = 0, idc_g = 0, idc_b = 0;

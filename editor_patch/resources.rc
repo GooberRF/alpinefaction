@@ -598,24 +598,33 @@ FONT 8, "MS Sans Serif", 0, 0, 0
     GROUPBOX        "Corona", -1, 7, 85, 245, 100
     LTEXT           "Bitmap:", -1, 14, 101, 28, 8
     EDITTEXT        IDC_CORONA_BITMAP, 60, 99, 184, 14, ES_AUTOHSCROLL
+    // Tunable fields keep the weather region's metrics: a 40x14 edit with an 11x14 spinner on its
+    // right edge (RED dialog 209), so the trailing column stays where it was.
     LTEXT           "Cone Angle:", -1, 14, 119, 44, 8
-    EDITTEXT        IDC_CORONA_CONE_ANGLE, 60, 117, 50, 14, ES_AUTOHSCROLL
+    EDITTEXT        IDC_CORONA_CONE_ANGLE, 60, 117, 40, 14, ES_AUTOHSCROLL
+    CONTROL         "Spin1", IDC_CORONA_CONE_ANGLE_SPIN, UPDOWN_CLASS, UDS_ARROWKEYS, 100, 117, 11, 14
     LTEXT           "Intensity:", -1, 14, 137, 36, 8
-    EDITTEXT        IDC_CORONA_INTENSITY, 60, 135, 50, 14, ES_AUTOHSCROLL
+    EDITTEXT        IDC_CORONA_INTENSITY, 60, 135, 40, 14, ES_AUTOHSCROLL
+    CONTROL         "Spin2", IDC_CORONA_INTENSITY_SPIN, UPDOWN_CLASS, UDS_ARROWKEYS, 100, 135, 11, 14
     LTEXT           "Radius Dist:", -1, 120, 119, 44, 8
-    EDITTEXT        IDC_CORONA_RADIUS_DISTANCE, 170, 117, 50, 14, ES_AUTOHSCROLL
+    EDITTEXT        IDC_CORONA_RADIUS_DISTANCE, 170, 117, 40, 14, ES_AUTOHSCROLL
+    CONTROL         "Spin3", IDC_CORONA_RADIUS_DISTANCE_SPIN, UPDOWN_CLASS, UDS_ARROWKEYS, 210, 117, 11, 14
     LTEXT           "Radius Scale:", -1, 120, 137, 48, 8
-    EDITTEXT        IDC_CORONA_RADIUS_SCALE, 170, 135, 50, 14, ES_AUTOHSCROLL
+    EDITTEXT        IDC_CORONA_RADIUS_SCALE, 170, 135, 40, 14, ES_AUTOHSCROLL
+    CONTROL         "Spin4", IDC_CORONA_RADIUS_SCALE_SPIN, UPDOWN_CLASS, UDS_ARROWKEYS, 210, 135, 11, 14
     LTEXT           "Diminish Dist:", -1, 14, 155, 48, 8
-    EDITTEXT        IDC_CORONA_DIMINISH_DISTANCE, 60, 153, 50, 14, ES_AUTOHSCROLL
+    EDITTEXT        IDC_CORONA_DIMINISH_DISTANCE, 60, 153, 40, 14, ES_AUTOHSCROLL
+    CONTROL         "Spin5", IDC_CORONA_DIMINISH_DISTANCE_SPIN, UPDOWN_CLASS, UDS_ARROWKEYS, 100, 153, 11, 14
 
     GROUPBOX        "Volumetric", -1, 7, 190, 245, 55
     LTEXT           "Bitmap:", -1, 14, 206, 28, 8
     EDITTEXT        IDC_CORONA_VOLUMETRIC_BITMAP, 60, 204, 184, 14, ES_AUTOHSCROLL
     LTEXT           "Height:", -1, 14, 224, 28, 8
-    EDITTEXT        IDC_CORONA_VOLUMETRIC_HEIGHT, 60, 222, 50, 14, ES_AUTOHSCROLL
+    EDITTEXT        IDC_CORONA_VOLUMETRIC_HEIGHT, 60, 222, 40, 14, ES_AUTOHSCROLL
+    CONTROL         "Spin6", IDC_CORONA_VOLUMETRIC_HEIGHT_SPIN, UPDOWN_CLASS, UDS_ARROWKEYS, 100, 222, 11, 14
     LTEXT           "Length:", -1, 120, 224, 28, 8
-    EDITTEXT        IDC_CORONA_VOLUMETRIC_LENGTH, 170, 222, 50, 14, ES_AUTOHSCROLL
+    EDITTEXT        IDC_CORONA_VOLUMETRIC_LENGTH, 170, 222, 40, 14, ES_AUTOHSCROLL
+    CONTROL         "Spin7", IDC_CORONA_VOLUMETRIC_LENGTH_SPIN, UPDOWN_CLASS, UDS_ARROWKEYS, 210, 222, 11, 14
 
     AUTOCHECKBOX    "Preview in editor", IDC_CORONA_SHOW_IN_EDITOR, 7, 250, 80, 10
 
@@ -722,6 +731,223 @@ FONT 8, "MS Sans Serif", 0, 0, 0
 
     DEFPUSHBUTTON   "OK", IDOK, 162, 373, 50, 14
     PUSHBUTTON      "Cancel", IDCANCEL, 217, 373, 50, 14
+}
+
+// Alpine Rope Emitter Properties dialog
+LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
+IDD_ALPINE_ROPE_PROPERTIES DIALOGEX 0, 0, 260, 341
+STYLE DS_MODALFRAME | WS_CAPTION | WS_VISIBLE | WS_POPUP | WS_SYSMENU
+CAPTION "Rope Emitter Properties"
+FONT 8, "MS Sans Serif", 0, 0, 0
+{
+    LTEXT           "Script Name:", -1, 7, 11, 44, 8
+    EDITTEXT        IDC_ROPE_SCRIPT_NAME, 60, 9, 130, 14, ES_AUTOHSCROLL
+
+    LTEXT           "Target UID:", -1, 7, 31, 44, 8
+    EDITTEXT        IDC_ROPE_TARGET_UID, 60, 29, 44, 14, ES_AUTOHSCROLL
+    LTEXT           "(-1 = hangs free)", -1, 108, 31, 60, 8
+    // Resolved target, refreshed as the uid is typed
+    LTEXT           "", IDC_ROPE_TARGET_INFO, 172, 31, 81, 8
+
+    // Groups follow the weather region convention: 7 DLU interior margin, first row 14 below the
+    // group top, rows pitched 20, 7 DLU below the last row.
+    GROUPBOX        "Shape", -1, 7, 50, 245, 55
+    // Tunable fields keep the weather region's metrics: a 40x14 edit with an 11x14 spinner on its
+    // right edge (RED dialog 209), so every trailing column stays where it was.
+    LTEXT           "Slack (m):", IDC_ROPE_SLACK_LABEL, 14, 66, 44, 8
+    EDITTEXT        IDC_ROPE_SLACK, 60, 64, 40, 14, ES_AUTOHSCROLL
+    CONTROL         "Spin1", IDC_ROPE_SLACK_SPIN, UPDOWN_CLASS, UDS_ARROWKEYS, 100, 64, 11, 14
+    LTEXT           "Dangle Len (m):", IDC_ROPE_DANGLE_LENGTH_LABEL, 120, 66, 56, 8
+    EDITTEXT        IDC_ROPE_DANGLE_LENGTH, 180, 64, 40, 14, ES_AUTOHSCROLL
+    CONTROL         "Spin2", IDC_ROPE_DANGLE_LENGTH_SPIN, UPDOWN_CLASS, UDS_ARROWKEYS, 220, 64, 11, 14
+    LTEXT           "Segments:", -1, 14, 86, 44, 8
+    EDITTEXT        IDC_ROPE_SEGMENTS, 60, 84, 40, 14, ES_NUMBER
+    CONTROL         "Spin3", IDC_ROPE_SEGMENTS_SPIN, UPDOWN_CLASS, UDS_ARROWKEYS, 100, 84, 11, 14
+    LTEXT           "Thickness (m):", -1, 120, 86, 52, 8
+    EDITTEXT        IDC_ROPE_THICKNESS, 180, 84, 40, 14, ES_AUTOHSCROLL
+    CONTROL         "Spin4", IDC_ROPE_THICKNESS_SPIN, UPDOWN_CLASS, UDS_ARROWKEYS, 220, 84, 11, 14
+
+    GROUPBOX        "Appearance", -1, 7, 110, 245, 93
+    // Color display + shared picker, matching the Level Properties sun color controls
+    LTEXT           "Color:", -1, 14, 126, 24, 8
+    CONTROL         "List1", IDC_ROPE_COLOR_SWATCH, WC_LISTVIEW, WS_BORDER | LVS_NOSCROLL | LVS_ICON, 40, 124, 32, 14, WS_EX_STATICEDGE
+    PUSHBUTTON      "Change color", IDC_ROPE_COLOR_CHANGE, 76, 124, 52, 14
+    EDITTEXT        IDC_ROPE_COLOR_VALUE, 132, 124, 46, 14, ES_AUTOHSCROLL
+    LTEXT           "Alpha:", -1, 14, 146, 24, 8
+    EDITTEXT        IDC_ROPE_COLOR_A, 40, 144, 32, 14, ES_NUMBER
+    LTEXT           "Bitmap:", -1, 14, 166, 28, 8
+    EDITTEXT        IDC_ROPE_BITMAP, 46, 164, 92, 14, ES_AUTOHSCROLL
+    PUSHBUTTON      "Browse...", IDC_ROPE_BITMAP_BROWSE, 142, 164, 38, 14
+    // 49x49 preview, same size the weather region panel uses
+    CONTROL         "", IDC_ROPE_BITMAP_PREVIEW, "Static", SS_OWNERDRAW | WS_BORDER, 196, 125, 49, 49
+    LTEXT           "UV Tiles/m:", -1, 14, 186, 44, 8
+    EDITTEXT        IDC_ROPE_UV_TILES, 60, 184, 40, 14, ES_AUTOHSCROLL
+    CONTROL         "Spin5", IDC_ROPE_UV_TILES_SPIN, UPDOWN_CLASS, UDS_ARROWKEYS, 100, 184, 11, 14
+    LTEXT           "(0 = stretch)", -1, 116, 186, 50, 8
+    AUTOCHECKBOX    "Glow", IDC_ROPE_GLOW, 176, 185, 36, 10
+
+    GROUPBOX        "Motion", -1, 7, 208, 245, 71
+    AUTOCHECKBOX    "Dynamic", IDC_ROPE_DYNAMIC, 14, 222, 48, 10
+    AUTOCHECKBOX    "Sway", IDC_ROPE_SWAY, 66, 222, 36, 10
+    LTEXT           "Mass:", IDC_ROPE_WEIGHT_LABEL, 14, 240, 44, 8
+    EDITTEXT        IDC_ROPE_WEIGHT, 60, 238, 40, 14, ES_AUTOHSCROLL
+    CONTROL         "Spin6", IDC_ROPE_WEIGHT_SPIN, UPDOWN_CLASS, UDS_ARROWKEYS, 100, 238, 11, 14
+    LTEXT           "Sway Amp (m):", IDC_ROPE_SWAY_AMPLITUDE_LABEL, 120, 240, 54, 8
+    EDITTEXT        IDC_ROPE_SWAY_AMPLITUDE, 180, 238, 40, 14, ES_AUTOHSCROLL
+    CONTROL         "Spin7", IDC_ROPE_SWAY_AMPLITUDE_SPIN, UPDOWN_CLASS, UDS_ARROWKEYS, 220, 238, 11, 14
+    LTEXT           "Sway Speed:", IDC_ROPE_SWAY_SPEED_LABEL, 14, 260, 48, 8
+    EDITTEXT        IDC_ROPE_SWAY_SPEED, 66, 258, 40, 14, ES_AUTOHSCROLL
+    CONTROL         "Spin8", IDC_ROPE_SWAY_SPEED_SPIN, UPDOWN_CLASS, UDS_ARROWKEYS, 106, 258, 11, 14
+
+    AUTOCHECKBOX    "Initially on", IDC_ROPE_INITIALLY_ON, 7, 287, 54, 10
+
+    // The decoration list and its placement rules live in their own popup; the checkbox gates it
+    // the same way the destructible checkbox gates the mesh panel's block.
+    AUTOCHECKBOX    "Decorations", IDC_ROPE_DECORATIONS, 7, 305, 60, 10
+    PUSHBUTTON      "Decorations...", IDC_ROPE_DECO_EDIT, 72, 302, 60, 14
+
+    DEFPUSHBUTTON   "OK", IDOK, 145, 320, 50, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 200, 320, 50, 14
+}
+
+// Rope decorations, opened from the rope dialog's Decorations... button. Edits the rope dialog's
+// staging: nothing reaches the rope objects until the main dialog's OK.
+LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
+IDD_ALPINE_ROPE_DECORATIONS DIALOGEX 0, 0, 249, 290
+STYLE DS_MODALFRAME | WS_CAPTION | WS_VISIBLE | WS_POPUP | WS_SYSMENU
+CAPTION "Rope Decorations"
+FONT 8, "MS Sans Serif", 0, 0, 0
+{
+    GROUPBOX        "Decoration Meshes", -1, 7, 7, 235, 135
+    LTEXT           "1:", -1, 14, 23, 8, 8
+    EDITTEXT        IDC_ROPE_DECO_MESH1, 25, 21, 155, 14, ES_AUTOHSCROLL
+    PUSHBUTTON      "...", IDC_ROPE_DECO_BROWSE1, 183, 21, 20, 14
+    PUSHBUTTON      "FX...", IDC_ROPE_DECO_FX1, 206, 21, 28, 14
+    LTEXT           "2:", -1, 14, 43, 8, 8
+    EDITTEXT        IDC_ROPE_DECO_MESH2, 25, 41, 155, 14, ES_AUTOHSCROLL
+    PUSHBUTTON      "...", IDC_ROPE_DECO_BROWSE2, 183, 41, 20, 14
+    PUSHBUTTON      "FX...", IDC_ROPE_DECO_FX2, 206, 41, 28, 14
+    LTEXT           "3:", -1, 14, 63, 8, 8
+    EDITTEXT        IDC_ROPE_DECO_MESH3, 25, 61, 155, 14, ES_AUTOHSCROLL
+    PUSHBUTTON      "...", IDC_ROPE_DECO_BROWSE3, 183, 61, 20, 14
+    PUSHBUTTON      "FX...", IDC_ROPE_DECO_FX3, 206, 61, 28, 14
+    LTEXT           "4:", -1, 14, 83, 8, 8
+    EDITTEXT        IDC_ROPE_DECO_MESH4, 25, 81, 155, 14, ES_AUTOHSCROLL
+    PUSHBUTTON      "...", IDC_ROPE_DECO_BROWSE4, 183, 81, 20, 14
+    PUSHBUTTON      "FX...", IDC_ROPE_DECO_FX4, 206, 81, 28, 14
+    LTEXT           "5:", -1, 14, 103, 8, 8
+    EDITTEXT        IDC_ROPE_DECO_MESH5, 25, 101, 155, 14, ES_AUTOHSCROLL
+    PUSHBUTTON      "...", IDC_ROPE_DECO_BROWSE5, 183, 101, 20, 14
+    PUSHBUTTON      "FX...", IDC_ROPE_DECO_FX5, 206, 101, 28, 14
+    LTEXT           "6:", -1, 14, 123, 8, 8
+    EDITTEXT        IDC_ROPE_DECO_MESH6, 25, 121, 155, 14, ES_AUTOHSCROLL
+    PUSHBUTTON      "...", IDC_ROPE_DECO_BROWSE6, 183, 121, 20, 14
+    PUSHBUTTON      "FX...", IDC_ROPE_DECO_FX6, 206, 121, 28, 14
+
+    GROUPBOX        "Placement", -1, 7, 149, 235, 111
+    LTEXT           "Method:", -1, 14, 165, 58, 8
+    COMBOBOX        IDC_ROPE_DECO_SPACING_MODE, 79, 163, 100, 60, WS_TABSTOP | CBS_DROPDOWNLIST
+    LTEXT           "Count:", IDC_ROPE_DECO_COUNT_LABEL, 14, 185, 44, 8
+    EDITTEXT        IDC_ROPE_DECO_COUNT, 79, 183, 40, 14, ES_NUMBER
+    CONTROL         "Spin1", IDC_ROPE_DECO_COUNT_SPIN, UPDOWN_CLASS, UDS_ARROWKEYS, 119, 183, 11, 14
+    LTEXT           "Every (m):", IDC_ROPE_DECO_SPACING_LABEL, 14, 205, 44, 8
+    EDITTEXT        IDC_ROPE_DECO_SPACING, 79, 203, 40, 14, ES_AUTOHSCROLL
+    CONTROL         "Spin2", IDC_ROPE_DECO_SPACING_SPIN, UPDOWN_CLASS, UDS_ARROWKEYS, 119, 203, 11, 14
+    LTEXT           "Orientation:", -1, 14, 225, 44, 8
+    COMBOBOX        IDC_ROPE_DECO_ORIENT, 79, 223, 100, 60, WS_TABSTOP | CBS_DROPDOWNLIST
+    AUTOCHECKBOX    "Randomly sort", IDC_ROPE_DECO_RANDOM, 14, 243, 70, 10
+
+    DEFPUSHBUTTON   "OK", IDOK, 137, 269, 50, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 192, 269, 50, 14
+}
+
+// Per-slot decoration effects, opened from one of the Decorations popup's FX... buttons. Edits a
+// staging copy: nothing reaches the rope objects until the main dialog's OK.
+LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
+IDD_ALPINE_ROPE_SLOT_FX DIALOGEX 0, 0, 340, 314
+STYLE DS_MODALFRAME | WS_CAPTION | WS_VISIBLE | WS_POPUP | WS_SYSMENU
+CAPTION "Decoration Slot Effects"
+FONT 8, "MS Sans Serif", 0, 0, 0
+{
+    // Tunable fields keep the weather region's metrics, shrunk to a 33x14 edit so the 11x14
+    // spinner (RED dialog 209) fits without moving the next column.
+    GROUPBOX        "Offsets (instance local)", -1, 7, 7, 326, 55
+    LTEXT           "Position X:", -1, 14, 23, 40, 8
+    EDITTEXT        IDC_ROPEFX_POS_X, 58, 21, 33, 14, ES_AUTOHSCROLL
+    CONTROL         "Spin1", IDC_ROPEFX_POS_X_SPIN, UPDOWN_CLASS, UDS_ARROWKEYS, 91, 21, 11, 14
+    LTEXT           "Y:", -1, 110, 23, 10, 8
+    EDITTEXT        IDC_ROPEFX_POS_Y, 122, 21, 33, 14, ES_AUTOHSCROLL
+    CONTROL         "Spin2", IDC_ROPEFX_POS_Y_SPIN, UPDOWN_CLASS, UDS_ARROWKEYS, 155, 21, 11, 14
+    LTEXT           "Z:", -1, 174, 23, 10, 8
+    EDITTEXT        IDC_ROPEFX_POS_Z, 186, 21, 33, 14, ES_AUTOHSCROLL
+    CONTROL         "Spin3", IDC_ROPEFX_POS_Z_SPIN, UPDOWN_CLASS, UDS_ARROWKEYS, 219, 21, 11, 14
+    LTEXT           "(meters)", -1, 238, 23, 40, 8
+    LTEXT           "Rotation P:", -1, 14, 43, 40, 8
+    EDITTEXT        IDC_ROPEFX_ROT_PITCH, 58, 41, 33, 14, ES_AUTOHSCROLL
+    CONTROL         "Spin4", IDC_ROPEFX_ROT_PITCH_SPIN, UPDOWN_CLASS, UDS_ARROWKEYS, 91, 41, 11, 14
+    LTEXT           "Y:", -1, 110, 43, 10, 8
+    EDITTEXT        IDC_ROPEFX_ROT_YAW, 122, 41, 33, 14, ES_AUTOHSCROLL
+    CONTROL         "Spin5", IDC_ROPEFX_ROT_YAW_SPIN, UPDOWN_CLASS, UDS_ARROWKEYS, 155, 41, 11, 14
+    LTEXT           "R:", -1, 174, 43, 10, 8
+    EDITTEXT        IDC_ROPEFX_ROT_ROLL, 186, 41, 33, 14, ES_AUTOHSCROLL
+    CONTROL         "Spin6", IDC_ROPEFX_ROT_ROLL_SPIN, UPDOWN_CLASS, UDS_ARROWKEYS, 219, 41, 11, 14
+    LTEXT           "(degrees)", -1, 238, 43, 40, 8
+
+    AUTOCHECKBOX    "Glare", IDC_ROPEFX_GLARE_ENABLE, 14, 66, 40, 10
+    GROUPBOX        "Glare Settings", IDC_ROPEFX_GLARE_GROUP, 7, 78, 326, 136
+    LTEXT           "Bitmap:", IDC_ROPEFX_GLARE_BITMAP_LABEL, 14, 96, 30, 8
+    EDITTEXT        IDC_ROPEFX_GLARE_BITMAP, 60, 94, 190, 14, ES_AUTOHSCROLL
+    PUSHBUTTON      "Browse...", IDC_ROPEFX_GLARE_BROWSE, 254, 94, 40, 14
+    LTEXT           "Color:", IDC_ROPEFX_GLARE_COLOR_LABEL, 14, 116, 24, 8
+    CONTROL         "List1", IDC_ROPEFX_GLARE_COLOR_SWATCH, WC_LISTVIEW, WS_BORDER | LVS_NOSCROLL | LVS_ICON, 60, 114, 32, 14, WS_EX_STATICEDGE
+    PUSHBUTTON      "Change color", IDC_ROPEFX_GLARE_COLOR_CHANGE, 96, 114, 52, 14
+    EDITTEXT        IDC_ROPEFX_GLARE_COLOR_VALUE, 152, 114, 46, 14, ES_AUTOHSCROLL
+    LTEXT           "Alpha:", IDC_ROPEFX_GLARE_ALPHA_LABEL, 204, 116, 24, 8
+    EDITTEXT        IDC_ROPEFX_GLARE_COLOR_A, 230, 114, 32, 14, ES_NUMBER
+    LTEXT           "Cone angle:", IDC_ROPEFX_CONE_ANGLE_LABEL, 14, 136, 44, 8
+    EDITTEXT        IDC_ROPEFX_CONE_ANGLE, 60, 134, 33, 14, ES_AUTOHSCROLL
+    CONTROL         "Spin7", IDC_ROPEFX_CONE_ANGLE_SPIN, UPDOWN_CLASS, UDS_ARROWKEYS, 93, 134, 11, 14
+    LTEXT           "Intensity:", IDC_ROPEFX_INTENSITY_LABEL, 112, 136, 36, 8
+    EDITTEXT        IDC_ROPEFX_INTENSITY, 152, 134, 33, 14, ES_AUTOHSCROLL
+    CONTROL         "Spin8", IDC_ROPEFX_INTENSITY_SPIN, UPDOWN_CLASS, UDS_ARROWKEYS, 185, 134, 11, 14
+    LTEXT           "Radius scale:", IDC_ROPEFX_RADIUS_SCALE_LABEL, 204, 136, 48, 8
+    EDITTEXT        IDC_ROPEFX_RADIUS_SCALE, 254, 134, 33, 14, ES_AUTOHSCROLL
+    CONTROL         "Spin9", IDC_ROPEFX_RADIUS_SCALE_SPIN, UPDOWN_CLASS, UDS_ARROWKEYS, 287, 134, 11, 14
+    LTEXT           "Radius dist:", IDC_ROPEFX_RADIUS_DISTANCE_LABEL, 14, 156, 44, 8
+    EDITTEXT        IDC_ROPEFX_RADIUS_DISTANCE, 60, 154, 33, 14, ES_AUTOHSCROLL
+    CONTROL         "Spin10", IDC_ROPEFX_RADIUS_DISTANCE_SPIN, UPDOWN_CLASS, UDS_ARROWKEYS, 93, 154, 11, 14
+    LTEXT           "Diminish dist:", IDC_ROPEFX_DIMINISH_DISTANCE_LABEL, 112, 156, 48, 8
+    EDITTEXT        IDC_ROPEFX_DIMINISH_DISTANCE, 164, 154, 33, 14, ES_AUTOHSCROLL
+    CONTROL         "Spin11", IDC_ROPEFX_DIMINISH_DISTANCE_SPIN, UPDOWN_CLASS, UDS_ARROWKEYS, 197, 154, 11, 14
+    LTEXT           "Volumetric:", IDC_ROPEFX_VOL_BITMAP_LABEL, 14, 176, 44, 8
+    EDITTEXT        IDC_ROPEFX_VOL_BITMAP, 60, 174, 190, 14, ES_AUTOHSCROLL
+    PUSHBUTTON      "Browse...", IDC_ROPEFX_VOL_BROWSE, 254, 174, 40, 14
+    LTEXT           "Vol height:", IDC_ROPEFX_VOL_HEIGHT_LABEL, 14, 196, 44, 8
+    EDITTEXT        IDC_ROPEFX_VOL_HEIGHT, 60, 194, 33, 14, ES_AUTOHSCROLL
+    CONTROL         "Spin12", IDC_ROPEFX_VOL_HEIGHT_SPIN, UPDOWN_CLASS, UDS_ARROWKEYS, 93, 194, 11, 14
+    LTEXT           "Vol length:", IDC_ROPEFX_VOL_LENGTH_LABEL, 112, 196, 44, 8
+    EDITTEXT        IDC_ROPEFX_VOL_LENGTH, 164, 194, 33, 14, ES_AUTOHSCROLL
+    CONTROL         "Spin13", IDC_ROPEFX_VOL_LENGTH_SPIN, UPDOWN_CLASS, UDS_ARROWKEYS, 197, 194, 11, 14
+
+    AUTOCHECKBOX    "Light", IDC_ROPEFX_LIGHT_ENABLE, 14, 219, 40, 10
+    GROUPBOX        "Light Settings", IDC_ROPEFX_LIGHT_GROUP, 7, 231, 326, 56
+    LTEXT           "Color:", IDC_ROPEFX_LIGHT_COLOR_LABEL, 14, 249, 24, 8
+    CONTROL         "List1", IDC_ROPEFX_LIGHT_COLOR_SWATCH, WC_LISTVIEW, WS_BORDER | LVS_NOSCROLL | LVS_ICON, 60, 247, 32, 14, WS_EX_STATICEDGE
+    PUSHBUTTON      "Change color", IDC_ROPEFX_LIGHT_COLOR_CHANGE, 96, 247, 52, 14
+    EDITTEXT        IDC_ROPEFX_LIGHT_COLOR_VALUE, 152, 247, 46, 14, ES_AUTOHSCROLL
+    LTEXT           "Radius (m):", IDC_ROPEFX_LIGHT_RADIUS_LABEL, 14, 269, 44, 8
+    EDITTEXT        IDC_ROPEFX_LIGHT_RADIUS, 60, 267, 33, 14, ES_AUTOHSCROLL
+    CONTROL         "Spin14", IDC_ROPEFX_LIGHT_RADIUS_SPIN, UPDOWN_CLASS, UDS_ARROWKEYS, 93, 267, 11, 14
+    LTEXT           "Intensity:", IDC_ROPEFX_LIGHT_INTENSITY_LABEL, 112, 269, 36, 8
+    EDITTEXT        IDC_ROPEFX_LIGHT_INTENSITY, 152, 267, 33, 14, ES_AUTOHSCROLL
+    CONTROL         "Spin15", IDC_ROPEFX_LIGHT_INTENSITY_SPIN, UPDOWN_CLASS, UDS_ARROWKEYS, 185, 267, 11, 14
+
+    // Copies what is typed here into every slot's staging straight away, whichever way this popup
+    // is then closed.
+    PUSHBUTTON      "Apply to all slots", IDC_ROPEFX_APPLY_ALL, 7, 293, 70, 14
+
+    DEFPUSHBUTTON   "OK", IDOK, 225, 293, 50, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 280, 293, 50, 14
 }
 
 // Face mode side panel (replaces stock dialog 178 with added Delete/Delete Ext./Split buttons)
@@ -923,6 +1149,21 @@ FONT 8, "MS Sans Serif"
     AUTOCHECKBOX    "Reset mesh origin to brush bbox center", IDC_CONVERT_RESET_ORIGIN, 10, 26, 160, 10
     DEFPUSHBUTTON   "OK", IDOK, 68, 48, 50, 14
     PUSHBUTTON      "Cancel", IDCANCEL, 122, 48, 50, 14
+}
+
+// Mesh-to-brush conversion options dialog
+LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
+IDD_MESH_TO_BRUSH_OPTIONS DIALOGEX 0, 0, 200, 96
+STYLE DS_MODALFRAME | DS_SETFONT | WS_POPUP | WS_VISIBLE | WS_CAPTION | WS_SYSMENU
+CAPTION "Convert Mesh to Brush"
+FONT 8, "MS Sans Serif"
+{
+    LTEXT           "", IDC_TOBRUSH_SUMMARY, 10, 8, 180, 8
+    LTEXT           "", IDC_TOBRUSH_WARNING, 10, 20, 180, 8
+    AUTOCHECKBOX    "Keep original mesh object", IDC_TOBRUSH_KEEP_MESH, 10, 36, 180, 10
+    AUTOCHECKBOX    "Duplicate double-sided faces", IDC_TOBRUSH_DOUBLE_SIDED, 10, 50, 180, 10
+    DEFPUSHBUTTON   "OK", IDOK, 88, 72, 50, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 142, 72, 50, 14
 }
 
 // Type filter dialog (used by Select Objects and Show/Hide Objects)

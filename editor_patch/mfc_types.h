@@ -180,7 +180,8 @@ enum class DedObjectType : int
     DED_BAG = 0x1A,    // Alpine 1.4
     DED_WEATHER_REGION = 0x1B, // Alpine 1.4
     // 0x1C is reserved
-    DED_PROJECTION_CAMERA = 0x1D // Alpine 1.5
+    DED_PROJECTION_CAMERA = 0x1D, // Alpine 1.5
+    DED_ROPE_EMITTER = 0x1E // Alpine 1.5
 };
 
 struct Vector3
@@ -543,6 +544,82 @@ struct DedWeatherRegion : DedObject
 struct DedProjectionCamera : DedObject
 {
     // All projection settings live on the linked Display_Projection event.
+};
+
+// flags bits, shared with the game runtime's rope_flag_* constants
+constexpr uint32_t ded_rope_flag_dynamic = 0x1;
+constexpr uint32_t ded_rope_flag_glow = 0x2;
+constexpr uint32_t ded_rope_flag_sway = 0x4;
+
+// Fields the solved preview polyline depends on: pos (3), has_target, target pos (3), slack,
+// segments, dangle length, target uid.
+constexpr int ded_rope_preview_key_len = 11;
+
+// Per-slot decoration extras: an instance-local transform offset plus the two optional effects.
+// A plain aggregate so clone/copy/paste carry it with a single assignment.
+struct DedRopeSlotFx
+{
+    float pos_x = 0.0f, pos_y = 0.0f, pos_z = 0.0f;
+    float rot_pitch = 0.0f, rot_yaw = 0.0f, rot_roll = 0.0f;
+    uint8_t flags = 0;                  // 0x1 glare, 0x2 light
+
+    std::string glare_bitmap = "LightCorona04.tga";
+    uint8_t glare_r = 255, glare_g = 255, glare_b = 255, glare_a = 255;
+    float cone_angle = 90.0f;           // degrees, halved by the game at creation
+    // Stock authoring factors, matching DedCorona and rope_curve.h's deco_fx defaults: negative
+    // diminish distance is how stock effects.tbl spells "always visible".
+    float intensity = 1.0f;
+    float radius_distance = 0.6f;
+    float radius_scale = 0.8f;
+    float diminish_distance = -0.05f;
+    std::string volumetric_bitmap;
+    float volumetric_height = 0.0f;
+    float volumetric_length = 0.0f;
+
+    uint8_t light_r = 255, light_g = 255, light_b = 255;
+    float light_radius = 5.0f;
+    float light_intensity = 1.0f;
+
+    bool has_glare() const { return (flags & 0x1) != 0; }
+    bool has_light() const { return (flags & 0x2) != 0; }
+};
+
+struct DedRopeEmitter : DedObject
+{
+    int32_t target_uid = -1;           // -1 = free hanging dangle
+    float dangle_length = 3.0f;        // only used when target_uid is -1
+    float slack = 0.5f;
+    float weight = 1.0f;
+    float thickness = 0.03f;
+    int32_t segments = 24;
+    float uv_tiles_per_meter = 0.0f;   // 0 = stretch the texture once over the full length
+    uint8_t color_r = 255, color_g = 255, color_b = 255, color_a = 255;
+    std::string bitmap;
+    float sway_amplitude = 0.05f;
+    float sway_speed = 1.0f;
+    uint32_t flags = 0;
+    bool initially_on = true;
+
+    // Decorations: up to six meshes duplicated along the rope. The name slots are kept compacted,
+    // so the used ones are always deco_meshes[0..n-1] and the first empty slot ends the list.
+    bool decorations_enabled = false;
+    std::string deco_meshes[6];
+    // Index-locked to deco_meshes: compaction moves a name and its effects together, and the wire
+    // carries them as one unit.
+    DedRopeSlotFx deco_fx[6];
+    // 0 = fixed count, 1 = every N meters, 2 = both ends, 3 = only start, 4 = only target
+    uint8_t deco_spacing_mode = 0;
+    int32_t deco_count = 10;
+    float deco_spacing = 1.0f;
+    bool deco_random_order = false;
+    uint8_t deco_orient_mode = 0;    // 0 = follow curve, 1 = upright
+
+    // Viewport preview cache, never serialized: the solved polyline plus the quantized inputs it
+    // was solved from, so a repaint only re-solves when something the curve depends on moved.
+    std::vector<Vector3> preview_points;
+    float preview_length = 0.0f;
+    int32_t preview_key[ded_rope_preview_key_len] = {};
+    bool preview_valid = false;
 };
 
 struct DedBoltEmitter : DedObject

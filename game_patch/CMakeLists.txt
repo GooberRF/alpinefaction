@@ -304,6 +304,8 @@ set(SRCS
     object/obj_light.cpp
     object/obj_collision.cpp
     object/obj_collision.h
+    object/alpine_obj_common.cpp
+    object/alpine_obj_common.h
     object/alpine_mesh.cpp
     object/alpine_corona.cpp
     object/alpine_corona.h
@@ -311,6 +313,8 @@ set(SRCS
     object/alpine_bag.h
     object/alpine_projection_camera.cpp
     object/alpine_projection_camera.h
+    object/alpine_rope.cpp
+    object/alpine_rope.h
     object/clock.cpp
     misc/achievements.h
     misc/achievements.cpp

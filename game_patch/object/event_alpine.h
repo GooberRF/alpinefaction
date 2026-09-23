@@ -33,6 +33,7 @@
 #include "../rf/glare.h"
 #include "../graphics/gr.h"
 #include "../graphics/weather.h"
+#include "alpine_rope.h"
 #include "../misc/level.h"
 #include "../misc/alpine_settings.h"
 #include "../multi/alpine_packets.h"
@@ -3166,4 +3167,37 @@ struct EventDisplayProjection : rf::Event
 
     void turn_on() override;
     void turn_off() override;
+};
+
+// id 160 — Rope_State: switch the Rope Emitter objects this event links to on or off. A rope's
+// visibility lives on its anchor clutter, so this is obj_unhide/obj_hide filtered to rope anchors:
+// a link to anything else is ignored, and repeating a state is a no-op on the anchor's flags.
+struct EventRopeState : rf::Event
+{
+    void turn_on() override
+    {
+        set_rope_links(true);
+    }
+
+    void turn_off() override
+    {
+        set_rope_links(false);
+    }
+
+    void set_rope_links(bool on)
+    {
+        for (const int link : this->links) {
+            if (!alpine_rope_is_rope(link)) {
+                continue;
+            }
+            if (Object* obj = rf::obj_from_handle(link)) {
+                if (on) {
+                    rf::obj_unhide(obj);
+                }
+                else {
+                    rf::obj_hide(obj);
+                }
+            }
+        }
+    }
 };
