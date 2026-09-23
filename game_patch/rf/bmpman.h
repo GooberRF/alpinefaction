@@ -73,6 +73,7 @@ namespace rf::bm
         ubyte cached_material_idx;
 #ifdef ALPINE_FACTION
         bool dynamic;
+        bool user_mipmap;
 #endif
         int total_bytes_for_all_levels;
         int file_open_unk_arg;
@@ -87,6 +88,7 @@ namespace rf::bm
     static auto& get_filename = addr_as_ref<const char*(int bm_handle)>(0x00511710);
     static auto& get_format = addr_as_ref<Format(int bm_handle)>(0x005106F0);
     static auto& get_type = addr_as_ref<Type(int bm_handle)>(0x0050F350);
+    static auto& get_type_from_filename = addr_as_ref<Type(const char* filename)>(0x0050FBF0);
     static auto& get_cache_slot = addr_as_ref<int(int bm_handle)>(0x0050F440);
     // Handle to cache slot WITHOUT resolving an animated bitmap's current frame, which
     // get_cache_slot does for an animated head entry. Frame k of such a head lives at slot + 1 + k.

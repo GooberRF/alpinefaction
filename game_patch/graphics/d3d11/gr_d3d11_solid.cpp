@@ -206,6 +206,11 @@ namespace gr::d3d11
 
         void render(FaceRenderType what, RenderContext& context);
 
+        bool has_batches(FaceRenderType what)
+        {
+            return !batches_.get_batches(what).empty();
+        }
+
     private:
         SolidBatches batches_;
         SolidGeometryBuffers geometry_buffers_;
@@ -706,12 +711,14 @@ namespace gr::d3d11
         after_render_decals();
     }
 
-    void SolidRenderer::render_movable_solid_dynamic_decals(rf::GSolid* solid, const rf::Vector3& pos, const rf::Matrix3& orient)
+    void SolidRenderer::render_movable_solid_dynamic_decals(rf::GSolid* solid, const rf::Vector3& pos,
+        const rf::Matrix3& orient, bool opaque_faces, bool alpha_faces)
     {
         rf::gr::start_instance(pos, orient);
         before_render_decals();
         for (rf::GFace& face: solid->face_list) {
-            if (should_render_face(&face)) {
+            bool wanted = determine_face_render_type(&face) == FaceRenderType::alpha ? alpha_faces : opaque_faces;
+            if (wanted && should_render_face(&face)) {
                 render_face_dynamic_decals(&face);
             }
         }
@@ -872,7 +879,8 @@ namespace gr::d3d11
         render_context_.update_lights();
     }
 
-    void SolidRenderer::render_movable_solid(rf::GSolid* solid, const rf::Vector3& pos, const rf::Matrix3& orient)
+    void SolidRenderer::render_movable_solid(rf::GSolid* solid, const rf::Vector3& pos, const rf::Matrix3& orient,
+        bool include_alpha)
     {
         // Mover brush geometry; picmip applies.
         RenderContext::ScopedPicmipActive picmip_scope{render_context_, true};
@@ -884,11 +892,36 @@ namespace gr::d3d11
         GRenderCache* cache = get_or_create_movable_solid_cache(solid);
         before_render(pos, orient);
         cache->render(FaceRenderType::opaque, render_context_);
+        if (include_alpha) {
+            cache->render(FaceRenderType::alpha, render_context_);
+        }
+        if (decals_enabled) {
+            // Decals on mover brushes; picmip doesn't apply.
+            RenderContext::ScopedPicmipActive decal_scope{render_context_, false};
+            render_movable_solid_dynamic_decals(solid, pos, orient, true, include_alpha);
+        }
+    }
+
+    bool SolidRenderer::movable_solid_has_alpha(rf::GSolid* solid)
+    {
+        return get_or_create_movable_solid_cache(solid)->has_batches(FaceRenderType::alpha);
+    }
+
+    void SolidRenderer::render_movable_solid_alpha(rf::GSolid* solid, const rf::Vector3& pos, const rf::Matrix3& orient)
+    {
+        // Mover brush geometry; picmip applies.
+        RenderContext::ScopedPicmipActive picmip_scope{render_context_, true};
+
+        xlog::trace("Rendering movable solid alpha {}", solid);
+        render_context_.set_draw_room_uid(-1);
+        render_context_.update_lights();
+        GRenderCache* cache = get_or_create_movable_solid_cache(solid);
+        before_render(pos, orient);
         cache->render(FaceRenderType::alpha, render_context_);
         if (decals_enabled) {
             // Decals on mover brushes; picmip doesn't apply.
             RenderContext::ScopedPicmipActive decal_scope{render_context_, false};
-            render_movable_solid_dynamic_decals(solid, pos, orient);
+            render_movable_solid_dynamic_decals(solid, pos, orient, false, true);
         }
     }
 

@@ -346,6 +346,7 @@ FunHook<void(bool)> level_init_post_hook{
         }
         apply_geoable_flags();
         apply_breakable_materials();
+        destruction_level_init_post();
 
         if (!rf::is_dedicated_server && !is_headless_mode()) {
             explosion_flash_lights_level_init();

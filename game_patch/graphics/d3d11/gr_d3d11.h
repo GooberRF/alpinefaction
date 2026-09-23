@@ -76,7 +76,9 @@ namespace gr::d3d11
         void project_vertex(rf::gr::Vertex* v);
         void setup_3d(Projection proj);
         void render_solid(rf::GSolid* solid, rf::GRoom** rooms, int num_rooms);
-        void render_movable_solid(rf::GSolid* solid, const rf::Vector3& pos, const rf::Matrix3& orient);
+        void render_movable_solid(rf::GSolid* solid, const rf::Vector3& pos, const rf::Matrix3& orient, bool include_alpha);
+        bool movable_solid_has_alpha(rf::GSolid* solid);
+        void render_movable_solid_alpha(rf::GSolid* solid, const rf::Vector3& pos, const rf::Matrix3& orient);
         void render_alpha_detail_room(rf::GRoom *room, rf::GSolid *solid);
         void render_sky_room(rf::GRoom *room, rf::Vector3& out_sky_transform_pos, rf::Matrix3& out_sky_transform_orient);
         void render_room_liquid_surface(rf::GSolid* solid, rf::GRoom* room);

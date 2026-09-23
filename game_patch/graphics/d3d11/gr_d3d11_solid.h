@@ -31,7 +31,9 @@ namespace gr::d3d11
         SolidRenderer(ComPtr<ID3D11Device> device, ShaderManager& shader_manager, StateManager& state_manager, DynamicGeometryRenderer& dyn_geo_renderer, RenderContext& render_context);
         ~SolidRenderer();
         void render_solid(rf::GSolid* solid, rf::GRoom** rooms, int num_rooms);
-        void render_movable_solid(rf::GSolid* solid, const rf::Vector3& pos, const rf::Matrix3& orient);
+        void render_movable_solid(rf::GSolid* solid, const rf::Vector3& pos, const rf::Matrix3& orient, bool include_alpha);
+        bool movable_solid_has_alpha(rf::GSolid* solid);
+        void render_movable_solid_alpha(rf::GSolid* solid, const rf::Vector3& pos, const rf::Matrix3& orient);
         void render_sky_room(rf::GRoom *room, rf::Vector3& out_sky_transform_pos, rf::Matrix3& out_sky_transform_orient);
         void render_alpha_detail(rf::GRoom *room, rf::GSolid *solid);
         void render_room_liquid_surface(rf::GSolid* solid, rf::GRoom* room);
@@ -50,7 +52,7 @@ namespace gr::d3d11
         void render_detail(rf::GSolid* solid, rf::GRoom* room, bool alpha);
         void render_dynamic_decals(rf::GRoom** rooms, int num_rooms);
         void render_alpha_detail_dynamic_decals(rf::GRoom* detail_room);
-        void render_movable_solid_dynamic_decals(rf::GSolid* solid, const rf::Vector3& pos, const rf::Matrix3& orient);
+        void render_movable_solid_dynamic_decals(rf::GSolid* solid, const rf::Vector3& pos, const rf::Matrix3& orient, bool opaque_faces, bool alpha_faces);
         void before_render_decals();
         void after_render_decals();
         RoomRenderCache* get_or_create_normal_room_cache(rf::GSolid* solid, rf::GRoom* room);

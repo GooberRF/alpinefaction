@@ -1042,14 +1042,32 @@ namespace gr::d3d11
         solid_renderer_->render_solid(solid, rooms, num_rooms);
     }
 
-    void Renderer::render_movable_solid(rf::GSolid* solid, const rf::Vector3& pos, const rf::Matrix3& orient)
+    void Renderer::render_movable_solid(rf::GSolid* solid, const rf::Vector3& pos, const rf::Matrix3& orient,
+        bool include_alpha)
     {
         dyn_geo_renderer_->flush();
-        solid_renderer_->render_movable_solid(solid, pos, orient);
+        solid_renderer_->render_movable_solid(solid, pos, orient, include_alpha);
+    }
+
+    bool Renderer::movable_solid_has_alpha(rf::GSolid* solid)
+    {
+        return solid_renderer_->movable_solid_has_alpha(solid);
+    }
+
+    void Renderer::render_movable_solid_alpha(rf::GSolid* solid, const rf::Vector3& pos, const rf::Matrix3& orient)
+    {
+        // Flush outlines before see-through solid faces render. Those faces write depth
+        // (ZBUFFER_TYPE_FULL_ALPHA_TEST), so a depth-tested outline queued during the object
+        // phase is rejected wherever they got there first. Draining the queue here instead of
+        // leaving it to whichever sorted item happens to flush next keeps outlines in front.
+        outline_renderer_->flush(*mesh_renderer_);
+        dyn_geo_renderer_->flush();
+        solid_renderer_->render_movable_solid_alpha(solid, pos, orient);
     }
 
     void Renderer::render_alpha_detail_room(rf::GRoom *room, rf::GSolid *solid)
     {
+        outline_renderer_->flush(*mesh_renderer_);
         dyn_geo_renderer_->flush();
         solid_renderer_->render_alpha_detail(room, solid);
     }

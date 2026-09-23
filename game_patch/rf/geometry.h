@@ -660,6 +660,14 @@ namespace rf
     static auto& g_cache_clear = addr_as_ref<void()>(0x004F0B90);
     static auto& g_get_room_render_list = addr_as_ref<void(GRoom ***rooms, int *num_rooms)>(0x004D3330);
 
+    using GRoomRenderItemFn = void(*)(void* user, GSolid* solid);
+    // Queues a render item for the current room pass. Returns false when the sphere (cull_pos, radius)
+    // is frustum culled or the 2048 entry list is full; a null render_fn queues nothing.
+    static auto& g_room_render_item_add = addr_as_ref<bool(void* user, const Vector3& pos, const Vector3& cull_pos,
+        float radius, GRoomRenderItemFn render_fn, bool sortable, const Plane* group_plane,
+        const Vector3* liquid_test_low, const Vector3* liquid_test_high, bool gather_lights,
+        bool flag11)>(0x004D3560);
+
     static auto& find_room = addr_as_ref<GRoom*(GSolid* solid, const Vector3* pos)>(0x004E1630);
 
     static auto& g_solid_portal_render =

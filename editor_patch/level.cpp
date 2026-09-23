@@ -3,6 +3,7 @@
 #include <patch_common/AsmWriter.h>
 #include <patch_common/MemUtils.h>
 #include <xlog/xlog.h>
+#include <common/utils/string-utils.h>
 #include <algorithm>
 #include <cfloat>
 #include <cmath>
@@ -399,13 +400,15 @@ static void compute_geoable_room_uids(CDedLevel& level, AlpineLevelProperties& p
 // Uses face_id matching (primary) with position-based fallback.
 static void compute_breakable_room_uids(CDedLevel& level, AlpineLevelProperties& props)
 {
-    // Prune stale UIDs
+    // Prune rows whose brush no longer qualifies.
     {
         std::unordered_set<int32_t> live_uids;
         BrushNode* node = level.brush_list;
         if (node) {
             do {
-                live_uids.insert(node->uid);
+                if (node->is_detail && node->life != -1) {
+                    live_uids.insert(node->uid);
+                }
                 node = node->next;
             } while (node && node != level.brush_list);
         }
@@ -417,6 +420,24 @@ static void compute_breakable_room_uids(CDedLevel& level, AlpineLevelProperties&
             } else {
                 i++;
             }
+        }
+    }
+
+    // Every destructible detail brush gets an entry, so the game can map its brush UID to the
+    // compiled room UID.
+    {
+        BrushNode* node = level.brush_list;
+        if (node) {
+            do {
+                if (node->is_detail && node->life != -1 &&
+                    std::find(props.breakable_brush_uids.begin(), props.breakable_brush_uids.end(),
+                              node->uid) == props.breakable_brush_uids.end()) {
+                    props.breakable_brush_uids.push_back(node->uid);
+                    props.breakable_room_uids.push_back(0);
+                    props.breakable_materials.push_back(0);
+                }
+                node = node->next;
+            } while (node && node != level.brush_list);
         }
     }
 
@@ -440,7 +461,14 @@ static void compute_breakable_room_uids(CDedLevel& level, AlpineLevelProperties&
             continue;
         }
 
-        // Fallback: position-based matching
+        // Fallback: position-based matching, but only for rows that carry a real material.
+        const uint8_t raw = (i < props.breakable_materials.size()) ? props.breakable_materials[i] : 0;
+        if (raw == 0) {
+            xlog::debug("[Breakable] brush uid={} mapping-only row unmatched, leaving room uid 0",
+                brush_uid);
+            continue;
+        }
+
         room = find_room_by_position(level, brush_uid);
         if (room) {
             props.breakable_room_uids[i] = room->uid;
@@ -499,7 +527,15 @@ static void populate_isolated_face_map()
 
     std::unordered_set<int32_t> isolated_set;
     isolated_set.insert(props.geoable_brush_uids.begin(), props.geoable_brush_uids.end());
-    isolated_set.insert(props.breakable_brush_uids.begin(), props.breakable_brush_uids.end());
+    // Glass entries exist only to carry the brush UID -> room UID mapping for When_Destroyed;
+    // they must not join the isolation set or a level would build different room structure than
+    // it did before those entries were added.
+    for (std::size_t i = 0; i < props.breakable_brush_uids.size(); i++) {
+        const uint8_t mat = (i < props.breakable_materials.size()) ? props.breakable_materials[i] : 0;
+        if ((mat & 0x7F) != 0) {
+            isolated_set.insert(props.breakable_brush_uids[i]);
+        }
+    }
 
     BrushNode* head = level->brush_list;
     if (!head) return;
@@ -892,6 +928,50 @@ CodeInjection CDedLevel_SaveLevel_patch{
     },
 };
 
+// Stock FlagFaceTextureTraits (0x0041d3c0) only stamps the see-through face flags
+// (FACE_SEE_THRU, FACE_HAS_HOLES) on faces carrying FACE_IS_DETAIL, which the geometry
+// build sets exclusively on compiled static faces. Mover brushes are saved as raw brush
+// geometry, so their faces never get those bits and the game draws their alpha textures
+// opaque. Mirror stock's detail-brush rule for the faces of moving group detail brushes;
+// the stock pass already cleared the bits, so only OR them back in.
+static void flag_mover_face_texture_traits(GSolid* solid)
+{
+    for (GFace* face = solid->face_list_head; face; face = face->next_solid) {
+        if (face->flags & FACE_IS_DETAIL) continue; // stock already handled compiled detail faces
+        if (face->bitmap_id == -1 || !bm_has_alpha(face->bitmap_id)) continue;
+
+        face->flags |= FACE_SEE_THRU;
+
+        const char* filename = bm_get_filename(face->bitmap_id);
+        if (!filename || !string_istarts_with(filename, "gls_")) {
+            face->flags |= FACE_HAS_HOLES;
+        }
+    }
+}
+
+// Hook FUN_0041d330 (FlagFaceTextureTraits_all, cdecl), run on every level save and
+// before lightmap UV calculation.
+void __cdecl flag_face_texture_traits_all_hooked(CDedLevel* level);
+FunHook<decltype(flag_face_texture_traits_all_hooked)> flag_face_texture_traits_all_hook{
+    0x0041d330,
+    flag_face_texture_traits_all_hooked,
+};
+void __cdecl flag_face_texture_traits_all_hooked(CDedLevel* level)
+{
+    flag_face_texture_traits_all_hook.call_target(level);
+
+    BrushNode* head = level->brush_list;
+    if (!head) return;
+    BrushNode* node = head;
+    do {
+        auto* geom = static_cast<GSolid*>(node->geometry);
+        if (geom && node->is_detail && level->brush_in_moving_group(node)) {
+            flag_mover_face_texture_traits(geom);
+        }
+        node = node->next;
+    } while (node && node != head);
+}
+
 // Fill the sun yaw/pitch edit fields from the 3D viewport camera. The camera is aimed
 // ALONG the sun's rays (at the ground), so to-sun is the NEGATED camera forward vector.
 static void set_sun_angles_from_camera(HWND hdlg)
@@ -1148,22 +1228,76 @@ static VArray<int>& get_link_array(DedObject* obj)
     return obj->links;  // +0x7C for all object types
 }
 
-void DedLevel_DoLinkImpl(CDedLevel* level, bool reverse_link_direction)
+// Brushes are not DedObjects and never enter level->selection; selection state lives on the
+// BrushNode itself, so a brush picked alongside an object is invisible to the selection array.
+static std::vector<int> collect_selected_detail_brush_uids(CDedLevel* level)
 {
-    auto& sel = level->selection;
-    const int count = sel.get_size();
+    std::vector<int> uids;
 
-    if (count < 2) {
+    BrushNode* node = level->brush_list;
+    if (!node) {
+        return uids;
+    }
+    do {
+        if (node->state == BRUSH_STATE_SELECTED && node->is_detail) {
+            uids.push_back(node->uid);
+        }
+        node = node->next;
+    } while (node && node != level->brush_list);
+
+    return uids;
+}
+
+// Link an object to selected detail brushes by UID. The object always receives the links
+// whichever way the command was invoked, because a brush has no link array of its own.
+static void link_object_to_detail_brushes(DedObject* object, const std::vector<int>& brush_uids)
+{
+    // The source rule is_link_allowed applies, minus its nav point clause: that one needs an
+    // event destination, and a brush can only ever be a destination.
+    if (object->type != DedObjectType::DED_TRIGGER && object->type != DedObjectType::DED_EVENT) {
         g_main_frame->DedMessageBox(
-            "You must select at least 2 objects to create a link.",
+            "Links to brushes can only be created from Triggers and Events.",
             "Error",
             0
         );
         return;
     }
 
-    DedObject* primary = sel[0];
-    if (!primary) {
+    auto& links = get_link_array(object);
+
+    for (int brush_uid : brush_uids) {
+        const int old_size = links.get_size();
+        const int idx = links.add_if_not_exists_int(brush_uid);
+
+        if (idx < 0) {
+            xlog::warn("DoLink: Failed to add brush link src_uid={} brush_uid={}", object->uid, brush_uid);
+        }
+        else if (idx >= old_size) {
+            xlog::debug("DoLink: Added new brush link src_uid={} -> brush_uid={}", object->uid, brush_uid);
+        }
+        else {
+            xlog::debug("DoLink: Brush link already existed src_uid={} -> brush_uid={}", object->uid, brush_uid);
+        }
+    }
+}
+
+void DedLevel_DoLinkImpl(CDedLevel* level, bool reverse_link_direction)
+{
+    auto& sel = level->selection;
+    const int count = sel.get_size();
+    DedObject* primary = count > 0 ? sel[0] : nullptr;
+
+    // One object plus one or more detail brushes reaches here as a single-object selection,
+    // which the object-only path can only report as an error.
+    if (count == 1 && primary) {
+        const std::vector<int> brush_uids = collect_selected_detail_brush_uids(level);
+        if (!brush_uids.empty()) {
+            link_object_to_detail_brushes(primary, brush_uids);
+            return;
+        }
+    }
+
+    if (count < 2 || !primary) {
         g_main_frame->DedMessageBox(
             "You must select at least 2 objects to create a link.",
             "Error",
@@ -1303,4 +1437,7 @@ void ApplyLevelPatches()
 
     // Skip "objects outside of level" bounds check for some object types
     skip_alpine_objects_bounds_check.install();
+
+    // Mark see-through textures on moving group brush faces so alpha renders in game
+    flag_face_texture_traits_all_hook.install();
 }

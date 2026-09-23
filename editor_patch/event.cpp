@@ -1,10 +1,12 @@
 #include <cstddef>
+#include <cstdio>
 #include <cstring>
 #include <functional>
 #include <string_view>
 #include <windows.h>
 #include <shellapi.h>
 #include <vector>
+#include <unordered_map>
 #include <memory>
 #include <iomanip>
 #include <sstream>
@@ -35,7 +37,7 @@
 
 // Custom event support
 constexpr int original_event_count = 89;
-constexpr int new_event_count = 62; // must be 1 higher than actual count
+constexpr int new_event_count = 64; // must be 1 higher than actual count
 constexpr int total_event_count = original_event_count + new_event_count;
 std::unique_ptr<const char*[]> extended_event_names; // array to hold original + additional event names
 
@@ -101,6 +103,8 @@ const char* additional_event_names[new_event_count] = {
     "ATX_Set_Frame_Time",
     "Weather_Region_State",
     "Display_Projection",
+    "Climbing_Region_State",
+    "When_Destroyed",
     "Rope_State",
     "_dummy"
 };
@@ -476,6 +480,12 @@ std::map<AlpineDedEventID, FieldConfig> eventFieldConfigs = {
         {FIELD_BOOL1},
         {
             {FIELD_BOOL1, "Activate on any dead (bool1):"}
+        }
+    }},
+    {AlpineDedEventID::When_Destroyed, {
+        {FIELD_BOOL1},
+        {
+            {FIELD_BOOL1, "Activate when any dead (bool1):"}
         }
     }},
     {AlpineDedEventID::Gametype_Gate, {
@@ -1275,10 +1285,225 @@ CodeInjection arrows_for_events_patch {
     }
 };
 
+static bool uid_is_detail_brush(int uid)
+{
+    auto* level = CDedLevel::Get();
+    if (!level || !level->brush_list) {
+        return false;
+    }
+
+    BrushNode* node = level->brush_list;
+    do {
+        if (node->uid == uid && node->is_detail) {
+            return true;
+        }
+        node = node->next;
+    } while (node && node != level->brush_list);
+
+    return false;
+}
+
+CodeInjection links_dialog_allow_detail_brush_patch{
+    0x00469B4A,
+    [](auto& regs) {
+        const int uid = static_cast<int>(regs.ebx);
+        if (!uid_is_detail_brush(uid)) {
+            return; // let the stock "Invalid object id entered" message run
+        }
+
+        void* dialog = *reinterpret_cast<void**>(regs.esp + 0x1C);
+        void* list_box = static_cast<char*>(dialog) + 0x5C;
+
+        char entry[32];
+        std::snprintf(entry, sizeof(entry), "Brush (%d)", uid);
+
+        // The stock duplicate scan lives further down the path we skip, so do it here or a
+        // second Add writes the same link twice.
+        HWND list_hwnd = *reinterpret_cast<HWND*>(static_cast<char*>(list_box) + 0x1C);
+        if (list_hwnd &&
+            SendMessageA(list_hwnd, LB_FINDSTRINGEXACT, static_cast<WPARAM>(-1),
+                         reinterpret_cast<LPARAM>(entry)) == LB_ERR) {
+            links_list_add_string(list_box, entry);
+        }
+
+        regs.eip = 0x00469C9F;
+    }
+};
+
+CodeInjection links_dialog_show_detail_brush_patch{
+    0x004699C2,
+    [](auto& regs) {
+        const int uid = *static_cast<int*>(static_cast<void*>(regs.esp));
+        if (!uid_is_detail_brush(uid)) {
+            return;
+        }
+
+        char entry[32];
+        std::snprintf(entry, sizeof(entry), "Brush (%d)", uid);
+        auto* dialog = static_cast<char*>(static_cast<void*>(regs.ebp));
+        links_list_add_string(dialog + 0x5C, entry);
+
+        regs.eax = 0;
+        regs.eip = 0x004699C7;
+    }
+};
+
+CodeInjection links_dialog_properties_skip_unresolved_patch{
+    0x004074C1,
+    [](auto& regs) {
+        if (regs.eax == 0) {
+            regs.eip = 0x0040750B;
+        }
+    }
+};
+
+CodeInjection object_exchange_keep_brush_links_patch{
+    0x00453D42,
+    [](auto& regs) {
+        auto* links = reinterpret_cast<VArray<int>*>(static_cast<void*>(regs.esi));
+        const int index = static_cast<int>(regs.edi);
+        if (!links || !links->data_ptr || index < 0 || index >= links->size) {
+            return;
+        }
+
+        if (uid_is_detail_brush(links->data_ptr[index])) {
+            regs.eip = 0x00453D4A; // skip the removal, continue the prune loop
+        }
+    }
+};
+
+// Link lines to detail brushes
+static std::unordered_map<int, BrushNode*> g_detail_brush_lookup;
+static bool g_any_detail_brush_selected = false;
+
+// 0 = draw links for the selection only (an outgoing pass and an incoming one), non-zero = draw
+// them for every object. Read by draw_links at 0x0042295E to pick between the two branches.
+static auto& g_link_draw_mode = addr_as_ref<uint8_t>(0x006C9AC4);
+
+struct LinkColor { int r, g, b; };
+
+// Same source and fallback draw_links uses in its own prologue.
+static LinkColor get_link_color()
+{
+    if (const EditorColorPrefs* prefs = editor_color_prefs()) {
+        return {prefs->link_r, prefs->link_g, prefs->link_b};
+    }
+    return {0, 0, 255};
+}
+
+static void rebuild_detail_brush_lookup(CDedLevel* level)
+{
+    g_detail_brush_lookup.clear();
+    g_any_detail_brush_selected = false;
+
+    if (!level || !level->brush_list) {
+        return;
+    }
+
+    BrushNode* node = level->brush_list;
+    do {
+        if (node->is_detail) {
+            g_detail_brush_lookup[node->uid] = node;
+            if (node->state == BRUSH_STATE_SELECTED) {
+                g_any_detail_brush_selected = true;
+            }
+        }
+        node = node->next;
+    } while (node && node != level->brush_list);
+}
+
+static void draw_incoming_brush_links(CDedLevel* level)
+{
+    if (!level || !g_any_detail_brush_selected) {
+        return;
+    }
+
+    const LinkColor color = get_link_color();
+    auto& objects = level->master_objects;
+
+    for (int i = 0; i < objects.get_size(); i++) {
+        DedObject* obj = objects.data_ptr[i];
+        if (!obj || obj->hidden_in_editor) {
+            continue;
+        }
+
+        for (int k = 0; k < obj->links.get_size(); k++) {
+            auto it = g_detail_brush_lookup.find(obj->links.data_ptr[k]);
+            if (it == g_detail_brush_lookup.end() || it->second->state != BRUSH_STATE_SELECTED) {
+                continue;
+            }
+            draw_link_line(obj->pos.x, obj->pos.y, obj->pos.z,
+                           it->second->pos.x, it->second->pos.y, it->second->pos.z,
+                           color.r, color.g, color.b);
+        }
+    }
+}
+
+CodeInjection draw_links_cache_detail_brushes_patch{
+    0x00422910,
+    [](auto& regs) {
+        auto* level = static_cast<CDedLevel*>(static_cast<void*>(regs.ecx));
+        try {
+            rebuild_detail_brush_lookup(level);
+            if (g_link_draw_mode == 0) {
+                draw_incoming_brush_links(level);
+            }
+        }
+        catch (...) {
+            // Never unwind into engine frames; draw no brush link lines this frame instead.
+            g_detail_brush_lookup.clear();
+            g_any_detail_brush_selected = false;
+        }
+    }
+};
+
+static void draw_detail_brush_link(BaseCodeInjection::Regs& regs)
+{
+    const int uid = *static_cast<int*>(static_cast<void*>(regs.esp));
+
+    auto it = g_detail_brush_lookup.find(uid);
+    if (it == g_detail_brush_lookup.end()) {
+        return;
+    }
+
+    auto* source = static_cast<DedObject*>(static_cast<void*>(regs.esi));
+    const BrushNode* brush = it->second;
+    const int blue = *reinterpret_cast<int*>(regs.esp + 0x1C);
+    const int green = *reinterpret_cast<int*>(regs.esp + 0x20);
+    const int red = *reinterpret_cast<int*>(regs.esp + 0x24);
+
+    draw_link_line(source->pos.x, source->pos.y, source->pos.z,
+                   brush->pos.x, brush->pos.y, brush->pos.z,
+                   red, green, blue);
+}
+
+// "Show links for all objects" pass.
+CodeInjection draw_links_all_objects_brush_patch{
+    0x004229B6,
+    [](auto& regs) { draw_detail_brush_link(regs); }
+};
+
+// "Show links for the selection" pass.
+CodeInjection draw_links_selection_brush_patch{
+    0x00422A67,
+    [](auto& regs) { draw_detail_brush_link(regs); }
+};
+
 void ApplyEventsPatches()
 {
     // Support custom events with orientation
     DedEvent__exchange_patch.install();
+
+    // Draw link lines from objects to the detail brushes they link to
+    draw_links_cache_detail_brushes_patch.install();
+    draw_links_all_objects_brush_patch.install();
+    draw_links_selection_brush_patch.install();
+
+    // Allow linking events to detail brushes by UID (When_Destroyed)
+    links_dialog_allow_detail_brush_patch.install();
+    links_dialog_show_detail_brush_patch.install();
+    links_dialog_properties_skip_unresolved_patch.install();
+    object_exchange_keep_brush_links_patch.install();
 
     // Render 3d arrows for events that save orientation
     arrows_for_events_patch.install();

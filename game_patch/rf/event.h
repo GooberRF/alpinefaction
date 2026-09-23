@@ -361,6 +361,8 @@ namespace rf
         ATX_Set_Frame_Time,
         Weather_Region_State,
         Display_Projection,
+        Climbing_Region_State,
+        When_Destroyed,
         Rope_State
     };
 

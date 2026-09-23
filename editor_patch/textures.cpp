@@ -488,24 +488,40 @@ CodeInjection vpp_texture_path_fix{
     }
 };
 
-static bool has_texture_extension(const char* filename)
+// Texture names come out of level and mesh files, which are shared content.
+// Only bare filenames should be packable, not paths.
+static bool has_packable_path(const char* filename)
 {
     if (!filename || !filename[0]) return false;
-    // Texture names come out of level and mesh files, which are shared content.
-    // Only bare filenames should be packable, not paths.
     if (strpbrk(filename, "\\/:") != nullptr) {
         xlog::warn("Refusing to pack texture with a path in its name: '{}'", filename);
         return false;
     }
+    return true;
+}
+
+static bool has_extension_from(const char* filename, std::initializer_list<const char*> extensions)
+{
+    if (!has_packable_path(filename)) return false;
     const char* ext = strrchr(filename, '.');
     if (!ext) return false;
-    return (_stricmp(ext, ".tga") == 0 ||
-            _stricmp(ext, ".vbm") == 0 ||
-            _stricmp(ext, ".dds") == 0 ||
-            _stricmp(ext, ".atx") == 0 ||
-            _stricmp(ext, ".png") == 0 ||
-            _stricmp(ext, ".jpg") == 0 ||
-            _stricmp(ext, ".jpeg") == 0);
+    for (const char* known : extensions) {
+        if (_stricmp(ext, known) == 0) return true;
+    }
+    return false;
+}
+
+// What RED itself can preview — the gate for textures named by level and mesh data.
+static bool has_texture_extension(const char* filename)
+{
+    return has_extension_from(filename, {".tga", ".vbm", ".dds", ".atx", ".png", ".jpg", ".jpeg"});
+}
+
+// Everything the game's loader resolves (mirrors g_texture_extensions in bmpman.cpp).
+static bool has_loadable_texture_extension(const char* filename)
+{
+    return has_extension_from(filename, {".tga", ".vbm", ".dds", ".atx", ".png", ".jpg", ".jpeg",
+                                         ".pcx", ".vaf", ".m2v"});
 }
 
 static void push_to_pack_list(void* temp_list, const char* filename)
@@ -523,18 +539,56 @@ static void push_to_pack_list(void* temp_list, const char* filename)
 }
 
 // Add a texture filename to the VPP temp file list if it has a valid texture extension.
-// For .atx files, also pulls in every dependency
+// .atx frame dependencies are expanded by expand_atx_deps_in_pack_list, which sweeps the whole
+// list after every caller here has run.
 static void add_texture_to_pack_list(void* temp_list, const char* filename)
 {
     if (!has_texture_extension(filename)) return;
     push_to_pack_list(temp_list, filename);
+}
 
-    if (string_iends_with(filename, ".atx")) {
-        // Parse the .atx and add each referenced texture.
-        for (const auto& dep : parse_atx_dependencies(filename)) {
-            if (has_texture_extension(dep.c_str())
-                && !string_iends_with(dep, ".atx")) {
-                push_to_pack_list(temp_list, dep.c_str());
+struct VppFileList {
+    int count;
+    int field_4;
+    VString* data;
+};
+
+static bool push_new_to_pack_list(void* temp_list, const char* filename)
+{
+    auto* list = static_cast<VppFileList*>(temp_list);
+    const int before = list->count;
+    push_to_pack_list(temp_list, filename);
+    return list->count != before;
+}
+
+static void expand_atx_deps_in_pack_list(void* temp_list)
+{
+    auto* list = static_cast<VppFileList*>(temp_list);
+    const int initial_count = list->count;
+    if (initial_count <= 0 || !list->data) return;
+
+    for (int i = 0; i < initial_count; i++) {
+        // Copy the name out: the pushes below can reallocate the element array.
+        const std::string name = list->data[i].c_str();
+        // The bare-name rule the rest of the pack flow applies, before reading anything by name.
+        if (name.empty() || !has_packable_path(name.c_str())) continue;
+
+        std::string atx = name;
+        if (!string_iends_with(atx, ".atx")) {
+            // A face or decal can name a legacy texture that the supercede chain resolves to a
+            // sibling .atx. The packer resolves entries by their literal name, so that .atx is
+            // not packed by itself and has to be pushed here.
+            atx = find_atx_sibling(name.c_str());
+            if (atx.empty()) continue;
+            if (push_new_to_pack_list(temp_list, atx.c_str())) {
+                xlog::info("VPP: Added superceding ATX '{}' for texture '{}'", atx, name);
+            }
+        }
+
+        for (const auto& dep : parse_atx_dependencies(atx.c_str())) {
+            if (!has_loadable_texture_extension(dep.c_str()) || string_iends_with(dep, ".atx")) continue;
+            if (push_new_to_pack_list(temp_list, dep.c_str())) {
+                xlog::info("VPP: Added ATX frame '{}' from '{}'", dep, atx);
             }
         }
     }
@@ -666,6 +720,9 @@ CodeInjection vpp_extra_textures_injection{
             add_mesh_textures_to_pack_list(temp_list, mesh->mesh_filename.c_str());
             add_mesh_textures_to_pack_list(temp_list, mesh->clutter_props.debris_filename.c_str());
             add_mesh_textures_to_pack_list(temp_list, mesh->clutter_props.corpse_filename.c_str());
+            if (mesh->brush_geo_source == 2 && !mesh->collision_mesh_filename.empty()) {
+                add_mesh_textures_to_pack_list(temp_list, mesh->collision_mesh_filename.c_str());
+            }
         }
 
         // Corona bitmaps (corona sprite + optional volumetric bitmap)
@@ -687,6 +744,9 @@ CodeInjection vpp_extra_textures_injection{
                 add_texture_to_pack_list(temp_list, fx.volumetric_bitmap.c_str());
             }
         }
+
+        // Last, so it also covers the stock loops' entries and everything added above
+        expand_atx_deps_in_pack_list(temp_list);
     }
 };
 
@@ -703,6 +763,9 @@ CodeInjection vpp_mesh_files_injection{
             add_mesh_to_vpp_list(mesh->clutter_props.debris_filename.c_str());
             add_mesh_to_vpp_list(mesh->clutter_props.corpse_filename.c_str());
             add_mesh_to_vpp_list(mesh->clutter_props.corpse_state_anim.c_str());
+            if (mesh->brush_geo_source == 2 && !mesh->collision_mesh_filename.empty()) {
+                add_mesh_to_vpp_list(mesh->collision_mesh_filename.c_str());
+            }
         }
 
         // Rope emitter decoration meshes

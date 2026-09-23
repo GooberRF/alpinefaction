@@ -19,6 +19,7 @@
 #include "../main/main.h"
 #include "../misc/misc.h"
 #include "../rf/geometry.h"
+#include "../rf/event.h"
 #include "../rf/level.h"
 #include "../rf/particle_emitter.h"
 #include "../rf/bmpman.h"
@@ -927,7 +928,16 @@ void apply_breakable_materials()
 
     for (std::size_t i = 0; i < props.breakable_room_uids.size(); i++) {
         int32_t uid = props.breakable_room_uids[i];
+        if (uid == 0) {
+            continue; // the editor found no compiled room for this brush
+        }
         uint8_t raw = (i < props.breakable_materials.size()) ? props.breakable_materials[i] : 0;
+        if (raw == 0) {
+            // Mapping-only row: every room was defaulted to Glass with no flags above, so this
+            // can only ever be a no-op — or, if its room UID came from the editor's position
+            // fallback and landed on a neighbour, reset a real material. Skip it.
+            continue;
+        }
         uint8_t mat = raw & 0x7F;
         bool no_debris = (raw & 0x80) != 0;
         if (mat >= static_cast<uint8_t>(rf::DetailMaterial::Count)) {
@@ -950,6 +960,122 @@ void apply_breakable_materials()
             xlog::debug("[Material] FAILED to find room uid={} for material {} (not found among detail rooms)", uid, mat);
         }
     }
+}
+
+// Destruction registry for the When_Destroyed catalyst event.
+struct DestructibleBrushState
+{
+    std::vector<int> brush_uids;
+    bool destroyed = false;
+};
+
+static std::unordered_map<int, DestructibleBrushState> g_brush_destruction; // room uid -> state
+static std::unordered_map<int, int> g_brush_uid_to_room_uid;
+// Every breakable brush UID the level declares, mapped or not. A row whose room mapping failed
+// still names a brush, and a brush is never an activation target.
+static std::unordered_set<int> g_breakable_brush_uids;
+
+static DestructibleBrushState* brush_state_from_brush_uid(int brush_uid)
+{
+    auto uit = g_brush_uid_to_room_uid.find(brush_uid);
+    if (uit == g_brush_uid_to_room_uid.end()) return nullptr;
+
+    auto it = g_brush_destruction.find(uit->second);
+    return it == g_brush_destruction.end() ? nullptr : &it->second;
+}
+
+bool brush_is_tracked(int brush_uid)
+{
+    return brush_state_from_brush_uid(brush_uid) != nullptr;
+}
+
+bool brush_uid_is_breakable(int brush_uid)
+{
+    return g_breakable_brush_uids.count(brush_uid) != 0;
+}
+
+bool brush_is_destroyed(int brush_uid)
+{
+    const DestructibleBrushState* state = brush_state_from_brush_uid(brush_uid);
+    return state && state->destroyed;
+}
+
+static void fire_when_destroyed_for_room(int room_uid)
+{
+    auto it = g_brush_destruction.find(room_uid);
+    if (it == g_brush_destruction.end()) return;
+
+    // Copy: event activation is synchronous and a chained break can rehash the registry.
+    const std::vector<int> brush_uids = it->second.brush_uids;
+    for (int brush_uid : brush_uids) {
+        rf::activate_all_events_of_type(rf::EventType::When_Destroyed, brush_uid, -1, true);
+    }
+}
+
+// A destructible brush that breaks counts as fully destroyed. Guarded so a room can only
+// commit once even if the break path were ever re-entered. `fire` is false on paths that
+// only observe an already-destroyed room (save restore), where firing would replay links.
+static void note_brush_break(int room_uid, bool fire = true)
+{
+    auto it = g_brush_destruction.find(room_uid);
+    if (it == g_brush_destruction.end()) return;
+    if (it->second.destroyed) return;
+
+    it->second.destroyed = true;
+    if (fire) {
+        fire_when_destroyed_for_room(room_uid);
+    }
+}
+
+// Build the brush uid -> room uid bridge. Called from level_init_post after
+// apply_breakable_materials, which is what fills the pair lists this reads.
+void destruction_level_init_post()
+{
+    g_brush_destruction.clear();
+    g_brush_uid_to_room_uid.clear();
+    g_breakable_brush_uids.clear();
+
+    auto& props = AlpineLevelProperties::instance();
+    g_breakable_brush_uids.insert(props.breakable_brush_uids.begin(), props.breakable_brush_uids.end());
+
+    auto* solid = rf::level.geometry;
+    if (!solid) return;
+
+    std::unordered_map<int, std::vector<int>> room_to_brushes;
+    auto add_pairs = [&](const std::vector<int32_t>& brush_uids, const std::vector<int32_t>& room_uids) {
+        const std::size_t n = std::min(brush_uids.size(), room_uids.size());
+        for (std::size_t i = 0; i < n; i++) {
+            if (room_uids[i] == 0) continue; // editor found no matching compiled room
+
+            auto [it, inserted] = g_brush_uid_to_room_uid.emplace(brush_uids[i], room_uids[i]);
+            if (!inserted) {
+                if (it->second != room_uids[i]) {
+                    xlog::warn("[Destroyed] brush uid={} maps to room {} and room {}, keeping {}",
+                        brush_uids[i], it->second, room_uids[i], it->second);
+                }
+                continue; // already recorded under the room it first claimed
+            }
+            room_to_brushes[room_uids[i]].push_back(brush_uids[i]);
+        }
+    };
+    // Breakable entries only: When_Destroyed tracks destructible detail brushes (life != -1).
+    // Geoable brushes belong to the RF2 geomod feature and are not tracked here.
+    add_pairs(props.breakable_brush_uids, props.breakable_room_uids);
+
+    if (room_to_brushes.empty()) return;
+
+    for (auto& room : solid->all_rooms) {
+        if (!room || !room->is_detail) continue;
+
+        auto bit = room_to_brushes.find(room->uid);
+        if (bit == room_to_brushes.end()) continue;
+
+        DestructibleBrushState state;
+        state.brush_uids = bit->second;
+        g_brush_destruction.emplace(room->uid, state);
+    }
+
+    xlog::debug("[Destroyed] tracking {} destructible brushes", g_brush_destruction.size());
 }
 
 CodeInjection validate_destroy_vertex_count_fix{
@@ -1843,11 +1969,41 @@ CodeInjection glass_kill_material_injection{
             g_breaking_material = face->which_room->material_type;
             g_breaking_room = face->which_room;
         }
+        else {
+            // Leaving the previous break's room behind would aim this break's effects, stats and
+            // When_Destroyed commit at the wrong brush. The material is read unguarded by the
+            // downstream glass suppression hooks, so it goes back to the stock default too.
+            g_breaking_room = nullptr;
+            g_breaking_material = rf::DetailMaterial::Glass;
+        }
         // Detect if this break is from an explosion:
         // - Local: g_current_radius_damage_type >= 0 (set by capture_damage_type_injection)
         // - Network: force_in_multi=1 (glass_kill only called from packet when explosion_flag=1)
         bool force_in_multi = *reinterpret_cast<char*>(regs.esp + 0x14) != 0;
         g_breaking_from_explosion = (g_current_radius_damage_type >= 0) || force_in_multi;
+    },
+};
+
+// The glass_kill packet handler (0x004723C3) picks one of two commit functions for a break a
+// client is replaying: glass_kill (explosion flag set), which the injection above covers, or
+// FUN_00491ed0 (flag clear), which the local direct-hit setter at 0x004c4f85 never precedes on a
+// client — so without this the break globals would still describe the previous break.
+CodeInjection glass_kill_packet_material_injection{
+    0x00491efe,
+    [](auto& regs) {
+        // This branch is only taken when the packet's explosion flag is clear. Glass rooms never
+        // reach the consumer that resets this, so a stale true would push later debris outward.
+        g_breaking_from_explosion = false;
+
+        auto* face = reinterpret_cast<rf::GFace*>(static_cast<void*>(regs.edi));
+        if (face && face->which_room) {
+            g_breaking_material = face->which_room->material_type;
+            g_breaking_room = face->which_room;
+        }
+        else {
+            g_breaking_room = nullptr;
+            g_breaking_material = rf::DetailMaterial::Glass;
+        }
     },
 };
 
@@ -1894,6 +2050,17 @@ CodeInjection glass_sound_entry_injection{
             const float dx = g_breaking_room->bbox_max.x - g_breaking_room->bbox_min.x;
             const float dz = g_breaking_room->bbox_max.z - g_breaking_room->bbox_min.z;
             weather_notify_geomod(room_center, 0.5f * std::sqrt(dx * dx + dz * dz));
+
+            // When_Destroyed: glass_sound is the one point both break paths reach, and only
+            // after validate_destroy succeeded, so a detail brush commits here exactly once
+            // whatever its material. Event activation runs synchronously, so a chained break
+            // inside it would leave these globals pointing at the other room; the shatter and
+            // glass_kill packet below still need this room's values, so stash and restore them.
+            const rf::DetailMaterial saved_material = g_breaking_material;
+            rf::GRoom* const saved_room = g_breaking_room;
+            note_brush_break(saved_room->uid);
+            g_breaking_material = saved_material;
+            g_breaking_room = saved_room;
         }
 
         auto* mat_cfg = get_material_config(g_breaking_material);
@@ -2079,6 +2246,11 @@ CodeInjection process_destroy_cleanup_injection{
     [](auto& regs) {
         auto* room = reinterpret_cast<rf::GRoom*>(static_cast<void*>(regs.ebx));
         if (room) {
+            // Keep the When_Destroyed registry consistent when a savegame restore tears
+            // down rooms that were already broken. The break path sets this at glass_sound,
+            // so this is a no-op there; it never fires links, only records the state.
+            note_brush_break(room->uid, false);
+
             // Invalidate parent room's render cache so the destroyed detail room's faces
             // are excluded on the next cache rebuild. room_to_render_with may be stale during
             // save/load (the save restore at FUN_004b47a0 destroys killed rooms AFTER
@@ -3176,7 +3348,15 @@ void destruction_level_cleanup()
     g_rf2_smoke_confirmed.clear();
     g_rf2_smoke_record_ptrs.clear();
     g_rf2_decal_deferred = false;
-    AlpineLevelProperties::instance().geoable_room_uids.clear();
+    g_brush_destruction.clear();
+    g_brush_uid_to_room_uid.clear();
+    g_breakable_brush_uids.clear();
+    auto& props = AlpineLevelProperties::instance();
+    props.geoable_room_uids.clear();
+    props.geoable_brush_uids.clear();
+    props.breakable_room_uids.clear();
+    props.breakable_brush_uids.clear();
+    props.breakable_materials.clear();
 }
 
 void g_solid_set_rf2_geo_limit(int limit)
@@ -3240,6 +3420,7 @@ void destruction_do_patch()
     AsmWriter{0x00492090, 0x004920A1}.jmp(radius_damage_trampoline_code.get());
     direct_hit_material_injection.install();
     glass_kill_material_injection.install();
+    glass_kill_packet_material_injection.install();
     glass_sound_entry_injection.install();
     glass_decal_material_injection.install();
     weapon_decal_glass_to_scorch_injection.install();

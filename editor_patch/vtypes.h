@@ -470,8 +470,15 @@ struct EditorColorPrefs
 {
     uint8_t pad_00[0x424];
     COLORREF background;
+    uint8_t pad_428[0x464 - 0x428];
+    uint8_t link_r;
+    uint8_t link_g;
+    uint8_t link_b;
 };
 static_assert(offsetof(EditorColorPrefs, background) == 0x424);
+static_assert(offsetof(EditorColorPrefs, link_r) == 0x464);
+static_assert(offsetof(EditorColorPrefs, link_g) == 0x465);
+static_assert(offsetof(EditorColorPrefs, link_b) == 0x466);
 static auto& editor_color_prefs = addr_as_ref<EditorColorPrefs* __cdecl()>(0x00483E10);
 
 // character_mesh_load_action: __thiscall on mesh_data, loads .rfa file, returns action index
@@ -485,6 +492,7 @@ static auto& vmesh_reset_actions = addr_as_ref<void(EditorVMesh* vmesh)>(0x004C0
 
 // Drawing primitives
 static auto& draw_3d_arrow = addr_as_ref<void(float, float, float, float, float, float, int, int, int)>(0x004CC2F0);
+static auto& draw_link_line = addr_as_ref<void(float, float, float, float, float, float, int, int, int)>(0x004CC2B0);
 static auto& project_to_screen = addr_as_ref<uint32_t(void* screen_out, const void* world_pos)>(0x004C5E30);
 static auto& set_draw_color = addr_as_ref<void(uint32_t r, uint32_t g, uint32_t b, uint32_t a)>(0x004B9700);
 static auto& gr_set_bitmap = addr_as_ref<void(int bm_handle, int unk)>(0x004B97E0);

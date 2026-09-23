@@ -8,6 +8,7 @@
 #include <unordered_set>
 #include <xlog/xlog.h>
 #include "../rf/geometry.h"
+#include "../rf/level.h"
 #include "../rf/file/file.h"
 #include "../os/os.h"
 
@@ -101,9 +102,9 @@ struct AlpineLevelProperties
     float static_mesh_ambient_light_modifier = 2.0f;
     // v4
     bool rf2_style_geomod = false;
-    // std::vector<int32_t> geoable_brush_uids; // unnecessary in game
+    std::vector<int32_t> geoable_brush_uids;
     std::vector<int32_t> geoable_room_uids;
-    // std::vector<int32_t> breakable_brush_uids; // unnecessary in game
+    std::vector<int32_t> breakable_brush_uids;
     std::vector<int32_t> breakable_room_uids;
     std::vector<uint8_t> breakable_materials;
     std::vector<int32_t> hold_open_keyframe_uids; // first keyframe UIDs of movers with "Hold Open"
@@ -253,13 +254,15 @@ struct AlpineLevelProperties
             uint32_t count_surplus = count > 10000 ? count - 10000 : 0;
             if (count > 10000) count = 10000;
             geoable_room_uids.resize(count);
+            geoable_brush_uids.resize(count);
             for (uint32_t i = 0; i < count; i++) {
-                int32_t brush_uid = 0; // editor-only, skip
+                int32_t brush_uid = 0;
                 if (!reader.read_bytes(&brush_uid, sizeof(brush_uid)))
                     return;
                 int32_t room_uid = 0;
                 if (!reader.read_bytes(&room_uid, sizeof(room_uid)))
                     return;
+                geoable_brush_uids[i] = brush_uid;
                 geoable_room_uids[i] = room_uid;
                 xlog::debug("[AlpineLevelProps] geoable entry: brush_uid={} room_uid={}", brush_uid, room_uid);
             }
@@ -277,14 +280,16 @@ struct AlpineLevelProperties
             uint32_t bcount_surplus = bcount > 10000 ? bcount - 10000 : 0;
             if (bcount > 10000) bcount = 10000;
             breakable_room_uids.resize(bcount);
+            breakable_brush_uids.resize(bcount);
             breakable_materials.resize(bcount);
             for (uint32_t i = 0; i < bcount; i++) {
-                int32_t brush_uid = 0; // editor-only, skip
+                int32_t brush_uid = 0;
                 if (!reader.read_bytes(&brush_uid, sizeof(brush_uid)))
                     return;
                 int32_t room_uid = 0;
                 if (!reader.read_bytes(&room_uid, sizeof(room_uid)))
                     return;
+                breakable_brush_uids[i] = brush_uid;
                 breakable_room_uids[i] = room_uid;
                 uint8_t mat = 0;
                 if (!reader.read_bytes(&mat, sizeof(mat)))
@@ -441,6 +446,7 @@ void level_shutdown();
 void alpine_mesh_load_chunk(rf::File& file, std::size_t chunk_len, int content_version);
 void alpine_mesh_do_frame();
 void alpine_mesh_clear_state();
+void alpine_mesh_free_collision_proxies();
 
 // Mesh event helpers
 namespace rf { struct Object; struct PhysicsData; }
@@ -466,6 +472,8 @@ bool alpine_mesh_collide_sphere_world(const rf::Vector3& start, const rf::Vector
 const std::string* alpine_mesh_get_corpse_filename(int handle);
 bool alpine_mesh_spawn_corpse(rf::Object* obj);
 void alpine_mesh_animate(rf::Object* obj, int type, const std::string& anim_filename, float blend_weight);
+bool alpine_mesh_pause_anim(rf::Object* obj);
+bool alpine_mesh_resume_anim(rf::Object* obj, int type, const std::string& anim_filename);
 void alpine_mesh_set_texture(rf::Object* obj, int slot, const std::string& texture_filename);
 void alpine_mesh_clear_texture(rf::Object* obj, int slot);
 void alpine_mesh_set_collision(rf::Object* obj, int collision_type);
@@ -512,6 +520,10 @@ struct GasRegionInfo {
 void gas_region_clear_state();
 const std::vector<GasRegionInfo>& gas_region_get_all();
 GasRegionInfo* gas_region_get_by_uid(int uid);
+
+void climb_region_clear_state();
+rf::ClimbRegion* climb_region_get_by_uid(int uid);
+void climb_region_set_enabled(int uid, bool enabled);
 
 // Gas region transitions (smooth interpolation over time)
 struct GasRegionTransition {

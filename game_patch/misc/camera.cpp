@@ -1,6 +1,7 @@
 #include <cassert>
 #include <algorithm>
 #include <cmath>
+#include <optional>
 #include <xlog/xlog.h>
 #include <patch_common/AsmWriter.h>
 #include <patch_common/CodeInjection.h>
@@ -215,6 +216,53 @@ CodeInjection free_camera_do_frame_patch{
             }
         }
     },
+};
+
+// Freelook camera velocity is an explicit-Euler drag integration: vel += (A - drag*vel)*dt, so the
+// target velocity is A/drag and the time constant 1/drag. Scaling both by 1/slide keeps the target
+// speed and shrinks the time constant; capping drag at 1/dt makes slide 0 an exact one-frame snap.
+CodeInjection freelook_camera_slide_patch{
+    0x0049F7C3,
+    [](auto& regs) {
+        const float slide = g_alpine_game_config.freelook_cam_slide;
+        if (slide == 1.0f) {
+            return;
+        }
+        rf::Entity* ep = regs.esi;
+        rf::Camera* cam = rf::local_player ? rf::local_player->cam : nullptr;
+        if (!cam || cam->camera_entity != ep || cam->mode != rf::CameraMode::CAMERA_FREELOOK) {
+            return;
+        }
+        const float dt = ep->p_data.frame_time_left;
+        float& drag = addr_as_ref<float>(regs.esp + 0xC);
+        rf::Vector3& accel = addr_as_ref<rf::Vector3>(regs.esp + 0x10);
+        if (dt <= 0.0f || drag <= 0.0f) {
+            return;
+        }
+        if (ep->p_data.flags & rf::PF_ACCEL_APPLIED) {
+            // repeat dispatch within the frame carries no input; hold velocity instead of decaying it
+            accel.zero();
+            drag = 0.0f;
+            return;
+        }
+        const float max_drag = 1.0f / dt;
+        const float new_drag = slide <= 0.0f ? max_drag : std::min(drag / slide, max_drag);
+        accel *= new_drag / drag;
+        drag = new_drag;
+    },
+};
+
+ConsoleCommand2 freelook_slide_cmd{
+    "cl_freelookslide",
+    [](std::optional<float> scale_opt) {
+        if (scale_opt) {
+            g_alpine_game_config.set_freelook_cam_slide(*scale_opt);
+        }
+        rf::console::print("Freelook camera slide scale is {:.2f} (0 = no slide, 1 = default)",
+                           g_alpine_game_config.freelook_cam_slide);
+    },
+    "Scale the acceleration/deceleration slide of the freelook camera.",
+    "cl_freelookslide [0.0-1.0]",
 };
 
 // In the freelook camera control processing, crouch moves the camera down because it has
@@ -611,6 +659,10 @@ void camera_do_patch()
     // Freelook camera accel and modifier
     camera_create_for_player_freelook_camera_patch.install();
     free_camera_do_frame_patch.install();
+
+    // Freelook camera slide scale
+    freelook_camera_slide_patch.install();
+    freelook_slide_cmd.register_cmd();
 
     // Allow jump button to move freelook camera up vertically
     freelook_camera_jump_vertical_patch.install();

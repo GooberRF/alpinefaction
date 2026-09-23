@@ -1,6 +1,7 @@
 #include <string>
 #include <vector>
 #include <algorithm>
+#include <cmath>
 #include <unordered_map>
 #include <unordered_set>
 #include <xlog/xlog.h>
@@ -46,6 +47,49 @@ struct EventAnimatedMesh {
 };
 static std::vector<EventAnimatedMesh> g_event_animated_meshes;
 
+// What each mesh object is currently playing, and whether that playback is paused.
+// Keyed by object handle so any Mesh_Animate event can pause or resume a mesh,
+// not just the one that started the animation.
+struct MeshAnimPlayback {
+    std::string anim_filename;
+    int animate_type = 2;    // 0=Action, 1=Action Hold Last, 2=State
+    bool paused = false;
+};
+static std::unordered_map<int, MeshAnimPlayback> g_mesh_anim_playback;
+
+static bool mesh_anim_paused(int obj_handle)
+{
+    auto it = g_mesh_anim_playback.find(obj_handle);
+    return it != g_mesh_anim_playback.end() && it->second.paused;
+}
+
+static void mesh_anim_set_playing(int obj_handle, int animate_type, const std::string& anim_filename)
+{
+    auto& playback = g_mesh_anim_playback[obj_handle];
+    playback.anim_filename = anim_filename;
+    playback.animate_type = animate_type;
+    playback.paused = false;
+}
+
+// Any explicit attempt to start an animation unpauses, even if the start then fails
+static void mesh_anim_clear_paused(int obj_handle)
+{
+    auto it = g_mesh_anim_playback.find(obj_handle);
+    if (it != g_mesh_anim_playback.end()) {
+        it->second.paused = false;
+    }
+}
+
+// Drop the record only when the other processing list isn't still driving this mesh
+static void mesh_anim_forget_if_not_event_animated(int obj_handle)
+{
+    const bool event_animated = std::any_of(g_event_animated_meshes.begin(), g_event_animated_meshes.end(),
+        [&](const EventAnimatedMesh& e) { return e.obj_handle == obj_handle; });
+    if (!event_animated) {
+        g_mesh_anim_playback.erase(obj_handle);
+    }
+}
+
 // Per-mesh ClutterInfo objects allocated for "is clutter" meshes (need cleanup)
 static std::vector<rf::ClutterInfo*> g_mesh_clutter_infos;
 
@@ -75,7 +119,27 @@ static uint64_t tex_key_handle(int handle) {
 }
 
 // brush collision meshes
-static std::unordered_map<int, rf::VMesh*> g_mesh_collision_meshes;
+struct MeshCollisionEntry {
+    rf::VMesh* render_vmesh;  // doubles as the staleness guard against Object::vmesh
+    rf::VMesh* collide_vmesh; // swept geometry: the render mesh, or a proxy from the cache below
+    bool force_lod0;
+};
+static std::unordered_map<int, MeshCollisionEntry> g_mesh_collision_meshes;
+
+// Proxy collision meshes shared by filename.
+static std::unordered_map<std::string, rf::VMesh*> g_mesh_collision_proxies;
+
+void alpine_mesh_free_collision_proxies()
+{
+    // Registry entries point at the proxies, so they must never outlive them.
+    g_mesh_collision_meshes.clear();
+    for (auto& entry : g_mesh_collision_proxies) {
+        if (entry.second) {
+            rf::vmesh_free(entry.second);
+        }
+    }
+    g_mesh_collision_proxies.clear();
+}
 
 // Register a mode-3 mesh. Static (.v3m) only; v3c/vfx warn and fall back to mode "All".
 static void alpine_mesh_register_collision_mesh(rf::Object* objp)
@@ -85,7 +149,7 @@ static void alpine_mesh_register_collision_mesh(rf::Object* objp)
                    objp->uid);
         return;
     }
-    g_mesh_collision_meshes[objp->handle] = objp->vmesh;
+    g_mesh_collision_meshes[objp->handle] = {objp->vmesh, objp->vmesh, true};
     xlog::debug("[AlpineMesh] Registered mode-3 collision mesh for uid {} handle {}", objp->uid, objp->handle);
 }
 
@@ -95,7 +159,7 @@ bool alpine_mesh_is_collision_mesh(rf::Object* objp)
         return false;
     }
     auto it = g_mesh_collision_meshes.find(objp->handle);
-    return it != g_mesh_collision_meshes.end() && it->second == objp->vmesh;
+    return it != g_mesh_collision_meshes.end() && it->second.render_vmesh == objp->vmesh;
 }
 
 void alpine_mesh_free_collision_solid(int obj_handle)
@@ -166,9 +230,9 @@ bool alpine_mesh_collide_sphere_world(const rf::Vector3& start, const rf::Vector
     bool hit = false;
     float best = max_fraction;
 
-    for (auto& [handle, stored_vmesh] : g_mesh_collision_meshes) {
+    for (auto& [handle, entry] : g_mesh_collision_meshes) {
         auto* mesh_objp = static_cast<rf::Object*>(rf::obj_from_handle(handle));
-        if (!mesh_objp || !mesh_objp->vmesh || mesh_objp->vmesh != stored_vmesh) {
+        if (!mesh_objp || !mesh_objp->vmesh || mesh_objp->vmesh != entry.render_vmesh) {
             continue;
         }
         if (self_pd == &mesh_objp->p_data) {
@@ -219,8 +283,10 @@ bool alpine_mesh_collide_sphere_world(const rf::Vector3& start, const rf::Vector
         // Force LOD0 for this Brush mesh's collision only. Restored immediately after the call so
         // no other object sees the flag.
         MeshLod0Guard lod0_guard;
-        mesh_force_lod0_begin(mesh_objp->vmesh, lod0_guard);
-        const bool mesh_hit = rf::vmesh_collide(mesh_objp->vmesh, &vin, &vout, true);
+        if (entry.force_lod0) {
+            mesh_force_lod0_begin(entry.collide_vmesh, lod0_guard);
+        }
+        const bool mesh_hit = rf::vmesh_collide(entry.collide_vmesh, &vin, &vout, true);
         mesh_force_lod0_end(lod0_guard);
         const bool accepted = mesh_hit && vout.fraction < best;
 
@@ -256,8 +322,93 @@ static rf::VMeshType determine_vmesh_type(const std::string& filename)
     return rf::MESH_TYPE_STATIC;
 }
 
-// Forward declaration
-static void alpine_mesh_create_object(const AlpineMeshInfo& info);
+// Load (or reuse) a proxy collision mesh. Returns null if the file is unusable.
+static rf::VMesh* alpine_mesh_get_collision_proxy(const std::string& filename, int uid)
+{
+    std::string key = string_to_lower(filename);
+    auto it = g_mesh_collision_proxies.find(key);
+    if (it != g_mesh_collision_proxies.end()) {
+        return it->second; // null = already tried and failed
+    }
+
+    if (determine_vmesh_type(filename) != rf::MESH_TYPE_STATIC) {
+        xlog::warn("[AlpineMesh] Collision mesh '{}' on mesh uid {} is not static (.v3m)", filename, uid);
+        g_mesh_collision_proxies[key] = nullptr;
+        return nullptr;
+    }
+
+    rf::VMesh* vmesh = rf::vmesh_load(filename.c_str(), rf::MESH_TYPE_STATIC, -1);
+    if (vmesh && !vmesh->instance) {
+        rf::vmesh_free(vmesh);
+        vmesh = nullptr;
+    }
+    if (!vmesh) {
+        xlog::warn("[AlpineMesh] Failed to load collision mesh '{}' for mesh uid {}", filename, uid);
+    }
+    g_mesh_collision_proxies[key] = vmesh;
+    return vmesh;
+}
+
+static void alpine_mesh_grow_bound_for_proxy(rf::Object* objp, rf::VMesh* proxy)
+{
+    auto* v3d = static_cast<rf::V3d*>(proxy->instance);
+    if (!v3d || v3d->num_meshes < 1 || !v3d->meshes) {
+        return;
+    }
+    for (int i = 0; i < v3d->num_meshes; ++i) {
+        if (!v3d->meshes[i].vu) {
+            return;
+        }
+    }
+
+    rf::Vector3 bbox_min, bbox_max;
+    rf::vmesh_get_bbox(proxy, &bbox_min, &bbox_max);
+
+    // The object rotates, so the bound has to be a sphere: the furthest bbox corner from origin.
+    float radius = 0.0f;
+    for (int i = 0; i < 8; ++i) {
+        const rf::Vector3 corner{(i & 1) ? bbox_max.x : bbox_min.x, (i & 2) ? bbox_max.y : bbox_min.y,
+                                 (i & 4) ? bbox_max.z : bbox_min.z};
+        radius = std::max(radius, corner.len());
+    }
+    if (!std::isfinite(radius) || radius <= 0.0f) {
+        return;
+    }
+
+    if (radius > objp->p_data.radius) {
+        objp->p_data.radius = radius;
+        objp->p_data.bbox_min = {objp->pos.x - radius, objp->pos.y - radius, objp->pos.z - radius};
+        objp->p_data.bbox_max = {objp->pos.x + radius, objp->pos.y + radius, objp->pos.z + radius};
+    }
+}
+
+// Apply a record's brush geometry source to its already-registered mode-3 entry. Anything
+// unusable falls back to the Highest LOD behaviour the entry was registered with.
+static void alpine_mesh_apply_brush_geo_source(int obj_handle, uint8_t source, const std::string& filename, int uid)
+{
+    auto it = g_mesh_collision_meshes.find(obj_handle);
+    if (it == g_mesh_collision_meshes.end()) {
+        return;
+    }
+    if (source == 1) {
+        it->second.force_lod0 = false;
+    }
+    else if (source == 2) {
+        if (filename.empty()) {
+            xlog::warn("[AlpineMesh] Mesh uid {} selects a collision mesh but names no file", uid);
+            return;
+        }
+        if (rf::VMesh* proxy = alpine_mesh_get_collision_proxy(filename, uid)) {
+            it->second.collide_vmesh = proxy;
+            if (auto* objp = static_cast<rf::Object*>(rf::obj_from_handle(obj_handle))) {
+                alpine_mesh_grow_bound_for_proxy(objp, proxy);
+            }
+        }
+    }
+}
+
+// Forward declaration; returns the created object handle, or -1 on failure.
+static int alpine_mesh_create_object(const AlpineMeshInfo& info);
 
 // ─── Chunk Loading ──────────────────────────────────────────────────────────
 
@@ -274,6 +425,10 @@ void alpine_mesh_load_chunk(rf::File& file, std::size_t chunk_len, int content_v
     if (count > 10000) count = 10000;
 
     uint32_t loaded = 0;
+    // Record-order (handle, uid) pairs so the trailing brush-geo block, which arrives after the
+    // objects are already created and registered, can be applied to them afterwards.
+    std::vector<std::pair<int, int>> created;
+    created.reserve(count);
 
     for (uint32_t i = 0; i < count; i++) {
         AlpineMeshInfo info;
@@ -383,7 +538,7 @@ void alpine_mesh_load_chunk(rf::File& file, std::size_t chunk_len, int content_v
         // Create the game object immediately so it exists before the stock link
         // resolver runs. This lets the stock resolver convert event→mesh link UIDs
         // to handles automatically, just like any other object type.
-        alpine_mesh_create_object(info);
+        created.emplace_back(alpine_mesh_create_object(info), info.uid);
         loaded++;
     }
 
@@ -392,6 +547,25 @@ void alpine_mesh_load_chunk(rf::File& file, std::size_t chunk_len, int content_v
         for (uint32_t i = 0; i < count; i++) {
             uint8_t flags = 0;
             if (!reader.read_bytes(&flags, sizeof(flags))) return;
+        }
+    }
+
+    // Trailing per-object brush geometry source block, appended after the flag block in rfl v306.
+    if (content_version >= 306 && loaded == count && remaining >= static_cast<std::size_t>(count) * 3) {
+        for (uint32_t i = 0; i < count; i++) {
+            uint8_t source = 0;
+            if (!reader.read_bytes(&source, sizeof(source))) return;
+            if (source > 2) source = 0;
+            std::string collision_mesh;
+            if (!reader.read_string(collision_mesh)) return;
+            if (collision_mesh.size() >= max_mesh_name) {
+                xlog::warn("[AlpineMesh] Ignoring over-long collision mesh filename on mesh uid {}",
+                           created[i].second);
+                collision_mesh.clear();
+            }
+            if (source != 0 && created[i].first != -1) {
+                alpine_mesh_apply_brush_geo_source(created[i].first, source, collision_mesh, created[i].second);
+            }
         }
     }
 }
@@ -459,11 +633,11 @@ static bool vmesh_play_v3c_action_by_name(rf::VMesh* vmesh, const char* action_n
 
 // Create a single mesh object from loaded info. Called during chunk reading so mesh
 // objects exist before the stock link resolver runs (just like stock clutter/entities).
-static void alpine_mesh_create_object(const AlpineMeshInfo& info)
+static int alpine_mesh_create_object(const AlpineMeshInfo& info)
 {
     if (info.mesh_filename.empty()) {
         xlog::warn("[AlpineMesh] Skipping mesh uid={} with empty filename", info.uid);
-        return;
+        return -1;
     }
 
     rf::VMeshType vtype = determine_vmesh_type(info.mesh_filename);
@@ -481,7 +655,7 @@ static void alpine_mesh_create_object(const AlpineMeshInfo& info)
     rf::Object* obj = rf::obj_create(rf::OT_CLUTTER, -1, 0, &oci, 0, nullptr);
     if (!obj) {
         xlog::warn("[AlpineMesh] Failed to create object for mesh uid={} file='{}'", info.uid, info.mesh_filename);
-        return;
+        return -1;
     }
 
     auto* clutter = reinterpret_cast<rf::Clutter*>(obj);
@@ -624,6 +798,7 @@ static void alpine_mesh_create_object(const AlpineMeshInfo& info)
         anim_state.obj_handle = obj->handle;
         anim_state.state_anim = info.state_anim;
         g_mesh_anim_states.push_back(std::move(anim_state));
+        mesh_anim_set_playing(obj->handle, 2, info.state_anim);
     }
 
     // Store corpse data if specified (for mesh swap on death)
@@ -639,6 +814,7 @@ static void alpine_mesh_create_object(const AlpineMeshInfo& info)
     g_alpine_mesh_handles.push_back(obj->handle);
     xlog::debug("[AlpineMesh] Created object: uid={} handle={} file='{}' pos=({:.2f},{:.2f},{:.2f})",
         info.uid, obj->handle, info.mesh_filename, obj->pos.x, obj->pos.y, obj->pos.z);
+    return obj->handle;
 }
 
 // ─── Per-Frame Animation Processing ─────────────────────────────────────────
@@ -649,7 +825,15 @@ void alpine_mesh_do_frame()
         rf::Object* obj = rf::obj_from_handle(it->obj_handle);
         if (!obj || !obj->vmesh || obj->vmesh->type != rf::MESH_TYPE_CHARACTER
             || !obj->vmesh->mesh || !obj->vmesh->instance) {
+            mesh_anim_forget_if_not_event_animated(it->obj_handle);
             it = g_mesh_anim_states.erase(it);
+            continue;
+        }
+
+        // Paused by Mesh_Animate turn_off: skip vmesh_process so the pose freezes.
+        // Only once the mesh has been processed at least once, so it never renders unprocessed.
+        if (it->anim_started && mesh_anim_paused(it->obj_handle)) {
+            ++it;
             continue;
         }
 
@@ -669,6 +853,7 @@ void alpine_mesh_do_frame()
             if (it->action_index < 0) {
                 xlog::warn("[AlpineMesh] Failed to load animation '{}' for handle {}",
                     it->state_anim, it->obj_handle);
+                mesh_anim_forget_if_not_event_animated(it->obj_handle);
                 it = g_mesh_anim_states.erase(it);
                 continue;
             }
@@ -700,6 +885,7 @@ void alpine_mesh_do_frame()
     for (auto it = g_event_animated_meshes.begin(); it != g_event_animated_meshes.end(); ) {
         rf::Object* obj = rf::obj_from_handle(it->obj_handle);
         if (!obj || !obj->vmesh || !obj->vmesh->mesh || !obj->vmesh->instance) {
+            g_mesh_anim_playback.erase(it->obj_handle);
             it = g_event_animated_meshes.erase(it);
             continue;
         }
@@ -708,12 +894,21 @@ void alpine_mesh_do_frame()
         if (obj->type != rf::OT_CLUTTER) {
             xlog::warn("[AlpineMesh] Removing non-clutter handle {} (type={}) from event-animated list",
                 it->obj_handle, static_cast<int>(obj->type));
+            g_mesh_anim_playback.erase(it->obj_handle);
             it = g_event_animated_meshes.erase(it);
             continue;
         }
 
         if (it->startup_delay > 0) {
             it->startup_delay--;
+            ++it;
+            continue;
+        }
+
+        // Paused by Mesh_Animate turn_off: skip vmesh_process so the pose freezes. A mesh on
+        // this list was already processed once synchronously by the alpine_mesh_animate branch
+        // that registered it, so pausing can never leave an unprocessed vmesh to be rendered.
+        if (mesh_anim_paused(it->obj_handle)) {
             ++it;
             continue;
         }
@@ -740,9 +935,11 @@ void alpine_mesh_clear_state()
     g_alpine_mesh_handles.clear();
     g_mesh_anim_states.clear();
     g_event_animated_meshes.clear();
+    g_mesh_anim_playback.clear();
     g_alpine_corpse_data.clear();
     g_original_tex_handles.clear();
     g_mesh_collision_meshes.clear();
+    alpine_mesh_free_collision_proxies();
     // Free per-mesh ClutterInfo objects
     for (auto* ci : g_mesh_clutter_infos) {
         delete ci;
@@ -778,6 +975,8 @@ bool alpine_mesh_spawn_corpse(rf::Object* obj)
     // Copy and erase corpse data so a second call for the same handle is a no-op
     CorpseData corpse_data = *data;
     g_alpine_corpse_data.erase(obj->handle);
+    // The dying mesh stops animating, so its playback record (and any pause) goes with it
+    g_mesh_anim_playback.erase(obj->handle);
 
     auto vtype = determine_vmesh_type(corpse_data.filename);
 
@@ -870,6 +1069,9 @@ void alpine_mesh_animate(rf::Object* obj, int type, const std::string& anim_file
         return;
     }
 
+    // Starting an animation always unpauses, so a failed start can never leave the mesh frozen
+    mesh_anim_clear_paused(obj->handle);
+
     if (anim_filename.empty()) {
         xlog::warn("[AlpineMesh] animate: no animation filename specified");
         return;
@@ -898,6 +1100,8 @@ void alpine_mesh_animate(rf::Object* obj, int type, const std::string& anim_file
         int action_index = rf::character_mesh_load_action(obj->vmesh->mesh, anim_filename.c_str(), 0, 0);
         if (action_index < 0) {
             xlog::warn("[AlpineMesh] Failed to load animation '{}' on handle {}", anim_filename, obj->handle);
+            // nothing is playing after vmesh_stop_all_actions, so no record is the accurate state
+            g_mesh_anim_playback.erase(obj->handle);
             return;
         }
 
@@ -917,6 +1121,7 @@ void alpine_mesh_animate(rf::Object* obj, int type, const std::string& anim_file
             g_event_animated_meshes.push_back({obj->handle, 0, action_index, blend_weight});
         }
 
+        mesh_anim_set_playing(obj->handle, 0, anim_filename);
         rf::vmesh_process(obj->vmesh, 0.0f, 0, &obj->pos, &obj->orient, 1);
 
         xlog::debug("[AlpineMesh] Playing animation '{}' (type=Action, action_index={}, weight={:.2f}) on handle {}",
@@ -928,6 +1133,8 @@ void alpine_mesh_animate(rf::Object* obj, int type, const std::string& anim_file
         int action_index = rf::character_mesh_load_action(obj->vmesh->mesh, anim_filename.c_str(), 0, 0);
         if (action_index < 0) {
             xlog::warn("[AlpineMesh] Failed to load animation '{}' on handle {}", anim_filename, obj->handle);
+            // nothing is playing after vmesh_stop_all_actions, so no record is the accurate state
+            g_mesh_anim_playback.erase(obj->handle);
             return;
         }
 
@@ -947,6 +1154,7 @@ void alpine_mesh_animate(rf::Object* obj, int type, const std::string& anim_file
             g_event_animated_meshes.end());
         g_event_animated_meshes.push_back({obj->handle, 1, action_index, blend_weight});
 
+        mesh_anim_set_playing(obj->handle, 1, anim_filename);
         rf::vmesh_process(obj->vmesh, 0.0f, 0, &obj->pos, &obj->orient, 1);
 
         xlog::debug("[AlpineMesh] Playing animation '{}' (type=Action Hold Last, action_index={}, weight={:.2f}) on handle {}",
@@ -958,6 +1166,8 @@ void alpine_mesh_animate(rf::Object* obj, int type, const std::string& anim_file
         int action_index = rf::character_mesh_load_action(obj->vmesh->mesh, anim_filename.c_str(), 1, 0);
         if (action_index < 0) {
             xlog::warn("[AlpineMesh] Failed to load animation '{}' on handle {}", anim_filename, obj->handle);
+            // nothing is playing after vmesh_stop_all_actions, so no record is the accurate state
+            g_mesh_anim_playback.erase(obj->handle);
             return;
         }
 
@@ -977,11 +1187,45 @@ void alpine_mesh_animate(rf::Object* obj, int type, const std::string& anim_file
             g_event_animated_meshes.end());
         g_event_animated_meshes.push_back({obj->handle, 2, action_index, blend_weight});
 
+        mesh_anim_set_playing(obj->handle, 2, anim_filename);
         rf::vmesh_process(obj->vmesh, 0.0f, 0, &obj->pos, &obj->orient, 1);
 
         xlog::debug("[AlpineMesh] Playing animation '{}' (type=State, action_index={}, weight={:.2f}) on handle {}",
             anim_filename, action_index, blend_weight, obj->handle);
     }
+}
+
+bool alpine_mesh_pause_anim(rf::Object* obj)
+{
+    if (!obj || obj->type != rf::OT_CLUTTER) {
+        return false;
+    }
+    auto it = g_mesh_anim_playback.find(obj->handle);
+    if (it == g_mesh_anim_playback.end()) {
+        return false;
+    }
+    it->second.paused = true;
+    xlog::debug("[AlpineMesh] Paused animation '{}' on handle {}", it->second.anim_filename, obj->handle);
+    return true;
+}
+
+bool alpine_mesh_resume_anim(rf::Object* obj, int type, const std::string& anim_filename)
+{
+    if (!obj || obj->type != rf::OT_CLUTTER) {
+        return false;
+    }
+    // paused is the whole gate: it is only ever set by turn_off, so a plain re-trigger with no
+    // pause in between still restarts the animation and one-shot replay keeps working.
+    auto it = g_mesh_anim_playback.find(obj->handle);
+    if (it == g_mesh_anim_playback.end() || !it->second.paused) {
+        return false;
+    }
+    if (it->second.animate_type != type || !string_iequals(it->second.anim_filename, anim_filename)) {
+        return false;
+    }
+    it->second.paused = false;
+    xlog::debug("[AlpineMesh] Resumed animation '{}' on handle {}", it->second.anim_filename, obj->handle);
+    return true;
 }
 
 void alpine_mesh_set_texture(rf::Object* obj, int slot, const std::string& texture_filename)
@@ -1060,12 +1304,22 @@ void alpine_mesh_set_collision(rf::Object* obj, int collision_type)
     }
 
     // Deregister existing collision pairs and clear flags
+    const bool was_brush = g_mesh_collision_meshes.count(obj->handle) != 0;
     alpine_mesh_free_collision_solid(obj->handle);
     rf::obj_collision_deregister(obj);
     obj->obj_flags = static_cast<rf::ObjectFlags>(
         static_cast<int>(obj->obj_flags) & ~static_cast<int>(rf::OF_WEAPON_ONLY_COLLIDE)
     );
     obj->p_data.flags &= ~rf::PF_COLLIDE_OBJECTS;
+
+    // A Brush proxy may have grown the physics bound past the render mesh; that inflated
+    // footprint must not outlive Brush mode.
+    if (was_brush) {
+        const float r = obj->radius;
+        obj->p_data.radius = r;
+        obj->p_data.bbox_min = {obj->pos.x - r, obj->pos.y - r, obj->pos.z - r};
+        obj->p_data.bbox_max = {obj->pos.x + r, obj->pos.y + r, obj->pos.z + r};
+    }
 
     if (collision_type > 0) {
         // Enable collision

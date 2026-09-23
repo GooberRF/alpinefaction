@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cmath>
 #include <optional>
 #include "../rf/os/timestamp.h"
 #include "../hud/hud.h"
@@ -226,6 +227,16 @@ struct AlpineGameSettings
     void set_gib_lifetime_ms(int lifetime_ms)
     {
         gib_lifetime_ms = std::clamp(lifetime_ms, min_gib_lifetime_ms, max_gib_lifetime_ms);
+    }
+    static constexpr float min_freelook_cam_slide = 0.0f;
+    static constexpr float max_freelook_cam_slide = 1.0f;
+    float freelook_cam_slide = 1.0f;
+    void set_freelook_cam_slide(float value)
+    {
+        if (std::isnan(value)) {
+            return;
+        }
+        freelook_cam_slide = std::clamp(value, min_freelook_cam_slide, max_freelook_cam_slide);
     }
     bool gib_flames = true;
     bool real_armor_values = false;

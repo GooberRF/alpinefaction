@@ -21,6 +21,7 @@ Version 1.5.0 (Trillium): Not yet released
 [@GooberRF](https://github.com/GooberRF)
 - Notify players in a server that is recording demos
 - Restore cut first person weapon aim sway, toggleable with `cl_weaponsway`
+- Add `cl_freelookslide` to scale the acceleration and deceleration slide of the freelook camera
 - Add terms of use and notices document to installer
 - Add compatibility table (lightmap clamp floor) for `dm-halloween.rfl`
 - Bump RFL version to 306
@@ -41,6 +42,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Extend view distance while submerged at `r_underwater` 2 or higher, up to 4x the liquid visibility, with the extension capped at the normal far clip
 - Add edge-vignette damage feedback as `cl_damageflash 2` (Direct3D 11 renderer only); `cl_damageflash` is now a level: 0 off, 1 screen flash, 2 vignette
 - Add `Brush` collision mode for Alpine Mesh objects
+- Add `Brush Geo` source selection for Alpine Mesh objects using `Brush` collision, allowing custom collision hulls
 - Raise level editor per-room and per-mesh render vertex limit from 8000 to 32768
 - Add `-bake in.rfl -bakeout out.rfl` launcher command line switches to calculate a level's lighting without user interaction, writing the result to a new level file and progress to a log beside it
 - Add `High-resolution lightmaps` level property, used in lightmap bake in level editor
@@ -58,12 +60,20 @@ Version 1.5.0 (Trillium): Not yet released
 - Show a live viewport preview while editing `Corona` and `Rope Emitter` properties in the level editor, so the fields being typed are what the viewport draws
 - Draw `Weather Region` sprites in the level editor at the same size as `Room Effect` sprites, and highlight selected regions in aqua
 - Consolidate duplicated Alpine object internals into shared machinery in the game and level editor, and harden level file parsing for `Corona`, `Bag` and `Weather Region` objects against corrupted data
+- Turning off `Mesh_Animate` now pauses the animation playing on the meshes it links to, and turning it back on with the same animation and type resumes it from the frozen pose
+- Add `Climbing_Region_State` event to toggle climbing regions
+- Support moving climbing regions with `Anchor_Marker` and `Anchor_Marker_Orient`
+- Add `When_Destroyed` catalyst event, which activates its links when the destructible detail brushes it links to are destroyed
+- Support linking events and triggers to detail brushes in the level editor
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Add `ui_color_console` console command to set the console background color
 
 [@is-this-c](https://github.com/is-this-c)
 - Do not kick a player, if they join right before limbo
+
+[@is-this-c](https://github.com/is-this-c)
+- Allow TrueType fonts to be rendered into bitmaps with mipmaps (D3D11 only)
 
 ### Bug fixes
 [@GooberRF](https://github.com/GooberRF)
@@ -84,8 +94,20 @@ Version 1.5.0 (Trillium): Not yet released
 - Fix level editor crashing when a Weather Region's snow `Bitmap` names a loose file instead of one inside a packfile
 - Fix a one frame flash to the default pose each time an animation loops on a mesh being simulated in the level editor
 - Update Weather Region bounds in viewport live when values are changed
+- Fix the fusion not being in-scope for the `Delayed Supers` mutator
+- Fix `Set_Light_Color` discarding the intensity of the lights it links to
+- Fix level editor packfile creation to include the frames and alpha mask of ATX textures used on faces and decals, and to include `.atx` files referenced by a legacy texture name
 - Fix crash when a bone, tag, or prop point is queried on a character whose mesh file contains no submeshes, or when such a character's weapon or textures are preloaded for rendering
 - Fix items not rotating correctly when out of view or when viewed through a Projection Camera
+- Fix Alpine Mesh objects using skeletal meshes receiving no light from the level in the `Ambient` and `Vertex` mesh lighting modes
+- Fix meshes keeping stale vertex lighting after the mesh lighting mode is changed until the level is reloaded
+- Fix objects and effects behind see-through faces of mover brushes being hidden by those faces
+- Fix alpha textures on detail brushes in moving groups rendering opaque in game
+- Fix player outlines seen through see-through geometry disappearing depending on view direction
+- Fix headless bot crash when a level references a texture by a file extension the stock bitmap loader does not support (e.g. `.dds`) and it cannot be loaded
+- Fix `Fuse` and `Carve` in the level editor dumping the textures and texture coordinates of faces taken from the later brush
+- Fix undoing `Fuse` in the level editor taking two steps
+- Fix level editor crashing or corrupting undo history when undoing, redoing, or autosaving while moving, rotating, or scaling in a viewport
 
 [@is-this-c](https://github.com/is-this-c)
 - Let `Caps Lock` capitalize

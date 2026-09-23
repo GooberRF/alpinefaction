@@ -883,7 +883,11 @@ namespace gr::d3d11
             if (use_vtx_lighting) {
                 // Old (master) vertex lighting: approximate lighting via mode color
                 if (is_character_mesh || is_fp_weapon) {
-                    color = add_clamped(params.ambient_color, {224, 224, 224, 224});
+                    // Character clutter has baked vertex colors and no custom ambient; its
+                    // ambient_color is uninitialized, so fall back to the level ambient
+                    color = (params.flags & rf::MeshRenderFlags::MRF_CUSTOM_AMBIENT_COLOR)
+                        ? add_clamped(params.ambient_color, {224, 224, 224, 224})
+                        : add_clamped(rf::level.ambient_light, {224, 224, 224, 224});
                 } else {
                     if (params.flags & rf::MeshRenderFlags::MRF_CUSTOM_AMBIENT_COLOR) {
                         color = g_character_meshes_are_fullbright

@@ -21,3 +21,5 @@ void handle_group_mirror();
 // Vertex mode operations
 void handle_vertex_delete();
 void handle_vertex_bridge();
+
+void ApplyGeometryPatches();

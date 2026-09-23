@@ -340,6 +340,10 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.set_gib_lifetime_ms(std::stoi(settings["GibLifetimeMs"]));
         processed_keys.insert("GibLifetimeMs");
     }
+    if (settings.count("FreelookCamSlide")) {
+        g_alpine_game_config.set_freelook_cam_slide(std::stof(settings["FreelookCamSlide"]));
+        processed_keys.insert("FreelookCamSlide");
+    }
     if (settings.count("GibFlames")) {
         g_alpine_game_config.gib_flames = std::stoi(settings["GibFlames"]);
         processed_keys.insert("GibFlames");
@@ -1417,6 +1421,7 @@ void alpine_player_settings_save(rf::Player* player)
     file << "GibChunkCount=" << g_alpine_game_config.gib_chunk_count << "\n";
     file << "GibVelocityScale=" << g_alpine_game_config.gib_velocity_scale << "\n";
     file << "GibLifetimeMs=" << g_alpine_game_config.gib_lifetime_ms << "\n";
+    file << "FreelookCamSlide=" << g_alpine_game_config.freelook_cam_slide << "\n";
     file << "GibFlames=" << g_alpine_game_config.gib_flames << "\n";
     file << "ShowFPGun=" << player->settings.render_fpgun << "\n";
     file << "AutoswitchWeapons=" << player->settings.autoswitch_weapons << "\n";

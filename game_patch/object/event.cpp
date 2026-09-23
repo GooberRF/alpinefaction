@@ -132,13 +132,17 @@ CodeInjection switch_model_event_obj_lighting_and_physics_fix{
 
             // D3D11 renderer: update vertex color state for the swapped mesh.
             // Self-illumination is detected at render time from CPU vertex colors.
-            if (g_game_config.renderer == GameConfig::Renderer::d3d11 &&
-                obj->vmesh &&
-                rf::vmesh_get_type(obj->vmesh) == rf::MESH_TYPE_STATIC) {
-
-                auto* v3d = static_cast<rf::V3d*>(obj->vmesh->instance);
-                if (v3d && v3d->num_meshes > 0 && v3d->meshes[0].vu) {
-                    gr::d3d11::on_static_vertex_color_state_changed(v3d->meshes[0].vu);
+            if (g_game_config.renderer == GameConfig::Renderer::d3d11 && obj->vmesh) {
+                auto mesh_type = rf::vmesh_get_type(obj->vmesh);
+                if (mesh_type == rf::MESH_TYPE_STATIC) {
+                    auto* v3d = static_cast<rf::V3d*>(obj->vmesh->instance);
+                    if (v3d && v3d->num_meshes > 0 && v3d->meshes[0].vu) {
+                        gr::d3d11::on_static_vertex_color_state_changed(v3d->meshes[0].vu);
+                    }
+                }
+                else if (mesh_type == rf::MESH_TYPE_CHARACTER) {
+                    // Cached character vertex colors are keyed by buffer pointer; force a rebuild
+                    gr::d3d11::on_character_fullbright_state_changed();
                 }
             }
         }

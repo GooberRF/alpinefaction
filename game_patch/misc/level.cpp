@@ -8,6 +8,7 @@
 #include "../os/console.h"
 #include "../rf/multi.h"
 #include "../rf/level.h"
+#include "../rf/math/ix.h"
 #include "../rf/file/file.h"
 #include "../rf/mover.h"
 #include "level.h"
@@ -25,6 +26,13 @@
 
 static std::vector<GasRegionInfo> g_gas_regions;
 static std::vector<GasRegionTransition> g_gas_region_transitions;
+
+struct ClimbRegionEntry {
+    rf::ClimbRegion* region;
+    int32_t uid;
+};
+static std::vector<ClimbRegionEntry> g_climb_regions;
+static std::vector<rf::ClimbRegion*> g_disabled_climb_regions;
 
 CodeInjection level_read_data_check_restore_status_patch{
     0x00461195,
@@ -119,6 +127,7 @@ CodeInjection level_load_init_patch{
         alpine_projection_camera_clear_state();
         alpine_rope_clear_state();
         gas_region_clear_state();
+        climb_region_clear_state();
         weather_clear_regions();
         projector_clear_all();
         alpine_mover_clear_hold_open();
@@ -129,9 +138,11 @@ CodeInjection level_load_init_patch{
 
 void level_shutdown()
 {
+    climb_region_clear_state();
     weather_clear_regions();
     projector_clear_all();
     alpine_rope_clear_state();
+    alpine_mesh_free_collision_proxies();
 }
 
 // Reached from quit-to-menu and leaving for the multiplayer menu (via game_shutdown), the
@@ -340,6 +351,69 @@ void gas_region_clear_state()
     g_gas_region_transitions.clear();
 }
 
+// Runs inside the stock climbing region chunk loader.
+CodeInjection climb_region_load_uid_patch{
+    0x00462EAF,
+    [](auto& regs) {
+        rf::ClimbRegion* region = regs.edi;
+        if (region) {
+            g_climb_regions.push_back({region, static_cast<int32_t>(regs.eax)});
+        }
+    },
+};
+
+// Faithful reimplementation of the stock query.
+FunHook<rf::ClimbRegion*(rf::Vector3*)> level_point_in_climb_region_hook{
+    0x0045CCA0,
+    [](rf::Vector3* point) -> rf::ClimbRegion* {
+        for (int i = 0; i < rf::level.ladders.size(); ++i) {
+            rf::ClimbRegion* region = rf::level.ladders[i];
+            if (!region) {
+                continue;
+            }
+            if (!g_disabled_climb_regions.empty() &&
+                std::find(g_disabled_climb_regions.begin(), g_disabled_climb_regions.end(), region) !=
+                    g_disabled_climb_regions.end()) {
+                continue;
+            }
+            if (rf::ix_point_in_box_oriented(*point, region->pos, region->orient, region->extents)) {
+                return region;
+            }
+        }
+        return nullptr;
+    },
+};
+
+void climb_region_clear_state()
+{
+    g_climb_regions.clear();
+    g_disabled_climb_regions.clear();
+}
+
+rf::ClimbRegion* climb_region_get_by_uid(int uid)
+{
+    for (const auto& entry : g_climb_regions) {
+        if (entry.uid == uid) return entry.region;
+    }
+    return nullptr;
+}
+
+void climb_region_set_enabled(int uid, bool enabled)
+{
+    auto* region = climb_region_get_by_uid(uid);
+    if (!region) return;
+
+    auto it = std::find(g_disabled_climb_regions.begin(), g_disabled_climb_regions.end(), region);
+    if (enabled) {
+        if (it != g_disabled_climb_regions.end()) {
+            g_disabled_climb_regions.erase(it);
+        }
+    }
+    else if (it == g_disabled_climb_regions.end()) {
+        g_disabled_climb_regions.push_back(region);
+    }
+}
+
 const std::vector<GasRegionInfo>& gas_region_get_all()
 {
     return g_gas_regions;
@@ -484,4 +558,8 @@ void level_apply_patch()
 
     // Hook stock gas region loader to capture gas region data for volumetric fog
     gas_region_load_hook.install();
+
+    // Climbing region uid capture and the Climbing_Region_State disable check
+    climb_region_load_uid_patch.install();
+    level_point_in_climb_region_hook.install();
 }

@@ -899,7 +899,7 @@ void update_rope(AlpineRope& rope, float dt, int64_t now_ms)
     rope_fx_update(rope, true, now_ms);
 }
 
-// Toggled at runtime by linking the rope's anchor to the Alpine Rope_State event (id 160), which
+// Toggled at runtime by linking the rope's anchor to the Alpine Rope_State event (id 162), which
 // clears or sets OF_HIDDEN on the rope anchors among its links. Force_Unhide (id 119) still does
 // the same thing to anything it is linked to. Stock Hide/Unhide events cannot: their body
 // (0x004BC340) only reaches a clutter whose vmesh (+0x80) is non-null, and an anchor has none.

@@ -474,6 +474,8 @@ struct DedMesh : DedObject
     int material = 0;                  // material type for impact sounds (0=default, applies to all meshes)
     MeshClutterProps clutter_props;
     bool no_shadow_cast = false;       // excluded from the lightmap bake's mesh occluders
+    uint8_t brush_geo_source = 0;      // collision_mode 3 only: 0=Highest LOD, 1=Lowest LOD, 2=Collision Mesh
+    std::string collision_mesh_filename; // brush_geo_source 2 only: static .v3m collided instead of the render mesh
 };
 
 struct DedNote : DedObject

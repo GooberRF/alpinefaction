@@ -482,49 +482,58 @@ CodeInjection mover_process_post_patch{
             rf::Event* event = static_cast<rf::Event*>(object);
 
             if (event->event_type == std::to_underlying(rf::EventType::Anchor_Marker)) {
+                const rf::Vector3 anchor_pos = event->p_data.next_pos;
+
                 for (const auto& linked_uid : event->links) {
-                    
-                    // check for an object - Note objects store handles in link int rather than UID
+
+                    // check for an object
                     if (auto* obj =
                             static_cast<rf::Object*>(rf::obj_from_handle(linked_uid))) {
-                        obj->pos = event->pos;
+                        obj->pos = anchor_pos;
                     }
 
                     // check for a light
                     if (auto* light = static_cast<rf::gr::Light*>(
                             rf::gr::light_get_from_handle(rf::gr::level_get_light_handle_from_uid(linked_uid)))) {
-                        light->vec = event->pos;
+                        light->vec = anchor_pos;
                     }
 
                     // check for a particle emitter
                     if (auto* emitter =
                             static_cast<rf::ParticleEmitter*>(rf::level_get_particle_emitter_from_uid(linked_uid))) {
-                        emitter->pos = event->pos;
+                        emitter->pos = anchor_pos;
                     }
 
                     // check for a push region
                     if (auto* push_region =
                             static_cast<rf::PushRegion*>(rf::level_get_push_region_from_uid(linked_uid))) {
-                        push_region->pos = event->pos;
+                        push_region->pos = anchor_pos;
                     }
 
                     // check for a gas region
                     if (auto* gas_region = gas_region_get_by_uid(linked_uid)) {
-                        gas_region->pos = event->pos;
+                        gas_region->pos = anchor_pos;
+                    }
+
+                    // check for a climbing region
+                    if (auto* climb_region = climb_region_get_by_uid(linked_uid)) {
+                        climb_region->pos = anchor_pos;
                     }
 
                     // check for a weather region
-                    weather_move_region(linked_uid, event->pos);
+                    weather_move_region(linked_uid, anchor_pos);
                 }
             }
 
             if (event->event_type == std::to_underlying(rf::EventType::Anchor_Marker_Orient)) {
+                const rf::Vector3 anchor_pos = event->p_data.next_pos;
+
                 for (const auto& linked_uid : event->links) {
-                    
-                    // check for an object - Note objects store handles in link int rather than UID
+
+                    // check for an object
                     if (auto* obj =
                             static_cast<rf::Object*>(rf::obj_from_handle(linked_uid))) {
-                        rf::Vector3 new_obj_pos = event->pos;
+                        rf::Vector3 new_obj_pos = anchor_pos;
                         obj->pos = new_obj_pos;
                         obj->p_data.pos = new_obj_pos;
                         obj->p_data.next_pos = new_obj_pos;
@@ -538,13 +547,13 @@ CodeInjection mover_process_post_patch{
                     // check for a light
                     if (auto* light = static_cast<rf::gr::Light*>(
                             rf::gr::light_get_from_handle(rf::gr::level_get_light_handle_from_uid(linked_uid)))) {
-                        light->vec = event->pos;
+                        light->vec = anchor_pos;
                     }
 
                     // check for a particle emitter
                     if (auto* emitter =
                             static_cast<rf::ParticleEmitter*>(rf::level_get_particle_emitter_from_uid(linked_uid))) {
-                        emitter->pos = event->pos;
+                        emitter->pos = anchor_pos;
 
                         emitter->dir = event->orient.fvec;
                     }
@@ -552,19 +561,25 @@ CodeInjection mover_process_post_patch{
                     // check for a push region
                     if (auto* push_region =
                             static_cast<rf::PushRegion*>(rf::level_get_push_region_from_uid(linked_uid))) {
-                        push_region->pos = event->pos;
+                        push_region->pos = anchor_pos;
 
                         push_region->orient = event->orient;
                     }
 
                     // check for a gas region
                     if (auto* gas_region = gas_region_get_by_uid(linked_uid)) {
-                        gas_region->pos = event->pos;
+                        gas_region->pos = anchor_pos;
                         gas_region->orient = event->orient;
                     }
 
+                    // check for a climbing region
+                    if (auto* climb_region = climb_region_get_by_uid(linked_uid)) {
+                        climb_region->pos = anchor_pos;
+                        climb_region->orient = event->orient;
+                    }
+
                     // check for a weather region
-                    weather_move_region(linked_uid, event->pos, event->orient);
+                    weather_move_region(linked_uid, anchor_pos, event->orient);
                 }
             }
         }

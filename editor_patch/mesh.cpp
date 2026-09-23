@@ -350,6 +350,12 @@ void mesh_serialize_chunk(CDedLevel& level, rf::File& file)
         file.write<uint8_t>(mesh->no_shadow_cast ? 1 : 0);
     }
 
+    // Per-object brush geometry source block; read back only from rfl v306+.
+    for (auto* mesh : meshes) {
+        file.write<uint8_t>(mesh->brush_geo_source);
+        write_rfl_string(file, mesh->collision_mesh_filename);
+    }
+
     level.EndRflSection(file, start_pos);
 }
 
@@ -486,6 +492,19 @@ void mesh_deserialize_chunk(CDedLevel& level, rf::File& file, std::size_t chunk_
             meshes[first_mesh + i]->no_shadow_cast = (flags != 0);
         }
     }
+
+    // Trailing per-object brush geometry source block, appended after the flag block in rfl v306.
+    if (content_version >= 306 && loaded == count && remaining >= static_cast<std::size_t>(count) * 3) {
+        for (uint32_t i = 0; i < count; i++) {
+            uint8_t source = 0;
+            if (!read_bytes(&source, sizeof(source))) return;
+            auto* mesh = meshes[first_mesh + i];
+            mesh->brush_geo_source = (source <= 2) ? source : 0;
+            std::string cmname = read_rfl_string(file, remaining);
+            if (cmname.size() > rfl_mesh_name_max_len) cmname.clear();
+            mesh->collision_mesh_filename = std::move(cmname);
+        }
+    }
 }
 
 // ─── Property Dialog ────────────────────────────────────────────────────────
@@ -504,6 +523,8 @@ static std::string g_init_script_name;
 static std::string g_init_filename;
 static std::string g_init_state_anim;
 static int g_init_collision_mode;
+static int g_init_brush_geo; // MULTIPLE_COLLISION when the selection disagrees
+static std::string g_init_collision_mesh;
 static std::vector<EditorTextureOverride> g_init_overrides;
 static bool g_init_overrides_multiple = false; // true if selected meshes have differing overrides
 static int g_init_simulate = 0; // 0=unchecked, 1=checked, -1=indeterminate (mixed)
@@ -604,6 +625,16 @@ static void mesh_dialog_update_state(HWND hdlg)
         SendMessageA(GetDlgItem(hdlg, IDC_MESH_COLLISION_MODE), CB_SETCURSEL, 0, 0);
     }
 
+    // Brush geometry source: only meaningful while the collision mode is Brush, and the proxy
+    // mesh fields only while that source is Collision Mesh.
+    int collision_sel = static_cast<int>(SendDlgItemMessage(hdlg, IDC_MESH_COLLISION_MODE, CB_GETCURSEL, 0, 0));
+    bool enable_brush_geo = enable_collision && collision_sel == 3;
+    EnableWindow(GetDlgItem(hdlg, IDC_MESH_BRUSH_GEO), enable_brush_geo);
+    int brush_geo_sel = static_cast<int>(SendDlgItemMessage(hdlg, IDC_MESH_BRUSH_GEO, CB_GETCURSEL, 0, 0));
+    bool enable_collision_mesh = enable_brush_geo && brush_geo_sel == 2;
+    EnableWindow(GetDlgItem(hdlg, IDC_MESH_COLLISION_MESH), enable_collision_mesh);
+    EnableWindow(GetDlgItem(hdlg, IDC_MESH_COLLISION_MESH_SELECT), enable_collision_mesh);
+
     // Material overrides: enable/disable controls based on filename
     EnableWindow(GetDlgItem(hdlg, IDC_MESH_OVERRIDE_LIST), has_filename);
     EnableWindow(GetDlgItem(hdlg, IDC_MESH_OVERRIDE_SLOT), has_filename);
@@ -679,6 +710,7 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
         auto* first = g_selected_meshes[0];
         bool all_same_script = true, all_same_filename = true;
         bool all_same_anim = true, all_same_collision = true;
+        bool all_same_brush_geo = true, all_same_collision_mesh = true;
         bool all_same_overrides = true;
         bool all_same_simulate = true;
         bool all_same_no_shadow_cast = true;
@@ -692,6 +724,8 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
             if (strcmp(m->mesh_filename.c_str(), first->mesh_filename.c_str()) != 0) all_same_filename = false;
             if (strcmp(m->state_anim.c_str(), first->state_anim.c_str()) != 0) all_same_anim = false;
             if (m->collision_mode != first->collision_mode) all_same_collision = false;
+            if (m->brush_geo_source != first->brush_geo_source) all_same_brush_geo = false;
+            if (m->collision_mesh_filename != first->collision_mesh_filename) all_same_collision_mesh = false;
             if (m->simulate_in_editor != first->simulate_in_editor) all_same_simulate = false;
             if (m->no_shadow_cast != first->no_shadow_cast) all_same_no_shadow_cast = false;
             if (m->material != first->material) all_same_material = false;
@@ -734,6 +768,8 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
         g_init_filename = all_same_filename ? first->mesh_filename.c_str() : MULTIPLE_STR;
         g_init_state_anim = all_same_anim ? first->state_anim.c_str() : MULTIPLE_STR;
         g_init_collision_mode = all_same_collision ? first->collision_mode : MULTIPLE_COLLISION;
+        g_init_brush_geo = all_same_brush_geo ? first->brush_geo_source : MULTIPLE_COLLISION;
+        g_init_collision_mesh = all_same_collision_mesh ? first->collision_mesh_filename : MULTIPLE_STR;
         g_init_overrides_multiple = !all_same_overrides;
         g_init_overrides = all_same_overrides ? first->texture_overrides : std::vector<EditorTextureOverride>{};
         g_init_simulate = all_same_simulate ? (first->simulate_in_editor ? 1 : 0) : -1;
@@ -873,6 +909,17 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
             }
         }
 
+        {
+            HWND combo = GetDlgItem(hdlg, IDC_MESH_BRUSH_GEO);
+            SendMessageA(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>("Highest LOD"));
+            SendMessageA(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>("Lowest LOD"));
+            SendMessageA(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>("Collision Mesh"));
+            // A blank selection means "leave each mesh alone"; picking an entry is the only
+            // way to write the field across a selection that disagreed.
+            SendMessageA(combo, CB_SETCURSEL, g_init_brush_geo, 0);
+        }
+        SetDlgItemTextA(hdlg, IDC_MESH_COLLISION_MESH, g_init_collision_mesh.c_str());
+
         // Mesh objects are link targets only (from events), not link sources.
         // Hide the Links button entirely.
         ShowWindow(GetDlgItem(hdlg, ID_LINKS), SW_HIDE);
@@ -913,6 +960,31 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
                     SetDlgItemTextA(hdlg, IDC_MESH_STATE_ANIM, chosen_anim.c_str());
                 }
                 mesh_dialog_update_state(hdlg);
+            }
+            return TRUE;
+        }
+
+        case IDC_MESH_COLLISION_MODE:
+        case IDC_MESH_BRUSH_GEO:
+            if (HIWORD(wparam) == CBN_SELCHANGE) {
+                mesh_dialog_update_state(hdlg);
+            }
+            return TRUE;
+
+        case IDC_MESH_COLLISION_MESH:
+            if (HIWORD(wparam) == EN_CHANGE) {
+                mesh_dialog_fix_extension(hdlg, IDC_MESH_COLLISION_MESH, "v3d", "v3m");
+            }
+            return TRUE;
+
+        case IDC_MESH_COLLISION_MESH_SELECT:
+        {
+            char current[MAX_PATH] = {};
+            GetDlgItemTextA(hdlg, IDC_MESH_COLLISION_MESH, current, sizeof(current));
+            std::string chosen = current;
+            // Collision proxies are swept as static geometry, so this field takes no animation.
+            if (alpine_browse_mesh(hdlg, chosen, ALPINE_MESH_V3M)) {
+                SetDlgItemTextA(hdlg, IDC_MESH_COLLISION_MESH, chosen.c_str());
             }
             return TRUE;
         }
@@ -1068,6 +1140,14 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
                 collision_changed = (collision_sel != g_init_collision_mode);
             }
 
+            // A blank brush-geo combo (differing selection, untouched) writes nothing.
+            int brush_geo_sel = static_cast<int>(SendDlgItemMessage(hdlg, IDC_MESH_BRUSH_GEO, CB_GETCURSEL, 0, 0));
+            bool brush_geo_changed = brush_geo_sel >= 0 && brush_geo_sel != g_init_brush_geo;
+
+            char collision_mesh_buf[MAX_PATH] = {};
+            GetDlgItemTextA(hdlg, IDC_MESH_COLLISION_MESH, collision_mesh_buf, sizeof(collision_mesh_buf));
+            bool collision_mesh_changed = (strcmp(collision_mesh_buf, g_init_collision_mesh.c_str()) != 0);
+
             // Check material override changes
             auto current_overrides = mesh_dialog_read_overrides(hdlg);
             bool overrides_changed = false;
@@ -1188,6 +1268,12 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
                 if (anim_changed) mesh->state_anim.assign_0(anim_buf);
                 if (collision_changed && collision_sel >= 0 && collision_sel <= 3) {
                     mesh->collision_mode = static_cast<uint8_t>(collision_sel);
+                }
+                if (brush_geo_changed && brush_geo_sel <= 2) {
+                    mesh->brush_geo_source = static_cast<uint8_t>(brush_geo_sel);
+                }
+                if (collision_mesh_changed) {
+                    mesh->collision_mesh_filename = collision_mesh_buf;
                 }
                 if (overrides_changed) {
                     mesh->texture_overrides = current_overrides;
@@ -1345,6 +1431,8 @@ DedMesh* CloneMeshObject(DedMesh* source, bool add_to_level)
     mesh->material = source->material;
     mesh->clutter_props = source->clutter_props;
     mesh->no_shadow_cast = source->no_shadow_cast;
+    mesh->brush_geo_source = source->brush_geo_source;
+    mesh->collision_mesh_filename = source->collision_mesh_filename;
 
     // Generate new UID
     mesh->uid = generate_uid();

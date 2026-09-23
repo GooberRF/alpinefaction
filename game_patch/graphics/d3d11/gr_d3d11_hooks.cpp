@@ -365,15 +365,19 @@ namespace gr::d3d11
         renderer->render_solid(solid, rooms, num_rooms);
     }
 
-    void render_movable_solid(rf::GSolid* solid, const rf::Vector3& pos, const rf::Matrix3& orient)
+    // Stock gr_d3d_render_movable_solid (0x00553C60) gathers only dynamic lights
+    // using the mover's own GSolid (not level.geometry). Static lights are already
+    // baked into the mover's lightmap, so we must not add them as point lights.
+    // The stock engine also temporarily transforms the solid's bbox to world space
+    // before calling light_filter_set_solid, since it uses bbox for sphere overlap tests.
+    class ScopedMovableSolidLights
     {
-        // Stock gr_d3d_render_movable_solid (0x00553C60) gathers only dynamic lights
-        // using the mover's own GSolid (not level.geometry). Static lights are already
-        // baked into the mover's lightmap, so we must not add them as point lights.
-        // The stock engine also temporarily transforms the solid's bbox to world space
-        // before calling light_filter_set_solid, since it uses bbox for sphere overlap tests.
-        bool lights_gathered = false;
-        if (solid) {
+    public:
+        ScopedMovableSolidLights(rf::GSolid* solid, const rf::Vector3& pos, const rf::Matrix3& orient)
+        {
+            if (!solid) {
+                return;
+            }
             // Save local-space bbox
             rf::Vector3 saved_min = solid->bbox_min;
             rf::Vector3 saved_max = solid->bbox_max;
@@ -392,19 +396,58 @@ namespace gr::d3d11
             solid->bbox_max = world_center + world_half;
 
             rf::gr::light_filter_set_solid(solid, true, false);
-            lights_gathered = true;
+            lights_gathered_ = true;
 
             // Restore local-space bbox
             solid->bbox_min = saved_min;
             solid->bbox_max = saved_max;
         }
 
-        renderer->render_movable_solid(solid, pos, orient);
-
-        if (lights_gathered) {
-            rf::gr::light_filter_reset();
-            renderer->clear_mesh_lights();
+        ~ScopedMovableSolidLights()
+        {
+            if (lights_gathered_) {
+                rf::gr::light_filter_reset();
+                renderer->clear_mesh_lights();
+            }
         }
+
+        ScopedMovableSolidLights(const ScopedMovableSolidLights&) = delete;
+        ScopedMovableSolidLights& operator=(const ScopedMovableSolidLights&) = delete;
+    private:
+        bool lights_gathered_ = false;
+    };
+
+    static rf::MoverBrush* find_mover_brush(rf::GSolid* solid)
+    {
+        for (auto& mb : DoublyLinkedList{rf::mover_brush_list}) {
+            if (mb.geometry == solid) {
+                return &mb;
+            }
+        }
+        return nullptr;
+    }
+
+    // Deferred alpha pass for a single mover brush, registered by obj_render_all_hook
+    static void render_mover_brush_alpha(void* user, rf::GSolid*)
+    {
+        auto* mb = static_cast<rf::MoverBrush*>(rf::obj_from_handle(static_cast<int>(reinterpret_cast<intptr_t>(user))));
+        if (!mb || !mb->geometry) {
+            return;
+        }
+        ScopedMovableSolidLights light_scope{mb->geometry, mb->pos, mb->orient};
+        renderer->render_movable_solid_alpha(mb->geometry, mb->pos, mb->orient);
+    }
+
+    void render_movable_solid(rf::GSolid* solid, const rf::Vector3& pos, const rf::Matrix3& orient)
+    {
+        // Mover brush see-through faces are drawn later, in the sorted alpha pass, so their depth
+        // writes stop hiding whatever is behind them. Debris solids reach here too and keep drawing
+        // their alpha faces inline.
+        rf::MoverBrush* mb = find_mover_brush(solid);
+        bool include_alpha = !mb || (mb->obj_flags & rf::OF_HAS_ALPHA);
+
+        ScopedMovableSolidLights light_scope{solid, pos, orient};
+        renderer->render_movable_solid(solid, pos, orient, include_alpha);
     }
 
     void render_alpha_detail_room(rf::GRoom *room, rf::GSolid *solid)
@@ -574,7 +617,8 @@ namespace gr::d3d11
             }
 
             bool fullbright_character = g_character_meshes_are_fullbright && !is_first_person;
-            bool synthesize_colors = params.vertex_colors == nullptr || fullbright_character;
+            // Baked vertex colors (character clutter) are only valid in vertex lighting modes
+            bool synthesize_colors = params.vertex_colors == nullptr || fullbright_character || !use_vertex_lighting;
 
             if (synthesize_colors) {
                 rf::MeshRenderParams params_with_vertex_colors = params;
@@ -866,6 +910,34 @@ namespace gr::d3d11
         },
     };
 
+    // obj_render_all queues every object of a room for the room pass. Add a second, sortable render item for
+    // each mover brush with see-through faces, so those faces are drawn back to front after the
+    // unsorted items instead of writing depth ahead of them.
+    static FunHook<void(rf::GRoom*, int)> obj_render_all_hook{
+        0x00488230,
+        [](rf::GRoom* room, int flag) {
+            obj_render_all_hook.call_target(room, flag);
+            if (!renderer) {
+                return;
+            }
+            for (auto& mb : DoublyLinkedList{rf::mover_brush_list}) {
+                // OF_HAS_ALPHA movers are queued sortable by the engine, which sorts them whole
+                if (!mb.geometry || (mb.obj_flags & (rf::OF_DELAYED_DELETE | rf::OF_HAS_ALPHA))) {
+                    continue;
+                }
+                // Only the low byte of flag is meaningful; the portal room loop leaves garbage above it
+                if (!rf::obj_should_render_in_room(&mb, room, (flag & 0xFF) != 0)) {
+                    continue;
+                }
+                if (!renderer->movable_solid_has_alpha(mb.geometry)) {
+                    continue;
+                }
+                rf::g_room_render_item_add(reinterpret_cast<void*>(static_cast<intptr_t>(mb.handle)), mb.pos, mb.pos,
+                    mb.radius, render_mover_brush_alpha, true, nullptr, nullptr, nullptr, false, true);
+            }
+        },
+    };
+
     static CodeInjection g_render_room_objects_render_liquid_injection{
         0x004D4106,
         [](auto& regs) {
@@ -1142,6 +1214,7 @@ void gr_d3d11_apply_patch()
     gameplay_render_frame_liquid_bg_color_hook.install();
     screen_flash_render_hook.install();
     g_render_room_objects_hook.install();
+    obj_render_all_hook.install();
     g_render_room_objects_render_liquid_injection.install();
     gr_d3d_setup_3d_injection.install();
     gr_d3d_setup_fustrum_injection.install();
