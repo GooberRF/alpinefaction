@@ -782,6 +782,13 @@ void DeleteWeatherRegionObject(DedWeatherRegion* weather_region)
 
 // ─── Rendering ──────────────────────────────────────────────────────────────
 
+constexpr float weather_region_icon_size = 1.0f;
+
+// Per-type selection color
+constexpr int weather_region_selected_r = 0x00;
+constexpr int weather_region_selected_g = 0xdc;
+constexpr int weather_region_selected_b = 0xdc;
+
 void weather_region_render(CDedLevel* level)
 {
     auto& regions = level->GetAlpineLevelProperties().weather_region_objects;
@@ -797,7 +804,9 @@ void weather_region_render(CDedLevel* level)
 
         const bool selected = is_object_selected(level, region);
 
-        int r = 0xff, g = 0x00, b = 0x00; // selected always wins
+        int r = weather_region_selected_r,
+            g = weather_region_selected_g,
+            b = weather_region_selected_b;
         if (!selected) {
             switch (region->weather_type) {
                 case WeatherRegionType::rain:
@@ -841,7 +850,7 @@ void weather_region_render(CDedLevel* level)
         if (g_weather_region_icon_handle >= 0) {
             gr_set_bitmap(g_weather_region_icon_handle, -1);
         }
-        gr_render_billboard(&region->pos, 0, 0.25f, cam_param);
+        gr_render_billboard(&region->pos, 0, weather_region_icon_size, cam_param);
     }
 }
 

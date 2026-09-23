@@ -56,6 +56,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Add a new and modern color picker to the level editor
 - Add click and drag spinner arrows to the numeric fields on the `Corona` and `Weather Region` object dialogs in the level editor
 - Show a live viewport preview while editing `Corona` and `Rope Emitter` properties in the level editor, so the fields being typed are what the viewport draws
+- Draw `Weather Region` sprites in the level editor at the same size as `Room Effect` sprites, and highlight selected regions in aqua
 - Consolidate duplicated Alpine object internals into shared machinery in the game and level editor, and harden level file parsing for `Corona`, `Bag` and `Weather Region` objects against corrupted data
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
