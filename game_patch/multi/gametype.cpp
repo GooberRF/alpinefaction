@@ -15,9 +15,13 @@
 #include "wipeout.h"
 #include "gungame.h"
 #include "salvage.h"
+#include "vehicles/vehicle.h"
+#include "vehicles/vehicle_markers.h"
+#include "vehicles/vehicle_physics.h"
 #include "multi.h"
 #include "mutators.h"
 #include "alpine_packets.h"
+#include "server_internal.h"
 #include "../fflink/afstats_events.h"
 #include "../hud/hud_internal.h"
 #include "../hud/multi_spectate.h"
@@ -522,6 +526,10 @@ bool player_inside_hill_trigger(const HillInfo& h, const rf::Player& p)
 {
     auto ent = rf::entity_from_handle(p.entity_handle);
     if (!ent || !h.trigger)
+        return false;
+
+    // Only players on foot hold a hill; any seat of any vehicle or turret does not.
+    if (ent->host_handle != -1)
         return false;
 
     if (h.trigger->type == 0 && h.handler->sphere_to_cylinder) {
@@ -1251,6 +1259,12 @@ static void koth_apply_ownership(HillInfo& h, HillOwner new_owner, bool announce
         else {
             // KOTH / DC: per-hill is fine
             koth_update_respawn_points(&h);
+        }
+
+        // Linked Vehicle Factories follow the point's owner. HO_Neutral 0 / HO_Red 1 / HO_Blue 2
+        // maps onto the factory's -1 none / 0 red / 1 blue.
+        for (int factory_index : h.vehicle_factories) {
+            vehicle_factory_set_team(factory_index, static_cast<int>(new_owner) - 1);
         }
 
         if (new_owner == HillOwner::HO_Red || new_owner == HillOwner::HO_Blue) {
@@ -2027,10 +2041,16 @@ static int build_hills_from_capture_point_events()
         h.hold_ms_accum = 0;
 
         // build vector of respawn points associated with hill
+        // Alpine respawn points and vehicle factories are not engine objects, so level_load leaves
+        // their links as raw RFL uids while engine-object links become handles.
         if (!e->links.empty()) {
             for (int linked_uid : e->links) {
                 if (auto* rp = get_alpine_respawn_point_by_uid(linked_uid)) {
                     h.mp_spawn_uids.push_back(rp->uid);
+                }
+                const int factory_index = vehicle_factory_index_by_uid(linked_uid);
+                if (factory_index >= 0) {
+                    h.vehicle_factories.push_back(factory_index);
                 }
             }
         }
@@ -2106,6 +2126,20 @@ void hill_mode_level_init_post()
     //xlog::warn("KOTH: {} capture points found in this map, gt {}", n, static_cast<int>(rf::netgame.type));
 }
 
+// Hills are built before the factory slots exist, so an initial ownership (ESC bases, or any hill
+// a gametype starts owned) is pushed to its linked factories here instead of from the hill build.
+static void hill_mode_apply_linked_factory_teams()
+{
+    for (const auto& hill : g_koth_info.hills) {
+        if (hill.ownership == HillOwner::HO_Neutral)
+            continue; // a neutral hill leaves the factory's authored team alone
+
+        for (int factory_index : hill.vehicle_factories) {
+            vehicle_factory_set_team(factory_index, static_cast<int>(hill.ownership) - 1, false);
+        }
+    }
+}
+
 void multi_level_init_post_gametypes()
 {
     hill_mode_level_init_post();
@@ -2114,6 +2148,12 @@ void multi_level_init_post_gametypes()
     pit_level_init_post();
     wipeout_level_init_post();
     gungame_level_init_post();
+    // Before the factory spawns below: entity_create seeds each hull's life from EntityInfo.
+    vehicle_tbl_overrides_level_init_post();
+    vehicle_level_init_post();
+    vehicle_markers_level_init_post(); // after the mesh overrides and the factory mirror
+    vehicle_physics_level_init_post(); // after the factory records exist
+    hill_mode_apply_linked_factory_teams(); // after vehicle_level_init_post: needs the slots
     // Rounds must initialise AFTER per-gametype level-init so the gametype
     // has registered its callbacks before round 1 begins.
     rounds_level_init_post();
@@ -2124,6 +2164,11 @@ void multi_level_init_post_gametypes()
     // After everything above, so the round_start snapshot sees the level, the
     // game type, the active rules and every gametype's own state as final.
     if (rf::is_multi && rf::is_server) {
+        // Not from multi_level_init: that runs before level_load, so the factory-driven client
+        // requirement in server_features_require_alpine_client would read one level late.
+        initialize_game_info_server_flags();
+        af_send_server_info_packet_to_all();
+        enforce_alpine_hard_reject_for_all_players_on_current_level();
         afstats::on_game_start();
     }
 }
@@ -2132,6 +2177,8 @@ void multi_level_init_post_gametypes()
 CodeInjection multi_level_init_gametypes_injection{
     0x0046E466,
     [] {
+        // Before gungame_level_init: weapons.tbl overrides restore LIFO.
+        vehicle_tbl_overrides_revert();
         rounds_level_init();
         hill_mode_level_init();
         bagman_level_init();
@@ -2140,6 +2187,8 @@ CodeInjection multi_level_init_gametypes_injection{
         pit_level_init();
         wipeout_level_init();
         gungame_level_init();
+        vehicle_level_init();
+        vehicle_physics_level_init();
         riot_shield_on_multi_level_init();
     },
 };
@@ -2186,6 +2235,11 @@ CodeInjection send_team_score_state_info_patch{
             if (rf::Player* pp = regs.edi) {
                 salvage_force_state_sync_to(pp);
             }
+        }
+
+        // replay occupied vehicle and turret seats on join
+        if (rf::Player* pp = regs.edi) {
+            vehicle_send_seat_states_to(pp);
         }
 
         // send Pit queue state and roster on join.
@@ -2300,6 +2354,9 @@ CodeInjection carrier_attachment_render_patch{
         // command uses this same hook. jetpack_render_attachment() does its own
         // active/first-person checks and yields to the bag on the carrier.
         jetpack_render_attachment(ep);
+
+        // Same attachment point: AF's jeep hull carries no tires, so they are drawn right after it.
+        vehicle_render_jeep_tires(ep);
 
         if (!rf::is_multi || !gt_is_bagman_any()) return;
 

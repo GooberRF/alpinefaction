@@ -121,6 +121,33 @@ namespace rf
         ENTITY_STATE_CUSTOM = 0x16,
     };
 
+    // EntityInfo::flags — entities.tbl flag names, parser name table at 0x00594598 (bit i = 1 << i).
+    enum EntityInfoFlags
+    {
+        // "holds_weapons": the class draws its weapon's third-person v3d as a separate mesh
+        EIF_HOLDS_WEAPONS = 0x8,
+        EIF_WATER_ONLY = 0x40,
+        EIF_APC        = 0x200,
+        EIF_SUB        = 0x400,
+        EIF_FIGHTER    = 0x800,
+        EIF_DRILLER    = 0x1000,
+        EIF_TURRET     = 0x2000,
+        EIF_MOUSELOOK  = 0x4000,
+        EIF_JEEP       = 0x400000,
+    };
+
+    // EntityInfo::use_function — parsed from "$Use:", value table at 0x0059F978.
+    enum EntityUseFunction
+    {
+        ENTITY_USE_NONE = 0x0,
+        ENTITY_USE_VEHICLE = 0x1,
+        ENTITY_USE_SWITCH = 0x2,
+        ENTITY_USE_COMMAND = 0x3,
+        ENTITY_USE_TURRET = 0x4,
+        ENTITY_USE_MONITOR = 0x5,
+        ENTITY_USE_MEDIC = 0x6,
+    };
+
     struct EntityInfo
     {
         String name;
@@ -240,10 +267,15 @@ namespace rf
         float weapon_specific_spine_adjustments[64];
     };
     static_assert(sizeof(EntityInfo) == 0x1514);
+    static_assert(offsetof(EntityInfo, use_function) == 0x1B4);
+    static_assert(offsetof(EntityInfo, flags) == 0x724);
 
     constexpr int MAX_ENTITY_TYPES = 75;
     static auto& num_entity_types = addr_as_ref<int>(0x0062F2D0);
     static auto& entity_types = addr_as_ref<EntityInfo[MAX_ENTITY_TYPES]>(0x005CC500);
+
+    // Shared jeep gun mesh; entity_create loads it lazily (0x00423A44), level release nulls it (0x0042B2E0).
+    static auto& jeep_gun_vmesh = addr_as_ref<VMesh*>(0x0062F3B0);
 
     struct MoveMode
     {
@@ -327,7 +359,8 @@ namespace rf
         float max_vel;
         EntitySpeed current_speed;
         int max_speed_scale;
-        VArray<EntityInterfacePoint> interface_points;
+        // Array of POINTERS: accessors index with a 4-byte stride and dereference (0x00427268).
+        VArray<EntityInterfacePoint*> interface_points;
         VArray<VMesh*> thruster_fx_handles;
         EntityAnim state_anims[23];
         EntityAnim action_anims[45];
@@ -391,7 +424,7 @@ namespace rf
         float time_since_spine_bend;
         int field_1468;
         int masako_in_fighter_entity_handle;
-        int driller_max_geomods;
+        int driller_geomod_count; // running count of craters this driller has carved; stock refuses past 25 (0x004214F3)
         Color ambient_color;
         int sub_hit_sound_instance;
         int bot_index;
@@ -402,6 +435,8 @@ namespace rf
         Timestamp field_1490;
     };
     static_assert(sizeof(Entity) == 0x1494);
+    static_assert(offsetof(Entity, interface_points) == 0x8CC);
+    static_assert(offsetof(Entity, driller_sound_handle) == 0x13D0);
 
     struct EntityFireInfo
     {
@@ -448,6 +483,8 @@ namespace rf
 
     static auto& entity_from_handle = addr_as_ref<Entity*(int handle)>(0x00426FC0);
     static auto& entity_lookup_type = addr_as_ref<int(const char* name)>(0x004251C0);
+    // use_function == ENTITY_USE_VEHICLE; the MP level entity filter (0x00464657) drops these, turrets excluded
+    static auto& entity_type_has_vehicle_use = addr_as_ref<bool __cdecl(int type_index)>(0x0042CDD0);
     static auto& entity_create =
         addr_as_ref<Entity*(int entity_type, const char* name, int parent_handle, const Vector3& pos,
         const Matrix3& orient, int create_flags, int mp_character)>(0x00422360);
@@ -463,6 +500,9 @@ namespace rf
     static auto& entity_is_jeep_gunner = addr_as_ref<bool(Entity *ep)>(0x0042ACD0);
     static auto& entity_is_local_player = addr_as_ref<bool(Entity* ep)>(0x0042A8E0);
     static auto& entity_is_driller = addr_as_ref<bool(Entity *ep)>(0x0042D780);
+    static auto& entity_maybe_drill_geomod = addr_as_ref<void(Entity* ep)>(0x00421310);
+    // info->flags & (jeep|apc|driller); these are the PF_AUTOMOBILE types
+    static auto& entity_is_automobile = addr_as_ref<bool(Entity *ep)>(0x0042D7B0);
     static auto& entity_is_sub = addr_as_ref<bool(Entity *ep)>(0x0040A270);
     static auto& entity_is_jeep = addr_as_ref<bool(Entity *ep)>(0x0040A2F0);
     static auto& entity_is_fighter = addr_as_ref<bool(Entity *ep)>(0x0040A210);
@@ -504,8 +544,35 @@ namespace rf
     static auto& entity_add_to_reserve_ammo = addr_as_ref<void(Entity *entity, int weapon_type, int count)>(0x00428D90);
     static auto& entity_turn_weapon_on = addr_as_ref<void __cdecl(int entity_handle, int weapon_type, bool alt_fire)>(0x0041A870);
     static auto& entity_turn_weapon_off = addr_as_ref<void __cdecl(int entity_handle, int weapon_type)>(0x0041AE70);
+    // One trigger pull of ai.current_primary_weapon. force != 0 skips the fire-wait gate and the
+    // continuous-weapon turn-on; pos/orient override the muzzle; last_fire_time moves only on a shot.
+    static auto& entity_fire_weapon = addr_as_ref<void __cdecl(Entity* ep, int force, int alt_fire,
+        void** out_weapon, Vector3* pos, Matrix3* orient)>(0x00425830);
+    // One shot of ai.current_secondary_weapon. force != 0 skips the fire-wait gate; next_fire_secondary re-arms only on a shot.
+    static auto& entity_fire_secondary_weapon = addr_as_ref<void __cdecl(Entity* ep, char force)>(0x00426CA0);
     static auto& entity_restore_mesh = addr_as_ref<void(Entity *ep, const char *mesh_name)>(0x0042C570);
-    static auto& entity_detach_from_host = addr_as_ref<void(Entity* ep)>(0x004279D0);
+    // bool, not void: the exit-spot search can refuse, and it answers in AL only.
+    static auto& entity_detach_from_host = addr_as_ref<bool(Entity* ep)>(0x004279D0);
+
+    // __thiscall on the vehicle (RET 8 verified). Fails if the tag is unknown or the seat is taken.
+    inline bool entity_attach_leech(Entity* vehicle, int leech_handle, int tag_handle)
+    {
+        return AddrCaller{0x00427240}.this_call<bool>(vehicle, leech_handle, tag_handle);
+    }
+
+    // __thiscall on the vehicle (RET 8 verified). The bookkeeping half of entity_detach_from_host.
+    inline bool entity_detach_leech(Entity* vehicle, int leech_handle, bool play_sound)
+    {
+        return AddrCaller{0x00427380}.this_call<bool>(vehicle, leech_handle, play_sound);
+    }
+
+    // Best "$Use" target: interface points, corpses, items, clutter, triggers. out_tag_handle is -1 when it has none.
+    static auto& player_find_use_target =
+        addr_as_ref<Object* __cdecl(Entity* player_entity, int* out_tag_handle)>(0x004897D0);
+
+    // Jeep gunner eye clamps; the boarding code uses these instead of the vehicle's own limits.
+    static auto& jeep_gunner_min_rel_eye_phb = addr_as_ref<Vector3>(0x007C7618);
+    static auto& jeep_gunner_max_rel_eye_phb = addr_as_ref<Vector3>(0x007C75F0);
     static auto& entity_set_skin = addr_as_ref<void(Entity* ep, const char* skin_name)>(0x00428FB0);
     static auto& entity_sim_distance = addr_as_ref<float>(0x00589548);
 

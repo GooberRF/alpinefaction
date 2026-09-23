@@ -267,6 +267,9 @@ namespace rf
     constexpr size_t max_packet_size = 512;
 
     static auto& multi_get_game_type = addr_as_ref<NetGameType()>(0x00470770);
+    // What the stock friendly-fire gate in obj_damage consults (call at 0x004893A8): netgame.flags
+    // bit 9 alone, never the 0x240 pair the config writes.
+    static auto& multi_is_team_damage_on = addr_as_ref<bool()>(0x004826B0);
     static auto& multi_io_send = addr_as_ref<void(Player *player, const void *packet, int len)>(0x00479370);
     static auto& multi_io_send_reliable =
         addr_as_ref<void(Player *player, const void *data, int len, bool require_in_game)>(0x00479480);

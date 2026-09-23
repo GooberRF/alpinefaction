@@ -64,6 +64,9 @@ namespace rf
         OF_IS_PLAYER = 0x8,            // checked by obj_is_player (FUN_004895d0)
         OF_WAS_RENDERED = 0x10,
         OF_UNK_80 = 0x80,
+        // An attached object keeps its own orientation (0x0048771B) and stays simulated
+        // (obj_should_sim_physics 0x0048807C). Set 0x004A61BA / cleared 0x004A61D0, local player only.
+        OF_KEEP_ORIENT_ON_HOST = 0x100,
         OF_HIDDEN = 0x4000,              // set by obj_hide, cleared by obj_unhide
         OF_NO_COLLIDE_SP = 0x4000,     // same bit as OF_HIDDEN — context-dependent alias used for SP collision skip
         OF_START_HIDDEN = 0x8000,
@@ -90,7 +93,8 @@ namespace rf
         Vector3 eye_phb_array[max_keyframes];
         Vector3 vel_array[max_keyframes];
         Vector3 move_array[max_keyframes];
-        uint32_t always_0_array[max_keyframes];
+        // Per-keyframe scalar track (FLD/FSTP at 0x004834BA/0x004834DC); both stock writers pass 0.0f.
+        float unused_scalar_array[max_keyframes];
         uint16_t time_array[max_keyframes]; // 16-bit server ms ticks
         uint32_t flags;    // bit 0: force re-anchor - the next keyframe insert re-anchors
                            // interp_time and then clears this bit; Clear() zeroes the whole
@@ -312,6 +316,8 @@ namespace rf
     static auto& physics_force_to_ground = addr_as_ref<void(Object* obj)>(0x004A0770);
 
     static auto& obj_set_friendliness = addr_as_ref<void(Object* obj, int friendliness)>(0x00489F70);
+    // Wakes a sleeping physics object: p_data.flags |= 0x80000000, obj_flags |= 0x6000000
+    static auto& obj_physics_activate = addr_as_ref<void(Object* obj)>(0x0040A420);
 
     static auto& obj_damage = addr_as_ref<float(int victim_handle, float damage, int killer_handle,
         int weapon_type, int damage_type, Vector3* pos, int killer_uid, char flags)>(0x004892C0);

@@ -5,6 +5,18 @@ Version 1.5.0 (Trillium): Not yet released
 --------------------------------
 ### Major features
 [@GooberRF](https://github.com/GooberRF)
+- Add multiplayer vehicles and turrets
+  - Jeeps, APCs, drillers, fighters, submarines, and stationary turrets, spawned by the new `Vehicle Factory` object
+  - Overhaul vehicle physics using Bullet physics engine
+  - Multi-seat vehicles with driver, gunner, and passenger seats; `Use` boards the lowest free seat and number keys `1`-`6` switch seats
+  - Render rolling, steering tires on jeeps
+  - Submarine propellers spin with speed
+  - Scroll APC and driller tread textures at the speed the vehicle is moving
+  - Use team colored textures for vehicle hulls and the jeep gun in team game types
+  - Extend player outlines to the vehicle or turret an outlined player is riding
+  - Mark each vehicle respawn point with the vehicle name and a countdown, with a ghost of the vehicle filling in as its respawn approaches (Direct3D 11 renderer only), toggleable with `cl_vehiclemarkers`
+  - Hand a `Vehicle Factory` linked from a `control_point_handler` event to whichever team owns that control point, spawning its vehicle immediately on capture
+  - Drop the flag a player is carrying when they board any vehicle other than a turret or a jeep
 - Add ray cast lightmap baking to level editor
   - Add `Invisible faces block light` and `Alpha-textured faces block light` level properties to control whether those faces occlude baked light
   - Add `No shadow cast` brush property for solid detail brushes and movers
@@ -34,6 +46,8 @@ Version 1.5.0 (Trillium): Not yet released
 - Add `Brush` collision mode for Alpine Mesh objects
 - Add `Brush Geo` source selection for Alpine Mesh objects using `Brush` collision, allowing custom collision hulls
 - Raise level editor per-room and per-mesh render vertex limit from 8000 to 32768
+- Add `Vehicle Factory` object to the level editor for placing multiplayer vehicles and turrets
+- Add `Limit vehicle flight ceiling` and `Ceiling height (Y)` options to level editor `Level Properties` to cap how high flying vehicles can climb
 - Add `-bake in.rfl -bakeout out.rfl` launcher command line switches to calculate a level's lighting without user interaction, writing the result to a new level file and progress to a log beside it
 - Add `High-resolution lightmaps` level property, used in lightmap bake in level editor
 - Deprecate and remove `-smoothlights` level editor switch
@@ -77,6 +91,8 @@ Version 1.5.0 (Trillium): Not yet released
 - Fix level editor crashing when a mesh is played with an animation that does not fit its skeleton
 - Fix level editor crashing when a Direct3D buffer lock fails
 - Fix level editor crashing when a Weather Region's snow `Bitmap` names a loose file instead of one inside a packfile
+- Fix level editor crashing while saving a level containing a clutter class that is missing from the loaded `clutter.tbl`
+- Report each clutter object whose class is missing from the loaded `clutter.tbl` in the level editor log
 - Fix a one frame flash to the default pose each time an animation loops on a mesh being simulated in the level editor
 - Update Weather Region bounds in viewport live when values are changed
 - Fix the fusion not being in-scope for the `Delayed Supers` mutator
@@ -89,6 +105,10 @@ Version 1.5.0 (Trillium): Not yet released
 - Fix objects and effects behind see-through faces of mover brushes being hidden by those faces
 - Fix alpha textures on detail brushes in moving groups rendering opaque in game
 - Fix player outlines seen through see-through geometry disappearing depending on view direction
+- Fix the sustained weapon fire sound of fighter-class vehicles playing at full volume with no direction regardless of how far away it is
+- Fix every entity with a flying sound permanently consuming one of the 25 ambient sound slots each time it is destroyed
+- Fix engine sounds keeping the direction they had when they started instead of following the vehicle when DirectSound 3D is enabled
+- Fix the driller's drilling sound looping forever when the driller is destroyed while drilling
 
 [@is-this-c](https://github.com/is-this-c)
 - Let `Caps Lock` capitalize
@@ -99,6 +119,9 @@ Version 1.5.0 (Trillium): Not yet released
 - Fix reload animation playing in third person for other players when client tries to reload with a full clip/magazine
 - Fix lighting for pistol silencer and remote charge detonator
 - Fix third-person crouch animations on remote players flickering and snapping
+
+### Imported libraries
+- [Bullet Physics 3.25](https://github.com/bulletphysics/bullet3) by Erwin Coumans
 
 Version 1.4.0 (Lupin): Released Aug-25-2026
 --------------------------------

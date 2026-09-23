@@ -20,6 +20,7 @@
 #include "../misc/vote_panel.h"
 #include "../misc/spray_picker.h"
 #include "../multi/multi.h"
+#include "../multi/vehicles/vehicle_physics.h"
 #include "../rf/player/player.h"
 #include "../rf/player/camera.h"
 #include "../rf/player/control_config.h"
@@ -581,6 +582,11 @@ FunHook<void(rf::Camera*)> camera_do_frame_hook{
             // Camera left third person for some other reason (death, cutscene, level change, etc).
             // Disengage and fall back to stock behaviour.
             g_static_camera_mode = AlpineStaticCameraMode::None;
+        }
+        // The vehicle passenger's chase camera positions the camera itself, for the local player or
+        // a first-person spectate target, so it must run ahead of the orbit spectate below.
+        if (vehicle_physics_camera_do_frame(camera)) {
+            return;
         }
         // Third-person orbit spectate positions the camera itself each frame.
         if (multi_spectate_camera_do_frame(camera)) {

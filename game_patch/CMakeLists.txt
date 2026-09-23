@@ -59,6 +59,7 @@ set(SRCS
     graphics/gr_font.cpp
     graphics/gr.cpp
     graphics/gr.h
+    graphics/gr_ghost_mesh.h
     graphics/gr_light.cpp
     graphics/weather.cpp
     graphics/weather.h
@@ -159,6 +160,31 @@ set(SRCS
     multi/gungame.cpp
     multi/salvage.h
     multi/salvage.cpp
+    multi/vehicles/vehicle.h
+    multi/vehicles/vehicle.cpp
+    multi/vehicles/vehicle_internal.h
+    multi/vehicles/vehicle_seats.h
+    multi/vehicles/vehicle_seats.cpp
+    multi/vehicles/vehicle_sync.h
+    multi/vehicles/vehicle_sync.cpp
+    multi/vehicles/vehicle_damage.h
+    multi/vehicles/vehicle_damage.cpp
+    multi/vehicles/vehicle_view.h
+    multi/vehicles/vehicle_view.cpp
+    multi/vehicles/vehicle_render.h
+    multi/vehicles/vehicle_render.cpp
+    multi/vehicles/vehicle_spawn.h
+    multi/vehicles/vehicle_spawn.cpp
+    multi/vehicles/vehicle_markers.h
+    multi/vehicles/vehicle_markers.cpp
+    multi/vehicles/vehicle_physics.h
+    multi/vehicles/physics/vphys_internal.h
+    multi/vehicles/physics/vphys_world.cpp
+    multi/vehicles/physics/vphys_car.cpp
+    multi/vehicles/physics/vphys_flight.cpp
+    multi/vehicles/physics/vphys_step.cpp
+    multi/vehicles/physics/vphys_camera.cpp
+    multi/vehicles/physics/vphys_debug.cpp
     multi/sprays.h
     multi/sprays.cpp
     multi/mutators.h
@@ -414,4 +440,7 @@ target_link_libraries(AlpineFaction
     freetype
     stb_vorbis
     stb_image
+    BulletDynamics
+    BulletCollision
+    LinearMath
 )

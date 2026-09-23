@@ -276,6 +276,11 @@ add_packfile(alpinefaction.vpp
     images/dec_af_csp09.tga
     images/dec_af_csp10.tga
     images/af-jetpack1skin1.tga
+    images/af_jeeptire1.tga
+    images/af_apctread1.atx
+    images/af_apctreadbm.tga
+    images/af_drilltread1.atx
+    images/cocpit_armor_digit4.tga
     images/caustics/af_caust00.png
     images/caustics/af_caust01.png
     images/caustics/af_caust02.png
@@ -314,6 +319,16 @@ add_packfile(alpinefaction.vpp
     meshes/af-jetpack1.v3m
     meshes/AFSALflag1.vfx
     meshes/af-jg1.v3m
+    meshes/af_Jeep01.v3m
+    meshes/af_Jeep01T.v3m
+    meshes/af_jeep_gun.v3m
+    meshes/af_APC.v3m
+    meshes/af_Driller01.v3m
+    meshes/af_APC.vfx
+    meshes/af_fighter01.vfx
+    meshes/af_Fighter01m.v3m
+    meshes/af_Sub_Mini01.v3m
+    meshes/af_Sub_Mini01T.v3m
 
     standard_vs:${CMAKE_BINARY_DIR}/shaders/standard_vs.bin
     character_vs:${CMAKE_BINARY_DIR}/shaders/character_vs.bin

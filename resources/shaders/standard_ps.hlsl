@@ -59,6 +59,8 @@ cbuffer LightsBuffer : register(b1)
 cbuffer TextureScaleBuffer : register(b2)
 {
     float2 tex0_uv_scale;
+    float ghost_fill_y;       // world Y below which a ghost mesh keeps its full alpha
+    float ghost_alpha_ratio;  // 0 = not a ghost draw; else alpha factor above ghost_fill_y
 };
 
 cbuffer ShadowBuffer : register(b3)
@@ -285,6 +287,10 @@ float4 main(VsOutput input) : SV_TARGET
     float2 scaled_uv0 = input.uv0 * tex0_uv_scale;
     float4 tex0_color = disable_textures > 0.5f ? float4(1.0, 1.0, 1.0, 1.0) : tex0.Sample(samp0, scaled_uv0);
     float4 target = input.color * tex0_color * current_color;
+
+    if (ghost_alpha_ratio > 0.0f) {
+        target.a *= input.world_pos_and_depth.y < ghost_fill_y ? 1.0f : ghost_alpha_ratio;
+    }
 
     clip(target.a - alpha_test);
 

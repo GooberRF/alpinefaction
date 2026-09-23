@@ -123,3 +123,13 @@ void add_damage_notify_world_hud_string(rf::Vector3 pos, uint8_t damaged_player_
                                        bool crit = false);
 void do_render_world_hud_sprite(rf::Vector3 pos, float base_scale, int bitmap_handle, WorldHUDRenderMode render_mode,
                                 bool stay_inside_fog, bool distance_scaling, bool only_draw_during_gameplay);
+void render_string_3d_pos_new(const rf::Vector3& pos, const std::string& text, int offset_x, int offset_y,
+    int font, rf::ubyte r, rf::ubyte g, rf::ubyte b, rf::ubyte a);
+int get_world_hud_font(const float world_hud_text_scale);
+int get_world_hud_label_bitmap_font();
+WorldHUDView make_world_hud_view(rf::Vector3 pos, bool stay_inside_fog = true);
+float world_hud_label_scale(const rf::Vector3& pos, bool stay_inside_fog);
+bool world_hud_ensure_text_label(NameLabelTex& slot, const std::string& text, int font);
+void world_hud_release_text_label(NameLabelTex& slot);
+void do_render_world_hud_text_label(const NameLabelTex& label, const rf::Vector3& pos, float vertical_offset,
+    float height_world, WorldHUDRenderMode render_mode, bool stay_inside_fog, bool distance_scaling, rf::Color color);

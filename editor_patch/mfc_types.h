@@ -179,7 +179,7 @@ enum class DedObjectType : int
     DED_CORONA = 0x19, // Alpine 1.3
     DED_BAG = 0x1A,    // Alpine 1.4
     DED_WEATHER_REGION = 0x1B, // Alpine 1.4
-    // 0x1C is reserved
+    DED_VEHICLE_FACTORY = 0x1C, // Alpine 1.5
     DED_PROJECTION_CAMERA = 0x1D // Alpine 1.5
 };
 
@@ -540,6 +540,30 @@ struct DedWeatherRegion : DedObject
     bool initially_enabled = true;
     bool block_by_geometry = false;
     float column_width = 0.5f;
+};
+
+// Team a Vehicle Factory's spawned vehicle belongs to. Serialized as a u8, 0xFF for none.
+enum class VehicleFactoryTeam : int
+{
+    none = -1,
+    red = 0,
+    blue = 1,
+};
+
+struct DedVehicleFactory : DedObject
+{
+    std::string vehicle_class = "Jeep01";
+    float respawn_delay_s = 30.0f;
+    VehicleFactoryTeam team = VehicleFactoryTeam::none;
+    bool lock_to_team = true;
+    bool active_by_default = true;
+
+    // Kept out of DedObject::vmesh so stock cleanup paths never free it; vehicle_factory.cpp owns it.
+    void* preview_vmesh = nullptr;
+    std::string preview_class;   // class the preview was loaded for
+    bool preview_load_failed = false;
+    float preview_bound_center[3] = {}; // preview mesh bounding sphere, object space
+    float preview_bound_radius = 0.0f;  // 0 = no preview loaded, use the fixed fallback radius
 };
 
 struct DedProjectionCamera : DedObject

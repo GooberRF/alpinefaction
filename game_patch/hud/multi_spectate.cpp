@@ -32,6 +32,7 @@
 #include "../misc/alpine_settings.h"
 #include "../multi/gametype.h"
 #include "../multi/saved_info.h"
+#include "../multi/vehicles/vehicle.h"
 #include <common/config/BuildConfig.h>
 #include <xlog/xlog.h>
 #include <algorithm>
@@ -220,9 +221,21 @@ static bool state_animation_is_crouch(int state)
 // Hook entity_set_next_state_anim to remap non-crouch animations to crouch
 // variants for the spectated entity when it's crouching. This prevents the
 // movement state machine from constantly overriding the crouch animation.
+//
+// SINGLE OWNER of 0x0042A580: the vehicles module needs its early-out here, not a second FunHook.
 FunHook<void(rf::Entity*, int, float)> spectate_entity_set_next_state_anim_hook{
     0x0042A580,
     [](rf::Entity* entity, int state_anim_index, float transition_time) {
+        // A seated rider whose character lacks the seated anims re-requests the state every frame and
+        // never finishes. Seat-locked MP riders only, or an SP NPC would freeze mid STAND->WALK.
+        if (vehicle_rider_pose_is_seat_locked(entity)
+            && state_anim_index > rf::ENTITY_STATE_STAND
+            && state_anim_index <= rf::ENTITY_STATE_CUSTOM
+            && entity->state_anims[state_anim_index].vmesh_anim_index == -1
+            && (entity->current_state_anim == rf::ENTITY_STATE_STAND
+                || entity->next_state_anim == rf::ENTITY_STATE_STAND)) {
+            return;
+        }
         if (g_spectate_mode_enabled && g_spectate_mode_target && rf::entity_is_crouching(entity)
             && entity->current_state_anim != rf::ENTITY_STATE_FREEFALL) {
             rf::Entity* target = rf::entity_from_handle(g_spectate_mode_target->entity_handle);

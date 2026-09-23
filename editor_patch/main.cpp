@@ -833,6 +833,34 @@ CodeInjection CCutscenePropertiesDialog_ct_crash_fix{
     },
 };
 
+// Stock DedClutter ctor leaves +0xB8..+0xDF uninitialized, including the skin count at +0xDC, so the
+// save-time texture gather walks a garbage count past the 7 skin slots. Zeroing makes it inert.
+void* __fastcall DedClutter_ct(void* this_, int edx);
+FunHook DedClutter_ct_hook{
+    0x0044D9F0,
+    DedClutter_ct,
+};
+void* __fastcall DedClutter_ct(void* this_, int edx)
+{
+    void* result = DedClutter_ct_hook.call_target(this_, edx);
+    std::memset(static_cast<char*>(this_) + 0xB8, 0, 0x28);
+    return result;
+}
+
+// Surface the silent clutter.tbl lookup failure above in the editor log.
+void __fastcall CDedLevel_AddClutter(void* this_, int edx, DedObject* obj, int flag);
+FunHook CDedLevel_AddClutter_hook{
+    0x004151C0,
+    CDedLevel_AddClutter,
+};
+void __fastcall CDedLevel_AddClutter(void* this_, int edx, DedObject* obj, int flag)
+{
+    CDedLevel_AddClutter_hook.call_target(this_, edx, obj, flag);
+    if (!obj->vmesh) {
+        LogDlg_Append(GetLogDlg(), "Unknown clutter class: %s (UID %d)\n", obj->class_name.c_str(), obj->uid);
+    }
+}
+
 enum class ColorPickerSrc : uint8_t { dialog_ebx, dialog_esi, level };
 
 struct ColorPickerSite
@@ -2010,6 +2038,10 @@ extern "C" DWORD AF_DLL_EXPORT Init([[maybe_unused]] void* unused)
 
     // Fix random crash when opening cutscene properties
     CCutscenePropertiesDialog_ct_crash_fix.install();
+
+    // Fix save crash on clutter with a class missing from clutter.tbl (uninitialized skin count)
+    DedClutter_ct_hook.install();
+    CDedLevel_AddClutter_hook.install();
 
     // Load alpinefaction.vpp
     vpackfile_init_injection.install();

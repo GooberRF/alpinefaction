@@ -282,7 +282,7 @@ void render_string_3d_pos_new(const rf::Vector3& pos, const std::string& text, i
     }
 }
 
-static WorldHUDView make_world_hud_view(rf::Vector3 pos, bool stay_inside_fog = true)
+WorldHUDView make_world_hud_view(rf::Vector3 pos, bool stay_inside_fog)
 {
     WorldHUDView v{pos, 1.0f};
 
@@ -306,6 +306,16 @@ static WorldHUDView make_world_hud_view(rf::Vector3 pos, bool stay_inside_fog = 
 
     v.dist_factor = std::max(distance, 1.0f) / WorldHUDRender::reference_distance;
     return v;
+}
+
+static inline float world_hud_label_scale_from(const WorldHUDView& view)
+{
+    return std::clamp(view.dist_factor, WorldHUDRender::min_scale, WorldHUDRender::max_scale);
+}
+
+float world_hud_label_scale(const rf::Vector3& pos, bool stay_inside_fog)
+{
+    return world_hud_label_scale_from(make_world_hud_view(pos, stay_inside_fog));
 }
 
 static inline void koth_owner_color(HillOwner owner, HillLockStatus lock_status, rf::ubyte& r, rf::ubyte& g, rf::ubyte& b, rf::ubyte& a)
@@ -357,52 +367,95 @@ static inline rf::Vector3 camera_up()
 
 static NameLabelTex& ensure_hill_name_tex(const HillInfo& h, int font)
 {
-    const int key = hill_key(h);
-    auto& slot = g_koth_name_labels[key];
-
-    if (slot.bm == -1 || slot.text != h.name || slot.font != font) {
-        const auto [tw, th] = rf::gr::get_string_size(h.name, font);
-
-        const int pad = 2;
-        const int bw = std::max(1, tw + pad * 2);
-        const int bh = std::max(1, th + pad * 2);
-
-        if (slot.bm != -1) {
-            rf::bm::release(slot.bm);
-            slot.bm = -1;
-        }
-
-        slot.bm = rf::bm::create(rf::bm::FORMAT_8888_ARGB, bw, bh);
-
-        // Mip chain so the label stays stable when minified.
-        bm_set_user_mipmap(slot.bm, true);
-
-        // keep resident
-        rf::bm::texture_add_ref(slot.bm);
-
-        // Transparent white so filtering and mips never bleed black into glyph edges.
-        bm_fill(slot.bm, 0x00FFFFFFu);
-
-        // render name text
-        rf::gr::set_color(255, 255, 255, 255);
-        rf::gr::string_render_into_bitmap(pad, pad, slot.bm, h.name.c_str(), font);
-
-        slot.w_px = bw;
-        slot.h_px = bh;
-        slot.text = h.name;
-        slot.font = font;
-    }
-
+    auto& slot = g_koth_name_labels[hill_key(h)];
+    world_hud_ensure_text_label(slot, h.name, font);
     return slot;
 }
 
 void clear_koth_name_textures()
 {
     for (auto& kv : g_koth_name_labels) {
-        if (kv.second.bm != -1)
-            rf::bm::release(kv.second.bm);
+        world_hud_release_text_label(kv.second);
     }
     g_koth_name_labels.clear();
+}
+
+void world_hud_release_text_label(NameLabelTex& slot)
+{
+    if (slot.bm != -1) {
+        // bm::release does not evict the D3D11 slot-keyed texture cache, so the GPU texture would
+        // leak and a reused cache slot would inherit it.
+        rf::gr::mark_texture_dirty(slot.bm);
+        rf::bm::release(slot.bm);
+    }
+
+    slot.bm = -1;
+    slot.w_px = 0;
+    slot.h_px = 0;
+    slot.text.clear();
+}
+
+bool world_hud_ensure_text_label(NameLabelTex& slot, const std::string& text, int font)
+{
+    if (slot.bm != -1 && slot.w_px > 0 && slot.h_px > 0 && slot.text == text && slot.font == font)
+        return true;
+
+    // gr_string_render_into_bitmap is hooked (gr_font.cpp, 0x005203A0) and renders Alpine TrueType
+    // font ids through draw_into_bitmap, so the font id is passed through unclamped.
+    const auto [tw, th] = rf::gr::get_string_size(text, font);
+
+    // A zero measurement means the font is not usable yet, so leave the slot unbuilt and retry later.
+    if (tw <= 0 || th <= 0) {
+        world_hud_release_text_label(slot);
+        return false;
+    }
+
+    const int pad = 2;
+    const int bw = tw + pad * 2;
+    const int bh = th + pad * 2;
+
+    world_hud_release_text_label(slot);
+
+    slot.bm = rf::bm::create(rf::bm::FORMAT_8888_ARGB, bw, bh);
+    if (slot.bm == -1)
+        return false;
+
+    // Mip chain so the label stays stable when minified.
+    bm_set_user_mipmap(slot.bm, true);
+
+    // keep resident
+    rf::bm::texture_add_ref(slot.bm);
+
+    // Transparent white so filtering and mips never bleed black into glyph edges.
+    bm_fill(slot.bm, 0x00FFFFFFu);
+
+    // white text so the draw-time vertex colour is a straight tint
+    rf::gr::set_color(255, 255, 255, 255);
+    rf::gr::string_render_into_bitmap(pad, pad, slot.bm, text.c_str(), font);
+
+    slot.w_px = bw;
+    slot.h_px = bh;
+    slot.text = text;
+    slot.font = font;
+    return true;
+}
+
+void do_render_world_hud_text_label(const NameLabelTex& label, const rf::Vector3& pos, float vertical_offset,
+    float height_world, WorldHUDRenderMode render_mode, bool stay_inside_fog, bool distance_scaling, rf::Color color)
+{
+    if (label.bm == -1 || label.w_px <= 0 || label.h_px <= 0)
+        return;
+
+    const WorldHUDView view = make_world_hud_view(pos, stay_inside_fog);
+    const float scale = distance_scaling ? world_hud_label_scale_from(view) : 1.0f;
+    const float h_world = height_world * scale;
+    const float w_world = h_world * (static_cast<float>(label.w_px) / static_cast<float>(label.h_px));
+
+    rf::Vector3 draw_pos = view.pos + camera_up() * (vertical_offset * scale);
+
+    rf::gr::set_color(color.red, color.green, color.blue, color.alpha);
+    rf::gr::set_texture(label.bm, -1);
+    rf::gr::bitmap_3d_angle_wh(&draw_pos, 0.0f, w_world, h_world, bitmap_mode_from(render_mode));
 }
 
 bool hill_vis_contested(HillInfo& h)
@@ -425,7 +478,7 @@ bool hill_vis_contested(HillInfo& h)
     return h.vis_contested;
 }
 
-static int get_world_hud_font(const float world_hud_text_scale) {
+int get_world_hud_font(const float world_hud_text_scale) {
     static constexpr int base_font_size = 14;
     static std::unordered_map<int, int> font_cache;
 
@@ -438,6 +491,13 @@ static int get_world_hud_font(const float world_hud_text_scale) {
     const std::string font_name = "boldfont.ttf:" + std::to_string(font_size);
     const int font_id = rf::gr::load_font(font_name.c_str());
     font_cache.emplace(font_size, font_id);
+    return font_id;
+}
+
+int get_world_hud_label_bitmap_font()
+{
+    // Texture resolution for world-space label quads, not a screen size; mips handle distance.
+    static const int font_id = rf::gr::load_font("boldfont.ttf:56");
     return font_id;
 }
 
@@ -528,8 +588,7 @@ static void render_koth_icon_for_hill(const HillInfo& h, WorldHUDRenderMode rm)
     }
 
     // hill name label
-    // Texture resolution for the world-space quad, not a screen size; mips handle distance.
-    static const int font = rf::gr::load_font("boldfont.ttf:56");
+    const int font = get_world_hud_label_bitmap_font();
     NameLabelTex& lbl = ensure_hill_name_tex(h, font);
 
     const float text_h_world = ring_scale * 0.55f;

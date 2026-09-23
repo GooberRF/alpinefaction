@@ -24,6 +24,7 @@
 #include "corona.h"
 #include "bag.h"
 #include "weather_region.h"
+#include "vehicle_factory.h"
 #include "projection_camera.h"
 
 // Forward declarations
@@ -91,6 +92,8 @@ void __fastcall CDedLevel_DeleteContents_hooked(CDedLevel* level, void* edx_unus
         static_cast<DedObject*>(c)->vmesh = nullptr;
     for (auto* b : props.bag_objects)
         static_cast<DedObject*>(b)->vmesh = nullptr;
+    for (auto* f : props.vehicle_factory_objects)
+        static_cast<DedObject*>(f)->vmesh = nullptr;
 
     // Let stock DeleteContents run — undo/redo cleanup skips Alpine objects
     // (found in master_objects), and loop 3 safely returns early for type > 0x16.
@@ -212,6 +215,13 @@ CodeInjection CDedLevel_LoadLevel_patch2{
                 }
                 if (chunk_id == alpine_projection_camera_chunk_id) {
                     projection_camera_deserialize_chunk(level, file, chunk_size);
+                    regs.eip = 0x0043090C;
+                }
+            }
+            // Vehicle factory chunk was introduced in rfl v306
+            if (file.check_version(306)) {
+                if (chunk_id == alpine_vehicle_factory_chunk_id) {
+                    vehicle_factory_deserialize_chunk(level, file, chunk_size);
                     regs.eip = 0x0043090C;
                 }
             }
@@ -911,6 +921,9 @@ CodeInjection CDedLevel_SaveLevel_patch{
         // Write weather region objects chunk
         weather_region_serialize_chunk(level, file);
 
+        // Write vehicle factory objects chunk
+        vehicle_factory_serialize_chunk(level, file);
+
         // Write projection camera objects chunk
         projection_camera_serialize_chunk(level, file);
 
@@ -1106,6 +1119,10 @@ CodeInjection CLevelDialog_OnInitDialog_patch{
         std::snprintf(buffer, sizeof(buffer), "%.3f", alpine_level_props.static_mesh_ambient_light_modifier);
         SetDlgItemTextA(hdlg, IDC_MESH_AMBIENT_LIGHT_MODIFIER, buffer);
         CheckDlgButton(hdlg, IDC_RF2_STYLE_GEOMOD, alpine_level_props.rf2_style_geomod ? BST_CHECKED : BST_UNCHECKED);
+        CheckDlgButton(hdlg, IDC_VEHICLE_FLIGHT_CEILING_ENABLE, alpine_level_props.vehicle_flight_ceiling_enabled ? BST_CHECKED : BST_UNCHECKED);
+        char ceiling_buffer[32];
+        std::snprintf(ceiling_buffer, sizeof(ceiling_buffer), "%.3f", alpine_level_props.vehicle_flight_ceiling);
+        SetDlgItemTextA(hdlg, IDC_VEHICLE_FLIGHT_CEILING, ceiling_buffer);
         CheckDlgButton(hdlg, IDC_LEGACY_LIGHTING, alpine_level_props.legacy_lighting ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hdlg, IDC_HIGHRES_LIGHTMAPS, alpine_level_props.highres_lightmaps ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hdlg, IDC_INVISIBLE_FACES_OCCLUDE, alpine_level_props.invisible_faces_occlude ? BST_CHECKED : BST_UNCHECKED);
@@ -1172,6 +1189,14 @@ CodeInjection CLevelDialog_OnOK_patch{
             alpine_level_props.static_mesh_ambient_light_modifier = modifier;
         }
         alpine_level_props.rf2_style_geomod = IsDlgButtonChecked(hdlg, IDC_RF2_STYLE_GEOMOD) == BST_CHECKED;
+        alpine_level_props.vehicle_flight_ceiling_enabled = IsDlgButtonChecked(hdlg, IDC_VEHICLE_FLIGHT_CEILING_ENABLE) == BST_CHECKED;
+        char ceiling_buffer[64] = {};
+        GetDlgItemTextA(hdlg, IDC_VEHICLE_FLIGHT_CEILING, ceiling_buffer, static_cast<int>(sizeof(ceiling_buffer)));
+        char* ceiling_end = nullptr;
+        float ceiling = std::strtof(ceiling_buffer, &ceiling_end);
+        if (ceiling_end != ceiling_buffer && std::isfinite(ceiling)) {
+            alpine_level_props.vehicle_flight_ceiling = ceiling;
+        }
         alpine_level_props.legacy_lighting = IsDlgButtonChecked(hdlg, IDC_LEGACY_LIGHTING) == BST_CHECKED;
         alpine_level_props.highres_lightmaps = IsDlgButtonChecked(hdlg, IDC_HIGHRES_LIGHTMAPS) == BST_CHECKED;
         alpine_level_props.invisible_faces_occlude = IsDlgButtonChecked(hdlg, IDC_INVISIBLE_FACES_OCCLUDE) == BST_CHECKED;

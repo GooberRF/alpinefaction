@@ -10,6 +10,9 @@ struct VsInput
 cbuffer ModelTransformBuffer : register(b0)
 {
     float4x3 world_mat;
+    // Per-draw UV0 offset. Zero for every draw that does not ask for one - set_model_transform
+    // clears it, so it cannot survive from one draw into the next.
+    float2 uv0_offset;
 };
 
 cbuffer ViewProjTransformBuffer : register(b1)
@@ -41,7 +44,7 @@ VsOutput main(VsInput input)
     float3 view_pos = mul(float4(world_pos, 1), view_mat);
     output.pos = mul(float4(view_pos, 1), proj_mat);
     output.norm = normalize(world_norm);
-    output.uv0 = input.uv0.xy + input.uv0.zw * time;
+    output.uv0 = input.uv0.xy + input.uv0.zw * time + uv0_offset;
     output.uv1 = input.uv1;
     output.color = input.color;
     output.world_pos_and_depth = float4(world_pos, view_pos.z);

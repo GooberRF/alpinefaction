@@ -16,6 +16,7 @@
 #include "../graphics/weather.h"
 #include "../multi/multi.h"
 #include "../multi/server_internal.h"
+#include "../multi/vehicles/vehicle_physics.h"
 #include "../main/main.h"
 #include "../misc/misc.h"
 #include "../rf/geometry.h"
@@ -2274,6 +2275,9 @@ CodeInjection process_destroy_cleanup_injection{
             room->room_to_render_with = nullptr;
             room->geo_cache = nullptr;
             room->face_list.clear();
+
+            // The pane is off face_list already, so the rebuild finds no faces and drops the body.
+            vehicle_physics_notify_room_geometry_changed(room);
         }
     },
 };
@@ -2314,6 +2318,9 @@ CodeInjection pregame_glass_render_cleanup_injection{
             }
             room->room_to_render_with = nullptr;
             room->geo_cache = nullptr;
+
+            // This client's level mesh was built before the server named the already-broken panes.
+            vehicle_physics_notify_room_geometry_changed(room);
         }
     },
 };
@@ -2615,8 +2622,9 @@ static void process_pending_geomod_effects()
     // Smoke emitters: replay FUN_00437230 with saved crater params.
     // Must run from per-frame hook (not State 3) because FUN_00437230 creates
     // emitter records that interact with FUN_00437180's linked list lifecycle.
+    // Raw: the carve already landed, so this record must not trigger a second vphys rebuild.
     while (!g_rf2_smoke_confirmed.empty()) {
-        rf::geomod_queue_add(&g_rf2_smoke_confirmed.front());
+        vehicle_physics_geomod_queue_add_raw(&g_rf2_smoke_confirmed.front());
         g_rf2_smoke_record_ptrs.push_back(&rf::g_geomod_pending_list.prev->parameters);
         g_rf2_smoke_confirmed.pop_front();
     }

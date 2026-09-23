@@ -340,6 +340,7 @@ namespace rf
     {
         PF_HIDE_FROM_CAMERA = 0x10,
         PF_KILL_AFTER_BLACKOUT = 0x200,
+        PF_IN_ENCLOSED_VEHICLE = 0x400, // set while boarding a $Use: "vehicle" entity, not turrets
         PF_END_LEVEL_AFTER_BLACKOUT = 0x1000,
     };
 
@@ -444,6 +445,10 @@ namespace rf
     static auto& game_get_gore_level = addr_as_ref<int()>(0x00436A20);
     static auto& game_set_gore_level = addr_as_ref<void(int gore_setting)>(0x00436A10);
     static auto& player_settings_apply_graphics_options = addr_as_ref<void(Player* player)>(0x004A8D20);
+    // Both are part of the vanilla boarding sequence (0x004A1DD8): zero the fpgun pivot data for
+    // the cockpit view, then drop any active zoom.
+    static auto& player_cockpit_reset = addr_as_ref<void(Player* player)>(0x004A8670);
+    static auto& player_fpgun_reset_zoom = addr_as_ref<void(Player* player)>(0x004AD8A0);
     static auto& local_screen_flash = addr_as_ref<void(Player* pp, uint8_t r, uint8_t g, uint8_t b, uint8_t a)>(0x00416450);
     static auto& g_player_flashlight_intensity = addr_as_ref<float>(0x005A00FC);
     static auto& g_player_flashlight_range = addr_as_ref<float>(0x005A0108);

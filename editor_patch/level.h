@@ -16,6 +16,7 @@
 void DestroyDedMesh(DedMesh* mesh);
 void DestroyDedCorona(DedCorona* corona);
 void DestroyDedWeatherRegion(DedWeatherRegion* weather_region);
+void DestroyDedVehicleFactory(DedVehicleFactory* factory);
 void DestroyDedProjectionCamera(DedProjectionCamera* camera);
 
 constexpr int alpine_props_chunk_id = 0x0AFBA5ED;
@@ -25,6 +26,7 @@ constexpr int alpine_corona_chunk_id = 0x0AFBAE03;
 constexpr int alpine_bag_chunk_id = 0x0AFBAE04;
 constexpr int alpine_brush_group_chunk_id = 0x0AFBAE05; // brush metadata in .rfg group files only
 constexpr int alpine_weather_region_chunk_id = 0x0AFBAE06;
+constexpr int alpine_vehicle_factory_chunk_id = 0x0AFBAE07;
 constexpr int alpine_projection_camera_chunk_id = 0x0AFBAE08;
 
 // Glacier saves new RFL chunks for its own purposes (metadata). Alpine Faction can
@@ -423,6 +425,10 @@ struct AlpineLevelProperties
     std::vector<int32_t> no_shadow_cast_brush_uids; // brushes whose faces never occlude a baked ray
     bool meshes_occlude = false; // alpine mesh objects cast baked shadows
 
+    // v6
+    bool vehicle_flight_ceiling_enabled = false;   // mapper opted into an altitude ceiling for flyers
+    float vehicle_flight_ceiling = 0.0f;           // world Y (RF up axis) the ceiling sits at
+
     // Alpine mesh objects (stored separately from stock object VArrays)
     std::vector<DedMesh*> mesh_objects;
 
@@ -438,13 +444,16 @@ struct AlpineLevelProperties
     // Alpine weather region objects
     std::vector<DedWeatherRegion*> weather_region_objects;
 
+    // Alpine vehicle factory objects
+    std::vector<DedVehicleFactory*> vehicle_factory_objects;
+
     // Alpine projection camera objects
     std::vector<DedProjectionCamera*> projection_camera_objects;
 
     // Retained Glacier RFL sections (0x6ED-prefixed IDs).
     std::vector<RetainedRflChunk> retained_chunks;
 
-    static constexpr std::uint32_t current_alpine_chunk_version = 5u;
+    static constexpr std::uint32_t current_alpine_chunk_version = 6u;
 
     Vector3 sun_to_light_dir() const
     {
@@ -516,6 +525,8 @@ struct AlpineLevelProperties
         alpha_faces_occlude = false;
         no_shadow_cast_brush_uids.clear();
         meshes_occlude = false;
+        vehicle_flight_ceiling_enabled = false;
+        vehicle_flight_ceiling = 0.0f;
         for (auto* m : mesh_objects) {
             DestroyDedMesh(m);
         }
@@ -546,6 +557,11 @@ struct AlpineLevelProperties
             DestroyDedWeatherRegion(w);
         }
         weather_region_objects.clear();
+
+        for (auto* f : vehicle_factory_objects) {
+            DestroyDedVehicleFactory(f);
+        }
+        vehicle_factory_objects.clear();
 
         for (auto* c : projection_camera_objects) {
             DestroyDedProjectionCamera(c);
@@ -618,6 +634,9 @@ struct AlpineLevelProperties
             file.write<int32_t>(no_shadow_cast_brush_uids[i]);
         }
         file.write<std::uint8_t>(meshes_occlude ? 1u : 0u);
+        // v6
+        file.write<std::uint8_t>(vehicle_flight_ceiling_enabled ? 1u : 0u);
+        file.write<float>(vehicle_flight_ceiling);
     }
 
     void Deserialize(rf::File& file, std::size_t chunk_len)
@@ -839,6 +858,15 @@ struct AlpineLevelProperties
             meshes_occlude = (u8 != 0);
             xlog::debug("[AlpineLevelProps] enable_sun {} yaw {} pitch {} intensity {} no_shadow_cast {}",
                 enable_sun, sun_yaw, sun_pitch, sun_intensity, nsc_count);
+        }
+
+        if (version >= 6) {
+            std::uint8_t u8 = 0;
+            if (!read_bytes(&u8, sizeof(u8)))
+                return;
+            vehicle_flight_ceiling_enabled = (u8 != 0);
+            if (!read_bytes(&vehicle_flight_ceiling, sizeof(vehicle_flight_ceiling)))
+                return;
         }
     }
 };

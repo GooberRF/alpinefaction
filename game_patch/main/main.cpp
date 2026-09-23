@@ -37,6 +37,9 @@
 #include "../multi/bagman.h"
 #include "../multi/jetpack.h"
 #include "../multi/salvage.h"
+#include "../multi/vehicles/vehicle.h"
+#include "../multi/vehicles/vehicle_markers.h"
+#include "../multi/vehicles/vehicle_physics.h"
 #include "../multi/server.h"
 #include "../multi/server_internal.h"
 #include "../multi/alpine_packets.h"
@@ -169,6 +172,8 @@ FunHook<int()> rf_do_frame_hook{
         bagman_do_frame();
         jetpack_do_frame();
         salvage_client_do_frame();      // client-side Salvage carried-flag attachment
+        vehicle_client_do_frame();      // vehicle trigger state of the local firing seat owner
+        vehicle_physics_do_frame();     // Bullet vehicle sim: body lifecycle (the step runs after the input read)
         hud_pit_queue_auto_spectate();  // client-side Pit auto-spectate
         gungame_client_do_frame();      // client-side Gun Game level-up notification watcher
         alpine_mesh_do_frame();
@@ -199,7 +204,21 @@ CodeInjection after_level_render_hook{
         debug_render();
         waypoints_render_debug();
         client_bot_render_debug();
+        vehicle_physics_render_debug();
+        vehicle_markers_render();   // 3D phase: leftovers only; the room pass below draws the rest
         hud_world_do_frame();
+    },
+};
+
+// The room's liquid surface is rendered a few instructions later, so a marker queued here is
+// blended under the water instead of being depth-rejected by it.
+CodeInjection before_room_liquid_render_hook{
+    0x004D40F6,
+    [](auto& regs) {
+        if (!is_headless_mode()) {
+            rf::GRoom* room = regs.edi;
+            vehicle_markers_render_room(room);
+        }
     },
 };
 
@@ -287,8 +306,15 @@ FunHook<int(rf::String&, rf::String&, char*)> level_load_hook{
         }
 
         int ret = level_load_hook.call_target(level_filename, save_filename, error);
-        if (ret != 0)
+        if (ret != 0) {
             xlog::warn("Loading failed: {}", error);
+            // level_init_post never runs on a failed load, so refresh here instead: the advertised
+            // flags would otherwise stay as they were for whatever level loaded last.
+            if (rf::is_multi && rf::is_server) {
+                initialize_game_info_server_flags();
+                af_send_server_info_packet_to_all();
+            }
+        }
         else {
             multi_spectate_level_init();
         }
@@ -589,6 +615,7 @@ extern "C" DWORD __declspec(dllexport) Init([[maybe_unused]] void* unused)
     cleanup_game_hook.install();
     rf_do_frame_hook.install();
     after_level_render_hook.install();
+    before_room_liquid_render_hook.install();
     after_frame_render_hook.install();
     level_load_hook.install();
     level_init_post_hook.install();

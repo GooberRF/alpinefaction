@@ -55,6 +55,19 @@ int tbl_parse_damage_type(const std::string& name)
     return -1;
 }
 
+// $Use: names, in the engine parser's own order and values (RF.exe 0x00489610, table 0x0059F978).
+static int tbl_parse_use_function(const std::string& name)
+{
+    static const struct { const char* name; int value; } uses[] = {
+        {"vehicle", 1}, {"switch", 2}, {"command", 3}, {"turret", 4},
+        {"monitor", 5}, {"medic", 6}, {"ai response", 9}, {"play_sound", 10},
+    };
+    for (auto& u : uses) {
+        if (_stricmp(name.c_str(), u.name) == 0) return u.value;
+    }
+    return 0;
+}
+
 // Clutter flag name to bit mapping
 static int parse_clutter_flag(const std::string& name)
 {
@@ -324,6 +337,9 @@ static void parse_entity_tbl()
         if (tok.match("$V3D Filename:")) {
             current->v3d_filename = tok.read_string();
         }
+        else if (tok.match("$Use:")) {
+            current->use_function = tbl_parse_use_function(tok.read_string());
+        }
         else if (tok.match("$Flags:") || tok.match("$Flags2:")) {
             // Parse flag list: ("flag1" "flag2" ...)
             if (tok.match("(")) {
@@ -397,6 +413,22 @@ static void parse_entity_tbl()
     }
 
     xlog::info("entity_tbl: parsed {} entity classes", g_entity_classes.size());
+}
+
+std::vector<std::string> entity_tbl_class_names_with_use(std::initializer_list<int> use_values)
+{
+    parse_entity_tbl();
+    std::vector<std::string> names;
+    for (const auto& kv : g_entity_classes) {
+        if (std::find(use_values.begin(), use_values.end(), kv.second.use_function)
+            != use_values.end()) {
+            names.push_back(kv.second.class_name);
+        }
+    }
+    std::sort(names.begin(), names.end(), [](const std::string& a, const std::string& b) {
+        return _stricmp(a.c_str(), b.c_str()) < 0;
+    });
+    return names;
 }
 
 const EntityClassInfo* entity_tbl_find(const char* class_name)

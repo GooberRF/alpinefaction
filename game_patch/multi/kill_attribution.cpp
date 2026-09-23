@@ -19,6 +19,7 @@
 #include "awards.h"
 #include "kill_attribution.h"
 #include "mutators.h"
+#include "vehicles/vehicle.h"
 
 // Server-side capture of what actually landed the killing blow. The stock obj_kill packet
 // carries no weapon at all, so every client used to guess it from replicated held-weapon
@@ -229,6 +230,14 @@ FunHook<float(int, float, int, int, int, rf::Vector3*, int, char)> obj_damage_ho
     0x004892C0,
     [](int victim_handle, float damage, int killer_handle, int weapon_type, int damage_type,
        rf::Vector3* pos, int killer_uid, char flags) {
+        // On the RAW killer argument, before the remap below: the tuning table exempts every killer -1 blow.
+        damage = vehicle_scale_damage(victim_handle, killer_handle, damage_type, damage);
+
+        // Ahead of the early-out below: the stock friendly-fire gate inside obj_damage reads the killer argument.
+        if (!vehicle_filter_obj_damage(victim_handle, &killer_handle, damage_type)) {
+            return 0.0f;
+        }
+
         if (!kill_attribution_is_active()) {
             return obj_damage_hook.call_target(victim_handle, damage, killer_handle, weapon_type, damage_type, pos, killer_uid, flags);
         }
@@ -441,8 +450,12 @@ std::vector<uint8_t> kill_attribution_take_assists(uint8_t victim_player_id, uin
     return assists;
 }
 
+static_assert(rf::DT_COUNT <= 16, "rf::DamageType no longer fits the kill-info damage nibble");
+static_assert(VDC_COUNT <= 16, "VehicleDamageClass no longer fits the kill-info vehicle nibble");
+
 void kill_attribution_record(uint8_t killed_player_id, uint8_t killer_player_id, int weapon_type,
-                             uint8_t flags, int damage_type, std::vector<uint8_t> assist_player_ids)
+                             uint8_t flags, int damage_type, int vehicle_class,
+                             std::vector<uint8_t> assist_player_ids)
 {
     KillAttributionRecord record{};
     record.attr.killer_player_id = killer_player_id;
@@ -450,8 +463,12 @@ void kill_attribution_record(uint8_t killed_player_id, uint8_t killer_player_id,
         record.attr.weapon_type = static_cast<uint8_t>(weapon_type);
     }
     record.attr.flags = flags;
-    if (damage_type >= 0 && damage_type < 0xFF) {
+    if (damage_type >= 0 && damage_type < rf::DT_COUNT) {
         record.attr.damage_type = static_cast<uint8_t>(damage_type);
+    }
+    if (vehicle_class >= 0 && vehicle_class < VDC_COUNT) {
+        record.attr.vehicle_class = static_cast<uint8_t>(vehicle_class);
+        record.attr.flags |= AF_KILL_FLAG_VEHICLE;
     }
     record.attr.assist_player_ids = std::move(assist_player_ids);
     record.recorded_at = std::chrono::steady_clock::now();

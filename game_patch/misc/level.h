@@ -17,6 +17,7 @@ constexpr int alpine_mesh_chunk_id = 0x0AFBAE01;
 constexpr int alpine_corona_chunk_id = 0x0AFBAE03;
 constexpr int alpine_bag_chunk_id = 0x0AFBAE04;
 constexpr int alpine_weather_region_chunk_id = 0x0AFBAE06;
+constexpr int alpine_vehicle_factory_chunk_id = 0x0AFBAE07;
 constexpr int alpine_projection_camera_chunk_id = 0x0AFBAE08;
 
 // Unit vector pointing TOWARD the sun. The light travel direction is its negation.
@@ -71,6 +72,10 @@ struct AlpineLevelProperties
     bool alpha_faces_occlude = false; // editor-side bake switch, no effect in game
     // no_shadow_cast_brush_uids is editor-only (bake occluder exclusion); read and discarded
     bool meshes_occlude = false; // editor-side bake switch, no effect in game
+
+    // v6
+    bool vehicle_flight_ceiling_enabled = false;   // mapper opted into an altitude ceiling for flyers
+    float vehicle_flight_ceiling = 0.0f;           // world Y (RF up axis) the ceiling sits at
 
     // should match SanitizeSunProperties in editor_patch\level.h
     // A level file can carry anything; these floats end up in the lights constant buffer and in the
@@ -337,6 +342,17 @@ struct AlpineLevelProperties
             xlog::debug("[AlpineLevelProps] enable_sun {} yaw {} pitch {} intensity {} no_shadow_cast {}",
                 enable_sun, sun_yaw, sun_pitch, sun_intensity, nsc_count);
         }
+
+        if (version >= 6) {
+            std::uint8_t u8 = 0;
+            if (!read_bytes(&u8, sizeof(u8)))
+                return;
+            vehicle_flight_ceiling_enabled = (u8 != 0);
+            if (!read_bytes(&vehicle_flight_ceiling, sizeof(vehicle_flight_ceiling)))
+                return;
+            xlog::debug("[AlpineLevelProps] vehicle_flight_ceiling {} (enabled {})",
+                        vehicle_flight_ceiling, vehicle_flight_ceiling_enabled);
+        }
     }
 };
 
@@ -451,6 +467,25 @@ struct AlpineCoronaInfo {
 
 void alpine_corona_load_chunk(rf::File& file, std::size_t chunk_len);
 void alpine_corona_clear_state();
+
+// Alpine vehicle factory info, loaded from RFL (v306+).
+struct AlpineVehicleFactoryInfo {
+    int32_t uid = -1;
+    rf::Vector3 pos{};
+    rf::Matrix3 orient{};
+    std::string script_name;
+    std::string vehicle_class;
+    float respawn_delay_s = 30.0f;
+    // -1 none, 0 red, 1 blue; the wire and the RFL carry this as a u8 with 0xFF for none.
+    int32_t team = -1;
+    bool lock_to_team = true;
+    bool active_by_default = true;
+};
+
+// Implemented in multi/vehicles/vehicle_spawn.cpp.
+void vehicle_factory_load_chunk(rf::File& file, std::size_t chunk_len);
+void vehicle_factory_clear_state();
+bool vehicle_level_has_factories();
 
 // Gas region info, loaded from stock RFL chunk 0xB00
 struct GasRegionInfo {

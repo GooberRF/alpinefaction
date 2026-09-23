@@ -100,7 +100,7 @@ FONT 8, "MS Sans Serif", 0, 0, 1
 }
 
 LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
-IDD_LEVEL_PROPERTIES DIALOGEX 0, 0, 298, 530
+IDD_LEVEL_PROPERTIES DIALOGEX 0, 0, 298, 558
 STYLE DS_MODALFRAME | DS_SETFONT | WS_CAPTION | WS_VISIBLE | WS_POPUP | WS_SYSMENU
 CAPTION "Level Properties"
 FONT 8, "MS Sans Serif"
@@ -144,7 +144,7 @@ FONT 8, "MS Sans Serif"
     DEFPUSHBUTTON   "OK", IDOK, 241, 7, 50, 14
     PUSHBUTTON      "Cancel", IDCANCEL, 241, 24, 50, 14
 
-    GROUPBOX        "Advanced Options", -1, 7, 268, 284, 150
+    GROUPBOX        "Advanced Options", -1, 7, 268, 284, 176
     AUTOCHECKBOX    "Legacy Cyclic_Timer events", IDC_LEGACY_CYCLIC_TIMERS, 13, 280, 175, 10
     AUTOCHECKBOX    "Legacy movers", IDC_LEGACY_MOVERS, 13, 292, 175, 10
     AUTOCHECKBOX    "Player starts with headlamp", IDC_STARTS_WITH_HEADLAMP, 13, 304, 175, 10
@@ -158,26 +158,30 @@ FONT 8, "MS Sans Serif"
     AUTOCHECKBOX    "Alpha-textured faces block light", IDC_ALPHA_FACES_OCCLUDE, 13, 392, 200, 10
     AUTOCHECKBOX    "Meshes block light", IDC_MESHES_OCCLUDE, 13, 404, 200, 10
 
-    GROUPBOX        "Sunlight", -1, 7, 422, 284, 100
-    AUTOCHECKBOX    "Enable directional sunlight", IDC_SUN_ENABLE, 13, 434, 160, 10
-    PUSHBUTTON      "Set from camera", IDC_SUN_SET_FROM_CAMERA, 178, 431, 70, 14
-    LTEXT           "Yaw:", -1, 13, 450, 18, 8
-    EDITTEXT        IDC_SUN_YAW, 34, 448, 34, 14, ES_AUTOHSCROLL
-    LTEXT           "Pitch:", -1, 74, 450, 21, 8
-    EDITTEXT        IDC_SUN_PITCH, 97, 448, 34, 14, ES_AUTOHSCROLL
-    LTEXT           "Intensity:", -1, 137, 450, 33, 8
-    EDITTEXT        IDC_SUN_INTENSITY, 172, 448, 34, 14, ES_AUTOHSCROLL
-    LTEXT           "Spread:", -1, 212, 450, 28, 8
-    EDITTEXT        IDC_SUN_SPREAD_ANGLE, 242, 448, 34, 14, ES_AUTOHSCROLL
-    LTEXT           "Color:", -1, 13, 469, 22, 8
-    CONTROL         "List1", IDC_SUN_COLOR_SWATCH, WC_LISTVIEW, WS_BORDER | LVS_NOSCROLL | LVS_ICON, 43, 466, 40, 14, WS_EX_STATICEDGE
-    PUSHBUTTON      "Change color", IDC_SUN_COLOR_CHANGE, 89, 466, 50, 14
-    EDITTEXT        IDC_SUN_COLOR_VALUE, 145, 466, 57, 14, ES_AUTOHSCROLL
-    AUTOCHECKBOX    "Casts shadows (lightmaps)", IDC_SUN_CAST_BAKED_SHADOWS, 13, 484, 120, 10
-    AUTOCHECKBOX    "Affects mesh lighting", IDC_SUN_AFFECTS_MESHES, 148, 484, 130, 10
-    AUTOCHECKBOX    "Scale mesh sunlight by lightmaps", IDC_SUN_MESH_MODE_SCALE, 13, 496, 130, 10
-    AUTOCHECKBOX    "Aligns dynamic shadows", IDC_SUN_DRIVES_SHADOWMAP_DIR, 148, 496, 130, 10
-    AUTOCHECKBOX    "Water blocks sunlight", IDC_SUN_LIQUID_OCCLUDES, 13, 508, 130, 10
+    AUTOCHECKBOX    "Limit vehicle flight ceiling", IDC_VEHICLE_FLIGHT_CEILING_ENABLE, 13, 416, 190, 10
+    LTEXT           "Ceiling height (Y):", -1, 30, 431, 120, 8
+    EDITTEXT        IDC_VEHICLE_FLIGHT_CEILING, 90, 428, 40, 14, ES_AUTOHSCROLL
+
+    GROUPBOX        "Sunlight", -1, 7, 450, 284, 100
+    AUTOCHECKBOX    "Enable directional sunlight", IDC_SUN_ENABLE, 13, 462, 160, 10
+    PUSHBUTTON      "Set from camera", IDC_SUN_SET_FROM_CAMERA, 178, 459, 70, 14
+    LTEXT           "Yaw:", -1, 13, 478, 18, 8
+    EDITTEXT        IDC_SUN_YAW, 34, 476, 34, 14, ES_AUTOHSCROLL
+    LTEXT           "Pitch:", -1, 74, 478, 21, 8
+    EDITTEXT        IDC_SUN_PITCH, 97, 476, 34, 14, ES_AUTOHSCROLL
+    LTEXT           "Intensity:", -1, 137, 478, 33, 8
+    EDITTEXT        IDC_SUN_INTENSITY, 172, 476, 34, 14, ES_AUTOHSCROLL
+    LTEXT           "Spread:", -1, 212, 478, 28, 8
+    EDITTEXT        IDC_SUN_SPREAD_ANGLE, 242, 476, 34, 14, ES_AUTOHSCROLL
+    LTEXT           "Color:", -1, 13, 497, 22, 8
+    CONTROL         "List1", IDC_SUN_COLOR_SWATCH, WC_LISTVIEW, WS_BORDER | LVS_NOSCROLL | LVS_ICON, 43, 494, 40, 14, WS_EX_STATICEDGE
+    PUSHBUTTON      "Change color", IDC_SUN_COLOR_CHANGE, 89, 494, 50, 14
+    EDITTEXT        IDC_SUN_COLOR_VALUE, 145, 494, 57, 14, ES_AUTOHSCROLL
+    AUTOCHECKBOX    "Casts shadows (lightmaps)", IDC_SUN_CAST_BAKED_SHADOWS, 13, 512, 120, 10
+    AUTOCHECKBOX    "Affects mesh lighting", IDC_SUN_AFFECTS_MESHES, 148, 512, 130, 10
+    AUTOCHECKBOX    "Scale mesh sunlight by lightmaps", IDC_SUN_MESH_MODE_SCALE, 13, 524, 130, 10
+    AUTOCHECKBOX    "Aligns dynamic shadows", IDC_SUN_DRIVES_SHADOWMAP_DIR, 148, 524, 130, 10
+    AUTOCHECKBOX    "Water blocks sunlight", IDC_SUN_LIQUID_OCCLUDES, 13, 536, 130, 10
 }
 
 LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
@@ -916,6 +920,33 @@ FONT 8, "MS Sans Serif"
     AUTORADIOBUTTON "Z", IDC_MIRROR_Z, 15, 40, 30, 10
     DEFPUSHBUTTON   "OK", IDOK, 66, 8, 48, 14
     PUSHBUTTON      "Cancel", IDCANCEL, 66, 26, 48, 14
+}
+
+// Alpine Vehicle Factory Properties dialog
+LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
+IDD_ALPINE_VEHICLE_FACTORY_PROPERTIES DIALOGEX 0, 0, 240, 139
+STYLE DS_MODALFRAME | WS_CAPTION | WS_VISIBLE | WS_POPUP | WS_SYSMENU
+CAPTION "Vehicle Factory Properties"
+FONT 8, "MS Sans Serif", 0, 0, 0
+{
+    LTEXT           "Script Name:", -1, 7, 11, 48, 8
+    EDITTEXT        IDC_VEHICLE_FACTORY_SCRIPT_NAME, 64, 9, 169, 14, ES_AUTOHSCROLL
+
+    LTEXT           "Class:", -1, 7, 33, 48, 8
+    COMBOBOX        IDC_VEHICLE_FACTORY_CLASS, 64, 31, 140, 120, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+
+    LTEXT           "Respawn Delay:", -1, 7, 55, 54, 8
+    EDITTEXT        IDC_VEHICLE_FACTORY_RESPAWN_DELAY, 64, 53, 44, 14, ES_AUTOHSCROLL
+    LTEXT           "seconds", -1, 112, 55, 32, 8
+
+    LTEXT           "Team:", -1, 7, 77, 48, 8
+    COMBOBOX        IDC_VEHICLE_FACTORY_TEAM, 64, 75, 60, 60, CBS_DROPDOWNLIST | WS_TABSTOP
+    AUTOCHECKBOX    "Lock to team", IDC_VEHICLE_FACTORY_LOCK_TEAM, 132, 77, 101, 10
+
+    AUTOCHECKBOX    "Spawn at level start", IDC_VEHICLE_FACTORY_ACTIVE, 64, 97, 100, 10
+
+    DEFPUSHBUTTON   "OK", IDOK, 129, 118, 50, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 183, 118, 50, 14
 }
 
 // Brush-to-mesh export options dialog

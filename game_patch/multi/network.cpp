@@ -36,6 +36,8 @@
 #include "server.h"
 #include "server_internal.h"
 #include "salvage.h"
+#include "vehicles/vehicle.h"
+#include "vehicles/vehicle_physics.h"
 #include "bagman.h"
 #include "gungame.h"
 #include "sprays.h"
@@ -289,7 +291,12 @@ enum packet_type : uint8_t {
     af_pit_roster          = 0x61,
     af_gungame_order       = 0x62,
     af_salvage_state       = 0x63,
-    af_crit_shot           = 0x64
+    af_crit_shot           = 0x64,
+    af_vehicle_state       = 0x65,
+    af_vehicle_fire        = 0x66,
+    af_vehicle_health      = 0x67,
+    af_vehicle_orient      = 0x68,
+    af_vehicle_factory_state = 0x69
 };
 
 // client -> server
@@ -316,7 +323,9 @@ std::array g_server_side_packet_whitelist{
     rcon,
     af_ping_location_req,
     af_client_req,
-    af_spectate_start
+    af_spectate_start,
+    af_vehicle_fire,
+    af_vehicle_orient
 };
 
 // server -> client
@@ -379,7 +388,12 @@ std::array g_client_side_packet_whitelist{
     af_pit_roster,
     af_gungame_order,
     af_salvage_state,
-    af_crit_shot
+    af_crit_shot,
+    af_vehicle_state,
+    af_vehicle_fire,
+    af_vehicle_health,
+    af_vehicle_orient,
+    af_vehicle_factory_state
 };
 // clang-format on
 
@@ -1369,7 +1383,9 @@ CodeInjection process_obj_update_check_flags_injection{
         [](auto& regs) {
             auto stack_frame = regs.esp + 0x9C;
             rf::Player* pp = addr_as_ref<rf::Player*>(stack_frame - 0x6C);
-            int flags = regs.ebx;
+            // Only BL carries this row's flags byte; the rest of EBX is stale from the previous row.
+            const int ebx = regs.ebx;
+            int flags = ebx & 0xFF;
             rf::Entity* ep = regs.edi;
             bool valid = true;
             if (rf::is_server) {
@@ -1379,9 +1395,11 @@ CodeInjection process_obj_update_check_flags_injection{
                     valid = false;
                 }
                 else if (ep && ep->handle != pp->entity_handle) {
-                    xlog::trace("Invalid obj_update entity {:x} {:x} {}", ep->handle, pp->entity_handle,
-                        pp->name.c_str());
-                    valid = false;
+                    if (!vehicle_is_driver_obj_update_row(pp, ep, flags)) {
+                        xlog::trace("Invalid obj_update entity {:x} {:x} {}", ep->handle, pp->entity_handle,
+                            pp->name.c_str());
+                        valid = false;
+                    }
                 }
                 else if (flags & (0x4 | 0x20 | 0x80)) { // OUF_WEAPON_TYPE | OUF_HEALTH_ARMOR | OUF_ARMOR_STATE
                     xlog::info("Invalid obj_update flags {:x}", flags);
@@ -1449,11 +1467,19 @@ CodeInjection process_obj_update_weapon_fire_injection{
         bool alt_fire = flags & ouf_alt_fire;
         void multi_turn_weapon_on(rf::Entity* ep, rf::Player* pp, bool alt_fire);
         void multi_turn_weapon_off(rf::Entity* ep);
-        if (is_on) {
-            multi_turn_weapon_on(entity, pp, alt_fire);
+        // Vehicle weapon state comes from af_vehicle_fire; driver obj_update rows have the fire bits stripped.
+        if (rf::is_server && vehicle_is_synced_entity_type(entity)) {
+            regs.eip = 0x0047E346;
+            return;
         }
-        else {
-            multi_turn_weapon_off(entity);
+        // The firing seat owner already drives the weapon locally; the server echo is a round trip late.
+        if (!vehicle_local_owns_firing_seat(entity)) {
+            if (is_on) {
+                multi_turn_weapon_on(entity, pp, alt_fire);
+            }
+            else {
+                multi_turn_weapon_off(entity);
+            }
         }
         regs.eip = 0x0047E346;
     },
@@ -2952,7 +2978,9 @@ FunHook<void()> multi_stop_hook{
         reset_local_pending_game_type(); // clear pending game type when leaving
         salvage_on_multi_shutdown(); // put the flag_red item class back to items.tbl
         bagman_on_multi_shutdown();  // put the amp aura bitmap back to its stock value
-        gungame_on_multi_shutdown(); // put the Jeep Gun mesh + damage back to weapons.tbl
+        vehicle_on_multi_shutdown(); // drop the per-level vehicle/turret records
+        vehicle_physics_on_multi_shutdown(); // tear down the Bullet world with the session
+        gungame_on_multi_shutdown(); // after the vehicle revert: weapons.tbl overrides restore LIFO
         mutators_on_multi_shutdown(); // put the level's own gravity back
         weather_clear_regions(); // weather regions belong to the level being left
         projector_clear_all(); // Display_Projection feeds and their render targets are level-scoped

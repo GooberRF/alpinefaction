@@ -187,7 +187,16 @@ namespace gr::d3d11
             const rf::Vector3& pos, const rf::Matrix3& orient);
 
     private:
-        void draw_cached_mesh(rf::VifLodMesh *lod_mesh, BaseMeshRenderCache& render_cache, const rf::MeshRenderParams& params, int lod_index, bool skip_ambient_cache = false);
+        // Per-draw UV offset, applied only to batches drawn with the claiming hull's belt texture.
+        struct UvScroll
+        {
+            bool active = false;
+            int config = -1; // vehicle tread table row that claimed the draw
+            float u = 0.0f;
+            float v = 0.0f;
+        };
+
+        void draw_cached_mesh(rf::VifLodMesh *lod_mesh, BaseMeshRenderCache& render_cache, const rf::MeshRenderParams& params, int lod_index, bool skip_ambient_cache = false, const UvScroll& uv_scroll = {});
 
         ComPtr<ID3D11Device> device_;
         RenderContext& render_context_;

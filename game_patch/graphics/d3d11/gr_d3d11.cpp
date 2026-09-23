@@ -1323,6 +1323,12 @@ namespace gr::d3d11
             return;
         }
 
+        // Vehicle and turret hulls are static meshes, claimed by the rendering entity handle. A claimed draw must
+        // return before the weapon-mesh inheritance below, which would paint a character's outline on it.
+        if (outline_renderer_->maybe_queue_static_outline(lod_mesh, lod_index, pos, orient)) {
+            return;
+        }
+
         // Queue outline for third-person weapon meshes.
         // The game renders weapon meshes (MRF_CUSTOM_AMBIENT_COLOR) immediately after
         // the owning character mesh, so current_character_outline tracks the association.

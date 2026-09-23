@@ -32,6 +32,7 @@
 #include "../multi/gametype.h"
 #include "../multi/server_internal.h"
 #include "../multi/mutators.h"
+#include "../multi/vehicles/vehicle.h"
 #include "../graphics/weather.h"
 #include "../misc/alpine_options.h"
 #include "../misc/misc.h"
@@ -598,7 +599,11 @@ FunHook<void(rf::Entity*)> entity_on_dead_hook{
             rf::activate_all_events_of_type(rf::EventType::AF_When_Dead, ep->handle, -1, true);
         }
 
+        // entity_die kills the occupants and then frees the seats with entity_detach_leech,
+        // which the vehicle module's exit broadcast never sees, so it announces them here.
+        vehicle_before_entity_die(ep);
         entity_on_dead_hook.call_target(ep);
+        vehicle_after_entity_die(ep);
     },
 };
 
@@ -913,8 +918,18 @@ CallHook<void(rf::Player*, int, bool, bool)> fpgun_riot_shield_break_switch_weap
 FunHook<void(rf::Entity*)> entity_delete_hook{
     0x00424F40,
     [](rf::Entity* ep) {
+        int fly_sound_slot = -1;
         if (ep) {
             entity_rate_limit_on_entity_delete(ep->handle);
+            fly_sound_slot = ep->fly_sound_ambient_handle;
+            // Stock entity_delete stops the move loop (+0x80C) and the weapon loop (+0x81C) but
+            // never the drill loop; entity_driller_do_frame (0x00421310) is the only other place
+            // that would, and a dead entity never reaches it. A driller killed mid-carve leaves
+            // its 3D loop playing for the rest of the level.
+            if (ep->driller_sound_handle >= 0) {
+                rf::snd_stop(ep->driller_sound_handle);
+                ep->driller_sound_handle = -1;
+            }
             if (rf::is_multi) {
                 // Silent removal, no shatter debris: the shield did not break.
                 riot_shield_remove_silently(ep);
@@ -923,6 +938,17 @@ FunHook<void(rf::Entity*)> entity_delete_hook{
         }
 
         entity_delete_hook.call_target(ep);
+
+        // Stock entity_delete only zeroes the fly sound's ambient volume and clears the entity's
+        // slot index - it never frees the slot itself, so every destroyed entity with a $FlySnd
+        // permanently consumes one of the 25 ambient slots.
+        if (fly_sound_slot >= 0 && fly_sound_slot < static_cast<int>(std::size(rf::ambient_sounds))) {
+            auto& ambient_snd = rf::ambient_sounds[fly_sound_slot];
+            if (ambient_snd.sig >= 0) {
+                rf::snd_pc_stop(ambient_snd.sig);
+            }
+            rf::ambient_sound_reset(&ambient_snd);
+        }
     },
 };
 

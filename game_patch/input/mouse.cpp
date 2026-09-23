@@ -16,6 +16,7 @@
 #include "../hud/multi_spectate.h"
 #include "mouse.h"
 #include "../multi/multi.h"
+#include "../multi/vehicles/vehicle.h"
 #include "input.h"
 
 // Raw mouse delta accumulators — captured in mouse_get_delta_hook, then consumed
@@ -30,8 +31,10 @@ static bool is_freelook_camera()
         && rf::local_player->cam->mode == rf::CameraMode::CAMERA_FREELOOK;
 }
 
-// Sub-pixel remainder accumulators for vehicle mouse sensitivity scaling.
-static float g_vehicle_mouse_dx_rem = 0.0f, g_vehicle_mouse_dy_rem = 0.0f;
+// The seat that steers a hull reads the mouse as a RATE (controls_read 0x00430B79): counts x sensitivity
+// x this / frametime. Modern mode scales it here rather than the integer counts, which would quantize.
+static constexpr float stock_hull_steer_mouse_scale = 100.0f; // 0x005894B4, a pooled constant
+static float g_hull_steer_mouse_scale = stock_hull_steer_mouse_scale;
 
 static float scope_sensitivity_value = 0.25f;
 static float scanner_sensitivity_value = 0.25f;
@@ -40,8 +43,6 @@ static void reset_mouse_delta_accumulators()
 {
     g_camera_mouse_dx = 0;
     g_camera_mouse_dy = 0;
-    g_vehicle_mouse_dx_rem = 0.0f;
-    g_vehicle_mouse_dy_rem = 0.0f;
 }
 
 static float applied_static_sensitivity_value = 0.25f; // value written by AsmWriter
@@ -230,6 +231,11 @@ FunHook<void(int&, int&, int&)> mouse_get_delta_hook{
     [](int& dx, int& dy, int& dz) {
         mouse_get_delta_hook.call_target(dx, dy, dz); // fills dz (scroll wheel)
 
+        constexpr float modern_hull_steer_factor = 0.08f;
+        g_hull_steer_mouse_scale = g_alpine_game_config.mouse_scale == 2
+            ? stock_hull_steer_mouse_scale * modern_hull_steer_factor
+            : stock_hull_steer_mouse_scale;
+
         // Nothing to do in Classic mode or outside gameplay.
         if (!rf::keep_mouse_centered || g_alpine_game_config.mouse_scale == 0) {
             reset_mouse_delta_accumulators();
@@ -258,24 +264,17 @@ FunHook<void(int&, int&, int&)> mouse_get_delta_hook{
 
         // In Raw/Modern mode: capture raw deltas for centralized angle
         // computation and zero them so RF does not apply its own scaling.
-        // Skip when in a vehicle (RF needs the deltas to steer), but scale
-        // them down to stay consistent with the camera formula feel.
-        bool in_vehicle = rf::local_player_entity &&
-            rf::entity_in_vehicle(rf::local_player_entity);
-        if (!in_vehicle) {
+        // Skipped ONLY for the seat that steers: player_process_controls re-points that one man's
+        // ControlInfo at the hull (0x004A6101), whose field_18 is 0, so controls_read takes the RATE
+        // branch. Every other rider keeps his own mouse-look ControlInfo and takes the on-foot path.
+        rf::Entity* local_ep = rf::local_player_entity;
+        const bool steers_hull = local_ep && rf::entity_in_vehicle(local_ep)
+            && !vehicle_rider_keeps_own_orient(local_ep);
+        if (!steers_hull) {
             g_camera_mouse_dx += dx;
             g_camera_mouse_dy += dy;
             dx = 0;
             dy = 0;
-        } else if (g_alpine_game_config.mouse_scale == 2) {
-            // Modern mode: scale vehicle steering down to match camera formula feel.
-            constexpr float vehicle_sens_scale = 0.08f;
-            g_vehicle_mouse_dx_rem += dx * vehicle_sens_scale;
-            g_vehicle_mouse_dy_rem += dy * vehicle_sens_scale;
-            dx = static_cast<int>(g_vehicle_mouse_dx_rem);
-            dy = static_cast<int>(g_vehicle_mouse_dy_rem);
-            g_vehicle_mouse_dx_rem -= dx;
-            g_vehicle_mouse_dy_rem -= dy;
         }
 
         // For freelook camera, apply deltas now (its control path doesn't go
@@ -450,6 +449,7 @@ void mouse_apply_patch()
     mouse_keep_centered_enable_hook.install();
     mouse_keep_centered_disable_hook.install();
     mouse_get_delta_hook.install();
+    AsmWriter{0x00430B7B}.fmul<float>(AsmRegMem{&g_hull_steer_mouse_scale});
 
     // Do not limit the cursor to the game window if in menu (Win32 mouse)
     AsmWriter(0x0051DD7C).jmp(0x0051DD8E);

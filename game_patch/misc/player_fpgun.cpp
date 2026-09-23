@@ -468,6 +468,20 @@ CodeInjection players_cleanup_injection{
     },
 };
 
+// player_fpgun_get_muzzle_tag_pos tests pp->weapon_mesh_handle at 0x004AD705 but re-reads it at
+// 0x004AD752, after an intervening call can have cleared it. Exit through the function's own false
+// tail at 0x004AD731, which expects the one argument already pushed here.
+CodeInjection player_fpgun_get_muzzle_tag_pos_null_guard{
+    0x004AD74B,
+    [](auto& regs) {
+        auto* pp = reinterpret_cast<rf::Player*>(static_cast<uintptr_t>(regs.esi));
+        if (!pp->weapon_mesh_handle) {
+            regs.esp += 4;
+            regs.eip = 0x004AD731;
+        }
+    },
+};
+
 void player_fpgun_do_patch()
 {
 #if SPECTATE_MODE_SHOW_WEAPON
@@ -577,6 +591,9 @@ void player_fpgun_do_patch()
     // Do not cull entities too early.
     player_fpgun_render_ir_cull_patch_1.install();
     player_fpgun_render_ir_cull_patch_2.install();
+
+    // A player with no fpgun mesh has no fpgun muzzle
+    player_fpgun_get_muzzle_tag_pos_null_guard.install();
 
 #ifndef NDEBUG
     reload_fpgun_cmd.register_cmd();

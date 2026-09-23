@@ -15,6 +15,7 @@
 #include "misc.h"
 #include "player.h"
 #include "../multi/server.h"
+#include "../multi/vehicles/vehicle_physics.h"
 #include "../object/alpine_corona.h"
 #include "../object/alpine_bag.h"
 #include "../object/alpine_projection_camera.h"
@@ -123,6 +124,7 @@ CodeInjection level_load_init_patch{
         alpine_mesh_clear_state();
         alpine_corona_clear_state();
         alpine_bag_clear_state();
+        vehicle_factory_clear_state();
         alpine_projection_camera_clear_state();
         gas_region_clear_state();
         climb_region_clear_state();
@@ -140,6 +142,7 @@ void level_shutdown()
     weather_clear_regions();
     projector_clear_all();
     alpine_mesh_free_collision_proxies();
+    vehicle_physics_level_init(); // the Bullet world keys on GRoom*, so it goes before the rooms
 }
 
 // Reached from quit-to-menu and leaving for the multiplayer menu (via game_shutdown), the
@@ -192,6 +195,13 @@ CodeInjection level_load_chunk_patch{
         if (chunk_id == alpine_weather_region_chunk_id) {
             xlog::debug("[Level] Loading alpine weather region chunk: len={}", chunk_len);
             weather_load_chunk(file, chunk_len);
+            regs.eip = 0x004608EF;
+        }
+
+        // handling for alpine vehicle factory objects chunk
+        if (chunk_id == alpine_vehicle_factory_chunk_id) {
+            xlog::debug("[Level] Loading alpine vehicle factory chunk: len={}", chunk_len);
+            vehicle_factory_load_chunk(file, chunk_len);
             regs.eip = 0x004608EF;
         }
 

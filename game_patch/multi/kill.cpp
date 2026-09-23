@@ -35,6 +35,7 @@
 #include "../misc/misc.h"
 #include "kill.h"
 #include "kill_attribution.h"
+#include "vehicles/vehicle.h"
 
 bool kill_messages = true;
 
@@ -59,7 +60,10 @@ void multi_kill_set_pending_attribution(const KillInfoPayload& payload,
     pending.attr.killer_player_id = payload.killer_player_id;
     pending.attr.weapon_type = payload.weapon_type;
     pending.attr.flags = payload.flags;
-    pending.attr.damage_type = payload.damage_type;
+    // The vehicle nibble is ignored without the flag, so a sender cannot leak a class id.
+    pending.attr.damage_type = payload.damage_type & af_kill_damage_type_mask;
+    pending.attr.vehicle_class = (payload.flags & AF_KILL_FLAG_VEHICLE)
+        ? static_cast<uint8_t>(payload.damage_type >> af_kill_vehicle_class_shift) : 0;
     auto& assists = pending.attr.assist_player_ids;
     assists.reserve(std::min<size_t>(assist_player_ids.size(), af_kill_info_max_assists));
     for (uint8_t assist_id : assist_player_ids) {
@@ -164,18 +168,19 @@ static std::optional<KillAttribution> get_kill_attribution(rf::Player* killed_pl
     return attr;
 }
 
-// Lowercased display name of the attributed weapon, or empty when there is nothing worth
-// showing (no attribution, a melee kill, or an index this build cannot resolve).
+// Display name of whatever did the killing, or empty when there is nothing worth showing.
 static std::string attribution_weapon_name(const std::optional<KillAttribution>& attr)
 {
     if (!attr || (attr->flags & AF_KILL_FLAG_MELEE)) {
         return {};
     }
-    const int weapon_type = attr->weapon_type;
-    if (!kill_attribution_is_valid_weapon_type(weapon_type)) {
-        return {};
+    if (kill_attribution_is_valid_weapon_type(attr->weapon_type)) {
+        return string_to_lower(rf::weapon_types[attr->weapon_type].display_name);
     }
-    return string_to_lower(rf::weapon_types[weapon_type].display_name);
+    if ((attr->flags & AF_KILL_FLAG_VEHICLE) && attr->vehicle_class < VDC_COUNT) {
+        return vehicle_class_display_name(attr->vehicle_class);
+    }
+    return {}; // no weapon, and no vehicle class this build has a name for
 }
 
 // True when the server would have told us what killed this player, so silence is an answer

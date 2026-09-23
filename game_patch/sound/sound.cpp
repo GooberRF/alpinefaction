@@ -384,6 +384,15 @@ void snd_update_ambient_sounds(const rf::Vector3& camera_pos)
                     float pan = rf::snd_pc_calculate_pan(ambient_snd.pos);
                     rf::snd_pc_set_pan(ambient_snd.sig, pan);
                 }
+                else if (ambient_snd.sig >= 0) {
+                    // The DS3D buffer position is only set when the sound starts, so without this
+                    // a moving ambient sound (e.g. a vehicle engine loop) keeps its initial direction
+                    int chnl = rf::snd_ds_get_channel(ambient_snd.sig);
+                    if (chnl >= 0) {
+                        rf::snd_ds3d_update_buffer(chnl, sound.min_range, sound.max_range, ambient_snd.pos,
+                            rf::zero_vector);
+                    }
+                }
             }
             else if (ambient_snd.sig >= 0) {
                 rf::snd_pc_stop(ambient_snd.sig);
@@ -392,6 +401,22 @@ void snd_update_ambient_sounds(const rf::Vector3& camera_pos)
         }
     }
 }
+
+// entity_process_post starts the fighter's held-fire $Launch loop with the 2D snd_play
+// (0x0041E680), which leaves is_3d_sound clear, so the snd_change_3d a few instructions
+// earlier is a no-op for the whole life of the loop: it plays centred at full volume for
+// every listener at any distance. Play it 3D instead; the existing snd_change_3d then
+// tracks the fighter every frame.
+CodeInjection entity_process_post_fighter_fire_loop_injection{
+    0x0041E680,
+    [](auto& regs) {
+        rf::Entity* ep = regs.esi;
+        int sound_handle = regs.eax;
+        regs.eax = rf::snd_play_3d(sound_handle, ep->pos, 1.0f, rf::zero_vector, 0);
+        regs.eip = 0x0041E685;
+    },
+    false,
+};
 
 #ifdef DEBUG
 
@@ -878,6 +903,9 @@ void apply_sound_patches()
 
     // Add custom sounds to sounds array
     gamesound_parse_sounds_table_patch.install();
+
+    // Play the fighter's held-fire weapon loop in 3D so it attenuates with distance
+    entity_process_post_fighter_fire_loop_injection.install();
 }
 
 void register_sound_commands()

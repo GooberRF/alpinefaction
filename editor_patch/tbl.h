@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <algorithm>
 #include <cctype>
+#include <initializer_list>
 #include <unordered_map>
 
 // ─── Generic .tbl tokenizer ─────────────────────────────────────────────────
@@ -222,6 +223,7 @@ const GlareClassInfo* glare_tbl_find(const char* glare_name);
 struct EntityClassInfo {
     std::string class_name;
     std::string v3d_filename;
+    int use_function = 0;                         // $Use:, 0 when absent or unrecognised
     float life = -1.0f;
     int material = 0;
     bool no_collide = false;                      // "no_collide" from $Flags:
@@ -245,3 +247,7 @@ struct EntityClassInfo {
 
 // Look up entity class info by name. Parses entity.tbl on first call.
 const EntityClassInfo* entity_tbl_find(const char* class_name);
+
+// Class names whose $Use: value is one of use_values, sorted case-insensitively.
+// Empty when entity.tbl could not be read.
+std::vector<std::string> entity_tbl_class_names_with_use(std::initializer_list<int> use_values);

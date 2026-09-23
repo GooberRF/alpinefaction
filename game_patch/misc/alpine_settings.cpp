@@ -976,6 +976,10 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.world_hud_damage_numbers = std::stoi(settings["WorldHUDDamageNumbers"]);
         processed_keys.insert("WorldHUDDamageNumbers");
     }
+    if (settings.count("VehicleRespawnMarkers")) {
+        g_alpine_game_config.vehicle_respawn_markers = std::stoi(settings["VehicleRespawnMarkers"]);
+        processed_keys.insert("VehicleRespawnMarkers");
+    }
     if (settings.count("WorldHUDSpectateLabels")) {
         g_alpine_game_config.world_hud_spectate_player_labels = std::stoi(settings["WorldHUDSpectateLabels"]);
         processed_keys.insert("WorldHUDSpectateLabels");
@@ -1609,6 +1613,7 @@ void alpine_player_settings_save(rf::Player* player)
     file << "WorldHUDFlagOverdraw=" << g_alpine_game_config.world_hud_flag_overdraw << "\n";
     file << "WorldHUDHillOverdraw=" << g_alpine_game_config.world_hud_hill_overdraw << "\n";
     file << "WorldHUDDamageNumbers=" << g_alpine_game_config.world_hud_damage_numbers << "\n";
+    file << "VehicleRespawnMarkers=" << g_alpine_game_config.vehicle_respawn_markers << "\n";
     file << "WorldHUDSpectateLabels=" << g_alpine_game_config.world_hud_spectate_player_labels << "\n";
     file << "WorldHUDDemoPlayerInfo=" << g_alpine_game_config.world_hud_demo_player_info << "\n";
     file << "WorldHUDDemoSpawns=" << g_alpine_game_config.world_hud_demo_spawns << "\n";
