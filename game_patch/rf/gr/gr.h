@@ -419,7 +419,7 @@ namespace rf::gr
     static auto& line_arrow = addr_as_ref<void(float x1, float y1, float z1, float x2, float y2, float z2, int r, int g, int b)>(0x00516AD0);
     static auto& cursor_3d = addr_as_ref<void(Vector3* pos, Matrix3* orient, float scale)>(0x00516B10);
     static auto& string_render_into_bitmap = addr_as_ref<void(int x, int y, int bm_handle, const char* s, int font)>(0x005203A0);
-    static auto& string_3d = addr_as_ref<void(Vector3* pos, Matrix3* orient, float scale, const char* string, int font_num, Mode mode)>(0x00520020);
+    static auto& string_3d = addr_as_ref<void(const Vector3* pos, const Matrix3* orient, float scale, const char* string, int font_num, Mode mode)>(0x00520020);
     static auto& bitmap_3d = addr_as_ref<void(Vector3* pos, Matrix3* orient, float scale, Mode mode)>(0x00515B10);
     static auto& bitmap_3d_angle = addr_as_ref<void(Vector3* pos, float angle, float scale, Mode mode)>(0x00515B40);
     static auto& bitmap_3d_angle_wh = addr_as_ref<void(Vector3* pos, float angle, float width, float height, Mode mode)>(0x00555B20);

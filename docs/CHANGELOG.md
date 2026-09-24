@@ -62,10 +62,9 @@ Version 1.5.0 (Trillium): Not yet released
 - Add `ui_color_console` console command to set the console background color
 
 [@is-this-c](https://github.com/is-this-c)
-- Do not kick a player, if they join right before limbo
-
-[@is-this-c](https://github.com/is-this-c)
+- Add `GrNewFont::draw_3d`
 - Allow TrueType fonts to be rendered into bitmaps with mipmaps (D3D11 only)
+- Do not kick a player, if they join right before limbo
 
 ### Bug fixes
 [@GooberRF](https://github.com/GooberRF)
