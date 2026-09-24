@@ -279,8 +279,8 @@ static void render_string_projected(
         rf::gr::project_vertex(&dest);
         // Check if projection was successful
         if (dest.flags & 1) {
-            const int screen_x = static_cast<int>(dest.sx) + offset_x;
-            const int screen_y = static_cast<int>(dest.sy) + offset_y;
+            const int screen_x = std::lround(dest.sx) + offset_x;
+            const int screen_y = std::lround(dest.sy) + offset_y;
             rf::gr::set_color(r, g, b, a);
             rf::gr::string(screen_x, screen_y, text.c_str(), font);
         }
