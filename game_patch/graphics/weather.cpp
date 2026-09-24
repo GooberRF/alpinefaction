@@ -15,6 +15,7 @@
 #include "weather.h"
 #include "../main/main.h"
 #include "../misc/alpine_settings.h"
+#include "../misc/level.h"
 #include "../multi/demo/demo.h"
 #include "../os/console.h"
 #include "../os/os.h"
@@ -804,28 +805,7 @@ void weather_load_chunk(rf::File& file, std::size_t chunk_len)
 
     rf::File::ChunkGuard chunk_guard{file, remaining};
 
-    bool read_error = false;
-
-    auto read_bytes = [&](void* dst, std::size_t n) -> bool {
-        if (remaining < n) { read_error = true; return false; }
-        int got = file.read(dst, n);
-        if (got != static_cast<int>(n)) {
-            if (got > 0) remaining -= got;
-            read_error = true;
-            return false;
-        }
-        remaining -= n;
-        return true;
-    };
-
-    auto read_string = [&]() -> std::string {
-        uint16_t len = 0;
-        if (!read_bytes(&len, sizeof(len))) return "";
-        if (len == 0) return "";
-        std::string result(len, '\0');
-        if (!read_bytes(result.data(), len)) return "";
-        return result;
-    };
+    AlpineChunkReader reader{file, remaining};
 
     auto all_finite = [](const float* values, std::size_t n) {
         for (std::size_t i = 0; i < n; ++i) {
@@ -835,7 +815,7 @@ void weather_load_chunk(rf::File& file, std::size_t chunk_len)
     };
 
     uint32_t count = 0;
-    if (!read_bytes(&count, sizeof(count))) {
+    if (!reader.read_bytes(&count, sizeof(count))) {
         xlog::warn("[Weather] Failed to read region count from chunk (len={})", chunk_len);
         return;
     }
@@ -855,46 +835,46 @@ void weather_load_chunk(rf::File& file, std::size_t chunk_len)
         float height = 0.0f;
         float depth = 0.0f;
 
-        if (!read_bytes(&uid, sizeof(uid))) return;
-        if (!read_bytes(&region.center.x, sizeof(float))) return;
-        if (!read_bytes(&region.center.y, sizeof(float))) return;
-        if (!read_bytes(&region.center.z, sizeof(float))) return;
-        if (!read_bytes(&region.orient.rvec.x, sizeof(float))) return;
-        if (!read_bytes(&region.orient.rvec.y, sizeof(float))) return;
-        if (!read_bytes(&region.orient.rvec.z, sizeof(float))) return;
-        if (!read_bytes(&region.orient.uvec.x, sizeof(float))) return;
-        if (!read_bytes(&region.orient.uvec.y, sizeof(float))) return;
-        if (!read_bytes(&region.orient.uvec.z, sizeof(float))) return;
-        if (!read_bytes(&region.orient.fvec.x, sizeof(float))) return;
-        if (!read_bytes(&region.orient.fvec.y, sizeof(float))) return;
-        if (!read_bytes(&region.orient.fvec.z, sizeof(float))) return;
-        read_string(); // script_name (discard)
-        if (read_error) return;
-        if (!read_bytes(&shape, sizeof(shape))) return;
-        if (!read_bytes(&type, sizeof(type))) return;
-        if (!read_bytes(&width, sizeof(float))) return;
-        if (!read_bytes(&height, sizeof(float))) return;
-        if (!read_bytes(&depth, sizeof(float))) return;
-        if (!read_bytes(&region.radius, sizeof(float))) return;
-        if (!read_bytes(&region.density_scale, sizeof(float))) return;
-        if (!read_bytes(&region.rain_color.red, sizeof(rf::ubyte))) return;
-        if (!read_bytes(&region.rain_color.green, sizeof(rf::ubyte))) return;
-        if (!read_bytes(&region.rain_color.blue, sizeof(rf::ubyte))) return;
-        if (!read_bytes(&region.rain_color.alpha, sizeof(rf::ubyte))) return;
-        if (!read_bytes(&region.rain_fall_speed, sizeof(float))) return;
-        if (!read_bytes(&region.rain_wind_x, sizeof(float))) return;
-        if (!read_bytes(&region.rain_wind_z, sizeof(float))) return;
-        if (!read_bytes(&region.rain_streak_seconds, sizeof(float))) return;
-        if (!read_bytes(&region.snow_color.red, sizeof(rf::ubyte))) return;
-        if (!read_bytes(&region.snow_color.green, sizeof(rf::ubyte))) return;
-        if (!read_bytes(&region.snow_color.blue, sizeof(rf::ubyte))) return;
-        if (!read_bytes(&region.snow_color.alpha, sizeof(rf::ubyte))) return;
-        if (!read_bytes(&region.snow_fall_speed, sizeof(float))) return;
-        if (!read_bytes(&region.snow_sway_amplitude, sizeof(float))) return;
-        if (!read_bytes(&region.snow_sway_speed, sizeof(float))) return;
-        if (!read_bytes(&region.snow_sprite_radius, sizeof(float))) return;
-        std::string snow_bitmap = read_string();
-        if (read_error) return;
+        if (!reader.read_bytes(&uid, sizeof(uid))) return;
+        if (!reader.read_bytes(&region.center.x, sizeof(float))) return;
+        if (!reader.read_bytes(&region.center.y, sizeof(float))) return;
+        if (!reader.read_bytes(&region.center.z, sizeof(float))) return;
+        if (!reader.read_bytes(&region.orient.rvec.x, sizeof(float))) return;
+        if (!reader.read_bytes(&region.orient.rvec.y, sizeof(float))) return;
+        if (!reader.read_bytes(&region.orient.rvec.z, sizeof(float))) return;
+        if (!reader.read_bytes(&region.orient.uvec.x, sizeof(float))) return;
+        if (!reader.read_bytes(&region.orient.uvec.y, sizeof(float))) return;
+        if (!reader.read_bytes(&region.orient.uvec.z, sizeof(float))) return;
+        if (!reader.read_bytes(&region.orient.fvec.x, sizeof(float))) return;
+        if (!reader.read_bytes(&region.orient.fvec.y, sizeof(float))) return;
+        if (!reader.read_bytes(&region.orient.fvec.z, sizeof(float))) return;
+        std::string script_name; // discarded
+        if (!reader.read_string(script_name)) return;
+        if (!reader.read_bytes(&shape, sizeof(shape))) return;
+        if (!reader.read_bytes(&type, sizeof(type))) return;
+        if (!reader.read_bytes(&width, sizeof(float))) return;
+        if (!reader.read_bytes(&height, sizeof(float))) return;
+        if (!reader.read_bytes(&depth, sizeof(float))) return;
+        if (!reader.read_bytes(&region.radius, sizeof(float))) return;
+        if (!reader.read_bytes(&region.density_scale, sizeof(float))) return;
+        if (!reader.read_bytes(&region.rain_color.red, sizeof(rf::ubyte))) return;
+        if (!reader.read_bytes(&region.rain_color.green, sizeof(rf::ubyte))) return;
+        if (!reader.read_bytes(&region.rain_color.blue, sizeof(rf::ubyte))) return;
+        if (!reader.read_bytes(&region.rain_color.alpha, sizeof(rf::ubyte))) return;
+        if (!reader.read_bytes(&region.rain_fall_speed, sizeof(float))) return;
+        if (!reader.read_bytes(&region.rain_wind_x, sizeof(float))) return;
+        if (!reader.read_bytes(&region.rain_wind_z, sizeof(float))) return;
+        if (!reader.read_bytes(&region.rain_streak_seconds, sizeof(float))) return;
+        if (!reader.read_bytes(&region.snow_color.red, sizeof(rf::ubyte))) return;
+        if (!reader.read_bytes(&region.snow_color.green, sizeof(rf::ubyte))) return;
+        if (!reader.read_bytes(&region.snow_color.blue, sizeof(rf::ubyte))) return;
+        if (!reader.read_bytes(&region.snow_color.alpha, sizeof(rf::ubyte))) return;
+        if (!reader.read_bytes(&region.snow_fall_speed, sizeof(float))) return;
+        if (!reader.read_bytes(&region.snow_sway_amplitude, sizeof(float))) return;
+        if (!reader.read_bytes(&region.snow_sway_speed, sizeof(float))) return;
+        if (!reader.read_bytes(&region.snow_sprite_radius, sizeof(float))) return;
+        std::string snow_bitmap;
+        if (!reader.read_string(snow_bitmap)) return;
         if (snow_bitmap.size() >= max_bitmap_name) {
             xlog::warn("[Weather] Ignoring over-long snow bitmap name on region uid {}", uid);
             snow_bitmap.clear();
@@ -902,12 +882,12 @@ void weather_load_chunk(rf::File& file, std::size_t chunk_len)
         if (!snow_bitmap.empty()) {
             region.snow_bitmap = std::move(snow_bitmap);
         }
-        if (!read_bytes(&always_show_range, sizeof(always_show_range))) return;
-        if (!read_bytes(&initially_enabled, sizeof(initially_enabled))) return;
-        if (!read_bytes(&region.active_distance, sizeof(float))) return;
-        if (!read_bytes(&region.visible_distance, sizeof(float))) return;
-        if (!read_bytes(&block_by_geometry, sizeof(block_by_geometry))) return;
-        if (!read_bytes(&region.column_width, sizeof(float))) return;
+        if (!reader.read_bytes(&always_show_range, sizeof(always_show_range))) return;
+        if (!reader.read_bytes(&initially_enabled, sizeof(initially_enabled))) return;
+        if (!reader.read_bytes(&region.active_distance, sizeof(float))) return;
+        if (!reader.read_bytes(&region.visible_distance, sizeof(float))) return;
+        if (!reader.read_bytes(&block_by_geometry, sizeof(block_by_geometry))) return;
+        if (!reader.read_bytes(&region.column_width, sizeof(float))) return;
 
         region.uid = uid;
         region.enabled = initially_enabled != 0;
@@ -974,7 +954,7 @@ void weather_load_chunk(rf::File& file, std::size_t chunk_len)
         g_weather_regions.push_back(std::move(region));
     }
 
-    if (read_error) {
+    if (reader.failed()) {
         xlog::warn("[Weather] Read error while parsing weather region chunk; loaded {} region(s)",
             g_weather_regions.size());
     }

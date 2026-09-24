@@ -1072,6 +1072,27 @@ void CMainFrame_PlayMultiFromCamera(CWnd* this_)
     g_is_play_in_multi = false;
 }
 
+// Commit a held viewport transform before undo/redo moves its entry off the top, as holding Ctrl does
+void __fastcall CMainFrame_OnEditUndo_new(CWnd* this_, void* edx_unused);
+FunHook<decltype(CMainFrame_OnEditUndo_new)> CMainFrame_OnEditUndo_hook{0x00447830, CMainFrame_OnEditUndo_new};
+void __fastcall CMainFrame_OnEditUndo_new(CWnd* this_, void* edx_unused)
+{
+    if (auto* level = CDedLevel::Get()) {
+        level->commit_pending_transform();
+    }
+    CMainFrame_OnEditUndo_hook.call_target(this_, edx_unused);
+}
+
+void __fastcall CMainFrame_OnEditRedo_new(CWnd* this_, void* edx_unused);
+FunHook<decltype(CMainFrame_OnEditRedo_new)> CMainFrame_OnEditRedo_hook{0x00447870, CMainFrame_OnEditRedo_new};
+void __fastcall CMainFrame_OnEditRedo_new(CWnd* this_, void* edx_unused)
+{
+    if (auto* level = CDedLevel::Get()) {
+        level->commit_pending_transform();
+    }
+    CMainFrame_OnEditRedo_hook.call_target(this_, edx_unused);
+}
+
 void CMainFrame_BackLink([[maybe_unused]] CWnd* this_)
 {
     DedLevel_DoBackLink();
@@ -1237,7 +1258,8 @@ static bool is_edit_key_held()
 CodeInjection autosave_defer_during_edit_injection{
     0x00483061,
     [](auto& regs) {
-        if (headless_bake_active() || is_edit_key_held()) {
+        auto* level = CDedLevel::Get();
+        if (headless_bake_active() || is_edit_key_held() || (level && level->transform_in_progress)) {
             regs.eip = 0x004831B4; // defer autosave until the text tick we are not in an edit operation
         }
         else {
@@ -2006,6 +2028,10 @@ extern "C" DWORD AF_DLL_EXPORT Init([[maybe_unused]] void* unused)
     // Fix changing properties of multiple respawn points
     CDedLevel_OpenRespawnPointProperties_injection.install();
 
+    // Fix undo/redo during a viewport transform corrupting the undo history
+    CMainFrame_OnEditUndo_hook.install();
+    CMainFrame_OnEditRedo_hook.install();
+
     // Apply patches defined in other files
     ApplyGraphicsPatches();
     ApplyTriggerPatches();
@@ -2014,6 +2040,7 @@ extern "C" DWORD AF_DLL_EXPORT Init([[maybe_unused]] void* unused)
     ApplyAlpineObjectPatches();
     ApplyTexturesPatches();
     ApplyLightmapPatches();
+    ApplyGeometryPatches();
     install_editor_bitmap_loader_hooks();
 
     // Browse for .v3m files instead of .v3d

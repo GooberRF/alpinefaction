@@ -18,6 +18,7 @@ void DestroyDedCorona(DedCorona* corona);
 void DestroyDedWeatherRegion(DedWeatherRegion* weather_region);
 void DestroyDedVehicleFactory(DedVehicleFactory* factory);
 void DestroyDedProjectionCamera(DedProjectionCamera* camera);
+void DestroyDedRopeEmitter(DedRopeEmitter* rope);
 
 constexpr int alpine_props_chunk_id = 0x0AFBA5ED;
 constexpr int alpine_mesh_chunk_id = 0x0AFBAE01;
@@ -28,6 +29,7 @@ constexpr int alpine_brush_group_chunk_id = 0x0AFBAE05; // brush metadata in .rf
 constexpr int alpine_weather_region_chunk_id = 0x0AFBAE06;
 constexpr int alpine_vehicle_factory_chunk_id = 0x0AFBAE07;
 constexpr int alpine_projection_camera_chunk_id = 0x0AFBAE08;
+constexpr int alpine_rope_emitter_chunk_id = 0x0AFBAE0A;
 
 // Glacier saves new RFL chunks for its own purposes (metadata). Alpine Faction can
 // neither read nor parse these, but AlpineEditor retains them verbatim on load and
@@ -175,6 +177,13 @@ struct GRoom
     {
         AddrCaller{0x00486a10}.this_call(this, solid, detail);
     }
+
+    // FUN_00485850: rebuild the room's face bbox tree (GRoom+0x3C); the last step of every
+    // from-scratch solid build (RED 0x004a5020)
+    void rebuild_bbox()
+    {
+        AddrCaller{0x00485850}.this_call(this);
+    }
 };
 static_assert(sizeof(GRoom) == 0x1CC);
 static_assert(offsetof(GRoom, is_detail) == 0x00);
@@ -191,6 +200,26 @@ static_assert(offsetof(GRoom, has_alpha) == 0x6A);
 static_assert(offsetof(GRoom, life) == 0x94);
 static_assert(offsetof(GRoom, liquid_type) == 0x180);
 static_assert(offsetof(GRoom, contains_liquid) == 0x184);
+
+// Attribute block a new GFace is stamped with: FUN_0048a660 copies these 0x18 bytes straight to
+// GFace+0x28. init() applies the editor's own defaults (FUN_00419f90) — flags 0x100, no texture,
+// face_id -1; Build Geometry's phase 1 (FUN_004399b0) assigns the real face ids.
+struct GFaceAttributes
+{
+    int flags;
+    int group_id;
+    int bitmap_id;
+    short portal_id;
+    short surface_index;
+    int face_id;
+    int smoothing_groups;
+
+    void init()
+    {
+        AddrCaller{0x00419f90}.this_call(this);
+    }
+};
+static_assert(sizeof(GFaceAttributes) == 0x18);
 
 // GFace::flags bits.
 enum GFaceFlags
@@ -249,6 +278,20 @@ struct GFace
     {
         return ::generate_uid();
     }
+
+    // FUN_0048abd0: pool-allocate a GFaceVertex and append it to the circular edge loop
+    GFaceVertex* add_vertex(GVertex* vertex, float u, float v, float lm_u, float lm_v)
+    {
+        return AddrCaller{0x0048abd0}.this_call<GFaceVertex*>(this, vertex, u, v, lm_u, lm_v);
+    }
+
+    // FUN_0048a8b0 (RET 8, so both stack arguments are passed): with a null plane it derives the
+    // plane from the edge loop winding by Newell's method and recomputes the face AABB. Returns
+    // false for a face with fewer than three vertices or zero area.
+    bool compute_plane_and_bbox()
+    {
+        return AddrCaller{0x0048a8b0}.this_call<bool>(this, 0, 0);
+    }
 };
 static_assert(sizeof(GFace) == 0x60);
 static_assert(offsetof(GFace, plane) == 0x00);
@@ -291,6 +334,39 @@ struct GSolid
     void remove_vertex(GVertex* vertex)
     {
         AddrCaller{0x0043df30}.this_call(&vertices, vertex);
+    }
+
+    // FUN_00496120: allocate a GVertex at pos and append it to the solid's vertex array
+    GVertex* add_vertex(const Vector3* pos)
+    {
+        return AddrCaller{0x00496120}.this_call<GVertex*>(this, pos);
+    }
+
+    // FUN_00495f50: pool-allocate a GFace stamped with attrs and link it onto the solid's face list
+    GFace* create_face(const GFaceAttributes* attrs)
+    {
+        return AddrCaller{0x00495f50}.this_call<GFace*>(this, attrs);
+    }
+
+    // FUN_00495e40: recompute bbox_min/bbox_max from the vertex array, pad them by the geometry
+    // epsilon and fit the bounding sphere
+    void compute_bbox_sphere()
+    {
+        AddrCaller{0x00495e40}.this_call(this);
+    }
+
+    // FUN_00495500 on a 0x378 byte allocation, as every from-scratch solid in RED does
+    static GSolid* create()
+    {
+        auto* solid = static_cast<GSolid*>(AddrCaller{0x0052ee74}.c_call<void*>(0x378));
+        if (!solid) return nullptr;
+        return AddrCaller{0x00495500}.this_call<GSolid*>(solid);
+    }
+
+    // FUN_00419ae0(1): scalar deleting destructor — releases rooms, faces and vertices, then frees
+    static void destroy(GSolid* solid)
+    {
+        AddrCaller{0x00419ae0}.this_call(solid, 1);
     }
 };
 static_assert(offsetof(GSolid, face_list_head) == 0x70);
@@ -359,6 +435,16 @@ struct BrushNode
     BrushState state;            // +0x48  brush state (0=normal, 2=hidden, 3=selected)
     BrushNode* next;             // +0x4C  next node in circular doubly-linked list
     BrushNode* prev;             // +0x50  prev node in circular doubly-linked list
+
+    // FUN_0044d5a0 on a 0x54 byte allocation, the same pairing the .rfl brush reader uses at
+    // 0x004308e2. Leaves uid -1, pos zero, identity orient, null geometry, brush_type AIR,
+    // life -1, state NORMAL.
+    static BrushNode* create()
+    {
+        auto* brush = static_cast<BrushNode*>(AddrCaller{0x0052ee74}.c_call<void*>(sizeof(BrushNode)));
+        if (!brush) return nullptr;
+        return AddrCaller{0x0044d5a0}.this_call<BrushNode*>(brush);
+    }
 };
 static_assert(sizeof(BrushNode) == 0x54);
 static_assert(offsetof(BrushNode, vtable) == 0x00);
@@ -449,6 +535,9 @@ struct AlpineLevelProperties
 
     // Alpine projection camera objects
     std::vector<DedProjectionCamera*> projection_camera_objects;
+
+    // Alpine rope emitter objects
+    std::vector<DedRopeEmitter*> rope_emitter_objects;
 
     // Retained Glacier RFL sections (0x6ED-prefixed IDs).
     std::vector<RetainedRflChunk> retained_chunks;
@@ -567,6 +656,11 @@ struct AlpineLevelProperties
             DestroyDedProjectionCamera(c);
         }
         projection_camera_objects.clear();
+
+        for (auto* r : rope_emitter_objects) {
+            DestroyDedRopeEmitter(r);
+        }
+        rope_emitter_objects.clear();
 
         retained_chunks.clear();
     }
@@ -901,6 +995,22 @@ static_assert(offsetof(GroupEntry, keyframes) == 0x1C);
 static_assert(offsetof(GroupEntry, name) == 0x20);
 static_assert(offsetof(GroupEntry, field_28) == 0x28);
 
+// Undo entry (0x34 bytes), created by FUN_0043ccf0(type)
+struct UndoEntry
+{
+    int type;                               // +0x00  4 = delete brushes, 7 = brush transform, 10 = modify snapshot, ...
+    VArray<DedObject*> objects;             // +0x04
+    VArray<BrushNode*> brushes;             // +0x10  type 10: live clones
+    VArray<BrushNode*> brushes_aux;         // +0x1C  type 10: originals, type 4: list predecessors
+    VArray<void*> raw_blocks;               // +0x28  operator-delete'd with the entry
+};
+static_assert(sizeof(UndoEntry) == 0x34);
+
+inline UndoEntry* undo_stack_top(const VArray<UndoEntry*>& stack)
+{
+    return stack.size > 0 ? stack.data_ptr[stack.size - 1] : nullptr;
+}
+
 struct CDedLevel
 {
     // --- vtable + string properties ---
@@ -972,7 +1082,8 @@ struct CDedLevel
     int icon_keyframe_silver;                     // +0x224 (Icon_Keyframe_Silver.tga)
     int icon_camera;                              // +0x228 (Icon_CameraPosition.tga)
     int icon_push_region;                         // +0x22C (Icon_ClimbRegion.tga second)
-    char _pad_230[0x272 - 0x230];                // +0x230 (editor state)
+    bool transform_in_progress;                   // +0x230 set by the per-mode transform begins, cleared by FUN_00427260
+    char _pad_231[0x272 - 0x231];                // +0x231 (editor state)
     bool geometry_needs_rebuild;                   // +0x272
     char _pad_273[0x280 - 0x273];                // +0x273
 
@@ -981,12 +1092,17 @@ struct CDedLevel
     // FUN_0043d320 (redo) pops from +0x28C, pushes to +0x280
     // Each entry's child VArray at +0x04 may hold raw DedObject* pointers
     // FUN_0043d170 cleanup calls FUN_0041c360 on those pointers (use-after-free risk)
-    VArray<void*> undo_stack;                     // +0x280
-    VArray<void*> redo_stack;                     // +0x28C
+    VArray<UndoEntry*> undo_stack;                // +0x280
+    VArray<UndoEntry*> redo_stack;                // +0x28C
 
     // --- selection ---
     VArray<DedObject*> selection;                 // +0x298
-    char _pad_2A4[0x2E0 - 0x2A4];                // +0x2A4
+    char _pad_2A4[0x2B0 - 0x2A4];                // +0x2A4
+    // Group import (FUN_00438340) clears these, then FUN_004365c0 records each uid it renumbers on
+    // a collision: old uid here, new uid at the same index below. Left filled until the next import.
+    VArray<int> import_renumbered_old_uids;       // +0x2B0
+    VArray<int> import_renumbered_new_uids;       // +0x2BC
+    char _pad_2C8[0x2E0 - 0x2C8];                // +0x2C8
     VArray<DedObject*> master_objects;            // +0x2E0 (all DedObjects, searched by FUN_00483920 for link validation)
     char _pad_2EC[0x340 - 0x2EC];                // +0x2EC
 
@@ -1081,6 +1197,22 @@ struct CDedLevel
         AddrCaller{0x00413050}.this_call(this);
     }
 
+    // FUN_00414650: assign a uid when the brush carries -1 and splice it into the circular brush
+    // list.
+    //
+    // register_undo opens a type 1 undo record (FUN_0043ccf0) and pushes the brush into its +0x10
+    // array. That path is complete but dead in stock RED: both call sites push 0 (the .rfl brush
+    // reader at 0x004308ff and 0x004381fa), and paste clones brushes without going through here.
+    // Traced anyway, because "unused" is not "broken": undo dispatch case 1 (FUN_0043d470) reads
+    // +0x10, unlinks each brush and saves its former prev in +0x1C; redo case 1 (FUN_0043d5a0)
+    // splices them back from those two arrays; and evicting a type 1 record past the 16 record cap
+    // frees only the record, never the brushes (FUN_0043ccf0 has no type 1 case and its tail loop
+    // walks +0x28, which stays empty).
+    void insert_brush(BrushNode* brush, bool register_undo)
+    {
+        AddrCaller{0x00414650}.this_call(this, brush, register_undo);
+    }
+
     // FUN_0042d6b0: check if any brush has face selection (face mode)
     bool has_face_selection()
     {
@@ -1113,6 +1245,20 @@ struct CDedLevel
     void create_undo_snapshot()
     {
         AddrCaller{0x0043bbe0}.this_call(this);
+    }
+
+    // FUN_00427260: commit the viewport transform in progress into its undo entry
+    void finish_transform()
+    {
+        AddrCaller{0x00427260}.this_call(this);
+    }
+
+    // A held transform records into whatever undo entry is on top when it finishes
+    void commit_pending_transform()
+    {
+        if (transform_in_progress) {
+            finish_transform();
+        }
     }
 
     void mark_geometry_dirty()

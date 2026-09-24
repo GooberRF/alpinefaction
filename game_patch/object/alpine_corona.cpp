@@ -9,13 +9,8 @@
 #include "../rf/file/file.h"
 #include "../rf/bmpman.h"
 #include "../misc/level.h"
+#include "alpine_obj_common.h"
 #include "object.h"
-
-// ─── Constants ───────────────────────────────────────────────────────────────
-
-// Stock effects.tbl parser multiplies cone angle degrees by 0.5 before storing in GlareInfo.
-// The render code uses this same 0.5 constant for smoothing and cone attenuation calculations.
-static constexpr float cone_angle_factor = 0.5f;
 
 // ─── Globals ─────────────────────────────────────────────────────────────────
 
@@ -41,31 +36,10 @@ void alpine_corona_load_chunk(rf::File& file, std::size_t chunk_len)
 
     rf::File::ChunkGuard chunk_guard{file, remaining};
 
-    bool read_error = false;
-
-    auto read_bytes = [&](void* dst, std::size_t n) -> bool {
-        if (remaining < n) { read_error = true; return false; }
-        int got = file.read(dst, n);
-        if (got != static_cast<int>(n)) {
-            if (got > 0) remaining -= got;
-            read_error = true;
-            return false;
-        }
-        remaining -= n;
-        return true;
-    };
-
-    auto read_string = [&]() -> std::string {
-        uint16_t len = 0;
-        if (!read_bytes(&len, sizeof(len))) return "";
-        if (len == 0) return "";
-        std::string result(len, '\0');
-        if (!read_bytes(result.data(), len)) return "";
-        return result;
-    };
+    AlpineChunkReader reader{file, remaining};
 
     uint32_t count = 0;
-    if (!read_bytes(&count, sizeof(count))) {
+    if (!reader.read_bytes(&count, sizeof(count))) {
         xlog::warn("[AlpineCorona] Failed to read corona count from chunk (len={})", chunk_len);
         return;
     }
@@ -76,41 +50,38 @@ void alpine_corona_load_chunk(rf::File& file, std::size_t chunk_len)
     for (uint32_t i = 0; i < count; i++) {
         AlpineCoronaInfo info;
 
-        if (!read_bytes(&info.uid, sizeof(info.uid))) return;
-        if (!read_bytes(&info.pos.x, sizeof(float))) return;
-        if (!read_bytes(&info.pos.y, sizeof(float))) return;
-        if (!read_bytes(&info.pos.z, sizeof(float))) return;
-        if (!read_bytes(&info.orient.rvec.x, sizeof(float))) return;
-        if (!read_bytes(&info.orient.rvec.y, sizeof(float))) return;
-        if (!read_bytes(&info.orient.rvec.z, sizeof(float))) return;
-        if (!read_bytes(&info.orient.uvec.x, sizeof(float))) return;
-        if (!read_bytes(&info.orient.uvec.y, sizeof(float))) return;
-        if (!read_bytes(&info.orient.uvec.z, sizeof(float))) return;
-        if (!read_bytes(&info.orient.fvec.x, sizeof(float))) return;
-        if (!read_bytes(&info.orient.fvec.y, sizeof(float))) return;
-        if (!read_bytes(&info.orient.fvec.z, sizeof(float))) return;
-        info.script_name = read_string();
-        if (read_error) return;
-        if (!read_bytes(&info.color_r, sizeof(uint8_t))) return;
-        if (!read_bytes(&info.color_g, sizeof(uint8_t))) return;
-        if (!read_bytes(&info.color_b, sizeof(uint8_t))) return;
-        if (!read_bytes(&info.color_a, sizeof(uint8_t))) return;
-        info.corona_bitmap = read_string();
-        if (read_error) return;
+        if (!reader.read_bytes(&info.uid, sizeof(info.uid))) return;
+        if (!reader.read_bytes(&info.pos.x, sizeof(float))) return;
+        if (!reader.read_bytes(&info.pos.y, sizeof(float))) return;
+        if (!reader.read_bytes(&info.pos.z, sizeof(float))) return;
+        if (!reader.read_bytes(&info.orient.rvec.x, sizeof(float))) return;
+        if (!reader.read_bytes(&info.orient.rvec.y, sizeof(float))) return;
+        if (!reader.read_bytes(&info.orient.rvec.z, sizeof(float))) return;
+        if (!reader.read_bytes(&info.orient.uvec.x, sizeof(float))) return;
+        if (!reader.read_bytes(&info.orient.uvec.y, sizeof(float))) return;
+        if (!reader.read_bytes(&info.orient.uvec.z, sizeof(float))) return;
+        if (!reader.read_bytes(&info.orient.fvec.x, sizeof(float))) return;
+        if (!reader.read_bytes(&info.orient.fvec.y, sizeof(float))) return;
+        if (!reader.read_bytes(&info.orient.fvec.z, sizeof(float))) return;
+        if (!reader.read_string(info.script_name)) return;
+        if (!reader.read_bytes(&info.color_r, sizeof(uint8_t))) return;
+        if (!reader.read_bytes(&info.color_g, sizeof(uint8_t))) return;
+        if (!reader.read_bytes(&info.color_b, sizeof(uint8_t))) return;
+        if (!reader.read_bytes(&info.color_a, sizeof(uint8_t))) return;
+        if (!reader.read_string(info.corona_bitmap)) return;
         if (info.corona_bitmap.size() >= max_bitmap_name) {
             xlog::warn("[AlpineCorona] Ignoring over-long corona bitmap name on corona uid {}", info.uid);
             info.corona_bitmap.clear();
         }
-        if (!read_bytes(&info.cone_angle, sizeof(float))) return;
-        if (!read_bytes(&info.intensity, sizeof(float))) return;
-        if (!read_bytes(&info.radius_distance, sizeof(float))) return;
-        if (!read_bytes(&info.radius_scale, sizeof(float))) return;
-        if (!read_bytes(&info.diminish_distance, sizeof(float))) return;
-        info.volumetric_bitmap = read_string();
-        if (read_error) return;
+        if (!reader.read_bytes(&info.cone_angle, sizeof(float))) return;
+        if (!reader.read_bytes(&info.intensity, sizeof(float))) return;
+        if (!reader.read_bytes(&info.radius_distance, sizeof(float))) return;
+        if (!reader.read_bytes(&info.radius_scale, sizeof(float))) return;
+        if (!reader.read_bytes(&info.diminish_distance, sizeof(float))) return;
+        if (!reader.read_string(info.volumetric_bitmap)) return;
         if (!info.volumetric_bitmap.empty()) {
-            if (!read_bytes(&info.volumetric_height, sizeof(float))) return;
-            if (!read_bytes(&info.volumetric_length, sizeof(float))) return;
+            if (!reader.read_bytes(&info.volumetric_height, sizeof(float))) return;
+            if (!reader.read_bytes(&info.volumetric_length, sizeof(float))) return;
         }
         if (info.volumetric_bitmap.size() >= max_bitmap_name) {
             xlog::warn("[AlpineCorona] Ignoring over-long volumetric bitmap name on corona uid {}", info.uid);
@@ -119,52 +90,16 @@ void alpine_corona_load_chunk(rf::File& file, std::size_t chunk_len)
 
         // Create anchor clutter immediately so it exists before the stock link
         // resolver runs. This lets event→corona link UIDs resolve to handles
-        rf::ObjectCreateInfo oci{};
-        oci.pos = info.pos;
-        oci.orient = info.orient;
-
-        rf::Object* obj = rf::obj_create(rf::OT_CLUTTER, -1, 0, &oci, 0, nullptr);
-        if (!obj) {
+        rf::Clutter* clutter =
+            alpine_create_anchor_clutter(info.pos, info.orient, info.uid, info.script_name.c_str());
+        if (!clutter) {
             xlog::warn("[AlpineCorona] Failed to create clutter for corona uid={}", info.uid);
             continue;
         }
 
-        auto* clutter = reinterpret_cast<rf::Clutter*>(obj);
-
-        // Set up clutter fields (same pattern as alpine_mesh)
-        clutter->info = &rf::get_dummy_clutter_info();
-        clutter->info_index = -1;
-        clutter->corpse_index = -1;
-        clutter->sound_handle = -1;
-        clutter->delayed_kill_sound = -1;
-        clutter->dmg_type_that_killed_me = 0;
-        clutter->corpse_vmesh_handle = nullptr;
-        clutter->current_skin_index = 0;
-        clutter->already_spawned_glass = false;
-        clutter->use_sound = -1;
-        clutter->killable_index = 0xFFFF;
-        *reinterpret_cast<int*>(reinterpret_cast<uint8_t*>(clutter) + 0x2D0) = -1;
-
-        // Insert into clutter linked list
-        clutter->prev = rf::clutter_list_tail;
-        clutter->next = reinterpret_cast<rf::Clutter*>(&rf::clutter_list);
-        rf::clutter_list_tail->next = clutter;
-        rf::clutter_list_tail = clutter;
-        rf::clutter_count++;
-
-        // Set identity
-        obj->uid = info.uid;
-        if (!info.script_name.empty()) {
-            obj->name = info.script_name.c_str();
-        }
-
-        // Make invulnerable (no mesh to break)
-        obj->obj_flags = static_cast<rf::ObjectFlags>(
-            static_cast<int>(obj->obj_flags) | static_cast<int>(rf::OF_INVULNERABLE)
-        );
-
-        g_corona_clutter_handles.push_back(obj->handle);
-        g_pending_coronas.push_back({std::move(info), obj->handle});
+        const int clutter_handle = clutter->handle;
+        g_corona_clutter_handles.push_back(clutter_handle);
+        g_pending_coronas.push_back({std::move(info), clutter_handle});
     }
 }
 
@@ -212,7 +147,7 @@ void alpine_corona_create_all()
             }
         }
 
-        gi->cone_angle = info.cone_angle * cone_angle_factor;
+        gi->cone_angle = info.cone_angle * alpine_glare_cone_angle_factor;
         gi->intensity = info.intensity;
         gi->radius_scale = info.radius_scale;
         gi->radius_distance = info.radius_distance;

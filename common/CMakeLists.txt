@@ -1,6 +1,7 @@
 set(SRCS
     include/common/HttpRequest.h
     include/common/rfproto.h
+    include/common/rope_curve.h
     include/common/ComPtr.h
     include/common/afd_format.h
     include/common/tlv.h

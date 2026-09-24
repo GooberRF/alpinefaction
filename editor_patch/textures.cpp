@@ -731,6 +731,20 @@ CodeInjection vpp_extra_textures_injection{
             add_texture_to_pack_list(temp_list, corona->volumetric_bitmap.c_str());
         }
 
+        // Rope emitter bitmaps, the textures on their decoration meshes, and the corona bitmaps of
+        // any decoration slot carrying a glare
+        for (auto* rope : level->GetAlpineLevelProperties().rope_emitter_objects) {
+            add_texture_to_pack_list(temp_list, rope->bitmap.c_str());
+            for (const auto& deco_mesh : rope->deco_meshes) {
+                add_mesh_textures_to_pack_list(temp_list, deco_mesh.c_str());
+            }
+            for (const auto& fx : rope->deco_fx) {
+                if (!fx.has_glare()) continue;
+                add_texture_to_pack_list(temp_list, fx.glare_bitmap.c_str());
+                add_texture_to_pack_list(temp_list, fx.volumetric_bitmap.c_str());
+            }
+        }
+
         // Last, so it also covers the stock loops' entries and everything added above
         expand_atx_deps_in_pack_list(temp_list);
     }
@@ -751,6 +765,13 @@ CodeInjection vpp_mesh_files_injection{
             add_mesh_to_vpp_list(mesh->clutter_props.corpse_state_anim.c_str());
             if (mesh->brush_geo_source == 2 && !mesh->collision_mesh_filename.empty()) {
                 add_mesh_to_vpp_list(mesh->collision_mesh_filename.c_str());
+            }
+        }
+
+        // Rope emitter decoration meshes
+        for (auto* rope : level->GetAlpineLevelProperties().rope_emitter_objects) {
+            for (const auto& deco_mesh : rope->deco_meshes) {
+                add_mesh_to_vpp_list(deco_mesh.c_str());
             }
         }
 

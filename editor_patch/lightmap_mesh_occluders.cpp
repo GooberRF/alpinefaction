@@ -43,35 +43,23 @@ bool bitmap_has_alpha(int handle)
 }
 
 // The double-sided face flag 0x20 is deliberately ignored: a mesh occluder blocks either way.
+// Positions come from the walker with the submesh center added, so they sit where the mesh is drawn.
 void collect_lod0(const EditorVifLodMesh* lod, MeshGeom& out)
 {
-    if (!lod || lod->num_levels <= 0) {
-        return;
-    }
-    const EditorVifMesh* vm = lod->meshes[0];
-    if (!vm || !vm->chunks) {
-        return;
-    }
-    for (int c = 0; c < vm->num_chunks; c++) {
-        const EditorVifChunk& chunk = vm->chunks[c];
-        const Vector3* vecs = chunk.vecs;
-        const EditorVifFace* faces = chunk.faces;
-        const int num_vecs = chunk.num_vecs;
-        const int num_faces = chunk.num_faces;
-        if (!vecs || !faces || num_vecs <= 0 || num_faces <= 0) {
-            continue;
-        }
-        const bool alpha = chunk.texture_idx >= 0 && chunk.texture_idx < vm->num_texture_handles &&
+    vmesh_for_each_lod0_chunk(lod, [&](const EditorVifMesh& vm, const EditorVifChunk& chunk,
+                                       auto&& vertex) {
+        const bool alpha = chunk.texture_idx >= 0 && chunk.texture_idx < vm.num_texture_handles &&
                            chunk.texture_idx < 7 &&
-                           bitmap_has_alpha(vm->tex_handles[chunk.texture_idx]);
-        for (int f = 0; f < num_faces; f++) {
-            const EditorVifFace& face = faces[f];
-            if (face.vindex1 >= num_vecs || face.vindex2 >= num_vecs || face.vindex3 >= num_vecs) {
+                           bitmap_has_alpha(vm.tex_handles[chunk.texture_idx]);
+        for (int f = 0; f < chunk.num_faces; f++) {
+            const EditorVifFace& face = chunk.faces[f];
+            if (!vmesh_lod0_face_valid(chunk, face)) {
                 continue;
             }
-            out.tris.push_back({vecs[face.vindex1], vecs[face.vindex2], vecs[face.vindex3], alpha});
+            out.tris.push_back(
+                {vertex(face.vindex1), vertex(face.vindex2), vertex(face.vindex3), alpha});
         }
-    }
+    });
 }
 
 bool collect_v3m(EditorVMesh* vmesh, MeshGeom& out)

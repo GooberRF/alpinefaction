@@ -38,6 +38,8 @@ Version 1.5.0 (Trillium): Not yet released
 - Add compatibility table (lightmap clamp floor) for `dm-halloween.rfl`
 - Bump RFL version to 306
 - Add `Display_Projection` event and `Projection Camera` object for rendering live camera views onto ATX textures (Direct3D 11 renderer only)
+- Add `Rope_State` event to switch `Rope Emitter` objects on and off at runtime
+- Add `Rope Emitter` object for ropes, cables, and power lines, with optional decorations
 - Add flames to gib chunks thrown by exploding entities, toggleable with `cl_gibflames`
 - Add `Jetpacks explode` option to the Jetpacks mutator
 - Add underwater rendering effects — animated caustics, depth-based water fog with a waterline, screen tint/vignette and distortion — with quality levels 0-3 via `r_underwater` (Direct3D 11 renderer only)
@@ -57,8 +59,13 @@ Version 1.5.0 (Trillium): Not yet released
 - Use the modern Windows file dialogs for every open and save in the level editor
 - Always render meshes at their highest LOD in the level editor
 - Make a mesh exported from a brush in the level editor immediately usable as a `Mesh` object
+- Add `To Brush` to the `Select Objects` window in the level editor, converting `Mesh` objects into detail brushes
 - Add a mesh browser to the level editor for picking meshes and animations for `Mesh` objects
 - Add a new and modern color picker to the level editor
+- Add click and drag spinner arrows to the numeric fields on the `Corona` and `Weather Region` object dialogs in the level editor
+- Show a live viewport preview while editing `Corona` and `Rope Emitter` properties in the level editor, so the fields being typed are what the viewport draws
+- Draw `Weather Region` sprites in the level editor at the same size as `Room Effect` sprites, and highlight selected regions in aqua
+- Consolidate duplicated Alpine object internals into shared machinery in the game and level editor, and harden level file parsing for `Corona`, `Bag` and `Weather Region` objects against corrupted data
 - Turning off `Mesh_Animate` now pauses the animation playing on the meshes it links to, and turning it back on with the same animation and type resumes it from the frozen pose
 - Add `Climbing_Region_State` event to toggle climbing regions
 - Support moving climbing regions with `Anchor_Marker` and `Anchor_Marker_Orient`
@@ -109,6 +116,12 @@ Version 1.5.0 (Trillium): Not yet released
 - Fix every entity with a flying sound permanently consuming one of the 25 ambient sound slots each time it is destroyed
 - Fix engine sounds keeping the direction they had when they started instead of following the vehicle when DirectSound 3D is enabled
 - Fix the driller's drilling sound looping forever when the driller is destroyed while drilling
+- Fix headless bot crash when a level references a texture by a file extension the stock bitmap loader does not support (e.g. `.dds`) and it cannot be loaded
+- Fix `Fuse` and `Carve` in the level editor dumping the textures and texture coordinates of faces taken from the later brush
+- Fix undoing `Fuse` in the level editor taking two steps
+- Fix level editor crashing or corrupting undo history when undoing, redoing, or autosaving while moving, rotating, or scaling in a viewport
+- Fix bolt emitters imported as part of a group in the level editor keeping their old target when the target object is renumbered to avoid a UID conflict
+- Fix geoable brush supports not being properly recognized if buried in level geometry
 
 [@is-this-c](https://github.com/is-this-c)
 - Let `Caps Lock` capitalize

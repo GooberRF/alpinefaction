@@ -155,6 +155,14 @@ bm_read_header_hook{
             }
         }
 
+        // Avoid a fatal error for non-stock texture formats in headless mode
+        if (rf::bm::get_type_from_filename(filename) == rf::bm::TYPE_NONE) {
+            if (!is_known_missing_stock_asset(filename)) {
+                xlog::warn("Failed to load bitmap header for '{}'", filename);
+            }
+            return rf::bm::TYPE_NONE;
+        }
+
         // Precedence chain: ATX > DDS > PNG/JPG > VBM > TGA.
         xlog::trace("Loading bitmap header for '{}'", filename);
         auto bm_type = bm_read_header_hook.call_target(filename, width_out, height_out, pixel_fmt_out, num_levels_out,

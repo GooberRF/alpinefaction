@@ -19,6 +19,7 @@
 #include "../object/alpine_corona.h"
 #include "../object/alpine_bag.h"
 #include "../object/alpine_projection_camera.h"
+#include "../object/alpine_rope.h"
 #include "../object/mover.h"
 #include "../hud/hud_world.h"
 #include "../graphics/weather.h"
@@ -126,6 +127,7 @@ CodeInjection level_load_init_patch{
         alpine_bag_clear_state();
         vehicle_factory_clear_state();
         alpine_projection_camera_clear_state();
+        alpine_rope_clear_state();
         gas_region_clear_state();
         climb_region_clear_state();
         weather_clear_regions();
@@ -141,6 +143,7 @@ void level_shutdown()
     climb_region_clear_state();
     weather_clear_regions();
     projector_clear_all();
+    alpine_rope_clear_state();
     alpine_mesh_free_collision_proxies();
     vehicle_physics_level_init(); // the Bullet world keys on GRoom*, so it goes before the rooms
 }
@@ -209,6 +212,13 @@ CodeInjection level_load_chunk_patch{
         if (chunk_id == alpine_projection_camera_chunk_id) {
             xlog::debug("[Level] Loading alpine projection camera chunk: len={}", chunk_len);
             alpine_projection_camera_load_chunk(file, chunk_len);
+            regs.eip = 0x004608EF;
+        }
+
+        // handling for alpine rope objects chunk
+        if (chunk_id == alpine_rope_emitter_chunk_id) {
+            xlog::debug("[Level] Loading alpine rope chunk: len={}", chunk_len);
+            alpine_rope_load_chunk(file, chunk_len);
             regs.eip = 0x004608EF;
         }
 

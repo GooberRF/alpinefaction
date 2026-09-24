@@ -38,6 +38,7 @@
 #include "../rf/os/timestamp.h"
 #include "../rf/physics.h"
 #include "../rf/gr/gr.h"
+#include "../object/alpine_rope.h"
 #include "../rf/sound/sound.h"
 #include "../os/console.h"
 #include "../os/os.h"
@@ -2660,6 +2661,9 @@ CallHook<void(rf::Vector3*, float, float, int, int)> crits_explosion_hook{
     },
     [](rf::Vector3* pos, float damage, float radius, int killer_handle, int damage_type) {
         const float scale = crits_on_explosion(pos, radius);
+        if (pos) {
+            alpine_rope_apply_explosion(*pos, radius * scale, damage);
+        }
         crits_explosion_hook.call_target(pos, damage, radius * scale, killer_handle, damage_type);
     },
 };

@@ -111,6 +111,7 @@ FunHook<int(const rf::String* name)> event_lookup_type_hook{
                 {"Display_Projection", 159},
                 {"Climbing_Region_State", 160},
                 {"When_Destroyed", 161},
+                {"Rope_State", 162},
             };
 
             auto it = custom_event_ids.find(name->c_str());
@@ -198,6 +199,7 @@ FunHook<rf::Event*(int event_type)> event_allocate_hook{
                 {159, []() { return new EventDisplayProjection(); }},
                 {160, []() { return new EventClimbingRegionState(); }},
                 {161, []() { return new EventWhenDestroyed(); }},
+                {162, []() { return new EventRopeState(); }},
             };
 
             // find type and allocate
@@ -290,6 +292,7 @@ FunHook<void(rf::Event*)> event_deallocate_hook{
                 {159, [](rf::Event* e) { delete static_cast<EventDisplayProjection*>(e); }},
                 {160, [](rf::Event* e) { delete static_cast<EventClimbingRegionState*>(e); }},
                 {161, [](rf::Event* e) { delete static_cast<EventWhenDestroyed*>(e); }},
+                {162, [](rf::Event* e) { delete static_cast<EventRopeState*>(e); }},
             };
 
             // find type and deallocate
@@ -352,7 +355,8 @@ bool is_forward_exempt(rf::EventType event_type) {
         rf::EventType::Weather_Region_State,
         rf::EventType::Display_Projection,
         rf::EventType::Climbing_Region_State,
-        rf::EventType::When_Destroyed
+        rf::EventType::When_Destroyed,
+        rf::EventType::Rope_State
     };
 
     // AF_Heal should be forward exempt, but this was missed when AF_Heal was added in RFL v300

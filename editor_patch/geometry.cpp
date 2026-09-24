@@ -4,6 +4,7 @@
 #include <set>
 #include <algorithm>
 #include <windows.h>
+#include <patch_common/FunHook.h>
 #include <patch_common/MemUtils.h>
 #include <xlog/xlog.h>
 #include "geometry.h"
@@ -1214,4 +1215,120 @@ void handle_vertex_bridge()
     level->mark_geometry_dirty();
     redraw_all_viewports();
     LogDlg_Append(GetLogDlg(), "Created bridge face with %d vertices.", static_cast<int>(verts.size()));
+}
+
+// ============================================================================
+// Brush mode: Fuse / Carve
+// ============================================================================
+
+constexpr int undo_delete_brushes = 4;
+constexpr int undo_modify_brushes = 10;
+
+// Fuse records a modify snapshot and then a separate delete of the absorbed brushes. The delete
+// entry carries this block in raw_blocks so undo/redo can treat the pair as one step. Stock
+// move/rotate code indexes raw_blocks of whatever entry is on top, reading +0x00 and writing
+// +0x30..+0x5F of its 0x60 byte move records, so the link is shaped like one and keeps its fields
+// clear of those ranges. The spare array slots are nulled so any further index faults as in stock.
+struct FuseUndoLink
+{
+    char move_record_pos[0x0C];
+    uint32_t magic;
+    UndoEntry* snapshot;
+    char move_record_rest[0x4C];
+};
+static_assert(sizeof(FuseUndoLink) == 0x60);
+constexpr uint32_t fuse_undo_link_magic = 0x45535546;
+
+static UndoEntry* fuse_linked_snapshot(UndoEntry* entry)
+{
+    if (!entry || entry->type != undo_delete_brushes || entry->raw_blocks.size != 1) {
+        return nullptr;
+    }
+    auto* link = static_cast<FuseUndoLink*>(entry->raw_blocks.data_ptr[0]);
+    return link && link->magic == fuse_undo_link_magic ? link->snapshot : nullptr;
+}
+
+// The boolean hands every face taken from the second solid to this texturer. Mode 4 stamps the
+// level's geomod textures with world-projected UVs; mode 1 leaves the face as it was. The geometry
+// build switches to mode 1 around its own booleans (0x00439C00), Fuse and Carve never did.
+static auto& boolean_face_texture_mode = addr_as_ref<int>(0x0057CACC);
+
+struct BooleanFaceTexturesKept
+{
+    int saved_mode = boolean_face_texture_mode;
+
+    BooleanFaceTexturesKept() { boolean_face_texture_mode = 1; }
+    ~BooleanFaceTexturesKept() { boolean_face_texture_mode = saved_mode; }
+    BooleanFaceTexturesKept(const BooleanFaceTexturesKept&) = delete;
+    BooleanFaceTexturesKept& operator=(const BooleanFaceTexturesKept&) = delete;
+};
+
+void __fastcall brush_fuse_hooked(CDedLevel* level, void* edx_unused);
+FunHook<decltype(brush_fuse_hooked)> brush_fuse_hook{0x0043B770, brush_fuse_hooked};
+void __fastcall brush_fuse_hooked(CDedLevel* level, void* edx_unused)
+{
+    auto& undo = level->undo_stack;
+    UndoEntry* prev_top = undo_stack_top(undo);
+    {
+        BooleanFaceTexturesKept textures_kept;
+        brush_fuse_hook.call_target(level, edx_unused);
+    }
+
+    if (undo.size < 2) {
+        return;
+    }
+    UndoEntry* deletion = undo.data_ptr[undo.size - 1];
+    UndoEntry* snapshot = undo.data_ptr[undo.size - 2];
+    if (deletion == prev_top || snapshot == prev_top || deletion->type != undo_delete_brushes ||
+        snapshot->type != undo_modify_brushes || deletion->raw_blocks.size != 0) {
+        return;
+    }
+    auto* link = static_cast<FuseUndoLink*>(rf_alloc(sizeof(FuseUndoLink)));
+    if (!link) {
+        return;
+    }
+    std::memset(link, 0, sizeof(FuseUndoLink));
+    link->magic = fuse_undo_link_magic;
+    link->snapshot = snapshot;
+    auto& blocks = deletion->raw_blocks;
+    blocks.push_back(link);
+    std::fill(blocks.data_ptr + blocks.size, blocks.data_ptr + blocks.capacity, nullptr);
+}
+
+void __fastcall brush_carve_hooked(CDedLevel* level, void* edx_unused);
+FunHook<decltype(brush_carve_hooked)> brush_carve_hook{0x0043B9B0, brush_carve_hooked};
+void __fastcall brush_carve_hooked(CDedLevel* level, void* edx_unused)
+{
+    BooleanFaceTexturesKept textures_kept;
+    brush_carve_hook.call_target(level, edx_unused);
+}
+
+void __fastcall level_undo_hooked(CDedLevel* level, void* edx_unused);
+FunHook<decltype(level_undo_hooked)> level_undo_hook{0x0043D210, level_undo_hooked};
+void __fastcall level_undo_hooked(CDedLevel* level, void* edx_unused)
+{
+    UndoEntry* snapshot = fuse_linked_snapshot(undo_stack_top(level->undo_stack));
+    level_undo_hook.call_target(level, edx_unused);
+    if (snapshot && undo_stack_top(level->undo_stack) == snapshot) {
+        level_undo_hook.call_target(level, edx_unused);
+    }
+}
+
+void __fastcall level_redo_hooked(CDedLevel* level, void* edx_unused);
+FunHook<decltype(level_redo_hooked)> level_redo_hook{0x0043D320, level_redo_hooked};
+void __fastcall level_redo_hooked(CDedLevel* level, void* edx_unused)
+{
+    UndoEntry* redone = undo_stack_top(level->redo_stack);
+    level_redo_hook.call_target(level, edx_unused);
+    if (redone && fuse_linked_snapshot(undo_stack_top(level->redo_stack)) == redone) {
+        level_redo_hook.call_target(level, edx_unused);
+    }
+}
+
+void ApplyGeometryPatches()
+{
+    brush_fuse_hook.install();
+    brush_carve_hook.install();
+    level_undo_hook.install();
+    level_redo_hook.install();
 }
