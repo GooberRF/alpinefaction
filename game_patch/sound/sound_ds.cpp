@@ -5,6 +5,8 @@
 #include <patch_common/AsmOpcodes.h>
 #include <stb_vorbis.h>
 #include <algorithm>
+#include <cstring>
+#include <memory>
 #include "../rf/sound/sound.h"
 #include "../rf/sound/sound_ds.h"
 #include "../rf/crt.h"
@@ -331,6 +333,23 @@ FunHook<int(HMMIO*, LPMMCKINFO, const MMCKINFO*)> snd_mmio_find_data_chunk_hook{
     },
 };
 
+// Bulk replacement for the stock chunk reader at 0x00563620: the original copies the wav data
+// into the destination buffer one byte at a time through the mmio buffered-IO window, which
+// costs several ms per sound during level load. One mmioRead call is semantically identical
+// (same clamp to mmcki->cksize, same error path) but memcpy-chunked internally.
+static int snd_mmio_read_chunk_bulk(HMMIO hmmio, unsigned buf_size, BYTE* buf, MMCKINFO* mmcki, int* bytes_read)
+{
+    unsigned len = std::min<unsigned>(buf_size, mmcki->cksize);
+    mmcki->cksize -= len;
+    LONG read = len ? mmioRead(hmmio, reinterpret_cast<HPSTR>(buf), len) : 0;
+    if (read < 0 || static_cast<unsigned>(read) != len) {
+        *bytes_read = 0;
+        return -1;
+    }
+    *bytes_read = read;
+    return 0;
+}
+
 FunHook<int(HMMIO, unsigned, BYTE*, MMCKINFO*, int*)> snd_mmio_read_chunk_hook{
     0x00563620,
     [](HMMIO hmmio, unsigned buf_size, BYTE *buf, MMCKINFO *mmcki, int *bytes_read) {
@@ -351,11 +370,11 @@ FunHook<int(HMMIO, unsigned, BYTE*, MMCKINFO*, int*)> snd_mmio_read_chunk_hook{
                 xlog::info("Ogg Vorbis: read {} samples", samples_read);
                 return 0;
             }
-            return snd_mmio_read_chunk_hook.call_target(wrapper->hmmio, buf_size, buf, mmcki, bytes_read);
+            return snd_mmio_read_chunk_bulk(wrapper->hmmio, buf_size, buf, mmcki, bytes_read);
         }
         else {
             // fallback: not a wrapper, treat as native
-            return snd_mmio_read_chunk_hook.call_target(hmmio, buf_size, buf, mmcki, bytes_read);
+            return snd_mmio_read_chunk_bulk(hmmio, buf_size, buf, mmcki, bytes_read);
         }
     },
 };

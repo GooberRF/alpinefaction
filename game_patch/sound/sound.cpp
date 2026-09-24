@@ -5,12 +5,14 @@
 #include <patch_common/ShortTypes.h>
 #include <patch_common/StaticBufferResizePatch.h>
 #include <algorithm>
+#include <vector>
 #include "sound.h"
 #include "../rf/sound/sound.h"
 #include "../rf/sound/sound_ds.h"
 #include "../rf/entity.h"
 #include "../rf/multi.h"
 #include "../rf/os/frametime.h"
+#include "../rf/os/timestamp.h"
 #include "../multi/multi.h"
 #include "../misc/alpine_settings.h"
 #include "../main/main.h"
@@ -420,6 +422,32 @@ void sound_test_do_frame()
 
 #endif // DEBUG
 
+// Defer sound preloads issued while reading level events: sound-heavy maps preload many MB
+// of ogg/wav synchronously during load. Queue the ids and warm them one per 10 ms after the
+// level is up; a sound played before it is warmed just loads on demand like in the stock game.
+static std::vector<int> g_deferred_snd_loads;
+static bool g_defer_snd_loads = false;
+
+FunHook<int(int)> snd_load_hint_defer_hook{
+    0x005054D0,
+    [](int snd_id) {
+        if (g_defer_snd_loads && snd_id >= 0) {
+            g_deferred_snd_loads.push_back(snd_id);
+            return 0;
+        }
+        return snd_load_hint_defer_hook.call_target(snd_id);
+    },
+};
+
+FunHook<void(void*)> level_read_events_snd_defer_hook{
+    0x00462150,
+    [](void* file) {
+        g_defer_snd_loads = true;
+        level_read_events_snd_defer_hook.call_target(file);
+        g_defer_snd_loads = false;
+    },
+};
+
 FunHook<void(const rf::Vector3&, const rf::Vector3&, const rf::Matrix3&)> snd_update_sounds_hook{
      0x00505EC0,
     [](const rf::Vector3& camera_pos, const rf::Vector3& camera_vel, const rf::Matrix3& camera_orient) {
@@ -436,6 +464,17 @@ FunHook<void(const rf::Vector3&, const rf::Vector3&, const rf::Matrix3&)> snd_up
 
         rf::sound_listener_pos = camera_pos;
         rf::sound_listener_rvec = camera_orient.rvec;
+
+        // Warm one deferred level sound per 10 ms
+        if (!g_deferred_snd_loads.empty()) {
+            static rf::Timestamp warm_timer;
+            if (!warm_timer.valid() || warm_timer.elapsed()) {
+                warm_timer.set(10);
+                int snd_id = g_deferred_snd_loads.back();
+                g_deferred_snd_loads.pop_back();
+                snd_load_hint_defer_hook.call_target(snd_id);
+            }
+        }
 
         // Update DirectSound 3D listener parameters
         rf::snd_pc_change_listener(camera_pos, camera_vel, camera_orient);
@@ -857,6 +896,10 @@ void apply_sound_patches()
     // Properly update DirectSound 3D sounds
     snd_change_3d_hook.install();
     snd_update_sounds_hook.install();
+
+    // Defer level-event sound preloads to after level load
+    snd_load_hint_defer_hook.install();
+    level_read_events_snd_defer_hook.install();
 
     // Apply patch for DirectSound specific code
     snd_ds_apply_patch();
