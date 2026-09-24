@@ -16,10 +16,12 @@
 #include "vehicle_spawn.h"
 #include "../alpine_packets.h"
 #include "../server_internal.h"
+#include "../gametype.h"
 #include "../../hud/hud.h"
 #include "../../hud/multi_spectate.h"
 #include "../../misc/level.h"
 #include "../../misc/player.h"
+#include "../../object/alpine_obj_common.h"
 #include "../../os/console.h"
 #include "../../os/os.h"
 #include "../../rf/ai.h"
@@ -89,7 +91,7 @@ namespace
         return {AF_VEHICLE_FACTORY_PENDING, static_cast<uint16_t>(std::min(left_s, 65535))};
     }
 
-    // The factory record is the authority on affiliation; the hull's own team is frozen on entry.
+    // The factory record is the authority on affiliation; an entered hull takes its boarders' team.
     uint8_t vehicle_factory_wire_team(int factory_index)
     {
         const AlpineVehicleFactoryInfo* info = vehicle_factory(factory_index);
@@ -207,7 +209,7 @@ void vehicle_slot_announce_for_hull(int vehicle_handle)
     }
 }
 
-void vehicle_on_hull_boarded(rf::Entity* vehicle)
+void vehicle_on_hull_boarded(rf::Entity* vehicle, const rf::Entity* rider)
 {
     if (!rf::is_server || !vehicle) {
         return;
@@ -217,12 +219,24 @@ void vehicle_on_hull_boarded(rf::Entity* vehicle)
         st->entered_once = true;
         st->unoccupied_since_ms = 0;
         st->unoccupied_deadline_ms = 0;
+        // The hull takes its boarder's team and keeps it once empty. A locked, teamed hull only ever
+        // admits its own team; a team gained by boarding carries no lock, so a neutral hull stays
+        // re-claimable.
+        const rf::Player* pp = rider && multi_is_team_game_type()
+            ? rf::player_from_entity_handle(rider->handle) : nullptr;
+        if (pp) {
+            const int team = pp->team == 1 ? 1 : 0;
+            if (st->team != team) {
+                st->team = team;
+                st->lock_to_team = false;
+            }
+        }
     }
     VehicleSpawnSlot* slot = vehicle_slot_for_hull(vehicle->handle);
     if (!slot || slot->entered_once) {
         return;
     }
-    // The team the hull carries for the rest of its life, and the factory's TAKEN announcement.
+    // The factory's TAKEN announcement.
     slot->entered_once = true;
     vehicle_slot_announce(*slot);
 }
@@ -379,25 +393,7 @@ void vehicle_factory_load_chunk(rf::File& file, std::size_t chunk_len)
     std::size_t remaining = chunk_len;
     rf::File::ChunkGuard chunk_guard{file, remaining};
 
-    auto read_bytes = [&](void* dst, std::size_t n) -> bool {
-        if (remaining < n) return false;
-        int got = file.read(dst, n);
-        if (got != static_cast<int>(n)) {
-            if (got > 0) remaining -= got;
-            return false;
-        }
-        remaining -= n;
-        return true;
-    };
-
-    auto read_string = [&]() -> std::string {
-        uint16_t len = 0;
-        if (!read_bytes(&len, sizeof(len))) return "";
-        if (len == 0) return "";
-        std::string result(len, '\0');
-        if (!read_bytes(result.data(), len)) return "";
-        return result;
-    };
+    AlpineChunkReader reader{file, remaining};
 
     // Untrusted input reaching a server-side Bullet body: a non-finite value is UB and a
     // non-rotation basis shears every derived box.
@@ -406,8 +402,10 @@ void vehicle_factory_load_chunk(rf::File& file, std::size_t chunk_len)
         if (!std::isfinite(info.pos.x) || !std::isfinite(info.pos.y) || !std::isfinite(info.pos.z)) {
             return false;
         }
+        if (!alpine_orient_is_sane(info.orient)) {
+            return false;
+        }
         for (const rf::Vector3* a : axes) {
-            if (!std::isfinite(a->x) || !std::isfinite(a->y) || !std::isfinite(a->z)) return false;
             if (std::fabs(a->len() - 1.0f) > 0.01f) return false;
         }
         return std::fabs(axes[0]->dot_prod(*axes[1])) <= 0.01f
@@ -417,7 +415,7 @@ void vehicle_factory_load_chunk(rf::File& file, std::size_t chunk_len)
     int rejected = 0;
 
     uint32_t count = 0;
-    if (!read_bytes(&count, sizeof(count))) {
+    if (!reader.read_bytes(&count, sizeof(count))) {
         xlog::warn("[VehicleFactory] failed to read factory count from chunk (len={})", chunk_len);
         return;
     }
@@ -425,38 +423,39 @@ void vehicle_factory_load_chunk(rf::File& file, std::size_t chunk_len)
 
     for (uint32_t i = 0; i < count; ++i) {
         AlpineVehicleFactoryInfo info;
-        if (!read_bytes(&info.uid, sizeof(info.uid))) return;
-        if (!read_bytes(&info.pos.x, sizeof(float))) return;
-        if (!read_bytes(&info.pos.y, sizeof(float))) return;
-        if (!read_bytes(&info.pos.z, sizeof(float))) return;
-        if (!read_bytes(&info.orient.rvec.x, sizeof(float))) return;
-        if (!read_bytes(&info.orient.rvec.y, sizeof(float))) return;
-        if (!read_bytes(&info.orient.rvec.z, sizeof(float))) return;
-        if (!read_bytes(&info.orient.uvec.x, sizeof(float))) return;
-        if (!read_bytes(&info.orient.uvec.y, sizeof(float))) return;
-        if (!read_bytes(&info.orient.uvec.z, sizeof(float))) return;
-        if (!read_bytes(&info.orient.fvec.x, sizeof(float))) return;
-        if (!read_bytes(&info.orient.fvec.y, sizeof(float))) return;
-        if (!read_bytes(&info.orient.fvec.z, sizeof(float))) return;
-        info.script_name = read_string();
-        info.vehicle_class = read_string();
-        if (!read_bytes(&info.respawn_delay_s, sizeof(float))) return;
+        if (!reader.read_bytes(&info.uid, sizeof(info.uid))) return;
+        if (!reader.read_bytes(&info.pos.x, sizeof(float))) return;
+        if (!reader.read_bytes(&info.pos.y, sizeof(float))) return;
+        if (!reader.read_bytes(&info.pos.z, sizeof(float))) return;
+        if (!reader.read_bytes(&info.orient.rvec.x, sizeof(float))) return;
+        if (!reader.read_bytes(&info.orient.rvec.y, sizeof(float))) return;
+        if (!reader.read_bytes(&info.orient.rvec.z, sizeof(float))) return;
+        if (!reader.read_bytes(&info.orient.uvec.x, sizeof(float))) return;
+        if (!reader.read_bytes(&info.orient.uvec.y, sizeof(float))) return;
+        if (!reader.read_bytes(&info.orient.uvec.z, sizeof(float))) return;
+        if (!reader.read_bytes(&info.orient.fvec.x, sizeof(float))) return;
+        if (!reader.read_bytes(&info.orient.fvec.y, sizeof(float))) return;
+        if (!reader.read_bytes(&info.orient.fvec.z, sizeof(float))) return;
+        if (!reader.read_string(info.script_name)) return;
+        if (!reader.read_string(info.vehicle_class)) return;
+        if (!reader.read_bytes(&info.respawn_delay_s, sizeof(float))) return;
         // Untrusted float: a NaN/inf here is UB in the later static_cast<int>(x*1000).
         if (!std::isfinite(info.respawn_delay_s) || info.respawn_delay_s < 0.0f) {
             info.respawn_delay_s = 0.0f;
         }
         uint8_t team = 0xFF;
-        if (!read_bytes(&team, sizeof(team))) return;
+        if (!reader.read_bytes(&team, sizeof(team))) return;
         info.team = (team == 0 || team == 1) ? static_cast<int32_t>(team) : -1;
         uint8_t reserved[2] = {};
-        if (!read_bytes(reserved, sizeof(reserved))) return;
+        if (!reader.read_bytes(reserved, sizeof(reserved))) return;
         uint8_t lock_to_team = 0;
-        if (!read_bytes(&lock_to_team, sizeof(lock_to_team))) return;
+        if (!reader.read_bytes(&lock_to_team, sizeof(lock_to_team))) return;
         // A team-none factory keeps its lock: a control point can hand it a team later, and
-        // vehicle_locked_against already ignores a lock while the hull's team is none.
+        // vehicle_locked_against ignores a lock while the hull's team is none. A team gained by
+        // boarding clears the hull's copy.
         info.lock_to_team = lock_to_team != 0;
         uint8_t active = 1;
-        if (!read_bytes(&active, sizeof(active))) return;
+        if (!reader.read_bytes(&active, sizeof(active))) return;
         info.active_by_default = active != 0;
 
         // The whole record is read before either rejection so the stream stays in step.

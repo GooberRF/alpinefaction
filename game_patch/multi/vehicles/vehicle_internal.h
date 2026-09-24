@@ -150,7 +150,7 @@ struct VehicleSpawnSlot
     rf::Vector3 pos{};
     rf::Matrix3 orient{};
     bool is_turret = false;   // the factory's class is a manned turret (use_function 4)
-    // The hull's own affiliation: seeded from the factory at spawn, and frozen once entered_once.
+    // The factory's team as last applied to this slot; the live hull's team is VehicleState::team.
     int hull_team = -1;
     bool entered_once = false;
     int factory_delay_ms = 0; // the mapper's delay, unless the server overrides it
@@ -321,7 +321,8 @@ VehicleSpawnSlot* vehicle_slot_for_hull(int vehicle_handle);
 bool vehicle_hull_occupied(const rf::Entity* vehicle);
 // Server: re-state a turret factory whose hull just changed occupancy; other slots are unaffected.
 void vehicle_slot_announce_for_hull(int vehicle_handle);
-// Server: first boarding of this hull - freezes its team, clears the auto-return and announces both.
-void vehicle_on_hull_boarded(rf::Entity* vehicle);
+// Server: every boarding - the hull takes the boarder's team, clears the auto-return, and the first
+// one announces the factory as TAKEN.
+void vehicle_on_hull_boarded(rf::Entity* vehicle, const rf::Entity* rider);
 // THE af_vehicle_state attribute derivation, shared by both senders; reads the hull's own state.
 af_vehicle_state_attrs vehicle_build_hull_attrs(int vehicle_handle);

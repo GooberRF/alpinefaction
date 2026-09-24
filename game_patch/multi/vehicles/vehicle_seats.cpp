@@ -360,8 +360,8 @@ namespace
         }
         // A driver boarding is always a fresh takeover of a parked/coasting hull, so flush the ring.
         vehicle_update_interp_ownership(vehicle, seat_index == 0);
-        // Before the announcement: it is what carries the frozen team and the cleared auto-return.
-        vehicle_on_hull_boarded(vehicle);
+        // Before the announcement: it is what carries the boarder's team and the cleared auto-return.
+        vehicle_on_hull_boarded(vehicle, rider);
         vehicle_broadcast_seat_occupancy(vehicle->handle, vehicle, seat_index);
         vehicle_broadcast_health(vehicle, true);
         // Dropped rather than seeded, so the next server frame repeats the value: a boarding

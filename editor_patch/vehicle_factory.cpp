@@ -15,6 +15,7 @@
 #include "resources.h"
 #include "vtypes.h"
 #include "alpine_obj.h"
+#include "alpine_spinner.h"
 #include "tbl.h"
 
 extern "C" IMAGE_DOS_HEADER __ImageBase;
@@ -358,7 +359,7 @@ void vehicle_factory_deserialize_chunk(CDedLevel& level, rf::File& file, std::si
 
 static std::vector<DedVehicleFactory*> g_selected_factories;
 
-static INT_PTR CALLBACK VehicleFactoryDialogProc(HWND hdlg, UINT msg, WPARAM wp, LPARAM)
+static INT_PTR CALLBACK VehicleFactoryDialogProc(HWND hdlg, UINT msg, WPARAM wp, LPARAM lp)
 {
     switch (msg) {
     case WM_INITDIALOG: {
@@ -396,9 +397,9 @@ static INT_PTR CALLBACK VehicleFactoryDialogProc(HWND hdlg, UINT msg, WPARAM wp,
         }
         SendMessage(cls, CB_SETCURSEL, cls_sel == CB_ERR ? 0 : cls_sel, 0);
 
-        char buf[32];
-        snprintf(buf, sizeof(buf), "%.4g", factory->respawn_delay_s);
-        SetDlgItemTextA(hdlg, IDC_VEHICLE_FACTORY_RESPAWN_DELAY, buf);
+        alpine_dlg_set_float_field(hdlg, IDC_VEHICLE_FACTORY_RESPAWN_DELAY, factory->respawn_delay_s);
+        alpine_spinner_init(hdlg, IDC_VEHICLE_FACTORY_RESPAWN_DELAY, IDC_VEHICLE_FACTORY_RESPAWN_DELAY_SPIN,
+                            1.0f, 0.0f, vehicle_factory_max_respawn_delay_s, 1);
 
         HWND team = GetDlgItem(hdlg, IDC_VEHICLE_FACTORY_TEAM);
         SendMessageA(team, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>("None"));
@@ -428,10 +429,7 @@ static INT_PTR CALLBACK VehicleFactoryDialogProc(HWND hdlg, UINT msg, WPARAM wp,
             if (have_class) {
                 SendMessageA(cls_ok, CB_GETLBTEXT, cls_cur, reinterpret_cast<LPARAM>(class_buf));
             }
-            char delay_buf[32] = {};
-            GetDlgItemTextA(hdlg, IDC_VEHICLE_FACTORY_RESPAWN_DELAY, delay_buf, sizeof(delay_buf));
-
-            float delay = static_cast<float>(atof(delay_buf));
+            float delay = alpine_dlg_get_float_field(hdlg, IDC_VEHICLE_FACTORY_RESPAWN_DELAY);
             // "nan"/"inf" parse, and std::clamp propagates them rather than bounding them.
             if (!std::isfinite(delay)) {
                 delay = vehicle_factory_default_respawn_delay_s;
@@ -473,6 +471,9 @@ static INT_PTR CALLBACK VehicleFactoryDialogProc(HWND hdlg, UINT msg, WPARAM wp,
             EndDialog(hdlg, IDCANCEL);
             return TRUE;
         }
+        break;
+    case WM_NOTIFY:
+        if (alpine_spinner_handle_notify(hdlg, lp)) return TRUE;
         break;
     }
     return FALSE;
@@ -782,24 +783,13 @@ void vehicle_factory_handle_delete_or_cut(DedObject* obj)
 
 void vehicle_factory_handle_delete_selection(CDedLevel* level)
 {
-    auto& sel = level->selection;
-    for (int i = sel.size - 1; i >= 0; i--) {
-        DedObject* obj = sel.data_ptr[i];
-        if (obj && obj->type == DedObjectType::DED_VEHICLE_FACTORY) {
-            for (int j = i; j < sel.size - 1; j++) {
-                sel.data_ptr[j] = sel.data_ptr[j + 1];
-            }
-            sel.size--;
-            DeleteVehicleFactoryObject(static_cast<DedVehicleFactory*>(obj));
-        }
-    }
+    alpine_compact_selection<DedVehicleFactory>(level, DedObjectType::DED_VEHICLE_FACTORY,
+                                                DeleteVehicleFactoryObject);
 }
 
 void vehicle_factory_ensure_uid(int& uid)
 {
     auto* level = CDedLevel::Get();
     if (!level) return;
-    for (auto* f : level->GetAlpineLevelProperties().vehicle_factory_objects) {
-        if (f->uid >= uid) uid = f->uid + 1;
-    }
+    alpine_ensure_uid(level->GetAlpineLevelProperties().vehicle_factory_objects, uid);
 }

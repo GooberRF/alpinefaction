@@ -290,8 +290,8 @@ namespace
         g_team_tex_cache.clear();
     }
 
-    // Who the hull reads as, client-side: its seat-0 rider outranks the affiliation it was frozen
-    // with, so a hull driven across the line is coloured for the man in it. -1 keeps stock art.
+    // Who the hull reads as, client-side: its seat-0 rider, else the stored affiliation (which boarding
+    // sets to the boarder's team). -1 keeps stock art.
     int vehicle_effective_team(rf::Entity* vehicle)
     {
         if (!multi_is_team_game_type()) {
