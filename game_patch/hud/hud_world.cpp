@@ -1368,6 +1368,20 @@ void populate_fullscreen_overlay_events()
     }
 }
 
+// Demo seek: the burst feeds minutes of packets in a few wall seconds, and these all
+// age on wall clock - damage numbers pile up and a map-start fullscreen image outlives
+// the jump. Drop them; a finite overlay is transient, an infinite one is level state.
+void hud_world_seek_reset()
+{
+    ephemeral_world_hud_strings.clear();
+    ephemeral_world_hud_sprites.clear();
+    for (auto* overlay : fullscreen_overlay_events) {
+        if (overlay->duration > 0.0f || overlay->fading_out_early) {
+            overlay->active = false;
+        }
+    }
+}
+
 void hud_world_level_unload()
 {
     world_hud_sprite_events.clear();

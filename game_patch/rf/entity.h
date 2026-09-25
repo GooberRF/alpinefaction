@@ -20,6 +20,7 @@ namespace rf
         EF_DYING = 0x1,
         EF_JUMP_START_ANIM = 0x2,
         EF_GIB_ON_DEATH = 0x80,
+        EF_RELOADING = 0x100, // set by entity_reload_current_primary, cleared by entity_reload_do_frame
         EF_IN_WATER = 0x1000,
         EF_EYE_UNDER_WATER = 0x2000,
         EF_CUSTOM_CORPSE = 0x2000000,
@@ -402,6 +403,8 @@ namespace rf
         Timestamp field_1490;
     };
     static_assert(sizeof(Entity) == 0x1494);
+    static_assert(offsetof(Entity, entity_flags) == 0x810);
+    static_assert(offsetof(Entity, reload_done_timestamp) == 0x139C);
 
     struct EntityFireInfo
     {

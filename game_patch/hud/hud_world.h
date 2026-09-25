@@ -118,6 +118,7 @@ void populate_world_hud_sprite_events();
 void populate_fullscreen_overlay_events();
 void fullscreen_overlay_do_frame();
 void hud_world_level_unload();
+void hud_world_seek_reset();
 void add_location_ping_world_hud_sprite(rf::Vector3 pos, std::string player_name, int player_id);
 void add_damage_notify_world_hud_string(rf::Vector3 pos, uint8_t damaged_player_id, uint16_t damage, bool died,
                                        bool crit = false);

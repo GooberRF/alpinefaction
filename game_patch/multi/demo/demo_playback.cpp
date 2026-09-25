@@ -6,6 +6,7 @@
 #include <format>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <common/rfproto.h>
 #include <common/utils/list-utils.h>
 #include <xlog/xlog.h>
@@ -22,8 +23,10 @@
 #include "../../misc/alpine_settings.h"
 #include "../../hud/multi_spectate.h"
 #include "../../hud/hud.h"
+#include "../../hud/hud_world.h"
 #include "../../rf/multi.h"
 #include "../../rf/level.h"
+#include "../../rf/event.h"
 #include "../../rf/gameseq.h"
 #include "../../rf/object.h"
 #include "../../rf/entity.h"
@@ -108,12 +111,23 @@ namespace
         bool seek_obj_update_seen = false;
         int64_t seek_settle_deadline = 0; // wall-clock cap for the settle window
         bool seek_audio_muted = false;
+        // Demo clock at which each entity (by handle) last started a reload, plus the
+        // game-time deadlines armed at that moment. Lets a seek that lands mid-reload
+        // resume the reload at the right offset instead of dropping it.
+        struct ReloadStart
+        {
+            double start_ms;
+            int duration_ms;  // reload_done_timestamp delay (= body reload anim length for remote entities)
+            int drop_clip_ms; // drop_clip_timestamp delay
+        };
+        std::unordered_map<int, ReloadStart> reload_starts;
         // Follow-cam: auto-attach on entering gameplay and remember the followed player
         // across seeks/restarts. Targets are stored by net player_id (stable across a
         // restart of the same stream), never by pointer - the roster is rebuilt.
         bool cam_want_attached = true;    // false only when the user deliberately went freelook
         bool cam_third_person = false;
         int cam_target_id = -1;           // remembered followed player
+        int cam_static_index = -1;        // remembered static camera (detached group), -1 = freelook
         int cam_last_active_id = -1;      // most recent killer/attacker
         bool cam_attach_pending = false;  // retry attach each pump frame (roster fills incrementally)
         int64_t cam_attach_deadline = 0;  // wall-clock give-up
@@ -361,9 +375,11 @@ namespace
         g_ctx.seek_settle = false;
         g_ctx.seek_obj_update_seen = false;
         g_ctx.seek_settle_deadline = 0;
+        g_ctx.reload_starts.clear();
         g_ctx.cam_want_attached = true;
         g_ctx.cam_third_person = false;
         g_ctx.cam_target_id = -1;
+        g_ctx.cam_static_index = -1;
         g_ctx.cam_last_active_id = -1;
         g_ctx.cam_attach_pending = false;
         g_ctx.cam_attach_deadline = 0;
@@ -419,6 +435,7 @@ namespace
             return;
         const bool following = multi_spectate_is_following_player();
         g_ctx.cam_want_attached = following;
+        g_ctx.cam_static_index = multi_spectate_get_camera_state().static_index;
         if (following) {
             g_ctx.cam_third_person = multi_spectate_get_camera_state().third_person;
             rf::Player* target = multi_spectate_get_target_player();
@@ -717,23 +734,98 @@ namespace
         // re-prime on their spawn timers)
         rf::particle_level_release();
         explosion_flash_lights_destroy_all();
+        hud_world_seek_reset();
+        // Event delays (Delay events, per-event delay fields) are game-time timestamps
+        // too: a chain armed during the burst fires minutes late, after the overlay
+        // drops (Crystalwood: When_Dead -> Delay -> 6 s -> fullscreen image). Cancel
+        // every pending delay the way Clear_Queued does; anything still legitimately
+        // pending at the target is a visual we would rather lose than replay.
+        for (int i = 0; i < rf::event_list.size(); ++i) {
+            if (auto* event = rf::event_list[i]) {
+                event->delay_timestamp.invalidate();
+                event->delayed_msg = false;
+            }
+        }
     }
 
     // A burst that ends between a fire-ON and fire-OFF obj_update leaves the entity's
     // weapon latch stuck on - entity_process_post would keep firing it forever. Clear
     // every latch; a genuinely-firing entity is re-latched by the first normal-paced
     // obj_update, which is exactly what the settle window waits for.
+    // Reloads are the same shape: a reload packet fed during the burst sets EF_RELOADING
+    // and arms reload_done_timestamp, but that is game time and barely advances while
+    // records are burst-fed, so every reload started in the skipped span is still "in
+    // progress" at the target. The spectate edge detector then sees a fresh rising edge
+    // and plays the fpgun reload from frame 0, and the body's reload action anim is
+    // still at its start. Using the demo clock recorded when the reload started: a
+    // reload that is genuinely mid-flight at the target is re-armed with the time it
+    // has left and its anims advanced by the skipped span; anything else is finished
+    // the way entity_reload_do_frame does on an MP client (flag off, timestamps
+    // dropped - ammo is server state) with the body action anim stopped.
     void cull_seek_fire_latches()
     {
+        multi_spectate_reset_action_anim_edge_state();
         for (auto& entity : DoublyLinkedList{rf::entity_list}) {
             for (int weapon_type = 0; weapon_type < 64; ++weapon_type) {
                 if (entity.ai.weapon_is_on[weapon_type]) {
                     rf::entity_turn_weapon_off(entity.handle, weapon_type);
                 }
             }
+            if (!(entity.entity_flags & rf::EF_RELOADING)) {
+                continue;
+            }
+            const auto it = g_ctx.reload_starts.find(entity.handle);
+            const double elapsed_ms = it != g_ctx.reload_starts.end() ? g_ctx.clock_ms - it->second.start_ms : -1.0;
+            if (elapsed_ms >= 0.0 && elapsed_ms < it->second.duration_ms) {
+                const auto& rs = it->second;
+                // The body anim already ran for the burst's wall time since the reload
+                // started (game time keeps ticking at wall rate during the burst); only
+                // advance it by what the burst skipped. Read before re-arming the deadline.
+                const int sim_elapsed_ms = rs.duration_ms - entity.reload_done_timestamp.time_until();
+                const double advance_ms = elapsed_ms - sim_elapsed_ms;
+                entity.reload_done_timestamp.set(static_cast<int>(rs.duration_ms - elapsed_ms));
+                if (rs.drop_clip_ms > elapsed_ms) {
+                    entity.drop_clip_timestamp.set(static_cast<int>(rs.drop_clip_ms - elapsed_ms));
+                }
+                else {
+                    entity.drop_clip_timestamp.invalidate();
+                }
+                if (entity.vmesh && advance_ms > 0.0) {
+                    rf::vmesh_process(entity.vmesh, static_cast<float>(advance_ms / 1000.0), 0, &entity.pos,
+                                      &entity.orient, 1);
+                }
+                multi_spectate_resume_reload_anim(&entity, static_cast<float>(elapsed_ms / 1000.0));
+                continue;
+            }
+            entity.entity_flags &= ~rf::EF_RELOADING;
+            entity.reload_done_timestamp.invalidate();
+            entity.drop_clip_timestamp.invalidate();
+            entity.zero_ammo_timestamp.invalidate();
+            if (entity.vmesh) {
+                rf::vmesh_stop_all_actions(entity.vmesh);
+            }
         }
-        multi_spectate_reset_action_anim_edge_state();
     }
+
+    // Record the demo clock at which each entity starts a reload (fed reload packets
+    // route through here via process_reload_packet), so a seek landing mid-reload can
+    // resume it - see cull_seek_fire_latches. The deadlines are read back right after
+    // the engine armed them, so time_until() is the full delay. clock_ms is the fed
+    // record's own timestamp in the burst loop and within a frame of it when paced.
+    FunHook<bool(rf::Entity*, bool, bool)> entity_reload_current_primary_demo_hook{
+        0x00425280,
+        [](rf::Entity* entity, bool no_sound, bool is_reload_packet) {
+            const bool reloaded = entity_reload_current_primary_demo_hook.call_target(entity, no_sound, is_reload_packet);
+            if (reloaded && g_ctx.state == PlaybackState::playing) {
+                g_ctx.reload_starts[entity->handle] = {
+                    g_ctx.clock_ms,
+                    entity->reload_done_timestamp.time_until(),
+                    entity->drop_clip_timestamp.valid() ? entity->drop_clip_timestamp.time_until() : 0,
+                };
+            }
+            return reloaded;
+        },
+    };
 
     void seek_begin(double target_ms)
     {
@@ -1495,6 +1587,11 @@ void demo_playback_do_frame()
             if (g_ctx.cam_want_attached) {
                 begin_attach_retry();
             }
+            else if (g_ctx.cam_static_index >= 0) {
+                // Static camera survived a session restart - dropped cameras are reloaded
+                // from the level's .afl in level_init, so the index is still valid
+                multi_spectate_apply_camera_state({false, false, g_ctx.cam_static_index}, nullptr);
+            }
             else {
                 // Freelook survived a session restart - put the camera back
                 apply_freelook_camera_memory();
@@ -1734,6 +1831,7 @@ void demo_playback_do_patch()
     psnet_rel_connect_to_server_hook.install();
     gameplay_sim_frame_hook.install();
     vmesh_process_hook.install();
+    entity_reload_current_primary_demo_hook.install();
 
     demo_play_cmd.register_cmd();
     demo_stop_cmd.register_cmd();

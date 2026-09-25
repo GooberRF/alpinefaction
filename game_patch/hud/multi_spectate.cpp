@@ -162,6 +162,25 @@ void multi_spectate_reset_action_anim_edge_state()
     g_prev_weapon_type = -1;
 }
 
+// Demo seek landed mid-reload of the spectated player: start the fpgun reload anim and
+// advance it by the time already elapsed, then mark the edge as seen so the per-frame
+// detector does not restart it from frame 0.
+void multi_spectate_resume_reload_anim(rf::Entity* entity, float elapsed_secs)
+{
+    rf::Player* target = g_spectate_mode_target;
+    if (!g_spectate_mode_enabled || !target || target == rf::local_player || !entity
+        || entity->handle != target->entity_handle || !target->weapon_mesh_handle) {
+        return;
+    }
+    const int weapon_type = entity->ai.current_primary_weapon;
+    if (weapon_type >= 0 && weapon_type < rf::num_weapon_types
+        && rf::player_fpgun_action_anim_exists(weapon_type, rf::WA_RELOAD)) {
+        rf::player_fpgun_play_anim(target, rf::WA_RELOAD);
+        rf::vmesh_process(target->weapon_mesh_handle, elapsed_secs, 0, nullptr, nullptr, 1);
+    }
+    g_prev_is_reloading = true;
+}
+
 void player_fpgun_set_player(rf::Player* pp);
 
 static void spectate_apply_player_view_mode();
@@ -759,6 +778,7 @@ SpectateCameraState multi_spectate_get_camera_state()
     SpectateCameraState state;
     state.attached = g_spectate_mode_enabled && spectate_is_player_view(g_spectate_view_mode);
     state.third_person = g_spectate_view_mode == SpectateViewMode::third_person;
+    state.static_index = g_spectate_static_active ? g_spectate_static_index : -1;
     return state;
 }
 
@@ -766,6 +786,12 @@ void multi_spectate_apply_camera_state(const SpectateCameraState& state, rf::Pla
 {
     if (!state.attached || !target || target == rf::local_player || target->is_non_participant()) {
         multi_spectate_enter_freelook();
+        if (state.static_index >= 0 && state.static_index < spectate_static_camera_count()) {
+            g_spectate_detached_submode = SpectateViewMode::static_cam;
+            spectate_set_view_mode(SpectateViewMode::static_cam);
+            g_spectate_static_index = state.static_index;
+            spectate_apply_static_index();
+        }
         return;
     }
     // set_target_player handles entering attached spectate from a free view (defaults
