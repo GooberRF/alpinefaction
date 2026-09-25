@@ -342,8 +342,9 @@ CodeInjection lightmap_apply_room_ambient_injection{
         uintptr_t room_elements = *reinterpret_cast<uintptr_t*>(gsolid + 0x90 + 8);
         if (room_count <= 0 || !room_elements) return;
 
-        int surface_count = *reinterpret_cast<int*>(gsolid + 0xC0);
-        uintptr_t surface_elements = *reinterpret_cast<uintptr_t*>(gsolid + 0xC0 + 8);
+        const auto& surfaces = reinterpret_cast<const GSolid*>(gsolid)->surfaces;
+        int surface_count = surfaces.size;
+        uintptr_t surface_elements = reinterpret_cast<uintptr_t>(surfaces.data_ptr);
         if (surface_count <= 0 || !surface_elements) return;
 
         // Build combined bbox per room_index from surfaces

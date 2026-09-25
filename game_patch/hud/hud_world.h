@@ -5,6 +5,11 @@
 #include "../rf/gr/gr.h"
 #include "../os/os.h"
 
+struct HillInfo;
+
+// Countdown and objective text colour shared by the world HUD, vehicle markers and minimap.
+constexpr rf::Color hud_amber_color{255, 220, 64, 255};
+
 struct WorldHUDAssets
 {
     int flag_red_d;
@@ -133,3 +138,6 @@ bool world_hud_ensure_text_label(NameLabelTex& slot, const std::string& text, in
 void world_hud_release_text_label(NameLabelTex& slot);
 void do_render_world_hud_text_label(const NameLabelTex& label, const rf::Vector3& pos, float vertical_offset,
     float height_world, WorldHUDRenderMode render_mode, bool stay_inside_fog, bool distance_scaling, rf::Color color);
+rf::Vector3 koth_hill_icon_pos(const HillInfo& h);
+// Red/blue from the outline team colours; white for no team.
+rf::Color hud_team_color(int team, rf::ubyte alpha = 255);

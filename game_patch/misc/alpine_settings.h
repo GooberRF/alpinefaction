@@ -175,6 +175,28 @@ struct AlpineGameSettings
         fps_counter_average_ms = std::clamp(window_ms, min_fps_counter_average_ms, max_fps_counter_average_ms);
     }
     bool speed_display = false;
+    bool minimap = true;
+    bool minimap_rotate = false;
+    static constexpr float min_minimap_size = 80.0f;
+    static constexpr float max_minimap_size = 240.0f;
+    float minimap_size = 140.0f; // small-HUD pixels
+    void set_minimap_size(float value)
+    {
+        if (std::isnan(value)) {
+            return;
+        }
+        minimap_size = std::clamp(value, min_minimap_size, max_minimap_size);
+    }
+    static constexpr float min_minimap_zoom = 0.1f;
+    static constexpr float max_minimap_zoom = 1.0f;
+    float minimap_zoom = 0.35f; // share of the level's larger extent shown across the panel
+    void set_minimap_zoom(float value)
+    {
+        if (std::isnan(value)) {
+            return;
+        }
+        minimap_zoom = std::clamp(value, min_minimap_zoom, max_minimap_zoom);
+    }
     bool ping_display = true;
     bool spectate_mode_minimal_ui = false;
     bool spectate_show_camera_meshes = true; // draw camera meshes in free look

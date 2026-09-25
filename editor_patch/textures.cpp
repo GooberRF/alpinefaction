@@ -745,6 +745,11 @@ CodeInjection vpp_extra_textures_injection{
             }
         }
 
+        const auto& props = level->GetAlpineLevelProperties();
+        if (props.minimap_enabled) {
+            add_texture_to_pack_list(temp_list, props.minimap_bitmap.c_str());
+        }
+
         // Last, so it also covers the stock loops' entries and everything added above
         expand_atx_deps_in_pack_list(temp_list);
     }
@@ -796,6 +801,45 @@ CodeInjection vpp_mesh_files_injection{
 
 // ─── Texture reload ─────────────────────────────────────────────────────────
 
+// Reloads `name` into `entry`, whose checksum the caller has inverted so bm_load's name lookup
+// skips it (it stays in its hash slot, preserving the linear probe chain). bm_load builds a real
+// entry, and its data is copied into `entry` so the handle stays valid. False, with `entry`
+// visible again, when the file still can't be read.
+static bool reload_entry_in_place(BitmapEntry* entry, int original_checksum, const char* name)
+{
+    const int new_handle = BitmapEntry::load(name, -1);
+    const int new_index = new_handle >= 0 ? BitmapEntry::handle_to_index(new_handle) : -1;
+    BitmapEntry* new_entry = new_index >= 0 ? &BitmapEntry::entries[new_index] : nullptr;
+    if (!new_entry || new_entry == entry) {
+        entry->name_checksum = original_checksum;
+        return false;
+    }
+
+    // bm_load never fails: an unreadable file gets another TYPE_USER placeholder.
+    if (new_entry->bm_type == BitmapEntry::TYPE_USER) {
+        entry->name_checksum = original_checksum;
+        new_entry->name_checksum = ~original_checksum;
+        return false;
+    }
+
+    // Preserve the old entry's handle and linked list pointers
+    const int old_handle = entry->handle;
+    BitmapEntry* old_next = entry->next;
+    BitmapEntry* old_prev = entry->prev;
+    // Name and checksum come across from the new entry: same filename, same values.
+    memcpy(entry, new_entry, sizeof(BitmapEntry));
+    entry->handle = old_handle;
+    entry->next = old_next;
+    entry->prev = old_prev;
+
+    // Invalidate the new entry's checksum so hash lookups find the old entry, not this one
+    new_entry->name_checksum = ~original_checksum;
+
+    // Invalidate the cached D3D texture so the renderer recreates it from the real data
+    gr_d3d_mark_texture_dirty(old_handle);
+    return true;
+}
+
 // Reload bitmap manager placeholder entries in-place.
 // bm_load creates a 32x32 TYPE_USER placeholder with the texture's name on failure
 // (FUN_004bc9c0). Subsequent loads find this cached entry and never retry from disk.
@@ -843,50 +887,27 @@ static void reload_bm_placeholders()
     // Phase 2: Reload each placeholder in-place
     int reloaded = 0;
     for (auto& ph : placeholders) {
-        int new_handle = BitmapEntry::load(ph.name, -1);
-
-        // bm_load never returns < 0 — if the file can't be read, it creates another
-        // placeholder. Check the new entry's type to detect this.
-        int new_index = BitmapEntry::handle_to_index(new_handle);
-        BitmapEntry* new_entry = &BitmapEntry::entries[new_index];
-
-        if (new_entry->bm_type == BitmapEntry::TYPE_USER) {
-            // File still can't be loaded — bm_load created another placeholder.
-            // Restore old entry's checksum and invalidate the redundant new one.
-            ph.entry->name_checksum = ph.original_checksum;
-            new_entry->name_checksum = ~ph.original_checksum;
+        if (!reload_entry_in_place(ph.entry, ph.original_checksum, ph.name)) {
             continue;
         }
-
-        // Preserve the old entry's handle and linked list pointers
-        int old_handle = ph.entry->handle;
-        BitmapEntry* old_next = ph.entry->next;
-        BitmapEntry* old_prev = ph.entry->prev;
-
-        // Copy all bitmap data from the new (real) entry into the old (placeholder) entry
-        memcpy(ph.entry, new_entry, sizeof(BitmapEntry));
-
-        // Restore the fields that must stay tied to the old entry's position
-        ph.entry->handle = old_handle;
-        ph.entry->next = old_next;
-        ph.entry->prev = old_prev;
-
-        // The old entry now has real texture metadata with the original handle.
-        // Checksum and name were copied from the new entry (same filename = same values).
-
-        // Invalidate the new entry's checksum so hash lookups find the old entry, not this one
-        new_entry->name_checksum = ~ph.original_checksum;
-
-        // Invalidate the cached D3D texture so the renderer recreates it from the real data
-        gr_d3d_mark_texture_dirty(old_handle);
-
-        xlog::info("Reloaded bmpman placeholder '{}' in-place (handle=0x{:x})", ph.name, old_handle);
+        xlog::info("Reloaded bmpman placeholder '{}' in-place (handle=0x{:x})", ph.name, ph.entry->handle);
         reloaded++;
     }
 
     if (!placeholders.empty()) {
         xlog::info("Reloaded {}/{} bmpman placeholder(s)", reloaded, placeholders.size());
     }
+}
+
+bool reload_bitmap_in_place(const char* filename)
+{
+    const int handle = BitmapEntry::load(filename, -1);
+    const int index = handle >= 0 ? BitmapEntry::handle_to_index(handle) : -1;
+    if (index < 0) return false;
+    BitmapEntry* entry = &BitmapEntry::entries[index];
+    const int checksum = entry->name_checksum;
+    entry->name_checksum = ~checksum;
+    return reload_entry_in_place(entry, checksum, filename);
 }
 
 void reload_custom_textures()

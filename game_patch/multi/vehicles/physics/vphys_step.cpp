@@ -7,6 +7,7 @@
 #include "vphys_internal.h"
 #include "../vehicle_physics.h"
 #include "../vehicle.h"
+#include "../../../misc/destruction.h"
 #include "../../../misc/level.h"
 #include "../../../os/console.h"
 #include "../../../os/os.h"
@@ -525,20 +526,33 @@ namespace
         },
     };
 
-    // geomod_queue_add is the ONE address every crater passes through - geomod_create returns early
-    // on a multiplayer client. params->scale is radius/shape_radius, so the world radius is that undone.
+    void notify_geomod_params(const rf::GeomodParams* params)
+    {
+        // No factory means no level mesh, so the shape lookup below would be paid for nothing.
+        if (!params || !g_level_has_bullet_vehicles) {
+            return;
+        }
+        const float radius = geomod_crater_radius(*params).value_or(0.0f);
+        vehicle_physics_notify_geomod(params->pos, radius > 0.0f ? radius : 0.0f);
+    }
+
+    // Live craters: geomod_create and the client's 0x29 handler both queue here; geomod_create returns
+    // early on a multiplayer client.
     FunHook<void(rf::GeomodParams*)> geomod_queue_add_vphys_hook{
         0x00437230,
         [](rf::GeomodParams* params) {
             geomod_queue_add_vphys_hook.call_target(params);
-            // No factory means no level mesh, so the shape lookup below would be paid for nothing.
-            if (!params || !g_level_has_bullet_vehicles) {
-                return;
-            }
-            auto* shape = AddrCaller{0x004375b0}.c_call<void*>(params->shape_index);
-            const float shape_radius =
-                shape ? *reinterpret_cast<const float*>(static_cast<const char*>(shape) + 0x60) : 0.0f;
-            vehicle_physics_notify_geomod(params->pos, shape_radius > 0.0f ? params->scale * shape_radius : 0.0f);
+            notify_geomod_params(params);
+        },
+    };
+
+    // A joiner's replayed craters (pregame boolean 0x11, handler 0x004766B0) carve synchronously through
+    // geomod_init without queueing, after this client's level mesh was built. Marked before the carve.
+    CallHook<void(rf::GeomodParams*)> pregame_boolean_geomod_init_vphys_hook{
+        0x00476787,
+        [](rf::GeomodParams* params) {
+            notify_geomod_params(params);
+            pregame_boolean_geomod_init_vphys_hook.call_target(params);
         },
     };
 } // namespace
@@ -789,5 +803,6 @@ void vehicle_physics_apply_patches()
     physics_simulate_entity_vphys_hook.install();
     player_process_controls_vphys_hook.install();
     geomod_queue_add_vphys_hook.install();
+    pregame_boolean_geomod_init_vphys_hook.install();
     vphys_world_install_patches();
 }

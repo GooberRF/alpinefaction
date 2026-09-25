@@ -437,6 +437,11 @@ static auto& bm_get_mipmap_info = addr_as_ref<void(int bm_handle, int* width, in
                                                   int* num_pixels_in_all_levels, int* mip_levels)>(0x004BCBD0);
 // Nonzero when the bitmap's pixel format carries alpha (formats 4, 5 and 7).
 static auto& bm_has_alpha = addr_as_ref<char __cdecl(int bm_handle)>(0x004BCC60);
+// Returns the pixel format, 0 on failure. A static bitmap's unlock frees the locked copy at once.
+static auto& bm_lock = addr_as_ref<int __cdecl(int bm_handle, void** pixels, void** palette)>(0x004BCCD0);
+static auto& bm_unlock = addr_as_ref<void __cdecl(int bm_handle)>(0x004BDC50);
+// The RF root directory, always with its trailing separator.
+static auto& file_root_path = addr_as_ref<char[256]>(0x0158CA10);
 
 // Primitives CBitmapPreviewDialog::OnPaint (0x0044C1B0) uses to draw a texture straight into a
 // control's own window rather than through its device context.

@@ -22,6 +22,9 @@ constexpr int alpine_vehicle_factory_chunk_id = 0x0AFBAE07;
 constexpr int alpine_projection_camera_chunk_id = 0x0AFBAE08;
 constexpr int alpine_rope_emitter_chunk_id = 0x0AFBAE0A;
 
+// Length limit (with the terminator) for bitmap names read from untrusted alpine level chunks.
+constexpr std::size_t max_bitmap_name = 32;
+
 // Bounds checked reader for the alpine RFL chunks. Bind it to the same `remaining` counter as the
 // rf::File::ChunkGuard that guards the chunk, so the guard still skips whatever went unread.
 struct AlpineChunkReader
@@ -133,6 +136,13 @@ struct AlpineLevelProperties
     // v6
     bool vehicle_flight_ceiling_enabled = false;   // mapper opted into an altitude ceiling for flyers
     float vehicle_flight_ceiling = 0.0f;           // world Y (RF up axis) the ceiling sits at
+
+    // v7
+    bool minimap_enabled = false;
+    std::string minimap_bitmap;
+    rf::Vector3 minimap_world_min{};
+    rf::Vector3 minimap_world_max{};
+    float minimap_cut_height = 0.0f; // editor-side bake parameter, no effect in game
 
     // should match SanitizeSunProperties in editor_patch\level.h
     // A level file can carry anything; these floats end up in the lights constant buffer and in the
@@ -399,6 +409,44 @@ struct AlpineLevelProperties
                 return;
             xlog::debug("[AlpineLevelProps] vehicle_flight_ceiling {} (enabled {})",
                         vehicle_flight_ceiling, vehicle_flight_ceiling_enabled);
+        }
+
+        if (version >= 7) {
+            std::uint8_t u8 = 0;
+            if (!reader.read_bytes(&u8, sizeof(u8)))
+                return;
+            const bool enabled = (u8 != 0);
+            std::string bitmap;
+            if (!reader.read_string(bitmap))
+                return;
+            rf::Vector3 world_min{}, world_max{};
+            if (!reader.read_bytes(&world_min, sizeof(world_min)))
+                return;
+            if (!reader.read_bytes(&world_max, sizeof(world_max)))
+                return;
+            if (!reader.read_bytes(&minimap_cut_height, sizeof(minimap_cut_height)))
+                return;
+            if (bitmap.size() >= max_bitmap_name || bitmap.find_first_of("\\/:") != std::string::npos) {
+                xlog::warn("[AlpineLevelProps] Ignoring invalid minimap bitmap name");
+                bitmap.clear();
+            }
+            // Bounded, so the extent and the panel scale derived from it stay finite and non-zero.
+            constexpr float max_coord = 1e6f;
+            constexpr float min_extent = 1.0f;
+            auto in_range = [](const rf::Vector3& v) {
+                return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z) &&
+                    std::fabs(v.x) <= max_coord && std::fabs(v.z) <= max_coord;
+            };
+            const bool bounds_ok = in_range(world_min) && in_range(world_max) &&
+                world_max.x - world_min.x >= min_extent && world_max.z - world_min.z >= min_extent;
+            if (enabled && !bounds_ok) {
+                xlog::warn("[AlpineLevelProps] Minimap disabled: invalid world bounds");
+            }
+            minimap_bitmap = std::move(bitmap);
+            minimap_world_min = world_min;
+            minimap_world_max = world_max;
+            minimap_enabled = enabled && bounds_ok;
+            xlog::debug("[AlpineLevelProps] minimap {} bitmap '{}'", minimap_enabled, minimap_bitmap);
         }
     }
 };

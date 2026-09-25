@@ -488,6 +488,18 @@ void gr_bitmap_scaled_float(int bitmap_handle, float x, float y, float w, float 
     }
 }
 
+void gr_poly_2d(int bitmap_handle, int nv, const rf::gr::Vertex* vertices, rf::gr::Mode mode)
+{
+    if (rf::gr::screen.mode == rf::gr::DIRECT3D) {
+        if (is_d3d11()) {
+            gr::d3d11::poly_2d(bitmap_handle, nv, vertices, mode);
+        }
+        else {
+            gr_d3d_poly_2d(bitmap_handle, nv, vertices, mode);
+        }
+    }
+}
+
 void gr_set_window_mode(rf::gr::WindowMode window_mode)
 {
     if (rf::gr::screen.mode == rf::gr::DIRECT3D) {

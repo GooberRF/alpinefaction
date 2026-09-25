@@ -1655,15 +1655,14 @@ void install_editor_bitmap_loader_hooks();
 void LoadAlpineEditorPackfile()
 {
     static auto& vpackfile_add = addr_as_ref<int __cdecl(const char *name, const char *dir)>(0x004CA930);
-    static auto& root_path = addr_as_ref<char[256]>(0x0158CA10);
 
     auto af_dir = get_module_dir(g_module);
-    std::string old_root_path = root_path;
-    std::strncpy(root_path, af_dir.c_str(), sizeof(root_path) - 1);
+    std::string old_root_path = file_root_path;
+    std::strncpy(file_root_path, af_dir.c_str(), sizeof(file_root_path) - 1);
     if (!vpackfile_add("alpinefaction.vpp", nullptr)) {
         xlog::error("Failed to load alpinefaction.vpp from {}", af_dir);
     }
-    std::strncpy(root_path, old_root_path.c_str(), sizeof(root_path) - 1);
+    std::strncpy(file_root_path, old_root_path.c_str(), sizeof(file_root_path) - 1);
 }
 
 CodeInjection vpackfile_init_injection{

@@ -632,6 +632,7 @@ namespace rf
     static auto& g_boolean_fast_path_var = addr_as_ref<int>(0x01370F64);
     static auto& g_level_solid = addr_as_ref<GSolid*>(0x006460E8);
     static auto& g_geomod_crater_solid = addr_as_ref<GSolid*>(0x00646A20);
+    static auto& geomod_shape_solid = addr_as_ref<GSolid*(int shape_index)>(0x004375B0);
     static auto& g_geomod_texture_index = addr_as_ref<int>(0x00647C94);
     static auto& g_geomod_scale = addr_as_ref<float>(0x00648598);
     static auto& g_geomod_flags = addr_as_ref<uint8_t>(0x0064858C);       // bit 0x1=local, 0x8=driller

@@ -17,6 +17,11 @@ Version 1.5.0 (Trillium): Not yet released
   - Mark each vehicle respawn point with the vehicle name and a countdown, with a ghost of the vehicle filling in as its respawn approaches (Direct3D 11 renderer only), toggleable with `cl_vehiclemarkers`
   - Hand a `Vehicle Factory` linked from a `control_point_handler` event to whichever team owns that control point, spawning its vehicle immediately on capture
   - Drop the flag a player is carrying when they board any vehicle other than a turret or a jeep
+- Add multiplayer minimap for levels that enable one in `Level Properties`
+  - Square minimap under the ammo counter showing the player, teammates, flags, control points, the bag, the salvage flag, vehicle factories, enterable vehicles, and geomod craters; enemies are never shown
+  - Hold `Show Map` (default `Q`) to display a large map of the whole level with control point names and vehicle respawn countdowns
+  - Toggle with `cl_minimap`, rotate with the player using `cl_minimap_rotate`, and adjust with `cl_minimap_size` and `cl_minimap_zoom`
+  - Configure in the level editor from the `Minimap...` button in `Level Properties`, where `Bake from level` renders a top-down image of the level's brushes with their textures and lighting, excluding the sky room, with an optional cut height for multi-floor levels
 - Add ray cast lightmap baking to level editor
   - Add `Invisible faces block light` and `Alpha-textured faces block light` level properties to control whether those faces occlude baked light
   - Add `No shadow cast` brush property for solid detail brushes and movers
@@ -122,6 +127,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Fix level editor crashing or corrupting undo history when undoing, redoing, or autosaving while moving, rotating, or scaling in a viewport
 - Fix bolt emitters imported as part of a group in the level editor keeping their old target when the target object is renumbered to avoid a UID conflict
 - Fix geoable brush supports not being properly recognized if buried in level geometry
+- Fix level editor not prompting to save changes made in `Level Properties`
 
 [@is-this-c](https://github.com/is-this-c)
 - Let `Caps Lock` capitalize

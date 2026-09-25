@@ -15,6 +15,7 @@
 #include "../main/main.h"
 #include "../misc/alpine_settings.h"
 #include "../hud/hud.h"
+#include "../hud/minimap.h"
 #include <xlog/xlog.h>
 
 static float g_frametime_history[1024];
@@ -29,6 +30,9 @@ static int frametime_hud_counter_base_y()
         y = g_alpine_game_config.big_hud ? 110 : 60;
         if (hud_weapons_is_double_ammo()) {
             y += g_alpine_game_config.big_hud ? 80 : 40;
+        }
+        if (const auto minimap = minimap_panel_rect()) {
+            y = std::max(y, minimap->y + minimap->size + (g_alpine_game_config.big_hud ? 10 : 6));
         }
     }
     return y;

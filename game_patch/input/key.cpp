@@ -292,6 +292,8 @@ CodeInjection control_config_init_patch{
                                        rf::AlpineControlConfigAction::AF_ACTION_SPRAY);
         alpine_control_config_add_item(ccp, "Call Vote Menu", false, rf::KEY_F4, -1, -1,
                                        rf::AlpineControlConfigAction::AF_ACTION_VOTE_MENU);
+        alpine_control_config_add_item(ccp, "Show Map", false, rf::KEY_Q, -1, -1,
+                                       rf::AlpineControlConfigAction::AF_ACTION_BIG_MAP);
     },
 };
 

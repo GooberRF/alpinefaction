@@ -386,25 +386,6 @@ namespace
     constexpr std::string_view vehicle_locked_team_deny =
         "That vehicle belongs to the other team.";
 
-    // You may share a vehicle only with people you are on a side with; the requester is never his
-    // own enemy, which is what keeps a seat swap working.
-    bool vehicle_occupied_by_enemy(const rf::Player* pp, const rf::Entity* vehicle)
-    {
-        if (!pp || !vehicle) {
-            return false;
-        }
-        const bool team_game = multi_is_team_game_type();
-        for (int i = 0; i < vehicle->interface_points.size(); ++i) {
-            // A stale handle or a non-player occupant is not an enemy.
-            const rf::Player* occupant = vehicle_seat_occupant_player(vehicle, i);
-            if (!occupant || occupant == pp || (team_game && occupant->team == pp->team)) {
-                continue;
-            }
-            return true;
-        }
-        return false;
-    }
-
     // The explicit lock: an affiliated hull whose factory set "Lock to team" is the other team's.
     // Affiliation alone restricts nothing, and a lock only bites in a team gametype.
     bool vehicle_locked_against(const rf::Player* pp, int vehicle_handle)
@@ -447,6 +428,25 @@ namespace
         return static_cast<uint8_t>(changed_seat);
     }
 } // namespace
+
+// You may share a vehicle only with people you are on a side with; the requester is never his
+// own enemy, which is what keeps a seat swap working.
+bool vehicle_occupied_by_enemy(const rf::Player* pp, const rf::Entity* vehicle)
+{
+    if (!pp || !vehicle) {
+        return false;
+    }
+    const bool team_game = multi_is_team_game_type();
+    for (int i = 0; i < vehicle->interface_points.size(); ++i) {
+        // A stale handle or a non-player occupant is not an enemy.
+        const rf::Player* occupant = vehicle_seat_occupant_player(vehicle, i);
+        if (!occupant || occupant == pp || (team_game && occupant->team == pp->team)) {
+            continue;
+        }
+        return true;
+    }
+    return false;
+}
 
 af_vehicle_state_attrs vehicle_build_hull_attrs(int vehicle_handle)
 {

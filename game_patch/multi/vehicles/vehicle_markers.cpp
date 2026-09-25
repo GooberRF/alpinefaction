@@ -118,28 +118,6 @@ namespace
         return out;
     }
 
-    rf::Color marker_team_color(int team)
-    {
-        if (team != rf::TEAM_RED && team != rf::TEAM_BLUE) {
-            return rf::Color{255, 255, 255, 255};
-        }
-        const uint32_t packed = team == rf::TEAM_RED ? g_alpine_game_config.outlines_color_team_r
-                                                     : g_alpine_game_config.outlines_color_team_b;
-        const auto comps = extract_color_components(packed);
-        return rf::Color{static_cast<rf::ubyte>(std::get<0>(comps)),
-                         static_cast<rf::ubyte>(std::get<1>(comps)),
-                         static_cast<rf::ubyte>(std::get<2>(comps)), 255};
-    }
-
-    std::string marker_countdown_text(int64_t ms_left)
-    {
-        const int secs = static_cast<int>((std::max<int64_t>(ms_left, 0) + 999) / 1000);
-        if (secs >= 60) {
-            return std::format("{}:{:02}", secs / 60, secs % 60);
-        }
-        return std::format("{}", secs);
-    }
-
     // Bare whole seconds, never M:SS - the auto-return window is read as a plain count.
     std::string marker_seconds_text(int64_t ms_left)
     {
@@ -274,6 +252,15 @@ namespace
     }
 } // namespace
 
+std::string vehicle_marker_countdown_text(int64_t ms_left)
+{
+    const int secs = static_cast<int>((std::max<int64_t>(ms_left, 0) + 999) / 1000);
+    if (secs >= 60) {
+        return std::format("{}:{:02}", secs / 60, secs % 60);
+    }
+    return std::format("{}", secs);
+}
+
 void vehicle_markers_level_init()
 {
     for (const MarkerMeshEntry& e : g_marker_meshes) {
@@ -371,7 +358,7 @@ static void vehicle_markers_render_pass(rf::GRoom* room_filter)
         const int64_t ms_left = pending ? std::max<int64_t>(ui->deadline_ms - now, 0) : 0;
         const bool urgent = pending && ms_left <= marker_urgent_window_ms;
         const bool flashing = ui->spawned_ms > 0 && now - ui->spawned_ms < marker_spawn_flash_ms;
-        const rf::Color team = marker_team_color(info->team);
+        const rf::Color team = hud_team_color(info->team);
 
         float line2_height = marker_line2_height;
         if (urgent) {
@@ -409,7 +396,7 @@ static void vehicle_markers_render_pass(rf::GRoom* room_filter)
 
         // A turret's TAKEN is only "somebody is in it right now"; a vehicle's is for the hull's life.
         const char* const taken_text = m.is_turret ? "IN USE" : "TAKEN";
-        const std::string line2 = pending ? marker_countdown_text(ms_left)
+        const std::string line2 = pending ? vehicle_marker_countdown_text(ms_left)
                                  : ui->state == AF_VEHICLE_FACTORY_ALIVE_TAKEN ? taken_text
                                                                                : "READY";
         float line2_alpha = pending ? 1.0f : marker_alive_line_alpha;
@@ -423,7 +410,8 @@ static void vehicle_markers_render_pass(rf::GRoom* room_filter)
         do_render_world_hud_text_label(
             m.line2_tex, anchor, marker_line2_offset, line2_height,
             WorldHUDRenderMode::no_overdraw, false, true,
-            rf::Color{255, 220, 64, static_cast<rf::ubyte>(255.0f * line2_alpha * fade)});
+            rf::Color{hud_amber_color.red, hud_amber_color.green, hud_amber_color.blue,
+                      static_cast<rf::ubyte>(255.0f * line2_alpha * fade)});
     }
 
     // Second marker type: the auto-return countdown, riding the hull rather than the factory.
@@ -459,7 +447,7 @@ static void vehicle_markers_render_pass(rf::GRoom* room_filter)
         // Lift by the scaled half-height of the quad so its bottom edge clears the hull at any distance.
         anchor.y += 0.5f * height * world_hud_label_scale(anchor, false);
 
-        const rf::Color team = marker_team_color(vehicle_hull_team(handle));
+        const rf::Color team = hud_team_color(vehicle_hull_team(handle));
         NameLabelTex& tex = hull_marker_tex(handle);
         world_hud_ensure_text_label(tex, marker_seconds_text(ms_left), label_font);
         do_render_world_hud_text_label(

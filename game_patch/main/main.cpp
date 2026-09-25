@@ -27,6 +27,7 @@
 #include "../graphics/d3d11/gr_d3d11_mesh.h"
 #include "../hud/hud.h"
 #include "../hud/hud_world.h"
+#include "../hud/minimap.h"
 #include "../hud/multi_scoreboard.h"
 #include "../hud/multi_spectate.h"
 #include "../object/object.h"
@@ -385,6 +386,7 @@ FunHook<void(bool)> level_init_post_hook{
                 toggle_chat_menu(ChatMenuType::None);
                 player_multi_level_post_init();
                 multi_hud_level_init();
+                minimap_level_init_post();
                 // listen server host spawns before this init, so we need to run on_local_spawn for them again
                 if (rf::is_server) {
                     multi_hud_on_local_spawn();

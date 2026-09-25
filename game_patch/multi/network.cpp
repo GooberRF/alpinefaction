@@ -47,6 +47,7 @@
 #include "../os/os.h"
 #include "../hud/hud.h"
 #include "../hud/multi_spectate.h"
+#include "../hud/minimap.h"
 #include "../rf/multi.h"
 #include "../rf/gameseq.h"
 #include "../rf/misc.h"
@@ -2983,6 +2984,7 @@ FunHook<void()> multi_stop_hook{
         gungame_on_multi_shutdown(); // after the vehicle revert: weapons.tbl overrides restore LIFO
         mutators_on_multi_shutdown(); // put the level's own gravity back
         weather_clear_regions(); // weather regions belong to the level being left
+        minimap_level_reset();
         projector_clear_all(); // Display_Projection feeds and their render targets are level-scoped
         riot_shield_on_multi_level_init(); // drop any pending riot shield break suppressions
         entity_rate_limit_clear(); // drop per-entity collision/landing-sound rate limit state

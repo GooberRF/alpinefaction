@@ -40,6 +40,8 @@ set(SRCS
     bitmap_loaders.h
     meshes.cpp
     meshes.h
+    minimap_bake.cpp
+    minimap_bake.h
     tbl.cpp
     tbl.h
     trigger.cpp

@@ -405,6 +405,22 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.speed_display = std::stoi(settings["ShowSpeed"]);
         processed_keys.insert("ShowSpeed");
     }
+    if (settings.count("ShowMinimap")) {
+        g_alpine_game_config.minimap = std::stoi(settings["ShowMinimap"]);
+        processed_keys.insert("ShowMinimap");
+    }
+    if (settings.count("MinimapRotate")) {
+        g_alpine_game_config.minimap_rotate = std::stoi(settings["MinimapRotate"]);
+        processed_keys.insert("MinimapRotate");
+    }
+    if (settings.count("MinimapSize")) {
+        g_alpine_game_config.set_minimap_size(std::stof(settings["MinimapSize"]));
+        processed_keys.insert("MinimapSize");
+    }
+    if (settings.count("MinimapZoom")) {
+        g_alpine_game_config.set_minimap_zoom(std::stof(settings["MinimapZoom"]));
+        processed_keys.insert("MinimapZoom");
+    }
     if (settings.count("FPSCounterAverageMs")) {
         g_alpine_game_config.set_fps_counter_average_ms(std::stoi(settings["FPSCounterAverageMs"]));
         processed_keys.insert("FPSCounterAverageMs");
@@ -1441,6 +1457,10 @@ void alpine_player_settings_save(rf::Player* player)
     file << "SpectatePovComp=" << g_alpine_game_config.spectate_povcomp << "\n";
     file << "ShowFPS=" << g_alpine_game_config.fps_counter << "\n";
     file << "ShowSpeed=" << g_alpine_game_config.speed_display << "\n";
+    file << "ShowMinimap=" << g_alpine_game_config.minimap << "\n";
+    file << "MinimapRotate=" << g_alpine_game_config.minimap_rotate << "\n";
+    file << "MinimapSize=" << g_alpine_game_config.minimap_size << "\n";
+    file << "MinimapZoom=" << g_alpine_game_config.minimap_zoom << "\n";
     file << "FPSCounterAverageMs=" << g_alpine_game_config.fps_counter_average_ms << "\n";
     file << "SaveConsoleHistory=" << g_alpine_game_config.save_console_history << "\n";
     file << "ConsoleColor=" << format_hex_color_string(g_alpine_game_config.console_color) << "\n";

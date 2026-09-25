@@ -125,6 +125,9 @@ bool vehicle_hull_entry_allowed(const rf::Entity* hull, const rf::Player* pp, in
 // The hull's affiliation, -1 none. Replicated, so this answers on a client too.
 int vehicle_hull_team(int vehicle_handle);
 
+// Any seat holds a player who is pp's enemy. Seats are replicated, so this answers on a client too.
+bool vehicle_occupied_by_enemy(const rf::Player* pp, const rf::Entity* vehicle);
+
 // Server: a hull left standing empty this long after its first rider goes back to its factory.
 inline constexpr int vehicle_unoccupied_destroy_s = 180;
 

@@ -104,7 +104,13 @@ constexpr size_t MAX_TEXTURE_NAME_LEN = 31;
 
 struct BitmapEntry {
     static constexpr int TYPE_USER = 3;
+    static constexpr int FORMAT_8_PALETTED = 1;
+    static constexpr int FORMAT_8_ALPHA = 2;
+    static constexpr int FORMAT_565_RGB = 3;
+    static constexpr int FORMAT_4444_ARGB = 4;
+    static constexpr int FORMAT_1555_ARGB = 5;
     static constexpr int FORMAT_888_RGB = 6;
+    static constexpr int FORMAT_8888_ARGB = 7;
 
     char name[32];                  // 0x00
     int name_checksum;              // 0x20
@@ -156,3 +162,5 @@ static_assert(offsetof(BitmapEntry, total_bytes_for_all_levels) == 0x60);
 static auto& gr_d3d_mark_texture_dirty = addr_as_ref<void(int bm_handle)>(0x004F6000);
 
 void reload_custom_textures();
+// Re-reads a bitmap from disk into its existing (or a newly loaded) entry, keeping the handle.
+bool reload_bitmap_in_place(const char* filename);

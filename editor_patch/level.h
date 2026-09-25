@@ -304,6 +304,26 @@ static_assert(offsetof(GFace, edge_loop) == 0x40);
 static_assert(offsetof(GFace, which_room) == 0x44);
 static_assert(offsetof(GFace, next_solid) == 0x54);
 
+// Lightmap page, from its constructor 0x004A6510; rgb is w * h tightly packed R, G, B bytes.
+struct GLightmap
+{
+    void* unk_00;                // +0x00
+    int w;                       // +0x04
+    int h;                       // +0x08
+    const uint8_t* rgb;          // +0x0C
+    int bm_handle;               // +0x10
+};
+static_assert(offsetof(GLightmap, rgb) == 0x0C);
+static_assert(offsetof(GLightmap, bm_handle) == 0x10);
+
+// Partial; GSolid::surfaces is indexed by GFace::surface_index (the face draw at 0x004E9665).
+struct GSurface
+{
+    char _pad_00[0xC];           // +0x00
+    GLightmap* lightmap;         // +0x0C
+};
+static_assert(offsetof(GSurface, lightmap) == 0x0C);
+
 // Editor-side GSolid partial layout (matches stock RED.exe / RF.exe GSolid)
 // Full game-side definition with ALPINE_FACTION extensions: game_patch/rf/geometry.h
 struct GSolid
@@ -320,7 +340,8 @@ struct GSolid
     VArray<GVertex*> vertices;   // +0x78
     VArray<GRoom*> children;     // +0x84
     VArray<GRoom*> all_rooms;    // +0x90
-    char _pad_9C[0xCC - 0x9C];  // +0x9C  unknown fields
+    char _pad_9C[0xC0 - 0x9C];  // +0x9C  unknown fields
+    VArray<GSurface*> surfaces;  // +0xC0
     VArray<GVertex*> vertex_selection; // +0xCC  selected vertices in vertex mode
     VArray<GFace*> face_selection;  // +0xD8  selected faces in face mode
 
@@ -371,6 +392,7 @@ struct GSolid
 };
 static_assert(offsetof(GSolid, face_list_head) == 0x70);
 static_assert(offsetof(GSolid, all_rooms) == 0x90);
+static_assert(offsetof(GSolid, surfaces) == 0xC0);
 static_assert(offsetof(GSolid, vertex_selection) == 0xCC);
 static_assert(offsetof(GSolid, face_selection) == 0xD8);
 
@@ -515,6 +537,13 @@ struct AlpineLevelProperties
     bool vehicle_flight_ceiling_enabled = false;   // mapper opted into an altitude ceiling for flyers
     float vehicle_flight_ceiling = 0.0f;           // world Y (RF up axis) the ceiling sits at
 
+    // v7
+    bool minimap_enabled = false;
+    std::string minimap_bitmap;
+    Vector3 minimap_world_min{};
+    Vector3 minimap_world_max{};
+    float minimap_cut_height = 0.0f;
+
     // Alpine mesh objects (stored separately from stock object VArrays)
     std::vector<DedMesh*> mesh_objects;
 
@@ -542,7 +571,7 @@ struct AlpineLevelProperties
     // Retained Glacier RFL sections (0x6ED-prefixed IDs).
     std::vector<RetainedRflChunk> retained_chunks;
 
-    static constexpr std::uint32_t current_alpine_chunk_version = 6u;
+    static constexpr std::uint32_t current_alpine_chunk_version = 7u;
 
     Vector3 sun_to_light_dir() const
     {
@@ -616,6 +645,11 @@ struct AlpineLevelProperties
         meshes_occlude = false;
         vehicle_flight_ceiling_enabled = false;
         vehicle_flight_ceiling = 0.0f;
+        minimap_enabled = false;
+        minimap_bitmap.clear();
+        minimap_world_min = {};
+        minimap_world_max = {};
+        minimap_cut_height = 0.0f;
         for (auto* m : mesh_objects) {
             DestroyDedMesh(m);
         }
@@ -731,6 +765,16 @@ struct AlpineLevelProperties
         // v6
         file.write<std::uint8_t>(vehicle_flight_ceiling_enabled ? 1u : 0u);
         file.write<float>(vehicle_flight_ceiling);
+        // v7
+        file.write<std::uint8_t>(minimap_enabled ? 1u : 0u);
+        write_rfl_string(file, minimap_bitmap);
+        file.write<float>(minimap_world_min.x);
+        file.write<float>(minimap_world_min.y);
+        file.write<float>(minimap_world_min.z);
+        file.write<float>(minimap_world_max.x);
+        file.write<float>(minimap_world_max.y);
+        file.write<float>(minimap_world_max.z);
+        file.write<float>(minimap_cut_height);
     }
 
     void Deserialize(rf::File& file, std::size_t chunk_len)
@@ -961,6 +1005,32 @@ struct AlpineLevelProperties
             vehicle_flight_ceiling_enabled = (u8 != 0);
             if (!read_bytes(&vehicle_flight_ceiling, sizeof(vehicle_flight_ceiling)))
                 return;
+        }
+
+        if (version >= 7) {
+            std::uint8_t u8 = 0;
+            if (!read_bytes(&u8, sizeof(u8)))
+                return;
+            minimap_enabled = (u8 != 0);
+            std::string bitmap = read_rfl_string(file, remaining);
+            if (rfl_name_over_long(bitmap) || bitmap.find_first_of("\\/:") != std::string::npos) {
+                xlog::warn("[AlpineLevelProps] Ignoring invalid minimap bitmap name");
+                bitmap.clear();
+            }
+            minimap_bitmap = std::move(bitmap);
+            float bounds[6] = {};
+            for (float& f : bounds) {
+                if (!read_bytes(&f, sizeof(f)))
+                    return;
+                if (!std::isfinite(f))
+                    f = 0.0f;
+            }
+            minimap_world_min = {bounds[0], bounds[1], bounds[2]};
+            minimap_world_max = {bounds[3], bounds[4], bounds[5]};
+            if (!read_bytes(&minimap_cut_height, sizeof(minimap_cut_height)))
+                return;
+            if (!std::isfinite(minimap_cut_height))
+                minimap_cut_height = 0.0f;
         }
     }
 };

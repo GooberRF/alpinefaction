@@ -22,6 +22,7 @@
 #include "../object/alpine_rope.h"
 #include "../object/mover.h"
 #include "../hud/hud_world.h"
+#include "../hud/minimap.h"
 #include "../graphics/weather.h"
 #include "../graphics/scene_capture.h"
 
@@ -131,6 +132,7 @@ CodeInjection level_load_init_patch{
         gas_region_clear_state();
         climb_region_clear_state();
         weather_clear_regions();
+        minimap_level_reset();
         projector_clear_all();
         alpine_mover_clear_hold_open();
         hud_world_level_unload();

@@ -232,7 +232,18 @@ void build_world_hud_sprite_icons() {
     }
 }
 
-static rf::Vector3 koth_hill_icon_pos(const HillInfo& h)
+rf::Color hud_team_color(int team, rf::ubyte alpha)
+{
+    if (team != rf::TEAM_RED && team != rf::TEAM_BLUE) {
+        return {255, 255, 255, alpha};
+    }
+    const uint32_t packed = team == rf::TEAM_RED ? g_alpine_game_config.outlines_color_team_r
+                                                 : g_alpine_game_config.outlines_color_team_b;
+    const auto [r, g, b, a] = extract_color_components(packed);
+    return {static_cast<rf::ubyte>(r), static_cast<rf::ubyte>(g), static_cast<rf::ubyte>(b), alpha};
+}
+
+rf::Vector3 koth_hill_icon_pos(const HillInfo& h)
 {
     rf::Vector3 p{0.f, 0.f, 0.f};
 
@@ -888,7 +899,8 @@ void build_bag_icon()
         rf::Vector3 text_pos = vec;
         text_pos.y += WorldHUDRender::bag_countdown_offset;
 
-        render_string_3d_pos_new(text_pos, label, -half_text_width, -25, font, 255, 220, 64, 255);
+        render_string_3d_pos_new(text_pos, label, -half_text_width, -25, font, hud_amber_color.red,
+                                 hud_amber_color.green, hud_amber_color.blue, hud_amber_color.alpha);
     }
 }
 
@@ -904,7 +916,8 @@ static void render_world_hud_countdown(const rf::Vector3& anchor, float y_offset
     rf::Vector3 text_pos = anchor;
     text_pos.y += y_offset;
 
-    render_string_3d_pos_new(text_pos, label, -half_text_width, -25, font, 255, 220, 64, 255);
+    render_string_3d_pos_new(text_pos, label, -half_text_width, -25, font, hud_amber_color.red,
+                             hud_amber_color.green, hud_amber_color.blue, hud_amber_color.alpha);
 }
 
 static int sal_icon_carrier(bool carrier_is_friendly)

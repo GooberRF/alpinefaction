@@ -37,6 +37,7 @@
 #include "destruction.h"
 #include "level.h"
 #include "../sound/sound_foley.h"
+#include "../hud/minimap.h"
 
 // Set by geomod_init hook; checked by boolean engine injections.
 static bool g_rf2_style_boolean_active = false;
@@ -3015,6 +3016,16 @@ static bool should_enable_geo_chunk_physics()
     return false;
 }
 
+// params.scale is radius / shape radius, so this undoes it.
+std::optional<float> geomod_crater_radius(const rf::GeomodParams& params)
+{
+    const rf::GSolid* shape = rf::geomod_shape_solid(params.shape_index);
+    if (!shape) {
+        return std::nullopt;
+    }
+    return params.scale * shape->bounding_sphere_radius;
+}
+
 // Hook geomod_init (FUN_00466b00) to activate RF2-style boolean targeting.
 // By this point, geomod_create_hook has already verified geoable rooms exist,
 // so overlapping should always be non-empty when RF2-style is active.
@@ -3036,8 +3047,9 @@ FunHook<void(rf::GeomodParams*)> geomod_init_hook{
         geomod_init_hook.call_target(params);
 
         // The carve can open or close a roof over a blocked-by-geometry weather region.
-        if (rf::g_geomod_crater_solid) {
-            weather_notify_geomod(params->pos, params->scale * rf::g_geomod_crater_solid->bounding_sphere_radius);
+        if (const auto radius = geomod_crater_radius(*params)) {
+            weather_notify_geomod(params->pos, *radius);
+            minimap_notify_geomod(params->pos, *radius);
         }
 
         // Clear the modification flag at the start of each geomod.

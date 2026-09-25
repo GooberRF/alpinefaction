@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <cmath>
 #include <patch_common/CallHook.h>
 #include <patch_common/FunHook.h>
 #include <patch_common/CodeInjection.h>
@@ -215,6 +216,50 @@ void hud_weapons_set_big(bool is_big)
     rf::hud_ammo_font = rf::gr::load_font(is_big ? "biggerfont.vf" : "bigfont.vf");
 }
 
+
+static void hud_ammo_bitmap_size(int bmh, int& w, int& h)
+{
+    w = 0;
+    h = 0;
+    if (bmh >= 0) {
+        rf::bm::get_dimensions(bmh, &w, &h);
+    }
+    w = static_cast<int>(std::round(w * g_hud_ammo_scale));
+    h = static_cast<int>(std::round(h * g_hud_ammo_scale));
+}
+
+// Union of the clip, power and no-clip layouts, so the result does not change with the weapon.
+int hud_ammo_counter_bottom_y()
+{
+    auto bm_bottom = [](rf::HudItem item, int bmh) {
+        int w, h;
+        hud_ammo_bitmap_size(bmh, w, h);
+        return rf::hud_coords[item].y + h;
+    };
+    auto text_bottom = [](rf::HudItem ul, rf::HudItem wh) {
+        return rf::hud_coords[ul].y + rf::hud_coords[wh].y;
+    };
+    return std::max({
+        bm_bottom(rf::hud_ammo_bar, rf::hud_ammo_bar_bmh),
+        bm_bottom(rf::hud_ammo_bar, rf::hud_ammo_bar_power_bmh),
+        bm_bottom(rf::hud_ammo_signal, rf::hud_ammo_signal_green_bmh),
+        bm_bottom(rf::hud_ammo_bar_position_no_clip, rf::hud_noclip_ammo_bar_bmh),
+        bm_bottom(rf::hud_ammo_signal_position_no_clip, rf::hud_ammo_signal_green_bmh),
+        text_bottom(rf::hud_ammo_in_clip_text_ul_region_coord, rf::hud_ammo_in_clip_text_width_and_height),
+        text_bottom(rf::hud_ammo_in_inv_text_ul_region_coord, rf::hud_ammo_in_inv_text_width_and_height),
+        text_bottom(rf::hud_ammo_in_inv_ul_region_coord_no_clip, rf::hud_ammo_in_inv_text_width_and_height_no_clip),
+        text_bottom(rf::hud_ammo_in_clip_ul_coord, rf::hud_ammo_in_clip_width_and_height),
+    });
+}
+
+int hud_ammo_counter_right_x()
+{
+    int bar_w, bar_h, noclip_w, noclip_h;
+    hud_ammo_bitmap_size(rf::hud_ammo_bar_bmh, bar_w, bar_h);
+    hud_ammo_bitmap_size(rf::hud_noclip_ammo_bar_bmh, noclip_w, noclip_h);
+    return std::max(rf::hud_coords[rf::hud_ammo_bar].x + bar_w,
+                    rf::hud_coords[rf::hud_ammo_bar_position_no_clip].x + noclip_w);
+}
 
 bool hud_weapons_is_double_ammo()
 {
