@@ -14,6 +14,9 @@ struct CustomSoundEntry
     float rolloff;
 };
 
+// False once the player skips the cutscene, which stops the pre-mixed track. The
+// subtitles are timed against that track, so they have to stop with it.
+bool is_cutscene_music_playing();
 void disable_sound_before_cutscene_skip();
 void enable_sound_after_cutscene_skip();
 void set_sound_enabled(bool enabled);
