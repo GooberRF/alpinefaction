@@ -5,7 +5,7 @@ struct VsOutput
     float4 color : COLOR;
     float2 uv0 : TEXCOORD0;
     // xy: stock lightmap page UV, or alpine chart texel coords when z >= 0
-    // z:  alpine lightmap chart (the static solid's surface index), -1 for the stock path
+    // z:  alpine lightmap chart (its af_lm_index chart record), -1 for the stock path
     float3 uv1 : TEXCOORD1;
     float4 world_pos_and_depth : TEXCOORD2;
 };
@@ -180,7 +180,7 @@ SamplerState   caustic_samp : register(s4);
 // Copy of the scene depth buffer, for the liquid surface pass only.
 Texture2D<float> scene_depth : register(t6);
 
-// Alpine lightmaps. af_lm_index holds the chart records for [0, num_charts) and the tile records
+// Alpine lightmaps. af_lm_index holds the chart records (surfaces, terrains, mover surfaces) and the tile records
 // after them; a chart's .z is already biased past the chart block, so it is added to ty*nx+tx and
 // nothing else. Layout is owned by common/lightmap/alpine_lightmap_reader.h.
 Texture2DArray            af_lm_pages : register(t4);

@@ -125,6 +125,39 @@ struct TerrainChart
     std::uint64_t geometry_fingerprint;
 };
 
+// The table directory follows the terrain table: u32 num_tables, then per table this header and
+// byte_len bytes of body. Every table owns num_tiles tiles of the tile table, after the terrain
+// tiles and in directory order, so a reader skips a table it does not know without losing the
+// layout. A tag present more than once, or a known tag at another version, is skipped the same way.
+struct TableHeader
+{
+    std::uint32_t tag;
+    std::uint16_t version;
+    std::uint16_t reserved;
+    std::uint32_t byte_len;
+    std::uint32_t num_tiles;
+};
+
+// Mover table (table_tag_movers) body: u32 num_movers, then per mover this record followed by
+// num_surfaces MoverSurfaceChart, positional over the mover solid's surfaces. surface_hash is the
+// XXH32 of that solid's surface records as written in the movers section (0x2000), XXH32("") for
+// none. Tiles run in record order, surface by surface, row major per chart.
+struct MoverChart
+{
+    std::int32_t mover_uid;
+    std::uint32_t num_surfaces;
+    std::uint32_t surface_hash;
+};
+
+// k_u == 0 or k_v == 0 means no chart and no tiles; w, h are the stock fragment the chart refines.
+struct MoverSurfaceChart
+{
+    std::uint16_t k_u;
+    std::uint16_t k_v;
+    std::uint16_t w;
+    std::uint16_t h;
+};
+
 struct Tile
 {
     std::uint16_t page;
@@ -154,7 +187,28 @@ struct LayerDirEntry
 static_assert(sizeof(SectionHeader) == 38);
 static_assert(sizeof(Chart) == 4);
 static_assert(sizeof(TerrainChart) == 28);
+static_assert(sizeof(TableHeader) == 16);
+static_assert(sizeof(MoverChart) == 12);
+static_assert(sizeof(MoverSurfaceChart) == 8);
 static_assert(sizeof(Tile) == 6);
+
+inline constexpr std::uint32_t max_tables = 16;
+inline constexpr std::uint32_t table_tag_movers = 1;
+inline constexpr std::uint16_t mover_table_version = 1;
+
+// A face's surface index is a short, and the RFL stores a fragment's w and h as u8.
+inline constexpr std::uint32_t max_mover_charts = 8192;
+inline constexpr std::uint32_t max_mover_surfaces = 32767;
+inline constexpr std::uint32_t max_mover_surfaces_total = 262144;
+inline constexpr std::uint32_t max_fragment_dim = 255;
+
+// Bytes one GSurface record occupies in a solid as the RFL stores it; the fingerprints hash these.
+inline constexpr std::uint32_t surface_record_size = 96;
+
+inline constexpr std::uint64_t mover_table_bytes(std::uint64_t num_movers, std::uint64_t num_surfaces)
+{
+    return sizeof(std::uint32_t) + num_movers * sizeof(MoverChart) + num_surfaces * sizeof(MoverSurfaceChart);
+}
 
 // A terrain is at most 256 cells per axis at 8 texels per cell. The texel total a section's terrain
 // charts may declare is what the page budget can hold, which bounds a reader's decoded copies.
@@ -225,6 +279,16 @@ inline constexpr ChartGeometry chart_geometry(std::uint32_t surface_w, std::uint
     }
     return chart_geometry_from_extent(static_cast<std::uint64_t>(surface_w - 2) * k_u,
                                       static_cast<std::uint64_t>(surface_h - 2) * k_v, step, g);
+}
+
+// Empty for no chart, and for a fragment size no RFL can store.
+inline constexpr ChartGeometry mover_chart_geometry(const MoverSurfaceChart& c, std::uint32_t step = tile_step,
+                                                    std::uint32_t g = gutter)
+{
+    if (c.w > max_fragment_dim || c.h > max_fragment_dim) {
+        return ChartGeometry{0, 0, 0, 0, 0, 0};
+    }
+    return chart_geometry(c.w, c.h, c.k_u, c.k_v, step, g);
 }
 
 // Empty for a record whose size no reader accepts.

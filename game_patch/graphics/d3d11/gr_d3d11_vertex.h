@@ -35,7 +35,7 @@ namespace gr::d3d11
         float v0_pan_speed;
         float u1;
         float v1;
-        // Alpine lightmap chart, i.e. the static solid's surface index. -1 keeps u1/v1 meaning
+        // Alpine lightmap chart, its af_lm_index chart record. -1 keeps u1/v1 meaning
         // the stock normalized lightmap page UV; otherwise they are chart texel coordinates.
         float lm_chart = -1.0f;
     };

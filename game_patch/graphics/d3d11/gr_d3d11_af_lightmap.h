@@ -41,8 +41,8 @@ namespace gr::d3d11
     // Geomod pages created later are real.
     int af_lightmap_synthesized_page_bm();
 
-    // Charts are positional over the STATIC solid's geometry::surfaces, so a mover's own solid
-    // never resolves one.
+    // Surface charts are positional over the static solid's geometry::surfaces, mover charts over the
+    // surfaces of a mover solid their record matched; out.chart is the af_lm_index chart record.
     bool af_lightmap_face_setup(rf::GSolid* solid, int surface_index, AfLightmapFace& out);
     void af_lightmap_face_texel(const AfLightmapFace& face, const rf::Vector3& pos, float& out_u,
                                 float& out_v);

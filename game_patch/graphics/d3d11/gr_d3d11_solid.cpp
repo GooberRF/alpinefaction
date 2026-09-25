@@ -302,9 +302,9 @@ namespace gr::d3d11
         bool is_sky_ = false;
         bool is_sky_fix_ = is_sky_fix_level(rf::level.filename);
         rf::GSolid* solid_ = nullptr;
-        // Only populated while alpine lightmaps are live, so build() cannot reach a different
-        // answer than add_face() did if is_sky_ flips between them.
-        std::unordered_map<rf::GFace*, int> af_charts_;
+        // The surface index of each face add_face() found an alpine chart for, so build() cannot reach a
+        // different answer if is_sky_ flips between them.
+        std::unordered_map<rf::GFace*, int> af_surfaces_;
 
     public:
         void enable_terrain(ID3D11Device* device)
@@ -435,7 +435,7 @@ namespace gr::d3d11
             AfLightmapFace af_face;
             if (af_lightmap_face_setup(solid, face->attributes.surface_index, af_face)) {
                 af_chart = af_face.chart;
-                af_charts_[face] = af_chart;
+                af_surfaces_[face] = face->attributes.surface_index;
             }
         }
         // Charted faces all sample the same atlas, so the stock page they were derived from does
@@ -575,8 +575,8 @@ namespace gr::d3d11
                 float u_pan_speed = texture_mover ? texture_mover->u_pan_speed : 0.0f;
                 float v_pan_speed = texture_mover ? texture_mover->v_pan_speed : 0.0f;
                 AfLightmapFace af_face;
-                auto af_it = af_charts_.find(face);
-                bool has_af = af_it != af_charts_.end()
+                auto af_it = af_surfaces_.find(face);
+                bool has_af = af_it != af_surfaces_.end()
                     && af_lightmap_face_setup(solid_, af_it->second, af_face);
                 emit_face_fan(face, vb_data, ib_data, base_vertex, max_face_fan_verts, report_long_edge_loop,
                     [&](GpuVertex& gpu_vert, rf::GFaceVertex* fvert, int) {

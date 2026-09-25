@@ -28,6 +28,8 @@ void ShowTerrainPropertiesDialog(CDedLevel* level);
 // Handlers called from shared hook points in alpine_obj.cpp
 void terrain_render(CDedLevel* level);
 void terrain_pick(CDedLevel* level, int param1, int param2);
+// Centre of the terrain's bounding box, where its icon is drawn and picked.
+Vector3 terrain_icon_pos(const DedTerrain& terrain);
 DedTerrain* terrain_click_pick(CDedLevel* level, float click_x, float click_y);
 void terrain_tree_populate(EditorTreeCtrl* tree, int master_groups, CDedLevel* level);
 void terrain_tree_add_object_type(EditorTreeCtrl* tree);

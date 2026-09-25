@@ -269,6 +269,16 @@ CodeInjection level_read_geometry_fingerprint_patch{
     },
 };
 
+// "ADD ESP,0xC; MOV ECX,ESI; MOV EDI,EAX" right after the movers section reads a mover's solid:
+// EAX = the solid, EBX = the mover uid, ESI = the memory VFile, its cursor just past the surface records.
+CodeInjection level_read_mover_solid_patch{
+    0x00463CC7,
+    [](auto& regs) {
+        af_lightmap_capture_mover(static_cast<int>(regs.ebx), reinterpret_cast<rf::GSolid*>(static_cast<uintptr_t>(regs.eax)),
+                                  reinterpret_cast<const void*>(static_cast<uintptr_t>(regs.esi)));
+    },
+};
+
 // "CMP EAX,0x2000", the head of the second chunk dispatcher. Everything written after the
 // geometry section, the alpine lightmaps included, arrives here rather than at 0x00460912.
 CodeInjection level_load_post_geometry_chunk_patch{
@@ -608,6 +618,7 @@ void level_apply_patch()
     level_load_init_patch.install();
     level_load_chunk_patch.install();
     level_read_geometry_fingerprint_patch.install();
+    level_read_mover_solid_patch.install();
     level_load_post_geometry_chunk_patch.install();
 
     // Release level scoped module state when the engine tears the level down

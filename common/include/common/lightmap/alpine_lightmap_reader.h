@@ -5,9 +5,11 @@
 // Pure and engine free, so the game and RED run the same code.
 // Every derived quantity still comes from alpine_lightmap.h; nothing is re-derived here.
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <utility>
 #include <vector>
 
 #include "alpine_lightmap.h"
@@ -31,9 +33,9 @@ struct LayerRef
     std::uint8_t compression;
 };
 
-// The surface charts and the terrain charts are validated independently: a section whose surface
-// fingerprint no longer matches (or whose reader has no surfaces to check against) still carries
-// usable terrain charts, and the other way round. ok means at least one half is usable.
+// The surface charts, the terrain charts and the mover charts are validated independently: a section
+// whose surface fingerprint no longer matches (or whose reader has no surfaces to check against) still
+// carries usable terrain and mover charts, and the other way round. ok means at least one is usable.
 struct ReadResult
 {
     bool ok = false;
@@ -51,6 +53,17 @@ struct ReadResult
     std::vector<ChartGeometry> terrain_geoms;
     std::vector<std::uint32_t> terrain_bases;
     std::vector<std::uint8_t> terrain_ok; // per record: usable
+    // Tiles every directory table owns, after the terrain tiles.
+    std::uint64_t ext_tiles = 0;
+    // The mover table, all empty unless its layout is known (mover_reason says why not).
+    const char* mover_reason = "";
+    std::vector<MoverChart> movers;                  // as stored
+    std::vector<std::uint32_t> mover_first_surface;  // per record, into mover_charts
+    std::vector<std::uint32_t> mover_hash_offset;    // per record, section offset of its surface_hash
+    std::vector<std::uint8_t> mover_ok;              // per record: usable
+    std::vector<MoverSurfaceChart> mover_charts;     // flattened, record then surface order
+    std::vector<ChartGeometry> mover_geoms;          // derived, parallel to mover_charts
+    std::vector<std::uint32_t> mover_bases;          // absolute first tile, parallel to mover_charts
     std::vector<Tile> tiles;
     LayerRef layer{};
 };
@@ -196,6 +209,117 @@ inline const char* validate_surfaces(ReadResult& r, const SurfaceDims* dims, std
     return nullptr;
 }
 
+// The mover table whose body is data[body_off, body_off + th.byte_len), its tiles from first_tile:
+// nullptr when its layout is known (each record is then usable or not on its own), else why not.
+// r.tiles must be loaded.
+inline const char* parse_movers(ReadResult& r, const std::uint8_t* data, std::uint64_t body_off,
+                                const TableHeader& th, std::uint32_t first_tile)
+{
+    const std::uint64_t end = body_off + th.byte_len;
+    std::uint64_t p = body_off;
+    std::uint32_t num_movers = 0;
+    if (end - p < sizeof(num_movers)) {
+        return "truncated mover table";
+    }
+    load(num_movers, data + p);
+    p += sizeof(num_movers);
+    if (num_movers > max_mover_charts) {
+        return "too many movers";
+    }
+    if (static_cast<std::uint64_t>(num_movers) * sizeof(MoverChart) > end - p) {
+        return "truncated mover table";
+    }
+    // sized only now: the checks above bound them by the table's byte_len
+    r.movers.resize(num_movers);
+    r.mover_first_surface.resize(num_movers);
+    r.mover_hash_offset.resize(num_movers);
+    std::uint64_t total = 0;
+    for (std::uint32_t i = 0; i < num_movers; i++) {
+        if (end - p < sizeof(MoverChart)) {
+            return "truncated mover table";
+        }
+        load(r.movers[i], data + p);
+        r.mover_hash_offset[i] = static_cast<std::uint32_t>(p + offsetof(MoverChart, surface_hash));
+        p += sizeof(MoverChart);
+        const std::uint32_t n = r.movers[i].num_surfaces;
+        if (n > max_mover_surfaces || total + n > max_mover_surfaces_total) {
+            return "too many mover surfaces";
+        }
+        if (static_cast<std::uint64_t>(n) * sizeof(MoverSurfaceChart) > end - p) {
+            return "truncated mover table";
+        }
+        r.mover_first_surface[i] = static_cast<std::uint32_t>(total);
+        total += n;
+        for (std::uint32_t s = 0; s < n; s++) {
+            MoverSurfaceChart c{};
+            load(c, data + p);
+            p += sizeof(MoverSurfaceChart);
+            r.mover_charts.push_back(c);
+        }
+    }
+    if (p != end) {
+        return "mover table length";
+    }
+
+    r.mover_geoms.assign(r.mover_charts.size(), ChartGeometry{0, 0, 0, 0, 0, 0});
+    r.mover_bases.assign(r.mover_charts.size(), first_tile);
+    std::uint64_t tiles = 0;
+    for (std::size_t k = 0; k < r.mover_charts.size(); k++) {
+        const MoverSurfaceChart& c = r.mover_charts[k];
+        if (c.k_u == 0 || c.k_v == 0) {
+            continue;
+        }
+        const ChartGeometry g = mover_chart_geometry(c, r.tile_step, r.gutter);
+        if (g.empty()) {
+            return "mover chart size";
+        }
+        r.mover_geoms[k] = g;
+        r.mover_bases[k] = first_tile + static_cast<std::uint32_t>(tiles);
+        tiles += static_cast<std::uint64_t>(g.nx) * g.ny;
+        if (tiles > th.num_tiles) {
+            return "mover tiles do not match their table";
+        }
+    }
+    if (tiles != th.num_tiles) {
+        return "mover tiles do not match their table";
+    }
+
+    r.mover_ok.assign(num_movers, 1);
+    for (std::uint32_t i = 0; i < num_movers; i++) {
+        const std::uint32_t first = r.mover_first_surface[i];
+        for (std::uint32_t s = 0; s < r.movers[i].num_surfaces; s++) {
+            if (!chart_tiles_on_pages(r, r.mover_geoms[first + s], r.mover_bases[first + s])) {
+                r.mover_ok[i] = 0;
+                break;
+            }
+        }
+    }
+    // a uid charted twice identifies neither record
+    std::vector<std::pair<std::int32_t, std::uint32_t>> uids(num_movers);
+    for (std::uint32_t i = 0; i < num_movers; i++) {
+        uids[i] = {r.movers[i].mover_uid, i};
+    }
+    std::sort(uids.begin(), uids.end());
+    for (std::size_t i = 1; i < uids.size(); i++) {
+        if (uids[i].first == uids[i - 1].first) {
+            r.mover_ok[uids[i].second] = 0;
+            r.mover_ok[uids[i - 1].second] = 0;
+        }
+    }
+    return nullptr;
+}
+
+inline void clear_movers(ReadResult& r)
+{
+    r.movers.clear();
+    r.mover_first_surface.clear();
+    r.mover_hash_offset.clear();
+    r.mover_ok.clear();
+    r.mover_charts.clear();
+    r.mover_geoms.clear();
+    r.mover_bases.clear();
+}
+
 } // namespace detail
 
 // `expect_surface_hash` is the xxhash32 the reader computed over the same bytes the writer
@@ -233,9 +357,43 @@ inline ReadResult read_section(const std::uint8_t* data, std::size_t len, const 
     if (num_terrain > max_terrain_charts) {
         return fail("too many terrain charts");
     }
-    const std::uint64_t tables = charts_end + sizeof(std::uint32_t)
-                               + static_cast<std::uint64_t>(num_terrain) * sizeof(TerrainChart)
-                               + static_cast<std::uint64_t>(r.head.num_tiles) * sizeof(Tile);
+    const std::uint64_t dir_off = charts_end + sizeof(std::uint32_t)
+                                + static_cast<std::uint64_t>(num_terrain) * sizeof(TerrainChart);
+    if (dir_off + sizeof(std::uint32_t) > len) {
+        return fail("truncated chart/tile tables");
+    }
+    std::uint32_t num_tables = 0;
+    load(num_tables, data + dir_off);
+    if (num_tables > max_tables) {
+        return fail("too many tables");
+    }
+    struct TableRef
+    {
+        TableHeader head;
+        std::uint64_t body_off;
+        std::uint32_t first_tile; // relative to the end of the terrain tiles
+    };
+    TableRef dir_tables[max_tables];
+    std::uint64_t dir_end = dir_off + sizeof(std::uint32_t);
+    for (std::uint32_t k = 0; k < num_tables; k++) {
+        if (dir_end + sizeof(TableHeader) > len) {
+            return fail("truncated table directory");
+        }
+        TableRef& t = dir_tables[k];
+        load(t.head, data + dir_end);
+        dir_end += sizeof(TableHeader);
+        if (t.head.byte_len > len - dir_end) {
+            return fail("truncated table directory");
+        }
+        t.body_off = dir_end;
+        t.first_tile = static_cast<std::uint32_t>(r.ext_tiles);
+        dir_end += t.head.byte_len;
+        r.ext_tiles += t.head.num_tiles;
+        if (r.ext_tiles > r.head.num_tiles) {
+            return fail("table tiles exceed the tile table");
+        }
+    }
+    const std::uint64_t tables = dir_end + static_cast<std::uint64_t>(r.head.num_tiles) * sizeof(Tile);
     if (tables > len) {
         return fail("truncated chart/tile tables");
     }
@@ -257,6 +415,7 @@ inline ReadResult read_section(const std::uint8_t* data, std::size_t len, const 
         load(r.terrain[i], data + off);
         off += sizeof(TerrainChart);
     }
+    off = static_cast<std::size_t>(dir_end);
     r.tiles.resize(r.head.num_tiles);
     for (std::uint32_t i = 0; i < r.head.num_tiles; i++) {
         load(r.tiles[i], data + off);
@@ -279,7 +438,9 @@ inline ReadResult read_section(const std::uint8_t* data, std::size_t len, const 
         terrain_tiles += static_cast<std::uint64_t>(r.terrain_geoms[i].nx) * r.terrain_geoms[i].ny;
         terrain_texels += static_cast<std::uint64_t>(r.terrain[i].w) * r.terrain[i].h;
     }
-    if (!terrain_reason && terrain_tiles > r.head.num_tiles) {
+    // the directory's tables own the end of the tile table
+    const std::uint32_t terrain_end = r.head.num_tiles - static_cast<std::uint32_t>(r.ext_tiles);
+    if (!terrain_reason && terrain_tiles > terrain_end) {
         terrain_reason = "terrain tiles exceed the tile table";
     }
     // a chart's texels are the interiors of its tiles, which cannot outgrow the pages they occupy
@@ -289,7 +450,7 @@ inline ReadResult read_section(const std::uint8_t* data, std::size_t len, const 
         terrain_reason = "terrain charts exceed the page budget";
     }
     if (!terrain_reason) {
-        std::uint32_t base = r.head.num_tiles - static_cast<std::uint32_t>(terrain_tiles);
+        std::uint32_t base = terrain_end - static_cast<std::uint32_t>(terrain_tiles);
         for (std::uint32_t i = 0; i < num_terrain; i++) {
             r.terrain_bases[i] = base;
             base += r.terrain_geoms[i].tile_count();
@@ -308,8 +469,29 @@ inline ReadResult read_section(const std::uint8_t* data, std::size_t len, const 
         terrain_tiles = 0;
     }
 
+    // Only one mover table of the known version is read; its tiles are reserved either way.
+    std::uint32_t mover_tables = 0;
+    const TableRef* mover_table = nullptr;
+    for (std::uint32_t k = 0; k < num_tables; k++) {
+        if (dir_tables[k].head.tag == table_tag_movers) {
+            mover_tables++;
+            mover_table = &dir_tables[k];
+        }
+    }
+    if (mover_tables == 1 && mover_table->head.version == mover_table_version) {
+        const char* reason = detail::parse_movers(r, data, mover_table->body_off, mover_table->head,
+                                                  terrain_end + mover_table->first_tile);
+        if (reason) {
+            detail::clear_movers(r);
+            r.mover_reason = reason;
+        }
+    }
+    else if (mover_tables > 0) {
+        r.mover_reason = mover_tables > 1 ? "more than one mover table" : "unsupported mover table version";
+    }
+
     const char* surface_reason = detail::validate_surfaces(r, dims, num_surfaces, expect_surface_hash,
-                                                           have_hash, terrain_tiles);
+                                                           have_hash, terrain_tiles + r.ext_tiles);
     r.surfaces_ok = surface_reason == nullptr;
     r.surface_reason = surface_reason ? surface_reason : "";
     if (!r.surfaces_ok) {
@@ -320,7 +502,11 @@ inline ReadResult read_section(const std::uint8_t* data, std::size_t len, const 
     for (std::uint8_t v : r.terrain_ok) {
         any_terrain = any_terrain || v != 0;
     }
-    if (!r.surfaces_ok && !any_terrain) {
+    bool any_mover = false;
+    for (std::uint8_t v : r.mover_ok) {
+        any_mover = any_mover || v != 0;
+    }
+    if (!r.surfaces_ok && !any_terrain && !any_mover) {
         return fail(num_terrain && terrain_reason ? terrain_reason : r.surface_reason);
     }
 
@@ -377,13 +563,14 @@ inline ReadResult read_section(const std::uint8_t* data, std::size_t len, const 
 
 // GPU index buffer, a typed Buffer<uint4> (R32G32B32A32_UINT, so it stays inside shader
 // model 4, which is what both pixel shader permutations compile to). S is gpu_surface_records(),
-// T the terrain chart count:
+// T the terrain chart count, M gpu_mover_records():
 //   [0, S)              one record per geometry surface, positionally (none unless surfaces_ok)
 //   [S, S + T)          one record per terrain chart, table order (gpu_terrain_chart)
+//   [S + T, S + T + M)  one record per mover surface, record then surface order (gpu_mover_chart)
 //       .x = nx, .y = ny                  0 means no usable chart
 //       .z = absolute index IN THIS BUFFER of the chart's first tile record
 //       .w = pad_u | (pad_v << 16)
-//   [S + T, S + T + num_tiles)  one record per tile, chart order, row major
+//   [S + T + M, S + T + M + num_tiles)  one record per tile, chart order, row major
 //       .x = page, .y = x, .z = y, .w = 0
 // Charts and tiles share one buffer so the pixel shader needs a single SRV slot; .z is already
 // biased past the chart records so the shader adds ty * nx + tx and nothing else.
@@ -397,11 +584,23 @@ inline std::uint32_t gpu_terrain_chart(const ReadResult& r, std::uint32_t terrai
     return gpu_surface_records(r) + terrain_index;
 }
 
+inline std::uint32_t gpu_mover_records(const ReadResult& r)
+{
+    return static_cast<std::uint32_t>(r.mover_charts.size());
+}
+
+// `record` < movers.size(), `surface` < that record's num_surfaces.
+inline std::uint32_t gpu_mover_chart(const ReadResult& r, std::uint32_t record, std::uint32_t surface)
+{
+    return gpu_surface_records(r) + static_cast<std::uint32_t>(r.terrain.size()) + r.mover_first_surface[record]
+         + surface;
+}
+
 inline std::vector<std::uint32_t> build_gpu_index(const ReadResult& r)
 {
     const std::uint32_t num_surface = gpu_surface_records(r);
     const std::uint32_t num_terrain = static_cast<std::uint32_t>(r.terrain.size());
-    const std::uint32_t num_records = num_surface + num_terrain;
+    const std::uint32_t num_records = num_surface + num_terrain + gpu_mover_records(r);
     const std::uint32_t num_tiles = r.head.num_tiles;
     std::vector<std::uint32_t> out(static_cast<std::size_t>(num_records + num_tiles) * 4, 0);
     auto put_chart = [&](std::uint32_t record, const ChartGeometry& g, std::uint32_t base) {
@@ -420,6 +619,15 @@ inline std::vector<std::uint32_t> build_gpu_index(const ReadResult& r)
     for (std::uint32_t i = 0; i < num_terrain; i++) {
         if (r.terrain_ok[i]) {
             put_chart(gpu_terrain_chart(r, i), r.terrain_geoms[i], r.terrain_bases[i]);
+        }
+    }
+    for (std::uint32_t i = 0; i < r.mover_ok.size(); i++) {
+        if (!r.mover_ok[i]) {
+            continue;
+        }
+        const std::uint32_t first = r.mover_first_surface[i];
+        for (std::uint32_t s = 0; s < r.movers[i].num_surfaces; s++) {
+            put_chart(gpu_mover_chart(r, i, s), r.mover_geoms[first + s], r.mover_bases[first + s]);
         }
     }
     for (std::uint32_t i = 0; i < num_tiles; i++) {

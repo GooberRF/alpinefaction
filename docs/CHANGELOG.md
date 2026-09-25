@@ -24,7 +24,7 @@ Version 1.5.0 (Trillium): Not yet released
   - `Convert to Brushes` turns a terrain into detail brushes
   - Direct3D 11 renderer draws terrain with blended layers, optional triplanar mapping, and smooth heightmap normals; Direct3D 8/9 draw each cell's dominant layer tinted by the level ambient
   - The level editor viewport shows a terrain's baked lighting after `Calculate Lighting` until its shape is edited
-- Add Alpine Lightmaps: `Calculate Lighting` also bakes higher-resolution, BC7-compressed lightmaps used by the Direct3D 11 renderer, including seamless baked lighting for terrain
+- Add Alpine Lightmaps: `Calculate Lighting` also bakes higher-resolution, BC7-compressed lightmaps used by the Direct3D 11 renderer, for brushwork and movers, including seamless baked lighting for terrain
   - Add `Lightmap density`, `Compression`, and `D3D11-only lightmaps` level properties
   - `Lightmap density` `Off` keeps the stock lightmaps for brushwork and still bakes terrain lighting
 

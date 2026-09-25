@@ -5,6 +5,7 @@
 namespace rf
 {
     class File;
+    struct GSolid;
 }
 
 // Alpine Lightmaps (RFL section 0x0AFBAE09), game side; implemented in gr_d3d11_af_lightmap.cpp. Terrain
@@ -31,6 +32,10 @@ void af_lightmap_init_synthesized_page();
 // Run once the geometry section has been read and the file cursor sits at its end: hashes the
 // surface records the section just consumed, which is the fingerprint the bake recorded.
 void af_lightmap_capture_surface_fingerprint(rf::File& file);
+
+// Run by the movers section (0x2000) right after it reads a mover's solid, `reader` being the memory
+// VFile it parses: hashes the surface records just consumed, the mover chart's fingerprint.
+void af_lightmap_capture_mover(int uid, rf::GSolid* solid, const void* reader);
 
 void af_lightmap_load_chunk(rf::File& file, std::size_t chunk_len);
 

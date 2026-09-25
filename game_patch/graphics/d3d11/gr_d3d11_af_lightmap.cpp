@@ -1,5 +1,7 @@
 #include <algorithm>
 #include <cstring>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include <d3d11.h>
@@ -7,6 +9,7 @@
 #include <xxhash.h>
 
 #include <common/ComPtr.h>
+#include <common/utils/list-utils.h>
 #include <common/lightmap/alpine_lightmap.h>
 #include <common/lightmap/alpine_lightmap_decode.h>
 #include <common/lightmap/alpine_lightmap_reader.h>
@@ -19,6 +22,7 @@
 #include "../../rf/geometry.h"
 #include "../../rf/level.h"
 #include "../../rf/math/vector.h"
+#include "../../rf/mover.h"
 #include "../../rf/multi.h"
 #include "../../misc/alpine_settings.h"
 #include "../../misc/alpine_terrain.h"
@@ -29,8 +33,7 @@ using namespace alpine_lightmap;
 
 namespace
 {
-    // Bytes one GSurface occupies in the RFL, from the stock loader at FUN_004EE210.
-    constexpr int af_surface_record_size = 96;
+    constexpr int af_surface_record_size = static_cast<int>(surface_record_size);
 
     // The bake's own page budget is 1024 slices, which is 67 MB of BC7, so a longer section is a
     // malformed length rather than one this build could ever consume.
@@ -60,6 +63,18 @@ namespace
     // Per alpine_terrain_get_all() index: the matching chart record, or -1.
     std::vector<int> g_terrain_record;
 
+    // Every mover solid the movers section (0x2000) loaded, with the fingerprint of its surface records.
+    struct MoverCapture
+    {
+        int uid;
+        rf::GSolid* solid;
+        std::uint32_t num_surfaces;
+        std::uint32_t hash;
+    };
+    std::vector<MoverCapture> g_mover_captures;
+    // The matched mover record of each mover solid; a solid missing here has no chart.
+    std::unordered_map<rf::GSolid*, std::uint32_t> g_mover_record;
+
     ComPtr<ID3D11Texture2D> g_pages_tex;
     ComPtr<ID3D11ShaderResourceView> g_pages_srv;
     ComPtr<ID3D11Buffer> g_index_buf;
@@ -76,6 +91,7 @@ namespace
         g_terrain_rgb.clear();
         g_terrain_reduction.clear();
         g_terrain_record.clear();
+        g_mover_record.clear();
     }
 
     // The chart record matched to terrain `index`, or null.
@@ -128,6 +144,83 @@ namespace
         for (std::size_t i = 0; i < used.size(); i++) {
             if (!used[i]) {
                 g_section.terrain_ok[i] = 0;
+            }
+        }
+    }
+
+    // Whether surface `s`, charted by `c`, is the fragment the chart was baked for and fits the page its
+    // uv_scale/uv_add normalize against (`bake_page` when the level ships no stock pages).
+    bool af_mover_surface_fits(const rf::GSurface* s, const MoverSurfaceChart& c, std::uint32_t bake_page)
+    {
+        if (!s || !s->lightmap || s->width != c.w || s->height != c.h || s->xstart < 0 || s->ystart < 0) {
+            return false;
+        }
+        const std::int64_t pw = bake_page ? bake_page : s->lightmap->w;
+        const std::int64_t ph = bake_page ? bake_page : s->lightmap->h;
+        return static_cast<std::int64_t>(s->xstart) + s->width <= pw
+            && static_cast<std::int64_t>(s->ystart) + s->height <= ph;
+    }
+
+    // Matches the mover records to the mover solids the movers section loaded, by uid, surface count and
+    // fingerprint. An unmatched record is marked unusable before the GPU index is built.
+    void af_match_movers(std::uint32_t bake_page)
+    {
+        g_mover_record.clear();
+        std::vector<std::uint8_t> used(g_section.movers.size(), 0);
+        if (is_d3d11() && !g_section.movers.empty()) {
+            // A mover whose creation failed freed its solid, so only the latest capture of a live solid counts.
+            std::unordered_set<rf::GSolid*> live;
+            for (rf::MoverBrush& mb : DoublyLinkedList{rf::mover_brush_list}) {
+                if (mb.geometry) {
+                    live.insert(mb.geometry);
+                }
+            }
+            std::vector<const MoverCapture*> current;
+            std::unordered_set<rf::GSolid*> seen;
+            for (auto it = g_mover_captures.rbegin(); it != g_mover_captures.rend(); ++it) {
+                if (live.count(it->solid) && seen.insert(it->solid).second) {
+                    current.push_back(&*it);
+                }
+            }
+            std::unordered_map<int, int> uid_count;
+            for (const MoverCapture* c : current) {
+                uid_count[c->uid]++;
+            }
+            for (const MoverCapture* c : current) {
+                if (uid_count[c->uid] != 1) {
+                    continue;
+                }
+                std::uint32_t record = 0;
+                bool found = false;
+                for (std::uint32_t i = 0; i < g_section.movers.size() && !found; i++) {
+                    if (g_section.mover_ok[i] && g_section.movers[i].mover_uid == c->uid) {
+                        record = i;
+                        found = true;
+                    }
+                }
+                if (!found) {
+                    continue;
+                }
+                const MoverChart& m = g_section.movers[record];
+                bool match = m.num_surfaces == c->num_surfaces && m.surface_hash == c->hash
+                          && static_cast<std::uint32_t>(c->solid->surfaces.size()) == c->num_surfaces;
+                for (std::uint32_t s = 0; match && s < m.num_surfaces; s++) {
+                    const std::uint32_t k = g_section.mover_first_surface[record] + s;
+                    match = g_section.mover_geoms[k].empty()
+                         || af_mover_surface_fits(c->solid->surfaces[s], g_section.mover_charts[k], bake_page);
+                }
+                if (!match) {
+                    xlog::warn("[AlpineLightmaps] mover {} changed since its lighting was baked, re-bake the level",
+                               c->uid);
+                    continue;
+                }
+                g_mover_record[c->solid] = record;
+                used[record] = 1;
+            }
+        }
+        for (std::size_t i = 0; i < used.size(); i++) {
+            if (!used[i]) {
+                g_section.mover_ok[i] = 0;
             }
         }
     }
@@ -303,13 +396,31 @@ namespace gr::d3d11
     bool af_lightmap_face_setup(rf::GSolid* solid, int surface_index, AfLightmapFace& out)
     {
         out = AfLightmapFace{};
-        if (!g_live || !g_section.surfaces_ok || !solid || solid != g_solid || surface_index < 0
-            || static_cast<std::uint32_t>(surface_index) >= g_section.head.num_charts
-            || surface_index >= solid->surfaces.size()) {
+        if (!g_live || !solid || surface_index < 0 || surface_index >= solid->surfaces.size()) {
             return false;
         }
-        if (g_section.geoms[surface_index].empty()) {
-            return false;
+        const auto index = static_cast<std::uint32_t>(surface_index);
+        std::uint32_t chart = 0;
+        Chart k{};
+        if (solid == g_solid) {
+            if (!g_section.surfaces_ok || index >= g_section.head.num_charts || g_section.geoms[index].empty()) {
+                return false;
+            }
+            chart = index;
+            k = g_section.charts[index];
+        }
+        else {
+            const auto it = g_mover_record.find(solid);
+            if (it == g_mover_record.end() || it->second >= g_section.movers.size() || !g_section.mover_ok[it->second]
+                || index >= g_section.movers[it->second].num_surfaces) {
+                return false;
+            }
+            const std::uint32_t flat = g_section.mover_first_surface[it->second] + index;
+            if (g_section.mover_geoms[flat].empty()) {
+                return false;
+            }
+            chart = gpu_mover_chart(g_section, it->second, index);
+            k = Chart{g_section.mover_charts[flat].k_u, g_section.mover_charts[flat].k_v};
         }
         rf::GSurface* surface = solid->surfaces[surface_index];
         if (!surface || !surface->lightmap) {
@@ -326,7 +437,7 @@ namespace gr::d3d11
                                                     : static_cast<std::uint32_t>(surface->lightmap->w);
         const std::uint32_t lm_h = g_bake_page_size ? g_bake_page_size
                                                     : static_cast<std::uint32_t>(surface->lightmap->h);
-        out.chart = surface_index;
+        out.chart = static_cast<int>(chart);
         out.axis_u = surface->u_coefficient;
         out.axis_v = surface->v_coefficient;
         out.scale_u = surface->uv_scale.x;
@@ -337,8 +448,8 @@ namespace gr::d3d11
         out.lm_h = lm_h;
         out.surf_x = static_cast<std::uint32_t>(surface->xstart);
         out.surf_y = static_cast<std::uint32_t>(surface->ystart);
-        out.k_u = g_section.charts[surface_index].k_u;
-        out.k_v = g_section.charts[surface_index].k_v;
+        out.k_u = k.k_u;
+        out.k_v = k.k_v;
         return true;
     }
 
@@ -396,6 +507,41 @@ void af_lightmap_level_reset()
     g_fp = AfFingerprint{};
     g_stock_section_seen = false;
     g_synth_page_bm = -1;
+    g_mover_captures.clear();
+}
+
+void af_lightmap_capture_mover(int uid, rf::GSolid* solid, const void* reader)
+{
+    if (rf::is_dedicated_server || is_headless_mode() || !is_d3d11() || !solid || !reader) {
+        return;
+    }
+    // the memory VFile the movers section is parsed from (RF 0x00514c50)
+    const auto* vf = static_cast<const std::uint8_t*>(reader);
+    const auto field = [vf](std::size_t off) {
+        std::int32_t v = 0;
+        std::memcpy(&v, vf + off, sizeof(v));
+        return v;
+    };
+    const std::int32_t is_memory = field(0x00);
+    const auto* buf = reinterpret_cast<const std::uint8_t*>(static_cast<std::uintptr_t>(static_cast<std::uint32_t>(field(0x08))));
+    const std::int32_t pos = field(0x0c);
+    const std::int32_t size = field(0x10);
+    const std::int32_t version = field(0x50);
+    const std::int32_t error = field(0x54);
+    const int n = solid->surfaces.size();
+    const std::int64_t need = static_cast<std::int64_t>(n) * af_surface_record_size;
+    if (is_memory != 1 || !buf || pos < 0 || pos > size || error != 0 || version < 0xB5 || n < 0 || need > pos) {
+        return;
+    }
+    // the solid's surface records are the last bytes its loader consumed
+    const std::uint8_t empty = 0;
+    const std::uint32_t hash = XXH32(n > 0 ? static_cast<const void*>(buf + (pos - need)) : static_cast<const void*>(&empty),
+                                     static_cast<std::size_t>(need), 0);
+    try {
+        g_mover_captures.push_back({uid, solid, static_cast<std::uint32_t>(n), hash});
+    }
+    catch (...) {
+    }
 }
 
 void af_lightmap_resolve_terrains()
@@ -559,6 +705,13 @@ static void af_load_chunk_inner(rf::File& file, std::size_t chunk_len, std::size
         return;
     }
     af_match_terrains();
+    // with no stock section, every stock page handle a face holds is the engine's synthesised page
+    const std::uint32_t bake_page =
+        g_stock_section_seen ? 0u : stock_page_size(AlpineLevelProperties::instance().highres_lightmaps);
+    if (*g_section.mover_reason) {
+        xlog::warn("[AlpineLightmaps] ignoring the mover charts: {}", g_section.mover_reason);
+    }
+    af_match_movers(bake_page);
     const auto drop_surfaces = [](const char* why) {
         xlog::warn("[AlpineLightmaps] ignoring the surface charts: {}", why);
         g_section.surfaces_ok = false;
@@ -574,10 +727,8 @@ static void af_load_chunk_inner(rf::File& file, std::size_t chunk_len, std::size
         g_section.bases.clear();
     }
 
-    // with no stock section, every stock page handle a face holds is the engine's synthesised page
-    if (g_section.surfaces_ok && !g_stock_section_seen) {
-        const std::uint32_t p =
-            stock_page_size(AlpineLevelProperties::instance().highres_lightmaps);
+    if (g_section.surfaces_ok && bake_page) {
+        const std::uint32_t p = bake_page;
         for (int i = 0; i < num_surfaces; i++) {
             rf::GSurface* s = solid->surfaces[i];
             if (!s || g_section.geoms[i].empty()) {
@@ -593,13 +744,13 @@ static void af_load_chunk_inner(rf::File& file, std::size_t chunk_len, std::size
                 break;
             }
         }
-        if (g_section.surfaces_ok) {
-            g_bake_page_size = p;
-        }
+    }
+    if (g_section.surfaces_ok || !g_mover_record.empty()) {
+        g_bake_page_size = bake_page;
     }
     const bool any_terrain = std::any_of(g_section.terrain_ok.begin(), g_section.terrain_ok.end(),
                                          [](std::uint8_t v) { return v != 0; });
-    if (!g_section.surfaces_ok && !any_terrain) {
+    if (!g_section.surfaces_ok && !any_terrain && g_mover_record.empty()) {
         af_drop_section();
         return;
     }
@@ -652,9 +803,12 @@ static void af_load_chunk_inner(rf::File& file, std::size_t chunk_len, std::size
             g_section.surfaces_ok = false;
             g_section.geoms.clear();
             g_section.bases.clear();
+            g_mover_record.clear();
         }
     }
-    xlog::info("[AlpineLightmaps] {} pages, {} surface charts{}, {} terrain charts, {} tiles, density {} px/m",
+    xlog::info("[AlpineLightmaps] {} pages, {} surface charts{}, {} terrain charts, {} mover charts ({} matched), "
+               "{} tiles, density {} px/m",
                g_section.head.num_pages, g_section.head.num_charts, g_section.surfaces_ok ? "" : " (unused)",
-               g_section.terrain.size(), g_section.head.num_tiles, g_section.head.base_density);
+               g_section.terrain.size(), g_section.movers.size(), g_mover_record.size(), g_section.head.num_tiles,
+               g_section.head.base_density);
 }

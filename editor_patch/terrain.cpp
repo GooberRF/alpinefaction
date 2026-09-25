@@ -2158,6 +2158,23 @@ void DeleteTerrainObject(DedTerrain* terrain)
 
 // ─── Rendering ──────────────────────────────────────────────────────────────
 
+// Centre of the bounding box of the footprint and the surface's height span: where the icon sits.
+static Vector3 terrain_icon_pos(const Vector3& pos, const DedTerrainData& d)
+{
+    const TerrainGrid* g = d.grid.get();
+    if (!g || g->heights.empty()) return pos;
+    const auto [lo, hi] = std::minmax_element(g->heights.begin(), g->heights.end());
+    const float y_lo = at::height_offset(*lo, d.height_min, d.height_range);
+    const float y_hi = at::height_offset(*hi, d.height_min, d.height_range);
+    return {pos.x + at::extent(g->nx, d.cell_size) * 0.5f, pos.y + (y_lo + y_hi) * 0.5f,
+            pos.z + at::extent(g->nz, d.cell_size) * 0.5f};
+}
+
+Vector3 terrain_icon_pos(const DedTerrain& terrain)
+{
+    return terrain_icon_pos(terrain.pos, terrain.data);
+}
+
 void terrain_render(CDedLevel* level)
 {
     auto& terrains = level->GetAlpineLevelProperties().terrain_objects;
@@ -2179,19 +2196,21 @@ void terrain_render(CDedLevel* level)
         if (g_terrain_icon_handle >= 0) {
             gr_set_bitmap(g_terrain_icon_handle, -1);
         }
-        gr_render_billboard(&terrain->pos, 0, 0.25f, cam_param);
+        Vector3 icon = terrain_icon_pos(terrain->pos, preview ? g_terrain_dlg.data : terrain->data);
+        gr_render_billboard(&icon, 0, 1.0f, cam_param);
     }
     terrain_paint_draw_cursor(*level);
     terrain_preview_frame_end(*level);
 }
 
-// Marquee: the origin handle inside the box, or the whole footprint.
+// Marquee: the icon inside the box, or the whole footprint.
 void terrain_pick(CDedLevel* level, int param1, int param2)
 {
     auto& terrains = level->GetAlpineLevelProperties().terrain_objects;
     for (auto* terrain : terrains) {
         if (terrain->hidden_in_editor) continue;
-        bool hit = level->hit_test_point(param1, param2, &terrain->pos);
+        const Vector3 icon = terrain_icon_pos(*terrain);
+        bool hit = level->hit_test_point(param1, param2, &icon);
         const DedTerrainData& d = terrain->data;
         if (!hit && d.grid && !d.layers.empty()) {
             const at::GridView v = terrain_grid_view(terrain->pos, d, *d.grid);
@@ -2213,8 +2232,21 @@ void terrain_pick(CDedLevel* level, int param1, int param2)
 
 DedTerrain* terrain_click_pick(CDedLevel* level, float click_x, float click_y)
 {
-    return alpine_click_pick_point(level->GetAlpineLevelProperties().terrain_objects, click_x, click_y,
-                                   alpine_click_pick_radius_sq);
+    DedTerrain* best = nullptr;
+    float best_dist_sq = 1e30f;
+    for (auto* terrain : level->GetAlpineLevelProperties().terrain_objects) {
+        if (terrain->hidden_in_editor) continue;
+        const Vector3 icon = terrain_icon_pos(*terrain);
+        float p[3] = {icon.x, icon.y, icon.z};
+        float sx = 0.0f, sy = 0.0f;
+        if (!project_to_screen_2d(p, &sx, &sy)) continue;
+        const float dist_sq = (sx - click_x) * (sx - click_x) + (sy - click_y) * (sy - click_y);
+        if (dist_sq <= alpine_click_pick_radius_sq && dist_sq < best_dist_sq) {
+            best = terrain;
+            best_dist_sq = dist_sq;
+        }
+    }
+    return best;
 }
 
 void terrain_tree_populate(EditorTreeCtrl* tree, int master_groups, CDedLevel* level)

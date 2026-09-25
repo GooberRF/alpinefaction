@@ -552,8 +552,8 @@ CodeInjection alpine_click_pick_patch{
             }
 
             if (best_terrain) {
-                float terrain_pos[3] = {best_terrain->pos.x, best_terrain->pos.y,
-                    best_terrain->pos.z};
+                const Vector3 icon = terrain_icon_pos(*best_terrain);
+                float terrain_pos[3] = {icon.x, icon.y, icon.z};
                 float tsx = 0.0f, tsy = 0.0f;
                 if (project_to_screen_2d(terrain_pos, &tsx, &tsy)) {
                     float tdx = tsx - click_x, tdy = tsy - click_y;
