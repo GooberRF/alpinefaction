@@ -83,6 +83,7 @@ namespace gr::d3d11
         void render_sky_room(rf::GRoom *room, rf::Vector3& out_sky_transform_pos, rf::Matrix3& out_sky_transform_orient);
         void render_room_liquid_surface(rf::GSolid* solid, rf::GRoom* room);
         void clear_solid_cache();
+        void release_detail_room_cache(rf::GRoom* room);
         void reset_solid_cache_after_boolean();
         void render_v3d_vif(rf::VifLodMesh *lod_mesh, int lod_index, const rf::Vector3& pos, const rf::Matrix3& orient, const rf::MeshRenderParams& params, bool skip_ambient_cache = false);
         void render_character_vif(rf::VifLodMesh *lod_mesh, int lod_index, const rf::Vector3& pos, const rf::Matrix3& orient, const rf::CharacterInstance *ci, const rf::MeshRenderParams& params, bool skip_ambient_cache = false);
@@ -138,6 +139,11 @@ namespace gr::d3d11
         int render_target_bm_handle() const
         {
             return render_target_bm_handle_;
+        }
+
+        ID3D11Device* device() const
+        {
+            return device_;
         }
 
     private:

@@ -25,6 +25,8 @@
 #include "../../os/console.h"
 #include "../gr.h"
 #include "gr_d3d11.h"
+#include "gr_d3d11_af_lightmap.h"
+#include "gr_d3d11_terrain.h"
 #include "gr_d3d11_liquid.h"
 #include "gr_d3d11_mesh.h"
 
@@ -235,7 +237,14 @@ namespace gr::d3d11
     void close()
     {
         xlog::info("Cleaning up D3D11");
+        af_lightmap_release_gpu();
+        terrain_gpu_release();
         renderer.reset();
+    }
+
+    ID3D11Device* af_lightmap_device()
+    {
+        return renderer ? renderer->device() : nullptr;
     }
 
     void init(HWND hwnd)
@@ -736,6 +745,13 @@ namespace gr::d3d11
     {
         if (renderer) {
             renderer->clear_solid_cache();
+        }
+    }
+
+    void release_detail_room_render_cache(rf::GRoom* room)
+    {
+        if (renderer) {
+            renderer->release_detail_room_cache(room);
         }
     }
 
@@ -1318,4 +1334,5 @@ void gr_d3d11_apply_patch()
 
     r_antialiasing_cmd.register_cmd();
     r_antialiasing_mode_cmd.register_cmd();
+    terrain_register_commands();
 }

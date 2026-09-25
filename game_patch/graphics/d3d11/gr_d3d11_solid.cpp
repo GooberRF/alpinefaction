@@ -2,6 +2,7 @@
 #undef NDEBUG
 
 #include <windows.h>
+#include <algorithm>
 #include <vector>
 #include <unordered_map>
 #include <map>
@@ -17,11 +18,16 @@
 #include "../../os/console.h"
 #include "../../misc/misc.h"
 #include "../../misc/alpine_options.h"
+#include "../../misc/alpine_terrain.h"
+#include "../../misc/destruction.h"
+#include "../../os/os.h"
 #include "gr_d3d11.h"
+#include "gr_d3d11_af_lightmap.h"
 #include "gr_d3d11_solid.h"
 #include "gr_d3d11_shader.h"
 #include "gr_d3d11_context.h"
 #include "gr_d3d11_dynamic_geometry.h"
+#include "gr_d3d11_terrain.h"
 
 namespace gr::d3d11
 {
@@ -29,16 +35,12 @@ namespace gr::d3d11
     class GRenderCache;
 
     static auto& decals_enabled = addr_as_ref<bool>(0x005A4458);
-    static auto& gr_decal_self_illuminated_mode = addr_as_ref<rf::gr::Mode>(0x01818340);
     static auto& gr_decal_tiling_u_mode = addr_as_ref<rf::gr::Mode>(0x0180831C);
     static auto& gr_decal_tiling_v_mode = addr_as_ref<rf::gr::Mode>(0x0181833C);
     static auto& gr_decal_mode = addr_as_ref<rf::gr::Mode>(0x01808318);
     static auto& gr_solid_mode = addr_as_ref<rf::gr::Mode>(0x01808328);
     static auto& gr_solid_alpha_mode = addr_as_ref<rf::gr::Mode>(0x0180832C);
-    static auto& geo_cache_rooms = addr_as_ref<rf::GRoom*[256]>(0x01375DB4);
     static auto& geo_cache_num_rooms = addr_as_ref<int>(0x013761B8);
-
-    static auto& set_currently_rendered_room = addr_as_ref<void (rf::GRoom *room)>(0x004D3350);
 
     static rf::gr::Mode sky_room_opaque_mode{
         rf::gr::TEXTURE_SOURCE_WRAP,
@@ -77,7 +79,7 @@ namespace gr::d3d11
     static inline rf::gr::Mode determine_decal_mode(rf::GDecal* decal)
     {
         if (decal->flags & rf::DF_SELF_ILLUMINATED) {
-            return gr_decal_self_illuminated_mode;
+            return rf::gr_decal_self_illuminated_mode;
         }
         if (decal->flags & rf::DF_TILING_U) {
             return gr_decal_tiling_u_mode;
@@ -162,6 +164,17 @@ namespace gr::d3d11
         );
     }
 
+    // One terrain's faces in a chunk room: top and underside together, told apart per vertex, and
+    // crater faces batched by their own texture.
+    struct TerrainBatch
+    {
+        int start_index;
+        int num_indices;
+        int base_vertex;
+        int terrain;
+        int crater_texture; // no_crater_texture: top and underside
+    };
+
     struct SolidBatch
     {
         SolidBatch(int start_index, int num_indices, int base_vertex, std::array<int, 2> textures, rf::gr::Mode mode) :
@@ -191,8 +204,14 @@ namespace gr::d3d11
             }
         }
 
+        std::vector<TerrainBatch>& get_terrain_batches()
+        {
+            return terrain_batches_;
+        }
+
     private:
         std::vector<SolidBatch> opaque_batches_;
+        std::vector<TerrainBatch> terrain_batches_;
         std::vector<SolidBatch> alpha_batches_;
         std::vector<SolidBatch> liquid_batches_;
     };
@@ -209,6 +228,23 @@ namespace gr::d3d11
         bool has_batches(FaceRenderType what)
         {
             return !batches_.get_batches(what).empty();
+        }
+
+        bool has_terrain_batches()
+        {
+            return !batches_.get_terrain_batches().empty();
+        }
+
+        // bind(batch) readies the terrain shader's inputs for a batch; false skips its draw.
+        template<typename F>
+        void render_terrain(RenderContext& render_context, F&& bind)
+        {
+            geometry_buffers_.bind_buffers(render_context);
+            for (const TerrainBatch& b : batches_.get_terrain_batches()) {
+                if (bind(b)) {
+                    render_context.draw_indexed(b.num_indices, b.start_index, b.base_vertex);
+                }
+            }
         }
 
     private:
@@ -231,10 +267,15 @@ namespace gr::d3d11
         // Exempt glass, grating, and other see-through textures from picmip.
         RenderContext::ScopedPicmipActive picmip_scope{render_context,
             render_context.picmip_active() && what != FaceRenderType::alpha};
+        // A level with no stock lightmaps section leaves every stock page handle pointing at the
+        // engine's synthesised page, whose texture it never writes. -1 resolves to the neutral
+        // grey the shader doubles to 1, so what has no alpine chart there renders fullbright.
+        const int synth_page_bm = af_lightmap_synthesized_page_bm();
         for (SolidBatch& b : batches) {
             bool lightmap_only = rf::gr::show_lightmaps && what != FaceRenderType::alpha;
             render_context.set_mode(b.mode, {255, 255, 255, 255}, lightmap_only);
-            render_context.set_textures(b.textures[0], b.textures[1]);
+            const int lightmap_bm = synth_page_bm != -1 && b.textures[1] == synth_page_bm ? -1 : b.textures[1];
+            render_context.set_textures(b.textures[0], lightmap_bm);
             render_context.draw_indexed(b.num_indices, b.start_index, b.base_vertex);
         }
         render_context.set_suppress_texture_uv_scale(false);
@@ -252,10 +293,25 @@ namespace gr::d3d11
         int num_inds_ = 0;
         std::map<FaceBatchKey, std::vector<rf::GFace*>> batched_faces_;
         std::map<DecalPolyBatchKey, std::vector<rf::DecalPoly*>> batched_decal_polys_;
+        // (terrain index, crater texture or no_crater_texture) -> its faces in this room with their kind
+        std::map<std::pair<int, int>, std::vector<std::pair<rf::GFace*, alpine_terrain::FaceKind>>> terrain_faces_;
+        // Set only for caches that may draw terrain batches
+        ID3D11Device* terrain_device_ = nullptr;
+        const AlpineTerrainRoomRef* terrain_room_ = nullptr;
+        alpine_terrain::GridView terrain_grid_{};
         bool is_sky_ = false;
         bool is_sky_fix_ = is_sky_fix_level(rf::level.filename);
+        rf::GSolid* solid_ = nullptr;
+        // Only populated while alpine lightmaps are live, so build() cannot reach a different
+        // answer than add_face() did if is_sky_ flips between them.
+        std::unordered_map<rf::GFace*, int> af_charts_;
 
     public:
+        void enable_terrain(ID3D11Device* device)
+        {
+            terrain_device_ = device;
+        }
+
         void add_solid(rf::GSolid* solid);
         void add_room(rf::GRoom* room, rf::GSolid* solid);
         void add_face(rf::GFace* face, rf::GSolid* solid);
@@ -273,7 +329,7 @@ namespace gr::d3d11
 
         int get_num_batches() const
         {
-            return batched_faces_.size() + batched_decal_polys_.size();
+            return batched_faces_.size() + batched_decal_polys_.size() + terrain_faces_.size();
         }
 
         friend class GRenderCache;
@@ -297,6 +353,7 @@ namespace gr::d3d11
 
     void GRenderCacheBuilder::add_solid(rf::GSolid* solid)
     {
+        solid_ = solid;
         link_faces_to_texture_movers(solid->face_list, solid);
         for (rf::GFace& face : solid->face_list) {
             add_face(&face, solid);
@@ -305,8 +362,17 @@ namespace gr::d3d11
 
     void GRenderCacheBuilder::add_room(rf::GRoom* room, rf::GSolid* solid)
     {
+        solid_ = solid;
         if (room->is_sky) {
             is_sky_ = true;
+        }
+        terrain_room_ = nullptr;
+        if (terrain_device_ && !is_sky_ && room->is_detail) {
+            const AlpineTerrainRoomRef* ref = alpine_terrain_find_room(room);
+            if (ref && terrain_gpu_prepare(terrain_device_, ref->terrain)) {
+                terrain_room_ = ref;
+                terrain_grid_ = alpine_terrain_grid(alpine_terrain_get_all()[ref->terrain]);
+            }
         }
         link_faces_to_texture_movers(room->face_list, solid);
         for (rf::GFace& face : room->face_list) {
@@ -320,6 +386,9 @@ namespace gr::d3d11
             for (rf::GRoom* detail_room : room->detail_rooms) {
                 if (detail_room->face_list.empty()) {
                     continue; // skip destroyed breakable detail rooms
+                }
+                if (alpine_terrain_is_separate_chunk(room, detail_room)) {
+                    continue;
                 }
                 add_room(detail_room, solid);
             }
@@ -349,6 +418,7 @@ namespace gr::d3d11
         FaceRenderType render_type = determine_face_render_type(face);
         int face_tex = face->attributes.bitmap_id;
         int lightmap_tex = -1;
+        int af_chart = -1;
         if (!is_sky_ && render_type != FaceRenderType::liquid && face->attributes.surface_index >= 0) {
             if (face->attributes.surface_index >= solid->surfaces.size()) {
                 xlog::warn("add_face: surface_index {} out of bounds (size {}), skipping face",
@@ -362,9 +432,37 @@ namespace gr::d3d11
                 return;
             }
             lightmap_tex = surface->lightmap->bm_handle;
+            AfLightmapFace af_face;
+            if (af_lightmap_face_setup(solid, face->attributes.surface_index, af_face)) {
+                af_chart = af_face.chart;
+                af_charts_[face] = af_chart;
+            }
         }
-        FaceBatchKey key = std::make_tuple(render_type, face_tex, lightmap_tex);
-        batched_faces_[key].push_back(face);
+        // Charted faces all sample the same atlas, so the stock page they were derived from does
+        // not have to split them into batches. The key stays negative-but-not--1 so the alpha
+        // render mode a face gets is still the one it would have had.
+        FaceBatchKey key = std::make_tuple(render_type, face_tex,
+                                           af_chart >= 0 ? af_lightmap_batch_key : lightmap_tex);
+        // Terrain shading covers the chunk's faces with no surface: the ones Build Geometry emitted and
+        // the crater faces RF2 carving adds. Anything else in a chunk room keeps the ordinary batches.
+        std::vector<std::pair<rf::GFace*, alpine_terrain::FaceKind>>* terrain_list = nullptr;
+        if (terrain_room_ && render_type == FaceRenderType::opaque && face->attributes.surface_index < 0) {
+            const alpine_terrain::FaceKind kind = alpine_terrain_face_kind(terrain_grid_, *face);
+            const int crater_texture = kind == alpine_terrain::FaceKind::crater ? std::max(face_tex, -1) : no_crater_texture;
+            terrain_list = &terrain_faces_[{terrain_room_->terrain, crater_texture}];
+            terrain_list->emplace_back(face, kind);
+        }
+        else {
+            batched_faces_[key].push_back(face);
+        }
+        auto remove_face = [&]() {
+            if (terrain_list) {
+                terrain_list->pop_back();
+            }
+            else {
+                batched_faces_[key].pop_back();
+            }
+        };
         auto fvert = face->edge_loop;
         int num_fverts = 0;
         constexpr int max_fverts = 10000;
@@ -372,7 +470,7 @@ namespace gr::d3d11
             ++num_fverts;
             if (num_fverts > max_fverts) {
                 xlog::error("add_face: edge_loop exceeds {} vertices, likely corrupted", max_fverts);
-                batched_faces_[key].pop_back();
+                remove_face();
                 return;
             }
             fvert = fvert->next;
@@ -382,7 +480,7 @@ namespace gr::d3d11
         }
         if (num_fverts < 3) {
             // Degenerate face, remove from batch
-            batched_faces_[key].pop_back();
+            remove_face();
             return;
         }
         rf::DecalPoly* dp = face->decal_list;
@@ -399,6 +497,42 @@ namespace gr::d3d11
         }
         num_verts_ += (1 + num_dp) * num_fverts;
         num_inds_ += (1 + num_dp) * (num_fverts - 2) * 3;
+    }
+
+    constexpr int max_face_fan_verts = 10000;
+
+    static void report_long_edge_loop()
+    {
+        xlog::error("build: edge_loop exceeds {} vertices", max_face_fan_verts);
+    }
+
+    // Appends `face` as a triangle fan: fill(vertex, fvert, index) sets each vertex. A loop longer than
+    // max_verts calls on_overflow and keeps the fan emitted so far.
+    template<typename Overflow, typename Fill>
+    static void emit_face_fan(rf::GFace* face, std::vector<GpuVertex>& vb_data, std::vector<rf::ushort>& ib_data,
+        std::size_t base_vertex, int max_verts, Overflow&& on_overflow, Fill&& fill)
+    {
+        auto face_start_index = static_cast<rf::ushort>(vb_data.size() - base_vertex);
+        int fvert_index = 0;
+        auto fvert = face->edge_loop;
+        while (fvert) {
+            if (fvert_index >= max_verts) {
+                on_overflow();
+                break;
+            }
+            fill(vb_data.emplace_back(), fvert, fvert_index);
+            if (fvert_index >= 2) {
+                ib_data.emplace_back(face_start_index);
+                ib_data.emplace_back(face_start_index + fvert_index - 1);
+                ib_data.emplace_back(face_start_index + fvert_index);
+            }
+            ++fvert_index;
+
+            fvert = fvert->next;
+            if (fvert == face->edge_loop) {
+                break;
+            }
+        }
     }
 
     GRenderCache GRenderCacheBuilder::build(ID3D11Device* device)
@@ -433,48 +567,42 @@ namespace gr::d3d11
 
             constexpr std::size_t max_batch_verts = 0xF000; // leave headroom below UINT16_MAX
             for (rf::GFace* face : faces) {
-                auto fvert = face->edge_loop;
-                if (!fvert) continue;
+                if (!face->edge_loop) continue;
                 if (vb_data.size() - base_vertex > max_batch_verts) {
                     emit_batch();
                 }
                 rf::GTextureMover* texture_mover = face->attributes.texture_mover;
                 float u_pan_speed = texture_mover ? texture_mover->u_pan_speed : 0.0f;
                 float v_pan_speed = texture_mover ? texture_mover->v_pan_speed : 0.0f;
-                auto face_start_index = static_cast<rf::ushort>(vb_data.size() - base_vertex);
-                int fvert_index = 0;
-                constexpr int max_fverts = 10000;
-                while (fvert) {
-                    if (fvert_index >= max_fverts) {
-                        xlog::error("build: edge_loop exceeds {} vertices", max_fverts);
-                        break;
-                    }
-                    auto& gpu_vert = vb_data.emplace_back();
-                    gpu_vert.x = fvert->vertex->pos.x;
-                    gpu_vert.y = fvert->vertex->pos.y;
-                    gpu_vert.z = fvert->vertex->pos.z;
-                    rf::Vector3 normal = calculate_face_vertex_normal(fvert, face);
-                    gpu_vert.norm = {normal.x, normal.y, normal.z};
-                    gpu_vert.diffuse = 0xFFFFFFFF;
-                    gpu_vert.u0 = fvert->texture_u;
-                    gpu_vert.v0 = fvert->texture_v;
-                    gpu_vert.u1 = fvert->lightmap_u;
-                    gpu_vert.v1 = fvert->lightmap_v;
-                    gpu_vert.u0_pan_speed = u_pan_speed;
-                    gpu_vert.v0_pan_speed = v_pan_speed;
-
-                    if (fvert_index >= 2) {
-                        ib_data.emplace_back(face_start_index);
-                        ib_data.emplace_back(face_start_index + fvert_index - 1);
-                        ib_data.emplace_back(face_start_index + fvert_index);
-                    }
-                    ++fvert_index;
-
-                    fvert = fvert->next;
-                    if (fvert == face->edge_loop) {
-                        break;
-                    }
-                }
+                AfLightmapFace af_face;
+                auto af_it = af_charts_.find(face);
+                bool has_af = af_it != af_charts_.end()
+                    && af_lightmap_face_setup(solid_, af_it->second, af_face);
+                emit_face_fan(face, vb_data, ib_data, base_vertex, max_face_fan_verts, report_long_edge_loop,
+                    [&](GpuVertex& gpu_vert, rf::GFaceVertex* fvert, int) {
+                        gpu_vert.x = fvert->vertex->pos.x;
+                        gpu_vert.y = fvert->vertex->pos.y;
+                        gpu_vert.z = fvert->vertex->pos.z;
+                        rf::Vector3 normal = calculate_face_vertex_normal(fvert, face);
+                        gpu_vert.norm = {normal.x, normal.y, normal.z};
+                        gpu_vert.diffuse = 0xFFFFFFFF;
+                        gpu_vert.u0 = fvert->texture_u;
+                        gpu_vert.v0 = fvert->texture_v;
+                        if (has_af) {
+                            // Re-projected from the surface's own affine: the per-vertex UVs the RFL
+                            // stores are clamped into the stock fragment and would shear a refined
+                            // chart.
+                            af_lightmap_face_texel(af_face, fvert->vertex->pos, gpu_vert.u1, gpu_vert.v1);
+                            gpu_vert.lm_chart = static_cast<float>(af_face.chart);
+                        }
+                        else {
+                            gpu_vert.u1 = fvert->lightmap_u;
+                            gpu_vert.v1 = fvert->lightmap_v;
+                            gpu_vert.lm_chart = -1.0f;
+                        }
+                        gpu_vert.u0_pan_speed = u_pan_speed;
+                        gpu_vert.v0_pan_speed = v_pan_speed;
+                    });
             }
             emit_batch();
         }
@@ -503,46 +631,79 @@ namespace gr::d3d11
                 rf::ubyte alpha = rfl_version_minimum(304) ? decal->alpha : 255;
                 int diffuse = pack_color(rf::Color{255, 255, 255, alpha});
                 auto face = dp->face;
-                auto fvert = face->edge_loop;
-                if (!fvert) continue;
+                if (!face->edge_loop) continue;
                 if (vb_data.size() - base_vertex > max_batch_verts) {
                     emit_decal_batch();
                 }
-                auto face_start_index = static_cast<rf::ushort>(vb_data.size() - base_vertex);
-                int fvert_index = 0;
-                while (fvert) {
-                    if (fvert_index >= static_cast<int>(std::size(dp->uvs))) {
+                emit_face_fan(face, vb_data, ib_data, base_vertex, static_cast<int>(std::size(dp->uvs)),
+                    [dp] {
                         xlog::error("build decal: face has more vertices than decal uvs capacity ({})", std::size(dp->uvs));
-                        break;
-                    }
-                    auto& gpu_vert = vb_data.emplace_back();
-                    gpu_vert.x = fvert->vertex->pos.x;
-                    gpu_vert.y = fvert->vertex->pos.y;
-                    gpu_vert.z = fvert->vertex->pos.z;
-                    rf::Vector3 normal = calculate_face_vertex_normal(fvert, face);
-                    gpu_vert.norm = {normal.x, normal.y, normal.z};
-                    gpu_vert.diffuse = diffuse;
-                    gpu_vert.u0 = dp->uvs[fvert_index].x;
-                    gpu_vert.v0 = dp->uvs[fvert_index].y;
-                    gpu_vert.u0_pan_speed = 0.0f;
-                    gpu_vert.v0_pan_speed = 0.0f;
-                    gpu_vert.u1 = fvert->lightmap_u;
-                    gpu_vert.v1 = fvert->lightmap_v;
-
-                    if (fvert_index >= 2) {
-                        ib_data.emplace_back(face_start_index);
-                        ib_data.emplace_back(face_start_index + fvert_index - 1);
-                        ib_data.emplace_back(face_start_index + fvert_index);
-                    }
-                    ++fvert_index;
-
-                    fvert = fvert->next;
-                    if (fvert == face->edge_loop) {
-                        break;
-                    }
-                }
+                    },
+                    [&](GpuVertex& gpu_vert, rf::GFaceVertex* fvert, int fvert_index) {
+                        gpu_vert.x = fvert->vertex->pos.x;
+                        gpu_vert.y = fvert->vertex->pos.y;
+                        gpu_vert.z = fvert->vertex->pos.z;
+                        rf::Vector3 normal = calculate_face_vertex_normal(fvert, face);
+                        gpu_vert.norm = {normal.x, normal.y, normal.z};
+                        gpu_vert.diffuse = diffuse;
+                        gpu_vert.u0 = dp->uvs[fvert_index].x;
+                        gpu_vert.v0 = dp->uvs[fvert_index].y;
+                        gpu_vert.u0_pan_speed = 0.0f;
+                        gpu_vert.v0_pan_speed = 0.0f;
+                        gpu_vert.u1 = fvert->lightmap_u;
+                        gpu_vert.v1 = fvert->lightmap_v;
+                        gpu_vert.lm_chart = -1.0f;
+                    });
             }
             emit_decal_batch();
+        }
+        for (auto& [key, faces] : terrain_faces_) {
+            const auto [terrain, crater_texture] = key;
+            std::size_t start_index = ib_data.size();
+            std::size_t base_vertex = vb_data.size();
+
+            auto emit_terrain_batch = [&]() {
+                std::size_t num_indices = ib_data.size() - start_index;
+                if (num_indices > 0) {
+                    batches.get_terrain_batches().push_back({static_cast<int>(start_index),
+                        static_cast<int>(num_indices), static_cast<int>(base_vertex), terrain, crater_texture});
+                }
+                start_index = ib_data.size();
+                base_vertex = vb_data.size();
+            };
+
+            constexpr std::size_t max_batch_verts = 0xF000;
+            for (auto [face, kind] : faces) {
+                if (!face->edge_loop) continue;
+                if (vb_data.size() - base_vertex > max_batch_verts) {
+                    emit_terrain_batch();
+                }
+                emit_face_fan(face, vb_data, ib_data, base_vertex, max_face_fan_verts, report_long_edge_loop,
+                    [&](GpuVertex& gpu_vert, rf::GFaceVertex* fvert, int) {
+                        gpu_vert.x = fvert->vertex->pos.x;
+                        gpu_vert.y = fvert->vertex->pos.y;
+                        gpu_vert.z = fvert->vertex->pos.z;
+                        // Crater faces take the flat face normal like the CPU sampler: carving leaves group_id
+                        // -1, so smoothing would blend in adjacent top and wall faces.
+                        rf::Vector3 normal = kind == alpine_terrain::FaceKind::crater
+                            ? face->plane.normal
+                            : calculate_face_vertex_normal(fvert, face);
+                        gpu_vert.norm = {normal.x, normal.y, normal.z};
+                        gpu_vert.diffuse = 0xFFFFFFFF;
+                        gpu_vert.u0 = fvert->texture_u;
+                        gpu_vert.v0 = fvert->texture_v;
+                        gpu_vert.u0_pan_speed = 0.0f;
+                        gpu_vert.v0_pan_speed = 0.0f;
+                        gpu_vert.u1 = 0.0f;
+                        gpu_vert.v1 = 0.0f;
+                        // The terrain shader's face kind: 0 top, 1 underside, 2 crater
+                        static_assert(static_cast<int>(alpine_terrain::FaceKind::top) == 0
+                            && static_cast<int>(alpine_terrain::FaceKind::underside) == 1
+                            && static_cast<int>(alpine_terrain::FaceKind::crater) == 2);
+                        gpu_vert.lm_chart = static_cast<float>(kind);
+                    });
+            }
+            emit_terrain_batch();
         }
 
         SolidGeometryBuffers geometry_buffers{vb_data, ib_data, device};
@@ -639,6 +800,8 @@ namespace gr::d3d11
         vertex_shader_ = shader_manager.get_vertex_shader(VertexShaderId::standard);
         pixel_shader_ = shader_manager.get_pixel_shader(PixelShaderId::standard);
         pixel_shader_no_gas_ = shader_manager.get_pixel_shader(PixelShaderId::standard_no_gas);
+        terrain_pixel_shader_ = shader_manager.get_pixel_shader(PixelShaderId::terrain);
+        terrain_pixel_shader_no_gas_ = shader_manager.get_pixel_shader(PixelShaderId::terrain_no_gas);
     }
 
     SolidRenderer::~SolidRenderer()
@@ -688,7 +851,10 @@ namespace gr::d3d11
                 }
             }
             for (rf::GRoom* detail_room : room->detail_rooms) {
-                if (detail_room->room_to_render_with == room) {
+                const bool draw = alpine_terrain_is_separate_chunk(room, detail_room)
+                    ? terrain_chunk_drawn(detail_room) && claim_terrain_chunk(terrain_decals_drawn_, detail_room)
+                    : detail_room->room_to_render_with == room;
+                if (draw) {
                     for (rf::GFace& face: detail_room->face_list) {
                         if (should_render_face(&face) && !face.attributes.is_see_thru()) {
                             render_face_dynamic_decals(&face);
@@ -767,8 +933,55 @@ namespace gr::d3d11
         render_context_.set_draw_room_uid(-1);
         GRenderCache* cache = get_or_create_detail_room_cache(solid, room);
         if (!cache) return;
+        // Terrain first: the room's level decals are in its opaque batches and have to land on top.
+        if (!alpha && cache->has_terrain_batches()) {
+            render_terrain(*cache);
+        }
         FaceRenderType render_type = alpha ? FaceRenderType::alpha : FaceRenderType::opaque;
         cache->render(render_type, render_context_);
+    }
+
+    void SolidRenderer::render_terrain(GRenderCache& cache)
+    {
+        render_context_.set_mode(determine_face_mode(FaceRenderType::opaque, false, false),
+                                 {255, 255, 255, 255}, rf::gr::show_lightmaps);
+        const bool gas = render_context_.has_gas_regions();
+        render_context_.set_pixel_shader(gas ? terrain_pixel_shader_ : terrain_pixel_shader_no_gas_);
+        cache.render_terrain(render_context_, [this](const TerrainBatch& b) {
+            if (b.terrain != bound_terrain_) {
+                if (!terrain_gpu_bind(context_, render_context_, b.terrain)) {
+                    return false;
+                }
+                bound_terrain_ = b.terrain;
+            }
+            if (b.crater_texture != no_crater_texture && b.crater_texture != bound_crater_texture_) {
+                terrain_gpu_bind_crater(context_, render_context_, b.crater_texture);
+                bound_crater_texture_ = b.crater_texture;
+            }
+            return true;
+        });
+        render_context_.set_pixel_shader(gas ? pixel_shader_ : pixel_shader_no_gas_);
+    }
+
+    // True the first time this pass; `room` is a resolved terrain chunk, so its index is valid.
+    bool SolidRenderer::claim_terrain_chunk(std::vector<int>& stamps, const rf::GRoom* room)
+    {
+        const auto idx = static_cast<std::size_t>(room->room_index);
+        if (idx >= stamps.size()) {
+            stamps.resize(idx + 1, 0);
+        }
+        if (stamps[idx] == terrain_pass_) {
+            return false;
+        }
+        stamps[idx] = terrain_pass_;
+        return true;
+    }
+
+    // Whether render_solid drew terrain chunk `room` this pass.
+    bool SolidRenderer::terrain_chunk_drawn(const rf::GRoom* room) const
+    {
+        const auto idx = static_cast<std::size_t>(room->room_index);
+        return idx < terrain_drawn_.size() && terrain_drawn_[idx] == terrain_pass_;
     }
 
     // Sentinel value stored in room->geo_cache to mark detail rooms that have been checked
@@ -785,7 +998,12 @@ namespace gr::d3d11
         if (!cache) {
             xlog::debug("Creating render cache for detail room {} (faces: {})",
                 room->room_index, room->face_list.size());
+            const bool timing = room->is_geoable && geomod_timing_enabled();
+            const int64_t start = timing ? timer::get_i64(1000000) : 0;
             GRenderCacheBuilder builder;
+            if (terrain_pixel_shader_ && terrain_pixel_shader_no_gas_) {
+                builder.enable_terrain(device_);
+            }
             builder.add_room(room, solid);
             xlog::debug("Detail room {} builder: verts={} inds={} batches={}",
                 room->room_index, builder.get_num_verts(), builder.get_num_inds(), builder.get_num_batches());
@@ -796,6 +1014,9 @@ namespace gr::d3d11
             }
             else {
                 room->geo_cache = k_empty_detail_sentinel;
+            }
+            if (timing) {
+                geomod_timing_report("D3D11 cache build", room, timer::get_i64(1000000) - start);
             }
             xlog::debug("Detail room {} cache creation complete", room->room_index);
         }
@@ -819,6 +1040,21 @@ namespace gr::d3d11
         geo_cache_rooms_.clear();
         geo_cache_num_rooms = 0;
         xlog::debug("Room render cache clear complete");
+    }
+
+    void SolidRenderer::release_detail_room_cache(rf::GRoom* room)
+    {
+        rf::GCache* const cache = room->geo_cache;
+        room->geo_cache = nullptr;
+        if (!cache || cache == k_empty_detail_sentinel) {
+            return;
+        }
+        auto it = std::find_if(detail_render_cache_.begin(), detail_render_cache_.end(), [cache](const auto& c) {
+            return reinterpret_cast<rf::GCache*>(c.get()) == cache;
+        });
+        if (it != detail_render_cache_.end()) {
+            detail_render_cache_.erase(it);
+        }
     }
 
     void SolidRenderer::reset_cache_after_boolean()
@@ -981,6 +1217,10 @@ namespace gr::d3d11
         RenderContext::ScopedPicmipActive picmip_scope{render_context_, true};
 
         xlog::trace("Rendering level solid");
+        // Terrain bindings are re-established once per pass
+        bound_terrain_ = -1;
+        bound_crater_texture_ = no_crater_texture;
+        ++terrain_pass_;
         render_context_.set_sky_room(false);
         render_context_.set_draw_room_uid(-1);
         rf::gr::light_filter_set_solid(solid, 1, 0);
@@ -1000,10 +1240,22 @@ namespace gr::d3d11
                     // Happens when a breakable detail brush is destroyed
                     continue;
                 }
-                if (detail_room->room_to_render_with == room && !rf::gr::cull_bounding_box(detail_room->bbox_min, detail_room->bbox_max)) {
+                // room_to_render_with is fixed by the frame's first portal pass (a monitor, say), so
+                // terrain chunks go by this pass's own rooms instead.
+                const bool draw = alpine_terrain_is_separate_chunk(room, detail_room)
+                    ? !rf::gr::cull_bounding_box(detail_room->bbox_min, detail_room->bbox_max) &&
+                          claim_terrain_chunk(terrain_drawn_, detail_room)
+                    : detail_room->room_to_render_with == room &&
+                          !rf::gr::cull_bounding_box(detail_room->bbox_min, detail_room->bbox_max);
+                if (draw) {
                     render_detail(solid, detail_room, false);
                 }
             }
+        }
+        if (bound_terrain_ >= 0) {
+            terrain_gpu_unbind(context_);
+            bound_terrain_ = -1;
+            bound_crater_texture_ = no_crater_texture;
         }
 
         if (decals_enabled) {
@@ -1023,6 +1275,7 @@ namespace gr::d3d11
         render_context_.set_model_transform(pos, orient);
         render_context_.set_cull_mode(D3D11_CULL_BACK);
         render_context_.set_primitive_topology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        af_lightmap_bind(device_, context_);
     }
 
     void SolidRenderer::page_in_solid(rf::GSolid* solid)

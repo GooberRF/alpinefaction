@@ -26,6 +26,11 @@
 #include "weather_region.h"
 #include "projection_camera.h"
 #include "rope_emitter.h"
+#include "terrain.h"
+#include "terrain_build.h"
+#include "alpine_lightmaps.h"
+#include "alpine_obj.h"
+#include "headless_bake.h"
 
 // Forward declarations
 int get_level_rfl_version();
@@ -40,6 +45,23 @@ static AlpineLevelProperties g_alpine_level_props;
 AlpineLevelProperties& CDedLevel::GetAlpineLevelProperties()
 {
     return g_alpine_level_props;
+}
+
+void editor_report(EditorReportLevel level, const char* tag, const std::string& msg, bool red_log)
+{
+    switch (level) {
+    case EditorReportLevel::info: xlog::info("[{}] {}", tag, msg); break;
+    case EditorReportLevel::warn: xlog::warn("[{}] {}", tag, msg); break;
+    case EditorReportLevel::error: xlog::error("[{}] {}", tag, msg); break;
+    }
+    if (headless_bake_active()) {
+        const char* prefix = level == EditorReportLevel::warn ? "WARNING: " : level == EditorReportLevel::error ? "ERROR: " : "";
+        headless_bake_note((prefix + msg).c_str());
+        return;
+    }
+    if (void* log = red_log && GetMainFrame() ? GetLogDlg() : nullptr) {
+        LogDlg_Append(log, "%s\n", msg.c_str());
+    }
 }
 
 // Initialize on CDedLevel construction
@@ -108,6 +130,7 @@ CodeInjection CDedLevel_LoadLevel_patch1{
     []() {
         CDedLevel::Get()->GetAlpineLevelProperties().LoadDefaults();
         lightmap_reset_level_state();
+        alpine_lm_drop_retained();
     },
 };
 
@@ -217,6 +240,14 @@ CodeInjection CDedLevel_LoadLevel_patch2{
                 }
                 if (chunk_id == alpine_rope_emitter_chunk_id) {
                     rope_emitter_deserialize_chunk(level, file, chunk_size);
+                    regs.eip = 0x0043090C;
+                }
+                if (chunk_id == alpine_terrain_chunk_id) {
+                    terrain_deserialize_chunk(level, file, chunk_size);
+                    regs.eip = 0x0043090C;
+                }
+                if (chunk_id == alpine_lightmaps_chunk_id) {
+                    alpine_lm_deserialize_chunk(level, file, chunk_size);
                     regs.eip = 0x0043090C;
                 }
             }
@@ -513,7 +544,8 @@ static void prune_no_shadow_cast_brush_uids(CDedLevel& level, AlpineLevelPropert
 //       adjacency test, so post-processing is the primary fix)
 
 // Map from face_id (GFaceAttributes+0x10) to brush UID for brushes that need isolation
-// (geoable and breakable detail brushes). Populated before room building, cleared afterwards.
+// (geoable and breakable detail brushes, terrain chunk brushes). Populated before room building,
+// cleared afterwards.
 static std::unordered_map<int, int> g_isolated_face_map;
 
 static void populate_isolated_face_map()
@@ -523,9 +555,10 @@ static void populate_isolated_face_map()
     auto* level = CDedLevel::Get();
     if (!level) return;
     auto& props = level->GetAlpineLevelProperties();
-    if (props.geoable_brush_uids.empty() && props.breakable_brush_uids.empty()) return;
 
     std::unordered_set<int32_t> isolated_set;
+    terrain_build_isolated_brush_uids(isolated_set);
+    if (props.geoable_brush_uids.empty() && props.breakable_brush_uids.empty() && isolated_set.empty()) return;
     isolated_set.insert(props.geoable_brush_uids.begin(), props.geoable_brush_uids.end());
     // Glass entries exist only to carry the brush UID -> room UID mapping for When_Destroyed;
     // they must not join the isolation set or a level would build different room structure than
@@ -687,10 +720,12 @@ static void merge_geoable_interior_rooms(GSolid* solid)
     auto* level = CDedLevel::Get();
     if (!level) return;
     auto& props = level->GetAlpineLevelProperties();
-    if (props.geoable_brush_uids.empty()) return;
 
+    // Terrain chunks merge the same way: holes can split a chunk into several components.
     std::unordered_set<int32_t> geoable_set(
         props.geoable_brush_uids.begin(), props.geoable_brush_uids.end());
+    terrain_build_isolated_brush_uids(geoable_set);
+    if (geoable_set.empty()) return;
 
     // Group rooms by geoable brush UID via face_id matching.
     std::unordered_map<int, std::vector<GRoom*>> brush_to_rooms;
@@ -857,7 +892,8 @@ CodeInjection skip_alpine_objects_bounds_check{
             obj->type == DedObjectType::DED_GAS_REGION ||
             obj->type == DedObjectType::DED_WEATHER_REGION ||
             obj->type == DedObjectType::DED_PROJECTION_CAMERA ||
-            obj->type == DedObjectType::DED_ROPE_EMITTER) {
+            obj->type == DedObjectType::DED_ROPE_EMITTER ||
+            obj->type == DedObjectType::DED_TERRAIN) {
             regs.eip = 0x0041dcfa;
         }
     },
@@ -871,6 +907,10 @@ CodeInjection CDedLevel_SaveLevel_patch{
     [](auto& regs) {
         auto& level = *static_cast<CDedLevel*>(regs.edi);
         auto& file = *static_cast<rf::File*>(regs.esi);
+
+        // Decides whether the alpine lightmap section is emitted, which the stock lightmaps
+        // section write a few instructions later depends on.
+        alpine_lm_save_begin(level);
 
         // Compute room UIDs and scrub stale data before serializing
         auto& alpine_level_props = level.GetAlpineLevelProperties();
@@ -899,7 +939,7 @@ CodeInjection CDedLevel_SaveLevel_patch{
         }
 
         auto start_pos = level.BeginRflSection(file, alpine_props_chunk_id);
-        alpine_level_props.Serialize(file);
+        alpine_level_props.Serialize(file, alpine_lm_stock_suppressed());
         level.EndRflSection(file, start_pos);
 
         // Write mesh objects chunk
@@ -922,6 +962,9 @@ CodeInjection CDedLevel_SaveLevel_patch{
 
         // Write rope emitter objects chunk
         rope_emitter_serialize_chunk(level, file);
+
+        // Write terrain objects chunk
+        terrain_serialize_chunk(level, file);
 
         // Re-write any Glacier chunks
         retained_chunks_serialize(level, file);
@@ -959,6 +1002,18 @@ FunHook<decltype(flag_face_texture_traits_all_hooked)> flag_face_texture_traits_
 void __cdecl flag_face_texture_traits_all_hooked(CDedLevel* level)
 {
     flag_face_texture_traits_all_hook.call_target(level);
+
+    // Terrain chunk faces are compiled detail faces, but the terrain shader blends its layers
+    // opaquely: an alpha layer texture must not make them see-through or holed.
+    const auto& terrain_uids = level->GetAlpineLevelProperties().terrain_room_uids;
+    if (level->solid && !terrain_uids.empty()) {
+        for (GFace* face = level->solid->face_list_head; face; face = face->next_solid) {
+            if (face->which_room &&
+                std::binary_search(terrain_uids.begin(), terrain_uids.end(), face->which_room->uid)) {
+                face->flags &= ~(FACE_SEE_THRU | FACE_HAS_HOLES);
+            }
+        }
+    }
 
     BrushNode* head = level->brush_list;
     if (!head) return;
@@ -1071,6 +1126,65 @@ static void pick_sun_color(HWND hdlg)
     }
 }
 
+// Both lightmap combos carry their stored property value as item data, so no index-to-value
+// table is needed on the way back out.
+static void init_lightmap_combos(HWND hdlg, const AlpineLevelProperties& props)
+{
+    char label[32];
+
+    if (HWND density = GetDlgItem(hdlg, IDC_LIGHTMAP_DENSITY)) {
+        SendMessageA(density, CB_RESETCONTENT, 0, 0);
+        std::snprintf(label, sizeof(label), "Default (%u)", alpine_lightmap::density_default);
+        int sel = alpine_dlg_combo_add(hdlg, IDC_LIGHTMAP_DENSITY, label, 0);
+        bool matched = props.lightmap_density == 0;
+        const int off = alpine_dlg_combo_add(hdlg, IDC_LIGHTMAP_DENSITY, "Off", lightmap_density_off);
+        if (props.lightmap_density == lightmap_density_off) {
+            sel = off;
+            matched = true;
+        }
+        static constexpr std::uint8_t density_presets[] = {2, 4, 8, 16, 32, 64, 128};
+        for (std::uint8_t value : density_presets) {
+            std::snprintf(label, sizeof(label), "%u", value);
+            const int item = alpine_dlg_combo_add(hdlg, IDC_LIGHTMAP_DENSITY, label, value);
+            if (props.lightmap_density == value) {
+                sel = item;
+                matched = true;
+            }
+        }
+        if (!matched) {
+            std::snprintf(label, sizeof(label), "%u (custom)", props.lightmap_density);
+            sel = alpine_dlg_combo_add(hdlg, IDC_LIGHTMAP_DENSITY, label, props.lightmap_density);
+        }
+        SendMessageA(density, CB_SETCURSEL, sel, 0);
+    }
+
+    if (HWND compression = GetDlgItem(hdlg, IDC_LIGHTMAP_COMPRESSION)) {
+        SendMessageA(compression, CB_RESETCONTENT, 0, 0);
+        static const char* const mode_names[] = {"Quality", "Balanced", "Compact"};
+        for (int i = 0; i < 3; i++) {
+            alpine_dlg_combo_add(hdlg, IDC_LIGHTMAP_COMPRESSION, mode_names[i], i);
+        }
+        SendMessageA(compression, CB_SETCURSEL, std::min<int>(props.lightmap_compression, 2), 0);
+    }
+}
+
+static std::uint8_t read_combo_u8(HWND hdlg, int id, std::uint8_t fallback)
+{
+    const LRESULT data = alpine_dlg_combo_data(hdlg, id, fallback);
+    return data < 0 || data > 255 ? fallback : static_cast<std::uint8_t>(data);
+}
+
+// D3D11-only lightmaps stands in for the stock section with the surface charts, which legacy lighting
+// and an Off density never bake.
+static void update_lightmap_controls(HWND hdlg)
+{
+    const bool legacy = IsDlgButtonChecked(hdlg, IDC_LEGACY_LIGHTING) == BST_CHECKED;
+    const bool off = alpine_dlg_combo_data(hdlg, IDC_LIGHTMAP_DENSITY, 0) == lightmap_density_off;
+    if (HWND d3d11_only = GetDlgItem(hdlg, IDC_D3D11_ONLY_LIGHTMAPS)) {
+        EnableWindow(d3d11_only, !legacy && !off);
+    }
+}
+
 static WNDPROC g_level_dlg_orig_wndproc = nullptr;
 
 static LRESULT CALLBACK LevelDialogSubclassProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
@@ -1088,6 +1202,10 @@ static LRESULT CALLBACK LevelDialogSubclassProc(HWND hwnd, UINT msg, WPARAM wpar
         read_sun_color_text(hwnd, g_sun_color_r, g_sun_color_g, g_sun_color_b);
         update_sun_color_controls(hwnd);
         return 0;
+    }
+    if (msg == WM_COMMAND && ((LOWORD(wparam) == IDC_LEGACY_LIGHTING && HIWORD(wparam) == BN_CLICKED) ||
+                              (LOWORD(wparam) == IDC_LIGHTMAP_DENSITY && HIWORD(wparam) == CBN_SELCHANGE))) {
+        update_lightmap_controls(hwnd);
     }
     if (msg == WM_NCDESTROY) {
         SetWindowLongPtrA(hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(orig));
@@ -1120,6 +1238,9 @@ CodeInjection CLevelDialog_OnInitDialog_patch{
         CheckDlgButton(hdlg, IDC_INVISIBLE_FACES_OCCLUDE, alpine_level_props.invisible_faces_occlude ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hdlg, IDC_ALPHA_FACES_OCCLUDE, alpine_level_props.alpha_faces_occlude ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hdlg, IDC_MESHES_OCCLUDE, alpine_level_props.meshes_occlude ? BST_CHECKED : BST_UNCHECKED);
+        CheckDlgButton(hdlg, IDC_D3D11_ONLY_LIGHTMAPS, alpine_level_props.d3d11_only_lightmaps ? BST_CHECKED : BST_UNCHECKED);
+        init_lightmap_combos(hdlg, alpine_level_props);
+        update_lightmap_controls(hdlg);
 
         CheckDlgButton(hdlg, IDC_SUN_ENABLE, alpine_level_props.enable_sun ? BST_CHECKED : BST_UNCHECKED);
         std::snprintf(buffer, sizeof(buffer), "%.3f", alpine_level_props.sun_yaw);
@@ -1186,6 +1307,11 @@ CodeInjection CLevelDialog_OnOK_patch{
         alpine_level_props.invisible_faces_occlude = IsDlgButtonChecked(hdlg, IDC_INVISIBLE_FACES_OCCLUDE) == BST_CHECKED;
         alpine_level_props.alpha_faces_occlude = IsDlgButtonChecked(hdlg, IDC_ALPHA_FACES_OCCLUDE) == BST_CHECKED;
         alpine_level_props.meshes_occlude = IsDlgButtonChecked(hdlg, IDC_MESHES_OCCLUDE) == BST_CHECKED;
+        alpine_level_props.d3d11_only_lightmaps = IsDlgButtonChecked(hdlg, IDC_D3D11_ONLY_LIGHTMAPS) == BST_CHECKED;
+        alpine_level_props.lightmap_density =
+            read_combo_u8(hdlg, IDC_LIGHTMAP_DENSITY, alpine_level_props.lightmap_density);
+        alpine_level_props.lightmap_compression =
+            read_combo_u8(hdlg, IDC_LIGHTMAP_COMPRESSION, alpine_level_props.lightmap_compression);
 
         alpine_level_props.enable_sun = IsDlgButtonChecked(hdlg, IDC_SUN_ENABLE) == BST_CHECKED;
         float yaw = alpine_level_props.sun_yaw;

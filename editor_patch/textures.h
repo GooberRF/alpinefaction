@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include "vtypes.h"
 #include "mfc_types.h"
@@ -72,6 +73,10 @@ static_assert(offsetof(TextureBrowserPanel, listbox_dirty) == 0x2bc);
 // (0x0045c140) does: preselect `folder`, seed the browser with `current_bm`, and return the
 // handle the user picked. Returns -1 when the browser is unavailable or was cancelled.
 int texture_browser_pick(const char* folder, int current_bm);
+
+// texture_browser_pick on the first of `folders` the browser has as a category (case-insensitive);
+// the browser keeps its current category when none is.
+int texture_browser_pick_first(const char* const* folders, std::size_t count, int current_bm);
 
 inline VArray<TextureCategory*>* texture_browser_categories(TextureBrowserPanel* panel)
 {

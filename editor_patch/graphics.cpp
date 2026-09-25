@@ -12,6 +12,7 @@
 #include <initializer_list>
 #include "vtypes.h"
 #include "alpine_obj.h"
+#include "terrain_preview.h"
 
 HWND GetMainFrameHandle();
 
@@ -340,6 +341,12 @@ CodeInjection geo_build_reset_render_cache{
 CodeInjection detail_room_overflow_check{
     0x0049b757, // MOV [EAX*4+array], ESI — unbounded detail room array write
     [](auto& regs) {
+        // A terrain chunk's compiled room stays out of its parents' caches: the terrain preview draws
+        // it. 0x0049b838 moves on to the next detail room.
+        if (terrain_preview_hides_room(reinterpret_cast<const GRoom*>(static_cast<uintptr_t>(regs.esi)))) {
+            regs.eip = 0x0049b838;
+            return;
+        }
         if (static_cast<int>(regs.eax) >= max_detail_rooms) {
             WARN_ONCE("Detail rooms limit reached ({}), additional detail rooms will not be rendered", max_detail_rooms);
             regs.eip = 0x0049b764; // skip write + inc + store

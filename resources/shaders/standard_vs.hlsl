@@ -4,7 +4,9 @@ struct VsInput
     float3 norm : NORMAL;
     float4 color : COLOR;
     float4 uv0 : TEXCOORD0;
-    float2 uv1 : TEXCOORD1;
+    // xy: stock lightmap page UV, or alpine chart texel coords when z >= 0
+    // z:  alpine lightmap chart (the static solid's surface index), -1 for the stock path
+    float3 uv1 : TEXCOORD1;
 };
 
 cbuffer ModelTransformBuffer : register(b0)
@@ -29,7 +31,7 @@ struct VsOutput
     float3 norm : NORMAL;
     float4 color : COLOR;
     float2 uv0 : TEXCOORD0;
-    float2 uv1 : TEXCOORD1;
+    float3 uv1 : TEXCOORD1;
     float4 world_pos_and_depth : TEXCOORD2;
 };
 

@@ -53,6 +53,7 @@
 #include "../misc/player.h"
 #include "../misc/waypoints.h"
 #include "../misc/level.h"
+#include "../graphics/af_lightmap.h"
 #include "../object/alpine_corona.h"
 #include "../object/alpine_rope.h"
 #include "../input/input.h"
@@ -293,6 +294,7 @@ FunHook<int(rf::String&, rf::String&, char*)> level_load_hook{
         if (ret != 0)
             xlog::warn("Loading failed: {}", error);
         else {
+            af_lightmap_resolve_terrains();
             multi_spectate_level_init();
         }
         return ret;

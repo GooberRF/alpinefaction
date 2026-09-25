@@ -16,6 +16,17 @@ Version 1.5.0 (Trillium): Not yet released
   - `Affects mesh lighting` lights meshes and entities per pixel from the sun direction, with `Scale mesh sunlight by lightmaps` to keep sunlight out of unlit interiors
   - `Aligns dynamic shadows` points entity shadows along the sun instead of the fixed default direction
   - `Water blocks sunlight` stops sun rays at liquid surfaces during the bake
+- Add `Terrain` object to level editor: heightmap terrain with up to 8 blended texture layers, holes, optional skirts, and per-terrain lightmap density
+  - Import and export 8/16-bit greyscale PNG and RAW16 heightmaps, and import splat maps
+  - Paint texture layers and holes in the viewport with `Terrain Tools`
+  - Up to 4 detail overlays per terrain: textures with alpha (leaves, debris) painted over the layers by their own coverage, with optional tiling break-up (Direct3D 11 renderer only)
+  - `Geoable` terrains are carved by RF2-style geomod craters, with their own underside and crater textures
+  - `Convert to Brushes` turns a terrain into detail brushes
+  - Direct3D 11 renderer draws terrain with blended layers, optional triplanar mapping, and smooth heightmap normals; Direct3D 8/9 draw each cell's dominant layer tinted by the level ambient
+  - The level editor viewport shows a terrain's baked lighting after `Calculate Lighting` until its shape is edited
+- Add Alpine Lightmaps: `Calculate Lighting` also bakes higher-resolution, BC7-compressed lightmaps used by the Direct3D 11 renderer, including seamless baked lighting for terrain
+  - Add `Lightmap density`, `Compression`, and `D3D11-only lightmaps` level properties
+  - `Lightmap density` `Off` keeps the stock lightmaps for brushwork and still bakes terrain lighting
 
 ### Minor features, changes, and enhancements
 [@GooberRF](https://github.com/GooberRF)
@@ -36,8 +47,11 @@ Version 1.5.0 (Trillium): Not yet released
 - Add `Brush` collision mode for Alpine Mesh objects
 - Add `Brush Geo` source selection for Alpine Mesh objects using `Brush` collision, allowing custom collision hulls
 - Raise level editor per-room and per-mesh render vertex limit from 8000 to 32768
-- Add `-bake in.rfl -bakeout out.rfl` launcher command line switches to calculate a level's lighting without user interaction, writing the result to a new level file and progress to a log beside it
+- Add `-bake in.rfl -bakeout out.rfl` launcher command line switches to build a level's geometry and calculate its lighting without user interaction, writing the result to a new level file and progress to a log beside it
 - Add `High-resolution lightmaps` level property, used in lightmap bake in level editor
+- Add `r_terrain_debug` console command (Direct3D 11 renderer only)
+- Light characters, items, and clutter standing on terrain from the terrain's baked lighting
+- Levels saved with `D3D11-only lightmaps` refuse to load with the Direct3D 8/9 renderers
 - Deprecate and remove `-smoothlights` level editor switch
 - Add `dbg_collision_pairs` console command to print object collision pair pool statistics
 - Add `sv_afstats_events_reset` console command to clear a stuck stats event send, a 401 pause, or a stretched retry pulse and resume the stream without discarding queued events
@@ -102,6 +116,11 @@ Version 1.5.0 (Trillium): Not yet released
 - Fix level editor crashing or corrupting undo history when undoing, redoing, or autosaving while moving, rotating, or scaling in a viewport
 - Fix bolt emitters imported as part of a group in the level editor keeping their old target when the target object is renumbered to avoid a UID conflict
 - Fix geoable brush supports not being properly recognized if buried in level geometry
+- Fix RF2-style geomod craters near the edge of a geoable brush not carving a neighboring geoable brush that the crater reaches
+- Fix RF2-style geomod giving up on geoable rooms with more than 5000 faces
+- Fix crash when a decal is created in a room containing a very large number of detail brushes
+- Fix Direct3D 8/9 renderer geometry cache overflowing with more than 256 rooms or detail rooms in view
+- Fix Direct3D 8/9 renderer rebuilding every room's render cache each frame while a room with more than 8000 vertices is in view
 
 [@is-this-c](https://github.com/is-this-c)
 - Let `Caps Lock` capitalize
@@ -112,6 +131,9 @@ Version 1.5.0 (Trillium): Not yet released
 - Fix reload animation playing in third person for other players when client tries to reload with a full clip/magazine
 - Fix lighting for pistol silencer and remote charge detonator
 - Fix third-person crouch animations on remote players flickering and snapping
+
+### Imported libraries
+- [bc7enc_rdo](https://github.com/richgel999/bc7enc_rdo) by Richard Geldreich, Jr.
 
 Version 1.4.0 (Lupin): Released Aug-25-2026
 --------------------------------

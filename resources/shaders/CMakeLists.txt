@@ -30,6 +30,8 @@ add_shader(outline_standard_vs outline_standard_vs.hlsl vs_4_0)
 
 add_shader(standard_ps standard_ps.hlsl ps_4_0)
 add_shader(standard_nogas_ps standard_ps.hlsl ps_4_0 -DMAX_GAS_REGIONS=0)
+add_shader(terrain_ps standard_ps.hlsl ps_4_0 -DTERRAIN)
+add_shader(terrain_nogas_ps standard_ps.hlsl ps_4_0 -DTERRAIN -DMAX_GAS_REGIONS=0)
 add_shader(ui_ps ui_ps.hlsl ps_4_0)
 add_shader(shadow_debug_ps shadow_debug_ps.hlsl ps_4_0)
 add_shader(outline_ps outline_ps.hlsl ps_4_0)

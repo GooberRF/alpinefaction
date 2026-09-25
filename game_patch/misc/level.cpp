@@ -12,6 +12,7 @@
 #include "../rf/file/file.h"
 #include "../rf/mover.h"
 #include "level.h"
+#include "alpine_terrain.h"
 #include "misc.h"
 #include "player.h"
 #include "../multi/server.h"
@@ -21,8 +22,11 @@
 #include "../object/alpine_rope.h"
 #include "../object/mover.h"
 #include "../hud/hud_world.h"
+#include "../graphics/af_lightmap.h"
+#include "../graphics/d3d11/gr_d3d11_terrain.h"
 #include "../graphics/weather.h"
 #include "../graphics/scene_capture.h"
+#include "../multi/multi.h"
 
 static std::vector<GasRegionInfo> g_gas_regions;
 static std::vector<GasRegionTransition> g_gas_region_transitions;
@@ -126,9 +130,12 @@ CodeInjection level_load_init_patch{
         alpine_bag_clear_state();
         alpine_projection_camera_clear_state();
         alpine_rope_clear_state();
+        alpine_terrain_clear_state();
+        gr::d3d11::terrain_gpu_release();
         gas_region_clear_state();
         climb_region_clear_state();
         weather_clear_regions();
+        af_lightmap_level_reset();
         projector_clear_all();
         alpine_mover_clear_hold_open();
         hud_world_level_unload();
@@ -140,8 +147,11 @@ void level_shutdown()
 {
     climb_region_clear_state();
     weather_clear_regions();
+    af_lightmap_level_reset();
     projector_clear_all();
     alpine_rope_clear_state();
+    alpine_terrain_clear_state();
+    gr::d3d11::terrain_gpu_release();
     alpine_mesh_free_collision_proxies();
 }
 
@@ -163,10 +173,25 @@ CodeInjection level_load_chunk_patch{
         rf::File& file = addr_as_ref<rf::File>(regs.esp + 0x2B0 - 0x278);
         auto chunk_len = addr_as_ref<std::size_t>(regs.esp + 0x2B0 - 0x2A0);
 
+        if (chunk_id == stock_lightmaps_chunk_id) {
+            af_lightmap_note_stock_lightmaps();
+        }
+
         // handling for alpine level props chunk
         if (chunk_id == alpine_props_chunk_id) {
             AlpineLevelProperties::instance().deserialize(file, chunk_len);
             set_headlamp_toggle_enabled(AlpineLevelProperties::instance().starts_with_headlamp);
+            // A d3d11-only level ships no stock lightmaps section at all, so the legacy renderers
+            // would draw its whole world fullbright. Refuse it the way an unsupported version is
+            // refused: the string lands in level_load's error buffer and the failure path unwinds.
+            if (af_lightmap_level_refused(AlpineLevelProperties::instance().d3d11_only_lightmaps,
+                                          rf::is_dedicated_server, is_headless_mode(),
+                                          g_game_config.renderer == GameConfig::Renderer::d3d11)) {
+                char* error_info = *reinterpret_cast<char**>(regs.esp + 0x2B0 + 0xC);
+                std::strcpy(error_info, "This level requires the D3D11 renderer");
+                regs.eip = 0x004608CC;
+                return;
+            }
             regs.eip = 0x004608EF; // loop back to begin next chunk
         }
 
@@ -212,6 +237,13 @@ CodeInjection level_load_chunk_patch{
             regs.eip = 0x004608EF;
         }
 
+        // handling for alpine terrain chunk
+        if (chunk_id == alpine_terrain_chunk_id) {
+            xlog::debug("[Level] Loading alpine terrain chunk: len={}", chunk_len);
+            alpine_terrain_load_chunk(file, chunk_len);
+            regs.eip = 0x004608EF;
+        }
+
         // handling for dash faction level props chunk, safe up to v1
         if (chunk_id == dash_level_props_chunk_id) {
             auto version = file.read<std::uint32_t>();
@@ -221,6 +253,35 @@ CodeInjection level_load_chunk_patch{
                 file.seek(chunk_len - 4, rf::File::seek_cur);
             }
             regs.eip = 0x004608EF;
+        }
+    },
+};
+
+// After the geometry section is read, cursor just past the surface records the bake fingerprinted.
+// Terrains resolve here, before the object chunks whose clutter samples their light.
+CodeInjection level_read_geometry_fingerprint_patch{
+    0x00460C6A,
+    [](auto& regs) {
+        auto& file = addr_as_ref<rf::File>(regs.esp + 0x2B0 - 0x278);
+        af_lightmap_init_synthesized_page();
+        af_lightmap_capture_surface_fingerprint(file);
+        alpine_terrain_resolve_rooms();
+    },
+};
+
+// "CMP EAX,0x2000", the head of the second chunk dispatcher. Everything written after the
+// geometry section, the alpine lightmaps included, arrives here rather than at 0x00460912.
+CodeInjection level_load_post_geometry_chunk_patch{
+    0x00460D5E,
+    [](auto& regs) {
+        int chunk_id = regs.eax;
+        rf::File& file = addr_as_ref<rf::File>(regs.esp + 0x2B0 - 0x278);
+        auto chunk_len = addr_as_ref<std::size_t>(regs.esp + 0x2B0 - 0x2A0);
+
+        if (chunk_id == alpine_lightmaps_chunk_id) {
+            xlog::debug("[Level] Loading alpine lightmaps chunk: len={}", chunk_len);
+            af_lightmap_load_chunk(file, chunk_len);
+            regs.eip = 0x00460D3B; // loop back to begin next chunk
         }
     },
 };
@@ -546,6 +607,8 @@ void level_apply_patch()
     // Load new rfl chunks
     level_load_init_patch.install();
     level_load_chunk_patch.install();
+    level_read_geometry_fingerprint_patch.install();
+    level_load_post_geometry_chunk_patch.install();
 
     // Release level scoped module state when the engine tears the level down
     level_close_hook.install();

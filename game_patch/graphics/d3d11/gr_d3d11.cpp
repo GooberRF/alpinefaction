@@ -1307,6 +1307,11 @@ namespace gr::d3d11
         solid_renderer_->clear_cache();
     }
 
+    void Renderer::release_detail_room_cache(rf::GRoom* room)
+    {
+        solid_renderer_->release_detail_room_cache(room);
+    }
+
     void Renderer::reset_solid_cache_after_boolean()
     {
         solid_renderer_->reset_cache_after_boolean();

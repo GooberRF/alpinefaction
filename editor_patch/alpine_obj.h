@@ -3,6 +3,7 @@
 #include <windows.h>
 #include <commctrl.h>
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -120,6 +121,23 @@ inline void alpine_dlg_set_float_field(HWND hdlg, int idc, float value)
     SetDlgItemTextA(hdlg, idc, buf);
 }
 
+// The shortest of %.6g .. %.9g that reads back (strtof) as exactly `v`, so a field re-read on OK
+// returns the bits it showed.
+inline void alpine_format_float_exact(char (&buf)[32], float v)
+{
+    for (int digits = 6; digits <= 9; digits++) {
+        std::snprintf(buf, sizeof(buf), "%.*g", digits, static_cast<double>(v));
+        if (std::strtof(buf, nullptr) == v) return;
+    }
+}
+
+inline void alpine_dlg_set_float_field_exact(HWND hdlg, int idc, float value)
+{
+    char buf[32];
+    alpine_format_float_exact(buf, value);
+    SetDlgItemTextA(hdlg, idc, buf);
+}
+
 inline float alpine_dlg_get_float_field(HWND hdlg, int idc)
 {
     char buf[32] = {};
@@ -134,6 +152,38 @@ inline int alpine_dlg_get_int_field(HWND hdlg, int idc)
     char buf[32] = {};
     GetDlgItemTextA(hdlg, idc, buf, sizeof(buf));
     return std::atoi(buf);
+}
+
+// Combo boxes carry each item's value as its item data.
+inline int alpine_dlg_combo_add(HWND hdlg, int idc, const char* label, LPARAM data)
+{
+    HWND combo = GetDlgItem(hdlg, idc);
+    const auto item = static_cast<int>(SendMessageA(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(label)));
+    if (item >= 0) SendMessageA(combo, CB_SETITEMDATA, item, data);
+    return item;
+}
+
+// The selected item's data, or `fallback` with nothing selected.
+inline LRESULT alpine_dlg_combo_data(HWND hdlg, int idc, LRESULT fallback)
+{
+    HWND combo = GetDlgItem(hdlg, idc);
+    if (!combo) return fallback;
+    const LRESULT sel = SendMessageA(combo, CB_GETCURSEL, 0, 0);
+    return sel == CB_ERR ? fallback : SendMessageA(combo, CB_GETITEMDATA, sel, 0);
+}
+
+// Selects the first item carrying `data`; false when none does.
+inline bool alpine_dlg_combo_select(HWND hdlg, int idc, LPARAM data)
+{
+    HWND combo = GetDlgItem(hdlg, idc);
+    const LRESULT n = combo ? SendMessageA(combo, CB_GETCOUNT, 0, 0) : 0;
+    for (LRESULT i = 0; i < n; i++) {
+        if (SendMessageA(combo, CB_GETITEMDATA, i, 0) == data) {
+            SendMessageA(combo, CB_SETCURSEL, i, 0);
+            return true;
+        }
+    }
+    return false;
 }
 
 // Names that aren't on disk or in a vpp stay at -1 rather than going through bm_load, which would
@@ -408,9 +458,10 @@ inline void render_additive_axial_quad(
 
     if (all_clip != 0) return;
 
-    void* ptrs[4] = {&verts[0], &verts[1], &verts[2], &verts[3]};
+    GrVertex* ptrs[4] = {&verts[0], &verts[1], &verts[2], &verts[3]};
 
     gr_set_mode(0x10);
-    gr_poly_render(4, ptrs, 1, cam_param, 0, 0.0f);
+    // The mode slot has always received the bits of this global (0x014cf7e0), typed float here.
+    gr_poly_render(4, ptrs, 1, std::bit_cast<uint32_t>(cam_param), 0, 0.0f);
     flush_additive();
 }

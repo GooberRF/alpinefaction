@@ -9,6 +9,7 @@
 #include <string>
 #include <algorithm>
 #include <patch_common/MemUtils.h>
+#include <common/lightmap/alpine_lightmap.h>
 #include "vtypes.h"
 #include "mfc_types.h"
 #include "resources.h"
@@ -18,6 +19,12 @@ void DestroyDedCorona(DedCorona* corona);
 void DestroyDedWeatherRegion(DedWeatherRegion* weather_region);
 void DestroyDedProjectionCamera(DedProjectionCamera* camera);
 void DestroyDedRopeEmitter(DedRopeEmitter* rope);
+void DestroyDedTerrain(DedTerrain* terrain);
+
+// AlpineLevelProperties::lightmap_density value for "Off": no alpine surface charts. The game never
+// reads the field, and builds before it clamp it to alpine_lightmap::density_max.
+constexpr uint8_t lightmap_density_off = 255;
+static_assert(lightmap_density_off > alpine_lightmap::density_max);
 
 constexpr int alpine_props_chunk_id = 0x0AFBA5ED;
 constexpr int alpine_mesh_chunk_id = 0x0AFBAE01;
@@ -28,6 +35,8 @@ constexpr int alpine_brush_group_chunk_id = 0x0AFBAE05; // brush metadata in .rf
 constexpr int alpine_weather_region_chunk_id = 0x0AFBAE06;
 constexpr int alpine_projection_camera_chunk_id = 0x0AFBAE08;
 constexpr int alpine_rope_emitter_chunk_id = 0x0AFBAE0A;
+constexpr int alpine_terrain_chunk_id = static_cast<int>(alpine_terrain::chunk_id); // 0x0AFBAE0B
+constexpr int alpine_lightmaps_chunk_id = static_cast<int>(alpine_lightmap::chunk_id); // 0x0AFBAE09
 
 // Glacier saves new RFL chunks for its own purposes (metadata). Alpine Faction can
 // neither read nor parse these, but AlpineEditor retains them verbatim on load and
@@ -508,6 +517,10 @@ struct AlpineLevelProperties
     bool alpha_faces_occlude = false; // alpha textured faces block light; stock skips them entirely
     std::vector<int32_t> no_shadow_cast_brush_uids; // brushes whose faces never occlude a baked ray
     bool meshes_occlude = false; // alpine mesh objects cast baked shadows
+    uint8_t lightmap_density = 0; // texels per world unit for the alpine lightmap bake, 0 = default, lightmap_density_off
+    bool d3d11_only_lightmaps = false; // skip writing the stock 0x1200 lightmaps section
+    bool stock_lightmaps_omitted = false; // load-time only: the file had no stock lightmaps section
+    uint8_t lightmap_compression = 0; // alpine_lightmap::CompressionMode
 
     // Alpine mesh objects (stored separately from stock object VArrays)
     std::vector<DedMesh*> mesh_objects;
@@ -530,6 +543,16 @@ struct AlpineLevelProperties
     // Alpine rope emitter objects
     std::vector<DedRopeEmitter*> rope_emitter_objects;
 
+    // Alpine terrain objects
+    std::vector<DedTerrain*> terrain_objects;
+    // Not serialized: sorted uids of the compiled solid's rooms that hold terrain chunks, from the last
+    // Build Geometry or the loaded build mappings.
+    std::vector<int32_t> terrain_room_uids;
+    // Not serialized: sorted uids of other rooms holding only terrain chunk faces (a chunk split across
+    // rooms), from the last Build Geometry. Hidden like terrain_room_uids, but lit as ordinary faces:
+    // the game knows a chunk by its mapped room alone.
+    std::vector<int32_t> terrain_split_room_uids;
+
     // Retained Glacier RFL sections (0x6ED-prefixed IDs).
     std::vector<RetainedRflChunk> retained_chunks;
 
@@ -538,6 +561,12 @@ struct AlpineLevelProperties
     Vector3 sun_to_light_dir() const
     {
         return alpine_sun_to_light_dir(sun_yaw, sun_pitch);
+    }
+
+    // Calculate Lighting gives the surfaces alpine charts; D3D11-only lightmaps can only apply then.
+    bool surface_charts_enabled() const
+    {
+        return !legacy_lighting && lightmap_density != lightmap_density_off;
     }
 
     void SanitizeSunProperties()
@@ -605,6 +634,10 @@ struct AlpineLevelProperties
         alpha_faces_occlude = false;
         no_shadow_cast_brush_uids.clear();
         meshes_occlude = false;
+        lightmap_density = 0;
+        d3d11_only_lightmaps = false;
+        stock_lightmaps_omitted = false;
+        lightmap_compression = 0;
         for (auto* m : mesh_objects) {
             DestroyDedMesh(m);
         }
@@ -646,10 +679,17 @@ struct AlpineLevelProperties
         }
         rope_emitter_objects.clear();
 
+        for (auto* t : terrain_objects) {
+            DestroyDedTerrain(t);
+        }
+        terrain_objects.clear();
+        terrain_room_uids.clear();
+        terrain_split_room_uids.clear();
+
         retained_chunks.clear();
     }
 
-    void Serialize(rf::File& file) const
+    void Serialize(rf::File& file, bool stock_lightmaps_suppressed) const
     {
         file.write<std::uint32_t>(current_alpine_chunk_version);
 
@@ -712,6 +752,11 @@ struct AlpineLevelProperties
             file.write<int32_t>(no_shadow_cast_brush_uids[i]);
         }
         file.write<std::uint8_t>(meshes_occlude ? 1u : 0u);
+        file.write<std::uint8_t>(lightmap_density);
+        file.write<std::uint8_t>(static_cast<std::uint8_t>(
+            (stock_lightmaps_suppressed ? alpine_lightmap::d3d11_only_stock_omitted : 0u) |
+            (d3d11_only_lightmaps ? alpine_lightmap::d3d11_only_setting : 0u)));
+        file.write<std::uint8_t>(lightmap_compression);
     }
 
     void Deserialize(rf::File& file, std::size_t chunk_len)
@@ -933,6 +978,16 @@ struct AlpineLevelProperties
             meshes_occlude = (u8 != 0);
             xlog::debug("[AlpineLevelProps] enable_sun {} yaw {} pitch {} intensity {} no_shadow_cast {}",
                 enable_sun, sun_yaw, sun_pitch, sun_intensity, nsc_count);
+            if (!read_bytes(&lightmap_density, sizeof(lightmap_density)))
+                return;
+            if (!read_bytes(&u8, sizeof(u8)))
+                return;
+            d3d11_only_lightmaps = (u8 & alpine_lightmap::d3d11_only_setting) != 0;
+            stock_lightmaps_omitted = (u8 & alpine_lightmap::d3d11_only_stock_omitted) != 0;
+            if (!read_bytes(&lightmap_compression, sizeof(lightmap_compression)))
+                return;
+            lightmap_compression =
+                static_cast<std::uint8_t>(alpine_lightmap::compression_mode_from_wire(lightmap_compression));
         }
     }
 };
@@ -1285,10 +1340,18 @@ inline bool no_shadow_cast_eligible(const BrushNode& brush,
 // they must be assigned from this counter manually before serialization.
 static auto& g_groom_uid_counter = addr_as_ref<int>(0x0057C954);
 
-// FUN_00483560: redraw all editor viewports
+// FUN_00483560: mark_level_modified, then redraw all editor viewports
 inline void redraw_all_viewports()
 {
     AddrCaller{0x00483560}.c_call();
+}
+
+// FUN_00484890: the document's SetModifiedFlag(TRUE), so closing or replacing the level asks to save
+inline void mark_level_modified()
+{
+    if (CDedLevel::Get()) {
+        AddrCaller{0x00484890}.c_call();
+    }
 }
 
 // FUN_00538fa4: show a message box in the editor
@@ -1328,5 +1391,18 @@ constexpr uint8_t DIK_LSHIFT = 0x2A;
 void* GetMainFrame();
 void* GetLogDlg();
 HWND GetMainFrameHandle();
+
+// One line to the AlpineEditor log ("[tag] msg" at `level`) and to a headless bake's log (warnings and
+// errors prefixed there); `red_log` also appends msg to RED's message log outside a headless bake.
+enum class EditorReportLevel
+{
+    info,
+    warn,
+    error,
+};
+void editor_report(EditorReportLevel level, const char* tag, const std::string& msg, bool red_log);
+
+// Inside RED's autosave (CDedDoc::LoadSaveLevel with is_autosave set).
+bool level_autosave_in_progress();
 
 void DedLevel_DoBackLink();

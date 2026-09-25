@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <set>
 #include <cmath>
+#include <utility>
 #include <common/version/version.h>
 #include <common/config/BuildConfig.h>
 #include <common/utils/os-utils.h>
@@ -42,6 +43,8 @@
 #include "textures.h"
 #include "meshes.h"
 #include "headless_bake.h"
+#include "terrain_paint.h"
+#include "terrain_preview.h"
 
 #define LAUNCHER_FILENAME "AlpineFactionLauncher.exe"
 HMODULE g_module;
@@ -1049,6 +1052,11 @@ void __fastcall CMainFrame_OnEditUndo_new(CWnd* this_, void* edx_unused);
 FunHook<decltype(CMainFrame_OnEditUndo_new)> CMainFrame_OnEditUndo_hook{0x00447830, CMainFrame_OnEditUndo_new};
 void __fastcall CMainFrame_OnEditUndo_new(CWnd* this_, void* edx_unused)
 {
+    // While Terrain Tools is open, Ctrl+Z / Edit > Undo undo paint strokes instead
+    if (terrain_paint_active()) {
+        terrain_paint_undo();
+        return;
+    }
     if (auto* level = CDedLevel::Get()) {
         level->commit_pending_transform();
     }
@@ -1059,6 +1067,10 @@ void __fastcall CMainFrame_OnEditRedo_new(CWnd* this_, void* edx_unused);
 FunHook<decltype(CMainFrame_OnEditRedo_new)> CMainFrame_OnEditRedo_hook{0x00447870, CMainFrame_OnEditRedo_new};
 void __fastcall CMainFrame_OnEditRedo_new(CWnd* this_, void* edx_unused)
 {
+    if (terrain_paint_active()) {
+        terrain_paint_redo();
+        return;
+    }
     if (auto* level = CDedLevel::Get()) {
         level->commit_pending_transform();
     }
@@ -1227,11 +1239,47 @@ static bool is_edit_key_held()
         || g_dinput_keys[DIK_LSHIFT];
 }
 
+// RED passes is_autosave only as a LoadSaveLevel argument, whose stack slot the save routine
+// (0x00430bf0) reuses for section offsets, so the hook keeps it for the nested chunk writers.
+static bool g_autosaving = false;
+
+bool level_autosave_in_progress()
+{
+    return g_autosaving;
+}
+
+char __fastcall CDedDoc_LoadSaveLevel_new(void* self, int edx, const char* path, int is_load, int is_autosave);
+FunHook<char __fastcall(void*, int, const char*, int, int)> CDedDoc_LoadSaveLevel_hook{
+    0x0041CCE0, CDedDoc_LoadSaveLevel_new}; // CDedDoc::LoadSaveLevel
+
+char __fastcall CDedDoc_LoadSaveLevel_new(void* self, int edx, const char* path, int is_load, int is_autosave)
+{
+    const bool was_autosaving = std::exchange(g_autosaving, !is_load && is_autosave);
+    char result = CDedDoc_LoadSaveLevel_hook.call_target(self, edx, path, is_load, is_autosave);
+    g_autosaving = was_autosaving;
+    if (is_load && !is_autosave) {
+        headless_bake_level_loaded(path, result != 0);
+    }
+    return result;
+}
+
+int __fastcall CEditorApp_OnIdle_new(void* self, int edx, int count);
+FunHook<int __fastcall(void*, int, int)> CEditorApp_OnIdle_hook{0x00482F00, CEditorApp_OnIdle_new};
+
+int __fastcall CEditorApp_OnIdle_new(void* self, int edx, int count)
+{
+    if (!headless_bake_idle()) {
+        terrain_paint_idle();
+    }
+    return CEditorApp_OnIdle_hook.call_target(self, edx, count);
+}
+
 CodeInjection autosave_defer_during_edit_injection{
     0x00483061,
     [](auto& regs) {
         auto* level = CDedLevel::Get();
-        if (headless_bake_active() || is_edit_key_held() || (level && level->transform_in_progress)) {
+        if (headless_bake_active() || is_edit_key_held() || (level && level->transform_in_progress) ||
+            terrain_paint_stroke_active()) {
             regs.eip = 0x004831B4; // defer autosave until the text tick we are not in an edit operation
         }
         else {
@@ -1487,6 +1535,17 @@ CodeInjection face_panel_subclass_injection{
 BOOL __fastcall CMainFrame_OnCmdMsg(CWnd* this_, int, UINT nID, int nCode, void* pExtra, void* pHandlerInfo)
 {
     constexpr int CN_COMMAND = 0;
+    constexpr int CN_UPDATE_COMMAND_UI = -1;
+
+    // RED disables Undo/Redo by its own lists (0x00447840, 0x00447880), and CWnd::OnCommand drops a
+    // disabled command before OnEditUndo/OnEditRedo run. pExtra is the CCmdUI; vtable slot 0 is
+    // Enable(BOOL).
+    if (nCode == CN_UPDATE_COMMAND_UI && (nID == ID_EDIT_UNDO || nID == ID_EDIT_REDO) && pExtra &&
+        terrain_paint_active()) {
+        const BOOL enable = nID == ID_EDIT_UNDO ? terrain_paint_can_undo() : terrain_paint_can_redo();
+        AddrCaller{(*static_cast<uintptr_t**>(pExtra))[0]}.this_call(pExtra, enable);
+        return TRUE;
+    }
 
     if (nCode == CN_COMMAND) {
         std::function<void()> handler;
@@ -1567,10 +1626,19 @@ BOOL __fastcall CMainFrame_OnCmdMsg(CWnd* this_, int, UINT nID, int nCode, void*
                 handler = reload_custom_meshes;
                 break;
             case ID_RELOAD_TEXTURES:
-                handler = reload_custom_textures;
+                handler = [] {
+                    reload_custom_textures();
+                    terrain_preview_textures_reloaded();
+                    terrain_paint_textures_reloaded();
+                };
                 break;
             case ID_TOGGLE_MAXIMIZE_VIEWPORT:
                 handler = std::bind(CMainFrame_ToggleMaximizeViewport, reinterpret_cast<CMainFrame*>(this_));
+                break;
+            case ID_TERRAIN_TOOLS:
+                handler = [this_]() {
+                    terrain_paint_open_for_selection(reinterpret_cast<CDedLevel*>(GetLevelFromMainFrame(this_)));
+                };
                 break;
         }
 
@@ -1619,9 +1687,12 @@ void InitCrashHandler()
 void ApplyGraphicsPatches();
 void ApplyTriggerPatches();
 void ApplyLevelPatches();
+void ApplyTerrainBuildPatches();
+void ApplyTerrainPreviewPatches();
 void ApplyEventsPatches();
 void ApplyTexturesPatches();
 void ApplyLightmapPatches();
+void ApplyAlpineLightmapPatches();
 void install_editor_bitmap_loader_hooks();
 
 void LoadAlpineEditorPackfile()
@@ -2008,11 +2079,15 @@ extern "C" DWORD AF_DLL_EXPORT Init([[maybe_unused]] void* unused)
     ApplyGraphicsPatches();
     ApplyTriggerPatches();
     ApplyLevelPatches();
+    ApplyTerrainBuildPatches();
+    ApplyTerrainPreviewPatches();
+    ApplyTerrainPaintPatches();
     ApplyEventsPatches();
     ApplyAlpineObjectPatches();
     ApplyTexturesPatches();
     ApplyLightmapPatches();
     ApplyGeometryPatches();
+    ApplyAlpineLightmapPatches();
     install_editor_bitmap_loader_hooks();
 
     // Browse for .v3m files instead of .v3d
@@ -2141,6 +2216,10 @@ extern "C" DWORD AF_DLL_EXPORT Init([[maybe_unused]] void* unused)
 
     // Defer autosave while an edit operation is in progress to prevent teleporting
     autosave_defer_during_edit_injection.install();
+
+    // Idle tick (headless bake, Terrain Tools) and level load/save bracketing
+    CEditorApp_OnIdle_hook.install();
+    CDedDoc_LoadSaveLevel_hook.install();
 
     // Subclass face mode panel for Delete/Delete Ext./Split button handling
     face_panel_subclass_injection.install();

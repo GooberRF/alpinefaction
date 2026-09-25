@@ -2,11 +2,14 @@
 #include <deque>
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <map>
 #include <set>
 #include <unordered_set>
 #include <unordered_map>
 #include <limits>
+#include <format>
+#include <string>
 #include <patch_common/FunHook.h>
 #include <patch_common/CallHook.h>
 #include <patch_common/CodeInjection.h>
@@ -15,6 +18,7 @@
 #include "../misc/alpine_options.h"
 #include "../misc/alpine_settings.h"
 #include "../graphics/weather.h"
+#include "../graphics/d3d11/gr_d3d11_hooks.h"
 #include "../multi/multi.h"
 #include "../multi/server_internal.h"
 #include "../main/main.h"
@@ -31,10 +35,12 @@
 #include "../rf/player/player.h"
 #include "../rf/player/camera.h"
 #include "../os/console.h"
+#include "../os/os.h"
 #include "../fflink/afstats_events.h"
 #include "../fflink/fflink_session.h"
 #include "destruction.h"
 #include "level.h"
+#include "alpine_terrain.h"
 #include "../sound/sound_foley.h"
 
 // Set by geomod_init hook; checked by boolean engine injections.
@@ -123,6 +129,52 @@ static std::unordered_set<rf::GFace*> g_rf2_pre_supported_faces;
 static bool g_rf2_target_supported_pre = false;
 // Non-target geoable rooms that had pieces extracted this pass (render cache invalidation).
 static std::vector<rf::GRoom*> g_rf2_cascaded_rooms;
+// Rooms other than the target with faces split by boolean state 2 this pass (render cache invalidation).
+static std::vector<rf::GRoom*> g_rf2_split_rooms;
+
+// dbg_geomod_timing: per-stage costs of RF2-style carves, printed as they happen.
+static bool g_geomod_timing = false;
+struct GeomodTiming
+{
+    int64_t boolean_us = 0;
+    int boolean_rooms = 0;
+    int64_t inside_us = 0;
+    int crater_faces = 0;
+    int crater_faces_kept = 0;
+    int surfaces_created = 0;
+    int surfaces_skipped = 0;
+    bool relink_skipped = false;
+};
+static GeomodTiming g_geomod_timing_stats;
+
+static int64_t geomod_timing_now_us()
+{
+    return timer::get_i64(1000000);
+}
+
+template<typename... Args>
+static void geomod_timing_print(std::format_string<Args...> fmt, Args&&... args)
+{
+    // Called from engine hooks: nothing may unwind through engine frames.
+    try {
+        const std::string line = std::format(fmt, std::forward<Args>(args)...);
+        rf::console::print("[RF2 timing] {}", line);
+        xlog::info("[RF2 timing] {}", line);
+    }
+    catch (...) {
+    }
+}
+
+bool geomod_timing_enabled()
+{
+    return g_geomod_timing;
+}
+
+void geomod_timing_report(const char* what, const rf::GRoom* room, int64_t us)
+{
+    geomod_timing_print("{} room {} ({} faces): {:.2f} ms", what, room ? room->room_index : -1,
+        room ? room->face_list.size() : 0, us / 1000.0);
+}
 
 // Find geoable detail rooms whose bboxes overlap the given position with padding
 // scaled by level hardness. Base padding is 3 units at hardness 50 (baseline).
@@ -308,7 +360,9 @@ static bool is_point_inside_room_geometry(const rf::Vector3& pt, rf::GRoom* room
     constexpr float ray_dz = 1.0f;
 
     // Safety limits to prevent infinite loops from corrupted linked lists
-    constexpr int max_faces = 5000;
+    constexpr int max_face_count = 1 << 20;
+    constexpr int face_margin = 1024;
+    const int max_faces = std::clamp(room->face_list.size(), 0, max_face_count) + face_margin;
     constexpr int max_verts_per_face = 500;
 
     int crossing_count = 0;
@@ -606,7 +660,13 @@ CodeInjection state5_reclassify_type1_for_rf2{
 
         // Classify against the target detail room's current geometry (ray casting).
         // Uses live face_list which correctly reflects previous craters (non-convex).
+        const int64_t inside_start = g_geomod_timing ? geomod_timing_now_us() : 0;
         int classification = is_point_inside_room_geometry(centroid, g_rf2_target_detail_room) ? 2 : 1;
+        if (g_geomod_timing) {
+            g_geomod_timing_stats.inside_us += geomod_timing_now_us() - inside_start;
+            g_geomod_timing_stats.crater_faces++;
+            g_geomod_timing_stats.crater_faces_kept += classification == 2;
+        }
 
         // Set classification on face attributes via FUN_004de9e0
         AddrCaller{0x004de9e0}.this_call(face_attrs, classification);
@@ -745,6 +805,15 @@ ConsoleCommand2 dbg_num_geomods_cmd{
     "Count the number of geomod craters in the current level",
 };
 
+ConsoleCommand2 dbg_geomod_timing_cmd{
+    "dbg_geomod_timing",
+    []() {
+        g_geomod_timing = !g_geomod_timing;
+        rf::console::print("RF2-style geomod timing is {}", g_geomod_timing ? "on" : "off");
+    },
+    "Prints how long each stage of an RF2-style geomod takes",
+};
+
 
 // Check if two planes are coplanar (same or opposite orientation, same plane).
 // Handles both same-direction and opposite-direction normals since detail brush
@@ -779,10 +848,42 @@ static bool face_bboxes_overlap(const rf::GFace& a, const rf::GFace& b)
            a.bounding_box_min.z - pad <= b.bounding_box_max.z;
 }
 
+// Crater face bitmap per terrain (alpine_terrain_get_all index), -1 = level geomod texture.
+static std::vector<int> g_terrain_crater_bitmaps;
+
+// Terrain chunks are always anchored: never support-model pieces, always static support.
+static bool is_terrain_room(const rf::GRoom* room)
+{
+    return alpine_terrain_find_room(room) != nullptr;
+}
+
+static void apply_terrain_geoable_flags(rf::GSolid* solid)
+{
+    const auto& terrains = alpine_terrain_get_all();
+    for (rf::GRoom* room : solid->all_rooms) {
+        const AlpineTerrainRoomRef* ref = alpine_terrain_find_room(room);
+        if (!ref) continue;
+        const AlpineTerrain& t = terrains[ref->terrain];
+        const auto chunk = static_cast<std::size_t>(ref->chunk);
+        if ((t.header.flags & alpine_terrain::flag_geoable) && chunk / 8 < t.geo_chunks.size() &&
+            alpine_terrain::get_bit(t.geo_chunks.data(), chunk)) {
+            room->is_geoable = true;
+        }
+    }
+    g_terrain_crater_bitmaps.assign(terrains.size(), -1);
+    for (std::size_t i = 0; i < terrains.size(); i++) {
+        const AlpineTerrain& t = terrains[i];
+        if (t.resolved && (t.header.flags & alpine_terrain::flag_geoable) && !t.crater_texture.empty()) {
+            g_terrain_crater_bitmaps[i] = rf::bm::load(t.crater_texture.c_str(), -1, true);
+        }
+    }
+}
+
 // Apply geoable flags from AlpineLevelProperties UIDs to GRoom objects.
 // Called from level_init_post_hook after both rooms and Alpine props are loaded.
 void apply_geoable_flags()
 {
+    g_terrain_crater_bitmaps.clear();
     auto* solid = rf::level.geometry;
     if (!solid) return;
 
@@ -813,6 +914,8 @@ void apply_geoable_flags()
             xlog::debug("[Geoable] room uid={} not found in solid->all_rooms", uid);
         }
     }
+
+    apply_terrain_geoable_flags(solid);
 }
 
 // Reset all breakable material global state. Called on level load to prevent stale pointers
@@ -2260,7 +2363,8 @@ CodeInjection pregame_glass_render_cleanup_injection{
 };
 
 // Support model. A geoable piece stays up if it touches, crosses or is buried in
-// world geometry or a non-geoable detail brush, or touches another geoable piece that does.
+// world geometry, a non-geoable detail brush or a terrain chunk, or touches another geoable
+// piece that does.
 // All face normals point out of solid volume (world faces into air, brush faces outward).
 struct RF2SupportNode {
     rf::GRoom* room;
@@ -2454,7 +2558,7 @@ static bool rf2_node_has_static_support(const RF2SupportNode& node, rf::GSolid* 
     constexpr float pad = 0.1f;
     rf::Vector3 sample = rf2_face_center(*node.faces[0]);
     for (auto& room : solid->all_rooms) {
-        if (room->is_detail && room->is_geoable) continue;
+        if (room->is_detail && room->is_geoable && !is_terrain_room(room)) continue;
         if (!rf2_bboxes_overlap(node.bbox_min, node.bbox_max, room->bbox_min, room->bbox_max, pad)) continue;
         for (rf::GFace& face : room->face_list) {
             if (!rf2_is_support_face(face)) continue;
@@ -2511,7 +2615,7 @@ static std::vector<RF2SupportNode> rf2_collect_geoable_nodes(rf::GSolid* solid)
 {
     std::vector<RF2SupportNode> nodes;
     for (auto& room : solid->all_rooms) {
-        if (room->is_detail && room->is_geoable) rf2_collect_room_nodes(room, nodes);
+        if (room->is_detail && room->is_geoable && !is_terrain_room(room)) rf2_collect_room_nodes(room, nodes);
     }
     return nodes;
 }
@@ -2571,7 +2675,7 @@ static void rf2_snapshot_support(rf::GRoom* target)
     g_rf2_pre_supported_faces.clear();
     g_rf2_target_supported_pre = false;
     rf::GSolid* solid = rf::level.geometry;
-    if (!target || !solid) return;
+    if (!target || !solid || is_terrain_room(target)) return;
 
     auto nodes = rf2_collect_geoable_nodes(solid);
     auto state = rf2_compute_support(nodes, target, solid);
@@ -2593,7 +2697,7 @@ static int rf2_mark_unsupported_pieces(rf::GRoom* target, rf::GSolid* solid)
     for (rf::GFace* face = solid->face_list.first(); face; face = solid->face_list.next(face)) {
         face->attributes.group_id = -1;
     }
-    if (!target) return 0;
+    if (!target || is_terrain_room(target)) return 0;
 
     auto nodes = rf2_collect_geoable_nodes(solid);
     auto state = rf2_compute_support(nodes, target, solid);
@@ -2655,11 +2759,66 @@ static float get_hardness_scaled_padding()
     return geoable_bbox_base_padding * scale;
 }
 
-// Results are sorted by distance from pos to bbox center (closest first).
-static std::vector<rf::GRoom*> find_overlapping_detail_rooms(const rf::Vector3& pos)
+static bool sphere_overlaps_aabb(const rf::Vector3& center, float radius, const rf::Vector3& min, const rf::Vector3& max)
+{
+    float dx = std::max({min.x - center.x, 0.0f, center.x - max.x});
+    float dy = std::max({min.y - center.y, 0.0f, center.y - max.y});
+    float dz = std::max({min.z - center.z, 0.0f, center.z - max.z});
+    return dx * dx + dy * dy + dz * dz <= radius * radius;
+}
+
+// Radius about the explosion pos bounding the crater solid as boolean State 0 (FUN_004dbdf0) places it:
+// each vertex is rotated, scaled (only when scale > 1e-4) and offset by pos, then pushed along
+// field_4C/field_58 by at most |push| * |v - pos| / (scale * bounding_sphere_radius). 0 = unknown.
+static float get_crater_extent_radius(rf::GSolid* crater, float scale, const rf::Vector3& push_a,
+    const rf::Vector3& push_b)
+{
+    constexpr float epsilon = 0.01f;
+    if (!crater) return 0.0f;
+    float max_len_sq = 0.0f;
+    for (const rf::GVertex* vertex : crater->vertices) {
+        max_len_sq = std::max(max_len_sq, vertex->pos.len_sq());
+    }
+    float radius = std::sqrt(max_len_sq) * (scale > 1e-4f ? scale : 1.0f);
+    float push_base = scale * crater->bounding_sphere_radius;
+    if (push_base > 0.0f) {
+        for (const rf::Vector3* push : {&push_a, &push_b}) {
+            float push_len = push->len();
+            if (std::isfinite(push_len)) {
+                radius *= 1.0f + push_len / push_base;
+            }
+        }
+    }
+    return std::isfinite(radius) ? radius + epsilon : 0.0f;
+}
+
+static float get_crater_extent_radius(const rf::GeomodParams& params)
+{
+    return get_crater_extent_radius(rf::geomod_get_crater_solid(params.shape_index), params.scale,
+        params.field_4C, params.field_58);
+}
+
+// The boolean's face broad phase (FUN_004dc670) against the crater sphere, plus a face-plane distance cull.
+static bool crater_overlaps_room_faces(const rf::Vector3& pos, float crater_radius, rf::GRoom* room)
+{
+    if (!sphere_overlaps_aabb(pos, crater_radius, room->bbox_min, room->bbox_max)) return false;
+    for (rf::GFace& face : room->face_list) {
+        if (sphere_overlaps_aabb(pos, crater_radius, face.bounding_box_min, face.bounding_box_max)
+            && std::abs(face.plane.distance_to_point(pos)) <= crater_radius) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Rooms whose padded bbox contains pos come first, then rooms only reached by the crater extent
+// (crater_radius, 0 = off). Each group is sorted by distance from pos to bbox center (closest first).
+// A terrain chunk's bbox spans its whole height, so with a known extent it is reached by the extent only.
+static std::vector<rf::GRoom*> find_overlapping_detail_rooms(const rf::Vector3& pos, float crater_radius)
 {
     float padding = get_hardness_scaled_padding();
     std::vector<rf::GRoom*> result;
+    std::vector<rf::GRoom*> extent_only;
     auto* solid = rf::level.geometry;
     if (!solid) return result;
 
@@ -2667,6 +2826,13 @@ static std::vector<rf::GRoom*> find_overlapping_detail_rooms(const rf::Vector3& 
     for (auto& room : solid->all_rooms) {
         if (!room->is_detail || !room->is_geoable) continue;
         geoable_count++;
+
+        if (crater_radius > 0.0f && is_terrain_room(room)) {
+            if (crater_overlaps_room_faces(pos, crater_radius, room)) {
+                extent_only.push_back(room);
+            }
+            continue;
+        }
 
         // Check if position is within room bbox + hardness-scaled padding
         bool in_x = pos.x >= room->bbox_min.x - padding && pos.x <= room->bbox_max.x + padding;
@@ -2676,14 +2842,16 @@ static std::vector<rf::GRoom*> find_overlapping_detail_rooms(const rf::Vector3& 
         if (in_x && in_y && in_z) {
             result.push_back(room);
         }
+        else if (crater_radius > 0.0f && crater_overlaps_room_faces(pos, crater_radius, room)) {
+            extent_only.push_back(room);
+        }
     }
 
     if (geoable_count == 0) {
         xlog::debug("[RF2] find_rooms: no geoable detail rooms in level");
     }
 
-    // Sort by distance from pos to bbox center (closest first)
-    std::sort(result.begin(), result.end(), [&pos](rf::GRoom* a, rf::GRoom* b) {
+    auto closest_first = [&pos](rf::GRoom* a, rf::GRoom* b) {
         auto center_a = rf::Vector3{
             (a->bbox_min.x + a->bbox_max.x) * 0.5f,
             (a->bbox_min.y + a->bbox_max.y) * 0.5f,
@@ -2697,7 +2865,10 @@ static std::vector<rf::GRoom*> find_overlapping_detail_rooms(const rf::Vector3& 
         float dist_sq_a = dx_a * dx_a + dy_a * dy_a + dz_a * dz_a;
         float dist_sq_b = dx_b * dx_b + dy_b * dy_b + dz_b * dz_b;
         return dist_sq_a < dist_sq_b;
-    });
+    };
+    std::sort(result.begin(), result.end(), closest_first);
+    std::sort(extent_only.begin(), extent_only.end(), closest_first);
+    result.insert(result.end(), extent_only.begin(), extent_only.end());
 
     return result;
 }
@@ -2791,7 +2962,10 @@ CallHook<int(rf::Vector3*, float, rf::Vector3*, int, int)> packet_rock_debris_de
         if (rf2_enabled && pos) {
             bool in_geo_region = is_pos_in_any_geo_region(*pos);
             if (!in_geo_region) {
-                auto overlapping = find_overlapping_detail_rooms(*pos);
+                // pos is &params.pos of the handler's stack GeomodParams (the same params geomod_init gets).
+                const auto& params = *reinterpret_cast<const rf::GeomodParams*>(
+                    reinterpret_cast<const char*>(pos) - offsetof(rf::GeomodParams, pos));
+                auto overlapping = find_overlapping_detail_rooms(*pos, get_crater_extent_radius(params));
                 if (!overlapping.empty()) {
                     // RF2 geomod near geoable brush — defer debris until carving confirmed
                     g_rf2_suppress_geomod_create_effects = true;
@@ -2880,7 +3054,19 @@ FunHook<bool(float, int, rf::GRoom*, rf::Vector3*, rf::Vector3*, int, int)> geom
                 // Effects gate: check if explosion is near any geoable detail room
                 // using bbox + padding. Reliable for all geometry shapes including
                 // concave brushes and touching detail brushes.
-                auto overlapping = find_overlapping_detail_rooms(*pos);
+                // Crater scale as geomod_create derives it: flag 8 pins 1.0, otherwise radius / bsphere
+                // times the FUN_0045cff0 hardness factor (level default outside Geo Regions).
+                float crater_radius = 0.0f;
+                rf::GSolid* crater = rf::geomod_get_crater_solid(shape_index);
+                if (crater && crater->bounding_sphere_radius > 0.0f) {
+                    float scale = 1.0f;
+                    if (!(flags & 8)) {
+                        float hardness_factor = std::clamp(1.0f - rf::level.default_rock_hardness * 0.01f, 0.0f, 1.0f);
+                        scale = radius / crater->bounding_sphere_radius * hardness_factor;
+                    }
+                    crater_radius = get_crater_extent_radius(crater, scale, rf::Vector3{}, rf::Vector3{});
+                }
+                auto overlapping = find_overlapping_detail_rooms(*pos, crater_radius);
                 if (overlapping.empty()) {
                     return false; // skip entire geomod (no effects, no boolean, no state machine)
                 }
@@ -3055,9 +3241,16 @@ FunHook<void(rf::GeomodParams*)> geomod_init_hook{
             }
 
             // Find detail rooms overlapping the crater and select the first target.
-            auto overlapping = find_overlapping_detail_rooms(rf::g_geomod_pos);
+            const int64_t targeting_start = g_geomod_timing ? geomod_timing_now_us() : 0;
+            auto overlapping = find_overlapping_detail_rooms(rf::g_geomod_pos, get_crater_extent_radius(*params));
+            if (g_geomod_timing) {
+                g_geomod_timing_stats = {};
+                geomod_timing_print("targeting: {} room(s), {:.2f} ms", overlapping.size(),
+                    (geomod_timing_now_us() - targeting_start) / 1000.0);
+            }
             g_rf2_pending_detail_rooms.clear();
             g_rf2_cascaded_rooms.clear();
+            g_rf2_split_rooms.clear();
             if (!overlapping.empty()) {
                 g_rf2_target_detail_room = overlapping[0];
                 for (size_t i = 1; i < overlapping.size(); i++) {
@@ -3093,6 +3286,641 @@ static void clear_corrupted_detail_rooms()
     }
 }
 
+static void report_boolean_state_timing(int inner_state, int64_t us)
+{
+    GeomodTiming& t = g_geomod_timing_stats;
+    const rf::GRoom* room = g_rf2_target_detail_room;
+    if (inner_state == 0) {
+        t.boolean_rooms++;
+    }
+    try {
+        std::string extra;
+        if (inner_state == 0) {
+            extra = std::format(", level faces {}", rf::level.geometry ? rf::level.geometry->face_list.size() : 0);
+        }
+        else if (inner_state == 5) {
+            extra = std::format(", crater faces {} kept {}, containment {:.2f} ms, surfaces {} made {} skipped{}",
+                t.crater_faces, t.crater_faces_kept, t.inside_us / 1000.0, t.surfaces_created, t.surfaces_skipped,
+                t.relink_skipped ? ", detail relink skipped" : "");
+        }
+        else if (inner_state == 7) {
+            extra = std::format(", surfaces {} made {} skipped", t.surfaces_created, t.surfaces_skipped);
+        }
+        geomod_timing_print("room {} ({}{} faces) inner state {}: {:.2f} ms{}", room ? room->room_index : -1,
+            alpine_terrain_find_room(room) ? "terrain, " : "", room ? room->face_list.size() : 0, inner_state,
+            us / 1000.0, extra);
+    }
+    catch (...) {
+    }
+    t.boolean_us += us;
+    t.inside_us = 0;
+    t.crater_faces = 0;
+    t.crater_faces_kept = 0;
+    t.surfaces_created = 0;
+    t.surfaces_skipped = 0;
+    t.relink_skipped = false;
+}
+
+// Boolean state 5 gives each new crater face a GSurface (0x004DE21A), and state 7 every face that still
+// has none (0x004DE50C; 0x005A3A58 is cleared only on dedicated servers): a noise lightmap relit from
+// stock lights only. Terrain faces are lit from the terrain's chart and keep surface -1.
+CallHook<void __fastcall(rf::GSolid*, int, rf::GFace*, float)> boolean_face_create_surface_hook{
+    {0x004DE21A, 0x004DE50C},
+    [](rf::GSolid* solid, int edx, rf::GFace* face, float ppm) FASTCALL_LAMBDA {
+        // A crater face no target face was cut for has no room yet.
+        const rf::GRoom* room = face->which_room;
+        if (!room && g_rf2_style_boolean_active) {
+            room = g_rf2_target_detail_room;
+        }
+        const bool terrain = alpine_terrain_find_room(room) != nullptr;
+        if (g_geomod_timing) {
+            (terrain ? g_geomod_timing_stats.surfaces_skipped : g_geomod_timing_stats.surfaces_created)++;
+        }
+        if (!terrain) {
+            boolean_face_create_surface_hook.call_target(solid, edx, face, ppm);
+        }
+    },
+};
+
+// Boolean state 5 ends by linking every overlapping detail room into each affected room's detail list,
+// comparing the bboxes of every face pair. RF2 carves affect only their target, a detail room, whose
+// detail list clear_corrupted_detail_rooms empties after this state anyway; against a terrain chunk's
+// neighbours the pass is hundreds of thousands of tests.
+CodeInjection boolean_state5_skip_detail_relink_for_terrain{
+    0x004DE2B9,
+    [](auto& regs) {
+        if (!g_rf2_style_boolean_active) {
+            return;
+        }
+        auto& affected = addr_as_ref<rf::GRoom*[(0x00C9F638 - 0x00C9F4DC) / 4]>(0x00C9F4DC);
+        const int count = addr_as_ref<int>(0x00C9F638);
+        if (count <= 0 || count > static_cast<int>(std::size(affected))) {
+            return;
+        }
+        for (int i = 0; i < count; i++) {
+            if (!affected[i] || !affected[i]->is_detail || !alpine_terrain_find_room(affected[i])) {
+                return;
+            }
+        }
+        g_geomod_timing_stats.relink_skipped = true;
+        regs.eip = 0x004DE454;
+    },
+};
+
+// Boolean state 2 splits every listed face of more than 16 vertices, in whatever room it is.
+CallHook<void(rf::GSolid*, rf::GFace*, rf::GFace**, rf::GFace**)> boolean_split_big_face_hook{
+    0x004DBBEB,
+    [](rf::GSolid* solid, rf::GFace* face, rf::GFace** a, rf::GFace** b) {
+        rf::GRoom* room = face->which_room;
+        if (g_rf2_style_boolean_active && solid == rf::g_level_solid && room && room != g_rf2_target_detail_room &&
+            std::find(g_rf2_split_rooms.begin(), g_rf2_split_rooms.end(), room) == g_rf2_split_rooms.end()) {
+            try {
+                g_rf2_split_rooms.push_back(room);
+            }
+            catch (...) {
+            }
+        }
+        boolean_split_big_face_hook.call_target(solid, face, a, b);
+    },
+};
+
+// Exact "Option B" for terrain targets (docs/GEOMOD_FACEWALK_ANALYSIS.md): inner states 0, 1 and 5 see only
+// the faces they can change, and the level face list is what stock leaves at every frame boundary.
+static bool g_geomod_fast_terrain = true;
+static bool g_geomod_fast_verify = false;
+
+namespace geomod_fast
+{
+    struct RawFaceList
+    {
+        rf::GFace* head;
+        int count;
+    };
+    static_assert(sizeof(RawFaceList) == sizeof(rf::VList<rf::GFace, rf::FACE_LIST_SOLID>));
+    static_assert(offsetof(rf::GRoom, contains_liquid) == 0x184);
+
+    static auto& boolean_solid = addr_as_ref<rf::GSolid*>(0x00C968B4);
+    static auto& boolean_op = addr_as_ref<int>(0x00C9B4C0);
+    static auto& boolean_outside_list = addr_as_ref<RawFaceList>(0x00C9F5A0);
+    static auto& boolean_registered_faces = addr_as_ref<int>(0x00C9F624);
+
+    struct Entry
+    {
+        rf::GFace* face;
+        bool in_tprime;
+        bool survived;
+    };
+
+    // Faces chained through next[0] in link order.
+    struct FaceChain
+    {
+        rf::GFace* head = nullptr;
+        rf::GFace* tail = nullptr;
+
+        void link(rf::GFace* f)
+        {
+            (tail ? tail->next[0] : head) = f;
+            tail = f;
+        }
+
+        // Links all of `other`, keeping its internal next[0] links.
+        void splice(const FaceChain& other)
+        {
+            if (other.head) {
+                link(other.head);
+                tail = other.tail;
+            }
+        }
+
+        // Points the last face (or head, when empty) at `rest` and returns the head.
+        rf::GFace* end_with(rf::GFace* rest)
+        {
+            (tail ? tail->next[0] : head) = rest;
+            return head;
+        }
+    };
+
+    struct Pass
+    {
+        bool active = false;
+        bool verify = false;
+        rf::GSolid* solid = nullptr;
+        std::vector<Entry> faces;
+        // T' face -> index in faces (-1: adjacent to the target but not in the list)
+        std::unordered_map<rf::GFace*, int> tprime;
+        int num_tprime = 0;
+        int num_target = 0;
+        int num_sweep = 0;
+        int last_tprime = -1;
+        int num_clones = 0;
+        int num_survivors = 0;
+        int64_t setup_us = 0;
+        int64_t bookkeeping_us = 0;
+        std::vector<uint32_t> verify_flags;
+        std::vector<rf::GFace*> verify_outside;
+    };
+    static Pass g_pass;
+
+    static RawFaceList& raw_list(rf::GSolid* solid)
+    {
+        return *reinterpret_cast<RawFaceList*>(&solid->face_list);
+    }
+
+    // What 0x004DBBB0 acts on: more than 16 vertices (0x004E03E0), or a pending decal fixup.
+    static bool needs_sweep(const rf::GFace* face)
+    {
+        if ((face->attributes.flags & 0x280000) == 0x280000) {
+            return true;
+        }
+        int n = 0;
+        for (const rf::GFaceVertex* fv = face->edge_loop; fv;) {
+            if (++n > 16) {
+                return true;
+            }
+            fv = fv->next;
+            if (fv == face->edge_loop) {
+                break;
+            }
+        }
+        return false;
+    }
+
+    // Inner state 0 on a face that isn't the target's, with boolean_clear_detail_bit3_for_rf2.
+    static uint32_t registered_flags(uint32_t flags, const rf::GRoom* room)
+    {
+        flags &= ~0x08800000u & 0x8FFFFFFFu;
+        if (room && (!room->is_detail || room->is_geoable)) {
+            flags &= ~0x8u;
+        }
+        return flags;
+    }
+
+    static void reset()
+    {
+        g_pass.active = false;
+        g_pass.solid = nullptr;
+        g_pass.faces.clear();
+        g_pass.tprime.clear();
+        g_pass.verify_flags.clear();
+        g_pass.verify_outside.clear();
+    }
+
+    static const char* not_applicable_reason(rf::GRoom* target)
+    {
+        if (!g_geomod_fast_terrain) return "off";
+        if (!alpine_terrain_find_room(target)) return "target is not a terrain chunk";
+        if (target->contains_liquid) return "target contains liquid";
+        if (boolean_solid != rf::g_level_solid || !rf::g_level_solid) return "not the level solid";
+        if (boolean_op != 3) return "not a geomod boolean";
+        if (target->face_list.empty()) return "empty target";
+        return nullptr;
+    }
+
+    // Before inner state 0: remember the order, give every other face what state 0 would, and hand the
+    // boolean T' (the target, faces sharing a vertex with it, and faces state 2's sweep would change).
+    static const char* begin(rf::GRoom* target)
+    {
+        Pass& p = g_pass;
+        rf::GSolid* solid = rf::g_level_solid;
+        RawFaceList& list = raw_list(solid);
+        const int n = list.count;
+        p.verify = g_geomod_fast_verify;
+        try {
+            p.faces.reserve(n);
+            if (p.verify) {
+                p.verify_flags.resize(n);
+            }
+            for (rf::GFace& face : target->face_list) {
+                if (face.which_room != target) {
+                    return "target room list mismatch";
+                }
+                p.tprime.emplace(&face, -1);
+                int guard = 0;
+                for (rf::GFaceVertex* fv = face.edge_loop; fv && guard++ < 1000;) {
+                    for (rf::GFace* adj : fv->vertex->adjacent_faces) {
+                        p.tprime.emplace(adj, -1);
+                    }
+                    fv = fv->next;
+                    if (fv == face.edge_loop) {
+                        break;
+                    }
+                }
+            }
+            // A bail-out from here on is harmless: stock state 0 gives other faces these same flags.
+            int by_room = 0;
+            for (rf::GFace* face = list.head; face; face = face->next[0]) {
+                const int index = static_cast<int>(p.faces.size());
+                if (index >= n) {
+                    return "list longer than its count";
+                }
+                auto it = p.tprime.find(face);
+                bool in = it != p.tprime.end();
+                if (face->which_room == target) {
+                    by_room++;
+                }
+                else if (!in && needs_sweep(face)) {
+                    it = p.tprime.emplace(face, -1).first;
+                    in = true;
+                    p.num_sweep++;
+                }
+                if (in) {
+                    it->second = index;
+                    p.num_tprime++;
+                    p.last_tprime = index;
+                }
+                else {
+                    if (p.verify) {
+                        p.verify_flags[index] = face->attributes.flags;
+                    }
+                    face->attributes.flags = registered_flags(face->attributes.flags, face->which_room);
+                }
+                p.faces.push_back({face, in, false});
+            }
+            if (static_cast<int>(p.faces.size()) != n) {
+                return "list shorter than its count";
+            }
+            if (by_room != target->face_list.size()) {
+                return "target faces outside its room list";
+            }
+            p.num_target = by_room;
+            if (p.num_tprime == 0) return "target faces not in the list";
+        }
+        catch (...) {
+            return "allocation failed";
+        }
+
+        FaceChain chain;
+        for (const Entry& e : p.faces) {
+            if (e.in_tprime) {
+                chain.link(e.face);
+            }
+        }
+        list.head = chain.end_with(nullptr);
+        list.count = p.num_tprime;
+        p.solid = solid;
+        p.active = true;
+        return nullptr;
+    }
+
+    // After inner state 0: the full list again, with the crater clones state 0 appended after T'.
+    static void after_register()
+    {
+        Pass& p = g_pass;
+        RawFaceList& list = raw_list(p.solid);
+        rf::GFace* first_clone = p.faces[p.last_tprime].face->next[0];
+        int num_clones = 0;
+        for (rf::GFace* f = first_clone; f; f = f->next[0]) {
+            num_clones++;
+        }
+        if (num_clones != list.count - p.num_tprime) {
+            xlog::warn("[RF2] fast geomod: {} crater clones but the list count says {}", num_clones,
+                list.count - p.num_tprime);
+        }
+        const int n = static_cast<int>(p.faces.size());
+        for (int i = 0; i + 1 < n; i++) {
+            p.faces[i].face->next[0] = p.faces[i + 1].face;
+        }
+        p.faces[n - 1].face->next[0] = first_clone;
+        list.head = p.faces[0].face;
+        list.count = n + num_clones;
+        p.num_clones = num_clones;
+        boolean_registered_faces = n;
+    }
+
+    // Before inner state 1: T' and the clones only. False puts the rest of the pass on the stock path.
+    static bool before_classify()
+    {
+        Pass& p = g_pass;
+        RawFaceList& list = raw_list(p.solid);
+        const int n = static_cast<int>(p.faces.size());
+        if (list.count != n + p.num_clones) {
+            return false;
+        }
+        // Stock state 1 gives these side 2 (boolean_skip_non_detail_faces_for_rf2) on either path.
+        rf::GFace* f = list.head;
+        for (int i = 0; i < n; i++, f = f->next[0]) {
+            if (f != p.faces[i].face) {
+                return false;
+            }
+            if (!p.faces[i].in_tprime) {
+                f->attributes.flags = (f->attributes.flags & 0x8FFFFFFFu) | 0x20000000u;
+            }
+        }
+        rf::GFace* first_clone = f;
+        int num_clones = 0;
+        for (; f && num_clones <= p.num_clones; f = f->next[0]) {
+            num_clones++;
+        }
+        if (num_clones != p.num_clones) {
+            return false;
+        }
+        if (p.verify) {
+            int bad = 0;
+            for (int i = 0; i < n; i++) {
+                const Entry& e = p.faces[i];
+                if (e.in_tprime) {
+                    continue;
+                }
+                uint32_t ref = p.verify_flags[i];
+                AddrCaller{0x004DEA10}.this_call(&ref, 0);
+                AddrCaller{0x004DEA30}.this_call(&ref, 0);
+                AddrCaller{0x004DE9E0}.this_call(&ref, 0);
+                const rf::GRoom* room = e.face->which_room;
+                if (room && (room->is_detail ? room->is_geoable : AddrCaller{0x004909B0}.this_call<bool>(&ref))) {
+                    ref &= ~0x8u;
+                }
+                AddrCaller{0x004DE9E0}.this_call(&ref, 2);
+                bad += ref != e.face->attributes.flags;
+            }
+            geomod_timing_print("fast path verify: {} of {} other face flags differ from stock states 0 and 1", bad,
+                n - p.num_tprime);
+        }
+
+        FaceChain chain;
+        for (const Entry& e : p.faces) {
+            if (e.in_tprime) {
+                chain.link(e.face);
+            }
+        }
+        list.head = chain.end_with(first_clone);
+        list.count = p.num_tprime + p.num_clones;
+        return true;
+    }
+
+    static void before_collect()
+    {
+        Pass& p = g_pass;
+        p.num_survivors = boolean_outside_list.count;
+        if (p.verify) {
+            try {
+                p.verify_outside.clear();
+                for (rf::GFace* f = boolean_outside_list.head; f; f = f->next[0]) {
+                    p.verify_outside.push_back(f);
+                }
+            }
+            catch (...) {
+                p.verify_outside.clear();
+            }
+        }
+    }
+
+    static void verify_order(const std::vector<rf::GFace*>& rest)
+    {
+        Pass& p = g_pass;
+        try {
+            std::unordered_set<rf::GFace*> outside(p.verify_outside.begin(), p.verify_outside.end());
+            std::vector<rf::GFace*> ref;
+            ref.reserve(p.faces.size() + p.verify_outside.size() + rest.size());
+            for (const Entry& e : p.faces) {
+                if (!e.in_tprime || outside.contains(e.face)) {
+                    ref.push_back(e.face);
+                }
+            }
+            for (rf::GFace* f : p.verify_outside) {
+                auto it = p.tprime.find(f);
+                if (it == p.tprime.end() || it->second < 0) {
+                    ref.push_back(f);
+                }
+            }
+            ref.insert(ref.end(), rest.begin(), rest.end());
+            const RawFaceList& list = raw_list(p.solid);
+            int i = 0;
+            int first_diff = -1;
+            for (const rf::GFace* f = list.head; f && i <= static_cast<int>(ref.size()); f = f->next[0], i++) {
+                if (first_diff < 0 && (i >= static_cast<int>(ref.size()) || ref[i] != f)) {
+                    first_diff = i;
+                }
+            }
+            if (first_diff < 0 && (i != static_cast<int>(ref.size()) || list.count != i)) {
+                first_diff = i;
+            }
+            if (first_diff < 0) {
+                geomod_timing_print("fast path verify: face order matches stock ({} faces)", i);
+            }
+            else {
+                geomod_timing_print("fast path verify: face order DIFFERS from stock at {} (list {} / count {}, stock {})",
+                    first_diff, i, list.count, ref.size());
+            }
+        }
+        catch (...) {
+            geomod_timing_print("fast path verify: skipped (out of memory)");
+        }
+    }
+
+    // After inner state 5: the list is state 1's outside faces (first num_survivors), then the kept and
+    // new faces. Stock's outside list also held every other face, in the original order.
+    static void after_collect()
+    {
+        Pass& p = g_pass;
+        RawFaceList& list = raw_list(p.solid);
+        const int s = p.num_survivors;
+        const int m = list.count;
+        const int num_other = static_cast<int>(p.faces.size()) - p.num_tprime;
+        auto survivor_index = [&](rf::GFace* f) {
+            auto it = p.tprime.find(f);
+            return it == p.tprime.end() ? -1 : it->second;
+        };
+
+        bool consistent = s >= 0 && s <= m;
+        rf::GFace* node = list.head;
+        for (int k = 0; consistent && k < s; k++) {
+            if (!node) {
+                consistent = false;
+                break;
+            }
+            const int index = survivor_index(node);
+            if (index >= 0) {
+                p.faces[index].survived = true;
+            }
+            node = node->next[0];
+        }
+        rf::GFace* rest = node;
+        int num_rest = 0;
+        for (rf::GFace* f = rest; consistent && f && num_rest <= m; f = f->next[0]) {
+            num_rest++;
+        }
+        consistent = consistent && s + num_rest == m;
+
+        std::vector<rf::GFace*> verify_rest;
+        if (p.verify && consistent) {
+            try {
+                verify_rest.reserve(num_rest);
+                for (rf::GFace* f = rest; f; f = f->next[0]) {
+                    verify_rest.push_back(f);
+                }
+            }
+            catch (...) {
+            }
+        }
+
+        FaceChain chain;
+        if (!consistent) {
+            // Never lose a face: the other faces in their order, then the list as it is.
+            xlog::warn("[RF2] fast geomod: unexpected list after state 5 (count {}, outside {})", m, s);
+            rf::GFace* old_head = list.head;
+            for (const Entry& e : p.faces) {
+                if (!e.in_tprime) {
+                    chain.link(e.face);
+                }
+            }
+            list.head = chain.end_with(old_head);
+            list.count = m + num_other;
+            return;
+        }
+
+        FaceChain extra;
+        node = list.head;
+        for (int k = 0; k < s; k++) {
+            rf::GFace* next = node->next[0];
+            if (survivor_index(node) < 0) {
+                extra.link(node);
+            }
+            node = next;
+        }
+        for (const Entry& e : p.faces) {
+            if (!e.in_tprime || e.survived) {
+                chain.link(e.face);
+            }
+        }
+        chain.splice(extra);
+        list.head = chain.end_with(rest);
+        list.count = m + num_other;
+
+        if (p.verify && static_cast<int>(verify_rest.size()) == num_rest &&
+            static_cast<int>(p.verify_outside.size()) == s) {
+            verify_order(verify_rest);
+        }
+    }
+}
+
+// Runs before the boolean state `inner_state`; false when the fast path is not in use for it.
+static bool geomod_fast_before_state(int inner_state)
+{
+    using namespace geomod_fast;
+    if (inner_state == 0) {
+        reset();
+        if (!g_rf2_style_boolean_active) {
+            return false;
+        }
+        const int64_t start = geomod_timing_now_us();
+        const char* reason = g_rf2_target_detail_room ? not_applicable_reason(g_rf2_target_detail_room) : "no target";
+        if (!reason) {
+            g_pass.num_tprime = g_pass.num_target = g_pass.num_sweep = g_pass.num_clones = 0;
+            g_pass.last_tprime = -1;
+            reason = begin(g_rf2_target_detail_room);
+            if (reason) {
+                reset();
+            }
+        }
+        g_pass.setup_us = geomod_timing_now_us() - start;
+        g_pass.bookkeeping_us = g_pass.setup_us;
+        if (g_geomod_timing && reason && alpine_terrain_find_room(g_rf2_target_detail_room)) {
+            geomod_timing_print("fast path not used: {}", reason);
+        }
+        return g_pass.active;
+    }
+    if (!g_pass.active) {
+        return false;
+    }
+    const int64_t start = geomod_timing_now_us();
+    if (inner_state == 1 && !before_classify()) {
+        if (g_geomod_timing) {
+            geomod_timing_print("fast path dropped: the face list changed between frames");
+        }
+        reset();
+        return false;
+    }
+    if (inner_state == 5) {
+        before_collect();
+    }
+    g_pass.bookkeeping_us += geomod_timing_now_us() - start;
+    return true;
+}
+
+static void geomod_fast_after_state(int inner_state)
+{
+    using namespace geomod_fast;
+    const int64_t start = geomod_timing_now_us();
+    if (inner_state == 0) {
+        after_register();
+    }
+    else if (inner_state == 5) {
+        after_collect();
+    }
+    g_pass.bookkeeping_us += geomod_timing_now_us() - start;
+}
+
+static void geomod_fast_finish_pass()
+{
+    using namespace geomod_fast;
+    if (g_geomod_timing) {
+        const Pass& p = g_pass;
+        geomod_timing_print("fast path: level faces {}, boolean saw {} (target {}, sharing a vertex {}, to split or fix {}), "
+            "crater clones {}, outside after state 1 {}; bookkeeping {:.2f} ms (setup {:.2f} ms)",
+            p.faces.size(), p.num_tprime, p.num_target, p.num_tprime - p.num_target - p.num_sweep, p.num_sweep,
+            p.num_clones, p.num_survivors, p.bookkeeping_us / 1000.0, p.setup_us / 1000.0);
+    }
+    reset();
+}
+
+ConsoleCommand2 geomod_fast_terrain_cmd{
+    "geomod_fast_terrain",
+    []() {
+        g_geomod_fast_terrain = !g_geomod_fast_terrain;
+        rf::console::print("Fast RF2-style geomod on terrain is {}", g_geomod_fast_terrain ? "on" : "off (stock path)");
+    },
+    "Toggles the faster, stock-identical face list handling of RF2-style craters on terrain",
+};
+
+ConsoleCommand2 dbg_geomod_fast_verify_cmd{
+    "dbg_geomod_fast_verify",
+    []() {
+        g_geomod_fast_verify = !g_geomod_fast_verify;
+        rf::console::print("Fast terrain geomod self-check is {}", g_geomod_fast_verify ? "on" : "off");
+    },
+    "Checks each fast terrain geomod pass against what the stock path would leave (printed as RF2 timing lines)",
+};
+
 // Hook FUN_004dbc50 (boolean_iterate) to clear corrupted detail_rooms after every call.
 // States: 0=face_register, 1=intersection_detect, 2=face_split_setup,
 //         3=classify_dispatch, 4=classify_action, 5=reclassify_and_collect,
@@ -3124,7 +3952,41 @@ FunHook<int()> boolean_iterate_hook{
             rf2_snapshot_support(g_rf2_target_detail_room);
         }
 
+        // A terrain's crater texture replaces the level geomod texture on the crater faces
+        // State 5 textures (FUN_004f8740) while that terrain's chunk is the target.
+        int crater_bitmap = -1;
+        if (g_rf2_style_boolean_active) {
+            const AlpineTerrainRoomRef* ref = alpine_terrain_find_room(g_rf2_target_detail_room);
+            if (ref && static_cast<std::size_t>(ref->terrain) < g_terrain_crater_bitmaps.size()) {
+                crater_bitmap = g_terrain_crater_bitmaps[ref->terrain];
+            }
+        }
+        auto& crater_face_bitmaps = rf::g_boolean_crater_face_bitmaps;
+        int saved_crater_face_bitmaps[3];
+        if (crater_bitmap >= 0) {
+            std::copy(std::begin(crater_face_bitmaps), std::end(crater_face_bitmaps), saved_crater_face_bitmaps);
+            std::fill(std::begin(crater_face_bitmaps), std::end(crater_face_bitmaps), crater_bitmap);
+        }
+
+        const int inner_state = rf::g_boolean_inner_state;
+        const bool fast = geomod_fast_before_state(inner_state);
+        const bool timing = g_geomod_timing && g_rf2_style_boolean_active;
+        const int64_t start = timing ? geomod_timing_now_us() : 0;
         int result = boolean_iterate_hook.call_target();
+        const int64_t state_us = timing ? geomod_timing_now_us() - start : 0;
+        if (fast) {
+            geomod_fast_after_state(inner_state);
+        }
+        if (timing) {
+            report_boolean_state_timing(inner_state, state_us);
+        }
+        if (fast && inner_state == 5) {
+            geomod_fast_finish_pass();
+        }
+
+        if (crater_bitmap >= 0) {
+            std::copy(std::begin(saved_crater_face_bitmaps), std::end(saved_crater_face_bitmaps), crater_face_bitmaps);
+        }
 
         if (g_rf2_style_boolean_active) {
             // Clear corrupted detail_rooms after EVERY inner state, not just when done.
@@ -3139,14 +4001,14 @@ FunHook<int()> boolean_iterate_hook{
 // Invalidate render caches after RF2-style boolean modifies detail room faces.
 // D3D9: Call stock g_render_cache_clear — parent room caches include detail room
 //       faces via recursive geo_cache_prepare_room, so clearing forces a rebuild.
-// D3D11: Null the carved detail room's cache and invalidate only the normal rooms
+// D3D11: Free the carved detail room's cache and invalidate only the normal rooms
 //        that embed it (state = 2 triggers rebuild on next render).
 //        Rebuilding every room is a whole-level rebuild per crater and re-bakes the
 //        accumulated scrolled UVs. We CANNOT call the full clear_cache() because
 //        destroying and recreating all RoomRenderCache objects causes a freeze.
 static void invalidate_detail_room_render_cache_d3d11(rf::GSolid* solid, rf::GRoom* target)
 {
-    target->geo_cache = nullptr;
+    gr::d3d11::release_detail_room_render_cache(target);
 
     // Normal rooms embed the detail room's faces in their own cache
     // (GRenderCacheBuilder::add_room recurses into detail_rooms), and the stock
@@ -3157,7 +4019,10 @@ static void invalidate_detail_room_render_cache_d3d11(rf::GSolid* solid, rf::GRo
             continue;
         for (rf::GRoom* detail_room : room->detail_rooms) {
             if (detail_room == target) {
-                room->geo_cache->state = 2;
+                // A separate terrain chunk is not part of its parent's cache.
+                if (!alpine_terrain_is_separate_chunk(room, target)) {
+                    room->geo_cache->state = 2;
+                }
                 break;
             }
         }
@@ -3177,6 +4042,8 @@ static void invalidate_rf2_render_caches()
 
     std::vector<rf::GRoom*> cascaded_rooms = std::move(g_rf2_cascaded_rooms);
     g_rf2_cascaded_rooms.clear();
+    std::vector<rf::GRoom*> split_rooms = std::move(g_rf2_split_rooms);
+    g_rf2_split_rooms.clear();
 
     if (!is_d3d11()) {
         AddrCaller{0x004f0b90}.c_call();
@@ -3190,6 +4057,17 @@ static void invalidate_rf2_render_caches()
     for (rf::GRoom* room : cascaded_rooms) {
         if (room != target) {
             invalidate_detail_room_render_cache_d3d11(solid, room);
+        }
+    }
+    for (rf::GRoom* room : split_rooms) {
+        if (std::find(cascaded_rooms.begin(), cascaded_rooms.end(), room) != cascaded_rooms.end()) {
+            continue;
+        }
+        if (room->is_detail) {
+            invalidate_detail_room_render_cache_d3d11(solid, room);
+        }
+        else if (room->geo_cache) {
+            room->geo_cache->state = 2;
         }
     }
 }
@@ -3230,7 +4108,11 @@ CodeInjection state2_rf2_separated_solids_injection{
         if (!g_rf2_style_boolean_active)
             return; // let stock code run normally
 
+        const int64_t start = g_geomod_timing ? geomod_timing_now_us() : 0;
         int count = rf2_mark_unsupported_pieces(g_rf2_target_detail_room, rf::g_level_solid);
+        if (g_geomod_timing) {
+            geomod_timing_print("support model: {} piece(s), {:.2f} ms", count, (geomod_timing_now_us() - start) / 1000.0);
+        }
 
         // Set EAX and ESI to the extraction count
         regs.eax = count;
@@ -3262,7 +4144,15 @@ CodeInjection geomod_state3_clear_detail_caches_injection{
             return;
 
         // Invalidate render caches for the just-completed room's boolean pass
+        const int64_t invalidate_start = g_geomod_timing ? geomod_timing_now_us() : 0;
         invalidate_rf2_render_caches();
+        if (g_geomod_timing) {
+            geomod_timing_print("cache invalidation: {:.2f} ms", (geomod_timing_now_us() - invalidate_start) / 1000.0);
+            if (g_rf2_pending_detail_rooms.empty()) {
+                geomod_timing_print("boolean total: {:.2f} ms over {} room pass(es)",
+                    g_geomod_timing_stats.boolean_us / 1000.0, g_geomod_timing_stats.boolean_rooms);
+            }
+        }
 
         // Check for pending rooms
         if (!g_rf2_pending_detail_rooms.empty()) {
@@ -3461,6 +4351,9 @@ void destruction_level_cleanup()
     g_rf2_pre_supported_faces.clear();
     g_rf2_target_supported_pre = false;
     g_rf2_cascaded_rooms.clear();
+    g_rf2_split_rooms.clear();
+    geomod_fast::reset();
+    g_terrain_crater_bitmaps.clear();
     g_rf2_boolean_modified_detail = false;
     g_rf2_suppress_geomod_create_effects = false;
     g_rf2_deferred_debris.pending = false;
@@ -3507,6 +4400,9 @@ void destruction_do_patch()
     boolean_skip_non_detail_faces_for_rf2.install();
     boolean_state5_allow_detail_for_rf2.install();
     boolean_state5_protect_detail_cache_for_rf2.install();
+    boolean_face_create_surface_hook.install();
+    boolean_state5_skip_detail_relink_for_terrain.install();
+    boolean_split_big_face_hook.install();
     state0_decal_defer_hook.install();
     state2_rf2_separated_solids_injection.install();
     geomod_state3_clear_detail_caches_injection.install();
@@ -3553,4 +4449,7 @@ void destruction_do_patch()
 
     // Commands
     dbg_num_geomods_cmd.register_cmd();
+    dbg_geomod_timing_cmd.register_cmd();
+    geomod_fast_terrain_cmd.register_cmd();
+    dbg_geomod_fast_verify_cmd.register_cmd();
 }

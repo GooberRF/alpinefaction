@@ -38,6 +38,8 @@ namespace gr::d3d11
         gamma,
         scenefx,
         depth_resolve,
+        terrain,
+        terrain_no_gas,
     };
 
     inline const char* get_vertex_shader_filename(VertexShaderId vertex_shader_id)
@@ -105,6 +107,10 @@ namespace gr::d3d11
                 return "scenefx_ps.bin";
             case PixelShaderId::depth_resolve:
                 return "depth_resolve_ps.bin";
+            case PixelShaderId::terrain:
+                return "terrain_ps.bin";
+            case PixelShaderId::terrain_no_gas:
+                return "terrain_nogas_ps.bin";
             default:
                 return nullptr;
         }

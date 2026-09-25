@@ -448,6 +448,18 @@ namespace gr::d3d11
             device_context_->OMSetRenderTargets(std::size(render_targets), render_targets, depth_stencil_view);
         }
 
+        // A bm handle's SRV for a draw that binds its own texture slots; white for -1.
+        ID3D11ShaderResourceView* texture_view(int tex_handle)
+        {
+            return get_diffuse_texture_view(tex_handle);
+        }
+
+        // The wrapping diffuse sampler set_mode would bind, honouring the texture filter and picmip.
+        ID3D11SamplerState* wrap_sampler_state()
+        {
+            return state_manager_.lookup_sampler_state(rf::gr::TEXTURE_SOURCE_WRAP, 0, picmip_active_);
+        }
+
         void bind_vs_cbuffer(int index, ID3D11Buffer* cbuffer)
         {
             ID3D11Buffer* vs_cbuffers[] = { cbuffer };

@@ -627,7 +627,10 @@ namespace rf
     static auto& g_boolean_fast_path_var = addr_as_ref<int>(0x01370F64);
     static auto& g_level_solid = addr_as_ref<GSolid*>(0x006460E8);
     static auto& g_geomod_crater_solid = addr_as_ref<GSolid*>(0x00646A20);
+    static auto& geomod_get_crater_solid = addr_as_ref<GSolid*(int shape_index)>(0x004375B0); // null if out of range
     static auto& g_geomod_texture_index = addr_as_ref<int>(0x00647C94);
+    // Bitmaps FUN_004f8740 puts on new crater faces; geomod_init sets all three to the level rock texture.
+    static auto& g_boolean_crater_face_bitmaps = addr_as_ref<int[3]>(0x005A3EA0);
     static auto& g_geomod_scale = addr_as_ref<float>(0x00648598);
     static auto& g_geomod_flags = addr_as_ref<uint8_t>(0x0064858C);       // bit 0x1=local, 0x8=driller
     static auto& g_num_geomods_this_level = addr_as_ref<int>(0x00647C9C);
@@ -658,6 +661,8 @@ namespace rf
     static auto& geomod_debris_level_init = addr_as_ref<void()>(0x0048F400);
 
     static auto& g_cache_clear = addr_as_ref<void()>(0x004F0B90);
+    static auto& set_currently_rendered_room = addr_as_ref<void(GRoom* room)>(0x004D3350);
+    static auto& gr_decal_self_illuminated_mode = addr_as_ref<gr::Mode>(0x01818340);
     static auto& g_get_room_render_list = addr_as_ref<void(GRoom ***rooms, int *num_rooms)>(0x004D3330);
 
     using GRoomRenderItemFn = void(*)(void* user, GSolid* solid);

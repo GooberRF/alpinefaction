@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <cmath>
+#include <new>
 #include <patch_common/FunHook.h>
 #include <patch_common/CallHook.h>
 #include <patch_common/CodeInjection.h>
@@ -22,10 +23,13 @@
 #include "../rf/player/camera.h"
 #include "../rf/gameseq.h"
 #include "../os/console.h"
+#include "../os/os.h"
 #include "../bmpman/bmpman.h"
 #include "../bmpman/fmt_conv_templates.h"
+#include "../rf/gr/gr_light.h"
 #include "destruction.h"
 #include "level.h"
+#include "alpine_terrain.h"
 
 constexpr auto reference_fps = 30.0f;
 constexpr auto reference_frametime = 1.0f / reference_fps;
@@ -39,21 +43,260 @@ std::optional<float> g_sky_room_eye_offset_scale;
 static rf::Vector3 g_adjusted_sky_room_eye_position;
 
 
+// A legacy room-cache batch as geo_cache_prepare_room 0x004F0C00 builds it; the static solid
+// renderer 0x0055F5E0 draws it with `mode` and writes `color` into every vertex's diffuse.
+struct GCacheBatchFace
+{
+    char pad[0x18];
+    rf::GFace* face;
+};
+static_assert(sizeof(GCacheBatchFace) == 0x1C);
+
+struct GCacheBatch
+{
+    char pad0[0x20];
+    rf::gr::Mode mode;
+    unsigned color; // D3DCOLOR
+    char pad28[0x8];
+    GCacheBatchFace* faces;
+    char pad34[0xC];
+    int bm0;
+    int bm1;
+    short num_vertices;
+    short num_faces;
+    char pad4c[0x4];
+};
+static_assert(sizeof(GCacheBatch) == 0x50);
+static_assert(offsetof(GCacheBatch, mode) == 0x20 && offsetof(GCacheBatch, faces) == 0x30);
+static_assert(offsetof(GCacheBatch, bm0) == 0x40 && offsetof(GCacheBatch, num_faces) == 0x4A);
+
+// Legacy renderers draw terrain faces single-textured without a lightmap, modulated by the level ambient.
+static void geo_cache_tint_terrain_batches(rf::GCache& cache)
+{
+    float ambient[3];
+    rf::gr::light_get_ambient(&ambient[0], &ambient[1], &ambient[2]);
+    unsigned color = 0xFF;
+    for (float c : ambient) {
+        color = (color << 8) | static_cast<unsigned>(std::clamp(c * 255.0f + 0.5f, 0.0f, 255.0f));
+    }
+
+    auto* batches = static_cast<GCacheBatch*>(cache.batches);
+    const int num_batches = static_cast<unsigned short>(cache.num_batches);
+    for (int i = 0; i < num_batches; ++i) {
+        GCacheBatch& b = batches[i];
+        if (b.bm0 < 0 || b.bm1 != -1 || b.num_faces <= 0 ||
+            b.mode.get_color_source() != rf::gr::COLOR_SOURCE_TEXTURE || b.mode == rf::gr_decal_self_illuminated_mode) {
+            continue;
+        }
+        // Batches group by texture alone here, so one may mix in unlit faces of other rooms.
+        bool all_terrain = true;
+        for (int f = 0; f < b.num_faces && all_terrain; ++f) {
+            const rf::GFace* face = b.faces[f].face;
+            all_terrain = face && face->attributes.surface_index < 0 && alpine_terrain_find_room(face->which_room);
+        }
+        if (!all_terrain) {
+            continue;
+        }
+        rf::gr::TextureSource ts = b.mode.get_texture_source();
+        if (ts == rf::gr::TEXTURE_SOURCE_CLAMP_1_WRAP_0 || ts == rf::gr::TEXTURE_SOURCE_CLAMP_1_WRAP_0_MOD2X) {
+            ts = rf::gr::TEXTURE_SOURCE_WRAP;
+        }
+        else if (ts == rf::gr::TEXTURE_SOURCE_CLAMP_1_CLAMP_0) {
+            ts = rf::gr::TEXTURE_SOURCE_CLAMP;
+        }
+        b.mode.set_texture_source(ts);
+        b.mode.set_color_source(rf::gr::COLOR_SOURCE_VERTEX_TIMES_TEXTURE);
+        b.color = color;
+    }
+}
+
+// Transformed-vertex array on 0x0055F5E0's stack
+constexpr int legacy_max_cache_vertices = 8000;
+
+// The rooms g_cache_clear 0x004F0B90 drops the caches of. Stock holds 256 with no bounds check, and
+// every terrain chunk has a cache of its own.
+static rf::GRoom* g_geo_cache_rooms[8192];
+static auto& g_geo_cache_num_rooms = addr_as_ref<int>(0x013761B8);
+static auto& g_geo_cache_arena_pos = addr_as_ref<char*>(0x013F1DD4);
+
+// The detail rooms 0x004F0C00 merged into the cache it builds. Stock holds 256 with no bounds check:
+// the 257th overwrites the count, which 0x004F0660 then walks as a room.
+static rf::GRoom* g_geo_cache_detail_rooms[8192];
+static auto& g_geo_cache_num_detail_rooms = addr_as_ref<int>(0x01398CCC);
+
+// Rooms too big for the legacy vertex array, skipped until g_cache_clear next runs. The first build
+// after a clear finds the cache room list empty.
+static std::vector<rf::GRoom*> g_geo_cache_oversized_rooms;
+
+// dbg_geomod_timing: legacy cache builds since the last static solid pass.
+static int g_geo_cache_timing_rooms = 0;
+static int g_geo_cache_timing_chunks = 0;
+static int64_t g_geo_cache_timing_us = 0;
+
+CodeInjection geo_cache_prepare_room_add_detail_room_injection{
+    0x004F0DFD,
+    [](auto& regs) {
+        if (g_geo_cache_num_detail_rooms >= static_cast<int>(std::size(g_geo_cache_detail_rooms))) {
+            regs.eip = 0x004F0EE8; // next detail room, as for an invisible one
+        }
+    },
+};
+
 FunHook<int(rf::GSolid*, rf::GRoom*)> geo_cache_prepare_room_hook{
     0x004F0C00,
     [](rf::GSolid* solid, rf::GRoom* room) {
-        int ret = geo_cache_prepare_room_hook.call_target(solid, room);
-        if (ret == 0 && room->geo_cache) {
-            int num_verts = room->geo_cache->num_vertices;
-            if (num_verts > 8000) {
-                static int once = 0;
-                if (!(once++))
-                    xlog::warn("Not rendering room with {} vertices!", num_verts);
-                room->geo_cache = nullptr;
-                return -1;
+        // Failing makes the caller drop every cache and retry, as it does when cache memory runs out
+        if (!room->geo_cache && g_geo_cache_num_rooms >= static_cast<int>(std::size(g_geo_cache_rooms))) {
+            return -1;
+        }
+        if (g_geo_cache_num_rooms == 0) {
+            g_geo_cache_oversized_rooms.clear();
+        }
+        if (!room->geo_cache && std::find(g_geo_cache_oversized_rooms.begin(), g_geo_cache_oversized_rooms.end(),
+                                          room) != g_geo_cache_oversized_rooms.end()) {
+            return 0;
+        }
+        // Terrain chunks draw from caches of their own (gr_render_static_solid_hook)
+        const bool terrain_chunk = room->is_detail && alpine_terrain_find_room(room);
+        std::vector<rf::GRoom*> hidden;
+        if (terrain_chunk) {
+            // The builder walks the root's detail rooms; an RF2 carve can leave garbage in a detail room's
+            if (room->detail_rooms.size() > 0) {
+                room->detail_rooms.clear();
             }
         }
+        else if (!room->is_detail) {
+            // Out of memory leaves the rest in the parent's cache (drawn twice), never an exception
+            try {
+                for (rf::GRoom* detail : room->detail_rooms) {
+                    if (detail && !detail->is_invisible && alpine_terrain_is_separate_chunk(room, detail)) {
+                        hidden.push_back(detail);
+                        detail->is_invisible = true;
+                    }
+                }
+            }
+            catch (const std::bad_alloc&) {
+            }
+        }
+        char* const arena_pos = g_geo_cache_arena_pos;
+        const int num_cache_rooms = g_geo_cache_num_rooms;
+        const bool timing = !room->geo_cache && geomod_timing_enabled();
+        const int64_t start = timing ? timer::get_i64(1000000) : 0;
+        int ret = geo_cache_prepare_room_hook.call_target(solid, room);
+        if (timing) {
+            g_geo_cache_timing_us += timer::get_i64(1000000) - start;
+            g_geo_cache_timing_rooms++;
+            g_geo_cache_timing_chunks += terrain_chunk;
+        }
+        for (rf::GRoom* detail : hidden) {
+            detail->is_invisible = false;
+        }
+        if (ret == 0 && room->geo_cache) {
+            int num_verts = room->geo_cache->num_vertices;
+            if (num_verts > legacy_max_cache_vertices) {
+                static int num_warnings = 0;
+                if (num_warnings < 32) {
+                    num_warnings++;
+                    xlog::warn("Not rendering room {} (uid {}): {} vertices exceed the legacy renderer's {}",
+                               room->room_index, room->uid, num_verts, legacy_max_cache_vertices);
+                }
+                try {
+                    g_geo_cache_oversized_rooms.push_back(room);
+                }
+                catch (const std::bad_alloc&) {
+                }
+                // Undo the build's last writes: its arena allocation and its entry in the cache room list
+                room->geo_cache = nullptr;
+                g_geo_cache_arena_pos = arena_pos;
+                g_geo_cache_num_rooms = num_cache_rooms;
+                // Failing would drop and rebuild every cache each frame for one room
+                return 0;
+            }
+            geo_cache_tint_terrain_batches(*room->geo_cache);
+        }
         return ret;
+    },
+};
+
+static_assert(offsetof(rf::GRoom, clip_wnd) == 0x16C);
+
+// Legacy renderers draw each terrain chunk once per pass, after the pass's rooms, from its own cache.
+// A chunk is seen through every visible room listing it, so it culls against the union of their
+// portal windows (detail rooms have none of their own).
+CallHook<void(rf::GSolid*, rf::GRoom**, int)> gr_render_static_solid_hook{
+    0x00516D28,
+    [](rf::GSolid* solid, rf::GRoom** rooms, int num_rooms) {
+        gr_render_static_solid_hook.call_target(solid, rooms, num_rooms);
+        if (is_d3d11()) {
+            return;
+        }
+        struct Chunk
+        {
+            rf::GRoom* room;
+            rf::GClipWnd saved_clip_wnd;
+        };
+        static std::vector<Chunk> chunks;
+        static std::vector<int> chunk_of_room; // by room_index, -1 when not collected
+        static std::vector<rf::GRoom*> draw;
+        chunks.clear();
+        draw.clear();
+        // Out of memory skips the chunks this pass; every window changed so far is in `chunks`.
+        try {
+            for (int i = 0; i < num_rooms; ++i) {
+                rf::GRoom* room = rooms[i];
+                for (rf::GRoom* detail : room->detail_rooms) {
+                    if (!detail || detail->is_invisible || detail->face_list.empty() ||
+                        !alpine_terrain_is_separate_chunk(room, detail)) {
+                        continue;
+                    }
+                    const auto idx = static_cast<std::size_t>(detail->room_index);
+                    if (idx >= chunk_of_room.size()) {
+                        chunk_of_room.resize(idx + 1, -1);
+                    }
+                    rf::GClipWnd& wnd = detail->clip_wnd;
+                    if (chunk_of_room[idx] < 0) {
+                        chunks.push_back({detail, wnd});
+                        chunk_of_room[idx] = static_cast<int>(chunks.size() - 1);
+                        wnd = room->clip_wnd;
+                        continue;
+                    }
+                    wnd.left = std::min(wnd.left, room->clip_wnd.left);
+                    wnd.top = std::min(wnd.top, room->clip_wnd.top);
+                    wnd.right = std::max(wnd.right, room->clip_wnd.right);
+                    wnd.bot = std::max(wnd.bot, room->clip_wnd.bot);
+                }
+            }
+            // Culled the way 0x0055F5E0 culls a room, before it builds a cache for the chunk
+            for (const Chunk& c : chunks) {
+                rf::set_currently_rendered_room(c.room);
+                if (!rf::gr::cull_bounding_box(c.room->bbox_min, c.room->bbox_max)) {
+                    draw.push_back(c.room);
+                }
+            }
+        }
+        catch (const std::bad_alloc&) {
+            draw.clear();
+            xlog::warn("Out of memory drawing terrain chunks");
+        }
+        if (!draw.empty()) {
+            // The renderer advances its batch scroll clock by a frame per call
+            auto& scroll_clock = addr_as_ref<float>(0x01EA574C);
+            const float clock = scroll_clock;
+            scroll_clock = clock - rf::frametime;
+            gr_render_static_solid_hook.call_target(solid, draw.data(), static_cast<int>(draw.size()));
+            scroll_clock = clock;
+        }
+        for (const Chunk& c : chunks) {
+            c.room->clip_wnd = c.saved_clip_wnd;
+            chunk_of_room[static_cast<std::size_t>(c.room->room_index)] = -1;
+        }
+        if (g_geo_cache_timing_rooms > 0) {
+            rf::console::print("[RF2 timing] legacy cache builds: {} room(s), {} terrain chunk(s), {:.2f} ms",
+                g_geo_cache_timing_rooms, g_geo_cache_timing_chunks, g_geo_cache_timing_us / 1000.0);
+            g_geo_cache_timing_rooms = 0;
+            g_geo_cache_timing_chunks = 0;
+            g_geo_cache_timing_us = 0;
+        }
     },
 };
 
@@ -132,6 +375,29 @@ CodeInjection GSolid_get_ambient_color_from_lightmap_patch{
         // Optimization: instead of locking the lightmap texture get color data from lightmap pixels stored in RAM
         const uint8_t* src_ptr = lm.buf + (y * lm.w + x) * 3;
         color.set(src_ptr[0], src_ptr[1], src_ptr[2], 255);
+    },
+};
+
+// Terrain faces have no surface, so stock returns white ("no lightmap") for anything on them.
+FunHook<rf::Color* __fastcall(rf::GSolid*, int, rf::Color*, rf::GFace*, rf::Vector3*)> GSolid_get_ambient_color_hook{
+    0x004E5C60,
+    [](rf::GSolid* solid, int edx, rf::Color* out, rf::GFace* face, rf::Vector3* pos) FASTCALL_LAMBDA -> rf::Color* {
+        if (face && pos && face->attributes.surface_index < 0) {
+            if (const AlpineTerrainRoomRef* ref = alpine_terrain_find_room(face->which_room)) {
+                const AlpineTerrain& t = alpine_terrain_get_all()[ref->terrain];
+                const float p[3] = {pos->x, pos->y, pos->z};
+                const float n[3] = {face->plane.normal.x, face->plane.normal.y, face->plane.normal.z};
+                float texel[3];
+                alpine_terrain_sample_light(t, alpine_terrain_face_kind(alpine_terrain_grid(t), *face), p, n, texel);
+                // Capped below 255 so the D3D11 mesh path never reads it as "no lightmap"
+                auto to_byte = [](float v) {
+                    return static_cast<rf::ubyte>(std::clamp(v * 255.0f + 0.5f, 0.0f, 254.0f));
+                };
+                out->set(to_byte(texel[0]), to_byte(texel[1]), to_byte(texel[2]), 255);
+                return out;
+            }
+        }
+        return GSolid_get_ambient_color_hook.call_target(solid, edx, out, face, pos);
     },
 };
 
@@ -433,6 +699,103 @@ CodeInjection g_decal_add_internal_cmp_global_weak_limit_injection{
     },
 };
 
+struct DecalClipBBox
+{
+    rf::Vector3 min;
+    rf::Vector3 max;
+    rf::GFace* faces; // linked through next[FACE_LIST_BBOX]
+    int field_1c;
+    DecalClipBBox* children[2];
+};
+static_assert(offsetof(DecalClipBBox, faces) == 0x18 && offsetof(DecalClipBBox, children) == 0x20);
+
+// Stock decal passes keep their room bbox worklist in a 1024-slot stack array with no bounds check,
+// filled with every detail room of up to two rooms: a parent owning ~1000 detail rooms (large
+// terrains) overwrote the return address. Same traversal, unbounded worklist. Neither pass nests
+// (0x004D5440 runs them in turn), so the worklist is kept between calls. Out of memory ends the
+// traversal early: the decal keeps the faces it reached, since the stock worklist is what overflows.
+template<typename F>
+static void decal_for_each_room_bbox_face(rf::GDecal* decal, F&& fn)
+{
+    static std::vector<DecalClipBBox*> work;
+    work.clear();
+    try {
+        for (rf::GRoom* room : {decal->room, decal->room2}) {
+            if (!room) {
+                continue;
+            }
+            work.push_back(reinterpret_cast<DecalClipBBox*>(room->bbox));
+            for (rf::GRoom* detail : room->detail_rooms) {
+                if (detail) {
+                    work.push_back(reinterpret_cast<DecalClipBBox*>(detail->bbox));
+                }
+            }
+        }
+        while (!work.empty()) {
+            DecalClipBBox* box = work.back();
+            work.pop_back();
+            if (!box || !AddrCaller{0x00507990}.c_call<bool>(&box->min, &box->max, &decal->bb_min, &decal->bb_max)) {
+                continue;
+            }
+            for (DecalClipBBox* child : box->children) {
+                if (child) {
+                    work.push_back(child);
+                }
+            }
+            for (rf::GFace* face = box->faces; face; face = face->next[rf::FACE_LIST_BBOX]) {
+                fn(face);
+            }
+        }
+    }
+    catch (const std::bad_alloc&) {
+        work.clear();
+        xlog::warn("Out of memory placing a decal");
+    }
+}
+
+FunHook<void(rf::GDecal*)> g_decal_clip_to_geometry_hook{
+    0x004D6910,
+    [](rf::GDecal* decal) {
+        auto& decal_face_list_size = addr_as_ref<int>(0x009BB6F0);
+        if (decal_face_list_size > 0 || !decal->room) {
+            g_decal_clip_to_geometry_hook.call_target(decal);
+            return;
+        }
+        decal_for_each_room_bbox_face(decal, [decal](rf::GFace* face) {
+            if (!(face->attributes.flags & 0x10)) {
+                AddrCaller{0x004D6240}.c_call<void>(decal, face, 0);
+            }
+        });
+    },
+};
+
+// Room branch of the decal orientation pass 0x004D5DA0; the solid branch and the tail stay stock.
+CodeInjection g_decal_orient_room_faces_injection{
+    0x004D5DC2,
+    [](auto& regs) {
+        auto* decal = addr_as_ref<rf::GDecal*>(regs.esp + 0x1040);
+        if (!decal->room) {
+            return;
+        }
+        const float min_dot = addr_as_ref<float>(0x00589570);
+        decal_for_each_room_bbox_face(decal, [decal, min_dot](rf::GFace* face) {
+            const auto& attr = face->attributes;
+            if (attr.portal_id > 0 || attr.is_liquid() || (attr.flags & 0x10)) {
+                return;
+            }
+            if (!(AddrCaller{0x0040A0B0}.this_call<double>(&face->plane.normal, &decal->orient.fvec) > min_dot)) {
+                return;
+            }
+            if (AddrCaller{0x004D60D0}.c_call<bool>(face, decal)) {
+                AddrCaller{0x004D7F70}.this_call<void>(&rf::g_decal_pass_list_b, face->plane.normal);
+                AddrCaller{0x0045EC40}.this_call<void>(&rf::g_decal_pass_list_a, face);
+            }
+        });
+        regs.edi = decal;
+        regs.eip = 0x004D5FE2;
+    },
+};
+
 void decal_patch_limit(int max_decals)
 {
     unsigned decal_farray_get_addresses[] = {
@@ -726,11 +1089,21 @@ void g_solid_do_patch()
     // Fix crash in geometry rendering
     geo_cache_prepare_room_hook.install();
 
+    // Legacy renderers: terrain chunks draw from caches of their own
+    gr_render_static_solid_hook.install();
+    write_mem_ptr(0x004F0BA7 + 1, &g_geo_cache_rooms); // g_cache_clear
+    write_mem_ptr(0x004F0BD9 + 1, &g_geo_cache_rooms); // g_cache_reset_after_boolean
+    write_mem_ptr(0x004F1BF6 + 3, &g_geo_cache_rooms); // geo_cache_prepare_room
+    write_mem_ptr(0x004F06F5 + 1, &g_geo_cache_detail_rooms); // 0x004F0660
+    write_mem_ptr(0x004F0E07 + 3, &g_geo_cache_detail_rooms); // geo_cache_prepare_room
+    geo_cache_prepare_room_add_detail_room_injection.install();
+
     // 32-bit color format - geomod
     GSurface_calculate_lightmap_color_conv_patch.install();
     GSurface_alloc_lightmap_color_conv_patch.install();
     // 32-bit color format - ambient color
     GSolid_get_ambient_color_from_lightmap_patch.install();
+    GSolid_get_ambient_color_hook.install();
     // water
     AsmWriter(0x004E68B0, 0x004E68B6).nop();
     g_proctex_update_water_patch.install();
@@ -766,6 +1139,8 @@ void g_solid_do_patch()
     decal_patch_limit(512);
     AsmWriter{0x004D54AF}.nop(2); // fix subhook trampoline preparation error
     g_decal_add_internal_cmp_global_weak_limit_injection.install();
+    g_decal_clip_to_geometry_hook.install();
+    g_decal_orient_room_faces_injection.install();
 
     // When rendering semi-transparent objects do not group objects that are behind a detail room.
     // Grouping breaks sorting in many cases because orientation and sizes of detail rooms and objects

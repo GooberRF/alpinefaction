@@ -2,6 +2,11 @@
 
 #include "../../rf/gr/gr.h"
 
+namespace rf
+{
+    struct GRoom;
+}
+
 namespace gr::d3d11 {
     bool set_render_target(int bm_handle);
     void invalidate_texture_cache();
@@ -18,4 +23,6 @@ namespace gr::d3d11 {
     void flush_frame_buffers();
     void flush_outlines_before_fpgun();
     bool trigger_damage_vignette(unsigned dir_mask);
+    // Frees a carved detail room's render cache; the room builds a new one when next drawn.
+    void release_detail_room_render_cache(rf::GRoom* room);
 }

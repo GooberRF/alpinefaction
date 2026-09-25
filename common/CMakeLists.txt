@@ -24,6 +24,10 @@ set(SRCS
     include/common/utils/string-utils.h
     include/common/utils/bool-utils.h
     include/common/bitmap/formats.h
+    include/common/lightmap/alpine_lightmap.h
+    include/common/lightmap/alpine_lightmap_reader.h
+    include/common/terrain/alpine_terrain.h
+    include/common/terrain/alpine_terrain_reader.h
     include/common/atx/spec.h
     include/common/atx/parse.h
     include/common/version/version.h

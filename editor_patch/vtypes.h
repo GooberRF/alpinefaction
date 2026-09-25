@@ -82,6 +82,11 @@ namespace rf
             return AddrCaller{0x004D00C0}.this_call<int>(this, pos, origin);
         }
 
+        [[nodiscard]] int tell() const
+        {
+            return AddrCaller{0x004D01A0}.this_call<int>(this);
+        }
+
         int read(void *buf, std::size_t buf_len, int min_ver = 0, int unused = 0)
         {
             return AddrCaller{0x004D0F40}.this_call<int>(this, buf, buf_len, min_ver, unused);
@@ -437,6 +442,51 @@ static auto& bm_get_mipmap_info = addr_as_ref<void(int bm_handle, int* width, in
                                                   int* num_pixels_in_all_levels, int* mip_levels)>(0x004BCBD0);
 // Nonzero when the bitmap's pixel format carries alpha (formats 4, 5 and 7).
 static auto& bm_has_alpha = addr_as_ref<char __cdecl(int bm_handle)>(0x004BCC60);
+// A user bitmap (common/bitmap/formats.h format), which holds no pixels of its own.
+static auto& bm_create = addr_as_ref<int __cdecl(int format, int w, int h)>(0x004BDF10);
+// Only unlinks the entry: its texture is freed when another bitmap takes the cache slot.
+static auto& bm_release = addr_as_ref<void __cdecl(int bm_handle)>(0x004BDEB0);
+// Returns the pixel format.
+static auto& bm_lock = addr_as_ref<int __cdecl(int bm_handle, void** pixels, void** palette)>(0x004BCCD0);
+static auto& bm_unlock = addr_as_ref<void __cdecl(int bm_handle)>(0x004BDC50);
+
+struct GrLockInfo
+{
+    int bm_handle;
+    int section;
+    int format;
+    uint8_t* data;
+    int w;
+    int h;
+    int stride_in_bytes;
+    int mode;
+};
+static_assert(sizeof(GrLockInfo) == 0x20);
+static auto& gr_lock = addr_as_ref<uint8_t __cdecl(int bm_handle, int section, GrLockInfo* lock, int mode)>(0x004BAA60);
+static auto& gr_unlock = addr_as_ref<void __cdecl(GrLockInfo* lock)>(0x004BAA90);
+
+// RED's D3D texture cache, one slot per bitmap index
+struct GrTextureSection
+{
+    void* texture;
+    char _pad_04[0x1C];
+};
+static_assert(sizeof(GrTextureSection) == 0x20);
+
+struct GrTextureSlot
+{
+    int bm_handle;
+    int16_t section_count;
+    char _pad_06[6];
+    GrTextureSection* sections;
+};
+static_assert(sizeof(GrTextureSlot) == 0x10);
+
+static auto& gr_texture_slots = addr_as_ref<GrTextureSlot*>(0x0183C3F8);
+static auto& gr_texture_create = addr_as_ref<int __cdecl(int bm_handle, GrTextureSlot* slot)>(0x004F5E40);
+static auto& gr_texture_free = addr_as_ref<void __cdecl(GrTextureSlot* slot)>(0x004F4880);
+static auto& gr_api = addr_as_ref<int>(0x014CF754);
+constexpr int gr_api_d3d = 0x66;
 
 // Primitives CBitmapPreviewDialog::OnPaint (0x0044C1B0) uses to draw a texture straight into a
 // control's own window rather than through its device context.
@@ -496,7 +546,7 @@ static auto& draw_link_line = addr_as_ref<void(float, float, float, float, float
 static auto& project_to_screen = addr_as_ref<uint32_t(void* screen_out, const void* world_pos)>(0x004C5E30);
 static auto& set_draw_color = addr_as_ref<void(uint32_t r, uint32_t g, uint32_t b, uint32_t a)>(0x004B9700);
 static auto& gr_set_bitmap = addr_as_ref<void(int bm_handle, int unk)>(0x004B97E0);
-// Nonzero while the viewports draw textured rather than wireframe.
+// View > Show Just Textures: nonzero draws level faces fullbright, without lightmaps.
 static auto& editor_textures_enabled = addr_as_ref<int>(0x006C9AA8);
 // Set around a .vfx draw so the renderer takes its transparency path.
 static auto& vfx_render_transparent = addr_as_ref<int>(0x0059E21C);
@@ -515,6 +565,20 @@ static auto& draw_wireframe_box_3d =
 inline uint32_t editor_line_mode()
 {
     return *reinterpret_cast<uint32_t*>(0x0147d260);
+}
+static auto& gr_line_3d = addr_as_ref<uint8_t __cdecl(const Vector3* p0, const Vector3* p1, uint32_t mode)>(0x004CB180);
+// Origin at +0, unit direction at +0xC, for the view last set up
+static auto& screen_to_ray = addr_as_ref<void __cdecl(float* ray_out, float x, float y)>(0x004C5FB0);
+
+// The main frame's four views; a view whose +0x6C is set repaints from RED's idle loop.
+constexpr int editor_num_views = 4;
+inline void* editor_view_at(int i)
+{
+    return g_main_frame && i >= 0 && i < editor_num_views ? g_main_frame->views[i] : nullptr;
+}
+inline void editor_view_mark_repaint(void* view)
+{
+    if (view) struct_field_ref<uint8_t>(view, 0x6C) = 1;
 }
 
 // ─── Render Params ───────────────────────────────────────────────────────────
@@ -673,7 +737,9 @@ static auto& gr_d3d_render_mode_cache = addr_as_ref<int>(0x01838dc0);
 
 // Render mode and polygon submission
 static auto& gr_set_mode = addr_as_ref<void(int)>(0x004BA730);
-static auto& gr_poly_render = addr_as_ref<uint32_t(int, void**, int, float, int, float)>(0x004CB1C0);
+// Fanned from vertex 0; mode as FUN_0047e140 packs it (0x004E8400 hands it to FUN_004e0490).
+static auto& gr_poly_render = addr_as_ref<uint8_t __cdecl(int count, GrVertex** verts, uint32_t tmap_flags, uint32_t mode,
+                                                          int override_z, float z)>(0x004CB1C0);
 
 // Computes clip flags from view-space coords in a GrVertex
 static auto& gr_compute_clip_flags = addr_as_ref<uint32_t(void*)>(0x004c5df0);

@@ -257,6 +257,7 @@ namespace gr::d3d11
                     gpu_vert.v0_pan_speed = 0.0f;
                     gpu_vert.u1 = 0.0f;
                     gpu_vert.v1 = 0.0f;
+                    gpu_vert.lm_chart = -1.0f;
                 }
                 for (int face_index = 0; face_index < chunk.num_faces; ++face_index) {
                     auto& face = chunk.faces[face_index];

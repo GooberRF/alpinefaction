@@ -5,9 +5,11 @@
 #include <patch_common/MemUtils.h>
 #include <mbstring.h>
 #include <algorithm>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include <common/terrain/alpine_terrain.h>
 
 extern "C" IMAGE_DOS_HEADER __ImageBase;
 
@@ -181,7 +183,8 @@ enum class DedObjectType : int
     DED_WEATHER_REGION = 0x1B, // Alpine 1.4
     // 0x1C is reserved
     DED_PROJECTION_CAMERA = 0x1D, // Alpine 1.5
-    DED_ROPE_EMITTER = 0x1E // Alpine 1.5
+    DED_ROPE_EMITTER = 0x1E, // Alpine 1.5
+    DED_TERRAIN = 0x1F // Alpine 1.5
 };
 
 struct Vector3
@@ -622,6 +625,73 @@ struct DedRopeEmitter : DedObject
     float preview_length = 0.0f;
     int32_t preview_key[ded_rope_preview_key_len] = {};
     bool preview_valid = false;
+};
+
+// Heavy per-terrain arrays. Shared copy-on-write between a terrain, the properties dialog's staging
+// and clipboard copies: an edit builds a new grid and swaps the pointer, never mutating a shared one.
+struct TerrainGrid
+{
+    uint32_t nx = 0;
+    uint32_t nz = 0;
+    uint32_t weight_res_mul = 1;
+    std::vector<uint16_t> heights; // nx * nz
+    std::vector<uint8_t> weights;  // alpine_terrain::blob_weights_bytes: two RGBA8 maps
+    std::vector<uint8_t> holes;    // alpine_terrain::bitmask_bytes
+    std::vector<uint8_t> diag;     // alpine_terrain::bitmask_bytes
+    // alpine_terrain::overlay_map_bytes while the terrain has overlays, else empty
+    std::vector<uint8_t> overlay;
+};
+
+struct DedTerrainLayer
+{
+    std::string texture = alpine_terrain::default_layer_texture;
+    float uv_scale = alpine_terrain::default_uv_scale;
+    bool triplanar = false;
+};
+
+struct DedTerrainOverlay : DedTerrainLayer
+{
+    bool break_tiling = true;
+
+    DedTerrainOverlay() { texture.clear(); }
+};
+
+// Everything a terrain carries beyond DedObject, as one copyable value.
+struct DedTerrainData
+{
+    float cell_size = alpine_terrain::default_cell_size;
+    float height_min = 0.0f;
+    float height_range = alpine_terrain::default_height_range;
+    uint32_t chunk_cells = alpine_terrain::default_chunk_cells;
+    uint8_t lightmap_density = alpine_terrain::lightmap_density_default;
+    uint8_t flags = 0; // alpine_terrain::flag_*
+    float thickness = alpine_terrain::default_thickness;
+    float skirt_depth = alpine_terrain::default_skirt_depth;
+    std::string underside_texture = alpine_terrain::default_layer_texture;
+    std::string crater_texture; // empty = level geomod texture
+    std::vector<DedTerrainLayer> layers;
+    std::vector<DedTerrainOverlay> overlays;
+    std::shared_ptr<const TerrainGrid> grid;
+    // Chunk geo mask (alpine_terrain.h) over geo_chunks_layout, the layout it was set on; read through
+    // terrain_chunk_geoable, which remaps it to the current one. Empty = every chunk.
+    std::vector<uint8_t> geo_chunks;
+    alpine_terrain::ChunkLayout geo_chunks_layout{};
+    // Written at save from the compiled rooms (terrain_build.cpp); read from the level on load.
+    std::vector<alpine_terrain::ChunkMapping> build_mapping;
+    // Not serialized: per chunk, the uid of the compiled room holding it in the current solid
+    // (alpine_terrain::no_room_uid for a chunk with no faces), and the geometry and material
+    // fingerprints (alpine_terrain.h) of the terrain it was built from.
+    std::vector<int32_t> built_room_uids;
+    uint64_t built_geometry_fingerprint = 0;
+    uint64_t built_material_fingerprint = 0;
+};
+
+// Axis-aligned: pos is the grid origin and orient is kept at identity.
+struct DedTerrain : DedObject
+{
+    DedTerrainData data;
+    // Not serialized: a save already showed the "no compiled geometry" message box for it
+    bool unbuilt_save_warned = false;
 };
 
 struct DedBoltEmitter : DedObject
