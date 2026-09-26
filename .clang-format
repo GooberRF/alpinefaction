@@ -1,3 +1,5 @@
+# THIS FILE IS NOT USED AT THIS TIME.
+#
 # Tested with clang-format 6.0.1
 AccessModifierOffset: -4
 AlignEscapedNewlines: Left
