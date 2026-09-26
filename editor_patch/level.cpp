@@ -111,9 +111,8 @@ CodeInjection CDedLevel_LoadLevel_patch1{
     },
 };
 
-// Capture Glacier-specific RFL chunks (0x6ED-prefixed ID) verbatim so they can be
-// re-emitted unchanged on the next save.
-static void retained_chunk_deserialize(CDedLevel& level, rf::File& file, uint32_t chunk_id, std::size_t chunk_len)
+// Capture another editor's RFL chunk verbatim so it can be re-emitted unchanged on the next save.
+static void retained_chunk_deserialize(CDedLevel& level, rf::File& file, uint32_t chunk_id, std::size_t chunk_len, const char* editor)
 {
     auto& chunks = level.GetAlpineLevelProperties().retained_chunks;
     std::size_t remaining = chunk_len;
@@ -146,11 +145,11 @@ static void retained_chunk_deserialize(CDedLevel& level, rf::File& file, uint32_
         remaining -= got;
     }
 
-    xlog::debug("[RetainedChunk] retained Glacier chunk id=0x{:08X} len={}", chunk_id, chunk.data.size());
+    xlog::debug("[RetainedChunk] retained {} chunk id=0x{:08X} len={}", editor, chunk_id, chunk.data.size());
     chunks.push_back(std::move(chunk));
 }
 
-// Re-write all retained Glacier chunks verbatim, preserving their original IDs.
+// Re-write all retained foreign-editor chunks verbatim, preserving their original IDs.
 static void retained_chunks_serialize(CDedLevel& level, rf::File& file)
 {
     auto& chunks = level.GetAlpineLevelProperties().retained_chunks;
@@ -169,12 +168,12 @@ CodeInjection CDedLevel_LoadLevel_patch2{
     [](auto& regs) {
         auto& file = *static_cast<rf::File*>(regs.esi);
 
-        // Preserve unknown chunks from Glacier (0x6ED-prefixed IDs).
+        // Preserve unknown chunks from other editors.
         uint32_t raw_chunk_id = static_cast<uint32_t>(regs.edi);
-        if (is_glacier_chunk_id(raw_chunk_id)) {
+        if (const char* editor = foreign_chunk_editor(raw_chunk_id)) {
             auto& level = *static_cast<CDedLevel*>(regs.ebp);
             std::size_t chunk_size = regs.ebx;
-            retained_chunk_deserialize(level, file, raw_chunk_id, chunk_size);
+            retained_chunk_deserialize(level, file, raw_chunk_id, chunk_size, editor);
             regs.eip = 0x0043090C;
             return;
         }
@@ -923,7 +922,7 @@ CodeInjection CDedLevel_SaveLevel_patch{
         // Write rope emitter objects chunk
         rope_emitter_serialize_chunk(level, file);
 
-        // Re-write any Glacier chunks
+        // Re-write any foreign-editor chunks
         retained_chunks_serialize(level, file);
     },
 };

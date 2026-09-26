@@ -29,17 +29,30 @@ constexpr int alpine_weather_region_chunk_id = 0x0AFBAE06;
 constexpr int alpine_projection_camera_chunk_id = 0x0AFBAE08;
 constexpr int alpine_rope_emitter_chunk_id = 0x0AFBAE0A;
 
-// Glacier saves new RFL chunks for its own purposes (metadata). Alpine Faction can
-// neither read nor parse these, but AlpineEditor retains them verbatim on load and
-// re-emits them on save so the originating editor can still read the file properly.
-constexpr uint32_t glacier_chunk_id_mask = 0xFFF00000u;
-constexpr uint32_t glacier_chunk_id_prefix = 0x6ED00000u;
-inline bool is_glacier_chunk_id(uint32_t id)
+// Other editors save RFL chunks of their own that Alpine Faction can neither read nor parse.
+// AlpineEditor retains them verbatim on load and re-emits them on save, so the originating
+// editor can still read the file properly.
+constexpr uint32_t foreign_chunk_id_mask = 0xFFF00000u;
+struct ForeignRflChunkSource {
+    uint32_t prefix;
+    const char* editor;
+};
+constexpr ForeignRflChunkSource foreign_chunk_sources[] = {
+    {0x6ED00000u, "Glacier"},
+    {0x5ED00000u, "RED+"},
+};
+// Name of the editor that owns this chunk id, or nullptr for anything that is not a foreign chunk.
+inline const char* foreign_chunk_editor(uint32_t id)
 {
-    return (id & glacier_chunk_id_mask) == glacier_chunk_id_prefix;
+    for (const auto& src : foreign_chunk_sources) {
+        if ((id & foreign_chunk_id_mask) == src.prefix) {
+            return src.editor;
+        }
+    }
+    return nullptr;
 }
 
-// A retained RFL section captured verbatim from Glacier.
+// A retained RFL section captured verbatim from another editor.
 struct RetainedRflChunk {
     uint32_t id;
     std::vector<uint8_t> data;
@@ -530,7 +543,7 @@ struct AlpineLevelProperties
     // Alpine rope emitter objects
     std::vector<DedRopeEmitter*> rope_emitter_objects;
 
-    // Retained Glacier RFL sections (0x6ED-prefixed IDs).
+    // Retained foreign-editor RFL sections
     std::vector<RetainedRflChunk> retained_chunks;
 
     static constexpr std::uint32_t current_alpine_chunk_version = 5u;

@@ -59,6 +59,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Support linking events and triggers to detail brushes in the level editor
 - Linking a `Bolt Emitter` or `Rope Emitter` to a `Target` in the level editor sets the emitter's target to it
 - `Owner_Gate` can now take its capture points from linked `Capture_Point_Handler` events
+- Retain RED+-specific chunks when RFLs are loaded and re-saved in the level editor
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Add `ui_color_console` console command to set the console background color
