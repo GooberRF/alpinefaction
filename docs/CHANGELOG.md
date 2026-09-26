@@ -62,7 +62,8 @@ Version 1.5.0 (Trillium): Not yet released
 - Add `ui_color_console` console command to set the console background color
 
 [@is-this-c](https://github.com/is-this-c)
-- Add `GrNewFont::draw_3d`
+- Support TrueType fonts in 3D text rendering
+- Render world HUD text (player labels, damage numbers, ping labels, countdowns) in 3D for smooth sub-pixel motion
 - Allow TrueType fonts to be rendered into bitmaps with mipmaps (D3D11 only)
 - Do not kick a player, if they join right before limbo
 

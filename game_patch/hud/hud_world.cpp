@@ -287,7 +287,7 @@ static void render_string_projected(
     }
 }
 
-static float world_y_units_per_pixel(const rf::Vector3 &pos) {
+static float world_y_units_per_pixel(const rf::Vector3& pos) {
     const rf::Vector3 delta = pos - rf::gr::view_pos;
     const float z = rf::gr::view_matrix.fvec.dot_prod(delta);
     if (z <= 1e-6f) {
@@ -296,7 +296,8 @@ static float world_y_units_per_pixel(const rf::Vector3 &pos) {
     return z / (rf::gr::screen.clip_height * .5f * rf::gr::matrix_scale.y);
 }
 
-static float world_x_units_per_pixel(const rf::Vector3 &pos) {
+[[maybe_unused]]
+static float world_x_units_per_pixel(const rf::Vector3& pos) {
     const rf::Vector3 delta = pos - rf::gr::view_pos;
     const float z = rf::gr::view_matrix.fvec.dot_prod(delta);
     if (z <= 1e-6f) {
@@ -305,6 +306,8 @@ static float world_x_units_per_pixel(const rf::Vector3 &pos) {
     return z / (rf::gr::screen.clip_width * .5f * rf::gr::matrix_scale.x);
 }
 
+#define USE_FAKE_STRING_3D 0
+
 static void render_string_3d(
     rf::Vector3 pos,
     const char* const string,
@@ -312,11 +315,10 @@ static void render_string_3d(
     const int offset_y,
     const int font_num,
     const rf::gr::Color color,
-    [[maybe_unused]] const rf::Matrix3& orient =
-        rf::local_player->cam->camera_entity->eye_orient
+    const rf::Matrix3* const orient = nullptr
 ) {
     const bool project =
-    #ifdef USE_FAKE_STRING_3D
+    #if USE_FAKE_STRING_3D
         true;
     #else
         false;
@@ -334,19 +336,41 @@ static void render_string_3d(
             color.alpha
         );
     } else {
-        const rf::Matrix3& unscaled_matrix = addr_as_ref<rf::Matrix3>(0x018186A0);
         const float scale = world_y_units_per_pixel(pos);
+        if (scale <= .0f) {
+            return;
+        }
         if (offset_x != 0) {
-            pos += unscaled_matrix.rvec * static_cast<float>(offset_x) * scale;
+            pos += rf::gr::unscaled_matrix.rvec * static_cast<float>(offset_x) * scale;
         }
         if (offset_y != 0) {
-            pos -= unscaled_matrix.uvec * static_cast<float>(offset_y) * scale;
+            pos -= rf::gr::unscaled_matrix.uvec * static_cast<float>(offset_y) * scale;
+        }
+        rf::Matrix3 default_orient{};
+        if (!orient) {
+            default_orient = rf::local_player->cam->camera_entity->eye_orient;
+
+            rf::Entity* const entity =
+                    rf::entity_from_handle(rf::local_player->entity_handle);
+            if (rf::local_player->cam->mode == rf::CAMERA_FIRST_PERSON
+                && entity
+                && rf::entity_in_vehicle(entity))
+            {
+                rf::Entity* const host =
+                    rf::entity_from_handle(entity->host_handle);
+                if (rf::entity_is_driller(host)) {
+                    rf::Vector3 pos{};
+                    // player_cockpit_get_camera_pos
+                    AddrCaller{0x004A8690}
+                        .c_call(rf::local_player, host, &pos, &default_orient);
+                }
+            }
         }
         const rf::gr::Color prev_color{rf::gr::screen.current_color};
         rf::gr::set_color(color);
         rf::gr::string_3d(
             &pos,
-            &orient,
+            orient ? orient : &default_orient,
             scale,
             string,
             font_num,
@@ -354,21 +378,6 @@ static void render_string_3d(
         );
         rf::gr::set_color(prev_color);
     }
-}
-
-static void render_string_3d(
-    rf::Vector3 pos,
-    const char* const string,
-    const int offset_x,
-    const int offset_y,
-    const int font_num,
-    const rf::ubyte r,
-    const rf::ubyte g,
-    const rf::ubyte b,
-    const rf::ubyte a,
-    const rf::Matrix3& orient = rf::local_player->cam->camera_entity->eye_orient
-) {
-    render_string_3d(pos, string, offset_x, offset_y, font_num, rf::gr::Color{r, g, b, a}, orient);
 }
 
 static WorldHUDView make_world_hud_view(rf::Vector3 pos, bool stay_inside_fog = true)
@@ -805,7 +814,7 @@ void build_player_labels() {
             label_a = teammate_override_a;
         }
 
-        render_string_3d(string_pos, label.c_str(), -half_text_width, centered_offset_y, font, label_r, label_g, label_b, label_a);
+        render_string_3d(string_pos, label.c_str(), -half_text_width, centered_offset_y, font, {label_r, label_g, label_b, label_a});
 
         if (demo_player_info) {
             render_player_info_bars(string_pos, centered_offset_y - 2, player_entity->life,
@@ -833,7 +842,7 @@ void build_ephemeral_world_hud_sprite_icons() {
 
         auto text_pos = es.pos;
         render_string_3d(text_pos, es.label.c_str(), -half_text_width, -25,
-            font, es.color.red, es.color.green, es.color.blue, es.color.alpha);
+            font, {es.color.red, es.color.green, es.color.blue, es.color.alpha});
     }
 }
 
@@ -858,10 +867,9 @@ void build_ephemeral_world_hud_strings() {
             string_pos.y += progress * 3.f;
 
             // Apply wind.
-            const float elapsed_time = es.timestamp.time_since_sec();
+            const float elapsed_sec = es.timestamp.time_since_sec();
             const float wind_amplitude = .15f;
-            const float wind_phase =
-                std::fmod(elapsed_time * .002f, 2.f * std::numbers::pi_v<float>);
+            const float wind_phase = elapsed_sec * 2.f;
             string_pos.x +=
                 wind_amplitude * std::sin(wind_phase + es.wind_phase_offset);
             string_pos.z +=
@@ -874,7 +882,7 @@ void build_ephemeral_world_hud_strings() {
         render_string_3d(
             string_pos,
             label.c_str(),
-            -half_text_width / 2,
+            -half_text_width,
             -25,
             font,
             es.color
@@ -921,7 +929,7 @@ void build_bag_icon()
         rf::Vector3 text_pos = vec;
         text_pos.y += WorldHUDRender::bag_countdown_offset;
 
-        render_string_3d(text_pos, label.c_str(), -half_text_width, -25, font, 255, 220, 64, 255);
+        render_string_3d(text_pos, label.c_str(), -half_text_width, -25, font, {255, 220, 64, 255});
     }
 }
 
@@ -937,7 +945,7 @@ static void render_world_hud_countdown(const rf::Vector3& anchor, float y_offset
     rf::Vector3 text_pos = anchor;
     text_pos.y += y_offset;
 
-    render_string_3d(text_pos, label.c_str(), -half_text_width, -25, font, 255, 220, 64, 255);
+    render_string_3d(text_pos, label.c_str(), -half_text_width, -25, font, {255, 220, 64, 255});
 }
 
 static int sal_icon_carrier(bool carrier_is_friendly)

@@ -367,6 +367,7 @@ namespace rf::gr
     static auto& glow_3d_bitmap_mode = addr_as_ref<Mode>(0x01775B30);
     static auto& glow_3d_poly_no_z_mode = addr_as_ref<Mode>(0x01775B14);
 
+    static auto& unscaled_matrix = addr_as_ref<rf::Matrix3>(0x018186A0);
     static auto& view_matrix = addr_as_ref<Matrix3>(0x018186C8);
     static auto& view_pos = addr_as_ref<Vector3>(0x01818690);
     static auto& eye_pos = addr_as_ref<Vector3>(0x01818680);

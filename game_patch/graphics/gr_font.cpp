@@ -100,7 +100,7 @@ private:
     int char_map_[256];
 };
 
-constexpr int ttf_font_flag = 0x1000;
+constexpr int TTF_FONT_FLAG = 0x1000;
 
 FT_Library g_freetype_lib = nullptr;
 int g_default_font_id = 0;
@@ -331,6 +331,9 @@ GrNewFont::GrNewFont(std::string_view name) :
         throw std::runtime_error{"failed to load font"};
     }
 
+    // In case, `draw_3d` scales down our glyph. 
+    bm_set_user_mipmap(bitmap_, true);
+
     if (!bm_fill(bitmap_, 0x00FFFFFFu)) {
         xlog::error("bm_fill failed for font atlas");
         throw std::runtime_error{"failed to initialize font atlas"};
@@ -466,12 +469,17 @@ void GrNewFont::draw_3d(
     const rf::Vector3 right = orient.rvec * scale;
     const rf::Vector3 up = orient.uvec * scale;
 
+    rf::Vector3 pen_origin = pos
+        - up
+        * static_cast<float>(baseline_y_ + line_spacing_);
+
     int line = 0;
     float pen_x = 0.f;
     for (const char ch : text) {
         if (ch == '\n') {
             ++line;
             pen_x = 0.f;
+            pen_origin -= up * static_cast<float>(line_spacing_);
             continue;
         }
 
@@ -482,10 +490,6 @@ void GrNewFont::draw_3d(
 
         const GlyphInfo& glyph = glyphs_[glyph_idx];
         if (glyph.bm_w > 0 && glyph.bm_h > 0) {
-            const rf::Vector3 pen_origin = pos
-                - up
-                * static_cast<float>(baseline_y_ + line * line_spacing_);
-
             // Negative `g.y` moves glyph up.
             const rf::Vector3 top_left = pen_origin
                 + right
@@ -526,8 +530,6 @@ void GrNewFont::draw_3d(
         pen_x += static_cast<float>(glyph.advance_x);
     }
 }
-
-
 
 void GrNewFont::draw(int x, int y, std::string_view text, rf::gr::Mode state) const
 {
@@ -645,13 +647,13 @@ FunHook<int(const char*, int)> gr_init_font_hook{
         for (unsigned i = 0; i < g_fonts.size(); ++i) {
             auto& font = g_fonts[i];
             if (font.get_name() == name) {
-                return static_cast<int>(i | ttf_font_flag);
+                return static_cast<int>(i | TTF_FONT_FLAG);
             }
         }
         try {
             GrNewFont font{name};
             g_fonts.push_back(font);
-            return static_cast<int>((g_fonts.size() - 1) | ttf_font_flag);
+            return static_cast<int>((g_fonts.size() - 1) | TTF_FONT_FLAG);
         }
         catch (std::exception& e) {
             xlog::error("Failed to load font {}: {}", name, e.what());
@@ -681,47 +683,66 @@ static bool report_bad_font_id_once(int font_num)
     return reported.insert(font_num).second;
 }
 
+static const GrNewFont* resolve_ttf_font(const int font_num, const char* const caller) {
+    if (font_num & TTF_FONT_FLAG) {
+        const unsigned idx = static_cast<unsigned>(font_num & ~TTF_FONT_FLAG);
+        if (idx >= g_fonts.size()) {
+            if (report_bad_font_id_once(font_num)) {
+                xlog::error(
+                    "{}: bad TTF font id {:#x} (have {})",
+                    caller,
+                    font_num,
+                    g_fonts.size()
+                );
+            }
+        } else {
+            return &g_fonts[idx];
+        }
+    }
+    return nullptr;
+}
+
 FunHook<int(int)> gr_get_font_height_hook{
     0x0051F4D0,
-    [](int font_num) {
+    [] (int font_num) {
         if (font_num == -1) {
             font_num = g_default_font_id;
         }
-        if (font_num & ttf_font_flag) {
-            unsigned idx = static_cast<unsigned>(font_num & ~ttf_font_flag);
-            if (idx >= g_fonts.size()) {
-                if (report_bad_font_id_once(font_num)) {
-                    xlog::error("gr_get_font_height: bad TTF font id {:#x} (have {})",
-                        font_num, g_fonts.size());
-                }
+        if (font_num & TTF_FONT_FLAG) {
+            const GrNewFont* const font =
+                resolve_ttf_font(font_num, "gr_get_font_height_hook");
+            if (font) {
+                return font->get_height();
+            } else {
                 return 0;
-            }
-            return g_fonts[idx].get_height();
+            } 
+        } else {
+            return gr_get_font_height_hook.call_target(font_num);
         }
-        return gr_get_font_height_hook.call_target(font_num);
     },
 };
 
 FunHook<void(int, int, int, const char*, int)> gr_string_render_into_bitmap_hook{
     0x005203A0,
-    [](int x, int y, int bm_handle, const char* text, int font_num) {
+    [] (
+        const int x,
+        const int y,
+        const int bm_handle,
+        const char* const text,
+        int font_num
+    ) {
         if (font_num == -1) {
             font_num = g_default_font_id;
         }
-        if (font_num & ttf_font_flag) {
-            const unsigned idx = static_cast<unsigned>(font_num & ~ttf_font_flag);
-            if (idx >= g_fonts.size()) {
-                if (report_bad_font_id_once(font_num)) {
-                    xlog::error("gr_string_render_into_bitmap_hook: bad TTF font id {:#x} (have {})", font_num,
-                                g_fonts.size());
-                }
+        if (font_num & TTF_FONT_FLAG) {
+            const GrNewFont* const font =
+                resolve_ttf_font(font_num, "gr_string_render_into_bitmap_hook");
+            if (font) {
+                font->draw_into_bitmap(x, y, bm_handle, text);
             }
-            else {
-                g_fonts[idx].draw_into_bitmap(x, y, bm_handle, text);
-            }
-        }
-        else {
-            gr_string_render_into_bitmap_hook.call_target(x, y, bm_handle, text, font_num);
+        } else {
+            gr_string_render_into_bitmap_hook
+                .call_target(x, y, bm_handle, text, font_num);
         }
     },
 };
@@ -741,21 +762,19 @@ FunHook<
         if (font_num == -1) {
             font_num = g_default_font_id;
         }
-        if (font_num & ttf_font_flag) {
-            const unsigned idx = static_cast<unsigned>(font_num & ~ttf_font_flag);
-            if (idx >= g_fonts.size()) {
-                if (report_bad_font_id_once(font_num)) {
-                    xlog::error(
-                        "render_string_3d_hook: bad TTF font id {:#x} (have {})",
-                        font_num,
-                        g_fonts.size()
-                    );
-                }
-            } else {
-                g_fonts[idx].draw_3d(*pos, *orient, scale, s, mode);
+        if (font_num & TTF_FONT_FLAG) {
+            const GrNewFont* const font =
+                resolve_ttf_font(font_num, "render_string_3d_hook");
+            if (font) {
+                font->draw_3d(*pos, *orient, scale, s, mode);
             }
         } else {
-            // Note.  Stock `render_string_3d` is faulty.
+            // Note.  Stock `render_string_3d` can draw glyphs with an invalid y offset.
+            //
+            // Moreover, it treats `pos` as the center of the first glyph cell.  At 0x00520082
+            // and 0x00520218, it builds half-extents with the `.5f` constant at 0x005893C0.  It
+            // emits each quad as `center ± right_half ± up_half`, and steps centers by each glyph's
+            // advance.  `draw_3d` treats `pos` as the top-left of the text box, matching `draw`.
             render_string_3d_hook.call_target(pos, orient, scale, s, font_num, mode);
         }
     },
@@ -763,22 +782,23 @@ FunHook<
 
 FunHook<void(int, int, const char*, int, rf::gr::Mode)> gr_string_hook{
     0x0051FEB0,
-    [](int x, int y, const char *text, int font_num, rf::gr::Mode mode) {
+    [] (
+        const int x,
+        const int y,
+        const char* const text,
+        int font_num,
+        const rf::gr::Mode mode
+    ) {
         if (font_num == -1) {
             font_num = g_default_font_id;
         }
-        if (font_num & ttf_font_flag) {
-            unsigned idx = static_cast<unsigned>(font_num & ~ttf_font_flag);
-            if (idx >= g_fonts.size()) {
-                if (report_bad_font_id_once(font_num)) {
-                    xlog::error("gr_string: bad TTF font id {:#x} (have {})",
-                        font_num, g_fonts.size());
-                }
-                return;
+        if (font_num & TTF_FONT_FLAG) {
+            const GrNewFont* const font =
+                resolve_ttf_font(font_num, "gr_string_hook");
+            if (font) {
+                font->draw(x, y, text, mode);
             }
-            g_fonts[idx].draw(x, y, text, mode);
-        }
-        else {
+        } else {
             gr_string_hook.call_target(x, y, text, font_num, mode);
         }
     },
@@ -790,28 +810,24 @@ FunHook<void(int*, int*, const char*, int, int)> gr_get_string_size_hook{
         if (font_num == -1) {
             font_num = g_default_font_id;
         }
-        if (font_num & ttf_font_flag) {
-            unsigned idx = static_cast<unsigned>(font_num & ~ttf_font_flag);
-            if (idx >= g_fonts.size()) {
-                if (report_bad_font_id_once(font_num)) {
-                    xlog::error("gr_get_string_size: bad TTF font id {:#x} (have {})",
-                        font_num, g_fonts.size());
+        if (font_num & TTF_FONT_FLAG) {
+            const GrNewFont* const font =
+                resolve_ttf_font(font_num, "gr_get_string_size_hook");
+            if (font) {
+                std::string_view text_sv{};
+                if (text_len < 0) {
+                    text_sv = std::string_view{text};
+                } else {
+                    text_sv = std::string_view{text, static_cast<size_t>(text_len)};
                 }
+                font->get_size(out_width, out_height, text_sv);
+            } else {
                 *out_width = 0;
                 *out_height = 0;
-                return;
             }
-            std::string_view text_sv;
-            if (text_len < 0) {
-                text_sv = std::string_view{text};
-            }
-            else {
-                text_sv = std::string_view{text, static_cast<size_t>(text_len)};
-            }
-            g_fonts[idx].get_size(out_width, out_height, text_sv);
-        }
-        else {
-            gr_get_string_size_hook.call_target(out_width, out_height, text, text_len, font_num);
+        } else {
+            gr_get_string_size_hook
+                .call_target(out_width, out_height, text, text_len, font_num);
         }
     },
 };
