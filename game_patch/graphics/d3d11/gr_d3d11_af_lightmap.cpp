@@ -33,7 +33,12 @@ using namespace alpine_lightmap;
 
 namespace
 {
-    constexpr int af_surface_record_size = static_cast<int>(surface_record_size);
+    // XXH32 of `bytes` of surface records, or of the empty message for none.
+    std::uint32_t surface_records_hash(const std::uint8_t* records, std::size_t bytes)
+    {
+        const std::uint8_t empty = 0;
+        return XXH32(bytes > 0 ? static_cast<const void*>(records) : static_cast<const void*>(&empty), bytes, 0);
+    }
 
     // The bake's own page budget is 1024 slices, which is 67 MB of BC7, so a longer section is a
     // malformed length rather than one this build could ever consume.
@@ -523,20 +528,19 @@ void af_lightmap_capture_mover(int uid, rf::GSolid* solid, const void* reader)
         return v;
     };
     const std::int32_t is_memory = field(0x00);
-    const auto* buf = reinterpret_cast<const std::uint8_t*>(static_cast<std::uintptr_t>(static_cast<std::uint32_t>(field(0x08))));
+    const auto* buf =
+        reinterpret_cast<const std::uint8_t*>(static_cast<std::uintptr_t>(static_cast<std::uint32_t>(field(0x08))));
     const std::int32_t pos = field(0x0c);
     const std::int32_t size = field(0x10);
     const std::int32_t version = field(0x50);
     const std::int32_t error = field(0x54);
     const int n = solid->surfaces.size();
-    const std::int64_t need = static_cast<std::int64_t>(n) * af_surface_record_size;
+    const std::int64_t need = static_cast<std::int64_t>(n) * surface_record_size;
     if (is_memory != 1 || !buf || pos < 0 || pos > size || error != 0 || version < 0xB5 || n < 0 || need > pos) {
         return;
     }
     // the solid's surface records are the last bytes its loader consumed
-    const std::uint8_t empty = 0;
-    const std::uint32_t hash = XXH32(n > 0 ? static_cast<const void*>(buf + (pos - need)) : static_cast<const void*>(&empty),
-                                     static_cast<std::size_t>(need), 0);
+    const std::uint32_t hash = surface_records_hash(buf + (pos - need), static_cast<std::size_t>(need));
     try {
         g_mover_captures.push_back({uid, solid, static_cast<std::uint32_t>(n), hash});
     }
@@ -608,7 +612,7 @@ void af_lightmap_capture_surface_fingerprint(rf::File& file)
         return;
     }
     const int end = file.tell();
-    const std::int64_t need = static_cast<std::int64_t>(count) * af_surface_record_size;
+    const std::int64_t need = static_cast<std::int64_t>(count) * surface_record_size;
     if (end < 0 || need > end) {
         return;
     }
@@ -616,7 +620,6 @@ void af_lightmap_capture_surface_fingerprint(rf::File& file)
     // The surface records are the last bytes of the geometry section, which is what makes the
     // range the bake hashed addressable without re-parsing the section.
     std::vector<std::uint8_t> buf;
-    const std::uint8_t empty = 0;
     try {
         buf.resize(static_cast<std::size_t>(need));
     }
@@ -634,9 +637,7 @@ void af_lightmap_capture_surface_fingerprint(rf::File& file)
     }
     g_fp.valid = true;
     g_fp.num_surfaces = static_cast<std::uint32_t>(count);
-    g_fp.hash = XXH32(need > 0 ? static_cast<const void*>(buf.data())
-                               : static_cast<const void*>(&empty),
-                      static_cast<std::size_t>(need), 0);
+    g_fp.hash = surface_records_hash(buf.data(), static_cast<std::size_t>(need));
 }
 
 // Allocations here are sized by the file, so a hostile or truncated level must not throw

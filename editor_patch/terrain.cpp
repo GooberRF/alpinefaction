@@ -2158,6 +2158,8 @@ void DeleteTerrainObject(DedTerrain* terrain)
 
 // ─── Rendering ──────────────────────────────────────────────────────────────
 
+static constexpr float terrain_icon_size = 1.0f;
+
 // Centre of the bounding box of the footprint and the surface's height span: where the icon sits.
 static Vector3 terrain_icon_pos(const Vector3& pos, const DedTerrainData& d)
 {
@@ -2189,15 +2191,16 @@ void terrain_render(CDedLevel* level)
 
         const bool preview = g_terrain_dlg.active && g_terrain_dlg.terrain == terrain;
         const bool selected = preview || is_object_selected(level, terrain);
-        terrain_preview_draw(*level, *terrain, preview ? g_terrain_dlg.data : terrain->data, selected);
+        const DedTerrainData& data = preview ? g_terrain_dlg.data : terrain->data;
+        terrain_preview_draw(*level, *terrain, data, selected);
 
         const auto& rgb = selected ? terrain_selected_rgb : terrain_unselected_rgb;
         set_draw_color(rgb[0], rgb[1], rgb[2], 0xff);
         if (g_terrain_icon_handle >= 0) {
             gr_set_bitmap(g_terrain_icon_handle, -1);
         }
-        Vector3 icon = terrain_icon_pos(terrain->pos, preview ? g_terrain_dlg.data : terrain->data);
-        gr_render_billboard(&icon, 0, 1.0f, cam_param);
+        Vector3 icon = terrain_icon_pos(terrain->pos, data);
+        gr_render_billboard(&icon, 0, terrain_icon_size, cam_param);
     }
     terrain_paint_draw_cursor(*level);
     terrain_preview_frame_end(*level);
@@ -2232,21 +2235,9 @@ void terrain_pick(CDedLevel* level, int param1, int param2)
 
 DedTerrain* terrain_click_pick(CDedLevel* level, float click_x, float click_y)
 {
-    DedTerrain* best = nullptr;
-    float best_dist_sq = 1e30f;
-    for (auto* terrain : level->GetAlpineLevelProperties().terrain_objects) {
-        if (terrain->hidden_in_editor) continue;
-        const Vector3 icon = terrain_icon_pos(*terrain);
-        float p[3] = {icon.x, icon.y, icon.z};
-        float sx = 0.0f, sy = 0.0f;
-        if (!project_to_screen_2d(p, &sx, &sy)) continue;
-        const float dist_sq = (sx - click_x) * (sx - click_x) + (sy - click_y) * (sy - click_y);
-        if (dist_sq <= alpine_click_pick_radius_sq && dist_sq < best_dist_sq) {
-            best = terrain;
-            best_dist_sq = dist_sq;
-        }
-    }
-    return best;
+    return alpine_click_pick_point(level->GetAlpineLevelProperties().terrain_objects, click_x, click_y,
+                                   alpine_click_pick_radius_sq,
+                                   [](const DedTerrain& terrain) { return terrain_icon_pos(terrain); });
 }
 
 void terrain_tree_populate(EditorTreeCtrl* tree, int master_groups, CDedLevel* level)

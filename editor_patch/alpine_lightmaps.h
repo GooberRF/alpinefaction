@@ -10,12 +10,31 @@ namespace rf
     struct File;
 }
 
-// Bake side, driven from editor_patch/lightmap.cpp.
-void alpine_lm_bake_begin();
+// A solid's GSurface* VArray (+0xc0, elements at +8); empty for no solid.
+struct SolidSurfaces
+{
+    int count = 0;
+    std::uintptr_t elems = 0;
+};
+
+inline SolidSurfaces solid_surfaces(std::uintptr_t solid)
+{
+    if (!solid) {
+        return {};
+    }
+    return {*reinterpret_cast<int*>(solid + 0xc0), *reinterpret_cast<std::uintptr_t*>(solid + 0xc0 + 8)};
+}
+
+// Bake side, driven from editor_patch/lightmap.cpp. bake_begin lays the charts out and returns the
+// page count; bake_allocate then allocates the pages.
+std::uint32_t alpine_lm_bake_begin();
+void alpine_lm_bake_allocate();
 void alpine_lm_bake_end();
 // Drops a bake that did not run to completion without encoding it.
 void alpine_lm_bake_abort();
 void alpine_lm_shade_surface(std::uintptr_t solid, std::uintptr_t surface, int mode);
+// Calculate Lighting's address-space check before anything is freed; reports and returns false on a refusal.
+bool lighting_calc_memory_admits();
 void alpine_lm_blend_edge(std::uintptr_t surf_a, std::uintptr_t surf_b, const float* p0,
                           const float* p1);
 

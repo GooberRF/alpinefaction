@@ -59,7 +59,6 @@ struct ReadResult
     const char* mover_reason = "";
     std::vector<MoverChart> movers;                  // as stored
     std::vector<std::uint32_t> mover_first_surface;  // per record, into mover_charts
-    std::vector<std::uint32_t> mover_hash_offset;    // per record, section offset of its surface_hash
     std::vector<std::uint8_t> mover_ok;              // per record: usable
     std::vector<MoverSurfaceChart> mover_charts;     // flattened, record then surface order
     std::vector<ChartGeometry> mover_geoms;          // derived, parallel to mover_charts
@@ -232,14 +231,12 @@ inline const char* parse_movers(ReadResult& r, const std::uint8_t* data, std::ui
     // sized only now: the checks above bound them by the table's byte_len
     r.movers.resize(num_movers);
     r.mover_first_surface.resize(num_movers);
-    r.mover_hash_offset.resize(num_movers);
     std::uint64_t total = 0;
     for (std::uint32_t i = 0; i < num_movers; i++) {
         if (end - p < sizeof(MoverChart)) {
             return "truncated mover table";
         }
         load(r.movers[i], data + p);
-        r.mover_hash_offset[i] = static_cast<std::uint32_t>(p + offsetof(MoverChart, surface_hash));
         p += sizeof(MoverChart);
         const std::uint32_t n = r.movers[i].num_surfaces;
         if (n > max_mover_surfaces || total + n > max_mover_surfaces_total) {
@@ -313,7 +310,6 @@ inline void clear_movers(ReadResult& r)
 {
     r.movers.clear();
     r.mover_first_surface.clear();
-    r.mover_hash_offset.clear();
     r.mover_ok.clear();
     r.mover_charts.clear();
     r.mover_geoms.clear();
@@ -643,18 +639,18 @@ inline std::vector<std::uint32_t> build_gpu_index(const ReadResult& r)
 using Bc7BlockDecoder = bool (*)(const void* block, std::uint8_t* rgba);
 
 // Decodes usable terrain chart `index` into out, w * h RGB8 texels row major, reading every texel
-// from the tile whose interior owns it. `layer` is the decompressed layer the section's layer
-// directory describes. False when the chart is unusable or the layer does not have its size.
-inline bool decode_terrain_chart(const ReadResult& r, const std::uint8_t* layer, std::size_t layer_len,
-                                 std::uint32_t index, Bc7BlockDecoder decode_bc7,
-                                 std::vector<std::uint8_t>& out)
+// from the tile whose interior owns it. The decompressed layer is held a page at a time: page_data(i)
+// is page i's layer_payload_size(codec, 1, page_size) bytes, or null when the layer has no page i.
+// False when the chart is unusable or a page it needs is missing.
+template<typename PageData>
+inline bool decode_terrain_chart_paged(const ReadResult& r, PageData&& page_data, std::uint32_t index,
+                                       Bc7BlockDecoder decode_bc7, std::vector<std::uint8_t>& out)
 {
-    if (!r.ok || index >= r.terrain.size() || !r.terrain_ok[index] || !layer) {
+    if (!r.ok || index >= r.terrain.size() || !r.terrain_ok[index]) {
         return false;
     }
     const auto codec = static_cast<Codec>(r.layer.codec);
-    if (layer_len != layer_payload_size(codec, r.head.num_pages, r.page_size)
-        || (codec == Codec::bc7_unorm && !decode_bc7)) {
+    if (codec == Codec::bc7_unorm && !decode_bc7) {
         return false;
     }
     const ChartGeometry& g = r.terrain_geoms[index];
@@ -671,21 +667,24 @@ inline bool decode_terrain_chart(const ReadResult& r, const std::uint8_t* layer,
             const std::uint32_t u0 = tx * r.tile_step, v0 = ty * r.tile_step;
             const std::uint32_t px0 = t.x + static_cast<std::uint32_t>(u0 - origin.u);
             const std::uint32_t py0 = t.y + static_cast<std::uint32_t>(v0 - origin.v);
+            const std::uint8_t* page = page_data(t.page);
+            if (!page) {
+                return false;
+            }
             if (codec == Codec::raw_rgb8) {
                 for (std::uint32_t y = 0; y < td.ih_t; y++) {
                     for (std::uint32_t x = 0; x < td.iw_t; x++) {
-                        const std::size_t src =
-                            ((static_cast<std::size_t>(t.page) * p + py0 + y) * p + px0 + x) * 3;
+                        const std::size_t src = (static_cast<std::size_t>(py0 + y) * p + px0 + x) * 3;
                         std::memcpy(&out[(static_cast<std::size_t>(v0 + y) * g.cw + u0 + x) * 3],
-                                    layer + src, 3);
+                                    page + src, 3);
                     }
                 }
                 continue;
             }
             for (std::uint32_t by = py0 / 4; by * 4 < py0 + td.ih_t; by++) {
                 for (std::uint32_t bx = px0 / 4; bx * 4 < px0 + td.iw_t; bx++) {
-                    const std::size_t b = (static_cast<std::size_t>(t.page) * bpr + by) * bpr + bx;
-                    if (!decode_bc7(layer + b * 16, block)) {
+                    const std::size_t b = static_cast<std::size_t>(by) * bpr + bx;
+                    if (!decode_bc7(page + b * 16, block)) {
                         std::memset(block, 0, sizeof(block));
                     }
                     for (std::uint32_t y = 0; y < 4; y++) {
@@ -708,6 +707,21 @@ inline bool decode_terrain_chart(const ReadResult& r, const std::uint8_t* layer,
         }
     }
     return true;
+}
+
+// Runs fn(page_data) over a decompressed layer held in one piece; false when it does not have the
+// size the section's layer directory gives.
+template<typename Fn>
+inline bool with_contiguous_layer(const ReadResult& r, const std::uint8_t* layer, std::size_t layer_len, Fn&& fn)
+{
+    if (!layer || layer_len != layer_payload_size(static_cast<Codec>(r.layer.codec), r.head.num_pages, r.page_size)) {
+        return false;
+    }
+    const auto page_len =
+        static_cast<std::size_t>(layer_payload_size(static_cast<Codec>(r.layer.codec), 1, r.page_size));
+    return fn([&](std::uint32_t page) -> const std::uint8_t* {
+        return page < r.head.num_pages ? layer + page * page_len : nullptr;
+    });
 }
 
 // Box filters a decoded w x h chart down by `reduction` (terrain_chart_reduction) in place. False,
@@ -744,22 +758,35 @@ inline bool reduce_terrain_chart(std::vector<std::uint8_t>& rgb, std::uint32_t w
     return true;
 }
 
-// decode_terrain_chart then reduce_terrain_chart by the reduction of the chart's density over a grid
-// cells_x cells across, which lands in `reduction`. False when either step fails.
-inline bool decode_reduced_terrain_chart(const ReadResult& r, const std::uint8_t* layer, std::size_t layer_len,
-                                         std::uint32_t index, std::uint32_t cells_x, Bc7BlockDecoder decode_bc7,
-                                         std::vector<std::uint8_t>& out, std::uint32_t& reduction)
+// decode_reduced_terrain_chart over a layer held a page at a time (decode_terrain_chart_paged).
+template<typename PageData>
+inline bool decode_reduced_terrain_chart_paged(const ReadResult& r, PageData&& page_data, std::uint32_t index,
+                                               std::uint32_t cells_x, Bc7BlockDecoder decode_bc7,
+                                               std::vector<std::uint8_t>& out, std::uint32_t& reduction)
 {
     if (index >= r.terrain.size()) {
         return false;
     }
     const TerrainChart& c = r.terrain[index];
     const std::uint32_t red = terrain_chart_reduction(terrain_chart_density(c, cells_x));
-    if (!decode_terrain_chart(r, layer, layer_len, index, decode_bc7, out) || !reduce_terrain_chart(out, c.w, c.h, red)) {
+    if (!decode_terrain_chart_paged(r, page_data, index, decode_bc7, out) ||
+        !reduce_terrain_chart(out, c.w, c.h, red)) {
         return false;
     }
     reduction = red;
     return true;
+}
+
+// decode_terrain_chart_paged then reduce_terrain_chart by the reduction of the chart's density over a
+// grid cells_x cells across, which lands in `reduction`. `layer` is the decompressed layer the
+// section's layer directory describes. False when either step fails or the layer does not have its size.
+inline bool decode_reduced_terrain_chart(const ReadResult& r, const std::uint8_t* layer, std::size_t layer_len,
+                                         std::uint32_t index, std::uint32_t cells_x, Bc7BlockDecoder decode_bc7,
+                                         std::vector<std::uint8_t>& out, std::uint32_t& reduction)
+{
+    return with_contiguous_layer(r, layer, layer_len, [&](auto&& page_data) {
+        return decode_reduced_terrain_chart_paged(r, page_data, index, cells_x, decode_bc7, out, reduction);
+    });
 }
 
 // Bilinear read of chart `c` reduced by `reduction` (decode_reduced_terrain_chart) at world (x, z).

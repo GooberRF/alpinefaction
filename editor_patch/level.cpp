@@ -64,6 +64,51 @@ void editor_report(EditorReportLevel level, const char* tag, const std::string& 
     }
 }
 
+void editor_report_blocking(const char* tag, const char* caption, const std::string& msg)
+{
+    editor_report(EditorReportLevel::error, tag, msg, true);
+    if (!headless_bake_active()) {
+        MessageBoxA(GetMainFrameHandle(), msg.c_str(), caption, MB_OK | MB_ICONWARNING);
+    }
+}
+
+std::string editor_address_space_shortfall(std::uint64_t largest, std::uint64_t total, const char* advice)
+{
+    SYSTEM_INFO si{};
+    GetSystemInfo(&si);
+    std::uint64_t free_largest = 0;
+    std::uint64_t free_total = 0;
+    auto addr = reinterpret_cast<std::uintptr_t>(si.lpMinimumApplicationAddress);
+    const auto end = reinterpret_cast<std::uintptr_t>(si.lpMaximumApplicationAddress);
+    MEMORY_BASIC_INFORMATION mbi{};
+    while (addr < end && VirtualQuery(reinterpret_cast<void*>(addr), &mbi, sizeof(mbi)) == sizeof(mbi)) {
+        if (mbi.State == MEM_FREE) {
+            free_largest = std::max<std::uint64_t>(free_largest, mbi.RegionSize);
+            free_total += mbi.RegionSize;
+        }
+        const auto next = reinterpret_cast<std::uintptr_t>(mbi.BaseAddress) + mbi.RegionSize;
+        if (next <= addr) {
+            break;
+        }
+        addr = next;
+    }
+    constexpr std::uint64_t mb = 1u << 20;
+    char msg[512];
+    if (free_largest < largest) {
+        std::snprintf(msg, sizeof(msg), "RED is low on memory (largest free block %llu MB, needs %llu MB). %s",
+                      static_cast<unsigned long long>(free_largest / mb),
+                      static_cast<unsigned long long>((largest + mb - 1) / mb), advice);
+        return msg;
+    }
+    if (free_total < total) {
+        std::snprintf(msg, sizeof(msg), "RED is low on memory (%llu MB of address space free, needs %llu MB). %s",
+                      static_cast<unsigned long long>(free_total / mb),
+                      static_cast<unsigned long long>((total + mb - 1) / mb), advice);
+        return msg;
+    }
+    return {};
+}
+
 // Initialize on CDedLevel construction
 CodeInjection CDedLevel_construct_patch{
     0x004181B8,
@@ -855,6 +900,27 @@ void __fastcall build_rooms_hooked(GSolid* solid, void* edx_unused)
     g_isolated_face_map.clear();
 }
 
+// FUN_0043a710 starts a Build Geometry (thiscall on CDedLevel*). The minimums cover the first build after
+// a load, the largest measured.
+constexpr std::uint64_t build_geometry_min_free_block = 100u << 20;
+constexpr std::uint64_t build_geometry_min_free_total = 160u << 20;
+
+void __fastcall build_geometry_start_hooked(CDedLevel* level, void* edx_unused);
+FunHook<decltype(build_geometry_start_hooked)> build_geometry_start_hook{
+    0x0043a710,
+    build_geometry_start_hooked,
+};
+void __fastcall build_geometry_start_hooked(CDedLevel* level, void* edx_unused)
+{
+    const std::string shortfall =
+        editor_address_space_shortfall(build_geometry_min_free_block, build_geometry_min_free_total);
+    if (!shortfall.empty()) {
+        editor_report_blocking("Build Geometry", "Build Geometry", shortfall);
+        return;
+    }
+    build_geometry_start_hook.call_target(level, edx_unused);
+}
+
 // Hook FUN_004861d0 (face adjacency test, cdecl) as secondary defense.
 // The primary fix is post-processing in isolate_marked_rooms, but this hook
 // also prevents merging via the geometric adjacency path during flood-fill.
@@ -1535,6 +1601,9 @@ void ApplyLevelPatches()
     CDedLevel_SaveLevel_patch.install();
     CLevelDialog_OnInitDialog_patch.install();
     CLevelDialog_OnOK_patch.install();
+
+    // Refuse a Build Geometry that the address space cannot hold
+    build_geometry_start_hook.install();
 
     // Prevent geoable/breakable detail brushes from merging rooms with other brushes
     build_rooms_hook.install();

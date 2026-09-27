@@ -22,11 +22,13 @@
 #include <patch_common/MemUtils.h>
 #include <xlog/xlog.h>
 
+#include <common/scope_guard.h>
 #include <common/lightmap/alpine_lightmap.h>
 #include <common/lightmap/alpine_lightmap_decode.h>
 #include <common/terrain/alpine_terrain.h>
 
 #include "alpine_lightmaps.h"
+#include "work_pool.h"
 #include "level.h"
 #include "mfc_types.h"
 #include "terrain_build.h"
@@ -48,10 +50,6 @@ constexpr std::uint32_t G = gutter;
 // stock page is wide and whose refinement is large can ask for a lot at once. Charts over the cap
 // are dropped rather than shrunk, so the atlas the header derives is the one that was shaded.
 constexpr std::size_t max_tile_view_bytes = 64u * 1024u * 1024u;
-
-// ert::reduce_entropy needs every block's source pixels resident at once. Past this the RDO pass
-// runs a page at a time, which only costs cross-page match opportunities.
-constexpr std::size_t max_ert_pixel_bytes = 128u * 1024u * 1024u;
 
 void af_log(const std::string& line)
 {
@@ -134,6 +132,18 @@ struct AfTerrain
     TerrainChart wire{};
 };
 
+// One buffer per page, so no allocation grows with the page count.
+using PageBuffers = std::vector<std::vector<std::uint8_t>>;
+
+std::size_t page_buffers_size(const PageBuffers& pages)
+{
+    std::size_t size = 0;
+    for (const auto& page : pages) {
+        size += page.size();
+    }
+    return size;
+}
+
 struct AfBake
 {
     bool active = false;      // charts derived, tiles being shaded
@@ -147,11 +157,12 @@ struct AfBake
     bool has_surface_charts = false;
     std::vector<AfTerrain> terrains;
     std::vector<AfMover> movers;
+    std::uint32_t mover_surfaces = 0; // over all movers
     std::uint32_t mover_density = 0;
     std::vector<AfChart> charts;
     std::vector<Tile> tiles;
     std::uint32_t num_pages = 0;
-    std::vector<std::uint8_t> pages; // num_pages * P * P * 3, RGB8
+    PageBuffers pages; // num_pages buffers of P * P * 3, RGB8
     std::unordered_map<std::uintptr_t, AfSurfaceRef> surface_index;
     std::vector<std::uint8_t> body; // serialised section, fingerprints still zero
 };
@@ -211,17 +222,11 @@ AlpineLevelProperties* level_props()
     return level ? &level->GetAlpineLevelProperties() : nullptr;
 }
 
-int solid_surface_count(std::uintptr_t solid)
-{
-    return solid ? *reinterpret_cast<int*>(solid + 0xc0) : 0;
-}
-
 // Not a wire value: a token that says the surfaces the charts were derived from are still the ones
 // about to be written, so a Build Geometry between the bake and the save drops the section.
 std::uint32_t surfaces_signature(std::uintptr_t solid)
 {
-    const int count = *reinterpret_cast<int*>(solid + 0xc0);
-    const auto elems = *reinterpret_cast<std::uintptr_t*>(solid + 0xc0 + 8);
+    const auto [count, elems] = solid_surfaces(solid);
     if (count <= 0 || !elems) {
         return 0;
     }
@@ -385,7 +390,7 @@ enum class PackResult
 bool derive_surface_charts(std::uintptr_t solid, std::uint32_t surface_count, float density,
                            std::vector<AfChart>& charts, const std::string& owner = {}, bool mover = false)
 {
-    const auto surfaces = *reinterpret_cast<std::uintptr_t*>(solid + 0xc0 + 8);
+    const auto surfaces = solid_surfaces(solid).elems;
     charts.assign(surface_count, AfChart{});
     bool any = false;
 
@@ -533,10 +538,10 @@ void report_offenders(const std::vector<AfChart>& charts, Label label = surface_
 
 std::uint8_t* page_texel(std::uint32_t page, std::uint32_t x, std::uint32_t y)
 {
-    if (page >= g_af.num_pages || x >= P || y >= P) {
+    if (page >= g_af.pages.size() || x >= P || y >= P) {
         return nullptr;
     }
-    return g_af.pages.data() + (static_cast<std::size_t>(page) * P * P + y * P + x) * 3;
+    return g_af.pages[page].data() + (static_cast<std::size_t>(y) * P + x) * 3;
 }
 
 // Reaches the padding as well as the chart, so the blend's bilinear taps and the edge replication
@@ -669,7 +674,7 @@ std::vector<AfMover> collect_movers(CDedLevel& level)
             }
             return;
         }
-        const int count = solid_surface_count(solid);
+        const int count = solid_surfaces(solid).count;
         if (count <= 0) {
             return;
         }
@@ -717,7 +722,7 @@ void derive_mover_charts(std::vector<AfMover>& movers, std::uint32_t density, st
 
 } // namespace
 
-void alpine_lm_bake_begin()
+std::uint32_t alpine_lm_bake_begin()
 {
     // a re-bake supersedes the loaded section even when it ends up emitting nothing
     g_retained.clear();
@@ -729,12 +734,11 @@ void alpine_lm_bake_begin()
     auto* props = level_props();
     auto* level = CDedLevel::Get();
     if (!props || !level || !level->solid) {
-        return;
+        return 0;
     }
 
     const auto solid = reinterpret_cast<std::uintptr_t>(level->solid);
-    const auto surface_count =
-        static_cast<std::uint32_t>(std::max(0, *reinterpret_cast<int*>(solid + 0xc0)));
+    const auto surface_count = static_cast<std::uint32_t>(std::max(0, solid_surfaces(solid).count));
 
     // The surfaces' charts first, at the level's density or below, exactly as if the level had no
     // terrain: the terrain charts are fitted around them afterwards and never cost them density.
@@ -824,7 +828,7 @@ void alpine_lm_bake_begin()
     std::vector<AfTerrain> terrains = collect_terrains(*props);
     if (!has_surface && terrains.empty() && movers.empty()) {
         af_log("no alpine lightmap section will be written");
-        return;
+        return 0;
     }
 
     std::vector<AfChart> charts;
@@ -845,7 +849,7 @@ void alpine_lm_bake_begin()
             break;
         }
         if (res == PackResult::no_charts) {
-            return;
+            return 0;
         }
         if (std::any_of(terrains.begin(), terrains.end(), [](const AfTerrain& a) { return a.density > 1; })) {
             af_warn("the terrain charts do not fit the page budget next to the surface charts, "
@@ -859,7 +863,7 @@ void alpine_lm_bake_begin()
                  "lighting is not baked");
         terrains.clear();
         if (!has_surface && movers.empty()) {
-            return;
+            return 0;
         }
     }
 
@@ -877,10 +881,9 @@ void alpine_lm_bake_begin()
     g_af.charts = std::move(charts);
     g_af.tiles = std::move(tiles);
     g_af.num_pages = pages;
-    g_af.pages.assign(static_cast<std::size_t>(pages) * P * P * 3, 0);
 
     const auto index_surfaces = [](std::uintptr_t owner, std::uint32_t count, std::uint32_t first_chart) {
-        const auto surfaces = *reinterpret_cast<std::uintptr_t*>(owner + 0xc0 + 8);
+        const auto surfaces = solid_surfaces(owner).elems;
         for (std::uint32_t i = 0; i < count; i++) {
             const auto surface = *reinterpret_cast<std::uintptr_t*>(surfaces + i * 4);
             if (surface) {
@@ -893,10 +896,7 @@ void alpine_lm_bake_begin()
     }
     for (const AfMover& m : g_af.movers) {
         index_surfaces(m.solid, m.num_surfaces, m.first_chart);
-    }
-    std::uint32_t mover_surfaces = 0;
-    for (const AfMover& m : g_af.movers) {
-        mover_surfaces += m.num_surfaces;
+        g_af.mover_surfaces += m.num_surfaces;
     }
 
     std::uint32_t tiled = 0;
@@ -908,13 +908,25 @@ void alpine_lm_bake_begin()
     g_af.active = true;
     af_log("density " + std::to_string(density) + ": " + std::to_string(surface_count) + " surfaces" +
            (has_surface ? "" : " (no charts)") + ", " + std::to_string(g_af.terrains.size()) + " terrains, " +
-           std::to_string(g_af.movers.size()) + " movers, " + std::to_string(mover_surfaces) +
+           std::to_string(g_af.movers.size()) + " movers, " + std::to_string(g_af.mover_surfaces) +
            " mover surfaces at density " + std::to_string(mover_density) + ", " +
            std::to_string(g_af.tiles.size()) + " tiles (" + std::to_string(tiled) +
            " charts tiled), " + std::to_string(pages) + " pages");
     for (const AfTerrain& a : g_af.terrains) {
         af_log(terrain_label(*a.terrain) + ": " + std::to_string(a.wire.w) + "x" + std::to_string(a.wire.h) +
                " texels, " + std::to_string(a.density) + " per cell");
+    }
+    return pages;
+}
+
+void alpine_lm_bake_allocate()
+{
+    if (!g_af.active) {
+        return;
+    }
+    g_af.pages.resize(g_af.num_pages);
+    for (auto& page : g_af.pages) {
+        page.assign(static_cast<std::size_t>(P) * P * 3, 0);
     }
 }
 
@@ -1064,6 +1076,38 @@ void downsample_into_stock(std::uintptr_t surface, const AfChart& c, int lm_w, i
     }
 }
 
+// At k = 1 a single-tile chart's shaded rect is the stock fragment rect to the texel (shade_tile), so
+// the tile can take the fragment the stock pass just shaded instead of shading it again.
+bool chart_is_stock_fragment(const AfChart& c)
+{
+    return c.k_u == 1 && c.k_v == 1 && c.geom.nx == 1 && c.geom.ny == 1;
+}
+
+// Stores the fragment as shade_tile stores its view.
+void store_fragment_as_tile(const AfChart& c, int lm_w, int xstart, int ystart, const std::uint8_t* page)
+{
+    const std::uint32_t idx = tile_index(c.tile_base, c.geom, 0, 0);
+    if (idx >= g_af.tiles.size()) {
+        return;
+    }
+    const Tile tile = g_af.tiles[idx];
+    const TileDims td = tile_dims(c.geom, 0, 0);
+    const std::uint32_t cw_t = td.iw_t + 2 * c.geom.pad_u;
+    const std::uint32_t ch_t = td.ih_t + 2 * c.geom.pad_v;
+    const std::uint32_t copy_w = std::min<std::uint32_t>(cw_t, P - tile.x);
+    for (std::uint32_t row = 0; row < td.h_t; row++) {
+        std::uint8_t* dst = page_texel(tile.page, tile.x, tile.y + row);
+        if (!dst) {
+            break;
+        }
+        const std::uint32_t src_row = std::min(row, ch_t - 1);
+        const std::uint8_t* src = page + ((static_cast<std::size_t>(ystart) + src_row) * lm_w + xstart) * 3;
+        for (std::uint32_t col = 0; col < td.w_t && tile.x + col < P; col++) {
+            std::memcpy(dst + col * 3u, src + std::min(col, copy_w - 1) * 3u, 3);
+        }
+    }
+}
+
 // The remaining surfaces skip the alpine bake and alpine_lm_bake_end drops it.
 void af_bake_failed(const char* during) noexcept
 {
@@ -1100,6 +1144,12 @@ void alpine_lm_shade_surface(std::uintptr_t solid, std::uintptr_t surface, int m
     const int xstart = surf_i(surface, 0x10);
     const int ystart = surf_i(surface, 0x14);
     if (lm_w <= 0 || lm_h <= 0 || !page) {
+        return;
+    }
+
+    // At k = 1 downsample_into_stock would only copy the same bytes back.
+    if (chart_is_stock_fragment(c)) {
+        store_fragment_as_tile(c, lm_w, xstart, ystart, page);
         return;
     }
 
@@ -1548,8 +1598,7 @@ void fill_block_pixels(std::uint32_t block, ert::color_rgba* out)
     const std::uint32_t bx = (within % blocks_per_row) * 4;
     const std::uint32_t by = (within / blocks_per_row) * 4;
     for (std::uint32_t y = 0; y < 4; y++) {
-        const std::uint8_t* row =
-            g_af.pages.data() + (static_cast<std::size_t>(page) * P * P + (by + y) * P + bx) * 3;
+        const std::uint8_t* row = g_af.pages[page].data() + (static_cast<std::size_t>(by + y) * P + bx) * 3;
         for (std::uint32_t x = 0; x < 4; x++) {
             ert::color_rgba& c = out[y * 4 + x];
             c.m_c[0] = row[x * 3];
@@ -1560,10 +1609,18 @@ void fill_block_pixels(std::uint32_t block, ert::color_rgba* out)
     }
 }
 
-std::vector<std::uint8_t> encode_bc7(const EncoderSettings& s, std::uint32_t& out_modified)
+// The pages' BC7 blocks, one buffer per page.
+PageBuffers encode_bc7(const EncoderSettings& s, std::uint32_t& out_modified)
 {
+    constexpr std::uint32_t page_blocks = (P / 4) * (P / 4);
     const std::uint32_t total = static_cast<std::uint32_t>(bc7_block_count(g_af.num_pages));
-    std::vector<std::uint8_t> blocks(static_cast<std::size_t>(total) * BC7ENC_BLOCK_SIZE);
+    PageBuffers blocks(g_af.num_pages);
+    for (auto& page : blocks) {
+        page.resize(static_cast<std::size_t>(page_blocks) * BC7ENC_BLOCK_SIZE);
+    }
+    const auto block_at = [&blocks](std::uint32_t b) {
+        return blocks[b / page_blocks].data() + static_cast<std::size_t>(b % page_blocks) * BC7ENC_BLOCK_SIZE;
+    };
     out_modified = 0;
     if (total == 0) {
         return blocks;
@@ -1586,8 +1643,7 @@ std::vector<std::uint8_t> encode_bc7(const EncoderSettings& s, std::uint32_t& ou
         ert::color_rgba pixels[16];
         for (std::uint32_t b = first; b < last; b++) {
             fill_block_pixels(b, pixels);
-            bc7enc_compress_block(blocks.data() + static_cast<std::size_t>(b) * BC7ENC_BLOCK_SIZE,
-                                  pixels, &bp);
+            bc7enc_compress_block(block_at(b), pixels, &bp);
         }
     };
 
@@ -1600,23 +1656,10 @@ std::vector<std::uint8_t> encode_bc7(const EncoderSettings& s, std::uint32_t& ou
     for (std::uint32_t start = 0; start < total; start += chunk) {
         ranges.emplace_back(start, std::min(total, start + chunk));
     }
-    std::vector<std::thread> pool;
-    std::size_t spawned = 1;
-    try {
-        for (; spawned < ranges.size(); spawned++) {
-            const auto r = ranges[spawned];
-            pool.emplace_back([&run, r] { run(r.first, r.second); });
-        }
-    }
-    catch (...) {
-    }
-    run(ranges[0].first, ranges[0].second);
-    for (auto& t : pool) {
-        t.join();
-    }
-    for (std::size_t i = pool.size() + 1; i < ranges.size(); i++) {
-        run(ranges[i].first, ranges[i].second);
-    }
+    work_pool_run(static_cast<int>(ranges.size()), [&](int i) {
+        const auto r = ranges[static_cast<std::size_t>(i)];
+        run(r.first, r.second);
+    });
 
     if (s.rdo_lambda > 0.0f) {
         ert::reduce_entropy_params ep;
@@ -1632,33 +1675,39 @@ std::vector<std::uint8_t> encode_bc7(const EncoderSettings& s, std::uint32_t& ou
         // weights of the components it is not told about are zero.
         ep.m_color_weights[3] = 0;
 
-        const std::size_t whole = static_cast<std::size_t>(total) * 16 * sizeof(ert::color_rgba);
-        const std::uint32_t span = whole <= max_ert_pixel_bytes ? total : (P / 4) * (P / 4);
-        if (span != total) {
-            af_log("RDO runs a page at a time: the whole atlas would need " +
-                   std::to_string(whole >> 20) + " MB of source pixels");
+        // the RDO pass must leave these blocks as encoded
+        std::vector<std::uint32_t> kept;
+        std::vector<std::uint8_t> kept_bytes;
+        for (std::uint32_t b = 0; b < total && b < g_shared_blocks.size(); b++) {
+            if (g_shared_blocks[b]) {
+                kept.push_back(b);
+                kept_bytes.insert(kept_bytes.end(), block_at(b), block_at(b) + BC7ENC_BLOCK_SIZE);
+            }
         }
-        std::vector<std::uint8_t> plain(blocks);
-        std::vector<ert::color_rgba> pixels(static_cast<std::size_t>(span) * 16);
-        for (std::uint32_t first = 0; first < total; first += span) {
-            const std::uint32_t n = std::min(span, total - first);
+        // blocks [first, first + n) laid out contiguously at `data`
+        const auto rdo = [&](std::uint8_t* data, std::uint32_t first, std::uint32_t n, std::uint32_t& modified) {
+            std::vector<ert::color_rgba> pixels(static_cast<std::size_t>(n) * 16);
             for (std::uint32_t b = 0; b < n; b++) {
                 fill_block_pixels(first + b, pixels.data() + static_cast<std::size_t>(b) * 16);
             }
-            std::uint32_t modified = 0;
-            ert::reduce_entropy(blocks.data() + static_cast<std::size_t>(first) * BC7ENC_BLOCK_SIZE,
-                                n, BC7ENC_BLOCK_SIZE, BC7ENC_BLOCK_SIZE, 4, 4, 3, pixels.data(), ep,
-                                modified, unpack_bc7_cb, nullptr);
-            out_modified += modified;
+            ert::reduce_entropy(data, n, BC7ENC_BLOCK_SIZE, BC7ENC_BLOCK_SIZE, 4, 4, 3, pixels.data(), ep, modified,
+                                unpack_bc7_cb, nullptr);
+        };
+        // One page per task on fixed block ranges, so the output is deterministic; no match crosses a page.
+        const int pages = static_cast<int>(blocks.size());
+        std::vector<std::uint32_t> modified(static_cast<std::size_t>(pages), 0);
+        work_pool_run(pages, [&](int page) {
+            const std::uint32_t first = static_cast<std::uint32_t>(page) * page_blocks;
+            rdo(blocks[static_cast<std::size_t>(page)].data(), first, std::min(page_blocks, total - first),
+                modified[static_cast<std::size_t>(page)]);
+        });
+        for (const std::uint32_t m : modified) {
+            out_modified += m;
         }
-        std::uint32_t restored = 0;
-        for (std::uint32_t b = 0; b < total && b < g_shared_blocks.size(); b++) {
-            if (g_shared_blocks[b]) {
-                const std::size_t o = static_cast<std::size_t>(b) * BC7ENC_BLOCK_SIZE;
-                std::memcpy(blocks.data() + o, plain.data() + o, BC7ENC_BLOCK_SIZE);
-                restored++;
-            }
+        for (std::size_t k = 0; k < kept.size(); k++) {
+            std::memcpy(block_at(kept[k]), kept_bytes.data() + k * BC7ENC_BLOCK_SIZE, BC7ENC_BLOCK_SIZE);
         }
+        const auto restored = static_cast<std::uint32_t>(kept.size());
         if (restored) {
             af_log("kept " + std::to_string(restored) + " of " + std::to_string(total) +
                    " blocks out of the RDO pass, they carry a reconciled tile gutter");
@@ -1667,21 +1716,68 @@ std::vector<std::uint8_t> encode_bc7(const EncoderSettings& s, std::uint32_t& ou
     return blocks;
 }
 
-void build_body(const std::vector<std::uint8_t>& raw, Codec codec)
+// The pages as one zlib stream, the same bytes compress2 makes of them laid end to end, in chunks of
+// at most 1 MB. False when zlib fails.
+bool deflate_pages(const PageBuffers& pages, PageBuffers& out, std::size_t& out_size)
 {
-    std::vector<std::uint8_t> payload;
+    constexpr std::size_t chunk = 1u << 20;
+    out.clear();
+    out_size = 0;
+    z_stream zs{};
+    if (deflateInit(&zs, Z_DEFAULT_COMPRESSION) != Z_OK) {
+        return false;
+    }
+    ScopeGuard end{[&zs] { deflateEnd(&zs); }};
+    std::vector<std::uint8_t> buf(chunk);
+    zs.next_out = buf.data();
+    zs.avail_out = static_cast<uInt>(chunk);
+    bool ok = true;
+    for (std::size_t i = 0; ok && i <= pages.size(); i++) {
+        const bool finish = i == pages.size();
+        zs.next_in = finish ? nullptr : const_cast<Bytef*>(pages[i].data());
+        zs.avail_in = finish ? 0u : static_cast<uInt>(pages[i].size());
+        while (true) {
+            const int zr = deflate(&zs, finish ? Z_FINISH : Z_NO_FLUSH);
+            if (zr == Z_STREAM_ERROR || (finish && zr == Z_BUF_ERROR && zs.avail_out != 0)) {
+                ok = false;
+                break;
+            }
+            if (finish && zr == Z_STREAM_END) {
+                break;
+            }
+            if (zs.avail_out == 0) {
+                out.push_back(std::move(buf));
+                buf.assign(chunk, 0);
+                zs.next_out = buf.data();
+                zs.avail_out = static_cast<uInt>(chunk);
+                continue;
+            }
+            if (!finish && zs.avail_in == 0) {
+                break;
+            }
+        }
+    }
+    if (ok) {
+        buf.resize(chunk - zs.avail_out);
+        out.push_back(std::move(buf));
+        out_size = zs.total_out;
+    }
+    return ok;
+}
+
+void build_body(const PageBuffers& raw, Codec codec)
+{
+    const std::size_t raw_size = page_buffers_size(raw);
+    PageBuffers payload;
+    std::size_t payload_size = 0;
     std::uint8_t compression = static_cast<std::uint8_t>(Compression::zlib);
-    uLongf bound = compressBound(static_cast<uLong>(raw.size()));
-    payload.resize(bound);
-    if (compress2(payload.data(), &bound, raw.data(), static_cast<uLong>(raw.size()),
-                  Z_DEFAULT_COMPRESSION) != Z_OK) {
-        payload = raw;
+    if (!deflate_pages(raw, payload, payload_size)) {
+        payload.clear();
+        payload_size = raw_size;
         compression = static_cast<std::uint8_t>(Compression::none);
         af_warn("zlib failed, storing the layer uncompressed");
     }
-    else {
-        payload.resize(bound);
-    }
+    const PageBuffers& stored = compression == static_cast<std::uint8_t>(Compression::none) ? raw : payload;
 
     SectionHeader head{};
     head.version = section_version;
@@ -1703,18 +1799,17 @@ void build_body(const std::vector<std::uint8_t>& raw, Codec codec)
     layer.layer_version = layer_version;
     layer.colorspace = static_cast<std::uint8_t>(Colorspace::rf_lightmap_x2);
     layer.compression = compression;
-    layer.uncompressed_size = static_cast<std::uint32_t>(raw.size());
-    layer.stored_size = static_cast<std::uint32_t>(payload.size());
+    layer.uncompressed_size = static_cast<std::uint32_t>(raw_size);
+    layer.stored_size = static_cast<std::uint32_t>(payload_size);
 
-    std::uint32_t mover_surfaces = 0;
     std::uint32_t mover_tiles = 0;
     for (const AfMover& m : g_af.movers) {
-        mover_surfaces += m.num_surfaces;
         for (std::uint32_t s = 0; s < m.num_surfaces; s++) {
             mover_tiles += g_af.charts[m.first_chart + s].geom.tile_count();
         }
     }
-    const std::uint64_t mover_bytes = g_af.movers.empty() ? 0 : mover_table_bytes(g_af.movers.size(), mover_surfaces);
+    const std::uint64_t mover_bytes =
+        g_af.movers.empty() ? 0 : mover_table_bytes(g_af.movers.size(), g_af.mover_surfaces);
 
     auto& body = g_af.body;
     body.clear();
@@ -1722,7 +1817,7 @@ void build_body(const std::vector<std::uint8_t>& raw, Codec codec)
                  g_af.terrains.size() * sizeof(TerrainChart) + sizeof(std::uint32_t) +
                  (g_af.movers.empty() ? 0 : sizeof(TableHeader) + static_cast<std::size_t>(mover_bytes)) +
                  g_af.tiles.size() * sizeof(Tile) +
-                 sizeof(dir) + sizeof(layer) + payload.size());
+                 sizeof(dir) + sizeof(layer) + payload_size);
     auto append = [&body](const void* p, std::size_t n) {
         const auto* b = static_cast<const std::uint8_t*>(p);
         body.insert(body.end(), b, b + n);
@@ -1766,7 +1861,9 @@ void build_body(const std::vector<std::uint8_t>& raw, Codec codec)
     }
     append(&dir, sizeof(dir));
     append(&layer, sizeof(layer));
-    append(payload.data(), payload.size());
+    for (const auto& piece : stored) {
+        append(piece.data(), piece.size());
+    }
 }
 
 } // namespace
@@ -1836,25 +1933,34 @@ std::vector<TerrainLightMatch> terrain_light_matches(const ReadResult& r, CDedLe
     return out;
 }
 
-void terrain_light_decode(const ReadResult& r, const std::vector<TerrainLightMatch>& matches,
-                          const std::vector<std::uint8_t>& layer)
+// decode(match, light) runs decode_reduced_terrain_chart for the match into the light's rgb and reduction.
+template<typename Decode>
+void terrain_light_decode(const ReadResult& r, const std::vector<TerrainLightMatch>& matches, Decode&& decode)
 {
     for (const TerrainLightMatch& m : matches) {
         TerrainBakedLight tl;
         tl.chart = r.terrain[m.index];
-        if (decode_reduced_terrain_chart(r, layer.data(), layer.size(), m.index, m.cells_x, unpack_bc7_rgba, tl.rgb,
-                                         tl.reduction)) {
+        if (decode(m, tl)) {
             g_terrain_light[tl.chart.terrain_uid] = std::move(tl);
         }
     }
 }
 
-// Replaces the decoded charts with those of `body`, whose decompressed layer is `layer`.
-void terrain_light_store(const std::vector<std::uint8_t>& body, const std::vector<std::uint8_t>& layer)
+// Replaces the decoded charts with those of `body`, whose decompressed layer is `layer`, a page per buffer.
+void terrain_light_store(const std::vector<std::uint8_t>& body, const PageBuffers& layer)
 {
     terrain_light_clear();
     const ReadResult r = read_unfingerprinted(body);
-    terrain_light_decode(r, terrain_light_matches(r, CDedLevel::Get()), layer);
+    const auto page_len =
+        static_cast<std::size_t>(layer_payload_size(static_cast<Codec>(r.layer.codec), 1, r.page_size));
+    const auto page_data = [&](std::uint32_t page) -> const std::uint8_t* {
+        return page < layer.size() && layer[page].size() == page_len ? layer[page].data() : nullptr;
+    };
+    terrain_light_decode(r, terrain_light_matches(r, CDedLevel::Get()),
+                         [&](const TerrainLightMatch& m, TerrainBakedLight& tl) {
+                             return decode_reduced_terrain_chart_paged(r, page_data, m.index, m.cells_x,
+                                                                       unpack_bc7_rgba, tl.rgb, tl.reduction);
+                         });
 }
 
 // The same from a section as stored, decompressing its layer only when a chart matches a terrain.
@@ -1870,7 +1976,10 @@ void terrain_light_store_section(const std::vector<std::uint8_t>& body, CDedLeve
     if (!decompress_layer(body.data(), body.size(), r.layer, layer)) {
         return;
     }
-    terrain_light_decode(r, matches, layer);
+    terrain_light_decode(r, matches, [&](const TerrainLightMatch& m, TerrainBakedLight& tl) {
+        return decode_reduced_terrain_chart(r, layer.data(), layer.size(), m.index, m.cells_x, unpack_bc7_rgba,
+                                            tl.rgb, tl.reduction);
+    });
 }
 
 } // namespace
@@ -1920,7 +2029,7 @@ void alpine_lm_bake_end()
     const EncoderSettings settings = encoder_settings(mode);
     const Codec codec = g_raw_codec ? Codec::raw_rgb8 : Codec::bc7_unorm;
     std::uint32_t rdo_modified = 0;
-    std::vector<std::uint8_t> raw;
+    PageBuffers raw;
     if (g_raw_codec) {
         raw = std::move(g_af.pages);
     }
@@ -1930,7 +2039,8 @@ void alpine_lm_bake_end()
         g_af.pages.clear();
         g_af.pages.shrink_to_fit();
     }
-    if (raw.size() != layer_payload_size(codec, g_af.num_pages) || raw.size() > 0xffffffffull) {
+    const std::uint64_t raw_size = page_buffers_size(raw);
+    if (raw_size != layer_payload_size(codec, g_af.num_pages) || raw_size > 0xffffffffull) {
         af_error("the encoded layer does not fit its size field, dropping the section");
         g_af = AfBake{};
         return;
@@ -2078,7 +2188,7 @@ namespace
 void save_decide(CDedLevel& level)
 {
     const auto s = reinterpret_cast<std::uintptr_t>(level.solid);
-    g_save_num_surfaces = static_cast<std::uint32_t>(std::max(0, *reinterpret_cast<int*>(s + 0xc0)));
+    g_save_num_surfaces = static_cast<std::uint32_t>(std::max(0, solid_surfaces(s).count));
     g_save_num_faces = static_cast<std::uint32_t>(
         std::max(0, AddrCaller{0x0043cc40}.this_call<int>(reinterpret_cast<void*>(s + 0x70))));
 
@@ -2146,7 +2256,7 @@ void save_decide(CDedLevel& level)
                "records lightmap index -1");
         std::vector<std::int32_t> warned;
         for_each_mover_brush(level, [&](const BrushNode& brush) {
-            if (solid_surface_count(reinterpret_cast<std::uintptr_t>(brush.geometry)) <= 0
+            if (solid_surfaces(reinterpret_cast<std::uintptr_t>(brush.geometry)).count <= 0
                 || std::find(charted_movers.begin(), charted_movers.end(), brush.uid) != charted_movers.end()
                 || std::find(warned.begin(), warned.end(), brush.uid) != warned.end()) {
                 return;
@@ -2245,7 +2355,7 @@ std::vector<MoverStamp> fresh_mover_stamps()
 
 // A retained section's records keep the hashes they were baked with; each that no longer matches what
 // the movers section just wrote is reported.
-std::vector<MoverStamp> check_retained_movers(const std::vector<std::uint8_t>& body)
+void check_retained_movers(const std::vector<std::uint8_t>& body)
 {
     const ReadResult r = read_unfingerprinted(body);
     for (std::size_t i = 0; i < r.movers.size(); i++) {
@@ -2259,7 +2369,6 @@ std::vector<MoverStamp> check_retained_movers(const std::vector<std::uint8_t>& b
                     "until re-baked");
         }
     }
-    return {};
 }
 
 } // namespace
@@ -2293,7 +2402,12 @@ void alpine_lm_serialize_chunk(CDedLevel& level, rf::File& file)
     }
     std::vector<MoverStamp> stamps;
     try {
-        stamps = g_emit_retained ? check_retained_movers(body) : fresh_mover_stamps();
+        if (g_emit_retained) {
+            check_retained_movers(body);
+        }
+        else {
+            stamps = fresh_mover_stamps();
+        }
     }
     catch (const std::bad_alloc&) {
         // unstamped mover records match no mover, which then keeps its stock lighting
@@ -2403,7 +2517,7 @@ void __cdecl solid_write_new(void* file, void* solid, char brush_only)
         }
         else {
             const auto s = reinterpret_cast<std::uintptr_t>(solid);
-            const SaveMover capture{hash, static_cast<std::uint32_t>(std::max(0, solid_surface_count(s))), s, false};
+            const SaveMover capture{hash, static_cast<std::uint32_t>(std::max(0, solid_surfaces(s).count)), s, false};
             try {
                 const auto [it, fresh] = g_save_movers.try_emplace(g_mover_save_brush->uid, capture);
                 if (!fresh && it->second.solid != s) {

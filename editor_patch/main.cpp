@@ -43,6 +43,7 @@
 #include "textures.h"
 #include "meshes.h"
 #include "headless_bake.h"
+#include "face_list_cache.h"
 #include "terrain_paint.h"
 #include "terrain_preview.h"
 
@@ -2088,6 +2089,7 @@ extern "C" DWORD AF_DLL_EXPORT Init([[maybe_unused]] void* unused)
     ApplyLightmapPatches();
     ApplyGeometryPatches();
     ApplyAlpineLightmapPatches();
+    ApplyFaceListCachePatches();
     install_editor_bitmap_loader_hooks();
 
     // Browse for .v3m files instead of .v3d

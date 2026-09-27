@@ -335,16 +335,15 @@ bool preview_bitmap_valid(int bm, uint32_t res)
     return e.handle == bm && e.bm_type == BitmapEntry::TYPE_USER && e.width == res && e.height == res;
 }
 
-// gr_lock's texture setup, done first so a failed CreateTexture never reaches gr_lock.
+// gr_lock's texture setup, done first so a failed CreateTexture never reaches gr_lock. A failure
+// frees the slot, so a pooled bitmap is tried again at the next recomposite.
 bool preview_texture_ready(int bm)
 {
-    if (gr_api != gr_api_d3d || !gr_texture_slots) return false;
-    const int index = BitmapEntry::handle_to_index(bm);
-    if (index < 0) return false;
-    GrTextureSlot& slot = gr_texture_slots[index];
-    if ((slot.section_count < 1 || slot.bm_handle != bm) && !gr_texture_create(bm, &slot)) return false;
-    if (slot.section_count == 1 && slot.sections && slot.sections[0].texture) return true;
-    gr_texture_free(&slot);
+    GrTextureSlot* slot = gr_texture_slot_of(bm);
+    if (!slot) return false;
+    const bool created = (slot->section_count > 0 && slot->bm_handle == bm) || gr_texture_create(bm, slot);
+    if (created && slot->section_count == 1 && slot->sections && slot->sections[0].texture) return true;
+    gr_texture_free(slot);
     return false;
 }
 

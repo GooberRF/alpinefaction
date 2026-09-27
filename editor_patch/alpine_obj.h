@@ -80,10 +80,17 @@ inline void alpine_compact_selection(CDedLevel* level, DedObjectType type, Destr
     }
 }
 
-// Closest object whose placed position projects within radius_sq of the click, in pixels.
 template<typename T>
+inline Vector3 alpine_obj_pos(const T& obj)
+{
+    return obj.pos;
+}
+
+// Closest object whose position (pos_of, the placed position by default) projects within radius_sq of
+// the click, in pixels.
+template<typename T, typename PosFn = Vector3 (*)(const T&)>
 inline T* alpine_click_pick_point(const std::vector<T*>& objects, float click_x, float click_y,
-                                  float radius_sq)
+                                  float radius_sq, PosFn pos_of = alpine_obj_pos<T>)
 {
     float best_dist_sq = 1e30f;
     T* best = nullptr;
@@ -91,7 +98,8 @@ inline T* alpine_click_pick_point(const std::vector<T*>& objects, float click_x,
     for (auto* obj : objects) {
         if (obj->hidden_in_editor) continue;
 
-        float center_pos[3] = {obj->pos.x, obj->pos.y, obj->pos.z};
+        const Vector3 pos = pos_of(*obj);
+        float center_pos[3] = {pos.x, pos.y, pos.z};
         float screen_cx = 0.0f, screen_cy = 0.0f;
         if (!project_to_screen_2d(center_pos, &screen_cx, &screen_cy))
             continue;

@@ -477,7 +477,8 @@ struct GrTextureSlot
 {
     int bm_handle;
     int16_t section_count;
-    char _pad_06[6];
+    char _pad_06[5];
+    uint8_t dirty; // set by FUN_004f6000 to ask for a rebuild, cleared by FUN_004f5e40
     GrTextureSection* sections;
 };
 static_assert(sizeof(GrTextureSlot) == 0x10);
@@ -487,6 +488,9 @@ static auto& gr_texture_create = addr_as_ref<int __cdecl(int bm_handle, GrTextur
 static auto& gr_texture_free = addr_as_ref<void __cdecl(GrTextureSlot* slot)>(0x004F4880);
 static auto& gr_api = addr_as_ref<int>(0x014CF754);
 constexpr int gr_api_d3d = 0x66;
+
+// RED.exe's import address table slot for USER32!MessageBoxA.
+constexpr uintptr_t red_message_box_iat_slot = 0x005545F4;
 
 // Primitives CBitmapPreviewDialog::OnPaint (0x0044C1B0) uses to draw a texture straight into a
 // control's own window rather than through its device context.

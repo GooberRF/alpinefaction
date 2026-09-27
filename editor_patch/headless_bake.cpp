@@ -10,6 +10,7 @@
 #include <patch_common/MemUtils.h>
 #include <xlog/xlog.h>
 #include "headless_bake.h"
+#include "face_list_cache.h"
 #include "level.h"
 #include "vtypes.h"
 
@@ -106,6 +107,9 @@ void restore_view_cameras()
 
 [[noreturn]] void bake_finish(int code)
 {
+    if (const std::string verify = face_list_cache_verify_summary(); !verify.empty()) {
+        bake_log(verify);
+    }
     bake_log(std::format("done rc={}", code));
     ExitProcess(static_cast<UINT>(code));
 }
@@ -127,6 +131,10 @@ bool run_build_geometry()
         return false;
     }
     AddrCaller{0x0043a710}.this_call(level);
+    // the build refused to start (too little address space)
+    if (!running()) {
+        return false;
+    }
     const DWORD begin = GetTickCount();
     while (running()) {
         if (GetTickCount() - begin > build_timeout_ms) {
@@ -356,6 +364,7 @@ void ApplyHeadlessBakePatches()
 
     bake_log(std::format("started in={} out={}", g_input_path, g_output_path));
 
-    // RED.exe IAT slot for USER32!MessageBoxA (call sites 0x0041CD58, 0x0041CD9B)
-    write_mem_ptr(0x005545F4, &MessageBoxA_headless);
+    // MessageBoxA call sites 0x0041CD58, 0x0041CD9B.
+    // Overrides the face list cache's pause wrapper on purpose: headless boxes never pump messages.
+    write_mem_ptr(red_message_box_iat_slot, &MessageBoxA_headless);
 }

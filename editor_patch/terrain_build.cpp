@@ -11,6 +11,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+#include <patch_common/CodeInjection.h>
 #include <patch_common/FunHook.h>
 #include <patch_common/MemUtils.h>
 #include <common/terrain/alpine_terrain.h>
@@ -18,6 +19,7 @@
 #include "alpine_lightmaps.h"
 #include "alpine_obj.h"
 #include "brush_import.h"
+#include "face_list_cache.h"
 #include "headless_bake.h"
 #include "level.h"
 #include "mfc_types.h"
@@ -593,6 +595,7 @@ void __fastcall geobuild_driver_hooked(CDedLevel* level);
 FunHook<decltype(geobuild_driver_hooked)> geobuild_driver_hook{0x004399b0, geobuild_driver_hooked};
 void __fastcall geobuild_driver_hooked(CDedLevel* level)
 {
+    FaceListCacheWindow face_list_cache;
     const bool cancelling = build_cancelling(*level);
     if (!cancelling && g_build_first_tick_pending) {
         try {
@@ -613,6 +616,7 @@ void __fastcall geobuild_driver_hooked(CDedLevel* level)
     }
     g_built_terrains.clear();
     g_build_notes.clear();
+    face_list_cache_log_verify_summary();
 }
 
 // Sorted uids of the level solid's terrain rooms while FUN_004aa610 builds its surfaces, else null.
@@ -638,6 +642,15 @@ int __fastcall surface_build_hooked(GSolid* solid, void* edx, uint32_t a1, uint3
     return result;
 }
 
+// FUN_004aa610 keeps a surface index in a short and sizes its per-surface arrays at 0x10000 (0x0144ac28),
+// so a surface past red_max_level_surfaces would write outside them. Faces past the limit keep surface -1.
+CodeInjection surface_build_cap{
+    0x004aa751, // a new surface is about to start; EBP = surfaces so far
+    [](auto& regs) {
+        if (static_cast<uint32_t>(regs.ebp) >= red_max_level_surfaces) regs.eip = 0x004aaa1c;
+    },
+};
+
 // FUN_004abac0 (ECX = &face->flags): refusing a face keeps it out of the surfaces only; it still occludes.
 bool __fastcall face_gets_surface_hooked(const int* flags);
 FunHook<decltype(face_gets_surface_hooked)> face_gets_surface_hook{0x004abac0, face_gets_surface_hooked};
@@ -647,6 +660,30 @@ bool __fastcall face_gets_surface_hooked(const int* flags)
     if (!g_terrain_gate_uids || g_terrain_gate_uids->empty()) return true;
     const auto* face = reinterpret_cast<const GFace*>(reinterpret_cast<const std::byte*>(flags) - offsetof(GFace, flags));
     return !in_terrain_room(face, *g_terrain_gate_uids);
+}
+
+bool gets_stock_surface(GFace* face, const std::vector<int32_t>& terrain_uids)
+{
+    return face_gets_surface_hook.call_target(&face->flags) && !in_terrain_room(face, terrain_uids);
+}
+
+// After the surface pass: faces left without a surface by the caps above.
+void report_surface_overflow(CDedLevel& level)
+{
+    const GSolid* solid = level.solid;
+    if (!solid) return;
+    const auto& terrain_uids = level.GetAlpineLevelProperties().terrain_room_uids;
+    uint32_t unlit = 0;
+    for (GFace* f = solid->face_list_head; f; f = f->next_solid) {
+        if (f->surface_index == -1 && gets_stock_surface(f, terrain_uids)) unlit++;
+    }
+    if (!unlit) return;
+    editor_report_blocking("Lightmap", "Calculate Lighting",
+                           std::format("The level needs more than RED's {} lightmap surfaces; {} faces got no "
+                                       "lightmap. Leftover geometry of a deleted, moved or converted terrain is "
+                                       "the usual cause: run Build Geometry, then Calculate Lighting again.",
+                                       red_max_level_surfaces, unlit));
+    headless_bake_mark_refused();
 }
 
 // A terrain with no build state may still have an older build in the compiled solid (saved stale,
@@ -676,9 +713,7 @@ bool terrain_lighting_refused(CDedLevel& level)
     uint32_t candidates = 0;
     if (const GSolid* solid = level.solid) {
         for (GFace* f = solid->face_list_head; f; f = f->next_solid) {
-            if (face_gets_surface_hook.call_target(&f->flags) && !in_terrain_room(f, props.terrain_room_uids)) {
-                candidates++;
-            }
+            if (gets_stock_surface(f, props.terrain_room_uids)) candidates++;
         }
     }
     if (candidates > red_max_level_surfaces) {
@@ -695,14 +730,14 @@ bool terrain_lighting_refused(CDedLevel& level)
     return false;
 }
 
-// FUN_00448ca0: Calculate Lighting's surface pass (thiscall, no stack arguments), run before the bake
-// by both Calculate Lighting commands and by the headless bake.
+// FUN_00448ca0: Calculate Lighting's surface pass (thiscall, no stack arguments), alone or before a bake.
+// It frees the level's lightmaps, so the memory check comes first.
 void __fastcall lighting_surfaces_hooked(void* self);
 FunHook<decltype(lighting_surfaces_hooked)> lighting_surfaces_hook{0x00448ca0, lighting_surfaces_hooked};
 void __fastcall lighting_surfaces_hooked(void* self)
 {
-    bool refused = false;
-    if (CDedLevel* level = CDedLevel::Get()) {
+    bool refused = !lighting_calc_memory_admits();
+    if (CDedLevel* level = refused ? nullptr : CDedLevel::Get()) {
         try {
             refused = terrain_lighting_refused(*level);
         }
@@ -711,7 +746,9 @@ void __fastcall lighting_surfaces_hooked(void* self)
         }
     }
     alpine_lm_note_lighting_refused(refused);
-    if (!refused) lighting_surfaces_hook.call_target(self);
+    if (refused) return;
+    lighting_surfaces_hook.call_target(self);
+    if (CDedLevel* level = CDedLevel::Get()) report_surface_overflow(*level);
 }
 
 } // namespace
@@ -1031,6 +1068,7 @@ void ApplyTerrainBuildPatches()
 {
     geobuild_driver_hook.install();
     surface_build_hook.install();
+    surface_build_cap.install();
     lighting_surfaces_hook.install();
     face_gets_surface_hook.install();
 }

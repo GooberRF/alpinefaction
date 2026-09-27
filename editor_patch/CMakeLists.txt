@@ -59,6 +59,10 @@ set(SRCS
     lightmap_mesh_occluders.h
     alpine_lightmaps.cpp
     alpine_lightmaps.h
+    face_list_cache.cpp
+    face_list_cache.h
+    work_pool.cpp
+    work_pool.h
 )
 source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${SRCS})
 

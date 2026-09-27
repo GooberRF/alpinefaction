@@ -274,7 +274,8 @@ CodeInjection level_read_geometry_fingerprint_patch{
 CodeInjection level_read_mover_solid_patch{
     0x00463CC7,
     [](auto& regs) {
-        af_lightmap_capture_mover(static_cast<int>(regs.ebx), reinterpret_cast<rf::GSolid*>(static_cast<uintptr_t>(regs.eax)),
+        af_lightmap_capture_mover(static_cast<int>(regs.ebx),
+                                  reinterpret_cast<rf::GSolid*>(static_cast<uintptr_t>(regs.eax)),
                                   reinterpret_cast<const void*>(static_cast<uintptr_t>(regs.esi)));
     },
 };

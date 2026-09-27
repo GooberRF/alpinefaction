@@ -1,7 +1,7 @@
 #pragma once
 
 // Alpine Lightmaps, RFL section 0x0AFBAE09: the wire spec and the only atlas derivation, shared by
-// the RED writer and the game reader. Id reservations: docs/LIGHTMAPS_CHUNK_RESERVATIONS.md.
+// the RED writer and the game reader.
 //
 // POD types and free functions only. Both binaries include this and both hand the results to
 // engine code, so nothing here may allocate, throw, or pass a non-trivial type by value.

@@ -18,7 +18,7 @@ Version 1.5.0 (Trillium): Not yet released
   - `Water blocks sunlight` stops sun rays at liquid surfaces during the bake
 - Add `Terrain` object to level editor: heightmap terrain with up to 8 blended texture layers, holes, optional skirts, and per-terrain lightmap density
   - Import and export 8/16-bit greyscale PNG and RAW16 heightmaps, and import splat maps
-  - Paint texture layers and holes in the viewport with `Terrain Tools`
+  - Sculpt heights (`Raise`, `Lower`, `Smooth Heights`, `Flatten`, `Set Height`, `Noise`, `Ramp`, `Ramp Between Points`), paint texture layers and holes, and pick geoable chunks in the viewport with `Terrain Tools`
   - Up to 4 detail overlays per terrain: textures with alpha (leaves, debris) painted over the layers by their own coverage, with optional tiling break-up (Direct3D 11 renderer only)
   - `Geoable` terrains are carved by RF2-style geomod craters, with their own underside and crater textures
   - `Convert to Brushes` turns a terrain into detail brushes
@@ -71,6 +71,8 @@ Version 1.5.0 (Trillium): Not yet released
 - Support moving climbing regions with `Anchor_Marker` and `Anchor_Marker_Orient`
 - Add `When_Destroyed` catalyst event, which activates its links when the destructible detail brushes it links to are destroyed
 - Support linking events and triggers to detail brushes in the level editor
+- Vastly improve `Calculate Lighting` times in the level editor (by 5-7x on large levels)
+- Improve level loading and `Build Geometry` times in the level editor on levels with many faces (especially levels with terrain, which load roughly 3x and build roughly 10x faster)
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Add `ui_color_console` console command to set the console background color
@@ -121,6 +123,12 @@ Version 1.5.0 (Trillium): Not yet released
 - Fix crash when a decal is created in a room containing a very large number of detail brushes
 - Fix Direct3D 8/9 renderer geometry cache overflowing with more than 256 rooms or detail rooms in view
 - Fix Direct3D 8/9 renderer rebuilding every room's render cache each frame while a room with more than 8000 vertices is in view
+- Fix level editor memory use growing with every `Build Geometry` and `Calculate Lighting` because the Direct3D textures of discarded lightmaps were never released
+- Fix level editor crashing when Direct3D fails to create a texture, which now logs a warning that the editor may be low on memory
+- Stop `Build Geometry` and `Calculate Lighting` in the level editor with a message when too little memory is left to finish them
+- Reduce the memory `Calculate Lighting` needs in the level editor, and how much of it must be in one piece
+- Fix level editor crashing in `Calculate Lighting` when a level needs more than 32767 lightmap surfaces; faces past the limit are left without a lightmap and the editor warns
+- Fix geomod craters creating new lightmap surfaces on every crater once a level holds more than 32767 of them
 
 [@is-this-c](https://github.com/is-this-c)
 - Let `Caps Lock` capitalize

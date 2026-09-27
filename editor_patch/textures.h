@@ -160,4 +160,14 @@ static_assert(offsetof(BitmapEntry, total_bytes_for_all_levels) == 0x60);
 
 static auto& gr_d3d_mark_texture_dirty = addr_as_ref<void(int bm_handle)>(0x004F6000);
 
+// Null unless Direct3D is the renderer and the bitmap has an index.
+inline GrTextureSlot* gr_texture_slot_of(int bm_handle)
+{
+    if (bm_handle < 0 || gr_api != gr_api_d3d || !gr_texture_slots) {
+        return nullptr;
+    }
+    const int index = BitmapEntry::handle_to_index(bm_handle);
+    return index < 0 ? nullptr : &gr_texture_slots[index];
+}
+
 void reload_custom_textures();

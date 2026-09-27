@@ -310,6 +310,8 @@ static_assert(offsetof(GFace, face_id) == 0x38);
 static_assert(offsetof(GFace, edge_loop) == 0x40);
 static_assert(offsetof(GFace, which_room) == 0x44);
 static_assert(offsetof(GFace, next_solid) == 0x54);
+static_assert(offsetof(GFace, next_bbox) == 0x58);
+static_assert(offsetof(GFace, next_room) == 0x5C);
 
 // Editor-side GSolid partial layout (matches stock RED.exe / RF.exe GSolid)
 // Full game-side definition with ALPINE_FACTION extensions: game_patch/rf/geometry.h
@@ -1401,6 +1403,13 @@ enum class EditorReportLevel
     error,
 };
 void editor_report(EditorReportLevel level, const char* tag, const std::string& msg, bool red_log);
+// editor_report at error level to RED's log, plus a message box titled `caption` outside a headless bake.
+void editor_report_blocking(const char* tag, const char* caption, const std::string& msg);
+
+// Empty when RED's address space has a free block of `largest` bytes and `total` bytes free overall;
+// otherwise the shortfall followed by `advice`.
+std::string editor_address_space_shortfall(std::uint64_t largest, std::uint64_t total,
+                                           const char* advice = "Save the level and restart RED.");
 
 // Inside RED's autosave (CDedDoc::LoadSaveLevel with is_autosave set).
 bool level_autosave_in_progress();

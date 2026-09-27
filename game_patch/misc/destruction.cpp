@@ -3324,9 +3324,14 @@ static void report_boolean_state_timing(int inner_state, int64_t us)
 // Boolean state 5 gives each new crater face a GSurface (0x004DE21A), and state 7 every face that still
 // has none (0x004DE50C; 0x005A3A58 is cleared only on dedicated servers): a noise lightmap relit from
 // stock lights only. Terrain faces are lit from the terrain's chart and keep surface -1.
+// GFace::surface_index is a short: a surface past 0x7FFF would wrap negative, and state 7 would make the
+// face another one on every boolean, so faces keep surface -1 once the solid is full.
 CallHook<void __fastcall(rf::GSolid*, int, rf::GFace*, float)> boolean_face_create_surface_hook{
     {0x004DE21A, 0x004DE50C},
     [](rf::GSolid* solid, int edx, rf::GFace* face, float ppm) FASTCALL_LAMBDA {
+        if (solid->surfaces.size() > 0x7FFF) {
+            return;
+        }
         // A crater face no target face was cut for has no room yet.
         const rf::GRoom* room = face->which_room;
         if (!room && g_rf2_style_boolean_active) {
@@ -3384,8 +3389,8 @@ CallHook<void(rf::GSolid*, rf::GFace*, rf::GFace**, rf::GFace**)> boolean_split_
     },
 };
 
-// Exact "Option B" for terrain targets (docs/GEOMOD_FACEWALK_ANALYSIS.md): inner states 0, 1 and 5 see only
-// the faces they can change, and the level face list is what stock leaves at every frame boundary.
+// Fast boolean iteration for terrain targets: inner states 0, 1 and 5 see only the faces they can change,
+// and the level face list is what stock leaves at every frame boundary.
 static bool g_geomod_fast_terrain = true;
 static bool g_geomod_fast_verify = false;
 
