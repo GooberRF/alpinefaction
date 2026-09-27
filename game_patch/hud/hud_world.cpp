@@ -838,11 +838,20 @@ void build_ephemeral_world_hud_sprite_icons() {
 
         // determine label width
         const auto [text_width, text_height] = rf::gr::get_string_size(es.label, font);
-        int half_text_width = text_width / 2;
+        const int half_text_width = text_width / 2;
 
-        auto text_pos = es.pos;
-        render_string_3d(text_pos, es.label.c_str(), -half_text_width, -25,
-            font, {es.color.red, es.color.green, es.color.blue, es.color.alpha});
+        const int base_font = get_world_hud_font(1.f);
+        const int base_text_height = rf::gr::get_string_size(es.label, base_font).second;
+        const int centered_offset_y = -25 - (text_height - base_text_height);
+
+        render_string_3d(
+            es.pos,
+            es.label.c_str(),
+            -half_text_width,
+            centered_offset_y,
+            font,
+            {es.color.red, es.color.green, es.color.blue, es.color.alpha}
+        );
     }
 }
 
@@ -879,11 +888,16 @@ void build_ephemeral_world_hud_strings() {
         const std::string label = std::to_string(es.damage);
         const auto [text_width, text_height] = rf::gr::get_string_size(label, font);
         const int half_text_width = text_width / 2;
+
+        const int base_font = get_world_hud_font(1.f);
+        const int base_text_height = rf::gr::get_string_size(label, base_font).second;
+        const int centered_offset_y = -25 - ((text_height - base_text_height) / 2);
+
         render_string_3d(
             string_pos,
             label.c_str(),
             -half_text_width,
-            -25,
+            centered_offset_y,
             font,
             es.color
         );

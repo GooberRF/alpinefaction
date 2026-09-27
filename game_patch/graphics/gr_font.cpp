@@ -469,9 +469,7 @@ void GrNewFont::draw_3d(
     const rf::Vector3 right = orient.rvec * scale;
     const rf::Vector3 up = orient.uvec * scale;
 
-    rf::Vector3 pen_origin = pos
-        - up
-        * static_cast<float>(baseline_y_ + line_spacing_);
+    rf::Vector3 pen_origin = pos - up * static_cast<float>(baseline_y_);
 
     int line = 0;
     float pen_x = 0.f;
