@@ -152,9 +152,9 @@ void unlink_brush(CDedLevel& level, BrushNode* brush)
 
 // Only while no build is running: the build dialog's work list points at the brushes until the
 // driver's finish or cancel empties it.
-int remove_temp_brushes(CDedLevel& level)
+int remove_temp_brushes(CDedLevel& level, std::size_t first = 0)
 {
-    if (g_temp_chunks.empty()) return 0;
+    if (g_temp_chunks.size() <= first) return 0;
     std::unordered_set<BrushNode*> live;
     if (BrushNode* head = level.brush_list) {
         BrushNode* node = head;
@@ -164,13 +164,14 @@ int remove_temp_brushes(CDedLevel& level)
         } while (node && node != head);
     }
     int removed = 0;
-    for (const TempChunk& tc : g_temp_chunks) {
+    for (std::size_t i = first; i < g_temp_chunks.size(); i++) {
+        const TempChunk& tc = g_temp_chunks[i];
         if (!live.count(tc.brush) || tc.brush->uid != tc.brush_uid) continue;
         unlink_brush(level, tc.brush);
         AddrCaller{brush_node_delete_addr}.this_call(tc.brush, 1);
         removed++;
     }
-    g_temp_chunks.clear();
+    g_temp_chunks.resize(first);
     return removed;
 }
 
@@ -305,12 +306,16 @@ void insert_temp_brushes(CDedLevel& level)
     g_build_triangles = 0;
     for (DedTerrain* t : level.GetAlpineLevelProperties().terrain_objects) {
         if (!t) continue;
+        const std::size_t first_chunk = g_temp_chunks.size();
+        const uint64_t triangles = g_build_triangles;
         try {
             insert_terrain(level, *t);
         }
         catch (const std::bad_alloc&) {
-            g_build_notes.push_back(
-                std::format("{}: out of memory while building its chunks; it is incomplete.", terrain_label(*t)));
+            remove_temp_brushes(level, first_chunk);
+            g_build_triangles = triangles;
+            g_build_notes.push_back(std::format("{}: out of memory while building its chunks; it was left out.",
+                                                terrain_label(*t)));
         }
     }
 }
@@ -609,10 +614,15 @@ void __fastcall geobuild_driver_hooked(CDedLevel* level)
     if (build_running(*level)) return;
     try {
         if (!cancelling) finish_build(*level);
-        remove_temp_brushes(*level);
     }
     catch (const std::bad_alloc&) {
         terrain_report("Out of memory finishing the terrain build; rebuild before saving.", false);
+    }
+    try {
+        remove_temp_brushes(*level);
+    }
+    catch (const std::bad_alloc&) {
+        xlog::error("[Terrain] out of memory removing temporary chunk brushes; saving strips them");
     }
     g_built_terrains.clear();
     g_build_notes.clear();
