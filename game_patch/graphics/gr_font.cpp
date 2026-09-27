@@ -331,9 +331,6 @@ GrNewFont::GrNewFont(std::string_view name) :
         throw std::runtime_error{"failed to load font"};
     }
 
-    // In case, `draw_3d` scales down our glyph. 
-    bm_set_user_mipmap(bitmap_, true);
-
     if (!bm_fill(bitmap_, 0x00FFFFFFu)) {
         xlog::error("bm_fill failed for font atlas");
         throw std::runtime_error{"failed to initialize font atlas"};
@@ -453,6 +450,7 @@ void GrNewFont::draw_into_bitmap(int x, int y, int bm_handle, std::string_view t
     }
 }
 
+// Note.  Mipmaps are not used at this time.
 void GrNewFont::draw_3d(
     const rf::Vector3& pos,
     const rf::Matrix3& orient,
@@ -471,11 +469,9 @@ void GrNewFont::draw_3d(
 
     rf::Vector3 pen_origin = pos - up * static_cast<float>(baseline_y_);
 
-    int line = 0;
     float pen_x = 0.f;
     for (const char ch : text) {
         if (ch == '\n') {
-            ++line;
             pen_x = 0.f;
             pen_origin -= up * static_cast<float>(line_spacing_);
             continue;
@@ -747,7 +743,7 @@ FunHook<void(int, int, int, const char*, int)> gr_string_render_into_bitmap_hook
 
 FunHook<
     void(const rf::Vector3*, const rf::Matrix3*, float, const char*, int, rf::gr::Mode)
-> render_string_3d_hook{
+> gr_string_3d_hook{
     0x00520020,
     [] (
         const rf::Vector3* const pos,
@@ -762,18 +758,16 @@ FunHook<
         }
         if (font_num & TTF_FONT_FLAG) {
             const GrNewFont* const font =
-                resolve_ttf_font(font_num, "render_string_3d_hook");
+                resolve_ttf_font(font_num, "gr_string_3d_hook");
             if (font) {
                 font->draw_3d(*pos, *orient, scale, s, mode);
             }
         } else {
-            // Note.  Stock `render_string_3d` can draw glyphs with an invalid y offset.
-            //
-            // Moreover, it treats `pos` as the center of the first glyph cell.  At 0x00520082
-            // and 0x00520218, it builds half-extents with the `.5f` constant at 0x005893C0.  It
-            // emits each quad as `center ± right_half ± up_half`, and steps centers by each glyph's
-            // advance.  `draw_3d` treats `pos` as the top-left of the text box, matching `draw`.
-            render_string_3d_hook.call_target(pos, orient, scale, s, font_num, mode);
+            // Note.  Stock `gr_string_3d` is faulty, and renders too much space between between
+            // certain glyphs.
+            // Moreover, it anchors `pos` at the first glyph's center; but `draw_3d` anchors
+            // at the first glyph's top-left, like `draw`.
+            gr_string_3d_hook.call_target(pos, orient, scale, s, font_num, mode);
         }
     },
 };
@@ -876,7 +870,7 @@ void gr_font_apply_patch()
     gr_set_default_font_hook.install();
     gr_get_font_height_hook.install();
     gr_string_render_into_bitmap_hook.install();
-    render_string_3d_hook.install();
+    gr_string_3d_hook.install();
     gr_string_hook.install();
     gr_get_string_size_hook.install();
     init_freetype_lib();

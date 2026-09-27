@@ -287,22 +287,21 @@ static void render_projected_string(
     }
 }
 
-static float world_z_depth(const rf::Vector3& pos) {
+static float scaled_view_depth(const rf::Vector3& pos) {
     const rf::Vector3 delta = pos - rf::gr::view_pos;
     return rf::gr::view_matrix.fvec.dot_prod(delta);
 }
 
 static float world_y_units_per_pixel(const rf::Vector3& pos) {
-    const float z = world_z_depth(pos);
+    const float z = scaled_view_depth(pos);
     if (z <= 1e-6f) {
         return 0.f;
     }
     return 2.f * z / (rf::gr::screen.clip_height * rf::gr::matrix_scale.y);
 }
 
-[[maybe_unused]]
 static float world_x_units_per_pixel(const rf::Vector3& pos) {
-    const float z = world_z_depth(pos);
+    const float z = scaled_view_depth(pos);
     if (z <= 1e-6f) {
         return 0.f;
     }
@@ -318,7 +317,7 @@ static void render_string_3d(
     const int offset_y,
     const int font_num,
     const rf::gr::Color color,
-    const rf::Matrix3* const orient = nullptr
+    const rf::Matrix3* const orient = &rf::gr::eye_matrix
 ) {
     if constexpr (WH_2D_TEXT) {
         render_projected_string(
@@ -338,36 +337,20 @@ static void render_string_3d(
             return;
         }
         if (offset_x != 0) {
-            pos += rf::gr::unscaled_matrix.rvec * static_cast<float>(offset_x) * scale;
+            pos += rf::gr::eye_matrix.rvec
+                * static_cast<float>(offset_x)
+                * world_x_units_per_pixel(pos);
         }
         if (offset_y != 0) {
-            pos -= rf::gr::unscaled_matrix.uvec * static_cast<float>(offset_y) * scale;
-        }
-        rf::Matrix3 local_player_orient{};
-        if (!orient) {
-            local_player_orient = rf::local_player->cam->camera_entity->eye_orient;
-
-            rf::Entity* const entity =
-                    rf::entity_from_handle(rf::local_player->entity_handle);
-            if (rf::local_player->cam->mode == rf::CAMERA_FIRST_PERSON
-                && entity
-                && rf::entity_in_vehicle(entity))
-            {
-                rf::Entity* const host =
-                    rf::entity_from_handle(entity->host_handle);
-                if (rf::entity_is_driller(host)) {
-                    rf::Vector3 pos{};
-                    // player_cockpit_get_camera_pos
-                    AddrCaller{0x004A8690}
-                        .c_call(rf::local_player, host, &pos, &local_player_orient);
-                }
-            }
+            pos -= rf::gr::eye_matrix.uvec
+                * static_cast<float>(offset_y)
+                * scale;
         }
         const rf::gr::Color prev_color{rf::gr::screen.current_color};
         rf::gr::set_color(color);
         rf::gr::string_3d(
             &pos,
-            orient ? orient : &local_player_orient,
+            orient,
             scale,
             string,
             font_num,
@@ -847,7 +830,7 @@ void build_ephemeral_world_hud_sprite_icons() {
             -half_text_width,
             offset_y,
             font,
-            {es.color.red, es.color.green, es.color.blue, es.color.alpha}
+            es.color
         );
     }
 }
