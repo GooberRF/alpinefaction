@@ -1,3 +1,4 @@
+#include <array>
 #include <vector>
 #include <deque>
 #include <algorithm>
@@ -3075,9 +3076,9 @@ FunHook<bool(float, int, rf::GRoom*, rf::Vector3*, rf::Vector3*, int, int)> geom
 
         // For RF2-style geomods: bypass both the soft multiplayer limit and the hard
         // 128 crater record limit by temporarily zeroing g_num_geomods_this_level and
-        // raising multi_geo_limit. The stock function writes a crater record at slot 0
-        // (which gets overwritten by future geomods — RF2 geomods don't need persistent
-        // crater records since the carved geometry IS the visual result).
+        // raising multi_geo_limit. The stock function then writes the crater's records at
+        // slot 0, which is restored afterwards so a stock crater there is kept; RF2 craters
+        // keep no record.
         //
         // For normal geomods in RF2-enabled levels: compensate the soft limit for RF2
         // entries in the persistent counter (DAT_0063715c) so RF2 geomods don't consume
@@ -3086,6 +3087,8 @@ FunHook<bool(float, int, rf::GRoom*, rf::Vector3*, rf::Vector3*, int, int)> geom
         auto& stock_limit = rf::multi_geo_limit;
         int saved_limit = stock_limit;
         int saved_crater_count = rf::g_num_geomods_this_level;
+        const auto saved_crater_record = std::to_array(rf::g_geomod_crater_records[0]);
+        const auto saved_crater_pushes = std::to_array(rf::g_geomod_crater_pushes[0]);
 
         if (is_rf2_geomod) {
             if (stock_limit > 0) stock_limit = INT_MAX;
@@ -3117,6 +3120,10 @@ FunHook<bool(float, int, rf::GRoom*, rf::Vector3*, rf::Vector3*, int, int)> geom
 
         auto result = geomod_create_hook.call_target(radius, parent_handle, src_room, pos, hit_normal, shape_index, flags);
         stock_limit = saved_limit;
+        if (is_rf2_geomod) {
+            std::ranges::copy(saved_crater_record, rf::g_geomod_crater_records[0]);
+            std::ranges::copy(saved_crater_pushes, rf::g_geomod_crater_pushes[0]);
+        }
         g_rf2_suppress_geomod_create_effects = false;
         rf::g_geomod_emitter_default_idx = saved_default_emitter;
         rf::g_geomod_emitter_driller_idx = saved_driller_emitter;

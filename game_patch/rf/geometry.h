@@ -634,6 +634,9 @@ namespace rf
     static auto& g_geomod_scale = addr_as_ref<float>(0x00648598);
     static auto& g_geomod_flags = addr_as_ref<uint8_t>(0x0064858C);       // bit 0x1=local, 0x8=driller
     static auto& g_num_geomods_this_level = addr_as_ref<int>(0x00647C9C);
+    // geomod_create 0x00467020 writes each crater's records at index g_num_geomods_this_level.
+    static auto& g_geomod_crater_records = addr_as_ref<uint8_t[128][0x20]>(0x00648600);
+    static auto& g_geomod_crater_pushes = addr_as_ref<uint8_t[128][0x24]>(0x00646A28);
     static auto& g_geomod_separate_solids = addr_as_ref<bool>(0x00647C28);
 
     // Geomod emitter template indices (set by geomod_init FUN_00437130)

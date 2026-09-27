@@ -1,6 +1,7 @@
 #include <cstring>
 #include <cctype>
 #include <string>
+#include <string_view>
 #include <vector>
 #include <algorithm>
 #include <unordered_set>
@@ -447,6 +448,48 @@ int texture_browser_pick(const char* folder, int current_bm)
     if (do_modal(panel) != IDOK) return -1;
 
     return panel->preview->bm_handle;
+}
+
+static_assert(offsetof(CDedLevel, texture_groups) == 0x1C4);
+
+static bool same_texture_stem(std::string_view a, std::string_view b)
+{
+    a = a.substr(0, a.find_last_of('.'));
+    b = b.substr(0, b.find_last_of('.'));
+    return a.size() == b.size() && _strnicmp(a.data(), b.data(), a.size()) == 0;
+}
+
+// Stock categories list their textures in the startup groups, as texture mode's reverse lookup
+// (0x00445910) searches them; custom subdirectory categories have no group, so their search path is
+// matched instead.
+const char* texture_category_of(const char* filename)
+{
+    CDedLevel* level = CDedLevel::Get();
+    if (!level || !filename || !filename[0]) return nullptr;
+    const auto& groups = level->texture_groups;
+    for (int g = 0; g < groups.size; g++) {
+        const TextureGroup* group = groups.data_ptr[g];
+        if (!group) continue;
+        for (int i = 0; i < group->textures.size; i++) {
+            if (same_texture_stem(group->textures.data_ptr[i].c_str(), filename)) return group->name.c_str();
+        }
+    }
+    if (!g_texture_manager) return nullptr;
+    const auto& categories =
+        *reinterpret_cast<VArray<TextureCategory*>*>(static_cast<char*>(g_texture_manager) + 0x7C);
+    for (EditorVfsFile* node : vfs_file_buckets) {
+        for (; node; node = node->next) {
+            if (!node->name || !same_texture_stem(node->name, filename)) continue;
+            for (int c = 0; c < categories.size; c++) {
+                const TextureCategory* cat = categories.data_ptr[c];
+                if (cat && cat->path_handle == node->path_index
+                    && std::strncmp(cat->name.c_str(), "Custom - ", 9) == 0) {
+                    return cat->name.c_str();
+                }
+            }
+        }
+    }
+    return nullptr;
 }
 
 // VPP packfile creation (FUN_004482c0) constructs custom texture paths by combining a

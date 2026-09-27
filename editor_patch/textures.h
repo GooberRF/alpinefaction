@@ -12,6 +12,13 @@ struct TextureCategory {
 };
 static_assert(sizeof(TextureCategory) == 0xC, "TextureCategory size mismatch!");
 
+// A stock category's name and the texture files listed in it (CDedLevel::texture_groups).
+struct TextureGroup {
+    VString name;
+    VArray<VString> textures;
+};
+static_assert(sizeof(TextureGroup) == 0x14);
+
 // Partial layout of the texture mode sidebar panel
 struct TextureModePanel {
     char pad_0[0x94];
@@ -73,6 +80,10 @@ static_assert(offsetof(TextureBrowserPanel, listbox_dirty) == 0x2bc);
 // (0x0045c140) does: preselect `folder`, seed the browser with `current_bm`, and return the
 // handle the user picked. Returns -1 when the browser is unavailable or was cancelled.
 int texture_browser_pick(const char* folder, int current_bm);
+
+// The name of the category holding `filename`, matched without its extension, as texture mode finds
+// it; null when no category does.
+const char* texture_category_of(const char* filename);
 
 inline VArray<TextureCategory*>* texture_browser_categories(TextureBrowserPanel* panel)
 {

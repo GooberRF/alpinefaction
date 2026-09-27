@@ -1089,7 +1089,7 @@ struct CDedLevel
     void* unk_obj_1AC;                            // +0x1AC (0x14-byte allocated object)
     char _pad_1B0[0x1C0 - 0x1B0];               // +0x1B0 (CString + int)
     int unk_1C0;                                  // +0x1C0 (init 0, file filter related)
-    char _pad_1C4[0x1D0 - 0x1C4];               // +0x1C4 (VArray, 12 bytes + padding)
+    VArray<struct TextureGroup*> texture_groups; // +0x1C4 built at startup by 0x0041b7c0
 
     // --- icon texture handles ---
     int icon_sp_start;                            // +0x1D0 (Icon_SinglePlayerStart.tga)

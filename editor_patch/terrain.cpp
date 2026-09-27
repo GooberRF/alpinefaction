@@ -1193,12 +1193,13 @@ static void terrain_dlg_reselect_layer(HWND hdlg, int kind, int sel)
 }
 
 // The texture browser runs its own modal loop off the main frame; same disable/re-activate dance the
-// rope dialog does. It opens on the category texture mode starts on.
+// rope dialog does. It opens on the field's texture's category, else on the one texture mode starts on.
 static bool terrain_browse_texture(HWND hdlg, int field_idc)
 {
     const std::string current = terrain_get_text(hdlg, field_idc);
+    const char* category = texture_category_of(current.c_str());
     EnableWindow(hdlg, FALSE);
-    const int picked = texture_browser_pick("Root", alpine_dlg_resolve_bitmap(current.c_str()));
+    const int picked = texture_browser_pick(category ? category : "Root", alpine_dlg_resolve_bitmap(current.c_str()));
     EnableWindow(hdlg, TRUE);
     SetActiveWindow(hdlg);
     if (picked < 0) return false;
