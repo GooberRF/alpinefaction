@@ -21,11 +21,6 @@ void DestroyDedProjectionCamera(DedProjectionCamera* camera);
 void DestroyDedRopeEmitter(DedRopeEmitter* rope);
 void DestroyDedTerrain(DedTerrain* terrain);
 
-// AlpineLevelProperties::lightmap_density value for "Off": no alpine surface charts. The game never
-// reads the field, and builds before it clamp it to alpine_lightmap::density_max.
-constexpr uint8_t lightmap_density_off = 255;
-static_assert(lightmap_density_off > alpine_lightmap::density_max);
-
 constexpr int alpine_props_chunk_id = 0x0AFBA5ED;
 constexpr int alpine_mesh_chunk_id = 0x0AFBAE01;
 constexpr int alpine_note_chunk_id = 0x0AFBAE02;
@@ -519,7 +514,7 @@ struct AlpineLevelProperties
     bool alpha_faces_occlude = false; // alpha textured faces block light; stock skips them entirely
     std::vector<int32_t> no_shadow_cast_brush_uids; // brushes whose faces never occlude a baked ray
     bool meshes_occlude = false; // alpine mesh objects cast baked shadows
-    uint8_t lightmap_density = 0; // texels per world unit for the alpine lightmap bake, 0 = default, lightmap_density_off
+    uint8_t lightmap_density = 0; // texels per world unit for the alpine lightmap bake, 0 = default, density_off
     bool d3d11_only_lightmaps = false; // skip writing the stock 0x1200 lightmaps section
     bool stock_lightmaps_omitted = false; // load-time only: the file had no stock lightmaps section
     uint8_t lightmap_compression = 0; // alpine_lightmap::CompressionMode
@@ -568,7 +563,7 @@ struct AlpineLevelProperties
     // Calculate Lighting gives the surfaces alpine charts; D3D11-only lightmaps can only apply then.
     bool surface_charts_enabled() const
     {
-        return !legacy_lighting && lightmap_density != lightmap_density_off;
+        return !legacy_lighting && lightmap_density != alpine_lightmap::density_off;
     }
 
     void SanitizeSunProperties()

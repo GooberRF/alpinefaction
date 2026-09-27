@@ -151,9 +151,11 @@ struct AfBake
     std::uintptr_t solid = 0; // the static solid the charts are positional over
     std::uint32_t signature = 0;
     std::uint8_t base_density = 0;
-    // charts[0, num_surface_charts) are the surfaces' charts, positionally; the terrain charts
-    // follow in terrains order, then the movers' in movers order: the reader's tile order.
+    std::uint32_t stock_page = 0; // the stock page edge the surfaces were packed and normalized at
+    // charts[0, num_surface_charts) are the surfaces' charts, positionally; the movers' follow in movers
+    // order, then from first_terrain_chart the terrain charts in terrains order: the reader's tile order.
     std::uint32_t num_surface_charts = 0;
+    std::uint32_t first_terrain_chart = 0;
     bool has_surface_charts = false;
     std::vector<AfTerrain> terrains;
     std::vector<AfMover> movers;
@@ -385,9 +387,24 @@ enum class PackResult
     over_budget,
 };
 
+// The stock page edge of the first surface of `solid` that has a page, 0 for none.
+std::uint32_t first_stock_page(std::uintptr_t solid)
+{
+    const auto [count, elems] = solid_surfaces(solid);
+    for (int i = 0; elems && i < count; i++) {
+        const auto surface = *reinterpret_cast<std::uintptr_t*>(elems + i * 4);
+        const std::uintptr_t lm = surface ? surf_lm(surface) : 0;
+        if (lm && *reinterpret_cast<int*>(lm + 4) > 0) {
+            return static_cast<std::uint32_t>(*reinterpret_cast<int*>(lm + 4));
+        }
+    }
+    return 0;
+}
+
 // The surfaces' charts at `density`; false when no surface qualifies for one. `owner` names the solid
-// in the log. A mover's charts are the ones its record can describe (mover_chart_geometry).
-bool derive_surface_charts(std::uintptr_t solid, std::uint32_t surface_count, float density,
+// in the log. A mover's charts are the ones its record can describe (mover_chart_geometry). Only a
+// surface on a stock_page x stock_page page gets one, the page size the header records.
+bool derive_surface_charts(std::uintptr_t solid, std::uint32_t surface_count, float density, std::uint32_t stock_page,
                            std::vector<AfChart>& charts, const std::string& owner = {}, bool mover = false)
 {
     const auto surfaces = solid_surfaces(solid).elems;
@@ -408,9 +425,11 @@ bool derive_surface_charts(std::uintptr_t solid, std::uint32_t surface_count, fl
             continue;
         }
         const int lm_w = *reinterpret_cast<int*>(lm + 4);
+        const int lm_h = *reinterpret_cast<int*>(lm + 8);
         const int u_coef = surf_i(surface, 0x60);
         const int v_coef = surf_i(surface, 0x64);
-        if (w <= 2 || h <= 2 || lm_w <= 0 || u_coef < 0 || u_coef > 2 || v_coef < 0 || v_coef > 2) {
+        if (w <= 2 || h <= 2 || !stock_page_edge_valid(stock_page) || lm_w != static_cast<int>(stock_page) ||
+            lm_h != static_cast<int>(stock_page) || u_coef < 0 || u_coef > 2 || v_coef < 0 || v_coef > 2) {
             continue;
         }
         const float extent_u =
@@ -438,7 +457,7 @@ bool derive_surface_charts(std::uintptr_t solid, std::uint32_t surface_count, fl
     return any;
 }
 
-// Lays every chart's tiles out in the pages: surfaces first, then terrain, as the reader derives it.
+// Lays every chart's tiles out in the pages, their tile order the chart order as the reader derives it.
 PackResult pack_charts(std::vector<AfChart>& charts, std::vector<Tile>& tiles, std::uint32_t& out_pages)
 {
     const auto chart_count = static_cast<std::uint32_t>(charts.size());
@@ -703,13 +722,14 @@ std::vector<AfMover> collect_movers(CDedLevel& level)
 
 // The movers' charts at `density`, appended to `out` in order; drops the movers that get none and
 // sets each kept mover's first_chart relative to the first mover chart.
-void derive_mover_charts(std::vector<AfMover>& movers, std::uint32_t density, std::vector<AfChart>& out)
+void derive_mover_charts(std::vector<AfMover>& movers, std::uint32_t density, std::uint32_t stock_page,
+                         std::vector<AfChart>& out)
 {
     out.clear();
     std::vector<AfMover> kept;
     std::vector<AfChart> charts;
     for (AfMover m : movers) {
-        if (!derive_surface_charts(m.solid, m.num_surfaces, static_cast<float>(density), charts,
+        if (!derive_surface_charts(m.solid, m.num_surfaces, static_cast<float>(density), stock_page, charts,
                                    "mover " + std::to_string(m.uid) + " ", true)) {
             continue;
         }
@@ -740,9 +760,22 @@ std::uint32_t alpine_lm_bake_begin()
     const auto solid = reinterpret_cast<std::uintptr_t>(level->solid);
     const auto surface_count = static_cast<std::uint32_t>(std::max(0, solid_surfaces(solid).count));
 
+    // The page edge the surfaces were packed and their uv_scale/uv_add normalized at: FUN_004a5f60 makes
+    // every page that square, of the size lightmap_highres_setup_injection chose for the last repack.
+    std::uint32_t stock_page = first_stock_page(solid);
+    for_each_mover_brush(*level, [&](const BrushNode& brush) {
+        if (!stock_page) {
+            stock_page = first_stock_page(reinterpret_cast<std::uintptr_t>(brush.geometry));
+        }
+    });
+    if (stock_page && !stock_page_edge_valid(stock_page)) {
+        af_warn("the stock lightmap pages are " + std::to_string(stock_page) +
+                " texels wide, surfaces and movers keep their stock lightmaps only");
+    }
+
     // The surfaces' charts first, at the level's density or below, exactly as if the level had no
     // terrain: the terrain charts are fitted around them afterwards and never cost them density.
-    const bool charts_off = props->lightmap_density == lightmap_density_off;
+    const bool charts_off = props->lightmap_density == density_off;
     std::uint32_t density = effective_density(charts_off ? 0 : props->lightmap_density);
     std::vector<AfChart> surface_charts(surface_count);
     bool has_surface = false;
@@ -756,7 +789,8 @@ std::uint32_t alpine_lm_bake_begin()
         std::vector<Tile> tiles;
         std::uint32_t pages = 0;
         while (true) {
-            if (!derive_surface_charts(solid, surface_count, static_cast<float>(density), surface_charts)) {
+            if (!derive_surface_charts(solid, surface_count, static_cast<float>(density), stock_page,
+                                       surface_charts)) {
                 af_log("no surface qualifies for an alpine chart");
                 break;
             }
@@ -788,7 +822,7 @@ std::uint32_t alpine_lm_bake_begin()
         std::uint32_t dm = has_surface ? density : effective_density(props->lightmap_density);
         while (!all_movers.empty()) {
             movers = all_movers;
-            derive_mover_charts(movers, dm, mover_charts);
+            derive_mover_charts(movers, dm, stock_page, mover_charts);
             if (movers.empty()) {
                 af_log("no mover surface qualifies for an alpine chart");
                 break;
@@ -836,12 +870,12 @@ std::uint32_t alpine_lm_bake_begin()
     std::uint32_t pages = 0;
     while (true) {
         charts = surface_charts;
+        charts.insert(charts.end(), mover_charts.begin(), mover_charts.end());
         std::uint64_t terrain_texels = 0;
         for (AfTerrain& a : terrains) {
             charts.push_back(terrain_chart(a));
             terrain_texels += static_cast<std::uint64_t>(a.wire.w) * a.wire.h;
         }
-        charts.insert(charts.end(), mover_charts.begin(), mover_charts.end());
         // the reader's cap on the section's terrain texels
         const PackResult res = terrain_texels > max_terrain_chart_texels ? PackResult::over_budget
                                                                          : pack_charts(charts, tiles, pages);
@@ -867,13 +901,14 @@ std::uint32_t alpine_lm_bake_begin()
         }
     }
 
-    const auto first_mover_chart = static_cast<std::uint32_t>(surface_count + terrains.size());
     for (AfMover& m : movers) {
-        m.first_chart += first_mover_chart;
+        m.first_chart += surface_count;
     }
     g_af.solid = solid;
     g_af.base_density = static_cast<std::uint8_t>(density);
+    g_af.stock_page = stock_page_edge_valid(stock_page) ? stock_page : stock_page_size(props->highres_lightmaps);
     g_af.num_surface_charts = surface_count;
+    g_af.first_terrain_chart = static_cast<std::uint32_t>(surface_count + mover_charts.size());
     g_af.has_surface_charts = has_surface;
     g_af.terrains = std::move(terrains);
     g_af.movers = std::move(movers);
@@ -1562,7 +1597,7 @@ void shade_terrain_charts()
     lightmap_prepare_terrain_bake();
     for (std::size_t k = 0; k < g_af.terrains.size(); k++) {
         AfTerrain& a = g_af.terrains[k];
-        const std::size_t ci = g_af.num_surface_charts + k;
+        const std::size_t ci = g_af.first_terrain_chart + k;
         const DWORD t0 = GetTickCount();
         bool ok = false;
         try {
@@ -1786,6 +1821,7 @@ void build_body(const PageBuffers& raw, Codec codec)
     head.tile_step = static_cast<std::uint16_t>(S);
     head.gutter = static_cast<std::uint8_t>(G);
     head.base_density = g_af.base_density;
+    head.stock_page_log2 = stock_page_log2_of(g_af.stock_page);
     head.num_pages = static_cast<std::uint16_t>(g_af.num_pages);
     head.num_charts = g_af.num_surface_charts;
     head.num_tiles = static_cast<std::uint32_t>(g_af.tiles.size());
@@ -1810,12 +1846,18 @@ void build_body(const PageBuffers& raw, Codec codec)
     }
     const std::uint64_t mover_bytes =
         g_af.movers.empty() ? 0 : mover_table_bytes(g_af.movers.size(), g_af.mover_surfaces);
+    std::uint32_t terrain_tiles = 0;
+    for (std::size_t k = 0; k < g_af.terrains.size(); k++) {
+        terrain_tiles += g_af.charts[g_af.first_terrain_chart + k].geom.tile_count();
+    }
+    const auto num_terrain = static_cast<std::uint32_t>(g_af.terrains.size());
+    const std::uint64_t terrain_bytes = num_terrain ? terrain_table_bytes(num_terrain) : 0;
 
     auto& body = g_af.body;
     body.clear();
-    body.reserve(sizeof(head) + g_af.charts.size() * sizeof(Chart) + sizeof(std::uint32_t) +
-                 g_af.terrains.size() * sizeof(TerrainChart) + sizeof(std::uint32_t) +
+    body.reserve(sizeof(head) + g_af.num_surface_charts * sizeof(Chart) + sizeof(std::uint32_t) +
                  (g_af.movers.empty() ? 0 : sizeof(TableHeader) + static_cast<std::size_t>(mover_bytes)) +
+                 (num_terrain ? sizeof(TableHeader) + static_cast<std::size_t>(terrain_bytes) : 0) +
                  g_af.tiles.size() * sizeof(Tile) +
                  sizeof(dir) + sizeof(layer) + payload_size);
     auto append = [&body](const void* p, std::size_t n) {
@@ -1829,16 +1871,12 @@ void build_body(const PageBuffers& raw, Codec codec)
                          c.geom.empty() ? std::uint16_t{0} : c.k_v};
         append(&wire, sizeof(wire));
     }
-    const auto num_terrain = static_cast<std::uint32_t>(g_af.terrains.size());
-    append(&num_terrain, sizeof(num_terrain));
-    for (const AfTerrain& a : g_af.terrains) {
-        append(&a.wire, sizeof(a.wire));
-    }
-    const std::uint32_t num_tables = g_af.movers.empty() ? 0 : 1;
+    // the tables in the order their tiles follow the surface tiles
+    const std::uint32_t num_tables = (g_af.movers.empty() ? 0 : 1) + (num_terrain ? 1 : 0);
     append(&num_tables, sizeof(num_tables));
-    if (num_tables) {
-        const TableHeader table{table_tag_movers, mover_table_version, 0, static_cast<std::uint32_t>(mover_bytes),
-                                mover_tiles};
+    if (!g_af.movers.empty()) {
+        const TableHeader table{static_cast<std::uint32_t>(TableTag::movers), mover_table_version, 0,
+                                static_cast<std::uint32_t>(mover_bytes), mover_tiles};
         append(&table, sizeof(table));
         const auto num_movers = static_cast<std::uint32_t>(g_af.movers.size());
         append(&num_movers, sizeof(num_movers));
@@ -1854,6 +1892,15 @@ void build_body(const PageBuffers& raw, Codec codec)
                                              c.w, c.h};
                 append(&wire, sizeof(wire));
             }
+        }
+    }
+    if (num_terrain) {
+        const TableHeader table{static_cast<std::uint32_t>(TableTag::terrain), terrain_table_version, 0,
+                                static_cast<std::uint32_t>(terrain_bytes), terrain_tiles};
+        append(&table, sizeof(table));
+        append(&num_terrain, sizeof(num_terrain));
+        for (const AfTerrain& a : g_af.terrains) {
+            append(&a.wire, sizeof(a.wire));
         }
     }
     for (const Tile& t : g_af.tiles) {
@@ -2470,6 +2517,21 @@ void alpine_lm_deserialize_chunk(CDedLevel& level, rf::File& file, std::size_t c
         return;
     }
     remaining = 0;
+    SectionHeader head{};
+    const char* invalid = "truncated header";
+    if (g_retained.size() >= sizeof(head)) {
+        std::memcpy(&head, g_retained.data(), sizeof(head));
+        invalid = header_invalid_reason(head);
+    }
+    if (invalid) {
+        g_retained.clear();
+        g_retained.shrink_to_fit();
+        af_warn(std::string{"the level's alpine lightmap section is dropped ("} + invalid +
+                "), run Calculate Lighting to bake it again");
+        return;
+    }
+    // before the signature, which covers the page size
+    lightmap_synthesized_page_resize(static_cast<int>(stock_page_edge(head)));
     g_retained_signature =
         level.solid ? surfaces_signature(reinterpret_cast<std::uintptr_t>(level.solid)) : 0;
     af_log("retained the level's " + std::to_string(chunk_len) +

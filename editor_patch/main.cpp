@@ -1973,6 +1973,17 @@ CodeInjection LoadSaveLevel_patch2{
     0x0041CDAA,
     [](auto& regs) {
         int* version = regs.edi;
+        int8_t is_loading = regs.bl;
+        if (is_loading && *version > MAXIMUM_RFL_VERSION) {
+            editor_report_blocking("Level", "Unsupported Level Version",
+                std::format("This level file was saved by a newer version of Alpine Faction.\n\n"
+                            "The version of this level file is {}, but this version of Alpine RED can only "
+                            "open levels with version {} or lower.\n\n"
+                            "Update Alpine Faction to edit this level.",
+                            *version, MAXIMUM_RFL_VERSION));
+            regs.eip = 0x0041CDA1; // fail the load, as for versions below 40
+            return;
+        }
         g_current_level_version = *version;
 
         if (*version < 300 && !g_skip_legacy_level_warning) {

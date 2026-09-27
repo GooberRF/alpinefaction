@@ -82,6 +82,8 @@ namespace gr::d3d11
         int terrain_pass_ = 0;
         std::vector<int> terrain_drawn_;
         std::vector<int> terrain_decals_drawn_;
+        // Sorted rooms that hold a dynamic decal, gathered by each render_dynamic_decals call
+        std::vector<rf::GRoom*> dynamic_decal_rooms_;
         DynamicGeometryRenderer& dyn_geo_renderer_;
         RenderContext& render_context_;
         std::vector<std::unique_ptr<RoomRenderCache>> room_cache_;

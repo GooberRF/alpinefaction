@@ -21,8 +21,8 @@ std::string terrain_label(const DedTerrain& t);
 // RED numbers a level's lightmap surfaces as int16 (FUN_004aa610).
 inline constexpr uint32_t red_max_level_surfaces = 32767;
 
-// The wire header of `d` placed at `pos` with grid `g` (no flag_chunk_geo_mask or overlays; zero sizes
-// without a grid).
+// The wire header of `d` placed at `pos` with grid `g`: chunk_cells the edge a build uses, no
+// flag_chunk_geo_mask or overlays; zero sizes without a grid.
 alpine_terrain::Header terrain_header(const Vector3& pos, const DedTerrainData& d, const TerrainGrid* g);
 
 // The emitter's view of `d` placed at `pos`, reading grid `g`.

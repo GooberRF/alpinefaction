@@ -45,7 +45,7 @@ struct Record
     std::vector<std::uint8_t> weights;
     std::vector<std::uint8_t> holes;
     std::vector<std::uint8_t> diag;
-    // flag_geoable only: the chunk geo mask over header_geo_chunk_count chunks, every chunk set when the
+    // flag_geoable only: the chunk geo mask over header_chunk_count chunks, every chunk set when the
     // record carries none.
     std::vector<std::uint8_t> geo_chunks;
     // flag_overlays only: overlay_map_bytes, channels past the overlay count cleared.
@@ -149,7 +149,7 @@ const char* read_record(Reader& r, Record& out, std::uint64_t& total_raw)
     const std::uint8_t* diag = raw.data() + blob_diag_offset(nx, nz, mul);
     out.diag.assign(diag, diag + mask);
     if (h.flags & flag_geoable) {
-        const std::uint32_t chunks = header_geo_chunk_count(h);
+        const std::uint32_t chunks = header_chunk_count(h);
         out.geo_chunks.assign(chunk_mask_bytes(chunks), 0);
         if (h.flags & flag_chunk_geo_mask) {
             const std::uint8_t* geo = raw.data() + blob_geo_mask_offset(nx, nz, mul);
@@ -160,7 +160,7 @@ const char* read_record(Reader& r, Record& out, std::uint64_t& total_raw)
             fill_chunk_mask(out.geo_chunks.data(), chunks);
         }
     }
-    const std::uint8_t* cov = raw.data() + blob_overlay_offset(nx, nz, mul, h.flags);
+    const std::uint8_t* cov = raw.data() + blob_overlay_offset(nx, nz, mul, h.chunk_cells, h.flags);
     out.overlay_coverage.assign(cov, cov + blob_overlay_bytes(nx, nz, mul, h.flags));
     clear_unused_overlay_channels(out.overlay_coverage.data(), out.overlay_coverage.size(), h.overlay_count);
     return nullptr;

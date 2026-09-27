@@ -14,9 +14,11 @@
 namespace alpine_lightmap {
 
 // ─── Container constants ──────────────────────────────────────────────────────
+// The section grows only through section_version, a table's version or layer_version, never the RFL
+// version: RED re-emits a retained section byte for byte into files stamped with newer RFL versions.
 
 inline constexpr std::uint32_t chunk_id       = 0x0AFBAE09u;
-inline constexpr std::uint32_t section_version = 1u;
+inline constexpr std::uint32_t section_version = 2u;
 inline constexpr std::uint16_t layer_version   = 1u;
 
 inline constexpr std::uint32_t page_size = 256; // P, edge length of every page
@@ -35,20 +37,37 @@ inline constexpr std::uint32_t stock_page_size(bool highres)
     return highres ? 256u : 128u;
 }
 
+// SectionHeader::stock_page_log2: the stock page edge the surfaces were packed and normalized at.
+inline constexpr std::uint8_t stock_page_log2_min = 7;
+inline constexpr std::uint8_t stock_page_log2_max = 8;
+
+inline constexpr std::uint8_t stock_page_log2_of(std::uint32_t edge)
+{
+    return edge == stock_page_size(true) ? stock_page_log2_max : stock_page_log2_min;
+}
+
+inline constexpr bool stock_page_edge_valid(std::uint32_t edge)
+{
+    return edge == stock_page_size(false) || edge == stock_page_size(true);
+}
+
 // ─── Level property `d3d11_only_lightmaps` (u8 bit field) ─────────────────────
 // bit0: the file carries no stock 0x1200 lightmaps section, which is all the game reads.
 // bit1: the editor setting, kept apart so a save that still wrote the stock section keeps it.
+// bits 2-7: reserved, written as 0.
 
 inline constexpr std::uint8_t d3d11_only_stock_omitted = 1u << 0;
 inline constexpr std::uint8_t d3d11_only_setting       = 1u << 1;
 
 // ─── Density ──────────────────────────────────────────────────────────────────
-// Level property `lightmap_density`, texels per world unit. 0 on the wire means "use the
-// default"; anything else is clamped into [density_min, density_max].
+// Level property `lightmap_density`: 0 = the default, 1-128 = texels per world unit, 129-254 clamp to
+// 128, density_off (255) = Off, no alpine surface charts. The game never reads it.
 
 inline constexpr std::uint8_t density_default = 8;
 inline constexpr std::uint8_t density_min     = 1;
 inline constexpr std::uint8_t density_max     = 128;
+inline constexpr std::uint8_t density_off     = 255;
+static_assert(density_off > density_max);
 
 inline constexpr std::uint8_t effective_density(std::uint8_t stored)
 {
@@ -81,6 +100,12 @@ enum class Compression : std::uint8_t {
     zlib = 1,
 };
 
+// TableHeader::tag
+enum class TableTag : std::uint32_t {
+    movers = 1,
+    terrain = 2,
+};
+
 // ─── Wire records ─────────────────────────────────────────────────────────────
 
 #pragma pack(push, 1)
@@ -93,7 +118,8 @@ struct SectionHeader
     std::uint16_t tile_step;
     std::uint8_t  gutter;
     std::uint8_t  base_density;
-    std::uint8_t  reserved[2];
+    std::uint8_t  stock_page_log2;
+    std::uint8_t  reserved;
     std::uint16_t num_pages;
     std::uint32_t num_charts;
     std::uint32_t num_tiles;
@@ -110,10 +136,10 @@ struct Chart
     std::uint16_t k_v;
 };
 
-// The terrain chart table follows the surface charts: u32 num_terrain_charts, then this record per
-// terrain. A terrain chart is w x h texels over the terrain's XZ footprint (terrain_texel_center);
-// its tiles follow every surface tile, in table order. geometry_fingerprint is
-// alpine_terrain::lighting_fingerprint of the terrain the chart was baked for.
+// Terrain table (TableTag::terrain) body: u32 num_terrain_charts, then this record per terrain. A
+// terrain chart is w x h texels over the terrain's XZ footprint (terrain_texel_center); its tiles run
+// in record order. geometry_fingerprint is alpine_terrain::lighting_fingerprint of the terrain the
+// chart was baked for.
 struct TerrainChart
 {
     std::int32_t terrain_uid;
@@ -125,8 +151,8 @@ struct TerrainChart
     std::uint64_t geometry_fingerprint;
 };
 
-// The table directory follows the terrain table: u32 num_tables, then per table this header and
-// byte_len bytes of body. Every table owns num_tiles tiles of the tile table, after the terrain
+// The table directory follows the surface charts: u32 num_tables, then per table this header and
+// byte_len bytes of body. Every table owns num_tiles tiles of the tile table, after the surface
 // tiles and in directory order, so a reader skips a table it does not know without losing the
 // layout. A tag present more than once, or a known tag at another version, is skipped the same way.
 struct TableHeader
@@ -138,7 +164,7 @@ struct TableHeader
     std::uint32_t num_tiles;
 };
 
-// Mover table (table_tag_movers) body: u32 num_movers, then per mover this record followed by
+// Mover table (TableTag::movers) body: u32 num_movers, then per mover this record followed by
 // num_surfaces MoverSurfaceChart, positional over the mover solid's surfaces. surface_hash is the
 // XXH32 of that solid's surface records as written in the movers section (0x2000), XXH32("") for
 // none. Tiles run in record order, surface by surface, row major per chart.
@@ -192,9 +218,11 @@ static_assert(sizeof(MoverChart) == 12);
 static_assert(sizeof(MoverSurfaceChart) == 8);
 static_assert(sizeof(Tile) == 6);
 
+// A reader cap, not a wire value: it can be raised freely.
 inline constexpr std::uint32_t max_tables = 16;
-inline constexpr std::uint32_t table_tag_movers = 1;
+
 inline constexpr std::uint16_t mover_table_version = 1;
+inline constexpr std::uint16_t terrain_table_version = 1;
 
 // A face's surface index is a short, and the RFL stores a fragment's w and h as u8.
 inline constexpr std::uint32_t max_mover_charts = 8192;
@@ -216,6 +244,12 @@ inline constexpr std::uint32_t max_terrain_charts = 64;
 inline constexpr std::uint32_t max_terrain_chart_dim = 2048;
 inline constexpr std::uint64_t max_terrain_chart_texels =
     static_cast<std::uint64_t>(max_pages) * tile_step * tile_step;
+
+inline constexpr std::uint64_t terrain_table_bytes(std::uint64_t num_terrain)
+{
+    return sizeof(std::uint32_t) + num_terrain * sizeof(TerrainChart);
+}
+
 static_assert(sizeof(LayerDirHeader) == 4);
 static_assert(sizeof(LayerDirEntry) == 16);
 

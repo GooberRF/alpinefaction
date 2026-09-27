@@ -322,7 +322,7 @@ CodeInjection GSurface_calculate_lightmap_color_conv_patch{
         int height = surface->height;
         int src_pitch = 3 * src_width;
         bool success = bm_convert_format(dst_data, lock.format, src_data, rf::bm::FORMAT_888_BGR,
-            src_width, height, lock.stride_in_bytes, src_pitch);
+            surface->width, height, lock.stride_in_bytes, src_pitch);
         if (!success)
             xlog::error("bm_convert_format failed for geomod (fmt {})", static_cast<int>(lock.format));
         rf::gr::unlock(&lock);
@@ -353,7 +353,7 @@ CodeInjection GSurface_alloc_lightmap_color_conv_patch{
         uint8_t* dst_row_ptr = &lock.data[dst_pixel_size * offset_x + offset_y * lock.stride_in_bytes];
         int src_pitch = 3 * src_width;
         bool success = bm_convert_format(dst_row_ptr, lock.format, src_data, rf::bm::FORMAT_888_BGR,
-                                                 src_width, height, lock.stride_in_bytes, src_pitch);
+                                                 surface->width, height, lock.stride_in_bytes, src_pitch);
         if (!success)
             xlog::error("ConvertBitmapFormat failed for geomod2 (fmt {})", static_cast<int>(lock.format));
         rf::gr::unlock(&lock);
@@ -1071,6 +1071,23 @@ CodeInjection level_release_sky_room_shutdown_patch{
     },
 };
 
+// The rooms g_solid_collect_visible_rooms_recursive 0x004D4860 lists for the frame. Stock holds 1024 with
+// no bounds check.
+static rf::GRoom* g_visible_rooms[8192];
+static auto& g_num_visible_rooms = addr_as_ref<int>(0x009BB57C);
+
+// Rooms past the end are left out of the list
+CodeInjection collect_visible_rooms_append_injection{
+    0x004D48E3,
+    [](auto& regs) {
+        if (g_num_visible_rooms < static_cast<int>(std::size(g_visible_rooms))) {
+            g_visible_rooms[g_num_visible_rooms++] = regs.edi;
+        }
+        regs.eip = 0x004D48F0;
+    },
+    false,
+};
+
 void g_solid_do_patch()
 {
     // allow Set_Skybox to set a specific sky room
@@ -1097,6 +1114,17 @@ void g_solid_do_patch()
     write_mem_ptr(0x004F06F5 + 1, &g_geo_cache_detail_rooms); // 0x004F0660
     write_mem_ptr(0x004F0E07 + 3, &g_geo_cache_detail_rooms); // geo_cache_prepare_room
     geo_cache_prepare_room_add_detail_room_injection.install();
+
+    // Visible room list
+    write_mem_ptr(0x004D333E + 2, &g_visible_rooms); // g_get_room_render_list
+    write_mem_ptr(0x004D4691 + 1, &g_visible_rooms); // g_solid_portal_renderer
+    write_mem_ptr(0x004D46FD + 1, &g_visible_rooms); // g_solid_portal_renderer
+    write_mem_ptr(0x004D471A + 3, &g_visible_rooms); // g_solid_portal_renderer
+    write_mem_ptr(0x004D4971 + 1, &g_visible_rooms); // g_solid_collect_visible_rooms_recursive
+    write_mem_ptr(0x004D4989 + 3, &g_visible_rooms); // g_solid_collect_visible_rooms_recursive
+    // g_solid_collect_visible_rooms_recursive addresses the last room as [count * 4 + base - 4]
+    write_mem<uintptr_t>(0x004D499D + 3, reinterpret_cast<uintptr_t>(&g_visible_rooms) - sizeof(rf::GRoom*));
+    collect_visible_rooms_append_injection.install();
 
     // 32-bit color format - geomod
     GSurface_calculate_lightmap_color_conv_patch.install();

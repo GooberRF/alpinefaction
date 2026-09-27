@@ -449,24 +449,6 @@ int texture_browser_pick(const char* folder, int current_bm)
     return panel->preview->bm_handle;
 }
 
-int texture_browser_pick_first(const char* const* folders, std::size_t count, int current_bm)
-{
-    auto* level = CDedLevel::Get();
-    auto* panel = level ? static_cast<TextureBrowserPanel*>(level->dialog_panels[texture_browser_panel_index]) : nullptr;
-    if (panel && panel->category_holder) {
-        const auto& categories = *texture_browser_categories(panel);
-        for (std::size_t i = 0; i < count; i++) {
-            for (int c = 0; c < categories.size; c++) {
-                const TextureCategory* cat = categories.data_ptr[c];
-                if (cat && _stricmp(cat->name.c_str(), folders[i]) == 0) {
-                    return texture_browser_pick(folders[i], current_bm);
-                }
-            }
-        }
-    }
-    return texture_browser_pick(nullptr, current_bm);
-}
-
 // VPP packfile creation (FUN_004482c0) constructs custom texture paths by combining a
 // fixed base directory ("user_maps\textures\") with the bare filename via FUN_004b6ee0.
 // For textures in subdirectories, this produces the wrong path. Inject at 0x004485a2

@@ -57,8 +57,8 @@ namespace
     ReadResult g_section;
     rf::GSolid* g_solid = nullptr;
     bool g_live = false;
-    // Page dimension the bake's uv_scale/uv_add normalize against, substituted for the engine's
-    // synthesised page on a level that ships no stock lightmaps section.
+    // Page dimension the bake's uv_scale/uv_add normalize against, as the section header records it; it
+    // stands in for the engine's synthesised page on a level that ships no stock lightmaps section.
     std::uint32_t g_bake_page_size = 0;
 
     // Per terrain chart record of g_section: its decoded RGB8 texels reduced by g_terrain_reduction,
@@ -153,17 +153,30 @@ namespace
         }
     }
 
-    // Whether surface `s`, charted by `c`, is the fragment the chart was baked for and fits the page its
-    // uv_scale/uv_add normalize against (`bake_page` when the level ships no stock pages).
+    // Whether surface `s`, charted by `c`, is the fragment the chart was baked for and fits the bake_page
+    // square page its uv_scale/uv_add normalize against.
     bool af_mover_surface_fits(const rf::GSurface* s, const MoverSurfaceChart& c, std::uint32_t bake_page)
     {
         if (!s || !s->lightmap || s->width != c.w || s->height != c.h || s->xstart < 0 || s->ystart < 0) {
             return false;
         }
-        const std::int64_t pw = bake_page ? bake_page : s->lightmap->w;
-        const std::int64_t ph = bake_page ? bake_page : s->lightmap->h;
-        return static_cast<std::int64_t>(s->xstart) + s->width <= pw
-            && static_cast<std::int64_t>(s->ystart) + s->height <= ph;
+        const auto p = static_cast<std::int64_t>(bake_page);
+        return static_cast<std::int64_t>(s->xstart) + s->width <= p
+            && static_cast<std::int64_t>(s->ystart) + s->height <= p;
+    }
+
+    // Whether every stock page the surfaces of `solid` point at is edge x edge.
+    bool af_stock_pages_are(const rf::GSolid* solid, std::uint32_t edge)
+    {
+        for (int i = 0; solid && i < solid->surfaces.size(); i++) {
+            const rf::GSurface* s = solid->surfaces[i];
+            if (s && s->lightmap
+                && (static_cast<std::uint32_t>(s->lightmap->w) != edge
+                    || static_cast<std::uint32_t>(s->lightmap->h) != edge)) {
+                return false;
+            }
+        }
+        return true;
     }
 
     // Matches the mover records to the mover solids the movers section loaded, by uid, surface count and
@@ -230,27 +243,45 @@ namespace
         }
     }
 
-    // Whether the section declares any terrain chart, peeked from its table prefix without reading
+    // Whether the section declares any terrain chart, peeked from its table directory without reading
     // the body. Leaves the file where it was.
     bool af_peek_terrain_charts(rf::File& file, std::size_t chunk_len)
     {
-        constexpr int head_len = static_cast<int>(sizeof(SectionHeader));
-        constexpr int count_len = static_cast<int>(sizeof(std::uint32_t));
         const int start = file.tell();
+        const auto read = [&file](void* dst, std::size_t len) {
+            return file.read(dst, static_cast<int>(len)) == static_cast<int>(len) && !file.error();
+        };
+        bool found = false;
         SectionHeader head{};
-        std::uint32_t num_terrain = 0;
-        bool ok = chunk_len >= sizeof(head) && file.read(&head, head_len) == head_len && !file.error()
-               && !header_invalid_reason(head);
-        if (ok) {
-            const std::uint64_t charts_end = sizeof(head) + static_cast<std::uint64_t>(head.num_charts) * sizeof(Chart);
-            ok = charts_end + sizeof(num_terrain) <= chunk_len;
-            if (ok) {
-                file.seek(static_cast<int>(charts_end - sizeof(head)), rf::File::seek_cur);
-                ok = file.read(&num_terrain, count_len) == count_len && !file.error();
+        std::uint32_t num_tables = 0;
+        if (chunk_len >= sizeof(head) && read(&head, sizeof(head)) && !header_invalid_reason(head)) {
+            std::uint64_t pos = sizeof(head) + static_cast<std::uint64_t>(head.num_charts) * sizeof(Chart);
+            if (pos + sizeof(num_tables) <= chunk_len) {
+                file.seek(static_cast<int>(start + pos), rf::File::seek_set);
+                if (read(&num_tables, sizeof(num_tables)) && num_tables <= max_tables) {
+                    pos += sizeof(num_tables);
+                    for (std::uint32_t k = 0; k < num_tables && !found; k++) {
+                        TableHeader th{};
+                        if (pos + sizeof(th) > chunk_len || !read(&th, sizeof(th))) {
+                            break;
+                        }
+                        pos += sizeof(th);
+                        if (th.byte_len > chunk_len - pos) {
+                            break;
+                        }
+                        std::uint32_t num_terrain = 0;
+                        found = th.tag == static_cast<std::uint32_t>(TableTag::terrain)
+                             && th.version == terrain_table_version
+                             && th.byte_len >= sizeof(num_terrain) && read(&num_terrain, sizeof(num_terrain))
+                             && num_terrain != 0;
+                        pos += th.byte_len;
+                        file.seek(static_cast<int>(start + pos), rf::File::seek_set);
+                    }
+                }
             }
         }
         file.seek(start, rf::File::seek_set);
-        return ok && num_terrain != 0;
+        return found;
     }
 
     bool af_create_gpu_resources(ID3D11Device* device, const std::vector<std::uint8_t>& payload,
@@ -706,11 +737,24 @@ static void af_load_chunk_inner(rf::File& file, std::size_t chunk_len, std::size
         return;
     }
     af_match_terrains();
-    // with no stock section, every stock page handle a face holds is the engine's synthesised page
-    const std::uint32_t bake_page =
-        g_stock_section_seen ? 0u : stock_page_size(AlpineLevelProperties::instance().highres_lightmaps);
+    // Surface and mover uv_scale/uv_add normalize against the stock page size the bake recorded. With no
+    // stock section every page a face holds is the engine's synthesised page, with one it must be that size.
+    const std::uint32_t bake_page = stock_page_edge(g_section.head);
+    bool stock_pages_differ = false;
+    if (g_stock_section_seen && is_d3d11()) {
+        stock_pages_differ = !af_stock_pages_are(solid, bake_page);
+        for (rf::MoverBrush& mb : DoublyLinkedList{rf::mover_brush_list}) {
+            stock_pages_differ = stock_pages_differ || !af_stock_pages_are(mb.geometry, bake_page);
+        }
+    }
     if (*g_section.mover_reason) {
         xlog::warn("[AlpineLightmaps] ignoring the mover charts: {}", g_section.mover_reason);
+    }
+    if (stock_pages_differ) {
+        xlog::warn("[AlpineLightmaps] ignoring the surface and mover charts: they were baked against {}x{} stock "
+                   "lightmap pages and the level's are not",
+                   bake_page, bake_page);
+        std::fill(g_section.mover_ok.begin(), g_section.mover_ok.end(), std::uint8_t{0});
     }
     af_match_movers(bake_page);
     const auto drop_surfaces = [](const char* why) {
@@ -722,13 +766,13 @@ static void af_load_chunk_inner(rf::File& file, std::size_t chunk_len, std::size
     if (!g_section.surfaces_ok) {
         drop_surfaces(g_section.surface_reason);
     }
-    else if (!is_d3d11()) {
+    else if (!is_d3d11() || stock_pages_differ) {
         g_section.surfaces_ok = false;
         g_section.geoms.clear();
         g_section.bases.clear();
     }
 
-    if (g_section.surfaces_ok && bake_page) {
+    if (g_section.surfaces_ok && !g_stock_section_seen) {
         const std::uint32_t p = bake_page;
         for (int i = 0; i < num_surfaces; i++) {
             rf::GSurface* s = solid->surfaces[i];
@@ -738,9 +782,7 @@ static void af_load_chunk_inner(rf::File& file, std::size_t chunk_len, std::size
             if (s->xstart < 0 || s->ystart < 0
                 || static_cast<std::uint32_t>(s->xstart + s->width) > p
                 || static_cast<std::uint32_t>(s->ystart + s->height) > p) {
-                xlog::warn("[AlpineLightmaps] surface {} does not fit the {}x{} page the level's "
-                           "highres_lightmaps flag implies",
-                           i, p, p);
+                xlog::warn("[AlpineLightmaps] surface {} does not fit the {}x{} page the section records", i, p, p);
                 drop_surfaces("a surface does not fit its page");
                 break;
             }

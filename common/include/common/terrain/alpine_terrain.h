@@ -10,9 +10,9 @@
 // the RFL version, or while terrain is unreleased on a wire flag, as flag_chunk_geo_mask and
 // flag_overlays do):
 //   i32 uid, f32x3 origin, vstring script_name, f32 cell_size, u16 nx, u16 nz,
-//   f32 height_min, f32 height_range, u8 chunk_cells, u8 weight_res_mul, u8 lightmap_density,
-//   u8 flags, f32 thickness, f32 skirt_depth, vstring underside_texture, vstring crater_texture,
-//   u8 layer_count, per layer {vstring texture, f32 uv_scale, u8 layer_flags},
+//   f32 height_min, f32 height_range, u8 chunk_cells (the edge a build uses), u8 weight_res_mul,
+//   u8 lightmap_density, u8 flags, f32 thickness, f32 skirt_depth, vstring underside_texture,
+//   vstring crater_texture, u8 layer_count, per layer {vstring texture, f32 uv_scale, u8 layer_flags},
 //   [flag_overlays: u8 overlay_count, per overlay {vstring texture, f32 uv_scale, u8 overlay_flags}],
 //   u32 mapping_count, per mapping {i32 room_uid, u32 vertex_count, u64 pos_hash},
 //   u32 raw_size, u32 comp_size, comp_size bytes of zlib holding the blob described by blob_*().
@@ -25,6 +25,7 @@
 #include <cstring>
 #include <cmath>
 #include <algorithm>
+#include <bit>
 #include <iterator>
 
 namespace alpine_terrain {
@@ -209,7 +210,8 @@ static_assert(chunk_count(cells(max_verts), cells(max_verts), chunk_edge_options
 
 // The smallest allowed edge at or above `requested` that keeps the terrain within max_chunks, held
 // at or below max_chunk_cells(flags). Always satisfiable (the asserts above): the smallest edge fits
-// every flag combination and cuts the largest terrain into max_chunks chunks.
+// every flag combination and cuts the largest terrain into max_chunks chunks. RED's choice for a new
+// build only: a record stores the edge it was built with, and readers never recompute it.
 inline constexpr std::uint32_t effective_chunk_cells(std::uint32_t cells_x, std::uint32_t cells_z,
                                                      std::uint32_t requested, std::uint32_t flags)
 {
@@ -455,8 +457,8 @@ struct ChunkLayout
     bool operator!=(const ChunkLayout& o) const { return !(*this == o); }
 };
 
-// The chunk grid of the terrain with flag_geoable set, whatever `flags` holds: the build mapping's
-// layout whenever the mask matters.
+// RED's chunk grid for a new build of the terrain with flag_geoable set, whatever `flags` holds: the
+// build mapping's layout whenever the mask matters.
 inline constexpr ChunkLayout geo_chunk_layout(std::uint32_t nx, std::uint32_t nz, std::uint32_t chunk_cells,
                                               std::uint32_t flags)
 {
@@ -473,10 +475,6 @@ inline constexpr std::size_t chunk_mask_bytes(std::uint32_t chunk_count)
 {
     return (static_cast<std::size_t>(chunk_count) + 7) / 8;
 }
-
-// On the wire the mask is always this size, so a change to the chunk policy keeps saved masks loadable:
-// bits past the chunk count are written clear and ignored on read.
-inline constexpr std::size_t chunk_geo_mask_wire_bytes = chunk_mask_bytes(max_chunks);
 
 inline void fill_chunk_mask(std::uint8_t* mask, std::uint32_t count)
 {
@@ -600,7 +598,7 @@ inline void clear_unused_overlay_channels(std::uint8_t* map, std::size_t bytes, 
 
 // ─── Decompressed blob ────────────────────────────────────────────────────────
 // heights u16[nx*nz] (little-endian) | weight map 0 | weight map 1 | holes mask | diagonal mask
-// [| chunk geo mask (chunk_geo_mask_wire_bytes), with flag_chunk_geo_mask]
+// [| chunk geo mask (blob_geo_mask_bytes), with flag_chunk_geo_mask]
 // [| overlay coverage map (overlay_map_bytes), with flag_overlays]
 
 inline constexpr std::size_t blob_heights_offset()
@@ -643,11 +641,18 @@ inline constexpr std::size_t blob_geo_mask_offset(std::uint32_t nx, std::uint32_
     return blob_raw_size(nx, nz, mul);
 }
 
-// `flags` as on the wire.
-inline constexpr std::size_t blob_overlay_offset(std::uint32_t nx, std::uint32_t nz, std::uint32_t mul,
+// `chunk_cells` and `flags` as on the wire: the mask covers the record's stored chunk grid, padding bits
+// written clear and ignored on read.
+inline constexpr std::size_t blob_geo_mask_bytes(std::uint32_t nx, std::uint32_t nz, std::uint32_t chunk_cells,
                                                  std::uint32_t flags)
 {
-    return blob_geo_mask_offset(nx, nz, mul) + ((flags & flag_chunk_geo_mask) ? chunk_geo_mask_wire_bytes : 0);
+    return (flags & flag_chunk_geo_mask) ? chunk_mask_bytes(chunk_count(cells(nx), cells(nz), chunk_cells)) : 0;
+}
+
+inline constexpr std::size_t blob_overlay_offset(std::uint32_t nx, std::uint32_t nz, std::uint32_t mul,
+                                                 std::uint32_t chunk_cells, std::uint32_t flags)
+{
+    return blob_geo_mask_offset(nx, nz, mul) + blob_geo_mask_bytes(nx, nz, chunk_cells, flags);
 }
 
 inline constexpr std::size_t blob_overlay_bytes(std::uint32_t nx, std::uint32_t nz, std::uint32_t mul,
@@ -656,7 +661,7 @@ inline constexpr std::size_t blob_overlay_bytes(std::uint32_t nx, std::uint32_t 
     return (flags & flag_overlays) ? overlay_map_bytes(nx, nz, mul) : 0;
 }
 
-static_assert(blob_raw_size(max_verts, max_verts, 4) + chunk_geo_mask_wire_bytes +
+static_assert(blob_raw_size(max_verts, max_verts, 4) + chunk_mask_bytes(max_chunks) +
                   overlay_map_bytes(max_verts, max_verts, 4) < 0xFFFFFFFFull);
 
 // ─── Validation (every reader, and the editor before it writes) ──────────────
@@ -696,6 +701,7 @@ inline const char* validate_header(const Header& h)
         return "height range out of range";
     }
     if (!is_allowed_chunk_cells(h.chunk_cells)) return "chunk size not allowed";
+    if (chunk_count(cells(h.nx), cells(h.nz), h.chunk_cells) > max_chunks) return "too many chunks";
     if (!is_allowed_weight_res_mul(h.weight_res_mul)) return "weight resolution not allowed";
     if (h.lightmap_density < lightmap_density_min || h.lightmap_density > lightmap_density_max) {
         return "lightmap density out of range";
@@ -732,35 +738,41 @@ inline const char* validate_overlay(float uv_scale, std::uint32_t overlay_flags)
     return nullptr;
 }
 
+// The chunk grid a record was built with, its stored chunk_cells: the build mapping and the chunk geo
+// mask cover it.
+inline ChunkLayout header_chunk_layout(const Header& h)
+{
+    return {cells(h.nx), cells(h.nz), h.chunk_cells};
+}
+
+inline std::uint32_t header_chunk_count(const Header& h)
+{
+    return layout_chunk_count(header_chunk_layout(h));
+}
+
 // A build mapping is either absent or covers every chunk.
 inline bool mapping_count_valid(const Header& h, std::uint32_t mapping_count)
 {
-    if (mapping_count == 0) return true;
-    const std::uint32_t cx = cells(h.nx), cz = cells(h.nz);
-    return mapping_count == chunk_count(cx, cz, effective_chunk_cells(cx, cz, h.chunk_cells, h.flags));
+    return mapping_count == 0 || mapping_count == header_chunk_count(h);
 }
 
-// A mapping count a reader may read past: one that is not mapping_count_valid (a chunk layout since
-// changed, such as a later cap on the chunk edge) is read and dropped, and the terrain loads unbuilt.
+// A mapping count a reader may read past: one that is not mapping_count_valid is read and dropped, and
+// the terrain loads unbuilt.
 inline bool mapping_count_acceptable(std::uint32_t mapping_count)
 {
     return mapping_count <= max_chunks;
 }
 
-inline std::uint32_t header_geo_chunk_count(const Header& h)
+// The decompressed blob of a terrain with this wire chunk_cells and these wire flags.
+inline constexpr std::size_t wire_raw_size(std::uint32_t nx, std::uint32_t nz, std::uint32_t mul,
+                                           std::uint32_t chunk_cells, std::uint32_t flags)
 {
-    return layout_chunk_count(geo_chunk_layout(h.nx, h.nz, h.chunk_cells, h.flags));
-}
-
-// The decompressed blob of a terrain with these wire flags.
-inline constexpr std::size_t wire_raw_size(std::uint32_t nx, std::uint32_t nz, std::uint32_t mul, std::uint32_t flags)
-{
-    return blob_overlay_offset(nx, nz, mul, flags) + blob_overlay_bytes(nx, nz, mul, flags);
+    return blob_overlay_offset(nx, nz, mul, chunk_cells, flags) + blob_overlay_bytes(nx, nz, mul, flags);
 }
 
 inline std::size_t header_raw_size(const Header& h)
 {
-    return wire_raw_size(h.nx, h.nz, h.weight_res_mul, h.flags);
+    return wire_raw_size(h.nx, h.nz, h.weight_res_mul, h.chunk_cells, h.flags);
 }
 
 // ─── Texturing ────────────────────────────────────────────────────────────────
@@ -1385,12 +1397,10 @@ struct PositionKey
     }
 };
 
-inline std::uint32_t position_bits(float f)
+inline constexpr std::uint32_t position_bits(float f)
 {
     if (f == 0.0f) f = 0.0f;
-    std::uint32_t bits;
-    std::memcpy(&bits, &f, sizeof(bits));
-    return bits;
+    return std::bit_cast<std::uint32_t>(f);
 }
 
 inline PositionKey position_key(float x, float y, float z)
@@ -1413,6 +1423,9 @@ inline constexpr std::uint64_t position_hash_term(const PositionKey& k)
                       static_cast<std::uint64_t>(k.z));
 }
 
+// Stored in every build mapping, so pinned.
+static_assert(position_hash_term({0x3F800000u, 0xC2280000u, 0x00000000u}) == 0x3E086D6D9F723AD7ull);
+
 // A room's vertex_count and pos_hash from the keys of all its face vertices, duplicates included.
 // Sorts `keys` in place.
 inline void position_set_hash(PositionKey* keys, std::size_t n, std::uint32_t& vertex_count,
@@ -1430,22 +1443,29 @@ inline void position_set_hash(PositionKey* keys, std::size_t n, std::uint32_t& v
 // What a terrain's baked chart (TerrainChart::geometry_fingerprint) depends on: placement, heights, holes,
 // triangulation and shape. Painting keeps the chart; geometry edits drop it.
 
-inline std::uint64_t lighting_fingerprint(const GridView& g)
+// Mixes the byte length of p[0, count), then its bytes as little-endian 64-bit words, the last one
+// zero-padded.
+template<typename Mix, typename T>
+constexpr void mix_le_words(Mix&& mix, const T* p, std::size_t count)
+{
+    constexpr std::size_t per = 8 / sizeof(T), bits = 8 * sizeof(T);
+    mix(count * sizeof(T));
+    std::size_t i = 0;
+    for (; i + per <= count; i += per) {
+        std::uint64_t w = 0;
+        for (std::size_t k = 0; k < per; k++) w |= static_cast<std::uint64_t>(p[i + k]) << (bits * k);
+        mix(w);
+    }
+    std::uint64_t tail = 0;
+    for (std::size_t k = 0; i + k < count; k++) tail |= static_cast<std::uint64_t>(p[i + k]) << (bits * k);
+    mix(tail);
+}
+
+// Its output must never change for an existing record: a new input is mixed in only when non-default.
+inline constexpr std::uint64_t lighting_fingerprint(const GridView& g)
 {
     std::uint64_t h = 0xcbf29ce484222325ull;
     auto mix = [&h](std::uint64_t v) { h = splitmix64(h ^ v); };
-    auto bytes = [&](const std::uint8_t* p, std::size_t n) {
-        mix(n);
-        std::size_t i = 0;
-        for (; i + 8 <= n; i += 8) {
-            std::uint64_t w;
-            std::memcpy(&w, p + i, 8);
-            mix(w);
-        }
-        std::uint64_t tail = 0;
-        if (n > i) std::memcpy(&tail, p + i, n - i);
-        mix(tail);
-    };
     for (float c : g.origin) mix(position_bits(c));
     mix(position_bits(g.cell_size));
     mix(position_bits(g.height_min));
@@ -1456,11 +1476,20 @@ inline std::uint64_t lighting_fingerprint(const GridView& g)
     mix(position_bits(g.thickness));
     mix(position_bits(g.skirt_depth));
     const std::size_t mask = bitmask_bytes(cells(g.nx), cells(g.nz));
-    bytes(reinterpret_cast<const std::uint8_t*>(g.heights), vertex_count(g.nx, g.nz) * sizeof(std::uint16_t));
-    bytes(g.holes, mask);
-    bytes(g.diag, mask);
+    mix_le_words(mix, g.heights, vertex_count(g.nx, g.nz));
+    mix_le_words(mix, g.holes, mask);
+    mix_le_words(mix, g.diag, mask);
     return h;
 }
+
+// Stored in every baked terrain chart, so pinned.
+static_assert([] {
+    const std::uint16_t heights[9] = {0, 1, 0xFFFF, 0x1234, 0x8000, 0xABCD, 7, 0x0100, 0x7FFF};
+    const std::uint8_t holes[1] = {0x04}, diag[1] = {0x09};
+    const GridView g{heights, nullptr, holes, diag, 3, 3, 1, {-12.5f, -0.0f, 1024.0f}, 2.0f, -3.0f, 64.0f,
+                     flag_geoable, 16.0f, 8.0f, 1, 0, {}};
+    return lighting_fingerprint(g);
+}() == 0xEE420A033E6AF829ull);
 
 // ─── Build fingerprints ───────────────────────────────────────────────────────
 // Geometry: every input of the compiled positions and chunk -> room layout (the build mapping is valid

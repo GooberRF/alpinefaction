@@ -806,7 +806,8 @@ at::Header terrain_header(const Vector3& pos, const DedTerrainData& d, const Ter
     h.nz = g ? g->nz : 0;
     h.height_min = d.height_min;
     h.height_range = d.height_range;
-    h.chunk_cells = d.chunk_cells;
+    h.chunk_cells = g ? at::effective_chunk_cells(at::cells(g->nx), at::cells(g->nz), d.chunk_cells, d.flags)
+                      : d.chunk_cells;
     h.weight_res_mul = g ? g->weight_res_mul : 0;
     h.lightmap_density = d.lightmap_density;
     h.flags = d.flags;

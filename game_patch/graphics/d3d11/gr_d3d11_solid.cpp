@@ -41,6 +41,7 @@ namespace gr::d3d11
     static auto& gr_solid_mode = addr_as_ref<rf::gr::Mode>(0x01808328);
     static auto& gr_solid_alpha_mode = addr_as_ref<rf::gr::Mode>(0x0180832C);
     static auto& geo_cache_num_rooms = addr_as_ref<int>(0x013761B8);
+    static auto& decal_list_head = addr_as_ref<rf::GDecal*>(0x00C4D56C);
 
     static rf::gr::Mode sky_room_opaque_mode{
         rf::gr::TEXTURE_SOURCE_WRAP,
@@ -124,12 +125,13 @@ namespace gr::d3d11
     class SolidGeometryBuffers
     {
     public:
-        SolidGeometryBuffers(const std::vector<GpuVertex>& vb_data, const std::vector<rf::ushort>& ib_data, ID3D11Device* device);
+        SolidGeometryBuffers(const std::vector<GpuVertex>& vb_data, const std::vector<uint32_t>& ib_data,
+            ID3D11Device* device);
 
         void bind_buffers(RenderContext& render_context)
         {
             render_context.set_vertex_buffer(vertex_buffer_, sizeof(GpuVertex));
-            render_context.set_index_buffer(index_buffer_);
+            render_context.set_index_buffer(index_buffer_, DXGI_FORMAT_R32_UINT);
         }
 
     private:
@@ -137,7 +139,8 @@ namespace gr::d3d11
         ComPtr<ID3D11Buffer> index_buffer_;
     };
 
-    SolidGeometryBuffers::SolidGeometryBuffers(const std::vector<GpuVertex>& vb_data, const std::vector<rf::ushort>& ib_data, ID3D11Device* device)
+    SolidGeometryBuffers::SolidGeometryBuffers(const std::vector<GpuVertex>& vb_data,
+        const std::vector<uint32_t>& ib_data, ID3D11Device* device)
     {
         if (vb_data.empty() || ib_data.empty()) {
             return;
@@ -509,10 +512,10 @@ namespace gr::d3d11
     // Appends `face` as a triangle fan: fill(vertex, fvert, index) sets each vertex. A loop longer than
     // max_verts calls on_overflow and keeps the fan emitted so far.
     template<typename Overflow, typename Fill>
-    static void emit_face_fan(rf::GFace* face, std::vector<GpuVertex>& vb_data, std::vector<rf::ushort>& ib_data,
+    static void emit_face_fan(rf::GFace* face, std::vector<GpuVertex>& vb_data, std::vector<uint32_t>& ib_data,
         std::size_t base_vertex, int max_verts, Overflow&& on_overflow, Fill&& fill)
     {
-        auto face_start_index = static_cast<rf::ushort>(vb_data.size() - base_vertex);
+        auto face_start_index = static_cast<uint32_t>(vb_data.size() - base_vertex);
         int fvert_index = 0;
         auto fvert = face->edge_loop;
         while (fvert) {
@@ -539,7 +542,7 @@ namespace gr::d3d11
     {
         SolidBatches batches;
         std::vector<GpuVertex> vb_data;
-        std::vector<rf::ushort> ib_data;
+        std::vector<uint32_t> ib_data;
         vb_data.reserve(num_verts_);
         ib_data.reserve(num_inds_);
 
@@ -550,27 +553,8 @@ namespace gr::d3d11
             std::size_t start_index = ib_data.size();
             std::size_t base_vertex = vb_data.size();
 
-            // Emit the current batch and start a new one (same key).
-            // Needed when per-batch vertex count approaches the ushort index limit.
-            auto emit_batch = [&]() {
-                std::size_t num_indices = ib_data.size() - start_index;
-                if (num_indices > 0) {
-                    std::array<int, 2> textures = {texture_1, texture_2};
-                    rf::gr::Mode mode = determine_face_mode(render_type, texture_2 != -1, is_sky_);
-                    batches.get_batches(render_type).emplace_back(
-                        start_index, num_indices, base_vertex, textures, mode
-                    );
-                }
-                start_index = ib_data.size();
-                base_vertex = vb_data.size();
-            };
-
-            constexpr std::size_t max_batch_verts = 0xF000; // leave headroom below UINT16_MAX
             for (rf::GFace* face : faces) {
                 if (!face->edge_loop) continue;
-                if (vb_data.size() - base_vertex > max_batch_verts) {
-                    emit_batch();
-                }
                 rf::GTextureMover* texture_mover = face->attributes.texture_mover;
                 float u_pan_speed = texture_mover ? texture_mover->u_pan_speed : 0.0f;
                 float v_pan_speed = texture_mover ? texture_mover->v_pan_speed : 0.0f;
@@ -604,7 +588,14 @@ namespace gr::d3d11
                         gpu_vert.v0_pan_speed = v_pan_speed;
                     });
             }
-            emit_batch();
+            std::size_t num_indices = ib_data.size() - start_index;
+            if (num_indices > 0) {
+                std::array<int, 2> textures = {texture_1, texture_2};
+                rf::gr::Mode mode = determine_face_mode(render_type, texture_2 != -1, is_sky_);
+                batches.get_batches(render_type).emplace_back(
+                    start_index, num_indices, base_vertex, textures, mode
+                );
+            }
         }
         for (auto& e : batched_decal_polys_) {
             const GRenderCacheBuilder::DecalPolyBatchKey& key = e.first;
@@ -613,28 +604,12 @@ namespace gr::d3d11
             std::size_t start_index = ib_data.size();
             std::size_t base_vertex = vb_data.size();
 
-            auto emit_decal_batch = [&]() {
-                std::size_t num_indices = ib_data.size() - start_index;
-                if (num_indices > 0) {
-                    std::array<int, 2> textures = {texture_1, texture_2};
-                    batches.get_batches(render_type).emplace_back(
-                        start_index, num_indices, base_vertex, textures, mode
-                    );
-                }
-                start_index = ib_data.size();
-                base_vertex = vb_data.size();
-            };
-
-            constexpr std::size_t max_batch_verts = 0xF000;
             for (rf::DecalPoly* dp : dps) {
                 rf::GDecal* decal = dp->my_decal;
                 rf::ubyte alpha = rfl_version_minimum(304) ? decal->alpha : 255;
                 int diffuse = pack_color(rf::Color{255, 255, 255, alpha});
                 auto face = dp->face;
                 if (!face->edge_loop) continue;
-                if (vb_data.size() - base_vertex > max_batch_verts) {
-                    emit_decal_batch();
-                }
                 emit_face_fan(face, vb_data, ib_data, base_vertex, static_cast<int>(std::size(dp->uvs)),
                     [dp] {
                         xlog::error("build decal: face has more vertices than decal uvs capacity ({})", std::size(dp->uvs));
@@ -655,29 +630,21 @@ namespace gr::d3d11
                         gpu_vert.lm_chart = -1.0f;
                     });
             }
-            emit_decal_batch();
+            std::size_t num_indices = ib_data.size() - start_index;
+            if (num_indices > 0) {
+                std::array<int, 2> textures = {texture_1, texture_2};
+                batches.get_batches(render_type).emplace_back(
+                    start_index, num_indices, base_vertex, textures, mode
+                );
+            }
         }
         for (auto& [key, faces] : terrain_faces_) {
             const auto [terrain, crater_texture] = key;
             std::size_t start_index = ib_data.size();
             std::size_t base_vertex = vb_data.size();
 
-            auto emit_terrain_batch = [&]() {
-                std::size_t num_indices = ib_data.size() - start_index;
-                if (num_indices > 0) {
-                    batches.get_terrain_batches().push_back({static_cast<int>(start_index),
-                        static_cast<int>(num_indices), static_cast<int>(base_vertex), terrain, crater_texture});
-                }
-                start_index = ib_data.size();
-                base_vertex = vb_data.size();
-            };
-
-            constexpr std::size_t max_batch_verts = 0xF000;
             for (auto [face, kind] : faces) {
                 if (!face->edge_loop) continue;
-                if (vb_data.size() - base_vertex > max_batch_verts) {
-                    emit_terrain_batch();
-                }
                 emit_face_fan(face, vb_data, ib_data, base_vertex, max_face_fan_verts, report_long_edge_loop,
                     [&](GpuVertex& gpu_vert, rf::GFaceVertex* fvert, int) {
                         gpu_vert.x = fvert->vertex->pos.x;
@@ -703,7 +670,11 @@ namespace gr::d3d11
                         gpu_vert.lm_chart = static_cast<float>(kind);
                     });
             }
-            emit_terrain_batch();
+            std::size_t num_indices = ib_data.size() - start_index;
+            if (num_indices > 0) {
+                batches.get_terrain_batches().push_back({static_cast<int>(start_index),
+                    static_cast<int>(num_indices), static_cast<int>(base_vertex), terrain, crater_texture});
+            }
         }
 
         SolidGeometryBuffers geometry_buffers{vb_data, ib_data, device};
@@ -833,28 +804,66 @@ namespace gr::d3d11
                 }
                 rf::Color color{255, 255, 255, decal->alpha};
                 // TODO: lightmap_uv
-                rf::gr::world_poly(decal->bitmap_id, dp->nv, verts, uvs, dynamic_decal_mode, color);
+                rf::gr::world_poly(decal->bitmap_id, nv, verts, uvs, dynamic_decal_mode, color);
             }
             dp = dp->next_for_face;
         }
+    }
+
+    // Calls visit(room) for the room of each face a dynamic decal is clipped to, until visit returns true.
+    template<typename F>
+    static bool visit_dynamic_decal_rooms(F&& visit)
+    {
+        rf::GDecal* const decal_head = decal_list_head;
+        for (rf::GDecal* decal = decal_head; decal;) {
+            if (!(decal->flags & rf::DF_LEVEL_DECAL)) {
+                rf::DecalPoly* const dp_head = decal->poly_list;
+                for (rf::DecalPoly* dp = dp_head; dp;) {
+                    if (dp->face && visit(dp->face->which_room)) {
+                        return true;
+                    }
+                    dp = dp->next;
+                    if (dp == dp_head) {
+                        break;
+                    }
+                }
+            }
+            decal = decal->next;
+            if (decal == decal_head) {
+                break;
+            }
+        }
+        return false;
     }
 
     void SolidRenderer::render_dynamic_decals(rf::GRoom** rooms, int num_rooms)
     {
         before_render_decals();
 
+        dynamic_decal_rooms_.clear();
+        visit_dynamic_decal_rooms([this](rf::GRoom* room) {
+            dynamic_decal_rooms_.push_back(room);
+            return false;
+        });
+        std::sort(dynamic_decal_rooms_.begin(), dynamic_decal_rooms_.end());
+        auto has_dynamic_decals = [this](rf::GRoom* room) {
+            return std::binary_search(dynamic_decal_rooms_.begin(), dynamic_decal_rooms_.end(), room);
+        };
+
         for (int i = 0; i < num_rooms; ++i) {
             rf::GRoom* room = rooms[i];
-            for (rf::GFace& face: room->face_list) {
-                if (should_render_face(&face) && !face.attributes.is_see_thru()) {
-                    render_face_dynamic_decals(&face);
+            if (has_dynamic_decals(room)) {
+                for (rf::GFace& face: room->face_list) {
+                    if (should_render_face(&face) && !face.attributes.is_see_thru()) {
+                        render_face_dynamic_decals(&face);
+                    }
                 }
             }
             for (rf::GRoom* detail_room : room->detail_rooms) {
                 const bool draw = alpine_terrain_is_separate_chunk(room, detail_room)
                     ? terrain_chunk_drawn(detail_room) && claim_terrain_chunk(terrain_decals_drawn_, detail_room)
                     : detail_room->room_to_render_with == room;
-                if (draw) {
+                if (draw && has_dynamic_decals(detail_room)) {
                     for (rf::GFace& face: detail_room->face_list) {
                         if (should_render_face(&face) && !face.attributes.is_see_thru()) {
                             render_face_dynamic_decals(&face);
@@ -869,9 +878,11 @@ namespace gr::d3d11
     void SolidRenderer::render_alpha_detail_dynamic_decals(rf::GRoom* detail_room)
     {
         before_render_decals();
-        for (rf::GFace& face: detail_room->face_list) {
-            if (should_render_face(&face) && face.attributes.is_see_thru()) {
-                render_face_dynamic_decals(&face);
+        if (visit_dynamic_decal_rooms([detail_room](rf::GRoom* room) { return room == detail_room; })) {
+            for (rf::GFace& face: detail_room->face_list) {
+                if (should_render_face(&face) && face.attributes.is_see_thru()) {
+                    render_face_dynamic_decals(&face);
+                }
             }
         }
         after_render_decals();

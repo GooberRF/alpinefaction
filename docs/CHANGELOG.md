@@ -75,6 +75,8 @@ Version 1.5.0 (Trillium): Not yet released
 - Improve level loading and `Build Geometry` times in the level editor on levels with many faces (especially levels with terrain, which load roughly 3x and build roughly 10x faster)
 - Linking a `Bolt Emitter` or `Rope Emitter` to a `Target` in the level editor sets the emitter's target to it
 - `Owner_Gate` can now take its capture points from linked `Capture_Point_Handler` events
+- Draw large rooms and terrain in fewer draw calls, and skip rooms without dynamic decals when drawing them (Direct3D 11 renderer only)
+- Level editor refuses to open levels saved by a newer version of Alpine Faction instead of misreading them
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Add `ui_color_console` console command to set the console background color
@@ -132,6 +134,9 @@ Version 1.5.0 (Trillium): Not yet released
 - Reduce the memory `Calculate Lighting` needs in the level editor, and how much of it must be in one piece
 - Fix level editor crashing in `Calculate Lighting` when a level needs more than 32767 lightmap surfaces; faces past the limit are left without a lightmap and the editor warns
 - Fix geomod craters creating new lightmap surfaces on every crater once a level holds more than 32767 of them
+- Fix memory corruption when more than 1024 rooms are visible at once
+- Fix geomod crater relighting converting lightmap texels beyond the relit surface, which could write past the end of the lightmap for a surface at the bottom of a lightmap page
+- Fix a possible out-of-bounds read when drawing dynamic decals (Direct3D 11 renderer only)
 - Fix level editor crashing when moving decals in a level with more than 128 decals
 - Fix copying and pasting face textures in level editor texture mode removing Alpine objects from the clipboard or unintentionally pasting them into the level
 - Remove the level editor warning about levels with too many decals

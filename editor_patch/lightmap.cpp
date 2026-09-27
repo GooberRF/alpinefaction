@@ -279,12 +279,18 @@ CodeInjection lightmap_page_clear_injection{
     false, // no trampoline: the injection fully replaces the two loads
 };
 
+// The page FUN_004a3c80 synthesised for a level that ships no stock lightmaps, while it lives.
+static void* g_synth_page = nullptr;
+
 // FUN_004a65b0, the lightmap page destructor, releases the page's bitmap but never its D3D texture.
 static void __fastcall lightmap_page_free_new(void* page);
 static FunHook<void __fastcall(void*)> lightmap_page_free_hook{0x004a65b0, lightmap_page_free_new};
 
 static void __fastcall lightmap_page_free_new(void* page)
 {
+    if (page == g_synth_page) {
+        g_synth_page = nullptr;
+    }
     const int bm = *reinterpret_cast<int*>(static_cast<std::uint8_t*>(page) + 0x10);
     if (GrTextureSlot* slot = gr_texture_slot_of(bm); slot && slot->bm_handle == bm) {
         gr_texture_free(slot);
@@ -294,7 +300,9 @@ static void __fastcall lightmap_page_free_new(void* page)
 
 // FUN_004a3c80 gives a level that ships no stock lightmaps one synthesised 128x128 page for every
 // surface to point at, but the surfaces' rects and uv_scale/uv_add were packed for pages of the
-// level's stock page size.
+// level's stock page size. Only the alpine lightmap section records that size, and it is read after
+// the geometry, so the page starts at the size the High-res lightmaps property implies and
+// lightmap_synthesized_page_resize corrects it once the section is read.
 static bool g_stock_layout_synthesized = false;
 
 bool lightmap_stock_layout_synthesized()
@@ -318,6 +326,7 @@ static void* __fastcall lightmap_synth_page_new(void* self, int edx, int w, int 
     // the loader clamps every surface's -1 index to this page, so the rects packed across many
     // pages now overlap on one until the next repack
     g_stock_layout_synthesized = true;
+    g_synth_page = page;
     auto* level = CDedLevel::Get();
     auto* buf = self ? *reinterpret_cast<std::uint8_t**>(static_cast<std::uint8_t*>(self) + 0xc) : nullptr;
     // a d3d11-only level reads as unlit in the RED viewport rather than black
@@ -325,6 +334,37 @@ static void* __fastcall lightmap_synth_page_new(void* self, int edx, int w, int 
         std::memset(buf, 0xff, static_cast<std::size_t>(w) * h * 3);
     }
     return page;
+}
+
+void lightmap_synthesized_page_resize(int edge)
+{
+    auto* page = static_cast<std::uint8_t*>(g_synth_page);
+    if (!g_stock_layout_synthesized || !page || edge <= 0 || edge > lm_highres_page_size) {
+        return;
+    }
+    if (*reinterpret_cast<int*>(page + 4) == edge && *reinterpret_cast<int*>(page + 8) == edge) {
+        return;
+    }
+    const std::size_t bytes = static_cast<std::size_t>(edge) * edge * 3;
+    auto* pixels = static_cast<std::uint8_t*>(editor_alloc(bytes));
+    if (!pixels) {
+        return;
+    }
+    // Rebuilt in place as FUN_004a6510 builds it: the surfaces and the page list hold its address and index.
+    lightmap_page_free_new(page);
+    *reinterpret_cast<void**>(page) = nullptr;
+    *reinterpret_cast<int*>(page + 4) = edge;
+    *reinterpret_cast<int*>(page + 8) = edge;
+    *reinterpret_cast<std::uint8_t**>(page + 0xc) = pixels;
+    *reinterpret_cast<int*>(page + 0x10) = AddrCaller{0x004bdf10}.c_call<int>(5, edge, edge);
+    g_synth_page = page;
+    auto* level = CDedLevel::Get();
+    const bool omitted = level && level->GetAlpineLevelProperties().stock_lightmaps_omitted;
+    std::memset(pixels, omitted ? 0xff : 0, bytes);
+    editor_report(EditorReportLevel::info, "Lightmap",
+                  "the synthesised lightmap page is " + std::to_string(edge) + "x" + std::to_string(edge) +
+                      ", the stock page size the alpine lightmap section records",
+                  false);
 }
 
 // Fix lightmap seam at portal-split face boundaries.
@@ -1816,6 +1856,7 @@ void lightmap_reset_level_state()
 {
     s_ambient_room_count = 0;
     g_stock_layout_synthesized = false;
+    g_synth_page = nullptr;
     alpine_lm_note_lighting_refused(false);
     g_no_shadow_cast_dropped.clear();
     g_occluder_tree_built = false;

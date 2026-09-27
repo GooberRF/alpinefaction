@@ -299,10 +299,12 @@ static uint64_t terrain_level_raw_bytes_except(CDedLevel* level, const DedTerrai
 static bool terrain_budget_allows(HWND owner, const DedTerrain* except, uint32_t nx, uint32_t nz,
                                   uint32_t mul, bool overlays)
 {
-    // Whether the geo mask is written depends on the edit's chunk layout, so it is always counted.
+    // Whether the geo mask is written depends on the edit's chunk layout, so it is always counted, at its
+    // largest (the finest chunk grid).
     const uint64_t total =
         terrain_level_raw_bytes_except(CDedLevel::Get(), except) +
-        at::wire_raw_size(nx, nz, mul, at::flag_chunk_geo_mask | (overlays ? at::flag_overlays : 0));
+        at::wire_raw_size(nx, nz, mul, at::chunk_edge_options[0],
+                          at::flag_chunk_geo_mask | (overlays ? at::flag_overlays : 0));
     if (total <= at::max_level_raw_bytes) return true;
     char msg[256];
     std::snprintf(msg, sizeof(msg),
@@ -361,7 +363,7 @@ static at::Header terrain_wire_header(const Vector3& pos, const DedTerrainData& 
     geo.clear();
     if ((d.flags & at::flag_geoable) && d.grid) {
         geo = terrain_geo_chunks(d);
-        if (!at::chunk_mask_full(geo.data(), at::header_geo_chunk_count(h))) h.flags |= at::flag_chunk_geo_mask;
+        if (!at::chunk_mask_full(geo.data(), at::header_chunk_count(h))) h.flags |= at::flag_chunk_geo_mask;
     }
     if (!d.overlays.empty()) {
         h.flags |= at::flag_overlays;
@@ -450,6 +452,7 @@ void terrain_serialize_chunk(CDedLevel& level, rf::File& file, bool group)
     {
         DedTerrain* terrain;
         std::string script_name;
+        uint8_t chunk_cells;
         uint8_t flags;
         bool write_mapping;
         uint32_t raw_size;
@@ -517,16 +520,18 @@ void terrain_serialize_chunk(CDedLevel& level, rf::File& file, bool group)
                         g.diag.size());
             if (header.flags & at::flag_chunk_geo_mask) {
                 uint8_t* dst = raw.data() + at::blob_geo_mask_offset(g.nx, g.nz, g.weight_res_mul);
-                std::memcpy(dst, geo.data(), geo.size());
-                std::memset(dst + geo.size(), 0, at::chunk_geo_mask_wire_bytes - geo.size());
+                const std::size_t n = at::blob_geo_mask_bytes(g.nx, g.nz, header.chunk_cells, header.flags);
+                std::memset(dst, 0, n);
+                std::memcpy(dst, geo.data(), std::min(geo.size(), n));
             }
             if (header.flags & at::flag_overlays) {
-                std::memcpy(raw.data() + at::blob_overlay_offset(g.nx, g.nz, g.weight_res_mul, header.flags),
+                std::memcpy(raw.data() + at::blob_overlay_offset(g.nx, g.nz, g.weight_res_mul, header.chunk_cells,
+                                                                 header.flags),
                             g.overlay.data(), g.overlay.size());
             }
 
-            Record rec{terrain, terrain->script_name.c_str(), static_cast<uint8_t>(header.flags), write_mapping,
-                       static_cast<uint32_t>(raw_size), {}};
+            Record rec{terrain, terrain->script_name.c_str(), static_cast<uint8_t>(header.chunk_cells),
+                       static_cast<uint8_t>(header.flags), write_mapping, static_cast<uint32_t>(raw_size), {}};
             if (rec.script_name.size() > at::max_script_name_len) rec.script_name.resize(at::max_script_name_len);
             uLongf comp_len = compressBound(static_cast<uLong>(raw_size));
             rec.comp.resize(comp_len);
@@ -566,7 +571,7 @@ void terrain_serialize_chunk(CDedLevel& level, rf::File& file, bool group)
         file.write<uint16_t>(static_cast<uint16_t>(g.nz));
         file.write<float>(d.height_min);
         file.write<float>(d.height_range);
-        file.write<uint8_t>(static_cast<uint8_t>(d.chunk_cells));
+        file.write<uint8_t>(rec.chunk_cells);
         file.write<uint8_t>(static_cast<uint8_t>(g.weight_res_mul));
         file.write<uint8_t>(d.lightmap_density);
         file.write<uint8_t>(rec.flags);
@@ -652,9 +657,9 @@ static void terrain_from_record(at::Record& rec, DedTerrain* terrain)
     }
     d.build_mapping = std::move(rec.build_mapping);
     d.grid = std::move(g);
-    if (!rec.geo_chunks.empty() && !at::chunk_mask_full(rec.geo_chunks.data(), at::header_geo_chunk_count(h))) {
+    if (!rec.geo_chunks.empty() && !at::chunk_mask_full(rec.geo_chunks.data(), at::header_chunk_count(h))) {
         d.geo_chunks = std::move(rec.geo_chunks);
-        d.geo_chunks_layout = at::geo_chunk_layout(h.nx, h.nz, h.chunk_cells, h.flags);
+        d.geo_chunks_layout = at::header_chunk_layout(h);
     }
 }
 
@@ -1187,19 +1192,13 @@ static void terrain_dlg_reselect_layer(HWND hdlg, int kind, int sel)
     terrain_dlg_load_layer_fields(hdlg, kind);
 }
 
-// Browser categories to open on, first match wins: a user's own terrain folder, then the closest
-// stock one.
-static constexpr const char* terrain_surface_categories[] = {"Terrain", "Custom - Terrain", "Floor - Rock"};
-static constexpr const char* terrain_underside_categories[] = {"Terrain", "Custom - Terrain", "Wall - Rock"};
-
 // The texture browser runs its own modal loop off the main frame; same disable/re-activate dance the
-// rope dialog does.
-template<std::size_t N>
-static bool terrain_browse_texture(HWND hdlg, int field_idc, const char* const (&categories)[N])
+// rope dialog does. It opens on the category texture mode starts on.
+static bool terrain_browse_texture(HWND hdlg, int field_idc)
 {
     const std::string current = terrain_get_text(hdlg, field_idc);
     EnableWindow(hdlg, FALSE);
-    const int picked = texture_browser_pick_first(categories, N, alpine_dlg_resolve_bitmap(current.c_str()));
+    const int picked = texture_browser_pick("Root", alpine_dlg_resolve_bitmap(current.c_str()));
     EnableWindow(hdlg, TRUE);
     SetActiveWindow(hdlg);
     if (picked < 0) return false;
@@ -1624,7 +1623,7 @@ static bool terrain_dlg_list_command(HWND hdlg, int id, int code)
         }
         else if (id == ui.browse) {
             // The edit's EN_CHANGE stores the pick into the layer.
-            terrain_browse_texture(hdlg, ui.texture, terrain_surface_categories);
+            terrain_browse_texture(hdlg, ui.texture);
         }
         else if (id == ui.add) {
             terrain_dlg_layer_add(hdlg, kind);
@@ -1739,10 +1738,10 @@ static INT_PTR terrain_dlg_command(HWND hdlg, WPARAM wp)
         }
         break;
     case IDC_TERRAIN_UNDERSIDE_BROWSE:
-        terrain_browse_texture(hdlg, IDC_TERRAIN_UNDERSIDE_TEXTURE, terrain_underside_categories);
+        terrain_browse_texture(hdlg, IDC_TERRAIN_UNDERSIDE_TEXTURE);
         return TRUE;
     case IDC_TERRAIN_CRATER_BROWSE:
-        terrain_browse_texture(hdlg, IDC_TERRAIN_CRATER_TEXTURE, terrain_surface_categories);
+        terrain_browse_texture(hdlg, IDC_TERRAIN_CRATER_TEXTURE);
         return TRUE;
     case IDC_TERRAIN_NEW_FLAT:
         terrain_dlg_new_flat(hdlg);

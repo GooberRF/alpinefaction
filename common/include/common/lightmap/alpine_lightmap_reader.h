@@ -49,12 +49,19 @@ struct ReadResult
     std::vector<Chart> charts;         // as stored, positional over the surfaces
     std::vector<ChartGeometry> geoms;  // derived, one per chart; empty unless surfaces_ok
     std::vector<std::uint32_t> bases;  // first tile index of each chart; empty unless surfaces_ok
+    // Tiles every directory table owns, after the surface tiles.
+    std::uint64_t table_tiles = 0;
+    // GPU chart records of the tables read, which follow the surface records in directory order;
+    // relative to the end of the surface records.
+    std::uint32_t table_records = 0;
+    std::uint32_t mover_record_offset = 0;
+    std::uint32_t terrain_record_offset = 0;
+    // The terrain table, all empty unless its layout is known (terrain_reason says why not).
+    const char* terrain_reason = "";
     std::vector<TerrainChart> terrain; // as stored
     std::vector<ChartGeometry> terrain_geoms;
-    std::vector<std::uint32_t> terrain_bases;
-    std::vector<std::uint8_t> terrain_ok; // per record: usable
-    // Tiles every directory table owns, after the terrain tiles.
-    std::uint64_t ext_tiles = 0;
+    std::vector<std::uint32_t> terrain_bases; // absolute first tile
+    std::vector<std::uint8_t> terrain_ok;     // per record: usable
     // The mover table, all empty unless its layout is known (mover_reason says why not).
     const char* mover_reason = "";
     std::vector<MoverChart> movers;                  // as stored
@@ -94,7 +101,17 @@ inline const char* header_invalid_reason(const SectionHeader& head)
     if (head.num_pages == 0 || head.num_pages > max_pages) {
         return "bad page count";
     }
+    if (head.stock_page_log2 < stock_page_log2_min || head.stock_page_log2 > stock_page_log2_max) {
+        return "bad stock page size";
+    }
     return nullptr;
+}
+
+// The stock page edge surface and mover uv_scale/uv_add normalize against, of a header that passed
+// header_invalid_reason.
+inline constexpr std::uint32_t stock_page_edge(const SectionHeader& head)
+{
+    return 1u << head.stock_page_log2;
 }
 
 // Only these combinations are decoded. Anything else is an unknown layer and is skipped, which
@@ -153,11 +170,11 @@ inline bool chart_tiles_on_pages(const ReadResult& r, const ChartGeometry& g, st
 
 namespace detail {
 
-// The surface half: nullptr when it is usable, else why not. terrain_tiles is the tile count the
-// terrain charts own at the end of the tile table.
+// The surface half: nullptr when it is usable, else why not. table_tiles is the tile count the
+// directory's tables own at the end of the tile table.
 inline const char* validate_surfaces(ReadResult& r, const SurfaceDims* dims, std::uint32_t num_surfaces,
                                      std::uint32_t expect_surface_hash, bool have_hash,
-                                     std::uint64_t terrain_tiles)
+                                     std::uint64_t table_tiles)
 {
     if (r.head.num_charts != num_surfaces) {
         return "chart count does not match the loaded geometry";
@@ -174,10 +191,10 @@ inline const char* validate_surfaces(ReadResult& r, const SurfaceDims* dims, std
     if (num_surfaces > 0 && !dims) {
         return "surface dimensions unavailable";
     }
-    if (terrain_tiles > r.head.num_tiles) {
+    if (table_tiles > r.head.num_tiles) {
         return "tile count does not match the derived atlas";
     }
-    const std::uint64_t surface_tiles = r.head.num_tiles - terrain_tiles;
+    const std::uint64_t surface_tiles = r.head.num_tiles - table_tiles;
     // sized only now: the count check above bounds them by the loaded geometry, not by the file
     r.geoms.assign(r.head.num_charts, ChartGeometry{0, 0, 0, 0, 0, 0});
     r.bases.assign(r.head.num_charts, 0);
@@ -316,6 +333,77 @@ inline void clear_movers(ReadResult& r)
     r.mover_bases.clear();
 }
 
+// The terrain table whose body is data[body_off, body_off + th.byte_len), its tiles from first_tile:
+// nullptr when its layout is known (each record is then usable or not on its own), else why not.
+// r.tiles must be loaded.
+inline const char* parse_terrain(ReadResult& r, const std::uint8_t* data, std::uint64_t body_off,
+                                 const TableHeader& th, std::uint32_t first_tile)
+{
+    std::uint32_t num_terrain = 0;
+    if (th.byte_len < sizeof(num_terrain)) {
+        return "truncated terrain table";
+    }
+    load(num_terrain, data + body_off);
+    if (num_terrain > max_terrain_charts) {
+        return "too many terrain charts";
+    }
+    if (th.byte_len != terrain_table_bytes(num_terrain)) {
+        return "terrain table length";
+    }
+    r.terrain.resize(num_terrain);
+    const std::uint8_t* records = data + body_off + sizeof(num_terrain);
+    for (std::uint32_t i = 0; i < num_terrain; i++) {
+        load(r.terrain[i], records + static_cast<std::size_t>(i) * sizeof(TerrainChart));
+    }
+
+    r.terrain_geoms.assign(num_terrain, ChartGeometry{0, 0, 0, 0, 0, 0});
+    r.terrain_bases.assign(num_terrain, first_tile);
+    r.terrain_ok.assign(num_terrain, 0);
+    std::uint64_t tiles = 0;
+    std::uint64_t texels = 0;
+    for (std::uint32_t i = 0; i < num_terrain; i++) {
+        const ChartGeometry g = terrain_chart_geometry(r.terrain[i].w, r.terrain[i].h, r.tile_step, r.gutter);
+        if (g.empty()) {
+            return "terrain chart size";
+        }
+        r.terrain_geoms[i] = g;
+        r.terrain_bases[i] = first_tile + static_cast<std::uint32_t>(tiles);
+        tiles += static_cast<std::uint64_t>(g.nx) * g.ny;
+        texels += static_cast<std::uint64_t>(r.terrain[i].w) * r.terrain[i].h;
+        if (tiles > th.num_tiles) {
+            return "terrain tiles do not match their table";
+        }
+    }
+    if (tiles != th.num_tiles) {
+        return "terrain tiles do not match their table";
+    }
+    // a chart's texels are the interiors of its tiles, which cannot outgrow the pages they occupy
+    if (texels > max_terrain_chart_texels
+        || texels > static_cast<std::uint64_t>(r.head.num_pages) * r.page_size * r.page_size) {
+        return "terrain charts exceed the page budget";
+    }
+    for (std::uint32_t i = 0; i < num_terrain; i++) {
+        bool usable = terrain_chart_fields_ok(r.terrain[i])
+                   && chart_tiles_on_pages(r, r.terrain_geoms[i], r.terrain_bases[i]);
+        // a uid charted twice identifies neither chart
+        for (std::uint32_t j = 0; j < num_terrain; j++) {
+            if (j != i && r.terrain[j].terrain_uid == r.terrain[i].terrain_uid) {
+                usable = false;
+            }
+        }
+        r.terrain_ok[i] = usable ? 1 : 0;
+    }
+    return nullptr;
+}
+
+inline void clear_terrain(ReadResult& r)
+{
+    r.terrain.clear();
+    r.terrain_geoms.clear();
+    r.terrain_bases.clear();
+    r.terrain_ok.clear();
+}
+
 } // namespace detail
 
 // `expect_surface_hash` is the xxhash32 the reader computed over the same bytes the writer
@@ -343,18 +431,8 @@ inline ReadResult read_section(const std::uint8_t* data, std::size_t len, const 
     r.tile_step = r.head.tile_step;
     r.gutter = r.head.gutter;
 
-    const std::uint64_t charts_end =
+    const std::uint64_t dir_off =
         sizeof(SectionHeader) + static_cast<std::uint64_t>(r.head.num_charts) * sizeof(Chart);
-    if (charts_end + sizeof(std::uint32_t) > len) {
-        return fail("truncated chart/tile tables");
-    }
-    std::uint32_t num_terrain = 0;
-    load(num_terrain, data + charts_end);
-    if (num_terrain > max_terrain_charts) {
-        return fail("too many terrain charts");
-    }
-    const std::uint64_t dir_off = charts_end + sizeof(std::uint32_t)
-                                + static_cast<std::uint64_t>(num_terrain) * sizeof(TerrainChart);
     if (dir_off + sizeof(std::uint32_t) > len) {
         return fail("truncated chart/tile tables");
     }
@@ -367,7 +445,7 @@ inline ReadResult read_section(const std::uint8_t* data, std::size_t len, const 
     {
         TableHeader head;
         std::uint64_t body_off;
-        std::uint32_t first_tile; // relative to the end of the terrain tiles
+        std::uint32_t first_tile; // relative to the end of the surface tiles
     };
     TableRef dir_tables[max_tables];
     std::uint64_t dir_end = dir_off + sizeof(std::uint32_t);
@@ -382,10 +460,10 @@ inline ReadResult read_section(const std::uint8_t* data, std::size_t len, const 
             return fail("truncated table directory");
         }
         t.body_off = dir_end;
-        t.first_tile = static_cast<std::uint32_t>(r.ext_tiles);
+        t.first_tile = static_cast<std::uint32_t>(r.table_tiles);
         dir_end += t.head.byte_len;
-        r.ext_tiles += t.head.num_tiles;
-        if (r.ext_tiles > r.head.num_tiles) {
+        r.table_tiles += t.head.num_tiles;
+        if (r.table_tiles > r.head.num_tiles) {
             return fail("table tiles exceed the tile table");
         }
     }
@@ -405,12 +483,6 @@ inline ReadResult read_section(const std::uint8_t* data, std::size_t len, const 
         load(r.charts[i], data + off);
         off += sizeof(Chart);
     }
-    off += sizeof(std::uint32_t);
-    r.terrain.resize(num_terrain);
-    for (std::uint32_t i = 0; i < num_terrain; i++) {
-        load(r.terrain[i], data + off);
-        off += sizeof(TerrainChart);
-    }
     off = static_cast<std::size_t>(dir_end);
     r.tiles.resize(r.head.num_tiles);
     for (std::uint32_t i = 0; i < r.head.num_tiles; i++) {
@@ -418,76 +490,61 @@ inline ReadResult read_section(const std::uint8_t* data, std::size_t len, const 
         off += sizeof(Tile);
     }
 
-    // Terrain tiles close the tile table, so their layout needs nothing from the surfaces: a
-    // record with an unreadable size makes the whole table's layout unknown.
-    r.terrain_geoms.assign(num_terrain, ChartGeometry{0, 0, 0, 0, 0, 0});
-    r.terrain_bases.assign(num_terrain, 0);
-    r.terrain_ok.assign(num_terrain, 0);
-    const char* terrain_reason = nullptr;
-    std::uint64_t terrain_tiles = 0;
-    std::uint64_t terrain_texels = 0;
-    for (std::uint32_t i = 0; i < num_terrain && !terrain_reason; i++) {
-        r.terrain_geoms[i] = terrain_chart_geometry(r.terrain[i].w, r.terrain[i].h, r.tile_step, r.gutter);
-        if (r.terrain_geoms[i].empty()) {
-            terrain_reason = "terrain chart size";
-        }
-        terrain_tiles += static_cast<std::uint64_t>(r.terrain_geoms[i].nx) * r.terrain_geoms[i].ny;
-        terrain_texels += static_cast<std::uint64_t>(r.terrain[i].w) * r.terrain[i].h;
-    }
-    // the directory's tables own the end of the tile table
-    const std::uint32_t terrain_end = r.head.num_tiles - static_cast<std::uint32_t>(r.ext_tiles);
-    if (!terrain_reason && terrain_tiles > terrain_end) {
-        terrain_reason = "terrain tiles exceed the tile table";
-    }
-    // a chart's texels are the interiors of its tiles, which cannot outgrow the pages they occupy
-    if (!terrain_reason
-        && (terrain_texels > max_terrain_chart_texels
-            || terrain_texels > static_cast<std::uint64_t>(r.head.num_pages) * r.page_size * r.page_size)) {
-        terrain_reason = "terrain charts exceed the page budget";
-    }
-    if (!terrain_reason) {
-        std::uint32_t base = terrain_end - static_cast<std::uint32_t>(terrain_tiles);
-        for (std::uint32_t i = 0; i < num_terrain; i++) {
-            r.terrain_bases[i] = base;
-            base += r.terrain_geoms[i].tile_count();
-            bool usable = terrain_chart_fields_ok(r.terrain[i])
-                       && chart_tiles_on_pages(r, r.terrain_geoms[i], r.terrain_bases[i]);
-            // a uid charted twice identifies neither chart
-            for (std::uint32_t j = 0; j < num_terrain; j++) {
-                if (j != i && r.terrain[j].terrain_uid == r.terrain[i].terrain_uid) {
-                    usable = false;
-                }
+    // The directory's tables own the end of the tile table, so their layouts need nothing from the
+    // surfaces. Only one table of a tag at its known version is read; the tiles of every table are
+    // reserved either way.
+    const std::uint32_t surface_end = r.head.num_tiles - static_cast<std::uint32_t>(r.table_tiles);
+    const auto find_table = [&](TableTag tag, std::uint16_t version, const char* more_than_one,
+                                const char* other_version, const char*& reason) -> std::int32_t {
+        std::uint32_t count = 0;
+        std::int32_t found = -1;
+        for (std::uint32_t k = 0; k < num_tables; k++) {
+            if (dir_tables[k].head.tag == static_cast<std::uint32_t>(tag)) {
+                count++;
+                found = static_cast<std::int32_t>(k);
             }
-            r.terrain_ok[i] = usable ? 1 : 0;
         }
-    }
-    else {
-        terrain_tiles = 0;
-    }
-
-    // Only one mover table of the known version is read; its tiles are reserved either way.
-    std::uint32_t mover_tables = 0;
-    const TableRef* mover_table = nullptr;
-    for (std::uint32_t k = 0; k < num_tables; k++) {
-        if (dir_tables[k].head.tag == table_tag_movers) {
-            mover_tables++;
-            mover_table = &dir_tables[k];
+        if (count == 1 && dir_tables[found].head.version == version) {
+            return found;
         }
-    }
-    if (mover_tables == 1 && mover_table->head.version == mover_table_version) {
-        const char* reason = detail::parse_movers(r, data, mover_table->body_off, mover_table->head,
-                                                  terrain_end + mover_table->first_tile);
-        if (reason) {
+        if (count > 0) {
+            reason = count > 1 ? more_than_one : other_version;
+        }
+        return -1;
+    };
+    std::int32_t mover_k = find_table(TableTag::movers, mover_table_version, "more than one mover table",
+                                      "unsupported mover table version", r.mover_reason);
+    if (mover_k >= 0) {
+        const TableRef& t = dir_tables[mover_k];
+        if (const char* reason = detail::parse_movers(r, data, t.body_off, t.head, surface_end + t.first_tile)) {
             detail::clear_movers(r);
             r.mover_reason = reason;
+            mover_k = -1;
         }
     }
-    else if (mover_tables > 0) {
-        r.mover_reason = mover_tables > 1 ? "more than one mover table" : "unsupported mover table version";
+    std::int32_t terrain_k = find_table(TableTag::terrain, terrain_table_version, "more than one terrain table",
+                                        "unsupported terrain table version", r.terrain_reason);
+    if (terrain_k >= 0) {
+        const TableRef& t = dir_tables[terrain_k];
+        if (const char* reason = detail::parse_terrain(r, data, t.body_off, t.head, surface_end + t.first_tile)) {
+            detail::clear_terrain(r);
+            r.terrain_reason = reason;
+            terrain_k = -1;
+        }
+    }
+    for (std::uint32_t k = 0; k < num_tables; k++) {
+        if (static_cast<std::int32_t>(k) == mover_k) {
+            r.mover_record_offset = r.table_records;
+            r.table_records += static_cast<std::uint32_t>(r.mover_charts.size());
+        }
+        else if (static_cast<std::int32_t>(k) == terrain_k) {
+            r.terrain_record_offset = r.table_records;
+            r.table_records += static_cast<std::uint32_t>(r.terrain.size());
+        }
     }
 
     const char* surface_reason = detail::validate_surfaces(r, dims, num_surfaces, expect_surface_hash,
-                                                           have_hash, terrain_tiles + r.ext_tiles);
+                                                           have_hash, r.table_tiles);
     r.surfaces_ok = surface_reason == nullptr;
     r.surface_reason = surface_reason ? surface_reason : "";
     if (!r.surfaces_ok) {
@@ -503,7 +560,7 @@ inline ReadResult read_section(const std::uint8_t* data, std::size_t len, const 
         any_mover = any_mover || v != 0;
     }
     if (!r.surfaces_ok && !any_terrain && !any_mover) {
-        return fail(num_terrain && terrain_reason ? terrain_reason : r.surface_reason);
+        return fail(*r.terrain_reason ? r.terrain_reason : r.surface_reason);
     }
 
     if (off + sizeof(LayerDirHeader) > len) {
@@ -559,14 +616,15 @@ inline ReadResult read_section(const std::uint8_t* data, std::size_t len, const 
 
 // GPU index buffer, a typed Buffer<uint4> (R32G32B32A32_UINT, so it stays inside shader
 // model 4, which is what both pixel shader permutations compile to). S is gpu_surface_records(),
-// T the terrain chart count, M gpu_mover_records():
-//   [0, S)              one record per geometry surface, positionally (none unless surfaces_ok)
-//   [S, S + T)          one record per terrain chart, table order (gpu_terrain_chart)
-//   [S + T, S + T + M)  one record per mover surface, record then surface order (gpu_mover_chart)
+// R = table_records the chart records of the tables read:
+//   [0, S)          one record per geometry surface, positionally (none unless surfaces_ok)
+//   [S, S + R)      the tables' records in directory order, one table after another:
+//                   movers: one per mover surface, record then surface order (gpu_mover_chart)
+//                   terrain: one per terrain chart, record order (gpu_terrain_chart)
 //       .x = nx, .y = ny                  0 means no usable chart
 //       .z = absolute index IN THIS BUFFER of the chart's first tile record
 //       .w = pad_u | (pad_v << 16)
-//   [S + T + M, S + T + M + num_tiles)  one record per tile, chart order, row major
+//   [S + R, S + R + num_tiles)  one record per tile, as the tile table stores them
 //       .x = page, .y = x, .z = y, .w = 0
 // Charts and tiles share one buffer so the pixel shader needs a single SRV slot; .z is already
 // biased past the chart records so the shader adds ty * nx + tx and nothing else.
@@ -577,26 +635,20 @@ inline std::uint32_t gpu_surface_records(const ReadResult& r)
 
 inline std::uint32_t gpu_terrain_chart(const ReadResult& r, std::uint32_t terrain_index)
 {
-    return gpu_surface_records(r) + terrain_index;
-}
-
-inline std::uint32_t gpu_mover_records(const ReadResult& r)
-{
-    return static_cast<std::uint32_t>(r.mover_charts.size());
+    return gpu_surface_records(r) + r.terrain_record_offset + terrain_index;
 }
 
 // `record` < movers.size(), `surface` < that record's num_surfaces.
 inline std::uint32_t gpu_mover_chart(const ReadResult& r, std::uint32_t record, std::uint32_t surface)
 {
-    return gpu_surface_records(r) + static_cast<std::uint32_t>(r.terrain.size()) + r.mover_first_surface[record]
-         + surface;
+    return gpu_surface_records(r) + r.mover_record_offset + r.mover_first_surface[record] + surface;
 }
 
 inline std::vector<std::uint32_t> build_gpu_index(const ReadResult& r)
 {
     const std::uint32_t num_surface = gpu_surface_records(r);
     const std::uint32_t num_terrain = static_cast<std::uint32_t>(r.terrain.size());
-    const std::uint32_t num_records = num_surface + num_terrain + gpu_mover_records(r);
+    const std::uint32_t num_records = num_surface + r.table_records;
     const std::uint32_t num_tiles = r.head.num_tiles;
     std::vector<std::uint32_t> out(static_cast<std::size_t>(num_records + num_tiles) * 4, 0);
     auto put_chart = [&](std::uint32_t record, const ChartGeometry& g, std::uint32_t base) {

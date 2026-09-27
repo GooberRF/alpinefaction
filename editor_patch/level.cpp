@@ -1203,8 +1203,8 @@ static void init_lightmap_combos(HWND hdlg, const AlpineLevelProperties& props)
         std::snprintf(label, sizeof(label), "Default (%u)", alpine_lightmap::density_default);
         int sel = alpine_dlg_combo_add(hdlg, IDC_LIGHTMAP_DENSITY, label, 0);
         bool matched = props.lightmap_density == 0;
-        const int off = alpine_dlg_combo_add(hdlg, IDC_LIGHTMAP_DENSITY, "Off", lightmap_density_off);
-        if (props.lightmap_density == lightmap_density_off) {
+        const int off = alpine_dlg_combo_add(hdlg, IDC_LIGHTMAP_DENSITY, "Off", alpine_lightmap::density_off);
+        if (props.lightmap_density == alpine_lightmap::density_off) {
             sel = off;
             matched = true;
         }
@@ -1245,7 +1245,7 @@ static std::uint8_t read_combo_u8(HWND hdlg, int id, std::uint8_t fallback)
 static void update_lightmap_controls(HWND hdlg)
 {
     const bool legacy = IsDlgButtonChecked(hdlg, IDC_LEGACY_LIGHTING) == BST_CHECKED;
-    const bool off = alpine_dlg_combo_data(hdlg, IDC_LIGHTMAP_DENSITY, 0) == lightmap_density_off;
+    const bool off = alpine_dlg_combo_data(hdlg, IDC_LIGHTMAP_DENSITY, 0) == alpine_lightmap::density_off;
     if (HWND d3d11_only = GetDlgItem(hdlg, IDC_D3D11_ONLY_LIGHTMAPS)) {
         EnableWindow(d3d11_only, !legacy && !off);
     }

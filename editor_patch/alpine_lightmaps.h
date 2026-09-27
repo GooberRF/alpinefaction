@@ -58,6 +58,8 @@ bool alpine_lm_stock_suppressed();
 // Defined in editor_patch/lightmap.cpp: the surfaces still point at the page RED synthesised for a
 // level loaded without stock lightmaps, so their rects overlap until the next repack.
 bool lightmap_stock_layout_synthesized();
+// Gives that synthesised page the edge the level's alpine lightmap section records; nothing otherwise.
+void lightmap_synthesized_page_resize(int edge);
 
 // Defined in editor_patch/lightmap.cpp, for the terrain charts of the Calculate Lighting in progress.
 struct LightmapPoint

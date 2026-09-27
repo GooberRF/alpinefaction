@@ -75,7 +75,9 @@ struct AlpineLevelProperties
     uint8_t sun_mesh_mode = 0; // 0 = scale by sampled lightmap luminance, 1 = apply everywhere
     bool sun_drives_shadowmap_dir = true;
     bool legacy_lighting = false;   // editor-side bake switch, no effect in game
-    bool highres_lightmaps = false; // editor-side bake switch, no effect in game
+    // editor-side bake switch, no effect in game: the Alpine Lightmaps section header records the stock
+    // page size its charts were baked against, which a toggle after the last repack no longer matches
+    bool highres_lightmaps = false;
     bool sun_liquid_occludes = true; // editor-side bake switch, no effect in game
     bool invisible_faces_occlude = false; // editor-side bake switch, no effect in game
     bool alpha_faces_occlude = false; // editor-side bake switch, no effect in game
