@@ -262,7 +262,7 @@ static float koth_fill_scale_from_progress(uint8_t progress01_100, float base_ic
 }
 
 // Use `render_string_3d`.
-static void render_string_projected(
+static void render_projected_string(
     const rf::Vector3& pos,
     const std::string& text,
     const int offset_x,
@@ -287,26 +287,29 @@ static void render_string_projected(
     }
 }
 
-static float world_y_units_per_pixel(const rf::Vector3& pos) {
+static float world_z_depth(const rf::Vector3& pos) {
     const rf::Vector3 delta = pos - rf::gr::view_pos;
-    const float z = rf::gr::view_matrix.fvec.dot_prod(delta);
+    return rf::gr::view_matrix.fvec.dot_prod(delta);
+}
+
+static float world_y_units_per_pixel(const rf::Vector3& pos) {
+    const float z = world_z_depth(pos);
     if (z <= 1e-6f) {
-        return .0f;
+        return 0.f;
     }
-    return z / (rf::gr::screen.clip_height * .5f * rf::gr::matrix_scale.y);
+    return 2.f * z / (rf::gr::screen.clip_height * rf::gr::matrix_scale.y);
 }
 
 [[maybe_unused]]
 static float world_x_units_per_pixel(const rf::Vector3& pos) {
-    const rf::Vector3 delta = pos - rf::gr::view_pos;
-    const float z = rf::gr::view_matrix.fvec.dot_prod(delta);
+    const float z = world_z_depth(pos);
     if (z <= 1e-6f) {
-        return .0f;
+        return 0.f;
     }
-    return z / (rf::gr::screen.clip_width * .5f * rf::gr::matrix_scale.x);
+    return 2.f * z / (rf::gr::screen.clip_width * rf::gr::matrix_scale.x);
 }
 
-#define USE_FAKE_STRING_3D 0
+constexpr bool WH_2D_TEXT = false;
 
 static void render_string_3d(
     rf::Vector3 pos,
@@ -317,14 +320,8 @@ static void render_string_3d(
     const rf::gr::Color color,
     const rf::Matrix3* const orient = nullptr
 ) {
-    const bool project =
-    #if USE_FAKE_STRING_3D
-        true;
-    #else
-        false;
-    #endif
-    if (project) {
-        render_string_projected(
+    if constexpr (WH_2D_TEXT) {
+        render_projected_string(
             pos,
             string,
             offset_x,
@@ -346,9 +343,9 @@ static void render_string_3d(
         if (offset_y != 0) {
             pos -= rf::gr::unscaled_matrix.uvec * static_cast<float>(offset_y) * scale;
         }
-        rf::Matrix3 default_orient{};
+        rf::Matrix3 local_player_orient{};
         if (!orient) {
-            default_orient = rf::local_player->cam->camera_entity->eye_orient;
+            local_player_orient = rf::local_player->cam->camera_entity->eye_orient;
 
             rf::Entity* const entity =
                     rf::entity_from_handle(rf::local_player->entity_handle);
@@ -362,7 +359,7 @@ static void render_string_3d(
                     rf::Vector3 pos{};
                     // player_cockpit_get_camera_pos
                     AddrCaller{0x004A8690}
-                        .c_call(rf::local_player, host, &pos, &default_orient);
+                        .c_call(rf::local_player, host, &pos, &local_player_orient);
                 }
             }
         }
@@ -370,7 +367,7 @@ static void render_string_3d(
         rf::gr::set_color(color);
         rf::gr::string_3d(
             &pos,
-            orient ? orient : &default_orient,
+            orient ? orient : &local_player_orient,
             scale,
             string,
             font_num,
