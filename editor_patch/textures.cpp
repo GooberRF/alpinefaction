@@ -460,8 +460,8 @@ static bool same_texture_stem(std::string_view a, std::string_view b)
 }
 
 // Stock categories list their textures in the startup groups, as texture mode's reverse lookup
-// (0x00445910) searches them; custom subdirectory categories have no group, so their search path is
-// matched instead.
+// (0x00445910) searches them; a custom category's search path is matched otherwise, as its files may
+// postdate the groups and its subdirectories have none.
 const char* texture_category_of(const char* filename)
 {
     CDedLevel* level = CDedLevel::Get();
@@ -483,7 +483,7 @@ const char* texture_category_of(const char* filename)
             for (int c = 0; c < categories.size; c++) {
                 const TextureCategory* cat = categories.data_ptr[c];
                 if (cat && cat->path_handle == node->path_index
-                    && std::strncmp(cat->name.c_str(), "Custom - ", 9) == 0) {
+                    && std::strncmp(cat->name.c_str(), "Custom", 6) == 0) {
                     return cat->name.c_str();
                 }
             }
