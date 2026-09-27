@@ -842,13 +842,13 @@ void build_ephemeral_world_hud_sprite_icons() {
 
         const int base_font = get_world_hud_font(1.f);
         const int base_text_height = rf::gr::get_string_size(es.label, base_font).second;
-        const int centered_offset_y = -25 - (text_height - base_text_height);
+        const int offset_y = -25 - (text_height - base_text_height);
 
         render_string_3d(
             es.pos,
             es.label.c_str(),
             -half_text_width,
-            centered_offset_y,
+            offset_y,
             font,
             {es.color.red, es.color.green, es.color.blue, es.color.alpha}
         );
