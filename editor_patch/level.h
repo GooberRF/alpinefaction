@@ -999,6 +999,16 @@ enum class DedRoomEffectType : int
     Liquid = 2,
 };
 
+enum class DedEditMode : int
+{
+    Brush = 0,
+    Face = 1,
+    Vertex = 2,
+    Texture = 3,
+    Object = 4,
+    Group = 5,
+};
+
 // Group entry struct (0x34 bytes) — element of CDedLevel::moving_groups
 // Constructor: FUN_0043dec0 (zeros 4 x 12-byte blocks at +0x04, +0x10, +0x1C, +0x28)
 // Creation: FUN_0043ccf0 (allocs 0x34, calls constructor, sets type, pushes to moving_groups)
@@ -1065,7 +1075,7 @@ struct CDedLevel
     char unk_74;                                  // +0x74 (init 0)
     char _pad_75[0x78 - 0x75];                   // +0x75
     float default_angles[32];                     // +0x78 (all init 89.9f, 128 bytes to +0xF8)
-    int unk_F8;                                   // +0xF8 (init 0)
+    DedEditMode edit_mode;                        // +0xF8 (init 0)
     int unk_FC;                                   // +0xFC (init 3)
     int unk_100;                                  // +0x100 (init 0)
     int unk_104;                                  // +0x104 (init 0)

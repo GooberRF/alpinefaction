@@ -1479,6 +1479,21 @@ void DedLevel_DoLinkImpl(CDedLevel* level, bool reverse_link_direction)
     const int count = sel.get_size();
     DedObject* primary = count > 0 ? sel[0] : nullptr;
 
+    // An emitter can't be a link source, so linking one to a Target aims it there instead.
+    if (!reverse_link_direction && count == 2 && primary && sel[1]
+        && sel[1]->type == DedObjectType::DED_TARGET) {
+        if (primary->type == DedObjectType::DED_BOLT_EMITTER) {
+            auto* bolt = static_cast<DedBoltEmitter*>(primary);
+            bolt->target_uid = sel[1]->uid;
+            bolt->sync_preview();
+            return;
+        }
+        if (primary->type == DedObjectType::DED_ROPE_EMITTER) {
+            static_cast<DedRopeEmitter*>(primary)->target_uid = sel[1]->uid;
+            return;
+        }
+    }
+
     // One object plus one or more detail brushes reaches here as a single-object selection,
     // which the object-only path can only report as an error.
     if (count == 1 && primary) {

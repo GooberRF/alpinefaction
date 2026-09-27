@@ -2423,29 +2423,72 @@ struct EventOwnerGate : rf::Event
         }
     }
 
-private:
-    bool condition_passes() const
+protected:
+    // Stock link activation (0x004B8B00), minus the linked handlers the gate only reads. Indexed
+    // like stock because a signalled link can add or remove this gate's links mid-loop.
+    void do_activate_links(int trigger_handle, int triggered_by_handle, bool on) override
     {
-        if (handler_uid < 0) {
-            return false;
+        for (int i = 0; i < this->links.size(); ++i) {
+            const int link_handle = this->links[i];
+            if (as_handler(rf::obj_from_handle(link_handle))) {
+                continue;
+            }
+            if (on) {
+                rf::event_signal_on(link_handle, trigger_handle, triggered_by_handle);
+            }
+            else {
+                rf::event_signal_off(link_handle, trigger_handle, triggered_by_handle, true);
+            }
         }
+    }
 
-        Object* obj = rf::obj_lookup_from_uid(handler_uid);
+private:
+    static EventCapturePointHandler* as_handler(Object* obj)
+    {
         if (!obj || obj->type != rf::ObjectType::OT_EVENT) {
-            return false;
+            return nullptr;
         }
 
-        auto* linked_event = static_cast<Event*>(obj);
-        if (linked_event->event_type != std::to_underlying(rf::EventType::Capture_Point_Handler)) {
-            return false;
+        auto* event = static_cast<Event*>(obj);
+        if (event->event_type != std::to_underlying(rf::EventType::Capture_Point_Handler)) {
+            return nullptr;
         }
 
-        auto* handler = static_cast<EventCapturePointHandler*>(linked_event);
+        return static_cast<EventCapturePointHandler*>(event);
+    }
+
+    bool owned_by_required(const EventCapturePointHandler* handler) const
+    {
         if (auto* hill = koth_find_hill_by_handler(handler)) {
             return static_cast<int>(hill->ownership) == required_owner;
         }
 
         return false;
+    }
+
+    // Linked handlers must all be owned by required_owner; handler_uid is only consulted when
+    // none are linked, so a leftover int1 cannot veto a linked setup.
+    bool condition_passes() const
+    {
+        bool any_linked = false;
+        for (int link_handle : this->links) {
+            if (auto* handler = as_handler(rf::obj_from_handle(link_handle))) {
+                if (!owned_by_required(handler)) {
+                    return false;
+                }
+                any_linked = true;
+            }
+        }
+        if (any_linked) {
+            return true;
+        }
+
+        if (handler_uid < 0) {
+            return false;
+        }
+
+        auto* handler = as_handler(rf::obj_lookup_from_uid(handler_uid));
+        return handler && owned_by_required(handler);
     }
 };
 

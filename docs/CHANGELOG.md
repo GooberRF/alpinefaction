@@ -73,6 +73,8 @@ Version 1.5.0 (Trillium): Not yet released
 - Support linking events and triggers to detail brushes in the level editor
 - Vastly improve `Calculate Lighting` times in the level editor (by 5-7x on large levels)
 - Improve level loading and `Build Geometry` times in the level editor on levels with many faces (especially levels with terrain, which load roughly 3x and build roughly 10x faster)
+- Linking a `Bolt Emitter` or `Rope Emitter` to a `Target` in the level editor sets the emitter's target to it
+- `Owner_Gate` can now take its capture points from linked `Capture_Point_Handler` events
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Add `ui_color_console` console command to set the console background color
@@ -117,6 +119,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Fix undoing `Fuse` in the level editor taking two steps
 - Fix level editor crashing or corrupting undo history when undoing, redoing, or autosaving while moving, rotating, or scaling in a viewport
 - Fix bolt emitters imported as part of a group in the level editor keeping their old target when the target object is renumbered to avoid a UID conflict
+- Fix bolt emitters pasted in the level editor together with their target still targeting the original object
 - Fix geoable brush supports not being properly recognized if buried in level geometry
 - Fix RF2-style geomod craters near the edge of a geoable brush not carving a neighboring geoable brush that the crater reaches
 - Fix RF2-style geomod giving up on geoable rooms with more than 5000 faces
@@ -129,6 +132,10 @@ Version 1.5.0 (Trillium): Not yet released
 - Reduce the memory `Calculate Lighting` needs in the level editor, and how much of it must be in one piece
 - Fix level editor crashing in `Calculate Lighting` when a level needs more than 32767 lightmap surfaces; faces past the limit are left without a lightmap and the editor warns
 - Fix geomod craters creating new lightmap surfaces on every crater once a level holds more than 32767 of them
+- Fix level editor crashing when moving decals in a level with more than 128 decals
+- Fix copying and pasting face textures in level editor texture mode removing Alpine objects from the clipboard or unintentionally pasting them into the level
+- Remove the level editor warning about levels with too many decals
+- Fix `Owner_Gate`, `Add_Link`, `Clone_Entity`, `Valid_Gate`, the trigger of `Inside_Gate`, and the eye anchor of `Set_Skybox` keeping the old UID when the object they reference is renumbered by a group import or pasted along with them in the level editor
 
 [@is-this-c](https://github.com/is-this-c)
 - Let `Caps Lock` capitalize
