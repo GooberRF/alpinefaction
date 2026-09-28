@@ -14,7 +14,7 @@
 //   u8 lightmap_density, u8 flags, f32 thickness, f32 skirt_depth, vstring underside_texture,
 //   vstring crater_texture, u8 layer_count, per layer {vstring texture, f32 uv_scale, u8 layer_flags},
 //   [flag_overlays: u8 overlay_count, per overlay {vstring texture, f32 uv_scale, u8 overlay_flags}],
-//   [flag_decorations: u8 decoration_count, per decoration {vstring mesh, f32 density, f32 scale_min,
+//   [flag_decorations: u8 decoration_count, per decoration {vstring mesh (.v3m/.vfx), f32 density, f32 scale_min,
 //    f32 scale_max, f32 max_slope_deg, f32 draw_distance, f32 vertical_offset, u8 link_layer,
 //    u8 decoration_flags}],
 //   u32 mapping_count, per mapping {i32 room_uid, u32 vertex_count, u64 pos_hash},
@@ -822,8 +822,17 @@ inline constexpr char ascii_lower(char c)
     return c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c;
 }
 
-// A decoration's mesh: empty (none picked yet), or a .v3m file name within the texture name caps and
-// without a path.
+// True when `name` (len >= 4) ends in `ext` (a lowercase ".xyz"), ignoring case.
+inline bool decoration_mesh_ext_is(const char* name, std::size_t len, const char* ext)
+{
+    for (std::size_t i = 0; i < 4; i++) {
+        if (ascii_lower(name[len - 4 + i]) != ext[i]) return false;
+    }
+    return true;
+}
+
+// A decoration's mesh: empty (none picked yet), or a .v3m or .vfx file name within the texture name caps and
+// without a path. .vfx (animated) is reserved: readers treat it as a mesh that fails to load.
 inline bool decoration_mesh_valid(const char* name, std::size_t len)
 {
     if (len == 0) return true;
@@ -832,8 +841,13 @@ inline bool decoration_mesh_valid(const char* name, std::size_t len)
         const char c = name[i];
         if (c == '/' || c == '\\' || c == ':' || c == '\0') return false;
     }
-    const char* ext = name + len - 4;
-    return ext[0] == '.' && ascii_lower(ext[1]) == 'v' && ext[2] == '3' && ascii_lower(ext[3]) == 'm';
+    return decoration_mesh_ext_is(name, len, ".v3m") || decoration_mesh_ext_is(name, len, ".vfx");
+}
+
+// A valid decoration mesh name that names an animated (.vfx) mesh.
+inline bool decoration_mesh_is_vfx(const char* name, std::size_t len)
+{
+    return len >= 4 && decoration_mesh_ext_is(name, len, ".vfx");
 }
 
 inline const char* validate_decoration(float density, float scale_min, float scale_max, float max_slope_deg,

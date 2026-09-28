@@ -160,7 +160,15 @@ void build_terrain(int index, const AlpineTerrain& t, TerrainDecorations& td, at
         td.draw_distance[d] = t.decorations[d].draw_distance;
         td.vertical_offset[d] = t.decorations[d].vertical_offset;
         if (at::decoration_active(views[d])) {
-            td.mesh_slot[d] = g_meshes.resolve(t.decorations[d].mesh, "AlpineTerrain");
+            const std::string& mesh = t.decorations[d].mesh;
+            if (at::decoration_mesh_is_vfx(mesh.c_str(), mesh.size())) {
+                if (g_meshes.reject(mesh)) {
+                    xlog::warn("[AlpineTerrain] Animated decoration mesh '{}' is not supported yet", mesh);
+                }
+                td.mesh_slot[d] = -1;
+                continue;
+            }
+            td.mesh_slot[d] = g_meshes.resolve(mesh, "AlpineTerrain");
             radius[d] = td.mesh_slot[d] >= 0 ? g_meshes[td.mesh_slot[d]].radius : 0.0f;
         }
     }

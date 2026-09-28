@@ -2103,8 +2103,8 @@ static bool terrain_dlg_commit(HWND hdlg)
     }
     for (const auto& deco : d.decorations) {
         if (!at::decoration_mesh_valid(deco.mesh.c_str(), deco.mesh.size())) {
-            const std::string msg = std::format("Decoration mesh '{}' must be a .v3m file name without a folder, "
-                                                "at most {} characters.",
+            const std::string msg = std::format("Decoration mesh '{}' must be a .v3m or .vfx file name without a "
+                                                "folder, at most {} characters.",
                                                 deco.mesh, at::max_texture_name_len);
             MessageBoxA(hdlg, msg.c_str(), "Terrain", MB_OK | MB_ICONWARNING);
             return false;

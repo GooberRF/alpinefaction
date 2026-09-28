@@ -55,6 +55,11 @@ int g_loads_left = mesh_loads_per_paint;
 MeshEntry load_mesh(const std::string& name)
 {
     MeshEntry e;
+    // Reserved; the loader would animate a .vfx mid-paint.
+    if (at::decoration_mesh_is_vfx(name.c_str(), name.size())) {
+        xlog::warn("[Terrain] animated decoration mesh '{}' is not supported yet", name);
+        return e;
+    }
     // A missing file must not reach the loader.
     rf::File file;
     if (!file.open(name.c_str())) {
