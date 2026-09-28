@@ -84,7 +84,7 @@ MeshEntry load_mesh(const std::string& name)
     return e;
 }
 
-// A name typed partway, or of anything but a static mesh file, is never loaded.
+// A name typed partway is never loaded, nor is a .vfx (load_mesh turns it away).
 bool loadable(const std::string& name)
 {
     return !name.empty() && at::decoration_mesh_valid(name.c_str(), name.size());
