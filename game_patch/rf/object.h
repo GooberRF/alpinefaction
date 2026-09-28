@@ -289,6 +289,18 @@ namespace rf
     static_assert(sizeof(ObjCollisionPairList) == 0x8);
 
     static auto& obj_collision_pair_free_list = addr_as_ref<ObjCollisionPairList>(0x0075DB30);
+
+    static auto& object_pairs_can_delete_pair = addr_as_ref<bool(ObjCollisionPair* pair)>(0x0048CC10);
+    static auto& object_pairs_check_trigger_pair = addr_as_ref<bool(ObjCollisionPair* pair)>(0x0048BB00);
+    static auto& object_pairs_should_check_pair = addr_as_ref<bool(ObjCollisionPair* pair)>(0x0048BB90);
+
+    // Objects pushed for the physics tick (obj_move_all pass 2 / ObjInterp::set_next_pos_orient)
+    struct SimObjArray
+    {
+        int count;
+        Object* objects[0x400];
+    };
+    static auto& obj_process_physics = addr_as_ref<void(SimObjArray* arr, bool not_interp)>(0x00487770);
     static auto& obj_collision_pair_active_list = addr_as_ref<ObjCollisionPairList>(0x0073DB28);
     static auto& obj_lookup_from_uid = addr_as_ref<Object*(int uid)>(0x0048A4A0);
     static auto& obj_from_handle = addr_as_ref<Object*(int handle)>(0x0040A0E0);

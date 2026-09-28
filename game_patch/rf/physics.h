@@ -10,6 +10,8 @@ namespace rf
     struct GFace;
     struct Object;
     struct Entity;
+    struct VMesh;
+    struct GSolid;
 
     struct PCollisionOut
     {
@@ -89,6 +91,18 @@ namespace rf
     static auto& physics_simulate_entity = addr_as_ref<void(Entity* ep)>(0x0049F3C0);
     static auto& physics_update_entity = addr_as_ref<void(Entity* ep)>(0x0049FE40);
     static auto& collide_object_world = addr_as_ref<char(Object* objp)>(0x0049BB70);
+    // Swept collision of pd1 cspheres (p1->p2) against pd2 cspheres; writes collision only when closer than collision->hit_time
+    static auto& collide_spheres_spheres = addr_as_ref<bool(Vector3* p1, Vector3* p2, PhysicsData* pd1, PhysicsData* pd2, PCollisionOut* collision)>(0x00499670);
+    static auto& collide_spheres_mesh = addr_as_ref<bool(Vector3* p1, Vector3* p2, PhysicsData* pd, Vector3* mesh_pos, Matrix3* mesh_orient, VMesh* vmesh, PCollisionOut* collision)>(0x00499AC0);
+    static auto& collide_spheres_solid = addr_as_ref<bool(Vector3* p1, Vector3* p2, PhysicsData* pd, Vector3* solid_pos, Matrix3* solid_orient, GSolid* solid, PCollisionOut* collision)>(0x00499C80);
+    // Pair-level object tests used by object_pairs_check_all_collisions and the weapon_create hitscan sweep.
+    // Both write hit results into the objects' p_data.collide_out and return true on hit.
+    static auto& collide_object_object_spheres = addr_as_ref<bool(Object* obj1, Object* obj2)>(0x0049A420);
+    static auto& collide_object_object_mesh = addr_as_ref<bool(Object* sphere_obj, Object* mesh_obj)>(0x0049AFE0);
+    static auto& collide_object_object = addr_as_ref<bool(Object* obj1, Object* obj2)>(0x0049AB00);
+    static auto& collide_object_debris_solid = addr_as_ref<bool(Object* sphere_obj, Object* debris_obj)>(0x0049B570);
+    // collide_stick2ground ignores clutter/debris whose p_data.radius is not above this
+    static auto& collide_stick2ground_min_radius = addr_as_ref<float>(0x005A00D4);
 
     static auto& gravity = addr_as_ref<float>(0x005A00DC);
     static auto& level_set_gravity = addr_as_ref<void(float value)>(0x004A0E20);
