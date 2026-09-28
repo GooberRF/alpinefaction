@@ -7,6 +7,9 @@
 #include <vector>
 #include <unordered_set>
 #include <xlog/xlog.h>
+#include <common/rfl_chunk_reader.h>
+#include <common/lightmap/alpine_lightmap.h>
+#include <common/terrain/alpine_terrain.h>
 #include "../rf/geometry.h"
 #include "../rf/level.h"
 #include "../rf/file/file.h"
@@ -20,61 +23,11 @@ constexpr int alpine_bag_chunk_id = 0x0AFBAE04;
 constexpr int alpine_weather_region_chunk_id = 0x0AFBAE06;
 constexpr int alpine_projection_camera_chunk_id = 0x0AFBAE08;
 constexpr int alpine_rope_emitter_chunk_id = 0x0AFBAE0A;
+constexpr int alpine_terrain_chunk_id = static_cast<int>(alpine_terrain::chunk_id); // 0x0AFBAE0B
+constexpr int alpine_lightmaps_chunk_id = static_cast<int>(alpine_lightmap::chunk_id); // 0x0AFBAE09
+constexpr int stock_lightmaps_chunk_id = 0x1200;
 
-// Bounds checked reader for the alpine RFL chunks. Bind it to the same `remaining` counter as the
-// rf::File::ChunkGuard that guards the chunk, so the guard still skips whatever went unread.
-struct AlpineChunkReader
-{
-    rf::File& file;
-    std::size_t& remaining;
-    bool read_error = false;
-
-    bool read_bytes(void* dst, std::size_t n)
-    {
-        if (remaining < n) {
-            read_error = true;
-            return false;
-        }
-        int got = file.read(dst, n);
-        if (got != static_cast<int>(n) || file.error()) {
-            if (got > 0) remaining -= got;
-            read_error = true;
-            return false;
-        }
-        remaining -= n;
-        return true;
-    }
-
-    // Length prefixed string. `out` is empty on every failure path, so callers that ignore the
-    // result still see the same value the returns-string readers used to hand back.
-    bool read_string(std::string& out)
-    {
-        out.clear();
-        uint16_t len = 0;
-        if (!read_bytes(&len, sizeof(len))) {
-            return false;
-        }
-        if (len == 0) {
-            return true;
-        }
-        // Bounds first: a bogus 64 KB length prefix must not allocate before it is known to fit.
-        if (remaining < len) {
-            read_error = true;
-            return false;
-        }
-        out.assign(len, '\0');
-        if (!read_bytes(out.data(), len)) {
-            out.clear();
-            return false;
-        }
-        return true;
-    }
-
-    bool failed() const
-    {
-        return read_error;
-    }
-};
+using AlpineChunkReader = RflChunkReader<rf::File>;
 
 // Unit vector pointing TOWARD the sun. The light travel direction is its negation.
 // should match helper in editor_patch\level.h
@@ -122,12 +75,17 @@ struct AlpineLevelProperties
     uint8_t sun_mesh_mode = 0; // 0 = scale by sampled lightmap luminance, 1 = apply everywhere
     bool sun_drives_shadowmap_dir = true;
     bool legacy_lighting = false;   // editor-side bake switch, no effect in game
-    bool highres_lightmaps = false; // editor-side bake switch, no effect in game
+    // editor-side bake switch, no effect in game: the Alpine Lightmaps section header records the stock
+    // page size its charts were baked against, which a toggle after the last repack no longer matches
+    bool highres_lightmaps = false;
     bool sun_liquid_occludes = true; // editor-side bake switch, no effect in game
     bool invisible_faces_occlude = false; // editor-side bake switch, no effect in game
     bool alpha_faces_occlude = false; // editor-side bake switch, no effect in game
     // no_shadow_cast_brush_uids is editor-only (bake occluder exclusion); read and discarded
     bool meshes_occlude = false; // editor-side bake switch, no effect in game
+    uint8_t lightmap_density = 0; // editor-side bake switch, no effect in game
+    bool d3d11_only_lightmaps = false; // level has no stock 0x1200 lightmaps section
+    uint8_t lightmap_compression = 0; // editor-side bake switch, no effect in game
 
     // should match SanitizeSunProperties in editor_patch\level.h
     // A level file can carry anything; these floats end up in the lights constant buffer and in the
@@ -383,6 +341,15 @@ struct AlpineLevelProperties
             meshes_occlude = (u8 != 0);
             xlog::debug("[AlpineLevelProps] enable_sun {} yaw {} pitch {} intensity {} no_shadow_cast {}",
                 enable_sun, sun_yaw, sun_pitch, sun_intensity, nsc_count);
+            if (!reader.read_bytes(&lightmap_density, sizeof(lightmap_density)))
+                return;
+            if (!reader.read_bytes(&u8, sizeof(u8)))
+                return;
+            d3d11_only_lightmaps = (u8 & alpine_lightmap::d3d11_only_stock_omitted) != 0;
+            if (!reader.read_bytes(&lightmap_compression, sizeof(lightmap_compression)))
+                return;
+            lightmap_compression =
+                static_cast<std::uint8_t>(alpine_lightmap::compression_mode_from_wire(lightmap_compression));
         }
     }
 };

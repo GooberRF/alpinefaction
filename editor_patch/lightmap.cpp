@@ -1,26 +1,37 @@
 #include <windows.h>
 #include <algorithm>
+#include <bit>
 #include <memory>
 #include <cstdint>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <map>
-#include <thread>
 #include <unordered_map>
 #include <unordered_set>
+#include <limits>
+#include <string>
 #include <utility>
 #include <vector>
+#include <patch_common/CallHook.h>
 #include <patch_common/CodeInjection.h>
 #include <patch_common/FunHook.h>
 #include <patch_common/MemUtils.h>
 #include <patch_common/ShortTypes.h>
 #include <xlog/xlog.h>
+#include <common/scope_guard.h>
+#include <common/bitmap/formats.h>
+#include <common/lightmap/alpine_lightmap.h>
 #include "level.h"
 #include "lightmap_mesh_occluders.h"
+#include "alpine_lightmaps.h"
+#include "headless_bake.h"
+#include "textures.h"
+#include "work_pool.h"
 
 // High resolution lightmaps
-static constexpr int lm_stock_page_size = 128;
-static constexpr int lm_highres_page_size = 256;
+static constexpr int lm_stock_page_size = static_cast<int>(alpine_lightmap::stock_page_size(false));
+static constexpr int lm_highres_page_size = static_cast<int>(alpine_lightmap::stock_page_size(true));
 static constexpr int lm_stock_fragment_max = 64;
 static constexpr int lm_highres_fragment_max = 254;
 static constexpr int lm_max_fragment_texels = lm_highres_fragment_max * lm_highres_fragment_max;
@@ -30,22 +41,35 @@ static constexpr int lm_max_fragment_texels = lm_highres_fragment_max * lm_highr
 static constexpr int max_shadow_masks = 1024;
 static void* shadow_mask_ptrs[max_shadow_masks];
 static std::unique_ptr<uint8_t[]> shadow_mask_pool;
-static int shadow_mask_texels = 0;
+static std::size_t shadow_mask_pool_bytes = 0;
 
-static bool shadow_mask_reserve(int texels)
+static void shadow_mask_release()
 {
-    if (texels <= shadow_mask_texels) {
-        return true;
-    }
+    shadow_mask_pool.reset();
+    shadow_mask_pool_bytes = 0;
+}
+
+// Lays out one mask of `texels` + 1 bytes per light of the surface about to be shaded. The masks
+// only live for that surface, so a pool too small for it is freed before the bigger one is made.
+static bool shadow_mask_reserve(int texels, int lights)
+{
     const std::size_t entry = static_cast<std::size_t>(texels) + 1;
-    std::unique_ptr<uint8_t[]> pool{new (std::nothrow) uint8_t[entry * max_shadow_masks]};
-    if (!pool) {
-        xlog::error("Lightmap: cannot grow the shadow mask pool to {} texels per light", texels);
-        return false;
+    const std::size_t need = entry * static_cast<std::size_t>(lights);
+    if (need > shadow_mask_pool_bytes) {
+        std::size_t bytes = std::max(need, shadow_mask_pool_bytes + shadow_mask_pool_bytes / 2);
+        shadow_mask_release();
+        shadow_mask_pool.reset(new (std::nothrow) uint8_t[bytes]);
+        if (!shadow_mask_pool && bytes > need) {
+            bytes = need;
+            shadow_mask_pool.reset(new (std::nothrow) uint8_t[bytes]);
+        }
+        if (!shadow_mask_pool) {
+            xlog::error("Lightmap: cannot allocate {} shadow masks of {} texels", lights, texels);
+            return false;
+        }
+        shadow_mask_pool_bytes = bytes;
     }
-    shadow_mask_pool = std::move(pool);
-    shadow_mask_texels = texels;
-    for (int i = 0; i < max_shadow_masks; i++) {
+    for (int i = 0; i < lights; i++) {
         shadow_mask_ptrs[i] = shadow_mask_pool.get() + static_cast<std::size_t>(i) * entry;
     }
     return true;
@@ -213,21 +237,22 @@ CodeInjection lightmap_light_limit_injection{
     [](auto& regs) {
         int light_count = regs.edi;
 
-        // Grow the shadow mask pool to whatever this surface needs
-        int width = *reinterpret_cast<int*>(regs.esi + 0x18);
-        int height = *reinterpret_cast<int*>(regs.esi + 0x1c);
-        if (width <= 0 || height <= 0 || width > lm_highres_page_size ||
-            height > lm_highres_page_size ||
-            !shadow_mask_reserve(width * std::max(width, height))) {
-            xlog::error("Lightmap: cannot cover a {}x{} surface at 0x{:x} with shadow masks! "
-                        "Falling back to pink fill",
-                        width, height, static_cast<uintptr_t>(regs.esi));
-            regs.eip = 0x004AC9E4; // pink fill safety fallback
-        }
-        else if (light_count >= max_shadow_masks) {
+        // One shadow mask per light of this surface
+        const auto* surface = reinterpret_cast<const GSurface*>(static_cast<uintptr_t>(regs.esi));
+        int width = surface->width;
+        int height = surface->height;
+        if (light_count >= max_shadow_masks) {
             xlog::warn("Lightmap: {} lights affect the surface at 0x{:x}, exceeding the {} shadow "
                        "mask limit! Falling back to pink fill",
                        light_count, static_cast<uintptr_t>(regs.esi), max_shadow_masks);
+            regs.eip = 0x004AC9E4; // pink fill safety fallback
+        }
+        else if (width <= 0 || height <= 0 || width > lm_highres_page_size ||
+                 height > lm_highres_page_size ||
+                 !shadow_mask_reserve(width * std::max(width, height), light_count)) {
+            xlog::error("Lightmap: cannot cover a {}x{} surface at 0x{:x} with shadow masks! "
+                        "Falling back to pink fill",
+                        width, height, static_cast<uintptr_t>(regs.esi));
             regs.eip = 0x004AC9E4; // pink fill safety fallback
         }
         else {
@@ -256,6 +281,94 @@ CodeInjection lightmap_page_clear_injection{
     },
     false, // no trampoline: the injection fully replaces the two loads
 };
+
+// The page FUN_004a3c80 synthesised for a level that ships no stock lightmaps, while it lives.
+static void* g_synth_page = nullptr;
+
+// FUN_004a65b0, the lightmap page destructor, releases the page's bitmap but never its D3D texture.
+static void __fastcall lightmap_page_free_new(void* page);
+static FunHook<void __fastcall(void*)> lightmap_page_free_hook{0x004a65b0, lightmap_page_free_new};
+
+static void __fastcall lightmap_page_free_new(void* page)
+{
+    if (page == g_synth_page) {
+        g_synth_page = nullptr;
+    }
+    const int bm = static_cast<GLightmap*>(page)->bm_handle;
+    if (GrTextureSlot* slot = gr_texture_slot_of(bm); slot && slot->bm_handle == bm) {
+        gr_texture_free(slot);
+    }
+    lightmap_page_free_hook.call_target(page);
+}
+
+// FUN_004a3c80 gives a level that ships no stock lightmaps one synthesised 128x128 page for every
+// surface to point at, but the surfaces' rects and uv_scale/uv_add were packed for pages of the
+// level's stock page size. Only the alpine lightmap section records that size, and it is read after
+// the geometry, so the page starts at the size the High-res lightmaps property implies and
+// lightmap_synthesized_page_resize corrects it once the section is read.
+static bool g_stock_layout_synthesized = false;
+
+bool lightmap_stock_layout_synthesized()
+{
+    return g_stock_layout_synthesized;
+}
+
+static void* __fastcall lightmap_synth_page_new(void* self, int edx, int w, int h, char alpha,
+                                                void* pixels);
+static CallHook<void* __fastcall(void*, int, int, int, char, void*)> lightmap_synth_page_hook{
+    0x004a3d04, lightmap_synth_page_new};
+
+static void* __fastcall lightmap_synth_page_new(void* self, int edx, int w, int h, char alpha,
+                                                void* pixels)
+{
+    if (highres_lightmaps_active()) {
+        w = lm_highres_page_size;
+        h = lm_highres_page_size;
+    }
+    void* page = lightmap_synth_page_hook.call_target(self, edx, w, h, alpha, pixels);
+    // the loader clamps every surface's -1 index to this page, so the rects packed across many
+    // pages now overlap on one until the next repack
+    g_stock_layout_synthesized = true;
+    g_synth_page = page;
+    auto* level = CDedLevel::Get();
+    auto* buf = self ? static_cast<GLightmap*>(self)->pixels : nullptr;
+    // a d3d11-only level reads as unlit in the RED viewport rather than black
+    if (buf && level && level->GetAlpineLevelProperties().stock_lightmaps_omitted) {
+        std::memset(buf, 0xff, static_cast<std::size_t>(w) * h * 3);
+    }
+    return page;
+}
+
+void lightmap_synthesized_page_resize(int edge)
+{
+    auto* page = static_cast<GLightmap*>(g_synth_page);
+    if (!g_stock_layout_synthesized || !page || edge <= 0 || edge > lm_highres_page_size) {
+        return;
+    }
+    if (page->w == edge && page->h == edge) {
+        return;
+    }
+    const std::size_t bytes = static_cast<std::size_t>(edge) * edge * 3;
+    auto* pixels = static_cast<std::uint8_t*>(editor_alloc(bytes));
+    if (!pixels) {
+        return;
+    }
+    // Rebuilt in place as FUN_004a6510 builds it: the surfaces and the page list hold its address and index.
+    lightmap_page_free_new(page);
+    page->alpha = nullptr;
+    page->w = edge;
+    page->h = edge;
+    page->pixels = pixels;
+    page->bm_handle = bm_create(BM_FORMAT_1555_ARGB, edge, edge);
+    g_synth_page = page;
+    auto* level = CDedLevel::Get();
+    const bool omitted = level && level->GetAlpineLevelProperties().stock_lightmaps_omitted;
+    std::memset(pixels, omitted ? 0xff : 0, bytes);
+    editor_report(EditorReportLevel::info, "Lightmap",
+                  "the synthesised lightmap page is " + std::to_string(edge) + "x" + std::to_string(edge) +
+                      ", the stock page size the alpine lightmap section records",
+                  false);
+}
 
 // Fix lightmap seam at portal-split face boundaries.
 // When a portal brush splits a face (e.g., a floor), the fragments end up in different
@@ -315,124 +428,127 @@ static int s_ambient_room_count = 0;
 // Fix pre-existing editor bug: room linker ambient properties are not reapplied to
 // GRoom objects after geometry rebuild. The room properties dialog (FUN_0040ab80) applies
 // them, but a subsequent "Build Geometry" recreates rooms with ambient_light_defined=0.
-// This injection runs at the entry of the batch lightmap calculator (FUN_004aabf0) and
+// Run at the entry of the batch lightmap calculator (FUN_004aabf0) for the solid it bakes, this
 // iterates the room linker list, applying ambient settings to the corresponding rooms.
+static void lightmap_collect_room_ambient(uintptr_t gsolid)
+{
+    s_ambient_room_count = 0;
+    if (!bake_fixes_active()) return;
+    if (!gsolid) return;
+
+    auto* level = CDedLevel::Get();
+    if (!level) return;
+
+    // Room linkers are the room effect objects
+    const auto& room_linkers = level->room_effects;
+    if (room_linkers.size <= 0 || !room_linkers.data_ptr) return;
+
+    // The BSP spatial lookup and GRoom bounding boxes don't reliably match surface
+    // room_index values (BSP can return room_index=183 when surfaces use 0-6).
+    // Instead, build combined bounding boxes from surfaces per room_index. This matches
+    // the exact room assignment the lightmap code uses.
+    const auto* solid = reinterpret_cast<const GSolid*>(gsolid);
+    int room_count = solid->all_rooms.size;
+    GRoom* const* room_elements = solid->all_rooms.data_ptr;
+    if (room_count <= 0 || !room_elements) return;
+
+    int surface_count = solid->surfaces.size;
+    const GSurface* const* surface_elements = solid->surfaces.data_ptr;
+    if (surface_count <= 0 || !surface_elements) return;
+
+    // Build combined bbox per room_index from surfaces
+    constexpr int max_tracked_rooms = 512;
+    struct RoomBBox { float mn[3]; float mx[3]; bool valid; };
+    auto* room_bboxes = new (std::nothrow) RoomBBox[max_tracked_rooms]();
+    if (!room_bboxes) return;
+
+    for (int s = 0; s < surface_count; s++) {
+        const GSurface* surf = surface_elements[s];
+        if (!surf) continue;
+        int ridx = surf->room_index;
+        if (ridx < 0 || ridx >= max_tracked_rooms) continue;
+        auto* smn = surf->bbox_mn;
+        auto* smx = surf->bbox_mx;
+        auto& bb = room_bboxes[ridx];
+        if (!bb.valid) {
+            for (int c = 0; c < 3; c++) { bb.mn[c] = smn[c]; bb.mx[c] = smx[c]; }
+            bb.valid = true;
+        } else {
+            for (int c = 0; c < 3; c++) {
+                if (smn[c] < bb.mn[c]) bb.mn[c] = smn[c];
+                if (smx[c] > bb.mx[c]) bb.mx[c] = smx[c];
+            }
+        }
+    }
+
+    for (int i = 0; i < room_linkers.size; i++) {
+        auto* linker = static_cast<DedRoomEffect*>(room_linkers.data_ptr[i]);
+        if (!linker) continue;
+
+        if (linker->effect_type != 3) continue; // only ambient linkers
+
+        const Vector3& pos = linker->pos;
+
+        // Find the smallest room bbox containing the linker position.
+        // Multiple room bboxes may overlap (adjacent rooms share boundaries, and
+        // cross-room merged surfaces extend bboxes). Using smallest-volume avoids
+        // matching a large room (e.g., room 0) that happens to contain the linker.
+        int best_ridx = -1;
+        float best_volume = 1e30f;
+        for (int ridx = 0; ridx < max_tracked_rooms; ridx++) {
+            auto& bb = room_bboxes[ridx];
+            if (!bb.valid) continue;
+            if (ridx >= room_count) continue;
+            if (pos.x >= bb.mn[0] && pos.x <= bb.mx[0] &&
+                pos.y >= bb.mn[1] && pos.y <= bb.mx[1] &&
+                pos.z >= bb.mn[2] && pos.z <= bb.mx[2]) {
+                float vol = (bb.mx[0] - bb.mn[0]) *
+                            (bb.mx[1] - bb.mn[1]) *
+                            (bb.mx[2] - bb.mn[2]);
+                if (vol < best_volume) {
+                    best_volume = vol;
+                    best_ridx = ridx;
+                }
+            }
+        }
+        if (best_ridx >= 0) {
+            GRoom* room = room_elements[best_ridx];
+            if (room) {
+                room->ambient_light_defined = true;
+                room->ambient_light = std::bit_cast<Color>(linker->ambient_color);
+            }
+        }
+    }
+    // Collect per-texel ambient data from rooms with custom ambient, using the
+    // surface-combined bboxes (which reliably match surface room_index assignments).
+    // Must be done BEFORE deleting room_bboxes.
+    s_ambient_room_count = 0;
+    for (int ridx = 0; ridx < room_count && ridx < max_tracked_rooms
+             && s_ambient_room_count < kMaxAmbientRooms; ridx++) {
+        const GRoom* room = room_elements[ridx];
+        if (!room) continue;
+        if (room->ambient_light_defined != 1) continue;
+        if (!room_bboxes[ridx].valid) continue; // no surfaces for this room
+        auto& entry = s_ambient_rooms[s_ambient_room_count];
+        for (int c = 0; c < 3; c++) {
+            entry.bbox_min[c] = room_bboxes[ridx].mn[c];
+            entry.bbox_max[c] = room_bboxes[ridx].mx[c];
+        }
+        constexpr float inv255 = 1.0f / 255.0f;
+        entry.r = static_cast<float>(room->ambient_light.r) * inv255;
+        entry.g = static_cast<float>(room->ambient_light.g) * inv255;
+        entry.b = static_cast<float>(room->ambient_light.b) * inv255;
+        s_ambient_room_count++;
+    }
+
+    delete[] room_bboxes;
+}
+
 CodeInjection lightmap_apply_room_ambient_injection{
     0x004aabf0, // entry of FUN_004aabf0 (batch lightmap calculator)
     [](auto& regs) {
         // ECX at FUN_004aabf0 entry is the GSolid used for lightmap calculation.
-        s_ambient_room_count = 0;
-        if (!bake_fixes_active()) return;
-        uintptr_t gsolid = regs.ecx;
-        if (!gsolid) return;
-
-        auto* level = CDedLevel::Get();
-        if (!level) return;
-
-        // Room linkers are the room effect objects
-        const auto& room_linkers = level->room_effects;
-        if (room_linkers.size <= 0 || !room_linkers.data_ptr) return;
-
-        // GSolid::all_rooms VArray at GSolid+0x90, surfaces VArray at GSolid+0xC0.
-        // The BSP spatial lookup and GRoom bounding boxes don't reliably match surface
-        // room_index values (BSP can return room_index=183 when surfaces use 0-6).
-        // Instead, build combined bounding boxes from surfaces per room_index. This matches
-        // the exact room assignment the lightmap code uses.
-        int room_count = *reinterpret_cast<int*>(gsolid + 0x90);
-        uintptr_t room_elements = *reinterpret_cast<uintptr_t*>(gsolid + 0x90 + 8);
-        if (room_count <= 0 || !room_elements) return;
-
-        int surface_count = *reinterpret_cast<int*>(gsolid + 0xC0);
-        uintptr_t surface_elements = *reinterpret_cast<uintptr_t*>(gsolid + 0xC0 + 8);
-        if (surface_count <= 0 || !surface_elements) return;
-
-        // Build combined bbox per room_index from surfaces
-        // GSurface layout: bbox_mn at +0x34 (Vec3), bbox_mx at +0x40 (Vec3), room_index at +0x68
-        constexpr int max_tracked_rooms = 512;
-        struct RoomBBox { float mn[3]; float mx[3]; bool valid; };
-        auto* room_bboxes = new (std::nothrow) RoomBBox[max_tracked_rooms]();
-        if (!room_bboxes) return;
-
-        for (int s = 0; s < surface_count; s++) {
-            uintptr_t surf = *reinterpret_cast<uintptr_t*>(surface_elements + s * 4);
-            if (!surf) continue;
-            int ridx = *reinterpret_cast<int*>(surf + 0x68);
-            if (ridx < 0 || ridx >= max_tracked_rooms) continue;
-            auto* smn = reinterpret_cast<const float*>(surf + 0x34);
-            auto* smx = reinterpret_cast<const float*>(surf + 0x40);
-            auto& bb = room_bboxes[ridx];
-            if (!bb.valid) {
-                for (int c = 0; c < 3; c++) { bb.mn[c] = smn[c]; bb.mx[c] = smx[c]; }
-                bb.valid = true;
-            } else {
-                for (int c = 0; c < 3; c++) {
-                    if (smn[c] < bb.mn[c]) bb.mn[c] = smn[c];
-                    if (smx[c] > bb.mx[c]) bb.mx[c] = smx[c];
-                }
-            }
-        }
-
-        for (int i = 0; i < room_linkers.size; i++) {
-            auto* linker = static_cast<DedRoomEffect*>(room_linkers.data_ptr[i]);
-            if (!linker) continue;
-
-            if (linker->effect_type != 3) continue; // only ambient linkers
-
-            const Vector3& pos = linker->pos;
-
-            // Find the smallest room bbox containing the linker position.
-            // Multiple room bboxes may overlap (adjacent rooms share boundaries, and
-            // cross-room merged surfaces extend bboxes). Using smallest-volume avoids
-            // matching a large room (e.g., room 0) that happens to contain the linker.
-            int best_ridx = -1;
-            float best_volume = 1e30f;
-            for (int ridx = 0; ridx < max_tracked_rooms; ridx++) {
-                auto& bb = room_bboxes[ridx];
-                if (!bb.valid) continue;
-                if (ridx >= room_count) continue;
-                if (pos.x >= bb.mn[0] && pos.x <= bb.mx[0] &&
-                    pos.y >= bb.mn[1] && pos.y <= bb.mx[1] &&
-                    pos.z >= bb.mn[2] && pos.z <= bb.mx[2]) {
-                    float vol = (bb.mx[0] - bb.mn[0]) *
-                                (bb.mx[1] - bb.mn[1]) *
-                                (bb.mx[2] - bb.mn[2]);
-                    if (vol < best_volume) {
-                        best_volume = vol;
-                        best_ridx = ridx;
-                    }
-                }
-            }
-            if (best_ridx >= 0) {
-                uintptr_t room = *reinterpret_cast<uintptr_t*>(room_elements + best_ridx * 4);
-                if (room) {
-                    *reinterpret_cast<uint8_t*>(room + 0x45) = 1;
-                    *reinterpret_cast<uint32_t*>(room + 0x46) = linker->ambient_color;
-                }
-            }
-        }
-        // Collect per-texel ambient data from rooms with custom ambient, using the
-        // surface-combined bboxes (which reliably match surface room_index assignments).
-        // Must be done BEFORE deleting room_bboxes.
-        s_ambient_room_count = 0;
-        for (int ridx = 0; ridx < room_count && ridx < max_tracked_rooms
-                 && s_ambient_room_count < kMaxAmbientRooms; ridx++) {
-            uintptr_t room = *reinterpret_cast<uintptr_t*>(room_elements + ridx * 4);
-            if (!room) continue;
-            if (*reinterpret_cast<uint8_t*>(room + 0x45) != 1) continue;
-            if (!room_bboxes[ridx].valid) continue; // no surfaces for this room
-            auto& entry = s_ambient_rooms[s_ambient_room_count];
-            for (int c = 0; c < 3; c++) {
-                entry.bbox_min[c] = room_bboxes[ridx].mn[c];
-                entry.bbox_max[c] = room_bboxes[ridx].mx[c];
-            }
-            constexpr float inv255 = 1.0f / 255.0f;
-            entry.r = static_cast<float>(*reinterpret_cast<uint8_t*>(room + 0x46)) * inv255;
-            entry.g = static_cast<float>(*reinterpret_cast<uint8_t*>(room + 0x47)) * inv255;
-            entry.b = static_cast<float>(*reinterpret_cast<uint8_t*>(room + 0x48)) * inv255;
-            s_ambient_room_count++;
-        }
-
-        delete[] room_bboxes;
+        lightmap_collect_room_ambient(regs.ecx);
     },
 };
 
@@ -566,7 +682,7 @@ CodeInjection lightmap_per_texel_ambient_fill_injection{
         const float base_r = *reinterpret_cast<float*>(esp + 0x18);
         const float base_g = *reinterpret_cast<float*>(esp + 0x1c);
         const float base_b = *reinterpret_cast<float*>(esp + 0x20);
-        const float shadowed = lm_read_const(0x00554720); // 0.5
+        const float shadowed = red_const_half;
 
         auto* buf_r = reinterpret_cast<float*>(0x0138a620);
         auto* buf_g = reinterpret_cast<float*>(0x0140ac20);
@@ -589,6 +705,18 @@ CodeInjection lightmap_per_texel_ambient_fill_injection{
         regs.eip = 0x004ac742; // skip original uniform fill
     },
 };
+
+// Texel (col, row) of a surface's fragment at (xstart, ystart) in a page `stride` texels wide, as the
+// engine addresses it. A tile view's page pointer is biased so this lands in its buffer
+// (alpine_lightmaps.cpp shade_tile), which relies on 32 bit wraparound, so it is unsigned arithmetic.
+static uint8_t* lm_page_texel(uint8_t* buf, int stride, int xstart, int ystart, int col, int row)
+{
+    static_assert(sizeof(uintptr_t) == sizeof(uint32_t));
+    const uint32_t y = static_cast<uint32_t>(ystart) + static_cast<uint32_t>(row);
+    const uint32_t x = static_cast<uint32_t>(xstart) + static_cast<uint32_t>(col);
+    const uint32_t off = (y * static_cast<uint32_t>(stride) + x) * 3u;
+    return reinterpret_cast<uint8_t*>(reinterpret_cast<uintptr_t>(buf) + off);
+}
 
 // Per-texel ambient fill for the no-lights path in FUN_004ac470.
 CodeInjection lightmap_per_texel_ambient_nolights_injection{
@@ -634,10 +762,10 @@ CodeInjection lightmap_per_texel_ambient_nolights_injection{
                     texel_to_world(p, col, row, wx, wy, wz);
                     get_ambient_at(wx, wy, wz, base_r, base_g, base_b, ar, ag, ab);
                 }
-                const int off = ((ystart + row) * stride + (xstart + col)) * 3;
-                buf[off]     = static_cast<uint8_t>(static_cast<int>(ar * scale));
-                buf[off + 1] = static_cast<uint8_t>(static_cast<int>(ag * scale));
-                buf[off + 2] = static_cast<uint8_t>(static_cast<int>(ab * scale));
+                uint8_t* texel = lm_page_texel(buf, stride, xstart, ystart, col, row);
+                texel[0] = static_cast<uint8_t>(static_cast<int>(ar * scale));
+                texel[1] = static_cast<uint8_t>(static_cast<int>(ag * scale));
+                texel[2] = static_cast<uint8_t>(static_cast<int>(ab * scale));
             }
         }
     },
@@ -939,24 +1067,24 @@ bool OccluderTree::build(uintptr_t solid, const NoShadowCastFilter& no_shadow_ca
             tris_.push_back(t);
         }
     }
-    // Alpine mesh objects live in world space, so they only belong to the static solid's tree; a
-    // mover's tree is brush local and answers only the rays cast onto that mover.
+    // Alpine mesh objects and terrain decorations live in world space, so they only belong to the
+    // static solid's tree; a mover's tree is brush local and answers only the rays cast onto that mover.
     if (!local_space) {
         std::vector<MeshOccluderTri> mesh_tris;
-        if (lightmap_collect_mesh_occluders(mesh_tris)) {
-            for (const MeshOccluderTri& m : mesh_tris) {
-                OccTri t{};
-                if (!occ_make_tri({m.v0.x, m.v0.y, m.v0.z}, {m.v1.x, m.v1.y, m.v1.z},
-                                  {m.v2.x, m.v2.y, m.v2.z}, t)) {
-                    continue;
-                }
-                // no surface owns a mesh triangle and none of the face flag classes apply to it,
-                // so it is a plain two-sided occluder that only answers to the alpha property
-                t.surf_id = -1;
-                t.mesh_uid = m.uid;
-                t.flags = m.alpha ? lm_occ_alpha_texture : 0u;
-                tris_.push_back(t);
+        lightmap_collect_mesh_occluders(mesh_tris);
+        lightmap_collect_decoration_occluders(mesh_tris);
+        for (const MeshOccluderTri& m : mesh_tris) {
+            OccTri t{};
+            if (!occ_make_tri({m.v0.x, m.v0.y, m.v0.z}, {m.v1.x, m.v1.y, m.v1.z}, {m.v2.x, m.v2.y, m.v2.z},
+                              t)) {
+                continue;
             }
+            // no surface owns a mesh triangle and none of the face flag classes apply to it,
+            // so it is a plain two-sided occluder that only answers to the alpha property
+            t.surf_id = -1;
+            t.mesh_uid = m.uid;
+            t.flags = m.alpha ? lm_occ_alpha_texture : 0u;
+            tris_.push_back(t);
         }
     }
     if (tris_.empty()) {
@@ -1127,6 +1255,22 @@ bool OccluderTree::occluded(const OccQuery& qy) const
     return false;
 }
 
+// Soft sun sampling: the axis plus two rings of four, all fixed - bakes must be reproducible.
+constexpr int sun_cone_samples = 9;
+
+// How one light's shadow rays are cast from a receiving point.
+struct LightRays
+{
+    int type = 0;
+    const float* vec = nullptr;
+    const float* vec_end = nullptr;
+    float radius = 0.0f;
+    unsigned skip_flags = 0;
+    unsigned oneside_flags = 0;
+    Vec3f cone[sun_cone_samples];
+    int cone_count = 0;
+};
+
 } // namespace
 
 static int g_sun_light_handle = -1;
@@ -1135,6 +1279,8 @@ static float g_sun_spread_angle = 0.0f;
 
 // Set for exactly as long as one of the two Calculate Lighting commands is running.
 static bool g_bake_active = false;
+// The shadow mode that command hands FUN_004ac470: 1 casts shadows, 0 does not.
+static int g_bake_mode = 0;
 
 // One cache per GSolid. Does not outlive a bake.
 struct SolidCache {
@@ -1251,9 +1397,6 @@ static void no_shadow_cast_report()
     }
 }
 
-// Soft sun sampling: the axis plus two rings of four, all fixed - bakes must be reproducible.
-static constexpr int sun_cone_samples = 9;
-
 static void sun_cone_directions(const Vec3f& axis, float spread_deg, Vec3f* out, int& count)
 {
     out[0] = axis;
@@ -1285,35 +1428,15 @@ static void sun_cone_directions(const Vec3f& axis, float spread_deg, Vec3f* out,
     }
 }
 
-static bool lightmap_raycast_mask(uintptr_t solid, uintptr_t surface, uintptr_t light,
-                                  std::uint8_t* mask)
+static bool light_rays_setup(uintptr_t light, LightRays& lr)
 {
-    if (!surface || !light || !mask) {
-        return false;
-    }
-    const int width = *reinterpret_cast<int*>(surface + 0x18);
-    const int height = *reinterpret_cast<int*>(surface + 0x1c);
-    if (width <= 0 || height <= 0 || width > lm_highres_page_size ||
-        height > lm_highres_page_size) {
-        return false;
-    }
-    SurfaceUVParams p;
-    if (!init_surface_uv_params(surface, p)) {
-        return false;
-    }
-    // an empty occluder set would mean the face walk found nothing, so leave stock in charge
-    const OccluderTree* tree = lightmap_occluder_tree(solid);
-    if (!tree) {
-        return false;
-    }
-
-    const int light_type = *reinterpret_cast<int*>(light + 8);
+    const auto* l = reinterpret_cast<const GrLight*>(light);
+    lr.type = l->type;
     // while a mover transform is pushed the engine keeps the light in the solid's own space
-    const int local = *reinterpret_cast<int*>(0x0158f414) != 0 ? 0x50 : 0;
-    const auto* vec = reinterpret_cast<const float*>(light + 0x0c + local);
-    const auto* vec_end = reinterpret_cast<const float*>(light + 0x18 + local);
-    const float radius = *reinterpret_cast<const float*>(light + 0x3c);
-    const int skip_surf = *reinterpret_cast<int*>(surface);
+    const bool local = gr_transform_stack_depth != 0;
+    lr.vec = local ? &l->local_vec.x : &l->vec.x;
+    lr.vec_end = local ? &l->local_vec2.x : &l->vec2.x;
+    lr.radius = l->rad_2;
     const bool is_sun = g_sun_light_ptr && reinterpret_cast<void*>(light) == g_sun_light_ptr;
     const bool one_sided = invisible_faces_occlude_active();
     unsigned skip_flags = 0x4u; // liquid, unless this is the sun and the level asks for it
@@ -1329,108 +1452,118 @@ static bool lightmap_raycast_mask(uintptr_t solid, uintptr_t surface, uintptr_t 
     if (!alpha_faces_occlude_active()) {
         skip_flags |= lm_occ_alpha_texture;
     }
-    const unsigned oneside_flags = one_sided ? 0x2000u : 0u;
-
-    const Vec3f ns{p.nx, p.ny, p.nz};
-    Vec3f cone[sun_cone_samples];
-    int cone_count = 0;
-    if (light_type == 1) {
-        Vec3f axis{vec[0], vec[1], vec[2]};
+    lr.skip_flags = skip_flags;
+    lr.oneside_flags = one_sided ? FACE_INVISIBLE : 0u;
+    lr.cone_count = 0;
+    if (lr.type == LT_DIRECTIONAL) {
+        Vec3f axis{lr.vec[0], lr.vec[1], lr.vec[2]};
         const float len = std::sqrt(vdot(axis, axis));
         if (!(len >= 1e-6f)) {
             return false;
         }
         axis = {axis.x / len, axis.y / len, axis.z / len};
-        sun_cone_directions(axis, is_sun ? g_sun_spread_angle : 0.0f, cone, cone_count);
+        sun_cone_directions(axis, is_sun ? g_sun_spread_angle : 0.0f, lr.cone, lr.cone_count);
     }
+    return true;
+}
+
+// The light's mask byte at one receiving point: 255 fully lit, 0 fully shadowed. The rays start
+// `lift` off the point along the receiver's normal `ns`.
+static std::uint8_t light_rays_visibility(const OccluderTree& tree, const LightRays& lr, const Vec3f& pos,
+                                          const Vec3f& ns, float lift, int skip_surf)
+{
+    const Vec3f origin{pos.x + ns.x * lift, pos.y + ns.y * lift, pos.z + ns.z * lift};
+    int lit = 0;
+    int taken = 0;
+    OccQuery q{};
+    q.origin = origin;
+    q.surf_normal = ns;
+    q.tmin = lm_ray_eps;
+    q.skip_surf = skip_surf;
+    q.skip_flags = lr.skip_flags;
+    q.oneside_flags = lr.oneside_flags;
+    if (lr.type == LT_DIRECTIONAL) {
+        q.tmax = 1.0e6f;
+        for (int k = 0; k < lr.cone_count; k++) {
+            q.dir = lr.cone[k];
+            q.nd = vdot(ns, q.dir);
+            taken++;
+            if (!tree.occluded(q)) {
+                lit++;
+            }
+        }
+    }
+    else {
+        const int samples = lr.type == LT_TUBE ? 2 : 1;
+        for (int k = 0; k < samples; k++) {
+            const float* target = k == 0 ? lr.vec : lr.vec_end;
+            Vec3f d{target[0] - origin.x, target[1] - origin.y, target[2] - origin.z};
+            const float len = std::sqrt(vdot(d, d));
+            if (!(len >= 1e-4f)) {
+                taken++;
+                lit++;
+                continue;
+            }
+            if (lr.radius > 0.0f && len > lr.radius) {
+                continue; // outside the light's range, the mask value is never read
+            }
+            q.dir = {d.x / len, d.y / len, d.z / len};
+            q.nd = vdot(ns, q.dir);
+            q.tmax = len - lm_ray_eps;
+            taken++;
+            if (!tree.occluded(q)) {
+                lit++;
+            }
+        }
+    }
+    return taken == 0 ? 0xffu : static_cast<std::uint8_t>((lit * 255 + taken / 2) / taken);
+}
+
+static bool lightmap_raycast_mask(uintptr_t solid, uintptr_t surface, uintptr_t light,
+                                  std::uint8_t* mask)
+{
+    if (!surface || !light || !mask) {
+        return false;
+    }
+    const auto* surf = reinterpret_cast<const GSurface*>(surface);
+    const int width = surf->width;
+    const int height = surf->height;
+    if (width <= 0 || height <= 0 || width > lm_highres_page_size ||
+        height > lm_highres_page_size) {
+        return false;
+    }
+    SurfaceUVParams p;
+    if (!init_surface_uv_params(surface, p)) {
+        return false;
+    }
+    // an empty occluder set would mean the face walk found nothing, so leave stock in charge
+    const OccluderTree* tree = lightmap_occluder_tree(solid);
+    if (!tree) {
+        return false;
+    }
+
+    LightRays lr;
+    if (!light_rays_setup(light, lr)) {
+        return false;
+    }
+    const int skip_surf = surf->index;
+    const Vec3f ns{p.nx, p.ny, p.nz};
 
     auto shade_rows = [&](int row_begin, int row_end) {
         for (int row = row_begin; row < row_end; row++) {
             for (int col = 0; col < width; col++) {
                 float wx, wy, wz;
                 texel_to_world(p, col, row, wx, wy, wz);
-                const Vec3f origin{wx + ns.x * lm_ray_lift, wy + ns.y * lm_ray_lift,
-                                   wz + ns.z * lm_ray_lift};
-                int lit = 0;
-                int taken = 0;
-                OccQuery q{};
-                q.origin = origin;
-                q.surf_normal = ns;
-                q.tmin = lm_ray_eps;
-                q.skip_surf = skip_surf;
-                q.skip_flags = skip_flags;
-                q.oneside_flags = oneside_flags;
-                if (light_type == 1) {
-                    q.tmax = 1.0e6f;
-                    for (int k = 0; k < cone_count; k++) {
-                        q.dir = cone[k];
-                        q.nd = vdot(ns, q.dir);
-                        taken++;
-                        if (!tree->occluded(q)) {
-                            lit++;
-                        }
-                    }
-                }
-                else {
-                    const int samples = light_type == 4 ? 2 : 1;
-                    for (int k = 0; k < samples; k++) {
-                        const float* target = k == 0 ? vec : vec_end;
-                        Vec3f d{target[0] - origin.x, target[1] - origin.y, target[2] - origin.z};
-                        const float len = std::sqrt(vdot(d, d));
-                        if (!(len >= 1e-4f)) {
-                            taken++;
-                            lit++;
-                            continue;
-                        }
-                        if (radius > 0.0f && len > radius) {
-                            continue; // outside the light's range, the mask value is never read
-                        }
-                        q.dir = {d.x / len, d.y / len, d.z / len};
-                        q.nd = vdot(ns, q.dir);
-                        q.tmax = len - lm_ray_eps;
-                        taken++;
-                        if (!tree->occluded(q)) {
-                            lit++;
-                        }
-                    }
-                }
-                const int index = row * width + col;
-                mask[index] = taken == 0
-                                  ? 0xffu
-                                  : static_cast<std::uint8_t>((lit * 255 + taken / 2) / taken);
+                mask[row * width + col] = light_rays_visibility(*tree, lr, {wx, wy, wz}, ns, lm_ray_lift, skip_surf);
             }
         }
     };
 
-    unsigned workers = std::thread::hardware_concurrency();
-    if (workers < 1) {
-        workers = 1;
+    if (width * height < 256) {
+        shade_rows(0, height);
     }
-    workers = std::min<unsigned>(workers, static_cast<unsigned>(height));
-    // Texels are independent and the workers write disjoint row ranges, so the result is the same
-    // whatever the split is; any worker that cannot be started just leaves its rows to this thread.
-    const int chunk = (workers > 1 && height >= 8)
-                          ? (height + static_cast<int>(workers) - 1) / static_cast<int>(workers)
-                          : height;
-    int covered = std::min(height, chunk);
-    std::vector<std::thread> pool;
-    try {
-        pool.reserve(workers > 1 ? workers - 1 : 0);
-        while (covered < height && pool.size() + 1 < workers) {
-            const int a = covered;
-            const int b = std::min(height, a + chunk);
-            pool.emplace_back([&shade_rows, a, b] { shade_rows(a, b); });
-            covered = b;
-        }
-    }
-    catch (...) {
-    }
-    shade_rows(0, std::min(height, chunk));
-    for (auto& t : pool) {
-        t.join();
-    }
-    if (covered < height) {
-        shade_rows(covered, height);
+    else {
+        work_pool_run(height, [&](int row) { shade_rows(row, row + 1); });
     }
     return true;
 }
@@ -1508,28 +1641,229 @@ public:
         }
         catch (...) {
         }
+        shadow_mask_release();
     }
     BakeScope(const BakeScope&) = delete;
     BakeScope& operator=(const BakeScope&) = delete;
 };
 
-static void __fastcall lighting_calc_shadows_new(void* self);
-static FunHook<void __fastcall(void*)> lighting_calc_shadows_hook{0x00448f20, lighting_calc_shadows_new};
-
-static void __fastcall lighting_calc_shadows_new(void* self)
+void lighting_calc_report_refusal(const char* msg)
 {
-    BakeScope bake;
-    lighting_calc_shadows_hook.call_target(self);
+    editor_report_blocking("Lightmap", "Calculate Lighting", msg);
+    headless_bake_mark_refused();
 }
 
+// Whether the address space holds what a bake of `pages` alpine pages allocates: the occluder tree is its
+// biggest single allocation, and each page takes an RGB8 buffer and its BC7 blocks. `headroom` is added
+// to both for what runs before the bake allocates. A shortfall is reported as a refusal.
+static bool lighting_calc_fits(std::uint32_t pages, std::uint64_t headroom, const char* advice)
+{
+    constexpr std::uint64_t largest = 64ull << 20;
+    constexpr std::uint64_t fixed = 96ull << 20;
+    constexpr std::uint64_t per_page = alpine_lightmap::page_size * alpine_lightmap::page_size * 4ull;
+    const std::string shortfall =
+        editor_address_space_shortfall(largest + headroom, fixed + pages * per_page + headroom, advice);
+    if (shortfall.empty()) {
+        return true;
+    }
+    lighting_calc_report_refusal(shortfall.c_str());
+    return false;
+}
+
+// Covers the address space RED's surface pass takes between the two checks (measured at 26-51 MB).
+static constexpr std::uint64_t lighting_surface_pass_headroom = 64ull << 20;
+
+// Before Calculate Lighting frees the level's lightmaps: refused unless a bake of the most pages fits
+// after the surface pass. Only surface charts (which movers follow) and terrain charts take pages.
+bool lighting_calc_memory_admits()
+{
+    auto* level = CDedLevel::Get();
+    const auto* props = level ? &level->GetAlpineLevelProperties() : nullptr;
+    const bool alpine_pages = props && (props->surface_charts_enabled() || !props->terrain_objects.empty());
+    return lighting_calc_fits(alpine_pages ? alpine_lightmap::max_pages : 0, lighting_surface_pass_headroom,
+                              "Save the level and restart RED.");
+}
+
+// Once the charts are laid out, which has already dropped the loaded alpine section; the surface pass,
+// when it ran, also rebuilt every stock page blank.
+static bool lighting_calc_memory_ok(std::uint32_t pages, bool surface_pass_ran)
+{
+    return lighting_calc_fits(
+        pages, 0,
+        surface_pass_ran
+            ? "Calculate Lighting has already cleared the level's lighting: restart RED and run Calculate Lighting "
+              "again. Saving now saves the level without lighting."
+            : "Calculate Lighting has already cleared the level's Alpine lightmaps, terrain lighting included: "
+              "restart RED and run Calculate Lighting again. Saving now saves the level without its Alpine "
+              "lightmaps.");
+}
+
+namespace
+{
+
+// The alpine half of a bake: one that is left without finishing is dropped, not encoded.
+class AlpineBakeScope
+{
+public:
+    explicit AlpineBakeScope(bool surface_pass_ran)
+    {
+        try {
+            if (!lighting_calc_memory_ok(alpine_lm_bake_begin(), surface_pass_ran)) {
+                admitted_ = false;
+                return;
+            }
+            alpine_lm_bake_allocate();
+        }
+        catch (...) {
+            alpine_lm_bake_abort();
+            editor_report(EditorReportLevel::error, "Lightmap",
+                          "out of memory preparing the alpine lightmap charts, the alpine lightmap section is not "
+                          "baked",
+                          true);
+        }
+    }
+    // False when the address space cannot hold the bake, which must then not run.
+    bool admitted() const { return admitted_; }
+    // Nothing may unwind into the engine's lighting frames; a failed encode is dropped like an abort.
+    void finish()
+    {
+        try {
+            alpine_lm_bake_end();
+            finished_ = true;
+        }
+        catch (...) {
+            try {
+                editor_report(EditorReportLevel::error, "Lightmap",
+                              "the alpine lightmap section could not be encoded and is dropped", true);
+            }
+            catch (...) {
+            }
+        }
+    }
+    ~AlpineBakeScope()
+    {
+        if (!finished_) {
+            try {
+                alpine_lm_bake_abort();
+            }
+            catch (...) {
+            }
+        }
+    }
+    AlpineBakeScope(const AlpineBakeScope&) = delete;
+    AlpineBakeScope& operator=(const AlpineBakeScope&) = delete;
+
+private:
+    bool finished_ = false;
+    bool admitted_ = true;
+};
+
+} // namespace
+
+// The blend and ring copy passes after FUN_004ac470 address every flagged surface's rect in its
+// page with no bound, so a layout that does not fit its pages must not be baked at all.
+static bool lighting_calc_refused()
+{
+    // the surface-pass hook already reported it
+    if (alpine_lm_take_lighting_refused()) {
+        return true;
+    }
+    auto* level = CDedLevel::Get();
+    if (!level || !level->solid) {
+        return false;
+    }
+    const auto surfaces = solid_surfaces(level->solid);
+    const auto& props = level->GetAlpineLevelProperties();
+    const bool stock_may_be_written = !(props.d3d11_only_lightmaps && props.surface_charts_enabled());
+    if (g_stock_layout_synthesized && stock_may_be_written && !surfaces.empty()) {
+        lighting_calc_report_refusal(
+            "Calculate Lighting was not run: this level was loaded without stock lightmaps, so its "
+            "surfaces share one page and would bake over each other. Run Build Geometry first.");
+        return true;
+    }
+    for (int i = 0; i < static_cast<int>(surfaces.size()); i++) {
+        const GSurface* s = surfaces[i];
+        const GLightmap* lm = s ? s->lightmap : nullptr;
+        if (!lm) {
+            continue;
+        }
+        const int page_w = lm->w;
+        const int page_h = lm->h;
+        const int x = s->xstart;
+        const int y = s->ystart;
+        const int w = s->width;
+        const int h = s->height;
+        if (x >= 0 && y >= 0 && w >= 0 && h >= 0 && x <= page_w - w && y <= page_h - h) {
+            continue;
+        }
+        char msg[320];
+        std::snprintf(msg, sizeof(msg),
+                      "Calculate Lighting was not run: surface %d has a %dx%d lightmap at %d,%d that "
+                      "does not fit its %dx%d page. Run Build Geometry first.",
+                      i, w, h, x, y, page_w, page_h);
+        lighting_calc_report_refusal(msg);
+        return true;
+    }
+    return false;
+}
+
+static void __fastcall lighting_calc_shadows_new(void* self);
+static FunHook<void __fastcall(void*)> lighting_calc_shadows_hook{0x00448f20, lighting_calc_shadows_new};
 static void __fastcall lighting_calc_no_shadows_new(void* self);
 static FunHook<void __fastcall(void*)> lighting_calc_no_shadows_hook{0x004492d0, lighting_calc_no_shadows_new};
 
+static void lighting_calc_bake(void* self, bool shadows, bool surface_pass_ran)
+{
+    if (lighting_calc_refused()) {
+        return;
+    }
+    BakeScope bake;
+    g_bake_mode = shadows ? 1 : 0;
+    AlpineBakeScope af_bake{surface_pass_ran};
+    if (!af_bake.admitted()) {
+        return;
+    }
+    if (shadows) {
+        lighting_calc_shadows_hook.call_target(self);
+    }
+    else {
+        lighting_calc_no_shadows_hook.call_target(self);
+    }
+    af_bake.finish();
+}
+
+// Entered directly (the Calculate Lighting menu items and Shift+L), the bake runs without the surface
+// pass, whose hook otherwise makes this check.
+static void lighting_calc_bake_alone(void* self, bool shadows)
+{
+    if (!lighting_calc_memory_admits()) {
+        return;
+    }
+    // no surface pass ran first, so any refusal it noted is stale
+    alpine_lm_note_lighting_refused(false);
+    lighting_calc_bake(self, shadows, false);
+}
+
+static void __fastcall lighting_calc_shadows_new(void* self)
+{
+    lighting_calc_bake_alone(self, true);
+}
+
 static void __fastcall lighting_calc_no_shadows_new(void* self)
 {
-    BakeScope bake;
-    lighting_calc_no_shadows_hook.call_target(self);
+    lighting_calc_bake_alone(self, false);
 }
+
+// Calculate Maps and Light (FUN_00449680) and its no-shadows twin (FUN_00449660) bake right after
+// the surface pass.
+static CallHook<void __fastcall(void*)> lighting_calc_shadows_after_surfaces_hook{
+    0x0044968a,
+    [](void* self) FASTCALL_LAMBDA { lighting_calc_bake(self, true, true); },
+};
+static CallHook<void __fastcall(void*)> lighting_calc_no_shadows_after_surfaces_hook{
+    0x0044966a,
+    [](void* self) FASTCALL_LAMBDA { lighting_calc_bake(self, false, true); },
+};
 
 static void lightmap_blend_reset();
 
@@ -1539,6 +1873,9 @@ static void lightmap_blend_reset();
 void lightmap_reset_level_state()
 {
     s_ambient_room_count = 0;
+    g_stock_layout_synthesized = false;
+    g_synth_page = nullptr;
+    alpine_lm_note_lighting_refused(false);
     g_no_shadow_cast_dropped.clear();
     g_occluder_tree_built = false;
     lightmap_release_occluders();
@@ -1637,9 +1974,9 @@ static void __cdecl sun_shadow_mask_new(uintptr_t solid, uintptr_t surface, uint
                    "surface, falling back to the stock projector for it");
     }
 
-    // while a mover transform is pushed (DAT_0158f414) the engine reads the solid-local copy
-    const int vec_off = *reinterpret_cast<int*>(0x0158f414) != 0 ? 0x5c : 0x0c;
-    auto* vec = reinterpret_cast<float*>(light + vec_off);
+    // while a mover transform is pushed the engine reads the solid-local copy
+    auto& light_ref = *reinterpret_cast<GrLight*>(light);
+    float* vec = gr_transform_stack_depth != 0 ? &light_ref.local_vec.x : &light_ref.vec.x;
     Vector3 to_sun{vec[0], vec[1], vec[2]};
     if (!sun_normalize(to_sun)) {
         sun_shadow_mask_hook.call_target(solid, surface, light, debug, mask);
@@ -1655,7 +1992,7 @@ static void __cdecl sun_shadow_mask_new(uintptr_t solid, uintptr_t surface, uint
                        center.z + to_sun.z * sun_origin_distance};
 
     const float saved_vec[3] = {vec[0], vec[1], vec[2]};
-    auto& rad_2 = *reinterpret_cast<float*>(light + 0x3c);
+    float& rad_2 = light_ref.rad_2;
     const float saved_rad_2 = rad_2;
     rad_2 = 1.0e9f;
 
@@ -1762,7 +2099,8 @@ static void lm_encode_bytes(double r, double g, double b, std::uint8_t* out)
 // FUN_004ace10 to everything else, which leaves a processing seam two texels in from every
 // fragment edge and no filtering at all on small fragments. The whole conversion block is taken
 // over here so that every texel gets the same 3x3 box, renormalised where the kernel is clipped.
-static void lm_encode_filtered(int col, int row, int width, int height, std::uint8_t* out)
+static void lm_encode_filtered(const float* acc_r, const float* acc_g, const float* acc_b, int col,
+                               int row, int width, int height, std::uint8_t* out)
 {
     const int x_min = std::max(col - 1, 0);
     const int x_max = std::min(col + 1, width - 1);
@@ -1771,16 +2109,27 @@ static void lm_encode_filtered(int col, int row, int width, int height, std::uin
 
     double sum_r = 0.0, sum_g = 0.0, sum_b = 0.0;
     for (int y = y_min; y <= y_max; y++) {
-        const int base = y * width;
+        const std::size_t base = static_cast<std::size_t>(y) * width;
         for (int x = x_min; x <= x_max; x++) {
-            sum_r += lm_accum_r[base + x];
-            sum_g += lm_accum_g[base + x];
-            sum_b += lm_accum_b[base + x];
+            sum_r += acc_r[base + x];
+            sum_g += acc_g[base + x];
+            sum_b += acc_b[base + x];
         }
     }
     const double scale = static_cast<double>(lm_read_const(0x0055c7fc)) /
                          ((x_max - x_min + 1) * (y_max - y_min + 1));
     lm_encode_bytes(sum_r * scale, sum_g * scale, sum_b * scale, out);
+}
+
+void lightmap_encode_float_texels(const float* r, const float* g, const float* b, int width, int height,
+                                  std::uint8_t* out)
+{
+    for (int row = 0; row < height; row++) {
+        for (int col = 0; col < width; col++) {
+            lm_encode_filtered(r, g, b, col, row, width, height,
+                               out + (static_cast<std::size_t>(row) * width + col) * 3);
+        }
+    }
 }
 
 CodeInjection lightmap_texel_convert_injection{
@@ -1811,10 +2160,10 @@ CodeInjection lightmap_texel_convert_injection{
         const double scale = lm_read_const(0x0055c7fc); // 255.0
 
         for (int row = 0; row < height; row++) {
-            std::uint8_t* out = buf + ((ystart + row) * stride + xstart) * 3;
-            for (int col = 0; col < width; col++, out += 3) {
+            for (int col = 0; col < width; col++) {
+                std::uint8_t* out = lm_page_texel(buf, stride, xstart, ystart, col, row);
                 if (filter) {
-                    lm_encode_filtered(col, row, width, height, out);
+                    lm_encode_filtered(lm_accum_r, lm_accum_g, lm_accum_b, col, row, width, height, out);
                 }
                 else {
                     const int index = row * width + col;
@@ -2124,6 +2473,7 @@ CodeInjection lightmap_highres_setup_injection{
     [](auto& regs) {
         const uintptr_t esp = static_cast<uintptr_t>(regs.esp);
         regs.ebp = *reinterpret_cast<std::uint32_t*>(esp + 0x94);
+        g_stock_layout_synthesized = false;
         if (highres_lightmaps_active()) {
             *reinterpret_cast<float*>(esp + 0x9c) *= 4.0f;
             *reinterpret_cast<int*>(0x0144ac24) = lm_highres_page_size;
@@ -2160,6 +2510,222 @@ static std::size_t lightmap_stack_headroom()
     }
     return sp - reinterpret_cast<uintptr_t>(mbi.AllocationBase);
 }
+
+// Blend-pass pair cull: FUN_004aae80 skips the face pairs no vertex match can join.
+namespace
+{
+
+// A longer (or cyclic) edge loop leaves the pass to the stock scan.
+constexpr int face_loop_max = 1 << 16;
+
+// A GFace's edge loop: fn(vertex, next) per GFaceVertex, next wrapping to the first. False when fn
+// stops or the loop passes face_loop_max.
+template<typename F>
+bool for_each_face_vertex(uintptr_t face, F&& fn)
+{
+    const auto head = reinterpret_cast<uintptr_t>(reinterpret_cast<const GFace*>(face)->edge_loop);
+    int steps = 0;
+    for (uintptr_t v = head; v;) {
+        const auto next = reinterpret_cast<uintptr_t>(reinterpret_cast<const GFaceVertex*>(v)->next);
+        if (++steps > face_loop_max || !fn(v, next && next != head ? next : head)) {
+            return false;
+        }
+        if (next == head) {
+            break;
+        }
+        v = next;
+    }
+    return true;
+}
+
+constexpr double blend_cull_cell = 0.01;
+// FUN_004aae80's entry array stride.
+constexpr uintptr_t blend_entry_stride = sizeof(LightmapBlendEntry);
+
+class BlendPairCull
+{
+public:
+    // False leaves the whole pass to the stock scan: a non-finite vertex matches anything there.
+    bool build(uintptr_t entries, int count)
+    {
+        try {
+            entries_ = entries;
+            count_ = count;
+            for (int e = 0; e < count; e++) {
+                const auto& faces = reinterpret_cast<const LightmapBlendEntry*>(entries)[e].faces;
+                const int n = faces.size;
+                GFace* const* data = faces.data_ptr;
+                for (int i = 0; i < n; i++) {
+                    const auto face = reinterpret_cast<uintptr_t>(data[i]);
+                    face_entry_.emplace(face, e);
+                    if (!for_each_vertex(face, [&](const float* p) {
+                            if (!std::isfinite(p[0]) || !std::isfinite(p[1]) || !std::isfinite(p[2])) {
+                                return false;
+                            }
+                            auto& list = cells_[cell_of(p)];
+                            if (list.empty() || list.back() != face) {
+                                list.push_back(face);
+                            }
+                            return true;
+                        })) {
+                        return false;
+                    }
+                }
+            }
+            return true;
+        }
+        catch (...) {
+            return false;
+        }
+    }
+
+    bool entry_has_candidates(uintptr_t fa, uintptr_t entry)
+    {
+        if (!select(fa)) {
+            return true;
+        }
+        const auto e = static_cast<std::size_t>((entry - entries_) / blend_entry_stride);
+        return e < candidate_entries_.size() && candidate_entries_[e];
+    }
+
+    bool face_is_candidate(uintptr_t fa, uintptr_t fb)
+    {
+        if (!select(fa)) {
+            return true;
+        }
+        return std::find(candidate_faces_.begin(), candidate_faces_.end(), fb) != candidate_faces_.end();
+    }
+
+private:
+    struct Cell
+    {
+        std::int64_t x, y, z;
+        bool operator==(const Cell&) const = default;
+    };
+    struct CellHash
+    {
+        std::size_t operator()(const Cell& c) const
+        {
+            std::uint64_t h = static_cast<std::uint64_t>(c.x) * 0x9E3779B97F4A7C15ull;
+            h ^= static_cast<std::uint64_t>(c.y) * 0xC2B2AE3D27D4EB4Full + (h << 6) + (h >> 2);
+            h ^= static_cast<std::uint64_t>(c.z) * 0x165667B19E3779F9ull + (h << 6) + (h >> 2);
+            return static_cast<std::size_t>(h ^ (h >> 32));
+        }
+    };
+
+    static Cell cell_of(const float* p)
+    {
+        return {static_cast<std::int64_t>(std::floor(static_cast<double>(p[0]) / blend_cull_cell)),
+                static_cast<std::int64_t>(std::floor(static_cast<double>(p[1]) / blend_cull_cell)),
+                static_cast<std::int64_t>(std::floor(static_cast<double>(p[2]) / blend_cull_cell))};
+    }
+
+    // Each GFaceVertex's GVertex position; false stops.
+    template<typename F>
+    static bool for_each_vertex(uintptr_t face, F&& fn)
+    {
+        return for_each_face_vertex(
+            face, [&](uintptr_t v, uintptr_t) { return fn(&reinterpret_cast<const GFaceVertex*>(v)->vertex->pos.x); });
+    }
+
+    bool select(uintptr_t fa)
+    {
+        if (fa == selected_) {
+            return selected_ok_;
+        }
+        selected_ = fa;
+        selected_ok_ = false;
+        try {
+            candidate_faces_.clear();
+            candidate_entries_.assign(static_cast<std::size_t>(count_), 0);
+            const bool complete = for_each_vertex(fa, [&](const float* p) {
+                const Cell c = cell_of(p);
+                for (std::int64_t dz = -1; dz <= 1; dz++) {
+                    for (std::int64_t dy = -1; dy <= 1; dy++) {
+                        for (std::int64_t dx = -1; dx <= 1; dx++) {
+                            const auto it = cells_.find({c.x + dx, c.y + dy, c.z + dz});
+                            if (it == cells_.end()) {
+                                continue;
+                            }
+                            for (const uintptr_t face : it->second) {
+                                if (std::find(candidate_faces_.begin(), candidate_faces_.end(), face) ==
+                                    candidate_faces_.end()) {
+                                    candidate_faces_.push_back(face);
+                                    const auto [first, last] = face_entry_.equal_range(face);
+                                    for (auto e = first; e != last; ++e) {
+                                        candidate_entries_[static_cast<std::size_t>(e->second)] = 1;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                return true;
+            });
+            selected_ok_ = complete;
+        }
+        catch (...) {
+        }
+        return selected_ok_;
+    }
+
+    uintptr_t entries_ = 0;
+    int count_ = 0;
+    std::unordered_map<Cell, std::vector<uintptr_t>, CellHash> cells_;
+    std::unordered_multimap<uintptr_t, int> face_entry_;
+    uintptr_t selected_ = 0;
+    bool selected_ok_ = false;
+    std::vector<uintptr_t> candidate_faces_;
+    std::vector<char> candidate_entries_;
+};
+
+// Scoped by lightmap_blend_pass_new to one FUN_004aae80 call; null when the pass is left to stock.
+BlendPairCull* g_blend_cull = nullptr;
+
+// The current A face: [ESP+0x10] is A's face VArray, [ESP+0x2c] the face index.
+uintptr_t blend_current_face(uintptr_t esp)
+{
+    const auto* faces = *reinterpret_cast<const VArray<GFace*>* const*>(esp + 0x10);
+    const int index = *reinterpret_cast<int*>(esp + 0x2c);
+    return reinterpret_cast<uintptr_t>(faces->data_ptr[index]);
+}
+
+} // namespace
+
+// Replaces "MOV EAX,[EBX-4]; MOV ECX,[EDI]" (5 bytes) at the head of the B-entry loop (EDI = entry),
+// which is also the loop's back-edge target; 0x004ab07c moves to the next entry, as the stock room check does.
+CodeInjection lightmap_blend_entry_cull_injection{
+    0x004aaf05,
+    [](auto& regs) {
+        const uintptr_t esp = static_cast<uintptr_t>(regs.esp);
+        const uintptr_t entry = static_cast<uintptr_t>(regs.edi);
+        regs.eax = *reinterpret_cast<uintptr_t*>(static_cast<uintptr_t>(regs.ebx) - 4);
+        regs.ecx = *reinterpret_cast<uintptr_t*>(entry);
+        regs.eip = 0x004aaf0a;
+        if (g_blend_cull && !g_blend_cull->entry_has_candidates(blend_current_face(esp), entry)) {
+            regs.eip = 0x004ab07c;
+        }
+    },
+    false, // no trampoline: the injection replaces the two loads
+};
+
+// Replaces "MOV EAX,[EAX]; XOR EBX,EBX; MOV [ESP+0x40],EAX" (8 bytes) after B's face fetch;
+// 0x004ab05d moves to the next face.
+CodeInjection lightmap_blend_face_cull_injection{
+    0x004aaf78,
+    [](auto& regs) {
+        const uintptr_t esp = static_cast<uintptr_t>(regs.esp);
+        const uintptr_t face = *reinterpret_cast<uintptr_t*>(static_cast<uintptr_t>(regs.eax));
+        regs.eax = face;
+        regs.ebx = 0;
+        *reinterpret_cast<uintptr_t*>(esp + 0x40) = face;
+        regs.eip = 0x004aaf80;
+        if (g_blend_cull && !g_blend_cull->face_is_candidate(blend_current_face(esp), face)) {
+            regs.eip = 0x004ab05d;
+        }
+    },
+    false, // no trampoline: the injection replaces the three instructions
+};
 
 static void __cdecl lightmap_blend_surfaces_new(void** a, void** b, void* p3, void* p4, void* p5);
 static FunHook<void __cdecl(void**, void**, void*, void*, void*)> lightmap_blend_surfaces_hook{
@@ -2493,6 +3059,7 @@ static void __cdecl lightmap_blend_surfaces_new(void** a, void** b, void* p3, vo
             }
             if (lightmap_blend_edge(reinterpret_cast<uintptr_t>(*a),
                                     reinterpret_cast<uintptr_t>(*b), p_0, p_1)) {
+                alpine_lm_blend_edge(static_cast<const GSurface*>(*a), static_cast<const GSurface*>(*b), p_0, p_1);
                 return;
             }
         }
@@ -2529,7 +3096,12 @@ static void __cdecl lightmap_blend_pass_new(void* entries, int count)
 {
     g_blend_edges.clear();
     blend_sides_clear();
-    lightmap_blend_pass_hook.call_target(entries, count);
+    {
+        BlendPairCull cull;
+        ScopeGuard reset{[] { g_blend_cull = nullptr; }};
+        g_blend_cull = cull.build(reinterpret_cast<uintptr_t>(entries), count) ? &cull : nullptr;
+        lightmap_blend_pass_hook.call_target(entries, count);
+    }
     g_blend_edges.clear();
     blend_sides_clear();
 }
@@ -2617,6 +3189,177 @@ CodeInjection lightmap_blend_face_vert_index_injection{
         regs.eip = 0x004aafe9;
     },
     false, // no trampoline: the injection fully replaces the 8 byte block
+};
+
+// Alpine lightmaps: terrain texels
+// The light model FUN_004ac470 gives a surface texel of the static solid, applied to arbitrary points:
+// the ambient seed (the level ambient, or the custom ambient room containing the point, halved by
+// red_const_half), the lights room_setup_bbox gathers for the points' bounding box from the global
+// list, each shadow casting light (GrLight::shadow_condition != 0) masked by the ray tracer when the
+// command casts shadows, and light_accum_at_texel with the point's own normal and a smooth receiver,
+// clamped at zero.
+
+bool lightmap_light_terrain_points(const LightmapPoint* points, int count, float lift, float* out_r,
+                                   float* out_g, float* out_b)
+{
+    auto* level = CDedLevel::Get();
+    if (!g_bake_active || !level || !level->solid || !points || count <= 0) {
+        return false;
+    }
+    const auto solid = reinterpret_cast<uintptr_t>(level->solid);
+
+    Vector3 lo{1e30f, 1e30f, 1e30f};
+    Vector3 hi{-1e30f, -1e30f, -1e30f};
+    for (int i = 0; i < count; i++) {
+        const float* p = points[i].pos;
+        lo = {std::min(lo.x, p[0]), std::min(lo.y, p[1]), std::min(lo.z, p[2])};
+        hi = {std::max(hi.x, p[0]), std::max(hi.y, p[1]), std::max(hi.z, p[2])};
+    }
+    const float pad = std::max(lift, lm_ray_lift);
+    lo = {lo.x - pad, lo.y - pad, lo.z - pad};
+    hi = {hi.x + pad, hi.y + pad, hi.z + pad};
+
+    float base[3] = {0.0f, 0.0f, 0.0f};
+    light_get_ambient(&base[0], &base[1], &base[2]);
+    const float half = red_const_half;
+    const bool per_room = bake_fixes_active() && s_ambient_room_count > 0;
+    for (int i = 0; i < count; i++) {
+        float a[3] = {base[0], base[1], base[2]};
+        if (per_room) {
+            get_ambient_at(points[i].pos[0], points[i].pos[1], points[i].pos[2], base[0], base[1], base[2],
+                           a[0], a[1], a[2]);
+        }
+        out_r[i] = a[0] * half;
+        out_g[i] = a[1] * half;
+        out_b[i] = a[2] * half;
+    }
+
+    const int lights = std::clamp(room_setup_bbox(nullptr, &lo, &hi, 0, 1), 0, max_scene_lights);
+    ScopeGuard light_list_scope{[] { room_cleanup(); }};
+    room_lights_to_local();
+    if (lights == 0) {
+        return true;
+    }
+
+    const OccluderTree* tree = g_bake_mode != 0 ? lightmap_occluder_tree(solid) : nullptr;
+    std::vector<std::uint8_t> lit_mask(static_cast<std::size_t>(count), 0xffu);
+    std::vector<LightRays> rays;
+    std::vector<int> ray_light;
+    std::vector<void*> masks(static_cast<std::size_t>(lights), lit_mask.data());
+    for (int li = 0; li < lights; li++) {
+        const auto light = reinterpret_cast<uintptr_t>(face_light_list[li]);
+        LightRays lr;
+        if (tree && light && reinterpret_cast<const GrLight*>(light)->shadow_condition != 0 &&
+            light_rays_setup(light, lr)) {
+            rays.push_back(lr);
+            ray_light.push_back(li);
+        }
+    }
+    std::vector<std::uint8_t> ray_masks(rays.size() * static_cast<std::size_t>(count));
+    for (std::size_t k = 0; k < rays.size(); k++) {
+        masks[ray_light[k]] = ray_masks.data() + k * count;
+    }
+
+    // Every (light, point) pair is independent and each writes its own byte, so any split of the
+    // work gives the same masks.
+    const std::size_t work = ray_masks.size();
+    auto shade = [&](std::size_t begin, std::size_t end) {
+        for (std::size_t w = begin; w < end; w++) {
+            const std::size_t k = w / count;
+            const LightmapPoint& pt = points[w % count];
+            ray_masks[w] = light_rays_visibility(*tree, rays[k], {pt.pos[0], pt.pos[1], pt.pos[2]},
+                                                 {pt.normal[0], pt.normal[1], pt.normal[2]}, lift,
+                                                 std::numeric_limits<int>::min());
+        }
+    };
+    constexpr std::size_t items_per_task = 256;
+    work_pool_run(static_cast<int>((work + items_per_task - 1) / items_per_task), [&](int task) {
+        const std::size_t begin = static_cast<std::size_t>(task) * items_per_task;
+        shade(begin, std::min(work, begin + items_per_task));
+    });
+
+    static const std::uint8_t smooth_receiver = 1;
+    for (int i = 0; i < count; i++) {
+        const Vector3 pos{points[i].pos[0], points[i].pos[1], points[i].pos[2]};
+        const Vector3 normal{points[i].normal[0], points[i].normal[1], points[i].normal[2]};
+        light_accum_at_texel(&out_r[i], &out_g[i], &out_b[i], &pos, &normal, masks.data(), i, &smooth_receiver);
+        out_r[i] = std::max(out_r[i], 0.0f);
+        out_g[i] = std::max(out_g[i], 0.0f);
+        out_b[i] = std::max(out_b[i], 0.0f);
+    }
+    return true;
+}
+
+// The terrain bake runs after the movers, whose passes leave their own rooms in the ambient table.
+void lightmap_prepare_terrain_bake()
+{
+    auto* level = CDedLevel::Get();
+    lightmap_collect_room_ambient(level ? reinterpret_cast<uintptr_t>(level->solid) : 0);
+}
+
+// Alpine lightmaps: per-surface driver
+// FUN_004ac470 shades one surface into its lightmap page. After the stock pass has produced the
+// stock fragment, the alpine writer re-runs this same function once per chart tile against a tile
+// view of the surface, then box-averages the result back into the stock fragment's interior.
+static void __fastcall lightmap_shade_surface_new(GSurface* surface, int edx, void* solid, int mode);
+static FunHook<void __fastcall(GSurface*, int, void*, int)> lightmap_shade_surface_hook{
+    0x004ac470, lightmap_shade_surface_new};
+
+static void __fastcall lightmap_shade_surface_new(GSurface* surface, int edx, void* solid, int mode)
+{
+    if (alpine_lm_tile_pass_active()) {
+        lightmap_shade_surface_hook.call_target(surface, edx, solid, mode);
+        return;
+    }
+    // Every write this function makes is addressed as (ystart + row) * page_w + xstart + col, with
+    // no bound of its own. The bake is refused up front when a rect does not fit its page; this
+    // is the backstop.
+    const GLightmap* lm = surface->lightmap;
+    if (lm) {
+        const int page_w = lm->w;
+        const int page_h = lm->h;
+        const int x = surface->xstart;
+        const int y = surface->ystart;
+        const int w = surface->width;
+        const int h = surface->height;
+        if (x < 0 || y < 0 || w < 0 || h < 0 || x + w > page_w || y + h > page_h) {
+            static bool warned = false;
+            if (!warned) {
+                warned = true;
+                xlog::warn("Lightmap: a {}x{} surface at {},{} does not fit its {}x{} page, "
+                           "skipping it - the level needs Build Geometry",
+                           w, h, x, y, page_w, page_h);
+            }
+            surface->flags = 0;
+            return;
+        }
+    }
+    // both halves of the engine's own gate at 0x004ac48c: shade only for SURFACE_SHADE or
+    // SURFACE_SHADE_RUNTIME, and never when fullbright is set, or the tile pass would produce a black
+    // chart and downsample it back
+    const std::uint8_t state = surface->flags;
+    const std::uint8_t fullbright = surface->fullbright;
+    lightmap_shade_surface_hook.call_target(surface, edx, solid, mode);
+    if ((state & (SURFACE_SHADE | SURFACE_SHADE_RUNTIME)) && !fullbright) {
+        alpine_lm_shade_surface(static_cast<GSolid*>(solid), surface, mode);
+    }
+}
+
+// Replaces "TEST byte ptr [ESI+8],1; JZ 0x004accda" (10 bytes) after the lightmap pass. Both blocks
+// behind it write the surface's live preview texture through the lightmap's bitmap handle, sized
+// for the real page; a tile view has neither, so SURFACE_DYNAMIC_LIGHTS and SURFACE_UPLOAD are
+// cleared for a tile pass and both blocks fall away. Branches into this filter land on the address
+// itself, never inside it.
+CodeInjection lightmap_preview_upload_injection{
+    0x004aca49,
+    [](auto& regs) {
+        auto* state = &reinterpret_cast<GSurface*>(static_cast<uintptr_t>(regs.esi))->flags;
+        if (alpine_lm_tile_pass_active()) {
+            *state &= static_cast<std::uint8_t>(~(SURFACE_DYNAMIC_LIGHTS | SURFACE_UPLOAD));
+        }
+        regs.eip = (*state & SURFACE_DYNAMIC_LIGHTS) ? 0x004aca53 : 0x004accda;
+    },
+    false, // no trampoline: the injection fully replaces the test and its branch
 };
 
 // Cross-room surface merging
@@ -2707,20 +3450,243 @@ CodeInjection lightmap_global_faces_lumel_injection{
     false, // no trampoline: the injection fully replaces the 7 byte store
 };
 
+// Lumel edge-crossing cull: FUN_004ad160 tests only the edges near each lumel square.
+namespace
+{
+
+constexpr float lumel_cull_pad = 1.0e-4f;
+
+class LumelEdgeGrid
+{
+public:
+    // The face list is the stack VArray at [ESP+0x5c] of FUN_004ad160; false leaves the stock scan
+    // in charge for the rest of the call.
+    bool ready(uintptr_t faces)
+    {
+        if (state_ == State::unbuilt) {
+            bool built = false;
+            try {
+                built = build(faces);
+            }
+            catch (...) {
+            }
+            state_ = built ? State::ready : State::failed;
+            if (!built) {
+                edges_ = {};
+                cell_start_ = {};
+                cell_edges_ = {};
+                stamp_ = {};
+            }
+        }
+        return state_ == State::ready;
+    }
+
+    bool any_crossing(const float* p0, const float* p1, const float* p2, const float* p3)
+    {
+        const float qx0 = std::min({p0[0], p1[0], p2[0], p3[0]}) - lumel_cull_pad;
+        const float qx1 = std::max({p0[0], p1[0], p2[0], p3[0]}) + lumel_cull_pad;
+        const float qy0 = std::min({p0[1], p1[1], p2[1], p3[1]}) - lumel_cull_pad;
+        const float qy1 = std::max({p0[1], p1[1], p2[1], p3[1]}) + lumel_cull_pad;
+        const int cx0 = std::max(0, cell(qx0, x0_, sx_));
+        const int cx1 = std::min(grid_ - 1, cell(qx1, x0_, sx_));
+        const int cy0 = std::max(0, cell(qy0, y0_, sy_));
+        const int cy1 = std::min(grid_ - 1, cell(qy1, y0_, sy_));
+        if (cx0 > cx1 || cy0 > cy1) {
+            return false;
+        }
+        if (++stamp_value_ == 0) {
+            std::fill(stamp_.begin(), stamp_.end(), 0u);
+            stamp_value_ = 1;
+        }
+        for (int cy = cy0; cy <= cy1; cy++) {
+            for (int cx = cx0; cx <= cx1; cx++) {
+                const std::size_t c = static_cast<std::size_t>(cy) * grid_ + cx;
+                for (std::size_t k = cell_start_[c]; k < cell_start_[c + 1]; k++) {
+                    const int i = cell_edges_[k];
+                    if (stamp_[i] == stamp_value_) {
+                        continue;
+                    }
+                    stamp_[i] = stamp_value_;
+                    const Edge& e = edges_[i];
+                    if (std::max(e.ax, e.bx) < qx0 || std::min(e.ax, e.bx) > qx1 || std::max(e.ay, e.by) < qy0 ||
+                        std::min(e.ay, e.by) > qy1) {
+                        continue;
+                    }
+                    if (hits(p0, p1, p2, p3, e)) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+private:
+    struct Edge
+    {
+        float ax, ay, bx, by;
+    };
+    enum class State { unbuilt, ready, failed };
+
+    // the four segments FUN_004ad160 tests, with the same arguments
+    static bool hits(const float* p0, const float* p1, const float* p2, const float* p3, const Edge& e)
+    {
+        return segments_intersect_2d(p0, p1, e.ax, e.ay, e.bx, e.by) ||
+               segments_intersect_2d(p2, p3, e.ax, e.ay, e.bx, e.by) ||
+               segments_intersect_2d(p0, p2, e.ax, e.ay, e.bx, e.by) ||
+               segments_intersect_2d(p1, p3, e.ax, e.ay, e.bx, e.by);
+    }
+
+    static int cell(float v, float origin, float size)
+    {
+        const float c = std::floor((v - origin) / size);
+        if (!(c > -1.0e6f)) {
+            return -1000000;
+        }
+        return c < 1.0e6f ? static_cast<int>(c) : 1000000;
+    }
+
+    // Edges as FUN_004ad160 walks them, from every vertex to the next, in lightmap UVs; false when an
+    // edge loop is too long to walk.
+    bool build(uintptr_t faces)
+    {
+        const auto& list = *reinterpret_cast<const VArray<GFace*>*>(faces);
+        const int count = list.size;
+        GFace* const* data = list.data_ptr;
+        for (int i = 0; i < count; i++) {
+            const auto face = reinterpret_cast<uintptr_t>(data[i]);
+            const bool walked = for_each_face_vertex(face, [&](uintptr_t v, uintptr_t w) {
+                const auto* a = reinterpret_cast<const GFaceVertex*>(v);
+                const auto* b = reinterpret_cast<const GFaceVertex*>(w);
+                const Edge e{a->lm_u, a->lm_v, b->lm_u, b->lm_v};
+                // FUN_004c9ef0 never reports an edge with a non-finite coordinate
+                if (std::isfinite(e.ax) && std::isfinite(e.ay) && std::isfinite(e.bx) && std::isfinite(e.by)) {
+                    edges_.push_back(e);
+                }
+                return true;
+            });
+            if (!walked) {
+                return false;
+            }
+        }
+        float x0 = std::numeric_limits<float>::max();
+        float y0 = std::numeric_limits<float>::max();
+        float x1 = std::numeric_limits<float>::lowest();
+        float y1 = std::numeric_limits<float>::lowest();
+        for (const Edge& e : edges_) {
+            x0 = std::min({x0, e.ax, e.bx});
+            y0 = std::min({y0, e.ay, e.by});
+            x1 = std::max({x1, e.ax, e.bx});
+            y1 = std::max({y1, e.ay, e.by});
+        }
+        const int n = static_cast<int>(edges_.size());
+        grid_ = std::clamp(static_cast<int>(std::sqrt(static_cast<float>(n)) * 2.0f), 1, 128);
+        x0_ = x0 - lumel_cull_pad;
+        y0_ = y0 - lumel_cull_pad;
+        sx_ = std::max((x1 - x0 + 2.0f * lumel_cull_pad) / static_cast<float>(grid_), 1.0e-12f);
+        sy_ = std::max((y1 - y0 + 2.0f * lumel_cull_pad) / static_cast<float>(grid_), 1.0e-12f);
+        const std::size_t cells = static_cast<std::size_t>(grid_) * grid_;
+        std::vector<int> ranges(static_cast<std::size_t>(n) * 4);
+        cell_start_.assign(cells + 1, 0);
+        for (int i = 0; i < n; i++) {
+            const Edge& e = edges_[i];
+            int* r = &ranges[static_cast<std::size_t>(i) * 4];
+            r[0] = std::clamp(cell(std::min(e.ax, e.bx) - lumel_cull_pad, x0_, sx_), 0, grid_ - 1);
+            r[1] = std::clamp(cell(std::max(e.ax, e.bx) + lumel_cull_pad, x0_, sx_), 0, grid_ - 1);
+            r[2] = std::clamp(cell(std::min(e.ay, e.by) - lumel_cull_pad, y0_, sy_), 0, grid_ - 1);
+            r[3] = std::clamp(cell(std::max(e.ay, e.by) + lumel_cull_pad, y0_, sy_), 0, grid_ - 1);
+            for (int cy = r[2]; cy <= r[3]; cy++) {
+                for (int cx = r[0]; cx <= r[1]; cx++) {
+                    cell_start_[static_cast<std::size_t>(cy) * grid_ + cx + 1]++;
+                }
+            }
+        }
+        for (std::size_t c = 0; c < cells; c++) {
+            cell_start_[c + 1] += cell_start_[c];
+        }
+        cell_edges_.resize(cell_start_[cells]);
+        std::vector<std::size_t> fill(cell_start_.begin(), cell_start_.end() - 1);
+        for (int i = 0; i < n; i++) {
+            const int* r = &ranges[static_cast<std::size_t>(i) * 4];
+            for (int cy = r[2]; cy <= r[3]; cy++) {
+                for (int cx = r[0]; cx <= r[1]; cx++) {
+                    cell_edges_[fill[static_cast<std::size_t>(cy) * grid_ + cx]++] = i;
+                }
+            }
+        }
+        stamp_.assign(edges_.size(), 0u);
+        return true;
+    }
+
+    State state_ = State::unbuilt;
+    std::vector<Edge> edges_;
+    std::vector<std::size_t> cell_start_;
+    std::vector<int> cell_edges_;
+    std::vector<unsigned> stamp_;
+    unsigned stamp_value_ = 0;
+    int grid_ = 1;
+    float x0_ = 0.0f;
+    float y0_ = 0.0f;
+    float sx_ = 1.0f;
+    float sy_ = 1.0f;
+};
+
+// Scoped by lightmap_lumel_pass_new to one FUN_004ad160 call.
+LumelEdgeGrid* g_lumel_grid = nullptr;
+
+} // namespace
+
+static void __cdecl lightmap_lumel_pass_new(void* solid, void* surface, int flag, void* masks);
+static FunHook<void __cdecl(void*, void*, int, void*)> lightmap_lumel_pass_hook{0x004ad160, lightmap_lumel_pass_new};
+
+static void __cdecl lightmap_lumel_pass_new(void* solid, void* surface, int flag, void* masks)
+{
+    LumelEdgeGrid grid;
+    ScopeGuard restore{[outer = std::exchange(g_lumel_grid, &grid)] { g_lumel_grid = outer; }};
+    lightmap_lumel_pass_hook.call_target(solid, surface, flag, masks);
+}
+
+// Replaces "XOR EDI,EDI; LEA ECX,[ESP+0x5c]" (6 bytes) at the head of the per-texel crossing scan. What
+// the scan leaves at 0x004ad4d6: EBP > 0 on a crossing, and its face index [ESP+0x3c] at the face count.
+CodeInjection lightmap_lumel_cull_injection{
+    0x004ad3b9,
+    [](auto& regs) {
+        const uintptr_t esp = static_cast<uintptr_t>(regs.esp);
+        const uintptr_t faces = esp + 0x5c;
+        LumelEdgeGrid* grid = g_lumel_grid;
+        if (!grid || !grid->ready(faces)) {
+            regs.edi = 0;
+            regs.ecx = faces;
+            regs.eip = 0x004ad3bf;
+            return;
+        }
+        const auto* p0 = reinterpret_cast<const float*>(esp + 0xc8);
+        const auto* p1 = reinterpret_cast<const float*>(esp + 0xd0);
+        const auto* p2 = reinterpret_cast<const float*>(esp + 0xd8);
+        const auto* p3 = reinterpret_cast<const float*>(esp + 0xc0);
+        const bool hit = grid->any_crossing(p0, p1, p2, p3);
+        *reinterpret_cast<int*>(esp + 0x3c) = reinterpret_cast<const VArray<GFace*>*>(faces)->size;
+        regs.ebp = hit ? 1 : 0;
+        regs.eip = 0x004ad4d6;
+    },
+    false, // no trampoline: the injection replaces the 6 bytes it covers
+};
+
 void ApplyLightmapPatches()
 {
-    // Fix pink lightmaps when a face is affected by >= 64 lights
-    // Allocate shadow mask buffers on the heap; grown on demand for high resolution levels
-    shadow_mask_reserve(0x1000);
-
     // Replace light handle-to-pointer with bounds-checked version
     light_handle_to_pointer_injection.install();
 
-    // Replace the >= 64 limit check with new limit
+    // Fix pink lightmaps when a face is affected by >= 64 lights: replace the limit check, and
+    // allocate each surface's shadow masks on the heap
     lightmap_light_limit_injection.install();
 
     // Lightmap pages are saved whole, so their inter-fragment gaps must not be heap garbage
     lightmap_page_clear_injection.install();
+    lightmap_synth_page_hook.install();
+
+    // Release a freed lightmap page's D3D texture
+    lightmap_page_free_hook.install();
 
     // Redirect mask buffer array references from old 64-entry array (0x0057CE78) to new array
     write_mem_ptr(0x004AC7A0 + 4, shadow_mask_ptrs);
@@ -2768,6 +3734,8 @@ void ApplyLightmapPatches()
     // Inert unless the level has enable_sun set.
     lighting_calc_shadows_hook.install();
     lighting_calc_no_shadows_hook.install();
+    lighting_calc_shadows_after_surfaces_hook.install();
+    lighting_calc_no_shadows_after_surfaces_hook.install();
     sun_shadow_mask_hook.install();
     sun_face_light_dedup_injection.install();
     sun_sky_occluder_skip_injection.install();
@@ -2779,6 +3747,16 @@ void ApplyLightmapPatches()
     lightmap_smoothing_normal_weight_injection.install();
     lightmap_border_duplicate_skip_injection.install();
     lightmap_alpha_texture_occluder_injection.install();
+
+    // Alpine lightmaps: the per-surface driver and the preview-upload gate it needs
+    lightmap_shade_surface_hook.install();
+    lightmap_preview_upload_injection.install();
+
+    // Lumel edge-crossing cull and blend-pass pair cull
+    lightmap_lumel_pass_hook.install();
+    lightmap_lumel_cull_injection.install();
+    lightmap_blend_entry_cull_injection.install();
+    lightmap_blend_face_cull_injection.install();
 
     // High resolution lightmaps, inert unless the level sets it
     lightmap_highres_setup_injection.install();

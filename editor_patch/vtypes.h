@@ -1,5 +1,8 @@
 #pragma once
 
+#include <algorithm>
+#include <climits>
+#include <iterator>
 #include <patch_common/MemUtils.h>
 #include "mfc_types.h"
 
@@ -80,6 +83,11 @@ namespace rf
         int seek(int pos, SeekOrigin origin)
         {
             return AddrCaller{0x004D00C0}.this_call<int>(this, pos, origin);
+        }
+
+        [[nodiscard]] int tell() const
+        {
+            return AddrCaller{0x004D01A0}.this_call<int>(this);
         }
 
         int read(void *buf, std::size_t buf_len, int min_ver = 0, int unused = 0)
@@ -301,18 +309,23 @@ static_assert(offsetof(EditorV3d, meshes) == 0x4C);
 // EditorVifFace::flags bit marking a face the renderer draws from both sides.
 constexpr int VIF_FACE_DOUBLE_SIDED = 0x20;
 
-// Calls fn(vif_mesh, chunk, vertex) for every LOD 0 chunk that carries geometry. Shared by the
-// lightmap mesh occluders and the mesh-to-brush conversion so both see the same set of chunks.
+// Level the LOD walkers clamp to the mesh's lowest detail.
+inline constexpr int vmesh_lowest_lod = INT_MAX;
+
+// Calls fn(vif_mesh, chunk, vertex) for every chunk of detail level `level` (clamped to the
+// levels the mesh has) that carries geometry. Shared by the lightmap occluders and the
+// mesh-to-brush conversion so all see the same set of chunks.
 // vertex(i) yields chunk vertex i in render-space mesh-local coordinates: the engine draws a
 // submesh at pos + orient * (lod_mesh->center + v), so the owning lod mesh's center is added here
 // and every caller works in the space the editor renders.
 template<typename Fn>
-inline void vmesh_for_each_lod0_chunk(const EditorVifLodMesh* lod, Fn&& fn)
+inline void vmesh_for_each_lod_chunk(const EditorVifLodMesh* lod, int level, Fn&& fn)
 {
     if (!lod || lod->num_levels <= 0) {
         return;
     }
-    const EditorVifMesh* vm = lod->meshes[0];
+    const int levels = std::min(lod->num_levels, static_cast<int>(std::size(lod->meshes)));
+    const EditorVifMesh* vm = lod->meshes[std::clamp(level, 0, levels - 1)];
     if (!vm || !vm->chunks) {
         return;
     }
@@ -330,8 +343,14 @@ inline void vmesh_for_each_lod0_chunk(const EditorVifLodMesh* lod, Fn&& fn)
     }
 }
 
+template<typename Fn>
+inline void vmesh_for_each_lod0_chunk(const EditorVifLodMesh* lod, Fn&& fn)
+{
+    vmesh_for_each_lod_chunk(lod, 0, std::forward<Fn>(fn));
+}
+
 // Whether a face's three indices are inside its chunk's vertex array.
-inline bool vmesh_lod0_face_valid(const EditorVifChunk& chunk, const EditorVifFace& face)
+inline bool vmesh_face_valid(const EditorVifChunk& chunk, const EditorVifFace& face)
 {
     return face.vindex1 < chunk.num_vecs && face.vindex2 < chunk.num_vecs &&
            face.vindex3 < chunk.num_vecs;
@@ -421,6 +440,11 @@ static auto& vmesh_load_v3c = addr_as_ref<EditorVMesh*(const char* filename, int
 static auto& vmesh_load_vfx = addr_as_ref<EditorVMesh*(const char* filename, int param2)>(0x004BFE10);
 static auto& vmesh_free = addr_as_ref<void(EditorVMesh* vmesh)>(0x004BFEC0);
 static auto& vmesh_render = addr_as_ref<void(EditorVMesh* vmesh, const void* pos, const void* orient, const EditorRenderParams* params)>(0x004C04B0);
+// vmesh_render of one submesh of a static mesh (-1 = all). The engine takes the camera into mesh space
+// with orient's transpose (FUN_004edf50), so an orient scaled by s draws the submesh as if the camera
+// sat s * s times as far from its centre.
+static auto& vmesh_render_submesh = addr_as_ref<void(EditorVMesh* vmesh, int submesh, const void* pos,
+                                                     const void* orient, const EditorRenderParams* params)>(0x004BFED0);
 static auto& vmesh_get_bound_sphere = addr_as_ref<void(EditorVMesh* vmesh, void* center_out, void* radius_out)>(0x004C0680);
 static auto& vmesh_process = addr_as_ref<void(EditorVMesh* vmesh, float time, int param3, const void* pos, const void* orient, int param6)>(0x004C0710);
 static auto& vmesh_anim_init = addr_as_ref<void(EditorVMesh* vmesh, int start_frame, float speed)>(0x004C0740);
@@ -437,6 +461,55 @@ static auto& bm_get_mipmap_info = addr_as_ref<void(int bm_handle, int* width, in
                                                   int* num_pixels_in_all_levels, int* mip_levels)>(0x004BCBD0);
 // Nonzero when the bitmap's pixel format carries alpha (formats 4, 5 and 7).
 static auto& bm_has_alpha = addr_as_ref<char __cdecl(int bm_handle)>(0x004BCC60);
+// A user bitmap (common/bitmap/formats.h format), which holds no pixels of its own.
+static auto& bm_create = addr_as_ref<int __cdecl(int format, int w, int h)>(0x004BDF10);
+// Only unlinks the entry: its texture is freed when another bitmap takes the cache slot.
+static auto& bm_release = addr_as_ref<void __cdecl(int bm_handle)>(0x004BDEB0);
+// Returns the pixel format.
+static auto& bm_lock = addr_as_ref<int __cdecl(int bm_handle, void** pixels, void** palette)>(0x004BCCD0);
+static auto& bm_unlock = addr_as_ref<void __cdecl(int bm_handle)>(0x004BDC50);
+
+struct GrLockInfo
+{
+    int bm_handle;
+    int section;
+    int format;
+    uint8_t* data;
+    int w;
+    int h;
+    int stride_in_bytes;
+    int mode;
+};
+static_assert(sizeof(GrLockInfo) == 0x20);
+static auto& gr_lock = addr_as_ref<uint8_t __cdecl(int bm_handle, int section, GrLockInfo* lock, int mode)>(0x004BAA60);
+static auto& gr_unlock = addr_as_ref<void __cdecl(GrLockInfo* lock)>(0x004BAA90);
+
+// RED's D3D texture cache, one slot per bitmap index
+struct GrTextureSection
+{
+    void* texture;
+    char _pad_04[0x1C];
+};
+static_assert(sizeof(GrTextureSection) == 0x20);
+
+struct GrTextureSlot
+{
+    int bm_handle;
+    int16_t section_count;
+    char _pad_06[5];
+    uint8_t dirty; // set by FUN_004f6000 to ask for a rebuild, cleared by FUN_004f5e40
+    GrTextureSection* sections;
+};
+static_assert(sizeof(GrTextureSlot) == 0x10);
+
+static auto& gr_texture_slots = addr_as_ref<GrTextureSlot*>(0x0183C3F8);
+static auto& gr_texture_create = addr_as_ref<int __cdecl(int bm_handle, GrTextureSlot* slot)>(0x004F5E40);
+static auto& gr_texture_free = addr_as_ref<void __cdecl(GrTextureSlot* slot)>(0x004F4880);
+static auto& gr_api = addr_as_ref<int>(0x014CF754);
+constexpr int gr_api_d3d = 0x66;
+
+// RED.exe's import address table slot for USER32!MessageBoxA.
+constexpr uintptr_t red_message_box_iat_slot = 0x005545F4;
 
 // Primitives CBitmapPreviewDialog::OnPaint (0x0044C1B0) uses to draw a texture straight into a
 // control's own window rather than through its device context.
@@ -461,8 +534,13 @@ static auto& gr_far_clip_dist = addr_as_ref<float>(0x0158F3F8);
 
 // Gathers the scene lights reaching a sphere into the render light list; paired with room_cleanup.
 static auto& room_setup = addr_as_ref<int __cdecl(void* room, const Vector3* pos, float radius,
-                                                  int include_static, int include_dynamic)>(0x004885D0);
+                                                  int include_dynamic, int include_static)>(0x004885D0);
 static auto& room_cleanup = addr_as_ref<void __cdecl()>(0x00488BB0);
+// room_setup for the lights reaching a box.
+static auto& room_setup_bbox = addr_as_ref<int __cdecl(void* room, const Vector3* bbox_min, const Vector3* bbox_max,
+                                                       int include_dynamic, int include_static)>(0x00488810);
+// Transforms each light in the render light list into the current local frame.
+static auto& room_lights_to_local = addr_as_ref<void __cdecl()>(0x00488BE0);
 
 // The Preferences page holding the editor's user configurable colours; the viewport painter
 // (0x0047DAE0) feeds the background one to set_draw_color before its clear.
@@ -496,7 +574,7 @@ static auto& draw_link_line = addr_as_ref<void(float, float, float, float, float
 static auto& project_to_screen = addr_as_ref<uint32_t(void* screen_out, const void* world_pos)>(0x004C5E30);
 static auto& set_draw_color = addr_as_ref<void(uint32_t r, uint32_t g, uint32_t b, uint32_t a)>(0x004B9700);
 static auto& gr_set_bitmap = addr_as_ref<void(int bm_handle, int unk)>(0x004B97E0);
-// Nonzero while the viewports draw textured rather than wireframe.
+// View > Show Just Textures: nonzero draws level faces fullbright, without lightmaps.
 static auto& editor_textures_enabled = addr_as_ref<int>(0x006C9AA8);
 // Set around a .vfx draw so the renderer takes its transparency path.
 static auto& vfx_render_transparent = addr_as_ref<int>(0x0059E21C);
@@ -516,6 +594,22 @@ inline uint32_t editor_line_mode()
 {
     return *reinterpret_cast<uint32_t*>(0x0147d260);
 }
+static auto& gr_line_3d = addr_as_ref<uint8_t __cdecl(const Vector3* p0, const Vector3* p1, uint32_t mode)>(0x004CB180);
+// Origin at +0, unit direction at +0xC, for the view last set up
+static auto& screen_to_ray = addr_as_ref<void __cdecl(float* ray_out, float x, float y)>(0x004C5FB0);
+static auto& gr_perspective = addr_as_ref<uint8_t>(0x0057E0ED);
+static auto& gr_half_width = addr_as_ref<float>(0x0158F2EC);
+
+// View menu state
+enum LevelRenderMode : int
+{
+    LEVEL_RENDER_BRUSHES_ONLY = 0, // Render Nothing (Except brushes)
+};
+static auto& level_render_mode = addr_as_ref<int>(0x0057B9B8); // LevelRenderMode
+static auto& view_see_through = addr_as_ref<int>(0x006C9A94);
+static auto& view_room_colors = addr_as_ref<int>(0x006C9A98);
+static auto& view_lightmaps_only = addr_as_ref<int>(0x006C9AA4);
+static auto& painting_view_index = addr_as_ref<int>(0x006C9ACC);
 
 // ─── Render Params ───────────────────────────────────────────────────────────
 
@@ -549,6 +643,17 @@ struct EditorRenderParams
     }
 };
 static_assert(sizeof(EditorRenderParams) == 0x50);
+
+// Default params, textured white while editor_textures_enabled is set. vmesh_render works on a copy of them.
+inline EditorRenderParams editor_mesh_render_params()
+{
+    EditorRenderParams params;
+    if (editor_textures_enabled != 0) {
+        params.flags |= ERF_TEXTURED;
+        params.diffuse_color = {0xff, 0xff, 0xff, 0xff};
+    }
+    return params;
+}
 
 // ─── Tree Control ────────────────────────────────────────────────────────────
 
@@ -590,10 +695,56 @@ struct EditorViewport
 {
     uint8_t pad_00[0x54];               // +0x00
     EditorViewData* view_data;          // +0x54
+    uint8_t pad_58[0x6C - 0x58];        // +0x58
+    uint8_t needs_repaint;              // +0x6C  repainted from RED's idle loop while set
+
+    // The message map's (0x0055C170) WM_LBUTTONDOWN, WM_LBUTTONUP and WM_LBUTTONDBLCLK handlers,
+    // thiscall (UINT flags, CPoint point)
+    void on_lbutton_down(UINT flags, int x, int y)
+    {
+        AddrCaller{0x0047CF20}.this_call(this, flags, x, y);
+    }
+
+    void on_lbutton_up(UINT flags, int x, int y)
+    {
+        AddrCaller{0x0047CFA0}.this_call(this, flags, x, y);
+    }
+
+    void on_lbutton_dblclk(UINT flags, int x, int y)
+    {
+        AddrCaller{0x0047D590}.this_call(this, flags, x, y);
+    }
+
+    // FUN_0047dae0: sets up gr for the view (window, viewport, camera), as the RBUTTONUP handler does
+    // before it casts a ray (0x0047d476)
+    void setup_gr(char begin_frame)
+    {
+        AddrCaller{0x0047DAE0}.this_call(this, begin_frame);
+    }
 };
 static_assert(offsetof(EditorViewport, view_data) == 0x54);
+static_assert(offsetof(EditorViewport, needs_repaint) == 0x6C);
 
 static auto& get_active_viewport = addr_as_ref<EditorViewport* __cdecl()>(0x004835B0);
+
+// The main frame's four views
+constexpr int editor_num_views = 4;
+inline void* editor_view_at(int i)
+{
+    return g_main_frame && i >= 0 && i < editor_num_views ? g_main_frame->views[i] : nullptr;
+}
+inline void editor_view_mark_repaint(void* view)
+{
+    if (view) {
+        static_cast<EditorViewport*>(view)->needs_repaint = 1;
+    }
+}
+inline void editor_views_mark_repaint_all()
+{
+    for (int i = 0; i < editor_num_views; i++) {
+        editor_view_mark_repaint(editor_view_at(i));
+    }
+}
 
 // ─── Editor GrVertex ─────────────────────────────────────────────────────────
 // Vertex structure (48 bytes) used by the editor's polygon renderer.
@@ -673,7 +824,28 @@ static auto& gr_d3d_render_mode_cache = addr_as_ref<int>(0x01838dc0);
 
 // Render mode and polygon submission
 static auto& gr_set_mode = addr_as_ref<void(int)>(0x004BA730);
-static auto& gr_poly_render = addr_as_ref<uint32_t(int, void**, int, float, int, float)>(0x004CB1C0);
+// Fanned from vertex 0; mode as FUN_0047e140 packs it (0x004E8400 hands it to FUN_004e0490).
+static auto& gr_poly_render = addr_as_ref<uint8_t __cdecl(int count, GrVertex** verts, uint32_t tmap_flags,
+                                                          uint32_t mode, int override_z, float z)>(0x004CB1C0);
+
+// gr_poly_render's tmap_flags: the vertices carry uv, and colour
+constexpr uint32_t tmap_uv = 0x1;
+constexpr uint32_t tmap_rgb = 0x4;
+
+// FUN_0047e140's packing of a gr_poly_render mode
+constexpr uint32_t gr_mode(uint32_t tex, uint32_t color, uint32_t alpha, uint32_t blend, uint32_t zbuf, uint32_t fog)
+{
+    return tex | color << 5 | alpha << 10 | blend << 15 | zbuf << 20 | fog << 25;
+}
+// clamped texture times vertex colour, full z-buffer
+constexpr uint32_t mode_textured = gr_mode(2, 2, 0, 0, 4, 0);
+// wrapped texture times vertex colour, full z-buffer
+constexpr uint32_t mode_textured_wrap = gr_mode(1, 2, 0, 0, 4, 0);
+constexpr uint32_t mode_vertex = gr_mode(0, 0, 0, 0, 4, 0);
+
+// Depth of the pushed instance transforms (0x004edf50 pushes, 0x004ee0a0 pops): nonzero while a mover's
+// is pushed, when the scene lights are kept in its frame too (GrLight::local_vec).
+static auto& gr_transform_stack_depth = addr_as_ref<int>(0x0158f414);
 
 // Computes clip flags from view-space coords in a GrVertex
 static auto& gr_compute_clip_flags = addr_as_ref<uint32_t(void*)>(0x004c5df0);
@@ -687,6 +859,41 @@ static auto& gr_cam_param = addr_as_ref<float>(0x014cf7e0);
 
 // ─── Lighting ────────────────────────────────────────────────────────────────
 
+// GrLight::type; the game's rf::gr::LightType.
+enum GrLightType
+{
+    LT_DIRECTIONAL = 1,
+    LT_POINT = 2,
+    LT_SPOT = 3,
+    LT_TUBE = 4,
+};
+
+// Scene light, partial (0x10C byte pool slots; stock pool at 0x006FB248, relocated by lightmap.cpp's light_pool);
+// the game's rf::gr::Light.
+struct GrLight
+{
+    char _pad_00[0x08];
+    int type;     // +0x08  GrLightType
+    Vector3 vec;  // +0x0C
+    Vector3 vec2; // +0x18  tube end
+    char _pad_24[0x3C - 0x24];
+    float rad_2; // +0x3C  radius
+    char _pad_40[0x50 - 0x40];
+    int shadow_condition; // +0x50  0 casts no shadows
+    char _pad_54[0x5C - 0x54];
+    Vector3 local_vec;  // +0x5C  vec in the pushed instance frame (room_lights_to_local)
+    Vector3 local_vec2; // +0x68
+    char _pad_74[0x10C - 0x74];
+};
+static_assert(sizeof(GrLight) == 0x10C);
+static_assert(offsetof(GrLight, type) == 0x08);
+static_assert(offsetof(GrLight, vec) == 0x0C);
+static_assert(offsetof(GrLight, vec2) == 0x18);
+static_assert(offsetof(GrLight, rad_2) == 0x3C);
+static_assert(offsetof(GrLight, shadow_condition) == 0x50);
+static_assert(offsetof(GrLight, local_vec) == 0x5C);
+static_assert(offsetof(GrLight, local_vec2) == 0x68);
+
 // Type 1 (directional) scene light; returns the light handle.
 static auto& light_create_directional =
     addr_as_ref<int __cdecl(const Vector3* dir, float intensity, float r, float g, float b,
@@ -696,6 +903,10 @@ static auto& light_free = addr_as_ref<void __cdecl(int light_handle, int unk)>(0
 static auto& light_accum_at_texel =
     addr_as_ref<void __cdecl(float* r, float* g, float* b, const Vector3* pos, const Vector3* normal,
                              void* masks, int texel_index, const void* smooth_flag)>(0x004894C0);
+// Copies out the level's ambient light color.
+static auto& light_get_ambient = addr_as_ref<void __cdecl(float* r, float* g, float* b)>(0x00487920);
+// RED's shared read-only 0.5f, which FUN_004ac470 halves the ambient seed by.
+static auto& red_const_half = addr_as_ref<const float>(0x00554720);
 
 // ─── Virtual file system ─────────────────────────────────────────────────────
 
@@ -764,6 +975,10 @@ constexpr int editor_packfile_entry_max = 0x34BC;
 
 // ─── Misc ────────────────────────────────────────────────────────────────────
 
+struct GFace;
+// The CSG's global face list (the head, then the count, as GSolid::face_list_head)
+static auto& csg_face_list_head = addr_as_ref<GFace*>(0x01131388);
+
 static auto& generate_uid = addr_as_ref<int()>(0x00484230);
 // True if uid is already taken. Scans master objects, brush list, undo/redo stacks.
 static auto& is_uid_in_use = addr_as_ref<bool __cdecl(int uid)>(0x00484000);
@@ -772,6 +987,10 @@ static auto& file_scan_path = addr_as_ref<void(int slot_index)>(0x004CF800);
 static auto& rf_alloc = addr_as_ref<void* __cdecl(size_t size)>(0x0052ee74);
 static auto& log_dlg_append = addr_as_ref<int __cdecl(void*, const char*, ...)>(0x00444980);
 static auto& log_dlg_clear = addr_as_ref<void __fastcall(void* self)>(0x00444940);
+// Whether segment a-b crosses segment (x1,y1)-(x2,y2) in the xy plane, ends included; parallel
+// segments never do.
+static auto& segments_intersect_2d =
+    addr_as_ref<bool __cdecl(const float* a, const float* b, float x1, float y1, float x2, float y2)>(0x004C9EF0);
 
 // ─── RFL String I/O ──────────────────────────────────────────────────────────
 

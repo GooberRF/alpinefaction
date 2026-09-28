@@ -5,9 +5,11 @@
 #include <patch_common/MemUtils.h>
 #include <mbstring.h>
 #include <algorithm>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include <common/terrain/alpine_terrain.h>
 
 extern "C" IMAGE_DOS_HEADER __ImageBase;
 
@@ -181,7 +183,8 @@ enum class DedObjectType : int
     DED_WEATHER_REGION = 0x1B, // Alpine 1.4
     // 0x1C is reserved
     DED_PROJECTION_CAMERA = 0x1D, // Alpine 1.5
-    DED_ROPE_EMITTER = 0x1E // Alpine 1.5
+    DED_ROPE_EMITTER = 0x1E, // Alpine 1.5
+    DED_TERRAIN = 0x1F // Alpine 1.5
 };
 
 struct Vector3
@@ -221,6 +224,8 @@ struct Matrix3
     }
 };
 static_assert(sizeof(Matrix3) == 0x24, "Matrix3 size mismatch!");
+
+inline const Matrix3 identity_orient{{1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f, 1.0f}};
 
 struct Plane
 {
@@ -441,6 +446,28 @@ struct DedRoomEffect : DedObject
 };
 static_assert(sizeof(DedRoomEffect) == 0xD4, "DedRoomEffect size mismatch");
 
+enum class GeoRegionShape : int
+{
+    sphere = 2,
+    box = 4,
+};
+
+// Partial; field use from the geo region reader/writer FUN_00454340
+struct DedGeoRegion : DedObject
+{
+    GeoRegionShape shape;              // 0x94
+    float radius;                      // 0x98 — sphere only
+    float height;                      // 0x9C — box only, full size
+    float width;                       // 0xA0
+    float depth;                       // 0xA4
+};
+static_assert(offsetof(DedGeoRegion, shape) == 0x94);
+static_assert(sizeof(GeoRegionShape) == sizeof(int));
+static_assert(offsetof(DedGeoRegion, radius) == 0x98);
+static_assert(offsetof(DedGeoRegion, height) == 0x9C);
+static_assert(offsetof(DedGeoRegion, width) == 0xA0);
+static_assert(offsetof(DedGeoRegion, depth) == 0xA4);
+
 // Per-slot texture override for editor mesh objects
 struct EditorTextureOverride {
     uint8_t slot;
@@ -622,6 +649,94 @@ struct DedRopeEmitter : DedObject
     float preview_length = 0.0f;
     int32_t preview_key[ded_rope_preview_key_len] = {};
     bool preview_valid = false;
+};
+
+// Heavy per-terrain arrays. Shared copy-on-write between a terrain, the properties dialog's staging
+// and clipboard copies: an edit builds a new grid and swaps the pointer, never mutating a shared one.
+struct TerrainGrid
+{
+    uint32_t nx = 0;
+    uint32_t nz = 0;
+    uint32_t weight_res_mul = 1;
+    std::vector<uint16_t> heights; // nx * nz
+    std::vector<uint8_t> weights;  // alpine_terrain::blob_weights_bytes: two RGBA8 maps
+    std::vector<uint8_t> holes;    // alpine_terrain::bitmask_bytes
+    std::vector<uint8_t> diag;     // alpine_terrain::bitmask_bytes
+    // alpine_terrain::overlay_map_bytes while the terrain has overlays, else empty
+    std::vector<uint8_t> overlay;
+    // One alpine_terrain::decoration_plane_bytes coverage plane per decoration, in list order
+    std::vector<uint8_t> decoration;
+};
+
+struct DedTerrainLayer
+{
+    std::string texture = alpine_terrain::default_layer_texture;
+    float uv_scale = alpine_terrain::default_uv_scale;
+    bool triplanar = false;
+};
+
+struct DedTerrainOverlay : DedTerrainLayer
+{
+    bool break_tiling = true;
+
+    DedTerrainOverlay() { texture.clear(); }
+};
+
+struct DedTerrainDecoration
+{
+    std::string mesh; // empty = none picked yet
+    float density = alpine_terrain::default_decoration_density;
+    float scale_min = alpine_terrain::default_decoration_scale;
+    float scale_max = alpine_terrain::default_decoration_scale;
+    float max_slope = alpine_terrain::default_decoration_slope_deg;
+    float draw_distance = alpine_terrain::default_decoration_draw_distance;
+    float vertical_offset = 0.0f;
+    uint8_t link_layer = alpine_terrain::decoration_link_none;
+    bool align_to_slope = false;
+    bool random_yaw = true;
+    bool casts_shadows = false;
+
+    bool operator==(const DedTerrainDecoration&) const = default;
+};
+
+// Everything a terrain carries beyond DedObject, as one copyable value.
+struct DedTerrainData
+{
+    float cell_size = alpine_terrain::default_cell_size;
+    float height_min = 0.0f;
+    float height_range = alpine_terrain::default_height_range;
+    uint32_t chunk_cells = alpine_terrain::default_chunk_cells;
+    uint8_t lightmap_density = alpine_terrain::lightmap_density_default;
+    uint8_t flags = 0; // alpine_terrain::flag_mask bits
+    bool fullbright = false; // alpine_terrain::flag_fullbright
+    float thickness = alpine_terrain::default_thickness;
+    float skirt_depth = alpine_terrain::default_skirt_depth;
+    std::string underside_texture = alpine_terrain::default_layer_texture;
+    std::string crater_texture; // empty = level geomod texture
+    std::vector<DedTerrainLayer> layers;
+    std::vector<DedTerrainOverlay> overlays;
+    std::vector<DedTerrainDecoration> decorations;
+    std::shared_ptr<const TerrainGrid> grid;
+    // Chunk geo mask (alpine_terrain.h) over geo_chunks_layout, the layout it was set on; read through
+    // terrain_chunk_geoable, which remaps it to the current one. Empty = every chunk.
+    std::vector<uint8_t> geo_chunks;
+    alpine_terrain::ChunkLayout geo_chunks_layout{};
+    // Written at save from the compiled rooms (terrain_build.cpp); read from the level on load.
+    std::vector<alpine_terrain::ChunkMapping> build_mapping;
+    // Not serialized: per chunk, the uid of the compiled room holding it in the current solid
+    // (alpine_terrain::no_room_uid for a chunk with no faces), and the geometry and material
+    // fingerprints (alpine_terrain.h) of the terrain it was built from.
+    std::vector<int32_t> built_room_uids;
+    uint64_t built_geometry_fingerprint = 0;
+    uint64_t built_material_fingerprint = 0;
+};
+
+// Axis-aligned: pos is the grid origin and orient is kept at identity.
+struct DedTerrain : DedObject
+{
+    DedTerrainData data;
+    // Not serialized: a save already showed the "no compiled geometry" message box for it
+    bool unbuilt_save_warned = false;
 };
 
 struct DedBoltEmitter : DedObject
@@ -957,7 +1072,7 @@ struct CMainFrame : CFrameWnd
     int favorite_textures[8];
     bool play_no_tnl;
     char padding_tail[3];
-    void* preferences_dlg;
+    struct PreferencesDialog* preferences_dlg;
 
     void MaximizeActiveViewport()
     {

@@ -2338,7 +2338,10 @@ void chat_menu_action_handler(rf::Key key) {
         else {
             // Default chat behavior
             volatile bool use_team_chat = (g_active_menu->type != ChatMenuListType::Basic);
-            const std::string msg = "\xA8 " + selected_element.long_string;
+            std::string msg = "\xA8 " + selected_element.long_string;
+            if (msg.size() > chat_msg_max_len) {
+                msg.resize(chat_msg_max_len);
+            }
             if (!msg.empty()) {
                 if (!g_rad_msg_timer.valid() || g_rad_msg_timer.elapsed()) {
                     g_rad_msg_timer.set(1000);
