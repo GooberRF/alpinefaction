@@ -60,7 +60,7 @@ VsOutput main(VsInput input)
     VsOutput output;
 #ifdef INSTANCED
     // The engine draws a submesh at pos + orient * (center + v); past the draw distance the instance shrinks
-    // to its base over the fade band.
+    // to its origin over the fade band.
     float3 origin = float3(input.inst_row0.w, input.inst_row1.w, input.inst_row2.w);
     float fade = saturate((draw_distance - length(mul(float4(origin, 1), view_mat))) / fade_band);
     float4 local = float4((input.pos + submesh_center) * fade, 1);

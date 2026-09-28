@@ -1255,6 +1255,22 @@ bool OccluderTree::occluded(const OccQuery& qy) const
     return false;
 }
 
+// Soft sun sampling: the axis plus two rings of four, all fixed - bakes must be reproducible.
+constexpr int sun_cone_samples = 9;
+
+// How one light's shadow rays are cast from a receiving point.
+struct LightRays
+{
+    int type = 0;
+    const float* vec = nullptr;
+    const float* vec_end = nullptr;
+    float radius = 0.0f;
+    unsigned skip_flags = 0;
+    unsigned oneside_flags = 0;
+    Vec3f cone[sun_cone_samples];
+    int cone_count = 0;
+};
+
 } // namespace
 
 static int g_sun_light_handle = -1;
@@ -1381,9 +1397,6 @@ static void no_shadow_cast_report()
     }
 }
 
-// Soft sun sampling: the axis plus two rings of four, all fixed - bakes must be reproducible.
-static constexpr int sun_cone_samples = 9;
-
 static void sun_cone_directions(const Vec3f& axis, float spread_deg, Vec3f* out, int& count)
 {
     out[0] = axis;
@@ -1414,24 +1427,6 @@ static void sun_cone_directions(const Vec3f& axis, float spread_deg, Vec3f* out,
         }
     }
 }
-
-namespace
-{
-
-// How one light's shadow rays are cast from a receiving point.
-struct LightRays
-{
-    int type = 0;
-    const float* vec = nullptr;
-    const float* vec_end = nullptr;
-    float radius = 0.0f;
-    unsigned skip_flags = 0;
-    unsigned oneside_flags = 0;
-    Vec3f cone[sun_cone_samples];
-    int cone_count = 0;
-};
-
-} // namespace
 
 static bool light_rays_setup(uintptr_t light, LightRays& lr)
 {

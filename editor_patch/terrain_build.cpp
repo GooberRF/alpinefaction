@@ -7,6 +7,7 @@
 #include <map>
 #include <memory>
 #include <new>
+#include <span>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -798,6 +799,46 @@ const uint8_t* terrain_stored_geo_chunks(const DedTerrainData& d)
     return !d.geo_chunks.empty() && sized ? d.geo_chunks.data() : nullptr;
 }
 
+using RoomsByUid = std::unordered_map<int32_t, const GRoom*>;
+
+// Why the terrain would be saved without a build mapping, else empty with `rooms` holding the compiled rooms
+// by uid.
+std::string terrain_build_mapping_problem(CDedLevel& level, const DedTerrain& terrain, RoomsByUid& rooms)
+{
+    const DedTerrainData& d = terrain.data;
+    const std::string who = terrain_label(terrain);
+    if (d.built_room_uids.empty() || !level.solid) {
+        return who + " has no compiled geometry - run Build Geometry before saving.";
+    }
+    if (d.built_room_uids.size() != terrain_chunk_count(d) ||
+        terrain_geometry_fingerprint(terrain) != d.built_geometry_fingerprint) {
+        return who + " changed since the last Build Geometry - rebuild before saving.";
+    }
+    const GSolid* solid = level.solid;
+    for (int i = 0; i < solid->all_rooms.get_size(); i++) {
+        const GRoom* room = solid->all_rooms.data_ptr[i];
+        if (room && room->uid != -1) rooms.emplace(room->uid, room);
+    }
+    for (std::size_t k = 0; k < d.built_room_uids.size(); k++) {
+        const int32_t uid = d.built_room_uids[k];
+        if (uid == at::no_room_uid) continue;
+        auto it = uid != missing_room_uid ? rooms.find(uid) : rooms.end();
+        if (it == rooms.end() || !it->second->face_list_head) {
+            return std::format("{}: chunk {} has no compiled room - rebuild before saving.", who, k);
+        }
+    }
+    return {};
+}
+
+// Decoration k's plane of `g`, empty when `g` has none for it.
+template<typename Grid>
+auto decoration_plane(Grid& g, std::size_t k)
+{
+    const std::size_t plane = at::decoration_plane_bytes(g.nx, g.nz, g.weight_res_mul);
+    const bool has_plane = (k + 1) * plane <= g.decoration.size();
+    return std::span{g.decoration.data() + (has_plane ? k * plane : 0), has_plane ? plane : 0};
+}
+
 } // namespace
 
 std::string terrain_label(const DedTerrain& t)
@@ -863,19 +904,29 @@ at::GridView terrain_grid_view(const Vector3& pos, const DedTerrainData& d, cons
                               g.diag.data(), d.layers.data());
 }
 
+std::span<uint8_t> terrain_decoration_plane(TerrainGrid& g, std::size_t k)
+{
+    return decoration_plane(g, k);
+}
+
+std::span<const uint8_t> terrain_decoration_plane(const TerrainGrid& g, std::size_t k)
+{
+    return decoration_plane(g, k);
+}
+
+std::size_t terrain_decoration_plane_count(const TerrainGrid& g)
+{
+    return g.decoration.size() / at::decoration_plane_bytes(g.nx, g.nz, g.weight_res_mul);
+}
+
 uint32_t terrain_decoration_views(const DedTerrainData& d, const TerrainGrid& g,
                                   at::DecorationView (&out)[at::max_decorations])
 {
-    const std::size_t plane = at::decoration_plane_bytes(g.nx, g.nz, g.weight_res_mul);
-    const auto count = static_cast<uint32_t>(std::min<std::size_t>(d.decorations.size(), at::max_decorations));
-    for (uint32_t i = 0; i < count; i++) {
-        const bool planed = g.decoration.size() >= (i + 1) * plane;
-        out[i] = at::make_decoration_view(d.decorations[i], planed ? g.decoration.data() + i * plane : nullptr);
-    }
-    return count;
+    return at::make_decoration_views(d.decorations, g.decoration,
+                                     at::decoration_plane_bytes(g.nx, g.nz, g.weight_res_mul), out);
 }
 
-uint64_t terrain_decoration_light_hash(int32_t uid, const Vector3& pos, const DedTerrainData& d)
+uint64_t terrain_decoration_lighting_hash(int32_t uid, const Vector3& pos, const DedTerrainData& d)
 {
     if (!d.grid || !terrain_decorations_cast(d)) return 0;
     at::DecorationView views[at::max_decorations];
@@ -883,23 +934,24 @@ uint64_t terrain_decoration_light_hash(int32_t uid, const Vector3& pos, const De
     return at::decoration_lighting_hash(uid, terrain_grid_view(pos, d, *d.grid), views, count);
 }
 
-bool terrain_decorations_cast(const DedTerrainData& d)
+bool terrain_decoration_casts(const DedTerrainDecoration& deco)
 {
-    return std::any_of(d.decorations.begin(), d.decorations.end(), [](const DedTerrainDecoration& deco) {
-        return deco.casts_shadows && !deco.mesh.empty() && deco.density > 0.0f;
-    });
+    return deco.casts_shadows && !deco.mesh.empty() && deco.density > 0.0f;
 }
 
-uint32_t terrain_decoration_instances(int32_t uid, const Vector3& pos, const DedTerrainData& d,
-                                      at::DecorationBudget& budget)
+bool terrain_decorations_cast(const DedTerrainData& d)
 {
-    if (!d.grid || d.decorations.empty()) return 0;
+    return std::any_of(d.decorations.begin(), d.decorations.end(), terrain_decoration_casts);
+}
+
+bool terrain_decoration_placement(const Vector3& pos, const DedTerrainData& d, TerrainDecorationPlacement& out)
+{
+    if (!d.grid || d.decorations.empty()) return false;
     const TerrainGrid& g = *d.grid;
-    at::DecorationView views[at::max_decorations];
-    const uint32_t count = terrain_decoration_views(d, g, views);
-    const at::ChunkLayout layout{at::cells(g.nx), at::cells(g.nz), terrain_effective_chunk_cells(d)};
-    return at::for_each_terrain_decoration(terrain_grid_view(pos, d, g), uid, layout, views, count, budget,
-                                           [](uint32_t, uint32_t, const at::DecorationInstance&) { return true; });
+    out.grid = terrain_grid_view(pos, d, g);
+    out.layout = {at::cells(g.nx), at::cells(g.nz), terrain_effective_chunk_cells(d)};
+    out.count = terrain_decoration_views(d, g, out.views);
+    return true;
 }
 
 void terrain_build_isolated_brush_uids(std::unordered_set<int32_t>& uids)
@@ -916,37 +968,6 @@ void terrain_build_strip_leftovers(CDedLevel& level)
     }
     const int removed = remove_temp_brushes(level);
     xlog::warn("[Terrain] removed {} temporary chunk brush(es) left by Build Geometry", removed);
-}
-
-using RoomsByUid = std::unordered_map<int32_t, const GRoom*>;
-
-// Why the terrain would be saved without a build mapping, else empty with `rooms` holding the compiled rooms
-// by uid.
-static std::string terrain_build_mapping_problem(CDedLevel& level, const DedTerrain& terrain, RoomsByUid& rooms)
-{
-    const DedTerrainData& d = terrain.data;
-    const std::string who = terrain_label(terrain);
-    if (d.built_room_uids.empty() || !level.solid) {
-        return who + " has no compiled geometry - run Build Geometry before saving.";
-    }
-    if (d.built_room_uids.size() != terrain_chunk_count(d) ||
-        terrain_geometry_fingerprint(terrain) != d.built_geometry_fingerprint) {
-        return who + " changed since the last Build Geometry - rebuild before saving.";
-    }
-    const GSolid* solid = level.solid;
-    for (int i = 0; i < solid->all_rooms.get_size(); i++) {
-        const GRoom* room = solid->all_rooms.data_ptr[i];
-        if (room && room->uid != -1) rooms.emplace(room->uid, room);
-    }
-    for (std::size_t k = 0; k < d.built_room_uids.size(); k++) {
-        const int32_t uid = d.built_room_uids[k];
-        if (uid == at::no_room_uid) continue;
-        auto it = uid != missing_room_uid ? rooms.find(uid) : rooms.end();
-        if (it == rooms.end() || !it->second->face_list_head) {
-            return std::format("{}: chunk {} has no compiled room - rebuild before saving.", who, k);
-        }
-    }
-    return {};
 }
 
 bool terrain_build_resolves(CDedLevel& level, const DedTerrain& terrain)

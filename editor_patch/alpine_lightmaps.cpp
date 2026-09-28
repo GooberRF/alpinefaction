@@ -606,7 +606,7 @@ std::vector<AfTerrain> collect_terrains(const AlpineLevelProperties& props)
         a.wire.origin_x = t->pos.x;
         a.wire.origin_z = t->pos.z;
         a.wire.geometry_fingerprint = at::chart_fingerprint(terrain_grid_view(t->pos, t->data, g),
-                                                            terrain_decoration_light_hash(t->uid, t->pos, t->data));
+                                                            terrain_decoration_lighting_hash(t->uid, t->pos, t->data));
         out.push_back(a);
     }
     return out;
@@ -1599,7 +1599,7 @@ bool terrain_chart_current(const alm::TerrainChart& c, std::int32_t uid, const V
     const TerrainGrid* g = data.grid.get();
     return g && c.terrain_uid == uid &&
            alm::terrain_chart_matches(c, terrain_grid_view(pos, data, *g),
-                                      terrain_decoration_light_hash(uid, pos, data));
+                                      terrain_decoration_lighting_hash(uid, pos, data));
 }
 
 // The usable records of `r` that light a terrain of the level as it is now, the only ones decoded.

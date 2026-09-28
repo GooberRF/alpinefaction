@@ -10,7 +10,6 @@
 #include <common/ComPtr.h>
 #include <xlog/xlog.h>
 #include "../../rf/gr/gr.h"
-#include "../../rf/gr/gr_light.h"
 #include "../../rf/math/quaternion.h"
 #include "../../rf/v3d.h"
 #include "../../rf/vmesh.h"
@@ -947,14 +946,10 @@ namespace gr::d3d11
                                  params.ambient_color.green == 255 &&
                                  params.ambient_color.blue == 255);
                 if (!is_white) {
-                    float global_amb[3];
-                    rf::gr::light_get_ambient(&global_amb[0], &global_amb[1], &global_amb[2]);
-                    constexpr float blend = 0.45f;
-                    float mesh_ambient[3] = {
-                        global_amb[0] * (1.0f - blend) + (params.ambient_color.red / 255.0f) * blend,
-                        global_amb[1] * (1.0f - blend) + (params.ambient_color.green / 255.0f) * blend,
-                        global_amb[2] * (1.0f - blend) + (params.ambient_color.blue / 255.0f) * blend,
-                    };
+                    const float lightmap[3] = {params.ambient_color.red / 255.0f, params.ambient_color.green / 255.0f,
+                                               params.ambient_color.blue / 255.0f};
+                    float mesh_ambient[3];
+                    gr_mesh_blend_ambient(lightmap, mesh_ambient);
                     if (!skip_ambient_cache) {
                         entity_ambient_cache[&params] = {mesh_ambient[0], mesh_ambient[1], mesh_ambient[2]};
                     }

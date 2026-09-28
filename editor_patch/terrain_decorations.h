@@ -14,9 +14,8 @@ struct TerrainGrid;
 // (the terrain's own, or the properties dialog's staged copy). Called after the terrain's preview is drawn.
 void terrain_decorations_collect(const DedTerrain& terrain, const DedTerrainData& data);
 
-// After the terrain surfaces pass: places and draws what the terrains collected, and frees the instances of terrains no
-// longer in the level and the meshes no decoration uses, the properties dialog's `staged` data (or null)
-// included.
+// After the terrain surfaces pass: places and draws what was collected, then frees the caches of terrains no longer
+// in the level and the meshes no decoration names (`staged`, the dialog's data, may be null).
 void terrain_decorations_frame_end(CDedLevel& level, const DedTerrainData* staged);
 
 // Whether a paint since the last call left instances or meshes for another paint; clears the flag.

@@ -344,11 +344,6 @@ TerrainCellRect texels_to_cells(const tp::Rect& r, uint32_t mul)
     return {r.x0 / mul, r.z0 / mul, (r.x1 + mul - 1) / mul, (r.z1 + mul - 1) / mul};
 }
 
-uint32_t decoration_planes(const TerrainGrid& g)
-{
-    return static_cast<uint32_t>(g.decoration.size() / at::decoration_plane_bytes(g.nx, g.nz, g.weight_res_mul));
-}
-
 // The surface height at world (x, z), as an offset above origin.y.
 float surface_offset(const DedTerrain& t, float x, float z)
 {
@@ -516,7 +511,7 @@ void stroke_commit()
         const uint32_t ww = at::weight_width(grid->nx, grid->weight_res_mul);
         const uint32_t wh = at::weight_height(grid->nz, grid->weight_res_mul);
         const uint32_t cx = at::cells(grid->nx);
-        e.diff.deco_planes = decoration_planes(*grid);
+        e.diff.deco_planes = static_cast<uint32_t>(terrain_decoration_plane_count(*grid));
         if (!texels.empty()) {
             e.diff.overlay = !before->overlay.empty() && before->overlay.size() == grid->overlay.size();
             const bool planes = before->decoration.size() == grid->decoration.size();
@@ -729,9 +724,9 @@ bool apply_dab(float x, float z)
                             g.overlay.size() == at::overlay_map_bytes(g.nx, g.nz, g.weight_res_mul);
     const int deco = overlay - overlay_count;
     const bool on_deco = deco >= 0 && deco < static_cast<int>(d.decorations.size()) &&
-                         static_cast<uint32_t>(deco) < decoration_planes(g);
-    const std::size_t plane = at::decoration_plane_bytes(g.nx, g.nz, g.weight_res_mul);
-    tp::CoverageMap cov = on_deco ? tp::CoverageMap{g.decoration.data() + deco * plane, ww, wh, g.weight_res_mul, 0, 1}
+                         static_cast<std::size_t>(deco) < terrain_decoration_plane_count(g);
+    uint8_t* deco_plane = on_deco ? terrain_decoration_plane(g, static_cast<std::size_t>(deco)).data() : nullptr;
+    tp::CoverageMap cov = on_deco ? tp::CoverageMap{deco_plane, ww, wh, g.weight_res_mul, 0, 1}
                                   : tp::CoverageMap{g.overlay.data(), ww, wh, g.weight_res_mul,
                                                     static_cast<uint32_t>(overlay)};
     const bool on_coverage = on_overlay || on_deco;
@@ -1029,8 +1024,8 @@ void undo_step(bool undo)
             editor_views_mark_repaint_all();
             return;
         }
-        // Planes added or removed replace the grid, which empties the stack; this only backs that up.
-        if (from->back().diff.deco_planes != decoration_planes(*t->data.grid)) {
+        // Backstop: adding or removing a decoration replaces the grid, which already empties the stack.
+        if (from->back().diff.deco_planes != terrain_decoration_plane_count(*t->data.grid)) {
             clear_stack(*s);
             update_status();
             return;

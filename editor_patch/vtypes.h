@@ -1,6 +1,8 @@
 #pragma once
 
 #include <algorithm>
+#include <climits>
+#include <iterator>
 #include <patch_common/MemUtils.h>
 #include "mfc_types.h"
 
@@ -307,6 +309,9 @@ static_assert(offsetof(EditorV3d, meshes) == 0x4C);
 // EditorVifFace::flags bit marking a face the renderer draws from both sides.
 constexpr int VIF_FACE_DOUBLE_SIDED = 0x20;
 
+// Level the LOD walkers clamp to the mesh's lowest detail.
+inline constexpr int vmesh_lowest_lod = INT_MAX;
+
 // Calls fn(vif_mesh, chunk, vertex) for every chunk of detail level `level` (clamped to the
 // levels the mesh has) that carries geometry. Shared by the lightmap occluders and the
 // mesh-to-brush conversion so all see the same set of chunks.
@@ -319,7 +324,8 @@ inline void vmesh_for_each_lod_chunk(const EditorVifLodMesh* lod, int level, Fn&
     if (!lod || lod->num_levels <= 0) {
         return;
     }
-    const EditorVifMesh* vm = lod->meshes[std::clamp(level, 0, std::min(lod->num_levels, 3) - 1)];
+    const int levels = std::min(lod->num_levels, static_cast<int>(std::size(lod->meshes)));
+    const EditorVifMesh* vm = lod->meshes[std::clamp(level, 0, levels - 1)];
     if (!vm || !vm->chunks) {
         return;
     }
@@ -344,7 +350,7 @@ inline void vmesh_for_each_lod0_chunk(const EditorVifLodMesh* lod, Fn&& fn)
 }
 
 // Whether a face's three indices are inside its chunk's vertex array.
-inline bool vmesh_lod0_face_valid(const EditorVifChunk& chunk, const EditorVifFace& face)
+inline bool vmesh_face_valid(const EditorVifChunk& chunk, const EditorVifFace& face)
 {
     return face.vindex1 < chunk.num_vecs && face.vindex2 < chunk.num_vecs &&
            face.vindex3 < chunk.num_vecs;
@@ -595,7 +601,11 @@ static auto& gr_perspective = addr_as_ref<uint8_t>(0x0057E0ED);
 static auto& gr_half_width = addr_as_ref<float>(0x0158F2EC);
 
 // View menu state
-static auto& level_render_mode = addr_as_ref<int>(0x0057B9B8); // 0 = Render Nothing (Except brushes)
+enum LevelRenderMode : int
+{
+    LEVEL_RENDER_BRUSHES_ONLY = 0, // Render Nothing (Except brushes)
+};
+static auto& level_render_mode = addr_as_ref<int>(0x0057B9B8); // LevelRenderMode
 static auto& view_see_through = addr_as_ref<int>(0x006C9A94);
 static auto& view_room_colors = addr_as_ref<int>(0x006C9A98);
 static auto& view_lightmaps_only = addr_as_ref<int>(0x006C9AA4);
@@ -633,6 +643,17 @@ struct EditorRenderParams
     }
 };
 static_assert(sizeof(EditorRenderParams) == 0x50);
+
+// Default params, textured white while editor_textures_enabled is set. vmesh_render works on a copy of them.
+inline EditorRenderParams editor_mesh_render_params()
+{
+    EditorRenderParams params;
+    if (editor_textures_enabled != 0) {
+        params.flags |= ERF_TEXTURED;
+        params.diffuse_color = {0xff, 0xff, 0xff, 0xff};
+    }
+    return params;
+}
 
 // ─── Tree Control ────────────────────────────────────────────────────────────
 

@@ -1,14 +1,18 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
+#include <span>
 #include <string>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 #include <common/terrain/alpine_terrain.h>
 
 struct CDedLevel;
 struct DedTerrain;
 struct DedTerrainData;
+struct DedTerrainDecoration;
 struct TerrainGrid;
 struct Vector3;
 struct BrushNode;
@@ -32,16 +36,53 @@ uint32_t terrain_chunk_count(const DedTerrainData& d);
 // The emitter's view of `d` placed at `pos`, reading grid `g`.
 alpine_terrain::GridView terrain_grid_view(const Vector3& pos, const DedTerrainData& d, const TerrainGrid& g);
 
+// Decoration k's coverage plane in `g`, empty when `g` has none for it.
+std::span<uint8_t> terrain_decoration_plane(TerrainGrid& g, std::size_t k);
+std::span<const uint8_t> terrain_decoration_plane(const TerrainGrid& g, std::size_t k);
+// Whole coverage planes `g` holds.
+std::size_t terrain_decoration_plane_count(const TerrainGrid& g);
+
 // Views of `d`'s decorations over grid `g`'s coverage planes, in list order; returns how many.
 uint32_t terrain_decoration_views(const DedTerrainData& d, const TerrainGrid& g,
                                   alpine_terrain::DecorationView (&out)[alpine_terrain::max_decorations]);
 // alpine_terrain::decoration_lighting_hash of terrain `uid` with `d` placed at `pos`; 0 without a grid.
-uint64_t terrain_decoration_light_hash(int32_t uid, const Vector3& pos, const DedTerrainData& d);
+uint64_t terrain_decoration_lighting_hash(int32_t uid, const Vector3& pos, const DedTerrainData& d);
+// What makes a decoration's view cast (alpine_terrain::decoration_casts), before it has a plane.
+bool terrain_decoration_casts(const DedTerrainDecoration& deco);
 // Whether a decoration of `d` would cast shadows (what makes decoration_lighting_hash non-zero).
 bool terrain_decorations_cast(const DedTerrainData& d);
-// The decoration instances terrain `uid` with `d` placed at `pos` makes within `budget`, which it lowers.
-uint32_t terrain_decoration_instances(int32_t uid, const Vector3& pos, const DedTerrainData& d,
-                                      alpine_terrain::DecorationBudget& budget);
+
+// What placing a terrain's decorations reads.
+struct TerrainDecorationPlacement
+{
+    alpine_terrain::GridView grid;
+    alpine_terrain::ChunkLayout layout;
+    alpine_terrain::DecorationView views[alpine_terrain::max_decorations];
+    uint32_t count;
+};
+// False when `d` has no grid or no decorations.
+bool terrain_decoration_placement(const Vector3& pos, const DedTerrainData& d, TerrainDecorationPlacement& out);
+
+// alpine_terrain::for_each_terrain_decoration over terrain `uid` with `d` placed at `pos`: the instances it makes
+// within `budget`, which it lowers, in the game's order. Returns how many fn was given.
+template<typename Fn>
+uint32_t terrain_for_each_decoration(int32_t uid, const Vector3& pos, const DedTerrainData& d,
+                                     alpine_terrain::DecorationBudget& budget, Fn&& fn)
+{
+    TerrainDecorationPlacement p;
+    if (!terrain_decoration_placement(pos, d, p)) return 0;
+    return alpine_terrain::for_each_terrain_decoration(p.grid, uid, p.layout, p.views, p.count, budget,
+                                                       std::forward<Fn>(fn));
+}
+
+inline uint32_t terrain_decoration_instances(int32_t uid, const Vector3& pos, const DedTerrainData& d,
+                                             alpine_terrain::DecorationBudget& budget)
+{
+    return terrain_for_each_decoration(uid, pos, d, budget,
+                                       [](uint32_t, uint32_t, const alpine_terrain::DecorationInstance&) {
+                                           return true;
+                                       });
+}
 
 // The chunk layout the terrain's geo mask covers now (alpine_terrain::geo_chunk_layout).
 alpine_terrain::ChunkLayout terrain_geo_chunk_layout(const DedTerrainData& d);
@@ -75,8 +116,8 @@ void terrain_reset_built_state(DedTerrain& terrain);
 // edited since; paint may differ).
 bool terrain_build_is_current(const DedTerrain& terrain);
 
-// Saved now, the terrain would carry a build mapping (terrain_build_fill_mapping succeeds), so the game
-// matches it to its rooms and places its decorations.
+// Whether terrain_build_fill_mapping would succeed now, so the game matches the terrain to its rooms and places
+// its decorations.
 bool terrain_build_resolves(CDedLevel& level, const DedTerrain& terrain);
 
 // Nearest t in [0, t_max] where the ray meets a face of the compiled level the viewport draws

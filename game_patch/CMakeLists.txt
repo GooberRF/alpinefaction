@@ -356,6 +356,8 @@ set(SRCS
     misc/alpine_terrain.h
     misc/alpine_terrain_decorations.cpp
     misc/alpine_terrain_decorations.h
+    misc/decoration_mesh_cache.cpp
+    misc/decoration_mesh_cache.h
     misc/waypoints.cpp
     misc/waypoints.h
     misc/waypoints_internal.h

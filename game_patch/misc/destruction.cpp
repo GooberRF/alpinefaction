@@ -2968,9 +2968,6 @@ CallHook<void(rf::GeomodParams*)> geomod_emitter_save_params_hook{
     },
 };
 
-// geomod_create's own flag (not a GeomodParams flag): crater scale 1.0 instead of radius-derived.
-constexpr int geomod_create_flag_unit_scale = 0x8;
-
 // Hook level_mod (0x00467020) — the master "create geomod" function called by the
 // explosion system. Creates visual effects (emitters, rock debris, sound) AND queues
 // the boolean request. Returning false prevents all geomod visuals and processing.
@@ -3002,7 +2999,7 @@ FunHook<bool(float, int, rf::GRoom*, rf::Vector3*, rf::Vector3*, int, int)> geom
                 rf::GSolid* crater = rf::geomod_get_crater_solid(shape_index);
                 if (crater && crater->bounding_sphere_radius > 0.0f) {
                     float scale = 1.0f;
-                    if (!(flags & geomod_create_flag_unit_scale)) {
+                    if (!(flags & rf::geomod_create_flag_unit_scale)) {
                         float hardness_factor = std::clamp(1.0f - rf::level.default_rock_hardness * 0.01f, 0.0f, 1.0f);
                         scale = radius / crater->bounding_sphere_radius * hardness_factor;
                     }

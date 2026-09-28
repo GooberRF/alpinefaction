@@ -121,7 +121,7 @@ namespace
                 continue;
             }
             const alm::TerrainChart& chart = g_section.terrain[record];
-            switch (alm::terrain_chart_fit(chart, alpine_terrain_grid(t), t.decoration_light_hash)) {
+            switch (alm::terrain_chart_fit(chart, alpine_terrain_grid(t), t.decoration_lighting_hash)) {
             case alm::TerrainChartFit::match:
                 break;
             case alm::TerrainChartFit::other_grid:

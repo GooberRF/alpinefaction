@@ -675,6 +675,8 @@ namespace rf
     static_assert(sizeof(GeomodEvent) == 0x84);
 
     static auto& geomod_queue_add = addr_as_ref<void(GeomodParams* params)>(0x00437230);
+    // geomod_create's (0x00467020) own flag, not a GeomodParams flag: crater scale 1.0 instead of radius-derived.
+    constexpr int geomod_create_flag_unit_scale = 0x8;
     static auto& g_geomod_pending_list = addr_as_ref<GeomodEvent>(0x00637168);
 
     // Geomod state machine globals

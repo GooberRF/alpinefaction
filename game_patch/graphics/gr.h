@@ -34,6 +34,8 @@ struct SunLightState
 };
 SunLightState gr_get_sun_state();
 float gr_sun_get_mesh_scale(const float* ambient);
+// The D3D11 mesh ambient for a custom ambient (a lightmap colour 0..1): mostly the level ambient, tinted by it.
+void gr_mesh_blend_ambient(const float (&lightmap)[3], float (&out)[3]);
 
 bool gr_is_antialiasing_err();
 bool gr_supports_sample_count(uint32_t sample_count);

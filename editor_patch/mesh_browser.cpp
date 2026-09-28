@@ -1020,13 +1020,9 @@ void preview_draw_mesh(BrowserState& st)
     gr_setup_3d(&camera_orient, &camera_pos, preview_fov, true, true);
 
     set_draw_color(0xff, 0xff, 0xff, 0xff);
-    EditorRenderParams params;
+    EditorRenderParams params = editor_mesh_render_params();
     params.flags |= ERF_CUSTOM_AMBIENT;
     params.ambient_color = preview_ambient;
-    if (editor_textures_enabled != 0) {
-        params.flags |= ERF_TEXTURED;
-        params.diffuse_color = {0xff, 0xff, 0xff, 0xff};
-    }
 
     const bool anim_fx = vmesh_get_type(st.vmesh) == VMESH_TYPE_ANIM_FX;
     if (anim_fx) {

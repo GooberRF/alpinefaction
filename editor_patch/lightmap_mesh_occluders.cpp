@@ -65,7 +65,7 @@ void collect_lod(const EditorVifLodMesh* lod, int level, MeshGeom& out)
                            bitmap_has_alpha(vm.tex_handles[chunk.texture_idx]);
         for (int f = 0; f < chunk.num_faces; f++) {
             const EditorVifFace& face = chunk.faces[f];
-            if (!vmesh_lod0_face_valid(chunk, face)) {
+            if (!vmesh_face_valid(chunk, face)) {
                 continue;
             }
             out.tris.push_back(
@@ -74,7 +74,7 @@ void collect_lod(const EditorVifLodMesh* lod, int level, MeshGeom& out)
     });
 }
 
-bool collect_v3m(EditorVMesh* vmesh, MeshGeom& out)
+bool collect_v3m(EditorVMesh* vmesh, int lod_level, MeshGeom& out)
 {
     const auto* v3d = static_cast<const EditorV3d*>(vmesh->instance);
     if (!v3d) {
@@ -84,7 +84,7 @@ bool collect_v3m(EditorVMesh* vmesh, MeshGeom& out)
         return false;
     }
     for (int i = 0; i < v3d->num_meshes; i++) {
-        collect_lod(v3d->meshes[i].lod_mesh, 0, out);
+        collect_lod(v3d->meshes[i].lod_mesh, lod_level, out);
     }
     return true;
 }
@@ -724,7 +724,7 @@ const MeshGeom& mesh_geometry(DedMesh* mesh)
                        mesh->mesh_filename.c_str());
         }
         else if (vmesh->type == VMESH_TYPE_STATIC) {
-            geom.ok = collect_v3m(vmesh, geom);
+            geom.ok = collect_v3m(vmesh, 0, geom);
         }
         else if (vmesh->type == VMESH_TYPE_CHARACTER) {
             geom.ok = collect_v3c(vmesh, geom);
@@ -741,7 +741,7 @@ const MeshGeom& mesh_geometry(DedMesh* mesh)
     return g_geom_cache.emplace(std::move(key), std::move(geom)).first->second;
 }
 
-// A decoration mesh's triangles at its lowest detail level (decorations are visual only; enough for shadows).
+// A decoration mesh's triangles at its lowest LOD, enough for baked shadows.
 const MeshGeom& decoration_geometry(const std::string& name)
 {
     std::string key = string_to_lower(name);
@@ -751,19 +751,14 @@ const MeshGeom& decoration_geometry(const std::string& name)
     }
     MeshGeom geom;
     if (EditorVMesh* vmesh = terrain_decorations_mesh(name)) {
-        const auto* v3d = static_cast<const EditorV3d*>(vmesh->instance);
-        for (int i = 0; v3d && v3d->meshes && i < v3d->num_meshes; i++) {
-            const EditorVifLodMesh* lod = v3d->meshes[i].lod_mesh;
-            collect_lod(lod, lod ? lod->num_levels - 1 : 0, geom);
-        }
-        geom.ok = true;
+        geom.ok = collect_v3m(vmesh, vmesh_lowest_lod, geom);
     }
     return g_decoration_geom.emplace(std::move(key), std::move(geom)).first->second;
 }
 
 } // namespace
 
-bool lightmap_collect_mesh_occluders(std::vector<MeshOccluderTri>& out)
+void lightmap_collect_mesh_occluders(std::vector<MeshOccluderTri>& out)
 {
     g_objects = 0;
     g_tris = 0;
@@ -773,7 +768,7 @@ bool lightmap_collect_mesh_occluders(std::vector<MeshOccluderTri>& out)
 
     auto* level = CDedLevel::Get();
     if (!level || !level->GetAlpineLevelProperties().meshes_occlude) {
-        return false;
+        return;
     }
     for (DedMesh* mesh : level->GetAlpineLevelProperties().mesh_objects) {
         if (!mesh || mesh->mesh_filename.empty()) {
@@ -824,7 +819,6 @@ bool lightmap_collect_mesh_occluders(std::vector<MeshOccluderTri>& out)
                     mesh->uid, mesh->mesh_filename.c_str(), geom.tris.size(), alpha_tris, lo.x,
                     lo.y, lo.z, hi.x, hi.y, hi.z);
     }
-    return true;
 }
 
 void lightmap_collect_decoration_occluders(std::vector<MeshOccluderTri>& out)
@@ -840,8 +834,8 @@ void lightmap_collect_decoration_occluders(std::vector<MeshOccluderTri>& out)
     if (!any) {
         return;
     }
-    // Placed as the game places them: the terrains it will match to their rooms in record order, every layer
-    // counting toward the level's budget, so the casters are instances the game draws.
+    // Placed as the game places them (resolvable terrains in record order, every decoration sharing the level
+    // budget), so only instances the game draws cast.
     at::DecorationBudget budget;
     uint32_t casters = 0;
     std::size_t tris = 0;
@@ -850,20 +844,17 @@ void lightmap_collect_decoration_occluders(std::vector<MeshOccluderTri>& out)
         if (overflow || budget.spent()) {
             break;
         }
-        if (!t || t->data.decorations.empty() || !terrain_build_resolves(*level, *t)) {
+        TerrainDecorationPlacement p;
+        if (!t || t->data.decorations.empty() || !terrain_build_resolves(*level, *t) ||
+            !terrain_decoration_placement(t->pos, t->data, p)) {
             continue;
         }
-        const DedTerrainData& d = t->data;
-        const TerrainGrid& g = *d.grid;
-        at::DecorationView views[at::max_decorations];
-        const uint32_t count = terrain_decoration_views(d, g, views);
         const MeshGeom* geoms[at::max_decorations] = {};
-        for (uint32_t k = 0; k < count; k++) {
-            if (at::decoration_active(views[k]) && (views[k].flags & at::decoration_flag_casts_shadows)) {
-                geoms[k] = &decoration_geometry(d.decorations[k].mesh);
+        for (uint32_t k = 0; k < p.count; k++) {
+            if (at::decoration_casts(p.views[k])) {
+                geoms[k] = &decoration_geometry(t->data.decorations[k].mesh);
             }
         }
-        const at::ChunkLayout layout{at::cells(g.nx), at::cells(g.nz), terrain_effective_chunk_cells(d)};
         auto emit = [&](uint32_t, uint32_t k, const at::DecorationInstance& inst) {
             const MeshGeom* geom = geoms[k];
             if (!geom || geom->tris.empty()) {
@@ -886,7 +877,7 @@ void lightmap_collect_decoration_occluders(std::vector<MeshOccluderTri>& out)
             casters++;
             return true;
         };
-        at::for_each_terrain_decoration(terrain_grid_view(t->pos, d, g), t->uid, layout, views, count, budget, emit);
+        at::for_each_terrain_decoration(p.grid, t->uid, p.layout, p.views, p.count, budget, emit);
     }
     xlog::info("[MeshOccluders] {} terrain decoration instances contributed {} triangles", casters, tris);
     if (overflow) {

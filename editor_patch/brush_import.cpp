@@ -162,7 +162,7 @@ bool gather_geometry(DedMesh* mesh, SourceGeom& out)
 
             for (int f = 0; f < chunk.num_faces; f++) {
                 const EditorVifFace& face = chunk.faces[f];
-                if (!vmesh_lod0_face_valid(chunk, face)) {
+                if (!vmesh_face_valid(chunk, face)) {
                     out.degenerate++;
                     continue;
                 }

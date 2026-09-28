@@ -383,26 +383,16 @@ uint32_t choose_res(uint32_t edge, uint32_t chunk_count)
     return res;
 }
 
-bool casts(const DedTerrainDecoration& deco)
-{
-    return deco.casts_shadows && !deco.mesh.empty() && deco.density > 0.0f;
-}
-
 // Whether `cast` lists `d`'s shadow casting decorations as they are (their draw distance aside).
 bool same_casting(const std::vector<std::pair<std::size_t, DedTerrainDecoration>>& cast, const DedTerrainData& d)
 {
     std::size_t n = 0;
     for (std::size_t i = 0; i < d.decorations.size(); i++) {
-        const DedTerrainDecoration& deco = d.decorations[i];
-        if (!casts(deco)) continue;
+        if (!terrain_decoration_casts(d.decorations[i])) continue;
         if (n >= cast.size() || cast[n].first != i) return false;
-        const DedTerrainDecoration& c = cast[n++].second;
-        if (c.mesh != deco.mesh || c.density != deco.density || c.scale_min != deco.scale_min ||
-            c.scale_max != deco.scale_max || c.max_slope != deco.max_slope ||
-            c.vertical_offset != deco.vertical_offset || c.link_layer != deco.link_layer ||
-            c.align_to_slope != deco.align_to_slope || c.random_yaw != deco.random_yaw) {
-            return false;
-        }
+        DedTerrainDecoration deco = d.decorations[i];
+        deco.draw_distance = 0.0f;
+        if (cast[n++].second != deco) return false;
     }
     return n == cast.size();
 }
@@ -411,7 +401,7 @@ std::vector<std::pair<std::size_t, DedTerrainDecoration>> casting_decorations(co
 {
     std::vector<std::pair<std::size_t, DedTerrainDecoration>> out;
     for (std::size_t i = 0; i < d.decorations.size(); i++) {
-        if (!casts(d.decorations[i])) continue;
+        if (!terrain_decoration_casts(d.decorations[i])) continue;
         out.emplace_back(i, d.decorations[i]);
         out.back().second.draw_distance = 0.0f;
     }
@@ -851,15 +841,6 @@ std::vector<GrVertex> g_verts;
 std::vector<uint32_t> g_vert_stamp;
 uint32_t g_stamp = 0;
 
-double elapsed_ms(const LARGE_INTEGER& since)
-{
-    static LARGE_INTEGER freq{};
-    if (!freq.QuadPart) QueryPerformanceFrequency(&freq);
-    LARGE_INTEGER now;
-    QueryPerformanceCounter(&now);
-    return static_cast<double>(now.QuadPart - since.QuadPart) * 1000.0 / static_cast<double>(freq.QuadPart);
-}
-
 Vector3 grid_point(const at::GridView& v, uint32_t x, uint32_t z, float lift = 0.0f)
 {
     float p[3];
@@ -1239,14 +1220,18 @@ void level_face_draw_hooked(GSolid* solid, GFace* face, char outline)
 
 } // namespace
 
+bool terrain_view_draws_solid()
+{
+    return gr_perspective && level_render_mode != LEVEL_RENDER_BRUSHES_ONLY && !view_see_through;
+}
+
 void terrain_preview_draw(CDedLevel& level, const DedTerrain& terrain, const DedTerrainData& data, bool selected)
 {
     if (!data.grid || data.layers.empty()) return;
     try {
         Preview& p = sync_preview(terrain, data);
         const at::GridView v = terrain_grid_view(terrain.pos, data, *data.grid);
-        const bool wire = !gr_perspective || level_render_mode == 0 || view_see_through;
-        if (wire) {
+        if (!terrain_view_draws_solid()) {
             draw_wireframe(v, selected);
             return;
         }
@@ -1437,8 +1422,7 @@ DedTerrain* terrain_surface_pick(CDedLevel& level, float screen_x, float screen_
         }
     }
     // Level faces the view draws in front of it; ortho, see-through and brush-only views draw none.
-    if (best && gr_perspective && level_render_mode != 0 && !view_see_through &&
-        terrain_build_level_ray_hit(level, ray.o, ray.d, best_t) < best_t) {
+    if (best && terrain_view_draws_solid() && terrain_build_level_ray_hit(level, ray.o, ray.d, best_t) < best_t) {
         return nullptr;
     }
     return best;

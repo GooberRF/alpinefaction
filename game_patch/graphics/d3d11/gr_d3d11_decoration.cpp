@@ -35,6 +35,9 @@ namespace
 
     constexpr UINT cbuffer_slot = 4;
     constexpr UINT instance_slot = 1;
+    // Instances shrink away over the last fade_band_fraction of the draw distance, at least min_fade_band
+    constexpr float min_fade_band = 2.0f;
+    constexpr float fade_band_fraction = 0.1f;
 
     // The level of detail stock LOD selection (0x0052FA40) picks at this apparent distance.
     int select_lod(const rf::VifLodMesh& lod_mesh, float apparent_distance)
@@ -50,14 +53,6 @@ namespace
             }
         }
         return min_lod;
-    }
-
-    float distance_to_box(const rf::Vector3& p, const DecoChunk& c)
-    {
-        const float dx = std::max({c.lo[0] - p.x, 0.0f, p.x - c.hi[0]});
-        const float dy = std::max({c.lo[1] - p.y, 0.0f, p.y - c.hi[1]});
-        const float dz = std::max({c.lo[2] - p.z, 0.0f, p.z - c.hi[2]});
-        return std::sqrt(dx * dx + dy * dy + dz * dz);
     }
 }
 
@@ -108,7 +103,7 @@ namespace gr::d3d11
             td.dirty_chunks.clear();
         }
         for (std::uint32_t c : td.dirty_chunks) {
-            const DecoChunk& chunk = td.chunks[c];
+            const DecorationChunk& chunk = td.chunks[c];
             for (std::uint32_t d = 0; d < at::max_decorations; d++) {
                 if (chunk.count[d] == 0) continue;
                 constexpr UINT stride = sizeof(GpuDecorationInstance);
@@ -132,7 +127,7 @@ namespace gr::d3d11
         DecorationBufferData data{};
         data.submesh_center = {center.x, center.y, center.z};
         data.draw_distance = draw_distance;
-        data.fade_band = std::max(2.0f, 0.1f * draw_distance);
+        data.fade_band = std::max(min_fade_band, fade_band_fraction * draw_distance);
         D3D11_MAPPED_SUBRESOURCE mapped;
         DF_GR_D3D11_CHECK_HR(render_context_.device_context()->Map(cbuffer_, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped));
         std::memcpy(mapped.pData, &data, sizeof(data));
@@ -179,13 +174,13 @@ namespace gr::d3d11
             render_context_.set_vertex_buffer(buffer, sizeof(GpuDecorationInstance), instance_slot);
             chunk_distance_.clear();
             for (std::size_t i = begin; i < end; i++) {
-                chunk_distance_.push_back(distance_to_box(eye, td.chunks[sorted_chunks_[i].chunk]));
+                chunk_distance_.push_back(std::sqrt(td.chunks[sorted_chunks_[i].chunk].dist_sq(eye)));
             }
             stats.visible_chunks += static_cast<std::uint32_t>(end - begin);
 
             for (std::uint32_t d = 0; d < at::max_decorations; d++) {
                 if (td.mesh_slot[d] < 0) continue;
-                auto* v3d = static_cast<rf::V3d*>(alpine_terrain_decoration_mesh(td.mesh_slot[d]).mesh->instance);
+                auto* v3d = static_cast<rf::V3d*>(alpine_terrain_decorations_mesh(td.mesh_slot[d]).mesh->instance);
                 if (!v3d || !v3d->meshes) continue;
                 const float draw_distance = td.draw_distance[d];
                 for (int m = 0; m < v3d->num_meshes; m++) {
@@ -195,7 +190,7 @@ namespace gr::d3d11
                     set_submesh(lod_mesh->center, draw_distance);
                     auto* materials = reinterpret_cast<rf::MeshMaterial*>(submesh.materials);
                     for (std::size_t i = begin; i < end; i++) {
-                        const DecoChunk& chunk = td.chunks[sorted_chunks_[i].chunk];
+                        const DecorationChunk& chunk = td.chunks[sorted_chunks_[i].chunk];
                         const float distance = chunk_distance_[i - begin];
                         if (chunk.count[d] == 0 || distance > draw_distance) continue;
                         const int lod = select_lod(*lod_mesh, distance * apparent_per_meter);

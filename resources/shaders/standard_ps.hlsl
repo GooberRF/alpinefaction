@@ -849,20 +849,20 @@ float4 main(VsOutput input) : SV_TARGET
 
     clip(target.a - alpha_test);
 
+    float3 light_color;
+#ifdef INSTANCE_LIGHT
+    // Per instance, what the mesh path uploads per mesh as ambient_light and sun_scale
+    light_color = input.inst_light.rgb + sun_color * input.inst_light.a * saturate(dot(input.norm, -sun_travel_dir));
+    if (disable_textures < 0.5f) {
+#else
     // The alpine branch is taken before the *2 modulate below, so show_lightmaps still emits the
     // raw atlas texel exactly as it emits the raw stock texel.
-    float3 light_color;
     [branch] if (af_lm_enabled > 0.5f && input.uv1.z >= 0.0f) {
         light_color = af_lm_sample(input.uv1.xy, (uint)(input.uv1.z + 0.5f));
     } else {
         light_color = tex1.Sample(samp1, input.uv1.xy).rgb;
     }
     if (disable_textures < 0.5f) {
-#ifdef INSTANCE_LIGHT
-        // Per instance, what the mesh path uploads per mesh as ambient_light and sun_scale
-        light_color = input.inst_light.rgb
-                    + sun_color * input.inst_light.a * saturate(dot(input.norm, -sun_travel_dir));
-#else
         if (use_dynamic_lighting > 0.5f) {
             // Dynamic-lit meshes (V3D items, characters): no lightmap.
             // Start from level ambient; light_scale applied to total after accumulation

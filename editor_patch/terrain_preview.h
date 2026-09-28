@@ -1,5 +1,6 @@
 #pragma once
 
+#include <windows.h>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -21,6 +22,19 @@ inline constexpr std::uint8_t terrain_selected_rgb[3] = {0xff, 0x00, 0x00};
 inline constexpr std::uint8_t terrain_unselected_rgb[3] = {0x50, 0xc0, 0x50};
 
 void ApplyTerrainPreviewPatches();
+
+// Milliseconds since a QueryPerformanceCounter reading.
+inline double elapsed_ms(const LARGE_INTEGER& since)
+{
+    static LARGE_INTEGER freq{};
+    if (!freq.QuadPart) QueryPerformanceFrequency(&freq);
+    LARGE_INTEGER now;
+    QueryPerformanceCounter(&now);
+    return static_cast<double>(now.QuadPart - since.QuadPart) * 1000.0 / static_cast<double>(freq.QuadPart);
+}
+
+// Whether the viewport being painted draws level surfaces solid: perspective, not brushes only, not see-through.
+bool terrain_view_draws_solid();
 
 // Draws one terrain into the viewport being painted, from `data` (the terrain's own, or the
 // properties dialog's staged copy). Called from the terrain surfaces pass (0x0041f6f9).

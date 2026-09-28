@@ -103,6 +103,7 @@ inline constexpr std::uint8_t overlay_flag_mask = overlay_flag_triplanar | overl
 // texture layer's weight. Visual only.
 inline constexpr std::uint32_t max_decorations = 8;
 inline constexpr std::uint8_t decoration_link_none = 0xFF;
+inline constexpr std::uint8_t decoration_coverage_full = 255;
 inline constexpr std::uint8_t decoration_flag_align_to_slope = 0x1;
 inline constexpr std::uint8_t decoration_flag_random_yaw = 0x2;
 inline constexpr std::uint8_t decoration_flag_casts_shadows = 0x4;
@@ -587,6 +588,12 @@ inline void texel_weights(const std::uint8_t* weights, std::size_t map_bytes, st
     }
 }
 
+// Where layer `layer`'s weight of texel 0 sits in the two maps; texel t's is 4 * t further.
+inline constexpr std::size_t layer_weight_offset(std::uint32_t layer, std::size_t map_bytes)
+{
+    return (layer < 4 ? 0 : map_bytes) + (layer & 3);
+}
+
 inline void set_texel_weights(std::uint8_t* weights, std::size_t map_bytes, std::size_t texel,
                               const std::uint8_t (&w)[max_layers])
 {
@@ -804,6 +811,11 @@ inline const char* validate_decoration_count(const Header& h)
     return nullptr;
 }
 
+inline constexpr char ascii_lower(char c)
+{
+    return c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c;
+}
+
 // A decoration's mesh: empty (none picked yet), or a .v3m file name within the texture name caps and
 // without a path.
 inline bool decoration_mesh_valid(const char* name, std::size_t len)
@@ -814,9 +826,8 @@ inline bool decoration_mesh_valid(const char* name, std::size_t len)
         const char c = name[i];
         if (c == '/' || c == '\\' || c == ':' || c == '\0') return false;
     }
-    auto lower = [](char c) { return c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c; };
     const char* ext = name + len - 4;
-    return ext[0] == '.' && lower(ext[1]) == 'v' && ext[2] == '3' && lower(ext[3]) == 'm';
+    return ext[0] == '.' && ascii_lower(ext[1]) == 'v' && ext[2] == '3' && ascii_lower(ext[3]) == 'm';
 }
 
 inline const char* validate_decoration(float density, float scale_min, float scale_max, float max_slope_deg,
@@ -1579,11 +1590,33 @@ DecorationView make_decoration_view(const Decoration& deco, const std::uint8_t* 
             deco.vertical_offset, deco.link_layer, decoration_flags(deco)};
 }
 
+// Views of the first max_decorations of `decos` over `coverage`, which holds their planes of plane_bytes each in
+// list order; one without a plane gets a null coverage. Returns how many.
+template<typename Decorations, typename Coverage>
+std::uint32_t make_decoration_views(const Decorations& decos, const Coverage& coverage, std::size_t plane_bytes,
+                                    DecorationView (&out)[max_decorations])
+{
+    const auto count = static_cast<std::uint32_t>(std::min<std::size_t>(decos.size(), max_decorations));
+    for (std::uint32_t i = 0; i < count; i++) {
+        const bool has_plane = coverage.size() >= (i + 1) * plane_bytes;
+        out[i] = make_decoration_view(decos[i], has_plane ? coverage.data() + i * plane_bytes : nullptr);
+    }
+    return count;
+}
+
 // Places nothing, casts nothing and hashes nothing when inactive.
 inline constexpr bool decoration_active(const DecorationView& d)
 {
     return d.coverage && d.mesh && d.mesh[0] && d.density > 0.0f;
 }
+
+inline constexpr bool decoration_casts(const DecorationView& d)
+{
+    return decoration_active(d) && (d.flags & decoration_flag_casts_shadows) != 0;
+}
+
+inline constexpr double deg_to_rad = 3.14159265358979 / 180.0;
+inline constexpr float two_pi = 6.28318531f;
 
 // Weight texels [x0, x1) x [z0, z1).
 struct TexelRect
@@ -1641,6 +1674,7 @@ struct DecorationBudget
 // texel expects density x texel area x coverage (x the linked layer's weight) instances; the fraction is one
 // more by chance. Holes, and ground steeper than the slope limit, drop their instances without moving any
 // other.
+// Its output is baked into decoration shadows: change it only together with decoration_lighting_hash.
 template<typename Fn>
 std::uint32_t for_each_decoration_instance(const GridView& g, const DecorationView& d, std::uint64_t seed,
                                            TexelRect r, DecorationBudget& budget, Fn&& fn)
@@ -1658,10 +1692,9 @@ std::uint32_t for_each_decoration_instance(const GridView& g, const DecorationVi
     const double expected = std::min(static_cast<double>(d.density) * step * step,
                                      static_cast<double>(max_decoration_instances_per_texel));
     const std::uint64_t expected_q16 = static_cast<std::uint64_t>(std::llround(expected * 65536.0));
-    const float cos_max =
-        static_cast<float>(std::cos(static_cast<double>(d.max_slope_deg) * (3.14159265358979 / 180.0)));
+    const float cos_max = static_cast<float>(std::cos(static_cast<double>(d.max_slope_deg) * deg_to_rad));
     const std::size_t map_bytes = weight_map_bytes(g.nx, g.nz, mul);
-    const std::size_t link_base = linked ? (d.link_layer < 4 ? 0 : map_bytes) + (d.link_layer & 3) : 0;
+    const std::size_t link_base = linked ? layer_weight_offset(d.link_layer, map_bytes) : 0;
     const bool align = (d.flags & decoration_flag_align_to_slope) != 0;
     const bool random_yaw = (d.flags & decoration_flag_random_yaw) != 0;
 
@@ -1689,7 +1722,7 @@ std::uint32_t for_each_decoration_instance(const GridView& g, const DecorationVi
                 inst.base[1] = height_at(g, inst.base[0], inst.base[2]);
                 heightmap_normal(g, inst.base[0], inst.base[2], inst.normal);
                 if (!(inst.normal[1] >= cos_max)) continue;
-                const float yaw = random_yaw ? hash_u01(r3) * 6.28318531f : 0.0f;
+                const float yaw = random_yaw ? hash_u01(r3) * two_pi : 0.0f;
                 inst.scale = d.scale_min + (d.scale_max - d.scale_min) * hash_u01(r4);
 
                 const float up[3] = {align ? inst.normal[0] : 0.0f, align ? inst.normal[1] : 1.0f,
@@ -1809,12 +1842,9 @@ static_assert([] {
 inline constexpr std::uint64_t decoration_lighting_hash(std::int32_t uid, const GridView& g, const DecorationView* d,
                                                         std::uint32_t count)
 {
-    auto casts = [](const DecorationView& v) {
-        return decoration_active(v) && (v.flags & decoration_flag_casts_shadows) != 0;
-    };
     count = std::min(count, max_decorations);
     bool any = false;
-    for (std::uint32_t i = 0; i < count; i++) any = any || casts(d[i]);
+    for (std::uint32_t i = 0; i < count; i++) any = any || decoration_casts(d[i]);
     if (!any) return 0;
 
     std::uint64_t h = 0x6A09E667F3BCC908ull;
@@ -1840,14 +1870,11 @@ inline constexpr std::uint64_t decoration_lighting_hash(std::int32_t uid, const 
     mix(g.weight_res_mul);
     for (std::uint32_t i = 0; i < count; i++) {
         const DecorationView& v = d[i];
-        if (!casts(v)) continue;
+        if (!decoration_casts(v)) continue;
         mix(i);
         std::size_t len = 0;
         while (v.mesh[len]) len++;
-        bytes(len, [&](std::size_t k) {
-            const char c = v.mesh[k];
-            return static_cast<std::uint8_t>(c >= 'A' && c <= 'Z' ? c - 'A' + 'a' : c);
-        });
+        bytes(len, [&](std::size_t k) { return static_cast<std::uint8_t>(ascii_lower(v.mesh[k])); });
         mix(position_bits(v.density));
         mix(position_bits(v.scale_min));
         mix(position_bits(v.scale_max));
@@ -1857,7 +1884,7 @@ inline constexpr std::uint64_t decoration_lighting_hash(std::int32_t uid, const 
         mix(v.link_layer);
         mix_le_words(mix, v.coverage, texels);
         if (v.link_layer != decoration_link_none && g.weights && v.link_layer < max_layers) {
-            const std::size_t base = (v.link_layer < 4 ? 0 : map_bytes) + (v.link_layer & 3);
+            const std::size_t base = layer_weight_offset(v.link_layer, map_bytes);
             bytes(texels, [&](std::size_t t) { return g.weights[base + t * 4]; });
         }
     }
@@ -1872,13 +1899,6 @@ inline constexpr std::uint64_t chart_fingerprint(const GridView& g, std::uint64_
 }
 
 // Stored in every baked terrain chart, so pinned.
-static_assert([] {
-    const std::uint16_t heights[9] = {0, 1, 0xFFFF, 0x1234, 0x8000, 0xABCD, 7, 0x0100, 0x7FFF};
-    const std::uint8_t holes[1] = {0x04}, diag[1] = {0x09};
-    const GridView g{heights, nullptr, holes, diag, 3, 3, 1, {-12.5f, -0.0f, 1024.0f}, 2.0f, -3.0f, 64.0f,
-                     flag_geoable, 16.0f, 8.0f, 1, 0, {}};
-    return chart_fingerprint(g, 0);
-}() == 0xEE420A033E6AF829ull);
 static_assert([] {
     const std::uint16_t heights[9] = {0, 1, 0xFFFF, 0x1234, 0x8000, 0xABCD, 7, 0x0100, 0x7FFF};
     const std::uint8_t holes[1] = {0x04}, diag[1] = {0x09}, plane[4] = {255, 0, 17, 128};

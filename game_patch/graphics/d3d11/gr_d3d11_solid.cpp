@@ -991,13 +991,12 @@ namespace gr::d3d11
     void SolidRenderer::collect_decoration_chunk(const rf::GRoom* room)
     {
         const AlpineTerrainRoomRef* ref = alpine_terrain_find_room(room);
-        const DecoChunk* chunk = ref ? alpine_terrain_decoration_chunk(*ref) : nullptr;
+        const DecorationChunk* chunk = ref ? alpine_terrain_decorations_chunk(*ref) : nullptr;
         if (!chunk) {
             return;
         }
-        const rf::Vector3 lo{chunk->lo[0], chunk->lo[1], chunk->lo[2]};
-        const rf::Vector3 hi{chunk->hi[0], chunk->hi[1], chunk->hi[2]};
-        if (!rf::gr::cull_bounding_box(lo, hi) && claim_terrain_chunk(terrain_decorations_seen_, room)) {
+        if (!rf::gr::cull_bounding_box(chunk->lo_vec(), chunk->hi_vec()) &&
+            claim_terrain_chunk(terrain_decorations_seen_, room)) {
             decoration_chunks_.push_back(*ref);
         }
     }

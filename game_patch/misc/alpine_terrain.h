@@ -13,15 +13,15 @@ namespace rf
     struct GFace;
 }
 
-// A loaded record. overlay_coverage is freed at load unless the D3D11 renderer draws the terrain, weights also
-// unless a client that renders places its decorations, and decoration_coverage unless one does. Placing them
-// frees what only it needed (alpine_terrain_release_decoration_maps).
+// A loaded record. At load, overlay_coverage is kept only for the D3D11 renderer, decoration_coverage only on a
+// client that renders, and weights for either; alpine_terrain_release_decoration_maps frees the decoration-only
+// ones once placed.
 struct AlpineTerrain : alpine_terrain::Record
 {
     // Set by alpine_terrain_resolve_rooms when every chunk matched its compiled room.
     bool resolved = false;
     // alpine_terrain::decoration_lighting_hash, taken at load while the maps it reads are still there.
-    std::uint64_t decoration_light_hash = 0;
+    std::uint64_t decoration_lighting_hash = 0;
 };
 
 // A resolved terrain chunk's compiled room.
@@ -50,6 +50,9 @@ inline bool alpine_terrain_is_chunk_room(const rf::GRoom* room)
 bool alpine_terrain_is_separate_chunk(const rf::GRoom* parent, const rf::GRoom* detail_room);
 // weights is null when freed; only emission (dominant_layer) and material_fingerprint read it.
 alpine_terrain::GridView alpine_terrain_grid(const AlpineTerrain& t);
+// Views of t's decorations over its coverage planes (none once freed); returns how many.
+std::uint32_t alpine_terrain_decoration_views(const AlpineTerrain& t,
+                                              alpine_terrain::DecorationView (&out)[alpine_terrain::max_decorations]);
 // alpine_terrain::face_kind of a chunk face with no surface.
 alpine_terrain::FaceKind alpine_terrain_face_kind(const alpine_terrain::GridView& g, const rf::GFace& face);
 // The light at `pos` on a face of `kind` of resolved terrain `terrain` (alpine_terrain_get_all index) as a

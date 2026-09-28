@@ -81,17 +81,17 @@ const char* resolve_terrain(const AlpineTerrain& t, const std::unordered_map<int
 }
 
 // Before anything is freed: it reads the decoration planes and the weights of linked layers.
-std::uint64_t decoration_light_hash(const AlpineTerrain& t)
+std::uint64_t decoration_lighting_hash(const AlpineTerrain& t)
 {
     at::DecorationView views[at::max_decorations];
-    const std::size_t plane = at::decoration_plane_bytes(t.header.nx, t.header.nz, t.header.weight_res_mul);
-    const auto count = static_cast<std::uint32_t>(std::min<std::size_t>(t.decorations.size(), at::max_decorations));
-    for (std::uint32_t i = 0; i < count; i++) {
-        const bool planed = t.decoration_coverage.size() >= (i + 1) * plane;
-        views[i] =
-            at::make_decoration_view(t.decorations[i], planed ? t.decoration_coverage.data() + i * plane : nullptr);
-    }
+    const std::uint32_t count = alpine_terrain_decoration_views(t, views);
     return at::decoration_lighting_hash(t.uid, alpine_terrain_grid(t), views, count);
+}
+
+// The paint maps are texture sources for the D3D11 terrain renderer, which cannot be switched to mid-session.
+bool keeps_paint_maps()
+{
+    return !rf::is_dedicated_server && is_d3d11();
 }
 
 } // namespace
@@ -113,10 +113,8 @@ void alpine_terrain_load_chunk(rf::File& file, std::size_t chunk_len)
         return;
     }
 
-    // The paint maps are texture sources for the D3D11 terrain renderer, which cannot be switched to
-    // mid-session; the weights and decoration planes also place decorations, which only a client that
-    // renders draws.
-    const bool keep_paint_maps = !rf::is_dedicated_server && is_d3d11();
+    // The weights and decoration planes also place decorations, which only a client that renders draws.
+    const bool keep_paint_maps = keeps_paint_maps();
     const bool renders = !rf::is_dedicated_server && !is_headless_mode();
 
     // All or nothing: after a bad record nothing later in the chunk can be trusted.
@@ -132,7 +130,7 @@ void alpine_terrain_load_chunk(rf::File& file, std::size_t chunk_len)
                 return;
             }
             AlpineTerrain& t = parsed.emplace_back(AlpineTerrain{std::move(rec)});
-            t.decoration_light_hash = decoration_light_hash(t);
+            t.decoration_lighting_hash = decoration_lighting_hash(t);
             const bool decorated = renders && !t.decorations.empty();
             if (!keep_paint_maps && !decorated) {
                 t.weights.clear();
@@ -168,7 +166,7 @@ void alpine_terrain_clear_state()
 
 void alpine_terrain_release_decoration_maps()
 {
-    const bool keep_paint_maps = is_d3d11();
+    const bool keep_paint_maps = keeps_paint_maps();
     for (AlpineTerrain& t : g_terrains) {
         t.decoration_coverage.clear();
         t.decoration_coverage.shrink_to_fit();
@@ -254,6 +252,13 @@ at::GridView alpine_terrain_grid(const AlpineTerrain& t)
 {
     return at::make_grid_view(t.header, t.heights.data(), t.weights.empty() ? nullptr : t.weights.data(),
                               t.holes.data(), t.diag.data(), t.layers.data());
+}
+
+std::uint32_t alpine_terrain_decoration_views(const AlpineTerrain& t, at::DecorationView (&out)[at::max_decorations])
+{
+    return at::make_decoration_views(
+        t.decorations, t.decoration_coverage,
+        at::decoration_plane_bytes(t.header.nx, t.header.nz, t.header.weight_res_mul), out);
 }
 
 const std::vector<AlpineTerrain>& alpine_terrain_get_all()

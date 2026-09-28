@@ -5,8 +5,6 @@
 #include <new>
 #include <optional>
 #include <string>
-#include <unordered_map>
-#include <common/utils/string-utils.h>
 #include <xlog/xlog.h>
 #include "alpine_settings.h"
 #include "alpine_terrain.h"
@@ -15,7 +13,6 @@
 #include "../multi/multi.h"
 #include "../os/console.h"
 #include "../rf/gr/gr.h"
-#include "../rf/gr/gr_light.h"
 #include "../rf/math/matrix.h"
 #include "../rf/math/vector.h"
 #include "../rf/multi.h"
@@ -47,10 +44,7 @@ struct Crater
 bool g_draw_enabled = true;
 std::uint32_t g_placed = 0;
 std::vector<TerrainDecorations> g_decorations;
-// The engine owns level meshes and frees them on unload: dropped at clear_state, never vmesh_free'd.
-std::vector<DecorationMesh> g_meshes;
-// Lowercased name -> g_meshes index, or -1 for a name known not to load, so it warns once
-std::unordered_map<std::string, int> g_mesh_lookup;
+DecorationMeshCache g_meshes{max_mesh_radius};
 // Every crater of the level so far, for those a savegame replays before the instances exist
 std::vector<Crater> g_craters;
 DecorationFrameStats g_stats;
@@ -65,7 +59,7 @@ struct LegacyChunk
 {
     float dist_sq;
     const TerrainDecorations* td;
-    const DecoChunk* chunk;
+    const DecorationChunk* chunk;
 };
 // Reserved at level init, so the render pass never allocates
 std::vector<LegacyDraw> g_legacy_draws;
@@ -77,34 +71,6 @@ bool level_decorated()
     return std::any_of(terrains.begin(), terrains.end(), [](const AlpineTerrain& t) {
         return t.resolved && !t.decorations.empty();
     });
-}
-
-int resolve_mesh(const std::string& name)
-{
-    const std::string key = string_to_lower(name);
-    auto it = g_mesh_lookup.find(key);
-    if (it != g_mesh_lookup.end()) {
-        return it->second;
-    }
-    rf::VMesh* mesh = rf::vmesh_load(name.c_str(), rf::MESH_TYPE_STATIC, -1);
-    if (!mesh) {
-        xlog::warn("[AlpineTerrain] Failed to load decoration mesh '{}'", name);
-        g_mesh_lookup.emplace(key, -1);
-        return -1;
-    }
-    rf::Vector3 bbox_min{}, bbox_max{};
-    rf::vmesh_get_bbox(mesh, &bbox_min, &bbox_max);
-    const rf::Vector3 extent{std::max(std::fabs(bbox_min.x), std::fabs(bbox_max.x)),
-                             std::max(std::fabs(bbox_min.y), std::fabs(bbox_max.y)),
-                             std::max(std::fabs(bbox_min.z), std::fabs(bbox_max.z))};
-    float radius = extent.len();
-    if (!std::isfinite(radius) || radius < 0.0f) {
-        radius = 0.0f;
-    }
-    const int slot = static_cast<int>(g_meshes.size());
-    g_meshes.push_back({mesh, std::min(radius, max_mesh_radius)});
-    g_mesh_lookup.emplace(key, slot);
-    return slot;
 }
 
 std::uint32_t pack_rgba(const float (&rgb)[3], float a)
@@ -127,12 +93,10 @@ std::uint32_t instance_light(int terrain, const at::DecorationInstance& inst, bo
     if (!d3d11) {
         return pack_rgba(texel, 1.0f);
     }
-    float ambient[3];
-    rf::gr::light_get_ambient(&ambient[0], &ambient[1], &ambient[2]);
-    constexpr float blend = 0.45f;
     float rgb[3];
-    for (int c = 0; c < 3; c++) {
-        rgb[c] = std::clamp(ambient[c] * (1.0f - blend) + texel[c] * blend, 0.0f, 1.0f);
+    gr_mesh_blend_ambient(texel, rgb);
+    for (float& c : rgb) {
+        c = std::clamp(c, 0.0f, 1.0f);
     }
     return pack_rgba(rgb, gr_sun_get_mesh_scale(rgb));
 }
@@ -149,18 +113,6 @@ rf::Vector3 instance_base(const GpuDecorationInstance& g, float vertical_offset)
             g.row2[3] - g.row2[1] * vertical_offset};
 }
 
-float box_dist_sq(const rf::Vector3& p, const float (&lo)[3], const float (&hi)[3])
-{
-    const float d[3] = {std::max({lo[0] - p.x, 0.0f, p.x - hi[0]}), std::max({lo[1] - p.y, 0.0f, p.y - hi[1]}),
-                        std::max({lo[2] - p.z, 0.0f, p.z - hi[2]})};
-    return d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
-}
-
-bool sphere_touches_box(const rf::Vector3& p, float r, const float (&lo)[3], const float (&hi)[3])
-{
-    return box_dist_sq(p, lo, hi) <= r * r;
-}
-
 // Removes the instances standing within the crater on the chunks it carves. Returns how many.
 std::uint32_t apply_crater(const Crater& crater)
 {
@@ -171,8 +123,8 @@ std::uint32_t apply_crater(const Crater& crater)
         TerrainDecorations& td = g_decorations[static_cast<std::size_t>(ref.terrain)];
         if (ref.chunk < 0 || static_cast<std::size_t>(ref.chunk) >= td.chunks.size()) continue;
         const auto c = static_cast<std::size_t>(ref.chunk);
-        DecoChunk& chunk = td.chunks[c];
-        if (!sphere_touches_box(crater.pos, crater.radius, chunk.lo, chunk.hi)) continue;
+        DecorationChunk& chunk = td.chunks[c];
+        if (!(chunk.dist_sq(crater.pos) <= r_sq)) continue;
         bool changed = false;
         for (std::uint32_t d = 0; d < at::max_decorations; d++) {
             GpuDecorationInstance* first = td.inst.data() + chunk.first[d];
@@ -201,27 +153,20 @@ void build_terrain(int index, const AlpineTerrain& t, TerrainDecorations& td, at
                    bool d3d11)
 {
     const at::GridView g = alpine_terrain_grid(t);
-    const std::size_t plane = at::decoration_plane_bytes(t.header.nx, t.header.nz, t.header.weight_res_mul);
-    const auto count = static_cast<std::uint32_t>(std::min<std::size_t>(t.decorations.size(), at::max_decorations));
     at::DecorationView views[at::max_decorations];
+    const std::uint32_t count = alpine_terrain_decoration_views(t, views);
     float radius[at::max_decorations] = {};
-    std::fill(std::begin(td.mesh_slot), std::end(td.mesh_slot), -1);
-    std::fill(std::begin(td.draw_distance), std::end(td.draw_distance), 0.0f);
-    std::fill(std::begin(td.vertical_offset), std::end(td.vertical_offset), 0.0f);
     for (std::uint32_t d = 0; d < count; d++) {
-        const bool planed = t.decoration_coverage.size() >= (d + 1) * plane;
-        const std::uint8_t* coverage = planed ? t.decoration_coverage.data() + d * plane : nullptr;
-        views[d] = at::make_decoration_view(t.decorations[d], coverage);
         td.draw_distance[d] = t.decorations[d].draw_distance;
         td.vertical_offset[d] = t.decorations[d].vertical_offset;
         if (at::decoration_active(views[d])) {
-            td.mesh_slot[d] = resolve_mesh(t.decorations[d].mesh);
+            td.mesh_slot[d] = g_meshes.resolve(t.decorations[d].mesh, "AlpineTerrain");
             radius[d] = td.mesh_slot[d] >= 0 ? g_meshes[td.mesh_slot[d]].radius : 0.0f;
         }
     }
 
     const at::ChunkLayout layout = at::header_chunk_layout(t.header);
-    DecoChunk empty{};
+    DecorationChunk empty{};
     std::fill(std::begin(empty.lo), std::end(empty.lo), std::numeric_limits<float>::max());
     std::fill(std::begin(empty.hi), std::end(empty.hi), -std::numeric_limits<float>::max());
     td.chunks.assign(at::layout_chunk_count(layout), empty);
@@ -231,7 +176,7 @@ void build_terrain(int index, const AlpineTerrain& t, TerrainDecorations& td, at
         g, t.uid, layout, views, count, budget,
         [&](std::uint32_t c, std::uint32_t d, const at::DecorationInstance& inst) {
             if (td.mesh_slot[d] < 0) return true;
-            DecoChunk& chunk = td.chunks[c];
+            DecorationChunk& chunk = td.chunks[c];
             if (chunk.count[d] == 0) {
                 chunk.first[d] = static_cast<std::uint32_t>(td.inst.size());
             }
@@ -251,7 +196,7 @@ void build_terrain(int index, const AlpineTerrain& t, TerrainDecorations& td, at
 }
 
 // Adds chunk's instances within the legacy range of `eye` to g_legacy_draws, up to its capacity.
-void collect_legacy_chunk(const TerrainDecorations& td, const DecoChunk& chunk, const rf::Vector3& eye)
+void collect_legacy_chunk(const TerrainDecorations& td, const DecorationChunk& chunk, const rf::Vector3& eye)
 {
     for (std::uint32_t d = 0; d < at::max_decorations; d++) {
         if (chunk.count[d] == 0 || td.mesh_slot[d] < 0) continue;
@@ -275,9 +220,9 @@ void draw_legacy(const LegacyDraw& draw)
     orient.rvec = {g.row0[0], g.row1[0], g.row2[0]};
     orient.uvec = {g.row0[1], g.row1[1], g.row2[1]};
     orient.fvec = {g.row0[2], g.row1[2], g.row2[2]};
-    const DecorationMesh& mesh = g_meshes[static_cast<std::size_t>(draw.mesh_slot)];
+    const DecorationMesh& mesh = g_meshes[draw.mesh_slot];
     if (rf::gr::cull_sphere(pos, mesh.radius * orient.rvec.len())) return;
-    // Best effort: the stock key and fill lights (0x0052DAD0) are turned by this orient, so scaled with it.
+    // params.orient also turns the stock key and fill lights (0x0052DAD0); its scale there is tolerated.
     rf::MeshRenderParams params{};
     params.init_defaults();
     params.flags = rf::MRF_CUSTOM_AMBIENT_COLOR;
@@ -356,7 +301,6 @@ void alpine_terrain_decorations_clear_state()
     g_decorations.clear();
     g_decorations.shrink_to_fit();
     g_meshes.clear();
-    g_mesh_lookup.clear();
     g_craters.clear();
     g_legacy_draws.clear();
     g_legacy_draws.shrink_to_fit();
@@ -407,11 +351,10 @@ void alpine_terrain_decorations_render_legacy()
     g_legacy_draws.clear();
     g_legacy_chunks.clear();
     for (const TerrainDecorations& td : g_decorations) {
-        for (const DecoChunk& chunk : td.chunks) {
-            const float dist_sq = box_dist_sq(eye, chunk.lo, chunk.hi);
-            const rf::Vector3 lo{chunk.lo[0], chunk.lo[1], chunk.lo[2]};
-            const rf::Vector3 hi{chunk.hi[0], chunk.hi[1], chunk.hi[2]};
-            if (dist_sq <= legacy_max_distance * legacy_max_distance && !rf::gr::cull_bounding_box(lo, hi) &&
+        for (const DecorationChunk& chunk : td.chunks) {
+            const float dist_sq = chunk.dist_sq(eye);
+            if (dist_sq <= legacy_max_distance * legacy_max_distance &&
+                !rf::gr::cull_bounding_box(chunk.lo_vec(), chunk.hi_vec()) &&
                 g_legacy_chunks.size() < g_legacy_chunks.capacity()) {
                 g_legacy_chunks.push_back({dist_sq, &td, &chunk});
             }
@@ -457,20 +400,37 @@ std::vector<TerrainDecorations>& alpine_terrain_decorations_get_all()
     return g_decorations;
 }
 
-const DecoChunk* alpine_terrain_decoration_chunk(const AlpineTerrainRoomRef& ref)
+const DecorationChunk* alpine_terrain_decorations_chunk(const AlpineTerrainRoomRef& ref)
 {
     if (ref.terrain < 0 || static_cast<std::size_t>(ref.terrain) >= g_decorations.size()) return nullptr;
     const TerrainDecorations& td = g_decorations[static_cast<std::size_t>(ref.terrain)];
     if (ref.chunk < 0 || static_cast<std::size_t>(ref.chunk) >= td.chunks.size()) return nullptr;
-    const DecoChunk& chunk = td.chunks[static_cast<std::size_t>(ref.chunk)];
+    const DecorationChunk& chunk = td.chunks[static_cast<std::size_t>(ref.chunk)];
     return std::any_of(std::begin(chunk.count), std::end(chunk.count), [](std::uint32_t n) { return n > 0; })
                ? &chunk
                : nullptr;
 }
 
-const DecorationMesh& alpine_terrain_decoration_mesh(int slot)
+const DecorationMesh& alpine_terrain_decorations_mesh(int slot)
 {
-    return g_meshes[static_cast<std::size_t>(slot)];
+    return g_meshes[slot];
+}
+
+float DecorationChunk::dist_sq(const rf::Vector3& p) const
+{
+    const float d[3] = {std::max({lo[0] - p.x, 0.0f, p.x - hi[0]}), std::max({lo[1] - p.y, 0.0f, p.y - hi[1]}),
+                        std::max({lo[2] - p.z, 0.0f, p.z - hi[2]})};
+    return d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+}
+
+rf::Vector3 DecorationChunk::lo_vec() const
+{
+    return {lo[0], lo[1], lo[2]};
+}
+
+rf::Vector3 DecorationChunk::hi_vec() const
+{
+    return {hi[0], hi[1], hi[2]};
 }
 
 DecorationFrameStats& alpine_terrain_decorations_frame_stats()

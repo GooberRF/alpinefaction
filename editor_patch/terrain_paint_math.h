@@ -325,7 +325,7 @@ struct CoverageMap
     std::uint32_t w, h;   // weight_width / weight_height
     std::uint32_t mul;    // texels per cell
     std::uint32_t channel;
-    std::uint32_t stride = 4;
+    std::uint32_t stride = at::max_overlays;
 };
 
 // Moves each texel's coverage toward 255 (raise) or 0 by the dab amount, rounding in favour of the
@@ -769,7 +769,7 @@ inline void capture_weights(const std::uint8_t* weights, std::uint32_t w, std::u
 {
     const std::size_t plane = static_cast<std::size_t>(w) * h, map = plane * 4;
     if (!planes) deco_planes = 0;
-    const std::size_t first_plane = overlay ? 12 : 8;
+    const std::size_t first_plane = weight_diff_stride(overlay != nullptr, 0);
     const std::size_t stride = weight_diff_stride(overlay != nullptr, deco_planes);
     out.resize(r.area() * stride);
     std::size_t k = 0;
@@ -792,7 +792,7 @@ inline void restore_weights(std::uint8_t* weights, std::uint32_t w, std::uint32_
 {
     const std::size_t plane = static_cast<std::size_t>(w) * h, map = plane * 4;
     if (!planes) deco_planes = 0;
-    const std::size_t first_plane = overlay ? 12 : 8;
+    const std::size_t first_plane = weight_diff_stride(overlay != nullptr, 0);
     const std::size_t stride = weight_diff_stride(overlay != nullptr, deco_planes);
     if (in.size() != r.area() * stride) return;
     std::size_t k = 0;

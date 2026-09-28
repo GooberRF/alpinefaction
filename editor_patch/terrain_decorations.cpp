@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <new>
 #include <string>
@@ -33,6 +34,8 @@ constexpr double build_budget_ms = 25.0;
 constexpr int mesh_loads_per_paint = 1;
 // Paints after which a chunk another view showed counts as idle again
 constexpr uint32_t shown_lapse_paints = 64;
+// Absurd geometry must not blow a chunk's light reach out to cover the level.
+constexpr float max_mesh_radius = 1000.0f;
 
 bool g_visible = true;
 
@@ -72,7 +75,7 @@ MeshEntry load_mesh(const std::string& name)
     vmesh_get_bound_sphere(vm, center, &radius);
     const float offset = std::sqrt(center[0] * center[0] + center[1] * center[1] + center[2] * center[2]);
     e.vmesh = vm;
-    e.radius = std::isfinite(radius + offset) ? std::clamp(radius + offset, 0.0f, 1000.0f) : 1000.0f;
+    e.radius = std::isfinite(radius + offset) ? std::clamp(radius + offset, 0.0f, max_mesh_radius) : max_mesh_radius;
     return e;
 }
 
@@ -180,18 +183,11 @@ struct ChunkOrder
 // Every terrain's chunks in reach, nearest first, so the instance budget goes to those nearest the camera
 std::vector<ChunkOrder> g_chunk_order;
 
-double elapsed_ms(const LARGE_INTEGER& since)
-{
-    static LARGE_INTEGER freq{};
-    if (!freq.QuadPart) QueryPerformanceFrequency(&freq);
-    LARGE_INTEGER now;
-    QueryPerformanceCounter(&now);
-    return static_cast<double>(now.QuadPart - since.QuadPart) * 1000.0 / static_cast<double>(freq.QuadPart);
-}
-
 uint32_t painting_view_bit()
 {
-    return painting_view_index >= 0 && painting_view_index < 32 ? 1u << painting_view_index : 0u;
+    return painting_view_index >= 0 && painting_view_index < std::numeric_limits<uint32_t>::digits
+               ? 1u << painting_view_index
+               : 0u;
 }
 
 void release_chunk(Chunk& c)
@@ -217,9 +213,8 @@ void release_terrain(const DedTerrain* terrain)
     }
 }
 
-// Frees built chunks out of this paint's reach and shown by no other view, to make room under the instance
-// budget; true when that freed any instances. Every terrain marks its reach before any chunk is built, so once
-// per paint is enough.
+// Frees built chunks outside this paint's reach that no other view shows; true if that freed any. At most once
+// per paint: every terrain marks its reach before any chunk is built.
 bool release_idle_chunks()
 {
     if (g_idle_released_frame == g_frame) return false;
@@ -420,6 +415,7 @@ void render_scaled(EditorVMesh* vm, const Instance& inst)
     if (!v3d || v3d->num_meshes <= 0 || !v3d->meshes) return;
     const float k = 1.0f / (inst.scale * inst.scale);
     const Matrix3& o = inst.orient;
+    EditorRenderParams params = editor_mesh_render_params();
     for (int i = 0; i < v3d->num_meshes; i++) {
         Vector3 pos = inst.pos;
         if (inst.scale != 1.0f) {
@@ -433,11 +429,6 @@ void render_scaled(EditorVMesh* vm, const Instance& inst)
                 const float centre = p[a] + mc[a];
                 p[a] = ed_cam_pos[a] + (centre - ed_cam_pos[a]) * k - mc[a];
             }
-        }
-        EditorRenderParams params;
-        if (editor_textures_enabled != 0) {
-            params.flags |= ERF_TEXTURED;
-            params.diffuse_color = {0xff, 0xff, 0xff, 0xff};
         }
         vmesh_render_submesh(vm, i, &pos, &o, &params);
     }
@@ -512,16 +503,17 @@ void drop_collected()
     g_candidates.clear();
 }
 
-bool preview_drawn()
+void release_all_caches()
 {
-    return gr_perspective && level_render_mode != 0 && !view_see_through;
+    drop_collected();
+    for (auto& c : g_caches) release_cache(*c);
 }
 
 } // namespace
 
 void terrain_decorations_collect(const DedTerrain& terrain, const DedTerrainData& data)
 {
-    if (!g_visible || !preview_drawn()) return;
+    if (!g_visible || !terrain_view_draws_solid()) return;
     if (data.decorations.empty() || !data.grid || data.layers.empty()) {
         release_terrain(&terrain);
         return;
@@ -554,11 +546,12 @@ void terrain_decorations_frame_end(CDedLevel& level, const DedTerrainData* stage
     }
     drop_collected();
     // Only a paint that draws the preview marks what it uses.
-    if (preview_drawn() && (!g_caches.empty() || !g_meshes.empty())) {
+    if (terrain_view_draws_solid() && (!g_caches.empty() || !g_meshes.empty())) {
         try {
             release_unused(level, staged);
         }
         catch (const std::bad_alloc&) {
+            xlog::error("[Terrain] out of memory releasing unused decoration previews");
         }
     }
     // Chunks or meshes left for the budget: this view paints again on the next idle tick.
@@ -623,8 +616,7 @@ void terrain_decorations_forget(const DedTerrain* terrain)
 
 void terrain_decorations_level_reset()
 {
-    drop_collected();
-    for (auto& c : g_caches) release_cache(*c);
+    release_all_caches();
     g_caches.clear();
     for (auto& [name, e] : g_meshes) free_mesh(e);
     g_meshes.clear();
@@ -638,10 +630,7 @@ bool terrain_decorations_visible()
 void terrain_decorations_set_visible(bool visible)
 {
     g_visible = visible;
-    if (!visible) {
-        drop_collected();
-        for (auto& c : g_caches) release_cache(*c);
-    }
+    if (!visible) release_all_caches();
 }
 
 EditorVMesh* terrain_decorations_mesh(const std::string& name)
