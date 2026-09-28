@@ -72,6 +72,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Add `When_Destroyed` catalyst event, which activates its links when the destructible detail brushes it links to are destroyed
 - Support linking events and triggers to detail brushes in the level editor
 - Vastly improve `Calculate Lighting` times in the level editor (by 5-7x on large levels)
+- Speed up `Calculate Lighting` in the level editor on levels with very many lightmap surfaces
 - Improve level loading and `Build Geometry` times in the level editor on levels with many faces (especially levels with terrain, which load roughly 3x and build roughly 10x faster)
 - Linking a `Bolt Emitter` or `Rope Emitter` to a `Target` in the level editor sets the emitter's target to it
 - `Owner_Gate` can now take its capture points from linked `Capture_Point_Handler` events

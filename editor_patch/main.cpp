@@ -1727,7 +1727,6 @@ void ApplyGraphicsPatches();
 void ApplyTriggerPatches();
 void ApplyLevelPatches();
 void ApplyTerrainBuildPatches();
-void ApplyTerrainPreviewPatches();
 void ApplyEventsPatches();
 void ApplyTexturesPatches();
 void ApplyLightmapPatches();

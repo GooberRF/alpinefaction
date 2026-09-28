@@ -100,8 +100,12 @@ static void terrain_match_overlay_map(DedTerrainData& d)
 {
     if (!d.grid || d.overlays.empty() == d.grid->overlay.empty()) return;
     auto g = std::make_shared<TerrainGrid>(*d.grid);
-    if (d.overlays.empty()) g->overlay.clear();
-    else g->overlay.assign(at::overlay_map_bytes(g->nx, g->nz, g->weight_res_mul), 0);
+    if (d.overlays.empty()) {
+        g->overlay.clear();
+    }
+    else {
+        g->overlay.assign(at::overlay_map_bytes(g->nx, g->nz, g->weight_res_mul), 0);
+    }
     d.grid = std::move(g);
 }
 
@@ -698,8 +702,12 @@ bool terrain_deserialize_chunk(CDedLevel& level, rf::File& file, std::size_t chu
         }
         if (!err) {
             for (auto* t : parsed) {
-                if (group) terrain_reset_built_state(*t);
-                else terrain_build_note_loaded(level, *t);
+                if (group) {
+                    terrain_reset_built_state(*t);
+                }
+                else {
+                    terrain_build_note_loaded(level, *t);
+                }
             }
             terrains.reserve(terrains.size() + parsed.size());
         }
@@ -2061,8 +2069,7 @@ static bool terrain_can_add(CDedLevel* level, const DedTerrainData& d, bool inte
         why = "The level's terrain data limit has been reached.";
     }
     if (!why) return true;
-    xlog::warn("[Terrain] {}", why);
-    if (interactive) show_error_message(why);
+    terrain_report(why, interactive);
     return false;
 }
 

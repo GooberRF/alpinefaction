@@ -1,7 +1,9 @@
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstring>
 #include <optional>
+#include <utility>
 #include <vector>
 #include <d3d11.h>
 #include <common/ComPtr.h>
@@ -12,9 +14,9 @@
 #include "../../bmpman/bmpman.h"
 #include "../../os/console.h"
 #include "../../misc/alpine_terrain.h"
+#include "../af_lightmap.h"
 #include "../gr.h"
 #include "gr_d3d11.h"
-#include "gr_d3d11_af_lightmap.h"
 #include "gr_d3d11_context.h"
 #include "gr_d3d11_terrain.h"
 
@@ -25,30 +27,30 @@ namespace
     // Mirror of TerrainBuffer (b7) in standard_ps.hlsl
     struct alignas(16) TerrainBufferData
     {
-        float origin[3];
+        std::array<float, 3> origin;
         float cell_size;
-        float extent[2];
+        std::array<float, 2> extent;
         float height_min;
         float height_range;
-        float grid_size[2];
+        std::array<float, 2> grid_size;
         float layer_count;
         float underside_uv_scale;
-        float sun_travel_dir[3];
+        std::array<float, 3> sun_travel_dir;
         float debug;
-        float sun_color[3];
+        std::array<float, 3> sun_color;
         float lm_chart;
-        float layer_uv_scale[at::max_layers];
-        float layer_triplanar[at::max_layers];
-        float lm_origin[2];
+        std::array<float, at::max_layers> layer_uv_scale;
+        std::array<float, at::max_layers> layer_triplanar;
+        std::array<float, 2> lm_origin;
         float lm_texel_size;
         float overlay_count;
-        float overlay_uv_scale[at::max_overlays];
-        float overlay_triplanar[at::max_overlays];
-        float overlay_break_tiling[at::max_overlays];
+        std::array<float, at::max_overlays> overlay_uv_scale;
+        std::array<float, at::max_overlays> overlay_triplanar;
+        std::array<float, at::max_overlays> overlay_break_tiling;
         // 0 for an overlay whose texture did not load, which then draws nothing
-        float overlay_enabled[at::max_overlays];
+        std::array<float, at::max_overlays> overlay_enabled;
         // 1 where the bound texture is create_premultiplied's copy
-        float overlay_premultiplied[at::max_overlays];
+        std::array<float, at::max_overlays> overlay_premultiplied;
     };
     static_assert(offsetof(TerrainBufferData, extent) == 16);
     static_assert(offsetof(TerrainBufferData, grid_size) == 32);
@@ -79,30 +81,6 @@ namespace
     constexpr UINT num_srvs = num_base_srvs + num_overlay_srvs;
     static_assert(overlay_srv_slot == 20 && first_srv_slot + num_srvs - 1 == 24);
 
-    enum class GpuState
-    {
-        unknown,
-        ready,
-        failed,
-    };
-
-    struct TerrainGpu
-    {
-        GpuState state = GpuState::unknown;
-        ComPtr<ID3D11ShaderResourceView> weights[2];
-        ComPtr<ID3D11ShaderResourceView> height;
-        ComPtr<ID3D11ShaderResourceView> overlay_coverage;
-        // create_premultiplied, or null where the overlay samples its bitmap's own texture
-        ComPtr<ID3D11ShaderResourceView> overlay_premultiplied[at::max_overlays];
-        int layer_bm[at::max_layers] = {-1, -1, -1, -1, -1, -1, -1, -1};
-        int underside_bm = -1;
-        int overlay_bm[at::max_overlays] = {-1, -1, -1, -1};
-    };
-
-    std::vector<TerrainGpu> g_gpu;
-    ID3D11Device* g_device = nullptr;
-    ComPtr<ID3D11Buffer> g_cbuffer;
-    ComPtr<ID3D11SamplerState> g_map_sampler;
     bool g_debug = false;
 
     ComPtr<ID3D11ShaderResourceView> create_map(ID3D11Device* device, DXGI_FORMAT format, UINT w, UINT h,
@@ -125,31 +103,6 @@ namespace
             return {};
         }
         return srv;
-    }
-
-    bool create_shared(ID3D11Device* device)
-    {
-        if (!g_cbuffer) {
-            CD3D11_BUFFER_DESC desc{
-                sizeof(TerrainBufferData),
-                D3D11_BIND_CONSTANT_BUFFER,
-                D3D11_USAGE_DYNAMIC,
-                D3D11_CPU_ACCESS_WRITE,
-            };
-            if (FAILED(device->CreateBuffer(&desc, nullptr, &g_cbuffer))) {
-                return false;
-            }
-        }
-        if (!g_map_sampler) {
-            CD3D11_SAMPLER_DESC desc{CD3D11_DEFAULT()};
-            desc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
-            desc.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
-            desc.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP;
-            if (FAILED(device->CreateSamplerState(&desc, &g_map_sampler))) {
-                return false;
-            }
-        }
-        return true;
     }
 
     int load_bitmap(const std::string& name)
@@ -237,7 +190,8 @@ namespace
                                                  src[(static_cast<std::size_t>(y0) * mw + x1) * 4 + c] +
                                                  src[(static_cast<std::size_t>(y1) * mw + x0) * 4 + c] +
                                                  src[(static_cast<std::size_t>(y1) * mw + x1) * 4 + c];
-                            dst[(static_cast<std::size_t>(y) * nw + x) * 4 + c] = static_cast<std::uint8_t>((sum + 2) / 4);
+                            dst[(static_cast<std::size_t>(y) * nw + x) * 4 + c] =
+                                static_cast<std::uint8_t>((sum + 2) / 4);
                         }
                     }
                 }
@@ -269,8 +223,33 @@ namespace
             return {};
         }
     }
+}
 
-    bool create_terrain(ID3D11Device* device, const AlpineTerrain& t, TerrainGpu& gpu)
+namespace gr::d3d11
+{
+    struct TerrainRenderer::TerrainGpu
+    {
+        enum class State
+        {
+            unknown,
+            ready,
+            failed,
+        };
+
+        State state = State::unknown;
+        ComPtr<ID3D11ShaderResourceView> weights[2];
+        ComPtr<ID3D11ShaderResourceView> height;
+        ComPtr<ID3D11ShaderResourceView> overlay_coverage;
+        // create_premultiplied, or null where the overlay samples its bitmap's own texture
+        ComPtr<ID3D11ShaderResourceView> overlay_premultiplied[at::max_overlays];
+        int layer_bm[at::max_layers] = {-1, -1, -1, -1, -1, -1, -1, -1};
+        int underside_bm = -1;
+        int overlay_bm[at::max_overlays] = {-1, -1, -1, -1};
+
+        bool create(ID3D11Device* device, const AlpineTerrain& t);
+    };
+
+    bool TerrainRenderer::TerrainGpu::create(ID3D11Device* device, const AlpineTerrain& t)
     {
         const at::Header& h = t.header;
         // Every texture format the shader samples has to filter, or the blend and normals step.
@@ -286,78 +265,94 @@ namespace
         const std::size_t map_bytes = at::weight_map_bytes(h.nx, h.nz, h.weight_res_mul);
         if (t.weights.size() != map_bytes * 2) return false;
         for (int m = 0; m < 2; m++) {
-            gpu.weights[m] = create_map(device, DXGI_FORMAT_R8G8B8A8_UNORM, ww, wh, t.weights.data() + m * map_bytes,
-                                        ww * 4);
-            if (!gpu.weights[m]) return false;
+            weights[m] =
+                create_map(device, DXGI_FORMAT_R8G8B8A8_UNORM, ww, wh, t.weights.data() + m * map_bytes, ww * 4);
+            if (!weights[m]) return false;
         }
-        gpu.height = create_map(device, DXGI_FORMAT_R16_UNORM, h.nx, h.nz, t.heights.data(), h.nx * 2);
-        if (!gpu.height) return false;
+        height = create_map(device, DXGI_FORMAT_R16_UNORM, h.nx, h.nz, t.heights.data(), h.nx * 2);
+        if (!height) return false;
         if (!t.overlays.empty() && t.overlay_coverage.size() == at::overlay_map_bytes(h.nx, h.nz, h.weight_res_mul)) {
-            gpu.overlay_coverage =
+            overlay_coverage =
                 create_map(device, DXGI_FORMAT_R8G8B8A8_UNORM, ww, wh, t.overlay_coverage.data(), ww * 4);
-            if (!gpu.overlay_coverage) return false;
+            if (!overlay_coverage) return false;
             for (std::size_t o = 0; o < t.overlays.size() && o < at::max_overlays; o++) {
-                gpu.overlay_bm[o] = load_bitmap(t.overlays[o].texture);
-                if (gpu.overlay_bm[o] >= 0) gpu.overlay_premultiplied[o] = create_premultiplied(device, gpu.overlay_bm[o]);
+                overlay_bm[o] = load_bitmap(t.overlays[o].texture);
+                if (overlay_bm[o] >= 0) {
+                    overlay_premultiplied[o] = create_premultiplied(device, overlay_bm[o]);
+                }
             }
         }
 
         for (std::size_t l = 0; l < t.layers.size() && l < at::max_layers; l++) {
-            gpu.layer_bm[l] = load_bitmap(t.layers[l].texture);
+            layer_bm[l] = load_bitmap(t.layers[l].texture);
         }
-        gpu.underside_bm = load_bitmap(t.underside_texture);
+        underside_bm = load_bitmap(t.underside_texture);
         return true;
     }
 
-    void release_all()
-    {
-        g_gpu.clear();
-        g_cbuffer.release();
-        g_map_sampler.release();
-        g_device = nullptr;
-    }
-}
+    TerrainRenderer::TerrainRenderer(ComPtr<ID3D11Device> device) : device_{std::move(device)} {}
 
-namespace gr::d3d11
-{
-    bool terrain_gpu_prepare(ID3D11Device* device, int index)
+    TerrainRenderer::~TerrainRenderer() = default;
+
+    bool TerrainRenderer::create_shared()
+    {
+        if (!cbuffer_) {
+            CD3D11_BUFFER_DESC desc{
+                sizeof(TerrainBufferData),
+                D3D11_BIND_CONSTANT_BUFFER,
+                D3D11_USAGE_DYNAMIC,
+                D3D11_CPU_ACCESS_WRITE,
+            };
+            if (FAILED(device_->CreateBuffer(&desc, nullptr, &cbuffer_))) {
+                return false;
+            }
+        }
+        if (!map_sampler_) {
+            CD3D11_SAMPLER_DESC desc{CD3D11_DEFAULT()};
+            desc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+            desc.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
+            desc.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP;
+            if (FAILED(device_->CreateSamplerState(&desc, &map_sampler_))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    bool TerrainRenderer::prepare(int index)
     {
         const auto& terrains = alpine_terrain_get_all();
-        if (!device || index < 0 || static_cast<std::size_t>(index) >= terrains.size()) {
+        if (index < 0 || static_cast<std::size_t>(index) >= terrains.size()) {
             return false;
         }
-        if (device != g_device) {
-            release_all();
-            g_device = device;
+        if (gpu_.size() != terrains.size()) {
+            gpu_.resize(terrains.size());
         }
-        if (g_gpu.size() != terrains.size()) {
-            g_gpu.resize(terrains.size());
-        }
-        TerrainGpu& gpu = g_gpu[index];
-        if (gpu.state == GpuState::unknown) {
-            const bool ok = create_shared(device) && create_terrain(device, terrains[index], gpu);
-            gpu.state = ok ? GpuState::ready : GpuState::failed;
+        TerrainGpu& gpu = gpu_[index];
+        if (gpu.state == TerrainGpu::State::unknown) {
+            const bool ok = create_shared() && gpu.create(device_, terrains[index]);
+            gpu.state = ok ? TerrainGpu::State::ready : TerrainGpu::State::failed;
             if (!ok) {
                 xlog::warn("[AlpineTerrain] Terrain {} renders as plain geometry: its textures could not be created",
                            terrains[index].uid);
             }
         }
-        return gpu.state == GpuState::ready;
+        return gpu.state == TerrainGpu::State::ready;
     }
 
-    bool terrain_gpu_bind(ID3D11DeviceContext* context, RenderContext& render_context, int index)
+    bool TerrainRenderer::bind(ID3D11DeviceContext* context, RenderContext& render_context, int index)
     {
         const auto& terrains = alpine_terrain_get_all();
         if (index < 0 || static_cast<std::size_t>(index) >= terrains.size() ||
-            static_cast<std::size_t>(index) >= g_gpu.size() || g_gpu[index].state != GpuState::ready) {
+            static_cast<std::size_t>(index) >= gpu_.size() || gpu_[index].state != TerrainGpu::State::ready) {
             return false;
         }
         const AlpineTerrain& t = terrains[index];
         const at::Header& h = t.header;
-        const TerrainGpu& gpu = g_gpu[index];
+        const TerrainGpu& gpu = gpu_[index];
 
         TerrainBufferData data{};
-        std::memcpy(data.origin, h.origin, sizeof(data.origin));
+        std::memcpy(data.origin.data(), h.origin, sizeof(data.origin));
         data.cell_size = h.cell_size;
         data.extent[0] = at::extent(h.nx, h.cell_size);
         data.extent[1] = at::extent(h.nz, h.cell_size);
@@ -370,7 +365,7 @@ namespace gr::d3d11
         data.sun_travel_dir[0] = sun.travel_dir.x;
         data.sun_travel_dir[1] = sun.travel_dir.y;
         data.sun_travel_dir[2] = sun.travel_dir.z;
-        std::memcpy(data.sun_color, sun.color, sizeof(data.sun_color));
+        std::memcpy(data.sun_color.data(), sun.color, sizeof(data.sun_color));
         data.debug = g_debug ? 1.0f : 0.0f;
         for (std::size_t l = 0; l < at::max_layers; l++) {
             const bool has = l < t.layers.size();
@@ -407,9 +402,9 @@ namespace gr::d3d11
         }
 
         D3D11_MAPPED_SUBRESOURCE mapped;
-        DF_GR_D3D11_CHECK_HR(context->Map(g_cbuffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped));
+        DF_GR_D3D11_CHECK_HR(context->Map(cbuffer_, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped));
         std::memcpy(mapped.pData, &data, sizeof(data));
-        context->Unmap(g_cbuffer, 0);
+        context->Unmap(cbuffer_, 0);
 
         // A missing layer shows layer 0, and a missing layer 0 the neutral white
         auto view = [&](int bm) -> ID3D11ShaderResourceView* {
@@ -425,36 +420,39 @@ namespace gr::d3d11
         context->PSSetShaderResources(first_srv_slot, num_base_srvs - 1, srvs);
         context->PSSetShaderResources(overlay_srv_slot, num_overlay_srvs, overlay_srvs);
 
-        ID3D11SamplerState* samplers[] = {render_context.wrap_sampler_state(), g_map_sampler};
+        ID3D11SamplerState* samplers[] = {render_context.wrap_sampler_state(), map_sampler_};
         context->PSSetSamplers(first_sampler_slot, 2, samplers);
-        ID3D11Buffer* cbuffer = g_cbuffer;
+        ID3D11Buffer* cbuffer = cbuffer_;
         context->PSSetConstantBuffers(cbuffer_slot, 1, &cbuffer);
         return true;
     }
 
-    void terrain_gpu_bind_crater(ID3D11DeviceContext* context, RenderContext& render_context, int bm)
+    void TerrainRenderer::bind_crater(ID3D11DeviceContext* context, RenderContext& render_context, int bm)
     {
         ID3D11ShaderResourceView* srv = render_context.texture_view(bm);
         if (!srv) srv = render_context.texture_view(-1);
         context->PSSetShaderResources(crater_srv_slot, 1, &srv);
     }
 
-    void terrain_gpu_unbind(ID3D11DeviceContext* context)
+    void TerrainRenderer::unbind(ID3D11DeviceContext* context)
     {
         ID3D11ShaderResourceView* srvs[num_srvs] = {};
         context->PSSetShaderResources(first_srv_slot, num_srvs, srvs);
     }
 
-    void terrain_gpu_release()
+    void TerrainRenderer::release()
     {
-        release_all();
+        gpu_.clear();
+        cbuffer_.release();
+        map_sampler_.release();
     }
 
     ConsoleCommand2 r_terrain_debug_cmd{
         "r_terrain_debug",
         [](std::optional<int> value) {
             g_debug = value ? value.value() != 0 : !g_debug;
-            rf::console::print("Terrain batch tint is {} (green: surface, red: underside, blue: crater)", g_debug ? "on" : "off");
+            rf::console::print("Terrain batch tint is {} (green: surface, red: underside, blue: crater)",
+                               g_debug ? "on" : "off");
         },
         "Tints terrain faces by the batch that draws them (Direct3D 11 renderer only)",
         "r_terrain_debug [0|1]",

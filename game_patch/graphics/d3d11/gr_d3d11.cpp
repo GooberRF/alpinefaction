@@ -14,6 +14,7 @@
 #include "../../os/os.h"
 #include "../gr.h"
 #include "gr_d3d11.h"
+#include "gr_d3d11_af_lightmap.h"
 #include "gr_d3d11_context.h"
 #include "gr_d3d11_shader.h"
 #include "gr_d3d11_texture.h"
@@ -75,7 +76,8 @@ namespace gr::d3d11
         texture_manager_ = std::make_unique<TextureManager>(device_, context_);
         render_context_ = std::make_unique<RenderContext>(device_, context_, *state_manager_, *shader_manager_, *texture_manager_);
         dyn_geo_renderer_ = std::make_unique<DynamicGeometryRenderer>(device_, *shader_manager_, *render_context_);
-        solid_renderer_ = std::make_unique<SolidRenderer>(device_, *shader_manager_, *state_manager_, *dyn_geo_renderer_, *render_context_);
+        af_lightmap_renderer_ = std::make_unique<AfLightmapRenderer>(device_, context_);
+        solid_renderer_ = std::make_unique<SolidRenderer>(device_, *shader_manager_, *state_manager_, *dyn_geo_renderer_, *render_context_, *af_lightmap_renderer_);
         mesh_renderer_ = std::make_unique<MeshRenderer>(device_, *shader_manager_, *state_manager_, *render_context_);
         entity_shadow_renderer_ = std::make_unique<EntityShadowRenderer>(device_, *shader_manager_, *mesh_renderer_);
         outline_renderer_ = std::make_unique<OutlineRenderer>(device_, *shader_manager_, *state_manager_, *render_context_);
@@ -1315,6 +1317,27 @@ namespace gr::d3d11
     void Renderer::reset_solid_cache_after_boolean()
     {
         solid_renderer_->reset_cache_after_boolean();
+    }
+
+    void Renderer::release_terrain_gpu()
+    {
+        solid_renderer_->release_terrain_gpu();
+    }
+
+    bool Renderer::upload_af_lightmap_atlas(const alpine_lightmap::ReadResult& section,
+                                            const std::vector<std::uint8_t>& blocks)
+    {
+        return af_lightmap_renderer_->upload(section, blocks);
+    }
+
+    void Renderer::release_af_lightmap_atlas()
+    {
+        af_lightmap_renderer_->release();
+    }
+
+    bool Renderer::af_lightmap_atlas_live() const
+    {
+        return af_lightmap_renderer_->live();
     }
 
     void Renderer::render_v3d_vif(rf::VifLodMesh *lod_mesh, int lod_index, const rf::Vector3& pos, const rf::Matrix3& orient, const rf::MeshRenderParams& params, bool skip_ambient_cache)

@@ -60,6 +60,7 @@ set(SRCS
     graphics/gr.cpp
     graphics/gr.h
     graphics/gr_light.cpp
+    graphics/af_lightmap.cpp
     graphics/af_lightmap.h
     graphics/weather.cpp
     graphics/weather.h

@@ -32,35 +32,11 @@ namespace at = alpine_terrain;
 namespace
 {
 
-constexpr std::size_t level_build_running_offset = 0x232;   // a Build Geometry is running
-constexpr std::size_t level_build_dialog_offset = 0x4A4;    // its progress dialog
-constexpr std::size_t build_dialog_cancelled_offset = 0x5C; // set by the dialog's Cancel
-auto& g_build_first_tick_pending = addr_as_ref<std::uint8_t>(0x005774a0);
-
-constexpr uintptr_t brush_node_delete_addr = 0x0044d8b0; // BrushNode scalar deleting destructor
-
-constexpr std::size_t level_geo_regions_offset = 0x3A0;
 constexpr int geo_region_shape_sphere = 2;
 constexpr int geo_region_shape_box = 4;
 
 // built_room_uids entry of a chunk that has faces but no compiled room
 constexpr int32_t missing_room_uid = -2;
-
-bool build_running(CDedLevel& level)
-{
-    return struct_field_ref<std::uint8_t>(&level, level_build_running_offset) != 0;
-}
-
-bool build_cancelling(CDedLevel& level)
-{
-    auto* dialog = struct_field_ref<std::uint8_t*>(&level, level_build_dialog_offset);
-    return dialog && dialog[build_dialog_cancelled_offset] != 0;
-}
-
-GFace* room_face_head(const GRoom* room)
-{
-    return *reinterpret_cast<GFace* const*>(reinterpret_cast<const char*>(room) + offsetof(GRoom, _face_list));
-}
 
 template<typename F>
 void for_each_face_vertex(const GFace* face, F&& f)
@@ -168,7 +144,7 @@ int remove_temp_brushes(CDedLevel& level, std::size_t first = 0)
         const TempChunk& tc = g_temp_chunks[i];
         if (!live.count(tc.brush) || tc.brush->uid != tc.brush_uid) continue;
         unlink_brush(level, tc.brush);
-        AddrCaller{brush_node_delete_addr}.this_call(tc.brush, 1);
+        BrushNode::destroy(tc.brush);
         removed++;
     }
     g_temp_chunks.resize(first);
@@ -352,20 +328,20 @@ void check_geo_regions(CDedLevel& level, const DedTerrain& t, const std::vector<
     const DedTerrainData& d = t.data;
     const float lo_y = at::bottom_y(make_view(t, *d.grid));
     const float hi_y = at::world_y(t.pos.y, UINT16_MAX, d.height_min, d.height_range);
-    const auto& regions = struct_field_ref<VArray<DedObject*>>(&level, level_geo_regions_offset);
+    const auto& regions = level.geo_regions;
     for (int i = 0; i < regions.get_size(); i++) {
-        DedObject* r = regions.data_ptr[i];
+        auto* r = static_cast<DedGeoRegion*>(regions.data_ptr[i]);
         if (!r || r->type != DedObjectType::DED_GEO_REGION) continue;
-        const int shape = struct_field_ref<int>(r, 0x94);
+        const int shape = r->shape;
         Vector3 half;
         if (shape == geo_region_shape_sphere) {
-            const float radius = struct_field_ref<float>(r, 0x98);
+            const float radius = r->radius;
             half = {radius, radius, radius};
         }
         else if (shape == geo_region_shape_box) {
-            const float ex = struct_field_ref<float>(r, 0xA0) * 0.5f;
-            const float ey = struct_field_ref<float>(r, 0x9C) * 0.5f;
-            const float ez = struct_field_ref<float>(r, 0xA4) * 0.5f;
+            const float ex = r->width * 0.5f;
+            const float ey = r->height * 0.5f;
+            const float ez = r->depth * 0.5f;
             const Matrix3& m = r->orient;
             half = {std::abs(m.rvec.x) * ex + std::abs(m.uvec.x) * ey + std::abs(m.fvec.x) * ez,
                     std::abs(m.rvec.y) * ex + std::abs(m.uvec.y) * ey + std::abs(m.fvec.y) * ez,
@@ -420,8 +396,12 @@ void finish_build(CDedLevel& level)
         if (it == face_owner.end() || !f->which_room) continue;
         auto& list = rooms[it->second];
         auto r = std::find_if(list.begin(), list.end(), [&](const auto& e) { return e.first == f->which_room; });
-        if (r == list.end()) list.emplace_back(f->which_room, 1);
-        else r->second++;
+        if (r == list.end()) {
+            list.emplace_back(f->which_room, 1);
+        }
+        else {
+            r->second++;
+        }
     }
 
     std::map<int32_t, ChunkCounts> counts;
@@ -453,7 +433,7 @@ void finish_build(CDedLevel& level)
             GRoom* room = entry.first;
             if (room == chunk_room[i]) continue;
             bool terrain_only = true;
-            for (const GFace* f = room_face_head(room); f && terrain_only; f = f->next_room) {
+            for (const GFace* f = room->face_list_head; f && terrain_only; f = f->next_room) {
                 terrain_only = face_owner.count(f->face_id) != 0;
             }
             if (!terrain_only) continue;
@@ -506,7 +486,7 @@ void finish_build(CDedLevel& level)
         }
         if (std::any_of(ps.begin(), ps.end(), [](const GRoom* p) { return p->is_sky; })) c.sky++;
         bool inside = true;
-        for (const GFace* f = room_face_head(room); f && inside; f = f->next_room) {
+        for (const GFace* f = room->face_list_head; f && inside; f = f->next_room) {
             for_each_face_vertex(f, [&](const Vector3& v) {
                 if (inside && std::none_of(ps.begin(), ps.end(), [&](const GRoom* p) {
                         return point_in_box(v, p->bbox_min, p->bbox_max);
@@ -595,13 +575,13 @@ void finish_build(CDedLevel& level)
 
 // ─── Hooks ──────────────────────────────────────────────────────────────────
 
-// GeoBuild_Driver, once per idle tick: chunk brushes go in before its first tick, out once it clears +0x232.
+// GeoBuild_Driver, once per idle tick: chunk brushes go in before its first tick, out once it clears build_running.
 void __fastcall geobuild_driver_hooked(CDedLevel* level);
 FunHook<decltype(geobuild_driver_hooked)> geobuild_driver_hook{0x004399b0, geobuild_driver_hooked};
 void __fastcall geobuild_driver_hooked(CDedLevel* level)
 {
     FaceListCacheWindow face_list_cache;
-    const bool cancelling = build_cancelling(*level);
+    const bool cancelling = level->build_cancelling();
     if (!cancelling && g_build_first_tick_pending) {
         try {
             insert_temp_brushes(*level);
@@ -611,7 +591,7 @@ void __fastcall geobuild_driver_hooked(CDedLevel* level)
         }
     }
     geobuild_driver_hook.call_target(level);
-    if (build_running(*level)) return;
+    if (level->build_running) return;
     try {
         if (!cancelling) finish_build(*level);
     }
@@ -626,12 +606,22 @@ void __fastcall geobuild_driver_hooked(CDedLevel* level)
     }
     g_built_terrains.clear();
     g_build_notes.clear();
-    face_list_cache_log_verify_summary();
 }
 
 // Sorted uids of the level solid's terrain rooms while FUN_004aa610 builds its surfaces, else null.
 // They outlive a deleted terrain until the next Build Geometry, as its rooms do.
 const std::vector<int32_t>* g_terrain_gate_uids = nullptr;
+
+// The solid's faces grouped by surface index in list order: surface i owns faces[offsets[i], offsets[i + 1]).
+struct SurfaceFaceBuckets
+{
+    bool built = false;
+    std::vector<uint32_t> offsets;
+    std::vector<GFace*> faces;
+};
+
+// Set for the duration of one FUN_004aa610 call, else null (also when building the buckets ran out of memory).
+SurfaceFaceBuckets* g_surface_face_buckets = nullptr;
 
 bool in_terrain_room(const GFace* face, const std::vector<int32_t>& uids)
 {
@@ -647,7 +637,10 @@ int __fastcall surface_build_hooked(GSolid* solid, void* edx, uint32_t a1, uint3
     CDedLevel* level = CDedLevel::Get();
     const bool level_solid = level && solid && solid == level->solid;
     g_terrain_gate_uids = level_solid ? &level->GetAlpineLevelProperties().terrain_room_uids : nullptr;
+    SurfaceFaceBuckets buckets;
+    g_surface_face_buckets = &buckets;
     const int result = surface_build_hook.call_target(solid, edx, a1, a2, a3, a4);
+    g_surface_face_buckets = nullptr;
     g_terrain_gate_uids = nullptr;
     return result;
 }
@@ -658,6 +651,57 @@ CodeInjection surface_build_cap{
     0x004aa751, // a new surface is about to start; EBP = surfaces so far
     [](auto& regs) {
         if (static_cast<uint32_t>(regs.ebp) >= red_max_level_surfaces) regs.eip = 0x004aaa1c;
+    },
+};
+
+void build_surface_face_buckets(SurfaceFaceBuckets& buckets, const GSolid* solid, int surface_count)
+{
+    auto& offsets = buckets.offsets;
+    offsets.assign(surface_count + 1, 0);
+    for (GFace* f = solid->face_list_head; f; f = f->next_solid) {
+        if (f->surface_index >= 0 && f->surface_index < surface_count)
+            offsets[f->surface_index + 1]++;
+    }
+    for (int i = 0; i < surface_count; i++) offsets[i + 1] += offsets[i];
+    buckets.faces.resize(offsets[surface_count]);
+    for (GFace* f = solid->face_list_head; f; f = f->next_solid) {
+        if (f->surface_index >= 0 && f->surface_index < surface_count)
+            buckets.faces[offsets[f->surface_index]++] = f;
+    }
+    // each offset now holds its bucket's end, which is the next bucket's start
+    std::copy_backward(offsets.begin(), offsets.end() - 1, offsets.end());
+    offsets[0] = 0;
+}
+
+// FUN_004aa610's last loop fills surface EBP's face array at [ESP+0x60] by walking every face of the solid
+// (0x004aaaf7-0x004aab28), which is quadratic. Nothing in that loop changes a face's surface index or the face
+// list, so one bucketing pass yields the same faces in the same order. Replaces the 12 bytes of MOVs before the walk.
+CodeInjection surface_faces_collect{
+    0x004aaaeb,
+    [](auto& regs) {
+        SurfaceFaceBuckets* buckets = g_surface_face_buckets;
+        if (!buckets) return;
+        const uintptr_t esp = regs.esp;
+        if (!buckets->built) {
+            buckets->built = true;
+            try {
+                build_surface_face_buckets(*buckets, *reinterpret_cast<GSolid**>(esp + 0x20),
+                                           *reinterpret_cast<int*>(esp + 0x10));
+            }
+            catch (const std::bad_alloc&) {
+                *buckets = SurfaceFaceBuckets{};
+                g_surface_face_buckets = nullptr;
+                return;
+            }
+        }
+        // the skipped MOV's unwind state, which marks the face array live
+        *reinterpret_cast<int*>(esp + 0x74) = 4;
+        auto& surface_faces = *reinterpret_cast<VArray<GFace*>*>(esp + 0x60);
+        const int surface = regs.ebp;
+        for (uint32_t k = buckets->offsets[surface]; k < buckets->offsets[surface + 1]; k++) {
+            surface_faces.push_back(buckets->faces[k]);
+        }
+        regs.eip = 0x004aab2a;
     },
 };
 
@@ -831,7 +875,7 @@ void terrain_build_isolated_brush_uids(std::unordered_set<int32_t>& uids)
 void terrain_build_strip_leftovers(CDedLevel& level)
 {
     if (g_temp_chunks.empty()) return;
-    if (build_running(level)) {
+    if (level.build_running) {
         terrain_report("Saving during Build Geometry: temporary terrain brushes are saved with the level.", false);
         return;
     }
@@ -875,7 +919,7 @@ std::string terrain_build_fill_mapping(CDedLevel& level, DedTerrain& terrain)
                 continue;
             }
             auto it = uid != missing_room_uid ? rooms.find(uid) : rooms.end();
-            const GFace* head = it != rooms.end() ? room_face_head(it->second) : nullptr;
+            const GFace* head = it != rooms.end() ? it->second->face_list_head : nullptr;
             if (!head) {
                 return std::format("{}: chunk {} has no compiled room - rebuild before saving.", who, k);
             }
@@ -1080,6 +1124,7 @@ void ApplyTerrainBuildPatches()
     geobuild_driver_hook.install();
     surface_build_hook.install();
     surface_build_cap.install();
+    surface_faces_collect.install();
     lighting_surfaces_hook.install();
     face_gets_surface_hook.install();
 }

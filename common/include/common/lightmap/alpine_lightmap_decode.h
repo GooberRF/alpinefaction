@@ -12,7 +12,8 @@
 
 #include "alpine_lightmap_reader.h"
 
-namespace alpine_lightmap {
+namespace alpine_lightmap
+{
 
 // A Bc7BlockDecoder: one 16 byte BC7 block to 16 RGBA8 texels, row major.
 inline bool unpack_bc7_rgba(const void* block, std::uint8_t* rgba)

@@ -11,7 +11,8 @@
 #include <cmath>
 #include <algorithm>
 
-namespace alpine_lightmap {
+namespace alpine_lightmap
+{
 
 // ─── Container constants ──────────────────────────────────────────────────────
 // The section grows only through section_version, a table's version or layer_version, never the RFL
@@ -74,34 +75,39 @@ inline constexpr std::uint8_t effective_density(std::uint8_t stored)
     return stored == 0 ? density_default : std::clamp(stored, density_min, density_max);
 }
 
-// ─── Wire enums (rfl.ksy: alpine_lightmap_*) ──────────────────────────────────
+// ─── Wire enums ───────────────────────────────────────────────────────────────
 
-enum class Semantic : std::uint16_t {
+enum class Semantic : std::uint16_t
+{
     radiance_ldr = 0,
     radiance_hdr = 1,
     directional_l1 = 2,
     ambient_occlusion = 3,
 };
 
-enum class Codec : std::uint16_t {
+enum class Codec : std::uint16_t
+{
     raw_rgb8 = 0,
     bc7_unorm = 1,
     bc6h_uf16 = 2,
 };
 
-enum class Colorspace : std::uint8_t {
+enum class Colorspace : std::uint8_t
+{
     rf_lightmap_x2 = 0,
     srgb = 1,
     linear = 2,
 };
 
-enum class Compression : std::uint8_t {
+enum class Compression : std::uint8_t
+{
     none = 0,
     zlib = 1,
 };
 
 // TableHeader::tag
-enum class TableTag : std::uint32_t {
+enum class TableTag : std::uint32_t
+{
     movers = 1,
     terrain = 2,
 };
@@ -288,7 +294,7 @@ inline constexpr ChartGeometry chart_geometry_from_extent(std::uint64_t cw, std:
                                                           std::uint32_t step = tile_step,
                                                           std::uint32_t g = gutter)
 {
-    ChartGeometry r{0, 0, 0, 0, 0, 0};
+    ChartGeometry r{};
     if (cw == 0 || ch == 0 || cw > max_chart_dim || ch > max_chart_dim) {
         return r;
     }
@@ -309,7 +315,7 @@ inline constexpr ChartGeometry chart_geometry(std::uint32_t surface_w, std::uint
                                               std::uint32_t g = gutter)
 {
     if (surface_w <= 2 || surface_h <= 2 || k_u == 0 || k_v == 0) {
-        return ChartGeometry{0, 0, 0, 0, 0, 0};
+        return ChartGeometry{};
     }
     return chart_geometry_from_extent(static_cast<std::uint64_t>(surface_w - 2) * k_u,
                                       static_cast<std::uint64_t>(surface_h - 2) * k_v, step, g);
@@ -320,7 +326,7 @@ inline constexpr ChartGeometry mover_chart_geometry(const MoverSurfaceChart& c, 
                                                     std::uint32_t g = gutter)
 {
     if (c.w > max_fragment_dim || c.h > max_fragment_dim) {
-        return ChartGeometry{0, 0, 0, 0, 0, 0};
+        return ChartGeometry{};
     }
     return chart_geometry(c.w, c.h, c.k_u, c.k_v, step, g);
 }
@@ -331,7 +337,7 @@ inline constexpr ChartGeometry terrain_chart_geometry(std::uint32_t w, std::uint
                                                       std::uint32_t g = gutter)
 {
     if (w > max_terrain_chart_dim || h > max_terrain_chart_dim) {
-        return ChartGeometry{0, 0, 0, 0, 0, 0};
+        return ChartGeometry{};
     }
     return chart_geometry_from_extent(w, h, step, g);
 }
@@ -362,7 +368,7 @@ struct TileDims
 inline constexpr TileDims tile_dims(const ChartGeometry& g, std::uint32_t tx, std::uint32_t ty,
                                     std::uint32_t step = tile_step)
 {
-    TileDims r{0, 0, 0, 0};
+    TileDims r{};
     if (tx >= g.nx || ty >= g.ny) {
         return r;
     }
@@ -426,7 +432,7 @@ struct TileSelect
 // defined (NaN fails both comparisons and lands in tile 0) rather than relying on lround.
 inline TileSelect select_tile(const ChartGeometry& g, float u, float v, std::uint32_t step = tile_step)
 {
-    TileSelect r{0, 0};
+    TileSelect r{};
     if (g.nx == 0 || g.ny == 0) {
         return r;
     }
@@ -463,7 +469,7 @@ inline PageSample sample_page_coords(const ChartGeometry& g, const Tile* tiles, 
     const TileSelect sel = select_tile(g, u, v, step);
     const std::uint32_t idx = tile_index(base, g, sel.tx, sel.ty);
     if (!tiles || idx >= num_tiles) {
-        return PageSample{0, 0.0f, 0.0f};
+        return PageSample{};
     }
     const Tile& t = tiles[idx];
     PageSample r;
@@ -486,7 +492,7 @@ struct TileSlot
 inline TileSlot chart_tile_slot(const ChartGeometry& g, std::uint32_t base, std::int64_t cu,
                                 std::int64_t cv, std::uint32_t step = tile_step)
 {
-    TileSlot r{0, 0, 0, false};
+    TileSlot r{};
     if (g.nx == 0 || g.ny == 0) {
         return r;
     }
@@ -701,7 +707,8 @@ inline constexpr std::uint32_t max_layer_pages(Codec codec)
 
 // ─── Compression modes (level property `lightmap_compression`) ────────────────
 
-enum class CompressionMode : std::uint8_t {
+enum class CompressionMode : std::uint8_t
+{
     quality = 0,  // plain BC7, RDO off
     balanced = 1,
     compact = 2,

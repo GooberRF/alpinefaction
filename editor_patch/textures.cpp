@@ -22,9 +22,9 @@
 // Subdirectory names registered during init, used by VPP packing fix
 static std::vector<std::string> custom_texture_subdirs;
 // Texture manager pointer, stored at init for reload support
-static void* g_texture_manager = nullptr;
+static TextureManager* g_texture_manager = nullptr;
 
-static void register_custom_texture_subdirectories(void* texture_manager)
+static void register_custom_texture_subdirectories(TextureManager* texture_manager)
 {
     // Resolve path relative to executable directory
     char exe_dir[MAX_PATH];
@@ -65,8 +65,7 @@ static void register_custom_texture_subdirectories(void* texture_manager)
     // Store for later use by VPP packing path fix
     custom_texture_subdirs = subdirs;
 
-    auto* category_array = reinterpret_cast<VArray<TextureCategory*>*>(
-        static_cast<char*>(texture_manager) + 0x7C);
+    auto* category_array = &texture_manager->categories;
 
     constexpr size_t texture_dir_max_len = 255;
 
@@ -92,7 +91,6 @@ static void register_custom_texture_subdirectories(void* texture_manager)
         // Register the subdirectory path with the VFS
         cat->path_handle = file_add_path(subdir_path.c_str(), ".tga .vbm .dds .atx .png .jpg .jpeg", false);
 
-        // Append to the manager's category array at this+0x7C
         category_array->push_back(cat);
 
         xlog::info("Registered custom texture category: '{}' (path_handle={})", display_name, cat->path_handle);
@@ -106,18 +104,15 @@ static void register_custom_texture_subdirectories(void* texture_manager)
 // red.cfg or falls through to default initialization. By hooking here (instead of
 // init_texture_categories at 0x004778e0), custom subdirectory categories are registered
 // regardless of whether red.cfg exists.
-void __fastcall texture_config_init_new(void* self, int edx);
+void __fastcall texture_config_init_new(PreferencesDialog* self, int edx);
 FunHook texture_config_init_hook{0x0046ac30, texture_config_init_new};
 
-void __fastcall texture_config_init_new(void* self, int edx)
+void __fastcall texture_config_init_new(PreferencesDialog* self, int edx)
 {
     // Call original: loads from red.cfg if present, otherwise initializes defaults
     texture_config_init_hook.call_target(self, edx);
 
-    // The texture manager (with category array at +0x7C) lives at [self + 0x9C].
-    // FUN_0046ac30's this is a parent object; the texture manager sub-object is dereferenced
-    // through FUN_0046ad00 -> FUN_00478320([this+0x9C]) -> FUN_004778e0 (init_texture_categories).
-    void* texture_manager = *reinterpret_cast<void**>(static_cast<char*>(self) + 0x9C);
+    TextureManager* texture_manager = self->texture_manager;
     g_texture_manager = texture_manager;
     register_custom_texture_subdirectories(texture_manager);
 }
@@ -210,8 +205,8 @@ CodeInjection config_save_skip_custom_subdirs{
     }
 };
 
-// FUN_0041b7c0 (startup default-texture folder group build) indexes the folder-name
-// VString array at manager+0x88 with each category's path_handle. Custom subdirectory
+// FUN_0041b7c0 (startup default-texture folder group build) indexes
+// TextureManager::folder_names with each category's path_handle. Custom subdirectory
 // categories store a VFS path slot there instead, which reads out of bounds.
 // Inject at 0x0041b9fa (EAX = TextureCategory** array element) and jump to the loop
 // increment at 0x0041bad7 to skip them.
@@ -230,13 +225,12 @@ CodeInjection folder_group_build_skip_custom_subdirs{
 // ("Custom - <dir>"), we need to use the selected category's own path_handle instead.
 // Inject at 0x0044540f to replace: MOV EDX, [ESI+0x98]
 // At this point: ESI = dialog object, [ESI+0x94] = selected category index,
-//                [ESI+0xa4] = texture manager ptr, category array at tex_mgr+0x7C
+//                [ESI+0xa4] = texture manager ptr
 CodeInjection sidebar_custom_texture_path_injection{
     0x0044540f,
     [](auto& regs) {
         auto* panel = reinterpret_cast<TextureModePanel*>(static_cast<uintptr_t>(regs.esi));
-        auto* cat_array = reinterpret_cast<VArray<TextureCategory*>*>(
-            static_cast<char*>(panel->texture_manager) + 0x7C);
+        auto* cat_array = &panel->texture_manager->categories;
         int path_handle = (*cat_array)[panel->category_index]->path_handle;
         // A custom subdirectory whose VFS path failed to register (path table full)
         // has path_handle == -1. This EDX value flows into the search's path-handle
@@ -276,8 +270,7 @@ CodeInjection texture_reverse_lookup_fix{
         // slot index at [search_ctx + 0] (verified at 0x4cfbc3: MOV [EBP], EDI).
         int found_path = *reinterpret_cast<int*>(stack + 0x1c);
 
-        auto* cat_array = reinterpret_cast<VArray<TextureCategory*>*>(
-            static_cast<char*>(g_texture_manager) + 0x7C);
+        auto* cat_array = &g_texture_manager->categories;
 
         for (int i = 0; i < cat_array->get_size(); i++) {
             TextureCategory* cat = (*cat_array)[i];
@@ -377,7 +370,7 @@ CodeInjection texture_refresh_all_iterate_custom_injection{
         regs.eip = 0x00470134;
 
         uint8_t flags = texture_browser_get_scan_flags(panel);
-        auto* cat_array = texture_browser_categories(panel);
+        auto* cat_array = &panel->texture_manager->categories;
 
         for (int i = 0; i < cat_array->get_size(); i++) {
             TextureCategory* cat = (*cat_array)[i];
@@ -475,8 +468,7 @@ const char* texture_category_of(const char* filename)
         }
     }
     if (!g_texture_manager) return nullptr;
-    const auto& categories =
-        *reinterpret_cast<VArray<TextureCategory*>*>(static_cast<char*>(g_texture_manager) + 0x7C);
+    const auto& categories = g_texture_manager->categories;
     for (EditorVfsFile* node : vfs_file_buckets) {
         for (; node; node = node->next) {
             if (!node->name || !same_texture_stem(node->name, filename)) continue;
@@ -948,8 +940,7 @@ void reload_custom_textures()
 {
     if (!g_texture_manager) return;
 
-    auto* category_array = reinterpret_cast<VArray<TextureCategory*>*>(
-        static_cast<char*>(g_texture_manager) + 0x7C);
+    auto* category_array = &g_texture_manager->categories;
 
     for (int i = 0; i < category_array->get_size(); i++) {
         const char* name = (*category_array)[i]->name.c_str();

@@ -33,18 +33,6 @@ namespace
 
 // ─── RED entry points ───────────────────────────────────────────────────────
 
-auto& gr_perspective = addr_as_ref<uint8_t>(0x0057E0ED);
-auto& gr_half_width = addr_as_ref<float>(0x0158F2EC);
-
-auto& level_render_mode = addr_as_ref<int>(0x0057B9B8); // 0 = Render Nothing (Except brushes)
-auto& view_see_through = addr_as_ref<int>(0x006C9A94);
-auto& view_room_colors = addr_as_ref<int>(0x006C9A98);
-auto& view_lightmaps_only = addr_as_ref<int>(0x006C9AA4);
-
-auto& painting_view_index = addr_as_ref<int>(0x006C9ACC);
-
-constexpr std::size_t level_ambient_offset = 0x30;
-
 // Render Everything's per-face drawer
 void level_face_draw_hooked(GSolid* solid, GFace* face, char outline);
 FunHook<decltype(level_face_draw_hooked)> level_face_draw_hook{0x004E94B0, level_face_draw_hooked};
@@ -502,7 +490,7 @@ ShadeKey current_shade_key(CDedLevel& level, int style)
         key.color[1] = props.sun_color_g / 255.0f * props.sun_intensity;
         key.color[2] = props.sun_color_b / 255.0f * props.sun_intensity;
     }
-    const Color& ambient = struct_field_ref<Color>(&level, level_ambient_offset);
+    const Color& ambient = level.ambient_color;
     key.ambient[0] = ambient.r;
     key.ambient[1] = ambient.g;
     key.ambient[2] = ambient.b;
@@ -1002,8 +990,12 @@ struct ChunkDraw
         for (uint32_t z = r.z0; z < r.z1; z += step) {
             for (uint32_t x = r.x0; x < r.x1; x += step) {
                 const uint32_t x2 = std::min(x + step, r.x1), z2 = std::min(z + step, r.z1);
-                if (x2 - x == 1 && z2 - z == 1) cell(x, z);
-                else quad(x, z, x2, z2);
+                if (x2 - x == 1 && z2 - z == 1) {
+                    cell(x, z);
+                }
+                else {
+                    quad(x, z, x2, z2);
+                }
             }
         }
     }

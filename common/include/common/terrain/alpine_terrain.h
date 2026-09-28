@@ -26,9 +26,9 @@
 #include <cmath>
 #include <algorithm>
 #include <bit>
-#include <iterator>
 
-namespace alpine_terrain {
+namespace alpine_terrain
+{
 
 inline constexpr std::uint32_t chunk_id = 0x0AFBAE0Bu;
 
@@ -895,6 +895,9 @@ inline void grid_position(const GridView& g, std::uint32_t x, std::uint32_t z, f
     out[2] = g.origin[2] + static_cast<float>(z) * g.cell_size;
 }
 
+// Relative slack of a few float ulps, scaled by the magnitude of the coordinates involved.
+inline constexpr float coord_ulps = 4.8e-7f;
+
 // World y of the emitted surface at world (x, z), on the triangle the cell's diagonal bit picks, so
 // it is exact at every grid vertex and follows the compiled faces between them. Clamped to the grid; NaN
 // for a NaN coordinate.
@@ -906,7 +909,7 @@ inline float height_at(const GridView& g, float world_x, float world_z)
     if (std::isnan(fx) || std::isnan(fz)) return NAN;
     // A vertex written as origin + i * cell_size does not divide back to exactly i: allow a few ulps
     // of the coordinates involved, in cells.
-    const float ulps = 4.8e-7f / g.cell_size;
+    const float ulps = coord_ulps / g.cell_size;
     const float tol_x = std::clamp((std::fabs(world_x) + std::fabs(g.origin[0])) * ulps, 1e-4f, 0.1f);
     const float tol_z = std::clamp((std::fabs(world_z) + std::fabs(g.origin[2])) * ulps, 1e-4f, 0.1f);
     if (std::fabs(fx - std::round(fx)) < tol_x) fx = std::round(fx);
@@ -940,8 +943,8 @@ inline float surface_tolerance(const GridView& g, float world_x, float world_y, 
     if (!(g.flags & flag_geoable)) return surface_epsilon;
     const float ax = std::fabs(world_x), ay = std::fabs(world_y), az = std::fabs(world_z);
     if (!(ax + ay + az < 2.0f * max_coord)) return surface_epsilon;
-    const float lat_x = (2.0f * ax + std::fabs(g.origin[0])) * 4.8e-7f + 1e-4f * g.cell_size;
-    const float lat_z = (2.0f * az + std::fabs(g.origin[2])) * 4.8e-7f + 1e-4f * g.cell_size;
+    const float lat_x = (2.0f * ax + std::fabs(g.origin[0])) * coord_ulps + 1e-4f * g.cell_size;
+    const float lat_z = (2.0f * az + std::fabs(g.origin[2])) * coord_ulps + 1e-4f * g.cell_size;
     const std::uint32_t cx = cells(g.nx), cz = cells(g.nz);
     auto nearest = [&](float c, float o, std::uint32_t n) {
         const float f = std::clamp((c - o) / g.cell_size, 0.0f, static_cast<float>(n));
@@ -957,7 +960,7 @@ inline float surface_tolerance(const GridView& g, float world_x, float world_y, 
             if (z < z1) rise_z = std::max(rise_z, std::fabs(top_y(g, x, z + 1) - top_y(g, x, z)));
         }
     }
-    const float t = (ax + ay + az) * 4.8e-7f + (rise_x * lat_x + rise_z * lat_z) / g.cell_size;
+    const float t = (ax + ay + az) * coord_ulps + (rise_x * lat_x + rise_z * lat_z) / g.cell_size;
     return std::clamp(t, surface_epsilon, max_surface_tolerance);
 }
 
@@ -1208,7 +1211,7 @@ enum class FaceKind : std::uint8_t
 // A world coordinate's slack: surface_epsilon, or a few ulps of the coordinates involved.
 inline float coord_tolerance(float a, float b)
 {
-    return std::max(surface_epsilon, (std::fabs(a) + std::fabs(b)) * 4.8e-7f);
+    return std::max(surface_epsilon, (std::fabs(a) + std::fabs(b)) * coord_ulps);
 }
 
 // for_each_vertex(visit) calls visit(x, y, z) once per vertex of the face.
@@ -1266,13 +1269,16 @@ inline float crater_light_factor(float depth)
 inline bool ray_triangle(const float (&o)[3], const float (&d)[3], const float (&a)[3], const float (&b)[3],
                          const float (&c)[3], float t_lo, float t_hi, float& t_out)
 {
-    const double e1[3] = {double(b[0]) - a[0], double(b[1]) - a[1], double(b[2]) - a[2]};
-    const double e2[3] = {double(c[0]) - a[0], double(c[1]) - a[1], double(c[2]) - a[2]};
+    const double e1[3] = {static_cast<double>(b[0]) - a[0], static_cast<double>(b[1]) - a[1],
+                          static_cast<double>(b[2]) - a[2]};
+    const double e2[3] = {static_cast<double>(c[0]) - a[0], static_cast<double>(c[1]) - a[1],
+                          static_cast<double>(c[2]) - a[2]};
     const double p[3] = {d[1] * e2[2] - d[2] * e2[1], d[2] * e2[0] - d[0] * e2[2], d[0] * e2[1] - d[1] * e2[0]};
     const double det = e1[0] * p[0] + e1[1] * p[1] + e1[2] * p[2];
     if (std::fabs(det) < 1e-12) return false;
     const double inv = 1.0 / det;
-    const double s[3] = {double(o[0]) - a[0], double(o[1]) - a[1], double(o[2]) - a[2]};
+    const double s[3] = {static_cast<double>(o[0]) - a[0], static_cast<double>(o[1]) - a[1],
+                         static_cast<double>(o[2]) - a[2]};
     constexpr double edge_eps = 1e-6;
     const double u = (s[0] * p[0] + s[1] * p[1] + s[2] * p[2]) * inv;
     if (u < -edge_eps || u > 1.0 + edge_eps) return false;
@@ -1355,7 +1361,8 @@ inline bool raycast(const GridView& g, const float (&o)[3], const float (&d)[3],
             cell_triangles(g, static_cast<std::uint32_t>(x), static_cast<std::uint32_t>(z), tri);
             float best = INFINITY, t = 0.0f;
             for (const auto& tr : tri) {
-                if (ray_triangle(o, d, tr[0], tr[1], tr[2], std::max(t_min, t0 - slack), std::min(t_max, t1 + slack), t) &&
+                if (ray_triangle(o, d, tr[0], tr[1], tr[2], std::max(t_min, t0 - slack), std::min(t_max, t1 + slack),
+                                 t) &&
                     t < best) {
                     best = t;
                 }

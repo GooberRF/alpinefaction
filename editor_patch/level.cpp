@@ -300,16 +300,6 @@ CodeInjection CDedLevel_LoadLevel_patch2{
     },
 };
 
-// Get the head of the room's face list (VList<GFace, FACE_LIST_ROOM>).
-// GRoom models the face_list as `char _face_list[8]` (head ptr + count); we read
-// the head pointer via offsetof so the layout is compile-time verified.
-// Faces are linked via GFace::next_room (+0x5C).
-static inline GFace* get_room_face_head(GRoom* room)
-{
-    return *reinterpret_cast<GFace**>(
-        reinterpret_cast<char*>(room) + offsetof(GRoom, _face_list));
-}
-
 // At save time, match geoable brush UIDs to compiled room UIDs via position.
 // For each geoable brush, find the detail room whose bbox contains the brush position.
 // Find the compiled room that contains a brush's faces by matching face_ids.
@@ -382,7 +372,7 @@ static GRoom* find_room_by_position(const CDedLevel& level, int32_t brush_uid)
         if (!room || !room->is_detail) continue;
         // Skip empty rooms (e.g. secondary rooms emptied by merge_geoable_interior_rooms).
         // Their bbox is stale and would cause false-positive position matches.
-        if (!get_room_face_head(room)) continue;
+        if (!room->face_list_head) continue;
         if (brush_pos.x >= room->bbox_min.x - tolerance && brush_pos.x <= room->bbox_max.x + tolerance &&
             brush_pos.y >= room->bbox_min.y - tolerance && brush_pos.y <= room->bbox_max.y + tolerance &&
             brush_pos.z >= room->bbox_min.z - tolerance && brush_pos.z <= room->bbox_max.z + tolerance) {
@@ -645,7 +635,7 @@ static void populate_isolated_face_map()
 // so after splitting faces out we must recompute from scratch.
 static void recompute_room_bbox(GRoom* room)
 {
-    GFace* head = get_room_face_head(room);
+    GFace* head = room->face_list_head;
     if (!head) return;
 
     Vector3 vmin = head->bounding_box_min;
@@ -780,7 +770,7 @@ static void merge_geoable_interior_rooms(GSolid* solid)
         GRoom* room = all_rooms.data_ptr[i];
         if (!room || !room->is_detail) continue;
 
-        GFace* head = get_room_face_head(room);
+        GFace* head = room->face_list_head;
         if (!head) continue;
 
         int brush_uid = -1;
@@ -811,7 +801,7 @@ static void merge_geoable_interior_rooms(GSolid* solid)
         int max_faces = -1;
         for (GRoom* r : rooms) {
             int count = 0;
-            for (GFace* f = get_room_face_head(r); f; f = f->next_room) count++;
+            for (GFace* f = r->face_list_head; f; f = f->next_room) count++;
             if (count > max_faces) {
                 max_faces = count;
                 primary = r;
@@ -822,7 +812,7 @@ static void merge_geoable_interior_rooms(GSolid* solid)
             if (r == primary) continue;
 
             std::vector<GFace*> faces;
-            for (GFace* f = get_room_face_head(r); f; f = f->next_room)
+            for (GFace* f = r->face_list_head; f; f = f->next_room)
                 faces.push_back(f);
 
             for (GFace* f : faces)
@@ -865,7 +855,7 @@ CodeInjection skip_empty_detail_rooms_in_loop2{
     0x00485f1a,
     [](auto& regs) {
         auto* room = reinterpret_cast<GRoom*>(static_cast<void*>(regs.esi));
-        if (!get_room_face_head(room)) {
+        if (!room->face_list_head) {
             regs.eip = 0x00486009;
         }
     },

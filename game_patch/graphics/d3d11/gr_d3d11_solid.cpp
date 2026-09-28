@@ -21,6 +21,7 @@
 #include "../../misc/alpine_terrain.h"
 #include "../../misc/destruction.h"
 #include "../../os/os.h"
+#include "../af_lightmap.h"
 #include "gr_d3d11.h"
 #include "gr_d3d11_af_lightmap.h"
 #include "gr_d3d11_solid.h"
@@ -40,8 +41,6 @@ namespace gr::d3d11
     static auto& gr_decal_mode = addr_as_ref<rf::gr::Mode>(0x01808318);
     static auto& gr_solid_mode = addr_as_ref<rf::gr::Mode>(0x01808328);
     static auto& gr_solid_alpha_mode = addr_as_ref<rf::gr::Mode>(0x0180832C);
-    static auto& geo_cache_num_rooms = addr_as_ref<int>(0x013761B8);
-    static auto& decal_list_head = addr_as_ref<rf::GDecal*>(0x00C4D56C);
 
     static rf::gr::Mode sky_room_opaque_mode{
         rf::gr::TEXTURE_SOURCE_WRAP,
@@ -299,7 +298,7 @@ namespace gr::d3d11
         // (terrain index, crater texture or no_crater_texture) -> its faces in this room with their kind
         std::map<std::pair<int, int>, std::vector<std::pair<rf::GFace*, alpine_terrain::FaceKind>>> terrain_faces_;
         // Set only for caches that may draw terrain batches
-        ID3D11Device* terrain_device_ = nullptr;
+        TerrainRenderer* terrain_renderer_ = nullptr;
         const AlpineTerrainRoomRef* terrain_room_ = nullptr;
         alpine_terrain::GridView terrain_grid_{};
         bool is_sky_ = false;
@@ -310,9 +309,9 @@ namespace gr::d3d11
         std::unordered_map<rf::GFace*, int> af_surfaces_;
 
     public:
-        void enable_terrain(ID3D11Device* device)
+        void enable_terrain(TerrainRenderer& terrain_renderer)
         {
-            terrain_device_ = device;
+            terrain_renderer_ = &terrain_renderer;
         }
 
         void add_solid(rf::GSolid* solid);
@@ -370,9 +369,9 @@ namespace gr::d3d11
             is_sky_ = true;
         }
         terrain_room_ = nullptr;
-        if (terrain_device_ && !is_sky_ && room->is_detail) {
+        if (terrain_renderer_ && !is_sky_ && room->is_detail) {
             const AlpineTerrainRoomRef* ref = alpine_terrain_find_room(room);
-            if (ref && terrain_gpu_prepare(terrain_device_, ref->terrain)) {
+            if (ref && terrain_renderer_->prepare(ref->terrain)) {
                 terrain_room_ = ref;
                 terrain_grid_ = alpine_terrain_grid(alpine_terrain_get_all()[ref->terrain]);
             }
@@ -451,7 +450,8 @@ namespace gr::d3d11
         std::vector<std::pair<rf::GFace*, alpine_terrain::FaceKind>>* terrain_list = nullptr;
         if (terrain_room_ && render_type == FaceRenderType::opaque && face->attributes.surface_index < 0) {
             const alpine_terrain::FaceKind kind = alpine_terrain_face_kind(terrain_grid_, *face);
-            const int crater_texture = kind == alpine_terrain::FaceKind::crater ? std::max(face_tex, -1) : no_crater_texture;
+            const int crater_texture =
+                kind == alpine_terrain::FaceKind::crater ? std::max(face_tex, -1) : no_crater_texture;
             terrain_list = &terrain_faces_[{terrain_room_->terrain, crater_texture}];
             terrain_list->emplace_back(face, kind);
         }
@@ -765,8 +765,10 @@ namespace gr::d3d11
 
     SolidRenderer::SolidRenderer(ComPtr<ID3D11Device> device, ShaderManager& shader_manager,
         [[maybe_unused]] StateManager& state_manager, DynamicGeometryRenderer& dyn_geo_renderer,
-        RenderContext& render_context) :
-        device_{std::move(device)}, context_{render_context.device_context()}, dyn_geo_renderer_{dyn_geo_renderer}, render_context_(render_context)
+        RenderContext& render_context, AfLightmapRenderer& af_lightmap_renderer) :
+        device_{std::move(device)}, context_{render_context.device_context()}, terrain_renderer_{device_},
+        dyn_geo_renderer_{dyn_geo_renderer}, render_context_(render_context),
+        af_lightmap_renderer_{af_lightmap_renderer}
     {
         vertex_shader_ = shader_manager.get_vertex_shader(VertexShaderId::standard);
         pixel_shader_ = shader_manager.get_pixel_shader(PixelShaderId::standard);
@@ -814,7 +816,7 @@ namespace gr::d3d11
     template<typename F>
     static bool visit_dynamic_decal_rooms(F&& visit)
     {
-        rf::GDecal* const decal_head = decal_list_head;
+        rf::GDecal* const decal_head = rf::g_decal_list;
         for (rf::GDecal* decal = decal_head; decal;) {
             if (!(decal->flags & rf::DF_LEVEL_DECAL)) {
                 rf::DecalPoly* const dp_head = decal->poly_list;
@@ -960,13 +962,13 @@ namespace gr::d3d11
         render_context_.set_pixel_shader(gas ? terrain_pixel_shader_ : terrain_pixel_shader_no_gas_);
         cache.render_terrain(render_context_, [this](const TerrainBatch& b) {
             if (b.terrain != bound_terrain_) {
-                if (!terrain_gpu_bind(context_, render_context_, b.terrain)) {
+                if (!terrain_renderer_.bind(context_, render_context_, b.terrain)) {
                     return false;
                 }
                 bound_terrain_ = b.terrain;
             }
             if (b.crater_texture != no_crater_texture && b.crater_texture != bound_crater_texture_) {
-                terrain_gpu_bind_crater(context_, render_context_, b.crater_texture);
+                terrain_renderer_.bind_crater(context_, render_context_, b.crater_texture);
                 bound_crater_texture_ = b.crater_texture;
             }
             return true;
@@ -1013,7 +1015,7 @@ namespace gr::d3d11
             const int64_t start = timing ? timer::get_i64(1000000) : 0;
             GRenderCacheBuilder builder;
             if (terrain_pixel_shader_ && terrain_pixel_shader_no_gas_) {
-                builder.enable_terrain(device_);
+                builder.enable_terrain(terrain_renderer_);
             }
             builder.add_room(room, solid);
             xlog::debug("Detail room {} builder: verts={} inds={} batches={}",
@@ -1049,7 +1051,7 @@ namespace gr::d3d11
         detail_render_cache_.clear();
         mover_render_cache_.clear();
         geo_cache_rooms_.clear();
-        geo_cache_num_rooms = 0;
+        rf::geo_cache_num_rooms = 0;
         xlog::debug("Room render cache clear complete");
     }
 
@@ -1264,7 +1266,7 @@ namespace gr::d3d11
             }
         }
         if (bound_terrain_ >= 0) {
-            terrain_gpu_unbind(context_);
+            terrain_renderer_.unbind(context_);
             bound_terrain_ = -1;
             bound_crater_texture_ = no_crater_texture;
         }
@@ -1286,7 +1288,7 @@ namespace gr::d3d11
         render_context_.set_model_transform(pos, orient);
         render_context_.set_cull_mode(D3D11_CULL_BACK);
         render_context_.set_primitive_topology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-        af_lightmap_bind(device_, context_);
+        af_lightmap_renderer_.bind();
     }
 
     void SolidRenderer::page_in_solid(rf::GSolid* solid)

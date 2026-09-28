@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <patch_common/MemUtils.h>
 #include "../os/vtypes.h"
 #include "../math/matrix.h"
@@ -146,6 +147,23 @@ namespace rf
             }
         };
     };
+
+    // A File or a memory buffer read through one interface, as level_load parses the geometry and
+    // movers sections (0x00514C40 constructs, 0x00514C50 opens a buffer, 0x00514E10 reads an int).
+    struct VFile
+    {
+        int is_memory;
+        File* file;
+        const ubyte* buf;
+        int pos;
+        int size;
+        char name[0x3C];
+        int version;
+        int error;
+    };
+    static_assert(sizeof(VFile) == 0x58);
+    static_assert(offsetof(VFile, buf) == 0x08 && offsetof(VFile, pos) == 0x0C && offsetof(VFile, size) == 0x10);
+    static_assert(offsetof(VFile, version) == 0x50 && offsetof(VFile, error) == 0x54);
 
     static auto& file_get_ext = addr_as_ref<char*(const char *path)>(0x005143F0);
     static auto& file_add_path = addr_as_ref<int(const char *path, const char *exts, bool search_on_cd)>(0x00514070);

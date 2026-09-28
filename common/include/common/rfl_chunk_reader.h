@@ -8,7 +8,7 @@
 #include <cstdint>
 #include <string>
 
-template<class File>
+template<typename File>
 struct RflChunkReader
 {
     File& file;

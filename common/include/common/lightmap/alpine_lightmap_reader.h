@@ -6,6 +6,7 @@
 // Every derived quantity still comes from alpine_lightmap.h; nothing is re-derived here.
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -13,9 +14,10 @@
 #include <vector>
 
 #include "alpine_lightmap.h"
-#include "../terrain/alpine_terrain.h"
+#include <common/terrain/alpine_terrain.h>
 
-namespace alpine_lightmap {
+namespace alpine_lightmap
+{
 
 // Stock lightmap fragment dimensions of one geometry surface, border ring included.
 struct SurfaceDims
@@ -130,24 +132,6 @@ inline constexpr bool layer_supported(std::uint16_t semantic, std::uint16_t code
             || compression == static_cast<std::uint8_t>(Compression::zlib));
 }
 
-namespace detail {
-
-inline ReadResult fail(const char* reason)
-{
-    ReadResult r;
-    r.ok = false;
-    r.reason = reason;
-    return r;
-}
-
-template<typename T>
-inline void load(T& dst, const std::uint8_t* p)
-{
-    std::memcpy(&dst, p, sizeof(T));
-}
-
-} // namespace detail
-
 // Every tile of chart geometry `g` from `base` stays on a page of the section.
 inline bool chart_tiles_on_pages(const ReadResult& r, const ChartGeometry& g, std::uint32_t base)
 {
@@ -168,7 +152,22 @@ inline bool chart_tiles_on_pages(const ReadResult& r, const ChartGeometry& g, st
     return true;
 }
 
-namespace detail {
+namespace detail
+{
+
+inline ReadResult fail(const char* reason)
+{
+    ReadResult r;
+    r.ok = false;
+    r.reason = reason;
+    return r;
+}
+
+template<typename T>
+inline void load(T& dst, const std::uint8_t* p)
+{
+    std::memcpy(&dst, p, sizeof(T));
+}
 
 // The surface half: nullptr when it is usable, else why not. table_tiles is the tile count the
 // directory's tables own at the end of the tile table.
@@ -196,7 +195,7 @@ inline const char* validate_surfaces(ReadResult& r, const SurfaceDims* dims, std
     }
     const std::uint64_t surface_tiles = r.head.num_tiles - table_tiles;
     // sized only now: the count check above bounds them by the loaded geometry, not by the file
-    r.geoms.assign(r.head.num_charts, ChartGeometry{0, 0, 0, 0, 0, 0});
+    r.geoms.assign(r.head.num_charts, ChartGeometry{});
     r.bases.assign(r.head.num_charts, 0);
     std::uint64_t derived_tiles = 0;
     for (std::uint32_t i = 0; i < r.head.num_charts; i++) {
@@ -275,7 +274,7 @@ inline const char* parse_movers(ReadResult& r, const std::uint8_t* data, std::ui
         return "mover table length";
     }
 
-    r.mover_geoms.assign(r.mover_charts.size(), ChartGeometry{0, 0, 0, 0, 0, 0});
+    r.mover_geoms.assign(r.mover_charts.size(), ChartGeometry{});
     r.mover_bases.assign(r.mover_charts.size(), first_tile);
     std::uint64_t tiles = 0;
     for (std::size_t k = 0; k < r.mover_charts.size(); k++) {
@@ -356,7 +355,7 @@ inline const char* parse_terrain(ReadResult& r, const std::uint8_t* data, std::u
         load(r.terrain[i], records + static_cast<std::size_t>(i) * sizeof(TerrainChart));
     }
 
-    r.terrain_geoms.assign(num_terrain, ChartGeometry{0, 0, 0, 0, 0, 0});
+    r.terrain_geoms.assign(num_terrain, ChartGeometry{});
     r.terrain_bases.assign(num_terrain, first_tile);
     r.terrain_ok.assign(num_terrain, 0);
     std::uint64_t tiles = 0;
@@ -852,7 +851,8 @@ inline void terrain_reduced_chart_sample(const std::uint8_t* rgb, const TerrainC
 
 // Whether chart `c` lights terrain grid `g` as it is now: it covers the grid's cells at a whole density
 // of 1..lightmap_density_max and was baked for its lighting_fingerprint. Matching the uid is the caller's.
-enum class TerrainChartFit : std::uint8_t {
+enum class TerrainChartFit : std::uint8_t
+{
     match,
     other_grid,
     stale,

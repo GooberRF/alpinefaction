@@ -1,5 +1,6 @@
 #include <windows.h>
 #include <algorithm>
+#include <bit>
 #include <memory>
 #include <cstdint>
 #include <cmath>
@@ -291,7 +292,7 @@ static void __fastcall lightmap_page_free_new(void* page)
     if (page == g_synth_page) {
         g_synth_page = nullptr;
     }
-    const int bm = *reinterpret_cast<int*>(static_cast<std::uint8_t*>(page) + 0x10);
+    const int bm = static_cast<GLightmap*>(page)->bm_handle;
     if (GrTextureSlot* slot = gr_texture_slot_of(bm); slot && slot->bm_handle == bm) {
         gr_texture_free(slot);
     }
@@ -328,7 +329,7 @@ static void* __fastcall lightmap_synth_page_new(void* self, int edx, int w, int 
     g_stock_layout_synthesized = true;
     g_synth_page = page;
     auto* level = CDedLevel::Get();
-    auto* buf = self ? *reinterpret_cast<std::uint8_t**>(static_cast<std::uint8_t*>(self) + 0xc) : nullptr;
+    auto* buf = self ? static_cast<GLightmap*>(self)->pixels : nullptr;
     // a d3d11-only level reads as unlit in the RED viewport rather than black
     if (buf && level && level->GetAlpineLevelProperties().stock_lightmaps_omitted) {
         std::memset(buf, 0xff, static_cast<std::size_t>(w) * h * 3);
@@ -338,11 +339,11 @@ static void* __fastcall lightmap_synth_page_new(void* self, int edx, int w, int 
 
 void lightmap_synthesized_page_resize(int edge)
 {
-    auto* page = static_cast<std::uint8_t*>(g_synth_page);
+    auto* page = static_cast<GLightmap*>(g_synth_page);
     if (!g_stock_layout_synthesized || !page || edge <= 0 || edge > lm_highres_page_size) {
         return;
     }
-    if (*reinterpret_cast<int*>(page + 4) == edge && *reinterpret_cast<int*>(page + 8) == edge) {
+    if (page->w == edge && page->h == edge) {
         return;
     }
     const std::size_t bytes = static_cast<std::size_t>(edge) * edge * 3;
@@ -352,11 +353,11 @@ void lightmap_synthesized_page_resize(int edge)
     }
     // Rebuilt in place as FUN_004a6510 builds it: the surfaces and the page list hold its address and index.
     lightmap_page_free_new(page);
-    *reinterpret_cast<void**>(page) = nullptr;
-    *reinterpret_cast<int*>(page + 4) = edge;
-    *reinterpret_cast<int*>(page + 8) = edge;
-    *reinterpret_cast<std::uint8_t**>(page + 0xc) = pixels;
-    *reinterpret_cast<int*>(page + 0x10) = AddrCaller{0x004bdf10}.c_call<int>(5, edge, edge);
+    page->alpha = nullptr;
+    page->w = edge;
+    page->h = edge;
+    page->pixels = pixels;
+    page->bm_handle = bm_create(5, edge, edge);
     g_synth_page = page;
     auto* level = CDedLevel::Get();
     const bool omitted = level && level->GetAlpineLevelProperties().stock_lightmaps_omitted;
@@ -440,33 +441,32 @@ static void lightmap_collect_room_ambient(uintptr_t gsolid)
     const auto& room_linkers = level->room_effects;
     if (room_linkers.size <= 0 || !room_linkers.data_ptr) return;
 
-    // GSolid::all_rooms VArray at GSolid+0x90, surfaces VArray at GSolid+0xC0.
     // The BSP spatial lookup and GRoom bounding boxes don't reliably match surface
     // room_index values (BSP can return room_index=183 when surfaces use 0-6).
     // Instead, build combined bounding boxes from surfaces per room_index. This matches
     // the exact room assignment the lightmap code uses.
-    int room_count = *reinterpret_cast<int*>(gsolid + 0x90);
-    uintptr_t room_elements = *reinterpret_cast<uintptr_t*>(gsolid + 0x90 + 8);
+    const auto* solid = reinterpret_cast<const GSolid*>(gsolid);
+    int room_count = solid->all_rooms.size;
+    GRoom* const* room_elements = solid->all_rooms.data_ptr;
     if (room_count <= 0 || !room_elements) return;
 
-    int surface_count = *reinterpret_cast<int*>(gsolid + 0xC0);
-    uintptr_t surface_elements = *reinterpret_cast<uintptr_t*>(gsolid + 0xC0 + 8);
+    int surface_count = solid->surfaces.size;
+    const GSurface* const* surface_elements = solid->surfaces.data_ptr;
     if (surface_count <= 0 || !surface_elements) return;
 
     // Build combined bbox per room_index from surfaces
-    // GSurface layout: bbox_mn at +0x34 (Vec3), bbox_mx at +0x40 (Vec3), room_index at +0x68
     constexpr int max_tracked_rooms = 512;
     struct RoomBBox { float mn[3]; float mx[3]; bool valid; };
     auto* room_bboxes = new (std::nothrow) RoomBBox[max_tracked_rooms]();
     if (!room_bboxes) return;
 
     for (int s = 0; s < surface_count; s++) {
-        uintptr_t surf = *reinterpret_cast<uintptr_t*>(surface_elements + s * 4);
+        const GSurface* surf = surface_elements[s];
         if (!surf) continue;
-        int ridx = *reinterpret_cast<int*>(surf + 0x68);
+        int ridx = surf->room_index;
         if (ridx < 0 || ridx >= max_tracked_rooms) continue;
-        auto* smn = reinterpret_cast<const float*>(surf + 0x34);
-        auto* smx = reinterpret_cast<const float*>(surf + 0x40);
+        auto* smn = surf->bbox_mn;
+        auto* smx = surf->bbox_mx;
         auto& bb = room_bboxes[ridx];
         if (!bb.valid) {
             for (int c = 0; c < 3; c++) { bb.mn[c] = smn[c]; bb.mx[c] = smx[c]; }
@@ -510,10 +510,10 @@ static void lightmap_collect_room_ambient(uintptr_t gsolid)
             }
         }
         if (best_ridx >= 0) {
-            uintptr_t room = *reinterpret_cast<uintptr_t*>(room_elements + best_ridx * 4);
+            GRoom* room = room_elements[best_ridx];
             if (room) {
-                *reinterpret_cast<uint8_t*>(room + 0x45) = 1;
-                *reinterpret_cast<uint32_t*>(room + 0x46) = linker->ambient_color;
+                room->ambient_light_defined = true;
+                room->ambient_light = std::bit_cast<Color>(linker->ambient_color);
             }
         }
     }
@@ -523,9 +523,9 @@ static void lightmap_collect_room_ambient(uintptr_t gsolid)
     s_ambient_room_count = 0;
     for (int ridx = 0; ridx < room_count && ridx < max_tracked_rooms
              && s_ambient_room_count < kMaxAmbientRooms; ridx++) {
-        uintptr_t room = *reinterpret_cast<uintptr_t*>(room_elements + ridx * 4);
+        const GRoom* room = room_elements[ridx];
         if (!room) continue;
-        if (*reinterpret_cast<uint8_t*>(room + 0x45) != 1) continue;
+        if (room->ambient_light_defined != 1) continue;
         if (!room_bboxes[ridx].valid) continue; // no surfaces for this room
         auto& entry = s_ambient_rooms[s_ambient_room_count];
         for (int c = 0; c < 3; c++) {
@@ -533,9 +533,9 @@ static void lightmap_collect_room_ambient(uintptr_t gsolid)
             entry.bbox_max[c] = room_bboxes[ridx].mx[c];
         }
         constexpr float inv255 = 1.0f / 255.0f;
-        entry.r = static_cast<float>(*reinterpret_cast<uint8_t*>(room + 0x46)) * inv255;
-        entry.g = static_cast<float>(*reinterpret_cast<uint8_t*>(room + 0x47)) * inv255;
-        entry.b = static_cast<float>(*reinterpret_cast<uint8_t*>(room + 0x48)) * inv255;
+        entry.r = static_cast<float>(room->ambient_light.r) * inv255;
+        entry.g = static_cast<float>(room->ambient_light.g) * inv255;
+        entry.b = static_cast<float>(room->ambient_light.b) * inv255;
         s_ambient_room_count++;
     }
 
@@ -1414,7 +1414,8 @@ static void sun_cone_directions(const Vec3f& axis, float spread_deg, Vec3f* out,
 }
 
 // How one light's shadow rays are cast from a receiving point.
-struct LightRays {
+struct LightRays
+{
     int type = 0;
     const float* vec = nullptr;
     const float* vec_end = nullptr;
@@ -1427,12 +1428,13 @@ struct LightRays {
 
 static bool light_rays_setup(uintptr_t light, LightRays& lr)
 {
-    lr.type = *reinterpret_cast<int*>(light + 8);
+    const auto* l = reinterpret_cast<const GrLight*>(light);
+    lr.type = l->type;
     // while a mover transform is pushed the engine keeps the light in the solid's own space
     const int local = *reinterpret_cast<int*>(0x0158f414) != 0 ? 0x50 : 0;
-    lr.vec = reinterpret_cast<const float*>(light + 0x0c + local);
-    lr.vec_end = reinterpret_cast<const float*>(light + 0x18 + local);
-    lr.radius = *reinterpret_cast<const float*>(light + 0x3c);
+    lr.vec = local ? &l->local_vec.x : &l->vec.x;
+    lr.vec_end = local ? &l->local_vec2.x : &l->vec2.x;
+    lr.radius = l->rad_2;
     const bool is_sun = g_sun_light_ptr && reinterpret_cast<void*>(light) == g_sun_light_ptr;
     const bool one_sided = invisible_faces_occlude_active();
     unsigned skip_flags = 0x4u; // liquid, unless this is the sun and the level asks for it
@@ -1449,9 +1451,9 @@ static bool light_rays_setup(uintptr_t light, LightRays& lr)
         skip_flags |= lm_occ_alpha_texture;
     }
     lr.skip_flags = skip_flags;
-    lr.oneside_flags = one_sided ? 0x2000u : 0u;
+    lr.oneside_flags = one_sided ? FACE_INVISIBLE : 0u;
     lr.cone_count = 0;
-    if (lr.type == 1) {
+    if (lr.type == LT_DIRECTIONAL) {
         Vec3f axis{lr.vec[0], lr.vec[1], lr.vec[2]};
         const float len = std::sqrt(vdot(axis, axis));
         if (!(len >= 1e-6f)) {
@@ -1478,7 +1480,7 @@ static std::uint8_t light_rays_visibility(const OccluderTree& tree, const LightR
     q.skip_surf = skip_surf;
     q.skip_flags = lr.skip_flags;
     q.oneside_flags = lr.oneside_flags;
-    if (lr.type == 1) {
+    if (lr.type == LT_DIRECTIONAL) {
         q.tmax = 1.0e6f;
         for (int k = 0; k < lr.cone_count; k++) {
             q.dir = lr.cone[k];
@@ -1490,7 +1492,7 @@ static std::uint8_t light_rays_visibility(const OccluderTree& tree, const LightR
         }
     }
     else {
-        const int samples = lr.type == 4 ? 2 : 1;
+        const int samples = lr.type == LT_TUBE ? 2 : 1;
         for (int k = 0; k < samples; k++) {
             const float* target = k == 0 ? lr.vec : lr.vec_end;
             Vec3f d{target[0] - origin.x, target[1] - origin.y, target[2] - origin.z};
@@ -1521,8 +1523,9 @@ static bool lightmap_raycast_mask(uintptr_t solid, uintptr_t surface, uintptr_t 
     if (!surface || !light || !mask) {
         return false;
     }
-    const int width = *reinterpret_cast<int*>(surface + 0x18);
-    const int height = *reinterpret_cast<int*>(surface + 0x1c);
+    const auto* surf = reinterpret_cast<const GSurface*>(surface);
+    const int width = surf->width;
+    const int height = surf->height;
     if (width <= 0 || height <= 0 || width > lm_highres_page_size ||
         height > lm_highres_page_size) {
         return false;
@@ -1541,7 +1544,7 @@ static bool lightmap_raycast_mask(uintptr_t solid, uintptr_t surface, uintptr_t 
     if (!light_rays_setup(light, lr)) {
         return false;
     }
-    const int skip_surf = *reinterpret_cast<int*>(surface);
+    const int skip_surf = surf->index;
     const Vec3f ns{p.nx, p.ny, p.nz};
 
     auto shade_rows = [&](int row_begin, int row_end) {
@@ -1764,17 +1767,17 @@ static bool lighting_calc_refused()
         return true;
     }
     for (int i = 0; elems && i < count; i++) {
-        const auto s = *reinterpret_cast<uintptr_t*>(elems + i * 4);
-        const uintptr_t lm = s ? *reinterpret_cast<uintptr_t*>(s + 0xc) : 0;
+        const auto* s = *reinterpret_cast<const GSurface* const*>(elems + i * 4);
+        const GLightmap* lm = s ? s->lightmap : nullptr;
         if (!lm) {
             continue;
         }
-        const int page_w = *reinterpret_cast<int*>(lm + 4);
-        const int page_h = *reinterpret_cast<int*>(lm + 8);
-        const int x = *reinterpret_cast<int*>(s + 0x10);
-        const int y = *reinterpret_cast<int*>(s + 0x14);
-        const int w = *reinterpret_cast<int*>(s + 0x18);
-        const int h = *reinterpret_cast<int*>(s + 0x1c);
+        const int page_w = lm->w;
+        const int page_h = lm->h;
+        const int x = s->xstart;
+        const int y = s->ystart;
+        const int w = s->width;
+        const int h = s->height;
         if (x >= 0 && y >= 0 && w >= 0 && h >= 0 && x <= page_w - w && y <= page_h - h) {
             continue;
         }
@@ -2500,15 +2503,15 @@ namespace
 // A longer (or cyclic) edge loop leaves the pass to the stock scan.
 constexpr int face_loop_max = 1 << 16;
 
-// A GFace's edge loop (+0x40, next at +0x14): fn(vertex, next) per GFaceVertex, next wrapping to the
-// first. False when fn stops or the loop passes face_loop_max.
+// A GFace's edge loop: fn(vertex, next) per GFaceVertex, next wrapping to the first. False when fn
+// stops or the loop passes face_loop_max.
 template<typename F>
 bool for_each_face_vertex(uintptr_t face, F&& fn)
 {
-    const uintptr_t head = *reinterpret_cast<uintptr_t*>(face + 0x40);
+    const auto head = reinterpret_cast<uintptr_t>(reinterpret_cast<const GFace*>(face)->edge_loop);
     int steps = 0;
     for (uintptr_t v = head; v;) {
-        const uintptr_t next = *reinterpret_cast<uintptr_t*>(v + 0x14);
+        const auto next = reinterpret_cast<uintptr_t>(reinterpret_cast<const GFaceVertex*>(v)->next);
         if (++steps > face_loop_max || !fn(v, next && next != head ? next : head)) {
             return false;
         }
@@ -2521,8 +2524,8 @@ bool for_each_face_vertex(uintptr_t face, F&& fn)
 }
 
 constexpr double blend_cull_cell = 0.01;
-// FUN_004aae80's entry array stride; an entry's face VArray is at +4.
-constexpr uintptr_t blend_entry_stride = 0x1c;
+// FUN_004aae80's entry array stride.
+constexpr uintptr_t blend_entry_stride = sizeof(LightmapBlendEntry);
 
 class BlendPairCull
 {
@@ -2534,11 +2537,11 @@ public:
             entries_ = entries;
             count_ = count;
             for (int e = 0; e < count; e++) {
-                const uintptr_t faces = entries + static_cast<uintptr_t>(e) * blend_entry_stride + 4;
-                const int n = *reinterpret_cast<int*>(faces);
-                const auto* data = *reinterpret_cast<uintptr_t* const*>(faces + 8);
+                const auto& faces = reinterpret_cast<const LightmapBlendEntry*>(entries)[e].faces;
+                const int n = faces.size;
+                GFace* const* data = faces.data_ptr;
                 for (int i = 0; i < n; i++) {
-                    const uintptr_t face = data[i];
+                    const auto face = reinterpret_cast<uintptr_t>(data[i]);
                     face_entry_.emplace(face, e);
                     if (!for_each_vertex(face, [&](const float* p) {
                             if (!std::isfinite(p[0]) || !std::isfinite(p[1]) || !std::isfinite(p[2])) {
@@ -2607,7 +2610,7 @@ private:
     static bool for_each_vertex(uintptr_t face, F&& fn)
     {
         return for_each_face_vertex(
-            face, [&](uintptr_t v, uintptr_t) { return fn(*reinterpret_cast<const float* const*>(v)); });
+            face, [&](uintptr_t v, uintptr_t) { return fn(&reinterpret_cast<const GFaceVertex*>(v)->vertex->pos.x); });
     }
 
     bool select(uintptr_t fa)
@@ -2667,9 +2670,9 @@ BlendPairCull* g_blend_cull = nullptr;
 // The current A face: [ESP+0x10] is A's face VArray, [ESP+0x2c] the face index.
 uintptr_t blend_current_face(uintptr_t esp)
 {
-    const uintptr_t faces = *reinterpret_cast<uintptr_t*>(esp + 0x10);
+    const auto* faces = *reinterpret_cast<const VArray<GFace*>* const*>(esp + 0x10);
     const int index = *reinterpret_cast<int*>(esp + 0x2c);
-    return (*reinterpret_cast<uintptr_t* const*>(faces + 8))[index];
+    return reinterpret_cast<uintptr_t>(faces->data_ptr[index]);
 }
 
 } // namespace
@@ -3177,9 +3180,10 @@ CodeInjection lightmap_blend_face_vert_index_injection{
 // Alpine lightmaps: terrain texels
 // The light model FUN_004ac470 gives a surface texel of the static solid, applied to arbitrary points:
 // the ambient seed (the level ambient, or the custom ambient room containing the point, halved by
-// 0x00554720), the lights FUN_00488810 gathers for the points' bounding box from the global list,
-// each shadow casting light (+0x50 != 0) masked by the ray tracer when the command casts shadows,
-// and light_accum_at_texel with the point's own normal and a smooth receiver, clamped at zero.
+// red_const_half), the lights room_setup_bbox gathers for the points' bounding box from the global
+// list, each shadow casting light (GrLight::shadow_condition != 0) masked by the ray tracer when the
+// command casts shadows, and light_accum_at_texel with the point's own normal and a smooth receiver,
+// clamped at zero.
 
 bool lightmap_light_terrain_points(const LightmapPoint* points, int count, float lift, float* out_r,
                                    float* out_g, float* out_b)
@@ -3202,8 +3206,8 @@ bool lightmap_light_terrain_points(const LightmapPoint* points, int count, float
     hi = {hi.x + pad, hi.y + pad, hi.z + pad};
 
     float base[3] = {0.0f, 0.0f, 0.0f};
-    AddrCaller{0x00487920}.c_call(&base[0], &base[1], &base[2]);
-    const float half = lm_read_const(0x00554720);
+    light_get_ambient(&base[0], &base[1], &base[2]);
+    const float half = red_const_half;
     const bool per_room = bake_fixes_active() && s_ambient_room_count > 0;
     for (int i = 0; i < count; i++) {
         float a[3] = {base[0], base[1], base[2]};
@@ -3216,12 +3220,15 @@ bool lightmap_light_terrain_points(const LightmapPoint* points, int count, float
         out_b[i] = a[2] * half;
     }
 
-    const int lights = std::clamp(
-        AddrCaller{0x00488810}.c_call<int>(static_cast<void*>(nullptr), &lo, &hi, 0, 1), 0, max_scene_lights);
-    struct LightListScope {
-        ~LightListScope() { AddrCaller{0x00488bb0}.c_call(); }
+    const int lights = std::clamp(room_setup_bbox(nullptr, &lo, &hi, 0, 1), 0, max_scene_lights);
+    struct LightListScope
+    {
+        ~LightListScope()
+        {
+            room_cleanup();
+        }
     } light_list_scope;
-    AddrCaller{0x00488be0}.c_call();
+    room_lights_to_local();
     if (lights == 0) {
         return true;
     }
@@ -3234,7 +3241,8 @@ bool lightmap_light_terrain_points(const LightmapPoint* points, int count, float
     for (int li = 0; li < lights; li++) {
         const auto light = reinterpret_cast<uintptr_t>(face_light_list[li]);
         LightRays lr;
-        if (tree && light && *reinterpret_cast<int*>(light + 0x50) != 0 && light_rays_setup(light, lr)) {
+        if (tree && light && reinterpret_cast<const GrLight*>(light)->shadow_condition != 0 &&
+            light_rays_setup(light, lr)) {
             rays.push_back(lr);
             ray_light.push_back(li);
         }
@@ -3295,18 +3303,18 @@ static void __fastcall lightmap_shade_surface_new(void* surface, int edx, void* 
         lightmap_shade_surface_hook.call_target(surface, edx, solid, mode);
         return;
     }
-    const auto s = reinterpret_cast<uintptr_t>(surface);
+    auto* s = static_cast<GSurface*>(surface);
     // Every write this function makes is addressed as (ystart + row) * page_w + xstart + col, with
     // no bound of its own. The bake is refused up front when a rect does not fit its page; this
     // is the backstop.
-    const uintptr_t lm = *reinterpret_cast<uintptr_t*>(s + 0xc);
+    const GLightmap* lm = s->lightmap;
     if (lm) {
-        const int page_w = *reinterpret_cast<int*>(lm + 4);
-        const int page_h = *reinterpret_cast<int*>(lm + 8);
-        const int x = *reinterpret_cast<int*>(s + 0x10);
-        const int y = *reinterpret_cast<int*>(s + 0x14);
-        const int w = *reinterpret_cast<int*>(s + 0x18);
-        const int h = *reinterpret_cast<int*>(s + 0x1c);
+        const int page_w = lm->w;
+        const int page_h = lm->h;
+        const int x = s->xstart;
+        const int y = s->ystart;
+        const int w = s->width;
+        const int h = s->height;
         if (x < 0 || y < 0 || w < 0 || h < 0 || x + w > page_w || y + h > page_h) {
             static bool warned = false;
             if (!warned) {
@@ -3315,32 +3323,34 @@ static void __fastcall lightmap_shade_surface_new(void* surface, int edx, void* 
                            "skipping it - the level needs Build Geometry",
                            w, h, x, y, page_w, page_h);
             }
-            *reinterpret_cast<std::uint8_t*>(s + 8) = 0;
+            s->flags = 0;
             return;
         }
     }
-    // both halves of the engine's own gate at 0x004ac48c: shade only for state bits 1 or 2, and
-    // never when +0xa is set, or the tile pass would produce a black chart and downsample it back
-    const std::uint8_t state = *reinterpret_cast<std::uint8_t*>(s + 8);
-    const std::uint8_t inhibit = *reinterpret_cast<std::uint8_t*>(s + 0xa);
+    // both halves of the engine's own gate at 0x004ac48c: shade only for SURFACE_SHADE or
+    // SURFACE_SHADE_RUNTIME, and never when fullbright is set, or the tile pass would produce a black
+    // chart and downsample it back
+    const std::uint8_t state = s->flags;
+    const std::uint8_t fullbright = s->fullbright;
     lightmap_shade_surface_hook.call_target(surface, edx, solid, mode);
-    if ((state & 6) && !inhibit) {
-        alpine_lm_shade_surface(reinterpret_cast<uintptr_t>(solid), s, mode);
+    if ((state & (SURFACE_SHADE | SURFACE_SHADE_RUNTIME)) && !fullbright) {
+        alpine_lm_shade_surface(reinterpret_cast<uintptr_t>(solid), reinterpret_cast<uintptr_t>(surface), mode);
     }
 }
 
 // Replaces "TEST byte ptr [ESI+8],1; JZ 0x004accda" (10 bytes) after the lightmap pass. Both blocks
 // behind it write the surface's live preview texture through the lightmap's bitmap handle, sized
-// for the real page; a tile view has neither, so bits 0 and 3 are cleared for a tile pass and both
-// blocks fall away. Branches into this filter land on the address itself, never inside it.
+// for the real page; a tile view has neither, so SURFACE_DYNAMIC_LIGHTS and SURFACE_UPLOAD are
+// cleared for a tile pass and both blocks fall away. Branches into this filter land on the address
+// itself, never inside it.
 CodeInjection lightmap_preview_upload_injection{
     0x004aca49,
     [](auto& regs) {
-        auto* state = reinterpret_cast<std::uint8_t*>(static_cast<uintptr_t>(regs.esi) + 8);
+        auto* state = &reinterpret_cast<GSurface*>(static_cast<uintptr_t>(regs.esi))->flags;
         if (alpine_lm_tile_pass_active()) {
-            *state &= static_cast<std::uint8_t>(~9u);
+            *state &= static_cast<std::uint8_t>(~(SURFACE_DYNAMIC_LIGHTS | SURFACE_UPLOAD));
         }
-        regs.eip = (*state & 1) ? 0x004aca53 : 0x004accda;
+        regs.eip = (*state & SURFACE_DYNAMIC_LIGHTS) ? 0x004aca53 : 0x004accda;
     },
     false, // no trampoline: the injection fully replaces the test and its branch
 };
@@ -3437,8 +3447,6 @@ CodeInjection lightmap_global_faces_lumel_injection{
 namespace
 {
 
-using LumelSegmentTest = bool(__cdecl*)(const float* a, const float* b, float x1, float y1, float x2, float y2);
-const auto lumel_segment_test = reinterpret_cast<LumelSegmentTest>(0x004c9ef0);
 constexpr float lumel_cull_pad = 1.0e-4f;
 
 class LumelEdgeGrid
@@ -3516,10 +3524,10 @@ private:
     // the four segments FUN_004ad160 tests, with the same arguments
     static bool hits(const float* p0, const float* p1, const float* p2, const float* p3, const Edge& e)
     {
-        return lumel_segment_test(p0, p1, e.ax, e.ay, e.bx, e.by) ||
-               lumel_segment_test(p2, p3, e.ax, e.ay, e.bx, e.by) ||
-               lumel_segment_test(p0, p2, e.ax, e.ay, e.bx, e.by) ||
-               lumel_segment_test(p1, p3, e.ax, e.ay, e.bx, e.by);
+        return segments_intersect_2d(p0, p1, e.ax, e.ay, e.bx, e.by) ||
+               segments_intersect_2d(p2, p3, e.ax, e.ay, e.bx, e.by) ||
+               segments_intersect_2d(p0, p2, e.ax, e.ay, e.bx, e.by) ||
+               segments_intersect_2d(p1, p3, e.ax, e.ay, e.bx, e.by);
     }
 
     static int cell(float v, float origin, float size)
@@ -3531,16 +3539,19 @@ private:
         return c < 1.0e6f ? static_cast<int>(c) : 1000000;
     }
 
-    // Edges as FUN_004ad160 walks them, from every vertex to the next, lightmap UVs at +0xc/+0x10; false
-    // when an edge loop is too long to walk.
+    // Edges as FUN_004ad160 walks them, from every vertex to the next, in lightmap UVs; false when an
+    // edge loop is too long to walk.
     bool build(uintptr_t faces)
     {
-        const int count = *reinterpret_cast<int*>(faces);
-        const auto* data = *reinterpret_cast<uintptr_t* const*>(faces + 8);
+        const auto& list = *reinterpret_cast<const VArray<GFace*>*>(faces);
+        const int count = list.size;
+        GFace* const* data = list.data_ptr;
         for (int i = 0; i < count; i++) {
-            const bool walked = for_each_face_vertex(data[i], [&](uintptr_t v, uintptr_t w) {
-                const Edge e{*reinterpret_cast<float*>(v + 0xc), *reinterpret_cast<float*>(v + 0x10),
-                             *reinterpret_cast<float*>(w + 0xc), *reinterpret_cast<float*>(w + 0x10)};
+            const auto face = reinterpret_cast<uintptr_t>(data[i]);
+            const bool walked = for_each_face_vertex(face, [&](uintptr_t v, uintptr_t w) {
+                const auto* a = reinterpret_cast<const GFaceVertex*>(v);
+                const auto* b = reinterpret_cast<const GFaceVertex*>(w);
+                const Edge e{a->lm_u, a->lm_v, b->lm_u, b->lm_v};
                 // FUN_004c9ef0 never reports an edge with a non-finite coordinate
                 if (std::isfinite(e.ax) && std::isfinite(e.ay) && std::isfinite(e.bx) && std::isfinite(e.by)) {
                     edges_.push_back(e);
@@ -3647,7 +3658,7 @@ CodeInjection lightmap_lumel_cull_injection{
         const auto* p2 = reinterpret_cast<const float*>(esp + 0xd8);
         const auto* p3 = reinterpret_cast<const float*>(esp + 0xc0);
         const bool hit = grid->any_crossing(p0, p1, p2, p3);
-        *reinterpret_cast<int*>(esp + 0x3c) = *reinterpret_cast<int*>(faces);
+        *reinterpret_cast<int*>(esp + 0x3c) = reinterpret_cast<const VArray<GFace*>*>(faces)->size;
         regs.ebp = hit ? 1 : 0;
         regs.eip = 0x004ad4d6;
     },

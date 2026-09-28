@@ -14,7 +14,8 @@
 #include <vector>
 #include <common/terrain/alpine_terrain.h>
 
-namespace terrain_paint {
+namespace terrain_paint
+{
 
 namespace at = alpine_terrain;
 

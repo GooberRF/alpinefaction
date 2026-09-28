@@ -10,7 +10,6 @@
 #include <patch_common/MemUtils.h>
 #include <xlog/xlog.h>
 #include "headless_bake.h"
-#include "face_list_cache.h"
 #include "level.h"
 #include "vtypes.h"
 
@@ -107,44 +106,36 @@ void restore_view_cameras()
 
 [[noreturn]] void bake_finish(int code)
 {
-    if (const std::string verify = face_list_cache_verify_summary(); !verify.empty()) {
-        bake_log(verify);
-    }
     bake_log(std::format("done rc={}", code));
     ExitProcess(static_cast<UINT>(code));
 }
 
-// Build Geometry as the Build command runs it (FUN_0043a710), then GeoBuild_Driver ticked until +0x232 clears.
+// Build Geometry as the Build command runs it, then GeoBuild_Driver ticked until build_running clears.
 bool run_build_geometry()
 {
-    constexpr std::size_t build_running_offset = 0x232;
-    constexpr std::size_t build_dialog_offset = 0x4A4;
-    constexpr std::size_t dialog_cancelled_offset = 0x5C;
     constexpr DWORD build_timeout_ms = 60u * 60u * 1000u;
 
     CDedLevel* level = CDedLevel::Get();
     if (!level) {
         return false;
     }
-    auto running = [level] { return struct_field_ref<std::uint8_t>(level, build_running_offset) != 0; };
-    if (running()) {
+    if (level->build_running) {
         return false;
     }
-    AddrCaller{0x0043a710}.this_call(level);
+    level->start_build_geometry();
     // the build refused to start (too little address space)
-    if (!running()) {
+    if (!level->build_running) {
         return false;
     }
     const DWORD begin = GetTickCount();
-    while (running()) {
+    while (level->build_running) {
         if (GetTickCount() - begin > build_timeout_ms) {
             bake_log("error: Build Geometry did not finish within an hour");
             return false;
         }
-        AddrCaller{0x004399b0}.this_call(level);
+        level->build_geometry_tick();
     }
-    auto* dialog = struct_field_ref<std::uint8_t*>(level, build_dialog_offset);
-    return !(dialog && dialog[dialog_cancelled_offset] != 0);
+    return !level->build_cancelling();
 }
 
 int WINAPI MessageBoxA_headless(HWND, LPCSTR text, LPCSTR caption, UINT type)

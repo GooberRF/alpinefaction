@@ -13,7 +13,8 @@
 
 #include "alpine_terrain.h"
 
-namespace alpine_terrain {
+namespace alpine_terrain
+{
 
 struct RecordLayer
 {

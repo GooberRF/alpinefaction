@@ -25,7 +25,7 @@
 #include "../../os/console.h"
 #include "../gr.h"
 #include "gr_d3d11.h"
-#include "gr_d3d11_af_lightmap.h"
+#include "gr_d3d11_hooks.h"
 #include "gr_d3d11_terrain.h"
 #include "gr_d3d11_liquid.h"
 #include "gr_d3d11_mesh.h"
@@ -237,14 +237,7 @@ namespace gr::d3d11
     void close()
     {
         xlog::info("Cleaning up D3D11");
-        af_lightmap_release_gpu();
-        terrain_gpu_release();
         renderer.reset();
-    }
-
-    ID3D11Device* af_lightmap_device()
-    {
-        return renderer ? renderer->device() : nullptr;
     }
 
     void init(HWND hwnd)
@@ -753,6 +746,30 @@ namespace gr::d3d11
         if (renderer) {
             renderer->release_detail_room_cache(room);
         }
+    }
+
+    void release_terrain_gpu()
+    {
+        if (renderer) {
+            renderer->release_terrain_gpu();
+        }
+    }
+
+    bool upload_af_lightmap_atlas(const alpine_lightmap::ReadResult& section, const std::vector<std::uint8_t>& blocks)
+    {
+        return renderer && renderer->upload_af_lightmap_atlas(section, blocks);
+    }
+
+    void release_af_lightmap_atlas()
+    {
+        if (renderer) {
+            renderer->release_af_lightmap_atlas();
+        }
+    }
+
+    bool af_lightmap_atlas_live()
+    {
+        return renderer && renderer->af_lightmap_atlas_live();
     }
 
     void reset_solid_render_cache_after_boolean()

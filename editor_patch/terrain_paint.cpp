@@ -34,28 +34,15 @@ namespace
 // ─── RED viewports ──────────────────────────────────────────────────────────
 // Mouse handlers only latch state (+0x58 cursor, +0x60..+0x62 buttons) that RED polls from its idle loop.
 
-constexpr std::size_t view_hwnd_offset = 0x1C; // CWnd::m_hWnd
-
 // The view message map (0x0055C170): AFX_MSGMAP_ENTRY pfn slots of WM_LBUTTONDOWN, WM_LBUTTONUP and
 // WM_LBUTTONDBLCLK, each a thiscall (UINT flags, CPoint point) handler that returns 0xC bytes.
 constexpr uintptr_t msgmap_lbutton_down_pfn = 0x0055C19C;
 constexpr uintptr_t msgmap_lbutton_up_pfn = 0x0055C1B4;
 constexpr uintptr_t msgmap_lbutton_dblclk_pfn = 0x0055C274;
-constexpr uintptr_t view_lbutton_down_addr = 0x0047CF20;
-constexpr uintptr_t view_lbutton_up_addr = 0x0047CFA0;
-constexpr uintptr_t view_lbutton_dblclk_addr = 0x0047D590;
-
-// FUN_0047dae0 (thiscall, char begin_frame): sets up gr for the view (window, viewport, camera), as
-// the RBUTTONUP handler does before it casts a ray (0x0047d476).
-constexpr uintptr_t view_setup_addr = 0x0047DAE0;
-
-// DirectInput scan codes
-constexpr uint8_t dik_lbracket = 0x1A;
-constexpr uint8_t dik_rbracket = 0x1B;
 
 HWND view_hwnd(void* view)
 {
-    return view ? struct_field_ref<HWND>(view, view_hwnd_offset) : nullptr;
+    return view ? WndToHandle(static_cast<CWnd*>(view)) : nullptr;
 }
 
 bool is_view(void* view)
@@ -883,7 +870,7 @@ bool cast_at_terrain(void* view, POINT cursor, const DedTerrain& t, float (&hit)
     const HWND hwnd = view_hwnd(view);
     POINT client = cursor;
     if (!hwnd || !ScreenToClient(hwnd, &client)) return false;
-    AddrCaller{view_setup_addr}.this_call(view, static_cast<char>(0));
+    static_cast<EditorViewport*>(view)->setup_gr(0);
     const TerrainRay ray = terrain_screen_ray(static_cast<float>(client.x), static_cast<float>(client.y));
     float th = 0.0f;
     if (!terrain_ray_hit(t, ray, terrain_pick_reach, th)) return false;
@@ -936,8 +923,12 @@ void paint_tick()
     // Only the mouse moves a stroke on: a surface rising under a still cursor would otherwise walk the
     // brush along the view ray.
     if (g_stroke.active && cursor_moved) {
-        if (g_hover.valid) changed = stroke_to(g_hover.pos[0], g_hover.pos[2]) || changed;
-        else g_stroke.has_last = false;
+        if (g_hover.valid) {
+            changed = stroke_to(g_hover.pos[0], g_hover.pos[2]) || changed;
+        }
+        else {
+            g_stroke.has_last = false;
+        }
         if (g_stroke.has_anchor) update_status();
     }
     if (t) {
@@ -979,7 +970,7 @@ void poll_keys()
 {
     const bool focus = GetForegroundWindow() == GetMainFrameHandle();
     const DWORD now = GetTickCount();
-    const uint8_t codes[2] = {dik_lbracket, dik_rbracket};
+    const uint8_t codes[2] = {DIK_LBRACKET, DIK_RBRACKET};
     for (int i = 0; i < 2; i++) {
         KeyRepeat& k = g_keys[i];
         const bool down = focus && g_dinput_keys[codes[i]] != 0;
@@ -1190,8 +1181,12 @@ void draw_geo_chunks(const DedTerrain& t, const at::GridView& v, float lift)
     if (!g_hover.valid) return;
     const uint32_t k = tp::chunk_at(layout, (g_hover.pos[0] - v.origin[0]) / v.cell_size,
                                     (g_hover.pos[2] - v.origin[2]) / v.cell_size);
-    if (g_stroke.active) set_draw_color(0xff, 0x00, 0x00, 0xff);
-    else set_draw_color(0xff, 0xff, 0x00, 0xff);
+    if (g_stroke.active) {
+        set_draw_color(0xff, 0x00, 0x00, 0xff);
+    }
+    else {
+        set_draw_color(0xff, 0xff, 0x00, 0xff);
+    }
     draw_chunk_outline(v, at::chunk_rect(layout.cells_x, layout.cells_z, layout.edge, k), inset * 3.0f, lift);
 }
 
@@ -1665,7 +1660,7 @@ void __fastcall view_lbutton_down(void* view, void* /*edx*/, UINT flags, int x, 
         return;
     }
     g_swallow_up_view = nullptr;
-    AddrCaller{view_lbutton_down_addr}.this_call(view, flags, x, y);
+    static_cast<EditorViewport*>(view)->on_lbutton_down(flags, x, y);
 }
 
 void __fastcall view_lbutton_dblclk(void* view, void* /*edx*/, UINT flags, int x, int y)
@@ -1676,7 +1671,7 @@ void __fastcall view_lbutton_dblclk(void* view, void* /*edx*/, UINT flags, int x
         return;
     }
     g_swallow_up_view = nullptr;
-    AddrCaller{view_lbutton_dblclk_addr}.this_call(view, flags, x, y);
+    static_cast<EditorViewport*>(view)->on_lbutton_dblclk(flags, x, y);
 }
 
 void __fastcall view_lbutton_up(void* view, void* /*edx*/, UINT flags, int x, int y)
@@ -1689,7 +1684,7 @@ void __fastcall view_lbutton_up(void* view, void* /*edx*/, UINT flags, int x, in
         }
         return;
     }
-    AddrCaller{view_lbutton_up_addr}.this_call(view, flags, x, y);
+    static_cast<EditorViewport*>(view)->on_lbutton_up(flags, x, y);
 }
 
 // RED's idle loop focuses whichever view's rect holds the cursor, even under another window such as
@@ -1799,8 +1794,12 @@ void terrain_paint_draw_cursor(CDedLevel& level)
         if (terrain_geoable(t)) draw_geo_chunks(*t, v, lift);
         return;
     }
-    if (g_stroke.active) set_draw_color(0xff, 0x00, 0x00, 0xff);
-    else set_draw_color(0xff, 0xff, 0x00, 0xff);
+    if (g_stroke.active) {
+        set_draw_color(0xff, 0x00, 0x00, 0xff);
+    }
+    else {
+        set_draw_color(0xff, 0xff, 0x00, 0xff);
+    }
     if (segment) {
         // The ramp's reach, then its centre line between the two end heights.
         const float ax = g_stroke.anchor[0], az = g_stroke.anchor[1], bx = g_stroke.end[0], bz = g_stroke.end[1];

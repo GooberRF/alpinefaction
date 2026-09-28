@@ -2760,7 +2760,8 @@ static float get_hardness_scaled_padding()
     return geoable_bbox_base_padding * scale;
 }
 
-static bool sphere_overlaps_aabb(const rf::Vector3& center, float radius, const rf::Vector3& min, const rf::Vector3& max)
+static bool sphere_overlaps_aabb(const rf::Vector3& center, float radius, const rf::Vector3& min,
+                                 const rf::Vector3& max)
 {
     float dx = std::max({min.x - center.x, 0.0f, center.x - max.x});
     float dy = std::max({min.y - center.y, 0.0f, center.y - max.y});
@@ -3364,8 +3365,8 @@ CodeInjection boolean_state5_skip_detail_relink_for_terrain{
         if (!g_rf2_style_boolean_active) {
             return;
         }
-        auto& affected = addr_as_ref<rf::GRoom*[(0x00C9F638 - 0x00C9F4DC) / 4]>(0x00C9F4DC);
-        const int count = addr_as_ref<int>(0x00C9F638);
+        auto& affected = rf::g_boolean_affected_rooms;
+        const int count = rf::g_boolean_num_affected_rooms;
         if (count <= 0 || count > static_cast<int>(std::size(affected))) {
             return;
         }
@@ -3401,21 +3402,8 @@ CallHook<void(rf::GSolid*, rf::GFace*, rf::GFace**, rf::GFace**)> boolean_split_
 static bool g_geomod_fast_terrain = true;
 static bool g_geomod_fast_verify = false;
 
-namespace geomod_fast
+namespace
 {
-    struct RawFaceList
-    {
-        rf::GFace* head;
-        int count;
-    };
-    static_assert(sizeof(RawFaceList) == sizeof(rf::VList<rf::GFace, rf::FACE_LIST_SOLID>));
-    static_assert(offsetof(rf::GRoom, contains_liquid) == 0x184);
-
-    static auto& boolean_solid = addr_as_ref<rf::GSolid*>(0x00C968B4);
-    static auto& boolean_op = addr_as_ref<int>(0x00C9B4C0);
-    static auto& boolean_outside_list = addr_as_ref<RawFaceList>(0x00C9F5A0);
-    static auto& boolean_registered_faces = addr_as_ref<int>(0x00C9F624);
-
     struct Entry
     {
         rf::GFace* face;
@@ -3423,7 +3411,7 @@ namespace geomod_fast
         bool survived;
     };
 
-    // Faces chained through next[0] in link order.
+    // Faces chained through next[FACE_LIST_SOLID] in link order.
     struct FaceChain
     {
         rf::GFace* head = nullptr;
@@ -3431,11 +3419,11 @@ namespace geomod_fast
 
         void link(rf::GFace* f)
         {
-            (tail ? tail->next[0] : head) = f;
+            (tail ? tail->next[rf::FACE_LIST_SOLID] : head) = f;
             tail = f;
         }
 
-        // Links all of `other`, keeping its internal next[0] links.
+        // Links all of `other`, keeping its internal next[FACE_LIST_SOLID] links.
         void splice(const FaceChain& other)
         {
             if (other.head) {
@@ -3447,7 +3435,7 @@ namespace geomod_fast
         // Points the last face (or head, when empty) at `rest` and returns the head.
         rf::GFace* end_with(rf::GFace* rest)
         {
-            (tail ? tail->next[0] : head) = rest;
+            (tail ? tail->next[rf::FACE_LIST_SOLID] : head) = rest;
             return head;
         }
     };
@@ -3471,15 +3459,10 @@ namespace geomod_fast
         std::vector<uint32_t> verify_flags;
         std::vector<rf::GFace*> verify_outside;
     };
-    static Pass g_pass;
-
-    static RawFaceList& raw_list(rf::GSolid* solid)
-    {
-        return *reinterpret_cast<RawFaceList*>(&solid->face_list);
-    }
+    Pass g_pass;
 
     // What 0x004DBBB0 acts on: more than 16 vertices (0x004E03E0), or a pending decal fixup.
-    static bool needs_sweep(const rf::GFace* face)
+    bool needs_sweep(const rf::GFace* face)
     {
         if ((face->attributes.flags & 0x280000) == 0x280000) {
             return true;
@@ -3498,16 +3481,16 @@ namespace geomod_fast
     }
 
     // Inner state 0 on a face that isn't the target's, with boolean_clear_detail_bit3_for_rf2.
-    static uint32_t registered_flags(uint32_t flags, const rf::GRoom* room)
+    uint32_t registered_flags(uint32_t flags, const rf::GRoom* room)
     {
-        flags &= ~0x08800000u & 0x8FFFFFFFu;
+        flags &= ~(rf::FACE_BOOLEAN_INTERSECTED | rf::FACE_BOOLEAN_TYPE_1 | rf::FACE_BOOLEAN_SIDE);
         if (room && (!room->is_detail || room->is_geoable)) {
-            flags &= ~0x8u;
+            flags &= ~rf::FACE_IS_DETAIL;
         }
         return flags;
     }
 
-    static void reset()
+    void reset()
     {
         g_pass.active = false;
         g_pass.solid = nullptr;
@@ -3517,25 +3500,25 @@ namespace geomod_fast
         g_pass.verify_outside.clear();
     }
 
-    static const char* not_applicable_reason(rf::GRoom* target)
+    const char* not_applicable_reason(rf::GRoom* target)
     {
         if (!g_geomod_fast_terrain) return "off";
         if (!alpine_terrain_find_room(target)) return "target is not a terrain chunk";
         if (target->contains_liquid) return "target contains liquid";
-        if (boolean_solid != rf::g_level_solid || !rf::g_level_solid) return "not the level solid";
-        if (boolean_op != 3) return "not a geomod boolean";
+        if (rf::g_boolean_solid != rf::g_level_solid || !rf::g_level_solid) return "not the level solid";
+        if (rf::g_boolean_op != rf::GBooleanOperation::BOP_DIFFERENCE) return "not a geomod boolean";
         if (target->face_list.empty()) return "empty target";
         return nullptr;
     }
 
     // Before inner state 0: remember the order, give every other face what state 0 would, and hand the
     // boolean T' (the target, faces sharing a vertex with it, and faces state 2's sweep would change).
-    static const char* begin(rf::GRoom* target)
+    const char* begin(rf::GRoom* target)
     {
         Pass& p = g_pass;
         rf::GSolid* solid = rf::g_level_solid;
-        RawFaceList& list = raw_list(solid);
-        const int n = list.count;
+        auto& list = solid->face_list;
+        const int n = list.size();
         p.verify = g_geomod_fast_verify;
         try {
             p.faces.reserve(n);
@@ -3560,7 +3543,7 @@ namespace geomod_fast
             }
             // A bail-out from here on is harmless: stock state 0 gives other faces these same flags.
             int by_room = 0;
-            for (rf::GFace* face = list.head; face; face = face->next[0]) {
+            for (rf::GFace* face = list.first(); face; face = face->next[rf::FACE_LIST_SOLID]) {
                 const int index = static_cast<int>(p.faces.size());
                 if (index >= n) {
                     return "list longer than its count";
@@ -3607,60 +3590,59 @@ namespace geomod_fast
                 chain.link(e.face);
             }
         }
-        list.head = chain.end_with(nullptr);
-        list.count = p.num_tprime;
+        list.assign(chain.end_with(nullptr), p.num_tprime);
         p.solid = solid;
         p.active = true;
         return nullptr;
     }
 
     // After inner state 0: the full list again, with the crater clones state 0 appended after T'.
-    static void after_register()
+    void after_register()
     {
         Pass& p = g_pass;
-        RawFaceList& list = raw_list(p.solid);
-        rf::GFace* first_clone = p.faces[p.last_tprime].face->next[0];
+        auto& list = p.solid->face_list;
+        rf::GFace* first_clone = p.faces[p.last_tprime].face->next[rf::FACE_LIST_SOLID];
         int num_clones = 0;
-        for (rf::GFace* f = first_clone; f; f = f->next[0]) {
+        for (rf::GFace* f = first_clone; f; f = f->next[rf::FACE_LIST_SOLID]) {
             num_clones++;
         }
-        if (num_clones != list.count - p.num_tprime) {
+        if (num_clones != list.size() - p.num_tprime) {
             xlog::warn("[RF2] fast geomod: {} crater clones but the list count says {}", num_clones,
-                list.count - p.num_tprime);
+                list.size() - p.num_tprime);
         }
         const int n = static_cast<int>(p.faces.size());
         for (int i = 0; i + 1 < n; i++) {
-            p.faces[i].face->next[0] = p.faces[i + 1].face;
+            p.faces[i].face->next[rf::FACE_LIST_SOLID] = p.faces[i + 1].face;
         }
-        p.faces[n - 1].face->next[0] = first_clone;
-        list.head = p.faces[0].face;
-        list.count = n + num_clones;
+        p.faces[n - 1].face->next[rf::FACE_LIST_SOLID] = first_clone;
+        list.assign(p.faces[0].face, n + num_clones);
         p.num_clones = num_clones;
-        boolean_registered_faces = n;
+        rf::g_boolean_num_registered_faces = n;
     }
 
     // Before inner state 1: T' and the clones only. False puts the rest of the pass on the stock path.
-    static bool before_classify()
+    bool before_classify()
     {
         Pass& p = g_pass;
-        RawFaceList& list = raw_list(p.solid);
+        auto& list = p.solid->face_list;
         const int n = static_cast<int>(p.faces.size());
-        if (list.count != n + p.num_clones) {
+        if (list.size() != n + p.num_clones) {
             return false;
         }
         // Stock state 1 gives these side 2 (boolean_skip_non_detail_faces_for_rf2) on either path.
-        rf::GFace* f = list.head;
-        for (int i = 0; i < n; i++, f = f->next[0]) {
+        rf::GFace* f = list.first();
+        for (int i = 0; i < n; i++, f = f->next[rf::FACE_LIST_SOLID]) {
             if (f != p.faces[i].face) {
                 return false;
             }
             if (!p.faces[i].in_tprime) {
-                f->attributes.flags = (f->attributes.flags & 0x8FFFFFFFu) | 0x20000000u;
+                f->attributes.flags =
+                    (f->attributes.flags & ~rf::FACE_BOOLEAN_SIDE) | (2u << rf::face_boolean_side_shift);
             }
         }
         rf::GFace* first_clone = f;
         int num_clones = 0;
-        for (; f && num_clones <= p.num_clones; f = f->next[0]) {
+        for (; f && num_clones <= p.num_clones; f = f->next[rf::FACE_LIST_SOLID]) {
             num_clones++;
         }
         if (num_clones != p.num_clones) {
@@ -3674,14 +3656,14 @@ namespace geomod_fast
                     continue;
                 }
                 uint32_t ref = p.verify_flags[i];
-                AddrCaller{0x004DEA10}.this_call(&ref, 0);
-                AddrCaller{0x004DEA30}.this_call(&ref, 0);
-                AddrCaller{0x004DE9E0}.this_call(&ref, 0);
+                rf::boolean_face_set_intersected(&ref, false);
+                rf::boolean_face_set_type(&ref, 0);
+                rf::boolean_face_set_side(&ref, 0);
                 const rf::GRoom* room = e.face->which_room;
-                if (room && (room->is_detail ? room->is_geoable : AddrCaller{0x004909B0}.this_call<bool>(&ref))) {
-                    ref &= ~0x8u;
+                if (room && (room->is_detail ? room->is_geoable : rf::face_flags_is_detail(&ref))) {
+                    ref &= ~rf::FACE_IS_DETAIL;
                 }
-                AddrCaller{0x004DE9E0}.this_call(&ref, 2);
+                rf::boolean_face_set_side(&ref, 2);
                 bad += ref != e.face->attributes.flags;
             }
             geomod_timing_print("fast path verify: {} of {} other face flags differ from stock states 0 and 1", bad,
@@ -3694,19 +3676,18 @@ namespace geomod_fast
                 chain.link(e.face);
             }
         }
-        list.head = chain.end_with(first_clone);
-        list.count = p.num_tprime + p.num_clones;
+        list.assign(chain.end_with(first_clone), p.num_tprime + p.num_clones);
         return true;
     }
 
-    static void before_collect()
+    void before_collect()
     {
         Pass& p = g_pass;
-        p.num_survivors = boolean_outside_list.count;
+        p.num_survivors = rf::g_boolean_outside_list.size();
         if (p.verify) {
             try {
                 p.verify_outside.clear();
-                for (rf::GFace* f = boolean_outside_list.head; f; f = f->next[0]) {
+                for (rf::GFace* f = rf::g_boolean_outside_list.first(); f; f = f->next[rf::FACE_LIST_SOLID]) {
                     p.verify_outside.push_back(f);
                 }
             }
@@ -3716,7 +3697,7 @@ namespace geomod_fast
         }
     }
 
-    static void verify_order(const std::vector<rf::GFace*>& rest)
+    void verify_order(const std::vector<rf::GFace*>& rest)
     {
         Pass& p = g_pass;
         try {
@@ -3735,23 +3716,25 @@ namespace geomod_fast
                 }
             }
             ref.insert(ref.end(), rest.begin(), rest.end());
-            const RawFaceList& list = raw_list(p.solid);
+            const auto& list = p.solid->face_list;
             int i = 0;
             int first_diff = -1;
-            for (const rf::GFace* f = list.head; f && i <= static_cast<int>(ref.size()); f = f->next[0], i++) {
+            for (const rf::GFace* f = list.first(); f && i <= static_cast<int>(ref.size());
+                 f = f->next[rf::FACE_LIST_SOLID], i++) {
                 if (first_diff < 0 && (i >= static_cast<int>(ref.size()) || ref[i] != f)) {
                     first_diff = i;
                 }
             }
-            if (first_diff < 0 && (i != static_cast<int>(ref.size()) || list.count != i)) {
+            if (first_diff < 0 && (i != static_cast<int>(ref.size()) || list.size() != i)) {
                 first_diff = i;
             }
             if (first_diff < 0) {
                 geomod_timing_print("fast path verify: face order matches stock ({} faces)", i);
             }
             else {
-                geomod_timing_print("fast path verify: face order DIFFERS from stock at {} (list {} / count {}, stock {})",
-                    first_diff, i, list.count, ref.size());
+                geomod_timing_print(
+                    "fast path verify: face order DIFFERS from stock at {} (list {} / count {}, stock {})", first_diff,
+                    i, list.size(), ref.size());
             }
         }
         catch (...) {
@@ -3761,12 +3744,12 @@ namespace geomod_fast
 
     // After inner state 5: the list is state 1's outside faces (first num_survivors), then the kept and
     // new faces. Stock's outside list also held every other face, in the original order.
-    static void after_collect()
+    void after_collect()
     {
         Pass& p = g_pass;
-        RawFaceList& list = raw_list(p.solid);
+        auto& list = p.solid->face_list;
         const int s = p.num_survivors;
-        const int m = list.count;
+        const int m = list.size();
         const int num_other = static_cast<int>(p.faces.size()) - p.num_tprime;
         auto survivor_index = [&](rf::GFace* f) {
             auto it = p.tprime.find(f);
@@ -3774,7 +3757,7 @@ namespace geomod_fast
         };
 
         bool consistent = s >= 0 && s <= m;
-        rf::GFace* node = list.head;
+        rf::GFace* node = list.first();
         for (int k = 0; consistent && k < s; k++) {
             if (!node) {
                 consistent = false;
@@ -3784,11 +3767,11 @@ namespace geomod_fast
             if (index >= 0) {
                 p.faces[index].survived = true;
             }
-            node = node->next[0];
+            node = node->next[rf::FACE_LIST_SOLID];
         }
         rf::GFace* rest = node;
         int num_rest = 0;
-        for (rf::GFace* f = rest; consistent && f && num_rest <= m; f = f->next[0]) {
+        for (rf::GFace* f = rest; consistent && f && num_rest <= m; f = f->next[rf::FACE_LIST_SOLID]) {
             num_rest++;
         }
         consistent = consistent && s + num_rest == m;
@@ -3797,7 +3780,7 @@ namespace geomod_fast
         if (p.verify && consistent) {
             try {
                 verify_rest.reserve(num_rest);
-                for (rf::GFace* f = rest; f; f = f->next[0]) {
+                for (rf::GFace* f = rest; f; f = f->next[rf::FACE_LIST_SOLID]) {
                     verify_rest.push_back(f);
                 }
             }
@@ -3809,21 +3792,20 @@ namespace geomod_fast
         if (!consistent) {
             // Never lose a face: the other faces in their order, then the list as it is.
             xlog::warn("[RF2] fast geomod: unexpected list after state 5 (count {}, outside {})", m, s);
-            rf::GFace* old_head = list.head;
+            rf::GFace* old_head = list.first();
             for (const Entry& e : p.faces) {
                 if (!e.in_tprime) {
                     chain.link(e.face);
                 }
             }
-            list.head = chain.end_with(old_head);
-            list.count = m + num_other;
+            list.assign(chain.end_with(old_head), m + num_other);
             return;
         }
 
         FaceChain extra;
-        node = list.head;
+        node = list.first();
         for (int k = 0; k < s; k++) {
-            rf::GFace* next = node->next[0];
+            rf::GFace* next = node->next[rf::FACE_LIST_SOLID];
             if (survivor_index(node) < 0) {
                 extra.link(node);
             }
@@ -3835,8 +3817,7 @@ namespace geomod_fast
             }
         }
         chain.splice(extra);
-        list.head = chain.end_with(rest);
-        list.count = m + num_other;
+        list.assign(chain.end_with(rest), m + num_other);
 
         if (p.verify && static_cast<int>(verify_rest.size()) == num_rest &&
             static_cast<int>(p.verify_outside.size()) == s) {
@@ -3848,7 +3829,6 @@ namespace geomod_fast
 // Runs before the boolean state `inner_state`; false when the fast path is not in use for it.
 static bool geomod_fast_before_state(int inner_state)
 {
-    using namespace geomod_fast;
     if (inner_state == 0) {
         reset();
         if (!g_rf2_style_boolean_active) {
@@ -3891,7 +3871,6 @@ static bool geomod_fast_before_state(int inner_state)
 
 static void geomod_fast_after_state(int inner_state)
 {
-    using namespace geomod_fast;
     const int64_t start = geomod_timing_now_us();
     if (inner_state == 0) {
         after_register();
@@ -3904,19 +3883,18 @@ static void geomod_fast_after_state(int inner_state)
 
 static void geomod_fast_finish_pass()
 {
-    using namespace geomod_fast;
     if (g_geomod_timing) {
         const Pass& p = g_pass;
-        geomod_timing_print("fast path: level faces {}, boolean saw {} (target {}, sharing a vertex {}, to split or fix {}), "
-            "crater clones {}, outside after state 1 {}; bookkeeping {:.2f} ms (setup {:.2f} ms)",
+        geomod_timing_print("fast path: level faces {}, boolean saw {} (target {}, sharing a vertex {}, to split or "
+            "fix {}), crater clones {}, outside after state 1 {}; bookkeeping {:.2f} ms (setup {:.2f} ms)",
             p.faces.size(), p.num_tprime, p.num_target, p.num_tprime - p.num_target - p.num_sweep, p.num_sweep,
             p.num_clones, p.num_survivors, p.bookkeeping_us / 1000.0, p.setup_us / 1000.0);
     }
     reset();
 }
 
-ConsoleCommand2 geomod_fast_terrain_cmd{
-    "geomod_fast_terrain",
+ConsoleCommand2 dbg_geomod_fast_terrain_cmd{
+    "dbg_geomod_fast_terrain",
     []() {
         g_geomod_fast_terrain = !g_geomod_fast_terrain;
         rf::console::print("Fast RF2-style geomod on terrain is {}", g_geomod_fast_terrain ? "on" : "off (stock path)");
@@ -4123,7 +4101,8 @@ CodeInjection state2_rf2_separated_solids_injection{
         const int64_t start = g_geomod_timing ? geomod_timing_now_us() : 0;
         int count = rf2_mark_unsupported_pieces(g_rf2_target_detail_room, rf::g_level_solid);
         if (g_geomod_timing) {
-            geomod_timing_print("support model: {} piece(s), {:.2f} ms", count, (geomod_timing_now_us() - start) / 1000.0);
+            geomod_timing_print("support model: {} piece(s), {:.2f} ms", count,
+                                (geomod_timing_now_us() - start) / 1000.0);
         }
 
         // Set EAX and ESI to the extraction count
@@ -4364,7 +4343,7 @@ void destruction_level_cleanup()
     g_rf2_target_supported_pre = false;
     g_rf2_cascaded_rooms.clear();
     g_rf2_split_rooms.clear();
-    geomod_fast::reset();
+    reset();
     g_terrain_crater_bitmaps.clear();
     g_rf2_boolean_modified_detail = false;
     g_rf2_suppress_geomod_create_effects = false;
@@ -4462,6 +4441,6 @@ void destruction_do_patch()
     // Commands
     dbg_num_geomods_cmd.register_cmd();
     dbg_geomod_timing_cmd.register_cmd();
-    geomod_fast_terrain_cmd.register_cmd();
+    dbg_geomod_fast_terrain_cmd.register_cmd();
     dbg_geomod_fast_verify_cmd.register_cmd();
 }

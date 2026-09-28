@@ -1,6 +1,5 @@
 #include <windows.h>
 #include <cstdint>
-#include <format>
 #include <unordered_map>
 #include <utility>
 #include <patch_common/CallHook.h>
@@ -14,9 +13,6 @@
 namespace
 {
 
-// Off by default; when on, every cached append is checked against a full walk and mismatches are logged.
-constexpr bool verify_face_list_cache = false;
-
 struct TailEntry
 {
     std::uintptr_t head;
@@ -28,22 +24,28 @@ struct TailEntry
 int g_window_depth = 0;
 int g_pause_depth = 0;
 
-long long g_verify_appends = 0;
-long long g_verify_failures = 0;
-
 bool cache_live()
 {
     return g_window_depth > 0 && g_pause_depth == 0;
 }
 
+// The stock face list the list helpers take as `this`, e.g. GSolid::face_list_head and face_list_count.
+struct FaceListHeader
+{
+    std::uintptr_t head;
+    int count;
+};
+static_assert(offsetof(FaceListHeader, count) == offsetof(GSolid, face_list_count) - offsetof(GSolid, face_list_head));
+static_assert(offsetof(FaceListHeader, count) == offsetof(GRoom, face_list_count) - offsetof(GRoom, face_list_head));
+
 std::uintptr_t& list_head(std::uintptr_t list)
 {
-    return *reinterpret_cast<std::uintptr_t*>(list);
+    return reinterpret_cast<FaceListHeader*>(list)->head;
 }
 
 int& list_count(std::uintptr_t list)
 {
-    return *reinterpret_cast<int*>(list + 4);
+    return reinterpret_cast<FaceListHeader*>(list)->count;
 }
 
 template<std::uintptr_t NextOffset>
@@ -84,20 +86,6 @@ struct FaceList
         }
         while (next(tail)) {
             tail = next(tail);
-        }
-        if constexpr (verify_face_list_cache) {
-            std::uintptr_t real = head;
-            while (next(real)) {
-                real = next(real);
-            }
-            g_verify_appends++;
-            if (real != tail) {
-                if (g_verify_failures++ < 16) {
-                    xlog::warn("[FaceListCache] list {:#x} (next +{:#x}): cached tail {:#x}, real tail {:#x}", list,
-                               NextOffset, tail, real);
-                }
-                tail = real;
-            }
         }
         next(face) = next(tail);
         next(tail) = face;
@@ -291,9 +279,7 @@ FunHook<int __fastcall(void*, int, void*, const char*)> level_read_hook{0x0042f0
 int __fastcall level_read(void* self, int edx, void* level, const char* path)
 {
     FaceListCacheWindow window;
-    const int result = level_read_hook.call_target(self, edx, level, path);
-    face_list_cache_log_verify_summary();
-    return result;
+    return level_read_hook.call_target(self, edx, level, path);
 }
 
 // Message handlers and message boxes can reach any editor command, so the cache is off inside them.
@@ -346,24 +332,6 @@ FaceListCacheWindow::~FaceListCacheWindow()
     g_window_depth--;
     g_pause_depth = outer_pause_depth_;
     clear_all();
-}
-
-std::string face_list_cache_verify_summary()
-{
-    if constexpr (verify_face_list_cache) {
-        return std::format("list tail cache verify: {} appends checked, {} failures", g_verify_appends,
-                           g_verify_failures);
-    }
-    else {
-        return {};
-    }
-}
-
-void face_list_cache_log_verify_summary()
-{
-    if constexpr (verify_face_list_cache) {
-        xlog::info("[FaceListCache] {}", face_list_cache_verify_summary());
-    }
 }
 
 void ApplyFaceListCachePatches()

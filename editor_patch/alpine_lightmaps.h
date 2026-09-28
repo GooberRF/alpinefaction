@@ -2,15 +2,9 @@
 
 #include <cstddef>
 #include <cstdint>
+#include "level.h"
 
-struct CDedLevel;
-
-namespace rf
-{
-    struct File;
-}
-
-// A solid's GSurface* VArray (+0xc0, elements at +8); empty for no solid.
+// A solid's GSolid::surfaces; empty for no solid.
 struct SolidSurfaces
 {
     int count = 0;
@@ -22,7 +16,8 @@ inline SolidSurfaces solid_surfaces(std::uintptr_t solid)
     if (!solid) {
         return {};
     }
-    return {*reinterpret_cast<int*>(solid + 0xc0), *reinterpret_cast<std::uintptr_t*>(solid + 0xc0 + 8)};
+    const auto& surfaces = reinterpret_cast<const GSolid*>(solid)->surfaces;
+    return {surfaces.size, reinterpret_cast<std::uintptr_t>(surfaces.data_ptr)};
 }
 
 // Bake side, driven from editor_patch/lightmap.cpp. bake_begin lays the charts out and returns the
@@ -80,8 +75,6 @@ void lightmap_encode_float_texels(const float* r, const float* g, const float* b
                                   std::uint8_t* out);
 
 // Baked terrain lighting for the viewport preview, from the last bake or the level as loaded.
-struct Vector3;
-struct DedTerrainData;
 struct TerrainBakedLight;
 // Changes whenever that lighting is replaced or dropped; a TerrainBakedLight lives until then.
 std::uint32_t terrain_baked_light_generation();

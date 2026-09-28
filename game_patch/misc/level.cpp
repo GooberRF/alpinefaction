@@ -23,7 +23,7 @@
 #include "../object/mover.h"
 #include "../hud/hud_world.h"
 #include "../graphics/af_lightmap.h"
-#include "../graphics/d3d11/gr_d3d11_terrain.h"
+#include "../graphics/d3d11/gr_d3d11_hooks.h"
 #include "../graphics/weather.h"
 #include "../graphics/scene_capture.h"
 #include "../multi/multi.h"
@@ -131,7 +131,7 @@ CodeInjection level_load_init_patch{
         alpine_projection_camera_clear_state();
         alpine_rope_clear_state();
         alpine_terrain_clear_state();
-        gr::d3d11::terrain_gpu_release();
+        gr::d3d11::release_terrain_gpu();
         gas_region_clear_state();
         climb_region_clear_state();
         weather_clear_regions();
@@ -151,7 +151,7 @@ void level_shutdown()
     projector_clear_all();
     alpine_rope_clear_state();
     alpine_terrain_clear_state();
-    gr::d3d11::terrain_gpu_release();
+    gr::d3d11::release_terrain_gpu();
     alpine_mesh_free_collision_proxies();
 }
 
@@ -276,7 +276,7 @@ CodeInjection level_read_mover_solid_patch{
     [](auto& regs) {
         af_lightmap_capture_mover(static_cast<int>(regs.ebx),
                                   reinterpret_cast<rf::GSolid*>(static_cast<uintptr_t>(regs.eax)),
-                                  reinterpret_cast<const void*>(static_cast<uintptr_t>(regs.esi)));
+                                  addr_as_ref<rf::VFile>(regs.esi));
     },
 };
 

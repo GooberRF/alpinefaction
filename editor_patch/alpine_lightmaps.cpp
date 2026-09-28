@@ -33,18 +33,23 @@
 #include "mfc_types.h"
 #include "terrain_build.h"
 
-using namespace alpine_lightmap;
+namespace alm = alpine_lightmap;
 namespace at = alpine_terrain;
 
-static_assert(at::max_terrains <= max_terrain_charts);
-static_assert(static_cast<std::uint64_t>(at::max_verts - 1) * at::lightmap_density_max <= max_terrain_chart_dim);
+static_assert(at::max_terrains <= alm::max_terrain_charts);
+static_assert(static_cast<std::uint64_t>(at::max_verts - 1) * at::lightmap_density_max <= alm::max_terrain_chart_dim);
+
+struct TerrainBakedLight
+{
+    alm::TerrainChart chart{};
+    // The chart box-filtered to at most terrain_reduced_texels_per_cell texels per cell, as the game keeps
+    // it: the preview needs no more, and a full-density copy of every terrain can reach 150 MB.
+    std::uint32_t reduction = 1;
+    std::vector<std::uint8_t> rgb;
+};
 
 namespace
 {
-
-constexpr std::uint32_t P = page_size;
-constexpr std::uint32_t S = tile_step;
-constexpr std::uint32_t G = gutter;
 
 // A tile view's scratch buffer is (h_t - 1) * k_u * lm_w * 3 + w_t * 3 bytes, so a surface whose
 // stock page is wide and whose refinement is large can ask for a lot at once. Charts over the cap
@@ -66,33 +71,6 @@ void af_error(const std::string& line)
     editor_report(EditorReportLevel::error, "AlpineLightmaps", line, false);
 }
 
-// ─── engine record accessors ──────────────────────────────────────────────────
-
-int surf_i(std::uintptr_t s, std::uint32_t off)
-{
-    return *reinterpret_cast<int*>(s + off);
-}
-
-float surf_f(std::uintptr_t s, std::uint32_t off)
-{
-    return *reinterpret_cast<float*>(s + off);
-}
-
-std::uintptr_t surf_lm(std::uintptr_t s)
-{
-    return *reinterpret_cast<std::uintptr_t*>(s + 0xc);
-}
-
-struct EngineLightmap
-{
-    int unknown0;
-    int w;
-    int h;
-    std::uint8_t* pixels;
-    int bm_handle;
-    int index;
-};
-
 // ─── module state ─────────────────────────────────────────────────────────────
 
 struct AfChart
@@ -101,7 +79,7 @@ struct AfChart
     std::uint16_t k_v = 0;
     std::uint16_t w = 0; // the stock fragment, which a mover record stores
     std::uint16_t h = 0;
-    ChartGeometry geom{};
+    alm::ChartGeometry geom{};
     std::uint32_t tile_base = 0;
 };
 
@@ -129,7 +107,7 @@ struct AfTerrain
     std::uint32_t cells_x = 0;
     std::uint32_t cells_z = 0;
     std::uint32_t density = 0;
-    TerrainChart wire{};
+    alm::TerrainChart wire{};
 };
 
 // One buffer per page, so no allocation grows with the page count.
@@ -162,9 +140,9 @@ struct AfBake
     std::uint32_t mover_surfaces = 0; // over all movers
     std::uint32_t mover_density = 0;
     std::vector<AfChart> charts;
-    std::vector<Tile> tiles;
+    std::vector<alm::Tile> tiles;
     std::uint32_t num_pages = 0;
-    PageBuffers pages; // num_pages buffers of P * P * 3, RGB8
+    PageBuffers pages; // num_pages buffers of page_size * page_size * 3, RGB8
     std::unordered_map<std::uintptr_t, AfSurfaceRef> surface_index;
     std::vector<std::uint8_t> body; // serialised section, fingerprints still zero
 };
@@ -191,7 +169,7 @@ bool g_raw_codec = false;
 // Slices of 256x256 the bake may spend before it halves the density and starts over.
 std::uint32_t page_budget()
 {
-    return max_layer_pages(g_raw_codec ? Codec::raw_rgb8 : Codec::bc7_unorm);
+    return alm::max_layer_pages(g_raw_codec ? alm::Codec::raw_rgb8 : alm::Codec::bc7_unorm);
 }
 
 // Save-time state.
@@ -240,13 +218,14 @@ std::uint32_t surfaces_signature(std::uintptr_t solid)
             token.insert(token.end(), {0u, 0u, 0u, 0u, 0u, 0u});
             continue;
         }
-        const std::uintptr_t lm = surf_lm(surface);
-        token.push_back(static_cast<std::uint32_t>(surf_i(surface, 0x10)));
-        token.push_back(static_cast<std::uint32_t>(surf_i(surface, 0x14)));
-        token.push_back(static_cast<std::uint32_t>(surf_i(surface, 0x18)));
-        token.push_back(static_cast<std::uint32_t>(surf_i(surface, 0x1c)));
-        token.push_back(lm ? static_cast<std::uint32_t>(*reinterpret_cast<int*>(lm + 4)) : 0u);
-        token.push_back(lm ? static_cast<std::uint32_t>(*reinterpret_cast<int*>(lm + 8)) : 0u);
+        const auto& sf = *reinterpret_cast<const GSurface*>(surface);
+        const GLightmap* lm = sf.lightmap;
+        token.push_back(static_cast<std::uint32_t>(sf.xstart));
+        token.push_back(static_cast<std::uint32_t>(sf.ystart));
+        token.push_back(static_cast<std::uint32_t>(sf.width));
+        token.push_back(static_cast<std::uint32_t>(sf.height));
+        token.push_back(lm ? static_cast<std::uint32_t>(lm->w) : 0u);
+        token.push_back(lm ? static_cast<std::uint32_t>(lm->h) : 0u);
     }
     return XXH32(token.data(), token.size() * sizeof(std::uint32_t), 0);
 }
@@ -269,7 +248,7 @@ public:
     bool place(std::uint32_t w, std::uint32_t h, std::uint16_t& out_x, std::uint16_t& out_y,
                std::uint16_t& out_page)
     {
-        if (w == 0 || h == 0 || w > P || h > P) {
+        if (w == 0 || h == 0 || w > alm::page_size || h > alm::page_size) {
             return false;
         }
         if (!try_place(w, h, out_x, out_y)) {
@@ -291,7 +270,7 @@ private:
     void new_page()
     {
         nodes_.clear();
-        nodes_.push_back({0, 0, P});
+        nodes_.push_back({0, 0, alm::page_size});
         pages_++;
     }
 
@@ -300,10 +279,10 @@ private:
     bool try_place(std::uint32_t w, std::uint32_t h, std::uint16_t& out_x, std::uint16_t& out_y)
     {
         std::size_t best = nodes_.size();
-        std::uint32_t best_y = P + 1;
+        std::uint32_t best_y = alm::page_size + 1;
         for (std::size_t i = 0; i < nodes_.size(); i++) {
             std::uint32_t y = 0;
-            if (!fits(i, w, y) || y + h > P) {
+            if (!fits(i, w, y) || y + h > alm::page_size) {
                 continue;
             }
             if (y < best_y) {
@@ -322,7 +301,7 @@ private:
 
     bool fits(std::size_t index, std::uint32_t w, std::uint32_t& y) const
     {
-        if (nodes_[index].x + w > P) {
+        if (nodes_[index].x + w > alm::page_size) {
             return false;
         }
         std::uint32_t left = w;
@@ -373,7 +352,7 @@ std::uint64_t tile_view_bytes(const AfChart& c, std::uint32_t lm_w)
     const std::uint64_t stride = static_cast<std::uint64_t>(c.k_u) * lm_w * 3u;
     for (std::uint32_t ty = 0; ty < c.geom.ny; ty++) {
         for (std::uint32_t tx = 0; tx < c.geom.nx; tx++) {
-            const TileDims td = tile_dims(c.geom, tx, ty);
+            const alm::TileDims td = alm::tile_dims(c.geom, tx, ty);
             worst = std::max(worst, (td.h_t - 1) * stride + td.w_t * 3u);
         }
     }
@@ -393,9 +372,9 @@ std::uint32_t first_stock_page(std::uintptr_t solid)
     const auto [count, elems] = solid_surfaces(solid);
     for (int i = 0; elems && i < count; i++) {
         const auto surface = *reinterpret_cast<std::uintptr_t*>(elems + i * 4);
-        const std::uintptr_t lm = surface ? surf_lm(surface) : 0;
-        if (lm && *reinterpret_cast<int*>(lm + 4) > 0) {
-            return static_cast<std::uint32_t>(*reinterpret_cast<int*>(lm + 4));
+        const GLightmap* lm = surface ? reinterpret_cast<const GSurface*>(surface)->lightmap : nullptr;
+        if (lm && lm->w > 0) {
+            return static_cast<std::uint32_t>(lm->w);
         }
     }
     return 0;
@@ -416,32 +395,32 @@ bool derive_surface_charts(std::uintptr_t solid, std::uint32_t surface_count, fl
         if (!surface) {
             continue;
         }
-        const int w = surf_i(surface, 0x18);
-        const int h = surf_i(surface, 0x1c);
+        const auto& sf = *reinterpret_cast<const GSurface*>(surface);
+        const int w = sf.width;
+        const int h = sf.height;
         charts[i].w = static_cast<std::uint16_t>(std::clamp(w, 0, 0xffff));
         charts[i].h = static_cast<std::uint16_t>(std::clamp(h, 0, 0xffff));
-        const std::uintptr_t lm = surf_lm(surface);
+        const GLightmap* lm = sf.lightmap;
         if (!lm) {
             continue;
         }
-        const int lm_w = *reinterpret_cast<int*>(lm + 4);
-        const int lm_h = *reinterpret_cast<int*>(lm + 8);
-        const int u_coef = surf_i(surface, 0x60);
-        const int v_coef = surf_i(surface, 0x64);
-        if (w <= 2 || h <= 2 || !stock_page_edge_valid(stock_page) || lm_w != static_cast<int>(stock_page) ||
+        const int lm_w = lm->w;
+        const int lm_h = lm->h;
+        const int u_coef = sf.u_coefficient;
+        const int v_coef = sf.v_coefficient;
+        if (w <= 2 || h <= 2 || !alm::stock_page_edge_valid(stock_page) || lm_w != static_cast<int>(stock_page) ||
             lm_h != static_cast<int>(stock_page) || u_coef < 0 || u_coef > 2 || v_coef < 0 || v_coef > 2) {
             continue;
         }
-        const float extent_u =
-            surf_f(surface, 0x40 + u_coef * 4) - surf_f(surface, 0x34 + u_coef * 4);
-        const float extent_v =
-            surf_f(surface, 0x40 + v_coef * 4) - surf_f(surface, 0x34 + v_coef * 4);
+        const float extent_u = sf.bbox_mx[u_coef] - sf.bbox_mn[u_coef];
+        const float extent_v = sf.bbox_mx[v_coef] - sf.bbox_mn[v_coef];
 
         AfChart c = charts[i];
-        c.k_u = k_from_density(static_cast<std::uint32_t>(w), extent_u, density);
-        c.k_v = k_from_density(static_cast<std::uint32_t>(h), extent_v, density);
-        c.geom = mover ? mover_chart_geometry(MoverSurfaceChart{c.k_u, c.k_v, c.w, c.h})
-                       : chart_geometry(static_cast<std::uint32_t>(w), static_cast<std::uint32_t>(h), c.k_u, c.k_v);
+        c.k_u = alm::k_from_density(static_cast<std::uint32_t>(w), extent_u, density);
+        c.k_v = alm::k_from_density(static_cast<std::uint32_t>(h), extent_v, density);
+        c.geom = mover ? alm::mover_chart_geometry(alm::MoverSurfaceChart{c.k_u, c.k_v, c.w, c.h})
+                       : alm::chart_geometry(static_cast<std::uint32_t>(w), static_cast<std::uint32_t>(h), c.k_u,
+                                             c.k_v);
         if (c.geom.empty()) {
             continue;
         }
@@ -458,26 +437,26 @@ bool derive_surface_charts(std::uintptr_t solid, std::uint32_t surface_count, fl
 }
 
 // Lays every chart's tiles out in the pages, their tile order the chart order as the reader derives it.
-PackResult pack_charts(std::vector<AfChart>& charts, std::vector<Tile>& tiles, std::uint32_t& out_pages)
+PackResult pack_charts(std::vector<AfChart>& charts, std::vector<alm::Tile>& tiles, std::uint32_t& out_pages)
 {
     const auto chart_count = static_cast<std::uint32_t>(charts.size());
     tiles.clear();
     out_pages = 0;
 
     // tile_base is the running sum over the charts in order, exactly as the reader derives it
-    std::vector<ChartGeometry> geoms(chart_count);
+    std::vector<alm::ChartGeometry> geoms(chart_count);
     std::vector<std::uint32_t> bases(chart_count);
     for (std::uint32_t i = 0; i < chart_count; i++) {
         geoms[i] = charts[i].geom;
     }
-    const std::uint32_t total = compute_tile_bases(geoms.data(), chart_count, bases.data());
+    const std::uint32_t total = alm::compute_tile_bases(geoms.data(), chart_count, bases.data());
     for (std::uint32_t i = 0; i < chart_count; i++) {
         charts[i].tile_base = bases[i];
     }
     if (total == 0) {
         return PackResult::no_charts;
     }
-    tiles.assign(total, Tile{0, 0, 0});
+    tiles.assign(total, alm::Tile{0, 0, 0});
 
     // Tall tiles first so the skyline fills from the bottom; ties keep chart order, so the whole
     // placement is a deterministic function of the chart table.
@@ -492,8 +471,8 @@ PackResult pack_charts(std::vector<AfChart>& charts, std::vector<Tile>& tiles, s
         const AfChart& c = charts[i];
         for (std::uint32_t ty = 0; ty < c.geom.ny; ty++) {
             for (std::uint32_t tx = 0; tx < c.geom.nx; tx++) {
-                const TileDims td = tile_dims(c.geom, tx, ty);
-                order.push_back({tile_index(c.tile_base, c.geom, tx, ty), td.w_t, td.h_t});
+                const alm::TileDims td = alm::tile_dims(c.geom, tx, ty);
+                order.push_back({alm::tile_index(c.tile_base, c.geom, tx, ty), td.w_t, td.h_t});
             }
         }
     }
@@ -510,7 +489,7 @@ PackResult pack_charts(std::vector<AfChart>& charts, std::vector<Tile>& tiles, s
     SkylinePacker packer;
     packer.reset();
     for (const Entry& e : order) {
-        Tile t{};
+        alm::Tile t{};
         if (!packer.place(e.w, e.h, t.x, t.y, t.page)) {
             return PackResult::over_budget;
         }
@@ -538,7 +517,7 @@ void report_offenders(const std::vector<AfChart>& charts, Label label = surface_
     };
     std::vector<Off> offs;
     for (std::uint32_t i = 0; i < charts.size(); i++) {
-        const ChartGeometry& g = charts[i].geom;
+        const alm::ChartGeometry& g = charts[i].geom;
         if (!g.empty()) {
             offs.push_back({i, static_cast<std::uint64_t>(g.cw) * g.ch});
         }
@@ -546,7 +525,7 @@ void report_offenders(const std::vector<AfChart>& charts, Label label = surface_
     std::stable_sort(offs.begin(), offs.end(),
                      [](const Off& a, const Off& b) { return a.texels > b.texels; });
     for (std::size_t i = 0; i < offs.size() && i < 20; i++) {
-        const ChartGeometry& g = charts[offs[i].index].geom;
+        const alm::ChartGeometry& g = charts[offs[i].index].geom;
         af_log("  offender " + label(offs[i].index) + ": chart " +
                std::to_string(g.cw) + "x" + std::to_string(g.ch) + ", " +
                std::to_string(g.tile_count()) + " tiles");
@@ -557,21 +536,21 @@ void report_offenders(const std::vector<AfChart>& charts, Label label = surface_
 
 std::uint8_t* page_texel(std::uint32_t page, std::uint32_t x, std::uint32_t y)
 {
-    if (page >= g_af.pages.size() || x >= P || y >= P) {
+    if (page >= g_af.pages.size() || x >= alm::page_size || y >= alm::page_size) {
         return nullptr;
     }
-    return g_af.pages[page].data() + (static_cast<std::size_t>(y) * P + x) * 3;
+    return g_af.pages[page].data() + (static_cast<std::size_t>(y) * alm::page_size + x) * 3;
 }
 
 // Reaches the padding as well as the chart, so the blend's bilinear taps and the edge replication
 // address the tile's whole stored rect the way the reconciliation does.
 std::uint8_t* chart_texel_padded(const AfChart& c, std::int64_t cu, std::int64_t cv)
 {
-    const TileSlot slot = chart_tile_slot(c.geom, c.tile_base, cu, cv);
+    const alm::TileSlot slot = alm::chart_tile_slot(c.geom, c.tile_base, cu, cv);
     if (!slot.valid || slot.index >= g_af.tiles.size()) {
         return nullptr;
     }
-    const Tile& t = g_af.tiles[slot.index];
+    const alm::Tile& t = g_af.tiles[slot.index];
     return page_texel(t.page, t.x + static_cast<std::uint32_t>(slot.sx),
                       t.y + static_cast<std::uint32_t>(slot.sy));
 }
@@ -584,38 +563,16 @@ std::uint8_t* chart_texel(const AfChart& c, std::uint32_t cu, std::uint32_t cv)
     return chart_texel_padded(c, cu, cv);
 }
 
-} // namespace
-
 // ─── bake driver ──────────────────────────────────────────────────────────────
-
-bool alpine_lm_tile_pass_active()
-{
-    return g_tile_pass;
-}
-
-static bool g_lighting_refused = false;
-
-void alpine_lm_note_lighting_refused(bool refused)
-{
-    g_lighting_refused = refused;
-}
-
-bool alpine_lm_take_lighting_refused()
-{
-    return std::exchange(g_lighting_refused, false);
-}
-
-namespace
-{
 
 // The chart of `a` at its current density.
 AfChart terrain_chart(AfTerrain& a)
 {
-    a.wire.w = static_cast<std::uint16_t>(terrain_chart_extent(a.cells_x, a.density));
-    a.wire.h = static_cast<std::uint16_t>(terrain_chart_extent(a.cells_z, a.density));
-    a.wire.texel_size = terrain_chart_texel_size(a.terrain->data.cell_size, a.density);
+    a.wire.w = static_cast<std::uint16_t>(alm::terrain_chart_extent(a.cells_x, a.density));
+    a.wire.h = static_cast<std::uint16_t>(alm::terrain_chart_extent(a.cells_z, a.density));
+    a.wire.texel_size = alm::terrain_chart_texel_size(a.terrain->data.cell_size, a.density);
     AfChart c;
-    c.geom = terrain_chart_geometry(a.wire.w, a.wire.h);
+    c.geom = alm::terrain_chart_geometry(a.wire.w, a.wire.h);
     return c;
 }
 
@@ -636,7 +593,7 @@ std::vector<AfTerrain> collect_terrains(const AlpineLevelProperties& props)
             af_log(terrain_label(*t) + " shares its uid with another terrain, its lighting is not baked");
             continue;
         }
-        if (out.size() >= max_terrain_charts) {
+        if (out.size() >= alm::max_terrain_charts) {
             break;
         }
         const TerrainGrid& g = *t->data.grid;
@@ -697,7 +654,7 @@ std::vector<AfMover> collect_movers(CDedLevel& level)
         if (count <= 0) {
             return;
         }
-        if (static_cast<std::uint32_t>(count) > max_mover_surfaces) {
+        if (static_cast<std::uint32_t>(count) > alm::max_mover_surfaces) {
             af_warn("mover " + std::to_string(brush.uid) + " has " + std::to_string(count) +
                     " lightmap surfaces, more than a mover chart can hold; it keeps its stock lightmaps");
             return;
@@ -712,10 +669,10 @@ std::vector<AfMover> collect_movers(CDedLevel& level)
         af_warn("two mover brushes share uid " + std::to_string(uid) + ", neither gets alpine lighting");
         out.erase(std::remove_if(out.begin(), out.end(), [uid](const AfMover& m) { return m.uid == uid; }), out.end());
     }
-    if (out.size() > max_mover_charts) {
+    if (out.size() > alm::max_mover_charts) {
         af_warn("the level has " + std::to_string(out.size()) + " movers, only the first " +
-                std::to_string(max_mover_charts) + " get alpine lighting");
-        out.resize(max_mover_charts);
+                std::to_string(alm::max_mover_charts) + " get alpine lighting");
+        out.resize(alm::max_mover_charts);
     }
     return out;
 }
@@ -740,234 +697,6 @@ void derive_mover_charts(std::vector<AfMover>& movers, std::uint32_t density, st
     movers = std::move(kept);
 }
 
-} // namespace
-
-std::uint32_t alpine_lm_bake_begin()
-{
-    // a re-bake supersedes the loaded section even when it ends up emitting nothing
-    g_retained.clear();
-    g_retained.shrink_to_fit();
-    terrain_light_clear();
-    g_af = AfBake{};
-    g_tile_pass = false;
-
-    auto* props = level_props();
-    auto* level = CDedLevel::Get();
-    if (!props || !level || !level->solid) {
-        return 0;
-    }
-
-    const auto solid = reinterpret_cast<std::uintptr_t>(level->solid);
-    const auto surface_count = static_cast<std::uint32_t>(std::max(0, solid_surfaces(solid).count));
-
-    // The page edge the surfaces were packed and their uv_scale/uv_add normalized at: FUN_004a5f60 makes
-    // every page that square, of the size lightmap_highres_setup_injection chose for the last repack.
-    std::uint32_t stock_page = first_stock_page(solid);
-    for_each_mover_brush(*level, [&](const BrushNode& brush) {
-        if (!stock_page) {
-            stock_page = first_stock_page(reinterpret_cast<std::uintptr_t>(brush.geometry));
-        }
-    });
-    if (stock_page && !stock_page_edge_valid(stock_page)) {
-        af_warn("the stock lightmap pages are " + std::to_string(stock_page) +
-                " texels wide, surfaces and movers keep their stock lightmaps only");
-    }
-
-    // The surfaces' charts first, at the level's density or below, exactly as if the level had no
-    // terrain: the terrain charts are fitted around them afterwards and never cost them density.
-    const bool charts_off = props->lightmap_density == density_off;
-    std::uint32_t density = effective_density(charts_off ? 0 : props->lightmap_density);
-    std::vector<AfChart> surface_charts(surface_count);
-    bool has_surface = false;
-    if (props->legacy_lighting) {
-        af_log("legacy lighting is set, surfaces keep their stock lightmaps only");
-    }
-    else if (charts_off) {
-        af_log("alpine surface lightmaps are off, surfaces keep their stock lightmaps only");
-    }
-    else if (surface_count > 0) {
-        std::vector<Tile> tiles;
-        std::uint32_t pages = 0;
-        while (true) {
-            if (!derive_surface_charts(solid, surface_count, static_cast<float>(density), stock_page,
-                                       surface_charts)) {
-                af_log("no surface qualifies for an alpine chart");
-                break;
-            }
-            if (pack_charts(surface_charts, tiles, pages) == PackResult::ok) {
-                has_surface = true;
-                break;
-            }
-            af_log("density " + std::to_string(density) + " needs more than the " +
-                   std::to_string(page_budget()) + " page budget");
-            if (density <= density_min) {
-                af_error("the level does not fit the page budget even at density 1, surfaces keep "
-                         "their stock lightmaps only");
-                report_offenders(surface_charts);
-                break;
-            }
-            density = std::max<std::uint32_t>(density_min, density / 2);
-        }
-        if (!has_surface) {
-            surface_charts.assign(surface_count, AfChart{});
-        }
-    }
-
-    // The movers next, around the surfaces' charts: static density is never reduced for them.
-    std::vector<AfMover> movers;
-    std::vector<AfChart> mover_charts;
-    std::uint32_t mover_density = 0;
-    if (props->surface_charts_enabled()) {
-        const std::vector<AfMover> all_movers = collect_movers(*level);
-        std::uint32_t dm = has_surface ? density : effective_density(props->lightmap_density);
-        while (!all_movers.empty()) {
-            movers = all_movers;
-            derive_mover_charts(movers, dm, stock_page, mover_charts);
-            if (movers.empty()) {
-                af_log("no mover surface qualifies for an alpine chart");
-                break;
-            }
-            std::vector<AfChart> fit = surface_charts;
-            fit.insert(fit.end(), mover_charts.begin(), mover_charts.end());
-            std::vector<Tile> tiles;
-            std::uint32_t pages = 0;
-            if (pack_charts(fit, tiles, pages) == PackResult::ok) {
-                mover_density = dm;
-                break;
-            }
-            if (dm <= density_min) {
-                af_warn("the mover charts do not fit the page budget next to the surfaces, movers keep their "
-                        "stock lightmaps (fullbright on d3d11-only levels)");
-                const std::size_t base = surface_charts.size();
-                report_offenders(fit, [&](std::uint32_t c) {
-                    if (c < base) {
-                        return surface_label(c);
-                    }
-                    const std::uint32_t rel = c - static_cast<std::uint32_t>(base);
-                    for (const AfMover& m : movers) {
-                        if (rel >= m.first_chart && rel < m.first_chart + m.num_surfaces) {
-                            return "mover " + std::to_string(m.uid) + " surface " + std::to_string(rel - m.first_chart);
-                        }
-                    }
-                    return surface_label(c);
-                });
-                movers.clear();
-                mover_charts.clear();
-                break;
-            }
-            dm = std::max<std::uint32_t>(density_min, dm / 2);
-        }
-    }
-
-    std::vector<AfTerrain> terrains = collect_terrains(*props);
-    if (!has_surface && terrains.empty() && movers.empty()) {
-        af_log("no alpine lightmap section will be written");
-        return 0;
-    }
-
-    std::vector<AfChart> charts;
-    std::vector<Tile> tiles;
-    std::uint32_t pages = 0;
-    while (true) {
-        charts = surface_charts;
-        charts.insert(charts.end(), mover_charts.begin(), mover_charts.end());
-        std::uint64_t terrain_texels = 0;
-        for (AfTerrain& a : terrains) {
-            charts.push_back(terrain_chart(a));
-            terrain_texels += static_cast<std::uint64_t>(a.wire.w) * a.wire.h;
-        }
-        // the reader's cap on the section's terrain texels
-        const PackResult res = terrain_texels > max_terrain_chart_texels ? PackResult::over_budget
-                                                                         : pack_charts(charts, tiles, pages);
-        if (res == PackResult::ok) {
-            break;
-        }
-        if (res == PackResult::no_charts) {
-            return 0;
-        }
-        if (std::any_of(terrains.begin(), terrains.end(), [](const AfTerrain& a) { return a.density > 1; })) {
-            af_warn("the terrain charts do not fit the page budget next to the surface charts, "
-                    "halving terrain lightmap density");
-            for (AfTerrain& a : terrains) {
-                a.density = std::max<std::uint32_t>(1, a.density / 2);
-            }
-            continue;
-        }
-        af_error("the terrain charts do not fit the page budget even at one texel per cell, terrain "
-                 "lighting is not baked");
-        terrains.clear();
-        if (!has_surface && movers.empty()) {
-            return 0;
-        }
-    }
-
-    for (AfMover& m : movers) {
-        m.first_chart += surface_count;
-    }
-    g_af.solid = solid;
-    g_af.base_density = static_cast<std::uint8_t>(density);
-    g_af.stock_page = stock_page_edge_valid(stock_page) ? stock_page : stock_page_size(props->highres_lightmaps);
-    g_af.num_surface_charts = surface_count;
-    g_af.first_terrain_chart = static_cast<std::uint32_t>(surface_count + mover_charts.size());
-    g_af.has_surface_charts = has_surface;
-    g_af.terrains = std::move(terrains);
-    g_af.movers = std::move(movers);
-    g_af.mover_density = mover_density;
-    g_af.charts = std::move(charts);
-    g_af.tiles = std::move(tiles);
-    g_af.num_pages = pages;
-
-    const auto index_surfaces = [](std::uintptr_t owner, std::uint32_t count, std::uint32_t first_chart) {
-        const auto surfaces = solid_surfaces(owner).elems;
-        for (std::uint32_t i = 0; i < count; i++) {
-            const auto surface = *reinterpret_cast<std::uintptr_t*>(surfaces + i * 4);
-            if (surface) {
-                g_af.surface_index[surface] = AfSurfaceRef{first_chart + i, owner};
-            }
-        }
-    };
-    if (has_surface) {
-        index_surfaces(solid, surface_count, 0);
-    }
-    for (const AfMover& m : g_af.movers) {
-        index_surfaces(m.solid, m.num_surfaces, m.first_chart);
-        g_af.mover_surfaces += m.num_surfaces;
-    }
-
-    std::uint32_t tiled = 0;
-    for (const AfChart& c : g_af.charts) {
-        if (c.geom.tile_count() > 1) {
-            tiled++;
-        }
-    }
-    g_af.active = true;
-    af_log("density " + std::to_string(density) + ": " + std::to_string(surface_count) + " surfaces" +
-           (has_surface ? "" : " (no charts)") + ", " + std::to_string(g_af.terrains.size()) + " terrains, " +
-           std::to_string(g_af.movers.size()) + " movers, " + std::to_string(g_af.mover_surfaces) +
-           " mover surfaces at density " + std::to_string(mover_density) + ", " +
-           std::to_string(g_af.tiles.size()) + " tiles (" + std::to_string(tiled) +
-           " charts tiled), " + std::to_string(pages) + " pages");
-    for (const AfTerrain& a : g_af.terrains) {
-        af_log(terrain_label(*a.terrain) + ": " + std::to_string(a.wire.w) + "x" + std::to_string(a.wire.h) +
-               " texels, " + std::to_string(a.density) + " per cell");
-    }
-    return pages;
-}
-
-void alpine_lm_bake_allocate()
-{
-    if (!g_af.active) {
-        return;
-    }
-    g_af.pages.resize(g_af.num_pages);
-    for (auto& page : g_af.pages) {
-        page.assign(static_cast<std::size_t>(P) * P * 3, 0);
-    }
-}
-
-namespace
-{
-
 // Runs the stock per-surface shading against a per-tile view of the surface. lm_w' = k_u * lm_w and
 // lm_h' = k_v * lm_h leave uv_scale and uv_add untouched, which is what makes k = 1 arithmetically
 // identical to the stock fragment and keeps the faces' stored lightmap UVs (which the out-of-face
@@ -975,15 +704,15 @@ namespace
 void shade_tile(std::uintptr_t solid, std::uintptr_t surface, int mode, const AfChart& c,
                 std::uint32_t tx, std::uint32_t ty, int lm_w, int lm_h, int xstart, int ystart)
 {
-    const TileDims td = tile_dims(c.geom, tx, ty);
+    const alm::TileDims td = alm::tile_dims(c.geom, tx, ty);
     if (td.w_t == 0 || td.h_t == 0) {
         return;
     }
-    const std::uint32_t idx = tile_index(c.tile_base, c.geom, tx, ty);
+    const std::uint32_t idx = alm::tile_index(c.tile_base, c.geom, tx, ty);
     if (idx >= g_af.tiles.size()) {
         return;
     }
-    const Tile tile = g_af.tiles[idx];
+    const alm::Tile tile = g_af.tiles[idx];
 
     // Shade exactly the interior plus its padding. The align4 rounding a stored tile carries on top
     // of that is filled by edge replication below, because widening the rect the engine shades
@@ -1003,11 +732,11 @@ void shade_tile(std::uintptr_t solid, std::uintptr_t surface, int mode, const Af
     }
     std::memset(g_tile_view.data(), 0, need);
 
-    const ChartCoord origin = tile_origin_chart(c.geom, tx, ty);
-    const std::int64_t view_x = stock_view_coord(c.k_u, xstart, origin.u);
-    const std::int64_t view_y = stock_view_coord(c.k_v, ystart, origin.v);
+    const alm::ChartCoord origin = alm::tile_origin_chart(c.geom, tx, ty);
+    const std::int64_t view_x = alm::stock_view_coord(c.k_u, xstart, origin.u);
+    const std::int64_t view_y = alm::stock_view_coord(c.k_v, ystart, origin.v);
 
-    EngineLightmap view{};
+    GLightmap view{};
     view.w = static_cast<int>(c.k_u) * lm_w;
     view.h = static_cast<int>(c.k_v) * lm_h;
     // The engine addresses ((view_y + row) * view.w + view_x + col) * 3 off this pointer, so biasing
@@ -1022,40 +751,34 @@ void shade_tile(std::uintptr_t solid, std::uintptr_t surface, int mode, const Af
 
     {
         // The surface goes back to describing its stock fragment however this scope is left
+        auto& sf = *reinterpret_cast<GSurface*>(surface);
         struct Restore
         {
-            std::uintptr_t surface;
-            std::uintptr_t lm;
+            GSurface& surface;
+            GLightmap* lm;
             int x, y, w, h;
             std::uint8_t state;
             ~Restore()
             {
-                *reinterpret_cast<std::uintptr_t*>(surface + 0xc) = lm;
-                *reinterpret_cast<int*>(surface + 0x10) = x;
-                *reinterpret_cast<int*>(surface + 0x14) = y;
-                *reinterpret_cast<int*>(surface + 0x18) = w;
-                *reinterpret_cast<int*>(surface + 0x1c) = h;
-                *reinterpret_cast<std::uint8_t*>(surface + 8) = state;
+                surface.lightmap = lm;
+                surface.xstart = x;
+                surface.ystart = y;
+                surface.width = w;
+                surface.height = h;
+                surface.flags = state;
                 g_tile_pass = false;
             }
-        } restore{surface,
-                  surf_lm(surface),
-                  surf_i(surface, 0x10),
-                  surf_i(surface, 0x14),
-                  surf_i(surface, 0x18),
-                  surf_i(surface, 0x1c),
-                  *reinterpret_cast<std::uint8_t*>(surface + 8)};
+        } restore{sf, sf.lightmap, sf.xstart, sf.ystart, sf.width, sf.height, sf.flags};
 
-        *reinterpret_cast<std::uintptr_t*>(surface + 0xc) = reinterpret_cast<std::uintptr_t>(&view);
-        *reinterpret_cast<int*>(surface + 0x10) = static_cast<int>(view_x);
-        *reinterpret_cast<int*>(surface + 0x14) = static_cast<int>(view_y);
-        *reinterpret_cast<int*>(surface + 0x18) = static_cast<int>(cw_t);
-        *reinterpret_cast<int*>(surface + 0x1c) = static_cast<int>(ch_t);
-        *reinterpret_cast<std::uint8_t*>(surface + 8) = 7;
+        sf.lightmap = &view;
+        sf.xstart = static_cast<int>(view_x);
+        sf.ystart = static_cast<int>(view_y);
+        sf.width = static_cast<int>(cw_t);
+        sf.height = static_cast<int>(ch_t);
+        sf.flags = SURFACE_DYNAMIC_LIGHTS | SURFACE_SHADE | SURFACE_SHADE_RUNTIME;
 
         g_tile_pass = true;
-        AddrCaller{0x004ac470}.this_call(reinterpret_cast<void*>(surface),
-                                         reinterpret_cast<void*>(solid), mode);
+        lightmap_shade_surface(&sf, 0, reinterpret_cast<void*>(solid), mode);
     }
 
     for (std::uint32_t row = 0; row < td.h_t; row++) {
@@ -1064,9 +787,9 @@ void shade_tile(std::uintptr_t solid, std::uintptr_t surface, int mode, const Af
             break;
         }
         const std::uint32_t src_row = std::min(row, ch_t - 1);
-        const std::uint32_t copy_w = std::min<std::uint32_t>(cw_t, P - tile.x);
+        const std::uint32_t copy_w = std::min<std::uint32_t>(cw_t, alm::page_size - tile.x);
         std::memcpy(dst, g_tile_view.data() + src_row * stride, copy_w * 3u);
-        for (std::uint32_t col = copy_w; col < td.w_t && tile.x + col < P; col++) {
+        for (std::uint32_t col = copy_w; col < td.w_t && tile.x + col < alm::page_size; col++) {
             std::memcpy(dst + col * 3u, dst + (copy_w - 1) * 3u, 3);
         }
     }
@@ -1078,8 +801,9 @@ void shade_tile(std::uintptr_t solid, std::uintptr_t surface, int mode, const Af
 void downsample_into_stock(std::uintptr_t surface, const AfChart& c, int lm_w, int xstart,
                            int ystart, std::uint8_t* page)
 {
-    const int w = surf_i(surface, 0x18);
-    const int h = surf_i(surface, 0x1c);
+    const auto& sf = *reinterpret_cast<const GSurface*>(surface);
+    const int w = sf.width;
+    const int h = sf.height;
     const std::uint32_t n = static_cast<std::uint32_t>(c.k_u) * c.k_v;
     for (int j = 0; j + 2 < h; j++) {
         for (int i = 0; i + 2 < w; i++) {
@@ -1088,8 +812,8 @@ void downsample_into_stock(std::uintptr_t surface, const AfChart& c, int lm_w, i
             for (std::uint32_t dv = 0; dv < c.k_v; dv++) {
                 for (std::uint32_t du = 0; du < c.k_u; du++) {
                     const std::uint8_t* src =
-                        chart_texel(c, stock_texel_chart_coord(static_cast<std::uint32_t>(i), c.k_u, du),
-                                    stock_texel_chart_coord(static_cast<std::uint32_t>(j), c.k_v, dv));
+                        chart_texel(c, alm::stock_texel_chart_coord(static_cast<std::uint32_t>(i), c.k_u, du),
+                                    alm::stock_texel_chart_coord(static_cast<std::uint32_t>(j), c.k_v, dv));
                     if (!src) {
                         continue;
                     }
@@ -1121,15 +845,15 @@ bool chart_is_stock_fragment(const AfChart& c)
 // Stores the fragment as shade_tile stores its view.
 void store_fragment_as_tile(const AfChart& c, int lm_w, int xstart, int ystart, const std::uint8_t* page)
 {
-    const std::uint32_t idx = tile_index(c.tile_base, c.geom, 0, 0);
+    const std::uint32_t idx = alm::tile_index(c.tile_base, c.geom, 0, 0);
     if (idx >= g_af.tiles.size()) {
         return;
     }
-    const Tile tile = g_af.tiles[idx];
-    const TileDims td = tile_dims(c.geom, 0, 0);
+    const alm::Tile tile = g_af.tiles[idx];
+    const alm::TileDims td = alm::tile_dims(c.geom, 0, 0);
     const std::uint32_t cw_t = td.iw_t + 2 * c.geom.pad_u;
     const std::uint32_t ch_t = td.ih_t + 2 * c.geom.pad_v;
-    const std::uint32_t copy_w = std::min<std::uint32_t>(cw_t, P - tile.x);
+    const std::uint32_t copy_w = std::min<std::uint32_t>(cw_t, alm::page_size - tile.x);
     for (std::uint32_t row = 0; row < td.h_t; row++) {
         std::uint8_t* dst = page_texel(tile.page, tile.x, tile.y + row);
         if (!dst) {
@@ -1137,7 +861,7 @@ void store_fragment_as_tile(const AfChart& c, int lm_w, int xstart, int ystart, 
         }
         const std::uint32_t src_row = std::min(row, ch_t - 1);
         const std::uint8_t* src = page + ((static_cast<std::size_t>(ystart) + src_row) * lm_w + xstart) * 3;
-        for (std::uint32_t col = 0; col < td.w_t && tile.x + col < P; col++) {
+        for (std::uint32_t col = 0; col < td.w_t && tile.x + col < alm::page_size; col++) {
             std::memcpy(dst + col * 3u, src + std::min(col, copy_w - 1) * 3u, 3);
         }
     }
@@ -1154,59 +878,9 @@ void af_bake_failed(const char* during) noexcept
     }
 }
 
-} // namespace
-
-void alpine_lm_shade_surface(std::uintptr_t solid, std::uintptr_t surface, int mode)
-{
-    if (!g_af.active || g_tile_pass) {
-        return;
-    }
-    auto it = g_af.surface_index.find(surface);
-    if (it == g_af.surface_index.end() || it->second.solid != solid || it->second.chart >= g_af.charts.size()) {
-        return;
-    }
-    const AfChart c = g_af.charts[it->second.chart];
-    if (c.geom.empty()) {
-        return;
-    }
-    const std::uintptr_t lm = surf_lm(surface);
-    if (!lm) {
-        return;
-    }
-    const int lm_w = *reinterpret_cast<int*>(lm + 4);
-    const int lm_h = *reinterpret_cast<int*>(lm + 8);
-    auto* page = *reinterpret_cast<std::uint8_t**>(lm + 0xc);
-    const int xstart = surf_i(surface, 0x10);
-    const int ystart = surf_i(surface, 0x14);
-    if (lm_w <= 0 || lm_h <= 0 || !page) {
-        return;
-    }
-
-    // At k = 1 downsample_into_stock would only copy the same bytes back.
-    if (chart_is_stock_fragment(c)) {
-        store_fragment_as_tile(c, lm_w, xstart, ystart, page);
-        return;
-    }
-
-    // Nothing may unwind into the engine's lighting frames: out of memory drops the alpine half of the
-    // bake, the stock bake goes on.
-    try {
-        for (std::uint32_t ty = 0; ty < c.geom.ny; ty++) {
-            for (std::uint32_t tx = 0; tx < c.geom.nx; tx++) {
-                shade_tile(solid, surface, mode, c, tx, ty, lm_w, lm_h, xstart, ystart);
-            }
-        }
-        downsample_into_stock(surface, c, lm_w, xstart, ystart, page);
-    }
-    catch (...) {
-        af_bake_failed("shading the surface charts");
-    }
-}
+bool g_lighting_refused = false;
 
 // ─── cross-surface blend at chart resolution ──────────────────────────────────
-
-namespace
-{
 
 constexpr float af_blend_own = 9.0f / 16.0f;
 constexpr float af_blend_other = 7.0f / 16.0f;
@@ -1240,37 +914,38 @@ bool af_blend_init(AfBlendSide& s, std::uintptr_t surface)
     if (c.geom.empty()) {
         return false;
     }
-    const std::uintptr_t lm = surf_lm(surface);
+    const auto& sf = *reinterpret_cast<const GSurface*>(surface);
+    const GLightmap* lm = sf.lightmap;
     if (!lm) {
         return false;
     }
-    s.scale_x = surf_f(surface, 0x4c);
-    s.scale_y = surf_f(surface, 0x50);
+    s.scale_x = sf.uv_scale_x;
+    s.scale_y = sf.uv_scale_y;
     if (s.scale_x == 0.0f || s.scale_y == 0.0f) {
         return false;
     }
     s.chart = &c;
-    s.lm_w = static_cast<float>(*reinterpret_cast<int*>(lm + 4));
-    s.lm_h = static_cast<float>(*reinterpret_cast<int*>(lm + 8));
-    s.add_x = surf_f(surface, 0x54);
-    s.add_y = surf_f(surface, 0x58);
-    s.u_coeff = surf_i(surface, 0x60);
-    s.v_coeff = surf_i(surface, 0x64);
+    s.lm_w = static_cast<float>(lm->w);
+    s.lm_h = static_cast<float>(lm->h);
+    s.add_x = sf.uv_add_x;
+    s.add_y = sf.uv_add_y;
+    s.u_coeff = sf.u_coefficient;
+    s.v_coeff = sf.v_coefficient;
     if (s.u_coeff < 0 || s.u_coeff > 2 || s.v_coeff < 0 || s.v_coeff > 2) {
         return false;
     }
-    s.xstart = surf_i(surface, 0x10);
-    s.ystart = surf_i(surface, 0x14);
+    s.xstart = sf.xstart;
+    s.ystart = sf.ystart;
     return true;
 }
 
 // World position -> chart texel, the projection the game places the surface's vertices with.
-ChartTexel af_world_to_chart(const AfBlendSide& s, const float* p)
+alm::ChartTexel af_world_to_chart(const AfBlendSide& s, const float* p)
 {
-    return surface_chart_texel(p, s.u_coeff, s.v_coeff, s.scale_x, s.scale_y, s.add_x, s.add_y,
-                               static_cast<std::uint32_t>(s.lm_w), static_cast<std::uint32_t>(s.lm_h),
-                               static_cast<std::uint32_t>(s.xstart), static_cast<std::uint32_t>(s.ystart),
-                               s.chart->k_u, s.chart->k_v);
+    return alm::surface_chart_texel(p, s.u_coeff, s.v_coeff, s.scale_x, s.scale_y, s.add_x, s.add_y,
+                                    static_cast<std::uint32_t>(s.lm_w), static_cast<std::uint32_t>(s.lm_h),
+                                    static_cast<std::uint32_t>(s.xstart), static_cast<std::uint32_t>(s.ystart),
+                                    s.chart->k_u, s.chart->k_v);
 }
 
 int af_blend_index(const AfBlendSide& s, float u, float v)
@@ -1345,10 +1020,10 @@ void af_blend_edge(std::uintptr_t surf_a, std::uintptr_t surf_b, const float* p0
     if (!af_blend_init(a, surf_a) || !af_blend_init(b, surf_b)) {
         return;
     }
-    const ChartTexel a0 = af_world_to_chart(a, p0);
-    const ChartTexel a1 = af_world_to_chart(a, p1);
-    const ChartTexel b0 = af_world_to_chart(b, p0);
-    const ChartTexel b1 = af_world_to_chart(b, p1);
+    const alm::ChartTexel a0 = af_world_to_chart(a, p0);
+    const alm::ChartTexel a1 = af_world_to_chart(a, p1);
+    const alm::ChartTexel b0 = af_world_to_chart(b, p0);
+    const alm::ChartTexel b1 = af_world_to_chart(b, p1);
     const float ext = std::max(std::max(std::abs(a1.u - a0.u), std::abs(a1.v - a0.v)),
                                std::max(std::abs(b1.u - b0.u), std::abs(b1.v - b0.v)));
     if (!(ext >= 0.0f) || ext > 1.0e7f) {
@@ -1372,33 +1047,14 @@ void af_blend_edge(std::uintptr_t surf_a, std::uintptr_t surf_b, const float* p0
     af_blend_apply(b);
 }
 
-} // namespace
-
-void alpine_lm_blend_edge(std::uintptr_t surf_a, std::uintptr_t surf_b, const float* p0,
-                          const float* p1)
-{
-    if (!g_af.active || g_tile_pass || !p0 || !p1) {
-        return;
-    }
-    try {
-        af_blend_edge(surf_a, surf_b, p0, p1);
-    }
-    catch (...) {
-        af_bake_failed("blending the surface charts");
-    }
-}
-
 // ─── gutter reconciliation, encode and serialisation ──────────────────────────
-
-namespace
-{
 
 // Blocks holding a texel reconciled with a sibling tile; RDO leaves them alone so seams stay exact.
 std::vector<std::uint8_t> g_shared_blocks;
 
 void mark_shared_block(std::uint32_t page, std::uint32_t x, std::uint32_t y)
 {
-    constexpr std::uint32_t bpr = P / 4;
+    constexpr std::uint32_t bpr = alm::page_size / 4;
     const std::size_t i = (static_cast<std::size_t>(page) * bpr + y / 4) * bpr + x / 4;
     if (i < g_shared_blocks.size()) {
         g_shared_blocks[i] = 1;
@@ -1418,13 +1074,13 @@ std::uint64_t replicate_chart_edges()
         };
         for (std::uint32_t ty = 0; ty < c.geom.ny; ty++) {
             for (std::uint32_t tx = 0; tx < c.geom.nx; tx++) {
-                const std::uint32_t idx = tile_index(c.tile_base, c.geom, tx, ty);
+                const std::uint32_t idx = alm::tile_index(c.tile_base, c.geom, tx, ty);
                 if (idx >= g_af.tiles.size()) {
                     continue;
                 }
-                const Tile& t = g_af.tiles[idx];
-                const TileDims td = tile_dims(c.geom, tx, ty);
-                const ChartCoord origin = tile_origin_chart(c.geom, tx, ty);
+                const alm::Tile& t = g_af.tiles[idx];
+                const alm::TileDims td = alm::tile_dims(c.geom, tx, ty);
+                const alm::ChartCoord origin = alm::tile_origin_chart(c.geom, tx, ty);
                 for (std::uint32_t sy = 0; sy < td.h_t; sy++) {
                     const std::int64_t cv = origin.v + sy;
                     const bool row_in = cv >= 0 && cv < c.geom.ch;
@@ -1455,7 +1111,7 @@ std::uint64_t replicate_chart_edges()
 // Texels several tiles store become byte copies of the owning tile's value (owner by clamped chart coordinate).
 std::uint64_t reconcile_gutters()
 {
-    g_shared_blocks.assign(static_cast<std::size_t>(bc7_block_count(g_af.num_pages)), 0);
+    g_shared_blocks.assign(static_cast<std::size_t>(alm::bc7_block_count(g_af.num_pages)), 0);
     std::uint64_t copied = 0;
     for (const AfChart& c : g_af.charts) {
         if (c.geom.empty() || c.geom.tile_count() <= 1) {
@@ -1463,23 +1119,23 @@ std::uint64_t reconcile_gutters()
         }
         for (std::uint32_t ty = 0; ty < c.geom.ny; ty++) {
             for (std::uint32_t tx = 0; tx < c.geom.nx; tx++) {
-                const std::uint32_t idx = tile_index(c.tile_base, c.geom, tx, ty);
+                const std::uint32_t idx = alm::tile_index(c.tile_base, c.geom, tx, ty);
                 if (idx >= g_af.tiles.size()) {
                     continue;
                 }
-                const Tile& t = g_af.tiles[idx];
-                const TileDims td = tile_dims(c.geom, tx, ty);
-                const ChartCoord origin = tile_origin_chart(c.geom, tx, ty);
+                const alm::Tile& t = g_af.tiles[idx];
+                const alm::TileDims td = alm::tile_dims(c.geom, tx, ty);
+                const alm::ChartCoord origin = alm::tile_origin_chart(c.geom, tx, ty);
                 for (std::uint32_t sy = 0; sy < td.h_t; sy++) {
                     const std::int64_t cv = origin.v + sy;
                     for (std::uint32_t sx = 0; sx < td.w_t; sx++) {
                         const std::int64_t cu = origin.u + sx;
-                        const TileSlot owner = chart_tile_slot(c.geom, c.tile_base, cu, cv);
+                        const alm::TileSlot owner = alm::chart_tile_slot(c.geom, c.tile_base, cu, cv);
                         if (owner.index == idx || !owner.valid ||
                             owner.index >= g_af.tiles.size()) {
                             continue;
                         }
-                        const Tile& ot = g_af.tiles[owner.index];
+                        const alm::Tile& ot = g_af.tiles[owner.index];
                         const std::uint8_t* src =
                             page_texel(ot.page, ot.x + static_cast<std::uint32_t>(owner.sx),
                                        ot.y + static_cast<std::uint32_t>(owner.sy));
@@ -1534,8 +1190,8 @@ bool shade_terrain_chart(const AfTerrain& a, const AfChart& c)
             for (std::uint32_t j = 0; j < bh; j++) {
                 for (std::uint32_t i = 0; i < bw; i++) {
                     LightmapPoint& p = pts[static_cast<std::size_t>(j) * bw + i];
-                    p.pos[0] = terrain_texel_center(a.wire.origin_x, ts, bx + i);
-                    p.pos[2] = terrain_texel_center(a.wire.origin_z, ts, by + j);
+                    p.pos[0] = alm::terrain_texel_center(a.wire.origin_x, ts, bx + i);
+                    p.pos[2] = alm::terrain_texel_center(a.wire.origin_z, ts, by + j);
                     p.pos[1] = at::height_at(g, p.pos[0], p.pos[2]);
                     at::heightmap_normal(g, p.pos[0], p.pos[2], p.normal);
                 }
@@ -1564,13 +1220,13 @@ bool shade_terrain_chart(const AfTerrain& a, const AfChart& c)
 
     for (std::uint32_t ty = 0; ty < c.geom.ny; ty++) {
         for (std::uint32_t tx = 0; tx < c.geom.nx; tx++) {
-            const std::uint32_t idx = tile_index(c.tile_base, c.geom, tx, ty);
+            const std::uint32_t idx = alm::tile_index(c.tile_base, c.geom, tx, ty);
             if (idx >= g_af.tiles.size()) {
                 continue;
             }
-            const Tile& tile = g_af.tiles[idx];
-            const TileDims td = tile_dims(c.geom, tx, ty);
-            const ChartCoord origin = tile_origin_chart(c.geom, tx, ty);
+            const alm::Tile& tile = g_af.tiles[idx];
+            const alm::TileDims td = alm::tile_dims(c.geom, tx, ty);
+            const alm::ChartCoord origin = alm::tile_origin_chart(c.geom, tx, ty);
             for (std::uint32_t sy = 0; sy < td.h_t; sy++) {
                 const std::int64_t cv = origin.v + sy;
                 for (std::uint32_t sx = 0; sx < td.w_t; sx++) {
@@ -1621,19 +1277,20 @@ void shade_terrain_charts()
 
 bool unpack_bc7_cb(const void* block, ert::color_rgba* pixels, uint32_t, void*)
 {
-    return unpack_bc7_rgba(block, reinterpret_cast<std::uint8_t*>(pixels));
+    return alm::unpack_bc7_rgba(block, reinterpret_cast<std::uint8_t*>(pixels));
 }
 
 void fill_block_pixels(std::uint32_t block, ert::color_rgba* out)
 {
-    constexpr std::uint32_t blocks_per_row = P / 4;
+    constexpr std::uint32_t blocks_per_row = alm::page_size / 4;
     constexpr std::uint32_t blocks_per_page = blocks_per_row * blocks_per_row;
     const std::uint32_t page = block / blocks_per_page;
     const std::uint32_t within = block % blocks_per_page;
     const std::uint32_t bx = (within % blocks_per_row) * 4;
     const std::uint32_t by = (within / blocks_per_row) * 4;
     for (std::uint32_t y = 0; y < 4; y++) {
-        const std::uint8_t* row = g_af.pages[page].data() + (static_cast<std::size_t>(by + y) * P + bx) * 3;
+        const std::uint8_t* row =
+            g_af.pages[page].data() + (static_cast<std::size_t>(by + y) * alm::page_size + bx) * 3;
         for (std::uint32_t x = 0; x < 4; x++) {
             ert::color_rgba& c = out[y * 4 + x];
             c.m_c[0] = row[x * 3];
@@ -1645,10 +1302,10 @@ void fill_block_pixels(std::uint32_t block, ert::color_rgba* out)
 }
 
 // The pages' BC7 blocks, one buffer per page.
-PageBuffers encode_bc7(const EncoderSettings& s, std::uint32_t& out_modified)
+PageBuffers encode_bc7(const alm::EncoderSettings& s, std::uint32_t& out_modified)
 {
-    constexpr std::uint32_t page_blocks = (P / 4) * (P / 4);
-    const std::uint32_t total = static_cast<std::uint32_t>(bc7_block_count(g_af.num_pages));
+    constexpr std::uint32_t page_blocks = (alm::page_size / 4) * (alm::page_size / 4);
+    const std::uint32_t total = static_cast<std::uint32_t>(alm::bc7_block_count(g_af.num_pages));
     PageBuffers blocks(g_af.num_pages);
     for (auto& page : blocks) {
         page.resize(static_cast<std::size_t>(page_blocks) * BC7ENC_BLOCK_SIZE);
@@ -1800,40 +1457,40 @@ bool deflate_pages(const PageBuffers& pages, PageBuffers& out, std::size_t& out_
     return ok;
 }
 
-void build_body(const PageBuffers& raw, Codec codec)
+void build_body(const PageBuffers& raw, alm::Codec codec)
 {
     const std::size_t raw_size = page_buffers_size(raw);
     PageBuffers payload;
     std::size_t payload_size = 0;
-    std::uint8_t compression = static_cast<std::uint8_t>(Compression::zlib);
+    std::uint8_t compression = static_cast<std::uint8_t>(alm::Compression::zlib);
     if (!deflate_pages(raw, payload, payload_size)) {
         payload.clear();
         payload_size = raw_size;
-        compression = static_cast<std::uint8_t>(Compression::none);
+        compression = static_cast<std::uint8_t>(alm::Compression::none);
         af_warn("zlib failed, storing the layer uncompressed");
     }
-    const PageBuffers& stored = compression == static_cast<std::uint8_t>(Compression::none) ? raw : payload;
+    const PageBuffers& stored = compression == static_cast<std::uint8_t>(alm::Compression::none) ? raw : payload;
 
-    SectionHeader head{};
-    head.version = section_version;
+    alm::SectionHeader head{};
+    head.version = alm::section_version;
     head.flags = 0;
-    head.page_size = static_cast<std::uint16_t>(P);
-    head.tile_step = static_cast<std::uint16_t>(S);
-    head.gutter = static_cast<std::uint8_t>(G);
+    head.page_size = static_cast<std::uint16_t>(alm::page_size);
+    head.tile_step = static_cast<std::uint16_t>(alm::tile_step);
+    head.gutter = static_cast<std::uint8_t>(alm::gutter);
     head.base_density = g_af.base_density;
-    head.stock_page_log2 = stock_page_log2_of(g_af.stock_page);
+    head.stock_page_log2 = alm::stock_page_log2_of(g_af.stock_page);
     head.num_pages = static_cast<std::uint16_t>(g_af.num_pages);
     head.num_charts = g_af.num_surface_charts;
     head.num_tiles = static_cast<std::uint32_t>(g_af.tiles.size());
 
-    LayerDirHeader dir{};
+    alm::LayerDirHeader dir{};
     dir.num_layers = 1;
 
-    LayerDirEntry layer{};
-    layer.semantic = static_cast<std::uint16_t>(Semantic::radiance_ldr);
+    alm::LayerDirEntry layer{};
+    layer.semantic = static_cast<std::uint16_t>(alm::Semantic::radiance_ldr);
     layer.codec = static_cast<std::uint16_t>(codec);
-    layer.layer_version = layer_version;
-    layer.colorspace = static_cast<std::uint8_t>(Colorspace::rf_lightmap_x2);
+    layer.layer_version = alm::layer_version;
+    layer.colorspace = static_cast<std::uint8_t>(alm::Colorspace::rf_lightmap_x2);
     layer.compression = compression;
     layer.uncompressed_size = static_cast<std::uint32_t>(raw_size);
     layer.stored_size = static_cast<std::uint32_t>(payload_size);
@@ -1845,20 +1502,20 @@ void build_body(const PageBuffers& raw, Codec codec)
         }
     }
     const std::uint64_t mover_bytes =
-        g_af.movers.empty() ? 0 : mover_table_bytes(g_af.movers.size(), g_af.mover_surfaces);
+        g_af.movers.empty() ? 0 : alm::mover_table_bytes(g_af.movers.size(), g_af.mover_surfaces);
     std::uint32_t terrain_tiles = 0;
     for (std::size_t k = 0; k < g_af.terrains.size(); k++) {
         terrain_tiles += g_af.charts[g_af.first_terrain_chart + k].geom.tile_count();
     }
     const auto num_terrain = static_cast<std::uint32_t>(g_af.terrains.size());
-    const std::uint64_t terrain_bytes = num_terrain ? terrain_table_bytes(num_terrain) : 0;
+    const std::uint64_t terrain_bytes = num_terrain ? alm::terrain_table_bytes(num_terrain) : 0;
 
     auto& body = g_af.body;
     body.clear();
-    body.reserve(sizeof(head) + g_af.num_surface_charts * sizeof(Chart) + sizeof(std::uint32_t) +
-                 (g_af.movers.empty() ? 0 : sizeof(TableHeader) + static_cast<std::size_t>(mover_bytes)) +
-                 (num_terrain ? sizeof(TableHeader) + static_cast<std::size_t>(terrain_bytes) : 0) +
-                 g_af.tiles.size() * sizeof(Tile) +
+    body.reserve(sizeof(head) + g_af.num_surface_charts * sizeof(alm::Chart) + sizeof(std::uint32_t) +
+                 (g_af.movers.empty() ? 0 : sizeof(alm::TableHeader) + static_cast<std::size_t>(mover_bytes)) +
+                 (num_terrain ? sizeof(alm::TableHeader) + static_cast<std::size_t>(terrain_bytes) : 0) +
+                 g_af.tiles.size() * sizeof(alm::Tile) +
                  sizeof(dir) + sizeof(layer) + payload_size);
     auto append = [&body](const void* p, std::size_t n) {
         const auto* b = static_cast<const std::uint8_t*>(p);
@@ -1867,43 +1524,44 @@ void build_body(const PageBuffers& raw, Codec codec)
     append(&head, sizeof(head));
     for (std::uint32_t i = 0; i < g_af.num_surface_charts; i++) {
         const AfChart& c = g_af.charts[i];
-        const Chart wire{c.geom.empty() ? std::uint16_t{0} : c.k_u,
-                         c.geom.empty() ? std::uint16_t{0} : c.k_v};
+        const alm::Chart wire{c.geom.empty() ? std::uint16_t{0} : c.k_u,
+                              c.geom.empty() ? std::uint16_t{0} : c.k_v};
         append(&wire, sizeof(wire));
     }
     // the tables in the order their tiles follow the surface tiles
     const std::uint32_t num_tables = (g_af.movers.empty() ? 0 : 1) + (num_terrain ? 1 : 0);
     append(&num_tables, sizeof(num_tables));
     if (!g_af.movers.empty()) {
-        const TableHeader table{static_cast<std::uint32_t>(TableTag::movers), mover_table_version, 0,
-                                static_cast<std::uint32_t>(mover_bytes), mover_tiles};
+        const alm::TableHeader table{static_cast<std::uint32_t>(alm::TableTag::movers), alm::mover_table_version,
+                                     0, static_cast<std::uint32_t>(mover_bytes), mover_tiles};
         append(&table, sizeof(table));
         const auto num_movers = static_cast<std::uint32_t>(g_af.movers.size());
         append(&num_movers, sizeof(num_movers));
         for (AfMover& m : g_af.movers) {
             // stamped when the save knows what the movers section wrote
-            const MoverChart record{m.uid, m.num_surfaces, 0};
-            m.hash_offset = static_cast<std::uint32_t>(body.size() + offsetof(MoverChart, surface_hash));
+            const alm::MoverChart record{m.uid, m.num_surfaces, 0};
+            m.hash_offset = static_cast<std::uint32_t>(body.size() + offsetof(alm::MoverChart, surface_hash));
             append(&record, sizeof(record));
             for (std::uint32_t s = 0; s < m.num_surfaces; s++) {
                 const AfChart& c = g_af.charts[m.first_chart + s];
                 const bool charted = !c.geom.empty();
-                const MoverSurfaceChart wire{charted ? c.k_u : std::uint16_t{0}, charted ? c.k_v : std::uint16_t{0},
-                                             c.w, c.h};
+                const alm::MoverSurfaceChart wire{charted ? c.k_u : std::uint16_t{0},
+                                                  charted ? c.k_v : std::uint16_t{0}, c.w, c.h};
                 append(&wire, sizeof(wire));
             }
         }
     }
     if (num_terrain) {
-        const TableHeader table{static_cast<std::uint32_t>(TableTag::terrain), terrain_table_version, 0,
-                                static_cast<std::uint32_t>(terrain_bytes), terrain_tiles};
+        const alm::TableHeader table{static_cast<std::uint32_t>(alm::TableTag::terrain),
+                                     alm::terrain_table_version, 0, static_cast<std::uint32_t>(terrain_bytes),
+                                     terrain_tiles};
         append(&table, sizeof(table));
         append(&num_terrain, sizeof(num_terrain));
         for (const AfTerrain& a : g_af.terrains) {
             append(&a.wire, sizeof(a.wire));
         }
     }
-    for (const Tile& t : g_af.tiles) {
+    for (const alm::Tile& t : g_af.tiles) {
         append(&t, sizeof(t));
     }
     append(&dir, sizeof(dir));
@@ -1913,21 +1571,7 @@ void build_body(const PageBuffers& raw, Codec codec)
     }
 }
 
-} // namespace
-
 // ─── decoded terrain charts for the viewport preview ──────────────────────────
-
-struct TerrainBakedLight
-{
-    TerrainChart chart{};
-    // The chart box-filtered to at most terrain_reduced_texels_per_cell texels per cell, as the game keeps
-    // it: the preview needs no more, and a full-density copy of every terrain can reach 150 MB.
-    std::uint32_t reduction = 1;
-    std::vector<std::uint8_t> rgb;
-};
-
-namespace
-{
 
 struct TerrainLightMatch
 {
@@ -1950,20 +1594,20 @@ void terrain_light_clear()
 }
 
 // The section's terrain and mover halves only: the editor has no surface fingerprint to hand, and needs none.
-ReadResult read_unfingerprinted(const std::vector<std::uint8_t>& body)
+alm::ReadResult read_unfingerprinted(const std::vector<std::uint8_t>& body)
 {
-    return read_section(body.data(), body.size(), nullptr, 0, 0, false);
+    return alm::read_section(body.data(), body.size(), nullptr, 0, 0, false);
 }
 
 // Whether chart `c` still lights terrain `uid` with `data` placed at `pos`.
-bool terrain_chart_current(const TerrainChart& c, std::int32_t uid, const Vector3& pos, const DedTerrainData& data)
+bool terrain_chart_current(const alm::TerrainChart& c, std::int32_t uid, const Vector3& pos, const DedTerrainData& data)
 {
     const TerrainGrid* g = data.grid.get();
-    return g && c.terrain_uid == uid && terrain_chart_matches(c, terrain_grid_view(pos, data, *g));
+    return g && c.terrain_uid == uid && alm::terrain_chart_matches(c, terrain_grid_view(pos, data, *g));
 }
 
 // The usable records of `r` that light a terrain of the level as it is now, the only ones decoded.
-std::vector<TerrainLightMatch> terrain_light_matches(const ReadResult& r, CDedLevel* level)
+std::vector<TerrainLightMatch> terrain_light_matches(const alm::ReadResult& r, CDedLevel* level)
 {
     std::vector<TerrainLightMatch> out;
     if (!r.ok || !level) {
@@ -1982,7 +1626,7 @@ std::vector<TerrainLightMatch> terrain_light_matches(const ReadResult& r, CDedLe
 
 // decode(match, light) runs decode_reduced_terrain_chart for the match into the light's rgb and reduction.
 template<typename Decode>
-void terrain_light_decode(const ReadResult& r, const std::vector<TerrainLightMatch>& matches, Decode&& decode)
+void terrain_light_decode(const alm::ReadResult& r, const std::vector<TerrainLightMatch>& matches, Decode&& decode)
 {
     for (const TerrainLightMatch& m : matches) {
         TerrainBakedLight tl;
@@ -1997,16 +1641,16 @@ void terrain_light_decode(const ReadResult& r, const std::vector<TerrainLightMat
 void terrain_light_store(const std::vector<std::uint8_t>& body, const PageBuffers& layer)
 {
     terrain_light_clear();
-    const ReadResult r = read_unfingerprinted(body);
+    const alm::ReadResult r = read_unfingerprinted(body);
     const auto page_len =
-        static_cast<std::size_t>(layer_payload_size(static_cast<Codec>(r.layer.codec), 1, r.page_size));
+        static_cast<std::size_t>(alm::layer_payload_size(static_cast<alm::Codec>(r.layer.codec), 1, r.page_size));
     const auto page_data = [&](std::uint32_t page) -> const std::uint8_t* {
         return page < layer.size() && layer[page].size() == page_len ? layer[page].data() : nullptr;
     };
     terrain_light_decode(r, terrain_light_matches(r, CDedLevel::Get()),
                          [&](const TerrainLightMatch& m, TerrainBakedLight& tl) {
-                             return decode_reduced_terrain_chart_paged(r, page_data, m.index, m.cells_x,
-                                                                       unpack_bc7_rgba, tl.rgb, tl.reduction);
+                             return alm::decode_reduced_terrain_chart_paged(r, page_data, m.index, m.cells_x,
+                                                                            alm::unpack_bc7_rgba, tl.rgb, tl.reduction);
                          });
 }
 
@@ -2014,139 +1658,31 @@ void terrain_light_store(const std::vector<std::uint8_t>& body, const PageBuffer
 void terrain_light_store_section(const std::vector<std::uint8_t>& body, CDedLevel& level)
 {
     terrain_light_clear();
-    const ReadResult r = read_unfingerprinted(body);
+    const alm::ReadResult r = read_unfingerprinted(body);
     const std::vector<TerrainLightMatch> matches = terrain_light_matches(r, &level);
     if (matches.empty()) {
         return;
     }
     std::vector<std::uint8_t> layer;
-    if (!decompress_layer(body.data(), body.size(), r.layer, layer)) {
+    if (!alm::decompress_layer(body.data(), body.size(), r.layer, layer)) {
         return;
     }
     terrain_light_decode(r, matches, [&](const TerrainLightMatch& m, TerrainBakedLight& tl) {
-        return decode_reduced_terrain_chart(r, layer.data(), layer.size(), m.index, m.cells_x, unpack_bc7_rgba,
-                                            tl.rgb, tl.reduction);
+        return alm::decode_reduced_terrain_chart(r, layer.data(), layer.size(), m.index, m.cells_x,
+                                                 alm::unpack_bc7_rgba, tl.rgb, tl.reduction);
     });
-}
-
-} // namespace
-
-std::uint32_t terrain_baked_light_generation()
-{
-    return g_terrain_light_generation;
-}
-
-const TerrainBakedLight* terrain_baked_light_find(int uid, const Vector3& pos, const DedTerrainData& data)
-{
-    const auto it = g_terrain_light.find(uid);
-    if (it == g_terrain_light.end() || it->second.rgb.empty()) {
-        return nullptr;
-    }
-    // placement is in the fingerprint; a moved terrain is told apart without hashing its heights
-    const TerrainChart& c = it->second.chart;
-    if (c.origin_x != pos.x || c.origin_z != pos.z) {
-        return nullptr;
-    }
-    return terrain_chart_current(c, uid, pos, data) ? &it->second : nullptr;
-}
-
-void terrain_baked_light_sample(const TerrainBakedLight& light, float world_x, float world_z, float (&texel)[3])
-{
-    terrain_reduced_chart_sample(light.rgb.data(), light.chart, light.reduction, world_x, world_z, texel);
-}
-
-void alpine_lm_bake_end()
-{
-    g_tile_pass = false;
-    g_tile_view.clear();
-    g_tile_view.shrink_to_fit();
-    if (!g_af.active) {
-        g_af = AfBake{};
-        return;
-    }
-
-    shade_terrain_charts();
-
-    const DWORD t0 = GetTickCount();
-    const std::uint64_t replicated = replicate_chart_edges();
-    const std::uint64_t copied = reconcile_gutters();
-
-    auto* props = level_props();
-    const CompressionMode mode = compression_mode_from_wire(props ? props->lightmap_compression : 0);
-    const EncoderSettings settings = encoder_settings(mode);
-    const Codec codec = g_raw_codec ? Codec::raw_rgb8 : Codec::bc7_unorm;
-    std::uint32_t rdo_modified = 0;
-    PageBuffers raw;
-    if (g_raw_codec) {
-        raw = std::move(g_af.pages);
-    }
-    else {
-        raw = encode_bc7(settings, rdo_modified);
-        // the encoder is the last reader of the RGB pages, and at the page budget they are 200 MB
-        g_af.pages.clear();
-        g_af.pages.shrink_to_fit();
-    }
-    const std::uint64_t raw_size = page_buffers_size(raw);
-    if (raw_size != layer_payload_size(codec, g_af.num_pages) || raw_size > 0xffffffffull) {
-        af_error("the encoded layer does not fit its size field, dropping the section");
-        g_af = AfBake{};
-        return;
-    }
-    build_body(raw, codec);
-    try {
-        terrain_light_store(g_af.body, raw);
-    }
-    catch (const std::bad_alloc&) {
-        terrain_light_clear();
-        af_error("out of memory keeping the baked terrain lighting for the editor view, the saved section "
-                 "is unaffected");
-    }
-    g_af.signature = surfaces_signature(g_af.solid);
-    for (AfMover& m : g_af.movers) {
-        m.signature = surfaces_signature(m.solid);
-    }
-    g_af.complete = true;
-    g_af.active = false;
-    g_af.pages.clear();
-    g_af.pages.shrink_to_fit();
-    g_shared_blocks.clear();
-    g_shared_blocks.shrink_to_fit();
-
-    char buf[256];
-    std::snprintf(buf, sizeof(buf),
-                  "encoded %u pages as %s, %llu edge texels replicated, %llu gutter texels copied, "
-                  "compression mode %u, rdo modified %u blocks, section %u bytes in %.1fs",
-                  g_af.num_pages, g_raw_codec ? "raw rgb8" : "bc7",
-                  static_cast<unsigned long long>(replicated),
-                  static_cast<unsigned long long>(copied), static_cast<unsigned>(mode),
-                  rdo_modified, static_cast<unsigned>(g_af.body.size()),
-                  (GetTickCount() - t0) / 1000.0);
-    af_log(buf);
-}
-
-void alpine_lm_bake_abort()
-{
-    g_tile_pass = false;
-    g_tile_view.clear();
-    g_tile_view.shrink_to_fit();
-    g_shared_blocks.clear();
-    g_shared_blocks.shrink_to_fit();
-    g_af = AfBake{};
 }
 
 // ─── save and load ────────────────────────────────────────────────────────────
 
-namespace
-{
-
 bool retained_header(std::uint32_t& faces, std::uint32_t& surfaces)
 {
-    if (g_retained.size() < sizeof(SectionHeader)) {
+    if (g_retained.size() < sizeof(alm::SectionHeader)) {
         return false;
     }
-    SectionHeader head{};
+    alm::SectionHeader head{};
     std::memcpy(&head, g_retained.data(), sizeof(head));
-    if (header_invalid_reason(head)) {
+    if (alm::header_invalid_reason(head)) {
         return false;
     }
     faces = head.src_num_faces;
@@ -2157,17 +1693,17 @@ bool retained_header(std::uint32_t& faces, std::uint32_t& surfaces)
 // Whether a stored section carries any surface chart, from its chart table.
 bool section_has_surface_charts(const std::vector<std::uint8_t>& body)
 {
-    if (body.size() < sizeof(SectionHeader)) {
+    if (body.size() < sizeof(alm::SectionHeader)) {
         return false;
     }
-    SectionHeader head{};
+    alm::SectionHeader head{};
     std::memcpy(&head, body.data(), sizeof(head));
-    if (body.size() - sizeof(SectionHeader) < static_cast<std::uint64_t>(head.num_charts) * sizeof(Chart)) {
+    if (body.size() - sizeof(alm::SectionHeader) < static_cast<std::uint64_t>(head.num_charts) * sizeof(alm::Chart)) {
         return false;
     }
     for (std::uint32_t i = 0; i < head.num_charts; i++) {
-        Chart c{};
-        std::memcpy(&c, body.data() + sizeof(SectionHeader) + i * sizeof(Chart), sizeof(c));
+        alm::Chart c{};
+        std::memcpy(&c, body.data() + sizeof(alm::SectionHeader) + i * sizeof(alm::Chart), sizeof(c));
         if (c.k_u != 0 && c.k_v != 0) {
             return true;
         }
@@ -2179,7 +1715,7 @@ bool section_has_surface_charts(const std::vector<std::uint8_t>& body)
 // have none: both render with the placeholder lighting in game until the level is re-baked.
 void warn_terrain_lighting(const std::vector<std::uint8_t>* body, const AlpineLevelProperties& props)
 {
-    ReadResult r;
+    alm::ReadResult r;
     if (body) {
         r = read_unfingerprinted(*body);
     }
@@ -2187,7 +1723,7 @@ void warn_terrain_lighting(const std::vector<std::uint8_t>* body, const AlpineLe
         if (!t) {
             continue;
         }
-        const TerrainChart* chart = nullptr;
+        const alm::TerrainChart* chart = nullptr;
         for (std::uint32_t i = 0; r.ok && i < r.terrain.size(); i++) {
             if (r.terrain_ok[i] && r.terrain[i].terrain_uid == t->uid) {
                 chart = &r.terrain[i];
@@ -2212,32 +1748,11 @@ void warn_if_stock_layout_synthesized()
     }
 }
 
-} // namespace
-
-void alpine_lm_drop_retained()
-{
-    g_retained.clear();
-    g_retained.shrink_to_fit();
-    g_retained_suppressed = false;
-    g_retained_signature = 0;
-    g_af = AfBake{};
-    terrain_light_clear();
-}
-
-bool alpine_lm_stock_suppressed()
-{
-    return g_suppress_stock;
-}
-
-namespace
-{
-
 void save_decide(CDedLevel& level)
 {
     const auto s = reinterpret_cast<std::uintptr_t>(level.solid);
     g_save_num_surfaces = static_cast<std::uint32_t>(std::max(0, solid_surfaces(s).count));
-    g_save_num_faces = static_cast<std::uint32_t>(
-        std::max(0, AddrCaller{0x0043cc40}.this_call<int>(reinterpret_cast<void*>(s + 0x70))));
+    g_save_num_faces = static_cast<std::uint32_t>(std::max(0, level.solid->face_list_count));
 
     // Surface charts replace the stock lightmaps only with the fixed pipeline, so a section that
     // carries them is not emitted for a legacy-lit level or one with alpine surface lightmaps off; one
@@ -2260,7 +1775,7 @@ void save_decide(CDedLevel& level)
     }
     else {
         std::uint32_t faces = 0, surfaces = 0;
-        const ReadResult retained = read_unfingerprinted(g_retained);
+        const alm::ReadResult retained = read_unfingerprinted(g_retained);
         const bool retained_surface = section_has_surface_charts(g_retained);
         const bool retained_brush = retained_surface || !retained.movers.empty();
         const bool retained_geometry = retained_header(faces, surfaces) && surfaces == g_save_num_surfaces &&
@@ -2319,51 +1834,16 @@ void save_decide(CDedLevel& level)
     }
 }
 
-} // namespace
-
-void alpine_lm_save_begin(CDedLevel& level)
-{
-    g_emit_af = false;
-    g_emit_retained = false;
-    g_emit_surface_charts = false;
-    g_suppress_stock = false;
-    g_save_num_faces = 0;
-    g_save_num_surfaces = 0;
-    g_save_surface_hash = 0;
-    g_hash_armed = false;
-    g_hash_capturing = false;
-    g_save_movers.clear();
-    g_mover_save_brush = nullptr;
-
-    if (!level.solid) {
-        return;
-    }
-    try {
-        save_decide(level);
-    }
-    catch (const std::bad_alloc&) {
-        // the stock section is written and nothing stands in for it
-        g_emit_af = false;
-        g_emit_retained = false;
-        g_emit_surface_charts = false;
-        g_suppress_stock = false;
-        xlog::error("[AlpineLightmaps] out of memory preparing the save, the alpine lightmap section is dropped");
-    }
-}
-
-namespace
-{
-
 // The section header as saved: with `restamp`, the fingerprint fields describe the surfaces just written.
 void section_header_as_written(const std::uint8_t* body, bool restamp, std::uint32_t num_faces,
                                std::uint32_t num_surfaces, std::uint32_t surface_hash,
-                               std::uint8_t (&head)[sizeof(SectionHeader)])
+                               std::uint8_t (&head)[sizeof(alm::SectionHeader)])
 {
     std::memcpy(head, body, sizeof(head));
     if (restamp) {
-        std::memcpy(head + offsetof(SectionHeader, src_num_faces), &num_faces, 4);
-        std::memcpy(head + offsetof(SectionHeader, src_num_surfaces), &num_surfaces, 4);
-        std::memcpy(head + offsetof(SectionHeader, src_surface_hash), &surface_hash, 4);
+        std::memcpy(head + offsetof(alm::SectionHeader, src_num_faces), &num_faces, 4);
+        std::memcpy(head + offsetof(alm::SectionHeader, src_num_surfaces), &num_surfaces, 4);
+        std::memcpy(head + offsetof(alm::SectionHeader, src_surface_hash), &surface_hash, 4);
     }
 }
 
@@ -2404,7 +1884,7 @@ std::vector<MoverStamp> fresh_mover_stamps()
 // the movers section just wrote is reported.
 void check_retained_movers(const std::vector<std::uint8_t>& body)
 {
-    const ReadResult r = read_unfingerprinted(body);
+    const alm::ReadResult r = read_unfingerprinted(body);
     for (std::size_t i = 0; i < r.movers.size(); i++) {
         if (!r.mover_ok[i]) {
             continue;
@@ -2418,136 +1898,7 @@ void check_retained_movers(const std::vector<std::uint8_t>& body)
     }
 }
 
-} // namespace
-
-void alpine_lm_serialize_chunk(CDedLevel& level, rf::File& file)
-{
-    if (!g_emit_af) {
-        return;
-    }
-    const std::vector<std::uint8_t>& body = g_emit_retained ? g_retained : g_af.body;
-    if (body.size() < sizeof(SectionHeader)) {
-        return;
-    }
-    // With no surface charts the fingerprint guards nothing, so a retained terrain-only section is
-    // restamped with the surfaces just written like a fresh one.
-    const bool restamp = !g_emit_retained || !g_emit_surface_charts;
-    if (!restamp) {
-        // The stock section is already behind us by now, so this can only refuse the stale copy.
-        std::uint32_t retained_hash = 0;
-        std::memcpy(&retained_hash, body.data() + offsetof(SectionHeader, src_surface_hash), 4);
-        if (retained_hash != g_save_surface_hash) {
-            try {
-                af_warn("the retained alpine lightmap section does not match the surfaces just "
-                        "written and was NOT saved, and the stock section was already omitted: the level "
-                        "now has NO lightmaps, re-bake it");
-            }
-            catch (const std::bad_alloc&) {
-            }
-            return;
-        }
-    }
-    std::vector<MoverStamp> stamps;
-    try {
-        if (g_emit_retained) {
-            check_retained_movers(body);
-        }
-        else {
-            stamps = fresh_mover_stamps();
-        }
-    }
-    catch (const std::bad_alloc&) {
-        // unstamped mover records match no mover, which then keeps its stock lighting
-        stamps.clear();
-    }
-    std::uint8_t head[sizeof(SectionHeader)];
-    section_header_as_written(body.data(), restamp, g_save_num_faces, g_save_num_surfaces, g_save_surface_hash,
-                              head);
-    auto start_pos = level.BeginRflSection(file, alpine_lightmaps_chunk_id);
-    file.write(head, sizeof(head));
-    std::size_t pos = sizeof(head);
-    for (const MoverStamp& st : stamps) {
-        if (st.offset < pos || st.offset + sizeof(st.hash) > body.size()) {
-            continue;
-        }
-        if (st.offset > pos) {
-            file.write(body.data() + pos, st.offset - pos);
-        }
-        file.write(&st.hash, sizeof(st.hash));
-        pos = st.offset + sizeof(st.hash);
-    }
-    if (body.size() > pos) {
-        file.write(body.data() + pos, body.size() - pos);
-    }
-    level.EndRflSection(file, start_pos);
-    try {
-        af_log("wrote the alpine lightmap section, " + std::to_string(body.size()) + " bytes");
-    }
-    catch (const std::bad_alloc&) {
-    }
-}
-
-void alpine_lm_deserialize_chunk(CDedLevel& level, rf::File& file, std::size_t chunk_len)
-{
-    std::size_t remaining = chunk_len;
-    rf::File::ChunkGuard chunk_guard{file, remaining};
-    g_retained.clear();
-    // the alpine props chunk is written before the geometry section and so is always read first
-    g_retained_suppressed = level.GetAlpineLevelProperties().stock_lightmaps_omitted;
-    const std::int64_t bytes_left = static_cast<std::int64_t>(file.get_size()) - file.tell();
-    if (!section_len_plausible(chunk_len, bytes_left)) {
-        // remaining is left alone so the guard seeks past the chunk; zeroing it would leave the
-        // cursor inside the payload and the next chunk header would be read out of it.
-        return;
-    }
-    try {
-        g_retained.resize(chunk_len);
-    }
-    catch (const std::bad_alloc&) {
-        g_retained.clear();
-        af_error("out of memory reading the alpine lightmap section, it is dropped");
-        return;
-    }
-    const int got = file.read(g_retained.data(), chunk_len);
-    if (got <= 0 || file.error() || static_cast<std::size_t>(got) < chunk_len) {
-        if (got > 0) {
-            remaining -= static_cast<std::size_t>(got);
-        }
-        g_retained.clear();
-        return;
-    }
-    remaining = 0;
-    SectionHeader head{};
-    const char* invalid = "truncated header";
-    if (g_retained.size() >= sizeof(head)) {
-        std::memcpy(&head, g_retained.data(), sizeof(head));
-        invalid = header_invalid_reason(head);
-    }
-    if (invalid) {
-        g_retained.clear();
-        g_retained.shrink_to_fit();
-        af_warn(std::string{"the level's alpine lightmap section is dropped ("} + invalid +
-                "), run Calculate Lighting to bake it again");
-        return;
-    }
-    // before the signature, which covers the page size
-    lightmap_synthesized_page_resize(static_cast<int>(stock_page_edge(head)));
-    g_retained_signature =
-        level.solid ? surfaces_signature(reinterpret_cast<std::uintptr_t>(level.solid)) : 0;
-    af_log("retained the level's " + std::to_string(chunk_len) +
-           " byte alpine lightmap section, it is re-emitted unchanged if nothing re-bakes it");
-    try {
-        terrain_light_store_section(g_retained, level);
-    }
-    catch (const std::bad_alloc&) {
-        terrain_light_clear();
-    }
-}
-
 // ─── engine hooks ─────────────────────────────────────────────────────────────
-
-namespace
-{
 
 // solid_write(file, solid, brush_only). The static solid's surface records are the last thing it
 // writes, so the fingerprint hash covers exactly them: the tap arms here and starts capturing on
@@ -2634,9 +1985,9 @@ CodeInjection surface_lightmap_index_injection{
             regs.edx = 0xffffffffu;
         }
         else {
-            const auto lm = *reinterpret_cast<std::uintptr_t*>(static_cast<uintptr_t>(regs.edi) + 0xc);
-            regs.ecx = lm;
-            regs.edx = *reinterpret_cast<std::uint32_t*>(lm + 0x14);
+            const GLightmap* lm = reinterpret_cast<GSurface*>(static_cast<uintptr_t>(regs.edi))->lightmap;
+            regs.ecx = reinterpret_cast<std::uintptr_t>(lm);
+            regs.edx = lm->index;
         }
         regs.eip = 0x004a46e2;
     },
@@ -2648,7 +1999,7 @@ CodeInjection surface_lightmap_index_injection{
 CodeInjection stock_lightmaps_section_injection{
     0x00430d55,
     [](auto& regs) {
-        regs.ecx = 0x1128678;
+        regs.ecx = reinterpret_cast<std::uintptr_t>(&lightmap_pages);
         regs.eip = g_suppress_stock ? 0x00430ddf : 0x00430d5a;
     },
     false, // no trampoline: the injection fully replaces the 5 byte load
@@ -2667,6 +2018,581 @@ CodeInjection alpine_lightmaps_section_injection{
 };
 
 } // namespace
+
+// ─── alpine_lightmaps.h interface ─────────────────────────────────────────────
+
+bool alpine_lm_tile_pass_active()
+{
+    return g_tile_pass;
+}
+
+void alpine_lm_note_lighting_refused(bool refused)
+{
+    g_lighting_refused = refused;
+}
+
+bool alpine_lm_take_lighting_refused()
+{
+    return std::exchange(g_lighting_refused, false);
+}
+
+std::uint32_t alpine_lm_bake_begin()
+{
+    // a re-bake supersedes the loaded section even when it ends up emitting nothing
+    g_retained.clear();
+    g_retained.shrink_to_fit();
+    terrain_light_clear();
+    g_af = AfBake{};
+    g_tile_pass = false;
+
+    auto* props = level_props();
+    auto* level = CDedLevel::Get();
+    if (!props || !level || !level->solid) {
+        return 0;
+    }
+
+    const auto solid = reinterpret_cast<std::uintptr_t>(level->solid);
+    const auto surface_count = static_cast<std::uint32_t>(std::max(0, solid_surfaces(solid).count));
+
+    // The page edge the surfaces were packed and their uv_scale/uv_add normalized at: FUN_004a5f60 makes
+    // every page that square, of the size lightmap_highres_setup_injection chose for the last repack.
+    std::uint32_t stock_page = first_stock_page(solid);
+    for_each_mover_brush(*level, [&](const BrushNode& brush) {
+        if (!stock_page) {
+            stock_page = first_stock_page(reinterpret_cast<std::uintptr_t>(brush.geometry));
+        }
+    });
+    if (stock_page && !alm::stock_page_edge_valid(stock_page)) {
+        af_warn("the stock lightmap pages are " + std::to_string(stock_page) +
+                " texels wide, surfaces and movers keep their stock lightmaps only");
+    }
+
+    // The surfaces' charts first, at the level's density or below, exactly as if the level had no
+    // terrain: the terrain charts are fitted around them afterwards and never cost them density.
+    const bool charts_off = props->lightmap_density == alm::density_off;
+    std::uint32_t density = alm::effective_density(charts_off ? 0 : props->lightmap_density);
+    std::vector<AfChart> surface_charts(surface_count);
+    bool has_surface = false;
+    if (props->legacy_lighting) {
+        af_log("legacy lighting is set, surfaces keep their stock lightmaps only");
+    }
+    else if (charts_off) {
+        af_log("alpine surface lightmaps are off, surfaces keep their stock lightmaps only");
+    }
+    else if (surface_count > 0) {
+        std::vector<alm::Tile> tiles;
+        std::uint32_t pages = 0;
+        while (true) {
+            if (!derive_surface_charts(solid, surface_count, static_cast<float>(density), stock_page,
+                                       surface_charts)) {
+                af_log("no surface qualifies for an alpine chart");
+                break;
+            }
+            if (pack_charts(surface_charts, tiles, pages) == PackResult::ok) {
+                has_surface = true;
+                break;
+            }
+            af_log("density " + std::to_string(density) + " needs more than the " +
+                   std::to_string(page_budget()) + " page budget");
+            if (density <= alm::density_min) {
+                af_error("the level does not fit the page budget even at density 1, surfaces keep "
+                         "their stock lightmaps only");
+                report_offenders(surface_charts);
+                break;
+            }
+            density = std::max<std::uint32_t>(alm::density_min, density / 2);
+        }
+        if (!has_surface) {
+            surface_charts.assign(surface_count, AfChart{});
+        }
+    }
+
+    // The movers next, around the surfaces' charts: static density is never reduced for them.
+    std::vector<AfMover> movers;
+    std::vector<AfChart> mover_charts;
+    std::uint32_t mover_density = 0;
+    if (props->surface_charts_enabled()) {
+        const std::vector<AfMover> all_movers = collect_movers(*level);
+        std::uint32_t dm = has_surface ? density : alm::effective_density(props->lightmap_density);
+        while (!all_movers.empty()) {
+            movers = all_movers;
+            derive_mover_charts(movers, dm, stock_page, mover_charts);
+            if (movers.empty()) {
+                af_log("no mover surface qualifies for an alpine chart");
+                break;
+            }
+            std::vector<AfChart> fit = surface_charts;
+            fit.insert(fit.end(), mover_charts.begin(), mover_charts.end());
+            std::vector<alm::Tile> tiles;
+            std::uint32_t pages = 0;
+            if (pack_charts(fit, tiles, pages) == PackResult::ok) {
+                mover_density = dm;
+                break;
+            }
+            if (dm <= alm::density_min) {
+                af_warn("the mover charts do not fit the page budget next to the surfaces, movers keep their "
+                        "stock lightmaps (fullbright on d3d11-only levels)");
+                const std::size_t base = surface_charts.size();
+                report_offenders(fit, [&](std::uint32_t c) {
+                    if (c < base) {
+                        return surface_label(c);
+                    }
+                    const std::uint32_t rel = c - static_cast<std::uint32_t>(base);
+                    for (const AfMover& m : movers) {
+                        if (rel >= m.first_chart && rel < m.first_chart + m.num_surfaces) {
+                            return "mover " + std::to_string(m.uid) + " surface " + std::to_string(rel - m.first_chart);
+                        }
+                    }
+                    return surface_label(c);
+                });
+                movers.clear();
+                mover_charts.clear();
+                break;
+            }
+            dm = std::max<std::uint32_t>(alm::density_min, dm / 2);
+        }
+    }
+
+    std::vector<AfTerrain> terrains = collect_terrains(*props);
+    if (!has_surface && terrains.empty() && movers.empty()) {
+        af_log("no alpine lightmap section will be written");
+        return 0;
+    }
+
+    std::vector<AfChart> charts;
+    std::vector<alm::Tile> tiles;
+    std::uint32_t pages = 0;
+    while (true) {
+        charts = surface_charts;
+        charts.insert(charts.end(), mover_charts.begin(), mover_charts.end());
+        std::uint64_t terrain_texels = 0;
+        for (AfTerrain& a : terrains) {
+            charts.push_back(terrain_chart(a));
+            terrain_texels += static_cast<std::uint64_t>(a.wire.w) * a.wire.h;
+        }
+        // the reader's cap on the section's terrain texels
+        const PackResult res = terrain_texels > alm::max_terrain_chart_texels ? PackResult::over_budget
+                                                                         : pack_charts(charts, tiles, pages);
+        if (res == PackResult::ok) {
+            break;
+        }
+        if (res == PackResult::no_charts) {
+            return 0;
+        }
+        if (std::any_of(terrains.begin(), terrains.end(), [](const AfTerrain& a) { return a.density > 1; })) {
+            af_warn("the terrain charts do not fit the page budget next to the surface charts, "
+                    "halving terrain lightmap density");
+            for (AfTerrain& a : terrains) {
+                a.density = std::max<std::uint32_t>(1, a.density / 2);
+            }
+            continue;
+        }
+        af_error("the terrain charts do not fit the page budget even at one texel per cell, terrain "
+                 "lighting is not baked");
+        terrains.clear();
+        if (!has_surface && movers.empty()) {
+            return 0;
+        }
+    }
+
+    for (AfMover& m : movers) {
+        m.first_chart += surface_count;
+    }
+    g_af.solid = solid;
+    g_af.base_density = static_cast<std::uint8_t>(density);
+    g_af.stock_page =
+        alm::stock_page_edge_valid(stock_page) ? stock_page : alm::stock_page_size(props->highres_lightmaps);
+    g_af.num_surface_charts = surface_count;
+    g_af.first_terrain_chart = static_cast<std::uint32_t>(surface_count + mover_charts.size());
+    g_af.has_surface_charts = has_surface;
+    g_af.terrains = std::move(terrains);
+    g_af.movers = std::move(movers);
+    g_af.mover_density = mover_density;
+    g_af.charts = std::move(charts);
+    g_af.tiles = std::move(tiles);
+    g_af.num_pages = pages;
+
+    const auto index_surfaces = [](std::uintptr_t owner, std::uint32_t count, std::uint32_t first_chart) {
+        const auto surfaces = solid_surfaces(owner).elems;
+        for (std::uint32_t i = 0; i < count; i++) {
+            const auto surface = *reinterpret_cast<std::uintptr_t*>(surfaces + i * 4);
+            if (surface) {
+                g_af.surface_index[surface] = AfSurfaceRef{first_chart + i, owner};
+            }
+        }
+    };
+    if (has_surface) {
+        index_surfaces(solid, surface_count, 0);
+    }
+    for (const AfMover& m : g_af.movers) {
+        index_surfaces(m.solid, m.num_surfaces, m.first_chart);
+        g_af.mover_surfaces += m.num_surfaces;
+    }
+
+    std::uint32_t tiled = 0;
+    for (const AfChart& c : g_af.charts) {
+        if (c.geom.tile_count() > 1) {
+            tiled++;
+        }
+    }
+    g_af.active = true;
+    af_log("density " + std::to_string(density) + ": " + std::to_string(surface_count) + " surfaces" +
+           (has_surface ? "" : " (no charts)") + ", " + std::to_string(g_af.terrains.size()) + " terrains, " +
+           std::to_string(g_af.movers.size()) + " movers, " + std::to_string(g_af.mover_surfaces) +
+           " mover surfaces at density " + std::to_string(mover_density) + ", " +
+           std::to_string(g_af.tiles.size()) + " tiles (" + std::to_string(tiled) +
+           " charts tiled), " + std::to_string(pages) + " pages");
+    for (const AfTerrain& a : g_af.terrains) {
+        af_log(terrain_label(*a.terrain) + ": " + std::to_string(a.wire.w) + "x" + std::to_string(a.wire.h) +
+               " texels, " + std::to_string(a.density) + " per cell");
+    }
+    return pages;
+}
+
+void alpine_lm_bake_allocate()
+{
+    if (!g_af.active) {
+        return;
+    }
+    g_af.pages.resize(g_af.num_pages);
+    for (auto& page : g_af.pages) {
+        page.assign(static_cast<std::size_t>(alm::page_size) * alm::page_size * 3, 0);
+    }
+}
+
+void alpine_lm_shade_surface(std::uintptr_t solid, std::uintptr_t surface, int mode)
+{
+    if (!g_af.active || g_tile_pass) {
+        return;
+    }
+    auto it = g_af.surface_index.find(surface);
+    if (it == g_af.surface_index.end() || it->second.solid != solid || it->second.chart >= g_af.charts.size()) {
+        return;
+    }
+    const AfChart c = g_af.charts[it->second.chart];
+    if (c.geom.empty()) {
+        return;
+    }
+    const auto& sf = *reinterpret_cast<const GSurface*>(surface);
+    const GLightmap* lm = sf.lightmap;
+    if (!lm) {
+        return;
+    }
+    const int lm_w = lm->w;
+    const int lm_h = lm->h;
+    auto* page = lm->pixels;
+    const int xstart = sf.xstart;
+    const int ystart = sf.ystart;
+    if (lm_w <= 0 || lm_h <= 0 || !page) {
+        return;
+    }
+
+    // At k = 1 downsample_into_stock would only copy the same bytes back.
+    if (chart_is_stock_fragment(c)) {
+        store_fragment_as_tile(c, lm_w, xstart, ystart, page);
+        return;
+    }
+
+    // Nothing may unwind into the engine's lighting frames: out of memory drops the alpine half of the
+    // bake, the stock bake goes on.
+    try {
+        for (std::uint32_t ty = 0; ty < c.geom.ny; ty++) {
+            for (std::uint32_t tx = 0; tx < c.geom.nx; tx++) {
+                shade_tile(solid, surface, mode, c, tx, ty, lm_w, lm_h, xstart, ystart);
+            }
+        }
+        downsample_into_stock(surface, c, lm_w, xstart, ystart, page);
+    }
+    catch (...) {
+        af_bake_failed("shading the surface charts");
+    }
+}
+
+void alpine_lm_blend_edge(std::uintptr_t surf_a, std::uintptr_t surf_b, const float* p0,
+                          const float* p1)
+{
+    if (!g_af.active || g_tile_pass || !p0 || !p1) {
+        return;
+    }
+    try {
+        af_blend_edge(surf_a, surf_b, p0, p1);
+    }
+    catch (...) {
+        af_bake_failed("blending the surface charts");
+    }
+}
+
+std::uint32_t terrain_baked_light_generation()
+{
+    return g_terrain_light_generation;
+}
+
+const TerrainBakedLight* terrain_baked_light_find(int uid, const Vector3& pos, const DedTerrainData& data)
+{
+    const auto it = g_terrain_light.find(uid);
+    if (it == g_terrain_light.end() || it->second.rgb.empty()) {
+        return nullptr;
+    }
+    // placement is in the fingerprint; a moved terrain is told apart without hashing its heights
+    const alm::TerrainChart& c = it->second.chart;
+    if (c.origin_x != pos.x || c.origin_z != pos.z) {
+        return nullptr;
+    }
+    return terrain_chart_current(c, uid, pos, data) ? &it->second : nullptr;
+}
+
+void terrain_baked_light_sample(const TerrainBakedLight& light, float world_x, float world_z, float (&texel)[3])
+{
+    alm::terrain_reduced_chart_sample(light.rgb.data(), light.chart, light.reduction, world_x, world_z, texel);
+}
+
+void alpine_lm_bake_end()
+{
+    g_tile_pass = false;
+    g_tile_view.clear();
+    g_tile_view.shrink_to_fit();
+    if (!g_af.active) {
+        g_af = AfBake{};
+        return;
+    }
+
+    shade_terrain_charts();
+
+    const DWORD t0 = GetTickCount();
+    const std::uint64_t replicated = replicate_chart_edges();
+    const std::uint64_t copied = reconcile_gutters();
+
+    auto* props = level_props();
+    const alm::CompressionMode mode = alm::compression_mode_from_wire(props ? props->lightmap_compression : 0);
+    const alm::EncoderSettings settings = alm::encoder_settings(mode);
+    const alm::Codec codec = g_raw_codec ? alm::Codec::raw_rgb8 : alm::Codec::bc7_unorm;
+    std::uint32_t rdo_modified = 0;
+    PageBuffers raw;
+    if (g_raw_codec) {
+        raw = std::move(g_af.pages);
+    }
+    else {
+        raw = encode_bc7(settings, rdo_modified);
+        // the encoder is the last reader of the RGB pages, and at the page budget they are 200 MB
+        g_af.pages.clear();
+        g_af.pages.shrink_to_fit();
+    }
+    const std::uint64_t raw_size = page_buffers_size(raw);
+    if (raw_size != alm::layer_payload_size(codec, g_af.num_pages) || raw_size > 0xffffffffull) {
+        af_error("the encoded layer does not fit its size field, dropping the section");
+        g_af = AfBake{};
+        return;
+    }
+    build_body(raw, codec);
+    try {
+        terrain_light_store(g_af.body, raw);
+    }
+    catch (const std::bad_alloc&) {
+        terrain_light_clear();
+        af_error("out of memory keeping the baked terrain lighting for the editor view, the saved section "
+                 "is unaffected");
+    }
+    g_af.signature = surfaces_signature(g_af.solid);
+    for (AfMover& m : g_af.movers) {
+        m.signature = surfaces_signature(m.solid);
+    }
+    g_af.complete = true;
+    g_af.active = false;
+    g_af.pages.clear();
+    g_af.pages.shrink_to_fit();
+    g_shared_blocks.clear();
+    g_shared_blocks.shrink_to_fit();
+
+    char buf[256];
+    std::snprintf(buf, sizeof(buf),
+                  "encoded %u pages as %s, %llu edge texels replicated, %llu gutter texels copied, "
+                  "compression mode %u, rdo modified %u blocks, section %u bytes in %.1fs",
+                  g_af.num_pages, g_raw_codec ? "raw rgb8" : "bc7",
+                  static_cast<unsigned long long>(replicated),
+                  static_cast<unsigned long long>(copied), static_cast<unsigned>(mode),
+                  rdo_modified, static_cast<unsigned>(g_af.body.size()),
+                  (GetTickCount() - t0) / 1000.0);
+    af_log(buf);
+}
+
+void alpine_lm_bake_abort()
+{
+    g_tile_pass = false;
+    g_tile_view.clear();
+    g_tile_view.shrink_to_fit();
+    g_shared_blocks.clear();
+    g_shared_blocks.shrink_to_fit();
+    g_af = AfBake{};
+}
+
+void alpine_lm_drop_retained()
+{
+    g_retained.clear();
+    g_retained.shrink_to_fit();
+    g_retained_suppressed = false;
+    g_retained_signature = 0;
+    g_af = AfBake{};
+    terrain_light_clear();
+}
+
+bool alpine_lm_stock_suppressed()
+{
+    return g_suppress_stock;
+}
+
+void alpine_lm_save_begin(CDedLevel& level)
+{
+    g_emit_af = false;
+    g_emit_retained = false;
+    g_emit_surface_charts = false;
+    g_suppress_stock = false;
+    g_save_num_faces = 0;
+    g_save_num_surfaces = 0;
+    g_save_surface_hash = 0;
+    g_hash_armed = false;
+    g_hash_capturing = false;
+    g_save_movers.clear();
+    g_mover_save_brush = nullptr;
+
+    if (!level.solid) {
+        return;
+    }
+    try {
+        save_decide(level);
+    }
+    catch (const std::bad_alloc&) {
+        // the stock section is written and nothing stands in for it
+        g_emit_af = false;
+        g_emit_retained = false;
+        g_emit_surface_charts = false;
+        g_suppress_stock = false;
+        xlog::error("[AlpineLightmaps] out of memory preparing the save, the alpine lightmap section is dropped");
+    }
+}
+
+void alpine_lm_serialize_chunk(CDedLevel& level, rf::File& file)
+{
+    if (!g_emit_af) {
+        return;
+    }
+    const std::vector<std::uint8_t>& body = g_emit_retained ? g_retained : g_af.body;
+    if (body.size() < sizeof(alm::SectionHeader)) {
+        return;
+    }
+    // With no surface charts the fingerprint guards nothing, so a retained terrain-only section is
+    // restamped with the surfaces just written like a fresh one.
+    const bool restamp = !g_emit_retained || !g_emit_surface_charts;
+    if (!restamp) {
+        // The stock section is already behind us by now, so this can only refuse the stale copy.
+        std::uint32_t retained_hash = 0;
+        std::memcpy(&retained_hash, body.data() + offsetof(alm::SectionHeader, src_surface_hash), 4);
+        if (retained_hash != g_save_surface_hash) {
+            try {
+                af_warn("the retained alpine lightmap section does not match the surfaces just "
+                        "written and was NOT saved, and the stock section was already omitted: the level "
+                        "now has NO lightmaps, re-bake it");
+            }
+            catch (const std::bad_alloc&) {
+            }
+            return;
+        }
+    }
+    std::vector<MoverStamp> stamps;
+    try {
+        if (g_emit_retained) {
+            check_retained_movers(body);
+        }
+        else {
+            stamps = fresh_mover_stamps();
+        }
+    }
+    catch (const std::bad_alloc&) {
+        // unstamped mover records match no mover, which then keeps its stock lighting
+        stamps.clear();
+    }
+    std::uint8_t head[sizeof(alm::SectionHeader)];
+    section_header_as_written(body.data(), restamp, g_save_num_faces, g_save_num_surfaces, g_save_surface_hash,
+                              head);
+    auto start_pos = level.BeginRflSection(file, alpine_lightmaps_chunk_id);
+    file.write(head, sizeof(head));
+    std::size_t pos = sizeof(head);
+    for (const MoverStamp& st : stamps) {
+        if (st.offset < pos || st.offset + sizeof(st.hash) > body.size()) {
+            continue;
+        }
+        if (st.offset > pos) {
+            file.write(body.data() + pos, st.offset - pos);
+        }
+        file.write(&st.hash, sizeof(st.hash));
+        pos = st.offset + sizeof(st.hash);
+    }
+    if (body.size() > pos) {
+        file.write(body.data() + pos, body.size() - pos);
+    }
+    level.EndRflSection(file, start_pos);
+    try {
+        af_log("wrote the alpine lightmap section, " + std::to_string(body.size()) + " bytes");
+    }
+    catch (const std::bad_alloc&) {
+    }
+}
+
+void alpine_lm_deserialize_chunk(CDedLevel& level, rf::File& file, std::size_t chunk_len)
+{
+    std::size_t remaining = chunk_len;
+    rf::File::ChunkGuard chunk_guard{file, remaining};
+    g_retained.clear();
+    // the alpine props chunk is written before the geometry section and so is always read first
+    g_retained_suppressed = level.GetAlpineLevelProperties().stock_lightmaps_omitted;
+    const std::int64_t bytes_left = static_cast<std::int64_t>(file.get_size()) - file.tell();
+    if (!alm::section_len_plausible(chunk_len, bytes_left)) {
+        // remaining is left alone so the guard seeks past the chunk; zeroing it would leave the
+        // cursor inside the payload and the next chunk header would be read out of it.
+        return;
+    }
+    try {
+        g_retained.resize(chunk_len);
+    }
+    catch (const std::bad_alloc&) {
+        g_retained.clear();
+        af_error("out of memory reading the alpine lightmap section, it is dropped");
+        return;
+    }
+    const int got = file.read(g_retained.data(), chunk_len);
+    if (got <= 0 || file.error() || static_cast<std::size_t>(got) < chunk_len) {
+        if (got > 0) {
+            remaining -= static_cast<std::size_t>(got);
+        }
+        g_retained.clear();
+        return;
+    }
+    remaining = 0;
+    alm::SectionHeader head{};
+    const char* invalid = "truncated header";
+    if (g_retained.size() >= sizeof(head)) {
+        std::memcpy(&head, g_retained.data(), sizeof(head));
+        invalid = alm::header_invalid_reason(head);
+    }
+    if (invalid) {
+        g_retained.clear();
+        g_retained.shrink_to_fit();
+        af_warn(std::string{"the level's alpine lightmap section is dropped ("} + invalid +
+                "), run Calculate Lighting to bake it again");
+        return;
+    }
+    // before the signature, which covers the page size
+    lightmap_synthesized_page_resize(static_cast<int>(alm::stock_page_edge(head)));
+    g_retained_signature =
+        level.solid ? surfaces_signature(reinterpret_cast<std::uintptr_t>(level.solid)) : 0;
+    af_log("retained the level's " + std::to_string(chunk_len) +
+           " byte alpine lightmap section, it is re-emitted unchanged if nothing re-bakes it");
+    try {
+        terrain_light_store_section(g_retained, level);
+    }
+    catch (const std::bad_alloc&) {
+        terrain_light_clear();
+    }
+}
 
 void ApplyAlpineLightmapPatches()
 {

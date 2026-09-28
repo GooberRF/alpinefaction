@@ -444,6 +444,21 @@ struct DedRoomEffect : DedObject
 };
 static_assert(sizeof(DedRoomEffect) == 0xD4, "DedRoomEffect size mismatch");
 
+// Partial; field use from the geo region reader/writer FUN_00454340
+struct DedGeoRegion : DedObject
+{
+    int shape;                         // 0x94 — 2 = Sphere, 4 = Box
+    float radius;                      // 0x98 — sphere only
+    float height;                      // 0x9C — box only, full size
+    float width;                       // 0xA0
+    float depth;                       // 0xA4
+};
+static_assert(offsetof(DedGeoRegion, shape) == 0x94);
+static_assert(offsetof(DedGeoRegion, radius) == 0x98);
+static_assert(offsetof(DedGeoRegion, height) == 0x9C);
+static_assert(offsetof(DedGeoRegion, width) == 0xA0);
+static_assert(offsetof(DedGeoRegion, depth) == 0xA4);
+
 // Per-slot texture override for editor mesh objects
 struct EditorTextureOverride {
     uint8_t slot;

@@ -43,7 +43,9 @@ AlpineTerrain terrain_from_record(at::Record& rec)
     t.underside_texture = std::move(rec.underside_texture);
     t.crater_texture = std::move(rec.crater_texture);
     t.layers.reserve(rec.layers.size());
-    for (at::RecordLayer& layer : rec.layers) t.layers.push_back({std::move(layer.texture), layer.uv_scale, layer.triplanar});
+    for (at::RecordLayer& layer : rec.layers) {
+        t.layers.push_back({std::move(layer.texture), layer.uv_scale, layer.triplanar});
+    }
     t.overlays.reserve(rec.overlays.size());
     for (at::RecordOverlay& overlay : rec.overlays) {
         t.overlays.push_back({std::move(overlay.texture), overlay.uv_scale, overlay.triplanar, overlay.break_tiling});
@@ -274,8 +276,9 @@ void alpine_terrain_sample_light(const AlpineTerrain& t, at::FaceKind kind, cons
     if (kind == at::FaceKind::top) {
         at::heightmap_normal(g, pos[0], pos[2], n);
     }
-    const float scale =
-        kind == at::FaceKind::crater ? at::crater_light_factor(at::surface_y_bilinear(g, pos[0], pos[2]) - pos[1]) : 1.0f;
+    const float scale = kind == at::FaceKind::crater
+                            ? at::crater_light_factor(at::surface_y_bilinear(g, pos[0], pos[2]) - pos[1])
+                            : 1.0f;
 
     // The baked terrain chart where the level carries one, the texel ter_base_light samples. It holds
     // the top surface's light, which craters take dimmed and the underside does not use.

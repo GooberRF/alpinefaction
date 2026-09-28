@@ -43,33 +43,6 @@ std::optional<float> g_sky_room_eye_offset_scale;
 static rf::Vector3 g_adjusted_sky_room_eye_position;
 
 
-// A legacy room-cache batch as geo_cache_prepare_room 0x004F0C00 builds it; the static solid
-// renderer 0x0055F5E0 draws it with `mode` and writes `color` into every vertex's diffuse.
-struct GCacheBatchFace
-{
-    char pad[0x18];
-    rf::GFace* face;
-};
-static_assert(sizeof(GCacheBatchFace) == 0x1C);
-
-struct GCacheBatch
-{
-    char pad0[0x20];
-    rf::gr::Mode mode;
-    unsigned color; // D3DCOLOR
-    char pad28[0x8];
-    GCacheBatchFace* faces;
-    char pad34[0xC];
-    int bm0;
-    int bm1;
-    short num_vertices;
-    short num_faces;
-    char pad4c[0x4];
-};
-static_assert(sizeof(GCacheBatch) == 0x50);
-static_assert(offsetof(GCacheBatch, mode) == 0x20 && offsetof(GCacheBatch, faces) == 0x30);
-static_assert(offsetof(GCacheBatch, bm0) == 0x40 && offsetof(GCacheBatch, num_faces) == 0x4A);
-
 // Legacy renderers draw terrain faces single-textured without a lightmap, modulated by the level ambient.
 static void geo_cache_tint_terrain_batches(rf::GCache& cache)
 {
@@ -80,10 +53,10 @@ static void geo_cache_tint_terrain_batches(rf::GCache& cache)
         color = (color << 8) | static_cast<unsigned>(std::clamp(c * 255.0f + 0.5f, 0.0f, 255.0f));
     }
 
-    auto* batches = static_cast<GCacheBatch*>(cache.batches);
+    rf::GCacheBatch* const batches = cache.batches;
     const int num_batches = static_cast<unsigned short>(cache.num_batches);
     for (int i = 0; i < num_batches; ++i) {
-        GCacheBatch& b = batches[i];
+        rf::GCacheBatch& b = batches[i];
         if (b.bm0 < 0 || b.bm1 != -1 || b.num_faces <= 0 ||
             b.mode.get_color_source() != rf::gr::COLOR_SOURCE_TEXTURE || b.mode == rf::gr_decal_self_illuminated_mode) {
             continue;
@@ -116,13 +89,10 @@ constexpr int legacy_max_cache_vertices = 8000;
 // The rooms g_cache_clear 0x004F0B90 drops the caches of. Stock holds 256 with no bounds check, and
 // every terrain chunk has a cache of its own.
 static rf::GRoom* g_geo_cache_rooms[8192];
-static auto& g_geo_cache_num_rooms = addr_as_ref<int>(0x013761B8);
-static auto& g_geo_cache_arena_pos = addr_as_ref<char*>(0x013F1DD4);
 
 // The detail rooms 0x004F0C00 merged into the cache it builds. Stock holds 256 with no bounds check:
 // the 257th overwrites the count, which 0x004F0660 then walks as a room.
 static rf::GRoom* g_geo_cache_detail_rooms[8192];
-static auto& g_geo_cache_num_detail_rooms = addr_as_ref<int>(0x01398CCC);
 
 // Rooms too big for the legacy vertex array, skipped until g_cache_clear next runs. The first build
 // after a clear finds the cache room list empty.
@@ -136,7 +106,7 @@ static int64_t g_geo_cache_timing_us = 0;
 CodeInjection geo_cache_prepare_room_add_detail_room_injection{
     0x004F0DFD,
     [](auto& regs) {
-        if (g_geo_cache_num_detail_rooms >= static_cast<int>(std::size(g_geo_cache_detail_rooms))) {
+        if (rf::geo_cache_num_detail_rooms >= static_cast<int>(std::size(g_geo_cache_detail_rooms))) {
             regs.eip = 0x004F0EE8; // next detail room, as for an invisible one
         }
     },
@@ -146,10 +116,10 @@ FunHook<int(rf::GSolid*, rf::GRoom*)> geo_cache_prepare_room_hook{
     0x004F0C00,
     [](rf::GSolid* solid, rf::GRoom* room) {
         // Failing makes the caller drop every cache and retry, as it does when cache memory runs out
-        if (!room->geo_cache && g_geo_cache_num_rooms >= static_cast<int>(std::size(g_geo_cache_rooms))) {
+        if (!room->geo_cache && rf::geo_cache_num_rooms >= static_cast<int>(std::size(g_geo_cache_rooms))) {
             return -1;
         }
-        if (g_geo_cache_num_rooms == 0) {
+        if (rf::geo_cache_num_rooms == 0) {
             g_geo_cache_oversized_rooms.clear();
         }
         if (!room->geo_cache && std::find(g_geo_cache_oversized_rooms.begin(), g_geo_cache_oversized_rooms.end(),
@@ -178,8 +148,8 @@ FunHook<int(rf::GSolid*, rf::GRoom*)> geo_cache_prepare_room_hook{
             catch (const std::bad_alloc&) {
             }
         }
-        char* const arena_pos = g_geo_cache_arena_pos;
-        const int num_cache_rooms = g_geo_cache_num_rooms;
+        char* const arena_pos = rf::geo_cache_arena_pos;
+        const int num_cache_rooms = rf::geo_cache_num_rooms;
         const bool timing = !room->geo_cache && geomod_timing_enabled();
         const int64_t start = timing ? timer::get_i64(1000000) : 0;
         int ret = geo_cache_prepare_room_hook.call_target(solid, room);
@@ -207,8 +177,8 @@ FunHook<int(rf::GSolid*, rf::GRoom*)> geo_cache_prepare_room_hook{
                 }
                 // Undo the build's last writes: its arena allocation and its entry in the cache room list
                 room->geo_cache = nullptr;
-                g_geo_cache_arena_pos = arena_pos;
-                g_geo_cache_num_rooms = num_cache_rooms;
+                rf::geo_cache_arena_pos = arena_pos;
+                rf::geo_cache_num_rooms = num_cache_rooms;
                 // Failing would drop and rebuild every cache each frame for one room
                 return 0;
             }
@@ -217,8 +187,6 @@ FunHook<int(rf::GSolid*, rf::GRoom*)> geo_cache_prepare_room_hook{
         return ret;
     },
 };
-
-static_assert(offsetof(rf::GRoom, clip_wnd) == 0x16C);
 
 // Legacy renderers draw each terrain chunk once per pass, after the pass's rooms, from its own cache.
 // A chunk is seen through every visible room listing it, so it culls against the union of their
@@ -280,11 +248,10 @@ CallHook<void(rf::GSolid*, rf::GRoom**, int)> gr_render_static_solid_hook{
         }
         if (!draw.empty()) {
             // The renderer advances its batch scroll clock by a frame per call
-            auto& scroll_clock = addr_as_ref<float>(0x01EA574C);
-            const float clock = scroll_clock;
-            scroll_clock = clock - rf::frametime;
+            const float clock = rf::gr_static_solid_scroll_clock;
+            rf::gr_static_solid_scroll_clock = clock - rf::frametime;
             gr_render_static_solid_hook.call_target(solid, draw.data(), static_cast<int>(draw.size()));
-            scroll_clock = clock;
+            rf::gr_static_solid_scroll_clock = clock;
         }
         for (const Chunk& c : chunks) {
             c.room->clip_wnd = c.saved_clip_wnd;
@@ -699,16 +666,6 @@ CodeInjection g_decal_add_internal_cmp_global_weak_limit_injection{
     },
 };
 
-struct DecalClipBBox
-{
-    rf::Vector3 min;
-    rf::Vector3 max;
-    rf::GFace* faces; // linked through next[FACE_LIST_BBOX]
-    int field_1c;
-    DecalClipBBox* children[2];
-};
-static_assert(offsetof(DecalClipBBox, faces) == 0x18 && offsetof(DecalClipBBox, children) == 0x20);
-
 // Stock decal passes keep their room bbox worklist in a 1024-slot stack array with no bounds check,
 // filled with every detail room of up to two rooms: a parent owning ~1000 detail rooms (large
 // terrains) overwrote the return address. Same traversal, unbounded worklist. Neither pass nests
@@ -717,32 +674,32 @@ static_assert(offsetof(DecalClipBBox, faces) == 0x18 && offsetof(DecalClipBBox, 
 template<typename F>
 static void decal_for_each_room_bbox_face(rf::GDecal* decal, F&& fn)
 {
-    static std::vector<DecalClipBBox*> work;
+    static std::vector<rf::GBBox*> work;
     work.clear();
     try {
         for (rf::GRoom* room : {decal->room, decal->room2}) {
             if (!room) {
                 continue;
             }
-            work.push_back(reinterpret_cast<DecalClipBBox*>(room->bbox));
+            work.push_back(room->bbox);
             for (rf::GRoom* detail : room->detail_rooms) {
                 if (detail) {
-                    work.push_back(reinterpret_cast<DecalClipBBox*>(detail->bbox));
+                    work.push_back(detail->bbox);
                 }
             }
         }
         while (!work.empty()) {
-            DecalClipBBox* box = work.back();
+            rf::GBBox* box = work.back();
             work.pop_back();
-            if (!box || !AddrCaller{0x00507990}.c_call<bool>(&box->min, &box->max, &decal->bb_min, &decal->bb_max)) {
+            if (!box || !rf::bbox_overlap(&box->min, &box->max, &decal->bb_min, &decal->bb_max)) {
                 continue;
             }
-            for (DecalClipBBox* child : box->children) {
+            for (rf::GBBox* child : box->children) {
                 if (child) {
                     work.push_back(child);
                 }
             }
-            for (rf::GFace* face = box->faces; face; face = face->next[rf::FACE_LIST_BBOX]) {
+            for (rf::GFace* face = box->face_list.first(); face; face = face->next[rf::FACE_LIST_BBOX]) {
                 fn(face);
             }
         }
@@ -756,14 +713,13 @@ static void decal_for_each_room_bbox_face(rf::GDecal* decal, F&& fn)
 FunHook<void(rf::GDecal*)> g_decal_clip_to_geometry_hook{
     0x004D6910,
     [](rf::GDecal* decal) {
-        auto& decal_face_list_size = addr_as_ref<int>(0x009BB6F0);
-        if (decal_face_list_size > 0 || !decal->room) {
+        if (rf::g_decal_pass_list_a.size() > 0 || !decal->room) {
             g_decal_clip_to_geometry_hook.call_target(decal);
             return;
         }
         decal_for_each_room_bbox_face(decal, [decal](rf::GFace* face) {
-            if (!(face->attributes.flags & 0x10)) {
-                AddrCaller{0x004D6240}.c_call<void>(decal, face, 0);
+            if (!(face->attributes.flags & rf::FACE_SCROLL_TEXTURE)) {
+                rf::g_decal_clip_to_face(decal, face, false);
             }
         });
     },
@@ -777,18 +733,18 @@ CodeInjection g_decal_orient_room_faces_injection{
         if (!decal->room) {
             return;
         }
-        const float min_dot = addr_as_ref<float>(0x00589570);
+        const float min_dot = rf::g_decal_orient_min_dot;
         decal_for_each_room_bbox_face(decal, [decal, min_dot](rf::GFace* face) {
             const auto& attr = face->attributes;
-            if (attr.portal_id > 0 || attr.is_liquid() || (attr.flags & 0x10)) {
+            if (attr.portal_id > 0 || attr.is_liquid() || (attr.flags & rf::FACE_SCROLL_TEXTURE)) {
                 return;
             }
-            if (!(AddrCaller{0x0040A0B0}.this_call<double>(&face->plane.normal, &decal->orient.fvec) > min_dot)) {
+            if (!(rf::vector_dot_prod(&face->plane.normal, &decal->orient.fvec) > min_dot)) {
                 return;
             }
-            if (AddrCaller{0x004D60D0}.c_call<bool>(face, decal)) {
-                AddrCaller{0x004D7F70}.this_call<void>(&rf::g_decal_pass_list_b, face->plane.normal);
-                AddrCaller{0x0045EC40}.this_call<void>(&rf::g_decal_pass_list_a, face);
+            if (rf::g_decal_face_in_reach(face, decal)) {
+                rf::g_decal_pass_list_b_add_unique(face->plane.normal);
+                rf::g_decal_pass_list_a_add(face);
             }
         });
         regs.edi = decal;
@@ -1074,14 +1030,13 @@ CodeInjection level_release_sky_room_shutdown_patch{
 // The rooms g_solid_collect_visible_rooms_recursive 0x004D4860 lists for the frame. Stock holds 1024 with
 // no bounds check.
 static rf::GRoom* g_visible_rooms[8192];
-static auto& g_num_visible_rooms = addr_as_ref<int>(0x009BB57C);
 
 // Rooms past the end are left out of the list
 CodeInjection collect_visible_rooms_append_injection{
     0x004D48E3,
     [](auto& regs) {
-        if (g_num_visible_rooms < static_cast<int>(std::size(g_visible_rooms))) {
-            g_visible_rooms[g_num_visible_rooms++] = regs.edi;
+        if (rf::g_num_visible_rooms < static_cast<int>(std::size(g_visible_rooms))) {
+            g_visible_rooms[rf::g_num_visible_rooms++] = regs.edi;
         }
         regs.eip = 0x004D48F0;
     },

@@ -50,9 +50,6 @@ inline bool is_object_selected(CDedLevel* level, DedObject* obj)
 }
 
 // ─── Shared Alpine object-type machinery (Tier 2) ───────────────────────────
-// Per docs/PLAN_alpine_shared_machinery.md. Only the rope emitter uses these so far; the six
-// older types still carry their own copies and are migrated separately.
-
 // Keeps the stock UID generator ahead of a type's objects, which it cannot see.
 template<typename T>
 inline void alpine_ensure_uid(const std::vector<T*>& objects, int& uid)

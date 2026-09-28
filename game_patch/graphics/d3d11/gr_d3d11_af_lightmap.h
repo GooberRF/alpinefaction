@@ -3,12 +3,11 @@
 #include <cstdint>
 #include <vector>
 #include <d3d11.h>
+#include <common/ComPtr.h>
 
-namespace rf
+namespace alpine_lightmap
 {
-    struct GSolid;
-    struct GSurface;
-    struct Vector3;
+    struct ReadResult;
 }
 
 namespace gr::d3d11
@@ -18,62 +17,35 @@ namespace gr::d3d11
     // render mode a face gets still depends on whether it had a stock lightmap.
     constexpr int af_lightmap_batch_key = -2;
 
-    // Everything the solid builder needs to place one face's vertices in the atlas. chart < 0
-    // means this face has no alpine chart and keeps the stock lightmap UVs.
-    struct AfLightmapFace
+    // The Alpine Lightmaps atlas (t4), its GPU chart index (t5) and their sampler (s5).
+    class AfLightmapRenderer
     {
-        int chart = -1;
-        int axis_u = 0;
-        int axis_v = 0;
-        float scale_u = 0.0f;
-        float scale_v = 0.0f;
-        float add_u = 0.0f;
-        float add_v = 0.0f;
-        std::uint32_t lm_w = 0;
-        std::uint32_t lm_h = 0;
-        std::uint32_t surf_x = 0;
-        std::uint32_t surf_y = 0;
-        std::uint32_t k_u = 0;
-        std::uint32_t k_v = 0;
+    public:
+        AfLightmapRenderer(ComPtr<ID3D11Device> device, ComPtr<ID3D11DeviceContext> context);
+
+        // Replaces the atlas with `section`'s pages, decompressed to `blocks`; false leaves none.
+        bool upload(const alpine_lightmap::ReadResult& section, const std::vector<std::uint8_t>& blocks);
+        void release();
+        void bind();
+
+        // Charts are handed out only while this is true, so a cache rebuilt after release() never
+        // addresses an atlas that is not bound.
+        bool live() const
+        {
+            return live_;
+        }
+
+    private:
+        bool create_resources(const alpine_lightmap::ReadResult& section, const std::vector<std::uint8_t>& payload,
+                              const std::vector<std::uint32_t>& index);
+
+        ComPtr<ID3D11Device> device_;
+        ComPtr<ID3D11DeviceContext> context_;
+        ComPtr<ID3D11Texture2D> pages_tex_;
+        ComPtr<ID3D11ShaderResourceView> pages_srv_;
+        ComPtr<ID3D11Buffer> index_buf_;
+        ComPtr<ID3D11ShaderResourceView> index_srv_;
+        ComPtr<ID3D11SamplerState> sampler_;
+        bool live_ = false;
     };
-
-    // With no stock lightmaps section, the engine's synthesised page's bitmap handle, else -1.
-    // Geomod pages created later are real.
-    int af_lightmap_synthesized_page_bm();
-
-    // Surface charts are positional over the static solid's geometry::surfaces, mover charts over the
-    // surfaces of a mover solid their record matched; out.chart is the af_lm_index chart record.
-    bool af_lightmap_face_setup(rf::GSolid* solid, int surface_index, AfLightmapFace& out);
-    void af_lightmap_face_texel(const AfLightmapFace& face, const rf::Vector3& pos, float& out_u,
-                                float& out_v);
-
-    struct AfLightmapConstants
-    {
-        float enabled;
-        float page_size;
-        float tile_step;
-        float gutter;
-    };
-    AfLightmapConstants af_lightmap_constants();
-
-    // The terrain chart the terrain pixel shader samples: its af_lm_index record and its XZ mapping.
-    struct AfTerrainChart
-    {
-        int chart;
-        float origin_x;
-        float origin_z;
-        float texel_size;
-    };
-    // For terrain `terrain_index` (alpine_terrain_get_all order), when the atlas is live and the level
-    // carries a chart af_lightmap_resolve_terrains matched to it.
-    bool af_lightmap_terrain_chart(int terrain_index, AfTerrainChart& out);
-
-    void af_lightmap_bind(ID3D11Device* device, ID3D11DeviceContext* context);
-
-    // Defined in gr_d3d11_hooks.cpp, which owns the renderer instance. Null before the renderer
-    // exists and after it is torn down.
-    ID3D11Device* af_lightmap_device();
-
-    bool af_lightmap_upload(ID3D11Device* device, const std::vector<std::uint8_t>& blocks);
-    void af_lightmap_release_gpu();
 }

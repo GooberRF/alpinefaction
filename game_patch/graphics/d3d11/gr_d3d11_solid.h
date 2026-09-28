@@ -6,6 +6,7 @@
 #include <d3d11.h>
 #include <common/ComPtr.h>
 #include "gr_d3d11_shader.h"
+#include "gr_d3d11_terrain.h"
 
 namespace rf
 {
@@ -19,6 +20,7 @@ namespace gr::d3d11
     class StateManager;
     class DynamicGeometryRenderer;
     class RenderContext;
+    class AfLightmapRenderer;
     class GRenderCacheBuilder;
     class RoomRenderCache;
     class GRenderCache;
@@ -31,7 +33,7 @@ namespace gr::d3d11
     class SolidRenderer
     {
     public:
-        SolidRenderer(ComPtr<ID3D11Device> device, ShaderManager& shader_manager, StateManager& state_manager, DynamicGeometryRenderer& dyn_geo_renderer, RenderContext& render_context);
+        SolidRenderer(ComPtr<ID3D11Device> device, ShaderManager& shader_manager, StateManager& state_manager, DynamicGeometryRenderer& dyn_geo_renderer, RenderContext& render_context, AfLightmapRenderer& af_lightmap_renderer);
         ~SolidRenderer();
         void render_solid(rf::GSolid* solid, rf::GRoom** rooms, int num_rooms);
         void render_movable_solid(rf::GSolid* solid, const rf::Vector3& pos, const rf::Matrix3& orient, bool include_alpha);
@@ -44,6 +46,10 @@ namespace gr::d3d11
         // Drops the cache a detail room's geo_cache points at, leaving it to be rebuilt.
         void release_detail_room_cache(rf::GRoom* room);
         void reset_cache_after_boolean();
+        void release_terrain_gpu()
+        {
+            terrain_renderer_.release();
+        }
         void page_in_solid(rf::GSolid* solid);
         void page_in_movable_solid(rf::GSolid* solid)
         {
@@ -74,6 +80,7 @@ namespace gr::d3d11
         ComPtr<ID3D11PixelShader> pixel_shader_no_gas_;
         ComPtr<ID3D11PixelShader> terrain_pixel_shader_;
         ComPtr<ID3D11PixelShader> terrain_pixel_shader_no_gas_;
+        TerrainRenderer terrain_renderer_;
         // Terrain whose inputs are bound this pass (-1 for none), and the crater texture bound with it
         int bound_terrain_ = -1;
         int bound_crater_texture_ = no_crater_texture;
@@ -86,6 +93,7 @@ namespace gr::d3d11
         std::vector<rf::GRoom*> dynamic_decal_rooms_;
         DynamicGeometryRenderer& dyn_geo_renderer_;
         RenderContext& render_context_;
+        AfLightmapRenderer& af_lightmap_renderer_;
         std::vector<std::unique_ptr<RoomRenderCache>> room_cache_;
         std::vector<std::unique_ptr<GRenderCache>> detail_render_cache_;
         std::unordered_map<rf::GSolid*, std::unique_ptr<GRenderCache>> mover_render_cache_;
