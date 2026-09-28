@@ -1800,7 +1800,7 @@ static void build_vote_options_blob(std::vector<uint8_t>& blob)
             blob_u8(blob, static_cast<uint8_t>(i));
             blob_u8(blob, multi_game_type_is_team_type(game_type) ? AF_VOTE_GAMETYPE_FLAG_TEAM : 0);
             blob_str(blob, multi_game_type_name(game_type));
-            blob_i32(blob, g_alpine_server_config_active_rules.get_score_limit(game_type).value_or(0));
+            blob_i32(blob, build_derived_server_rules(game_type, {}).get_score_limit(game_type).value_or(0));
         });
     }
 
