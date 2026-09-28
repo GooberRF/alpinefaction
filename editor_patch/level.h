@@ -271,12 +271,6 @@ struct GFace
         AddrCaller{0x0048a700}.c_call(face);
     }
 
-    // FUN_00484230: generate next unique face/brush UID (delegates to ::generate_uid in vtypes.h)
-    static int generate_uid()
-    {
-        return ::generate_uid();
-    }
-
     // FUN_0048abd0: pool-allocate a GFaceVertex and append it to the circular edge loop
     GFaceVertex* add_vertex(GVertex* vertex, float u, float v, float lm_u, float lm_v)
     {
@@ -302,6 +296,17 @@ static_assert(offsetof(GFace, edge_loop) == 0x40);
 static_assert(offsetof(GFace, which_room) == 0x44);
 static_assert(offsetof(GFace, next_solid) == 0x54);
 
+// Scrolling texture record. In brush geometry it is keyed by the owning face's face_id
+// (Face Properties FUN_00402d60, Build Geometry phase 1 in FUN_004399b0).
+struct GTextureMover
+{
+    int face_id;
+    float u_pan_speed;
+    float v_pan_speed;
+    VArray<GFace*> faces;
+};
+static_assert(sizeof(GTextureMover) == 0x18);
+
 // Editor-side GSolid partial layout (matches stock RED.exe / RF.exe GSolid)
 // Full game-side definition with ALPINE_FACTION extensions: game_patch/rf/geometry.h
 struct GSolid
@@ -321,6 +326,8 @@ struct GSolid
     char _pad_9C[0xCC - 0x9C];  // +0x9C  unknown fields
     VArray<GVertex*> vertex_selection; // +0xCC  selected vertices in vertex mode
     VArray<GFace*> face_selection;  // +0xD8  selected faces in face mode
+    char _pad_E4[0x2F4 - 0xE4];  // +0xE4  unknown fields
+    VArray<GTextureMover*> texture_movers; // +0x2F4
 
     // FUN_00486bd0: remove face from solid's face linked list (thiscall on face_list at +0x70)
     void remove_face(GFace* face)
@@ -371,6 +378,7 @@ static_assert(offsetof(GSolid, face_list_head) == 0x70);
 static_assert(offsetof(GSolid, all_rooms) == 0x90);
 static_assert(offsetof(GSolid, vertex_selection) == 0xCC);
 static_assert(offsetof(GSolid, face_selection) == 0xD8);
+static_assert(offsetof(GSolid, texture_movers) == 0x2F4);
 
 // Brush state enum (BrushNode::state at +0x48)
 // Determined via byte-pattern searches and cross-referencing comparison/assignment sites:

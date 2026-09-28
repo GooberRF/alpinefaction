@@ -112,6 +112,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Remove the level editor warning about levels with too many decals
 - Fix `Owner_Gate`, `Add_Link`, `Clone_Entity`, `Valid_Gate`, the trigger of `Inside_Gate`, and the eye anchor of `Set_Skybox` keeping the old UID when the object they reference is renumbered by a group import or pasted along with them in the level editor
 - Fix `Score Limit Override` mutator not working in Wipeout
+- Fix faces created by `Split` and `Bridge` in the level editor sharing an ID, which made them share scrolling texture settings and could map geoable or breakable brushes to the wrong room when saving before rebuilding
 
 [@is-this-c](https://github.com/is-this-c)
 - Let `Caps Lock` capitalize
