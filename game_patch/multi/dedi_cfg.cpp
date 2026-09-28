@@ -2386,11 +2386,17 @@ void load_and_print_alpine_dedicated_server_config(std::string ads_config_name, 
 
     apply_alpine_dedicated_server_rules(netgame, cfg.base_rules); // base rules
 
-    if (g_alpine_server_config.dynamic_rotation) {
+    if (g_alpine_server_config.dynamic_rotation && !cfg.levels.empty()) {
         shuffle_level_array();
     }
     else {
         rebuild_rotation_from_cfg();
+    }
+
+    if (netgame.levels.empty()) {
+        rf::console::print("----> No valid level files were specified!\n");
+        rf::console::print("----> Using Glass House as the level rotation...\n\n");
+        netgame.levels.add("glass_house.rfl");
     }
 
     std::string output{};
@@ -2683,12 +2689,6 @@ void launch_alpine_dedicated_server() {
     }
 
     load_and_print_alpine_dedicated_server_config(g_ads_config_name, true);
-
-    if (netgame.levels.size() <= 0) {
-        rf::console::print("----> No valid level files were specified!\n");
-        rf::console::print("----> Launching server on Glass House...\n\n");
-        netgame.levels.add("glass_house.rfl");
-    }
 
     g_alpine_server_config_active_rules = cfg.base_rules; // initialize rules with base in case it is checked before first level loads
     init_alpine_dedicated_server();

@@ -1008,6 +1008,10 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.show_awards = std::stoi(settings["ShowAwards"]);
         processed_keys.insert("ShowAwards");
     }
+    if (settings.count("ShowDominationMsgs")) {
+        g_alpine_game_config.show_domination_msgs = std::stoi(settings["ShowDominationMsgs"]);
+        processed_keys.insert("ShowDominationMsgs");
+    }
     if (settings.count("SprayDisplay")) {
         g_alpine_game_config.spray_display = std::stoi(settings["SprayDisplay"]);
         processed_keys.insert("SprayDisplay");
@@ -1617,6 +1621,7 @@ void alpine_player_settings_save(rf::Player* player)
     file << "ShowLocationPings=" << g_alpine_game_config.show_location_pings << "\n";
     file << "PlayHitsounds=" << g_alpine_game_config.play_hit_sounds << "\n";
     file << "ShowAwards=" << g_alpine_game_config.show_awards << "\n";
+    file << "ShowDominationMsgs=" << g_alpine_game_config.show_domination_msgs << "\n";
     file << "SprayDisplay=" << g_alpine_game_config.spray_display << "\n";
     file << "SpraySelection=" << g_alpine_game_config.selected_spray_index << "\n";
     file << "KillfeedEnabled=" << g_alpine_game_config.killfeed_enabled << "\n";

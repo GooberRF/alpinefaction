@@ -612,7 +612,7 @@ int LauncherApp::Run()
 
 bool LauncherApp::ValidateAFLinkToken(const std::string& fflink_token)
 {
-    xlog::info("Attempting to validate FactionFiles token: {}...", fflink_token);
+    xlog::info("Attempting to validate FactionFiles token...");
 
     std::string verify_url = "https://link.factionfiles.com/aflauncher/v1/link_check.php?token=" + fflink_token;
     //xlog::info("AFLink validity check URL: {}", verify_url);

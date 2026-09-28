@@ -77,9 +77,13 @@ void load_next_level()
 
 void load_prev_level()
 {
+    if (rf::netgame.levels.empty()) {
+        rf::console::print("Level rotation is empty");
+        return;
+    }
     clear_manual_rules_override();
     rf::netgame.current_level_index--;
-    if (rf::netgame.current_level_index < 0) {
+    if (rf::netgame.current_level_index < 0 || rf::netgame.current_level_index >= rf::netgame.levels.size()) {
         rf::netgame.current_level_index = rf::netgame.levels.size() - 1;
     }
     if (g_prev_level.empty()) {

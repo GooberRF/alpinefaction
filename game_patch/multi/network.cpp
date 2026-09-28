@@ -558,25 +558,22 @@ static void handle_rcon_request_packet(const uint8_t* pkt, size_t len, const rf:
 
     const auto lookup = lookup_rcon_password(password);
     if (!lookup.profile_index) {
-        // A wrong password from an address that already holds an authenticated rcon session is not
-        // a legitimate re-auth. Do not revoke the live session or count it toward the lockout.
-        if (g_rcon_access_by_addr.find(attempt_key) != g_rcon_access_by_addr.end()) {
-            rf::console::print("{} sent an incorrect rcon password while already holding rcon access; ignoring.", rcon_player_name(addr));
-            return;
-        }
         const int failures = ++g_rcon_failed_attempts_by_addr[attempt_key];
-        g_rcon_access_by_addr.erase(addr_key(addr));
-        set_rcon_holder_flag(addr, false);
-        rf::console::print("{} requested rcon with password '{}', DENIED because the password is not correct for any profile.", rcon_player_name(addr), password);
+        // A wrong password from a current holder counts toward the lockout but doesn't revoke the live session.
+        if (g_rcon_access_by_addr.find(attempt_key) != g_rcon_access_by_addr.end()) {
+            rf::console::print("{} sent an incorrect rcon password while already holding rcon access; counted toward lockout, session kept.", rcon_player_name(addr));
+            send_rcon_feedback(addr, "Rcon access denied: wrong password (current session kept).");
+        }
+        else {
+            set_rcon_holder_flag(addr, false);
+            rf::console::print("{} requested rcon with password '{}', DENIED because the password is not correct for any profile.", rcon_player_name(addr), password);
+            send_rcon_feedback(addr, "Rcon access denied: wrong password.");
+        }
         if (failures == kRconMaxFailedAttempts) {
             rf::console::print("{} reached {} failed rcon password attempts and is now locked out of rcon until they reconnect.", rcon_player_name(addr), kRconMaxFailedAttempts);
         }
-        send_rcon_feedback(addr, "Rcon access denied: wrong password.");
         return;
     }
-
-    // Successful authentication: reset the brute-force throttle for this connection.
-    g_rcon_failed_attempts_by_addr.erase(attempt_key);
 
     const uint64_t key = addr_key(addr);
     // ensure a client can only hold a single rcon profile at a time
@@ -1071,6 +1068,10 @@ FunHook<MultiIoPacketHandler> process_team_change_packet_hook{
     0x004825B0,
     [](char* data, const rf::NetAddr& addr) {
         // server-side and client-side
+        size_t remaining;
+        if (multi_io_subpacket_remaining(data, remaining) && remaining < 2) {
+            return;
+        }
         if (rf::is_server) {
             verify_player_id_in_packet(&data[0], addr, "team_change");
             data[1] = std::clamp(data[1], '\0', '\1'); // team validation (fixes "green team")

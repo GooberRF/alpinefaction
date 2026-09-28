@@ -520,6 +520,10 @@ std::pair<std::string_view, std::string_view> strip_by_space(std::string_view st
 
 void handle_next_map_command(rf::Player* player)
 {
+    if (rf::netgame.levels.empty()) {
+        af_send_automated_chat_msg("This server has no level rotation.", player);
+        return;
+    }
     int next_idx = (rf::netgame.current_level_index + 1) % rf::netgame.levels.size();
     rf::String next_level_filename = rf::netgame.levels[next_idx];
     const uint32_t version = get_level_file_version(next_level_filename).value_or(0);
@@ -2645,6 +2649,7 @@ void remove_ready_player_silent(rf::Player* player)
     // handled by remove_ready_player instead.
     g_match_info.ready_players_red.erase(player);
     g_match_info.ready_players_blue.erase(player);
+    g_match_info.active_match_players.erase(player);
 }
 
 void remove_ready_player(rf::Player* player)
