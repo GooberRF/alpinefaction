@@ -5,10 +5,12 @@
 #include <cstring>
 #include <algorithm>
 #include <map>
+#include <new>
 #include <set>
 #include <vector>
 #include <string>
 #include <xlog/xlog.h>
+#include <common/scope_guard.h>
 #include <common/utils/string-utils.h>
 #include <common/version/version.h>
 #include <patch_common/CodeInjection.h>
@@ -24,6 +26,9 @@
 #include "vehicle_factory.h"
 #include "projection_camera.h"
 #include "rope_emitter.h"
+#include "terrain.h"
+#include "terrain_preview.h"
+#include "event.h"
 #include "mfc_types.h"
 #include "level.h"
 #include "vtypes.h"
@@ -65,6 +70,7 @@ static std::vector<CopyLinkEntry> g_copy_weather_region_entries;
 static std::vector<CopyLinkEntry> g_copy_vehicle_factory_entries;
 static std::vector<CopyLinkEntry> g_copy_projection_camera_entries;
 static std::vector<CopyLinkEntry> g_copy_rope_emitter_entries;
+static std::vector<CopyLinkEntry> g_copy_terrain_entries;
 
 // Set of all UIDs that were part of the copied selection (for filtering external links)
 static std::set<int> g_copy_all_uids;
@@ -78,7 +84,62 @@ static bool is_alpine_type(DedObjectType type)
            type == DedObjectType::DED_WEATHER_REGION ||
            type == DedObjectType::DED_VEHICLE_FACTORY ||
            type == DedObjectType::DED_PROJECTION_CAMERA ||
-           type == DedObjectType::DED_ROPE_EMITTER;
+           type == DedObjectType::DED_ROPE_EMITTER ||
+           type == DedObjectType::DED_TERRAIN;
+}
+
+// -1 means unset and is never remapped.
+static bool remap_uid(int& uid, const std::map<int, int>& uid_map)
+{
+    if (uid == -1)
+        return false;
+    auto it = uid_map.find(uid);
+    if (it == uid_map.end())
+        return false;
+    uid = it->second;
+    return true;
+}
+
+// Event fields holding an object UID need to be remapped when UIDs are renumbered.
+static int remap_event_uid_fields(DedObject* const* objects, int count,
+                                  const std::map<int, int>& uid_map)
+{
+    std::set<int> new_trigger_uids;
+    for (int i = 0; i < count; i++) {
+        if (objects[i] && objects[i]->type == DedObjectType::DED_TRIGGER)
+            new_trigger_uids.insert(objects[i]->uid);
+    }
+
+    int remapped = 0;
+    auto remap = [&](int& uid, bool trigger_only) {
+        int mapped = uid;
+        if (remap_uid(mapped, uid_map) && (!trigger_only || new_trigger_uids.count(mapped))) {
+            uid = mapped;
+            remapped++;
+        }
+    };
+    for (int i = 0; i < count; i++) {
+        if (!objects[i] || objects[i]->type != DedObjectType::DED_EVENT)
+            continue;
+        auto* event = static_cast<DedEvent*>(objects[i]);
+        switch (int_to_af_ded_event(event->event_type)) {
+            case AlpineDedEventID::Inside_Gate:
+                remap(event->int1, true);
+                break;
+            case AlpineDedEventID::Clone_Entity:
+            case AlpineDedEventID::Add_Link:
+            case AlpineDedEventID::Valid_Gate:
+            case AlpineDedEventID::Owner_Gate:
+                remap(event->int1, false);
+                break;
+            case AlpineDedEventID::Set_Skybox:
+                remap(event->int2, false);
+                break;
+            default:
+                break;
+        }
+    }
+    return remapped;
 }
 
 // Capture link snapshot from the current selection before copy processes it.
@@ -95,6 +156,7 @@ static void capture_copy_link_snapshot()
     g_copy_vehicle_factory_entries.clear();
     g_copy_projection_camera_entries.clear();
     g_copy_rope_emitter_entries.clear();
+    g_copy_terrain_entries.clear();
     g_copy_all_uids.clear();
 
     auto* level = CDedLevel::Get();
@@ -150,6 +212,9 @@ static void capture_copy_link_snapshot()
             case DedObjectType::DED_ROPE_EMITTER:
                 g_copy_rope_emitter_entries.push_back(std::move(entry));
                 break;
+            case DedObjectType::DED_TERRAIN:
+                g_copy_terrain_entries.push_back(std::move(entry));
+                break;
             default:
                 g_copy_stock_entries.push_back(std::move(entry));
                 break;
@@ -162,10 +227,12 @@ static void capture_copy_link_snapshot()
 //   - stock→alpine links
 //   - alpine→stock links
 //   - alpine→alpine links
+//   - event UID fields (remap_event_uid_fields) and bolt emitter targets, which stock paste never
+//     touches
 static void fix_paste_links(CDedLevel* level, int stock_count, int mesh_count,
                             int note_count, int corona_count, int bag_count,
                             int weather_region_count, int vehicle_factory_count,
-                            int projection_camera_count, int rope_emitter_count)
+                            int projection_camera_count, int rope_emitter_count, int terrain_count)
 {
     // Verify counts match the snapshot (mismatch means the clipboard state diverged).
     // This is the safety guard for the selection-ordering assumption: if anything is
@@ -178,10 +245,11 @@ static void fix_paste_links(CDedLevel* level, int stock_count, int mesh_count,
         weather_region_count != static_cast<int>(g_copy_weather_region_entries.size()) ||
         vehicle_factory_count != static_cast<int>(g_copy_vehicle_factory_entries.size()) ||
         projection_camera_count != static_cast<int>(g_copy_projection_camera_entries.size()) ||
-        rope_emitter_count != static_cast<int>(g_copy_rope_emitter_entries.size())) {
+        rope_emitter_count != static_cast<int>(g_copy_rope_emitter_entries.size()) ||
+        terrain_count != static_cast<int>(g_copy_terrain_entries.size())) {
         xlog::warn("[AlpineObj] Paste link fixup skipped: count mismatch "
             "(stock {}/{}, mesh {}/{}, note {}/{}, corona {}/{}, bag {}/{}, weather region {}/{}, "
-            "vehicle factory {}/{}, projection camera {}/{}, rope emitter {}/{})",
+            "vehicle factory {}/{}, projection camera {}/{}, rope emitter {}/{}, terrain {}/{})",
             stock_count, g_copy_stock_entries.size(),
             mesh_count, g_copy_mesh_entries.size(),
             note_count, g_copy_note_entries.size(),
@@ -190,18 +258,17 @@ static void fix_paste_links(CDedLevel* level, int stock_count, int mesh_count,
             weather_region_count, g_copy_weather_region_entries.size(),
             vehicle_factory_count, g_copy_vehicle_factory_entries.size(),
             projection_camera_count, g_copy_projection_camera_entries.size(),
-            rope_emitter_count, g_copy_rope_emitter_entries.size());
+            rope_emitter_count, g_copy_rope_emitter_entries.size(),
+            terrain_count, g_copy_terrain_entries.size());
         return;
     }
 
-    // Nothing to fix if there are no alpine objects involved
     bool has_alpine = (mesh_count + note_count + corona_count + bag_count + weather_region_count
-        + vehicle_factory_count + projection_camera_count + rope_emitter_count) > 0;
-    if (!has_alpine) return;
+        + vehicle_factory_count + projection_camera_count + rope_emitter_count + terrain_count) > 0;
 
     auto& sel = level->selection;
     int total = stock_count + mesh_count + note_count + corona_count + bag_count + weather_region_count
-        + vehicle_factory_count + projection_camera_count + rope_emitter_count;
+        + vehicle_factory_count + projection_camera_count + rope_emitter_count + terrain_count;
     if (sel.size < total) return;
 
     // Build old_uid → new_uid mapping from all entry lists.
@@ -228,6 +295,26 @@ static void fix_paste_links(CDedLevel* level, int stock_count, int mesh_count,
     const int rope_sel_start = idx;
     for (int i = 0; i < rope_emitter_count; i++, idx++)
         uid_map[g_copy_rope_emitter_entries[i].original_uid] = sel.data_ptr[idx]->uid;
+    for (int i = 0; i < terrain_count; i++, idx++)
+        uid_map[g_copy_terrain_entries[i].original_uid] = sel.data_ptr[idx]->uid;
+
+    // An event UID field follows its referent only when that was pasted too; otherwise it keeps
+    // naming the original, like a link to an object outside the copy.
+    remap_event_uid_fields(sel.data_ptr, stock_count, uid_map);
+
+    // Stock paste copies a bolt's target unchanged. Adding the clone already synced its viewport bolt,
+    // so only a retargeted one needs another sync.
+    for (int i = 0; i < stock_count; i++) {
+        DedObject* obj = sel.data_ptr[i];
+        if (!obj || obj->type != DedObjectType::DED_BOLT_EMITTER)
+            continue;
+        auto* bolt = static_cast<DedBoltEmitter*>(obj);
+        if (remap_uid(bolt->target_uid, uid_map))
+            bolt->sync_preview();
+    }
+
+    // Stock paste already handled stock->stock links
+    if (!has_alpine) return;
 
     // Apply links from the snapshot to each pasted object
     auto apply_links = [&](const std::vector<CopyLinkEntry>& entries, int count, int& sel_idx) {
@@ -266,6 +353,7 @@ static void fix_paste_links(CDedLevel* level, int stock_count, int mesh_count,
     apply_links(g_copy_vehicle_factory_entries, vehicle_factory_count, idx);
     apply_links(g_copy_projection_camera_entries, projection_camera_count, idx);
     apply_links(g_copy_rope_emitter_entries, rope_emitter_count, idx);
+    apply_links(g_copy_terrain_entries, terrain_count, idx);
 
     // A rope's far anchor is a UID reference outside the links array, so it needs the same
     // translation. Pasting a rope without its target leaves the reference pointing at the
@@ -273,16 +361,13 @@ static void fix_paste_links(CDedLevel* level, int stock_count, int mesh_count,
     for (int i = 0; i < rope_emitter_count; i++) {
         DedObject* obj = sel.data_ptr[rope_sel_start + i];
         if (!obj || obj->type != DedObjectType::DED_ROPE_EMITTER) continue;
-        auto* rope = static_cast<DedRopeEmitter*>(obj);
-        auto it = uid_map.find(rope->target_uid);
-        if (it != uid_map.end())
-            rope->target_uid = it->second;
+        remap_uid(static_cast<DedRopeEmitter*>(obj)->target_uid, uid_map);
     }
 
     xlog::trace("[AlpineObj] Fixed paste links for {} stock + {} mesh + {} note + {} corona + {} bag "
-        "+ {} weather region + {} vehicle factory + {} projection camera + {} rope emitter objects",
+        "+ {} weather region + {} vehicle factory + {} projection camera + {} rope emitter + {} terrain objects",
         stock_count, mesh_count, note_count, corona_count, bag_count, weather_region_count,
-        vehicle_factory_count, projection_camera_count, rope_emitter_count);
+        vehicle_factory_count, projection_camera_count, rope_emitter_count, terrain_count);
 }
 
 // ─── UID Generation ─────────────────────────────────────────────────────────
@@ -304,6 +389,7 @@ FunHook<int()> alpine_generate_uid_hook{
             vehicle_factory_ensure_uid(uid);
             projection_camera_ensure_uid(uid);
             rope_emitter_ensure_uid(uid);
+            terrain_ensure_uid(uid);
         }
         return uid;
     },
@@ -363,6 +449,12 @@ CodeInjection alpine_properties_patch{
             regs.eip = 0x00402293;
             return;
         }
+        if (regs.eax == static_cast<int>(DedObjectType::DED_TERRAIN)) {
+            auto* level = reinterpret_cast<CDedLevel*>(static_cast<uintptr_t>(regs.esi));
+            ShowTerrainPropertiesDialog(level);
+            regs.eip = 0x00402293;
+            return;
+        }
     },
 };
 
@@ -388,6 +480,7 @@ CodeInjection alpine_tree_patch{
         vehicle_factory_tree_populate(tree, master_groups, level);
         projection_camera_tree_populate(tree, master_groups, level);
         rope_emitter_tree_populate(tree, master_groups, level);
+        terrain_tree_populate(tree, master_groups, level);
         tree->sort_children(master_groups);
     },
 };
@@ -414,6 +507,7 @@ CodeInjection alpine_pick_patch{
         vehicle_factory_pick(level, param1, param2);
         projection_camera_pick(level, param1, param2);
         rope_emitter_pick(level, param1, param2);
+        terrain_pick(level, param1, param2);
     },
 };
 
@@ -464,6 +558,9 @@ CodeInjection alpine_click_pick_patch{
 
             // Check rope emitter objects using fixed screen radius
             DedRopeEmitter* best_rope_emitter = rope_emitter_click_pick(level, click_x, click_y);
+
+            // Check terrain objects by their origin handle using fixed screen radius
+            DedTerrain* best_terrain = terrain_click_pick(level, click_x, click_y);
 
             // Determine best Alpine hit
             DedObject* best_alpine = nullptr;
@@ -557,6 +654,25 @@ CodeInjection alpine_click_pick_patch{
                 }
             }
 
+            if (best_terrain) {
+                const Vector3 icon = terrain_icon_pos(*best_terrain);
+                float terrain_pos[3] = {icon.x, icon.y, icon.z};
+                float tsx = 0.0f, tsy = 0.0f;
+                if (project_to_screen_2d(terrain_pos, &tsx, &tsy)) {
+                    float tdx = tsx - click_x, tdy = tsy - click_y;
+                    float terrain_dist = tdx * tdx + tdy * tdy;
+                    if (!best_alpine || terrain_dist < best_dist_sq) {
+                        best_alpine = static_cast<DedObject*>(best_terrain);
+                        best_dist_sq = terrain_dist;
+                    }
+                }
+            }
+
+            // Nothing with a handle under the cursor: fall back to a terrain surface.
+            if (!best_alpine) {
+                best_alpine = terrain_surface_pick(*level, click_x, click_y);
+            }
+
             if (best_alpine) {
                 uint8_t shift = *reinterpret_cast<uint8_t*>(esp_val + 0x18);
                 if (!shift) {
@@ -596,7 +712,12 @@ CodeInjection alpine_click_pick_patch{
 // the link snapshot before stock copy processes the selection.
 CodeInjection alpine_copy_begin_hook{
     0x00412e20,
-    [](auto& /*regs*/) {
+    [](auto& regs) {
+        // A texture-mode copy leaves stock's object clipboard alone, so the Alpine clipboards and the
+        // link snapshot must survive it too or the next object paste loses its Alpine side.
+        auto* level = reinterpret_cast<CDedLevel*>(static_cast<uintptr_t>(regs.ecx));
+        if (level->edit_mode == DedEditMode::Texture)
+            return;
         mesh_clear_clipboard();
         note_clear_clipboard();
         corona_clear_clipboard();
@@ -605,6 +726,7 @@ CodeInjection alpine_copy_begin_hook{
         vehicle_factory_clear_clipboard();
         projection_camera_clear_clipboard();
         rope_emitter_clear_clipboard();
+        terrain_clear_clipboard();
         capture_copy_link_snapshot();
     },
 };
@@ -656,6 +778,11 @@ CodeInjection alpine_copy_hook{
             rope_emitter_copy_object(source);
             regs.eip = 0x00412edb;
         }
+        else if (source && source->type == DedObjectType::DED_TERRAIN) {
+            regs.ebx = reinterpret_cast<uintptr_t>(source);
+            terrain_copy_object(source);
+            regs.eip = 0x00412edb;
+        }
     },
 };
 
@@ -668,6 +795,9 @@ static void __fastcall alpine_paste_wrapper(void* ecx_level, void* /*edx_unused*
     // Stock paste: clones stock clipboard entries, assigns new UIDs, remaps stock→stock links.
     // After this, selection contains newly pasted stock objects in clipboard order.
     level->paste_objects();
+    // Stock pastes a copied face texture in texture mode and no objects, so neither do we.
+    if (level->edit_mode == DedEditMode::Texture)
+        return;
     int stock_count = level->selection.size;
 
     // Alpine paste: clone from alpine-specific clipboards and add to selection.
@@ -700,9 +830,14 @@ static void __fastcall alpine_paste_wrapper(void* ecx_level, void* /*edx_unused*
     int rope_emitter_count = level->selection.size - stock_count - mesh_count - note_count
         - corona_count - bag_count - weather_region_count - vehicle_factory_count - projection_camera_count;
 
+    terrain_paste_objects(level);
+    int terrain_count = level->selection.size - stock_count - mesh_count - note_count
+        - corona_count - bag_count - weather_region_count - vehicle_factory_count - projection_camera_count
+        - rope_emitter_count;
+
     // Fix links that the stock paste missed (involving alpine object types)
     fix_paste_links(level, stock_count, mesh_count, note_count, corona_count, bag_count,
-        weather_region_count, vehicle_factory_count, projection_camera_count, rope_emitter_count);
+        weather_region_count, vehicle_factory_count, projection_camera_count, rope_emitter_count, terrain_count);
 }
 
 // ─── Delete / Cut ───────────────────────────────────────────────────────────
@@ -718,9 +853,9 @@ CodeInjection alpine_delete_mode_patch{
         auto esp_val = static_cast<uintptr_t>(regs.esp);
         auto param_2 = *reinterpret_cast<int*>(esp_val + 4);
         auto* level = reinterpret_cast<CDedLevel*>(static_cast<uintptr_t>(regs.ecx));
-        auto mode = *reinterpret_cast<int*>(reinterpret_cast<uintptr_t>(level) + 0xf8);
-        g_alpine_delete_mode = (mode == 4 && param_2 == 1);
-        g_alpine_cut_mode = (mode == 4 && param_2 == 0);
+        const bool object_mode = level->edit_mode == DedEditMode::Object;
+        g_alpine_delete_mode = (object_mode && param_2 == 1);
+        g_alpine_cut_mode = (object_mode && param_2 == 0);
     },
 };
 
@@ -754,6 +889,9 @@ CodeInjection alpine_paste_finalize_patch{
         }
         else if (obj && obj->type == DedObjectType::DED_ROPE_EMITTER) {
             rope_emitter_handle_delete_or_cut(obj);
+        }
+        else if (obj && obj->type == DedObjectType::DED_TERRAIN) {
+            terrain_handle_delete_or_cut(obj);
         }
     },
 };
@@ -826,6 +964,13 @@ CodeInjection alpine_undo_readd_patch{
                 props.rope_emitter_objects.push_back(rope);
             }
         }
+        else if (obj->type == DedObjectType::DED_TERRAIN) {
+            auto* terrain = static_cast<DedTerrain*>(obj);
+            if (std::find(props.terrain_objects.begin(), props.terrain_objects.end(), terrain)
+                == props.terrain_objects.end()) {
+                props.terrain_objects.push_back(terrain);
+            }
+        }
     },
 };
 
@@ -862,6 +1007,7 @@ CodeInjection alpine_delete_patch{
         vehicle_factory_handle_delete_selection(level);
         projection_camera_handle_delete_selection(level);
         rope_emitter_handle_delete_selection(level);
+        terrain_handle_delete_selection(level);
     },
 };
 
@@ -880,12 +1026,14 @@ CodeInjection alpine_object_tree_patch{
         vehicle_factory_tree_add_object_type(tree);
         projection_camera_tree_add_object_type(tree);
         rope_emitter_tree_add_object_type(tree);
+        terrain_tree_add_object_type(tree);
         tree->sort_children(static_cast<int>(reinterpret_cast<intptr_t>(TVI_ROOT)));
     },
 };
 
 // Track which Alpine object type the tree view is creating.
-static int g_alpine_create_type = 0; // 0=Mesh, 2=Note, 3=Corona, 4=Bag, 5=Weather Region, 6=Vehicle Factory, 7=Projection Camera, 8=Rope Emitter
+// 0=Mesh, 2=Note, 3=Corona, 4=Bag, 5=Weather Region, 6=Vehicle Factory, 7=Projection Camera, 8=Rope Emitter, 9=Terrain
+static int g_alpine_create_type = 0;
 
 // Hook factory FUN_00442a40 to detect Alpine object types by tree item text.
 int __fastcall alpine_factory_hooked(void* ecx_panel, void* /*edx*/, void* tree_item);
@@ -927,6 +1075,9 @@ int __fastcall alpine_factory_hooked(void* ecx_panel, void* edx, void* tree_item
         else if (strcmp(text, "Rope Emitter") == 0) {
             g_alpine_create_type = 8;
         }
+        else if (strcmp(text, "Terrain") == 0) {
+            g_alpine_create_type = 9;
+        }
     }
 
     return alpine_factory_hook.call_target(ecx_panel, edx, tree_item);
@@ -959,6 +1110,9 @@ CodeInjection alpine_create_object_patch{
             else if (g_alpine_create_type == 8) {
                 PlaceNewRopeEmitterObject();
             }
+            else if (g_alpine_create_type == 9) {
+                PlaceNewTerrainObject();
+            }
             else {
                 PlaceNewMeshObject();
             }
@@ -969,6 +1123,17 @@ CodeInjection alpine_create_object_patch{
 };
 
 // ─── Rendering ──────────────────────────────────────────────────────────────
+
+// Terrain surfaces are opaque level geometry: draw them before FUN_0041f6d0's first draw (the player start
+// sprite, which tests but does not write depth), so nothing drawn from here on is painted over by them.
+CodeInjection alpine_render_surfaces_patch{
+    0x0041f6f9,
+    [](auto& regs) {
+        auto* level = CDedLevel::Get();
+        if (!level) return;
+        terrain_render_surfaces(level);
+    },
+};
 
 // Hook into the editor's 3D render function to render Alpine objects.
 // Inject after the main object render loop in FUN_0041f6d0, before the icon pass.
@@ -986,6 +1151,7 @@ CodeInjection alpine_render_patch{
         vehicle_factory_render(level);
         projection_camera_render(level);
         rope_emitter_render(level);
+        terrain_render(level);
     },
 };
 
@@ -1024,6 +1190,7 @@ const char* get_type_display_name(DedObjectType type)
         case DedObjectType::DED_VEHICLE_FACTORY:    return "Vehicle Factory";
         case DedObjectType::DED_PROJECTION_CAMERA:  return "Projection Camera";
         case DedObjectType::DED_ROPE_EMITTER:       return "Rope Emitter";
+        case DedObjectType::DED_TERRAIN:            return "Terrain";
         default:                                    return "Unknown";
     }
 }
@@ -1058,6 +1225,7 @@ static const struct { DedObjectType type; const char* label; } g_type_filters[] 
     {DedObjectType::DED_ROOM_EFFECT,      "Room Effects"},
     {DedObjectType::DED_ROPE_EMITTER,     "Rope Emitters"},
     {DedObjectType::DED_TARGET,           "Targets"},
+    {DedObjectType::DED_TERRAIN,          "Terrains"},
     {DedObjectType::DED_TRIGGER,          "Triggers"},
     {DedObjectType::DED_VEHICLE_FACTORY,  "Vehicle Factories"},
     {DedObjectType::DED_WEATHER_REGION,   "Weather Regions"},
@@ -2082,19 +2250,7 @@ static INT_PTR CALLBACK TypeFilterDlgProc(HWND hwnd, UINT msg, WPARAM wparam, LP
                     "groups: " + uid_list;
             }
 
-            if (BrushNode* head = level->brush_list) {
-                BrushNode* b = head;
-                do {
-                    if (b->state == BRUSH_STATE_SELECTED) b->state = BRUSH_STATE_NORMAL;
-                    b = b->next;
-                } while (b != head);
-            }
-            for (auto* brush : new_brushes)
-                brush->state = BRUSH_STATE_SELECTED;
-
-            level->mark_geometry_dirty();
-            level->update_console_display();
-            redraw_all_viewports();
+            select_inserted_brushes(level, new_brushes);
 
             // Save filter state and close dialog first
             for (int i = 0; i < g_num_type_filters; i++)
@@ -2231,8 +2387,8 @@ void alpine_hide_objects(CDedLevel* level)
 // Global vectors to collect Alpine objects during group serialization.
 // FUN_00435630 (per-group serializer) has a switch on obj->type that handles types 0..0x16.
 // Alpine types (0x17=DED_MESH, 0x18=DED_NOTE, 0x19=DED_CORONA, 0x1A=DED_BAG,
-// 0x1B=DED_WEATHER_REGION, 0x1C=DED_VEHICLE_FACTORY, 0x1D=DED_PROJECTION_CAMERA, 0x1E=DED_ROPE_EMITTER)
-// fall through and are silently dropped.
+// 0x1B=DED_WEATHER_REGION, 0x1C=DED_VEHICLE_FACTORY, 0x1D=DED_PROJECTION_CAMERA, 0x1E=DED_ROPE_EMITTER,
+// 0x1F=DED_TERRAIN) fall through and are silently dropped.
 static std::vector<DedMesh*> g_group_save_meshes;
 static std::vector<DedNote*> g_group_save_notes;
 static std::vector<DedCorona*> g_group_save_coronas;
@@ -2241,6 +2397,7 @@ static std::vector<DedWeatherRegion*> g_group_save_weather_regions;
 static std::vector<DedVehicleFactory*> g_group_save_vehicle_factories;
 static std::vector<DedProjectionCamera*> g_group_save_projection_cameras;
 static std::vector<DedRopeEmitter*> g_group_save_rope_emitters;
+static std::vector<DedTerrain*> g_group_save_terrains;
 
 // Brush UIDs captured in serialization order during group save.
 // Used to write brush metadata (geoable/breakable flags) to the .rfg brush group chunk.
@@ -2261,6 +2418,7 @@ CodeInjection alpine_group_save_clear_hook{
         g_group_save_vehicle_factories.clear();
         g_group_save_projection_cameras.clear();
         g_group_save_rope_emitters.clear();
+        g_group_save_terrains.clear();
         g_group_save_brush_uids.clear();
     },
 };
@@ -2301,6 +2459,8 @@ CodeInjection alpine_group_type_collect_hook{
                 g_group_save_projection_cameras.push_back(static_cast<DedProjectionCamera*>(obj));
             else if (type == static_cast<int>(DedObjectType::DED_ROPE_EMITTER))
                 g_group_save_rope_emitters.push_back(static_cast<DedRopeEmitter*>(obj));
+            else if (type == static_cast<int>(DedObjectType::DED_TERRAIN))
+                g_group_save_terrains.push_back(static_cast<DedTerrain*>(obj));
             regs.eip = 0x00435be1; // skip to loop continue
         }
         // types <= 0x16 fall through to jump table at 0x00435a88
@@ -2379,6 +2539,21 @@ CodeInjection alpine_group_save_hook{
             props.rope_emitter_objects = std::move(saved);
         }
 
+        if (!g_group_save_terrains.empty()) {
+            std::vector<DedTerrain*> saved = std::move(props.terrain_objects);
+            ScopeGuard restore{[&] { props.terrain_objects = std::move(saved); }};
+            try {
+                // One chunk per terrain keeps every chunk under the group loader's size cap.
+                for (auto* terrain : g_group_save_terrains) {
+                    props.terrain_objects.assign(1, terrain);
+                    terrain_serialize_chunk(*level, *file, true);
+                }
+            }
+            catch (const std::bad_alloc&) {
+                terrain_report("Out of memory saving the group's terrains; some are missing from it.", true);
+            }
+        }
+
         // Write brush group metadata chunk: which brushes (by serialization index) are
         // geoable/breakable. This enables .rfg round-tripping of brush properties.
         if (!g_group_save_brush_uids.empty()) {
@@ -2444,7 +2619,7 @@ CodeInjection alpine_group_save_hook{
         }
 
         xlog::info("[AlpineObj] Saved {} meshes, {} notes, {} coronas, {} bags, {} weather regions, "
-            "{} vehicle factories, {} projection cameras, {} rope emitters to group",
+            "{} vehicle factories, {} projection cameras, {} rope emitters, {} terrains to group",
             g_group_save_meshes.size(),
             g_group_save_notes.size(),
             g_group_save_coronas.size(),
@@ -2452,7 +2627,8 @@ CodeInjection alpine_group_save_hook{
             g_group_save_weather_regions.size(),
             g_group_save_vehicle_factories.size(),
             g_group_save_projection_cameras.size(),
-            g_group_save_rope_emitters.size()
+            g_group_save_rope_emitters.size(),
+            g_group_save_terrains.size()
         );
 
         g_group_save_meshes.clear();
@@ -2463,6 +2639,7 @@ CodeInjection alpine_group_save_hook{
         g_group_save_vehicle_factories.clear();
         g_group_save_projection_cameras.clear();
         g_group_save_rope_emitters.clear();
+        g_group_save_terrains.clear();
         g_group_save_brush_uids.clear();
     },
 };
@@ -2478,31 +2655,29 @@ CodeInjection alpine_group_pre_load_hook{
     },
 };
 
-// Rope and bolt emitter targets are uid references outside the links array, which stock's own
-// fixup never touches — stock bolts keep a stale target on a colliding import. Stock renumberings
-// come from the table the importer leaves on the level; a target in neither map was not
-// renumbered, so it still names the right object.
-static void remap_imported_emitter_targets(CDedLevel* level, const std::map<int, int>& alpine_uid_map,
-                                           std::size_t rope_emitter_start)
+// Rope and bolt emitter targets and event UID fields are uid references outside the links array.
+// Stock's own fixup (0x004363C0) only rewrites bolt targets in the group entries it matches, so
+// bolts can keep a stale target on a colliding import.
+// Stock renumberings come from the table the importer leaves on the level; a target in neither map
+// was not renumbered, so it still names the right object.
+static void remap_imported_uid_refs(CDedLevel* level, const std::map<int, int>& alpine_uid_map,
+                                    std::size_t rope_emitter_start)
 {
-    std::map<int, int> stock_uid_map;
+    // Source UIDs are unique, so the stock and Alpine renumberings only share a key in a file with
+    // duplicate UIDs; the Alpine one wins there.
+    std::map<int, int> uid_map;
     const auto& old_uids = level->import_renumbered_old_uids;
     const auto& new_uids = level->import_renumbered_new_uids;
-    for (int k = 0; k < std::min(old_uids.size, new_uids.size); k++)
-        stock_uid_map[old_uids.data_ptr[k]] = new_uids.data_ptr[k];
+    const int stock_renumbered = std::min(old_uids.size, new_uids.size);
+    for (int k = 0; k < stock_renumbered; k++)
+        uid_map[old_uids.data_ptr[k]] = new_uids.data_ptr[k];
+    for (const auto& [old_uid, new_uid] : alpine_uid_map)
+        uid_map[old_uid] = new_uid;
 
     int remapped = 0;
     auto remap_target = [&](int& target_uid) {
-        if (target_uid == -1)
-            return;
-        if (auto it = alpine_uid_map.find(target_uid); it != alpine_uid_map.end()) {
-            target_uid = it->second;
+        if (remap_uid(target_uid, uid_map))
             remapped++;
-        }
-        else if (auto it2 = stock_uid_map.find(target_uid); it2 != stock_uid_map.end()) {
-            target_uid = it2->second;
-            remapped++;
-        }
     };
 
     auto& ropes = level->GetAlpineLevelProperties().rope_emitter_objects;
@@ -2511,6 +2686,8 @@ static void remap_imported_emitter_targets(CDedLevel* level, const std::map<int,
 
     // Stock's import deselects everything and then selects each object it loads, and the hook adds
     // Alpine objects only afterwards, so the selection is exactly this import's stock objects.
+    const int event_fields = remap_event_uid_fields(level->selection.data_ptr, level->selection.size, uid_map);
+
     int bolts = 0;
     for (int k = 0; k < level->selection.size; k++) {
         DedObject* obj = level->selection.data_ptr[k];
@@ -2524,9 +2701,10 @@ static void remap_imported_emitter_targets(CDedLevel* level, const std::map<int,
         bolts++;
     }
 
-    if (remapped || bolts)
-        xlog::info("[AlpineObj] Group import: {} stock uid(s) renumbered, {} emitter target(s) remapped, "
-                   "{} bolt emitter preview(s) resynced", stock_uid_map.size(), remapped, bolts);
+    if (remapped || event_fields || bolts)
+        xlog::info("[AlpineObj] Group import: {} stock uid(s) renumbered, {} emitter target(s) and {} event "
+                   "field(s) remapped, {} bolt emitter preview(s) resynced", stock_renumbered, remapped,
+                   event_fields, bolts);
 }
 
 // Load hook: read Alpine object chunks after stock data.
@@ -2553,9 +2731,11 @@ CodeInjection alpine_group_load_hook{
         auto vehicle_factory_start = props.vehicle_factory_objects.size();
         auto projection_camera_start = props.projection_camera_objects.size();
         auto rope_emitter_start = props.rope_emitter_objects.size();
+        auto terrain_start = props.terrain_objects.size();
 
         // Brush group entries parsed from the .rfg brush metadata chunk.
         std::vector<BrushGroupEntry> brush_group_entries;
+        int terrain_chunks_dropped = 0;
 
         // Read chunks in the same format as .rfl files: chunk_id (int32) + chunk_size (int32) + data
         while (true) {
@@ -2590,6 +2770,10 @@ CodeInjection alpine_group_load_hook{
             }
             else if (chunk_id == alpine_rope_emitter_chunk_id) {
                 rope_emitter_deserialize_chunk(*level, *file, chunk_size);
+            }
+            else if (chunk_id == alpine_terrain_chunk_id) {
+                if (!terrain_deserialize_chunk(*level, *file, chunk_size, true))
+                    terrain_chunks_dropped++;
             }
             else if (chunk_id == alpine_brush_group_chunk_id) {
                 // Read brush metadata chunk, tracking remaining bytes to stay within chunk bounds
@@ -2645,6 +2829,12 @@ CodeInjection alpine_group_load_hook{
             }
         }
 
+        if (terrain_chunks_dropped) {
+            terrain_report("Some of the group's terrains were not imported: the level would exceed its "
+                           "terrain count or data limit, or their data is damaged. The log lists each one.",
+                           true);
+        }
+
         int meshes_loaded = static_cast<int>(props.mesh_objects.size() - mesh_start);
         int notes_loaded = static_cast<int>(props.note_objects.size() - note_start);
         int coronas_loaded = static_cast<int>(props.corona_objects.size() - corona_start);
@@ -2653,6 +2843,7 @@ CodeInjection alpine_group_load_hook{
         int vehicle_factories_loaded = static_cast<int>(props.vehicle_factory_objects.size() - vehicle_factory_start);
         int projection_cameras_loaded = static_cast<int>(props.projection_camera_objects.size() - projection_camera_start);
         int rope_emitters_loaded = static_cast<int>(props.rope_emitter_objects.size() - rope_emitter_start);
+        int terrains_loaded = static_cast<int>(props.terrain_objects.size() - terrain_start);
         bool has_brush_props = !brush_group_entries.empty();
 
         if (!meshes_loaded &&
@@ -2663,9 +2854,10 @@ CodeInjection alpine_group_load_hook{
             !vehicle_factories_loaded &&
             !projection_cameras_loaded &&
             !rope_emitters_loaded &&
+            !terrains_loaded &&
             !has_brush_props) {
-            // A stock-only group can carry bolt emitters.
-            remap_imported_emitter_targets(level, {}, rope_emitter_start);
+            // A stock-only group can carry bolt emitters and UID-referencing events.
+            remap_imported_uid_refs(level, {}, rope_emitter_start);
             return;
         }
 
@@ -2691,9 +2883,10 @@ CodeInjection alpine_group_load_hook{
         renumber(props.vehicle_factory_objects, vehicle_factory_start);
         renumber(props.projection_camera_objects, projection_camera_start);
         renumber(props.rope_emitter_objects, rope_emitter_start);
+        renumber(props.terrain_objects, terrain_start);
 
-        // Unfiltered copy for references that can only mean an imported Alpine object (rope
-        // targets), where the ambiguity filter below would wrongly drop a correct renumbering.
+        // Unfiltered copy for references stock never rewrote (rope targets, event UID fields), which
+        // still hold source UIDs, so the ambiguity filter below would wrongly drop a correct renumbering.
         auto alpine_uid_map_raw = alpine_uid_map;
 
         // Every Alpine object now holds its new UID, so any old UID still reported as in use
@@ -2729,7 +2922,7 @@ CodeInjection alpine_group_load_hook{
             }
         }
 
-        remap_imported_emitter_targets(level, alpine_uid_map_raw, rope_emitter_start);
+        remap_imported_uid_refs(level, alpine_uid_map_raw, rope_emitter_start);
 
         // Add newly loaded Alpine objects to the selection so they move with the
         // other stock objects when the user places the imported group.
@@ -2749,6 +2942,8 @@ CodeInjection alpine_group_load_hook{
             level->add_to_selection(static_cast<DedObject*>(props.projection_camera_objects[i]));
         for (auto i = rope_emitter_start; i < props.rope_emitter_objects.size(); i++)
             level->add_to_selection(static_cast<DedObject*>(props.rope_emitter_objects[i]));
+        for (auto i = terrain_start; i < props.terrain_objects.size(); i++)
+            level->add_to_selection(static_cast<DedObject*>(props.terrain_objects[i]));
 
         // Refresh console display to include newly selected Alpine objects
         // (stock FUN_00423460 runs inside FUN_00438340, before our hook loads them)
@@ -2786,6 +2981,8 @@ CodeInjection alpine_group_load_hook{
                     entry->objects.push_back(static_cast<DedObject*>(props.projection_camera_objects[i]));
                 for (auto i = rope_emitter_start; i < props.rope_emitter_objects.size(); i++)
                     entry->objects.push_back(static_cast<DedObject*>(props.rope_emitter_objects[i]));
+                for (auto i = terrain_start; i < props.terrain_objects.size(); i++)
+                    entry->objects.push_back(static_cast<DedObject*>(props.terrain_objects[i]));
 
                 // Apply brush group properties: map serialization index → final brush UID
                 // via the group entry's brushes VArray (same order as serialized).
@@ -2832,9 +3029,9 @@ CodeInjection alpine_group_load_hook{
         }
 
         xlog::info("[AlpineObj] Loaded {} meshes, {} notes, {} coronas, {} bags, {} weather regions, "
-            "{} vehicle factories, {} projection cameras, {} rope emitters from group",
+            "{} vehicle factories, {} projection cameras, {} rope emitters, {} terrains from group",
             meshes_loaded, notes_loaded, coronas_loaded, bags_loaded, weather_regions_loaded,
-            vehicle_factories_loaded, projection_cameras_loaded, rope_emitters_loaded);
+            vehicle_factories_loaded, projection_cameras_loaded, rope_emitters_loaded, terrains_loaded);
     },
 };
 
@@ -2857,6 +3054,7 @@ void ApplyAlpineObjectPatches()
     alpine_object_tree_patch.install();
     alpine_factory_hook.install();
     alpine_create_object_patch.install();
+    alpine_render_surfaces_patch.install();
     alpine_render_patch.install();
     alpine_group_save_clear_hook.install();
     alpine_group_brush_save_capture_hook.install();

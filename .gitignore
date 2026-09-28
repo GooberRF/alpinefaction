@@ -36,5 +36,5 @@ CMakeSettings.json
 # Claude IDE integration settings
 /.claude
 
-# Private working notes
-docs/private/
+# Private working docs (engine notes, plans, reviews)
+/docs/private/

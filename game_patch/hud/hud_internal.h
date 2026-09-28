@@ -60,6 +60,8 @@ struct ChatMenuList
     std::vector<ChatMenuElement> elements;
 };
 
+inline constexpr int chat_msg_max_len = 224;
+
 extern bool g_pre_match_active;
 extern float g_hud_ammo_scale;
 

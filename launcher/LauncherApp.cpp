@@ -565,7 +565,8 @@ int LauncherApp::Run()
             "-demo file   Starts game immediately and plays specified demo file\n"
             "-play-demo file  Shows demo info and asks before playing it\n"
             "-editor      Starts level editor immediately\n"
-            "-bake in.rfl -bakeout out.rfl  Bakes lighting for in.rfl in the editor, writes the result to out.rfl and exits; progress goes to out.rfl.log\n"
+            "-bake in.rfl -bakeout out.rfl  Runs Build Geometry and bakes lighting for in.rfl in the editor, "
+            "writes the result to out.rfl and exits; progress goes to out.rfl.log\n"
             "-exe-path     Override patched executable file location\n"
             "args...      Additional arguments passed to game or editor\n",
             "Alpine Faction Launcher Help", MB_OK | MB_ICONINFORMATION);
@@ -612,7 +613,7 @@ int LauncherApp::Run()
 
 bool LauncherApp::ValidateAFLinkToken(const std::string& fflink_token)
 {
-    xlog::info("Attempting to validate FactionFiles token: {}...", fflink_token);
+    xlog::info("Attempting to validate FactionFiles token...");
 
     std::string verify_url = "https://link.factionfiles.com/aflauncher/v1/link_check.php?token=" + fflink_token;
     //xlog::info("AFLink validity check URL: {}", verify_url);

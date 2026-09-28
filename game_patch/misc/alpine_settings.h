@@ -104,6 +104,7 @@ struct AlpineGameSettings
     bool play_hit_sounds = true;
     bool show_awards = true;
     bool vehicle_respawn_markers = true;
+    bool show_domination_msgs = true;
 
     bool spray_display = true;
     int selected_spray_index = 0;

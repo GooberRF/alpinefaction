@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <unordered_map>
 #include <vector>
+#include <common/rfl_chunk_reader.h>
 #include <common/rope_curve.h>
 #include <xlog/xlog.h>
 #include "alpine_color_picker.h"
@@ -276,39 +277,12 @@ void rope_emitter_deserialize_chunk(CDedLevel& level, rf::File& file, std::size_
     std::size_t remaining = chunk_len;
 
     rf::File::ChunkGuard chunk_guard{file, remaining};
-
-    auto read_bytes = [&](void* dst, std::size_t n) -> bool {
-        if (remaining < n) return false;
-        int got = file.read(dst, n);
-        if (got != static_cast<int>(n) || file.error()) {
-            if (got > 0) remaining -= got;
-            return false;
-        }
-        remaining -= n;
-        return true;
-    };
-
-    // Length prefixed string routed through read_bytes so `remaining` stays in step with the
-    // ChunkGuard on every failure path.
-    auto read_string = [&](std::string& out) -> bool {
-        out.clear();
-        uint16_t len = 0;
-        if (!read_bytes(&len, sizeof(len))) return false;
-        if (len == 0) return true;
-        // Bounds first, so a hostile length prefix cannot buy a 64 KB allocation.
-        if (remaining < len) return false;
-        out.assign(len, '\0');
-        if (!read_bytes(out.data(), len)) {
-            out.clear();
-            return false;
-        }
-        return true;
-    };
+    RflChunkReader<rf::File> reader{file, remaining};
 
     // Payload growth appends per-record fields gated on the RFL content version (mesh flag-block
     // precedent); no chunk version - a reader never sees a file above its supported RFL version.
     uint32_t count = 0;
-    if (!read_bytes(&count, sizeof(count))) return;
+    if (!reader.read_bytes(&count, sizeof(count))) return;
     if (count > rope_curve::rope_max_count) count = rope_curve::rope_max_count;
 
     uint32_t loaded = 0;
@@ -318,22 +292,22 @@ void rope_emitter_deserialize_chunk(CDedLevel& level, rf::File& file, std::size_
         rope->vtbl = reinterpret_cast<void*>(ded_object_vtbl_addr);
         rope->type = DedObjectType::DED_ROPE_EMITTER;
 
-        if (!read_bytes(&rope->uid, sizeof(rope->uid))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
-        if (!read_bytes(&rope->pos.x, sizeof(float))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
-        if (!read_bytes(&rope->pos.y, sizeof(float))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
-        if (!read_bytes(&rope->pos.z, sizeof(float))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
-        if (!read_bytes(&rope->orient.rvec.x, sizeof(float))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
-        if (!read_bytes(&rope->orient.rvec.y, sizeof(float))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
-        if (!read_bytes(&rope->orient.rvec.z, sizeof(float))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
-        if (!read_bytes(&rope->orient.uvec.x, sizeof(float))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
-        if (!read_bytes(&rope->orient.uvec.y, sizeof(float))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
-        if (!read_bytes(&rope->orient.uvec.z, sizeof(float))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
-        if (!read_bytes(&rope->orient.fvec.x, sizeof(float))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
-        if (!read_bytes(&rope->orient.fvec.y, sizeof(float))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
-        if (!read_bytes(&rope->orient.fvec.z, sizeof(float))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
+        if (!reader.read_bytes(&rope->uid, sizeof(rope->uid))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
+        if (!reader.read_bytes(&rope->pos.x, sizeof(float))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
+        if (!reader.read_bytes(&rope->pos.y, sizeof(float))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
+        if (!reader.read_bytes(&rope->pos.z, sizeof(float))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
+        if (!reader.read_bytes(&rope->orient.rvec.x, sizeof(float))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
+        if (!reader.read_bytes(&rope->orient.rvec.y, sizeof(float))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
+        if (!reader.read_bytes(&rope->orient.rvec.z, sizeof(float))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
+        if (!reader.read_bytes(&rope->orient.uvec.x, sizeof(float))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
+        if (!reader.read_bytes(&rope->orient.uvec.y, sizeof(float))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
+        if (!reader.read_bytes(&rope->orient.uvec.z, sizeof(float))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
+        if (!reader.read_bytes(&rope->orient.fvec.x, sizeof(float))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
+        if (!reader.read_bytes(&rope->orient.fvec.y, sizeof(float))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
+        if (!reader.read_bytes(&rope->orient.fvec.z, sizeof(float))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
 
         std::string sname;
-        if (!read_string(sname)) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
+        if (!reader.read_string(sname)) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
         if (sname.size() > rope_curve::rope_max_script_name_len) {
             xlog::warn("[RopeEmitter] uid={} script name is {} chars, ignoring it", rope->uid,
                        sname.size());
@@ -341,45 +315,45 @@ void rope_emitter_deserialize_chunk(CDedLevel& level, rf::File& file, std::size_
         }
         rope->script_name.assign_0(sname.c_str());
 
-        if (!read_bytes(&rope->target_uid, sizeof(rope->target_uid))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
-        if (!read_bytes(&rope->dangle_length, sizeof(float))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
-        if (!read_bytes(&rope->slack, sizeof(float))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
-        if (!read_bytes(&rope->weight, sizeof(float))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
-        if (!read_bytes(&rope->thickness, sizeof(float))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
-        if (!read_bytes(&rope->segments, sizeof(int32_t))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
-        if (!read_bytes(&rope->uv_tiles_per_meter, sizeof(float))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
+        if (!reader.read_bytes(&rope->target_uid, sizeof(rope->target_uid))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
+        if (!reader.read_bytes(&rope->dangle_length, sizeof(float))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
+        if (!reader.read_bytes(&rope->slack, sizeof(float))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
+        if (!reader.read_bytes(&rope->weight, sizeof(float))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
+        if (!reader.read_bytes(&rope->thickness, sizeof(float))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
+        if (!reader.read_bytes(&rope->segments, sizeof(int32_t))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
+        if (!reader.read_bytes(&rope->uv_tiles_per_meter, sizeof(float))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
 
         uint32_t packed_color = 0;
-        if (!read_bytes(&packed_color, sizeof(packed_color))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
+        if (!reader.read_bytes(&packed_color, sizeof(packed_color))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
         rope->color_r = static_cast<uint8_t>((packed_color >> 24) & 0xFF);
         rope->color_g = static_cast<uint8_t>((packed_color >> 16) & 0xFF);
         rope->color_b = static_cast<uint8_t>((packed_color >> 8) & 0xFF);
         rope->color_a = static_cast<uint8_t>(packed_color & 0xFF);
 
-        if (!read_string(rope->bitmap)) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
+        if (!reader.read_string(rope->bitmap)) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
         if (rfl_name_over_long(rope->bitmap)) {
             xlog::warn("[RopeEmitter] uid={} bitmap name '{}' is too long, ignoring it", rope->uid,
                        rope->bitmap);
             rope->bitmap.clear();
         }
 
-        if (!read_bytes(&rope->sway_amplitude, sizeof(float))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
-        if (!read_bytes(&rope->sway_speed, sizeof(float))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
-        if (!read_bytes(&rope->flags, sizeof(rope->flags))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
+        if (!reader.read_bytes(&rope->sway_amplitude, sizeof(float))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
+        if (!reader.read_bytes(&rope->sway_speed, sizeof(float))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
+        if (!reader.read_bytes(&rope->flags, sizeof(rope->flags))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
 
         uint8_t initially_on = 1;
-        if (!read_bytes(&initially_on, sizeof(initially_on))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
+        if (!reader.read_bytes(&initially_on, sizeof(initially_on))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
         rope->initially_on = initially_on != 0;
 
         // Read exactly as written: the block is present whenever the rope has any decoration mesh,
         // and the Decorations checkbox is the first field inside it.
         uint8_t has_deco_block = 0;
         uint8_t decorations_enabled = 0;
-        if (!read_bytes(&has_deco_block, sizeof(has_deco_block))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
+        if (!reader.read_bytes(&has_deco_block, sizeof(has_deco_block))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
         if (has_deco_block != 0) {
-            if (!read_bytes(&decorations_enabled, sizeof(decorations_enabled))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
+            if (!reader.read_bytes(&decorations_enabled, sizeof(decorations_enabled))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
             uint8_t mesh_count = 0;
-            if (!read_bytes(&mesh_count, sizeof(mesh_count))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
+            if (!reader.read_bytes(&mesh_count, sizeof(mesh_count))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
             if (mesh_count < 1 || mesh_count > rope_curve::deco_max_meshes) {
                 // The count was read, so this is not truncation - but every field behind it is
                 // measured from the mesh names, so there is no way to work out where this record
@@ -394,7 +368,7 @@ void rope_emitter_deserialize_chunk(CDedLevel& level, rf::File& file, std::size_
             // Per-slot unit, read exactly as written: name, offsets, slot flags, then whichever
             // effect blocks the flags declare.
             for (uint8_t m = 0; m < mesh_count; m++) {
-                if (!read_string(rope->deco_meshes[m])) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
+                if (!reader.read_string(rope->deco_meshes[m])) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
                 if (rope->deco_meshes[m].size() > rfl_mesh_name_max_len) {
                     xlog::warn("[RopeEmitter] uid={} decoration mesh name is {} chars, ignoring it",
                                rope->uid, rope->deco_meshes[m].size());
@@ -402,50 +376,50 @@ void rope_emitter_deserialize_chunk(CDedLevel& level, rf::File& file, std::size_
                 }
 
                 DedRopeSlotFx& fx = rope->deco_fx[m];
-                if (!read_bytes(&fx.pos_x, sizeof(float))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
-                if (!read_bytes(&fx.pos_y, sizeof(float))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
-                if (!read_bytes(&fx.pos_z, sizeof(float))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
-                if (!read_bytes(&fx.rot_pitch, sizeof(float))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
-                if (!read_bytes(&fx.rot_yaw, sizeof(float))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
-                if (!read_bytes(&fx.rot_roll, sizeof(float))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
-                if (!read_bytes(&fx.flags, sizeof(uint8_t))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
+                if (!reader.read_bytes(&fx.pos_x, sizeof(float))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
+                if (!reader.read_bytes(&fx.pos_y, sizeof(float))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
+                if (!reader.read_bytes(&fx.pos_z, sizeof(float))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
+                if (!reader.read_bytes(&fx.rot_pitch, sizeof(float))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
+                if (!reader.read_bytes(&fx.rot_yaw, sizeof(float))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
+                if (!reader.read_bytes(&fx.rot_roll, sizeof(float))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
+                if (!reader.read_bytes(&fx.flags, sizeof(uint8_t))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
                 fx.flags &= rope_curve::deco_slot_flag_mask;
 
                 if (fx.has_glare()) {
-                    if (!read_string(fx.glare_bitmap)) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
+                    if (!reader.read_string(fx.glare_bitmap)) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
                     if (rfl_name_over_long(fx.glare_bitmap)) fx.glare_bitmap.clear();
-                    if (!read_bytes(&fx.glare_r, sizeof(uint8_t))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
-                    if (!read_bytes(&fx.glare_g, sizeof(uint8_t))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
-                    if (!read_bytes(&fx.glare_b, sizeof(uint8_t))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
-                    if (!read_bytes(&fx.glare_a, sizeof(uint8_t))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
-                    if (!read_bytes(&fx.cone_angle, sizeof(float))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
-                    if (!read_bytes(&fx.intensity, sizeof(float))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
-                    if (!read_bytes(&fx.radius_distance, sizeof(float))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
-                    if (!read_bytes(&fx.radius_scale, sizeof(float))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
-                    if (!read_bytes(&fx.diminish_distance, sizeof(float))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
-                    if (!read_string(fx.volumetric_bitmap)) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
+                    if (!reader.read_bytes(&fx.glare_r, sizeof(uint8_t))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
+                    if (!reader.read_bytes(&fx.glare_g, sizeof(uint8_t))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
+                    if (!reader.read_bytes(&fx.glare_b, sizeof(uint8_t))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
+                    if (!reader.read_bytes(&fx.glare_a, sizeof(uint8_t))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
+                    if (!reader.read_bytes(&fx.cone_angle, sizeof(float))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
+                    if (!reader.read_bytes(&fx.intensity, sizeof(float))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
+                    if (!reader.read_bytes(&fx.radius_distance, sizeof(float))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
+                    if (!reader.read_bytes(&fx.radius_scale, sizeof(float))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
+                    if (!reader.read_bytes(&fx.diminish_distance, sizeof(float))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
+                    if (!reader.read_string(fx.volumetric_bitmap)) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
                     if (!fx.volumetric_bitmap.empty()) {
-                        if (!read_bytes(&fx.volumetric_height, sizeof(float))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
-                        if (!read_bytes(&fx.volumetric_length, sizeof(float))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
+                        if (!reader.read_bytes(&fx.volumetric_height, sizeof(float))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
+                        if (!reader.read_bytes(&fx.volumetric_length, sizeof(float))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
                     }
                     if (rfl_name_over_long(fx.volumetric_bitmap)) fx.volumetric_bitmap.clear();
                 }
 
                 if (fx.has_light()) {
-                    if (!read_bytes(&fx.light_r, sizeof(uint8_t))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
-                    if (!read_bytes(&fx.light_g, sizeof(uint8_t))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
-                    if (!read_bytes(&fx.light_b, sizeof(uint8_t))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
-                    if (!read_bytes(&fx.light_radius, sizeof(float))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
-                    if (!read_bytes(&fx.light_intensity, sizeof(float))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
+                    if (!reader.read_bytes(&fx.light_r, sizeof(uint8_t))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
+                    if (!reader.read_bytes(&fx.light_g, sizeof(uint8_t))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
+                    if (!reader.read_bytes(&fx.light_b, sizeof(uint8_t))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
+                    if (!reader.read_bytes(&fx.light_radius, sizeof(float))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
+                    if (!reader.read_bytes(&fx.light_intensity, sizeof(float))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
                 }
             }
 
             uint8_t spacing_mode = 0, random_order = 0, orient_mode = 0;
-            if (!read_bytes(&spacing_mode, sizeof(spacing_mode))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
-            if (!read_bytes(&rope->deco_count, sizeof(int32_t))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
-            if (!read_bytes(&rope->deco_spacing, sizeof(float))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
-            if (!read_bytes(&random_order, sizeof(random_order))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
-            if (!read_bytes(&orient_mode, sizeof(orient_mode))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
+            if (!reader.read_bytes(&spacing_mode, sizeof(spacing_mode))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
+            if (!reader.read_bytes(&rope->deco_count, sizeof(int32_t))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
+            if (!reader.read_bytes(&rope->deco_spacing, sizeof(float))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
+            if (!reader.read_bytes(&random_order, sizeof(random_order))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
+            if (!reader.read_bytes(&orient_mode, sizeof(orient_mode))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
 
             rope->decorations_enabled = decorations_enabled != 0;
             rope->deco_spacing_mode =

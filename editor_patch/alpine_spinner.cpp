@@ -25,6 +25,7 @@ struct SpinnerState
     bool dragging = false;
     float start_value = 0.0f;
     int start_y = 0;
+    int wrap_offset = 0;
 };
 
 SpinnerState* spinner_state(HWND spin)
@@ -62,6 +63,33 @@ void spinner_write(const SpinnerState* st, float value)
     SetWindowTextA(st->edit, buf);
 }
 
+void spinner_wrap_cursor(HWND spin, SpinnerState* st, int client_x, int client_y)
+{
+    POINT pt{client_x, client_y};
+    if (!ClientToScreen(spin, &pt)) return;
+    MONITORINFO mi{};
+    mi.cbSize = sizeof(mi);
+    HMONITOR mon = MonitorFromPoint(pt, MONITOR_DEFAULTTONULL);
+    if (!mon || !GetMonitorInfoA(mon, &mi)) return;
+    const RECT& rc = mi.rcMonitor;
+
+    int target_y;
+    if (pt.y >= rc.bottom - 1 && !MonitorFromPoint(POINT{pt.x, rc.bottom}, MONITOR_DEFAULTTONULL)) {
+        target_y = rc.top + 1;
+    }
+    else if (pt.y <= rc.top && !MonitorFromPoint(POINT{pt.x, rc.top - 1}, MONITOR_DEFAULTTONULL)) {
+        target_y = rc.bottom - 2;
+    }
+    else {
+        return;
+    }
+
+    if (!SetCursorPos(pt.x, target_y)) return;
+    POINT now{};
+    if (!GetCursorPos(&now)) now.y = target_y;
+    st->wrap_offset += pt.y - now.y;
+}
+
 // Every message is forwarded: the up-down keeps its native click-step, autorepeat and arrow keys,
 // and only learns that the cursor left its rect because the move reaches it as well.
 LRESULT CALLBACK spinner_subclass_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR,
@@ -91,11 +119,13 @@ LRESULT CALLBACK spinner_subclass_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp
                     st->dragging = true;
                     st->start_value = spinner_read(st);
                     st->start_y = y;
+                    st->wrap_offset = 0;
                 }
             }
             if (st->dragging) {
-                spinner_write(st,
-                              st->start_value + static_cast<float>(st->start_y - y) * st->step);
+                spinner_write(st, st->start_value
+                                      + static_cast<float>(st->start_y - (y + st->wrap_offset)) * st->step);
+                spinner_wrap_cursor(hwnd, st, GET_X_LPARAM(lp), y);
             }
         }
         break;

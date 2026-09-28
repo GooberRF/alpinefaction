@@ -19,7 +19,6 @@
 bool g_big_chatbox = false;
 bool g_all_players_muted = false;
 
-constexpr int chat_msg_max_len = 224;
 constexpr int chatbox_border_alpha = 0x30; // default is 77
 constexpr int chatbox_bg_alpha = 0x40; // default is 128
 

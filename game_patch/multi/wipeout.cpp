@@ -96,7 +96,7 @@ int count_team_waiting(int team)
 
 int match_win_threshold()
 {
-    return rounds_get_max() / 2 + 1;
+    return g_alpine_server_config_active_rules.rounds.wins_to_take_match();
 }
 
 bool match_is_decided()

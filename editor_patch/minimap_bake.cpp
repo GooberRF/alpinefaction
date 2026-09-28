@@ -291,10 +291,10 @@ void sample_lightmap(const GLightmap& p, float lu, float lv, float out[3])
     const float fx = x - x0;
     const float fy = y - y0;
     for (int c = 0; c < 3; ++c) {
-        const float t00 = p.rgb[(y0 * p.w + x0) * 3 + c];
-        const float t10 = p.rgb[(y0 * p.w + x1) * 3 + c];
-        const float t01 = p.rgb[(y1 * p.w + x0) * 3 + c];
-        const float t11 = p.rgb[(y1 * p.w + x1) * 3 + c];
+        const float t00 = p.pixels[(y0 * p.w + x0) * 3 + c];
+        const float t10 = p.pixels[(y0 * p.w + x1) * 3 + c];
+        const float t01 = p.pixels[(y1 * p.w + x0) * 3 + c];
+        const float t11 = p.pixels[(y1 * p.w + x1) * 3 + c];
         const float top = t00 + (t10 - t00) * fx;
         const float bottom = t01 + (t11 - t01) * fx;
         out[c] = top + (bottom - top) * fy;
@@ -734,7 +734,7 @@ bool minimap_bake(CDedLevel& level, const MinimapBakeParams& p, MinimapBakeResul
                 surfaces.data_ptr) {
                 const GSurface* surface = surfaces.data_ptr[surface_index];
                 const GLightmap* page = surface ? surface->lightmap : nullptr;
-                if (page && page->rgb && page->w > 0 && page->h > 0 && page->w <= 4096 && page->h <= 4096) {
+                if (page && page->pixels && page->w > 0 && page->h > 0 && page->w <= 4096 && page->h <= 4096) {
                     shade.lightmap = page;
                 }
             }
