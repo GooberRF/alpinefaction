@@ -589,7 +589,9 @@ namespace gr::d3d11
         // When apply_light_scale is false (character meshes), use 1.0 to skip scaling.
         if (current_apply_light_scale_) {
             const auto& level_props = AlpineLevelProperties::instance();
-            if (level_props.override_static_mesh_ambient_light_modifier) {
+            if (current_fixed_light_scale_ > 0.0f) {
+                data.light_scale = current_fixed_light_scale_;
+            } else if (level_props.override_static_mesh_ambient_light_modifier) {
                 data.light_scale = level_props.static_mesh_ambient_light_modifier;
             } else {
                 data.light_scale = rf::is_multi ? 3.2f : 2.0f;
