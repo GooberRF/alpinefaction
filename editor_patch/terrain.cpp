@@ -21,6 +21,7 @@
 #include <common/utils/string-utils.h>
 #include <xlog/xlog.h>
 #include "alpine_spinner.h"
+#include "dialog_tooltips.h"
 #include "file_dialogs.h"
 #include "headless_bake.h"
 #include "terrain.h"
@@ -2192,6 +2193,40 @@ static INT_PTR terrain_dlg_command(HWND hdlg, WPARAM wp)
     return FALSE;
 }
 
+static constexpr const char* terrain_tip_cell_size = "Distance between height samples (m).";
+static constexpr const char* terrain_tip_tile = "World size (m) of one texture repeat.";
+static constexpr const char* terrain_tip_triplanar =
+    "Projects from 3 axes; no stretching on steep slopes.";
+static constexpr const char* terrain_tip_weights = "Paint texels per cell edge, for layers and overlays.";
+static constexpr const char* terrain_tip_chunk_size =
+    "Cells per chunk edge, one room each; smaller = cheaper craters, more rooms.";
+static constexpr const char* terrain_tip_lightmap = "Baked light texels per cell edge.";
+static constexpr const char* terrain_tip_thickness =
+    "Solid depth below Height Min; keep it deeper than craters or they punch through.";
+static constexpr const char* terrain_tip_skirt_depth = "How far skirts hang below the edges and holes.";
+
+static constexpr DialogTooltip terrain_dlg_tooltips[] = {
+    {IDC_TERRAIN_CELL_SIZE, terrain_tip_cell_size},
+    {IDC_TERRAIN_CELL_SIZE_LABEL, terrain_tip_cell_size},
+    {IDC_TERRAIN_CHUNK_SIZE, terrain_tip_chunk_size},
+    {IDC_TERRAIN_CHUNK_SIZE_LABEL, terrain_tip_chunk_size},
+    {IDC_TERRAIN_LM_DENSITY, terrain_tip_lightmap},
+    {IDC_TERRAIN_LM_DENSITY_LABEL, terrain_tip_lightmap},
+    {IDC_TERRAIN_THICKNESS, terrain_tip_thickness},
+    {IDC_TERRAIN_THICKNESS_LABEL, terrain_tip_thickness},
+    {IDC_TERRAIN_SKIRT_DEPTH, terrain_tip_skirt_depth},
+    {IDC_TERRAIN_SKIRT_DEPTH_LABEL, terrain_tip_skirt_depth},
+    {IDC_TERRAIN_LAYER_UV_SCALE, terrain_tip_tile},
+    {IDC_TERRAIN_LAYER_UV_SCALE_LABEL, terrain_tip_tile},
+    {IDC_TERRAIN_LAYER_TRIPLANAR, terrain_tip_triplanar},
+    {IDC_TERRAIN_WEIGHT_RES, terrain_tip_weights},
+    {IDC_TERRAIN_WEIGHT_RES_LABEL, terrain_tip_weights},
+    {IDC_TERRAIN_OVERLAY_UV_SCALE, terrain_tip_tile},
+    {IDC_TERRAIN_OVERLAY_UV_SCALE_LABEL, terrain_tip_tile},
+    {IDC_TERRAIN_OVERLAY_TRIPLANAR, terrain_tip_triplanar},
+    {IDC_TERRAIN_OVERLAY_BREAK_TILING, "Rotates and shifts each repeat to hide tiling."},
+};
+
 static INT_PTR CALLBACK TerrainDialogProc(HWND hdlg, UINT msg, WPARAM wp, LPARAM lp)
 {
     switch (msg) {
@@ -2248,6 +2283,7 @@ static INT_PTR CALLBACK TerrainDialogProc(HWND hdlg, UINT msg, WPARAM wp, LPARAM
             terrain_dlg_load_layer_fields(hdlg, kind);
         }
         terrain_dlg_update_readouts(hdlg);
+        alpine_dlg_add_tooltips(hdlg, terrain_dlg_tooltips);
         g_terrain_dlg.active = true;
         terrain_dlg_refresh_viewports();
         SetTimer(hdlg, terrain_dlg_repaint_timer, 50, nullptr);
@@ -2427,20 +2463,9 @@ static TerrainEdit terrain_edit_kind(const DedTerrainData& a, const DedTerrainDa
     return same_overlays ? TerrainEdit::none : TerrainEdit::overlays_only;
 }
 
-// The heightmap and weights are per-terrain data, so the dialog edits the first selected terrain.
-void ShowTerrainPropertiesDialog(CDedLevel* level)
+void terrain_show_properties(CDedLevel* level, DedTerrain* terrain)
 {
-    DedTerrain* terrain = nullptr;
-    auto& sel = level->selection;
-    for (int i = 0; i < sel.get_size(); i++) {
-        DedObject* obj = sel[i];
-        if (obj && obj->type == DedObjectType::DED_TERRAIN) {
-            terrain = static_cast<DedTerrain*>(obj);
-            break;
-        }
-    }
-    if (!terrain) return;
-
+    if (!level || !terrain) return;
     terrain_paint_end_stroke(nullptr);
     terrain_clamp_properties(terrain->data);
     g_terrain_dlg = TerrainDialogState{};
@@ -2465,6 +2490,19 @@ void ShowTerrainPropertiesDialog(CDedLevel* level)
 
     if (result == IDC_TERRAIN_TOOLS) terrain_paint_open(level, terrain);
     else if (result == IDC_TERRAIN_CONVERT) terrain_convert_to_brushes(level, terrain);
+}
+
+// The heightmap and weights are per-terrain data, so the dialog edits the first selected terrain.
+void ShowTerrainPropertiesDialog(CDedLevel* level)
+{
+    auto& sel = level->selection;
+    for (int i = 0; i < sel.get_size(); i++) {
+        DedObject* obj = sel[i];
+        if (obj && obj->type == DedObjectType::DED_TERRAIN) {
+            terrain_show_properties(level, static_cast<DedTerrain*>(obj));
+            return;
+        }
+    }
 }
 
 // ─── Object Lifecycle ───────────────────────────────────────────────────────

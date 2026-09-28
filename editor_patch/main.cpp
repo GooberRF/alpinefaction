@@ -1679,6 +1679,11 @@ BOOL __fastcall CMainFrame_OnCmdMsg(CWnd* this_, int, UINT nID, int nCode, void*
                     terrain_paint_open_for_selection(reinterpret_cast<CDedLevel*>(GetLevelFromMainFrame(this_)));
                 };
                 break;
+            case ID_TERRAIN_TOOLS_PROPERTIES:
+                handler = [this_]() {
+                    terrain_paint_show_properties(reinterpret_cast<CDedLevel*>(GetLevelFromMainFrame(this_)));
+                };
+                break;
         }
 
         if (handler) {

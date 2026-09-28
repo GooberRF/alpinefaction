@@ -22,7 +22,8 @@ void PlaceNewTerrainObject();
 DedTerrain* CloneTerrainObject(DedTerrain* source, bool add_to_level = true);
 void DeleteTerrainObject(DedTerrain* terrain);
 
-// Properties dialog
+// Properties dialog, for `terrain` or for the first selected terrain
+void terrain_show_properties(CDedLevel* level, DedTerrain* terrain);
 void ShowTerrainPropertiesDialog(CDedLevel* level);
 
 // Handlers called from shared hook points in alpine_obj.cpp

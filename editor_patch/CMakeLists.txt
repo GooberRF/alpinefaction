@@ -8,6 +8,8 @@ set(SRCS
     alpine_spinner.h
     brush_import.cpp
     brush_import.h
+    dialog_tooltips.cpp
+    dialog_tooltips.h
     event.cpp
     file_dialogs.cpp
     file_dialogs.h

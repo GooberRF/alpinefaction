@@ -57,7 +57,7 @@ inline bool tool_edits_heights(Tool t)
 }
 
 // Held still, these keep dabbing at the last spot; noise reaches its full shape in one pass, and a
-// ramp between points is applied once, on release.
+// bridge points is applied once, on release.
 inline bool tool_repeats_in_place(Tool t)
 {
     return tool_edits_heights(t) && t != Tool::noise && t != Tool::ramp_between;
@@ -423,7 +423,7 @@ inline float noise_feature_cells(float radius_cells)
 }
 
 inline constexpr float max_ramp_angle = 80.0f;
-// Ramp between points: a shorter drag does nothing.
+// Bridge points: a shorter drag does nothing.
 inline constexpr float min_segment_cells = 0.25f;
 
 // Ramp: the height change per cell along x and z of a slope of `angle_deg` rising along the unit
@@ -605,7 +605,7 @@ struct SculptDab
     float target = 0.0f;
     float plane_x = 0.0f, plane_z = 0.0f;
     float slope_x = 0.0f, slope_z = 0.0f;
-    // Ramp between points: the segment from the dab centre to (seg_x, seg_z) cells past it, along
+    // Bridge points: the segment from the dab centre to (seg_x, seg_z) cells past it, along
     // which the target runs from `target` to `target_end`. The falloff is by distance from it.
     float seg_x = 0.0f, seg_z = 0.0f;
     float target_end = 0.0f;
@@ -632,7 +632,7 @@ inline bool segment_long_enough(const SculptDab& s)
     return std::sqrt(s.seg_x * s.seg_x + s.seg_z * s.seg_z) >= min_segment_cells;
 }
 
-// Ramp between points: a vertex's falloff by its distance from the segment, and the target where it
+// Bridge points: a vertex's falloff by its distance from the segment, and the target where it
 // projects onto it.
 inline float segment_falloff(const SculptDab& s, std::uint32_t i, std::uint32_t j, double& target)
 {
@@ -643,7 +643,7 @@ inline float segment_falloff(const SculptDab& s, std::uint32_t i, std::uint32_t 
     return falloff_weight(s.dab.falloff, dist / std::max(s.dab.radius, 1e-6f));
 }
 
-// The vertices a dab can reach: its circle, or for a ramp between points the segment's capsule.
+// The vertices a dab can reach: its circle, or for a bridge points the segment's capsule.
 inline Rect sculpt_vertex_rect(const SculptDab& s, std::uint32_t nx, std::uint32_t nz)
 {
     if (s.tool != Tool::ramp_between) return dab_vertex_rect(s.dab, nx, nz);

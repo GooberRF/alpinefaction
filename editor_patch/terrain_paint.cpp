@@ -181,7 +181,7 @@ struct Stroke
     float noise_feature = 1.0f;
     std::vector<float> coverage;
     // Ramp tools: where the stroke started (world x, z) and the surface offset there; a ramp's
-    // direction once locked; a ramp between points' far end.
+    // direction once locked; a bridge points' far end.
     bool has_anchor = false;
     float anchor[2] = {};
     float anchor_offset = 0.0f;
@@ -837,7 +837,7 @@ bool stroke_to(float x, float z)
     return changed;
 }
 
-// Ramp Between Points, on release: one pass over the segment from where the stroke started to where
+// Bridge Points, on release: one pass over the segment from where the stroke started to where
 // it ends, whose height is sampled now.
 bool ramp_between_apply()
 {
@@ -846,7 +846,7 @@ bool ramp_between_apply()
     const float cs = t->data.cell_size;
     const float dx = (g_stroke.end[0] - g_stroke.anchor[0]) / cs, dz = (g_stroke.end[1] - g_stroke.anchor[1]) / cs;
     if (!(std::sqrt(dx * dx + dz * dz) >= tp::min_segment_cells)) {
-        g_note = "Ramp Between Points: drag from one end to the other";
+        g_note = "Bridge Points: drag from one end to the other";
         return false;
     }
     g_stroke.end_offset = surface_offset(*t, g_stroke.end[0], g_stroke.end[1]);
@@ -1241,8 +1241,6 @@ void panel_update_state()
     // Geoable Chunks needs a geoable target; it falls back to the first tool when Geoable is turned off.
     g_panel.geo_allowed = terrain_geoable(g_panel.target);
     EnableWindow(GetDlgItem(g_panel.hwnd, IDC_TTOOLS_GEO_CHUNKS), g_panel.geo_allowed);
-    SetDlgItemTextA(g_panel.hwnd, IDC_TTOOLS_GEO_NOTE,
-                    g_panel.geo_allowed ? "" : "Needs Geoable ticked in Properties.");
     if (!g_panel.geo_allowed && g_settings.tool == tp::Tool::geo_chunks) {
         if (g_stroke.active) stroke_end();
         g_settings.tool = tp::Tool::paint_layer;
@@ -1541,6 +1539,10 @@ INT_PTR CALLBACK TerrainToolsProc(HWND hdlg, UINT msg, WPARAM wp, LPARAM lp)
         case IDC_TTOOLS_REDO:
             undo_step(false);
             return TRUE;
+        case IDC_TTOOLS_PROPERTIES:
+            // Deferred so the panel is destroyed outside its own proc before the modal dialog opens.
+            PostMessageA(GetMainFrameHandle(), WM_COMMAND, ID_TERRAIN_TOOLS_PROPERTIES, 0);
+            return TRUE;
         case IDCANCEL:
             DestroyWindow(hdlg);
             return TRUE;
@@ -1640,7 +1642,7 @@ void panel_click(void* view, UINT flags)
     }
 }
 
-// The button came up on the stroke's view. Ending the stroke any other way applies no ramp between points.
+// The button came up on the stroke's view. Ending the stroke any other way applies no bridge points.
 void stroke_release()
 {
     if (g_settings.tool != tp::Tool::ramp_between || !IsWindowEnabled(GetMainFrameHandle())) return;
@@ -1738,6 +1740,14 @@ void terrain_paint_open_for_selection(CDedLevel* level)
     }
     MessageBoxA(GetMainFrameHandle(), "Select a terrain first, then open Terrain Tools.", "Terrain Tools",
                 MB_OK | MB_ICONINFORMATION);
+}
+
+void terrain_paint_show_properties(CDedLevel* level)
+{
+    DedTerrain* terrain = g_panel.target;
+    if (!g_panel.hwnd || !target_in_level(level, terrain) || !IsWindowEnabled(GetMainFrameHandle())) return;
+    DestroyWindow(g_panel.hwnd);
+    terrain_show_properties(level, terrain);
 }
 
 bool terrain_paint_active()

@@ -12,6 +12,8 @@ void ApplyTerrainPaintPatches();
 void terrain_paint_open(CDedLevel* level, DedTerrain* terrain);
 // Tools > Terrain Tools: the first selected terrain.
 void terrain_paint_open_for_selection(CDedLevel* level);
+// The panel's Properties... button: closes the panel, then opens Terrain Properties on its terrain.
+void terrain_paint_show_properties(CDedLevel* level);
 
 // The panel is open: left-drag in a viewport paints, and Undo/Redo act on paint strokes.
 bool terrain_paint_active();
