@@ -97,6 +97,8 @@ set(SRCS
     graphics/d3d11/gr_d3d11_af_lightmap.h
     graphics/d3d11/gr_d3d11_terrain.cpp
     graphics/d3d11/gr_d3d11_terrain.h
+    graphics/d3d11/gr_d3d11_decoration.cpp
+    graphics/d3d11/gr_d3d11_decoration.h
     graphics/d3d11/gr_d3d11_liquid.cpp
     graphics/d3d11/gr_d3d11_liquid.h
     graphics/d3d11/gr_d3d11_vertex.h
@@ -352,6 +354,8 @@ set(SRCS
     misc/level.cpp
     misc/alpine_terrain.cpp
     misc/alpine_terrain.h
+    misc/alpine_terrain_decorations.cpp
+    misc/alpine_terrain_decorations.h
     misc/waypoints.cpp
     misc/waypoints.h
     misc/waypoints_internal.h

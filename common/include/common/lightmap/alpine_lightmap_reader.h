@@ -19,6 +19,10 @@
 namespace alpine_lightmap
 {
 
+static_assert(max_terrain_charts >= alpine_terrain::max_terrains);
+static_assert(max_terrain_chart_dim >=
+              alpine_terrain::cells(alpine_terrain::max_verts) * alpine_terrain::lightmap_density_max);
+
 // Stock lightmap fragment dimensions of one geometry surface, border ring included.
 struct SurfaceDims
 {
@@ -850,7 +854,8 @@ inline void terrain_reduced_chart_sample(const std::uint8_t* rgb, const TerrainC
 }
 
 // Whether chart `c` lights terrain grid `g` as it is now: it covers the grid's cells at a whole density
-// of 1..lightmap_density_max and was baked for its lighting_fingerprint. Matching the uid is the caller's.
+// of 1..lightmap_density_max and was baked for its chart_fingerprint, with `decoration_hash` the terrain's
+// decoration_lighting_hash. Matching the uid is the caller's.
 enum class TerrainChartFit : std::uint8_t
 {
     match,
@@ -858,21 +863,23 @@ enum class TerrainChartFit : std::uint8_t
     stale,
 };
 
-inline TerrainChartFit terrain_chart_fit(const TerrainChart& c, const alpine_terrain::GridView& g)
+inline TerrainChartFit terrain_chart_fit(const TerrainChart& c, const alpine_terrain::GridView& g,
+                                         std::uint64_t decoration_hash)
 {
     namespace at = alpine_terrain;
     if (!terrain_chart_fits_grid(c, at::cells(g.nx), at::cells(g.nz), at::lightmap_density_max)) {
         return TerrainChartFit::other_grid;
     }
-    if (c.geometry_fingerprint != at::lighting_fingerprint(g)) {
+    if (c.geometry_fingerprint != at::chart_fingerprint(g, decoration_hash)) {
         return TerrainChartFit::stale;
     }
     return TerrainChartFit::match;
 }
 
-inline bool terrain_chart_matches(const TerrainChart& c, const alpine_terrain::GridView& g)
+inline bool terrain_chart_matches(const TerrainChart& c, const alpine_terrain::GridView& g,
+                                  std::uint64_t decoration_hash)
 {
-    return terrain_chart_fit(c, g) == TerrainChartFit::match;
+    return terrain_chart_fit(c, g, decoration_hash) == TerrainChartFit::match;
 }
 
 } // namespace alpine_lightmap

@@ -29,6 +29,10 @@ GSolid* build_brush_solid(const std::vector<Vector3>& positions, const std::vect
 // record. Takes ownership of `solid` either way.
 BrushNode* insert_detail_solid_brush(CDedLevel* level, GSolid* solid, const Vector3& pos, const Matrix3& orient);
 
+// Brush selection lives in BrushNode::state, not CDedLevel::selection: every other brush is deselected
+// and `brushes` selected, then the level is marked for rebuild and redrawn.
+void select_inserted_brushes(CDedLevel* level, const std::vector<BrushNode*>& brushes);
+
 // "To Brush" conversion options, gathered by mesh_to_brush_options_dialog.
 struct MeshToBrushOptions
 {

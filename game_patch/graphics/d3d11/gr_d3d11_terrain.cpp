@@ -81,7 +81,7 @@ namespace
     constexpr UINT num_srvs = num_base_srvs + num_overlay_srvs;
     static_assert(overlay_srv_slot == 20 && first_srv_slot + num_srvs - 1 == 24);
 
-    bool g_debug = false;
+    bool g_tint_batches = false;
 
     ComPtr<ID3D11ShaderResourceView> create_map(ID3D11Device* device, DXGI_FORMAT format, UINT w, UINT h,
                                                 const void* data, UINT row_pitch)
@@ -366,7 +366,7 @@ namespace gr::d3d11
         data.sun_travel_dir[1] = sun.travel_dir.y;
         data.sun_travel_dir[2] = sun.travel_dir.z;
         std::memcpy(data.sun_color.data(), sun.color, sizeof(data.sun_color));
-        data.debug = g_debug ? 1.0f : 0.0f;
+        data.debug = g_tint_batches ? 1.0f : 0.0f;
         for (std::size_t l = 0; l < at::max_layers; l++) {
             const bool has = l < t.layers.size();
             data.layer_uv_scale[l] = has ? t.layers[l].uv_scale : at::default_uv_scale;
@@ -447,19 +447,19 @@ namespace gr::d3d11
         map_sampler_.release();
     }
 
-    ConsoleCommand2 r_terrain_debug_cmd{
-        "r_terrain_debug",
+    ConsoleCommand2 dbg_terrain_batches_cmd{
+        "dbg_terrain_batches",
         [](std::optional<int> value) {
-            g_debug = value ? value.value() != 0 : !g_debug;
+            g_tint_batches = value ? value.value() != 0 : !g_tint_batches;
             rf::console::print("Terrain batch tint is {} (green: surface, red: underside, blue: crater)",
-                               g_debug ? "on" : "off");
+                               g_tint_batches ? "on" : "off");
         },
         "Tints terrain faces by the batch that draws them (Direct3D 11 renderer only)",
-        "r_terrain_debug [0|1]",
+        "dbg_terrain_batches [0|1]",
     };
 
     void terrain_register_commands()
     {
-        r_terrain_debug_cmd.register_cmd();
+        dbg_terrain_batches_cmd.register_cmd();
     }
 }

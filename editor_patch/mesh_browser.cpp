@@ -126,7 +126,6 @@ struct BrowserState
     int tree_full_bottom; // mesh tree bottom with the animation pane hidden
 };
 
-const Matrix3 identity_orient{{1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f, 1.0f}};
 // The preview draws in its own space rather than beside the editor camera: with the light list
 // emptied and a fixed ambient, nothing about the result depends on where the level is.
 const Vector3 preview_origin{0.0f, 0.0f, 0.0f};

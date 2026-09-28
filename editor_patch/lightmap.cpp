@@ -20,6 +20,7 @@
 #include <patch_common/ShortTypes.h>
 #include <xlog/xlog.h>
 #include <common/scope_guard.h>
+#include <common/bitmap/formats.h>
 #include <common/lightmap/alpine_lightmap.h>
 #include "level.h"
 #include "lightmap_mesh_occluders.h"
@@ -237,8 +238,9 @@ CodeInjection lightmap_light_limit_injection{
         int light_count = regs.edi;
 
         // One shadow mask per light of this surface
-        int width = *reinterpret_cast<int*>(regs.esi + 0x18);
-        int height = *reinterpret_cast<int*>(regs.esi + 0x1c);
+        const auto* surface = reinterpret_cast<const GSurface*>(static_cast<uintptr_t>(regs.esi));
+        int width = surface->width;
+        int height = surface->height;
         if (light_count >= max_shadow_masks) {
             xlog::warn("Lightmap: {} lights affect the surface at 0x{:x}, exceeding the {} shadow "
                        "mask limit! Falling back to pink fill",
@@ -357,7 +359,7 @@ void lightmap_synthesized_page_resize(int edge)
     page->w = edge;
     page->h = edge;
     page->pixels = pixels;
-    page->bm_handle = bm_create(5, edge, edge);
+    page->bm_handle = bm_create(BM_FORMAT_1555_ARGB, edge, edge);
     g_synth_page = page;
     auto* level = CDedLevel::Get();
     const bool omitted = level && level->GetAlpineLevelProperties().stock_lightmaps_omitted;
@@ -680,7 +682,7 @@ CodeInjection lightmap_per_texel_ambient_fill_injection{
         const float base_r = *reinterpret_cast<float*>(esp + 0x18);
         const float base_g = *reinterpret_cast<float*>(esp + 0x1c);
         const float base_b = *reinterpret_cast<float*>(esp + 0x20);
-        const float shadowed = lm_read_const(0x00554720); // 0.5
+        const float shadowed = red_const_half;
 
         auto* buf_r = reinterpret_cast<float*>(0x0138a620);
         auto* buf_g = reinterpret_cast<float*>(0x0140ac20);
@@ -1065,24 +1067,24 @@ bool OccluderTree::build(uintptr_t solid, const NoShadowCastFilter& no_shadow_ca
             tris_.push_back(t);
         }
     }
-    // Alpine mesh objects live in world space, so they only belong to the static solid's tree; a
-    // mover's tree is brush local and answers only the rays cast onto that mover.
+    // Alpine mesh objects and terrain decorations live in world space, so they only belong to the
+    // static solid's tree; a mover's tree is brush local and answers only the rays cast onto that mover.
     if (!local_space) {
         std::vector<MeshOccluderTri> mesh_tris;
-        if (lightmap_collect_mesh_occluders(mesh_tris)) {
-            for (const MeshOccluderTri& m : mesh_tris) {
-                OccTri t{};
-                if (!occ_make_tri({m.v0.x, m.v0.y, m.v0.z}, {m.v1.x, m.v1.y, m.v1.z},
-                                  {m.v2.x, m.v2.y, m.v2.z}, t)) {
-                    continue;
-                }
-                // no surface owns a mesh triangle and none of the face flag classes apply to it,
-                // so it is a plain two-sided occluder that only answers to the alpha property
-                t.surf_id = -1;
-                t.mesh_uid = m.uid;
-                t.flags = m.alpha ? lm_occ_alpha_texture : 0u;
-                tris_.push_back(t);
+        lightmap_collect_mesh_occluders(mesh_tris);
+        lightmap_collect_decoration_occluders(mesh_tris);
+        for (const MeshOccluderTri& m : mesh_tris) {
+            OccTri t{};
+            if (!occ_make_tri({m.v0.x, m.v0.y, m.v0.z}, {m.v1.x, m.v1.y, m.v1.z}, {m.v2.x, m.v2.y, m.v2.z},
+                              t)) {
+                continue;
             }
+            // no surface owns a mesh triangle and none of the face flag classes apply to it,
+            // so it is a plain two-sided occluder that only answers to the alpha property
+            t.surf_id = -1;
+            t.mesh_uid = m.uid;
+            t.flags = m.alpha ? lm_occ_alpha_texture : 0u;
+            tris_.push_back(t);
         }
     }
     if (tris_.empty()) {
@@ -1413,6 +1415,9 @@ static void sun_cone_directions(const Vec3f& axis, float spread_deg, Vec3f* out,
     }
 }
 
+namespace
+{
+
 // How one light's shadow rays are cast from a receiving point.
 struct LightRays
 {
@@ -1426,12 +1431,14 @@ struct LightRays
     int cone_count = 0;
 };
 
+} // namespace
+
 static bool light_rays_setup(uintptr_t light, LightRays& lr)
 {
     const auto* l = reinterpret_cast<const GrLight*>(light);
     lr.type = l->type;
     // while a mover transform is pushed the engine keeps the light in the solid's own space
-    const bool local = *reinterpret_cast<int*>(0x0158f414) != 0;
+    const bool local = gr_transform_stack_depth != 0;
     lr.vec = local ? &l->local_vec.x : &l->vec.x;
     lr.vec_end = local ? &l->local_vec2.x : &l->vec2.x;
     lr.radius = l->rad_2;
@@ -1645,7 +1652,7 @@ public:
     BakeScope& operator=(const BakeScope&) = delete;
 };
 
-static void lighting_calc_report_refusal(const char* msg)
+void lighting_calc_report_refusal(const char* msg)
 {
     editor_report_blocking("Lightmap", "Calculate Lighting", msg);
     headless_bake_mark_refused();
@@ -1672,10 +1679,13 @@ static bool lighting_calc_fits(std::uint32_t pages, std::uint64_t headroom, cons
 static constexpr std::uint64_t lighting_surface_pass_headroom = 64ull << 20;
 
 // Before Calculate Lighting frees the level's lightmaps: refused unless a bake of the most pages fits
-// after the surface pass.
+// after the surface pass. Only surface charts (which movers follow) and terrain charts take pages.
 bool lighting_calc_memory_admits()
 {
-    return lighting_calc_fits(alpine_lightmap::max_pages, lighting_surface_pass_headroom,
+    auto* level = CDedLevel::Get();
+    const auto* props = level ? &level->GetAlpineLevelProperties() : nullptr;
+    const bool alpine_pages = props && (props->surface_charts_enabled() || !props->terrain_objects.empty());
+    return lighting_calc_fits(alpine_pages ? alpine_lightmap::max_pages : 0, lighting_surface_pass_headroom,
                               "Save the level and restart RED.");
 }
 
@@ -1692,6 +1702,9 @@ static bool lighting_calc_memory_ok(std::uint32_t pages, bool surface_pass_ran)
               "restart RED and run Calculate Lighting again. Saving now saves the level without its Alpine "
               "lightmaps.");
 }
+
+namespace
+{
 
 // The alpine half of a bake: one that is left without finishing is dropped, not encoded.
 class AlpineBakeScope
@@ -1724,7 +1737,12 @@ public:
             finished_ = true;
         }
         catch (...) {
-            xlog::error("Lightmap: the alpine lightmap section could not be encoded and is dropped");
+            try {
+                editor_report(EditorReportLevel::error, "Lightmap",
+                              "the alpine lightmap section could not be encoded and is dropped", true);
+            }
+            catch (...) {
+            }
         }
     }
     ~AlpineBakeScope()
@@ -1745,6 +1763,8 @@ private:
     bool admitted_ = true;
 };
 
+} // namespace
+
 // The blend and ring copy passes after FUN_004ac470 address every flagged surface's rect in its
 // page with no bound, so a layout that does not fit its pages must not be baked at all.
 static bool lighting_calc_refused()
@@ -1757,17 +1777,17 @@ static bool lighting_calc_refused()
     if (!level || !level->solid) {
         return false;
     }
-    const auto [count, elems] = solid_surfaces(reinterpret_cast<uintptr_t>(level->solid));
+    const auto surfaces = solid_surfaces(level->solid);
     const auto& props = level->GetAlpineLevelProperties();
     const bool stock_may_be_written = !(props.d3d11_only_lightmaps && props.surface_charts_enabled());
-    if (g_stock_layout_synthesized && stock_may_be_written && count > 0) {
+    if (g_stock_layout_synthesized && stock_may_be_written && !surfaces.empty()) {
         lighting_calc_report_refusal(
             "Calculate Lighting was not run: this level was loaded without stock lightmaps, so its "
             "surfaces share one page and would bake over each other. Run Build Geometry first.");
         return true;
     }
-    for (int i = 0; elems && i < count; i++) {
-        const auto* s = *reinterpret_cast<const GSurface* const*>(elems + i * 4);
+    for (int i = 0; i < static_cast<int>(surfaces.size()); i++) {
+        const GSurface* s = surfaces[i];
         const GLightmap* lm = s ? s->lightmap : nullptr;
         if (!lm) {
             continue;
@@ -1959,9 +1979,9 @@ static void __cdecl sun_shadow_mask_new(uintptr_t solid, uintptr_t surface, uint
                    "surface, falling back to the stock projector for it");
     }
 
-    // while a mover transform is pushed (DAT_0158f414) the engine reads the solid-local copy
-    const int vec_off = *reinterpret_cast<int*>(0x0158f414) != 0 ? 0x5c : 0x0c;
-    auto* vec = reinterpret_cast<float*>(light + vec_off);
+    // while a mover transform is pushed the engine reads the solid-local copy
+    auto& light_ref = *reinterpret_cast<GrLight*>(light);
+    float* vec = gr_transform_stack_depth != 0 ? &light_ref.local_vec.x : &light_ref.vec.x;
     Vector3 to_sun{vec[0], vec[1], vec[2]};
     if (!sun_normalize(to_sun)) {
         sun_shadow_mask_hook.call_target(solid, surface, light, debug, mask);
@@ -1977,7 +1997,7 @@ static void __cdecl sun_shadow_mask_new(uintptr_t solid, uintptr_t surface, uint
                        center.z + to_sun.z * sun_origin_distance};
 
     const float saved_vec[3] = {vec[0], vec[1], vec[2]};
-    auto& rad_2 = *reinterpret_cast<float*>(light + 0x3c);
+    float& rad_2 = light_ref.rad_2;
     const float saved_rad_2 = rad_2;
     rad_2 = 1.0e9f;
 
@@ -3044,8 +3064,7 @@ static void __cdecl lightmap_blend_surfaces_new(void** a, void** b, void* p3, vo
             }
             if (lightmap_blend_edge(reinterpret_cast<uintptr_t>(*a),
                                     reinterpret_cast<uintptr_t>(*b), p_0, p_1)) {
-                alpine_lm_blend_edge(reinterpret_cast<uintptr_t>(*a),
-                                     reinterpret_cast<uintptr_t>(*b), p_0, p_1);
+                alpine_lm_blend_edge(static_cast<const GSurface*>(*a), static_cast<const GSurface*>(*b), p_0, p_1);
                 return;
             }
         }
@@ -3221,13 +3240,7 @@ bool lightmap_light_terrain_points(const LightmapPoint* points, int count, float
     }
 
     const int lights = std::clamp(room_setup_bbox(nullptr, &lo, &hi, 0, 1), 0, max_scene_lights);
-    struct LightListScope
-    {
-        ~LightListScope()
-        {
-            room_cleanup();
-        }
-    } light_list_scope;
+    ScopeGuard light_list_scope{[] { room_cleanup(); }};
     room_lights_to_local();
     if (lights == 0) {
         return true;
@@ -3293,28 +3306,27 @@ void lightmap_prepare_terrain_bake()
 // FUN_004ac470 shades one surface into its lightmap page. After the stock pass has produced the
 // stock fragment, the alpine writer re-runs this same function once per chart tile against a tile
 // view of the surface, then box-averages the result back into the stock fragment's interior.
-static void __fastcall lightmap_shade_surface_new(void* surface, int edx, void* solid, int mode);
-static FunHook<void __fastcall(void*, int, void*, int)> lightmap_shade_surface_hook{
+static void __fastcall lightmap_shade_surface_new(GSurface* surface, int edx, void* solid, int mode);
+static FunHook<void __fastcall(GSurface*, int, void*, int)> lightmap_shade_surface_hook{
     0x004ac470, lightmap_shade_surface_new};
 
-static void __fastcall lightmap_shade_surface_new(void* surface, int edx, void* solid, int mode)
+static void __fastcall lightmap_shade_surface_new(GSurface* surface, int edx, void* solid, int mode)
 {
     if (alpine_lm_tile_pass_active()) {
         lightmap_shade_surface_hook.call_target(surface, edx, solid, mode);
         return;
     }
-    auto* s = static_cast<GSurface*>(surface);
     // Every write this function makes is addressed as (ystart + row) * page_w + xstart + col, with
     // no bound of its own. The bake is refused up front when a rect does not fit its page; this
     // is the backstop.
-    const GLightmap* lm = s->lightmap;
+    const GLightmap* lm = surface->lightmap;
     if (lm) {
         const int page_w = lm->w;
         const int page_h = lm->h;
-        const int x = s->xstart;
-        const int y = s->ystart;
-        const int w = s->width;
-        const int h = s->height;
+        const int x = surface->xstart;
+        const int y = surface->ystart;
+        const int w = surface->width;
+        const int h = surface->height;
         if (x < 0 || y < 0 || w < 0 || h < 0 || x + w > page_w || y + h > page_h) {
             static bool warned = false;
             if (!warned) {
@@ -3323,18 +3335,18 @@ static void __fastcall lightmap_shade_surface_new(void* surface, int edx, void* 
                            "skipping it - the level needs Build Geometry",
                            w, h, x, y, page_w, page_h);
             }
-            s->flags = 0;
+            surface->flags = 0;
             return;
         }
     }
     // both halves of the engine's own gate at 0x004ac48c: shade only for SURFACE_SHADE or
     // SURFACE_SHADE_RUNTIME, and never when fullbright is set, or the tile pass would produce a black
     // chart and downsample it back
-    const std::uint8_t state = s->flags;
-    const std::uint8_t fullbright = s->fullbright;
+    const std::uint8_t state = surface->flags;
+    const std::uint8_t fullbright = surface->fullbright;
     lightmap_shade_surface_hook.call_target(surface, edx, solid, mode);
     if ((state & (SURFACE_SHADE | SURFACE_SHADE_RUNTIME)) && !fullbright) {
-        alpine_lm_shade_surface(reinterpret_cast<uintptr_t>(solid), reinterpret_cast<uintptr_t>(surface), mode);
+        alpine_lm_shade_surface(static_cast<GSolid*>(solid), surface, mode);
     }
 }
 

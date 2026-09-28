@@ -328,6 +328,9 @@ add_packfile(alpinefaction.vpp
     standard_nogas_ps:${CMAKE_BINARY_DIR}/shaders/standard_nogas_ps.bin
     terrain_ps:${CMAKE_BINARY_DIR}/shaders/terrain_ps.bin
     terrain_nogas_ps:${CMAKE_BINARY_DIR}/shaders/terrain_nogas_ps.bin
+    decoration_vs:${CMAKE_BINARY_DIR}/shaders/decoration_vs.bin
+    decoration_ps:${CMAKE_BINARY_DIR}/shaders/decoration_ps.bin
+    decoration_nogas_ps:${CMAKE_BINARY_DIR}/shaders/decoration_nogas_ps.bin
     ui_ps:${CMAKE_BINARY_DIR}/shaders/ui_ps.bin
     shadow_debug_ps:${CMAKE_BINARY_DIR}/shaders/shadow_debug_ps.bin
     outline_ps:${CMAKE_BINARY_DIR}/shaders/outline_ps.bin

@@ -15,6 +15,7 @@
 #include "../rf/gr/gr_light.h"
 #include "../graphics/gr.h"
 #include "../graphics/af_lightmap.h"
+#include "../multi/multi.h"
 
 namespace at = alpine_terrain;
 
@@ -34,108 +35,16 @@ std::vector<RoomSlot> g_room_slots;
 // Far above any real level's room count, so a garbage index cannot size the table.
 constexpr int max_room_index = 1 << 20;
 
-AlpineTerrain terrain_from_record(at::Record& rec)
-{
-    AlpineTerrain t;
-    t.uid = rec.uid;
-    t.script_name = std::move(rec.script_name);
-    t.header = rec.header;
-    t.underside_texture = std::move(rec.underside_texture);
-    t.crater_texture = std::move(rec.crater_texture);
-    t.layers.reserve(rec.layers.size());
-    for (at::RecordLayer& layer : rec.layers) {
-        t.layers.push_back({std::move(layer.texture), layer.uv_scale, layer.triplanar});
-    }
-    t.overlays.reserve(rec.overlays.size());
-    for (at::RecordOverlay& overlay : rec.overlays) {
-        t.overlays.push_back({std::move(overlay.texture), overlay.uv_scale, overlay.triplanar, overlay.break_tiling});
-    }
-    t.build_mapping = std::move(rec.build_mapping);
-    t.heights = std::move(rec.heights);
-    t.weights = std::move(rec.weights);
-    t.holes = std::move(rec.holes);
-    t.diag = std::move(rec.diag);
-    t.geo_chunks = std::move(rec.geo_chunks);
-    t.overlay_coverage = std::move(rec.overlay_coverage);
-    return t;
-}
-
-} // namespace
-
-void alpine_terrain_load_chunk(rf::File& file, std::size_t chunk_len)
-{
-    std::size_t remaining = chunk_len;
-    rf::File::ChunkGuard chunk_guard{file, remaining};
-    AlpineChunkReader reader{file, remaining};
-
-    std::uint32_t count = 0;
-    if (!reader.read_bytes(&count, sizeof(count))) {
-        xlog::warn("[AlpineTerrain] Ignoring the terrain chunk: truncated");
-        return;
-    }
-    if (count > at::max_terrains - g_terrains.size()) {
-        xlog::warn("[AlpineTerrain] Ignoring the terrain chunk: {} more terrains would exceed {}", count,
-                   at::max_terrains);
-        return;
-    }
-
-    // The paint maps are only ever texture sources for the D3D11 terrain renderer, which cannot be
-    // switched to mid-session.
-    const bool keep_paint_maps = !rf::is_dedicated_server && is_d3d11();
-
-    // All or nothing: after a bad record nothing later in the chunk can be trusted.
-    std::vector<AlpineTerrain> parsed;
-    std::uint64_t total_raw = 0;
-    for (const auto& t : g_terrains) total_raw += at::header_raw_size(t.header);
-    // Sized by the file, inside an engine call nothing may unwind through.
-    try {
-        for (std::uint32_t i = 0; i < count; ++i) {
-            at::Record rec;
-            if (const char* err = at::read_record(reader, rec, total_raw)) {
-                xlog::warn("[AlpineTerrain] Ignoring the terrain chunk: record {} {}", i, err);
-                return;
-            }
-            AlpineTerrain& t = parsed.emplace_back(terrain_from_record(rec));
-            if (!keep_paint_maps) {
-                t.weights.clear();
-                t.weights.shrink_to_fit();
-                t.overlay_coverage.clear();
-                t.overlay_coverage.shrink_to_fit();
-            }
-        }
-        g_terrains.reserve(g_terrains.size() + parsed.size());
-    }
-    catch (const std::bad_alloc&) {
-        xlog::warn("[AlpineTerrain] Ignoring the terrain chunk: out of memory");
-        return;
-    }
-
-    for (auto& t : parsed) g_terrains.push_back(std::move(t));
-    xlog::info("[AlpineTerrain] Loaded {} terrain(s)", parsed.size());
-}
-
-void alpine_terrain_clear_state()
-{
-    g_terrains.clear();
-    g_terrains.shrink_to_fit();
-    g_room_slots.clear();
-    g_room_slots.shrink_to_fit();
-}
-
-namespace
-{
-
 // vertex_count and pos_hash of a compiled room, as alpine_terrain.h defines them for the mapping.
 bool room_position_hash(rf::GRoom* room, std::vector<at::PositionKey>& keys, std::uint32_t& count,
                         std::uint64_t& hash)
 {
-    constexpr int max_fverts = 10000;
     keys.clear();
     for (rf::GFace& face : room->face_list) {
         const rf::GFaceVertex* head = face.edge_loop;
         int n = 0;
         for (const rf::GFaceVertex* fv = head; fv;) {
-            if (++n > max_fverts) return false;
+            if (++n > rf::max_face_vertices) return false;
             if (fv->vertex) keys.push_back(at::position_key(fv->vertex->pos.x, fv->vertex->pos.y, fv->vertex->pos.z));
             fv = fv->next;
             if (fv == head) break;
@@ -171,7 +80,104 @@ const char* resolve_terrain(const AlpineTerrain& t, const std::unordered_map<int
     return nullptr;
 }
 
+// Before anything is freed: it reads the decoration planes and the weights of linked layers.
+std::uint64_t decoration_light_hash(const AlpineTerrain& t)
+{
+    at::DecorationView views[at::max_decorations];
+    const std::size_t plane = at::decoration_plane_bytes(t.header.nx, t.header.nz, t.header.weight_res_mul);
+    const auto count = static_cast<std::uint32_t>(std::min<std::size_t>(t.decorations.size(), at::max_decorations));
+    for (std::uint32_t i = 0; i < count; i++) {
+        const bool planed = t.decoration_coverage.size() >= (i + 1) * plane;
+        views[i] =
+            at::make_decoration_view(t.decorations[i], planed ? t.decoration_coverage.data() + i * plane : nullptr);
+    }
+    return at::decoration_lighting_hash(t.uid, alpine_terrain_grid(t), views, count);
+}
+
 } // namespace
+
+void alpine_terrain_load_chunk(rf::File& file, std::size_t chunk_len)
+{
+    std::size_t remaining = chunk_len;
+    rf::File::ChunkGuard chunk_guard{file, remaining};
+    AlpineChunkReader reader{file, remaining};
+
+    std::uint32_t count = 0;
+    if (!reader.read_bytes(&count, sizeof(count))) {
+        xlog::warn("[AlpineTerrain] Ignoring the terrain chunk: truncated");
+        return;
+    }
+    if (count > at::max_terrains - g_terrains.size()) {
+        xlog::warn("[AlpineTerrain] Ignoring the terrain chunk: {} more terrains would exceed {}", count,
+                   at::max_terrains);
+        return;
+    }
+
+    // The paint maps are texture sources for the D3D11 terrain renderer, which cannot be switched to
+    // mid-session; the weights and decoration planes also place decorations, which only a client that
+    // renders draws.
+    const bool keep_paint_maps = !rf::is_dedicated_server && is_d3d11();
+    const bool renders = !rf::is_dedicated_server && !is_headless_mode();
+
+    // All or nothing: after a bad record nothing later in the chunk can be trusted.
+    std::vector<AlpineTerrain> parsed;
+    std::uint64_t total_raw = 0;
+    for (const auto& t : g_terrains) total_raw += at::header_raw_size(t.header);
+    // Sized by the file, inside an engine call nothing may unwind through.
+    try {
+        for (std::uint32_t i = 0; i < count; ++i) {
+            at::Record rec;
+            if (const char* err = at::read_record(reader, rec, total_raw)) {
+                xlog::warn("[AlpineTerrain] Ignoring the terrain chunk: record {} {}", i, err);
+                return;
+            }
+            AlpineTerrain& t = parsed.emplace_back(AlpineTerrain{std::move(rec)});
+            t.decoration_light_hash = decoration_light_hash(t);
+            const bool decorated = renders && !t.decorations.empty();
+            if (!keep_paint_maps && !decorated) {
+                t.weights.clear();
+                t.weights.shrink_to_fit();
+            }
+            if (!keep_paint_maps) {
+                t.overlay_coverage.clear();
+                t.overlay_coverage.shrink_to_fit();
+            }
+            if (!decorated) {
+                t.decoration_coverage.clear();
+                t.decoration_coverage.shrink_to_fit();
+            }
+        }
+        g_terrains.reserve(g_terrains.size() + parsed.size());
+    }
+    catch (const std::bad_alloc&) {
+        xlog::warn("[AlpineTerrain] Ignoring the terrain chunk: out of memory");
+        return;
+    }
+
+    for (auto& t : parsed) g_terrains.push_back(std::move(t));
+    xlog::info("[AlpineTerrain] Loaded {} terrain(s)", parsed.size());
+}
+
+void alpine_terrain_clear_state()
+{
+    g_terrains.clear();
+    g_terrains.shrink_to_fit();
+    g_room_slots.clear();
+    g_room_slots.shrink_to_fit();
+}
+
+void alpine_terrain_release_decoration_maps()
+{
+    const bool keep_paint_maps = is_d3d11();
+    for (AlpineTerrain& t : g_terrains) {
+        t.decoration_coverage.clear();
+        t.decoration_coverage.shrink_to_fit();
+        if (!keep_paint_maps) {
+            t.weights.clear();
+            t.weights.shrink_to_fit();
+        }
+    }
+}
 
 void alpine_terrain_resolve_rooms()
 {
@@ -241,7 +247,7 @@ const AlpineTerrainRoomRef* alpine_terrain_find_room(const rf::GRoom* room)
 
 bool alpine_terrain_is_separate_chunk(const rf::GRoom* parent, const rf::GRoom* detail_room)
 {
-    return parent && !parent->is_sky && alpine_terrain_find_room(detail_room);
+    return parent && !parent->is_sky && alpine_terrain_is_chunk_room(detail_room);
 }
 
 at::GridView alpine_terrain_grid(const AlpineTerrain& t)
@@ -257,10 +263,9 @@ const std::vector<AlpineTerrain>& alpine_terrain_get_all()
 
 at::FaceKind alpine_terrain_face_kind(const at::GridView& g, const rf::GFace& face)
 {
-    constexpr int max_fverts = 10000;
     return at::face_kind(g, [&](auto&& visit) {
         int n = 0;
-        for (const rf::GFaceVertex* fv = face.edge_loop; fv && fv->vertex && n < max_fverts; n++) {
+        for (const rf::GFaceVertex* fv = face.edge_loop; fv && fv->vertex && n < rf::max_face_vertices; n++) {
             visit(fv->vertex->pos.x, fv->vertex->pos.y, fv->vertex->pos.z);
             fv = fv->next;
             if (fv == face.edge_loop) break;
@@ -268,10 +273,10 @@ at::FaceKind alpine_terrain_face_kind(const at::GridView& g, const rf::GFace& fa
     });
 }
 
-void alpine_terrain_sample_light(const AlpineTerrain& t, at::FaceKind kind, const float (&pos)[3],
+void alpine_terrain_sample_light(int terrain, at::FaceKind kind, const float (&pos)[3],
                                  const float (&face_normal)[3], float (&texel)[3])
 {
-    const at::GridView g = alpine_terrain_grid(t);
+    const at::GridView g = alpine_terrain_grid(g_terrains[static_cast<std::size_t>(terrain)]);
     float n[3] = {face_normal[0], face_normal[1], face_normal[2]};
     if (kind == at::FaceKind::top) {
         at::heightmap_normal(g, pos[0], pos[2], n);
@@ -282,12 +287,9 @@ void alpine_terrain_sample_light(const AlpineTerrain& t, at::FaceKind kind, cons
 
     // The baked terrain chart where the level carries one, the texel ter_base_light samples. It holds
     // the top surface's light, which craters take dimmed and the underside does not use.
-    if (kind != at::FaceKind::underside) {
-        const std::size_t index = static_cast<std::size_t>(&t - g_terrains.data());
-        if (index < g_terrains.size() && af_lightmap_terrain_sample(static_cast<int>(index), pos[0], pos[2], texel)) {
-            for (float& c : texel) c *= scale;
-            return;
-        }
+    if (kind != at::FaceKind::underside && af_lightmap_terrain_sample(terrain, pos[0], pos[2], texel)) {
+        for (float& c : texel) c *= scale;
+        return;
     }
 
     // Otherwise identical to ter_base_light without a chart: level ambient plus the sun's N.L. The

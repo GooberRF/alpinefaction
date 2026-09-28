@@ -41,7 +41,8 @@ public:
             std::lock_guard lock{mutex_};
             job_ = &fn;
             count_ = count;
-            // Workers take the caller's x87 precision/rounding and SSE state, so no item's result depends on its thread.
+            // Workers take the caller's x87 precision/rounding and SSE state, so no item's result depends
+            // on its thread.
             fp_control_ = _control87(0, 0);
             fp_csr_ = _mm_getcsr();
             next_.store(0);

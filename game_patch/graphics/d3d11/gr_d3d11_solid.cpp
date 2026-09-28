@@ -19,6 +19,7 @@
 #include "../../misc/misc.h"
 #include "../../misc/alpine_options.h"
 #include "../../misc/alpine_terrain.h"
+#include "../../misc/alpine_terrain_decorations.h"
 #include "../../os/os.h"
 #include "../af_lightmap.h"
 #include "gr_d3d11.h"
@@ -467,11 +468,10 @@ namespace gr::d3d11
         };
         auto fvert = face->edge_loop;
         int num_fverts = 0;
-        constexpr int max_fverts = 10000;
         while (fvert) {
             ++num_fverts;
-            if (num_fverts > max_fverts) {
-                xlog::error("add_face: edge_loop exceeds {} vertices, likely corrupted", max_fverts);
+            if (num_fverts > rf::max_face_vertices) {
+                xlog::error("add_face: edge_loop exceeds {} vertices, likely corrupted", rf::max_face_vertices);
                 remove_face();
                 return;
             }
@@ -501,11 +501,9 @@ namespace gr::d3d11
         num_inds_ += (1 + num_dp) * (num_fverts - 2) * 3;
     }
 
-    constexpr int max_face_fan_verts = 10000;
-
     static void report_long_edge_loop()
     {
-        xlog::error("build: edge_loop exceeds {} vertices", max_face_fan_verts);
+        xlog::error("build: edge_loop exceeds {} vertices", rf::max_face_vertices);
     }
 
     // Appends `face` as a triangle fan: fill(vertex, fvert, index) sets each vertex. A loop longer than
@@ -561,7 +559,7 @@ namespace gr::d3d11
                 auto af_it = af_surfaces_.find(face);
                 bool has_af = af_it != af_surfaces_.end()
                     && af_lightmap_face_setup(solid_, af_it->second, af_face);
-                emit_face_fan(face, vb_data, ib_data, base_vertex, max_face_fan_verts, report_long_edge_loop,
+                emit_face_fan(face, vb_data, ib_data, base_vertex, rf::max_face_vertices, report_long_edge_loop,
                     [&](GpuVertex& gpu_vert, rf::GFaceVertex* fvert, int) {
                         gpu_vert.x = fvert->vertex->pos.x;
                         gpu_vert.y = fvert->vertex->pos.y;
@@ -644,7 +642,7 @@ namespace gr::d3d11
 
             for (auto [face, kind] : faces) {
                 if (!face->edge_loop) continue;
-                emit_face_fan(face, vb_data, ib_data, base_vertex, max_face_fan_verts, report_long_edge_loop,
+                emit_face_fan(face, vb_data, ib_data, base_vertex, rf::max_face_vertices, report_long_edge_loop,
                     [&](GpuVertex& gpu_vert, rf::GFaceVertex* fvert, int) {
                         gpu_vert.x = fvert->vertex->pos.x;
                         gpu_vert.y = fvert->vertex->pos.y;
@@ -989,6 +987,21 @@ namespace gr::d3d11
         return true;
     }
 
+    // Decorations reach past their chunk's faces, so they are culled by their own box, once per pass.
+    void SolidRenderer::collect_decoration_chunk(const rf::GRoom* room)
+    {
+        const AlpineTerrainRoomRef* ref = alpine_terrain_find_room(room);
+        const DecoChunk* chunk = ref ? alpine_terrain_decoration_chunk(*ref) : nullptr;
+        if (!chunk) {
+            return;
+        }
+        const rf::Vector3 lo{chunk->lo[0], chunk->lo[1], chunk->lo[2]};
+        const rf::Vector3 hi{chunk->hi[0], chunk->hi[1], chunk->hi[2]};
+        if (!rf::gr::cull_bounding_box(lo, hi) && claim_terrain_chunk(terrain_decorations_seen_, room)) {
+            decoration_chunks_.push_back(*ref);
+        }
+    }
+
     // Whether render_solid drew terrain chunk `room` this pass.
     bool SolidRenderer::terrain_chunk_drawn(const rf::GRoom* room) const
     {
@@ -1228,6 +1241,8 @@ namespace gr::d3d11
         bound_terrain_ = -1;
         bound_crater_texture_ = no_crater_texture;
         ++terrain_pass_;
+        decoration_chunks_.clear();
+        const bool decorations = alpine_terrain_decorations_active();
         render_context_.set_sky_room(false);
         render_context_.set_draw_room_uid(-1);
         rf::gr::light_filter_set_solid(solid, 1, 0);
@@ -1243,13 +1258,17 @@ namespace gr::d3d11
             // Note: calling set_currently_rendered_room could improve culling here but it breaks some levels
             // if a detail brush is contained in multiple normal rooms
             for (rf::GRoom* detail_room : room->detail_rooms) {
+                const bool separate_chunk = alpine_terrain_is_separate_chunk(room, detail_room);
+                if (decorations && separate_chunk) {
+                    collect_decoration_chunk(detail_room);
+                }
                 if (detail_room->face_list.empty()) {
                     // Happens when a breakable detail brush is destroyed
                     continue;
                 }
                 // room_to_render_with is fixed by the frame's first portal pass (a monitor, say), so
                 // terrain chunks go by this pass's own rooms instead.
-                const bool draw = alpine_terrain_is_separate_chunk(room, detail_room)
+                const bool draw = separate_chunk
                     ? !rf::gr::cull_bounding_box(detail_room->bbox_min, detail_room->bbox_max) &&
                           claim_terrain_chunk(terrain_drawn_, detail_room)
                     : detail_room->room_to_render_with == room &&

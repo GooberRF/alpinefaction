@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <patch_common/MemUtils.h>
 #include "mfc_types.h"
 
@@ -306,18 +307,19 @@ static_assert(offsetof(EditorV3d, meshes) == 0x4C);
 // EditorVifFace::flags bit marking a face the renderer draws from both sides.
 constexpr int VIF_FACE_DOUBLE_SIDED = 0x20;
 
-// Calls fn(vif_mesh, chunk, vertex) for every LOD 0 chunk that carries geometry. Shared by the
-// lightmap mesh occluders and the mesh-to-brush conversion so both see the same set of chunks.
+// Calls fn(vif_mesh, chunk, vertex) for every chunk of detail level `level` (clamped to the
+// levels the mesh has) that carries geometry. Shared by the lightmap occluders and the
+// mesh-to-brush conversion so all see the same set of chunks.
 // vertex(i) yields chunk vertex i in render-space mesh-local coordinates: the engine draws a
 // submesh at pos + orient * (lod_mesh->center + v), so the owning lod mesh's center is added here
 // and every caller works in the space the editor renders.
 template<typename Fn>
-inline void vmesh_for_each_lod0_chunk(const EditorVifLodMesh* lod, Fn&& fn)
+inline void vmesh_for_each_lod_chunk(const EditorVifLodMesh* lod, int level, Fn&& fn)
 {
     if (!lod || lod->num_levels <= 0) {
         return;
     }
-    const EditorVifMesh* vm = lod->meshes[0];
+    const EditorVifMesh* vm = lod->meshes[std::clamp(level, 0, std::min(lod->num_levels, 3) - 1)];
     if (!vm || !vm->chunks) {
         return;
     }
@@ -333,6 +335,12 @@ inline void vmesh_for_each_lod0_chunk(const EditorVifLodMesh* lod, Fn&& fn)
         };
         fn(*vm, chunk, vertex);
     }
+}
+
+template<typename Fn>
+inline void vmesh_for_each_lod0_chunk(const EditorVifLodMesh* lod, Fn&& fn)
+{
+    vmesh_for_each_lod_chunk(lod, 0, std::forward<Fn>(fn));
 }
 
 // Whether a face's three indices are inside its chunk's vertex array.
@@ -426,6 +434,11 @@ static auto& vmesh_load_v3c = addr_as_ref<EditorVMesh*(const char* filename, int
 static auto& vmesh_load_vfx = addr_as_ref<EditorVMesh*(const char* filename, int param2)>(0x004BFE10);
 static auto& vmesh_free = addr_as_ref<void(EditorVMesh* vmesh)>(0x004BFEC0);
 static auto& vmesh_render = addr_as_ref<void(EditorVMesh* vmesh, const void* pos, const void* orient, const EditorRenderParams* params)>(0x004C04B0);
+// vmesh_render of one submesh of a static mesh (-1 = all). The engine takes the camera into mesh space
+// with orient's transpose (FUN_004edf50), so an orient scaled by s draws the submesh as if the camera
+// sat s * s times as far from its centre.
+static auto& vmesh_render_submesh = addr_as_ref<void(EditorVMesh* vmesh, int submesh, const void* pos,
+                                                     const void* orient, const EditorRenderParams* params)>(0x004BFED0);
 static auto& vmesh_get_bound_sphere = addr_as_ref<void(EditorVMesh* vmesh, void* center_out, void* radius_out)>(0x004C0680);
 static auto& vmesh_process = addr_as_ref<void(EditorVMesh* vmesh, float time, int param3, const void* pos, const void* orient, int param6)>(0x004C0710);
 static auto& vmesh_anim_init = addr_as_ref<void(EditorVMesh* vmesh, int start_frame, float speed)>(0x004C0740);
@@ -705,6 +718,12 @@ inline void editor_view_mark_repaint(void* view)
         static_cast<EditorViewport*>(view)->needs_repaint = 1;
     }
 }
+inline void editor_views_mark_repaint_all()
+{
+    for (int i = 0; i < editor_num_views; i++) {
+        editor_view_mark_repaint(editor_view_at(i));
+    }
+}
 
 // ─── Editor GrVertex ─────────────────────────────────────────────────────────
 // Vertex structure (48 bytes) used by the editor's polygon renderer.
@@ -785,8 +804,27 @@ static auto& gr_d3d_render_mode_cache = addr_as_ref<int>(0x01838dc0);
 // Render mode and polygon submission
 static auto& gr_set_mode = addr_as_ref<void(int)>(0x004BA730);
 // Fanned from vertex 0; mode as FUN_0047e140 packs it (0x004E8400 hands it to FUN_004e0490).
-static auto& gr_poly_render = addr_as_ref<uint8_t __cdecl(int count, GrVertex** verts, uint32_t tmap_flags, uint32_t mode,
-                                                          int override_z, float z)>(0x004CB1C0);
+static auto& gr_poly_render = addr_as_ref<uint8_t __cdecl(int count, GrVertex** verts, uint32_t tmap_flags,
+                                                          uint32_t mode, int override_z, float z)>(0x004CB1C0);
+
+// gr_poly_render's tmap_flags: the vertices carry uv, and colour
+constexpr uint32_t tmap_uv = 0x1;
+constexpr uint32_t tmap_rgb = 0x4;
+
+// FUN_0047e140's packing of a gr_poly_render mode
+constexpr uint32_t gr_mode(uint32_t tex, uint32_t color, uint32_t alpha, uint32_t blend, uint32_t zbuf, uint32_t fog)
+{
+    return tex | color << 5 | alpha << 10 | blend << 15 | zbuf << 20 | fog << 25;
+}
+// clamped texture times vertex colour, full z-buffer
+constexpr uint32_t mode_textured = gr_mode(2, 2, 0, 0, 4, 0);
+// wrapped texture times vertex colour, full z-buffer
+constexpr uint32_t mode_textured_wrap = gr_mode(1, 2, 0, 0, 4, 0);
+constexpr uint32_t mode_vertex = gr_mode(0, 0, 0, 0, 4, 0);
+
+// Depth of the pushed instance transforms (0x004edf50 pushes, 0x004ee0a0 pops): nonzero while a mover's
+// is pushed, when the scene lights are kept in its frame too (GrLight::local_vec).
+static auto& gr_transform_stack_depth = addr_as_ref<int>(0x0158f414);
 
 // Computes clip flags from view-space coords in a GrVertex
 static auto& gr_compute_clip_flags = addr_as_ref<uint32_t(void*)>(0x004c5df0);
@@ -915,6 +953,10 @@ static auto& num_packfiles = addr_as_ref<int>(0x01611F6C);
 constexpr int editor_packfile_entry_max = 0x34BC;
 
 // ─── Misc ────────────────────────────────────────────────────────────────────
+
+struct GFace;
+// The CSG's global face list (the head, then the count, as GSolid::face_list_head)
+static auto& csg_face_list_head = addr_as_ref<GFace*>(0x01131388);
 
 static auto& generate_uid = addr_as_ref<int()>(0x00484230);
 // True if uid is already taken. Scans master objects, brush list, undo/redo stacks.

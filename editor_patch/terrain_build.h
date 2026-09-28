@@ -22,11 +22,26 @@ std::string terrain_label(const DedTerrain& t);
 inline constexpr uint32_t red_max_level_surfaces = 32767;
 
 // The wire header of `d` placed at `pos` with grid `g`: chunk_cells the edge a build uses, no
-// flag_chunk_geo_mask or overlays; zero sizes without a grid.
+// flag_chunk_geo_mask, overlays or decorations; zero sizes without a grid.
 alpine_terrain::Header terrain_header(const Vector3& pos, const DedTerrainData& d, const TerrainGrid* g);
+
+// The chunk edge a build uses for `d` and its chunk count; `d` must have a grid.
+uint32_t terrain_effective_chunk_cells(const DedTerrainData& d);
+uint32_t terrain_chunk_count(const DedTerrainData& d);
 
 // The emitter's view of `d` placed at `pos`, reading grid `g`.
 alpine_terrain::GridView terrain_grid_view(const Vector3& pos, const DedTerrainData& d, const TerrainGrid& g);
+
+// Views of `d`'s decorations over grid `g`'s coverage planes, in list order; returns how many.
+uint32_t terrain_decoration_views(const DedTerrainData& d, const TerrainGrid& g,
+                                  alpine_terrain::DecorationView (&out)[alpine_terrain::max_decorations]);
+// alpine_terrain::decoration_lighting_hash of terrain `uid` with `d` placed at `pos`; 0 without a grid.
+uint64_t terrain_decoration_light_hash(int32_t uid, const Vector3& pos, const DedTerrainData& d);
+// Whether a decoration of `d` would cast shadows (what makes decoration_lighting_hash non-zero).
+bool terrain_decorations_cast(const DedTerrainData& d);
+// The decoration instances terrain `uid` with `d` placed at `pos` makes within `budget`, which it lowers.
+uint32_t terrain_decoration_instances(int32_t uid, const Vector3& pos, const DedTerrainData& d,
+                                      alpine_terrain::DecorationBudget& budget);
 
 // The chunk layout the terrain's geo mask covers now (alpine_terrain::geo_chunk_layout).
 alpine_terrain::ChunkLayout terrain_geo_chunk_layout(const DedTerrainData& d);
@@ -59,6 +74,10 @@ void terrain_reset_built_state(DedTerrain& terrain);
 // The compiled level geometry holds this terrain's geometry as it is now (built, and its shape not
 // edited since; paint may differ).
 bool terrain_build_is_current(const DedTerrain& terrain);
+
+// Saved now, the terrain would carry a build mapping (terrain_build_fill_mapping succeeds), so the game
+// matches it to its rooms and places its decorations.
+bool terrain_build_resolves(CDedLevel& level, const DedTerrain& terrain);
 
 // Nearest t in [0, t_max] where the ray meets a face of the compiled level the viewport draws
 // opaque and front facing (terrain rooms excluded), else t_max.

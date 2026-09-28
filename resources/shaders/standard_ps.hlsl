@@ -8,6 +8,10 @@ struct VsOutput
     // z:  alpine lightmap chart (its af_lm_index chart record), -1 for the stock path
     float3 uv1 : TEXCOORD1;
     float4 world_pos_and_depth : TEXCOORD2;
+#ifdef INSTANCE_LIGHT
+    // Terrain decoration: rgb its mesh ambient, a its sun scale
+    float4 inst_light : TEXCOORD3;
+#endif
 };
 
 cbuffer RenderModeBuffer : register(b0)
@@ -314,9 +318,11 @@ float3 af_lm_sample(float2 chart_uv, uint chart)
 // for dynamic-lit meshes the light scale and overbright compression.
 float3 add_scene_lights(float3 light_color, float3 pixel_pos, float3 norm)
 {
+#ifndef INSTANCE_LIGHT
     if (sun_scale > 0.0f) {
         light_color += sun_color * sun_scale * saturate(dot(norm, -sun_travel_dir));
     }
+#endif
     for (int i = 0; i < num_point_lights; ++i) {
         float ltype = point_lights[i].light_type;
         float dist;
@@ -848,11 +854,15 @@ float4 main(VsOutput input) : SV_TARGET
     float3 light_color;
     [branch] if (af_lm_enabled > 0.5f && input.uv1.z >= 0.0f) {
         light_color = af_lm_sample(input.uv1.xy, (uint)(input.uv1.z + 0.5f));
-    }
-    else {
+    } else {
         light_color = tex1.Sample(samp1, input.uv1.xy).rgb;
     }
     if (disable_textures < 0.5f) {
+#ifdef INSTANCE_LIGHT
+        // Per instance, what the mesh path uploads per mesh as ambient_light and sun_scale
+        light_color = input.inst_light.rgb
+                    + sun_color * input.inst_light.a * saturate(dot(input.norm, -sun_travel_dir));
+#else
         if (use_dynamic_lighting > 0.5f) {
             // Dynamic-lit meshes (V3D items, characters): no lightmap.
             // Start from level ambient; light_scale applied to total after accumulation
@@ -862,6 +872,7 @@ float4 main(VsOutput input) : SV_TARGET
             // Static meshes: use baked lightmap
             light_color *= 2;
         }
+#endif
         light_color = add_scene_lights(light_color, input.world_pos_and_depth.xyz, input.norm);
     }
     return finish_fragment(input, target, tex0_color.rgb, light_color, input.norm);
@@ -1162,8 +1173,7 @@ float3 ter_base_light(float3 wp, float3 n, bool underside)
         if (disable_textures < 0.5f) {
             light *= 2.0f;
         }
-    }
-    else {
+    } else {
         light = ambient_light + ter_sun_color * saturate(dot(n, -ter_sun_travel_dir));
     }
     return light;
@@ -1187,11 +1197,9 @@ float4 main(VsOutput input) : SV_TARGET
         [branch] if (crater) {
             // The texture and planar UVs the carve gave the face
             albedo = ter_crater.SampleGrad(ter_layer_samp, input.uv0, duvx, duvy).rgb;
-        }
-        else if (underside) {
+        } else if (underside) {
             albedo = ter_underside_albedo(wp, dwx, dwy, tw);
-        }
-        else {
+        } else {
             albedo = ter_overlays(ter_albedo(wp, dwx, dwy, tw), wp, dwx, dwy, tw);
         }
     }

@@ -2,22 +2,16 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include "level.h"
 
 // A solid's GSolid::surfaces; empty for no solid.
-struct SolidSurfaces
+inline std::span<GSurface* const> solid_surfaces(const GSolid* solid)
 {
-    int count = 0;
-    std::uintptr_t elems = 0;
-};
-
-inline SolidSurfaces solid_surfaces(std::uintptr_t solid)
-{
-    if (!solid) {
+    if (!solid || solid->surfaces.size <= 0 || !solid->surfaces.data_ptr) {
         return {};
     }
-    const auto& surfaces = reinterpret_cast<const GSolid*>(solid)->surfaces;
-    return {surfaces.size, reinterpret_cast<std::uintptr_t>(surfaces.data_ptr)};
+    return {solid->surfaces.data_ptr, static_cast<std::size_t>(solid->surfaces.size)};
 }
 
 // Bake side, driven from editor_patch/lightmap.cpp. bake_begin lays the charts out and returns the
@@ -27,11 +21,12 @@ void alpine_lm_bake_allocate();
 void alpine_lm_bake_end();
 // Drops a bake that did not run to completion without encoding it.
 void alpine_lm_bake_abort();
-void alpine_lm_shade_surface(std::uintptr_t solid, std::uintptr_t surface, int mode);
+void alpine_lm_shade_surface(GSolid* solid, GSurface* surface, int mode);
 // Calculate Lighting's address-space check before anything is freed; reports and returns false on a refusal.
 bool lighting_calc_memory_admits();
-void alpine_lm_blend_edge(std::uintptr_t surf_a, std::uintptr_t surf_b, const float* p0,
-                          const float* p1);
+// Reports why Calculate Lighting was not run, and marks a headless bake refused.
+void lighting_calc_report_refusal(const char* msg);
+void alpine_lm_blend_edge(const GSurface* surf_a, const GSurface* surf_b, const float* p0, const float* p1);
 
 // True while a per-tile shading call is running inside FUN_004ac470, i.e. while the surface is
 // repointed at a tile view. The preview-texture blocks of that function must not run then.
@@ -47,6 +42,8 @@ void alpine_lm_save_begin(CDedLevel& level);
 void alpine_lm_serialize_chunk(CDedLevel& level, rf::File& file);
 void alpine_lm_deserialize_chunk(CDedLevel& level, rf::File& file, std::size_t chunk_len);
 void alpine_lm_drop_retained();
+// alpine_lm_drop_retained without the repaint, for a level being reset while the views may be gone.
+void alpine_lm_reset_level_state();
 // Valid from alpine_lm_save_begin on: whether this save omits the stock lightmaps section.
 bool alpine_lm_stock_suppressed();
 

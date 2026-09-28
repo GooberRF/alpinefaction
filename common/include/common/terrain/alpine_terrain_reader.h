@@ -31,6 +31,21 @@ struct RecordOverlay
     bool break_tiling = false;
 };
 
+struct RecordDecoration
+{
+    std::string mesh; // empty = none picked
+    float density = 0.0f;
+    float scale_min = 0.0f;
+    float scale_max = 0.0f;
+    float max_slope = 0.0f;
+    float draw_distance = 0.0f;
+    float vertical_offset = 0.0f;
+    std::uint8_t link_layer = decoration_link_none;
+    bool align_to_slope = false;
+    bool random_yaw = false;
+    bool casts_shadows = false;
+};
+
 // One validated record; array sizes match `header` exactly.
 struct Record
 {
@@ -38,9 +53,10 @@ struct Record
     Header header{};
     std::string script_name;
     std::string underside_texture;
-    std::string crater_texture;
+    std::string crater_texture; // empty = level geomod texture
     std::vector<RecordLayer> layers;
     std::vector<RecordOverlay> overlays;
+    std::vector<RecordDecoration> decorations;
     std::vector<ChunkMapping> build_mapping; // empty = absent, or stale and dropped
     std::vector<std::uint16_t> heights;
     std::vector<std::uint8_t> weights;
@@ -51,6 +67,8 @@ struct Record
     std::vector<std::uint8_t> geo_chunks;
     // flag_overlays only: overlay_map_bytes, channels past the overlay count cleared.
     std::vector<std::uint8_t> overlay_coverage;
+    // flag_decorations only: one decoration_plane_bytes plane per decoration, in list order.
+    std::vector<std::uint8_t> decoration_coverage;
 };
 
 // Reader: bool read_bytes(void*, std::size_t) and bool read_string(std::string&) (u16 length prefix)
@@ -82,6 +100,7 @@ const char* read_record(Reader& r, Record& out, std::uint64_t& total_raw)
     h.flags = flags;
     h.layer_count = layer_count;
     h.overlay_count = 0;
+    h.decoration_count = 0;
     if (const char* err = validate_header(h)) return err;
     if (!texture_name_valid(out.underside_texture.c_str(), out.underside_texture.size()) ||
         !texture_name_valid(out.crater_texture.c_str(), out.crater_texture.size())) {
@@ -111,6 +130,30 @@ const char* read_record(Reader& r, Record& out, std::uint64_t& total_raw)
         if (const char* err = validate_overlay(overlay.uv_scale, overlay_flags)) return err;
         overlay.triplanar = (overlay_flags & overlay_flag_triplanar) != 0;
         overlay.break_tiling = (overlay_flags & overlay_flag_break_tiling) != 0;
+    }
+
+    if (h.flags & flag_decorations) {
+        std::uint8_t decoration_count = 0;
+        if (!get(decoration_count)) return "truncated";
+        h.decoration_count = decoration_count;
+    }
+    if (const char* err = validate_decoration_count(h)) return err;
+    out.decorations.resize(h.decoration_count);
+    for (RecordDecoration& d : out.decorations) {
+        std::uint8_t link = 0, flags_byte = 0;
+        if (!r.read_string(d.mesh) || !get(d.density) || !get(d.scale_min) || !get(d.scale_max) || !get(d.max_slope) ||
+            !get(d.draw_distance) || !get(d.vertical_offset) || !get(link) || !get(flags_byte)) {
+            return "truncated";
+        }
+        if (!decoration_mesh_valid(d.mesh.c_str(), d.mesh.size())) return "decoration mesh name invalid";
+        if (const char* err = validate_decoration(d.density, d.scale_min, d.scale_max, d.max_slope, d.draw_distance,
+                                                  d.vertical_offset, link, flags_byte, h.layer_count)) {
+            return err;
+        }
+        d.link_layer = link;
+        d.align_to_slope = (flags_byte & decoration_flag_align_to_slope) != 0;
+        d.random_yaw = (flags_byte & decoration_flag_random_yaw) != 0;
+        d.casts_shadows = (flags_byte & decoration_flag_casts_shadows) != 0;
     }
 
     std::uint32_t mapping_count = 0;
@@ -164,6 +207,8 @@ const char* read_record(Reader& r, Record& out, std::uint64_t& total_raw)
     const std::uint8_t* cov = raw.data() + blob_overlay_offset(nx, nz, mul, h.chunk_cells, h.flags);
     out.overlay_coverage.assign(cov, cov + blob_overlay_bytes(nx, nz, mul, h.flags));
     clear_unused_overlay_channels(out.overlay_coverage.data(), out.overlay_coverage.size(), h.overlay_count);
+    const std::uint8_t* planes = raw.data() + blob_decoration_offset(nx, nz, mul, h.chunk_cells, h.flags);
+    out.decoration_coverage.assign(planes, planes + blob_decoration_bytes(nx, nz, mul, h.flags, h.decoration_count));
     return nullptr;
 }
 

@@ -143,6 +143,16 @@ inline void alpine_dlg_set_float_field_exact(HWND hdlg, int idc, float value)
     SetDlgItemTextA(hdlg, idc, buf);
 }
 
+// `shown` while the field still holds the text alpine_dlg_set_float_field_exact wrote for it, else what
+// was typed.
+inline float alpine_dlg_get_float_field_exact(HWND hdlg, int idc, float shown)
+{
+    char text[32] = {}, fmt[32];
+    GetDlgItemTextA(hdlg, idc, text, sizeof(text));
+    alpine_format_float_exact(fmt, shown);
+    return std::strcmp(text, fmt) == 0 ? shown : std::strtof(text, nullptr);
+}
+
 inline float alpine_dlg_get_float_field(HWND hdlg, int idc)
 {
     char buf[32] = {};

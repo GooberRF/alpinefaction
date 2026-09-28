@@ -44,6 +44,8 @@
 #include "meshes.h"
 #include "headless_bake.h"
 #include "face_list_cache.h"
+#include "alpine_lightmaps.h"
+#include "terrain_build.h"
 #include "terrain_paint.h"
 #include "terrain_preview.h"
 
@@ -1731,11 +1733,9 @@ void InitCrashHandler()
 void ApplyGraphicsPatches();
 void ApplyTriggerPatches();
 void ApplyLevelPatches();
-void ApplyTerrainBuildPatches();
 void ApplyEventsPatches();
 void ApplyTexturesPatches();
 void ApplyLightmapPatches();
-void ApplyAlpineLightmapPatches();
 void install_editor_bitmap_loader_hooks();
 
 void LoadAlpineEditorPackfile()

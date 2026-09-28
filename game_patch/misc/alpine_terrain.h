@@ -4,7 +4,7 @@
 #include <cstdint>
 #include <string>
 #include <vector>
-#include <common/terrain/alpine_terrain.h>
+#include <common/terrain/alpine_terrain_reader.h>
 #include "../rf/file/file.h"
 
 namespace rf
@@ -13,41 +13,15 @@ namespace rf
     struct GFace;
 }
 
-struct AlpineTerrainLayer
+// A loaded record. overlay_coverage is freed at load unless the D3D11 renderer draws the terrain, weights also
+// unless a client that renders places its decorations, and decoration_coverage unless one does. Placing them
+// frees what only it needed (alpine_terrain_release_decoration_maps).
+struct AlpineTerrain : alpine_terrain::Record
 {
-    std::string texture;
-    float uv_scale = alpine_terrain::default_uv_scale;
-    bool triplanar = false;
-};
-
-struct AlpineTerrainOverlay
-{
-    std::string texture;
-    float uv_scale = alpine_terrain::default_uv_scale;
-    bool triplanar = false;
-    bool break_tiling = false;
-};
-
-// One validated record of the 0x0AFBAE0B chunk; array sizes match `header` exactly.
-struct AlpineTerrain
-{
-    int uid = -1;
-    std::string script_name;
-    alpine_terrain::Header header{};
-    std::string underside_texture;
-    std::string crater_texture; // empty = level geomod texture
-    std::vector<AlpineTerrainLayer> layers;
-    std::vector<AlpineTerrainOverlay> overlays;
-    std::vector<alpine_terrain::ChunkMapping> build_mapping; // empty = not built
-    std::vector<std::uint16_t> heights;
-    // weights and overlay_coverage are freed at load unless the D3D11 renderer draws the terrain
-    std::vector<std::uint8_t> weights;
-    std::vector<std::uint8_t> holes;
-    std::vector<std::uint8_t> diag;
-    std::vector<std::uint8_t> geo_chunks; // alpine_terrain::Record::geo_chunks
-    std::vector<std::uint8_t> overlay_coverage; // alpine_terrain::Record::overlay_coverage
     // Set by alpine_terrain_resolve_rooms when every chunk matched its compiled room.
     bool resolved = false;
+    // alpine_terrain::decoration_lighting_hash, taken at load while the maps it reads are still there.
+    std::uint64_t decoration_light_hash = 0;
 };
 
 // A resolved terrain chunk's compiled room.
@@ -59,12 +33,18 @@ struct AlpineTerrainRoomRef
 
 void alpine_terrain_load_chunk(rf::File& file, std::size_t chunk_len);
 void alpine_terrain_clear_state();
+// Frees every decoration_coverage, and the weights unless the D3D11 renderer draws the terrain.
+void alpine_terrain_release_decoration_maps();
 // Matches every terrain's build mapping against the loaded static geometry. Runs once the level
 // has loaded and before anything builds a render cache.
 void alpine_terrain_resolve_rooms();
 const std::vector<AlpineTerrain>& alpine_terrain_get_all();
 // Null unless `room` is a chunk room of a resolved terrain.
 const AlpineTerrainRoomRef* alpine_terrain_find_room(const rf::GRoom* room);
+inline bool alpine_terrain_is_chunk_room(const rf::GRoom* room)
+{
+    return alpine_terrain_find_room(room) != nullptr;
+}
 // A detail room of `parent` that every renderer draws from its own cache, once per pass, and never
 // as part of the parent's. Never under the sky room, whose renderers draw its detail rooms with it.
 bool alpine_terrain_is_separate_chunk(const rf::GRoom* parent, const rf::GRoom* detail_room);
@@ -72,8 +52,8 @@ bool alpine_terrain_is_separate_chunk(const rf::GRoom* parent, const rf::GRoom* 
 alpine_terrain::GridView alpine_terrain_grid(const AlpineTerrain& t);
 // alpine_terrain::face_kind of a chunk face with no surface.
 alpine_terrain::FaceKind alpine_terrain_face_kind(const alpine_terrain::GridView& g, const rf::GFace& face);
-// The light at `pos` on a face of `kind` of a resolved terrain as a stock lightmap texel (0..1, drawn
-// doubled), so an entity standing there is lit like one on ordinary geometry that renders as bright.
-// Off the top, `face_normal` shades instead of the heightmap normal.
-void alpine_terrain_sample_light(const AlpineTerrain& t, alpine_terrain::FaceKind kind, const float (&pos)[3],
+// The light at `pos` on a face of `kind` of resolved terrain `terrain` (alpine_terrain_get_all index) as a
+// stock lightmap texel (0..1, drawn doubled), so an entity standing there is lit like one on ordinary
+// geometry that renders as bright. Off the top, `face_normal` shades instead of the heightmap normal.
+void alpine_terrain_sample_light(int terrain, alpine_terrain::FaceKind kind, const float (&pos)[3],
                                  const float (&face_normal)[3], float (&texel)[3]);

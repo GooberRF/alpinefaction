@@ -186,6 +186,10 @@ namespace gr::d3d11
             rf::VifLodMesh* lod_mesh, int lod_index,
             const rf::Vector3& pos, const rf::Matrix3& orient);
 
+        // Pages in a static mesh and binds its vertex and index buffers, without a model transform.
+        const std::vector<BaseMeshRenderCache::Batch>* bind_v3d_buffers(
+            rf::VifLodMesh* lod_mesh, int lod_index, rf::MeshMaterial* materials = nullptr, int num_materials = 0);
+
     private:
         void draw_cached_mesh(rf::VifLodMesh *lod_mesh, BaseMeshRenderCache& render_cache, const rf::MeshRenderParams& params, int lod_index, bool skip_ambient_cache = false);
 

@@ -977,7 +977,8 @@ CodeInjection alpine_object_tree_patch{
 };
 
 // Track which Alpine object type the tree view is creating.
-static int g_alpine_create_type = 0; // 0=Mesh, 2=Note, 3=Corona, 4=Bag, 5=Weather Region, 6=reserved, 7=Projection Camera, 8=Rope Emitter, 9=Terrain
+// 0=Mesh, 2=Note, 3=Corona, 4=Bag, 5=Weather Region, 6=reserved, 7=Projection Camera, 8=Rope Emitter, 9=Terrain
+static int g_alpine_create_type = 0;
 
 // Hook factory FUN_00442a40 to detect Alpine object types by tree item text.
 int __fastcall alpine_factory_hooked(void* ecx_panel, void* /*edx*/, void* tree_item);
@@ -1061,6 +1062,17 @@ CodeInjection alpine_create_object_patch{
 };
 
 // ─── Rendering ──────────────────────────────────────────────────────────────
+
+// Terrain surfaces are opaque level geometry: draw them before FUN_0041f6d0's first draw (the player start
+// sprite, which tests but does not write depth), so nothing drawn from here on is painted over by them.
+CodeInjection alpine_render_surfaces_patch{
+    0x0041f6f9,
+    [](auto& regs) {
+        auto* level = CDedLevel::Get();
+        if (!level) return;
+        terrain_render_surfaces(level);
+    },
+};
 
 // Hook into the editor's 3D render function to render Alpine objects.
 // Inject after the main object render loop in FUN_0041f6d0, before the icon pass.
@@ -2174,19 +2186,7 @@ static INT_PTR CALLBACK TypeFilterDlgProc(HWND hwnd, UINT msg, WPARAM wparam, LP
                     "groups: " + uid_list;
             }
 
-            if (BrushNode* head = level->brush_list) {
-                BrushNode* b = head;
-                do {
-                    if (b->state == BRUSH_STATE_SELECTED) b->state = BRUSH_STATE_NORMAL;
-                    b = b->next;
-                } while (b != head);
-            }
-            for (auto* brush : new_brushes)
-                brush->state = BRUSH_STATE_SELECTED;
-
-            level->mark_geometry_dirty();
-            level->update_console_display();
-            redraw_all_viewports();
+            select_inserted_brushes(level, new_brushes);
 
             // Save filter state and close dialog first
             for (int i = 0; i < g_num_type_filters; i++)
@@ -2474,7 +2474,7 @@ CodeInjection alpine_group_save_hook{
                 }
             }
             catch (const std::bad_alloc&) {
-                show_error_message("Out of memory saving the group's terrains; some are missing from it.");
+                terrain_report("Out of memory saving the group's terrains; some are missing from it.", true);
             }
         }
 
@@ -2748,8 +2748,9 @@ CodeInjection alpine_group_load_hook{
         }
 
         if (terrain_chunks_dropped) {
-            show_error_message("Some of the group's terrains were not imported: the level would exceed its "
-                               "terrain count or data limit, or their data is damaged. The log lists each one.");
+            terrain_report("Some of the group's terrains were not imported: the level would exceed its "
+                           "terrain count or data limit, or their data is damaged. The log lists each one.",
+                           true);
         }
 
         int meshes_loaded = static_cast<int>(props.mesh_objects.size() - mesh_start);
@@ -2964,6 +2965,7 @@ void ApplyAlpineObjectPatches()
     alpine_object_tree_patch.install();
     alpine_factory_hook.install();
     alpine_create_object_patch.install();
+    alpine_render_surfaces_patch.install();
     alpine_render_patch.install();
     alpine_group_save_clear_hook.install();
     alpine_group_brush_save_capture_hook.install();

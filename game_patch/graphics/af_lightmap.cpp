@@ -120,7 +120,8 @@ namespace
             if (record < 0) {
                 continue;
             }
-            switch (alm::terrain_chart_fit(g_section.terrain[record], alpine_terrain_grid(t))) {
+            const alm::TerrainChart& chart = g_section.terrain[record];
+            switch (alm::terrain_chart_fit(chart, alpine_terrain_grid(t), t.decoration_light_hash)) {
             case alm::TerrainChartFit::match:
                 break;
             case alm::TerrainChartFit::other_grid:
@@ -142,16 +143,20 @@ namespace
         }
     }
 
+    // Whether surface `s` lies within a page x page lightmap page.
+    bool surface_fits_page(const rf::GSurface* s, std::uint32_t page)
+    {
+        const auto p = static_cast<std::int64_t>(page);
+        return s->xstart >= 0 && s->ystart >= 0 && s->width >= 0 && s->height >= 0
+            && static_cast<std::int64_t>(s->xstart) + s->width <= p
+            && static_cast<std::int64_t>(s->ystart) + s->height <= p;
+    }
+
     // Whether surface `s`, charted by `c`, is the fragment the chart was baked for and fits the bake_page
     // square page its uv_scale/uv_add normalize against.
     bool af_mover_surface_fits(const rf::GSurface* s, const alm::MoverSurfaceChart& c, std::uint32_t bake_page)
     {
-        if (!s || !s->lightmap || s->width != c.w || s->height != c.h || s->xstart < 0 || s->ystart < 0) {
-            return false;
-        }
-        const auto p = static_cast<std::int64_t>(bake_page);
-        return static_cast<std::int64_t>(s->xstart) + s->width <= p
-            && static_cast<std::int64_t>(s->ystart) + s->height <= p;
+        return s && s->lightmap && s->width == c.w && s->height == c.h && surface_fits_page(s, bake_page);
     }
 
     // Whether every stock page the surfaces of `solid` point at is edge x edge.
@@ -273,6 +278,13 @@ namespace
         return found;
     }
 
+    void af_drop_surface_charts()
+    {
+        g_section.surfaces_ok = false;
+        g_section.geoms.clear();
+        g_section.bases.clear();
+    }
+
     // Allocations here are sized by the file, so a hostile or truncated level must not throw
     // across the engine call this runs inside.
     void af_load_chunk_inner(rf::File& file, std::size_t chunk_len, std::size_t& remaining)
@@ -345,17 +357,13 @@ namespace
         af_match_movers(bake_page);
         const auto drop_surfaces = [](const char* why) {
             xlog::warn("[AlpineLightmaps] ignoring the surface charts: {}", why);
-            g_section.surfaces_ok = false;
-            g_section.geoms.clear();
-            g_section.bases.clear();
+            af_drop_surface_charts();
         };
         if (!g_section.surfaces_ok) {
             drop_surfaces(g_section.surface_reason);
         }
         else if (!is_d3d11() || stock_pages_differ) {
-            g_section.surfaces_ok = false;
-            g_section.geoms.clear();
-            g_section.bases.clear();
+            af_drop_surface_charts();
         }
 
         if (g_section.surfaces_ok && !g_stock_section_seen) {
@@ -365,9 +373,7 @@ namespace
                 if (!s || g_section.geoms[i].empty()) {
                     continue;
                 }
-                if (s->xstart < 0 || s->ystart < 0
-                    || static_cast<std::uint32_t>(s->xstart + s->width) > p
-                    || static_cast<std::uint32_t>(s->ystart + s->height) > p) {
+                if (!surface_fits_page(s, p)) {
                     xlog::warn("[AlpineLightmaps] surface {} does not fit the {}x{} page the section records", i, p, p);
                     drop_surfaces("a surface does not fit its page");
                     break;
@@ -425,9 +431,7 @@ namespace
         if (is_d3d11() && !gr::d3d11::upload_af_lightmap_atlas(g_section, blocks)) {
             xlog::warn("[AlpineLightmaps] the atlas could not be uploaded, the level renders with its stock "
                        "lightmaps");
-            g_section.surfaces_ok = false;
-            g_section.geoms.clear();
-            g_section.bases.clear();
+            af_drop_surface_charts();
             g_mover_record.clear();
         }
         xlog::info("[AlpineLightmaps] {} pages, {} surface charts{}, {} terrain charts, {} mover charts ({} matched), "

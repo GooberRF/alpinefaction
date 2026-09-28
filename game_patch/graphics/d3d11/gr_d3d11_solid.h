@@ -7,6 +7,7 @@
 #include <common/ComPtr.h>
 #include "gr_d3d11_shader.h"
 #include "gr_d3d11_terrain.h"
+#include "../../misc/alpine_terrain.h"
 
 namespace rf
 {
@@ -55,6 +56,11 @@ namespace gr::d3d11
         {
             get_or_create_movable_solid_cache(solid);
         }
+        // Terrain chunks whose decorations the last render_solid pass found in view
+        const std::vector<AlpineTerrainRoomRef>& decoration_chunks() const
+        {
+            return decoration_chunks_;
+        }
 
     private:
         void before_render(const rf::Vector3& pos, const rf::Matrix3& orient);
@@ -72,6 +78,7 @@ namespace gr::d3d11
         GRenderCache* get_or_create_movable_solid_cache(rf::GSolid* solid);
         bool claim_terrain_chunk(std::vector<int>& stamps, const rf::GRoom* room);
         bool terrain_chunk_drawn(const rf::GRoom* room) const;
+        void collect_decoration_chunk(const rf::GRoom* room);
 
         ComPtr<ID3D11Device> device_;
         ComPtr<ID3D11DeviceContext> context_;
@@ -89,6 +96,8 @@ namespace gr::d3d11
         int terrain_pass_ = 0;
         std::vector<int> terrain_drawn_;
         std::vector<int> terrain_decals_drawn_;
+        std::vector<int> terrain_decorations_seen_;
+        std::vector<AlpineTerrainRoomRef> decoration_chunks_;
         // Sorted rooms that hold a dynamic decal, gathered by each render_dynamic_decals call
         std::vector<rf::GRoom*> dynamic_decal_rooms_;
         DynamicGeometryRenderer& dyn_geo_renderer_;

@@ -13,14 +13,6 @@ namespace at = alpine_terrain;
 namespace
 {
 
-uint64_t splitmix64(uint64_t& state)
-{
-    uint64_t z = (state += 0x9E3779B97F4A7C15ull);
-    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
-    z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
-    return z ^ (z >> 31);
-}
-
 // Every table and stream derives from the user's seed through its own salt.
 class Rng
 {
@@ -29,7 +21,9 @@ public:
 
     uint64_t next()
     {
-        return splitmix64(state_);
+        const uint64_t r = at::splitmix64(state_);
+        state_ += 0x9E3779B97F4A7C15ull;
+        return r;
     }
 
     // [0, 1)

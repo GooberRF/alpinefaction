@@ -6,14 +6,16 @@
 //
 // POD types and free functions only: nothing here may allocate, throw, or pass a non-trivial type by value.
 //
-// Wire layout, per terrain after a u32 count (no chunk version; growth appends fields gated on
-// the RFL version, or while terrain is unreleased on a wire flag, as flag_chunk_geo_mask and
-// flag_overlays do):
+// Wire layout, per terrain after a u32 count (no chunk version; growth appends fields gated on the RFL
+// version; wire flags (flag_chunk_geo_mask, flag_overlays, flag_decorations) gate optional parts):
 //   i32 uid, f32x3 origin, vstring script_name, f32 cell_size, u16 nx, u16 nz,
 //   f32 height_min, f32 height_range, u8 chunk_cells (the edge a build uses), u8 weight_res_mul,
 //   u8 lightmap_density, u8 flags, f32 thickness, f32 skirt_depth, vstring underside_texture,
 //   vstring crater_texture, u8 layer_count, per layer {vstring texture, f32 uv_scale, u8 layer_flags},
 //   [flag_overlays: u8 overlay_count, per overlay {vstring texture, f32 uv_scale, u8 overlay_flags}],
+//   [flag_decorations: u8 decoration_count, per decoration {vstring mesh, f32 density, f32 scale_min,
+//    f32 scale_max, f32 max_slope_deg, f32 draw_distance, f32 vertical_offset, u8 link_layer,
+//    u8 decoration_flags}],
 //   u32 mapping_count, per mapping {i32 room_uid, u32 vertex_count, u64 pos_hash},
 //   u32 raw_size, u32 comp_size, comp_size bytes of zlib holding the blob described by blob_*().
 //
@@ -70,6 +72,7 @@ inline constexpr std::uint32_t legacy_chunk_face_budget = 12288;
 inline constexpr std::uint32_t level_triangle_budget = 250000;
 
 // ─── Flags ────────────────────────────────────────────────────────────────────
+// Append-only: never reuse or renumber a value. Readers reject unknown bits.
 
 inline constexpr std::uint8_t flag_geoable = 0x1;
 inline constexpr std::uint8_t flag_skirts = 0x2;
@@ -81,7 +84,10 @@ inline constexpr std::uint8_t flag_chunk_geo_mask = 0x4;
 // Wire only: the header lists overlays after the layers and the blob ends with their coverage map. The
 // writer sets it when the terrain has at least one overlay.
 inline constexpr std::uint8_t flag_overlays = 0x8;
-inline constexpr std::uint8_t wire_flag_mask = flag_mask | flag_chunk_geo_mask | flag_overlays;
+// Wire only: the header lists decorations after the overlays and the blob ends with their coverage planes.
+// The writer sets it when the terrain has at least one decoration.
+inline constexpr std::uint8_t flag_decorations = 0x10;
+inline constexpr std::uint8_t wire_flag_mask = flag_mask | flag_chunk_geo_mask | flag_overlays | flag_decorations;
 
 inline constexpr std::uint8_t layer_flag_triplanar = 0x1;
 inline constexpr std::uint8_t layer_flag_mask = layer_flag_triplanar;
@@ -92,6 +98,30 @@ inline constexpr std::uint8_t overlay_flag_triplanar = layer_flag_triplanar;
 // Hex-tiled with a random rotation and offset per tile, so the repeat does not show.
 inline constexpr std::uint8_t overlay_flag_break_tiling = 0x2;
 inline constexpr std::uint8_t overlay_flag_mask = overlay_flag_triplanar | overlay_flag_break_tiling;
+
+// Decorations: a static mesh scattered over the surface by its painted coverage plane, optionally scaled by a
+// texture layer's weight. Visual only.
+inline constexpr std::uint32_t max_decorations = 8;
+inline constexpr std::uint8_t decoration_link_none = 0xFF;
+inline constexpr std::uint8_t decoration_flag_align_to_slope = 0x1;
+inline constexpr std::uint8_t decoration_flag_random_yaw = 0x2;
+inline constexpr std::uint8_t decoration_flag_casts_shadows = 0x4;
+inline constexpr std::uint8_t decoration_flag_mask =
+    decoration_flag_align_to_slope | decoration_flag_random_yaw | decoration_flag_casts_shadows;
+// Instances per m² at full coverage
+inline constexpr float max_decoration_density = 16.0f;
+inline constexpr float min_decoration_scale = 0.01f;
+inline constexpr float max_decoration_scale = 16.0f;
+inline constexpr float max_decoration_slope_deg = 90.0f;
+inline constexpr float min_decoration_draw_distance = 1.0f;
+inline constexpr float max_decoration_draw_distance = 1024.0f;
+// Mesh units along the instance's up axis, so scaled with it
+inline constexpr float max_decoration_offset = 16.0f;
+inline constexpr std::uint32_t max_decoration_instances_per_texel = 256;
+// The game places a level's instances in for_each_terrain_decoration order until it has placed this many or
+// tried this many candidates, placed or dropped by the slope limit (DecorationBudget).
+inline constexpr std::uint32_t max_level_decoration_instances = 250000;
+inline constexpr std::uint32_t max_level_decoration_candidates = 4 * max_level_decoration_instances;
 
 // Decompressed bytes summed over every 0x0AFBAE0B chunk; a chunk that would pass it is dropped whole.
 inline constexpr std::uint64_t max_level_raw_bytes = 128ull * 1024 * 1024;
@@ -110,6 +140,10 @@ inline constexpr float default_skirt_depth = 8.0f;
 inline constexpr float default_uv_scale = 4.0f;
 // RED's own default face texture (RED.exe string at 0x005781C8)
 inline constexpr const char* default_layer_texture = "Rck_default.tga";
+inline constexpr float default_decoration_density = 0.5f;
+inline constexpr float default_decoration_scale = 1.0f;
+inline constexpr float default_decoration_slope_deg = 35.0f;
+inline constexpr float default_decoration_draw_distance = 80.0f;
 
 // ─── Parsed header ────────────────────────────────────────────────────────────
 
@@ -124,11 +158,12 @@ struct Header
     std::uint32_t chunk_cells;
     std::uint32_t weight_res_mul;
     std::uint32_t lightmap_density;
-    std::uint32_t flags; // as on the wire, flag_chunk_geo_mask and flag_overlays included
+    std::uint32_t flags; // as on the wire, the wire-only flags included
     float thickness;
     float skirt_depth;
     std::uint32_t layer_count;
     std::uint32_t overlay_count; // 0 without flag_overlays
+    std::uint32_t decoration_count; // 0 without flag_decorations
 };
 
 struct ChunkMapping
@@ -404,7 +439,8 @@ inline float thickness_after_growth(std::uint32_t flags, float thickness, float 
 }
 
 // ─── Per-cell bitmasks (holes, diagonals) ─────────────────────────────────────
-// Bit (z * cells_x + x), LSB first within each byte.
+// Bit (z * cells_x + x), LSB first within each byte. Padding bits are written clear and kept as read
+// (lighting_fingerprint hashes them).
 // Diagonal bit 0 splits the cell along (x, z)-(x+1, z+1); 1 along (x+1, z)-(x, z+1).
 
 inline constexpr std::size_t cell_bit_index(std::uint32_t cells_x, std::uint32_t x, std::uint32_t z)
@@ -600,6 +636,7 @@ inline void clear_unused_overlay_channels(std::uint8_t* map, std::size_t bytes, 
 // heights u16[nx*nz] (little-endian) | weight map 0 | weight map 1 | holes mask | diagonal mask
 // [| chunk geo mask (blob_geo_mask_bytes), with flag_chunk_geo_mask]
 // [| overlay coverage map (overlay_map_bytes), with flag_overlays]
+// [| decoration_count coverage planes (decoration_plane_bytes each, in list order), with flag_decorations]
 
 inline constexpr std::size_t blob_heights_offset()
 {
@@ -661,8 +698,27 @@ inline constexpr std::size_t blob_overlay_bytes(std::uint32_t nx, std::uint32_t 
     return (flags & flag_overlays) ? overlay_map_bytes(nx, nz, mul) : 0;
 }
 
+// One byte of coverage per weight texel, laid out as a weight map.
+inline constexpr std::size_t decoration_plane_bytes(std::uint32_t nx, std::uint32_t nz, std::uint32_t mul)
+{
+    return weight_texel_count(nx, nz, mul);
+}
+
+inline constexpr std::size_t blob_decoration_offset(std::uint32_t nx, std::uint32_t nz, std::uint32_t mul,
+                                                    std::uint32_t chunk_cells, std::uint32_t flags)
+{
+    return blob_overlay_offset(nx, nz, mul, chunk_cells, flags) + blob_overlay_bytes(nx, nz, mul, flags);
+}
+
+inline constexpr std::size_t blob_decoration_bytes(std::uint32_t nx, std::uint32_t nz, std::uint32_t mul,
+                                                   std::uint32_t flags, std::uint32_t decoration_count)
+{
+    return (flags & flag_decorations) ? decoration_plane_bytes(nx, nz, mul) * decoration_count : 0;
+}
+
 static_assert(blob_raw_size(max_verts, max_verts, 4) + chunk_mask_bytes(max_chunks) +
-                  overlay_map_bytes(max_verts, max_verts, 4) < 0xFFFFFFFFull);
+                  overlay_map_bytes(max_verts, max_verts, 4) +
+                  max_decorations * decoration_plane_bytes(max_verts, max_verts, 4) < 0xFFFFFFFFull);
 
 // ─── Validation (every reader, and the editor before it writes) ──────────────
 
@@ -738,6 +794,59 @@ inline const char* validate_overlay(float uv_scale, std::uint32_t overlay_flags)
     return nullptr;
 }
 
+// 1..max_decorations with flag_decorations, else 0.
+inline const char* validate_decoration_count(const Header& h)
+{
+    const bool listed = (h.flags & flag_decorations) != 0;
+    if (listed ? h.decoration_count < 1 || h.decoration_count > max_decorations : h.decoration_count != 0) {
+        return "decoration count out of range";
+    }
+    return nullptr;
+}
+
+// A decoration's mesh: empty (none picked yet), or a .v3m file name within the texture name caps and
+// without a path.
+inline bool decoration_mesh_valid(const char* name, std::size_t len)
+{
+    if (len == 0) return true;
+    if (!texture_name_valid(name, len) || len < 4) return false;
+    for (std::size_t i = 0; i < len; i++) {
+        const char c = name[i];
+        if (c == '/' || c == '\\' || c == ':' || c == '\0') return false;
+    }
+    auto lower = [](char c) { return c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c; };
+    const char* ext = name + len - 4;
+    return ext[0] == '.' && lower(ext[1]) == 'v' && ext[2] == '3' && lower(ext[3]) == 'm';
+}
+
+inline const char* validate_decoration(float density, float scale_min, float scale_max, float max_slope_deg,
+                                       float draw_distance, float vertical_offset, std::uint32_t link_layer,
+                                       std::uint32_t flags, std::uint32_t layer_count)
+{
+    if (!finite_in(density, 0.0f, max_decoration_density)) return "decoration density out of range";
+    if (!finite_in(scale_min, min_decoration_scale, max_decoration_scale)) return "decoration scale min out of range";
+    if (!finite_in(scale_max, min_decoration_scale, max_decoration_scale)) return "decoration scale max out of range";
+    if (!finite_in(max_slope_deg, 0.0f, max_decoration_slope_deg)) return "decoration max slope out of range";
+    if (!finite_in(draw_distance, min_decoration_draw_distance, max_decoration_draw_distance)) {
+        return "decoration draw distance out of range";
+    }
+    if (!finite_in(vertical_offset, -max_decoration_offset, max_decoration_offset)) {
+        return "decoration vertical offset out of range";
+    }
+    if (scale_max < scale_min) return "decoration scale max below scale min";
+    if (link_layer != decoration_link_none && link_layer >= layer_count) return "decoration link layer out of range";
+    if ((flags & ~static_cast<std::uint32_t>(decoration_flag_mask)) != 0) return "unknown decoration flags";
+    return nullptr;
+}
+
+// A decoration's wire flags from its align_to_slope, random_yaw and casts_shadows.
+template<typename Decoration>
+constexpr std::uint32_t decoration_flags(const Decoration& d)
+{
+    return (d.align_to_slope ? decoration_flag_align_to_slope : 0u) | (d.random_yaw ? decoration_flag_random_yaw : 0u) |
+           (d.casts_shadows ? decoration_flag_casts_shadows : 0u);
+}
+
 // The chunk grid a record was built with, its stored chunk_cells: the build mapping and the chunk geo
 // mask cover it.
 inline ChunkLayout header_chunk_layout(const Header& h)
@@ -763,16 +872,18 @@ inline bool mapping_count_acceptable(std::uint32_t mapping_count)
     return mapping_count <= max_chunks;
 }
 
-// The decompressed blob of a terrain with this wire chunk_cells and these wire flags.
+// The decompressed blob of a terrain with this wire chunk_cells, these wire flags and this decoration count.
 inline constexpr std::size_t wire_raw_size(std::uint32_t nx, std::uint32_t nz, std::uint32_t mul,
-                                           std::uint32_t chunk_cells, std::uint32_t flags)
+                                           std::uint32_t chunk_cells, std::uint32_t flags,
+                                           std::uint32_t decoration_count)
 {
-    return blob_overlay_offset(nx, nz, mul, chunk_cells, flags) + blob_overlay_bytes(nx, nz, mul, flags);
+    return blob_decoration_offset(nx, nz, mul, chunk_cells, flags) +
+           blob_decoration_bytes(nx, nz, mul, flags, decoration_count);
 }
 
 inline std::size_t header_raw_size(const Header& h)
 {
-    return wire_raw_size(h.nx, h.nz, h.weight_res_mul, h.chunk_cells, h.flags);
+    return wire_raw_size(h.nx, h.nz, h.weight_res_mul, h.chunk_cells, h.flags, h.decoration_count);
 }
 
 // ─── Texturing ────────────────────────────────────────────────────────────────
@@ -1446,6 +1557,200 @@ inline void position_set_hash(PositionKey* keys, std::size_t n, std::uint32_t& v
     pos_hash = hash;
 }
 
+// ─── Decorations ──────────────────────────────────────────────────────────────
+// Instances are placed per weight texel from integer hashes of the terrain uid, the decoration's index and
+// the texel, so every reader places the same ones whatever chunk grid it walks. The game draws them; RED
+// counts and bakes them.
+
+struct DecorationView
+{
+    const std::uint8_t* coverage; // decoration_plane_bytes
+    const char* mesh;
+    float density, scale_min, scale_max, max_slope_deg, vertical_offset;
+    std::uint32_t link_layer, flags;
+};
+
+// `deco` has .mesh (std::string), .density, .scale_min, .scale_max, .max_slope, .vertical_offset, .link_layer
+// and the flag bools decoration_flags reads; `plane` is its coverage plane.
+template<typename Decoration>
+DecorationView make_decoration_view(const Decoration& deco, const std::uint8_t* plane)
+{
+    return {plane, deco.mesh.c_str(), deco.density, deco.scale_min, deco.scale_max, deco.max_slope,
+            deco.vertical_offset, deco.link_layer, decoration_flags(deco)};
+}
+
+// Places nothing, casts nothing and hashes nothing when inactive.
+inline constexpr bool decoration_active(const DecorationView& d)
+{
+    return d.coverage && d.mesh && d.mesh[0] && d.density > 0.0f;
+}
+
+// Weight texels [x0, x1) x [z0, z1).
+struct TexelRect
+{
+    std::uint32_t x0, z0, x1, z1;
+};
+
+inline constexpr TexelRect chunk_texel_rect(const ChunkRect& r, std::uint32_t mul)
+{
+    return {r.x0 * mul, r.z0 * mul, r.x1 * mul, r.z1 * mul};
+}
+
+// One placed mesh: its base on the surface, the surface normal there, its origin (the base raised along uvec
+// by vertical_offset * scale) and its unit orientation, scaled by `scale`.
+struct DecorationInstance
+{
+    float base[3], normal[3], pos[3], rvec[3], uvec[3], fvec[3];
+    float scale;
+};
+
+inline constexpr std::uint64_t decoration_seed(std::int32_t uid, std::uint32_t index)
+{
+    return splitmix64(splitmix64(static_cast<std::uint32_t>(uid)) ^ (0xDEC0ull << 48 | index));
+}
+
+inline constexpr std::uint64_t decoration_texel_key(std::uint64_t seed, std::uint32_t i, std::uint32_t j)
+{
+    return splitmix64(seed ^ (static_cast<std::uint64_t>(j) << 32 | i));
+}
+
+// Where every reader's instances come from, so pinned.
+static_assert(decoration_texel_key(decoration_seed(-7, 3), 12, 34) == 0xE541EBED09662C5Full);
+
+// The top 24 bits of `h` as a float in [0, 1).
+inline constexpr float hash_u01(std::uint64_t h)
+{
+    return static_cast<float>(h >> 40) * (1.0f / 16777216.0f);
+}
+
+// What is left of a level's placement work, carried across terrains in record order: instances placed, and
+// candidates tried whether placed or dropped by the slope limit, so steep ground cannot make it unbounded.
+struct DecorationBudget
+{
+    std::uint32_t instances = max_level_decoration_instances;
+    std::uint32_t candidates = max_level_decoration_candidates;
+
+    constexpr bool spent() const
+    {
+        return instances == 0 || candidates == 0;
+    }
+};
+
+// Calls fn(const DecorationInstance&) for decoration `d`'s instances on weight texels `r` (clamped to the grid),
+// row by row, within `budget`, which it lowers; fn returns false to stop. Returns how many it was given. A
+// texel expects density x texel area x coverage (x the linked layer's weight) instances; the fraction is one
+// more by chance. Holes, and ground steeper than the slope limit, drop their instances without moving any
+// other.
+template<typename Fn>
+std::uint32_t for_each_decoration_instance(const GridView& g, const DecorationView& d, std::uint64_t seed,
+                                           TexelRect r, DecorationBudget& budget, Fn&& fn)
+{
+    const bool linked = d.link_layer != decoration_link_none;
+    if (!decoration_active(d) || budget.spent()) return 0;
+    if (linked && (!g.weights || d.link_layer >= std::min(g.layer_count, max_layers))) return 0;
+    const std::uint32_t mul = g.weight_res_mul;
+    const std::uint32_t ww = weight_width(g.nx, mul), wh = weight_height(g.nz, mul);
+    r.x1 = std::min(r.x1, ww);
+    r.z1 = std::min(r.z1, wh);
+    if (mul == 0 || r.x0 >= r.x1 || r.z0 >= r.z1) return 0;
+
+    const double step = static_cast<double>(g.cell_size) / mul;
+    const double expected = std::min(static_cast<double>(d.density) * step * step,
+                                     static_cast<double>(max_decoration_instances_per_texel));
+    const std::uint64_t expected_q16 = static_cast<std::uint64_t>(std::llround(expected * 65536.0));
+    const float cos_max =
+        static_cast<float>(std::cos(static_cast<double>(d.max_slope_deg) * (3.14159265358979 / 180.0)));
+    const std::size_t map_bytes = weight_map_bytes(g.nx, g.nz, mul);
+    const std::size_t link_base = linked ? (d.link_layer < 4 ? 0 : map_bytes) + (d.link_layer & 3) : 0;
+    const bool align = (d.flags & decoration_flag_align_to_slope) != 0;
+    const bool random_yaw = (d.flags & decoration_flag_random_yaw) != 0;
+
+    std::uint32_t count = 0;
+    for (std::uint32_t j = r.z0; j < r.z1; j++) {
+        for (std::uint32_t i = r.x0; i < r.x1; i++) {
+            const std::size_t t = static_cast<std::size_t>(j) * ww + i;
+            const std::uint32_t cov = d.coverage[t];
+            if (cov == 0) continue;
+            const std::uint32_t weight = linked ? g.weights[link_base + t * 4] : 255u;
+            if (weight == 0 || !cell_solid(g, i / mul, j / mul)) continue;
+            const std::uint64_t n_q16 = expected_q16 * cov * weight / 65025u;
+            std::uint32_t n = static_cast<std::uint32_t>(n_q16 >> 16);
+            const std::uint64_t key = decoration_texel_key(seed, i, j);
+            if ((splitmix64(key ^ 0xF4AC7105ull) & 0xFFFFu) < (n_q16 & 0xFFFFu)) n++;
+
+            for (std::uint32_t k = 0; k < n; k++) {
+                if (budget.candidates == 0) return count;
+                budget.candidates--;
+                const std::uint64_t s = splitmix64(key + (k + 1ull) * 0x9E3779B97F4A7C15ull);
+                const std::uint64_t r1 = splitmix64(s), r2 = splitmix64(r1), r3 = splitmix64(r2), r4 = splitmix64(r3);
+                DecorationInstance inst;
+                inst.base[0] = g.origin[0] + static_cast<float>((i + static_cast<double>(hash_u01(r1))) * step);
+                inst.base[2] = g.origin[2] + static_cast<float>((j + static_cast<double>(hash_u01(r2))) * step);
+                inst.base[1] = height_at(g, inst.base[0], inst.base[2]);
+                heightmap_normal(g, inst.base[0], inst.base[2], inst.normal);
+                if (!(inst.normal[1] >= cos_max)) continue;
+                const float yaw = random_yaw ? hash_u01(r3) * 6.28318531f : 0.0f;
+                inst.scale = d.scale_min + (d.scale_max - d.scale_min) * hash_u01(r4);
+
+                const float up[3] = {align ? inst.normal[0] : 0.0f, align ? inst.normal[1] : 1.0f,
+                                     align ? inst.normal[2] : 0.0f};
+                const float sy = std::sin(yaw), cy = std::cos(yaw);
+                // rvec = up x (sin yaw, 0, cos yaw), or up x (cos yaw, 0, -sin yaw) where up lies along the first
+                float rv[3] = {up[1] * cy, up[2] * sy - up[0] * cy, -up[1] * sy};
+                float len = std::sqrt(rv[0] * rv[0] + rv[1] * rv[1] + rv[2] * rv[2]);
+                if (!(len >= 1e-6f)) {
+                    rv[0] = -up[1] * sy;
+                    rv[1] = up[2] * cy + up[0] * sy;
+                    rv[2] = -up[1] * cy;
+                    len = std::sqrt(rv[0] * rv[0] + rv[1] * rv[1] + rv[2] * rv[2]);
+                }
+                const float lift = d.vertical_offset * inst.scale;
+                for (int c = 0; c < 3; c++) {
+                    inst.rvec[c] = rv[c] / len;
+                    inst.uvec[c] = up[c];
+                    inst.pos[c] = inst.base[c] + up[c] * lift;
+                }
+                inst.fvec[0] = inst.rvec[1] * up[2] - inst.rvec[2] * up[1];
+                inst.fvec[1] = inst.rvec[2] * up[0] - inst.rvec[0] * up[2];
+                inst.fvec[2] = inst.rvec[0] * up[1] - inst.rvec[1] * up[0];
+                count++;
+                budget.instances--;
+                if (!fn(static_cast<const DecorationInstance&>(inst)) || budget.instances == 0) return count;
+            }
+        }
+    }
+    return count;
+}
+
+// Every decoration instance of one terrain in the order the game places them: chunk by chunk of `layout`,
+// within a chunk decoration by decoration, within `budget` (the level's, carried across terrains in record
+// order), which it lowers. fn(chunk, decoration, const DecorationInstance&) returns false to stop. Returns
+// how many it was given.
+template<typename Fn>
+std::uint32_t for_each_terrain_decoration(const GridView& g, std::int32_t uid, const ChunkLayout& layout,
+                                          const DecorationView* decos, std::uint32_t count,
+                                          DecorationBudget& budget, Fn&& fn)
+{
+    count = std::min(count, max_decorations);
+    std::uint64_t seeds[max_decorations];
+    for (std::uint32_t k = 0; k < count; k++) seeds[k] = decoration_seed(uid, k);
+    const std::uint32_t chunks = layout_chunk_count(layout);
+    std::uint32_t visited = 0;
+    bool stop = false;
+    for (std::uint32_t c = 0; c < chunks && !stop && !budget.spent(); c++) {
+        const TexelRect r =
+            chunk_texel_rect(chunk_rect(layout.cells_x, layout.cells_z, layout.edge, c), g.weight_res_mul);
+        for (std::uint32_t k = 0; k < count && !stop && !budget.spent(); k++) {
+            visited += for_each_decoration_instance(g, decos[k], seeds[k], r, budget,
+                                                    [&](const DecorationInstance& inst) {
+                                                        stop = !fn(c, k, inst);
+                                                        return !stop;
+                                                    });
+        }
+    }
+    return visited;
+}
+
 // ─── Lighting fingerprint ─────────────────────────────────────────────────────
 // What a terrain's baked chart (TerrainChart::geometry_fingerprint) depends on: placement, heights, holes,
 // triangulation and shape. Painting keeps the chart; geometry edits drop it.
@@ -1497,6 +1802,92 @@ static_assert([] {
                      flag_geoable, 16.0f, 8.0f, 1, 0, {}};
     return lighting_fingerprint(g);
 }() == 0xEE420A033E6AF829ull);
+
+// What a terrain's baked light depends on beyond lighting_fingerprint: the decorations that cast shadows,
+// by everything that places them (draw_distance does not). 0 when none casts, so terrains without one keep
+// their charts. A linked layer's weights must be present.
+inline constexpr std::uint64_t decoration_lighting_hash(std::int32_t uid, const GridView& g, const DecorationView* d,
+                                                        std::uint32_t count)
+{
+    auto casts = [](const DecorationView& v) {
+        return decoration_active(v) && (v.flags & decoration_flag_casts_shadows) != 0;
+    };
+    count = std::min(count, max_decorations);
+    bool any = false;
+    for (std::uint32_t i = 0; i < count; i++) any = any || casts(d[i]);
+    if (!any) return 0;
+
+    std::uint64_t h = 0x6A09E667F3BCC908ull;
+    auto mix = [&h](std::uint64_t v) { h = splitmix64(h ^ v); };
+    // Bytes as material_fingerprint mixes them: the length, then little-endian words, the last zero-padded.
+    auto bytes = [&mix](std::size_t n, auto&& byte_at) {
+        mix(n);
+        std::uint64_t w = 0;
+        std::size_t k = 0;
+        for (std::size_t i = 0; i < n; i++) {
+            w |= static_cast<std::uint64_t>(byte_at(i)) << (8 * k);
+            if (++k == 8) {
+                mix(w);
+                w = 0;
+                k = 0;
+            }
+        }
+        mix(w);
+    };
+    const std::size_t texels = weight_texel_count(g.nx, g.nz, g.weight_res_mul);
+    const std::size_t map_bytes = weight_map_bytes(g.nx, g.nz, g.weight_res_mul);
+    mix(static_cast<std::uint32_t>(uid));
+    mix(g.weight_res_mul);
+    for (std::uint32_t i = 0; i < count; i++) {
+        const DecorationView& v = d[i];
+        if (!casts(v)) continue;
+        mix(i);
+        std::size_t len = 0;
+        while (v.mesh[len]) len++;
+        bytes(len, [&](std::size_t k) {
+            const char c = v.mesh[k];
+            return static_cast<std::uint8_t>(c >= 'A' && c <= 'Z' ? c - 'A' + 'a' : c);
+        });
+        mix(position_bits(v.density));
+        mix(position_bits(v.scale_min));
+        mix(position_bits(v.scale_max));
+        mix(position_bits(v.max_slope_deg));
+        mix(position_bits(v.vertical_offset));
+        mix(v.flags);
+        mix(v.link_layer);
+        mix_le_words(mix, v.coverage, texels);
+        if (v.link_layer != decoration_link_none && g.weights && v.link_layer < max_layers) {
+            const std::size_t base = (v.link_layer < 4 ? 0 : map_bytes) + (v.link_layer & 3);
+            bytes(texels, [&](std::size_t t) { return g.weights[base + t * 4]; });
+        }
+    }
+    return h == 0 ? 1 : h;
+}
+
+// The fingerprint a baked terrain chart stores: lighting_fingerprint, mixed with decoration_lighting_hash when
+// a decoration casts shadows.
+inline constexpr std::uint64_t chart_fingerprint(const GridView& g, std::uint64_t decoration_hash)
+{
+    return decoration_hash == 0 ? lighting_fingerprint(g) : splitmix64(lighting_fingerprint(g) ^ decoration_hash);
+}
+
+// Stored in every baked terrain chart, so pinned.
+static_assert([] {
+    const std::uint16_t heights[9] = {0, 1, 0xFFFF, 0x1234, 0x8000, 0xABCD, 7, 0x0100, 0x7FFF};
+    const std::uint8_t holes[1] = {0x04}, diag[1] = {0x09};
+    const GridView g{heights, nullptr, holes, diag, 3, 3, 1, {-12.5f, -0.0f, 1024.0f}, 2.0f, -3.0f, 64.0f,
+                     flag_geoable, 16.0f, 8.0f, 1, 0, {}};
+    return chart_fingerprint(g, 0);
+}() == 0xEE420A033E6AF829ull);
+static_assert([] {
+    const std::uint16_t heights[9] = {0, 1, 0xFFFF, 0x1234, 0x8000, 0xABCD, 7, 0x0100, 0x7FFF};
+    const std::uint8_t holes[1] = {0x04}, diag[1] = {0x09}, plane[4] = {255, 0, 17, 128};
+    const GridView g{heights, nullptr, holes, diag, 3, 3, 1, {-12.5f, -0.0f, 1024.0f}, 2.0f, -3.0f, 64.0f,
+                     flag_geoable, 16.0f, 8.0f, 1, 0, {}};
+    const DecorationView d{plane, "rock.v3m", 0.5f, 0.75f, 1.5f, 35.0f, 0.5f, decoration_link_none,
+                           decoration_flag_random_yaw | decoration_flag_casts_shadows};
+    return chart_fingerprint(g, decoration_lighting_hash(-7, g, &d, 1));
+}() == 0x2BD621293A0026F6ull);
 
 // ─── Build fingerprints ───────────────────────────────────────────────────────
 // Geometry: every input of the compiled positions and chunk -> room layout (the build mapping is valid

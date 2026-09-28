@@ -12,6 +12,7 @@ namespace gr::d3d11
         standard,
         character,
         transformed,
+        standard_instanced,
     };
 
     using float3 = std::array<float, 3>;
@@ -111,6 +112,22 @@ namespace gr::d3d11
         };
     }
 
+    // The standard vertex in slot 0 and a GpuDecorationInstance per instance in slot 1
+    template<>
+    inline
+    std::vector<D3D11_INPUT_ELEMENT_DESC>
+    VertexLayoutTrait<VertexLayout::standard_instanced>::get_desc()
+    {
+        auto desc = VertexLayoutTrait<VertexLayout::standard>::get_desc();
+        desc.insert(desc.end(), {
+            { "INSTANCE", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 0, D3D11_INPUT_PER_INSTANCE_DATA, 1 },
+            { "INSTANCE", 1, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 16, D3D11_INPUT_PER_INSTANCE_DATA, 1 },
+            { "INSTANCE", 2, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 32, D3D11_INPUT_PER_INSTANCE_DATA, 1 },
+            { "INSTANCE_LIGHT", 0, DXGI_FORMAT_R8G8B8A8_UNORM, 1, 48, D3D11_INPUT_PER_INSTANCE_DATA, 1 },
+        });
+        return desc;
+    }
+
     inline std::vector<D3D11_INPUT_ELEMENT_DESC> get_vertex_layout_desc(VertexLayout vertex_layout)
     {
         switch (vertex_layout) {
@@ -120,6 +137,8 @@ namespace gr::d3d11
                 return VertexLayoutTrait<VertexLayout::character>::get_desc();
             case VertexLayout::transformed:
                 return VertexLayoutTrait<VertexLayout::transformed>::get_desc();
+            case VertexLayout::standard_instanced:
+                return VertexLayoutTrait<VertexLayout::standard_instanced>::get_desc();
             default:
                 assert(false);
                 return {};

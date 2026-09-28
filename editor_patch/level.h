@@ -672,6 +672,16 @@ struct AlpineLevelProperties
         return !legacy_lighting && lightmap_density != alpine_lightmap::density_off;
     }
 
+    bool is_terrain_room(int32_t room_uid) const
+    {
+        return std::binary_search(terrain_room_uids.begin(), terrain_room_uids.end(), room_uid);
+    }
+
+    bool is_terrain_split_room(int32_t room_uid) const
+    {
+        return std::binary_search(terrain_split_room_uids.begin(), terrain_split_room_uids.end(), room_uid);
+    }
+
     void SanitizeSunProperties()
     {
         const float yaw_in = sun_yaw, pitch_in = sun_pitch;
@@ -1444,6 +1454,7 @@ struct CDedLevel
 static_assert(sizeof(CDedLevel) == 0x608);
 static_assert(offsetof(CDedLevel, ambient_color) == 0x30);
 static_assert(offsetof(CDedLevel, build_running) == 0x232);
+static_assert(offsetof(CDedLevel, texture_groups) == 0x1C4);
 static_assert(offsetof(CDedLevel, geo_regions) == 0x3A0);
 static_assert(offsetof(CDedLevel, dialog_panels) == 0x444);
 
@@ -1486,6 +1497,13 @@ inline bool no_shadow_cast_eligible(const BrushNode& brush,
 // Final compiled rooms in all_rooms are clones that skip the constructor and get uid=-1;
 // they must be assigned from this counter manually before serialization.
 static auto& g_groom_uid_counter = addr_as_ref<int>(0x0057C954);
+
+inline void groom_assign_uid_if_missing(GRoom& room)
+{
+    if (room.uid == -1) {
+        room.uid = g_groom_uid_counter--;
+    }
+}
 
 // Set while the next GeoBuild_Driver tick is a build's first, which assigns the brush face ids
 static auto& g_build_first_tick_pending = addr_as_ref<std::uint8_t>(0x005774a0);

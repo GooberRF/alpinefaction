@@ -811,13 +811,22 @@ namespace gr::d3d11
         rf::VifLodMesh* lod_mesh, int lod_index,
         const rf::Vector3& pos, const rf::Matrix3& orient)
     {
-        page_in_v3d_mesh(lod_mesh);
+        const auto* batches = bind_v3d_buffers(lod_mesh, lod_index);
+        if (batches) {
+            render_context_.set_model_transform(pos, orient);
+        }
+        return batches;
+    }
+
+    const std::vector<BaseMeshRenderCache::Batch>* MeshRenderer::bind_v3d_buffers(
+        rf::VifLodMesh* lod_mesh, int lod_index, rf::MeshMaterial* materials, int num_materials)
+    {
+        page_in_v3d_mesh(lod_mesh, materials, num_materials);
         auto render_cache = reinterpret_cast<MeshRenderCache*>(lod_mesh->render_cache);
         if (!render_cache) {
             return nullptr;
         }
 
-        render_context_.set_model_transform(pos, orient);
         render_context_.set_vertex_buffer(v3d_vb_.buffer(), sizeof(GpuVertex));
         render_context_.set_index_buffer(v3d_ib_.buffer());
 

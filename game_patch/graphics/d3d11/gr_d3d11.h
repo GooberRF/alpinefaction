@@ -41,6 +41,7 @@ namespace gr::d3d11
     class AfLightmapRenderer;
     class SolidRenderer;
     class MeshRenderer;
+    class DecorationRenderer;
     class EntityShadowRenderer;
     class OutlineRenderer;
     class GammaPass;
@@ -186,6 +187,7 @@ namespace gr::d3d11
         std::unique_ptr<AfLightmapRenderer> af_lightmap_renderer_;
         std::unique_ptr<SolidRenderer> solid_renderer_;
         std::unique_ptr<MeshRenderer> mesh_renderer_;
+        std::unique_ptr<DecorationRenderer> decoration_renderer_;
         std::unique_ptr<EntityShadowRenderer> entity_shadow_renderer_;
         std::unique_ptr<OutlineRenderer> outline_renderer_;
         std::unique_ptr<GammaPass> gamma_pass_;

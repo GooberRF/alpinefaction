@@ -438,6 +438,21 @@ BrushNode* insert_detail_solid_brush(CDedLevel* level, GSolid* solid, const Vect
     return brush;
 }
 
+void select_inserted_brushes(CDedLevel* level, const std::vector<BrushNode*>& brushes)
+{
+    if (BrushNode* head = level->brush_list) {
+        BrushNode* b = head;
+        do {
+            if (b->state == BRUSH_STATE_SELECTED) b->state = BRUSH_STATE_NORMAL;
+            b = b->next;
+        } while (b && b != head);
+    }
+    for (BrushNode* brush : brushes) brush->state = BRUSH_STATE_SELECTED;
+    level->mark_geometry_dirty();
+    level->update_console_display();
+    redraw_all_viewports();
+}
+
 int mesh_to_brush_triangle_count(DedMesh* mesh)
 {
     const EditorV3d* v3d = mesh_static_v3d(mesh);

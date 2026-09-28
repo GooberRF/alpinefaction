@@ -390,6 +390,8 @@ namespace rf::gr
     static auto& setup_3d = addr_as_ref<void(const Matrix3* orient, const Vector3* pos, float fov, int zbuffer, int z_scale)>(0x00517EB0);
     static auto& flush = addr_as_ref<void()>(0x0050E4B0);
     static auto& cull_sphere = addr_as_ref<bool(const Vector3& pos, float radius)>(0x005186A0);
+    // Distance from the eye scaled by the projection, as LOD selection (0x0052FA40) compares it
+    static auto& get_apparent_distance_from_camera = addr_as_ref<float(const Vector3& pos)>(0x005182F0);
     static auto& set_texture_mip_filter = addr_as_ref<void(bool linear)>(0x0050E830);
     static auto& lock = addr_as_ref<bool(int bm_handle, int section, LockInfo* lock, LockMode mode)>(0x0050E2E0);
     static auto& unlock = addr_as_ref<void(LockInfo* lock)>(0x0050E310);

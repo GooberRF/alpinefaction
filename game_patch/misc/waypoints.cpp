@@ -6167,7 +6167,7 @@ int link_jump_pads_to_trajectory_destinations()
 // thick for that.
 static bool is_blastable_geoable_room(const rf::GRoom* room)
 {
-    return room->is_detail && room->is_geoable && !alpine_terrain_find_room(room);
+    return room->is_detail && room->is_geoable && !alpine_terrain_is_chunk_room(room);
 }
 
 // Check if any detail brush blocks the line segment.

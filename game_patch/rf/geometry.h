@@ -62,6 +62,11 @@ namespace rf
         FACE_FULL_BRIGHT = 0x20,
         FACE_SEE_THRU = 0x40,
         FACE_INVISIBLE = 0x2000,
+        // Set when 0x004D00B0 splits an edge of a face with FACE_HAS_LEVEL_DECAL; 0x004DBBB0 then
+        // recomputes the face's decal UVs.
+        FACE_LEVEL_DECAL_UVS_STALE = 0x80000,
+        // Set by g_decal_clip_to_face for a DF_LEVEL_DECAL decal
+        FACE_HAS_LEVEL_DECAL = 0x200000,
         // Boolean face state. State 2 (0x004DC990) marks both faces of a pair it intersected (0x004DEA10);
         // state 0 (0x004DBDF0) clears the mark and gives the second operand's faces type 1 (0x004DEA30).
         FACE_BOOLEAN_TYPE_1 = 0x800000,
@@ -397,6 +402,9 @@ namespace rf
     };
     static_assert(sizeof(GFace) == 0x60);
 
+    // Alpine Faction: the longest face edge loop its code walks; a longer one is taken as corrupt.
+    constexpr int max_face_vertices = 10000;
+
     // A node of a solid's or room's bounding box tree (0x004F97B0 allocates them)
     struct GBBox
     {
@@ -694,8 +702,9 @@ namespace rf
     static auto& g_geomod_flags = addr_as_ref<uint8_t>(0x0064858C);       // bit 0x1=local, 0x8=driller
     static auto& g_num_geomods_this_level = addr_as_ref<int>(0x00647C9C);
     // geomod_create 0x00467020 writes each crater's records at index g_num_geomods_this_level.
-    static auto& g_geomod_crater_records = addr_as_ref<uint8_t[128][0x20]>(0x00648600);
-    static auto& g_geomod_crater_pushes = addr_as_ref<uint8_t[128][0x24]>(0x00646A28);
+    constexpr int max_geomod_craters = 128;
+    static auto& g_geomod_crater_records = addr_as_ref<uint8_t[max_geomod_craters][0x20]>(0x00648600);
+    static auto& g_geomod_crater_pushes = addr_as_ref<uint8_t[max_geomod_craters][0x24]>(0x00646A28);
     static auto& g_geomod_separate_solids = addr_as_ref<bool>(0x00647C28);
 
     // Geomod emitter template indices (set by geomod_init FUN_00437130)

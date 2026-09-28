@@ -2,17 +2,24 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <format>
 #include <map>
 #include <string>
 #include <utility>
 #include <vector>
 #include <patch_common/MemUtils.h>
 #include <xlog/xlog.h>
+#include <common/terrain/alpine_terrain.h>
 #include <common/utils/string-utils.h>
 #include "lightmap_mesh_occluders.h"
 #include "level.h"
 #include "mesh.h"
+#include "terrain.h"
+#include "terrain_build.h"
+#include "terrain_decorations.h"
 #include "vtypes.h"
+
+namespace at = alpine_terrain;
 
 namespace
 {
@@ -30,6 +37,11 @@ struct MeshGeom
 };
 
 std::map<std::string, MeshGeom> g_geom_cache;
+// Terrain decoration meshes by lowercased file name
+std::map<std::string, MeshGeom> g_decoration_geom;
+
+// What the casting decorations of one bake may add to the occluder tree
+constexpr std::size_t max_decoration_occluder_tris = 262144;
 
 int g_objects = 0;
 int g_tris = 0;
@@ -44,10 +56,10 @@ bool bitmap_has_alpha(int handle)
 
 // The double-sided face flag 0x20 is deliberately ignored: a mesh occluder blocks either way.
 // Positions come from the walker with the submesh center added, so they sit where the mesh is drawn.
-void collect_lod0(const EditorVifLodMesh* lod, MeshGeom& out)
+void collect_lod(const EditorVifLodMesh* lod, int level, MeshGeom& out)
 {
-    vmesh_for_each_lod0_chunk(lod, [&](const EditorVifMesh& vm, const EditorVifChunk& chunk,
-                                       auto&& vertex) {
+    vmesh_for_each_lod_chunk(lod, level, [&](const EditorVifMesh& vm, const EditorVifChunk& chunk,
+                                             auto&& vertex) {
         const bool alpha = chunk.texture_idx >= 0 && chunk.texture_idx < vm.num_texture_handles &&
                            chunk.texture_idx < 7 &&
                            bitmap_has_alpha(vm.tex_handles[chunk.texture_idx]);
@@ -72,7 +84,7 @@ bool collect_v3m(EditorVMesh* vmesh, MeshGeom& out)
         return false;
     }
     for (int i = 0; i < v3d->num_meshes; i++) {
-        collect_lod0(v3d->meshes[i].lod_mesh, out);
+        collect_lod(v3d->meshes[i].lod_mesh, 0, out);
     }
     return true;
 }
@@ -88,7 +100,7 @@ bool collect_v3c(EditorVMesh* vmesh, MeshGeom& out)
     if (!v3d_mesh) {
         return false;
     }
-    collect_lod0(v3d_mesh->lod_mesh, out);
+    collect_lod(v3d_mesh->lod_mesh, 0, out);
     return true;
 }
 
@@ -729,6 +741,26 @@ const MeshGeom& mesh_geometry(DedMesh* mesh)
     return g_geom_cache.emplace(std::move(key), std::move(geom)).first->second;
 }
 
+// A decoration mesh's triangles at its lowest detail level (decorations are visual only; enough for shadows).
+const MeshGeom& decoration_geometry(const std::string& name)
+{
+    std::string key = string_to_lower(name);
+    auto it = g_decoration_geom.find(key);
+    if (it != g_decoration_geom.end()) {
+        return it->second;
+    }
+    MeshGeom geom;
+    if (EditorVMesh* vmesh = terrain_decorations_mesh(name)) {
+        const auto* v3d = static_cast<const EditorV3d*>(vmesh->instance);
+        for (int i = 0; v3d && v3d->meshes && i < v3d->num_meshes; i++) {
+            const EditorVifLodMesh* lod = v3d->meshes[i].lod_mesh;
+            collect_lod(lod, lod ? lod->num_levels - 1 : 0, geom);
+        }
+        geom.ok = true;
+    }
+    return g_decoration_geom.emplace(std::move(key), std::move(geom)).first->second;
+}
+
 } // namespace
 
 bool lightmap_collect_mesh_occluders(std::vector<MeshOccluderTri>& out)
@@ -795,9 +827,80 @@ bool lightmap_collect_mesh_occluders(std::vector<MeshOccluderTri>& out)
     return true;
 }
 
+void lightmap_collect_decoration_occluders(std::vector<MeshOccluderTri>& out)
+{
+    auto* level = CDedLevel::Get();
+    if (!level) {
+        return;
+    }
+    const auto& terrains = level->GetAlpineLevelProperties().terrain_objects;
+    const bool any = std::any_of(terrains.begin(), terrains.end(), [](const DedTerrain* t) {
+        return t && terrain_decorations_cast(t->data);
+    });
+    if (!any) {
+        return;
+    }
+    // Placed as the game places them: the terrains it will match to their rooms in record order, every layer
+    // counting toward the level's budget, so the casters are instances the game draws.
+    at::DecorationBudget budget;
+    uint32_t casters = 0;
+    std::size_t tris = 0;
+    bool overflow = false;
+    for (const DedTerrain* t : terrains) {
+        if (overflow || budget.spent()) {
+            break;
+        }
+        if (!t || t->data.decorations.empty() || !terrain_build_resolves(*level, *t)) {
+            continue;
+        }
+        const DedTerrainData& d = t->data;
+        const TerrainGrid& g = *d.grid;
+        at::DecorationView views[at::max_decorations];
+        const uint32_t count = terrain_decoration_views(d, g, views);
+        const MeshGeom* geoms[at::max_decorations] = {};
+        for (uint32_t k = 0; k < count; k++) {
+            if (at::decoration_active(views[k]) && (views[k].flags & at::decoration_flag_casts_shadows)) {
+                geoms[k] = &decoration_geometry(d.decorations[k].mesh);
+            }
+        }
+        const at::ChunkLayout layout{at::cells(g.nx), at::cells(g.nz), terrain_effective_chunk_cells(d)};
+        auto emit = [&](uint32_t, uint32_t k, const at::DecorationInstance& inst) {
+            const MeshGeom* geom = geoms[k];
+            if (!geom || geom->tris.empty()) {
+                return true;
+            }
+            if (tris + geom->tris.size() > max_decoration_occluder_tris) {
+                overflow = true;
+                return false;
+            }
+            const float s = inst.scale;
+            auto to_world = [&](const Vector3& v) {
+                return Vector3{inst.pos[0] + (inst.rvec[0] * v.x + inst.uvec[0] * v.y + inst.fvec[0] * v.z) * s,
+                               inst.pos[1] + (inst.rvec[1] * v.x + inst.uvec[1] * v.y + inst.fvec[1] * v.z) * s,
+                               inst.pos[2] + (inst.rvec[2] * v.x + inst.uvec[2] * v.y + inst.fvec[2] * v.z) * s};
+            };
+            for (const LocalTri& lt : geom->tris) {
+                out.push_back({to_world(lt.v0), to_world(lt.v1), to_world(lt.v2), -1, lt.alpha});
+            }
+            tris += geom->tris.size();
+            casters++;
+            return true;
+        };
+        at::for_each_terrain_decoration(terrain_grid_view(t->pos, d, g), t->uid, layout, views, count, budget, emit);
+    }
+    xlog::info("[MeshOccluders] {} terrain decoration instances contributed {} triangles", casters, tris);
+    if (overflow) {
+        terrain_report(std::format("Terrain decorations that cast shadows make more than {} shadow triangles: "
+                                   "only the first {} instances cast shadows.",
+                                   max_decoration_occluder_tris, casters),
+                       false);
+    }
+}
+
 void lightmap_mesh_occluders_release()
 {
     g_geom_cache.clear();
+    g_decoration_geom.clear();
 }
 
 void lightmap_mesh_occluder_report()

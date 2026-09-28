@@ -20,6 +20,7 @@
 #include "resources.h"
 #include "terrain.h"
 #include "terrain_build.h"
+#include "terrain_decorations.h"
 #include "terrain_paint.h"
 #include "terrain_paint_math.h"
 #include "terrain_preview.h"
@@ -51,11 +52,6 @@ bool is_view(void* view)
         if (editor_view_at(i) == view) return true;
     }
     return false;
-}
-
-void mark_all_views()
-{
-    for (int i = 0; i < editor_num_views; i++) editor_view_mark_repaint(editor_view_at(i));
 }
 
 // ─── State ──────────────────────────────────────────────────────────────────
@@ -97,10 +93,12 @@ constexpr int tool_ids[tp::tool_count] = {
 };
 
 const char* const tool_hints[tp::tool_count] = {
-    "Blends toward the selected layer, or raises the selected overlay's coverage. Strength: how far per dab.",
-    "Blends toward layer 1, the base, or lowers the selected overlay's coverage. Strength: how far per dab.",
-    "Blends layer weights, or the selected overlay's coverage, toward their neighbours'. Strength: how far per "
-    "dab.",
+    "Blends toward the selected layer, or raises the selected overlay's or decoration's coverage. Strength: how "
+    "far per dab.",
+    "Blends toward layer 1, the base, or lowers the selected overlay's or decoration's coverage. Strength: how far "
+    "per dab.",
+    "Blends layer weights, or the selected overlay's or decoration's coverage, toward their neighbours'. "
+    "Strength: how far per dab.",
     "Cuts holes in the cells under the brush. Strength and falloff do not apply.",
     "Fills holes in the cells under the brush. Strength and falloff do not apply.",
     "Raises by up to strength x radius / 20 per dab at the centre; hold still to keep raising. The height "
@@ -124,6 +122,8 @@ const char* const tool_hints[tp::tool_count] = {
 // Chunk outlines while Geoable Chunks is the tool
 constexpr uint8_t geo_chunk_on_rgb[3] = {0xff, 0x80, 0x00};
 constexpr uint8_t geo_chunk_off_rgb[3] = {0x80, 0x80, 0x80};
+// Swatch of the decoration entries in the Layer list
+constexpr COLORREF decoration_swatch_color = RGB(80, 160, 60);
 
 struct Panel
 {
@@ -181,7 +181,7 @@ struct Stroke
     float noise_feature = 1.0f;
     std::vector<float> coverage;
     // Ramp tools: where the stroke started (world x, z) and the surface offset there; a ramp's
-    // direction once locked; a bridge points' far end.
+    // direction once locked; a Bridge Points stroke's far end.
     bool has_anchor = false;
     float anchor[2] = {};
     float anchor_offset = 0.0f;
@@ -344,6 +344,11 @@ TerrainCellRect texels_to_cells(const tp::Rect& r, uint32_t mul)
     return {r.x0 / mul, r.z0 / mul, (r.x1 + mul - 1) / mul, (r.z1 + mul - 1) / mul};
 }
 
+uint32_t decoration_planes(const TerrainGrid& g)
+{
+    return static_cast<uint32_t>(g.decoration.size() / at::decoration_plane_bytes(g.nx, g.nz, g.weight_res_mul));
+}
+
 // The surface height at world (x, z), as an offset above origin.y.
 float surface_offset(const DedTerrain& t, float x, float z)
 {
@@ -403,6 +408,8 @@ void invalidate(DedTerrain* t, const tp::Rect& texels, const tp::Rect& cells, ui
     if (!texels.empty()) {
         const TerrainCellRect r = texels_to_cells(texels, mul);
         terrain_preview_invalidate(t, &r, false);
+        // Coverage and linked weights place the decorations whose shadows are baked.
+        if (terrain_decorations_cast(t->data)) terrain_preview_lighting_changed(t);
     }
     if (!cells.empty()) {
         const TerrainCellRect r{cells.x0, cells.z0, cells.x1, cells.z1};
@@ -509,12 +516,17 @@ void stroke_commit()
         const uint32_t ww = at::weight_width(grid->nx, grid->weight_res_mul);
         const uint32_t wh = at::weight_height(grid->nz, grid->weight_res_mul);
         const uint32_t cx = at::cells(grid->nx);
+        e.diff.deco_planes = decoration_planes(*grid);
         if (!texels.empty()) {
-            const bool overlay = !before->overlay.empty() && before->overlay.size() == grid->overlay.size();
+            e.diff.overlay = !before->overlay.empty() && before->overlay.size() == grid->overlay.size();
+            const bool planes = before->decoration.size() == grid->decoration.size();
             tp::capture_weights(before->weights.data(), ww, wh, texels, e.diff.weights_before,
-                                overlay ? before->overlay.data() : nullptr);
+                                e.diff.overlay ? before->overlay.data() : nullptr,
+                                planes ? before->decoration.data() : nullptr, e.diff.deco_planes);
             tp::capture_weights(grid->weights.data(), ww, wh, texels, e.diff.weights_after,
-                                overlay ? grid->overlay.data() : nullptr);
+                                e.diff.overlay ? grid->overlay.data() : nullptr,
+                                planes ? grid->decoration.data() : nullptr, e.diff.deco_planes);
+            if (!planes) e.diff.deco_planes = 0;
         }
         if (!cells.empty()) {
             tp::capture_holes(before->holes.data(), cx, cells, e.diff.holes_before);
@@ -544,7 +556,7 @@ void stroke_end()
     stop_repeat_timer();
     if (hwnd && GetCapture() == hwnd) ReleaseCapture();
     update_status();
-    mark_all_views();
+    editor_views_mark_repaint_all();
 }
 
 void stroke_abandon()
@@ -572,7 +584,7 @@ void paint_out_of_memory()
         g_note = "Out of memory: the stroke was stopped";
         g_hover.grid = nullptr;
         update_status();
-        mark_all_views();
+        editor_views_mark_repaint_all();
     }
     catch (const std::bad_alloc&) {
     }
@@ -710,22 +722,29 @@ bool apply_dab(float x, float z)
     const uint32_t layer_count = static_cast<uint32_t>(std::min<std::size_t>(d.layers.size(), at::max_layers));
     const uint32_t ww = at::weight_width(g.nx, g.weight_res_mul), wh = at::weight_height(g.nz, g.weight_res_mul);
     tp::WeightMaps maps{g.weights.data(), ww, wh, g.weight_res_mul, layer_count};
-    // Entries past the base layers in the panel's list are the overlays.
+    // Entries past the base layers in the panel's list are the overlays, then the decorations.
     const int overlay = g_settings.layer - static_cast<int>(layer_count);
     const int overlay_count = static_cast<int>(std::min<std::size_t>(d.overlays.size(), at::max_overlays));
     const bool on_overlay = overlay >= 0 && overlay < overlay_count &&
                             g.overlay.size() == at::overlay_map_bytes(g.nx, g.nz, g.weight_res_mul);
-    tp::CoverageMap cov{g.overlay.data(), ww, wh, g.weight_res_mul, static_cast<uint32_t>(overlay)};
+    const int deco = overlay - overlay_count;
+    const bool on_deco = deco >= 0 && deco < static_cast<int>(d.decorations.size()) &&
+                         static_cast<uint32_t>(deco) < decoration_planes(g);
+    const std::size_t plane = at::decoration_plane_bytes(g.nx, g.nz, g.weight_res_mul);
+    tp::CoverageMap cov = on_deco ? tp::CoverageMap{g.decoration.data() + deco * plane, ww, wh, g.weight_res_mul, 0, 1}
+                                  : tp::CoverageMap{g.overlay.data(), ww, wh, g.weight_res_mul,
+                                                    static_cast<uint32_t>(overlay)};
+    const bool on_coverage = on_overlay || on_deco;
     switch (g_settings.tool) {
     case tp::Tool::paint_layer:
-        if (on_overlay) texels = tp::paint_coverage(cov, dab, true);
+        if (on_coverage) texels = tp::paint_coverage(cov, dab, true);
         else if (overlay < 0) texels = tp::paint_layer(maps, dab, static_cast<uint32_t>(std::max(g_settings.layer, 0)));
         break;
     case tp::Tool::erase:
-        texels = on_overlay ? tp::paint_coverage(cov, dab, false) : tp::paint_layer(maps, dab, 0);
+        texels = on_coverage ? tp::paint_coverage(cov, dab, false) : tp::paint_layer(maps, dab, 0);
         break;
     case tp::Tool::smooth:
-        texels = on_overlay ? tp::smooth_coverage(cov, dab) : tp::smooth_weights(maps, dab);
+        texels = on_coverage ? tp::smooth_coverage(cov, dab) : tp::smooth_weights(maps, dab);
         break;
     case tp::Tool::paint_holes:
     case tp::Tool::clear_holes:
@@ -904,7 +923,7 @@ void paint_tick()
         if (g_other_views_pending && now - g_other_views_repainted >= 100) {
             g_other_views_pending = false;
             g_other_views_repainted = now;
-            mark_all_views();
+            editor_views_mark_repaint_all();
         }
         return;
     }
@@ -939,7 +958,7 @@ void paint_tick()
     // The view under the cursor follows at once, the others a few times a second.
     if (!g_hover.valid && !was_valid && !changed) return;
     if (changed || now - g_other_views_repainted >= 100) {
-        mark_all_views();
+        editor_views_mark_repaint_all();
         g_other_views_repainted = now;
         g_other_views_pending = false;
     }
@@ -1007,7 +1026,13 @@ void undo_step(bool undo)
             (undo ? s->redo : s->undo).push_back(std::move(e));
             g_note.clear();
             update_status();
-            mark_all_views();
+            editor_views_mark_repaint_all();
+            return;
+        }
+        // Planes added or removed replace the grid, which empties the stack; this only backs that up.
+        if (from->back().diff.deco_planes != decoration_planes(*t->data.grid)) {
+            clear_stack(*s);
+            update_status();
             return;
         }
         auto g = std::make_shared<TerrainGrid>(*t->data.grid);
@@ -1016,7 +1041,8 @@ void undo_step(bool undo)
         const uint32_t ww = at::weight_width(g->nx, g->weight_res_mul);
         const uint32_t wh = at::weight_height(g->nz, g->weight_res_mul);
         tp::apply_diff(e.diff, !undo, g->weights.data(), ww, wh, g->holes.data(), at::cells(g->nx),
-                       g->overlay.empty() ? nullptr : g->overlay.data());
+                       g->overlay.empty() ? nullptr : g->overlay.data(),
+                       g->decoration.empty() ? nullptr : g->decoration.data());
         tp::apply_height_diff(e.diff, !undo, g->heights.data(), g->nx, t->data.height_min, t->data.height_range,
                               t->data.thickness);
         const TerrainGrid* old = t->data.grid.get();
@@ -1041,7 +1067,7 @@ void undo_step(bool undo)
     }
     g_hover.grid = nullptr;
     update_status();
-    mark_all_views();
+    editor_views_mark_repaint_all();
 }
 
 bool can_step(bool undo)
@@ -1194,7 +1220,7 @@ void draw_geo_chunks(const DedTerrain& t, const at::GridView& v, float lift)
 
 void panel_update_state();
 
-// The base layers, then the overlays.
+// The base layers, then the overlays, then the decorations.
 void panel_refresh_layers(bool force)
 {
     if (!g_panel.hwnd || !g_panel.target) return;
@@ -1213,6 +1239,11 @@ void panel_refresh_layers(bool force)
         names.push_back(name);
         shape.overlays.push_back(name);
     }
+    for (std::size_t i = 0; i < d.decorations.size(); i++) {
+        const std::string& name = d.decorations[i].mesh;
+        labels.push_back(std::format("Deco {}: {}", i + 1, name.empty() ? "(none)" : name));
+        shape.decorations.push_back(name);
+    }
     if (!force && labels == g_panel.layer_labels) return;
     if (g_layer_list.owner == g_panel.target) {
         g_settings.layer = tp::remap_layer_selection(g_settings.layer, g_layer_list.shape, shape);
@@ -1225,6 +1256,7 @@ void panel_refresh_layers(bool force)
         terrain_preview_layer_color(name, rgb);
         g_panel.layer_colors.push_back(RGB(rgb[0], rgb[1], rgb[2]));
     }
+    g_panel.layer_colors.insert(g_panel.layer_colors.end(), d.decorations.size(), decoration_swatch_color);
     HWND list = GetDlgItem(g_panel.hwnd, IDC_TTOOLS_LAYER_LIST);
     SendMessageA(list, LB_RESETCONTENT, 0, 0);
     for (const std::string& label : labels) {
@@ -1245,15 +1277,17 @@ void panel_update_state()
         if (g_stroke.active) stroke_end();
         g_settings.tool = tp::Tool::paint_layer;
         for (int i = 0; i < tp::tool_count; i++) {
-            CheckDlgButton(g_panel.hwnd, tool_ids[i], i == static_cast<int>(g_settings.tool) ? BST_CHECKED : BST_UNCHECKED);
+            CheckDlgButton(g_panel.hwnd, tool_ids[i],
+                           i == static_cast<int>(g_settings.tool) ? BST_CHECKED : BST_UNCHECKED);
         }
-        mark_all_views();
+        editor_views_mark_repaint_all();
     }
     const bool geo = g_settings.tool == tp::Tool::geo_chunks;
-    // Erase and Smooth act on the selected overlay, if any.
-    const bool overlays = g_panel.target && !g_panel.target->data.overlays.empty();
+    // Erase and Smooth act on the selected overlay or decoration, if any.
+    const bool coverage =
+        g_panel.target && (!g_panel.target->data.overlays.empty() || !g_panel.target->data.decorations.empty());
     const bool list = g_settings.tool == tp::Tool::paint_layer ||
-                      (overlays && (g_settings.tool == tp::Tool::erase || g_settings.tool == tp::Tool::smooth));
+                      (coverage && (g_settings.tool == tp::Tool::erase || g_settings.tool == tp::Tool::smooth));
     EnableWindow(GetDlgItem(g_panel.hwnd, IDC_TTOOLS_LAYER_LIST), list);
     const bool weights = !tp::tool_edits_holes(g_settings.tool) && !geo;
     for (int id : {IDC_TTOOLS_STRENGTH, IDC_TTOOLS_STRENGTH_SPIN, IDC_TTOOLS_FALLOFF}) {
@@ -1367,7 +1401,7 @@ void stitch_edges()
     if (!range_note.empty()) g_note += "; " + range_note;
     g_hover.grid = nullptr;
     update_status();
-    mark_all_views();
+    editor_views_mark_repaint_all();
 }
 
 void panel_set_target(DedTerrain* t)
@@ -1387,7 +1421,7 @@ void panel_destroyed()
     if (g_panel.msg_hook) UnhookWindowsHookEx(g_panel.msg_hook);
     g_panel = Panel{};
     g_hover = Hover{};
-    mark_all_views();
+    editor_views_mark_repaint_all();
 }
 
 // The panel's keyboard (tab, arrows, typing) goes through IsDialogMessage before RED's accelerators
@@ -1460,6 +1494,7 @@ INT_PTR CALLBACK TerrainToolsProc(HWND hdlg, UINT msg, WPARAM wp, LPARAM lp)
         SetDlgItemTextA(hdlg, IDC_TTOOLS_ANGLE, buf);
         alpine_spinner_init(hdlg, IDC_TTOOLS_ANGLE, IDC_TTOOLS_ANGLE_SPIN, 1.0f, -tp::max_ramp_angle,
                             tp::max_ramp_angle, 1);
+        CheckDlgButton(hdlg, IDC_TTOOLS_SHOW_DECORATIONS, terrain_decorations_visible() ? BST_CHECKED : BST_UNCHECKED);
         g_panel.updating = false;
 
         // Top right of RED's window, clear of the side panel's top, kept on the monitor's work area.
@@ -1500,7 +1535,7 @@ INT_PTR CALLBACK TerrainToolsProc(HWND hdlg, UINT msg, WPARAM wp, LPARAM lp)
                 g_note.clear();
                 panel_update_state();
                 update_status();
-                mark_all_views();
+                editor_views_mark_repaint_all();
             }
             return TRUE;
         case IDC_TTOOLS_HEIGHT:
@@ -1530,8 +1565,12 @@ INT_PTR CALLBACK TerrainToolsProc(HWND hdlg, UINT msg, WPARAM wp, LPARAM lp)
             if (HIWORD(wp) == CBN_SELCHANGE) {
                 const LRESULT sel = SendDlgItemMessageA(hdlg, IDC_TTOOLS_FALLOFF, CB_GETCURSEL, 0, 0);
                 if (sel >= 0 && sel <= 2) g_settings.falloff = static_cast<tp::Falloff>(sel);
-                mark_all_views();
+                editor_views_mark_repaint_all();
             }
+            return TRUE;
+        case IDC_TTOOLS_SHOW_DECORATIONS:
+            terrain_decorations_set_visible(IsDlgButtonChecked(hdlg, IDC_TTOOLS_SHOW_DECORATIONS) == BST_CHECKED);
+            editor_views_mark_repaint_all();
             return TRUE;
         case IDC_TTOOLS_UNDO:
             undo_step(true);
@@ -1593,7 +1632,8 @@ INT_PTR CALLBACK TerrainToolsProc(HWND hdlg, UINT msg, WPARAM wp, LPARAM lp)
         RECT tr = dis->rcItem;
         tr.left = swatch.right + 4;
         SetBkMode(dis->hDC, TRANSPARENT);
-        SetTextColor(dis->hDC, GetSysColor(!enabled ? COLOR_GRAYTEXT : selected ? COLOR_HIGHLIGHTTEXT : COLOR_WINDOWTEXT));
+        SetTextColor(dis->hDC,
+                     GetSysColor(!enabled ? COLOR_GRAYTEXT : selected ? COLOR_HIGHLIGHTTEXT : COLOR_WINDOWTEXT));
         DrawTextA(dis->hDC, text, -1, &tr, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
         if (dis->itemState & ODS_FOCUS) DrawFocusRect(dis->hDC, &dis->rcItem);
         return TRUE;
@@ -1724,7 +1764,7 @@ void terrain_paint_open(CDedLevel* level, DedTerrain* terrain)
     panel_update_state();
     ShowWindow(g_panel.hwnd, SW_SHOW);
     SetActiveWindow(g_panel.hwnd);
-    mark_all_views();
+    editor_views_mark_repaint_all();
 }
 
 void terrain_paint_open_for_selection(CDedLevel* level)

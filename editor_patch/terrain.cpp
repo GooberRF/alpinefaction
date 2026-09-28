@@ -21,11 +21,14 @@
 #include <common/utils/string-utils.h>
 #include <xlog/xlog.h>
 #include "alpine_spinner.h"
+#include "brush_import.h"
 #include "dialog_tooltips.h"
 #include "file_dialogs.h"
 #include "headless_bake.h"
+#include "mesh_browser.h"
 #include "terrain.h"
 #include "terrain_build.h"
+#include "terrain_decorations.h"
 #include "terrain_generate.h"
 #include "terrain_paint.h"
 #include "terrain_paint_math.h"
@@ -59,13 +62,6 @@ static void terrain_load_icon()
     }
 }
 
-static void terrain_set_identity(Matrix3& orient)
-{
-    orient.rvec = {1.0f, 0.0f, 0.0f};
-    orient.uvec = {0.0f, 1.0f, 0.0f};
-    orient.fvec = {0.0f, 0.0f, 1.0f};
-}
-
 // ─── Grid helpers ────────────────────────────────────────────────────────────
 
 static std::shared_ptr<TerrainGrid> terrain_make_flat_grid(uint32_t nx, uint32_t nz, uint32_t mul)
@@ -93,10 +89,12 @@ static bool terrain_grid_consistent(const TerrainGrid& g)
     }
     if (!at::is_allowed_weight_res_mul(g.weight_res_mul)) return false;
     const std::size_t mask = at::bitmask_bytes(at::cells(g.nx), at::cells(g.nz));
+    const std::size_t plane = at::decoration_plane_bytes(g.nx, g.nz, g.weight_res_mul);
     return g.heights.size() == at::vertex_count(g.nx, g.nz) &&
            g.weights.size() == at::blob_weights_bytes(g.nx, g.nz, g.weight_res_mul) &&
            g.holes.size() == mask && g.diag.size() == mask &&
-           (g.overlay.empty() || g.overlay.size() == at::overlay_map_bytes(g.nx, g.nz, g.weight_res_mul));
+           (g.overlay.empty() || g.overlay.size() == at::overlay_map_bytes(g.nx, g.nz, g.weight_res_mul)) &&
+           g.decoration.size() % plane == 0 && g.decoration.size() / plane <= at::max_decorations;
 }
 
 // The grid carries a coverage map exactly while the terrain has overlays; a new one starts at zero.
@@ -109,6 +107,23 @@ static void terrain_match_overlay_map(DedTerrainData& d)
     }
     else {
         g->overlay.assign(at::overlay_map_bytes(g->nx, g->nz, g->weight_res_mul), 0);
+    }
+    d.grid = std::move(g);
+}
+
+// The grid carries one coverage plane per decoration; a new one starts full when its decoration follows a
+// texture layer, so it appears where that layer is painted, else empty.
+static void terrain_match_decoration_planes(DedTerrainData& d)
+{
+    if (!d.grid) return;
+    const std::size_t plane = at::decoration_plane_bytes(d.grid->nx, d.grid->nz, d.grid->weight_res_mul);
+    const std::size_t have = d.grid->decoration.size() / plane;
+    if (have == d.decorations.size() && d.grid->decoration.size() % plane == 0) return;
+    auto g = std::make_shared<TerrainGrid>(*d.grid);
+    g->decoration.resize(std::min(have, d.decorations.size()) * plane);
+    for (std::size_t i = g->decoration.size() / plane; i < d.decorations.size(); i++) {
+        const bool linked = d.decorations[i].link_layer != at::decoration_link_none;
+        g->decoration.insert(g->decoration.end(), plane, static_cast<uint8_t>(linked ? 255 : 0));
     }
     d.grid = std::move(g);
 }
@@ -214,8 +229,8 @@ static uint8_t terrain_weight_byte(float v)
     return static_cast<uint8_t>(std::clamp(std::lround(v), 0L, 255L));
 }
 
-// Heights filtered on the vertex lattice, weights over texel centres and renormalized, overlay coverage
-// as the weights without renormalizing, holes and diagonals nearest by cell centre.
+// Heights filtered on the vertex lattice, weights over texel centres and renormalized, overlay coverage and
+// decoration planes as the weights without renormalizing, holes and diagonals nearest by cell centre.
 static std::shared_ptr<TerrainGrid> terrain_resample_grid(const TerrainGrid& src, uint32_t nx,
                                                           uint32_t nz, uint32_t mul)
 {
@@ -267,6 +282,26 @@ static std::shared_ptr<TerrainGrid> terrain_resample_grid(const TerrainGrid& src
             });
     }
 
+    const std::size_t src_plane = at::decoration_plane_bytes(src.nx, src.nz, src.weight_res_mul);
+    const std::size_t planes = src.decoration.size() / src_plane;
+    if (planes > 0) {
+        const std::size_t dst_plane = at::decoration_plane_bytes(nx, nz, mul);
+        g->decoration.assign(planes * dst_plane, 0);
+        const TerrainAxisTaps tx = terrain_axis_taps(sw, dw, false), tz = terrain_axis_taps(sh, dh, false);
+        for (std::size_t p = 0; p < planes; p++) {
+            const uint8_t* in = src.decoration.data() + p * src_plane;
+            uint8_t* out = g->decoration.data() + p * dst_plane;
+            terrain_filter(
+                tx, tz, sw, 1,
+                [&](uint32_t c, uint32_t r, uint32_t) {
+                    return static_cast<float>(in[static_cast<std::size_t>(r) * sw + c]);
+                },
+                [&](uint32_t i, uint32_t j, const float* v) {
+                    out[static_cast<std::size_t>(j) * dw + i] = terrain_weight_byte(v[0]);
+                });
+        }
+    }
+
     const uint32_t scx = at::cells(src.nx), scz = at::cells(src.nz);
     const uint32_t dcx = at::cells(nx), dcz = at::cells(nz);
     const std::size_t mask = at::bitmask_bytes(dcx, dcz);
@@ -281,6 +316,19 @@ static std::shared_ptr<TerrainGrid> terrain_resample_grid(const TerrainGrid& src
         }
     }
     return g;
+}
+
+// A copy of `old` at nx x nz vertices, resampled only when that changes its resolution.
+static std::shared_ptr<TerrainGrid> terrain_grid_at_resolution(const TerrainGrid& old, uint32_t nx, uint32_t nz)
+{
+    return nx == old.nx && nz == old.nz ? std::make_shared<TerrainGrid>(old)
+                                        : terrain_resample_grid(old, nx, nz, old.weight_res_mul);
+}
+
+// Every weight channel up to `highest` gets a layer behind it.
+static void terrain_grow_layers(DedTerrainData& d, int highest)
+{
+    while (static_cast<int>(d.layers.size()) <= highest) d.layers.emplace_back();
 }
 
 // ─── Budget ──────────────────────────────────────────────────────────────────
@@ -305,14 +353,15 @@ static uint64_t terrain_level_raw_bytes_except(CDedLevel* level, const DedTerrai
 
 // The game drops the whole terrain chunk past this budget, so RED never lets a level reach it.
 static bool terrain_budget_allows(HWND owner, const DedTerrain* except, uint32_t nx, uint32_t nz,
-                                  uint32_t mul, bool overlays)
+                                  uint32_t mul, bool overlays, std::size_t decorations)
 {
     // Whether the geo mask is written depends on the edit's chunk layout, so it is always counted, at its
     // largest (the finest chunk grid).
-    const uint64_t total =
-        terrain_level_raw_bytes_except(CDedLevel::Get(), except) +
-        at::wire_raw_size(nx, nz, mul, at::chunk_edge_options[0],
-                          at::flag_chunk_geo_mask | (overlays ? at::flag_overlays : 0));
+    const auto deco_count = static_cast<uint32_t>(std::min<std::size_t>(decorations, at::max_decorations));
+    const uint32_t flags = at::flag_chunk_geo_mask | (overlays ? at::flag_overlays : 0) |
+                           (deco_count ? at::flag_decorations : 0);
+    const uint64_t total = terrain_level_raw_bytes_except(CDedLevel::Get(), except) +
+                           at::wire_raw_size(nx, nz, mul, at::chunk_edge_options[0], flags, deco_count);
     if (total <= at::max_level_raw_bytes) return true;
     char msg[256];
     std::snprintf(msg, sizeof(msg),
@@ -357,14 +406,32 @@ static void terrain_clamp_properties(DedTerrainData& d)
         terrain_sanitize_texture(overlay.texture, "");
         overlay.uv_scale = at::clamp_finite(overlay.uv_scale, at::min_uv_scale, at::max_uv_scale, at::default_uv_scale);
     }
+    if (d.decorations.size() > at::max_decorations) d.decorations.resize(at::max_decorations);
+    for (auto& deco : d.decorations) {
+        if (!at::decoration_mesh_valid(deco.mesh.c_str(), deco.mesh.size())) deco.mesh.clear();
+        deco.density = at::clamp_finite(deco.density, 0.0f, at::max_decoration_density, at::default_decoration_density);
+        deco.scale_min = at::clamp_finite(deco.scale_min, at::min_decoration_scale, at::max_decoration_scale,
+                                          at::default_decoration_scale);
+        deco.scale_max = at::clamp_finite(deco.scale_max, at::min_decoration_scale, at::max_decoration_scale,
+                                          at::default_decoration_scale);
+        deco.scale_max = std::max(deco.scale_max, deco.scale_min);
+        deco.max_slope = at::clamp_finite(deco.max_slope, 0.0f, at::max_decoration_slope_deg,
+                                          at::default_decoration_slope_deg);
+        deco.draw_distance = at::clamp_finite(deco.draw_distance, at::min_decoration_draw_distance,
+                                              at::max_decoration_draw_distance, at::default_decoration_draw_distance);
+        deco.vertical_offset =
+            at::clamp_finite(deco.vertical_offset, -at::max_decoration_offset, at::max_decoration_offset, 0.0f);
+        if (deco.link_layer >= d.layers.size()) deco.link_layer = at::decoration_link_none;
+    }
     if (!d.grid || !terrain_grid_consistent(*d.grid)) {
         d.grid = terrain_make_flat_grid(at::default_verts, at::default_verts, at::default_weight_res_mul);
     }
     terrain_match_overlay_map(d);
+    terrain_match_decoration_planes(d);
 }
 
-// The header as written: flag_chunk_geo_mask added when a chunk is not geoable, `geo` then the mask, and
-// flag_overlays when the terrain has overlays.
+// The header as written: flag_chunk_geo_mask added when a chunk is not geoable, `geo` then the mask,
+// flag_overlays when the terrain has overlays and flag_decorations when it has decorations.
 static at::Header terrain_wire_header(const Vector3& pos, const DedTerrainData& d, std::vector<uint8_t>& geo)
 {
     at::Header h = terrain_header(pos, d, d.grid.get());
@@ -377,13 +444,17 @@ static at::Header terrain_wire_header(const Vector3& pos, const DedTerrainData& 
         h.flags |= at::flag_overlays;
         h.overlay_count = static_cast<uint32_t>(d.overlays.size());
     }
+    if (!d.decorations.empty()) {
+        h.flags |= at::flag_decorations;
+        h.decoration_count = static_cast<uint32_t>(d.decorations.size());
+    }
     return h;
 }
 
 void terrain_prepare(DedTerrain& terrain)
 {
     terrain_clamp_properties(terrain.data);
-    terrain_set_identity(terrain.orient);
+    terrain.orient = identity_orient;
 }
 
 // ─── Cleanup ─────────────────────────────────────────────────────────────────
@@ -393,6 +464,7 @@ void DestroyDedTerrain(DedTerrain* terrain)
     if (!terrain) return;
     terrain_paint_forget(terrain);
     terrain_preview_forget(terrain);
+    terrain_decorations_forget(terrain);
     terrain->field_4.free();
     terrain->script_name.free();
     terrain->class_name.free();
@@ -405,7 +477,7 @@ static DedTerrain* terrain_alloc()
     memset(static_cast<DedObject*>(terrain), 0, sizeof(DedObject));
     terrain->vtbl = reinterpret_cast<void*>(ded_object_vtbl_addr);
     terrain->type = DedObjectType::DED_TERRAIN;
-    terrain_set_identity(terrain->orient);
+    terrain->orient = identity_orient;
     return terrain;
 }
 
@@ -478,7 +550,7 @@ void terrain_serialize_chunk(CDedLevel& level, rf::File& file, bool group)
         try {
             DedTerrainData& d = terrain->data;
             terrain_clamp_properties(d);
-            terrain_set_identity(terrain->orient);
+            terrain->orient = identity_orient;
             const TerrainGrid& g = *d.grid;
 
             Vector3& pos = terrain->pos;
@@ -495,6 +567,7 @@ void terrain_serialize_chunk(CDedLevel& level, rf::File& file, bool group)
             const at::Header header = terrain_wire_header(pos, d, geo);
             const char* err = at::validate_header(header);
             if (!err) err = at::validate_overlay_count(header);
+            if (!err) err = at::validate_decoration_count(header);
             if (err) {
                 problems.push_back(std::format("Terrain uid {} was not saved: {}.", terrain->uid, err));
                 continue;
@@ -537,6 +610,14 @@ void terrain_serialize_chunk(CDedLevel& level, rf::File& file, bool group)
                                                                  header.flags),
                             g.overlay.data(), g.overlay.size());
             }
+            if (header.flags & at::flag_decorations) {
+                uint8_t* dst = raw.data() + at::blob_decoration_offset(g.nx, g.nz, g.weight_res_mul,
+                                                                       header.chunk_cells, header.flags);
+                const std::size_t n =
+                    at::blob_decoration_bytes(g.nx, g.nz, g.weight_res_mul, header.flags, header.decoration_count);
+                std::memset(dst, 0, n);
+                std::memcpy(dst, g.decoration.data(), std::min(g.decoration.size(), n));
+            }
 
             Record rec{terrain, terrain->script_name.c_str(), static_cast<uint8_t>(header.chunk_cells),
                        static_cast<uint8_t>(header.flags), write_mapping, static_cast<uint32_t>(raw_size), {}};
@@ -558,6 +639,34 @@ void terrain_serialize_chunk(CDedLevel& level, rf::File& file, bool group)
         }
     }
     std::vector<uint8_t>().swap(raw);
+
+    // The game places the decorations of the terrains it matches to their rooms (those saved with a build
+    // mapping, terrain_build_resolves), in record order, within its level budget. One instance over the cap
+    // tells "more than" from "exactly".
+    at::DecorationBudget budget;
+    budget.instances++;
+    uint32_t instances = 0;
+    for (const auto& rec : records) {
+        if (!rec.write_mapping || budget.spent()) continue;
+        const DedTerrain& t = *rec.terrain;
+        instances += terrain_decoration_instances(t.uid, t.pos, t.data, budget);
+    }
+    try {
+        if (instances > at::max_level_decoration_instances) {
+            problems.push_back(std::format("The level's terrain decorations make more than {0} instances; the game "
+                                           "draws the first {0}.",
+                                           at::max_level_decoration_instances));
+        }
+        else if (budget.candidates == 0) {
+            problems.push_back(std::format("The level's terrain decorations reach the limit of {} placement tries "
+                                           "(most on ground steeper than their slope limit); the game draws the "
+                                           "{} instances found first.",
+                                           at::max_level_decoration_candidates, instances));
+        }
+    }
+    catch (const std::bad_alloc&) {
+        xlog::error("[Terrain] out of memory reporting the decoration instance count");
+    }
 
     auto start_pos = level.BeginRflSection(file, alpine_terrain_chunk_id);
 
@@ -602,6 +711,20 @@ void terrain_serialize_chunk(CDedLevel& level, rf::File& file, bool group)
                                                          (overlay.break_tiling ? at::overlay_flag_break_tiling : 0)));
             }
         }
+        if (rec.flags & at::flag_decorations) {
+            file.write<uint8_t>(static_cast<uint8_t>(d.decorations.size()));
+            for (const auto& deco : d.decorations) {
+                write_rfl_string(file, deco.mesh);
+                file.write<float>(deco.density);
+                file.write<float>(deco.scale_min);
+                file.write<float>(deco.scale_max);
+                file.write<float>(deco.max_slope);
+                file.write<float>(deco.draw_distance);
+                file.write<float>(deco.vertical_offset);
+                file.write<uint8_t>(deco.link_layer);
+                file.write<uint8_t>(static_cast<uint8_t>(at::decoration_flags(deco)));
+            }
+        }
 
         file.write<uint32_t>(rec.write_mapping ? static_cast<uint32_t>(d.build_mapping.size()) : 0);
         if (rec.write_mapping) {
@@ -640,6 +763,7 @@ static void terrain_from_record(at::Record& rec, DedTerrain* terrain)
     g->holes = std::move(rec.holes);
     g->diag = std::move(rec.diag);
     g->overlay = std::move(rec.overlay_coverage);
+    g->decoration = std::move(rec.decoration_coverage);
 
     terrain->uid = rec.uid;
     terrain->pos = {h.origin[0], h.origin[1], h.origin[2]};
@@ -655,13 +779,31 @@ static void terrain_from_record(at::Record& rec, DedTerrain* terrain)
     d.underside_texture = std::move(rec.underside_texture);
     d.crater_texture = std::move(rec.crater_texture);
     d.layers.reserve(rec.layers.size());
-    for (at::RecordLayer& layer : rec.layers) d.layers.push_back({std::move(layer.texture), layer.uv_scale, layer.triplanar});
+    for (at::RecordLayer& layer : rec.layers) {
+        d.layers.push_back({std::move(layer.texture), layer.uv_scale, layer.triplanar});
+    }
     d.overlays.resize(rec.overlays.size());
     for (std::size_t i = 0; i < rec.overlays.size(); i++) {
         d.overlays[i].texture = std::move(rec.overlays[i].texture);
         d.overlays[i].uv_scale = rec.overlays[i].uv_scale;
         d.overlays[i].triplanar = rec.overlays[i].triplanar;
         d.overlays[i].break_tiling = rec.overlays[i].break_tiling;
+    }
+    d.decorations.resize(rec.decorations.size());
+    for (std::size_t i = 0; i < rec.decorations.size(); i++) {
+        at::RecordDecoration& src = rec.decorations[i];
+        DedTerrainDecoration& deco = d.decorations[i];
+        deco.mesh = std::move(src.mesh);
+        deco.density = src.density;
+        deco.scale_min = src.scale_min;
+        deco.scale_max = src.scale_max;
+        deco.max_slope = src.max_slope;
+        deco.draw_distance = src.draw_distance;
+        deco.vertical_offset = src.vertical_offset;
+        deco.link_layer = src.link_layer;
+        deco.align_to_slope = src.align_to_slope;
+        deco.random_yaw = src.random_yaw;
+        deco.casts_shadows = src.casts_shadows;
     }
     d.build_mapping = std::move(rec.build_mapping);
     d.grid = std::move(g);
@@ -780,7 +922,8 @@ static bool terrain_load_heightmap(const char* path, std::vector<uint16_t>& out,
         const std::size_t n = bytes.size() / 2;
         const auto side = static_cast<uint32_t>(std::lround(std::sqrt(static_cast<double>(n))));
         if (static_cast<std::size_t>(side) * side != n || side < at::min_verts || side > terrain_max_image_edge) {
-            err = "A RAW16 heightmap must be square (2x2 to 4097x4097).";
+            err = std::format("A RAW16 heightmap must be square ({0}x{0} to {1}x{1}).", at::min_verts,
+                              terrain_max_image_edge);
             return false;
         }
         w = h = side;
@@ -798,7 +941,8 @@ static bool terrain_load_heightmap(const char* path, std::vector<uint16_t>& out,
     }
     if (iw < static_cast<int>(at::min_verts) || ih < static_cast<int>(at::min_verts) ||
         iw > static_cast<int>(terrain_max_image_edge) || ih > static_cast<int>(terrain_max_image_edge)) {
-        err = "The image must be between 2x2 and 4097x4097 pixels.";
+        err = std::format("The image must be between {0}x{0} and {1}x{1} pixels.", at::min_verts,
+                          terrain_max_image_edge);
         return false;
     }
     // 8-bit images come back widened to 16 bits (v * 257), so both depths share one path.
@@ -972,14 +1116,73 @@ static void terrain_swap_overlay_channels(TerrainGrid& g, std::size_t a, std::si
     for (std::size_t t = 0; t + 4 <= g.overlay.size(); t += 4) std::swap(g.overlay[t + a], g.overlay[t + b]);
 }
 
+static void terrain_remove_decoration_plane(TerrainGrid& g, std::size_t k)
+{
+    const std::size_t plane = terrain_texel_count(g);
+    if ((k + 1) * plane > g.decoration.size()) return;
+    const auto first = g.decoration.begin() + static_cast<std::ptrdiff_t>(k * plane);
+    g.decoration.erase(first, first + static_cast<std::ptrdiff_t>(plane));
+}
+
+static void terrain_swap_decoration_planes(TerrainGrid& g, std::size_t a, std::size_t b)
+{
+    const std::size_t plane = terrain_texel_count(g);
+    if ((std::max(a, b) + 1) * plane > g.decoration.size()) return;
+    std::swap_ranges(g.decoration.begin() + static_cast<std::ptrdiff_t>(a * plane),
+                     g.decoration.begin() + static_cast<std::ptrdiff_t>((a + 1) * plane),
+                     g.decoration.begin() + static_cast<std::ptrdiff_t>(b * plane));
+}
+
+static bool terrain_decoration_plane_is(const TerrainGrid& g, std::size_t k, uint8_t value)
+{
+    const std::size_t plane = terrain_texel_count(g);
+    if ((k + 1) * plane > g.decoration.size()) return false;
+    const auto first = g.decoration.begin() + static_cast<std::ptrdiff_t>(k * plane);
+    return std::all_of(first, first + static_cast<std::ptrdiff_t>(plane), [value](uint8_t v) { return v == value; });
+}
+
+static void terrain_fill_decoration_plane(TerrainGrid& g, std::size_t k, uint8_t value)
+{
+    const std::size_t plane = terrain_texel_count(g);
+    if ((k + 1) * plane > g.decoration.size()) return;
+    std::fill_n(g.decoration.begin() + static_cast<std::ptrdiff_t>(k * plane), plane, value);
+}
+
+// Decorations that follow texture layer `removed` follow none, and one still at the full coverage linking gave
+// it is emptied rather than left covering the whole terrain; those after it follow the same layer's new index.
+// `g` is d's grid, not shared.
+static void terrain_unlink_removed_layer(DedTerrainData& d, TerrainGrid& g, std::size_t removed)
+{
+    for (std::size_t k = 0; k < d.decorations.size(); k++) {
+        DedTerrainDecoration& deco = d.decorations[k];
+        if (deco.link_layer == at::decoration_link_none) continue;
+        if (deco.link_layer == removed) {
+            deco.link_layer = at::decoration_link_none;
+            if (terrain_decoration_plane_is(g, k, 255)) terrain_fill_decoration_plane(g, k, 0);
+        }
+        else if (deco.link_layer > removed) {
+            deco.link_layer--;
+        }
+    }
+}
+
+static void terrain_swap_layer_links(DedTerrainData& d, std::size_t a, std::size_t b)
+{
+    for (auto& deco : d.decorations) {
+        if (deco.link_layer == a) deco.link_layer = static_cast<uint8_t>(b);
+        else if (deco.link_layer == b) deco.link_layer = static_cast<uint8_t>(a);
+    }
+}
+
 // ─── Properties Dialog ──────────────────────────────────────────────────────
 
-// The dialog edits base layers and overlays through the same list controls.
+// The dialog edits base layers, overlays and decorations through the same list controls.
 enum TerrainListKind
 {
     terrain_list_layers = 0,
     terrain_list_overlays = 1,
-    terrain_list_kinds = 2,
+    terrain_list_decorations = 2,
+    terrain_list_kinds = 3,
 };
 
 struct TerrainListUi
@@ -997,6 +1200,55 @@ static constexpr TerrainListUi terrain_list_ui[terrain_list_kinds] = {
      IDC_TERRAIN_OVERLAY_DOWN, IDC_TERRAIN_OVERLAY_TEXTURE, IDC_TERRAIN_OVERLAY_BROWSE, IDC_TERRAIN_OVERLAY_UV_SCALE,
      IDC_TERRAIN_OVERLAY_UV_SCALE_SPIN, IDC_TERRAIN_OVERLAY_TRIPLANAR, IDC_TERRAIN_OVERLAY_BREAK_TILING,
      IDC_TERRAIN_OVERLAY_PREVIEW, 0, static_cast<int>(at::max_overlays)},
+    // Its fields are its own (terrain_deco_fields and the controls around them); 0 = none.
+    {IDC_TERRAIN_DECO_LIST, IDC_TERRAIN_DECO_ADD, IDC_TERRAIN_DECO_REMOVE, IDC_TERRAIN_DECO_UP, IDC_TERRAIN_DECO_DOWN,
+     0, 0, 0, 0, 0, 0, 0, 0, static_cast<int>(at::max_decorations)},
+};
+
+// A decoration's float fields, stepped by `step` within [lo, hi].
+struct TerrainDecoField
+{
+    int edit, spin;
+    float DedTerrainDecoration::*value;
+    float step, lo, hi;
+    int decimals;
+};
+
+static constexpr TerrainDecoField terrain_deco_fields[] = {
+    {IDC_TERRAIN_DECO_DENSITY, IDC_TERRAIN_DECO_DENSITY_SPIN, &DedTerrainDecoration::density, 0.1f, 0.0f,
+     at::max_decoration_density, 3},
+    {IDC_TERRAIN_DECO_SCALE_MIN, IDC_TERRAIN_DECO_SCALE_MIN_SPIN, &DedTerrainDecoration::scale_min, 0.1f,
+     at::min_decoration_scale, at::max_decoration_scale, 2},
+    {IDC_TERRAIN_DECO_SCALE_MAX, IDC_TERRAIN_DECO_SCALE_MAX_SPIN, &DedTerrainDecoration::scale_max, 0.1f,
+     at::min_decoration_scale, at::max_decoration_scale, 2},
+    {IDC_TERRAIN_DECO_SLOPE, IDC_TERRAIN_DECO_SLOPE_SPIN, &DedTerrainDecoration::max_slope, 1.0f, 0.0f,
+     at::max_decoration_slope_deg, 1},
+    {IDC_TERRAIN_DECO_DRAW_DIST, IDC_TERRAIN_DECO_DRAW_DIST_SPIN, &DedTerrainDecoration::draw_distance, 5.0f,
+     at::min_decoration_draw_distance, at::max_decoration_draw_distance, 1},
+    {IDC_TERRAIN_DECO_OFFSET, IDC_TERRAIN_DECO_OFFSET_SPIN, &DedTerrainDecoration::vertical_offset, 0.05f,
+     -at::max_decoration_offset, at::max_decoration_offset, 3},
+};
+
+struct TerrainDecoCheck
+{
+    int check;
+    bool DedTerrainDecoration::*value;
+};
+
+static constexpr TerrainDecoCheck terrain_deco_checks[] = {
+    {IDC_TERRAIN_DECO_ALIGN, &DedTerrainDecoration::align_to_slope},
+    {IDC_TERRAIN_DECO_RANDOM_YAW, &DedTerrainDecoration::random_yaw},
+    {IDC_TERRAIN_DECO_CASTS_SHADOWS, &DedTerrainDecoration::casts_shadows},
+};
+
+// Enabled while there is a decoration to edit.
+static constexpr int terrain_deco_controls[] = {
+    IDC_TERRAIN_DECO_MESH,       IDC_TERRAIN_DECO_MESH_BROWSE,    IDC_TERRAIN_DECO_DENSITY,
+    IDC_TERRAIN_DECO_DENSITY_SPIN, IDC_TERRAIN_DECO_SCALE_MIN,    IDC_TERRAIN_DECO_SCALE_MIN_SPIN,
+    IDC_TERRAIN_DECO_SCALE_MAX,  IDC_TERRAIN_DECO_SCALE_MAX_SPIN, IDC_TERRAIN_DECO_SLOPE,
+    IDC_TERRAIN_DECO_SLOPE_SPIN, IDC_TERRAIN_DECO_DRAW_DIST,      IDC_TERRAIN_DECO_DRAW_DIST_SPIN,
+    IDC_TERRAIN_DECO_OFFSET,     IDC_TERRAIN_DECO_OFFSET_SPIN,    IDC_TERRAIN_DECO_LINK,
+    IDC_TERRAIN_DECO_ALIGN,      IDC_TERRAIN_DECO_RANDOM_YAW,     IDC_TERRAIN_DECO_CASTS_SHADOWS,
 };
 
 // Staging for the open dialog: only IDOK writes the terrain. The viewport box follows the staged
@@ -1009,36 +1261,25 @@ struct TerrainDialogState
     DedTerrainData data;
     int sel[terrain_list_kinds] = {};
     std::string preview_name[terrain_list_kinds];
-    int preview_handle[terrain_list_kinds] = {-1, -1};
+    int preview_handle[terrain_list_kinds] = {-1, -1, -1};
 };
 static TerrainDialogState g_terrain_dlg;
 
 static int terrain_dlg_count(int kind)
 {
-    return static_cast<int>(kind == terrain_list_overlays ? g_terrain_dlg.data.overlays.size()
-                                                          : g_terrain_dlg.data.layers.size());
+    const DedTerrainData& d = g_terrain_dlg.data;
+    switch (kind) {
+    case terrain_list_overlays: return static_cast<int>(d.overlays.size());
+    case terrain_list_decorations: return static_cast<int>(d.decorations.size());
+    default: return static_cast<int>(d.layers.size());
+    }
 }
 
+// A base layer or an overlay.
 static DedTerrainLayer& terrain_dlg_item(int kind, int index)
 {
     if (kind == terrain_list_overlays) return g_terrain_dlg.data.overlays[index];
     return g_terrain_dlg.data.layers[index];
-}
-
-// More digits than alpine_dlg_set_float_field where needed: OK re-reads every field, and a value a
-// sculpt stroke grew (height min/range, thickness) must read back bit for bit.
-static void terrain_set_float_field(HWND hdlg, int idc, float value)
-{
-    alpine_dlg_set_float_field_exact(hdlg, idc, value);
-}
-
-// `shown` while the field still holds its text, else what was typed.
-static float terrain_get_float_field(HWND hdlg, int idc, float shown)
-{
-    char text[32] = {}, fmt[32];
-    GetDlgItemTextA(hdlg, idc, text, sizeof(text));
-    alpine_format_float_exact(fmt, shown);
-    return std::strcmp(text, fmt) == 0 ? shown : std::strtof(text, nullptr);
 }
 
 static std::string terrain_get_text(HWND hdlg, int idc)
@@ -1056,6 +1297,31 @@ static TerrainGrid& terrain_mutable_grid(DedTerrainData& d)
     return *g;
 }
 
+static constexpr UINT_PTR terrain_dlg_status_timer = 2;
+static constexpr UINT terrain_dlg_status_delay_ms = 250;
+
+static void terrain_dlg_update_status(HWND hdlg)
+{
+    const DedTerrainData& d = g_terrain_dlg.data;
+    const TerrainGrid& g = *d.grid;
+    char buf[128];
+    const int n = std::snprintf(buf, sizeof(buf), "Data %.2f MB, weights %u x %u",
+                                static_cast<double>(terrain_data_raw_bytes(d)) / (1024.0 * 1024.0),
+                                at::weight_width(g.nx, g.weight_res_mul), at::weight_height(g.nz, g.weight_res_mul));
+    if (!d.decorations.empty() && n > 0 && static_cast<std::size_t>(n) < sizeof(buf)) {
+        const DedTerrain& t = *g_terrain_dlg.terrain;
+        const uint32_t cap = at::max_level_decoration_instances;
+        at::DecorationBudget budget;
+        budget.instances = cap + 1;
+        const uint32_t instances = terrain_decoration_instances(t.uid, t.pos, d, budget);
+        const char* format = instances > cap           ? ". Decorations: over %u instances"
+                             : budget.candidates == 0 ? ". Decorations: %u instances (placement limit)"
+                                                      : ". Decorations: %u instances";
+        std::snprintf(buf + n, sizeof(buf) - n, format, std::min(instances, cap));
+    }
+    SetDlgItemTextA(hdlg, IDC_TERRAIN_STATUS, buf);
+}
+
 static void terrain_dlg_update_readouts(HWND hdlg)
 {
     const DedTerrainData& d = g_terrain_dlg.data;
@@ -1070,8 +1336,8 @@ static void terrain_dlg_update_readouts(HWND hdlg)
                   at::extent(g.nz, d.cell_size));
     SetDlgItemTextA(hdlg, IDC_TERRAIN_EXTENT, buf);
 
-    const uint32_t edge = at::effective_chunk_cells(cx, cz, d.chunk_cells, d.flags);
-    const uint32_t chunks = at::chunk_count(cx, cz, edge);
+    const uint32_t edge = terrain_effective_chunk_cells(d);
+    const uint32_t chunks = terrain_chunk_count(d);
     if (edge != d.chunk_cells) {
         std::snprintf(buf, sizeof(buf), "%s to %u (%u chunks)", edge > d.chunk_cells ? "raised" : "lowered",
                       edge, chunks);
@@ -1081,10 +1347,14 @@ static void terrain_dlg_update_readouts(HWND hdlg)
     }
     SetDlgItemTextA(hdlg, IDC_TERRAIN_CHUNK_INFO, buf);
 
-    std::snprintf(buf, sizeof(buf), "Data %.2f MB, weights %u x %u",
-                  static_cast<double>(terrain_data_raw_bytes(d)) / (1024.0 * 1024.0),
-                  at::weight_width(g.nx, g.weight_res_mul), at::weight_height(g.nz, g.weight_res_mul));
-    SetDlgItemTextA(hdlg, IDC_TERRAIN_STATUS, buf);
+    // Counting decorations can take a while, so while there are any the status line follows once edits pause.
+    if (d.decorations.empty()) {
+        KillTimer(hdlg, terrain_dlg_status_timer);
+        terrain_dlg_update_status(hdlg);
+    }
+    else {
+        SetTimer(hdlg, terrain_dlg_status_timer, terrain_dlg_status_delay_ms, nullptr);
+    }
 }
 
 static void terrain_dlg_refresh_viewports()
@@ -1092,12 +1362,27 @@ static void terrain_dlg_refresh_viewports()
     if (g_terrain_dlg.active) redraw_all_viewports();
 }
 
-// Composites left for a later paint are otherwise serviced by RED's idle loop, which the dialog's
-// modal loop does not run.
+// Composites and decorations left for a later paint are otherwise serviced by RED's idle loop, which the
+// dialog's modal loop does not run.
 static constexpr UINT_PTR terrain_dlg_repaint_timer = 1;
 
 static void terrain_dlg_format_layer(int kind, int index, char* buf, std::size_t size)
 {
+    if (kind == terrain_list_decorations) {
+        const DedTerrainDecoration& deco = g_terrain_dlg.data.decorations[index];
+        char link[24] = "";
+        if (deco.link_layer != at::decoration_link_none) {
+            std::snprintf(link, sizeof(link), ", layer %d", deco.link_layer + 1);
+        }
+        char offset[24] = "";
+        if (deco.vertical_offset != 0.0f) {
+            std::snprintf(offset, sizeof(offset), ", offset %+.3g", deco.vertical_offset);
+        }
+        std::snprintf(buf, size, "%d: %s  (%.3g/m\xB2, x%.3g-%.3g%s%s%s)", index + 1,
+                      deco.mesh.empty() ? "(none)" : deco.mesh.c_str(), deco.density, deco.scale_min, deco.scale_max,
+                      link, offset, deco.casts_shadows ? ", shadows" : "");
+        return;
+    }
     const DedTerrainLayer& layer = terrain_dlg_item(kind, index);
     const bool break_tiling = kind == terrain_list_overlays && g_terrain_dlg.data.overlays[index].break_tiling;
     std::snprintf(buf, size, "%d: %s  (tile %.4g m%s%s)", index + 1,
@@ -1129,6 +1414,7 @@ static void terrain_dlg_refresh_layer_row(HWND hdlg, int kind, int index)
 
 static void terrain_dlg_update_layer_preview(HWND hdlg, int kind, bool force)
 {
+    if (!terrain_list_ui[kind].preview) return;
     const std::string name = terrain_get_text(hdlg, terrain_list_ui[kind].texture);
     if (!force && g_terrain_dlg.preview_name[kind] == name) return;
     g_terrain_dlg.preview_name[kind] = name;
@@ -1167,6 +1453,48 @@ static void terrain_dlg_update_state(HWND hdlg)
             if (id) EnableWindow(GetDlgItem(hdlg, id), count > 0);
         }
     }
+    const bool decorations = terrain_dlg_count(terrain_list_decorations) > 0;
+    for (int id : terrain_deco_controls) EnableWindow(GetDlgItem(hdlg, id), decorations);
+}
+
+// "None", then every base layer.
+static void terrain_dlg_fill_link_combo(HWND hdlg, uint8_t selected)
+{
+    SendDlgItemMessageA(hdlg, IDC_TERRAIN_DECO_LINK, CB_RESETCONTENT, 0, 0);
+    alpine_dlg_combo_add(hdlg, IDC_TERRAIN_DECO_LINK, "None", at::decoration_link_none);
+    const auto& layers = g_terrain_dlg.data.layers;
+    for (std::size_t i = 0; i < layers.size(); i++) {
+        char buf[64];
+        const std::string& name = layers[i].texture;
+        std::snprintf(buf, sizeof(buf), "%zu: %s", i + 1, name.empty() ? "(none)" : name.c_str());
+        alpine_dlg_combo_add(hdlg, IDC_TERRAIN_DECO_LINK, buf, static_cast<LPARAM>(i));
+    }
+    alpine_dlg_combo_select(hdlg, IDC_TERRAIN_DECO_LINK, selected);
+}
+
+static const DedTerrainDecoration* terrain_dlg_selected_decoration()
+{
+    const int sel = g_terrain_dlg.sel[terrain_list_decorations];
+    const auto& decorations = g_terrain_dlg.data.decorations;
+    return sel >= 0 && static_cast<std::size_t>(sel) < decorations.size() ? &decorations[sel] : nullptr;
+}
+
+static void terrain_dlg_load_decoration_fields(HWND hdlg)
+{
+    const DedTerrainDecoration* deco = terrain_dlg_selected_decoration();
+    SetDlgItemTextA(hdlg, IDC_TERRAIN_DECO_MESH, deco ? deco->mesh.c_str() : "");
+    for (const TerrainDecoField& f : terrain_deco_fields) {
+        if (deco) {
+            alpine_dlg_set_float_field_exact(hdlg, f.edit, deco->*f.value);
+        }
+        else {
+            SetDlgItemTextA(hdlg, f.edit, "");
+        }
+    }
+    terrain_dlg_fill_link_combo(hdlg, deco ? deco->link_layer : at::decoration_link_none);
+    for (const TerrainDecoCheck& c : terrain_deco_checks) {
+        CheckDlgButton(hdlg, c.check, deco && deco->*c.value ? BST_CHECKED : BST_UNCHECKED);
+    }
 }
 
 static void terrain_dlg_load_layer_fields(HWND hdlg, int kind)
@@ -1176,10 +1504,13 @@ static void terrain_dlg_load_layer_fields(HWND hdlg, int kind)
     g_terrain_dlg.sel[kind] = std::clamp(g_terrain_dlg.sel[kind], 0, std::max(count - 1, 0));
     const int sel = g_terrain_dlg.sel[kind];
     g_terrain_dlg.loading_layer = true;
-    if (count > 0) {
+    if (kind == terrain_list_decorations) {
+        terrain_dlg_load_decoration_fields(hdlg);
+    }
+    else if (count > 0) {
         const DedTerrainLayer& layer = terrain_dlg_item(kind, sel);
         SetDlgItemTextA(hdlg, ui.texture, layer.texture.c_str());
-        terrain_set_float_field(hdlg, ui.uv_scale, layer.uv_scale);
+        alpine_dlg_set_float_field_exact(hdlg, ui.uv_scale, layer.uv_scale);
         CheckDlgButton(hdlg, ui.triplanar, layer.triplanar ? BST_CHECKED : BST_UNCHECKED);
         if (ui.break_tiling) {
             CheckDlgButton(hdlg, ui.break_tiling,
@@ -1202,6 +1533,12 @@ static void terrain_dlg_reselect_layer(HWND hdlg, int kind, int sel)
     g_terrain_dlg.sel[kind] = sel;
     terrain_dlg_fill_layer_list(hdlg, kind);
     terrain_dlg_load_layer_fields(hdlg, kind);
+}
+
+// The base layers changed: the decorations show their links again.
+static void terrain_dlg_layers_changed(HWND hdlg)
+{
+    terrain_dlg_reselect_layer(hdlg, terrain_list_decorations, g_terrain_dlg.sel[terrain_list_decorations]);
 }
 
 // The texture browser runs its own modal loop off the main frame; same disable/re-activate dance the
@@ -1231,6 +1568,21 @@ struct TerrainResolutionPrompt
 };
 static TerrainResolutionPrompt g_terrain_res_prompt;
 
+// Whether both vertex count fields are in range; says so when not.
+static bool terrain_dlg_vertex_counts_valid(HWND hdlg, int nx_idc, int nz_idc)
+{
+    for (int idc : {nx_idc, nz_idc}) {
+        const int n = alpine_dlg_get_int_field(hdlg, idc);
+        if (n < static_cast<int>(at::min_verts) || n > static_cast<int>(at::max_verts)) {
+            const std::string msg =
+                std::format("Each vertex count must be between {} and {}.", at::min_verts, at::max_verts);
+            MessageBoxA(hdlg, msg.c_str(), "Terrain", MB_OK | MB_ICONWARNING);
+            return false;
+        }
+    }
+    return true;
+}
+
 static INT_PTR CALLBACK TerrainResolutionDialogProc(HWND hdlg, UINT msg, WPARAM wp, LPARAM lp)
 {
     switch (msg) {
@@ -1248,16 +1600,9 @@ static INT_PTR CALLBACK TerrainResolutionDialogProc(HWND hdlg, UINT msg, WPARAM 
     case WM_COMMAND:
         switch (LOWORD(wp)) {
         case IDOK: {
-            const int nx = alpine_dlg_get_int_field(hdlg, IDC_TERRAIN_RES_NX);
-            const int nz = alpine_dlg_get_int_field(hdlg, IDC_TERRAIN_RES_NZ);
-            if (nx < static_cast<int>(at::min_verts) || nx > static_cast<int>(at::max_verts) ||
-                nz < static_cast<int>(at::min_verts) || nz > static_cast<int>(at::max_verts)) {
-                MessageBoxA(hdlg, "Each vertex count must be between 2 and 257.", "Terrain",
-                            MB_OK | MB_ICONWARNING);
-                return TRUE;
-            }
-            g_terrain_res_prompt.nx = static_cast<uint32_t>(nx);
-            g_terrain_res_prompt.nz = static_cast<uint32_t>(nz);
+            if (!terrain_dlg_vertex_counts_valid(hdlg, IDC_TERRAIN_RES_NX, IDC_TERRAIN_RES_NZ)) return TRUE;
+            g_terrain_res_prompt.nx = static_cast<uint32_t>(alpine_dlg_get_int_field(hdlg, IDC_TERRAIN_RES_NX));
+            g_terrain_res_prompt.nz = static_cast<uint32_t>(alpine_dlg_get_int_field(hdlg, IDC_TERRAIN_RES_NZ));
             EndDialog(hdlg, IDOK);
             return TRUE;
         }
@@ -1339,17 +1684,18 @@ static void terrain_dlg_new_flat(HWND hdlg)
     uint32_t nx = old.nx, nz = old.nz;
     if (!terrain_prompt_resolution(hdlg, "New Flat Terrain",
                                    "Resets the heights to Height Min and clears the layer weights, "
-                                   "overlay coverage, holes and cell diagonals.",
+                                   "overlay and decoration coverage, holes and cell diagonals.",
                                    nx, nz)) {
         return;
     }
     if (!terrain_budget_allows(hdlg, g_terrain_dlg.terrain, nx, nz, old.weight_res_mul,
-                               !g_terrain_dlg.data.overlays.empty())) {
+                               !g_terrain_dlg.data.overlays.empty(), g_terrain_dlg.data.decorations.size())) {
         return;
     }
     DedTerrainData next = g_terrain_dlg.data;
     next.grid = terrain_make_flat_grid(nx, nz, old.weight_res_mul);
     terrain_match_overlay_map(next);
+    terrain_match_decoration_planes(next);
     g_terrain_dlg.data = std::move(next);
     terrain_dlg_update_readouts(hdlg);
     terrain_dlg_refresh_viewports();
@@ -1378,8 +1724,12 @@ static void terrain_dlg_import_heightmap(HWND hdlg)
     const uint32_t longest = std::max(w, h);
     if (longest > at::max_verts) {
         const double scale = static_cast<double>(at::max_verts - 1) / (longest - 1);
-        nx = std::clamp<uint32_t>(static_cast<uint32_t>(std::lround((w - 1) * scale)) + 1, at::min_verts, at::max_verts);
-        nz = std::clamp<uint32_t>(static_cast<uint32_t>(std::lround((h - 1) * scale)) + 1, at::min_verts, at::max_verts);
+        const auto scaled = [scale](uint32_t n) {
+            return std::clamp<uint32_t>(static_cast<uint32_t>(std::lround((n - 1) * scale)) + 1, at::min_verts,
+                                        at::max_verts);
+        };
+        nx = scaled(w);
+        nz = scaled(h);
     }
     char info[160];
     std::snprintf(info, sizeof(info),
@@ -1389,13 +1739,11 @@ static void terrain_dlg_import_heightmap(HWND hdlg)
 
     const TerrainGrid& old = *g_terrain_dlg.data.grid;
     if (!terrain_budget_allows(hdlg, g_terrain_dlg.terrain, nx, nz, old.weight_res_mul,
-                               !g_terrain_dlg.data.overlays.empty())) {
+                               !g_terrain_dlg.data.overlays.empty(), g_terrain_dlg.data.decorations.size())) {
         return;
     }
 
-    std::shared_ptr<TerrainGrid> g = (nx == old.nx && nz == old.nz)
-                                         ? std::make_shared<TerrainGrid>(old)
-                                         : terrain_resample_grid(old, nx, nz, old.weight_res_mul);
+    std::shared_ptr<TerrainGrid> g = terrain_grid_at_resolution(old, nx, nz);
     terrain_heights_from_image(*g, img, w, h);
     g_terrain_dlg.data.grid = std::move(g);
     terrain_dlg_update_readouts(hdlg);
@@ -1445,8 +1793,9 @@ static void terrain_dlg_import_splat(HWND hdlg)
     }
     if (w < 1 || h < 1 || w > static_cast<int>(terrain_max_image_edge) ||
         h > static_cast<int>(terrain_max_image_edge)) {
-        MessageBoxA(hdlg, "The image must be at most 4097x4097 pixels.", "Import Splat Map",
-                    MB_OK | MB_ICONWARNING);
+        const std::string msg =
+            std::format("The image must be at most {0}x{0} pixels.", terrain_max_image_edge);
+        MessageBoxA(hdlg, msg.c_str(), "Import Splat Map", MB_OK | MB_ICONWARNING);
         return;
     }
     std::unique_ptr<stbi_uc, void (*)(void*)> pixels{
@@ -1465,24 +1814,12 @@ static void terrain_dlg_import_splat(HWND hdlg)
     const int highest = terrain_apply_splat(*g, pixels.get(), static_cast<uint32_t>(w),
                                             static_cast<uint32_t>(h), g_terrain_splat_base);
     next.grid = std::move(g);
-    // Every channel that now carries weight gets a layer behind it.
-    while (static_cast<int>(next.layers.size()) <= highest) next.layers.emplace_back();
+    terrain_grow_layers(next, highest);
     g_terrain_dlg.data = std::move(next);
     terrain_dlg_reselect_layer(hdlg, terrain_list_layers, g_terrain_dlg.sel[terrain_list_layers]);
+    terrain_dlg_layers_changed(hdlg);
     terrain_dlg_update_readouts(hdlg);
     terrain_dlg_refresh_viewports();
-}
-
-// A large image can exhaust RED's 32-bit address space; the exception must not unwind into the dialog
-// manager.
-static void terrain_dlg_run_import(HWND hdlg, const char* title, void (*import)(HWND))
-{
-    try {
-        import(hdlg);
-    }
-    catch (const std::bad_alloc&) {
-        MessageBoxA(hdlg, "There is not enough memory to import this file.", title, MB_OK | MB_ICONWARNING);
-    }
 }
 
 static void terrain_dlg_set_weight_res(HWND hdlg)
@@ -1493,7 +1830,7 @@ static void terrain_dlg_set_weight_res(HWND hdlg)
     const TerrainGrid& old = *g_terrain_dlg.data.grid;
     if (!at::is_allowed_weight_res_mul(mul) || mul == old.weight_res_mul) return;
     if (!terrain_budget_allows(hdlg, g_terrain_dlg.terrain, old.nx, old.nz, mul,
-                               !g_terrain_dlg.data.overlays.empty())) {
+                               !g_terrain_dlg.data.overlays.empty(), g_terrain_dlg.data.decorations.size())) {
         alpine_dlg_combo_select(hdlg, IDC_TERRAIN_WEIGHT_RES, old.weight_res_mul);
         return;
     }
@@ -1506,10 +1843,10 @@ static void terrain_dlg_layer_add(HWND hdlg, int kind)
 {
     if (terrain_dlg_count(kind) >= terrain_list_ui[kind].max_count) return;
     DedTerrainData d = g_terrain_dlg.data;
+    const TerrainGrid& g = *d.grid;
     if (kind == terrain_list_overlays) {
-        const TerrainGrid& g = *d.grid;
-        if (d.overlays.empty() &&
-            !terrain_budget_allows(hdlg, g_terrain_dlg.terrain, g.nx, g.nz, g.weight_res_mul, true)) {
+        if (d.overlays.empty() && !terrain_budget_allows(hdlg, g_terrain_dlg.terrain, g.nx, g.nz, g.weight_res_mul,
+                                                         true, d.decorations.size())) {
             return;
         }
         d.overlays.emplace_back();
@@ -1517,9 +1854,20 @@ static void terrain_dlg_layer_add(HWND hdlg, int kind)
         g_terrain_dlg.data = std::move(d);
         terrain_dlg_update_readouts(hdlg);
     }
+    else if (kind == terrain_list_decorations) {
+        if (!terrain_budget_allows(hdlg, g_terrain_dlg.terrain, g.nx, g.nz, g.weight_res_mul, !d.overlays.empty(),
+                                   d.decorations.size() + 1)) {
+            return;
+        }
+        d.decorations.emplace_back();
+        terrain_match_decoration_planes(d);
+        g_terrain_dlg.data = std::move(d);
+        terrain_dlg_update_readouts(hdlg);
+    }
     else {
         d.layers.emplace_back();
         g_terrain_dlg.data = std::move(d);
+        terrain_dlg_layers_changed(hdlg);
     }
     terrain_dlg_reselect_layer(hdlg, kind, terrain_dlg_count(kind) - 1);
     terrain_dlg_refresh_viewports();
@@ -1539,11 +1887,22 @@ static void terrain_dlg_layer_remove(HWND hdlg, int kind)
         g_terrain_dlg.data = std::move(d);
         terrain_dlg_update_readouts(hdlg);
     }
+    else if (kind == terrain_list_decorations) {
+        terrain_remove_decoration_plane(terrain_mutable_grid(d), static_cast<std::size_t>(sel));
+        d.decorations.erase(d.decorations.begin() + sel);
+        terrain_match_decoration_planes(d);
+        g_terrain_dlg.data = std::move(d);
+        terrain_dlg_update_readouts(hdlg);
+    }
     else {
         // Its weight goes to the remaining layers in proportion; layer 0 takes texels left empty.
-        terrain_remove_weight_channel(terrain_mutable_grid(d), static_cast<std::size_t>(sel));
+        TerrainGrid& g = terrain_mutable_grid(d);
+        terrain_remove_weight_channel(g, static_cast<std::size_t>(sel));
         d.layers.erase(d.layers.begin() + sel);
+        terrain_unlink_removed_layer(d, g, static_cast<std::size_t>(sel));
         g_terrain_dlg.data = std::move(d);
+        terrain_dlg_layers_changed(hdlg);
+        terrain_dlg_update_readouts(hdlg);
     }
     terrain_dlg_reselect_layer(hdlg, kind, std::min(sel, std::max(terrain_dlg_count(kind) - 1, 0)));
     terrain_dlg_refresh_viewports();
@@ -1561,11 +1920,17 @@ static void terrain_dlg_layer_move(HWND hdlg, int kind, int delta)
         terrain_swap_overlay_channels(terrain_mutable_grid(d), ca, cb);
         std::swap(d.overlays[ca], d.overlays[cb]);
     }
+    else if (kind == terrain_list_decorations) {
+        terrain_swap_decoration_planes(terrain_mutable_grid(d), ca, cb);
+        std::swap(d.decorations[ca], d.decorations[cb]);
+    }
     else {
         terrain_swap_weight_channels(terrain_mutable_grid(d), ca, cb);
         std::swap(d.layers[ca], d.layers[cb]);
+        terrain_swap_layer_links(d, ca, cb);
     }
     g_terrain_dlg.data = std::move(d);
+    if (kind == terrain_list_layers) terrain_dlg_layers_changed(hdlg);
     terrain_dlg_reselect_layer(hdlg, kind, b);
     terrain_dlg_refresh_viewports();
 }
@@ -1573,38 +1938,90 @@ static void terrain_dlg_layer_move(HWND hdlg, int kind, int delta)
 static void terrain_dlg_capture_shape(HWND hdlg)
 {
     DedTerrainData& d = g_terrain_dlg.data;
-    d.cell_size = at::clamp_finite(terrain_get_float_field(hdlg, IDC_TERRAIN_CELL_SIZE, d.cell_size), at::min_cell_size,
-                         at::max_cell_size, d.cell_size);
-    d.height_min = at::clamp_finite(terrain_get_float_field(hdlg, IDC_TERRAIN_HEIGHT_MIN, d.height_min), -at::max_coord,
-                          at::max_coord, d.height_min);
-    d.height_range = at::clamp_finite(terrain_get_float_field(hdlg, IDC_TERRAIN_HEIGHT_RANGE, d.height_range),
-                            at::min_height_range, at::max_height_range, d.height_range);
+    auto field = [hdlg](int idc, float shown) { return alpine_dlg_get_float_field_exact(hdlg, idc, shown); };
+    d.cell_size = at::clamp_finite(field(IDC_TERRAIN_CELL_SIZE, d.cell_size), at::min_cell_size, at::max_cell_size,
+                                   d.cell_size);
+    d.height_min = at::clamp_finite(field(IDC_TERRAIN_HEIGHT_MIN, d.height_min), -at::max_coord, at::max_coord,
+                                    d.height_min);
+    d.height_range = at::clamp_finite(field(IDC_TERRAIN_HEIGHT_RANGE, d.height_range), at::min_height_range,
+                                      at::max_height_range, d.height_range);
     d.chunk_cells = static_cast<uint32_t>(alpine_dlg_combo_data(hdlg, IDC_TERRAIN_CHUNK_SIZE, d.chunk_cells));
     // Geoable and skirted terrains cap the effective chunk size, so the readout follows the checkboxes.
     d.flags = static_cast<uint8_t>(d.flags & ~(at::flag_geoable | at::flag_skirts));
     if (IsDlgButtonChecked(hdlg, IDC_TERRAIN_GEOABLE) == BST_CHECKED) d.flags |= at::flag_geoable;
     if (IsDlgButtonChecked(hdlg, IDC_TERRAIN_SKIRTS) == BST_CHECKED) d.flags |= at::flag_skirts;
-    d.thickness = at::clamp_finite(terrain_get_float_field(hdlg, IDC_TERRAIN_THICKNESS, d.thickness), at::min_thickness,
-                         at::max_thickness, d.thickness);
-    d.skirt_depth = at::clamp_finite(terrain_get_float_field(hdlg, IDC_TERRAIN_SKIRT_DEPTH, d.skirt_depth), 0.0f,
-                           at::max_skirt_depth, d.skirt_depth);
+    d.thickness = at::clamp_finite(field(IDC_TERRAIN_THICKNESS, d.thickness), at::min_thickness, at::max_thickness,
+                                   d.thickness);
+    d.skirt_depth = at::clamp_finite(field(IDC_TERRAIN_SKIRT_DEPTH, d.skirt_depth), 0.0f, at::max_skirt_depth,
+                                     d.skirt_depth);
+}
+
+// A link to a layer from none starts from full coverage when the plane is empty, so the decoration appears
+// where that layer is painted; unlinking a plane still full empties it again.
+static void terrain_dlg_store_decoration_fields(HWND hdlg)
+{
+    if (g_terrain_dlg.loading_layer) return;
+    const int sel = g_terrain_dlg.sel[terrain_list_decorations];
+    DedTerrainData& d = g_terrain_dlg.data;
+    if (sel < 0 || static_cast<std::size_t>(sel) >= d.decorations.size()) return;
+    DedTerrainDecoration& deco = d.decorations[sel];
+    deco.mesh = terrain_get_text(hdlg, IDC_TERRAIN_DECO_MESH);
+    for (const TerrainDecoField& f : terrain_deco_fields) {
+        const float v = alpine_dlg_get_float_field_exact(hdlg, f.edit, deco.*f.value);
+        if (std::isfinite(v)) deco.*f.value = std::clamp(v, f.lo, f.hi);
+    }
+    const LRESULT link = alpine_dlg_combo_data(hdlg, IDC_TERRAIN_DECO_LINK, deco.link_layer);
+    const auto new_link = static_cast<uint8_t>(link >= 0 && link < static_cast<LRESULT>(d.layers.size())
+                                                   ? link
+                                                   : at::decoration_link_none);
+    const bool was_linked = deco.link_layer != at::decoration_link_none;
+    const bool linked = new_link != at::decoration_link_none;
+    const auto k = static_cast<std::size_t>(sel);
+    if (!was_linked && linked && terrain_decoration_plane_is(*d.grid, k, 0)) {
+        terrain_fill_decoration_plane(terrain_mutable_grid(d), k, 255);
+    }
+    else if (was_linked && !linked && terrain_decoration_plane_is(*d.grid, k, 255)) {
+        terrain_fill_decoration_plane(terrain_mutable_grid(d), k, 0);
+    }
+    deco.link_layer = new_link;
+    for (const TerrainDecoCheck& c : terrain_deco_checks) {
+        deco.*c.value = IsDlgButtonChecked(hdlg, c.check) == BST_CHECKED;
+    }
+    terrain_dlg_refresh_layer_row(hdlg, terrain_list_decorations, sel);
+    terrain_dlg_update_readouts(hdlg);
+    terrain_dlg_refresh_viewports();
+}
+
+static void terrain_dlg_browse_mesh(HWND hdlg)
+{
+    std::string name = terrain_get_text(hdlg, IDC_TERRAIN_DECO_MESH);
+    // Static geometry only, so the browser offers no animation; the edit's EN_CHANGE stores the pick.
+    if (alpine_browse_mesh(hdlg, name, ALPINE_MESH_V3M)) SetDlgItemTextA(hdlg, IDC_TERRAIN_DECO_MESH, name.c_str());
 }
 
 static void terrain_dlg_store_layer_fields(HWND hdlg, int kind)
 {
     if (g_terrain_dlg.loading_layer) return;
+    if (kind == terrain_list_decorations) {
+        terrain_dlg_store_decoration_fields(hdlg);
+        return;
+    }
     const TerrainListUi& ui = terrain_list_ui[kind];
     const int sel = g_terrain_dlg.sel[kind];
     if (sel < 0 || sel >= terrain_dlg_count(kind)) return;
     DedTerrainLayer& layer = terrain_dlg_item(kind, sel);
     layer.texture = terrain_get_text(hdlg, ui.texture);
-    const float uv = terrain_get_float_field(hdlg, ui.uv_scale, layer.uv_scale);
+    const float uv = alpine_dlg_get_float_field_exact(hdlg, ui.uv_scale, layer.uv_scale);
     if (std::isfinite(uv)) layer.uv_scale = std::clamp(uv, at::min_uv_scale, at::max_uv_scale);
     layer.triplanar = IsDlgButtonChecked(hdlg, ui.triplanar) == BST_CHECKED;
     if (ui.break_tiling) {
         g_terrain_dlg.data.overlays[sel].break_tiling = IsDlgButtonChecked(hdlg, ui.break_tiling) == BST_CHECKED;
     }
     terrain_dlg_refresh_layer_row(hdlg, kind, sel);
+    if (kind == terrain_list_layers) {
+        const DedTerrainDecoration* deco = terrain_dlg_selected_decoration();
+        terrain_dlg_fill_link_combo(hdlg, deco ? deco->link_layer : at::decoration_link_none);
+    }
     terrain_dlg_refresh_viewports();
 }
 
@@ -1622,19 +2039,19 @@ static bool terrain_dlg_list_command(HWND hdlg, int id, int code)
                 }
             }
         }
-        else if (id == ui.texture) {
+        else if (ui.texture && id == ui.texture) {
             if (code == EN_CHANGE) {
                 terrain_dlg_store_layer_fields(hdlg, kind);
                 terrain_dlg_update_layer_preview(hdlg, kind, false);
             }
         }
-        else if (id == ui.uv_scale) {
+        else if (ui.uv_scale && id == ui.uv_scale) {
             if (code == EN_CHANGE) terrain_dlg_store_layer_fields(hdlg, kind);
         }
-        else if (id == ui.triplanar || (ui.break_tiling && id == ui.break_tiling)) {
+        else if ((ui.triplanar && id == ui.triplanar) || (ui.break_tiling && id == ui.break_tiling)) {
             terrain_dlg_store_layer_fields(hdlg, kind);
         }
-        else if (id == ui.browse) {
+        else if (ui.browse && id == ui.browse) {
             // The edit's EN_CHANGE stores the pick into the layer.
             terrain_browse_texture(hdlg, ui.texture);
         }
@@ -1679,6 +2096,15 @@ static bool terrain_dlg_commit(HWND hdlg)
             return false;
         }
     }
+    for (const auto& deco : d.decorations) {
+        if (!at::decoration_mesh_valid(deco.mesh.c_str(), deco.mesh.size())) {
+            const std::string msg = std::format("Decoration mesh '{}' must be a .v3m file name without a folder, "
+                                                "at most {} characters.",
+                                                deco.mesh, at::max_texture_name_len);
+            MessageBoxA(hdlg, msg.c_str(), "Terrain", MB_OK | MB_ICONWARNING);
+            return false;
+        }
+    }
     terrain_clamp_properties(d);
 
     DedTerrain* terrain = g_terrain_dlg.terrain;
@@ -1690,16 +2116,16 @@ static bool terrain_dlg_commit(HWND hdlg)
     return true;
 }
 
-// RED's 32-bit address space can run out on a large grid: the exception must not unwind into the dialog
-// manager, and every edit either completes or leaves the staged data as it was.
+// RED's 32-bit address space can run out on a large grid or image: the exception must not unwind into the
+// dialog manager, and every edit either completes or leaves the staged data as it was.
 template<typename F>
-static void terrain_dlg_guard(HWND hdlg, const char* message, F&& edit)
+static void terrain_dlg_guard(HWND hdlg, const char* message, F&& edit, const char* caption = "Terrain")
 {
     try {
         edit();
     }
     catch (const std::bad_alloc&) {
-        MessageBoxA(hdlg, message, "Terrain", MB_OK | MB_ICONWARNING);
+        MessageBoxA(hdlg, message, caption, MB_OK | MB_ICONWARNING);
     }
 }
 
@@ -1798,8 +2224,8 @@ static void terrain_gen_load_fields(HWND hdlg)
     const TerrainGenSettings& s = g_terrain_gen.settings;
     SetDlgItemInt(hdlg, IDC_TGEN_NX, g_terrain_gen.nx, FALSE);
     SetDlgItemInt(hdlg, IDC_TGEN_NZ, g_terrain_gen.nz, FALSE);
-    terrain_set_float_field(hdlg, IDC_TGEN_HEIGHT_MIN, g_terrain_gen.height_min);
-    terrain_set_float_field(hdlg, IDC_TGEN_HEIGHT_RANGE, g_terrain_gen.height_range);
+    alpine_dlg_set_float_field_exact(hdlg, IDC_TGEN_HEIGHT_MIN, g_terrain_gen.height_min);
+    alpine_dlg_set_float_field_exact(hdlg, IDC_TGEN_HEIGHT_RANGE, g_terrain_gen.height_range);
     alpine_dlg_combo_select(hdlg, IDC_TGEN_TYPE, static_cast<LPARAM>(s.type));
     SetDlgItemTextA(hdlg, IDC_TGEN_SEED, std::to_string(s.seed).c_str());
     for (const TerrainGenFloatField& f : terrain_gen_float_fields) {
@@ -1823,10 +2249,10 @@ static void terrain_gen_read_fields(HWND hdlg)
     g_terrain_gen.nx = verts(IDC_TGEN_NX);
     g_terrain_gen.nz = verts(IDC_TGEN_NZ);
     g_terrain_gen.height_min =
-        at::clamp_finite(terrain_get_float_field(hdlg, IDC_TGEN_HEIGHT_MIN, g_terrain_gen.height_min), -at::max_coord,
-                         at::max_coord, g_terrain_gen.height_min);
+        at::clamp_finite(alpine_dlg_get_float_field_exact(hdlg, IDC_TGEN_HEIGHT_MIN, g_terrain_gen.height_min),
+                         -at::max_coord, at::max_coord, g_terrain_gen.height_min);
     g_terrain_gen.height_range =
-        at::clamp_finite(terrain_get_float_field(hdlg, IDC_TGEN_HEIGHT_RANGE, g_terrain_gen.height_range),
+        at::clamp_finite(alpine_dlg_get_float_field_exact(hdlg, IDC_TGEN_HEIGHT_RANGE, g_terrain_gen.height_range),
                          at::min_height_range, at::max_height_range, g_terrain_gen.height_range);
     s.type = static_cast<TerrainNoiseType>(alpine_dlg_combo_data(hdlg, IDC_TGEN_TYPE, static_cast<LRESULT>(s.type)));
     s.seed = static_cast<uint32_t>(std::strtoul(terrain_get_text(hdlg, IDC_TGEN_SEED).c_str(), nullptr, 10));
@@ -1946,16 +2372,10 @@ static void terrain_gen_regenerate(HWND hdlg)
 
 // Writes the result into the staged terrain: the grid is resampled to the new resolution and its heights
 // replaced, as heightmap import does, and Height Min, Height Range and any splat map are applied as well.
-// Holes, diagonals and overlay coverage are kept.
+// Holes, diagonals, overlay coverage and decoration planes are kept.
 static bool terrain_gen_apply(HWND hdlg)
 {
-    for (int idc : {IDC_TGEN_NX, IDC_TGEN_NZ}) {
-        const int n = alpine_dlg_get_int_field(hdlg, idc);
-        if (n < static_cast<int>(at::min_verts) || n > static_cast<int>(at::max_verts)) {
-            MessageBoxA(hdlg, "Each vertex count must be between 2 and 257.", "Terrain", MB_OK | MB_ICONWARNING);
-            return false;
-        }
-    }
+    if (!terrain_dlg_vertex_counts_valid(hdlg, IDC_TGEN_NX, IDC_TGEN_NZ)) return false;
     if (g_terrain_gen.pending || !g_terrain_gen.result_valid) {
         terrain_gen_regenerate(hdlg);
     }
@@ -1963,13 +2383,11 @@ static bool terrain_gen_apply(HWND hdlg)
     const TerrainGenResult& r = g_terrain_gen.result;
     const TerrainGrid& old = *g_terrain_dlg.data.grid;
     if (!terrain_budget_allows(hdlg, g_terrain_dlg.terrain, r.nx, r.nz, old.weight_res_mul,
-                               !g_terrain_dlg.data.overlays.empty())) {
+                               !g_terrain_dlg.data.overlays.empty(), g_terrain_dlg.data.decorations.size())) {
         return false;
     }
     DedTerrainData next = g_terrain_dlg.data;
-    std::shared_ptr<TerrainGrid> g = (r.nx == old.nx && r.nz == old.nz)
-                                         ? std::make_shared<TerrainGrid>(old)
-                                         : terrain_resample_grid(old, r.nx, r.nz, old.weight_res_mul);
+    std::shared_ptr<TerrainGrid> g = terrain_grid_at_resolution(old, r.nx, r.nz);
     g->heights = r.heights;
     int highest = -1;
     if (!r.splat.empty()) {
@@ -1979,8 +2397,9 @@ static bool terrain_gen_apply(HWND hdlg)
     next.grid = std::move(g);
     next.height_min = g_terrain_gen.height_min;
     next.height_range = g_terrain_gen.height_range;
-    while (static_cast<int>(next.layers.size()) <= highest) next.layers.emplace_back();
+    terrain_grow_layers(next, highest);
     terrain_match_overlay_map(next);
+    terrain_match_decoration_planes(next);
     g_terrain_dlg.data = std::move(next);
     return true;
 }
@@ -2102,9 +2521,10 @@ static void terrain_dlg_generate(HWND hdlg)
     // Each field's EN_CHANGE re-stages both from their text, so both values are taken before either is shown.
     const float height_min = g_terrain_dlg.data.height_min;
     const float height_range = g_terrain_dlg.data.height_range;
-    terrain_set_float_field(hdlg, IDC_TERRAIN_HEIGHT_MIN, height_min);
-    terrain_set_float_field(hdlg, IDC_TERRAIN_HEIGHT_RANGE, height_range);
+    alpine_dlg_set_float_field_exact(hdlg, IDC_TERRAIN_HEIGHT_MIN, height_min);
+    alpine_dlg_set_float_field_exact(hdlg, IDC_TERRAIN_HEIGHT_RANGE, height_range);
     terrain_dlg_reselect_layer(hdlg, terrain_list_layers, g_terrain_dlg.sel[terrain_list_layers]);
+    terrain_dlg_layers_changed(hdlg);
     terrain_dlg_update_readouts(hdlg);
     terrain_dlg_refresh_viewports();
 }
@@ -2162,6 +2582,26 @@ static INT_PTR terrain_dlg_command(HWND hdlg, WPARAM wp)
     case IDC_TERRAIN_CRATER_BROWSE:
         terrain_browse_texture(hdlg, IDC_TERRAIN_CRATER_TEXTURE);
         return TRUE;
+    case IDC_TERRAIN_DECO_MESH:
+    case IDC_TERRAIN_DECO_DENSITY:
+    case IDC_TERRAIN_DECO_SCALE_MIN:
+    case IDC_TERRAIN_DECO_SCALE_MAX:
+    case IDC_TERRAIN_DECO_SLOPE:
+    case IDC_TERRAIN_DECO_DRAW_DIST:
+    case IDC_TERRAIN_DECO_OFFSET:
+        if (HIWORD(wp) == EN_CHANGE && g_terrain_dlg.active) terrain_dlg_store_decoration_fields(hdlg);
+        break;
+    case IDC_TERRAIN_DECO_LINK:
+        if (HIWORD(wp) == CBN_SELCHANGE && g_terrain_dlg.active) terrain_dlg_store_decoration_fields(hdlg);
+        break;
+    case IDC_TERRAIN_DECO_ALIGN:
+    case IDC_TERRAIN_DECO_RANDOM_YAW:
+    case IDC_TERRAIN_DECO_CASTS_SHADOWS:
+        terrain_dlg_store_decoration_fields(hdlg);
+        return TRUE;
+    case IDC_TERRAIN_DECO_MESH_BROWSE:
+        terrain_dlg_browse_mesh(hdlg);
+        return TRUE;
     case IDC_TERRAIN_NEW_FLAT:
         terrain_dlg_new_flat(hdlg);
         return TRUE;
@@ -2169,13 +2609,15 @@ static INT_PTR terrain_dlg_command(HWND hdlg, WPARAM wp)
         terrain_dlg_generate(hdlg);
         return TRUE;
     case IDC_TERRAIN_IMPORT_HEIGHTMAP:
-        terrain_dlg_run_import(hdlg, "Import Heightmap", terrain_dlg_import_heightmap);
+        terrain_dlg_guard(hdlg, "There is not enough memory to import this file.",
+                          [&] { terrain_dlg_import_heightmap(hdlg); }, "Import Heightmap");
         return TRUE;
     case IDC_TERRAIN_EXPORT_HEIGHTMAP:
         terrain_dlg_export_heightmap(hdlg);
         return TRUE;
     case IDC_TERRAIN_IMPORT_SPLAT:
-        terrain_dlg_run_import(hdlg, "Import Splat Map", terrain_dlg_import_splat);
+        terrain_dlg_guard(hdlg, "There is not enough memory to import this file.",
+                          [&] { terrain_dlg_import_splat(hdlg); }, "Import Splat Map");
         return TRUE;
     case IDOK:
     case IDC_TERRAIN_TOOLS:
@@ -2204,6 +2646,12 @@ static constexpr const char* terrain_tip_lightmap = "Baked light texels per cell
 static constexpr const char* terrain_tip_thickness =
     "Solid depth below Height Min; keep it deeper than craters or they punch through.";
 static constexpr const char* terrain_tip_skirt_depth = "How far skirts hang below the edges and holes.";
+static constexpr const char* terrain_tip_deco_density = "Instances per m\xB2 where coverage is full.";
+static constexpr const char* terrain_tip_deco_link = "Also scaled by this texture layer's painted weight.";
+static constexpr const char* terrain_tip_deco_slope = "No instances on ground steeper than this (degrees).";
+static constexpr const char* terrain_tip_deco_draw_dist = "Instances fade out by this distance (m).";
+static constexpr const char* terrain_tip_deco_offset =
+    "Raises each mesh along its up axis (mesh units, scaled). For meshes centred on their origin.";
 
 static constexpr DialogTooltip terrain_dlg_tooltips[] = {
     {IDC_TERRAIN_CELL_SIZE, terrain_tip_cell_size},
@@ -2225,6 +2673,18 @@ static constexpr DialogTooltip terrain_dlg_tooltips[] = {
     {IDC_TERRAIN_OVERLAY_UV_SCALE_LABEL, terrain_tip_tile},
     {IDC_TERRAIN_OVERLAY_TRIPLANAR, terrain_tip_triplanar},
     {IDC_TERRAIN_OVERLAY_BREAK_TILING, "Rotates and shifts each repeat to hide tiling."},
+    {IDC_TERRAIN_DECO_DENSITY, terrain_tip_deco_density},
+    {IDC_TERRAIN_DECO_DENSITY_LABEL, terrain_tip_deco_density},
+    {IDC_TERRAIN_DECO_LINK, terrain_tip_deco_link},
+    {IDC_TERRAIN_DECO_LINK_LABEL, terrain_tip_deco_link},
+    {IDC_TERRAIN_DECO_SLOPE, terrain_tip_deco_slope},
+    {IDC_TERRAIN_DECO_SLOPE_LABEL, terrain_tip_deco_slope},
+    {IDC_TERRAIN_DECO_DRAW_DIST, terrain_tip_deco_draw_dist},
+    {IDC_TERRAIN_DECO_DRAW_DIST_LABEL, terrain_tip_deco_draw_dist},
+    {IDC_TERRAIN_DECO_OFFSET, terrain_tip_deco_offset},
+    {IDC_TERRAIN_DECO_OFFSET_LABEL, terrain_tip_deco_offset},
+    {IDC_TERRAIN_DECO_CASTS_SHADOWS, "Shadows are baked by Calculate Lighting."},
+    {IDC_TERRAIN_DECO_ALIGN, "Tilt to the ground slope."},
 };
 
 static INT_PTR CALLBACK TerrainDialogProc(HWND hdlg, UINT msg, WPARAM wp, LPARAM lp)
@@ -2236,12 +2696,12 @@ static INT_PTR CALLBACK TerrainDialogProc(HWND hdlg, UINT msg, WPARAM wp, LPARAM
 
         SendDlgItemMessageA(hdlg, IDC_TERRAIN_SCRIPT_NAME, EM_LIMITTEXT, at::max_script_name_len, 0);
         SetDlgItemTextA(hdlg, IDC_TERRAIN_SCRIPT_NAME, terrain->script_name.c_str());
-        terrain_set_float_field(hdlg, IDC_TERRAIN_CELL_SIZE, d.cell_size);
-        terrain_set_float_field(hdlg, IDC_TERRAIN_HEIGHT_MIN, d.height_min);
-        terrain_set_float_field(hdlg, IDC_TERRAIN_HEIGHT_RANGE, d.height_range);
+        alpine_dlg_set_float_field_exact(hdlg, IDC_TERRAIN_CELL_SIZE, d.cell_size);
+        alpine_dlg_set_float_field_exact(hdlg, IDC_TERRAIN_HEIGHT_MIN, d.height_min);
+        alpine_dlg_set_float_field_exact(hdlg, IDC_TERRAIN_HEIGHT_RANGE, d.height_range);
         SetDlgItemInt(hdlg, IDC_TERRAIN_LM_DENSITY, d.lightmap_density, FALSE);
-        terrain_set_float_field(hdlg, IDC_TERRAIN_THICKNESS, d.thickness);
-        terrain_set_float_field(hdlg, IDC_TERRAIN_SKIRT_DEPTH, d.skirt_depth);
+        alpine_dlg_set_float_field_exact(hdlg, IDC_TERRAIN_THICKNESS, d.thickness);
+        alpine_dlg_set_float_field_exact(hdlg, IDC_TERRAIN_SKIRT_DEPTH, d.skirt_depth);
         SetDlgItemTextA(hdlg, IDC_TERRAIN_UNDERSIDE_TEXTURE, d.underside_texture.c_str());
         SetDlgItemTextA(hdlg, IDC_TERRAIN_CRATER_TEXTURE, d.crater_texture.c_str());
         CheckDlgButton(hdlg, IDC_TERRAIN_GEOABLE, (d.flags & at::flag_geoable) ? BST_CHECKED : BST_UNCHECKED);
@@ -2275,14 +2735,22 @@ static INT_PTR CALLBACK TerrainDialogProc(HWND hdlg, UINT msg, WPARAM wp, LPARAM
                             at::max_thickness, 2);
         alpine_spinner_init(hdlg, IDC_TERRAIN_SKIRT_DEPTH, IDC_TERRAIN_SKIRT_DEPTH_SPIN, 1.0f, 0.0f,
                             at::max_skirt_depth, 2);
+        for (const TerrainDecoField& f : terrain_deco_fields) {
+            alpine_spinner_init(hdlg, f.edit, f.spin, f.step, f.lo, f.hi, f.decimals);
+        }
+        SendDlgItemMessageA(hdlg, IDC_TERRAIN_DECO_MESH, EM_LIMITTEXT, at::max_texture_name_len, 0);
         for (int kind = 0; kind < terrain_list_kinds; kind++) {
             const TerrainListUi& ui = terrain_list_ui[kind];
-            alpine_spinner_init(hdlg, ui.uv_scale, ui.uv_scale_spin, 0.5f, at::min_uv_scale, at::max_uv_scale, 3);
+            if (ui.uv_scale) {
+                alpine_spinner_init(hdlg, ui.uv_scale, ui.uv_scale_spin, 0.5f, at::min_uv_scale, at::max_uv_scale, 3);
+            }
             g_terrain_dlg.sel[kind] = 0;
             terrain_dlg_fill_layer_list(hdlg, kind);
             terrain_dlg_load_layer_fields(hdlg, kind);
         }
         terrain_dlg_update_readouts(hdlg);
+        KillTimer(hdlg, terrain_dlg_status_timer);
+        terrain_dlg_update_status(hdlg);
         alpine_dlg_add_tooltips(hdlg, terrain_dlg_tooltips);
         g_terrain_dlg.active = true;
         terrain_dlg_refresh_viewports();
@@ -2290,8 +2758,16 @@ static INT_PTR CALLBACK TerrainDialogProc(HWND hdlg, UINT msg, WPARAM wp, LPARAM
         return TRUE;
     }
     case WM_TIMER:
+        if (wp == terrain_dlg_status_timer) {
+            KillTimer(hdlg, terrain_dlg_status_timer);
+            terrain_dlg_update_status(hdlg);
+            return TRUE;
+        }
         if (wp != terrain_dlg_repaint_timer) break;
-        if (terrain_preview_take_pending_work()) terrain_dlg_refresh_viewports();
+        {
+            const bool decorations = terrain_decorations_take_pending_work();
+            if (terrain_preview_take_pending_work() || decorations) terrain_dlg_refresh_viewports();
+        }
         return TRUE;
     case WM_COMMAND: {
         INT_PTR handled = FALSE;
@@ -2305,7 +2781,8 @@ static INT_PTR CALLBACK TerrainDialogProc(HWND hdlg, UINT msg, WPARAM wp, LPARAM
     case WM_DRAWITEM: {
         auto* dis = reinterpret_cast<DRAWITEMSTRUCT*>(lp);
         for (int kind = 0; dis && kind < terrain_list_kinds; kind++) {
-            if (static_cast<int>(dis->CtlID) == terrain_list_ui[kind].preview) {
+            const int preview = terrain_list_ui[kind].preview;
+            if (preview && static_cast<int>(dis->CtlID) == preview) {
                 alpine_dlg_draw_bitmap_preview(dis->hwndItem, dis->rcItem, g_terrain_dlg.preview_handle[kind]);
                 return TRUE;
             }
@@ -2408,21 +2885,10 @@ static void terrain_convert_to_brushes(CDedLevel* level, DedTerrain* terrain)
         terrain_report("Out of memory converting the terrain; the brushes made so far stay in the level.", true);
     }
 
-    // Brush selection lives in BrushNode::state; the new brushes take it over, as To Brush does.
+    // The new brushes take the selection over, as To Brush does.
     level->clear_selection();
-    if (BrushNode* head = level->brush_list) {
-        BrushNode* b = head;
-        do {
-            if (b->state == BRUSH_STATE_SELECTED) b->state = BRUSH_STATE_NORMAL;
-            b = b->next;
-        } while (b && b != head);
-    }
-    for (BrushNode* brush : brushes) brush->state = BRUSH_STATE_SELECTED;
     if (!g_terrain_convert.keep && !brushes.empty()) DeleteTerrainObject(terrain);
-
-    level->mark_geometry_dirty();
-    level->update_console_display();
-    redraw_all_viewports();
+    select_inserted_brushes(level, brushes);
 }
 
 static bool terrain_layers_equal(const DedTerrainLayer& a, const DedTerrainLayer& b)
@@ -2433,11 +2899,12 @@ static bool terrain_layers_equal(const DedTerrainLayer& a, const DedTerrainLayer
 enum class TerrainEdit
 {
     none,
-    overlays_only,
+    overlays_or_decorations,
     other,
 };
 
-// What differs between `a` and `b`: nothing, only their overlays (the list and the coverage), or more.
+// What differs between `a` and `b`: nothing, only their overlays or decorations (the lists and the coverage),
+// or more.
 static TerrainEdit terrain_edit_kind(const DedTerrainData& a, const DedTerrainData& b)
 {
     if (!a.grid || !b.grid) return TerrainEdit::other;
@@ -2460,7 +2927,8 @@ static TerrainEdit terrain_edit_kind(const DedTerrainData& a, const DedTerrainDa
                        return terrain_layers_equal(x, y) && x.break_tiling == y.break_tiling;
                    }) &&
         (&ga == &gb || ga.overlay == gb.overlay);
-    return same_overlays ? TerrainEdit::none : TerrainEdit::overlays_only;
+    const bool same_decorations = a.decorations == b.decorations && (&ga == &gb || ga.decoration == gb.decoration);
+    return same_overlays && same_decorations ? TerrainEdit::none : TerrainEdit::overlays_or_decorations;
 }
 
 void terrain_show_properties(CDedLevel* level, DedTerrain* terrain)
@@ -2473,16 +2941,20 @@ void terrain_show_properties(CDedLevel* level, DedTerrain* terrain)
     g_terrain_dlg.data = terrain->data;
     const DedTerrainData before = terrain->data;
     const std::string before_name = terrain->script_name.c_str();
+    const uint64_t before_light = terrain_decoration_light_hash(terrain->uid, terrain->pos, before);
 
     const INT_PTR result = DialogBoxParam(reinterpret_cast<HINSTANCE>(&__ImageBase),
                                           MAKEINTRESOURCE(IDD_ALPINE_TERRAIN_PROPERTIES), GetActiveWindow(),
                                           TerrainDialogProc, 0);
     if (result == IDOK || result == IDC_TERRAIN_TOOLS || result == IDC_TERRAIN_CONVERT) {
-        // Overlays never need a rebuild; nothing changed marks nothing.
+        // Overlays and decorations never need a rebuild; nothing changed marks nothing.
         const TerrainEdit edit = before_name == terrain->script_name.c_str() ? terrain_edit_kind(before, terrain->data)
                                                                               : TerrainEdit::other;
-        if (edit == TerrainEdit::overlays_only) mark_level_modified();
+        if (edit == TerrainEdit::overlays_or_decorations) mark_level_modified();
         else if (edit == TerrainEdit::other) level->mark_geometry_dirty();
+        if (terrain_decoration_light_hash(terrain->uid, terrain->pos, terrain->data) != before_light) {
+            terrain_preview_lighting_changed(terrain);
+        }
     }
 
     g_terrain_dlg = TerrainDialogState{};
@@ -2510,15 +2982,15 @@ void ShowTerrainPropertiesDialog(CDedLevel* level)
 static bool terrain_can_add(CDedLevel* level, const DedTerrainData& d, bool interactive)
 {
     auto& terrains = level->GetAlpineLevelProperties().terrain_objects;
-    const char* why = nullptr;
+    std::string why;
     if (terrains.size() >= at::max_terrains) {
-        why = "A level holds at most 64 terrains.";
+        why = std::format("A level holds at most {} terrains.", at::max_terrains);
     }
     else if (terrain_level_raw_bytes_except(level, nullptr) + terrain_data_raw_bytes(d) >
              at::max_level_raw_bytes) {
         why = "The level's terrain data limit has been reached.";
     }
-    if (!why) return true;
+    if (why.empty()) return true;
     terrain_report(why, interactive);
     return false;
 }
@@ -2634,6 +3106,24 @@ Vector3 terrain_icon_pos(const DedTerrain& terrain)
     return terrain_icon_pos(terrain.pos, terrain.data);
 }
 
+void terrain_render_surfaces(CDedLevel* level)
+{
+    for (auto* terrain : level->GetAlpineLevelProperties().terrain_objects) {
+        if (terrain->hidden_in_editor) continue;
+
+        // Axis-aligned by definition: a rotate tool pass leaves nothing behind.
+        terrain->orient = identity_orient;
+
+        const bool preview = g_terrain_dlg.active && g_terrain_dlg.terrain == terrain;
+        const bool selected = preview || is_object_selected(level, terrain);
+        const DedTerrainData& data = preview ? g_terrain_dlg.data : terrain->data;
+        terrain_preview_draw(*level, *terrain, data, selected);
+        terrain_decorations_collect(*terrain, data);
+    }
+    terrain_decorations_frame_end(*level, g_terrain_dlg.active ? &g_terrain_dlg.data : nullptr);
+    terrain_preview_frame_end(*level);
+}
+
 void terrain_render(CDedLevel* level)
 {
     auto& terrains = level->GetAlpineLevelProperties().terrain_objects;
@@ -2642,14 +3132,9 @@ void terrain_render(CDedLevel* level)
 
     for (auto* terrain : terrains) {
         if (terrain->hidden_in_editor) continue;
-
-        // Axis-aligned by definition: a rotate tool pass leaves nothing behind.
-        terrain_set_identity(terrain->orient);
-
         const bool preview = g_terrain_dlg.active && g_terrain_dlg.terrain == terrain;
         const bool selected = preview || is_object_selected(level, terrain);
         const DedTerrainData& data = preview ? g_terrain_dlg.data : terrain->data;
-        terrain_preview_draw(*level, *terrain, data, selected);
 
         const auto& rgb = selected ? terrain_selected_rgb : terrain_unselected_rgb;
         set_draw_color(rgb[0], rgb[1], rgb[2], 0xff);
@@ -2660,7 +3145,6 @@ void terrain_render(CDedLevel* level)
         gr_render_billboard(&icon, 0, terrain_icon_size, cam_param);
     }
     terrain_paint_draw_cursor(*level);
-    terrain_preview_frame_end(*level);
 }
 
 // Marquee: the icon inside the box, or the whole footprint.
@@ -2757,10 +3241,10 @@ void terrain_paste_objects(CDedLevel* level)
         }
     }
     if (skipped) {
-        show_error_message(std::format("{} terrain(s) were not pasted: the level would exceed its terrain "
-                                       "count or data limit.",
-                                       skipped)
-                               .c_str());
+        terrain_report(std::format("{} terrain(s) were not pasted: the level would exceed its terrain count or "
+                                   "data limit.",
+                                   skipped),
+                       true);
     }
     if (failed) {
         terrain_report(std::format("{} terrain(s) were not pasted: there is not enough memory.", failed), true);

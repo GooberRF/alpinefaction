@@ -28,6 +28,7 @@
 #include "rope_emitter.h"
 #include "terrain.h"
 #include "terrain_build.h"
+#include "terrain_decorations.h"
 #include "alpine_lightmaps.h"
 #include "alpine_obj.h"
 #include "headless_bake.h"
@@ -55,7 +56,9 @@ void editor_report(EditorReportLevel level, const char* tag, const std::string& 
     case EditorReportLevel::error: xlog::error("[{}] {}", tag, msg); break;
     }
     if (headless_bake_active()) {
-        const char* prefix = level == EditorReportLevel::warn ? "WARNING: " : level == EditorReportLevel::error ? "ERROR: " : "";
+        const char* prefix = level == EditorReportLevel::warn    ? "WARNING: "
+                             : level == EditorReportLevel::error ? "ERROR: "
+                                                                 : "";
         headless_bake_note((prefix + msg).c_str());
         return;
     }
@@ -144,6 +147,7 @@ FunHook<decltype(CDedLevel_DeleteContents_hooked)> CDedLevel_DeleteContents_hook
 void __fastcall CDedLevel_DeleteContents_hooked(CDedLevel* level, void* edx_unused)
 {
     auto& props = level->GetAlpineLevelProperties();
+    terrain_decorations_level_reset();
 
     // Null out vmesh BEFORE stock code runs, but leave objects in master_objects.
     // This makes Alpine objects safe for stock FUN_0041c360 (loop 3):
@@ -167,6 +171,8 @@ void __fastcall CDedLevel_DeleteContents_hooked(CDedLevel* level, void* edx_unus
     // Now stock code is done. Free the Alpine objects properly.
     props.LoadDefaults();
     lightmap_reset_level_state();
+    // Also runs as the document closes at exit, when the views may be gone, so nothing is repainted.
+    alpine_lm_reset_level_state();
 }
 
 // load default AlpineLevelProperties values
@@ -433,9 +439,8 @@ static void compute_geoable_room_uids(CDedLevel& level, AlpineLevelProperties& p
     // a UID. Assign UIDs here so solid_write persists them to the .rfl and our geoable mapping
     // can reference them.
     for (int j = 0; j < all_rooms.get_size(); j++) {
-        GRoom* room = all_rooms.data_ptr[j];
-        if (room && room->uid == -1) {
-            room->uid = g_groom_uid_counter--;
+        if (GRoom* room = all_rooms.data_ptr[j]) {
+            groom_assign_uid_if_missing(*room);
         }
     }
 
@@ -1061,11 +1066,10 @@ void __cdecl flag_face_texture_traits_all_hooked(CDedLevel* level)
 
     // Terrain chunk faces are compiled detail faces, but the terrain shader blends its layers
     // opaquely: an alpha layer texture must not make them see-through or holed.
-    const auto& terrain_uids = level->GetAlpineLevelProperties().terrain_room_uids;
-    if (level->solid && !terrain_uids.empty()) {
+    const auto& props = level->GetAlpineLevelProperties();
+    if (level->solid && !props.terrain_room_uids.empty()) {
         for (GFace* face = level->solid->face_list_head; face; face = face->next_solid) {
-            if (face->which_room &&
-                std::binary_search(terrain_uids.begin(), terrain_uids.end(), face->which_room->uid)) {
+            if (face->which_room && props.is_terrain_room(face->which_room->uid)) {
                 face->flags &= ~(FACE_SEE_THRU | FACE_HAS_HOLES);
             }
         }
@@ -1294,7 +1298,8 @@ CodeInjection CLevelDialog_OnInitDialog_patch{
         CheckDlgButton(hdlg, IDC_INVISIBLE_FACES_OCCLUDE, alpine_level_props.invisible_faces_occlude ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hdlg, IDC_ALPHA_FACES_OCCLUDE, alpine_level_props.alpha_faces_occlude ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hdlg, IDC_MESHES_OCCLUDE, alpine_level_props.meshes_occlude ? BST_CHECKED : BST_UNCHECKED);
-        CheckDlgButton(hdlg, IDC_D3D11_ONLY_LIGHTMAPS, alpine_level_props.d3d11_only_lightmaps ? BST_CHECKED : BST_UNCHECKED);
+        CheckDlgButton(hdlg, IDC_D3D11_ONLY_LIGHTMAPS,
+                       alpine_level_props.d3d11_only_lightmaps ? BST_CHECKED : BST_UNCHECKED);
         init_lightmap_combos(hdlg, alpine_level_props);
         update_lightmap_controls(hdlg);
 
@@ -1621,7 +1626,7 @@ void ApplyLevelPatches()
     // adjacency test hook uses to identify which brush each compiled face belongs to.
     // The stock code skips Phase 1 on the first build after editor launch (flag at
     // 0x005774a0 starts at 0). Setting it to 1 ensures face_ids are always assigned.
-    write_mem<uint8_t>(0x005774a0, 1);
+    g_build_first_tick_pending = 1;
 
     // Avoid clamping lightmaps when loading rfl files
     AsmWriter{0x004A5D6A}.jmp(0x004A5D6E);

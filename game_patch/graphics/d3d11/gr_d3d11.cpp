@@ -6,6 +6,7 @@
 #include "../../rf/gr/gr.h"
 #include "../../rf/v3d.h"
 #include "../../rf/gameseq.h"
+#include "../../rf/level.h"
 #include "../../rf/os/frametime.h"
 #include "../../rf/os/os.h"
 #include "../../bmpman/bmpman.h"
@@ -22,6 +23,7 @@
 #include "gr_d3d11_dynamic_geometry.h"
 #include "gr_d3d11_solid.h"
 #include "gr_d3d11_mesh.h"
+#include "gr_d3d11_decoration.h"
 #include "gr_d3d11_entity_shadow.h"
 #include "gr_d3d11_outline.h"
 #include "gr_d3d11_gamma.h"
@@ -79,6 +81,8 @@ namespace gr::d3d11
         af_lightmap_renderer_ = std::make_unique<AfLightmapRenderer>(device_, context_);
         solid_renderer_ = std::make_unique<SolidRenderer>(device_, *shader_manager_, *state_manager_, *dyn_geo_renderer_, *render_context_, *af_lightmap_renderer_);
         mesh_renderer_ = std::make_unique<MeshRenderer>(device_, *shader_manager_, *state_manager_, *render_context_);
+        decoration_renderer_ =
+            std::make_unique<DecorationRenderer>(device_, *shader_manager_, *render_context_, *mesh_renderer_);
         entity_shadow_renderer_ = std::make_unique<EntityShadowRenderer>(device_, *shader_manager_, *mesh_renderer_);
         outline_renderer_ = std::make_unique<OutlineRenderer>(device_, *shader_manager_, *state_manager_, *render_context_);
         gamma_pass_ = std::make_unique<GammaPass>(device_, *shader_manager_);
@@ -1042,6 +1046,10 @@ namespace gr::d3d11
         entity_shadow_renderer_->bind_shadow_resources(context_);
 
         solid_renderer_->render_solid(solid, rooms, num_rooms);
+        // With the opaque world, before objects and alpha detail draw over it
+        if (solid == rf::level.geometry && !solid_renderer_->decoration_chunks().empty()) {
+            decoration_renderer_->render(solid, solid_renderer_->decoration_chunks());
+        }
     }
 
     void Renderer::render_movable_solid(rf::GSolid* solid, const rf::Vector3& pos, const rf::Matrix3& orient,
@@ -1322,6 +1330,7 @@ namespace gr::d3d11
     void Renderer::release_terrain_gpu()
     {
         solid_renderer_->release_terrain_gpu();
+        decoration_renderer_->release();
     }
 
     bool Renderer::upload_af_lightmap_atlas(const alpine_lightmap::ReadResult& section,

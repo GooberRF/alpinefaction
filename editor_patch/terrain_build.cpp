@@ -32,9 +32,6 @@ namespace at = alpine_terrain;
 namespace
 {
 
-constexpr int geo_region_shape_sphere = 2;
-constexpr int geo_region_shape_box = 4;
-
 // built_room_uids entry of a chunk that has faces but no compiled room
 constexpr int32_t missing_room_uid = -2;
 
@@ -55,16 +52,6 @@ DedTerrain* find_terrain(CDedLevel& level, int32_t uid)
         if (t && t->uid == uid) return t;
     }
     return nullptr;
-}
-
-uint32_t terrain_effective_chunk_cells(const DedTerrainData& d)
-{
-    return at::effective_chunk_cells(at::cells(d.grid->nx), at::cells(d.grid->nz), d.chunk_cells, d.flags);
-}
-
-uint32_t terrain_chunk_count(const DedTerrainData& d)
-{
-    return at::chunk_count(at::cells(d.grid->nx), at::cells(d.grid->nz), terrain_effective_chunk_cells(d));
 }
 
 // ─── Fingerprints (alpine_terrain.h) ────────────────────────────────────────
@@ -127,7 +114,8 @@ void unlink_brush(CDedLevel& level, BrushNode* brush)
 }
 
 // Only while no build is running: the build dialog's work list points at the brushes until the
-// driver's finish or cancel empties it.
+// driver's finish or cancel empties it. Also on a build's first tick, before insert_temp_brushes
+// adds this build's own.
 int remove_temp_brushes(CDedLevel& level, std::size_t first = 0)
 {
     if (g_temp_chunks.size() <= first) return 0;
@@ -249,8 +237,6 @@ void build_chunk_solids(const DedTerrain& t, const Vector3& base, std::vector<st
     }
 }
 
-const Matrix3 identity_orient{{1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f, 1.0f}};
-
 void insert_terrain(CDedLevel& level, DedTerrain& t)
 {
     terrain_prepare(t);
@@ -332,13 +318,13 @@ void check_geo_regions(CDedLevel& level, const DedTerrain& t, const std::vector<
     for (int i = 0; i < regions.get_size(); i++) {
         auto* r = static_cast<DedGeoRegion*>(regions.data_ptr[i]);
         if (!r || r->type != DedObjectType::DED_GEO_REGION) continue;
-        const int shape = r->shape;
+        const GeoRegionShape shape = r->shape;
         Vector3 half;
-        if (shape == geo_region_shape_sphere) {
+        if (shape == GeoRegionShape::sphere) {
             const float radius = r->radius;
             half = {radius, radius, radius};
         }
-        else if (shape == geo_region_shape_box) {
+        else if (shape == GeoRegionShape::box) {
             const float ex = r->width * 0.5f;
             const float ey = r->height * 0.5f;
             const float ez = r->depth * 0.5f;
@@ -416,7 +402,7 @@ void finish_build(CDedLevel& level)
         }
         if (list.size() > 1) counts[g_temp_chunks[i].terrain_uid].split++;
         GRoom* room = best->first;
-        if (room->uid == -1) room->uid = g_groom_uid_counter--;
+        groom_assign_uid_if_missing(*room);
         chunk_room[i] = room;
     }
     std::vector<int32_t> room_uids;
@@ -437,8 +423,8 @@ void finish_build(CDedLevel& level)
                 terrain_only = face_owner.count(f->face_id) != 0;
             }
             if (!terrain_only) continue;
-            if (room->uid == -1) room->uid = g_groom_uid_counter--;
-            if (!std::binary_search(props.terrain_room_uids.begin(), props.terrain_room_uids.end(), room->uid)) {
+            groom_assign_uid_if_missing(*room);
+            if (!props.is_terrain_room(room->uid)) {
                 split_uids.push_back(room->uid);
             }
         }
@@ -712,7 +698,8 @@ bool __fastcall face_gets_surface_hooked(const int* flags)
 {
     if (!face_gets_surface_hook.call_target(flags)) return false;
     if (!g_terrain_gate_uids || g_terrain_gate_uids->empty()) return true;
-    const auto* face = reinterpret_cast<const GFace*>(reinterpret_cast<const std::byte*>(flags) - offsetof(GFace, flags));
+    const auto* face =
+        reinterpret_cast<const GFace*>(reinterpret_cast<const std::byte*>(flags) - offsetof(GFace, flags));
     return !in_terrain_room(face, *g_terrain_gate_uids);
 }
 
@@ -732,12 +719,11 @@ void report_surface_overflow(CDedLevel& level)
         if (f->surface_index == -1 && gets_stock_surface(f, terrain_uids)) unlit++;
     }
     if (!unlit) return;
-    editor_report_blocking("Lightmap", "Calculate Lighting",
-                           std::format("The level needs more than RED's {} lightmap surfaces; {} faces got no "
-                                       "lightmap. Leftover geometry of a deleted, moved or converted terrain is "
-                                       "the usual cause: run Build Geometry, then Calculate Lighting again.",
-                                       red_max_level_surfaces, unlit));
-    headless_bake_mark_refused();
+    const std::string msg = std::format("The level needs more than RED's {} lightmap surfaces; {} faces got no "
+                                        "lightmap. Leftover geometry of a deleted, moved or converted terrain is "
+                                        "the usual cause: run Build Geometry, then Calculate Lighting again.",
+                                        red_max_level_surfaces, unlit);
+    lighting_calc_report_refusal(msg.c_str());
 }
 
 // A terrain with no build state may still have an older build in the compiled solid (saved stale,
@@ -805,6 +791,13 @@ void __fastcall lighting_surfaces_hooked(void* self)
     if (CDedLevel* level = CDedLevel::Get()) report_surface_overflow(*level);
 }
 
+// A stored mask sized for another layout than its own is ignored (every chunk).
+const uint8_t* terrain_stored_geo_chunks(const DedTerrainData& d)
+{
+    const bool sized = d.geo_chunks.size() == at::chunk_mask_bytes(at::layout_chunk_count(d.geo_chunks_layout));
+    return !d.geo_chunks.empty() && sized ? d.geo_chunks.data() : nullptr;
+}
+
 } // namespace
 
 std::string terrain_label(const DedTerrain& t)
@@ -813,16 +806,19 @@ std::string terrain_label(const DedTerrain& t)
     return name[0] ? std::format("Terrain {} '{}'", t.uid, name) : std::format("Terrain {}", t.uid);
 }
 
+uint32_t terrain_effective_chunk_cells(const DedTerrainData& d)
+{
+    return at::effective_chunk_cells(at::cells(d.grid->nx), at::cells(d.grid->nz), d.chunk_cells, d.flags);
+}
+
+uint32_t terrain_chunk_count(const DedTerrainData& d)
+{
+    return at::chunk_count(at::cells(d.grid->nx), at::cells(d.grid->nz), terrain_effective_chunk_cells(d));
+}
+
 at::ChunkLayout terrain_geo_chunk_layout(const DedTerrainData& d)
 {
     return d.grid ? at::geo_chunk_layout(d.grid->nx, d.grid->nz, d.chunk_cells, d.flags) : at::ChunkLayout{};
-}
-
-// A stored mask sized for another layout than its own is ignored (every chunk).
-static const uint8_t* terrain_stored_geo_chunks(const DedTerrainData& d)
-{
-    const bool sized = d.geo_chunks.size() == at::chunk_mask_bytes(at::layout_chunk_count(d.geo_chunks_layout));
-    return !d.geo_chunks.empty() && sized ? d.geo_chunks.data() : nullptr;
 }
 
 bool terrain_chunk_geoable(const DedTerrainData& d, uint32_t index)
@@ -867,6 +863,45 @@ at::GridView terrain_grid_view(const Vector3& pos, const DedTerrainData& d, cons
                               g.diag.data(), d.layers.data());
 }
 
+uint32_t terrain_decoration_views(const DedTerrainData& d, const TerrainGrid& g,
+                                  at::DecorationView (&out)[at::max_decorations])
+{
+    const std::size_t plane = at::decoration_plane_bytes(g.nx, g.nz, g.weight_res_mul);
+    const auto count = static_cast<uint32_t>(std::min<std::size_t>(d.decorations.size(), at::max_decorations));
+    for (uint32_t i = 0; i < count; i++) {
+        const bool planed = g.decoration.size() >= (i + 1) * plane;
+        out[i] = at::make_decoration_view(d.decorations[i], planed ? g.decoration.data() + i * plane : nullptr);
+    }
+    return count;
+}
+
+uint64_t terrain_decoration_light_hash(int32_t uid, const Vector3& pos, const DedTerrainData& d)
+{
+    if (!d.grid || !terrain_decorations_cast(d)) return 0;
+    at::DecorationView views[at::max_decorations];
+    const uint32_t count = terrain_decoration_views(d, *d.grid, views);
+    return at::decoration_lighting_hash(uid, terrain_grid_view(pos, d, *d.grid), views, count);
+}
+
+bool terrain_decorations_cast(const DedTerrainData& d)
+{
+    return std::any_of(d.decorations.begin(), d.decorations.end(), [](const DedTerrainDecoration& deco) {
+        return deco.casts_shadows && !deco.mesh.empty() && deco.density > 0.0f;
+    });
+}
+
+uint32_t terrain_decoration_instances(int32_t uid, const Vector3& pos, const DedTerrainData& d,
+                                      at::DecorationBudget& budget)
+{
+    if (!d.grid || d.decorations.empty()) return 0;
+    const TerrainGrid& g = *d.grid;
+    at::DecorationView views[at::max_decorations];
+    const uint32_t count = terrain_decoration_views(d, g, views);
+    const at::ChunkLayout layout{at::cells(g.nx), at::cells(g.nz), terrain_effective_chunk_cells(d)};
+    return at::for_each_terrain_decoration(terrain_grid_view(pos, d, g), uid, layout, views, count, budget,
+                                           [](uint32_t, uint32_t, const at::DecorationInstance&) { return true; });
+}
+
 void terrain_build_isolated_brush_uids(std::unordered_set<int32_t>& uids)
 {
     for (const TempChunk& tc : g_temp_chunks) uids.insert(tc.brush_uid);
@@ -883,6 +918,49 @@ void terrain_build_strip_leftovers(CDedLevel& level)
     xlog::warn("[Terrain] removed {} temporary chunk brush(es) left by Build Geometry", removed);
 }
 
+using RoomsByUid = std::unordered_map<int32_t, const GRoom*>;
+
+// Why the terrain would be saved without a build mapping, else empty with `rooms` holding the compiled rooms
+// by uid.
+static std::string terrain_build_mapping_problem(CDedLevel& level, const DedTerrain& terrain, RoomsByUid& rooms)
+{
+    const DedTerrainData& d = terrain.data;
+    const std::string who = terrain_label(terrain);
+    if (d.built_room_uids.empty() || !level.solid) {
+        return who + " has no compiled geometry - run Build Geometry before saving.";
+    }
+    if (d.built_room_uids.size() != terrain_chunk_count(d) ||
+        terrain_geometry_fingerprint(terrain) != d.built_geometry_fingerprint) {
+        return who + " changed since the last Build Geometry - rebuild before saving.";
+    }
+    const GSolid* solid = level.solid;
+    for (int i = 0; i < solid->all_rooms.get_size(); i++) {
+        const GRoom* room = solid->all_rooms.data_ptr[i];
+        if (room && room->uid != -1) rooms.emplace(room->uid, room);
+    }
+    for (std::size_t k = 0; k < d.built_room_uids.size(); k++) {
+        const int32_t uid = d.built_room_uids[k];
+        if (uid == at::no_room_uid) continue;
+        auto it = uid != missing_room_uid ? rooms.find(uid) : rooms.end();
+        if (it == rooms.end() || !it->second->face_list_head) {
+            return std::format("{}: chunk {} has no compiled room - rebuild before saving.", who, k);
+        }
+    }
+    return {};
+}
+
+bool terrain_build_resolves(CDedLevel& level, const DedTerrain& terrain)
+{
+    if (!terrain.data.grid) return false;
+    try {
+        RoomsByUid rooms;
+        return terrain_build_mapping_problem(level, terrain, rooms).empty();
+    }
+    catch (const std::bad_alloc&) {
+        return false;
+    }
+}
+
 std::string terrain_build_fill_mapping(CDedLevel& level, DedTerrain& terrain)
 {
     DedTerrainData& d = terrain.data;
@@ -890,24 +968,15 @@ std::string terrain_build_fill_mapping(CDedLevel& level, DedTerrain& terrain)
     if (!d.grid) return {};
     const std::string who = terrain_label(terrain);
     const uint32_t count = terrain_chunk_count(d);
-    if (d.built_room_uids.empty() || !level.solid) {
-        return who + " has no compiled geometry - run Build Geometry before saving.";
-    }
-    if (d.built_room_uids.size() != count || terrain_geometry_fingerprint(terrain) != d.built_geometry_fingerprint) {
-        return who + " changed since the last Build Geometry - rebuild before saving.";
-    }
-    if (terrain_material_fingerprint(terrain) != d.built_material_fingerprint) {
-        terrain_report(who + " was painted since the last Build Geometry - footstep materials and legacy (D3D8/9) "
-                             "textures update on the next build.",
-                       false);
-    }
 
     try {
-        std::unordered_map<int32_t, const GRoom*> rooms;
-        const GSolid* solid = level.solid;
-        for (int i = 0; i < solid->all_rooms.get_size(); i++) {
-            const GRoom* room = solid->all_rooms.data_ptr[i];
-            if (room && room->uid != -1) rooms.emplace(room->uid, room);
+        RoomsByUid rooms;
+        std::string problem = terrain_build_mapping_problem(level, terrain, rooms);
+        if (!problem.empty()) return problem;
+        if (terrain_material_fingerprint(terrain) != d.built_material_fingerprint) {
+            terrain_report(who + " was painted since the last Build Geometry - footstep materials and legacy "
+                                 "(D3D8/9) textures update on the next build.",
+                           false);
         }
 
         std::vector<at::ChunkMapping> mapping(count);
@@ -918,11 +987,7 @@ std::string terrain_build_fill_mapping(CDedLevel& level, DedTerrain& terrain)
                 mapping[k] = {at::no_room_uid, 0, 0};
                 continue;
             }
-            auto it = uid != missing_room_uid ? rooms.find(uid) : rooms.end();
-            const GFace* head = it != rooms.end() ? it->second->face_list_head : nullptr;
-            if (!head) {
-                return std::format("{}: chunk {} has no compiled room - rebuild before saving.", who, k);
-            }
+            const GFace* head = rooms.at(uid)->face_list_head;
             // Distinct positions of the faces as the RFL stores them (alpine_terrain.h, build mapping hash)
             keys.clear();
             for (const GFace* f = head; f; f = f->next_room) {
@@ -1007,7 +1072,8 @@ float terrain_build_level_ray_hit(CDedLevel& level, const float (&o)[3], const f
         // Back faces, as the viewport culls them (0x004ee4c0)
         const Vector3& n = f->plane.normal;
         if (n.x * o[0] + n.y * o[1] + n.z * o[2] + f->plane.dist <= 0.0f) continue;
-        if (in_terrain_room(f, props.terrain_room_uids) || in_terrain_room(f, props.terrain_split_room_uids)) {
+        if (f->which_room &&
+            (props.is_terrain_room(f->which_room->uid) || props.is_terrain_split_room(f->which_room->uid))) {
             continue;
         }
         loop.clear();

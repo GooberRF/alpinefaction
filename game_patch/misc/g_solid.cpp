@@ -65,7 +65,7 @@ static void geo_cache_tint_terrain_batches(rf::GCache& cache)
         bool all_terrain = true;
         for (int f = 0; f < b.num_faces && all_terrain; ++f) {
             const rf::GFace* face = b.faces[f].face;
-            all_terrain = face && face->attributes.surface_index < 0 && alpine_terrain_find_room(face->which_room);
+            all_terrain = face && face->attributes.surface_index < 0 && alpine_terrain_is_chunk_room(face->which_room);
         }
         if (!all_terrain) {
             continue;
@@ -122,7 +122,7 @@ FunHook<int(rf::GSolid*, rf::GRoom*)> geo_cache_prepare_room_hook{
             return 0;
         }
         // Terrain chunks draw from caches of their own (gr_render_static_solid_hook)
-        const bool terrain_chunk = room->is_detail && alpine_terrain_find_room(room);
+        const bool terrain_chunk = room->is_detail && alpine_terrain_is_chunk_room(room);
         std::vector<rf::GRoom*> hidden;
         if (terrain_chunk) {
             // The builder walks the root's detail rooms; an RF2 carve can leave garbage in a chunk's own
@@ -337,7 +337,8 @@ FunHook<rf::Color* __fastcall(rf::GSolid*, int, rf::Color*, rf::GFace*, rf::Vect
                 const float p[3] = {pos->x, pos->y, pos->z};
                 const float n[3] = {face->plane.normal.x, face->plane.normal.y, face->plane.normal.z};
                 float texel[3];
-                alpine_terrain_sample_light(t, alpine_terrain_face_kind(alpine_terrain_grid(t), *face), p, n, texel);
+                const auto kind = alpine_terrain_face_kind(alpine_terrain_grid(t), *face);
+                alpine_terrain_sample_light(ref->terrain, kind, p, n, texel);
                 // Capped below 255 so the D3D11 mesh path never reads it as "no lightmap"
                 auto to_byte = [](float v) {
                     return static_cast<rf::ubyte>(std::clamp(v * 255.0f + 0.5f, 0.0f, 254.0f));

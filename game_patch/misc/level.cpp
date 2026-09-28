@@ -13,6 +13,7 @@
 #include "../rf/mover.h"
 #include "level.h"
 #include "alpine_terrain.h"
+#include "alpine_terrain_decorations.h"
 #include "misc.h"
 #include "player.h"
 #include "../multi/server.h"
@@ -130,6 +131,7 @@ CodeInjection level_load_init_patch{
         alpine_bag_clear_state();
         alpine_projection_camera_clear_state();
         alpine_rope_clear_state();
+        alpine_terrain_decorations_clear_state();
         alpine_terrain_clear_state();
         gr::d3d11::release_terrain_gpu();
         gas_region_clear_state();
@@ -150,6 +152,7 @@ void level_shutdown()
     af_lightmap_level_reset();
     projector_clear_all();
     alpine_rope_clear_state();
+    alpine_terrain_decorations_clear_state();
     alpine_terrain_clear_state();
     gr::d3d11::release_terrain_gpu();
     alpine_mesh_free_collision_proxies();
@@ -637,4 +640,6 @@ void level_apply_patch()
     // Climbing region uid capture and the Climbing_Region_State disable check
     climb_region_load_uid_patch.install();
     level_point_in_climb_region_hook.install();
+
+    alpine_terrain_decorations_apply_patch();
 }

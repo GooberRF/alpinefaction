@@ -1,6 +1,5 @@
 #pragma once
 
-#include <algorithm>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -24,10 +23,10 @@ inline constexpr std::uint8_t terrain_unselected_rgb[3] = {0x50, 0xc0, 0x50};
 void ApplyTerrainPreviewPatches();
 
 // Draws one terrain into the viewport being painted, from `data` (the terrain's own, or the
-// properties dialog's staged copy). Called from the Alpine object pass (0x0041f9b2).
+// properties dialog's staged copy). Called from the terrain surfaces pass (0x0041f6f9).
 void terrain_preview_draw(CDedLevel& level, const DedTerrain& terrain, const DedTerrainData& data, bool selected);
 
-// After the pass: frees the previews of terrains no longer in the level and asks for another paint
+// After the surfaces pass: frees the previews of terrains no longer in the level and asks for another paint
 // while composites are still outstanding.
 void terrain_preview_frame_end(CDedLevel& level);
 
@@ -81,29 +80,3 @@ struct TerrainRay
 TerrainRay terrain_screen_ray(float screen_x, float screen_y);
 // Distance along `ray` to the terrain's surface within [0, t_max], holes skipped.
 bool terrain_ray_hit(const DedTerrain& t, const TerrainRay& ray, float t_max, float& hit_t);
-
-// A lightmapped texel as RED draws a brush (texture x lightmap, MODULATE2X) and the game's terrain shader
-// draws the chart (albedo x 2 x chart texel, saturated), dynamic lights aside: albedo 0..255, texel a
-// stock lightmap texel 0..1, result 0..255.
-inline float terrain_preview_lit(float albedo, float texel)
-{
-    return std::min(albedo * 2.0f * texel, 255.0f);
-}
-
-inline std::uint8_t terrain_preview_byte(float v)
-{
-    return static_cast<std::uint8_t>(std::clamp(v, 0.0f, 255.0f) + 0.5f);
-}
-
-// The level-wide composite budget has room for one more res x res composite.
-inline bool composite_budget_fits(int bitmaps, std::uint64_t texels, std::uint32_t res, int max_bitmaps,
-                                  std::uint64_t max_texels)
-{
-    return bitmaps < max_bitmaps && texels + static_cast<std::uint64_t>(res) * res <= max_texels;
-}
-
-// A composite last drawn in paint `last_drawn` may be freed for another in paint `frame`.
-inline bool composite_evictable(std::uint32_t last_drawn, std::uint32_t frame, std::uint32_t keep_frames)
-{
-    return frame - last_drawn >= keep_frames;
-}

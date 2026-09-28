@@ -76,6 +76,7 @@ inline constexpr std::uint8_t effective_density(std::uint8_t stored)
 }
 
 // ─── Wire enums ───────────────────────────────────────────────────────────────
+// Append-only: never reuse or renumber a value.
 
 enum class Semantic : std::uint16_t
 {
@@ -105,7 +106,7 @@ enum class Compression : std::uint8_t
     zlib = 1,
 };
 
-// TableHeader::tag
+// TableHeader::tag. Append-only: never reuse or renumber a value.
 enum class TableTag : std::uint32_t
 {
     movers = 1,
@@ -119,13 +120,13 @@ enum class TableTag : std::uint32_t
 struct SectionHeader
 {
     std::uint32_t version;
-    std::uint32_t flags;
+    std::uint32_t flags; // written 0, ignored by readers
     std::uint16_t page_size;
     std::uint16_t tile_step;
     std::uint8_t  gutter;
     std::uint8_t  base_density;
     std::uint8_t  stock_page_log2;
-    std::uint8_t  reserved;
+    std::uint8_t  reserved; // written 0, ignored by readers
     std::uint16_t num_pages;
     std::uint32_t num_charts;
     std::uint32_t num_tiles;
@@ -144,8 +145,8 @@ struct Chart
 
 // Terrain table (TableTag::terrain) body: u32 num_terrain_charts, then this record per terrain. A
 // terrain chart is w x h texels over the terrain's XZ footprint (terrain_texel_center); its tiles run
-// in record order. geometry_fingerprint is alpine_terrain::lighting_fingerprint of the terrain the
-// chart was baked for.
+// in record order. geometry_fingerprint is alpine_terrain::chart_fingerprint of the terrain the chart
+// was baked for (its lighting_fingerprint while no decoration casts shadows).
 struct TerrainChart
 {
     std::int32_t terrain_uid;
@@ -165,7 +166,7 @@ struct TableHeader
 {
     std::uint32_t tag;
     std::uint16_t version;
-    std::uint16_t reserved;
+    std::uint16_t reserved; // written 0, ignored by readers
     std::uint32_t byte_len;
     std::uint32_t num_tiles;
 };
@@ -200,7 +201,7 @@ struct Tile
 struct LayerDirHeader
 {
     std::uint8_t num_layers;
-    std::uint8_t reserved2[3];
+    std::uint8_t reserved2[3]; // written 0, ignored by readers
 };
 
 struct LayerDirEntry
@@ -678,7 +679,7 @@ inline constexpr std::uint64_t bc7_block_count(std::uint32_t num_pages, std::uin
     return static_cast<std::uint64_t>(num_pages) * (p / 4) * (p / 4);
 }
 
-// Exact decoded size of one layer, i.e. what alpine_lightmap_layer::uncompressed_size must hold.
+// Exact decoded size of one layer, i.e. what LayerDirEntry::uncompressed_size must hold.
 // That field is u32 while this returns u64: raw_rgb8 overflows it at 21846 pages, so a writer
 // must reject a page count whose payload does not fit before narrowing.
 inline constexpr std::uint64_t layer_payload_size(Codec codec, std::uint32_t num_pages,

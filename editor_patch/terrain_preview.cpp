@@ -7,6 +7,7 @@
 #include <new>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 #include <patch_common/FunHook.h>
 #include <patch_common/MemUtils.h>
@@ -21,6 +22,7 @@
 #include "mfc_types.h"
 #include "terrain.h"
 #include "terrain_build.h"
+#include "terrain_decorations.h"
 #include "terrain_paint.h"
 #include "terrain_preview.h"
 #include "textures.h"
@@ -37,18 +39,6 @@ namespace
 void level_face_draw_hooked(GSolid* solid, GFace* face, char outline);
 FunHook<decltype(level_face_draw_hooked)> level_face_draw_hook{0x004E94B0, level_face_draw_hooked};
 
-constexpr uint32_t tmap_uv = 0x1;
-constexpr uint32_t tmap_rgb = 0x4;
-
-// FUN_0047e140's packing
-constexpr uint32_t gr_mode(uint32_t tex, uint32_t color, uint32_t alpha, uint32_t blend, uint32_t zbuf, uint32_t fog)
-{
-    return tex | color << 5 | alpha << 10 | blend << 15 | zbuf << 20 | fog << 25;
-}
-// clamped texture times vertex colour, full z-buffer
-constexpr uint32_t mode_textured = gr_mode(2, 2, 0, 0, 4, 0);
-constexpr uint32_t mode_vertex = gr_mode(0, 0, 0, 0, 4, 0);
-
 // RED makes 8888 bitmaps A4R4G4B4 textures; 565 gets its best opaque 16-bit format.
 constexpr int composite_format = BM_FORMAT_565_RGB;
 
@@ -59,6 +49,31 @@ constexpr int max_level_bitmaps = 1024;
 constexpr double composite_budget_ms = 20.0;
 
 const uint8_t chunk_line_rgb[3] = {0x90, 0x00, 0x00};
+
+// A lightmapped texel as RED draws a brush (texture x lightmap, MODULATE2X) and the game's terrain shader
+// draws the chart (albedo x 2 x chart texel, saturated), dynamic lights aside: albedo 0..255, texel a
+// stock lightmap texel 0..1, result 0..255.
+float terrain_preview_lit(float albedo, float texel)
+{
+    return std::min(albedo * 2.0f * texel, 255.0f);
+}
+
+uint8_t terrain_preview_byte(float v)
+{
+    return static_cast<uint8_t>(std::clamp(v, 0.0f, 255.0f) + 0.5f);
+}
+
+// The level-wide composite budget has room for one more res x res composite.
+bool composite_budget_fits(int bitmaps, uint64_t texels, uint32_t res, int max_bitmaps, uint64_t max_texels)
+{
+    return bitmaps < max_bitmaps && texels + static_cast<uint64_t>(res) * res <= max_texels;
+}
+
+// A composite last drawn in paint `last_drawn` may be freed for another in paint `frame`.
+bool composite_evictable(uint32_t last_drawn, uint32_t frame, uint32_t keep_frames)
+{
+    return frame - last_drawn >= keep_frames;
+}
 
 // ─── Layer tiles ────────────────────────────────────────────────────────────
 
@@ -235,8 +250,8 @@ struct ShadeKey
     bool operator==(const ShadeKey& o) const
     {
         return style == o.style && sun == o.sun && std::memcmp(dir, o.dir, sizeof(dir)) == 0 &&
-               std::memcmp(color, o.color, sizeof(color)) == 0 && std::memcmp(ambient, o.ambient, sizeof(ambient)) == 0 &&
-               light == o.light && light_gen == o.light_gen;
+               std::memcmp(color, o.color, sizeof(color)) == 0 &&
+               std::memcmp(ambient, o.ambient, sizeof(ambient)) == 0 && light == o.light && light_gen == o.light_gen;
     }
 };
 
@@ -285,6 +300,8 @@ struct Preview
     uint8_t flags = 0;
     float thickness = 0.0f;
     float skirt_depth = 0.0f;
+    // The decorations that cast shadows, by index, as decoration_lighting_hash reads them
+    std::vector<std::pair<std::size_t, DedTerrainDecoration>> casting;
     BakedLight baked = BakedLight::unknown;
     const TerrainBakedLight* light = nullptr;
     uint32_t light_gen = 0;
@@ -366,6 +383,41 @@ uint32_t choose_res(uint32_t edge, uint32_t chunk_count)
     return res;
 }
 
+bool casts(const DedTerrainDecoration& deco)
+{
+    return deco.casts_shadows && !deco.mesh.empty() && deco.density > 0.0f;
+}
+
+// Whether `cast` lists `d`'s shadow casting decorations as they are (their draw distance aside).
+bool same_casting(const std::vector<std::pair<std::size_t, DedTerrainDecoration>>& cast, const DedTerrainData& d)
+{
+    std::size_t n = 0;
+    for (std::size_t i = 0; i < d.decorations.size(); i++) {
+        const DedTerrainDecoration& deco = d.decorations[i];
+        if (!casts(deco)) continue;
+        if (n >= cast.size() || cast[n].first != i) return false;
+        const DedTerrainDecoration& c = cast[n++].second;
+        if (c.mesh != deco.mesh || c.density != deco.density || c.scale_min != deco.scale_min ||
+            c.scale_max != deco.scale_max || c.max_slope != deco.max_slope ||
+            c.vertical_offset != deco.vertical_offset || c.link_layer != deco.link_layer ||
+            c.align_to_slope != deco.align_to_slope || c.random_yaw != deco.random_yaw) {
+            return false;
+        }
+    }
+    return n == cast.size();
+}
+
+std::vector<std::pair<std::size_t, DedTerrainDecoration>> casting_decorations(const DedTerrainData& d)
+{
+    std::vector<std::pair<std::size_t, DedTerrainDecoration>> out;
+    for (std::size_t i = 0; i < d.decorations.size(); i++) {
+        if (!casts(d.decorations[i])) continue;
+        out.emplace_back(i, d.decorations[i]);
+        out.back().second.draw_distance = 0.0f;
+    }
+    return out;
+}
+
 Preview& find_preview(const DedTerrain* owner)
 {
     for (auto& p : g_previews) {
@@ -381,10 +433,8 @@ Preview& find_preview(const DedTerrain* owner)
 Preview& sync_preview(const DedTerrain& terrain, const DedTerrainData& d)
 {
     Preview& p = find_preview(&terrain);
-    const TerrainGrid& g = *d.grid;
-    const uint32_t cx = at::cells(g.nx), cz = at::cells(g.nz);
-    const uint32_t edge = at::effective_chunk_cells(cx, cz, d.chunk_cells, d.flags);
-    const uint32_t count = at::chunk_count(cx, cz, edge);
+    const uint32_t edge = terrain_effective_chunk_cells(d);
+    const uint32_t count = terrain_chunk_count(d);
     const uint32_t res = choose_res(edge, count);
 
     bool recomposite = false;
@@ -419,6 +469,10 @@ Preview& sync_preview(const DedTerrain& terrain, const DedTerrainData& d)
         p.flags = d.flags;
         p.thickness = d.thickness;
         p.skirt_depth = d.skirt_depth;
+    }
+    if (!same_casting(p.casting, d)) {
+        p.baked = BakedLight::unknown;
+        p.casting = casting_decorations(d);
     }
     bool same_layers = p.layers.size() == d.layers.size();
     for (std::size_t i = 0; same_layers && i < d.layers.size(); i++) {
@@ -675,7 +729,8 @@ Composite create_chunk_bitmap(PreviewChunk& chunk, uint32_t res)
 
 // Blends the layer tiles by the weight maps into chunk k's bitmap, then lays the overlay tiles over
 // them by their coverage and alpha, lit by `light` when given.
-Composite composite_chunk(Preview& p, const at::GridView& v, uint32_t k, const LayerTile* const (&tiles)[at::max_layers],
+Composite composite_chunk(Preview& p, const at::GridView& v, uint32_t k,
+                          const LayerTile* const (&tiles)[at::max_layers],
                           const LayerTile* const (&overlay_tiles)[at::max_overlays], const TerrainBakedLight* light)
 {
     PreviewChunk& chunk = p.chunks[k];
@@ -1018,7 +1073,7 @@ void draw_walls(Preview& p, const at::GridView& v, bool textured, const std::str
     }
     gr_set_bitmap(bm, -1);
     const uint32_t flags = bm >= 0 ? tmap_uv | tmap_rgb : tmap_rgb;
-    const uint32_t mode = bm >= 0 ? gr_mode(1, 2, 0, 0, 4, 0) : mode_vertex;
+    const uint32_t mode = bm >= 0 ? mode_textured_wrap : mode_vertex;
     const float s0 = v.layer_uv_scale[0];
 
     auto wall = [&](uint32_t px, uint32_t pz, uint32_t qx, uint32_t qz, float nx, float nz) {
@@ -1234,6 +1289,7 @@ bool terrain_preview_take_pending_work()
 
 void terrain_preview_invalidate(const DedTerrain* terrain, const TerrainCellRect* cells, bool heights_changed)
 {
+    terrain_decorations_invalidate(terrain, cells);
     for (auto& p : g_previews) {
         if (p->owner != terrain) continue;
         p->shade_dirty = p->shade_dirty || heights_changed;
@@ -1253,6 +1309,7 @@ void terrain_preview_invalidate(const DedTerrain* terrain, const TerrainCellRect
 
 void terrain_preview_heights_changed(const DedTerrain* terrain, const TerrainCellRect* verts)
 {
+    terrain_decorations_invalidate(terrain, verts);
     terrain_preview_lighting_changed(terrain);
     for (auto& p : g_previews) {
         if (p->owner != terrain) continue;
@@ -1299,12 +1356,13 @@ void terrain_preview_textures_reloaded()
         p->underside_bm = -1;
         for (PreviewChunk& c : p->chunks) c.dirty = true;
     }
-    for (int i = 0; i < editor_num_views; i++) editor_view_mark_repaint(editor_view_at(i));
+    editor_views_mark_repaint_all();
 }
 
 void terrain_preview_rebind_grid(const DedTerrain* terrain, const TerrainGrid* old_grid,
                                  const std::shared_ptr<const TerrainGrid>& new_grid)
 {
+    terrain_decorations_rebind_grid(terrain, old_grid, new_grid);
     for (auto& p : g_previews) {
         if (p->owner == terrain && p->grid.get() == old_grid) p->grid = new_grid;
     }
@@ -1348,8 +1406,7 @@ bool terrain_preview_hides_room(const GRoom* room)
     CDedLevel* level = CDedLevel::Get();
     if (!level) return false;
     const auto& props = level->GetAlpineLevelProperties();
-    auto in = [&](const std::vector<int32_t>& uids) { return std::binary_search(uids.begin(), uids.end(), room->uid); };
-    return in(props.terrain_room_uids) || in(props.terrain_split_room_uids);
+    return props.is_terrain_room(room->uid) || props.is_terrain_split_room(room->uid);
 }
 
 TerrainRay terrain_screen_ray(float screen_x, float screen_y)

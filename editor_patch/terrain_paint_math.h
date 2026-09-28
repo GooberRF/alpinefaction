@@ -1,7 +1,7 @@
 #pragma once
 
-// Terrain paint brush math: dabs on the raw weight maps, overlay coverage and hole mask, and the per-stroke undo
-// diffs. No RED dependencies, so the standalone self-check compiles it as is.
+// Terrain paint brush math: dabs on the raw weight maps, overlay and decoration coverage and hole mask, and the
+// per-stroke undo diffs. No RED dependencies, so the standalone self-check compiles it as is.
 
 #include <cmath>
 #include <cstddef>
@@ -57,7 +57,7 @@ inline bool tool_edits_heights(Tool t)
 }
 
 // Held still, these keep dabbing at the last spot; noise reaches its full shape in one pass, and a
-// bridge points is applied once, on release.
+// Bridge Points stroke is applied once, on release.
 inline bool tool_repeats_in_place(Tool t)
 {
     return tool_edits_heights(t) && t != Tool::noise && t != Tool::ramp_between;
@@ -110,33 +110,45 @@ void chunks_on_segment(const at::ChunkLayout& l, float x0, float z0, float x1, f
 }
 
 // ─── Layer list ───────────────────────────────────────────────────────────────
-// The panel lists the base layers, then the overlays; its selection is one index into both.
+// The panel lists the base layers, then the overlays, then the decorations; its selection is one index into all.
 
 struct LayerListShape
 {
     int layers = 0;
-    std::vector<std::string> overlays; // texture names
+    std::vector<std::string> overlays;    // texture names
+    std::vector<std::string> decorations; // mesh names
 };
 
-// The selection after the lists changed from `before` to `after`, never moving between a base layer and an
-// overlay: a base layer keeps its index (clamped); an overlay stays at its index while that entry still has
-// its texture, follows its texture if exactly one overlay has it (a reorder), else keeps its index if no
-// overlay was removed (its texture was replaced); otherwise base layer 0 is selected.
+// Entry k of a named list after it changed from `before` to `after`: it stays while the entry keeps its name,
+// follows its name if exactly one entry has it (a reorder), else keeps its index if no entry was removed (its
+// name was replaced); otherwise -1.
+inline int remap_named_entry(int k, const std::vector<std::string>& before, const std::vector<std::string>& after)
+{
+    const int n = static_cast<int>(after.size());
+    if (k >= static_cast<int>(before.size())) return -1;
+    const std::string& name = before[k];
+    if (k < n && after[k] == name) return k;
+    if (std::count(after.begin(), after.end(), name) == 1) {
+        return static_cast<int>(std::find(after.begin(), after.end(), name) - after.begin());
+    }
+    return k < n && n >= static_cast<int>(before.size()) ? k : -1;
+}
+
+// The selection after the lists changed from `before` to `after`, never moving between a base layer, an
+// overlay and a decoration: a base layer keeps its index (clamped); an overlay or a decoration follows
+// remap_named_entry within its own list; otherwise base layer 0 is selected.
 inline int remap_layer_selection(int sel, const LayerListShape& before, const LayerListShape& after)
 {
     if (sel < 0 || after.layers < 1) return 0;
     if (sel < before.layers) return std::min(sel, after.layers - 1);
     const int k = sel - before.layers;
-    const int n = static_cast<int>(after.overlays.size());
-    if (k >= static_cast<int>(before.overlays.size())) return 0;
-    const std::string& name = before.overlays[k];
-    if (k < n && after.overlays[k] == name) return after.layers + k;
-    const auto same = std::count(after.overlays.begin(), after.overlays.end(), name);
-    if (same == 1) {
-        return after.layers +
-               static_cast<int>(std::find(after.overlays.begin(), after.overlays.end(), name) - after.overlays.begin());
+    const int overlays = static_cast<int>(before.overlays.size());
+    if (k < overlays) {
+        const int r = remap_named_entry(k, before.overlays, after.overlays);
+        return r < 0 ? 0 : after.layers + r;
     }
-    return k < n && n >= static_cast<int>(before.overlays.size()) ? after.layers + k : 0;
+    const int r = remap_named_entry(k - overlays, before.decorations, after.decorations);
+    return r < 0 ? 0 : after.layers + static_cast<int>(after.overlays.size()) + r;
 }
 
 // Brush weight at t = distance / radius: 1 at the centre, 0 at and past the rim.
@@ -305,13 +317,15 @@ inline Rect smooth_weights(WeightMaps& m, const Dab& d)
     return changed;
 }
 
-// One channel of the overlay coverage map, laid out as a weight map.
+// One channel of a coverage map laid out as a weight map with `stride` channels per texel: the overlay
+// coverage map, or a decoration's plane (stride 1).
 struct CoverageMap
 {
     std::uint8_t* data;
     std::uint32_t w, h;   // weight_width / weight_height
     std::uint32_t mul;    // texels per cell
     std::uint32_t channel;
+    std::uint32_t stride = 4;
 };
 
 // Moves each texel's coverage toward 255 (raise) or 0 by the dab amount, rounding in favour of the
@@ -319,14 +333,14 @@ struct CoverageMap
 // the texels changed.
 inline Rect paint_coverage(CoverageMap& m, const Dab& d, bool raise)
 {
-    if (m.channel >= at::max_overlays) return {};
+    if (m.channel >= m.stride) return {};
     const Rect r = dab_rect(d, m.mul, m.w, m.h);
     Rect changed;
     for (std::uint32_t j = r.z0; j < r.z1; j++) {
         for (std::uint32_t i = r.x0; i < r.x1; i++) {
             const float a = dab_amount(d, m.mul, i, j);
             if (a < min_amount) continue;
-            std::uint8_t& v = m.data[(static_cast<std::size_t>(j) * m.w + i) * 4 + m.channel];
+            std::uint8_t& v = m.data[(static_cast<std::size_t>(j) * m.w + i) * m.stride + m.channel];
             const float rest = raise ? 255.0f - v : static_cast<float>(v);
             const auto left = static_cast<std::uint8_t>(std::floor(rest * (1.0f - a)));
             const std::uint8_t out = raise ? static_cast<std::uint8_t>(255 - left) : left;
@@ -342,14 +356,14 @@ inline Rect paint_coverage(CoverageMap& m, const Dab& d, bool raise)
 // smooth_weights does. Returns the texels changed.
 inline Rect smooth_coverage(CoverageMap& m, const Dab& d)
 {
-    if (m.channel >= at::max_overlays) return {};
+    if (m.channel >= m.stride) return {};
     const Rect r = dab_rect(d, m.mul, m.w, m.h);
     if (r.empty()) return {};
     const std::uint32_t sx0 = r.x0 > 0 ? r.x0 - 1 : 0, sz0 = r.z0 > 0 ? r.z0 - 1 : 0;
     const std::uint32_t sx1 = std::min(r.x1 + 1, m.w), sz1 = std::min(r.z1 + 1, m.h);
     const std::uint32_t sw = sx1 - sx0;
     auto at_ = [&](std::uint32_t i, std::uint32_t j) -> std::uint8_t& {
-        return m.data[(static_cast<std::size_t>(j) * m.w + i) * 4 + m.channel];
+        return m.data[(static_cast<std::size_t>(j) * m.w + i) * m.stride + m.channel];
     };
     std::vector<std::uint8_t> src(static_cast<std::size_t>(sw) * (sz1 - sz0));
     for (std::uint32_t j = sz0; j < sz1; j++) {
@@ -643,7 +657,7 @@ inline float segment_falloff(const SculptDab& s, std::uint32_t i, std::uint32_t 
     return falloff_weight(s.dab.falloff, dist / std::max(s.dab.radius, 1e-6f));
 }
 
-// The vertices a dab can reach: its circle, or for a bridge points the segment's capsule.
+// The vertices a dab can reach: its circle, or for a Bridge Points stroke the segment's capsule.
 inline Rect sculpt_vertex_rect(const SculptDab& s, std::uint32_t nx, std::uint32_t nz)
 {
     if (s.tool != Tool::ramp_between) return dab_vertex_rect(s.dab, nx, nz);
@@ -738,42 +752,57 @@ inline HeightWrite sculpt_dab(HeightGrid& g, const SculptDab& s, SculptScratch& 
 
 // ─── Undo diffs ───────────────────────────────────────────────────────────────
 // A stroke's before and after state inside the rectangles it touched: 8 weight bytes per texel
-// (map 0 channels then map 1 channels) and, when the terrain has overlays, the texel's 4 coverage
-// bytes after them; one byte per hole cell and the heights of the vertices. A stroke that grew the
-// height mapping covers every vertex and records both mappings.
+// (map 0 channels then map 1 channels), then the texel's 4 overlay coverage bytes when the terrain has
+// overlays and a byte per decoration plane when it has decorations; one byte per hole cell and the heights
+// of the vertices. A stroke that grew the height mapping covers every vertex and records both mappings.
 
-inline void capture_weights(const std::uint8_t* weights, std::uint32_t w, std::uint32_t h, const Rect& r,
-                            std::vector<std::uint8_t>& out, const std::uint8_t* overlay = nullptr)
+// The captured bytes per texel.
+inline std::size_t weight_diff_stride(bool overlay, std::uint32_t deco_planes)
 {
-    const std::size_t map = static_cast<std::size_t>(w) * h * 4;
-    const std::size_t stride = overlay ? 12 : 8;
+    return 8 + (overlay ? 4 : 0) + deco_planes;
+}
+
+// `planes` holds `deco_planes` decoration planes of w x h bytes.
+inline void capture_weights(const std::uint8_t* weights, std::uint32_t w, std::uint32_t h, const Rect& r,
+                            std::vector<std::uint8_t>& out, const std::uint8_t* overlay = nullptr,
+                            const std::uint8_t* planes = nullptr, std::uint32_t deco_planes = 0)
+{
+    const std::size_t plane = static_cast<std::size_t>(w) * h, map = plane * 4;
+    if (!planes) deco_planes = 0;
+    const std::size_t first_plane = overlay ? 12 : 8;
+    const std::size_t stride = weight_diff_stride(overlay != nullptr, deco_planes);
     out.resize(r.area() * stride);
     std::size_t k = 0;
     for (std::uint32_t j = r.z0; j < r.z1; j++) {
         for (std::uint32_t i = r.x0; i < r.x1; i++) {
-            const std::size_t t = (static_cast<std::size_t>(j) * w + i) * 4;
+            const std::size_t texel = static_cast<std::size_t>(j) * w + i, t = texel * 4;
             std::memcpy(&out[k], weights + t, 4);
             std::memcpy(&out[k + 4], weights + map + t, 4);
             if (overlay) std::memcpy(&out[k + 8], overlay + t, 4);
+            for (std::uint32_t p = 0; p < deco_planes; p++) out[k + first_plane + p] = planes[p * plane + texel];
             k += stride;
         }
     }
 }
 
-// `overlay` is restored only when `in` holds coverage (the same grid layout captured it).
+// Restores what capture_weights took with the same overlay presence and plane count; anything else is left alone.
 inline void restore_weights(std::uint8_t* weights, std::uint32_t w, std::uint32_t h, const Rect& r,
-                            const std::vector<std::uint8_t>& in, std::uint8_t* overlay = nullptr)
+                            const std::vector<std::uint8_t>& in, std::uint8_t* overlay = nullptr,
+                            std::uint8_t* planes = nullptr, std::uint32_t deco_planes = 0)
 {
-    const std::size_t map = static_cast<std::size_t>(w) * h * 4;
-    const std::size_t stride = in.size() == r.area() * 12 ? 12 : 8;
+    const std::size_t plane = static_cast<std::size_t>(w) * h, map = plane * 4;
+    if (!planes) deco_planes = 0;
+    const std::size_t first_plane = overlay ? 12 : 8;
+    const std::size_t stride = weight_diff_stride(overlay != nullptr, deco_planes);
     if (in.size() != r.area() * stride) return;
     std::size_t k = 0;
     for (std::uint32_t j = r.z0; j < r.z1; j++) {
         for (std::uint32_t i = r.x0; i < r.x1; i++) {
-            const std::size_t t = (static_cast<std::size_t>(j) * w + i) * 4;
+            const std::size_t texel = static_cast<std::size_t>(j) * w + i, t = texel * 4;
             std::memcpy(weights + t, &in[k], 4);
             std::memcpy(weights + map + t, &in[k + 4], 4);
-            if (overlay && stride == 12) std::memcpy(overlay + t, &in[k + 8], 4);
+            if (overlay) std::memcpy(overlay + t, &in[k + 8], 4);
+            for (std::uint32_t p = 0; p < deco_planes; p++) planes[p * plane + texel] = in[k + first_plane + p];
             k += stride;
         }
     }
@@ -789,7 +818,8 @@ inline void capture_holes(const std::uint8_t* holes, std::uint32_t cells_x, cons
     }
 }
 
-inline void restore_holes(std::uint8_t* holes, std::uint32_t cells_x, const Rect& r, const std::vector<std::uint8_t>& in)
+inline void restore_holes(std::uint8_t* holes, std::uint32_t cells_x, const Rect& r,
+                          const std::vector<std::uint8_t>& in)
 {
     std::size_t k = 0;
     for (std::uint32_t z = r.z0; z < r.z1; z++) {
@@ -807,7 +837,8 @@ inline void capture_heights(const std::uint16_t* heights, std::uint32_t nx, cons
     }
 }
 
-inline void restore_heights(std::uint16_t* heights, std::uint32_t nx, const Rect& r, const std::vector<std::uint16_t>& in)
+inline void restore_heights(std::uint16_t* heights, std::uint32_t nx, const Rect& r,
+                            const std::vector<std::uint16_t>& in)
 {
     std::size_t k = 0;
     for (std::uint32_t z = r.z0; z < r.z1; z++) {
@@ -819,6 +850,9 @@ struct StrokeDiff
 {
     Rect texels;
     std::vector<std::uint8_t> weights_before, weights_after;
+    // What the weight bytes carry after the weights (capture_weights)
+    bool overlay = false;
+    std::uint32_t deco_planes = 0;
     Rect cells;
     std::vector<std::uint8_t> holes_before, holes_after;
     Rect verts;
@@ -841,12 +875,14 @@ struct StrokeDiff
     }
 };
 
-// Applies one side of a diff to a grid's weight maps, overlay coverage and hole mask.
+// Applies one side of a diff to a grid's weight maps, overlay coverage, decoration planes and hole mask.
 inline void apply_diff(const StrokeDiff& d, bool after, std::uint8_t* weights, std::uint32_t w, std::uint32_t h,
-                       std::uint8_t* holes, std::uint32_t cells_x, std::uint8_t* overlay = nullptr)
+                       std::uint8_t* holes, std::uint32_t cells_x, std::uint8_t* overlay = nullptr,
+                       std::uint8_t* planes = nullptr)
 {
     if (!d.texels.empty()) {
-        restore_weights(weights, w, h, d.texels, after ? d.weights_after : d.weights_before, overlay);
+        restore_weights(weights, w, h, d.texels, after ? d.weights_after : d.weights_before,
+                        d.overlay ? overlay : nullptr, planes, d.deco_planes);
     }
     if (!d.cells.empty()) restore_holes(holes, cells_x, d.cells, after ? d.holes_after : d.holes_before);
 }

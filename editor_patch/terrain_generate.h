@@ -3,9 +3,8 @@
 #include <cstdint>
 #include <vector>
 
-// Procedural heightmaps (and optionally a splat map) for a terrain grid. Pure computation: no editor state,
-// so it runs the same in the Generate Terrain dialog and in a test harness. The same settings and input
-// always give the same bytes.
+// Procedural heightmaps (and optionally a splat map) for a terrain grid. Pure computation: no editor state.
+// The same settings and input always give the same bytes.
 
 enum class TerrainNoiseType
 {

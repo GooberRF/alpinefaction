@@ -663,6 +663,13 @@ namespace gr::d3d11
             device_context_->DrawIndexed(index_count, index_start_location, base_vertex_location);
         }
 
+        void draw_indexed_instanced(int index_count, int instance_count, int index_start_location,
+                                    int base_vertex_location, int instance_start_location)
+        {
+            device_context_->DrawIndexedInstanced(index_count, instance_count, index_start_location,
+                                                  base_vertex_location, instance_start_location);
+        }
+
         const Projection& projection() const
         {
             return projection_;

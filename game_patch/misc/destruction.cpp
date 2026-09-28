@@ -40,6 +40,7 @@
 #include "destruction.h"
 #include "level.h"
 #include "alpine_terrain.h"
+#include "alpine_terrain_decorations.h"
 #include "../sound/sound_foley.h"
 
 // Set by geomod_init hook; checked by boolean engine injections.
@@ -790,12 +791,6 @@ static bool face_bboxes_overlap(const rf::GFace& a, const rf::GFace& b)
 
 // Crater face bitmap per terrain (alpine_terrain_get_all index), -1 = level geomod texture.
 static std::vector<int> g_terrain_crater_bitmaps;
-
-// Terrain chunks are always anchored: never support-model pieces, always static support.
-static bool is_terrain_room(const rf::GRoom* room)
-{
-    return alpine_terrain_find_room(room) != nullptr;
-}
 
 static void apply_terrain_geoable_flags(rf::GSolid* solid)
 {
@@ -2498,7 +2493,8 @@ static bool rf2_node_has_static_support(const RF2SupportNode& node, rf::GSolid* 
     constexpr float pad = 0.1f;
     rf::Vector3 sample = rf2_face_center(*node.faces[0]);
     for (auto& room : solid->all_rooms) {
-        if (room->is_detail && room->is_geoable && !is_terrain_room(room)) continue;
+        // Terrain chunks are always anchored: never support-model pieces, always static support.
+        if (room->is_detail && room->is_geoable && !alpine_terrain_is_chunk_room(room)) continue;
         if (!rf2_bboxes_overlap(node.bbox_min, node.bbox_max, room->bbox_min, room->bbox_max, pad)) continue;
         for (rf::GFace& face : room->face_list) {
             if (!rf2_is_support_face(face)) continue;
@@ -2555,7 +2551,9 @@ static std::vector<RF2SupportNode> rf2_collect_geoable_nodes(rf::GSolid* solid)
 {
     std::vector<RF2SupportNode> nodes;
     for (auto& room : solid->all_rooms) {
-        if (room->is_detail && room->is_geoable && !is_terrain_room(room)) rf2_collect_room_nodes(room, nodes);
+        if (room->is_detail && room->is_geoable && !alpine_terrain_is_chunk_room(room)) {
+            rf2_collect_room_nodes(room, nodes);
+        }
     }
     return nodes;
 }
@@ -2615,7 +2613,7 @@ static void rf2_snapshot_support(rf::GRoom* target)
     g_rf2_pre_supported_faces.clear();
     g_rf2_target_supported_pre = false;
     rf::GSolid* solid = rf::level.geometry;
-    if (!target || !solid || is_terrain_room(target)) return;
+    if (!target || !solid || alpine_terrain_is_chunk_room(target)) return;
 
     auto nodes = rf2_collect_geoable_nodes(solid);
     auto state = rf2_compute_support(nodes, target, solid);
@@ -2637,7 +2635,7 @@ static int rf2_mark_unsupported_pieces(rf::GRoom* target, rf::GSolid* solid)
     for (rf::GFace* face = solid->face_list.first(); face; face = solid->face_list.next(face)) {
         face->attributes.group_id = -1;
     }
-    if (!target || is_terrain_room(target)) return 0;
+    if (!target || alpine_terrain_is_chunk_room(target)) return 0;
 
     auto nodes = rf2_collect_geoable_nodes(solid);
     auto state = rf2_compute_support(nodes, target, solid);
@@ -2768,7 +2766,7 @@ static std::vector<rf::GRoom*> find_overlapping_detail_rooms(const rf::Vector3& 
         if (!room->is_detail || !room->is_geoable) continue;
         geoable_count++;
 
-        if (crater_radius > 0.0f && is_terrain_room(room)) {
+        if (crater_radius > 0.0f && alpine_terrain_is_chunk_room(room)) {
             if (crater_overlaps_room_faces(pos, crater_radius, room)) {
                 extent_only.push_back(room);
             }
@@ -2970,6 +2968,9 @@ CallHook<void(rf::GeomodParams*)> geomod_emitter_save_params_hook{
     },
 };
 
+// geomod_create's own flag (not a GeomodParams flag): crater scale 1.0 instead of radius-derived.
+constexpr int geomod_create_flag_unit_scale = 0x8;
+
 // Hook level_mod (0x00467020) — the master "create geomod" function called by the
 // explosion system. Creates visual effects (emitters, rock debris, sound) AND queues
 // the boolean request. Returning false prevents all geomod visuals and processing.
@@ -2995,13 +2996,13 @@ FunHook<bool(float, int, rf::GRoom*, rf::Vector3*, rf::Vector3*, int, int)> geom
                 // Effects gate: check if explosion is near any geoable detail room
                 // using bbox + padding. Reliable for all geometry shapes including
                 // concave brushes and touching detail brushes.
-                // Crater scale as geomod_create derives it: flag 8 pins 1.0, otherwise radius / bsphere
+                // Crater scale as geomod_create derives it: 1.0 with the unit-scale flag, otherwise radius / bsphere
                 // times the FUN_0045cff0 hardness factor (level default outside Geo Regions).
                 float crater_radius = 0.0f;
                 rf::GSolid* crater = rf::geomod_get_crater_solid(shape_index);
                 if (crater && crater->bounding_sphere_radius > 0.0f) {
                     float scale = 1.0f;
-                    if (!(flags & 8)) {
+                    if (!(flags & geomod_create_flag_unit_scale)) {
                         float hardness_factor = std::clamp(1.0f - rf::level.default_rock_hardness * 0.01f, 0.0f, 1.0f);
                         scale = radius / crater->bounding_sphere_radius * hardness_factor;
                     }
@@ -3188,7 +3189,9 @@ FunHook<void(rf::GeomodParams*)> geomod_init_hook{
             }
 
             // Find detail rooms overlapping the crater and select the first target.
-            auto overlapping = find_overlapping_detail_rooms(rf::g_geomod_pos, get_crater_extent_radius(*params));
+            const float crater_radius = get_crater_extent_radius(*params);
+            auto overlapping = find_overlapping_detail_rooms(rf::g_geomod_pos, crater_radius);
+            alpine_terrain_decorations_notify_crater(rf::g_geomod_pos, crater_radius, overlapping);
             g_rf2_pending_detail_rooms.clear();
             g_rf2_cascaded_rooms.clear();
             g_rf2_split_rooms.clear();
@@ -3243,7 +3246,7 @@ CallHook<void __fastcall(rf::GSolid*, int, rf::GFace*, float)> boolean_face_crea
         if (!room && g_rf2_style_boolean_active) {
             room = g_rf2_target_detail_room;
         }
-        if (!alpine_terrain_find_room(room)) {
+        if (!alpine_terrain_is_chunk_room(room)) {
             boolean_face_create_surface_hook.call_target(solid, edx, face, ppm);
         }
     },
@@ -3265,7 +3268,7 @@ CodeInjection boolean_state5_skip_detail_relink_for_terrain{
             return;
         }
         for (int i = 0; i < count; i++) {
-            if (!affected[i] || !affected[i]->is_detail || !alpine_terrain_find_room(affected[i])) {
+            if (!affected[i] || !affected[i]->is_detail || !alpine_terrain_is_chunk_room(affected[i])) {
                 return;
             }
         }
@@ -3347,20 +3350,11 @@ namespace
     // What 0x004DBBB0 acts on: more than 16 vertices (0x004E03E0), or a pending decal fixup.
     bool needs_sweep(const rf::GFace* face)
     {
-        if ((face->attributes.flags & 0x280000) == 0x280000) {
+        constexpr uint32_t stale_decal = rf::FACE_HAS_LEVEL_DECAL | rf::FACE_LEVEL_DECAL_UVS_STALE;
+        if ((face->attributes.flags & stale_decal) == stale_decal) {
             return true;
         }
-        int n = 0;
-        for (const rf::GFaceVertex* fv = face->edge_loop; fv;) {
-            if (++n > 16) {
-                return true;
-            }
-            fv = fv->next;
-            if (fv == face->edge_loop) {
-                break;
-            }
-        }
-        return false;
+        return face->vertex_count() > 16;
     }
 
     // Inner state 0 on a face that isn't the target's, with boolean_clear_detail_bit3_for_rf2.
@@ -3381,19 +3375,17 @@ namespace
         g_pass.tprime.clear();
     }
 
-    const char* not_applicable_reason(rf::GRoom* target)
+    bool applicable(rf::GRoom* target)
     {
-        if (!alpine_terrain_find_room(target)) return "target is not a terrain chunk";
-        if (target->contains_liquid) return "target contains liquid";
-        if (rf::g_boolean_solid != rf::g_level_solid || !rf::g_level_solid) return "not the level solid";
-        if (rf::g_boolean_op != rf::GBooleanOperation::BOP_DIFFERENCE) return "not a geomod boolean";
-        if (target->face_list.empty()) return "empty target";
-        return nullptr;
+        return alpine_terrain_is_chunk_room(target) && !target->contains_liquid &&
+            rf::g_level_solid && rf::g_boolean_solid == rf::g_level_solid &&
+            rf::g_boolean_op == rf::GBooleanOperation::BOP_DIFFERENCE && !target->face_list.empty();
     }
 
     // Before inner state 0: remember the order, give every other face what state 0 would, and hand the
     // boolean T' (the target, faces sharing a vertex with it, and faces state 2's sweep would change).
-    const char* begin(rf::GRoom* target)
+    // False leaves the pass to the stock path.
+    bool begin(rf::GRoom* target)
     {
         Pass& p = g_pass;
         rf::GSolid* solid = rf::g_level_solid;
@@ -3403,7 +3395,7 @@ namespace
             p.faces.reserve(n);
             for (rf::GFace& face : target->face_list) {
                 if (face.which_room != target) {
-                    return "target room list mismatch";
+                    return false;
                 }
                 p.tprime.emplace(&face, -1);
                 int guard = 0;
@@ -3422,7 +3414,7 @@ namespace
             for (rf::GFace* face = list.first(); face; face = face->next[rf::FACE_LIST_SOLID]) {
                 const int index = static_cast<int>(p.faces.size());
                 if (index >= n) {
-                    return "list longer than its count";
+                    return false;
                 }
                 auto it = p.tprime.find(face);
                 bool in = it != p.tprime.end();
@@ -3443,16 +3435,12 @@ namespace
                 }
                 p.faces.push_back({face, in, false});
             }
-            if (static_cast<int>(p.faces.size()) != n) {
-                return "list shorter than its count";
+            if (static_cast<int>(p.faces.size()) != n || by_room != target->face_list.size() || p.num_tprime == 0) {
+                return false;
             }
-            if (by_room != target->face_list.size()) {
-                return "target faces outside its room list";
-            }
-            if (p.num_tprime == 0) return "target faces not in the list";
         }
         catch (...) {
-            return "allocation failed";
+            return false;
         }
 
         FaceChain chain;
@@ -3464,7 +3452,7 @@ namespace
         list.assign(chain.end_with(nullptr), p.num_tprime);
         p.solid = solid;
         p.active = true;
-        return nullptr;
+        return true;
     }
 
     // After inner state 0: the full list again, with the crater clones state 0 appended after T'.
@@ -3610,11 +3598,10 @@ static bool geomod_fast_before_state(int inner_state)
         if (!g_rf2_style_boolean_active) {
             return false;
         }
-        const char* reason = g_rf2_target_detail_room ? not_applicable_reason(g_rf2_target_detail_room) : "no target";
-        if (!reason) {
+        if (g_rf2_target_detail_room && applicable(g_rf2_target_detail_room)) {
             g_pass.num_tprime = g_pass.num_clones = 0;
             g_pass.last_tprime = -1;
-            if (begin(g_rf2_target_detail_room)) {
+            if (!begin(g_rf2_target_detail_room)) {
                 reset();
             }
         }
@@ -3760,7 +3747,7 @@ static void invalidate_rf2_render_caches()
     g_rf2_split_rooms.clear();
 
     if (!is_d3d11()) {
-        AddrCaller{0x004f0b90}.c_call();
+        rf::g_cache_clear();
         return;
     }
 

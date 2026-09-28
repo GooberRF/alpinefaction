@@ -24,6 +24,15 @@ static std::vector<std::string> custom_texture_subdirs;
 // Texture manager pointer, stored at init for reload support
 static TextureManager* g_texture_manager = nullptr;
 
+// "Custom" categories list files from disk; "Custom - <dir>" are the subdirectory ones registered here.
+static constexpr std::string_view custom_category_prefix = "Custom";
+static constexpr std::string_view custom_subdir_category_prefix = "Custom - ";
+
+static bool category_name_starts_with(const char* name, std::string_view prefix = custom_category_prefix)
+{
+    return std::string_view{name}.starts_with(prefix);
+}
+
 static void register_custom_texture_subdirectories(TextureManager* texture_manager)
 {
     // Resolve path relative to executable directory
@@ -124,7 +133,7 @@ void __fastcall texture_config_init_new(PreferencesDialog* self, int edx)
 static char __cdecl is_custom_category(VString* name, const char* /*cstr*/)
 {
     const char* buf = name->c_str();
-    return strncmp(buf, "Custom", 6) == 0 ? 1 : 0;
+    return category_name_starts_with(buf) ? 1 : 0;
 }
 
 // All call sites in RED.exe where FUN_004b7560 compares a category name against "Custom":
@@ -199,7 +208,7 @@ CodeInjection config_save_skip_custom_subdirs{
     [](auto& regs) {
         auto* cat = reinterpret_cast<TextureCategory*>(static_cast<int>(regs.esi));
         const char* name = cat->name.c_str();
-        if (strncmp(name, "Custom - ", 9) == 0) {
+        if (category_name_starts_with(name, custom_subdir_category_prefix)) {
             regs.eip = 0x0047755d;
         }
     }
@@ -214,7 +223,7 @@ CodeInjection folder_group_build_skip_custom_subdirs{
     0x0041b9fa,
     [](auto& regs) {
         auto* cat = *reinterpret_cast<TextureCategory**>(static_cast<int>(regs.eax));
-        if (strncmp(cat->name.c_str(), "Custom - ", 9) == 0) {
+        if (category_name_starts_with(cat->name.c_str(), custom_subdir_category_prefix)) {
             regs.eip = 0x0041bad7;
         }
     }
@@ -276,7 +285,7 @@ CodeInjection texture_reverse_lookup_fix{
             TextureCategory* cat = (*cat_array)[i];
             // Only match custom categories — stock categories' path_handle values
             // are a different namespace that can numerically overlap with VFS path slots
-            if (strncmp(cat->name.c_str(), "Custom", 6) != 0) continue;
+            if (!category_name_starts_with(cat->name.c_str())) continue;
             if (cat->path_handle == found_path) {
                 // Update panel's path_handle so file enumeration at 0x445a92 uses
                 // the correct subdirectory
@@ -374,7 +383,7 @@ CodeInjection texture_refresh_all_iterate_custom_injection{
 
         for (int i = 0; i < cat_array->get_size(); i++) {
             TextureCategory* cat = (*cat_array)[i];
-            if (std::strncmp(cat->name.c_str(), "Custom", 6) != 0) continue;
+            if (!category_name_starts_with(cat->name.c_str())) continue;
             // A subdirectory whose VFS path failed to register has path_handle == -1;
             // texture_browser_scan_path (0x004c3ec0) would index the path table out of
             // bounds on a negative handle. Skip it (mirrors reload_custom_textures).
@@ -443,8 +452,6 @@ int texture_browser_pick(const char* folder, int current_bm)
     return panel->preview->bm_handle;
 }
 
-static_assert(offsetof(CDedLevel, texture_groups) == 0x1C4);
-
 static bool same_texture_stem(std::string_view a, std::string_view b)
 {
     a = a.substr(0, a.find_last_of('.'));
@@ -475,7 +482,7 @@ const char* texture_category_of(const char* filename)
             for (int c = 0; c < categories.size; c++) {
                 const TextureCategory* cat = categories.data_ptr[c];
                 if (cat && cat->path_handle == node->path_index
-                    && std::strncmp(cat->name.c_str(), "Custom", 6) == 0) {
+                    && category_name_starts_with(cat->name.c_str())) {
                     return cat->name.c_str();
                 }
             }
@@ -780,13 +787,16 @@ CodeInjection vpp_extra_textures_injection{
             }
         }
 
-        // Terrain layer, overlay, underside and crater textures
+        // Terrain layer, overlay, underside and crater textures, and the textures on decoration meshes
         for (auto* terrain : level->GetAlpineLevelProperties().terrain_objects) {
             for (const auto& layer : terrain->data.layers) {
                 add_texture_to_pack_list(temp_list, layer.texture.c_str());
             }
             for (const auto& overlay : terrain->data.overlays) {
                 add_texture_to_pack_list(temp_list, overlay.texture.c_str());
+            }
+            for (const auto& deco : terrain->data.decorations) {
+                add_mesh_textures_to_pack_list(temp_list, deco.mesh.c_str());
             }
             add_texture_to_pack_list(temp_list, terrain->data.underside_texture.c_str());
             add_texture_to_pack_list(temp_list, terrain->data.crater_texture.c_str());
@@ -819,6 +829,13 @@ CodeInjection vpp_mesh_files_injection{
         for (auto* rope : level->GetAlpineLevelProperties().rope_emitter_objects) {
             for (const auto& deco_mesh : rope->deco_meshes) {
                 add_mesh_to_vpp_list(deco_mesh.c_str());
+            }
+        }
+
+        // Terrain decoration meshes
+        for (auto* terrain : level->GetAlpineLevelProperties().terrain_objects) {
+            for (const auto& deco : terrain->data.decorations) {
+                add_mesh_to_vpp_list(deco.mesh.c_str());
             }
         }
 
@@ -944,7 +961,7 @@ void reload_custom_textures()
 
     for (int i = 0; i < category_array->get_size(); i++) {
         const char* name = (*category_array)[i]->name.c_str();
-        if (strncmp(name, "Custom", 6) == 0) {
+        if (category_name_starts_with(name)) {
             int handle = (*category_array)[i]->path_handle;
             if (handle >= 0) {
                 file_scan_path(handle);

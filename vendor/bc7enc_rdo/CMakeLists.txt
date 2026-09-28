@@ -4,7 +4,8 @@
 # (ert), plus the two headers ert.cpp includes (utils.h, dds_defs.h). bc7decomp_ref.cpp is vendored
 # with bc7decomp but not built: nothing calls the reference decoder.
 # bc7e.ispc (Apache 2.0), LodePNG, rgbcx, miniz and the reference driver are NOT vendored.
-# Local patch: `#pragma once` added to bc7enc.h, which upstream ships without an include guard.
+# Local patches: `#pragma once` added to bc7enc.h, which upstream ships without an include guard, and
+# `#include <stdint.h>` added to ert.h, which uses the fixed-width types without it (GNU build).
 set(SRCS
     bc7enc.cpp
     bc7decomp.cpp

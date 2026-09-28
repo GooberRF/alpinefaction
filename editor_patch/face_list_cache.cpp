@@ -5,7 +5,6 @@
 #include <patch_common/CallHook.h>
 #include <patch_common/FunHook.h>
 #include <patch_common/MemUtils.h>
-#include <xlog/xlog.h>
 #include "face_list_cache.h"
 #include "level.h"
 #include "vtypes.h"
@@ -250,14 +249,12 @@ void __fastcall solid_prepend(std::uintptr_t list, int edx, std::uintptr_t face)
 
 // The CSG end's whole-list moves end by emptying the global CSG list, which drops the whole cache
 // (csg_take_faces covers the begin move); emptying any other header drops just its entry.
-constexpr std::uintptr_t csg_face_list = 0x01131388;
-
 void __fastcall list_clear(std::uintptr_t list, int edx);
 FunHook<void __fastcall(std::uintptr_t, int)> list_clear_hook{0x004afd80, list_clear};
 void __fastcall list_clear(std::uintptr_t list, int edx)
 {
     list_clear_hook.call_target(list, edx);
-    if (list == csg_face_list) {
+    if (list == reinterpret_cast<std::uintptr_t>(&csg_face_list_head)) {
         clear_all();
     }
     else {

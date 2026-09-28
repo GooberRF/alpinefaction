@@ -17,10 +17,11 @@ Version 1.5.0 (Trillium): Not yet released
   - `Aligns dynamic shadows` points entity shadows along the sun instead of the fixed default direction
   - `Water blocks sunlight` stops sun rays at liquid surfaces during the bake
 - Add `Terrain` object to level editor: heightmap terrain with up to 8 blended texture layers, holes, optional skirts, and per-terrain lightmap density
-  - Import and export 8/16-bit greyscale PNG and RAW16 heightmaps, and import splat maps
+  - Import 8/16-bit greyscale PNG and RAW16 heightmaps, export 16-bit PNG and RAW16 heightmaps, and import splat maps
   - Generate heightmaps from `Generate...` in Terrain Properties: fractal noise (fBm, ridged, billow, hybrid), domain warp, terracing, edge falloff, and thermal and hydraulic erosion, with a live preview and an optional splat map from height, slope and ridges
   - Sculpt heights (`Raise`, `Lower`, `Smooth Heights`, `Flatten`, `Set Height`, `Noise`, `Ramp`, `Bridge Points`), paint texture layers and holes, and pick geoable chunks in the viewport with `Terrain Tools`
   - Up to 4 detail overlays per terrain: textures with alpha (leaves, debris) painted over the layers by their own coverage, with optional tiling break-up (Direct3D 11 renderer only)
+  - Up to 8 mesh decoration layers per terrain (grass, rocks, bushes): scattered by painted density with an optional link to a texture layer, with slope limit, random yaw and scale, vertical offset, draw distance, and optional baked shadows; craters remove them. Direct3D 8/9 draw only the nearest ones
   - `Geoable` terrains are carved by RF2-style geomod craters, with their own underside and crater textures
   - `Convert to Brushes` turns a terrain into detail brushes
   - Direct3D 11 renderer draws terrain with blended layers, optional triplanar mapping, and smooth heightmap normals; Direct3D 8/9 draw each cell's dominant layer tinted by the level ambient
@@ -50,7 +51,8 @@ Version 1.5.0 (Trillium): Not yet released
 - Raise level editor per-room and per-mesh render vertex limit from 8000 to 32768
 - Add `-bake in.rfl -bakeout out.rfl` launcher command line switches to build a level's geometry and calculate its lighting without user interaction, writing the result to a new level file and progress to a log beside it
 - Add `High-resolution lightmaps` level property, used in lightmap bake in level editor
-- Add `r_terrain_debug` console command (Direct3D 11 renderer only)
+- Add `dbg_terrain_batches` console command to tint terrain faces by render batch (Direct3D 11 renderer only)
+- Add `dbg_terrain_decorations` console command to toggle terrain mesh decorations and print their draw statistics
 - Light characters, items, and clutter standing on terrain from the terrain's baked lighting
 - Levels saved with `D3D11-only lightmaps` refuse to load with the Direct3D 8/9 renderers
 - Deprecate and remove `-smoothlights` level editor switch
@@ -72,12 +74,11 @@ Version 1.5.0 (Trillium): Not yet released
 - Support moving climbing regions with `Anchor_Marker` and `Anchor_Marker_Orient`
 - Add `When_Destroyed` catalyst event, which activates its links when the destructible detail brushes it links to are destroyed
 - Support linking events and triggers to detail brushes in the level editor
-- Vastly improve `Calculate Lighting` times in the level editor (by 5-7x on large levels)
-- Speed up `Calculate Lighting` in the level editor on levels with very many lightmap surfaces
-- Improve level loading and `Build Geometry` times in the level editor on levels with many faces (especially levels with terrain, which load roughly 3x and build roughly 10x faster)
+- Speed up `Calculate Lighting` in the level editor, especially on large levels and levels with very many lightmap surfaces
+- Improve level loading and `Build Geometry` times in the level editor on levels with many faces
 - Linking a `Bolt Emitter` or `Rope Emitter` to a `Target` in the level editor sets the emitter's target to it
 - `Owner_Gate` can now take its capture points from linked `Capture_Point_Handler` events
-- Draw large rooms and terrain in fewer draw calls, and skip rooms without dynamic decals when drawing them (Direct3D 11 renderer only)
+- Draw large rooms in fewer draw calls, and skip rooms without dynamic decals when drawing them (Direct3D 11 renderer only)
 - Level editor refuses to open levels saved by a newer version of Alpine Faction instead of misreading them
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)

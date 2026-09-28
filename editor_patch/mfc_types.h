@@ -225,6 +225,8 @@ struct Matrix3
 };
 static_assert(sizeof(Matrix3) == 0x24, "Matrix3 size mismatch!");
 
+inline const Matrix3 identity_orient{{1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f, 1.0f}};
+
 struct Plane
 {
     Vector3 normal;
@@ -444,16 +446,23 @@ struct DedRoomEffect : DedObject
 };
 static_assert(sizeof(DedRoomEffect) == 0xD4, "DedRoomEffect size mismatch");
 
+enum class GeoRegionShape : int
+{
+    sphere = 2,
+    box = 4,
+};
+
 // Partial; field use from the geo region reader/writer FUN_00454340
 struct DedGeoRegion : DedObject
 {
-    int shape;                         // 0x94 — 2 = Sphere, 4 = Box
+    GeoRegionShape shape;              // 0x94
     float radius;                      // 0x98 — sphere only
     float height;                      // 0x9C — box only, full size
     float width;                       // 0xA0
     float depth;                       // 0xA4
 };
 static_assert(offsetof(DedGeoRegion, shape) == 0x94);
+static_assert(sizeof(GeoRegionShape) == sizeof(int));
 static_assert(offsetof(DedGeoRegion, radius) == 0x98);
 static_assert(offsetof(DedGeoRegion, height) == 0x9C);
 static_assert(offsetof(DedGeoRegion, width) == 0xA0);
@@ -655,6 +664,8 @@ struct TerrainGrid
     std::vector<uint8_t> diag;     // alpine_terrain::bitmask_bytes
     // alpine_terrain::overlay_map_bytes while the terrain has overlays, else empty
     std::vector<uint8_t> overlay;
+    // One alpine_terrain::decoration_plane_bytes coverage plane per decoration, in list order
+    std::vector<uint8_t> decoration;
 };
 
 struct DedTerrainLayer
@@ -669,6 +680,23 @@ struct DedTerrainOverlay : DedTerrainLayer
     bool break_tiling = true;
 
     DedTerrainOverlay() { texture.clear(); }
+};
+
+struct DedTerrainDecoration
+{
+    std::string mesh; // empty = none picked yet
+    float density = alpine_terrain::default_decoration_density;
+    float scale_min = alpine_terrain::default_decoration_scale;
+    float scale_max = alpine_terrain::default_decoration_scale;
+    float max_slope = alpine_terrain::default_decoration_slope_deg;
+    float draw_distance = alpine_terrain::default_decoration_draw_distance;
+    float vertical_offset = 0.0f;
+    uint8_t link_layer = alpine_terrain::decoration_link_none;
+    bool align_to_slope = false;
+    bool random_yaw = true;
+    bool casts_shadows = false;
+
+    bool operator==(const DedTerrainDecoration&) const = default;
 };
 
 // Everything a terrain carries beyond DedObject, as one copyable value.
@@ -686,6 +714,7 @@ struct DedTerrainData
     std::string crater_texture; // empty = level geomod texture
     std::vector<DedTerrainLayer> layers;
     std::vector<DedTerrainOverlay> overlays;
+    std::vector<DedTerrainDecoration> decorations;
     std::shared_ptr<const TerrainGrid> grid;
     // Chunk geo mask (alpine_terrain.h) over geo_chunks_layout, the layout it was set on; read through
     // terrain_chunk_geoable, which remaps it to the current one. Empty = every chunk.
