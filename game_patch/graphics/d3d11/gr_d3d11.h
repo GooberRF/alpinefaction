@@ -3,6 +3,7 @@
 #include <source_location>
 #include <concepts>
 #include <cstdint>
+#include <vector>
 #include <d3d11.h>
 #include <common/ComPtr.h>
 #include <common/DynamicLinkLibrary.h>
@@ -26,6 +27,11 @@ namespace rf
     struct VfxSfxoRenderObj;
 }
 
+namespace alpine_lightmap
+{
+    struct ReadResult;
+}
+
 namespace gr::d3d11
 {
     class StateManager;
@@ -33,8 +39,10 @@ namespace gr::d3d11
     class TextureManager;
     class DynamicGeometryRenderer;
     class RenderContext;
+    class AfLightmapRenderer;
     class SolidRenderer;
     class MeshRenderer;
+    class DecorationRenderer;
     class EntityShadowRenderer;
     class OutlineRenderer;
     class VfxMeshRenderer;
@@ -85,7 +93,13 @@ namespace gr::d3d11
         void render_sky_room(rf::GRoom *room, rf::Vector3& out_sky_transform_pos, rf::Matrix3& out_sky_transform_orient);
         void render_room_liquid_surface(rf::GSolid* solid, rf::GRoom* room);
         void clear_solid_cache();
+        void release_detail_room_cache(rf::GRoom* room);
         void reset_solid_cache_after_boolean();
+        void release_terrain_gpu();
+        bool upload_af_lightmap_atlas(const alpine_lightmap::ReadResult& section,
+                                      const std::vector<std::uint8_t>& blocks);
+        void release_af_lightmap_atlas();
+        bool af_lightmap_atlas_live() const;
         void render_v3d_vif(rf::VifLodMesh *lod_mesh, int lod_index, const rf::Vector3& pos, const rf::Matrix3& orient, const rf::MeshRenderParams& params, bool skip_ambient_cache = false);
         void render_character_vif(rf::VifLodMesh *lod_mesh, int lod_index, const rf::Vector3& pos, const rf::Matrix3& orient, const rf::CharacterInstance *ci, const rf::MeshRenderParams& params, bool skip_ambient_cache = false);
         void clear_vif_cache(rf::VifLodMesh *lod_mesh);
@@ -173,8 +187,10 @@ namespace gr::d3d11
         std::unique_ptr<TextureManager> texture_manager_;
         std::unique_ptr<DynamicGeometryRenderer> dyn_geo_renderer_;
         std::unique_ptr<RenderContext> render_context_;
+        std::unique_ptr<AfLightmapRenderer> af_lightmap_renderer_;
         std::unique_ptr<SolidRenderer> solid_renderer_;
         std::unique_ptr<MeshRenderer> mesh_renderer_;
+        std::unique_ptr<DecorationRenderer> decoration_renderer_;
         std::unique_ptr<VfxMeshRenderer> vfx_renderer_;
         std::unique_ptr<EntityShadowRenderer> entity_shadow_renderer_;
         std::unique_ptr<OutlineRenderer> outline_renderer_;

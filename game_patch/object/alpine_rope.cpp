@@ -2,7 +2,6 @@
 #include <cmath>
 #include <cstdint>
 #include <string>
-#include <unordered_map>
 #include <vector>
 #include <common/rope_curve.h>
 #include <common/utils/list-utils.h>
@@ -10,6 +9,7 @@
 #include <patch_common/CallHook.h>
 #include <xlog/xlog.h>
 #include "../misc/alpine_settings.h"
+#include "../misc/decoration_mesh_cache.h"
 #include "../misc/level.h"
 #include "../multi/demo/demo.h"
 #include "../multi/multi.h"
@@ -330,18 +330,10 @@ bool g_clock_started = false;
 // false cache hit in practice, since a collision needs 2^32 sim frames inside one level.
 uint32_t g_deco_xform_frame = 0;
 
-// One entry per unique decoration mesh name in the level. The engine owns level meshes and frees
-// them on unload, so these pointers are dropped at clear_state, never vmesh_free'd.
-struct RopeDecoMesh
-{
-    rf::VMesh* mesh = nullptr;
-    float radius = 0.0f;
-};
-
-std::vector<RopeDecoMesh> g_deco_meshes;
-// Lowercased name -> index into g_deco_meshes, or -1 for a name already known to be unloadable.
-// Keeping the failures means the warning is logged once per name, not once per rope.
-std::unordered_map<std::string, int> g_deco_mesh_lookup;
+// Absurd geometry must not blow the rope's cull box out to cover the level.
+constexpr float rope_deco_max_radius = 100.0f;
+// One entry per unique decoration mesh name in the level
+DecorationMeshCache g_deco_meshes{rope_deco_max_radius};
 std::vector<float> g_deco_arc;
 
 // Mirrors the editor's rfl_name_over_long: over-long stem or over-long extension.
@@ -1063,55 +1055,21 @@ bool render_rope(AlpineRope& rope, const rf::Vector3& eye, int64_t now_ms)
 
 // ─── Decorations ────────────────────────────────────────────────────────────
 
-// Absurd geometry must not blow the rope's cull box out to cover the level.
-constexpr float rope_deco_max_radius = 100.0f;
-
-// Loads a decoration mesh once per level and caches it by lowercased name. Level init only: a
-// mesh load in the render hook drags the bitmap system in with it and corrupts it.
 int resolve_deco_mesh(const std::string& name)
 {
     if (name.empty()) {
         return -1;
     }
-    const std::string key = string_to_lower(name);
-    auto it = g_deco_mesh_lookup.find(key);
-    if (it != g_deco_mesh_lookup.end()) {
-        return it->second; // -1 for a name already known to be unloadable, so it warns once
-    }
-
     // vmesh_load hard-sets STATIC, which a .vfx cannot be: it would load as a mesh with no frames
     // and draw nothing. Rejected here rather than in the engine so the mapper gets told.
-    if (string_ends_with(key, ".vfx")) {
-        xlog::warn("[AlpineRope] Decoration mesh '{}' is an animated .vfx; decorations are static "
-                   "geometry only", name);
-        g_deco_mesh_lookup.emplace(key, -1);
+    if (string_ends_with(string_to_lower(name), ".vfx")) {
+        if (g_deco_meshes.reject(name)) {
+            xlog::warn("[AlpineRope] Decoration mesh '{}' is an animated .vfx; decorations are static "
+                       "geometry only", name);
+        }
         return -1;
     }
-
-    rf::VMesh* mesh = rf::vmesh_load(name.c_str(), rf::MESH_TYPE_STATIC, -1);
-    if (!mesh) {
-        xlog::warn("[AlpineRope] Failed to load decoration mesh '{}'", name);
-        g_deco_mesh_lookup.emplace(key, -1);
-        return -1;
-    }
-
-    rf::Vector3 bbox_min{}, bbox_max{};
-    rf::vmesh_get_bbox(mesh, &bbox_min, &bbox_max);
-    // Radius about the mesh origin, because that is the point sitting on the curve, not the bbox
-    // centre the engine would use.
-    const rf::Vector3 extent{std::max(std::fabs(bbox_min.x), std::fabs(bbox_max.x)),
-                             std::max(std::fabs(bbox_min.y), std::fabs(bbox_max.y)),
-                             std::max(std::fabs(bbox_min.z), std::fabs(bbox_max.z))};
-    float radius = extent.len();
-    if (!std::isfinite(radius) || radius < 0.0f) {
-        radius = 0.0f;
-    }
-    radius = std::min(radius, rope_deco_max_radius);
-
-    const int index = static_cast<int>(g_deco_meshes.size());
-    g_deco_meshes.push_back(RopeDecoMesh{mesh, radius});
-    g_deco_mesh_lookup.emplace(key, index);
-    return index;
+    return g_deco_meshes.resolve(name, "AlpineRope");
 }
 
 uint32_t deco_rand(uint32_t& state)
@@ -1343,8 +1301,8 @@ bool render_rope_decorations(AlpineRope& rope, const RopeSwayPaint& paint)
         if (name != current_name) {
             current_name = name;
             const int slot = deco.slots[static_cast<std::size_t>(name)];
-            mesh = slot >= 0 ? g_deco_meshes[static_cast<std::size_t>(slot)].mesh : nullptr;
-            radius = slot >= 0 ? g_deco_meshes[static_cast<std::size_t>(slot)].radius : 0.0f;
+            mesh = slot >= 0 ? g_deco_meshes[slot].mesh : nullptr;
+            radius = slot >= 0 ? g_deco_meshes[slot].radius : 0.0f;
         }
         if (!mesh) {
             continue;
@@ -2052,8 +2010,7 @@ void alpine_rope_level_init()
                 const int slot = resolve_deco_mesh(rope.deco.mesh_names[m]);
                 rope.deco.slots[m] = slot;
                 if (slot >= 0) {
-                    rope.deco.max_radius = std::max(rope.deco.max_radius,
-                                                    g_deco_meshes[static_cast<std::size_t>(slot)].radius);
+                    rope.deco.max_radius = std::max(rope.deco.max_radius, g_deco_meshes[slot].radius);
                 }
                 if (m < rope.deco.fx.size()) {
                     rope.deco.max_offset =
@@ -2141,7 +2098,6 @@ void alpine_rope_clear_state()
     g_draw_order.clear();
     g_pushers.clear();
     g_deco_meshes.clear();
-    g_deco_mesh_lookup.clear();
     g_render_points.clear();
     g_deco_arc.clear();
     g_has_dynamic = false;

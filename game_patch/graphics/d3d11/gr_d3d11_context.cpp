@@ -8,6 +8,7 @@
 #include "../../rf/os/frametime.h"
 #include "../../rf/multi.h"
 #include "../../misc/level.h"
+#include "../af_lightmap.h"
 #include "../gr.h"
 #include "gr_d3d11.h"
 #include "gr_d3d11_context.h"
@@ -229,7 +230,13 @@ namespace gr::d3d11
         std::array<float, 3> sun_travel_dir;
         float sun_scale;
         std::array<float, 3> sun_color;       // premultiplied by sun intensity
-        float _sun_pad;
+        // Alpine lightmap atlas constants; must stay byte for byte with the b1 tail in
+        // standard_ps.hlsl, which both pixel shader permutations share.
+        float af_lm_enabled;
+        float af_lm_page_size;
+        float af_lm_tile_step;
+        float af_lm_gutter;
+        float _af_lm_pad;
     };
     static_assert(sizeof(LightsBufferData::PointLight) % 16 == 0);
     static_assert(sizeof(LightsBufferData) % 16 == 0);
@@ -322,6 +329,14 @@ namespace gr::d3d11
             data.sun_scale = sun_scale;
             data.sun_color = {sun.color[0], sun.color[1], sun.color[2]};
         }
+
+        // Outside the force_neutral branch: a neutral upload still has to describe the atlas,
+        // because the draws that follow one carry the same charted vertices.
+        const AfLightmapConstants af_lm = af_lightmap_constants();
+        data.af_lm_enabled = af_lm.enabled;
+        data.af_lm_page_size = af_lm.page_size;
+        data.af_lm_tile_step = af_lm.tile_step;
+        data.af_lm_gutter = af_lm.gutter;
 
         std::memcpy(mapped_subres.pData, &data, sizeof(data));
 

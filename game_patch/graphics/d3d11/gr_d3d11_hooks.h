@@ -1,6 +1,18 @@
 #pragma once
 
+#include <cstdint>
+#include <vector>
 #include "../../rf/gr/gr.h"
+
+namespace rf
+{
+    struct GRoom;
+}
+
+namespace alpine_lightmap
+{
+    struct ReadResult;
+}
 
 namespace gr::d3d11 {
     bool set_render_target(int bm_handle);
@@ -18,4 +30,13 @@ namespace gr::d3d11 {
     void flush_frame_buffers();
     void flush_outlines_before_fpgun();
     bool trigger_damage_vignette(unsigned dir_mask);
+    // Frees a carved detail room's render cache; the room builds a new one when next drawn.
+    void release_detail_room_render_cache(rf::GRoom* room);
+    // Frees every terrain's textures, which the next render cache build creates again.
+    void release_terrain_gpu();
+    // Replaces the Alpine Lightmaps atlas; false, with none held, when there is no renderer or the
+    // upload fails.
+    bool upload_af_lightmap_atlas(const alpine_lightmap::ReadResult& section, const std::vector<std::uint8_t>& blocks);
+    void release_af_lightmap_atlas();
+    bool af_lightmap_atlas_live();
 }

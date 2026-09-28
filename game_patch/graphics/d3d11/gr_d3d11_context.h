@@ -451,6 +451,18 @@ namespace gr::d3d11
             device_context_->OMSetRenderTargets(std::size(render_targets), render_targets, depth_stencil_view);
         }
 
+        // A bm handle's SRV for a draw that binds its own texture slots; white for -1.
+        ID3D11ShaderResourceView* texture_view(int tex_handle)
+        {
+            return get_diffuse_texture_view(tex_handle);
+        }
+
+        // The wrapping diffuse sampler set_mode would bind, honouring the texture filter and picmip.
+        ID3D11SamplerState* wrap_sampler_state()
+        {
+            return state_manager_.lookup_sampler_state(rf::gr::TEXTURE_SOURCE_WRAP, 0, picmip_active_);
+        }
+
         void bind_vs_cbuffer(int index, ID3D11Buffer* cbuffer)
         {
             ID3D11Buffer* vs_cbuffers[] = { cbuffer };
@@ -566,11 +578,12 @@ namespace gr::d3d11
             }
         }
 
-        void set_index_buffer(ID3D11Buffer* index_buffer)
+        void set_index_buffer(ID3D11Buffer* index_buffer, DXGI_FORMAT format = DXGI_FORMAT_R16_UINT)
         {
-            if (index_buffer != current_index_buffer_) {
+            if (index_buffer != current_index_buffer_ || format != current_index_format_) {
                 current_index_buffer_ = index_buffer;
-                device_context_->IASetIndexBuffer(index_buffer, DXGI_FORMAT_R16_UINT, 0);
+                current_index_format_ = format;
+                device_context_->IASetIndexBuffer(index_buffer, format, 0);
             }
         }
 
@@ -653,6 +666,13 @@ namespace gr::d3d11
             device_context_->DrawIndexed(index_count, index_start_location, base_vertex_location);
         }
 
+        void draw_indexed_instanced(int index_count, int instance_count, int index_start_location,
+                                    int base_vertex_location, int instance_start_location)
+        {
+            device_context_->DrawIndexedInstanced(index_count, instance_count, index_start_location,
+                                                  base_vertex_location, instance_start_location);
+        }
+
         const Projection& projection() const
         {
             return projection_;
@@ -662,6 +682,7 @@ namespace gr::d3d11
         {
             for (auto& vb : current_vertex_buffers_) vb = nullptr;
             current_index_buffer_ = nullptr;
+            current_index_format_ = DXGI_FORMAT_UNKNOWN;
             current_input_layout_ = nullptr;
             current_vertex_shader_ = nullptr;
             current_pixel_shader_ = nullptr;
@@ -730,6 +751,7 @@ namespace gr::d3d11
         ID3D11DepthStencilView* depth_stencil_view_ = nullptr;
         ID3D11Buffer* current_vertex_buffers_[vertex_buffer_slots] = {};
         ID3D11Buffer* current_index_buffer_ = nullptr;
+        DXGI_FORMAT current_index_format_ = DXGI_FORMAT_UNKNOWN;
         ID3D11InputLayout* current_input_layout_ = nullptr;
         ID3D11VertexShader* current_vertex_shader_ = nullptr;
         ID3D11PixelShader* current_pixel_shader_ = nullptr;

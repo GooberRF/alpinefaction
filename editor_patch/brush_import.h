@@ -2,10 +2,36 @@
 
 #include <vector>
 #include <windows.h>
+#include "mfc_types.h"
 
 struct CDedLevel;
 struct DedMesh;
 struct BrushNode;
+struct GSolid;
+
+// One face of a brush solid: a planar convex loop of `count` indices into the position list, wound
+// so Newell's normal points out of the brush, with texture UVs.
+struct BrushSolidFace
+{
+    int bitmap_id;
+    int count; // 3 or 4
+    int v[4];
+    float uv[4][2];
+};
+
+// Builds a brush GSolid holding every position as a vertex and one room owning every face. Faces
+// that cannot be planed are dropped and counted in `dropped`. nullptr when allocation fails or no
+// face survives.
+GSolid* build_brush_solid(const std::vector<Vector3>& positions, const std::vector<BrushSolidFace>& faces,
+                          int& dropped);
+
+// Wraps `solid` in a solid detail brush at pos/orient and links it into the level without an undo
+// record. Takes ownership of `solid` either way.
+BrushNode* insert_detail_solid_brush(CDedLevel* level, GSolid* solid, const Vector3& pos, const Matrix3& orient);
+
+// Brush selection lives in BrushNode::state, not CDedLevel::selection: every other brush is deselected
+// and `brushes` selected, then the level is marked for rebuild and redrawn.
+void select_inserted_brushes(CDedLevel* level, const std::vector<BrushNode*>& brushes);
 
 // "To Brush" conversion options, gathered by mesh_to_brush_options_dialog.
 struct MeshToBrushOptions

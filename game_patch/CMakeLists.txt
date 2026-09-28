@@ -60,6 +60,8 @@ set(SRCS
     graphics/gr.cpp
     graphics/gr.h
     graphics/gr_light.cpp
+    graphics/af_lightmap.cpp
+    graphics/af_lightmap.h
     graphics/weather.cpp
     graphics/weather.h
     graphics/scene_capture.cpp
@@ -93,6 +95,12 @@ set(SRCS
     graphics/d3d11/gr_d3d11_entity_shadow.h
     graphics/d3d11/gr_d3d11_caustics.cpp
     graphics/d3d11/gr_d3d11_caustics.h
+    graphics/d3d11/gr_d3d11_af_lightmap.cpp
+    graphics/d3d11/gr_d3d11_af_lightmap.h
+    graphics/d3d11/gr_d3d11_terrain.cpp
+    graphics/d3d11/gr_d3d11_terrain.h
+    graphics/d3d11/gr_d3d11_decoration.cpp
+    graphics/d3d11/gr_d3d11_decoration.h
     graphics/d3d11/gr_d3d11_liquid.cpp
     graphics/d3d11/gr_d3d11_liquid.h
     graphics/d3d11/gr_d3d11_vertex.h
@@ -346,6 +354,12 @@ set(SRCS
     misc/saved_votes.h
     misc/game.cpp
     misc/level.cpp
+    misc/alpine_terrain.cpp
+    misc/alpine_terrain.h
+    misc/alpine_terrain_decorations.cpp
+    misc/alpine_terrain_decorations.h
+    misc/decoration_mesh_cache.cpp
+    misc/decoration_mesh_cache.h
     misc/waypoints.cpp
     misc/waypoints.h
     misc/waypoints_internal.h
@@ -412,6 +426,7 @@ target_link_libraries(AlpineFaction
     Common
     CrashHandlerStub
     xxhash
+    bc7enc_rdo
     gdi32
     winmm
     iphlpapi

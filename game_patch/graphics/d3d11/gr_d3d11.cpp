@@ -6,6 +6,7 @@
 #include "../../rf/gr/gr.h"
 #include "../../rf/v3d.h"
 #include "../../rf/gameseq.h"
+#include "../../rf/level.h"
 #include "../../rf/os/frametime.h"
 #include "../../rf/os/os.h"
 #include "../../bmpman/bmpman.h"
@@ -14,6 +15,7 @@
 #include "../../os/os.h"
 #include "../gr.h"
 #include "gr_d3d11.h"
+#include "gr_d3d11_af_lightmap.h"
 #include "gr_d3d11_context.h"
 #include "gr_d3d11_shader.h"
 #include "gr_d3d11_texture.h"
@@ -21,6 +23,7 @@
 #include "gr_d3d11_dynamic_geometry.h"
 #include "gr_d3d11_solid.h"
 #include "gr_d3d11_mesh.h"
+#include "gr_d3d11_decoration.h"
 #include "gr_d3d11_vfx.h"
 #include "gr_d3d11_entity_shadow.h"
 #include "gr_d3d11_outline.h"
@@ -76,8 +79,11 @@ namespace gr::d3d11
         texture_manager_ = std::make_unique<TextureManager>(device_, context_);
         render_context_ = std::make_unique<RenderContext>(device_, context_, *state_manager_, *shader_manager_, *texture_manager_);
         dyn_geo_renderer_ = std::make_unique<DynamicGeometryRenderer>(device_, *shader_manager_, *render_context_);
-        solid_renderer_ = std::make_unique<SolidRenderer>(device_, *shader_manager_, *state_manager_, *dyn_geo_renderer_, *render_context_);
+        af_lightmap_renderer_ = std::make_unique<AfLightmapRenderer>(device_, context_);
+        solid_renderer_ = std::make_unique<SolidRenderer>(device_, *shader_manager_, *state_manager_, *dyn_geo_renderer_, *render_context_, *af_lightmap_renderer_);
         mesh_renderer_ = std::make_unique<MeshRenderer>(device_, *shader_manager_, *state_manager_, *render_context_);
+        decoration_renderer_ =
+            std::make_unique<DecorationRenderer>(device_, *shader_manager_, *render_context_, *mesh_renderer_);
         vfx_renderer_ = std::make_unique<VfxMeshRenderer>(device_, *shader_manager_, *render_context_);
         entity_shadow_renderer_ = std::make_unique<EntityShadowRenderer>(device_, *shader_manager_, *mesh_renderer_);
         outline_renderer_ = std::make_unique<OutlineRenderer>(device_, *shader_manager_, *state_manager_, *render_context_);
@@ -1042,6 +1048,10 @@ namespace gr::d3d11
         entity_shadow_renderer_->bind_shadow_resources(context_);
 
         solid_renderer_->render_solid(solid, rooms, num_rooms);
+        // With the opaque world, before objects and alpha detail draw over it
+        if (solid == rf::level.geometry && !solid_renderer_->decoration_chunks().empty()) {
+            decoration_renderer_->render(solid, solid_renderer_->decoration_chunks());
+        }
     }
 
     void Renderer::render_movable_solid(rf::GSolid* solid, const rf::Vector3& pos, const rf::Matrix3& orient,
@@ -1309,9 +1319,36 @@ namespace gr::d3d11
         solid_renderer_->clear_cache();
     }
 
+    void Renderer::release_detail_room_cache(rf::GRoom* room)
+    {
+        solid_renderer_->release_detail_room_cache(room);
+    }
+
     void Renderer::reset_solid_cache_after_boolean()
     {
         solid_renderer_->reset_cache_after_boolean();
+    }
+
+    void Renderer::release_terrain_gpu()
+    {
+        solid_renderer_->release_terrain_gpu();
+        decoration_renderer_->release();
+    }
+
+    bool Renderer::upload_af_lightmap_atlas(const alpine_lightmap::ReadResult& section,
+                                            const std::vector<std::uint8_t>& blocks)
+    {
+        return af_lightmap_renderer_->upload(section, blocks);
+    }
+
+    void Renderer::release_af_lightmap_atlas()
+    {
+        af_lightmap_renderer_->release();
+    }
+
+    bool Renderer::af_lightmap_atlas_live() const
+    {
+        return af_lightmap_renderer_->live();
     }
 
     void Renderer::render_v3d_vif(rf::VifLodMesh *lod_mesh, int lod_index, const rf::Vector3& pos, const rf::Matrix3& orient, const rf::MeshRenderParams& params, bool skip_ambient_cache)

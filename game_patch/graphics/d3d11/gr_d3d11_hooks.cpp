@@ -26,6 +26,8 @@
 #include "../../os/console.h"
 #include "../gr.h"
 #include "gr_d3d11.h"
+#include "gr_d3d11_hooks.h"
+#include "gr_d3d11_terrain.h"
 #include "gr_d3d11_liquid.h"
 #include "gr_d3d11_mesh.h"
 #include "gr_d3d11_vfx.h"
@@ -773,6 +775,37 @@ namespace gr::d3d11
         }
     }
 
+    void release_detail_room_render_cache(rf::GRoom* room)
+    {
+        if (renderer) {
+            renderer->release_detail_room_cache(room);
+        }
+    }
+
+    void release_terrain_gpu()
+    {
+        if (renderer) {
+            renderer->release_terrain_gpu();
+        }
+    }
+
+    bool upload_af_lightmap_atlas(const alpine_lightmap::ReadResult& section, const std::vector<std::uint8_t>& blocks)
+    {
+        return renderer && renderer->upload_af_lightmap_atlas(section, blocks);
+    }
+
+    void release_af_lightmap_atlas()
+    {
+        if (renderer) {
+            renderer->release_af_lightmap_atlas();
+        }
+    }
+
+    bool af_lightmap_atlas_live()
+    {
+        return renderer && renderer->af_lightmap_atlas_live();
+    }
+
     void reset_solid_render_cache_after_boolean()
     {
         if (renderer) {
@@ -1352,5 +1385,6 @@ void gr_d3d11_apply_patch()
 
     r_antialiasing_cmd.register_cmd();
     r_antialiasing_mode_cmd.register_cmd();
+    terrain_register_commands();
     vfx_gpu_cmd.register_cmd();
 }

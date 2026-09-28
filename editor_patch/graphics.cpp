@@ -11,7 +11,9 @@
 #include <cmath>
 #include <initializer_list>
 #include "vtypes.h"
+#include "level.h"
 #include "alpine_obj.h"
+#include "terrain_preview.h"
 
 HWND GetMainFrameHandle();
 
@@ -340,6 +342,12 @@ CodeInjection geo_build_reset_render_cache{
 CodeInjection detail_room_overflow_check{
     0x0049b757, // MOV [EAX*4+array], ESI — unbounded detail room array write
     [](auto& regs) {
+        // A terrain chunk's compiled room stays out of its parents' caches: the terrain preview draws
+        // it. 0x0049b838 moves on to the next detail room.
+        if (terrain_preview_hides_room(reinterpret_cast<const GRoom*>(static_cast<uintptr_t>(regs.esi)))) {
+            regs.eip = 0x0049b838;
+            return;
+        }
         if (static_cast<int>(regs.eax) >= max_detail_rooms) {
             WARN_ONCE("Detail rooms limit reached ({}), additional detail rooms will not be rendered", max_detail_rooms);
             regs.eip = 0x0049b764; // skip write + inc + store
@@ -410,6 +418,57 @@ CodeInjection geometry_submit_lock_failure_guard_2{
     []() {
         substitute_failed_locks(&red::gr_d3d_vertex_buffer_data, nullptr,
                                 "the level geometry submit path");
+    },
+};
+
+// FUN_004f5ae0's return when the upload cannot lock its new texture leaks that texture.
+CodeInjection gr_texture_section_upload_failure_release{
+    0x004F5C57,
+    [](auto& regs) {
+        auto& texture = *reinterpret_cast<IUnknown**>(static_cast<uintptr_t>(regs.esp) + 0x10);
+        if (texture) {
+            texture->Release();
+            texture = nullptr;
+        }
+    },
+};
+
+// FUN_004f4940's two failure returns after bm_lock skip the bm_unlock its success path makes.
+static void gr_texture_mip_failure_unlock(BaseCodeInjection::Regs& regs)
+{
+    bm_unlock(*reinterpret_cast<int*>(static_cast<uintptr_t>(regs.esp) + 0x60));
+}
+
+CodeInjection gr_texture_mip_create_failure_unlock{0x004F49FA, gr_texture_mip_failure_unlock};
+CodeInjection gr_texture_mip_upload_failure_unlock{0x004F4ADA, gr_texture_mip_failure_unlock};
+
+// FUN_004f5e40 can report success with a null section texture, which the next gr_lock calls through.
+// A failed slot keeps the bitmap's handle with no sections, so it is not retried until it is freed,
+// another bitmap takes it, or it is marked dirty.
+FunHook<int __cdecl(int, GrTextureSlot*)> gr_texture_create_hook{
+    0x004F5E40,
+    [](int bm_handle, GrTextureSlot* slot) {
+        if (bm_handle >= 0 && slot->bm_handle == bm_handle && slot->section_count == 0 && !slot->dirty) {
+            return 0;
+        }
+        const int result = gr_texture_create_hook.call_target(bm_handle, slot);
+        bool missing = false;
+        for (int i = 0; i < slot->section_count; i++) {
+            missing = missing || !slot->sections[i].texture;
+        }
+        if (result && !missing) {
+            return result;
+        }
+        gr_texture_free(slot);
+        slot->bm_handle = bm_handle;
+        static bool warned = false;
+        if (result && !warned) {
+            warned = true;
+            editor_report(EditorReportLevel::warn, "Direct3D",
+                          "Direct3D could not create a texture (RED may be low on memory): save and restart RED.",
+                          true);
+        }
+        return 0;
     },
 };
 
@@ -509,6 +568,12 @@ void ApplyGraphicsPatches()
     room_submit_lock_failure_guard_2.install();
     geometry_submit_lock_failure_guard.install();
     geometry_submit_lock_failure_guard_2.install();
+
+    // Never leave a texture slot holding a null texture after a failed CreateTexture
+    gr_texture_create_hook.install();
+    gr_texture_section_upload_failure_release.install();
+    gr_texture_mip_create_failure_unlock.install();
+    gr_texture_mip_upload_failure_unlock.install();
 
     // Fix editor not using all space for rendering when used with a big monitor
     gr_init_hook.install();

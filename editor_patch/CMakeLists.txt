@@ -8,6 +8,8 @@ set(SRCS
     alpine_spinner.h
     brush_import.cpp
     brush_import.h
+    dialog_tooltips.cpp
+    dialog_tooltips.h
     event.cpp
     file_dialogs.cpp
     file_dialogs.h
@@ -33,6 +35,19 @@ set(SRCS
     projection_camera.h
     rope_emitter.cpp
     rope_emitter.h
+    terrain.cpp
+    terrain.h
+    terrain_build.cpp
+    terrain_build.h
+    terrain_decorations.cpp
+    terrain_decorations.h
+    terrain_generate.cpp
+    terrain_generate.h
+    terrain_paint.cpp
+    terrain_paint.h
+    terrain_paint_math.h
+    terrain_preview.cpp
+    terrain_preview.h
     textures.cpp
     bitmap_loaders.cpp
     bitmap_loaders.h
@@ -48,6 +63,12 @@ set(SRCS
     lightmap.cpp
     lightmap_mesh_occluders.cpp
     lightmap_mesh_occluders.h
+    alpine_lightmaps.cpp
+    alpine_lightmaps.h
+    face_list_cache.cpp
+    face_list_cache.h
+    work_pool.cpp
+    work_pool.h
 )
 source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${SRCS})
 
@@ -66,6 +87,8 @@ target_include_directories(AlpineEditor PRIVATE
     ${CMAKE_SOURCE_DIR}/vendor
     ${CMAKE_SOURCE_DIR}/vendor/d3d8
     ${CMAKE_SOURCE_DIR}/vendor/stb
+    ${CMAKE_SOURCE_DIR}/vendor/zlib
+    ${CMAKE_SOURCE_DIR}/vendor/xxhash
 )
 
 target_link_libraries(AlpineEditor
@@ -79,4 +102,7 @@ target_link_libraries(AlpineEditor
     shell32
     uuid
     stb_image
+    zlib
+    bc7enc_rdo
+    xxhash
 )
