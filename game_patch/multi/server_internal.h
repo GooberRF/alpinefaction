@@ -220,6 +220,9 @@ struct RoundConfig
     // =============================================
 
     void set_max_rounds(int v) { max_rounds = std::clamp(v, 1, 999); }
+    // Best-of-N: round wins that take the match.
+    int wins_to_take_match() const { return max_rounds / 2 + 1; }
+    void set_wins_to_take_match(int wins) { set_max_rounds(std::clamp(wins, 1, 500) * 2 - 1); }
     void set_round_time(int v) { round_time = static_cast<uint16_t>(std::clamp(v, 10, 3600)); }
     void set_post_round_time(int v) { post_round_time = static_cast<uint8_t>(std::clamp(v, 0, 10)); }
     void set_intermission_time(int v) { intermission_time = static_cast<uint8_t>(std::clamp(v, 0, 10)); }
@@ -883,6 +886,7 @@ struct AlpineServerConfigRules
             case rf::NetGameType::NG_TYPE_GG:      return gungame_score_limit;
             case rf::NetGameType::NG_TYPE_BAG:     return bagman.bag_score_limit;
             case rf::NetGameType::NG_TYPE_TBAG:    return bagman.tbag_score_limit;
+            case rf::NetGameType::NG_TYPE_WO:      return rounds.wins_to_take_match();
             case rf::NetGameType::NG_TYPE_RUN:
             case rf::NetGameType::NG_TYPE_REV:
             case rf::NetGameType::NG_TYPE_ESC:     return std::nullopt;
@@ -905,6 +909,7 @@ struct AlpineServerConfigRules
             case rf::NetGameType::NG_TYPE_GG:      set_gungame_score_limit(count); return true;
             case rf::NetGameType::NG_TYPE_BAG:     bagman.set_bag_score_limit(count); return true;
             case rf::NetGameType::NG_TYPE_TBAG:    bagman.set_tbag_score_limit(count); return true;
+            case rf::NetGameType::NG_TYPE_WO:      rounds.set_wins_to_take_match(count); return true;
             case rf::NetGameType::NG_TYPE_RUN:
             case rf::NetGameType::NG_TYPE_REV:
             case rf::NetGameType::NG_TYPE_ESC:     return false;

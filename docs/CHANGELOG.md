@@ -60,6 +60,8 @@ Version 1.5.0 (Trillium): Not yet released
 - Linking a `Bolt Emitter` or `Rope Emitter` to a `Target` in the level editor sets the emitter's target to it
 - `Owner_Gate` can now take its capture points from linked `Capture_Point_Handler` events
 - Retain RED+-specific chunks when RFLs are loaded and re-saved in the level editor
+- Make third person spectate an over-the-shoulder camera, and stop third person and orbit spectate cameras from clipping through walls
+- Switching from a spectated player to free look starts the free look camera at the current view instead of where free look was last left
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Add `ui_color_console` console command to set the console background color
@@ -110,6 +112,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Fix copying and pasting face textures in level editor texture mode removing Alpine objects from the clipboard or unintentionally pasting them into the level
 - Remove the level editor warning about levels with too many decals
 - Fix `Owner_Gate`, `Add_Link`, `Clone_Entity`, `Valid_Gate`, the trigger of `Inside_Gate`, and the eye anchor of `Set_Skybox` keeping the old UID when the object they reference is renumbered by a group import or pasted along with them in the level editor
+- Fix `Score Limit Override` mutator not working in Wipeout
 
 [@is-this-c](https://github.com/is-this-c)
 - Let `Caps Lock` capitalize
