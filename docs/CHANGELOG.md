@@ -16,19 +16,14 @@ Version 1.5.0 (Trillium): Not yet released
   - `Affects mesh lighting` lights meshes and entities per pixel from the sun direction, with `Scale mesh sunlight by lightmaps` to keep sunlight out of unlit interiors
   - `Aligns dynamic shadows` points entity shadows along the sun instead of the fixed default direction
   - `Water blocks sunlight` stops sun rays at liquid surfaces during the bake
-- Add `Terrain` object to level editor: heightmap terrain with up to 8 blended texture layers, holes, optional skirts, per-terrain lightmap density, and optional fullbright (unlit, not baked)
+- Add Alpine Lightmaps, providing higher-resolution, BC7-compressed lightmaps for brushwork, movers, and terrain
+- Add heightmap-based `Terrain` object to level editor
+  - Support blended texture layers, holes, optional skirts, per-terrain lightmap density, and optional fullbright
   - Import 8/16-bit greyscale PNG and RAW16 heightmaps, export 16-bit PNG and RAW16 heightmaps, and import splat maps
-  - Generate heightmaps from `Generate...` in Terrain Properties: fractal noise (fBm, ridged, billow, hybrid), domain warp, terracing, edge falloff, and thermal and hydraulic erosion, with a live preview and an optional splat map from height, slope and ridges
-  - Sculpt heights (`Raise`, `Lower`, `Smooth Heights`, `Flatten`, `Set Height`, `Noise`, `Ramp`, `Bridge Points`), paint texture layers and holes, and pick geoable chunks in the viewport with `Terrain Tools`
-  - Up to 4 detail overlays per terrain: textures with alpha (leaves, debris) painted over the layers by their own coverage, with optional tiling break-up (Direct3D 11 renderer only)
-  - Up to 8 mesh decoration layers per terrain (grass, rocks, bushes): scattered by painted density with an optional link to a texture layer, with slope limit, random yaw and scale, vertical offset, draw distance, and optional baked shadows; craters remove them. Direct3D 8/9 draw only the nearest ones
+  - Generate heightmaps using fractal noise with optional splat map from height, slope and ridges
+  - Sculpt heights, paint texture layers and holes, and pick geoable chunks in the viewport with `Terrain Tools`
+  - Up to 4 detail overlays (leaves, debris) and 8 mesh decoration layers per terrain (grass, rocks, bushes)
   - `Geoable` terrains are carved by RF2-style geomod craters, with their own underside and crater textures
-  - `Convert to Brushes` turns a terrain into detail brushes
-  - Direct3D 11 renderer draws terrain with blended layers, optional triplanar mapping, and smooth heightmap normals; Direct3D 8/9 draw each cell's dominant layer tinted by the level ambient
-  - The level editor viewport shows a terrain's baked lighting after `Calculate Lighting` until its shape is edited
-- Add Alpine Lightmaps: `Calculate Lighting` also bakes higher-resolution, BC7-compressed lightmaps used by the Direct3D 11 renderer, for brushwork and movers, including seamless baked lighting for terrain
-  - Add `Lightmap density`, `Compression`, and `D3D11-only lightmaps` level properties
-  - `Lightmap density` `Off` keeps the stock lightmaps for brushwork and still bakes terrain lighting
 
 ### Minor features, changes, and enhancements
 [@GooberRF](https://github.com/GooberRF)
@@ -51,10 +46,6 @@ Version 1.5.0 (Trillium): Not yet released
 - Raise level editor per-room and per-mesh render vertex limit from 8000 to 32768
 - Add `-bake in.rfl -bakeout out.rfl` launcher command line switches to build a level's geometry and calculate its lighting without user interaction, writing the result to a new level file and progress to a log beside it
 - Add `High-resolution lightmaps` level property, used in lightmap bake in level editor
-- Add `dbg_terrain_batches` console command to tint terrain faces by render batch (Direct3D 11 renderer only)
-- Add `dbg_terrain_decorations` console command to toggle terrain mesh decorations and print their draw statistics
-- Light characters, items, and clutter standing on terrain from the terrain's baked lighting
-- Levels saved with `D3D11-only lightmaps` refuse to load with the Direct3D 8/9 renderers
 - Deprecate and remove `-smoothlights` level editor switch
 - Add `dbg_collision_pairs` console command to print object collision pair pool statistics
 - Add `sv_afstats_events_reset` console command to clear a stuck stats event send, a 401 pause, or a stretched retry pulse and resume the stream without discarding queued events
@@ -74,15 +65,18 @@ Version 1.5.0 (Trillium): Not yet released
 - Support moving climbing regions with `Anchor_Marker` and `Anchor_Marker_Orient`
 - Add `When_Destroyed` catalyst event, which activates its links when the destructible detail brushes it links to are destroyed
 - Support linking events and triggers to detail brushes in the level editor
-- Speed up `Calculate Lighting` in the level editor, especially on large levels and levels with very many lightmap surfaces
-- Improve level loading and `Build Geometry` times in the level editor on levels with many faces
 - Linking a `Bolt Emitter` or `Rope Emitter` to a `Target` in the level editor sets the emitter's target to it
 - `Owner_Gate` can now take its capture points from linked `Capture_Point_Handler` events
-- Draw large rooms in fewer draw calls, and skip rooms without dynamic decals when drawing them (Direct3D 11 renderer only)
-- Level editor refuses to open levels saved by a newer version of Alpine Faction instead of misreading them
 - Retain RED+-specific chunks when RFLs are loaded and re-saved in the level editor
 - Make third person spectate an over-the-shoulder camera, and stop third person and orbit spectate cameras from clipping through walls
 - Switching from a spectated player to free look starts the free look camera at the current view instead of where free look was last left
+- Add `dbg_terrain_batches` console command to tint terrain faces by render batch (Direct3D 11 renderer only)
+- Add `dbg_terrain_decorations` console command to toggle terrain mesh decorations and print their draw statistics
+- Levels saved with `D3D11-only lightmaps` refuse to load with the Direct3D 8/9 renderers
+- Speed up `Calculate Lighting` in the level editor, especially on large levels and levels with very many lightmap surfaces
+- Improve level loading and `Build Geometry` times in the level editor on levels with many faces
+- Draw large rooms in fewer draw calls, and skip rooms without dynamic decals when drawing them (Direct3D 11 renderer only)
+- Make level editor refuse to open levels saved by a newer version of Alpine Faction instead of misreading them
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Add `ui_color_console` console command to set the console background color
@@ -130,25 +124,25 @@ Version 1.5.0 (Trillium): Not yet released
 - Fix bolt emitters imported as part of a group in the level editor keeping their old target when the target object is renumbered to avoid a UID conflict
 - Fix bolt emitters pasted in the level editor together with their target still targeting the original object
 - Fix geoable brush supports not being properly recognized if buried in level geometry
+- Fix level editor crashing when moving decals in a level with more than 128 decals
+- Fix copying and pasting face textures in level editor texture mode removing Alpine objects from the clipboard or unintentionally pasting them into the level
+- Remove the level editor warning about levels with too many decals
+- Fix `Owner_Gate`, `Add_Link`, `Clone_Entity`, `Valid_Gate`, the trigger of `Inside_Gate`, and the eye anchor of `Set_Skybox` keeping the old UID when the object they reference is renumbered by a group import or pasted along with them in the level editor
+- Fix `Score Limit Override` mutator not working in Wipeout
 - Fix RF2-style geomod craters near the edge of a geoable brush not carving a neighboring geoable brush that the crater reaches
 - Fix RF2-style geomod giving up on geoable rooms with more than 5000 faces
 - Fix crash when a decal is created in a room containing a very large number of detail brushes
 - Fix Direct3D 8/9 renderer geometry cache overflowing with more than 256 rooms or detail rooms in view
 - Fix Direct3D 8/9 renderer rebuilding every room's render cache each frame while a room with more than 8000 vertices is in view
 - Fix level editor memory use growing with every `Build Geometry` and `Calculate Lighting` because the Direct3D textures of discarded lightmaps were never released
-- Fix level editor crashing when Direct3D fails to create a texture, which now logs a warning that the editor may be low on memory
-- Stop `Build Geometry` and `Calculate Lighting` in the level editor with a message when too little memory is left to finish them
+- Fix level editor crashing when Direct3D fails to create a texture
+- Stop `Build Geometry` and `Calculate Lighting` in the level editor with a message when too little memory is left to finish them (instead of crashing)
 - Reduce the memory `Calculate Lighting` needs in the level editor, and how much of it must be in one piece
 - Fix level editor crashing in `Calculate Lighting` when a level needs more than 32767 lightmap surfaces; faces past the limit are left without a lightmap and the editor warns
 - Fix geomod craters creating new lightmap surfaces on every crater once a level holds more than 32767 of them
 - Fix memory corruption when more than 1024 rooms are visible at once
 - Fix geomod crater relighting converting lightmap texels beyond the relit surface, which could write past the end of the lightmap for a surface at the bottom of a lightmap page
 - Fix a possible out-of-bounds read when drawing dynamic decals (Direct3D 11 renderer only)
-- Fix level editor crashing when moving decals in a level with more than 128 decals
-- Fix copying and pasting face textures in level editor texture mode removing Alpine objects from the clipboard or unintentionally pasting them into the level
-- Remove the level editor warning about levels with too many decals
-- Fix `Owner_Gate`, `Add_Link`, `Clone_Entity`, `Valid_Gate`, the trigger of `Inside_Gate`, and the eye anchor of `Set_Skybox` keeping the old UID when the object they reference is renumbered by a group import or pasted along with them in the level editor
-- Fix `Score Limit Override` mutator not working in Wipeout
 
 [@is-this-c](https://github.com/is-this-c)
 - Let `Caps Lock` capitalize
