@@ -22,6 +22,11 @@ struct AlpineTerrain : alpine_terrain::Record
     bool resolved = false;
     // alpine_terrain::decoration_lighting_hash, taken at load while the maps it reads are still there.
     std::uint64_t decoration_lighting_hash = 0;
+
+    bool fullbright() const
+    {
+        return (header.flags & alpine_terrain::flag_fullbright) != 0;
+    }
 };
 
 // A resolved terrain chunk's compiled room.
@@ -57,6 +62,7 @@ std::uint32_t alpine_terrain_decoration_views(const AlpineTerrain& t,
 alpine_terrain::FaceKind alpine_terrain_face_kind(const alpine_terrain::GridView& g, const rf::GFace& face);
 // The light at `pos` on a face of `kind` of resolved terrain `terrain` (alpine_terrain_get_all index) as a
 // stock lightmap texel (0..1, drawn doubled), so an entity standing there is lit like one on ordinary
-// geometry that renders as bright. Off the top, `face_normal` shades instead of the heightmap normal.
+// geometry that renders as bright. Off the top, `face_normal` shades instead of the heightmap normal. A
+// fullbright terrain lights it as unbaked ground: level ambient and sun, craters undimmed.
 void alpine_terrain_sample_light(int terrain, alpine_terrain::FaceKind kind, const float (&pos)[3],
                                  const float (&face_normal)[3], float (&texel)[3]);

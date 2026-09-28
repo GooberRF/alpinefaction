@@ -7,7 +7,8 @@
 // POD types and free functions only: nothing here may allocate, throw, or pass a non-trivial type by value.
 //
 // Wire layout, per terrain after a u32 count (no chunk version; growth appends fields gated on the RFL
-// version; wire flags (flag_chunk_geo_mask, flag_overlays, flag_decorations) gate optional parts):
+// version; wire flags (flag_chunk_geo_mask, flag_overlays, flag_decorations) gate optional parts, and
+// flag_fullbright adds none):
 //   i32 uid, f32x3 origin, vstring script_name, f32 cell_size, u16 nx, u16 nz,
 //   f32 height_min, f32 height_range, u8 chunk_cells (the edge a build uses), u8 weight_res_mul,
 //   u8 lightmap_density, u8 flags, f32 thickness, f32 skirt_depth, vstring underside_texture,
@@ -87,7 +88,12 @@ inline constexpr std::uint8_t flag_overlays = 0x8;
 // Wire only: the header lists decorations after the overlays and the blob ends with their coverage planes.
 // The writer sets it when the terrain has at least one decoration.
 inline constexpr std::uint8_t flag_decorations = 0x10;
-inline constexpr std::uint8_t wire_flag_mask = flag_mask | flag_chunk_geo_mask | flag_overlays | flag_decorations;
+// Drawn at full brightness, without ambient, sun or baked light; Calculate Lighting bakes no chart for it.
+// Outside flag_mask:
+// it changes neither the shape nor any fingerprint.
+inline constexpr std::uint8_t flag_fullbright = 0x20;
+inline constexpr std::uint8_t wire_flag_mask =
+    flag_mask | flag_chunk_geo_mask | flag_overlays | flag_decorations | flag_fullbright;
 
 inline constexpr std::uint8_t layer_flag_triplanar = 0x1;
 inline constexpr std::uint8_t layer_flag_mask = layer_flag_triplanar;
@@ -1428,11 +1434,11 @@ inline void cell_triangles(const GridView& g, std::uint32_t x, std::uint32_t z, 
     }
 }
 
-// The first top face (holes skipped, both sides) hit by origin + t * dir for t in [t_min, t_max]:
-// a 2D DDA over the cells the ray crosses inside the terrain's box, exact triangle tests per cell. No hit
-// for a non-finite origin or direction, or a NaN t range.
+// The first top face (holes skipped unless ignore_holes, both sides) hit by origin + t * dir for t in
+// [t_min, t_max]: a 2D DDA over the cells the ray crosses inside the terrain's box, exact triangle tests per
+// cell. No hit for a non-finite origin or direction, or a NaN t range.
 inline bool raycast(const GridView& g, const float (&o)[3], const float (&d)[3], float t_min, float t_max,
-                    float& t_hit)
+                    float& t_hit, bool ignore_holes = false)
 {
     const std::uint32_t cx = cells(g.nx), cz = cells(g.nz);
     if (cx == 0 || cz == 0) return false;
@@ -1478,7 +1484,7 @@ inline bool raycast(const GridView& g, const float (&o)[3], const float (&d)[3],
     // A hit may lie a hair outside the cell's own t span when it is on a shared edge.
     const float slack = (t1 - t0) * 1e-5f + 1e-4f;
     for (std::uint32_t guard = 0; guard <= cx + cz + 2; guard++) {
-        if (cell_solid(g, x, z)) {
+        if (ignore_holes || cell_solid(g, x, z)) {
             float tri[2][3][3];
             cell_triangles(g, static_cast<std::uint32_t>(x), static_cast<std::uint32_t>(z), tri);
             float best = INFINITY, t = 0.0f;

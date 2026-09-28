@@ -879,6 +879,7 @@ void* view_under_cursor(POINT cursor)
     return nullptr;
 }
 
+// Hole cells count as surface, so the brush keeps working over them.
 bool cast_at_terrain(void* view, POINT cursor, const DedTerrain& t, float (&hit)[3])
 {
     const HWND hwnd = view_hwnd(view);
@@ -887,7 +888,7 @@ bool cast_at_terrain(void* view, POINT cursor, const DedTerrain& t, float (&hit)
     static_cast<EditorViewport*>(view)->setup_gr(0);
     const TerrainRay ray = terrain_screen_ray(static_cast<float>(client.x), static_cast<float>(client.y));
     float th = 0.0f;
-    if (!terrain_ray_hit(t, ray, terrain_pick_reach, th)) return false;
+    if (!terrain_ray_hit(t, ray, terrain_pick_reach, th, /* ignore_holes */ true)) return false;
     for (int i = 0; i < 3; i++) hit[i] = ray.o[i] + ray.d[i] * th;
     return true;
 }

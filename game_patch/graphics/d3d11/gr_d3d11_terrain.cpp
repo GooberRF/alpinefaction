@@ -51,6 +51,8 @@ namespace
         std::array<float, at::max_overlays> overlay_enabled;
         // 1 where the bound texture is create_premultiplied's copy
         std::array<float, at::max_overlays> overlay_premultiplied;
+        float fullbright;
+        std::array<float, 3> pad;
     };
     static_assert(offsetof(TerrainBufferData, extent) == 16);
     static_assert(offsetof(TerrainBufferData, grid_size) == 32);
@@ -67,7 +69,8 @@ namespace
     static_assert(offsetof(TerrainBufferData, overlay_break_tiling) == 192);
     static_assert(offsetof(TerrainBufferData, overlay_enabled) == 208);
     static_assert(offsetof(TerrainBufferData, overlay_premultiplied) == 224);
-    static_assert(sizeof(TerrainBufferData) == 240);
+    static_assert(offsetof(TerrainBufferData, fullbright) == 240);
+    static_assert(sizeof(TerrainBufferData) == 256);
     static_assert(at::max_overlays == 4, "the shader holds the overlays in float4s");
 
     constexpr UINT first_srv_slot = 7;
@@ -367,6 +370,7 @@ namespace gr::d3d11
         data.sun_travel_dir[2] = sun.travel_dir.z;
         std::memcpy(data.sun_color.data(), sun.color, sizeof(data.sun_color));
         data.debug = g_tint_batches ? 1.0f : 0.0f;
+        data.fullbright = t.fullbright() ? 1.0f : 0.0f;
         for (std::size_t l = 0; l < at::max_layers; l++) {
             const bool has = l < t.layers.size();
             data.layer_uv_scale[l] = has ? t.layers[l].uv_scale : at::default_uv_scale;

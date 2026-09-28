@@ -103,7 +103,8 @@ namespace
     }
 
     // Matches the chart records to the terrains, whose chunk precedes the geometry section and so
-    // this one. An unmatched record is marked unusable before anything is decoded for it.
+    // this one. An unmatched record is marked unusable before anything is decoded for it. A fullbright
+    // terrain takes none.
     void af_match_terrains()
     {
         const auto& terrains = alpine_terrain_get_all();
@@ -111,6 +112,9 @@ namespace
         std::vector<std::uint8_t> used(g_section.terrain.size(), 0);
         for (std::size_t k = 0; k < terrains.size(); k++) {
             const AlpineTerrain& t = terrains[k];
+            if (t.fullbright()) {
+                continue;
+            }
             int record = -1;
             for (std::size_t i = 0; i < g_section.terrain.size(); i++) {
                 if (g_section.terrain_ok[i] && g_section.terrain[i].terrain_uid == t.uid) {
@@ -588,12 +592,17 @@ void af_lightmap_resolve_terrains()
     // matched when the section loaded, so this only reports
     const auto& terrains = alpine_terrain_get_all();
     int matched = 0;
+    int lit = 0;
     for (std::size_t k = 0; k < terrains.size(); k++) {
+        if (terrains[k].fullbright()) {
+            continue;
+        }
+        lit++;
         int record = -1;
         matched += af_terrain_record(static_cast<int>(k), record) ? 1 : 0;
     }
-    if (!g_section.terrain.empty() || !terrains.empty()) {
-        xlog::info("[AlpineLightmaps] {} of {} terrain(s) have baked lighting", matched, terrains.size());
+    if (!g_section.terrain.empty() || lit > 0) {
+        xlog::info("[AlpineLightmaps] {} of {} lit terrain(s) have baked lighting", matched, lit);
     }
 }
 

@@ -281,12 +281,13 @@ at::FaceKind alpine_terrain_face_kind(const at::GridView& g, const rf::GFace& fa
 void alpine_terrain_sample_light(int terrain, at::FaceKind kind, const float (&pos)[3],
                                  const float (&face_normal)[3], float (&texel)[3])
 {
-    const at::GridView g = alpine_terrain_grid(g_terrains[static_cast<std::size_t>(terrain)]);
+    const AlpineTerrain& t = g_terrains[static_cast<std::size_t>(terrain)];
+    const at::GridView g = alpine_terrain_grid(t);
     float n[3] = {face_normal[0], face_normal[1], face_normal[2]};
     if (kind == at::FaceKind::top) {
         at::heightmap_normal(g, pos[0], pos[2], n);
     }
-    const float scale = kind == at::FaceKind::crater
+    const float scale = kind == at::FaceKind::crater && !t.fullbright()
                             ? at::crater_light_factor(at::surface_y_bilinear(g, pos[0], pos[2]) - pos[1])
                             : 1.0f;
 

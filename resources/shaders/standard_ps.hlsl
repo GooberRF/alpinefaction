@@ -898,6 +898,7 @@ cbuffer TerrainBuffer : register(b7)
     float4 ter_overlay_break_tiling;
     float4 ter_overlay_enabled;
     float4 ter_overlay_premultiplied;   // 1: the texture holds premultiplied colour
+    float  ter_fullbright;              // 1: lit as a stock fullbright face
 };
 
 Texture2D        ter_weights0   : register(t7);
@@ -1209,10 +1210,16 @@ float4 main(VsOutput input) : SV_TARGET
     }
     float4 target = float4(albedo, 1.0f) * input.color * current_color;
 
-    // Craters take the top's light at their XZ, dimmed by depth
-    float3 light_color = ter_base_light(wp, n, underside);
-    if (crater) {
-        light_color *= ter_crater_factor(wp);
+    // Craters take the top's light at their XZ, dimmed by depth. A fullbright terrain has a stock
+    // fullbright face's light: no lightmap, the neutral texel doubled to 1 (raw when lightmaps are shown).
+    float3 light_color;
+    [branch] if (ter_fullbright > 0.5f) {
+        light_color = disable_textures < 0.5f ? 1.0f : 0.5f;
+    } else {
+        light_color = ter_base_light(wp, n, underside);
+        if (crater) {
+            light_color *= ter_crater_factor(wp);
+        }
     }
     if (disable_textures < 0.5f) {
         light_color = add_scene_lights(light_color, wp, n);

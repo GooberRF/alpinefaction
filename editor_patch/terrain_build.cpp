@@ -891,7 +891,7 @@ at::Header terrain_header(const Vector3& pos, const DedTerrainData& d, const Ter
                       : d.chunk_cells;
     h.weight_res_mul = g ? g->weight_res_mul : 0;
     h.lightmap_density = d.lightmap_density;
-    h.flags = d.flags;
+    h.flags = d.flags | (d.fullbright ? at::flag_fullbright : 0);
     h.thickness = d.thickness;
     h.skirt_depth = d.skirt_depth;
     h.layer_count = static_cast<uint32_t>(d.layers.size());

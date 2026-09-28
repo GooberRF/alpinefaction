@@ -1199,7 +1199,8 @@ FONT 8, "MS Sans Serif", 0, 0, 0
     LTEXT           "Lightmap:", IDC_TERRAIN_LM_DENSITY_LABEL, 307, 64, 44, 8, SS_NOTIFY
     EDITTEXT        IDC_TERRAIN_LM_DENSITY, 353, 62, 40, 14, ES_NUMBER
     CONTROL         "Spin4", IDC_TERRAIN_LM_DENSITY_SPIN, UPDOWN_CLASS, UDS_ARROWKEYS, 393, 62, 11, 14
-    LTEXT           "texels per cell", -1, 409, 64, 60, 8
+    LTEXT           "texels per cell", IDC_TERRAIN_LM_DENSITY_UNIT, 409, 64, 60, 8
+    AUTOCHECKBOX    "Fullbright", IDC_TERRAIN_FULLBRIGHT, 489, 64, 50, 10
 
     GROUPBOX        "Underside", -1, 300, 87, 286, 58
     AUTOCHECKBOX    "Geoable", IDC_TERRAIN_GEOABLE, 307, 101, 44, 10

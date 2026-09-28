@@ -92,5 +92,5 @@ struct TerrainRay
 };
 // The world ray through a screen point of the viewport last set up (FUN_004c5fb0).
 TerrainRay terrain_screen_ray(float screen_x, float screen_y);
-// Distance along `ray` to the terrain's surface within [0, t_max], holes skipped.
-bool terrain_ray_hit(const DedTerrain& t, const TerrainRay& ray, float t_max, float& hit_t);
+// Distance along `ray` to the terrain's surface within [0, t_max], holes skipped unless ignore_holes.
+bool terrain_ray_hit(const DedTerrain& t, const TerrainRay& ray, float t_max, float& hit_t, bool ignore_holes = false);

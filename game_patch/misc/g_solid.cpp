@@ -43,7 +43,8 @@ std::optional<float> g_sky_room_eye_offset_scale;
 static rf::Vector3 g_adjusted_sky_room_eye_position;
 
 
-// Legacy renderers draw terrain faces single-textured without a lightmap, modulated by the level ambient.
+// Legacy renderers draw terrain faces single-textured without a lightmap, modulated by the level ambient;
+// a fullbright terrain's are left at full brightness, as a stock fullbright face is.
 static void geo_cache_tint_terrain_batches(rf::GCache& cache)
 {
     float ambient[3];
@@ -63,13 +64,18 @@ static void geo_cache_tint_terrain_batches(rf::GCache& cache)
         }
         // Batches group by texture alone here, so one may mix in unlit faces of other rooms.
         bool all_terrain = true;
+        bool all_fullbright = true;
         for (int f = 0; f < b.num_faces && all_terrain; ++f) {
             const rf::GFace* face = b.faces[f].face;
-            all_terrain = face && face->attributes.surface_index < 0 && alpine_terrain_is_chunk_room(face->which_room);
+            const AlpineTerrainRoomRef* ref =
+                face && face->attributes.surface_index < 0 ? alpine_terrain_find_room(face->which_room) : nullptr;
+            all_terrain = ref != nullptr;
+            all_fullbright = all_fullbright && ref && alpine_terrain_get_all()[ref->terrain].fullbright();
         }
         if (!all_terrain) {
             continue;
         }
+        // Single-textured either way: the batch's mode still expects the lightmap stage it lacks
         rf::gr::TextureSource ts = b.mode.get_texture_source();
         if (ts == rf::gr::TEXTURE_SOURCE_CLAMP_1_WRAP_0 || ts == rf::gr::TEXTURE_SOURCE_CLAMP_1_WRAP_0_MOD2X) {
             ts = rf::gr::TEXTURE_SOURCE_WRAP;
@@ -78,6 +84,9 @@ static void geo_cache_tint_terrain_batches(rf::GCache& cache)
             ts = rf::gr::TEXTURE_SOURCE_CLAMP;
         }
         b.mode.set_texture_source(ts);
+        if (all_fullbright) {
+            continue;
+        }
         b.mode.set_color_source(rf::gr::COLOR_SOURCE_VERTEX_TIMES_TEXTURE);
         b.color = color;
     }

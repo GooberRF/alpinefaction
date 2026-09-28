@@ -707,7 +707,8 @@ struct DedTerrainData
     float height_range = alpine_terrain::default_height_range;
     uint32_t chunk_cells = alpine_terrain::default_chunk_cells;
     uint8_t lightmap_density = alpine_terrain::lightmap_density_default;
-    uint8_t flags = 0; // alpine_terrain::flag_*
+    uint8_t flags = 0; // alpine_terrain::flag_mask bits
+    bool fullbright = false; // alpine_terrain::flag_fullbright
     float thickness = alpine_terrain::default_thickness;
     float skirt_depth = alpine_terrain::default_skirt_depth;
     std::string underside_texture = alpine_terrain::default_layer_texture;

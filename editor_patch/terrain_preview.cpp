@@ -244,6 +244,7 @@ struct ShadeKey
     float dir[3] = {};
     float color[3] = {};
     uint8_t ambient[3] = {};
+    bool fullbright = false;
     const TerrainBakedLight* light = nullptr;
     uint32_t light_gen = 0;
 
@@ -251,7 +252,8 @@ struct ShadeKey
     {
         return style == o.style && sun == o.sun && std::memcmp(dir, o.dir, sizeof(dir)) == 0 &&
                std::memcmp(color, o.color, sizeof(color)) == 0 &&
-               std::memcmp(ambient, o.ambient, sizeof(ambient)) == 0 && light == o.light && light_gen == o.light_gen;
+               std::memcmp(ambient, o.ambient, sizeof(ambient)) == 0 && fullbright == o.fullbright &&
+               light == o.light && light_gen == o.light_gen;
     }
 };
 
@@ -567,11 +569,14 @@ const TerrainBakedLight* shown_light(const Preview& p)
 }
 
 // Per-vertex colour: level ambient plus the sun (or, with no sun, a fixed editor light) by the
-// heightmap normal, floored so unlit slopes keep their shape.
+// heightmap normal, floored so unlit slopes keep their shape. Fullbright shows the neutral lightmap in the
+// lightmaps style, as the game does, and white otherwise.
+constexpr uint8_t neutral_lightmap_byte = 128;
+
 void light_color(const ShadeKey& key, const float (&n)[3], uint8_t* out)
 {
-    if (key.style == style_textures) {
-        out[0] = out[1] = out[2] = 255;
+    if (key.style == style_textures || key.fullbright) {
+        out[0] = out[1] = out[2] = key.style == style_lightmaps ? neutral_lightmap_byte : 255;
         return;
     }
     static const float room_tint[3] = {0.55f, 0.8f, 0.55f};
@@ -1137,7 +1142,10 @@ void draw_surface(CDedLevel& level, Preview& p, const DedTerrain& terrain, const
     // composites (texture x lightmap x 2), with lightmaps alone into the vertex colours.
     update_baked_light(p, terrain, d);
     ShadeKey key = current_shade_key(level, style);
-    if (style == style_lit || style == style_lightmaps) {
+    // A fullbright terrain shows no light in the styles that show it.
+    const bool light_style = style == style_lit || style == style_lightmaps;
+    key.fullbright = light_style && d.fullbright;
+    if (light_style && !key.fullbright) {
         key.light = shown_light(p);
         key.light_gen = key.light ? p.light_gen : 0;
     }
@@ -1401,11 +1409,11 @@ TerrainRay terrain_screen_ray(float screen_x, float screen_y)
     return TerrainRay{{ray[0], ray[1], ray[2]}, {ray[3], ray[4], ray[5]}};
 }
 
-bool terrain_ray_hit(const DedTerrain& t, const TerrainRay& ray, float t_max, float& hit_t)
+bool terrain_ray_hit(const DedTerrain& t, const TerrainRay& ray, float t_max, float& hit_t, bool ignore_holes)
 {
     if (!t.data.grid) return false;
     const at::GridView v = terrain_grid_view(t.pos, t.data, *t.data.grid);
-    return at::raycast(v, ray.o, ray.d, 0.0f, t_max, hit_t);
+    return at::raycast(v, ray.o, ray.d, 0.0f, t_max, hit_t, ignore_holes);
 }
 
 DedTerrain* terrain_surface_pick(CDedLevel& level, float screen_x, float screen_y)

@@ -572,13 +572,17 @@ AfChart terrain_chart(AfTerrain& a)
     return c;
 }
 
-// Every terrain whose compiled geometry is current. The rest keep no baked lighting; the Calculate
-// Lighting pre-check has already said why.
+// Every non-fullbright terrain whose compiled geometry is current. The rest keep no baked lighting; the
+// bake log says why.
 std::vector<AfTerrain> collect_terrains(const AlpineLevelProperties& props)
 {
     std::vector<AfTerrain> out;
     for (const DedTerrain* t : props.terrain_objects) {
         if (!t || !t->data.grid) {
+            continue;
+        }
+        if (t->data.fullbright) {
+            af_log(terrain_label(*t) + " is fullbright, its lighting is not baked");
             continue;
         }
         if (!terrain_build_is_current(*t)) {
@@ -1708,7 +1712,8 @@ bool section_has_surface_charts(const std::vector<std::uint8_t>& body)
 }
 
 // Terrain lighting the save is about to carry that no longer matches its terrain, and terrains that
-// have none: both render with the placeholder lighting in game until the level is re-baked.
+// have none: both render with the placeholder lighting in game until the level is re-baked. Fullbright
+// terrains use none.
 void warn_terrain_lighting(const std::vector<std::uint8_t>* body, const AlpineLevelProperties& props)
 {
     alm::ReadResult r;
@@ -1716,7 +1721,7 @@ void warn_terrain_lighting(const std::vector<std::uint8_t>* body, const AlpineLe
         r = read_unfingerprinted(*body);
     }
     for (const DedTerrain* t : props.terrain_objects) {
-        if (!t) {
+        if (!t || t->data.fullbright) {
             continue;
         }
         const alm::TerrainChart* chart = nullptr;

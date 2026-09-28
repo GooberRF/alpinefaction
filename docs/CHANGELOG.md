@@ -16,7 +16,7 @@ Version 1.5.0 (Trillium): Not yet released
   - `Affects mesh lighting` lights meshes and entities per pixel from the sun direction, with `Scale mesh sunlight by lightmaps` to keep sunlight out of unlit interiors
   - `Aligns dynamic shadows` points entity shadows along the sun instead of the fixed default direction
   - `Water blocks sunlight` stops sun rays at liquid surfaces during the bake
-- Add `Terrain` object to level editor: heightmap terrain with up to 8 blended texture layers, holes, optional skirts, and per-terrain lightmap density
+- Add `Terrain` object to level editor: heightmap terrain with up to 8 blended texture layers, holes, optional skirts, per-terrain lightmap density, and optional fullbright (unlit, not baked)
   - Import 8/16-bit greyscale PNG and RAW16 heightmaps, export 16-bit PNG and RAW16 heightmaps, and import splat maps
   - Generate heightmaps from `Generate...` in Terrain Properties: fractal noise (fBm, ridged, billow, hybrid), domain warp, terracing, edge falloff, and thermal and hydraulic erosion, with a live preview and an optional splat map from height, slope and ridges
   - Sculpt heights (`Raise`, `Lower`, `Smooth Heights`, `Flatten`, `Set Height`, `Noise`, `Ramp`, `Bridge Points`), paint texture layers and holes, and pick geoable chunks in the viewport with `Terrain Tools`

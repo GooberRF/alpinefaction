@@ -772,6 +772,7 @@ static void terrain_from_record(at::Record& rec, DedTerrain* terrain)
     d.chunk_cells = h.chunk_cells;
     d.lightmap_density = static_cast<uint8_t>(h.lightmap_density);
     d.flags = static_cast<uint8_t>(h.flags & at::flag_mask);
+    d.fullbright = (h.flags & at::flag_fullbright) != 0;
     d.thickness = h.thickness;
     d.skirt_depth = h.skirt_depth;
     d.underside_texture = std::move(rec.underside_texture);
@@ -1448,6 +1449,13 @@ static void terrain_dlg_update_state(HWND hdlg)
                                              IDC_TERRAIN_UNDERSIDE_LABEL};
     for (int id : underside_controls) EnableWindow(GetDlgItem(hdlg, id), geoable || skirts);
 
+    // A fullbright terrain gets no baked light.
+    const bool lit = IsDlgButtonChecked(hdlg, IDC_TERRAIN_FULLBRIGHT) != BST_CHECKED;
+    for (int id : {IDC_TERRAIN_LM_DENSITY, IDC_TERRAIN_LM_DENSITY_SPIN, IDC_TERRAIN_LM_DENSITY_LABEL,
+                   IDC_TERRAIN_LM_DENSITY_UNIT}) {
+        EnableWindow(GetDlgItem(hdlg, id), lit);
+    }
+
     for (int kind = 0; kind < terrain_list_kinds; kind++) {
         const TerrainListUi& ui = terrain_list_ui[kind];
         const int count = terrain_dlg_count(kind);
@@ -2078,6 +2086,7 @@ static bool terrain_dlg_commit(HWND hdlg)
     d.flags = 0;
     if (IsDlgButtonChecked(hdlg, IDC_TERRAIN_GEOABLE) == BST_CHECKED) d.flags |= at::flag_geoable;
     if (IsDlgButtonChecked(hdlg, IDC_TERRAIN_SKIRTS) == BST_CHECKED) d.flags |= at::flag_skirts;
+    d.fullbright = IsDlgButtonChecked(hdlg, IDC_TERRAIN_FULLBRIGHT) == BST_CHECKED;
     d.underside_texture = terrain_get_text(hdlg, IDC_TERRAIN_UNDERSIDE_TEXTURE);
     d.crater_texture = terrain_get_text(hdlg, IDC_TERRAIN_CRATER_TEXTURE);
 
@@ -2568,6 +2577,11 @@ static INT_PTR terrain_dlg_command(HWND hdlg, WPARAM wp)
         terrain_dlg_update_state(hdlg);
         terrain_dlg_refresh_viewports();
         return TRUE;
+    case IDC_TERRAIN_FULLBRIGHT:
+        g_terrain_dlg.data.fullbright = IsDlgButtonChecked(hdlg, IDC_TERRAIN_FULLBRIGHT) == BST_CHECKED;
+        terrain_dlg_update_state(hdlg);
+        terrain_dlg_refresh_viewports();
+        return TRUE;
     case IDC_TERRAIN_UNDERSIDE_TEXTURE:
         if (HIWORD(wp) == EN_CHANGE && g_terrain_dlg.active) {
             g_terrain_dlg.data.underside_texture = terrain_get_text(hdlg, IDC_TERRAIN_UNDERSIDE_TEXTURE);
@@ -2659,6 +2673,9 @@ static constexpr DialogTooltip terrain_dlg_tooltips[] = {
     {IDC_TERRAIN_CHUNK_SIZE_LABEL, terrain_tip_chunk_size},
     {IDC_TERRAIN_LM_DENSITY, terrain_tip_lightmap},
     {IDC_TERRAIN_LM_DENSITY_LABEL, terrain_tip_lightmap},
+    {IDC_TERRAIN_FULLBRIGHT,
+     "Draws the textures at full brightness, ignoring ambient, sun and baked lighting. Not baked by Calculate "
+     "Lighting."},
     {IDC_TERRAIN_THICKNESS, terrain_tip_thickness},
     {IDC_TERRAIN_THICKNESS_LABEL, terrain_tip_thickness},
     {IDC_TERRAIN_SKIRT_DEPTH, terrain_tip_skirt_depth},
@@ -2708,6 +2725,7 @@ static INT_PTR CALLBACK TerrainDialogProc(HWND hdlg, UINT msg, WPARAM wp, LPARAM
         SetDlgItemTextA(hdlg, IDC_TERRAIN_CRATER_TEXTURE, d.crater_texture.c_str());
         CheckDlgButton(hdlg, IDC_TERRAIN_GEOABLE, (d.flags & at::flag_geoable) ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hdlg, IDC_TERRAIN_SKIRTS, (d.flags & at::flag_skirts) ? BST_CHECKED : BST_UNCHECKED);
+        CheckDlgButton(hdlg, IDC_TERRAIN_FULLBRIGHT, d.fullbright ? BST_CHECKED : BST_UNCHECKED);
 
         for (uint32_t edge : at::chunk_edge_options) {
             // An edge over the flagless cap is always lowered.
@@ -2901,12 +2919,12 @@ static bool terrain_layers_equal(const DedTerrainLayer& a, const DedTerrainLayer
 enum class TerrainEdit
 {
     none,
-    overlays_or_decorations,
+    look_only, // overlays, decorations or fullbright
     other,
 };
 
-// What differs between `a` and `b`: nothing, only their overlays or decorations (the lists and the coverage),
-// or more.
+// What differs between `a` and `b`: nothing, only their overlays, decorations (the lists and the coverage) or
+// fullbright, or more.
 static TerrainEdit terrain_edit_kind(const DedTerrainData& a, const DedTerrainData& b)
 {
     if (!a.grid || !b.grid) return TerrainEdit::other;
@@ -2930,7 +2948,8 @@ static TerrainEdit terrain_edit_kind(const DedTerrainData& a, const DedTerrainDa
                    }) &&
         (&ga == &gb || ga.overlay == gb.overlay);
     const bool same_decorations = a.decorations == b.decorations && (&ga == &gb || ga.decoration == gb.decoration);
-    return same_overlays && same_decorations ? TerrainEdit::none : TerrainEdit::overlays_or_decorations;
+    return same_overlays && same_decorations && a.fullbright == b.fullbright ? TerrainEdit::none
+                                                                             : TerrainEdit::look_only;
 }
 
 void terrain_show_properties(CDedLevel* level, DedTerrain* terrain)
@@ -2949,10 +2968,10 @@ void terrain_show_properties(CDedLevel* level, DedTerrain* terrain)
                                           MAKEINTRESOURCE(IDD_ALPINE_TERRAIN_PROPERTIES), GetActiveWindow(),
                                           TerrainDialogProc, 0);
     if (result == IDOK || result == IDC_TERRAIN_TOOLS || result == IDC_TERRAIN_CONVERT) {
-        // Overlays and decorations never need a rebuild; nothing changed marks nothing.
+        // Overlays, decorations and fullbright never need a rebuild; nothing changed marks nothing.
         const TerrainEdit edit = before_name == terrain->script_name.c_str() ? terrain_edit_kind(before, terrain->data)
                                                                               : TerrainEdit::other;
-        if (edit == TerrainEdit::overlays_or_decorations) mark_level_modified();
+        if (edit == TerrainEdit::look_only) mark_level_modified();
         else if (edit == TerrainEdit::other) level->mark_geometry_dirty();
         if (terrain_decoration_lighting_hash(terrain->uid, terrain->pos, terrain->data) != before_light) {
             terrain_preview_lighting_changed(terrain);
