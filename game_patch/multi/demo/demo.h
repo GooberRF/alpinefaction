@@ -148,6 +148,9 @@ void demo_playback_render();
 // Powerup respawn timers (demo_powerup_timers.cpp); called from hud render right
 // after demo_playback_render. Gated on the DemoPowerupTimers setting.
 void demo_powerup_timers_render();
+// Called after every processed item_update packet, the only channel through which a
+// spectator learns about level-item pickups/respawns.
+void demo_powerup_timers_on_item_update();
 // Full-screen "SEEKING..." overlay with progress; called from after_frame_render_hook
 // (the world render - including the HUD - is skipped while seeking).
 void demo_playback_render_seek_overlay();

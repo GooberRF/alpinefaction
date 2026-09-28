@@ -541,6 +541,7 @@ struct RF_ItemUpdatePacket
 {
     struct RF_GamePacketHeader header; // RF_GPT_ITEM_UPDATE
     uint8_t level_items_bitmap[25];    // Bitmap of visible static items (loaded from RFL). Maximal number of visible items is 25*8=200
+                                       // (for v306+ levels AF servers size the bitmap by header.size, up to 188 bytes)
 };
 
 enum RF_Weapon

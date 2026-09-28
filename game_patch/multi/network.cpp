@@ -27,6 +27,7 @@
 #include <patch_common/CodeInjection.h>
 #include <patch_common/AsmWriter.h>
 #include <patch_common/ShortTypes.h>
+#include <patch_common/StaticBufferResizePatch.h>
 #include "network.h"
 #include "tracker.h"
 #include "multi.h"
@@ -2892,6 +2893,22 @@ static std::array<
     rf::NET_MAX_REL_SOCKETS
 > g_send_queues_rel{};
 
+// Deferred reliable sends keep RESERVE_SEND_SLOTS free and spend at most QUEUE_FACTOR of
+// the free slots above that per frame.
+static constexpr int RESERVE_SEND_SLOTS = 32;
+static constexpr float QUEUE_FACTOR = .3f;
+
+static int net_rel_free_send_slots(const int socket_id)
+{
+    int empty_send_slots = 0;
+    for (const void* const sbuffers : rf::net_rel_sockets[socket_id].sbuffers) {
+        if (!sbuffers) {
+            ++empty_send_slots;
+        }
+    }
+    return empty_send_slots;
+}
+
 void send_queues_rel_clear_packets(const int socket_id) {
     if (socket_id >= 0 && socket_id < std::size(g_send_queues_rel)) {
         g_send_queues_rel[socket_id].clear();
@@ -3263,6 +3280,185 @@ FunHook<void(rf::Item*, rf::Player*, int16_t)> send_item_create_packet_hook{
     },
 };
 
+// item_update replicates the level item table as a bitmap, which must fit in one packet.
+static constexpr int MAX_ITEM_UPDATE_BITMAP_LEN = (extended_item_limit + 7) / 8;
+static_assert(sizeof(RF_GamePacketHeader) + MAX_ITEM_UPDATE_BITMAP_LEN <= rf::max_packet_size);
+
+StaticBufferResizePatch<int> level_item_handles_resize_patch{
+    0x006D5DC0,
+    stock_item_limit,
+    extended_item_limit,
+    {
+        {0x0045C64B},
+        {0x0047A0D5},
+        {0x004797F5},
+        {0x004817BB},
+    },
+};
+
+// Replaces the stock append, which stops at 200 and crashes on a failed item_create.
+CodeInjection level_load_item_append_injection{
+    0x00465191,
+    [](auto& regs) {
+        const rf::Item* const item = regs.eax;
+        if (item && rf::num_level_items < extended_item_limit) {
+            level_item_handles_resize_patch[rf::num_level_items++] = item->handle;
+        }
+        regs.eip = 0x004651C6;
+    },
+    false
+};
+
+static rf::Item* level_item_from_index(const int index)
+{
+    const int handle = level_item_handles_resize_patch[index];
+    return handle >= 0 ? rf::item_from_handle(handle) : nullptr;
+}
+
+// Pre-v306 levels are limited to 200 items, so they still get the stock 25-byte bitmap.
+FunHook<void()> send_item_update_packet_hook{
+    0x0047A0F0,
+    [] {
+        const int num_items = rf::num_level_items;
+        const int bitmap_len = std::max(stock_item_limit, num_items + 7) / 8;
+
+        std::array<uint8_t, sizeof(RF_GamePacketHeader) + MAX_ITEM_UPDATE_BITMAP_LEN> packet{};
+        const RF_GamePacketHeader header{
+            .type = RF_GPT_ITEM_UPDATE,
+            .size = static_cast<uint16_t>(bitmap_len),
+        };
+        std::memcpy(packet.data(), &header, sizeof(header));
+        uint8_t* const bitmap = packet.data() + sizeof(header);
+        for (int i = 0; i < num_items; ++i) {
+            const rf::Item* const item = level_item_from_index(i);
+            if (item && !(item->obj_flags & rf::OF_HIDDEN)) {
+                bitmap[i / 8] |= 1 << (i % 8);
+            }
+        }
+
+        const int packet_len = static_cast<int>(sizeof(header)) + bitmap_len;
+        for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
+            if (&player != rf::local_player
+                && (!player.net_data || player.net_data->state == rf::NETPLAYER_STATE_IN_GAME)) {
+                rf::multi_io_send(&player, packet.data(), packet_len);
+            }
+        }
+    },
+};
+
+FunHook<MultiIoPacketHandler> process_item_update_packet_hook{
+    0x0047A220,
+    [](char* data, [[maybe_unused]] const rf::NetAddr& addr) {
+        size_t bitmap_len = stock_item_limit / 8;
+        multi_io_subpacket_remaining(data, bitmap_len);
+        const int num_bits = std::min(
+            static_cast<int>(std::min<size_t>(bitmap_len, MAX_ITEM_UPDATE_BITMAP_LEN)) * 8, extended_item_limit);
+
+        const auto* const bitmap = reinterpret_cast<const uint8_t*>(data);
+        for (int i = 0; i < num_bits; ++i) {
+            rf::Item* const item = level_item_from_index(i);
+            if (!item) {
+                continue;
+            }
+            if (bitmap[i / 8] & (1 << (i % 8))) {
+                rf::item_unhide(item);
+            }
+            else {
+                if (!(item->obj_flags & rf::OF_HIDDEN)) {
+                    rf::item_play_pickup_sound(item);
+                }
+                rf::obj_hide(item);
+            }
+        }
+        demo_powerup_timers_on_item_update();
+    },
+};
+
+// Leaves room in the reliable socket for everything send_state_info sends after the items.
+static constexpr int JOIN_RESERVE_SEND_SLOTS = 40;
+
+static constexpr int CTF_ITEM_FLAGS =
+    rf::IF_RED_FLAG | rf::IF_BLUE_FLAG | rf::IF_RED_BASE | rf::IF_BLUE_BASE | rf::IF_CTF_FLAG;
+
+static bool is_ctf_item(const rf::Item& item)
+{
+    return (item.item_flags & CTF_ITEM_FLAGS) != 0;
+}
+
+// CTF flags and bases go first and are never deferred: the CTF state follows the items.
+static void send_level_items_on_join(rf::Player* const player)
+{
+    const auto socket_id = static_cast<int>(player->net_data->reliable_socket);
+    const bool can_defer = socket_id >= 0 && socket_id < rf::NET_MAX_REL_SOCKETS;
+
+    for (const bool ctf_pass : {true, false}) {
+        for (int i = 0; i < rf::num_level_items; ++i) {
+            rf::Item* const item = level_item_from_index(i);
+            if (!item || is_ctf_item(*item) != ctf_pass) {
+                continue;
+            }
+            if (!ctf_pass && can_defer && net_rel_free_send_slots(socket_id) <= JOIN_RESERVE_SEND_SLOTS) {
+                player->next_pending_level_item = i;
+                return;
+            }
+            rf::send_item_create_packet(item, player, static_cast<int16_t>(i));
+        }
+    }
+}
+
+CodeInjection send_state_info_level_items_injection{
+    0x004817AF,
+    [](auto& regs) {
+        rf::Player* const player = regs.edi;
+        player->next_pending_level_item = -1;
+        if (level_allows_extra_items()) {
+            send_level_items_on_join(player);
+            regs.eip = 0x004817E9;
+        }
+    },
+};
+
+// A level change sets every player WAITING, and send_state_info resets the index before
+// making them IN_GAME again, so a pending index never outlives its level.
+static void send_pending_level_items()
+{
+    for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
+        if (player.next_pending_level_item < 0 || !player.net_data
+            || player.net_data->state != rf::NETPLAYER_STATE_IN_GAME) {
+            continue;
+        }
+        const auto socket_id = static_cast<int>(player.net_data->reliable_socket);
+        if (socket_id < 0 || socket_id >= rf::NET_MAX_REL_SOCKETS
+            || rf::net_rel_sockets[socket_id].status != rf::NetReliableSocketStatus::CONNECTED) {
+            continue;
+        }
+        const int empty_send_slots = net_rel_free_send_slots(socket_id);
+        if (empty_send_slots <= RESERVE_SEND_SLOTS) {
+            continue;
+        }
+        // Budgeted in free send slots rather than packets: item_create packets share the
+        // player's reliable buffer, which only takes a slot when it flushes.
+        const int min_empty_send_slots = empty_send_slots - static_cast<int>(
+            static_cast<float>(empty_send_slots - RESERVE_SEND_SLOTS) * QUEUE_FACTOR);
+
+        int& index = player.next_pending_level_item;
+        bool sent = false;
+        while (index >= 0 && net_rel_free_send_slots(socket_id) > min_empty_send_slots) {
+            rf::Item* const item = index < rf::num_level_items ? level_item_from_index(index) : nullptr;
+            if (item && !is_ctf_item(*item)) {
+                rf::send_item_create_packet(item, &player, static_cast<int16_t>(index));
+                sent = true;
+            }
+            if (++index >= rf::num_level_items) {
+                index = -1;
+            }
+        }
+        if (sent) {
+            rf::multi_io_send_buffered_reliable_packets(&player);
+        }
+    }
+}
+
 extern FunHook<void __fastcall(void*, int, int, bool, int)> multi_io_stats_add_hook;
 
 void __fastcall multi_io_stats_add_new(void *this_, int edx, int size, bool is_send, int packet_type)
@@ -3563,19 +3759,11 @@ FunHook<void()> multi_io_do_frame_hook{
                 continue;
             }
 
-            int empty_send_slots = 0;
-            for (const void* const sbuffers : rf::net_rel_sockets[i].sbuffers) {
-                if (!sbuffers) {
-                    ++empty_send_slots;
-                }
-            }
-
-            constexpr int RESERVE_SEND_SLOTS = 32;
+            const int empty_send_slots = net_rel_free_send_slots(i);
             if (empty_send_slots <= RESERVE_SEND_SLOTS) {
                 continue;
             }
 
-            constexpr float QUEUE_FACTOR = .3f;
             int send_limit = static_cast<int>(
                 static_cast<float>(empty_send_slots - RESERVE_SEND_SLOTS)
                     * QUEUE_FACTOR
@@ -3596,6 +3784,8 @@ FunHook<void()> multi_io_do_frame_hook{
                 }
             }
         }
+
+        send_pending_level_items();
     },
 };
 
@@ -3853,6 +4043,15 @@ void network_init()
 
     // Never replicate items that are already flagged dead
     send_item_create_packet_hook.install();
+
+    // Raise the 200 level item limit for v306+ levels
+    level_item_handles_resize_patch.install();
+    write_mem<i32>(0x0045C643 + 1, extended_item_limit); // level init clear
+    write_mem<i16>(0x0047A0C9 + 2, extended_item_limit); // process_item_create_packet
+    level_load_item_append_injection.install();
+    send_item_update_packet_hook.install();
+    process_item_update_packet_hook.install();
+    send_state_info_level_items_injection.install();
 
     // Use spawnpoint team property in TeamDM game (PF compatible)
     write_mem<u8>(0x00470395 + 4, 0); // change cmp argument: CTF -> DM
