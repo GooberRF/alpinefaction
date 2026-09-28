@@ -797,30 +797,27 @@ void build_ephemeral_world_hud_sprite_icons() {
         return !es.timestamp.valid() || es.timestamp.elapsed();
     });
 
-    for (const auto& es : ephemeral_world_hud_sprites) {
-        const int font = get_world_hud_font(g_alpine_game_config.get_world_hud_ping_label_text_scale());
+    if (ephemeral_world_hud_sprites.empty()) {
+        return;
+    }
 
-        rf::gr::set_color(es.color.red, es.color.green, es.color.blue, es.color.alpha);
+    const int base_font = get_world_hud_font(1.f);
+    const int font =
+        get_world_hud_font(g_alpine_game_config.get_world_hud_ping_label_text_scale());
+
+    for (const auto& es : ephemeral_world_hud_sprites) {
+        rf::gr::set_color(es.color);
         if (es.bitmap != -1) {
             do_render_world_hud_sprite(es.pos, 1.0f, es.bitmap, es.render_mode, true, true, true);
         }
 
-        // determine label width
+        // Determine label's width.
         const auto [text_width, text_height] = rf::gr::get_string_size(es.label, font);
         const int half_text_width = text_width / 2;
-
-        const int base_font = get_world_hud_font(1.f);
         const int base_text_height = rf::gr::get_font_height(base_font);
         const int offset_y = -25 - (text_height - base_text_height);
 
-        render_string_3d(
-            es.pos,
-            es.label.c_str(),
-            -half_text_width,
-            offset_y,
-            font,
-            es.color
-        );
+        render_string_3d(es.pos, es.label.c_str(), -half_text_width, offset_y, font, es.color);
     }
 }
 
@@ -832,10 +829,19 @@ void build_ephemeral_world_hud_strings() {
         return !es.timestamp.valid() || es.timestamp.elapsed();
     });
 
+    if (ephemeral_world_hud_strings.empty()) {
+        return;
+    }
+
+    const int base_font = get_world_hud_font(1.f);
+    const int dmg_font =
+         get_world_hud_font(g_alpine_game_config.get_world_hud_damage_text_scale());
+    const int critical_font = get_world_hud_font(
+        g_alpine_game_config.get_world_hud_damage_text_scale() * world_hud_crit_damage_text_scale
+    );
+
     for (const EphemeralWorldHUDString& es : ephemeral_world_hud_strings) {
-        const float text_scale = g_alpine_game_config.get_world_hud_damage_text_scale()
-            * (es.crit ? world_hud_crit_damage_text_scale : 1.f);
-        const int font = get_world_hud_font(text_scale);
+        const int font = es.crit ? critical_font : dmg_font;
         rf::Vector3 string_pos = es.pos;
         string_pos.y += .85f;
 
@@ -857,8 +863,6 @@ void build_ephemeral_world_hud_strings() {
         const std::string label = std::to_string(es.damage);
         const auto [text_width, text_height] = rf::gr::get_string_size(label, font);
         const int half_text_width = text_width / 2;
-
-        const int base_font = get_world_hud_font(1.f);
         const int base_text_height = rf::gr::get_font_height(base_font);
         const int centered_offset_y = -25 - ((text_height - base_text_height) / 2);
 
