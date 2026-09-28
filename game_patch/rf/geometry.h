@@ -62,10 +62,11 @@ namespace rf
         FACE_FULL_BRIGHT = 0x20,
         FACE_SEE_THRU = 0x40,
         FACE_INVISIBLE = 0x2000,
-        // Boolean state, see boolean_face_set_type and boolean_face_set_intersected
+        // Boolean face state. State 2 (0x004DC990) marks both faces of a pair it intersected (0x004DEA10);
+        // state 0 (0x004DBDF0) clears the mark and gives the second operand's faces type 1 (0x004DEA30).
         FACE_BOOLEAN_TYPE_1 = 0x800000,
         FACE_BOOLEAN_INTERSECTED = 0x8000000,
-        // The side a boolean classified the face on, bits 28-30 (boolean_face_set_side)
+        // The side a boolean classified the face on, bits 28-30 (0x004DE9E0)
         FACE_BOOLEAN_SIDE = 0x70000000,
     };
     constexpr int face_boolean_side_shift = 28;
@@ -683,28 +684,6 @@ namespace rf
     // The rooms the boolean changed, which state 5 relinks the detail rooms of
     static auto& g_boolean_affected_rooms = addr_as_ref<GRoom*[(0x00C9F638 - 0x00C9F4DC) / 4]>(0x00C9F4DC);
     static auto& g_boolean_num_affected_rooms = addr_as_ref<int>(0x00C9F638);
-
-    // Boolean face state, on GFaceAttributes::flags. State 2 (0x004DC990) marks both faces of a pair it
-    // intersected; state 0 (0x004DBDF0) clears the mark and gives the second operand's faces type 1.
-    inline void boolean_face_set_intersected(uint* flags, bool intersected)
-    {
-        AddrCaller{0x004DEA10}.this_call(flags, intersected);
-    }
-
-    inline void boolean_face_set_type(uint* flags, int type)
-    {
-        AddrCaller{0x004DEA30}.this_call(flags, type);
-    }
-
-    inline void boolean_face_set_side(uint* flags, int side)
-    {
-        AddrCaller{0x004DE9E0}.this_call(flags, side);
-    }
-
-    inline bool face_flags_is_detail(const uint* flags)
-    {
-        return AddrCaller{0x004909B0}.this_call<bool>(flags);
-    }
     static auto& g_level_solid = addr_as_ref<GSolid*>(0x006460E8);
     static auto& g_geomod_crater_solid = addr_as_ref<GSolid*>(0x00646A20);
     static auto& geomod_get_crater_solid = addr_as_ref<GSolid*(int shape_index)>(0x004375B0); // null if out of range

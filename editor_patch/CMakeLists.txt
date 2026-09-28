@@ -37,6 +37,8 @@ set(SRCS
     terrain.h
     terrain_build.cpp
     terrain_build.h
+    terrain_generate.cpp
+    terrain_generate.h
     terrain_paint.cpp
     terrain_paint.h
     terrain_paint_math.h

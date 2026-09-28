@@ -1431,7 +1431,7 @@ static bool light_rays_setup(uintptr_t light, LightRays& lr)
     const auto* l = reinterpret_cast<const GrLight*>(light);
     lr.type = l->type;
     // while a mover transform is pushed the engine keeps the light in the solid's own space
-    const int local = *reinterpret_cast<int*>(0x0158f414) != 0 ? 0x50 : 0;
+    const bool local = *reinterpret_cast<int*>(0x0158f414) != 0;
     lr.vec = local ? &l->local_vec.x : &l->vec.x;
     lr.vec_end = local ? &l->local_vec2.x : &l->vec2.x;
     lr.radius = l->rad_2;

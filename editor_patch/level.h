@@ -333,7 +333,8 @@ static_assert(offsetof(GLightmap, index) == 0x14);
 // The level's lightmap pages, written as the 0x1200 section by FUN_00430bf0.
 static auto& lightmap_pages = addr_as_ref<VArray<GLightmap*>>(0x01128678);
 
-// GSurface::flags: the work FUN_004ac470 does on the surface, all cleared when it returns.
+// GSurface::flags: the work FUN_004ac470 does on the surface, all cleared when it returns unless the surface
+// has zero width or height.
 enum GSurfaceFlags
 {
     SURFACE_DYNAMIC_LIGHTS = 0x1, // the lightmap plus the dynamic lights reaching it, into its bitmap

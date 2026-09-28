@@ -5,7 +5,6 @@
 // Forward declarations
 namespace rf {
     struct ImpactSoundSet;
-    struct GRoom;
     enum class DetailMaterial : uint8_t;
 }
 
@@ -65,6 +64,3 @@ bool brush_uid_is_breakable(int brush_uid);
 void apply_geoable_flags();
 void apply_breakable_materials();
 void g_solid_set_rf2_geo_limit(int limit);
-// dbg_geomod_timing: renderers report their cache rebuilds for geoable rooms through these.
-bool geomod_timing_enabled();
-void geomod_timing_report(const char* what, const rf::GRoom* room, int64_t us);

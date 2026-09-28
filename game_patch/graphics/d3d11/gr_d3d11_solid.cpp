@@ -19,7 +19,6 @@
 #include "../../misc/misc.h"
 #include "../../misc/alpine_options.h"
 #include "../../misc/alpine_terrain.h"
-#include "../../misc/destruction.h"
 #include "../../os/os.h"
 #include "../af_lightmap.h"
 #include "gr_d3d11.h"
@@ -1011,8 +1010,6 @@ namespace gr::d3d11
         if (!cache) {
             xlog::debug("Creating render cache for detail room {} (faces: {})",
                 room->room_index, room->face_list.size());
-            const bool timing = room->is_geoable && geomod_timing_enabled();
-            const int64_t start = timing ? timer::get_i64(1000000) : 0;
             GRenderCacheBuilder builder;
             if (terrain_pixel_shader_ && terrain_pixel_shader_no_gas_) {
                 builder.enable_terrain(terrain_renderer_);
@@ -1027,9 +1024,6 @@ namespace gr::d3d11
             }
             else {
                 room->geo_cache = k_empty_detail_sentinel;
-            }
-            if (timing) {
-                geomod_timing_report("D3D11 cache build", room, timer::get_i64(1000000) - start);
             }
             xlog::debug("Detail room {} cache creation complete", room->room_index);
         }

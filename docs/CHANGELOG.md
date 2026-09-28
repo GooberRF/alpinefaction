@@ -18,6 +18,7 @@ Version 1.5.0 (Trillium): Not yet released
   - `Water blocks sunlight` stops sun rays at liquid surfaces during the bake
 - Add `Terrain` object to level editor: heightmap terrain with up to 8 blended texture layers, holes, optional skirts, and per-terrain lightmap density
   - Import and export 8/16-bit greyscale PNG and RAW16 heightmaps, and import splat maps
+  - Generate heightmaps from `Generate...` in Terrain Properties: fractal noise (fBm, ridged, billow, hybrid), domain warp, terracing, edge falloff, and thermal and hydraulic erosion, with a live preview and an optional splat map from height, slope and ridges
   - Sculpt heights (`Raise`, `Lower`, `Smooth Heights`, `Flatten`, `Set Height`, `Noise`, `Ramp`, `Ramp Between Points`), paint texture layers and holes, and pick geoable chunks in the viewport with `Terrain Tools`
   - Up to 4 detail overlays per terrain: textures with alpha (leaves, debris) painted over the layers by their own coverage, with optional tiling break-up (Direct3D 11 renderer only)
   - `Geoable` terrains are carved by RF2-style geomod craters, with their own underside and crater textures

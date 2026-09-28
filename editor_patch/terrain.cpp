@@ -7,9 +7,11 @@
 #include <cmath>
 #include <string>
 #include <algorithm>
+#include <chrono>
 #include <format>
 #include <memory>
 #include <new>
+#include <random>
 #include <vector>
 #include <zlib.h>
 #include <stb_image.h>
@@ -23,6 +25,7 @@
 #include "headless_bake.h"
 #include "terrain.h"
 #include "terrain_build.h"
+#include "terrain_generate.h"
 #include "terrain_paint.h"
 #include "terrain_paint_math.h"
 #include "terrain_preview.h"
@@ -1699,6 +1702,412 @@ static void terrain_dlg_guard(HWND hdlg, const char* message, F&& edit)
     }
 }
 
+// ─── Generate Terrain ───────────────────────────────────────────────────────
+
+namespace
+{
+
+// Fields shown as `scale` times the setting (percentages), within [lo, hi] as shown.
+struct TerrainGenFloatField
+{
+    int edit, spin;
+    float TerrainGenSettings::*value;
+    float scale, step, lo, hi;
+    int decimals;
+};
+
+constexpr TerrainGenFloatField terrain_gen_float_fields[] = {
+    {IDC_TGEN_FEATURE, IDC_TGEN_FEATURE_SPIN, &TerrainGenSettings::feature_size, 1.0f, 4.0f, 1.0f, 65536.0f, 1},
+    {IDC_TGEN_ROUGHNESS, IDC_TGEN_ROUGHNESS_SPIN, &TerrainGenSettings::roughness, 1.0f, 0.05f, 0.1f, 0.9f, 2},
+    {IDC_TGEN_LACUNARITY, IDC_TGEN_LACUNARITY_SPIN, &TerrainGenSettings::lacunarity, 1.0f, 0.05f, 1.25f, 4.0f, 2},
+    {IDC_TGEN_WARP, IDC_TGEN_WARP_SPIN, &TerrainGenSettings::warp, 1.0f, 0.05f, 0.0f, 2.0f, 2},
+    {IDC_TGEN_EXPONENT, IDC_TGEN_EXPONENT_SPIN, &TerrainGenSettings::exponent, 1.0f, 0.05f, 0.2f, 5.0f, 2},
+    {IDC_TGEN_OFFSET, IDC_TGEN_OFFSET_SPIN, &TerrainGenSettings::offset, 100.0f, 1.0f, -50.0f, 50.0f, 0},
+    {IDC_TGEN_FALLOFF_WIDTH, IDC_TGEN_FALLOFF_WIDTH_SPIN, &TerrainGenSettings::falloff_width, 100.0f, 1.0f, 2.0f,
+     100.0f, 0},
+    {IDC_TGEN_TALUS, IDC_TGEN_TALUS_SPIN, &TerrainGenSettings::talus_deg, 1.0f, 1.0f, 5.0f, 75.0f, 1},
+    {IDC_TGEN_STRENGTH, IDC_TGEN_STRENGTH_SPIN, &TerrainGenSettings::erosion_strength, 100.0f, 5.0f, 0.0f, 100.0f, 0},
+    {IDC_TGEN_SLOPE, IDC_TGEN_SLOPE_SPIN, &TerrainGenSettings::slope_deg, 1.0f, 1.0f, 0.0f, 89.0f, 1},
+    {IDC_TGEN_SLOPE_BLEND, IDC_TGEN_SLOPE_BLEND_SPIN, &TerrainGenSettings::slope_blend_deg, 1.0f, 1.0f, 0.0f, 45.0f, 1},
+    {IDC_TGEN_HIGH, IDC_TGEN_HIGH_SPIN, &TerrainGenSettings::high_start, 100.0f, 1.0f, 0.0f, 100.0f, 0},
+    {IDC_TGEN_HIGH_BLEND, IDC_TGEN_HIGH_BLEND_SPIN, &TerrainGenSettings::high_blend, 100.0f, 1.0f, 0.0f, 100.0f, 0},
+    {IDC_TGEN_VARIATION, IDC_TGEN_VARIATION_SPIN, &TerrainGenSettings::variation, 100.0f, 5.0f, 0.0f, 100.0f, 0},
+    {IDC_TGEN_VARIATION_SIZE, IDC_TGEN_VARIATION_SIZE_SPIN, &TerrainGenSettings::variation_size, 1.0f, 1.0f, 1.0f,
+     65536.0f, 1},
+    {IDC_TGEN_RIDGE, IDC_TGEN_RIDGE_SPIN, &TerrainGenSettings::ridge_emphasis, 100.0f, 5.0f, 0.0f, 100.0f, 0},
+};
+
+struct TerrainGenIntField
+{
+    int edit, spin;
+    int TerrainGenSettings::*value;
+    int step, lo, hi;
+};
+
+constexpr TerrainGenIntField terrain_gen_int_fields[] = {
+    {IDC_TGEN_OCTAVES, IDC_TGEN_OCTAVES_SPIN, &TerrainGenSettings::octaves, 1, 1, 10},
+    {IDC_TGEN_TERRACES, IDC_TGEN_TERRACES_SPIN, &TerrainGenSettings::terraces, 1, 0, 64},
+    {IDC_TGEN_THERMAL, IDC_TGEN_THERMAL_SPIN, &TerrainGenSettings::thermal_iterations, 5, 0, 100},
+    {IDC_TGEN_DROPLETS, IDC_TGEN_DROPLETS_SPIN, &TerrainGenSettings::droplets, 5000, 0, 100000},
+    {IDC_TGEN_SMOOTH, IDC_TGEN_SMOOTH_SPIN, &TerrainGenSettings::smooth_passes, 1, 0, 10},
+};
+
+constexpr int terrain_gen_splat_controls[] = {
+    IDC_TGEN_SPLAT_LAYERS,        IDC_TGEN_SLOPE,     IDC_TGEN_SLOPE_SPIN,     IDC_TGEN_SLOPE_BLEND,
+    IDC_TGEN_SLOPE_BLEND_SPIN,    IDC_TGEN_HIGH,      IDC_TGEN_HIGH_SPIN,      IDC_TGEN_HIGH_BLEND,
+    IDC_TGEN_HIGH_BLEND_SPIN,     IDC_TGEN_VARIATION, IDC_TGEN_VARIATION_SPIN, IDC_TGEN_VARIATION_SIZE,
+    IDC_TGEN_VARIATION_SIZE_SPIN, IDC_TGEN_RIDGE,     IDC_TGEN_RIDGE_SPIN,     IDC_TGEN_PREVIEW_SPLAT};
+
+// Option changes regenerate once typing pauses.
+constexpr UINT_PTR terrain_gen_timer = 1;
+constexpr UINT terrain_gen_delay_ms = 250;
+
+struct TerrainGenerateState
+{
+    // The options last used, kept for the session; sizes default from the first terrain's extent.
+    TerrainGenSettings settings;
+    bool sized = false;
+    int splat_base = 0;
+    TerrainGenPreview preview = TerrainGenPreview::shaded;
+
+    // The open dialog: its grid and height mapping, and the result OK applies.
+    uint32_t nx = 0, nz = 0;
+    float height_min = 0.0f, height_range = at::default_height_range;
+    bool pending = false;
+    bool result_valid = false;
+    TerrainGenResult result;
+    std::vector<uint32_t> pixels;
+    int pixels_size = 0;
+};
+TerrainGenerateState g_terrain_gen;
+
+} // namespace
+
+static void terrain_gen_default_sizes(TerrainGenSettings& s)
+{
+    const TerrainGrid& g = *g_terrain_dlg.data.grid;
+    const float extent =
+        std::max(at::extent(g.nx, g_terrain_dlg.data.cell_size), at::extent(g.nz, g_terrain_dlg.data.cell_size));
+    s.feature_size = std::max(std::round(extent * 0.5f), 1.0f);
+    s.variation_size = std::max(std::round(extent * 0.1f), 1.0f);
+}
+
+static void terrain_gen_load_fields(HWND hdlg)
+{
+    const TerrainGenSettings& s = g_terrain_gen.settings;
+    SetDlgItemInt(hdlg, IDC_TGEN_NX, g_terrain_gen.nx, FALSE);
+    SetDlgItemInt(hdlg, IDC_TGEN_NZ, g_terrain_gen.nz, FALSE);
+    terrain_set_float_field(hdlg, IDC_TGEN_HEIGHT_MIN, g_terrain_gen.height_min);
+    terrain_set_float_field(hdlg, IDC_TGEN_HEIGHT_RANGE, g_terrain_gen.height_range);
+    alpine_dlg_combo_select(hdlg, IDC_TGEN_TYPE, static_cast<LPARAM>(s.type));
+    SetDlgItemTextA(hdlg, IDC_TGEN_SEED, std::to_string(s.seed).c_str());
+    for (const TerrainGenFloatField& f : terrain_gen_float_fields) {
+        char buf[32];
+        std::snprintf(buf, sizeof(buf), "%.6g", static_cast<double>(s.*f.value * f.scale));
+        SetDlgItemTextA(hdlg, f.edit, buf);
+    }
+    for (const TerrainGenIntField& f : terrain_gen_int_fields) SetDlgItemInt(hdlg, f.edit, s.*f.value, TRUE);
+    alpine_dlg_combo_select(hdlg, IDC_TGEN_FALLOFF, static_cast<LPARAM>(s.falloff));
+    CheckDlgButton(hdlg, IDC_TGEN_SPLAT, s.splat ? BST_CHECKED : BST_UNCHECKED);
+    alpine_dlg_combo_select(hdlg, IDC_TGEN_SPLAT_LAYERS, g_terrain_gen.splat_base);
+}
+
+static void terrain_gen_read_fields(HWND hdlg)
+{
+    TerrainGenSettings& s = g_terrain_gen.settings;
+    const auto verts = [&](int idc) {
+        return static_cast<uint32_t>(std::clamp(alpine_dlg_get_int_field(hdlg, idc), static_cast<int>(at::min_verts),
+                                                static_cast<int>(at::max_verts)));
+    };
+    g_terrain_gen.nx = verts(IDC_TGEN_NX);
+    g_terrain_gen.nz = verts(IDC_TGEN_NZ);
+    g_terrain_gen.height_min =
+        at::clamp_finite(terrain_get_float_field(hdlg, IDC_TGEN_HEIGHT_MIN, g_terrain_gen.height_min), -at::max_coord,
+                         at::max_coord, g_terrain_gen.height_min);
+    g_terrain_gen.height_range =
+        at::clamp_finite(terrain_get_float_field(hdlg, IDC_TGEN_HEIGHT_RANGE, g_terrain_gen.height_range),
+                         at::min_height_range, at::max_height_range, g_terrain_gen.height_range);
+    s.type = static_cast<TerrainNoiseType>(alpine_dlg_combo_data(hdlg, IDC_TGEN_TYPE, static_cast<LRESULT>(s.type)));
+    s.seed = static_cast<uint32_t>(std::strtoul(terrain_get_text(hdlg, IDC_TGEN_SEED).c_str(), nullptr, 10));
+    for (const TerrainGenFloatField& f : terrain_gen_float_fields) {
+        const float shown = alpine_dlg_get_float_field(hdlg, f.edit);
+        if (std::isfinite(shown)) {
+            s.*f.value = std::clamp(shown, f.lo, f.hi) / f.scale;
+        }
+    }
+    for (const TerrainGenIntField& f : terrain_gen_int_fields) {
+        s.*f.value = std::clamp(alpine_dlg_get_int_field(hdlg, f.edit), f.lo, f.hi);
+    }
+    s.falloff =
+        static_cast<TerrainEdgeFalloff>(alpine_dlg_combo_data(hdlg, IDC_TGEN_FALLOFF, static_cast<LRESULT>(s.falloff)));
+    s.splat = IsDlgButtonChecked(hdlg, IDC_TGEN_SPLAT) == BST_CHECKED;
+    g_terrain_gen.splat_base = alpine_dlg_combo_data(hdlg, IDC_TGEN_SPLAT_LAYERS, 0) == 4 ? 4 : 0;
+}
+
+static void terrain_gen_update_state(HWND hdlg)
+{
+    const bool splat = IsDlgButtonChecked(hdlg, IDC_TGEN_SPLAT) == BST_CHECKED;
+    for (int id : terrain_gen_splat_controls) EnableWindow(GetDlgItem(hdlg, id), splat);
+    if (!splat && g_terrain_gen.preview == TerrainGenPreview::splat) {
+        g_terrain_gen.preview = TerrainGenPreview::shaded;
+    }
+    const int preview_ids[] = {IDC_TGEN_PREVIEW_HEIGHT, IDC_TGEN_PREVIEW_SHADED, IDC_TGEN_PREVIEW_SPLAT};
+    CheckRadioButton(hdlg, IDC_TGEN_PREVIEW_HEIGHT, IDC_TGEN_PREVIEW_SPLAT,
+                     preview_ids[static_cast<int>(g_terrain_gen.preview)]);
+}
+
+static void terrain_gen_render_preview(HWND hdlg)
+{
+    HWND ctrl = GetDlgItem(hdlg, IDC_TGEN_PREVIEW);
+    RECT rc{};
+    GetClientRect(ctrl, &rc);
+    g_terrain_gen.pixels_size = std::max<int>(std::min(rc.right - rc.left, rc.bottom - rc.top), 0);
+    if (g_terrain_gen.result_valid) {
+        terrain_generate_preview(g_terrain_gen.result, g_terrain_gen.preview, g_terrain_gen.pixels_size,
+                                 g_terrain_gen.pixels);
+    }
+    else {
+        g_terrain_gen.pixels.clear();
+    }
+    InvalidateRect(ctrl, nullptr, TRUE);
+}
+
+static void terrain_gen_draw_preview(const DRAWITEMSTRUCT& dis)
+{
+    FillRect(dis.hDC, &dis.rcItem, GetSysColorBrush(COLOR_BTNFACE));
+    const int size = g_terrain_gen.pixels_size;
+    if (size <= 0 || g_terrain_gen.pixels.size() != static_cast<std::size_t>(size) * size) return;
+    BITMAPINFO info{};
+    info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    info.bmiHeader.biWidth = size;
+    info.bmiHeader.biHeight = -size;
+    info.bmiHeader.biPlanes = 1;
+    info.bmiHeader.biBitCount = 32;
+    info.bmiHeader.biCompression = BI_RGB;
+    const int x = dis.rcItem.left + (dis.rcItem.right - dis.rcItem.left - size) / 2;
+    const int y = dis.rcItem.top + (dis.rcItem.bottom - dis.rcItem.top - size) / 2;
+    SetDIBitsToDevice(dis.hDC, x, y, size, size, 0, 0, 0, size, g_terrain_gen.pixels.data(), &info, DIB_RGB_COLORS);
+}
+
+static void terrain_gen_regenerate(HWND hdlg)
+{
+    KillTimer(hdlg, terrain_gen_timer);
+    g_terrain_gen.pending = false;
+    terrain_gen_read_fields(hdlg);
+    const TerrainGenSettings& s = g_terrain_gen.settings;
+    const float cell_size = g_terrain_dlg.data.cell_size;
+    char buf[512];
+    std::snprintf(buf, sizeof(buf), "%.3g cells", s.feature_size / cell_size);
+    SetDlgItemTextA(hdlg, IDC_TGEN_FEATURE_INFO, buf);
+
+    TerrainGenInput in;
+    in.nx = g_terrain_gen.nx;
+    in.nz = g_terrain_gen.nz;
+    in.weight_res_mul = g_terrain_dlg.data.grid->weight_res_mul;
+    in.cell_size = cell_size;
+    in.height_range = g_terrain_gen.height_range;
+    HCURSOR cursor = SetCursor(LoadCursor(nullptr, IDC_WAIT));
+    const auto start = std::chrono::steady_clock::now();
+    g_terrain_gen.result_valid = false;
+    try {
+        terrain_generate(s, in, g_terrain_gen.result);
+        g_terrain_gen.result_valid = true;
+    }
+    catch (const std::bad_alloc&) {
+        g_terrain_gen.result = {};
+    }
+    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start);
+    SetCursor(cursor);
+
+    const TerrainGenResult& r = g_terrain_gen.result;
+    if (!g_terrain_gen.result_valid) {
+        std::snprintf(buf, sizeof(buf), "There is not enough memory to generate this terrain.");
+    }
+    else {
+        int n = std::snprintf(buf, sizeof(buf),
+                              "Heights span %.6g to %.6g (Height Min to Height Min + Height Range).\n\n"
+                              "Slope: mean %.1f deg, max %.1f deg; %.0f%% steeper than %.4g deg.\n\n",
+                              g_terrain_gen.height_min, g_terrain_gen.height_min + g_terrain_gen.height_range,
+                              r.slope_mean_deg, r.slope_max_deg, r.steep_share * 100.0f, s.slope_deg);
+        if (!r.splat.empty()) {
+            const int first = g_terrain_gen.splat_base + 1;
+            n += std::snprintf(buf + n, sizeof(buf) - n,
+                               "Layers %d-%d: base %.0f%%, slope %.0f%%, high %.0f%%, variation %.0f%%.\n\n", first,
+                               first + 3, r.coverage[terrain_gen_base] * 100.0f, r.coverage[terrain_gen_slope] * 100.0f,
+                               r.coverage[terrain_gen_high] * 100.0f, r.coverage[terrain_gen_variation] * 100.0f);
+        }
+        std::snprintf(buf + n, sizeof(buf) - n, "%u x %u vertices, generated in %lld ms.", r.nx, r.nz,
+                      static_cast<long long>(ms.count()));
+    }
+    SetDlgItemTextA(hdlg, IDC_TGEN_STATS, buf);
+    terrain_gen_render_preview(hdlg);
+}
+
+// Writes the result into the staged terrain: the grid is resampled to the new resolution and its heights
+// replaced, as heightmap import does, and Height Min, Height Range and any splat map are applied as well.
+// Holes, diagonals and overlay coverage are kept.
+static bool terrain_gen_apply(HWND hdlg)
+{
+    for (int idc : {IDC_TGEN_NX, IDC_TGEN_NZ}) {
+        const int n = alpine_dlg_get_int_field(hdlg, idc);
+        if (n < static_cast<int>(at::min_verts) || n > static_cast<int>(at::max_verts)) {
+            MessageBoxA(hdlg, "Each vertex count must be between 2 and 257.", "Terrain", MB_OK | MB_ICONWARNING);
+            return false;
+        }
+    }
+    if (g_terrain_gen.pending || !g_terrain_gen.result_valid) {
+        terrain_gen_regenerate(hdlg);
+    }
+    if (!g_terrain_gen.result_valid) return false;
+    const TerrainGenResult& r = g_terrain_gen.result;
+    const TerrainGrid& old = *g_terrain_dlg.data.grid;
+    if (!terrain_budget_allows(hdlg, g_terrain_dlg.terrain, r.nx, r.nz, old.weight_res_mul,
+                               !g_terrain_dlg.data.overlays.empty())) {
+        return false;
+    }
+    DedTerrainData next = g_terrain_dlg.data;
+    std::shared_ptr<TerrainGrid> g = (r.nx == old.nx && r.nz == old.nz)
+                                         ? std::make_shared<TerrainGrid>(old)
+                                         : terrain_resample_grid(old, r.nx, r.nz, old.weight_res_mul);
+    g->heights = r.heights;
+    int highest = -1;
+    if (!r.splat.empty()) {
+        highest = terrain_apply_splat(*g, r.splat.data(), at::weight_width(r.nx, r.weight_res_mul),
+                                      at::weight_height(r.nz, r.weight_res_mul), g_terrain_gen.splat_base);
+    }
+    next.grid = std::move(g);
+    next.height_min = g_terrain_gen.height_min;
+    next.height_range = g_terrain_gen.height_range;
+    while (static_cast<int>(next.layers.size()) <= highest) next.layers.emplace_back();
+    terrain_match_overlay_map(next);
+    g_terrain_dlg.data = std::move(next);
+    return true;
+}
+
+static INT_PTR CALLBACK TerrainGenerateDialogProc(HWND hdlg, UINT msg, WPARAM wp, LPARAM lp)
+{
+    switch (msg) {
+    case WM_INITDIALOG: {
+        alpine_center_dialog_on_owner(hdlg);
+        const TerrainGrid& g = *g_terrain_dlg.data.grid;
+        g_terrain_gen.nx = g.nx;
+        g_terrain_gen.nz = g.nz;
+        g_terrain_gen.height_min = g_terrain_dlg.data.height_min;
+        g_terrain_gen.height_range = g_terrain_dlg.data.height_range;
+        if (!g_terrain_gen.sized) {
+            terrain_gen_default_sizes(g_terrain_gen.settings);
+            g_terrain_gen.sized = true;
+        }
+        alpine_dlg_combo_add(hdlg, IDC_TGEN_TYPE, "fBm (hills)", static_cast<LPARAM>(TerrainNoiseType::fbm));
+        alpine_dlg_combo_add(hdlg, IDC_TGEN_TYPE, "Ridged", static_cast<LPARAM>(TerrainNoiseType::ridged));
+        alpine_dlg_combo_add(hdlg, IDC_TGEN_TYPE, "Billow", static_cast<LPARAM>(TerrainNoiseType::billow));
+        alpine_dlg_combo_add(hdlg, IDC_TGEN_TYPE, "Hybrid", static_cast<LPARAM>(TerrainNoiseType::hybrid));
+        alpine_dlg_combo_add(hdlg, IDC_TGEN_FALLOFF, "None", static_cast<LPARAM>(TerrainEdgeFalloff::none));
+        alpine_dlg_combo_add(hdlg, IDC_TGEN_FALLOFF, "Island", static_cast<LPARAM>(TerrainEdgeFalloff::island));
+        alpine_dlg_combo_add(hdlg, IDC_TGEN_FALLOFF, "Basin", static_cast<LPARAM>(TerrainEdgeFalloff::basin));
+        alpine_dlg_combo_add(hdlg, IDC_TGEN_SPLAT_LAYERS, "Layers 1-4", 0);
+        alpine_dlg_combo_add(hdlg, IDC_TGEN_SPLAT_LAYERS, "Layers 5-8", 4);
+        SendDlgItemMessageA(hdlg, IDC_TGEN_SEED, EM_LIMITTEXT, 10, 0);
+        alpine_spinner_init_int(hdlg, IDC_TGEN_NX, IDC_TGEN_NX_SPIN, 1, static_cast<int>(at::min_verts),
+                                static_cast<int>(at::max_verts));
+        alpine_spinner_init_int(hdlg, IDC_TGEN_NZ, IDC_TGEN_NZ_SPIN, 1, static_cast<int>(at::min_verts),
+                                static_cast<int>(at::max_verts));
+        alpine_spinner_init(hdlg, IDC_TGEN_HEIGHT_MIN, IDC_TGEN_HEIGHT_MIN_SPIN, 1.0f, -at::max_coord, at::max_coord,
+                            2);
+        alpine_spinner_init(hdlg, IDC_TGEN_HEIGHT_RANGE, IDC_TGEN_HEIGHT_RANGE_SPIN, 1.0f, at::min_height_range,
+                            at::max_height_range, 2);
+        for (const TerrainGenFloatField& f : terrain_gen_float_fields) {
+            alpine_spinner_init(hdlg, f.edit, f.spin, f.step, f.lo, f.hi, f.decimals);
+        }
+        for (const TerrainGenIntField& f : terrain_gen_int_fields) {
+            alpine_spinner_init_int(hdlg, f.edit, f.spin, f.step, f.lo, f.hi);
+        }
+        terrain_gen_load_fields(hdlg);
+        terrain_gen_update_state(hdlg);
+        terrain_dlg_guard(hdlg, "There is not enough memory to generate this terrain.",
+                          [&] { terrain_gen_regenerate(hdlg); });
+        return TRUE;
+    }
+    case WM_TIMER:
+        if (wp != terrain_gen_timer) break;
+        terrain_dlg_guard(hdlg, "There is not enough memory to generate this terrain.",
+                          [&] { terrain_gen_regenerate(hdlg); });
+        return TRUE;
+    case WM_COMMAND: {
+        const int id = LOWORD(wp), code = HIWORD(wp);
+        switch (id) {
+        case IDOK: {
+            bool applied = false;
+            terrain_dlg_guard(hdlg, "There is not enough memory to generate this terrain; it was left as it was.",
+                              [&] { applied = terrain_gen_apply(hdlg); });
+            if (applied) {
+                EndDialog(hdlg, IDOK);
+            }
+            return TRUE;
+        }
+        case IDCANCEL:
+            EndDialog(hdlg, IDCANCEL);
+            return TRUE;
+        case IDC_TGEN_RANDOMIZE:
+            SetDlgItemTextA(hdlg, IDC_TGEN_SEED, std::to_string(std::random_device{}()).c_str());
+            return TRUE;
+        case IDC_TGEN_DEFAULTS:
+            g_terrain_gen.settings = {};
+            terrain_gen_default_sizes(g_terrain_gen.settings);
+            g_terrain_gen.splat_base = 0;
+            terrain_gen_load_fields(hdlg);
+            terrain_gen_update_state(hdlg);
+            return TRUE;
+        case IDC_TGEN_PREVIEW_HEIGHT:
+        case IDC_TGEN_PREVIEW_SHADED:
+        case IDC_TGEN_PREVIEW_SPLAT:
+            g_terrain_gen.preview = static_cast<TerrainGenPreview>(id - IDC_TGEN_PREVIEW_HEIGHT);
+            terrain_dlg_guard(hdlg, "There is not enough memory to draw the preview.",
+                              [&] { terrain_gen_render_preview(hdlg); });
+            return TRUE;
+        case IDC_TGEN_SPLAT:
+            terrain_gen_update_state(hdlg);
+            break;
+        }
+        if (code == EN_CHANGE || code == CBN_SELCHANGE || code == BN_CLICKED) {
+            g_terrain_gen.pending = true;
+            SetTimer(hdlg, terrain_gen_timer, terrain_gen_delay_ms, nullptr);
+        }
+        return TRUE;
+    }
+    case WM_NOTIFY:
+        if (alpine_spinner_handle_notify(hdlg, lp)) return TRUE;
+        break;
+    case WM_DRAWITEM: {
+        const auto* dis = reinterpret_cast<const DRAWITEMSTRUCT*>(lp);
+        if (!dis || static_cast<int>(dis->CtlID) != IDC_TGEN_PREVIEW) break;
+        terrain_gen_draw_preview(*dis);
+        return TRUE;
+    }
+    }
+    return FALSE;
+}
+
+// Generate opens over Terrain Properties and, like the imports, changes only the staged copy.
+static void terrain_dlg_generate(HWND hdlg)
+{
+    const INT_PTR result =
+        DialogBoxParam(reinterpret_cast<HINSTANCE>(&__ImageBase), MAKEINTRESOURCE(IDD_ALPINE_TERRAIN_GENERATE), hdlg,
+                       TerrainGenerateDialogProc, 0);
+    g_terrain_gen.result = {};
+    g_terrain_gen.result_valid = false;
+    std::vector<uint32_t>().swap(g_terrain_gen.pixels);
+    if (result != IDOK) return;
+    // Each field's EN_CHANGE re-stages both from their text, so both values are taken before either is shown.
+    const float height_min = g_terrain_dlg.data.height_min;
+    const float height_range = g_terrain_dlg.data.height_range;
+    terrain_set_float_field(hdlg, IDC_TERRAIN_HEIGHT_MIN, height_min);
+    terrain_set_float_field(hdlg, IDC_TERRAIN_HEIGHT_RANGE, height_range);
+    terrain_dlg_reselect_layer(hdlg, terrain_list_layers, g_terrain_dlg.sel[terrain_list_layers]);
+    terrain_dlg_update_readouts(hdlg);
+    terrain_dlg_refresh_viewports();
+}
+
 static INT_PTR terrain_dlg_command(HWND hdlg, WPARAM wp)
 {
     switch (LOWORD(wp)) {
@@ -1754,6 +2163,9 @@ static INT_PTR terrain_dlg_command(HWND hdlg, WPARAM wp)
         return TRUE;
     case IDC_TERRAIN_NEW_FLAT:
         terrain_dlg_new_flat(hdlg);
+        return TRUE;
+    case IDC_TERRAIN_GENERATE:
+        terrain_dlg_generate(hdlg);
         return TRUE;
     case IDC_TERRAIN_IMPORT_HEIGHTMAP:
         terrain_dlg_run_import(hdlg, "Import Heightmap", terrain_dlg_import_heightmap);

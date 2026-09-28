@@ -809,7 +809,8 @@ enum GrLightType
     LT_TUBE = 4,
 };
 
-// Scene light, partial (pool of 0x10C byte slots at 0x006FB248); the game's rf::gr::Light.
+// Scene light, partial (0x10C byte pool slots; stock pool at 0x006FB248, relocated by lightmap.cpp's light_pool);
+// the game's rf::gr::Light.
 struct GrLight
 {
     char _pad_00[0x08];

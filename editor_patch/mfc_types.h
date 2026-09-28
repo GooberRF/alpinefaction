@@ -1042,7 +1042,7 @@ struct CMainFrame : CFrameWnd
     int favorite_textures[8];
     bool play_no_tnl;
     char padding_tail[3];
-    void* preferences_dlg;
+    struct PreferencesDialog* preferences_dlg;
 
     void MaximizeActiveViewport()
     {

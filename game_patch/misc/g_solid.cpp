@@ -98,11 +98,6 @@ static rf::GRoom* g_geo_cache_detail_rooms[8192];
 // after a clear finds the cache room list empty.
 static std::vector<rf::GRoom*> g_geo_cache_oversized_rooms;
 
-// dbg_geomod_timing: legacy cache builds since the last static solid pass.
-static int g_geo_cache_timing_rooms = 0;
-static int g_geo_cache_timing_chunks = 0;
-static int64_t g_geo_cache_timing_us = 0;
-
 CodeInjection geo_cache_prepare_room_add_detail_room_injection{
     0x004F0DFD,
     [](auto& regs) {
@@ -130,7 +125,8 @@ FunHook<int(rf::GSolid*, rf::GRoom*)> geo_cache_prepare_room_hook{
         const bool terrain_chunk = room->is_detail && alpine_terrain_find_room(room);
         std::vector<rf::GRoom*> hidden;
         if (terrain_chunk) {
-            // The builder walks the root's detail rooms; an RF2 carve can leave garbage in a detail room's
+            // The builder walks the root's detail rooms; an RF2 carve can leave garbage in a chunk's own
+            // detail list, so clear it.
             if (room->detail_rooms.size() > 0) {
                 room->detail_rooms.clear();
             }
@@ -150,14 +146,7 @@ FunHook<int(rf::GSolid*, rf::GRoom*)> geo_cache_prepare_room_hook{
         }
         char* const arena_pos = rf::geo_cache_arena_pos;
         const int num_cache_rooms = rf::geo_cache_num_rooms;
-        const bool timing = !room->geo_cache && geomod_timing_enabled();
-        const int64_t start = timing ? timer::get_i64(1000000) : 0;
         int ret = geo_cache_prepare_room_hook.call_target(solid, room);
-        if (timing) {
-            g_geo_cache_timing_us += timer::get_i64(1000000) - start;
-            g_geo_cache_timing_rooms++;
-            g_geo_cache_timing_chunks += terrain_chunk;
-        }
         for (rf::GRoom* detail : hidden) {
             detail->is_invisible = false;
         }
@@ -256,13 +245,6 @@ CallHook<void(rf::GSolid*, rf::GRoom**, int)> gr_render_static_solid_hook{
         for (const Chunk& c : chunks) {
             c.room->clip_wnd = c.saved_clip_wnd;
             chunk_of_room[static_cast<std::size_t>(c.room->room_index)] = -1;
-        }
-        if (g_geo_cache_timing_rooms > 0) {
-            rf::console::print("[RF2 timing] legacy cache builds: {} room(s), {} terrain chunk(s), {:.2f} ms",
-                g_geo_cache_timing_rooms, g_geo_cache_timing_chunks, g_geo_cache_timing_us / 1000.0);
-            g_geo_cache_timing_rooms = 0;
-            g_geo_cache_timing_chunks = 0;
-            g_geo_cache_timing_us = 0;
         }
     },
 };
