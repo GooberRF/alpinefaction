@@ -91,7 +91,7 @@ namespace gr::d3d11
     public:
         RenderModeBuffer(ID3D11Device* device);
 
-        void update(rf::gr::Mode mode, rf::Color color, bool lightmap_only, bool dynamic_lighting, float self_illumination, bool apply_light_scale, bool emissive_override, ID3D11DeviceContext* device_context)
+        void update(rf::gr::Mode mode, rf::Color color, bool lightmap_only, bool dynamic_lighting, float self_illumination, bool apply_light_scale, bool emissive_override, float fixed_light_scale, ID3D11DeviceContext* device_context)
         {
             bool alpha_test = mode.get_zbuffer_type() == rf::gr::ZBUFFER_TYPE_FULL_ALPHA_TEST;
             bool fog_allowed = mode.get_fog_type() != rf::gr::FOG_NOT_ALLOWED;
@@ -99,7 +99,7 @@ namespace gr::d3d11
             float dynamic_light_ndotl = g_alpine_game_config.dynamic_light_ndotl;
             float pixel_light_overbright = g_level_pixel_light_overbright;
             float alpha_test_threshold = g_alpha_test_threshold;
-            if (force_update_ || current_alpha_test_ != alpha_test || current_fog_allowed_ != fog_allowed || current_color_ != color || current_colorblind_mode_ != colorblind_mode || current_lightmap_only_ != lightmap_only || current_dynamic_lighting_ != dynamic_lighting || current_self_illumination_ != self_illumination || current_apply_light_scale_ != apply_light_scale || current_emissive_override_ != emissive_override || current_dynamic_light_ndotl_ != dynamic_light_ndotl || current_pixel_light_overbright_ != pixel_light_overbright || current_alpha_test_threshold_ != alpha_test_threshold) {
+            if (force_update_ || current_alpha_test_ != alpha_test || current_fog_allowed_ != fog_allowed || current_color_ != color || current_colorblind_mode_ != colorblind_mode || current_lightmap_only_ != lightmap_only || current_dynamic_lighting_ != dynamic_lighting || current_self_illumination_ != self_illumination || current_apply_light_scale_ != apply_light_scale || current_fixed_light_scale_ != fixed_light_scale || current_emissive_override_ != emissive_override || current_dynamic_light_ndotl_ != dynamic_light_ndotl || current_pixel_light_overbright_ != pixel_light_overbright || current_alpha_test_threshold_ != alpha_test_threshold) {
                 current_alpha_test_ = alpha_test;
                 current_fog_allowed_ = fog_allowed;
                 current_color_ = color;
@@ -108,6 +108,7 @@ namespace gr::d3d11
                 current_dynamic_lighting_ = dynamic_lighting;
                 current_self_illumination_ = self_illumination;
                 current_apply_light_scale_ = apply_light_scale;
+                current_fixed_light_scale_ = fixed_light_scale;
                 current_emissive_override_ = emissive_override;
                 current_dynamic_light_ndotl_ = dynamic_light_ndotl;
                 current_pixel_light_overbright_ = pixel_light_overbright;
@@ -171,6 +172,7 @@ namespace gr::d3d11
         bool current_dynamic_lighting_ = false;
         float current_self_illumination_ = 0.0f;
         bool current_apply_light_scale_ = true;
+        float current_fixed_light_scale_ = 0.0f;
         bool current_emissive_override_ = false;
         float current_dynamic_light_ndotl_ = 0.0f;
         float current_pixel_light_overbright_ = 0.5f;
@@ -368,9 +370,10 @@ namespace gr::d3d11
             bool prev_;
         };
 
-        void set_mode(rf::gr::Mode mode, rf::Color color = {255, 255, 255, 255}, bool lightmap_only = false, bool dynamic_lighting = false, float self_illumination = 0.0f, bool apply_light_scale = true, bool emissive_override = false)
+        // fixed_light_scale > 0 replaces the level's static mesh light modifier when apply_light_scale is set
+        void set_mode(rf::gr::Mode mode, rf::Color color = {255, 255, 255, 255}, bool lightmap_only = false, bool dynamic_lighting = false, float self_illumination = 0.0f, bool apply_light_scale = true, bool emissive_override = false, float fixed_light_scale = 0.0f)
         {
-            render_mode_cbuffer_.update(mode, color, lightmap_only, dynamic_lighting, self_illumination, apply_light_scale, emissive_override, device_context_);
+            render_mode_cbuffer_.update(mode, color, lightmap_only, dynamic_lighting, self_illumination, apply_light_scale, emissive_override, fixed_light_scale, device_context_);
             if (!current_mode_ || current_mode_.value() != mode || current_picmip_active_ != picmip_active_) {
                 if (!current_mode_ || current_mode_.value().get_texture_source() != mode.get_texture_source() || current_picmip_active_ != picmip_active_) {
                     std::array<ID3D11SamplerState*, 2> sampler_states = {
