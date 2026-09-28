@@ -287,25 +287,14 @@ static void render_projected_string(
     }
 }
 
-static float scaled_view_depth(const rf::Vector3& pos) {
+// Assumes `rf::gr::screen.aspect` to be 1, so x and y scales are equal.
+static float world_units_per_pixel(const rf::Vector3& pos) {
     const rf::Vector3 delta = pos - rf::gr::view_pos;
-    return rf::gr::view_matrix.fvec.dot_prod(delta);
-}
-
-static float world_y_units_per_pixel(const rf::Vector3& pos) {
-    const float z = scaled_view_depth(pos);
+    const float z = rf::gr::view_matrix.fvec.dot_prod(delta);
     if (z <= 1e-6f) {
         return 0.f;
     }
     return 2.f * z / (rf::gr::screen.clip_height * rf::gr::matrix_scale.y);
-}
-
-static float world_x_units_per_pixel(const rf::Vector3& pos) {
-    const float z = scaled_view_depth(pos);
-    if (z <= 1e-6f) {
-        return 0.f;
-    }
-    return 2.f * z / (rf::gr::screen.clip_width * rf::gr::matrix_scale.x);
 }
 
 constexpr bool WH_2D_TEXT = false;
@@ -313,8 +302,8 @@ constexpr bool WH_2D_TEXT = false;
 static void render_string_3d(
     rf::Vector3 pos,
     const char* const string,
-    const int offset_x,
-    const int offset_y,
+    const int screen_offset_x,
+    const int screen_offset_y,
     const int font_num,
     const rf::gr::Color color,
     const rf::Matrix3* const orient = &rf::gr::eye_matrix
@@ -323,8 +312,8 @@ static void render_string_3d(
         render_projected_string(
             pos,
             string,
-            offset_x,
-            offset_y,
+            screen_offset_x,
+            screen_offset_y,
             font_num,
             color.red,
             color.green,
@@ -332,18 +321,18 @@ static void render_string_3d(
             color.alpha
         );
     } else {
-        const float scale = world_y_units_per_pixel(pos);
+        const float scale = world_units_per_pixel(pos);
         if (scale <= .0f) {
             return;
         }
-        if (offset_x != 0) {
+        if (screen_offset_x != 0) {
             pos += rf::gr::eye_matrix.rvec
-                * static_cast<float>(offset_x)
-                * world_x_units_per_pixel(pos);
+                * static_cast<float>(screen_offset_x)
+                * scale;
         }
-        if (offset_y != 0) {
+        if (screen_offset_y != 0) {
             pos -= rf::gr::eye_matrix.uvec
-                * static_cast<float>(offset_y)
+                * static_cast<float>(screen_offset_y)
                 * scale;
         }
         const rf::gr::Color prev_color{rf::gr::screen.current_color};
@@ -764,7 +753,7 @@ void build_player_labels() {
 
         // determine label width
         const auto [text_width, text_height] = rf::gr::get_string_size(label, font);
-        const int base_text_height = rf::gr::get_string_size(label, base_font).second;
+        const int base_text_height = rf::gr::get_font_height(base_font);
         int half_text_width = text_width / 2;
         int centered_offset_y = -25 - ((text_height - base_text_height) / 2);
 
@@ -821,7 +810,7 @@ void build_ephemeral_world_hud_sprite_icons() {
         const int half_text_width = text_width / 2;
 
         const int base_font = get_world_hud_font(1.f);
-        const int base_text_height = rf::gr::get_string_size(es.label, base_font).second;
+        const int base_text_height = rf::gr::get_font_height(base_font);
         const int offset_y = -25 - (text_height - base_text_height);
 
         render_string_3d(
@@ -870,7 +859,7 @@ void build_ephemeral_world_hud_strings() {
         const int half_text_width = text_width / 2;
 
         const int base_font = get_world_hud_font(1.f);
-        const int base_text_height = rf::gr::get_string_size(label, base_font).second;
+        const int base_text_height = rf::gr::get_font_height(base_font);
         const int centered_offset_y = -25 - ((text_height - base_text_height) / 2);
 
         render_string_3d(

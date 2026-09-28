@@ -763,10 +763,8 @@ FunHook<
                 font->draw_3d(*pos, *orient, scale, s, mode);
             }
         } else {
-            // Note.  Stock `gr_string_3d` is faulty, and renders too much space between between
-            // certain glyphs.
-            // Moreover, it anchors `pos` at the first glyph's center; but `draw_3d` anchors
-            // at the first glyph's top-left, like `draw`.
+            // Stock centers each glyph upon a pen advanced by its spacing, so proportional
+            // glyphs are mis-spaced; but `draw_3d` anchors at the top-left, like `draw`.
             gr_string_3d_hook.call_target(pos, orient, scale, s, font_num, mode);
         }
     },
