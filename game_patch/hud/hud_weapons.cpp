@@ -15,6 +15,7 @@
 #include "../main/main.h"
 #include "../misc/alpine_settings.h"
 #include "../misc/misc.h"
+#include "../multi/vehicles/vehicle_physics.h"
 #include "hud_internal.h"
 
 float g_hud_ammo_scale = 1.0f;
@@ -46,13 +47,18 @@ CallHook<void(int, int, int, rf::gr::Mode)> render_reticle_gr_bitmap_hook{
         0x0043A4FE,
     },
     [](int bm_handle, int x, int y, rf::gr::Mode mode) {
+        float aim_dx = 0.0f;
+        float aim_dy = 0.0f;
+        if (!vehicle_physics_camera_reticle_offset(&aim_dx, &aim_dy)) {
+            return;
+        }
         float base_scale = g_alpine_game_config.big_hud ? 2.0f : 1.0f;
         float scale = base_scale * g_alpine_game_config.get_reticle_scale();
         int clip_w = rf::gr::clip_width();
         int clip_h = rf::gr::clip_height();
 
-        x = static_cast<int>((x - clip_w / 2.0F) * scale + clip_w / 2.0F);
-        y = static_cast<int>((y - clip_h / 2.0F) * scale + clip_h / 2.0F);
+        x = static_cast<int>((x - clip_w / 2.0F) * scale + clip_w / 2.0F + aim_dx);
+        y = static_cast<int>((y - clip_h / 2.0F) * scale + clip_h / 2.0F + aim_dy);
 
         hud_scaled_bitmap(bm_handle, x, y, scale, mode);
     },

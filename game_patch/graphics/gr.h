@@ -20,6 +20,8 @@ void gr_bitmap_scaled_float(int bitmap_handle, float x, float y, float w, float 
 void gr_poly_2d(int bitmap_handle, int nv, const rf::gr::Vertex* vertices, rf::gr::Mode mode);
 float gr_scale_fov_hor_plus(float horizontal_fov);
 bool gr_3d_bitmap_oriented_wh(const rf::Vector3* pnt, const rf::Matrix3* M, float half_w, float half_h, rf::gr::Mode mode);
+// Current view's screen position of a world point; false when behind the camera or not projected.
+bool gr_project_world_to_screen(const rf::Vector3& world_pos, float& out_sx, float& out_sy);
 int gr_fit_string(std::string& text, int max_width, int font_id = -1, std::string_view suffix = "-");
 void explosion_flash_lights_level_init();
 void explosion_flash_lights_destroy_all();

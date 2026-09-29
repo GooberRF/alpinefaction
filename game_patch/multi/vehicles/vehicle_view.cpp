@@ -1,3 +1,5 @@
+#include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <patch_common/AsmWriter.h>
 #include <patch_common/CodeInjection.h>
@@ -41,7 +43,8 @@ void vehicle_feed_automobile_eye_input(rf::Entity* ep)
         return;
     }
     rf::EntityControlData& cd = ep->control_data;
-    cd.delta_eye_phb.x = ep->info->rot_acceleration * ep->ai.ci.rot.x * ep->p_data.frame_time_left;
+    const float look = vehicle_physics_camera_owns_driver_look() ? 0.0f : ep->ai.ci.rot.x;
+    cd.delta_eye_phb.x = ep->info->rot_acceleration * look * ep->p_data.frame_time_left;
     cd.delta_eye_phb.y = 0.0f;
     cd.delta_eye_phb.z = 0.0f;
 }
@@ -380,11 +383,43 @@ namespace
         },
     };
 
-    // The jeep GUNNER's exclusion is load bearing: OF_KEEP_ORIENT_ON_HOST makes the engine's attach
-    // placement (0x0048771B) skip him, so his replicated orientation is all that orients his body.
-    bool vehicle_rider_orient_is_pinned(rf::Entity* ep)
+    // A body frame that IS the seat frame. Not the jeep gunner's: he aims the gun by turning.
+    bool vehicle_rider_holds_seat_pose(rf::Entity* ep)
     {
         return vehicle_rider_pose_is_seat_locked(ep) && !rf::entity_is_jeep_gunner(ep);
+    }
+
+    // The seat supplies pitch and roll; the gunner's forward is the seat-plane direction on his aim's
+    // compass heading, so the gun he turns stays on his aim. A hull on its side has no compass heading
+    // to keep, so there his heading is simply projected into the seat plane, blended in as it tips.
+    rf::Matrix3 vehicle_gunner_body_orient(const rf::Matrix3& seat, float heading)
+    {
+        const rf::Vector3 facing{std::sin(heading), 0.0f, std::cos(heading)};
+        const rf::Vector3 side{std::cos(heading), 0.0f, -std::sin(heading)};
+        auto unit = [](const rf::Vector3& v) {
+            const float l = v.len();
+            return l >= 1e-4f ? v * (1.0f / l) : rf::Vector3{0.0f, 0.0f, 0.0f};
+        };
+        rf::Vector3 compass = side.cross(seat.uvec);
+        if (compass.dot_prod(facing) < 0.0f) {
+            compass = compass * -1.0f;
+        }
+        const rf::Vector3 projected = facing - seat.uvec * facing.dot_prod(seat.uvec);
+        const float upright = std::clamp((std::fabs(seat.uvec.y) - 0.1f) / 0.25f, 0.0f, 1.0f);
+        const rf::Vector3 dir = unit(compass) * upright + unit(projected) * (1.0f - upright);
+        float c = dir.dot_prod(seat.fvec);
+        float s = dir.dot_prod(seat.rvec);
+        const float len = std::sqrt(c * c + s * s);
+        if (!(len >= 1e-4f)) {
+            return seat;
+        }
+        c /= len;
+        s /= len;
+        rf::Matrix3 body;
+        body.uvec = seat.uvec;
+        body.fvec = seat.fvec * c + seat.rvec * s;
+        body.rvec = seat.rvec * c - seat.fvec * s;
+        return body;
     }
 
     // entity_should_bend_spine gates a pose modifier whose blend timer resets on every true->false
@@ -453,47 +488,64 @@ void vehicle_sync_rider_orient_flags()
     }
 }
 
-// A seat-locked rider's BODY faces the hull; only his LOOK is free. Hooked at entity_process_post,
-// the engine's own rider/host reconciliation point. The tidier split (body from phb, look from a
-// wide-clamped eye_phb) is foreclosed: 0x0049DE50 zeroes eye_phb.y/z for every on-foot player too.
+// A seat-locked rider's BODY follows the seat; only his LOOK is free. The tidier split (body from phb,
+// look from a wide-clamped eye_phb) is foreclosed: 0x0049DE50 zeroes eye_phb.y/z for every on-foot
+// player too. Writers that rebuild it upright from phb: 0x0049DE50 and multi_obj_interp_orient inside
+// physics_simulate_entity (re-pinned by vphys_step's call hook), then the commit (0x0049D0A0 /
+// 0x004A00FB); this pin is the last, and re-places the eye after it.
+bool vehicle_pin_rider_body(rf::Entity* ep)
+{
+    if (!vehicle_rider_pose_is_seat_locked(ep)) {
+        return false;
+    }
+    rf::Entity* vehicle = rf::entity_from_handle(ep->host_handle);
+    if (!vehicle) {
+        return false;
+    }
+
+    // The SEAT TAG's world transform, not the hull's orient: obj_attach_update (0x00487630) writes
+    // these same three fields from the tag transform, so matching it is byte-identical.
+    rf::Matrix3 body = vehicle->orient;
+    if (ep->host_tag_handle >= 0 && vehicle->vmesh) {
+        rf::Vector3 seat_pos{};
+        rf::vmesh_get_prop_point_transform(vehicle->vmesh, ep->host_tag_handle, &vehicle->orient,
+                                           &vehicle->pos, &body, &seat_pos);
+    }
+    if (rf::entity_is_jeep_gunner(ep)) {
+        // From the HULL: stock never posed him from his seat tag (the flag skips it), and its axes are
+        // not upright.
+        body = vehicle_gunner_body_orient(vehicle->orient, ep->control_data.phb.y);
+    }
+    ep->orient = body;
+    ep->p_data.orient = body;
+    ep->p_data.next_orient = body;
+    return true;
+}
+
+// Hooked at entity_process_post, the engine's own rider/host reconciliation point.
 FunHook<void(rf::Entity*)> entity_process_post_passenger_orient_hook{
     0x0041E4B0,
     [](rf::Entity* ep) {
         entity_process_post_passenger_orient_hook.call_target(ep);
 
-        if (!vehicle_rider_pose_is_seat_locked(ep)) {
-            return;
-        }
-
         // time_since_spine_bend must NOT be touched here: entity_apply_aim_bend_hook owns that field
         // and needs it to ADVANCE to ever finish fading the aim bend out.
 
-        if (!vehicle_rider_orient_is_pinned(ep)) {
+        if (!vehicle_pin_rider_body(ep)) {
             return;
         }
-        rf::Entity* vehicle = rf::entity_from_handle(ep->host_handle);
-        if (!vehicle) {
-            return;
+        // The engine placed his eye from the upright body its commit rebuilt; not the driver's, which
+        // is the hull's.
+        if (ep->obj_flags & rf::OF_KEEP_ORIENT_ON_HOST) {
+            AddrCaller{0x004194E0}.c_call(ep);
         }
-
-        // The SEAT TAG's world transform, not the hull's orient: obj_attach_update (0x00487630)
-        // writes these same three fields from the tag transform, so matching it is byte-identical.
-        rf::Matrix3 seat_orient = vehicle->orient;
-        if (ep->host_tag_handle >= 0 && vehicle->vmesh) {
-            rf::Vector3 seat_pos{};
-            rf::vmesh_get_prop_point_transform(vehicle->vmesh, ep->host_tag_handle, &vehicle->orient,
-                                               &vehicle->pos, &seat_orient, &seat_pos);
-        }
-        ep->orient = seat_orient;
-        ep->p_data.orient = seat_orient;
-        ep->p_data.next_orient = seat_orient;
 
         // multi_obj_interp_orient (0x004842E0) rebuilds the rider's body from control_data.phb, which
         // froze when he sat down (player_process_controls retargets his control block to the HULL),
         // so phb must stay the exact inverse of the seat matrix. DRIVER only: a passenger and the
         // jeep gunner carry OF_KEEP_ORIENT_ON_HOST, so 0x0049DE50 folds their LOOK into phb.y.
-        if (!(ep->obj_flags & rf::OF_KEEP_ORIENT_ON_HOST)) {
-            ep->control_data.phb = vehicle_matrix_phb(seat_orient);
+        if (vehicle_rider_holds_seat_pose(ep) && !(ep->obj_flags & rf::OF_KEEP_ORIENT_ON_HOST)) {
+            ep->control_data.phb = vehicle_matrix_phb(ep->orient);
         }
     },
 };
@@ -504,7 +556,7 @@ FunHook<void(rf::Entity*)> entity_process_post_passenger_orient_hook{
 FunHook<float __cdecl(rf::Entity*, void*, int)> entity_apply_aim_bend_hook{
     0x0041DFB0,
     [](rf::Entity* ep, void* character_instance, int fade_in) -> float {
-        if (vehicle_rider_orient_is_pinned(ep)) {
+        if (vehicle_rider_holds_seat_pose(ep)) {
             return 0.0f;
         }
         return entity_apply_aim_bend_hook.call_target(ep, character_instance, fade_in);

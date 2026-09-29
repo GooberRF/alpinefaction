@@ -13,8 +13,30 @@ namespace rf
     struct Vector3;
 }
 
-// True means the camera entity is already posed and camera_do_frame must not run (passenger view).
+// True means the camera entity is already posed and camera_do_frame must not run (orbit view).
 bool vehicle_physics_camera_do_frame(rf::Camera* camera);
+
+// Change View while seated: flips the driver's or the jeep gunner's third-person setting. False for
+// every other seat, which has no choice (fighter/sub drivers first person, passengers third).
+bool vehicle_physics_camera_toggle_view();
+
+// Whether the local player's current seat is viewed through the orbit camera.
+bool vehicle_physics_camera_local_seat_is_orbit();
+
+// A third-person driver's mouse and look keys turn the orbit, not the hull.
+bool vehicle_physics_camera_owns_driver_look();
+
+// 0x0049DE50's look deltas for the local gunner or passenger in the orbit view: they turn the orbit
+// instead, and are replaced by the deltas that put his eye on the camera's aim. False: untouched.
+bool vehicle_physics_camera_take_rider_look(rf::Entity* ep, float& pitch_delta, float& yaw_delta);
+
+// The local third-person APC driver's convergence aim (world, unit); false keeps the rebuilt frame.
+// out_capped: whether the hull limits moved it off the aim point.
+bool vehicle_physics_camera_driver_aim(const rf::Entity* vehicle, const rf::Entity* driver,
+                                       rf::Vector3* out_dir, bool* out_capped = nullptr);
+
+// Screen offset of the reticle from the view centre; false hides it.
+bool vehicle_physics_camera_reticle_offset(float* out_dx, float* out_dy);
 
 // True while a Bullet body owns this entity's motion, so stock integration must not run for it.
 bool vehicle_physics_drives(const rf::Entity* ep);

@@ -104,6 +104,90 @@ struct AlpineGameSettings
     bool play_hit_sounds = true;
     bool show_awards = true;
     bool vehicle_respawn_markers = true;
+    bool vehicle_driver_third_person = false;
+    bool vehicle_gunner_third_person = false;
+
+    // Third-person vehicle camera. Times are smoothing times in seconds (0 = rigid).
+    static constexpr float default_vehicle_cam_follow = 0.3f;
+    static constexpr float max_vehicle_cam_follow = 2.0f;
+    float vehicle_cam_follow = default_vehicle_cam_follow;
+    void set_vehicle_cam_follow(float value)
+    {
+        if (!std::isnan(value)) {
+            vehicle_cam_follow = std::clamp(value, 0.0f, max_vehicle_cam_follow);
+        }
+    }
+    static constexpr float default_vehicle_cam_velocity = 1.0f;
+    float vehicle_cam_velocity = default_vehicle_cam_velocity; // share of the travel heading at speed
+    void set_vehicle_cam_velocity(float value)
+    {
+        if (!std::isnan(value)) {
+            vehicle_cam_velocity = std::clamp(value, 0.0f, 1.0f);
+        }
+    }
+    static constexpr float default_vehicle_cam_min_speed = 1.5f;
+    static constexpr float max_vehicle_cam_min_speed = 10.0f;
+    float vehicle_cam_min_speed = default_vehicle_cam_min_speed; // m/s
+    void set_vehicle_cam_min_speed(float value)
+    {
+        if (!std::isnan(value)) {
+            vehicle_cam_min_speed = std::clamp(value, 0.0f, max_vehicle_cam_min_speed);
+        }
+    }
+    static constexpr float default_vehicle_cam_lookahead = 0.2f;
+    static constexpr float max_vehicle_cam_lookahead = 1.0f;
+    float vehicle_cam_lookahead = default_vehicle_cam_lookahead; // s of yaw rate
+    void set_vehicle_cam_lookahead(float value)
+    {
+        if (!std::isnan(value)) {
+            vehicle_cam_lookahead = std::clamp(value, 0.0f, max_vehicle_cam_lookahead);
+        }
+    }
+    static constexpr float default_vehicle_cam_lookahead_max = 12.0f;
+    static constexpr float max_vehicle_cam_lookahead_max = 30.0f;
+    float vehicle_cam_lookahead_max = default_vehicle_cam_lookahead_max; // degrees
+    void set_vehicle_cam_lookahead_max(float value)
+    {
+        if (!std::isnan(value)) {
+            vehicle_cam_lookahead_max = std::clamp(value, 0.0f, max_vehicle_cam_lookahead_max);
+        }
+    }
+    static constexpr float default_vehicle_cam_pitch_follow = 0.35f;
+    float vehicle_cam_pitch_follow = default_vehicle_cam_pitch_follow; // share of the hull pitch
+    void set_vehicle_cam_pitch_follow(float value)
+    {
+        if (!std::isnan(value)) {
+            vehicle_cam_pitch_follow = std::clamp(value, 0.0f, 1.0f);
+        }
+    }
+    static constexpr float default_vehicle_cam_pitch_smooth = 0.9f;
+    static constexpr float max_vehicle_cam_pitch_smooth = 3.0f;
+    float vehicle_cam_pitch_smooth = default_vehicle_cam_pitch_smooth;
+    void set_vehicle_cam_pitch_smooth(float value)
+    {
+        if (!std::isnan(value)) {
+            vehicle_cam_pitch_smooth = std::clamp(value, 0.0f, max_vehicle_cam_pitch_smooth);
+        }
+    }
+    static constexpr float default_vehicle_cam_bounce = 0.15f;
+    static constexpr float max_vehicle_cam_bounce = 1.0f;
+    float vehicle_cam_bounce = default_vehicle_cam_bounce; // vertical
+    void set_vehicle_cam_bounce(float value)
+    {
+        if (!std::isnan(value)) {
+            vehicle_cam_bounce = std::clamp(value, 0.0f, max_vehicle_cam_bounce);
+        }
+    }
+    static constexpr float default_vehicle_cam_lag = 0.04f;
+    static constexpr float max_vehicle_cam_lag = 0.5f;
+    float vehicle_cam_lag = default_vehicle_cam_lag; // horizontal
+    void set_vehicle_cam_lag(float value)
+    {
+        if (!std::isnan(value)) {
+            vehicle_cam_lag = std::clamp(value, 0.0f, max_vehicle_cam_lag);
+        }
+    }
+
     bool show_domination_msgs = true;
 
     bool spray_display = true;

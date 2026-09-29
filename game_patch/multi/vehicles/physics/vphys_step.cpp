@@ -523,6 +523,9 @@ namespace
                 return;
             }
             physics_simulate_entity_vphys_hook.call_target(ep);
+            // A simulated rider's body was just rebuilt upright, and the pair walk after this batch
+            // collides against it.
+            vehicle_pin_rider_body(ep);
         },
     };
 
@@ -805,4 +808,5 @@ void vehicle_physics_apply_patches()
     geomod_queue_add_vphys_hook.install();
     pregame_boolean_geomod_init_vphys_hook.install();
     vphys_world_install_patches();
+    vphys_camera_install_patches();
 }

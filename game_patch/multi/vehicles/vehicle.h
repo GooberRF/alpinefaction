@@ -83,7 +83,8 @@ bool vehicle_is_flyer(rf::Entity* ep);
 
 // Rebuild the fire frame from the AUTHORITATIVE hull matrix, never the interpolated angles.
 void vehicle_rebuild_eye_orient(rf::Entity* ep, const rf::Matrix3& hull);
-// Re-assert the driver's synced aim on a freshly rebuilt eye_orient; no-op on the DRIVING machine.
+// Re-assert the driver's synced aim on a freshly rebuilt eye_orient; on the DRIVING machine only a
+// third-person convergence aim is re-asserted.
 void vehicle_refresh_aim_orient(rf::Entity* vehicle);
 
 // The phb physics_make_orient (0x004A0D70) turns back into this matrix; RF has two conventions.
@@ -292,6 +293,9 @@ void vehicle_client_do_frame();
 // Any occupant of a synced ENTITY_USE_VEHICLE hull. Turret occupants are deliberately out - their
 // pose IS their aim.
 bool vehicle_rider_pose_is_seat_locked(rf::Entity* ep);
+
+// Writes a seat-locked rider's body frame (orient, p_data.orient, next_orient); false for anyone else.
+bool vehicle_pin_rider_body(rf::Entity* ep);
 
 // The answer player_process_controls gets at 0x004A6101: true keeps the rider on his OWN
 // ControlInfo, false re-points it at the hull's. Also the OF_KEEP_ORIENT_ON_HOST predicate.

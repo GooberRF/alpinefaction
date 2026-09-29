@@ -478,8 +478,8 @@ void vehicle_ease_aim_do_frame()
 namespace
 {
     // Rebuild BOTH frames a vehicle's guns can fire along - the hull's and the rider's, which
-    // entity_get_weapon_fire_pos_orient (0x0041B040) picks between on WTF_FROM_EYE. NEVER on the
-    // DRIVING machine.
+    // entity_get_weapon_fire_pos_orient (0x0041B040) picks between on WTF_FROM_EYE. On the DRIVING
+    // machine only a third-person convergence aim replaces the rebuilt frame.
     void vehicle_apply_aim_orient(rf::Entity* vehicle, VehicleAimSource source)
     {
         if (!vehicle || !vehicle_physics_class_syncs_driver_aim(vehicle)) {
@@ -487,25 +487,32 @@ namespace
         }
         // An unmanned hull has no consumer: the supplement is the ex-driver's last aim.
         rf::Entity* driver = vehicle_driver_entity(vehicle);
-        if (!driver || driver == rf::local_player_entity) {
+        if (!driver) {
             return;
         }
-        VehicleOrientSupplement* supp_ptr = vehicle_orient_supplement(vehicle->handle);
-        if (!supp_ptr) {
-            return;
-        }
-        const VehicleOrientSupplement& supp = *supp_ptr;
-        const bool use_eased = source == VehicleAimSource::eased && supp.eased_valid;
-        const float aim_pitch = use_eased ? supp.eased_aim_pitch : supp.aim_pitch;
-        const float aim_head = use_eased ? supp.eased_aim_head : supp.aim_head;
-        const float cp = std::cos(aim_pitch);
-        const rf::Vector3 dir{cp * std::sin(aim_head), std::sin(aim_pitch), cp * std::cos(aim_head)};
-
         // make_quick (0x004FCFA0) builds an UPRIGHT frame, so the roll is recovered below; fvec is
         // never touched (the fire-agreement contract). ONE read, shared with the cockpit pose.
         const rf::Matrix3 hull = vehicle->orient;
-        supp_ptr->eye_hull_orient = hull;
-        supp_ptr->eye_hull_valid = true;
+        rf::Vector3 dir{};
+        if (driver == rf::local_player_entity) {
+            if (!vehicle_physics_camera_driver_aim(vehicle, driver, &dir)) {
+                return;
+            }
+        }
+        else {
+            VehicleOrientSupplement* supp_ptr = vehicle_orient_supplement(vehicle->handle);
+            if (!supp_ptr) {
+                return;
+            }
+            const VehicleOrientSupplement& supp = *supp_ptr;
+            const bool use_eased = source == VehicleAimSource::eased && supp.eased_valid;
+            const float aim_pitch = use_eased ? supp.eased_aim_pitch : supp.aim_pitch;
+            const float aim_head = use_eased ? supp.eased_aim_head : supp.aim_head;
+            const float cp = std::cos(aim_pitch);
+            dir = rf::Vector3{cp * std::sin(aim_head), std::sin(aim_pitch), cp * std::cos(aim_head)};
+            supp_ptr->eye_hull_orient = hull;
+            supp_ptr->eye_hull_valid = true;
+        }
 
         rf::Matrix3& eye = vehicle->eye_orient;
         eye.make_quick(dir);
@@ -594,7 +601,7 @@ namespace
         sent.keepalive.set(vehicle_orient_keepalive_ms);
 
         // Stored on the sending machine too, for the keyframe decoration and the last-sent
-        // bookkeeping; the eye_orient half is a no-op here.
+        // bookkeeping; the eye_orient half only re-asserts a third-person APC driver's convergence aim.
         vehicle_store_orient(vehicle, tick, vehicle_dequantize_angle(pitch),
                              vehicle_dequantize_angle(bank), vehicle_dequantize_angle(aim_pitch),
                              vehicle_dequantize_angle(aim_head), vehicle_dequantize_steer(steer));

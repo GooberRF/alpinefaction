@@ -996,6 +996,50 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.vehicle_respawn_markers = std::stoi(settings["VehicleRespawnMarkers"]);
         processed_keys.insert("VehicleRespawnMarkers");
     }
+    if (settings.count("VehicleDriverThirdPerson")) {
+        g_alpine_game_config.vehicle_driver_third_person = std::stoi(settings["VehicleDriverThirdPerson"]);
+        processed_keys.insert("VehicleDriverThirdPerson");
+    }
+    if (settings.count("VehicleGunnerThirdPerson")) {
+        g_alpine_game_config.vehicle_gunner_third_person = std::stoi(settings["VehicleGunnerThirdPerson"]);
+        processed_keys.insert("VehicleGunnerThirdPerson");
+    }
+    if (settings.count("VehicleCamFollow")) {
+        g_alpine_game_config.set_vehicle_cam_follow(std::stof(settings["VehicleCamFollow"]));
+        processed_keys.insert("VehicleCamFollow");
+    }
+    if (settings.count("VehicleCamVelocity")) {
+        g_alpine_game_config.set_vehicle_cam_velocity(std::stof(settings["VehicleCamVelocity"]));
+        processed_keys.insert("VehicleCamVelocity");
+    }
+    if (settings.count("VehicleCamMinSpeed")) {
+        g_alpine_game_config.set_vehicle_cam_min_speed(std::stof(settings["VehicleCamMinSpeed"]));
+        processed_keys.insert("VehicleCamMinSpeed");
+    }
+    if (settings.count("VehicleCamLookahead")) {
+        g_alpine_game_config.set_vehicle_cam_lookahead(std::stof(settings["VehicleCamLookahead"]));
+        processed_keys.insert("VehicleCamLookahead");
+    }
+    if (settings.count("VehicleCamLookaheadMax")) {
+        g_alpine_game_config.set_vehicle_cam_lookahead_max(std::stof(settings["VehicleCamLookaheadMax"]));
+        processed_keys.insert("VehicleCamLookaheadMax");
+    }
+    if (settings.count("VehicleCamPitchFollow")) {
+        g_alpine_game_config.set_vehicle_cam_pitch_follow(std::stof(settings["VehicleCamPitchFollow"]));
+        processed_keys.insert("VehicleCamPitchFollow");
+    }
+    if (settings.count("VehicleCamPitchSmooth")) {
+        g_alpine_game_config.set_vehicle_cam_pitch_smooth(std::stof(settings["VehicleCamPitchSmooth"]));
+        processed_keys.insert("VehicleCamPitchSmooth");
+    }
+    if (settings.count("VehicleCamBounce")) {
+        g_alpine_game_config.set_vehicle_cam_bounce(std::stof(settings["VehicleCamBounce"]));
+        processed_keys.insert("VehicleCamBounce");
+    }
+    if (settings.count("VehicleCamLag")) {
+        g_alpine_game_config.set_vehicle_cam_lag(std::stof(settings["VehicleCamLag"]));
+        processed_keys.insert("VehicleCamLag");
+    }
     if (settings.count("WorldHUDSpectateLabels")) {
         g_alpine_game_config.world_hud_spectate_player_labels = std::stoi(settings["WorldHUDSpectateLabels"]);
         processed_keys.insert("WorldHUDSpectateLabels");
@@ -1638,6 +1682,17 @@ void alpine_player_settings_save(rf::Player* player)
     file << "WorldHUDHillOverdraw=" << g_alpine_game_config.world_hud_hill_overdraw << "\n";
     file << "WorldHUDDamageNumbers=" << g_alpine_game_config.world_hud_damage_numbers << "\n";
     file << "VehicleRespawnMarkers=" << g_alpine_game_config.vehicle_respawn_markers << "\n";
+    file << "VehicleDriverThirdPerson=" << g_alpine_game_config.vehicle_driver_third_person << "\n";
+    file << "VehicleGunnerThirdPerson=" << g_alpine_game_config.vehicle_gunner_third_person << "\n";
+    file << "VehicleCamFollow=" << g_alpine_game_config.vehicle_cam_follow << "\n";
+    file << "VehicleCamVelocity=" << g_alpine_game_config.vehicle_cam_velocity << "\n";
+    file << "VehicleCamMinSpeed=" << g_alpine_game_config.vehicle_cam_min_speed << "\n";
+    file << "VehicleCamLookahead=" << g_alpine_game_config.vehicle_cam_lookahead << "\n";
+    file << "VehicleCamLookaheadMax=" << g_alpine_game_config.vehicle_cam_lookahead_max << "\n";
+    file << "VehicleCamPitchFollow=" << g_alpine_game_config.vehicle_cam_pitch_follow << "\n";
+    file << "VehicleCamPitchSmooth=" << g_alpine_game_config.vehicle_cam_pitch_smooth << "\n";
+    file << "VehicleCamBounce=" << g_alpine_game_config.vehicle_cam_bounce << "\n";
+    file << "VehicleCamLag=" << g_alpine_game_config.vehicle_cam_lag << "\n";
     file << "WorldHUDSpectateLabels=" << g_alpine_game_config.world_hud_spectate_player_labels << "\n";
     file << "WorldHUDDemoPlayerInfo=" << g_alpine_game_config.world_hud_demo_player_info << "\n";
     file << "WorldHUDDemoSpawns=" << g_alpine_game_config.world_hud_demo_spawns << "\n";

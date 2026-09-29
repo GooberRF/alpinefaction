@@ -448,6 +448,10 @@ CodeInjection linear_pitch_patch{
             yaw_delta += mouse_yaw;
         }
 
+        if (vehicle_physics_camera_take_rider_look(entity, pitch_delta, yaw_delta)) {
+            return;
+        }
+
         // Apply linear pitch correction to combined delta
         if (g_alpine_game_config.mouse_linear_pitch && pitch_delta != 0.0f) {
             const float current_yaw = entity->control_data.phb.y;
@@ -583,8 +587,9 @@ FunHook<void(rf::Camera*)> camera_do_frame_hook{
             // Disengage and fall back to stock behaviour.
             g_static_camera_mode = AlpineStaticCameraMode::None;
         }
-        // The vehicle passenger's chase camera positions the camera itself, for the local player or
-        // a first-person spectate target, so it must run ahead of the orbit spectate below.
+        // The vehicle orbit camera (passengers, and third-person drivers and jeep gunners) positions
+        // the camera itself, for the local player or a first-person spectated passenger, so it must
+        // run ahead of the orbit spectate below.
         if (vehicle_physics_camera_do_frame(camera)) {
             return;
         }

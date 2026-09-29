@@ -5,6 +5,7 @@
 #include "hud.h"
 #include "hud_internal.h"
 #include "multi_scoreboard.h"
+#include "../graphics/gr.h"
 #include "../input/input.h"
 #include "../os/console.h"
 #include "../rf/entity.h"
@@ -61,7 +62,7 @@ static rf::Player* g_spectate_freelook_saved_target = nullptr;
 
 // Two spectate groups, each with its own submode. The "attached" group watches a player
 // (first or third person); the "detached" group is a free camera (free look or static).
-// The Attach bind swaps between groups; Change Spectate View flips the submode in the group.
+// The Attach bind swaps between groups; Change View flips the submode in the group.
 enum class SpectateViewMode
 {
     first_person,
@@ -868,7 +869,7 @@ void multi_spectate_toggle_attach()
     }
 }
 
-// Change Spectate View bind: flip the submode within the active group.
+// Change View bind while spectating: flip the submode within the active group.
 void multi_spectate_change_view()
 {
     if (!multi_spectate_is_spectating())
@@ -1644,20 +1645,6 @@ static void spectate_populate_default_binds()
     }
 }
 
-static bool spectate_project_to_screen(const rf::Vector3& world_pos, float& sx, float& sy)
-{
-    rf::gr::Vertex v{};
-    if (!rf::gr::rotate_vertex(&v, &world_pos)) { // 0 => in front of the camera
-        rf::gr::project_vertex(&v);
-        if (v.flags & rf::gr::VF_PROJECTED) {
-            sx = v.sx;
-            sy = v.sy;
-            return true;
-        }
-    }
-    return false;
-}
-
 // Returns the numpad bind suffix for a player for the nameplate, e.g. " (1, 3)" (or "" if none).
 static std::string spectate_player_bind_suffix(const rf::Player* player)
 {
@@ -1717,7 +1704,7 @@ static void spectate_render_camera_mesh(const rf::Vector3& pos, const rf::Matrix
     }
 
     float sx = 0.0f, sy = 0.0f;
-    if (spectate_project_to_screen(label_pos, sx, sy)) {
+    if (gr_project_world_to_screen(label_pos, sx, sy)) {
         rf::gr::set_color(0xFF, 0xF0, 0x50, 0xFF);
         rf::gr::string_aligned(rf::gr::ALIGN_CENTER, static_cast<int>(sx), static_cast<int>(sy),
             label.c_str(), hud_get_default_font());

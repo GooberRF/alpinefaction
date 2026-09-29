@@ -157,7 +157,7 @@ struct VehiclePhysicsParams
     // 0 = the strafe keys steer (ci.move.x); non-zero uses the mouse integrator on ci.rot.y.
     float steer_from_mouse = 0.0f;
 
-    // The chase camera is a PASSENGER-seat view only; drivers and the jeep gunner keep first person.
+    // The orbit chase camera: always for passengers; for land-vehicle drivers and the jeep gunner by choice.
     float cam_enable = 0.0f;
     float cam_dist = 0.0f;      // <= 0: derive from the hull box (2.0 * half.z + 2.0)
     float cam_height = 0.0f;    // <= 0: derive from the hull box (1.3 * half.y + 0.9)
@@ -361,6 +361,14 @@ constexpr short vphys_mask_no_hull = static_cast<short>(~vphys_group_hull);
 constexpr short vphys_group_vehicle_box = 0x20;
 constexpr short vphys_mask_none = 0;
 
+enum class VehicleOrbitSeat
+{
+    none,
+    passenger,
+    driver, // jeep, APC, driller
+    gunner, // the jeep gunner
+};
+
 struct VehicleChaseCamera
 {
     bool active = false;
@@ -368,6 +376,36 @@ struct VehicleChaseCamera
     int rider_handle = -1; // whose seat the orbit is on, so a target switch re-seeds the view
     float dist = 0.0f;       // the distance in use, after the wall probe and its rate limit
     rf::CameraMode saved_mode = rf::CAMERA_FIRST_PERSON;
+
+    // False: a spectated passenger, viewed along his own eye frame with no orbit of our own.
+    bool orbit = false;
+    VehicleOrbitSeat seat = VehicleOrbitSeat::none;
+    int cls = -1;
+    // Hull reference: springs (with their rates) toward a heading target that a land vehicle holds
+    // while slow or reversing, and toward a share of the hull pitch.
+    float ref_yaw = 0.0f;
+    float ref_pitch = 0.0f;
+    float ref_yaw_vel = 0.0f;
+    float ref_pitch_vel = 0.0f;
+    float target_yaw = 0.0f;
+    // The hull as the camera measures it: last flat heading, smoothed yaw rate and velocity.
+    float hull_yaw = 0.0f;
+    float hull_yaw_rate = 0.0f;
+    rf::Vector3 hull_pos{};
+    rf::Vector3 hull_vel{};
+    // Smoothed focus, snapped when the seat (its interface tag) changes.
+    rf::Vector3 focus{};
+    rf::Vector3 focus_vel{};
+    int seat_tag = -1;
+    // The player's orbit, relative to the reference; drift eases it back after idle_s.
+    float rel_yaw = 0.0f;
+    float rel_pitch = 0.0f;
+    float idle_s = 0.0f;
+    // Last posed view, and the centre-ray point the aiming seats converge on.
+    rf::Vector3 pos{};
+    rf::Vector3 look{};
+    rf::Vector3 aim_point{};
+    bool aim_valid = false;
 };
 
 // Shared globals, defined once in the TU named beside each.
@@ -447,6 +485,7 @@ void vphys_prev_frame_dt_reset();
 float vphys_cam_distance(const VehiclePhysicsParams& p, const HullBox& box);
 float vphys_cam_height(const VehiclePhysicsParams& p, const HullBox& box);
 bool vphys_chase_camera_do_frame(rf::Camera* camera);
+void vphys_camera_install_patches();
 
 // ---- vphys_debug.cpp ----
 void vphys_render_debug();

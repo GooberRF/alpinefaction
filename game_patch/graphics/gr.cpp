@@ -154,6 +154,21 @@ bool gr_3d_bitmap_oriented_wh(const rf::Vector3* pnt, const rf::Matrix3* M, floa
     return rf::gr::poly(4, verts, rf::gr::TMapperFlags::TMAP_FLAG_TEXTURED, mode, 0, 0.0f);
 }
 
+bool gr_project_world_to_screen(const rf::Vector3& world_pos, float& out_sx, float& out_sy)
+{
+    rf::gr::Vertex v{};
+    if (rf::gr::rotate_vertex(&v, &world_pos)) { // behind the near plane
+        return false;
+    }
+    rf::gr::project_vertex(&v);
+    if (!(v.flags & rf::gr::VF_PROJECTED)) {
+        return false;
+    }
+    out_sx = v.sx;
+    out_sy = v.sy;
+    return true;
+}
+
 float gr_scale_fov_hor_plus(float horizontal_fov)
 {
     // Use Hor+ FOV scaling method to improve user experience for wide screens

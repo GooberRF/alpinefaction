@@ -9,6 +9,8 @@ Version 1.5.0 (Trillium): Not yet released
   - Jeeps, APCs, drillers, fighters, submarines, and stationary turrets, spawned by the new `Vehicle Factory` object
   - Overhaul vehicle physics using Bullet physics engine
   - Multi-seat vehicles with driver, gunner, and passenger seats; `Use` boards the lowest free seat and number keys `1`-`6` switch seats
+  - Optional third-person view for jeep, APC, and driller drivers and the jeep gunner, toggled with `Change View` (formerly `Change Spectate View`, default `;`) and remembered
+  - Third-person vehicle views orbit with the mouse and follow the vehicle with a smoothed, speed-aware chase camera, tunable with the `cl_vehiclecam_*` commands; driver and passenger views ease back behind the vehicle, and the APC's guns converge on the crosshair
   - Render rolling, steering tires on jeeps
   - Submarine propellers spin with speed
   - Scroll APC and driller tread textures at the speed the vehicle is moving

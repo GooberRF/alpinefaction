@@ -200,7 +200,8 @@ namespace
             pp->flags |= rf::PF_IN_ENCLOSED_VEHICLE;
         }
         rf::player_fpgun_reset_zoom(pp);
-        if (pp->cam) {
+        // An orbit seat is claimed by the camera frame; forcing first person first would flash it.
+        if (pp->cam && !vehicle_physics_camera_local_seat_is_orbit()) {
             rf::camera_enter_first_person(pp->cam);
         }
     }
