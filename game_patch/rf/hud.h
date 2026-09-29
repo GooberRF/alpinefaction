@@ -146,6 +146,7 @@ namespace rf
     static auto& hud_do_frame = addr_as_ref<void(Player*)>(0x00437B80);
     static auto& hud_msg = addr_as_ref<void(const char* text, int, int duration, Color*)>(0x004383C0);
     static auto& hud_msg_clear = addr_as_ref<void()>(0x004381F0); // hud_msg_level_init in code
+    static auto& hud_translate_special_character_token = addr_as_ref<char*(char* token)>(0x004385C0);
 
     // MP final countdown
     static auto& played_n_seconds_left_sound = addr_as_ref<bool[10]>(0x006C9D38);

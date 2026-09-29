@@ -3,6 +3,7 @@
 #include <windows.h>
 #include <commctrl.h>
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -49,9 +50,6 @@ inline bool is_object_selected(CDedLevel* level, DedObject* obj)
 }
 
 // ─── Shared Alpine object-type machinery (Tier 2) ───────────────────────────
-// Per docs/PLAN_alpine_shared_machinery.md. Only the rope emitter uses these so far; the six
-// older types still carry their own copies and are migrated separately.
-
 // Keeps the stock UID generator ahead of a type's objects, which it cannot see.
 template<typename T>
 inline void alpine_ensure_uid(const std::vector<T*>& objects, int& uid)
@@ -79,10 +77,17 @@ inline void alpine_compact_selection(CDedLevel* level, DedObjectType type, Destr
     }
 }
 
-// Closest object whose placed position projects within radius_sq of the click, in pixels.
 template<typename T>
+inline Vector3 alpine_obj_pos(const T& obj)
+{
+    return obj.pos;
+}
+
+// Closest object whose position (pos_of, the placed position by default) projects within radius_sq of
+// the click, in pixels.
+template<typename T, typename PosFn = Vector3 (*)(const T&)>
 inline T* alpine_click_pick_point(const std::vector<T*>& objects, float click_x, float click_y,
-                                  float radius_sq)
+                                  float radius_sq, PosFn pos_of = alpine_obj_pos<T>)
 {
     float best_dist_sq = 1e30f;
     T* best = nullptr;
@@ -90,7 +95,8 @@ inline T* alpine_click_pick_point(const std::vector<T*>& objects, float click_x,
     for (auto* obj : objects) {
         if (obj->hidden_in_editor) continue;
 
-        float center_pos[3] = {obj->pos.x, obj->pos.y, obj->pos.z};
+        const Vector3 pos = pos_of(*obj);
+        float center_pos[3] = {pos.x, pos.y, pos.z};
         float screen_cx = 0.0f, screen_cy = 0.0f;
         if (!project_to_screen_2d(center_pos, &screen_cx, &screen_cy))
             continue;
@@ -120,6 +126,33 @@ inline void alpine_dlg_set_float_field(HWND hdlg, int idc, float value)
     SetDlgItemTextA(hdlg, idc, buf);
 }
 
+// The shortest of %.6g .. %.9g that reads back (strtof) as exactly `v`, so a field re-read on OK
+// returns the bits it showed.
+inline void alpine_format_float_exact(char (&buf)[32], float v)
+{
+    for (int digits = 6; digits <= 9; digits++) {
+        std::snprintf(buf, sizeof(buf), "%.*g", digits, static_cast<double>(v));
+        if (std::strtof(buf, nullptr) == v) return;
+    }
+}
+
+inline void alpine_dlg_set_float_field_exact(HWND hdlg, int idc, float value)
+{
+    char buf[32];
+    alpine_format_float_exact(buf, value);
+    SetDlgItemTextA(hdlg, idc, buf);
+}
+
+// `shown` while the field still holds the text alpine_dlg_set_float_field_exact wrote for it, else what
+// was typed.
+inline float alpine_dlg_get_float_field_exact(HWND hdlg, int idc, float shown)
+{
+    char text[32] = {}, fmt[32];
+    GetDlgItemTextA(hdlg, idc, text, sizeof(text));
+    alpine_format_float_exact(fmt, shown);
+    return std::strcmp(text, fmt) == 0 ? shown : std::strtof(text, nullptr);
+}
+
 inline float alpine_dlg_get_float_field(HWND hdlg, int idc)
 {
     char buf[32] = {};
@@ -134,6 +167,38 @@ inline int alpine_dlg_get_int_field(HWND hdlg, int idc)
     char buf[32] = {};
     GetDlgItemTextA(hdlg, idc, buf, sizeof(buf));
     return std::atoi(buf);
+}
+
+// Combo boxes carry each item's value as its item data.
+inline int alpine_dlg_combo_add(HWND hdlg, int idc, const char* label, LPARAM data)
+{
+    HWND combo = GetDlgItem(hdlg, idc);
+    const auto item = static_cast<int>(SendMessageA(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(label)));
+    if (item >= 0) SendMessageA(combo, CB_SETITEMDATA, item, data);
+    return item;
+}
+
+// The selected item's data, or `fallback` with nothing selected.
+inline LRESULT alpine_dlg_combo_data(HWND hdlg, int idc, LRESULT fallback)
+{
+    HWND combo = GetDlgItem(hdlg, idc);
+    if (!combo) return fallback;
+    const LRESULT sel = SendMessageA(combo, CB_GETCURSEL, 0, 0);
+    return sel == CB_ERR ? fallback : SendMessageA(combo, CB_GETITEMDATA, sel, 0);
+}
+
+// Selects the first item carrying `data`; false when none does.
+inline bool alpine_dlg_combo_select(HWND hdlg, int idc, LPARAM data)
+{
+    HWND combo = GetDlgItem(hdlg, idc);
+    const LRESULT n = combo ? SendMessageA(combo, CB_GETCOUNT, 0, 0) : 0;
+    for (LRESULT i = 0; i < n; i++) {
+        if (SendMessageA(combo, CB_GETITEMDATA, i, 0) == data) {
+            SendMessageA(combo, CB_SETCURSEL, i, 0);
+            return true;
+        }
+    }
+    return false;
 }
 
 // Names that aren't on disk or in a vpp stay at -1 rather than going through bm_load, which would
@@ -408,9 +473,10 @@ inline void render_additive_axial_quad(
 
     if (all_clip != 0) return;
 
-    void* ptrs[4] = {&verts[0], &verts[1], &verts[2], &verts[3]};
+    GrVertex* ptrs[4] = {&verts[0], &verts[1], &verts[2], &verts[3]};
 
     gr_set_mode(0x10);
-    gr_poly_render(4, ptrs, 1, cam_param, 0, 0.0f);
+    // The mode slot has always received the bits of this global (0x014cf7e0), typed float here.
+    gr_poly_render(4, ptrs, 1, std::bit_cast<uint32_t>(cam_param), 0, 0.0f);
     flush_additive();
 }

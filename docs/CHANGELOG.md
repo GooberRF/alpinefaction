@@ -16,6 +16,14 @@ Version 1.5.0 (Trillium): Not yet released
   - `Affects mesh lighting` lights meshes and entities per pixel from the sun direction, with `Scale mesh sunlight by lightmaps` to keep sunlight out of unlit interiors
   - `Aligns dynamic shadows` points entity shadows along the sun instead of the fixed default direction
   - `Water blocks sunlight` stops sun rays at liquid surfaces during the bake
+- Add Alpine Lightmaps, providing higher-resolution, BC7-compressed lightmaps for brushwork, movers, and terrain
+- Add heightmap-based `Terrain` object to level editor
+  - Support blended texture layers, holes, optional skirts, per-terrain lightmap density, and optional fullbright
+  - Import 8/16-bit greyscale PNG and RAW16 heightmaps, export 16-bit PNG and RAW16 heightmaps, and import splat maps
+  - Generate heightmaps using fractal noise with optional splat map from height, slope and ridges
+  - Sculpt heights, paint texture layers and holes, and pick geoable chunks in the viewport with `Terrain Tools`
+  - Up to 4 detail overlays (leaves, debris) and 8 mesh decoration layers per terrain (grass, rocks, bushes)
+  - `Geoable` terrains are carved by RF2-style geomod craters, with their own underside and crater textures
 
 ### Minor features, changes, and enhancements
 [@GooberRF](https://github.com/GooberRF)
@@ -37,7 +45,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Add `Brush Geo` source selection for Alpine Mesh objects using `Brush` collision, allowing custom collision hulls
 - Raise level editor per-room and per-mesh render vertex limit from 8000 to 32768
 - Raise the limit on items per level from 200 to 1500 (RFL version 306+ levels only)
-- Add `-bake in.rfl -bakeout out.rfl` launcher command line switches to calculate a level's lighting without user interaction, writing the result to a new level file and progress to a log beside it
+- Add `-bake in.rfl -bakeout out.rfl` launcher command line switches to build a level's geometry and calculate its lighting without user interaction, writing the result to a new level file and progress to a log beside it
 - Add `High-resolution lightmaps` level property, used in lightmap bake in level editor
 - Deprecate and remove `-smoothlights` level editor switch
 - Add `dbg_collision_pairs` console command to print object collision pair pool statistics
@@ -60,11 +68,23 @@ Version 1.5.0 (Trillium): Not yet released
 - Support linking events and triggers to detail brushes in the level editor
 - Linking a `Bolt Emitter` or `Rope Emitter` to a `Target` in the level editor sets the emitter's target to it
 - `Owner_Gate` can now take its capture points from linked `Capture_Point_Handler` events
+- Retain RED+-specific chunks when RFLs are loaded and re-saved in the level editor
 - Make third person spectate an over-the-shoulder camera, and stop third person and orbit spectate cameras from clipping through walls
 - Switching from a spectated player to free look starts the free look camera at the current view instead of where free look was last left
+- Show the spectated player's jetpack fuel gauge in third person spectate and when `spectate_minui` is enabled
+- Add `cl_dominationmsgs` console command to toggle display of dominating and revenge server messages in chat
+- Add `dbg_terrain_batches` console command to tint terrain faces by render batch (Direct3D 11 renderer only)
+- Add `dbg_terrain_decorations` console command to toggle terrain mesh decorations and print their draw statistics
+- Levels saved with `D3D11-only lightmaps` refuse to load with the Direct3D 8/9 renderers
+- Speed up `Calculate Lighting` in the level editor, especially on large levels and levels with very many lightmap surfaces
+- Improve level loading and `Build Geometry` times in the level editor on levels with many faces
+- Draw large rooms in fewer draw calls, and skip rooms without dynamic decals when drawing them (Direct3D 11 renderer only)
+- Make level editor refuse to open levels saved by a newer version of Alpine Faction instead of misreading them
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Add `ui_color_console` console command to set the console background color
+- Render animated (`.vfx`) meshes on the GPU with per-pixel lighting, and apply their materials' reflection maps (Direct3D 11 renderer only)
+- Load levels with very large face counts or many level sounds much faster
 
 [@is-this-c](https://github.com/is-this-c)
 - Do not kick a player, if they join right before limbo
@@ -113,6 +133,33 @@ Version 1.5.0 (Trillium): Not yet released
 - Remove the level editor warning about levels with too many decals
 - Fix `Owner_Gate`, `Add_Link`, `Clone_Entity`, `Valid_Gate`, the trigger of `Inside_Gate`, and the eye anchor of `Set_Skybox` keeping the old UID when the object they reference is renumbered by a group import or pasted along with them in the level editor
 - Fix `Score Limit Override` mutator not working in Wipeout
+- Fix faces created by `Split` and `Bridge` in the level editor sharing an ID, which made them share scrolling texture settings and could map geoable or breakable brushes to the wrong room when saving before rebuilding
+- Fix dedicated servers and headless bots using the Win32 console hanging when printing certain text
+- Fix dedicated server crashing when a `Clone_Entity` or `Set_Player_World_Collide` event is activated, and `Clone_Entity` crashing when the entity cannot be created
+- Fix `HUD_Message` crashing the game with certain message text
+- Improve validation of ATX texture files
+- Improve validation of `mapname_info.tbl`
+- Fix dedicated server crashes in certain level rotation configurations
+- Improve rcon failed login attempt handling
+- Fix a player joining mid-match occasionally being treated as a match participant after a participant leaves
+- Fix weapon select HUD reading and writing out of bounds for weapons past the 32nd entry in `weapons.tbl`
+- Fix Alpine event variable handler data leaking across level loads
+- Harden team change and server info packet handling against malformed data
+- Stop writing FactionFiles link tokens to the launcher log
+- Fix RF2-style geomod craters near the edge of a geoable brush not carving a neighboring geoable brush that the crater reaches
+- Fix RF2-style geomod giving up on geoable rooms with more than 5000 faces
+- Fix crash when a decal is created in a room containing a very large number of detail brushes
+- Fix Direct3D 8/9 renderer geometry cache overflowing with more than 256 rooms or detail rooms in view
+- Fix Direct3D 8/9 renderer rebuilding every room's render cache each frame while a room with more than 8000 vertices is in view
+- Fix level editor memory use growing with every `Build Geometry` and `Calculate Lighting` because the Direct3D textures of discarded lightmaps were never released
+- Fix level editor crashing when Direct3D fails to create a texture
+- Stop `Build Geometry` and `Calculate Lighting` in the level editor with a message when too little memory is left to finish them (instead of crashing)
+- Reduce the memory `Calculate Lighting` needs in the level editor, and how much of it must be in one piece
+- Fix level editor crashing in `Calculate Lighting` when a level needs more than 32767 lightmap surfaces; faces past the limit are left without a lightmap and the editor warns
+- Fix geomod craters creating new lightmap surfaces on every crater once a level holds more than 32767 of them
+- Fix memory corruption when more than 1024 rooms are visible at once
+- Fix geomod crater relighting converting lightmap texels beyond the relit surface, which could write past the end of the lightmap for a surface at the bottom of a lightmap page
+- Fix a possible out-of-bounds read when drawing dynamic decals (Direct3D 11 renderer only)
 
 [@is-this-c](https://github.com/is-this-c)
 - Let `Caps Lock` capitalize
@@ -123,6 +170,9 @@ Version 1.5.0 (Trillium): Not yet released
 - Fix reload animation playing in third person for other players when client tries to reload with a full clip/magazine
 - Fix lighting for pistol silencer and remote charge detonator
 - Fix third-person crouch animations on remote players flickering and snapping
+
+### Imported libraries
+- [bc7enc_rdo](https://github.com/richgel999/bc7enc_rdo) by Richard Geldreich, Jr.
 
 Version 1.4.0 (Lupin): Released Aug-25-2026
 --------------------------------

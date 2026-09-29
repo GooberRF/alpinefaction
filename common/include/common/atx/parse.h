@@ -6,6 +6,7 @@
 //   - Valid TOML syntax (toml++ parses it)
 //   - At least one [[frame]]
 //   - Each frame has a non-empty `file` that doesn't end in .atx (no nesting)
+//   - Frame `file` and `alpha_mask` are at most ATX_MAX_FILENAME_LEN characters
 //   - animation_mode is in range (0–3); out-of-range warns and falls back to default
 //   - Numeric fields clamped to ATX_MIN_FRAME_TIME_MS
 //
@@ -68,6 +69,11 @@ inline std::optional<AtxSpec> parse_atx(std::string_view toml_bytes, std::string
             if (!v->empty()) spec.header.format = *v;
         }
         if (auto v = (*hdr)[ATX_KEY_ALPHA_MASK].value<std::string>()) {
+            if (v->size() > ATX_MAX_FILENAME_LEN) {
+                xlog::warn("ATX '{}': alpha_mask '{}' longer than {} characters",
+                           source_name, *v, ATX_MAX_FILENAME_LEN);
+                return std::nullopt;
+            }
             if (!v->empty()) spec.header.alpha_mask = *v;
         }
         if (auto v = (*hdr)[ATX_KEY_MATERIAL].value<std::string>()) {
@@ -99,6 +105,11 @@ inline std::optional<AtxSpec> parse_atx(std::string_view toml_bytes, std::string
         if (string_iends_with(f.filename, ".atx")) {
             xlog::warn("ATX '{}': nested .atx is not allowed (frame '{}')",
                        source_name, f.filename);
+            return std::nullopt;
+        }
+        if (f.filename.size() > ATX_MAX_FILENAME_LEN) {
+            xlog::warn("ATX '{}': frame file '{}' longer than {} characters",
+                       source_name, f.filename, ATX_MAX_FILENAME_LEN);
             return std::nullopt;
         }
         if (auto v = (*frame_tbl)[ATX_KEY_FRAME_TIME_OVR].value<int64_t>()) {

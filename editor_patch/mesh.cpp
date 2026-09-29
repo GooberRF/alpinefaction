@@ -1593,13 +1593,7 @@ void mesh_render(CDedLevel* level)
         if (vm && !just_loaded) {
             set_draw_color(0xff, 0xff, 0xff, 0xff);
 
-            EditorRenderParams render_params;
-
-            // Check if textures are enabled
-            if (editor_textures_enabled != 0) {
-                render_params.flags |= ERF_TEXTURED;
-                render_params.diffuse_color = {0xff, 0xff, 0xff, 0xff};
-            }
+            EditorRenderParams render_params = editor_mesh_render_params();
 
             // Selection highlight
             if (selected) {

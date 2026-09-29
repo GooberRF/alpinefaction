@@ -4,6 +4,7 @@ set(SRCS
     include/common/rope_curve.h
     include/common/ComPtr.h
     include/common/afd_format.h
+    include/common/rfl_chunk_reader.h
     include/common/tlv.h
     include/common/scope_guard.h
     include/common/config/BuildConfig.h
@@ -24,6 +25,11 @@ set(SRCS
     include/common/utils/string-utils.h
     include/common/utils/bool-utils.h
     include/common/bitmap/formats.h
+    include/common/lightmap/alpine_lightmap.h
+    include/common/lightmap/alpine_lightmap_decode.h
+    include/common/lightmap/alpine_lightmap_reader.h
+    include/common/terrain/alpine_terrain.h
+    include/common/terrain/alpine_terrain_reader.h
     include/common/atx/spec.h
     include/common/atx/parse.h
     include/common/version/version.h

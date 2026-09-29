@@ -279,6 +279,9 @@ struct EventCloneEntity : rf::Event
                 rf::Entity* entity = static_cast<rf::Entity*>(obj);
                 rf::Entity* new_entity =
                     rf::entity_create(entity->info_index, entity->name, -1, pos, this->orient, 0, -1);
+                if (!new_entity) {
+                    continue;
+                }
                 new_entity->entity_flags = entity->entity_flags;
                 new_entity->entity_flags2 = entity->entity_flags2;
                 new_entity->info->flags = entity->info->flags;
@@ -343,7 +346,7 @@ struct EventCloneEntity : rf::Event
                     rf::entity_make_run(new_entity);
                 }
 
-                if (hostile_to_player) {
+                if (hostile_to_player && rf::local_player_entity) {
                     new_entity->ai.hate_list.add(rf::local_player_entity->handle);
                 }
             }
@@ -356,11 +359,15 @@ struct EventSetCollisionPlayer : rf::Event
 {
     void turn_on() override
     {
-        rf::local_player->collides_with_world = true;
+        if (rf::local_player) {
+            rf::local_player->collides_with_world = true;
+        }
     }
     void turn_off() override
     {
-        rf::local_player->collides_with_world = false;
+        if (rf::local_player) {
+            rf::local_player->collides_with_world = false;
+        }
     }
 };
 

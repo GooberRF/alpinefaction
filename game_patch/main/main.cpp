@@ -53,6 +53,8 @@
 #include "../misc/player.h"
 #include "../misc/waypoints.h"
 #include "../misc/level.h"
+#include "../misc/alpine_terrain_decorations.h"
+#include "../graphics/af_lightmap.h"
 #include "../object/alpine_corona.h"
 #include "../object/alpine_rope.h"
 #include "../input/input.h"
@@ -198,6 +200,7 @@ CodeInjection after_level_render_hook{
 #endif
         weather_render();
         alpine_rope_render();
+        alpine_terrain_decorations_render_legacy();
         crits_client_render();
         debug_render();
         waypoints_render_debug();
@@ -293,6 +296,7 @@ FunHook<int(rf::String&, rf::String&, char*)> level_load_hook{
         if (ret != 0)
             xlog::warn("Loading failed: {}", error);
         else {
+            af_lightmap_resolve_terrains();
             multi_spectate_level_init();
         }
         return ret;
@@ -349,6 +353,7 @@ FunHook<void(bool)> level_init_post_hook{
         destruction_level_init_post();
 
         if (!rf::is_dedicated_server && !is_headless_mode()) {
+            alpine_terrain_decorations_level_init();
             explosion_flash_lights_level_init();
             evaluate_fullbright_meshes();
             set_levelmod_autotexture_ppm();

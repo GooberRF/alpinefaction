@@ -126,7 +126,6 @@ struct BrowserState
     int tree_full_bottom; // mesh tree bottom with the animation pane hidden
 };
 
-const Matrix3 identity_orient{{1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f, 1.0f}};
 // The preview draws in its own space rather than beside the editor camera: with the light list
 // emptied and a fixed ambient, nothing about the result depends on where the level is.
 const Vector3 preview_origin{0.0f, 0.0f, 0.0f};
@@ -1021,13 +1020,9 @@ void preview_draw_mesh(BrowserState& st)
     gr_setup_3d(&camera_orient, &camera_pos, preview_fov, true, true);
 
     set_draw_color(0xff, 0xff, 0xff, 0xff);
-    EditorRenderParams params;
+    EditorRenderParams params = editor_mesh_render_params();
     params.flags |= ERF_CUSTOM_AMBIENT;
     params.ambient_color = preview_ambient;
-    if (editor_textures_enabled != 0) {
-        params.flags |= ERF_TEXTURED;
-        params.diffuse_color = {0xff, 0xff, 0xff, 0xff};
-    }
 
     const bool anim_fx = vmesh_get_type(st.vmesh) == VMESH_TYPE_ANIM_FX;
     if (anim_fx) {

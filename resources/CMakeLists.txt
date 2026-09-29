@@ -257,6 +257,7 @@ add_packfile(alpinefaction.vpp
     images/Icon_AFWeather.tga
     images/Icon_AFProjection.tga
     images/Icon_AFRope.tga
+    images/Icon_AFTerrain.tga
     images/af_gbrsnowfl01.tga
     images/radar_dish.tga
     images/score_aflogo.tga
@@ -325,6 +326,11 @@ add_packfile(alpinefaction.vpp
     outline_standard_vs:${CMAKE_BINARY_DIR}/shaders/outline_standard_vs.bin
     standard_ps:${CMAKE_BINARY_DIR}/shaders/standard_ps.bin
     standard_nogas_ps:${CMAKE_BINARY_DIR}/shaders/standard_nogas_ps.bin
+    terrain_ps:${CMAKE_BINARY_DIR}/shaders/terrain_ps.bin
+    terrain_nogas_ps:${CMAKE_BINARY_DIR}/shaders/terrain_nogas_ps.bin
+    decoration_vs:${CMAKE_BINARY_DIR}/shaders/decoration_vs.bin
+    decoration_ps:${CMAKE_BINARY_DIR}/shaders/decoration_ps.bin
+    decoration_nogas_ps:${CMAKE_BINARY_DIR}/shaders/decoration_nogas_ps.bin
     ui_ps:${CMAKE_BINARY_DIR}/shaders/ui_ps.bin
     shadow_debug_ps:${CMAKE_BINARY_DIR}/shaders/shadow_debug_ps.bin
     outline_ps:${CMAKE_BINARY_DIR}/shaders/outline_ps.bin

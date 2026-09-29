@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include "vtypes.h"
 #include "mfc_types.h"
@@ -11,13 +12,39 @@ struct TextureCategory {
 };
 static_assert(sizeof(TextureCategory) == 0xC, "TextureCategory size mismatch!");
 
+// A stock category's name and the texture files listed in it (CDedLevel::texture_groups).
+struct TextureGroup
+{
+    VString name;
+    VArray<VString> textures;
+};
+static_assert(sizeof(TextureGroup) == 0x14);
+
+// The Texture tab (template 0xE6) of the Red Preferences dialog, which owns the texture categories.
+struct TextureManager
+{
+    char pad_0[0x7C];
+    VArray<TextureCategory*> categories; // 0x7C
+    VArray<VString> folder_names;        // 0x88 — indexed by a stock category's path_handle
+};
+static_assert(offsetof(TextureManager, categories) == 0x7C);
+static_assert(offsetof(TextureManager, folder_names) == 0x88);
+
+// CMainFrame::preferences_dlg: the "Red Preferences" dialog, whose tabs are separate child dialogs.
+struct PreferencesDialog
+{
+    char pad_0[0x9C];
+    TextureManager* texture_manager; // 0x9C — the Texture tab
+};
+static_assert(offsetof(PreferencesDialog, texture_manager) == 0x9C);
+
 // Partial layout of the texture mode sidebar panel
 struct TextureModePanel {
     char pad_0[0x94];
     int category_index;         // 0x94 — selected category array index
     int custom_path_handle;     // 0x98 — VFS path handle for custom texture enumeration
     char pad_9c[0x08];
-    void* texture_manager;      // 0xA4 — pointer to texture manager (category array at +0x7C)
+    TextureManager* texture_manager; // 0xA4
 };
 static_assert(offsetof(TextureModePanel, category_index) == 0x94);
 static_assert(offsetof(TextureModePanel, custom_path_handle) == 0x98);
@@ -59,13 +86,13 @@ struct TextureBrowserPanel {
     TextureListSentinel master_list;    // 0x278 — currently-displayed entries
     char pad_280[0x30];
     BitmapPreviewDialog* preview;       // 0x2b0 — seeded before DoModal, holds the pick after
-    void* category_holder;              // 0x2b4 — VArray<TextureCategory*> at +0x7C
+    TextureManager* texture_manager;    // 0x2b4
     char pad_2b8[0x04];
     uint8_t listbox_dirty;              // 0x2bc — non-zero forces listbox repaint
 };
 static_assert(offsetof(TextureBrowserPanel, master_list) == 0x278);
 static_assert(offsetof(TextureBrowserPanel, preview) == 0x2b0);
-static_assert(offsetof(TextureBrowserPanel, category_holder) == 0x2b4);
+static_assert(offsetof(TextureBrowserPanel, texture_manager) == 0x2b4);
 static_assert(offsetof(TextureBrowserPanel, listbox_dirty) == 0x2bc);
 
 // Run the stock texture browser the way EmitterPropertiesDialog::OnBrowseForBitmap
@@ -73,11 +100,9 @@ static_assert(offsetof(TextureBrowserPanel, listbox_dirty) == 0x2bc);
 // handle the user picked. Returns -1 when the browser is unavailable or was cancelled.
 int texture_browser_pick(const char* folder, int current_bm);
 
-inline VArray<TextureCategory*>* texture_browser_categories(TextureBrowserPanel* panel)
-{
-    return reinterpret_cast<VArray<TextureCategory*>*>(
-        static_cast<char*>(panel->category_holder) + 0x7C);
-}
+// The name of the category holding `filename`, matched without its extension, as texture mode finds
+// it; null when no category does.
+const char* texture_category_of(const char* filename);
 
 // FUN_004712d0: __thiscall returning the file-scan flags byte (5 or 6) for this panel.
 // Bit 0 selects sort-by-name; passed straight to texture_browser_scan_path.
@@ -154,5 +179,15 @@ static_assert(offsetof(BitmapEntry, total_bytes_for_all_levels) == 0x60);
 // ─── D3D texture cache ──────────────────────────────────────────────────────
 
 static auto& gr_d3d_mark_texture_dirty = addr_as_ref<void(int bm_handle)>(0x004F6000);
+
+// Null unless Direct3D is the renderer and the bitmap has an index.
+inline GrTextureSlot* gr_texture_slot_of(int bm_handle)
+{
+    if (bm_handle < 0 || gr_api != gr_api_d3d || !gr_texture_slots) {
+        return nullptr;
+    }
+    const int index = BitmapEntry::handle_to_index(bm_handle);
+    return index < 0 ? nullptr : &gr_texture_slots[index];
+}
 
 void reload_custom_textures();

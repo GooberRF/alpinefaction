@@ -33,9 +33,10 @@ inline constexpr std::string_view ATX_ARRAY_FRAME        = "frame";
 
 // ─── Default values & limits ──────────────────────────────────────────────────
 
-inline constexpr int  ATX_MIN_FRAME_TIME_MS     = 1;   // floor enforced by parser
-inline constexpr int  ATX_DEFAULT_FRAME_TIME_MS = 100;
-inline constexpr bool ATX_DEFAULT_INITIALLY_ON  = true;
+inline constexpr int    ATX_MIN_FRAME_TIME_MS     = 1;   // floor enforced by parser
+inline constexpr size_t ATX_MAX_FILENAME_LEN      = 31;  // bm entry name is char[32]
+inline constexpr int    ATX_DEFAULT_FRAME_TIME_MS = 100;
+inline constexpr bool   ATX_DEFAULT_INITIALLY_ON  = true;
 
 // ─── Parsed structures ────────────────────────────────────────────────────────
 

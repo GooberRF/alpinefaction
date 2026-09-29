@@ -1004,12 +1004,12 @@ void jetpack_render_hud()
         return;
     }
 
-    // First-person spectate and demo playback both follow through multi_spectate:
-    // the gauge tracks the viewed player's estimated fuel, the local-only overlays
-    // (spawn reveal, keybind hint) stay hidden.
+    // Attached spectate (first or third person) and demo playback both follow through
+    // multi_spectate: the gauge tracks the viewed player's estimated fuel, the local-only
+    // overlays (spawn reveal, keybind hint) stay hidden.
     if (multi_spectate_is_spectating()) {
         g_jetpack_hint_fade = 0.0f;
-        if (!multi_spectate_is_first_person() || g_alpine_game_config.spectate_mode_minimal_ui) {
+        if (!multi_spectate_is_following_player()) {
             return;
         }
         rf::Player* target = multi_spectate_get_target_player();

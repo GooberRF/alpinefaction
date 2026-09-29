@@ -136,6 +136,11 @@ namespace rf
     };
     static_assert(offsetof(VifLodMesh, meshes) == 0x4);
 
+    // Read by LOD selection (0x0052FA40): the most detailed level distance may pick (from the detail setting),
+    // and whether every mesh stays at level 0 (set while a cutscene plays, 0x0052FC60).
+    static auto& vif_min_lod = addr_as_ref<int>(0x01C45254);
+    static auto& vif_lod_full_detail = addr_as_ref<bool>(0x01C45258);
+
     struct MeshRenderParams
     {
         int flags;
