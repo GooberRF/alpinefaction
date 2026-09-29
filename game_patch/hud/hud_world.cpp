@@ -261,24 +261,91 @@ static float koth_fill_scale_from_progress(uint8_t progress01_100, float base_ic
     return base_icon_scale * g_koth_hud_tuning.fill_vs_ring_scale * r;
 }
 
-void render_string_3d_pos_new(const rf::Vector3& pos, const std::string& text, int offset_x, int offset_y,
-    int font, rf::ubyte r, rf::ubyte g, rf::ubyte b, rf::ubyte a)
-{
-    rf::gr::Vertex dest;
-
-    // Transform the position to screen space
-    if (!rf::gr::rotate_vertex(&dest, &pos))
-    {
+// Use `render_string_3d`.
+static void render_projected_string(
+    const rf::Vector3& pos,
+    const std::string& text,
+    const int offset_x,
+    const int offset_y,
+    const int font,
+    const rf::ubyte r,
+    const rf::ubyte g,
+    const rf::ubyte b,
+    const rf::ubyte a
+) {
+    rf::gr::Vertex dest{};
+    // Transform to screen space.
+    if (!rf::gr::rotate_vertex(&dest, &pos)) {
         rf::gr::project_vertex(&dest);
-
         // Check if projection was successful
-        if (dest.flags & 1)
-        {
-            int screen_x = static_cast<int>(dest.sx) + offset_x;
-            int screen_y = static_cast<int>(dest.sy) + offset_y;
+        if (dest.flags & 1) {
+            const int screen_x = std::lround(dest.sx) + offset_x;
+            const int screen_y = std::lround(dest.sy) + offset_y;
             rf::gr::set_color(r, g, b, a);
             rf::gr::string(screen_x, screen_y, text.c_str(), font);
         }
+    }
+}
+
+// Assumes `rf::gr::screen.aspect` to be 1, so x and y scales are equal.
+static float world_units_per_pixel(const rf::Vector3& pos) {
+    const rf::Vector3 delta = pos - rf::gr::view_pos;
+    const float z = rf::gr::view_matrix.fvec.dot_prod(delta);
+    if (z <= 1e-6f) {
+        return 0.f;
+    }
+    return 2.f * z / (rf::gr::screen.clip_height * rf::gr::matrix_scale.y);
+}
+
+constexpr bool WH_2D_TEXT = false;
+
+static void render_string_3d(
+    rf::Vector3 pos,
+    const char* const string,
+    const int screen_offset_x,
+    const int screen_offset_y,
+    const int font_num,
+    const rf::gr::Color color,
+    const rf::Matrix3* const orient = &rf::gr::eye_matrix
+) {
+    if constexpr (WH_2D_TEXT) {
+        render_projected_string(
+            pos,
+            string,
+            screen_offset_x,
+            screen_offset_y,
+            font_num,
+            color.red,
+            color.green,
+            color.blue,
+            color.alpha
+        );
+    } else {
+        const float scale = world_units_per_pixel(pos);
+        if (scale <= .0f) {
+            return;
+        }
+        if (screen_offset_x != 0) {
+            pos += rf::gr::eye_matrix.rvec
+                * static_cast<float>(screen_offset_x)
+                * scale;
+        }
+        if (screen_offset_y != 0) {
+            pos -= rf::gr::eye_matrix.uvec
+                * static_cast<float>(screen_offset_y)
+                * scale;
+        }
+        const rf::gr::Color prev_color{rf::gr::screen.current_color};
+        rf::gr::set_color(color);
+        rf::gr::string_3d(
+            &pos,
+            orient,
+            scale,
+            string,
+            font_num,
+            rf::gr::bitmap_clamp_mode
+        );
+        rf::gr::set_color(prev_color);
     }
 }
 
@@ -686,7 +753,7 @@ void build_player_labels() {
 
         // determine label width
         const auto [text_width, text_height] = rf::gr::get_string_size(label, font);
-        const int base_text_height = rf::gr::get_string_size(label, base_font).second;
+        const int base_text_height = rf::gr::get_font_height(base_font);
         int half_text_width = text_width / 2;
         int centered_offset_y = -25 - ((text_height - base_text_height) / 2);
 
@@ -716,7 +783,7 @@ void build_player_labels() {
             label_a = teammate_override_a;
         }
 
-        render_string_3d_pos_new(string_pos, label.c_str(), -half_text_width, centered_offset_y, font, label_r, label_g, label_b, label_a);
+        render_string_3d(string_pos, label.c_str(), -half_text_width, centered_offset_y, font, {label_r, label_g, label_b, label_a});
 
         if (demo_player_info) {
             render_player_info_bars(string_pos, centered_offset_y - 2, player_entity->life,
@@ -730,21 +797,27 @@ void build_ephemeral_world_hud_sprite_icons() {
         return !es.timestamp.valid() || es.timestamp.elapsed();
     });
 
-    for (const auto& es : ephemeral_world_hud_sprites) {
-        const int font = get_world_hud_font(g_alpine_game_config.get_world_hud_ping_label_text_scale());
+    if (ephemeral_world_hud_sprites.empty()) {
+        return;
+    }
 
-        rf::gr::set_color(es.color.red, es.color.green, es.color.blue, es.color.alpha);
+    const int base_font = get_world_hud_font(1.f);
+    const int font =
+        get_world_hud_font(g_alpine_game_config.get_world_hud_ping_label_text_scale());
+
+    for (const auto& es : ephemeral_world_hud_sprites) {
+        rf::gr::set_color(es.color);
         if (es.bitmap != -1) {
             do_render_world_hud_sprite(es.pos, 1.0f, es.bitmap, es.render_mode, true, true, true);
         }
 
-        // determine label width
+        // Determine label's width.
         const auto [text_width, text_height] = rf::gr::get_string_size(es.label, font);
-        int half_text_width = text_width / 2;
+        const int half_text_width = text_width / 2;
+        const int base_text_height = rf::gr::get_font_height(base_font);
+        const int offset_y = -25 - (text_height - base_text_height);
 
-        auto text_pos = es.pos;
-        render_string_3d_pos_new(text_pos, es.label.c_str(), -half_text_width, -25,
-            font, es.color.red, es.color.green, es.color.blue, es.color.alpha);
+        render_string_3d(es.pos, es.label.c_str(), -half_text_width, offset_y, font, es.color);
     }
 }
 
@@ -752,41 +825,55 @@ void build_ephemeral_world_hud_sprite_icons() {
 constexpr float world_hud_crit_damage_text_scale = 1.5f;
 
 void build_ephemeral_world_hud_strings() {
-    std::erase_if(ephemeral_world_hud_strings, [](const EphemeralWorldHUDString& es) {
+    std::erase_if(ephemeral_world_hud_strings, [] (const EphemeralWorldHUDString& es) {
         return !es.timestamp.valid() || es.timestamp.elapsed();
     });
 
-    for (const auto& es : ephemeral_world_hud_strings) {
-        int label_y_offset = 0;
-        const float text_scale = g_alpine_game_config.get_world_hud_damage_text_scale()
-            * (es.crit ? world_hud_crit_damage_text_scale : 1.0f);
-        const int font = get_world_hud_font(text_scale);
+    if (ephemeral_world_hud_strings.empty()) {
+        return;
+    }
+
+    const int base_font = get_world_hud_font(1.f);
+    const int dmg_font =
+         get_world_hud_font(g_alpine_game_config.get_world_hud_damage_text_scale());
+    const int critical_font = get_world_hud_font(
+        g_alpine_game_config.get_world_hud_damage_text_scale() * world_hud_crit_damage_text_scale
+    );
+
+    for (const EphemeralWorldHUDString& es : ephemeral_world_hud_strings) {
+        const int font = es.crit ? critical_font : dmg_font;
         rf::Vector3 string_pos = es.pos;
-        string_pos.y += 0.85f;
+        string_pos.y += .85f;
 
         if (es.float_away) {
-            // Calculate the progress of the fade effect
+            // Calculate the progress of the fade effect.
             const float progress = es.timestamp.elapsed_frac();
-            string_pos.y += progress * 3.0f;
+            string_pos.y += progress * 3.f;
 
-            // Apply wind effect
-            const float elapsed_time = es.timestamp.time_since_sec();
-            float wind_amplitude = 0.15f;
-            float wind_frequency_x = 12.0f;
-            float wind_frequency_z = 9.0f;
-
-            string_pos.x += wind_amplitude * std::sin((elapsed_time * 0.002f) + es.wind_phase_offset);
-            string_pos.z += wind_amplitude * std::cos((elapsed_time * 0.002f) + es.wind_phase_offset * 0.8f);
+            // Apply wind.
+            const float elapsed_sec = es.timestamp.time_since_sec();
+            const float wind_amplitude = .15f;
+            const float wind_phase = elapsed_sec * 2.f;
+            string_pos.x +=
+                wind_amplitude * std::sin(wind_phase + es.wind_phase_offset);
+            string_pos.z +=
+                wind_amplitude * std::cos(wind_phase + es.wind_phase_offset * .8f);
         }
 
-        std::string label = std::to_string(es.damage);
-
-        // determine label width
+        const std::string label = std::to_string(es.damage);
         const auto [text_width, text_height] = rf::gr::get_string_size(label, font);
-        int half_text_width = text_width / 2;
+        const int half_text_width = text_width / 2;
+        const int base_text_height = rf::gr::get_font_height(base_font);
+        const int centered_offset_y = -25 - ((text_height - base_text_height) / 2);
 
-        render_string_3d_pos_new(string_pos, label.c_str(), -half_text_width, -25,
-            font, es.color.red, es.color.green, es.color.blue, es.color.alpha);
+        render_string_3d(
+            string_pos,
+            label.c_str(),
+            -half_text_width,
+            centered_offset_y,
+            font,
+            es.color
+        );
     }
 }
 
@@ -829,7 +916,7 @@ void build_bag_icon()
         rf::Vector3 text_pos = vec;
         text_pos.y += WorldHUDRender::bag_countdown_offset;
 
-        render_string_3d_pos_new(text_pos, label, -half_text_width, -25, font, 255, 220, 64, 255);
+        render_string_3d(text_pos, label.c_str(), -half_text_width, -25, font, {255, 220, 64, 255});
     }
 }
 
@@ -845,7 +932,7 @@ static void render_world_hud_countdown(const rf::Vector3& anchor, float y_offset
     rf::Vector3 text_pos = anchor;
     text_pos.y += y_offset;
 
-    render_string_3d_pos_new(text_pos, label, -half_text_width, -25, font, 255, 220, 64, 255);
+    render_string_3d(text_pos, label.c_str(), -half_text_width, -25, font, {255, 220, 64, 255});
 }
 
 static int sal_icon_carrier(bool carrier_is_friendly)
