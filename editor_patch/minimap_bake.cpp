@@ -15,12 +15,21 @@
 #include <vector>
 #include <xlog/xlog.h>
 #include <patch_common/MemUtils.h>
+#include <common/terrain/alpine_terrain.h>
 #include <common/utils/string-utils.h>
 #include "minimap_bake.h"
+#include "alpine_lightmaps.h"
+#include "alpine_obj.h"
 #include "level.h"
 #include "meshes.h"
+#include "mfc_types.h"
+#include "terrain_build.h"
+#include "terrain_decorations.h"
+#include "terrain_preview.h"
 #include "textures.h"
 #include "vtypes.h"
+
+namespace at = alpine_terrain;
 
 namespace
 {
@@ -30,6 +39,14 @@ constexpr int max_texture_dim = 128;
 constexpr int max_source_texture_dim = 8192;
 constexpr uint32_t fallback_texel = 0xFF808080u;
 constexpr int alpha_test_ref = 128;
+// Decorations reaching less than this many pixels from their origin are blended in, not rasterized.
+constexpr float min_raster_reach_px = 1.0f;
+// Below this reach a decoration is drawn from its lowest LOD.
+constexpr float far_lod_reach_px = 8.0f;
+// Past this many decoration triangles the smallest decorations are blended in instead.
+constexpr std::size_t max_deco_raster_tris = 4'000'000;
+// The clamp the game gives a decoration's ambient (instance_light)
+constexpr float max_mesh_light_texel = 254.0f / 255.0f;
 
 struct TexLevel
 {
@@ -42,6 +59,9 @@ struct Texture
 {
     std::vector<TexLevel> levels;
     bool alpha_tested = false;
+    // Average colour of the texels that pass the alpha test, and the fraction that do
+    float opaque_rgb[3] = {128.0f, 128.0f, 128.0f};
+    float opaque_fraction = 1.0f;
 };
 
 uint32_t argb(int a, int r, int g, int b)
@@ -239,6 +259,17 @@ Texture load_texture(int handle)
         base.px.assign(1, fallback_texel);
         tex.alpha_tested = false;
     }
+    uint64_t sum[3] = {};
+    std::size_t opaque = 0;
+    for (const uint32_t t : base.px) {
+        if (tex.alpha_tested && static_cast<int>(t >> 24) < alpha_test_ref) continue;
+        for (int c = 0; c < 3; ++c) sum[c] += (t >> (16 - 8 * c)) & 0xFF;
+        ++opaque;
+    }
+    if (opaque > 0) {
+        for (int c = 0; c < 3; ++c) tex.opaque_rgb[c] = static_cast<float>(sum[c]) / static_cast<float>(opaque);
+    }
+    tex.opaque_fraction = static_cast<float>(opaque) / static_cast<float>(base.px.size());
     tex.levels.push_back(std::move(base));
     while (tex.levels.back().w > 1 || tex.levels.back().h > 1) {
         tex.levels.push_back(downsample(tex.levels.back()));
@@ -364,10 +395,19 @@ private:
     bool top_left_;
 };
 
+int lit_channel(int c, float texel)
+{
+    return std::min(255, static_cast<int>(static_cast<float>(c) * texel * 2.0f + 0.5f));
+}
+
 struct FaceShade
 {
     const Texture* tex = nullptr;
     const GLightmap* lightmap = nullptr;
+    // A lightmap texel (0..1, drawn doubled) for the whole face, when it has no lightmap
+    const float* light = nullptr;
+    // 1 + the index of the terrain whose shading replaces the face's
+    uint8_t terrain = 0;
     bool liquid = false;
     float liquid_rgb[3] = {};
     float liquid_alpha = 0.0f;
@@ -379,8 +419,58 @@ public:
     Raster(int res, float min_x, float max_z, float scale_x, float scale_z) :
         res_{res}, min_x_{min_x}, max_z_{max_z}, scale_x_{scale_x}, scale_z_{scale_z},
         depth_(static_cast<std::size_t>(res) * res, -std::numeric_limits<float>::infinity()),
-        color_(static_cast<std::size_t>(res) * res, 0u)
+        color_(static_cast<std::size_t>(res) * res, 0u), terrain_(static_cast<std::size_t>(res) * res, 0)
     {}
+
+    float pixel_world_size() const { return std::max(1.0f / scale_x_, 1.0f / scale_z_); }
+    float pixels_per_unit() const { return std::min(scale_x_, scale_z_); }
+    float pixel_area_per_unit2() const { return scale_x_ * scale_z_; }
+
+    // Replaces each terrain-marked pixel with shade(terrain index, world x, y, z); returns how many.
+    template<typename Fn>
+    int shade_terrain(Fn&& shade)
+    {
+        int shaded = 0;
+        for (int py = 0; py < res_; ++py) {
+            const float z = max_z_ - (py + 0.5f) / scale_z_;
+            for (int px = 0; px < res_; ++px) {
+                const std::size_t i = static_cast<std::size_t>(py) * res_ + px;
+                if (!terrain_[i]) continue;
+                color_[i] = shade(terrain_[i] - 1, min_x_ + (px + 0.5f) / scale_x_, depth_[i], z);
+                terrain_[i] = 0;
+                ++shaded;
+            }
+        }
+        return shaded;
+    }
+
+    // Blends rgb by `weight`, split bilinearly over the pixels around world (x, z), into those whose
+    // surface top_y is above.
+    void splat(float x, float z, float top_y, const float (&rgb)[3], float weight)
+    {
+        const float fx = (x - min_x_) * scale_x_ - 0.5f;
+        const float fy = (max_z_ - z) * scale_z_ - 0.5f;
+        if (!(fx > -1.0f && fy > -1.0f && fx < res_ && fy < res_)) return;
+        const float bx = std::floor(fx);
+        const float by = std::floor(fy);
+        const float tx = fx - bx;
+        const float ty = fy - by;
+        for (int k = 0; k < 4; ++k) {
+            const int px = static_cast<int>(bx) + (k & 1);
+            const int py = static_cast<int>(by) + (k >> 1);
+            if (px < 0 || py < 0 || px >= res_ || py >= res_) continue;
+            const float w = weight * ((k & 1) ? tx : 1.0f - tx) * ((k >> 1) ? ty : 1.0f - ty);
+            const std::size_t i = static_cast<std::size_t>(py) * res_ + px;
+            if (!(w > 0.0f) || !std::isfinite(depth_[i]) || !(top_y > depth_[i])) continue;
+            uint32_t& dst = color_[i];
+            int out[3];
+            for (int c = 0; c < 3; ++c) {
+                const float under = static_cast<float>((dst >> (16 - 8 * c)) & 0xFF);
+                out[c] = static_cast<int>(under + (rgb[c] - under) * w + 0.5f);
+            }
+            dst = argb(255, out[0], out[1], out[2]);
+        }
+    }
 
     // Returns true if any triangle of the polygon covered a pixel center.
     bool draw_polygon(const std::vector<WorldVert>& poly, const FaceShade& shade)
@@ -428,7 +518,7 @@ private:
         const int y1 = std::min(res_ - 1, static_cast<int>(std::ceil(fmax_y)));
 
         const TexLevel* level = nullptr;
-        if (shade.tex) {
+        if (shade.tex && !shade.terrain) {
             const TexLevel& top = shade.tex->levels.front();
             const float rho = std::max(std::hypot(dx[1] * top.w, dx[2] * top.h),
                                        std::hypot(dy[1] * top.w, dy[2] * top.h));
@@ -457,6 +547,11 @@ private:
                     shade_liquid(i, y, shade);
                     continue;
                 }
+                if (shade.terrain) {
+                    depth_[i] = y;
+                    terrain_[i] = shade.terrain;
+                    continue;
+                }
                 uint32_t texel = fallback_texel;
                 if (level) {
                     texel = sample_texture(*level, a.attr[1] + dx[1] * rx + dy[1] * ry,
@@ -474,8 +569,14 @@ private:
                     g = std::min(255, static_cast<int>(g * lm[1] * (2.0f / 255.0f) + 0.5f));
                     bl = std::min(255, static_cast<int>(bl * lm[2] * (2.0f / 255.0f) + 0.5f));
                 }
+                else if (shade.light) {
+                    r = lit_channel(r, shade.light[0]);
+                    g = lit_channel(g, shade.light[1]);
+                    bl = lit_channel(bl, shade.light[2]);
+                }
                 depth_[i] = y;
                 color_[i] = argb(255, r, g, bl);
+                terrain_[i] = 0;
             }
         }
         return drew;
@@ -507,6 +608,7 @@ private:
     float scale_z_;
     std::vector<float> depth_;
     std::vector<uint32_t> color_;
+    std::vector<uint8_t> terrain_;
     std::vector<ScreenVert> screen_;
 };
 
@@ -565,6 +667,387 @@ bool gather_face(GFace* face, std::vector<WorldVert>& out)
         fv = fv->next;
     } while (fv && fv != start && ++guard < 256);
     return out.size() >= 3;
+}
+
+struct MipLevel
+{
+    int size = 0;
+    std::vector<uint8_t> px;
+};
+
+// An n-channel square tile and its box-filtered halvings.
+std::vector<MipLevel> tile_mips(const std::vector<uint8_t>& base, int size, int n)
+{
+    std::vector<MipLevel> out;
+    if (size <= 0 || base.size() < static_cast<std::size_t>(size) * size * n) return out;
+    out.push_back({size, base});
+    while (out.back().size > 1 && out.back().size % 2 == 0) {
+        const MipLevel& s = out.back();
+        MipLevel d;
+        d.size = s.size / 2;
+        d.px.resize(static_cast<std::size_t>(d.size) * d.size * n);
+        auto texel = [&](int x, int y, int c) { return s.px[(static_cast<std::size_t>(y) * s.size + x) * n + c]; };
+        for (int y = 0; y < d.size; ++y) {
+            for (int x = 0; x < d.size; ++x) {
+                for (int c = 0; c < n; ++c) {
+                    const int sum = texel(2 * x, 2 * y, c) + texel(2 * x + 1, 2 * y, c) + texel(2 * x, 2 * y + 1, c) +
+                                    texel(2 * x + 1, 2 * y + 1, c);
+                    d.px[(static_cast<std::size_t>(y) * d.size + x) * n + c] = static_cast<uint8_t>((sum + 2) / 4);
+                }
+            }
+        }
+        out.push_back(std::move(d));
+    }
+    return out;
+}
+
+// Bilinear and wrapping, 0..255 per channel, from the level with about one texel per pixel.
+template<int N>
+void sample_mips(const std::vector<MipLevel>& mips, float texels_per_pixel, float u, float v, float (&out)[N])
+{
+    const int lod = texels_per_pixel > 1.0f && std::isfinite(texels_per_pixel)
+                        ? static_cast<int>(std::log2(texels_per_pixel))
+                        : 0;
+    const MipLevel& m = mips[std::clamp(lod, 0, static_cast<int>(mips.size()) - 1)];
+    const int size = m.size;
+    const float fu = wrap01(u) * size - 0.5f;
+    const float fv = wrap01(v) * size - 0.5f;
+    const float bu = std::floor(fu);
+    const float bv = std::floor(fv);
+    const float wu = fu - bu;
+    const float wv = fv - bv;
+    const int u0 = (static_cast<int>(bu) + size) % size;
+    const int v0 = (static_cast<int>(bv) + size) % size;
+    const int u1 = (u0 + 1) % size;
+    const int v1 = (v0 + 1) % size;
+    const uint8_t* r0 = &m.px[static_cast<std::size_t>(v0) * size * N];
+    const uint8_t* r1 = &m.px[static_cast<std::size_t>(v1) * size * N];
+    for (int k = 0; k < N; ++k) {
+        const float top = r0[u0 * N + k] + (r0[u1 * N + k] - r0[u0 * N + k]) * wu;
+        const float bottom = r1[u0 * N + k] + (r1[u1 * N + k] - r1[u0 * N + k]) * wu;
+        out[k] = top + (bottom - top) * wv;
+    }
+}
+
+struct TileMips
+{
+    std::vector<MipLevel> rgb;
+    std::vector<MipLevel> rgba_premul;
+};
+
+struct TerrainTexture
+{
+    const TileMips* mips = nullptr;
+    float inv_uv_scale = 1.0f;
+    bool triplanar = false;
+};
+
+// Planar XZ, plus the two upright wall planes by the triplanar weights when the layer is triplanar
+// (standard_ps.hlsl TER_ADD).
+template<int N>
+void sample_terrain_texture(const std::vector<MipLevel>& mips, const TerrainTexture& t, float pixel_world, float x,
+                            float y, float z, const float (&tw)[3], float (&out)[N])
+{
+    const float tpp = static_cast<float>(mips.front().size) * pixel_world * t.inv_uv_scale;
+    sample_mips(mips, tpp, x * t.inv_uv_scale, z * t.inv_uv_scale, out);
+    if (!t.triplanar) return;
+    float a[N], b[N];
+    sample_mips(mips, tpp, z * t.inv_uv_scale, -y * t.inv_uv_scale, a);
+    sample_mips(mips, tpp, x * t.inv_uv_scale, -y * t.inv_uv_scale, b);
+    for (int k = 0; k < N; ++k) out[k] = out[k] * tw[1] + a[k] * tw[0] + b[k] * tw[2];
+}
+
+// The level ambient and sun, as the game's gr_get_sun_state and light_get_ambient give them
+struct LevelLight
+{
+    float ambient[3] = {};
+    float sun[3] = {};
+    float travel[3] = {0.0f, -1.0f, 0.0f};
+};
+
+LevelLight make_level_light(CDedLevel& level)
+{
+    LevelLight l;
+    const Color& a = level.ambient_color;
+    l.ambient[0] = a.r / 255.0f;
+    l.ambient[1] = a.g / 255.0f;
+    l.ambient[2] = a.b / 255.0f;
+    const auto& props = level.GetAlpineLevelProperties();
+    if (props.enable_sun && std::isfinite(props.sun_yaw) && std::isfinite(props.sun_pitch)) {
+        const Vector3 to_sun = props.sun_to_light_dir();
+        l.travel[0] = -to_sun.x;
+        l.travel[1] = -to_sun.y;
+        l.travel[2] = -to_sun.z;
+        const float intensity =
+            std::isfinite(props.sun_intensity) ? std::clamp(props.sun_intensity, 0.0f, 10.0f) : 0.0f;
+        l.sun[0] = props.sun_color_r / 255.0f * intensity;
+        l.sun[1] = props.sun_color_g / 255.0f * intensity;
+        l.sun[2] = props.sun_color_b / 255.0f * intensity;
+    }
+    return l;
+}
+
+// alpine_terrain_sample_light with no baked chart: ambient plus the sun's N.L, as a lightmap texel.
+void fallback_light(const LevelLight& l, const float (&n)[3], float (&texel)[3])
+{
+    const float ndl = std::clamp(-(n[0] * l.travel[0] + n[1] * l.travel[1] + n[2] * l.travel[2]), 0.0f, 1.0f);
+    for (int c = 0; c < 3; ++c) texel[c] = (l.ambient[c] + l.sun[c] * ndl) * 0.5f;
+}
+
+struct TerrainShade
+{
+    const DedTerrain* terrain = nullptr;
+    at::GridView v{};
+    bool mapped = false;
+    bool weighted = false;
+    TerrainTexture layers[at::max_layers];
+    uint32_t layer_count = 0;
+    TerrainTexture overlays[at::max_overlays];
+    uint32_t overlay_count = 0;
+    const uint8_t* coverage = nullptr;
+    const TerrainBakedLight* light = nullptr;
+    bool fullbright = false;
+    bool needs_normal = false;
+};
+
+TerrainShade make_terrain_shade(const DedTerrain& t, std::unordered_map<const TerrainLayerTile*, TileMips>& cache)
+{
+    TerrainShade s;
+    const DedTerrainData& d = t.data;
+    const TerrainGrid& g = *d.grid;
+    s.terrain = &t;
+    s.v = terrain_grid_view(t.pos, d, g);
+    const uint32_t mul = g.weight_res_mul;
+    s.mapped = mul > 0 && g.nx >= at::min_verts && g.nz >= at::min_verts;
+    s.weighted = s.mapped && g.weights.size() >= 2 * at::weight_map_bytes(g.nx, g.nz, mul);
+    auto texture = [&](const DedTerrainLayer& layer) {
+        TerrainTexture out;
+        if (const TerrainLayerTile* tile = terrain_preview_layer_tile(layer.texture)) {
+            auto it = cache.find(tile);
+            if (it == cache.end()) {
+                it = cache.emplace(tile, TileMips{tile_mips(tile->rgb, tile->size, 3),
+                                                  tile_mips(tile->rgba_premul, tile->size, 4)})
+                         .first;
+            }
+            if (!it->second.rgb.empty()) out.mips = &it->second;
+        }
+        out.inv_uv_scale = 1.0f / std::max(layer.uv_scale, at::min_uv_scale);
+        out.triplanar = layer.triplanar;
+        s.needs_normal = s.needs_normal || (out.triplanar && out.mips);
+        return out;
+    };
+    s.layer_count = static_cast<uint32_t>(std::min<std::size_t>(d.layers.size(), at::max_layers));
+    for (uint32_t l = 0; l < s.layer_count; ++l) s.layers[l] = texture(d.layers[l]);
+    if (s.mapped && !g.overlay.empty() && g.overlay.size() == at::overlay_map_bytes(g.nx, g.nz, mul)) {
+        s.coverage = g.overlay.data();
+        s.overlay_count = static_cast<uint32_t>(std::min<std::size_t>(d.overlays.size(), at::max_overlays));
+        for (uint32_t o = 0; o < s.overlay_count; ++o) s.overlays[o] = texture(d.overlays[o]);
+    }
+    s.fullbright = d.fullbright;
+    s.light = terrain_baked_light_find(t.uid, t.pos, d);
+    s.needs_normal = s.needs_normal || (!s.fullbright && !s.light);
+    return s;
+}
+
+// The preview's composite (terrain_preview.cpp composite_chunk) at one point, lit as the game lights it.
+uint32_t shade_terrain_pixel(const TerrainShade& s, const LevelLight& ll, float pixel_world, float x, float y, float z)
+{
+    const at::GridView& v = s.v;
+    float n[3] = {0.0f, 1.0f, 0.0f};
+    if (s.needs_normal) at::heightmap_normal(v, x, z, n);
+    float tw[3];
+    float tw_sum = 0.0f;
+    for (int c = 0; c < 3; ++c) {
+        tw[c] = n[c] * n[c] * n[c] * n[c];
+        tw_sum += tw[c];
+    }
+    for (float& w : tw) w /= std::max(tw_sum, 1e-4f);
+
+    std::size_t t00 = 0, t10 = 0, t01 = 0, t11 = 0;
+    float fx = 0.0f, fz = 0.0f;
+    if (s.mapped) {
+        const uint32_t mul = v.weight_res_mul;
+        const uint32_t ww = at::weight_width(v.nx, mul);
+        const uint32_t wh = at::weight_height(v.nz, mul);
+        auto tap = [&](float world, float origin, uint32_t count, uint32_t& i0, uint32_t& i1, float& f) {
+            const float cell = (world - origin) / v.cell_size * static_cast<float>(mul) - 0.5f;
+            const float t = std::clamp(std::isfinite(cell) ? cell : 0.0f, 0.0f, static_cast<float>(count - 1));
+            i0 = std::min(static_cast<uint32_t>(t), count - 1);
+            i1 = std::min(i0 + 1, count - 1);
+            f = t - static_cast<float>(i0);
+        };
+        uint32_t x0, x1, z0, z1;
+        tap(x, v.origin[0], ww, x0, x1, fx);
+        tap(z, v.origin[2], wh, z0, z1, fz);
+        t00 = (static_cast<std::size_t>(z0) * ww + x0) * 4;
+        t10 = (static_cast<std::size_t>(z0) * ww + x1) * 4;
+        t01 = (static_cast<std::size_t>(z1) * ww + x0) * 4;
+        t11 = (static_cast<std::size_t>(z1) * ww + x1) * 4;
+    }
+    auto bilinear = [&](const uint8_t* map, std::size_t off) {
+        const float a = map[t00 + off] + (map[t10 + off] - map[t00 + off]) * fx;
+        const float b = map[t01 + off] + (map[t11 + off] - map[t01 + off]) * fx;
+        return a + (b - a) * fz;
+    };
+
+    float w[at::max_layers] = {};
+    float total = 0.0f;
+    if (s.weighted) {
+        const std::size_t map1 = at::weight_map_bytes(v.nx, v.nz, v.weight_res_mul);
+        for (uint32_t l = 0; l < s.layer_count; ++l) {
+            w[l] = bilinear(v.weights, (l < 4 ? 0 : map1) + (l & 3));
+            total += w[l];
+        }
+    }
+    if (total <= 0.0f) {
+        w[0] = 1.0f;
+        total = 1.0f;
+    }
+    float c[3] = {};
+    for (uint32_t l = 0; l < s.layer_count; ++l) {
+        if (w[l] <= 0.0f) continue;
+        const float share = w[l] / total;
+        const TileMips* mips = s.layers[l].mips ? s.layers[l].mips : s.layers[0].mips;
+        float t[3] = {160.0f, 160.0f, 160.0f};
+        if (mips) sample_terrain_texture(mips->rgb, s.layers[l], pixel_world, x, y, z, tw, t);
+        for (int ch = 0; ch < 3; ++ch) c[ch] += t[ch] * share;
+    }
+    for (uint32_t o = 0; o < s.overlay_count; ++o) {
+        const TerrainTexture& t = s.overlays[o];
+        if (!t.mips || t.mips->rgba_premul.empty()) continue;
+        const float cov = bilinear(s.coverage, o) / 255.0f;
+        if (cov <= 0.0f) continue;
+        float p[4];
+        sample_terrain_texture(t.mips->rgba_premul, t, pixel_world, x, y, z, tw, p);
+        const float keep = 1.0f - p[3] / 255.0f * cov;
+        for (int ch = 0; ch < 3; ++ch) c[ch] = c[ch] * keep + p[ch] * cov;
+    }
+
+    float texel[3] = {0.5f, 0.5f, 0.5f};
+    if (!s.fullbright) {
+        if (s.light) terrain_baked_light_sample(*s.light, x, z, texel);
+        else fallback_light(ll, n, texel);
+    }
+    int rgb[3];
+    for (int ch = 0; ch < 3; ++ch) {
+        rgb[ch] = static_cast<int>(std::clamp(c[ch] * 2.0f * texel[ch], 0.0f, 255.0f) + 0.5f);
+    }
+    return argb(255, rgb[0], rgb[1], rgb[2]);
+}
+
+struct DecoTri
+{
+    Vector3 p[3];
+    float uv[3][2];
+    const Texture* tex;
+};
+
+// A decoration mesh's LOD 0 triangles in the space the editor renders it, and what a top-down view of it
+// shows when it is smaller than a pixel.
+struct DecoMesh
+{
+    std::vector<DecoTri> tris;
+    // Lowest LOD; empty when the mesh has only LOD 0
+    std::vector<DecoTri> far_tris;
+    Vector3 lo{};
+    Vector3 hi{};
+    float reach_xz = 0.0f;
+    float radius = 0.0f;
+    // Top-down area its opaque texels cover at scale 1, and their average colour
+    float cover = 0.0f;
+    float rgb[3] = {128.0f, 128.0f, 128.0f};
+};
+
+int chunk_bitmap(const EditorV3dMesh& sub, const EditorVifMesh& vm, const EditorVifChunk& chunk)
+{
+    const int idx = chunk.texture_idx;
+    if (idx < 0 || idx >= 7 || idx >= vm.num_texture_handles) return -1;
+    if (vm.tex_handles[idx] != -1) return vm.tex_handles[idx];
+    const int material = vm.tex_ids[idx];
+    if (sub.materials && material < sub.num_materials) {
+        return alpine_dlg_resolve_bitmap(sub.materials[material].texture_maps[0].name);
+    }
+    return -1;
+}
+
+template<typename GetTexture>
+void gather_deco_tris(const EditorV3d& v3d, int level, GetTexture& get_texture, std::vector<DecoTri>& out)
+{
+    for (int s = 0; s < v3d.num_meshes; ++s) {
+        const EditorV3dMesh& sub = v3d.meshes[s];
+        vmesh_for_each_lod_chunk(sub.lod_mesh, level, [&](const EditorVifMesh& vm, const EditorVifChunk& chunk,
+                                                          auto&& vertex) {
+            const int bm = chunk_bitmap(sub, vm, chunk);
+            const Texture* tex = bm >= 0 ? get_texture(bm) : nullptr;
+            const auto* uvs = static_cast<const float*>(chunk.uvs);
+            for (int f = 0; f < chunk.num_faces; ++f) {
+                const EditorVifFace& face = chunk.faces[f];
+                if (!vmesh_face_valid(chunk, face)) continue;
+                const uint16_t idx[3] = {face.vindex1, face.vindex2, face.vindex3};
+                DecoTri tri{};
+                tri.tex = tex;
+                bool finite = true;
+                for (int k = 0; k < 3; ++k) {
+                    tri.p[k] = vertex(idx[k]);
+                    finite = finite && std::isfinite(tri.p[k].x) && std::isfinite(tri.p[k].y) &&
+                             std::isfinite(tri.p[k].z);
+                    if (uvs) {
+                        tri.uv[k][0] = uvs[idx[k] * 2];
+                        tri.uv[k][1] = uvs[idx[k] * 2 + 1];
+                    }
+                }
+                if (finite) out.push_back(tri);
+            }
+        });
+    }
+}
+
+template<typename GetTexture>
+DecoMesh load_deco_mesh(const std::string& name, GetTexture&& get_texture)
+{
+    DecoMesh m;
+    EditorVMesh* vmesh = terrain_decorations_mesh(name);
+    const auto* v3d = vmesh ? static_cast<const EditorV3d*>(vmesh->instance) : nullptr;
+    if (!v3d || v3d->num_meshes <= 0 || !v3d->meshes) return m;
+    gather_deco_tris(*v3d, 0, get_texture, m.tris);
+    if (m.tris.empty()) return m;
+    gather_deco_tris(*v3d, vmesh_lowest_lod, get_texture, m.far_tris);
+    if (m.far_tris.size() >= m.tris.size()) m.far_tris.clear();
+
+    m.lo = {FLT_MAX, FLT_MAX, FLT_MAX};
+    m.hi = {-FLT_MAX, -FLT_MAX, -FLT_MAX};
+    double top_weight = 0.0, any_weight = 0.0;
+    double top_rgb[3] = {}, any_rgb[3] = {};
+    for (const DecoTri& t : m.tris) {
+        for (const Vector3& p : t.p) {
+            m.lo = {std::min(m.lo.x, p.x), std::min(m.lo.y, p.y), std::min(m.lo.z, p.z)};
+            m.hi = {std::max(m.hi.x, p.x), std::max(m.hi.y, p.y), std::max(m.hi.z, p.z)};
+            m.reach_xz = std::max(m.reach_xz, std::sqrt(p.x * p.x + p.z * p.z));
+            m.radius = std::max(m.radius, std::sqrt(p.x * p.x + p.y * p.y + p.z * p.z));
+        }
+        const double e1[3] = {double(t.p[1].x) - t.p[0].x, double(t.p[1].y) - t.p[0].y, double(t.p[1].z) - t.p[0].z};
+        const double e2[3] = {double(t.p[2].x) - t.p[0].x, double(t.p[2].y) - t.p[0].y, double(t.p[2].z) - t.p[0].z};
+        const double cx = e1[1] * e2[2] - e1[2] * e2[1];
+        const double cy = e1[2] * e2[0] - e1[0] * e2[2];
+        const double cz = e1[0] * e2[1] - e1[1] * e2[0];
+        const double opaque = t.tex ? t.tex->opaque_fraction : 1.0;
+        const double top = 0.5 * std::fabs(cy) * opaque;
+        const double any = 0.5 * std::sqrt(cx * cx + cy * cy + cz * cz) * opaque;
+        for (int c = 0; c < 3; ++c) {
+            const double col = t.tex ? t.tex->opaque_rgb[c] : 128.0;
+            top_rgb[c] += col * top;
+            any_rgb[c] += col * any;
+        }
+        top_weight += top;
+        any_weight += any;
+    }
+    const bool from_top = top_weight > 1e-9;
+    const double weight = from_top ? top_weight : any_weight;
+    if (weight > 1e-12) {
+        for (int c = 0; c < 3; ++c) m.rgb[c] = static_cast<float>((from_top ? top_rgb[c] : any_rgb[c]) / weight);
+    }
+    m.cover = static_cast<float>(std::min(top_weight, double(m.hi.x - m.lo.x) * double(m.hi.z - m.lo.z)));
+    return m;
 }
 
 } // namespace
@@ -652,11 +1135,15 @@ bool minimap_bake(CDedLevel& level, const MinimapBakeParams& p, MinimapBakeResul
                 }
             }
         }
+        std::unordered_set<int32_t> sky_room_uids;
 
         guard = 0;
         for (GFace* face = solid->face_list_head; face && guard < (1 << 22); face = face->next_solid, ++guard) {
             GRoom* room = face->which_room;
-            if (room && sky_rooms.count(room)) continue;
+            if (room && sky_rooms.count(room)) {
+                if (room->uid >= 0) sky_room_uids.insert(room->uid);
+                continue;
+            }
             if (room) {
                 if (rooms.insert(room).second) grow(room->bbox_min, room->bbox_max);
             }
@@ -699,8 +1186,62 @@ bool minimap_bake(CDedLevel& level, const MinimapBakeParams& p, MinimapBakeResul
         }
 
         const VArray<GSurface*>& surfaces = solid->surfaces;
+        const auto& props = level.GetAlpineLevelProperties();
+        // A level loaded without stock lightmaps points every surface at one placeholder page until
+        // Calculate Lighting repacks them.
+        const bool lightmaps_placeholder = lightmap_stock_layout_synthesized();
+        const LevelLight level_light = make_level_light(level);
 
         std::unordered_map<int, Texture> textures;
+        auto get_texture = [&](int handle) -> const Texture* {
+            auto it = textures.find(handle);
+            if (it == textures.end()) {
+                it = textures.emplace(handle, load_texture(handle)).first;
+            }
+            return &it->second;
+        };
+
+        // By index in terrain_objects, the order the game places decorations in
+        std::unordered_map<const TerrainLayerTile*, TileMips> tile_cache;
+        std::vector<TerrainShade> terrains(props.terrain_objects.size());
+        std::unordered_map<int32_t, uint8_t> room_terrain;
+        for (std::size_t k = 0; k < terrains.size(); ++k) {
+            const DedTerrain* t = props.terrain_objects[k];
+            if (!t || !t->data.grid || t->data.layers.empty()) continue;
+            terrains[k] = make_terrain_shade(*t, tile_cache);
+            if (k >= UINT8_MAX) continue;
+            for (const int32_t uid : t->data.built_room_uids) {
+                if (uid >= 0) room_terrain.emplace(uid, static_cast<uint8_t>(k + 1));
+            }
+        }
+        // A split chunk's other rooms map to no terrain: the one whose surface passes nearest the face.
+        auto terrain_of = [&](const GRoom& room, const std::vector<WorldVert>& face) -> uint8_t {
+            if (auto it = room_terrain.find(room.uid); it != room_terrain.end()) return it->second;
+            float c[3] = {};
+            for (const WorldVert& v : face) {
+                c[0] += v.x;
+                c[1] += v.y;
+                c[2] += v.z;
+            }
+            for (float& f : c) f /= static_cast<float>(face.size());
+            uint8_t best = 0;
+            float best_dy = FLT_MAX;
+            for (std::size_t k = 0; k < terrains.size() && k < UINT8_MAX; ++k) {
+                if (!terrains[k].terrain) continue;
+                const at::GridView& v = terrains[k].v;
+                if (c[0] < v.origin[0] || c[0] > v.origin[0] + at::extent(v.nx, v.cell_size) ||
+                    c[2] < v.origin[2] || c[2] > v.origin[2] + at::extent(v.nz, v.cell_size)) {
+                    continue;
+                }
+                const float dy = std::fabs(at::height_at(v, c[0], c[2]) - c[1]);
+                if (dy <= std::max(1.0f, v.cell_size) && dy < best_dy) {
+                    best = static_cast<uint8_t>(k + 1);
+                    best_dy = dy;
+                }
+            }
+            return best;
+        };
+
         Raster raster{res, world_min.x, world_max.z, res / (world_max.x - world_min.x),
                       res / (world_max.z - world_min.z)};
         std::vector<WorldVert> poly, clipped;
@@ -721,25 +1262,24 @@ bool minimap_bake(CDedLevel& level, const MinimapBakeParams& p, MinimapBakeResul
                 liquids.emplace_back(face, shade);
                 continue;
             }
-
-            if (face->bitmap_id >= 0) {
-                auto it = textures.find(face->bitmap_id);
-                if (it == textures.end()) {
-                    it = textures.emplace(face->bitmap_id, load_texture(face->bitmap_id)).first;
-                }
-                shade.tex = &it->second;
-            }
-            const int surface_index = face->surface_index;
-            if (!(face->flags & FACE_FULL_BRIGHT) && surface_index >= 0 && surface_index < surfaces.size &&
-                surfaces.data_ptr) {
-                const GSurface* surface = surfaces.data_ptr[surface_index];
-                const GLightmap* page = surface ? surface->lightmap : nullptr;
-                if (page && page->pixels && page->w > 0 && page->h > 0 && page->w <= 4096 && page->h <= 4096) {
-                    shade.lightmap = page;
-                }
-            }
-
             if (!gather_face(face, poly)) continue;
+
+            if (room && (props.is_terrain_room(room->uid) || props.is_terrain_split_room(room->uid))) {
+                shade.terrain = terrain_of(*room, poly);
+            }
+            if (!shade.terrain) {
+                if (face->bitmap_id >= 0) shade.tex = get_texture(face->bitmap_id);
+                const int surface_index = face->surface_index;
+                if (!lightmaps_placeholder && !(face->flags & FACE_FULL_BRIGHT) && surface_index >= 0 &&
+                    surface_index < surfaces.size && surfaces.data_ptr) {
+                    const GSurface* surface = surfaces.data_ptr[surface_index];
+                    const GLightmap* page = surface ? surface->lightmap : nullptr;
+                    if (page && page->pixels && page->w > 0 && page->h > 0 && page->w <= 4096 && page->h <= 4096) {
+                        shade.lightmap = page;
+                    }
+                }
+            }
+
             const std::vector<WorldVert>* src = &poly;
             if (cut_applied) {
                 clip_below(poly, cut, clipped);
@@ -751,6 +1291,168 @@ bool minimap_bake(CDedLevel& level, const MinimapBakeParams& p, MinimapBakeResul
             }
         }
 
+        const auto terrain_started = std::chrono::steady_clock::now();
+        const float pixel_world = raster.pixel_world_size();
+        std::vector<bool> terrain_shown(terrains.size(), false);
+        const int terrain_pixels = raster.shade_terrain([&](int k, float x, float y, float z) {
+            terrain_shown[k] = true;
+            return shade_terrain_pixel(terrains[k], level_light, pixel_world, x, y, z);
+        });
+        int terrains_unlit = 0;
+        for (std::size_t k = 0; k < terrains.size(); ++k) {
+            if (terrain_shown[k] && !terrains[k].fullbright && !terrains[k].light) ++terrains_unlit;
+        }
+
+        // Placed as the game places them: resolvable terrains in record order, one level budget.
+        const auto decorations_started = std::chrono::steady_clock::now();
+        std::unordered_map<std::string, DecoMesh> deco_meshes;
+        uint32_t deco_placed = 0;
+        int deco_drawn = 0;
+        int deco_blended = 0;
+        std::size_t deco_tris = 0;
+        const float px_per_unit = raster.pixels_per_unit();
+        const float px_area = raster.pixel_area_per_unit2();
+        const float half_x = (world_max.x - world_min.x) * 0.5f;
+        const float half_z = (world_max.z - world_min.z) * 0.5f;
+        const float mid_x = world_min.x + half_x;
+        const float mid_z = world_min.z + half_z;
+        // fn(k, mesh, inst) for every instance in the bounds; a skybox terrain's instances only spend the budget.
+        auto for_each_decoration = [&](auto&& fn) {
+            at::DecorationBudget budget;
+            for (std::size_t k = 0; k < props.terrain_objects.size() && !budget.spent(); ++k) {
+                const DedTerrain* t = props.terrain_objects[k];
+                TerrainDecorationPlacement placement;
+                if (!t || t->data.decorations.empty() || !terrain_build_resolves(level, *t) ||
+                    !terrain_decoration_placement(t->pos, t->data, placement)) {
+                    continue;
+                }
+                const bool in_sky = std::any_of(t->data.built_room_uids.begin(), t->data.built_room_uids.end(),
+                                                [&](int32_t uid) { return sky_room_uids.count(uid) != 0; });
+                const DecoMesh* meshes[at::max_decorations] = {};
+                for (uint32_t d = 0; d < placement.count && !in_sky; ++d) {
+                    if (!at::decoration_active(placement.views[d])) continue;
+                    const std::string& name = t->data.decorations[d].mesh;
+                    std::string key = string_to_lower(name);
+                    auto it = deco_meshes.find(key);
+                    if (it == deco_meshes.end()) {
+                        it = deco_meshes.emplace(std::move(key), load_deco_mesh(name, get_texture)).first;
+                    }
+                    if (!it->second.tris.empty()) meshes[d] = &it->second;
+                }
+                at::for_each_terrain_decoration(
+                    placement.grid, t->uid, placement.layout, placement.views, placement.count, budget,
+                    [&](uint32_t, uint32_t d, const at::DecorationInstance& inst) {
+                        ++deco_placed;
+                        const DecoMesh* mesh = meshes[d];
+                        if (!mesh) return true;
+                        const float reach = mesh->radius * inst.scale;
+                        if (std::fabs(inst.pos[0] - mid_x) <= half_x + reach &&
+                            std::fabs(inst.pos[2] - mid_z) <= half_z + reach) {
+                            fn(k, *mesh, inst);
+                        }
+                        return true;
+                    });
+            }
+        };
+        auto deco_reach_px = [&](const DecoMesh& mesh, const at::DecorationInstance& inst) {
+            return mesh.reach_xz * inst.scale * px_per_unit;
+        };
+        auto deco_lod = [&](const DecoMesh& mesh, float reach_px) -> const std::vector<DecoTri>& {
+            return reach_px < far_lod_reach_px && !mesh.far_tris.empty() ? mesh.far_tris : mesh.tris;
+        };
+
+        // Over the triangle budget, the smallest decorations blend instead, evenly across the map.
+        std::vector<std::pair<float, uint32_t>> raster_costs;
+        std::size_t raster_total = 0;
+        for_each_decoration([&](std::size_t, const DecoMesh& mesh, const at::DecorationInstance& inst) {
+            const float reach_px = deco_reach_px(mesh, inst);
+            if (!(reach_px >= min_raster_reach_px)) return;
+            const auto n = static_cast<uint32_t>(deco_lod(mesh, reach_px).size());
+            raster_costs.emplace_back(reach_px, n);
+            raster_total += n;
+        });
+        float raster_min_reach_px = min_raster_reach_px;
+        bool raster_over_budget = false;
+        if (raster_total > max_deco_raster_tris) {
+            std::sort(raster_costs.begin(), raster_costs.end(),
+                      [](const auto& a, const auto& b) { return a.first > b.first; });
+            std::size_t sum = 0;
+            for (const auto& [reach_px, n] : raster_costs) {
+                if (sum + n > max_deco_raster_tris) {
+                    raster_min_reach_px = reach_px;
+                    raster_over_budget = true;
+                    break;
+                }
+                sum += n;
+            }
+            xlog::info("[Minimap] {} decoration triangles over the {} budget: blending decorations reaching {:.1f} px "
+                       "or less",
+                       raster_total, max_deco_raster_tris, raster_min_reach_px);
+        }
+        raster_costs = {};
+
+        deco_placed = 0;
+        for_each_decoration([&](std::size_t k, const DecoMesh& mesh, const at::DecorationInstance& inst) {
+            const float sc = inst.scale;
+            auto to_world = [&](const Vector3& p, const float (&uv)[2]) {
+                WorldVert w{};
+                w.x = inst.pos[0] + (inst.rvec[0] * p.x + inst.uvec[0] * p.y + inst.fvec[0] * p.z) * sc;
+                w.y = inst.pos[1] + (inst.rvec[1] * p.x + inst.uvec[1] * p.y + inst.fvec[1] * p.z) * sc;
+                w.z = inst.pos[2] + (inst.rvec[2] * p.x + inst.uvec[2] * p.y + inst.fvec[2] * p.z) * sc;
+                w.u = uv[0];
+                w.v = uv[1];
+                return w;
+            };
+            float light[3];
+            if (terrains[k].terrain && terrains[k].light) {
+                terrain_baked_light_sample(*terrains[k].light, inst.base[0], inst.base[2], light);
+            }
+            else {
+                fallback_light(level_light, inst.normal, light);
+            }
+            for (float& c : light) c = std::clamp(c, 0.0f, max_mesh_light_texel);
+
+            const float reach_px = deco_reach_px(mesh, inst);
+            if (!(reach_px >= min_raster_reach_px) || (raster_over_budget && reach_px <= raster_min_reach_px)) {
+                if (inst.base[1] > cut) return;
+                static const float no_uv[2] = {};
+                float top = -FLT_MAX;
+                for (int c = 0; c < 8; ++c) {
+                    const Vector3 corner{(c & 1) ? mesh.hi.x : mesh.lo.x, (c & 2) ? mesh.hi.y : mesh.lo.y,
+                                         (c & 4) ? mesh.hi.z : mesh.lo.z};
+                    top = std::max(top, to_world(corner, no_uv).y);
+                }
+                float rgb[3];
+                for (int c = 0; c < 3; ++c) rgb[c] = std::min(mesh.rgb[c] * 2.0f * light[c], 255.0f);
+                // A slope rises up to a pixel's width across the pixel the instance lands in.
+                raster.splat(inst.pos[0], inst.pos[2], std::min(top, cut) + pixel_world, rgb,
+                             std::min(1.0f, mesh.cover * sc * sc * px_area));
+                ++deco_blended;
+                return;
+            }
+
+            const std::vector<DecoTri>& tris = deco_lod(mesh, reach_px);
+            FaceShade shade;
+            shade.light = light;
+            bool drew = false;
+            for (const DecoTri& tri : tris) {
+                shade.tex = tri.tex;
+                poly.assign({to_world(tri.p[0], tri.uv[0]), to_world(tri.p[1], tri.uv[1]),
+                             to_world(tri.p[2], tri.uv[2])});
+                const std::vector<WorldVert>* src = &poly;
+                if (cut_applied) {
+                    clip_below(poly, cut, clipped);
+                    src = &clipped;
+                }
+                drew |= raster.draw_polygon(*src, shade);
+            }
+            if (drew) {
+                ++deco_drawn;
+                deco_tris += tris.size();
+            }
+        });
+
+        const auto liquids_started = std::chrono::steady_clock::now();
         for (auto& [face, shade] : liquids) {
             if (!gather_face(face, poly)) continue;
             const std::vector<WorldVert>* src = &poly;
@@ -771,7 +1473,13 @@ bool minimap_bake(CDedLevel& level, const MinimapBakeParams& p, MinimapBakeResul
             out_error = "Could not write " + path + ".";
             return false;
         }
-        xlog::info("[Minimap] Baked {} ({}x{}, {} faces, {} lightmapped)", path, res, res, drawn, lightmapped);
+        auto ms = [](auto from, auto to) { return std::chrono::duration<double, std::milli>(to - from).count(); };
+        xlog::info("[Minimap] Baked {} ({}x{}, {} faces, {} lightmapped{}, {} terrain pixels, {} decorations placed: "
+                   "{} rasterized ({} triangles), {} blended; faces {:.0f} ms, terrain {:.0f} ms, decorations "
+                   "{:.0f} ms)",
+                   path, res, res, drawn, lightmapped, lightmaps_placeholder ? ", placeholder lightmaps ignored" : "",
+                   terrain_pixels, deco_placed, deco_drawn, deco_tris, deco_blended, ms(started, terrain_started),
+                   ms(terrain_started, decorations_started), ms(decorations_started, liquids_started));
 
         register_written_file(path.c_str());
         if (!reload_bitmap_in_place(bitmap_name.c_str())) {
@@ -783,6 +1491,10 @@ bool minimap_bake(CDedLevel& level, const MinimapBakeParams& p, MinimapBakeResul
         out.world_max = world_max;
         out.faces_drawn = drawn;
         out.faces_lightmapped = lightmapped;
+        out.lightmaps_placeholder = lightmaps_placeholder;
+        out.terrains_unlit = terrains_unlit;
+        out.decorations_drawn = deco_drawn;
+        out.decorations_blended = deco_blended;
         out.cut_applied = cut_applied;
         out.cut_height = cut_applied ? cut : 0.0f;
         out.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();

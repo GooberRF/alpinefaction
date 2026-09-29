@@ -23,6 +23,12 @@ struct MinimapBakeResult
     Vector3 world_max{};
     int faces_drawn = 0;
     int faces_lightmapped = 0;
+    // The level was loaded without stock lightmaps and not lit since: brushes were baked unlit.
+    bool lightmaps_placeholder = false;
+    // Terrains drawn with the level ambient and sun for want of baked lighting
+    int terrains_unlit = 0;
+    int decorations_drawn = 0;
+    int decorations_blended = 0;
     bool cut_applied = false;
     float cut_height = 0.0f;
     double seconds = 0.0;

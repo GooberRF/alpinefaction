@@ -11,6 +11,7 @@
 #include "vphys_internal.h"
 #include "../vehicle_physics.h"
 #include "../vehicle.h"
+#include "../../../misc/alpine_terrain.h"
 #include "../../../misc/level.h"
 #include "../../../os/console.h"
 #include "../../../os/os.h"
@@ -343,7 +344,8 @@ namespace
         uint32_t last_rebuild_serial = 0;
     };
 
-    // A room under vphys_mesh_chunk_min_tris is a SINGLE chunk at cell (0,0,0); the mode never changes.
+    // A room under vphys_mesh_chunk_min_tris, or a terrain chunk room, is a SINGLE chunk at cell (0,0,0);
+    // the mode never changes.
     struct LevelMeshRoomChunks
     {
         bool single = false;
@@ -488,6 +490,44 @@ namespace
     bool remesh_cell_is_dirty(const RemeshRequest& req, const LevelMeshCell& cell)
     {
         return req.all || req.cells.count(cell) != 0;
+    }
+
+    using LevelMeshRoomSet = std::unordered_set<const rf::GRoom*>;
+
+    // Skybox decoration: detail rooms listed under the sky room. Stock collision reaches a detail room
+    // only through a parent, so one a non-sky room also lists stays solid.
+    LevelMeshRoomSet level_mesh_sky_detail_rooms(rf::GSolid* solid)
+    {
+        LevelMeshRoomSet out;
+        if (!solid) {
+            return out;
+        }
+        // detail_rooms is only read on a non-detail room: the engine can leave a detail room's corrupt.
+        for (rf::GRoom* room : solid->all_rooms) {
+            if (room && room->is_sky && !room->is_detail) {
+                for (rf::GRoom* detail : room->detail_rooms) {
+                    if (detail) {
+                        out.insert(detail);
+                    }
+                }
+            }
+        }
+        if (out.empty()) {
+            return out;
+        }
+        for (rf::GRoom* room : solid->all_rooms) {
+            if (room && !room->is_sky && !room->is_detail) {
+                for (rf::GRoom* detail : room->detail_rooms) {
+                    out.erase(detail);
+                }
+            }
+        }
+        return out;
+    }
+
+    bool level_mesh_room_is_skipped(const rf::GRoom* room, const LevelMeshRoomSet& sky_detail)
+    {
+        return !room || room->is_sky || sky_detail.count(room) != 0;
     }
 
     bool level_mesh_face_is_solid(const rf::GFace& face)
@@ -684,18 +724,20 @@ namespace
 
     int level_mesh_build_room(rf::GRoom* room)
     {
-        // The sky-room filter lives here: RF's own GSolid::collide skips a sky room outright.
+        // RF's own GSolid::collide skips a sky room outright; callers also skip its detail rooms.
         if (!room || room->is_sky) {
             return 0;
         }
+        // A terrain chunk is always one body.
+        const bool terrain = alpine_terrain_is_chunk_room(room);
         ChunkBuckets buckets;
-        const int tris = level_mesh_bucket_room(room, buckets, false);
+        const int tris = level_mesh_bucket_room(room, buckets, terrain);
         if (tris == 0) {
             return 0;
         }
         LevelMeshRoomChunks entry;
-        entry.single = tris < vphys_mesh_chunk_min_tris;
-        if (entry.single) {
+        entry.single = terrain || tris < vphys_mesh_chunk_min_tris;
+        if (entry.single && !terrain) {
             // Re-bucket: a single-chunk room's chunk must sit at cell (0,0,0), where rebuilds look.
             buckets.clear();
             level_mesh_bucket_room(room, buckets, true);
@@ -868,8 +910,9 @@ void level_mesh_build()
     int rooms = 0;
     // A null level solid is not a reason to skip the movers, so only the room pass is guarded.
     if (rf::GSolid* solid = rf::level.geometry) {
+        const LevelMeshRoomSet sky_detail = level_mesh_sky_detail_rooms(solid);
         for (rf::GRoom* room : solid->all_rooms) {
-            if (!room || room->is_sky) {
+            if (level_mesh_room_is_skipped(room, sky_detail)) {
                 continue;
             }
             if (level_mesh_build_room(room) == 0) {
@@ -993,6 +1036,7 @@ void level_mesh_rebuild_pending()
     }
     ++g_level_mesh_rebuild_serial;
     rf::GSolid* solid = rf::level.geometry;
+    const LevelMeshRoomSet sky_detail = level_mesh_sky_detail_rooms(solid);
     for (auto& pending : g_remesh_pending) {
         rf::GRoom* room = pending.first;
         const RemeshRequest& req = pending.second;
@@ -1012,7 +1056,9 @@ void level_mesh_rebuild_pending()
             continue;
         }
         if (it == g_level_mesh.end()) {
-            level_mesh_build_room(room);
+            if (!level_mesh_room_is_skipped(room, sky_detail)) {
+                level_mesh_build_room(room);
+            }
             continue;
         }
         LevelMeshRoomChunks& entry = it->second;
@@ -1189,6 +1235,8 @@ void world_create()
         new VphysDynamicsWorld(g_vphys.dispatcher, g_vphys.broadphase, g_vphys.solver, g_vphys.config);
     // NEUTRAL world gravity and it must stay so: setGravity/addRigidBody overwrite every body's.
     g_vphys.world->setGravity(btVector3(0.0f, 0.0f, 0.0f));
+    // Active bodies only: a static or sleeping body must never be moved in place, only removed and re-added.
+    g_vphys.world->setForceUpdateAllAabbs(false);
 }
 
 void sim_body_destroy(VehicleSimBody* b)
@@ -1615,11 +1663,6 @@ namespace
                 obstacle.motion_state->setWorldTransform(t);
                 obstacle.body->setWorldTransform(t);
             }
-            else if (box_changed) {
-                // A static obstacle is posed once, so a corpse swap that moved the centre needs this.
-                obstacle.motion_state->setWorldTransform(t);
-                obstacle.body->setWorldTransform(t);
-            }
         }
     }
 } // namespace
@@ -1662,7 +1705,7 @@ namespace
                 rf::console::print("  level mesh: green boxes=chunk triangle bounds near you  "
                                    "orange=chunks the last remesh rebuilt (a crater's dirty set)");
                 rf::console::print("  blue cubes={:.0f}u chunk cell grid, your cell and its 26 "
-                                   "neighbours", level_mesh_debug_cell_size());
+                                   "neighbours (a terrain chunk is one body)", level_mesh_debug_cell_size());
             }
         },
         "Draw the vehicle physics collision primitives in the world",
@@ -1679,8 +1722,9 @@ void vehicle_physics_notify_geomod(const rf::Vector3& pos, float radius)
     const float r = std::max(radius, 0.0f) + 1.0f; // a margin, since the crater shape is scaled
     const rf::Vector3 lo{pos.x - r, pos.y - r, pos.z - r};
     const rf::Vector3 hi{pos.x + r, pos.y + r, pos.z + r};
+    const LevelMeshRoomSet sky_detail = level_mesh_sky_detail_rooms(rf::level.geometry);
     for (rf::GRoom* room : rf::level.geometry->all_rooms) {
-        if (!room || room->is_sky) {
+        if (level_mesh_room_is_skipped(room, sky_detail)) {
             continue; // never gets a body, so never mark one
         }
         if (hi.x < room->bbox_min.x || lo.x > room->bbox_max.x || hi.y < room->bbox_min.y

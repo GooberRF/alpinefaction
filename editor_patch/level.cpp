@@ -1362,14 +1362,29 @@ static void minimap_bake_from_dialog(HWND hdlg)
     else {
         std::snprintf(cut_text, sizeof(cut_text), "no cut");
     }
-    char summary[512];
+    const char* lighting = result.lightmaps_placeholder
+                               ? "The level has no usable brush lightmaps (D3D11-only or missing), so brushes are "
+                                 "unlit. Build Geometry and Calculate Lighting for lit brushes."
+                           : result.faces_lightmapped > 0 ? "Brushes are lit with the level's lightmaps."
+                                                          : "No brush lightmaps found: brushes are unlit.";
+    char terrain_note[160] = "";
+    if (result.terrains_unlit > 0) {
+        std::snprintf(terrain_note, sizeof(terrain_note),
+                      "\n%d terrain(s) have no baked lighting and use the level ambient and sun.",
+                      result.terrains_unlit);
+    }
+    char deco_text[96] = "";
+    if (result.decorations_drawn + result.decorations_blended > 0) {
+        std::snprintf(deco_text, sizeof(deco_text), " %d terrain decorations (%d drawn, %d blended),",
+                      result.decorations_drawn + result.decorations_blended, result.decorations_drawn,
+                      result.decorations_blended);
+    }
+    char summary[768];
     std::snprintf(summary, sizeof(summary),
-                  "Wrote user_maps\\textures\\%s\n%d x %d, %d faces, %s, %.2f s.\n%s\n"
+                  "Wrote user_maps\\textures\\%s\n%d x %d, %d faces,%s %s, %.2f s.\n%s%s\n"
                   "The bitmap and bounds are applied to the level now; Cancel does not undo them.",
-                  result.bitmap_name.c_str(), params.resolution, params.resolution, result.faces_drawn, cut_text,
-                  result.seconds,
-                  result.faces_lightmapped > 0 ? "Lit with the level's lightmaps."
-                                               : "No lightmaps found: textures are unlit.");
+                  result.bitmap_name.c_str(), params.resolution, params.resolution, result.faces_drawn, deco_text,
+                  cut_text, result.seconds, lighting, terrain_note);
     MessageBoxA(hdlg, summary, "Bake minimap", MB_OK | MB_ICONINFORMATION);
 }
 
