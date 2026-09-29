@@ -1373,6 +1373,13 @@ static void minimap_bake_from_dialog(HWND hdlg)
                       "\n%d terrain(s) have no baked lighting and use the level ambient and sun.",
                       result.terrains_unlit);
     }
+    char stale_note[160] = "";
+    if (result.terrains_stale > 0) {
+        std::snprintf(stale_note, sizeof(stale_note),
+                      "\n%d terrain(s) changed since the last Build Geometry are drawn as plain geometry, as the "
+                      "game would. Rebuild, then bake again.",
+                      result.terrains_stale);
+    }
     char deco_text[96] = "";
     if (result.decorations_drawn + result.decorations_blended > 0) {
         std::snprintf(deco_text, sizeof(deco_text), " %d terrain decorations (%d drawn, %d blended),",
@@ -1381,10 +1388,10 @@ static void minimap_bake_from_dialog(HWND hdlg)
     }
     char summary[768];
     std::snprintf(summary, sizeof(summary),
-                  "Wrote user_maps\\textures\\%s\n%d x %d, %d faces,%s %s, %.2f s.\n%s%s\n"
+                  "Wrote user_maps\\textures\\%s\n%d x %d, %d faces,%s %s, %.2f s.\n%s%s%s\n"
                   "The bitmap and bounds are applied to the level now; Cancel does not undo them.",
                   result.bitmap_name.c_str(), params.resolution, params.resolution, result.faces_drawn, deco_text,
-                  cut_text, result.seconds, lighting, terrain_note);
+                  cut_text, result.seconds, lighting, terrain_note, stale_note);
     MessageBoxA(hdlg, summary, "Bake minimap", MB_OK | MB_ICONINFORMATION);
 }
 

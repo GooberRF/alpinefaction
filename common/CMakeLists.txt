@@ -29,6 +29,7 @@ set(SRCS
     include/common/lightmap/alpine_lightmap.h
     include/common/lightmap/alpine_lightmap_decode.h
     include/common/lightmap/alpine_lightmap_reader.h
+    include/common/lighting/alpine_lighting.h
     include/common/terrain/alpine_terrain.h
     include/common/terrain/alpine_terrain_reader.h
     include/common/atx/spec.h

@@ -27,6 +27,8 @@ struct MinimapBakeResult
     bool lightmaps_placeholder = false;
     // Terrains drawn with the level ambient and sun for want of baked lighting
     int terrains_unlit = 0;
+    // Terrains changed since the last Build Geometry, drawn as plain faces without decorations as the game draws them
+    int terrains_stale = 0;
     int decorations_drawn = 0;
     int decorations_blended = 0;
     bool cut_applied = false;

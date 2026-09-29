@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <patch_common/MemUtils.h>
 #include <xlog/xlog.h>
+#include <common/lighting/alpine_lighting.h>
 #include <common/lightmap/alpine_lightmap.h>
 #include "vtypes.h"
 #include "mfc_types.h"
@@ -594,17 +595,6 @@ static_assert(offsetof(BrushNode, state) == 0x48);
 static_assert(offsetof(BrushNode, next) == 0x4C);
 static_assert(offsetof(BrushNode, prev) == 0x50);
 
-// Unit vector pointing TOWARD the sun. The light travel direction is its negation.
-// should match helper in game_patch\misc\level.h
-inline Vector3 alpine_sun_to_light_dir(float yaw_deg, float pitch_deg)
-{
-    constexpr float deg_to_rad = 3.14159265358979f / 180.0f;
-    const float yaw = yaw_deg * deg_to_rad;
-    const float pitch = pitch_deg * deg_to_rad;
-    const float cp = std::cos(pitch);
-    return {cp * std::sin(yaw), std::sin(pitch), cp * std::cos(yaw)};
-}
-
 // should match structure in game_patch\misc\level.h
 struct AlpineLevelProperties
 {
@@ -698,9 +688,11 @@ struct AlpineLevelProperties
 
     static constexpr std::uint32_t current_alpine_chunk_version = 7u;
 
+    // Unit vector pointing TOWARD the sun. The light travel direction is its negation.
     Vector3 sun_to_light_dir() const
     {
-        return alpine_sun_to_light_dir(sun_yaw, sun_pitch);
+        const alpine_lighting::Direction d = alpine_lighting::sun_to_light_dir(sun_yaw, sun_pitch);
+        return {d.x, d.y, d.z};
     }
 
     // Calculate Lighting gives the surfaces alpine charts; D3D11-only lightmaps can only apply then.

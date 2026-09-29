@@ -6,6 +6,7 @@
 #include <optional>
 #include <string>
 #include <xlog/xlog.h>
+#include <common/lighting/alpine_lighting.h>
 #include "alpine_settings.h"
 #include "alpine_terrain.h"
 #include "alpine_terrain_decorations.h"
@@ -86,9 +87,8 @@ std::uint32_t instance_light(int terrain, const at::DecorationInstance& inst, bo
 {
     float texel[3];
     alpine_terrain_sample_light(terrain, at::FaceKind::top, inst.base, inst.normal, texel);
-    // The clamp GSolid_get_ambient_color_hook applies, which keeps it from reading as "no lightmap"
     for (float& c : texel) {
-        c = std::clamp(c, 0.0f, 254.0f / 255.0f);
+        c = std::clamp(c, 0.0f, alpine_lighting::max_mesh_ambient_texel);
     }
     if (!d3d11) {
         return pack_rgba(texel, 1.0f);

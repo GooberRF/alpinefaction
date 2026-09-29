@@ -5,6 +5,7 @@
 #include <unordered_map>
 #include <utility>
 #include <xlog/xlog.h>
+#include <common/lighting/alpine_lighting.h>
 #include <common/terrain/alpine_terrain_reader.h>
 #include "alpine_settings.h"
 #include "alpine_terrain.h"
@@ -298,14 +299,10 @@ void alpine_terrain_sample_light(int terrain, at::FaceKind kind, const float (&p
         return;
     }
 
-    // Otherwise identical to ter_base_light without a chart: level ambient plus the sun's N.L. The
-    // shader draws that light as is, a lightmap texel doubled, hence the half.
+    // Otherwise identical to ter_base_light without a chart.
     float light[3];
     rf::gr::light_get_ambient(&light[0], &light[1], &light[2]);
     const SunLightState sun = gr_get_sun_state();
-    const float n_dot_l =
-        std::clamp(-(n[0] * sun.travel_dir.x + n[1] * sun.travel_dir.y + n[2] * sun.travel_dir.z), 0.0f, 1.0f);
-    for (int i = 0; i < 3; i++) {
-        texel[i] = (light[i] + sun.color[i] * n_dot_l) * 0.5f * scale;
-    }
+    const float travel[3] = {sun.travel_dir.x, sun.travel_dir.y, sun.travel_dir.z};
+    alpine_lighting::terrain_fallback_texel(light, travel, sun.color, n, scale, texel);
 }

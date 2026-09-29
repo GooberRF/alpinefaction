@@ -33,17 +33,6 @@ constexpr std::size_t max_bitmap_name = 32;
 
 using AlpineChunkReader = RflChunkReader<rf::File>;
 
-// Unit vector pointing TOWARD the sun. The light travel direction is its negation.
-// should match helper in editor_patch\level.h
-inline rf::Vector3 alpine_sun_to_light_dir(float yaw_deg, float pitch_deg)
-{
-    constexpr float deg_to_rad = 3.14159265358979f / 180.0f;
-    const float yaw = yaw_deg * deg_to_rad;
-    const float pitch = pitch_deg * deg_to_rad;
-    const float cp = std::cos(pitch);
-    return {cp * std::sin(yaw), std::sin(pitch), cp * std::cos(yaw)};
-}
-
 // should match structure in editor_patch\level.h
 struct AlpineLevelProperties
 {
