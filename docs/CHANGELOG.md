@@ -44,7 +44,6 @@ Version 1.5.0 (Trillium): Not yet released
 - Add `Brush` collision mode for Alpine Mesh objects
 - Add `Brush Geo` source selection for Alpine Mesh objects using `Brush` collision, allowing custom collision hulls
 - Raise level editor per-room and per-mesh render vertex limit from 8000 to 32768
-- Raise the limit on items per level from 200 to 1500 (RFL version 306+ levels only)
 - Add `-bake in.rfl -bakeout out.rfl` launcher command line switches to build a level's geometry and calculate its lighting without user interaction, writing the result to a new level file and progress to a log beside it
 - Add `High-resolution lightmaps` level property, used in lightmap bake in level editor
 - Deprecate and remove `-smoothlights` level editor switch
@@ -80,6 +79,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Improve level loading and `Build Geometry` times in the level editor on levels with many faces
 - Draw large rooms in fewer draw calls, and skip rooms without dynamic decals when drawing them (Direct3D 11 renderer only)
 - Make level editor refuse to open levels saved by a newer version of Alpine Faction instead of misreading them
+- Raise the limit on items per level from 200 to 1500
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Add `ui_color_console` console command to set the console background color
