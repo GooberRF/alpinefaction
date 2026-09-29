@@ -639,6 +639,7 @@ FunHook<void(rf::Player*)> hud_do_frame_input_sync_hook{
         }
     },
 };
+
 void apply_event_patches()
 {
     // allow custom directional events
