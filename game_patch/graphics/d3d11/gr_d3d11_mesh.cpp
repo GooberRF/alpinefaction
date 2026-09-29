@@ -10,7 +10,6 @@
 #include <common/ComPtr.h>
 #include <xlog/xlog.h>
 #include "../../rf/gr/gr.h"
-#include "../../rf/gr/gr_light.h"
 #include "../../rf/math/quaternion.h"
 #include "../../rf/v3d.h"
 #include "../../rf/vmesh.h"
@@ -257,6 +256,7 @@ namespace gr::d3d11
                     gpu_vert.v0_pan_speed = 0.0f;
                     gpu_vert.u1 = 0.0f;
                     gpu_vert.v1 = 0.0f;
+                    gpu_vert.lm_chart = -1.0f;
                 }
                 for (int face_index = 0; face_index < chunk.num_faces; ++face_index) {
                     auto& face = chunk.faces[face_index];
@@ -810,13 +810,22 @@ namespace gr::d3d11
         rf::VifLodMesh* lod_mesh, int lod_index,
         const rf::Vector3& pos, const rf::Matrix3& orient)
     {
-        page_in_v3d_mesh(lod_mesh);
+        const auto* batches = bind_v3d_buffers(lod_mesh, lod_index);
+        if (batches) {
+            render_context_.set_model_transform(pos, orient);
+        }
+        return batches;
+    }
+
+    const std::vector<BaseMeshRenderCache::Batch>* MeshRenderer::bind_v3d_buffers(
+        rf::VifLodMesh* lod_mesh, int lod_index, rf::MeshMaterial* materials, int num_materials)
+    {
+        page_in_v3d_mesh(lod_mesh, materials, num_materials);
         auto render_cache = reinterpret_cast<MeshRenderCache*>(lod_mesh->render_cache);
         if (!render_cache) {
             return nullptr;
         }
 
-        render_context_.set_model_transform(pos, orient);
         render_context_.set_vertex_buffer(v3d_vb_.buffer(), sizeof(GpuVertex));
         render_context_.set_index_buffer(v3d_ib_.buffer());
 
@@ -882,8 +891,12 @@ namespace gr::d3d11
         if (!ir_scanner) {
             if (use_vtx_lighting) {
                 // Old (master) vertex lighting: approximate lighting via mode color
-                if (is_character_mesh) {
-                    color = add_clamped(params.ambient_color, {224, 224, 224, 224});
+                if (is_character_mesh || is_fp_weapon) {
+                    // Character clutter has baked vertex colors and no custom ambient; its
+                    // ambient_color is uninitialized, so fall back to the level ambient
+                    color = (params.flags & rf::MeshRenderFlags::MRF_CUSTOM_AMBIENT_COLOR)
+                        ? add_clamped(params.ambient_color, {224, 224, 224, 224})
+                        : add_clamped(rf::level.ambient_light, {224, 224, 224, 224});
                 } else {
                     if (params.flags & rf::MeshRenderFlags::MRF_CUSTOM_AMBIENT_COLOR) {
                         color = g_character_meshes_are_fullbright
@@ -933,14 +946,10 @@ namespace gr::d3d11
                                  params.ambient_color.green == 255 &&
                                  params.ambient_color.blue == 255);
                 if (!is_white) {
-                    float global_amb[3];
-                    rf::gr::light_get_ambient(&global_amb[0], &global_amb[1], &global_amb[2]);
-                    constexpr float blend = 0.45f;
-                    float mesh_ambient[3] = {
-                        global_amb[0] * (1.0f - blend) + (params.ambient_color.red / 255.0f) * blend,
-                        global_amb[1] * (1.0f - blend) + (params.ambient_color.green / 255.0f) * blend,
-                        global_amb[2] * (1.0f - blend) + (params.ambient_color.blue / 255.0f) * blend,
-                    };
+                    const float lightmap[3] = {params.ambient_color.red / 255.0f, params.ambient_color.green / 255.0f,
+                                               params.ambient_color.blue / 255.0f};
+                    float mesh_ambient[3];
+                    gr_mesh_blend_ambient(lightmap, mesh_ambient);
                     if (!skip_ambient_cache) {
                         entity_ambient_cache[&params] = {mesh_ambient[0], mesh_ambient[1], mesh_ambient[2]};
                     }
@@ -1045,7 +1054,9 @@ namespace gr::d3d11
                 self_illum = 1.0f;
             }
 
-            render_context_.set_mode(forced_mode.value_or(b.mode), color, false, gpu_dynamic_lighting, self_illum, !is_character_mesh, emissive);
+            // Static-mesh light scale is skipped for first person meshes too: fpguns are character meshes, and
+            // static fpgun attachments (silencer) must match them
+            render_context_.set_mode(forced_mode.value_or(b.mode), color, false, gpu_dynamic_lighting, self_illum, !is_character_mesh && !is_fp_weapon, emissive);
             render_context_.set_textures(texture, -1);
             render_context_.draw_indexed(b.num_indices, b.start_index, b.base_vertex);
         }

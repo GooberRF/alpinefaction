@@ -18,6 +18,7 @@
 #include "../../rf/object.h"
 #include "../../rf/player/player.h"
 #include "../../rf/vmesh.h"
+#include "../../rf/vfx.h"
 #include "../../bmpman/bmpman.h"
 #include "../../main/main.h"
 #include "../../misc/misc.h"
@@ -25,8 +26,11 @@
 #include "../../os/console.h"
 #include "../gr.h"
 #include "gr_d3d11.h"
+#include "gr_d3d11_hooks.h"
+#include "gr_d3d11_terrain.h"
 #include "gr_d3d11_liquid.h"
 #include "gr_d3d11_mesh.h"
+#include "gr_d3d11_vfx.h"
 
 void gr_light_use_static(bool use_static);
 
@@ -365,15 +369,19 @@ namespace gr::d3d11
         renderer->render_solid(solid, rooms, num_rooms);
     }
 
-    void render_movable_solid(rf::GSolid* solid, const rf::Vector3& pos, const rf::Matrix3& orient)
+    // Stock gr_d3d_render_movable_solid (0x00553C60) gathers only dynamic lights
+    // using the mover's own GSolid (not level.geometry). Static lights are already
+    // baked into the mover's lightmap, so we must not add them as point lights.
+    // The stock engine also temporarily transforms the solid's bbox to world space
+    // before calling light_filter_set_solid, since it uses bbox for sphere overlap tests.
+    class ScopedMovableSolidLights
     {
-        // Stock gr_d3d_render_movable_solid (0x00553C60) gathers only dynamic lights
-        // using the mover's own GSolid (not level.geometry). Static lights are already
-        // baked into the mover's lightmap, so we must not add them as point lights.
-        // The stock engine also temporarily transforms the solid's bbox to world space
-        // before calling light_filter_set_solid, since it uses bbox for sphere overlap tests.
-        bool lights_gathered = false;
-        if (solid) {
+    public:
+        ScopedMovableSolidLights(rf::GSolid* solid, const rf::Vector3& pos, const rf::Matrix3& orient)
+        {
+            if (!solid) {
+                return;
+            }
             // Save local-space bbox
             rf::Vector3 saved_min = solid->bbox_min;
             rf::Vector3 saved_max = solid->bbox_max;
@@ -392,19 +400,58 @@ namespace gr::d3d11
             solid->bbox_max = world_center + world_half;
 
             rf::gr::light_filter_set_solid(solid, true, false);
-            lights_gathered = true;
+            lights_gathered_ = true;
 
             // Restore local-space bbox
             solid->bbox_min = saved_min;
             solid->bbox_max = saved_max;
         }
 
-        renderer->render_movable_solid(solid, pos, orient);
-
-        if (lights_gathered) {
-            rf::gr::light_filter_reset();
-            renderer->clear_mesh_lights();
+        ~ScopedMovableSolidLights()
+        {
+            if (lights_gathered_) {
+                rf::gr::light_filter_reset();
+                renderer->clear_mesh_lights();
+            }
         }
+
+        ScopedMovableSolidLights(const ScopedMovableSolidLights&) = delete;
+        ScopedMovableSolidLights& operator=(const ScopedMovableSolidLights&) = delete;
+    private:
+        bool lights_gathered_ = false;
+    };
+
+    static rf::MoverBrush* find_mover_brush(rf::GSolid* solid)
+    {
+        for (auto& mb : DoublyLinkedList{rf::mover_brush_list}) {
+            if (mb.geometry == solid) {
+                return &mb;
+            }
+        }
+        return nullptr;
+    }
+
+    // Deferred alpha pass for a single mover brush, registered by obj_render_all_hook
+    static void render_mover_brush_alpha(void* user, rf::GSolid*)
+    {
+        auto* mb = static_cast<rf::MoverBrush*>(rf::obj_from_handle(static_cast<int>(reinterpret_cast<intptr_t>(user))));
+        if (!mb || !mb->geometry) {
+            return;
+        }
+        ScopedMovableSolidLights light_scope{mb->geometry, mb->pos, mb->orient};
+        renderer->render_movable_solid_alpha(mb->geometry, mb->pos, mb->orient);
+    }
+
+    void render_movable_solid(rf::GSolid* solid, const rf::Vector3& pos, const rf::Matrix3& orient)
+    {
+        // Mover brush see-through faces are drawn later, in the sorted alpha pass, so their depth
+        // writes stop hiding whatever is behind them. Debris solids reach here too and keep drawing
+        // their alpha faces inline.
+        rf::MoverBrush* mb = find_mover_brush(solid);
+        bool include_alpha = !mb || (mb->obj_flags & rf::OF_HAS_ALPHA);
+
+        ScopedMovableSolidLights light_scope{solid, pos, orient};
+        renderer->render_movable_solid(solid, pos, orient, include_alpha);
     }
 
     void render_alpha_detail_room(rf::GRoom *room, rf::GSolid *solid)
@@ -574,7 +621,8 @@ namespace gr::d3d11
             }
 
             bool fullbright_character = g_character_meshes_are_fullbright && !is_first_person;
-            bool synthesize_colors = params.vertex_colors == nullptr || fullbright_character;
+            // Baked vertex colors (character clutter) are only valid in vertex lighting modes
+            bool synthesize_colors = params.vertex_colors == nullptr || fullbright_character || !use_vertex_lighting;
 
             if (synthesize_colors) {
                 rf::MeshRenderParams params_with_vertex_colors = params;
@@ -657,6 +705,38 @@ namespace gr::d3d11
         renderer->render_character_vif(lod_mesh, lod_index, pos, orient, ci, params);
     }
 
+    static bool g_vfx_gpu = true;
+
+    // Eligibility is checked before the light gather so a stock fallback never sees a reset light list
+    FunHook<void(rf::VfxSfxoRenderObj*, float)> gr_d3d_render_vfx_hook{
+        0x00553EE0,
+        [](rf::VfxSfxoRenderObj* obj, float frame) {
+            float radius = 0.0f;
+            if (!g_vfx_gpu || !renderer || !vfx_gpu_eligible(obj, &radius)) {
+                gr_d3d_render_vfx_hook.call_target(obj, frame);
+                return;
+            }
+            bool lights_gathered = rf::level.geometry && !skip_mesh_light_gather && !level_uses_vertex_lighting();
+            if (lights_gathered) {
+                gather_mesh_lights(obj->render_pos, radius);
+            }
+            renderer->render_vfx(obj, frame);
+            if (lights_gathered) {
+                rf::gr::light_filter_reset();
+                renderer->clear_mesh_lights();
+            }
+        },
+    };
+
+    ConsoleCommand2 vfx_gpu_cmd{
+        "dbg_vfxgpu",
+        []() {
+            g_vfx_gpu = !g_vfx_gpu;
+            rf::console::print("GPU vfx mesh rendering: {}", g_vfx_gpu ? "on" : "off");
+        },
+        "Toggles GPU rendering of .vfx meshes (off = stock CPU path)",
+    };
+
     void fog_set()
     {
         renderer->fog_set();
@@ -693,6 +773,37 @@ namespace gr::d3d11
         if (renderer) {
             renderer->clear_solid_cache();
         }
+    }
+
+    void release_detail_room_render_cache(rf::GRoom* room)
+    {
+        if (renderer) {
+            renderer->release_detail_room_cache(room);
+        }
+    }
+
+    void release_terrain_gpu()
+    {
+        if (renderer) {
+            renderer->release_terrain_gpu();
+        }
+    }
+
+    bool upload_af_lightmap_atlas(const alpine_lightmap::ReadResult& section, const std::vector<std::uint8_t>& blocks)
+    {
+        return renderer && renderer->upload_af_lightmap_atlas(section, blocks);
+    }
+
+    void release_af_lightmap_atlas()
+    {
+        if (renderer) {
+            renderer->release_af_lightmap_atlas();
+        }
+    }
+
+    bool af_lightmap_atlas_live()
+    {
+        return renderer && renderer->af_lightmap_atlas_live();
     }
 
     void reset_solid_render_cache_after_boolean()
@@ -866,6 +977,34 @@ namespace gr::d3d11
         },
     };
 
+    // obj_render_all queues every object of a room for the room pass. Add a second, sortable render item for
+    // each mover brush with see-through faces, so those faces are drawn back to front after the
+    // unsorted items instead of writing depth ahead of them.
+    static FunHook<void(rf::GRoom*, int)> obj_render_all_hook{
+        0x00488230,
+        [](rf::GRoom* room, int flag) {
+            obj_render_all_hook.call_target(room, flag);
+            if (!renderer) {
+                return;
+            }
+            for (auto& mb : DoublyLinkedList{rf::mover_brush_list}) {
+                // OF_HAS_ALPHA movers are queued sortable by the engine, which sorts them whole
+                if (!mb.geometry || (mb.obj_flags & (rf::OF_DELAYED_DELETE | rf::OF_HAS_ALPHA))) {
+                    continue;
+                }
+                // Only the low byte of flag is meaningful; the portal room loop leaves garbage above it
+                if (!rf::obj_should_render_in_room(&mb, room, (flag & 0xFF) != 0)) {
+                    continue;
+                }
+                if (!renderer->movable_solid_has_alpha(mb.geometry)) {
+                    continue;
+                }
+                rf::g_room_render_item_add(reinterpret_cast<void*>(static_cast<intptr_t>(mb.handle)), mb.pos, mb.pos,
+                    mb.radius, render_mover_brush_alpha, true, nullptr, nullptr, nullptr, false, true);
+            }
+        },
+    };
+
     static CodeInjection g_render_room_objects_render_liquid_injection{
         0x004D4106,
         [](auto& regs) {
@@ -939,8 +1078,12 @@ namespace gr::d3d11
         0x0051C4C0,
         [] (auto& regs) {
             rf::CharacterInstance* ci = regs.ecx;
-            if (renderer) {
-                renderer->page_in_character_mesh(ci->base_character->character_meshes[0].mesh->vu);
+            if (!renderer || !ci->base_character || ci->base_character->num_character_meshes < 1) {
+                return;
+            }
+            rf::V3dMesh* mesh = ci->base_character->character_meshes[0].mesh;
+            if (mesh && mesh->vu) {
+                renderer->page_in_character_mesh(mesh->vu);
             }
         },
     };
@@ -1138,6 +1281,7 @@ void gr_d3d11_apply_patch()
     gameplay_render_frame_liquid_bg_color_hook.install();
     screen_flash_render_hook.install();
     g_render_room_objects_hook.install();
+    obj_render_all_hook.install();
     g_render_room_objects_render_liquid_injection.install();
     gr_d3d_setup_3d_injection.install();
     gr_d3d_setup_fustrum_injection.install();
@@ -1182,7 +1326,7 @@ void gr_d3d11_apply_patch()
     AsmWriter{0x00551900}.jmp(tmapper); // gr_d3d_tmapper
     AsmWriter{0x005536C0}.jmp(render_sky_room);
     AsmWriter{0x00553C60}.jmp(render_movable_solid); // gr_d3d_render_movable_solid - uses gr_d3d_render_face_list
-    // AsmWriter{0x00553EE0}.ret(); // gr_d3d_vfx - uses gr_poly
+    gr_d3d_render_vfx_hook.install(); // gr_d3d_vfx - GPU path in gr_d3d11_vfx.cpp, stock fallback
     // AsmWriter{0x00554BF0}.ret(); // gr_d3d_vfx_facing - uses gr_d3d_3d_bitmap_angle, gr_d3d_render_volumetric_light
     // AsmWriter{0x00555080}.ret(); // gr_d3d_vfx_glow - uses gr_d3d_3d_bitmap_angle
     // AsmWriter{0x00555100}.ret(); // gr_d3d_line_vertex
@@ -1241,4 +1385,6 @@ void gr_d3d11_apply_patch()
 
     r_antialiasing_cmd.register_cmd();
     r_antialiasing_mode_cmd.register_cmd();
+    terrain_register_commands();
+    vfx_gpu_cmd.register_cmd();
 }

@@ -3,6 +3,7 @@
 #include <source_location>
 #include <concepts>
 #include <cstdint>
+#include <vector>
 #include <d3d11.h>
 #include <common/ComPtr.h>
 #include <common/DynamicLinkLibrary.h>
@@ -10,6 +11,7 @@
 #include "../../rf/gr/gr.h"
 #include "../../rf/os/frametime.h"
 #include "gr_d3d11_transform.h"
+#include "gr_d3d11_liquid.h"
 #include "gr_d3d11_scenefx.h"
 
 namespace rf
@@ -22,6 +24,12 @@ namespace rf
     struct MeshRenderParams;
     struct CharacterInstance;
     struct Player;
+    struct VfxSfxoRenderObj;
+}
+
+namespace alpine_lightmap
+{
+    struct ReadResult;
 }
 
 namespace gr::d3d11
@@ -31,10 +39,13 @@ namespace gr::d3d11
     class TextureManager;
     class DynamicGeometryRenderer;
     class RenderContext;
+    class AfLightmapRenderer;
     class SolidRenderer;
     class MeshRenderer;
+    class DecorationRenderer;
     class EntityShadowRenderer;
     class OutlineRenderer;
+    class VfxMeshRenderer;
     class GammaPass;
 
     class Renderer
@@ -75,15 +86,24 @@ namespace gr::d3d11
         void project_vertex(rf::gr::Vertex* v);
         void setup_3d(Projection proj);
         void render_solid(rf::GSolid* solid, rf::GRoom** rooms, int num_rooms);
-        void render_movable_solid(rf::GSolid* solid, const rf::Vector3& pos, const rf::Matrix3& orient);
+        void render_movable_solid(rf::GSolid* solid, const rf::Vector3& pos, const rf::Matrix3& orient, bool include_alpha);
+        bool movable_solid_has_alpha(rf::GSolid* solid);
+        void render_movable_solid_alpha(rf::GSolid* solid, const rf::Vector3& pos, const rf::Matrix3& orient);
         void render_alpha_detail_room(rf::GRoom *room, rf::GSolid *solid);
         void render_sky_room(rf::GRoom *room, rf::Vector3& out_sky_transform_pos, rf::Matrix3& out_sky_transform_orient);
         void render_room_liquid_surface(rf::GSolid* solid, rf::GRoom* room);
         void clear_solid_cache();
+        void release_detail_room_cache(rf::GRoom* room);
         void reset_solid_cache_after_boolean();
+        void release_terrain_gpu();
+        bool upload_af_lightmap_atlas(const alpine_lightmap::ReadResult& section,
+                                      const std::vector<std::uint8_t>& blocks);
+        void release_af_lightmap_atlas();
+        bool af_lightmap_atlas_live() const;
         void render_v3d_vif(rf::VifLodMesh *lod_mesh, int lod_index, const rf::Vector3& pos, const rf::Matrix3& orient, const rf::MeshRenderParams& params, bool skip_ambient_cache = false);
         void render_character_vif(rf::VifLodMesh *lod_mesh, int lod_index, const rf::Vector3& pos, const rf::Matrix3& orient, const rf::CharacterInstance *ci, const rf::MeshRenderParams& params, bool skip_ambient_cache = false);
         void clear_vif_cache(rf::VifLodMesh *lod_mesh);
+        void render_vfx(rf::VfxSfxoRenderObj* obj, float frame);
         void fog_set();
         void page_in_v3d_mesh(rf::VifLodMesh* lod_mesh, rf::MeshMaterial* materials = nullptr, int num_materials = 0);
         void page_in_character_mesh(rf::VifLodMesh* lod_mesh);
@@ -161,13 +181,17 @@ namespace gr::d3d11
         ComPtr<ID3D11Texture2D> default_render_target_;
         ComPtr<ID3D11RenderTargetView> default_render_target_view_;
         ComPtr<ID3D11DepthStencilView> depth_stencil_view_;
+        SceneDepthCapture scene_depth_;
         std::unique_ptr<StateManager> state_manager_;
         std::unique_ptr<ShaderManager> shader_manager_;
         std::unique_ptr<TextureManager> texture_manager_;
         std::unique_ptr<DynamicGeometryRenderer> dyn_geo_renderer_;
         std::unique_ptr<RenderContext> render_context_;
+        std::unique_ptr<AfLightmapRenderer> af_lightmap_renderer_;
         std::unique_ptr<SolidRenderer> solid_renderer_;
         std::unique_ptr<MeshRenderer> mesh_renderer_;
+        std::unique_ptr<DecorationRenderer> decoration_renderer_;
+        std::unique_ptr<VfxMeshRenderer> vfx_renderer_;
         std::unique_ptr<EntityShadowRenderer> entity_shadow_renderer_;
         std::unique_ptr<OutlineRenderer> outline_renderer_;
         std::unique_ptr<GammaPass> gamma_pass_;
@@ -179,6 +203,8 @@ namespace gr::d3d11
         int damage_vignette_decay_frame_ = -1;
         int object_room_uid_ = -1;
         int liquid_update_frame_ = -1;
+        int scene_depth_frame_ = -1;
+        bool scene_depth_wanted_ = false;
         rf::Player* deferred_reticle_player_ = nullptr;
         int render_target_bm_handle_ = -1;
         bool skip_gamma_pass_ = false;

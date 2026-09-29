@@ -4041,7 +4041,10 @@ static void af_process_server_info_packet(const void* data, size_t len, const rf
 
     auto game_type = static_cast<rf::NetGameType>(pkt.game_type);
 
-    if (game_type != rf::netgame.type) {
+    if (pkt.game_type >= RF_GT_UNK) {
+        xlog::warn("af_server_info: unknown game type {}", pkt.game_type);
+    }
+    else if (game_type != rf::netgame.type) {
         set_local_pending_game_type(game_type, static_cast<int>(pkt.win_condition));
     }
     else {
@@ -4729,8 +4732,12 @@ void af_process_server_msg_packet(
         g_remote_server_cfg_popup.finalize();
     } else if (msg_packet.type == static_cast<uint8_t>(AF_SERVER_MSG_TYPE_AUTOMATED_CHAT)) {
         const char* ptr = static_cast<const char*>(data) + sizeof(msg_packet);
-        const rf::String msg{std::string_view{ptr, len - sizeof(msg_packet)}};
+        const std::string_view msg_sv{ptr, len - sizeof(msg_packet)};
+        const rf::String msg{msg_sv};
         handle_vote_or_ready_up_msg(msg);
+        if (!g_alpine_game_config.show_domination_msgs && awards_is_domination_chat_msg(msg_sv)) {
+            return;
+        }
         rf::multi_chat_print(msg, rf::ChatMsgColor::gold_white, rf::String{"Server: "});
         if (!g_alpine_game_config.simple_server_chat_msgs) {
             rf::snd_play(stock_sound_id::end_voice, 0, 0.f, 1.f);

@@ -433,6 +433,9 @@ $RFE Level1:      "AF_General"
 $Event Name:      "Display_Projection"
 $RFE Level1:      "AF_General"
 
+$Event Name:      "Climbing_Region_State"
+$RFE Level1:      "AF_General"
+
 #End
 
 // ------------------------------------------------
@@ -515,6 +518,9 @@ $RFE Level1:      "AF_Utility"
 #AlpineCatalysts
 
 $Event Name:      "AF_When_Dead"
+$RFE Level1:      "AF_Catalysts"
+
+$Event Name:      "When_Destroyed"
 $RFE Level1:      "AF_Catalysts"
 
 $Event Name:      "When_Picked_Up"

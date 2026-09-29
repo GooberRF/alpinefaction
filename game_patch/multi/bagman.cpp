@@ -769,24 +769,6 @@ bool bagman_query_pickup_bag_outline(
     return true;
 }
 
-void bagman_tick_pickup_spin()
-{
-    if (!gt_is_bagman_any()) return;
-    if (g_bagman_info.state != BagState::BS_At_Spawn
-        && g_bagman_info.state != BagState::BS_Dropped) return;
-
-    rf::Item* bag = find_client_side_bag_pickup_item();
-    if (!bag || !bag->info) return;
-    if (!(bag->info->flags & rf::IIF_SPINS_IN_MULTI)) return;
-
-    const float spin_rate = addr_as_ref<float>(0x005897A8);
-    const float two_pi = addr_as_ref<float>(0x005894AC);
-    bag->spin_angle += spin_rate * rf::frametime;
-    if (bag->spin_angle > two_pi) {
-        bag->spin_angle -= two_pi;
-    }
-}
-
 bool bagman_query_carrier_bag_outline(
     rf::VifLodMesh** out_lod_mesh, rf::Vector3* out_pos, rf::Matrix3* out_orient)
 {

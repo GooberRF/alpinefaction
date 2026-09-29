@@ -10,6 +10,7 @@
 #include <patch_common/AsmWriter.h>
 #include <common/version/version.h>
 #include <common/utils/list-utils.h>
+#include <common/rfproto.h>
 #include "multi.h"
 #include "demo/demo.h"
 #include "endgame_votes.h"
@@ -643,6 +644,24 @@ FunHook<void(rf::Player*, rf::Entity*, int)> multi_select_weapon_server_side_hoo
             ep->ai.current_primary_weapon = weapon_type;
             g_select_weapon_done_timestamp[pp->net_data->player_id].set(300);
         }
+    },
+};
+
+CallHook<void(rf::Entity*, int, int, int)> entity_reload_resync_send_hook{
+    0x00425403,
+    [](rf::Entity* ep, int weapon_type, int ammo, int clip_ammo) {
+        rf::Player* pp = rf::player_from_entity_handle(ep->handle);
+        if (!pp || pp == rf::local_player) {
+            return; // no owner, or listen server host (authoritative, nothing to resync)
+        }
+        RF_ReloadPacket packet;
+        packet.header.type = RF_GPT_RELOAD;
+        packet.header.size = sizeof(packet) - sizeof(packet.header);
+        packet.entity_handle = ep->handle;
+        packet.weapon = weapon_type;
+        packet.clip_ammo = ammo;      // rfproto field names are swapped: wire order is reserve, then clip
+        packet.ammo = clip_ammo;
+        rf::multi_io_send(pp, &packet, sizeof(packet));
     },
 };
 
@@ -1468,6 +1487,9 @@ void multi_do_patch()
 
     // Weapon select server-side handling
     multi_select_weapon_server_side_hook.install();
+
+    // Send the "nothing to reload" ammo resync only to the requesting player
+    entity_reload_resync_send_hook.install();
 
     // Check ammo server-side when handling weapon fire packets
     multi_process_remote_weapon_fire_hook.install();

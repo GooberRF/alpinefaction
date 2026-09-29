@@ -111,6 +111,15 @@ static constexpr float k_spectate_orbit_distance = 4.5f;
 static constexpr float k_spectate_orbit_focus_height = 1.0f;
 static constexpr float k_spectate_orbit_pitch_limit = 1.4f; // ~80 degrees
 
+// Third person over-the-shoulder camera. The boom length is pulled in instantly by level geometry
+// and eased back out when clear.
+static constexpr float k_spectate_shoulder_distance = 2.2f;
+static constexpr float k_spectate_shoulder_right = 0.6f;
+static constexpr float k_spectate_shoulder_up = 0.2f;
+static constexpr float k_spectate_shoulder_ease_rate = 8.0f;
+static constexpr float k_spectate_camera_radius = 0.2f;
+static float g_spectate_shoulder_boom = k_spectate_shoulder_distance;
+
 // Free look stepped zoom: tapping "next" (primary attack) steps through these FOV divisors and wraps.
 static constexpr float k_spectate_freelook_zoom_steps[] = {1.0f, 2.0f, 4.0f};
 static int g_spectate_freelook_zoom_index = 0;
@@ -502,6 +511,7 @@ static void spectate_apply_player_view_mode()
         player_fpgun_set_player(rf::local_player);
 #endif
         rf::camera_enter_third_person(camera);
+        g_spectate_shoulder_boom = k_spectate_shoulder_distance;
         if (g_spectate_view_mode == SpectateViewMode::third_person && g_spectate_third_person_orbit)
             spectate_init_orbit(camera);
     }
@@ -697,8 +707,43 @@ static void spectate_drop_freelook_camera()
         static_cast<int>(g_spectate_dropped_cameras.size()), spectate_static_camera_count());
 }
 
+// Start free look at a given view. The free look camera rebuilds its view from control_data every
+// frame (phb.y = yaw, eye_phb.x = RF's non-linear pitch, + = up) and moves from p_data.pos.
+static void spectate_place_freelook_camera(rf::Entity* ce, const rf::Vector3& pos, const rf::Matrix3& view)
+{
+    const rf::Vector3& f = view.fvec;
+    // From rvec (cos(yaw), 0, -sin(yaw)): fvec loses the heading when looking straight up/down
+    const float yaw = std::atan2(-view.rvec.z, view.rvec.x);
+    // Inverse of the engine's fvec ~ (k sin(yaw), sin(pitch), k cos(yaw)) with k = 1 - |sin(pitch)|
+    const float h = std::sqrt(f.x * f.x + f.z * f.z);
+    float pitch = std::copysign(1.5707964f, f.y);
+    if (h > 1e-6f) {
+        const float t = std::abs(f.y) / h;
+        pitch = std::copysign(std::asin(t / (1.0f + t)), f.y);
+    }
+    rf::Matrix3 body;
+    body.set_from_angles(0.0f, 0.0f, yaw);
+
+    ce->pos = pos;
+    ce->eye_pos = pos;
+    ce->p_data.pos = pos;
+    ce->p_data.next_pos = pos;
+    ce->orient = body;
+    ce->p_data.orient = body;
+    ce->p_data.next_orient = body;
+    ce->eye_orient = view;
+    ce->control_data.phb.set(0.0f, yaw, 0.0f);
+    ce->control_data.eye_phb.set(pitch, 0.0f, 0.0f);
+    ce->control_data.delta_phb.zero();
+    ce->control_data.delta_eye_phb.zero();
+    ce->p_data.vel.zero();
+    ce->set_room(nullptr);
+    ce->update_room();
+}
+
 // Transition from the current spectate view to `to`, handling target binding/unbinding.
-static void spectate_set_view_mode(SpectateViewMode to)
+// `keep_view`: a player view -> free look switch starts free look at the view on screen.
+static void spectate_set_view_mode(SpectateViewMode to, bool keep_view = false)
 {
     if (!rf::local_player || !rf::local_player->cam)
         return;
@@ -741,14 +786,21 @@ static void spectate_set_view_mode(SpectateViewMode to)
     }
     else {
         // Entering a free view (free look or static) - release any player target.
+        rf::Camera* cam = rf::local_player->cam;
+        keep_view = keep_view && from_player && to == SpectateViewMode::freelook && cam->camera_entity;
+        const rf::Vector3 view_pos = keep_view ? rf::camera_get_pos(cam) : rf::Vector3{};
+        const rf::Matrix3 view_orient = keep_view ? rf::camera_get_orient(cam) : rf::Matrix3{};
         if (from_player) {
             g_spectate_freelook_saved_target = g_spectate_mode_target;
             spectate_unbind_target();
             g_spectate_mode_enabled = false;
             g_spectate_mode_target = rf::local_player;
         }
-        if (to == SpectateViewMode::freelook)
+        if (to == SpectateViewMode::freelook) {
             multi_spectate_enter_freelook();
+            if (keep_view && cam->mode == rf::CAMERA_FREELOOK && cam->camera_entity)
+                spectate_place_freelook_camera(cam->camera_entity, view_pos, view_orient);
+        }
         else
             spectate_enter_static();
     }
@@ -792,7 +844,7 @@ void multi_spectate_toggle_attach()
     if (attached) {
         g_spectate_attached_submode = g_spectate_view_mode;   // remember first/third
         g_spectate_last_attached = false;
-        spectate_set_view_mode(g_spectate_detached_submode);  // restore free/static
+        spectate_set_view_mode(g_spectate_detached_submode, true); // restore free/static
     }
     else {
         g_spectate_detached_submode = g_spectate_static_active
@@ -1053,8 +1105,36 @@ static ConsoleCommand2 spectate_povcomp_cmd{
     "spectate_povcomp [on|off|<delay ms>]",
 };
 
-// Per-frame camera positioning for third-person orbit (called from camera_do_frame_hook). Returns
-// true if it positioned the camera, so the stock per-frame third-person logic is skipped.
+// How far the camera can travel from `from` toward `to` before level geometry, keeping
+// k_spectate_camera_radius clear of the hit.
+static float spectate_camera_clear_distance(const rf::Vector3& from, const rf::Vector3& to)
+{
+    const rf::Vector3 delta = to - from;
+    const float full = delta.len();
+    if (full < 0.001f)
+        return full;
+    const rf::Vector3 dir = delta / full;
+    rf::Vector3 p0 = from;
+    rf::Vector3 p1 = from + dir * (full + k_spectate_camera_radius);
+    rf::GCollisionOutput col{};
+    if (!rf::collide_linesegment_level_solid(p0, p1, rf::CF_PROCESS_INVISIBLE_FACES, &col))
+        return full;
+    return std::clamp((col.hit_point - from).len() - k_spectate_camera_radius, 0.0f, full);
+}
+
+static void spectate_set_camera_entity(rf::Entity* ce, const rf::Vector3& pos, const rf::Matrix3& orient)
+{
+    ce->pos = pos;
+    ce->orient = orient;
+    ce->eye_pos = pos;
+    ce->eye_orient = orient;
+    ce->set_room(nullptr);
+    ce->update_room();
+}
+
+// Per-frame camera positioning for third person (over-the-shoulder and orbit), called from
+// camera_do_frame_hook. Returns true if it positioned the camera, so the stock per-frame
+// third-person logic is skipped.
 bool multi_spectate_camera_do_frame(rf::Camera* camera)
 {
     if (!rf::local_player || camera != rf::local_player->cam || !camera->camera_entity)
@@ -1070,17 +1150,12 @@ bool multi_spectate_camera_do_frame(rf::Camera* camera)
         const int di = g_spectate_static_index - rf::fixed_camera_count;
         if (di >= 0 && di < static_cast<int>(g_spectate_dropped_cameras.size())) {
             const SpectateStaticCamera& sc = g_spectate_dropped_cameras[di];
-            ce->pos = sc.pos;
-            ce->orient = sc.orient;
-            ce->eye_pos = sc.pos;
-            ce->eye_orient = sc.orient;
-            ce->set_room(nullptr);
-            ce->update_room();
+            spectate_set_camera_entity(ce, sc.pos, sc.orient);
             return true;
         }
     }
 
-    // Third-person orbit is only driven during active gameplay; at round end let the engine run
+    // Third person is only driven during active gameplay; at round end let the engine run
     // its own endgame fixed-camera flyby.
     if (rf::gameseq_get_state() != rf::GS_GAMEPLAY)
         return false;
@@ -1132,17 +1207,42 @@ bool multi_spectate_camera_do_frame(rf::Camera* camera)
             std::sin(g_spectate_orbit_pitch),
             std::cos(g_spectate_orbit_pitch) * std::cos(g_spectate_orbit_yaw),
         };
-        rf::Vector3 cam_pos = focus - look_dir * k_spectate_orbit_distance;
+        const float distance = spectate_camera_clear_distance(focus, focus - look_dir * k_spectate_orbit_distance);
+        const rf::Vector3 cam_pos = focus - look_dir * distance;
 
         rf::Matrix3 orient;
         orient.make_quick(look_dir);
 
-        ce->pos = cam_pos;
-        ce->orient = orient;
-        ce->eye_pos = cam_pos;
-        ce->eye_orient = orient;
-        ce->set_room(nullptr);
-        ce->update_room();
+        spectate_set_camera_entity(ce, cam_pos, orient);
+        return true;
+    }
+
+    if (g_spectate_mode_enabled && g_spectate_view_mode == SpectateViewMode::third_person
+        && camera->mode == rf::CAMERA_THIRD_PERSON) {
+        rf::Entity* target = g_spectate_mode_target
+            ? rf::entity_from_handle(g_spectate_mode_target->entity_handle)
+            : nullptr;
+        if (!target)
+            return true; // target dead/gone this frame - hold the camera in place
+
+        // Shoulder offset uses the horizontal right vector and world up, so pitch swings the camera
+        // around the shoulder pivot.
+        const rf::Matrix3& aim = target->eye_orient;
+        rf::Vector3 right{aim.rvec.x, 0.0f, aim.rvec.z};
+        const float right_len = right.len();
+        right = right_len > 0.001f ? right / right_len : aim.rvec;
+        const rf::Vector3 shoulder = right * k_spectate_shoulder_right + rf::Vector3{0.0f, k_spectate_shoulder_up, 0.0f};
+        const float shoulder_clear = spectate_camera_clear_distance(target->eye_pos, target->eye_pos + shoulder);
+        const rf::Vector3 pivot = target->eye_pos + shoulder * (shoulder_clear / shoulder.len());
+
+        const float allowed = spectate_camera_clear_distance(pivot, pivot - aim.fvec * k_spectate_shoulder_distance);
+        if (allowed < g_spectate_shoulder_boom)
+            g_spectate_shoulder_boom = allowed;
+        else
+            g_spectate_shoulder_boom += (allowed - g_spectate_shoulder_boom)
+                * std::min(1.0f, rf::frametime * k_spectate_shoulder_ease_rate);
+
+        spectate_set_camera_entity(ce, pivot - aim.fvec * g_spectate_shoulder_boom, aim);
         return true;
     }
 

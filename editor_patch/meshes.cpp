@@ -7,6 +7,7 @@
 #include <windows.h>
 #include <xlog/xlog.h>
 #include <patch_common/MemUtils.h>
+#include <common/utils/string-utils.h>
 #include "meshes.h"
 #include "vtypes.h"
 
@@ -152,6 +153,68 @@ void reload_custom_meshes()
     for (int slot : g_mesh_path_slots) {
         file_scan_path(slot);
     }
+}
+
+static std::string canonical_dir(const std::string& dir)
+{
+    char full[MAX_PATH];
+    DWORD len = GetFullPathNameA(dir.c_str(), MAX_PATH, full, nullptr);
+    std::string text = (len > 0 && len < MAX_PATH) ? std::string{full} : dir;
+
+    std::string out;
+    for (std::size_t i = 0; i < text.size(); ++i) {
+        char c = text[i] == '/' ? '\\' : text[i];
+        // A UNC prefix is the one place a separator run is meaningful
+        if (c == '\\' && i > 1 && !out.empty() && out.back() == '\\') continue;
+        out.push_back(c);
+    }
+    while (out.size() > 1 && out.back() == '\\') out.pop_back();
+    return out;
+}
+
+// file_scan_path (0x004CF800) lowercases each name it finds, cuts it at its FIRST dot and takes the
+// file only if the slot's extension list contains that suffix. A registration outside a scan has to
+// decide the same way or it admits files a rescan would drop.
+static bool register_in_search_path(const std::string& dir, const std::string& name)
+{
+    const char* ext = std::strchr(name.c_str(), '.');
+    if (!ext) return false;
+
+    char path[1024];
+    for (int slot = 0; slot < editor_vfs_path_count; ++slot) {
+        if (slot != 0 && !vfs_paths[slot].path) continue;
+        const char* exts = vfs_paths[slot].extensions;
+        if (!exts || !std::strstr(exts, ext)) continue;
+        file_make_path(slot, nullptr, path);
+        path[sizeof(path) - 1] = '\0';
+        if (canonical_dir(path) != dir) continue;
+        file_add_loose_file(name.c_str(), slot);
+        xlog::info("Registered '{}' in search path '{}'", name,
+                   vfs_paths[slot].path ? vfs_paths[slot].path : "");
+        return true;
+    }
+    return false;
+}
+
+bool register_written_file(const char* full_path)
+{
+    if (!full_path || !full_path[0]) return false;
+
+    const char* bare = std::strrchr(full_path, '\\');
+    if (const char* slash = std::strrchr(full_path, '/'); slash && (!bare || slash > bare)) {
+        bare = slash;
+    }
+    if (!bare || !bare[1]) return false;
+
+    const std::string name = string_to_lower(bare + 1);
+    const std::string dir =
+        canonical_dir(std::string{full_path, static_cast<std::size_t>(bare - full_path)});
+
+    if (register_in_search_path(dir, name)) return true;
+    // The directory may have been made after the last scan, in which case it is not a search path
+    // yet and the reload is what turns it into one.
+    reload_custom_meshes();
+    return register_in_search_path(dir, name);
 }
 
 // ─── Mesh file disk lookup ─────────────────────────────────────────────────

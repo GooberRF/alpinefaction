@@ -138,6 +138,14 @@ FunHook<void(rf::Monitor&)> monitor_update_static_hook{
 };
 #endif
 
+FunHook<void(rf::Monitor&)> monitor_update_from_camera_hook{
+    0x00412820,
+    [](rf::Monitor& mon) {
+        FrametimeGuard frametime_guard;
+        monitor_update_from_camera_hook.call_target(mon);
+    },
+};
+
 CodeInjection monitor_update_from_camera_begin_render_to_texture{
     0x00412860,
     [](auto& regs) {
@@ -180,6 +188,9 @@ void monitor_do_patch()
     bm_create_user_bitmap_monitor_hook.install();
     monitor_update_off_hook.install();
     monitor_update_static_hook.install();
+
+    // Stop the monitor camera pass from advancing render-side state a second time
+    monitor_update_from_camera_hook.install();
 
     // Use render to texture approach for monitors
     monitor_update_from_camera_begin_render_to_texture.install();

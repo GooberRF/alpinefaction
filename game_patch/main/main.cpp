@@ -53,7 +53,10 @@
 #include "../misc/player.h"
 #include "../misc/waypoints.h"
 #include "../misc/level.h"
+#include "../misc/alpine_terrain_decorations.h"
+#include "../graphics/af_lightmap.h"
 #include "../object/alpine_corona.h"
+#include "../object/alpine_rope.h"
 #include "../input/input.h"
 #include "../input/gamepad.h"
 #include "../rf/gr/gr.h"
@@ -175,6 +178,8 @@ FunHook<int()> rf_do_frame_hook{
         hud_pit_queue_auto_spectate();  // client-side Pit auto-spectate
         gungame_client_do_frame();      // client-side Gun Game level-up notification watcher
         alpine_mesh_do_frame();
+        alpine_rope_do_frame();
+        item_do_frame();
         atx_do_frame();
         fflink::do_frame();
         int result = rf_do_frame_hook.call_target();
@@ -197,6 +202,8 @@ CodeInjection after_level_render_hook{
         experimental_render_in_game();
 #endif
         weather_render();
+        alpine_rope_render();
+        alpine_terrain_decorations_render_legacy();
         crits_client_render();
         debug_render();
         waypoints_render_debug();
@@ -292,6 +299,7 @@ FunHook<int(rf::String&, rf::String&, char*)> level_load_hook{
         if (ret != 0)
             xlog::warn("Loading failed: {}", error);
         else {
+            af_lightmap_resolve_terrains();
             multi_spectate_level_init();
         }
         return ret;
@@ -328,6 +336,9 @@ FunHook<void(bool)> level_init_post_hook{
         // Create corona objects (clutter + glare pairs) now that geometry is loaded
         alpine_corona_create_all();
 
+        // Ropes resolve their target uids here, once every level object exists
+        alpine_rope_level_init();
+
         apply_maximum_fps(); // set maximum FPS based on game state
         process_queued_spawn_points_from_items();
         populate_world_hud_sprite_events();
@@ -343,8 +354,10 @@ FunHook<void(bool)> level_init_post_hook{
         }
         apply_geoable_flags();
         apply_breakable_materials();
+        destruction_level_init_post();
 
         if (!rf::is_dedicated_server && !is_headless_mode()) {
+            alpine_terrain_decorations_level_init();
             explosion_flash_lights_level_init();
             evaluate_fullbright_meshes();
             set_levelmod_autotexture_ppm();
@@ -610,6 +623,7 @@ extern "C" DWORD __declspec(dllexport) Init([[maybe_unused]] void* unused)
     multi_spectate_appy_patch();
     high_fps_init();
     object_do_patch();
+    alpine_rope_apply_patch();
     misc_init();
     server_init();
     dedi_cfg_init();

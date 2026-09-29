@@ -299,6 +299,10 @@ void on_clutter_destroyed(rf::Clutter* clutter, int killer_handle, int weapon_ty
 void on_detail_brush_destroyed(uint8_t material, int room_uid, int killer_handle,
                                int weapon_type, int damage_type, const rf::Vector3& pos);
 
+// The text `sv_afstats_events_status` prints, as one newline-joined string with no
+// trailing newline, so the rcon handler can return it to the caller.
+std::string build_afstats_events_status_output();
+
 // Register console commands. Called from fflink::do_patch().
 void do_patch();
 

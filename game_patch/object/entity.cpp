@@ -7,6 +7,7 @@
 #include <cstring>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 #include <xlog/xlog.h>
 #include "../misc/achievements.h"
@@ -879,6 +880,26 @@ CodeInjection clear_stale_movement_input_injection{
     },
 };
 
+CodeInjection entity_set_next_state_anim_guard{
+    0x0042A5BC,
+    [](auto& regs) {
+        rf::Entity* ep = regs.ecx;
+        const int state = regs.edx;
+        const bool blending = ep->total_transition_time != 0.0f;
+        if (state == (blending ? ep->next_state_anim : ep->current_state_anim)) {
+            regs.eip = 0x0042A64E; // already there, or already heading there
+        }
+        else if (blending && state == ep->current_state_anim) {
+            const float transition_time = *reinterpret_cast<float*>(regs.esp + 0xC);
+            const float frac = ep->elapsed_transition_time / ep->total_transition_time;
+            std::swap(ep->current_state_anim, ep->next_state_anim);
+            ep->total_transition_time = transition_time;
+            ep->elapsed_transition_time = (1.0f - frac) * transition_time;
+            regs.eip = 0x0042A64E;
+        }
+    },
+};
+
 void entity_do_patch()
 {
     //player_create_entity_patch.install(); // force team skin experiment
@@ -890,6 +911,9 @@ void entity_do_patch()
     stuck_to_ground_when_jumping_fix.install();
     stuck_to_ground_when_using_jump_pad_fix.install();
     stuck_to_ground_fix.install();
+
+    // Ignore redundant state anim requests and reverse in-flight crossfades instead of restarting them
+    entity_set_next_state_anim_guard.install();
 
     // Fix water deceleration on high FPS
     AsmWriter(0x0049D816).nop(5);

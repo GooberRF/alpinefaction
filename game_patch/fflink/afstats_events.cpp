@@ -90,13 +90,21 @@ constexpr int64_t k_ping_sample_interval_ms = 10000;
 constexpr auto k_player_pings_interval = std::chrono::seconds(5);
 
 constexpr unsigned long k_connect_timeout_ms = 3000;
+constexpr unsigned long k_send_timeout_ms = 5000;
 constexpr unsigned long k_receive_timeout_ms = 5000;
 
 // The shutdown path gets its own short timeouts so one unreachable host cannot hold
 // the process open past the ~2s shutdown wall: a single unreachable attempt stays
-// under the deadline, and the flush breaks on the first failure.
+// under the deadline, and the flush breaks on the first failure. That bound holds only
+// because do_one_post caps WinINet's connect retries at 1; the default of 5 would
+// multiply every connect timeout below by five.
 constexpr unsigned long k_shutdown_connect_timeout_ms = 500;
 constexpr unsigned long k_shutdown_receive_timeout_ms = 1000;
+
+// How long an attempt may sit in flight before the worker is declared hung. Sits well
+// above the worst legitimately-bounded attempt (one connect retry plus the timeouts
+// above), so only a WinINet call that blew past its own timeouts can trip it.
+constexpr auto k_in_flight_watchdog = std::chrono::seconds(60);
 
 constexpr size_t k_max_name_len = 32;
 
@@ -711,12 +719,16 @@ struct SendJob
     std::string body;
     uint32_t batch = 0;
     uint32_t generation = 0;
+    // Which worker was live when the job was handed over; `generation` above is the
+    // session's, and the two move independently.
+    uint32_t worker_generation = 0;
 };
 
 struct SendResult
 {
     uint32_t batch = 0;
     uint32_t generation = 0;
+    uint32_t worker_generation = 0;
     int status = 0;
     int retry_after_s = 0;
     bool network_error = false;
@@ -1645,12 +1657,27 @@ SendResult do_one_post(const SendJob& job, unsigned long connect_timeout_ms, uns
     SendResult out;
     out.batch = job.batch;
     out.generation = job.generation;
+    out.worker_generation = job.worker_generation;
 
     std::string response;
     try {
         HttpSession session(k_user_agent);
         session.set_connect_timeout(connect_timeout_ms);
+        session.set_send_timeout(k_send_timeout_ms);
         session.set_receive_timeout(receive_timeout_ms);
+        try {
+            session.set_connect_retries(1);
+        }
+        catch (const std::exception& e) {
+            // Todo: confirm if Wine's wininet implements this option.
+            static bool warned = false;
+            if (!warned) {
+                warned = true;
+                xlog::warn("[afstats-ev] could not cap WinINet connect retries ({}); attempts may "
+                           "take up to five times the connect timeout",
+                           e.what());
+            }
+        }
 
         HttpRequest req(k_events_url, "POST", session);
         req.set_content_type("application/json");
@@ -1754,12 +1781,14 @@ void worker_main(uint32_t my_generation)
         catch (const std::exception& e) {
             result.batch = job.batch;
             result.generation = job.generation;
+            result.worker_generation = job.worker_generation;
             result.network_error = true;
             result.detail = std::string{"sender thread error: "} + e.what();
         }
         catch (...) {
             result.batch = job.batch;
             result.generation = job.generation;
+            result.worker_generation = job.worker_generation;
             result.network_error = true;
             result.detail = "sender thread error: unknown exception";
         }
@@ -1847,11 +1876,34 @@ void dispatch(PendingBatch& batch, const std::string& gssk)
 
     {
         std::lock_guard lock(g_worker_mutex);
-        g_worker_job = SendJob{std::move(body), batch.batch, g_session_generation};
+        g_worker_job = SendJob{std::move(body), batch.batch, g_session_generation, g_worker_generation};
     }
     g_worker_cv.notify_one();
     g_send_in_flight = true;
     g_last_post_at = std::chrono::steady_clock::now();
+}
+
+// Gives up on an attempt the worker never came back from, so the stream can move again.
+void abandon_in_flight_attempt(const char* why)
+{
+    const auto stuck_s = std::chrono::duration_cast<std::chrono::seconds>(
+                             std::chrono::steady_clock::now() - g_last_post_at)
+                             .count();
+    xlog::warn("[afstats-ev] abandoning the in-flight attempt for batch {} after {}s ({})",
+               g_pending.empty() ? 0u : g_pending.front().batch, stuck_s, why);
+
+    {
+        std::lock_guard lock(g_worker_mutex);
+        // Not g_worker_stop: that flag belongs to shutdown and would retire the
+        // replacement worker along with the abandoned one.
+        ++g_worker_generation;
+        g_worker_job.reset();
+    }
+    // Retires a predecessor parked on the CV; one stuck inside WinINet retires when its
+    // call finally returns and it loops back to the wait.
+    g_worker_cv.notify_all();
+    g_worker_started = false;
+    g_send_in_flight = false;
 }
 
 void build_batch_from_queue()
@@ -1933,6 +1985,18 @@ void on_send_result(SendResult result)
     // A completion from a previous session's worker: the module was
     // reset out from under it, so it must not touch the new session's in-flight state.
     if (!g_session_started || result.generation != g_session_generation) {
+        return;
+    }
+
+    // A completion from an attempt the watchdog (or an operator reset) already gave up on.
+    bool abandoned = false;
+    {
+        std::lock_guard lock(g_worker_mutex);
+        abandoned = result.worker_generation != g_worker_generation;
+    }
+    if (abandoned) {
+        xlog::warn("[afstats-ev] discarding a result from an abandoned attempt for batch {}",
+                   result.batch);
         return;
     }
 
@@ -2317,35 +2381,47 @@ void emit_game_end(GameEndType end_type)
 ConsoleCommand2 sv_afstats_events_status_cmd{
     "sv_afstats_events_status",
     []() {
-        if (!g_session_started) {
-            rf::console::print("AF stats event stream: not started ({})",
-                               fflink::afstats_server_enabled() ? "no events yet" : "stats not enabled");
-            return;
-        }
-        rf::console::print("AF stats event stream: session {}", g_session_id);
-        rf::console::print("  Game: {} ({})", g_game, g_game_open ? "open" : "closed");
-        rf::console::print("  Events emitted: {} (dropped {})", g_events_emitted, g_events_dropped);
-        rf::console::print("  Queue depth: {} / {}", g_queue.size(), k_max_queued_events);
-        rf::console::print("  Batches acked: {} (next batch number {})", g_batches_acked, g_next_batch);
-        if (g_pending.empty()) {
-            rf::console::print("  In flight: none");
-        }
-        else {
-            const auto& front = g_pending.front();
-            rf::console::print("  In flight: batch {} ({} events, {} attempts){}", front.batch,
-                               front.events.size(), front.attempts,
-                               g_pending.size() > 1
-                                   ? std::format(", {} more queued", g_pending.size() - 1)
-                                   : std::string{});
-        }
-        rf::console::print("  Last response: {}", g_last_response);
-        if (g_paused_401) {
-            rf::console::print("  Paused: waiting for a new session key after a 401");
-        }
-        const auto pulse_s = std::chrono::duration_cast<std::chrono::seconds>(g_pulse_interval).count();
-        rf::console::print("  Pulse: {}s, trace {}", pulse_s, g_trace ? "on" : "off");
+        rf::console::print("{}", build_afstats_events_status_output());
     },
     "Show the status of the FactionFiles stats event stream.",
+};
+
+ConsoleCommand2 sv_afstats_events_reset_cmd{
+    "sv_afstats_events_reset",
+    []() {
+        if (!g_session_started) {
+            rf::console::print("AF stats event stream is not active.");
+            return;
+        }
+
+        const bool was_in_flight = g_send_in_flight;
+        const bool was_paused = g_paused_401;
+        const auto old_pulse = g_pulse_interval;
+
+        if (was_in_flight) {
+            abandon_in_flight_attempt("operator reset");
+        }
+        g_paused_401 = false;
+        g_paused_gssk.clear();
+        g_pulse_interval = k_pulse_interval;
+        g_next_pulse = std::chrono::steady_clock::now();
+
+        rf::console::print("AF stats event stream reset; nothing queued was discarded.");
+        if (was_in_flight) {
+            rf::console::print("  Abandoned the in-flight attempt; the batch will be sent again.");
+        }
+        if (was_paused) {
+            rf::console::print("  Cleared the pause left by a 401.");
+        }
+        if (old_pulse != k_pulse_interval) {
+            rf::console::print("  Pulse restored to {}s (was {}s).",
+                               std::chrono::duration_cast<std::chrono::seconds>(k_pulse_interval).count(),
+                               std::chrono::duration_cast<std::chrono::seconds>(old_pulse).count());
+        }
+        rf::console::print("  {} events queued, {} batches pending; sending on the next frame.",
+                           g_queue.size(), g_pending.size());
+    },
+    "Clear a stuck send and resume the FactionFiles stats event stream without discarding queued events.",
 };
 
 ConsoleCommand2 sv_afstats_trace_cmd{
@@ -3157,9 +3233,57 @@ std::optional<GameIdentity> current_reporting_game()
     return GameIdentity{g_session_id, g_game};
 }
 
+// Carries no key material: the session id is a server-minted stream identifier, and
+// `Last response` is the already-sanitized endpoint detail. Lines are newline-joined with
+// no trailing newline, because both consumers (console output, rcon feedback) add their own.
+std::string build_afstats_events_status_output()
+{
+    std::string output;
+    auto line = std::back_inserter(output);
+
+    if (!g_session_started) {
+        std::format_to(line, "AF stats event stream: not started ({})",
+                       fflink::afstats_server_enabled() ? "no events yet" : "stats not enabled");
+        return output;
+    }
+
+    std::format_to(line, "AF stats event stream: session {}\n", g_session_id);
+    std::format_to(line, "  Game: {} ({})\n", g_game, g_game_open ? "open" : "closed");
+    std::format_to(line, "  Events emitted: {} (dropped {})\n", g_events_emitted, g_events_dropped);
+    std::format_to(line, "  Queue depth: {} / {}\n", g_queue.size(), k_max_queued_events);
+    std::format_to(line, "  Batches acked: {} (next batch number {})\n", g_batches_acked, g_next_batch);
+    if (g_pending.empty()) {
+        output += "  In flight: none\n";
+    }
+    else {
+        const auto& front = g_pending.front();
+        // An attempt whose "sent Ns ago" keeps climbing while the attempt count does
+        // not is the signature of a hung sender thread.
+        std::string sent_ago;
+        if (g_send_in_flight) {
+            const auto ago = std::chrono::duration_cast<std::chrono::seconds>(
+                                 std::chrono::steady_clock::now() - g_last_post_at)
+                                 .count();
+            sent_ago = std::format(", sent {}s ago", ago);
+        }
+        std::format_to(line, "  In flight: batch {} ({} events, {} attempts{}){}\n", front.batch,
+                       front.events.size(), front.attempts, sent_ago,
+                       g_pending.size() > 1 ? std::format(", {} more queued", g_pending.size() - 1)
+                                            : std::string{});
+    }
+    std::format_to(line, "  Last response: {}\n", g_last_response);
+    if (g_paused_401) {
+        output += "  Paused: waiting for a new session key after a 401\n";
+    }
+    const auto pulse_s = std::chrono::duration_cast<std::chrono::seconds>(g_pulse_interval).count();
+    std::format_to(line, "  Pulse: {}s, trace {}", pulse_s, g_trace ? "on" : "off");
+    return output;
+}
+
 void do_patch()
 {
     sv_afstats_events_status_cmd.register_cmd();
+    sv_afstats_events_reset_cmd.register_cmd();
     sv_afstats_trace_cmd.register_cmd();
 }
 
@@ -3240,7 +3364,13 @@ void do_frame_impl()
     }
 
     if (g_send_in_flight) {
-        return;
+        // Sync WinINet can block past its own timeouts (WPAD/proxy, DNS, TLS, Wine). The
+        // worker always reports a result, so an attempt still outstanding this long means
+        // the thread is wedged and nothing else will ever clear the flag.
+        if (now - g_last_post_at <= k_in_flight_watchdog) {
+            return;
+        }
+        abandon_in_flight_attempt("the sender thread stopped responding");
     }
     if (!pulse_due) {
         return;

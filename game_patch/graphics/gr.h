@@ -2,6 +2,7 @@
 
 #include "../rf/bmpman.h"
 #include "../rf/gr/gr.h"
+#include "../rf/os/frametime.h"
 #include "../rf/os/string.h"
 
 void gr_apply_patch();
@@ -33,10 +34,22 @@ struct SunLightState
 };
 SunLightState gr_get_sun_state();
 float gr_sun_get_mesh_scale(const float* ambient);
+// The D3D11 mesh ambient for a custom ambient (a lightmap colour 0..1): mostly the level ambient, tinted by it.
+void gr_mesh_blend_ambient(const float (&lightmap)[3], float (&out)[3]);
 
 bool gr_is_antialiasing_err();
 bool gr_supports_sample_count(uint32_t sample_count);
 void gr_flush_frame_buffers();
+
+// Zeroes rf::frametime for an extra world render.
+struct FrametimeGuard
+{
+    const float saved = rf::frametime;
+    FrametimeGuard() { rf::frametime = 0.0f; }
+    ~FrametimeGuard() { rf::frametime = saved; }
+    FrametimeGuard(const FrametimeGuard&) = delete;
+    FrametimeGuard& operator=(const FrametimeGuard&) = delete;
+};
 
 inline constexpr rf::gr::Mode overdraw_colorized_3d_bitmap{
         rf::gr::TEXTURE_SOURCE_WRAP,

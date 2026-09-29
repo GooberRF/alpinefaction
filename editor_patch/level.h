@@ -9,6 +9,8 @@
 #include <string>
 #include <algorithm>
 #include <patch_common/MemUtils.h>
+#include <xlog/xlog.h>
+#include <common/lightmap/alpine_lightmap.h>
 #include "vtypes.h"
 #include "mfc_types.h"
 #include "resources.h"
@@ -17,6 +19,8 @@ void DestroyDedMesh(DedMesh* mesh);
 void DestroyDedCorona(DedCorona* corona);
 void DestroyDedWeatherRegion(DedWeatherRegion* weather_region);
 void DestroyDedProjectionCamera(DedProjectionCamera* camera);
+void DestroyDedRopeEmitter(DedRopeEmitter* rope);
+void DestroyDedTerrain(DedTerrain* terrain);
 
 constexpr int alpine_props_chunk_id = 0x0AFBA5ED;
 constexpr int alpine_mesh_chunk_id = 0x0AFBAE01;
@@ -26,18 +30,34 @@ constexpr int alpine_bag_chunk_id = 0x0AFBAE04;
 constexpr int alpine_brush_group_chunk_id = 0x0AFBAE05; // brush metadata in .rfg group files only
 constexpr int alpine_weather_region_chunk_id = 0x0AFBAE06;
 constexpr int alpine_projection_camera_chunk_id = 0x0AFBAE08;
+constexpr int alpine_rope_emitter_chunk_id = 0x0AFBAE0A;
+constexpr int alpine_terrain_chunk_id = static_cast<int>(alpine_terrain::chunk_id); // 0x0AFBAE0B
+constexpr int alpine_lightmaps_chunk_id = static_cast<int>(alpine_lightmap::chunk_id); // 0x0AFBAE09
 
-// Glacier saves new RFL chunks for its own purposes (metadata). Alpine Faction can
-// neither read nor parse these, but AlpineEditor retains them verbatim on load and
-// re-emits them on save so the originating editor can still read the file properly.
-constexpr uint32_t glacier_chunk_id_mask = 0xFFF00000u;
-constexpr uint32_t glacier_chunk_id_prefix = 0x6ED00000u;
-inline bool is_glacier_chunk_id(uint32_t id)
+// Other editors save RFL chunks of their own that Alpine Faction can neither read nor parse.
+// AlpineEditor retains them verbatim on load and re-emits them on save, so the originating
+// editor can still read the file properly.
+constexpr uint32_t foreign_chunk_id_mask = 0xFFF00000u;
+struct ForeignRflChunkSource {
+    uint32_t prefix;
+    const char* editor;
+};
+constexpr ForeignRflChunkSource foreign_chunk_sources[] = {
+    {0x6ED00000u, "Glacier"},
+    {0x5ED00000u, "RED+"},
+};
+// Name of the editor that owns this chunk id, or nullptr for anything that is not a foreign chunk.
+inline const char* foreign_chunk_editor(uint32_t id)
 {
-    return (id & glacier_chunk_id_mask) == glacier_chunk_id_prefix;
+    for (const auto& src : foreign_chunk_sources) {
+        if ((id & foreign_chunk_id_mask) == src.prefix) {
+            return src.editor;
+        }
+    }
+    return nullptr;
 }
 
-// A retained RFL section captured verbatim from Glacier.
+// A retained RFL section captured verbatim from another editor.
 struct RetainedRflChunk {
     uint32_t id;
     std::vector<uint8_t> data;
@@ -59,6 +79,7 @@ struct GFace;
 struct GSolid;
 struct GBBox;
 struct DecalPoly;
+struct TextureGroup;
 
 // Shared vertex position data. Multiple GFaceVertex entries reference the same GVertex.
 struct GVertex
@@ -109,7 +130,8 @@ struct GRoom
     Vector3 bbox_max;            // +0x14  serialized
     int room_index;              // +0x20  serialized (used in portal/detail-room sections)
     int uid;                     // +0x24  serialized (first field written per room)
-    char _face_list[8];          // +0x28  VList<GFace>: head ptr + count (faces serialized separately)
+    GFace* face_list_head;       // +0x28  VList<GFace, FACE_LIST_ROOM>: head pointer (faces serialized separately)
+    int face_list_count;         // +0x2C  VList<GFace, FACE_LIST_ROOM>: element count
     VArray<void*> portals;       // +0x30  VArray<GPortal*> (serialized separately)
     void* bbox_ptr;              // +0x3C  runtime pointer (GBBox*)
     bool is_blocked;             // +0x40  not serialized in room loop
@@ -173,6 +195,13 @@ struct GRoom
     {
         AddrCaller{0x00486a10}.this_call(this, solid, detail);
     }
+
+    // FUN_00485850: rebuild the room's face bbox tree (GRoom+0x3C); the last step of every
+    // from-scratch solid build (RED 0x004a5020)
+    void rebuild_bbox()
+    {
+        AddrCaller{0x00485850}.this_call(this);
+    }
 };
 static_assert(sizeof(GRoom) == 0x1CC);
 static_assert(offsetof(GRoom, is_detail) == 0x00);
@@ -180,7 +209,8 @@ static_assert(offsetof(GRoom, bbox_min) == 0x08);
 static_assert(offsetof(GRoom, bbox_max) == 0x14);
 static_assert(offsetof(GRoom, room_index) == 0x20);
 static_assert(offsetof(GRoom, uid) == 0x24);
-static_assert(offsetof(GRoom, _face_list) == 0x28);
+static_assert(offsetof(GRoom, face_list_head) == 0x28);
+static_assert(offsetof(GRoom, face_list_count) == 0x2C);
 static_assert(offsetof(GRoom, is_cold) == 0x41);
 static_assert(offsetof(GRoom, ambient_light_defined) == 0x45);
 static_assert(offsetof(GRoom, ambient_light) == 0x46);
@@ -189,6 +219,40 @@ static_assert(offsetof(GRoom, has_alpha) == 0x6A);
 static_assert(offsetof(GRoom, life) == 0x94);
 static_assert(offsetof(GRoom, liquid_type) == 0x180);
 static_assert(offsetof(GRoom, contains_liquid) == 0x184);
+
+// Attribute block a new GFace is stamped with: FUN_0048a660 copies these 0x18 bytes straight to
+// GFace+0x28. init() applies the editor's own defaults (FUN_00419f90) — flags 0x100, no texture,
+// face_id -1; Build Geometry's phase 1 (FUN_004399b0) assigns the real face ids.
+struct GFaceAttributes
+{
+    int flags;
+    int group_id;
+    int bitmap_id;
+    short portal_id;
+    short surface_index;
+    int face_id;
+    int smoothing_groups;
+
+    void init()
+    {
+        AddrCaller{0x00419f90}.this_call(this);
+    }
+};
+static_assert(sizeof(GFaceAttributes) == 0x18);
+
+// GFace::flags bits.
+enum GFaceFlags
+{
+    FACE_SHOW_SKY = 0x1,
+    FACE_MIRRORED = 0x2,
+    FACE_LIQUID = 0x4,
+    FACE_IS_DETAIL = 0x8,
+    FACE_SCROLL_TEXTURE = 0x10,
+    FACE_FULL_BRIGHT = 0x20,
+    FACE_SEE_THRU = 0x40,
+    FACE_HAS_HOLES = 0x80,
+    FACE_INVISIBLE = 0x2000,
+};
 
 // Editor-side GFace layout (0x60 bytes, matches stock RED.exe / RF.exe GFace)
 // Full game-side definition: game_patch/rf/geometry.h
@@ -228,10 +292,18 @@ struct GFace
         AddrCaller{0x0048a700}.c_call(face);
     }
 
-    // FUN_00484230: generate next unique face/brush UID (delegates to ::generate_uid in vtypes.h)
-    static int generate_uid()
+    // FUN_0048abd0: pool-allocate a GFaceVertex and append it to the circular edge loop
+    GFaceVertex* add_vertex(GVertex* vertex, float u, float v, float lm_u, float lm_v)
     {
-        return ::generate_uid();
+        return AddrCaller{0x0048abd0}.this_call<GFaceVertex*>(this, vertex, u, v, lm_u, lm_v);
+    }
+
+    // FUN_0048a8b0 (RET 8, so both stack arguments are passed): with a null plane it derives the
+    // plane from the edge loop winding by Newell's method and recomputes the face AABB. Returns
+    // false for a face with fewer than three vertices or zero area.
+    bool compute_plane_and_bbox()
+    {
+        return AddrCaller{0x0048a8b0}.this_call<bool>(this, 0, 0);
     }
 };
 static_assert(sizeof(GFace) == 0x60);
@@ -244,6 +316,112 @@ static_assert(offsetof(GFace, face_id) == 0x38);
 static_assert(offsetof(GFace, edge_loop) == 0x40);
 static_assert(offsetof(GFace, which_room) == 0x44);
 static_assert(offsetof(GFace, next_solid) == 0x54);
+static_assert(offsetof(GFace, next_bbox) == 0x58);
+static_assert(offsetof(GFace, next_room) == 0x5C);
+
+// Editor-side GLightmap (matches stock RED.exe / RF.exe GLightmap), one lightmap page
+// Full game-side definition: game_patch/rf/geometry.h
+struct GLightmap
+{
+    std::uint8_t* alpha;    // +0x00, w*h bytes, null unless built with alpha
+    int w;                  // +0x04
+    int h;                  // +0x08
+    std::uint8_t* pixels;   // +0x0C  RGB8, w * h * 3 bytes
+    int bm_handle;          // +0x10
+    int index;              // +0x14
+};
+static_assert(sizeof(GLightmap) == 0x18);
+static_assert(offsetof(GLightmap, w) == 0x04);
+static_assert(offsetof(GLightmap, h) == 0x08);
+static_assert(offsetof(GLightmap, pixels) == 0x0C);
+static_assert(offsetof(GLightmap, bm_handle) == 0x10);
+static_assert(offsetof(GLightmap, index) == 0x14);
+
+// The level's lightmap pages, written as the 0x1200 section by FUN_00430bf0.
+static auto& lightmap_pages = addr_as_ref<VArray<GLightmap*>>(0x01128678);
+
+// GSurface::flags: the work FUN_004ac470 does on the surface, all cleared when it returns unless the surface
+// has zero width or height.
+enum GSurfaceFlags
+{
+    SURFACE_DYNAMIC_LIGHTS = 0x1, // the lightmap plus the dynamic lights reaching it, into its bitmap
+    SURFACE_SHADE = 0x2,          // shade from the static lights, every shadow casting light masked
+    SURFACE_SHADE_RUNTIME = 0x4,  // likewise, but only SHADOWCAST_RUNTIME lights masked
+    SURFACE_UPLOAD = 0x8,         // the lightmap into its bitmap
+};
+
+// Editor-side GSurface partial layout (matches stock RED.exe / RF.exe GSurface), a face's lightmap
+// fragment. Full game-side definition: game_patch/rf/geometry.h
+struct GSurface
+{
+    int index; // +0x00  the GFace::surface_index of its faces
+    char _pad_04[0x08 - 0x04];
+    std::uint8_t flags;     // +0x08  GSurfaceFlags
+    char _pad_09;
+    std::uint8_t fullbright; // +0x0A  nonzero: FUN_004ac470 never shades it
+    char _pad_0B;
+    GLightmap* lightmap;    // +0x0C
+    int xstart;             // +0x10
+    int ystart;             // +0x14
+    int width;              // +0x18
+    int height;             // +0x1C
+    char _pad_20[0x34 - 0x20];
+    float bbox_mn[3];       // +0x34
+    float bbox_mx[3];       // +0x40
+    float uv_scale_x;       // +0x4C
+    float uv_scale_y;       // +0x50
+    float uv_add_x;         // +0x54
+    float uv_add_y;         // +0x58
+    int dropped_coefficient; // +0x5C
+    int u_coefficient;      // +0x60  axis of bbox_mn/bbox_mx the lightmap u follows
+    int v_coefficient;      // +0x64
+    int room_index;         // +0x68  index into GSolid::all_rooms, -1 for none
+};
+static_assert(offsetof(GSurface, index) == 0x00);
+static_assert(offsetof(GSurface, flags) == 0x08);
+static_assert(offsetof(GSurface, fullbright) == 0x0A);
+static_assert(offsetof(GSurface, lightmap) == 0x0C);
+static_assert(offsetof(GSurface, xstart) == 0x10);
+static_assert(offsetof(GSurface, ystart) == 0x14);
+static_assert(offsetof(GSurface, width) == 0x18);
+static_assert(offsetof(GSurface, height) == 0x1C);
+static_assert(offsetof(GSurface, bbox_mn) == 0x34);
+static_assert(offsetof(GSurface, bbox_mx) == 0x40);
+static_assert(offsetof(GSurface, uv_scale_x) == 0x4C);
+static_assert(offsetof(GSurface, uv_scale_y) == 0x50);
+static_assert(offsetof(GSurface, uv_add_x) == 0x54);
+static_assert(offsetof(GSurface, uv_add_y) == 0x58);
+static_assert(offsetof(GSurface, dropped_coefficient) == 0x5C);
+static_assert(offsetof(GSurface, u_coefficient) == 0x60);
+static_assert(offsetof(GSurface, v_coefficient) == 0x64);
+static_assert(offsetof(GSurface, room_index) == 0x68);
+
+// FUN_004ac470 (thiscall on the surface, RET 8): does the GSurfaceFlags work the surface carries.
+// `mode` is the shadow mode, 0 for none.
+static auto& lightmap_shade_surface =
+    addr_as_ref<void __fastcall(GSurface* surface, int edx, void* solid, int mode)>(0x004ac470);
+
+// One smoothed surface of the blend pass: FUN_004aabf0 builds the array (ctor FUN_004ab980) and
+// hands it to FUN_004aae80.
+struct LightmapBlendEntry
+{
+    GSurface* surface;    // +0x00
+    VArray<GFace*> faces; // +0x04  the faces whose surface_index is surface->index
+    char _pad_10[0x1C - 0x10];
+};
+static_assert(sizeof(LightmapBlendEntry) == 0x1C);
+static_assert(offsetof(LightmapBlendEntry, faces) == 0x04);
+
+// Scrolling texture record. In brush geometry it is keyed by the owning face's face_id
+// (Face Properties FUN_00402d60, Build Geometry phase 1 in FUN_004399b0).
+struct GTextureMover
+{
+    int face_id;
+    float u_pan_speed;
+    float v_pan_speed;
+    VArray<GFace*> faces;
+};
+static_assert(sizeof(GTextureMover) == 0x18);
 
 // Editor-side GSolid partial layout (matches stock RED.exe / RF.exe GSolid)
 // Full game-side definition with ALPINE_FACTION extensions: game_patch/rf/geometry.h
@@ -261,9 +439,12 @@ struct GSolid
     VArray<GVertex*> vertices;   // +0x78
     VArray<GRoom*> children;     // +0x84
     VArray<GRoom*> all_rooms;    // +0x90
-    char _pad_9C[0xCC - 0x9C];  // +0x9C  unknown fields
+    char _pad_9C[0xC0 - 0x9C];   // +0x9C  unknown fields
+    VArray<GSurface*> surfaces;  // +0xC0  lightmap fragments
     VArray<GVertex*> vertex_selection; // +0xCC  selected vertices in vertex mode
     VArray<GFace*> face_selection;  // +0xD8  selected faces in face mode
+    char _pad_E4[0x2F4 - 0xE4];  // +0xE4  unknown fields
+    VArray<GTextureMover*> texture_movers; // +0x2F4
 
     // FUN_00486bd0: remove face from solid's face linked list (thiscall on face_list at +0x70)
     void remove_face(GFace* face)
@@ -276,11 +457,47 @@ struct GSolid
     {
         AddrCaller{0x0043df30}.this_call(&vertices, vertex);
     }
+
+    // FUN_00496120: allocate a GVertex at pos and append it to the solid's vertex array
+    GVertex* add_vertex(const Vector3* pos)
+    {
+        return AddrCaller{0x00496120}.this_call<GVertex*>(this, pos);
+    }
+
+    // FUN_00495f50: pool-allocate a GFace stamped with attrs and link it onto the solid's face list
+    GFace* create_face(const GFaceAttributes* attrs)
+    {
+        return AddrCaller{0x00495f50}.this_call<GFace*>(this, attrs);
+    }
+
+    // FUN_00495e40: recompute bbox_min/bbox_max from the vertex array, pad them by the geometry
+    // epsilon and fit the bounding sphere
+    void compute_bbox_sphere()
+    {
+        AddrCaller{0x00495e40}.this_call(this);
+    }
+
+    // FUN_00495500 on a 0x378 byte allocation, as every from-scratch solid in RED does
+    static GSolid* create()
+    {
+        auto* solid = static_cast<GSolid*>(AddrCaller{0x0052ee74}.c_call<void*>(0x378));
+        if (!solid) return nullptr;
+        return AddrCaller{0x00495500}.this_call<GSolid*>(solid);
+    }
+
+    // FUN_00419ae0(1): scalar deleting destructor — releases rooms, faces and vertices, then frees
+    static void destroy(GSolid* solid)
+    {
+        AddrCaller{0x00419ae0}.this_call(solid, 1);
+    }
 };
 static_assert(offsetof(GSolid, face_list_head) == 0x70);
+static_assert(offsetof(GSolid, face_list_count) == 0x74);
 static_assert(offsetof(GSolid, all_rooms) == 0x90);
+static_assert(offsetof(GSolid, surfaces) == 0xC0);
 static_assert(offsetof(GSolid, vertex_selection) == 0xCC);
 static_assert(offsetof(GSolid, face_selection) == 0xD8);
+static_assert(offsetof(GSolid, texture_movers) == 0x2F4);
 
 // Brush state enum (BrushNode::state at +0x48)
 // Determined via byte-pattern searches and cross-referencing comparison/assignment sites:
@@ -343,6 +560,22 @@ struct BrushNode
     BrushState state;            // +0x48  brush state (0=normal, 2=hidden, 3=selected)
     BrushNode* next;             // +0x4C  next node in circular doubly-linked list
     BrushNode* prev;             // +0x50  prev node in circular doubly-linked list
+
+    // FUN_0044d5a0 on a 0x54 byte allocation, the same pairing the .rfl brush reader uses at
+    // 0x004308e2. Leaves uid -1, pos zero, identity orient, null geometry, brush_type AIR,
+    // life -1, state NORMAL.
+    static BrushNode* create()
+    {
+        auto* brush = static_cast<BrushNode*>(AddrCaller{0x0052ee74}.c_call<void*>(sizeof(BrushNode)));
+        if (!brush) return nullptr;
+        return AddrCaller{0x0044d5a0}.this_call<BrushNode*>(brush);
+    }
+
+    // FUN_0044d8b0(1): scalar deleting destructor
+    static void destroy(BrushNode* brush)
+    {
+        AddrCaller{0x0044d8b0}.this_call(brush, 1);
+    }
 };
 static_assert(sizeof(BrushNode) == 0x54);
 static_assert(offsetof(BrushNode, vtable) == 0x00);
@@ -408,6 +641,10 @@ struct AlpineLevelProperties
     bool alpha_faces_occlude = false; // alpha textured faces block light; stock skips them entirely
     std::vector<int32_t> no_shadow_cast_brush_uids; // brushes whose faces never occlude a baked ray
     bool meshes_occlude = false; // alpine mesh objects cast baked shadows
+    uint8_t lightmap_density = 0; // texels per world unit for the alpine lightmap bake, 0 = default, density_off
+    bool d3d11_only_lightmaps = false; // skip writing the stock 0x1200 lightmaps section
+    bool stock_lightmaps_omitted = false; // load-time only: the file had no stock lightmaps section
+    uint8_t lightmap_compression = 0; // alpine_lightmap::CompressionMode
 
     // Alpine mesh objects (stored separately from stock object VArrays)
     std::vector<DedMesh*> mesh_objects;
@@ -427,7 +664,20 @@ struct AlpineLevelProperties
     // Alpine projection camera objects
     std::vector<DedProjectionCamera*> projection_camera_objects;
 
-    // Retained Glacier RFL sections (0x6ED-prefixed IDs).
+    // Alpine rope emitter objects
+    std::vector<DedRopeEmitter*> rope_emitter_objects;
+
+    // Alpine terrain objects
+    std::vector<DedTerrain*> terrain_objects;
+    // Not serialized: sorted uids of the compiled solid's rooms that hold terrain chunks, from the last
+    // Build Geometry or the loaded build mappings.
+    std::vector<int32_t> terrain_room_uids;
+    // Not serialized: sorted uids of other rooms holding only terrain chunk faces (a chunk split across
+    // rooms), from the last Build Geometry. Hidden like terrain_room_uids, but lit as ordinary faces:
+    // the game knows a chunk by its mapped room alone.
+    std::vector<int32_t> terrain_split_room_uids;
+
+    // Retained foreign-editor RFL sections
     std::vector<RetainedRflChunk> retained_chunks;
 
     static constexpr std::uint32_t current_alpine_chunk_version = 5u;
@@ -435,6 +685,22 @@ struct AlpineLevelProperties
     Vector3 sun_to_light_dir() const
     {
         return alpine_sun_to_light_dir(sun_yaw, sun_pitch);
+    }
+
+    // Calculate Lighting gives the surfaces alpine charts; D3D11-only lightmaps can only apply then.
+    bool surface_charts_enabled() const
+    {
+        return !legacy_lighting && lightmap_density != alpine_lightmap::density_off;
+    }
+
+    bool is_terrain_room(int32_t room_uid) const
+    {
+        return std::binary_search(terrain_room_uids.begin(), terrain_room_uids.end(), room_uid);
+    }
+
+    bool is_terrain_split_room(int32_t room_uid) const
+    {
+        return std::binary_search(terrain_split_room_uids.begin(), terrain_split_room_uids.end(), room_uid);
     }
 
     void SanitizeSunProperties()
@@ -502,6 +768,10 @@ struct AlpineLevelProperties
         alpha_faces_occlude = false;
         no_shadow_cast_brush_uids.clear();
         meshes_occlude = false;
+        lightmap_density = 0;
+        d3d11_only_lightmaps = false;
+        stock_lightmaps_omitted = false;
+        lightmap_compression = 0;
         for (auto* m : mesh_objects) {
             DestroyDedMesh(m);
         }
@@ -538,10 +808,22 @@ struct AlpineLevelProperties
         }
         projection_camera_objects.clear();
 
+        for (auto* r : rope_emitter_objects) {
+            DestroyDedRopeEmitter(r);
+        }
+        rope_emitter_objects.clear();
+
+        for (auto* t : terrain_objects) {
+            DestroyDedTerrain(t);
+        }
+        terrain_objects.clear();
+        terrain_room_uids.clear();
+        terrain_split_room_uids.clear();
+
         retained_chunks.clear();
     }
 
-    void Serialize(rf::File& file) const
+    void Serialize(rf::File& file, bool stock_lightmaps_suppressed) const
     {
         file.write<std::uint32_t>(current_alpine_chunk_version);
 
@@ -604,6 +886,11 @@ struct AlpineLevelProperties
             file.write<int32_t>(no_shadow_cast_brush_uids[i]);
         }
         file.write<std::uint8_t>(meshes_occlude ? 1u : 0u);
+        file.write<std::uint8_t>(lightmap_density);
+        file.write<std::uint8_t>(static_cast<std::uint8_t>(
+            (stock_lightmaps_suppressed ? alpine_lightmap::d3d11_only_stock_omitted : 0u) |
+            (d3d11_only_lightmaps ? alpine_lightmap::d3d11_only_setting : 0u)));
+        file.write<std::uint8_t>(lightmap_compression);
     }
 
     void Deserialize(rf::File& file, std::size_t chunk_len)
@@ -825,6 +1112,16 @@ struct AlpineLevelProperties
             meshes_occlude = (u8 != 0);
             xlog::debug("[AlpineLevelProps] enable_sun {} yaw {} pitch {} intensity {} no_shadow_cast {}",
                 enable_sun, sun_yaw, sun_pitch, sun_intensity, nsc_count);
+            if (!read_bytes(&lightmap_density, sizeof(lightmap_density)))
+                return;
+            if (!read_bytes(&u8, sizeof(u8)))
+                return;
+            d3d11_only_lightmaps = (u8 & alpine_lightmap::d3d11_only_setting) != 0;
+            stock_lightmaps_omitted = (u8 & alpine_lightmap::d3d11_only_stock_omitted) != 0;
+            if (!read_bytes(&lightmap_compression, sizeof(lightmap_compression)))
+                return;
+            lightmap_compression =
+                static_cast<std::uint8_t>(alpine_lightmap::compression_mode_from_wire(lightmap_compression));
         }
     }
 };
@@ -832,6 +1129,16 @@ struct AlpineLevelProperties
 enum class DedRoomEffectType : int
 {
     Liquid = 2,
+};
+
+enum class DedEditMode : int
+{
+    Brush = 0,
+    Face = 1,
+    Vertex = 2,
+    Texture = 3,
+    Object = 4,
+    Group = 5,
 };
 
 // Group entry struct (0x34 bytes) — element of CDedLevel::moving_groups
@@ -859,6 +1166,31 @@ static_assert(offsetof(GroupEntry, keyframes) == 0x1C);
 static_assert(offsetof(GroupEntry, name) == 0x20);
 static_assert(offsetof(GroupEntry, field_28) == 0x28);
 
+// Undo entry (0x34 bytes), created by FUN_0043ccf0(type)
+struct UndoEntry
+{
+    int type;                               // +0x00  4 = delete brushes, 7 = brush transform, 10 = modify snapshot, ...
+    VArray<DedObject*> objects;             // +0x04
+    VArray<BrushNode*> brushes;             // +0x10  type 10: live clones
+    VArray<BrushNode*> brushes_aux;         // +0x1C  type 10: originals, type 4: list predecessors
+    VArray<void*> raw_blocks;               // +0x28  operator-delete'd with the entry
+};
+static_assert(sizeof(UndoEntry) == 0x34);
+
+inline UndoEntry* undo_stack_top(const VArray<UndoEntry*>& stack)
+{
+    return stack.size > 0 ? stack.data_ptr[stack.size - 1] : nullptr;
+}
+
+// Build Geometry's progress dialog, CDedLevel::dialog_panels[build_dialog_panel_index]
+struct BuildProgressDialog
+{
+    char _pad_00[0x5C];     // +0x00
+    std::uint8_t cancelled; // +0x5C set by its Cancel button, read by GeoBuild_Driver
+};
+static_assert(offsetof(BuildProgressDialog, cancelled) == 0x5C);
+constexpr int build_dialog_panel_index = (0x4A4 - 0x444) / 4;
+
 struct CDedLevel
 {
     // --- vtable + string properties ---
@@ -869,7 +1201,7 @@ struct CDedLevel
     VString unk_str_1C;                           // +0x1C (VString, 8 bytes)
     VString geomod_texture;                       // +0x24 (crater texture filename)
     char _pad_2C[0x30 - 0x2C];                   // +0x2C
-    int unk_30;                                   // +0x30 (small object, FUN_004b9380)
+    Color ambient_color;                          // +0x30 (level properties, FUN_004b9380)
     int unk_34;                                   // +0x34
     int unk_38;                                   // +0x38
     char _pad_3C[0x44 - 0x3C];                   // +0x3C
@@ -884,7 +1216,7 @@ struct CDedLevel
     char unk_74;                                  // +0x74 (init 0)
     char _pad_75[0x78 - 0x75];                   // +0x75
     float default_angles[32];                     // +0x78 (all init 89.9f, 128 bytes to +0xF8)
-    int unk_F8;                                   // +0xF8 (init 0)
+    DedEditMode edit_mode;                        // +0xF8 (init 0)
     int unk_FC;                                   // +0xFC (init 3)
     int unk_100;                                  // +0x100 (init 0)
     int unk_104;                                  // +0x104 (init 0)
@@ -903,7 +1235,7 @@ struct CDedLevel
     void* unk_obj_1AC;                            // +0x1AC (0x14-byte allocated object)
     char _pad_1B0[0x1C0 - 0x1B0];               // +0x1B0 (CString + int)
     int unk_1C0;                                  // +0x1C0 (init 0, file filter related)
-    char _pad_1C4[0x1D0 - 0x1C4];               // +0x1C4 (VArray, 12 bytes + padding)
+    VArray<TextureGroup*> texture_groups;        // +0x1C4 built at startup by 0x0041b7c0
 
     // --- icon texture handles ---
     int icon_sp_start;                            // +0x1D0 (Icon_SinglePlayerStart.tga)
@@ -930,7 +1262,10 @@ struct CDedLevel
     int icon_keyframe_silver;                     // +0x224 (Icon_Keyframe_Silver.tga)
     int icon_camera;                              // +0x228 (Icon_CameraPosition.tga)
     int icon_push_region;                         // +0x22C (Icon_ClimbRegion.tga second)
-    char _pad_230[0x272 - 0x230];                // +0x230 (editor state)
+    bool transform_in_progress;                   // +0x230 set by the per-mode transform begins, cleared by FUN_00427260
+    char _pad_231;                                // +0x231
+    std::uint8_t build_running;                   // +0x232 a Build Geometry is running (FUN_0043a710 sets it)
+    char _pad_233[0x272 - 0x233];                // +0x233 (editor state)
     bool geometry_needs_rebuild;                   // +0x272
     char _pad_273[0x280 - 0x273];                // +0x273
 
@@ -939,12 +1274,17 @@ struct CDedLevel
     // FUN_0043d320 (redo) pops from +0x28C, pushes to +0x280
     // Each entry's child VArray at +0x04 may hold raw DedObject* pointers
     // FUN_0043d170 cleanup calls FUN_0041c360 on those pointers (use-after-free risk)
-    VArray<void*> undo_stack;                     // +0x280
-    VArray<void*> redo_stack;                     // +0x28C
+    VArray<UndoEntry*> undo_stack;                // +0x280
+    VArray<UndoEntry*> redo_stack;                // +0x28C
 
     // --- selection ---
     VArray<DedObject*> selection;                 // +0x298
-    char _pad_2A4[0x2E0 - 0x2A4];                // +0x2A4
+    char _pad_2A4[0x2B0 - 0x2A4];                // +0x2A4
+    // Group import (FUN_00438340) clears these, then FUN_004365c0 records each uid it renumbers on
+    // a collision: old uid here, new uid at the same index below. Left filled until the next import.
+    VArray<int> import_renumbered_old_uids;       // +0x2B0
+    VArray<int> import_renumbered_new_uids;       // +0x2BC
+    char _pad_2C8[0x2E0 - 0x2C8];                // +0x2C8
     VArray<DedObject*> master_objects;            // +0x2E0 (all DedObjects, searched by FUN_00483920 for link validation)
     char _pad_2EC[0x340 - 0x2EC];                // +0x2EC
 
@@ -959,7 +1299,7 @@ struct CDedLevel
     VArray<DedObject*> triggers;                  // +0x37C (chunk 0x500)
     VArray<DedObject*> obj_arr_388;               // +0x388 (chunk 0x50000)
     VArray<DedObject*> entities;                  // +0x394 (chunk 0x300)
-    VArray<DedObject*> lights;                    // +0x3A0 (chunk 0x200)
+    VArray<DedObject*> geo_regions;               // +0x3A0 (chunk 0x200)
     VArray<DedObject*> obj_arr_3AC;               // +0x3AC (type 9 objects, chunk 0x20000, searched by FUN_004839a0)
     VArray<DedObject*> ambient_sounds;            // +0x3B8 (chunk 0x400)
     VArray<DedObject*> events;                    // +0x3C4 (chunk 0x5000)
@@ -1039,6 +1379,34 @@ struct CDedLevel
         AddrCaller{0x00413050}.this_call(this);
     }
 
+    // FUN_0043a710: starts Build Geometry as the Build command does; sets build_running
+    void start_build_geometry()
+    {
+        AddrCaller{0x0043a710}.this_call(this);
+    }
+
+    // FUN_004399b0 (GeoBuild_Driver): one idle tick of a running Build Geometry
+    void build_geometry_tick()
+    {
+        AddrCaller{0x004399b0}.this_call(this);
+    }
+
+    // FUN_00414650: assign a uid when the brush carries -1 and splice it into the circular brush
+    // list.
+    //
+    // register_undo opens a type 1 undo record (FUN_0043ccf0) and pushes the brush into its +0x10
+    // array. That path is complete but dead in stock RED: both call sites push 0 (the .rfl brush
+    // reader at 0x004308ff and 0x004381fa), and paste clones brushes without going through here.
+    // Traced anyway, because "unused" is not "broken": undo dispatch case 1 (FUN_0043d470) reads
+    // +0x10, unlinks each brush and saves its former prev in +0x1C; redo case 1 (FUN_0043d5a0)
+    // splices them back from those two arrays; and evicting a type 1 record past the 16 record cap
+    // frees only the record, never the brushes (FUN_0043ccf0 has no type 1 case and its tail loop
+    // walks +0x28, which stays empty).
+    void insert_brush(BrushNode* brush, bool register_undo)
+    {
+        AddrCaller{0x00414650}.this_call(this, brush, register_undo);
+    }
+
     // FUN_0042d6b0: check if any brush has face selection (face mode)
     bool has_face_selection()
     {
@@ -1061,15 +1429,42 @@ struct CDedLevel
         return false;
     }
 
+    // FUN_0042a630: check if the brush belongs to any moving group (mover)
+    bool brush_in_moving_group(BrushNode* brush)
+    {
+        return AddrCaller{0x0042a630}.this_call<bool>(this, brush);
+    }
+
     // FUN_0043bbe0: create undo snapshot (type 10, clones selected brushes)
     void create_undo_snapshot()
     {
         AddrCaller{0x0043bbe0}.this_call(this);
     }
 
+    // FUN_00427260: commit the viewport transform in progress into its undo entry
+    void finish_transform()
+    {
+        AddrCaller{0x00427260}.this_call(this);
+    }
+
+    // A held transform records into whatever undo entry is on top when it finishes
+    void commit_pending_transform()
+    {
+        if (transform_in_progress) {
+            finish_transform();
+        }
+    }
+
     void mark_geometry_dirty()
     {
         geometry_needs_rebuild = true;
+    }
+
+    // Build Geometry's Cancel button was pressed; no progress dialog means no cancel
+    bool build_cancelling() const
+    {
+        const auto* dialog = static_cast<const BuildProgressDialog*>(dialog_panels[build_dialog_panel_index]);
+        return dialog && dialog->cancelled != 0;
     }
 
     static CDedLevel* Get()
@@ -1078,6 +1473,11 @@ struct CDedLevel
     }
 };
 static_assert(sizeof(CDedLevel) == 0x608);
+static_assert(offsetof(CDedLevel, ambient_color) == 0x30);
+static_assert(offsetof(CDedLevel, build_running) == 0x232);
+static_assert(offsetof(CDedLevel, texture_groups) == 0x1C4);
+static_assert(offsetof(CDedLevel, geo_regions) == 0x3A0);
+static_assert(offsetof(CDedLevel, dialog_panels) == 0x444);
 
 // "No shadow cast" is resolved back to a brush through the face ids CSG carried onto the compiled
 // geometry, so it can only mean anything for a brush whose geometry survives CSG as its own thing.
@@ -1119,10 +1519,28 @@ inline bool no_shadow_cast_eligible(const BrushNode& brush,
 // they must be assigned from this counter manually before serialization.
 static auto& g_groom_uid_counter = addr_as_ref<int>(0x0057C954);
 
-// FUN_00483560: redraw all editor viewports
+inline void groom_assign_uid_if_missing(GRoom& room)
+{
+    if (room.uid == -1) {
+        room.uid = g_groom_uid_counter--;
+    }
+}
+
+// Set while the next GeoBuild_Driver tick is a build's first, which assigns the brush face ids
+static auto& g_build_first_tick_pending = addr_as_ref<std::uint8_t>(0x005774a0);
+
+// FUN_00483560: mark_level_modified, then redraw all editor viewports
 inline void redraw_all_viewports()
 {
     AddrCaller{0x00483560}.c_call();
+}
+
+// FUN_00484890: the document's SetModifiedFlag(TRUE), so closing or replacing the level asks to save
+inline void mark_level_modified()
+{
+    if (CDedLevel::Get()) {
+        AddrCaller{0x00484890}.c_call();
+    }
 }
 
 // FUN_00538fa4: show a message box in the editor
@@ -1157,10 +1575,32 @@ constexpr uint8_t DIK_R = 0x13;     // rotate
 constexpr uint8_t DIK_M = 0x32;     // move
 constexpr uint8_t DIK_S = 0x1F;     // scale
 constexpr uint8_t DIK_LSHIFT = 0x2A;
+constexpr uint8_t DIK_LBRACKET = 0x1A;
+constexpr uint8_t DIK_RBRACKET = 0x1B;
 
 // Editor app globals
 void* GetMainFrame();
 void* GetLogDlg();
 HWND GetMainFrameHandle();
+
+// One line to the AlpineEditor log ("[tag] msg" at `level`) and to a headless bake's log (warnings and
+// errors prefixed there); `red_log` also appends msg to RED's message log outside a headless bake.
+enum class EditorReportLevel
+{
+    info,
+    warn,
+    error,
+};
+void editor_report(EditorReportLevel level, const char* tag, const std::string& msg, bool red_log);
+// editor_report at error level to RED's log, plus a message box titled `caption` outside a headless bake.
+void editor_report_blocking(const char* tag, const char* caption, const std::string& msg);
+
+// Empty when RED's address space has a free block of `largest` bytes and `total` bytes free overall;
+// otherwise the shortfall followed by `advice`.
+std::string editor_address_space_shortfall(std::uint64_t largest, std::uint64_t total,
+                                           const char* advice = "Save the level and restart RED.");
+
+// Inside RED's autosave (CDedDoc::LoadSaveLevel with is_autosave set).
+bool level_autosave_in_progress();
 
 void DedLevel_DoBackLink();

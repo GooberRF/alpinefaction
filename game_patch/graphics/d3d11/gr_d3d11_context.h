@@ -91,7 +91,7 @@ namespace gr::d3d11
     public:
         RenderModeBuffer(ID3D11Device* device);
 
-        void update(rf::gr::Mode mode, rf::Color color, bool lightmap_only, bool dynamic_lighting, float self_illumination, bool apply_light_scale, bool emissive_override, ID3D11DeviceContext* device_context)
+        void update(rf::gr::Mode mode, rf::Color color, bool lightmap_only, bool dynamic_lighting, float self_illumination, bool apply_light_scale, bool emissive_override, float fixed_light_scale, ID3D11DeviceContext* device_context)
         {
             bool alpha_test = mode.get_zbuffer_type() == rf::gr::ZBUFFER_TYPE_FULL_ALPHA_TEST;
             bool fog_allowed = mode.get_fog_type() != rf::gr::FOG_NOT_ALLOWED;
@@ -99,7 +99,7 @@ namespace gr::d3d11
             float dynamic_light_ndotl = g_alpine_game_config.dynamic_light_ndotl;
             float pixel_light_overbright = g_level_pixel_light_overbright;
             float alpha_test_threshold = g_alpha_test_threshold;
-            if (force_update_ || current_alpha_test_ != alpha_test || current_fog_allowed_ != fog_allowed || current_color_ != color || current_colorblind_mode_ != colorblind_mode || current_lightmap_only_ != lightmap_only || current_dynamic_lighting_ != dynamic_lighting || current_self_illumination_ != self_illumination || current_apply_light_scale_ != apply_light_scale || current_emissive_override_ != emissive_override || current_dynamic_light_ndotl_ != dynamic_light_ndotl || current_pixel_light_overbright_ != pixel_light_overbright || current_alpha_test_threshold_ != alpha_test_threshold) {
+            if (force_update_ || current_alpha_test_ != alpha_test || current_fog_allowed_ != fog_allowed || current_color_ != color || current_colorblind_mode_ != colorblind_mode || current_lightmap_only_ != lightmap_only || current_dynamic_lighting_ != dynamic_lighting || current_self_illumination_ != self_illumination || current_apply_light_scale_ != apply_light_scale || current_fixed_light_scale_ != fixed_light_scale || current_emissive_override_ != emissive_override || current_dynamic_light_ndotl_ != dynamic_light_ndotl || current_pixel_light_overbright_ != pixel_light_overbright || current_alpha_test_threshold_ != alpha_test_threshold) {
                 current_alpha_test_ = alpha_test;
                 current_fog_allowed_ = fog_allowed;
                 current_color_ = color;
@@ -108,6 +108,7 @@ namespace gr::d3d11
                 current_dynamic_lighting_ = dynamic_lighting;
                 current_self_illumination_ = self_illumination;
                 current_apply_light_scale_ = apply_light_scale;
+                current_fixed_light_scale_ = fixed_light_scale;
                 current_emissive_override_ = emissive_override;
                 current_dynamic_light_ndotl_ = dynamic_light_ndotl;
                 current_pixel_light_overbright_ = pixel_light_overbright;
@@ -149,6 +150,15 @@ namespace gr::d3d11
             }
         }
 
+        // Liquid surface pass. Same reasoning again: scoped to the draw sequence, not the mode.
+        void set_liquid_surface(bool liquid_surface, ID3D11DeviceContext* device_context)
+        {
+            if (current_liquid_surface_ != liquid_surface) {
+                current_liquid_surface_ = liquid_surface;
+                update_buffer(device_context);
+            }
+        }
+
     private:
         void update_buffer(ID3D11DeviceContext* device_context);
 
@@ -162,12 +172,14 @@ namespace gr::d3d11
         bool current_dynamic_lighting_ = false;
         float current_self_illumination_ = 0.0f;
         bool current_apply_light_scale_ = true;
+        float current_fixed_light_scale_ = 0.0f;
         bool current_emissive_override_ = false;
         float current_dynamic_light_ndotl_ = 0.0f;
         float current_pixel_light_overbright_ = 0.5f;
         float current_alpha_test_threshold_ = 1.0f / 255.0f;
         bool current_sky_room_ = false;
         int current_draw_room_uid_ = -1;
+        bool current_liquid_surface_ = false;
     };
 
     class PerFrameBuffer
@@ -358,9 +370,10 @@ namespace gr::d3d11
             bool prev_;
         };
 
-        void set_mode(rf::gr::Mode mode, rf::Color color = {255, 255, 255, 255}, bool lightmap_only = false, bool dynamic_lighting = false, float self_illumination = 0.0f, bool apply_light_scale = true, bool emissive_override = false)
+        // fixed_light_scale > 0 replaces the level's static mesh light modifier when apply_light_scale is set
+        void set_mode(rf::gr::Mode mode, rf::Color color = {255, 255, 255, 255}, bool lightmap_only = false, bool dynamic_lighting = false, float self_illumination = 0.0f, bool apply_light_scale = true, bool emissive_override = false, float fixed_light_scale = 0.0f)
         {
-            render_mode_cbuffer_.update(mode, color, lightmap_only, dynamic_lighting, self_illumination, apply_light_scale, emissive_override, device_context_);
+            render_mode_cbuffer_.update(mode, color, lightmap_only, dynamic_lighting, self_illumination, apply_light_scale, emissive_override, fixed_light_scale, device_context_);
             if (!current_mode_ || current_mode_.value() != mode || current_picmip_active_ != picmip_active_) {
                 if (!current_mode_ || current_mode_.value().get_texture_source() != mode.get_texture_source() || current_picmip_active_ != picmip_active_) {
                     std::array<ID3D11SamplerState*, 2> sampler_states = {
@@ -438,6 +451,18 @@ namespace gr::d3d11
             device_context_->OMSetRenderTargets(std::size(render_targets), render_targets, depth_stencil_view);
         }
 
+        // A bm handle's SRV for a draw that binds its own texture slots; white for -1.
+        ID3D11ShaderResourceView* texture_view(int tex_handle)
+        {
+            return get_diffuse_texture_view(tex_handle);
+        }
+
+        // The wrapping diffuse sampler set_mode would bind, honouring the texture filter and picmip.
+        ID3D11SamplerState* wrap_sampler_state()
+        {
+            return state_manager_.lookup_sampler_state(rf::gr::TEXTURE_SOURCE_WRAP, 0, picmip_active_);
+        }
+
         void bind_vs_cbuffer(int index, ID3D11Buffer* cbuffer)
         {
             ID3D11Buffer* vs_cbuffers[] = { cbuffer };
@@ -473,9 +498,10 @@ namespace gr::d3d11
         }
 
         Projection update_liquid_fx(const Projection& projection, const rf::Vector3& eye_pos,
-                                    const rf::Matrix3& eye_orient)
+                                    const rf::Matrix3& eye_orient, float scene_depth_mode)
         {
-            return liquid_fx_renderer_.update(device_context_, projection, eye_pos, eye_orient);
+            return liquid_fx_renderer_.update(device_context_, projection, eye_pos, eye_orient,
+                                              scene_depth_mode);
         }
 
         const LiquidState& liquid_state() const
@@ -532,6 +558,15 @@ namespace gr::d3d11
             render_mode_cbuffer_.set_draw_room_uid(room_uid, device_context_);
         }
 
+        // Marks the liquid surface pass, which the shader gives its own distance opacity.
+        void set_liquid_surface(bool liquid_surface)
+        {
+            if (liquid_surface && g_alpine_game_config.underwater_fx < 2) {
+                return;
+            }
+            render_mode_cbuffer_.set_liquid_surface(liquid_surface, device_context_);
+        }
+
         void set_vertex_buffer(ID3D11Buffer* vertex_buffer, UINT stride, UINT slot = 0)
         {
             assert(slot < vertex_buffer_slots);
@@ -543,11 +578,12 @@ namespace gr::d3d11
             }
         }
 
-        void set_index_buffer(ID3D11Buffer* index_buffer)
+        void set_index_buffer(ID3D11Buffer* index_buffer, DXGI_FORMAT format = DXGI_FORMAT_R16_UINT)
         {
-            if (index_buffer != current_index_buffer_) {
+            if (index_buffer != current_index_buffer_ || format != current_index_format_) {
                 current_index_buffer_ = index_buffer;
-                device_context_->IASetIndexBuffer(index_buffer, DXGI_FORMAT_R16_UINT, 0);
+                current_index_format_ = format;
+                device_context_->IASetIndexBuffer(index_buffer, format, 0);
             }
         }
 
@@ -630,6 +666,13 @@ namespace gr::d3d11
             device_context_->DrawIndexed(index_count, index_start_location, base_vertex_location);
         }
 
+        void draw_indexed_instanced(int index_count, int instance_count, int index_start_location,
+                                    int base_vertex_location, int instance_start_location)
+        {
+            device_context_->DrawIndexedInstanced(index_count, instance_count, index_start_location,
+                                                  base_vertex_location, instance_start_location);
+        }
+
         const Projection& projection() const
         {
             return projection_;
@@ -639,6 +682,7 @@ namespace gr::d3d11
         {
             for (auto& vb : current_vertex_buffers_) vb = nullptr;
             current_index_buffer_ = nullptr;
+            current_index_format_ = DXGI_FORMAT_UNKNOWN;
             current_input_layout_ = nullptr;
             current_vertex_shader_ = nullptr;
             current_pixel_shader_ = nullptr;
@@ -651,9 +695,7 @@ namespace gr::d3d11
             current_blend_state_ = nullptr;
             current_depth_stencil_state_ = nullptr;
             current_rasterizer_state_ = nullptr;
-            zbias_ = 0;
             zbias_changed_ = true;
-            depth_clip_enabled_ = true;
             depth_clip_enabled_changed_ = true;
             // Re-bind RenderContext's own constant buffers (restores b1 VP after shadow pass etc.)
             bind_cbuffers();
@@ -709,6 +751,7 @@ namespace gr::d3d11
         ID3D11DepthStencilView* depth_stencil_view_ = nullptr;
         ID3D11Buffer* current_vertex_buffers_[vertex_buffer_slots] = {};
         ID3D11Buffer* current_index_buffer_ = nullptr;
+        DXGI_FORMAT current_index_format_ = DXGI_FORMAT_UNKNOWN;
         ID3D11InputLayout* current_input_layout_ = nullptr;
         ID3D11VertexShader* current_vertex_shader_ = nullptr;
         ID3D11PixelShader* current_pixel_shader_ = nullptr;

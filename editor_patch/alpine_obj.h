@@ -1,7 +1,15 @@
 #pragma once
 
+#include <windows.h>
+#include <commctrl.h>
+#include <algorithm>
+#include <bit>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include "alpine_color_picker.h"
 #include "vtypes.h"
 #include "level.h"
 
@@ -12,6 +20,9 @@ void ApplyAlpineObjectPatches();
 // Replacement dialogs for stock Select Objects / Hide Objects (Tools menu)
 void alpine_select_objects(CDedLevel* level);
 void alpine_hide_objects(CDedLevel* level);
+
+// Singular display name for an object type, as the object lists show it.
+const char* get_type_display_name(DedObjectType type);
 
 inline void alpine_remove_from_groups(CDedLevel* level, DedObject* obj)
 {
@@ -36,6 +47,270 @@ inline bool is_object_selected(CDedLevel* level, DedObject* obj)
         if (sel.data_ptr[i] == obj) return true;
     }
     return false;
+}
+
+// ─── Shared Alpine object-type machinery (Tier 2) ───────────────────────────
+// Keeps the stock UID generator ahead of a type's objects, which it cannot see.
+template<typename T>
+inline void alpine_ensure_uid(const std::vector<T*>& objects, int& uid)
+{
+    for (auto* obj : objects) {
+        if (obj->uid >= uid) uid = obj->uid + 1;
+    }
+}
+
+// Deletes every selected object of one type, compacting the selection in place. Reverse
+// iteration is required: `destroy` frees the object, and each removal shifts the tail down.
+template<typename T, typename DestroyFn>
+inline void alpine_compact_selection(CDedLevel* level, DedObjectType type, DestroyFn destroy)
+{
+    auto& sel = level->selection;
+    for (int i = sel.size - 1; i >= 0; i--) {
+        DedObject* obj = sel.data_ptr[i];
+        if (obj && obj->type == type) {
+            for (int j = i; j < sel.size - 1; j++) {
+                sel.data_ptr[j] = sel.data_ptr[j + 1];
+            }
+            sel.size--;
+            destroy(static_cast<T*>(obj));
+        }
+    }
+}
+
+template<typename T>
+inline Vector3 alpine_obj_pos(const T& obj)
+{
+    return obj.pos;
+}
+
+// Closest object whose position (pos_of, the placed position by default) projects within radius_sq of
+// the click, in pixels.
+template<typename T, typename PosFn = Vector3 (*)(const T&)>
+inline T* alpine_click_pick_point(const std::vector<T*>& objects, float click_x, float click_y,
+                                  float radius_sq, PosFn pos_of = alpine_obj_pos<T>)
+{
+    float best_dist_sq = 1e30f;
+    T* best = nullptr;
+
+    for (auto* obj : objects) {
+        if (obj->hidden_in_editor) continue;
+
+        const Vector3 pos = pos_of(*obj);
+        float center_pos[3] = {pos.x, pos.y, pos.z};
+        float screen_cx = 0.0f, screen_cy = 0.0f;
+        if (!project_to_screen_2d(center_pos, &screen_cx, &screen_cy))
+            continue;
+
+        float dx = screen_cx - click_x;
+        float dy = screen_cy - click_y;
+        float dist_sq = dx * dx + dy * dy;
+        if (dist_sq <= radius_sq && dist_sq < best_dist_sq) {
+            best_dist_sq = dist_sq;
+            best = obj;
+        }
+    }
+
+    return best;
+}
+
+// Screen radius the point-picked Alpine object types share (20 px).
+constexpr float alpine_click_pick_radius_sq = 400.0f;
+
+// ─── Shared properties-dialog helpers (Tier 2) ──────────────────────────────
+// The older types still carry their own copies; they migrate with the rest of Tier 2.
+
+inline void alpine_dlg_set_float_field(HWND hdlg, int idc, float value)
+{
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "%.4g", value);
+    SetDlgItemTextA(hdlg, idc, buf);
+}
+
+// The shortest of %.6g .. %.9g that reads back (strtof) as exactly `v`, so a field re-read on OK
+// returns the bits it showed.
+inline void alpine_format_float_exact(char (&buf)[32], float v)
+{
+    for (int digits = 6; digits <= 9; digits++) {
+        std::snprintf(buf, sizeof(buf), "%.*g", digits, static_cast<double>(v));
+        if (std::strtof(buf, nullptr) == v) return;
+    }
+}
+
+inline void alpine_dlg_set_float_field_exact(HWND hdlg, int idc, float value)
+{
+    char buf[32];
+    alpine_format_float_exact(buf, value);
+    SetDlgItemTextA(hdlg, idc, buf);
+}
+
+// `shown` while the field still holds the text alpine_dlg_set_float_field_exact wrote for it, else what
+// was typed.
+inline float alpine_dlg_get_float_field_exact(HWND hdlg, int idc, float shown)
+{
+    char text[32] = {}, fmt[32];
+    GetDlgItemTextA(hdlg, idc, text, sizeof(text));
+    alpine_format_float_exact(fmt, shown);
+    return std::strcmp(text, fmt) == 0 ? shown : std::strtof(text, nullptr);
+}
+
+inline float alpine_dlg_get_float_field(HWND hdlg, int idc)
+{
+    char buf[32] = {};
+    GetDlgItemTextA(hdlg, idc, buf, sizeof(buf));
+    return static_cast<float>(std::atof(buf));
+}
+
+// Text rather than GetDlgItemInt, so a half typed or empty field reads as 0 instead of leaving the
+// caller to interpret a FALSE translated flag.
+inline int alpine_dlg_get_int_field(HWND hdlg, int idc)
+{
+    char buf[32] = {};
+    GetDlgItemTextA(hdlg, idc, buf, sizeof(buf));
+    return std::atoi(buf);
+}
+
+// Combo boxes carry each item's value as its item data.
+inline int alpine_dlg_combo_add(HWND hdlg, int idc, const char* label, LPARAM data)
+{
+    HWND combo = GetDlgItem(hdlg, idc);
+    const auto item = static_cast<int>(SendMessageA(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(label)));
+    if (item >= 0) SendMessageA(combo, CB_SETITEMDATA, item, data);
+    return item;
+}
+
+// The selected item's data, or `fallback` with nothing selected.
+inline LRESULT alpine_dlg_combo_data(HWND hdlg, int idc, LRESULT fallback)
+{
+    HWND combo = GetDlgItem(hdlg, idc);
+    if (!combo) return fallback;
+    const LRESULT sel = SendMessageA(combo, CB_GETCURSEL, 0, 0);
+    return sel == CB_ERR ? fallback : SendMessageA(combo, CB_GETITEMDATA, sel, 0);
+}
+
+// Selects the first item carrying `data`; false when none does.
+inline bool alpine_dlg_combo_select(HWND hdlg, int idc, LPARAM data)
+{
+    HWND combo = GetDlgItem(hdlg, idc);
+    const LRESULT n = combo ? SendMessageA(combo, CB_GETCOUNT, 0, 0) : 0;
+    for (LRESULT i = 0; i < n; i++) {
+        if (SendMessageA(combo, CB_GETITEMDATA, i, 0) == data) {
+            SendMessageA(combo, CB_SETCURSEL, i, 0);
+            return true;
+        }
+    }
+    return false;
+}
+
+// Names that aren't on disk or in a vpp stay at -1 rather than going through bm_load, which would
+// manufacture (and permanently cache) a placeholder entry for every half-typed name. A -1 handle
+// takes the same empty-preview path the stock panel uses when nothing is selected.
+inline int alpine_dlg_resolve_bitmap(const char* name)
+{
+    if (!name || name[0] == '\0') return -1;
+    if (std::strlen(name) > rfl_name_max_len) return -1;
+    const char* ext = std::strrchr(name, '.');
+    if (ext && std::strlen(ext) > rfl_ext_max_len) return -1;
+    // open (0x004CF9A0) locates the file without opening a stream, so no close belongs here:
+    // close (0x004CFF60) would index the open file table at slot -1 (the constructor's value).
+    rf::File file;
+    if (!file.open(name)) return -1;
+    return bm_load(name, -1, 1);
+}
+
+// Mirrors CBitmapPreviewDialog::OnPaint (0x0044C1B0): the editor renderer draws into the control's
+// own window, letterboxed so the texture keeps its aspect ratio.
+inline void alpine_dlg_draw_bitmap_preview(HWND ctrl, const RECT& rc, int bm_handle)
+{
+    int w = std::min<int>(rc.right - rc.left, gr_get_max_width());
+    int h = std::min<int>(rc.bottom - rc.top, gr_get_max_height());
+    if (w <= 0 || h <= 0) return;
+
+    gr_set_viewport_wnd(ctrl);
+
+    if (bm_handle < 0) {
+        gr_set_clip(0, 0, w, h);
+        gr_clear();
+        gr_flip();
+        return;
+    }
+
+    for (int pass = 0; pass < 2; pass++) {
+        gr_set_clip(0, 0, w, h);
+        gr_clear();
+
+        int src_w = 0, src_h = 0, num_pixels = 0, mip_levels = 0;
+        bm_get_mipmap_info(bm_handle, &src_w, &src_h, &num_pixels, &mip_levels);
+        if (src_w <= 0 || src_h <= 0) break;
+
+        int dst_x = 0, dst_y = 0, dst_w = w, dst_h = h;
+        if (src_h > src_w) {
+            dst_w = static_cast<int>(std::lround(static_cast<float>(h) / src_h * src_w));
+            dst_x = static_cast<int>(std::lround((w - dst_w) * 0.5f));
+        }
+        else if (src_w > src_h) {
+            dst_h = static_cast<int>(std::lround(static_cast<float>(w) / src_w * src_h));
+            dst_y = static_cast<int>(std::lround((h - dst_h) * 0.5f));
+        }
+
+        gr_bitmap_scaled(bm_handle, dst_x, dst_y, dst_w, dst_h, 0, 0, src_w, src_h,
+                         0.0f, 0.0f, gr_bitmap_preview_mode);
+    }
+
+    gr_flip();
+}
+
+// ─── Shared color controls ──────────────────────────────────────────────────
+// The Level Properties sun color idiom: a swatch tinted to the current color, a "<r, g, b>" text
+// field, and a button that opens the shared picker. One derivation, so every site behaves the same.
+
+inline void alpine_dlg_set_color_controls(HWND hdlg, int swatch_idc, int value_idc, uint8_t r,
+                                          uint8_t g, uint8_t b)
+{
+    // a null HWND would send InvalidateRect at every window on the desktop
+    if (HWND swatch = GetDlgItem(hdlg, swatch_idc)) {
+        SendMessageA(swatch, LVM_SETBKCOLOR, 0, static_cast<LPARAM>(RGB(r, g, b)));
+        InvalidateRect(swatch, nullptr, TRUE);
+    }
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "<%d, %d, %d>", r, g, b);
+    SetDlgItemTextA(hdlg, value_idc, buf);
+}
+
+// Leaves r/g/b untouched unless all three components parse.
+inline bool alpine_dlg_parse_color_text(HWND hdlg, int value_idc, uint8_t& r, uint8_t& g, uint8_t& b)
+{
+    char buf[64] = {};
+    GetDlgItemTextA(hdlg, value_idc, buf, sizeof(buf));
+    long values[3] = {};
+    const char* p = buf;
+    while (*p == ' ' || *p == '\t') ++p;
+    if (*p == '<') ++p;
+    for (int i = 0; i < 3; i++) {
+        while (*p == ' ' || *p == '\t' || (i > 0 && *p == ',')) ++p;
+        char* end = nullptr;
+        long value = std::strtol(p, &end, 10);
+        if (end == p || value < 0 || value > 255) return false;
+        values[i] = value;
+        p = end;
+    }
+    r = static_cast<uint8_t>(values[0]);
+    g = static_cast<uint8_t>(values[1]);
+    b = static_cast<uint8_t>(values[2]);
+    return true;
+}
+
+inline bool alpine_dlg_pick_color(HWND hdlg, int swatch_idc, int value_idc, uint8_t& r, uint8_t& g,
+                                  uint8_t& b)
+{
+    COLORREF color = RGB(r, g, b);
+    if (!alpine_pick_color(hdlg, color, alpine_shared_custom_colors())) {
+        return false;
+    }
+    r = GetRValue(color);
+    g = GetGValue(color);
+    b = GetBValue(color);
+    alpine_dlg_set_color_controls(hdlg, swatch_idc, value_idc, r, g, b);
+    return true;
 }
 
 // ─── Shared drawing helpers for Alpine object types ─────────────────────────
@@ -198,9 +473,10 @@ inline void render_additive_axial_quad(
 
     if (all_clip != 0) return;
 
-    void* ptrs[4] = {&verts[0], &verts[1], &verts[2], &verts[3]};
+    GrVertex* ptrs[4] = {&verts[0], &verts[1], &verts[2], &verts[3]};
 
     gr_set_mode(0x10);
-    gr_poly_render(4, ptrs, 1, cam_param, 0, 0.0f);
+    // The mode slot has always received the bits of this global (0x014cf7e0), typed float here.
+    gr_poly_render(4, ptrs, 1, std::bit_cast<uint32_t>(cam_param), 0, 0.0f);
     flush_additive();
 }

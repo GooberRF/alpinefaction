@@ -168,6 +168,8 @@ bool scene_capture_render(const rf::Vector3& pos, const rf::Matrix3& orient, flo
         return false;
     }
 
+    FrametimeGuard frametime_guard;
+
     int clip_x = 0, clip_y = 0, clip_w = 0, clip_h = 0;
     rf::gr::get_clip(&clip_x, &clip_y, &clip_w, &clip_h);
 

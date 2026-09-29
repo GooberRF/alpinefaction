@@ -342,6 +342,10 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.set_gib_lifetime_ms(std::stoi(settings["GibLifetimeMs"]));
         processed_keys.insert("GibLifetimeMs");
     }
+    if (settings.count("FreelookCamSlide")) {
+        g_alpine_game_config.set_freelook_cam_slide(std::stof(settings["FreelookCamSlide"]));
+        processed_keys.insert("FreelookCamSlide");
+    }
     if (settings.count("GibFlames")) {
         g_alpine_game_config.gib_flames = std::stoi(settings["GibFlames"]);
         processed_keys.insert("GibFlames");
@@ -1006,6 +1010,10 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.show_awards = std::stoi(settings["ShowAwards"]);
         processed_keys.insert("ShowAwards");
     }
+    if (settings.count("ShowDominationMsgs")) {
+        g_alpine_game_config.show_domination_msgs = std::stoi(settings["ShowDominationMsgs"]);
+        processed_keys.insert("ShowDominationMsgs");
+    }
     if (settings.count("SprayDisplay")) {
         g_alpine_game_config.spray_display = std::stoi(settings["SprayDisplay"]);
         processed_keys.insert("SprayDisplay");
@@ -1652,6 +1660,7 @@ void alpine_player_settings_save(rf::Player* player)
     file << "GibChunkCount=" << g_alpine_game_config.gib_chunk_count << "\n";
     file << "GibVelocityScale=" << g_alpine_game_config.gib_velocity_scale << "\n";
     file << "GibLifetimeMs=" << g_alpine_game_config.gib_lifetime_ms << "\n";
+    file << "FreelookCamSlide=" << g_alpine_game_config.freelook_cam_slide << "\n";
     file << "GibFlames=" << g_alpine_game_config.gib_flames << "\n";
     file << "ShowFPGun=" << player->settings.render_fpgun << "\n";
     file << "AutoswitchWeapons=" << player->settings.autoswitch_weapons << "\n";
@@ -1847,6 +1856,7 @@ void alpine_player_settings_save(rf::Player* player)
     file << "ShowLocationPings=" << g_alpine_game_config.show_location_pings << "\n";
     file << "PlayHitsounds=" << g_alpine_game_config.play_hit_sounds << "\n";
     file << "ShowAwards=" << g_alpine_game_config.show_awards << "\n";
+    file << "ShowDominationMsgs=" << g_alpine_game_config.show_domination_msgs << "\n";
     file << "SprayDisplay=" << g_alpine_game_config.spray_display << "\n";
     file << "SpraySelection=" << g_alpine_game_config.selected_spray_index << "\n";
     file << "KillfeedEnabled=" << g_alpine_game_config.killfeed_enabled << "\n";

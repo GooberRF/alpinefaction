@@ -646,6 +646,16 @@ float gr_sun_get_mesh_scale(const float* ambient)
     return std::clamp(luminance * 2.0f, 0.0f, 1.0f);
 }
 
+void gr_mesh_blend_ambient(const float (&lightmap)[3], float (&out)[3])
+{
+    float global_ambient[3];
+    rf::gr::light_get_ambient(&global_ambient[0], &global_ambient[1], &global_ambient[2]);
+    constexpr float blend = 0.45f;
+    for (int i = 0; i < 3; i++) {
+        out[i] = global_ambient[i] * (1.0f - blend) + lightmap[i] * blend;
+    }
+}
+
 // Power of 2 texture enforcement
 // Access p2t flag directly to avoid pulling in D3D8 types from gr_direct3d.h
 namespace rf::gr::d3d {

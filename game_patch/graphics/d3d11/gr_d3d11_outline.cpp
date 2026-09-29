@@ -467,18 +467,8 @@ namespace gr::d3d11
 
     void OutlineRenderer::refresh_vfx_transforms()
     {
-        // begin_frame() runs from setup_3d, before item_render advances the pickup
-        // spin, so the transform sampled there is a frame stale. Re-sample it at draw
-        // time. render_vfx_outline still prefers the engine's own per-chunk cache when
-        // the two agree — that is the exact pair the engine drew with — and falls back
-        // to this one when the item was culled and the cache never refreshed.
         if (vfx_queue_.empty()) {
             return;
-        }
-        // Tick the spin when the flag was culled (the stock increment in item_render is
-        // skipped then) so the re-query below derives the orient from the new angle.
-        if (gt_is_salvage() && !salvage_flag_was_rendered_this_frame()) {
-            salvage_tick_flag_spin();
         }
         // The salvage flag is the only thing that ever queues a .vfx outline, so an
         // entry the live query no longer backs is stale by definition — the flag was
@@ -609,9 +599,6 @@ namespace gr::d3d11
             v3d_queue_.push_back(std::move(entry));
         };
         if (need_forced_pickup) {
-            // Tick spin (the stock increment in item_render is skipped while
-            // culled) then re-query for the post-tick orient.
-            bagman_tick_pickup_spin();
             rf::VifLodMesh* lod = nullptr;
             rf::Vector3 p{};
             rf::Matrix3 o{};
@@ -874,9 +861,7 @@ namespace gr::d3d11
         // vertex_positions straight to gr::rotate_vertex — so a vertex lands at
         // render_pos + render_orient * v, with no per-chunk offset and no scale.
         // Reusing that cached pair rather than the item transform sampled back in
-        // begin_frame() puts the hull on exactly the pixels the engine drew: by the
-        // time this runs, item_render has already advanced the pickup spin and
-        // salvage_move_carried_flag has already placed the carried flag.
+        // begin_frame() puts the hull on exactly the pixels the engine drew.
         // A portal-culled item is never dispatched, so the cache can be stale; when it
         // no longer agrees with where the item is now, fall back to the queried pair.
         // A culled flag at rest still agrees on position, so the cache is trusted at all

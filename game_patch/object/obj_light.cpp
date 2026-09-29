@@ -16,6 +16,7 @@
 #include "../rf/level.h"
 #include "../rf/clutter.h"
 #include "../rf/v3d.h"
+#include "../rf/character.h"
 #include "../rf/gr/gr.h"
 #include "../graphics/d3d11/gr_d3d11_mesh.h"
 #include "../rf/multi.h"
@@ -38,8 +39,13 @@ void obj_mesh_lighting_alloc_one(rf::Object* objp)
 {
     if ((objp->type != rf::OT_ITEM && objp->type != rf::OT_CLUTTER && objp->type != rf::OT_DEBRIS) ||
         !objp->vmesh ||
-        (objp->obj_flags & rf::OF_DELAYED_DELETE) ||
-        rf::vmesh_get_type(objp->vmesh) != rf::MESH_TYPE_STATIC) {
+        (objp->obj_flags & rf::OF_DELAYED_DELETE)) {
+        return;
+    }
+    // Alpine "Mesh" clutter can be a character (v3c) mesh; the stock bake supports those too
+    auto mesh_type = rf::vmesh_get_type(objp->vmesh);
+    if (mesh_type != rf::MESH_TYPE_STATIC &&
+        !(mesh_type == rf::MESH_TYPE_CHARACTER && objp->type == rf::OT_CLUTTER)) {
         return;
     }
     assert(objp->mesh_lighting_data == nullptr);
@@ -83,6 +89,12 @@ void recalc_mesh_static_lighting()
     rf::obj_light_free();
     rf::obj_light_alloc();
     rf::obj_light_calculate();
+
+    if (is_d3d11()) {
+        // The baked vertex colors moved, so cached GPU vertex color buffers are stale
+        gr::d3d11::on_static_vertex_color_state_changed();
+        gr::d3d11::on_character_fullbright_state_changed();
+    }
 }
 
 void evaluate_fullbright_meshes()
@@ -326,6 +338,48 @@ CodeInjection debris_render_set_vertex_colors_patch{
     }
 };
 
+static_assert(offsetof(rf::CharacterInstance, base_character) == 0x1D50);
+static_assert(offsetof(rf::Character, character_meshes) + offsetof(rf::CharacterMesh, v3d_file) == 0x19C0);
+static_assert(offsetof(rf::V3d, num_meshes) == 0x48);
+static_assert(offsetof(rf::V3d, meshes) == 0x4C);
+static_assert(offsetof(rf::MeshRenderParams, vertex_colors) == 0x1C);
+
+// Replaces the stock per-LOD vertex color lookup at 0x0052FB4C (13 bytes, resumes at 0x0052FB59)
+CodeInjection vif_render_resolve_lod_vertex_colors_patch{
+    0x0052FB4C,
+    [](auto& regs) {
+        auto* params = reinterpret_cast<rf::MeshRenderParams*>(static_cast<uintptr_t>(regs.esi));
+        if (params->vertex_colors) {
+            const int lod = regs.ebp;
+            // Static meshes arrive with vertex_colors already pointing at the submesh block's LOD table
+            auto* lod_colors = reinterpret_cast<rf::ubyte* const*>(params->vertex_colors);
+            auto* ci = reinterpret_cast<rf::CharacterInstance*>(static_cast<uintptr_t>(regs.ebx));
+            if (ci) {
+                // Character meshes get the raw block list instead, so find this submesh's block
+                auto* lod_mesh = reinterpret_cast<const rf::VifLodMesh*>(static_cast<uintptr_t>(regs.edi));
+                lod_colors = nullptr;
+                if (const rf::Character* character = ci->base_character) {
+                    const rf::V3d& v3d = character->character_meshes[0].v3d_file;
+                    const rf::ubyte* block = params->vertex_colors;
+                    for (int i = 0; i < v3d.num_meshes; ++i) {
+                        if (v3d.meshes[i].vu == lod_mesh) {
+                            lod_colors = reinterpret_cast<rf::ubyte* const*>(block + 4);
+                            break;
+                        }
+                        const int block_size = *reinterpret_cast<const int*>(block);
+                        if (block_size <= 0) {
+                            break;
+                        }
+                        block += block_size;
+                    }
+                }
+            }
+            params->vertex_colors = lod_colors && lod >= 0 && lod < 3 ? lod_colors[lod] : nullptr;
+        }
+        regs.eip = 0x0052FB59;
+    }
+};
+
 CodeInjection dynamic_light_load_patch{
     0x0045F500,
     [](auto& regs) {
@@ -345,6 +399,9 @@ void obj_light_apply_patch()
 
     // Set vertex colors for debris meshes so they receive proper lighting instead of being fullbright
     debris_render_set_vertex_colors_patch.install();
+
+    // Stock only resolves baked vertex colors per submesh for static meshes, not for character meshes
+    vif_render_resolve_lod_vertex_colors_patch.install();
 
     // Allow dynamic lights in levels
     dynamic_light_load_patch.install(); // in LevelLight__load

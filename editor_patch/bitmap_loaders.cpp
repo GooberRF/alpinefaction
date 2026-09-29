@@ -451,6 +451,25 @@ namespace
         ".atx", ".dds", ".png", ".jpg", ".jpeg"
     };
 
+    // What the GAME's loader resolves, in its precedence order — mirrors g_texture_extensions
+    // in bmpman.cpp. Used only for pack-time probes, which have to agree with the game's
+    // lookup rather than with RED's narrower preview chain above.
+    constexpr std::array<std::string_view, 10> game_texture_extensions = {
+        ".atx", ".dds", ".png", ".jpg", ".jpeg", ".vbm", ".tga", ".pcx", ".vaf", ".m2v"
+    };
+
+    // Mirrors bm_strip_texture_ext: drops a trailing extension only when it is one the game can
+    // resolve a texture from.
+    std::string_view strip_game_texture_ext(std::string_view filename)
+    {
+        for (auto ext : game_texture_extensions) {
+            if (string_iends_with(filename, ext)) {
+                return filename.substr(0, filename.size() - ext.size());
+            }
+        }
+        return filename;
+    }
+
     std::string find_supercede_sibling(const char* requested_name)
     {
         std::string base{get_filename_without_ext(requested_name)};
@@ -649,6 +668,16 @@ void clear_editor_bitmap_redirects()
 {
     g_atx_redirects.clear();
     g_file_redirects.clear();
+}
+
+std::string find_atx_sibling(const char* requested_name)
+{
+    if (!requested_name || !requested_name[0] || string_iends_with(requested_name, ".atx")) {
+        return {};
+    }
+    std::string candidate{strip_game_texture_ext(requested_name)};
+    candidate += ".atx";
+    return sibling_file_exists(candidate.c_str()) ? candidate : std::string{};
 }
 
 std::vector<std::string> parse_atx_dependencies(const char* atx_filename)

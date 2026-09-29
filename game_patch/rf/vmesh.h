@@ -104,7 +104,7 @@ namespace rf
     static auto& vmesh_update_lighting_data = addr_as_ref<int(VMesh *vmesh, GRoom *room, const Vector3 &pos, const Matrix3 &orient, void *mesh_lighting_data)>(0x00504000);
     static auto& vmesh_reset_actions = addr_as_ref<void(VMesh* vmesh)>(0x005033F0);
     static auto& vmesh_set_action_weight = addr_as_ref<void(VMesh* vmesh, int action_index, float weight)>(0x00503390);
-    static auto& vmesh_play_action_by_index = addr_as_ref<void(VMesh* vmesh, int action_index, float transition_time, int hold_last_frame)>(0x005033B0);
+    static auto& vmesh_play_action_by_index = addr_as_ref<void(VMesh* vmesh, int action_index, float weight, int hold_last_frame)>(0x005033B0);
     static auto& vmesh_stop_all_actions = addr_as_ref<void(VMesh* vmesh)>(0x00503400);
     static auto& vmesh_get_materials_array = addr_as_ref<void(VMesh *vmesh, int *num_materials_out, MeshMaterial **materials_array_out)>(0x00503650);
     static auto& vmesh_render = addr_as_ref<void(VMesh* vmesh, Vector3* pos, Matrix3* orient, MeshRenderParams* params)>(0x00503100);

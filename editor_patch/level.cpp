@@ -3,6 +3,7 @@
 #include <patch_common/AsmWriter.h>
 #include <patch_common/MemUtils.h>
 #include <xlog/xlog.h>
+#include <common/utils/string-utils.h>
 #include <algorithm>
 #include <cfloat>
 #include <cmath>
@@ -13,6 +14,7 @@
 #include <windows.h>
 #include <commdlg.h>
 #include <commctrl.h>
+#include "alpine_color_picker.h"
 #include "level.h"
 #include "vtypes.h"
 #include "mfc_types.h"
@@ -23,6 +25,13 @@
 #include "bag.h"
 #include "weather_region.h"
 #include "projection_camera.h"
+#include "rope_emitter.h"
+#include "terrain.h"
+#include "terrain_build.h"
+#include "terrain_decorations.h"
+#include "alpine_lightmaps.h"
+#include "alpine_obj.h"
+#include "headless_bake.h"
 
 // Forward declarations
 int get_level_rfl_version();
@@ -37,6 +46,70 @@ static AlpineLevelProperties g_alpine_level_props;
 AlpineLevelProperties& CDedLevel::GetAlpineLevelProperties()
 {
     return g_alpine_level_props;
+}
+
+void editor_report(EditorReportLevel level, const char* tag, const std::string& msg, bool red_log)
+{
+    switch (level) {
+    case EditorReportLevel::info: xlog::info("[{}] {}", tag, msg); break;
+    case EditorReportLevel::warn: xlog::warn("[{}] {}", tag, msg); break;
+    case EditorReportLevel::error: xlog::error("[{}] {}", tag, msg); break;
+    }
+    if (headless_bake_active()) {
+        const char* prefix = level == EditorReportLevel::warn    ? "WARNING: "
+                             : level == EditorReportLevel::error ? "ERROR: "
+                                                                 : "";
+        headless_bake_note((prefix + msg).c_str());
+        return;
+    }
+    if (void* log = red_log && GetMainFrame() ? GetLogDlg() : nullptr) {
+        LogDlg_Append(log, "%s\n", msg.c_str());
+    }
+}
+
+void editor_report_blocking(const char* tag, const char* caption, const std::string& msg)
+{
+    editor_report(EditorReportLevel::error, tag, msg, true);
+    if (!headless_bake_active()) {
+        MessageBoxA(GetMainFrameHandle(), msg.c_str(), caption, MB_OK | MB_ICONWARNING);
+    }
+}
+
+std::string editor_address_space_shortfall(std::uint64_t largest, std::uint64_t total, const char* advice)
+{
+    SYSTEM_INFO si{};
+    GetSystemInfo(&si);
+    std::uint64_t free_largest = 0;
+    std::uint64_t free_total = 0;
+    auto addr = reinterpret_cast<std::uintptr_t>(si.lpMinimumApplicationAddress);
+    const auto end = reinterpret_cast<std::uintptr_t>(si.lpMaximumApplicationAddress);
+    MEMORY_BASIC_INFORMATION mbi{};
+    while (addr < end && VirtualQuery(reinterpret_cast<void*>(addr), &mbi, sizeof(mbi)) == sizeof(mbi)) {
+        if (mbi.State == MEM_FREE) {
+            free_largest = std::max<std::uint64_t>(free_largest, mbi.RegionSize);
+            free_total += mbi.RegionSize;
+        }
+        const auto next = reinterpret_cast<std::uintptr_t>(mbi.BaseAddress) + mbi.RegionSize;
+        if (next <= addr) {
+            break;
+        }
+        addr = next;
+    }
+    constexpr std::uint64_t mb = 1u << 20;
+    char msg[512];
+    if (free_largest < largest) {
+        std::snprintf(msg, sizeof(msg), "RED is low on memory (largest free block %llu MB, needs %llu MB). %s",
+                      static_cast<unsigned long long>(free_largest / mb),
+                      static_cast<unsigned long long>((largest + mb - 1) / mb), advice);
+        return msg;
+    }
+    if (free_total < total) {
+        std::snprintf(msg, sizeof(msg), "RED is low on memory (%llu MB of address space free, needs %llu MB). %s",
+                      static_cast<unsigned long long>(free_total / mb),
+                      static_cast<unsigned long long>((total + mb - 1) / mb), advice);
+        return msg;
+    }
+    return {};
 }
 
 // Initialize on CDedLevel construction
@@ -74,6 +147,7 @@ FunHook<decltype(CDedLevel_DeleteContents_hooked)> CDedLevel_DeleteContents_hook
 void __fastcall CDedLevel_DeleteContents_hooked(CDedLevel* level, void* edx_unused)
 {
     auto& props = level->GetAlpineLevelProperties();
+    terrain_decorations_level_reset();
 
     // Null out vmesh BEFORE stock code runs, but leave objects in master_objects.
     // This makes Alpine objects safe for stock FUN_0041c360 (loop 3):
@@ -97,6 +171,8 @@ void __fastcall CDedLevel_DeleteContents_hooked(CDedLevel* level, void* edx_unus
     // Now stock code is done. Free the Alpine objects properly.
     props.LoadDefaults();
     lightmap_reset_level_state();
+    // Also runs as the document closes at exit, when the views may be gone, so nothing is repainted.
+    alpine_lm_reset_level_state();
 }
 
 // load default AlpineLevelProperties values
@@ -105,12 +181,12 @@ CodeInjection CDedLevel_LoadLevel_patch1{
     []() {
         CDedLevel::Get()->GetAlpineLevelProperties().LoadDefaults();
         lightmap_reset_level_state();
+        alpine_lm_drop_retained();
     },
 };
 
-// Capture Glacier-specific RFL chunks (0x6ED-prefixed ID) verbatim so they can be
-// re-emitted unchanged on the next save.
-static void retained_chunk_deserialize(CDedLevel& level, rf::File& file, uint32_t chunk_id, std::size_t chunk_len)
+// Capture another editor's RFL chunk verbatim so it can be re-emitted unchanged on the next save.
+static void retained_chunk_deserialize(CDedLevel& level, rf::File& file, uint32_t chunk_id, std::size_t chunk_len, const char* editor)
 {
     auto& chunks = level.GetAlpineLevelProperties().retained_chunks;
     std::size_t remaining = chunk_len;
@@ -143,11 +219,11 @@ static void retained_chunk_deserialize(CDedLevel& level, rf::File& file, uint32_
         remaining -= got;
     }
 
-    xlog::debug("[RetainedChunk] retained Glacier chunk id=0x{:08X} len={}", chunk_id, chunk.data.size());
+    xlog::debug("[RetainedChunk] retained {} chunk id=0x{:08X} len={}", editor, chunk_id, chunk.data.size());
     chunks.push_back(std::move(chunk));
 }
 
-// Re-write all retained Glacier chunks verbatim, preserving their original IDs.
+// Re-write all retained foreign-editor chunks verbatim, preserving their original IDs.
 static void retained_chunks_serialize(CDedLevel& level, rf::File& file)
 {
     auto& chunks = level.GetAlpineLevelProperties().retained_chunks;
@@ -166,12 +242,12 @@ CodeInjection CDedLevel_LoadLevel_patch2{
     [](auto& regs) {
         auto& file = *static_cast<rf::File*>(regs.esi);
 
-        // Preserve unknown chunks from Glacier (0x6ED-prefixed IDs).
+        // Preserve unknown chunks from other editors.
         uint32_t raw_chunk_id = static_cast<uint32_t>(regs.edi);
-        if (is_glacier_chunk_id(raw_chunk_id)) {
+        if (const char* editor = foreign_chunk_editor(raw_chunk_id)) {
             auto& level = *static_cast<CDedLevel*>(regs.ebp);
             std::size_t chunk_size = regs.ebx;
-            retained_chunk_deserialize(level, file, raw_chunk_id, chunk_size);
+            retained_chunk_deserialize(level, file, raw_chunk_id, chunk_size, editor);
             regs.eip = 0x0043090C;
             return;
         }
@@ -212,20 +288,22 @@ CodeInjection CDedLevel_LoadLevel_patch2{
                     projection_camera_deserialize_chunk(level, file, chunk_size);
                     regs.eip = 0x0043090C;
                 }
+                if (chunk_id == alpine_rope_emitter_chunk_id) {
+                    rope_emitter_deserialize_chunk(level, file, chunk_size);
+                    regs.eip = 0x0043090C;
+                }
+                if (chunk_id == alpine_terrain_chunk_id) {
+                    terrain_deserialize_chunk(level, file, chunk_size);
+                    regs.eip = 0x0043090C;
+                }
+                if (chunk_id == alpine_lightmaps_chunk_id) {
+                    alpine_lm_deserialize_chunk(level, file, chunk_size);
+                    regs.eip = 0x0043090C;
+                }
             }
         }
     },
 };
-
-// Get the head of the room's face list (VList<GFace, FACE_LIST_ROOM>).
-// GRoom models the face_list as `char _face_list[8]` (head ptr + count); we read
-// the head pointer via offsetof so the layout is compile-time verified.
-// Faces are linked via GFace::next_room (+0x5C).
-static inline GFace* get_room_face_head(GRoom* room)
-{
-    return *reinterpret_cast<GFace**>(
-        reinterpret_cast<char*>(room) + offsetof(GRoom, _face_list));
-}
 
 // At save time, match geoable brush UIDs to compiled room UIDs via position.
 // For each geoable brush, find the detail room whose bbox contains the brush position.
@@ -299,7 +377,7 @@ static GRoom* find_room_by_position(const CDedLevel& level, int32_t brush_uid)
         if (!room || !room->is_detail) continue;
         // Skip empty rooms (e.g. secondary rooms emptied by merge_geoable_interior_rooms).
         // Their bbox is stale and would cause false-positive position matches.
-        if (!get_room_face_head(room)) continue;
+        if (!room->face_list_head) continue;
         if (brush_pos.x >= room->bbox_min.x - tolerance && brush_pos.x <= room->bbox_max.x + tolerance &&
             brush_pos.y >= room->bbox_min.y - tolerance && brush_pos.y <= room->bbox_max.y + tolerance &&
             brush_pos.z >= room->bbox_min.z - tolerance && brush_pos.z <= room->bbox_max.z + tolerance) {
@@ -360,9 +438,8 @@ static void compute_geoable_room_uids(CDedLevel& level, AlpineLevelProperties& p
     // a UID. Assign UIDs here so solid_write persists them to the .rfl and our geoable mapping
     // can reference them.
     for (int j = 0; j < all_rooms.get_size(); j++) {
-        GRoom* room = all_rooms.data_ptr[j];
-        if (room && room->uid == -1) {
-            room->uid = g_groom_uid_counter--;
+        if (GRoom* room = all_rooms.data_ptr[j]) {
+            groom_assign_uid_if_missing(*room);
         }
     }
 
@@ -393,13 +470,15 @@ static void compute_geoable_room_uids(CDedLevel& level, AlpineLevelProperties& p
 // Uses face_id matching (primary) with position-based fallback.
 static void compute_breakable_room_uids(CDedLevel& level, AlpineLevelProperties& props)
 {
-    // Prune stale UIDs
+    // Prune rows whose brush no longer qualifies.
     {
         std::unordered_set<int32_t> live_uids;
         BrushNode* node = level.brush_list;
         if (node) {
             do {
-                live_uids.insert(node->uid);
+                if (node->is_detail && node->life != -1) {
+                    live_uids.insert(node->uid);
+                }
                 node = node->next;
             } while (node && node != level.brush_list);
         }
@@ -411,6 +490,24 @@ static void compute_breakable_room_uids(CDedLevel& level, AlpineLevelProperties&
             } else {
                 i++;
             }
+        }
+    }
+
+    // Every destructible detail brush gets an entry, so the game can map its brush UID to the
+    // compiled room UID.
+    {
+        BrushNode* node = level.brush_list;
+        if (node) {
+            do {
+                if (node->is_detail && node->life != -1 &&
+                    std::find(props.breakable_brush_uids.begin(), props.breakable_brush_uids.end(),
+                              node->uid) == props.breakable_brush_uids.end()) {
+                    props.breakable_brush_uids.push_back(node->uid);
+                    props.breakable_room_uids.push_back(0);
+                    props.breakable_materials.push_back(0);
+                }
+                node = node->next;
+            } while (node && node != level.brush_list);
         }
     }
 
@@ -434,7 +531,14 @@ static void compute_breakable_room_uids(CDedLevel& level, AlpineLevelProperties&
             continue;
         }
 
-        // Fallback: position-based matching
+        // Fallback: position-based matching, but only for rows that carry a real material.
+        const uint8_t raw = (i < props.breakable_materials.size()) ? props.breakable_materials[i] : 0;
+        if (raw == 0) {
+            xlog::debug("[Breakable] brush uid={} mapping-only row unmatched, leaving room uid 0",
+                brush_uid);
+            continue;
+        }
+
         room = find_room_by_position(level, brush_uid);
         if (room) {
             props.breakable_room_uids[i] = room->uid;
@@ -479,7 +583,8 @@ static void prune_no_shadow_cast_brush_uids(CDedLevel& level, AlpineLevelPropert
 //       adjacency test, so post-processing is the primary fix)
 
 // Map from face_id (GFaceAttributes+0x10) to brush UID for brushes that need isolation
-// (geoable and breakable detail brushes). Populated before room building, cleared afterwards.
+// (geoable and breakable detail brushes, terrain chunk brushes). Populated before room building,
+// cleared afterwards.
 static std::unordered_map<int, int> g_isolated_face_map;
 
 static void populate_isolated_face_map()
@@ -489,11 +594,20 @@ static void populate_isolated_face_map()
     auto* level = CDedLevel::Get();
     if (!level) return;
     auto& props = level->GetAlpineLevelProperties();
-    if (props.geoable_brush_uids.empty() && props.breakable_brush_uids.empty()) return;
 
     std::unordered_set<int32_t> isolated_set;
+    terrain_build_isolated_brush_uids(isolated_set);
+    if (props.geoable_brush_uids.empty() && props.breakable_brush_uids.empty() && isolated_set.empty()) return;
     isolated_set.insert(props.geoable_brush_uids.begin(), props.geoable_brush_uids.end());
-    isolated_set.insert(props.breakable_brush_uids.begin(), props.breakable_brush_uids.end());
+    // Glass entries exist only to carry the brush UID -> room UID mapping for When_Destroyed;
+    // they must not join the isolation set or a level would build different room structure than
+    // it did before those entries were added.
+    for (std::size_t i = 0; i < props.breakable_brush_uids.size(); i++) {
+        const uint8_t mat = (i < props.breakable_materials.size()) ? props.breakable_materials[i] : 0;
+        if ((mat & 0x7F) != 0) {
+            isolated_set.insert(props.breakable_brush_uids[i]);
+        }
+    }
 
     BrushNode* head = level->brush_list;
     if (!head) return;
@@ -525,7 +639,7 @@ static void populate_isolated_face_map()
 // so after splitting faces out we must recompute from scratch.
 static void recompute_room_bbox(GRoom* room)
 {
-    GFace* head = get_room_face_head(room);
+    GFace* head = room->face_list_head;
     if (!head) return;
 
     Vector3 vmin = head->bounding_box_min;
@@ -645,10 +759,12 @@ static void merge_geoable_interior_rooms(GSolid* solid)
     auto* level = CDedLevel::Get();
     if (!level) return;
     auto& props = level->GetAlpineLevelProperties();
-    if (props.geoable_brush_uids.empty()) return;
 
+    // Terrain chunks merge the same way: holes can split a chunk into several components.
     std::unordered_set<int32_t> geoable_set(
         props.geoable_brush_uids.begin(), props.geoable_brush_uids.end());
+    terrain_build_isolated_brush_uids(geoable_set);
+    if (geoable_set.empty()) return;
 
     // Group rooms by geoable brush UID via face_id matching.
     std::unordered_map<int, std::vector<GRoom*>> brush_to_rooms;
@@ -658,7 +774,7 @@ static void merge_geoable_interior_rooms(GSolid* solid)
         GRoom* room = all_rooms.data_ptr[i];
         if (!room || !room->is_detail) continue;
 
-        GFace* head = get_room_face_head(room);
+        GFace* head = room->face_list_head;
         if (!head) continue;
 
         int brush_uid = -1;
@@ -689,7 +805,7 @@ static void merge_geoable_interior_rooms(GSolid* solid)
         int max_faces = -1;
         for (GRoom* r : rooms) {
             int count = 0;
-            for (GFace* f = get_room_face_head(r); f; f = f->next_room) count++;
+            for (GFace* f = r->face_list_head; f; f = f->next_room) count++;
             if (count > max_faces) {
                 max_faces = count;
                 primary = r;
@@ -700,7 +816,7 @@ static void merge_geoable_interior_rooms(GSolid* solid)
             if (r == primary) continue;
 
             std::vector<GFace*> faces;
-            for (GFace* f = get_room_face_head(r); f; f = f->next_room)
+            for (GFace* f = r->face_list_head; f; f = f->next_room)
                 faces.push_back(f);
 
             for (GFace* f : faces)
@@ -743,7 +859,7 @@ CodeInjection skip_empty_detail_rooms_in_loop2{
     0x00485f1a,
     [](auto& regs) {
         auto* room = reinterpret_cast<GRoom*>(static_cast<void*>(regs.esi));
-        if (!get_room_face_head(room)) {
+        if (!room->face_list_head) {
             regs.eip = 0x00486009;
         }
     },
@@ -776,6 +892,27 @@ void __fastcall build_rooms_hooked(GSolid* solid, void* edx_unused)
     populate_isolated_face_map();
     build_rooms_hook.call_target(solid, edx_unused);
     g_isolated_face_map.clear();
+}
+
+// FUN_0043a710 starts a Build Geometry (thiscall on CDedLevel*). The minimums cover the first build after
+// a load, the largest measured.
+constexpr std::uint64_t build_geometry_min_free_block = 100u << 20;
+constexpr std::uint64_t build_geometry_min_free_total = 160u << 20;
+
+void __fastcall build_geometry_start_hooked(CDedLevel* level, void* edx_unused);
+FunHook<decltype(build_geometry_start_hooked)> build_geometry_start_hook{
+    0x0043a710,
+    build_geometry_start_hooked,
+};
+void __fastcall build_geometry_start_hooked(CDedLevel* level, void* edx_unused)
+{
+    const std::string shortfall =
+        editor_address_space_shortfall(build_geometry_min_free_block, build_geometry_min_free_total);
+    if (!shortfall.empty()) {
+        editor_report_blocking("Build Geometry", "Build Geometry", shortfall);
+        return;
+    }
+    build_geometry_start_hook.call_target(level, edx_unused);
 }
 
 // Hook FUN_004861d0 (face adjacency test, cdecl) as secondary defense.
@@ -814,7 +951,9 @@ CodeInjection skip_alpine_objects_bounds_check{
             obj->type == DedObjectType::DED_CORONA ||
             obj->type == DedObjectType::DED_GAS_REGION ||
             obj->type == DedObjectType::DED_WEATHER_REGION ||
-            obj->type == DedObjectType::DED_PROJECTION_CAMERA) {
+            obj->type == DedObjectType::DED_PROJECTION_CAMERA ||
+            obj->type == DedObjectType::DED_ROPE_EMITTER ||
+            obj->type == DedObjectType::DED_TERRAIN) {
             regs.eip = 0x0041dcfa;
         }
     },
@@ -828,6 +967,10 @@ CodeInjection CDedLevel_SaveLevel_patch{
     [](auto& regs) {
         auto& level = *static_cast<CDedLevel*>(regs.edi);
         auto& file = *static_cast<rf::File*>(regs.esi);
+
+        // Decides whether the alpine lightmap section is emitted, which the stock lightmaps
+        // section write a few instructions later depends on.
+        alpine_lm_save_begin(level);
 
         // Compute room UIDs and scrub stale data before serializing
         auto& alpine_level_props = level.GetAlpineLevelProperties();
@@ -856,7 +999,7 @@ CodeInjection CDedLevel_SaveLevel_patch{
         }
 
         auto start_pos = level.BeginRflSection(file, alpine_props_chunk_id);
-        alpine_level_props.Serialize(file);
+        alpine_level_props.Serialize(file, alpine_lm_stock_suppressed());
         level.EndRflSection(file, start_pos);
 
         // Write mesh objects chunk
@@ -877,10 +1020,71 @@ CodeInjection CDedLevel_SaveLevel_patch{
         // Write projection camera objects chunk
         projection_camera_serialize_chunk(level, file);
 
-        // Re-write any Glacier chunks
+        // Write rope emitter objects chunk
+        rope_emitter_serialize_chunk(level, file);
+
+        // Write terrain objects chunk
+        terrain_serialize_chunk(level, file);
+
+        // Re-write any foreign-editor chunks
         retained_chunks_serialize(level, file);
     },
 };
+
+// Stock FlagFaceTextureTraits (0x0041d3c0) only stamps the see-through face flags
+// (FACE_SEE_THRU, FACE_HAS_HOLES) on faces carrying FACE_IS_DETAIL, which the geometry
+// build sets exclusively on compiled static faces. Mover brushes are saved as raw brush
+// geometry, so their faces never get those bits and the game draws their alpha textures
+// opaque. Mirror stock's detail-brush rule for the faces of moving group detail brushes;
+// the stock pass already cleared the bits, so only OR them back in.
+static void flag_mover_face_texture_traits(GSolid* solid)
+{
+    for (GFace* face = solid->face_list_head; face; face = face->next_solid) {
+        if (face->flags & FACE_IS_DETAIL) continue; // stock already handled compiled detail faces
+        if (face->bitmap_id == -1 || !bm_has_alpha(face->bitmap_id)) continue;
+
+        face->flags |= FACE_SEE_THRU;
+
+        const char* filename = bm_get_filename(face->bitmap_id);
+        if (!filename || !string_istarts_with(filename, "gls_")) {
+            face->flags |= FACE_HAS_HOLES;
+        }
+    }
+}
+
+// Hook FUN_0041d330 (FlagFaceTextureTraits_all, cdecl), run on every level save and
+// before lightmap UV calculation.
+void __cdecl flag_face_texture_traits_all_hooked(CDedLevel* level);
+FunHook<decltype(flag_face_texture_traits_all_hooked)> flag_face_texture_traits_all_hook{
+    0x0041d330,
+    flag_face_texture_traits_all_hooked,
+};
+void __cdecl flag_face_texture_traits_all_hooked(CDedLevel* level)
+{
+    flag_face_texture_traits_all_hook.call_target(level);
+
+    // Terrain chunk faces are compiled detail faces, but the terrain shader blends its layers
+    // opaquely: an alpha layer texture must not make them see-through or holed.
+    const auto& props = level->GetAlpineLevelProperties();
+    if (level->solid && !props.terrain_room_uids.empty()) {
+        for (GFace* face = level->solid->face_list_head; face; face = face->next_solid) {
+            if (face->which_room && props.is_terrain_room(face->which_room->uid)) {
+                face->flags &= ~(FACE_SEE_THRU | FACE_HAS_HOLES);
+            }
+        }
+    }
+
+    BrushNode* head = level->brush_list;
+    if (!head) return;
+    BrushNode* node = head;
+    do {
+        auto* geom = static_cast<GSolid*>(node->geometry);
+        if (geom && node->is_detail && level->brush_in_moving_group(node)) {
+            flag_mover_face_texture_traits(geom);
+        }
+        node = node->next;
+    } while (node && node != head);
+}
 
 // Fill the sun yaw/pitch edit fields from the 3D viewport camera. The camera is aimed
 // ALONG the sun's rays (at the ground), so to-sun is the NEGATED camera forward vector.
@@ -972,21 +1176,71 @@ static bool read_sun_color_text(HWND hdlg, uint8_t& r, uint8_t& g, uint8_t& b)
 
 static void pick_sun_color(HWND hdlg)
 {
-    // Every stock picker overwrites the array MFC's CColorDialog ctor installs (0x0052d497) with
-    // CMainFrame::custom_colors, so going through that field is what shares swatches with them.
-    static COLORREF fallback_custom_colors[16] = {};
-
-    CHOOSECOLORA cc = {};
-    cc.lStructSize = sizeof(cc);
-    cc.hwndOwner = hdlg;
-    cc.rgbResult = RGB(g_sun_color_r, g_sun_color_g, g_sun_color_b);
-    cc.lpCustColors = g_main_frame ? g_main_frame->custom_colors : fallback_custom_colors;
-    cc.Flags = CC_RGBINIT | CC_FULLOPEN;
-    if (ChooseColorA(&cc)) {
-        g_sun_color_r = GetRValue(cc.rgbResult);
-        g_sun_color_g = GetGValue(cc.rgbResult);
-        g_sun_color_b = GetBValue(cc.rgbResult);
+    COLORREF color = RGB(g_sun_color_r, g_sun_color_g, g_sun_color_b);
+    if (alpine_pick_color(hdlg, color, alpine_shared_custom_colors())) {
+        g_sun_color_r = GetRValue(color);
+        g_sun_color_g = GetGValue(color);
+        g_sun_color_b = GetBValue(color);
         update_sun_color_controls(hdlg);
+    }
+}
+
+// Both lightmap combos carry their stored property value as item data, so no index-to-value
+// table is needed on the way back out.
+static void init_lightmap_combos(HWND hdlg, const AlpineLevelProperties& props)
+{
+    char label[32];
+
+    if (HWND density = GetDlgItem(hdlg, IDC_LIGHTMAP_DENSITY)) {
+        SendMessageA(density, CB_RESETCONTENT, 0, 0);
+        std::snprintf(label, sizeof(label), "Default (%u)", alpine_lightmap::density_default);
+        int sel = alpine_dlg_combo_add(hdlg, IDC_LIGHTMAP_DENSITY, label, 0);
+        bool matched = props.lightmap_density == 0;
+        const int off = alpine_dlg_combo_add(hdlg, IDC_LIGHTMAP_DENSITY, "Off", alpine_lightmap::density_off);
+        if (props.lightmap_density == alpine_lightmap::density_off) {
+            sel = off;
+            matched = true;
+        }
+        static constexpr std::uint8_t density_presets[] = {2, 4, 8, 16, 32, 64, 128};
+        for (std::uint8_t value : density_presets) {
+            std::snprintf(label, sizeof(label), "%u", value);
+            const int item = alpine_dlg_combo_add(hdlg, IDC_LIGHTMAP_DENSITY, label, value);
+            if (props.lightmap_density == value) {
+                sel = item;
+                matched = true;
+            }
+        }
+        if (!matched) {
+            std::snprintf(label, sizeof(label), "%u (custom)", props.lightmap_density);
+            sel = alpine_dlg_combo_add(hdlg, IDC_LIGHTMAP_DENSITY, label, props.lightmap_density);
+        }
+        SendMessageA(density, CB_SETCURSEL, sel, 0);
+    }
+
+    if (HWND compression = GetDlgItem(hdlg, IDC_LIGHTMAP_COMPRESSION)) {
+        SendMessageA(compression, CB_RESETCONTENT, 0, 0);
+        static const char* const mode_names[] = {"Quality", "Balanced", "Compact"};
+        for (int i = 0; i < 3; i++) {
+            alpine_dlg_combo_add(hdlg, IDC_LIGHTMAP_COMPRESSION, mode_names[i], i);
+        }
+        SendMessageA(compression, CB_SETCURSEL, std::min<int>(props.lightmap_compression, 2), 0);
+    }
+}
+
+static std::uint8_t read_combo_u8(HWND hdlg, int id, std::uint8_t fallback)
+{
+    const LRESULT data = alpine_dlg_combo_data(hdlg, id, fallback);
+    return data < 0 || data > 255 ? fallback : static_cast<std::uint8_t>(data);
+}
+
+// D3D11-only lightmaps stands in for the stock section with the surface charts, which legacy lighting
+// and an Off density never bake.
+static void update_lightmap_controls(HWND hdlg)
+{
+    const bool legacy = IsDlgButtonChecked(hdlg, IDC_LEGACY_LIGHTING) == BST_CHECKED;
+    const bool off = alpine_dlg_combo_data(hdlg, IDC_LIGHTMAP_DENSITY, 0) == alpine_lightmap::density_off;
+    if (HWND d3d11_only = GetDlgItem(hdlg, IDC_D3D11_ONLY_LIGHTMAPS)) {
+        EnableWindow(d3d11_only, !legacy && !off);
     }
 }
 
@@ -1007,6 +1261,10 @@ static LRESULT CALLBACK LevelDialogSubclassProc(HWND hwnd, UINT msg, WPARAM wpar
         read_sun_color_text(hwnd, g_sun_color_r, g_sun_color_g, g_sun_color_b);
         update_sun_color_controls(hwnd);
         return 0;
+    }
+    if (msg == WM_COMMAND && ((LOWORD(wparam) == IDC_LEGACY_LIGHTING && HIWORD(wparam) == BN_CLICKED) ||
+                              (LOWORD(wparam) == IDC_LIGHTMAP_DENSITY && HIWORD(wparam) == CBN_SELCHANGE))) {
+        update_lightmap_controls(hwnd);
     }
     if (msg == WM_NCDESTROY) {
         SetWindowLongPtrA(hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(orig));
@@ -1039,6 +1297,10 @@ CodeInjection CLevelDialog_OnInitDialog_patch{
         CheckDlgButton(hdlg, IDC_INVISIBLE_FACES_OCCLUDE, alpine_level_props.invisible_faces_occlude ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hdlg, IDC_ALPHA_FACES_OCCLUDE, alpine_level_props.alpha_faces_occlude ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hdlg, IDC_MESHES_OCCLUDE, alpine_level_props.meshes_occlude ? BST_CHECKED : BST_UNCHECKED);
+        CheckDlgButton(hdlg, IDC_D3D11_ONLY_LIGHTMAPS,
+                       alpine_level_props.d3d11_only_lightmaps ? BST_CHECKED : BST_UNCHECKED);
+        init_lightmap_combos(hdlg, alpine_level_props);
+        update_lightmap_controls(hdlg);
 
         CheckDlgButton(hdlg, IDC_SUN_ENABLE, alpine_level_props.enable_sun ? BST_CHECKED : BST_UNCHECKED);
         std::snprintf(buffer, sizeof(buffer), "%.3f", alpine_level_props.sun_yaw);
@@ -1105,6 +1367,11 @@ CodeInjection CLevelDialog_OnOK_patch{
         alpine_level_props.invisible_faces_occlude = IsDlgButtonChecked(hdlg, IDC_INVISIBLE_FACES_OCCLUDE) == BST_CHECKED;
         alpine_level_props.alpha_faces_occlude = IsDlgButtonChecked(hdlg, IDC_ALPHA_FACES_OCCLUDE) == BST_CHECKED;
         alpine_level_props.meshes_occlude = IsDlgButtonChecked(hdlg, IDC_MESHES_OCCLUDE) == BST_CHECKED;
+        alpine_level_props.d3d11_only_lightmaps = IsDlgButtonChecked(hdlg, IDC_D3D11_ONLY_LIGHTMAPS) == BST_CHECKED;
+        alpine_level_props.lightmap_density =
+            read_combo_u8(hdlg, IDC_LIGHTMAP_DENSITY, alpine_level_props.lightmap_density);
+        alpine_level_props.lightmap_compression =
+            read_combo_u8(hdlg, IDC_LIGHTMAP_COMPRESSION, alpine_level_props.lightmap_compression);
 
         alpine_level_props.enable_sun = IsDlgButtonChecked(hdlg, IDC_SUN_ENABLE) == BST_CHECKED;
         float yaw = alpine_level_props.sun_yaw;
@@ -1147,22 +1414,91 @@ static VArray<int>& get_link_array(DedObject* obj)
     return obj->links;  // +0x7C for all object types
 }
 
-void DedLevel_DoLinkImpl(CDedLevel* level, bool reverse_link_direction)
+// Brushes are not DedObjects and never enter level->selection; selection state lives on the
+// BrushNode itself, so a brush picked alongside an object is invisible to the selection array.
+static std::vector<int> collect_selected_detail_brush_uids(CDedLevel* level)
 {
-    auto& sel = level->selection;
-    const int count = sel.get_size();
+    std::vector<int> uids;
 
-    if (count < 2) {
+    BrushNode* node = level->brush_list;
+    if (!node) {
+        return uids;
+    }
+    do {
+        if (node->state == BRUSH_STATE_SELECTED && node->is_detail) {
+            uids.push_back(node->uid);
+        }
+        node = node->next;
+    } while (node && node != level->brush_list);
+
+    return uids;
+}
+
+// Link an object to selected detail brushes by UID. The object always receives the links
+// whichever way the command was invoked, because a brush has no link array of its own.
+static void link_object_to_detail_brushes(DedObject* object, const std::vector<int>& brush_uids)
+{
+    // The source rule is_link_allowed applies, minus its nav point clause: that one needs an
+    // event destination, and a brush can only ever be a destination.
+    if (object->type != DedObjectType::DED_TRIGGER && object->type != DedObjectType::DED_EVENT) {
         g_main_frame->DedMessageBox(
-            "You must select at least 2 objects to create a link.",
+            "Links to brushes can only be created from Triggers and Events.",
             "Error",
             0
         );
         return;
     }
 
-    DedObject* primary = sel[0];
-    if (!primary) {
+    auto& links = get_link_array(object);
+
+    for (int brush_uid : brush_uids) {
+        const int old_size = links.get_size();
+        const int idx = links.add_if_not_exists_int(brush_uid);
+
+        if (idx < 0) {
+            xlog::warn("DoLink: Failed to add brush link src_uid={} brush_uid={}", object->uid, brush_uid);
+        }
+        else if (idx >= old_size) {
+            xlog::debug("DoLink: Added new brush link src_uid={} -> brush_uid={}", object->uid, brush_uid);
+        }
+        else {
+            xlog::debug("DoLink: Brush link already existed src_uid={} -> brush_uid={}", object->uid, brush_uid);
+        }
+    }
+}
+
+void DedLevel_DoLinkImpl(CDedLevel* level, bool reverse_link_direction)
+{
+    auto& sel = level->selection;
+    const int count = sel.get_size();
+    DedObject* primary = count > 0 ? sel[0] : nullptr;
+
+    // An emitter can't be a link source, so linking one to a Target aims it there instead.
+    if (!reverse_link_direction && count == 2 && primary && sel[1]
+        && sel[1]->type == DedObjectType::DED_TARGET) {
+        if (primary->type == DedObjectType::DED_BOLT_EMITTER) {
+            auto* bolt = static_cast<DedBoltEmitter*>(primary);
+            bolt->target_uid = sel[1]->uid;
+            bolt->sync_preview();
+            return;
+        }
+        if (primary->type == DedObjectType::DED_ROPE_EMITTER) {
+            static_cast<DedRopeEmitter*>(primary)->target_uid = sel[1]->uid;
+            return;
+        }
+    }
+
+    // One object plus one or more detail brushes reaches here as a single-object selection,
+    // which the object-only path can only report as an error.
+    if (count == 1 && primary) {
+        const std::vector<int> brush_uids = collect_selected_detail_brush_uids(level);
+        if (!brush_uids.empty()) {
+            link_object_to_detail_brushes(primary, brush_uids);
+            return;
+        }
+    }
+
+    if (count < 2 || !primary) {
         g_main_frame->DedMessageBox(
             "You must select at least 2 objects to create a link.",
             "Error",
@@ -1275,6 +1611,9 @@ void ApplyLevelPatches()
     CLevelDialog_OnInitDialog_patch.install();
     CLevelDialog_OnOK_patch.install();
 
+    // Refuse a Build Geometry that the address space cannot hold
+    build_geometry_start_hook.install();
+
     // Prevent geoable/breakable detail brushes from merging rooms with other brushes
     build_rooms_hook.install();
     adjacency_test_hook.install();
@@ -1286,7 +1625,7 @@ void ApplyLevelPatches()
     // adjacency test hook uses to identify which brush each compiled face belongs to.
     // The stock code skips Phase 1 on the first build after editor launch (flag at
     // 0x005774a0 starts at 0). Setting it to 1 ensures face_ids are always assigned.
-    write_mem<uint8_t>(0x005774a0, 1);
+    g_build_first_tick_pending = 1;
 
     // Avoid clamping lightmaps when loading rfl files
     AsmWriter{0x004A5D6A}.jmp(0x004A5D6E);
@@ -1302,4 +1641,7 @@ void ApplyLevelPatches()
 
     // Skip "objects outside of level" bounds check for some object types
     skip_alpine_objects_bounds_check.install();
+
+    // Mark see-through textures on moving group brush faces so alpha renders in game
+    flag_face_texture_traits_all_hook.install();
 }

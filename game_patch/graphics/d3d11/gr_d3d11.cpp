@@ -6,6 +6,7 @@
 #include "../../rf/gr/gr.h"
 #include "../../rf/v3d.h"
 #include "../../rf/gameseq.h"
+#include "../../rf/level.h"
 #include "../../rf/os/frametime.h"
 #include "../../rf/os/os.h"
 #include "../../bmpman/bmpman.h"
@@ -14,6 +15,7 @@
 #include "../../os/os.h"
 #include "../gr.h"
 #include "gr_d3d11.h"
+#include "gr_d3d11_af_lightmap.h"
 #include "gr_d3d11_context.h"
 #include "gr_d3d11_shader.h"
 #include "gr_d3d11_texture.h"
@@ -21,6 +23,8 @@
 #include "gr_d3d11_dynamic_geometry.h"
 #include "gr_d3d11_solid.h"
 #include "gr_d3d11_mesh.h"
+#include "gr_d3d11_decoration.h"
+#include "gr_d3d11_vfx.h"
 #include "gr_d3d11_entity_shadow.h"
 #include "gr_d3d11_outline.h"
 #include "gr_d3d11_gamma.h"
@@ -75,8 +79,12 @@ namespace gr::d3d11
         texture_manager_ = std::make_unique<TextureManager>(device_, context_);
         render_context_ = std::make_unique<RenderContext>(device_, context_, *state_manager_, *shader_manager_, *texture_manager_);
         dyn_geo_renderer_ = std::make_unique<DynamicGeometryRenderer>(device_, *shader_manager_, *render_context_);
-        solid_renderer_ = std::make_unique<SolidRenderer>(device_, *shader_manager_, *state_manager_, *dyn_geo_renderer_, *render_context_);
+        af_lightmap_renderer_ = std::make_unique<AfLightmapRenderer>(device_, context_);
+        solid_renderer_ = std::make_unique<SolidRenderer>(device_, *shader_manager_, *state_manager_, *dyn_geo_renderer_, *render_context_, *af_lightmap_renderer_);
         mesh_renderer_ = std::make_unique<MeshRenderer>(device_, *shader_manager_, *state_manager_, *render_context_);
+        decoration_renderer_ =
+            std::make_unique<DecorationRenderer>(device_, *shader_manager_, *render_context_, *mesh_renderer_);
+        vfx_renderer_ = std::make_unique<VfxMeshRenderer>(device_, *shader_manager_, *render_context_);
         entity_shadow_renderer_ = std::make_unique<EntityShadowRenderer>(device_, *shader_manager_, *mesh_renderer_);
         outline_renderer_ = std::make_unique<OutlineRenderer>(device_, *shader_manager_, *state_manager_, *render_context_);
         gamma_pass_ = std::make_unique<GammaPass>(device_, *shader_manager_);
@@ -487,19 +495,46 @@ namespace gr::d3d11
         depth_stencil_desc.Usage = D3D11_USAGE_DEFAULT;
         depth_stencil_desc.BindFlags = D3D11_BIND_DEPTH_STENCIL;
 
+        // A multisampled depth buffer the liquid pass can resolve out of.
         ComPtr<ID3D11Texture2D> depth_stencil;
-        DF_GR_D3D11_CHECK_HR(
-            device_->CreateTexture2D(&depth_stencil_desc, nullptr, &depth_stencil)
-        );
+        bool msaa_depth_readable = false;
+        if (use_msaa && device_->GetFeatureLevel() >= D3D_FEATURE_LEVEL_10_1) {
+            D3D11_TEXTURE2D_DESC readable_desc = depth_stencil_desc;
+            readable_desc.Format = DXGI_FORMAT_R24G8_TYPELESS;
+            readable_desc.BindFlags |= D3D11_BIND_SHADER_RESOURCE;
+            msaa_depth_readable =
+                SUCCEEDED(device_->CreateTexture2D(&readable_desc, nullptr, &depth_stencil));
+        }
 
         D3D11_DEPTH_STENCIL_VIEW_DESC view_desc{};
         view_desc.ViewDimension = use_msaa
             ? D3D11_DSV_DIMENSION_TEXTURE2DMS
             : D3D11_DSV_DIMENSION_TEXTURE2D;
+        if (msaa_depth_readable) {
+            // A typeless resource has no view format to inherit
+            view_desc.Format = DXGI_FORMAT_D24_UNORM_S8_UINT;
+            const HRESULT hr =
+                device_->CreateDepthStencilView(depth_stencil, &view_desc, &depth_stencil_view_);
+            if (FAILED(hr)) {
+                // The depth buffer itself must not be lost over this, so drop the readable form
+                xlog::warn("Failed to create a depth stencil view on the readable depth buffer: {:x}",
+                           static_cast<uint32_t>(hr));
+                depth_stencil.release();
+                msaa_depth_readable = false;
+                view_desc.Format = DXGI_FORMAT_UNKNOWN;
+            }
+        }
 
-        DF_GR_D3D11_CHECK_HR(
-            device_->CreateDepthStencilView(depth_stencil, &view_desc, &depth_stencil_view_)
-        );
+        if (!msaa_depth_readable) {
+            DF_GR_D3D11_CHECK_HR(
+                device_->CreateTexture2D(&depth_stencil_desc, nullptr, &depth_stencil)
+            );
+            DF_GR_D3D11_CHECK_HR(
+                device_->CreateDepthStencilView(depth_stencil, &view_desc, &depth_stencil_view_)
+            );
+        }
+
+        scene_depth_.reset(device_, context_, depth_stencil);
     }
 
     bool Renderer::supports_sample_count(const uint32_t sample_count) {
@@ -962,7 +997,18 @@ namespace gr::d3d11
         // projection to apply, so the widened far plane reaches begin_frame and the frustum setup.
         if (render_target_bm_handle_ == -1 && liquid_update_frame_ != rf::frame_count) {
             liquid_update_frame_ = rf::frame_count;
-            proj = render_context_->update_liquid_fx(proj, rf::gr::eye_pos, rf::gr::eye_matrix);
+            // The depth copy is only worth allocating where a liquid surface will read it. The
+            // state still holds last frame's answer here, so the frame a liquid room first comes
+            // into range runs without the clamp; the buffer is ready from the next one on.
+            const LiquidState& prev = render_context_->liquid_state();
+            const bool want_depth = g_alpine_game_config.underwater_fx >= 2
+                && prev.mode != 0 && !prev.eye_under
+                && scene_depth_.ensure(device_, context_, *shader_manager_);
+            // The capture gate reads this so it can only run when the frame's uploaded
+            // depth_mode is non-zero — prev state makes re-deriving it later disagree.
+            scene_depth_wanted_ = want_depth;
+            proj = render_context_->update_liquid_fx(proj, rf::gr::eye_pos, rf::gr::eye_matrix,
+                                                    want_depth ? scene_depth_.mode() : 0.0f);
         }
         render_context_->update_view_proj_transform(proj);
         // Only initialize outlines when rendering to the back buffer, and only after the
@@ -1002,16 +1048,38 @@ namespace gr::d3d11
         entity_shadow_renderer_->bind_shadow_resources(context_);
 
         solid_renderer_->render_solid(solid, rooms, num_rooms);
+        // With the opaque world, before objects and alpha detail draw over it
+        if (solid == rf::level.geometry && !solid_renderer_->decoration_chunks().empty()) {
+            decoration_renderer_->render(solid, solid_renderer_->decoration_chunks());
+        }
     }
 
-    void Renderer::render_movable_solid(rf::GSolid* solid, const rf::Vector3& pos, const rf::Matrix3& orient)
+    void Renderer::render_movable_solid(rf::GSolid* solid, const rf::Vector3& pos, const rf::Matrix3& orient,
+        bool include_alpha)
     {
         dyn_geo_renderer_->flush();
-        solid_renderer_->render_movable_solid(solid, pos, orient);
+        solid_renderer_->render_movable_solid(solid, pos, orient, include_alpha);
+    }
+
+    bool Renderer::movable_solid_has_alpha(rf::GSolid* solid)
+    {
+        return solid_renderer_->movable_solid_has_alpha(solid);
+    }
+
+    void Renderer::render_movable_solid_alpha(rf::GSolid* solid, const rf::Vector3& pos, const rf::Matrix3& orient)
+    {
+        // Flush outlines before see-through solid faces render. Those faces write depth
+        // (ZBUFFER_TYPE_FULL_ALPHA_TEST), so a depth-tested outline queued during the object
+        // phase is rejected wherever they got there first. Draining the queue here instead of
+        // leaving it to whichever sorted item happens to flush next keeps outlines in front.
+        outline_renderer_->flush(*mesh_renderer_);
+        dyn_geo_renderer_->flush();
+        solid_renderer_->render_movable_solid_alpha(solid, pos, orient);
     }
 
     void Renderer::render_alpha_detail_room(rf::GRoom *room, rf::GSolid *solid)
     {
+        outline_renderer_->flush(*mesh_renderer_);
         dyn_geo_renderer_->flush();
         solid_renderer_->render_alpha_detail(room, solid);
     }
@@ -1031,6 +1099,21 @@ namespace gr::d3d11
         // contaminating outline colors.
         outline_renderer_->flush(*mesh_renderer_);
         dyn_geo_renderer_->flush();
+        // Snapshot the depth buffer once, before the first surface of the frame reads it: the
+        // world, its objects and the outlines are all in by now, and taking it here keeps a
+        // surface from bounding its own column on a surface drawn earlier this frame.
+        if (scene_depth_wanted_ && render_target_bm_handle_ == -1
+            && scene_depth_frame_ != rf::frame_count) {
+            scene_depth_frame_ = rf::frame_count;
+            if (scene_depth_.capture(context_)) {
+                // The multisampled resolve drew with its own pipeline state. Only reachable with
+                // the back buffer as the target, so the default view is the one to come back to.
+                render_context_->invalidate_cached_state();
+                render_context_->set_render_target(default_render_target_view_, depth_stencil_view_);
+                render_context_->set_clip();
+                render_context_->set_cull_mode(D3D11_CULL_BACK);
+            }
+        }
         // Disable shadows for liquid surfaces — shadows pass through water/lava
         // and land on the solid geometry below
         entity_shadow_renderer_->disable_shadow_rendering(context_);
@@ -1134,7 +1217,9 @@ namespace gr::d3d11
             return false;
         }
         const LiquidState& liquid = render_context_->liquid_state();
-        if (liquid.mode == 0) {
+        // The overlay is about the liquid the camera is standing in; a room it can only see into
+        // still feeds the fog volumes but must not put a waterline on the screen.
+        if (liquid.mode == 0 || !liquid.eye_room_liquid) {
             return false;
         }
         // The near plane reaches near_dist / proj_sy above the eye, so liquid can still cover
@@ -1234,9 +1319,36 @@ namespace gr::d3d11
         solid_renderer_->clear_cache();
     }
 
+    void Renderer::release_detail_room_cache(rf::GRoom* room)
+    {
+        solid_renderer_->release_detail_room_cache(room);
+    }
+
     void Renderer::reset_solid_cache_after_boolean()
     {
         solid_renderer_->reset_cache_after_boolean();
+    }
+
+    void Renderer::release_terrain_gpu()
+    {
+        solid_renderer_->release_terrain_gpu();
+        decoration_renderer_->release();
+    }
+
+    bool Renderer::upload_af_lightmap_atlas(const alpine_lightmap::ReadResult& section,
+                                            const std::vector<std::uint8_t>& blocks)
+    {
+        return af_lightmap_renderer_->upload(section, blocks);
+    }
+
+    void Renderer::release_af_lightmap_atlas()
+    {
+        af_lightmap_renderer_->release();
+    }
+
+    bool Renderer::af_lightmap_atlas_live() const
+    {
+        return af_lightmap_renderer_->live();
     }
 
     void Renderer::render_v3d_vif(rf::VifLodMesh *lod_mesh, int lod_index, const rf::Vector3& pos, const rf::Matrix3& orient, const rf::MeshRenderParams& params, bool skip_ambient_cache)
@@ -1267,6 +1379,14 @@ namespace gr::d3d11
         }
 
         outline_renderer_->maybe_queue_bag_outline(lod_mesh, lod_index, pos, orient);
+    }
+
+    void Renderer::render_vfx(rf::VfxSfxoRenderObj* obj, float frame)
+    {
+        // Keep ordering against gr_poly-drawn geometry (billboard vfx chunks, particles)
+        dyn_geo_renderer_->flush();
+        render_context_->set_draw_room_uid(object_room_uid_);
+        vfx_renderer_->render(obj, frame);
     }
 
     void Renderer::render_character_vif(rf::VifLodMesh *lod_mesh, int lod_index, const rf::Vector3& pos, const rf::Matrix3& orient, const rf::CharacterInstance *ci, const rf::MeshRenderParams& params, bool skip_ambient_cache)
@@ -1333,6 +1453,7 @@ namespace gr::d3d11
     void Renderer::flush_caches()
     {
         mesh_renderer_->flush_caches();
+        vfx_renderer_->clear_cache();
         // Runs from level_page_out_injection, so it doubles as the level-change reset
         damage_vignette_ = {};
     }

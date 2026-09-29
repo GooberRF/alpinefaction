@@ -1,7 +1,7 @@
 ⚙️⛏ Alpine Faction Changelog ⛏⚙️
 ===================================
 
-Version 1.5.0 (TBD): Not yet released
+Version 1.5.0 (Trillium): Not yet released
 --------------------------------
 ### Major features
 [@AL2009man](https://github.com/AL2009man) & [@nickalreadyinuse](https://github.com/nickalreadyinuse)
@@ -43,29 +43,74 @@ Version 1.5.0 (TBD): Not yet released
   - `Affects mesh lighting` lights meshes and entities per pixel from the sun direction, with `Scale mesh sunlight by lightmaps` to keep sunlight out of unlit interiors
   - `Aligns dynamic shadows` points entity shadows along the sun instead of the fixed default direction
   - `Water blocks sunlight` stops sun rays at liquid surfaces during the bake
+- Add Alpine Lightmaps, providing higher-resolution, BC7-compressed lightmaps for brushwork, movers, and terrain
+- Add heightmap-based `Terrain` object to level editor
+  - Support blended texture layers, holes, optional skirts, per-terrain lightmap density, and optional fullbright
+  - Import 8/16-bit greyscale PNG and RAW16 heightmaps, export 16-bit PNG and RAW16 heightmaps, and import splat maps
+  - Generate heightmaps using fractal noise with optional splat map from height, slope and ridges
+  - Sculpt heights, paint texture layers and holes, and pick geoable chunks in the viewport with `Terrain Tools`
+  - Up to 4 detail overlays (leaves, debris) and 8 mesh decoration layers per terrain (grass, rocks, bushes)
+  - `Geoable` terrains are carved by RF2-style geomod craters, with their own underside and crater textures
 
 ### Minor features, changes, and enhancements
 [@GooberRF](https://github.com/GooberRF)
 - Notify players in a server that is recording demos
 - Restore cut first person weapon aim sway, toggleable with `cl_weaponsway`
+- Add `cl_freelookslide` to scale the acceleration and deceleration slide of the freelook camera
 - Add terms of use and notices document to installer
 - Add compatibility table (lightmap clamp floor) for `dm-halloween.rfl`
 - Bump RFL version to 306
 - Add `Display_Projection` event and `Projection Camera` object for rendering live camera views onto ATX textures (Direct3D 11 renderer only)
+- Add `Rope_State` event to switch `Rope Emitter` objects on and off at runtime
+- Add `Rope Emitter` object for ropes, cables, and power lines, with optional decorations
 - Add flames to gib chunks thrown by exploding entities, toggleable with `cl_gibflames`
 - Add `Jetpacks explode` option to the Jetpacks mutator
 - Add underwater rendering effects — animated caustics, depth-based water fog with a waterline, screen tint/vignette and distortion — with quality levels 0-3 via `r_underwater` (Direct3D 11 renderer only)
 - Extend view distance while submerged at `r_underwater` 2 or higher, up to 4x the liquid visibility, with the extension capped at the normal far clip
 - Add edge-vignette damage feedback as `cl_damageflash 2` (Direct3D 11 renderer only); `cl_damageflash` is now a level: 0 off, 1 screen flash, 2 vignette
 - Add `Brush` collision mode for Alpine Mesh objects
+- Add `Brush Geo` source selection for Alpine Mesh objects using `Brush` collision, allowing custom collision hulls
 - Raise level editor per-room and per-mesh render vertex limit from 8000 to 32768
-- Add `-bake in.rfl -bakeout out.rfl` launcher command line switches to calculate a level's lighting without user interaction, writing the result to a new level file and progress to a log beside it
+- Add `-bake in.rfl -bakeout out.rfl` launcher command line switches to build a level's geometry and calculate its lighting without user interaction, writing the result to a new level file and progress to a log beside it
 - Add `High-resolution lightmaps` level property, used in lightmap bake in level editor
 - Deprecate and remove `-smoothlights` level editor switch
 - Add `dbg_collision_pairs` console command to print object collision pair pool statistics
+- Add `sv_afstats_events_reset` console command to clear a stuck stats event send, a 401 pause, or a stretched retry pulse and resume the stream without discarding queued events
+- Add rcon profile access to `sv_afstats` and `sv_fflink` commands and make status commands return their output to the rcon holder
+- Use the modern Windows file dialogs for every open and save in the level editor
+- Always render meshes at their highest LOD in the level editor
+- Make a mesh exported from a brush in the level editor immediately usable as a `Mesh` object
+- Add `To Brush` to the `Select Objects` window in the level editor, converting `Mesh` objects into detail brushes
+- Add a mesh browser to the level editor for picking meshes and animations for `Mesh` objects
+- Add a new and modern color picker to the level editor
+- Add click and drag spinner arrows to the numeric fields on the `Corona` and `Weather Region` object dialogs in the level editor
+- Show a live viewport preview while editing `Corona` and `Rope Emitter` properties in the level editor, so the fields being typed are what the viewport draws
+- Draw `Weather Region` sprites in the level editor at the same size as `Room Effect` sprites, and highlight selected regions in aqua
+- Consolidate duplicated Alpine object internals into shared machinery in the game and level editor, and harden level file parsing for `Corona`, `Bag` and `Weather Region` objects against corrupted data
+- Turning off `Mesh_Animate` now pauses the animation playing on the meshes it links to, and turning it back on with the same animation and type resumes it from the frozen pose
+- Add `Climbing_Region_State` event to toggle climbing regions
+- Support moving climbing regions with `Anchor_Marker` and `Anchor_Marker_Orient`
+- Add `When_Destroyed` catalyst event, which activates its links when the destructible detail brushes it links to are destroyed
+- Support linking events and triggers to detail brushes in the level editor
+- Linking a `Bolt Emitter` or `Rope Emitter` to a `Target` in the level editor sets the emitter's target to it
+- `Owner_Gate` can now take its capture points from linked `Capture_Point_Handler` events
+- Retain RED+-specific chunks when RFLs are loaded and re-saved in the level editor
+- Make third person spectate an over-the-shoulder camera, and stop third person and orbit spectate cameras from clipping through walls
+- Switching from a spectated player to free look starts the free look camera at the current view instead of where free look was last left
+- Show the spectated player's jetpack fuel gauge in third person spectate and when `spectate_minui` is enabled
+- Add `cl_dominationmsgs` console command to toggle display of dominating and revenge server messages in chat
+- Add `dbg_terrain_batches` console command to tint terrain faces by render batch (Direct3D 11 renderer only)
+- Add `dbg_terrain_decorations` console command to toggle terrain mesh decorations and print their draw statistics
+- Levels saved with `D3D11-only lightmaps` refuse to load with the Direct3D 8/9 renderers
+- Speed up `Calculate Lighting` in the level editor, especially on large levels and levels with very many lightmap surfaces
+- Improve level loading and `Build Geometry` times in the level editor on levels with many faces
+- Draw large rooms in fewer draw calls, and skip rooms without dynamic decals when drawing them (Direct3D 11 renderer only)
+- Make level editor refuse to open levels saved by a newer version of Alpine Faction instead of misreading them
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Add `ui_color_console` console command to set the console background color
+- Render animated (`.vfx`) meshes on the GPU with per-pixel lighting, and apply their materials' reflection maps (Direct3D 11 renderer only)
+- Load levels with very large face counts or many level sounds much faster
 
 [@is-this-c](https://github.com/is-this-c)
 - Do not kick a player, if they join right before limbo
@@ -73,6 +118,9 @@ Version 1.5.0 (TBD): Not yet released
 [@AL2009man](https://github.com/AL2009man)
 - Add `GamepadRawInput` option (via `alpine_settings.ini`) to enable RawInput driver for better handling of XInput controllers, while allowing Trigger Rumble/Impulse Trigger support.
 - Add the ability to scroll through Alpine Settings menu panels with the mouse wheel or right stick, enabling more options in the near future. As of this version: this only applies for Input settings panel 
+
+[@is-this-c](https://github.com/is-this-c)
+- Allow TrueType fonts to be rendered into bitmaps with mipmaps (D3D11 only)
 
 ### Bug fixes
 [@GooberRF](https://github.com/GooberRF)
@@ -87,6 +135,62 @@ Version 1.5.0 (TBD): Not yet released
   - Fix several accuracy issues on face edges that resulted in dark bands and splotches along polygon boundaries
   - Blend coplanar surfaces across room boundaries
 - Fix object collision pairs silently running out on levels with many collidable clutter objects, triggers, and items when many players are connected
+- Fix FactionFiles stats event reporting stalling permanently when a send attempt hangs inside WinINet
+- Fix level editor crashing when a mesh is played with an animation that does not fit its skeleton
+- Fix level editor crashing when a Direct3D buffer lock fails
+- Fix level editor crashing when a Weather Region's snow `Bitmap` names a loose file instead of one inside a packfile
+- Fix a one frame flash to the default pose each time an animation loops on a mesh being simulated in the level editor
+- Update Weather Region bounds in viewport live when values are changed
+- Fix the fusion not being in-scope for the `Delayed Supers` mutator
+- Fix `Set_Light_Color` discarding the intensity of the lights it links to
+- Fix level editor packfile creation to include the frames and alpha mask of ATX textures used on faces and decals, and to include `.atx` files referenced by a legacy texture name
+- Fix crash when a bone, tag, or prop point is queried on a character whose mesh file contains no submeshes, or when such a character's weapon or textures are preloaded for rendering
+- Fix items not rotating correctly when out of view or when viewed through a Projection Camera
+- Fix Alpine Mesh objects using skeletal meshes receiving no light from the level in the `Ambient` and `Vertex` mesh lighting modes
+- Fix meshes keeping stale vertex lighting after the mesh lighting mode is changed until the level is reloaded
+- Fix objects and effects behind see-through faces of mover brushes being hidden by those faces
+- Fix alpha textures on detail brushes in moving groups rendering opaque in game
+- Fix player outlines seen through see-through geometry disappearing depending on view direction
+- Fix headless bot crash when a level references a texture by a file extension the stock bitmap loader does not support (e.g. `.dds`) and it cannot be loaded
+- Fix `Fuse` and `Carve` in the level editor dumping the textures and texture coordinates of faces taken from the later brush
+- Fix undoing `Fuse` in the level editor taking two steps
+- Fix level editor crashing or corrupting undo history when undoing, redoing, or autosaving while moving, rotating, or scaling in a viewport
+- Fix bolt emitters imported as part of a group in the level editor keeping their old target when the target object is renumbered to avoid a UID conflict
+- Fix bolt emitters pasted in the level editor together with their target still targeting the original object
+- Fix geoable brush supports not being properly recognized if buried in level geometry
+- Fix level editor crashing when moving decals in a level with more than 128 decals
+- Fix copying and pasting face textures in level editor texture mode removing Alpine objects from the clipboard or unintentionally pasting them into the level
+- Remove the level editor warning about levels with too many decals
+- Fix `Owner_Gate`, `Add_Link`, `Clone_Entity`, `Valid_Gate`, the trigger of `Inside_Gate`, and the eye anchor of `Set_Skybox` keeping the old UID when the object they reference is renumbered by a group import or pasted along with them in the level editor
+- Fix `Score Limit Override` mutator not working in Wipeout
+- Fix faces created by `Split` and `Bridge` in the level editor sharing an ID, which made them share scrolling texture settings and could map geoable or breakable brushes to the wrong room when saving before rebuilding
+- Fix dedicated servers and headless bots using the Win32 console hanging when printing certain text
+- Fix dedicated server crashing when a `Clone_Entity` or `Set_Player_World_Collide` event is activated, and `Clone_Entity` crashing when the entity cannot be created
+- Fix `HUD_Message` crashing the game with certain message text
+- Improve validation of ATX texture files
+- Improve validation of `mapname_info.tbl`
+- Fix dedicated server crashes in certain level rotation configurations
+- Improve rcon failed login attempt handling
+- Fix a player joining mid-match occasionally being treated as a match participant after a participant leaves
+- Fix weapon select HUD reading and writing out of bounds for weapons past the 32nd entry in `weapons.tbl`
+- Fix Alpine event variable handler data leaking across level loads
+- Harden team change and server info packet handling against malformed data
+- Stop writing FactionFiles link tokens to the launcher log
+- Fix RF2-style geomod craters near the edge of a geoable brush not carving a neighboring geoable brush that the crater reaches
+- Fix RF2-style geomod giving up on geoable rooms with more than 5000 faces
+- Fix crash when a decal is created in a room containing a very large number of detail brushes
+- Fix Direct3D 8/9 renderer geometry cache overflowing with more than 256 rooms or detail rooms in view
+- Fix Direct3D 8/9 renderer rebuilding every room's render cache each frame while a room with more than 8000 vertices is in view
+- Fix level editor memory use growing with every `Build Geometry` and `Calculate Lighting` because the Direct3D textures of discarded lightmaps were never released
+- Fix level editor crashing when Direct3D fails to create a texture
+- Stop `Build Geometry` and `Calculate Lighting` in the level editor with a message when too little memory is left to finish them (instead of crashing)
+- Reduce the memory `Calculate Lighting` needs in the level editor, and how much of it must be in one piece
+- Fix level editor crashing in `Calculate Lighting` when a level needs more than 32767 lightmap surfaces; faces past the limit are left without a lightmap and the editor warns
+- Fix geomod craters creating new lightmap surfaces on every crater once a level holds more than 32767 of them
+- Fix memory corruption when more than 1024 rooms are visible at once
+- Fix geomod crater relighting converting lightmap texels beyond the relit surface, which could write past the end of the lightmap for a surface at the bottom of a lightmap page
+- Fix a possible out-of-bounds read when drawing dynamic decals (Direct3D 11 renderer only)
+- Fix level editor crashing when more than 128 semi-transparent detail brushes in one room are in view
 
 [@is-this-c](https://github.com/is-this-c)
 - Let `Caps Lock` capitalize
@@ -94,6 +198,12 @@ Version 1.5.0 (TBD): Not yet released
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Cap FPS-dependent launch velocity when head jumping
 - Fix landing sound spam on ramps and jump pads at high FPS
+- Fix reload animation playing in third person for other players when client tries to reload with a full clip/magazine
+- Fix lighting for pistol silencer and remote charge detonator
+- Fix third-person crouch animations on remote players flickering and snapping
+
+### Imported libraries
+- [bc7enc_rdo](https://github.com/richgel999/bc7enc_rdo) by Richard Geldreich, Jr.
 
 
 Version 1.4.0 (Lupin): Released Aug-25-2026

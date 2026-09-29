@@ -1,6 +1,5 @@
 #include <windows.h>
 #include <commctrl.h>
-#include <commdlg.h>
 #include <cstdio>
 #include <cstring>
 #include <cstdint>
@@ -13,6 +12,7 @@
 #include <patch_common/CodeInjection.h>
 #include <patch_common/FunHook.h>
 #include "mesh.h"
+#include "mesh_browser.h"
 #include "mfc_types.h"
 #include "level.h"
 #include "resources.h"
@@ -27,19 +27,6 @@ extern "C" IMAGE_DOS_HEADER __ImageBase;
 // Forward declarations
 static void mesh_apply_texture_overrides(DedMesh* mesh);
 
-static const char* get_meshes_dir()
-{
-    static char path[MAX_PATH] = {};
-    if (!path[0]) {
-        DWORD len = GetModuleFileNameA(NULL, path, MAX_PATH);
-        if (len == 0 || len >= MAX_PATH) { path[0] = '\0'; return path; }
-        char* last_sep = strrchr(path, '\\');
-        if (last_sep) *(last_sep + 1) = '\0';
-        strcat_s(path, "user_maps\\meshes");
-    }
-    return path;
-}
-
 // DedObject::vmesh is void* (stock struct), this helper provides typed access
 static EditorVMesh* get_vmesh(DedMesh* mesh) { return static_cast<EditorVMesh*>(mesh->vmesh); }
 
@@ -47,8 +34,6 @@ static EditorVMesh* get_vmesh(DedMesh* mesh) { return static_cast<EditorVMesh*>(
 static std::unordered_map<EditorVMesh*, int> g_v3c_action_cache;
 // Track whether simulate_in_editor was active when the action was last set up
 static std::unordered_map<EditorVMesh*, bool> g_v3c_action_simulating;
-// Track elapsed time for manually looping one-shot actions in simulate mode
-static std::unordered_map<EditorVMesh*, float> g_v3c_action_elapsed;
 
 // ─── VMesh Loading ──────────────────────────────────────────────────────────
 
@@ -59,17 +44,21 @@ static bool mesh_play_v3c_action(EditorVMesh* vmesh, const char* action_name,
     if (vmesh->type != VMESH_TYPE_CHARACTER) return false;
     if (!vmesh->mesh) return false;
 
-    // Verify the animation file exists before loading (character_mesh_load_action
-    // returns 0 rather than -1 for missing files, which leads to garbage animation data)
-    rf::File file;
-    if (!file.open(action_name)) {
-        xlog::warn("[Mesh] Animation file '{}' not found, skipping", action_name);
+    // Recorded before the attempt, so an animation that cannot be played is not revalidated and
+    // warned about on every frame the simulate flag is compared against it.
+    g_v3c_action_simulating[vmesh] = simulate;
+
+    // character_mesh_load_action returns 0 rather than -1 for a missing file, and the engine
+    // indexes an animation's bone table with the character's own bone index without a bounds
+    // check, so the file has to be proven readable and compatible before it is handed over.
+    if (!alpine_anim_playable_on(vmesh, action_name)) {
+        xlog::warn("[Mesh] Animation '{}' is missing or not compatible with this mesh, skipping",
+                   action_name);
         return false;
     }
 
-    // Always load as one-shot (is_state=0). vmesh_play_action_by_index silently
-    // ignores state actions (is_state=1), so we must use one-shot and manually
-    // handle looping by restarting the action when it expires.
+    // Always load as one-shot (is_state=0). ci_play_action (0x004DC090) refuses state actions
+    // outright, so looping is ours to drive.
     int action_index = character_mesh_load_action(vmesh->mesh, action_name, 0, 0);
     if (action_index < 0) {
         xlog::warn("[Mesh] Failed to load animation '{}' on vmesh {:p}", action_name, static_cast<void*>(vmesh));
@@ -82,29 +71,32 @@ static bool mesh_play_v3c_action(EditorVMesh* vmesh, const char* action_name,
     }
 
     g_v3c_action_cache[vmesh] = action_index;
-    g_v3c_action_simulating[vmesh] = simulate;
-    g_v3c_action_elapsed[vmesh] = 0.0f;
 
-    vmesh_stop_all_actions(vmesh);
-    vmesh_play_action_by_index(vmesh, action_index, 1.0f, 0);
+    mesh_play_v3c_action_looping(vmesh, action_index);
     return true;
 }
 
-void mesh_load_vmesh(DedMesh* mesh)
+// The fourth argument is ci_play_action's hold flag: instead of zeroing the action's weight and
+// dropping it from the list, the instance clamps the action at end_time and raises action_held,
+// which is what makes completion observable. ci_play_action writes the slot weight directly at
+// full value and resets the time in the same call, so nothing else is needed to restart.
+void mesh_play_v3c_action_looping(EditorVMesh* vmesh, int action_index)
 {
-    if (!mesh) return;
+    vmesh_stop_all_actions(vmesh);
+    vmesh_play_action_by_index(vmesh, action_index, 1.0f, 1);
+}
 
-    // Free existing vmesh if any
-    if (auto* v = get_vmesh(mesh)) {
-        g_v3c_action_cache.erase(v);
-        g_v3c_action_simulating.erase(v);
-        g_v3c_action_elapsed.erase(v);
-        vmesh_free(v);
-        mesh->vmesh = nullptr;
+bool mesh_v3c_action_finished(EditorVMesh* vmesh)
+{
+    if (!vmesh || !vmesh->instance) {
+        return false;
     }
+    return static_cast<const EditorCharacterInstance*>(vmesh->instance)->action_held != 0;
+}
 
-    const char* filename = mesh->mesh_filename.c_str();
-    if (!filename || filename[0] == '\0') return;
+EditorVMesh* mesh_load_vmesh_file(const char* filename)
+{
+    if (!filename || filename[0] == '\0') return nullptr;
 
     auto ext = get_ext_from_filename(filename);
 
@@ -129,20 +121,42 @@ void mesh_load_vmesh(DedMesh* mesh)
         }
     }
 
-    mesh->vmesh = vmesh;
-    mesh->vmesh_load_failed = (vmesh == nullptr);
     if (vmesh) {
         // Clear replacement material state to prevent stale data from memory reuse
         // (e.g. VFX vmesh freed then V3M allocated at same address with leftover flags)
         vmesh->replacement_materials = nullptr;
         vmesh->use_replacement_materials = false;
 
-        auto vtype = vmesh_get_type(vmesh);
         // Initialize VFX animation state (matches stock item setup in FUN_004151c0)
-        if (vtype == VMESH_TYPE_ANIM_FX) {
+        if (vmesh_get_type(vmesh) == VMESH_TYPE_ANIM_FX) {
             vmesh_anim_init(vmesh, 0, 1.0f);
             vmesh_process(vmesh, 0.0f, 0, nullptr, nullptr, 1);
         }
+    }
+    return vmesh;
+}
+
+void mesh_load_vmesh(DedMesh* mesh)
+{
+    if (!mesh) return;
+
+    // Free existing vmesh if any
+    if (auto* v = get_vmesh(mesh)) {
+        g_v3c_action_cache.erase(v);
+        g_v3c_action_simulating.erase(v);
+        vmesh_free(v);
+        mesh->vmesh = nullptr;
+    }
+
+    const char* filename = mesh->mesh_filename.c_str();
+    if (!filename || filename[0] == '\0') return;
+
+    EditorVMesh* vmesh = mesh_load_vmesh_file(filename);
+
+    mesh->vmesh = vmesh;
+    mesh->vmesh_load_failed = (vmesh == nullptr);
+    if (vmesh) {
+        auto vtype = vmesh_get_type(vmesh);
         // Play state animation for v3c skeletal meshes
         if (vtype == VMESH_TYPE_CHARACTER) {
             const char* anim = mesh->state_anim.c_str();
@@ -244,7 +258,6 @@ void DestroyDedMesh(DedMesh* mesh)
     if (auto* v = get_vmesh(mesh)) {
         g_v3c_action_cache.erase(v);
         g_v3c_action_simulating.erase(v);
-        g_v3c_action_elapsed.erase(v);
         vmesh_free(v);
         mesh->vmesh = nullptr;
     }
@@ -335,6 +348,12 @@ void mesh_serialize_chunk(CDedLevel& level, rf::File& file)
     // Per-object flag block appended after the last record; read back only from rfl v306+.
     for (auto* mesh : meshes) {
         file.write<uint8_t>(mesh->no_shadow_cast ? 1 : 0);
+    }
+
+    // Per-object brush geometry source block; read back only from rfl v306+.
+    for (auto* mesh : meshes) {
+        file.write<uint8_t>(mesh->brush_geo_source);
+        write_rfl_string(file, mesh->collision_mesh_filename);
     }
 
     level.EndRflSection(file, start_pos);
@@ -473,6 +492,19 @@ void mesh_deserialize_chunk(CDedLevel& level, rf::File& file, std::size_t chunk_
             meshes[first_mesh + i]->no_shadow_cast = (flags != 0);
         }
     }
+
+    // Trailing per-object brush geometry source block, appended after the flag block in rfl v306.
+    if (content_version >= 306 && loaded == count && remaining >= static_cast<std::size_t>(count) * 3) {
+        for (uint32_t i = 0; i < count; i++) {
+            uint8_t source = 0;
+            if (!read_bytes(&source, sizeof(source))) return;
+            auto* mesh = meshes[first_mesh + i];
+            mesh->brush_geo_source = (source <= 2) ? source : 0;
+            std::string cmname = read_rfl_string(file, remaining);
+            if (cmname.size() > rfl_mesh_name_max_len) cmname.clear();
+            mesh->collision_mesh_filename = std::move(cmname);
+        }
+    }
 }
 
 // ─── Property Dialog ────────────────────────────────────────────────────────
@@ -491,6 +523,8 @@ static std::string g_init_script_name;
 static std::string g_init_filename;
 static std::string g_init_state_anim;
 static int g_init_collision_mode;
+static int g_init_brush_geo; // MULTIPLE_COLLISION when the selection disagrees
+static std::string g_init_collision_mesh;
 static std::vector<EditorTextureOverride> g_init_overrides;
 static bool g_init_overrides_multiple = false; // true if selected meshes have differing overrides
 static int g_init_simulate = 0; // 0=unchecked, 1=checked, -1=indeterminate (mixed)
@@ -591,6 +625,16 @@ static void mesh_dialog_update_state(HWND hdlg)
         SendMessageA(GetDlgItem(hdlg, IDC_MESH_COLLISION_MODE), CB_SETCURSEL, 0, 0);
     }
 
+    // Brush geometry source: only meaningful while the collision mode is Brush, and the proxy
+    // mesh fields only while that source is Collision Mesh.
+    int collision_sel = static_cast<int>(SendDlgItemMessage(hdlg, IDC_MESH_COLLISION_MODE, CB_GETCURSEL, 0, 0));
+    bool enable_brush_geo = enable_collision && collision_sel == 3;
+    EnableWindow(GetDlgItem(hdlg, IDC_MESH_BRUSH_GEO), enable_brush_geo);
+    int brush_geo_sel = static_cast<int>(SendDlgItemMessage(hdlg, IDC_MESH_BRUSH_GEO, CB_GETCURSEL, 0, 0));
+    bool enable_collision_mesh = enable_brush_geo && brush_geo_sel == 2;
+    EnableWindow(GetDlgItem(hdlg, IDC_MESH_COLLISION_MESH), enable_collision_mesh);
+    EnableWindow(GetDlgItem(hdlg, IDC_MESH_COLLISION_MESH_SELECT), enable_collision_mesh);
+
     // Material overrides: enable/disable controls based on filename
     EnableWindow(GetDlgItem(hdlg, IDC_MESH_OVERRIDE_LIST), has_filename);
     EnableWindow(GetDlgItem(hdlg, IDC_MESH_OVERRIDE_SLOT), has_filename);
@@ -602,10 +646,10 @@ static void mesh_dialog_update_state(HWND hdlg)
     bool is_clutter = (IsDlgButtonChecked(hdlg, IDC_MESH_IS_CLUTTER) == BST_CHECKED);
     static const int clutter_controls[] = {
         IDC_MESH_CLUTTER_LIFE,
-        IDC_MESH_CLUTTER_DEBRIS, IDC_MESH_CLUTTER_DEBRIS_BROWSE,
+        IDC_MESH_CLUTTER_DEBRIS, IDC_MESH_CLUTTER_DEBRIS_SELECT,
         IDC_MESH_CLUTTER_VCLIP, IDC_MESH_CLUTTER_EXPLODE_RADIUS,
         IDC_MESH_CLUTTER_DEBRIS_VEL,
-        IDC_MESH_CLUTTER_CORPSE, IDC_MESH_CLUTTER_CORPSE_BROWSE,
+        IDC_MESH_CLUTTER_CORPSE, IDC_MESH_CLUTTER_CORPSE_SELECT,
         IDC_MESH_CLUTTER_CORPSE_STATE_ANIM, IDC_MESH_CLUTTER_CORPSE_COLLISION,
         IDC_MESH_CLUTTER_CORPSE_MATERIAL,
         IDC_MESH_CLUTTER_DMG_BASH, IDC_MESH_CLUTTER_DMG_BULLET,
@@ -666,6 +710,7 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
         auto* first = g_selected_meshes[0];
         bool all_same_script = true, all_same_filename = true;
         bool all_same_anim = true, all_same_collision = true;
+        bool all_same_brush_geo = true, all_same_collision_mesh = true;
         bool all_same_overrides = true;
         bool all_same_simulate = true;
         bool all_same_no_shadow_cast = true;
@@ -679,6 +724,8 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
             if (strcmp(m->mesh_filename.c_str(), first->mesh_filename.c_str()) != 0) all_same_filename = false;
             if (strcmp(m->state_anim.c_str(), first->state_anim.c_str()) != 0) all_same_anim = false;
             if (m->collision_mode != first->collision_mode) all_same_collision = false;
+            if (m->brush_geo_source != first->brush_geo_source) all_same_brush_geo = false;
+            if (m->collision_mesh_filename != first->collision_mesh_filename) all_same_collision_mesh = false;
             if (m->simulate_in_editor != first->simulate_in_editor) all_same_simulate = false;
             if (m->no_shadow_cast != first->no_shadow_cast) all_same_no_shadow_cast = false;
             if (m->material != first->material) all_same_material = false;
@@ -721,6 +768,8 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
         g_init_filename = all_same_filename ? first->mesh_filename.c_str() : MULTIPLE_STR;
         g_init_state_anim = all_same_anim ? first->state_anim.c_str() : MULTIPLE_STR;
         g_init_collision_mode = all_same_collision ? first->collision_mode : MULTIPLE_COLLISION;
+        g_init_brush_geo = all_same_brush_geo ? first->brush_geo_source : MULTIPLE_COLLISION;
+        g_init_collision_mesh = all_same_collision_mesh ? first->collision_mesh_filename : MULTIPLE_STR;
         g_init_overrides_multiple = !all_same_overrides;
         g_init_overrides = all_same_overrides ? first->texture_overrides : std::vector<EditorTextureOverride>{};
         g_init_simulate = all_same_simulate ? (first->simulate_in_editor ? 1 : 0) : -1;
@@ -860,6 +909,17 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
             }
         }
 
+        {
+            HWND combo = GetDlgItem(hdlg, IDC_MESH_BRUSH_GEO);
+            SendMessageA(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>("Highest LOD"));
+            SendMessageA(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>("Lowest LOD"));
+            SendMessageA(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>("Collision Mesh"));
+            // A blank selection means "leave each mesh alone"; picking an entry is the only
+            // way to write the field across a selection that disagreed.
+            SendMessageA(combo, CB_SETCURSEL, g_init_brush_geo, 0);
+        }
+        SetDlgItemTextA(hdlg, IDC_MESH_COLLISION_MESH, g_init_collision_mesh.c_str());
+
         // Mesh objects are link targets only (from events), not link sources.
         // Hide the Links button entirely.
         ShowWindow(GetDlgItem(hdlg, ID_LINKS), SW_HIDE);
@@ -886,23 +946,45 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
             }
             return TRUE;
 
-        case IDC_MESH_BROWSE:
+        case IDC_MESH_SELECT:
         {
-            char filename[MAX_PATH] = {};
-            OPENFILENAMEA ofn = {};
-            ofn.lStructSize = sizeof(ofn);
-            ofn.hwndOwner = hdlg;
-            ofn.lpstrFilter = "Mesh Files (*.v3m;*.v3c;*.vfx)\0*.v3m;*.v3c;*.vfx\0All Files (*.*)\0*.*\0";
-            ofn.lpstrInitialDir = get_meshes_dir();
-            ofn.lpstrFile = filename;
-            ofn.nMaxFile = MAX_PATH;
-            ofn.Flags = OFN_FILEMUSTEXIST | OFN_NOCHANGEDIR;
-            if (GetOpenFileNameA(&ofn)) {
-                const char* base = strrchr(filename, '\\');
-                if (!base) base = strrchr(filename, '/');
-                if (base) base++; else base = filename;
-                SetDlgItemTextA(hdlg, IDC_MESH_FILENAME, base);
+            char current[MAX_PATH] = {};
+            char current_anim[MAX_PATH] = {};
+            GetDlgItemTextA(hdlg, IDC_MESH_FILENAME, current, sizeof(current));
+            GetDlgItemTextA(hdlg, IDC_MESH_STATE_ANIM, current_anim, sizeof(current_anim));
+            std::string chosen = current;
+            std::string chosen_anim = current_anim;
+            if (alpine_browse_mesh(hdlg, chosen, ALPINE_MESH_ANY, &chosen_anim)) {
+                SetDlgItemTextA(hdlg, IDC_MESH_FILENAME, chosen.c_str());
+                if (chosen_anim != current_anim) {
+                    SetDlgItemTextA(hdlg, IDC_MESH_STATE_ANIM, chosen_anim.c_str());
+                }
                 mesh_dialog_update_state(hdlg);
+            }
+            return TRUE;
+        }
+
+        case IDC_MESH_COLLISION_MODE:
+        case IDC_MESH_BRUSH_GEO:
+            if (HIWORD(wparam) == CBN_SELCHANGE) {
+                mesh_dialog_update_state(hdlg);
+            }
+            return TRUE;
+
+        case IDC_MESH_COLLISION_MESH:
+            if (HIWORD(wparam) == EN_CHANGE) {
+                mesh_dialog_fix_extension(hdlg, IDC_MESH_COLLISION_MESH, "v3d", "v3m");
+            }
+            return TRUE;
+
+        case IDC_MESH_COLLISION_MESH_SELECT:
+        {
+            char current[MAX_PATH] = {};
+            GetDlgItemTextA(hdlg, IDC_MESH_COLLISION_MESH, current, sizeof(current));
+            std::string chosen = current;
+            // Collision proxies are swept as static geometry, so this field takes no animation.
+            if (alpine_browse_mesh(hdlg, chosen, ALPINE_MESH_V3M)) {
+                SetDlgItemTextA(hdlg, IDC_MESH_COLLISION_MESH, chosen.c_str());
             }
             return TRUE;
         }
@@ -931,42 +1013,32 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
             mesh_dialog_update_state(hdlg);
             return TRUE;
 
-        case IDC_MESH_CLUTTER_DEBRIS_BROWSE:
+        case IDC_MESH_CLUTTER_DEBRIS_SELECT:
         {
-            char filename[MAX_PATH] = {};
-            OPENFILENAMEA ofn = {};
-            ofn.lStructSize = sizeof(ofn);
-            ofn.hwndOwner = hdlg;
-            ofn.lpstrFilter = "Static Mesh (*.v3m)\0*.v3m\0All Files (*.*)\0*.*\0";
-            ofn.lpstrInitialDir = get_meshes_dir();
-            ofn.lpstrFile = filename;
-            ofn.nMaxFile = MAX_PATH;
-            ofn.Flags = OFN_FILEMUSTEXIST | OFN_NOCHANGEDIR;
-            if (GetOpenFileNameA(&ofn)) {
-                const char* base = strrchr(filename, '\\');
-                if (!base) base = strrchr(filename, '/');
-                if (base) base++; else base = filename;
-                SetDlgItemTextA(hdlg, IDC_MESH_CLUTTER_DEBRIS, base);
+            char current[MAX_PATH] = {};
+            GetDlgItemTextA(hdlg, IDC_MESH_CLUTTER_DEBRIS, current, sizeof(current));
+            std::string chosen = current;
+            // Debris is static geometry only, so this field takes no animation either.
+            if (alpine_browse_mesh(hdlg, chosen, ALPINE_MESH_V3M)) {
+                SetDlgItemTextA(hdlg, IDC_MESH_CLUTTER_DEBRIS, chosen.c_str());
             }
             return TRUE;
         }
 
-        case IDC_MESH_CLUTTER_CORPSE_BROWSE:
+        case IDC_MESH_CLUTTER_CORPSE_SELECT:
         {
-            char filename[MAX_PATH] = {};
-            OPENFILENAMEA ofn = {};
-            ofn.lStructSize = sizeof(ofn);
-            ofn.hwndOwner = hdlg;
-            ofn.lpstrFilter = "Mesh Files (*.v3m;*.v3c;*.vfx)\0*.v3m;*.v3c;*.vfx\0All Files (*.*)\0*.*\0";
-            ofn.lpstrInitialDir = get_meshes_dir();
-            ofn.lpstrFile = filename;
-            ofn.nMaxFile = MAX_PATH;
-            ofn.Flags = OFN_FILEMUSTEXIST | OFN_NOCHANGEDIR;
-            if (GetOpenFileNameA(&ofn)) {
-                const char* base = strrchr(filename, '\\');
-                if (!base) base = strrchr(filename, '/');
-                if (base) base++; else base = filename;
-                SetDlgItemTextA(hdlg, IDC_MESH_CLUTTER_CORPSE, base);
+            char current[MAX_PATH] = {};
+            GetDlgItemTextA(hdlg, IDC_MESH_CLUTTER_CORPSE, current, sizeof(current));
+            char current_anim[MAX_PATH] = {};
+            GetDlgItemTextA(hdlg, IDC_MESH_CLUTTER_CORPSE_STATE_ANIM, current_anim,
+                            sizeof(current_anim));
+            std::string chosen = current;
+            std::string chosen_anim = current_anim;
+            if (alpine_browse_mesh(hdlg, chosen, ALPINE_MESH_ANY, &chosen_anim)) {
+                SetDlgItemTextA(hdlg, IDC_MESH_CLUTTER_CORPSE, chosen.c_str());
+                if (chosen_anim != current_anim) {
+                    SetDlgItemTextA(hdlg, IDC_MESH_CLUTTER_CORPSE_STATE_ANIM, chosen_anim.c_str());
+                }
                 mesh_dialog_update_state(hdlg);
             }
             return TRUE;
@@ -1067,6 +1139,14 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
             } else {
                 collision_changed = (collision_sel != g_init_collision_mode);
             }
+
+            // A blank brush-geo combo (differing selection, untouched) writes nothing.
+            int brush_geo_sel = static_cast<int>(SendDlgItemMessage(hdlg, IDC_MESH_BRUSH_GEO, CB_GETCURSEL, 0, 0));
+            bool brush_geo_changed = brush_geo_sel >= 0 && brush_geo_sel != g_init_brush_geo;
+
+            char collision_mesh_buf[MAX_PATH] = {};
+            GetDlgItemTextA(hdlg, IDC_MESH_COLLISION_MESH, collision_mesh_buf, sizeof(collision_mesh_buf));
+            bool collision_mesh_changed = (strcmp(collision_mesh_buf, g_init_collision_mesh.c_str()) != 0);
 
             // Check material override changes
             auto current_overrides = mesh_dialog_read_overrides(hdlg);
@@ -1189,6 +1269,12 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
                 if (collision_changed && collision_sel >= 0 && collision_sel <= 3) {
                     mesh->collision_mode = static_cast<uint8_t>(collision_sel);
                 }
+                if (brush_geo_changed && brush_geo_sel <= 2) {
+                    mesh->brush_geo_source = static_cast<uint8_t>(brush_geo_sel);
+                }
+                if (collision_mesh_changed) {
+                    mesh->collision_mesh_filename = collision_mesh_buf;
+                }
                 if (overrides_changed) {
                     mesh->texture_overrides = current_overrides;
                 }
@@ -1244,7 +1330,6 @@ void ShowMeshPropertiesDialog(DedMesh* mesh)
         if (auto* v = get_vmesh(mesh)) {
             g_v3c_action_cache.erase(v);
             g_v3c_action_simulating.erase(v);
-            g_v3c_action_elapsed.erase(v);
             vmesh_free(v);
             mesh->vmesh = nullptr;
         }
@@ -1256,7 +1341,6 @@ void ShowMeshPropertiesDialog(DedMesh* mesh)
         if (auto* v = get_vmesh(mesh)) {
             g_v3c_action_cache.erase(v);
             g_v3c_action_simulating.erase(v);
-            g_v3c_action_elapsed.erase(v);
             vmesh_free(v);
             mesh->vmesh = nullptr;
         }
@@ -1347,6 +1431,8 @@ DedMesh* CloneMeshObject(DedMesh* source, bool add_to_level)
     mesh->material = source->material;
     mesh->clutter_props = source->clutter_props;
     mesh->no_shadow_cast = source->no_shadow_cast;
+    mesh->brush_geo_source = source->brush_geo_source;
+    mesh->collision_mesh_filename = source->collision_mesh_filename;
 
     // Generate new UID
     mesh->uid = generate_uid();
@@ -1417,7 +1503,6 @@ void ShowMeshPropertiesForSelection(CDedLevel* level)
                 if (auto* v = get_vmesh(m)) {
                     g_v3c_action_cache.erase(v);
                     g_v3c_action_simulating.erase(v);
-                    g_v3c_action_elapsed.erase(v);
                     vmesh_free(v);
                     m->vmesh = nullptr;
                 }
@@ -1431,7 +1516,6 @@ void ShowMeshPropertiesForSelection(CDedLevel* level)
                 if (auto* v = get_vmesh(m)) {
                     g_v3c_action_cache.erase(v);
                     g_v3c_action_simulating.erase(v);
-                    g_v3c_action_elapsed.erase(v);
                     vmesh_free(v);
                     m->vmesh = nullptr;
                 }
@@ -1509,13 +1593,7 @@ void mesh_render(CDedLevel* level)
         if (vm && !just_loaded) {
             set_draw_color(0xff, 0xff, 0xff, 0xff);
 
-            EditorRenderParams render_params;
-
-            // Check if textures are enabled (DAT_006c9aa8)
-            if (*reinterpret_cast<int*>(0x006c9aa8) != 0) {
-                render_params.flags |= ERF_TEXTURED;
-                render_params.diffuse_color = {0xff, 0xff, 0xff, 0xff};
-            }
+            EditorRenderParams render_params = editor_mesh_render_params();
 
             // Selection highlight
             if (selected) {
@@ -1527,7 +1605,7 @@ void mesh_render(CDedLevel* level)
             auto vmesh_type = vmesh_get_type(vm);
             if (vmesh_type == VMESH_TYPE_ANIM_FX) {
                 vmesh_process(vm, frame_dt, 0, &mesh->pos, &mesh->orient, 1);
-                *reinterpret_cast<int*>(0x0059e21c) = 1;
+                vfx_render_transparent = 1;
             }
             else if (vmesh_type == VMESH_TYPE_CHARACTER) {
                 if (vm->instance) {
@@ -1545,18 +1623,13 @@ void mesh_render(CDedLevel* level)
                         }
 
                         if (mesh->simulate_in_editor) {
-                            // Simulate mode: advance animation each frame
-                            // Track elapsed time to detect when one-shot action expires
-                            auto& elapsed = g_v3c_action_elapsed[vm];
-                            elapsed += frame_dt;
-                            float duration = vmesh_get_action_duration(vm, it->second);
-                            if (duration > 0.0f && elapsed >= duration) {
-                                // One-shot action expired — restart for looping
-                                elapsed = 0.0f;
-                                vmesh_stop_all_actions(vm);
-                                vmesh_play_action_by_index(vm, it->second, 1.0f, 0);
-                            }
+                            // Simulate mode: advance animation each frame, stepping straight past
+                            // the loop seam so the clamped end frame is never the one drawn
                             vmesh_process(vm, frame_dt, 0, &mesh->pos, &mesh->orient, 1);
+                            if (mesh_v3c_action_finished(vm)) {
+                                mesh_play_v3c_action_looping(vm, it->second);
+                                vmesh_process(vm, frame_dt, 0, &mesh->pos, &mesh->orient, 1);
+                            }
                         }
                         // Freeze mode: don't call vmesh_process, pose stays at frame 0
                     }
@@ -1569,17 +1642,12 @@ void mesh_render(CDedLevel* level)
             vmesh_get_bound_sphere(vm, bound_center, &bound_radius);
 
             // Room visibility setup (required for mesh rendering)
-            using RoomSetupFn = int(__cdecl*)(int, const void*, float, int, int);
-            using RoomCleanupFn = void(__cdecl*)();
-            auto room_setup = reinterpret_cast<RoomSetupFn>(0x004885d0);
-            auto room_cleanup = reinterpret_cast<RoomCleanupFn>(0x00488bb0);
-
-            room_setup(0, &mesh->pos, bound_radius, 1, 1);
+            room_setup(nullptr, &mesh->pos, bound_radius, 1, 1);
             vmesh_render(vm, &mesh->pos, &mesh->orient, &render_params);
             room_cleanup();
 
             // Reset VFX transparency flag
-            *reinterpret_cast<int*>(0x0059e21c) = 0;
+            vfx_render_transparent = 0;
         }
 
         // Draw 3D cross at mesh position (cyan normal, red if selected)
@@ -1741,7 +1809,6 @@ void mesh_clear_clipboard()
         if (auto* v = get_vmesh(mesh)) {
             g_v3c_action_cache.erase(v);
             g_v3c_action_simulating.erase(v);
-            g_v3c_action_elapsed.erase(v);
             vmesh_free(v);
         }
         mesh->field_4.free();

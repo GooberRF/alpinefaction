@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <set>
 #include <cmath>
+#include <utility>
 #include <common/version/version.h>
 #include <common/config/BuildConfig.h>
 #include <common/utils/os-utils.h>
@@ -28,7 +29,9 @@
 #include <patch_common/CodeInjection.h>
 #include <crash_handler_stub.h>
 #include "../game_patch/rf/os/array.h"
+#include "alpine_color_picker.h"
 #include "exports.h"
+#include "file_dialogs.h"
 #include "resources.h"
 #include "mfc_types.h"
 #include "vtypes.h"
@@ -40,6 +43,11 @@
 #include "textures.h"
 #include "meshes.h"
 #include "headless_bake.h"
+#include "face_list_cache.h"
+#include "alpine_lightmaps.h"
+#include "terrain_build.h"
+#include "terrain_paint.h"
+#include "terrain_preview.h"
 
 #define LAUNCHER_FILENAME "AlpineFactionLauncher.exe"
 HMODULE g_module;
@@ -450,10 +458,15 @@ static void apply_no_debris_to_selected_brushes(int new_state)
                                 props.breakable_brush_uids.end(), node->uid);
             if (it != props.breakable_brush_uids.end()) {
                 auto idx = std::distance(props.breakable_brush_uids.begin(), it);
-                if (new_state == BST_CHECKED) {
-                    props.breakable_materials[idx] |= 0x80;
-                } else {
-                    props.breakable_materials[idx] &= 0x7F;
+                // Glass rows exist only to carry the brush UID -> room UID mapping, and the
+                // checkbox is disabled for Glass anyway; matching the mat > 0 rule the checkbox
+                // state is computed from keeps a mixed selection from flagging one.
+                if ((props.breakable_materials[idx] & 0x7F) != 0) {
+                    if (new_state == BST_CHECKED) {
+                        props.breakable_materials[idx] |= 0x80;
+                    } else {
+                        props.breakable_materials[idx] &= 0x7F;
+                    }
                 }
             }
         }
@@ -892,6 +905,32 @@ CodeInjection CColorDialog_ct_seed_current_color{
     },
 };
 
+// CColorDialog::DoModal is the single choke point for every stock color site: its whole body is
+// PreModal, ChooseColorA on the embedded CHOOSECOLOR (this+0x5C), PostModal, return IDOK/IDCANCEL.
+int __fastcall CColorDialog_DoModal_new(CColorDialog* this_);
+FunHook CColorDialog_DoModal_hook{
+    0x0052D46B,
+    CColorDialog_DoModal_new,
+};
+int __fastcall CColorDialog_DoModal_new(CColorDialog* this_)
+{
+    HWND parent = this_->PreModal();
+    this_->m_cc.hwndOwner = parent;
+    COLORREF color = this_->m_cc.rgbResult & 0xFFFFFF;
+    auto result = alpine_pick_color_ex(parent, color, this_->m_cc.lpCustColors);
+    this_->PostModal();
+
+    switch (result) {
+        case AlpineColorPickerResult::ok:
+            this_->m_cc.rgbResult = color;
+            return IDOK;
+        case AlpineColorPickerResult::cancelled:
+            return IDCANCEL;
+        default:
+            return CColorDialog_DoModal_hook.call_target(this_);
+    }
+}
+
 static auto RedrawEditorAfterModification = addr_as_ref<int __cdecl()>(0x00483560);
 
 void* GetLevelFromMainFrame(CWnd* main_frame)
@@ -1009,6 +1048,36 @@ void CMainFrame_PlayMultiFromCamera(CWnd* this_)
     g_is_play_in_multi = true;
     AddrCaller{0x00447B90}.this_call<int>(this_); // CMainFrame_OnPlayLevelFromCameraCmd
     g_is_play_in_multi = false;
+}
+
+// Commit a held viewport transform before undo/redo moves its entry off the top, as holding Ctrl does
+void __fastcall CMainFrame_OnEditUndo_new(CWnd* this_, void* edx_unused);
+FunHook<decltype(CMainFrame_OnEditUndo_new)> CMainFrame_OnEditUndo_hook{0x00447830, CMainFrame_OnEditUndo_new};
+void __fastcall CMainFrame_OnEditUndo_new(CWnd* this_, void* edx_unused)
+{
+    // While Terrain Tools is open, Ctrl+Z / Edit > Undo undo paint strokes instead
+    if (terrain_paint_active()) {
+        terrain_paint_undo();
+        return;
+    }
+    if (auto* level = CDedLevel::Get()) {
+        level->commit_pending_transform();
+    }
+    CMainFrame_OnEditUndo_hook.call_target(this_, edx_unused);
+}
+
+void __fastcall CMainFrame_OnEditRedo_new(CWnd* this_, void* edx_unused);
+FunHook<decltype(CMainFrame_OnEditRedo_new)> CMainFrame_OnEditRedo_hook{0x00447870, CMainFrame_OnEditRedo_new};
+void __fastcall CMainFrame_OnEditRedo_new(CWnd* this_, void* edx_unused)
+{
+    if (terrain_paint_active()) {
+        terrain_paint_redo();
+        return;
+    }
+    if (auto* level = CDedLevel::Get()) {
+        level->commit_pending_transform();
+    }
+    CMainFrame_OnEditRedo_hook.call_target(this_, edx_unused);
 }
 
 void CMainFrame_BackLink([[maybe_unused]] CWnd* this_)
@@ -1165,6 +1234,44 @@ static void __fastcall decal_geometry_update_new(void* self, int /*edx*/, int p1
     decal_geometry_update_hook.call_target(self, 0, p1);
 }
 
+static void __fastcall decal_pos_update_new(void* self, int /*edx*/, void* pos);
+FunHook<decltype(decal_pos_update_new)> decal_pos_update_hook{
+    0x0044e950, decal_pos_update_new};
+static void __fastcall decal_pos_update_new(void* self, int /*edx*/, void* pos)
+{
+    auto* sub_obj = *reinterpret_cast<void**>(static_cast<std::byte*>(self) + 0xA4);
+    if (!sub_obj) {
+        WARN_ONCE("Skipping decal position update for object with null sub-object at +0xA4");
+        return;
+    }
+    decal_pos_update_hook.call_target(self, 0, pos);
+}
+
+static void __fastcall decal_align_to_surface_new(void* self);
+FunHook<decltype(decal_align_to_surface_new)> decal_align_to_surface_hook{
+    0x0044eab0, decal_align_to_surface_new};
+static void __fastcall decal_align_to_surface_new(void* self)
+{
+    auto* sub_obj = *reinterpret_cast<void**>(static_cast<std::byte*>(self) + 0xA4);
+    if (!sub_obj) {
+        WARN_ONCE("Skipping decal surface alignment for object with null sub-object at +0xA4");
+        return;
+    }
+    decal_align_to_surface_hook.call_target(self);
+}
+
+// Match the game's excpanded 512-decal pool
+constexpr int editor_max_decals = 512;
+constexpr std::size_t decal_slot_size = 0xEC;
+alignas(16) static std::byte g_decal_slots[editor_max_decals][decal_slot_size];
+
+static void decal_patch_limit()
+{
+    write_mem_ptr(0x00492281 + 1, &g_decal_slots[0]);
+    write_mem_ptr(0x004922C3 + 1, &g_decal_slots[editor_max_decals]);
+    write_mem<i32>(0x00494396 + 1, editor_max_decals);
+}
+
 static bool is_edit_key_held()
 {
     return g_dinput_keys[DIK_R]
@@ -1173,10 +1280,47 @@ static bool is_edit_key_held()
         || g_dinput_keys[DIK_LSHIFT];
 }
 
+// RED passes is_autosave only as a LoadSaveLevel argument, whose stack slot the save routine
+// (0x00430bf0) reuses for section offsets, so the hook keeps it for the nested chunk writers.
+static bool g_autosaving = false;
+
+bool level_autosave_in_progress()
+{
+    return g_autosaving;
+}
+
+char __fastcall CDedDoc_LoadSaveLevel_new(void* self, int edx, const char* path, int is_load, int is_autosave);
+FunHook<char __fastcall(void*, int, const char*, int, int)> CDedDoc_LoadSaveLevel_hook{
+    0x0041CCE0, CDedDoc_LoadSaveLevel_new}; // CDedDoc::LoadSaveLevel
+
+char __fastcall CDedDoc_LoadSaveLevel_new(void* self, int edx, const char* path, int is_load, int is_autosave)
+{
+    const bool was_autosaving = std::exchange(g_autosaving, !is_load && is_autosave);
+    char result = CDedDoc_LoadSaveLevel_hook.call_target(self, edx, path, is_load, is_autosave);
+    g_autosaving = was_autosaving;
+    if (is_load && !is_autosave) {
+        headless_bake_level_loaded(path, result != 0);
+    }
+    return result;
+}
+
+int __fastcall CEditorApp_OnIdle_new(void* self, int edx, int count);
+FunHook<int __fastcall(void*, int, int)> CEditorApp_OnIdle_hook{0x00482F00, CEditorApp_OnIdle_new};
+
+int __fastcall CEditorApp_OnIdle_new(void* self, int edx, int count)
+{
+    if (!headless_bake_idle()) {
+        terrain_paint_idle();
+    }
+    return CEditorApp_OnIdle_hook.call_target(self, edx, count);
+}
+
 CodeInjection autosave_defer_during_edit_injection{
     0x00483061,
     [](auto& regs) {
-        if (headless_bake_active() || is_edit_key_held()) {
+        auto* level = CDedLevel::Get();
+        if (headless_bake_active() || is_edit_key_held() || (level && level->transform_in_progress) ||
+            terrain_paint_stroke_active()) {
             regs.eip = 0x004831B4; // defer autosave until the text tick we are not in an edit operation
         }
         else {
@@ -1432,6 +1576,17 @@ CodeInjection face_panel_subclass_injection{
 BOOL __fastcall CMainFrame_OnCmdMsg(CWnd* this_, int, UINT nID, int nCode, void* pExtra, void* pHandlerInfo)
 {
     constexpr int CN_COMMAND = 0;
+    constexpr int CN_UPDATE_COMMAND_UI = -1;
+
+    // RED disables Undo/Redo by its own lists (0x00447840, 0x00447880), and CWnd::OnCommand drops a
+    // disabled command before OnEditUndo/OnEditRedo run. pExtra is the CCmdUI; vtable slot 0 is
+    // Enable(BOOL).
+    if (nCode == CN_UPDATE_COMMAND_UI && (nID == ID_EDIT_UNDO || nID == ID_EDIT_REDO) && pExtra &&
+        terrain_paint_active()) {
+        const BOOL enable = nID == ID_EDIT_UNDO ? terrain_paint_can_undo() : terrain_paint_can_redo();
+        AddrCaller{(*static_cast<uintptr_t**>(pExtra))[0]}.this_call(pExtra, enable);
+        return TRUE;
+    }
 
     if (nCode == CN_COMMAND) {
         std::function<void()> handler;
@@ -1512,10 +1667,24 @@ BOOL __fastcall CMainFrame_OnCmdMsg(CWnd* this_, int, UINT nID, int nCode, void*
                 handler = reload_custom_meshes;
                 break;
             case ID_RELOAD_TEXTURES:
-                handler = reload_custom_textures;
+                handler = [] {
+                    reload_custom_textures();
+                    terrain_preview_textures_reloaded();
+                    terrain_paint_textures_reloaded();
+                };
                 break;
             case ID_TOGGLE_MAXIMIZE_VIEWPORT:
                 handler = std::bind(CMainFrame_ToggleMaximizeViewport, reinterpret_cast<CMainFrame*>(this_));
+                break;
+            case ID_TERRAIN_TOOLS:
+                handler = [this_]() {
+                    terrain_paint_open_for_selection(reinterpret_cast<CDedLevel*>(GetLevelFromMainFrame(this_)));
+                };
+                break;
+            case ID_TERRAIN_TOOLS_PROPERTIES:
+                handler = [this_]() {
+                    terrain_paint_show_properties(reinterpret_cast<CDedLevel*>(GetLevelFromMainFrame(this_)));
+                };
                 break;
         }
 
@@ -1808,6 +1977,17 @@ CodeInjection LoadSaveLevel_patch2{
     0x0041CDAA,
     [](auto& regs) {
         int* version = regs.edi;
+        int8_t is_loading = regs.bl;
+        if (is_loading && *version > MAXIMUM_RFL_VERSION) {
+            editor_report_blocking("Level", "Unsupported Level Version",
+                std::format("This level file was saved by a newer version of Alpine Faction.\n\n"
+                            "The version of this level file is {}, but this version of Alpine RED can only "
+                            "open levels with version {} or lower.\n\n"
+                            "Update Alpine Faction to edit this level.",
+                            *version, MAXIMUM_RFL_VERSION));
+            regs.eip = 0x0041CDA1; // fail the load, as for versions below 40
+            return;
+        }
         g_current_level_version = *version;
 
         if (*version < 300 && !g_skip_legacy_level_warning) {
@@ -1945,14 +2125,24 @@ extern "C" DWORD AF_DLL_EXPORT Init([[maybe_unused]] void* unused)
     // Fix changing properties of multiple respawn points
     CDedLevel_OpenRespawnPointProperties_injection.install();
 
+    // Fix undo/redo during a viewport transform corrupting the undo history
+    CMainFrame_OnEditUndo_hook.install();
+    CMainFrame_OnEditRedo_hook.install();
+
     // Apply patches defined in other files
     ApplyGraphicsPatches();
     ApplyTriggerPatches();
     ApplyLevelPatches();
+    ApplyTerrainBuildPatches();
+    ApplyTerrainPreviewPatches();
+    ApplyTerrainPaintPatches();
     ApplyEventsPatches();
     ApplyAlpineObjectPatches();
     ApplyTexturesPatches();
     ApplyLightmapPatches();
+    ApplyGeometryPatches();
+    ApplyAlpineLightmapPatches();
+    ApplyFaceListCachePatches();
     install_editor_bitmap_loader_hooks();
 
     // Browse for .v3m files instead of .v3d
@@ -2020,10 +2210,10 @@ extern "C" DWORD AF_DLL_EXPORT Init([[maybe_unused]] void* unused)
     // Fix editor crash when building geometry after lightmap resolution for a face was set to Undefined
     write_mem<i8>(0x00402DFA + 1, 0);
 
-    // Allow more decals before displaying a warning message about too many decals in the level
-    write_mem<i8>(0x0041E2A9 + 2, 127);
-    write_mem<i8>(0x0041E2BA + 2, 127);
-    write_mem_ptr(0x0041E2C6 + 1, "There are more than 127 decals in the level! It can result in a crash for older game clients.");
+    // Never show the stock "more than 64 decals" warning.
+    AsmWriter{0x0041E2AC, 0x0041E2AE}.nop();
+    AsmWriter{0x0041E2BD}.jmp_short(0x0041E2D0);
+    decal_patch_limit();
 
     // Fix copying cutscene path node
     CDedLevel_CloneObject_injection.install();
@@ -2078,15 +2268,27 @@ extern "C" DWORD AF_DLL_EXPORT Init([[maybe_unused]] void* unused)
     decal_orient_update_hook.install();
     decal_angles_update_hook.install();
     decal_geometry_update_hook.install();
+    decal_pos_update_hook.install();
+    decal_align_to_surface_hook.install();
 
     // Defer autosave while an edit operation is in progress to prevent teleporting
     autosave_defer_during_edit_injection.install();
+
+    // Idle tick (headless bake, Terrain Tools) and level load/save bracketing
+    CEditorApp_OnIdle_hook.install();
+    CDedDoc_LoadSaveLevel_hook.install();
 
     // Subclass face mode panel for Delete/Delete Ext./Split button handling
     face_panel_subclass_injection.install();
 
     // Open the color picker on the current color instead of black
     CColorDialog_ct_seed_current_color.install();
+
+    // Replace the stock ChooseColor dialog with the Alpine color picker at every editor color site
+    CColorDialog_DoModal_hook.install();
+
+    // Replace the stock common file dialogs with the modern shell ones
+    ApplyFileDialogPatches();
 
     // Headless "-bake <in.rfl> -bakeout <out.rfl>" lighting bake
     ApplyHeadlessBakePatches();

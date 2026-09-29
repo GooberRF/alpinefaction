@@ -11,6 +11,7 @@
 #include "../rf/os/frametime.h"
 #include "../rf/sound/sound.h"
 #include "../rf/vmesh.h"
+#include "../rf/v3d.h"
 #include "../rf/weapon.h"
 #include "../rf/entity.h"
 #include "../rf/multi.h"
@@ -414,6 +415,22 @@ CodeInjection player_fpgun_render_main_player_entity_injection{
     },
 };
 
+// Stock renders fpgun attachments (silencer, remote charge detonator) with default MeshRenderParams, so the
+// renderer lights them like world meshes (near fullbright). Give them the same params as the fpgun itself.
+static void fpgun_attachment_render_params(BaseCodeInjection::Regs& regs)
+{
+    static_assert(offsetof(rf::Entity, ambient_color) == 0x1474);
+    static_assert(offsetof(rf::MeshRenderParams, orient) == 0x2C);
+    auto& entity = addr_as_ref<rf::Entity>(addr_as_ref<int>(regs.esp + 0x38));
+    auto& params = addr_as_ref<rf::MeshRenderParams>(regs.esp + 0xA0);
+    params.flags |= rf::MRF_CUSTOM_AMBIENT_COLOR | rf::MRF_CLIP_VERTICES | rf::MRF_FIRST_PERSON;
+    params.ambient_color = entity.ambient_color;
+    params.orient = entity.orient;
+}
+
+CodeInjection player_fpgun_render_silencer_params_injection{0x004AC22E, fpgun_attachment_render_params};
+CodeInjection player_fpgun_render_detonator_params_injection{0x004ABD70, fpgun_attachment_render_params};
+
 CodeInjection player_fpgun_render_ir_cull_patch_1{
     0x004AF137,
     [] (auto& regs) {
@@ -482,6 +499,10 @@ void player_fpgun_do_patch()
     players_cleanup_injection.install(); // fixes crash at 0x004AEB8F in player_fpgun_delete_meshes
 
     player_fpgun_render_main_player_entity_injection.install();
+
+    // Light fpgun attachments like the fpgun instead of fullbright
+    player_fpgun_render_silencer_params_injection.install();
+    player_fpgun_render_detonator_params_injection.install();
 
     player_fpgun_update_state_anim_hook.install();
 

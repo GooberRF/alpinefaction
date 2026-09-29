@@ -2,11 +2,16 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <string>
 #include <vector>
 #include <unordered_set>
 #include <xlog/xlog.h>
+#include <common/rfl_chunk_reader.h>
+#include <common/lightmap/alpine_lightmap.h>
+#include <common/terrain/alpine_terrain.h>
 #include "../rf/geometry.h"
+#include "../rf/level.h"
 #include "../rf/file/file.h"
 #include "../os/os.h"
 
@@ -17,6 +22,12 @@ constexpr int alpine_corona_chunk_id = 0x0AFBAE03;
 constexpr int alpine_bag_chunk_id = 0x0AFBAE04;
 constexpr int alpine_weather_region_chunk_id = 0x0AFBAE06;
 constexpr int alpine_projection_camera_chunk_id = 0x0AFBAE08;
+constexpr int alpine_rope_emitter_chunk_id = 0x0AFBAE0A;
+constexpr int alpine_terrain_chunk_id = static_cast<int>(alpine_terrain::chunk_id); // 0x0AFBAE0B
+constexpr int alpine_lightmaps_chunk_id = static_cast<int>(alpine_lightmap::chunk_id); // 0x0AFBAE09
+constexpr int stock_lightmaps_chunk_id = 0x1200;
+
+using AlpineChunkReader = RflChunkReader<rf::File>;
 
 // Unit vector pointing TOWARD the sun. The light travel direction is its negation.
 // should match helper in editor_patch\level.h
@@ -44,9 +55,9 @@ struct AlpineLevelProperties
     float static_mesh_ambient_light_modifier = 2.0f;
     // v4
     bool rf2_style_geomod = false;
-    // std::vector<int32_t> geoable_brush_uids; // unnecessary in game
+    std::vector<int32_t> geoable_brush_uids;
     std::vector<int32_t> geoable_room_uids;
-    // std::vector<int32_t> breakable_brush_uids; // unnecessary in game
+    std::vector<int32_t> breakable_brush_uids;
     std::vector<int32_t> breakable_room_uids;
     std::vector<uint8_t> breakable_materials;
     std::vector<int32_t> hold_open_keyframe_uids; // first keyframe UIDs of movers with "Hold Open"
@@ -64,12 +75,17 @@ struct AlpineLevelProperties
     uint8_t sun_mesh_mode = 0; // 0 = scale by sampled lightmap luminance, 1 = apply everywhere
     bool sun_drives_shadowmap_dir = true;
     bool legacy_lighting = false;   // editor-side bake switch, no effect in game
-    bool highres_lightmaps = false; // editor-side bake switch, no effect in game
+    // editor-side bake switch, no effect in game: the Alpine Lightmaps section header records the stock
+    // page size its charts were baked against, which a toggle after the last repack no longer matches
+    bool highres_lightmaps = false;
     bool sun_liquid_occludes = true; // editor-side bake switch, no effect in game
     bool invisible_faces_occlude = false; // editor-side bake switch, no effect in game
     bool alpha_faces_occlude = false; // editor-side bake switch, no effect in game
     // no_shadow_cast_brush_uids is editor-only (bake occluder exclusion); read and discarded
     bool meshes_occlude = false; // editor-side bake switch, no effect in game
+    uint8_t lightmap_density = 0; // editor-side bake switch, no effect in game
+    bool d3d11_only_lightmaps = false; // level has no stock 0x1200 lightmaps section
+    uint8_t lightmap_compression = 0; // editor-side bake switch, no effect in game
 
     // should match SanitizeSunProperties in editor_patch\level.h
     // A level file can carry anything; these floats end up in the lights constant buffer and in the
@@ -121,17 +137,7 @@ struct AlpineLevelProperties
             ~SanitizeGuard() { props->sanitize_sun_properties(); }
         } sanitize_guard{this};
 
-        auto read_bytes = [&](void* dst, std::size_t n) -> bool {
-            if (remaining < n)
-                return false;
-            int got = file.read(dst, n);
-            if (got != static_cast<int>(n) || file.error()) {
-                if (got > 0) remaining -= got;
-                return false;
-            }
-            remaining -= n;
-            return true;
-        };
+        AlpineChunkReader reader{file, remaining};
 
         // A count larger than the cap still describes that many entries in the file, so the
         // surplus has to be consumed or every field behind it is read from the wrong offset.
@@ -141,7 +147,7 @@ struct AlpineLevelProperties
             while (bytes > 0) {
                 const std::size_t step =
                     static_cast<std::size_t>(std::min<std::uint64_t>(bytes, sizeof(scratch)));
-                if (!read_bytes(scratch, step))
+                if (!reader.read_bytes(scratch, step))
                     return false;
                 bytes -= step;
             }
@@ -150,7 +156,7 @@ struct AlpineLevelProperties
 
         // version
         std::uint32_t version = 0;
-        if (!read_bytes(&version, sizeof(version))) {
+        if (!reader.read_bytes(&version, sizeof(version))) {
             xlog::warn("[AlpineLevelProps] chunk too small for version header (len={})", chunk_len);
             return;
         }
@@ -163,7 +169,7 @@ struct AlpineLevelProperties
 
         if (version >= 1) {
             std::uint8_t u8 = 0;
-            if (!read_bytes(&u8, sizeof(u8)))
+            if (!reader.read_bytes(&u8, sizeof(u8)))
                 return;
             legacy_cyclic_timers = (u8 != 0);
             xlog::debug("[AlpineLevelProps] legacy_cyclic_timers {}", legacy_cyclic_timers);
@@ -171,11 +177,11 @@ struct AlpineLevelProperties
 
         if (version >= 2) {
             std::uint8_t u8 = 0;
-            if (!read_bytes(&u8, sizeof(u8)))
+            if (!reader.read_bytes(&u8, sizeof(u8)))
                 return;
             legacy_movers = (u8 != 0);
             xlog::debug("[AlpineLevelProps] legacy_movers {}", legacy_movers);
-            if (!read_bytes(&u8, sizeof(u8)))
+            if (!reader.read_bytes(&u8, sizeof(u8)))
                 return;
             starts_with_headlamp = (u8 != 0);
             xlog::debug("[AlpineLevelProps] starts_with_headlamp {}", starts_with_headlamp);
@@ -183,36 +189,38 @@ struct AlpineLevelProperties
 
         if (version >= 3) {
             std::uint8_t u8 = 0;
-            if (!read_bytes(&u8, sizeof(u8)))
+            if (!reader.read_bytes(&u8, sizeof(u8)))
                 return;
             override_static_mesh_ambient_light_modifier = (u8 != 0);
             xlog::debug("[AlpineLevelProps] override_static_mesh_ambient_light_modifier {}", override_static_mesh_ambient_light_modifier);
-            if (!read_bytes(&static_mesh_ambient_light_modifier, sizeof(static_mesh_ambient_light_modifier)))
+            if (!reader.read_bytes(&static_mesh_ambient_light_modifier, sizeof(static_mesh_ambient_light_modifier)))
                 return;
             xlog::debug("[AlpineLevelProps] static_mesh_ambient_light_modifier {}", static_mesh_ambient_light_modifier);
         }
 
         if (version >= 4) {
             std::uint8_t u8 = 0;
-            if (!read_bytes(&u8, sizeof(u8)))
+            if (!reader.read_bytes(&u8, sizeof(u8)))
                 return;
             rf2_style_geomod = (u8 != 0);
             xlog::debug("[AlpineLevelProps] rf2_style_geomod {}", rf2_style_geomod);
 
             // Geoable entries as (brush_uid, room_uid) pairs
             uint32_t count = 0;
-            if (!read_bytes(&count, sizeof(count)))
+            if (!reader.read_bytes(&count, sizeof(count)))
                 return;
             uint32_t count_surplus = count > 10000 ? count - 10000 : 0;
             if (count > 10000) count = 10000;
             geoable_room_uids.resize(count);
+            geoable_brush_uids.resize(count);
             for (uint32_t i = 0; i < count; i++) {
-                int32_t brush_uid = 0; // editor-only, skip
-                if (!read_bytes(&brush_uid, sizeof(brush_uid)))
+                int32_t brush_uid = 0;
+                if (!reader.read_bytes(&brush_uid, sizeof(brush_uid)))
                     return;
                 int32_t room_uid = 0;
-                if (!read_bytes(&room_uid, sizeof(room_uid)))
+                if (!reader.read_bytes(&room_uid, sizeof(room_uid)))
                     return;
+                geoable_brush_uids[i] = brush_uid;
                 geoable_room_uids[i] = room_uid;
                 xlog::debug("[AlpineLevelProps] geoable entry: brush_uid={} room_uid={}", brush_uid, room_uid);
             }
@@ -222,7 +230,7 @@ struct AlpineLevelProperties
 
             // Breakable material entries as (brush_uid, room_uid, material) triples
             uint32_t bcount = 0;
-            if (!read_bytes(&bcount, sizeof(bcount))) {
+            if (!reader.read_bytes(&bcount, sizeof(bcount))) {
                 xlog::warn("[AlpineLevelProps] GAME: failed to read breakable count (remaining={})", remaining);
                 return;
             }
@@ -230,17 +238,19 @@ struct AlpineLevelProperties
             uint32_t bcount_surplus = bcount > 10000 ? bcount - 10000 : 0;
             if (bcount > 10000) bcount = 10000;
             breakable_room_uids.resize(bcount);
+            breakable_brush_uids.resize(bcount);
             breakable_materials.resize(bcount);
             for (uint32_t i = 0; i < bcount; i++) {
-                int32_t brush_uid = 0; // editor-only, skip
-                if (!read_bytes(&brush_uid, sizeof(brush_uid)))
+                int32_t brush_uid = 0;
+                if (!reader.read_bytes(&brush_uid, sizeof(brush_uid)))
                     return;
                 int32_t room_uid = 0;
-                if (!read_bytes(&room_uid, sizeof(room_uid)))
+                if (!reader.read_bytes(&room_uid, sizeof(room_uid)))
                     return;
+                breakable_brush_uids[i] = brush_uid;
                 breakable_room_uids[i] = room_uid;
                 uint8_t mat = 0;
-                if (!read_bytes(&mat, sizeof(mat)))
+                if (!reader.read_bytes(&mat, sizeof(mat)))
                     return;
                 breakable_materials[i] = mat;
                 xlog::trace("[AlpineLevelProps] GAME: breakable[{}] brush_uid={} room_uid={} material={}", i, brush_uid, room_uid, mat);
@@ -251,14 +261,14 @@ struct AlpineLevelProperties
 
             // Hold open first-keyframe UIDs
             uint32_t ho_count = 0;
-            if (!read_bytes(&ho_count, sizeof(ho_count)))
+            if (!reader.read_bytes(&ho_count, sizeof(ho_count)))
                 return;
             uint32_t ho_surplus = ho_count > 10000 ? ho_count - 10000 : 0;
             if (ho_count > 10000) ho_count = 10000;
             hold_open_keyframe_uids.resize(ho_count);
             for (uint32_t i = 0; i < ho_count; i++) {
                 int32_t uid = 0;
-                if (!read_bytes(&uid, sizeof(uid)))
+                if (!reader.read_bytes(&uid, sizeof(uid)))
                     return;
                 hold_open_keyframe_uids[i] = uid;
             }
@@ -269,68 +279,77 @@ struct AlpineLevelProperties
 
         if (version >= 5) {
             std::uint8_t u8 = 0;
-            if (!read_bytes(&u8, sizeof(u8)))
+            if (!reader.read_bytes(&u8, sizeof(u8)))
                 return;
             enable_sun = (u8 != 0);
-            if (!read_bytes(&sun_yaw, sizeof(sun_yaw)))
+            if (!reader.read_bytes(&sun_yaw, sizeof(sun_yaw)))
                 return;
-            if (!read_bytes(&sun_pitch, sizeof(sun_pitch)))
+            if (!reader.read_bytes(&sun_pitch, sizeof(sun_pitch)))
                 return;
-            if (!read_bytes(&sun_color_r, sizeof(sun_color_r)))
+            if (!reader.read_bytes(&sun_color_r, sizeof(sun_color_r)))
                 return;
-            if (!read_bytes(&sun_color_g, sizeof(sun_color_g)))
+            if (!reader.read_bytes(&sun_color_g, sizeof(sun_color_g)))
                 return;
-            if (!read_bytes(&sun_color_b, sizeof(sun_color_b)))
+            if (!reader.read_bytes(&sun_color_b, sizeof(sun_color_b)))
                 return;
-            if (!read_bytes(&sun_color_a, sizeof(sun_color_a)))
+            if (!reader.read_bytes(&sun_color_a, sizeof(sun_color_a)))
                 return;
-            if (!read_bytes(&sun_intensity, sizeof(sun_intensity)))
+            if (!reader.read_bytes(&sun_intensity, sizeof(sun_intensity)))
                 return;
-            if (!read_bytes(&sun_spread_angle, sizeof(sun_spread_angle)))
+            if (!reader.read_bytes(&sun_spread_angle, sizeof(sun_spread_angle)))
                 return;
-            if (!read_bytes(&u8, sizeof(u8)))
+            if (!reader.read_bytes(&u8, sizeof(u8)))
                 return;
             sun_cast_baked_shadows = (u8 != 0);
-            if (!read_bytes(&u8, sizeof(u8)))
+            if (!reader.read_bytes(&u8, sizeof(u8)))
                 return;
             sun_affects_meshes = (u8 != 0);
-            if (!read_bytes(&sun_mesh_mode, sizeof(sun_mesh_mode)))
+            if (!reader.read_bytes(&sun_mesh_mode, sizeof(sun_mesh_mode)))
                 return;
-            if (!read_bytes(&u8, sizeof(u8)))
+            if (!reader.read_bytes(&u8, sizeof(u8)))
                 return;
             sun_drives_shadowmap_dir = (u8 != 0);
-            if (!read_bytes(&u8, sizeof(u8)))
+            if (!reader.read_bytes(&u8, sizeof(u8)))
                 return;
             legacy_lighting = (u8 != 0);
-            if (!read_bytes(&u8, sizeof(u8)))
+            if (!reader.read_bytes(&u8, sizeof(u8)))
                 return;
             highres_lightmaps = (u8 != 0);
-            if (!read_bytes(&u8, sizeof(u8)))
+            if (!reader.read_bytes(&u8, sizeof(u8)))
                 return;
             sun_liquid_occludes = (u8 != 0);
-            if (!read_bytes(&u8, sizeof(u8)))
+            if (!reader.read_bytes(&u8, sizeof(u8)))
                 return;
             invisible_faces_occlude = (u8 != 0);
-            if (!read_bytes(&u8, sizeof(u8)))
+            if (!reader.read_bytes(&u8, sizeof(u8)))
                 return;
             alpha_faces_occlude = (u8 != 0);
             uint32_t nsc_count = 0;
-            if (!read_bytes(&nsc_count, sizeof(nsc_count)))
+            if (!reader.read_bytes(&nsc_count, sizeof(nsc_count)))
                 return;
             uint32_t nsc_surplus = nsc_count > 10000 ? nsc_count - 10000 : 0;
             if (nsc_count > 10000) nsc_count = 10000;
             for (uint32_t i = 0; i < nsc_count; i++) {
                 int32_t brush_uid = 0; // editor-only, skip
-                if (!read_bytes(&brush_uid, sizeof(brush_uid)))
+                if (!reader.read_bytes(&brush_uid, sizeof(brush_uid)))
                     return;
             }
             if (!skip_entries(nsc_surplus, 4))
                 return;
-            if (!read_bytes(&u8, sizeof(u8)))
+            if (!reader.read_bytes(&u8, sizeof(u8)))
                 return;
             meshes_occlude = (u8 != 0);
             xlog::debug("[AlpineLevelProps] enable_sun {} yaw {} pitch {} intensity {} no_shadow_cast {}",
                 enable_sun, sun_yaw, sun_pitch, sun_intensity, nsc_count);
+            if (!reader.read_bytes(&lightmap_density, sizeof(lightmap_density)))
+                return;
+            if (!reader.read_bytes(&u8, sizeof(u8)))
+                return;
+            d3d11_only_lightmaps = (u8 & alpine_lightmap::d3d11_only_stock_omitted) != 0;
+            if (!reader.read_bytes(&lightmap_compression, sizeof(lightmap_compression)))
+                return;
+            lightmap_compression =
+                static_cast<std::uint8_t>(alpine_lightmap::compression_mode_from_wire(lightmap_compression));
         }
     }
 };
@@ -394,6 +413,7 @@ void level_shutdown();
 void alpine_mesh_load_chunk(rf::File& file, std::size_t chunk_len, int content_version);
 void alpine_mesh_do_frame();
 void alpine_mesh_clear_state();
+void alpine_mesh_free_collision_proxies();
 
 // Mesh event helpers
 namespace rf { struct Object; struct PhysicsData; }
@@ -419,6 +439,8 @@ bool alpine_mesh_collide_sphere_world(const rf::Vector3& start, const rf::Vector
 const std::string* alpine_mesh_get_corpse_filename(int handle);
 bool alpine_mesh_spawn_corpse(rf::Object* obj);
 void alpine_mesh_animate(rf::Object* obj, int type, const std::string& anim_filename, float blend_weight);
+bool alpine_mesh_pause_anim(rf::Object* obj);
+bool alpine_mesh_resume_anim(rf::Object* obj, int type, const std::string& anim_filename);
 void alpine_mesh_set_texture(rf::Object* obj, int slot, const std::string& texture_filename);
 void alpine_mesh_clear_texture(rf::Object* obj, int slot);
 void alpine_mesh_set_collision(rf::Object* obj, int collision_type);
@@ -432,10 +454,13 @@ struct AlpineCoronaInfo {
     uint8_t color_r = 255, color_g = 255, color_b = 255, color_a = 255;
     std::string corona_bitmap;
     float cone_angle = 0.0f;         // degrees (multiplied by 0.5 at creation, matching effects.tbl)
+    // Stock authoring factors, not distances, matching DedCorona and rope_curve.h's deco_fx
+    // defaults. Every field below is read unconditionally, so these only stand in for a malformed
+    // chunk - prevention rather than a behaviour change for valid files.
     float intensity = 1.0f;
-    float radius_distance = 100.0f;
-    float radius_scale = 1.0f;
-    float diminish_distance = 200.0f;
+    float radius_distance = 0.6f;
+    float radius_scale = 0.8f;
+    float diminish_distance = -0.05f;
     std::string volumetric_bitmap;
     float volumetric_height = 0.0f;
     float volumetric_length = 0.0f;
@@ -463,6 +488,10 @@ void gas_region_clear_state();
 const std::vector<GasRegionInfo>& gas_region_get_all();
 GasRegionInfo* gas_region_get_by_uid(int uid);
 
+void climb_region_clear_state();
+rf::ClimbRegion* climb_region_get_by_uid(int uid);
+void climb_region_set_enabled(int uid, bool enabled);
+
 // Gas region transitions (smooth interpolation over time)
 struct GasRegionTransition {
     int32_t region_uid;
@@ -488,9 +517,3 @@ void gas_region_add_modify_transition(int32_t region_uid, rf::Color target_color
 void gas_region_add_resize_transition(int32_t region_uid, int target_shape, float target_radius,
                                        float target_height, float target_width, float target_depth, float duration_sec);
 void gas_region_transition_do_frame();
-
-// used by RF2-style geomod
-struct RF2AnchorInfo {
-    rf::GRoom* room;
-    std::unordered_set<rf::GFace*> anchor_faces;
-};

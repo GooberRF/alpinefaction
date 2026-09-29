@@ -87,7 +87,10 @@ enum class AlpineDedEventID : int
     ATX_Pause,
     ATX_Set_Frame_Time,
     Weather_Region_State,
-    Display_Projection
+    Display_Projection,
+    Climbing_Region_State,
+    When_Destroyed,
+    Rope_State
 };
 
 constexpr int af_ded_event_to_int(AlpineDedEventID event_id) noexcept
@@ -124,3 +127,4 @@ struct FieldConfig
 };
 
 static auto OpenLinksDialog = reinterpret_cast<void(__thiscall*)(void* this_)>(0x004073D0);
+static auto links_list_add_string = reinterpret_cast<void(__thiscall*)(void* this_, const char* text)>(0x0045A1A0);
