@@ -3146,10 +3146,18 @@ void terrain_render_surfaces(CDedLevel* level)
         bool selected = false;
         const DedTerrainData& data = terrain_shown_data(level, terrain, selected);
         terrain_preview_draw(*level, *terrain, data, selected);
-        terrain_decorations_collect(*terrain, data);
+    }
+    terrain_preview_frame_end(*level);
+}
+
+void terrain_render_decorations(CDedLevel* level)
+{
+    for (auto* terrain : level->GetAlpineLevelProperties().terrain_objects) {
+        if (terrain->hidden_in_editor) continue;
+        bool selected = false;
+        terrain_decorations_collect(*terrain, terrain_shown_data(level, terrain, selected));
     }
     terrain_decorations_frame_end(*level, g_terrain_dlg.active ? &g_terrain_dlg.data : nullptr);
-    terrain_preview_frame_end(*level);
 }
 
 void terrain_render(CDedLevel* level)

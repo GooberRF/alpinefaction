@@ -606,6 +606,9 @@ static auto& gr_half_width = addr_as_ref<float>(0x0158F2EC);
 enum LevelRenderMode : int
 {
     LEVEL_RENDER_BRUSHES_ONLY = 0, // Render Nothing (Except brushes)
+    LEVEL_RENDER_EVERYTHING = 1,
+    LEVEL_RENDER_CURRENT_ROOM = 2,
+    LEVEL_RENDER_PORTALS = 3,
 };
 static auto& level_render_mode = addr_as_ref<int>(0x0057B9B8); // LevelRenderMode
 static auto& view_see_through = addr_as_ref<int>(0x006C9A94);
@@ -695,7 +698,9 @@ static_assert(offsetof(EditorViewData, camera_pos) == 0x28);
 // Editor viewport — returned by get_active_viewport()
 struct EditorViewport
 {
-    uint8_t pad_00[0x54];               // +0x00
+    uint8_t pad_00[0x4C];               // +0x00
+    int view_type;                      // +0x4C  0 = the perspective (3D) view
+    int view_index;                     // +0x50  its slot in the main frame, as painting_view_index
     EditorViewData* view_data;          // +0x54
     uint8_t pad_58[0x6C - 0x58];        // +0x58
     uint8_t needs_repaint;              // +0x6C  repainted from RED's idle loop while set
@@ -821,6 +826,8 @@ static auto& d3d_device_ptr = addr_as_ref<void*>(0x0183b914);
 // Batch management
 static auto& gr_flush_batch = addr_as_ref<void()>(0x004e99d0);
 static auto& gr_begin_batch = addr_as_ref<void(int, int)>(0x004e98e0);
+// Set while a batch holds the vertex buffers locked; gr_flush_batch draws it and clears this.
+static auto& gr_batch_open = addr_as_ref<bool>(0x0183930d);
 
 static auto& gr_d3d_render_mode_cache = addr_as_ref<int>(0x01838dc0);
 
@@ -830,9 +837,11 @@ static auto& gr_set_mode = addr_as_ref<void(int)>(0x004BA730);
 static auto& gr_poly_render = addr_as_ref<uint8_t __cdecl(int count, GrVertex** verts, uint32_t tmap_flags,
                                                           uint32_t mode, int override_z, float z)>(0x004CB1C0);
 
-// gr_poly_render's tmap_flags: the vertices carry uv, and colour
+// gr_poly_render's tmap_flags: the vertices carry uv, colour, and alpha (without it, 0x004e1540 takes the
+// alpha of the current draw colour)
 constexpr uint32_t tmap_uv = 0x1;
 constexpr uint32_t tmap_rgb = 0x4;
+constexpr uint32_t tmap_alpha = 0x8;
 
 // FUN_0047e140's packing of a gr_poly_render mode
 constexpr uint32_t gr_mode(uint32_t tex, uint32_t color, uint32_t alpha, uint32_t blend, uint32_t zbuf, uint32_t fog)
@@ -844,6 +853,9 @@ constexpr uint32_t mode_textured = gr_mode(2, 2, 0, 0, 4, 0);
 // wrapped texture times vertex colour, full z-buffer
 constexpr uint32_t mode_textured_wrap = gr_mode(1, 2, 0, 0, 4, 0);
 constexpr uint32_t mode_vertex = gr_mode(0, 0, 0, 0, 4, 0);
+// vertex colour and alpha, alpha blended (0x004deda0: SRCALPHA / INVSRCALPHA), z-buffer read without write.
+// RED never culls (0x004ecdae sets D3DCULL_NONE), so each polygon shows from both sides.
+constexpr uint32_t mode_vertex_alpha = gr_mode(0, 0, 0, 3, 1, 0);
 
 // Depth of the pushed instance transforms (0x004edf50 pushes, 0x004ee0a0 pops): nonzero while a mover's
 // is pushed, when the scene lights are kept in its frame too (GrLight::local_vec).

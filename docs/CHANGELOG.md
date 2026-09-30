@@ -41,6 +41,7 @@ Version 1.5.0 (Trillium): Not yet released
   - Import 8/16-bit greyscale PNG and RAW16 heightmaps, export 16-bit PNG and RAW16 heightmaps, and import splat maps
   - Generate heightmaps using fractal noise with optional splat map from height, slope and ridges
   - Sculpt heights, paint texture layers and holes, and pick geoable chunks in the viewport with `Terrain Tools`
+  - Mirror `Terrain Tools` brush strokes across the terrain's X and/or Z axis, with movable mirror lines
   - Up to 4 detail overlays (leaves, debris) and 8 mesh decoration layers per terrain (grass, rocks, bushes)
   - `Geoable` terrains are carved by RF2-style geomod craters, with their own underside and crater textures
 

@@ -13,6 +13,7 @@
 #include <common/scope_guard.h>
 #include <common/utils/string-utils.h>
 #include <common/version/version.h>
+#include <patch_common/CallHook.h>
 #include <patch_common/CodeInjection.h>
 #include <patch_common/FunHook.h>
 #include <patch_common/AsmWriter.h>
@@ -1124,14 +1125,58 @@ CodeInjection alpine_create_object_patch{
 
 // ─── Rendering ──────────────────────────────────────────────────────────────
 
-// Terrain surfaces are opaque level geometry: draw them before FUN_0041f6d0's first draw (the player start
-// sprite, which tests but does not write depth), so nothing drawn from here on is painted over by them.
+// Terrain surfaces are opaque level geometry: in the 3D view, where they draw solid, they go into the depth
+// buffer before the level's own faces, so its liquid surfaces and alpha faces blend over them as in game. The
+// batch is flushed so none of their polygons stay queued behind the level's.
+static void render_terrain_before_level(CDedLevel* level)
+{
+    const bool batch_was_open = gr_batch_open;
+    terrain_render_surfaces(level);
+    if (gr_batch_open) gr_flush_batch();
+    if (batch_was_open) gr_begin_batch(4, 3);
+}
+
+// FUN_0047ad30 before the level (0x0047aeb2 on). The portal and current-room modes draw a sky room first, which
+// clears the depth buffer (FUN_00424c90 -> FUN_004b95c0(1)): there the terrain waits for the hook below.
+CodeInjection alpine_render_surfaces_3d_patch{
+    0x0047ae96,
+    [](auto& regs) {
+        auto* level = CDedLevel::Get();
+        const auto* view = reinterpret_cast<const EditorViewport*>(static_cast<uintptr_t>(regs.esi));
+        if (!level || view->view_type != 0) return;
+        // Set by FUN_0041e4c0 only after the level; the preview's repaint requests read it.
+        painting_view_index = view->view_index;
+        if (!terrain_view_draws_solid()) return;
+        // [view+0x40]+0xac: the solid the level pass draws (none: no level pass)
+        const auto doc = *reinterpret_cast<const uintptr_t*>(reinterpret_cast<uintptr_t>(view) + 0x40);
+        const bool portal_walk = (level_render_mode == LEVEL_RENDER_CURRENT_ROOM ||
+                                  level_render_mode == LEVEL_RENDER_PORTALS) &&
+                                 *reinterpret_cast<void* const*>(doc + 0xac);
+        if (!portal_walk) render_terrain_before_level(level);
+    },
+};
+
+// FUN_00425950 (3D view only, from 0x0047aedc): after the sky room, before the rooms' opaque caches.
+CallHook<void(void*, void*, int)> alpine_render_surfaces_portal_hook{
+    0x00425a83,
+    [](void* solid, void* rooms, int count) {
+        auto* level = CDedLevel::Get();
+        if (level && terrain_view_draws_solid()) render_terrain_before_level(level);
+        alpine_render_surfaces_portal_hook.call_target(solid, rooms, count);
+    },
+};
+
+// Start of FUN_0041f6d0 (arg 2 set: not the 3D view), before the player start sprite, which tests but does not
+// write depth: the other views, and a 3D view that draws the terrain as lines, draw it here. Decorations draw
+// here in every view.
 CodeInjection alpine_render_surfaces_patch{
     0x0041f6f9,
     [](auto& regs) {
         auto* level = CDedLevel::Get();
         if (!level) return;
-        terrain_render_surfaces(level);
+        const bool view_3d = !*reinterpret_cast<const bool*>(regs.esp + 0x50);
+        if (!view_3d || !terrain_view_draws_solid()) terrain_render_surfaces(level);
+        terrain_render_decorations(level);
     },
 };
 
@@ -3054,6 +3099,8 @@ void ApplyAlpineObjectPatches()
     alpine_object_tree_patch.install();
     alpine_factory_hook.install();
     alpine_create_object_patch.install();
+    alpine_render_surfaces_3d_patch.install();
+    alpine_render_surfaces_portal_hook.install();
     alpine_render_surfaces_patch.install();
     alpine_render_patch.install();
     alpine_group_save_clear_hook.install();

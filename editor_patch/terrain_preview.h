@@ -38,7 +38,8 @@ inline double elapsed_ms(const LARGE_INTEGER& since)
 bool terrain_view_draws_solid();
 
 // Draws one terrain into the viewport being painted, from `data` (the terrain's own, or the
-// properties dialog's staged copy). Called from the terrain surfaces pass (0x0041f6f9).
+// properties dialog's staged copy). Drawn before the level in a solid 3D view (0x0047ae96, or 0x00425a83 in the
+// portal modes), otherwise at 0x0041f6f9.
 void terrain_preview_draw(CDedLevel& level, const DedTerrain& terrain, const DedTerrainData& data, bool selected);
 
 // After the surfaces pass: frees the previews of terrains no longer in the level and asks for another paint
