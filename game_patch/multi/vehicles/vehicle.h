@@ -171,6 +171,9 @@ void vehicle_send_seat_occupancy_to(rf::Player* pp, const rf::Entity* vehicle, i
 // Server: replay every hull's seat occupancy to a joining player.
 void vehicle_send_seat_states_to(rf::Player* pp);
 
+// Server: an entity weapon's actual on/off edge, from the engine's turn-on/turn-off hooks.
+void vehicle_server_announce_weapon_edge(int entity_handle, int weapon_type, bool on, bool alt_fire);
+
 // Client mirror of one Vehicle Factory's server-side respawn state, indexed like g_vehicle_factories.
 struct VehicleFactoryUi
 {

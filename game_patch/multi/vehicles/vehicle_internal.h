@@ -45,6 +45,22 @@ struct VehicleHealth
     float max_life = 0.0f;
 };
 
+// Fire-free time before a vehicle weapon regenerates ammo; the server can never raise a weapon's ammo sooner.
+inline constexpr int64_t vehicle_ammo_regen_delay_ms = 5000;
+
+// How long after its own predicted shots the firing client ignores a higher server total: a stale packet
+// arrives within about RTT + the 100 ms send floor, while the reliable settle (sent 1 s after the last
+// change) must still get through.
+inline constexpr int64_t vehicle_ammo_stale_raise_ms = 800;
+
+// Client side, per weapon slot (primary, secondary): the total last applied from the server and when this
+// machine last saw it drop, so a packet sent before its own latest shots cannot top the mirror back up.
+struct VehicleAmmoMirror
+{
+    int total[2] = {-1, -1};
+    int64_t last_drop_ms[2] = {};
+};
+
 // Server: one vehicle weapon's ammo regeneration state, captured at spawn.
 struct VehicleAmmoRegen
 {
@@ -52,6 +68,8 @@ struct VehicleAmmoRegen
     int spawn_ammo = 0;   // the ceiling regen may climb back to
     int interval_ms = 0;  // 0 = this weapon does not regenerate
     int64_t next_ms = 0;  // when the next +1 is due
+    int last_seen_ammo = 0;
+    int64_t last_fire_ms = 0; // driven by an OBSERVED drop in ammo or a held trigger, like last_damage_ms
 };
 
 // Server: hull regeneration and melee repair state. spawn_max_life is captured ONCE at creation and
@@ -210,9 +228,12 @@ struct VehicleModuleState
 {
     std::vector<int> synced_handles;
     std::unordered_map<int, VehicleFireState> fire;
+    // Server: when each hull's continuous gun may next turn on.
+    std::unordered_map<int, rf::Timestamp> fire_rearm;
     std::unordered_map<int, VehicleHealthSync> health_sync;
     std::unordered_map<int, int> last_damager; // vehicle handle -> attacker entity handle
     std::unordered_map<int, VehicleHealth> health; // client side
+    std::unordered_map<int, VehicleAmmoMirror> ammo_mirror; // client side
     // What arrived for a vehicle this machine watches, and what it last sent for the one it drives.
     std::unordered_map<int, VehicleOrientSupplement> orient;
     std::unordered_map<int, VehicleOrientSend> orient_sent;

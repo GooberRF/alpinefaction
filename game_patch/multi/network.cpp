@@ -1467,15 +1467,9 @@ CodeInjection process_obj_update_weapon_fire_injection{
 
         bool is_on = flags & ouf_fire;
         bool alt_fire = flags & ouf_alt_fire;
-        void multi_turn_weapon_on(rf::Entity* ep, rf::Player* pp, bool alt_fire);
-        void multi_turn_weapon_off(rf::Entity* ep);
-        // Vehicle weapon state comes from af_vehicle_fire; driver obj_update rows have the fire bits stripped.
-        if (rf::is_server && vehicle_is_synced_entity_type(entity)) {
-            regs.eip = 0x0047E346;
-            return;
-        }
-        // The firing seat owner already drives the weapon locally; the server echo is a round trip late.
-        if (!vehicle_local_owns_firing_seat(entity)) {
+        // Vehicle weapon state comes from af_vehicle_fire edges both ways; a sampled bit misses a
+        // one-frame burst and a late row could re-arm a stopped gun.
+        if (!vehicle_is_synced_entity_type(entity)) {
             if (is_on) {
                 multi_turn_weapon_on(entity, pp, alt_fire);
             }
@@ -3110,10 +3104,11 @@ FunHook<void __cdecl(int, int, bool)> entity_turn_weapon_on_hook{
         // called every frame while the trigger is held; only the off->on edge matters
         bool was_on = rf::entity_weapon_is_on(entity_handle, weapon_type);
         entity_turn_weapon_on_hook.call_target(entity_handle, weapon_type, alt_fire);
-        if (!was_on && is_local_entity(entity_handle)
-            && rf::weapon_is_on_off_weapon(weapon_type, alt_fire)
-            && rf::entity_weapon_is_on(entity_handle, weapon_type)) {
-            multi_force_fire_state_send();
+        if (!was_on && rf::entity_weapon_is_on(entity_handle, weapon_type)) {
+            if (is_local_entity(entity_handle) && rf::weapon_is_on_off_weapon(weapon_type, alt_fire)) {
+                multi_force_fire_state_send();
+            }
+            vehicle_server_announce_weapon_edge(entity_handle, weapon_type, true, alt_fire);
         }
     },
 };
@@ -3123,9 +3118,11 @@ FunHook<void __cdecl(int, int)> entity_turn_weapon_off_hook{
     [](int entity_handle, int weapon_type) {
         bool was_on = rf::entity_weapon_is_on(entity_handle, weapon_type);
         entity_turn_weapon_off_hook.call_target(entity_handle, weapon_type);
-        if (was_on && is_local_entity(entity_handle)
-            && !rf::entity_weapon_is_on(entity_handle, weapon_type)) {
-            multi_force_fire_state_send();
+        if (was_on && !rf::entity_weapon_is_on(entity_handle, weapon_type)) {
+            if (is_local_entity(entity_handle)) {
+                multi_force_fire_state_send();
+            }
+            vehicle_server_announce_weapon_edge(entity_handle, weapon_type, false, false);
         }
     },
 };

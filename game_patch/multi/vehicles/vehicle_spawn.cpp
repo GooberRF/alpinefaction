@@ -574,12 +574,12 @@ namespace
     // Exactly the mods/gg diff. Anything not listed keeps its stock value.
     constexpr VehicleWeaponOverride vehicle_weapon_overrides[] = {
         {"Torpedo",         17.0f, 1.25f, 275.0f, 10, 12.0f, 8.5f,  true},
-        {"Fighter Rocket",  {},    2.0f,  275.0f, 10, {},    10.0f, true},
-        {"APC Rocket",      {},    {},    275.0f, 10, {},    {},    false},
-        {"APC Minigun",     {},    {},    45.0f,  {}, {},    {},    false},
-        {"Jeep Gun",        {},    {},    45.0f,  {}, {},    {},    false},
-        {"Fighter Minigun", {},    {},    45.0f,  {}, {},    {},    false},
-        {"Vauss",           {},    {},    45.0f,  {}, {},    {},    false},
+        {"Fighter Rocket",  {},    2.0f,  275.0f, 10,  {},    10.0f, true},
+        {"APC Rocket",      {},    {},    275.0f, 10,  {},    {},    false},
+        {"APC Minigun",     {},    {},    45.0f,  100, {},    {},    false},
+        {"Jeep Gun",        {},    {},    45.0f,  150, {},    {},    false},
+        {"Fighter Minigun", {},    {},    45.0f,  100, {},    {},    false},
+        {"Vauss",           {},    {},    45.0f,  150, {},    {},    false},
     };
 
     struct VehicleEntityOverride

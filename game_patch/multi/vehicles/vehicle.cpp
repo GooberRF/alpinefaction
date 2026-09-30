@@ -14,7 +14,9 @@
 #include "vehicle_markers.h"
 #include "vehicle_render.h"
 #include "vehicle_spawn.h"
+#include "vehicle_tracers.h"
 #include "../alpine_packets.h"
+#include "../multi.h"
 #include "../server_internal.h"
 #include "../../hud/hud.h"
 #include "../../hud/multi_spectate.h"
@@ -455,6 +457,7 @@ void vehicle_client_do_frame()
             return !vehicle_is_synced_entity_type(rf::entity_from_handle(kv.first));
         };
         std::erase_if(g_vehicle_state.health, handle_is_gone);
+        std::erase_if(g_vehicle_state.ammo_mirror, handle_is_gone);
         std::erase_if(g_vehicle_state.orient, handle_is_gone);
         std::erase_if(g_vehicle_state.orient_sent, handle_is_gone);
         // The mirror the auto-return label and the entry rules read; nothing else drops it on a
@@ -498,6 +501,15 @@ void vehicle_client_do_frame()
     const int handle = vehicle ? vehicle->handle : -1;
     if (handle != g_vehicle_state.reported_fire_vehicle) {
         rf::Entity* previous = rf::entity_from_handle(g_vehicle_state.reported_fire_vehicle);
+        // The server leaves this machine out of every edge while it holds the gun, so a predicted
+        // burst still on at a death in the seat would never hear its STOP. Not once someone else
+        // holds it: his bursts are server edges.
+        if (!rf::is_server && vehicle_is_synced_entity_type(previous)) {
+            const rf::Entity* holder = vehicle_firing_seat_occupant(previous);
+            if (!holder || holder == rf::local_player_entity) {
+                multi_turn_weapon_off(previous);
+            }
+        }
         if (g_vehicle_state.reported_primary_held) {
             report(previous, false, false);
         }
@@ -658,6 +670,7 @@ void vehicle_level_init()
     vehicle_drop_jeep_tire_mesh();
     vehicle_view_level_init();
     vehicle_markers_level_init();
+    vehicle_tracers_level_init();
     // The bm cache is rebuilt per level, so a handle resolved for the last one means nothing here.
     vehicle_tread_runtime_reset();
     vehicle_ammo_regen_runtime_reset();
@@ -856,6 +869,7 @@ void vehicle_on_multi_shutdown()
     vehicle_drop_jeep_tire_mesh();
     vehicle_view_level_init();
     vehicle_markers_level_init();
+    vehicle_tracers_level_init();
 }
 
 namespace
@@ -887,4 +901,5 @@ void vehicle_apply_patches()
     AsmWriter{0x0049F475}.call(0x0048AA30);
 
     vehicle_spawn_install();
+    vehicle_tracers_install();
 }

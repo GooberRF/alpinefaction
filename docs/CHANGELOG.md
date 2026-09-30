@@ -9,6 +9,7 @@ Version 1.5.0 (Trillium): Not yet released
   - Jeeps, APCs, drillers, fighters, submarines, and stationary turrets, spawned by the new `Vehicle Factory` object
   - Overhaul vehicle physics using Bullet physics engine
   - Multi-seat vehicles with driver, gunner, and passenger seats; `Use` boards the lowest free seat and number keys `1`-`6` switch seats
+  - Regenerate vehicle weapon ammo after 5 seconds without firing
   - Optional third-person view for jeep, APC, and driller drivers and the jeep gunner, toggled with `Change View` (formerly `Change Spectate View`, default `;`) and remembered
   - Third-person vehicle views orbit with the mouse and follow the vehicle with a smoothed, speed-aware chase camera, tunable with the `cl_vehiclecam_*` commands; driver and passenger views ease back behind the vehicle, and the APC's guns converge on the crosshair
   - Render rolling, steering tires on jeeps
@@ -17,6 +18,7 @@ Version 1.5.0 (Trillium): Not yet released
   - Use team colored textures for vehicle hulls and the jeep gun in team game types
   - Extend player outlines to the vehicle or turret an outlined player is riding
   - Mark each vehicle respawn point with the vehicle name and a countdown, with a ghost of the vehicle filling in as its respawn approaches (Direct3D 11 renderer only), toggleable with `cl_vehiclemarkers`
+  - Draw glowing tracers for vehicle machine guns, tinted toward the firing team's color in team game types and configurable with the `cl_vehicletracers` commands
   - Hand a `Vehicle Factory` linked from a `control_point_handler` event to whichever team owns that control point, spawning its vehicle immediately on capture
   - Drop the flag a player is carrying when they board any vehicle other than a turret or a jeep
 - Add multiplayer minimap for levels that enable one in `Level Properties`

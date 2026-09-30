@@ -15,6 +15,7 @@
 #include "vehicle_damage.h"
 #include "vehicle_view.h"
 #include "../alpine_packets.h"
+#include "../multi.h"
 #include "../server_internal.h"
 #include "../../hud/hud.h"
 #include "../../hud/multi_spectate.h"
@@ -46,6 +47,9 @@ namespace
     constexpr int vehicle_orient_keepalive_ms = 5000;
     // Past half the 16-bit tick range a tick comparison is meaningless; a record this old accepts anything.
     constexpr int64_t vehicle_orient_stale_ms = 30000;
+
+    // Least time between two turn-ons of one hull's continuous gun, whatever weapons.tbl says.
+    constexpr int vehicle_fire_rearm_floor_ms = 100;
 
     // pack_obj_update_data (cdecl: recipient, entity, out buffer) -> bytes written. network.cpp's
     // dedupe keys on the newest keyframe tick, so at most ONE keyframe per ms tick may be pushed.
@@ -644,8 +648,9 @@ namespace
         if (vphys_hull_submerged(vehicle)) {
             return false;
         }
-        // A forced call is a watcher replaying a shot the server already validated and paid for.
-        if (!force) {
+        // Only the server's ammo is authoritative; every client call is a replay of a shot or burst
+        // the server already validated.
+        if (!force && rf::is_server) {
             const int weapon = alt && vehicle->info->use_function == rf::ENTITY_USE_VEHICLE
                 ? vehicle->ai.current_secondary_weapon
                 : vehicle->ai.current_primary_weapon;
@@ -695,10 +700,19 @@ namespace
         }
 
         if (!use_secondary && rf::weapon_is_on_off_weapon(weapon, alt)) {
-            // The on flag is the fire state other machines read off the row, so it still has to be
-            // set, but the loop-fire does not reliably see it - hence the direct fire below.
+            // Turning the gun on sends the START other machines replay; the loop-fire does not reliably
+            // see the flag on the server - hence the direct fire below.
             if (!rf::entity_weapon_is_on(vehicle->handle, weapon)) {
+                // Every turn-on is a reliable START to every client, so a trigger toggled each frame
+                // must not re-arm faster than this. Held, it re-arms the frame the window lapses.
+                rf::Timestamp& rearm = g_vehicle_state.fire_rearm[vehicle->handle];
+                if (rearm.valid() && !rearm.elapsed()) {
+                    return;
+                }
                 rf::entity_turn_weapon_on(vehicle->handle, weapon, alt);
+                // The drill ignores its fire-wait and makes no projectile, so only the floor applies to it.
+                const int fire_wait = rf::entity_is_driller(vehicle) ? 0 : rf::weapon_get_fire_wait_ms(weapon, alt);
+                rearm.set(std::max(fire_wait, vehicle_fire_rearm_floor_ms));
             }
             // Stock entity_process_post carves too (0x0041EA82), but this direct call is
             // load-bearing: keep BOTH. A double carve is harmless, the internal pacing bounds it.
@@ -740,9 +754,8 @@ void vehicle_server_apply_fire(rf::Entity* vehicle, const VehicleFireState& stat
     vehicle_server_apply_trigger(vehicle, true, state.alt_held, state.requester_id);
 }
 
-// Server: drop both channels whether or not a fire report was ever recorded, so the final broadcast
-// row cannot carry OUF_FIRE - the row stops the moment the last seat empties, and a weapon left on
-// then fires forever on every watcher.
+// Server: drop both channels whether or not a fire report was ever recorded - a weapon left on with
+// nobody in the firing seat fires forever, here and, through its START, on every watcher.
 void vehicle_server_stop_fire(rf::Entity* vehicle)
 {
     if (!rf::is_server || !vehicle) {
@@ -797,9 +810,11 @@ void vehicle_server_sync_health(rf::Entity* vehicle)
 void vehicle_drop_combat_state(int vehicle_handle)
 {
     g_vehicle_state.fire.erase(vehicle_handle);
+    g_vehicle_state.fire_rearm.erase(vehicle_handle);
     g_vehicle_state.health_sync.erase(vehicle_handle);
     g_vehicle_state.last_damager.erase(vehicle_handle);
     g_vehicle_state.health.erase(vehicle_handle);
+    g_vehicle_state.ammo_mirror.erase(vehicle_handle);
     g_vehicle_state.hull_state.erase(vehicle_handle);
     g_vehicle_state.orient.erase(vehicle_handle);
     g_vehicle_state.orient_sent.erase(vehicle_handle);
@@ -951,6 +966,31 @@ namespace
             if (vehicle_local_owns_firing_seat(shooter)) {
                 regs.eip = 0x004266C8;
             }
+        },
+    };
+
+    // A watcher's fire is a replay of a shot the server already paid for; his ammo copy must not
+    // refuse it. Stock's discrete remote replay passes pos, which skips the primary's gate, but its
+    // loop-fire passes none and does gate a remote continuous weapon.
+    bool vehicle_fire_skips_local_ammo_gate(rf::Entity* ep)
+    {
+        return rf::is_multi && !rf::is_server && vehicle_is_synced_entity_type(ep)
+            && !vehicle_local_owns_firing_seat(ep);
+    }
+
+    CallHook<int(rf::Entity*)> entity_fire_weapon_watcher_ammo_gate_hook{
+        0x00425BFB,
+        [](rf::Entity* ep) -> int {
+            const int total = entity_fire_weapon_watcher_ammo_gate_hook.call_target(ep);
+            return vehicle_fire_skips_local_ammo_gate(ep) ? std::max(total, 1) : total;
+        },
+    };
+
+    CallHook<int(rf::Entity*, int)> entity_fire_secondary_watcher_ammo_gate_hook{
+        0x00426D0C,
+        [](rf::Entity* ep, int weapon_type) -> int {
+            const int reserve = entity_fire_secondary_watcher_ammo_gate_hook.call_target(ep, weapon_type);
+            return vehicle_fire_skips_local_ammo_gate(ep) ? std::max(reserve, 1) : reserve;
         },
     };
 
@@ -1218,8 +1258,8 @@ namespace
         },
     };
 
-    // A vehicle with an empty driver seat has nobody reporting it, and for a gunner-only jeep the
-    // row's OUF_FIRE bit is the only thing telling other clients its gun is firing.
+    // A vehicle with an empty driver seat has nobody reporting it, so while another seat is taken
+    // (a gunner-only jeep) the server samples its row itself.
     bool vehicle_server_samples_vehicle(rf::Entity* vehicle)
     {
         if (!rf::is_server || !vehicle || rf::entity_is_dying(vehicle)) {
@@ -1307,6 +1347,12 @@ namespace
             vehicle_init_synced_entity(ep);
         },
     };
+
+    rf::Player* vehicle_firing_seat_player(rf::Entity* vehicle)
+    {
+        const rf::Entity* holder = vehicle_firing_seat_occupant(vehicle);
+        return holder ? rf::player_from_entity_handle(holder->handle) : nullptr;
+    }
 } // namespace
 
 void vehicle_send_seat_states_to(rf::Player* pp)
@@ -1327,6 +1373,13 @@ void vehicle_send_seat_states_to(rf::Player* pp)
         af_send_vehicle_health_packet(pp, vehicle->handle, vehicle->life, vehicle_hud_max_life(vehicle),
                                       vehicle_weapon_ammo(vehicle, vehicle->ai.current_primary_weapon),
                                       vehicle_weapon_ammo(vehicle, vehicle->ai.current_secondary_weapon));
+        // A gun already firing sent its START before this man existed.
+        const int primary = vehicle->ai.current_primary_weapon;
+        if (primary >= 0 && rf::entity_weapon_is_on(vehicle->handle, primary)
+            && vehicle_firing_seat_player(vehicle) != pp) {
+            af_send_vehicle_fire_packet(pp, vehicle->handle, AF_VEHICLE_FIRE_START,
+                                        (vehicle->ai.ai_flags & rf::AIF_ALT_FIRE) ? 1 : 0);
+        }
     }
     vehicle_send_factory_states_to(pp);
 }
@@ -1425,17 +1478,62 @@ void vehicle_server_handle_fire_request(rf::Player* pp, int vehicle_handle, uint
     }
 }
 
+// Every off path (release, ammo, blackout, seat change, death) funnels through the engine's turn-off,
+// so hooking the edges themselves is what keeps a watcher's gun from outliving the server's.
+void vehicle_server_announce_weapon_edge(int entity_handle, int weapon_type, bool on, bool alt_fire)
+{
+    if (!rf::is_multi || !rf::is_server) {
+        return;
+    }
+    rf::Entity* vehicle = vehicle_synced_entity(entity_handle);
+    if (!vehicle || weapon_type != vehicle->ai.current_primary_weapon) {
+        return;
+    }
+    // STOP for either mode, so no START can go unpaired.
+    const bool continuous = on ? rf::weapon_is_on_off_weapon(weapon_type, alt_fire)
+                               : rf::weapon_is_on_off_weapon(weapon_type, false)
+                                     || rf::weapon_is_on_off_weapon(weapon_type, true);
+    if (!continuous) {
+        return;
+    }
+    af_send_vehicle_fire_packet_to_all(vehicle_firing_seat_player(vehicle), vehicle->handle,
+                                       on ? AF_VEHICLE_FIRE_START : AF_VEHICLE_FIRE_STOP,
+                                       on && alt_fire ? 1 : 0);
+}
+
 void vehicle_apply_fire_from_packet(int vehicle_handle, uint8_t action, uint8_t alt_fire)
 {
-    if (action != AF_VEHICLE_FIRE_SHOT) {
-        return; // continuous state rides the stock obj_update fire bits
-    }
     rf::Object* obj = rf::obj_from_remote_handle(vehicle_handle);
-    rf::Entity* vehicle = obj ? vehicle_live_synced_entity(obj->handle) : nullptr;
+    if (!obj) {
+        return;
+    }
+    const bool alt = alt_fire != 0;
+    if (action == AF_VEHICLE_FIRE_STOP) {
+        // Unconditional, dying hull included: a spare turn-off is a no-op, a missed one fires forever.
+        if (rf::Entity* vehicle = vehicle_synced_entity(obj->handle)) {
+            multi_turn_weapon_off(vehicle);
+        }
+        return;
+    }
+    rf::Entity* vehicle = vehicle_live_synced_entity(obj->handle);
     if (!vehicle) {
         return;
     }
-    vehicle_fire_discrete(vehicle, alt_fire != 0, true);
+    if (action == AF_VEHICLE_FIRE_SHOT) {
+        vehicle_fire_discrete(vehicle, alt, true);
+        return;
+    }
+    // Only a turret's alt is a mode of its continuous primary. The firing seat predicts its own.
+    if (action != AF_VEHICLE_FIRE_START || vehicle_local_owns_firing_seat(vehicle)
+        || (alt && vehicle->info->use_function == rf::ENTITY_USE_VEHICLE)) {
+        return;
+    }
+    multi_turn_weapon_on(vehicle, nullptr, alt);
+    // The server's own on-branch fires at once too; unforced, so the fire-wait it sets keeps the
+    // loop-fire from doubling it, and a STOP in the same batch still leaves exactly this round.
+    if (rf::entity_weapon_is_on(vehicle->handle, vehicle->ai.current_primary_weapon)) {
+        vehicle_fire_discrete(vehicle, alt, false);
+    }
 }
 
 void vehicle_server_handle_orient_report(rf::Player* pp, int vehicle_handle, uint16_t tick,
@@ -1511,7 +1609,11 @@ void vehicle_store_health_from_packet(int vehicle_handle, float life, float max_
     if (!vehicle) {
         return;
     }
-    const auto set_ammo = [vehicle](int weapon_type, int total) {
+    VehicleAmmoMirror& mirror = g_vehicle_state.ammo_mirror[obj->handle];
+    const int64_t now = timer::get_i64(1000);
+    // Only the firing seat predicts shots; a watcher's replays are the server's own and must take its value.
+    const bool predicts = vehicle_local_owns_firing_seat(vehicle);
+    const auto set_ammo = [vehicle, &mirror, now, predicts](int slot, int weapon_type, int total) {
         constexpr int vehicle_wire_ammo_max = 10000;
         if (total < 0 || total > vehicle_wire_ammo_max || weapon_type < 0 || weapon_type >= 64) {
             return; // -1 total = the hull has no such weapon; leave the mirror alone
@@ -1522,10 +1624,22 @@ void vehicle_store_health_from_packet(int vehicle_handle, float life, float max_
         }
         // The server's number is the TOTAL the fire gate uses: clip + reserve.
         const int clip = vehicle->ai.clip_ammo[weapon_type];
+        const int local = clip + vehicle->ai.ammo[ammo_type];
+        if (predicts && mirror.total[slot] >= 0 && local < mirror.total[slot]) {
+            mirror.last_drop_ms[slot] = now; // shots fired here since the last packet
+        }
+        // A raise this soon after a local shot is a packet from before it; applying it would feed shots the
+        // server never fires.
+        if (predicts && total > local && mirror.total[slot] >= 0
+            && now - mirror.last_drop_ms[slot] < vehicle_ammo_stale_raise_ms) {
+            mirror.total[slot] = local;
+            return;
+        }
         vehicle->ai.ammo[ammo_type] = std::max(total - clip, 0);
+        mirror.total[slot] = total;
     };
-    set_ammo(vehicle->ai.current_primary_weapon, primary_ammo);
-    set_ammo(vehicle->ai.current_secondary_weapon, secondary_ammo);
+    set_ammo(0, vehicle->ai.current_primary_weapon, primary_ammo);
+    set_ammo(1, vehicle->ai.current_secondary_weapon, secondary_ammo);
 }
 
 void vehicle_sync_apply_patch()
@@ -1546,5 +1660,7 @@ void vehicle_sync_apply_patch()
     obj_pair_should_skip_hook.install();
     weapon_create_own_vehicle_bullet_injection.install();
     entity_fire_weapon_own_vehicle_bullet_injection.install();
+    entity_fire_weapon_watcher_ammo_gate_hook.install();
+    entity_fire_secondary_watcher_ammo_gate_hook.install();
     weapon_update_homing_target_hook.install();
 }

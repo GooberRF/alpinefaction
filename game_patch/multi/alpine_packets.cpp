@@ -3863,6 +3863,22 @@ void af_send_vehicle_fire_packet_to_all(rf::Player* except, int vehicle_handle, 
     af_broadcast_to_af_clients(&pkt, sizeof(pkt), true, except);
 }
 
+void af_send_vehicle_fire_packet(rf::Player* player, int vehicle_handle, uint8_t action, uint8_t alt_fire)
+{
+    // server -> one client, for the join replay
+    if (!rf::is_server || !player) {
+        return;
+    }
+    if (!is_player_minimum_af_client_version(player, 1, 5, 0)) {
+        return;
+    }
+
+    af_vehicle_fire_packet pkt{};
+    build_af_vehicle_fire_packet(pkt, vehicle_handle, action, alt_fire);
+
+    af_send_packet(player, &pkt, static_cast<int>(sizeof(pkt)), true);
+}
+
 void af_process_vehicle_fire_packet(const void* data, size_t len, const rf::NetAddr& addr)
 {
     if (!rf::is_multi) {

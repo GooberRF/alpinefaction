@@ -41,6 +41,7 @@
 #include "../multi/vehicles/vehicle.h"
 #include "../multi/vehicles/vehicle_markers.h"
 #include "../multi/vehicles/vehicle_physics.h"
+#include "../multi/vehicles/vehicle_tracers.h"
 #include "../multi/server.h"
 #include "../multi/server_internal.h"
 #include "../multi/alpine_packets.h"
@@ -208,6 +209,7 @@ CodeInjection after_level_render_hook{
         alpine_rope_render();
         alpine_terrain_decorations_render_legacy();
         crits_client_render();
+        vehicle_tracers_render();
         debug_render();
         waypoints_render_debug();
         client_bot_render_debug();

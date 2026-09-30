@@ -1040,6 +1040,25 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.set_vehicle_cam_lag(std::stof(settings["VehicleCamLag"]));
         processed_keys.insert("VehicleCamLag");
     }
+    if (settings.count("VehicleTracers")) {
+        g_alpine_game_config.vehicle_tracers = std::stoi(settings["VehicleTracers"]);
+        processed_keys.insert("VehicleTracers");
+    }
+    if (settings.count("VehicleTracerFrequency")) {
+        g_alpine_game_config.set_vehicle_tracer_frequency(std::stoi(settings["VehicleTracerFrequency"]));
+        processed_keys.insert("VehicleTracerFrequency");
+    }
+    if (settings.count("VehicleTracerColor")) {
+        auto c = parse_hex_color_string(settings["VehicleTracerColor"]);
+        if (c) {
+            g_alpine_game_config.vehicle_tracer_color = *c;
+        }
+        processed_keys.insert("VehicleTracerColor");
+    }
+    if (settings.count("VehicleTracerLength")) {
+        g_alpine_game_config.set_vehicle_tracer_length(std::stof(settings["VehicleTracerLength"]));
+        processed_keys.insert("VehicleTracerLength");
+    }
     if (settings.count("WorldHUDSpectateLabels")) {
         g_alpine_game_config.world_hud_spectate_player_labels = std::stoi(settings["WorldHUDSpectateLabels"]);
         processed_keys.insert("WorldHUDSpectateLabels");
@@ -1693,6 +1712,10 @@ void alpine_player_settings_save(rf::Player* player)
     file << "VehicleCamPitchSmooth=" << g_alpine_game_config.vehicle_cam_pitch_smooth << "\n";
     file << "VehicleCamBounce=" << g_alpine_game_config.vehicle_cam_bounce << "\n";
     file << "VehicleCamLag=" << g_alpine_game_config.vehicle_cam_lag << "\n";
+    file << "VehicleTracers=" << g_alpine_game_config.vehicle_tracers << "\n";
+    file << "VehicleTracerFrequency=" << g_alpine_game_config.vehicle_tracer_frequency << "\n";
+    file << "VehicleTracerColor=" << format_hex_color_string(g_alpine_game_config.vehicle_tracer_color) << "\n";
+    file << "VehicleTracerLength=" << g_alpine_game_config.vehicle_tracer_length << "\n";
     file << "WorldHUDSpectateLabels=" << g_alpine_game_config.world_hud_spectate_player_labels << "\n";
     file << "WorldHUDDemoPlayerInfo=" << g_alpine_game_config.world_hud_demo_player_info << "\n";
     file << "WorldHUDDemoSpawns=" << g_alpine_game_config.world_hud_demo_spawns << "\n";

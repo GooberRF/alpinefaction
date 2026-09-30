@@ -189,6 +189,8 @@ set(SRCS
     multi/vehicles/vehicle_spawn.cpp
     multi/vehicles/vehicle_markers.h
     multi/vehicles/vehicle_markers.cpp
+    multi/vehicles/vehicle_tracers.h
+    multi/vehicles/vehicle_tracers.cpp
     multi/vehicles/vehicle_physics.h
     multi/vehicles/physics/vphys_internal.h
     multi/vehicles/physics/vphys_world.cpp

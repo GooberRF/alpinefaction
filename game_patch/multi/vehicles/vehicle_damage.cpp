@@ -6,6 +6,7 @@
 #include <iterator>
 #include <vector>
 #include <xlog/xlog.h>
+#include <patch_common/CallHook.h>
 #include <patch_common/CodeInjection.h>
 #include <patch_common/FunHook.h>
 #include <patch_common/MemUtils.h>
@@ -1421,7 +1422,7 @@ void vehicle_capture_spawn_ammo(rf::Entity* ep)
             slot.weapon_type = wt;
             slot.spawn_ammo = vehicle_weapon_ammo(ep, wt);
             slot.interval_ms = vehicle_weapon_ammo_regen[row].interval_ms;
-            slot.next_ms = timer::get_i64(1000) + slot.interval_ms;
+            slot.last_seen_ammo = slot.spawn_ammo;
             break;
         }
     }
@@ -1429,28 +1430,79 @@ void vehicle_capture_spawn_ammo(rf::Entity* ep)
 
 namespace
 {
-    // Its own clock, no damage gate and no occupancy gate. The round goes through the engine's own
-    // entity_add_to_reserve_ammo (0x00428D90), so its clamping and bookkeeping happen too.
-    bool vehicle_ammo_regen_do_frame(rf::Entity* ep, VehicleRegen& regen, int64_t now)
+    // Slot 0 is the primary weapon, slot 1 the secondary; a turret's two triggers both drive its primary.
+    bool vehicle_ammo_slot_trigger_held(const rf::Entity* ep, int slot_index)
     {
-        bool changed = false;
-        for (VehicleAmmoRegen& slot : regen.ammo) {
+        auto it = g_vehicle_state.fire.find(ep->handle);
+        if (it == g_vehicle_state.fire.end()) {
+            return false;
+        }
+        const VehicleFireState& state = it->second;
+        if (ep->info->use_function != rf::ENTITY_USE_VEHICLE) {
+            return slot_index == 0 && state.any_held();
+        }
+        return slot_index == 0 ? state.primary_held : state.alt_held;
+    }
+
+    // Mirrors the life regen: any shot or a held trigger restarts the delay, then one round per
+    // interval up to the spawn ammo. Runs after this frame's fire pass, so its shots read as a drop.
+    void vehicle_ammo_regen_do_frame(rf::Entity* ep, VehicleRegen& regen, int64_t now)
+    {
+        for (int i = 0; i < 2; ++i) {
+            VehicleAmmoRegen& slot = regen.ammo[i];
             if (slot.interval_ms <= 0 || slot.weapon_type < 0 || slot.spawn_ammo <= 0) {
+                continue;
+            }
+            const int ammo = vehicle_weapon_ammo(ep, slot.weapon_type);
+            if (ammo < slot.last_seen_ammo || vehicle_ammo_slot_trigger_held(ep, i)) {
+                slot.last_fire_ms = now;
+            }
+            slot.last_seen_ammo = ammo;
+            // The first round lands as the delay ends; a full weapon banks nothing.
+            if (ammo >= slot.spawn_ammo) {
+                slot.next_ms = now;
+                continue;
+            }
+            if (now - slot.last_fire_ms < vehicle_ammo_regen_delay_ms) {
+                slot.next_ms = slot.last_fire_ms + vehicle_ammo_regen_delay_ms;
                 continue;
             }
             if (now < slot.next_ms) {
                 continue;
             }
-            // Re-arm from NOW, not by adding the interval: a hull at its cap must not bank rounds.
             slot.next_ms = now + slot.interval_ms;
-            if (vehicle_weapon_ammo(ep, slot.weapon_type) >= slot.spawn_ammo) {
-                continue;
-            }
             rf::entity_add_to_reserve_ammo(ep, slot.weapon_type, 1);
-            changed = true;
+            slot.last_seen_ammo = vehicle_weapon_ammo(ep, slot.weapon_type);
         }
-        return changed;
     }
+
+    // Stock gives a fighter infinite ammo: player_fire_primary_weapon refills an empty fighter host by
+    // max_ammo (the call at 0x004A549E). On an MP client that refill is local only, so the pilot kept predicting
+    // fire the server - which has no refill - was no longer making.
+    CallHook<void(rf::Entity*, int, int)> player_fire_fighter_ammo_refill_hook{
+        0x004A549E,
+        [](rf::Entity* host, int weapon_type, int count) {
+            if (rf::is_multi && vehicle_is_synced_entity_type(host)) {
+                return;
+            }
+            player_fire_fighter_ammo_refill_hook.call_target(host, weapon_type, count);
+        },
+    };
+
+    // The primary-empty dry test ignores the alt flag, so an empty primary refuses a loaded secondary.
+    // ESI is the shooter, [esp+0x6C] the alt flag; 0x004A554D is where a primary with ammo continues.
+    CodeInjection player_fire_alt_skip_primary_empty_injection{
+        0x004A550B,
+        [](auto& regs) {
+            rf::Entity* shooter = regs.esi;
+            if (rf::is_multi && addr_as_ref<uint8_t>(regs.esp + 0x6C) != 0
+                && vehicle_is_synced_entity_type(shooter)
+                && shooter->info->use_function == rf::ENTITY_USE_VEHICLE
+                && shooter->ai.current_secondary_weapon >= 0) {
+                regs.eip = 0x004A554D;
+            }
+        },
+    };
 } // namespace
 
 // Constant-rate hull regeneration back to the life this vehicle SPAWNED with. The damage clock is
@@ -1465,8 +1517,7 @@ void vehicle_regen_do_frame(rf::Entity* ep)
     VehicleRegen& regen = it->second;
     const int64_t now = timer::get_i64(1000);
 
-    // Ammo first and unconditionally: it is not on the life regen's clock and must keep running for
-    // a hull that is at full health, damaged, submerged or empty.
+    // Ammo first: it keeps its own fire clock, not the life regen's, and runs whatever the hull's health.
     if (ep->life > 0.0f && !rf::entity_is_dying(ep)) {
         vehicle_ammo_regen_do_frame(ep, regen, now);
     }
@@ -1506,4 +1557,6 @@ void vehicle_damage_apply_patch()
     item_pickup_hook.install();
     cockpit_vfx_armor_readout_hook.install();
     cockpit_vfx_update_materials_hook.install();
+    player_fire_fighter_ammo_refill_hook.install();
+    player_fire_alt_skip_primary_empty_injection.install();
 }

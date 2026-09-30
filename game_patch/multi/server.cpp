@@ -36,6 +36,7 @@
 #include "gungame.h"
 #include "salvage.h"
 #include "vehicles/vehicle.h"
+#include "vehicles/vehicle_tracers.h"
 #include "../os/console.h"
 #include "../hud/hud.h"
 #include "../misc/player.h"
@@ -3323,6 +3324,9 @@ CallHook<rf::Weapon*(int, int, rf::Vector3*, rf::Matrix3*, int, int)>
         rf::Weapon* wp = weapon_fire_projectile_create_hook.call_target(
             weapon_type, parent_handle, pos, orient, alt_fire, a6);
         crits_on_weapon_created(wp, parent_handle);
+        if (wp && pos && orient) {
+            vehicle_tracers_on_weapon_created(weapon_type, parent_handle, *pos, *orient);
+        }
         if (wp && rf::is_server) {
             if (rf::Player* pp = rf::player_from_entity_handle(parent_handle)) {
                 // Low byte compared against 1, matching the engine's own contract -- the pushed

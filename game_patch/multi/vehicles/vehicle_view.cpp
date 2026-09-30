@@ -19,6 +19,7 @@
 #include "../../os/console.h"
 #include "../../rf/ai.h"
 #include "../../rf/entity.h"
+#include "../../rf/gr/gr.h"
 #include "../../rf/item.h"
 #include "../../rf/multi.h"
 #include "../../rf/object.h"
@@ -181,6 +182,9 @@ namespace
     void __cdecl vehicle_render_cockpit_for_view(rf::Player* render_player)
     {
         rf::Player* pp = vehicle_cockpit_view_player();
+        // The fighter's cockpit muzzle flash (0x004A8360) is drawn in the current colour and never
+        // sets it, unlike the fpgun's (0x004AB1A0), so it would take whatever the last draw left.
+        rf::gr::set_color(255, 255, 255, 255);
         AddrCaller{0x004A7860}.c_call(pp ? pp : render_player);
     }
 

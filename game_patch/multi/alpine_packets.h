@@ -640,7 +640,8 @@ struct af_vehicle_state_packet
 };
 static_assert(sizeof(af_vehicle_state_packet) == sizeof(RF_GamePacketHeader) + 40);
 
-// Vehicle weapon control. Client -> server: trigger state. Server -> client: a discrete shot.
+// Vehicle weapon control. Client -> server: trigger edges. Server -> client: a discrete shot, or a
+// continuous weapon's actual on/off edge (STOP's alt_fire is 0 and ignored).
 enum af_vehicle_fire_action : uint8_t
 {
     AF_VEHICLE_FIRE_STOP = 0,
@@ -1030,9 +1031,10 @@ void af_send_vehicle_state_packet_to_all(int vehicle_handle, const int32_t* seat
 void af_process_vehicle_state_packet(const void* data, size_t len, const rf::NetAddr&);
 // client -> server: trigger state of the vehicle whose firing seat the local player owns
 void af_send_vehicle_fire_request(int vehicle_handle, uint8_t action, uint8_t alt_fire);
-// server -> every vehicle-capable client except `except` (the requester already fired locally)
+// server -> every vehicle-capable client except `except` (the firing seat, which predicts its own)
 void af_send_vehicle_fire_packet_to_all(rf::Player* except, int vehicle_handle, uint8_t action,
                                         uint8_t alt_fire);
+void af_send_vehicle_fire_packet(rf::Player* player, int vehicle_handle, uint8_t action, uint8_t alt_fire);
 void af_process_vehicle_fire_packet(const void* data, size_t len, const rf::NetAddr& addr);
 void af_send_vehicle_health_packet(rf::Player* player, int vehicle_handle, float life, float max_life,
                                    int primary_ammo, int secondary_ammo);

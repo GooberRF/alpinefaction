@@ -188,6 +188,30 @@ struct AlpineGameSettings
         }
     }
 
+    bool vehicle_tracers = true;
+    static constexpr int default_vehicle_tracer_frequency = 1;
+    static constexpr int min_vehicle_tracer_frequency = 1;
+    static constexpr int max_vehicle_tracer_frequency = 10;
+    int vehicle_tracer_frequency = default_vehicle_tracer_frequency; // every Nth round
+    void set_vehicle_tracer_frequency(int value)
+    {
+        vehicle_tracer_frequency =
+            std::clamp(value, min_vehicle_tracer_frequency, max_vehicle_tracer_frequency);
+    }
+    static constexpr uint32_t default_vehicle_tracer_color = 0xFFB43CFF; // RRGGBBAA
+    uint32_t vehicle_tracer_color = default_vehicle_tracer_color;
+    static constexpr float default_vehicle_tracer_length = 3.0f;
+    static constexpr float min_vehicle_tracer_length = 0.5f;
+    static constexpr float max_vehicle_tracer_length = 10.0f;
+    float vehicle_tracer_length = default_vehicle_tracer_length; // m
+    void set_vehicle_tracer_length(float value)
+    {
+        if (!std::isnan(value)) {
+            vehicle_tracer_length =
+                std::clamp(value, min_vehicle_tracer_length, max_vehicle_tracer_length);
+        }
+    }
+
     bool show_domination_msgs = true;
 
     bool spray_display = true;

@@ -18,6 +18,8 @@
 #include "../jetpack.h"
 #include "../alpine_packets.h"
 #include "../awards.h"
+#include "../vehicles/vehicle.h"
+#include "../vehicles/vehicle_tracers.h"
 #include "../../misc/misc.h"
 #include "../../misc/alpine_settings.h"
 #include "../../hud/multi_spectate.h"
@@ -717,15 +719,20 @@ namespace
         // re-prime on their spawn timers)
         rf::particle_level_release();
         explosion_flash_lights_destroy_all();
+        vehicle_tracers_clear();
     }
 
     // A burst that ends between a fire-ON and fire-OFF obj_update leaves the entity's
     // weapon latch stuck on - entity_process_post would keep firing it forever. Clear
     // every latch; a genuinely-firing entity is re-latched by the first normal-paced
-    // obj_update, which is exactly what the settle window waits for.
+    // obj_update, which is exactly what the settle window waits for. A synced vehicle ignores
+    // those bits; its latch already follows the af_vehicle_fire edges the fast-forward fed.
     void cull_seek_fire_latches()
     {
         for (auto& entity : DoublyLinkedList{rf::entity_list}) {
+            if (vehicle_is_synced_entity_type(&entity)) {
+                continue;
+            }
             for (int weapon_type = 0; weapon_type < 64; ++weapon_type) {
                 if (entity.ai.weapon_is_on[weapon_type]) {
                     rf::entity_turn_weapon_off(entity.handle, weapon_type);
