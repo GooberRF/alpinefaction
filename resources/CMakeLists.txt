@@ -299,6 +299,42 @@ add_packfile(alpinefaction.vpp
     images/caustics/af_caust13.png
     images/caustics/af_caust14.png
     images/caustics/af_caust15.png
+    images/vehicle_teams/APC_P01_red.tga
+    images/vehicle_teams/APC_P02_red.tga
+    images/vehicle_teams/APC_P03_red.tga
+    images/vehicle_teams/APC_P04_red.tga
+    images/vehicle_teams/Driller01_P01_blue.tga
+    images/vehicle_teams/Driller01_P01_red.tga
+    images/vehicle_teams/Driller01_P02_blue.tga
+    images/vehicle_teams/Driller01_P02_red.tga
+    images/vehicle_teams/Driller01_P04_blue.tga
+    images/vehicle_teams/Driller01_P04_red.tga
+    images/vehicle_teams/Driller01_P06_blue.tga
+    images/vehicle_teams/Driller01_P06_red.tga
+    images/vehicle_teams/Driller01_P07_blue.tga
+    images/vehicle_teams/Driller01_P07_red.tga
+    images/vehicle_teams/Driller01_P09_blue.tga
+    images/vehicle_teams/Driller01_P09_red.tga
+    images/vehicle_teams/Driller01_P10_blue.tga
+    images/vehicle_teams/Driller01_P10_red.tga
+    images/vehicle_teams/Fighter01_P01_blue.tga
+    images/vehicle_teams/Fighter01_P01_red.tga
+    images/vehicle_teams/Fighter01_P02_blue.tga
+    images/vehicle_teams/Fighter01_P02_red.tga
+    images/vehicle_teams/Fighter01_P03_blue.tga
+    images/vehicle_teams/Fighter01_P03_red.tga
+    images/vehicle_teams/Jeep01_P01_blue.tga
+    images/vehicle_teams/Jeep01_P01_red.tga
+    images/vehicle_teams/Jeep01_P02_blue.tga
+    images/vehicle_teams/Jeep01_P02_red.tga
+    images/vehicle_teams/Sub_P01_blue.tga
+    images/vehicle_teams/Sub_P01_red.tga
+    images/vehicle_teams/Sub_P02_blue.tga
+    images/vehicle_teams/Sub_P02_red.tga
+    images/vehicle_teams/Sub_P03_blue.tga
+    images/vehicle_teams/Sub_P03_red.tga
+    images/vehicle_teams/Sub_P04_blue.tga
+    images/vehicle_teams/Sub_P04_red.tga
 
     fonts/biggerfont.vf
     fonts/regularfont.ttf
