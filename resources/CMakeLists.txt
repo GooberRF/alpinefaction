@@ -299,6 +299,7 @@ add_packfile(alpinefaction.vpp
     images/caustics/af_caust13.png
     images/caustics/af_caust14.png
     images/caustics/af_caust15.png
+    images/vehicle_teams/APC_Low_red.tga
     images/vehicle_teams/APC_P01_red.tga
     images/vehicle_teams/APC_P02_red.tga
     images/vehicle_teams/APC_P03_red.tga
@@ -323,10 +324,14 @@ add_packfile(alpinefaction.vpp
     images/vehicle_teams/Fighter01_P02_red.tga
     images/vehicle_teams/Fighter01_P03_blue.tga
     images/vehicle_teams/Fighter01_P03_red.tga
+    images/vehicle_teams/Fighter_LOD2_blue.tga
+    images/vehicle_teams/Fighter_LOD2_red.tga
     images/vehicle_teams/Jeep01_P01_blue.tga
     images/vehicle_teams/Jeep01_P01_red.tga
     images/vehicle_teams/Jeep01_P02_blue.tga
     images/vehicle_teams/Jeep01_P02_red.tga
+    images/vehicle_teams/Sub_LOD2_blue.tga
+    images/vehicle_teams/Sub_LOD2_red.tga
     images/vehicle_teams/Sub_P01_blue.tga
     images/vehicle_teams/Sub_P01_red.tga
     images/vehicle_teams/Sub_P02_blue.tga
