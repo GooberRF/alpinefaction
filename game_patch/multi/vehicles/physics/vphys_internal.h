@@ -161,9 +161,8 @@ struct VehiclePhysicsParams
     float cam_enable = 0.0f;
     float cam_dist = 0.0f;      // <= 0: derive from the hull box (2.0 * half.z + 2.0)
     float cam_height = 0.0f;    // <= 0: derive from the hull box (1.3 * half.y + 0.9)
-    float cam_collide_margin = 0.45f; // gap kept between the camera and whatever the probe hit
-    float cam_pull_rate = 60.0f;      // u/s the camera is allowed to rush IN on a fresh hit
-    float cam_extend_rate = 8.0f;     // u/s it eases back OUT once the obstruction clears
+    float cam_collide_margin = 0.45f; // gap kept between the camera (and its focus) and solid geometry
+    float cam_extend_rate = 8.0f;     // u/s it eases back OUT once the obstruction clears; IN is instant
 
     // Per-axis control signs; the car model reuses yaw_sign for steering and thrust_sign for drive.
     float pitch_sign = 1.0f;
@@ -406,6 +405,10 @@ struct VehicleChaseCamera
     rf::Vector3 look{};
     rf::Vector3 aim_point{};
     bool aim_valid = false;
+    // The gunner's last aim: its weight on the aim point (0 = faded to the look) and the reticle's
+    // cut distance past vcam_reticle_max_dist that keeps it on that point.
+    float gun_weight = 1.0f;
+    float gun_reach = 0.0f;
 };
 
 // Shared globals, defined once in the TU named beside each.

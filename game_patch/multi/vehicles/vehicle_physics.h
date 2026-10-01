@@ -31,7 +31,7 @@ bool vehicle_physics_camera_owns_driver_look();
 bool vehicle_physics_camera_take_rider_look(rf::Entity* ep, float& pitch_delta, float& yaw_delta);
 
 // The local third-person APC driver's convergence aim (world, unit); false keeps the rebuilt frame.
-// out_capped: whether the hull limits moved it off the aim point.
+// out_capped: whether the hull limits moved it off the aim point, or the look past them is fading it off.
 bool vehicle_physics_camera_driver_aim(const rf::Entity* vehicle, const rf::Entity* driver,
                                        rf::Vector3* out_dir, bool* out_capped = nullptr);
 

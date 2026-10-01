@@ -10,6 +10,7 @@ Version 1.5.0 (Trillium): Not yet released
   - Overhaul vehicle physics using Bullet physics engine
   - Multi-seat vehicles with driver, gunner, and passenger seats; `Use` boards the lowest free seat and number keys `1`-`6` switch seats
   - Regenerate vehicle weapon ammo after 5 seconds without firing
+  - Show the APC's minigun and rocket ammo in the HUD ammo counter while driving it
   - Optional third-person view for jeep, APC, and driller drivers and the jeep gunner, toggled with `Change View` (formerly `Change Spectate View`, default `;`) and remembered
   - Third-person vehicle views orbit with the mouse and follow the vehicle with a smoothed, speed-aware chase camera, tunable with the `cl_vehiclecam_*` commands; driver and passenger views ease back behind the vehicle, and the APC's guns converge on the crosshair
   - Render rolling, steering tires on jeeps

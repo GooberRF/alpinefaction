@@ -15,11 +15,35 @@
 #include "../main/main.h"
 #include "../misc/alpine_settings.h"
 #include "../misc/misc.h"
+#include "../multi/vehicles/vehicle.h"
 #include "../multi/vehicles/vehicle_physics.h"
+#include "hud.h"
 #include "hud_internal.h"
+#include "multi_spectate.h"
 
 float g_hud_ammo_scale = 1.0f;
 bool g_displaying_custom_reticle = false;
+
+// The Machine Pistol Special's row under the main widget (0x0043B1D5).
+constexpr int hud_second_ammo_slot_offset_y = 45;
+
+// The APC this rider drives; the ammo widgets show its primary and secondary.
+static rf::Entity* hud_ammo_driven_apc(rf::Entity* rider)
+{
+    if (!rf::is_multi) {
+        return nullptr;
+    }
+    rf::Entity* hull = vehicle_ridden_hull(rider);
+    if (!hull || vehicle_damage_class(hull) != VDC_APC || vehicle_firing_seat_occupant(hull) != rider) {
+        return nullptr;
+    }
+    return hull;
+}
+
+static bool hud_ammo_hull_has_secondary(const rf::Entity* hull)
+{
+    return vehicle_weapon_ammo(hull, hull->ai.current_secondary_weapon) >= 0;
+}
 
 CallHook<void(int, int, int, rf::gr::Mode)> hud_render_ammo_gr_bitmap_hook{
     {
@@ -193,7 +217,37 @@ FunHook<void(rf::Entity*, int)> hud_render_ammo_no_clip_hook{
     0x0043ADD0,
     [](rf::Entity* entity, int weapon_type) {
         hud_render_ammo_no_clip_hook.call_target(entity, weapon_type);
+        // Only the APC driver's path hands this widget an APC hull.
+        if (vehicle_damage_class(entity) == VDC_APC) {
+            if (hud_ammo_hull_has_secondary(entity)) {
+                constexpr rf::HudItem no_clip_items[] = {
+                    rf::hud_ammo_bar_position_no_clip,
+                    rf::hud_ammo_signal_position_no_clip,
+                    rf::hud_ammo_icon_position_no_clip,
+                    rf::hud_ammo_in_inv_ul_region_coord_no_clip,
+                };
+                const int dy = static_cast<int>(hud_second_ammo_slot_offset_y * g_hud_ammo_scale);
+                for (auto item : no_clip_items) {
+                    rf::hud_coords[item].y += dy;
+                }
+                hud_render_ammo_no_clip_hook.call_target(entity, entity->ai.current_secondary_weapon);
+                for (auto item : no_clip_items) {
+                    rf::hud_coords[item].y -= dy;
+                }
+            }
+            return;
+        }
         hud_render_weapon_name_label(weapon_type);
+    },
+};
+
+CallHook<bool(rf::Entity*)> hud_weapons_render_jeep_gunner_hook{
+    {
+        0x0043B0E6u,
+        0x0043B128u,
+    },
+    [](rf::Entity* ep) {
+        return hud_weapons_render_jeep_gunner_hook.call_target(ep) || hud_ammo_driven_apc(ep) != nullptr;
     },
 };
 
@@ -234,7 +288,8 @@ static void hud_ammo_bitmap_size(int bmh, int& w, int& h)
     h = static_cast<int>(std::round(h * g_hud_ammo_scale));
 }
 
-// Union of the clip, power and no-clip layouts, so the result does not change with the weapon.
+// Union of the clip, power and no-clip layouts, so the result does not change with the weapon; plus the
+// second row while one is drawn.
 int hud_ammo_counter_bottom_y()
 {
     auto bm_bottom = [](rf::HudItem item, int bmh) {
@@ -255,7 +310,7 @@ int hud_ammo_counter_bottom_y()
         text_bottom(rf::hud_ammo_in_inv_text_ul_region_coord, rf::hud_ammo_in_inv_text_width_and_height),
         text_bottom(rf::hud_ammo_in_inv_ul_region_coord_no_clip, rf::hud_ammo_in_inv_text_width_and_height_no_clip),
         text_bottom(rf::hud_ammo_in_clip_ul_coord, rf::hud_ammo_in_clip_width_and_height),
-    });
+    }) + (hud_weapons_is_double_ammo() ? static_cast<int>(hud_second_ammo_slot_offset_y * g_hud_ammo_scale) : 0);
 }
 
 int hud_ammo_counter_right_x()
@@ -270,7 +325,9 @@ int hud_ammo_counter_right_x()
 bool hud_weapons_is_double_ammo()
 {
     if (rf::is_multi) {
-        return false;
+        rf::Player* pp = multi_spectate_is_following_player() ? multi_spectate_get_target_player() : rf::local_player;
+        rf::Entity* hull = pp ? hud_ammo_driven_apc(rf::entity_from_handle(pp->entity_handle)) : nullptr;
+        return hull && hud_ammo_hull_has_secondary(hull);
     }
     rf::Entity* entity = rf::entity_from_handle(rf::local_player->entity_handle);
     if (!entity) {
@@ -322,6 +379,7 @@ void hud_weapons_apply_patches()
     hud_render_ammo_gr_bitmap_hook.install();
     hud_render_ammo_hook.install();
     hud_render_ammo_no_clip_hook.install();
+    hud_weapons_render_jeep_gunner_hook.install();
 
     // reticle color and scale
     render_reticle_gr_bitmap_hook.install();
