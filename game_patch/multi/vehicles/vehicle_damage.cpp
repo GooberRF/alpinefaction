@@ -21,10 +21,12 @@
 #include "../server_internal.h"
 #include "../../hud/hud.h"
 #include "../../hud/multi_spectate.h"
+#include "../../misc/level.h"
 #include "../../misc/player.h"
 #include "../../os/console.h"
 #include "../../os/os.h"
 #include "../../rf/ai.h"
+#include "../../rf/corpse.h"
 #include "../../rf/entity.h"
 #include "../../rf/item.h"
 #include "../../rf/multi.h"
@@ -53,12 +55,6 @@ namespace
     bool vehicle_crush_victim_is_exempt(const rf::Entity* victim)
     {
         return vehicle_ridden_hull(victim) != nullptr;
-    }
-
-    // A turret is bolted down, so no contact with one is ever a run-over; every crush path skips it.
-    bool vehicle_hull_is_turret(const rf::Entity* vehicle)
-    {
-        return vehicle && vehicle->info && vehicle->info->use_function == rf::ENTITY_USE_TURRET;
     }
 
     // How long a hull keeps killing for the driver who just stepped out. A ceiling: a boarding or a
@@ -1088,6 +1084,32 @@ namespace
             regs.eip = 0x00419019;
         },
     };
+
+    // entity_damage sends a freshly ignited entity berserk unless its class has ignore_fire. Stock
+    // exempts only use_function 1, so a flamed turret left CATATONIC and dropped its gun.
+    CallHook<void(rf::AiInfo*, float, bool)> entity_damage_ignite_berserk_hook{
+        0x0041A6E0,
+        [](rf::AiInfo* ai, float berserk_time, bool force) {
+            if (rf::is_multi && vehicle_is_synced_entity_type(ai->ep)) {
+                return;
+            }
+            entity_damage_ignite_berserk_hook.call_target(ai, berserk_time, force);
+        },
+    };
+
+    // A turret's $Corpse V3D is created on every machine unsynced, right where its factory respawns it.
+    CallHook<rf::Corpse*(rf::Entity*, const char*, const rf::Vector3*, const rf::Matrix3*, int, int)>
+        entity_die_corpse_create_hook{
+            0x00419335,
+            [](rf::Entity* ep, const char* mesh_name, const rf::Vector3* pos, const rf::Matrix3* orient,
+               int unk1, int unk2) -> rf::Corpse* {
+                if (rf::is_multi && vehicle_level_has_factories() && vehicle_is_synced_entity_type(ep)
+                    && vehicle_hull_is_turret(ep)) {
+                    return nullptr;
+                }
+                return entity_die_corpse_create_hook.call_target(ep, mesh_name, pos, orient, unk1, unk2);
+            },
+        };
 } // namespace
 
 float vehicle_hud_life(const rf::Entity* vehicle)
@@ -1554,6 +1576,8 @@ void vehicle_damage_apply_patch()
     entity_crush_damage_hook.install();
     obj_damage_vehicle_crush_injection.install();
     entity_die_occupant_kill_injection.install();
+    entity_damage_ignite_berserk_hook.install();
+    entity_die_corpse_create_hook.install();
     item_pickup_hook.install();
     cockpit_vfx_armor_readout_hook.install();
     cockpit_vfx_update_materials_hook.install();

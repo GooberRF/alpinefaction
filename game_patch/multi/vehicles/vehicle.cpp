@@ -363,6 +363,11 @@ float vehicle_collision_reach_along(rf::Entity* ep, const rf::Vector3& dir)
     return reach;
 }
 
+bool vehicle_hull_is_turret(const rf::Entity* ep)
+{
+    return ep && ep->info && ep->info->use_function == rf::ENTITY_USE_TURRET;
+}
+
 bool vehicle_is_flyer(rf::Entity* ep)
 {
     return ep && ep->info && ep->info->use_function == rf::ENTITY_USE_VEHICLE
@@ -725,7 +730,7 @@ void vehicle_do_frame()
         }
 
         // A turret never moves, so it neither drowns nor falls into the void.
-        const bool is_turret = ep->info && ep->info->use_function == rf::ENTITY_USE_TURRET;
+        const bool is_turret = vehicle_hull_is_turret(ep);
 
         // Submerged = the hull ORIGIN below this room's liquid plane, the threshold the sub's board
         // gate uses. A non-sub drowns under water, a sub strands out of it; the dwell absorbs a splash,

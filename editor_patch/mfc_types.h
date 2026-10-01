@@ -583,7 +583,7 @@ struct DedVehicleFactory : DedObject
     std::string vehicle_class = "Jeep01";
     float respawn_delay_s = 30.0f;
     VehicleFactoryTeam team = VehicleFactoryTeam::none;
-    bool lock_to_team = true;
+    bool lock_to_team = false;
     bool active_by_default = true;
 
     // Kept out of DedObject::vmesh so stock cleanup paths never free it; vehicle_factory.cpp owns it.

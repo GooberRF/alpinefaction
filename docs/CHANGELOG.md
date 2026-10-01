@@ -18,7 +18,7 @@ Version 1.5.0 (Trillium): Not yet released
   - Use team colored textures for vehicle hulls and the jeep gun in team game types
   - Extend player outlines to the vehicle or turret an outlined player is riding
   - Mark each vehicle respawn point with the vehicle name and a countdown, with a ghost of the vehicle filling in as its respawn approaches (Direct3D 11 renderer only), toggleable with `cl_vehiclemarkers`
-  - Draw glowing tracers for vehicle machine guns, tinted toward the firing team's color in team game types and configurable with the `cl_vehicletracers` commands
+  - Draw glowing tracers for vehicle and turret machine guns, tinted toward the firing team's color in team game types and configurable with the `cl_vehicletracers` commands
   - Hand a `Vehicle Factory` linked from a `control_point_handler` event to whichever team owns that control point, spawning its vehicle immediately on capture
   - Drop the flag a player is carrying when they board any vehicle other than a turret or a jeep
 - Add multiplayer minimap for levels that enable one in `Level Properties`
@@ -190,6 +190,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Fix memory corruption when more than 1024 rooms are visible at once
 - Fix geomod crater relighting converting lightmap texels beyond the relit surface, which could write past the end of the lightmap for a surface at the bottom of a lightmap page
 - Fix a possible out-of-bounds read when drawing dynamic decals (Direct3D 11 renderer only)
+- Fix some multiplayer characters' upper bodies staying bent toward where they were last aiming instead of straightening out
 
 [@is-this-c](https://github.com/is-this-c)
 - Let `Caps Lock` capitalize

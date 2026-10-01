@@ -7,6 +7,7 @@
 #include <common/utils/string-utils.h>
 #include "vehicle.h"
 #include "vehicle_tracers.h"
+#include "vehicle_view.h"
 #include "../gametype.h"
 #include "../multi.h"
 #include "../demo/demo.h"
@@ -33,6 +34,7 @@ namespace
     constexpr int tracer_counter_slots = 32;
     constexpr float tracer_skip_dist = 3.0f;
     constexpr float tracer_fade_in_dist = 3.0f;
+    constexpr float tracer_muzzle_max_dist = 3.0f;
     constexpr float tracer_range = 2000.0f;
     constexpr float tracer_default_far_clip = 1700.0f; // D3D11's far plane when the level sets none
     constexpr float tracer_max_frame_delta = 0.1f;
@@ -86,6 +88,8 @@ namespace
         float age = 0.0f;
         rf::Color color{};
         bool active = false;
+        bool eye_start = false; // restart from the first rendered frame's eye, offset by eye_offset
+        rf::Vector3 eye_offset{};
     };
 
     // One frame's geometry for a tracer, so every glow can be drawn before every core.
@@ -131,8 +135,8 @@ namespace
             && std::ranges::find(g_tracer_weapon_types, weapon_type) != g_tracer_weapon_types.end();
     }
 
-    // The hull a round came from and the rider who fired it: the round's parent is the hull on
-    // every MP path, or its firing-seat rider. Turrets and anyone else are not vehicle fire.
+    // The vehicle or turret a round came from and the rider who fired it: the round's parent is the
+    // hull on every MP path, or its firing-seat rider. Anyone else is not vehicle fire.
     rf::Entity* tracer_shooting_hull(rf::Entity* parent, rf::Entity** out_shooter)
     {
         if (!parent) {
@@ -150,9 +154,6 @@ namespace
                 return nullptr;
             }
             shooter = parent;
-        }
-        if (!hull->info || hull->info->use_function != rf::ENTITY_USE_VEHICLE) {
-            return nullptr;
         }
         *out_shooter = shooter;
         return hull;
@@ -212,6 +213,20 @@ namespace
             start = col.hit_point + dir * 0.05f;
         }
         return level_dist;
+    }
+
+    // Restarts a tracer at from, still ending where the round stops.
+    bool tracer_restart(rf::Vector3& origin, rf::Vector3& dir, float& end_dist, const rf::Vector3& from)
+    {
+        const rf::Vector3 to_end = origin + dir * end_dist - from;
+        const float len = to_end.len();
+        if (!std::isfinite(from.x + from.y + from.z) || !(len > 1e-3f)) {
+            return false;
+        }
+        origin = from;
+        dir = to_end * (1.0f / len);
+        end_dist = len;
+        return true;
     }
 
     rf::Color tracer_color(const rf::Entity* hull, const rf::Entity* shooter)
@@ -471,7 +486,26 @@ void vehicle_tracers_on_weapon_created(int weapon_type, int parent_handle, const
         return;
     }
     dir *= 1.0f / dir_len;
-    const float end_dist = tracer_trace(pos, dir, hull, shooter);
+    float end_dist = tracer_trace(pos, dir, hull, shooter);
+    rf::Vector3 origin = pos;
+    // A from-eye round runs down its shooter's view ray, end-on to him; his own starts where he sees the
+    // muzzle on screen, or with no muzzle drawn, at the eye he sees this frame from.
+    bool eye_start = false;
+    rf::Vector3 eye_offset{};
+    if (rf::weapon_types[weapon_type].flags & rf::WTF_FROM_EYE) {
+        rf::Vector3 start;
+        switch (vehicle_fp_own_shot_start(hull, shooter, pos, tracer_muzzle_max_dist, &start)) {
+        case VehicleFpShotStart::world:
+            tracer_restart(origin, dir, end_dist, start);
+            break;
+        case VehicleFpShotStart::eye_frame:
+            eye_start = true;
+            eye_offset = start;
+            break;
+        case VehicleFpShotStart::stock:
+            break;
+        }
+    }
     if (end_dist <= tracer_skip_dist) {
         return;
     }
@@ -491,8 +525,8 @@ void vehicle_tracers_on_weapon_created(int weapon_type, int parent_handle, const
         }
         ++g_tracer_live;
     }
-    g_tracers[slot] = VehicleTracer{pos, dir, end_dist, speed, g_alpine_game_config.vehicle_tracer_length, 0.0f,
-                                    tracer_color(hull, shooter), true};
+    g_tracers[slot] = VehicleTracer{origin, dir, end_dist, speed, g_alpine_game_config.vehicle_tracer_length, 0.0f,
+                                    tracer_color(hull, shooter), true, eye_start, eye_offset};
     g_tracer_next = (slot + 1) % tracer_pool_size;
 }
 
@@ -524,6 +558,16 @@ void vehicle_tracers_render()
     for (VehicleTracer& t : g_tracers) {
         if (!t.active) {
             continue;
+        }
+        // Its fire pos is the rider's eye before this frame's attach pass moved him with the hull, and his
+        // fpgun muzzle is last frame's pose, so the start is placed in the eye this frame is drawn from.
+        if (t.eye_start) {
+            t.eye_start = false;
+            if ((eye - t.origin).len_sq() <= tracer_muzzle_max_dist * tracer_muzzle_max_dist) {
+                const rf::Matrix3& m = rf::gr::eye_matrix;
+                const rf::Vector3& o = t.eye_offset;
+                tracer_restart(t.origin, t.dir, t.end_dist, eye + m.rvec * o.x + m.uvec * o.y + m.fvec * o.z);
+            }
         }
         t.age += dt;
         const float head = t.speed * t.age;

@@ -81,6 +81,8 @@ float vehicle_collision_reach_along(rf::Entity* ep, const rf::Vector3& dir);
 // A synced use_function-1 vehicle that is neither PF_AUTOMOBILE nor water-bound.
 bool vehicle_is_flyer(rf::Entity* ep);
 
+bool vehicle_hull_is_turret(const rf::Entity* ep);
+
 // Rebuild the fire frame from the AUTHORITATIVE hull matrix, never the interpolated angles.
 void vehicle_rebuild_eye_orient(rf::Entity* ep, const rf::Matrix3& hull);
 // Re-assert the driver's synced aim on a freshly rebuilt eye_orient; on the DRIVING machine only a
@@ -296,6 +298,9 @@ void vehicle_client_do_frame();
 // Any occupant of a synced ENTITY_USE_VEHICLE hull. Turret occupants are deliberately out - their
 // pose IS their aim.
 bool vehicle_rider_pose_is_seat_locked(rf::Entity* ep);
+// True for a synced turret rider's ENTITY_STATE_ON_TURRET request, attaching the stock clip first when
+// his rig can play it.
+bool vehicle_turret_rider_resolve_state_anim(rf::Entity* ep, int state);
 
 // Writes a seat-locked rider's body frame (orient, p_data.orient, next_orient); false for anyone else.
 bool vehicle_pin_rider_body(rf::Entity* ep);

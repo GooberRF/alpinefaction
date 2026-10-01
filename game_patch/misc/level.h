@@ -532,7 +532,7 @@ struct AlpineVehicleFactoryInfo {
     float respawn_delay_s = 30.0f;
     // -1 none, 0 red, 1 blue; the wire and the RFL carry this as a u8 with 0xFF for none.
     int32_t team = -1;
-    bool lock_to_team = true;
+    bool lock_to_team = false;
     bool active_by_default = true;
 };
 

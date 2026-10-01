@@ -30,10 +30,21 @@ static constexpr int entity_use_turret = 4;
 // on a level is kept by the dialog's append path.
 static const char* const g_stock_vehicle_classes[] = {
     // $Use: "vehicle"
-    "Jeep01", "APC", "Fighter01", "masako_fighter", "sub", "Driller01",
+    "Jeep01", "APC", "Fighter01", "sub", "Driller01",
     // $Use: "turret"
-    "Stationary Turret", "Stationary Turret_Plain",
+    "Stationary Turret_Plain",
 };
+
+// Offered by entity.tbl but not supported by factories; kept off the drop-list only.
+static const char* const g_unsupported_vehicle_classes[] = {
+    "masako_fighter", "Stationary Turret", "Shuttle",
+};
+
+static bool vehicle_factory_class_is_unsupported(const std::string& class_name)
+{
+    return std::any_of(std::begin(g_unsupported_vehicle_classes), std::end(g_unsupported_vehicle_classes),
+        [&](const char* name) { return string_iequals(class_name, name); });
+}
 
 struct VehicleClassMesh { const char* class_name; const char* mesh; };
 
@@ -371,8 +382,8 @@ static INT_PTR CALLBACK VehicleFactoryDialogProc(HWND hdlg, UINT msg, WPARAM wp,
 
         SetDlgItemTextA(hdlg, IDC_VEHICLE_FACTORY_SCRIPT_NAME, factory->script_name.c_str());
 
-        // Exactly the classes this install's entity.tbl offers the game; a class already on the
-        // object is appended rather than dropped.
+        // The classes this install's entity.tbl offers the game, less the unsupported ones; a class
+        // already on the object (unsupported or not) is appended rather than dropped.
         HWND cls = GetDlgItem(hdlg, IDC_VEHICLE_FACTORY_CLASS);
         const std::vector<std::string> tbl_classes =
             entity_tbl_class_names_with_use({entity_use_vehicle, entity_use_turret});
@@ -384,7 +395,9 @@ static INT_PTR CALLBACK VehicleFactoryDialogProc(HWND hdlg, UINT msg, WPARAM wp,
         }
         else {
             for (const std::string& name : tbl_classes) {
-                SendMessageA(cls, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(name.c_str()));
+                if (!vehicle_factory_class_is_unsupported(name)) {
+                    SendMessageA(cls, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(name.c_str()));
+                }
             }
         }
         int cls_sel = static_cast<int>(SendMessageA(cls, CB_FINDSTRINGEXACT, static_cast<WPARAM>(-1),

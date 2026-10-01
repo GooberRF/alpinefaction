@@ -204,6 +204,9 @@ namespace
             ep->p_data.orient = authoritative_orient;
             ep->p_data.next_orient = authoritative_orient;
             ep->orient = authoritative_orient;
+            if (vehicle_hull_is_turret(ep)) {
+                return;
+            }
             vehicle_rebuild_eye_orient(ep, authoritative_orient);
             vehicle_apply_aim_orient(ep, VehicleAimSource::eased); // continuous view frame
         },
@@ -213,8 +216,13 @@ namespace
     FunHook<void(rf::Entity*)> multi_lag_comp_rewind_entity_hook{
         0x0046FD00,
         [](rf::Entity* ep) {
+            const bool turret = vehicle_is_synced_entity_type(ep) && vehicle_hull_is_turret(ep);
+            // Stock never rewinds the local shooter, but a turret's shots name the hull, not him.
+            if (turret && vehicle_local_owns_firing_seat(ep)) {
+                return;
+            }
             multi_lag_comp_rewind_entity_hook.call_target(ep);
-            if (vehicle_is_synced_entity_type(ep)) {
+            if (vehicle_is_synced_entity_type(ep) && !turret) {
                 vehicle_rebuild_eye_orient(ep, ep->orient);
                 // Raw, not eased: this runs only to read a muzzle at fire time.
                 vehicle_apply_aim_orient(ep, VehicleAimSource::raw);
@@ -700,8 +708,8 @@ namespace
         }
 
         if (!use_secondary && rf::weapon_is_on_off_weapon(weapon, alt)) {
-            // Turning the gun on sends the START other machines replay; the loop-fire does not reliably
-            // see the flag on the server - hence the direct fire below.
+            // Turning the gun on sends the START other machines replay. The direct fire below shares
+            // next_fire_primary with entity_process_post's loop-fire, so the two never double the rate.
             if (!rf::entity_weapon_is_on(vehicle->handle, weapon)) {
                 // Every turn-on is a reliable START to every client, so a trigger toggled each frame
                 // must not re-arm faster than this. Held, it re-arms the frame the window lapses.
@@ -917,18 +925,23 @@ namespace
     // A vehicle weapon's projectile spawns INSIDE the firing hull's collision, and stock drops only
     // the weapon<->parent pair, never the weapon<->OCCUPANT one. Keyed off the projectile's parent,
     // so an enemy hull has a different parent and stays hittable.
+    // Stock also gives only a PLAYER's shot the mesh test against an entity (bit 2: entity is a, bit 4:
+    // entity is b); a hull's shot met just the victim's cspheres, so rockets flew through hull gaps.
     FunHook<bool(rf::Object*, rf::Object*, unsigned*)> obj_pair_should_skip_hook{
         0x0048BE00,
         [](rf::Object* a, rf::Object* b, unsigned* out_flags) -> bool {
+            rf::Object* weapon = nullptr;
+            rf::Object* other = nullptr;
+            rf::Entity* parent = nullptr;
             // Every collision pair in the level reaches this; the handle lookup below must not.
             if (rf::is_multi && a && b && vehicle_level_has_factories()) {
-                rf::Object* weapon = a->type == rf::OT_WEAPON ? a
-                                   : b->type == rf::OT_WEAPON ? b
-                                                              : nullptr;
+                weapon = a->type == rf::OT_WEAPON ? a
+                       : b->type == rf::OT_WEAPON ? b
+                                                  : nullptr;
                 if (weapon) {
-                    rf::Object* other = weapon == a ? b : a;
+                    other = weapon == a ? b : a;
                     if (other->type == rf::OT_ENTITY) {
-                        rf::Entity* parent = vehicle_synced_entity(weapon->parent_handle);
+                        parent = vehicle_synced_entity(weapon->parent_handle);
                         if (parent
                             && (other->handle == parent->handle
                                 || other->host_handle == parent->handle)) {
@@ -937,7 +950,11 @@ namespace
                     }
                 }
             }
-            return obj_pair_should_skip_hook.call_target(a, b, out_flags);
+            const bool skip = obj_pair_should_skip_hook.call_target(a, b, out_flags);
+            if (!skip && parent && other->vmesh) {
+                *out_flags |= weapon == a ? 4u : 2u;
+            }
+            return skip;
         },
     };
 
@@ -991,6 +1008,18 @@ namespace
         [](rf::Entity* ep, int weapon_type) -> int {
             const int reserve = entity_fire_secondary_watcher_ammo_gate_hook.call_target(ep, weapon_type);
             return vehicle_fire_skips_local_ammo_gate(ep) ? std::max(reserve, 1) : reserve;
+        },
+    };
+
+    // ai_do_frame turns a CATATONIC entity's gun off every frame unless it is or hosts a local player,
+    // which on a server would cut a synced hull's continuous gun right after its pass turned it on.
+    CallHook<void(int, int)> ai_catatonic_weapon_off_hook{
+        0x00403642,
+        [](int entity_handle, int weapon_type) {
+            if (rf::is_multi && vehicle_is_synced_entity_type(rf::entity_from_handle(entity_handle))) {
+                return; // vehicle_server_apply_trigger owns a synced hull's weapon
+            }
+            ai_catatonic_weapon_off_hook.call_target(entity_handle, weapon_type);
         },
     };
 
@@ -1662,5 +1691,6 @@ void vehicle_sync_apply_patch()
     entity_fire_weapon_own_vehicle_bullet_injection.install();
     entity_fire_weapon_watcher_ammo_gate_hook.install();
     entity_fire_secondary_watcher_ammo_gate_hook.install();
+    ai_catatonic_weapon_off_hook.install();
     weapon_update_homing_target_hook.install();
 }
