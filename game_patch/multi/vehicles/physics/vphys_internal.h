@@ -53,6 +53,10 @@ struct VehiclePhysicsParams
     float ground_clearance = 0.5f;
     float restitution = 0.15f;      // fraction of the into-surface speed returned as a bounce
     float hull_friction = 0.05f;
+    // Non-zero: a SERVER-OWNED sphere hull also wears a flat skid box, bottom flush with the sphere's.
+    float parked_skid = 0.0f;
+    // Body friction while the skid is worn; keep (x level 0.6) under skid half-width / standoff or it tips.
+    float parked_friction = 1.1f;
     float obstacle_range = 4.0f;    // kinematic-obstacle radius, in hull radii
     float obstacle_min_size = 0.8f; // world units: clutter smaller than this is not an obstacle
 
@@ -66,6 +70,12 @@ struct VehiclePhysicsParams
     float engine_force = 18.0f;         // forward drive acceleration at full throttle (u/s^2)
     float brake_force = 26.0f;          // deceleration when braking into motion (u/s^2)
     float idle_brake_force = 5.0f;      // light rolling brake with no throttle, so it rolls to rest
+    // The driver's handbrake (jump, ci.move.y): this brake with the drive cut; <= 0 disables it.
+    float handbrake_force = 14.0f;
+    // Below this ground speed, on a slope no steeper than handbrake_hold_max_deg, it also pins
+    // the hull in place: the wheel brake alone lets a parked hull creep.
+    float handbrake_hold_speed = 0.3f;
+    float handbrake_hold_max_deg = 40.0f;
     // Exponential rate constants (1/s) on the APPLIED force; the commanded value is unchanged.
     float throttle_ramp = 20.0f;        // 1/s toward the commanded engine force
     float brake_ramp = 20.0f;           // 1/s toward the commanded brake force
@@ -255,6 +265,8 @@ struct VehicleSimBody
     bool car_action_in_world = false;
 
     btSphereShape* shape = nullptr;          // flyer/sub hull (null for an automobile)
+    btCompoundShape* skid_compound = nullptr; // parked_skid only: `shape` plus skid_shape
+    btBoxShape* skid_shape = nullptr;
     btDefaultMotionState* motion_state = nullptr;
     // The dynamic body, sphere hull OR car chassis; its user pointer points back at this struct.
     btRigidBody* body = nullptr;
@@ -292,7 +304,11 @@ struct VehicleSimBody
     float engine_accel = 0.0f;
     float brake_accel = 0.0f;
     float engine_cmd = 0.0f;
-    // Chassis box on a ground-facing plane; ground_material (the exit gate) is wheels OR this.
+    bool handbrake = false; // this frame's handbrake input
+    // Parked on the handbrake: the world's pre-tick zeroes velocity and forces every substep.
+    bool handbrake_pin = false;
+    bool wheel_on_mover = false; // a wheel cast since the last model pass stood on a mover brush
+    // Chassis box (or a skid flyer's skid) on a ground-facing plane; a car's exit gate is wheels OR this.
     bool chassis_ground_contact = false;
     // What the frame's single manifold pass found; only a recomputing frame copies it across.
     bool chassis_ground_contact_pass = false;
@@ -315,10 +331,15 @@ struct VehicleSimBody
     bool impact_armed = false;
     bool impact_skip = false;
     bool impact_drilling = false; // the drill face's contacts are not crashes
-    // This frame's best level/mover chassis contact: the largest velocity change along its normal.
+    // This frame's best level/mover chassis contact: the largest velocity change along its normal,
+    // and the pre-step speed into the surface along that normal.
     bool impact_contact = false;
     float impact_contact_dvn = 0.0f;
     float impact_contact_ny = 0.0f;
+    float impact_contact_approach = 0.0f;
+    btVector3 impact_contact_n{0.0f, 1.0f, 0.0f};
+    // Simulated time the hull has been touching anything, capped; 0 on a frame with no contact.
+    float impact_grounded_s = 1.0f;
     // The open window: simulated time left (0 = closed), the signed running sum and its peak, and
     // the positive part with its up-weighted share, which says ground or wall.
     float impact_window_s = 0.0f;
@@ -326,6 +347,14 @@ struct VehicleSimBody
     float impact_peak = 0.0f;
     float impact_pos_sum = 0.0f;
     float impact_up_sum = 0.0f;
+    // The window's largest pre-contact speed into a surface, that contact's normal and pre-step velocity.
+    float impact_approach = 0.0f;
+    btVector3 impact_approach_n{0.0f, 1.0f, 0.0f};
+    btVector3 impact_approach_vel{0.0f, 0.0f, 0.0f};
+    bool impact_approach_ground = false; // that contact was a wheel or ground-facing
+    bool impact_landing = false;      // opened just after airtime
+    bool impact_land_stopped = false; // lost the stop fraction of that speed along that normal
+    bool impact_land_ext = false;     // a landing awaiting the stop, past the first window
 
     rf::Vector3 written_pos{}; // the position last written into the entity, for correction detection
     // The liquid surface the sub was last actually under; a breaching hull's room stops answering.

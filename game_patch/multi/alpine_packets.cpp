@@ -1960,7 +1960,11 @@ static void af_process_client_req_packet(const void* data, size_t len, const rf:
         }
         case af_client_req_type::af_req_vehicle_crush: {
             if (remaining < sizeof(VehicleCrushReqPayload)) {
-                xlog::warn("af_process_client_req_packet: VehicleCrush payload too short");
+                static rf::Timestamp short_warn_throttle;
+                if (!short_warn_throttle.valid() || short_warn_throttle.elapsed()) {
+                    short_warn_throttle.set(5000);
+                    xlog::warn("af_process_client_req_packet: VehicleCrush payload too short");
+                }
                 return;
             }
             VehicleCrushReqPayload req{};

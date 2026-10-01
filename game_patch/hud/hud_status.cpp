@@ -1,5 +1,4 @@
 #include "hud_internal.h"
-#include "hud_world.h"
 #include "../rf/bmpman.h"
 #include "../rf/hud.h"
 #include "../rf/player/player.h"

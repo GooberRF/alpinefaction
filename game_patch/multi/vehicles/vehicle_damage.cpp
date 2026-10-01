@@ -359,6 +359,24 @@ namespace
         return (live_ep && rf::player_from_entity_handle(live_ep->handle) == pp) ? live_ep : nullptr;
     }
 
+    // The player who destroyed the hull, resolved like vehicle_coast_memory_driver; null for a non-player.
+    rf::Entity* vehicle_lethal_killer_entity(const VehicleLethalKiller& lethal)
+    {
+        if (lethal.entity_handle == -1 || lethal.player_id == 0xFF) {
+            return nullptr;
+        }
+        rf::Player* pp = rf::multi_find_player_by_id(lethal.player_id);
+        if (!pp) {
+            return nullptr;
+        }
+        rf::Entity* ep = rf::entity_from_handle(lethal.entity_handle);
+        if (ep && rf::player_from_entity_handle(ep->handle) == pp) {
+            return ep;
+        }
+        rf::Entity* live_ep = rf::entity_from_handle(pp->entity_handle);
+        return (live_ep && rf::player_from_entity_handle(live_ep->handle) == pp) ? live_ep : nullptr;
+    }
+
     // What this module is minting through obj_damage right now, or an empty record. obj_damage
     // has no user tag and it recurses, so the mint is keyed by VICTIM handle: an inner blow on a
     // different object inherits nothing, and the RAII restore puts the outer mint back.
@@ -441,7 +459,7 @@ namespace
     bool vehicle_server_mint_crush(rf::Entity* victim, rf::Entity* killer, const rf::Entity* vehicle)
     {
         // The last gate before the blow exists at all; every caller already asked.
-        if (vehicle_crush_victim_is_exempt(victim)) {
+        if (vehicle_crush_victim_is_exempt(victim) || victim->life <= 0.0f || rf::entity_is_dying(victim)) {
             return false;
         }
         rf::Timestamp& cooldown = g_vehicle_state.crush_cooldown[victim->handle];
@@ -817,8 +835,125 @@ void vehicle_server_ram_sweep()
 
 namespace
 {
-    // Over the class's own bound: gravity and drive keep acting across the summing window.
+    // Over each report bound: gravity and drive keep acting across the summing window.
     constexpr float vehicle_crash_report_slack = 3.0f;
+    // Four buckets of this: the observed peak spans at least the last 375 ms of rows, at most 500.
+    constexpr int64_t vehicle_observed_speed_bucket_ms = 125;
+    // Net extremity speed a run-over needs: between a parked driven APC's measured creep (0.047 u/s on a
+    // 20 deg slope, 0.075 u/s while a walker shoves it) and the 0.1 u/s that must count.
+    constexpr float vehicle_crush_motion_min_speed = 0.085f;
+    // An oldest pose younger than this is too close to rate a speed from.
+    constexpr int64_t vehicle_crush_motion_min_span_ms = 250;
+    // A step past it every <= 200 ms needs only 0.05 u/s, well under the speed floor.
+    constexpr float vehicle_crush_change_min_extent = 0.01f;
+    constexpr int64_t vehicle_crush_motion_window_ms = 500;
+    // The victim's 2.2 x 25 ms interp delay, the server's relay tick and a ~120 ms report round trip.
+    constexpr int64_t vehicle_crush_motion_tail_ms = 200;
+
+    // The stock crusher speed, the pooled constant 0x0041A0AD/0x0041A0C5 compare against.
+    static auto& stock_crusher_min_speed = addr_as_ref<float>(0x005893C0);
+
+    // A yaw rate times this is the fastest any box FACE moves along its own normal: the far end of a side.
+    float vehicle_hull_yaw_reach(const rf::Entity* vehicle)
+    {
+        rf::Vector3 half{};
+        rf::Vector3 center{};
+        vehicle_physics_entity_hull_box(vehicle, &half, &center);
+        return std::max(std::fabs(center.x) + half.x, std::fabs(center.z) + half.z);
+    }
+
+    // How far the hull's extremity moved: the origin's shift, or the heading change swung at the reach.
+    float vehicle_pose_extent(const rf::Vector3& from_pos, float from_heading, const rf::Vector3& to_pos,
+                              float to_heading, float reach)
+    {
+        const float turn = std::remainder(to_heading - from_heading, vehicle_two_pi);
+        return std::max((to_pos - from_pos).len(), std::fabs(turn) * reach);
+    }
+
+    void vehicle_observed_speed_advance(VehicleObservedSpeed& s, int64_t now)
+    {
+        const int64_t shift = (now - s.bucket_start_ms) / vehicle_observed_speed_bucket_ms;
+        if (shift <= 0) {
+            return;
+        }
+        for (int i = VehicleObservedSpeed::bucket_count - 1; i >= 0; --i) {
+            const bool kept = i >= shift;
+            const int from = kept ? i - static_cast<int>(shift) : 0;
+            s.bucket_peak[i] = kept ? s.bucket_peak[from] : 0.0f;
+            s.bucket_pos[i] = kept ? s.bucket_pos[from] : rf::Vector3{};
+            s.bucket_heading[i] = kept ? s.bucket_heading[from] : 0.0f;
+            s.bucket_pose_ms[i] = kept ? s.bucket_pose_ms[from] : 0;
+            s.bucket_posed[i] = kept && s.bucket_posed[from];
+        }
+        s.bucket_start_ms += shift * vehicle_observed_speed_bucket_ms;
+    }
+
+    struct VehicleObservedRates
+    {
+        float linear = 0.0f; // u/s of the origin
+        float turn = 0.0f;   // rad/s of the heading
+        float reach = 0.0f;
+    };
+
+    // Net from the oldest pose in the window to the newest, over their ARRIVAL span: a relay burst
+    // changes when rows land, not what they carry. 0 once it stops stepping, and a turret never runs
+    // anyone over.
+    VehicleObservedRates vehicle_observed_linear_and_turn_rate(const rf::Entity* vehicle)
+    {
+        if (!vehicle || vehicle_hull_is_turret(vehicle)) {
+            return {};
+        }
+        auto it = g_vehicle_state.observed_speed.find(vehicle->handle);
+        if (it == g_vehicle_state.observed_speed.end()) {
+            return {};
+        }
+        VehicleObservedSpeed& s = it->second;
+        const int64_t now = timer::get_i64(1000);
+        vehicle_observed_speed_advance(s, now);
+        if (!s.changed || now - s.changed_ms > vehicle_crush_motion_tail_ms) {
+            return {};
+        }
+        for (int i = VehicleObservedSpeed::bucket_count - 1; i >= 0; --i) {
+            if (!s.bucket_posed[i] || now - s.bucket_pose_ms[i] > vehicle_crush_motion_window_ms) {
+                continue;
+            }
+            const int64_t span_ms = s.newest_ms - s.bucket_pose_ms[i];
+            if (span_ms < vehicle_crush_motion_min_span_ms) {
+                return {};
+            }
+            const float span_s = static_cast<float>(span_ms) * 0.001f;
+            const float turn = std::remainder(s.newest_heading - s.bucket_heading[i], vehicle_two_pi);
+            return {(s.newest_pos - s.bucket_pos[i]).len() / span_s, std::fabs(turn) / span_s, s.reach};
+        }
+        return {};
+    }
+
+    // u/s of the hull's farthest point: the origin's speed, or the heading rate swung at the reach.
+    float vehicle_observed_extremity_speed(const rf::Entity* vehicle)
+    {
+        const VehicleObservedRates r = vehicle_observed_linear_and_turn_rate(vehicle);
+        return std::max(r.linear, r.turn * r.reach);
+    }
+
+    bool vehicle_observed_motion(const rf::Entity* vehicle)
+    {
+        return vehicle_observed_extremity_speed(vehicle) >= vehicle_crush_motion_min_speed;
+    }
+
+    float vehicle_observed_speed_peak(int vehicle_handle)
+    {
+        auto it = g_vehicle_state.observed_speed.find(vehicle_handle);
+        if (it == g_vehicle_state.observed_speed.end()) {
+            return 0.0f;
+        }
+        VehicleObservedSpeed& s = it->second;
+        vehicle_observed_speed_advance(s, timer::get_i64(1000));
+        float peak = 0.0f;
+        for (float v : s.bucket_peak) {
+            peak = std::max(peak, v);
+        }
+        return peak;
+    }
 
     // The one derivation both the reporting client and the server use.
     float vehicle_crash_life_frac(int vdc, float impact_dv, bool ground)
@@ -833,7 +968,7 @@ namespace
         if (over <= 0.0f || ref_over <= 0.0f) {
             return 0.0f;
         }
-        const float x = over / ref_over;
+        const float x = std::min(over / ref_over, vehicle_crash_max_over_ref);
         const float frac = (ground ? t.land_frac : t.wall_frac) * x * x;
         return frac >= vehicle_crash_min_life_frac ? frac : 0.0f;
     }
@@ -912,10 +1047,56 @@ void vehicle_server_handle_crash_report(rf::Player* pp, int vehicle_handle, bool
     if (vehicle_seat_leech(vehicle, 0) != pp->entity_handle) {
         return;
     }
-    if (impact_dv > vehicle_crash_max_impact_dv(vehicle_damage_class(vehicle))) {
+    // Clamped, not rejected: a report may claim no more than the motion this server last saw allows.
+    const int vdc = vehicle_damage_class(vehicle);
+    const float observed_dv = vehicle_observed_speed_peak(vehicle->handle) * vehicle_physics_class_bounce_gain(vdc)
+        + vehicle_crash_report_slack;
+    vehicle_server_apply_crash(vehicle, std::min({impact_dv, vehicle_crash_max_impact_dv(vdc), observed_dv}), ground);
+}
+
+void vehicle_note_observed_speed(int vehicle_handle, float speed)
+{
+    if (!rf::is_server || !std::isfinite(speed)) {
         return;
     }
-    vehicle_server_apply_crash(vehicle, impact_dv, ground);
+    VehicleObservedSpeed& s = g_vehicle_state.observed_speed[vehicle_handle];
+    vehicle_observed_speed_advance(s, timer::get_i64(1000));
+    s.bucket_peak[0] = std::max(s.bucket_peak[0], speed);
+}
+
+void vehicle_note_observed_pose(int vehicle_handle, const rf::Vector3& pos, float heading)
+{
+    if (!rf::is_multi || !std::isfinite(pos.x) || !std::isfinite(pos.y) || !std::isfinite(pos.z)
+        || !std::isfinite(heading)) {
+        return;
+    }
+    VehicleObservedSpeed& s = g_vehicle_state.observed_speed[vehicle_handle];
+    const int64_t now = timer::get_i64(1000);
+    vehicle_observed_speed_advance(s, now);
+    if (!(s.reach > 0.0f)) {
+        if (const rf::Entity* ep = rf::entity_from_handle(vehicle_handle)) {
+            s.reach = vehicle_hull_yaw_reach(ep);
+        }
+    }
+    if (!s.bucket_posed[0]) {
+        s.bucket_pos[0] = pos;
+        s.bucket_heading[0] = heading;
+        s.bucket_pose_ms[0] = now;
+        s.bucket_posed[0] = true;
+    }
+    s.newest_pos = pos;
+    s.newest_heading = heading;
+    s.newest_ms = now;
+    // Against the last step's pose, not the previous note: a slow creep moves far less than the floor per row.
+    if (!s.anchored
+        || vehicle_pose_extent(s.anchor_pos, s.anchor_heading, pos, heading, s.reach)
+               > vehicle_crush_change_min_extent) {
+        s.changed = s.anchored;
+        s.changed_ms = now;
+        s.anchor_pos = pos;
+        s.anchor_heading = heading;
+        s.anchored = true;
+    }
 }
 
 namespace
@@ -983,28 +1164,27 @@ namespace
     // No client applies a vehicle crush locally. Every client suppresses its own; the DRIVER's
     // machine and the VICTIM's additionally report, each seeing one side of the contact first hand
     // while the server holds two interpolated bodies. A listen host keeps the stock path.
-    bool vehicle_client_report_crush(rf::Entity* victim)
+    bool vehicle_client_report_crush(rf::Entity* victim, rf::Entity* vehicle)
     {
         if (!rf::is_multi || rf::is_server || !victim) {
             return false;
         }
         // Seated: suppress and report nothing, whatever is crushing. True rather than false, because
-        // false hands him back to the stock crush and a seated man may not be crushed by a mover.
+        // false hands him back to the stock crush and a seated man may not be crushed at all.
         if (vehicle_crush_victim_is_exempt(victim)) {
             return true;
         }
-        // only_simulated=false: recognise the crusher on a watcher too, so its local crush is
-        // suppressed and the victim's own machine can still report the contact.
-        rf::Entity* vehicle = vehicle_crusher_of(victim, false);
-        if (!vehicle) {
-            return false; // a mover, a lift, an SP-style crusher: none of this feature's business
+        if (!vehicle_is_synced_entity_type(vehicle)) {
+            return false; // an SP-style crusher: none of this feature's business
         }
         // Suppress the local crush as for any hull, but send nothing: the server rejects it anyway.
         if (vehicle_hull_is_turret(vehicle)) {
             return true;
         }
+        // A hull at rest reports nothing: 0x0041A000 crushes on a driven APC's contact alone.
         const bool can_report =
-            vehicle_local_driven_vehicle() == vehicle || victim == rf::local_player_entity;
+            (vehicle_local_driven_vehicle() == vehicle || victim == rf::local_player_entity)
+            && vehicle_observed_motion(vehicle);
         if (can_report && rf::player_from_entity_handle(victim->handle)
             && !rf::entity_is_dying(victim)) {
             // The same window the server dedupes on, so a sliding contact is not sent per frame.
@@ -1017,26 +1197,60 @@ namespace
         return true; // suppress on every client, driver or watcher
     }
 
-    // A player under any synced hull: his squash belongs to the kill record, whichever blow kills him.
-    bool vehicle_server_crush_squash_is_recorded(const rf::Entity* victim)
+    // A player under a synced hull: the stock body minus its squash foley, which the kill record plays
+    // unless he gibbed.
+    bool vehicle_server_crush(rf::Entity* victim, rf::Entity* crusher)
     {
-        return rf::is_multi && rf::is_server && victim
-            && rf::player_from_entity_handle(victim->handle) && vehicle_crusher_of(victim, false);
+        if (!rf::is_multi || !rf::is_server || !victim || !rf::player_from_entity_handle(victim->handle)
+            || !vehicle_is_synced_entity_type(crusher)) {
+            return false;
+        }
+        if (vehicle_observed_motion(crusher)) {
+            // The host's own contact counts as a victim report; a coasting hull credits its ex-driver.
+            rf::Entity* driver = (crusher->p_data.flags & rf::PF_NET_PLAYER)
+                ? vehicle_driver_entity(crusher) : vehicle_ram_credit(crusher);
+            if (driver == victim) {
+                return true; // as in the sweeps, nobody runs himself over
+            }
+            if (driver) {
+                vehicle_server_mint_crush(victim, driver, crusher);
+            }
+            else {
+                rf::obj_damage(victim->handle, vehicle_crush_damage, -1, -1, rf::DT_CRUSH,
+                               nullptr, -1, 0);
+            }
+        }
+        return true;
     }
 
-    FunHook<void(rf::Entity*)> entity_crush_damage_hook{
+    // ESI is the crusher: both callers sit in 0x0041A000, which loads its param_1 into ESI and never
+    // writes it again. The victim's own collide_out may already be the world's. 0x004297DD is the RET.
+    CodeInjection entity_crush_damage_injection{
         0x00429790,
-        [](rf::Entity* victim) {
-            if (vehicle_client_report_crush(victim)) {
+        [](auto& regs) {
+            rf::Entity* crusher = regs.esi;
+            rf::Entity* victim = addr_as_ref<rf::Entity*>(regs.esp + 4);
+            if (vehicle_client_report_crush(victim, crusher) || vehicle_server_crush(victim, crusher)) {
+                regs.eip = 0x004297DD;
+            }
+        },
+    };
+
+    // The crusher branch of 0x0041A000 compares |vel| (+0x144) and |rotvel| with 0.5, and a watched hull's
+    // vel is its row's, truncated to whole u/s. Its observed rates, on the same two tests, can add the
+    // crush (0x0041A0EE); stock otherwise. Replaces LEA ECX,[ESI+0x144] (6 bytes, no jump in).
+    CodeInjection entity_crusher_observed_speed_injection{
+        0x0041A0A2,
+        [](auto& regs) {
+            rf::Entity* hull = regs.esi;
+            if (!rf::is_multi || !vehicle_level_has_factories() || !vehicle_is_synced_entity_type(hull)
+                || !(hull->p_data.flags & rf::PF_NET_PLAYER) || vehicle_physics_drives(hull)) {
                 return;
             }
-            // The stock body minus its squash foley, which the kill record plays unless he gibbed.
-            if (vehicle_server_crush_squash_is_recorded(victim)) {
-                rf::obj_damage(victim->handle, vehicle_crush_damage, -1, -1, rf::DT_CRUSH, nullptr,
-                               -1, 0);
-                return;
+            const VehicleObservedRates r = vehicle_observed_linear_and_turn_rate(hull);
+            if (r.linear > stock_crusher_min_speed || r.turn > stock_crusher_min_speed) {
+                regs.eip = 0x0041A0EE;
             }
-            entity_crush_damage_hook.call_target(victim);
         },
     };
 
@@ -1323,14 +1537,15 @@ int vehicle_resolve_damage_killer(rf::Entity* victim, int killer_handle, int dam
             // An unattributed lethal blow (drowned, stranded, returned, void, own ram share) is the
             // rider's own death, whoever softened the hull first; they are paid in assists instead.
             auto lethal = g_vehicle_state.lethal_killer.find(vehicle->handle);
-            if (lethal != g_vehicle_state.lethal_killer.end() && lethal->second == -1) {
+            if (lethal != g_vehicle_state.lethal_killer.end() && lethal->second.entity_handle == -1) {
                 return victim->handle;
             }
             // The player who destroyed it, not one who hit the wreck while it was dying.
             int credit = -1;
-            if (lethal != g_vehicle_state.lethal_killer.end()
-                && rf::player_from_entity_handle(lethal->second)) {
-                credit = lethal->second;
+            rf::Entity* destroyer =
+                lethal != g_vehicle_state.lethal_killer.end() ? vehicle_lethal_killer_entity(lethal->second) : nullptr;
+            if (destroyer) {
+                credit = destroyer->handle;
             }
             else if (auto it = g_vehicle_state.last_damager.find(vehicle->handle);
                      it != g_vehicle_state.last_damager.end()) {
@@ -1375,15 +1590,49 @@ int vehicle_occupant_death_blast_hull(int victim_handle, int damage_type)
         ? g_vehicle_blast_mint.vehicle_handle : -1;
 }
 
+bool vehicle_lethal_blow_attribution(int vehicle_handle, const rf::Player* killer_player, int& weapon_type,
+                                     bool& splash, int& vehicle_class)
+{
+    auto it = g_vehicle_state.lethal_killer.find(vehicle_handle);
+    if (it == g_vehicle_state.lethal_killer.end() || !killer_player || !killer_player->net_data
+        || it->second.player_id != killer_player->net_data->player_id) {
+        return false;
+    }
+    weapon_type = it->second.weapon_type;
+    splash = it->second.splash;
+    vehicle_class = it->second.vehicle_class;
+    return true;
+}
+
 void vehicle_note_hull_damage(rf::Entity* vehicle, float life_before, int killer_handle,
-                              float real_damage)
+                              float real_damage, int weapon_type, bool splash)
 {
     if (!rf::is_multi || !rf::is_server || !vehicle_is_synced_entity_type(vehicle)
         || life_before <= 0.0f) {
         return; // a blow on a wreck neither kills it again nor softens it for anybody
     }
     if (vehicle->life <= 0.0f) {
-        g_vehicle_state.lethal_killer.try_emplace(vehicle->handle, killer_handle);
+        VehicleLethalKiller lethal;
+        rf::Entity* killer = killer_handle != -1 ? rf::entity_from_handle(killer_handle) : nullptr;
+        // A rider's own shot is his own death, as the own ram share is: suicides and assists.
+        if (vehicle_ridden_hull(killer) != vehicle) {
+            lethal.entity_handle = killer_handle;
+            rf::Player* killer_player = killer_handle != -1 ? rf::player_from_entity_handle(killer_handle) : nullptr;
+            if (killer_player && killer_player->net_data) {
+                lethal.player_id = killer_player->net_data->player_id;
+            }
+            // A minted ram names its hull: a coasting hull's credited ex-driver is on foot.
+            lethal.vehicle_class = vehicle_crush_damage_is_mint(vehicle->handle)
+                ? g_vehicle_crush_mint.damage_class : -1;
+            if (lethal.vehicle_class < 0) {
+                lethal.vehicle_class = vehicle_occupied_damage_class(killer);
+            }
+            if (lethal.vehicle_class < 0 && kill_attribution_is_valid_weapon_type(weapon_type)) {
+                lethal.weapon_type = weapon_type;
+                lethal.splash = splash;
+            }
+        }
+        g_vehicle_state.lethal_killer.try_emplace(vehicle->handle, lethal);
     }
     if (killer_handle == -1 || real_damage <= 0.0f) {
         return; // player_from_entity_handle does not validate -1
@@ -1520,6 +1769,10 @@ void vehicle_server_handle_crush_report(rf::Player* pp, int vehicle_handle, int 
         return;
     }
     if (pp->entity_handle != driver->handle && pp->entity_handle != victim->handle) {
+        return;
+    }
+    // The claim is only as good as the motion this server saw: rows carry |vel| in whole u/s, so poses.
+    if (!vehicle_observed_motion(vehicle)) {
         return;
     }
     // The mint's own per-victim cooldown is the driver/victim dedupe.
@@ -1716,7 +1969,7 @@ namespace
             if (now < slot.next_ms) {
                 continue;
             }
-            slot.next_ms = now + slot.interval_ms;
+            slot.next_ms += slot.interval_ms;
             rf::entity_add_to_reserve_ammo(ep, slot.weapon_type, 1);
             slot.last_seen_ammo = vehicle_weapon_ammo(ep, slot.weapon_type);
         }
@@ -1797,7 +2050,8 @@ void vehicle_regen_do_frame(rf::Entity* ep)
 
 void vehicle_damage_apply_patch()
 {
-    entity_crush_damage_hook.install();
+    entity_crush_damage_injection.install();
+    entity_crusher_observed_speed_injection.install();
     obj_damage_vehicle_crush_injection.install();
     entity_die_occupant_kill_injection.install();
     entity_damage_ignite_berserk_hook.install();

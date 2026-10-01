@@ -75,6 +75,9 @@ float vehicle_physics_class_max_speed(int vdc_class);
 // The speed the model drives a VehicleDamageClass at, below that cap. 0 for a class that cannot move.
 float vehicle_physics_class_top_speed(int vdc_class);
 
+// 1 + the class restitution: the largest velocity change a contact gives per unit of approach speed.
+float vehicle_physics_class_bounce_gain(int vdc_class);
+
 // The largest velocity change a contact can give this class: its cap, plus the bounce off it.
 float vehicle_physics_class_max_impact_speed(int vdc_class);
 

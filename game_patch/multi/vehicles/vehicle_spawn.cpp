@@ -60,8 +60,10 @@ namespace
         if (!vehicle_is_synced_entity_type(entity_type)) {
             return nullptr;
         }
+        // A copy: entity_create uprights the matrix it is handed in place.
+        rf::Matrix3 create_orient = orient;
         rf::Entity* ep = rf::entity_create(entity_type, rf::entity_types[entity_type].name.c_str(), -1,
-                                           pos, orient, 0, -1);
+                                           pos, create_orient, 0, -1);
         if (!ep) {
             return nullptr;
         }
@@ -398,19 +400,13 @@ void vehicle_factory_load_chunk(rf::File& file, std::size_t chunk_len)
     // Untrusted input reaching a server-side Bullet body: a non-finite value is UB and a
     // non-rotation basis shears every derived box.
     auto pose_is_sane = [](const AlpineVehicleFactoryInfo& info) {
-        const rf::Vector3* axes[3] = {&info.orient.rvec, &info.orient.uvec, &info.orient.fvec};
         if (!std::isfinite(info.pos.x) || !std::isfinite(info.pos.y) || !std::isfinite(info.pos.z)) {
             return false;
         }
         if (!alpine_orient_is_sane(info.orient)) {
             return false;
         }
-        for (const rf::Vector3* a : axes) {
-            if (std::fabs(a->len() - 1.0f) > 0.01f) return false;
-        }
-        return std::fabs(axes[0]->dot_prod(*axes[1])) <= 0.01f
-            && std::fabs(axes[0]->dot_prod(*axes[2])) <= 0.01f
-            && std::fabs(axes[1]->dot_prod(*axes[2])) <= 0.01f;
+        return vehicle_orient_is_orthonormal(info.orient);
     };
     int rejected = 0;
 

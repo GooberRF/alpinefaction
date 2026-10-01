@@ -465,6 +465,7 @@ void vehicle_client_do_frame()
         std::erase_if(g_vehicle_state.ammo_mirror, handle_is_gone);
         std::erase_if(g_vehicle_state.orient, handle_is_gone);
         std::erase_if(g_vehicle_state.orient_sent, handle_is_gone);
+        std::erase_if(g_vehicle_state.observed_speed, handle_is_gone);
         // The mirror the auto-return label and the entry rules read; nothing else drops it on a
         // client, since vehicle_do_frame's own sweep is server side.
         std::erase_if(g_vehicle_state.hull_state, handle_is_gone);

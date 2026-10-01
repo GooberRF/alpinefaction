@@ -10,6 +10,8 @@ void vehicle_server_driven_crush_sweep(rf::Entity* vehicle);
 void vehicle_server_ram_sweep();
 // Server: per-frame drill contact damage, driven while the driller's drill is on.
 void vehicle_server_drill_damage_sweep(rf::Entity* vehicle);
+// Server: one received row's speed for a client-driven hull, for the crash report bound.
+void vehicle_note_observed_speed(int vehicle_handle, float speed);
 // Server: one hull's life and ammo regeneration for this frame.
 void vehicle_regen_do_frame(rf::Entity* ep);
 

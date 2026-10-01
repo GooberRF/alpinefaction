@@ -280,11 +280,15 @@ void vehicle_note_damage(rf::Entity* victim, int killer_handle);
 bool vehicle_is_occupant_death_blast(const rf::Entity* victim, int damage_type);
 // The same blast's hull handle, or -1 for any other blow.
 int vehicle_occupant_death_blast_hull(int victim_handle, int damage_type);
+// Server: what killer_player's lethal blow on this hull was (weapon -1 / class -1 = unknown); false
+// when the lethal blow was not his.
+bool vehicle_lethal_blow_attribution(int vehicle_handle, const rf::Player* killer_player, int& weapon_type,
+                                     bool& splash, int& vehicle_class);
 
 // Server, from entity_damage after the blow lands on a synced hull: records the lethal blow's
-// killer and offers a player attacker to every rider as an assist on that hull's blast.
+// killer and weapon, and offers a player attacker to every rider as an assist on that hull's blast.
 void vehicle_note_hull_damage(rf::Entity* vehicle, float life_before, int killer_handle,
-                              float real_damage);
+                              float real_damage, int weapon_type, bool splash);
 
 // Server: a client reported that the vehicle it drives ran a player over.
 void vehicle_server_handle_crush_report(rf::Player* pp, int vehicle_handle, int victim_handle);
@@ -293,6 +297,10 @@ void vehicle_server_handle_crush_report(rf::Player* pp, int vehicle_handle, int 
 // change along the contact normal, and whether it was ground rather than a wall. The server applies
 // it; a driver's client reports it.
 void vehicle_crash_impact(rf::Entity* vehicle, float impact_dv, bool ground);
+
+// One authoritative pose of a hull (a received row, or the body this machine simulates), for the
+// run-over motion test.
+void vehicle_note_observed_pose(int vehicle_handle, const rf::Vector3& pos, float heading);
 
 // Server: a client reported an impact on the vehicle it drives.
 void vehicle_server_handle_crash_report(rf::Player* pp, int vehicle_handle, bool ground,

@@ -85,6 +85,7 @@ struct RfVehicleRaycaster : public btVehicleRaycaster
         float best_L = 1e30f;
         float best_theta = 0.0f;
         float L_straight = 1e30f; // the L the straight-down sample implies; the seat's floor
+        bool best_mover = false;
 
         if (owner->wheel_cylinder) {
             rf::Vector3 fwd = owner->wheel_fwd;
@@ -118,6 +119,7 @@ struct RfVehicleRaycaster : public btVehicleRaycaster
                     best_theta = theta;
                     contact = o.hit_point;
                     surf_normal = o.hit_normal;
+                    best_mover = o.obj_handle >= 0;
                 }
             }
             if (best_L > 1e29f) {
@@ -136,11 +138,13 @@ struct RfVehicleRaycaster : public btVehicleRaycaster
             best_L = (o.hit_point - a).dot_prod(dir) - radius;
             contact = o.hit_point;
             surf_normal = o.hit_normal;
+            best_mover = o.obj_handle >= 0;
         }
 
         if (best_L > rest + 0.001f) {
             return nullptr;
         }
+        owner->wheel_on_mover |= best_mover;
         const float L = std::clamp(best_L, 0.0f, rest);
 
         // Surface normal straight down, the radial edge->axle normal on an edge, so the wheel climbs.
@@ -204,6 +208,9 @@ void car_teardown(VehicleSimBody& b)
     b.engine_accel = 0.0f;
     b.brake_accel = 0.0f;
     b.engine_cmd = 0.0f;
+    b.handbrake = false;
+    b.handbrake_pin = false;
+    b.wheel_on_mover = false;
     b.upright_recover_timer = 0.0f;
     b.upright_prop_timer = 0.0f;
     b.upright_recovering = false;
@@ -309,14 +316,34 @@ void body_apply_mass(VehicleSimBody& b, const VehiclePhysicsParams& p, const rf:
 void body_apply_shape(VehicleSimBody& b, const VehiclePhysicsParams& p, rf::Entity* ep)
 {
     const float radius = hull_standoff(p, ep);
-    if (std::fabs(radius - b.body_radius) < 0.001f) {
+    const bool skid = b.server_owned && p.parked_skid != 0.0f;
+    if (std::fabs(radius - b.body_radius) < 0.001f && skid == (b.skid_compound != nullptr)) {
         return;
     }
     g_vphys.world->removeRigidBody(b.body);
     btSphereShape* shape = new btSphereShape(radius);
-    b.body->setCollisionShape(shape);
+    btBoxShape* skid_shape = nullptr;
+    btCompoundShape* compound = nullptr;
+    if (skid) {
+        // The csphere box's footprint, bottom flush with the sphere's, so the resting height is unchanged.
+        constexpr float skid_half_y = 0.25f;
+        const HullBox box = hull_local_box(ep);
+        skid_shape = new btBoxShape(btVector3(std::max(box.half.x(), skid_half_y), skid_half_y,
+                                              std::max(box.half.z(), skid_half_y)));
+        compound = new btCompoundShape();
+        compound->addChildShape(btTransform::getIdentity(), shape);
+        btTransform child;
+        child.setIdentity();
+        child.setOrigin(btVector3(box.center.x(), skid_half_y - radius, box.center.z()));
+        compound->addChildShape(child, skid_shape);
+    }
+    b.body->setCollisionShape(compound ? static_cast<btCollisionShape*>(compound) : shape);
+    delete b.skid_compound;
+    delete b.skid_shape;
     delete b.shape;
     b.shape = shape;
+    b.skid_shape = skid_shape;
+    b.skid_compound = compound;
     b.body_radius = radius;
     b.body->setCcdMotionThreshold(radius);
     b.body->setCcdSweptSphereRadius(radius * 0.5f);
@@ -620,10 +647,17 @@ bool apply_car_controls(VehicleSimBody& b, rf::Entity* ep, const VehiclePhysicsP
     const float engine_force_now = std::max(p.engine_force, 0.0f) * drill_scale;
 
     const float throttle = std::clamp(ci.move.z, -1.0f, 1.0f) * p.thrust_sign;
+    // While seated, controls_read adds held jump to ci.move.y (0x004A60EF forces its hold mode).
+    b.handbrake = ci.move.y > 0.5f && p.handbrake_force > 0.0f;
     // ACCELERATIONS, before the mass/wheel split, so a class's wind-up is wheel-count independent.
     float engine_cmd = 0.0f;
     float brake_cmd = 0.0f;
-    if (std::fabs(throttle) > 0.05f) {
+    if (b.handbrake) {
+        brake_cmd = p.handbrake_force;
+        // Exactly zero: updateFriction reads m_brake only on a wheel with no engine force at all.
+        b.engine_accel = 0.0f;
+    }
+    else if (std::fabs(throttle) > 0.05f) {
         const bool braking = throttle * fwd_speed < -0.5f && std::fabs(fwd_speed) > 1.0f;
         if (braking) {
             brake_cmd = std::max(p.brake_force, 0.0f);
@@ -750,12 +784,13 @@ void apply_car_model(VehicleSimBody& b, const VehiclePhysicsParams& p, float dt,
     }
 
     float brake_applied_accel = 0.0f;
+    // The handbrake's exactly-zero engine force lets the wheel brake deliver it in full on its own.
+    const float chassis_scale = b.handbrake ? 0.0f : std::clamp(p.brake_chassis_scale, 0.0f, 2.0f);
     if (grounded_here > 0 && b.brake_accel > 0.0f && std::fabs(fwd_speed) > 0.05f
-        && p.brake_chassis_scale > 0.0f) {
+        && chassis_scale > 0.0f) {
         const float grounded_frac =
             static_cast<float>(grounded_here) / static_cast<float>(std::max(nwheels, 1));
-        brake_applied_accel = b.brake_accel * std::clamp(p.brake_chassis_scale, 0.0f, 2.0f)
-                            * grounded_frac;
+        brake_applied_accel = b.brake_accel * chassis_scale * grounded_frac;
         // Bullet clears forces only AFTER its substep loop, so this one acts over step_time, not dt.
         brake_applied_accel =
             std::min(brake_applied_accel, std::fabs(fwd_speed) / std::max(step_time, 0.0001f));
@@ -895,5 +930,16 @@ void apply_car_model(VehicleSimBody& b, const VehiclePhysicsParams& p, float dt,
     extra_down += rf::gravity * (p.air_gravity - p.gravity_scale) * air_frac;
     if (std::fabs(extra_down) > 0.001f) {
         body->applyCentralForce(btVector3(0.0f, -extra_down * mass, 0.0f));
+    }
+
+    // The wheels act only AFTER each substep's integration, so any steady force creeps a braked hull;
+    // pin it while parked. A mover's surface must still carry the hull, so only static ground.
+    const bool on_mover = b.wheel_on_mover;
+    b.wheel_on_mover = false;
+    if (b.handbrake && !on_mover && grounded_wheels >= ref_min_wheels && normal_sum.length2() > 1e-6f
+        && ground_speed < std::max(p.handbrake_hold_speed, 0.0f)) {
+        const btVector3 n = normal_sum.normalized();
+        const float max_deg = std::clamp(p.handbrake_hold_max_deg, 0.0f, 89.0f);
+        b.handbrake_pin = n.y() >= std::cos(max_deg * std::numbers::pi_v<float> / 180.0f);
     }
 }

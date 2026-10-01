@@ -15,6 +15,7 @@
 #include "vehicle_markers.h"
 #include "../alpine_packets.h"
 #include "../../graphics/gr_ghost_mesh.h"
+#include "../../hud/hud_internal.h"
 #include "../../hud/hud_world.h"
 #include "../../hud/multi_spectate.h"
 #include "../../misc/alpine_settings.h"
@@ -26,6 +27,7 @@
 #include "../../rf/gr/gr.h"
 #include "../../rf/level.h"
 #include "../../rf/multi.h"
+#include "../../rf/os/frametime.h"
 #include "../../rf/player/camera.h"
 #include "../../rf/player/player.h"
 #include "../../rf/vmesh.h"
@@ -105,6 +107,8 @@ namespace
     std::vector<HullMarker> g_hull_markers;
     std::vector<std::pair<int, int64_t>> g_hull_scratch; // reused; never freed while rendering
     std::vector<HullHealthBar> g_health_bars; // bounded by the live hull count
+    rf::Entity* g_viewer_hull = nullptr;
+    int g_viewer_hull_frame = -1;
 
     rf::VMesh* marker_resolve_mesh(const char* filename)
     {
@@ -287,11 +291,30 @@ namespace
         return std::min(b.rise_from + (1.0f - b.rise_from) * t, health_bar_fade(b, now));
     }
 
-    // Once a frame: track every live hull below max life and start the fade of any back at max.
+    // The hull whose own bar the HUD already shows: the local player's, or the followed spectate target's.
+    rf::Entity* health_bar_viewer_hull()
+    {
+        if (g_viewer_hull_frame == rf::frame_count) {
+            return g_viewer_hull;
+        }
+        rf::Player* viewer = rf::local_player;
+        if (multi_spectate_is_spectating() && !multi_spectate_is_freelook()) {
+            if (rf::Player* target = multi_spectate_get_target_player()) {
+                viewer = target;
+            }
+        }
+        g_viewer_hull = viewer ? vehicle_ridden_hull(rf::entity_from_handle(viewer->entity_handle)) : nullptr;
+        g_viewer_hull_frame = rf::frame_count;
+        return g_viewer_hull;
+    }
+
+    // Once a frame: track every live hull below max life and start the fade of any back at max. The
+    // viewer's hull gets no entry, so leaving it fades its bar in afresh.
     void health_bars_refresh(int64_t now)
     {
+        const rf::Entity* const viewer_hull = health_bar_viewer_hull();
         for (rf::Entity& ep : DoublyLinkedList{rf::entity_list}) {
-            if (!vehicle_is_synced_entity_type(&ep) || rf::entity_is_dying(&ep)) {
+            if (&ep == viewer_hull || !vehicle_is_synced_entity_type(&ep) || rf::entity_is_dying(&ep)) {
                 continue;
             }
             const float max_life = vehicle_hud_max_life(&ep);
@@ -315,23 +338,11 @@ namespace
                 it->full_since_ms = now;
             }
         }
-        std::erase_if(g_health_bars, [now](const HullHealthBar& b) {
+        std::erase_if(g_health_bars, [now, viewer_hull](const HullHealthBar& b) {
             rf::Entity* ep = rf::entity_from_handle(b.handle);
-            return !vehicle_is_synced_entity_type(ep) || rf::entity_is_dying(ep)
+            return ep == viewer_hull || !vehicle_is_synced_entity_type(ep) || rf::entity_is_dying(ep)
                 || (b.full_since_ms >= 0 && now - b.full_since_ms >= marker_bar_fade_ms);
         });
-    }
-
-    // The hull whose own bar the HUD already shows: the local player's, or the followed spectate target's.
-    rf::Entity* health_bar_viewer_hull()
-    {
-        rf::Player* viewer = rf::local_player;
-        if (multi_spectate_is_spectating() && !multi_spectate_is_freelook()) {
-            if (rf::Player* target = multi_spectate_get_target_player()) {
-                viewer = target;
-            }
-        }
-        return viewer ? vehicle_ridden_hull(rf::entity_from_handle(viewer->entity_handle)) : nullptr;
     }
 
     // 0 for a hull with no bar drawn over it, so its countdown keeps the plain anchor.
@@ -396,6 +407,8 @@ void vehicle_markers_level_init()
     g_hull_markers.clear();
     g_hull_scratch.clear();
     g_health_bars.clear();
+    g_viewer_hull = nullptr;
+    g_viewer_hull_frame = -1;
 }
 
 void vehicle_markers_level_init_post()
@@ -453,14 +466,12 @@ static void vehicle_markers_render_pass(rf::GRoom* room_filter)
     if (g_alpine_game_config.vehicle_health_bars) {
         for (const HullHealthBar& b : g_health_bars) {
             rf::Entity* ep = rf::entity_from_handle(b.handle);
-            if (!ep || rf::entity_is_dying(ep) || ep == viewer_hull) {
+            if (!ep || rf::entity_is_dying(ep) || ep == viewer_hull
+                || !marker_pass_takes(marker_render_room(ep->room), room_filter)) {
                 continue;
             }
             const float alpha = health_bar_lift(b, now) * marker_distance_fade(ep->pos, cam_pos);
             if (alpha <= 0.0f) {
-                continue;
-            }
-            if (!marker_pass_takes(marker_render_room(ep->room), room_filter)) {
                 continue;
             }
             const float max_life = vehicle_hud_max_life(ep);

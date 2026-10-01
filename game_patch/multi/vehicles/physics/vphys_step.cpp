@@ -234,6 +234,11 @@ namespace
         b.impact_peak = 0.0f;
         b.impact_pos_sum = 0.0f;
         b.impact_up_sum = 0.0f;
+        b.impact_approach = 0.0f;
+        b.impact_approach_ground = false;
+        b.impact_landing = false;
+        b.impact_land_stopped = false;
+        b.impact_land_ext = false;
     }
 
     void vphys_world_pre_step()
@@ -251,6 +256,7 @@ namespace
         const bool is_car = vphys_class_is_automobile(cls);
         const VehiclePhysicsParams& p = params_for_class(cls);
         b.impact_armed = false;
+        b.handbrake_pin = false;
         bool reseeded = false;
 
         // A teleport or correction wins - but NOT for a server body: the interp echo is our own output.
@@ -277,7 +283,7 @@ namespace
             body_apply_mass(b, p, ep);
             body->setRestitution(std::clamp(p.restitution, 0.0f, 0.95f));
             if (!is_car) {
-                body->setFriction(std::max(p.hull_friction, 0.0f));
+                body->setFriction(std::max(b.skid_compound ? p.parked_friction : p.hull_friction, 0.0f));
             }
             if (is_car) {
                 body->setDamping(std::clamp(p.car_linear_damping, 0.0f, 0.99f),
@@ -324,6 +330,7 @@ namespace
         // After the model on purpose: the ceiling's sink floor writes velocity directly.
         if (stepping) {
             const bool pushed = vphys_apply_pair_response(b, ep, b.pre_step_dt);
+            b.handbrake_pin = b.handbrake_pin && !pushed; // the pin would erase the push
             b.pre_step_dt = 0.0f;
             // Last, so every velocity write above is the step's input and never reads as an impact.
             b.impact_pre_vel = body->getLinearVelocity();
@@ -338,16 +345,24 @@ namespace
         g_vphys.world->stepSimulation(dt, vphys_max_substeps, vphys_fixed_timestep);
     }
 
-    VehicleSimBody* car_body_of(const btCollisionObject* obj)
+    // A car, or a flyer wearing its parked skid.
+    VehicleSimBody* ground_body_of(const btCollisionObject* obj)
     {
         if (!obj) {
             return nullptr;
         }
         VehicleSimBody* b = static_cast<VehicleSimBody*>(obj->getUserPointer());
-        if (!b || b->body != obj || !vphys_class_is_automobile(b->vehicle_class)) {
+        if (!b || b->body != obj || (!vphys_class_is_automobile(b->vehicle_class) && !b->skid_compound)) {
             return nullptr;
         }
         return b;
+    }
+
+    // n points out of the ground into the body; a skid flyer counts only when it is down on the skid.
+    bool ground_contact_counts(const VehicleSimBody& b, const btVector3& n)
+    {
+        return n.y() > 0.5f
+            && (!b.skid_compound || n.dot(b.body->getWorldTransform().getBasis().getColumn(1)) > 0.7f);
     }
 
     // ONE walk of the world's manifolds for every car, bucketed by body: the same test run per car
@@ -360,8 +375,8 @@ namespace
         const int nm = g_vphys.dispatcher->getNumManifolds();
         for (int m = 0; m < nm; ++m) {
             const btPersistentManifold* pm = g_vphys.dispatcher->getManifoldByIndexInternal(m);
-            VehicleSimBody* car0 = car_body_of(pm->getBody0());
-            VehicleSimBody* car1 = car_body_of(pm->getBody1());
+            VehicleSimBody* car0 = ground_body_of(pm->getBody0());
+            VehicleSimBody* car1 = ground_body_of(pm->getBody1());
             // getBody1 is the flipped side: its ground normal is the negated m_normalWorldOnB.
             if ((!car0 || car0->chassis_ground_contact_pass) &&
                 (!car1 || car1->chassis_ground_contact_pass)) {
@@ -372,11 +387,10 @@ namespace
                 if (cp.getDistance() > 0.02f) {
                     continue;
                 }
-                const float ny = cp.m_normalWorldOnB.y();
-                if (car0 && ny > 0.5f) {
+                if (car0 && ground_contact_counts(*car0, cp.m_normalWorldOnB)) {
                     car0->chassis_ground_contact_pass = true;
                 }
-                if (car1 && -ny > 0.5f) {
+                if (car1 && ground_contact_counts(*car1, -cp.m_normalWorldOnB)) {
                     car1->chassis_ground_contact_pass = true;
                 }
             }
@@ -418,6 +432,8 @@ namespace
             }
             const btVector3 dv = b->body->getLinearVelocity() - b->impact_pre_vel;
             const btVector3 fwd = b->body->getWorldTransform().getBasis().getColumn(2);
+            // A mover's own motion counts toward the speed into it; the level mesh has none.
+            const btRigidBody* other = btRigidBody::upcast(side > 0.0f ? pm->getBody1() : pm->getBody0());
             for (int c = 0; c < pm->getNumContacts(); ++c) {
                 const btManifoldPoint& cp = pm->getContactPoint(c);
                 if (cp.getDistance() > 0.02f) {
@@ -429,9 +445,16 @@ namespace
                 }
                 const float dvn = dv.dot(n);
                 if (!b->impact_contact || dvn > b->impact_contact_dvn) {
+                    btVector3 rel_pre = b->impact_pre_vel;
+                    if (other) {
+                        const btVector3& p = side > 0.0f ? cp.getPositionWorldOnB() : cp.getPositionWorldOnA();
+                        rel_pre -= other->getVelocityInLocalPoint(p - other->getCenterOfMassPosition());
+                    }
                     b->impact_contact = true;
                     b->impact_contact_dvn = dvn;
                     b->impact_contact_ny = n.y();
+                    b->impact_contact_approach = std::max(-rel_pre.dot(n), 0.0f);
+                    b->impact_contact_n = n;
                 }
             }
         }
@@ -451,14 +474,13 @@ namespace
             return;
         }
         b.impact_armed = false;
-        if (b.impact_skip || speed_clamped) {
-            vphys_impact_window_close(b);
-            return;
-        }
-        const btVector3 dv = b.body->getLinearVelocity() - b.impact_pre_vel;
+        const btVector3 vel = b.body->getLinearVelocity();
+        const btVector3 dv = vel - b.impact_pre_vel;
         bool contact = b.impact_contact;
         float dvn = b.impact_contact_dvn;
         float ny = b.impact_contact_ny;
+        float approach = b.impact_contact_approach;
+        btVector3 n = b.impact_contact_n;
         if (b.raycast_vehicle) {
             for (int i = 0; i < b.raycast_vehicle->getNumWheels(); ++i) {
                 const btWheelInfo& w = b.raycast_vehicle->getWheelInfo(i);
@@ -475,17 +497,27 @@ namespace
                     contact = true;
                     dvn = d;
                     ny = 1.0f; // a wheel is always a landing: its edge normal leans back on any step
+                    n = wn / len;
+                    approach = std::max(-b.impact_pre_vel.dot(n), 0.0f);
                 }
             }
         }
+        const bool after_air = b.impact_grounded_s < vehicle_crash_land_air_grace_s;
+        b.impact_grounded_s = contact ? std::min(b.impact_grounded_s + step_time, 1.0f) : 0.0f;
+        if (b.impact_skip || speed_clamped) {
+            vphys_impact_window_close(b);
+            return;
+        }
         if (!contact) {
             dvn = 0.0f;
+            approach = 0.0f;
         }
         if (b.impact_window_s <= 0.0f) {
-            if (dvn < vehicle_crash_open_dv) {
+            if (dvn < vehicle_crash_open_accel * step_time) {
                 return;
             }
             b.impact_window_s = vehicle_crash_window_s;
+            b.impact_landing = after_air;
         }
         b.impact_sum += dvn;
         b.impact_peak = std::max(b.impact_peak, b.impact_sum);
@@ -493,12 +525,39 @@ namespace
             b.impact_pos_sum += dvn;
             b.impact_up_sum += dvn * ny;
         }
+        if (approach > b.impact_approach) {
+            b.impact_approach = approach;
+            b.impact_approach_n = n;
+            b.impact_approach_vel = b.impact_pre_vel;
+            b.impact_approach_ground = ny >= vehicle_crash_ground_ny;
+            b.impact_land_stopped = false; // a new largest approach must confirm its own stop
+        }
+        // Net, gravity and drive included: a touchdown kills its normal speed, a graze does not.
+        if (b.impact_approach > 0.0f
+            && (vel - b.impact_approach_vel).dot(b.impact_approach_n)
+                   >= vehicle_crash_land_stop_frac * b.impact_approach) {
+            b.impact_land_stopped = true;
+        }
         b.impact_window_s -= step_time;
-        if (b.impact_window_s > 0.0f) {
+        if (b.impact_window_s > 0.0f && !(b.impact_land_ext && b.impact_land_stopped)) {
             return;
         }
-        const VehicleImpact impact{b.vehicle_handle, b.impact_peak,
-                                   b.impact_up_sum >= vehicle_crash_ground_ny * b.impact_pos_sum};
+        // Inside an extended landing a wall needs both the largest approach and the vote to say wall.
+        const bool vote_ground = b.impact_up_sum >= vehicle_crash_ground_ny * b.impact_pos_sum;
+        const bool ground = b.impact_land_ext ? (b.impact_approach_ground || vote_ground) : vote_ground;
+        // Never more than the speed into the surface: a pinned drivetrain keeps adding velocity change.
+        float impact_dv = std::min(b.impact_peak, b.impact_approach);
+        if (ground && b.impact_landing && b.impact_approach_ground) {
+            if (b.impact_land_stopped) {
+                impact_dv = b.impact_approach; // suspension spreads the stop past any summing window
+            }
+            else if (!b.impact_land_ext) {
+                b.impact_land_ext = true;
+                b.impact_window_s += vehicle_crash_land_window_s - vehicle_crash_window_s;
+                return;
+            }
+        }
+        const VehicleImpact impact{b.vehicle_handle, impact_dv, ground};
         vphys_impact_window_close(b);
         if (std::isfinite(impact.impact_dv) && impact.impact_dv > 0.0f) {
             out.push_back(impact);
@@ -556,10 +615,10 @@ namespace
         }
 
         ep->orient = orient;
+        if ((is_car || b.skid_compound) && (step_time > 0.0f || g_vphys.manifolds_dirty)) {
+            b.chassis_ground_contact = b.chassis_ground_contact_pass;
+        }
         if (is_car) {
-            if (step_time > 0.0f || g_vphys.manifolds_dirty) {
-                b.chassis_ground_contact = b.chassis_ground_contact_pass;
-            }
             ep->ground_material = (wheels_all_airborne && !b.chassis_ground_contact) ? -1 : 0;
         }
 
@@ -600,6 +659,7 @@ namespace
         vehicle_rebuild_eye_orient(ep, orient);
         vehicle_refresh_aim_orient(ep); // the aim outranks this hull-derived seed
         b.written_pos = ep->pos;
+        vehicle_note_observed_pose(ep->handle, pos, std::atan2(orient.fvec.x, orient.fvec.z));
     }
 
     void vphys_step_frame()
@@ -804,6 +864,9 @@ bool vehicle_physics_server_ensure(rf::Entity* ep, const rf::Vector3* seed_vel)
         return false;
     }
     b->server_owned = true;
+    if (!vphys_class_is_automobile(cls)) {
+        body_apply_shape(*b, params_for_class(cls), ep); // the parked skid keys off server_owned
+    }
     if (seed_vel) {
         b->body->setLinearVelocity(to_bt(*seed_vel));
         b->body->setInterpolationLinearVelocity(to_bt(*seed_vel));
@@ -944,14 +1007,19 @@ float vehicle_physics_class_top_speed(int vdc_class)
     return cls < 0 ? 0.0f : vphys_class_top_speed(cls);
 }
 
-float vehicle_physics_class_max_impact_speed(int vdc_class)
+float vehicle_physics_class_bounce_gain(int vdc_class)
 {
     const int cls = vphys_class_from_vdc(vdc_class);
     if (cls < 0) {
-        return 0.0f;
+        return 1.0f;
     }
     // The same clamp the pre-step gives the body.
-    return vphys_class_speed_cap(cls) * (1.0f + std::clamp(params_for_class(cls).restitution, 0.0f, 0.95f));
+    return 1.0f + std::clamp(params_for_class(cls).restitution, 0.0f, 0.95f);
+}
+
+float vehicle_physics_class_max_impact_speed(int vdc_class)
+{
+    return vehicle_physics_class_max_speed(vdc_class) * vehicle_physics_class_bounce_gain(vdc_class);
 }
 
 void vehicle_physics_level_init()

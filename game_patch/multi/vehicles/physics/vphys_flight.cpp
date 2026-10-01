@@ -158,7 +158,10 @@ void apply_flight_model(VehicleSimBody& b, rf::Entity* ep, const VehiclePhysicsP
     const float bank_right = (bank_rate_target - bank_right_now) * p.rot_servo;
 
     const btVector3 alpha = right * (-nose_up) + up * yaw_right + forward * (-bank_right);
-    body->applyTorque(body->getInvInertiaTensorWorld().inverse() * alpha);
+    // Down on its skid the hull settles onto the slope like a crate; the bank servo would hold it on an edge.
+    if (!b.skid_compound || !b.chassis_ground_contact) {
+        body->applyTorque(body->getInvInertiaTensorWorld().inverse() * alpha);
+    }
 
     if (ceiling_active && ep->pos.y >= props.vehicle_flight_ceiling
         && velocity.y() > -p.ceiling_sink) {

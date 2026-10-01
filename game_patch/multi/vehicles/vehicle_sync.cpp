@@ -232,7 +232,7 @@ namespace
 
     void vehicle_send_orient_supplement(rf::Entity* vehicle, const rf::Vector3& phb, uint16_t tick);
 
-    void vehicle_push_local_interp_sample(rf::Entity* vehicle,
+    bool vehicle_push_local_interp_sample(rf::Entity* vehicle,
                                           std::optional<uint16_t> tick_override = std::nullopt);
 } // namespace
 
@@ -288,6 +288,26 @@ namespace
         vel = speed > 0.0f ? vel * (limit / speed) : rf::Vector3{};
     }
 
+    // Above any live stream's arrival gap; a parked hull's next row always exceeds it.
+    constexpr uint32_t vehicle_interp_rest_gap_ms = 500;
+
+    // The insert logs a rest as one arrival gap, whose 20-sample average x2.2 (0x00483702) is the
+    // re-anchor headroom: interp_time would then trail the row by up to the whole rest.
+    void vehicle_interp_absorb_rest_gap(rf::ObjInterp* interp)
+    {
+        if (interp->num_frames() == 0 || interp->last_update_time == static_cast<uint32_t>(-1)) {
+            return;
+        }
+        const auto now_ms = static_cast<uint32_t>(timer::get_i64(1000));
+        if (now_ms - interp->last_update_time <= vehicle_interp_rest_gap_ms) {
+            return;
+        }
+        const float typical_gap =
+            std::clamp(interp->arrive_time_avg_diff, 0.0f, static_cast<float>(vehicle_interp_rest_gap_ms));
+        interp->last_update_time = now_ms - static_cast<uint32_t>(typical_gap);
+        interp->flags |= 1u; // force the re-anchor on this insert
+    }
+
     // Reached only from the engine's RECEIVE path: this machine's own keyframes go in through
     // call_target below, so a row that gets here could not carry pitch or bank.
     FunHook<void __fastcall(rf::ObjInterp*, int, rf::Entity*, rf::Vector3*, rf::Vector3*,
@@ -307,6 +327,10 @@ namespace
                         return;
                     }
                     vehicle_clamp_row_velocity(ep, *vel);
+                    vehicle_note_observed_speed(ep->handle, vel->len());
+                }
+                if (ep && pos && phb && vehicle_is_synced_entity_type(ep) && !vehicle_physics_drives(ep)) {
+                    vehicle_note_observed_pose(ep->handle, *pos, phb->y);
                 }
                 if (ep && phb && (ep->p_data.flags & rf::PF_NET_PLAYER)
                     && vehicle_is_synced_entity_type(ep)) {
@@ -315,17 +339,20 @@ namespace
                         phb->z = supp->bank;
                     }
                 }
+                if (ep && (ep->p_data.flags & rf::PF_NET_PLAYER) && vehicle_is_synced_entity_type(ep)) {
+                    vehicle_interp_absorb_rest_gap(self);
+                }
                 obj_interp_set_next_pos_orient_hook.call_target(self, edx, ep, pos, phb, eye_phb,
                                                                 vel, move, time, always_0);
             },
         };
 
     // pack_obj_update_data serializes a non-local entity out of its own ObjInterp ring, and the
-    // vehicle this machine drives has an empty one - so seed it.
-    void vehicle_push_local_interp_sample(rf::Entity* vehicle, std::optional<uint16_t> tick_override)
+    // vehicle this machine drives has an empty one - so seed it. True when a keyframe was inserted.
+    bool vehicle_push_local_interp_sample(rf::Entity* vehicle, std::optional<uint16_t> tick_override)
     {
         if (!vehicle || !vehicle->obj_interp) {
-            return;
+            return false;
         }
         rf::Vector3 pos = vehicle->pos;
         rf::Vector3 phb = vehicle_matrix_phb(vehicle->orient);
@@ -335,18 +362,23 @@ namespace
         const auto tick = tick_override.value_or(static_cast<uint16_t>(timer::get_i64(1000)));
         // The server packs one row per recipient; the tick keeps one frame from filling the ring.
         rf::ObjInterp* interp = vehicle->obj_interp;
-        if (interp->num_frames() == 0 || interp->newest_frame_time() != tick) {
+        const bool inserted = interp->num_frames() == 0 || interp->newest_frame_time() != tick;
+        if (inserted) {
             // call_target, never the raw address: an authored keyframe must not re-enter the hook.
             obj_interp_set_next_pos_orient_hook.call_target(interp, 0, vehicle, &pos, &phb,
                                                             &eye_phb, &vel, &move,
                                                             static_cast<int>(tick), 0.0f);
         }
         vehicle_send_orient_supplement(vehicle, phb, tick);
+        return inserted;
     }
 
     // Where a SERVER-SIMULATED hull is called stopped. Angular is separate: a hull can spin in place.
     constexpr float vehicle_server_settle_speed = 0.35f;
     constexpr float vehicle_server_settle_ang = 0.25f; // rad/s
+    // Below the settle speeds a row goes out only once the hull has crept this far from the last one.
+    constexpr float vehicle_server_row_pos_tolerance = 0.01f;
+    constexpr float vehicle_server_row_axis_tolerance = 0.005f; // axis chord, ~rad
 } // namespace
 
 namespace
@@ -383,10 +415,19 @@ void vehicle_server_body_do_frame(rf::Entity* ep)
     }
     std::optional<uint16_t> coast_tick;
     if (tick_seeded) {
-        coast_tick = static_cast<uint16_t>(base_tick + (timer::get_i64(1000) - base_time_ms));
+        const int64_t now_ms = timer::get_i64(1000);
+        coast_tick = static_cast<uint16_t>(base_tick + (now_ms - base_time_ms));
+        // Strictly after the ring's newest in 16-bit order, or no row is inserted at all.
+        const rf::ObjInterp* ring = ep->obj_interp;
+        if (ring && ring->num_frames() > 0
+            && static_cast<int16_t>(*coast_tick - ring->newest_frame_time()) <= 0) {
+            base_tick = static_cast<uint16_t>(ring->newest_frame_time() + 1);
+            base_time_ms = now_ms;
+            coast_tick = base_tick;
+        }
     }
 
-    // Asleep is Bullet's own verdict; the speed test ends the samples before the island manager's 2 s.
+    // The speed test is the settle verdict; Bullet sleeps only after 2 s below its own thresholds.
     const bool moving = !asleep
                      && (linear_speed > vehicle_server_settle_speed
                          || angular_speed > vehicle_server_settle_ang);
@@ -395,15 +436,24 @@ void vehicle_server_body_do_frame(rf::Entity* ep)
     // clocks in one ring alternately freeze and warp the hull on every watcher.
     const bool ours_to_sample = !vehicle_server_samples_vehicle(ep);
 
+    // Not "until asleep": a body touching a mover is re-activated every step and never sleeps.
+    const bool drifted = !has || !it->second.row_valid
+        || (ep->pos - it->second.row_pos).len() > vehicle_server_row_pos_tolerance
+        || (ep->orient.fvec - it->second.row_orient.fvec).len() > vehicle_server_row_axis_tolerance
+        || (ep->orient.uvec - it->second.row_orient.uvec).len() > vehicle_server_row_axis_tolerance;
+    const bool fell_asleep = asleep && has && !it->second.asleep;
+    const bool creep_row = !moving && !was_active && (drifted || fell_asleep);
+
+    bool pushed = false;
     if (moving) {
         ep->move(&pos);
         ep->update_room();
         if (ours_to_sample) {
-            vehicle_push_local_interp_sample(ep, coast_tick);
+            pushed = vehicle_push_local_interp_sample(ep, coast_tick);
         }
     }
     else if (was_active) {
-        // Just settled: zero ALL of the hull's motion and author one final row at the rest position.
+        // Just settled: zero ALL of the hull's motion and author a row at the current position.
         ep->p_data.vel = rf::Vector3{};
         ep->p_data.rotvel = rf::Vector3{};
         ep->p_data.ang_momentum = rf::Vector3{};
@@ -412,8 +462,11 @@ void vehicle_server_body_do_frame(rf::Entity* ep)
         ep->move(&pos);
         ep->update_room();
         if (ours_to_sample) {
-            vehicle_push_local_interp_sample(ep, coast_tick);
+            pushed = vehicle_push_local_interp_sample(ep, coast_tick);
         }
+    }
+    else if (creep_row && ours_to_sample) {
+        pushed = vehicle_push_local_interp_sample(ep, coast_tick);
     }
 
     VehicleKinematics& k = g_vehicle_state.kinematics[ep->handle];
@@ -423,10 +476,17 @@ void vehicle_server_body_do_frame(rf::Entity* ep)
     k.base_tick = base_tick;
     k.base_time_ms = base_time_ms;
     k.tick_seeded = tick_seeded;
-    k.broadcast = moving || was_active;
+    k.broadcast = moving || was_active || creep_row;
+    k.asleep = asleep;
+    // The send injection samples an occupied hull live, so its watchers are never behind.
+    if (pushed || !ours_to_sample) {
+        k.row_pos = ep->pos;
+        k.row_orient = ep->orient;
+        k.row_valid = true;
+    }
 
     // The memory window and the crush window are ONE window, ended by the same settle verdict that
-    // ends the samples. Last in the frame, so the record above is written whatever obj_damage does.
+    // ends the full-rate samples. Last in the frame, so the record above is written whatever obj_damage does.
     if (!moving) {
         g_vehicle_state.coast_memory.erase(ep->handle);
     }
@@ -437,7 +497,7 @@ void vehicle_server_body_do_frame(rf::Entity* ep)
 
 namespace
 {
-    // True while a coasting/sinking hull is moving and for the one settle frame.
+    // True while a coasting/sinking hull is moving, and on the settle, creep and sleep-edge frames.
     bool vehicle_is_kinematically_broadcast(rf::Entity* ep)
     {
         auto it = g_vehicle_state.kinematics.find(ep->handle);
@@ -822,6 +882,7 @@ void vehicle_drop_combat_state(int vehicle_handle)
     g_vehicle_state.health_sync.erase(vehicle_handle);
     g_vehicle_state.last_damager.erase(vehicle_handle);
     g_vehicle_state.lethal_killer.erase(vehicle_handle);
+    g_vehicle_state.observed_speed.erase(vehicle_handle);
     g_vehicle_state.crash_cooldown.erase(vehicle_handle);
     g_vehicle_state.health.erase(vehicle_handle);
     g_vehicle_state.ammo_mirror.erase(vehicle_handle);
@@ -1366,18 +1427,31 @@ namespace
         },
     };
 
-    // Tail of the NPC branch of process_entity_create_packet: EAX holds the entity entity_create
-    // just returned, before the handle mapping is registered.
-    CodeInjection process_entity_create_packet_vehicle_injection{
-        0x00475663,
-        [](auto& regs) {
-            rf::Entity* ep = regs.eax;
-            if (!vehicle_is_synced_entity_type(ep)) {
-                return;
-            }
-            vehicle_init_synced_entity(ep);
-        },
-    };
+    // entity_create uprights the wire orient in place for non-flyer movemodes, and its ground drop
+    // (0x004A0770) re-seats a "run"/"apc" hull on its cspheres, up to 0.30 above the wire pos.
+    CallHook<rf::Entity*(int, const char*, int, const rf::Vector3&, rf::Matrix3&, int, int)>
+        process_entity_create_packet_vehicle_hook{
+            0x0047565E,
+            [](int entity_type, const char* name, int parent_handle, const rf::Vector3& pos,
+               rf::Matrix3& orient, int create_flags, int mp_character) -> rf::Entity* {
+                const rf::Vector3 wire_pos = pos;
+                const rf::Matrix3 wire_orient = orient;
+                rf::Entity* ep = process_entity_create_packet_vehicle_hook.call_target(
+                    entity_type, name, parent_handle, pos, orient, create_flags, mp_character);
+                if (!ep || !vehicle_is_synced_entity_type(ep)) {
+                    return ep;
+                }
+                rf::Vector3 restored_pos = wire_pos;
+                ep->move(&restored_pos);
+                if (vehicle_orient_is_orthonormal(wire_orient)) {
+                    ep->orient = wire_orient;
+                    ep->p_data.orient = wire_orient;
+                    ep->p_data.next_orient = wire_orient;
+                }
+                vehicle_init_synced_entity(ep);
+                return ep;
+            },
+        };
 
     rf::Player* vehicle_firing_seat_player(rf::Entity* vehicle)
     {
@@ -1676,7 +1750,7 @@ void vehicle_store_health_from_packet(int vehicle_handle, float life, float max_
 void vehicle_sync_apply_patch()
 {
     send_entity_create_packet_vehicle_injection.install();
-    process_entity_create_packet_vehicle_injection.install();
+    process_entity_create_packet_vehicle_hook.install();
     physics_world_collision_vehicle_injection.install();
     obj_should_sim_physics_hook.install();
     driller_interp_no_movement_halt_injection.install();

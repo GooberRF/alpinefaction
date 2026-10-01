@@ -4,6 +4,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <iterator>
+#include <utility>
+#include <vector>
 #include <patch_common/AsmWriter.h>
 #include <patch_common/CallHook.h>
 #include <patch_common/CodeInjection.h>
@@ -260,31 +262,28 @@ namespace
         AddrCaller{0x004A8690}.c_call(pp, driller, out_pos, out_orient);
     }
 
-    // Keyed per hull as well: several hulls of one class would thrash a single entry.
-    struct VehicleHullPropCache
-    {
-        int hull_handle = -1;
-        VehicleViewPropCache prop;
-    };
-    std::array<VehicleHullPropCache, 8> g_driver_view_forward_cache;
-    std::size_t g_driver_view_forward_cache_next = 0;
+    // Keyed by the shared mesh data the lookup reads (0x00501220), so hulls of one class share an entry.
+    std::vector<std::pair<const void*, int>> g_driver_view_forward_cache;
+    // Character meshes the turret rider clip could not be attached to; not retried until the next level.
+    std::vector<const void*> g_turret_rider_clip_failed;
 
     int vehicle_driver_view_forward_index(rf::Entity* hull)
     {
-        auto it = std::find_if(g_driver_view_forward_cache.begin(), g_driver_view_forward_cache.end(),
-                               [&](const VehicleHullPropCache& e) { return e.hull_handle == hull->handle; });
-        if (it == g_driver_view_forward_cache.end()) {
-            it = g_driver_view_forward_cache.begin() + g_driver_view_forward_cache_next;
-            g_driver_view_forward_cache_next = (g_driver_view_forward_cache_next + 1) % g_driver_view_forward_cache.size();
-            *it = VehicleHullPropCache{hull->handle};
-        }
         rf::VMesh* vmesh = hull->vmesh;
-        if (it->prop.vmesh != vmesh || it->prop.instance != vmesh->instance) {
-            it->prop.vmesh = vmesh;
-            it->prop.instance = vmesh->instance;
-            it->prop.index = rf::vmesh_lookup_prop_point(vmesh, "view_forward");
+        const void* key = vmesh->type == rf::MESH_TYPE_CHARACTER ? vmesh->mesh
+                        : vmesh->type == rf::MESH_TYPE_STATIC    ? vmesh->instance
+                                                                 : nullptr;
+        // An anim fx mesh is per instance, so caching it would grow with every respawn.
+        if (!key) {
+            return rf::vmesh_lookup_prop_point(vmesh, "view_forward");
         }
-        return it->prop.index;
+        auto it = std::find_if(g_driver_view_forward_cache.begin(), g_driver_view_forward_cache.end(),
+                               [key](const auto& e) { return e.first == key; });
+        if (it == g_driver_view_forward_cache.end()) {
+            g_driver_view_forward_cache.emplace_back(key, rf::vmesh_lookup_prop_point(vmesh, "view_forward"));
+            return g_driver_view_forward_cache.back().second;
+        }
+        return it->second;
     }
 
     // A driven hull whose mesh carries `view_forward` puts its driver's eye there, not on his seat.
@@ -314,8 +313,8 @@ namespace
 void vehicle_view_level_init()
 {
     g_driller_view_forward_cache = VehicleViewPropCache{};
-    g_driver_view_forward_cache = {};
-    g_driver_view_forward_cache_next = 0;
+    g_driver_view_forward_cache.clear();
+    g_turret_rider_clip_failed.clear();
 }
 
 VehicleFpShotStart vehicle_fp_own_shot_start(rf::Entity* hull, rf::Entity* shooter, const rf::Vector3& fire_pos,
@@ -442,13 +441,19 @@ namespace
         if (!vmesh || vmesh->type != rf::MESH_TYPE_CHARACTER || !vmesh->mesh) {
             return;
         }
+        if (std::find(g_turret_rider_clip_failed.begin(), g_turret_rider_clip_failed.end(), vmesh->mesh)
+            != g_turret_rider_clip_failed.end()) {
+            return;
+        }
         const auto* character = static_cast<const rf::Character*>(vmesh->mesh);
         if (character->num_anims >= static_cast<int>(std::size(character->animations))
             || !rf::File{}.find("ult2_on_turret.rfa")) {
+            g_turret_rider_clip_failed.push_back(vmesh->mesh);
             return;
         }
         const int anim_index = rf::character_mesh_load_action(vmesh->mesh, "ult2_on_turret.mvf", 1, 0);
         if (anim_index < 0) {
+            g_turret_rider_clip_failed.push_back(vmesh->mesh);
             return;
         }
         for (rf::EntityAnim* slot : {&ep->state_anims[rf::ENTITY_STATE_ON_TURRET],

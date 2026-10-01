@@ -1859,7 +1859,8 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
                                              killer_player->net_data->player_id);
         }
         if (victim_is_synced_vehicle) {
-            vehicle_note_hull_damage(damaged_ep, life_before, killer_handle, real_damage);
+            vehicle_note_hull_damage(damaged_ep, life_before, killer_handle, real_damage, damage_ctx.weapon_type,
+                                     damage_ctx.splash);
         }
 
         // Record what landed the killing blow so the kill message can name the real weapon
@@ -1868,18 +1869,7 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
         if (rf::is_multi && rf::is_server && damaged_player && damaged_player->net_data
             && is_dead && life_before > 0.0f) {
             int weapon = damage_ctx.weapon_type;
-            uint8_t kill_flags = damage_ctx.splash ? AF_KILL_FLAG_SPLASH : 0;
-            if (roadkill_vehicle_class >= 0) {
-                // A run-over fired no weapon: leave `weapon` -1 so the feed names the vehicle.
-            }
-            else if (weapon < 0 && killer_player && killer_player != damaged_player) {
-                // No weapon context (fire damage over time, odd paths): the killer's held weapon
-                // at damage time is still better than the client's at-render-time guess.
-                rf::Entity* killer_ep = rf::entity_from_handle(killer_handle);
-                if (killer_ep) {
-                    weapon = killer_ep->ai.current_primary_weapon;
-                }
-            }
+            bool splash = damage_ctx.splash;
             // Seated is sufficient: a rider can only fire the vehicle's gun. Roadkill stays
             // separate - a coasting kill's ex-driver is seated in nothing.
             int vehicle_kill_class = roadkill_vehicle_class;
@@ -1887,6 +1877,21 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
                 vehicle_kill_class =
                     vehicle_occupied_damage_class(rf::entity_from_handle(killer_handle));
             }
+            const int blast_hull = vehicle_occupant_death_blast_hull(damaged_ep_handle, damage_type);
+            // A destroyed hull's riders are named the blow that destroyed it, not the blast.
+            if (blast_hull != -1 && killer_player != damaged_player) {
+                vehicle_lethal_blow_attribution(blast_hull, killer_player, weapon, splash, vehicle_kill_class);
+            }
+            // A run-over or a vehicle gun keeps `weapon` as is, so the feed names the vehicle.
+            if (vehicle_kill_class < 0 && weapon < 0 && killer_player && killer_player != damaged_player) {
+                // No weapon context (fire damage over time, odd paths): the killer's held weapon
+                // at damage time is still better than the client's at-render-time guess.
+                rf::Entity* killer_ep = rf::entity_from_handle(killer_handle);
+                if (killer_ep) {
+                    weapon = killer_ep->ai.current_primary_weapon;
+                }
+            }
+            uint8_t kill_flags = splash ? AF_KILL_FLAG_SPLASH : 0;
             if (vehicle_kill_class >= 0) {
                 kill_flags |= AF_KILL_FLAG_VEHICLE;
             }
@@ -1924,8 +1929,7 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
             const uint8_t killed_id = damaged_player->net_data->player_id;
             const uint8_t killer_id = (killer_player && killer_player->net_data)
                 ? killer_player->net_data->player_id : 0xFF;
-            std::vector<uint8_t> assists = kill_attribution_take_assists(
-                killed_id, killer_id, vehicle_occupant_death_blast_hull(damaged_ep_handle, damage_type));
+            std::vector<uint8_t> assists = kill_attribution_take_assists(killed_id, killer_id, blast_hull);
 
             for (uint8_t assist_id : assists) {
                 rf::Player* assister = rf::multi_find_player_by_id(assist_id);
@@ -1947,7 +1951,7 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
             // Same resolved killer, weapon and splash decision the attribution above is built
             // from. Runs for every death, so the victim-side award resets cover world deaths and
             // suicides too.
-            awards_on_kill(damaged_player, killer_player, weapon, damage_ctx.splash, killer_handle,
+            awards_on_kill(damaged_player, killer_player, weapon, splash, killer_handle,
                            victim_team_before_damage, damage, life_before, armor_before);
 
             // Arena's reload-on-kill is applied from on_player_kill, which the engine only runs

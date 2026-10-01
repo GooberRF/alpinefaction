@@ -45,6 +45,7 @@ namespace
         // Wheelless: the size floor is the only gate, since the height exemption is wheeled-only.
         fighter.obstacle_min_size = 0.35f;
         fighter.deadstick_lift = 0.55f;
+        fighter.parked_skid = 1.0f;
         fighter.cam_enable = 1.0f;
         g_params[VPHYS_CLASS_FIGHTER] = fighter;
 
@@ -125,6 +126,7 @@ namespace
         apc.engine_force = 14.0f;
         apc.brake_force = 20.0f;
         apc.idle_brake_force = 10.0f;
+        apc.handbrake_force = 16.0f;
         apc.throttle_ramp = 1.6f;
         apc.throttle_release_ramp = 6.0f;
         apc.brake_ramp = 6.0f;
@@ -168,6 +170,7 @@ namespace
         driller.engine_force = 12.0f;
         driller.brake_force = 20.0f;
         driller.idle_brake_force = 10.0f;
+        driller.handbrake_force = 16.0f;
         driller.throttle_ramp = 1.3f;
         driller.throttle_release_ramp = 5.0f;
         driller.brake_ramp = 6.0f;
@@ -290,6 +293,10 @@ namespace
         }
         delete b.motion_state;
         b.motion_state = nullptr;
+        delete b.skid_compound;
+        b.skid_compound = nullptr;
+        delete b.skid_shape;
+        b.skid_shape = nullptr;
         delete b.shape;
         b.shape = nullptr;
         b.liquid_surface_valid = false;
@@ -1208,6 +1215,18 @@ namespace
             level_mesh_build();
         }
     }
+
+    // Before the solve: the wheel impulses of the last substep are discarded, never integrated.
+    void vphys_pin_pre_tick(btDynamicsWorld*, btScalar)
+    {
+        for (const auto& owned : g_vphys.bodies) {
+            if (owned->handbrake_pin && owned->body) {
+                owned->body->setLinearVelocity(btVector3(0.0f, 0.0f, 0.0f));
+                owned->body->setAngularVelocity(btVector3(0.0f, 0.0f, 0.0f));
+                owned->body->clearForces();
+            }
+        }
+    }
 } // namespace
 
 void world_destroy()
@@ -1235,6 +1254,7 @@ void world_create()
         new VphysDynamicsWorld(g_vphys.dispatcher, g_vphys.broadphase, g_vphys.solver, g_vphys.config);
     // NEUTRAL world gravity and it must stay so: setGravity/addRigidBody overwrite every body's.
     g_vphys.world->setGravity(btVector3(0.0f, 0.0f, 0.0f));
+    g_vphys.world->setInternalTickCallback(vphys_pin_pre_tick, nullptr, true);
     // Active bodies only: a static or sleeping body must never be moved in place, only removed and re-added.
     g_vphys.world->setForceUpdateAllAabbs(false);
 }

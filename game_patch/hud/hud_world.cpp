@@ -477,6 +477,7 @@ static int world_hud_white_bitmap()
     if (white_bm == -1 && !failed) {
         const int bm = rf::bm::create(rf::bm::FORMAT_8888_ARGB, 8, 8);
         if (bm == -1) {
+            failed = true;
             return -1;
         }
         if (!bm_fill(bm, 0xFFFFFFFFu)) {

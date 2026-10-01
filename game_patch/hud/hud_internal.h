@@ -67,6 +67,8 @@ extern float g_hud_ammo_scale;
 
 void hud_status_apply_patches();
 void hud_status_set_big(bool is_big);
+// Fill colour of a vehicle health bar at this fraction of max life; a is the HUD bar's alpha.
+void hud_vehicle_bar_fill_color(float frac, rf::ubyte& r, rf::ubyte& g, rf::ubyte& b, rf::ubyte& a);
 void hud_personas_apply_patches();
 void hud_personas_set_big(bool is_big);
 void hud_weapons_apply_patches();

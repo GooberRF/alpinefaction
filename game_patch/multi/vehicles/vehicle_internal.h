@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cmath>
 #include <cstdint>
 #include <map>
 #include <optional>
@@ -44,6 +45,21 @@ struct VehicleHealth
     float life = 0.0f;
     float max_life = 0.0f;
 };
+
+// Finite unit axes, pairwise orthogonal, both within 0.01: a basis that cannot shear a derived box.
+inline bool vehicle_orient_is_orthonormal(const rf::Matrix3& orient)
+{
+    const rf::Vector3* axes[3] = {&orient.rvec, &orient.uvec, &orient.fvec};
+    for (const rf::Vector3* a : axes) {
+        if (!std::isfinite(a->x) || !std::isfinite(a->y) || !std::isfinite(a->z)
+            || std::fabs(a->len() - 1.0f) > 0.01f) {
+            return false;
+        }
+    }
+    return std::fabs(axes[0]->dot_prod(*axes[1])) <= 0.01f
+        && std::fabs(axes[0]->dot_prod(*axes[2])) <= 0.01f
+        && std::fabs(axes[1]->dot_prod(*axes[2])) <= 0.01f;
+}
 
 // Fire-free time before a vehicle weapon regenerates ammo; the server can never raise a weapon's ammo sooner.
 inline constexpr int64_t vehicle_ammo_regen_delay_ms = 5000;
@@ -128,6 +144,10 @@ struct VehicleKinematics
     bool pos_valid = false;   // pos has been seeded from the vehicle
     bool active = false;      // moved as of the last tick (drives the settle-frame sample)
     bool broadcast = false;   // the send injection should force-serialize it this frame
+    bool asleep = false;      // Bullet's verdict last frame; the sleep edge authors the exact rest row
+    bool row_valid = false;   // row_pos/row_orient hold the pose of the last row watchers were given
+    rf::Vector3 row_pos{};
+    rf::Matrix3 row_orient{};
     // Coast keyframes must CONTINUE the driver's interp-tick timeline rather than restart on the
     // server's clock, or a watcher's hull freezes (tick behind its anchor) or warps (ahead of it).
     uint16_t base_tick = 0;   // driver's last relayed keyframe tick, captured at seed
@@ -204,6 +224,42 @@ struct VehicleRamPair
 
 using VehicleRamKey = std::pair<int, int>; // ordered (lower handle, higher handle)
 
+// Server: the killer of the blow that took a hull from alive to dead, by net id too so credit follows
+// the PLAYER if that entity is gone by the hull's entity_die. entity_handle -1 = nobody.
+struct VehicleLethalKiller
+{
+    int entity_handle = -1;
+    uint8_t player_id = 0xFF;
+    // What that blow was, for the riders' kill lines: an on-foot weapon, or the killer's hull class.
+    int weapon_type = -1;
+    bool splash = false;
+    int vehicle_class = -1;
+};
+
+// In fixed time buckets: server, the fastest |vel| a client-driven hull's received rows carried;
+// every machine, the FIRST pose (received row, or this machine's own body) noted in each bucket, and when.
+struct VehicleObservedSpeed
+{
+    static constexpr int bucket_count = 4;
+    float bucket_peak[bucket_count]{}; // [0] is the current bucket
+    rf::Vector3 bucket_pos[bucket_count]{};
+    float bucket_heading[bucket_count]{};
+    int64_t bucket_pose_ms[bucket_count]{};
+    bool bucket_posed[bucket_count]{};
+    int64_t bucket_start_ms = 0;
+    rf::Vector3 newest_pos{};
+    float newest_heading = 0.0f;
+    int64_t newest_ms = 0;
+    // The hull box's longest origin-to-face half extent: what turns a heading change into a distance.
+    float reach = 0.0f;
+    // The pose at the last step past the change floor, and when; a parked or silent hull never steps.
+    rf::Vector3 anchor_pos{};
+    float anchor_heading = 0.0f;
+    int64_t changed_ms = 0;
+    bool anchored = false;
+    bool changed = false;
+};
+
 // Client render: jeep wheel roll, integrated from a POSITION delta (a coasting hull wires zero vel).
 struct VehicleWheelSpin
 {
@@ -232,8 +288,9 @@ struct VehicleModuleState
     std::unordered_map<int, rf::Timestamp> fire_rearm;
     std::unordered_map<int, VehicleHealthSync> health_sync;
     std::unordered_map<int, int> last_damager; // vehicle handle -> attacker entity handle
-    // Server: the resolved killer of the blow that took the hull from alive to dead; -1 = nobody.
-    std::unordered_map<int, int> lethal_killer;
+    std::unordered_map<int, VehicleLethalKiller> lethal_killer;
+    // What bounds a crash report and gates a run-over; fed by received rows and local bodies.
+    std::unordered_map<int, VehicleObservedSpeed> observed_speed;
     std::unordered_map<int, VehicleHealth> health; // client side
     std::unordered_map<int, VehicleAmmoMirror> ammo_mirror; // client side
     // What arrived for a vehicle this machine watches, and what it last sent for the one it drives.
