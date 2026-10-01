@@ -572,6 +572,15 @@ bool vphys_chase_camera_do_frame(rf::Camera* camera)
             vcam_seed(view, vehicle);
         }
     }
+    if (g_vcam.seat != t.seat) {
+        const VehicleChaseCamera reset{};
+        g_vcam.gun_weight = reset.gun_weight;
+        g_vcam.gun_reach = reset.gun_reach;
+        g_vcam.focus_lift = reset.focus_lift;
+    }
+    else if (g_vcam.orbit && !fresh && rider->host_tag_handle != g_vcam.seat_tag) {
+        g_vcam.focus_lift = VehicleChaseCamera{}.focus_lift;
+    }
     g_vcam.seat = t.seat;
     g_vcam.cls = t.cls;
 
@@ -579,7 +588,10 @@ bool vphys_chase_camera_do_frame(rf::Camera* camera)
     // reached from the hull origin, which the chassis keeps out of solid; a seat tag need not be.
     const float margin = std::max(p.cam_collide_margin, 0.0f);
     const rf::Vector3 seat = vcam_clear_point(vehicle->pos, rider->pos, margin);
-    rf::Vector3 focus = vcam_clear_point(seat, seat + rf::Vector3{0.0f, height, 0.0f}, margin);
+    // Any lift up to the clip is open space; easing it back up keeps a roof's end from popping the view.
+    const float clip_lift = vcam_clear_point(seat, seat + rf::Vector3{0.0f, height, 0.0f}, margin).y - seat.y;
+    g_vcam.focus_lift = std::min(clip_lift, g_vcam.focus_lift + std::max(p.cam_extend_rate, 0.0f) * dt);
+    rf::Vector3 focus = seat + rf::Vector3{0.0f, g_vcam.focus_lift, 0.0f};
     // A teleport moves the hull further in one frame than any class can drive. Measured on the hull,
     // not the seat, so a seat swap (up to ~4 m on the APC) is not mistaken for one.
     const bool jumped = g_vcam.orbit && !fresh

@@ -278,13 +278,41 @@ void vehicle_note_damage(rf::Entity* victim, int killer_handle);
 // Server, from entity_damage: the 10000 DT_EXPLOSIVE blast entity_die deals to a destroyed vehicle's
 // occupants. A guaranteed kill, so it must be exempt from every PvP damage reducer.
 bool vehicle_is_occupant_death_blast(const rf::Entity* victim, int damage_type);
+// The same blast's hull handle, or -1 for any other blow.
+int vehicle_occupant_death_blast_hull(int victim_handle, int damage_type);
+
+// Server, from entity_damage after the blow lands on a synced hull: records the lethal blow's
+// killer and offers a player attacker to every rider as an assist on that hull's blast.
+void vehicle_note_hull_damage(rf::Entity* vehicle, float life_before, int killer_handle,
+                              float real_damage);
 
 // Server: a client reported that the vehicle it drives ran a player over.
 void vehicle_server_handle_crush_report(rf::Player* pp, int vehicle_handle, int victim_handle);
 
+// The machine simulating this hull measured an impact against the level or a mover: the velocity
+// change along the contact normal, and whether it was ground rather than a wall. The server applies
+// it; a driver's client reports it.
+void vehicle_crash_impact(rf::Entity* vehicle, float impact_dv, bool ground);
+
+// Server: a client reported an impact on the vehicle it drives.
+void vehicle_server_handle_crash_report(rf::Player* pp, int vehicle_handle, bool ground,
+                                        float impact_dv);
+
 // Server, from entity_damage: the VehicleDamageClass of the hull that ran this victim over, or -1.
 // Must be asked BEFORE the damage lands, while the victim still resolves.
 int vehicle_roadkill_damage_class(int victim_handle, int killer_handle);
+
+// Server, asked like vehicle_roadkill_damage_class: a run-over or a drill blow, never a ram.
+bool vehicle_crush_squashes(int victim_handle, int killer_handle);
+
+// Server, asked like vehicle_roadkill_damage_class: the run-over hull's speed, 0 for any other blow.
+float vehicle_roadkill_speed(int victim_handle, int killer_handle);
+
+// A run-over at 75% of the class's top speed or faster.
+bool vehicle_roadkill_speed_gibs(int vdc_class, float speed);
+
+// The victim class's squash foley at its position, as entity_crush_damage plays it.
+void vehicle_play_squash_sound(const rf::Entity* victim);
 
 // The VehicleDamageClass of the vehicle this entity rides in, or -1.
 int vehicle_occupied_damage_class(const rf::Entity* rider);

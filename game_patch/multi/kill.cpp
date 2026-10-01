@@ -258,16 +258,14 @@ static bool attribution_credits_player(const std::optional<KillAttribution>& att
         != attr->assist_player_ids.end();
 }
 
-// Assist highlighting applies only where the assist detail is actually shown.
 static bool attribution_highlights_local(const std::optional<KillAttribution>& attr,
-                                         bool is_third_party_kill, rf::Player* spectate_target)
+                                         rf::Player* spectate_target)
 {
     if (!g_alpine_game_config.highlight_assisted_kills) {
         return false;
     }
-    return is_third_party_kill
-        && (attribution_credits_player(attr, rf::local_player)
-            || attribution_credits_player(attr, spectate_target));
+    return attribution_credits_player(attr, rf::local_player)
+        || attribution_credits_player(attr, spectate_target);
 }
 
 void print_kill_message(rf::Player* killed_player, rf::Player* killer_player)
@@ -282,29 +280,38 @@ void print_kill_message(rf::Player* killed_player, rf::Player* killer_player)
     const std::string attr_weapon_name = attribution_weapon_name(attr);
     const bool is_melee_kill = kill_was_melee(attr, killer_entity);
 
+    rf::Player* spectate_target = multi_spectate_is_following_player() ? multi_spectate_get_target_player() : nullptr;
+
     // Trailing detail shared by the chat line and the killfeed segment.
     const bool is_third_party_kill = killer_player && killer_player != killed_player;
-    // Assist credit goes on every non-suicide kill message, first person included. The weapon
-    // clause is observer-only: the first-person lines already name the weapon themselves.
-    const std::string assists_text = is_third_party_kill ? assist_suffix(attr) : std::string{};
+    // Assist credit goes on every kill message, suicides, world deaths and first person included.
+    // The weapon clause is observer-only: the first-person lines already name the weapon themselves.
+    const std::string assists_text = assist_suffix(attr);
     std::string kill_detail_suffix;
-    if (is_third_party_kill) {
-        if (!attr_weapon_name.empty()) {
-            kill_detail_suffix = "'s " + attr_weapon_name;
-        }
-        kill_detail_suffix += assists_text;
+    if (is_third_party_kill && !attr_weapon_name.empty()) {
+        kill_detail_suffix = "'s " + attr_weapon_name;
     }
+    kill_detail_suffix += assists_text;
 
     if (!killer_player) {
-        color_id = rf::ChatMsgColor::default_;
+        color_id = attribution_highlights_local(attr, spectate_target)
+            ? rf::ChatMsgColor::white_white : rf::ChatMsgColor::default_;
         mui_msg = null_to_empty(rf::strings::was_killed_mysteriously);
-        msg = rf::String::format("{}{}", killed_player->name, mui_msg);
+        msg = rf::String::format("{}{}{}", killed_player->name, mui_msg, assists_text);
     }
     else if (killed_player == rf::local_player) {
         color_id = rf::ChatMsgColor::white_white;
         if (killer_player == killed_player) {
             mui_msg = null_to_empty(rf::strings::you_killed_yourself);
-            msg = rf::String::format("{}", mui_msg);
+            // Keep the string's closing '!' last, like the other first-person lines.
+            std::string line = mui_msg;
+            if (!line.empty() && line.back() == '!') {
+                line.insert(line.size() - 1, assists_text);
+            }
+            else {
+                line += assists_text;
+            }
+            msg = rf::String::format("{}", line);
         }
         else if (is_melee_kill) {
             mui_msg = null_to_empty(rf::strings::you_just_got_beat_down_by);
@@ -346,16 +353,15 @@ void print_kill_message(rf::Player* killed_player, rf::Player* killer_player)
         msg = rf::String::format("{}{}{}!", mui_msg, killed_player->name, assists_text);
     }
     else {
-        rf::Player* spectate_target = multi_spectate_is_following_player() ? multi_spectate_get_target_player() : nullptr;
         color_id = (killed_player == spectate_target || killer_player == spectate_target
-                    || attribution_highlights_local(attr, is_third_party_kill, spectate_target))
+                    || attribution_highlights_local(attr, spectate_target))
             ? rf::ChatMsgColor::white_white : rf::ChatMsgColor::default_;
         if (killer_player == killed_player) {
             if (rf::multi_entity_is_female(killed_player->settings.multi_character))
                 mui_msg = null_to_empty(rf::strings::was_killed_by_her_own_hand);
             else
                 mui_msg = null_to_empty(rf::strings::was_killed_by_his_own_hand);
-            msg = rf::String::format("{}{}", killed_player->name, mui_msg);
+            msg = rf::String::format("{}{}{}", killed_player->name, mui_msg, assists_text);
         }
         else {
             if (is_melee_kill)
@@ -369,11 +375,11 @@ void print_kill_message(rf::Player* killed_player, rf::Player* killer_player)
 
     if (g_alpine_game_config.killfeed_enabled) {
         bool is_team_mode = multi_is_team_game_type();
-        rf::Player* spectate_target = multi_spectate_is_following_player() ? multi_spectate_get_target_player() : nullptr;
+        const char* trailing = kill_detail_suffix.empty() ? nullptr : kill_detail_suffix.c_str();
         // An assister counts as involved: same line as everyone else, just in white.
         bool is_local = (killed_player == rf::local_player || killer_player == rf::local_player
                          || killed_player == spectate_target || killer_player == spectate_target
-                         || attribution_highlights_local(attr, is_third_party_kill, spectate_target));
+                         || attribution_highlights_local(attr, spectate_target));
 
         if (is_local) {
             // Local player involved: show full message in white
@@ -384,7 +390,7 @@ void print_kill_message(rf::Player* killed_player, rf::Player* killer_player)
             killfeed_add_kill(killed_player->name, killed_player->team,
                               nullptr, 0,
                               null_to_empty(rf::strings::was_killed_mysteriously),
-                              false, is_team_mode);
+                              false, is_team_mode, trailing);
         }
         else if (killer_player == killed_player) {
             // Self-kill: "PlayerName was killed by his/her own hand"
@@ -395,7 +401,7 @@ void print_kill_message(rf::Player* killed_player, rf::Player* killer_player)
                 self_verb = null_to_empty(rf::strings::was_killed_by_his_own_hand);
             killfeed_add_kill(killed_player->name, killed_player->team,
                               nullptr, 0,
-                              self_verb, false, is_team_mode);
+                              self_verb, false, is_team_mode, trailing);
         }
         else {
             // Third-party kill: "KilledName verb KillerName"
@@ -406,8 +412,7 @@ void print_kill_message(rf::Player* killed_player, rf::Player* killer_player)
                 verb = null_to_empty(rf::strings::was_killed_by);
             killfeed_add_kill(killed_player->name, killed_player->team,
                               killer_player->name, killer_player->team,
-                              verb, false, is_team_mode,
-                              kill_detail_suffix.empty() ? nullptr : kill_detail_suffix.c_str());
+                              verb, false, is_team_mode, trailing);
         }
     }
     else {

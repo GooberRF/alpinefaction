@@ -164,6 +164,18 @@ struct CombatChain
 
 static std::unordered_map<uint8_t, CombatChain> g_combat_chains;
 
+// Damage to the vehicle a player rode, per attacker and hull. Counts only toward the death the
+// hull's destruction deals him, and only within the window of that attacker's last hit.
+static constexpr std::chrono::milliseconds hull_assist_window{5000};
+
+struct HullAssist
+{
+    int hull_handle = -1;
+    std::chrono::steady_clock::time_point last_hit;
+};
+
+static std::unordered_map<uint8_t, std::unordered_map<uint8_t, HullAssist>> g_hull_assists;
+
 // -2 = not resolved yet, -1 = no such weapon in the loaded tables.
 static int g_riot_shield_weapon_type = -2;
 
@@ -414,29 +426,50 @@ void kill_attribution_note_pvp_damage(uint8_t victim_player_id, uint8_t attacker
     chain.expires_at = now + combat_chain_window;
 }
 
-std::vector<uint8_t> kill_attribution_take_assists(uint8_t victim_player_id, uint8_t killer_player_id)
+void kill_attribution_note_hull_damage(uint8_t rider_player_id, uint8_t attacker_player_id,
+                                       int hull_handle)
+{
+    g_hull_assists[rider_player_id][attacker_player_id] =
+        HullAssist{hull_handle, std::chrono::steady_clock::now()};
+}
+
+std::vector<uint8_t> kill_attribution_take_assists(uint8_t victim_player_id, uint8_t killer_player_id,
+                                                   int blast_hull_handle)
 {
     std::vector<uint8_t> assists;
+    const auto now = std::chrono::steady_clock::now();
+    std::unordered_map<uint8_t, std::chrono::steady_clock::time_point> candidates;
 
-    auto it = g_combat_chains.find(victim_player_id);
-    if (it == g_combat_chains.end()) {
-        return assists;
+    if (auto it = g_combat_chains.find(victim_player_id); it != g_combat_chains.end()) {
+        if (now <= it->second.expires_at) {
+            candidates = it->second.contributors;
+        }
+        g_combat_chains.erase(it);
     }
 
-    const auto now = std::chrono::steady_clock::now();
-    if (now > it->second.expires_at) {
-        g_combat_chains.erase(it);
-        return assists;
+    // Every death drains these: they belong to the life that rode the hull.
+    if (auto it = g_hull_assists.find(victim_player_id); it != g_hull_assists.end()) {
+        if (blast_hull_handle != -1) {
+            for (const auto& [attacker_id, entry] : it->second) {
+                if (entry.hull_handle != blast_hull_handle || now - entry.last_hit > hull_assist_window) {
+                    continue;
+                }
+                auto [slot, inserted] = candidates.try_emplace(attacker_id, entry.last_hit);
+                if (!inserted) {
+                    slot->second = std::max(slot->second, entry.last_hit);
+                }
+            }
+        }
+        g_hull_assists.erase(it);
     }
 
     std::vector<std::pair<uint8_t, std::chrono::steady_clock::time_point>> ranked;
-    for (const auto& [attacker_id, last_hit] : it->second.contributors) {
+    for (const auto& [attacker_id, last_hit] : candidates) {
         if (attacker_id == killer_player_id || attacker_id == victim_player_id) {
             continue;
         }
         ranked.emplace_back(attacker_id, last_hit);
     }
-    g_combat_chains.erase(it);
 
     // Most recent contributor first, so truncation drops the stalest assists.
     std::sort(ranked.begin(), ranked.end(),
@@ -518,6 +551,7 @@ void kill_attribution_level_init()
     g_kill_attributions.clear();
     g_kill_attribution_sent_sequence.clear();
     g_combat_chains.clear();
+    g_hull_assists.clear();
     g_ctx = DamageResolutionContext{};
     g_hit_region_ctx = {};
     g_riot_shield_weapon_type = -2;

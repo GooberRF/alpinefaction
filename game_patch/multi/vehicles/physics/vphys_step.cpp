@@ -7,6 +7,7 @@
 #include "vphys_internal.h"
 #include "../vehicle_physics.h"
 #include "../vehicle.h"
+#include "../vehicle_crash_tuning.h"
 #include "../../../misc/destruction.h"
 #include "../../../misc/level.h"
 #include "../../../os/console.h"
@@ -49,13 +50,18 @@ int vphys_class_for(const rf::Entity* ep)
 
 namespace
 {
+    // The speed the model drives the class at: the car's engine cutoff, the flyer's drag hold.
+    float vphys_class_top_speed(int cls)
+    {
+        const VehiclePhysicsParams& p = params_for_class(cls);
+        const float model_max = vphys_class_is_automobile(cls) ? p.car_max_speed : p.max_speed;
+        return model_max > 0.0f ? model_max : 0.0f;
+    }
+
     // The one derivation of a class's speed ceiling: the post-step cap and the wire clamp share it.
     float vphys_class_speed_cap(int cls)
     {
-        const VehiclePhysicsParams& p = params_for_class(cls);
-        const bool is_car = vphys_class_is_automobile(cls);
-        const float model_max = is_car ? p.car_max_speed : p.max_speed;
-        return model_max > 0.0f ? model_max * (is_car ? 1.5f : 1.25f) : 0.0f;
+        return vphys_class_top_speed(cls) * (vphys_class_is_automobile(cls) ? 1.5f : 1.25f);
     }
 
     rf::Entity* vphys_target(int* out_class)
@@ -152,11 +158,13 @@ namespace
     }
 
     // Walks the ENTITY list, not g_vphys.bodies: nobody simulates a turret, so that is its only way in.
-    void vphys_apply_pair_response(VehicleSimBody& b, rf::Entity* self, float dt)
+    // True when it pushed the body.
+    bool vphys_apply_pair_response(VehicleSimBody& b, rf::Entity* self, float dt)
     {
         if (!b.body || dt <= 0.0f) {
-            return;
+            return false;
         }
+        bool pushed = false;
         const VehicleHullObb mine = pair_hull_obb(self);
         const float my_reach = mine.half.len();
 
@@ -206,7 +214,9 @@ namespace
             }
             b.body->setLinearVelocity(v + axis * (target - vn));
             b.body->activate(true);
+            pushed = true;
         }
+        return pushed;
     }
 
     // The order is load-bearing: world pre-step, per-body pre, ONE world step, per-body post.
@@ -215,6 +225,16 @@ namespace
         VehicleSimBody* b = nullptr;
         rf::Entity* ep = nullptr;
     };
+
+    // Discards an open crash window unreported.
+    void vphys_impact_window_close(VehicleSimBody& b)
+    {
+        b.impact_window_s = 0.0f;
+        b.impact_sum = 0.0f;
+        b.impact_peak = 0.0f;
+        b.impact_pos_sum = 0.0f;
+        b.impact_up_sum = 0.0f;
+    }
 
     void vphys_world_pre_step()
     {
@@ -230,9 +250,13 @@ namespace
         const int cls = b.vehicle_class;
         const bool is_car = vphys_class_is_automobile(cls);
         const VehiclePhysicsParams& p = params_for_class(cls);
+        b.impact_armed = false;
+        bool reseeded = false;
 
         // A teleport or correction wins - but NOT for a server body: the interp echo is our own output.
         if (!b.server_owned && (ep->pos - b.written_pos).len() > 0.05f) {
+            reseeded = true;
+            vphys_impact_window_close(b);
             body_seed_from_entity(b, ep);
             b.pre_step_dt = 0.0f;
             if (is_car && b.raycast_vehicle) {
@@ -282,6 +306,7 @@ namespace
         }
         if (b.server_owned && body->getActivationState() == ISLAND_SLEEPING) {
             b.pre_step_dt = 0.0f;
+            vphys_impact_window_close(b);
             return;
         }
         b.pre_step_dt += dt;
@@ -298,8 +323,13 @@ namespace
 
         // After the model on purpose: the ceiling's sink floor writes velocity directly.
         if (stepping) {
-            vphys_apply_pair_response(b, ep, b.pre_step_dt);
+            const bool pushed = vphys_apply_pair_response(b, ep, b.pre_step_dt);
             b.pre_step_dt = 0.0f;
+            // Last, so every velocity write above is the step's input and never reads as an impact.
+            b.impact_pre_vel = body->getLinearVelocity();
+            b.impact_armed = true;
+            b.impact_skip = reseeded || pushed || timer::get_i64(1000) < b.shove_brake_until_ms;
+            b.impact_drilling = is_car && car_drills_on(ep, p);
         }
     }
 
@@ -353,7 +383,129 @@ namespace
         }
     }
 
-    void vphys_body_post_step(BodyStepScratch& s, float step_time)
+    VehicleSimBody* impact_body_of(const btCollisionObject* obj)
+    {
+        if (!obj) {
+            return nullptr;
+        }
+        VehicleSimBody* b = static_cast<VehicleSimBody*>(obj->getUserPointer());
+        return b && b->body == obj && b->impact_armed ? b : nullptr;
+    }
+
+    bool impact_is_level_object(const btCollisionObject* obj)
+    {
+        const btBroadphaseProxy* proxy = obj ? obj->getBroadphaseHandle() : nullptr;
+        return proxy && proxy->m_collisionFilterGroup == vphys_group_level;
+    }
+
+    // The level mesh and movers only: another hull's box forms no pair, and hull on hull is the ram's.
+    void vphys_impact_contact_pass()
+    {
+        for (const auto& owned : g_vphys.bodies) {
+            owned->impact_contact = false;
+        }
+        const int nm = g_vphys.dispatcher->getNumManifolds();
+        for (int m = 0; m < nm; ++m) {
+            const btPersistentManifold* pm = g_vphys.dispatcher->getManifoldByIndexInternal(m);
+            VehicleSimBody* b = impact_body_of(pm->getBody0());
+            float side = 1.0f; // m_normalWorldOnB points at body 0
+            if (!b || !impact_is_level_object(pm->getBody1())) {
+                b = impact_body_of(pm->getBody1());
+                side = -1.0f;
+                if (!b || !impact_is_level_object(pm->getBody0())) {
+                    continue;
+                }
+            }
+            const btVector3 dv = b->body->getLinearVelocity() - b->impact_pre_vel;
+            const btVector3 fwd = b->body->getWorldTransform().getBasis().getColumn(2);
+            for (int c = 0; c < pm->getNumContacts(); ++c) {
+                const btManifoldPoint& cp = pm->getContactPoint(c);
+                if (cp.getDistance() > 0.02f) {
+                    continue;
+                }
+                const btVector3 n = cp.m_normalWorldOnB * side;
+                if (b->impact_drilling && n.y() < vehicle_crash_ground_ny && n.dot(fwd) < vehicle_crash_drill_face_dot) {
+                    continue;
+                }
+                const float dvn = dv.dot(n);
+                if (!b->impact_contact || dvn > b->impact_contact_dvn) {
+                    b->impact_contact = true;
+                    b->impact_contact_dvn = dvn;
+                    b->impact_contact_ny = n.y();
+                }
+            }
+        }
+    }
+
+    struct VehicleImpact
+    {
+        int vehicle_handle;
+        float impact_dv;
+        bool ground;
+    };
+
+    void vphys_impact_measure(VehicleSimBody& b, bool speed_clamped, float step_time,
+                              std::vector<VehicleImpact>& out)
+    {
+        if (!b.impact_armed) {
+            return;
+        }
+        b.impact_armed = false;
+        if (b.impact_skip || speed_clamped) {
+            vphys_impact_window_close(b);
+            return;
+        }
+        const btVector3 dv = b.body->getLinearVelocity() - b.impact_pre_vel;
+        bool contact = b.impact_contact;
+        float dvn = b.impact_contact_dvn;
+        float ny = b.impact_contact_ny;
+        if (b.raycast_vehicle) {
+            for (int i = 0; i < b.raycast_vehicle->getNumWheels(); ++i) {
+                const btWheelInfo& w = b.raycast_vehicle->getWheelInfo(i);
+                if (!w.m_raycastInfo.m_isInContact) {
+                    continue;
+                }
+                const btVector3& wn = w.m_raycastInfo.m_contactNormalWS;
+                const float len = wn.length();
+                if (len < 0.0001f) {
+                    continue;
+                }
+                const float d = dv.dot(wn) / len;
+                if (!contact || d > dvn) {
+                    contact = true;
+                    dvn = d;
+                    ny = 1.0f; // a wheel is always a landing: its edge normal leans back on any step
+                }
+            }
+        }
+        if (!contact) {
+            dvn = 0.0f;
+        }
+        if (b.impact_window_s <= 0.0f) {
+            if (dvn < vehicle_crash_open_dv) {
+                return;
+            }
+            b.impact_window_s = vehicle_crash_window_s;
+        }
+        b.impact_sum += dvn;
+        b.impact_peak = std::max(b.impact_peak, b.impact_sum);
+        if (dvn > 0.0f) {
+            b.impact_pos_sum += dvn;
+            b.impact_up_sum += dvn * ny;
+        }
+        b.impact_window_s -= step_time;
+        if (b.impact_window_s > 0.0f) {
+            return;
+        }
+        const VehicleImpact impact{b.vehicle_handle, b.impact_peak,
+                                   b.impact_up_sum >= vehicle_crash_ground_ny * b.impact_pos_sum};
+        vphys_impact_window_close(b);
+        if (std::isfinite(impact.impact_dv) && impact.impact_dv > 0.0f) {
+            out.push_back(impact);
+        }
+    }
+
+    void vphys_body_post_step(BodyStepScratch& s, float step_time, std::vector<VehicleImpact>& impacts)
     {
         VehicleSimBody& b = *s.b;
         rf::Entity* ep = s.ep;
@@ -376,6 +528,7 @@ namespace
 
         // The one place a non-finite solve can leave the world: the entity pose is broadcast from it.
         if (!vphys_finite(pos) || !vphys_finite(vel) || !vphys_finite(orient)) {
+            vphys_impact_window_close(b);
             body_seed_from_entity(b, ep);
             body->setLinearVelocity(btVector3(0.0f, 0.0f, 0.0f));
             body->setInterpolationLinearVelocity(btVector3(0.0f, 0.0f, 0.0f));
@@ -384,7 +537,9 @@ namespace
 
         const float speed = vel.len();
         const float speed_cap = vphys_class_speed_cap(cls);
-        if (speed_cap > 0.0f && speed > speed_cap) {
+        const bool speed_clamped = speed_cap > 0.0f && speed > speed_cap;
+        vphys_impact_measure(b, speed_clamped, step_time, impacts);
+        if (speed_clamped) {
             vel *= speed_cap / speed;
             body->setLinearVelocity(to_bt(vel));
         }
@@ -499,10 +654,20 @@ namespace
         if (step_time > 0.0f || g_vphys.manifolds_dirty) {
             vphys_ground_contact_pass();
         }
+        if (step_time > 0.0f) {
+            vphys_impact_contact_pass();
+        }
+        std::vector<VehicleImpact> impacts;
         for (BodyStepScratch& s : step) {
-            vphys_body_post_step(s, step_time);
+            vphys_body_post_step(s, step_time, impacts);
         }
         g_vphys.manifolds_dirty = false;
+        // After the walk: the damage can destroy a hull, and its body with it.
+        for (const VehicleImpact& impact : impacts) {
+            if (rf::Entity* ep = rf::entity_from_handle(impact.vehicle_handle)) {
+                vehicle_crash_impact(ep, impact.impact_dv, impact.ground);
+            }
+        }
     }
 
     // The CALL to player_process_controls: this frame's input is in ai.ci and nothing has consumed it.
@@ -771,6 +936,22 @@ float vehicle_physics_class_max_speed(int vdc_class)
 {
     const int cls = vphys_class_from_vdc(vdc_class);
     return cls < 0 ? 0.0f : vphys_class_speed_cap(cls);
+}
+
+float vehicle_physics_class_top_speed(int vdc_class)
+{
+    const int cls = vphys_class_from_vdc(vdc_class);
+    return cls < 0 ? 0.0f : vphys_class_top_speed(cls);
+}
+
+float vehicle_physics_class_max_impact_speed(int vdc_class)
+{
+    const int cls = vphys_class_from_vdc(vdc_class);
+    if (cls < 0) {
+        return 0.0f;
+    }
+    // The same clamp the pre-step gives the body.
+    return vphys_class_speed_cap(cls) * (1.0f + std::clamp(params_for_class(cls).restitution, 0.0f, 0.95f));
 }
 
 void vehicle_physics_level_init()

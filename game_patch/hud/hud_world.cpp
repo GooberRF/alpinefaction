@@ -469,6 +469,49 @@ void do_render_world_hud_text_label(const NameLabelTex& label, const rf::Vector3
     rf::gr::bitmap_3d_angle_wh(&draw_pos, 0.0f, w_world, h_world, bitmap_mode_from(render_mode));
 }
 
+// Session-lifetime, like the font atlases: lets a solid quad share the textured labels' render modes.
+static int world_hud_white_bitmap()
+{
+    static int white_bm = -1;
+    static bool failed = false;
+    if (white_bm == -1 && !failed) {
+        const int bm = rf::bm::create(rf::bm::FORMAT_8888_ARGB, 8, 8);
+        if (bm == -1) {
+            return -1;
+        }
+        if (!bm_fill(bm, 0xFFFFFFFFu)) {
+            rf::gr::mark_texture_dirty(bm);
+            rf::bm::release(bm);
+            failed = true;
+            return -1;
+        }
+        rf::bm::texture_add_ref(bm);
+        white_bm = bm;
+    }
+    return white_bm;
+}
+
+void do_render_world_hud_rect(const rf::Vector3& pos, float vertical_offset, float horizontal_offset,
+    float width_world, float height_world, WorldHUDRenderMode render_mode, bool stay_inside_fog,
+    bool distance_scaling, rf::Color color)
+{
+    if (width_world <= 0.0f || height_world <= 0.0f)
+        return;
+    const int bm = world_hud_white_bitmap();
+    if (bm == -1)
+        return;
+
+    const WorldHUDView view = make_world_hud_view(pos, stay_inside_fog);
+    const float scale = distance_scaling ? world_hud_label_scale_from(view) : 1.0f;
+    rf::Vector3 draw_pos =
+        view.pos + camera_up() * (vertical_offset * scale) + camera_right() * (horizontal_offset * scale);
+
+    rf::gr::set_color(color.red, color.green, color.blue, color.alpha);
+    rf::gr::set_texture(bm, -1);
+    rf::gr::bitmap_3d_angle_wh(&draw_pos, 0.0f, width_world * scale, height_world * scale,
+                               bitmap_mode_from(render_mode));
+}
+
 bool hill_vis_contested(HillInfo& h)
 {
     const int64_t now = timer::get_i64(1000);

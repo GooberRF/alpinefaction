@@ -1,4 +1,5 @@
 #include "hud_internal.h"
+#include "hud_world.h"
 #include "../rf/bmpman.h"
 #include "../rf/hud.h"
 #include "../rf/player/player.h"
@@ -19,29 +20,29 @@
 
 bool g_big_health_armor_hud = false;
 
+void hud_vehicle_bar_fill_color(float frac, rf::ubyte& r, rf::ubyte& g, rf::ubyte& b, rf::ubyte& a)
+{
+    a = 200;
+    if (frac > 0.60f) {
+        r = 0; g = 190; b = 40;
+        return;
+    }
+    if (frac > 0.35f) {
+        r = 215; g = 200; b = 0;
+        return;
+    }
+    if (frac > 0.15f) {
+        r = 230; g = 130; b = 0;
+        return;
+    }
+    r = 200; g = 30; b = 30;
+}
+
 namespace
 {
     // unscaled hud.tbl units
     constexpr int hud_vehicle_panel_gap = 6;
     constexpr int hud_vehicle_bar_height = 24;
-
-    void hud_vehicle_bar_fill_color(float frac, rf::ubyte& r, rf::ubyte& g, rf::ubyte& b, rf::ubyte& a)
-    {
-        a = 200;
-        if (frac > 0.60f) {
-            r = 0; g = 190; b = 40;
-            return;
-        }
-        if (frac > 0.35f) {
-            r = 215; g = 200; b = 0;
-            return;
-        }
-        if (frac > 0.15f) {
-            r = 230; g = 130; b = 0;
-            return;
-        }
-        r = 200; g = 30; b = 30;
-    }
 
     int hud_bitmap_height(int bmh)
     {

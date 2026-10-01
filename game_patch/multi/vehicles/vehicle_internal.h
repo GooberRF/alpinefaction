@@ -232,6 +232,8 @@ struct VehicleModuleState
     std::unordered_map<int, rf::Timestamp> fire_rearm;
     std::unordered_map<int, VehicleHealthSync> health_sync;
     std::unordered_map<int, int> last_damager; // vehicle handle -> attacker entity handle
+    // Server: the resolved killer of the blow that took the hull from alive to dead; -1 = nobody.
+    std::unordered_map<int, int> lethal_killer;
     std::unordered_map<int, VehicleHealth> health; // client side
     std::unordered_map<int, VehicleAmmoMirror> ammo_mirror; // client side
     // What arrived for a vehicle this machine watches, and what it last sent for the one it drives.
@@ -256,6 +258,10 @@ struct VehicleModuleState
     std::unordered_map<int, rf::Timestamp> crush_report_cooldown; // by player id
     // One roadkill per victim per cooldown: one contact can span several physics substeps.
     std::unordered_map<int, rf::Timestamp> crush_cooldown; // by victim entity handle
+    // One crash per hull per cooldown; the client keeps a slightly longer window to spare the report.
+    std::unordered_map<int, rf::Timestamp> crash_cooldown; // by vehicle handle
+    // Server: bounds one sender's crash reports, apart from his roadkill reports.
+    std::unordered_map<int, rf::Timestamp> crash_report_cooldown; // by player id
     // Server: an entry exists only inside the memory window.
     std::unordered_map<int, VehicleCoastMemory> coast_memory;
     std::map<VehicleRamKey, VehicleRamPair> ram_pairs;

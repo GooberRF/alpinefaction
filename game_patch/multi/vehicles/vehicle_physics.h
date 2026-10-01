@@ -72,6 +72,12 @@ bool vehicle_physics_class_syncs_driver_aim(const rf::Entity* vehicle);
 // LIVE tuning, so a wire-side check and the simulation agree. 0 for a class that cannot move.
 float vehicle_physics_class_max_speed(int vdc_class);
 
+// The speed the model drives a VehicleDamageClass at, below that cap. 0 for a class that cannot move.
+float vehicle_physics_class_top_speed(int vdc_class);
+
+// The largest velocity change a contact can give this class: its cap, plus the bounce off it.
+float vehicle_physics_class_max_impact_speed(int vdc_class);
+
 // The drown test: the hull ORIGIN below a liquid room's plane, and never the sub.
 bool vphys_hull_submerged(const rf::Entity* ep);
 

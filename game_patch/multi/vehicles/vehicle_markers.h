@@ -4,7 +4,7 @@
 #include <string>
 
 // Client-side respawn signposting for Vehicle Factories: a world marker per factory plus a ghost
-// hull that fills up as the respawn delay runs down.
+// hull that fills up as the respawn delay runs down. Also a health bar over every damaged hull.
 
 namespace rf
 {

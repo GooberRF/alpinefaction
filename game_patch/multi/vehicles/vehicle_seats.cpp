@@ -648,6 +648,7 @@ void vehicle_on_player_disconnect(rf::Player* pp)
         const int player_id = pp->net_data->player_id;
         g_vehicle_state.use_cooldown.erase(player_id);
         g_vehicle_state.crush_report_cooldown.erase(player_id);
+        g_vehicle_state.crash_report_cooldown.erase(player_id);
         g_vehicle_state.orient_relay_cooldown.erase(player_id);
     }
     // The engine flags a leaving player's entity for delayed delete WITHOUT detaching it, so the seat

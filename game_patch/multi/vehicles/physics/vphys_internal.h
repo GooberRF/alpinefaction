@@ -310,6 +310,23 @@ struct VehicleSimBody
     // timer::get_i64(1000) instant the IDLE BRAKE resumes after a ram shove; 0 = never shoved.
     int64_t shove_brake_until_ms = 0;
 
+    // Crash measurement: the velocity handed to this frame's step, and whether the frame counts.
+    btVector3 impact_pre_vel{0.0f, 0.0f, 0.0f};
+    bool impact_armed = false;
+    bool impact_skip = false;
+    bool impact_drilling = false; // the drill face's contacts are not crashes
+    // This frame's best level/mover chassis contact: the largest velocity change along its normal.
+    bool impact_contact = false;
+    float impact_contact_dvn = 0.0f;
+    float impact_contact_ny = 0.0f;
+    // The open window: simulated time left (0 = closed), the signed running sum and its peak, and
+    // the positive part with its up-weighted share, which says ground or wall.
+    float impact_window_s = 0.0f;
+    float impact_sum = 0.0f;
+    float impact_peak = 0.0f;
+    float impact_pos_sum = 0.0f;
+    float impact_up_sum = 0.0f;
+
     rf::Vector3 written_pos{}; // the position last written into the entity, for correction detection
     // The liquid surface the sub was last actually under; a breaching hull's room stops answering.
     float liquid_surface = 0.0f;
@@ -395,6 +412,7 @@ struct VehicleChaseCamera
     // Smoothed focus, snapped when the seat (its interface tag) changes.
     rf::Vector3 focus{};
     rf::Vector3 focus_vel{};
+    float focus_lift = 1.0e30f; // seat-to-focus height: drops to the overhead clip at once, rises at cam_extend_rate
     int seat_tag = -1;
     // The player's orbit, relative to the reference; drift eases it back after idle_s.
     float rel_yaw = 0.0f;
@@ -469,6 +487,8 @@ void car_body_create(VehicleSimBody& b, rf::Entity* ep, int cls);
 void car_apply_box_shape(VehicleSimBody& b, const VehiclePhysicsParams& p, rf::Entity* ep,
                          const HullBox& box);
 bool apply_car_controls(VehicleSimBody& b, rf::Entity* ep, const VehiclePhysicsParams& p, float dt);
+// The driller with its drills running, which slows it down.
+bool car_drills_on(rf::Entity* ep, const VehiclePhysicsParams& p);
 // dt is frame time SUMMED since the last stepping frame; step_time is the window a force acts over.
 void apply_car_model(VehicleSimBody& b, const VehiclePhysicsParams& p, float dt, float step_time);
 

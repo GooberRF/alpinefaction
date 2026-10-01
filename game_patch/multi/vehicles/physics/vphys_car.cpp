@@ -570,6 +570,13 @@ void car_apply_box_shape(VehicleSimBody& b, const VehiclePhysicsParams& p, rf::E
     g_vphys.world->addRigidBody(b.body, vphys_group_hull, vphys_mask_no_hull);
 }
 
+bool car_drills_on(rf::Entity* ep, const VehiclePhysicsParams& p)
+{
+    return p.drill_speed_scale < 1.0f && rf::entity_is_driller(ep)
+        && ep->ai.current_primary_weapon >= 0
+        && rf::entity_weapon_is_on(ep->handle, ep->ai.current_primary_weapon);
+}
+
 bool apply_car_controls(VehicleSimBody& b, rf::Entity* ep, const VehiclePhysicsParams& p, float dt)
 {
     btRaycastVehicle* veh = b.raycast_vehicle;
@@ -607,9 +614,7 @@ bool apply_car_controls(VehicleSimBody& b, rf::Entity* ep, const VehiclePhysicsP
     const float max_step = std::max(p.steer_rate, 0.0f) * dt;
     b.steer_current += std::clamp(steer_target - b.steer_current, -max_step, max_step);
 
-    const bool drills_on = p.drill_speed_scale < 1.0f && rf::entity_is_driller(ep)
-                        && ep->ai.current_primary_weapon >= 0
-                        && rf::entity_weapon_is_on(ep->handle, ep->ai.current_primary_weapon);
+    const bool drills_on = car_drills_on(ep, p);
     const float drill_scale = drills_on ? std::clamp(p.drill_speed_scale, 0.1f, 1.0f) : 1.0f;
     const float max_speed_now = p.car_max_speed * drill_scale;
     const float engine_force_now = std::max(p.engine_force, 0.0f) * drill_scale;

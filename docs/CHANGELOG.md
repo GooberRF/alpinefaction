@@ -20,8 +20,12 @@ Version 1.5.0 (Trillium): Not yet released
   - Extend player outlines to the vehicle or turret an outlined player is riding
   - Mark each vehicle respawn point with the vehicle name and a countdown, with a ghost of the vehicle filling in as its respawn approaches (Direct3D 11 renderer only), toggleable with `cl_vehiclemarkers`
   - Draw glowing tracers for vehicle and turret machine guns, tinted toward the firing team's color in team game types and configurable with the `cl_vehicletracers` commands
+  - Show a small health bar above every damaged vehicle and turret, fading out once it is back to full health, toggleable with `cl_vehiclehealthbars`
   - Hand a `Vehicle Factory` linked from a `control_point_handler` event to whichever team owns that control point, spawning its vehicle immediately on capture
   - Drop the flag a player is carrying when they board any vehicle other than a turret or a jeep
+  - Play the squash sound when a player is run over or drilled by a vehicle, and gib players run over at high speed when gibbing is enabled
+  - Riders of a vehicle destroyed by drowning, falling out of the level, their own ram, or other unattributed damage take their own deaths, and players who damaged the vehicle in the last 5 seconds earn assists; the player who destroys a vehicle keeps credit for its riders
+  - Vehicles take damage from hard crashes into walls and from hard landings, configurable with the `[vehicles]` `crash_damage` dedicated server rule
 - Add multiplayer minimap for levels that enable one in `Level Properties`
   - Square minimap under the ammo counter showing the player, teammates, flags, control points, the bag, the salvage flag, vehicle factories, enterable vehicles, and geomod craters; enemies are never shown
   - Hold `Show Map` (default `Q`) to display a large map of the whole level with control point names and vehicle respawn countdowns
@@ -104,6 +108,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Improve level loading and `Build Geometry` times in the level editor on levels with many faces
 - Draw large rooms in fewer draw calls, and skip rooms without dynamic decals when drawing them (Direct3D 11 renderer only)
 - Make level editor refuse to open levels saved by a newer version of Alpine Faction instead of misreading them
+- Show assists on suicide and environmental death lines in chat and the kill feed, as on other kill messages
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Add `ui_color_console` console command to set the console background color

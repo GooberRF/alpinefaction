@@ -1774,6 +1774,10 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
         // Same reason: the roadkill derivation needs a live victim.
         const int roadkill_vehicle_class = damage_type == rf::DT_CRUSH
             ? vehicle_roadkill_damage_class(damaged_ep_handle, killer_handle) : -1;
+        const bool crush_squashes = damage_type == rf::DT_CRUSH
+            && vehicle_crush_squashes(damaged_ep_handle, killer_handle);
+        const float roadkill_speed = damage_type == rf::DT_CRUSH
+            ? vehicle_roadkill_speed(damaged_ep_handle, killer_handle) : 0.0f;
         // The kill is judged against the team the victim had when the damage landed: death
         // processing can move them (auto team balance), and awards must not see that.
         const int victim_team_before_damage = damaged_player ? damaged_player->team : 0;
@@ -1822,10 +1826,13 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
                       entity_killed_from_behind(damaged_ep, killer_handle))
                      // or a fire damage death
                      || damage_type == rf::DT_FIRE);
+                const bool roadkill_speed_gib =
+                    gibbing.enabled &&
+                    vehicle_roadkill_speed_gibs(roadkill_vehicle_class, roadkill_speed);
                 if (damaged_ep->life < 0.0f &&                      // dead
                     damaged_ep->material == 3 &&                    // flesh
                     !(damaged_ep->entity_flags & rf::EF_DYING) &&
-                    (overkill_gib || jetpack_explode_gib))
+                    (overkill_gib || jetpack_explode_gib || roadkill_speed_gib))
                 {
                     entity_set_gib_flag(damaged_ep);
                     af_send_should_gib_req(static_cast<uint32_t>(damaged_ep->handle));
@@ -1850,6 +1857,9 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
             && !(multi_is_team_game_type() && damaged_player->team == killer_player->team)) {
             kill_attribution_note_pvp_damage(damaged_player->net_data->player_id,
                                              killer_player->net_data->player_id);
+        }
+        if (victim_is_synced_vehicle) {
+            vehicle_note_hull_damage(damaged_ep, life_before, killer_handle, real_damage);
         }
 
         // Record what landed the killing blow so the kill message can name the real weapon
@@ -1891,6 +1901,13 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
             if (did_gib) {
                 kill_flags |= AF_KILL_FLAG_GIBBED;
             }
+            else if (crush_squashes) {
+                kill_flags |= AF_KILL_FLAG_SQUASHED;
+                // A listen host gets no kill info, and its stock crush leaves the sound to this.
+                if (!rf::is_dedicated_server) {
+                    vehicle_play_squash_sound(damaged_ep);
+                }
+            }
 
             // Hit location is only meaningful for a direct weapon hit, and only when the
             // region was measured against this victim.
@@ -1907,7 +1924,8 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
             const uint8_t killed_id = damaged_player->net_data->player_id;
             const uint8_t killer_id = (killer_player && killer_player->net_data)
                 ? killer_player->net_data->player_id : 0xFF;
-            std::vector<uint8_t> assists = kill_attribution_take_assists(killed_id, killer_id);
+            std::vector<uint8_t> assists = kill_attribution_take_assists(
+                killed_id, killer_id, vehicle_occupant_death_blast_hull(damaged_ep_handle, damage_type));
 
             for (uint8_t assist_id : assists) {
                 rf::Player* assister = rf::multi_find_player_by_id(assist_id);

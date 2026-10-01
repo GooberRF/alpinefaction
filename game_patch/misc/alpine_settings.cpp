@@ -996,6 +996,10 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.vehicle_respawn_markers = std::stoi(settings["VehicleRespawnMarkers"]);
         processed_keys.insert("VehicleRespawnMarkers");
     }
+    if (settings.count("VehicleHealthBars")) {
+        g_alpine_game_config.vehicle_health_bars = std::stoi(settings["VehicleHealthBars"]);
+        processed_keys.insert("VehicleHealthBars");
+    }
     if (settings.count("VehicleDriverThirdPerson")) {
         g_alpine_game_config.vehicle_driver_third_person = std::stoi(settings["VehicleDriverThirdPerson"]);
         processed_keys.insert("VehicleDriverThirdPerson");
@@ -1701,6 +1705,7 @@ void alpine_player_settings_save(rf::Player* player)
     file << "WorldHUDHillOverdraw=" << g_alpine_game_config.world_hud_hill_overdraw << "\n";
     file << "WorldHUDDamageNumbers=" << g_alpine_game_config.world_hud_damage_numbers << "\n";
     file << "VehicleRespawnMarkers=" << g_alpine_game_config.vehicle_respawn_markers << "\n";
+    file << "VehicleHealthBars=" << g_alpine_game_config.vehicle_health_bars << "\n";
     file << "VehicleDriverThirdPerson=" << g_alpine_game_config.vehicle_driver_third_person << "\n";
     file << "VehicleGunnerThirdPerson=" << g_alpine_game_config.vehicle_gunner_third_person << "\n";
     file << "VehicleCamFollow=" << g_alpine_game_config.vehicle_cam_follow << "\n";

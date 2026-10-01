@@ -821,6 +821,8 @@ void vehicle_drop_combat_state(int vehicle_handle)
     g_vehicle_state.fire_rearm.erase(vehicle_handle);
     g_vehicle_state.health_sync.erase(vehicle_handle);
     g_vehicle_state.last_damager.erase(vehicle_handle);
+    g_vehicle_state.lethal_killer.erase(vehicle_handle);
+    g_vehicle_state.crash_cooldown.erase(vehicle_handle);
     g_vehicle_state.health.erase(vehicle_handle);
     g_vehicle_state.ammo_mirror.erase(vehicle_handle);
     g_vehicle_state.hull_state.erase(vehicle_handle);

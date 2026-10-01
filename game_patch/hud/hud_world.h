@@ -138,6 +138,12 @@ bool world_hud_ensure_text_label(NameLabelTex& slot, const std::string& text, in
 void world_hud_release_text_label(NameLabelTex& slot);
 void do_render_world_hud_text_label(const NameLabelTex& label, const rf::Vector3& pos, float vertical_offset,
     float height_world, WorldHUDRenderMode render_mode, bool stay_inside_fog, bool distance_scaling, rf::Color color);
+// Solid camera-facing quad in the text labels' units; offsets run along the camera's up and right.
+void do_render_world_hud_rect(const rf::Vector3& pos, float vertical_offset, float horizontal_offset,
+    float width_world, float height_world, WorldHUDRenderMode render_mode, bool stay_inside_fog,
+    bool distance_scaling, rf::Color color);
+// Fill colour of a vehicle health bar at this fraction of max life; a is the HUD bar's alpha.
+void hud_vehicle_bar_fill_color(float frac, rf::ubyte& r, rf::ubyte& g, rf::ubyte& b, rf::ubyte& a);
 rf::Vector3 koth_hill_icon_pos(const HillInfo& h);
 // Red/blue from the outline team colours; white for no team.
 rf::Color hud_team_color(int team, rf::ubyte alpha = 255);

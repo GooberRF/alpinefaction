@@ -181,6 +181,7 @@ set(SRCS
     multi/vehicles/vehicle_sync.cpp
     multi/vehicles/vehicle_damage.h
     multi/vehicles/vehicle_damage.cpp
+    multi/vehicles/vehicle_crash_tuning.h
     multi/vehicles/vehicle_view.h
     multi/vehicles/vehicle_view.cpp
     multi/vehicles/vehicle_render.h

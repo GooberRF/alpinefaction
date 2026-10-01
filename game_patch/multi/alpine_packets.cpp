@@ -877,6 +877,9 @@ void serialize_payload(const VehicleCrushReqPayload& payload, std::byte* buf, si
     offset += sizeof(payload.vehicle_handle);
     std::memcpy(buf + offset, &payload.victim_handle, sizeof(payload.victim_handle));
     offset += sizeof(payload.victim_handle);
+    buf[offset++] = static_cast<std::byte>(payload.kind);
+    std::memcpy(buf + offset, &payload.impact_dv, sizeof(payload.impact_dv));
+    offset += sizeof(payload.impact_dv);
 }
 
 // af_req_stats_pssk
@@ -1960,12 +1963,20 @@ static void af_process_client_req_packet(const void* data, size_t len, const rf:
                 xlog::warn("af_process_client_req_packet: VehicleCrush payload too short");
                 return;
             }
-            int32_t vehicle_handle = -1;
-            int32_t victim_handle = -1;
-            std::memcpy(&vehicle_handle, bytes + offset, sizeof(vehicle_handle));
-            std::memcpy(&victim_handle, bytes + offset + sizeof(vehicle_handle),
-                        sizeof(victim_handle));
-            vehicle_server_handle_crush_report(player, vehicle_handle, victim_handle);
+            VehicleCrushReqPayload req{};
+            std::memcpy(&req.vehicle_handle, bytes + offset, sizeof(req.vehicle_handle));
+            offset += sizeof(req.vehicle_handle);
+            std::memcpy(&req.victim_handle, bytes + offset, sizeof(req.victim_handle));
+            offset += sizeof(req.victim_handle);
+            req.kind = bytes[offset++];
+            std::memcpy(&req.impact_dv, bytes + offset, sizeof(req.impact_dv));
+            if (req.kind == AF_VEHICLE_CRUSH_RUNOVER) {
+                vehicle_server_handle_crush_report(player, req.vehicle_handle, req.victim_handle);
+            }
+            else if (req.kind == AF_VEHICLE_CRUSH_WALL || req.kind == AF_VEHICLE_CRUSH_GROUND) {
+                vehicle_server_handle_crash_report(player, req.vehicle_handle,
+                                                   req.kind == AF_VEHICLE_CRUSH_GROUND, req.impact_dv);
+            }
             break;
         }
         case af_client_req_type::af_req_stats_pssk: {
@@ -2374,7 +2385,7 @@ void af_send_kill_info(rf::Player* killed_player)
 
     // Clients predating AF_KILL_FLAG_VEHICLE read the whole byte as the damage type.
     KillInfoPayload legacy = payload;
-    legacy.flags &= static_cast<uint8_t>(~AF_KILL_FLAG_VEHICLE);
+    legacy.flags &= static_cast<uint8_t>(~(AF_KILL_FLAG_VEHICLE | AF_KILL_FLAG_SQUASHED));
     legacy.damage_type &= af_kill_damage_type_mask;
     std::byte legacy_buf[rf::max_packet_size];
     const size_t legacy_len = build(legacy, legacy_buf);
@@ -2949,6 +2960,12 @@ static void af_process_server_req_packet(const void* data, size_t len, const rf:
                     xlog::debug("af_process_server_req_packet: KillInfo gib target {} unresolved",
                         payload.killed_player_id);
                 }
+            }
+            // Queued ahead of obj_kill, so the victim still resolves here.
+            if (payload.flags & AF_KILL_FLAG_SQUASHED) {
+                rf::Player* squashed_player = rf::multi_find_player_by_id(payload.killed_player_id);
+                vehicle_play_squash_sound(squashed_player
+                    ? rf::entity_from_handle(squashed_player->entity_handle) : nullptr);
             }
             break;
         }
@@ -4120,7 +4137,23 @@ void af_send_vehicle_crush_report(int vehicle_handle, int victim_handle)
     packet.header.type = static_cast<uint8_t>(af_packet_type::af_client_req);
     packet.header.size = sizeof(uint8_t) + sizeof(VehicleCrushReqPayload);
     packet.req_type = af_client_req_type::af_req_vehicle_crush;
-    packet.payload = VehicleCrushReqPayload{vehicle_handle, victim_handle};
+    packet.payload = VehicleCrushReqPayload{vehicle_handle, victim_handle, AF_VEHICLE_CRUSH_RUNOVER, 0.0f};
+
+    af_send_client_req_packet(packet, true); // reliable
+}
+
+void af_send_vehicle_crash_report(int vehicle_handle, bool ground, float impact_dv)
+{
+    if (!rf::is_multi || rf::is_server) {
+        return;
+    }
+
+    af_client_req_packet packet{};
+    packet.header.type = static_cast<uint8_t>(af_packet_type::af_client_req);
+    packet.header.size = sizeof(uint8_t) + sizeof(VehicleCrushReqPayload);
+    packet.req_type = af_client_req_type::af_req_vehicle_crush;
+    packet.payload = VehicleCrushReqPayload{
+        vehicle_handle, -1, ground ? AF_VEHICLE_CRUSH_GROUND : AF_VEHICLE_CRUSH_WALL, impact_dv};
 
     af_send_client_req_packet(packet, true); // reliable
 }

@@ -104,6 +104,7 @@ struct AlpineGameSettings
     bool play_hit_sounds = true;
     bool show_awards = true;
     bool vehicle_respawn_markers = true;
+    bool vehicle_health_bars = true;
     bool vehicle_driver_third_person = false;
     bool vehicle_gunner_third_person = false;
 

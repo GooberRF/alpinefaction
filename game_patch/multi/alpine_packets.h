@@ -126,7 +126,7 @@ enum class af_client_req_type : uint8_t
     af_req_jetpack_state = 0xA, // Alpine 1.4 (2 bytes: on 0/1, fuel_pct 0-100)
     af_req_stats_pssk = 0xB,    // Alpine 1.4 (32 bytes: player stats session key, no NUL)
     af_req_vehicle_use = 0xC,   // Alpine 1.5 (5 bytes: vehicle server handle + seat index)
-    af_req_vehicle_crush = 0xD, // Alpine 1.5 (8 bytes: vehicle server handle + victim server handle)
+    af_req_vehicle_crush = 0xD, // Alpine 1.5 (13 bytes: VehicleCrushReqPayload)
 };
 
 // Frozen wire constants, values can NEVER be reordered or changed.
@@ -332,13 +332,24 @@ struct VehicleUseReqPayload
 };
 static_assert(sizeof(VehicleUseReqPayload) == 5);
 
-// Roadkill report; both handles are server handles, and the server revalidates before applying.
+// VehicleCrushReqPayload::kind
+enum af_vehicle_crush_kind : uint8_t
+{
+    AF_VEHICLE_CRUSH_RUNOVER = 0, // victim_handle names who the hull ran over
+    AF_VEHICLE_CRUSH_WALL = 1,    // impact_dv: the hull hit the level or a mover
+    AF_VEHICLE_CRUSH_GROUND = 2,  // impact_dv: the hull landed
+};
+
+// Roadkill or hull impact report from the hull's driver; handles are server handles, and the server
+// revalidates before applying.
 struct VehicleCrushReqPayload
 {
     int32_t vehicle_handle = -1;
-    int32_t victim_handle = -1;
+    int32_t victim_handle = -1; // -1 unless kind is AF_VEHICLE_CRUSH_RUNOVER
+    uint8_t kind = AF_VEHICLE_CRUSH_RUNOVER;
+    float impact_dv = 0.0f;     // u/s along the contact normal; 0 for a run-over
 };
-static_assert(sizeof(VehicleCrushReqPayload) == 8);
+static_assert(sizeof(VehicleCrushReqPayload) == 13);
 
 using af_client_payload = std::variant<HandicapPayload, SprayReqPayload, CharacterPayload,
                                        ReadyReqPayload, PitQueueReqPayload, VoteCastReqPayload,
@@ -424,6 +435,7 @@ enum af_kill_info_flags : uint8_t
     AF_KILL_FLAG_LEGSHOT  = 1 << 4, // meaningful only for direct hits
     AF_KILL_FLAG_GIBBED   = 1 << 5,
     AF_KILL_FLAG_VEHICLE  = 1 << 6, // vehicle kill; the class rides in damage_type, not weapon_type
+    AF_KILL_FLAG_SQUASHED = 1 << 7, // run over or drilled by a vehicle, and not gibbed
 };
 
 // KillInfoPayload::damage_type is two nibbles:
@@ -1095,6 +1107,7 @@ void af_send_stats_pssk(const std::string& pssk);
 // vehicle_handle -1 = exit request
 void af_send_vehicle_use_request(int vehicle_handle, uint8_t seat_index);
 void af_send_vehicle_crush_report(int vehicle_handle, int victim_handle);
+void af_send_vehicle_crash_report(int vehicle_handle, bool ground, float impact_dv);
 
 // vote system (client -> server)
 void af_send_vote_call(const AfVoteCallParams& params);
