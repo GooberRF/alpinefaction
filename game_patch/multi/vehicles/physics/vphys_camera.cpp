@@ -60,6 +60,9 @@ namespace
     constexpr float vcam_drift_rate = 3.0f;           // 1/s: 95% of the way back after one second
     constexpr float vcam_aim_far = 1000.0f;
     constexpr float vcam_aim_min_ahead = 1.0f;        // past the hull's front half length
+    constexpr float vcam_reticle_max_dist = 100.0f;   // from the camera: a detached reticle's farthest point
+    constexpr float vcam_reticle_project_dist = 10.0f;
+    constexpr float vcam_aim_blend = 0.1745f;         // 10 degrees past an aim limit: convergence fully faded
     constexpr float apc_aim_yaw_cap = 0.2618f;        // 15 degrees either side of hull forward
     constexpr int vcam_ray_pass_through = 4;
 
@@ -92,6 +95,24 @@ namespace
         m.make_identity();
         AddrCaller{0x004FD240}.this_call<void>(&m, eye_pitch);
         return std::asin(std::clamp(m.fvec.y, -1.0f, 1.0f));
+    }
+
+    // Past an aim limit the convergence offset (gun origin -> P against the camera ray) fades out, so
+    // the gun follows the camera's look and never P's distance, which jumps as the centre ray hits or misses.
+    void vcam_fade_convergence(float excess, float look_yaw, float look_pitch, float& yaw, float& pitch)
+    {
+        if (excess > 0.0f) {
+            const float w = 1.0f - std::min(excess / vcam_aim_blend, 1.0f);
+            yaw = wrap_pi(look_yaw + w * wrap_pi(yaw - look_yaw));
+            pitch = look_pitch + w * (pitch - look_pitch);
+        }
+    }
+
+    // How far the camera's look is past the jeep gunner's stock pitch limit, in eye_phb.x units.
+    float vcam_gunner_look_excess(const rf::Entity* rider, float* out_heading, float* out_pitch)
+    {
+        engine_angles_from_dir(g_vcam.look, out_heading, out_pitch);
+        return std::max({rider->min_rel_eye_phb.x - *out_pitch, *out_pitch - rider->max_rel_eye_phb.x, 0.0f});
     }
 
     bool vcam_class_has_driver_choice(int cls)
@@ -661,6 +682,12 @@ bool vehicle_physics_camera_take_rider_look(rf::Entity* ep, float& pitch_delta, 
     float heading = 0.0f;
     float pitch = 0.0f;
     engine_angles_from_dir(dir, &heading, &pitch);
+    if (g_vcam.seat == VehicleOrbitSeat::gunner) {
+        float look_heading = 0.0f;
+        float look_pitch = 0.0f;
+        const float excess = vcam_gunner_look_excess(ep, &look_heading, &look_pitch);
+        vcam_fade_convergence(excess, look_heading, look_pitch, heading, pitch);
+    }
     // 0x0049DE50 zeroes phb.x/z before building the eye from phb + eye_phb, so eye_phb.x is all of it.
     const rf::EntityControlData& cd = ep->control_data;
     yaw_delta = wrap_pi(heading - cd.phb.y);
@@ -669,7 +696,8 @@ bool vehicle_physics_camera_take_rider_look(rf::Entity* ep, float& pitch_delta, 
 }
 
 // Toward the camera's aim point from the minigun's origin (the driver's eye); the rockets fire
-// parallel. Capped to the hull: +-15 degrees of yaw and the pitch first person allows.
+// parallel. Capped to the hull: +-15 degrees of yaw and the pitch first person allows; past the cap
+// it follows the camera's look.
 bool vehicle_physics_camera_driver_aim(const rf::Entity* vehicle, const rf::Entity* driver,
                                        rf::Vector3* out_dir, bool* out_capped)
 {
@@ -680,19 +708,32 @@ bool vehicle_physics_camera_driver_aim(const rf::Entity* vehicle, const rf::Enti
         return false;
     }
     const rf::Matrix3& hull = vehicle->orient;
+    const auto hull_angles = [&hull](const rf::Vector3& v, float& yaw, float& pitch) {
+        yaw = std::atan2(v.dot_prod(hull.rvec), v.dot_prod(hull.fvec));
+        pitch = std::asin(std::clamp(v.dot_prod(hull.uvec), -1.0f, 1.0f));
+    };
     rf::Vector3 d = g_vcam.aim_point - driver->eye_pos;
     const float len = d.len();
     d = len > 0.01f ? d * (1.0f / len) : hull.fvec;
-    const float yaw = std::atan2(d.dot_prod(hull.rvec), d.dot_prod(hull.fvec));
-    const float pitch = std::asin(std::clamp(d.dot_prod(hull.uvec), -1.0f, 1.0f));
+    float yaw = 0.0f;
+    float pitch = 0.0f;
+    hull_angles(d, yaw, pitch);
+    float look_yaw = 0.0f;
+    float look_pitch = 0.0f;
+    hull_angles(g_vcam.look, look_yaw, look_pitch);
     const float a = eye_pitch_to_local(vehicle->min_rel_eye_phb.x);
     const float b = eye_pitch_to_local(vehicle->max_rel_eye_phb.x);
+    const float min_pitch = std::min(a, b);
+    const float max_pitch = std::max(a, b);
+    const float excess = std::max({std::abs(look_yaw) - apc_aim_yaw_cap, min_pitch - look_pitch,
+                                   look_pitch - max_pitch, 0.0f});
+    vcam_fade_convergence(excess, look_yaw, look_pitch, yaw, pitch);
     const float capped_yaw = std::clamp(yaw, -apc_aim_yaw_cap, apc_aim_yaw_cap);
-    const float capped_pitch = std::clamp(pitch, std::min(a, b), std::max(a, b));
+    const float capped_pitch = std::clamp(pitch, min_pitch, max_pitch);
     const rf::Vector3 local = dir_from_yaw_pitch(capped_yaw, capped_pitch);
     *out_dir = hull.rvec * local.x + hull.uvec * local.y + hull.fvec * local.z;
     if (out_capped) {
-        *out_capped = capped_yaw != yaw || capped_pitch != pitch;
+        *out_capped = excess > 0.0f || capped_yaw != yaw || capped_pitch != pitch;
     }
     return true;
 }
@@ -709,9 +750,13 @@ bool vehicle_physics_camera_reticle_offset(float* out_dx, float* out_dy)
             || rider->host_handle != g_vcam.vehicle_handle) {
             return true;
         }
-        // 0x0049CF40 stores the bound itself, so equality means the seat's pitch limit holds his gun.
+        // 0x0049CF40 stores the bound itself, so equality means the seat's pitch limit holds his gun;
+        // a look past that limit has faded his aim off P.
         const float eye_pitch = rider->control_data.eye_phb.x;
-        if (eye_pitch > rider->min_rel_eye_phb.x && eye_pitch < rider->max_rel_eye_phb.x) {
+        float look_heading = 0.0f;
+        float look_pitch = 0.0f;
+        if (eye_pitch > rider->min_rel_eye_phb.x && eye_pitch < rider->max_rel_eye_phb.x
+            && !(vcam_gunner_look_excess(rider, &look_heading, &look_pitch) > 0.0f)) {
             return true;
         }
         dir = rider->eye_orient.fvec;
@@ -722,20 +767,29 @@ bool vehicle_physics_camera_reticle_offset(float* out_dx, float* out_dy)
             return true;
         }
     }
+    // The gun's ray, cut where it leaves vcam_reticle_max_dist of the camera: |o + t*dir| = R, o = from - cam.
     const rf::Vector3 from = rider->eye_pos;
-    const rf::Vector3 far_point = from + dir * vcam_aim_far;
-    rf::Vector3 hit = far_point;
-    if (!vcam_raycast(from, far_point, vehicle, &hit)) {
-        hit = far_point;
+    const rf::Vector3 o = from - g_vcam.pos;
+    const float b = o.dot_prod(dir);
+    const float c = o.dot_prod(o) - vcam_reticle_max_dist * vcam_reticle_max_dist;
+    const float t = c <= 0.0f ? std::sqrt(b * b - c) - b : vcam_reticle_max_dist;
+    const rf::Vector3 end = from + dir * t;
+    rf::Vector3 point = end;
+    vcam_raycast(from, end, vehicle, &point);
+    // Projected at a fixed depth on the same sight line, so the far plane (0x005475D0) cannot cull it.
+    const rf::Vector3 rel = point - rf::gr::view_pos;
+    const float rel_len = rel.len();
+    if (!(rel_len > 0.01f)) {
+        return true;
     }
     float hx = 0.0f;
     float hy = 0.0f;
     float cx = 0.0f;
     float cy = 0.0f;
-    if (!gr_project_world_to_screen(hit, hx, hy)) {
+    if (!gr_project_world_to_screen(rf::gr::view_pos + rel * (vcam_reticle_project_dist / rel_len), hx, hy)) {
         return false;
     }
-    if (!gr_project_world_to_screen(g_vcam.pos + g_vcam.look * 10.0f, cx, cy)) {
+    if (!gr_project_world_to_screen(g_vcam.pos + g_vcam.look * vcam_reticle_project_dist, cx, cy)) {
         return true;
     }
     *out_dx = hx - cx;

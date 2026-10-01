@@ -111,10 +111,10 @@ namespace
     };
 
     constexpr VehicleWeaponAmmoRegen vehicle_weapon_ammo_regen[] = {
-        {"Vauss", 500},
-        {"Fighter Minigun", 500},
-        {"APC Minigun", 500},
-        {"Jeep Gun", 500},
+        {"Vauss", 100},
+        {"Fighter Minigun", 100},
+        {"APC Minigun", 100},
+        {"Jeep Gun", 100},
         {"Torpedo", 5000},
         {"Fighter Rocket", 5000},
         {"APC Rocket", 5000},
