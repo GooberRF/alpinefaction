@@ -25,9 +25,7 @@
 #include "../../misc/player.h"
 #include "../../os/console.h"
 #include "../../rf/ai.h"
-#include "../../rf/character.h"
 #include "../../rf/entity.h"
-#include "../../rf/file/file.h"
 #include "../../rf/gr/gr.h"
 #include "../../rf/item.h"
 #include "../../rf/multi.h"
@@ -264,8 +262,6 @@ namespace
 
     // Keyed by the shared mesh data the lookup reads (0x00501220), so hulls of one class share an entry.
     std::vector<std::pair<const void*, int>> g_driver_view_forward_cache;
-    // Character meshes the turret rider clip could not be attached to; not retried until the next level.
-    std::vector<const void*> g_turret_rider_clip_failed;
 
     int vehicle_driver_view_forward_index(rf::Entity* hull)
     {
@@ -314,7 +310,6 @@ void vehicle_view_level_init()
 {
     g_driller_view_forward_cache = VehicleViewPropCache{};
     g_driver_view_forward_cache.clear();
-    g_turret_rider_clip_failed.clear();
 }
 
 VehicleFpShotStart vehicle_fp_own_shot_start(rf::Entity* hull, rf::Entity* shooter, const rf::Vector3& fire_pos,
@@ -426,57 +421,12 @@ bool vehicle_rider_pose_is_seat_locked(rf::Entity* ep)
     return vehicle && vehicle->info && vehicle->info->use_function == rf::ENTITY_USE_VEHICLE;
 }
 
-namespace
-{
-    // A character that already stands in ult2_stand is on the rig the stock turret clip was made for.
-    void vehicle_attach_turret_rider_clip(rf::Entity* ep)
-    {
-        const rf::EntityInfo* anim_info = ep->info2;
-        const int stand_info = ep->state_anims[rf::ENTITY_STATE_STAND].info_index;
-        if (!anim_info || stand_info < 0 || stand_info >= anim_info->num_state_anims
-            || !string_iequals(anim_info->state_anims[stand_info].anim_filename.c_str(), "ult2_stand.mvf")) {
-            return;
-        }
-        rf::VMesh* vmesh = ep->vmesh;
-        if (!vmesh || vmesh->type != rf::MESH_TYPE_CHARACTER || !vmesh->mesh) {
-            return;
-        }
-        if (std::find(g_turret_rider_clip_failed.begin(), g_turret_rider_clip_failed.end(), vmesh->mesh)
-            != g_turret_rider_clip_failed.end()) {
-            return;
-        }
-        const auto* character = static_cast<const rf::Character*>(vmesh->mesh);
-        if (character->num_anims >= static_cast<int>(std::size(character->animations))
-            || !rf::File{}.find("ult2_on_turret.rfa")) {
-            g_turret_rider_clip_failed.push_back(vmesh->mesh);
-            return;
-        }
-        const int anim_index = rf::character_mesh_load_action(vmesh->mesh, "ult2_on_turret.mvf", 1, 0);
-        if (anim_index < 0) {
-            g_turret_rider_clip_failed.push_back(vmesh->mesh);
-            return;
-        }
-        for (rf::EntityAnim* slot : {&ep->state_anims[rf::ENTITY_STATE_ON_TURRET],
-                                     &ep->default_state_anims[rf::ENTITY_STATE_ON_TURRET]}) {
-            slot->vmesh_anim_index = anim_index;
-            slot->info_index = stand_info;
-        }
-    }
-} // namespace
-
-bool vehicle_turret_rider_resolve_state_anim(rf::Entity* ep, int state)
+bool vehicle_is_turret_rider_state(rf::Entity* ep, int state)
 {
     if (state != rf::ENTITY_STATE_ON_TURRET || !rf::is_multi || !ep || ep->host_handle == -1) {
         return false;
     }
-    rf::Entity* hull = vehicle_ridden_hull(ep);
-    if (!vehicle_hull_is_turret(hull)) {
-        return false;
-    }
-    if (ep->state_anims[state].vmesh_anim_index == -1) {
-        vehicle_attach_turret_rider_clip(ep);
-    }
-    return true;
+    return vehicle_hull_is_turret(vehicle_ridden_hull(ep));
 }
 
 namespace

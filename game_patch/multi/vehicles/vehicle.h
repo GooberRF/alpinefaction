@@ -252,7 +252,7 @@ void vehicle_apply_orient_from_packet(int vehicle_handle, uint16_t tick, int16_t
 
 // Client: store an af_vehicle_health update, and the values the HUD shows for a vehicle.
 void vehicle_store_health_from_packet(int vehicle_handle, float life, float max_life, int primary_ammo,
-                                      int secondary_ammo);
+                                      int secondary_ammo, const rf::Vector3* hit_dir = nullptr);
 // Total ammo (clip + reserve) for one weapon type, or -1 for a weapon with no ammo pool at all.
 // Only an exact 0 means EMPTY, so a caller gating on emptiness must test == 0, never <= 0.
 int vehicle_weapon_ammo(const rf::Entity* vehicle, int weapon_type);
@@ -334,9 +334,8 @@ void vehicle_client_do_frame();
 // Any occupant of a synced ENTITY_USE_VEHICLE hull. Turret occupants are deliberately out - their
 // pose IS their aim.
 bool vehicle_rider_pose_is_seat_locked(rf::Entity* ep);
-// True for a synced turret rider's ENTITY_STATE_ON_TURRET request, attaching the stock clip first when
-// his rig can play it.
-bool vehicle_turret_rider_resolve_state_anim(rf::Entity* ep, int state);
+// True for a synced turret rider's ENTITY_STATE_ON_TURRET request.
+bool vehicle_is_turret_rider_state(rf::Entity* ep, int state);
 
 // Writes a seat-locked rider's body frame (orient, p_data.orient, next_orient); false for anyone else.
 bool vehicle_pin_rider_body(rf::Entity* ep);

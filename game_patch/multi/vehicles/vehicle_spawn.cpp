@@ -27,6 +27,7 @@
 #include "../../rf/ai.h"
 #include "../../rf/bmpman.h"
 #include "../../rf/entity.h"
+#include "../../rf/file/file.h"
 #include "../../rf/gameseq.h"
 #include "../../rf/geometry.h"
 #include "../../rf/item.h"
@@ -650,9 +651,126 @@ namespace
     constexpr char af_jeep_gun_mesh_filename[] = "af_jeep_gun.v3m";
     bool g_jeep_gun_mesh_repointed = false;
 
+    // Seated clips appended to $EntityAnimType state lists as if entity.tbl listed them: entity_create
+    // (0x00422360) resolves each state BY NAME from that list. miner1 has the jeep clips but not
+    // on_turret; the other three MP rigs have none, so theirs are retargets of the miner1 clips.
+    struct VehicleRiderAnim
+    {
+        const char* anim_type;
+        rf::EntityState state;
+        const char* state_name; // the engine's name for `state` (table at 0x0062F208)
+        const char* filename;
+    };
+
+    constexpr VehicleRiderAnim vehicle_rider_anims[] = {
+        {"miner1", rf::ENTITY_STATE_ON_TURRET, "on_turret", "ult2_on_turret.rfa"},
+        {"multi_female", rf::ENTITY_STATE_JEEP_DRIVE, "jeep_drive", "af_female_jeep_driver.rfa"},
+        {"multi_female", rf::ENTITY_STATE_JEEP_GUN, "jeep_gun", "af_female_jeep_gunner.rfa"},
+        {"multi_female", rf::ENTITY_STATE_ON_TURRET, "on_turret", "af_female_on_turret.rfa"},
+        {"multi_merc", rf::ENTITY_STATE_JEEP_DRIVE, "jeep_drive", "af_merc_jeep_driver.rfa"},
+        {"multi_merc", rf::ENTITY_STATE_JEEP_GUN, "jeep_gun", "af_merc_jeep_gunner.rfa"},
+        {"multi_merc", rf::ENTITY_STATE_ON_TURRET, "on_turret", "af_merc_on_turret.rfa"},
+        {"multi_civilian", rf::ENTITY_STATE_JEEP_DRIVE, "jeep_drive", "af_civilian_jeep_driver.rfa"},
+        {"multi_civilian", rf::ENTITY_STATE_JEEP_GUN, "jeep_gun", "af_civilian_jeep_gunner.rfa"},
+        {"multi_civilian", rf::ENTITY_STATE_ON_TURRET, "on_turret", "af_civilian_on_turret.rfa"},
+    };
+
+    // The tbl parser (0x0041B910) allocates every state list at its fixed 23 entries.
+    constexpr int entity_info_state_anims_capacity = 23;
+
+    struct VehicleRiderAnimApplied
+    {
+        int entity_type;
+        int info_index;
+        const VehicleRiderAnim* anim;
+    };
+
     std::vector<VehicleWeaponSaved> g_vehicle_tbl_weapon_saved;
     std::vector<VehicleEntitySaved> g_vehicle_tbl_entity_saved;
     std::vector<VehicleEntityMeshSaved> g_vehicle_tbl_mesh_saved;
+    std::vector<VehicleRiderAnimApplied> g_vehicle_tbl_rider_anims;
+
+    bool entity_info_has_state_anim(const rf::EntityInfo& ei, const char* state_name)
+    {
+        for (int i = 0; i < ei.num_state_anims; ++i) {
+            if (string_iequals(ei.state_anims[i].name.c_str(), state_name)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    void vehicle_rider_anims_apply()
+    {
+        for (const VehicleRiderAnim& a : vehicle_rider_anims) {
+            const int et = rf::entity_lookup_type(a.anim_type);
+            if (et < 0 || et >= rf::num_entity_types) {
+                continue;
+            }
+            rf::EntityInfo& ei = rf::entity_types[et];
+            if (!ei.state_anims || ei.num_state_anims < 0 || ei.num_state_anims >= entity_info_state_anims_capacity
+                || entity_info_has_state_anim(ei, a.state_name)) {
+                continue;
+            }
+            // A missing clip would map the seat to the mesh's clip 0, so this rig keeps standing instead.
+            if (!rf::File{}.find(a.filename)) {
+                xlog::warn("[vehicle] rider anim '{}' not found", a.filename);
+                continue;
+            }
+            const int index = ei.num_state_anims;
+            rf::EntityAnimInfo& info = ei.state_anims[index];
+            info.name = a.state_name;
+            info.anim_filename = a.filename;
+            info.num_triggers = 0;
+            ei.num_state_anims = index + 1;
+            g_vehicle_tbl_rider_anims.push_back({et, index, &a});
+        }
+    }
+
+    // LIFO, so each list's count steps back over exactly what was appended to it.
+    void vehicle_rider_anims_revert()
+    {
+        for (auto it = g_vehicle_tbl_rider_anims.rbegin(); it != g_vehicle_tbl_rider_anims.rend(); ++it) {
+            if (it->entity_type < 0 || it->entity_type >= rf::num_entity_types) {
+                continue;
+            }
+            rf::EntityInfo& ei = rf::entity_types[it->entity_type];
+            if (ei.num_state_anims != it->info_index + 1) {
+                continue;
+            }
+            rf::EntityAnimInfo& info = ei.state_anims[it->info_index];
+            info.name = rf::String{};
+            info.anim_filename = rf::String{};
+            ei.num_state_anims = it->info_index;
+        }
+        g_vehicle_tbl_rider_anims.clear();
+    }
+
+    // level_load creates a listen server's own entity (0x0045C807) before level_init_post, so it
+    // resolved its state clips without the appended entries. Every other entity comes later.
+    void vehicle_rider_anims_attach_local_entity()
+    {
+        rf::Player* pp = rf::local_player;
+        rf::Entity* ep = pp ? rf::entity_from_handle(pp->entity_handle) : nullptr;
+        if (!ep || !ep->vmesh || ep->vmesh->type != rf::MESH_TYPE_CHARACTER || !ep->vmesh->mesh) {
+            return;
+        }
+        const int character = ep->mp_character_id;
+        if (character < 0 || character >= rf::num_multi_characters) {
+            return;
+        }
+        const int anim_type = rf::mp_characters[character].anim_entity_type;
+        for (const VehicleRiderAnimApplied& a : g_vehicle_tbl_rider_anims) {
+            if (a.entity_type != anim_type || ep->state_anims[a.anim->state].vmesh_anim_index != -1) {
+                continue;
+            }
+            const int anim_index = rf::character_mesh_load_action(ep->vmesh->mesh, a.anim->filename, 1, 0);
+            for (rf::EntityAnim* slot : {&ep->state_anims[a.anim->state], &ep->default_state_anims[a.anim->state]}) {
+                slot->vmesh_anim_index = anim_index;
+                slot->info_index = a.info_index;
+            }
+        }
+    }
 } // namespace
 
 void vehicle_tbl_overrides_revert()
@@ -697,6 +815,7 @@ void vehicle_tbl_overrides_revert()
         write_mem<uint32_t>(jeep_gun_mesh_push_imm32, jeep_gun_mesh_stock_string);
         g_jeep_gun_mesh_repointed = false;
     }
+    vehicle_rider_anims_revert();
     g_vehicle_tbl_weapon_saved.clear();
     g_vehicle_tbl_entity_saved.clear();
     g_vehicle_tbl_mesh_saved.clear();
@@ -799,6 +918,9 @@ void vehicle_tbl_overrides_level_init_post()
     write_mem<uint32_t>(jeep_gun_mesh_push_imm32,
                         reinterpret_cast<uint32_t>(af_jeep_gun_mesh_filename));
     g_jeep_gun_mesh_repointed = true;
+
+    vehicle_rider_anims_apply();
+    vehicle_rider_anims_attach_local_entity();
 }
 
 void vehicle_spawn_install()

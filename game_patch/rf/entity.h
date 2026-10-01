@@ -71,6 +71,7 @@ namespace rf
         EntityAnimTrigger triggers[2];
         int field_30;
     };
+    static_assert(sizeof(EntityAnimInfo) == 0x34);
 
     struct NanoShieldInfo
     {
@@ -269,6 +270,8 @@ namespace rf
     static_assert(sizeof(EntityInfo) == 0x1514);
     static_assert(offsetof(EntityInfo, use_function) == 0x1B4);
     static_assert(offsetof(EntityInfo, flags) == 0x724);
+    static_assert(offsetof(EntityInfo, num_state_anims) == 0x754);
+    static_assert(offsetof(EntityInfo, state_anims) == 0x75C);
 
     constexpr int MAX_ENTITY_TYPES = 75;
     static auto& num_entity_types = addr_as_ref<int>(0x0062F2D0);

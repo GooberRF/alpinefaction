@@ -3994,7 +3994,8 @@ void af_process_vehicle_orient_packet(const void* data, size_t len, const rf::Ne
 }
 
 static void build_af_vehicle_health_packet(af_vehicle_health_packet& pkt, int vehicle_handle, float life,
-                                           float max_life, int primary_ammo, int secondary_ammo)
+                                           float max_life, int primary_ammo, int secondary_ammo,
+                                           const rf::Vector3* hit_dir = nullptr)
 {
     pkt.header.type = static_cast<uint8_t>(af_packet_type::af_vehicle_health);
     pkt.header.size = static_cast<uint16_t>(sizeof(pkt) - sizeof(RF_GamePacketHeader));
@@ -4003,6 +4004,12 @@ static void build_af_vehicle_health_packet(af_vehicle_health_packet& pkt, int ve
     pkt.max_life = max_life;
     pkt.primary_ammo = primary_ammo;
     pkt.secondary_ammo = secondary_ammo;
+    if (hit_dir) {
+        const float axes[3] = {hit_dir->x, hit_dir->y, hit_dir->z};
+        for (int i = 0; i < 3; ++i) {
+            pkt.hit_dir[i] = static_cast<int8_t>(std::lround(std::clamp(axes[i], -1.0f, 1.0f) * 127.0f));
+        }
+    }
 }
 
 void af_send_vehicle_health_packet(rf::Player* player, int vehicle_handle, float life, float max_life,
@@ -4024,14 +4031,15 @@ void af_send_vehicle_health_packet(rf::Player* player, int vehicle_handle, float
 
 // server -> everyone, not just occupants: spectator HUDs and the demo recorder need it too
 void af_send_vehicle_health_packet_to_all(int vehicle_handle, float life, float max_life,
-                                          int primary_ammo, int secondary_ammo, bool is_reliable)
+                                          int primary_ammo, int secondary_ammo, bool is_reliable,
+                                          const rf::Vector3* hit_dir)
 {
     if (!rf::is_server) {
         return;
     }
 
     af_vehicle_health_packet pkt{};
-    build_af_vehicle_health_packet(pkt, vehicle_handle, life, max_life, primary_ammo, secondary_ammo);
+    build_af_vehicle_health_packet(pkt, vehicle_handle, life, max_life, primary_ammo, secondary_ammo, hit_dir);
 
     af_broadcast_to_af_clients(&pkt, sizeof(pkt), is_reliable);
 }
@@ -4048,8 +4056,10 @@ void af_process_vehicle_health_packet(const void* data, size_t len, const rf::Ne
         return;
     }
 
+    const rf::Vector3 hit_dir{pkt.hit_dir[0] / 127.0f, pkt.hit_dir[1] / 127.0f, pkt.hit_dir[2] / 127.0f};
+    const bool has_hit_dir = pkt.hit_dir[0] != 0 || pkt.hit_dir[1] != 0 || pkt.hit_dir[2] != 0;
     vehicle_store_health_from_packet(pkt.vehicle_handle, pkt.life, pkt.max_life, pkt.primary_ammo,
-                                    pkt.secondary_ammo);
+                                    pkt.secondary_ammo, has_hit_dir ? &hit_dir : nullptr);
 }
 
 static void build_af_vehicle_factory_state_packet(af_vehicle_factory_state_packet& pkt,

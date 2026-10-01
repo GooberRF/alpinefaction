@@ -19,6 +19,7 @@
 #include "../server_internal.h"
 #include "../../hud/hud.h"
 #include "../../hud/multi_spectate.h"
+#include "../../misc/alpine_settings.h"
 #include "../../misc/level.h"
 #include "../../misc/player.h"
 #include "../../os/console.h"
@@ -41,6 +42,8 @@ namespace
     // Rate floor for the streaming health/ammo sends, and the hold-still time before the reliable one.
     constexpr int vehicle_health_send_interval_ms = 100;
     constexpr int64_t vehicle_health_settle_ms = 1000;
+    // A hit older than this belongs to a drop already sent; it must not steer a later one.
+    constexpr int64_t vehicle_hit_dir_max_age_ms = 250;
 
     // One supplement per obj_update sample (CLIENT_NET_FPS 40, 25 ms); only a faster client is capped.
     constexpr int vehicle_orient_relay_min_ms = 15;
@@ -835,12 +838,12 @@ void vehicle_server_stop_fire(rf::Entity* vehicle)
 
 // Everyone, not just the occupants: a spectator's HUD draws the bar for the man he is watching, and
 // the demo recorder is a virtual observer player.
-void vehicle_broadcast_health(rf::Entity* vehicle, bool is_reliable)
+void vehicle_broadcast_health(rf::Entity* vehicle, bool is_reliable, const rf::Vector3* hit_dir)
 {
     af_send_vehicle_health_packet_to_all(vehicle->handle, vehicle->life, vehicle_hud_max_life(vehicle),
                                          vehicle_weapon_ammo(vehicle, vehicle->ai.current_primary_weapon),
                                          vehicle_weapon_ammo(vehicle, vehicle->ai.current_secondary_weapon),
-                                         is_reliable);
+                                         is_reliable, hit_dir);
 }
 
 // Streaming UNRELIABLE, settling RELIABLE: each unreliable packet supersedes the last, so only the
@@ -865,7 +868,9 @@ void vehicle_server_sync_health(rf::Entity* vehicle)
         sync.next_send.set(vehicle_health_send_interval_ms);
         sync.last_change_ms = now;
         sync.settled_sent = false;
-        vehicle_broadcast_health(vehicle, false);
+        const bool hit_is_recent = sync.hit_ms >= 0 && now - sync.hit_ms <= vehicle_hit_dir_max_age_ms;
+        sync.hit_ms = -1;
+        vehicle_broadcast_health(vehicle, false, hit_is_recent ? &sync.hit_dir : nullptr);
         return;
     }
 
@@ -1694,8 +1699,34 @@ void vehicle_apply_orient_from_packet(int vehicle_handle, uint16_t tick, int16_t
                          vehicle_dequantize_angle(aim_head_q), vehicle_dequantize_steer(steer_q));
 }
 
+// The feedback obj_update gives a man for his own health drop (0x0047E4DA), for a drop of the hull he
+// rides; a spectator gets the flash alone, as for the man he watches.
+void vehicle_rider_damage_feedback(int vehicle_handle, const rf::Vector3* hit_dir)
+{
+    rf::Entity* local_hull = vehicle_ridden_hull(rf::local_player_entity);
+    if (rf::local_player && local_hull && local_hull->handle == vehicle_handle) {
+        player_damage_feedback();
+        if (hit_dir) {
+            rf::player_start_hud_damage_indicators(rf::local_player,
+                                                   rf::player_damage_dir_mask(rf::local_player, hit_dir));
+        }
+        return;
+    }
+    if (!g_alpine_game_config.spectate_damage_screen_flash) {
+        return;
+    }
+    rf::Player* spectated = multi_spectate_get_target_player();
+    if (!spectated || spectated == rf::local_player || multi_spectate_is_freelook()) {
+        return;
+    }
+    rf::Entity* watched_hull = vehicle_ridden_hull(rf::entity_from_handle(spectated->entity_handle));
+    if (watched_hull && watched_hull->handle == vehicle_handle) {
+        player_damage_feedback();
+    }
+}
+
 void vehicle_store_health_from_packet(int vehicle_handle, float life, float max_life, int primary_ammo,
-                                      int secondary_ammo)
+                                      int secondary_ammo, const rf::Vector3* hit_dir)
 {
     rf::Object* obj = rf::obj_from_remote_handle(vehicle_handle);
     if (!obj) {
@@ -1706,7 +1737,12 @@ void vehicle_store_health_from_packet(int vehicle_handle, float life, float max_
     if (!std::isfinite(life) || !std::isfinite(max_life) || max_life < 0.0f) {
         return;
     }
+    const auto prev = g_vehicle_state.health.find(obj->handle);
+    const bool hull_hurt = prev != g_vehicle_state.health.end() && life < prev->second.life;
     g_vehicle_state.health[obj->handle] = VehicleHealth{life, max_life};
+    if (hull_hurt) {
+        vehicle_rider_damage_feedback(obj->handle, hit_dir);
+    }
 
     // Ammo goes into the entity's own AiInfo rather than a side store: the cockpit readout
     // (0x004A7F60) and the stock HUD both read ai.ammo off the entity.

@@ -372,6 +372,15 @@ add_packfile(alpinefaction.vpp
     meshes/af_Fighter01m.v3m
     meshes/af_Sub_Mini01.v3m
     meshes/af_Sub_Mini01T.v3m
+    meshes/af_female_jeep_driver.rfa
+    meshes/af_female_jeep_gunner.rfa
+    meshes/af_female_on_turret.rfa
+    meshes/af_merc_jeep_driver.rfa
+    meshes/af_merc_jeep_gunner.rfa
+    meshes/af_merc_on_turret.rfa
+    meshes/af_civilian_jeep_driver.rfa
+    meshes/af_civilian_jeep_gunner.rfa
+    meshes/af_civilian_on_turret.rfa
 
     standard_vs:${CMAKE_BINARY_DIR}/shaders/standard_vs.bin
     character_vs:${CMAKE_BINARY_DIR}/shaders/character_vs.bin

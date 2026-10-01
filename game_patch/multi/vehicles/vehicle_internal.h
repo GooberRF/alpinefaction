@@ -37,6 +37,8 @@ struct VehicleHealthSync
     rf::Timestamp next_send;
     int64_t last_change_ms = 0;
     bool settled_sent = true; // nothing has changed since the last reliable send
+    rf::Vector3 hit_dir{};    // travel direction of the latest attributed hit, for the riders' indicators
+    int64_t hit_ms = -1;
 };
 
 // Client: the last af_vehicle_health for a vehicle, by local object handle.

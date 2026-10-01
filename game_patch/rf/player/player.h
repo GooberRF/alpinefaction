@@ -450,6 +450,9 @@ namespace rf
     static auto& player_cockpit_reset = addr_as_ref<void(Player* player)>(0x004A8670);
     static auto& player_fpgun_reset_zoom = addr_as_ref<void(Player* player)>(0x004AD8A0);
     static auto& local_screen_flash = addr_as_ref<void(Player* pp, uint8_t r, uint8_t g, uint8_t b, uint8_t a)>(0x00416450);
+    // 4-way mask (1 front, 2 left, 4 back, 8 right) of a hit travelling along dir, in pp's entity frame.
+    static auto& player_damage_dir_mask = addr_as_ref<unsigned(Player* pp, const Vector3* dir)>(0x004A5A20);
+    static auto& player_start_hud_damage_indicators = addr_as_ref<void(Player* pp, unsigned dir_mask)>(0x004A5AF0);
     static auto& g_player_flashlight_intensity = addr_as_ref<float>(0x005A00FC);
     static auto& g_player_flashlight_range = addr_as_ref<float>(0x005A0108);
 }

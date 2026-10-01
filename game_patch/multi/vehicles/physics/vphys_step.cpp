@@ -283,7 +283,7 @@ namespace
             body_apply_mass(b, p, ep);
             body->setRestitution(std::clamp(p.restitution, 0.0f, 0.95f));
             if (!is_car) {
-                body->setFriction(std::max(b.skid_compound ? p.parked_friction : p.hull_friction, 0.0f));
+                body->setFriction(std::max(b.parked_shape ? p.parked_friction : p.hull_friction, 0.0f));
             }
             if (is_car) {
                 body->setDamping(std::clamp(p.car_linear_damping, 0.0f, 0.99f),
@@ -345,24 +345,16 @@ namespace
         g_vphys.world->stepSimulation(dt, vphys_max_substeps, vphys_fixed_timestep);
     }
 
-    // A car, or a flyer wearing its parked skid.
-    VehicleSimBody* ground_body_of(const btCollisionObject* obj)
+    VehicleSimBody* car_body_of(const btCollisionObject* obj)
     {
         if (!obj) {
             return nullptr;
         }
         VehicleSimBody* b = static_cast<VehicleSimBody*>(obj->getUserPointer());
-        if (!b || b->body != obj || (!vphys_class_is_automobile(b->vehicle_class) && !b->skid_compound)) {
+        if (!b || b->body != obj || !vphys_class_is_automobile(b->vehicle_class)) {
             return nullptr;
         }
         return b;
-    }
-
-    // n points out of the ground into the body; a skid flyer counts only when it is down on the skid.
-    bool ground_contact_counts(const VehicleSimBody& b, const btVector3& n)
-    {
-        return n.y() > 0.5f
-            && (!b.skid_compound || n.dot(b.body->getWorldTransform().getBasis().getColumn(1)) > 0.7f);
     }
 
     // ONE walk of the world's manifolds for every car, bucketed by body: the same test run per car
@@ -375,8 +367,8 @@ namespace
         const int nm = g_vphys.dispatcher->getNumManifolds();
         for (int m = 0; m < nm; ++m) {
             const btPersistentManifold* pm = g_vphys.dispatcher->getManifoldByIndexInternal(m);
-            VehicleSimBody* car0 = ground_body_of(pm->getBody0());
-            VehicleSimBody* car1 = ground_body_of(pm->getBody1());
+            VehicleSimBody* car0 = car_body_of(pm->getBody0());
+            VehicleSimBody* car1 = car_body_of(pm->getBody1());
             // getBody1 is the flipped side: its ground normal is the negated m_normalWorldOnB.
             if ((!car0 || car0->chassis_ground_contact_pass) &&
                 (!car1 || car1->chassis_ground_contact_pass)) {
@@ -387,10 +379,11 @@ namespace
                 if (cp.getDistance() > 0.02f) {
                     continue;
                 }
-                if (car0 && ground_contact_counts(*car0, cp.m_normalWorldOnB)) {
+                const float ny = cp.m_normalWorldOnB.y();
+                if (car0 && ny > 0.5f) {
                     car0->chassis_ground_contact_pass = true;
                 }
-                if (car1 && ground_contact_counts(*car1, -cp.m_normalWorldOnB)) {
+                if (car1 && -ny > 0.5f) {
                     car1->chassis_ground_contact_pass = true;
                 }
             }
@@ -615,10 +608,10 @@ namespace
         }
 
         ep->orient = orient;
-        if ((is_car || b.skid_compound) && (step_time > 0.0f || g_vphys.manifolds_dirty)) {
-            b.chassis_ground_contact = b.chassis_ground_contact_pass;
-        }
         if (is_car) {
+            if (step_time > 0.0f || g_vphys.manifolds_dirty) {
+                b.chassis_ground_contact = b.chassis_ground_contact_pass;
+            }
             ep->ground_material = (wheels_all_airborne && !b.chassis_ground_contact) ? -1 : 0;
         }
 
@@ -865,7 +858,7 @@ bool vehicle_physics_server_ensure(rf::Entity* ep, const rf::Vector3* seed_vel)
     }
     b->server_owned = true;
     if (!vphys_class_is_automobile(cls)) {
-        body_apply_shape(*b, params_for_class(cls), ep); // the parked skid keys off server_owned
+        body_apply_shape(*b, params_for_class(cls), ep); // the parked cylinder keys off server_owned
     }
     if (seed_vel) {
         b->body->setLinearVelocity(to_bt(*seed_vel));

@@ -5,6 +5,7 @@
 #include "vphys_internal.h"
 #include "../vehicle_physics.h"
 #include "../vehicle.h"
+#include "../vehicle_internal.h"
 #include "../../../misc/level.h"
 #include "../../../os/os.h"
 #include "../../../rf/ai.h"
@@ -21,6 +22,8 @@
 // The arc's angular reach: forward for climbing, a little rearward for descending symmetry.
 constexpr float wheel_arc_fwd_deg = 55.0f;
 constexpr float wheel_arc_back_deg = 25.0f;
+// How long the handbrake must hold a hull grounded and still before it pins it.
+constexpr float handbrake_settle_s = 0.5f;
 
 // 0x00498E80 walks the mover-brush list with no solidity test at all, so a brush the Bullet chassis
 // passes through (mover_brush_is_solid, vphys_world.cpp) would still stop a probe. Re-cast from just
@@ -210,6 +213,7 @@ void car_teardown(VehicleSimBody& b)
     b.engine_cmd = 0.0f;
     b.handbrake = false;
     b.handbrake_pin = false;
+    b.handbrake_settle = 0.0f;
     b.wheel_on_mover = false;
     b.upright_recover_timer = 0.0f;
     b.upright_prop_timer = 0.0f;
@@ -316,34 +320,19 @@ void body_apply_mass(VehicleSimBody& b, const VehiclePhysicsParams& p, const rf:
 void body_apply_shape(VehicleSimBody& b, const VehiclePhysicsParams& p, rf::Entity* ep)
 {
     const float radius = hull_standoff(p, ep);
-    const bool skid = b.server_owned && p.parked_skid != 0.0f;
-    if (std::fabs(radius - b.body_radius) < 0.001f && skid == (b.skid_compound != nullptr)) {
+    const bool parked = b.server_owned && p.parked_cylinder != 0.0f;
+    if (std::fabs(radius - b.body_radius) < 0.001f && parked == (b.parked_shape != nullptr)) {
         return;
     }
     g_vphys.world->removeRigidBody(b.body);
     btSphereShape* shape = new btSphereShape(radius);
-    btBoxShape* skid_shape = nullptr;
-    btCompoundShape* compound = nullptr;
-    if (skid) {
-        // The csphere box's footprint, bottom flush with the sphere's, so the resting height is unchanged.
-        constexpr float skid_half_y = 0.25f;
-        const HullBox box = hull_local_box(ep);
-        skid_shape = new btBoxShape(btVector3(std::max(box.half.x(), skid_half_y), skid_half_y,
-                                              std::max(box.half.z(), skid_half_y)));
-        compound = new btCompoundShape();
-        compound->addChildShape(btTransform::getIdentity(), shape);
-        btTransform child;
-        child.setIdentity();
-        child.setOrigin(btVector3(box.center.x(), skid_half_y - radius, box.center.z()));
-        compound->addChildShape(child, skid_shape);
-    }
-    b.body->setCollisionShape(compound ? static_cast<btCollisionShape*>(compound) : shape);
-    delete b.skid_compound;
-    delete b.skid_shape;
+    // Contains the sphere with bottom and top flush, so neither swap moves or sinks the hull on flat ground.
+    btCylinderShape* parked_shape = parked ? new btCylinderShape(btVector3(radius, radius, radius)) : nullptr;
+    b.body->setCollisionShape(parked_shape ? static_cast<btCollisionShape*>(parked_shape) : shape);
+    delete b.parked_shape;
     delete b.shape;
     b.shape = shape;
-    b.skid_shape = skid_shape;
-    b.skid_compound = compound;
+    b.parked_shape = parked_shape;
     b.body_radius = radius;
     b.body->setCcdMotionThreshold(radius);
     b.body->setCcdSweptSphereRadius(radius * 0.5f);
@@ -647,8 +636,16 @@ bool apply_car_controls(VehicleSimBody& b, rf::Entity* ep, const VehiclePhysicsP
     const float engine_force_now = std::max(p.engine_force, 0.0f) * drill_scale;
 
     const float throttle = std::clamp(ci.move.z, -1.0f, 1.0f) * p.thrust_sign;
+    const bool shove_grace =
+        b.shove_brake_until_ms != 0 && timer::get_i64(1000) < b.shove_brake_until_ms;
+    // A hull nobody has entered since it spawned holds its spot; a ram shove's grace releases it.
+    const VehicleState* hull_st = b.server_owned ? vehicle_hull_state(ep->handle) : nullptr;
+    const bool auto_handbrake = hull_st && !hull_st->entered_once && !shove_grace;
     // While seated, controls_read adds held jump to ci.move.y (0x004A60EF forces its hold mode).
-    b.handbrake = ci.move.y > 0.5f && p.handbrake_force > 0.0f;
+    b.handbrake = (ci.move.y > 0.5f || auto_handbrake) && p.handbrake_force > 0.0f;
+    if (!b.handbrake) {
+        b.handbrake_settle = 0.0f;
+    }
     // ACCELERATIONS, before the mass/wheel split, so a class's wind-up is wheel-count independent.
     float engine_cmd = 0.0f;
     float brake_cmd = 0.0f;
@@ -672,8 +669,6 @@ bool apply_car_controls(VehicleSimBody& b, rf::Entity* ep, const VehiclePhysicsP
     }
     else {
         // The idle brake would eat the whole capped shove inside a second, so a grace suppresses it.
-        const bool shove_grace =
-            b.shove_brake_until_ms != 0 && timer::get_i64(1000) < b.shove_brake_until_ms;
         brake_cmd = shove_grace ? 0.0f : std::max(p.idle_brake_force, 0.0f);
     }
     b.engine_cmd = engine_cmd;
@@ -936,8 +931,12 @@ void apply_car_model(VehicleSimBody& b, const VehiclePhysicsParams& p, float dt,
     // pin it while parked. A mover's surface must still carry the hull, so only static ground.
     const bool on_mover = b.wheel_on_mover;
     b.wheel_on_mover = false;
-    if (b.handbrake && !on_mover && grounded_wheels >= ref_min_wheels && normal_sum.length2() > 1e-6f
-        && ground_speed < std::max(p.handbrake_hold_speed, 0.0f)) {
+    const float hold_speed = std::max(p.handbrake_hold_speed, 0.0f);
+    // FULL speed, held a while: a pin at a landing's touchdown or bounce would freeze the springs there.
+    const bool still = b.handbrake && grounded_wheels >= ref_min_wheels && body_speed < hold_speed
+                    && omega.length() < hold_speed;
+    b.handbrake_settle = still ? b.handbrake_settle + dt : 0.0f;
+    if (still && b.handbrake_settle >= handbrake_settle_s && !on_mover && normal_sum.length2() > 1e-6f) {
         const btVector3 n = normal_sum.normalized();
         const float max_deg = std::clamp(p.handbrake_hold_max_deg, 0.0f, 89.0f);
         b.handbrake_pin = n.y() >= std::cos(max_deg * std::numbers::pi_v<float> / 180.0f);

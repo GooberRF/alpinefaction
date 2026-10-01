@@ -53,10 +53,10 @@ struct VehiclePhysicsParams
     float ground_clearance = 0.5f;
     float restitution = 0.15f;      // fraction of the into-surface speed returned as a bounce
     float hull_friction = 0.05f;
-    // Non-zero: a SERVER-OWNED sphere hull also wears a flat skid box, bottom flush with the sphere's.
-    float parked_skid = 0.0f;
-    // Body friction while the skid is worn; keep (x level 0.6) under skid half-width / standoff or it tips.
-    float parked_friction = 1.1f;
+    // Non-zero: a SERVER-OWNED sphere hull wears the sphere's bounding upright cylinder instead.
+    float parked_cylinder = 0.0f;
+    // Body friction while the cylinder is worn; x level 0.6 gives the slope it holds on (atan).
+    float parked_friction = 0.3f;
     float obstacle_range = 4.0f;    // kinematic-obstacle radius, in hull radii
     float obstacle_min_size = 0.8f; // world units: clutter smaller than this is not an obstacle
 
@@ -265,8 +265,7 @@ struct VehicleSimBody
     bool car_action_in_world = false;
 
     btSphereShape* shape = nullptr;          // flyer/sub hull (null for an automobile)
-    btCompoundShape* skid_compound = nullptr; // parked_skid only: `shape` plus skid_shape
-    btBoxShape* skid_shape = nullptr;
+    btCylinderShape* parked_shape = nullptr;  // parked_cylinder only: worn instead of `shape`
     btDefaultMotionState* motion_state = nullptr;
     // The dynamic body, sphere hull OR car chassis; its user pointer points back at this struct.
     btRigidBody* body = nullptr;
@@ -304,11 +303,12 @@ struct VehicleSimBody
     float engine_accel = 0.0f;
     float brake_accel = 0.0f;
     float engine_cmd = 0.0f;
-    bool handbrake = false; // this frame's handbrake input
+    bool handbrake = false; // this frame's handbrake: input, or a never-entered server hull's hold
     // Parked on the handbrake: the world's pre-tick zeroes velocity and forces every substep.
     bool handbrake_pin = false;
+    float handbrake_settle = 0.0f; // how long the handbrake has continuously held it grounded and still
     bool wheel_on_mover = false; // a wheel cast since the last model pass stood on a mover brush
-    // Chassis box (or a skid flyer's skid) on a ground-facing plane; a car's exit gate is wheels OR this.
+    // Chassis box on a ground-facing plane; ground_material (the exit gate) is wheels OR this.
     bool chassis_ground_contact = false;
     // What the frame's single manifold pass found; only a recomputing frame copies it across.
     bool chassis_ground_contact_pass = false;

@@ -620,6 +620,31 @@ namespace
         // The erase-on-expiry read is safe here: this walks the vehicle list, not the memory map.
         return vehicle_coast_memory_driver(rammer->handle);
     }
+
+    // Direction runs from the attacker, or the hull he rides; a crash or a coasting hull's ram has none.
+    // `stock_indicated`: stock weapon damage has already lit a local rider's indicator (0x004C6183, 0x00489195).
+    void vehicle_note_hull_hit(rf::Entity* vehicle, int killer_handle, bool stock_indicated)
+    {
+        rf::Entity* source = killer_handle != -1 ? rf::entity_from_handle(killer_handle) : nullptr;
+        if (rf::Entity* hull = vehicle_ridden_hull(source)) {
+            source = hull;
+        }
+        else if (vehicle_crush_damage_is_mint(vehicle->handle)) {
+            source = nullptr; // a coasting hull's credited ex-driver is on foot elsewhere
+        }
+        rf::Vector3 dir = source && source != vehicle ? vehicle->pos - source->pos : rf::Vector3{};
+        const bool has_dir = dir.len_sq() > 1e-4f;
+        if (has_dir) {
+            dir.normalize();
+            VehicleHealthSync& sync = g_vehicle_state.health_sync[vehicle->handle];
+            sync.hit_dir = dir;
+            sync.hit_ms = timer::get_i64(1000);
+        }
+        // A listen host is sent no 0x67 of his own.
+        if (!rf::is_dedicated_server) {
+            vehicle_rider_damage_feedback(vehicle->handle, has_dir && !stock_indicated ? &dir : nullptr);
+        }
+    }
 } // namespace
 
 // Per-frame rather than latched: a drill is a continuous contact and the engine bypasses the
@@ -1163,7 +1188,7 @@ namespace
 {
     // No client applies a vehicle crush locally. Every client suppresses its own; the DRIVER's
     // machine and the VICTIM's additionally report, each seeing one side of the contact first hand
-    // while the server holds two interpolated bodies. A listen host keeps the stock path.
+    // while the server holds two interpolated bodies. A listen host mints through vehicle_server_crush.
     bool vehicle_client_report_crush(rf::Entity* victim, rf::Entity* vehicle)
     {
         if (!rf::is_multi || rf::is_server || !victim) {
@@ -1205,10 +1230,12 @@ namespace
             || !vehicle_is_synced_entity_type(crusher)) {
             return false;
         }
+        if (vehicle_crush_victim_is_exempt(victim)) {
+            return true;
+        }
         if (vehicle_observed_motion(crusher)) {
             // The host's own contact counts as a victim report; a coasting hull credits its ex-driver.
-            rf::Entity* driver = (crusher->p_data.flags & rf::PF_NET_PLAYER)
-                ? vehicle_driver_entity(crusher) : vehicle_ram_credit(crusher);
+            rf::Entity* driver = vehicle_ram_credit(crusher);
             if (driver == victim) {
                 return true; // as in the sweeps, nobody runs himself over
             }
@@ -1633,6 +1660,10 @@ void vehicle_note_hull_damage(rf::Entity* vehicle, float life_before, int killer
             }
         }
         g_vehicle_state.lethal_killer.try_emplace(vehicle->handle, lethal);
+    }
+    else if (real_damage > 0.0f) {
+        const bool stock_indicated = splash || (kill_attribution_in_projectile_impact() && weapon_type >= 0);
+        vehicle_note_hull_hit(vehicle, killer_handle, stock_indicated);
     }
     if (killer_handle == -1 || real_damage <= 0.0f) {
         return; // player_from_entity_handle does not validate -1

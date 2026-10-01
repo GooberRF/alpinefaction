@@ -45,7 +45,7 @@ namespace
         // Wheelless: the size floor is the only gate, since the height exemption is wheeled-only.
         fighter.obstacle_min_size = 0.35f;
         fighter.deadstick_lift = 0.55f;
-        fighter.parked_skid = 1.0f;
+        fighter.parked_cylinder = 1.0f;
         fighter.cam_enable = 1.0f;
         g_params[VPHYS_CLASS_FIGHTER] = fighter;
 
@@ -293,10 +293,8 @@ namespace
         }
         delete b.motion_state;
         b.motion_state = nullptr;
-        delete b.skid_compound;
-        b.skid_compound = nullptr;
-        delete b.skid_shape;
-        b.skid_shape = nullptr;
+        delete b.parked_shape;
+        b.parked_shape = nullptr;
         delete b.shape;
         b.shape = nullptr;
         b.liquid_surface_valid = false;

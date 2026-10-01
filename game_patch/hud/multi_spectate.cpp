@@ -238,7 +238,7 @@ FunHook<void(rf::Entity*, int, float)> spectate_entity_set_next_state_anim_hook{
     [](rf::Entity* entity, int state_anim_index, float transition_time) {
         // A seated rider whose character lacks the seated anims re-requests the state every frame and
         // never finishes. Seat-locked MP riders only, or an SP NPC would freeze mid STAND->WALK.
-        const bool turret_rider = vehicle_turret_rider_resolve_state_anim(entity, state_anim_index);
+        const bool turret_rider = vehicle_is_turret_rider_state(entity, state_anim_index);
         if ((turret_rider || vehicle_rider_pose_is_seat_locked(entity))
             && state_anim_index > rf::ENTITY_STATE_STAND
             && state_anim_index <= rf::ENTITY_STATE_CUSTOM
