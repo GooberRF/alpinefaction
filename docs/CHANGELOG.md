@@ -9,11 +9,6 @@ Version 1.5.0 (Trillium): Not yet released
   - Jeeps, APCs, drillers, fighters, submarines, and stationary turrets, spawned by the new `Vehicle Factory` object
   - Simulate vehicle physics with the Bullet physics engine
   - Multi-seat vehicles with driver, gunner, and passenger seats; `Use` boards the lowest free seat and number keys `1`-`6` switch seats
-- Add multiplayer minimap for levels that enable one in `Level Properties`
-  - Square minimap under the ammo counter showing the player, teammates, flags, control points and their names, the bag, the salvage flag, vehicle factories, enterable vehicles, and geomod craters; enemies are never shown
-  - Hold `Show Map` (default `Q`) to display a large map of the whole level with control point names and vehicle respawn countdowns
-  - Toggle with `cl_minimap`, rotate with the player using `cl_minimap_rotate`, hide control point names with `cl_minimap_labels`, and adjust with `cl_minimap_size` and `cl_minimap_zoom`
-  - Configure in the level editor from the `Minimap...` button in `Level Properties`, where `Bake from level` renders a top-down image of the level's brushes, terrain and terrain decorations with their textures and lighting, excluding the sky room, with an optional cut height for multi-floor levels
 - Add ray cast lightmap baking to level editor
   - Add `Invisible faces block light` and `Alpha-textured faces block light` level properties to control whether those faces occlude baked light
   - Add `No shadow cast` brush property for solid detail brushes and movers
@@ -92,6 +87,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Draw large rooms in fewer draw calls, and skip rooms without dynamic decals when drawing them (Direct3D 11 renderer only)
 - Make level editor refuse to open levels saved by a newer version of Alpine Faction instead of misreading them
 - Show assists on suicide and environmental death lines in chat and the kill feed, as on other kill messages
+- Add multiplayer minimap, configured in `Level Properties`
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Add `ui_color_console` console command to set the console background color
