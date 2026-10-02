@@ -793,7 +793,7 @@ namespace gr::d3d11
         render_cache->update_bone_transforms_buffer(ci, render_context_);
         render_cache->bind_buffers(render_context_, morphed);
 
-        draw_cached_mesh(lod_mesh, *render_cache, params, lod_index, skip_ambient_cache);
+        draw_cached_mesh(lod_mesh, *render_cache, params, lod_index, skip_ambient_cache, {});
     }
 
     const std::vector<BaseMeshRenderCache::Batch>* MeshRenderer::prepare_character_for_draw(
