@@ -16,7 +16,7 @@ static const char* search_overrides(const ButtonOverride (&table)[N], int button
     return nullptr;
 }
 
-// Maps SDL face-button labels to display strings.
+// Maps SDL face-button glyphs to display names.
 // Face button glyphs takes priority
 static const char* get_label_name(SDL_GamepadButtonLabel label)
 {
@@ -33,7 +33,7 @@ static const char* get_label_name(SDL_GamepadButtonLabel label)
     }
 }
 
-// shared names — shared by PlayStation and Steam Deck families.
+// shared glyphs
 // Provides L1/R1/L2/R2/L3/R3/L4/R4/L5/R5 and misc button names for buttons
 // not covered by a family-specific override table.
 static const ButtonOverride shared_glyphs[] = {
@@ -59,7 +59,8 @@ static const ButtonOverride xbox360_overrides[] = {
     {  6, "Start" },
 };
 
-// Xbox One/Series overrides — also used as fallback for Xbox 360
+// Xbox One/Series overrides
+// also used as fallback for Xbox 360
 static const ButtonOverride xboxone_overrides[] = {
     {  4, "View"     },
     {  5, "Xbox"     },
@@ -190,11 +191,8 @@ static SDL_GamepadType icon_type_to_sdl(ControllerIconType icon)
         case ControllerIconType::PS4:              return SDL_GAMEPAD_TYPE_PS4;
         case ControllerIconType::PS5:              return SDL_GAMEPAD_TYPE_PS5;
         case ControllerIconType::NintendoSwitch:   return SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_PRO;
-#if SDL_VERSION_ATLEAST(3, 2, 0)
         case ControllerIconType::NintendoGameCube: return SDL_GAMEPAD_TYPE_GAMECUBE;
-#endif
-        // Steam hardware uses Xbox-style A/B/X/Y face labels
-        case ControllerIconType::Steam:            return SDL_GAMEPAD_TYPE_XBOXONE;
+        case ControllerIconType::Steam:            return SDL_GAMEPAD_TYPE_STEAM;
         default:                                   return SDL_GAMEPAD_TYPE_UNKNOWN;
     }
 }
@@ -213,6 +211,7 @@ static ControllerIconType sdl_type_to_icon(SDL_GamepadType type)
         case SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_LEFT:
         case SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_RIGHT:  return ControllerIconType::NintendoSwitch;
         case SDL_GAMEPAD_TYPE_GAMECUBE:                      return ControllerIconType::NintendoGameCube;
+        case SDL_GAMEPAD_TYPE_STEAM:                         return ControllerIconType::Steam;
         default:                                             return ControllerIconType::Generic;
     }
 }
@@ -245,8 +244,7 @@ static bool uses_shared_glyphs(ControllerIconType type)
 const char* gamepad_get_button_display_name(ControllerIconType type, int button_idx)
 {
     // Tier 1: SDL face-button label (buttons 0–3).
-    // SDL handles per-controller A/B/X/Y label mapping including Switch A/B swap.
-    // Generic/Auto have no SDL type (→ UNKNOWN), so this tier is naturally skipped for them.
+    // SDL's A/B/X/Y glyphs, including Nintendo layout swap.
     if (button_idx >= 0 && button_idx < 4) {
         SDL_GamepadType sdl_type = icon_type_to_sdl(type);
         if (sdl_type != SDL_GAMEPAD_TYPE_UNKNOWN) {
@@ -310,7 +308,7 @@ const char* gamepad_get_effective_display_name(ControllerIconType icon_pref, SDL
     ControllerIconType type;
     if (icon_pref == ControllerIconType::Auto) {
         SDL_GamepadType sdl_type = ctrl ? SDL_GetGamepadType(ctrl) : SDL_GAMEPAD_TYPE_UNKNOWN;
-        type = get_steam_virtual_controller_detection(ctrl, sdl_type_to_icon(sdl_type));
+        type = sdl_type_to_icon(sdl_type);
     } else {
         type = icon_pref;
     }
