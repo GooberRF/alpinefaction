@@ -9,11 +9,13 @@
 #include <string>
 #include <vector>
 #include <xlog/xlog.h>
+#include <patch_common/CodeInjection.h>
 #include <common/utils/list-utils.h>
 #include <common/utils/string-utils.h>
 #include "vehicle.h"
 #include "vehicle_markers.h"
 #include "../alpine_packets.h"
+#include "../multi.h"
 #include "../../graphics/gr_ghost_mesh.h"
 #include "../../hud/hud_internal.h"
 #include "../../hud/hud_world.h"
@@ -106,6 +108,7 @@ namespace
     // Bounded by the live hull count, which the factory count bounds in turn.
     std::vector<HullMarker> g_hull_markers;
     std::vector<std::pair<int, int64_t>> g_hull_scratch; // reused; never freed while rendering
+    int g_hull_scratch_frame = -1;
     std::vector<HullHealthBar> g_health_bars; // bounded by the live hull count
     rf::Entity* g_viewer_hull = nullptr;
     int g_viewer_hull_frame = -1;
@@ -406,6 +409,7 @@ void vehicle_markers_level_init()
     g_marker_meshes.clear();
     g_hull_markers.clear();
     g_hull_scratch.clear();
+    g_hull_scratch_frame = -1;
     g_health_bars.clear();
     g_viewer_hull = nullptr;
     g_viewer_hull_frame = -1;
@@ -507,6 +511,10 @@ static void vehicle_markers_render_pass(rf::GRoom* room_filter)
         if (fade <= 0.0f) {
             continue;
         }
+        const bool room_known = m.room_resolved;
+        if (room_known && !marker_pass_takes(m.room, room_filter)) {
+            continue;
+        }
 
         const bool pending = ui->state == AF_VEHICLE_FACTORY_PENDING;
         const int64_t ms_left = pending ? std::max<int64_t>(ui->deadline_ms - now, 0) : 0;
@@ -525,7 +533,7 @@ static void vehicle_markers_render_pass(rf::GRoom* room_filter)
         // Lift by the scaled half-height of the taller quad so its bottom edge clears the hull at any distance.
         anchor.y += 0.5f * std::max(marker_label_height, line2_height) * world_hud_label_scale(anchor, false);
 
-        if (!marker_pass_takes(factory_marker_room(m, anchor), room_filter)) {
+        if (!room_known && !marker_pass_takes(factory_marker_room(m, anchor), room_filter)) {
             continue;
         }
 
@@ -569,9 +577,12 @@ static void vehicle_markers_render_pass(rf::GRoom* room_filter)
     }
 
     // Second marker type: the auto-return countdown, riding the hull rather than the factory.
-    g_hull_scratch.clear();
-    vehicle_unoccupied_hulls(g_hull_scratch);
-    hull_markers_retain(g_hull_scratch);
+    if (g_hull_scratch_frame != rf::frame_count) {
+        g_hull_scratch.clear();
+        vehicle_unoccupied_hulls(g_hull_scratch);
+        hull_markers_retain(g_hull_scratch);
+        g_hull_scratch_frame = rf::frame_count;
+    }
     for (const auto& [handle, deadline_ms] : g_hull_scratch) {
         rf::Entity* ep = rf::entity_from_handle(handle);
         if (!ep || rf::entity_is_dying(ep)) {
@@ -599,7 +610,6 @@ static void vehicle_markers_render_pass(rf::GRoom* room_filter)
         rf::Vector3 anchor = ep->pos;
         anchor.y += hull_anchor_height(ep) + marker_anchor_margin;
         const float scale = world_hud_label_scale(anchor, false);
-        // Lift by the scaled half-height of the quad so its bottom edge clears the hull at any distance.
         anchor.y += 0.5f * height * scale;
         // The health bar sits below.
         anchor.y += (marker_bar_height + marker_bar_countdown_gap) * scale
@@ -615,12 +625,17 @@ static void vehicle_markers_render_pass(rf::GRoom* room_filter)
     }
 }
 
-void vehicle_markers_render_room(rf::GRoom* room)
-{
-    if (room) {
-        vehicle_markers_render_pass(room);
-    }
-}
+// The room's liquid surface is rendered a few instructions later, so a marker queued here is
+// blended under the water instead of being depth-rejected by it.
+static CodeInjection before_room_liquid_render_hook{
+    0x004D40F6,
+    [](auto& regs) {
+        rf::GRoom* room = regs.edi;
+        if (!is_headless_mode() && room) {
+            vehicle_markers_render_pass(room);
+        }
+    },
+};
 
 void vehicle_markers_render()
 {
@@ -632,4 +647,9 @@ void vehicle_markers_render()
         health_bars_refresh(timer::get_i64(1000));
     }
     vehicle_markers_render_pass(nullptr);
+}
+
+void vehicle_markers_apply_patch()
+{
+    before_room_liquid_render_hook.install();
 }

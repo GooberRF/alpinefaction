@@ -219,18 +219,6 @@ CodeInjection after_level_render_hook{
     },
 };
 
-// The room's liquid surface is rendered a few instructions later, so a marker queued here is
-// blended under the water instead of being depth-rejected by it.
-CodeInjection before_room_liquid_render_hook{
-    0x004D40F6,
-    [](auto& regs) {
-        if (!is_headless_mode()) {
-            rf::GRoom* room = regs.edi;
-            vehicle_markers_render_room(room);
-        }
-    },
-};
-
 CodeInjection after_frame_render_hook{
     0x004B2DC2,
     [] {
@@ -630,7 +618,6 @@ extern "C" DWORD __declspec(dllexport) Init([[maybe_unused]] void* unused)
     cleanup_game_hook.install();
     rf_do_frame_hook.install();
     after_level_render_hook.install();
-    before_room_liquid_render_hook.install();
     after_frame_render_hook.install();
     level_load_hook.install();
     level_init_post_hook.install();

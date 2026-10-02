@@ -16,7 +16,7 @@ namespace alpine_lighting
 inline constexpr float max_mesh_ambient_texel = 254.0f / 255.0f;
 
 // A level ambient byte as the level loader (0x004618B0) hands it to light_set_ambient: times the float 1/255.
-inline float level_ambient_channel(std::uint8_t c)
+inline float level_ambient_channel(uint8_t c)
 {
     return static_cast<float>(c) * (1.0f / 255.0f);
 }

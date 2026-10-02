@@ -25,7 +25,6 @@
 #include "gr_d3d11_context.h"
 #include "gr_d3d11_shader.h"
 #include "../../object/object.h"
-#include "../../multi/vehicles/vehicle.h"
 #include "../../multi/vehicles/vehicle_render.h"
 #include "../gr_ghost_mesh.h"
 
@@ -1335,6 +1334,9 @@ namespace gr
                            float alpha_below, float alpha_above, float fill_y, const rf::Color* tint)
     {
         if (!mesh || rf::gr::screen.mode != rf::gr::DIRECT3D || !is_d3d11()) {
+            return false;
+        }
+        if (rf::vmesh_get_type(mesh) == rf::MESH_TYPE_ANIM_FX) {
             return false;
         }
         if (!std::isfinite(alpha_below) || !std::isfinite(alpha_above) || !std::isfinite(fill_y)) {

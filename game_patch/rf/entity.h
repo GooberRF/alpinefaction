@@ -22,12 +22,15 @@ namespace rf
         EF_GIB_ON_DEATH = 0x80,
         EF_IN_WATER = 0x1000,
         EF_EYE_UNDER_WATER = 0x2000,
+        EF_BOARDED = 0x10000, // set by boarding (0x004A1E7F) and the level's "boarded" property (0x0041895D)
         EF_CUSTOM_CORPSE = 0x2000000,
     };
 
     enum EntityFlags2
     {
         EF2_NO_SHADOW = 0x2,
+        EF2_DRILL_CONTACT = 0x40, // the driller's bit is touching something (0x004214F0)
+        EF2_NO_EXIT = 0x80,       // riders cannot get out of this host (0x004A19AB)
         EF2_POWERUP_DAMAGE_AMP = 0x20000,
         EF2_POWERUP_INVULNERABLE = 0x40000,
         EF2_POWERUP_NANO_SHIELD = 0x80000,
@@ -268,10 +271,14 @@ namespace rf
         float weapon_specific_spine_adjustments[64];
     };
     static_assert(sizeof(EntityInfo) == 0x1514);
+    static_assert(offsetof(EntityInfo, vmesh_filename) == 0x8);
+    static_assert(offsetof(EntityInfo, max_life) == 0x44);
     static_assert(offsetof(EntityInfo, use_function) == 0x1B4);
     static_assert(offsetof(EntityInfo, flags) == 0x724);
     static_assert(offsetof(EntityInfo, num_state_anims) == 0x754);
     static_assert(offsetof(EntityInfo, state_anims) == 0x75C);
+    static_assert(offsetof(EntityInfo, squash_sounds_id) == 0x174);
+    static_assert(offsetof(EntityInfo, cockpit_vfx_filename) == 0x13CC);
 
     constexpr int MAX_ENTITY_TYPES = 75;
     static auto& num_entity_types = addr_as_ref<int>(0x0062F2D0);
@@ -439,7 +446,9 @@ namespace rf
     };
     static_assert(sizeof(Entity) == 0x1494);
     static_assert(offsetof(Entity, interface_points) == 0x8CC);
+    static_assert(offsetof(Entity, entity_flags2) == 0x814);
     static_assert(offsetof(Entity, driller_sound_handle) == 0x13D0);
+    static_assert(offsetof(Entity, driller_geomod_count) == 0x1470);
 
     struct EntityFireInfo
     {
@@ -492,6 +501,7 @@ namespace rf
         addr_as_ref<Entity*(int entity_type, const char* name, int parent_handle, const Vector3& pos,
         const Matrix3& orient, int create_flags, int mp_character)>(0x00422360);
     static auto& entity_maybe_die = addr_as_ref<void(Entity* ep)>(0x0041FDC0);
+    static auto& entity_calc_eye_pos = addr_as_ref<void(Entity* ep)>(0x004194E0);
     static auto& entity_get_first_leech = addr_as_ref<int(Entity* ep)>(0x00427DA0);
     static auto& entity_is_dying = addr_as_ref<bool(Entity *ep)>(0x00427020);
     static auto& entity_is_on_turret = addr_as_ref<bool(Entity* ep)>(0x00429F90);

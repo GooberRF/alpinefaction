@@ -478,7 +478,7 @@ CodeInjection players_cleanup_injection{
 CodeInjection player_fpgun_get_muzzle_tag_pos_null_guard{
     0x004AD74B,
     [](auto& regs) {
-        auto* pp = reinterpret_cast<rf::Player*>(static_cast<uintptr_t>(regs.esi));
+        rf::Player* pp = regs.esi;
         if (!pp->weapon_mesh_handle) {
             regs.esp += 4;
             regs.eip = 0x004AD731;

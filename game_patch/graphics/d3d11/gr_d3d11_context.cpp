@@ -111,6 +111,7 @@ namespace gr::d3d11
         std::array<float, 4> uv0_offset;
     };
     static_assert(sizeof(ModelTransformBufferData) % 16 == 0);
+    static_assert(offsetof(ModelTransformBufferData, uv0_offset) == 48);
 
     ModelTransformBuffer::ModelTransformBuffer(ID3D11Device* device) :
         current_model_pos_{NAN, NAN, NAN},

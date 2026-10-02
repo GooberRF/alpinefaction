@@ -220,6 +220,20 @@ const GlareClassInfo* glare_tbl_find(const char* glare_name);
 
 // ─── Entities ──────────────────────────────────────────────────────────────
 
+// $Use: values, mirroring rf::EntityUseFunction.
+enum EntityUseFunction
+{
+    ENTITY_USE_NONE = 0,
+    ENTITY_USE_VEHICLE = 1,
+    ENTITY_USE_SWITCH = 2,
+    ENTITY_USE_COMMAND = 3,
+    ENTITY_USE_TURRET = 4,
+    ENTITY_USE_MONITOR = 5,
+    ENTITY_USE_MEDIC = 6,
+    ENTITY_USE_AI_RESPONSE = 9,
+    ENTITY_USE_PLAY_SOUND = 10,
+};
+
 struct EntityClassInfo {
     std::string class_name;
     std::string v3d_filename;

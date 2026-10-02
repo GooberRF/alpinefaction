@@ -98,6 +98,7 @@ struct EphemeralWorldHUDString
 {
     rf::Vector3 pos;
     uint8_t player_id;
+    int hull_handle = -1; // a non-player victim's server handle, so two hulls' numbers stay apart
     uint16_t damage;
     WorldHUDRenderMode render_mode = WorldHUDRenderMode::overdraw;
     HighResTimer timestamp;
@@ -124,15 +125,11 @@ void populate_fullscreen_overlay_events();
 void fullscreen_overlay_do_frame();
 void hud_world_level_unload();
 void add_location_ping_world_hud_sprite(rf::Vector3 pos, std::string player_name, int player_id);
-void add_damage_notify_world_hud_string(rf::Vector3 pos, uint8_t damaged_player_id, uint16_t damage, bool died,
-                                       bool crit = false);
+void add_damage_notify_world_hud_string(rf::Vector3 pos, uint8_t damaged_player_id, int hull_handle, uint16_t damage,
+                                       bool died, bool crit = false);
 void do_render_world_hud_sprite(rf::Vector3 pos, float base_scale, int bitmap_handle, WorldHUDRenderMode render_mode,
                                 bool stay_inside_fog, bool distance_scaling, bool only_draw_during_gameplay);
-void render_string_3d_pos_new(const rf::Vector3& pos, const std::string& text, int offset_x, int offset_y,
-    int font, rf::ubyte r, rf::ubyte g, rf::ubyte b, rf::ubyte a);
-int get_world_hud_font(const float world_hud_text_scale);
 int get_world_hud_label_bitmap_font();
-WorldHUDView make_world_hud_view(rf::Vector3 pos, bool stay_inside_fog = true);
 float world_hud_label_scale(const rf::Vector3& pos, bool stay_inside_fog);
 bool world_hud_ensure_text_label(NameLabelTex& slot, const std::string& text, int font);
 void world_hud_release_text_label(NameLabelTex& slot);
@@ -143,5 +140,7 @@ void do_render_world_hud_rect(const rf::Vector3& pos, float vertical_offset, flo
     float width_world, float height_world, WorldHUDRenderMode render_mode, bool stay_inside_fog,
     bool distance_scaling, rf::Color color);
 rf::Vector3 koth_hill_icon_pos(const HillInfo& h);
+// The RGB of a packed config colour, with the given alpha.
+rf::Color hud_color_from_packed(uint32_t packed, rf::ubyte alpha = 255);
 // Red/blue from the outline team colours; white for no team.
 rf::Color hud_team_color(int team, rf::ubyte alpha = 255);

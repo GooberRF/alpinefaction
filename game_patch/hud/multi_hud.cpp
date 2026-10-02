@@ -2592,13 +2592,14 @@ ConsoleCommand2 ui_runtimer_cmd{
 
 ConsoleCommand2 cl_vehiclemarkers_cmd{
     "cl_vehiclemarkers",
-    [] {
-        g_alpine_game_config.vehicle_respawn_markers = !g_alpine_game_config.vehicle_respawn_markers;
+    [](std::optional<bool> enabled) {
+        g_alpine_game_config.vehicle_respawn_markers =
+            enabled.value_or(!g_alpine_game_config.vehicle_respawn_markers);
         rf::console::print("Vehicle factory respawn markers are {}",
             g_alpine_game_config.vehicle_respawn_markers ? "enabled" : "disabled");
     },
     "Toggle vehicle factory respawn markers and their spawn cues",
-    "cl_vehiclemarkers",
+    "cl_vehiclemarkers [bool]",
 };
 
 ConsoleCommand2 cl_vehiclehealthbars_cmd{

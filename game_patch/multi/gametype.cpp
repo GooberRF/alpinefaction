@@ -16,6 +16,7 @@
 #include "gungame.h"
 #include "salvage.h"
 #include "vehicles/vehicle.h"
+#include "vehicles/vehicle_render.h"
 #include "vehicles/vehicle_markers.h"
 #include "vehicles/vehicle_physics.h"
 #include "multi.h"
@@ -1221,6 +1222,12 @@ static void koth_maybe_grant_lockdown(const HillInfo& captured, HillOwner new_ow
     }
 }
 
+// HO_Neutral 0 / HO_Red 1 / HO_Blue 2 maps onto a Vehicle Factory's -1 none / 0 red / 1 blue.
+static int hill_owner_factory_team(HillOwner owner)
+{
+    return static_cast<int>(owner) - 1;
+}
+
 static void koth_apply_ownership(HillInfo& h, HillOwner new_owner, bool announce = true, HillOwner scoring_team = HillOwner::HO_Neutral)
 {
     if (gt_is_rev() && new_owner == HillOwner::HO_Blue)
@@ -1261,10 +1268,9 @@ static void koth_apply_ownership(HillInfo& h, HillOwner new_owner, bool announce
             koth_update_respawn_points(&h);
         }
 
-        // Linked Vehicle Factories follow the point's owner. HO_Neutral 0 / HO_Red 1 / HO_Blue 2
-        // maps onto the factory's -1 none / 0 red / 1 blue.
+        // Linked Vehicle Factories follow the point's owner.
         for (int factory_index : h.vehicle_factories) {
-            vehicle_factory_set_team(factory_index, static_cast<int>(new_owner) - 1);
+            vehicle_factory_set_team(factory_index, hill_owner_factory_team(new_owner));
         }
 
         if (new_owner == HillOwner::HO_Red || new_owner == HillOwner::HO_Blue) {
@@ -2135,7 +2141,7 @@ static void hill_mode_apply_linked_factory_teams()
             continue; // a neutral hill leaves the factory's authored team alone
 
         for (int factory_index : hill.vehicle_factories) {
-            vehicle_factory_set_team(factory_index, static_cast<int>(hill.ownership) - 1, false);
+            vehicle_factory_set_team(factory_index, hill_owner_factory_team(hill.ownership), false);
         }
     }
 }
@@ -2188,7 +2194,7 @@ CodeInjection multi_level_init_gametypes_injection{
         wipeout_level_init();
         gungame_level_init();
         vehicle_level_init();
-        vehicle_physics_level_init();
+        vehicle_physics_level_reset();
         riot_shield_on_multi_level_init();
     },
 };

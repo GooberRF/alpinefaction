@@ -23,18 +23,26 @@ void hud_vehicle_bar_fill_color(float frac, rf::ubyte& r, rf::ubyte& g, rf::ubyt
 {
     a = 200;
     if (frac > 0.60f) {
-        r = 0; g = 190; b = 40;
+        r = 0;
+        g = 190;
+        b = 40;
         return;
     }
     if (frac > 0.35f) {
-        r = 215; g = 200; b = 0;
+        r = 215;
+        g = 200;
+        b = 0;
         return;
     }
     if (frac > 0.15f) {
-        r = 230; g = 130; b = 0;
+        r = 230;
+        g = 130;
+        b = 0;
         return;
     }
-    r = 200; g = 30; b = 30;
+    r = 200;
+    g = 30;
+    b = 30;
 }
 
 namespace
@@ -70,87 +78,87 @@ namespace
                                       + rf::hud_coords[rf::hud_envirosuit_value_width_and_height].y);
         return bottom;
     }
+
+    // Drawn under the rider's own health/armor cluster, not instead of it.
+    void hud_draw_vehicle_status(rf::Entity* entity, float scale)
+    {
+        rf::Entity* vehicle = vehicle_ridden_hull(entity);
+        if (!vehicle) {
+            return;
+        }
+
+        const int bar_x_unscaled = rf::hud_coords[rf::hud_envirosuit].x;
+        const int bar_y_unscaled = hud_status_cluster_bottom(entity) + hud_vehicle_panel_gap;
+        const int bar_w_unscaled = rf::hud_coords[rf::hud_envirosuit_value_ul_corner].x
+            + rf::hud_coords[rf::hud_envirosuit_value_width_and_height].x - bar_x_unscaled;
+
+        rf::HudPoint pos = hud_scale_coords(rf::HudPoint{bar_x_unscaled, bar_y_unscaled}, scale);
+        const int w = std::max(8, static_cast<int>(bar_w_unscaled * scale));
+        const int h = std::max(6, static_cast<int>(hud_vehicle_bar_height * scale));
+
+        // Keep the whole bar on screen whatever hud.tbl and the scale produce.
+        pos.x -= std::max(0, pos.x + w - rf::gr::clip_width());
+        pos.y -= std::max(0, pos.y + h - rf::gr::clip_height());
+
+        const float max_life = vehicle_hud_max_life(vehicle);
+        const float life = vehicle_hud_life(vehicle);
+        const float frac = max_life > 0.0f ? std::clamp(life / max_life, 0.0f, 1.0f) : 1.0f;
+
+        const int border = std::max(1, static_cast<int>(std::lround(scale)));
+        const int inner_x = pos.x + border;
+        const int inner_y = pos.y + border;
+        const int inner_w = std::max(1, w - 2 * border);
+        const int inner_h = std::max(1, h - 2 * border);
+
+        rf::gr::set_color(0, 0, 0, 150);
+        rf::gr::rect(pos.x, pos.y, w, h);
+
+        if (frac > 0.0f) {
+            rf::ubyte r, g, b, a;
+            hud_vehicle_bar_fill_color(frac, r, g, b, a);
+            rf::gr::set_color(r, g, b, a);
+            // Rounded rather than truncated, so a full hull reaches the far edge.
+            rf::gr::rect(inner_x, inner_y, std::clamp(static_cast<int>(std::lround(inner_w * frac)), 1, inner_w),
+                         inner_h);
+        }
+
+        rf::gr::set_color(150, 150, 150, 170);
+        hud_rect_border(pos.x, pos.y, w, h, border);
+
+        // No ascent metric exists - both engine helpers return the whole LINE height - so th/6
+        // approximates the empty descender space and pulls the digits off the visual high side.
+        const int font_id = rf::hud_status_font;
+        auto life_str = std::to_string(std::max(static_cast<int>(life), 0));
+        const int th = rf::gr::get_string_size(life_str, font_id).second;
+        const int text_x = inner_x + inner_w / 2;
+        const int text_y = inner_y + (inner_h - th + 1) / 2 + th / 6;
+
+        rf::gr::set_color(0, 0, 0, 220);
+        rf::gr::string_aligned(rf::gr::ALIGN_CENTER, text_x + border, text_y + border, life_str.c_str(), font_id);
+        rf::gr::set_color(255, 255, 255, 255);
+        rf::gr::string_aligned(rf::gr::ALIGN_CENTER, text_x, text_y, life_str.c_str(), font_id);
+    }
+
+    // Retargets hud_status_render's entity_in_vehicle call (0x00439DA0). Answering false lands on
+    // 0x00439F58 with the registers the on-foot path expects, clear of the FunHook on 0x00439D80.
+    bool __cdecl hud_status_rider_hides_own_status(rf::Entity* ep)
+    {
+        if (rf::is_multi && vehicle_ridden_hull(ep)) {
+            return false;
+        }
+        return rf::entity_in_vehicle(ep);
+    }
+
+    // A rider whose vehicle widget this module draws for itself, or null.
+    rf::Entity* hud_status_widget_rider(rf::Player* player)
+    {
+        rf::Entity* rider = rf::entity_from_handle(player->entity_handle);
+        if (!rf::is_multi || !rf::gameseq_in_gameplay()) {
+            return nullptr;
+        }
+        return vehicle_ridden_hull(rider) ? rider : nullptr;
+    }
 } // namespace
-
-// Drawn under the rider's own health/armor cluster, not instead of it.
-static void hud_draw_vehicle_status(rf::Entity* entity, float scale)
-{
-    rf::Entity* vehicle = vehicle_ridden_hull(entity);
-    if (!vehicle) {
-        return;
-    }
-
-    const int bar_x_unscaled = rf::hud_coords[rf::hud_envirosuit].x;
-    const int bar_y_unscaled = hud_status_cluster_bottom(entity) + hud_vehicle_panel_gap;
-    const int bar_w_unscaled = rf::hud_coords[rf::hud_envirosuit_value_ul_corner].x
-        + rf::hud_coords[rf::hud_envirosuit_value_width_and_height].x - bar_x_unscaled;
-
-    rf::HudPoint pos = hud_scale_coords(rf::HudPoint{bar_x_unscaled, bar_y_unscaled}, scale);
-    const int w = std::max(8, static_cast<int>(bar_w_unscaled * scale));
-    const int h = std::max(6, static_cast<int>(hud_vehicle_bar_height * scale));
-
-    // Keep the whole bar on screen whatever hud.tbl and the scale produce.
-    pos.x -= std::max(0, pos.x + w - rf::gr::clip_width());
-    pos.y -= std::max(0, pos.y + h - rf::gr::clip_height());
-
-    const float max_life = vehicle_hud_max_life(vehicle);
-    const float life = vehicle_hud_life(vehicle);
-    const float frac = max_life > 0.0f ? std::clamp(life / max_life, 0.0f, 1.0f) : 1.0f;
-
-    const int border = std::max(1, static_cast<int>(std::lround(scale)));
-    const int inner_x = pos.x + border;
-    const int inner_y = pos.y + border;
-    const int inner_w = std::max(1, w - 2 * border);
-    const int inner_h = std::max(1, h - 2 * border);
-
-    rf::gr::set_color(0, 0, 0, 150);
-    rf::gr::rect(pos.x, pos.y, w, h);
-
-    if (frac > 0.0f) {
-        rf::ubyte r, g, b, a;
-        hud_vehicle_bar_fill_color(frac, r, g, b, a);
-        rf::gr::set_color(r, g, b, a);
-        // Rounded rather than truncated, so a full hull reaches the far edge.
-        rf::gr::rect(inner_x, inner_y, std::clamp(static_cast<int>(std::lround(inner_w * frac)), 1, inner_w),
-                     inner_h);
-    }
-
-    rf::gr::set_color(150, 150, 150, 170);
-    hud_rect_border(pos.x, pos.y, w, h, border);
-
-    // No ascent metric exists - both engine helpers return the whole LINE height - so th/6
-    // approximates the empty descender space and pulls the digits off the visual high side.
-    const int font_id = rf::hud_status_font;
-    auto life_str = std::to_string(std::max(static_cast<int>(life), 0));
-    const int th = rf::gr::get_string_size(life_str, font_id).second;
-    const int text_x = inner_x + inner_w / 2;
-    const int text_y = inner_y + (inner_h - th + 1) / 2 + th / 6;
-
-    rf::gr::set_color(0, 0, 0, 220);
-    rf::gr::string_aligned(rf::gr::ALIGN_CENTER, text_x + border, text_y + border, life_str.c_str(), font_id);
-    rf::gr::set_color(255, 255, 255, 255);
-    rf::gr::string_aligned(rf::gr::ALIGN_CENTER, text_x, text_y, life_str.c_str(), font_id);
-}
-
-// Retargets hud_status_render's entity_in_vehicle call (0x00439DA0). Answering false lands on
-// 0x00439F58 with the registers the on-foot path expects, clear of the FunHook on 0x00439D80.
-static bool __cdecl hud_status_rider_hides_own_status(rf::Entity* ep)
-{
-    if (rf::is_multi && vehicle_ridden_hull(ep)) {
-        return false;
-    }
-    return rf::entity_in_vehicle(ep);
-}
-
-// A rider whose vehicle widget this module draws for itself, or null.
-static rf::Entity* hud_status_widget_rider(rf::Player* player)
-{
-    rf::Entity* rider = rf::entity_from_handle(player->entity_handle);
-    if (!rf::is_multi || !rf::gameseq_in_gameplay()) {
-        return nullptr;
-    }
-    return vehicle_ridden_hull(rider) ? rider : nullptr;
-}
 
 FunHook<void(rf::Player*)> hud_status_render_hook{
     0x00439D80,

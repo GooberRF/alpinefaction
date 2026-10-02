@@ -404,11 +404,8 @@ void snd_update_ambient_sounds(const rf::Vector3& camera_pos)
     }
 }
 
-// entity_process_post starts the fighter's held-fire $Launch loop with the 2D snd_play
-// (0x0041E680), which leaves is_3d_sound clear, so the snd_change_3d a few instructions
-// earlier is a no-op for the whole life of the loop: it plays centred at full volume for
-// every listener at any distance. Play it 3D instead; the existing snd_change_3d then
-// tracks the fighter every frame.
+// Stock starts the fighter's held-fire loop with the 2D snd_play, so it plays at full volume everywhere; start it 3D.
+// No trampoline: this replaces the whole relative CALL, and the caller's add esp,0x10 (0x0041E685) pops its args.
 CodeInjection entity_process_post_fighter_fire_loop_injection{
     0x0041E680,
     [](auto& regs) {

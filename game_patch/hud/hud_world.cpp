@@ -232,6 +232,12 @@ void build_world_hud_sprite_icons() {
     }
 }
 
+rf::Color hud_color_from_packed(uint32_t packed, rf::ubyte alpha)
+{
+    const auto [r, g, b, a] = extract_color_components(packed);
+    return {static_cast<rf::ubyte>(r), static_cast<rf::ubyte>(g), static_cast<rf::ubyte>(b), alpha};
+}
+
 rf::Color hud_team_color(int team, rf::ubyte alpha)
 {
     if (team != rf::TEAM_RED && team != rf::TEAM_BLUE) {
@@ -239,8 +245,7 @@ rf::Color hud_team_color(int team, rf::ubyte alpha)
     }
     const uint32_t packed = team == rf::TEAM_RED ? g_alpine_game_config.outlines_color_team_r
                                                  : g_alpine_game_config.outlines_color_team_b;
-    const auto [r, g, b, a] = extract_color_components(packed);
-    return {static_cast<rf::ubyte>(r), static_cast<rf::ubyte>(g), static_cast<rf::ubyte>(b), alpha};
+    return hud_color_from_packed(packed, alpha);
 }
 
 rf::Vector3 koth_hill_icon_pos(const HillInfo& h)
@@ -272,7 +277,7 @@ static float koth_fill_scale_from_progress(uint8_t progress01_100, float base_ic
     return base_icon_scale * g_koth_hud_tuning.fill_vs_ring_scale * r;
 }
 
-void render_string_3d_pos_new(const rf::Vector3& pos, const std::string& text, int offset_x, int offset_y,
+static void render_string_3d_pos_new(const rf::Vector3& pos, const std::string& text, int offset_x, int offset_y,
     int font, rf::ubyte r, rf::ubyte g, rf::ubyte b, rf::ubyte a)
 {
     rf::gr::Vertex dest;
@@ -293,7 +298,7 @@ void render_string_3d_pos_new(const rf::Vector3& pos, const std::string& text, i
     }
 }
 
-WorldHUDView make_world_hud_view(rf::Vector3 pos, bool stay_inside_fog)
+static WorldHUDView make_world_hud_view(rf::Vector3 pos, bool stay_inside_fog = true)
 {
     WorldHUDView v{pos, 1.0f};
 
@@ -411,8 +416,7 @@ bool world_hud_ensure_text_label(NameLabelTex& slot, const std::string& text, in
     if (slot.bm != -1 && slot.w_px > 0 && slot.h_px > 0 && slot.text == text && slot.font == font)
         return true;
 
-    // gr_string_render_into_bitmap is hooked (gr_font.cpp, 0x005203A0) and renders Alpine TrueType
-    // font ids through draw_into_bitmap, so the font id is passed through unclamped.
+    // Unclamped: the hooked string_render_into_bitmap (0x005203A0) also renders Alpine TrueType font ids.
     const auto [tw, th] = rf::gr::get_string_size(text, font);
 
     // A zero measurement means the font is not usable yet, so leave the slot unbuilt and retry later.
@@ -533,7 +537,8 @@ bool hill_vis_contested(HillInfo& h)
     return h.vis_contested;
 }
 
-int get_world_hud_font(const float world_hud_text_scale) {
+static int get_world_hud_font(const float world_hud_text_scale)
+{
     static constexpr int base_font_size = 14;
     static std::unordered_map<int, int> font_cache;
 
@@ -646,17 +651,20 @@ static void render_koth_icon_for_hill(const HillInfo& h, WorldHUDRenderMode rm)
     const int font = get_world_hud_label_bitmap_font();
     NameLabelTex& lbl = ensure_hill_name_tex(h, font);
 
-    const float text_h_world = ring_scale * 0.55f;
-    const float aspect = (lbl.w_px > 0 && lbl.h_px > 0) ? float(lbl.w_px) / float(lbl.h_px) : 1.0f;
-    const float text_w_world = text_h_world * aspect;
-
-    const rf::Vector3 up = camera_up();
-    const float margin = ring_scale * -0.4f;
-    const rf::Vector3 text_pos = view.pos + up * (ring_scale + margin + 0.5f * text_h_world);
-
     rf::gr::set_color(255, 255, 255, 255);
-    rf::gr::set_texture(lbl.bm, -1);
-    rf::gr::bitmap_3d_angle_wh(&const_cast<rf::Vector3&>(text_pos), 0.0f, text_w_world, text_h_world, bitmap_mode_from(rm));
+    if (lbl.bm != -1) {
+        const float text_h_world = ring_scale * 0.55f;
+        const float aspect = (lbl.w_px > 0 && lbl.h_px > 0) ? float(lbl.w_px) / float(lbl.h_px) : 1.0f;
+        const float text_w_world = text_h_world * aspect;
+
+        const rf::Vector3 up = camera_up();
+        const float margin = ring_scale * -0.4f;
+        const rf::Vector3 text_pos = view.pos + up * (ring_scale + margin + 0.5f * text_h_world);
+
+        rf::gr::set_texture(lbl.bm, -1);
+        rf::gr::bitmap_3d_angle_wh(&const_cast<rf::Vector3&>(text_pos), 0.0f, text_w_world, text_h_world,
+                                   bitmap_mode_from(rm));
+    }
 
     // icon ring
     rf::gr::set_texture(ring_bmp, -1);
@@ -1540,8 +1548,8 @@ void add_location_ping_world_hud_sprite(rf::Vector3 pos, std::string player_name
     ephemeral_world_hud_sprites.push_back(es);
 }
 
-void add_damage_notify_world_hud_string(rf::Vector3 pos, uint8_t damaged_player_id, uint16_t damage, bool died,
-                                       bool crit)
+void add_damage_notify_world_hud_string(rf::Vector3 pos, uint8_t damaged_player_id, int hull_handle, uint16_t damage,
+                                       bool died, bool crit)
 {
     if (!g_alpine_game_config.world_hud_damage_numbers) {
         return; // turned off
@@ -1551,10 +1559,12 @@ void add_damage_notify_world_hud_string(rf::Vector3 pos, uint8_t damaged_player_
 
     // Use cumulative damage values for the same player_id unless disabled
     if (!g_alpine_game_config.world_hud_alt_damage_indicators) {
-        // Search for an existing entry with the same player_id
+        // Search for an existing entry with the same victim
         auto it = std::find_if(
             ephemeral_world_hud_strings.begin(), ephemeral_world_hud_strings.end(),
-            [damaged_player_id](const EphemeralWorldHUDString& es) { return es.player_id == damaged_player_id; });
+            [damaged_player_id, hull_handle](const EphemeralWorldHUDString& es) {
+                return es.player_id == damaged_player_id && es.hull_handle == hull_handle;
+            });
 
         if (it != ephemeral_world_hud_strings.end()) {
             // If found, sum the damage values and remove the old entry
@@ -1567,6 +1577,7 @@ void add_damage_notify_world_hud_string(rf::Vector3 pos, uint8_t damaged_player_
     EphemeralWorldHUDString es;
     es.pos = pos;
     es.player_id = damaged_player_id;
+    es.hull_handle = hull_handle;
     es.damage = damage;
     es.timestamp.set_ms(1000);
     es.float_away = true;

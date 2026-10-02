@@ -11,35 +11,20 @@
 #include <common/utils/string-utils.h>
 #include <common/vehicle_meshes.h>
 #include "vehicle.h"
-#include "vehicle_physics.h"
 #include "vehicle_internal.h"
 #include "vehicle_spawn.h"
 #include "../alpine_packets.h"
-#include "../server_internal.h"
 #include "../gametype.h"
-#include "../../hud/hud.h"
-#include "../../hud/multi_spectate.h"
 #include "../../misc/level.h"
-#include "../../misc/player.h"
 #include "../../object/alpine_obj_common.h"
 #include "../../os/console.h"
 #include "../../os/os.h"
-#include "../../rf/ai.h"
-#include "../../rf/bmpman.h"
 #include "../../rf/entity.h"
 #include "../../rf/file/file.h"
-#include "../../rf/gameseq.h"
-#include "../../rf/geometry.h"
-#include "../../rf/item.h"
-#include "../../rf/level.h"
 #include "../../rf/multi.h"
 #include "../../rf/object.h"
 #include "../../rf/os/console.h"
-#include "../../rf/physics.h"
-#include "../../rf/player/camera.h"
-#include "../../rf/player/control_config.h"
 #include "../../rf/player/player.h"
-#include "../../rf/v3d.h"
 #include "../../rf/vmesh.h"
 #include "../../rf/weapon.h"
 
@@ -127,9 +112,8 @@ namespace
             slot.respawn_timer.invalidate();
             slot.entered_once = false;
             const AlpineVehicleFactoryInfo* info = vehicle_factory(slot.factory_index);
-            slot.hull_team = info ? info->team : -1;
             VehicleState& st = g_vehicle_state.hull_state[ep->handle];
-            st.team = slot.hull_team;
+            st.team = info ? info->team : -1;
             st.lock_to_team = info && info->lock_to_team;
             if (announce) {
                 vehicle_slot_announce(slot);
@@ -144,7 +128,7 @@ namespace
         if (!vehicle_is_synced_entity_type(slot.entity_type)) {
             slot.given_up = true;
             slot.respawn_timer.invalidate();
-            xlog::error("vehicle: entity type {} is not a spawnable vehicle or turret class; "
+            xlog::error("[vehicle] entity type {} is not a spawnable vehicle or turret class; "
                         "giving up for this level", slot.entity_type);
             if (announce) {
                 vehicle_slot_announce(slot);
@@ -152,7 +136,7 @@ namespace
             return false;
         }
         if (++slot.failures == vehicle_max_respawn_retries) {
-            xlog::warn("vehicle: entity type {} has failed to spawn {} times; still retrying",
+            xlog::warn("[vehicle] entity type {} has failed to spawn {} times; still retrying",
                        slot.entity_type, vehicle_max_respawn_retries);
         }
         slot.respawn_timer.set(vehicle_respawn_retry_interval_ms);
@@ -276,16 +260,17 @@ void vehicle_factory_set_team(int factory_index, int team, bool spawn_waiting)
             continue;
         }
         if (!slot.entered_once) {
-            slot.hull_team = team;
             rf::Entity* ep = vehicle_live_synced_entity(slot.handle);
             VehicleState* st = ep ? vehicle_hull_state(ep->handle) : nullptr;
             if (st) {
                 st->team = team;
-                vehicle_broadcast_seat_occupancy(ep->handle, ep, -1);
+                if (spawn_waiting) {
+                    vehicle_broadcast_seat_occupancy(ep->handle, ep, -1);
+                }
             }
         }
         // A capture that flips a waiting factory hands its new owners a vehicle at once.
-        if (spawn_waiting && slot.handle == -1 && !slot.given_up) {
+        if (spawn_waiting && team >= 0 && slot.handle == -1 && !slot.given_up) {
             const rf::Timestamp pending = slot.respawn_timer;
             // Silent: the announce below is the one 0x69 this capture sends, and it must state the
             // timer AFTER the restore, not the short retry interval try_spawn sets for itself.
@@ -301,7 +286,9 @@ void vehicle_factory_set_team(int factory_index, int team, bool spawn_waiting)
             continue;
         }
         // The team byte rides this packet, so a slot whose respawn state did not change still sends.
-        vehicle_slot_announce(slot);
+        if (spawn_waiting) {
+            vehicle_slot_announce(slot);
+        }
     }
 }
 
@@ -389,8 +376,7 @@ rf::Entity* vehicle_spawn(const char* class_name, const rf::Vector3& pos, const 
     return vehicle_spawn_type(entity_type, pos, orient);
 }
 
-// The chunk layout is documented where it is written, vehicle_factory_serialize_chunk in
-// editor_patch/vehicle_factory.cpp.
+// Must stay in step with the editor's vehicle_factory_serialize_chunk.
 void vehicle_factory_load_chunk(rf::File& file, std::size_t chunk_len)
 {
     std::size_t remaining = chunk_len;
@@ -401,7 +387,7 @@ void vehicle_factory_load_chunk(rf::File& file, std::size_t chunk_len)
     // Untrusted input reaching a server-side Bullet body: a non-finite value is UB and a
     // non-rotation basis shears every derived box.
     auto pose_is_sane = [](const AlpineVehicleFactoryInfo& info) {
-        if (!std::isfinite(info.pos.x) || !std::isfinite(info.pos.y) || !std::isfinite(info.pos.z)) {
+        if (!vehicle_vector_is_finite(info.pos)) {
             return false;
         }
         if (!alpine_orient_is_sane(info.orient)) {
@@ -413,10 +399,10 @@ void vehicle_factory_load_chunk(rf::File& file, std::size_t chunk_len)
 
     uint32_t count = 0;
     if (!reader.read_bytes(&count, sizeof(count))) {
-        xlog::warn("[VehicleFactory] failed to read factory count from chunk (len={})", chunk_len);
+        xlog::warn("[vehicle] failed to read factory count from chunk (len={})", chunk_len);
         return;
     }
-    if (count > 1000) count = 1000;
+    count = std::min(count, vehicle_factory_max_records);
 
     for (uint32_t i = 0; i < count; ++i) {
         AlpineVehicleFactoryInfo info;
@@ -461,7 +447,7 @@ void vehicle_factory_load_chunk(rf::File& file, std::size_t chunk_len)
             continue;
         }
         // The clamp above bounds one chunk; a level carrying several would otherwise append past it.
-        if (g_vehicle_factories.size() >= 1000) {
+        if (g_vehicle_factories.size() >= vehicle_factory_max_records) {
             ++rejected;
             continue;
         }
@@ -470,8 +456,8 @@ void vehicle_factory_load_chunk(rf::File& file, std::size_t chunk_len)
     }
 
     if (rejected > 0) {
-        xlog::warn("[VehicleFactory] rejected {} factory record(s) with an invalid pose or past the "
-                   "1000 record limit", rejected);
+        xlog::warn("[vehicle] rejected {} factory record(s) with an invalid pose or past the {} record limit",
+                   rejected, vehicle_factory_max_records);
     }
 }
 
@@ -500,7 +486,7 @@ void vehicle_level_init_post()
         const AlpineVehicleFactoryInfo& info = g_vehicle_factories[i];
         const int entity_type = rf::entity_lookup_type(info.vehicle_class.c_str());
         if (!vehicle_is_synced_entity_type(entity_type)) {
-            xlog::warn("vehicle factory (uid {}): '{}' is not a vehicle or turret entity class",
+            xlog::warn("[vehicle] factory (uid {}): '{}' is not a vehicle or turret entity class",
                        info.uid, info.vehicle_class);
             continue;
         }
@@ -535,25 +521,6 @@ void vehicle_level_init_post()
 
 // tbl overrides for vehicle levels: applied to the LIVE parsed tbl structures for the duration of a
 // vehicle level and written back verbatim afterwards.
-//
-// Field offsets are asserted rather than trusted: a WeaponInfo layout drift would otherwise corrupt
-// unrelated weapon state silently.
-static_assert(offsetof(rf::WeaponInfo, clip_size_multi) == 0x84);
-static_assert(offsetof(rf::WeaponInfo, max_speed) == 0xC0);
-static_assert(offsetof(rf::WeaponInfo, max_speed_multi) == 0xC4);
-static_assert(offsetof(rf::WeaponInfo, fire_wait) == 0xD0);
-static_assert(offsetof(rf::WeaponInfo, damage_multi) == 0x10C);
-static_assert(offsetof(rf::WeaponInfo, crater_radius) == 0x14C);
-static_assert(offsetof(rf::WeaponInfo, damage_radius_multi) == 0x210);
-static_assert(offsetof(rf::WeaponInfo, max_ammo_multi) == 0x25C);
-static_assert(offsetof(rf::WeaponInfo, flags) == 0x264);
-// entity_create (0x00422360) seeds a spawned hull's health from this field and no other.
-static_assert(offsetof(rf::EntityInfo, max_life) == 0x44);
-// entity_create reads both mesh names at CREATE time with nothing cached per type in between, so a
-// post-parse swap of either field is the whole of "spawn a different hull / load a different cockpit".
-static_assert(offsetof(rf::EntityInfo, vmesh_filename) == 0x8);
-static_assert(offsetof(rf::EntityInfo, cockpit_vfx_filename) == 0x13CC);
-
 namespace
 {
     struct VehicleWeaponOverride
@@ -677,6 +644,7 @@ namespace
 
     // The tbl parser (0x0041B910) allocates every state list at its fixed 23 entries.
     constexpr int entity_info_state_anims_capacity = 23;
+    static_assert(entity_info_state_anims_capacity == rf::ENTITY_STATE_CUSTOM + 1);
 
     struct VehicleRiderAnimApplied
     {

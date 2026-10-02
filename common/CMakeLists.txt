@@ -8,6 +8,7 @@ set(SRCS
     include/common/tlv.h
     include/common/scope_guard.h
     include/common/vehicle_meshes.h
+    include/common/vehicle_orient.h
     include/common/config/BuildConfig.h
     include/common/config/CfgVar.h
     include/common/config/GameConfig.h

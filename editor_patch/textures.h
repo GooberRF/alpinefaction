@@ -167,6 +167,8 @@ struct BitmapEntry {
     int resolution_level;           // 0x68
 
     inline static auto& load = addr_as_ref<int(const char* filename, int a2)>(0x004BBC30);
+    // The handle of the visible entry with this name, or -1; never loads.
+    inline static auto& find = addr_as_ref<int(const char* filename)>(0x004BBAD0);
     inline static auto& handle_to_index = addr_as_ref<int(int bm_handle)>(0x004BB990);
     inline static auto& hash_table = addr_as_ref<BitmapEntry**>(0x014cfc24);
     inline static auto& hash_table_size_m1 = addr_as_ref<int>(0x0057dbb0);

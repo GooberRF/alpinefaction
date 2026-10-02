@@ -15,6 +15,7 @@
 #include "../../multi/bagman.h"
 #include "../../multi/salvage.h"
 #include "../../multi/vehicles/vehicle.h"
+#include "../../multi/vehicles/vehicle_render.h"
 #include "../../misc/level.h"
 #include "../../hud/multi_spectate.h"
 #include "../../rf/multi.h"
@@ -562,10 +563,8 @@ namespace gr::d3d11
         if (!lod_mesh || vehicle_target_count_ == 0) {
             return false;
         }
-        // Static meshes are cached by filename, so two jeeps share one VifLodMesh and the draw pose
-        // cannot tell them apart. The hull (0x00421C03), tire/gun (0x00421C0B) and held-weapon
-        // (0x00421C1B) draws are all inside entity_render, which names the owner outright; a rider's
-        // own weapon draw sits under his nested entity_render and falls through to the character path.
+        // Static meshes are cached by filename, so two jeeps share one VifLodMesh and the draw pose cannot
+        // tell them apart; the entity_render on the stack names the owner instead.
         rf::Entity* vehicle = vehicle_rendering_entity();
         if (!vehicle) {
             return false;
@@ -766,8 +765,8 @@ namespace gr::d3d11
             bagman_carrier_xray_.lod_mesh && !bagman_carrier_xray_.naturally_rendered;
 
         // Only xray hulls qualify: a depth-tested outline drawn this late has no scene depth to test.
-        const bool need_forced_static = std::any_of(
-            vehicle_targets().begin(), vehicle_targets().end(),
+        const bool need_forced_static = std::ranges::any_of(
+            vehicle_targets(),
             [](const VehicleOutlineTarget& target) {
                 return target.has_info && target.info.xray && !target.naturally_rendered
                     && !target.lod_meshes.empty();
@@ -967,7 +966,8 @@ namespace gr::d3d11
     {
         // Pass 1 for a whole stencil-ref group before pass 2 of any of it: interleaving lets an early
         // part's inflated shell land on a later part's pixels before that part marks the stencil.
-        std::vector<UINT> done_refs;
+        std::vector<UINT>& done_refs = v3d_done_refs_;
+        done_refs.clear();
         for (const auto& first : v3d_queue_) {
             const UINT ref = first.info.stencil_ref;
             if (std::find(done_refs.begin(), done_refs.end(), ref) != done_refs.end()) {

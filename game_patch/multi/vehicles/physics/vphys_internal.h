@@ -144,7 +144,7 @@ struct VehiclePhysicsParams
     float drive_wheels = 2.0f;          // 0 = rear, 1 = front, 2 = all
     float car_linear_damping = 0.05f;
     float car_angular_damping = 0.35f;
-    float chassis_clearance = 0.4f;     // DEBUG OVERLAY ONLY: the yellow size reference vphys_dbg draws
+    float chassis_clearance = 0.4f;     // DEBUG OVERLAY ONLY: the yellow size reference dbg_vphys draws
 
     // Per-face trims, hull-local; a NEGATIVE trim EXPANDS. No bottom trim - it is the wheel line.
     float chassis_trim_side = 0.0f;  // taken off BOTH +X and -X
@@ -221,14 +221,10 @@ inline rf::Matrix3 from_bt(const btMatrix3x3& m)
     };
 }
 
-inline bool vphys_finite(const rf::Vector3& v)
+inline bool vphys_matrix_is_finite(const rf::Matrix3& m)
 {
-    return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z);
-}
-
-inline bool vphys_finite(const rf::Matrix3& m)
-{
-    return vphys_finite(m.rvec) && vphys_finite(m.uvec) && vphys_finite(m.fvec);
+    return vehicle_vector_is_finite(m.rvec) && vehicle_vector_is_finite(m.uvec)
+        && vehicle_vector_is_finite(m.fvec);
 }
 
 // Half extents plus the CENTRE they are measured about - not the hull origin for a land vehicle.
@@ -251,7 +247,10 @@ class VphysDynamicsWorld : public btDiscreteDynamicsWorld
 {
 public:
     using btDiscreteDynamicsWorld::btDiscreteDynamicsWorld;
-    btScalar local_time() const { return m_localTime; }
+    btScalar local_time() const
+    {
+        return m_localTime;
+    }
 };
 
 // Heap-owned so its address is stable: RfVehicleRaycaster holds a back-pointer to it.
@@ -293,7 +292,7 @@ struct VehicleSimBody
     // Read by RfVehicleRaycaster::castRay through its owner back-pointer; per BODY, never global.
     rf::Vector3 wheel_fwd{0.0f, 0.0f, 1.0f}; // hull forward axis for the arc plane
     bool wheel_cylinder = true;              // wheel_cylinder_cast: the disc model (off = one ray)
-    int wheel_arc_samples = 6;               // wheel_arc_samples
+    int wheel_arc_samples = 6;
     float wheel_rest_len = 0.25f;            // this frame's suspension rest length, to recover radius
     float wheel_edge_min_normal_y = 0.6f;    // cap on an edge normal's backward lean
 
@@ -312,7 +311,7 @@ struct VehicleSimBody
     bool chassis_ground_contact = false;
     // What the frame's single manifold pass found; only a recomputing frame copies it across.
     bool chassis_ground_contact_pass = false;
-    // The upright servo's up reference, kept for the vphys_dbg overlay later in the same frame.
+    // The upright servo's up reference, kept for the dbg_vphys overlay later in the same frame.
     rf::Vector3 upright_ref{0.0f, 1.0f, 0.0f};
     // How long the stranded test has continuously held, and whether the auto-right is engaged.
     float upright_recover_timer = 0.0f;
@@ -367,12 +366,10 @@ struct VehiclePhysicsObstacle
     btBoxShape* shape = nullptr;
     btDefaultMotionState* motion_state = nullptr;
     btRigidBody* body = nullptr;
-    // The rebuild key, all four parts: handles recycle, and a corpse swap changes only the vmesh.
+    // The rebuild key, all three parts: a corpse swap changes only the vmesh.
     int info_index = -1;
-    int obj_type = -1;
     const void* vmesh = nullptr;
     btVector3 built_half{0.0f, 0.0f, 0.0f};
-    bool is_static = false; // level clutter: posed once, never re-written
 };
 
 // How long a server body's IDLE BRAKE is suppressed after a ram shove (ms).
@@ -401,10 +398,6 @@ constexpr short vphys_group_hull = 0x80;
 constexpr short vphys_group_level = 0x40;
 // A hull pairs with everything EXCEPT another hull: vehicle-vs-vehicle is vphys_apply_pair_response.
 constexpr short vphys_mask_no_hull = static_cast<short>(~vphys_group_hull);
-
-// A vehicle ANOTHER machine simulates: mask of nothing, so no vehicle pair ever reaches the solver.
-constexpr short vphys_group_vehicle_box = 0x20;
-constexpr short vphys_mask_none = 0;
 
 enum class VehicleOrbitSeat
 {
@@ -462,7 +455,6 @@ struct VehicleChaseCamera
 extern VehiclePhysicsWorld g_vphys;         // vphys_world.cpp
 extern bool g_level_has_bullet_vehicles;    // vphys_world.cpp
 extern VehicleChaseCamera g_vcam;           // vphys_camera.cpp
-extern bool g_vphys_dbg;                    // vphys_debug.cpp
 
 // ---- vphys_world.cpp ----
 bool vphys_class_is_automobile(int cls);
@@ -494,12 +486,14 @@ void obstacles_update_all();
 // step_time is THIS frame's step (0 if none); engine_dt is the PREVIOUS frame's rf::frametime.
 void movers_update_all(bool step_will_run, float step_time, float engine_dt);
 void vphys_world_install_patches();
+// Every crater, whatever the source: rebuilds the affected rooms' Bullet collision meshes.
+void vehicle_physics_notify_geomod(const rf::Vector3& pos, float radius);
 // Whether the Bullet chassis collides with this mover brush at all.
 bool mover_brush_is_solid(const rf::Object& mb);
 
 // ---- vphys_car.cpp ----
-// collide_linesegment_world plus the mover-brush solidity rule above.
-bool vphys_collide_solid_segment(const rf::Vector3& a, const rf::Vector3& b, rf::PCollisionOut& out);
+// collide_linesegment_world plus the mover-brush solidity rule above. `flags` are rf::CollideFlags.
+bool vphys_collide_solid_segment(const rf::Vector3& a, const rf::Vector3& b, int flags, rf::PCollisionOut& out);
 void car_teardown(VehicleSimBody& b);
 HullBox hull_contact_box(const HullBox& base, const VehiclePhysicsParams& p, float bottom_raise);
 // The chassis bottom raise: the class's authored value, else the hull's wheel radius. `b` supplies
@@ -523,7 +517,8 @@ void apply_car_model(VehicleSimBody& b, const VehiclePhysicsParams& p, float dt,
 
 // ---- vphys_flight.cpp ----
 bool liquid_surface_for(VehicleSimBody& b, rf::Entity* ep, float& out);
-void apply_flight_model(VehicleSimBody& b, rf::Entity* ep, const VehiclePhysicsParams& p, int cls);
+void apply_flight_model(VehicleSimBody& b, rf::Entity* ep, const VehiclePhysicsParams& p, int cls,
+                        float step_time);
 
 // ---- vphys_step.cpp ----
 // The VPHYS class of a hull, a pure mapping from its wire-frozen VehicleDamageClass; -1 for a
@@ -541,3 +536,4 @@ void vphys_camera_install_patches();
 
 // ---- vphys_debug.cpp ----
 void vphys_render_debug();
+void vphys_debug_install_patches();

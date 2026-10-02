@@ -54,7 +54,7 @@ Hiro:
 * Assistance evaluating levels for `pow2tex` fix
 
 Intharth:
-* Multiplayer team color variants of vehicle textures (game_patch/resources/images/vehicle_teams)
+* Multiplayer team color variants of vehicle textures (resources/images/vehicle_teams)
 
 Beta testers:
 * nick

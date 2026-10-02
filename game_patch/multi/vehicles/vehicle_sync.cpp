@@ -16,23 +16,18 @@
 #include "vehicle_view.h"
 #include "../alpine_packets.h"
 #include "../multi.h"
-#include "../server_internal.h"
-#include "../../hud/hud.h"
 #include "../../hud/multi_spectate.h"
 #include "../../misc/alpine_settings.h"
 #include "../../misc/level.h"
 #include "../../misc/player.h"
-#include "../../os/console.h"
 #include "../../os/os.h"
 #include "../../rf/ai.h"
 #include "../../rf/collide.h"
 #include "../../rf/entity.h"
-#include "../../rf/item.h"
 #include "../../rf/multi.h"
 #include "../../rf/object.h"
 #include "../../rf/os/frametime.h"
 #include "../../rf/physics.h"
-#include "../../rf/player/camera.h"
 #include "../../rf/player/player.h"
 #include "../../rf/vmesh.h"
 #include "../../rf/weapon.h"
@@ -53,13 +48,6 @@ namespace
 
     // Least time between two turn-ons of one hull's continuous gun, whatever weapons.tbl says.
     constexpr int vehicle_fire_rearm_floor_ms = 100;
-
-    // pack_obj_update_data (cdecl: recipient, entity, out buffer) -> bytes written. network.cpp's
-    // dedupe keys on the newest keyframe tick, so at most ONE keyframe per ms tick may be pushed.
-    constexpr uintptr_t pack_obj_update_data_addr = 0x0047DB20;
-
-    // __thiscall, eight stack args, RET 0x20; arg 8 is a FLOAT (FLD [ESP+0x1300] at 0x004834BA).
-    constexpr uintptr_t obj_interp_set_next_pos_orient_addr = 0x00483360;
 } // namespace
 
 // Re-seed PF_NET_PLAYER ownership from the seats. driver_boarding is a seat-0 boarding, a fresh
@@ -76,7 +64,6 @@ void vehicle_update_interp_ownership(rf::Entity* vehicle, bool driver_boarding)
         vehicle->control_data.phb = vehicle_make_orient_phb(vehicle->orient);
         vehicle->p_data.flags &= ~rf::PF_NET_PLAYER;
         g_vehicle_state.orient.erase(vehicle->handle);
-        // Taking over a hull this machine watched coast: drop its keyframes.
         if (driver_boarding && vehicle->obj_interp) {
             vehicle->obj_interp->Clear();
             g_vehicle_state.orient_sent.erase(vehicle->handle);
@@ -154,14 +141,12 @@ void vehicle_rebuild_eye_orient(rf::Entity* ep, const rf::Matrix3& hull)
     const rf::EntityControlData& cd = ep->control_data;
     ep->eye_orient = hull;
     if (ep->p_data.flags & rf::PF_AUTOMOBILE) {
-        AddrCaller{0x004FD240}.this_call<void>(&ep->eye_orient,
-                                              cd.automobile_eye_phb.x + cd.eye_phb.x);
-        AddrCaller{0x004FD310}.this_call<void>(&ep->eye_orient,
-                                              cd.automobile_eye_phb.z + cd.eye_phb.z);
+        ep->eye_orient.rotate_about_local_x(cd.automobile_eye_phb.x + cd.eye_phb.x);
+        ep->eye_orient.rotate_about_local_z(cd.automobile_eye_phb.z + cd.eye_phb.z);
         return;
     }
-    AddrCaller{0x004FD240}.this_call<void>(&ep->eye_orient, cd.eye_phb.x);
-    AddrCaller{0x004FD310}.this_call<void>(&ep->eye_orient, cd.eye_phb.z);
+    ep->eye_orient.rotate_about_local_x(cd.eye_phb.x);
+    ep->eye_orient.rotate_about_local_z(cd.eye_phb.z);
 }
 
 namespace
@@ -192,7 +177,7 @@ namespace
             vehicle_feed_automobile_eye_input(ep);
             // A collide_out written into a hull this machine only watches clips its interp target.
             // Exempt a record naming the LOCAL player: that one fires entity_crush_damage.
-            if (rf::is_multi && vehicle_is_synced_entity_type(ep)
+            if (vehicle_is_synced_entity_type(ep)
                 && (ep->p_data.flags & rf::PF_NET_PLAYER) && !vehicle_physics_drives(ep)
                 && !(ep->p_data.collide_out.hit_time < 1.0f && rf::local_player_entity
                      && ep->p_data.collide_out.obj_handle == rf::local_player_entity->handle)) {
@@ -211,7 +196,7 @@ namespace
                 return;
             }
             vehicle_rebuild_eye_orient(ep, authoritative_orient);
-            vehicle_apply_aim_orient(ep, VehicleAimSource::eased); // continuous view frame
+            vehicle_apply_aim_orient(ep, VehicleAimSource::eased);
         },
     };
 
@@ -268,11 +253,6 @@ void vehicle_decorate_interp_orient(rf::Entity* vehicle)
 
 namespace
 {
-    bool vehicle_vector_is_finite(const rf::Vector3& v)
-    {
-        return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z);
-    }
-
     // The keyframe came off a driving client's obj_update row, so nothing in it is trusted.
     bool vehicle_row_is_client_authored(const rf::Entity* ep)
     {
@@ -313,10 +293,11 @@ namespace
 
     // Reached only from the engine's RECEIVE path: this machine's own keyframes go in through
     // call_target below, so a row that gets here could not carry pitch or bank.
+    // __thiscall, eight stack args, RET 0x20; arg 8 is a FLOAT (FLD [ESP+0x1300] at 0x004834BA).
     FunHook<void __fastcall(rf::ObjInterp*, int, rf::Entity*, rf::Vector3*, rf::Vector3*,
                             rf::Vector3*, rf::Vector3*, rf::Vector3*, int, float)>
         obj_interp_set_next_pos_orient_hook{
-            obj_interp_set_next_pos_orient_addr,
+            0x00483360,
             [](rf::ObjInterp* self, int edx, rf::Entity* ep, rf::Vector3* pos, rf::Vector3* phb,
                rf::Vector3* eye_phb, rf::Vector3* vel, rf::Vector3* move, int time,
                float always_0) FASTCALL_LAMBDA {
@@ -382,10 +363,7 @@ namespace
     // Below the settle speeds a row goes out only once the hull has crept this far from the last one.
     constexpr float vehicle_server_row_pos_tolerance = 0.01f;
     constexpr float vehicle_server_row_axis_tolerance = 0.005f; // axis chord, ~rad
-} // namespace
 
-namespace
-{
     bool vehicle_server_samples_vehicle(rf::Entity* vehicle);
 } // namespace
 
@@ -473,8 +451,6 @@ void vehicle_server_body_do_frame(rf::Entity* ep)
     }
 
     VehicleKinematics& k = g_vehicle_state.kinematics[ep->handle];
-    k.pos = pos;
-    k.pos_valid = true;
     k.active = moving;
     k.base_tick = base_tick;
     k.base_time_ms = base_time_ms;
@@ -531,21 +507,9 @@ void vehicle_ease_aim_do_frame()
             supp.eased_valid = true;
             continue;
         }
-        float head_delta = supp.aim_head - supp.eased_aim_head;
-        while (head_delta > vehicle_two_pi * 0.5f) {
-            head_delta -= vehicle_two_pi;
-        }
-        while (head_delta < -vehicle_two_pi * 0.5f) {
-            head_delta += vehicle_two_pi;
-        }
-        supp.eased_aim_head += head_delta * t;
-        // Fold back into [-pi, pi]: an unbounded value loses trig precision over a long session.
-        if (supp.eased_aim_head > vehicle_two_pi * 0.5f) {
-            supp.eased_aim_head -= vehicle_two_pi;
-        }
-        else if (supp.eased_aim_head < -vehicle_two_pi * 0.5f) {
-            supp.eased_aim_head += vehicle_two_pi;
-        }
+        const float head_delta = vehicle_wrap_pi(supp.aim_head - supp.eased_aim_head);
+        // Folded into [-pi, pi]: an unbounded value loses trig precision over a long session.
+        supp.eased_aim_head = vehicle_wrap_pi(supp.eased_aim_head + head_delta * t);
         supp.eased_aim_pitch += (supp.aim_pitch - supp.eased_aim_pitch) * t;
     }
 }
@@ -616,12 +580,7 @@ namespace
         }
         // interp_rotation lerps phb component-wise, so bank needs a continuous branch across +-pi.
         if (supp.valid) {
-            while (bank - supp.bank > vehicle_two_pi * 0.5f) {
-                bank -= vehicle_two_pi;
-            }
-            while (bank - supp.bank < -vehicle_two_pi * 0.5f) {
-                bank += vehicle_two_pi;
-            }
+            bank = supp.bank + vehicle_wrap_pi(bank - supp.bank);
         }
         supp.pitch = pitch;
         supp.bank = bank;
@@ -946,7 +905,7 @@ namespace
     // the server that halt is what parks the driller against the wall so the carve raycast hits.
     bool vehicle_driller_contact_halt(rf::Entity* ep)
     {
-        return rf::is_server && (ep->entity_flags2 & 0x40) && rf::entity_is_driller(ep);
+        return rf::is_server && (ep->entity_flags2 & rf::EF2_DRILL_CONTACT) && rf::entity_is_driller(ep);
     }
 
     // Keeps the driven vehicle out of the idle/distance culling in obj_move_all.
@@ -990,11 +949,9 @@ namespace
         },
     };
 
-    // A vehicle weapon's projectile spawns INSIDE the firing hull's collision, and stock drops only
-    // the weapon<->parent pair, never the weapon<->OCCUPANT one. Keyed off the projectile's parent,
-    // so an enemy hull has a different parent and stays hittable.
-    // Stock also gives only a PLAYER's shot the mesh test against an entity (bit 2: entity is a, bit 4:
-    // entity is b); a hull's shot met just the victim's cspheres, so rockets flew through hull gaps.
+    // A vehicle round spawns INSIDE its hull, and stock skips only the weapon<->parent pair, never
+    // weapon<->OCCUPANT; keyed off the parent, so an enemy hull stays hittable. Stock also gives only a
+    // PLAYER's shot the mesh test (bit 2: entity is a, bit 4: b), so hull rounds flew through hull gaps.
     FunHook<bool(rf::Object*, rf::Object*, unsigned*)> obj_pair_should_skip_hook{
         0x0048BE00,
         [](rf::Object* a, rf::Object* b, unsigned* out_flags) -> bool {
@@ -1121,17 +1078,11 @@ namespace
         return hit_ent && hit_ent->host_handle == own_vehicle->handle;
     }
 
-    // +0x2E8 is weapon_process's homing target handle, past the Object fields; -1 for none.
-    int& vehicle_weapon_homing_target(rf::Object* weapon)
-    {
-        return *reinterpret_cast<int*>(reinterpret_cast<char*>(weapon) + 0x2E8);
-    }
-
     // Target SELECTION only, and the ONLY non-stock thing on a vehicle round: the stock scan excludes
     // the round's parent but not anyone RIDING it, so a sub's torpedo locks onto its own driver.
-    FunHook<void(rf::Object*)> weapon_update_homing_target_hook{
+    FunHook<void(rf::Weapon*)> weapon_update_homing_target_hook{
         0x004C6D70,
-        [](rf::Object* weapon) {
+        [](rf::Weapon* weapon) {
             weapon_update_homing_target_hook.call_target(weapon);
             if (!rf::is_multi || !weapon) {
                 return;
@@ -1140,11 +1091,10 @@ namespace
             if (!own) {
                 return;
             }
-            int& target = vehicle_weapon_homing_target(weapon);
-            if (!vehicle_weapon_hit_is_own(own, target)) {
+            if (!vehicle_weapon_hit_is_own(own, weapon->target_handle)) {
                 return;
             }
-            target = -1;
+            weapon->target_handle = -1;
         },
     };
 
@@ -1343,14 +1293,14 @@ namespace
             }
 
             vehicle_push_local_interp_sample(vehicle);
-            const int row_len = AddrCaller{pack_obj_update_data_addr}
-                                    .c_call<int>(rf::local_player, vehicle, buf + offset);
+            // The obj_update dedupe keys on the newest keyframe tick: at most ONE keyframe per ms tick.
+            const int row_len = rf::multi_pack_obj_update_data(rf::local_player, vehicle, buf + offset);
             if (row_len <= 0) {
                 return;
             }
             // Fire bits carry no payload bytes, so clearing them keeps the row length valid.
             // Vehicle weapons are the server's; the server rejects rows that carry them.
-            buf[offset + 4] &= static_cast<uint8_t>(~(0x40 | 0x10));
+            buf[offset + 4] &= static_cast<uint8_t>(~(rf::OUF_FIRE | rf::OUF_ALT_FIRE));
             regs.eax = player_row_len + row_len;
         },
     };
@@ -1506,7 +1456,7 @@ bool vehicle_is_driver_obj_update_row(const rf::Player* pp, const rf::Entity* ep
     }
     // OUF_POS_ROT_ANIM, the connection counter and the weapon lag compensation block, which carry no
     // entity state. Weapon type, health, armor state and fire stay server-owned.
-    constexpr int permitted_flags = 0x01 | 0x02 | 0x08;
+    constexpr int permitted_flags = rf::OUF_POS_ROT_ANIM | rf::OUF_CONNECTION_COUNTER | rf::OUF_WEAPON_LAG_COMP;
     return (flags & ~permitted_flags) == 0;
 }
 

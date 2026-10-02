@@ -436,6 +436,13 @@ struct DedEvent : DedObject
 };
 static_assert(sizeof(DedEvent) == 0xC4, "DedEvent size mismatch");
 
+struct DedClutter : DedObject
+{
+    char pad_94[0xB8 - 0x94];
+    char skin_block[0x28]; // 0xB8 — includes the skin count at 0xDC; the stock ctor (0x0044D9F0) leaves it unset
+};
+static_assert(offsetof(DedClutter, skin_block) == 0xB8);
+
 struct DedRoomEffect : DedObject
 {
     int effect_type;                   // 0x94 — 2 = Liquid Room, 3 = Ambient Light

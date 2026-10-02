@@ -168,11 +168,14 @@ static std::unordered_map<uint8_t, CombatChain> g_combat_chains;
 // hull's destruction deals him, and only within the window of that attacker's last hit.
 static constexpr std::chrono::milliseconds hull_assist_window{5000};
 
+namespace
+{
 struct HullAssist
 {
     int hull_handle = -1;
     std::chrono::steady_clock::time_point last_hit;
 };
+} // namespace
 
 static std::unordered_map<uint8_t, std::unordered_map<uint8_t, HullAssist>> g_hull_assists;
 
@@ -501,7 +504,6 @@ void kill_attribution_record(uint8_t killed_player_id, uint8_t killer_player_id,
     }
     if (vehicle_class >= 0 && vehicle_class < VDC_COUNT) {
         record.attr.vehicle_class = static_cast<uint8_t>(vehicle_class);
-        record.attr.flags |= AF_KILL_FLAG_VEHICLE;
     }
     record.attr.assist_player_ids = std::move(assist_player_ids);
     record.recorded_at = std::chrono::steady_clock::now();

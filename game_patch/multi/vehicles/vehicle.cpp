@@ -96,12 +96,12 @@ namespace
         }
         return use_function == rf::ENTITY_USE_VEHICLE || use_function == rf::ENTITY_USE_TURRET;
     }
-} // namespace
 
-// Indexed by VehicleDamageClass; already cased for use after a possessive ("Bob's APC").
-static constexpr const char* vehicle_class_display_names[VDC_COUNT] = {
-    "jeep", "APC", "driller", "aesir", "submarine", "turret",
-};
+    // Indexed by VehicleDamageClass; already cased for use after a possessive ("Bob's APC").
+    constexpr const char* vehicle_class_display_names[VDC_COUNT] = {
+        "jeep", "APC", "driller", "aesir", "submarine", "turret",
+    };
+} // namespace
 
 const char* vehicle_class_display_name(int vehicle_class)
 {
@@ -113,10 +113,8 @@ const char* vehicle_class_display_name(int vehicle_class)
 
 namespace
 {
-    // THE class ladder - every other taxonomy in this module is a function of its result. The tbl
-    // flag tests are the ones the engine's own entity_is_* helpers make, which read this same row
-    // (0x0040A270 / 0x0040A2F0 / 0x0042D780 / 0x0042D7B0 all load [ep+0x294]->flags at +0x724).
-    // Every use_function-1 hull that is not sub, jeep, driller or apc lands on VDC_FIGHTER.
+    // THE class ladder - every other taxonomy in this module is a function of its result. The flag
+    // tests match the engine's own entity_is_* helpers. Any other use_function-1 hull is VDC_FIGHTER.
     int vehicle_damage_class_from_info(const rf::EntityInfo& info)
     {
         if (info.use_function == rf::ENTITY_USE_TURRET) {
@@ -429,10 +427,9 @@ void vehicle_client_do_frame()
     // update_room's distance early-out never re-looks-up a hull that holds still, so force it the
     // way the engine does: set_room(nullptr) then update_room. Unmanned non-dying hulls, twice a second.
     if (!rf::is_dedicated_server) {
-        static int64_t next_room_check_ms = 0;
         const int64_t now_ms = timer::get_i64(1000);
-        if (now_ms >= next_room_check_ms) {
-            next_room_check_ms = now_ms + 500;
+        if (now_ms >= g_vehicle_state.next_room_check_ms) {
+            g_vehicle_state.next_room_check_ms = now_ms + 500;
             for (rf::Entity& entity : DoublyLinkedList{rf::entity_list}) {
                 if (!vehicle_is_synced_entity_type(&entity) || rf::entity_is_dying(&entity)
                     || rf::entity_get_first_leech(&entity) != -1) {
@@ -455,7 +452,6 @@ void vehicle_client_do_frame()
         return !kv.second.valid() || kv.second.elapsed();
     });
 
-    // Safety net for a supplement that overtook the row it belongs to.
     if (!rf::is_server) {
         // A vehicle deleted without dying leaves stale entries a recycled handle would read.
         auto handle_is_gone = [](const auto& kv) {
@@ -472,6 +468,7 @@ void vehicle_client_do_frame()
         // After the entity creates of this frame's packets, so a rider named by an earlier
         // af_vehicle_state is seated the moment he exists.
         vehicle_retry_pending_seat_occupancy();
+        // Safety net for a supplement that overtook the row it belongs to.
         for (rf::Entity& entity : DoublyLinkedList{rf::entity_list}) {
             if (vehicle_is_synced_entity_type(&entity)) {
                 vehicle_decorate_interp_orient(&entity);
@@ -567,9 +564,7 @@ namespace
         return std::max(vehicle_drown_damage, ep->life + ep->armor + vehicle_drown_damage);
     }
 
-    // The server's kill sequence: forget the hull's motion state, release its Bullet body so nothing
-    // fights the death animation, then damage it with nobody credited. Erasing all four maps is safe
-    // whichever path got here - a hull about to die has no use for any of them.
+    // The Bullet body is released first so nothing fights the death animation; nobody is credited.
     void vehicle_server_scuttle(rf::Entity* ep, float damage)
     {
         const int handle = ep->handle;
@@ -754,14 +749,16 @@ void vehicle_do_frame()
             }
         }
 
-        // Void fall. A liquid room is excluded because the drown test above owns that case.
+        // Void fall. A liquid room is excluded because the drown test above owns that case. Invisible
+        // faces count: the chassis rests on them.
         if (!is_turret && !(ep->room && ep->room->contains_liquid)) {
             rf::Vector3 vfrom = ep->pos;
             rf::Vector3 vto = ep->pos;
             vto.y -= vehicle_void_probe;
             rf::PCollisionOut vo{};
             vo.obj_handle = -1;
-            const bool nothing_below = !rf::collide_linesegment_world(vfrom, vto, 0, &vo);
+            const bool nothing_below =
+                !rf::collide_linesegment_world(vfrom, vto, rf::CF_PROCESS_INVISIBLE_FACES, &vo);
             float& held = g_vehicle_state.void_timer[handle];
             held = nothing_below ? held + rf::frametime : 0.0f;
             if (held >= vehicle_void_time) {
@@ -870,12 +867,7 @@ void vehicle_do_frame()
 void vehicle_on_multi_shutdown()
 {
     vehicle_tbl_overrides_revert(); // put weapons.tbl/entity.tbl back before the session ends
-    g_vehicle_state = VehicleModuleState{};
-    vehicle_clear_local_enclosed_flag();
-    vehicle_drop_jeep_tire_mesh();
-    vehicle_view_level_init();
-    vehicle_markers_level_init();
-    vehicle_tracers_level_init();
+    vehicle_level_init();
 }
 
 namespace
@@ -896,6 +888,7 @@ void vehicle_apply_patches()
     vehicle_view_apply_patch();
     vehicle_damage_apply_patch();
     vehicle_render_install();
+    vehicle_markers_apply_patch();
 
     // The stock MP level entity filter calls entity_type_has_vehicle_use (use_function == 1) here;
     // on a factory level, factories are the sole source of hulls AND turrets.
@@ -904,7 +897,7 @@ void vehicle_apply_patches()
     // The generic-movemode rotation branch that flies the fighter and the sub gates on obj_is_player
     // in MP, which no vehicle carries. Broadening it to the local-player-or-ride predicate is safe:
     // physics_simulate_entity diverts remote bodies at 0x0049F3F1 and automobiles at 0x0049F409.
-    AsmWriter{0x0049F475}.call(0x0048AA30);
+    AsmWriter{0x0049F475}.call(&rf::obj_is_local_player_or_mount);
 
     vehicle_spawn_install();
     vehicle_tracers_install();

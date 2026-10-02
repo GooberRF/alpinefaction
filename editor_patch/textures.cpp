@@ -965,8 +965,13 @@ static void reload_bm_placeholders()
 
 bool reload_bitmap_in_place(const char* filename)
 {
-    const int handle = BitmapEntry::load(filename, -1);
-    const int index = handle >= 0 ? BitmapEntry::handle_to_index(handle) : -1;
+    const int handle = BitmapEntry::find(filename);
+    if (handle < 0) {
+        // Not resident, so a plain load already reads the file from disk.
+        BitmapEntry::load(filename, -1);
+        return true;
+    }
+    const int index = BitmapEntry::handle_to_index(handle);
     if (index < 0) return false;
     BitmapEntry* entry = &BitmapEntry::entries[index];
     const int checksum = entry->name_checksum;

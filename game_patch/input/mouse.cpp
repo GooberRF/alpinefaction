@@ -68,6 +68,18 @@ static float mouse_look_radians_per_count()
     }
 }
 
+// Raw counts to look angle deltas (radians) at the given sensitivity, honouring the invert-Y setting.
+static void mouse_counts_to_look_angles(int dx, int dy, float sens, float& out_pitch, float& out_yaw)
+{
+    const float scale = mouse_look_radians_per_count();
+    float fy = static_cast<float>(dy);
+    if (rf::local_player->settings.controls.axes[1].invert) {
+        fy = -fy;
+    }
+    out_pitch = -fy * sens * scale;
+    out_yaw = static_cast<float>(dx) * sens * scale;
+}
+
 void consume_vehicle_orbit_mouse_deltas(float& out_pitch, float& out_yaw)
 {
     const int dx = g_vehicle_orbit_mouse_dx;
@@ -79,13 +91,7 @@ void consume_vehicle_orbit_mouse_deltas(float& out_pitch, float& out_yaw)
     if (!rf::local_player || (dx == 0 && dy == 0)) {
         return;
     }
-    const float k = rf::local_player->settings.controls.mouse_sensitivity * mouse_look_radians_per_count();
-    float fy = static_cast<float>(dy);
-    if (rf::local_player->settings.controls.axes[1].invert) {
-        fy = -fy;
-    }
-    out_pitch = -fy * k;
-    out_yaw = static_cast<float>(dx) * k;
+    mouse_counts_to_look_angles(dx, dy, rf::local_player->settings.controls.mouse_sensitivity, out_pitch, out_yaw);
 }
 
 // Converts accumulated raw mouse deltas to camera angle deltas (radians).
@@ -107,7 +113,6 @@ void consume_raw_mouse_deltas(float& out_pitch, float& out_yaw, bool apply_scope
     }
 
     float sens = rf::local_player->settings.controls.mouse_sensitivity;
-    const float scale = mouse_look_radians_per_count();
 
     if (apply_scope_sens) {
         if (rf::local_player->fpgun_data.scanning_for_target) {
@@ -130,12 +135,7 @@ void consume_raw_mouse_deltas(float& out_pitch, float& out_yaw, bool apply_scope
         }
     }
 
-    float dy = static_cast<float>(g_camera_mouse_dy);
-    if (rf::local_player->settings.controls.axes[1].invert)
-        dy = -dy;
-
-    out_pitch = -dy * sens * scale;
-    out_yaw = static_cast<float>(g_camera_mouse_dx) * sens * scale;
+    mouse_counts_to_look_angles(g_camera_mouse_dx, g_camera_mouse_dy, sens, out_pitch, out_yaw);
 
     g_camera_mouse_dx = 0;
     g_camera_mouse_dy = 0;

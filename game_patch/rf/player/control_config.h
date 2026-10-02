@@ -34,6 +34,9 @@ namespace rf
         CC_ACTION_MP_STATS = 0x16,
         CC_ACTION_QUICK_SAVE = 0x17,
         CC_ACTION_QUICK_LOAD = 0x18,
+        // 4 weapon-category selects, then the per-weapon selects control_config_init (0x0043D060) appends
+        CC_ACTION_SELECT_WEAPON_FIRST = 0x19,
+        CC_ACTION_SELECT_WEAPON_LAST = 0x3C,
     };
 
     enum AlpineControlConfigAction

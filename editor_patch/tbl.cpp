@@ -59,13 +59,14 @@ int tbl_parse_damage_type(const std::string& name)
 static int tbl_parse_use_function(const std::string& name)
 {
     static const struct { const char* name; int value; } uses[] = {
-        {"vehicle", 1}, {"switch", 2}, {"command", 3}, {"turret", 4},
-        {"monitor", 5}, {"medic", 6}, {"ai response", 9}, {"play_sound", 10},
+        {"vehicle", ENTITY_USE_VEHICLE}, {"switch", ENTITY_USE_SWITCH}, {"command", ENTITY_USE_COMMAND},
+        {"turret", ENTITY_USE_TURRET}, {"monitor", ENTITY_USE_MONITOR}, {"medic", ENTITY_USE_MEDIC},
+        {"ai response", ENTITY_USE_AI_RESPONSE}, {"play_sound", ENTITY_USE_PLAY_SOUND},
     };
     for (auto& u : uses) {
         if (_stricmp(name.c_str(), u.name) == 0) return u.value;
     }
-    return 0;
+    return ENTITY_USE_NONE;
 }
 
 // Clutter flag name to bit mapping

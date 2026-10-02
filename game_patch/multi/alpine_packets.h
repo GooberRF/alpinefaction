@@ -68,7 +68,7 @@ enum af_damage_notify_flags : uint8_t
 {
     AF_DAMAGE_NOTIFY_DIED = 1 << 0,
     AF_DAMAGE_NOTIFY_CRIT = 1 << 1,
-    // Victim is not a player: player_id is af_damage_notify_no_player and a float[3] world pos follows
+    // Victim is not a player: player_id is af_damage_notify_no_player and the hull tail follows
     AF_DAMAGE_NOTIFY_WORLD_POS = 1 << 2,
 };
 
@@ -82,8 +82,16 @@ struct af_damage_notify_packet
     uint16_t damage;
     uint8_t flags; // af_damage_notify_flags
     // Optional tails, in this order:
-    //   float[3] world_pos  - present iff AF_DAMAGE_NOTIFY_WORLD_POS
-    //   uint8_t attacker_id - present in recorded demos only
+    //   float[3] world_pos, int32_t hull_handle - present iff AF_DAMAGE_NOTIFY_WORLD_POS
+    //   uint8_t attacker_id                     - present in recorded demos only
+};
+
+// A non-player victim: where its number is anchored, and its server handle, which keys the merge of
+// its numbers apart from every other hull's.
+struct AfDamageNotifyHull
+{
+    rf::Vector3 pos;
+    int handle;
 };
 
 // Critical Hits mutator, in-flight telegraph. Sent once per crit-rolled projectile fire
@@ -328,7 +336,7 @@ static_assert(sizeof(StatsPsskPayload) == 32);
 struct VehicleUseReqPayload
 {
     int32_t vehicle_handle = -1; // server handle; -1 = "let me out of whatever I am in"
-    uint8_t seat_index = 0;      // index into interface_points; 0xFF = vehicle_seat_auto (vehicle.h)
+    uint8_t seat_index = 0;      // index into interface_points; 0xFF = vehicle_seat_auto
 };
 static_assert(sizeof(VehicleUseReqPayload) == 5);
 
@@ -440,7 +448,7 @@ enum af_kill_info_flags : uint8_t
 
 // KillInfoPayload::damage_type is two nibbles:
 //   bits 0-3  rf::DamageType, or af_kill_damage_type_unknown
-//   bits 4-7  VehicleDamageClass id (multi/vehicle.h), meaningful only with AF_KILL_FLAG_VEHICLE
+//   bits 4-7  VehicleDamageClass id, meaningful only with AF_KILL_FLAG_VEHICLE
 constexpr uint8_t af_kill_damage_type_mask = 0x0F;
 constexpr uint8_t af_kill_damage_type_unknown = 0x0F; // no damage type the server could name
 constexpr uint8_t af_kill_vehicle_class_shift = 4;
@@ -989,15 +997,15 @@ static void af_process_ping_location_req_packet(const void* data, size_t len, co
 void af_send_ping_location_packet_to_team(rf::Vector3* pos, uint8_t player_id, rf::ubyte team);
 void af_send_ping_location_packet_to_all(rf::Vector3* pos, uint8_t player_id);
 static void af_process_ping_location_packet(const void* data, size_t len, const rf::NetAddr& addr);
-// world_pos non-null replaces the victim player id with a world position, for a non-player victim
+// hull non-null replaces the victim player id with a non-player victim's position and handle
 void af_send_damage_notify_packet(uint8_t player_id, float damage, bool died, bool crit, rf::Player* player,
-                                  const rf::Vector3* world_pos = nullptr);
+                                  const AfDamageNotifyHull* hull = nullptr);
 // Demo-recorder variant: same payload plus a trailing attacker id, so playback can
 // filter notifications down to the player currently being spectated. Live clients
 // never receive this form (their copy is implicitly "attacker = you").
 void af_send_damage_notify_packet_for_demo(uint8_t victim_id, float damage, bool died, bool crit,
                                            uint8_t attacker_id, rf::Player* recorder,
-                                           const rf::Vector3* world_pos = nullptr);
+                                           const AfDamageNotifyHull* hull = nullptr);
 static void af_process_damage_notify_packet(const void* data, size_t len, const rf::NetAddr& addr);
 void af_send_crit_shot_packet(uint8_t shooter_player_id, uint8_t weapon_type, rf::Player* player);
 static void af_process_crit_shot_packet(const void* data, size_t len, const rf::NetAddr& addr);

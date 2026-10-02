@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cmath>
 #include <cstdint>
 #include <numbers>
 #include <utility>
@@ -11,7 +12,6 @@ namespace rf
 {
     struct Entity;
     struct Player;
-    struct VMesh;
 }
 
 struct AlpineVehicleFactoryInfo;
@@ -61,6 +61,17 @@ bool vehicle_hull_obb_overlap(const VehicleHullObb& a, const VehicleHullObb& b, 
 
 // The one spelling of 2*pi in the vehicle tree.
 inline constexpr float vehicle_two_pi = 2.0f * std::numbers::pi_v<float>;
+inline constexpr float vehicle_deg_to_rad = std::numbers::pi_v<float> / 180.0f;
+
+inline float vehicle_wrap_pi(float a)
+{
+    return std::remainder(a, vehicle_two_pi);
+}
+
+inline bool vehicle_vector_is_finite(const rf::Vector3& v)
+{
+    return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z);
+}
 
 // Slack allowed on every face of BOTH boxes.
 inline constexpr float vehicle_ram_contact_margin = 0.10f;  // server ram/crush sweep
@@ -140,8 +151,9 @@ int64_t vehicle_hull_unoccupied_deadline(int vehicle_handle);
 // Client: appends (local hull handle, deadline ms) for every hull with a running auto-return.
 void vehicle_unoccupied_hulls(std::vector<std::pair<int, int64_t>>& out);
 
-// Server: set a factory's affiliation. An un-entered hull follows it; a pending slot spawns now
-// unless spawn_waiting is false (level-init ownership, which must not pre-empt a delayed first spawn).
+// Server: set a factory's affiliation. An un-entered hull follows it, and a capture (team >= 0) spawns a
+// pending slot now. spawn_waiting=false (level init) neither spawns nor broadcasts: the state-info sweep
+// states it.
 void vehicle_factory_set_team(int factory_index, int team, bool spawn_waiting = true);
 
 // The g_vehicle_factories index of the factory carrying this RFL uid, -1 if there is none.
@@ -210,28 +222,6 @@ bool vehicle_is_driver_obj_update_row(const rf::Player* pp, const rf::Entity* ep
 rf::Entity* vehicle_firing_seat_occupant(rf::Entity* vehicle);
 bool vehicle_local_owns_firing_seat(rf::Entity* ep);
 
-// Render: a Bagman bag carrier aboard, else the driver, else the lowest occupied seat; null for an
-// empty hull, which never outlines.
-rf::Entity* vehicle_outline_occupant(rf::Entity* vehicle);
-
-// Render: a jeep's four tires - instances of one shared static mesh, not hull geometry.
-void vehicle_render_jeep_tires(rf::Entity* ep);
-
-// The shared tire mesh for this level, or null before the first jeep is seen / if it failed to load.
-// The D3D11 outline pass must register its sub-meshes under each jeep's entity handle, or four
-// separate static draws inherit the last drawn character's outline.
-rf::VMesh* vehicle_jeep_tire_mesh();
-
-// Render: the entity whose entity_render call is on the stack, or null outside one.
-rf::Entity* vehicle_rendering_entity();
-
-// Render: the UV offset for the belt of the tracked hull currently being rendered, on that class's
-// tiling axis, plus its table row. False with all outputs cleared for every other draw.
-bool vehicle_tread_scroll_for_draw(int& config_out, float& u_out, float& v_out);
-
-// Is this bitmap the belt texture of that table row? Matched on the BASENAME: an ATX has no ext.
-bool vehicle_is_tread_bitmap(int bm_handle, int config_index);
-
 bool vehicle_suppress_local_fire(const rf::Player* pp);
 
 // Server: a client reported its vehicle trigger state (action 0/1); action 2 is server->client only.
@@ -266,14 +256,6 @@ float vehicle_scale_damage(int victim_handle, int killer_handle, int damage_type
 // Server, from obj_damage, BEFORE the stock body: *killer_handle is rewritten in place with the
 // occupant responsible for a vehicle killer. False means the damage must not be applied at all.
 bool vehicle_filter_obj_damage(int victim_handle, int* killer_handle, int damage_type);
-
-// Server: a vehicle's own weapon hitting one of its occupants; yes drops the damage.
-bool vehicle_damage_is_own_vehicle(const rf::Entity* victim, int killer_handle);
-
-// Server: swap a vehicle killer for the occupant responsible, and remember who last hurt a vehicle
-// so its explosion can credit them.
-int vehicle_resolve_damage_killer(rf::Entity* victim, int killer_handle, int damage_type);
-void vehicle_note_damage(rf::Entity* victim, int killer_handle);
 
 // Server, from entity_damage: the 10000 DT_EXPLOSIVE blast entity_die deals to a destroyed vehicle's
 // occupants. A guaranteed kill, so it must be exempt from every PvP damage reducer.

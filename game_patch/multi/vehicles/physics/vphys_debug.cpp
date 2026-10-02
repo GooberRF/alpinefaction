@@ -1,22 +1,44 @@
 #include <algorithm>
 #include <cmath>
+#include <optional>
 #include <vector>
 #include <common/utils/list-utils.h>
 #include "vphys_internal.h"
 #include "../vehicle_physics.h"
 #include "../vehicle.h"
 #include "../../../graphics/gr.h"
-#include "../../../rf/ai.h"
+#include "../../../os/console.h"
 #include "../../../rf/entity.h"
 #include "../../../rf/gameseq.h"
-#include "../../../rf/multi.h"
-#include "../../../rf/physics.h"
-#include "../../../rf/player/camera.h"
-
-bool g_vphys_dbg = false;
+#include "../../../rf/os/console.h"
 
 namespace
 {
+    bool g_vphys_dbg = false;
+
+    ConsoleCommand2 dbg_vphys_cmd{
+        "dbg_vphys",
+        [](std::optional<int> enable) {
+            g_vphys_dbg = enable ? *enable != 0 : !g_vphys_dbg;
+            rf::console::print("dbg_vphys is {}", g_vphys_dbg ? "enabled" : "disabled");
+            if (g_vphys_dbg) {
+                rf::console::print("  car: grey=table box  cyan=chassis contact box (trimmed, this "
+                                   "is what meets the level mesh)  yellow=cyan +chassis_clearance "
+                                   "(size reference only)");
+                rf::console::print("  flyer/sub: cyan=hull_radius sphere  yellow=hull_standoff "
+                                   "sphere (the bt shape)");
+                rf::console::print("  magenta=vehicle-vs-vehicle volume (untrimmed +{:.2f})",
+                                   vehicle_ram_contact_margin);
+                rf::console::print("  level mesh: green boxes=chunk triangle bounds near you  "
+                                   "orange=chunks the last remesh rebuilt (a crater's dirty set)");
+                rf::console::print("  blue cubes={:.0f}u chunk cell grid, your cell and its 26 "
+                                   "neighbours (a terrain chunk is one body)", level_mesh_debug_cell_size());
+            }
+        },
+        "Draw the vehicle physics collision primitives in the world",
+        "dbg_vphys [0|1]",
+    };
+
     rf::Vector3 hull_local_to_world(const rf::Entity* ep, const btVector3& local)
     {
         return ep->pos + ep->orient.rvec * local.x() + ep->orient.uvec * local.y()
@@ -241,4 +263,9 @@ void vphys_render_debug()
         rf::gr::set_color(240, 220, 60, 255);
         rf::gr::sphere(entity.pos, hull_standoff(p, &entity), no_overdraw_2d_line);
     }
+}
+
+void vphys_debug_install_patches()
+{
+    dbg_vphys_cmd.register_cmd();
 }

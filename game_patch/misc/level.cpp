@@ -160,7 +160,7 @@ void level_shutdown()
     alpine_terrain_clear_state();
     gr::d3d11::release_terrain_gpu();
     alpine_mesh_free_collision_proxies();
-    vehicle_physics_level_init(); // the Bullet world keys on GRoom*, so it goes before the rooms
+    vehicle_physics_level_reset(); // the Bullet world keys on GRoom*, so it goes before the rooms
 }
 
 // Reached from quit-to-menu and leaving for the multiplayer menu (via game_shutdown), the

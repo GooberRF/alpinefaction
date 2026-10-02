@@ -965,8 +965,12 @@ uint32_t shade_terrain_pixel(const TerrainShade& s, const LevelLight& ll, float 
 
     float texel[3] = {0.5f, 0.5f, 0.5f};
     if (!s.fullbright) {
-        if (s.light) terrain_baked_light_sample(*s.light, x, z, texel);
-        else fallback_light(ll, n, texel);
+        if (s.light) {
+            terrain_baked_light_sample(*s.light, x, z, texel);
+        }
+        else {
+            fallback_light(ll, n, texel);
+        }
     }
     int rgb[3];
     for (int ch = 0; ch < 3; ++ch) {
@@ -1018,8 +1022,7 @@ int chunk_bitmap(const EditorV3dMesh& sub, const EditorVifMesh& vm, const Editor
 // The floor the D3D11 renderer gives a chunk's light (gr_d3d11_decoration.cpp render, gr_d3d11_mesh.cpp batches).
 float chunk_self_illumination(const EditorV3dMesh& sub, const EditorVifMesh& vm, const EditorVifChunk& chunk)
 {
-    constexpr int color_source_texture = 1;
-    if (((chunk.mode >> 5) & 0x1F) == color_source_texture) return 1.0f;
+    if (((chunk.mode >> gr_mode_color_shift) & gr_mode_color_mask) == gr_mode_color_texture) return 1.0f;
     const int idx = chunk.texture_idx;
     if (!sub.materials || sub.num_materials <= 0 || idx < 0 || idx >= 7) return 0.0f;
     const int material = vm.tex_ids[idx];
@@ -1419,7 +1422,6 @@ bool minimap_bake(CDedLevel& level, const MinimapBakeParams& p, MinimapBakeResul
             }
         }
 
-        const auto terrain_started = std::chrono::steady_clock::now();
         const float pixel_world = raster.pixel_world_size();
         std::vector<bool> terrain_shown(terrains.size(), false);
         const int terrain_pixels = raster.shade_terrain([&](int k, float x, float y, float z) {
@@ -1432,7 +1434,6 @@ bool minimap_bake(CDedLevel& level, const MinimapBakeParams& p, MinimapBakeResul
         }
 
         // Placed as the game places them: resolvable terrains in record order, one level budget.
-        const auto decorations_started = std::chrono::steady_clock::now();
         std::unordered_map<std::string, DecoMesh> deco_meshes;
         uint32_t deco_placed = 0;
         int deco_drawn = 0;
@@ -1593,7 +1594,6 @@ bool minimap_bake(CDedLevel& level, const MinimapBakeParams& p, MinimapBakeResul
             }
         });
 
-        const auto liquids_started = std::chrono::steady_clock::now();
         for (auto& [face, shade] : liquids) {
             if (!gather_face(face, poly)) continue;
             const std::vector<WorldVert>* src = &poly;
@@ -1614,13 +1614,10 @@ bool minimap_bake(CDedLevel& level, const MinimapBakeParams& p, MinimapBakeResul
             out_error = "Could not write " + path + ".";
             return false;
         }
-        auto ms = [](auto from, auto to) { return std::chrono::duration<double, std::milli>(to - from).count(); };
         xlog::info("[Minimap] Baked {} ({}x{}, {} faces, {} lightmapped{}, {} terrain pixels, {} decorations placed: "
-                   "{} rasterized ({} triangles), {} blended; faces {:.0f} ms, terrain {:.0f} ms, decorations "
-                   "{:.0f} ms)",
+                   "{} rasterized ({} triangles), {} blended)",
                    path, res, res, drawn, lightmapped, lightmaps_placeholder ? ", placeholder lightmaps ignored" : "",
-                   terrain_pixels, deco_placed, deco_drawn, deco_tris, deco_blended, ms(started, terrain_started),
-                   ms(terrain_started, decorations_started), ms(decorations_started, liquids_started));
+                   terrain_pixels, deco_placed, deco_drawn, deco_tris, deco_blended);
 
         register_written_file(path.c_str());
         if (!reload_bitmap_in_place(bitmap_name.c_str())) {

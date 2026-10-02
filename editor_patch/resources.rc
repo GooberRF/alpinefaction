@@ -165,7 +165,7 @@ FONT 8, "MS Sans Serif"
     COMBOBOX        IDC_LIGHTMAP_COMPRESSION, 204, 429, 74, 60, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
 
     AUTOCHECKBOX    "Limit vehicle flight ceiling", IDC_VEHICLE_FLIGHT_CEILING_ENABLE, 13, 447, 190, 10
-    LTEXT           "Ceiling height (Y):", -1, 30, 462, 120, 8
+    LTEXT           "Ceiling height (Y):", -1, 30, 462, 58, 8
     EDITTEXT        IDC_VEHICLE_FLIGHT_CEILING, 90, 459, 40, 14, ES_AUTOHSCROLL
 
     GROUPBOX        "Sunlight", -1, 7, 481, 284, 100

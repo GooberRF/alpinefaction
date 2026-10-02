@@ -7,7 +7,7 @@ Version 1.5.0 (Trillium): Not yet released
 [@GooberRF](https://github.com/GooberRF)
 - Add multiplayer vehicles and turrets
   - Jeeps, APCs, drillers, fighters, submarines, and stationary turrets, spawned by the new `Vehicle Factory` object
-  - Overhaul vehicle physics using Bullet physics engine
+  - Simulate vehicle physics with the Bullet physics engine
   - Multi-seat vehicles with driver, gunner, and passenger seats; `Use` boards the lowest free seat and number keys `1`-`6` switch seats
   - Seat every multiplayer character properly as jeep driver, jeep gunner, and turret user, with new animations for characters that had none
   - Hold `Jump` to apply the handbrake in jeeps, APCs, and drillers, which also holds a stopped vehicle in place on slopes; vehicles nobody has entered yet hold their spot the same way
@@ -30,6 +30,8 @@ Version 1.5.0 (Trillium): Not yet released
   - Play the squash sound when a player is run over or drilled by a vehicle, and gib players run over at high speed when gibbing is enabled
   - Riders of a vehicle destroyed by drowning, falling out of the level, their own ram, or other unattributed damage take their own deaths, and players who damaged the vehicle in the last 5 seconds earn assists; the player who destroys a vehicle keeps credit for its riders
   - Vehicles take damage from hard crashes into walls and from hard landings, configurable with the `[vehicles]` `crash_damage` dedicated server rule
+  - Add `dbg_vphys` console command to draw vehicle physics collision shapes
+  - Add `dbg_vehicle_spawn` console command to spawn a vehicle or turret in front of a player (multiplayer server only)
 - Add multiplayer minimap for levels that enable one in `Level Properties`
   - Square minimap under the ammo counter showing the player, teammates, flags, control points, the bag, the salvage flag, vehicle factories, enterable vehicles, and geomod craters; enemies are never shown
   - Hold `Show Map` (default `Q`) to display a large map of the whole level with control point names and vehicle respawn countdowns

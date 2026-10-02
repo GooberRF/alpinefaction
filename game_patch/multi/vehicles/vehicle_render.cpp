@@ -136,40 +136,7 @@ namespace
             g_rendering_entity = prev;
         },
     };
-} // namespace
 
-rf::Entity* vehicle_rendering_entity()
-{
-    return g_rendering_entity;
-}
-
-rf::Entity* vehicle_outline_occupant(rf::Entity* vehicle)
-{
-    if (!vehicle_is_synced_entity_type(vehicle)) {
-        return nullptr;
-    }
-    const rf::Player* bag_carrier = gt_is_bagman_any() ? g_bagman_info.carrier : nullptr;
-    rf::Entity* first = nullptr;
-    for (int i = 0; i < vehicle->interface_points.size(); ++i) {
-        rf::Entity* occupant = rf::entity_from_handle(vehicle_seat_leech(vehicle, i));
-        if (!occupant) {
-            continue;
-        }
-        if (!bag_carrier) {
-            return occupant;
-        }
-        if (occupant->handle == bag_carrier->entity_handle) {
-            return occupant;
-        }
-        if (!first) {
-            first = occupant;
-        }
-    }
-    return first;
-}
-
-namespace
-{
     constexpr int vehicle_team_tex_slots = std::extent_v<decltype(rf::VifMesh::tex_ids)>;
 
     struct VehicleTeamTexSet
@@ -221,7 +188,6 @@ namespace
         return size;
     }
 
-    // Defined with the tread rows below.
     bool vehicle_bitmap_is_tread_belt(int bm_handle);
 
     // Null when nothing resolved: every probe result is cached, so a mesh with no team art costs
@@ -304,13 +270,10 @@ namespace
         return team == 0 || team == 1 ? team : -1;
     }
 
-    // Defined with the spinner table below; the team-texture patch has to ask about it first.
     bool vehicle_is_spinner_mesh(const rf::VMesh* vmesh);
 
-    // Per SUB-MESH, inside the static-mesh branch of vmesh_render's body (0x00502B20): EAX holds
-    // &V3d::meshes[i] and [ESP] the MeshRenderParams the draw is about to take. Both renderers read
-    // alt_tex (+0x10) off that struct, so this one site covers D3D9 and D3D11, and it covers the
-    // hull and the jeep's gun alike - both draw inside the hull's entity_render.
+    // Per sub-mesh in vmesh_render's static branch: EAX = &V3d::meshes[i], [ESP] = the MeshRenderParams.
+    // Both renderers read alt_tex off that struct, so this one site covers D3D9 and D3D11.
     CodeInjection vmesh_render_static_team_tex_patch{
         0x00502FA2,
         [](auto& regs) {
@@ -323,10 +286,8 @@ namespace
             if (!params || !vmesh) {
                 return;
             }
-            // 0x0052FA40 writes its own remapped array BACK into this params, so from the second
-            // sub-mesh on, alt_tex is the previous one's - the caller's own value survives only at
-            // ESI 0, the first iteration of the loop this site sits in. Captured there so a
-            // sub-mesh with no team art can be handed the CALLER's array back rather than null.
+            // 0x0052FA40 writes its remapped array back into params, so the caller's own alt_tex
+            // survives only at ESI 0; captured there for sub-meshes with no team art.
             static rf::MeshRenderParams* caller_params = nullptr;
             static int* caller_alt_tex = nullptr;
             if (regs.esi.value == 0 || params != caller_params) {
@@ -540,43 +501,6 @@ namespace
         return rf::Matrix3{{c, s, 0.0f}, {-s, c, 0.0f}, {0.0f, 0.0f, 1.0f}};
     }
 
-} // namespace
-
-// Both teams, because a hull can change hands without re-spawning.
-void vehicle_team_textures_prime(rf::Entity* ep)
-{
-    if (rf::is_dedicated_server || !ep || !multi_is_team_game_type()) {
-        return;
-    }
-    rf::VMesh* vmesh = ep->vmesh;
-    if (!vmesh || rf::vmesh_get_type(vmesh) != rf::MESH_TYPE_STATIC) {
-        return;
-    }
-    const auto* v3d = static_cast<const rf::V3d*>(vmesh->instance);
-    if (!v3d || !v3d->meshes) {
-        return;
-    }
-    for (int team = 0; team <= 1; ++team) {
-        for (int i = 0; i < v3d->num_meshes; ++i) {
-            vehicle_team_tex_set(&v3d->meshes[i], team);
-        }
-    }
-}
-
-// Dropped, not vmesh_free'd: that would decrement a reference the level teardown already owns.
-void vehicle_drop_jeep_tire_mesh()
-{
-    for (int cfg = 0; cfg < vehicle_spinner_config_count; ++cfg) {
-        g_spinner_mesh[cfg] = VehicleSpinnerMesh{};
-        // The hull meshes go with the level too, so the memoized tag indices must not outlive them.
-        g_spinner_prop_cache[cfg] = VehicleSpinnerPropCache{};
-    }
-    // Same for the team texture arrays: both the mesh keys and the bm handles die with the level.
-    vehicle_team_tex_cache_clear();
-}
-
-namespace
-{
     void vehicle_ensure_spinner_mesh(int cfg)
     {
         VehicleSpinnerMesh& m = g_spinner_mesh[cfg];
@@ -591,78 +515,7 @@ namespace
                        filename);
         }
     }
-} // namespace
 
-// Spin is integrated from the hull's position DELTA, not a velocity: a driverless coasting hull
-// deliberately reports zero velocity on the wire. On the frame tick and not in the render hook,
-// which does not fire for an off-screen hull and fires twice for one in the rail-scanner overlay.
-void vehicle_update_jeep_wheels()
-{
-    // Nothing can be in the map when this is false: the same gate the row lookup opens on.
-    if (!rf::is_multi || !vehicle_level_has_factories()) {
-        return;
-    }
-    std::erase_if(g_vehicle_state.wheel_spin, [](const auto& kv) {
-        return vehicle_spinner_config_for_entity(rf::entity_from_handle(kv.first)) < 0;
-    });
-
-    for (rf::Entity& entity : DoublyLinkedList{rf::entity_list}) {
-        const int cfg = vehicle_spinner_config_for_entity(&entity);
-        if (cfg < 0) {
-            continue;
-        }
-        const VehicleSpinnerConfig& c = vehicle_spinner_configs[cfg];
-        vehicle_ensure_spinner_mesh(cfg);
-        VehicleWheelSpin& spin = g_vehicle_state.wheel_spin[entity.handle];
-        const rf::Vector3 delta = entity.pos - spin.last_pos;
-        const bool had_last = spin.has_last;
-        spin.last_pos = entity.pos;
-        spin.has_last = true;
-
-        if (c.steer_front) {
-            // The driving machine reads its Bullet body's live angle; everyone else reads the
-            // driver's quantized one at obj_update cadence, which has to be eased. The first frame
-            // snaps, so a jeep entering view mid-turn does not sweep in from zero.
-            float steer_target = 0.0f;
-            const bool steer_is_local =
-                vehicle_physics_driven_steer_angle(entity.handle, &steer_target);
-            if (!steer_is_local) {
-                if (const VehicleOrientSupplement* supp = vehicle_orient_supplement(entity.handle)) {
-                    steer_target = supp->steer;
-                }
-            }
-            if (steer_is_local || !had_last) {
-                spin.steer = steer_target;
-            }
-            else {
-                constexpr float steer_ease_rate = 10.0f;
-                // Frame-rate independent: a clamped rate*dt converges faster the finer the frame is.
-                const float t = 1.0f - std::exp(-steer_ease_rate * rf::frametime);
-                spin.steer += (steer_target - spin.steer) * t;
-            }
-        }
-
-        if (!had_last) {
-            continue;
-        }
-        // A respawn, a level-start snap or an interp catch-up moves further in one frame than any
-        // hull can drive; spinning that would burst the wheels, so the angle holds instead.
-        constexpr float max_step = 8.0f;
-        if (delta.len_sq() > max_step * max_step) {
-            continue;
-        }
-        // Only whether this hull has drawable spinners; the transforms are the render path's job.
-        if (!entity.vmesh || !vehicle_spinner_prop_cache(cfg, entity.vmesh).complete) {
-            continue;
-        }
-        const float forward = delta.dot_prod(entity.orient.fvec);
-        spin.angle = std::fmod(spin.angle + forward * vehicle_spinner_radians_per_unit(cfg),
-                               vehicle_two_pi);
-    }
-}
-
-namespace
-{
     // Tracked hulls carry their belts as geometry, so they are animated by scrolling the texture.
     struct VehicleTreadConfig
     {
@@ -738,6 +591,137 @@ namespace
     }
 } // namespace
 
+rf::Entity* vehicle_rendering_entity()
+{
+    return g_rendering_entity;
+}
+
+rf::Entity* vehicle_outline_occupant(rf::Entity* vehicle)
+{
+    if (!vehicle_is_synced_entity_type(vehicle)) {
+        return nullptr;
+    }
+    const rf::Player* bag_carrier = gt_is_bagman_any() ? g_bagman_info.carrier : nullptr;
+    rf::Entity* first = nullptr;
+    for (int i = 0; i < vehicle->interface_points.size(); ++i) {
+        rf::Entity* occupant = rf::entity_from_handle(vehicle_seat_leech(vehicle, i));
+        if (!occupant) {
+            continue;
+        }
+        if (!bag_carrier) {
+            return occupant;
+        }
+        if (occupant->handle == bag_carrier->entity_handle) {
+            return occupant;
+        }
+        if (!first) {
+            first = occupant;
+        }
+    }
+    return first;
+}
+
+// Both teams, because a hull can change hands without re-spawning.
+void vehicle_team_textures_prime(rf::Entity* ep)
+{
+    if (rf::is_dedicated_server || !ep || !multi_is_team_game_type()) {
+        return;
+    }
+    rf::VMesh* vmesh = ep->vmesh;
+    if (!vmesh || rf::vmesh_get_type(vmesh) != rf::MESH_TYPE_STATIC) {
+        return;
+    }
+    const auto* v3d = static_cast<const rf::V3d*>(vmesh->instance);
+    if (!v3d || !v3d->meshes) {
+        return;
+    }
+    for (int team = 0; team <= 1; ++team) {
+        for (int i = 0; i < v3d->num_meshes; ++i) {
+            vehicle_team_tex_set(&v3d->meshes[i], team);
+        }
+    }
+}
+
+// Dropped, not vmesh_free'd: that would decrement a reference the level teardown already owns.
+void vehicle_drop_jeep_tire_mesh()
+{
+    for (int cfg = 0; cfg < vehicle_spinner_config_count; ++cfg) {
+        g_spinner_mesh[cfg] = VehicleSpinnerMesh{};
+        // The hull meshes go with the level too, so the memoized tag indices must not outlive them.
+        g_spinner_prop_cache[cfg] = VehicleSpinnerPropCache{};
+    }
+    // Same for the team texture arrays: both the mesh keys and the bm handles die with the level.
+    vehicle_team_tex_cache_clear();
+}
+
+// Spin is integrated from the hull's position DELTA, not a velocity: a driverless coasting hull
+// deliberately reports zero velocity on the wire. On the frame tick and not in the render hook,
+// which does not fire for an off-screen hull and fires twice for one in the rail-scanner overlay.
+void vehicle_update_jeep_wheels()
+{
+    // Nothing can be in the map when this is false: the same gate the row lookup opens on.
+    if (!rf::is_multi || !vehicle_level_has_factories()) {
+        return;
+    }
+    std::erase_if(g_vehicle_state.wheel_spin, [](const auto& kv) {
+        return vehicle_spinner_config_for_entity(rf::entity_from_handle(kv.first)) < 0;
+    });
+
+    for (rf::Entity& entity : DoublyLinkedList{rf::entity_list}) {
+        const int cfg = vehicle_spinner_config_for_entity(&entity);
+        if (cfg < 0) {
+            continue;
+        }
+        const VehicleSpinnerConfig& c = vehicle_spinner_configs[cfg];
+        vehicle_ensure_spinner_mesh(cfg);
+        VehicleWheelSpin& spin = g_vehicle_state.wheel_spin[entity.handle];
+        const rf::Vector3 delta = entity.pos - spin.last_pos;
+        const bool had_last = spin.has_last;
+        spin.last_pos = entity.pos;
+        spin.has_last = true;
+
+        if (c.steer_front) {
+            // The driving machine reads its Bullet body's live angle; everyone else reads the
+            // driver's quantized one at obj_update cadence, which has to be eased. The first frame
+            // snaps, so a jeep entering view mid-turn does not sweep in from zero.
+            float steer_target = 0.0f;
+            const bool steer_is_local =
+                vehicle_physics_driven_steer_angle(entity.handle, &steer_target);
+            if (!steer_is_local) {
+                if (const VehicleOrientSupplement* supp = vehicle_orient_supplement(entity.handle)) {
+                    steer_target = supp->steer;
+                }
+            }
+            if (steer_is_local || !had_last) {
+                spin.steer = steer_target;
+            }
+            else {
+                constexpr float steer_ease_rate = 10.0f;
+                // Frame-rate independent: a clamped rate*dt converges faster the finer the frame is.
+                const float t = 1.0f - std::exp(-steer_ease_rate * rf::frametime);
+                spin.steer += (steer_target - spin.steer) * t;
+            }
+        }
+
+        if (!had_last) {
+            continue;
+        }
+        // A respawn, a level-start snap or an interp catch-up moves further in one frame than any
+        // hull can drive; spinning that would burst the wheels, so the angle holds instead.
+        constexpr float max_step = 8.0f;
+        if (delta.len_sq() > max_step * max_step) {
+            continue;
+        }
+        // Only whether this hull has drawable spinners; the transforms are the render path's job.
+        if (!entity.vmesh || !vehicle_spinner_prop_cache(cfg, entity.vmesh).complete) {
+            continue;
+        }
+        const float forward = delta.dot_prod(entity.orient.fvec);
+        spin.angle = std::fmod(spin.angle + forward * vehicle_spinner_radians_per_unit(cfg),
+                               vehicle_two_pi);
+    }
+}
+
 // Advanced from the position delta on the frame tick, for the same reasons as the jeep's roll.
 void vehicle_update_treads()
 {
@@ -762,7 +746,6 @@ void vehicle_update_treads()
         if (!had_last) {
             continue;
         }
-        // Same guard as the jeep's roll.
         constexpr float max_step = 8.0f;
         if (delta.len_sq() > max_step * max_step) {
             continue;

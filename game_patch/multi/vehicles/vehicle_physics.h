@@ -53,11 +53,8 @@ void vehicle_physics_on_seat_change();
 // Frame top: lifecycle only. The step runs from a hook on the input read in gameplay_do_frame.
 void vehicle_physics_do_frame();
 
-// The vphys_dbg world-space collision overlay; a no-op unless vphys_dbg is on.
+// The dbg_vphys world-space collision overlay; a no-op unless dbg_vphys is on.
 void vehicle_physics_render_debug();
-
-// Every crater, whatever the source: rebuilds the affected rooms' Bullet collision meshes.
-void vehicle_physics_notify_geomod(const rf::Vector3& pos, float radius);
 
 // geomod_queue_add with the vphys hook stepped over; ONLY for the RF2 smoke replay's landed crater.
 void vehicle_physics_geomod_queue_add_raw(rf::GeomodParams* params);
@@ -111,8 +108,8 @@ void vehicle_physics_server_wake(int vehicle_handle);
 // Change this SERVER body's velocity by `delta_v` world u/s along `dir` (need not be normalized).
 bool vehicle_physics_server_shove(int vehicle_handle, const rf::Vector3& dir, float delta_v);
 
-void vehicle_physics_level_init();
-// MUST run after the RFL chunk parse - vehicle_physics_level_init fires before it.
+void vehicle_physics_level_reset();
+// MUST run after the RFL chunk parse - vehicle_physics_level_reset fires before it.
 void vehicle_physics_level_init_post();
 void vehicle_physics_on_multi_shutdown();
 void vehicle_physics_apply_patches();

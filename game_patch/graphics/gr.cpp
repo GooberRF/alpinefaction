@@ -207,10 +207,9 @@ CodeInjection gameplay_render_frame_fov_injection{
     0x00431BA1,
     []() {
         // Scale world FOV
-        auto& rf_fov = addr_as_ref<float>(0x0059613C);
-        rf_fov = gr_scale_world_fov(rf_fov);
+        rf::gr::gameplay_fov = gr_scale_world_fov(rf::gr::gameplay_fov);
         // Free-look spectate stepped zoom narrows the FOV (1.0 when not zoomed)
-        rf_fov /= multi_spectate_get_view_fov_scale();
+        rf::gr::gameplay_fov /= multi_spectate_get_view_fov_scale();
     },
 };
 

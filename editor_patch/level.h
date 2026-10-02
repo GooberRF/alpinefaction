@@ -641,8 +641,6 @@ struct AlpineLevelProperties
     // v6
     bool vehicle_flight_ceiling_enabled = false;   // mapper opted into an altitude ceiling for flyers
     float vehicle_flight_ceiling = 0.0f;           // world Y (RF up axis) the ceiling sits at
-
-    // v7
     bool minimap_enabled = false;
     std::string minimap_bitmap;
     Vector3 minimap_world_min{};
@@ -686,7 +684,7 @@ struct AlpineLevelProperties
     // Retained foreign-editor RFL sections
     std::vector<RetainedRflChunk> retained_chunks;
 
-    static constexpr std::uint32_t current_alpine_chunk_version = 7u;
+    static constexpr std::uint32_t current_alpine_chunk_version = 6u;
 
     // Unit vector pointing TOWARD the sun. The light travel direction is its negation.
     Vector3 sun_to_light_dir() const
@@ -914,7 +912,6 @@ struct AlpineLevelProperties
         // v6
         file.write<std::uint8_t>(vehicle_flight_ceiling_enabled ? 1u : 0u);
         file.write<float>(vehicle_flight_ceiling);
-        // v7
         file.write<std::uint8_t>(minimap_enabled ? 1u : 0u);
         write_rfl_string(file, minimap_bitmap);
         file.write<float>(minimap_world_min.x);
@@ -1164,10 +1161,7 @@ struct AlpineLevelProperties
             vehicle_flight_ceiling_enabled = (u8 != 0);
             if (!read_bytes(&vehicle_flight_ceiling, sizeof(vehicle_flight_ceiling)))
                 return;
-        }
 
-        if (version >= 7) {
-            std::uint8_t u8 = 0;
             if (!read_bytes(&u8, sizeof(u8)))
                 return;
             minimap_enabled = (u8 != 0);

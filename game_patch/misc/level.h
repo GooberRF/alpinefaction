@@ -83,8 +83,6 @@ struct AlpineLevelProperties
     // v6
     bool vehicle_flight_ceiling_enabled = false;   // mapper opted into an altitude ceiling for flyers
     float vehicle_flight_ceiling = 0.0f;           // world Y (RF up axis) the ceiling sits at
-
-    // v7
     bool minimap_enabled = false;
     std::string minimap_bitmap;
     rf::Vector3 minimap_world_min{};
@@ -365,10 +363,7 @@ struct AlpineLevelProperties
                 return;
             xlog::debug("[AlpineLevelProps] vehicle_flight_ceiling {} (enabled {})",
                         vehicle_flight_ceiling, vehicle_flight_ceiling_enabled);
-        }
 
-        if (version >= 7) {
-            std::uint8_t u8 = 0;
             if (!reader.read_bytes(&u8, sizeof(u8)))
                 return;
             const bool enabled = (u8 != 0);
@@ -536,7 +531,6 @@ struct AlpineVehicleFactoryInfo {
     bool active_by_default = true;
 };
 
-// Implemented in multi/vehicles/vehicle_spawn.cpp.
 void vehicle_factory_load_chunk(rf::File& file, std::size_t chunk_len);
 void vehicle_factory_clear_state();
 bool vehicle_level_has_factories();

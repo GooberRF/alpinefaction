@@ -5,7 +5,30 @@
 namespace rf
 {
     struct Entity;
+    struct VMesh;
 }
+
+// Render: a Bagman bag carrier aboard, else the driver, else the lowest occupied seat; null for an
+// empty hull, which never outlines.
+rf::Entity* vehicle_outline_occupant(rf::Entity* vehicle);
+
+// Render: a jeep's four tires - instances of one shared static mesh, not hull geometry.
+void vehicle_render_jeep_tires(rf::Entity* ep);
+
+// The shared tire mesh for this level, or null before the first jeep is seen / if it failed to load.
+// The D3D11 outline pass must register its sub-meshes under each jeep's entity handle, or four
+// separate static draws inherit the last drawn character's outline.
+rf::VMesh* vehicle_jeep_tire_mesh();
+
+// Render: the entity whose entity_render call is on the stack, or null outside one.
+rf::Entity* vehicle_rendering_entity();
+
+// Render: the UV offset for the belt of the tracked hull currently being rendered, on that class's
+// tiling axis, plus its table row. False with all outputs cleared for every other draw.
+bool vehicle_tread_scroll_for_draw(int& config_out, float& u_out, float& v_out);
+
+// Is this bitmap the belt texture of that table row? Matched on the BASENAME: an ATX has no ext.
+bool vehicle_is_tread_bitmap(int bm_handle, int config_index);
 
 // Client: load this hull's team texture variants now, so the first draw is a map lookup. The
 // in-draw resolve stays as the fallback for meshes this does not reach.

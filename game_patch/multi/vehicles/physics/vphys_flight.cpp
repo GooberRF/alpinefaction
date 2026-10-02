@@ -1,25 +1,20 @@
 #include <algorithm>
 #include <cmath>
-#include <numbers>
 #include "vphys_internal.h"
 #include "../vehicle_physics.h"
 #include "../vehicle.h"
+#include "../../../graphics/weather.h"
 #include "../../../misc/level.h"
 #include "../../../rf/ai.h"
 #include "../../../rf/entity.h"
 #include "../../../rf/geometry.h"
-#include "../../../rf/level.h"
-#include "../../../rf/multi.h"
 #include "../../../rf/object.h"
 #include "../../../rf/physics.h"
-#include "../../../rf/player/camera.h"
 
-// Surface = bbox_min.y + liquid_depth (point_in_liquid, 0x004CE080); cached for a breached sub.
+// Cached for a breached sub.
 bool liquid_surface_for(VehicleSimBody& b, rf::Entity* ep, float& out)
 {
-    rf::GRoom* room = ep->room;
-    if (room && room->contains_liquid) {
-        out = room->bbox_min.y + room->liquid_depth;
+    if (room_liquid_surface_y(ep->room, out)) {
         b.liquid_surface = out;
         b.liquid_surface_valid = true;
         return true;
@@ -33,14 +28,15 @@ bool liquid_surface_for(VehicleSimBody& b, rf::Entity* ep, float& out)
 
 bool vphys_hull_submerged(const rf::Entity* ep)
 {
-    if (!ep || !ep->room || !ep->room->contains_liquid
-        || rf::entity_is_sub(const_cast<rf::Entity*>(ep))) {
+    float surface_y = 0.0f;
+    if (!ep || !room_liquid_surface_y(ep->room, surface_y) || rf::entity_is_sub(const_cast<rf::Entity*>(ep))) {
         return false;
     }
-    return ep->pos.y < ep->room->bbox_min.y + ep->room->liquid_depth;
+    return ep->pos.y < surface_y;
 }
 
-void apply_flight_model(VehicleSimBody& b, rf::Entity* ep, const VehiclePhysicsParams& p, int cls)
+void apply_flight_model(VehicleSimBody& b, rf::Entity* ep, const VehiclePhysicsParams& p, int cls,
+                        float step_time)
 {
     btRigidBody* body = b.body;
     const btMatrix3x3& basis = body->getWorldTransform().getBasis();
@@ -132,21 +128,21 @@ void apply_flight_model(VehicleSimBody& b, rf::Entity* ep, const VehiclePhysicsP
     const float yaw_right_now = omega.dot(up);
     const float bank_right_now = -omega.dot(forward);
 
-    const float nose_up = (pitch_in * p.pitch_rate - nose_up_now) * p.rot_servo;
+    const float servo = step_time > 0.0f ? std::min(p.rot_servo, 1.0f / step_time) : p.rot_servo;
+    const float nose_up = (pitch_in * p.pitch_rate - nose_up_now) * servo;
 
-    const float yaw_right = (yaw_in * p.yaw_rate - yaw_right_now) * p.rot_servo;
+    const float yaw_right = (yaw_in * p.yaw_rate - yaw_right_now) * servo;
 
     const float bank_now = std::asin(std::clamp(-right.y(), -1.0f, 1.0f));
     const float bank_limit = std::fabs(p.bank_max);
     const float bank_target = std::clamp(yaw_in * p.bank_gain * p.bank_sign, -bank_limit, bank_limit);
 
-    constexpr float deg_to_rad = std::numbers::pi_v<float> / 180.0f;
     constexpr float bank_fade_band_deg = 35.0f;
     const float horiz = std::sqrt(std::max(1.0f - forward.y() * forward.y(), 0.0f));
     const float fade_start_deg = std::clamp(p.bank_fade_deg, 0.0f, 89.0f);
     const float fade_end_deg = std::min(fade_start_deg + bank_fade_band_deg, 90.0f);
-    const float horiz_full = std::cos(fade_start_deg * deg_to_rad);
-    const float horiz_zero = std::cos(fade_end_deg * deg_to_rad);
+    const float horiz_full = std::cos(fade_start_deg * vehicle_deg_to_rad);
+    const float horiz_zero = std::cos(fade_end_deg * vehicle_deg_to_rad);
     float bank_fade = 1.0f;
     if (horiz_full - horiz_zero > 0.0001f) {
         const float t = std::clamp((horiz - horiz_zero) / (horiz_full - horiz_zero), 0.0f, 1.0f);
@@ -155,7 +151,7 @@ void apply_flight_model(VehicleSimBody& b, rf::Entity* ep, const VehiclePhysicsP
     }
 
     const float bank_rate_target = (bank_target - bank_now) * p.bank_servo * bank_fade;
-    const float bank_right = (bank_rate_target - bank_right_now) * p.rot_servo;
+    const float bank_right = (bank_rate_target - bank_right_now) * servo;
 
     const btVector3 alpha = right * (-nose_up) + up * yaw_right + forward * (-bank_right);
     body->applyTorque(body->getInvInertiaTensorWorld().inverse() * alpha);

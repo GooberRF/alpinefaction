@@ -922,10 +922,7 @@ FunHook<void(rf::Entity*)> entity_delete_hook{
         if (ep) {
             entity_rate_limit_on_entity_delete(ep->handle);
             fly_sound_slot = ep->fly_sound_ambient_handle;
-            // Stock entity_delete stops the move loop (+0x80C) and the weapon loop (+0x81C) but
-            // never the drill loop; entity_driller_do_frame (0x00421310) is the only other place
-            // that would, and a dead entity never reaches it. A driller killed mid-carve leaves
-            // its 3D loop playing for the rest of the level.
+            // Stock entity_delete never stops the drill loop, and a dead driller no longer runs the code that would.
             if (ep->driller_sound_handle >= 0) {
                 rf::snd_stop(ep->driller_sound_handle);
                 ep->driller_sound_handle = -1;

@@ -1,35 +1,29 @@
 #include <algorithm>
 #include <cmath>
-#include <numbers>
 #include <vector>
 #include "vphys_internal.h"
 #include "../vehicle_physics.h"
 #include "../vehicle.h"
 #include "../vehicle_internal.h"
-#include "../../../misc/level.h"
 #include "../../../os/os.h"
 #include "../../../rf/ai.h"
-#include "../../../rf/clutter.h"
 #include "../../../rf/collide.h"
 #include "../../../rf/entity.h"
-#include "../../../rf/os/timer.h"
-#include "../../../rf/multi.h"
 #include "../../../rf/object.h"
 #include "../../../rf/physics.h"
-#include "../../../rf/player/camera.h"
 
 // Wheels are cast with RF's collide_linesegment_world (0x00498E80); null means "airborne".
+// Invisible faces carry an entity as they carry the chassis.
+constexpr int wheel_probe_flags = rf::CF_PROCESS_INVISIBLE_FACES;
 // The arc's angular reach: forward for climbing, a little rearward for descending symmetry.
 constexpr float wheel_arc_fwd_deg = 55.0f;
 constexpr float wheel_arc_back_deg = 25.0f;
 // How long the handbrake must hold a hull grounded and still before it pins it.
 constexpr float handbrake_settle_s = 0.5f;
 
-// 0x00498E80 walks the mover-brush list with no solidity test at all, so a brush the Bullet chassis
-// passes through (mover_brush_is_solid, vphys_world.cpp) would still stop a probe. Re-cast from just
-// past each such hit rather than discarding it: the engine returns only the nearest hit, so the real
-// surface behind a see-through mover is otherwise lost.
-bool vphys_collide_solid_segment(const rf::Vector3& a, const rf::Vector3& b, rf::PCollisionOut& out)
+// 0x00498E80 stops at every mover brush, solid or not, and returns only the nearest hit, so a mover
+// the chassis passes through is re-cast past rather than discarded.
+bool vphys_collide_solid_segment(const rf::Vector3& a, const rf::Vector3& b, int flags, rf::PCollisionOut& out)
 {
     constexpr int max_pass_through = 4;
     // Small enough that a solid surface hugging the back of a see-through mover face is not stepped over.
@@ -45,7 +39,7 @@ bool vphys_collide_solid_segment(const rf::Vector3& a, const rf::Vector3& b, rf:
         rf::Vector3 to = b; // 0x00498E80 takes both endpoints by non-const reference
         out = rf::PCollisionOut{};
         out.obj_handle = -1;
-        if (!rf::collide_linesegment_world(from, to, 0, &out)) {
+        if (!rf::collide_linesegment_world(from, to, flags, &out)) {
             return false;
         }
         // -1 is level geometry; the only object the segment test ever reports is a mover brush.
@@ -85,9 +79,9 @@ struct RfVehicleRaycaster : public btVehicleRaycaster
 
         rf::Vector3 contact{};
         rf::Vector3 surf_normal{0.0f, 1.0f, 0.0f};
-        float best_L = 1e30f;
+        float best_len = 1e30f;
         float best_theta = 0.0f;
-        float L_straight = 1e30f; // the L the straight-down sample implies; the seat's floor
+        float straight_len = 1e30f; // the length the straight-down sample implies; the seat's floor
         bool best_mover = false;
 
         if (owner->wheel_cylinder) {
@@ -95,9 +89,8 @@ struct RfVehicleRaycaster : public btVehicleRaycaster
             fwd -= dir * fwd.dot_prod(dir);
             fwd.normalize_safe();
             const int n = std::clamp(owner->wheel_arc_samples, 3, 12);
-            constexpr float deg2rad = std::numbers::pi_v<float> / 180.0f;
-            const float th_lo = -wheel_arc_back_deg * deg2rad;
-            const float th_hi = wheel_arc_fwd_deg * deg2rad;
+            const float th_lo = -wheel_arc_back_deg * vehicle_deg_to_rad;
+            const float th_hi = wheel_arc_fwd_deg * vehicle_deg_to_rad;
             const float probe_len = raylen + radius + 0.5f;
             // theta == 0 is sampled unconditionally (the extra i == n pass): the fall-through guarantee.
             for (int i = 0; i <= n; ++i) {
@@ -109,46 +102,46 @@ struct RfVehicleRaycaster : public btVehicleRaycaster
                 rf::Vector3 pa = a + fwd * (radius * st);
                 rf::Vector3 pb = pa + dir * probe_len;
                 rf::PCollisionOut o{};
-                if (!vphys_collide_solid_segment(pa, pb, o)) {
+                if (!vphys_collide_solid_segment(pa, pb, wheel_probe_flags, o)) {
                     continue;
                 }
                 const float d_hit = (o.hit_point - pa).dot_prod(dir);
-                const float L = d_hit - radius * ct; // suspension length this arc point implies
+                const float susp_len = d_hit - radius * ct; // suspension length this arc point implies
                 if (theta == 0.0f) {
-                    L_straight = L;
+                    straight_len = susp_len;
                 }
-                if (L < best_L) {
-                    best_L = L;
+                if (susp_len < best_len) {
+                    best_len = susp_len;
                     best_theta = theta;
                     contact = o.hit_point;
                     surf_normal = o.hit_normal;
                     best_mover = o.obj_handle >= 0;
                 }
             }
-            if (best_L > 1e29f) {
+            if (best_len > 1e29f) {
                 return nullptr;
             }
             // Scale the extra lift a forward edge asks for by cos(theta); never below the straight-down floor.
-            if (best_theta > 0.15f && L_straight < 1e29f && best_L < L_straight) {
-                best_L = L_straight - (L_straight - best_L) * std::cos(best_theta);
+            if (best_theta > 0.15f && straight_len < 1e29f && best_len < straight_len) {
+                best_len = straight_len - (straight_len - best_len) * std::cos(best_theta);
             }
         }
         else {
             rf::PCollisionOut o{};
-            if (!vphys_collide_solid_segment(a, b, o)) {
+            if (!vphys_collide_solid_segment(a, b, wheel_probe_flags, o)) {
                 return nullptr;
             }
-            best_L = (o.hit_point - a).dot_prod(dir) - radius;
+            best_len = (o.hit_point - a).dot_prod(dir) - radius;
             contact = o.hit_point;
             surf_normal = o.hit_normal;
             best_mover = o.obj_handle >= 0;
         }
 
-        if (best_L > rest + 0.001f) {
+        if (best_len > rest + 0.001f) {
             return nullptr;
         }
         owner->wheel_on_mover |= best_mover;
-        const float L = std::clamp(best_L, 0.0f, rest);
+        const float susp_len = std::clamp(best_len, 0.0f, rest);
 
         // Surface normal straight down, the radial edge->axle normal on an edge, so the wheel climbs.
         rf::Vector3 normal = surf_normal;
@@ -175,7 +168,7 @@ struct RfVehicleRaycaster : public btVehicleRaycaster
 
         result.m_hitPointInWorld = to_bt(contact);
         result.m_hitNormalInWorld = to_bt(normal);
-        result.m_distFraction = std::clamp((L + radius) / raylen, 0.0f, 1.0f);
+        result.m_distFraction = std::clamp((susp_len + radius) / raylen, 0.0f, 1.0f);
         // Any non-null pointer means "hit"; btRaycastVehicle never dereferences what we return.
         return this;
     }
@@ -273,76 +266,7 @@ namespace
         }
         return std::max(radius, 0.25f);
     }
-} // namespace
 
-float hull_radius_for(const VehiclePhysicsParams& p, const rf::Object* op)
-{
-    return p.hull_radius > 0.0f ? p.hull_radius : hull_auto_radius(op);
-}
-
-// The sphere a flyer's/sub's bt body wears: how far the hull origin stays from any surface.
-float hull_standoff(const VehiclePhysicsParams& p, const rf::Object* op)
-{
-    return hull_radius_for(p, op) + std::max(p.ground_clearance, 0.0f);
-}
-
-void body_seed_from_entity(VehicleSimBody& b, rf::Entity* ep)
-{
-    btTransform t;
-    t.setBasis(to_bt(ep->orient));
-    t.setOrigin(to_bt(ep->pos));
-    b.body->setWorldTransform(t);
-    // The interpolation anchors too, or the first frame after a seed lerps out of the old pose.
-    b.body->setInterpolationWorldTransform(t);
-    b.motion_state->setWorldTransform(t);
-    b.body->setLinearVelocity(to_bt(ep->p_data.vel));
-    b.body->setInterpolationLinearVelocity(to_bt(ep->p_data.vel));
-    b.body->setAngularVelocity(btVector3(0, 0, 0));
-    b.body->setInterpolationAngularVelocity(btVector3(0, 0, 0));
-    b.body->clearForces();
-    b.written_pos = ep->pos;
-}
-
-void body_apply_mass(VehicleSimBody& b, const VehiclePhysicsParams& p, const rf::Entity* ep)
-{
-    const float mass = std::max(ep->p_data.mass, 1.0f) * std::max(p.mass_scale, 0.01f);
-    if (std::fabs(mass - b.body_mass) < 0.01f) {
-        return;
-    }
-    btVector3 inertia(0, 0, 0);
-    b.body->getCollisionShape()->calculateLocalInertia(mass, inertia);
-    b.body->setMassProps(mass, inertia);
-    b.body->updateInertiaTensor();
-    b.body_mass = mass;
-}
-
-// The body leaves the world for the swap: the broadphase caches the proxy AABB from the old shape.
-void body_apply_shape(VehicleSimBody& b, const VehiclePhysicsParams& p, rf::Entity* ep)
-{
-    const float radius = hull_standoff(p, ep);
-    const bool parked = b.server_owned && p.parked_cylinder != 0.0f;
-    if (std::fabs(radius - b.body_radius) < 0.001f && parked == (b.parked_shape != nullptr)) {
-        return;
-    }
-    g_vphys.world->removeRigidBody(b.body);
-    btSphereShape* shape = new btSphereShape(radius);
-    // Contains the sphere with bottom and top flush, so neither swap moves or sinks the hull on flat ground.
-    btCylinderShape* parked_shape = parked ? new btCylinderShape(btVector3(radius, radius, radius)) : nullptr;
-    b.body->setCollisionShape(parked_shape ? static_cast<btCollisionShape*>(parked_shape) : shape);
-    delete b.parked_shape;
-    delete b.shape;
-    b.shape = shape;
-    b.parked_shape = parked_shape;
-    b.body_radius = radius;
-    b.body->setCcdMotionThreshold(radius);
-    b.body->setCcdSweptSphereRadius(radius * 0.5f);
-    b.body_mass = 0.0f; // force the inertia tensor to be rebuilt against the new shape
-    body_apply_mass(b, p, ep);
-    g_vphys.world->addRigidBody(b.body, vphys_group_hull, vphys_mask_no_hull);
-}
-
-namespace
-{
     btRaycastVehicle::btVehicleTuning car_tuning(const VehiclePhysicsParams& p)
     {
         btRaycastVehicle::btVehicleTuning t;
@@ -370,36 +294,7 @@ namespace
     {
         return b.wheel_ref_count > 0 ? b.wheel_ref_count : std::max(num_wheels, 1);
     }
-} // namespace
 
-// The hull's tyre radius: the mean of its spring cspheres.
-float hull_wheel_radius(const rf::Object* op, const VehiclePhysicsParams& p)
-{
-    if (p.wheel_radius > 0.0f) {
-        return p.wheel_radius;
-    }
-    float sum = 0.0f;
-    int n = 0;
-    for (int i = 0; i < op->p_data.cspheres.size(); ++i) {
-        if (op->p_data.cspheres[i].spring_const > 0.0f) {
-            sum += op->p_data.cspheres[i].radius;
-            ++n;
-        }
-    }
-    return n > 0 ? sum / static_cast<float>(n) : 0.0f;
-}
-
-float wheel_sag(const VehicleSimBody& b, const VehiclePhysicsParams& p, int num_wheels)
-{
-    const float k = std::max(p.suspension_stiffness, 0.01f);
-    const float n = static_cast<float>(wheel_effective_count(b, num_wheels));
-    // air_gravity is deliberately not here: it only acts where there is no spring load.
-    const float g = rf::gravity * std::max(p.gravity_scale, 0.0f);
-    return std::min(g / (n * k), std::max(p.suspension_rest_length, 0.05f) * 0.7f);
-}
-
-namespace
-{
     // The SPRING cspheres ARE the wheels in RF's own suspension, so centre and radius are verbatim.
     void car_add_wheels(VehicleSimBody& b, rf::Entity* ep, const VehiclePhysicsParams& p,
                         const HullBox& box)
@@ -505,6 +400,98 @@ namespace
         b.num_wheels = b.raycast_vehicle->getNumWheels();
     }
 } // namespace
+
+float hull_radius_for(const VehiclePhysicsParams& p, const rf::Object* op)
+{
+    return p.hull_radius > 0.0f ? p.hull_radius : hull_auto_radius(op);
+}
+
+// The sphere a flyer's/sub's bt body wears: how far the hull origin stays from any surface.
+float hull_standoff(const VehiclePhysicsParams& p, const rf::Object* op)
+{
+    return hull_radius_for(p, op) + std::max(p.ground_clearance, 0.0f);
+}
+
+void body_seed_from_entity(VehicleSimBody& b, rf::Entity* ep)
+{
+    btTransform t;
+    t.setBasis(to_bt(ep->orient));
+    t.setOrigin(to_bt(ep->pos));
+    b.body->setWorldTransform(t);
+    // The interpolation anchors too, or the first frame after a seed lerps out of the old pose.
+    b.body->setInterpolationWorldTransform(t);
+    b.motion_state->setWorldTransform(t);
+    b.body->setLinearVelocity(to_bt(ep->p_data.vel));
+    b.body->setInterpolationLinearVelocity(to_bt(ep->p_data.vel));
+    b.body->setAngularVelocity(btVector3(0, 0, 0));
+    b.body->setInterpolationAngularVelocity(btVector3(0, 0, 0));
+    b.body->clearForces();
+    b.written_pos = ep->pos;
+}
+
+void body_apply_mass(VehicleSimBody& b, const VehiclePhysicsParams& p, const rf::Entity* ep)
+{
+    const float mass = std::max(ep->p_data.mass, 1.0f) * std::max(p.mass_scale, 0.01f);
+    if (std::fabs(mass - b.body_mass) < 0.01f) {
+        return;
+    }
+    btVector3 inertia(0, 0, 0);
+    b.body->getCollisionShape()->calculateLocalInertia(mass, inertia);
+    b.body->setMassProps(mass, inertia);
+    b.body->updateInertiaTensor();
+    b.body_mass = mass;
+}
+
+// The body leaves the world for the swap: the broadphase caches the proxy AABB from the old shape.
+void body_apply_shape(VehicleSimBody& b, const VehiclePhysicsParams& p, rf::Entity* ep)
+{
+    const float radius = hull_standoff(p, ep);
+    const bool parked = b.server_owned && p.parked_cylinder != 0.0f;
+    if (std::fabs(radius - b.body_radius) < 0.001f && parked == (b.parked_shape != nullptr)) {
+        return;
+    }
+    g_vphys.world->removeRigidBody(b.body);
+    btSphereShape* shape = new btSphereShape(radius);
+    // Contains the sphere with bottom and top flush, so neither swap moves or sinks the hull on flat ground.
+    btCylinderShape* parked_shape = parked ? new btCylinderShape(btVector3(radius, radius, radius)) : nullptr;
+    b.body->setCollisionShape(parked_shape ? static_cast<btCollisionShape*>(parked_shape) : shape);
+    delete b.parked_shape;
+    delete b.shape;
+    b.shape = shape;
+    b.parked_shape = parked_shape;
+    b.body_radius = radius;
+    b.body->setCcdMotionThreshold(radius);
+    b.body->setCcdSweptSphereRadius(radius * 0.5f);
+    b.body_mass = 0.0f; // force the inertia tensor to be rebuilt against the new shape
+    body_apply_mass(b, p, ep);
+    g_vphys.world->addRigidBody(b.body, vphys_group_hull, vphys_mask_no_hull);
+}
+
+// The hull's tyre radius: the mean of its spring cspheres.
+float hull_wheel_radius(const rf::Object* op, const VehiclePhysicsParams& p)
+{
+    if (p.wheel_radius > 0.0f) {
+        return p.wheel_radius;
+    }
+    float sum = 0.0f;
+    int n = 0;
+    for (int i = 0; i < op->p_data.cspheres.size(); ++i) {
+        if (op->p_data.cspheres[i].spring_const > 0.0f) {
+            sum += op->p_data.cspheres[i].radius;
+            ++n;
+        }
+    }
+    return n > 0 ? sum / static_cast<float>(n) : 0.0f;
+}
+
+float wheel_sag(const VehicleSimBody& b, const VehiclePhysicsParams& p, int num_wheels)
+{
+    const float k = std::max(p.suspension_stiffness, 0.01f);
+    const float n = static_cast<float>(wheel_effective_count(b, num_wheels));
+    // air_gravity is deliberately not here: it only acts where there is no spring load.
+    const float g = rf::gravity * std::max(p.gravity_scale, 0.0f);
+    return std::min(g / (n * k), std::max(p.suspension_rest_length, 0.05f) * 0.7f);
+}
 
 void car_body_create(VehicleSimBody& b, rf::Entity* ep, int cls)
 {
@@ -832,7 +819,7 @@ void apply_car_model(VehicleSimBody& b, const VehiclePhysicsParams& p, float dt,
         }
     }
     // Cap the reference's own lean, or a hull against a near-vertical face adopts that face as up.
-    const float ref_max = std::clamp(p.upright_ref_max_deg, 0.0f, 89.0f) * std::numbers::pi_v<float> / 180.0f;
+    const float ref_max = std::clamp(p.upright_ref_max_deg, 0.0f, 89.0f) * vehicle_deg_to_rad;
     const float ref_cos = std::clamp(ref_up.dot(world_up), -1.0f, 1.0f);
     if (std::acos(ref_cos) > ref_max) {
         btVector3 perp = ref_up - world_up * ref_cos;
@@ -939,6 +926,6 @@ void apply_car_model(VehicleSimBody& b, const VehiclePhysicsParams& p, float dt,
     if (still && b.handbrake_settle >= handbrake_settle_s && !on_mover && normal_sum.length2() > 1e-6f) {
         const btVector3 n = normal_sum.normalized();
         const float max_deg = std::clamp(p.handbrake_hold_max_deg, 0.0f, 89.0f);
-        b.handbrake_pin = n.y() >= std::cos(max_deg * std::numbers::pi_v<float> / 180.0f);
+        b.handbrake_pin = n.y() >= std::cos(max_deg * vehicle_deg_to_rad);
     }
 }

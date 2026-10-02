@@ -93,8 +93,7 @@ namespace rf
         Vector3 eye_phb_array[max_keyframes];
         Vector3 vel_array[max_keyframes];
         Vector3 move_array[max_keyframes];
-        // Per-keyframe scalar track (FLD/FSTP at 0x004834BA/0x004834DC); both stock writers pass 0.0f.
-        float unused_scalar_array[max_keyframes];
+        uint32_t always_0_array[max_keyframes];
         uint16_t time_array[max_keyframes]; // 16-bit server ms ticks
         uint32_t flags;    // bit 0: force re-anchor - the next keyframe insert re-anchors
                            // interp_time and then clears this bit; Clear() zeroes the whole
@@ -270,6 +269,8 @@ namespace rf
     static auto& obj_create = addr_as_ref<Object*(int type, int sub_type, int parent, ObjectCreateInfo* oci, int flags, GRoom* room)>(0x00486DA0);
     static auto& obj_collision_register = addr_as_ref<void(Object* obj)>(0x0048C9A0);
     static auto& obj_collision_deregister = addr_as_ref<void(Object* obj)>(0x0048C9F0);
+    // The stock object-pair filter: true means "these two never collide".
+    static auto& obj_pair_should_skip = addr_as_ref<bool(Object* a, Object* b, unsigned* out_flags)>(0x0048BE00);
 
     struct ObjCollisionPair
     {

@@ -849,7 +849,8 @@ FunHook DedClutter_ct_hook{
 void* __fastcall DedClutter_ct(void* this_, int edx)
 {
     void* result = DedClutter_ct_hook.call_target(this_, edx);
-    std::memset(static_cast<char*>(this_) + 0xB8, 0, 0x28);
+    auto* clutter = static_cast<DedClutter*>(this_);
+    std::memset(clutter->skin_block, 0, sizeof(clutter->skin_block));
     return result;
 }
 

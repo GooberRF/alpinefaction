@@ -10,9 +10,7 @@
 #include "../vehicle_crash_tuning.h"
 #include "../../../misc/destruction.h"
 #include "../../../misc/level.h"
-#include "../../../os/console.h"
 #include "../../../os/os.h"
-#include "../../../rf/ai.h"
 #include "../../../rf/entity.h"
 #include "../../../rf/geometry.h"
 #include "../../../rf/multi.h"
@@ -41,15 +39,7 @@ namespace
             return -1; // VDC_TURRET has no motion to author; -1 is not a synced vehicle at all
         }
     }
-} // namespace
 
-int vphys_class_for(const rf::Entity* ep)
-{
-    return vphys_class_from_vdc(vehicle_damage_class(ep));
-}
-
-namespace
-{
     // The speed the model drives the class at: the car's engine cutoff, the flyer's drag hold.
     float vphys_class_top_speed(int cls)
     {
@@ -80,56 +70,10 @@ namespace
         *out_class = cls;
         return vehicle;
     }
-} // namespace
 
-void vphys_reconcile()
-{
-    int cls = VPHYS_CLASS_FIGHTER;
-    rf::Entity* target = vphys_target(&cls);
-    const int want = target ? target->handle : -1;
-    const VehicleSimBody* have_body = g_vphys.driven;
-    const int have = have_body ? have_body->vehicle_handle : -1;
-    if (want == have && (!target || (have_body && cls == have_body->vehicle_class))) {
-        return;
-    }
-    driven_body_destroy();
-    if (target) {
-        // A listen host's boarded hull may still carry its server body; one handle can hold only one.
-        sim_body_destroy(sim_body_from_handle(target->handle));
-        g_vphys.driven = body_create(target, cls);
-    }
-}
-
-namespace
-{
     // The PREVIOUS frame's rf::frametime: movers_update_all runs ahead of obj_move_all.
     float g_vphys_prev_frame_dt = 0.0f;
-} // namespace
 
-void vphys_prev_frame_dt_reset()
-{
-    g_vphys_prev_frame_dt = 0.0f;
-}
-
-// btDiscreteDynamicsWorld::stepSimulation lines 386-412, on ITS accumulator and read before the
-// step: the residual drains UNCLAMPED while only the CLAMPED count integrates. This is the exact
-// window the same call then hands saveKinematicState, so the mover kinematic velocity matches.
-float vphys_frame_step_time(float dt)
-{
-    if (!g_vphys.world) {
-        return 0.0f;
-    }
-    const btScalar local = g_vphys.world->local_time() + dt;
-    int num = 0;
-    if (local >= vphys_fixed_timestep) {
-        num = static_cast<int>(local / vphys_fixed_timestep);
-    }
-    const int clamped = num > vphys_max_substeps ? vphys_max_substeps : num;
-    return clamped * vphys_fixed_timestep;
-}
-
-namespace
-{
     // How hard the cushion pushes (u/s^2) and the separation speed it stops pushing at (u/s).
     constexpr float vphys_pair_push_accel = 8.0f;
     constexpr float vphys_pair_push_max = 5.0f;
@@ -187,7 +131,7 @@ namespace
             }
 
             const float dist = delta.len();
-            if (dist < 0.0001f) {
+            if (!(dist >= 0.0001f)) {
                 continue;
             }
             rf::Vector3 n = delta / dist;
@@ -324,7 +268,7 @@ namespace
             }
         }
         else {
-            apply_flight_model(b, ep, p, cls);
+            apply_flight_model(b, ep, p, cls, step_time);
         }
 
         // After the model on purpose: the ceiling's sink floor writes velocity directly.
@@ -357,8 +301,8 @@ namespace
         return b;
     }
 
-    // ONE walk of the world's manifolds for every car, bucketed by body: the same test run per car
-    // was O(cars x manifolds). Manifold contents do not change between here and the post-step read.
+    // ONE walk of the world's manifolds for every car, bucketed by body. Manifold contents do not
+    // change between here and the post-step read.
     void vphys_ground_contact_pass()
     {
         for (const auto& owned : g_vphys.bodies) {
@@ -370,8 +314,8 @@ namespace
             VehicleSimBody* car0 = car_body_of(pm->getBody0());
             VehicleSimBody* car1 = car_body_of(pm->getBody1());
             // getBody1 is the flipped side: its ground normal is the negated m_normalWorldOnB.
-            if ((!car0 || car0->chassis_ground_contact_pass) &&
-                (!car1 || car1->chassis_ground_contact_pass)) {
+            if ((!car0 || car0->chassis_ground_contact_pass)
+                && (!car1 || car1->chassis_ground_contact_pass)) {
                 continue;
             }
             for (int c = 0; c < pm->getNumContacts(); ++c) {
@@ -433,7 +377,8 @@ namespace
                     continue;
                 }
                 const btVector3 n = cp.m_normalWorldOnB * side;
-                if (b->impact_drilling && n.y() < vehicle_crash_ground_ny && n.dot(fwd) < vehicle_crash_drill_face_dot) {
+                if (b->impact_drilling && n.y() < vehicle_crash_ground_ny
+                    && n.dot(fwd) < vehicle_crash_drill_face_dot) {
                     continue;
                 }
                 const float dvn = dv.dot(n);
@@ -574,12 +519,11 @@ namespace
         btTransform interp;
         b.motion_state->getWorldTransform(interp);
         rf::Vector3 pos = from_bt(interp.getOrigin());
-        const rf::Vector3 pre_contact_pos = pos;
         rf::Vector3 vel = from_bt(body->getLinearVelocity());
         const rf::Matrix3 orient = from_bt(interp.getBasis());
 
         // The one place a non-finite solve can leave the world: the entity pose is broadcast from it.
-        if (!vphys_finite(pos) || !vphys_finite(vel) || !vphys_finite(orient)) {
+        if (!vehicle_vector_is_finite(pos) || !vehicle_vector_is_finite(vel) || !vphys_matrix_is_finite(orient)) {
             vphys_impact_window_close(b);
             body_seed_from_entity(b, ep);
             body->setLinearVelocity(btVector3(0.0f, 0.0f, 0.0f));
@@ -607,7 +551,6 @@ namespace
             }
         }
 
-        ep->orient = orient;
         if (is_car) {
             if (step_time > 0.0f || g_vphys.manifolds_dirty) {
                 b.chassis_ground_contact = b.chassis_ground_contact_pass;
@@ -615,20 +558,7 @@ namespace
             ep->ground_material = (wheels_all_airborne && !b.chassis_ground_contact) ? -1 : 0;
         }
 
-        // The correction must reach BOTH transforms: the motion-state pose is built from the interp one.
-        const rf::Vector3 correction = pos - pre_contact_pos;
-        if (correction.len() > 0.0001f) {
-            const btVector3 delta = to_bt(correction);
-            btTransform t = body->getWorldTransform();
-            t.setOrigin(t.getOrigin() + delta);
-            body->setWorldTransform(t);
-            btTransform ti = body->getInterpolationWorldTransform();
-            ti.setOrigin(ti.getOrigin() + delta);
-            body->setInterpolationWorldTransform(ti);
-            interp.setOrigin(to_bt(pos));
-            b.motion_state->setWorldTransform(interp);
-        }
-        // Same for the velocity: a 0-substep frame would otherwise extrapolate the PRE-contact one.
+        // After the cap, both: a 0-substep frame extrapolates from the interpolation velocity.
         body->setLinearVelocity(to_bt(vel));
         body->setInterpolationLinearVelocity(to_bt(vel));
 
@@ -777,6 +707,51 @@ namespace
         },
     };
 } // namespace
+
+int vphys_class_for(const rf::Entity* ep)
+{
+    return vphys_class_from_vdc(vehicle_damage_class(ep));
+}
+
+void vphys_reconcile()
+{
+    int cls = VPHYS_CLASS_FIGHTER;
+    rf::Entity* target = vphys_target(&cls);
+    const int want = target ? target->handle : -1;
+    const VehicleSimBody* have_body = g_vphys.driven;
+    const int have = have_body ? have_body->vehicle_handle : -1;
+    if (want == have && (!target || (have_body && cls == have_body->vehicle_class))) {
+        return;
+    }
+    driven_body_destroy();
+    if (target) {
+        // A listen host's boarded hull may still carry its server body; one handle can hold only one.
+        sim_body_destroy(sim_body_from_handle(target->handle));
+        g_vphys.driven = body_create(target, cls);
+    }
+}
+
+void vphys_prev_frame_dt_reset()
+{
+    g_vphys_prev_frame_dt = 0.0f;
+}
+
+// btDiscreteDynamicsWorld::stepSimulation, on ITS accumulator and read before the step: the residual
+// drains UNCLAMPED while only the CLAMPED count integrates. This is the exact window the same call
+// then hands saveKinematicState, so the mover kinematic velocity matches.
+float vphys_frame_step_time(float dt)
+{
+    if (!g_vphys.world) {
+        return 0.0f;
+    }
+    const btScalar local = g_vphys.world->local_time() + dt;
+    int num = 0;
+    if (local >= vphys_fixed_timestep) {
+        num = static_cast<int>(local / vphys_fixed_timestep);
+    }
+    const int clamped = num > vphys_max_substeps ? vphys_max_substeps : num;
+    return clamped * vphys_fixed_timestep;
+}
 
 void vehicle_physics_geomod_queue_add_raw(rf::GeomodParams* params)
 {
@@ -1015,7 +990,7 @@ float vehicle_physics_class_max_impact_speed(int vdc_class)
     return vehicle_physics_class_max_speed(vdc_class) * vehicle_physics_class_bounce_gain(vdc_class);
 }
 
-void vehicle_physics_level_init()
+void vehicle_physics_level_reset()
 {
     // The EARLY hook: teardown only - this fires before the RFL parse, so factory records are empty.
     world_destroy();
@@ -1051,4 +1026,5 @@ void vehicle_physics_apply_patches()
     pregame_boolean_geomod_init_vphys_hook.install();
     vphys_world_install_patches();
     vphys_camera_install_patches();
+    vphys_debug_install_patches();
 }

@@ -243,8 +243,8 @@ FunHook<void(rf::Entity*, int)> hud_render_ammo_no_clip_hook{
 
 CallHook<bool(rf::Entity*)> hud_weapons_render_jeep_gunner_hook{
     {
-        0x0043B0E6u,
-        0x0043B128u,
+        0x0043B0E6,
+        0x0043B128,
     },
     [](rf::Entity* ep) {
         return hud_weapons_render_jeep_gunner_hook.call_target(ep) || hud_ammo_driven_apc(ep) != nullptr;

@@ -1,6 +1,5 @@
 #pragma once
 
-#include <cmath>
 #include <cstdint>
 #include <map>
 #include <optional>
@@ -8,6 +7,7 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
+#include <common/vehicle_orient.h>
 #include "vehicle.h"
 #include "../alpine_packets.h"
 #include "../server_internal.h"
@@ -47,21 +47,6 @@ struct VehicleHealth
     float life = 0.0f;
     float max_life = 0.0f;
 };
-
-// Finite unit axes, pairwise orthogonal, both within 0.01: a basis that cannot shear a derived box.
-inline bool vehicle_orient_is_orthonormal(const rf::Matrix3& orient)
-{
-    const rf::Vector3* axes[3] = {&orient.rvec, &orient.uvec, &orient.fvec};
-    for (const rf::Vector3* a : axes) {
-        if (!std::isfinite(a->x) || !std::isfinite(a->y) || !std::isfinite(a->z)
-            || std::fabs(a->len() - 1.0f) > 0.01f) {
-            return false;
-        }
-    }
-    return std::fabs(axes[0]->dot_prod(*axes[1])) <= 0.01f
-        && std::fabs(axes[0]->dot_prod(*axes[2])) <= 0.01f
-        && std::fabs(axes[1]->dot_prod(*axes[2])) <= 0.01f;
-}
 
 // Fire-free time before a vehicle weapon regenerates ammo; the server can never raise a weapon's ammo sooner.
 inline constexpr int64_t vehicle_ammo_regen_delay_ms = 5000;
@@ -142,8 +127,6 @@ struct VehicleOrientSend
 // vehicle_server_body_do_frame. Every sample authored from a server body carries velocity zero.
 struct VehicleKinematics
 {
-    rf::Vector3 pos{};        // authoritative position the samples are authored from
-    bool pos_valid = false;   // pos has been seeded from the vehicle
     bool active = false;      // moved as of the last tick (drives the settle-frame sample)
     bool broadcast = false;   // the send injection should force-serialize it this frame
     bool asleep = false;      // Bullet's verdict last frame; the sleep edge authors the exact rest row
@@ -190,8 +173,6 @@ struct VehicleSpawnSlot
     rf::Vector3 pos{};
     rf::Matrix3 orient{};
     bool is_turret = false;   // the factory's class is a manned turret (use_function 4)
-    // The factory's team as last applied to this slot; the live hull's team is VehicleState::team.
-    int hull_team = -1;
     bool entered_once = false;
     int factory_delay_ms = 0; // the mapper's delay, unless the server overrides it
     int handle = -1;
@@ -347,11 +328,12 @@ struct VehicleModuleState
     std::string use_prompt_text;
     int use_prompt_class = -1;
     int use_prompt_reason = -1;
+    // Client: when unmanned hulls next re-look-up their room.
+    int64_t next_room_check_ms = 0;
 };
 
 // Server roadkill floor, world u/s: the hull's own speed and its closing speed on the victim.
-constexpr float vehicle_crush_min_speed = 1.5f;
-
+inline constexpr float vehicle_crush_min_speed = 1.5f;
 
 extern VehicleModuleState g_vehicle_state;
 
@@ -377,7 +359,6 @@ bool vehicle_class_open_seats(const rf::Entity* vehicle);
 void vehicle_init_synced_entity(rf::Entity* ep);
 // Server: capture this hull's per-weapon ammo ceiling at creation, beside the life ceiling.
 void vehicle_capture_spawn_ammo(rf::Entity* ep);
-// weapons.tbl is reparsed per level, so the ammo regen name->type ids must be resolved again.
 void vehicle_ammo_regen_runtime_reset();
 void track_synced_entity(rf::Entity* ep);
 const rf::EntityInterfacePoint* vehicle_seat(const rf::Entity* vehicle, int index);

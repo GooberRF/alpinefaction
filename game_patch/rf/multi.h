@@ -240,6 +240,19 @@ namespace rf
     };
     static_assert(sizeof(NetReliableSocketStatus) == 4);
 
+    // obj_update row flags byte.
+    enum ObjUpdateFlags
+    {
+        OUF_POS_ROT_ANIM = 0x01,
+        OUF_CONNECTION_COUNTER = 0x02,
+        OUF_WEAPON_TYPE = 0x04,
+        OUF_WEAPON_LAG_COMP = 0x08,
+        OUF_ALT_FIRE = 0x10,
+        OUF_HEALTH_ARMOR = 0x20,
+        OUF_FIRE = 0x40,
+        OUF_ARMOR_STATE = 0x80,
+    };
+
     #pragma pack(push, 1)
     struct NetReliableSocket {
         void* sbuffers[75];
@@ -342,6 +355,7 @@ namespace rf
     static auto& send_obj_kill_packet = addr_as_ref<void(Entity* killed_entity, Item* item, int* a3)>(0x0047E8C0);
     static auto& send_obj_update_packet = addr_as_ref<void()>(0x0047E5B0); // client -> server
     static auto& send_obj_update_packet_timestamp = addr_as_ref<TimestampRealtime>(0x006FB424);
+    static auto& multi_pack_obj_update_data = addr_as_ref<int(Player* pp, Object* obj, uint8_t* out)>(0x0047DB20);
     static auto& send_item_create_packet = addr_as_ref<void(Item* item, Player* recipient, int16_t level_item_index)>(0x00479A20);
     static auto& send_item_apply_packet = addr_as_ref<void(Player* to, int item_handle, int entity_handle, int weapon, int ammo, int clip_ammo)>(0x00479810);
     static auto& send_respawn_req_packet = addr_as_ref<void(uint32_t multi_character, uint8_t player_id)>(0x004809D0); // client -> server

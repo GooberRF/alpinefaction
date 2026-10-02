@@ -1873,7 +1873,7 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
             // Seated is sufficient: a rider can only fire the vehicle's gun. Roadkill stays
             // separate - a coasting kill's ex-driver is seated in nothing.
             int vehicle_kill_class = roadkill_vehicle_class;
-            if (vehicle_kill_class < 0) {
+            if (vehicle_kill_class < 0 && damage_type != rf::DT_FIRE) {
                 vehicle_kill_class =
                     vehicle_occupied_damage_class(rf::entity_from_handle(killer_handle));
             }
@@ -1943,7 +1943,8 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
             const rf::Vector3 victim_pos = damaged_ep ? damaged_ep->pos : victim_pos_before_damage;
             const rf::Entity* killer_ep_for_pos = rf::entity_from_handle(killer_handle);
             afstats::on_kill(damaged_player, killer_player, weapon, damage_type, kill_flags, assists,
-                             victim_pos, killer_ep_for_pos ? &killer_ep_for_pos->pos : nullptr);
+                             victim_pos, killer_ep_for_pos ? &killer_ep_for_pos->pos : nullptr,
+                             vehicle_kill_class);
 
             kill_attribution_record(killed_id, killer_id, weapon, kill_flags, damage_type,
                                     vehicle_kill_class, std::move(assists));
@@ -2214,11 +2215,12 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
         if (rf::is_server && rf::is_multi && victim_is_synced_vehicle && real_damage > 0.0f
             && killer_player && killer_player->net_data
             && g_alpine_server_config.damage_notification_config.enabled) {
-            const rf::Vector3 hull_pos = damaged_ep ? damaged_ep->pos : victim_pos_before_damage;
+            const AfDamageNotifyHull hull{damaged_ep ? damaged_ep->pos : victim_pos_before_damage,
+                                          damaged_ep_handle};
 
             if (is_player_minimum_af_client_version(killer_player, 1, 1, 0)) {
-                af_send_damage_notify_packet(0, effective_damage, is_dead, crit_applied,
-                                             killer_player, &hull_pos);
+                af_send_damage_notify_packet(af_damage_notify_no_player, effective_damage, is_dead, false,
+                                             killer_player, &hull);
             }
             else if (g_alpine_server_config.damage_notification_config.support_legacy_clients) {
                 send_legacy_hit_sound_packet(killer_player);
@@ -2230,14 +2232,14 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
                 }
                 if (player.spectatee.value_or(nullptr) == killer_player
                     && is_player_minimum_af_client_version(&player, 1, 1, 0)) {
-                    af_send_damage_notify_packet(0, effective_damage, is_dead, crit_applied,
-                                                 &player, &hull_pos);
+                    af_send_damage_notify_packet(af_damage_notify_no_player, effective_damage, is_dead, false,
+                                                 &player, &hull);
                 }
             }
 
             demo_record_pvp_damage_notify(af_damage_notify_no_player, effective_damage, is_dead,
-                                          crit_applied, killer_player->net_data->player_id,
-                                          &hull_pos);
+                                          false, killer_player->net_data->player_id,
+                                          &hull);
         }
 
         if (is_achievement_system_initialized() &&

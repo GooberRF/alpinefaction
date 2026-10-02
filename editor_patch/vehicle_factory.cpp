@@ -8,8 +8,10 @@
 #include <algorithm>
 #include <vector>
 #include <xlog/xlog.h>
+#include <common/rfl_chunk_reader.h>
 #include <common/utils/string-utils.h>
 #include <common/vehicle_meshes.h>
+#include <common/vehicle_orient.h>
 #include "vehicle_factory.h"
 #include "level.h"
 #include "resources.h"
@@ -20,15 +22,14 @@
 
 extern "C" IMAGE_DOS_HEADER __ImageBase;
 
-// ─── Constants ───────────────────────────────────────────────────────────────
+namespace
+{
 
-// $Use: values the game side's is_synced_use_function accepts (RF.exe 0x00489610).
-static constexpr int entity_use_vehicle = 1;
-static constexpr int entity_use_turret = 4;
+// ─── Constants ───────────────────────────────────────────────────────────────
 
 // Drop-list fallback for an install whose entity.tbl could not be read. An off-list class already
 // on a level is kept by the dialog's append path.
-static const char* const g_stock_vehicle_classes[] = {
+const char* const g_stock_vehicle_classes[] = {
     // $Use: "vehicle"
     "Jeep01", "APC", "Fighter01", "sub", "Driller01",
     // $Use: "turret"
@@ -36,20 +37,18 @@ static const char* const g_stock_vehicle_classes[] = {
 };
 
 // Offered by entity.tbl but not supported by factories; kept off the drop-list only.
-static const char* const g_unsupported_vehicle_classes[] = {
+const char* const g_unsupported_vehicle_classes[] = {
     "masako_fighter", "Stationary Turret", "Shuttle",
 };
 
-static bool vehicle_factory_class_is_unsupported(const std::string& class_name)
+bool vehicle_factory_class_is_unsupported(const std::string& class_name)
 {
     return std::any_of(std::begin(g_unsupported_vehicle_classes), std::end(g_unsupported_vehicle_classes),
         [&](const char* name) { return string_iequals(class_name, name); });
 }
 
-struct VehicleClassMesh { const char* class_name; const char* mesh; };
-
 // Preview meshes for the stock classes, used only when entity.tbl is unavailable.
-static const VehicleClassMesh g_fallback_meshes[] = {
+const AlpineVehicleClassMesh g_fallback_meshes[] = {
     {"Jeep01", "jeep01.v3c"},
     {"APC", "apc01.v3c"},
     {"Fighter01", "fighter01.v3c"},
@@ -62,42 +61,18 @@ static const VehicleClassMesh g_fallback_meshes[] = {
 };
 
 // Selection/culling sphere used until a preview mesh supplies a real one.
-static constexpr float vehicle_factory_fallback_radius = 0.75f;
+constexpr float vehicle_factory_fallback_radius = 0.75f;
 
 // DedVehicleFactory's own default, used wherever a delay arrives non-finite.
-static constexpr float vehicle_factory_default_respawn_delay_s = 30.0f;
-static constexpr float vehicle_factory_max_respawn_delay_s = 3600.0f;
-
-static bool vehicle_factory_axis_is_unit(const Vector3& a)
-{
-    if (!std::isfinite(a.x) || !std::isfinite(a.y) || !std::isfinite(a.z)) return false;
-    return std::fabs(std::sqrt(a.x * a.x + a.y * a.y + a.z * a.z) - 1.0f) <= 0.01f;
-}
-
-static float vehicle_factory_dot(const Vector3& a, const Vector3& b)
-{
-    return a.x * b.x + a.y * b.y + a.z * b.z;
-}
-
-// Mirrors pose_is_sane in game_patch/multi/vehicles/vehicle_spawn.cpp, which drops any factory the
-// test fails: a level RED writes back out must never carry a pose the game will refuse.
-static bool vehicle_factory_orient_is_sane(const Matrix3& m)
-{
-    if (!vehicle_factory_axis_is_unit(m.rvec) || !vehicle_factory_axis_is_unit(m.uvec)
-        || !vehicle_factory_axis_is_unit(m.fvec)) {
-        return false;
-    }
-    return std::fabs(vehicle_factory_dot(m.rvec, m.uvec)) <= 0.01f
-        && std::fabs(vehicle_factory_dot(m.rvec, m.fvec)) <= 0.01f
-        && std::fabs(vehicle_factory_dot(m.uvec, m.fvec)) <= 0.01f;
-}
+constexpr float vehicle_factory_default_respawn_delay_s = 30.0f;
+constexpr float vehicle_factory_max_respawn_delay_s = 3600.0f;
 
 // ─── Globals ─────────────────────────────────────────────────────────────────
 
-static int g_vehicle_factory_icon_handle = -1;
-static std::vector<DedVehicleFactory*> g_vehicle_factory_clipboard;
+int g_vehicle_factory_icon_handle = -1;
+std::vector<DedVehicleFactory*> g_vehicle_factory_clipboard;
 
-static void vehicle_factory_load_icon()
+void vehicle_factory_load_icon()
 {
     if (g_vehicle_factory_icon_handle < 0) {
         // No factory icon ships yet; the bag sprite stands in, drawn in the factory's own colour.
@@ -107,12 +82,12 @@ static void vehicle_factory_load_icon()
 
 // ─── Mesh preview ────────────────────────────────────────────────────────────
 
-static EditorVMesh* get_preview_vmesh(DedVehicleFactory* factory)
+EditorVMesh* get_preview_vmesh(DedVehicleFactory* factory)
 {
     return static_cast<EditorVMesh*>(factory->preview_vmesh);
 }
 
-static void vehicle_factory_free_preview(DedVehicleFactory* factory)
+void vehicle_factory_free_preview(DedVehicleFactory* factory)
 {
     if (auto* v = get_preview_vmesh(factory)) {
         vmesh_free(v);
@@ -128,21 +103,21 @@ static void vehicle_factory_free_preview(DedVehicleFactory* factory)
 
 // World-space bounding sphere of the preview mesh; falls back to the fixed radius around the
 // factory's own origin while no preview is loaded.
-static void vehicle_factory_bound_sphere(const DedVehicleFactory* factory, float* out_center,
+void vehicle_factory_bound_sphere(const DedVehicleFactory* factory, float* out_center,
     float* out_radius)
 {
-    const Matrix3& o = factory->orient;
     const float* c = factory->preview_bound_center;
-    out_center[0] = factory->pos.x + o.rvec.x * c[0] + o.uvec.x * c[1] + o.fvec.x * c[2];
-    out_center[1] = factory->pos.y + o.rvec.y * c[0] + o.uvec.y * c[1] + o.fvec.y * c[2];
-    out_center[2] = factory->pos.z + o.rvec.z * c[0] + o.uvec.z * c[1] + o.fvec.z * c[2];
+    const Vector3 center = factory->pos + factory->orient * Vector3{c[0], c[1], c[2]};
+    out_center[0] = center.x;
+    out_center[1] = center.y;
+    out_center[2] = center.z;
     *out_radius = factory->preview_bound_radius > 0.0f ? factory->preview_bound_radius
                                                        : vehicle_factory_fallback_radius;
 }
 
 // The AF override the game will apply wins; otherwise entity.tbl is authoritative (it carries the
 // extension) and the fallback table covers the stock classes.
-static std::string vehicle_factory_mesh_for_class(const std::string& class_name)
+std::string vehicle_factory_mesh_for_class(const std::string& class_name)
 {
     std::string filename;
     // The game rewrites $V3D Filename for these classes at level init, so the preview has to show
@@ -167,7 +142,7 @@ static std::string vehicle_factory_mesh_for_class(const std::string& class_name)
     if (filename.empty()) {
         for (const auto& entry : g_fallback_meshes) {
             if (string_iequals(entry.class_name, class_name)) {
-                filename = entry.mesh;
+                filename = entry.vmesh_filename;
                 break;
             }
         }
@@ -180,7 +155,7 @@ static std::string vehicle_factory_mesh_for_class(const std::string& class_name)
     return filename;
 }
 
-static void vehicle_factory_load_preview(DedVehicleFactory* factory)
+void vehicle_factory_load_preview(DedVehicleFactory* factory)
 {
     vehicle_factory_free_preview(factory);
     factory->preview_class = factory->vehicle_class;
@@ -191,7 +166,7 @@ static void vehicle_factory_load_preview(DedVehicleFactory* factory)
         return;
     }
     // entity.tbl bounds nothing and RED's loader copies the name into VMesh::filename[65] with an
-    // unbounded inline strcpy (0x004BE3A0). Same caps mesh.cpp applies to an RFL-sourced name.
+    // unbounded inline strcpy (0x004BE3A0).
     if (filename.size() > rfl_mesh_name_max_len || rfl_ext_over_long(filename)) {
         xlog::warn("[VehicleFactory] mesh name '{}' for class '{}' is too long to load", filename,
             factory->vehicle_class);
@@ -208,7 +183,7 @@ static void vehicle_factory_load_preview(DedVehicleFactory* factory)
         // The v3c loader raises a fatal error for a missing file, so probe first.
         rf::File file;
         if (file.open(filename.c_str())) {
-            file.close(); // rf::File has no destructor, so the probe leaks the OS handle otherwise
+            file.close();
             vmesh = vmesh_load_v3c(filename.c_str(), 0, 0);
         }
         else {
@@ -229,148 +204,11 @@ static void vehicle_factory_load_preview(DedVehicleFactory* factory)
     }
 }
 
-// ─── Cleanup ─────────────────────────────────────────────────────────────────
-
-void DestroyDedVehicleFactory(DedVehicleFactory* factory)
-{
-    if (!factory) return;
-    vehicle_factory_free_preview(factory);
-    factory->field_4.free();
-    factory->script_name.free();
-    factory->class_name.free();
-    delete factory;
-}
-
-// ─── Serialization ──────────────────────────────────────────────────────────
-
-// Vehicle Factory chunk (id 0x0AFBAE07, RFL 306+), no per-chunk version per the Alpine convention.
-// vehicle_factory_load_chunk in game_patch/multi/vehicles/vehicle_spawn.cpp must stay in step.
-void vehicle_factory_serialize_chunk(CDedLevel& level, rf::File& file)
-{
-    auto& factories = level.GetAlpineLevelProperties().vehicle_factory_objects;
-    if (factories.empty()) return;
-
-    auto start_pos = level.BeginRflSection(file, alpine_vehicle_factory_chunk_id);
-
-    file.write<uint32_t>(static_cast<uint32_t>(factories.size()));
-
-    for (auto* factory : factories) {
-        file.write<int32_t>(factory->uid);
-        file.write<float>(factory->pos.x);
-        file.write<float>(factory->pos.y);
-        file.write<float>(factory->pos.z);
-        file.write<float>(factory->orient.rvec.x);
-        file.write<float>(factory->orient.rvec.y);
-        file.write<float>(factory->orient.rvec.z);
-        file.write<float>(factory->orient.uvec.x);
-        file.write<float>(factory->orient.uvec.y);
-        file.write<float>(factory->orient.uvec.z);
-        file.write<float>(factory->orient.fvec.x);
-        file.write<float>(factory->orient.fvec.y);
-        file.write<float>(factory->orient.fvec.z);
-        write_rfl_string(file, factory->script_name);
-        write_rfl_string(file, factory->vehicle_class);
-        file.write<float>(factory->respawn_delay_s);
-        // 5 bytes: team (0xFF none), two reserved, lock_to_team, active_by_default.
-        file.write<uint8_t>(factory->team == VehicleFactoryTeam::none
-            ? 0xFFu : static_cast<uint8_t>(factory->team));
-        file.write<uint8_t>(0u);
-        file.write<uint8_t>(0u);
-        file.write<uint8_t>(factory->lock_to_team ? 1u : 0u);
-        file.write<uint8_t>(factory->active_by_default ? 1u : 0u);
-    }
-
-    level.EndRflSection(file, start_pos);
-}
-
-void vehicle_factory_deserialize_chunk(CDedLevel& level, rf::File& file, std::size_t chunk_len)
-{
-    auto& factories = level.GetAlpineLevelProperties().vehicle_factory_objects;
-    std::size_t remaining = chunk_len;
-
-    rf::File::ChunkGuard chunk_guard{file, remaining};
-
-    auto read_bytes = [&](void* dst, std::size_t n) -> bool {
-        if (remaining < n) return false;
-        int got = file.read(dst, n);
-        if (got != static_cast<int>(n) || file.error()) {
-            if (got > 0) remaining -= got;
-            return false;
-        }
-        remaining -= n;
-        return true;
-    };
-
-    uint32_t count = 0;
-    if (!read_bytes(&count, sizeof(count))) return;
-    if (count > 1000) count = 1000;
-
-    for (uint32_t i = 0; i < count; i++) {
-        auto* factory = new DedVehicleFactory();
-        memset(static_cast<DedObject*>(factory), 0, sizeof(DedObject));
-        factory->vtbl = reinterpret_cast<void*>(ded_object_vtbl_addr);
-        factory->type = DedObjectType::DED_VEHICLE_FACTORY;
-
-        if (!read_bytes(&factory->uid, sizeof(factory->uid))) { DestroyDedVehicleFactory(factory); return; }
-        if (!read_bytes(&factory->pos.x, sizeof(float))) { DestroyDedVehicleFactory(factory); return; }
-        if (!read_bytes(&factory->pos.y, sizeof(float))) { DestroyDedVehicleFactory(factory); return; }
-        if (!read_bytes(&factory->pos.z, sizeof(float))) { DestroyDedVehicleFactory(factory); return; }
-        if (!read_bytes(&factory->orient.rvec.x, sizeof(float))) { DestroyDedVehicleFactory(factory); return; }
-        if (!read_bytes(&factory->orient.rvec.y, sizeof(float))) { DestroyDedVehicleFactory(factory); return; }
-        if (!read_bytes(&factory->orient.rvec.z, sizeof(float))) { DestroyDedVehicleFactory(factory); return; }
-        if (!read_bytes(&factory->orient.uvec.x, sizeof(float))) { DestroyDedVehicleFactory(factory); return; }
-        if (!read_bytes(&factory->orient.uvec.y, sizeof(float))) { DestroyDedVehicleFactory(factory); return; }
-        if (!read_bytes(&factory->orient.uvec.z, sizeof(float))) { DestroyDedVehicleFactory(factory); return; }
-        if (!read_bytes(&factory->orient.fvec.x, sizeof(float))) { DestroyDedVehicleFactory(factory); return; }
-        if (!read_bytes(&factory->orient.fvec.y, sizeof(float))) { DestroyDedVehicleFactory(factory); return; }
-        if (!read_bytes(&factory->orient.fvec.z, sizeof(float))) { DestroyDedVehicleFactory(factory); return; }
-
-        if (!std::isfinite(factory->pos.x) || !std::isfinite(factory->pos.y)
-            || !std::isfinite(factory->pos.z)) {
-            factory->pos = {};
-        }
-        if (!vehicle_factory_orient_is_sane(factory->orient)) {
-            factory->orient = {{1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f, 1.0f}};
-        }
-
-        std::string sname = read_rfl_string(file, remaining);
-        factory->script_name.assign_0(sname.c_str());
-
-        factory->vehicle_class = read_rfl_string(file, remaining);
-        if (rfl_name_over_long(factory->vehicle_class)) factory->vehicle_class.clear();
-
-        if (!read_bytes(&factory->respawn_delay_s, sizeof(float))) { DestroyDedVehicleFactory(factory); return; }
-        if (!std::isfinite(factory->respawn_delay_s)) {
-            factory->respawn_delay_s = vehicle_factory_default_respawn_delay_s;
-        }
-        factory->respawn_delay_s =
-            std::clamp(factory->respawn_delay_s, 0.0f, vehicle_factory_max_respawn_delay_s);
-        uint8_t team = 0xFF;
-        if (!read_bytes(&team, sizeof(team))) { DestroyDedVehicleFactory(factory); return; }
-        factory->team = (team == 0 || team == 1) ? static_cast<VehicleFactoryTeam>(team)
-                                                 : VehicleFactoryTeam::none;
-        uint8_t reserved[2] = {};
-        if (!read_bytes(reserved, sizeof(reserved))) { DestroyDedVehicleFactory(factory); return; }
-        uint8_t lock_to_team = 0;
-        if (!read_bytes(&lock_to_team, sizeof(lock_to_team))) { DestroyDedVehicleFactory(factory); return; }
-        // A team-none factory keeps its lock: a control point can hand it a team later.
-        factory->lock_to_team = (lock_to_team != 0);
-        uint8_t active = 1;
-        if (!read_bytes(&active, sizeof(active))) { DestroyDedVehicleFactory(factory); return; }
-        factory->active_by_default = (active != 0);
-
-        factories.push_back(factory);
-        level.master_objects.add(static_cast<DedObject*>(factory));
-    }
-
-    xlog::info("[VehicleFactory] Loaded {} vehicle factory object(s)", factories.size());
-}
-
 // ─── Properties Dialog ──────────────────────────────────────────────────────
 
-static std::vector<DedVehicleFactory*> g_selected_factories;
+std::vector<DedVehicleFactory*> g_selected_factories;
 
-static INT_PTR CALLBACK VehicleFactoryDialogProc(HWND hdlg, UINT msg, WPARAM wp, LPARAM lp)
+INT_PTR CALLBACK VehicleFactoryDialogProc(HWND hdlg, UINT msg, WPARAM wp, LPARAM lp)
 {
     switch (msg) {
     case WM_INITDIALOG: {
@@ -386,7 +224,7 @@ static INT_PTR CALLBACK VehicleFactoryDialogProc(HWND hdlg, UINT msg, WPARAM wp,
         // already on the object (unsupported or not) is appended rather than dropped.
         HWND cls = GetDlgItem(hdlg, IDC_VEHICLE_FACTORY_CLASS);
         const std::vector<std::string> tbl_classes =
-            entity_tbl_class_names_with_use({entity_use_vehicle, entity_use_turret});
+            entity_tbl_class_names_with_use({ENTITY_USE_VEHICLE, ENTITY_USE_TURRET});
         if (tbl_classes.empty()) {
             // entity.tbl is missing or its .vpp is not mounted, so nothing was parsed.
             for (const char* name : g_stock_vehicle_classes) {
@@ -492,6 +330,8 @@ static INT_PTR CALLBACK VehicleFactoryDialogProc(HWND hdlg, UINT msg, WPARAM wp,
     return FALSE;
 }
 
+} // namespace
+
 void ShowVehicleFactoryPropertiesDialog(CDedLevel* level)
 {
     auto& sel = level->selection;
@@ -514,6 +354,135 @@ void ShowVehicleFactoryPropertiesDialog(CDedLevel* level)
     }
 
     g_selected_factories.clear();
+}
+
+// ─── Cleanup ─────────────────────────────────────────────────────────────────
+
+void DestroyDedVehicleFactory(DedVehicleFactory* factory)
+{
+    if (!factory) return;
+    vehicle_factory_free_preview(factory);
+    factory->field_4.free();
+    factory->script_name.free();
+    factory->class_name.free();
+    delete factory;
+}
+
+// ─── Serialization ──────────────────────────────────────────────────────────
+
+// Vehicle Factory chunk (id 0x0AFBAE07, RFL 306+), no per-chunk version per the Alpine convention.
+// vehicle_factory_load_chunk in game_patch/multi/vehicles/vehicle_spawn.cpp must stay in step.
+void vehicle_factory_serialize_chunk(CDedLevel& level, rf::File& file)
+{
+    auto& factories = level.GetAlpineLevelProperties().vehicle_factory_objects;
+    if (factories.empty()) return;
+
+    auto start_pos = level.BeginRflSection(file, alpine_vehicle_factory_chunk_id);
+
+    file.write<uint32_t>(static_cast<uint32_t>(factories.size()));
+
+    for (auto* factory : factories) {
+        file.write<int32_t>(factory->uid);
+        file.write<float>(factory->pos.x);
+        file.write<float>(factory->pos.y);
+        file.write<float>(factory->pos.z);
+        file.write<float>(factory->orient.rvec.x);
+        file.write<float>(factory->orient.rvec.y);
+        file.write<float>(factory->orient.rvec.z);
+        file.write<float>(factory->orient.uvec.x);
+        file.write<float>(factory->orient.uvec.y);
+        file.write<float>(factory->orient.uvec.z);
+        file.write<float>(factory->orient.fvec.x);
+        file.write<float>(factory->orient.fvec.y);
+        file.write<float>(factory->orient.fvec.z);
+        write_rfl_string(file, factory->script_name);
+        write_rfl_string(file, factory->vehicle_class);
+        file.write<float>(factory->respawn_delay_s);
+        // 5 bytes: team (0xFF none), two reserved, lock_to_team, active_by_default.
+        file.write<uint8_t>(factory->team == VehicleFactoryTeam::none
+            ? 0xFFu : static_cast<uint8_t>(factory->team));
+        file.write<uint8_t>(0u);
+        file.write<uint8_t>(0u);
+        file.write<uint8_t>(factory->lock_to_team ? 1u : 0u);
+        file.write<uint8_t>(factory->active_by_default ? 1u : 0u);
+    }
+
+    level.EndRflSection(file, start_pos);
+}
+
+void vehicle_factory_deserialize_chunk(CDedLevel& level, rf::File& file, std::size_t chunk_len)
+{
+    auto& factories = level.GetAlpineLevelProperties().vehicle_factory_objects;
+    std::size_t remaining = chunk_len;
+
+    rf::File::ChunkGuard chunk_guard{file, remaining};
+    RflChunkReader<rf::File> reader{file, remaining};
+
+    uint32_t count = 0;
+    if (!reader.read_bytes(&count, sizeof(count))) return;
+    count = std::min(count, vehicle_factory_max_records);
+
+    for (uint32_t i = 0; i < count; i++) {
+        auto* factory = new DedVehicleFactory();
+        memset(static_cast<DedObject*>(factory), 0, sizeof(DedObject));
+        factory->vtbl = reinterpret_cast<void*>(ded_object_vtbl_addr);
+        factory->type = DedObjectType::DED_VEHICLE_FACTORY;
+
+        if (!reader.read_bytes(&factory->uid, sizeof(factory->uid))) { DestroyDedVehicleFactory(factory); return; }
+        if (!reader.read_bytes(&factory->pos.x, sizeof(float))) { DestroyDedVehicleFactory(factory); return; }
+        if (!reader.read_bytes(&factory->pos.y, sizeof(float))) { DestroyDedVehicleFactory(factory); return; }
+        if (!reader.read_bytes(&factory->pos.z, sizeof(float))) { DestroyDedVehicleFactory(factory); return; }
+        if (!reader.read_bytes(&factory->orient.rvec.x, sizeof(float))) { DestroyDedVehicleFactory(factory); return; }
+        if (!reader.read_bytes(&factory->orient.rvec.y, sizeof(float))) { DestroyDedVehicleFactory(factory); return; }
+        if (!reader.read_bytes(&factory->orient.rvec.z, sizeof(float))) { DestroyDedVehicleFactory(factory); return; }
+        if (!reader.read_bytes(&factory->orient.uvec.x, sizeof(float))) { DestroyDedVehicleFactory(factory); return; }
+        if (!reader.read_bytes(&factory->orient.uvec.y, sizeof(float))) { DestroyDedVehicleFactory(factory); return; }
+        if (!reader.read_bytes(&factory->orient.uvec.z, sizeof(float))) { DestroyDedVehicleFactory(factory); return; }
+        if (!reader.read_bytes(&factory->orient.fvec.x, sizeof(float))) { DestroyDedVehicleFactory(factory); return; }
+        if (!reader.read_bytes(&factory->orient.fvec.y, sizeof(float))) { DestroyDedVehicleFactory(factory); return; }
+        if (!reader.read_bytes(&factory->orient.fvec.z, sizeof(float))) { DestroyDedVehicleFactory(factory); return; }
+
+        if (!std::isfinite(factory->pos.x) || !std::isfinite(factory->pos.y)
+            || !std::isfinite(factory->pos.z)) {
+            factory->pos = {};
+        }
+        // The game drops a factory whose basis fails this test.
+        if (!vehicle_orient_is_orthonormal(factory->orient)) {
+            factory->orient = {{1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f, 1.0f}};
+        }
+
+        std::string sname;
+        if (!reader.read_string(sname)) { DestroyDedVehicleFactory(factory); return; }
+        factory->script_name.assign_0(sname.c_str());
+
+        if (!reader.read_string(factory->vehicle_class)) { DestroyDedVehicleFactory(factory); return; }
+        if (rfl_name_over_long(factory->vehicle_class)) factory->vehicle_class.clear();
+
+        if (!reader.read_bytes(&factory->respawn_delay_s, sizeof(float))) { DestroyDedVehicleFactory(factory); return; }
+        if (!std::isfinite(factory->respawn_delay_s)) {
+            factory->respawn_delay_s = vehicle_factory_default_respawn_delay_s;
+        }
+        factory->respawn_delay_s =
+            std::clamp(factory->respawn_delay_s, 0.0f, vehicle_factory_max_respawn_delay_s);
+        uint8_t team = 0xFF;
+        if (!reader.read_bytes(&team, sizeof(team))) { DestroyDedVehicleFactory(factory); return; }
+        factory->team = (team == 0 || team == 1) ? static_cast<VehicleFactoryTeam>(team)
+                                                 : VehicleFactoryTeam::none;
+        uint8_t reserved[2] = {};
+        if (!reader.read_bytes(reserved, sizeof(reserved))) { DestroyDedVehicleFactory(factory); return; }
+        uint8_t lock_to_team = 0;
+        if (!reader.read_bytes(&lock_to_team, sizeof(lock_to_team))) { DestroyDedVehicleFactory(factory); return; }
+        // A team-none factory keeps its lock: a control point can hand it a team later.
+        factory->lock_to_team = (lock_to_team != 0);
+        uint8_t active = 1;
+        if (!reader.read_bytes(&active, sizeof(active))) { DestroyDedVehicleFactory(factory); return; }
+        factory->active_by_default = (active != 0);
+
+        factories.push_back(factory);
+        level.master_objects.add(static_cast<DedObject*>(factory));
+    }
+
+    xlog::info("[VehicleFactory] Loaded {} vehicle factory object(s)", factories.size());
 }
 
 // ─── Object Lifecycle ───────────────────────────────────────────────────────

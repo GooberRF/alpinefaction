@@ -2,7 +2,6 @@
 #include <cmath>
 #include <optional>
 #include <string_view>
-#include <patch_common/MemUtils.h>
 #include "vphys_internal.h"
 #include "../vehicle_physics.h"
 #include "../vehicle.h"
@@ -34,7 +33,7 @@ float vphys_cam_height(const VehiclePhysicsParams& p, const HullBox& box)
     return p.cam_height > 0.0f ? p.cam_height : 1.3f * box.half.y() + 0.9f;
 }
 
-// Posed from AF's camera_do_frame hook (0x0040D850, misc/camera.cpp).
+// Posed from AF's camera_do_frame hook (0x0040D850).
 VehicleChaseCamera g_vcam;
 
 namespace
@@ -65,11 +64,7 @@ namespace
     constexpr float vcam_aim_fade_band = 0.1745f;     // 10 degrees past an aim limit: convergence fully faded
     constexpr float apc_aim_yaw_cap = 0.2618f;        // 15 degrees either side of hull forward
     constexpr int vcam_ray_pass_through = 4;
-
-    float wrap_pi(float a)
-    {
-        return std::remainder(a, vehicle_two_pi);
-    }
+    constexpr int vcam_probe_flags = 0;               // the boom passes invisible faces, which the view sees through
 
     rf::Vector3 dir_from_yaw_pitch(float yaw, float pitch)
     {
@@ -93,7 +88,7 @@ namespace
     {
         rf::Matrix3 m;
         m.make_identity();
-        AddrCaller{0x004FD240}.this_call<void>(&m, eye_pitch);
+        m.rotate_about_local_x(eye_pitch);
         return std::asin(std::clamp(m.fvec.y, -1.0f, 1.0f));
     }
 
@@ -108,7 +103,7 @@ namespace
     void vcam_fade_convergence(float w, float look_yaw, float look_pitch, float& yaw, float& pitch)
     {
         if (w < 1.0f) {
-            yaw = wrap_pi(look_yaw + w * wrap_pi(yaw - look_yaw));
+            yaw = vehicle_wrap_pi(look_yaw + w * vehicle_wrap_pi(yaw - look_yaw));
             pitch = look_pitch + w * (pitch - look_pitch);
         }
     }
@@ -139,11 +134,6 @@ namespace
         return w * std::max((g_vcam.aim_point - g_vcam.pos).len() - vcam_reticle_max_dist, 0.0f);
     }
 
-    bool vcam_class_has_driver_choice(int cls)
-    {
-        return cls == VPHYS_CLASS_JEEP || cls == VPHYS_CLASS_APC || cls == VPHYS_CLASS_DRILLER;
-    }
-
     // A local seat whose view is the player's choice: jeep/APC/driller driver, jeep gunner.
     VehicleOrbitSeat vcam_local_choice_seat(bool require_setting)
     {
@@ -162,7 +152,7 @@ namespace
         }
         if (vehicle_driver_entity(vehicle) == rider) {
             // A mouse-steered class would lose its steering to the orbit.
-            if (!vcam_class_has_driver_choice(cls) || params_for_class(cls).steer_from_mouse != 0.0f) {
+            if (!vphys_class_is_automobile(cls) || params_for_class(cls).steer_from_mouse != 0.0f) {
                 return VehicleOrbitSeat::none;
             }
             return !require_setting || g_alpine_game_config.vehicle_driver_third_person
@@ -233,14 +223,8 @@ namespace
                                       vcam_pitch_limit - g_vcam.ref_pitch);
     }
 
-    bool vcam_finite(const rf::Vector3& v)
-    {
-        return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z);
-    }
-
-    // Critically damped spring, exact for a constant target over any dt: about 60% of a step is
-    // covered in smooth_s and 90% in twice that. Below vcam_rigid_s it is rigid. Returns the new
-    // offset from the target; a non-finite result collapses onto the target.
+    // Critically damped spring, exact for a constant target over any dt. Returns the new offset from
+    // the target; a non-finite result collapses onto the target.
     float vcam_spring_step(float delta, float& vel, float smooth_s, float dt)
     {
         if (!(smooth_s >= vcam_rigid_s) || !std::isfinite(delta) || !std::isfinite(vel)) {
@@ -270,7 +254,7 @@ namespace
     void vcam_spring_angle(float& x, float& vel, float target, float smooth_s, float dt)
     {
         if (std::isfinite(target)) {
-            x = wrap_pi(target + vcam_spring_step(wrap_pi(x - target), vel, smooth_s, dt));
+            x = vehicle_wrap_pi(target + vcam_spring_step(vehicle_wrap_pi(x - target), vel, smooth_s, dt));
         }
     }
 
@@ -292,10 +276,10 @@ namespace
             const float k = 1.0f - std::exp(-dt / vcam_track_smooth_s);
             const rf::Vector3 raw = (vehicle->pos - g_vcam.hull_pos) * (1.0f / dt);
             g_vcam.hull_vel += (raw - g_vcam.hull_vel) * k;
-            const float step = has_heading ? wrap_pi(heading - g_vcam.hull_yaw) : 0.0f;
+            const float step = has_heading ? vehicle_wrap_pi(heading - g_vcam.hull_yaw) : 0.0f;
             const float rate = std::abs(step) <= vcam_max_heading_step ? step / dt : 0.0f;
             g_vcam.hull_yaw_rate += (rate - g_vcam.hull_yaw_rate) * k;
-            if (!vcam_finite(g_vcam.hull_vel) || !std::isfinite(g_vcam.hull_yaw_rate)) {
+            if (!vehicle_vector_is_finite(g_vcam.hull_vel) || !std::isfinite(g_vcam.hull_yaw_rate)) {
                 g_vcam.hull_vel = rf::Vector3{};
                 g_vcam.hull_yaw_rate = 0.0f;
             }
@@ -304,9 +288,7 @@ namespace
         g_vcam.hull_yaw = heading;
     }
 
-    // Heading target: the flattened hull forward, blended toward the travel heading with speed and
-    // looking ahead into a turn; held while slow, reversing, or pointing near vertical (a tumbling
-    // hull). Pitch follows only a share of the hull's, so bumps barely register.
+    // The heading is held while slow, reversing or near vertical; pitch follows only a share of the hull's.
     void vcam_update_reference(const rf::Entity* vehicle, float dt, bool snap)
     {
         vcam_track_hull(vehicle, dt, snap);
@@ -325,22 +307,22 @@ namespace
                     // One speed ramp fades both in from the hold threshold, so neither steps there.
                     const float ramp = std::max(min_speed, vcam_velocity_ramp_floor);
                     const float fade = std::clamp((speed - ramp) / (2.0f * ramp), 0.0f, 1.0f);
-                    const float slip = std::clamp(wrap_pi(std::atan2(v.x, v.z) - target),
+                    const float slip = std::clamp(vehicle_wrap_pi(std::atan2(v.x, v.z) - target),
                                                   -vcam_velocity_yaw_cap, vcam_velocity_yaw_cap);
                     target += slip * fade * cfg.vehicle_cam_velocity;
-                    const float max_ahead = cfg.vehicle_cam_lookahead_max * (vehicle_two_pi / 360.0f);
+                    const float max_ahead = cfg.vehicle_cam_lookahead_max * vehicle_deg_to_rad;
                     lookahead = fade * std::clamp(g_vcam.hull_yaw_rate * cfg.vehicle_cam_lookahead,
                                                   -max_ahead, max_ahead);
                 }
                 if (std::isfinite(target) && std::isfinite(lookahead)) {
-                    g_vcam.target_yaw = wrap_pi(target);
+                    g_vcam.target_yaw = vehicle_wrap_pi(target);
                 }
                 else {
                     lookahead = 0.0f;
                 }
             }
         }
-        const float yaw_target = wrap_pi(g_vcam.target_yaw + lookahead);
+        const float yaw_target = vehicle_wrap_pi(g_vcam.target_yaw + lookahead);
         const float pitch_target = std::clamp(std::asin(std::clamp(f.y, -1.0f, 1.0f)) * cfg.vehicle_cam_pitch_follow,
                                               -vcam_follow_pitch_limit, vcam_follow_pitch_limit);
         if (snap || !std::isfinite(g_vcam.ref_yaw) || !std::isfinite(g_vcam.ref_pitch)) {
@@ -355,9 +337,9 @@ namespace
         const float prev_yaw = g_vcam.ref_yaw;
         vcam_spring_angle(g_vcam.ref_yaw, g_vcam.ref_yaw_vel, yaw_target, cfg.vehicle_cam_follow, dt);
         const float max_step = vcam_heading_rate * dt;
-        const float step = wrap_pi(g_vcam.ref_yaw - prev_yaw);
+        const float step = vehicle_wrap_pi(g_vcam.ref_yaw - prev_yaw);
         if (dt > 0.0f && std::abs(step) > max_step) {
-            g_vcam.ref_yaw = wrap_pi(prev_yaw + std::copysign(max_step, step));
+            g_vcam.ref_yaw = vehicle_wrap_pi(prev_yaw + std::copysign(max_step, step));
             g_vcam.ref_yaw_vel = std::copysign(vcam_heading_rate, step);
         }
         vcam_spring(g_vcam.ref_pitch, g_vcam.ref_pitch_vel, pitch_target, cfg.vehicle_cam_pitch_smooth, dt);
@@ -371,10 +353,10 @@ namespace
         const AlpineGameSettings& cfg = g_alpine_game_config;
         rf::Vector3& p = g_vcam.focus;
         rf::Vector3& v = g_vcam.focus_vel;
-        if (!vcam_finite(target)) {
-            return vcam_finite(p) ? p : target;
+        if (!vehicle_vector_is_finite(target)) {
+            return vehicle_vector_is_finite(p) ? p : target;
         }
-        if (snap || !vcam_finite(p) || !vcam_finite(v)) {
+        if (snap || !vehicle_vector_is_finite(p) || !vehicle_vector_is_finite(v)) {
             p = target;
             v = rf::Vector3{};
             return p;
@@ -411,7 +393,7 @@ namespace
         const float lag_len = lag.len();
         if (lag_len > vcam_focus_probe_min) {
             rf::PCollisionOut hit{};
-            if (vphys_collide_solid_segment(target, p, hit)) {
+            if (vphys_collide_solid_segment(target, p, vcam_probe_flags, hit)) {
                 const float keep = std::max((hit.hit_point - target).len() - vcam_focus_margin, 0.0f);
                 p = target + lag * (std::min(keep, lag_len) / lag_len);
                 v = rf::Vector3{};
@@ -425,7 +407,7 @@ namespace
     rf::Vector3 vcam_clear_point(const rf::Vector3& from, const rf::Vector3& to, float margin)
     {
         rf::PCollisionOut hit{};
-        if (!vphys_collide_solid_segment(from, to, hit)) {
+        if (!vphys_collide_solid_segment(from, to, vcam_probe_flags, hit)) {
             return to;
         }
         const rf::Vector3 seg = to - from;
@@ -442,7 +424,7 @@ namespace
         g_vcam.hull_yaw = std::isfinite(view_yaw) ? view_yaw : 0.0f;
         g_vcam.target_yaw = g_vcam.hull_yaw;
         vcam_update_reference(vehicle, 0.0f, true);
-        g_vcam.rel_yaw = wrap_pi(std::atan2(f.x, f.z) - g_vcam.ref_yaw);
+        g_vcam.rel_yaw = vehicle_wrap_pi(std::atan2(f.x, f.z) - g_vcam.ref_yaw);
         g_vcam.rel_pitch = std::asin(std::clamp(f.y, -1.0f, 1.0f)) - g_vcam.ref_pitch;
         vcam_clamp_rel_pitch();
         g_vcam.idle_s = 0.0f;
@@ -453,7 +435,7 @@ namespace
         if (pitch == 0.0f && yaw == 0.0f) {
             return;
         }
-        g_vcam.rel_yaw = wrap_pi(g_vcam.rel_yaw + yaw);
+        g_vcam.rel_yaw = vehicle_wrap_pi(g_vcam.rel_yaw + yaw);
         g_vcam.rel_pitch += pitch;
         vcam_clamp_rel_pitch();
         g_vcam.idle_s = 0.0f;
@@ -521,235 +503,7 @@ namespace
         g_vcam.aim_point = from + look * std::max(t, min_t);
         g_vcam.aim_valid = true;
     }
-} // namespace
 
-bool vphys_chase_camera_do_frame(rf::Camera* camera)
-{
-    if (!rf::local_player || !camera || camera != rf::local_player->cam || !camera->camera_entity) {
-        return false;
-    }
-    VcamTarget t{};
-    const bool targeted = vphys_chase_camera_target(t);
-    if (!targeted || rf::gameseq_get_state() != rf::GS_GAMEPLAY) {
-        if (g_vcam.active) {
-            vphys_chase_camera_release(camera, !targeted && vcam_local_choice_seat(false) != VehicleOrbitSeat::none);
-        }
-        return false;
-    }
-    if (g_vcam.active && camera->mode != rf::CAMERA_THIRD_PERSON) {
-        g_vcam = VehicleChaseCamera{};
-        return false;
-    }
-    rf::Entity* vehicle = t.vehicle;
-    rf::Entity* rider = t.rider;
-
-    const VehiclePhysicsParams& p = params_for_class(t.cls);
-    const HullBox box = hull_local_box(vehicle);
-    const float want_dist = vphys_cam_distance(p, box);
-    const float height = vphys_cam_height(p, box);
-    const float dt = std::isfinite(rf::frametime) ? std::max(rf::frametime, 0.0f) : 0.0f;
-
-    const bool fresh = !g_vcam.active || g_vcam.vehicle_handle != vehicle->handle
-        || g_vcam.rider_handle != rider->handle || g_vcam.orbit != t.local;
-    if (fresh) {
-        // Read before the mode change: the orbit starts from what is on screen, so nothing snaps.
-        const rf::Matrix3 view = rf::camera_get_orient(camera);
-        const rf::CameraMode prev_mode = camera->mode;
-        // 0x0040DE80 sets the mode itself on success and refuses on a dead handle, having seeded
-        // nothing; claiming the view anyway would pose a camera the engine never entered.
-        if (prev_mode != rf::CAMERA_THIRD_PERSON && !rf::camera_enter_third_person(camera)) {
-            return false;
-        }
-        const rf::CameraMode saved_mode = g_vcam.active ? g_vcam.saved_mode : prev_mode;
-        g_vcam = VehicleChaseCamera{};
-        g_vcam.saved_mode = saved_mode;
-        g_vcam.dist = want_dist;
-        g_vcam.active = true;
-        g_vcam.vehicle_handle = vehicle->handle;
-        g_vcam.rider_handle = rider->handle;
-        g_vcam.orbit = t.local;
-        if (t.local) {
-            vcam_seed(view, vehicle);
-        }
-    }
-    if (g_vcam.seat != t.seat) {
-        const VehicleChaseCamera reset{};
-        g_vcam.gun_weight = reset.gun_weight;
-        g_vcam.gun_reach = reset.gun_reach;
-        g_vcam.focus_lift = reset.focus_lift;
-    }
-    else if (g_vcam.orbit && !fresh && rider->host_tag_handle != g_vcam.seat_tag) {
-        g_vcam.focus_lift = VehicleChaseCamera{}.focus_lift;
-    }
-    g_vcam.seat = t.seat;
-    g_vcam.cls = t.cls;
-
-    // A seated rider is placed on his interface point each frame, so his pos IS the seat. It is
-    // reached from the hull origin, which the chassis keeps out of solid; a seat tag need not be.
-    const float margin = std::max(p.cam_collide_margin, 0.0f);
-    const rf::Vector3 seat = vcam_clear_point(vehicle->pos, rider->pos, margin);
-    // Any lift up to the clip is open space; easing it back up keeps a roof's end from popping the view.
-    const float clip_lift = vcam_clear_point(seat, seat + rf::Vector3{0.0f, height, 0.0f}, margin).y - seat.y;
-    g_vcam.focus_lift = std::min(clip_lift, g_vcam.focus_lift + std::max(p.cam_extend_rate, 0.0f) * dt);
-    rf::Vector3 focus = seat + rf::Vector3{0.0f, g_vcam.focus_lift, 0.0f};
-    // A teleport moves the hull further in one frame than any class can drive. Measured on the hull,
-    // not the seat, so a seat swap (up to ~4 m on the APC) is not mistaken for one.
-    const bool jumped = g_vcam.orbit && !fresh
-        && !((vehicle->pos - g_vcam.hull_pos).len() <= vcam_snap_dist + vcam_snap_speed * dt);
-
-    rf::Vector3 look_dir;
-    if (g_vcam.orbit) {
-        const bool gunner = g_vcam.seat == VehicleOrbitSeat::gunner;
-        if (!fresh) {
-            const float prev_ref_yaw = g_vcam.ref_yaw;
-            const float prev_ref_pitch = g_vcam.ref_pitch;
-            vcam_update_reference(vehicle, dt, jumped);
-            if (gunner) {
-                // His view is his aim: it holds its world direction as the hull turns, as in first person.
-                g_vcam.rel_yaw = wrap_pi(g_vcam.rel_yaw - wrap_pi(g_vcam.ref_yaw - prev_ref_yaw));
-                g_vcam.rel_pitch -= g_vcam.ref_pitch - prev_ref_pitch;
-            }
-        }
-        if (g_vcam.seat == VehicleOrbitSeat::driver) {
-            float pitch = 0.0f;
-            float yaw = 0.0f;
-            consume_vehicle_orbit_mouse_deltas(pitch, yaw);
-            // His look keys land in the hull's ControlInfo; scaled as 0x0049DE50 scales a passenger's.
-            const float key_scale = rider->info->rot_acceleration * dt;
-            vcam_add_look(pitch + vehicle->ai.ci.rot.x * key_scale, yaw + vehicle->ai.ci.rot.y * key_scale);
-        }
-        g_vcam.idle_s += dt;
-        if (!gunner && g_vcam.idle_s >= vcam_drift_delay_s) {
-            const float k = 1.0f - std::exp(-vcam_drift_rate * dt);
-            g_vcam.rel_yaw -= g_vcam.rel_yaw * k;
-            g_vcam.rel_pitch += (vcam_default_pitch - g_vcam.rel_pitch) * k;
-        }
-        vcam_clamp_rel_pitch();
-        look_dir = vcam_look_dir();
-
-        const bool snap_focus = fresh || jumped || rider->host_tag_handle != g_vcam.seat_tag;
-        g_vcam.seat_tag = rider->host_tag_handle;
-        focus = vcam_update_focus(focus, dt, snap_focus);
-    }
-    else {
-        // A spectated passenger: his own eye frame, which his orbit steers on his machine.
-        look_dir = rider->eye_orient.fvec;
-    }
-
-    rf::Vector3 probe_a = focus;
-    rf::Vector3 probe_b = focus - look_dir * (want_dist + margin);
-    rf::PCollisionOut probe{};
-    float allowed = want_dist;
-    const bool probe_hit = vphys_collide_solid_segment(probe_a, probe_b, probe);
-    if (probe_hit) {
-        allowed = std::clamp((probe.hit_point - focus).len() - margin, 0.0f, want_dist);
-    }
-    if (allowed < g_vcam.dist) {
-        g_vcam.dist = allowed;
-    }
-    else {
-        g_vcam.dist = std::min(allowed, g_vcam.dist + std::max(p.cam_extend_rate, 0.0f) * dt);
-    }
-
-    const rf::Vector3 cam_pos = focus - look_dir * g_vcam.dist;
-    rf::Matrix3 orient;
-    orient.make_quick(look_dir);
-
-    rf::Entity* ce = camera->camera_entity;
-    ce->pos = cam_pos;
-    ce->orient = orient;
-    ce->eye_pos = cam_pos;
-    ce->eye_orient = orient;
-    ce->set_room(nullptr);
-    ce->update_room();
-
-    g_vcam.pos = cam_pos;
-    g_vcam.look = look_dir;
-    if (g_vcam.orbit) {
-        vcam_update_aim_point(vehicle, focus);
-    }
-    return true;
-}
-
-bool vehicle_physics_camera_toggle_view()
-{
-    switch (vcam_local_choice_seat(false)) {
-        case VehicleOrbitSeat::driver:
-            g_alpine_game_config.vehicle_driver_third_person = !g_alpine_game_config.vehicle_driver_third_person;
-            return true;
-        case VehicleOrbitSeat::gunner:
-            g_alpine_game_config.vehicle_gunner_third_person = !g_alpine_game_config.vehicle_gunner_third_person;
-            return true;
-        default:
-            return false;
-    }
-}
-
-bool vehicle_physics_camera_local_seat_is_orbit()
-{
-    rf::Entity* rider = rf::local_player_entity;
-    if (rf::Entity* vehicle = vehicle_passenger_vehicle(rider)) {
-        const int cls = vphys_class_for(vehicle);
-        return rf::is_multi && cls >= 0 && params_for_class(cls).cam_enable != 0.0f;
-    }
-    return vcam_local_choice_seat(true) != VehicleOrbitSeat::none;
-}
-
-bool vehicle_physics_camera_owns_driver_look()
-{
-    return g_vcam.active && g_vcam.orbit && g_vcam.seat == VehicleOrbitSeat::driver
-        && rf::local_player_entity && g_vcam.rider_handle == rf::local_player_entity->handle
-        && rf::local_player_entity->host_handle == g_vcam.vehicle_handle;
-}
-
-bool vehicle_physics_camera_take_rider_look(rf::Entity* ep, float& pitch_delta, float& yaw_delta)
-{
-    if (!ep || ep != rf::local_player_entity || !g_vcam.active || !g_vcam.orbit
-        || g_vcam.rider_handle != ep->handle || ep->host_handle != g_vcam.vehicle_handle
-        || (g_vcam.seat != VehicleOrbitSeat::passenger && g_vcam.seat != VehicleOrbitSeat::gunner)) {
-        return false;
-    }
-    vcam_add_look(pitch_delta, yaw_delta);
-    pitch_delta = 0.0f;
-    yaw_delta = 0.0f;
-
-    // The gunner's eye ray (his muzzle is eye + 0.2 fvec) goes through the aim point; a passenger's
-    // eye looks where his camera looks, so his body and a spectator's view of him agree with it.
-    rf::Vector3 dir;
-    if (g_vcam.seat == VehicleOrbitSeat::gunner) {
-        if (!g_vcam.aim_valid) {
-            return true;
-        }
-        dir = g_vcam.aim_point - ep->eye_pos;
-        const float len = dir.len();
-        if (len < 0.01f) {
-            return true;
-        }
-        dir *= 1.0f / len;
-    }
-    else {
-        dir = vcam_look_dir();
-    }
-    float heading = 0.0f;
-    float pitch = 0.0f;
-    engine_angles_from_dir(dir, &heading, &pitch);
-    if (g_vcam.seat == VehicleOrbitSeat::gunner) {
-        float look_heading = 0.0f;
-        float look_pitch = 0.0f;
-        engine_angles_from_dir(g_vcam.look, &look_heading, &look_pitch);
-        g_vcam.gun_weight = vcam_gunner_aim_weight(ep);
-        g_vcam.gun_reach = vcam_reticle_reach(g_vcam.gun_weight);
-        vcam_fade_convergence(g_vcam.gun_weight, look_heading, look_pitch, heading, pitch);
-    }
-    // 0x0049DE50 zeroes phb.x/z before building the eye from phb + eye_phb, so eye_phb.x is all of it.
-    const rf::EntityControlData& cd = ep->control_data;
-    yaw_delta = wrap_pi(heading - cd.phb.y);
-    pitch_delta = pitch - cd.eye_phb.x;
-    return true;
-}
-
-namespace
-{
     // Toward the camera's aim point from the minigun's origin (the driver's eye); the rockets fire
     // parallel. Capped to the hull: +-15 degrees of yaw and the pitch first person allows; past the cap
     // it follows the camera's look.
@@ -791,87 +545,7 @@ namespace
         out_capped = excess > 0.0f || capped_yaw != yaw || capped_pitch != pitch;
         return true;
     }
-} // namespace
 
-bool vehicle_physics_camera_driver_aim(const rf::Entity* vehicle, const rf::Entity* driver,
-                                       rf::Vector3* out_dir, bool* out_capped)
-{
-    bool capped = false;
-    float weight = 1.0f;
-    if (!vcam_apc_aim(vehicle, driver, *out_dir, capped, weight)) {
-        return false;
-    }
-    if (out_capped) {
-        *out_capped = capped;
-    }
-    return true;
-}
-
-bool vehicle_physics_camera_reticle_offset(float* out_dx, float* out_dy)
-{
-    *out_dx = 0.0f;
-    *out_dy = 0.0f;
-    rf::Entity* rider = rf::local_player_entity;
-    rf::Entity* vehicle = g_vcam.active ? rf::entity_from_handle(g_vcam.vehicle_handle) : nullptr;
-    rf::Vector3 dir{};
-    float reach = 0.0f;
-    if (g_vcam.active && g_vcam.orbit && g_vcam.seat == VehicleOrbitSeat::gunner) {
-        if (!vehicle || !rider || !g_vcam.aim_valid || rider->handle != g_vcam.rider_handle
-            || rider->host_handle != g_vcam.vehicle_handle) {
-            return true;
-        }
-        // 0x0049CF40 stores the bound itself, so equality means the seat's pitch limit holds his gun;
-        // a look past that limit has faded his aim off P.
-        const float eye_pitch = rider->control_data.eye_phb.x;
-        if (eye_pitch > rider->min_rel_eye_phb.x && eye_pitch < rider->max_rel_eye_phb.x
-            && !(g_vcam.gun_weight < 1.0f)) {
-            return true;
-        }
-        dir = rider->eye_orient.fvec;
-        reach = g_vcam.gun_reach;
-    }
-    else {
-        bool capped = false;
-        float weight = 1.0f;
-        if (!vcam_apc_aim(vehicle, rider, dir, capped, weight) || !capped) {
-            return true;
-        }
-        reach = vcam_reticle_reach(weight);
-    }
-    // The gun's ray, cut where it leaves R of the camera: |o + t*dir| = R, o = from - cam. R reaches out
-    // to P while the aim still converges on it, so the reticle leaves the crosshair without a snap.
-    const float r = vcam_reticle_max_dist + reach;
-    const rf::Vector3 from = rider->eye_pos;
-    const rf::Vector3 o = from - g_vcam.pos;
-    const float b = o.dot_prod(dir);
-    const float c = o.dot_prod(o) - r * r;
-    const float t = c <= 0.0f ? std::sqrt(b * b - c) - b : r;
-    const rf::Vector3 end = from + dir * t;
-    rf::Vector3 point = end;
-    vcam_raycast(from, end, vehicle, &point);
-    // Projected at a fixed depth on the same sight line, so the far plane (0x005475D0) cannot cull it.
-    const rf::Vector3 rel = point - rf::gr::view_pos;
-    const float rel_len = rel.len();
-    if (!(rel_len > 0.01f)) {
-        return true;
-    }
-    float hx = 0.0f;
-    float hy = 0.0f;
-    float cx = 0.0f;
-    float cy = 0.0f;
-    if (!gr_project_world_to_screen(rf::gr::view_pos + rel * (vcam_reticle_project_dist / rel_len), hx, hy)) {
-        return false;
-    }
-    if (!gr_project_world_to_screen(g_vcam.pos + g_vcam.look * vcam_reticle_project_dist, cx, cy)) {
-        return true;
-    }
-    *out_dx = hx - cx;
-    *out_dy = hy - cy;
-    return true;
-}
-
-namespace
-{
     void vcam_setting_cmd(std::optional<float> value, void (AlpineGameSettings::*setter)(float),
                           float AlpineGameSettings::*field, float def, std::string_view what,
                           std::string_view unit)
@@ -990,6 +664,308 @@ namespace
         "cl_vehiclecam_lag [0.0-0.5]",
     };
 } // namespace
+
+bool vphys_chase_camera_do_frame(rf::Camera* camera)
+{
+    if (!rf::local_player || !camera || camera != rf::local_player->cam || !camera->camera_entity) {
+        return false;
+    }
+    VcamTarget t{};
+    const bool targeted = vphys_chase_camera_target(t);
+    if (!targeted || rf::gameseq_get_state() != rf::GS_GAMEPLAY) {
+        if (g_vcam.active) {
+            vphys_chase_camera_release(camera, !targeted && vcam_local_choice_seat(false) != VehicleOrbitSeat::none);
+        }
+        return false;
+    }
+    if (g_vcam.active && camera->mode != rf::CAMERA_THIRD_PERSON) {
+        g_vcam = VehicleChaseCamera{};
+        return false;
+    }
+    rf::Entity* vehicle = t.vehicle;
+    rf::Entity* rider = t.rider;
+
+    const VehiclePhysicsParams& p = params_for_class(t.cls);
+    const HullBox box = hull_local_box(vehicle);
+    const float want_dist = vphys_cam_distance(p, box);
+    const float height = vphys_cam_height(p, box);
+    const float dt = std::isfinite(rf::frametime) ? std::max(rf::frametime, 0.0f) : 0.0f;
+
+    const bool fresh = !g_vcam.active || g_vcam.vehicle_handle != vehicle->handle
+        || g_vcam.rider_handle != rider->handle || g_vcam.orbit != t.local;
+    if (fresh) {
+        // Read before the mode change: the orbit starts from what is on screen, so nothing snaps.
+        const rf::Matrix3 view = rf::camera_get_orient(camera);
+        const rf::CameraMode prev_mode = camera->mode;
+        // 0x0040DE80 sets the mode itself on success and refuses on a dead handle, having seeded
+        // nothing; claiming the view anyway would pose a camera the engine never entered.
+        if (prev_mode != rf::CAMERA_THIRD_PERSON && !rf::camera_enter_third_person(camera)) {
+            return false;
+        }
+        const rf::CameraMode saved_mode = g_vcam.active ? g_vcam.saved_mode : prev_mode;
+        g_vcam = VehicleChaseCamera{};
+        g_vcam.saved_mode = saved_mode;
+        g_vcam.dist = want_dist;
+        g_vcam.active = true;
+        g_vcam.vehicle_handle = vehicle->handle;
+        g_vcam.rider_handle = rider->handle;
+        g_vcam.orbit = t.local;
+        if (t.local) {
+            vcam_seed(view, vehicle);
+        }
+    }
+    if (g_vcam.seat != t.seat) {
+        const VehicleChaseCamera reset{};
+        g_vcam.gun_weight = reset.gun_weight;
+        g_vcam.gun_reach = reset.gun_reach;
+        g_vcam.focus_lift = reset.focus_lift;
+    }
+    else if (g_vcam.orbit && !fresh && rider->host_tag_handle != g_vcam.seat_tag) {
+        g_vcam.focus_lift = VehicleChaseCamera{}.focus_lift;
+    }
+    g_vcam.seat = t.seat;
+    g_vcam.cls = t.cls;
+
+    // A seated rider is placed on his interface point each frame, so his pos IS the seat. It is
+    // reached from the hull origin, which the chassis keeps out of solid; a seat tag need not be.
+    const float margin = std::max(p.cam_collide_margin, 0.0f);
+    const rf::Vector3 seat = vcam_clear_point(vehicle->pos, rider->pos, margin);
+    // Any lift up to the clip is open space; easing it back up keeps a roof's end from popping the view.
+    const float clip_lift = vcam_clear_point(seat, seat + rf::Vector3{0.0f, height, 0.0f}, margin).y - seat.y;
+    g_vcam.focus_lift = std::min(clip_lift, g_vcam.focus_lift + std::max(p.cam_extend_rate, 0.0f) * dt);
+    rf::Vector3 focus = seat + rf::Vector3{0.0f, g_vcam.focus_lift, 0.0f};
+    // A teleport moves the hull further in one frame than any class can drive. Measured on the hull,
+    // not the seat, so a seat swap (up to ~4 m on the APC) is not mistaken for one.
+    const bool jumped = g_vcam.orbit && !fresh
+        && !((vehicle->pos - g_vcam.hull_pos).len() <= vcam_snap_dist + vcam_snap_speed * dt);
+
+    rf::Vector3 look_dir;
+    if (g_vcam.orbit) {
+        const bool gunner = g_vcam.seat == VehicleOrbitSeat::gunner;
+        if (!fresh) {
+            const float prev_ref_yaw = g_vcam.ref_yaw;
+            const float prev_ref_pitch = g_vcam.ref_pitch;
+            vcam_update_reference(vehicle, dt, jumped);
+            if (gunner) {
+                // His view is his aim: it holds its world direction as the hull turns, as in first person.
+                g_vcam.rel_yaw = vehicle_wrap_pi(g_vcam.rel_yaw - vehicle_wrap_pi(g_vcam.ref_yaw - prev_ref_yaw));
+                g_vcam.rel_pitch -= g_vcam.ref_pitch - prev_ref_pitch;
+            }
+        }
+        if (g_vcam.seat == VehicleOrbitSeat::driver) {
+            float pitch = 0.0f;
+            float yaw = 0.0f;
+            consume_vehicle_orbit_mouse_deltas(pitch, yaw);
+            // His look keys land in the hull's ControlInfo; scaled as 0x0049DE50 scales a passenger's.
+            const float key_scale = rider->info->rot_acceleration * dt;
+            vcam_add_look(pitch + vehicle->ai.ci.rot.x * key_scale, yaw + vehicle->ai.ci.rot.y * key_scale);
+        }
+        g_vcam.idle_s += dt;
+        if (!gunner && g_vcam.idle_s >= vcam_drift_delay_s) {
+            const float k = 1.0f - std::exp(-vcam_drift_rate * dt);
+            g_vcam.rel_yaw -= g_vcam.rel_yaw * k;
+            g_vcam.rel_pitch += (vcam_default_pitch - g_vcam.rel_pitch) * k;
+        }
+        vcam_clamp_rel_pitch();
+        look_dir = vcam_look_dir();
+
+        const bool snap_focus = fresh || jumped || rider->host_tag_handle != g_vcam.seat_tag;
+        g_vcam.seat_tag = rider->host_tag_handle;
+        focus = vcam_update_focus(focus, dt, snap_focus);
+    }
+    else {
+        // A spectated passenger: his own eye frame, which his orbit steers on his machine.
+        look_dir = rider->eye_orient.fvec;
+    }
+
+    rf::Vector3 probe_a = focus;
+    rf::Vector3 probe_b = focus - look_dir * (want_dist + margin);
+    rf::PCollisionOut probe{};
+    float allowed = want_dist;
+    const bool probe_hit = vphys_collide_solid_segment(probe_a, probe_b, vcam_probe_flags, probe);
+    if (probe_hit) {
+        allowed = std::clamp((probe.hit_point - focus).len() - margin, 0.0f, want_dist);
+    }
+    if (allowed < g_vcam.dist) {
+        g_vcam.dist = allowed;
+    }
+    else {
+        g_vcam.dist = std::min(allowed, g_vcam.dist + std::max(p.cam_extend_rate, 0.0f) * dt);
+    }
+
+    const rf::Vector3 cam_pos = focus - look_dir * g_vcam.dist;
+    rf::Matrix3 orient;
+    orient.make_quick(look_dir);
+
+    rf::Entity* ce = camera->camera_entity;
+    ce->pos = cam_pos;
+    ce->orient = orient;
+    ce->eye_pos = cam_pos;
+    ce->eye_orient = orient;
+    ce->set_room(nullptr);
+    ce->update_room();
+
+    g_vcam.pos = cam_pos;
+    g_vcam.look = look_dir;
+    if (g_vcam.orbit) {
+        vcam_update_aim_point(vehicle, focus);
+    }
+    return true;
+}
+
+bool vehicle_physics_camera_toggle_view()
+{
+    switch (vcam_local_choice_seat(false)) {
+        case VehicleOrbitSeat::driver:
+            g_alpine_game_config.vehicle_driver_third_person = !g_alpine_game_config.vehicle_driver_third_person;
+            return true;
+        case VehicleOrbitSeat::gunner:
+            g_alpine_game_config.vehicle_gunner_third_person = !g_alpine_game_config.vehicle_gunner_third_person;
+            return true;
+        default:
+            return false;
+    }
+}
+
+bool vehicle_physics_camera_local_seat_is_orbit()
+{
+    rf::Entity* rider = rf::local_player_entity;
+    if (rf::Entity* vehicle = vehicle_passenger_vehicle(rider)) {
+        const int cls = vphys_class_for(vehicle);
+        return rf::is_multi && cls >= 0 && params_for_class(cls).cam_enable != 0.0f;
+    }
+    return vcam_local_choice_seat(true) != VehicleOrbitSeat::none;
+}
+
+bool vehicle_physics_camera_owns_driver_look()
+{
+    return g_vcam.active && g_vcam.orbit && g_vcam.seat == VehicleOrbitSeat::driver
+        && rf::local_player_entity && g_vcam.rider_handle == rf::local_player_entity->handle
+        && rf::local_player_entity->host_handle == g_vcam.vehicle_handle;
+}
+
+bool vehicle_physics_camera_take_rider_look(rf::Entity* ep, float& pitch_delta, float& yaw_delta)
+{
+    if (!ep || ep != rf::local_player_entity || !g_vcam.active || !g_vcam.orbit
+        || g_vcam.rider_handle != ep->handle || ep->host_handle != g_vcam.vehicle_handle
+        || (g_vcam.seat != VehicleOrbitSeat::passenger && g_vcam.seat != VehicleOrbitSeat::gunner)) {
+        return false;
+    }
+    vcam_add_look(pitch_delta, yaw_delta);
+    pitch_delta = 0.0f;
+    yaw_delta = 0.0f;
+
+    // The gunner's eye ray (his muzzle is eye + 0.2 fvec) goes through the aim point; a passenger's
+    // eye looks where his camera looks, so his body and a spectator's view of him agree with it.
+    rf::Vector3 dir;
+    if (g_vcam.seat == VehicleOrbitSeat::gunner) {
+        if (!g_vcam.aim_valid) {
+            return true;
+        }
+        dir = g_vcam.aim_point - ep->eye_pos;
+        const float len = dir.len();
+        if (len < 0.01f) {
+            return true;
+        }
+        dir *= 1.0f / len;
+    }
+    else {
+        dir = vcam_look_dir();
+    }
+    float heading = 0.0f;
+    float pitch = 0.0f;
+    engine_angles_from_dir(dir, &heading, &pitch);
+    if (g_vcam.seat == VehicleOrbitSeat::gunner) {
+        float look_heading = 0.0f;
+        float look_pitch = 0.0f;
+        engine_angles_from_dir(g_vcam.look, &look_heading, &look_pitch);
+        g_vcam.gun_weight = vcam_gunner_aim_weight(ep);
+        g_vcam.gun_reach = vcam_reticle_reach(g_vcam.gun_weight);
+        vcam_fade_convergence(g_vcam.gun_weight, look_heading, look_pitch, heading, pitch);
+    }
+    // 0x0049DE50 zeroes phb.x/z before building the eye from phb + eye_phb, so eye_phb.x is all of it.
+    const rf::EntityControlData& cd = ep->control_data;
+    yaw_delta = vehicle_wrap_pi(heading - cd.phb.y);
+    pitch_delta = pitch - cd.eye_phb.x;
+    return true;
+}
+
+bool vehicle_physics_camera_driver_aim(const rf::Entity* vehicle, const rf::Entity* driver,
+                                       rf::Vector3* out_dir, bool* out_capped)
+{
+    bool capped = false;
+    float weight = 1.0f;
+    if (!vcam_apc_aim(vehicle, driver, *out_dir, capped, weight)) {
+        return false;
+    }
+    if (out_capped) {
+        *out_capped = capped;
+    }
+    return true;
+}
+
+bool vehicle_physics_camera_reticle_offset(float* out_dx, float* out_dy)
+{
+    *out_dx = 0.0f;
+    *out_dy = 0.0f;
+    rf::Entity* rider = rf::local_player_entity;
+    rf::Entity* vehicle = g_vcam.active ? rf::entity_from_handle(g_vcam.vehicle_handle) : nullptr;
+    rf::Vector3 dir{};
+    float reach = 0.0f;
+    if (g_vcam.active && g_vcam.orbit && g_vcam.seat == VehicleOrbitSeat::gunner) {
+        if (!vehicle || !rider || !g_vcam.aim_valid || rider->handle != g_vcam.rider_handle
+            || rider->host_handle != g_vcam.vehicle_handle) {
+            return true;
+        }
+        // 0x0049CF40 stores the bound itself, so equality means the seat's pitch limit holds his gun;
+        // a look past that limit has faded his aim off P.
+        const float eye_pitch = rider->control_data.eye_phb.x;
+        if (eye_pitch > rider->min_rel_eye_phb.x && eye_pitch < rider->max_rel_eye_phb.x
+            && !(g_vcam.gun_weight < 1.0f)) {
+            return true;
+        }
+        dir = rider->eye_orient.fvec;
+        reach = g_vcam.gun_reach;
+    }
+    else {
+        bool capped = false;
+        float weight = 1.0f;
+        if (!vcam_apc_aim(vehicle, rider, dir, capped, weight) || !capped) {
+            return true;
+        }
+        reach = vcam_reticle_reach(weight);
+    }
+    // The gun's ray, cut where it leaves R of the camera: |o + t*dir| = R, o = from - cam. R reaches out
+    // to P while the aim still converges on it, so the reticle leaves the crosshair without a snap.
+    const float r = vcam_reticle_max_dist + reach;
+    const rf::Vector3 from = rider->eye_pos;
+    const rf::Vector3 o = from - g_vcam.pos;
+    const float b = o.dot_prod(dir);
+    const float c = o.dot_prod(o) - r * r;
+    const float t = c <= 0.0f ? std::sqrt(b * b - c) - b : r;
+    const rf::Vector3 end = from + dir * t;
+    rf::Vector3 point = end;
+    vcam_raycast(from, end, vehicle, &point);
+    // Projected at a fixed depth on the same sight line, so the far plane (0x005475D0) cannot cull it.
+    const rf::Vector3 rel = point - rf::gr::view_pos;
+    const float rel_len = rel.len();
+    if (!(rel_len > 0.01f)) {
+        return true;
+    }
+    float hx = 0.0f;
+    float hy = 0.0f;
+    float cx = 0.0f;
+    float cy = 0.0f;
+    if (!gr_project_world_to_screen(rf::gr::view_pos + rel * (vcam_reticle_project_dist / rel_len), hx, hy)) {
+        return false;
+    }
+    if (!gr_project_world_to_screen(g_vcam.pos + g_vcam.look * vcam_reticle_project_dist, cx, cy)) {
+        return true;
+    }
+    *out_dx = hx - cx;
+    *out_dy = hy - cy;
+    return true;
+}
 
 void vphys_camera_install_patches()
 {

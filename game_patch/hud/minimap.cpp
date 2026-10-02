@@ -27,6 +27,7 @@
 #include "../multi/multi.h"
 #include "../multi/salvage.h"
 #include "../multi/vehicles/vehicle.h"
+#include "../multi/vehicles/vehicle_render.h"
 #include "../multi/vehicles/vehicle_markers.h"
 #include "../object/event_alpine.h"
 #include "../os/console.h"
@@ -120,8 +121,8 @@ namespace
 
         bool contains(float sx, float sy, float margin) const
         {
-            return sx >= panel.x0 - margin && sx <= panel.x1 + margin && sy >= panel.y0 - margin &&
-                   sy <= panel.y1 + margin;
+            return sx >= panel.x0 - margin && sx <= panel.x1 + margin && sy >= panel.y0 - margin
+                && sy <= panel.y1 + margin;
         }
     };
 
@@ -253,16 +254,10 @@ namespace
         draw_clipped(-1, poly, 4, view.panel, fill_mode);
     }
 
-    rf::Color color_from_packed(uint32_t packed, rf::ubyte alpha = 255)
-    {
-        const auto [r, g, b, a] = extract_color_components(packed);
-        return {static_cast<rf::ubyte>(r), static_cast<rf::ubyte>(g), static_cast<rf::ubyte>(b), alpha};
-    }
-
     rf::Color teammate_color(const Viewer& viewer)
     {
         const auto& override_color = g_alpine_game_config.outlines_color_team;
-        return override_color ? color_from_packed(*override_color) : hud_team_color(viewer.team);
+        return override_color ? hud_color_from_packed(*override_color) : hud_team_color(viewer.team);
     }
 
     const rf::Color outline_color{0, 0, 0, 200};
@@ -400,8 +395,8 @@ namespace
 
     void draw_ctf_flags(const View& view, const Viewer& viewer)
     {
-        if (rf::multi_get_game_type() != rf::NetGameType::NG_TYPE_CTF || !rf::ctf_red_flag_item ||
-            !rf::ctf_blue_flag_item) {
+        if (rf::multi_get_game_type() != rf::NetGameType::NG_TYPE_CTF || !rf::ctf_red_flag_item
+            || !rf::ctf_blue_flag_item) {
             return;
         }
         for (const bool blue : {false, true}) {
@@ -703,15 +698,15 @@ namespace
     // Overlays that hide both the panel and the big map.
     bool minimap_overlay_active()
     {
-        return multi_scoreboard_is_visible() || g_remote_server_cfg_popup.is_active() ||
-               vote_panel_is_gameplay_overlay_active();
+        return multi_scoreboard_is_visible() || g_remote_server_cfg_popup.is_active()
+            || vote_panel_is_gameplay_overlay_active();
     }
 
     // Transient views that hide only the corner panel; its space stays reserved.
     bool corner_panel_suppressed()
     {
-        return rf::local_player->fpgun_data.scanning_for_target || multi_spectate_is_freelook() ||
-               rf::hud_render_weapon_cycle;
+        return rf::local_player->fpgun_data.scanning_for_target || multi_spectate_is_freelook()
+            || rf::hud_render_weapon_cycle;
     }
 
     // control_is_control_down reads raw key state, so a key typed into the chat box would count.
@@ -831,8 +826,8 @@ void minimap_render()
 
 void minimap_notify_geomod(const rf::Vector3& pos, float radius)
 {
-    if (!rf::is_multi || rf::is_dedicated_server || is_headless_mode() ||
-        !AlpineLevelProperties::instance().minimap_enabled || !std::isfinite(radius) || radius <= 0.0f) {
+    if (!rf::is_multi || rf::is_dedicated_server || is_headless_mode()
+        || !AlpineLevelProperties::instance().minimap_enabled || !std::isfinite(radius) || radius <= 0.0f) {
         return;
     }
     for (const Crater& c : g_minimap.craters) {

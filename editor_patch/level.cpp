@@ -1339,10 +1339,7 @@ static void minimap_bake_from_dialog(HWND hdlg)
     props.minimap_world_min = result.world_min;
     props.minimap_world_max = result.world_max;
     props.minimap_cut_height = params.cut_height;
-    // CDocument::SetModifiedFlag (0x0041E440) is exactly this store; stock Level Properties never sets it.
-    if (g_main_frame && g_main_frame->doc) {
-        g_main_frame->doc->_d.m_bModified = TRUE;
-    }
+    mark_level_modified();
     g_minimap_staging.bitmap = result.bitmap_name;
     g_minimap_staging.world_min = result.world_min;
     g_minimap_staging.world_max = result.world_max;
@@ -1671,13 +1668,7 @@ CodeInjection CLevelDialog_OnOK_patch{
         }
         alpine_level_props.rf2_style_geomod = IsDlgButtonChecked(hdlg, IDC_RF2_STYLE_GEOMOD) == BST_CHECKED;
         alpine_level_props.vehicle_flight_ceiling_enabled = IsDlgButtonChecked(hdlg, IDC_VEHICLE_FLIGHT_CEILING_ENABLE) == BST_CHECKED;
-        char ceiling_buffer[64] = {};
-        GetDlgItemTextA(hdlg, IDC_VEHICLE_FLIGHT_CEILING, ceiling_buffer, static_cast<int>(sizeof(ceiling_buffer)));
-        char* ceiling_end = nullptr;
-        float ceiling = std::strtof(ceiling_buffer, &ceiling_end);
-        if (ceiling_end != ceiling_buffer && std::isfinite(ceiling)) {
-            alpine_level_props.vehicle_flight_ceiling = ceiling;
-        }
+        read_dlg_float(hdlg, IDC_VEHICLE_FLIGHT_CEILING, alpine_level_props.vehicle_flight_ceiling, -FLT_MAX, FLT_MAX);
         alpine_level_props.legacy_lighting = IsDlgButtonChecked(hdlg, IDC_LEGACY_LIGHTING) == BST_CHECKED;
         alpine_level_props.highres_lightmaps = IsDlgButtonChecked(hdlg, IDC_HIGHRES_LIGHTMAPS) == BST_CHECKED;
         alpine_level_props.invisible_faces_occlude = IsDlgButtonChecked(hdlg, IDC_INVISIBLE_FACES_OCCLUDE) == BST_CHECKED;
@@ -1718,9 +1709,7 @@ CodeInjection CLevelDialog_OnOK_patch{
         alpine_level_props.minimap_cut_height = g_minimap_staging.cut_height;
 
         // Stock OnOK (and the menu path, 0x00402300) never marks the document modified.
-        if (g_main_frame && g_main_frame->doc) {
-            g_main_frame->doc->_d.m_bModified = TRUE;
-        }
+        mark_level_modified();
     },
 };
 

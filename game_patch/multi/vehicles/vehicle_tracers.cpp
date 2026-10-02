@@ -510,7 +510,6 @@ void vehicle_tracers_on_weapon_created(int weapon_type, int parent_handle, const
         return;
     }
 
-    // A free slot if there is one, else the oldest tracer.
     int slot = g_tracer_next;
     if (g_tracer_live == tracer_pool_size) {
         for (int i = 0; i < tracer_pool_size; ++i) {

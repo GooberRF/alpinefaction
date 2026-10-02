@@ -1,5 +1,10 @@
 #pragma once
 
+#include <cstdint>
+
+// Reader cap on Vehicle Factory records in a level, shared by the game and the level editor.
+inline constexpr uint32_t vehicle_factory_max_records = 1000;
+
 // Hull meshes Alpine Faction substitutes for the stock vehicle classes at level init, shared so the
 // level editor's Vehicle Factory preview shows the hull the game will actually spawn. Any extra
 // per-class override the game needs (cockpit VFX) stays game side, keyed on these class names.

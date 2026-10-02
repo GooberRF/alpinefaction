@@ -822,13 +822,10 @@ bool gr_d3d_is_d3d8to9()
     return is_d3d9;
 }
 
-static auto& gr_d3d_get_num_texture_sections = addr_as_ref<int(int bm_handle)>(0x0055CA60);
-static auto& gr_d3d_set_state_and_texture = addr_as_ref<void(rf::gr::Mode, int, int)>(0x00550850);
-
 void gr_d3d_bitmap_float(int bitmap_handle, float x, float y, float w, float h,
                          float sx, float sy, float sw, float sh, bool flip_x, bool flip_y, rf::gr::Mode mode)
 {
-    if (gr_d3d_get_num_texture_sections(bitmap_handle) != 1) {
+    if (rf::gr::d3d::get_num_texture_sections(bitmap_handle) != 1) {
         // If bitmap is sectioned fall back to the old implementation...
         rf::gr::bitmap_scaled(bitmap_handle,
             static_cast<int>(x), static_cast<int>(y), static_cast<int>(w), static_cast<int>(h),
@@ -891,12 +888,12 @@ void gr_d3d_poly_2d(int bitmap_handle, int nv, const rf::gr::Vertex* vertices, r
     if (bitmap_handle >= 0) {
         // Only the state/texture setup pages the bitmap in (via 0x0055CAD0); set_texture just
         // records the handle, and the section count is stale until paging has run.
-        gr_d3d_set_state_and_texture(mode, bitmap_handle, -1);
-        if (gr_d3d_get_num_texture_sections(bitmap_handle) != 1) {
+        rf::gr::d3d::set_state_and_texture(mode, bitmap_handle, -1);
+        if (rf::gr::d3d::get_num_texture_sections(bitmap_handle) != 1) {
             static bool warned = false;
             if (!warned) {
                 warned = true;
-                xlog::warn("gr_poly_2d: bitmap {} is too large for one texture on this renderer, not drawn",
+                xlog::warn("[gr] gr_poly_2d: bitmap {} is too large for one texture on this renderer, not drawn",
                            bitmap_handle);
             }
             return;

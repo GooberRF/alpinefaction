@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cstring>
 #include <iterator>
+#include <type_traits>
 #include <vector>
 #include <xlog/xlog.h>
 #include <patch_common/CallHook.h>
@@ -101,8 +102,7 @@ namespace
 
     // Per second, scaled by frametime at the point of use; dealt as DT_CRUSH through the ram mint.
     constexpr float vehicle_drill_damage_per_sec = 200.0f;
-    // Matches the physics model's own drill probe (vphys_internal.h drill_probe_reach 8.97), so
-    // damage and carve describe the same bits.
+    // Matches the driller's physics drill probe reach, so damage and carve describe the same bits.
     constexpr float vehicle_drill_reach = 9.0f;
     constexpr float vehicle_drill_radius = 2.5f;
 
@@ -144,18 +144,14 @@ namespace
         }
     }
 
-    // One row per vehicle class, two scales per row, one column per rf::DamageType. Server only,
-    // applied BEFORE obj_damage's own body. A NEGATIVE hull multiplier means REPAIR (hence bash
-    // -1.00: melee is the repair tool); 0.0 means immune to that type from players, which cannot
-    // make a hull unkillable because the table only scales a blow that names a killer.
+    // One row per vehicle class, one column per rf::DamageType; server only, applied BEFORE obj_damage's
+    // own body. A NEGATIVE hull multiplier means REPAIR (bash -1.00: melee is the repair tool).
     struct VehicleDamageTuning
     {
         float occupant[rf::DT_COUNT]; // scale on damage dealt to a player seated in this class
         float hull[rf::DT_COUNT];     // scale on damage dealt to the vehicle entity itself
     };
 
-    // Column order is rf::DamageType (rf/object.h): bash, bullet, armor-piercing, explosive, fire,
-    // energy, electrical, acid, scalding, crush, and two unused.
     constexpr VehicleDamageTuning vehicle_damage_tuning[VDC_COUNT] = {
         // ------------------------------------------------------------------ VDC_JEEP (open seats)
         {
@@ -253,7 +249,6 @@ namespace
         return false;
     }
 
-    // The hull column of the tuning table, or 1.0 for anything that is not a synced hull.
     float vehicle_hull_damage_multiplier(const rf::Entity* victim, int damage_type)
     {
         if (damage_type < 0 || damage_type >= rf::DT_COUNT) {
@@ -273,13 +268,13 @@ namespace
         }
         const rf::Player* repairer = rf::player_from_entity_handle(killer_handle);
         if (!repairer) {
-            return false; // only a player repairs
+            return false;
         }
         const bool team_game = multi_is_team_game_type();
         for (int i = 0; i < vehicle->interface_points.size(); ++i) {
             const int leech_handle = vehicle_seat_leech(vehicle, i);
             if (leech_handle == -1 || leech_handle == killer_handle) {
-                continue; // an empty seat, or the repairer's own
+                continue;
             }
             const rf::Player* occupant = vehicle_seat_occupant_player(vehicle, i);
             if (!occupant) {
@@ -297,7 +292,7 @@ namespace
     void vehicle_apply_repair(rf::Entity* vehicle, int killer_handle, float heal)
     {
         if (heal <= 0.0f || vehicle->life <= 0.0f || rf::entity_is_dying(vehicle)) {
-            return; // nothing may bring a dying or dead hull back
+            return;
         }
         auto it = g_vehicle_state.regen.find(vehicle->handle);
         if (it == g_vehicle_state.regen.end() || it->second.spawn_max_life <= 0.0f) {
@@ -311,29 +306,24 @@ namespace
         vehicle->life = std::min(vehicle->life + heal, regen.spawn_max_life);
         const float applied = vehicle->life - before;
         if (applied <= 0.0f) {
-            return; // already full
+            return;
         }
         // Shift the watermark by exactly what was healed, not to the new life: damage that landed
         // earlier in this same frame must still read as a drop to the regen pass.
         regen.last_seen_life = std::min(regen.last_seen_life + applied, regen.spawn_max_life);
     }
-} // namespace
 
-// Opened by vehicle_server_handle_exit; closed by a boarding, a settle, the vehicle dying or going
-// away, or expiry - whichever comes first.
-void vehicle_coast_memory_set(rf::Entity* vehicle, rf::Player* pp, rf::Entity* rider)
-{
-    if (!rf::is_server || !pp || !pp->net_data || !rider) {
-        return;
+    // pp's entity: the one entity_handle names while it is still his, otherwise his live one.
+    rf::Entity* vehicle_player_credit_entity(const rf::Player* pp, int entity_handle)
+    {
+        rf::Entity* ep = rf::entity_from_handle(entity_handle);
+        if (ep && rf::player_from_entity_handle(ep->handle) == pp) {
+            return ep;
+        }
+        rf::Entity* live_ep = rf::entity_from_handle(pp->entity_handle);
+        return (live_ep && rf::player_from_entity_handle(live_ep->handle) == pp) ? live_ep : nullptr;
     }
-    VehicleCoastMemory& mem = g_vehicle_state.coast_memory[vehicle->handle];
-    mem.player_id = pp->net_data->player_id;
-    mem.exit_entity_handle = rider->handle;
-    mem.expiry_ms = timer::get_i64(1000) + vehicle_coast_memory_ms;
-}
 
-namespace
-{
     // The entity the coast names as killer, or null. By net id, so credit follows the PLAYER if he
     // respawned inside the window. Expired entries are dropped on the way through.
     rf::Entity* vehicle_coast_memory_driver(int vehicle_handle)
@@ -351,12 +341,7 @@ namespace
             g_vehicle_state.coast_memory.erase(it); // disconnected: nobody left to credit
             return nullptr;
         }
-        rf::Entity* exit_ep = rf::entity_from_handle(it->second.exit_entity_handle);
-        if (exit_ep && rf::player_from_entity_handle(exit_ep->handle) == pp) {
-            return exit_ep;
-        }
-        rf::Entity* live_ep = rf::entity_from_handle(pp->entity_handle);
-        return (live_ep && rf::player_from_entity_handle(live_ep->handle) == pp) ? live_ep : nullptr;
+        return vehicle_player_credit_entity(pp, it->second.exit_entity_handle);
     }
 
     // The player who destroyed the hull, resolved like vehicle_coast_memory_driver; null for a non-player.
@@ -369,12 +354,7 @@ namespace
         if (!pp) {
             return nullptr;
         }
-        rf::Entity* ep = rf::entity_from_handle(lethal.entity_handle);
-        if (ep && rf::player_from_entity_handle(ep->handle) == pp) {
-            return ep;
-        }
-        rf::Entity* live_ep = rf::entity_from_handle(pp->entity_handle);
-        return (live_ep && rf::player_from_entity_handle(live_ep->handle) == pp) ? live_ep : nullptr;
+        return vehicle_player_credit_entity(pp, lethal.entity_handle);
     }
 
     // What this module is minting through obj_damage right now, or an empty record. obj_damage
@@ -399,7 +379,10 @@ namespace
             g_vehicle_crush_mint =
                 VehicleCrushMint{victim_handle, vehicle_damage_class(vehicle), squash, speed};
         }
-        ~VehicleCrushMintScope() { g_vehicle_crush_mint = saved_; }
+        ~VehicleCrushMintScope()
+        {
+            g_vehicle_crush_mint = saved_;
+        }
         VehicleCrushMintScope(const VehicleCrushMintScope&) = delete;
         VehicleCrushMintScope& operator=(const VehicleCrushMintScope&) = delete;
 
@@ -429,7 +412,10 @@ namespace
         {
             g_vehicle_blast_mint = VehicleBlastMint{occupant_handle, vehicle_handle};
         }
-        ~VehicleBlastMintScope() { g_vehicle_blast_mint = saved_; }
+        ~VehicleBlastMintScope()
+        {
+            g_vehicle_blast_mint = saved_;
+        }
         VehicleBlastMintScope(const VehicleBlastMintScope&) = delete;
         VehicleBlastMintScope& operator=(const VehicleBlastMintScope&) = delete;
 
@@ -501,7 +487,6 @@ namespace
             if (vehicle_crush_victim_is_exempt(victim)) {
                 continue;
             }
-            // You cannot run yourself over.
             if (victim->handle == killer->handle) {
                 continue;
             }
@@ -509,7 +494,7 @@ namespace
             const rf::Vector3 delta = victim->pos - box_center;
             const float dist = delta.len();
             if (!(dist <= hull_reject + vr)) {
-                continue; // cheap reject before the three dot products
+                continue;
             }
             const rf::Vector3 local{
                 delta.dot_prod(vehicle->orient.rvec),
@@ -530,50 +515,7 @@ namespace
             vehicle_server_mint_crush(victim, killer, vehicle);
         }
     }
-} // namespace
 
-// Detection cannot live on a client: the coast's interp samples deliberately carry zero velocity, so
-// a watcher's stock crush classification has nothing to key on. Only while the memory window is live.
-void vehicle_server_coast_crush_sweep(rf::Entity* vehicle, const rf::Vector3& hull_pos)
-{
-    if (vehicle_hull_is_turret(vehicle)) {
-        return;
-    }
-    rf::Entity* killer = vehicle_coast_memory_driver(vehicle->handle);
-    if (!killer) {
-        return;
-    }
-    // Ownership test only: no server body means this machine is not simulating the hull.
-    if (!vehicle_physics_server_owns(vehicle->handle)) {
-        return;
-    }
-    rf::Vector3 half{};
-    rf::Vector3 center{};
-    vehicle_physics_entity_hull_box(vehicle, &half, &center);
-    vehicle_server_crush_sweep(vehicle, hull_pos, half, center, killer);
-}
-
-// The server sweeps driven hulls too: the stock crush trigger dies once a hull latches
-// collide_out.is_liquid, which the engine never clears.
-void vehicle_server_driven_crush_sweep(rf::Entity* vehicle)
-{
-    if (!rf::is_multi || !rf::is_server || !vehicle || vehicle_hull_is_turret(vehicle)
-        || rf::entity_is_dying(vehicle)) {
-        return;
-    }
-    // A driverless hull belongs to the coast sweep, which runs in the other branch of the same frame.
-    rf::Entity* killer = vehicle_driver_entity(vehicle);
-    if (!killer) {
-        return;
-    }
-    rf::Vector3 half{};
-    rf::Vector3 center{};
-    vehicle_physics_entity_hull_box(vehicle, &half, &center);
-    vehicle_server_crush_sweep(vehicle, vehicle->pos, half, center, killer);
-}
-
-namespace
-{
     // Server-only: no client is authoritative over two hulls at once. Damage lands ON IMPACT, once -
     // a pair in contact takes nothing more until it has come fully apart.
 
@@ -589,8 +531,8 @@ namespace
         float mass = 0.1f;
     };
 
-    // The shared overlap test, so this and vehicle_physics.cpp's pair response cannot disagree about
-    // which hulls are touching. Only the margin is the sweep's own.
+    // The shared overlap test, so this and the physics pair response cannot disagree about which hulls
+    // are touching. Only the margin is the sweep's own.
     bool vehicle_ram_hulls_overlap(const VehicleRamHull& a, const VehicleRamHull& b)
     {
         const VehicleHullObb box_a{a.center, a.ep->orient, a.half};
@@ -647,6 +589,59 @@ namespace
     }
 } // namespace
 
+// Opened by vehicle_server_handle_exit; closed by a boarding, a settle, the vehicle dying or going
+// away, or expiry - whichever comes first.
+void vehicle_coast_memory_set(rf::Entity* vehicle, rf::Player* pp, rf::Entity* rider)
+{
+    if (!rf::is_server || !pp || !pp->net_data || !rider) {
+        return;
+    }
+    VehicleCoastMemory& mem = g_vehicle_state.coast_memory[vehicle->handle];
+    mem.player_id = pp->net_data->player_id;
+    mem.exit_entity_handle = rider->handle;
+    mem.expiry_ms = timer::get_i64(1000) + vehicle_coast_memory_ms;
+}
+
+// Detection cannot live on a client: the coast's interp samples deliberately carry zero velocity, so
+// a watcher's stock crush classification has nothing to key on. Only while the memory window is live.
+void vehicle_server_coast_crush_sweep(rf::Entity* vehicle, const rf::Vector3& hull_pos)
+{
+    if (vehicle_hull_is_turret(vehicle)) {
+        return;
+    }
+    rf::Entity* killer = vehicle_coast_memory_driver(vehicle->handle);
+    if (!killer) {
+        return;
+    }
+    // Ownership test only: no server body means this machine is not simulating the hull.
+    if (!vehicle_physics_server_owns(vehicle->handle)) {
+        return;
+    }
+    rf::Vector3 half{};
+    rf::Vector3 center{};
+    vehicle_physics_entity_hull_box(vehicle, &half, &center);
+    vehicle_server_crush_sweep(vehicle, hull_pos, half, center, killer);
+}
+
+// The server sweeps driven hulls too: the stock crush trigger dies once a hull latches
+// collide_out.is_liquid, which the engine never clears.
+void vehicle_server_driven_crush_sweep(rf::Entity* vehicle)
+{
+    if (!rf::is_multi || !rf::is_server || !vehicle || vehicle_hull_is_turret(vehicle)
+        || rf::entity_is_dying(vehicle)) {
+        return;
+    }
+    // A driverless hull belongs to the coast sweep, which runs in the other branch of the same frame.
+    rf::Entity* killer = vehicle_driver_entity(vehicle);
+    if (!killer) {
+        return;
+    }
+    rf::Vector3 half{};
+    rf::Vector3 center{};
+    vehicle_physics_entity_hull_box(vehicle, &half, &center);
+    vehicle_server_crush_sweep(vehicle, vehicle->pos, half, center, killer);
+}
+
 // Per-frame rather than latched: a drill is a continuous contact and the engine bypasses the
 // fire-wait (0x00425919), so there is no discrete shot to hang a cooldown on.
 void vehicle_server_drill_damage_sweep(rf::Entity* vehicle)
@@ -676,9 +671,8 @@ void vehicle_server_drill_damage_sweep(rf::Entity* vehicle)
         if ((victim->pos - bit).len_sq() > reach * reach) {
             return;
         }
-        // The RAM mint, not a bare obj_damage: DT_CRUSH is what the kill feed's vehicle classifier
-        // recognises, and the mint scope carries it past the MP nullification for a VEHICLE victim.
-        // Credited to the hull only when somebody is driving it, as the shape test it replaced was.
+        // The RAM mint, not a bare obj_damage: its scope carries the DT_CRUSH past the MP nullification
+        // and names the hull to the kill feed.
         vehicle_ram_mint_damage(victim->handle, killer_handle, damage, driver ? vehicle : nullptr,
                                 true);
     };
@@ -729,7 +723,6 @@ void vehicle_server_ram_sweep()
                 || rf::entity_is_dying(a.ep) || rf::entity_is_dying(b.ep)) {
                 continue;
             }
-            // Attached hulls cannot ram each other.
             if (a.ep->host_handle == b.ep->handle || b.ep->host_handle == a.ep->handle) {
                 continue;
             }
@@ -875,8 +868,8 @@ namespace
     // The victim's 2.2 x 25 ms interp delay, the server's relay tick and a ~120 ms report round trip.
     constexpr int64_t vehicle_crush_motion_tail_ms = 200;
 
-    // The stock crusher speed, the pooled constant 0x0041A0AD/0x0041A0C5 compare against.
-    static auto& stock_crusher_min_speed = addr_as_ref<float>(0x005893C0);
+    // The stock crusher speed: the pooled constant at 0x005893C0 that 0x0041A0AD/0x0041A0C5 compare against.
+    constexpr float stock_crusher_min_speed = 0.5f;
 
     // A yaw rate times this is the fastest any box FACE moves along its own normal: the far end of a side.
     float vehicle_hull_yaw_reach(const rf::Entity* vehicle)
@@ -1091,8 +1084,7 @@ void vehicle_note_observed_speed(int vehicle_handle, float speed)
 
 void vehicle_note_observed_pose(int vehicle_handle, const rf::Vector3& pos, float heading)
 {
-    if (!rf::is_multi || !std::isfinite(pos.x) || !std::isfinite(pos.y) || !std::isfinite(pos.z)
-        || !std::isfinite(heading)) {
+    if (!rf::is_multi || !vehicle_vector_is_finite(pos) || !std::isfinite(heading)) {
         return;
     }
     VehicleObservedSpeed& s = g_vehicle_state.observed_speed[vehicle_handle];
@@ -1159,33 +1151,7 @@ namespace
         const float centre_gap = std::fabs((b.center - a.center).dot_prod(n));
         return centre_gap > vehicle_obb_extent_on(a, n, margin) + vehicle_obb_extent_on(b, n, margin);
     }
-} // namespace
 
-// The standard fifteen axes for two oriented boxes: three faces of A, three of B, nine edge-edge
-// cross products. `margin` inflates both boxes on every face.
-bool vehicle_hull_obb_overlap(const VehicleHullObb& a, const VehicleHullObb& b, float margin)
-{
-    for (int i = 0; i < 3; ++i) {
-        if (vehicle_obb_axis_separates(a, b, vehicle_obb_axis(a, i), margin)) {
-            return false;
-        }
-        if (vehicle_obb_axis_separates(a, b, vehicle_obb_axis(b, i), margin)) {
-            return false;
-        }
-    }
-    for (int i = 0; i < 3; ++i) {
-        for (int j = 0; j < 3; ++j) {
-            const rf::Vector3 axis = vehicle_obb_axis(a, i).cross(vehicle_obb_axis(b, j));
-            if (vehicle_obb_axis_separates(a, b, axis, margin)) {
-                return false;
-            }
-        }
-    }
-    return true;
-}
-
-namespace
-{
     // No client applies a vehicle crush locally. Every client suppresses its own; the DRIVER's
     // machine and the VICTIM's additionally report, each seeing one side of the contact first hand
     // while the server holds two interpolated bodies. A listen host mints through vehicle_server_crush.
@@ -1293,10 +1259,8 @@ namespace
         },
     };
 
-    // The ONE DT_CRUSH this module does not mint itself: the engine's own crusher contact damage
-    // (0x00429790), which still runs on a server. It names no killer, so vehicle_resolve_damage_killer
-    // has already rewritten the argument to the SEATED driver by the time this is asked - a coasting
-    // hull's stock crush never gets one, which is why there is no coast-memory lookup here.
+    // The one DT_CRUSH not minted here: the engine's crusher damage (0x00429790). Its killer is already
+    // rewritten to the SEATED driver; a coasting hull's stock crush never gets one, hence no coast lookup.
     rf::Entity* vehicle_crush_damage_roadkill_hull(int victim_handle, int killer_handle)
     {
         rf::Entity* killer = rf::entity_from_handle(killer_handle);
@@ -1315,22 +1279,10 @@ namespace
         return vehicle;
     }
 
-    bool vehicle_crush_damage_is_roadkill(int victim_handle, int killer_handle)
-    {
-        return vehicle_crush_damage_roadkill_hull(victim_handle, killer_handle) != nullptr;
-    }
-
     // A fourth digit for the $Cockpit VFX hull readout; the engine's armor readout has exactly three
     // named materials. "digit4" is the fourth one ADDED: it sits LEFT of digit1, weight thousands.
     constexpr float cockpit_digit_weight_thousands = 0.001f; // 0x3A83126F, the primary strip's own
     constexpr const char* cockpit_armor_digit4_name = "cocpit_armor_digit4.tga";
-
-    // int __cdecl(int value, float weight), verified at 0x004A7EB0: returns
-    // ((int)floor(value * weight + eps)) % 10 + 1, a 1-based frame index.
-    static auto& cockpit_vfx_digit_frame = addr_as_ref<int __cdecl(int value, float weight)>(0x004A7EB0);
-    // Read AFTER call_target, so whatever 0x004A7E00 / 0x004A7D80 prepared this frame is in them.
-    static auto& cockpit_digit_strip_base = addr_as_ref<int>(0x005A068C);          // non-fighter
-    static auto& cockpit_digit_strip_base_fighter = addr_as_ref<int>(0x005A073C);  // fighter
 
     // Scoped to one call of the cockpit driver. It cannot be stateless: the clamp lives inside the
     // readout, which the driver calls before it walks any material, and which never sees the array.
@@ -1397,10 +1349,10 @@ namespace
 
             if (g_cockpit_pass.has_digit4) {
                 const int strip_base = rf::entity_is_fighter(vehicle)
-                    ? cockpit_digit_strip_base_fighter
-                    : cockpit_digit_strip_base;
-                const int frame = cockpit_vfx_digit_frame(g_cockpit_pass.armor_value,
-                                                          cockpit_digit_weight_thousands);
+                    ? rf::cockpit_digit_strip_base_fighter
+                    : rf::cockpit_digit_strip_base;
+                const int frame = rf::cockpit_vfx_digit_frame(g_cockpit_pass.armor_value,
+                                                              cockpit_digit_weight_thousands);
                 for (int i = 0; i < num_materials; ++i) {
                     if (cockpit_material_is(materials[i], cockpit_armor_digit4_name)) {
                         materials[i].texture_maps[0].tex_handle = strip_base + frame;
@@ -1422,7 +1374,7 @@ namespace
             // Everything this module mints says so through its scope; the argument test is only
             // for the engine's own crusher damage, which nothing here wraps.
             if (vehicle_crush_damage_is_mint(victim_handle)
-                || vehicle_crush_damage_is_roadkill(victim_handle, killer_handle)) {
+                || vehicle_crush_damage_roadkill_hull(victim_handle, killer_handle) != nullptr) {
                 regs.eip = 0x004894DE;
             }
         },
@@ -1476,7 +1428,210 @@ namespace
                 return entity_die_corpse_create_hook.call_target(ep, mesh_name, pos, orient, unk1, unk2);
             },
         };
+
+    bool vehicle_damage_is_own_vehicle(const rf::Entity* victim, int killer_handle)
+    {
+        if (!rf::is_server || !victim || killer_handle == -1 || victim->host_handle == -1) {
+            return false;
+        }
+        // entity_die's occupant blast names no killer, so only a shot parented to this vehicle lands here.
+        if (killer_handle != victim->host_handle) {
+            return false;
+        }
+        return vehicle_ridden_hull(victim) != nullptr;
+    }
+
+    int vehicle_resolve_damage_killer(rf::Entity* victim, int killer_handle, int damage_type)
+    {
+        if (!rf::is_server || !victim) {
+            return killer_handle;
+        }
+
+        if (killer_handle != -1) {
+            rf::Entity* killer = vehicle_synced_entity(killer_handle);
+            if (killer) {
+                // A vehicle handle is never a valid killer for the scoreboard.
+                rf::Entity* occupant = vehicle_firing_seat_occupant(killer);
+                if (!occupant) {
+                    occupant = vehicle_driver_entity(killer);
+                }
+                if (occupant) {
+                    return occupant->handle;
+                }
+            }
+            return killer_handle;
+        }
+
+        // Crusher contact damage (0x00429790) names no killer at all; the crushing vehicle is the one
+        // whose own collision result still points at this victim.
+        if (damage_type == rf::DT_CRUSH) {
+            if (rf::Entity* driver = vehicle_driver_entity(vehicle_crusher_of(victim))) {
+                return driver->handle;
+            }
+            return killer_handle;
+        }
+
+        // entity_die's occupant blast (killer -1): credit whoever destroyed the hull. Only the mint scope
+        // names this blow; a third-party explosive on a rider of a zero-life hull is ordinary damage.
+        if (vehicle_blast_damage_is_mint(victim->handle)) {
+            rf::Entity* vehicle = vehicle_synced_entity(g_vehicle_blast_mint.vehicle_handle);
+            if (vehicle) {
+                // An unattributed lethal blow (drowned, stranded, returned, void, own ram share) is the
+                // rider's own death, whoever softened the hull first; they are paid in assists instead.
+                auto lethal = g_vehicle_state.lethal_killer.find(vehicle->handle);
+                if (lethal != g_vehicle_state.lethal_killer.end() && lethal->second.entity_handle == -1) {
+                    return victim->handle;
+                }
+                // The player who destroyed it, not one who hit the wreck while it was dying.
+                int credit = -1;
+                rf::Entity* destroyer = lethal != g_vehicle_state.lethal_killer.end()
+                    ? vehicle_lethal_killer_entity(lethal->second)
+                    : nullptr;
+                if (destroyer) {
+                    credit = destroyer->handle;
+                }
+                else if (auto it = g_vehicle_state.last_damager.find(vehicle->handle);
+                         it != g_vehicle_state.last_damager.end()) {
+                    credit = it->second;
+                }
+                // The stock friendly-fire gate at 0x0048939F resolves its killer with
+                // player_from_entity_handle, which does not validate -1 and so matches the first player
+                // with no entity. Crediting the occupant makes the gate a no-op (killer == victim).
+                rf::Player* occupant = rf::player_from_entity_handle(victim->handle);
+                if (vehicle_team_damage_blocked(rf::player_from_entity_handle(credit), occupant)) {
+                    return victim->handle;
+                }
+                // Nobody shot it down: a SUICIDE. -1 would print "killed mysteriously" and score nothing.
+                return credit != -1 ? credit : victim->handle;
+            }
+        }
+        return killer_handle;
+    }
+
+    void vehicle_note_damage(rf::Entity* victim, int killer_handle)
+    {
+        if (!rf::is_server || killer_handle == -1 || !vehicle_is_synced_entity_type(victim)) {
+            return;
+        }
+        if (rf::player_from_entity_handle(killer_handle)) {
+            g_vehicle_state.last_damager[victim->handle] = killer_handle;
+        }
+    }
+
+    // entity_fire_weapon asks the same question the same way (WTF_MELEE at 0x00425B9E): a melee weapon
+    // is never out of ammo, and with no pool configured ammo_type indexes nothing meaningful.
+    bool vehicle_weapon_has_ammo_pool(int weapon_type)
+    {
+        if (weapon_type < 0 || weapon_type >= rf::max_weapon_types) {
+            return false;
+        }
+        const rf::WeaponInfo& wi = rf::weapon_types[weapon_type];
+        if (wi.flags & rf::WTF_MELEE) {
+            return false;
+        }
+        if (wi.max_ammo <= 0) {
+            return false;
+        }
+        return wi.ammo_type >= 0
+            && wi.ammo_type < static_cast<int>(std::extent_v<decltype(rf::AiInfo::ammo)>);
+    }
+
+    // Slot 0 is the primary weapon, slot 1 the secondary; a turret's two triggers both drive its primary.
+    bool vehicle_ammo_slot_trigger_held(const rf::Entity* ep, int slot_index)
+    {
+        auto it = g_vehicle_state.fire.find(ep->handle);
+        if (it == g_vehicle_state.fire.end()) {
+            return false;
+        }
+        const VehicleFireState& state = it->second;
+        if (ep->info->use_function != rf::ENTITY_USE_VEHICLE) {
+            return slot_index == 0 && state.any_held();
+        }
+        return slot_index == 0 ? state.primary_held : state.alt_held;
+    }
+
+    // Mirrors the life regen: any shot or a held trigger restarts the delay, then one round per
+    // interval up to the spawn ammo. Runs after this frame's fire pass, so its shots read as a drop.
+    void vehicle_ammo_regen_do_frame(rf::Entity* ep, VehicleRegen& regen, int64_t now)
+    {
+        for (int i = 0; i < 2; ++i) {
+            VehicleAmmoRegen& slot = regen.ammo[i];
+            if (slot.interval_ms <= 0 || slot.weapon_type < 0 || slot.spawn_ammo <= 0) {
+                continue;
+            }
+            const int ammo = vehicle_weapon_ammo(ep, slot.weapon_type);
+            if (ammo < slot.last_seen_ammo || vehicle_ammo_slot_trigger_held(ep, i)) {
+                slot.last_fire_ms = now;
+            }
+            slot.last_seen_ammo = ammo;
+            // The first round lands as the delay ends; a full weapon banks nothing.
+            if (ammo >= slot.spawn_ammo) {
+                slot.next_ms = now;
+                continue;
+            }
+            if (now - slot.last_fire_ms < vehicle_ammo_regen_delay_ms) {
+                slot.next_ms = slot.last_fire_ms + vehicle_ammo_regen_delay_ms;
+                continue;
+            }
+            if (now < slot.next_ms) {
+                continue;
+            }
+            slot.next_ms += slot.interval_ms;
+            rf::entity_add_to_reserve_ammo(ep, slot.weapon_type, 1);
+            slot.last_seen_ammo = vehicle_weapon_ammo(ep, slot.weapon_type);
+        }
+    }
+
+    // Stock refills an empty fighter host by max_ammo here. On an MP client that refill is local only, so
+    // the pilot kept predicting fire the server was no longer making.
+    CallHook<void(rf::Entity*, int, int)> player_fire_fighter_ammo_refill_hook{
+        0x004A549E,
+        [](rf::Entity* host, int weapon_type, int count) {
+            if (rf::is_multi && vehicle_is_synced_entity_type(host)) {
+                return;
+            }
+            player_fire_fighter_ammo_refill_hook.call_target(host, weapon_type, count);
+        },
+    };
+
+    // The primary-empty dry test ignores the alt flag, so an empty primary refuses a loaded secondary.
+    // ESI is the shooter, [esp+0x6C] the alt flag; 0x004A554D is where a primary with ammo continues.
+    CodeInjection player_fire_alt_skip_primary_empty_injection{
+        0x004A550B,
+        [](auto& regs) {
+            rf::Entity* shooter = regs.esi;
+            if (rf::is_multi && addr_as_ref<uint8_t>(regs.esp + 0x6C) != 0
+                && vehicle_is_synced_entity_type(shooter)
+                && shooter->info->use_function == rf::ENTITY_USE_VEHICLE
+                && shooter->ai.current_secondary_weapon >= 0) {
+                regs.eip = 0x004A554D;
+            }
+        },
+    };
 } // namespace
+
+// The standard fifteen axes for two oriented boxes: three faces of A, three of B, nine edge-edge
+// cross products. `margin` inflates both boxes on every face.
+bool vehicle_hull_obb_overlap(const VehicleHullObb& a, const VehicleHullObb& b, float margin)
+{
+    for (int i = 0; i < 3; ++i) {
+        if (vehicle_obb_axis_separates(a, b, vehicle_obb_axis(a, i), margin)) {
+            return false;
+        }
+        if (vehicle_obb_axis_separates(a, b, vehicle_obb_axis(b, i), margin)) {
+            return false;
+        }
+    }
+    for (int i = 0; i < 3; ++i) {
+        for (int j = 0; j < 3; ++j) {
+            const rf::Vector3 axis = vehicle_obb_axis(a, i).cross(vehicle_obb_axis(b, j));
+            if (vehicle_obb_axis_separates(a, b, axis, margin)) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
 
 float vehicle_hud_life(const rf::Entity* vehicle)
 {
@@ -1512,102 +1667,9 @@ float vehicle_hud_max_life(const rf::Entity* vehicle)
     return vehicle->info ? vehicle->info->max_life : 0.0f;
 }
 
-bool vehicle_damage_is_own_vehicle(const rf::Entity* victim, int killer_handle)
-{
-    if (!rf::is_server || !victim || killer_handle == -1 || victim->host_handle == -1) {
-        return false;
-    }
-    // entity_die's occupant blast names no killer, so only a shot parented to this vehicle lands here.
-    if (killer_handle != victim->host_handle) {
-        return false;
-    }
-    return vehicle_ridden_hull(victim) != nullptr;
-}
-
-int vehicle_resolve_damage_killer(rf::Entity* victim, int killer_handle, int damage_type)
-{
-    if (!rf::is_server || !victim) {
-        return killer_handle;
-    }
-
-    if (killer_handle != -1) {
-        rf::Entity* killer = vehicle_synced_entity(killer_handle);
-        if (killer) {
-            // A vehicle handle is never a valid killer for the scoreboard.
-            rf::Entity* occupant = vehicle_firing_seat_occupant(killer);
-            if (!occupant) {
-                occupant = vehicle_driver_entity(killer);
-            }
-            if (occupant) {
-                return occupant->handle;
-            }
-        }
-        return killer_handle;
-    }
-
-    // Crusher contact damage (0x00429790) names no killer at all; the crushing vehicle is the one
-    // whose own collision result still points at this victim.
-    if (damage_type == rf::DT_CRUSH) {
-        if (rf::Entity* driver = vehicle_driver_entity(vehicle_crusher_of(victim))) {
-            return driver->handle;
-        }
-        return killer_handle;
-    }
-
-    // entity_die (0x00418F80) deals 10000 explosive with killer -1 to every player occupant of
-    // a vehicle it is destroying, before it frees the seats. Credit whoever destroyed it. The
-    // scope the injection opens is the only thing that names this blow; a third-party explosive
-    // landing on a rider of a zero-life hull is ordinary damage.
-    if (vehicle_blast_damage_is_mint(victim->handle)) {
-        rf::Entity* vehicle = vehicle_synced_entity(g_vehicle_blast_mint.vehicle_handle);
-        if (vehicle) {
-            // An unattributed lethal blow (drowned, stranded, returned, void, own ram share) is the
-            // rider's own death, whoever softened the hull first; they are paid in assists instead.
-            auto lethal = g_vehicle_state.lethal_killer.find(vehicle->handle);
-            if (lethal != g_vehicle_state.lethal_killer.end() && lethal->second.entity_handle == -1) {
-                return victim->handle;
-            }
-            // The player who destroyed it, not one who hit the wreck while it was dying.
-            int credit = -1;
-            rf::Entity* destroyer =
-                lethal != g_vehicle_state.lethal_killer.end() ? vehicle_lethal_killer_entity(lethal->second) : nullptr;
-            if (destroyer) {
-                credit = destroyer->handle;
-            }
-            else if (auto it = g_vehicle_state.last_damager.find(vehicle->handle);
-                     it != g_vehicle_state.last_damager.end()) {
-                credit = it->second;
-            }
-            // The stock friendly-fire gate at 0x0048939F resolves its killer with
-            // player_from_entity_handle, which does not validate -1 and so matches the first player
-            // with no entity. Crediting the occupant makes the gate a no-op (killer == victim).
-            rf::Player* occupant = rf::player_from_entity_handle(victim->handle);
-            if (vehicle_team_damage_blocked(rf::player_from_entity_handle(credit), occupant)) {
-                return victim->handle;
-            }
-            // Nobody shot it down: that is a SUICIDE, not a mystery. -1 would leave the kill feed on
-            // "killed mysteriously" and score nothing; the occupant takes the killer == victim branch.
-            return credit != -1 ? credit : victim->handle;
-        }
-    }
-    return killer_handle;
-}
-
-void vehicle_note_damage(rf::Entity* victim, int killer_handle)
-{
-    if (!rf::is_server || killer_handle == -1 || !vehicle_is_synced_entity_type(victim)) {
-        return;
-    }
-    if (rf::player_from_entity_handle(killer_handle)) {
-        g_vehicle_state.last_damager[victim->handle] = killer_handle;
-    }
-}
-
 bool vehicle_is_occupant_death_blast(const rf::Entity* victim, int damage_type)
 {
-    // Scope, not argument shape: only the blow entity_die_occupant_kill_injection is dealing right
-    // now bypasses the PvP reducers. Everything else - including a rocket that lands on a rider the
-    // frame his hull hits zero life - is ordinary damage.
+    // Scope, not argument shape: a rocket on a rider the frame his hull hits zero life is ordinary damage.
     return damage_type == rf::DT_EXPLOSIVE && victim && vehicle_blast_damage_is_mint(victim->handle);
 }
 
@@ -1851,8 +1913,6 @@ bool vehicle_roadkill_speed_gibs(int vdc_class, float speed)
     return top_speed > 0.0f && speed >= 0.75f * top_speed;
 }
 
-static_assert(offsetof(rf::EntityInfo, squash_sounds_id) == 0x174); // read at 0x004297B7
-
 void vehicle_play_squash_sound(const rf::Entity* victim)
 {
     if (!victim || !victim->info) {
@@ -1895,23 +1955,6 @@ void vehicle_after_entity_die(rf::Entity* ep)
     // On the EX-DRIVER's own machine nothing put PF_NET_PLAYER back on the wreck. Every machine,
     // because that one is not necessarily the server.
     vehicle_update_interp_ownership(ep);
-}
-
-// entity_fire_weapon asks the same question the same way (WTF_MELEE at 0x00425B9E): a melee weapon
-// is never out of ammo, and with no pool configured ammo_type indexes nothing meaningful.
-bool vehicle_weapon_has_ammo_pool(int weapon_type)
-{
-    if (weapon_type < 0 || weapon_type >= rf::max_weapon_types) {
-        return false;
-    }
-    const rf::WeaponInfo& wi = rf::weapon_types[weapon_type];
-    if (wi.flags & rf::WTF_MELEE) {
-        return false;
-    }
-    if (wi.max_ammo <= 0) {
-        return false;
-    }
-    return wi.ammo_type >= 0 && wi.ammo_type < 32;
 }
 
 // Total ammo in the terms the engine's fire gate uses (0x00428B70). -1 for a weapon with no pool -
@@ -1958,83 +2001,6 @@ void vehicle_capture_spawn_ammo(rf::Entity* ep)
     }
 }
 
-namespace
-{
-    // Slot 0 is the primary weapon, slot 1 the secondary; a turret's two triggers both drive its primary.
-    bool vehicle_ammo_slot_trigger_held(const rf::Entity* ep, int slot_index)
-    {
-        auto it = g_vehicle_state.fire.find(ep->handle);
-        if (it == g_vehicle_state.fire.end()) {
-            return false;
-        }
-        const VehicleFireState& state = it->second;
-        if (ep->info->use_function != rf::ENTITY_USE_VEHICLE) {
-            return slot_index == 0 && state.any_held();
-        }
-        return slot_index == 0 ? state.primary_held : state.alt_held;
-    }
-
-    // Mirrors the life regen: any shot or a held trigger restarts the delay, then one round per
-    // interval up to the spawn ammo. Runs after this frame's fire pass, so its shots read as a drop.
-    void vehicle_ammo_regen_do_frame(rf::Entity* ep, VehicleRegen& regen, int64_t now)
-    {
-        for (int i = 0; i < 2; ++i) {
-            VehicleAmmoRegen& slot = regen.ammo[i];
-            if (slot.interval_ms <= 0 || slot.weapon_type < 0 || slot.spawn_ammo <= 0) {
-                continue;
-            }
-            const int ammo = vehicle_weapon_ammo(ep, slot.weapon_type);
-            if (ammo < slot.last_seen_ammo || vehicle_ammo_slot_trigger_held(ep, i)) {
-                slot.last_fire_ms = now;
-            }
-            slot.last_seen_ammo = ammo;
-            // The first round lands as the delay ends; a full weapon banks nothing.
-            if (ammo >= slot.spawn_ammo) {
-                slot.next_ms = now;
-                continue;
-            }
-            if (now - slot.last_fire_ms < vehicle_ammo_regen_delay_ms) {
-                slot.next_ms = slot.last_fire_ms + vehicle_ammo_regen_delay_ms;
-                continue;
-            }
-            if (now < slot.next_ms) {
-                continue;
-            }
-            slot.next_ms += slot.interval_ms;
-            rf::entity_add_to_reserve_ammo(ep, slot.weapon_type, 1);
-            slot.last_seen_ammo = vehicle_weapon_ammo(ep, slot.weapon_type);
-        }
-    }
-
-    // Stock gives a fighter infinite ammo: player_fire_primary_weapon refills an empty fighter host by
-    // max_ammo (the call at 0x004A549E). On an MP client that refill is local only, so the pilot kept predicting
-    // fire the server - which has no refill - was no longer making.
-    CallHook<void(rf::Entity*, int, int)> player_fire_fighter_ammo_refill_hook{
-        0x004A549E,
-        [](rf::Entity* host, int weapon_type, int count) {
-            if (rf::is_multi && vehicle_is_synced_entity_type(host)) {
-                return;
-            }
-            player_fire_fighter_ammo_refill_hook.call_target(host, weapon_type, count);
-        },
-    };
-
-    // The primary-empty dry test ignores the alt flag, so an empty primary refuses a loaded secondary.
-    // ESI is the shooter, [esp+0x6C] the alt flag; 0x004A554D is where a primary with ammo continues.
-    CodeInjection player_fire_alt_skip_primary_empty_injection{
-        0x004A550B,
-        [](auto& regs) {
-            rf::Entity* shooter = regs.esi;
-            if (rf::is_multi && addr_as_ref<uint8_t>(regs.esp + 0x6C) != 0
-                && vehicle_is_synced_entity_type(shooter)
-                && shooter->info->use_function == rf::ENTITY_USE_VEHICLE
-                && shooter->ai.current_secondary_weapon >= 0) {
-                regs.eip = 0x004A554D;
-            }
-        },
-    };
-} // namespace
-
 // Constant-rate hull regeneration back to the life this vehicle SPAWNED with. The damage clock is
 // driven by an OBSERVED drop in life, not by a hook: every source that can hurt a hull writes that
 // one field, so "any damage resets the clock" holds with no second mechanism.
@@ -2058,7 +2024,6 @@ void vehicle_regen_do_frame(rf::Entity* ep)
         return;
     }
 
-    // Any drop restarts the delay.
     if (ep->life < regen.last_seen_life - 0.01f) {
         regen.last_damage_ms = now;
     }

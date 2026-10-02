@@ -29,7 +29,7 @@ private:
 
 // What the server determined actually killed a player. Mirrors the kill-info wire payload
 // minus the victim id, which is the map key on both sides of the wire.
-// Unpacked: damage_type and vehicle_class share one wire byte (nibble split in alpine_packets.h).
+// Unpacked: damage_type and vehicle_class share one wire byte.
 struct KillAttribution
 {
     uint8_t killer_player_id = 0xFF;
@@ -95,7 +95,7 @@ void kill_attribution_note_hull_damage(uint8_t rider_player_id, uint8_t attacker
 std::vector<uint8_t> kill_attribution_take_assists(uint8_t victim_player_id, uint8_t killer_player_id,
                                                    int blast_hull_handle);
 
-// `vehicle_class`: VehicleDamageClass of the killing vehicle, or -1; it sets AF_KILL_FLAG_VEHICLE.
+// vehicle_class: VehicleDamageClass of the killing vehicle, or -1 (the caller sets AF_KILL_FLAG_VEHICLE).
 void kill_attribution_record(uint8_t killed_player_id, uint8_t killer_player_id, int weapon_type,
                              uint8_t flags, int damage_type, int vehicle_class,
                              std::vector<uint8_t> assist_player_ids);

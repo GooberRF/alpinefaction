@@ -1,5 +1,6 @@
 #pragma once
 
+#include <span>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -94,16 +95,6 @@ namespace gr::d3d11
         bool naturally_rendered = false;
     };
 
-    // The live prefix of the frame-persistent target store; elements past it are reusable storage.
-    struct VehicleOutlineTargetSpan
-    {
-        VehicleOutlineTarget* first = nullptr;
-        VehicleOutlineTarget* last = nullptr;
-        VehicleOutlineTarget* begin() const { return first; }
-        VehicleOutlineTarget* end() const { return last; }
-        bool empty() const { return first == last; }
-    };
-
     class OutlineRenderer
     {
     public:
@@ -184,10 +175,12 @@ namespace gr::d3d11
         // destroyed, and each one's lod_meshes keeps its buffer. vehicle_target_count_ is the live prefix.
         std::vector<VehicleOutlineTarget> vehicle_targets_;
         size_t vehicle_target_count_ = 0;
+        std::vector<UINT> v3d_done_refs_; // render_v3d_queue scratch, reused across frames
 
-        VehicleOutlineTargetSpan vehicle_targets()
+        // The live prefix of the target store; elements past it are reusable storage.
+        std::span<VehicleOutlineTarget> vehicle_targets()
         {
-            return {vehicle_targets_.data(), vehicle_targets_.data() + vehicle_target_count_};
+            return {vehicle_targets_.data(), vehicle_target_count_};
         }
         VehicleOutlineTarget& vehicle_target_push();
     };

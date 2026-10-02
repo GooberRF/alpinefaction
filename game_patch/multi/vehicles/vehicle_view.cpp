@@ -57,7 +57,6 @@ void vehicle_feed_automobile_eye_input(rf::Entity* ep)
     cd.delta_eye_phb.z = 0.0f;
 }
 
-// The vehicle the local player is currently driving (not riding as a gunner), or null.
 rf::Entity* vehicle_local_driven_vehicle()
 {
     // Deliberately the non-live resolver, and no rider-dying test: this gate must keep answering
@@ -126,7 +125,7 @@ namespace
     // Widens the hide block's REACH to that driver; everything downstream stays stock.
     bool __cdecl vehicle_render_hide_reaches(rf::Entity* ep)
     {
-        return vehicle_fp_spectated_ride(ep) || AddrCaller{0x0048AA30}.c_call<bool>(ep);
+        return vehicle_fp_spectated_ride(ep) || rf::obj_is_local_player_or_mount(ep);
     }
 
     // The frame entity_render draws a turret in on this machine (0x00421B36..0x00421B68).
@@ -149,16 +148,16 @@ namespace
         },
     };
 
-    // 0x007C763C is the player the frame is rendered for and the caller compares this result against
+    // render_player is the player the frame is rendered for and the caller compares this result against
     // it, so answering with it carries the spectated hull past that compare.
     rf::Player* __cdecl vehicle_render_hide_view_player(rf::Entity* ep)
     {
         if (vehicle_fp_spectated_ride(ep)) {
-            if (rf::Player* render_player = addr_as_ref<rf::Player*>(0x007C763C)) {
-                return render_player;
+            if (rf::render_player) {
+                return rf::render_player;
             }
         }
-        return AddrCaller{0x0048AA90}.c_call<rf::Player*>(ep);
+        return rf::player_from_local_obj_or_mount(ep);
     }
 
     // entity_render's hide block exempts a jeep carrying a gunner, but keys on the SEAT being
@@ -221,13 +220,11 @@ namespace
         // The fighter's cockpit muzzle flash (0x004A8360) is drawn in the current colour and never
         // sets it, unlike the fpgun's (0x004AB1A0), so it would take whatever the last draw left.
         rf::gr::set_color(255, 255, 255, 255);
-        AddrCaller{0x004A7860}.c_call(pp ? pp : render_player);
+        rf::player_cockpit_render(pp ? pp : render_player);
     }
 
-    // A cheap same-level key only - VMesh::instance is the V3d pointer, not a generation counter -
-    // so correctness rests on vehicle_view_level_init dropping the entry with the meshes. A -1 is
-    // cached too, so a hull without the tag costs no lookup and keeps falling through to the stock
-    // view below.
+    // VMesh::instance is the V3d pointer, not a generation counter, so this key is only valid within a
+    // level: vehicle_view_level_init must drop the entry with the meshes.
     struct VehicleViewPropCache
     {
         const rf::VMesh* vmesh = nullptr;
@@ -257,7 +254,7 @@ namespace
                                                    &tag_orient, out_pos);
             }
         }
-        AddrCaller{0x004A8690}.c_call(pp, driller, out_pos, out_orient);
+        rf::player_cockpit_get_view(pp, driller, out_pos, out_orient);
     }
 
     // Keyed by the shared mesh data the lookup reads (0x00501220), so hulls of one class share an entry.
@@ -304,133 +301,7 @@ namespace
         *out_pos = rider->pos + (view_world - seat_world);
         return true;
     }
-} // namespace
 
-void vehicle_view_level_init()
-{
-    g_driller_view_forward_cache = VehicleViewPropCache{};
-    g_driver_view_forward_cache.clear();
-}
-
-VehicleFpShotStart vehicle_fp_own_shot_start(rf::Entity* hull, rf::Entity* shooter, const rf::Vector3& fire_pos,
-                                             float max_dist, rf::Vector3* out_pos)
-{
-    using Start = VehicleFpShotStart;
-    if (!hull || !shooter || vehicle_fp_view_entity() != shooter || !rf::local_player->cam
-        || rf::camera_get_mode(*rf::local_player->cam) != rf::CAMERA_FIRST_PERSON) {
-        return Start::stock;
-    }
-    const auto stale = [&] {
-        return !std::isfinite(out_pos->x + out_pos->y + out_pos->z)
-            || (*out_pos - fire_pos).len_sq() > max_dist * max_dist;
-    };
-    const auto eye_start = [&] {
-        *out_pos = rf::Vector3{0.0f, 0.0f, 0.0f};
-        return Start::eye_frame;
-    };
-    if (vehicle_hull_is_turret(hull)) {
-        const int tag = hull->info->primary_muzzle_flash_tag;
-        if (tag < 0 || !hull->vmesh) {
-            return eye_start();
-        }
-        rf::Matrix3 tag_orient{};
-        rf::vmesh_get_prop_point_transform(hull->vmesh, tag, &vehicle_turret_draw_orient(hull), &hull->pos,
-                                           &tag_orient, out_pos);
-        return stale() ? Start::stock : Start::world;
-    }
-    // player_fpgun_get_muzzle_tag_pos, the muzzle stock's fire position reads for a local fpgun.
-    rf::Player* pp = rf::player_from_entity_handle(shooter->handle);
-    if (!pp || !AddrCaller{0x004AD6D0}.c_call<bool>(pp, out_pos, 0)) {
-        return eye_start();
-    }
-    if (stale()) {
-        return Start::stock;
-    }
-    // The fpgun is drawn from his eye through its own FOV (CALL 0x004AB411), the scene from 0.14 behind it
-    // through 0x0059613C, so move the muzzle to where the scene puts it on screen.
-    const int weapon = rf::player_get_current_weapon(pp);
-    if (weapon < 0 || weapon >= rf::num_weapon_types) {
-        return Start::stock;
-    }
-    static_assert(offsetof(rf::WeaponInfo, first_person_fov) == 0x74);
-    const float fpgun_fov = player_fpgun_render_fov(rf::weapon_types[weapon].first_person_fov);
-    const float scene_fov = addr_as_ref<float>(0x0059613C);
-    constexpr float half_deg_to_rad = 3.141592f / 360.0f;
-    const float k = std::tan(scene_fov * half_deg_to_rad) / std::tan(fpgun_fov * half_deg_to_rad);
-    const rf::Matrix3& eye = shooter->eye_orient;
-    const rf::Vector3 d = *out_pos - shooter->eye_pos;
-    const float depth = d.dot_prod(eye.fvec);
-    if (!std::isfinite(k) || !(k > 0.0f) || !(depth > 0.0f)) {
-        return Start::stock;
-    }
-    // Relative to the scene eye, so the caller can place it in the eye the frame is drawn from.
-    const float pullback = vehicle_scene_eye_pullback();
-    const float lateral = k * (depth + pullback) / depth;
-    *out_pos = rf::Vector3{d.dot_prod(eye.rvec) * lateral, d.dot_prod(eye.uvec) * lateral, depth + pullback};
-    return std::isfinite(out_pos->x + out_pos->y + out_pos->z) ? Start::eye_frame : Start::stock;
-}
-
-// The transform a SPECTATED driver's cockpit mesh is posed with; false everywhere else, and the
-// caller then keeps its own stock pointers. Both halves come off ONE sample of the hull frame
-// (eye_hull_orient), so the cockpit cannot trail the view. NOT patched at the poser call 0x004A7907:
-// player.cpp's widescreen hook owns that site and the two corrections are ORDERED, stretch last.
-bool vehicle_cockpit_view_pose(rf::Vector3* out_pos, rf::Matrix3* out_orient)
-{
-    rf::Player* pp = vehicle_cockpit_view_player();
-    if (!pp || !pp->cam) {
-        return false;
-    }
-    // Re-resolved so the driller question below is asked about the same vehicle the gate passed.
-    rf::Entity* rider = rf::entity_from_handle(pp->entity_handle);
-    rf::Entity* vehicle = rider ? rf::entity_from_handle(rider->host_handle) : nullptr;
-    if (!vehicle) {
-        return false;
-    }
-
-    if (rf::entity_is_driller(vehicle)) {
-        *out_pos = rf::camera_get_pos(pp->cam);
-        *out_orient = rf::camera_get_orient(pp->cam);
-        return true;
-    }
-
-    *out_pos = rider->eye_pos;
-    // The fallback covers a class whose driver aim is not synced (sub, fighter): nothing publishes a
-    // sample, and their eye_orient is built straight off this same live hull matrix.
-    auto it = g_vehicle_state.orient.find(vehicle->handle);
-    *out_orient = (it != g_vehicle_state.orient.end() && it->second.eye_hull_valid)
-        ? it->second.eye_hull_orient
-        : vehicle->orient;
-    return true;
-}
-
-// The cockpit vmesh is stepped by 0x004A77A0, reached only from the LOCAL players sweep, which bails
-// when the player's own entity is gone - so a spectator's target is never processed and never draws.
-void vehicle_process_spectated_cockpit()
-{
-    if (rf::Player* pp = vehicle_cockpit_view_player()) {
-        AddrCaller{0x004A77A0}.c_call(pp);
-    }
-}
-
-bool vehicle_rider_pose_is_seat_locked(rf::Entity* ep)
-{
-    if (!rf::is_multi || !ep || ep->host_handle == -1) {
-        return false;
-    }
-    rf::Entity* vehicle = rf::entity_from_handle(ep->host_handle);
-    return vehicle && vehicle->info && vehicle->info->use_function == rf::ENTITY_USE_VEHICLE;
-}
-
-bool vehicle_is_turret_rider_state(rf::Entity* ep, int state)
-{
-    if (state != rf::ENTITY_STATE_ON_TURRET || !rf::is_multi || !ep || ep->host_handle == -1) {
-        return false;
-    }
-    return vehicle_hull_is_turret(vehicle_ridden_hull(ep));
-}
-
-namespace
-{
     // entity_update_liquid_status ejects the LOCAL player from a ridden mount the instant it dips
     // under water - client-only, so the server keeps his seat. The flags set before it are kept.
     CodeInjection entity_liquid_status_no_vehicle_eject_injection{
@@ -485,14 +356,12 @@ namespace
                 }
             }
         }
-        return AddrCaller{0x0048AA90}.c_call<rf::Player*>(obj);
+        return rf::player_from_local_obj_or_mount(obj);
     }
 
-    // entity_get_weapon_fire_pos_orient dereferences this call's result unconditionally at
-    // 0x0041B196 (MOV ECX,[EAX+0x14], 3 bytes), so the 5-byte CALL at 0x0041B191 is the last site
-    // that can still refuse. No trampoline: the replaced CALL is rel32 and the handler always sets
-    // eip. 0x0041B33F is the function's own "no rider entity" tail, which stock flow reaches after
-    // the ADD ESP,8 at 0x0041B1A1 - hence the PUSH ESI at 0x0041B190 unwound by hand.
+    // entity_get_weapon_fire_pos_orient dereferences this CALL's result unconditionally at 0x0041B196.
+    // No trampoline: the replaced CALL is rel32 and the handler always sets eip. The refusal path pops
+    // the PUSH ESI at 0x0041B190 by hand before the "no rider entity" tail (0x0041B33F).
     CodeInjection entity_weapon_fire_pos_eye_player_injection{
         0x0041B191,
         [](auto& regs) {
@@ -515,7 +384,8 @@ namespace
     CodeInjection player_fpgun_load_weapon_mesh_null_guard{
         0x004AE1F3,
         [](auto& regs) {
-            if (rf::is_multi && addr_as_ref<int>(regs.esi + 0x34) == 0) {
+            auto* pp = reinterpret_cast<rf::Player*>(static_cast<uintptr_t>(regs.esi));
+            if (rf::is_multi && !pp->weapon_mesh_handle) {
                 regs.eax = 0;
                 regs.eip = 0x004AE0FA;
             }
@@ -645,7 +515,231 @@ namespace
             return entity_process_path_hook.call_target(entity_handle);
         },
     };
+
+    // Hooked at entity_process_post, the engine's own rider/host reconciliation point.
+    FunHook<void(rf::Entity*)> entity_process_post_passenger_orient_hook{
+        0x0041E4B0,
+        [](rf::Entity* ep) {
+            entity_process_post_passenger_orient_hook.call_target(ep);
+
+            // time_since_spine_bend must NOT be touched here: entity_apply_aim_bend_hook owns that field
+            // and needs it to ADVANCE to ever finish fading the aim bend out.
+
+            if (!vehicle_pin_rider_body(ep)) {
+                return;
+            }
+            // The engine placed his eye from the upright body its commit rebuilt; not the driver's, which
+            // is the hull's.
+            if (ep->obj_flags & rf::OF_KEEP_ORIENT_ON_HOST) {
+                rf::entity_calc_eye_pos(ep);
+            }
+
+            // multi_obj_interp_orient (0x004842E0) rebuilds the body from phb, so phb must stay the
+            // inverse of the seat matrix. Driver only: the others' phb.y carries their look.
+            if (vehicle_rider_holds_seat_pose(ep) && !(ep->obj_flags & rf::OF_KEEP_ORIENT_ON_HOST)) {
+                ep->control_data.phb = vehicle_matrix_phb(ep->orient);
+            }
+        },
+    };
+
+    // Refused on the pose READ, not on the aim stream: a driver's eye_phb pitch is his live vehicle aim.
+    // Returning 0.0 is the engine's own completion signal, so the caller clears the timer and both bone
+    // overrides itself.
+    FunHook<float __cdecl(rf::Entity*, void*, int)> entity_apply_aim_bend_hook{
+        0x0041DFB0,
+        [](rf::Entity* ep, void* character_instance, int fade_in) -> float {
+            if (vehicle_rider_holds_seat_pose(ep) || vehicle_rider_of_synced_turret(ep)) {
+                return 0.0f;
+            }
+            return entity_apply_aim_bend_hook.call_target(ep, character_instance, fade_in);
+        },
+    };
+
+    // The two seated-state gates, split by SEAT ROLE: seat 0 -> JEEP_DRIVE, the jeep gunner and every
+    // PASSENGER -> JEEP_GUN. Both pickers run the turret test first, which keeps turret occupants out.
+
+    // The JEEP_DRIVE gate: seat 0 and nobody else.
+    bool __cdecl vehicle_state_is_vehicle_driver(rf::Entity* ep)
+    {
+        if (rf::entity_is_jeep_driver(ep)) {
+            return true; // the stock answer, single player included
+        }
+        if (!vehicle_rider_pose_is_seat_locked(ep)) {
+            return false; // on foot, a turret occupant, or single player
+        }
+        rf::Entity* host = rf::entity_from_handle(ep->host_handle);
+        return host && vehicle_driver_entity(host) == ep;
+    }
+
+    // The JEEP_GUN gate for the LOCAL player's picker, whose site (0x004A5D5C) really does ask
+    // entity_is_jeep_gunner in stock.
+    bool __cdecl vehicle_state_is_gunner_or_passenger(rf::Entity* ep)
+    {
+        if (rf::entity_is_jeep_gunner(ep)) {
+            return true; // the stock answer, single player included
+        }
+        // An APC driver is seat 0 and the weapon owner, so the passenger test never catches him.
+        return vehicle_rider_pose_is_seat_locked(ep) && vehicle_passenger_vehicle(ep) != nullptr;
+    }
+
+    // The same gate for the REMOTE picker's site (0x0041F4E8), where stock asks entity_is_jeep_driver and
+    // NOT the gunner test. Single player keeps the stock answer verbatim.
+    bool __cdecl vehicle_state_is_gunner_or_passenger_remote(rf::Entity* ep)
+    {
+        if (!rf::is_multi) {
+            return rf::entity_is_jeep_driver(ep);
+        }
+        return vehicle_state_is_gunner_or_passenger(ep);
+    }
+
+    // Wider than vehicle_rider_pose_is_seat_locked on purpose: turret gunners included.
+    bool vehicle_rider_of_synced_vehicle(rf::Entity* ep)
+    {
+        return rf::is_multi && vehicle_ridden_hull(ep) != nullptr;
+    }
+
+    // entity_render's scanner block replaces the character's whole animation state with STAND at full
+    // weight, and the pose is evaluated from those weights at DRAW time. Answering yes to the
+    // entity_is_dying call it asks second skips that and leaves the seat animation in place.
+    bool __cdecl vehicle_render_scanner_keeps_pose(rf::Entity* ep)
+    {
+        if (vehicle_rider_of_synced_vehicle(ep)) {
+            return true;
+        }
+        return rf::entity_is_dying(ep);
+    }
+
+    // Whether entity_render draws the rider of a use_function-1 mount at all. Stock only ever carried a
+    // player on a jeep, so every other class hides its occupants outright.
+    bool __cdecl vehicle_render_rider_host_is_drawn(rf::Entity* host)
+    {
+        if (rf::is_multi && vehicle_is_synced_entity_type(host)) {
+            return true;
+        }
+        return host && rf::entity_is_jeep(host);
+    }
 } // namespace
+
+void vehicle_view_level_init()
+{
+    g_driller_view_forward_cache = VehicleViewPropCache{};
+    g_driver_view_forward_cache.clear();
+}
+
+VehicleFpShotStart vehicle_fp_own_shot_start(rf::Entity* hull, rf::Entity* shooter, const rf::Vector3& fire_pos,
+                                             float max_dist, rf::Vector3* out_pos)
+{
+    using Start = VehicleFpShotStart;
+    if (!hull || !shooter || vehicle_fp_view_entity() != shooter || !rf::local_player->cam
+        || rf::camera_get_mode(*rf::local_player->cam) != rf::CAMERA_FIRST_PERSON) {
+        return Start::stock;
+    }
+    const auto stale = [&] {
+        return !std::isfinite(out_pos->x + out_pos->y + out_pos->z)
+            || (*out_pos - fire_pos).len_sq() > max_dist * max_dist;
+    };
+    const auto eye_start = [&] {
+        *out_pos = rf::Vector3{0.0f, 0.0f, 0.0f};
+        return Start::eye_frame;
+    };
+    if (vehicle_hull_is_turret(hull)) {
+        const int tag = hull->info->primary_muzzle_flash_tag;
+        if (tag < 0 || !hull->vmesh) {
+            return eye_start();
+        }
+        rf::Matrix3 tag_orient{};
+        rf::vmesh_get_prop_point_transform(hull->vmesh, tag, &vehicle_turret_draw_orient(hull), &hull->pos,
+                                           &tag_orient, out_pos);
+        return stale() ? Start::stock : Start::world;
+    }
+    // The muzzle stock's fire position reads for a local fpgun.
+    rf::Player* pp = rf::player_from_entity_handle(shooter->handle);
+    if (!pp || !rf::player_fpgun_get_muzzle_tag_pos(pp, out_pos, nullptr)) {
+        return eye_start();
+    }
+    if (stale()) {
+        return Start::stock;
+    }
+    // The fpgun is drawn from his eye through its own FOV (CALL 0x004AB411), the scene from 0.14 behind it
+    // through gameplay_fov, so move the muzzle to where the scene puts it on screen.
+    const int weapon = rf::player_get_current_weapon(pp);
+    if (weapon < 0 || weapon >= rf::num_weapon_types) {
+        return Start::stock;
+    }
+    const float fpgun_fov = player_fpgun_render_fov(rf::weapon_types[weapon].first_person_fov);
+    const float scene_fov = rf::gr::gameplay_fov;
+    constexpr float half_deg_to_rad = 3.141592f / 360.0f;
+    const float k = std::tan(scene_fov * half_deg_to_rad) / std::tan(fpgun_fov * half_deg_to_rad);
+    const rf::Matrix3& eye = shooter->eye_orient;
+    const rf::Vector3 d = *out_pos - shooter->eye_pos;
+    const float depth = d.dot_prod(eye.fvec);
+    if (!std::isfinite(k) || !(k > 0.0f) || !(depth > 0.0f)) {
+        return Start::stock;
+    }
+    // Relative to the scene eye, so the caller can place it in the eye the frame is drawn from.
+    const float pullback = vehicle_scene_eye_pullback();
+    const float lateral = k * (depth + pullback) / depth;
+    *out_pos = rf::Vector3{d.dot_prod(eye.rvec) * lateral, d.dot_prod(eye.uvec) * lateral, depth + pullback};
+    return std::isfinite(out_pos->x + out_pos->y + out_pos->z) ? Start::eye_frame : Start::stock;
+}
+
+// The transform a spectated driver's cockpit mesh is posed with; false keeps the caller's stock pose.
+// Both halves come off one sample of the hull frame, so the cockpit cannot trail the view. Not patched
+// at the poser call 0x004A7907: the widescreen hook owns that site and must apply its stretch last.
+bool vehicle_cockpit_view_pose(rf::Vector3* out_pos, rf::Matrix3* out_orient)
+{
+    rf::Player* pp = vehicle_cockpit_view_player();
+    if (!pp || !pp->cam) {
+        return false;
+    }
+    // Re-resolved so the driller question below is asked about the same vehicle the gate passed.
+    rf::Entity* rider = rf::entity_from_handle(pp->entity_handle);
+    rf::Entity* vehicle = rider ? rf::entity_from_handle(rider->host_handle) : nullptr;
+    if (!vehicle) {
+        return false;
+    }
+
+    if (rf::entity_is_driller(vehicle)) {
+        *out_pos = rf::camera_get_pos(pp->cam);
+        *out_orient = rf::camera_get_orient(pp->cam);
+        return true;
+    }
+
+    *out_pos = rider->eye_pos;
+    // The fallback covers a class whose driver aim is not synced (sub, fighter): nothing publishes a
+    // sample, and their eye_orient is built straight off this same live hull matrix.
+    auto it = g_vehicle_state.orient.find(vehicle->handle);
+    *out_orient = (it != g_vehicle_state.orient.end() && it->second.eye_hull_valid)
+        ? it->second.eye_hull_orient
+        : vehicle->orient;
+    return true;
+}
+
+// The cockpit vmesh is stepped by 0x004A77A0, reached only from the LOCAL players sweep, which bails
+// when the player's own entity is gone - so a spectator's target is never processed and never draws.
+void vehicle_process_spectated_cockpit()
+{
+    if (rf::Player* pp = vehicle_cockpit_view_player()) {
+        rf::player_cockpit_process(pp);
+    }
+}
+
+bool vehicle_rider_pose_is_seat_locked(rf::Entity* ep)
+{
+    if (!rf::is_multi || !ep || ep->host_handle == -1) {
+        return false;
+    }
+    rf::Entity* vehicle = rf::entity_from_handle(ep->host_handle);
+    return vehicle && vehicle->info && vehicle->info->use_function == rf::ENTITY_USE_VEHICLE;
+}
+
+bool vehicle_is_turret_rider_state(rf::Entity* ep, int state)
+{
+    if (state != rf::ENTITY_STATE_ON_TURRET || !rf::is_multi || !ep || ep->host_handle == -1) {
+        return false;
+    }
+    return vehicle_hull_is_turret(vehicle_ridden_hull(ep));
+}
 
 rf::Entity* vehicle_fp_view_passenger_vehicle(rf::Entity** out_rider)
 {
@@ -661,10 +755,8 @@ rf::Entity* vehicle_fp_view_passenger_vehicle(rf::Entity** out_rider)
     return vehicle;
 }
 
-// The riders that keep an eye frame of their OWN while seated, rather than the per-frame copy of the
-// hull's that entity_process_post hands every other rider (0x0041E81F). This is what the engine keys
-// on OF_KEEP_ORIENT_ON_HOST: the eye copy skips them, and obj_should_sim_physics (0x00488030) does
-// not, so their angles integrate from their own ControlInfo.
+// The riders that keep an eye frame of their own while seated (OF_KEEP_ORIENT_ON_HOST) instead of the
+// per-frame copy of the hull's (0x0041E81F).
 bool __cdecl vehicle_rider_keeps_own_orient(rf::Entity* ep)
 {
     return rf::entity_is_jeep_gunner(ep) || vehicle_passenger_vehicle(ep) != nullptr;
@@ -689,11 +781,8 @@ void vehicle_sync_rider_orient_flags()
     }
 }
 
-// A seat-locked rider's BODY follows the seat; only his LOOK is free. The tidier split (body from phb,
-// look from a wide-clamped eye_phb) is foreclosed: 0x0049DE50 zeroes eye_phb.y/z for every on-foot
-// player too. Writers that rebuild it upright from phb: 0x0049DE50 and multi_obj_interp_orient inside
-// physics_simulate_entity (re-pinned by vphys_step's call hook), then the commit (0x0049D0A0 /
-// 0x004A00FB); this pin is the last, and re-places the eye after it.
+// A seat-locked rider's BODY follows the seat; only his LOOK is free. Several engine writers rebuild the
+// body upright from phb each frame; this pin must run after all of them.
 bool vehicle_pin_rider_body(rf::Entity* ep)
 {
     if (!vehicle_rider_pose_is_seat_locked(ep)) {
@@ -723,111 +812,6 @@ bool vehicle_pin_rider_body(rf::Entity* ep)
     return true;
 }
 
-// Hooked at entity_process_post, the engine's own rider/host reconciliation point.
-FunHook<void(rf::Entity*)> entity_process_post_passenger_orient_hook{
-    0x0041E4B0,
-    [](rf::Entity* ep) {
-        entity_process_post_passenger_orient_hook.call_target(ep);
-
-        // time_since_spine_bend must NOT be touched here: entity_apply_aim_bend_hook owns that field
-        // and needs it to ADVANCE to ever finish fading the aim bend out.
-
-        if (!vehicle_pin_rider_body(ep)) {
-            return;
-        }
-        // The engine placed his eye from the upright body its commit rebuilt; not the driver's, which
-        // is the hull's.
-        if (ep->obj_flags & rf::OF_KEEP_ORIENT_ON_HOST) {
-            AddrCaller{0x004194E0}.c_call(ep);
-        }
-
-        // multi_obj_interp_orient (0x004842E0) rebuilds the rider's body from control_data.phb, which
-        // froze when he sat down (player_process_controls retargets his control block to the HULL),
-        // so phb must stay the exact inverse of the seat matrix. DRIVER only: a passenger and the
-        // jeep gunner carry OF_KEEP_ORIENT_ON_HOST, so 0x0049DE50 folds their LOOK into phb.y.
-        if (vehicle_rider_holds_seat_pose(ep) && !(ep->obj_flags & rf::OF_KEEP_ORIENT_ON_HOST)) {
-            ep->control_data.phb = vehicle_matrix_phb(ep->orient);
-        }
-    },
-};
-
-// Refused on the pose READ, not on the aim stream: a driver's eye_phb pitch is his live vehicle aim.
-// Returning 0.0 is the engine's own completion signal, so the caller clears the timer and both bone
-// overrides itself.
-FunHook<float __cdecl(rf::Entity*, void*, int)> entity_apply_aim_bend_hook{
-    0x0041DFB0,
-    [](rf::Entity* ep, void* character_instance, int fade_in) -> float {
-        if (vehicle_rider_holds_seat_pose(ep) || vehicle_rider_of_synced_turret(ep)) {
-            return 0.0f;
-        }
-        return entity_apply_aim_bend_hook.call_target(ep, character_instance, fade_in);
-    },
-};
-
-// The two seated-state gates, split by SEAT ROLE: seat 0 -> JEEP_DRIVE, the jeep gunner and every
-// PASSENGER -> JEEP_GUN. Both pickers run the turret test first, which keeps turret occupants out.
-
-// The JEEP_DRIVE gate: seat 0 and nobody else.
-static bool __cdecl vehicle_state_is_vehicle_driver(rf::Entity* ep)
-{
-    if (rf::entity_is_jeep_driver(ep)) {
-        return true; // the stock answer, single player included
-    }
-    if (!vehicle_rider_pose_is_seat_locked(ep)) {
-        return false; // on foot, a turret occupant, or single player
-    }
-    rf::Entity* host = rf::entity_from_handle(ep->host_handle);
-    return host && vehicle_driver_entity(host) == ep;
-}
-
-// The JEEP_GUN gate for the LOCAL player's picker, whose site (0x004A5D5C) really does ask
-// entity_is_jeep_gunner in stock.
-static bool __cdecl vehicle_state_is_gunner_or_passenger(rf::Entity* ep)
-{
-    if (rf::entity_is_jeep_gunner(ep)) {
-        return true; // the stock answer, single player included
-    }
-    // An APC driver is seat 0 and the weapon owner, so the passenger test never catches him.
-    return vehicle_rider_pose_is_seat_locked(ep) && vehicle_passenger_vehicle(ep) != nullptr;
-}
-
-// The same gate for the REMOTE picker's site (0x0041F4E8), where stock asks entity_is_jeep_driver and
-// NOT the gunner test. Single player keeps the stock answer verbatim.
-static bool __cdecl vehicle_state_is_gunner_or_passenger_remote(rf::Entity* ep)
-{
-    if (!rf::is_multi) {
-        return rf::entity_is_jeep_driver(ep);
-    }
-    return vehicle_state_is_gunner_or_passenger(ep);
-}
-
-// Wider than vehicle_rider_pose_is_seat_locked on purpose: turret gunners included.
-static bool vehicle_rider_of_synced_vehicle(rf::Entity* ep)
-{
-    return rf::is_multi && vehicle_ridden_hull(ep) != nullptr;
-}
-
-// entity_render's scanner block replaces the character's whole animation state with STAND at full
-// weight, and the pose is evaluated from those weights at DRAW time. Answering yes to the
-// entity_is_dying call it asks second skips that and leaves the seat animation in place.
-static bool __cdecl vehicle_render_scanner_keeps_pose(rf::Entity* ep)
-{
-    if (vehicle_rider_of_synced_vehicle(ep)) {
-        return true;
-    }
-    return rf::entity_is_dying(ep);
-}
-
-// Whether entity_render draws the rider of a use_function-1 mount at all. Stock only ever carried a
-// player on a jeep, so every other class hides its occupants outright.
-static bool __cdecl vehicle_render_rider_host_is_drawn(rf::Entity* host)
-{
-    if (rf::is_multi && vehicle_is_synced_entity_type(host)) {
-        return true;
-    }
-    return host && rf::entity_is_jeep(host);
-}
-
 void vehicle_view_apply_patch()
 {
     entity_render_fp_vehicle_hide_injection.install();
@@ -844,40 +828,31 @@ void vehicle_view_apply_patch()
     entity_weapon_fire_pos_eye_player_injection.install();
     obj_render_turret_muzzle_glare_frame_injection.install();
 
-    // The two seated-state gates in both pickers: the remote one (0x0041F400) and the LOCAL player's
-    // (0x004A5CD0). All four are 5-byte relative CALLs with no incoming jumps, fed by the PUSH ESI in
-    // front (0x0041F4B0 / 0x004A5D25 and 0x0041F4E7 / 0x004A5D5B). Per-site retargets, so
-    // entity_is_jeep_driver's and entity_is_jeep_gunner's other callers keep the stock answers.
+    // The two seated-state gates in the remote (0x0041F400) and local (0x004A5CD0) state pickers. Per-site
+    // retargets, so entity_is_jeep_driver's and entity_is_jeep_gunner's other callers keep stock answers.
     AsmWriter{0x0041F4B1}.call(&vehicle_state_is_vehicle_driver);
     AsmWriter{0x004A5D26}.call(&vehicle_state_is_vehicle_driver);
     AsmWriter{0x0041F4E8}.call(&vehicle_state_is_gunner_or_passenger_remote);
     AsmWriter{0x004A5D5C}.call(&vehicle_state_is_gunner_or_passenger);
 
-    // The rail scanner's forced STAND pose and the rider-visibility gate, both inside entity_render
-    // and both 5-byte relative CALLs with no incoming jumps. Fed by PUSH ESI at 0x00421AF6 and by
-    // PUSH EAX at 0x00421985, whose push the ADD ESP,8 at 0x0042198B cleans with the one before it.
+    // entity_render: the rail scanner's forced STAND pose and the rider-visibility gate.
     AsmWriter{0x00421AF7}.call(&vehicle_render_scanner_keeps_pose);
     AsmWriter{0x00421986}.call(&vehicle_render_rider_host_is_drawn);
 
-    // player_process_controls asks entity_is_jeep_gunner twice about the local player, and both
-    // answers belong to every passenger too: 0x004A6101 is the control-block redirect (false
-    // re-points EBP at the HOST's ControlInfo) and 0x004A61A2 the flag (false clears
-    // OF_KEEP_ORIENT_ON_HOST at 0x004A61D0). The DRIVER answers false at both, exactly as stock.
+    // player_process_controls' two entity_is_jeep_gunner asks (control-block redirect, keep-orient flag)
+    // must answer true for every passenger too. The driver answers false at both, as stock.
     AsmWriter{0x004A6101}.call(&vehicle_rider_keeps_own_orient);
     AsmWriter{0x004A61A2}.call(&vehicle_rider_keeps_own_orient);
 
-    // First-person SPECTATE of a vehicle driver: no hull, cockpit VFX instead. entity_render's reach
-    // test (0x00421997, PUSH ESI at 0x00421996) and the view-player lookup behind it (0x004219A4,
-    // PUSH ESI at 0x004219A3); both 5-byte CALLs of the same __cdecl(Entity*) shape.
+    // First-person spectate of a vehicle driver: no hull, cockpit VFX instead. entity_render's reach
+    // test and the view-player lookup behind it.
     AsmWriter{0x00421997}.call(&vehicle_render_hide_reaches);
     AsmWriter{0x004219A4}.call(&vehicle_render_hide_view_player);
-    // The same reach test picks a turret's pitched draw frame (0x00421B51, PUSH ESI at 0x00421B50), so a
-    // first-person spectator sees the gun where its gunner does.
+    // The same reach test picks a turret's pitched draw frame.
     AsmWriter{0x00421B51}.call(&vehicle_render_hide_reaches);
 
-    // The cockpit: gameplay_render_frame's gate opener, a clean 5-byte MOV EAX,[local_player_entity]
-    // reached only by fall-through (0x0043294F, with the five pushed arguments of the call before it
-    // still live - a 0-arg __cdecl neither reads nor disturbs them), and the render call (0x0043297A).
+    // The cockpit gate opener (0x0043294F) is reached with the previous call's five pushed arguments
+    // still live; a 0-arg __cdecl leaves them alone.
     AsmWriter{0x0043294F}.call(&vehicle_cockpit_view_entity);
     AsmWriter{0x0043297A}.call(&vehicle_render_cockpit_for_view);
 

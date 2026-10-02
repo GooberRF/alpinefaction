@@ -18,23 +18,17 @@
 #include "../alpine_packets.h"
 #include "../gametype.h"
 #include "../server.h"
-#include "../server_internal.h"
 #include "../../hud/hud.h"
 #include "../../hud/multi_spectate.h"
 #include "../../input/control_input_filter.h"
 #include "../../input/input.h"
 #include "../../misc/level.h"
-#include "../../misc/player.h"
-#include "../../os/console.h"
 #include "../../os/os.h"
 #include "../../rf/ai.h"
-#include "../../rf/bmpman.h"
 #include "../../rf/entity.h"
 #include "../../rf/gameseq.h"
 #include "../../rf/geometry.h"
 #include "../../rf/input.h"
-#include "../../rf/item.h"
-#include "../../rf/level.h"
 #include "../../rf/multi.h"
 #include "../../rf/object.h"
 #include "../../rf/os/console.h"
@@ -42,9 +36,6 @@
 #include "../../rf/player/camera.h"
 #include "../../rf/player/control_config.h"
 #include "../../rf/player/player.h"
-#include "../../rf/v3d.h"
-#include "../../rf/vmesh.h"
-#include "../../rf/weapon.h"
 
 namespace
 {
@@ -53,6 +44,9 @@ namespace
 
     // How often one player may make a use request - board, seat swap or exit. Both sides of the wire.
     constexpr int vehicle_use_request_cooldown_ms = 200;
+
+    // How long a stated occupancy naming an unresolvable rider keeps being re-applied.
+    constexpr int64_t vehicle_pending_seats_ttl_ms = 5000;
 
     // Lowest UNOCCUPIED seat, or -1. Free == leech_handle -1, the condition entity_attach_leech takes.
     // Capped at the wire's seat count: a seat the occupancy packet cannot state would be released by
@@ -96,7 +90,7 @@ namespace
             rf::ai_set_mode(&vehicle->ai, rf::AI_MODE_CATATONIC, -1, -1);
         }
         rf::ai_set_submode(&vehicle->ai, rf::AI_SUBMODE_NONE);
-        vehicle->entity_flags = (vehicle->entity_flags & ~0x20000u) | 0x10000u;
+        vehicle->entity_flags = (vehicle->entity_flags & ~0x20000u) | rf::EF_BOARDED;
         rf::obj_set_friendliness(vehicle, rf::OBJ_NEUTRAL);
         vehicle->min_rel_eye_phb = vehicle->info->min_rel_eye_phb;
         vehicle->max_rel_eye_phb = vehicle->info->max_rel_eye_phb;
@@ -114,9 +108,8 @@ namespace
             rider->max_rel_eye_phb = rf::jeep_gunner_max_rel_eye_phb;
         }
         else if (vehicle_passenger_vehicle(rider) == vehicle) {
-            // Only pitch is a limit at all: the integrator clamps eye_phb against this pair
-            // (0x0049CFA0..0x0049CFF7) and his HEADING lives in control_data.phb.y, which nothing
-            // clamps - so the y/z zeros pin his bank and leave him free to turn right round.
+            // Only pitch is a limit: his HEADING lives in control_data.phb.y, which nothing clamps, so
+            // the y/z zeros pin his bank and leave him free to turn right round.
             rider->min_rel_eye_phb = rf::Vector3{-vehicle_passenger_eye_pitch_limit, 0.0f, 0.0f};
             rider->max_rel_eye_phb = rf::Vector3{vehicle_passenger_eye_pitch_limit, 0.0f, 0.0f};
         }
@@ -206,13 +199,6 @@ namespace
         }
     }
 
-    void vehicle_local_rider_exit()
-    {
-        if (rf::local_player) {
-            rf::local_player->flags &= ~rf::PF_IN_ENCLOSED_VEHICLE;
-        }
-    }
-
     // THE hull velocity derivation, shared by every handoff point and by the wire: whichever of the
     // LOCAL driven body, a server body or the entity this machine actually keeps it in.
     rf::Vector3 vehicle_live_hull_velocity(const rf::Entity* vehicle)
@@ -254,8 +240,7 @@ namespace
     // still where the other team can contest it. Every other hull would take it out of reach.
     bool vehicle_hull_may_carry_flags(const rf::Entity* vehicle)
     {
-        return vehicle->info->use_function == rf::ENTITY_USE_TURRET
-            || vehicle_damage_class(vehicle) == VDC_JEEP;
+        return vehicle_hull_is_turret(vehicle) || vehicle_damage_class(vehicle) == VDC_JEEP;
     }
 
     bool vehicle_sub_water_gate_ok(const rf::Entity* vehicle)
@@ -271,9 +256,8 @@ namespace
         af_send_hud_notification(reason, 3, static_cast<int>(HudNotificationType::Generic), true, pp);
     }
 
-    // entity_attach_leech (0x00427240) plays the boarding foley unconditionally - snd_play_3d at
-    // 0x00427309, on entity info +0x114 - so a mirror repair and the join sweep can only be silenced
-    // at that one call site. Scoped around the attach, never left set.
+    // entity_attach_leech plays the boarding foley unconditionally, so a mirror repair and the join
+    // sweep can only be silenced at its snd_play_3d call. Scoped around the attach, never left set.
     bool g_boarding_foley_muted = false;
 
     CallHook<int(int, const rf::Vector3&, float, const rf::Vector3&, int)> entity_attach_leech_foley_hook{
@@ -300,10 +284,9 @@ namespace
         VehicleSilentBoardingScope& operator=(const VehicleSilentBoardingScope&) = delete;
     };
 
-    // THE atomic seat change. A swap is not an exit followed by a boarding - the rider never leaves
-    // the hull, so no exit machinery may run: entity_detach_leech (0x00427380) then
-    // entity_attach_leech (0x00427240), neither of which places the rider. The eye limits are reset
-    // from the rider's own entity type first because they belong to the SEAT. False = still in from.
+    // THE atomic seat change: the rider never leaves the hull, so no exit machinery may run, and
+    // neither leech call places him. Eye limits are reset first because they belong to the SEAT.
+    // False = still in from.
     bool vehicle_move_rider_to_seat(rf::Entity* vehicle, rf::Entity* rider, int from_seat,
                                     int to_seat)
     {
@@ -427,6 +410,537 @@ namespace
             return af_vehicle_state_changed_none;
         }
         return static_cast<uint8_t>(changed_seat);
+    }
+
+    void vehicle_server_handle_enter(rf::Player* pp, rf::Entity* rider, int vehicle_handle,
+                                     uint8_t seat_index)
+    {
+        vehicle_clear_stale_host(rider);
+        if (rider->host_handle != -1) {
+            vehicle_deny(pp, "You are already in a vehicle.");
+            return;
+        }
+
+        rf::Entity* vehicle = vehicle_live_synced_entity(vehicle_handle);
+        if (!vehicle) {
+            return;
+        }
+
+        // vehicle_seat_auto is resolved HERE because occupancy is the server's to know: a client's
+        // mirror can be a packet behind, and resolving there would race two players onto one seat.
+        int resolved_seat = static_cast<int>(seat_index);
+        if (seat_index == vehicle_seat_auto) {
+            resolved_seat = vehicle_lowest_free_seat(vehicle);
+            if (resolved_seat < 0) {
+                vehicle_deny(pp, "That vehicle is full.");
+                return;
+            }
+        }
+        else if (resolved_seat >= af_vehicle_state_max_seats) {
+            return; // the occupancy packet cannot state this seat, so no client could mirror it
+        }
+
+        int tag_handle = -1;
+        if (!vehicle_seat_tag_from_index(vehicle, resolved_seat, &tag_handle)) {
+            return;
+        }
+        if (vehicle_seat_leech(vehicle, resolved_seat) != -1) {
+            vehicle_deny(pp, "That seat is taken.");
+            return;
+        }
+        if (rider->eye_pos.distance_to(vehicle->pos) > vehicle->info->use_radius + board_range_slack) {
+            return;
+        }
+        if (!vehicle_sub_water_gate_ok(vehicle)) {
+            vehicle_deny(pp, "The sub only works in water.");
+            return;
+        }
+        if (vehicle_locked_against(pp, vehicle->handle)) {
+            vehicle_deny(pp, vehicle_locked_team_deny);
+            return;
+        }
+        if (vehicle_occupied_by_enemy(pp, vehicle)) {
+            vehicle_deny(pp, vehicle_enemy_occupant_deny);
+            return;
+        }
+
+        vehicle_server_attach(vehicle, rider, resolved_seat, tag_handle);
+    }
+
+    void vehicle_server_handle_exit(rf::Player* pp, rf::Entity* rider)
+    {
+        // An af_client_req 0xC exit with vehicle_handle == -1 is sendable unconditionally, so guard
+        // the type: vehicle_update_interp_ownership would otherwise zero a non-vehicle host's motion.
+        rf::Entity* vehicle = vehicle_ridden_hull(rider);
+        if (!vehicle) {
+            return;
+        }
+        if (vehicle->entity_flags2 & rf::EF2_NO_EXIT) {
+            vehicle_deny(pp, "You cannot get out right now.");
+            return;
+        }
+        // No ground test here: only the driver's client can answer it. The engine's own exit-spot
+        // search below still runs server-side and refuses an impossible exit.
+
+        // Published BEFORE the detach: its ownership call's reconcile destroys a listen host's body.
+        const bool driver_exit = vehicle_driver_entity(vehicle) == rider;
+        const rf::Vector3 exit_vel = driver_exit ? vehicle_live_hull_velocity(vehicle) : rf::Vector3{};
+        if (driver_exit) {
+            vehicle->p_data.vel = exit_vel;
+        }
+        const rf::Vector3 rider_inertia = (rider == rf::local_player_entity)
+            ? vehicle_capture_exit_inertia(vehicle, rider) : rf::Vector3{};
+
+        const VehicleExitView view = vehicle_capture_exit_view(vehicle);
+        // Taken before the detach, which clears it, for the fallback broadcast below.
+        const int exit_seat = vehicle_seat_of_rider(vehicle, rider);
+        // The detach FunHook broadcasts the seat release for every successful detach.
+        if (!rf::entity_detach_from_host(rider)) {
+            // The exit-spot search refused, so the rider stays put - but only while the VEHICLE is
+            // still a thing he can sit in. A client applies exactly this fallback for an exit packet.
+            if (rf::entity_is_dying(vehicle)) {
+                rf::entity_detach_leech(vehicle, rider->handle, false);
+                rider->host_handle = -1;
+                rider->host_tag_handle = -1;
+                vehicle_broadcast_seat_occupancy(vehicle->handle, vehicle, exit_seat);
+                vehicle_update_interp_ownership(vehicle);
+                return;
+            }
+            vehicle_deny(pp, "There is no room to get out.");
+            return;
+        }
+        vehicle_exit_restore(vehicle, rider, view);
+        vehicle_apply_exit_inertia(rider, rider_inertia);
+        if (rider == rf::local_player_entity) {
+            vehicle_clear_local_enclosed_flag();
+        }
+        vehicle_update_interp_ownership(vehicle);
+
+        const bool now_driverless =
+            vehicle_seat_leech(vehicle, 0) == -1 && !rf::entity_is_dying(vehicle);
+
+        // The hull remembers the DRIVER who just stepped out, so the server's own body can run people
+        // over in his name. No speed gate: an exit at walking pace may still pick up speed downhill.
+        if (driver_exit && now_driverless) {
+            vehicle_coast_memory_set(vehicle, pp, rider);
+        }
+        else {
+            g_vehicle_state.coast_memory.erase(vehicle->handle);
+        }
+
+        // The new server body starts from exit_vel: the ownership call above zeroed the entity's.
+        if (now_driverless && vehicle_physics_server_ensure(vehicle, driver_exit ? &exit_vel : nullptr)) {
+            // Server-simulated from here, so any stale replication record must go;
+            // vehicle_server_body_do_frame re-seeds its tick base from the ring on its first frame.
+            g_vehicle_state.kinematics.erase(vehicle->handle);
+        }
+    }
+
+    // A use request naming the hull the requester is already aboard is a SEAT SWAP. Every boarding
+    // gate that still means something for a man already inside is applied; use_radius and
+    // sub-in-water are dropped because he is past what they guard.
+    void vehicle_server_handle_seat_swap(rf::Player* pp, rf::Entity* rider, rf::Entity* vehicle,
+                                         uint8_t seat_index)
+    {
+        if (!pp->net_data) {
+            return;
+        }
+        if (!vehicle_is_synced_entity_type(vehicle) || rf::entity_is_dying(vehicle)) {
+            return;
+        }
+        // "Auto" is a BOARDING sentinel only: a hotkey always names the seat it means.
+        if (seat_index == vehicle_seat_auto) {
+            return;
+        }
+        if (seat_index >= af_vehicle_state_max_seats) {
+            return; // the occupancy packet cannot state this seat, so no client could mirror it
+        }
+        const int from_seat = vehicle_seat_of_rider(vehicle, rider);
+        if (from_seat < 0) {
+            return; // half attachment; vehicle_release_orphaned_riders owns that divergence
+        }
+        if (from_seat == static_cast<int>(seat_index)) {
+            return; // already there
+        }
+        int to_tag = -1;
+        if (!vehicle_seat_tag_from_index(vehicle, seat_index, &to_tag)) {
+            return; // this hull has no such seat: a "4" on a two-seat jeep says nothing
+        }
+        if (vehicle_seat_leech(vehicle, seat_index) != -1) {
+            vehicle_deny(pp, "That seat is taken.");
+            return;
+        }
+        if (vehicle_locked_against(pp, vehicle->handle)) {
+            vehicle_deny(pp, vehicle_locked_team_deny);
+            return;
+        }
+        if (vehicle_occupied_by_enemy(pp, vehicle)) {
+            vehicle_deny(pp, vehicle_enemy_occupant_deny);
+            return;
+        }
+
+        // BEFORE anything below touches it: vehicle_update_interp_ownership zeroes it for a hull left
+        // with no driver, so a swap OUT of seat 0 must carry the momentum across the handoff.
+        const rf::Vector3 exit_vel = vehicle_live_hull_velocity(vehicle);
+
+        const rf::Entity* gun_before = vehicle_firing_seat_occupant(vehicle);
+
+        if (!vehicle_move_rider_to_seat(vehicle, rider, from_seat, static_cast<int>(seat_index))) {
+            return;
+        }
+
+        // The trigger belongs to the SEAT, so it is dropped exactly when the swap CHANGED HANDS.
+        // Conditional because a THIRD party may be firing, and his client reports edges only: the
+        // server's frame pass can clear a held trigger but never re-arm one.
+        if (gun_before != vehicle_firing_seat_occupant(vehicle)) {
+            vehicle_server_stop_fire(vehicle);
+        }
+
+        const bool now_driver = seat_index == 0;
+        const bool was_driver = from_seat == 0;
+        if (now_driver) {
+            // Symmetric to the seat-0 exit above, and it MUST precede the ownership call: on a
+            // listen host that reconcile destroys the server body this is the only reader of.
+            vehicle->p_data.vel = vehicle_live_hull_velocity(vehicle);
+        }
+        vehicle_update_interp_ownership(vehicle, now_driver);
+        // Somebody is aboard, so no ex-driver's coast claim survives - the boarding rule.
+        g_vehicle_state.coast_memory.erase(vehicle->handle);
+        if (now_driver) {
+            // Seat 0 taken: that driver's client simulates from here and the server owns no body.
+            g_vehicle_state.kinematics.erase(vehicle->handle);
+            vehicle_physics_server_release(vehicle->handle);
+        }
+        else if (was_driver && !rf::entity_is_dying(vehicle)
+                 && vehicle_physics_server_ensure(vehicle, &exit_vel)) {
+            // Seat 0 emptied: the server takes the hull over carrying the velocity it had. Getting
+            // in ahead of the frame reconcile is what makes the pre-handoff velocity reachable.
+            g_vehicle_state.kinematics.erase(vehicle->handle);
+        }
+
+        // ONE announcement naming the new seat: the occupancy already shows the old seat empty and
+        // the new one his, so a receiver makes the identical atomic move with no exit machinery.
+        vehicle_broadcast_seat_occupancy(vehicle->handle, vehicle, static_cast<int>(seat_index));
+    }
+
+    // The is_multi gate is load bearing: vehicle_is_synced_entity_type asks only about use_function,
+    // so without it the input veto below would fire for the SINGLE PLAYER jeep.
+    rf::Entity* vehicle_local_seated_vehicle()
+    {
+        if (!rf::is_multi) {
+            return nullptr;
+        }
+        rf::Entity* rider = rf::local_player_entity;
+        if (!rider || rf::entity_is_dying(rider)) {
+            return nullptr;
+        }
+        return vehicle_ridden_live_hull(rider);
+    }
+
+    // By ACTION rather than by key, so a rebound weapon slot is covered too. The upper bound is NOT
+    // the stock 0x3C: AF appends its own actions after a variable-length per-weapon block, so on a
+    // small weapon set claiming that far would eat Drop Flag, Spray and the vote keys.
+    bool vehicle_blocks_weapon_select(rf::ControlConfig* ccp, rf::ControlConfigAction action)
+    {
+        if (action < rf::CC_ACTION_SELECT_WEAPON_FIRST) {
+            return false;
+        }
+        const int af_base = static_cast<int>(get_af_control(rf::AF_ACTION_FLASHLIGHT));
+        const int last = std::min(static_cast<int>(rf::CC_ACTION_SELECT_WEAPON_LAST), af_base - 1);
+        if (static_cast<int>(action) > last) {
+            return false;
+        }
+        if (!rf::local_player || ccp != &rf::local_player->settings.controls) {
+            return false;
+        }
+        return vehicle_local_seated_vehicle() != nullptr;
+    }
+
+    // What seat a Use press asks for, or -1 when the winning tag is not a seat of this vehicle (let
+    // the stock handler have it). The jeep's gunner point is the one carve-out: a scan landing on it
+    // asks for seat 1 explicitly and gets it or nothing.
+    int vehicle_use_request_seat(rf::Entity* vehicle, int tag_handle)
+    {
+        const int scan_seat = vehicle_seat_index_from_tag(vehicle, tag_handle);
+        if (scan_seat < 0) {
+            return -1;
+        }
+        if (scan_seat == 1 && rf::entity_is_jeep(vehicle)) {
+            return 1;
+        }
+        return vehicle_seat_auto;
+    }
+
+    // True when the press was consumed, false to let the stock handler run (doors, items, ...).
+    bool vehicle_client_handle_use_keypress(rf::Player* pp)
+    {
+        rf::Entity* rider = rf::entity_from_handle(pp->entity_handle);
+        if (!rider || rf::entity_is_dying(rider)) {
+            return false;
+        }
+
+        vehicle_clear_stale_host(rider);
+        if (rider->host_handle != -1) {
+            // No ground gate: only the driver could answer one - a gunner's copy of ground_material
+            // is the stale interp-driven one - and the stock exit-spot search handles placement.
+            af_send_vehicle_use_request(-1, 0);
+            return true;
+        }
+
+        int tag_handle = -1;
+        rf::Object* target = rf::player_find_use_target(rider, &tag_handle);
+        if (!target || target->type != rf::OT_ENTITY) {
+            return false;
+        }
+        rf::Entity* vehicle = vehicle_synced_entity(target->handle);
+        if (!vehicle) {
+            return false;
+        }
+        const int seat_index = vehicle_use_request_seat(vehicle, tag_handle);
+        if (seat_index < 0) {
+            return false;
+        }
+        // The same answer the server is about to give, said locally for instant feedback.
+        if (vehicle_occupied_by_enemy(pp, vehicle)) {
+            hud_notification_show(std::string{vehicle_enemy_occupant_deny}, 3,
+                                  HudNotificationType::Generic, true);
+            return true;
+        }
+
+        af_send_vehicle_use_request(vehicle->server_handle, static_cast<uint8_t>(seat_index));
+        return true;
+    }
+
+    // player_handle_use_keypress2 (cdecl, 5-byte PUSH ESI + MOV ESI,[ESP+8] prologue). On an MP
+    // client the stock body only forwards a use_key_pressed packet, whose server-side handler has the
+    // vehicle branches gated off, so boarding has to start here.
+    FunHook<void(rf::Player*)> player_handle_use_keypress2_hook{
+        0x004A29F0,
+        [](rf::Player* pp) {
+            if (rf::is_multi && pp && pp == rf::local_player && vehicle_level_has_factories()) {
+                if (rf::is_server) {
+                    // Listen server host: no request to send, run the server path directly.
+                    rf::Entity* rider = rf::entity_from_handle(pp->entity_handle);
+                    if (rider && !rf::entity_is_dying(rider)) {
+                        vehicle_clear_stale_host(rider);
+                        if (rider->host_handle != -1) {
+                            // Any other host falls through to the stock handler.
+                            rf::Entity* vehicle = vehicle_ridden_hull(rider);
+                            if (vehicle) {
+                                vehicle_server_handle_exit(pp, rider);
+                                return;
+                            }
+                        }
+                        else {
+                            int tag_handle = -1;
+                            rf::Object* target = rf::player_find_use_target(rider, &tag_handle);
+                            if (target && target->type == rf::OT_ENTITY) {
+                                rf::Entity* vehicle = vehicle_synced_entity(target->handle);
+                                const int seat =
+                                    vehicle ? vehicle_use_request_seat(vehicle, tag_handle) : -1;
+                                if (seat >= 0) {
+                                    vehicle_server_handle_enter(pp, rider, vehicle->handle,
+                                                                static_cast<uint8_t>(seat));
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                }
+                else if (vehicle_client_handle_use_keypress(pp)) {
+                    return;
+                }
+            }
+            player_handle_use_keypress2_hook.call_target(pp);
+        },
+    };
+
+    // Every seat release that goes through the ENGINE's detach is announced from here. A disconnect
+    // never reaches it (the engine only flags the entity for delete): that is
+    // vehicle_on_player_disconnect's, with the vehicle_do_frame sweep as backstop.
+    FunHook<bool(rf::Entity*)> entity_detach_from_host_hook{
+        0x004279D0,
+        [](rf::Entity* ep) -> bool {
+            rf::Entity* vehicle =
+                (ep && rf::is_multi) ? rf::entity_from_handle(ep->host_handle) : nullptr;
+            const int seat_index = (vehicle && vehicle_is_synced_entity_type(vehicle))
+                ? vehicle_seat_of_rider(vehicle, ep) : -1;
+            // Both taken BEFORE the detach, which clears ep->host_handle.
+            const rf::Entity* gun_before =
+                seat_index >= 0 ? vehicle_firing_seat_occupant(vehicle) : nullptr;
+
+            const bool result = entity_detach_from_host_hook.call_target(ep);
+
+            if (result && seat_index >= 0) {
+                if (rf::is_server) {
+                    if (gun_before != vehicle_firing_seat_occupant(vehicle)) {
+                        vehicle_server_stop_fire(vehicle);
+                    }
+                    vehicle_broadcast_seat_occupancy(vehicle->handle, vehicle, seat_index);
+                }
+                if (ep == rf::local_player_entity) {
+                    vehicle_clear_local_enclosed_flag();
+                }
+                vehicle_update_interp_ownership(vehicle);
+            }
+            return result;
+        },
+    };
+
+    // player_find_use_target sweeps every object and fires a world trace per candidate; stock ran it
+    // on a keypress only, so the prompt polls it at 10 Hz and re-probes at once on any move or loss.
+    constexpr int64_t use_probe_interval_ms = 100;
+    constexpr float use_probe_move_sq = 0.25f; // 0.5 u
+
+    // The cached answer is only ever a live synced hull, so a non-vehicle target caches as "none"
+    // rather than re-probing every frame.
+    rf::Entity* vehicle_use_probe(rf::Entity* rider, int* out_tag_handle)
+    {
+        const int64_t now = timer::get_i64(1000);
+        rf::Entity* cached = g_vehicle_state.use_probe_handle != -1
+            ? vehicle_live_synced_entity(g_vehicle_state.use_probe_handle) : nullptr;
+        const bool lost = g_vehicle_state.use_probe_handle != -1 && !cached;
+        const bool moved = (rider->pos - g_vehicle_state.use_probe_pos).len_sq() > use_probe_move_sq;
+        if (now < g_vehicle_state.use_probe_next_ms && !moved && !lost) {
+            *out_tag_handle = g_vehicle_state.use_probe_tag;
+            return cached;
+        }
+        g_vehicle_state.use_probe_next_ms = now + use_probe_interval_ms;
+        g_vehicle_state.use_probe_pos = rider->pos;
+        int tag_handle = -1;
+        rf::Object* target = rf::player_find_use_target(rider, &tag_handle);
+        rf::Entity* vehicle = (target && target->type == rf::OT_ENTITY)
+            ? vehicle_live_synced_entity(target->handle) : nullptr;
+        g_vehicle_state.use_probe_handle = vehicle ? vehicle->handle : -1;
+        g_vehicle_state.use_probe_tag = vehicle ? tag_handle : -1;
+        *out_tag_handle = g_vehicle_state.use_probe_tag;
+        return vehicle;
+    }
+
+    // The vehicle a Use press would act on right now, with the entry answer the server would give.
+    // False when no prompt belongs on screen at all.
+    bool vehicle_use_prompt_query(int* out_class, int* out_reason)
+    {
+        if (!vehicle_level_has_factories()) {
+            return false; // no hull can exist, so the 10 Hz player_find_use_target sweep is pure cost
+        }
+        if (!rf::is_multi || rf::is_dedicated_server || !rf::local_player) {
+            return false;
+        }
+        if (multi_spectate_is_spectating()) {
+            return false;
+        }
+        rf::Entity* rider = rf::entity_from_handle(rf::local_player->entity_handle);
+        if (!rider || rf::entity_is_dying(rider) || rider->host_handle != -1) {
+            return false;
+        }
+        int tag_handle = -1;
+        rf::Entity* vehicle = vehicle_use_probe(rider, &tag_handle);
+        if (!vehicle) {
+            return false;
+        }
+        // The same tag-to-seat gate the press makes: a scan landing off the seats is the stock
+        // handler's press, not a board.
+        const int seat = vehicle_use_request_seat(vehicle, tag_handle);
+        if (seat < 0) {
+            return false;
+        }
+        // vehicle_server_handle_enter's own range check, so the prompt never offers a board the
+        // server silently drops.
+        if (rider->eye_pos.distance_to(vehicle->pos) > vehicle->info->use_radius + board_range_slack) {
+            return false;
+        }
+        const int vehicle_class = vehicle_damage_class(vehicle);
+        if (vehicle_class < 0) {
+            return false;
+        }
+        vehicle_hull_entry_allowed(vehicle, rf::local_player, out_reason, seat);
+        *out_class = vehicle_class;
+        return true;
+    }
+
+    std::string vehicle_use_prompt_build(int vehicle_class, int reason)
+    {
+        const std::string name{vehicle_class_display_name(vehicle_class)};
+        switch (reason) {
+        case VEHICLE_ENTRY_OCCUPIED_OTHER_TEAM:
+            return "The " + name + " is occupied by the enemy team";
+        case VEHICLE_ENTRY_LOCKED_OTHER_TEAM:
+            return "The " + name + " belongs to the enemy team";
+        case VEHICLE_ENTRY_NO_SEAT:
+            return "The " + name + " is full";
+        case VEHICLE_ENTRY_SUB_OUT_OF_WATER:
+            return "The " + name + " only works in water";
+        case VEHICLE_ENTRY_SEAT_TAKEN:
+            return "That seat is taken";
+        default:
+            break;
+        }
+        const rf::String bind = get_action_bind_name(rf::CC_ACTION_USE);
+        const char* key = bind.c_str();
+        return "Press " + std::string{(key && *key) ? key : "?"} + " to enter the " + name;
+    }
+
+    // Release a rider the stated occupancy no longer seats. `announced` is the packet's changed
+    // seat: that one exit is the event the server is reporting, so it runs the ENGINE's detach -
+    // the exit-spot search and its cues. Any other seat is a mirror repair and is released in
+    // place, silently. Either way the rider is fully un-welded and his eye limits restored.
+    void vehicle_client_release_rider(rf::Entity* vehicle, rf::Entity* rider, bool announced)
+    {
+        const VehicleExitView view = vehicle_capture_exit_view(vehicle);
+        const rf::Vector3 rider_inertia = (announced && rider == rf::local_player_entity)
+            ? vehicle_capture_exit_inertia(vehicle, rider) : rf::Vector3{};
+        const bool detached = announced && rider->host_handle == vehicle->handle
+            && rf::entity_detach_from_host(rider);
+        if (!detached) {
+            rf::entity_detach_leech(vehicle, rider->handle, false);
+            rider->host_handle = -1;
+            rider->host_tag_handle = -1;
+        }
+        if (rider == rf::local_player_entity) {
+            vehicle_clear_local_enclosed_flag();
+        }
+        vehicle_exit_restore(vehicle, rider, view);
+        vehicle_apply_exit_inertia(rider, rider_inertia);
+    }
+
+    // Seat this rider, who is in no seat of this hull. Stale leeches were cleared by the release
+    // pass, so an attach refusal here is a real one.
+    bool vehicle_client_seat_rider(rf::Entity* vehicle, rf::Entity* rider, int seat_index)
+    {
+        int tag_handle = -1;
+        if (!vehicle_seat_tag_from_index(vehicle, seat_index, &tag_handle)) {
+            return false;
+        }
+        if (rider->host_handle == vehicle->handle) {
+            // A half attachment, released by hand: entity_detach_from_host would run the exit-spot
+            // search on a man with no seat.
+            rider->host_handle = -1;
+            rider->host_tag_handle = -1;
+        }
+        else if (rider->host_handle != -1) {
+            // Aboard something else; the server is authoritative. The engine detach refuses when its
+            // exit-spot search finds nowhere to stand, and leaving him leeched there would seat one
+            // rider in two hulls at once.
+            rf::Entity* old_host = rf::entity_from_handle(rider->host_handle);
+            if (!rf::entity_detach_from_host(rider)) {
+                if (old_host) {
+                    rf::entity_detach_leech(old_host, rider->handle, false);
+                }
+                rider->host_handle = -1;
+                rider->host_tag_handle = -1;
+            }
+        }
+        rf::entity_turn_weapon_off(rider->handle, rider->ai.current_primary_weapon);
+        if (!rf::entity_attach_leech(vehicle, rider->handle, tag_handle)) {
+            xlog::warn("[vehicle] attach failed (seat {} of '{}')", seat_index, vehicle->name);
+            return false;
+        }
+        vehicle_boarding_init(vehicle, rider);
+        if (rider == rf::local_player_entity) {
+            vehicle_local_rider_enter(vehicle);
+        }
+        return true;
     }
 } // namespace
 
@@ -668,265 +1182,6 @@ void vehicle_on_player_disconnect(rf::Player* pp)
     rider->host_tag_handle = -1;
 }
 
-namespace
-{
-    void vehicle_server_handle_enter(rf::Player* pp, rf::Entity* rider, int vehicle_handle,
-                                     uint8_t seat_index)
-    {
-        vehicle_clear_stale_host(rider);
-        if (rider->host_handle != -1) {
-            vehicle_deny(pp, "You are already in a vehicle.");
-            return;
-        }
-
-        rf::Entity* vehicle = vehicle_live_synced_entity(vehicle_handle);
-        if (!vehicle) {
-            return;
-        }
-
-        // vehicle_seat_auto is resolved HERE because occupancy is the server's to know: a client's
-        // mirror can be a packet behind, and resolving there would race two players onto one seat.
-        int resolved_seat = static_cast<int>(seat_index);
-        if (seat_index == vehicle_seat_auto) {
-            resolved_seat = vehicle_lowest_free_seat(vehicle);
-            if (resolved_seat < 0) {
-                vehicle_deny(pp, "That vehicle is full.");
-                return;
-            }
-        }
-        else if (resolved_seat >= af_vehicle_state_max_seats) {
-            return; // the occupancy packet cannot state this seat, so no client could mirror it
-        }
-
-        int tag_handle = -1;
-        if (!vehicle_seat_tag_from_index(vehicle, resolved_seat, &tag_handle)) {
-            return;
-        }
-        if (vehicle_seat_leech(vehicle, resolved_seat) != -1) {
-            vehicle_deny(pp, "That seat is taken.");
-            return;
-        }
-        if (rider->eye_pos.distance_to(vehicle->pos) > vehicle->info->use_radius + board_range_slack) {
-            return;
-        }
-        if (!vehicle_sub_water_gate_ok(vehicle)) {
-            vehicle_deny(pp, "The sub only works in water.");
-            return;
-        }
-        if (vehicle_locked_against(pp, vehicle->handle)) {
-            vehicle_deny(pp, vehicle_locked_team_deny);
-            return;
-        }
-        if (vehicle_occupied_by_enemy(pp, vehicle)) {
-            vehicle_deny(pp, vehicle_enemy_occupant_deny);
-            return;
-        }
-
-        vehicle_server_attach(vehicle, rider, resolved_seat, tag_handle);
-    }
-
-    void vehicle_server_handle_exit(rf::Player* pp, rf::Entity* rider)
-    {
-        // An af_client_req 0xC exit with vehicle_handle == -1 is sendable unconditionally, so guard
-        // the type: vehicle_update_interp_ownership would otherwise zero a non-vehicle host's motion.
-        rf::Entity* vehicle = vehicle_ridden_hull(rider);
-        if (!vehicle) {
-            return;
-        }
-        if (vehicle->entity_flags2 & 0x80) { // scripted no-exit
-            vehicle_deny(pp, "You cannot get out right now.");
-            return;
-        }
-        // No ground test here: only the driver's client can answer it. The engine's own exit-spot
-        // search below still runs server-side and refuses an impossible exit.
-
-        // Published BEFORE the detach: its ownership call's reconcile destroys a listen host's body.
-        const bool driver_exit = vehicle_driver_entity(vehicle) == rider;
-        const rf::Vector3 exit_vel = driver_exit ? vehicle_live_hull_velocity(vehicle) : rf::Vector3{};
-        if (driver_exit) {
-            vehicle->p_data.vel = exit_vel;
-        }
-        const rf::Vector3 rider_inertia = (rider == rf::local_player_entity)
-            ? vehicle_capture_exit_inertia(vehicle, rider) : rf::Vector3{};
-
-        const VehicleExitView view = vehicle_capture_exit_view(vehicle);
-        // Taken before the detach, which clears it, for the fallback broadcast below.
-        const int exit_seat = vehicle_seat_of_rider(vehicle, rider);
-        // The detach FunHook broadcasts the seat release for every successful detach.
-        if (!rf::entity_detach_from_host(rider)) {
-            // The exit-spot search refused, so the rider stays put - but only while the VEHICLE is
-            // still a thing he can sit in. A client applies exactly this fallback for an exit packet.
-            if (rf::entity_is_dying(vehicle)) {
-                rf::entity_detach_leech(vehicle, rider->handle, false);
-                rider->host_handle = -1;
-                rider->host_tag_handle = -1;
-                vehicle_broadcast_seat_occupancy(vehicle->handle, vehicle, exit_seat);
-                vehicle_update_interp_ownership(vehicle);
-                return;
-            }
-            vehicle_deny(pp, "There is no room to get out.");
-            return;
-        }
-        vehicle_exit_restore(vehicle, rider, view);
-        vehicle_apply_exit_inertia(rider, rider_inertia);
-        if (rider == rf::local_player_entity) {
-            vehicle_local_rider_exit();
-        }
-        vehicle_update_interp_ownership(vehicle);
-
-        const bool now_driverless =
-            vehicle_seat_leech(vehicle, 0) == -1 && !rf::entity_is_dying(vehicle);
-
-        // The hull remembers the DRIVER who just stepped out, so the server's own body can run people
-        // over in his name. No speed gate: an exit at walking pace may still pick up speed downhill.
-        if (driver_exit && now_driverless) {
-            vehicle_coast_memory_set(vehicle, pp, rider);
-        }
-        else {
-            g_vehicle_state.coast_memory.erase(vehicle->handle);
-        }
-
-        // A hull that has just lost its driver becomes server-simulated, and the body it gets must
-        // start with the velocity the hull was carrying. The entity can no longer supply it -
-        // vehicle_update_interp_ownership zeroed it above - so exit_vel is the copy taken at the top.
-        if (now_driverless && vehicle_physics_server_ensure(vehicle, driver_exit ? &exit_vel : nullptr)) {
-            // Server-simulated from here, so any stale replication record must go;
-            // vehicle_server_body_do_frame re-seeds its tick base from the ring on its first frame.
-            g_vehicle_state.kinematics.erase(vehicle->handle);
-        }
-    }
-
-    // A use request naming the hull the requester is already aboard is a SEAT SWAP. Every boarding
-    // gate that still means something for a man already inside is applied; use_radius and
-    // sub-in-water are dropped because he is past what they guard.
-    void vehicle_server_handle_seat_swap(rf::Player* pp, rf::Entity* rider, rf::Entity* vehicle,
-                                         uint8_t seat_index)
-    {
-        if (!pp->net_data) {
-            return;
-        }
-        if (!vehicle_is_synced_entity_type(vehicle) || rf::entity_is_dying(vehicle)) {
-            return;
-        }
-        // "Auto" is a BOARDING sentinel only: a hotkey always names the seat it means.
-        if (seat_index == vehicle_seat_auto) {
-            return;
-        }
-        if (seat_index >= af_vehicle_state_max_seats) {
-            return; // the occupancy packet cannot state this seat, so no client could mirror it
-        }
-        const int from_seat = vehicle_seat_of_rider(vehicle, rider);
-        if (from_seat < 0) {
-            return; // half attachment; vehicle_release_orphaned_riders owns that divergence
-        }
-        if (from_seat == static_cast<int>(seat_index)) {
-            return; // already there
-        }
-        int to_tag = -1;
-        if (!vehicle_seat_tag_from_index(vehicle, seat_index, &to_tag)) {
-            return; // this hull has no such seat: a "4" on a two-seat jeep says nothing
-        }
-        if (vehicle_seat_leech(vehicle, seat_index) != -1) {
-            vehicle_deny(pp, "That seat is taken.");
-            return;
-        }
-        if (vehicle_locked_against(pp, vehicle->handle)) {
-            vehicle_deny(pp, vehicle_locked_team_deny);
-            return;
-        }
-        if (vehicle_occupied_by_enemy(pp, vehicle)) {
-            vehicle_deny(pp, vehicle_enemy_occupant_deny);
-            return;
-        }
-
-        // BEFORE anything below touches it: vehicle_update_interp_ownership zeroes it for a hull left
-        // with no driver, so a swap OUT of seat 0 must carry the momentum across the handoff.
-        const rf::Vector3 exit_vel = vehicle->p_data.vel;
-
-        // Who owns the hull's gun, on both sides of the move.
-        const rf::Entity* gun_before = vehicle_firing_seat_occupant(vehicle);
-
-        if (!vehicle_move_rider_to_seat(vehicle, rider, from_seat, static_cast<int>(seat_index))) {
-            return;
-        }
-
-        // The trigger belongs to the SEAT, so it is dropped exactly when the swap CHANGED HANDS.
-        // Conditional because a THIRD party may be firing, and his client reports edges only: the
-        // server's frame pass can clear a held trigger but never re-arm one.
-        if (gun_before != vehicle_firing_seat_occupant(vehicle)) {
-            vehicle_server_stop_fire(vehicle);
-        }
-
-        const bool now_driver = seat_index == 0;
-        const bool was_driver = from_seat == 0;
-        if (now_driver) {
-            // Symmetric to the seat-0 exit above, and it MUST precede the ownership call: on a
-            // listen host that reconcile destroys the server body this is the only reader of.
-            vehicle->p_data.vel = vehicle_live_hull_velocity(vehicle);
-        }
-        // The one ownership point every seat change on this machine goes through.
-        vehicle_update_interp_ownership(vehicle, now_driver);
-        // Somebody is aboard, so no ex-driver's coast claim survives - the boarding rule.
-        g_vehicle_state.coast_memory.erase(vehicle->handle);
-        if (now_driver) {
-            // Seat 0 taken: that driver's client simulates from here and the server owns no body.
-            g_vehicle_state.kinematics.erase(vehicle->handle);
-            vehicle_physics_server_release(vehicle->handle);
-        }
-        else if (was_driver && !rf::entity_is_dying(vehicle)
-                 && vehicle_physics_server_ensure(vehicle, &exit_vel)) {
-            // Seat 0 emptied: the server takes the hull over carrying the velocity it had. Getting
-            // in ahead of the frame reconcile is what makes the pre-handoff velocity reachable.
-            g_vehicle_state.kinematics.erase(vehicle->handle);
-        }
-
-        // ONE announcement naming the new seat: the occupancy already shows the old seat empty and
-        // the new one his, so a receiver makes the identical atomic move with no exit machinery.
-        vehicle_broadcast_seat_occupancy(vehicle->handle, vehicle, static_cast<int>(seat_index));
-    }
-
-    // The is_multi gate is load bearing: vehicle_is_synced_entity_type asks only about use_function,
-    // so without it the input veto below would fire for the SINGLE PLAYER jeep.
-    rf::Entity* vehicle_local_seated_vehicle()
-    {
-        if (!rf::is_multi) {
-            return nullptr;
-        }
-        rf::Entity* rider = rf::local_player_entity;
-        if (!rider || rf::entity_is_dying(rider)) {
-            return nullptr;
-        }
-        return vehicle_ridden_live_hull(rider);
-    }
-
-    // Every action a weapon-selection key can drive in player_execute_action's jump table: 0x19..0x1C
-    // are the four weapon-CATEGORY selects (stock RF's only number-key bindings) and 0x1D..0x3C the
-    // direct per-weapon selects control_config_init appends.
-    constexpr rf::ControlConfigAction vehicle_weapon_select_first =
-        static_cast<rf::ControlConfigAction>(0x19);
-    constexpr rf::ControlConfigAction vehicle_weapon_select_last =
-        static_cast<rf::ControlConfigAction>(0x3C);
-
-    // By ACTION rather than by key, so a rebound weapon slot is covered too. The upper bound is NOT
-    // the stock 0x3C: AF appends its own actions after a variable-length per-weapon block, so on a
-    // small weapon set claiming that far would eat Drop Flag, Spray and the vote keys.
-    bool vehicle_blocks_weapon_select(rf::ControlConfig* ccp, rf::ControlConfigAction action)
-    {
-        if (action < vehicle_weapon_select_first) {
-            return false;
-        }
-        const int af_base = static_cast<int>(get_af_control(rf::AF_ACTION_FLASHLIGHT));
-        const int last = std::min(static_cast<int>(vehicle_weapon_select_last), af_base - 1);
-        if (static_cast<int>(action) > last) {
-            return false;
-        }
-        if (!rf::local_player || ccp != &rf::local_player->settings.controls) {
-            return false;
-        }
-        return vehicle_local_seated_vehicle() != nullptr;
-    }
-} // namespace
-
 // Raw key DOWN state rather than a control action, because stock RF leaves 5 and 6 bound to nothing.
 // rf::key_is_down consumes nothing, unlike the down-counter control_config_check_pressed drains. The
 // edge is taken against last frame's mask, maintained whether or not the press is acted on.
@@ -981,234 +1236,6 @@ void vehicle_poll_seat_hotkeys()
         af_send_vehicle_use_request(vehicle->server_handle, static_cast<uint8_t>(seat));
     }
 }
-
-namespace
-{
-    // What seat a Use press asks for, or -1 when the winning tag is not a seat of this vehicle (let
-    // the stock handler have it). The jeep's gunner point is the one carve-out: a scan landing on it
-    // asks for seat 1 explicitly and gets it or nothing.
-    int vehicle_use_request_seat(rf::Entity* vehicle, int tag_handle)
-    {
-        const int scan_seat = vehicle_seat_index_from_tag(vehicle, tag_handle);
-        if (scan_seat < 0) {
-            return -1;
-        }
-        if (scan_seat == 1 && rf::entity_is_jeep(vehicle)) {
-            return 1;
-        }
-        return vehicle_seat_auto;
-    }
-
-    // True when the press was consumed, false to let the stock handler run (doors, items, ...).
-    bool vehicle_client_handle_use_keypress(rf::Player* pp)
-    {
-        rf::Entity* rider = rf::entity_from_handle(pp->entity_handle);
-        if (!rider || rf::entity_is_dying(rider)) {
-            return false;
-        }
-
-        vehicle_clear_stale_host(rider);
-        if (rider->host_handle != -1) {
-            // No ground gate: only the driver could answer one - a gunner's copy of ground_material
-            // is the stale interp-driven one - and the stock exit-spot search handles placement.
-            af_send_vehicle_use_request(-1, 0);
-            return true;
-        }
-
-        int tag_handle = -1;
-        rf::Object* target = rf::player_find_use_target(rider, &tag_handle);
-        if (!target || target->type != rf::OT_ENTITY) {
-            return false;
-        }
-        rf::Entity* vehicle = vehicle_synced_entity(target->handle);
-        if (!vehicle) {
-            return false;
-        }
-        const int seat_index = vehicle_use_request_seat(vehicle, tag_handle);
-        if (seat_index < 0) {
-            return false;
-        }
-        // The same answer the server is about to give, said locally for instant feedback.
-        if (vehicle_occupied_by_enemy(pp, vehicle)) {
-            hud_notification_show(std::string{vehicle_enemy_occupant_deny}, 3,
-                                  HudNotificationType::Generic, true);
-            return true;
-        }
-
-        af_send_vehicle_use_request(vehicle->server_handle, static_cast<uint8_t>(seat_index));
-        return true;
-    }
-
-    // player_handle_use_keypress2 (cdecl, 5-byte PUSH ESI + MOV ESI,[ESP+8] prologue). On an MP
-    // client the stock body only forwards a use_key_pressed packet, whose server-side handler has the
-    // vehicle branches gated off, so boarding has to start here.
-    FunHook<void(rf::Player*)> player_handle_use_keypress2_hook{
-        0x004A29F0,
-        [](rf::Player* pp) {
-            if (rf::is_multi && pp && pp == rf::local_player) {
-                if (rf::is_server) {
-                    // Listen server host: no request to send, run the server path directly.
-                    rf::Entity* rider = rf::entity_from_handle(pp->entity_handle);
-                    if (rider && !rf::entity_is_dying(rider)) {
-                        vehicle_clear_stale_host(rider);
-                        if (rider->host_handle != -1) {
-                            // Any other host falls through to the stock handler.
-                            rf::Entity* vehicle = vehicle_ridden_hull(rider);
-                            if (vehicle) {
-                                vehicle_server_handle_exit(pp, rider);
-                                return;
-                            }
-                        }
-                        else {
-                            int tag_handle = -1;
-                            rf::Object* target = rf::player_find_use_target(rider, &tag_handle);
-                            if (target && target->type == rf::OT_ENTITY) {
-                                rf::Entity* vehicle = vehicle_synced_entity(target->handle);
-                                const int seat =
-                                    vehicle ? vehicle_use_request_seat(vehicle, tag_handle) : -1;
-                                if (seat >= 0) {
-                                    vehicle_server_handle_enter(pp, rider, vehicle->handle,
-                                                                static_cast<uint8_t>(seat));
-                                    return;
-                                }
-                            }
-                        }
-                    }
-                }
-                else if (vehicle_client_handle_use_keypress(pp)) {
-                    return;
-                }
-            }
-            player_handle_use_keypress2_hook.call_target(pp);
-        },
-    };
-
-    // Every seat release that goes through the ENGINE's detach is announced from here. A disconnect
-    // never reaches it (the engine only flags the entity for delete): that is
-    // vehicle_on_player_disconnect's, with the vehicle_do_frame sweep as backstop.
-    FunHook<bool(rf::Entity*)> entity_detach_from_host_hook{
-        0x004279D0,
-        [](rf::Entity* ep) -> bool {
-            rf::Entity* vehicle =
-                (ep && rf::is_multi) ? rf::entity_from_handle(ep->host_handle) : nullptr;
-            const int seat_index = (vehicle && vehicle_is_synced_entity_type(vehicle))
-                ? vehicle_seat_of_rider(vehicle, ep) : -1;
-            // Both taken BEFORE the detach, which clears ep->host_handle.
-            const rf::Entity* gun_before =
-                seat_index >= 0 ? vehicle_firing_seat_occupant(vehicle) : nullptr;
-
-            const bool result = entity_detach_from_host_hook.call_target(ep);
-
-            if (result && seat_index >= 0) {
-                if (rf::is_server) {
-                    if (gun_before != vehicle_firing_seat_occupant(vehicle)) {
-                        vehicle_server_stop_fire(vehicle);
-                    }
-                    vehicle_broadcast_seat_occupancy(vehicle->handle, vehicle, seat_index);
-                }
-                if (ep == rf::local_player_entity) {
-                    vehicle_local_rider_exit();
-                }
-                vehicle_update_interp_ownership(vehicle);
-            }
-            return result;
-        },
-    };
-
-    // player_find_use_target sweeps every object and fires a world trace per candidate; stock ran it
-    // on a keypress only, so the prompt polls it at 10 Hz and re-probes at once on any move or loss.
-    constexpr int64_t use_probe_interval_ms = 100;
-    constexpr float use_probe_move_sq = 0.25f; // 0.5 u
-
-    // The cached answer is only ever a live synced hull, so a non-vehicle target caches as "none"
-    // rather than re-probing every frame.
-    rf::Entity* vehicle_use_probe(rf::Entity* rider, int* out_tag_handle)
-    {
-        const int64_t now = timer::get_i64(1000);
-        rf::Entity* cached = g_vehicle_state.use_probe_handle != -1
-            ? vehicle_live_synced_entity(g_vehicle_state.use_probe_handle) : nullptr;
-        const bool lost = g_vehicle_state.use_probe_handle != -1 && !cached;
-        const bool moved = (rider->pos - g_vehicle_state.use_probe_pos).len_sq() > use_probe_move_sq;
-        if (now < g_vehicle_state.use_probe_next_ms && !moved && !lost) {
-            *out_tag_handle = g_vehicle_state.use_probe_tag;
-            return cached;
-        }
-        g_vehicle_state.use_probe_next_ms = now + use_probe_interval_ms;
-        g_vehicle_state.use_probe_pos = rider->pos;
-        int tag_handle = -1;
-        rf::Object* target = rf::player_find_use_target(rider, &tag_handle);
-        rf::Entity* vehicle = (target && target->type == rf::OT_ENTITY)
-            ? vehicle_live_synced_entity(target->handle) : nullptr;
-        g_vehicle_state.use_probe_handle = vehicle ? vehicle->handle : -1;
-        g_vehicle_state.use_probe_tag = vehicle ? tag_handle : -1;
-        *out_tag_handle = g_vehicle_state.use_probe_tag;
-        return vehicle;
-    }
-
-    // The vehicle a Use press would act on right now, with the entry answer the server would give.
-    // False when no prompt belongs on screen at all.
-    bool vehicle_use_prompt_query(int* out_class, int* out_reason)
-    {
-        if (!vehicle_level_has_factories()) {
-            return false; // no hull can exist, so the 10 Hz player_find_use_target sweep is pure cost
-        }
-        if (!rf::is_multi || rf::is_dedicated_server || !rf::local_player) {
-            return false;
-        }
-        if (multi_spectate_is_spectating()) {
-            return false;
-        }
-        rf::Entity* rider = rf::entity_from_handle(rf::local_player->entity_handle);
-        if (!rider || rf::entity_is_dying(rider) || rider->host_handle != -1) {
-            return false;
-        }
-        int tag_handle = -1;
-        rf::Entity* vehicle = vehicle_use_probe(rider, &tag_handle);
-        if (!vehicle) {
-            return false;
-        }
-        // The same tag-to-seat gate the press makes: a scan landing off the seats is the stock
-        // handler's press, not a board.
-        const int seat = vehicle_use_request_seat(vehicle, tag_handle);
-        if (seat < 0) {
-            return false;
-        }
-        // vehicle_server_handle_enter's own range check, so the prompt never offers a board the
-        // server silently drops.
-        if (rider->eye_pos.distance_to(vehicle->pos) > vehicle->info->use_radius + board_range_slack) {
-            return false;
-        }
-        const int vehicle_class = vehicle_damage_class(vehicle);
-        if (vehicle_class < 0) {
-            return false;
-        }
-        vehicle_hull_entry_allowed(vehicle, rf::local_player, out_reason, seat);
-        *out_class = vehicle_class;
-        return true;
-    }
-
-    std::string vehicle_use_prompt_build(int vehicle_class, int reason)
-    {
-        const std::string name{vehicle_class_display_name(vehicle_class)};
-        switch (reason) {
-        case VEHICLE_ENTRY_OCCUPIED_OTHER_TEAM:
-            return "The " + name + " is occupied by the enemy team";
-        case VEHICLE_ENTRY_LOCKED_OTHER_TEAM:
-            return "The " + name + " belongs to the enemy team";
-        case VEHICLE_ENTRY_NO_SEAT:
-            return "The " + name + " is full";
-        case VEHICLE_ENTRY_SUB_OUT_OF_WATER:
-            return "The " + name + " only works in water";
-        case VEHICLE_ENTRY_SEAT_TAKEN:
-            return "That seat is taken";
-        default:
-            break;
-        }
-        const rf::String bind = get_action_bind_name(rf::CC_ACTION_USE);
-        const char* key = bind.c_str();
-        return "Press " + std::string{(key && *key) ? key : "?"} + " to enter the " + name;
-    }
-} // namespace
 
 // Rebuilt only when the answer changes: get_action_bind_name allocates an engine-heap rf::String,
 // which must not happen on every frame the prompt is up.
@@ -1292,74 +1319,6 @@ void vehicle_server_handle_use_request(rf::Player* pp, int vehicle_handle, uint8
     vehicle_server_handle_enter(pp, rider, vehicle_handle, seat_index);
 }
 
-namespace
-{
-    // Release a rider the stated occupancy no longer seats. `announced` is the packet's changed
-    // seat: that one exit is the event the server is reporting, so it runs the ENGINE's detach -
-    // the exit-spot search and its cues. Any other seat is a mirror repair and is released in
-    // place, silently. Either way the rider is fully un-welded and his eye limits restored.
-    void vehicle_client_release_rider(rf::Entity* vehicle, rf::Entity* rider, bool announced)
-    {
-        const VehicleExitView view = vehicle_capture_exit_view(vehicle);
-        const rf::Vector3 rider_inertia = (announced && rider == rf::local_player_entity)
-            ? vehicle_capture_exit_inertia(vehicle, rider) : rf::Vector3{};
-        const bool detached = announced && rider->host_handle == vehicle->handle
-            && rf::entity_detach_from_host(rider);
-        if (!detached) {
-            rf::entity_detach_leech(vehicle, rider->handle, false);
-            rider->host_handle = -1;
-            rider->host_tag_handle = -1;
-        }
-        if (rider == rf::local_player_entity) {
-            vehicle_local_rider_exit();
-        }
-        vehicle_exit_restore(vehicle, rider, view);
-        vehicle_apply_exit_inertia(rider, rider_inertia);
-    }
-
-    // Seat this rider, who is in no seat of this hull. Stale leeches were cleared by the release
-    // pass, so an attach refusal here is a real one.
-    bool vehicle_client_seat_rider(rf::Entity* vehicle, rf::Entity* rider, int seat_index)
-    {
-        int tag_handle = -1;
-        if (!vehicle_seat_tag_from_index(vehicle, seat_index, &tag_handle)) {
-            return false;
-        }
-        if (rider->host_handle == vehicle->handle) {
-            // A half attachment, released by hand: entity_detach_from_host would run the exit-spot
-            // search on a man with no seat.
-            rider->host_handle = -1;
-            rider->host_tag_handle = -1;
-        }
-        else if (rider->host_handle != -1) {
-            // Aboard something else; the server is authoritative. The engine detach refuses when its
-            // exit-spot search finds nowhere to stand, and leaving him leeched there would seat one
-            // rider in two hulls at once.
-            rf::Entity* old_host = rf::entity_from_handle(rider->host_handle);
-            if (!rf::entity_detach_from_host(rider)) {
-                if (old_host) {
-                    rf::entity_detach_leech(old_host, rider->handle, false);
-                }
-                rider->host_handle = -1;
-                rider->host_tag_handle = -1;
-            }
-        }
-        rf::entity_turn_weapon_off(rider->handle, rider->ai.current_primary_weapon);
-        if (!rf::entity_attach_leech(vehicle, rider->handle, tag_handle)) {
-            xlog::warn("vehicle_state: attach failed (seat {} of '{}')", seat_index, vehicle->name);
-            return false;
-        }
-        vehicle_boarding_init(vehicle, rider);
-        if (rider == rf::local_player_entity) {
-            vehicle_local_rider_enter(vehicle);
-        }
-        return true;
-    }
-} // namespace
-
-// How long a stated occupancy naming an unresolvable rider keeps being re-applied.
-constexpr int64_t vehicle_pending_seats_ttl_ms = 5000;
-
 void vehicle_apply_seat_occupancy_from_packet(int vehicle_handle, const int32_t* seat_rider,
                                               int seat_count, uint8_t changed_seat,
                                               const int16_t* hull_vel)
@@ -1373,7 +1332,7 @@ void vehicle_apply_seat_occupancy_from_packet(int vehicle_handle, const int32_t*
         seat_count = af_vehicle_state_max_seats;
     }
     if (changed_seat != af_vehicle_state_changed_none && changed_seat >= seat_count) {
-        xlog::warn("vehicle_state: changed seat {} outside stated count {}", changed_seat, seat_count);
+        xlog::warn("[vehicle] changed seat {} outside stated count {}", changed_seat, seat_count);
         return;
     }
 

@@ -699,7 +699,7 @@ static_assert(offsetof(EditorViewData, camera_pos) == 0x28);
 struct EditorViewport
 {
     uint8_t pad_00[0x4C];               // +0x00
-    int view_type;                      // +0x4C  0 = the perspective (3D) view
+    int view_type;                      // +0x4C  editor_view_type_perspective for the 3D view
     int view_index;                     // +0x50  its slot in the main frame, as painting_view_index
     EditorViewData* view_data;          // +0x54
     uint8_t pad_58[0x6C - 0x58];        // +0x58
@@ -729,8 +729,12 @@ struct EditorViewport
         AddrCaller{0x0047DAE0}.this_call(this, begin_frame);
     }
 };
+static_assert(offsetof(EditorViewport, view_type) == 0x4C);
+static_assert(offsetof(EditorViewport, view_index) == 0x50);
 static_assert(offsetof(EditorViewport, view_data) == 0x54);
 static_assert(offsetof(EditorViewport, needs_repaint) == 0x6C);
+
+constexpr int editor_view_type_perspective = 0;
 
 static auto& get_active_viewport = addr_as_ref<EditorViewport* __cdecl()>(0x004835B0);
 
@@ -843,10 +847,14 @@ constexpr uint32_t tmap_uv = 0x1;
 constexpr uint32_t tmap_rgb = 0x4;
 constexpr uint32_t tmap_alpha = 0x8;
 
+// gr_mode's colour-source field, and its value for colour taken from the texture
+constexpr uint32_t gr_mode_color_shift = 5;
+constexpr uint32_t gr_mode_color_mask = 0x1F;
+constexpr uint32_t gr_mode_color_texture = 1;
 // FUN_0047e140's packing of a gr_poly_render mode
 constexpr uint32_t gr_mode(uint32_t tex, uint32_t color, uint32_t alpha, uint32_t blend, uint32_t zbuf, uint32_t fog)
 {
-    return tex | color << 5 | alpha << 10 | blend << 15 | zbuf << 20 | fog << 25;
+    return tex | color << gr_mode_color_shift | alpha << 10 | blend << 15 | zbuf << 20 | fog << 25;
 }
 // clamped texture times vertex colour, full z-buffer
 constexpr uint32_t mode_textured = gr_mode(2, 2, 0, 0, 4, 0);
