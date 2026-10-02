@@ -11,6 +11,7 @@ void vehicle_server_apply_fire(rf::Entity* vehicle, const VehicleFireState& stat
 void vehicle_server_stop_fire(rf::Entity* vehicle);
 void vehicle_broadcast_health(rf::Entity* vehicle, bool is_reliable, const rf::Vector3* hit_dir = nullptr);
 void vehicle_server_sync_health(rf::Entity* vehicle);
+void vehicle_tick_ammo_refill_mirrors();
 void vehicle_rider_damage_feedback(int vehicle_handle, const rf::Vector3* hit_dir);
 void vehicle_drop_combat_state(int vehicle_handle);
 

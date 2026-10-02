@@ -459,6 +459,7 @@ void vehicle_client_do_frame()
         };
         std::erase_if(g_vehicle_state.health, handle_is_gone);
         std::erase_if(g_vehicle_state.ammo_mirror, handle_is_gone);
+        vehicle_tick_ammo_refill_mirrors();
         std::erase_if(g_vehicle_state.orient, handle_is_gone);
         std::erase_if(g_vehicle_state.orient_sent, handle_is_gone);
         std::erase_if(g_vehicle_state.observed_speed, handle_is_gone);

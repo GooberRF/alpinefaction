@@ -107,20 +107,14 @@ namespace
     constexpr float vehicle_drill_radius = 2.5f;
 
     // One row per vehicle WEAPON; a weapon with no row never regenerates.
-    struct VehicleWeaponAmmoRegen
-    {
-        const char* weapon_name;
-        int interval_ms; // one round every this many milliseconds
-    };
-
-    constexpr VehicleWeaponAmmoRegen vehicle_weapon_ammo_regen[] = {
-        {"Vauss", 100},
-        {"Fighter Minigun", 100},
-        {"APC Minigun", 100},
-        {"Jeep Gun", 100},
-        {"Torpedo", 5000},
-        {"Fighter Rocket", 5000},
-        {"APC Rocket", 5000},
+    constexpr const char* vehicle_weapon_ammo_regen[] = {
+        "Vauss",
+        "Fighter Minigun",
+        "APC Minigun",
+        "Jeep Gun",
+        "Torpedo",
+        "Fighter Rocket",
+        "APC Rocket",
     };
 
     // The authored table above is the readable config; this is the runtime one. Names are resolved
@@ -135,11 +129,10 @@ namespace
         }
         g_vehicle_ammo_regen_resolved = true;
         for (std::size_t i = 0; i < std::size(vehicle_weapon_ammo_regen); ++i) {
-            const int wt = rf::weapon_lookup_type(vehicle_weapon_ammo_regen[i].weapon_name);
+            const int wt = rf::weapon_lookup_type(vehicle_weapon_ammo_regen[i]);
             g_vehicle_ammo_regen_type[i] = (wt >= 0 && wt < rf::num_weapon_types) ? wt : -1;
             if (g_vehicle_ammo_regen_type[i] < 0) {
-                xlog::warn("[vehicle] ammo regen: unknown weapon class '{}'",
-                           vehicle_weapon_ammo_regen[i].weapon_name);
+                xlog::warn("[vehicle] ammo regen: unknown weapon class '{}'", vehicle_weapon_ammo_regen[i]);
             }
         }
     }
@@ -1550,34 +1543,25 @@ namespace
         return slot_index == 0 ? state.primary_held : state.alt_held;
     }
 
-    // Mirrors the life regen: any shot or a held trigger restarts the delay, then one round per
-    // interval up to the spawn ammo. Runs after this frame's fire pass, so its shots read as a drop.
+    // Each slot refills to its spawn ammo in one step once the delay has passed since its last real
+    // shot. A trigger held on an empty gun fires nothing, so it must not hold the refill off. Runs
+    // after this frame's fire pass, so its shots read as a drop.
     void vehicle_ammo_regen_do_frame(rf::Entity* ep, VehicleRegen& regen, int64_t now)
     {
         for (int i = 0; i < 2; ++i) {
             VehicleAmmoRegen& slot = regen.ammo[i];
-            if (slot.interval_ms <= 0 || slot.weapon_type < 0 || slot.spawn_ammo <= 0) {
+            if (slot.weapon_type < 0 || slot.spawn_ammo <= 0) {
                 continue;
             }
             const int ammo = vehicle_weapon_ammo(ep, slot.weapon_type);
-            if (ammo < slot.last_seen_ammo || vehicle_ammo_slot_trigger_held(ep, i)) {
+            if (ammo < slot.last_seen_ammo || (ammo > 0 && vehicle_ammo_slot_trigger_held(ep, i))) {
                 slot.last_fire_ms = now;
             }
             slot.last_seen_ammo = ammo;
-            // The first round lands as the delay ends; a full weapon banks nothing.
-            if (ammo >= slot.spawn_ammo) {
-                slot.next_ms = now;
+            if (ammo < 0 || ammo >= slot.spawn_ammo || now - slot.last_fire_ms < vehicle_ammo_regen_delay_ms) {
                 continue;
             }
-            if (now - slot.last_fire_ms < vehicle_ammo_regen_delay_ms) {
-                slot.next_ms = slot.last_fire_ms + vehicle_ammo_regen_delay_ms;
-                continue;
-            }
-            if (now < slot.next_ms) {
-                continue;
-            }
-            slot.next_ms += slot.interval_ms;
-            rf::entity_add_to_reserve_ammo(ep, slot.weapon_type, 1);
+            rf::entity_add_to_reserve_ammo(ep, slot.weapon_type, slot.spawn_ammo - ammo);
             slot.last_seen_ammo = vehicle_weapon_ammo(ep, slot.weapon_type);
         }
     }
@@ -1994,11 +1978,59 @@ void vehicle_capture_spawn_ammo(rf::Entity* ep)
             }
             slot.weapon_type = wt;
             slot.spawn_ammo = vehicle_weapon_ammo(ep, wt);
-            slot.interval_ms = vehicle_weapon_ammo_regen[row].interval_ms;
             slot.last_seen_ammo = slot.spawn_ammo;
             break;
         }
     }
+}
+
+int64_t vehicle_ammo_refill_due_ms(const rf::Entity* ep, int slot_index)
+{
+    if (!ep || slot_index < 0 || slot_index >= 2 || ep->life <= 0.0f
+        || rf::entity_is_dying(const_cast<rf::Entity*>(ep))) {
+        return 0;
+    }
+    auto it = g_vehicle_state.regen.find(ep->handle);
+    if (it == g_vehicle_state.regen.end()) {
+        return 0;
+    }
+    const VehicleAmmoRegen& slot = it->second.ammo[slot_index];
+    if (slot.weapon_type < 0 || slot.spawn_ammo <= 0) {
+        return 0;
+    }
+    const int ammo = vehicle_weapon_ammo(ep, slot.weapon_type);
+    if (ammo < 0 || ammo >= slot.spawn_ammo) {
+        return 0;
+    }
+    return slot.last_fire_ms + vehicle_ammo_regen_delay_ms;
+}
+
+// A listen host reads the regen state itself: it is sent no 0x67 of its own.
+bool vehicle_hud_ammo_refill_progress(const rf::Entity* vehicle, int slot_index, float& progress)
+{
+    if (!vehicle || slot_index < 0 || slot_index >= 2) {
+        return false;
+    }
+    float ms_left = 0.0f;
+    if (rf::is_server) {
+        const int64_t due = vehicle_ammo_refill_due_ms(vehicle, slot_index);
+        if (due <= 0) {
+            return false;
+        }
+        ms_left = static_cast<float>(std::clamp<int64_t>(due - timer::get_i64(1000), 0, vehicle_ammo_regen_delay_ms));
+    }
+    else {
+        auto it = g_vehicle_state.ammo_mirror.find(vehicle->handle);
+        if (it == g_vehicle_state.ammo_mirror.end()) {
+            return false;
+        }
+        ms_left = it->second.refill_ms_left[slot_index];
+    }
+    if (ms_left <= 0.0f) {
+        return false;
+    }
+    progress = std::clamp(1.0f - ms_left / static_cast<float>(vehicle_ammo_regen_delay_ms), 0.0f, 1.0f);
+    return true;
 }
 
 // Constant-rate hull regeneration back to the life this vehicle SPAWNED with. The damage clock is

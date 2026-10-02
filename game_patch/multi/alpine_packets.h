@@ -688,8 +688,9 @@ struct af_vehicle_health_packet
     int32_t primary_ammo;   // -1 = this hull has no such weapon
     int32_t secondary_ammo;
     int8_t hit_dir[3];      // world travel direction of the latest attributed hit, x127; all zero = none
+    uint16_t refill_ms[2];  // per weapon slot, ms until its ammo refills; 0 = none pending
 };
-static_assert(sizeof(af_vehicle_health_packet) == sizeof(RF_GamePacketHeader) + 23);
+static_assert(sizeof(af_vehicle_health_packet) == sizeof(RF_GamePacketHeader) + 27);
 
 // Hull angles the stock obj_update row has no slot for; tick keys them to the matching ObjInterp keyframe.
 struct af_vehicle_orient_packet
@@ -1058,10 +1059,10 @@ void af_send_vehicle_fire_packet_to_all(rf::Player* except, int vehicle_handle, 
 void af_send_vehicle_fire_packet(rf::Player* player, int vehicle_handle, uint8_t action, uint8_t alt_fire);
 void af_process_vehicle_fire_packet(const void* data, size_t len, const rf::NetAddr& addr);
 void af_send_vehicle_health_packet(rf::Player* player, int vehicle_handle, float life, float max_life,
-                                   int primary_ammo, int secondary_ammo);
+                                   int primary_ammo, int secondary_ammo, const uint16_t refill_ms[2]);
 void af_send_vehicle_health_packet_to_all(int vehicle_handle, float life, float max_life,
-                                          int primary_ammo, int secondary_ammo, bool is_reliable,
-                                          const rf::Vector3* hit_dir = nullptr);
+                                          int primary_ammo, int secondary_ammo, const uint16_t refill_ms[2],
+                                          bool is_reliable, const rf::Vector3* hit_dir = nullptr);
 void af_process_vehicle_health_packet(const void* data, size_t len, const rf::NetAddr&);
 // client -> server: the hull pitch/bank of the vehicle the local player drives
 void af_send_vehicle_orient_request(int vehicle_handle, uint16_t tick, int16_t pitch, int16_t bank,

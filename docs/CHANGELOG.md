@@ -11,8 +11,8 @@ Version 1.5.0 (Trillium): Not yet released
   - Multi-seat vehicles with driver, gunner, and passenger seats; `Use` boards the lowest free seat and number keys `1`-`6` switch seats
   - Seat every multiplayer character properly as jeep driver, jeep gunner, and turret user, with new animations for characters that had none
   - Hold `Jump` to apply the handbrake in jeeps, APCs, and drillers, which also holds a stopped vehicle in place on slopes; vehicles nobody has entered yet hold their spot the same way
-  - Regenerate vehicle weapon ammo after 5 seconds without firing
-  - Show the APC's minigun and rocket ammo in the HUD ammo counter while driving it
+  - Refill vehicle weapon ammo all at once 5 seconds after the weapon last fired, with a charge bar beside the ammo counter
+  - Show the APC's and fighter's primary and secondary ammo, and the submarine's torpedo ammo, in the HUD ammo counter while driving them
   - Show the vehicle's speed in the HUD speedometer (`ui_show_speed`) while riding in one
   - Optional third-person view for jeep, APC, and driller drivers and the jeep gunner, toggled with `Change View` (formerly `Change Spectate View`, default `;`) and remembered
   - Third-person vehicle views orbit with the mouse and follow the vehicle with a smoothed, speed-aware chase camera, tunable with the `cl_vehiclecam_*` commands; driver and passenger views ease back behind the vehicle, and the APC's guns converge on the crosshair

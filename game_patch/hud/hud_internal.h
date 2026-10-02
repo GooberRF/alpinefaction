@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <string>
 #include "../rf/gr/gr.h"
 #include "../rf/input.h"
@@ -67,6 +68,9 @@ extern float g_hud_ammo_scale;
 
 void hud_status_apply_patches();
 void hud_status_set_big(bool is_big);
+// How long a vehicle bar takes to rise over its previous alpha, and to fade once full.
+inline constexpr int64_t hud_vehicle_bar_rise_ms = 150;
+inline constexpr int64_t hud_vehicle_bar_fade_ms = 1000;
 // Fill colour of a vehicle health bar at this fraction of max life; a is the HUD bar's alpha.
 void hud_vehicle_bar_fill_color(float frac, rf::ubyte& r, rf::ubyte& g, rf::ubyte& b, rf::ubyte& a);
 void hud_personas_apply_patches();

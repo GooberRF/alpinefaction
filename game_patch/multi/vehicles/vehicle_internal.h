@@ -34,6 +34,7 @@ struct VehicleHealthSync
     float last_sent_life = -1.0f;
     int last_sent_primary_ammo = -2;   // -1 is a legal "no such weapon", so the unsent marker is -2
     int last_sent_secondary_ammo = -2;
+    int64_t last_sent_refill_due_ms[2] = {-1, -1};
     rf::Timestamp next_send;
     int64_t last_change_ms = 0;
     bool settled_sent = true; // nothing has changed since the last reliable send
@@ -48,7 +49,7 @@ struct VehicleHealth
     float max_life = 0.0f;
 };
 
-// Fire-free time before a vehicle weapon regenerates ammo; the server can never raise a weapon's ammo sooner.
+// Time after a weapon's last real shot until it refills to its spawn ammo in one step.
 inline constexpr int64_t vehicle_ammo_regen_delay_ms = 5000;
 
 // How long after its own predicted shots the firing client ignores a higher server total: a stale packet
@@ -62,17 +63,19 @@ struct VehicleAmmoMirror
 {
     int total[2] = {-1, -1};
     int64_t last_drop_ms[2] = {};
+    // Counted down in demo time between packets; 0 = no refill pending.
+    float refill_ms_left[2] = {};
+    // The last packet's refill_ms was nonzero: a raise in the next one with refill_ms 0 is that refill.
+    bool refill_pending[2] = {};
 };
 
 // Server: one vehicle weapon's ammo regeneration state, captured at spawn.
 struct VehicleAmmoRegen
 {
     int weapon_type = -1;
-    int spawn_ammo = 0;   // the ceiling regen may climb back to
-    int interval_ms = 0;  // 0 = this weapon does not regenerate
-    int64_t next_ms = 0;  // when the next +1 is due
+    int spawn_ammo = 0;   // the refill target; 0 = this weapon does not regenerate
     int last_seen_ammo = 0;
-    int64_t last_fire_ms = 0; // driven by an OBSERVED drop in ammo or a held trigger, like last_damage_ms
+    int64_t last_fire_ms = 0; // driven by an OBSERVED drop in ammo or a trigger held on a loaded gun
 };
 
 // Server: hull regeneration and melee repair state. spawn_max_life is captured ONCE at creation and
@@ -360,6 +363,8 @@ void vehicle_init_synced_entity(rf::Entity* ep);
 // Server: capture this hull's per-weapon ammo ceiling at creation, beside the life ceiling.
 void vehicle_capture_spawn_ammo(rf::Entity* ep);
 void vehicle_ammo_regen_runtime_reset();
+// Server: the local clock time this weapon slot refills at, 0 when no refill is pending.
+int64_t vehicle_ammo_refill_due_ms(const rf::Entity* ep, int slot_index);
 void track_synced_entity(rf::Entity* ep);
 const rf::EntityInterfacePoint* vehicle_seat(const rf::Entity* vehicle, int index);
 int vehicle_seat_leech(const rf::Entity* vehicle, int index);

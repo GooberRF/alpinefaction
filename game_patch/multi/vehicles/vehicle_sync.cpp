@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <numbers>
 #include <optional>
@@ -16,6 +17,7 @@
 #include "vehicle_view.h"
 #include "../alpine_packets.h"
 #include "../multi.h"
+#include "../demo/demo.h"
 #include "../../hud/multi_spectate.h"
 #include "../../misc/alpine_settings.h"
 #include "../../misc/level.h"
@@ -39,6 +41,8 @@ namespace
     constexpr int64_t vehicle_health_settle_ms = 1000;
     // A hit older than this belongs to a drop already sent; it must not steer a later one.
     constexpr int64_t vehicle_hit_dir_max_age_ms = 250;
+    // A trigger held on a loaded gun pushes the refill due time on every frame; drift under this is not resent.
+    constexpr int64_t vehicle_refill_due_resend_ms = 250;
 
     // One supplement per obj_update sample (CLIENT_NET_FPS 40, 25 ms); only a faster client is capped.
     constexpr int vehicle_orient_relay_min_ms = 15;
@@ -48,6 +52,16 @@ namespace
 
     // Least time between two turn-ons of one hull's continuous gun, whatever weapons.tbl says.
     constexpr int vehicle_fire_rearm_floor_ms = 100;
+
+    // Relative to the send, so a late or resent packet still counts down to the right moment.
+    void vehicle_wire_refill_ms(const rf::Entity* vehicle, int64_t now, uint16_t out[2])
+    {
+        for (int i = 0; i < 2; ++i) {
+            const int64_t due = vehicle_ammo_refill_due_ms(vehicle, i);
+            out[i] = due > 0 ? static_cast<uint16_t>(std::clamp<int64_t>(due - now, 1, vehicle_ammo_regen_delay_ms))
+                             : 0;
+        }
+    }
 } // namespace
 
 // Re-seed PF_NET_PLAYER ownership from the seats. driver_boarding is a seat-0 boarding, a fresh
@@ -799,23 +813,34 @@ void vehicle_server_stop_fire(rf::Entity* vehicle)
 // the demo recorder is a virtual observer player.
 void vehicle_broadcast_health(rf::Entity* vehicle, bool is_reliable, const rf::Vector3* hit_dir)
 {
+    uint16_t refill_ms[2];
+    vehicle_wire_refill_ms(vehicle, timer::get_i64(1000), refill_ms);
     af_send_vehicle_health_packet_to_all(vehicle->handle, vehicle->life, vehicle_hud_max_life(vehicle),
                                          vehicle_weapon_ammo(vehicle, vehicle->ai.current_primary_weapon),
                                          vehicle_weapon_ammo(vehicle, vehicle->ai.current_secondary_weapon),
-                                         is_reliable, hit_dir);
+                                         refill_ms, is_reliable, hit_dir);
 }
 
 // Streaming UNRELIABLE, settling RELIABLE: each unreliable packet supersedes the last, so only the
-// LAST packet of a run is not self-correcting. Ammo shares the packet, compared for ANY change.
+// LAST packet of a run is not self-correcting. Ammo and the refill clocks share the packet, compared
+// for ANY change: a restarted refill clock must reach the HUD bars even when no ammo moved.
 void vehicle_server_sync_health(rf::Entity* vehicle)
 {
     VehicleHealthSync& sync = g_vehicle_state.health_sync[vehicle->handle];
     const int primary = vehicle_weapon_ammo(vehicle, vehicle->ai.current_primary_weapon);
     const int secondary = vehicle_weapon_ammo(vehicle, vehicle->ai.current_secondary_weapon);
+    const int64_t refill_due[2] = {vehicle_ammo_refill_due_ms(vehicle, 0), vehicle_ammo_refill_due_ms(vehicle, 1)};
     const int64_t now = timer::get_i64(1000);
+    // A start or a finish always goes out; a moved due time only once the bar would visibly drift.
+    const auto refill_changed = [&sync, &refill_due](int i) {
+        const int64_t last = sync.last_sent_refill_due_ms[i];
+        return refill_due[i] != last
+            && (refill_due[i] == 0 || last == 0 || std::abs(refill_due[i] - last) >= vehicle_refill_due_resend_ms);
+    };
 
     const bool changed = std::fabs(vehicle->life - sync.last_sent_life) >= 1.0f
-        || primary != sync.last_sent_primary_ammo || secondary != sync.last_sent_secondary_ammo;
+        || primary != sync.last_sent_primary_ammo || secondary != sync.last_sent_secondary_ammo
+        || refill_changed(0) || refill_changed(1);
 
     if (changed) {
         if (sync.next_send.valid() && !sync.next_send.elapsed()) {
@@ -824,6 +849,8 @@ void vehicle_server_sync_health(rf::Entity* vehicle)
         sync.last_sent_life = vehicle->life;
         sync.last_sent_primary_ammo = primary;
         sync.last_sent_secondary_ammo = secondary;
+        sync.last_sent_refill_due_ms[0] = refill_due[0];
+        sync.last_sent_refill_due_ms[1] = refill_due[1];
         sync.next_send.set(vehicle_health_send_interval_ms);
         sync.last_change_ms = now;
         sync.settled_sent = false;
@@ -1430,9 +1457,12 @@ void vehicle_send_seat_states_to(rf::Player* pp)
         vehicle_send_seat_occupancy_to(pp, vehicle, -1);
         // Health too: the broadcast only fires on a change watermark, so an untouched hull would
         // never send this man anything.
+        uint16_t refill_ms[2];
+        vehicle_wire_refill_ms(vehicle, timer::get_i64(1000), refill_ms);
         af_send_vehicle_health_packet(pp, vehicle->handle, vehicle->life, vehicle_hud_max_life(vehicle),
                                       vehicle_weapon_ammo(vehicle, vehicle->ai.current_primary_weapon),
-                                      vehicle_weapon_ammo(vehicle, vehicle->ai.current_secondary_weapon));
+                                      vehicle_weapon_ammo(vehicle, vehicle->ai.current_secondary_weapon),
+                                      refill_ms);
         // A gun already firing sent its START before this man existed.
         const int primary = vehicle->ai.current_primary_weapon;
         if (primary >= 0 && rf::entity_weapon_is_on(vehicle->handle, primary)
@@ -1676,7 +1706,8 @@ void vehicle_rider_damage_feedback(int vehicle_handle, const rf::Vector3* hit_di
 }
 
 void vehicle_store_health_from_packet(int vehicle_handle, float life, float max_life, int primary_ammo,
-                                      int secondary_ammo, const rf::Vector3* hit_dir)
+                                      int secondary_ammo, uint16_t primary_refill_ms, uint16_t secondary_refill_ms,
+                                      const rf::Vector3* hit_dir)
 {
     rf::Object* obj = rf::obj_from_remote_handle(vehicle_handle);
     if (!obj) {
@@ -1704,7 +1735,11 @@ void vehicle_store_health_from_packet(int vehicle_handle, float life, float max_
     const int64_t now = timer::get_i64(1000);
     // Only the firing seat predicts shots; a watcher's replays are the server's own and must take its value.
     const bool predicts = vehicle_local_owns_firing_seat(vehicle);
-    const auto set_ammo = [vehicle, &mirror, now, predicts](int slot, int weapon_type, int total) {
+    const auto set_ammo = [vehicle, &mirror, now, predicts](int slot, int weapon_type, int total, uint16_t refill_ms) {
+        // A refill lands whole, so a driver firing through it would otherwise dry-click out the stale window.
+        // Any shots still in flight are taken off by the next packet's lower total, which is always applied.
+        const bool refill_landed = mirror.refill_pending[slot] && refill_ms == 0;
+        mirror.refill_pending[slot] = refill_ms > 0;
         constexpr int vehicle_wire_ammo_max = 10000;
         if (total < 0 || total > vehicle_wire_ammo_max || weapon_type < 0 || weapon_type >= 64) {
             return; // -1 total = the hull has no such weapon; leave the mirror alone
@@ -1721,7 +1756,7 @@ void vehicle_store_health_from_packet(int vehicle_handle, float life, float max_
         }
         // A raise this soon after a local shot is a packet from before it; applying it would feed shots the
         // server never fires.
-        if (predicts && total > local && mirror.total[slot] >= 0
+        if (predicts && total > local && !refill_landed && mirror.total[slot] >= 0
             && now - mirror.last_drop_ms[slot] < vehicle_ammo_stale_raise_ms) {
             mirror.total[slot] = local;
             return;
@@ -1729,8 +1764,21 @@ void vehicle_store_health_from_packet(int vehicle_handle, float life, float max_
         vehicle->ai.ammo[ammo_type] = std::max(total - clip, 0);
         mirror.total[slot] = total;
     };
-    set_ammo(0, vehicle->ai.current_primary_weapon, primary_ammo);
-    set_ammo(1, vehicle->ai.current_secondary_weapon, secondary_ammo);
+    set_ammo(0, vehicle->ai.current_primary_weapon, primary_ammo, primary_refill_ms);
+    set_ammo(1, vehicle->ai.current_secondary_weapon, secondary_ammo, secondary_refill_ms);
+    mirror.refill_ms_left[0] = static_cast<float>(std::min<int64_t>(primary_refill_ms, vehicle_ammo_regen_delay_ms));
+    mirror.refill_ms_left[1] = static_cast<float>(std::min<int64_t>(secondary_refill_ms, vehicle_ammo_regen_delay_ms));
+}
+
+// Ticked on demo time, so a paused or rescaled demo keeps the bars in step with the recorded refills.
+void vehicle_tick_ammo_refill_mirrors()
+{
+    const float dt_ms = rf::frametime * 1000.0f * demo_playback_sim_time_scale();
+    for (auto& [handle, mirror] : g_vehicle_state.ammo_mirror) {
+        for (float& ms_left : mirror.refill_ms_left) {
+            ms_left = std::max(ms_left - dt_ms, 0.0f);
+        }
+    }
 }
 
 void vehicle_sync_apply_patch()

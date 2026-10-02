@@ -60,8 +60,6 @@ namespace
     constexpr float marker_bar_back_alpha = 0.45f;
     constexpr float marker_bar_fill_alpha = 0.75f;
     constexpr float marker_bar_full_epsilon = 0.5f;
-    constexpr int64_t marker_bar_fade_ms = 1000;
-    constexpr int64_t marker_bar_rise_ms = 150; // how long the countdown takes to slide up over a new bar
 
     struct MarkerMeshEntry
     {
@@ -283,14 +281,14 @@ namespace
         if (b.full_since_ms < 0) {
             return 1.0f;
         }
-        return std::clamp(1.0f - static_cast<float>(now - b.full_since_ms) / marker_bar_fade_ms, 0.0f, 1.0f);
+        return std::clamp(1.0f - static_cast<float>(now - b.full_since_ms) / hud_vehicle_bar_fade_ms, 0.0f, 1.0f);
     }
 
     // The bar's visibility, and the share of its height the countdown is lifted by: rises as the bar
     // appears, falls as it fades.
     float health_bar_lift(const HullHealthBar& b, int64_t now)
     {
-        const float t = std::clamp(static_cast<float>(now - b.rise_since_ms) / marker_bar_rise_ms, 0.0f, 1.0f);
+        const float t = std::clamp(static_cast<float>(now - b.rise_since_ms) / hud_vehicle_bar_rise_ms, 0.0f, 1.0f);
         return std::min(b.rise_from + (1.0f - b.rise_from) * t, health_bar_fade(b, now));
     }
 
@@ -344,7 +342,7 @@ namespace
         std::erase_if(g_health_bars, [now, viewer_hull](const HullHealthBar& b) {
             rf::Entity* ep = rf::entity_from_handle(b.handle);
             return ep == viewer_hull || !vehicle_is_synced_entity_type(ep) || rf::entity_is_dying(ep)
-                || (b.full_since_ms >= 0 && now - b.full_since_ms >= marker_bar_fade_ms);
+                || (b.full_since_ms >= 0 && now - b.full_since_ms >= hud_vehicle_bar_fade_ms);
         });
     }
 

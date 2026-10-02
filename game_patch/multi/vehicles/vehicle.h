@@ -242,12 +242,15 @@ void vehicle_apply_orient_from_packet(int vehicle_handle, uint16_t tick, int16_t
 
 // Client: store an af_vehicle_health update, and the values the HUD shows for a vehicle.
 void vehicle_store_health_from_packet(int vehicle_handle, float life, float max_life, int primary_ammo,
-                                      int secondary_ammo, const rf::Vector3* hit_dir = nullptr);
+                                      int secondary_ammo, uint16_t primary_refill_ms, uint16_t secondary_refill_ms,
+                                      const rf::Vector3* hit_dir = nullptr);
 // Total ammo (clip + reserve) for one weapon type, or -1 for a weapon with no ammo pool at all.
 // Only an exact 0 means EMPTY, so a caller gating on emptiness must test == 0, never <= 0.
 int vehicle_weapon_ammo(const rf::Entity* vehicle, int weapon_type);
 float vehicle_hud_life(const rf::Entity* vehicle);
 float vehicle_hud_max_life(const rf::Entity* vehicle);
+// False when weapon slot 0 (primary) or 1 (secondary) has no refill pending; else its 0..1 progress.
+bool vehicle_hud_ammo_refill_progress(const rf::Entity* vehicle, int slot_index, float& progress);
 
 // Server, from obj_damage: the per-class / per-damage-type damage scales. MUST be passed the RAW
 // killer, before vehicle_filter_obj_damage rewrites it; returns damage unchanged off the server.
