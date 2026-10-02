@@ -45,9 +45,14 @@ void riot_shield_reset_fp_decals(rf::Player* player);
 void riot_shield_on_multi_level_init();
 void entity_rate_limit_on_entity_delete(int handle);
 void entity_rate_limit_clear();
+bool level_allows_extra_items();
 
 constexpr size_t old_obj_limit = 1024;
 constexpr size_t obj_limit = 65536;
+
+// Item limit of pre-v306 levels, and of v306+ levels (see level_allows_extra_items).
+constexpr int stock_item_limit = 200;
+constexpr int extended_item_limit = 1500;
 
 // Length limits for names read from untrusted alpine level chunks.
 constexpr size_t max_bitmap_name = 32;

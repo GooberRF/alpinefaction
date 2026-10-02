@@ -102,16 +102,6 @@ CodeInjection level_read_moving_group_lift_patch{
     }
 };
 
-CodeInjection level_load_items_crash_fix{
-    0x0046519F,
-    [](auto& regs) {
-        void* item = regs.eax;
-        if (item == nullptr) {
-            regs.eip = 0x004651C6;
-        }
-    },
-};
-
 CallHook<void(rf::Vector3*, float, float, float, float, bool, int, int)> level_read_geometry_header_light_add_directional_hook{
     0x004619E1,
     [](rf::Vector3 *dir, float intensity, float r, float g, float b, bool is_dynamic, int casts_shadow, int dropoff_type) {
@@ -611,9 +601,6 @@ void level_apply_patch()
     // Fix impossible mover timing values and allow lift type movers
     level_read_moving_group_travel_time_patch.install();
     level_read_moving_group_lift_patch.install();
-
-    // Fix item_create null result handling in RFL loading (affects multiplayer only)
-    level_load_items_crash_fix.install();
 
     // Fix dedicated server crash when loading level that uses directional light
     level_read_geometry_header_light_add_directional_hook.install();

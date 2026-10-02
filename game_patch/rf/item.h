@@ -67,9 +67,13 @@ namespace rf
     static auto& item_list = addr_as_ref<Item>(0x00642DD8);
     static auto& item_info = addr_as_ref<ItemInfo[96]>(0x006430A0);
     static auto& num_item_types = addr_as_ref<int>(0x00644EA0);
+    static auto& num_level_items = addr_as_ref<int>(0x006D60E4); // multi server; handle table is relocated
 
     static auto& item_lookup_type = addr_as_ref<int(const char *name)>(0x00459430);
     static auto& item_restore_mesh = addr_as_ref<void(Item *item, const char *mesh_name)>(0x00459BB0);
+    static auto& item_from_handle = addr_as_ref<Item*(int handle)>(0x00459A20);
+    static auto& item_play_pickup_sound = addr_as_ref<void(Item *item)>(0x00459520);
+    static auto& item_unhide = addr_as_ref<void(Item *item)>(0x00459970); // no-op unless hidden; plays respawn sound
     static auto& item_create = addr_as_ref<Item*(int type, const char* name, int count, int parent_handle,
         const Vector3* pos, Matrix3* orient, int respawn_time, bool permanent, bool from_packet)>(0x00459100);
 
