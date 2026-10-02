@@ -36,6 +36,7 @@
 #include "terrain_decorations.h"
 #include "alpine_lightmaps.h"
 #include "headless_bake.h"
+#include "face_list_cache.h"
 
 // Forward declarations
 int get_level_rfl_version();
@@ -671,6 +672,24 @@ static void recompute_room_bbox(GRoom* room)
     room->bbox_max = vmax;
 }
 
+// Leaves the room exactly as add_face's per-face unlinks would, in one pass.
+static void unlink_room_faces(GRoom* room, const std::unordered_set<GFace*>& faces)
+{
+    GFace** link = &room->face_list_head;
+    while (GFace* f = *link) {
+        if (faces.count(f)) {
+            *link = f->next_room;
+            f->next_room = nullptr;
+            f->which_room = nullptr;
+            room->face_list_count--;
+        }
+        else {
+            link = &f->next_room;
+        }
+    }
+    face_list_cache_forget(&room->face_list_head);
+}
+
 static void isolate_marked_rooms(GSolid* solid)
 {
     // Group faces by room, then by isolated brush UID (-1 = not isolated)
@@ -700,24 +719,37 @@ static void isolate_marked_rooms(GSolid* solid)
         if (isolated_count == 0) continue;                 // no isolated faces
         if (!has_unmarked && isolated_count <= 1) continue; // single isolated brush, no mixing
 
-        // Room has mixed content — split each isolated brush into its own room
-        bool first_isolated = true;
-        for (auto& [uid, faces] : fg.by_brush) {
-            if (uid == -1) continue;
+        // If room has only isolated faces (no unmarked), keep the first
+        // isolated group in the original room to avoid creating an empty room
+        int kept_uid = -1;
+        if (!has_unmarked) {
+            kept_uid = fg.by_brush.begin()->first;
+        }
 
-            // If room has only isolated faces (no unmarked), keep the first
-            // isolated group in the original room to avoid creating an empty room
-            if (!has_unmarked && first_isolated) {
-                first_isolated = false;
-                continue;
+        // add_face's stock unlink walks the room list from its head for every face, which is quadratic
+        // when a terrain room is split, so every moving face leaves the room list in one pass first.
+        std::unordered_set<GFace*> moving;
+        for (auto& [uid, faces] : fg.by_brush) {
+            if (uid != -1 && uid != kept_uid) {
+                moving.insert(faces.begin(), faces.end());
             }
-            first_isolated = false;
+        }
+        unlink_room_faces(room, moving);
+
+        // Room has mixed content — split each isolated brush into its own room
+        for (auto& [uid, faces] : fg.by_brush) {
+            if (uid == -1 || uid == kept_uid) continue;
 
             // Use first face's bbox to initialize the new room
             GFace* seed = faces[0];
 
             GRoom* new_room = GRoom::alloc();
-            if (!new_room) continue;
+            if (!new_room) {
+                for (GFace* f : faces) {
+                    room->add_face(f);
+                }
+                continue;
+            }
             new_room->init(solid, &seed->bounding_box_min, &seed->bounding_box_max);
 
             // Copy life from original room so breakable brushes retain their HP.
