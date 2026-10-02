@@ -772,6 +772,14 @@ static bool is_action_held_by_button(int action_idx)
     return false;
 }
 
+// Vehicles and freelook have no analog movement path (physics hook skips ai.ci.move for
+// both), so they drive off the real key-down state instead — we're injecting key events.
+static bool movement_uses_digital_fallback()
+{
+    return (rf::local_player_entity && rf::entity_in_vehicle(rf::local_player_entity))
+        || is_freelook_camera();
+}
+
 static void set_movement_key(rf::ControlConfigAction action, bool down)
 {
     int idx = static_cast<int>(action);
@@ -780,8 +788,7 @@ static void set_movement_key(rf::ControlConfigAction action, bool down)
     if (in_gameplay)
         down = down || is_action_held_by_button(idx);
 
-    // Vehicles have no analog throttle path and drive off the real key-down state, we're injecting key events.
-    if (in_gameplay && rf::local_player_entity && rf::entity_in_vehicle(rf::local_player_entity)
+    if (in_gameplay && movement_uses_digital_fallback()
         && g_action_curr[idx] != down && rf::local_player
         && (!down || !rf::console::console_is_visible())) {
         int16_t sc = rf::local_player->settings.controls.bindings[idx].scan_codes[0];
@@ -802,10 +809,10 @@ static void release_movement_keys()
         rf::CC_ACTION_SLIDE_LEFT,
         rf::CC_ACTION_SLIDE_RIGHT,
     };
-    bool in_vehicle = rf::local_player_entity && rf::entity_in_vehicle(rf::local_player_entity);
+    bool needs_key_release = movement_uses_digital_fallback();
     for (rf::ControlConfigAction action : k_move_actions) {
         int idx = static_cast<int>(action);
-        if (in_vehicle && g_action_curr[idx] && rf::local_player) {
+        if (needs_key_release && g_action_curr[idx] && rf::local_player) {
             int16_t sc = rf::local_player->settings.controls.bindings[idx].scan_codes[0];
             if (sc > 0)
                 rf::key_process_event(sc, 0, 0);
@@ -1589,6 +1596,44 @@ static bool is_local_player_vehicle(rf::Entity* entity)
     return vehicle == entity;
 }
 
+// Inject stick + gyro into vehicle rotation (ci.rot, range ±1.0 like keyboard input).
+static void apply_vehicle_camera_input(rf::Entity* entity)
+{
+    SDL_GamepadAxis rot_x, rot_y;
+    float rot_dz;
+    get_stick_axes(true, rot_x, rot_y, rot_dz);
+    constexpr float k_vehicle_dz_multiplier = 1.2f;
+    float rx = get_axis(rot_x, rot_dz * k_vehicle_dz_multiplier);
+    float ry = get_axis(rot_y, rot_dz * k_vehicle_dz_multiplier);
+    float joy_yaw_sign   = g_alpine_game_config.gamepad_joy_invert_x ? -1.0f : 1.0f;
+    float joy_pitch_sign = g_alpine_game_config.gamepad_joy_invert_y ? 1.0f : -1.0f;
+    // Normalize so that the default sensitivity (2.5) produces 1:1 vehicle scale.
+    constexpr float k_default_sens = 2.5f;
+    float joy_sens = g_alpine_game_config.gamepad_joy_sensitivity / k_default_sens;
+    entity->ai.ci.rot.y += std::clamp(joy_yaw_sign * rx * joy_sens, -1.0f, 1.0f);
+    entity->ai.ci.rot.x += std::clamp(joy_pitch_sign * ry * joy_sens, -1.0f, 1.0f);
+
+    // 1/90 scale: 90 deg/s gyro = full keyboard deflection at default sensitivity.
+    // Normalized by k_default_sens so gyro and joystick sensitivity values are equivalent.
+    if (g_motion_sensors_supported && g_alpine_game_config.gamepad_gyro_enabled
+        && g_alpine_game_config.gamepad_gyro_vehicle_camera
+        && g_alpine_game_config.gamepad_gyro_sensitivity > 0.0f
+        && gyro_ratcheting_is_active()) {
+        float gyro_pitch, gyro_yaw;
+        gyro_get_axis_orientation(gyro_pitch, gyro_yaw);
+        gyro_apply_smoothing(gyro_pitch, gyro_yaw);
+        gyro_apply_tightening(gyro_pitch, gyro_yaw);
+        gyro_apply_vh_mixer(gyro_pitch, gyro_yaw);
+
+        constexpr float gyro_to_rot = 1.0f / 90.0f;
+        float sens = g_alpine_game_config.gamepad_gyro_sensitivity / k_default_sens;
+        float yaw_sign = g_alpine_game_config.gamepad_gyro_invert_x ? -1.0f : 1.0f;
+        float pitch_sign = g_alpine_game_config.gamepad_gyro_invert_y ? -1.0f : 1.0f;
+        entity->ai.ci.rot.y += std::clamp(yaw_sign * -gyro_yaw * gyro_to_rot * sens, -1.0f, 1.0f);
+        entity->ai.ci.rot.x += std::clamp(pitch_sign * gyro_pitch * gyro_to_rot * sens, -1.0f, 1.0f);
+    }
+}
+
 FunHook<void(rf::Entity*)> physics_simulate_entity_hook{
     0x0049F3C0,
     [](rf::Entity* entity) {
@@ -1607,42 +1652,8 @@ FunHook<void(rf::Entity*)> physics_simulate_entity_hook{
             }
         }
 
-        // Inject stick + gyro into vehicle rotation (ci.rot, range ±1.0 like keyboard input).
-        if (is_gamepad_input_active() && is_local_player_vehicle(entity)) {
-            SDL_GamepadAxis rot_x, rot_y;
-            float rot_dz;
-            get_stick_axes(true, rot_x, rot_y, rot_dz);
-            constexpr float k_vehicle_dz_multiplier = 1.2f;
-            float rx = get_axis(rot_x, rot_dz * k_vehicle_dz_multiplier);
-            float ry = get_axis(rot_y, rot_dz * k_vehicle_dz_multiplier);
-            float joy_yaw_sign   = g_alpine_game_config.gamepad_joy_invert_x ? -1.0f : 1.0f;
-            float joy_pitch_sign = g_alpine_game_config.gamepad_joy_invert_y ? 1.0f : -1.0f;
-            // Normalize so that the default sensitivity (2.5) produces 1:1 vehicle scale.
-            constexpr float k_default_sens = 2.5f;
-            float joy_sens = g_alpine_game_config.gamepad_joy_sensitivity / k_default_sens;
-            entity->ai.ci.rot.y += std::clamp(joy_yaw_sign * rx * joy_sens, -1.0f, 1.0f);
-            entity->ai.ci.rot.x += std::clamp(joy_pitch_sign * ry * joy_sens, -1.0f, 1.0f);
-
-            // 1/90 scale: 90 deg/s gyro = full keyboard deflection at default sensitivity.
-            // Normalized by k_default_sens so gyro and joystick sensitivity values are equivalent.
-            if (g_motion_sensors_supported && g_alpine_game_config.gamepad_gyro_enabled
-                && g_alpine_game_config.gamepad_gyro_vehicle_camera
-                && g_alpine_game_config.gamepad_gyro_sensitivity > 0.0f
-                && gyro_ratcheting_is_active()) {
-                float gyro_pitch, gyro_yaw;
-                gyro_get_axis_orientation(gyro_pitch, gyro_yaw);
-                gyro_apply_smoothing(gyro_pitch, gyro_yaw);
-                gyro_apply_tightening(gyro_pitch, gyro_yaw);
-                gyro_apply_vh_mixer(gyro_pitch, gyro_yaw);
-
-                constexpr float gyro_to_rot = 1.0f / 90.0f;
-                float sens = g_alpine_game_config.gamepad_gyro_sensitivity / k_default_sens;
-                float yaw_sign = g_alpine_game_config.gamepad_gyro_invert_x ? -1.0f : 1.0f;
-                float pitch_sign = g_alpine_game_config.gamepad_gyro_invert_y ? -1.0f : 1.0f;
-                entity->ai.ci.rot.y += std::clamp(yaw_sign * -gyro_yaw * gyro_to_rot * sens, -1.0f, 1.0f);
-                entity->ai.ci.rot.x += std::clamp(pitch_sign * gyro_pitch * gyro_to_rot * sens, -1.0f, 1.0f);
-            }
-        }
+        if (is_gamepad_input_active() && is_local_player_vehicle(entity))
+            apply_vehicle_camera_input(entity);
 
         physics_simulate_entity_hook.call_target(entity);
     },
