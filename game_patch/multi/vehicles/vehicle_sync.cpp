@@ -842,8 +842,14 @@ void vehicle_server_sync_health(rf::Entity* vehicle)
         || primary != sync.last_sent_primary_ammo || secondary != sync.last_sent_secondary_ammo
         || refill_changed(0) || refill_changed(1);
 
+    // A landed refill skips the floor, or a shot arriving inside the window sends it with a fresh clock and
+    // the firing seat never sees the refill. Once per refill: the send leaves last_sent at 0.
+    const auto refill_landed = [&sync, &refill_due](int i) {
+        return sync.last_sent_refill_due_ms[i] > 0 && refill_due[i] == 0;
+    };
+
     if (changed) {
-        if (sync.next_send.valid() && !sync.next_send.elapsed()) {
+        if (!refill_landed(0) && !refill_landed(1) && sync.next_send.valid() && !sync.next_send.elapsed()) {
             return; // the rate floor; the change goes out next window
         }
         sync.last_sent_life = vehicle->life;
@@ -1738,7 +1744,9 @@ void vehicle_store_health_from_packet(int vehicle_handle, float life, float max_
     const auto set_ammo = [vehicle, &mirror, now, predicts](int slot, int weapon_type, int total, uint16_t refill_ms) {
         // A refill lands whole, so a driver firing through it would otherwise dry-click out the stale window.
         // Any shots still in flight are taken off by the next packet's lower total, which is always applied.
-        const bool refill_landed = mirror.refill_pending[slot] && refill_ms == 0;
+        // A reordered old full-ammo packet also reads 0, but arrives with the local countdown still running.
+        const bool refill_landed = mirror.refill_pending[slot] && refill_ms == 0
+            && mirror.refill_ms_left[slot] < static_cast<float>(vehicle_ammo_regen_delay_ms / 2);
         mirror.refill_pending[slot] = refill_ms > 0;
         constexpr int vehicle_wire_ammo_max = 10000;
         if (total < 0 || total > vehicle_wire_ammo_max || weapon_type < 0 || weapon_type >= 64) {
