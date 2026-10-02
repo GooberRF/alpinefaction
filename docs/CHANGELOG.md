@@ -160,6 +160,10 @@ Version 1.5.0 (Trillium): Not yet released
 - Fix geomod crater relighting converting lightmap texels beyond the relit surface, which could write past the end of the lightmap for a surface at the bottom of a lightmap page
 - Fix a possible out-of-bounds read when drawing dynamic decals (Direct3D 11 renderer only)
 - Fix level editor crashing when more than 128 semi-transparent detail brushes in one room are in view
+- Improve validation of TGA textures in game and level editor
+- Fix level editor crash when a texture is too large to load
+- Fix 8-bit greyscale TGA textures with mipmap files sometimes loading with garbage pixels
+- Show control characters in texture filenames as escape sequences in log warnings
 
 [@is-this-c](https://github.com/is-this-c)
 - Let `Caps Lock` capitalize
