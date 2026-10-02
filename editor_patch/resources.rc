@@ -1359,6 +1359,7 @@ FONT 8, "MS Sans Serif", 0, 0, 0
     AUTOCHECKBOX    "Align to slope", IDC_TERRAIN_DECO_ALIGN, 307, 377, 62, 10
     AUTOCHECKBOX    "Random yaw", IDC_TERRAIN_DECO_RANDOM_YAW, 375, 377, 56, 10
     AUTOCHECKBOX    "Casts shadows", IDC_TERRAIN_DECO_CASTS_SHADOWS, 437, 377, 64, 10
+    AUTOCHECKBOX    "Dither fade", IDC_TERRAIN_DECO_DITHER_FADE, 507, 377, 56, 10
 
     LTEXT           "", IDC_TERRAIN_STATUS, 7, 398, 579, 8
     // Both apply the dialog's changes first, as OK does

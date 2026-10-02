@@ -12,7 +12,7 @@ function(add_packfile packfile_name)
     add_custom_command(
         OUTPUT ${CMAKE_BINARY_DIR}/bin/${packfile_name}
         COMMAND ${VPP_TOOL} -c ${CMAKE_BINARY_DIR}/bin/${packfile_name} ${input_paths}
-        DEPENDS ${input_deps}
+        DEPENDS ${input_deps} ${input_paths}
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
     )
     add_custom_target(${packfile_name} ALL DEPENDS ${CMAKE_BINARY_DIR}/bin/${packfile_name})

@@ -159,6 +159,7 @@ void build_terrain(int index, const AlpineTerrain& t, TerrainDecorations& td, at
     for (std::uint32_t d = 0; d < count; d++) {
         td.draw_distance[d] = t.decorations[d].draw_distance;
         td.vertical_offset[d] = t.decorations[d].vertical_offset;
+        td.dither_fade[d] = t.decorations[d].dither_fade;
         if (at::decoration_active(views[d])) {
             const std::string& mesh = t.decorations[d].mesh;
             if (at::decoration_mesh_is_vfx(mesh.c_str(), mesh.size())) {

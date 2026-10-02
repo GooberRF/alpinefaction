@@ -33,9 +33,9 @@ Version 1.5.0 (Trillium): Not yet released
   - Add `dbg_vphys` console command to draw vehicle physics collision shapes
   - Add `dbg_vehicle_spawn` console command to spawn a vehicle or turret in front of a player (multiplayer server only)
 - Add multiplayer minimap for levels that enable one in `Level Properties`
-  - Square minimap under the ammo counter showing the player, teammates, flags, control points, the bag, the salvage flag, vehicle factories, enterable vehicles, and geomod craters; enemies are never shown
+  - Square minimap under the ammo counter showing the player, teammates, flags, control points and their names, the bag, the salvage flag, vehicle factories, enterable vehicles, and geomod craters; enemies are never shown
   - Hold `Show Map` (default `Q`) to display a large map of the whole level with control point names and vehicle respawn countdowns
-  - Toggle with `cl_minimap`, rotate with the player using `cl_minimap_rotate`, and adjust with `cl_minimap_size` and `cl_minimap_zoom`
+  - Toggle with `cl_minimap`, rotate with the player using `cl_minimap_rotate`, hide control point names with `cl_minimap_labels`, and adjust with `cl_minimap_size` and `cl_minimap_zoom`
   - Configure in the level editor from the `Minimap...` button in `Level Properties`, where `Bake from level` renders a top-down image of the level's brushes, terrain and terrain decorations with their textures and lighting, excluding the sky room, with an optional cut height for multi-floor levels
 - Add ray cast lightmap baking to level editor
   - Add `Invisible faces block light` and `Alpha-textured faces block light` level properties to control whether those faces occlude baked light

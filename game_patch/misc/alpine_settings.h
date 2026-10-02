@@ -287,6 +287,7 @@ struct AlpineGameSettings
     bool speed_display = false;
     bool minimap = true;
     bool minimap_rotate = false;
+    bool minimap_labels = true;
     static constexpr float min_minimap_size = 80.0f;
     static constexpr float max_minimap_size = 240.0f;
     float minimap_size = 140.0f; // small-HUD pixels

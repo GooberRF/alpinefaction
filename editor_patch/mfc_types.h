@@ -726,6 +726,7 @@ struct DedTerrainDecoration
     bool align_to_slope = false;
     bool random_yaw = true;
     bool casts_shadows = false;
+    bool dither_fade = false;
 
     bool operator==(const DedTerrainDecoration&) const = default;
 };

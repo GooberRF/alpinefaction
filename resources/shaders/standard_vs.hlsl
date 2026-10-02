@@ -42,6 +42,7 @@ cbuffer DecorationBuffer : register(b4)
     float3 submesh_center;
     float draw_distance;
     float fade_band;
+    float dither_fade;
 };
 #endif
 
@@ -55,6 +56,7 @@ struct VsOutput
     float4 world_pos_and_depth : TEXCOORD2;
 #ifdef INSTANCED
     float4 inst_light : TEXCOORD3;
+    float inst_keep : TEXCOORD4;
 #endif
 };
 
@@ -62,16 +64,20 @@ VsOutput main(VsInput input)
 {
     VsOutput output;
 #ifdef INSTANCED
-    // The engine draws a submesh at pos + orient * (center + v); past the draw distance the instance shrinks
-    // to its origin over the fade band.
+    // The engine draws a submesh at pos + orient * (center + v); toward the draw distance the instance shrinks
+    // to its origin over the fade band, or keeps its size and leaves the pixel shader to dither it out. Either way
+    // a fully faded instance collapses so it never reaches the rasteriser.
     float3 origin = float3(input.inst_row0.w, input.inst_row1.w, input.inst_row2.w);
     float fade = saturate((draw_distance - length(mul(float4(origin, 1), view_mat))) / fade_band);
-    float4 local = float4((input.pos + submesh_center) * fade, 1);
+    bool dither = dither_fade > 0.5f;
+    float scale = dither ? (fade > 0.0f ? 1.0f : 0.0f) : fade;
+    float4 local = float4((input.pos + submesh_center) * scale, 1);
     float3 world_pos = float3(dot(input.inst_row0, local), dot(input.inst_row1, local), dot(input.inst_row2, local));
     float3 world_norm = float3(dot(input.inst_row0.xyz, input.norm), dot(input.inst_row1.xyz, input.norm),
                                dot(input.inst_row2.xyz, input.norm));
     output.uv1 = float3(0, 0, -1);
     output.inst_light = input.inst_light;
+    output.inst_keep = dither ? fade : 1.0f;
 #else
     float3 world_pos = mul(float4(input.pos.xyz, 1), world_mat);
     float3 world_norm = mul(float4(input.norm, 0.0f), world_mat);

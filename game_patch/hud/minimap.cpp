@@ -114,7 +114,9 @@ namespace
         float sin_yaw;
         float scale;
         rf::ubyte image_alpha;
-        bool labels;
+        bool hill_labels;
+        bool label_pinned;
+        bool factory_labels;
 
         void to_screen(float wx, float wz, float& sx, float& sy) const
         {
@@ -267,14 +269,21 @@ namespace
 
     const rf::Color outline_color{0, 0, 0, 200};
 
+    // Objectives are never culled: an off-view one is pinned to the panel edge.
+    void objective_screen_pos(const View& view, const rf::Vector3& pos, float& sx, float& sy)
+    {
+        const float edge = 4.0f * view.scale + view.scale;
+        view.to_screen(pos.x, pos.z, sx, sy);
+        sx = std::clamp(sx, view.panel.x0 + edge, view.panel.x1 - edge);
+        sy = std::clamp(sy, view.panel.y0 + edge, view.panel.y1 - edge);
+    }
+
     void draw_objective(const View& view, const rf::Vector3& pos, const rf::Color& color)
     {
         const float half = 4.0f * view.scale;
         const float edge = half + view.scale;
         float sx, sy;
-        view.to_screen(pos.x, pos.z, sx, sy);
-        sx = std::clamp(sx, view.panel.x0 + edge, view.panel.x1 - edge);
-        sy = std::clamp(sy, view.panel.y0 + edge, view.panel.y1 - edge);
+        objective_screen_pos(view, pos, sx, sy);
         fill_square(view, sx, sy, edge, outline_color);
         fill_square(view, sx, sy, half, color);
     }
@@ -572,7 +581,7 @@ namespace
         draw(1.0f);
     }
 
-    // align_x / align_y: 0 anchors the text's left / top edge, 0.5 centres it.
+    // align_x / align_y: 0 anchors the text's left / top edge, 0.5 centres it, 1 anchors the right / bottom edge.
     void draw_label(const View& view, float ax, float ay, const std::string& text, const rf::Color& color,
                     float align_x, float align_y)
     {
@@ -583,12 +592,26 @@ namespace
         // gr::string does not clip, so a label wider than the view is shortened to fit.
         std::string shown = text;
         const int max_w = static_cast<int>(view.panel.x1 - view.panel.x0 - 2.0f);
-        const float w = static_cast<float>(gr_fit_string(shown, max_w, font, "..."));
-        const float h = static_cast<float>(rf::gr::get_font_height(font));
+        const int text_w = gr_fit_string(shown, max_w, font, "...");
+        const int text_h = rf::gr::get_font_height(font);
+        const float w = static_cast<float>(text_w);
+        const float h = static_cast<float>(text_h);
         const float max_x = std::max(view.panel.x0, view.panel.x1 - 1.0f - w);
         const float max_y = std::max(view.panel.y0, view.panel.y1 - 1.0f - h);
         const int x = static_cast<int>(std::lround(std::clamp(ax - align_x * w, view.panel.x0, max_x)));
         const int y = static_cast<int>(std::lround(std::clamp(ay - align_y * h, view.panel.y0, max_y)));
+
+        // Backdrop covers the text and its 1 px shadow.
+        const int pad = std::max(1, static_cast<int>(std::lround(2.0f * view.scale)));
+        const int bx0 = std::max(x - pad, static_cast<int>(view.panel.x0));
+        const int by0 = std::max(y - pad, static_cast<int>(view.panel.y0));
+        const int bx1 = std::min(x + text_w + 1 + pad, static_cast<int>(view.panel.x1));
+        const int by1 = std::min(y + text_h + 1 + pad, static_cast<int>(view.panel.y1));
+        if (bx1 > bx0 && by1 > by0) {
+            rf::gr::set_color(0, 0, 0, 120);
+            rf::gr::rect(bx0, by0, bx1 - bx0, by1 - by0);
+        }
+
         rf::gr::set_color(0, 0, 0, 200);
         rf::gr::string(x + 1, y + 1, shown.c_str(), font);
         rf::gr::set_color(color);
@@ -600,16 +623,33 @@ namespace
         // Outer half-size of the objective and factory squares.
         const float marker_half = 5.0f * view.scale;
         const float gap = 2.0f * view.scale;
-        if (multi_is_game_type_with_hills()) {
+        if (view.hill_labels && multi_is_game_type_with_hills()) {
+            const float label_h = static_cast<float>(rf::gr::get_font_height(hud_get_small_font()));
             for (const HillInfo& h : g_koth_info.hills) {
                 if (h.name.empty() || (!h.trigger && !h.handler && h.trigger_uid < 0)) {
                     continue;
                 }
                 const rf::Vector3 pos = koth_hill_icon_pos(h);
                 float sx, sy;
-                view.to_screen(pos.x, pos.z, sx, sy);
-                draw_label(view, sx, sy + marker_half + gap, h.name, hill_color(h.ownership, 255), 0.5f, 0.0f);
+                if (!view.label_pinned) {
+                    view.to_screen(pos.x, pos.z, sx, sy);
+                    if (!view.contains(sx, sy, 0.0f)) {
+                        continue;
+                    }
+                }
+                objective_screen_pos(view, pos, sx, sy);
+                const rf::Color color = hill_color(h.ownership, 255);
+                // Below the icon when above would cross the panel top and get pushed onto it.
+                if (sy - marker_half - gap - label_h < view.panel.y0) {
+                    draw_label(view, sx, sy + marker_half + gap, h.name, color, 0.5f, 0.0f);
+                }
+                else {
+                    draw_label(view, sx, sy - marker_half - gap, h.name, color, 0.5f, 1.0f);
+                }
             }
+        }
+        if (!view.factory_labels) {
+            return;
         }
         const int64_t now = timer::get_i64(1000);
         for_each_factory([&](const AlpineVehicleFactoryInfo& info, const VehicleFactoryUi& ui) {
@@ -638,9 +678,7 @@ namespace
         draw_bag(view);
         draw_salvage_flag(view);
         draw_self_arrow(view, self_pos, heading - view.yaw);
-        if (view.labels) {
-            draw_labels(view);
-        }
+        draw_labels(view);
     }
 
     Panel make_panel(int x, int y, int size, int border)
@@ -730,7 +768,9 @@ namespace
         rf::ubyte image_alpha;
         float marker_scale;
         bool follow_viewer; // centred on the viewer with cl_minimap_zoom/rotate, else the whole level north-up
-        bool labels;
+        bool hill_labels;
+        bool label_pinned; // also name hills pinned to the edge, not just those in view
+        bool factory_labels;
     };
 
     void render_panel(int x, int y, int size, const PanelStyle& style)
@@ -772,7 +812,9 @@ namespace
             view.sin_yaw = std::sin(view.yaw);
             view.scale = style.marker_scale * s;
             view.image_alpha = style.image_alpha;
-            view.labels = style.labels;
+            view.hill_labels = style.hill_labels;
+            view.label_pinned = style.label_pinned;
+            view.factory_labels = style.factory_labels;
 
             draw_view(view, viewer, props, self_pos, heading);
         }
@@ -786,7 +828,7 @@ namespace
         const int clip_w = rf::gr::clip_width();
         const int clip_h = rf::gr::clip_height();
         const int size = static_cast<int>(std::min(0.8f * clip_h, 0.9f * clip_w));
-        render_panel((clip_w - size) / 2, (clip_h - size) / 2, size, {110, 200, 1.5f, false, true});
+        render_panel((clip_w - size) / 2, (clip_h - size) / 2, size, {110, 200, 1.5f, false, true, true, true});
     }
 
     void bm_set_resolution_level(int bm_handle, int level);
@@ -841,7 +883,8 @@ void minimap_render()
     }
     else if (!corner_panel_suppressed()) {
         if (const auto rect = minimap_panel_rect()) {
-            render_panel(rect->x, rect->y, rect->size, {150, 230, 1.0f, true, false});
+            render_panel(rect->x, rect->y, rect->size,
+                         {150, 230, 1.0f, true, g_alpine_game_config.minimap_labels, false, false});
         }
     }
 }
@@ -902,6 +945,17 @@ ConsoleCommand2 minimap_rotate_cmd{
     "cl_minimap_rotate [bool]",
 };
 
+ConsoleCommand2 minimap_labels_cmd{
+    "cl_minimap_labels",
+    [](std::optional<bool> enabled) {
+        g_alpine_game_config.minimap_labels = enabled.value_or(!g_alpine_game_config.minimap_labels);
+        rf::console::print("Minimap control point names are {}",
+                           g_alpine_game_config.minimap_labels ? "enabled" : "disabled");
+    },
+    "Show control point names on the minimap",
+    "cl_minimap_labels [bool]",
+};
+
 ConsoleCommand2 minimap_size_cmd{
     "cl_minimap_size",
     [](std::optional<float> size) {
@@ -934,6 +988,7 @@ void minimap_apply_patches()
     bm_set_resolution_level_hook.install();
     minimap_cmd.register_cmd();
     minimap_rotate_cmd.register_cmd();
+    minimap_labels_cmd.register_cmd();
     minimap_size_cmd.register_cmd();
     minimap_zoom_cmd.register_cmd();
 }

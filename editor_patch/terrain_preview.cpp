@@ -378,7 +378,7 @@ uint32_t choose_res(uint32_t edge, uint32_t chunk_count)
     return res;
 }
 
-// Whether `cast` lists `d`'s shadow casting decorations as they are (their draw distance aside).
+// Whether `cast` lists `d`'s shadow casting decorations as they are (their draw distance and fade aside).
 bool same_casting(const std::vector<std::pair<std::size_t, DedTerrainDecoration>>& cast, const DedTerrainData& d)
 {
     std::size_t n = 0;
@@ -387,6 +387,7 @@ bool same_casting(const std::vector<std::pair<std::size_t, DedTerrainDecoration>
         if (n >= cast.size() || cast[n].first != i) return false;
         DedTerrainDecoration deco = d.decorations[i];
         deco.draw_distance = 0.0f;
+        deco.dither_fade = false;
         if (cast[n++].second != deco) return false;
     }
     return n == cast.size();
@@ -399,6 +400,7 @@ std::vector<std::pair<std::size_t, DedTerrainDecoration>> casting_decorations(co
         if (!terrain_decoration_casts(d.decorations[i])) continue;
         out.emplace_back(i, d.decorations[i]);
         out.back().second.draw_distance = 0.0f;
+        out.back().second.dither_fade = false;
     }
     return out;
 }
