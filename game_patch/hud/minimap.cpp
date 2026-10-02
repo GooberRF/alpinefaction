@@ -2,12 +2,16 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <numbers>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 #include <xlog/xlog.h>
+#include <patch_common/FunHook.h>
 #include <common/utils/list-utils.h>
+#include <common/utils/string-utils.h>
 #include "minimap.h"
 #include "hud.h"
 #include "hud_internal.h"
@@ -32,6 +36,7 @@
 #include "../object/event_alpine.h"
 #include "../os/console.h"
 #include "../os/os.h"
+#include "../rf/bmpman.h"
 #include "../rf/entity.h"
 #include "../rf/file/file.h"
 #include "../rf/gameseq.h"
@@ -783,6 +788,23 @@ namespace
         const int size = static_cast<int>(std::min(0.8f * clip_h, 0.9f * clip_w));
         render_panel((clip_w - size) / 2, (clip_h - size) / 2, size, {110, 200, 1.5f, false, true});
     }
+
+    void bm_set_resolution_level(int bm_handle, int level);
+    FunHook<decltype(bm_set_resolution_level)> bm_set_resolution_level_hook{0x0050EF80, bm_set_resolution_level};
+
+    // The minimap's DDS carries mips, so unlike single-level HUD bitmaps it would follow the texture-detail setting.
+    void bm_set_resolution_level(int bm_handle, int level)
+    {
+        const auto& props = AlpineLevelProperties::instance();
+        if (level != 0 && !props.minimap_bitmap.empty()) {
+            const auto& entry = rf::bm::bitmaps[rf::bm::handle_to_index(bm_handle)];
+            const std::string_view name{entry.name, strnlen(entry.name, sizeof(entry.name))};
+            if (string_iequals(name, props.minimap_bitmap)) {
+                level = 0;
+            }
+        }
+        bm_set_resolution_level_hook.call_target(bm_handle, level);
+    }
 }
 
 std::optional<MinimapRect> minimap_panel_rect()
@@ -909,6 +931,7 @@ ConsoleCommand2 minimap_zoom_cmd{
 
 void minimap_apply_patches()
 {
+    bm_set_resolution_level_hook.install();
     minimap_cmd.register_cmd();
     minimap_rotate_cmd.register_cmd();
     minimap_size_cmd.register_cmd();

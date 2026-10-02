@@ -576,7 +576,9 @@ Copyright (c) 2020-2021 Richard Geldreich, Jr.
 bc7enc_rdo is offered under two licenses; Alpine Faction uses it under the MIT
 License (ALTERNATIVE A), reproduced below. Only the BC7 encoder, the BC7
 decoder, the entropy reduction transform and the two support headers they
-include are used; bc7e.ispc (Apache 2.0) and LodePNG are not included.
+include, and the BC1/DXT1 encoder (rgbcx, with its smaller table header
+rgbcx_table4_small.h) are used; bc7e.ispc (Apache 2.0) and LodePNG are not
+included.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy of
 this software and associated documentation files(the "Software"), to deal in

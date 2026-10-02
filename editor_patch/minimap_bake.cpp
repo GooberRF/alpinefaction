@@ -13,6 +13,8 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+#include <dds.h>
+#include <rgbcx.h>
 #include <xlog/xlog.h>
 #include <patch_common/MemUtils.h>
 #include <common/lighting/alpine_lighting.h>
@@ -635,20 +637,158 @@ bool ensure_dir(const std::string& dir)
     return CreateDirectoryA(dir.c_str(), nullptr) || GetLastError() == ERROR_ALREADY_EXISTS;
 }
 
-bool write_tga(const std::string& path, int res, const std::vector<uint32_t>& pixels)
+// A square RGBA (R first) level's 2x2 box halving. Colour is averaged over the covered texels only, so
+// the empty background does not darken the level's edges.
+std::vector<uint8_t> halve_rgba(int size, const std::vector<uint8_t>& s)
+{
+    const int half = size / 2;
+    std::vector<uint8_t> d(static_cast<std::size_t>(half) * half * 4);
+    for (int y = 0; y < half; ++y) {
+        for (int x = 0; x < half; ++x) {
+            int sum_a = 0;
+            int sum_ca[3] = {};
+            for (int k = 0; k < 4; ++k) {
+                const std::size_t row = static_cast<std::size_t>(2 * y + (k >> 1)) * size;
+                const uint8_t* t = &s[(row + 2 * x + (k & 1)) * 4];
+                sum_a += t[3];
+                for (int c = 0; c < 3; ++c) sum_ca[c] += t[c] * t[3];
+            }
+            uint8_t* o = &d[(static_cast<std::size_t>(y) * half + x) * 4];
+            for (int c = 0; c < 3; ++c) {
+                o[c] = sum_a > 0 ? static_cast<uint8_t>((sum_ca[c] + sum_a / 2) / sum_a) : 0;
+            }
+            o[3] = static_cast<uint8_t>((sum_a + 2) / 4);
+        }
+    }
+    return d;
+}
+
+constexpr uint32_t bc1_quality = 10;
+
+// 16 RGBA texels to a BC1 block. Texels with alpha below alpha_test_ref become 3-colour mode's
+// transparent black.
+void encode_bc1_punch_through(const uint8_t* px, uint8_t* dst)
+{
+    alignas(4) uint8_t opaque[16 * 4];
+    int n = 0;
+    for (int i = 0; i < 16; ++i) {
+        if (px[i * 4 + 3] >= alpha_test_ref) {
+            std::memcpy(opaque + n * 4, px + i * 4, 4);
+            ++n;
+        }
+    }
+    if (n == 16) {
+        rgbcx::encode_bc1(bc1_quality, dst, px, true, false);
+        return;
+    }
+    if (n == 0) {
+        constexpr uint8_t transparent[8] = {0, 0, 0, 0, 0xFF, 0xFF, 0xFF, 0xFF};
+        std::memcpy(dst, transparent, sizeof(transparent));
+        return;
+    }
+    // rgbcx has no punch-through mode: fit the endpoints to the opaque texels alone, then order them
+    // for 3-colour mode and pick the selectors again.
+    for (int i = n; i < 16; ++i) {
+        std::memcpy(opaque + i * 4, opaque + (i % n) * 4, 4);
+    }
+    rgbcx::encode_bc1(bc1_quality, dst, opaque, true, false);
+    const uint16_t e0 = static_cast<uint16_t>(dst[0] | dst[1] << 8);
+    const uint16_t e1 = static_cast<uint16_t>(dst[2] | dst[3] << 8);
+    const uint16_t lo = std::min(e0, e1);
+    const uint16_t hi = std::max(e0, e1);
+    dst[0] = static_cast<uint8_t>(lo);
+    dst[1] = static_cast<uint8_t>(lo >> 8);
+    dst[2] = static_cast<uint8_t>(hi);
+    dst[3] = static_cast<uint8_t>(hi >> 8);
+    rgbcx::color32 pal[4];
+    rgbcx::unpack_bc1_block_colors(dst, pal);
+    uint32_t sels = 0;
+    for (int i = 0; i < 16; ++i) {
+        const uint8_t* t = px + i * 4;
+        uint32_t sel = 3;
+        if (t[3] >= alpha_test_ref) {
+            int best = std::numeric_limits<int>::max();
+            for (uint32_t k = 0; k < 3; ++k) {
+                const int dr = pal[k].r - t[0];
+                const int dg = pal[k].g - t[1];
+                const int db = pal[k].b - t[2];
+                const int err = dr * dr + dg * dg + db * db;
+                if (err < best) {
+                    best = err;
+                    sel = k;
+                }
+            }
+        }
+        sels |= sel << (2 * i);
+    }
+    for (int k = 0; k < 4; ++k) {
+        dst[4 + k] = static_cast<uint8_t>(sels >> (8 * k));
+    }
+}
+
+// The file bytes of a DXT1 DDS with a full mip chain, of a square ARGB image.
+std::vector<uint8_t> encode_dds_dxt1(int size, const std::vector<uint32_t>& argb)
+{
+    static const bool rgbcx_ready = (rgbcx::init(), true);
+    (void)rgbcx_ready;
+
+    int levels = 1;
+    for (int s = size; s > 1; s /= 2) ++levels;
+    auto level_bytes = [](int s) { return static_cast<std::size_t>((s + 3) / 4) * ((s + 3) / 4) * 8; };
+    std::size_t total = sizeof(DDS_MAGIC) + sizeof(DDS_HEADER);
+    for (int k = 0; k < levels; ++k) {
+        total += level_bytes(size >> k);
+    }
+    std::vector<uint8_t> out(total);
+
+    DDS_HEADER hdr{};
+    hdr.size = sizeof(DDS_HEADER);
+    hdr.flags = DDS_HEADER_FLAGS_TEXTURE | DDS_HEADER_FLAGS_MIPMAP | DDS_HEADER_FLAGS_LINEARSIZE;
+    hdr.height = static_cast<uint32_t>(size);
+    hdr.width = static_cast<uint32_t>(size);
+    hdr.pitchOrLinearSize = static_cast<uint32_t>(level_bytes(size));
+    hdr.mipMapCount = static_cast<uint32_t>(levels);
+    hdr.ddspf = DDSPF_DXT1;
+    hdr.caps = DDS_SURFACE_FLAGS_TEXTURE | DDS_SURFACE_FLAGS_MIPMAP;
+    std::memcpy(out.data(), &DDS_MAGIC, sizeof(DDS_MAGIC));
+    std::memcpy(out.data() + sizeof(DDS_MAGIC), &hdr, sizeof(hdr));
+
+    std::vector<uint8_t> level(static_cast<std::size_t>(size) * size * 4);
+    for (std::size_t i = 0; i < level.size() / 4; ++i) {
+        const uint32_t p = argb[i];
+        level[i * 4 + 0] = static_cast<uint8_t>(p >> 16);
+        level[i * 4 + 1] = static_cast<uint8_t>(p >> 8);
+        level[i * 4 + 2] = static_cast<uint8_t>(p);
+        level[i * 4 + 3] = static_cast<uint8_t>(p >> 24);
+    }
+
+    uint8_t* dst = out.data() + sizeof(DDS_MAGIC) + sizeof(hdr);
+    alignas(4) uint8_t block[16 * 4];
+    for (int s = size;; s /= 2) {
+        const uint8_t* src = level.data();
+        for (int by = 0; by < s; by += 4) {
+            for (int bx = 0; bx < s; bx += 4) {
+                // Levels under 4x4 repeat their edge texels to fill the block.
+                for (int i = 0; i < 16; ++i) {
+                    const int x = std::min(bx + (i & 3), s - 1);
+                    const int y = std::min(by + (i >> 2), s - 1);
+                    std::memcpy(block + i * 4, src + (static_cast<std::size_t>(y) * s + x) * 4, 4);
+                }
+                encode_bc1_punch_through(block, dst);
+                dst += 8;
+            }
+        }
+        if (s <= 1) break;
+        level = halve_rgba(s, level);
+    }
+    return out;
+}
+
+bool write_file(const std::string& path, const std::vector<uint8_t>& bytes)
 {
     FILE* f = std::fopen(path.c_str(), "wb");
     if (!f) return false;
-    const uint8_t header[18] = {0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                                static_cast<uint8_t>(res & 0xFF), static_cast<uint8_t>(res >> 8),
-                                static_cast<uint8_t>(res & 0xFF), static_cast<uint8_t>(res >> 8),
-                                32, 8};
-    bool ok = std::fwrite(header, sizeof(header), 1, f) == 1;
-    // Bottom-left origin: rows go out bottom-up.
-    for (int row = res - 1; ok && row >= 0; --row) {
-        ok = std::fwrite(pixels.data() + static_cast<std::size_t>(row) * res, 4, res, f) ==
-             static_cast<std::size_t>(res);
-    }
+    bool ok = std::fwrite(bytes.data(), 1, bytes.size(), f) == bytes.size();
     ok = (std::fclose(f) == 0) && ok;
     return ok;
 }
@@ -1175,7 +1315,7 @@ bool minimap_bake_target(std::string& out_bitmap_name, std::string& out_path, st
     }
     // The file scan takes the extension at the first dot, so a dotted stem would not register.
     std::replace(stem.begin(), stem.end(), '.', '_');
-    constexpr std::string_view suffix = "_minimap.tga";
+    constexpr std::string_view suffix = "_mm.dds";
     const std::size_t max_stem = rfl_name_max_len - suffix.size();
     if (stem.size() > max_stem) {
         char hash[8];
@@ -1604,13 +1744,14 @@ bool minimap_bake(CDedLevel& level, const MinimapBakeParams& p, MinimapBakeResul
             if (raster.draw_polygon(*src, shade)) ++drawn;
         }
 
+        const std::vector<uint8_t> dds = encode_dds_dxt1(res, raster.pixels());
         const std::string dir{std::string{file_root_path} + "user_maps"};
         const std::string tex_dir = dir + "\\textures";
         if (!ensure_dir(dir) || !ensure_dir(tex_dir)) {
             out_error = "Could not create " + tex_dir + ".";
             return false;
         }
-        if (!write_tga(path, res, raster.pixels())) {
+        if (!write_file(path, dds)) {
             out_error = "Could not write " + path + ".";
             return false;
         }
