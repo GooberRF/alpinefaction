@@ -596,6 +596,11 @@ void ApplyGraphicsPatches()
     // Reset render cache pool after geometry rebuild so stale geo_cache pointers are detected
     geo_build_reset_render_cache.install();
 
+    // When rendering semi-transparent objects do not group them behind alpha detail rooms, same as the game.
+    // Stock stores up to 128 groups per room without a limit check.
+    AsmWriter{0x00425789}.jmp(0x00425831);
+    AsmWriter{0x00425847}.nop(2);
+
     // Expand detail rooms array from 256 entries (0x010cee5c)
     // Array base references
     write_mem_ptr(0x0049b046, detail_room_list);  // FUN_0049afb0: read loop base
