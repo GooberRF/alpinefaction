@@ -14,6 +14,7 @@
 #include "vehicle_internal.h"
 #include "vehicle_sync.h"
 #include "vehicle_damage.h"
+#include "vehicle_horn.h"
 #include "vehicle_view.h"
 #include "../alpine_packets.h"
 #include "../multi.h"
@@ -876,6 +877,7 @@ void vehicle_drop_combat_state(int vehicle_handle)
 {
     g_vehicle_state.fire.erase(vehicle_handle);
     g_vehicle_state.fire_rearm.erase(vehicle_handle);
+    g_vehicle_state.horn.erase(vehicle_handle);
     g_vehicle_state.health_sync.erase(vehicle_handle);
     g_vehicle_state.last_damager.erase(vehicle_handle);
     g_vehicle_state.lethal_killer.erase(vehicle_handle);
@@ -1545,6 +1547,10 @@ void vehicle_server_handle_fire_request(rf::Player* pp, int vehicle_handle, uint
                                         uint8_t alt_fire)
 {
     if (!rf::is_server || !pp || !pp->net_data) {
+        return;
+    }
+    if (action == AF_VEHICLE_HORN_STOP || action == AF_VEHICLE_HORN_START) {
+        vehicle_server_handle_horn_request(pp, vehicle_handle, action == AF_VEHICLE_HORN_START);
         return;
     }
     if (action != AF_VEHICLE_FIRE_STOP && action != AF_VEHICLE_FIRE_START) {

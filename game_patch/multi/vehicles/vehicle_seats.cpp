@@ -15,6 +15,7 @@
 #include "vehicle_seats.h"
 #include "vehicle_sync.h"
 #include "vehicle_damage.h"
+#include "vehicle_horn.h"
 #include "../alpine_packets.h"
 #include "../gametype.h"
 #include "../server.h"
@@ -973,6 +974,9 @@ af_vehicle_state_attrs vehicle_build_hull_attrs(int vehicle_handle)
         attrs.vel[1] = vehicle_quantize_hull_vel_axis(vel.y);
         attrs.vel[2] = vehicle_quantize_hull_vel_axis(vel.z);
     }
+    if (vehicle_server_horn_sounding(vehicle_handle)) {
+        attrs.flags |= AF_VEHICLE_STATE_HORN;
+    }
     const VehicleState* st = vehicle_hull_state(vehicle_handle);
     if (!st) {
         return attrs;
@@ -1164,6 +1168,7 @@ void vehicle_on_player_disconnect(rf::Player* pp)
         g_vehicle_state.crush_report_cooldown.erase(player_id);
         g_vehicle_state.crash_report_cooldown.erase(player_id);
         g_vehicle_state.orient_relay_cooldown.erase(player_id);
+        g_vehicle_state.horn_cooldown.erase(player_id);
     }
     // The engine flags a leaving player's entity for delayed delete WITHOUT detaching it, so the seat
     // would only read as free once that entity is gone - by which time no client can resolve the
@@ -1517,6 +1522,7 @@ void vehicle_apply_hull_attrs_from_packet(int vehicle_handle, uint8_t team, uint
     st.team = (team == 0 || team == 1) ? static_cast<int>(team) : -1;
     st.lock_to_team = (flags & AF_VEHICLE_STATE_LOCK_TO_TEAM) != 0;
     st.entered_once = (flags & AF_VEHICLE_STATE_ENTERED_ONCE) != 0;
+    st.horn = (flags & AF_VEHICLE_STATE_HORN) != 0;
     // Ticked locally from here: the server states the timer once, when it starts.
     if (any_rider || !(flags & AF_VEHICLE_STATE_UNOCCUPIED_RUNNING)) {
         st.unoccupied_deadline_ms = 0;

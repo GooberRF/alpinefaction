@@ -113,6 +113,9 @@ Drummyfish:
 leeor_net:
 * af_caust00.png - af_caust15.png (CC0: https://opengameart.org/content/water-caustics-effect-small/)
 
+mcpable:
+* af_jeep_horn.ogg (CC0: https://freesound.org/s/131930/)
+
 ###############################################################################
 ## stb_image, stb_vorbis
 ###############################################################################

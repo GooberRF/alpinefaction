@@ -212,6 +212,7 @@ struct AlpineGameSettings
                 std::clamp(value, min_vehicle_tracer_length, max_vehicle_tracer_length);
         }
     }
+    bool vehicle_horns = true; // other players' jeep horns; your own always plays
 
     bool show_domination_msgs = true;
 

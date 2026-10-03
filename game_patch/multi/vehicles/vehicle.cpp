@@ -10,6 +10,7 @@
 #include "vehicle_seats.h"
 #include "vehicle_sync.h"
 #include "vehicle_damage.h"
+#include "vehicle_horn.h"
 #include "vehicle_view.h"
 #include "vehicle_markers.h"
 #include "vehicle_render.h"
@@ -533,6 +534,8 @@ void vehicle_client_do_frame()
         report(vehicle, alt_held, true);
         g_vehicle_state.reported_alt_held = alt_held;
     }
+
+    vehicle_horn_client_do_frame();
 }
 
 namespace
@@ -667,6 +670,7 @@ float vehicle_factory_ui_progress(int i, int64_t now)
 
 void vehicle_level_init()
 {
+    vehicle_horn_level_init();
     g_vehicle_state = VehicleModuleState{};
     vehicle_clear_local_enclosed_flag();
     vehicle_drop_jeep_tire_mesh();
@@ -856,6 +860,8 @@ void vehicle_do_frame()
         });
     }
 
+    vehicle_server_horn_do_frame();
+
     // After the per-vehicle pass, never inside it: PAIRS need every dead hull already dropped and
     // every pose already moved from its body.
     vehicle_server_ram_sweep();
@@ -902,4 +908,5 @@ void vehicle_apply_patches()
 
     vehicle_spawn_install();
     vehicle_tracers_install();
+    vehicle_horn_install();
 }

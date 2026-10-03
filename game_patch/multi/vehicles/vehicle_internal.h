@@ -153,6 +153,15 @@ struct VehicleState
     bool entered_once = false;
     int64_t unoccupied_since_ms = 0;    // server: when the hull was last left empty; 0 = not running
     int64_t unoccupied_deadline_ms = 0; // client: local clock the auto-return is due at; 0 = none
+    bool horn = false;                  // client: the server states the driver's horn is sounding
+};
+
+// Server: a jeep horn whose driver holds the button; `on` stays false while his START waits out the
+// rate window.
+struct VehicleHorn
+{
+    uint8_t requester_id = 0xFF;
+    bool on = false;
 };
 
 // Client: a stated occupancy this machine could not fully resolve - a rider named by an
@@ -317,6 +326,12 @@ struct VehicleModuleState
     int reported_fire_vehicle = -1;
     bool reported_primary_held = false;
     bool reported_alt_held = false;
+    // Server: an entry exists only while the jeep's driver holds the horn.
+    std::unordered_map<int, VehicleHorn> horn;
+    std::unordered_map<int, rf::Timestamp> horn_cooldown; // by player id
+    // Client: the horn edge currently standing with the server.
+    int reported_horn_vehicle = -1;
+    bool reported_horn_held = false;
     // Use-request cadence, both sides of the wire. Server: one window per player id covering EVERY
     // af_client_req use subtype. Client: the local window on the seat hotkeys.
     std::unordered_map<int, rf::Timestamp> use_cooldown;

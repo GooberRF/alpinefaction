@@ -192,6 +192,8 @@ set(SRCS
     multi/vehicles/vehicle_markers.cpp
     multi/vehicles/vehicle_tracers.h
     multi/vehicles/vehicle_tracers.cpp
+    multi/vehicles/vehicle_horn.h
+    multi/vehicles/vehicle_horn.cpp
     multi/vehicles/vehicle_physics.h
     multi/vehicles/physics/vphys_internal.h
     multi/vehicles/physics/vphys_world.cpp

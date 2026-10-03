@@ -1067,6 +1067,10 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.set_vehicle_tracer_length(std::stof(settings["VehicleTracerLength"]));
         processed_keys.insert("VehicleTracerLength");
     }
+    if (settings.count("VehicleHorns")) {
+        g_alpine_game_config.vehicle_horns = std::stoi(settings["VehicleHorns"]);
+        processed_keys.insert("VehicleHorns");
+    }
     if (settings.count("WorldHUDSpectateLabels")) {
         g_alpine_game_config.world_hud_spectate_player_labels = std::stoi(settings["WorldHUDSpectateLabels"]);
         processed_keys.insert("WorldHUDSpectateLabels");
@@ -1726,6 +1730,7 @@ void alpine_player_settings_save(rf::Player* player)
     file << "VehicleTracerFrequency=" << g_alpine_game_config.vehicle_tracer_frequency << "\n";
     file << "VehicleTracerColor=" << format_hex_color_string(g_alpine_game_config.vehicle_tracer_color) << "\n";
     file << "VehicleTracerLength=" << g_alpine_game_config.vehicle_tracer_length << "\n";
+    file << "VehicleHorns=" << g_alpine_game_config.vehicle_horns << "\n";
     file << "WorldHUDSpectateLabels=" << g_alpine_game_config.world_hud_spectate_player_labels << "\n";
     file << "WorldHUDDemoPlayerInfo=" << g_alpine_game_config.world_hud_demo_player_info << "\n";
     file << "WorldHUDDemoSpawns=" << g_alpine_game_config.world_hud_demo_spawns << "\n";

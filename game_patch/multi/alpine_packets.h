@@ -632,6 +632,7 @@ enum af_vehicle_state_flag : uint8_t
     AF_VEHICLE_STATE_LOCK_TO_TEAM = 0x01,
     AF_VEHICLE_STATE_ENTERED_ONCE = 0x02,
     AF_VEHICLE_STATE_UNOCCUPIED_RUNNING = 0x04,
+    AF_VEHICLE_STATE_HORN = 0x08, // the jeep driver's horn is sounding
 };
 
 // The replicated per-hull attributes af_vehicle_state carries beside the seat array.
@@ -660,13 +661,16 @@ struct af_vehicle_state_packet
 };
 static_assert(sizeof(af_vehicle_state_packet) == sizeof(RF_GamePacketHeader) + 40);
 
-// Vehicle weapon control. Client -> server: trigger edges. Server -> client: a discrete shot, or a
-// continuous weapon's actual on/off edge (STOP's alt_fire is 0 and ignored).
+// Vehicle weapon control. Client -> server: trigger edges, and the jeep driver's horn edges (alt_fire 0).
+// Server -> client: a discrete shot, or a continuous weapon's actual on/off edge (STOP's alt_fire is 0
+// and ignored); the horn reaches clients as AF_VEHICLE_STATE_HORN.
 enum af_vehicle_fire_action : uint8_t
 {
     AF_VEHICLE_FIRE_STOP = 0,
     AF_VEHICLE_FIRE_START = 1,
     AF_VEHICLE_FIRE_SHOT = 2,
+    AF_VEHICLE_HORN_STOP = 3,
+    AF_VEHICLE_HORN_START = 4,
 };
 
 struct af_vehicle_fire_packet

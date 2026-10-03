@@ -1925,6 +1925,7 @@ void vehicle_before_entity_die(rf::Entity* ep)
     // entity_die frees seats with entity_detach_leech, not entity_detach_from_host, so the detach
     // hook never runs on death: both the trigger drop and the seat statement must happen here.
     vehicle_server_stop_fire(ep);
+    g_vehicle_state.horn.erase(ep->handle);
     // The occupancy entity_die is about to leave behind - a null hull states "nobody is aboard it".
     vehicle_broadcast_seat_occupancy(ep->handle, nullptr, -1);
 }

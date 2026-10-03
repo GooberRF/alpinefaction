@@ -224,7 +224,8 @@ bool vehicle_local_owns_firing_seat(rf::Entity* ep);
 
 bool vehicle_suppress_local_fire(const rf::Player* pp);
 
-// Server: a client reported its vehicle trigger state (action 0/1); action 2 is server->client only.
+// Server: a client reported its vehicle trigger state (action 0/1) or, as the jeep driver, its horn
+// (action 3/4); action 2 is server->client only.
 void vehicle_server_handle_fire_request(rf::Player* pp, int vehicle_handle, uint8_t action,
                                         uint8_t alt_fire);
 
