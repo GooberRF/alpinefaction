@@ -422,10 +422,12 @@ void vehicle_factory_load_chunk(rf::File& file, std::size_t chunk_len)
         if (!reader.read_string(info.script_name)) return;
         if (!reader.read_string(info.vehicle_class)) return;
         if (!reader.read_bytes(&info.respawn_delay_s, sizeof(float))) return;
-        // Untrusted float: a NaN/inf here is UB in the later static_cast<int>(x*1000).
+        // Untrusted float: out of range it is UB in the later static_cast<int>(x*1000).
         if (!std::isfinite(info.respawn_delay_s) || info.respawn_delay_s < 0.0f) {
             info.respawn_delay_s = 0.0f;
         }
+        info.respawn_delay_s =
+            std::min(info.respawn_delay_s, static_cast<float>(vehicle_max_respawn_delay_ms) / 1000.0f);
         uint8_t team = 0xFF;
         if (!reader.read_bytes(&team, sizeof(team))) return;
         info.team = (team == 0 || team == 1) ? static_cast<int32_t>(team) : -1;
