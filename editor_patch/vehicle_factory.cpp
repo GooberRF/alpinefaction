@@ -420,7 +420,9 @@ void vehicle_factory_deserialize_chunk(CDedLevel& level, rf::File& file, std::si
 
     uint32_t count = 0;
     if (!reader.read_bytes(&count, sizeof(count))) return;
-    count = std::min(count, vehicle_factory_max_records);
+    // The cap is level-wide, as the game applies it across every chunk.
+    const uint32_t loaded = static_cast<uint32_t>(std::min<std::size_t>(factories.size(), vehicle_factory_max_records));
+    count = std::min(count, vehicle_factory_max_records - loaded);
 
     for (uint32_t i = 0; i < count; i++) {
         auto* factory = new DedVehicleFactory();
@@ -447,7 +449,7 @@ void vehicle_factory_deserialize_chunk(CDedLevel& level, rf::File& file, std::si
             factory->pos = {};
         }
         // The game drops a factory whose basis fails this test.
-        if (!vehicle_orient_is_orthonormal(factory->orient)) {
+        if (!vehicle_orient_is_rotation(factory->orient)) {
             factory->orient = {{1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f, 1.0f}};
         }
 

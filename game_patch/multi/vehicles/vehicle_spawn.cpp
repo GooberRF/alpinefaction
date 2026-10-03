@@ -393,7 +393,7 @@ void vehicle_factory_load_chunk(rf::File& file, std::size_t chunk_len)
         if (!alpine_orient_is_sane(info.orient)) {
             return false;
         }
-        return vehicle_orient_is_orthonormal(info.orient);
+        return vehicle_orient_is_rotation(info.orient);
     };
     int rejected = 0;
 

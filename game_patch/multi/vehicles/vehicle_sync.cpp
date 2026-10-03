@@ -1431,7 +1431,7 @@ namespace
                 }
                 rf::Vector3 restored_pos = wire_pos;
                 ep->move(&restored_pos);
-                if (vehicle_orient_is_orthonormal(wire_orient)) {
+                if (vehicle_orient_is_rotation(wire_orient)) {
                     ep->orient = wire_orient;
                     ep->p_data.orient = wire_orient;
                     ep->p_data.next_orient = wire_orient;
