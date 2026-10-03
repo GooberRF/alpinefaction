@@ -41,7 +41,7 @@ namespace rf
 
         // Opens a file by name, searching loose files and .vpp archives.
         // path_id: search path identifier (0x98967f = default mesh/anim paths)
-        // Returns true if the file was found and opened.
+        // Returns true if the file was found. Only a lookup: no stream is opened, so never close() after it.
         bool open(const char* filename, int path_id = 0x98967f)
         {
             return AddrCaller{0x004CF9A0}.this_call<bool>(this, filename, path_id);

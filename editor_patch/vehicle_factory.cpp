@@ -129,7 +129,6 @@ std::string vehicle_factory_mesh_for_class(const std::string& class_name)
         // Probed, so an install without the AF assets still previews the stock hull.
         rf::File file;
         if (file.open(entry.vmesh_filename)) {
-            file.close(); // rf::File has no destructor, so the probe leaks the OS handle otherwise
             filename = entry.vmesh_filename;
         }
         break;
@@ -183,7 +182,6 @@ void vehicle_factory_load_preview(DedVehicleFactory* factory)
         // The v3c loader raises a fatal error for a missing file, so probe first.
         rf::File file;
         if (file.open(filename.c_str())) {
-            file.close();
             vmesh = vmesh_load_v3c(filename.c_str(), 0, 0);
         }
         else {
