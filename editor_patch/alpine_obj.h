@@ -9,9 +9,11 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <string>
 #include "alpine_color_picker.h"
 #include "vtypes.h"
 #include "level.h"
+#include "textures.h"
 
 // Shared Alpine object infrastructure — hooks that dispatch to all Alpine object types.
 // Type-specific logic lives in mesh.cpp / note.cpp / corona.cpp; this file wires them together.
@@ -258,6 +260,39 @@ inline void alpine_dlg_draw_bitmap_preview(HWND ctrl, const RECT& rc, int bm_han
 
     gr_flip();
 }
+
+// The texture browser runs its own modal loop off the main frame, which would leave the dialog
+// clickable; it is disabled so OK/Cancel can't run underneath. True when a bitmap was picked.
+inline bool alpine_dlg_browse_bitmap(HWND hdlg, int field_idc, const char* folder, int current_handle)
+{
+    EnableWindow(hdlg, FALSE);
+    const int picked = texture_browser_pick(folder, current_handle);
+    EnableWindow(hdlg, TRUE);
+    SetActiveWindow(hdlg);
+    if (picked < 0) return false;
+    const char* name = bm_get_filename(picked);
+    SetDlgItemTextA(hdlg, field_idc, name ? name : "");
+    return true;
+}
+
+// Bitmap shown in a preview control, tracked so an edit-box keystroke only touches the bitmap
+// manager when the name actually changed.
+struct AlpineBitmapPreview
+{
+    std::string name;
+    int handle = -1;
+
+    void update(HWND hdlg, int edit_idc, int preview_idc, bool force)
+    {
+        char buf[256] = {};
+        GetDlgItemTextA(hdlg, edit_idc, buf, sizeof(buf));
+        if (!force && name == buf) return;
+
+        name = buf;
+        handle = alpine_dlg_resolve_bitmap(buf);
+        InvalidateRect(GetDlgItem(hdlg, preview_idc), nullptr, TRUE);
+    }
+};
 
 // ─── Shared color controls ──────────────────────────────────────────────────
 // The Level Properties sun color idiom: a swatch tinted to the current color, a "<r, g, b>" text

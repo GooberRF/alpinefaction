@@ -4,6 +4,7 @@
 #include <common/utils/list-utils.h>
 #include <common/utils/os-utils.h>
 #include <common/config/BuildConfig.h>
+#include <common/lighting/alpine_lighting.h>
 #include <common/ComPtr.h>
 #include <patch_common/CallHook.h>
 #include <patch_common/FunHook.h>
@@ -11,6 +12,7 @@
 #include <patch_common/ShortTypes.h>
 #include <patch_common/AsmWriter.h>
 #include <xlog/xlog.h>
+#include <iterator>
 #include <optional>
 #include <shellapi.h>
 #include "../os/console.h"
@@ -152,6 +154,21 @@ bool gr_3d_bitmap_oriented_wh(const rf::Vector3* pnt, const rf::Matrix3* M, floa
     return rf::gr::poly(4, verts, rf::gr::TMapperFlags::TMAP_FLAG_TEXTURED, mode, 0, 0.0f);
 }
 
+bool gr_project_world_to_screen(const rf::Vector3& world_pos, float& out_sx, float& out_sy)
+{
+    rf::gr::Vertex v{};
+    if (rf::gr::rotate_vertex(&v, &world_pos)) { // behind the near plane
+        return false;
+    }
+    rf::gr::project_vertex(&v);
+    if (!(v.flags & rf::gr::VF_PROJECTED)) {
+        return false;
+    }
+    out_sx = v.sx;
+    out_sy = v.sy;
+    return true;
+}
+
 float gr_scale_fov_hor_plus(float horizontal_fov)
 {
     // Use Hor+ FOV scaling method to improve user experience for wide screens
@@ -190,10 +207,9 @@ CodeInjection gameplay_render_frame_fov_injection{
     0x00431BA1,
     []() {
         // Scale world FOV
-        auto& rf_fov = addr_as_ref<float>(0x0059613C);
-        rf_fov = gr_scale_world_fov(rf_fov);
+        rf::gr::gameplay_fov = gr_scale_world_fov(rf::gr::gameplay_fov);
         // Free-look spectate stepped zoom narrows the FOV (1.0 when not zoomed)
-        rf_fov /= multi_spectate_get_view_fov_scale();
+        rf::gr::gameplay_fov /= multi_spectate_get_view_fov_scale();
     },
 };
 
@@ -488,6 +504,18 @@ void gr_bitmap_scaled_float(int bitmap_handle, float x, float y, float w, float 
     }
 }
 
+void gr_poly_2d(int bitmap_handle, int nv, const rf::gr::Vertex* vertices, rf::gr::Mode mode)
+{
+    if (rf::gr::screen.mode == rf::gr::DIRECT3D) {
+        if (is_d3d11()) {
+            gr::d3d11::poly_2d(bitmap_handle, nv, vertices, mode);
+        }
+        else {
+            gr_d3d_poly_2d(bitmap_handle, nv, vertices, mode);
+        }
+    }
+}
+
 void gr_set_window_mode(rf::gr::WindowMode window_mode)
 {
     if (rf::gr::screen.mode == rf::gr::DIRECT3D) {
@@ -600,60 +628,32 @@ SunLightState gr_get_sun_state()
     if (!(rf::level.flags & rf::LEVEL_LOADED)) {
         return state;
     }
-
-    const auto& props = AlpineLevelProperties::instance();
-    if (!props.enable_sun) {
-        return state;
-    }
-    // the chunk reader already constrains these, but this is the last thing between a level
-    // property and a constant buffer, and a NaN direction takes a whole frame of lighting with it
-    if (!std::isfinite(props.sun_yaw) || !std::isfinite(props.sun_pitch)) {
-        return state;
-    }
-    const float yaw = props.sun_yaw;
-    const float pitch = props.sun_pitch;
-    const float intensity =
-        std::isfinite(props.sun_intensity) ? std::clamp(props.sun_intensity, 0.0f, 10.0f) : 0.0f;
-
-    state.enabled = true;
-    state.affects_meshes = props.sun_affects_meshes;
-    state.drives_shadowmap_dir = props.sun_drives_shadowmap_dir;
-    state.mesh_mode = props.sun_mesh_mode;
-    rf::Vector3 to_sun = alpine_sun_to_light_dir(yaw, pitch);
-    state.travel_dir = {-to_sun.x, -to_sun.y, -to_sun.z};
-    state.color[0] = props.sun_color_r / 255.0f * intensity;
-    state.color[1] = props.sun_color_g / 255.0f * intensity;
-    state.color[2] = props.sun_color_b / 255.0f * intensity;
+    const alpine_lighting::SunState sun = alpine_lighting::sun_state(AlpineLevelProperties::instance());
+    state.enabled = sun.enabled;
+    state.affects_meshes = sun.affects_meshes;
+    state.drives_shadowmap_dir = sun.drives_shadowmap_dir;
+    state.mesh_mode = sun.mesh_mode;
+    state.travel_dir = {sun.travel_dir[0], sun.travel_dir[1], sun.travel_dir[2]};
+    std::copy(std::begin(sun.color), std::end(sun.color), state.color);
     return state;
 }
 
 float gr_sun_get_mesh_scale(const float* ambient)
 {
     const SunLightState sun = gr_get_sun_state();
-    if (!sun.enabled || !sun.affects_meshes) {
-        return 0.0f;
-    }
-    if (sun.mesh_mode != 0) {
-        return 1.0f;
-    }
     float global_ambient[3];
     if (!ambient) {
         rf::gr::light_get_ambient(&global_ambient[0], &global_ambient[1], &global_ambient[2]);
         ambient = global_ambient;
     }
-    // an ambient luminance of 0.5 and up takes full sunlight, anything darker scales down with it
-    float luminance = ambient[0] * 0.299f + ambient[1] * 0.587f + ambient[2] * 0.114f;
-    return std::clamp(luminance * 2.0f, 0.0f, 1.0f);
+    return alpine_lighting::sun_mesh_scale(sun.enabled && sun.affects_meshes, sun.mesh_mode, ambient);
 }
 
 void gr_mesh_blend_ambient(const float (&lightmap)[3], float (&out)[3])
 {
     float global_ambient[3];
     rf::gr::light_get_ambient(&global_ambient[0], &global_ambient[1], &global_ambient[2]);
-    constexpr float blend = 0.45f;
-    for (int i = 0; i < 3; i++) {
-        out[i] = global_ambient[i] * (1.0f - blend) + lightmap[i] * blend;
-    }
+    alpine_lighting::mesh_blend_ambient(global_ambient, lightmap, out);
 }
 
 // Power of 2 texture enforcement

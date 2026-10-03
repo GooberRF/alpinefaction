@@ -27,15 +27,17 @@ namespace
         std::array<float, 3> submesh_center;
         float draw_distance;
         float fade_band;
-        std::array<float, 3> pad;
+        float dither_fade;
+        std::array<float, 2> pad;
     };
     static_assert(offsetof(DecorationBufferData, draw_distance) == 12);
     static_assert(offsetof(DecorationBufferData, fade_band) == 16);
+    static_assert(offsetof(DecorationBufferData, dither_fade) == 20);
     static_assert(sizeof(DecorationBufferData) == 32);
 
     constexpr UINT cbuffer_slot = 4;
     constexpr UINT instance_slot = 1;
-    // Instances shrink away over the last fade_band_fraction of the draw distance, at least min_fade_band
+    // Instances shrink (or dither) away over the last fade_band_fraction of the draw distance, at least min_fade_band
     constexpr float min_fade_band = 2.0f;
     constexpr float fade_band_fraction = 0.1f;
 
@@ -115,9 +117,9 @@ namespace gr::d3d11
         return buffer;
     }
 
-    void DecorationRenderer::set_submesh(const rf::Vector3& center, float draw_distance)
+    void DecorationRenderer::set_submesh(const rf::Vector3& center, float draw_distance, bool dither_fade)
     {
-        const float state[4] = {center.x, center.y, center.z, draw_distance};
+        const float state[5] = {center.x, center.y, center.z, draw_distance, dither_fade ? 1.0f : 0.0f};
         if (cbuffer_valid_ && std::equal(std::begin(state), std::end(state), std::begin(cbuffer_state_))) {
             return;
         }
@@ -128,6 +130,7 @@ namespace gr::d3d11
         data.submesh_center = {center.x, center.y, center.z};
         data.draw_distance = draw_distance;
         data.fade_band = std::max(min_fade_band, fade_band_fraction * draw_distance);
+        data.dither_fade = state[4];
         D3D11_MAPPED_SUBRESOURCE mapped;
         DF_GR_D3D11_CHECK_HR(render_context_.device_context()->Map(cbuffer_, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped));
         std::memcpy(mapped.pData, &data, sizeof(data));
@@ -183,11 +186,12 @@ namespace gr::d3d11
                 auto* v3d = static_cast<rf::V3d*>(alpine_terrain_decorations_mesh(td.mesh_slot[d]).mesh->instance);
                 if (!v3d || !v3d->meshes) continue;
                 const float draw_distance = td.draw_distance[d];
+                const bool dither_fade = td.dither_fade[d];
                 for (int m = 0; m < v3d->num_meshes; m++) {
                     rf::V3dMesh& submesh = v3d->meshes[m];
                     rf::VifLodMesh* lod_mesh = submesh.vu;
                     if (!lod_mesh || lod_mesh->num_levels < 1) continue;
-                    set_submesh(lod_mesh->center, draw_distance);
+                    set_submesh(lod_mesh->center, draw_distance, dither_fade);
                     auto* materials = reinterpret_cast<rf::MeshMaterial*>(submesh.materials);
                     for (std::size_t i = begin; i < end; i++) {
                         const DecorationChunk& chunk = td.chunks[sorted_chunks_[i].chunk];

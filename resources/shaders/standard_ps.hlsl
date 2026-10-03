@@ -11,6 +11,8 @@ struct VsOutput
 #ifdef INSTANCE_LIGHT
     // Terrain decoration: rgb its mesh ambient, a its sun scale
     float4 inst_light : TEXCOORD3;
+    // Fraction of its pixels a dither-fading decoration keeps
+    float inst_keep : TEXCOORD4;
 #endif
 };
 
@@ -69,6 +71,8 @@ cbuffer LightsBuffer : register(b1)
 cbuffer TextureScaleBuffer : register(b2)
 {
     float2 tex0_uv_scale;
+    float ghost_fill_y;       // world Y below which a ghost mesh keeps its full alpha
+    float ghost_alpha_ratio;  // 0 = not a ghost draw; else alpha factor above ghost_fill_y
 };
 
 cbuffer ShadowBuffer : register(b3)
@@ -209,6 +213,15 @@ static const float2 pcf_offsets[15] = {
     float2( 0.891f, -0.546f),
     float2(-0.428f,  0.882f),
 };
+
+#ifdef INSTANCE_LIGHT
+static const float bayer4x4[16] = {
+     0.0f,  8.0f,  2.0f, 10.0f,
+    12.0f,  4.0f, 14.0f,  6.0f,
+     3.0f, 11.0f,  1.0f,  9.0f,
+    15.0f,  7.0f, 13.0f,  5.0f,
+};
+#endif
 
 // One medium over the fragment: dim by its transmittance, then add its in-scatter where the
 // draw mode allows fog. Apply the farther medium first so each in-scatter is dimmed by the
@@ -843,9 +856,19 @@ float4 finish_fragment(VsOutput input, float4 target, float3 tex0_rgb, float3 li
 
 float4 main(VsOutput input) : SV_TARGET
 {
+#ifdef INSTANCE_LIGHT
+    // Ordered (4x4 Bayer) screen-door fade: keeps inst_keep of the pixels, opaque and depth-written.
+    uint2 cell = (uint2)input.pos.xy & 3u;
+    clip(input.inst_keep - (bayer4x4[cell.y * 4u + cell.x] + 0.5f) / 16.0f);
+#endif
+
     float2 scaled_uv0 = input.uv0 * tex0_uv_scale;
     float4 tex0_color = disable_textures > 0.5f ? float4(1.0, 1.0, 1.0, 1.0) : tex0.Sample(samp0, scaled_uv0);
     float4 target = input.color * tex0_color * current_color;
+
+    if (ghost_alpha_ratio > 0.0f) {
+        target.a *= input.world_pos_and_depth.y < ghost_fill_y ? 1.0f : ghost_alpha_ratio;
+    }
 
     clip(target.a - alpha_test);
 

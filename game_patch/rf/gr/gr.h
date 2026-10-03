@@ -352,6 +352,7 @@ namespace rf::gr
 
     static auto& screen = addr_as_ref<Screen>(0x017C7BC0);
     static auto& gamma_ramp = addr_as_ref<uint32_t[256]>(0x017C7C68);
+    static auto& gameplay_fov = addr_as_ref<float>(0x0059613C); // horizontal FOV the scene is rendered with
     static auto& default_wfar = addr_as_ref<float>(0x00596140);
     static auto& gamma = addr_as_ref<float>(0x005A445C);
 

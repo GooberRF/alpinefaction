@@ -66,8 +66,21 @@ struct Settings
     float spacing = 0.25f; // of the radius
     float set_height = 0.0f; // world y
     float ramp_angle = 15.0f; // degrees, rising along the drag
+    bool mirror_x = false, mirror_z = false;
 };
 Settings g_settings;
+
+// Each terrain's mirror lines, as offsets from its centre in half cells, until it is freed.
+struct MirrorLines
+{
+    const DedTerrain* terrain = nullptr;
+    int32_t x_off2 = 0, z_off2 = 0;
+};
+std::vector<MirrorLines> g_mirror_lines;
+
+constexpr uint8_t mirror_x_rgb[3] = {0x00, 0xff, 0xff};
+constexpr uint8_t mirror_z_rgb[3] = {0xff, 0x00, 0xff};
+constexpr uint8_t mirror_plane_alpha = 0x20;
 
 // The Layer list as the selection last saw it, so edits in Properties keep the selection on its entry.
 struct LayerListState
@@ -169,14 +182,20 @@ struct Stroke
     std::shared_ptr<const TerrainGrid> before;
     std::shared_ptr<TerrainGrid> grid;
     float height_min_before = 0.0f, height_range_before = 0.0f, thickness_before = 0.0f;
-    tp::Rect texels, cells, verts;
+    // What each mirror image changed; only image 0 without a mirror.
+    tp::Rect texels[tp::max_images], cells[tp::max_images], verts[tp::max_images], diag[tp::max_images];
     bool requantized = false;
+    tp::Mirror mirror;
     bool has_last = false;
     float last[2] = {};
     DWORD last_dab = 0;
     // Sculpting: the flatten target (offset above origin.y), and the noise pattern and coverage.
     bool has_target = false;
     float target = 0.0f;
+    // Mirrored flatten, ramp and bridge points: per image, its own target, anchor and end offsets.
+    float image_target[tp::max_images] = {};
+    float anchor_offsets[tp::max_images] = {};
+    float end_offsets[tp::max_images] = {};
     uint32_t seed = 0;
     float noise_feature = 1.0f;
     std::vector<float> coverage;
@@ -193,6 +212,7 @@ struct Stroke
     // Sculpting: each vertex's exact offset so far (tp::SculptDab::exact).
     std::vector<double> exact;
     tp::SculptScratch scratch;
+    tp::Snapshots<uint8_t> smooth_src;
     // Geoable Chunks: the state the stroke's first chunk decided, and from its first change until the
     // commit, the terrain's stored mask before it and how many chunks changed.
     bool geo_decided = false;
@@ -226,7 +246,8 @@ struct GeoChunks
 
 struct UndoEntry
 {
-    tp::StrokeDiff diff;
+    // At least one; a mirrored stroke keeps one per area it reached.
+    std::vector<tp::StrokeDiff> parts;
     uint64_t seq = 0;
     bool geometry = false; // holes or heights
     bool geo = false;      // geo_before / geo_after instead of the diff
@@ -350,6 +371,85 @@ float surface_offset(const DedTerrain& t, float x, float z)
     return at::height_at(terrain_grid_view(t.pos, t.data, *t.data.grid), x, z) - t.pos.y;
 }
 
+MirrorLines& mirror_lines(const DedTerrain* t)
+{
+    for (MirrorLines& l : g_mirror_lines) {
+        if (l.terrain == t) return l;
+    }
+    g_mirror_lines.push_back({t});
+    return g_mirror_lines.back();
+}
+
+// The mirror the panel's settings give the terrain, its lines kept within the grid.
+tp::Mirror terrain_mirror(const DedTerrain& t)
+{
+    tp::Mirror m;
+    if (!t.data.grid || (!g_settings.mirror_x && !g_settings.mirror_z)) return m;
+    const MirrorLines& l = mirror_lines(&t);
+    const auto cx = static_cast<int32_t>(at::cells(t.data.grid->nx));
+    const auto cz = static_cast<int32_t>(at::cells(t.data.grid->nz));
+    m.x = g_settings.mirror_x;
+    m.z = g_settings.mirror_z;
+    m.x2 = cx + std::clamp(l.x_off2, -cx, cx);
+    m.z2 = cz + std::clamp(l.z_off2, -cz, cz);
+    return m;
+}
+
+const tp::Mirror* stroke_mirror()
+{
+    return tp::mirror_on(&g_stroke.mirror) ? &g_stroke.mirror : nullptr;
+}
+
+void clear_stroke_rects()
+{
+    for (int k = 0; k < tp::max_images; k++) {
+        g_stroke.texels[k] = g_stroke.cells[k] = g_stroke.verts[k] = g_stroke.diag[k] = {};
+    }
+    g_stroke.requantized = false;
+}
+
+// World (x, z) as image k of the mirror places it.
+void mirror_world(const DedTerrain& t, const tp::Mirror& m, int k, float x, float z, float& out_x, float& out_z)
+{
+    const float cs = t.data.cell_size;
+    out_x = (k & 1) ? 2.0f * t.pos.x + static_cast<float>(m.x2) * cs - x : x;
+    out_z = (k & 2) ? 2.0f * t.pos.z + static_cast<float>(m.z2) * cs - z : z;
+}
+
+// Per mirror image, the surface offset where its copy of world (x, z) is; image 0 is surface_offset.
+void image_surface_offsets(const DedTerrain& t, const tp::Mirror& m, float x, float z, float (&out)[tp::max_images])
+{
+    const at::GridView v = terrain_grid_view(t.pos, t.data, *t.data.grid);
+    out[0] = surface_offset(t, x, z);
+    for (int k = 1; k < tp::max_images; k++) {
+        out[k] = tp::image_on(&m, k) ? tp::mirrored_height_at(v, m, k, x, z) - t.pos.y : out[0];
+    }
+}
+
+// Per-image rects as few boxes as keep the area down: two merge when one box covers them for no more.
+std::vector<tp::Rect> merged_rects(const tp::Rect (&rects)[tp::max_images])
+{
+    std::vector<tp::Rect> out;
+    for (const tp::Rect& r : rects) {
+        if (!r.empty()) out.push_back(r);
+    }
+    for (bool merged = true; merged;) {
+        merged = false;
+        for (std::size_t a = 0; a < out.size() && !merged; a++) {
+            for (std::size_t b = a + 1; b < out.size(); b++) {
+                const tp::Rect u = tp::rect_union(out[a], out[b]);
+                if (u.area() <= out[a].area() + out[b].area()) {
+                    out[a] = u;
+                    out.erase(out.begin() + static_cast<std::ptrdiff_t>(b));
+                    merged = true;
+                    break;
+                }
+            }
+        }
+    }
+    return out;
+}
+
 // Mid-drag, what a ramp tool will do.
 std::string ramp_status()
 {
@@ -383,6 +483,10 @@ void update_status()
         uint32_t on = 0;
         for (uint32_t k = 0; k < n; k++) on += terrain_chunk_geoable(t->data, k) ? 1 : 0;
         text += std::format(". Geoable chunks {}/{}", on, n);
+    }
+    if (g_settings.mirror_x || g_settings.mirror_z) {
+        text += ". Mirror ";
+        text += g_settings.mirror_x && g_settings.mirror_z ? "X+Z" : g_settings.mirror_x ? "X" : "Z";
     }
     const std::string ramp = ramp_status();
     if (!ramp.empty()) text += ". " + ramp;
@@ -479,55 +583,70 @@ void stroke_commit()
     DedTerrain* t = g_stroke.terrain;
     std::shared_ptr<const TerrainGrid> before = std::move(g_stroke.before);
     std::shared_ptr<TerrainGrid> grid = std::move(g_stroke.grid);
-    const tp::Rect texels = g_stroke.texels, cells = g_stroke.cells;
-    const tp::Rect verts = g_stroke.requantized && grid ? tp::Rect{0, 0, grid->nx, grid->nz} : g_stroke.verts;
-    g_stroke.texels = g_stroke.cells = g_stroke.verts = {};
-    g_stroke.requantized = false;
+    std::vector<tp::Rect> texels, cells, verts, diag;
+    if (grid && before) {
+        texels = merged_rects(g_stroke.texels);
+        cells = merged_rects(g_stroke.cells);
+        verts = g_stroke.requantized ? std::vector<tp::Rect>{{0, 0, grid->nx, grid->nz}} : merged_rects(g_stroke.verts);
+        diag = merged_rects(g_stroke.diag);
+    }
+    clear_stroke_rects();
     if (!t || !grid || !before || t->data.grid.get() != grid.get()) return;
-    if (texels.empty() && cells.empty() && verts.empty()) return;
+    if (texels.empty() && cells.empty() && verts.empty() && diag.empty()) return;
 
     CDedLevel* level = CDedLevel::Get();
-    if ((!cells.empty() || !verts.empty()) && level) level->mark_geometry_dirty();
+    const bool geometry = !cells.empty() || !verts.empty() || !diag.empty();
+    if (geometry && level) level->mark_geometry_dirty();
     mark_level_modified();
 
     try {
         UndoStack& s = stack_for_commit(t);
         UndoEntry e;
         e.seq = ++g_undo_seq;
-        e.geometry = !cells.empty() || !verts.empty();
-        e.diff.texels = texels;
-        e.diff.cells = cells;
-        e.diff.verts = verts;
-        e.diff.height_min_before = g_stroke.height_min_before;
-        e.diff.height_range_before = g_stroke.height_range_before;
-        e.diff.height_min_after = t->data.height_min;
-        e.diff.height_range_after = t->data.height_range;
-        e.diff.thickness_before = g_stroke.thickness_before;
-        e.diff.thickness_after = t->data.thickness;
-        if (!verts.empty()) {
-            tp::capture_heights(before->heights.data(), grid->nx, verts, e.diff.heights_before);
-            tp::capture_heights(grid->heights.data(), grid->nx, verts, e.diff.heights_after);
-        }
+        e.geometry = geometry;
+        const std::size_t parts = std::max({texels.size(), cells.size(), verts.size(), diag.size()});
+        e.parts.resize(parts);
         const uint32_t ww = at::weight_width(grid->nx, grid->weight_res_mul);
         const uint32_t wh = at::weight_height(grid->nz, grid->weight_res_mul);
         const uint32_t cx = at::cells(grid->nx);
-        e.diff.deco_planes = static_cast<uint32_t>(terrain_decoration_plane_count(*grid));
-        if (!texels.empty()) {
-            e.diff.overlay = !before->overlay.empty() && before->overlay.size() == grid->overlay.size();
-            const bool planes = before->decoration.size() == grid->decoration.size();
-            tp::capture_weights(before->weights.data(), ww, wh, texels, e.diff.weights_before,
-                                e.diff.overlay ? before->overlay.data() : nullptr,
-                                planes ? before->decoration.data() : nullptr, e.diff.deco_planes);
-            tp::capture_weights(grid->weights.data(), ww, wh, texels, e.diff.weights_after,
-                                e.diff.overlay ? grid->overlay.data() : nullptr,
-                                planes ? grid->decoration.data() : nullptr, e.diff.deco_planes);
-            if (!planes) e.diff.deco_planes = 0;
+        for (std::size_t p = 0; p < parts; p++) {
+            tp::StrokeDiff& d = e.parts[p];
+            d.texels = p < texels.size() ? texels[p] : tp::Rect{};
+            d.cells = p < cells.size() ? cells[p] : tp::Rect{};
+            d.verts = p < verts.size() ? verts[p] : tp::Rect{};
+            d.diag_cells = p < diag.size() ? diag[p] : tp::Rect{};
+            d.height_min_before = g_stroke.height_min_before;
+            d.height_range_before = g_stroke.height_range_before;
+            d.height_min_after = t->data.height_min;
+            d.height_range_after = t->data.height_range;
+            d.thickness_before = g_stroke.thickness_before;
+            d.thickness_after = t->data.thickness;
+            if (!d.verts.empty()) {
+                tp::capture_heights(before->heights.data(), grid->nx, d.verts, d.heights_before);
+                tp::capture_heights(grid->heights.data(), grid->nx, d.verts, d.heights_after);
+            }
+            d.deco_planes = static_cast<uint32_t>(terrain_decoration_plane_count(*grid));
+            if (!d.texels.empty()) {
+                d.overlay = !before->overlay.empty() && before->overlay.size() == grid->overlay.size();
+                const bool planes = before->decoration.size() == grid->decoration.size();
+                tp::capture_weights(before->weights.data(), ww, wh, d.texels, d.weights_before,
+                                    d.overlay ? before->overlay.data() : nullptr,
+                                    planes ? before->decoration.data() : nullptr, d.deco_planes);
+                tp::capture_weights(grid->weights.data(), ww, wh, d.texels, d.weights_after,
+                                    d.overlay ? grid->overlay.data() : nullptr,
+                                    planes ? grid->decoration.data() : nullptr, d.deco_planes);
+                if (!planes) d.deco_planes = 0;
+            }
+            if (!d.cells.empty()) {
+                tp::capture_holes(before->holes.data(), cx, d.cells, d.holes_before);
+                tp::capture_holes(grid->holes.data(), cx, d.cells, d.holes_after);
+            }
+            if (!d.diag_cells.empty()) {
+                tp::capture_holes(before->diag.data(), cx, d.diag_cells, d.diag_before);
+                tp::capture_holes(grid->diag.data(), cx, d.diag_cells, d.diag_after);
+            }
+            e.bytes += d.bytes();
         }
-        if (!cells.empty()) {
-            tp::capture_holes(before->holes.data(), cx, cells, e.diff.holes_before);
-            tp::capture_holes(grid->holes.data(), cx, cells, e.diff.holes_after);
-        }
-        e.bytes = e.diff.bytes();
         push_entry(s, std::move(e));
     }
     catch (const std::bad_alloc&) {
@@ -592,8 +711,7 @@ void stroke_own_grid(DedTerrain* t)
         // Something replaced the grid mid-stroke: what was painted is lost to undo with it.
         g_stroke.before.reset();
         g_stroke.grid.reset();
-        g_stroke.texels = g_stroke.cells = g_stroke.verts = {};
-        g_stroke.requantized = false;
+        clear_stroke_rects();
     }
     if (g_stroke.grid) return;
     valid_stack(t);
@@ -627,10 +745,32 @@ void note_height_write(DedTerrain* t, const tp::HeightGrid& hg, const tp::Height
                              at::max_height_range, -at::max_coord);
     }
     if (w.verts.empty()) return;
-    g_stroke.verts = tp::rect_union(g_stroke.verts, w.verts);
+    for (int k = 0; k < tp::max_images; k++) g_stroke.verts[k] = tp::rect_union(g_stroke.verts[k], w.image_verts[k]);
     g_height_serial++;
-    const TerrainCellRect r{w.verts.x0, w.verts.z0, w.verts.x1, w.verts.z1};
-    terrain_preview_heights_changed(t, w.requantized ? nullptr : &r);
+    if (w.requantized) {
+        terrain_preview_heights_changed(t, nullptr);
+        return;
+    }
+    for (const tp::Rect& v : w.image_verts) {
+        if (v.empty()) continue;
+        const TerrainCellRect r{v.x0, v.z0, v.x1, v.z1};
+        terrain_preview_heights_changed(t, &r);
+    }
+}
+
+// Mirrored sculpting: the diagonals of the cells next to what each image changed follow their mirrors.
+void mirror_stroke_diagonals(DedTerrain* t, TerrainGrid& g, const tp::Dab& dab, const tp::HeightWrite& w)
+{
+    const tp::Mirror* mirror = stroke_mirror();
+    if (!mirror) return;
+    for (int k = 0; k < tp::max_images; k++) {
+        const tp::Rect c = tp::mirror_diagonals(g.diag.data(), at::cells(g.nx), at::cells(g.nz), *mirror, dab.cx,
+                                                dab.cz, w.image_verts[k]);
+        if (c.empty()) continue;
+        g_stroke.diag[k] = tp::rect_union(g_stroke.diag[k], c);
+        const TerrainCellRect r{c.x0, c.z0, c.x1 + 1, c.z1 + 1};
+        terrain_preview_heights_changed(t, &r);
+    }
 }
 
 bool sculpt_dab(DedTerrain* t, TerrainGrid& g, const tp::Dab& dab, float x, float z)
@@ -639,6 +779,7 @@ bool sculpt_dab(DedTerrain* t, TerrainGrid& g, const tp::Dab& dab, float x, floa
     tp::SculptDab s;
     s.tool = g_settings.tool;
     s.dab = dab;
+    s.mirror = stroke_mirror();
     switch (s.tool) {
     case tp::Tool::raise:
     case tp::Tool::lower:
@@ -648,8 +789,10 @@ bool sculpt_dab(DedTerrain* t, TerrainGrid& g, const tp::Dab& dab, float x, floa
         if (!g_stroke.has_target) {
             g_stroke.has_target = true;
             g_stroke.target = surface_offset(*t, x, z);
+            if (s.mirror) image_surface_offsets(*t, *s.mirror, x, z, g_stroke.image_target);
         }
         s.target = g_stroke.target;
+        std::copy(std::begin(g_stroke.image_target), std::end(g_stroke.image_target), s.image_target);
         break;
     case tp::Tool::set_height:
         s.target = g_settings.set_height - t->pos.y;
@@ -657,6 +800,7 @@ bool sculpt_dab(DedTerrain* t, TerrainGrid& g, const tp::Dab& dab, float x, floa
     case tp::Tool::ramp:
         if (!g_stroke.ramp_locked) return false;
         s.target = g_stroke.anchor_offset;
+        std::copy(std::begin(g_stroke.anchor_offsets), std::end(g_stroke.anchor_offsets), s.image_target);
         s.plane_x = (g_stroke.anchor[0] - t->pos.x) / d.cell_size;
         s.plane_z = (g_stroke.anchor[1] - t->pos.z) / d.cell_size;
         tp::ramp_slope(g_settings.ramp_angle, g_stroke.ramp_dir[0], g_stroke.ramp_dir[1], d.cell_size, s.slope_x,
@@ -666,12 +810,16 @@ bool sculpt_dab(DedTerrain* t, TerrainGrid& g, const tp::Dab& dab, float x, floa
         if (!g_stroke.has_anchor || !g_stroke.has_end) return false;
         s.target = g_stroke.anchor_offset;
         s.target_end = g_stroke.end_offset;
+        std::copy(std::begin(g_stroke.anchor_offsets), std::end(g_stroke.anchor_offsets), s.image_target);
+        std::copy(std::begin(g_stroke.end_offsets), std::end(g_stroke.end_offsets), s.image_target_end);
         s.seg_x = (g_stroke.end[0] - g_stroke.anchor[0]) / d.cell_size;
         s.seg_z = (g_stroke.end[1] - g_stroke.anchor[1]) / d.cell_size;
         break;
-    case tp::Tool::noise:
+    case tp::Tool::noise: {
         if (!g_stroke.before || g_stroke.before->heights.size() != g.heights.size()) return false;
-        if (g_stroke.coverage.size() != g.heights.size()) g_stroke.coverage.assign(g.heights.size(), 0.0f);
+        // One coverage plane per mirror image.
+        const std::size_t coverage = g.heights.size() * (s.mirror ? tp::max_images : 1);
+        if (g_stroke.coverage.size() != coverage) g_stroke.coverage.assign(coverage, 0.0f);
         if (!g_stroke.seed) {
             g_stroke.seed = static_cast<uint32_t>(at::splitmix64(++g_stroke_count ^ GetTickCount())) | 1u;
             g_stroke.noise_feature = tp::noise_feature_cells(dab.radius);
@@ -684,6 +832,7 @@ bool sculpt_dab(DedTerrain* t, TerrainGrid& g, const tp::Dab& dab, float x, floa
         s.seed = g_stroke.seed;
         s.feature_cells = g_stroke.noise_feature;
         break;
+    }
     default:
         break;
     }
@@ -693,6 +842,7 @@ bool sculpt_dab(DedTerrain* t, TerrainGrid& g, const tp::Dab& dab, float x, floa
     hg.headroom_floor = at::growth_headroom_floor(d.flags, d.height_min, d.thickness);
     const tp::HeightWrite w = tp::sculpt_dab(hg, s, g_stroke.scratch);
     note_height_write(t, hg, w);
+    mirror_stroke_diagonals(t, g, dab, w);
     return !w.verts.empty();
 }
 
@@ -713,7 +863,6 @@ bool apply_dab(float x, float z)
     dab.falloff = g_settings.falloff;
     if (tp::tool_edits_heights(g_settings.tool)) return sculpt_dab(t, g, dab, x, z);
 
-    tp::Rect texels, cells;
     const uint32_t layer_count = static_cast<uint32_t>(std::min<std::size_t>(d.layers.size(), at::max_layers));
     const uint32_t ww = at::weight_width(g.nx, g.weight_res_mul), wh = at::weight_height(g.nz, g.weight_res_mul);
     tp::WeightMaps maps{g.weights.data(), ww, wh, g.weight_res_mul, layer_count};
@@ -730,30 +879,40 @@ bool apply_dab(float x, float z)
                                   : tp::CoverageMap{g.overlay.data(), ww, wh, g.weight_res_mul,
                                                     static_cast<uint32_t>(overlay)};
     const bool on_coverage = on_overlay || on_deco;
+    const tp::Mirror* mirror = stroke_mirror();
+    tp::Rect texels[tp::max_images], cells[tp::max_images];
     switch (g_settings.tool) {
     case tp::Tool::paint_layer:
-        if (on_coverage) texels = tp::paint_coverage(cov, dab, true);
-        else if (overlay < 0) texels = tp::paint_layer(maps, dab, static_cast<uint32_t>(std::max(g_settings.layer, 0)));
+        if (on_coverage) tp::paint_coverage(cov, dab, true, mirror, texels);
+        else if (overlay < 0) {
+            tp::paint_layer(maps, dab, static_cast<uint32_t>(std::max(g_settings.layer, 0)), mirror, texels);
+        }
         break;
     case tp::Tool::erase:
-        texels = on_coverage ? tp::paint_coverage(cov, dab, false) : tp::paint_layer(maps, dab, 0);
+        if (on_coverage) tp::paint_coverage(cov, dab, false, mirror, texels);
+        else tp::paint_layer(maps, dab, 0, mirror, texels);
         break;
     case tp::Tool::smooth:
-        texels = on_coverage ? tp::smooth_coverage(cov, dab) : tp::smooth_weights(maps, dab);
+        if (on_coverage) tp::smooth_coverage(cov, dab, g_stroke.smooth_src, mirror, texels);
+        else tp::smooth_weights(maps, dab, g_stroke.smooth_src, mirror, texels);
         break;
     case tp::Tool::paint_holes:
     case tp::Tool::clear_holes:
-        cells = tp::paint_holes(g.holes.data(), at::cells(g.nx), at::cells(g.nz), dab,
-                                g_settings.tool == tp::Tool::paint_holes);
+        tp::paint_holes(g.holes.data(), at::cells(g.nx), at::cells(g.nz), dab, g_settings.tool == tp::Tool::paint_holes,
+                        mirror, cells);
         break;
     default:
         break;
     }
-    if (texels.empty() && cells.empty()) return false;
-    g_stroke.texels = tp::rect_union(g_stroke.texels, texels);
-    g_stroke.cells = tp::rect_union(g_stroke.cells, cells);
-    invalidate(t, texels, cells, g.weight_res_mul);
-    return true;
+    bool changed = false;
+    for (int k = 0; k < tp::max_images; k++) {
+        if (texels[k].empty() && cells[k].empty()) continue;
+        changed = true;
+        g_stroke.texels[k] = tp::rect_union(g_stroke.texels[k], texels[k]);
+        g_stroke.cells[k] = tp::rect_union(g_stroke.cells[k], cells[k]);
+        invalidate(t, texels[k], cells[k], g.weight_res_mul);
+    }
+    return changed;
 }
 
 // Geoable Chunks: every chunk the cursor crossed since the last point takes the state the stroke's first
@@ -775,7 +934,7 @@ bool geo_stroke_to(float x, float z)
         g_stroke.geo_state = !terrain_chunk_geoable(d, tp::chunk_at(layout, cx, cz));
     }
     bool changed = false;
-    tp::chunks_on_segment(layout, px, pz, cx, cz, [&](uint32_t k) {
+    auto visit = [&](uint32_t k) {
         if (terrain_chunk_geoable(d, k) == g_stroke.geo_state) return;
         if (!g_stroke.geo_changed) {
             std::vector<uint8_t> now = terrain_geo_chunks(d);
@@ -788,7 +947,24 @@ bool geo_stroke_to(float x, float z)
         at::set_bit(d.geo_chunks.data(), k, g_stroke.geo_state);
         g_stroke.geo_count++;
         changed = true;
-    });
+    };
+    const tp::Mirror* mirror = stroke_mirror();
+    for (int k = 0; k < tp::max_images; k++) {
+        if (!tp::image_on(mirror, k)) continue;
+        float ax = px, az = pz, bx = cx, bz = cz;
+        if (k & 1) {
+            ax = static_cast<float>(mirror->x2) - ax;
+            bx = static_cast<float>(mirror->x2) - bx;
+        }
+        if (k & 2) {
+            az = static_cast<float>(mirror->z2) - az;
+            bz = static_cast<float>(mirror->z2) - bz;
+        }
+        // Clamping a segment's off-grid part onto the edge would reach chunks it never crosses.
+        const float w = static_cast<float>(layout.cells_x), h = static_cast<float>(layout.cells_z);
+        if (mirror && !tp::clip_segment(ax, az, bx, bz, w, h)) continue;
+        tp::chunks_on_segment(layout, ax, az, bx, bz, visit);
+    }
     return changed;
 }
 
@@ -805,6 +981,9 @@ bool stroke_to(float x, float z)
         g_stroke.anchor[0] = x;
         g_stroke.anchor[1] = z;
         g_stroke.anchor_offset = surface_offset(*t, x, z);
+        if (const tp::Mirror* mirror = stroke_mirror()) {
+            image_surface_offsets(*t, *mirror, x, z, g_stroke.anchor_offsets);
+        }
     }
     if (g_settings.tool == tp::Tool::ramp_between) {
         // Applied on release (ramp_between_apply)
@@ -864,6 +1043,9 @@ bool ramp_between_apply()
         return false;
     }
     g_stroke.end_offset = surface_offset(*t, g_stroke.end[0], g_stroke.end[1]);
+    if (const tp::Mirror* mirror = stroke_mirror()) {
+        image_surface_offsets(*t, *mirror, g_stroke.end[0], g_stroke.end[1], g_stroke.end_offsets);
+    }
     return apply_dab(g_stroke.anchor[0], g_stroke.anchor[1]);
 }
 
@@ -1026,7 +1208,8 @@ void undo_step(bool undo)
             return;
         }
         // Backstop: adding or removing a decoration replaces the grid, which already empties the stack.
-        if (from->back().diff.deco_planes != terrain_decoration_plane_count(*t->data.grid)) {
+        const std::vector<tp::StrokeDiff>& parts = from->back().parts;
+        if (parts.empty() || parts[0].deco_planes != terrain_decoration_plane_count(*t->data.grid)) {
             clear_stack(*s);
             update_status();
             return;
@@ -1036,19 +1219,29 @@ void undo_step(bool undo)
         from->pop_back();
         const uint32_t ww = at::weight_width(g->nx, g->weight_res_mul);
         const uint32_t wh = at::weight_height(g->nz, g->weight_res_mul);
-        tp::apply_diff(e.diff, !undo, g->weights.data(), ww, wh, g->holes.data(), at::cells(g->nx),
-                       g->overlay.empty() ? nullptr : g->overlay.data(),
-                       g->decoration.empty() ? nullptr : g->decoration.data());
-        tp::apply_height_diff(e.diff, !undo, g->heights.data(), g->nx, t->data.height_min, t->data.height_range,
-                              t->data.thickness);
+        // Parts that overlap hold the same bytes there, so their order does not matter.
+        for (const tp::StrokeDiff& d : e.parts) {
+            tp::apply_diff(d, !undo, g->weights.data(), ww, wh, g->holes.data(), at::cells(g->nx),
+                           g->overlay.empty() ? nullptr : g->overlay.data(),
+                           g->decoration.empty() ? nullptr : g->decoration.data(), g->diag.data());
+            tp::apply_height_diff(d, !undo, g->heights.data(), g->nx, t->data.height_min, t->data.height_range,
+                                  t->data.thickness);
+        }
         const TerrainGrid* old = t->data.grid.get();
         t->data.grid = g;
         terrain_preview_rebind_grid(t, old, t->data.grid);
-        invalidate(t, e.diff.texels, e.diff.cells, g->weight_res_mul);
-        if (!e.diff.verts.empty()) {
-            g_height_serial++;
-            const TerrainCellRect r{e.diff.verts.x0, e.diff.verts.z0, e.diff.verts.x1, e.diff.verts.z1};
-            terrain_preview_heights_changed(t, e.diff.mapping_changed() ? nullptr : &r);
+        for (const tp::StrokeDiff& d : e.parts) {
+            invalidate(t, d.texels, d.cells, g->weight_res_mul);
+            if (!d.verts.empty()) {
+                g_height_serial++;
+                const TerrainCellRect r{d.verts.x0, d.verts.z0, d.verts.x1, d.verts.z1};
+                terrain_preview_heights_changed(t, d.mapping_changed() ? nullptr : &r);
+            }
+            if (!d.diag_cells.empty()) {
+                g_height_serial++;
+                const TerrainCellRect r{d.diag_cells.x0, d.diag_cells.z0, d.diag_cells.x1 + 1, d.diag_cells.z1 + 1};
+                terrain_preview_heights_changed(t, &r);
+            }
         }
         track_stack(t);
         if (e.geometry) {
@@ -1186,8 +1379,60 @@ void draw_chunk_outline(const at::GridView& v, const at::ChunkRect& r, float ins
     }
 }
 
+// A mirror line: along the surface from edge to edge, and a translucent wall through the terrain's height
+// range, so it shows where it cuts the ground.
+void draw_mirror_line(const DedTerrain& t, const at::GridView& v, float lift, bool along_z, int32_t line2,
+                      const uint8_t (&rgb)[3])
+{
+    const uint32_t cells_across = at::cells(along_z ? v.nz : v.nx);
+    const float at_line = static_cast<float>(line2) * 0.5f * v.cell_size;
+    const float length = at::extent(along_z ? v.nz : v.nx, v.cell_size);
+    auto point = [&](float s, float y) {
+        return along_z ? Vector3{v.origin[0] + at_line, y, v.origin[2] + s}
+                       : Vector3{v.origin[0] + s, y, v.origin[2] + at_line};
+    };
+
+    const float margin = std::max(1.0f, t.data.height_range * 0.05f);
+    const float y0 = t.pos.y + t.data.height_min - margin;
+    const float y1 = t.pos.y + t.data.height_min + t.data.height_range + margin;
+    const int strips = std::clamp(static_cast<int>(cells_across / 16), 1, 32);
+    gr_set_bitmap(-1, -1);
+    for (int i = 0; i < strips; i++) {
+        const float s0 = length * static_cast<float>(i) / static_cast<float>(strips);
+        const float s1 = length * static_cast<float>(i + 1) / static_cast<float>(strips);
+        const Vector3 pts[4] = {point(s0, y0), point(s1, y0), point(s1, y1), point(s0, y1)};
+        GrVertex gv[4] = {};
+        for (int c = 0; c < 4; c++) {
+            project_to_screen(&gv[c], &pts[c]);
+            gv[c].r = rgb[0];
+            gv[c].g = rgb[1];
+            gv[c].b = rgb[2];
+            gv[c].a = mirror_plane_alpha;
+        }
+        GrVertex* poly[4] = {&gv[0], &gv[1], &gv[2], &gv[3]};
+        gr_poly_render(4, poly, tmap_rgb | tmap_alpha, mode_vertex_alpha, 0, 0.0f);
+    }
+
+    set_draw_color(rgb[0], rgb[1], rgb[2], 0xff);
+    DrapedPath path{v, lift};
+    const float cs = v.cell_size;
+    auto world = [&](float s) { return point(s, 0.0f); };
+    const Vector3 a = world(0.0f);
+    path.move_to(a.x, a.z);
+    for (uint32_t i = 1; i <= cells_across; i++) {
+        const Vector3 p = world(std::min(static_cast<float>(i) * cs, length));
+        path.line_to(p.x, p.z);
+    }
+}
+
+void draw_mirror_lines(const DedTerrain& t, const at::GridView& v, float lift, const tp::Mirror& m)
+{
+    if (m.x) draw_mirror_line(t, v, lift, true, m.x2, mirror_x_rgb);
+    if (m.z) draw_mirror_line(t, v, lift, false, m.z2, mirror_z_rgb);
+}
+
 // Geoable Chunks: every chunk outlined by its state, the one under the cursor inset again in the cursor's colour.
-void draw_geo_chunks(const DedTerrain& t, const at::GridView& v, float lift)
+void draw_geo_chunks(const DedTerrain& t, const at::GridView& v, float lift, const tp::Mirror& mirror)
 {
     const at::ChunkLayout layout = terrain_geo_chunk_layout(t.data);
     const uint32_t n = at::layout_chunk_count(layout);
@@ -1210,6 +1455,19 @@ void draw_geo_chunks(const DedTerrain& t, const at::GridView& v, float lift)
         set_draw_color(0xff, 0xff, 0x00, 0xff);
     }
     draw_chunk_outline(v, at::chunk_rect(layout.cells_x, layout.cells_z, layout.edge, k), inset * 3.0f, lift);
+    for (int image = 1; image < tp::max_images; image++) {
+        if (!tp::image_on(&mirror, image)) continue;
+        float x = 0.0f, z = 0.0f;
+        mirror_world(t, mirror, image, g_hover.pos[0], g_hover.pos[2], x, z);
+        const float cx = (x - v.origin[0]) / v.cell_size, cz = (z - v.origin[2]) / v.cell_size;
+        if (cx < 0.0f || cz < 0.0f || cx > static_cast<float>(layout.cells_x) ||
+            cz > static_cast<float>(layout.cells_z)) {
+            continue;
+        }
+        set_draw_color(0x80, g_stroke.active ? 0x00 : 0x80, 0x00, 0xff);
+        const uint32_t mk = tp::chunk_at(layout, cx, cz);
+        draw_chunk_outline(v, at::chunk_rect(layout.cells_x, layout.cells_z, layout.edge, mk), inset * 3.0f, lift);
+    }
 }
 
 // ─── Panel ──────────────────────────────────────────────────────────────────
@@ -1296,7 +1554,90 @@ void panel_update_state()
     for (int id : {IDC_TTOOLS_HEIGHT, IDC_TTOOLS_HEIGHT_SPIN}) EnableWindow(GetDlgItem(g_panel.hwnd, id), set_height);
     const bool ramp = g_settings.tool == tp::Tool::ramp;
     for (int id : {IDC_TTOOLS_ANGLE, IDC_TTOOLS_ANGLE_SPIN}) EnableWindow(GetDlgItem(g_panel.hwnd, id), ramp);
-    SetDlgItemTextA(g_panel.hwnd, IDC_TTOOLS_HINT, tool_hints[static_cast<int>(g_settings.tool)]);
+    for (int id : {IDC_TTOOLS_MIRROR_X_OFFSET, IDC_TTOOLS_MIRROR_X_SPIN}) {
+        EnableWindow(GetDlgItem(g_panel.hwnd, id), g_settings.mirror_x);
+    }
+    for (int id : {IDC_TTOOLS_MIRROR_Z_OFFSET, IDC_TTOOLS_MIRROR_Z_SPIN}) {
+        EnableWindow(GetDlgItem(g_panel.hwnd, id), g_settings.mirror_z);
+    }
+    const bool mirrored = g_settings.mirror_x || g_settings.mirror_z;
+    EnableWindow(GetDlgItem(g_panel.hwnd, IDC_TTOOLS_MIRROR_CENTRE), mirrored);
+    std::string hint = tool_hints[static_cast<int>(g_settings.tool)];
+    if (mirrored) hint += " Shift+click places the mirror lines.";
+    SetDlgItemTextA(g_panel.hwnd, IDC_TTOOLS_HINT, hint.c_str());
+}
+
+// The offset spinners reach the target's edges.
+void panel_init_mirror_spinners(HWND hdlg, const DedTerrain* t)
+{
+    const TerrainGrid* g = t ? t->data.grid.get() : nullptr;
+    const float max_x = static_cast<float>(at::cells(g ? g->nx : at::max_verts)) * 0.5f;
+    const float max_z = static_cast<float>(at::cells(g ? g->nz : at::max_verts)) * 0.5f;
+    alpine_spinner_init(hdlg, IDC_TTOOLS_MIRROR_X_OFFSET, IDC_TTOOLS_MIRROR_X_SPIN, 0.5f, -max_x, max_x, 1);
+    alpine_spinner_init(hdlg, IDC_TTOOLS_MIRROR_Z_OFFSET, IDC_TTOOLS_MIRROR_Z_SPIN, 0.5f, -max_z, max_z, 1);
+}
+
+// The target's mirror line offsets, in cells from its centre.
+void panel_show_mirror_offsets(int only = 0)
+{
+    if (!g_panel.hwnd || !g_panel.target) return;
+    const MirrorLines& l = mirror_lines(g_panel.target);
+    g_panel.updating = true;
+    char buf[32];
+    if (only != IDC_TTOOLS_MIRROR_Z_OFFSET) {
+        std::snprintf(buf, sizeof(buf), "%.1f", l.x_off2 * 0.5);
+        SetDlgItemTextA(g_panel.hwnd, IDC_TTOOLS_MIRROR_X_OFFSET, buf);
+    }
+    if (only != IDC_TTOOLS_MIRROR_X_OFFSET) {
+        std::snprintf(buf, sizeof(buf), "%.1f", l.z_off2 * 0.5);
+        SetDlgItemTextA(g_panel.hwnd, IDC_TTOOLS_MIRROR_Z_OFFSET, buf);
+    }
+    g_panel.updating = false;
+}
+
+// A mirror setting changed: a stroke in progress ends first, so each keeps the images it began with.
+void mirror_changed()
+{
+    if (g_stroke.active) stroke_end();
+    panel_update_state();
+    update_status();
+    editor_views_mark_repaint_all();
+}
+
+// Sets an axis's line offset (half cells from the centre) on the target, kept within the grid.
+void set_mirror_offset(bool x_axis, int32_t off2)
+{
+    const DedTerrain* t = g_panel.target;
+    if (!t || !t->data.grid) return;
+    const auto half = static_cast<int32_t>(at::cells(x_axis ? t->data.grid->nx : t->data.grid->nz));
+    int32_t& slot = x_axis ? mirror_lines(t).x_off2 : mirror_lines(t).z_off2;
+    off2 = std::clamp(off2, -half, half);
+    if (slot == off2) return;
+    slot = off2;
+    mirror_changed();
+}
+
+// Shift+click while a mirror is on: its lines move to the half-cell line nearest the point clicked.
+void place_mirror_lines(void* view)
+{
+    const DedTerrain* t = g_panel.target;
+    POINT cursor{};
+    float hit[3];
+    if (terrain_paintable(t) && GetCursorPos(&cursor) && cast_at_terrain(view, cursor, *t, hit)) {
+        const float cs = t->data.cell_size;
+        auto off2 = [&](float world, float origin, uint32_t verts) {
+            return static_cast<int32_t>(std::lround(2.0f * (world - origin) / cs)) -
+                   static_cast<int32_t>(at::cells(verts));
+        };
+        if (g_settings.mirror_x) set_mirror_offset(true, off2(hit[0], t->pos.x, t->data.grid->nx));
+        if (g_settings.mirror_z) set_mirror_offset(false, off2(hit[2], t->pos.z, t->data.grid->nz));
+        panel_show_mirror_offsets();
+        g_note.clear();
+    }
+    else {
+        g_note = "Shift+click on the terrain to place the mirror lines there";
+    }
+    update_status();
 }
 
 void set_height_field(float y)
@@ -1388,7 +1729,7 @@ void stitch_edges()
     const tp::HeightWrite w = tp::write_heights(hg, targets);
     g_note.clear();
     note_height_write(t, hg, w);
-    const tp::Rect changed = g_stroke.verts;
+    const tp::Rect changed = w.verts;
     stroke_commit();
     g_stroke = Stroke{};
     const std::string range_note = std::move(g_note);
@@ -1408,6 +1749,8 @@ void panel_set_target(DedTerrain* t)
     if (!g_panel.hwnd) return;
     SetDlgItemTextA(g_panel.hwnd, IDC_TTOOLS_TARGET, t ? terrain_label(*t).c_str() : "");
     panel_refresh_layers(true);
+    panel_init_mirror_spinners(g_panel.hwnd, t);
+    panel_show_mirror_offsets();
     update_status();
 }
 
@@ -1460,6 +1803,12 @@ void panel_read_fields(int changed)
         const float a = alpine_dlg_get_float_field(h, IDC_TTOOLS_ANGLE);
         if (std::isfinite(a)) g_settings.ramp_angle = std::clamp(a, -tp::max_ramp_angle, tp::max_ramp_angle);
     }
+    else if (changed == IDC_TTOOLS_MIRROR_X_OFFSET || changed == IDC_TTOOLS_MIRROR_Z_OFFSET) {
+        const float cells = alpine_dlg_get_float_field(h, changed);
+        if (std::isfinite(cells) && std::fabs(cells) < 1e6f) {
+            set_mirror_offset(changed == IDC_TTOOLS_MIRROR_X_OFFSET, static_cast<int32_t>(std::lround(cells * 2.0f)));
+        }
+    }
 }
 
 INT_PTR CALLBACK TerrainToolsProc(HWND hdlg, UINT msg, WPARAM wp, LPARAM lp)
@@ -1491,6 +1840,9 @@ INT_PTR CALLBACK TerrainToolsProc(HWND hdlg, UINT msg, WPARAM wp, LPARAM lp)
         alpine_spinner_init(hdlg, IDC_TTOOLS_ANGLE, IDC_TTOOLS_ANGLE_SPIN, 1.0f, -tp::max_ramp_angle,
                             tp::max_ramp_angle, 1);
         CheckDlgButton(hdlg, IDC_TTOOLS_SHOW_DECORATIONS, terrain_decorations_visible() ? BST_CHECKED : BST_UNCHECKED);
+        CheckDlgButton(hdlg, IDC_TTOOLS_MIRROR_X, g_settings.mirror_x ? BST_CHECKED : BST_UNCHECKED);
+        CheckDlgButton(hdlg, IDC_TTOOLS_MIRROR_Z, g_settings.mirror_z ? BST_CHECKED : BST_UNCHECKED);
+        panel_init_mirror_spinners(hdlg, g_panel.target);
         g_panel.updating = false;
 
         // Top right of RED's window, clear of the side panel's top, kept on the monitor's work area.
@@ -1537,6 +1889,23 @@ INT_PTR CALLBACK TerrainToolsProc(HWND hdlg, UINT msg, WPARAM wp, LPARAM lp)
         case IDC_TTOOLS_HEIGHT:
         case IDC_TTOOLS_ANGLE:
             if (HIWORD(wp) == EN_CHANGE) panel_read_fields(LOWORD(wp));
+            return TRUE;
+        case IDC_TTOOLS_MIRROR_X:
+        case IDC_TTOOLS_MIRROR_Z:
+            (LOWORD(wp) == IDC_TTOOLS_MIRROR_X ? g_settings.mirror_x : g_settings.mirror_z) =
+                IsDlgButtonChecked(hdlg, LOWORD(wp)) == BST_CHECKED;
+            mirror_changed();
+            return TRUE;
+        case IDC_TTOOLS_MIRROR_X_OFFSET:
+        case IDC_TTOOLS_MIRROR_Z_OFFSET:
+            if (HIWORD(wp) == EN_CHANGE) panel_read_fields(LOWORD(wp));
+            // The value in effect (snapped to half cells, kept within the grid) shows once the field is left.
+            if (HIWORD(wp) == EN_KILLFOCUS) panel_show_mirror_offsets(LOWORD(wp));
+            return TRUE;
+        case IDC_TTOOLS_MIRROR_CENTRE:
+            if (g_settings.mirror_x) set_mirror_offset(true, 0);
+            if (g_settings.mirror_z) set_mirror_offset(false, 0);
+            panel_show_mirror_offsets();
             return TRUE;
         case IDC_TTOOLS_STITCH:
             try {
@@ -1594,7 +1963,12 @@ INT_PTR CALLBACK TerrainToolsProc(HWND hdlg, UINT msg, WPARAM wp, LPARAM lp)
         panel_destroyed();
         return TRUE;
     case WM_NOTIFY:
-        if (alpine_spinner_handle_notify(hdlg, lp)) return TRUE;
+        if (alpine_spinner_handle_notify(hdlg, lp)) {
+            const UINT_PTR from = reinterpret_cast<NMHDR*>(lp)->idFrom;
+            if (from == IDC_TTOOLS_MIRROR_X_SPIN) panel_show_mirror_offsets(IDC_TTOOLS_MIRROR_X_OFFSET);
+            if (from == IDC_TTOOLS_MIRROR_Z_SPIN) panel_show_mirror_offsets(IDC_TTOOLS_MIRROR_Z_OFFSET);
+            return TRUE;
+        }
         break;
     case WM_MEASUREITEM: {
         auto* mis = reinterpret_cast<MEASUREITEMSTRUCT*>(lp);
@@ -1655,6 +2029,7 @@ void stroke_begin(void* view)
     g_stroke.view = view;
     g_stroke.hwnd = view_hwnd(view);
     g_stroke.terrain = g_panel.target;
+    if (g_panel.target) g_stroke.mirror = terrain_mirror(*g_panel.target);
     g_swallow_up_view = view;
     if (g_stroke.hwnd) SetCapture(g_stroke.hwnd);
     if (tp::tool_repeats_in_place(g_settings.tool)) SetTimer(g_panel.hwnd, repeat_timer_id, repeat_ms, nullptr);
@@ -1669,6 +2044,11 @@ void panel_click(void* view, UINT flags)
         if ((flags & MK_CONTROL) && g_settings.tool == tp::Tool::set_height) {
             g_swallow_up_view = view;
             sample_set_height(view);
+            return;
+        }
+        if ((flags & MK_SHIFT) && (g_settings.mirror_x || g_settings.mirror_z)) {
+            g_swallow_up_view = view;
+            place_mirror_lines(view);
             return;
         }
         stroke_begin(view);
@@ -1833,35 +2213,49 @@ void terrain_paint_draw_cursor(CDedLevel& level)
     const bool geo = g_settings.tool == tp::Tool::geo_chunks;
     const bool segment = g_stroke.active && g_stroke.terrain == t && g_settings.tool == tp::Tool::ramp_between &&
                          g_stroke.has_anchor && g_stroke.has_end;
-    if (!geo && !segment && !g_hover.valid) return;
+    const tp::Mirror mirror = g_stroke.active && g_stroke.terrain == t ? g_stroke.mirror : terrain_mirror(*t);
+    const bool mirrored = tp::mirror_on(&mirror);
+    if (!geo && !segment && !g_hover.valid && !mirrored) return;
     const at::GridView v = terrain_grid_view(t->pos, t->data, *t->data.grid);
     const float lift = std::max(0.05f, v.cell_size * 0.05f);
+    if (mirrored) draw_mirror_lines(*t, v, lift, mirror);
     if (geo) {
-        if (terrain_geoable(t)) draw_geo_chunks(*t, v, lift);
+        if (terrain_geoable(t)) draw_geo_chunks(*t, v, lift, mirror);
         return;
     }
-    if (g_stroke.active) {
-        set_draw_color(0xff, 0x00, 0x00, 0xff);
-    }
-    else {
-        set_draw_color(0xff, 0xff, 0x00, 0xff);
-    }
-    if (segment) {
-        // The ramp's reach, then its centre line between the two end heights.
-        const float ax = g_stroke.anchor[0], az = g_stroke.anchor[1], bx = g_stroke.end[0], bz = g_stroke.end[1];
-        draw_capsule(v, ax, az, bx, bz, g_settings.radius, lift);
-        if (g_settings.falloff != tp::Falloff::constant) {
-            draw_capsule(v, ax, az, bx, bz, g_settings.radius * 0.5f, lift);
+    if (!segment && !g_hover.valid) return;
+    // The brush at each mirror image, dimmed, then at the cursor.
+    for (int image = mirrored ? tp::max_images - 1 : 0; image >= 0; image--) {
+        if (!tp::image_on(&mirror, image)) continue;
+        const uint32_t level = image == 0 ? 0xff : 0x80;
+        set_draw_color(level, g_stroke.active ? 0x00 : level, 0x00, 0xff);
+        if (segment) {
+            // The ramp's reach, then its centre line between the two end heights.
+            float ax = 0.0f, az = 0.0f, bx = 0.0f, bz = 0.0f;
+            mirror_world(*t, mirror, image, g_stroke.anchor[0], g_stroke.anchor[1], ax, az);
+            mirror_world(*t, mirror, image, g_stroke.end[0], g_stroke.end[1], bx, bz);
+            draw_capsule(v, ax, az, bx, bz, g_settings.radius, lift);
+            if (g_settings.falloff != tp::Falloff::constant) {
+                draw_capsule(v, ax, az, bx, bz, g_settings.radius * 0.5f, lift);
+            }
+            if (image != 0) continue;
+            set_draw_color(0xff, 0xff, 0x00, 0xff);
+            const Vector3 a{ax, t->pos.y + g_stroke.anchor_offset + lift, az};
+            const Vector3 b{bx, at::height_at(v, bx, bz) + lift, bz};
+            gr_line_3d(&a, &b, editor_line_mode());
+            return;
         }
-        set_draw_color(0xff, 0xff, 0x00, 0xff);
-        const Vector3 a{ax, t->pos.y + g_stroke.anchor_offset + lift, az};
-        const Vector3 b{bx, at::height_at(v, bx, bz) + lift, bz};
-        gr_line_3d(&a, &b, editor_line_mode());
-        return;
-    }
-    draw_ring(v, g_hover.pos[0], g_hover.pos[2], g_settings.radius, lift);
-    if (!tp::tool_edits_holes(g_settings.tool) && g_settings.falloff != tp::Falloff::constant) {
-        draw_ring(v, g_hover.pos[0], g_hover.pos[2], g_settings.radius * 0.5f, lift);
+        float x = 0.0f, z = 0.0f;
+        mirror_world(*t, mirror, image, g_hover.pos[0], g_hover.pos[2], x, z);
+        const float r = g_settings.radius;
+        if (image != 0 && (x + r < v.origin[0] || x - r > v.origin[0] + at::extent(v.nx, v.cell_size) ||
+                           z + r < v.origin[2] || z - r > v.origin[2] + at::extent(v.nz, v.cell_size))) {
+            continue;
+        }
+        draw_ring(v, x, z, g_settings.radius, lift);
+        if (!tp::tool_edits_holes(g_settings.tool) && g_settings.falloff != tp::Falloff::constant) {
+            draw_ring(v, x, z, g_settings.radius * 0.5f, lift);
+        }
     }
     const float tick = std::max(g_settings.radius * 0.08f, v.cell_size * 0.25f);
     const Vector3 a{g_hover.pos[0], g_hover.pos[1] + lift, g_hover.pos[2]};
@@ -1904,6 +2298,7 @@ void terrain_paint_forget(const DedTerrain* terrain)
     if (!terrain) return;
     if (g_stroke.terrain == terrain) stroke_abandon();
     drop_stack(terrain);
+    std::erase_if(g_mirror_lines, [&](const MirrorLines& l) { return l.terrain == terrain; });
     if (g_layer_list.owner == terrain) g_layer_list = LayerListState{};
     if (g_panel.hwnd && g_panel.target == terrain) {
         g_panel.target = nullptr;

@@ -103,6 +103,117 @@ struct AlpineGameSettings
     bool show_location_pings = true;
     bool play_hit_sounds = true;
     bool show_awards = true;
+    bool vehicle_respawn_markers = true;
+    bool vehicle_health_bars = true;
+    bool vehicle_driver_third_person = false;
+    bool vehicle_gunner_third_person = false;
+
+    // Third-person vehicle camera. Times are smoothing times in seconds (0 = rigid).
+    static constexpr float default_vehicle_cam_follow = 0.3f;
+    static constexpr float max_vehicle_cam_follow = 2.0f;
+    float vehicle_cam_follow = default_vehicle_cam_follow;
+    void set_vehicle_cam_follow(float value)
+    {
+        if (!std::isnan(value)) {
+            vehicle_cam_follow = std::clamp(value, 0.0f, max_vehicle_cam_follow);
+        }
+    }
+    static constexpr float default_vehicle_cam_velocity = 1.0f;
+    float vehicle_cam_velocity = default_vehicle_cam_velocity; // share of the travel heading at speed
+    void set_vehicle_cam_velocity(float value)
+    {
+        if (!std::isnan(value)) {
+            vehicle_cam_velocity = std::clamp(value, 0.0f, 1.0f);
+        }
+    }
+    static constexpr float default_vehicle_cam_min_speed = 1.5f;
+    static constexpr float max_vehicle_cam_min_speed = 10.0f;
+    float vehicle_cam_min_speed = default_vehicle_cam_min_speed; // m/s
+    void set_vehicle_cam_min_speed(float value)
+    {
+        if (!std::isnan(value)) {
+            vehicle_cam_min_speed = std::clamp(value, 0.0f, max_vehicle_cam_min_speed);
+        }
+    }
+    static constexpr float default_vehicle_cam_lookahead = 0.2f;
+    static constexpr float max_vehicle_cam_lookahead = 1.0f;
+    float vehicle_cam_lookahead = default_vehicle_cam_lookahead; // s of yaw rate
+    void set_vehicle_cam_lookahead(float value)
+    {
+        if (!std::isnan(value)) {
+            vehicle_cam_lookahead = std::clamp(value, 0.0f, max_vehicle_cam_lookahead);
+        }
+    }
+    static constexpr float default_vehicle_cam_lookahead_max = 12.0f;
+    static constexpr float max_vehicle_cam_lookahead_max = 30.0f;
+    float vehicle_cam_lookahead_max = default_vehicle_cam_lookahead_max; // degrees
+    void set_vehicle_cam_lookahead_max(float value)
+    {
+        if (!std::isnan(value)) {
+            vehicle_cam_lookahead_max = std::clamp(value, 0.0f, max_vehicle_cam_lookahead_max);
+        }
+    }
+    static constexpr float default_vehicle_cam_pitch_follow = 0.35f;
+    float vehicle_cam_pitch_follow = default_vehicle_cam_pitch_follow; // share of the hull pitch
+    void set_vehicle_cam_pitch_follow(float value)
+    {
+        if (!std::isnan(value)) {
+            vehicle_cam_pitch_follow = std::clamp(value, 0.0f, 1.0f);
+        }
+    }
+    static constexpr float default_vehicle_cam_pitch_smooth = 0.9f;
+    static constexpr float max_vehicle_cam_pitch_smooth = 3.0f;
+    float vehicle_cam_pitch_smooth = default_vehicle_cam_pitch_smooth;
+    void set_vehicle_cam_pitch_smooth(float value)
+    {
+        if (!std::isnan(value)) {
+            vehicle_cam_pitch_smooth = std::clamp(value, 0.0f, max_vehicle_cam_pitch_smooth);
+        }
+    }
+    static constexpr float default_vehicle_cam_bounce = 0.15f;
+    static constexpr float max_vehicle_cam_bounce = 1.0f;
+    float vehicle_cam_bounce = default_vehicle_cam_bounce; // vertical
+    void set_vehicle_cam_bounce(float value)
+    {
+        if (!std::isnan(value)) {
+            vehicle_cam_bounce = std::clamp(value, 0.0f, max_vehicle_cam_bounce);
+        }
+    }
+    static constexpr float default_vehicle_cam_lag = 0.04f;
+    static constexpr float max_vehicle_cam_lag = 0.5f;
+    float vehicle_cam_lag = default_vehicle_cam_lag; // horizontal
+    void set_vehicle_cam_lag(float value)
+    {
+        if (!std::isnan(value)) {
+            vehicle_cam_lag = std::clamp(value, 0.0f, max_vehicle_cam_lag);
+        }
+    }
+
+    bool vehicle_tracers = true;
+    static constexpr int default_vehicle_tracer_frequency = 1;
+    static constexpr int min_vehicle_tracer_frequency = 1;
+    static constexpr int max_vehicle_tracer_frequency = 10;
+    int vehicle_tracer_frequency = default_vehicle_tracer_frequency; // every Nth round
+    void set_vehicle_tracer_frequency(int value)
+    {
+        vehicle_tracer_frequency =
+            std::clamp(value, min_vehicle_tracer_frequency, max_vehicle_tracer_frequency);
+    }
+    static constexpr uint32_t default_vehicle_tracer_color = 0xFFB43CFF; // RRGGBBAA
+    uint32_t vehicle_tracer_color = default_vehicle_tracer_color;
+    static constexpr float default_vehicle_tracer_length = 3.0f;
+    static constexpr float min_vehicle_tracer_length = 0.5f;
+    static constexpr float max_vehicle_tracer_length = 10.0f;
+    float vehicle_tracer_length = default_vehicle_tracer_length; // m
+    void set_vehicle_tracer_length(float value)
+    {
+        if (!std::isnan(value)) {
+            vehicle_tracer_length =
+                std::clamp(value, min_vehicle_tracer_length, max_vehicle_tracer_length);
+        }
+    }
+    bool vehicle_horns = true; // other players' jeep horns; your own always plays
+
     bool show_domination_msgs = true;
 
     bool spray_display = true;
@@ -175,6 +286,29 @@ struct AlpineGameSettings
         fps_counter_average_ms = std::clamp(window_ms, min_fps_counter_average_ms, max_fps_counter_average_ms);
     }
     bool speed_display = false;
+    bool minimap = true;
+    bool minimap_rotate = false;
+    bool minimap_labels = true;
+    static constexpr float min_minimap_size = 80.0f;
+    static constexpr float max_minimap_size = 240.0f;
+    float minimap_size = 140.0f; // small-HUD pixels
+    void set_minimap_size(float value)
+    {
+        if (std::isnan(value)) {
+            return;
+        }
+        minimap_size = std::clamp(value, min_minimap_size, max_minimap_size);
+    }
+    static constexpr float min_minimap_zoom = 0.1f;
+    static constexpr float max_minimap_zoom = 1.0f;
+    float minimap_zoom = 0.35f; // share of the level's larger extent shown across the panel
+    void set_minimap_zoom(float value)
+    {
+        if (std::isnan(value)) {
+            return;
+        }
+        minimap_zoom = std::clamp(value, min_minimap_zoom, max_minimap_zoom);
+    }
     bool ping_display = true;
     bool spectate_mode_minimal_ui = false;
     bool spectate_show_camera_meshes = true; // draw camera meshes in free look

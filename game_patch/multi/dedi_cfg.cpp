@@ -213,6 +213,14 @@ static GibConfig parse_gib_config(const toml::table& t, GibConfig c)
     return c;
 }
 
+static VehicleConfig parse_vehicle_config(const toml::table& t, VehicleConfig c)
+{
+    if (auto x = t["crash_damage"].value<bool>())
+        c.crash_damage = *x;
+
+    return c;
+}
+
 
 static ForceCharacterConfig parse_force_character_config(const toml::table& t, ForceCharacterConfig c)
 {
@@ -645,6 +653,8 @@ static void apply_rules_keys_from_toml(const toml::table& t, AlpineServerConfigR
         o.spawn_delay = parse_spawn_delay_config(*sub, o.spawn_delay);
     if (auto sub = t["gibbing"].as_table())
         o.gibbing = parse_gib_config(*sub, o.gibbing);
+    if (auto sub = t["vehicles"].as_table())
+        o.vehicles = parse_vehicle_config(*sub, o.vehicles);
 
     // spawn_loadout is the loadout for everyone; spawn_loadout_blue overrides it for the
     // blue team only.
@@ -1761,6 +1771,9 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
             std::format_to(iter, "    All damage types:                    {}\n", rules.gibbing.all_damage);
         }
     }
+
+    if (base || rules.vehicles.crash_damage != b.vehicles.crash_damage)
+        std::format_to(iter, "  Vehicle crash damage:                  {}\n", rules.vehicles.crash_damage);
 
     // spawn weapon
     if (base || rules.default_player_weapon.index != b.default_player_weapon.index ||

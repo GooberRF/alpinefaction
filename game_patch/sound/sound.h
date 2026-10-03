@@ -21,6 +21,10 @@ int get_custom_sound_id(int custom_id);
 bool is_valid_custom_sound_id(int custom_id);
 int get_spray_sound_id();
 int get_award_sound_id();
+int get_jeep_horn_sound_id();
+// A snd_play/snd_play_3d instance that is still playing its own sound; stock snd_is_playing answers for
+// whatever has since reused the slot.
+bool snd_instance_is_playing(int instance_handle);
 void play_local_sound_2d(uint16_t sound_id, int group, float volume);
 void play_local_sound_3d(uint16_t sound_id, rf::Vector3 pos, int group, float volume);
 void play_chat_sound(std::string_view msg, bool is_taunt);

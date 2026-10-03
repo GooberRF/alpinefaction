@@ -13,6 +13,7 @@
 #include <common/scope_guard.h>
 #include <common/utils/string-utils.h>
 #include <common/version/version.h>
+#include <patch_common/CallHook.h>
 #include <patch_common/CodeInjection.h>
 #include <patch_common/FunHook.h>
 #include <patch_common/AsmWriter.h>
@@ -23,6 +24,7 @@
 #include "corona.h"
 #include "bag.h"
 #include "weather_region.h"
+#include "vehicle_factory.h"
 #include "projection_camera.h"
 #include "rope_emitter.h"
 #include "terrain.h"
@@ -66,6 +68,7 @@ static std::vector<CopyLinkEntry> g_copy_note_entries;
 static std::vector<CopyLinkEntry> g_copy_corona_entries;
 static std::vector<CopyLinkEntry> g_copy_bag_entries;
 static std::vector<CopyLinkEntry> g_copy_weather_region_entries;
+static std::vector<CopyLinkEntry> g_copy_vehicle_factory_entries;
 static std::vector<CopyLinkEntry> g_copy_projection_camera_entries;
 static std::vector<CopyLinkEntry> g_copy_rope_emitter_entries;
 static std::vector<CopyLinkEntry> g_copy_terrain_entries;
@@ -80,6 +83,7 @@ static bool is_alpine_type(DedObjectType type)
            type == DedObjectType::DED_CORONA ||
            type == DedObjectType::DED_BAG ||
            type == DedObjectType::DED_WEATHER_REGION ||
+           type == DedObjectType::DED_VEHICLE_FACTORY ||
            type == DedObjectType::DED_PROJECTION_CAMERA ||
            type == DedObjectType::DED_ROPE_EMITTER ||
            type == DedObjectType::DED_TERRAIN;
@@ -150,6 +154,7 @@ static void capture_copy_link_snapshot()
     g_copy_corona_entries.clear();
     g_copy_bag_entries.clear();
     g_copy_weather_region_entries.clear();
+    g_copy_vehicle_factory_entries.clear();
     g_copy_projection_camera_entries.clear();
     g_copy_rope_emitter_entries.clear();
     g_copy_terrain_entries.clear();
@@ -199,6 +204,9 @@ static void capture_copy_link_snapshot()
             case DedObjectType::DED_WEATHER_REGION:
                 g_copy_weather_region_entries.push_back(std::move(entry));
                 break;
+            case DedObjectType::DED_VEHICLE_FACTORY:
+                g_copy_vehicle_factory_entries.push_back(std::move(entry));
+                break;
             case DedObjectType::DED_PROJECTION_CAMERA:
                 g_copy_projection_camera_entries.push_back(std::move(entry));
                 break;
@@ -224,8 +232,8 @@ static void capture_copy_link_snapshot()
 //     touches
 static void fix_paste_links(CDedLevel* level, int stock_count, int mesh_count,
                             int note_count, int corona_count, int bag_count,
-                            int weather_region_count, int projection_camera_count,
-                            int rope_emitter_count, int terrain_count)
+                            int weather_region_count, int vehicle_factory_count,
+                            int projection_camera_count, int rope_emitter_count, int terrain_count)
 {
     // Verify counts match the snapshot (mismatch means the clipboard state diverged).
     // This is the safety guard for the selection-ordering assumption: if anything is
@@ -236,18 +244,20 @@ static void fix_paste_links(CDedLevel* level, int stock_count, int mesh_count,
         corona_count != static_cast<int>(g_copy_corona_entries.size()) ||
         bag_count != static_cast<int>(g_copy_bag_entries.size()) ||
         weather_region_count != static_cast<int>(g_copy_weather_region_entries.size()) ||
+        vehicle_factory_count != static_cast<int>(g_copy_vehicle_factory_entries.size()) ||
         projection_camera_count != static_cast<int>(g_copy_projection_camera_entries.size()) ||
         rope_emitter_count != static_cast<int>(g_copy_rope_emitter_entries.size()) ||
         terrain_count != static_cast<int>(g_copy_terrain_entries.size())) {
         xlog::warn("[AlpineObj] Paste link fixup skipped: count mismatch "
             "(stock {}/{}, mesh {}/{}, note {}/{}, corona {}/{}, bag {}/{}, weather region {}/{}, "
-            "projection camera {}/{}, rope emitter {}/{}, terrain {}/{})",
+            "vehicle factory {}/{}, projection camera {}/{}, rope emitter {}/{}, terrain {}/{})",
             stock_count, g_copy_stock_entries.size(),
             mesh_count, g_copy_mesh_entries.size(),
             note_count, g_copy_note_entries.size(),
             corona_count, g_copy_corona_entries.size(),
             bag_count, g_copy_bag_entries.size(),
             weather_region_count, g_copy_weather_region_entries.size(),
+            vehicle_factory_count, g_copy_vehicle_factory_entries.size(),
             projection_camera_count, g_copy_projection_camera_entries.size(),
             rope_emitter_count, g_copy_rope_emitter_entries.size(),
             terrain_count, g_copy_terrain_entries.size());
@@ -255,16 +265,16 @@ static void fix_paste_links(CDedLevel* level, int stock_count, int mesh_count,
     }
 
     bool has_alpine = (mesh_count + note_count + corona_count + bag_count + weather_region_count
-        + projection_camera_count + rope_emitter_count + terrain_count) > 0;
+        + vehicle_factory_count + projection_camera_count + rope_emitter_count + terrain_count) > 0;
 
     auto& sel = level->selection;
-    int total = stock_count + mesh_count + note_count + corona_count + bag_count
-        + weather_region_count + projection_camera_count + rope_emitter_count + terrain_count;
+    int total = stock_count + mesh_count + note_count + corona_count + bag_count + weather_region_count
+        + vehicle_factory_count + projection_camera_count + rope_emitter_count + terrain_count;
     if (sel.size < total) return;
 
     // Build old_uid → new_uid mapping from all entry lists.
     // Selection order after paste: stock objects first, then meshes, notes, coronas, bags,
-    // weather regions.
+    // weather regions, vehicle factories, projection cameras.
     std::map<int, int> uid_map;
     int idx = 0;
     for (int i = 0; i < stock_count; i++, idx++)
@@ -279,6 +289,8 @@ static void fix_paste_links(CDedLevel* level, int stock_count, int mesh_count,
         uid_map[g_copy_bag_entries[i].original_uid] = sel.data_ptr[idx]->uid;
     for (int i = 0; i < weather_region_count; i++, idx++)
         uid_map[g_copy_weather_region_entries[i].original_uid] = sel.data_ptr[idx]->uid;
+    for (int i = 0; i < vehicle_factory_count; i++, idx++)
+        uid_map[g_copy_vehicle_factory_entries[i].original_uid] = sel.data_ptr[idx]->uid;
     for (int i = 0; i < projection_camera_count; i++, idx++)
         uid_map[g_copy_projection_camera_entries[i].original_uid] = sel.data_ptr[idx]->uid;
     const int rope_sel_start = idx;
@@ -339,6 +351,7 @@ static void fix_paste_links(CDedLevel* level, int stock_count, int mesh_count,
     apply_links(g_copy_corona_entries, corona_count, idx);
     apply_links(g_copy_bag_entries, bag_count, idx);
     apply_links(g_copy_weather_region_entries, weather_region_count, idx);
+    apply_links(g_copy_vehicle_factory_entries, vehicle_factory_count, idx);
     apply_links(g_copy_projection_camera_entries, projection_camera_count, idx);
     apply_links(g_copy_rope_emitter_entries, rope_emitter_count, idx);
     apply_links(g_copy_terrain_entries, terrain_count, idx);
@@ -353,9 +366,9 @@ static void fix_paste_links(CDedLevel* level, int stock_count, int mesh_count,
     }
 
     xlog::trace("[AlpineObj] Fixed paste links for {} stock + {} mesh + {} note + {} corona + {} bag "
-        "+ {} weather region + {} projection camera + {} rope emitter + {} terrain objects",
+        "+ {} weather region + {} vehicle factory + {} projection camera + {} rope emitter + {} terrain objects",
         stock_count, mesh_count, note_count, corona_count, bag_count, weather_region_count,
-        projection_camera_count, rope_emitter_count, terrain_count);
+        vehicle_factory_count, projection_camera_count, rope_emitter_count, terrain_count);
 }
 
 // ─── UID Generation ─────────────────────────────────────────────────────────
@@ -374,6 +387,7 @@ FunHook<int()> alpine_generate_uid_hook{
             corona_ensure_uid(uid);
             bag_ensure_uid(uid);
             weather_region_ensure_uid(uid);
+            vehicle_factory_ensure_uid(uid);
             projection_camera_ensure_uid(uid);
             rope_emitter_ensure_uid(uid);
             terrain_ensure_uid(uid);
@@ -419,6 +433,12 @@ CodeInjection alpine_properties_patch{
             regs.eip = 0x00402293;
             return;
         }
+        if (regs.eax == static_cast<int>(DedObjectType::DED_VEHICLE_FACTORY)) {
+            auto* level = reinterpret_cast<CDedLevel*>(static_cast<uintptr_t>(regs.esi));
+            ShowVehicleFactoryPropertiesDialog(level);
+            regs.eip = 0x00402293;
+            return;
+        }
         if (regs.eax == static_cast<int>(DedObjectType::DED_PROJECTION_CAMERA)) {
             // Every projection setting lives on the Display_Projection event linked to it.
             regs.eip = 0x00402293;
@@ -458,6 +478,7 @@ CodeInjection alpine_tree_patch{
         corona_tree_populate(tree, master_groups, level);
         bag_tree_populate(tree, master_groups, level);
         weather_region_tree_populate(tree, master_groups, level);
+        vehicle_factory_tree_populate(tree, master_groups, level);
         projection_camera_tree_populate(tree, master_groups, level);
         rope_emitter_tree_populate(tree, master_groups, level);
         terrain_tree_populate(tree, master_groups, level);
@@ -484,6 +505,7 @@ CodeInjection alpine_pick_patch{
         corona_pick(level, param1, param2);
         bag_pick(level, param1, param2);
         weather_region_pick(level, param1, param2);
+        vehicle_factory_pick(level, param1, param2);
         projection_camera_pick(level, param1, param2);
         rope_emitter_pick(level, param1, param2);
         terrain_pick(level, param1, param2);
@@ -525,6 +547,11 @@ CodeInjection alpine_click_pick_patch{
 
             // Check weather region objects using fixed screen radius
             DedWeatherRegion* best_weather_region = weather_region_click_pick(level, click_x, click_y);
+
+            // Check vehicle factory objects using bounding sphere
+            float vf_dist_sq = 1e30f;
+            DedVehicleFactory* best_vehicle_factory =
+                vehicle_factory_click_pick(level, click_x, click_y, &vf_dist_sq);
 
             // Check projection camera objects using fixed screen radius
             DedProjectionCamera* best_projection_camera =
@@ -590,6 +617,13 @@ CodeInjection alpine_click_pick_patch{
                         best_alpine = static_cast<DedObject*>(best_weather_region);
                         best_dist_sq = wr_dist;
                     }
+                }
+            }
+
+            if (best_vehicle_factory) {
+                if (!best_alpine || vf_dist_sq < best_dist_sq) {
+                    best_alpine = static_cast<DedObject*>(best_vehicle_factory);
+                    best_dist_sq = vf_dist_sq;
                 }
             }
 
@@ -690,6 +724,7 @@ CodeInjection alpine_copy_begin_hook{
         corona_clear_clipboard();
         bag_clear_clipboard();
         weather_region_clear_clipboard();
+        vehicle_factory_clear_clipboard();
         projection_camera_clear_clipboard();
         rope_emitter_clear_clipboard();
         terrain_clear_clipboard();
@@ -727,6 +762,11 @@ CodeInjection alpine_copy_hook{
         else if (source && source->type == DedObjectType::DED_WEATHER_REGION) {
             regs.ebx = reinterpret_cast<uintptr_t>(source);
             weather_region_copy_object(source);
+            regs.eip = 0x00412edb;
+        }
+        else if (source && source->type == DedObjectType::DED_VEHICLE_FACTORY) {
+            regs.ebx = reinterpret_cast<uintptr_t>(source);
+            vehicle_factory_copy_object(source);
             regs.eip = 0x00412edb;
         }
         else if (source && source->type == DedObjectType::DED_PROJECTION_CAMERA) {
@@ -779,22 +819,26 @@ static void __fastcall alpine_paste_wrapper(void* ecx_level, void* /*edx_unused*
     int weather_region_count = level->selection.size - stock_count - mesh_count - note_count
         - corona_count - bag_count;
 
+    vehicle_factory_paste_objects(level);
+    int vehicle_factory_count = level->selection.size - stock_count - mesh_count - note_count
+        - corona_count - bag_count - weather_region_count;
+
     projection_camera_paste_objects(level);
     int projection_camera_count = level->selection.size - stock_count - mesh_count - note_count
-        - corona_count - bag_count - weather_region_count;
+        - corona_count - bag_count - weather_region_count - vehicle_factory_count;
 
     rope_emitter_paste_objects(level);
     int rope_emitter_count = level->selection.size - stock_count - mesh_count - note_count
-        - corona_count - bag_count - weather_region_count - projection_camera_count;
+        - corona_count - bag_count - weather_region_count - vehicle_factory_count - projection_camera_count;
 
     terrain_paste_objects(level);
     int terrain_count = level->selection.size - stock_count - mesh_count - note_count
-        - corona_count - bag_count - weather_region_count - projection_camera_count
+        - corona_count - bag_count - weather_region_count - vehicle_factory_count - projection_camera_count
         - rope_emitter_count;
 
     // Fix links that the stock paste missed (involving alpine object types)
     fix_paste_links(level, stock_count, mesh_count, note_count, corona_count, bag_count,
-        weather_region_count, projection_camera_count, rope_emitter_count, terrain_count);
+        weather_region_count, vehicle_factory_count, projection_camera_count, rope_emitter_count, terrain_count);
 }
 
 // ─── Delete / Cut ───────────────────────────────────────────────────────────
@@ -837,6 +881,9 @@ CodeInjection alpine_paste_finalize_patch{
         }
         else if (obj && obj->type == DedObjectType::DED_WEATHER_REGION) {
             weather_region_handle_delete_or_cut(obj);
+        }
+        else if (obj && obj->type == DedObjectType::DED_VEHICLE_FACTORY) {
+            vehicle_factory_handle_delete_or_cut(obj);
         }
         else if (obj && obj->type == DedObjectType::DED_PROJECTION_CAMERA) {
             projection_camera_handle_delete_or_cut(obj);
@@ -896,6 +943,13 @@ CodeInjection alpine_undo_readd_patch{
                 props.weather_region_objects.push_back(weather_region);
             }
         }
+        else if (obj->type == DedObjectType::DED_VEHICLE_FACTORY) {
+            auto* factory = static_cast<DedVehicleFactory*>(obj);
+            if (std::find(props.vehicle_factory_objects.begin(), props.vehicle_factory_objects.end(),
+                factory) == props.vehicle_factory_objects.end()) {
+                props.vehicle_factory_objects.push_back(factory);
+            }
+        }
         else if (obj->type == DedObjectType::DED_PROJECTION_CAMERA) {
             auto* camera = static_cast<DedProjectionCamera*>(obj);
             if (std::find(props.projection_camera_objects.begin(),
@@ -951,6 +1005,7 @@ CodeInjection alpine_delete_patch{
         corona_handle_delete_selection(level);
         bag_handle_delete_selection(level);
         weather_region_handle_delete_selection(level);
+        vehicle_factory_handle_delete_selection(level);
         projection_camera_handle_delete_selection(level);
         rope_emitter_handle_delete_selection(level);
         terrain_handle_delete_selection(level);
@@ -969,6 +1024,7 @@ CodeInjection alpine_object_tree_patch{
         corona_tree_add_object_type(tree);
         bag_tree_add_object_type(tree);
         weather_region_tree_add_object_type(tree);
+        vehicle_factory_tree_add_object_type(tree);
         projection_camera_tree_add_object_type(tree);
         rope_emitter_tree_add_object_type(tree);
         terrain_tree_add_object_type(tree);
@@ -977,7 +1033,7 @@ CodeInjection alpine_object_tree_patch{
 };
 
 // Track which Alpine object type the tree view is creating.
-// 0=Mesh, 2=Note, 3=Corona, 4=Bag, 5=Weather Region, 6=reserved, 7=Projection Camera, 8=Rope Emitter, 9=Terrain
+// 0=Mesh, 2=Note, 3=Corona, 4=Bag, 5=Weather Region, 6=Vehicle Factory, 7=Projection Camera, 8=Rope Emitter, 9=Terrain
 static int g_alpine_create_type = 0;
 
 // Hook factory FUN_00442a40 to detect Alpine object types by tree item text.
@@ -1011,6 +1067,9 @@ int __fastcall alpine_factory_hooked(void* ecx_panel, void* edx, void* tree_item
         else if (strcmp(text, "Weather Region") == 0) {
             g_alpine_create_type = 5;
         }
+        else if (strcmp(text, "Vehicle Factory") == 0) {
+            g_alpine_create_type = 6;
+        }
         else if (strcmp(text, "Projection Camera") == 0) {
             g_alpine_create_type = 7;
         }
@@ -1043,6 +1102,9 @@ CodeInjection alpine_create_object_patch{
             else if (g_alpine_create_type == 5) {
                 PlaceNewWeatherRegionObject();
             }
+            else if (g_alpine_create_type == 6) {
+                PlaceNewVehicleFactoryObject();
+            }
             else if (g_alpine_create_type == 7) {
                 PlaceNewProjectionCameraObject();
             }
@@ -1063,14 +1125,55 @@ CodeInjection alpine_create_object_patch{
 
 // ─── Rendering ──────────────────────────────────────────────────────────────
 
-// Terrain surfaces are opaque level geometry: draw them before FUN_0041f6d0's first draw (the player start
-// sprite, which tests but does not write depth), so nothing drawn from here on is painted over by them.
+// Terrain goes into the depth buffer before the level's own faces, so liquid and alpha faces blend over it as in
+// game; the flush keeps none of its polygons queued behind the level's.
+static void render_terrain_before_level(CDedLevel* level)
+{
+    const bool batch_was_open = gr_batch_open;
+    terrain_render_surfaces(level);
+    if (gr_batch_open) gr_flush_batch();
+    if (batch_was_open) gr_begin_batch(4, 3);
+}
+
+// FUN_0047ad30 before the level. The portal and current-room modes draw a sky room first, which clears the depth
+// buffer, so there the terrain waits for the hook below.
+CodeInjection alpine_render_surfaces_3d_patch{
+    0x0047ae96,
+    [](auto& regs) {
+        auto* level = CDedLevel::Get();
+        const auto* view = reinterpret_cast<const EditorViewport*>(static_cast<uintptr_t>(regs.esi));
+        if (!level || view->view_type != editor_view_type_perspective) return;
+        // Set by FUN_0041e4c0 only after the level; the preview's repaint requests read it.
+        painting_view_index = view->view_index;
+        if (!terrain_view_draws_solid()) return;
+        // The level pass draws level->solid (none: no level pass).
+        const bool portal_walk = (level_render_mode == LEVEL_RENDER_CURRENT_ROOM ||
+                                  level_render_mode == LEVEL_RENDER_PORTALS) &&
+                                 level->solid;
+        if (!portal_walk) render_terrain_before_level(level);
+    },
+};
+
+// FUN_00425950 (3D view only, from 0x0047aedc): after the sky room, before the rooms' opaque caches.
+CallHook<void(void*, void*, int)> alpine_render_surfaces_portal_hook{
+    0x00425a83,
+    [](void* solid, void* rooms, int count) {
+        auto* level = CDedLevel::Get();
+        if (level && terrain_view_draws_solid()) render_terrain_before_level(level);
+        alpine_render_surfaces_portal_hook.call_target(solid, rooms, count);
+    },
+};
+
+// Start of FUN_0041f6d0, before the player start sprite: the 2D views and a 3D view that draws the terrain as
+// lines draw it here. Decorations draw here in every view.
 CodeInjection alpine_render_surfaces_patch{
     0x0041f6f9,
     [](auto& regs) {
         auto* level = CDedLevel::Get();
         if (!level) return;
-        terrain_render_surfaces(level);
+        const bool view_3d = !*reinterpret_cast<const bool*>(regs.esp + 0x50);
+        if (!view_3d || !terrain_view_draws_solid()) terrain_render_surfaces(level);
+        terrain_render_decorations(level);
     },
 };
 
@@ -1087,6 +1190,7 @@ CodeInjection alpine_render_patch{
         corona_render(level);
         bag_render(level);
         weather_region_render(level);
+        vehicle_factory_render(level);
         projection_camera_render(level);
         rope_emitter_render(level);
         terrain_render(level);
@@ -1125,6 +1229,7 @@ const char* get_type_display_name(DedObjectType type)
         case DedObjectType::DED_CORONA:             return "Corona";
         case DedObjectType::DED_BAG:                return "Bag";
         case DedObjectType::DED_WEATHER_REGION:     return "Weather Region";
+        case DedObjectType::DED_VEHICLE_FACTORY:    return "Vehicle Factory";
         case DedObjectType::DED_PROJECTION_CAMERA:  return "Projection Camera";
         case DedObjectType::DED_ROPE_EMITTER:       return "Rope Emitter";
         case DedObjectType::DED_TERRAIN:            return "Terrain";
@@ -1164,6 +1269,7 @@ static const struct { DedObjectType type; const char* label; } g_type_filters[] 
     {DedObjectType::DED_TARGET,           "Targets"},
     {DedObjectType::DED_TERRAIN,          "Terrains"},
     {DedObjectType::DED_TRIGGER,          "Triggers"},
+    {DedObjectType::DED_VEHICLE_FACTORY,  "Vehicle Factories"},
     {DedObjectType::DED_WEATHER_REGION,   "Weather Regions"},
 };
 constexpr int g_num_type_filters = sizeof(g_type_filters) / sizeof(g_type_filters[0]);
@@ -2323,13 +2429,14 @@ void alpine_hide_objects(CDedLevel* level)
 // Global vectors to collect Alpine objects during group serialization.
 // FUN_00435630 (per-group serializer) has a switch on obj->type that handles types 0..0x16.
 // Alpine types (0x17=DED_MESH, 0x18=DED_NOTE, 0x19=DED_CORONA, 0x1A=DED_BAG,
-// 0x1B=DED_WEATHER_REGION, 0x1D=DED_PROJECTION_CAMERA, 0x1E=DED_ROPE_EMITTER,
+// 0x1B=DED_WEATHER_REGION, 0x1C=DED_VEHICLE_FACTORY, 0x1D=DED_PROJECTION_CAMERA, 0x1E=DED_ROPE_EMITTER,
 // 0x1F=DED_TERRAIN) fall through and are silently dropped.
 static std::vector<DedMesh*> g_group_save_meshes;
 static std::vector<DedNote*> g_group_save_notes;
 static std::vector<DedCorona*> g_group_save_coronas;
 static std::vector<DedBag*> g_group_save_bags;
 static std::vector<DedWeatherRegion*> g_group_save_weather_regions;
+static std::vector<DedVehicleFactory*> g_group_save_vehicle_factories;
 static std::vector<DedProjectionCamera*> g_group_save_projection_cameras;
 static std::vector<DedRopeEmitter*> g_group_save_rope_emitters;
 static std::vector<DedTerrain*> g_group_save_terrains;
@@ -2350,6 +2457,7 @@ CodeInjection alpine_group_save_clear_hook{
         g_group_save_coronas.clear();
         g_group_save_bags.clear();
         g_group_save_weather_regions.clear();
+        g_group_save_vehicle_factories.clear();
         g_group_save_projection_cameras.clear();
         g_group_save_rope_emitters.clear();
         g_group_save_terrains.clear();
@@ -2387,6 +2495,8 @@ CodeInjection alpine_group_type_collect_hook{
                 g_group_save_bags.push_back(static_cast<DedBag*>(obj));
             else if (type == static_cast<int>(DedObjectType::DED_WEATHER_REGION))
                 g_group_save_weather_regions.push_back(static_cast<DedWeatherRegion*>(obj));
+            else if (type == static_cast<int>(DedObjectType::DED_VEHICLE_FACTORY))
+                g_group_save_vehicle_factories.push_back(static_cast<DedVehicleFactory*>(obj));
             else if (type == static_cast<int>(DedObjectType::DED_PROJECTION_CAMERA))
                 g_group_save_projection_cameras.push_back(static_cast<DedProjectionCamera*>(obj));
             else if (type == static_cast<int>(DedObjectType::DED_ROPE_EMITTER))
@@ -2445,6 +2555,14 @@ CodeInjection alpine_group_save_hook{
             props.weather_region_objects.assign(g_group_save_weather_regions.begin(), g_group_save_weather_regions.end());
             weather_region_serialize_chunk(*level, *file);
             props.weather_region_objects = std::move(saved);
+        }
+
+        if (!g_group_save_vehicle_factories.empty()) {
+            auto saved = std::move(props.vehicle_factory_objects);
+            props.vehicle_factory_objects.assign(g_group_save_vehicle_factories.begin(),
+                g_group_save_vehicle_factories.end());
+            vehicle_factory_serialize_chunk(*level, *file);
+            props.vehicle_factory_objects = std::move(saved);
         }
 
         if (!g_group_save_projection_cameras.empty()) {
@@ -2543,12 +2661,13 @@ CodeInjection alpine_group_save_hook{
         }
 
         xlog::info("[AlpineObj] Saved {} meshes, {} notes, {} coronas, {} bags, {} weather regions, "
-            "{} projection cameras, {} rope emitters, {} terrains to group",
+            "{} vehicle factories, {} projection cameras, {} rope emitters, {} terrains to group",
             g_group_save_meshes.size(),
             g_group_save_notes.size(),
             g_group_save_coronas.size(),
             g_group_save_bags.size(),
             g_group_save_weather_regions.size(),
+            g_group_save_vehicle_factories.size(),
             g_group_save_projection_cameras.size(),
             g_group_save_rope_emitters.size(),
             g_group_save_terrains.size()
@@ -2559,6 +2678,7 @@ CodeInjection alpine_group_save_hook{
         g_group_save_coronas.clear();
         g_group_save_bags.clear();
         g_group_save_weather_regions.clear();
+        g_group_save_vehicle_factories.clear();
         g_group_save_projection_cameras.clear();
         g_group_save_rope_emitters.clear();
         g_group_save_terrains.clear();
@@ -2650,6 +2770,7 @@ CodeInjection alpine_group_load_hook{
         auto corona_start = props.corona_objects.size();
         auto bag_start = props.bag_objects.size();
         auto weather_region_start = props.weather_region_objects.size();
+        auto vehicle_factory_start = props.vehicle_factory_objects.size();
         auto projection_camera_start = props.projection_camera_objects.size();
         auto rope_emitter_start = props.rope_emitter_objects.size();
         auto terrain_start = props.terrain_objects.size();
@@ -2682,6 +2803,9 @@ CodeInjection alpine_group_load_hook{
             }
             else if (chunk_id == alpine_weather_region_chunk_id) {
                 weather_region_deserialize_chunk(*level, *file, chunk_size);
+            }
+            else if (chunk_id == alpine_vehicle_factory_chunk_id) {
+                vehicle_factory_deserialize_chunk(*level, *file, chunk_size);
             }
             else if (chunk_id == alpine_projection_camera_chunk_id) {
                 projection_camera_deserialize_chunk(*level, *file, chunk_size);
@@ -2758,6 +2882,7 @@ CodeInjection alpine_group_load_hook{
         int coronas_loaded = static_cast<int>(props.corona_objects.size() - corona_start);
         int bags_loaded = static_cast<int>(props.bag_objects.size() - bag_start);
         int weather_regions_loaded = static_cast<int>(props.weather_region_objects.size() - weather_region_start);
+        int vehicle_factories_loaded = static_cast<int>(props.vehicle_factory_objects.size() - vehicle_factory_start);
         int projection_cameras_loaded = static_cast<int>(props.projection_camera_objects.size() - projection_camera_start);
         int rope_emitters_loaded = static_cast<int>(props.rope_emitter_objects.size() - rope_emitter_start);
         int terrains_loaded = static_cast<int>(props.terrain_objects.size() - terrain_start);
@@ -2768,6 +2893,7 @@ CodeInjection alpine_group_load_hook{
             !coronas_loaded &&
             !bags_loaded &&
             !weather_regions_loaded &&
+            !vehicle_factories_loaded &&
             !projection_cameras_loaded &&
             !rope_emitters_loaded &&
             !terrains_loaded &&
@@ -2796,6 +2922,7 @@ CodeInjection alpine_group_load_hook{
         renumber(props.corona_objects, corona_start);
         renumber(props.bag_objects, bag_start);
         renumber(props.weather_region_objects, weather_region_start);
+        renumber(props.vehicle_factory_objects, vehicle_factory_start);
         renumber(props.projection_camera_objects, projection_camera_start);
         renumber(props.rope_emitter_objects, rope_emitter_start);
         renumber(props.terrain_objects, terrain_start);
@@ -2851,6 +2978,8 @@ CodeInjection alpine_group_load_hook{
             level->add_to_selection(static_cast<DedObject*>(props.bag_objects[i]));
         for (auto i = weather_region_start; i < props.weather_region_objects.size(); i++)
             level->add_to_selection(static_cast<DedObject*>(props.weather_region_objects[i]));
+        for (auto i = vehicle_factory_start; i < props.vehicle_factory_objects.size(); i++)
+            level->add_to_selection(static_cast<DedObject*>(props.vehicle_factory_objects[i]));
         for (auto i = projection_camera_start; i < props.projection_camera_objects.size(); i++)
             level->add_to_selection(static_cast<DedObject*>(props.projection_camera_objects[i]));
         for (auto i = rope_emitter_start; i < props.rope_emitter_objects.size(); i++)
@@ -2888,6 +3017,8 @@ CodeInjection alpine_group_load_hook{
                     entry->objects.push_back(static_cast<DedObject*>(props.bag_objects[i]));
                 for (auto i = weather_region_start; i < props.weather_region_objects.size(); i++)
                     entry->objects.push_back(static_cast<DedObject*>(props.weather_region_objects[i]));
+                for (auto i = vehicle_factory_start; i < props.vehicle_factory_objects.size(); i++)
+                    entry->objects.push_back(static_cast<DedObject*>(props.vehicle_factory_objects[i]));
                 for (auto i = projection_camera_start; i < props.projection_camera_objects.size(); i++)
                     entry->objects.push_back(static_cast<DedObject*>(props.projection_camera_objects[i]));
                 for (auto i = rope_emitter_start; i < props.rope_emitter_objects.size(); i++)
@@ -2940,9 +3071,9 @@ CodeInjection alpine_group_load_hook{
         }
 
         xlog::info("[AlpineObj] Loaded {} meshes, {} notes, {} coronas, {} bags, {} weather regions, "
-            "{} projection cameras, {} rope emitters, {} terrains from group",
+            "{} vehicle factories, {} projection cameras, {} rope emitters, {} terrains from group",
             meshes_loaded, notes_loaded, coronas_loaded, bags_loaded, weather_regions_loaded,
-            projection_cameras_loaded, rope_emitters_loaded, terrains_loaded);
+            vehicle_factories_loaded, projection_cameras_loaded, rope_emitters_loaded, terrains_loaded);
     },
 };
 
@@ -2965,6 +3096,8 @@ void ApplyAlpineObjectPatches()
     alpine_object_tree_patch.install();
     alpine_factory_hook.install();
     alpine_create_object_patch.install();
+    alpine_render_surfaces_3d_patch.install();
+    alpine_render_surfaces_portal_hook.install();
     alpine_render_surfaces_patch.install();
     alpine_render_patch.install();
     alpine_group_save_clear_hook.install();

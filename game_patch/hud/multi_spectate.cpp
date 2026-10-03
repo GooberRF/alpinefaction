@@ -5,6 +5,7 @@
 #include "hud.h"
 #include "hud_internal.h"
 #include "multi_scoreboard.h"
+#include "../graphics/gr.h"
 #include "../input/input.h"
 #include "../os/console.h"
 #include "../rf/entity.h"
@@ -32,6 +33,7 @@
 #include "../misc/alpine_settings.h"
 #include "../multi/gametype.h"
 #include "../multi/saved_info.h"
+#include "../multi/vehicles/vehicle.h"
 #include <common/config/BuildConfig.h>
 #include <xlog/xlog.h>
 #include <algorithm>
@@ -60,7 +62,7 @@ static rf::Player* g_spectate_freelook_saved_target = nullptr;
 
 // Two spectate groups, each with its own submode. The "attached" group watches a player
 // (first or third person); the "detached" group is a free camera (free look or static).
-// The Attach bind swaps between groups; Change Spectate View flips the submode in the group.
+// The Attach bind swaps between groups; Change View flips the submode in the group.
 enum class SpectateViewMode
 {
     first_person,
@@ -229,9 +231,22 @@ static bool state_animation_is_crouch(int state)
 // Hook entity_set_next_state_anim to remap non-crouch animations to crouch
 // variants for the spectated entity when it's crouching. This prevents the
 // movement state machine from constantly overriding the crouch animation.
+//
+// SINGLE OWNER of 0x0042A580: the vehicles module needs its early-out here, not a second FunHook.
 FunHook<void(rf::Entity*, int, float)> spectate_entity_set_next_state_anim_hook{
     0x0042A580,
     [](rf::Entity* entity, int state_anim_index, float transition_time) {
+        // A seated rider whose character lacks the seated anims re-requests the state every frame and
+        // never finishes. Seat-locked MP riders only, or an SP NPC would freeze mid STAND->WALK.
+        const bool turret_rider = vehicle_is_turret_rider_state(entity, state_anim_index);
+        if ((turret_rider || vehicle_rider_pose_is_seat_locked(entity))
+            && state_anim_index > rf::ENTITY_STATE_STAND
+            && state_anim_index <= rf::ENTITY_STATE_CUSTOM
+            && entity->state_anims[state_anim_index].vmesh_anim_index == -1
+            && (entity->current_state_anim == rf::ENTITY_STATE_STAND
+                || entity->next_state_anim == rf::ENTITY_STATE_STAND)) {
+            return;
+        }
         if (g_spectate_mode_enabled && g_spectate_mode_target && rf::entity_is_crouching(entity)
             && entity->current_state_anim != rf::ENTITY_STATE_FREEFALL) {
             rf::Entity* target = rf::entity_from_handle(g_spectate_mode_target->entity_handle);
@@ -855,7 +870,7 @@ void multi_spectate_toggle_attach()
     }
 }
 
-// Change Spectate View bind: flip the submode within the active group.
+// Change View bind while spectating: flip the submode within the active group.
 void multi_spectate_change_view()
 {
     if (!multi_spectate_is_spectating())
@@ -1631,20 +1646,6 @@ static void spectate_populate_default_binds()
     }
 }
 
-static bool spectate_project_to_screen(const rf::Vector3& world_pos, float& sx, float& sy)
-{
-    rf::gr::Vertex v{};
-    if (!rf::gr::rotate_vertex(&v, &world_pos)) { // 0 => in front of the camera
-        rf::gr::project_vertex(&v);
-        if (v.flags & rf::gr::VF_PROJECTED) {
-            sx = v.sx;
-            sy = v.sy;
-            return true;
-        }
-    }
-    return false;
-}
-
 // Returns the numpad bind suffix for a player for the nameplate, e.g. " (1, 3)" (or "" if none).
 static std::string spectate_player_bind_suffix(const rf::Player* player)
 {
@@ -1704,7 +1705,7 @@ static void spectate_render_camera_mesh(const rf::Vector3& pos, const rf::Matrix
     }
 
     float sx = 0.0f, sy = 0.0f;
-    if (spectate_project_to_screen(label_pos, sx, sy)) {
+    if (gr_project_world_to_screen(label_pos, sx, sy)) {
         rf::gr::set_color(0xFF, 0xF0, 0x50, 0xFF);
         rf::gr::string_aligned(rf::gr::ALIGN_CENTER, static_cast<int>(sx), static_cast<int>(sy),
             label.c_str(), hud_get_default_font());

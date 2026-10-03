@@ -567,6 +567,12 @@ struct GibConfig
     }
 };
 
+struct VehicleConfig
+{
+    // Hulls take damage from hitting the level or a mover hard, and from hard landings.
+    bool crash_damage = true;
+};
+
 // Controls which level pickups survive under a mutator. Enforced server-side in
 // mutators_level_init_post() via multi_hide_level_items().
 enum class PickupPolicy : uint8_t
@@ -749,6 +755,7 @@ struct AlpineServerConfigRules
     SpawnProtectionConfig spawn_protection;
     NewSpawnLogicConfig spawn_logic;
     GibConfig gibbing;
+    VehicleConfig vehicles;
     WelcomeMessageConfig welcome_message;
     bool weapon_items_give_full_ammo = false;
     bool weapon_infinite_magazines = false;
