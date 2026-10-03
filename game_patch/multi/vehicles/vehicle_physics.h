@@ -47,6 +47,11 @@ bool vehicle_physics_driven_velocity(int vehicle_handle, rf::Vector3* out);
 // Front-wheel steer angle of the locally DRIVEN body, in RADIANS, positive toward the hull's right.
 bool vehicle_physics_driven_steer_angle(int vehicle_handle, float* out);
 
+// For each hull-local point, its nearest wheel's height above where that wheel sits loaded at rest:
+// from the body this machine simulates, else (allow_probe) one straight-down level cast per point.
+bool vehicle_physics_wheel_offsets(const rf::Entity* ep, const rf::Vector3* points, int num_points,
+                                   bool allow_probe, float* out);
+
 // Creates or destroys the local body to match who is driving; call on every seat change.
 void vehicle_physics_on_seat_change();
 

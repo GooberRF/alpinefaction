@@ -263,6 +263,9 @@ struct VehicleWheelSpin
     float angle = 0.0f; // radians, wrapped to [0, 2pi)
     // Displayed front-pair steer angle, positive toward the hull's right; eased, not assigned.
     float steer = 0.0f;
+    // Displayed per-tire lift along the hull's up axis, in spinner prop order; eased, not assigned.
+    float suspension[4] = {};
+    bool has_suspension = false;
 };
 
 // Client render: tread UV scroll, integrated from a POSITION delta like VehicleWheelSpin.

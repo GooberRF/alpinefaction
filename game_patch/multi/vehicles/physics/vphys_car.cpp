@@ -295,6 +295,53 @@ namespace
         return b.wheel_ref_count > 0 ? b.wheel_ref_count : std::max(num_wheels, 1);
     }
 
+    float wheel_sag_for_count(const VehiclePhysicsParams& p, int effective_count)
+    {
+        const float k = std::max(p.suspension_stiffness, 0.01f);
+        const float n = static_cast<float>(std::max(effective_count, 1));
+        // air_gravity is deliberately not here: it only acts where there is no spring load.
+        const float g = rf::gravity * std::max(p.gravity_scale, 0.0f);
+        return std::min(g / (n * k), std::max(p.suspension_rest_length, 0.05f) * 0.7f);
+    }
+
+    struct SpringSpan
+    {
+        int count = 0;
+        float min_z = 1e30f;
+        float max_z = -1e30f;
+    };
+
+    SpringSpan spring_span(const rf::Object* op)
+    {
+        SpringSpan s;
+        for (int i = 0; i < op->p_data.cspheres.size(); ++i) {
+            if (op->p_data.cspheres[i].spring_const > 0.0f) {
+                const float z = op->p_data.cspheres[i].center.z;
+                s.min_z = std::min(s.min_z, z);
+                s.max_z = std::max(s.max_z, z);
+                ++s.count;
+            }
+        }
+        return s;
+    }
+
+    // Three spring spheres AND a real front/rear spread, or the steered/driven split is meaningless.
+    bool spring_span_has_axles(const SpringSpan& s)
+    {
+        return s.count >= 3 && (s.max_z - s.min_z) > 0.2f;
+    }
+
+    int car_tread_wheels_per_side(const VehiclePhysicsParams& p)
+    {
+        return static_cast<int>(std::lround(std::max(p.tread_wheels_per_side, 0.0f)));
+    }
+
+    // The layout car_add_wheels takes the spring spheres verbatim for: axled, and no tread rows.
+    bool car_wheels_are_spring_spheres(const SpringSpan& s, const VehiclePhysicsParams& p)
+    {
+        return spring_span_has_axles(s) && car_tread_wheels_per_side(p) < 2;
+    }
+
     // The SPRING cspheres ARE the wheels in RF's own suspension, so centre and radius are verbatim.
     void car_add_wheels(VehicleSimBody& b, rf::Entity* ep, const VehiclePhysicsParams& p,
                         const HullBox& box)
@@ -311,20 +358,12 @@ namespace
         };
         std::vector<WheelPos> wheels;
 
-        float min_z = 1e30f;
-        float max_z = -1e30f;
-        int spring_count = 0;
-        for (int i = 0; i < ep->p_data.cspheres.size(); ++i) {
-            if (ep->p_data.cspheres[i].spring_const > 0.0f) {
-                const float z = ep->p_data.cspheres[i].center.z;
-                min_z = std::min(min_z, z);
-                max_z = std::max(max_z, z);
-                ++spring_count;
-            }
-        }
-        // Three spring spheres AND a real front/rear spread, or the steered/driven split is meaningless.
-        const int tread_per_side = static_cast<int>(std::lround(std::max(p.tread_wheels_per_side, 0.0f)));
-        if (spring_count >= 3 && (max_z - min_z) > 0.2f) {
+        const SpringSpan span = spring_span(ep);
+        const float min_z = span.min_z;
+        const float max_z = span.max_z;
+        const int spring_count = span.count;
+        const int tread_per_side = car_tread_wheels_per_side(p);
+        if (spring_span_has_axles(span)) {
             const float front_line = max_z - (max_z - min_z) * 0.25f;
             if (tread_per_side >= 2) {
                 // A TREAD ROW per side: sides split on the sign of x, laid evenly between their ends.
@@ -486,11 +525,84 @@ float hull_wheel_radius(const rf::Object* op, const VehiclePhysicsParams& p)
 
 float wheel_sag(const VehicleSimBody& b, const VehiclePhysicsParams& p, int num_wheels)
 {
-    const float k = std::max(p.suspension_stiffness, 0.01f);
-    const float n = static_cast<float>(wheel_effective_count(b, num_wheels));
-    // air_gravity is deliberately not here: it only acts where there is no spring load.
-    const float g = rf::gravity * std::max(p.gravity_scale, 0.0f);
-    return std::min(g / (n * k), std::max(p.suspension_rest_length, 0.05f) * 0.7f);
+    return wheel_sag_for_count(p, wheel_effective_count(b, num_wheels));
+}
+
+// Matched by hull-local XZ, so the spring-sphere order never has to agree with the caller's.
+bool vehicle_physics_wheel_offsets(const rf::Entity* ep, const rf::Vector3* points, int num_points,
+                                   bool allow_probe, float* out)
+{
+    if (!ep || !points || !out || num_points <= 0) {
+        return false;
+    }
+    const auto xz_dist_sq = [](float x, float z, const rf::Vector3& pt) {
+        return (x - pt.x) * (x - pt.x) + (z - pt.z) * (z - pt.z);
+    };
+
+    if (const VehicleSimBody* b = sim_body_from_handle(ep->handle); b && b->raycast_vehicle) {
+        const btRaycastVehicle* veh = b->raycast_vehicle;
+        const int nwheels = std::min(veh->getNumWheels(), static_cast<int>(b->wheel_center_y.size()));
+        if (nwheels <= 0) {
+            return false;
+        }
+        for (int i = 0; i < num_points; ++i) {
+            int best = 0;
+            float best_d = 1e30f;
+            for (int w = 0; w < nwheels; ++w) {
+                const btVector3& c = veh->getWheelInfo(w).m_chassisConnectionPointCS;
+                const float d = xz_dist_sq(c.x(), c.z(), points[i]);
+                if (d < best_d) {
+                    best_d = d;
+                    best = w;
+                }
+            }
+            const btWheelInfo& w = veh->getWheelInfo(best);
+            out[i] = w.m_chassisConnectionPointCS.y() - w.m_raycastInfo.m_suspensionLength
+                   - b->wheel_center_y[best];
+        }
+        return true;
+    }
+
+    if (!allow_probe) {
+        return false;
+    }
+    const int cls = vphys_class_for(ep);
+    if (cls < 0 || !vphys_class_is_automobile(cls)) {
+        return false;
+    }
+    const VehiclePhysicsParams& p = params_for_class(cls);
+    const SpringSpan span = spring_span(ep);
+    if (!car_wheels_are_spring_spheres(span, p)) {
+        return false;
+    }
+    const float rest = std::max(p.suspension_rest_length, 0.05f);
+    const float sag = wheel_sag_for_count(p, span.count);
+    const rf::Vector3 down = ep->orient.uvec * -1.0f;
+    for (int i = 0; i < num_points; ++i) {
+        // Seeded with the first spring sphere like the sim path's wheel 0, so a NaN distance can't leave it null.
+        const rf::PCollisionSphere* best = nullptr;
+        float best_d = 1e30f;
+        for (int j = 0; j < ep->p_data.cspheres.size(); ++j) {
+            const rf::PCollisionSphere& s = ep->p_data.cspheres[j];
+            const float d = xz_dist_sq(s.center.x, s.center.z, points[i]);
+            if (s.spring_const > 0.0f && (!best || d < best_d)) {
+                best_d = d;
+                best = &s;
+            }
+        }
+        const float radius = p.wheel_radius > 0.0f ? p.wheel_radius : std::max(best->radius, 0.1f);
+        // castRay's straight-down sample, from the connection point car_add_wheels gives the wheel.
+        const rf::Vector3 conn{best->center.x, best->center.y + rest - sag, best->center.z};
+        const rf::Vector3 from = ep->pos + ep->orient.transform_vector(conn);
+        const rf::Vector3 to = from + down * (rest + radius);
+        float len = rest;
+        rf::PCollisionOut o{};
+        if (vphys_collide_solid_segment(from, to, wheel_probe_flags, o)) {
+            len = std::clamp((o.hit_point - from).dot_prod(down) - radius, 0.0f, rest);
+        }
+        out[i] = rest - sag - len;
+    }
+    return true;
 }
 
 void car_body_create(VehicleSimBody& b, rf::Entity* ep, int cls)

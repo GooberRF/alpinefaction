@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <cmath>
+#include <iterator>
 #include <map>
 #include <numbers>
 #include <string>
@@ -346,18 +347,30 @@ namespace
         bool steer_front;
         bool yaw_right_180;      // the tire mesh is a LEFT wheel, faced outboard on the right side
         bool negate_right;       // right-side instances spin the other way, as twin screws do
+        // >0: each instance follows its wheel's suspension, clamped to this far above / below rest.
+        float max_rise;
+        float max_droop;
     };
+
+    // af_Jeep01's arches clear the tire tops by 0.236 at the rear and 0.270 at the front.
+    constexpr float jeep_tire_max_rise = 0.20f;
+    constexpr float jeep_tire_max_droop = 0.15f;
+    // Seconds; long enough to hide a one-frame contact spike, short enough that a landing still lands.
+    constexpr float vehicle_tire_suspension_ease_s = 0.06f;
+    // Beyond this a hull nobody here simulates is not probed and its tires ease back to rest.
+    constexpr float vehicle_tire_probe_range = 50.0f;
 
     constexpr VehicleSpinnerConfig vehicle_spinner_configs[] = {
         {VDC_JEEP, "af_Jeep01T.v3m", jeep_wheel_prop_names, 4, 0.52735f, 0.0f, false, false, true,
-         true, true},
+         true, true, jeep_tire_max_rise, jeep_tire_max_droop},
         {VDC_SUB, "af_Sub_Mini01T.v3m", sub_screw_prop_names, 2, 0.0f, 2.0f, true, true, false,
-         false, true},
+         false, true, 0.0f, 0.0f},
     };
 
     constexpr int vehicle_spinner_config_count =
         static_cast<int>(std::size(vehicle_spinner_configs));
     constexpr int vehicle_spinner_max_props = 4;
+    static_assert(std::extent_v<decltype(VehicleWheelSpin::suspension)> == vehicle_spinner_max_props);
 
     // Dropped on every level init: the engine frees its static meshes with the level.
     struct VehicleSpinnerMesh
@@ -514,6 +527,43 @@ namespace
             xlog::warn("[vehicle] failed to load mesh '{}', that hull renders without its wheels",
                        filename);
         }
+    }
+
+    // Not keyed off the draw, so a hull coming back into view already sits where it should. The probe
+    // stays bounded by the camera range.
+    void vehicle_update_tire_suspension(const rf::Entity& entity, int cfg, VehicleWheelSpin& spin)
+    {
+        const VehicleSpinnerConfig& c = vehicle_spinner_configs[cfg];
+        VehicleSpinnerPlacement placements[vehicle_spinner_max_props];
+        const int n = c.max_rise > 0.0f || c.max_droop > 0.0f
+                          ? vehicle_spinner_placements(cfg, &entity, placements)
+                          : 0;
+        if (n == 0) {
+            spin.has_suspension = false;
+            return;
+        }
+        rf::Vector3 points[vehicle_spinner_max_props];
+        for (int i = 0; i < n; ++i) {
+            points[i] = placements[i].center;
+        }
+        bool in_range = false;
+        if (rf::local_player && rf::local_player->cam) {
+            const rf::Vector3 to_hull = entity.pos - rf::camera_get_pos(rf::local_player->cam);
+            in_range = to_hull.len_sq() < vehicle_tire_probe_range * vehicle_tire_probe_range;
+        }
+        float target[vehicle_spinner_max_props] = {};
+        const bool live = vehicle_physics_wheel_offsets(&entity, points, n, in_range, target);
+        if (!live) {
+            std::fill(std::begin(target), std::end(target), 0.0f);
+        }
+        const bool snap = !spin.has_suspension;
+        const float t = 1.0f - std::exp(-rf::frametime / vehicle_tire_suspension_ease_s);
+        for (int i = 0; i < n; ++i) {
+            const float goal = std::clamp(target[i], -c.max_droop, c.max_rise);
+            const float s = spin.suspension[i];
+            spin.suspension[i] = snap ? goal : s + (goal - s) * t;
+        }
+        spin.has_suspension = true;
     }
 
     // Tracked hulls carry their belts as geometry, so they are animated by scrolling the texture.
@@ -703,6 +753,8 @@ void vehicle_update_jeep_wheels()
             }
         }
 
+        vehicle_update_tire_suspension(entity, cfg, spin);
+
         if (!had_last) {
             continue;
         }
@@ -844,15 +896,18 @@ void vehicle_render_jeep_tires(rf::Entity* ep)
 
     const VehicleSpinnerConfig& c = vehicle_spinner_configs[cfg];
     const auto it = g_vehicle_state.wheel_spin.find(ep->handle);
-    const float spin = it != g_vehicle_state.wheel_spin.end() ? it->second.angle : 0.0f;
+    const VehicleWheelSpin* state = it != g_vehicle_state.wheel_spin.end() ? &it->second : nullptr;
+    const float spin = state ? state->angle : 0.0f;
     // Radians, positive toward the hull's right.
-    const float steer = it != g_vehicle_state.wheel_spin.end() ? it->second.steer : 0.0f;
+    const float steer = state ? state->steer : 0.0f;
+    const bool lifted = state && state->has_suspension;
 
     rf::MeshRenderParams params{};
     params.init_defaults();
     for (int i = 0; i < n; ++i) {
         const VehicleSpinnerPlacement& w = placements[i];
-        rf::Vector3 pos = ep->pos + ep->orient.transform_vector(w.center);
+        const rf::Vector3 lift{0.0f, lifted ? state->suspension[i] : 0.0f, 0.0f};
+        rf::Vector3 pos = ep->pos + ep->orient.transform_vector(w.center + lift);
 
         rf::Matrix3 orient = ep->orient;
         if (c.use_prop_orient) {
