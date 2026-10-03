@@ -732,7 +732,7 @@ bool apply_car_controls(VehicleSimBody& b, rf::Entity* ep, const VehiclePhysicsP
     const bool drills_on = car_drills_on(ep, p);
     const float drill_scale = drills_on ? std::clamp(p.drill_speed_scale, 0.1f, 1.0f) : 1.0f;
     const float max_speed_now = p.car_max_speed * drill_scale;
-    const float engine_force_now = std::max(p.engine_force, 0.0f) * drill_scale;
+    const float engine_force_now = std::max(p.engine_force, 0.0f);
 
     const float throttle = std::clamp(ci.move.z, -1.0f, 1.0f) * p.thrust_sign;
     const bool shove_grace =

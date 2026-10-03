@@ -215,6 +215,12 @@ INT_PTR CALLBACK VehicleFactoryDialogProc(HWND hdlg, UINT msg, WPARAM wp, LPARAM
             return TRUE;
         }
         auto* factory = g_selected_factories[0];
+        // A field the selection disagrees on is shown blank (indeterminate for a checkbox), and OK
+        // leaves it as it is on every factory unless the user sets it.
+        const auto uniform = [factory](auto field) {
+            return std::all_of(g_selected_factories.begin(), g_selected_factories.end(),
+                [&](const DedVehicleFactory* f) { return f->*field == factory->*field; });
+        };
 
         SetDlgItemTextA(hdlg, IDC_VEHICLE_FACTORY_SCRIPT_NAME, factory->script_name.c_str());
 
@@ -236,17 +242,21 @@ INT_PTR CALLBACK VehicleFactoryDialogProc(HWND hdlg, UINT msg, WPARAM wp, LPARAM
                 }
             }
         }
-        int cls_sel = static_cast<int>(SendMessageA(cls, CB_FINDSTRINGEXACT, static_cast<WPARAM>(-1),
-            reinterpret_cast<LPARAM>(factory->vehicle_class.c_str())));
-        if (cls_sel == CB_ERR) {
-            cls_sel = factory->vehicle_class.empty()
-                ? 0
-                : static_cast<int>(SendMessageA(cls, CB_ADDSTRING, 0,
-                    reinterpret_cast<LPARAM>(factory->vehicle_class.c_str())));
+        if (uniform(&DedVehicleFactory::vehicle_class)) {
+            int cls_sel = static_cast<int>(SendMessageA(cls, CB_FINDSTRINGEXACT, static_cast<WPARAM>(-1),
+                reinterpret_cast<LPARAM>(factory->vehicle_class.c_str())));
+            if (cls_sel == CB_ERR) {
+                cls_sel = factory->vehicle_class.empty()
+                    ? 0
+                    : static_cast<int>(SendMessageA(cls, CB_ADDSTRING, 0,
+                        reinterpret_cast<LPARAM>(factory->vehicle_class.c_str())));
+            }
+            SendMessage(cls, CB_SETCURSEL, cls_sel == CB_ERR ? 0 : cls_sel, 0);
         }
-        SendMessage(cls, CB_SETCURSEL, cls_sel == CB_ERR ? 0 : cls_sel, 0);
 
-        alpine_dlg_set_float_field(hdlg, IDC_VEHICLE_FACTORY_RESPAWN_DELAY, factory->respawn_delay_s);
+        if (uniform(&DedVehicleFactory::respawn_delay_s)) {
+            alpine_dlg_set_float_field_exact(hdlg, IDC_VEHICLE_FACTORY_RESPAWN_DELAY, factory->respawn_delay_s);
+        }
         alpine_spinner_init(hdlg, IDC_VEHICLE_FACTORY_RESPAWN_DELAY, IDC_VEHICLE_FACTORY_RESPAWN_DELAY_SPIN,
                             1.0f, 0.0f, vehicle_factory_max_respawn_delay_s, 1);
 
@@ -254,18 +264,27 @@ INT_PTR CALLBACK VehicleFactoryDialogProc(HWND hdlg, UINT msg, WPARAM wp, LPARAM
         SendMessageA(team, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>("None"));
         SendMessageA(team, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>("Red"));
         SendMessageA(team, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>("Blue"));
-        SendMessage(team, CB_SETCURSEL, static_cast<int>(factory->team) + 1, 0);
+        if (uniform(&DedVehicleFactory::team)) {
+            SendMessage(team, CB_SETCURSEL, static_cast<int>(factory->team) + 1, 0);
+        }
 
-        CheckDlgButton(hdlg, IDC_VEHICLE_FACTORY_LOCK_TEAM,
-            factory->lock_to_team ? BST_CHECKED : BST_UNCHECKED);
-
-        CheckDlgButton(hdlg, IDC_VEHICLE_FACTORY_ACTIVE,
-            factory->active_by_default ? BST_CHECKED : BST_UNCHECKED);
+        const auto check_state = [&](auto field) {
+            return !uniform(field) ? BST_INDETERMINATE : factory->*field ? BST_CHECKED : BST_UNCHECKED;
+        };
+        CheckDlgButton(hdlg, IDC_VEHICLE_FACTORY_LOCK_TEAM, check_state(&DedVehicleFactory::lock_to_team));
+        CheckDlgButton(hdlg, IDC_VEHICLE_FACTORY_ACTIVE, check_state(&DedVehicleFactory::active_by_default));
 
         return TRUE;
     }
     case WM_COMMAND:
         switch (LOWORD(wp)) {
+        case IDC_VEHICLE_FACTORY_LOCK_TEAM:
+        case IDC_VEHICLE_FACTORY_ACTIVE:
+            // Indeterminate is only a starting state: clicking cycles between the two real values.
+            if (IsDlgButtonChecked(hdlg, LOWORD(wp)) == BST_INDETERMINATE) {
+                CheckDlgButton(hdlg, LOWORD(wp), BST_UNCHECKED);
+            }
+            return TRUE;
         case IDOK: {
             char name_buf[256] = {};
             GetDlgItemTextA(hdlg, IDC_VEHICLE_FACTORY_SCRIPT_NAME, name_buf, sizeof(name_buf));
@@ -278,7 +297,14 @@ INT_PTR CALLBACK VehicleFactoryDialogProc(HWND hdlg, UINT msg, WPARAM wp, LPARAM
             if (have_class) {
                 SendMessageA(cls_ok, CB_GETLBTEXT, cls_cur, reinterpret_cast<LPARAM>(class_buf));
             }
-            float delay = alpine_dlg_get_float_field(hdlg, IDC_VEHICLE_FACTORY_RESPAWN_DELAY);
+            // The script name is the factory's identity, so it alone does not bulk-apply.
+            const bool single = g_selected_factories.size() == 1;
+
+            char delay_text[32] = {};
+            GetDlgItemTextA(hdlg, IDC_VEHICLE_FACTORY_RESPAWN_DELAY, delay_text, sizeof(delay_text));
+            const bool have_delay = single || std::strspn(delay_text, " \t") < std::strlen(delay_text);
+            float delay = alpine_dlg_get_float_field_exact(hdlg, IDC_VEHICLE_FACTORY_RESPAWN_DELAY,
+                                                           g_selected_factories[0]->respawn_delay_s);
             // "nan"/"inf" parse, and std::clamp propagates them rather than bounding them.
             if (!std::isfinite(delay)) {
                 delay = vehicle_factory_default_respawn_delay_s;
@@ -289,11 +315,8 @@ INT_PTR CALLBACK VehicleFactoryDialogProc(HWND hdlg, UINT msg, WPARAM wp, LPARAM
                 CB_GETCURSEL, 0, 0));
             auto team = (team_sel >= 1 && team_sel <= 2) ? static_cast<VehicleFactoryTeam>(team_sel - 1)
                                                          : VehicleFactoryTeam::none;
-            bool lock_to_team = IsDlgButtonChecked(hdlg, IDC_VEHICLE_FACTORY_LOCK_TEAM) == BST_CHECKED;
-            bool active = IsDlgButtonChecked(hdlg, IDC_VEHICLE_FACTORY_ACTIVE) == BST_CHECKED;
-
-            // The script name is the factory's identity, so it alone does not bulk-apply.
-            const bool single = g_selected_factories.size() == 1;
+            const UINT lock_state = IsDlgButtonChecked(hdlg, IDC_VEHICLE_FACTORY_LOCK_TEAM);
+            const UINT active_state = IsDlgButtonChecked(hdlg, IDC_VEHICLE_FACTORY_ACTIVE);
 
             for (auto* f : g_selected_factories) {
                 if (single) {
@@ -308,10 +331,18 @@ INT_PTR CALLBACK VehicleFactoryDialogProc(HWND hdlg, UINT msg, WPARAM wp, LPARAM
                     }
                     f->vehicle_class = class_buf;
                 }
-                f->respawn_delay_s = delay;
-                f->team = team;
-                f->lock_to_team = lock_to_team;
-                f->active_by_default = active;
+                if (have_delay) {
+                    f->respawn_delay_s = delay;
+                }
+                if (team_sel != CB_ERR) {
+                    f->team = team;
+                }
+                if (lock_state != BST_INDETERMINATE) {
+                    f->lock_to_team = lock_state == BST_CHECKED;
+                }
+                if (active_state != BST_INDETERMINATE) {
+                    f->active_by_default = active_state == BST_CHECKED;
+                }
             }
             EndDialog(hdlg, IDOK);
             return TRUE;

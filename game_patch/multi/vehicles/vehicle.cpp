@@ -320,10 +320,20 @@ void track_synced_entity(rf::Entity* ep)
     vehicle_capture_spawn_ammo(ep);
 }
 
+int vehicle_seat_count(const rf::Entity* vehicle)
+{
+    if (!vehicle) {
+        return 0;
+    }
+    const int seats = std::min<int>(vehicle->interface_points.size(), af_vehicle_state_max_seats);
+    // The stock turret mesh carries a second interface tag, but a turret seats its operator alone.
+    return vehicle_hull_is_turret(vehicle) ? std::min(seats, 1) : seats;
+}
+
 // interface_points is an array of POINTERS engine-side; never index it as if it held the structs.
 const rf::EntityInterfacePoint* vehicle_seat(const rf::Entity* vehicle, int index)
 {
-    if (!vehicle || index < 0 || index >= vehicle->interface_points.size()) {
+    if (!vehicle || index < 0 || index >= vehicle_seat_count(vehicle)) {
         return nullptr;
     }
     return vehicle->interface_points[index];
@@ -487,6 +497,9 @@ void vehicle_client_do_frame()
         primary_held = rf::control_is_control_down(controls, rf::CC_ACTION_PRIMARY_ATTACK);
         alt_held = rf::control_is_control_down(controls, rf::CC_ACTION_SECONDARY_ATTACK);
     }
+    // A turret's alt trigger is its operator's zoom and is never reported.
+    vehicle_turret_zoom_do_frame();
+    alt_held = alt_held && !vehicle_hull_is_turret(vehicle);
 
     auto report = [](rf::Entity* target, bool fire_held, bool fire_alt) {
         if (!target) {
@@ -706,7 +719,7 @@ void vehicle_do_frame()
             continue;
         }
         // Catch-all for a rider whose entity vanished by a route other than disconnect.
-        for (int i = 0; i < ep->interface_points.size(); ++i) {
+        for (int i = 0; i < vehicle_seat_count(ep); ++i) {
             const int leech_handle = vehicle_seat_leech(ep, i);
             if (leech_handle == -1 || rf::entity_from_handle(leech_handle)) {
                 continue;

@@ -329,6 +329,9 @@ struct VehicleModuleState
     int reported_fire_vehicle = -1;
     bool reported_primary_held = false;
     bool reported_alt_held = false;
+    // Client: the turret the local operator has zoomed in, -1 for none, and last frame's alt trigger.
+    int turret_zoom_handle = -1;
+    bool turret_zoom_alt_down = false;
     // Server: an entry exists only while the jeep's driver holds the horn.
     std::unordered_map<int, VehicleHorn> horn;
     std::unordered_map<int, rf::Timestamp> horn_cooldown; // by player id
@@ -384,6 +387,8 @@ void vehicle_ammo_regen_runtime_reset();
 // Server: the local clock time this weapon slot refills at, 0 when no refill is pending.
 int64_t vehicle_ammo_refill_due_ms(const rf::Entity* ep, int slot_index);
 void track_synced_entity(rf::Entity* ep);
+// Seats this hull offers, capped at what the occupancy packet can state; vehicle_seat refuses the rest.
+int vehicle_seat_count(const rf::Entity* vehicle);
 const rf::EntityInterfacePoint* vehicle_seat(const rf::Entity* vehicle, int index);
 int vehicle_seat_leech(const rf::Entity* vehicle, int index);
 rf::Entity* vehicle_driver_entity(const rf::Entity* vehicle);

@@ -18,6 +18,7 @@
 #include "../multi/multi.h"
 #include "../multi/vehicles/vehicle.h"
 #include "../multi/vehicles/vehicle_physics.h"
+#include "../multi/vehicles/vehicle_view.h"
 #include "input.h"
 
 // Raw mouse delta accumulators — captured in mouse_get_delta_hook, then consumed
@@ -94,6 +95,13 @@ void consume_vehicle_orbit_mouse_deltas(float& out_pitch, float& out_yaw)
     mouse_counts_to_look_angles(dx, dy, rf::local_player->settings.controls.mouse_sensitivity, out_pitch, out_yaw);
 }
 
+// Stock controls_read's dynamic scope divisor, the setting standing in for its 0x005895C0 constant.
+static float dynamic_scope_sensitivity_divisor(float zoom)
+{
+    constexpr float zoom_scale = 30.0f;
+    return (zoom - 1.0f) * applied_dynamic_sensitivity_value * zoom_scale;
+}
+
 // Converts accumulated raw mouse deltas to camera angle deltas (radians).
 // For the player entity, this is called from linear_pitch_patch inside the entity
 // control function where timing is guaranteed. For the freelook camera, it's called
@@ -118,15 +126,14 @@ void consume_raw_mouse_deltas(float& out_pitch, float& out_yaw, bool apply_scope
         if (rf::local_player->fpgun_data.scanning_for_target) {
             sens *= scanner_sensitivity_value;
         } else {
-            float zoom = rf::local_player->fpgun_data.zoom_factor;
+            float zoom = std::max(rf::local_player->fpgun_data.zoom_factor, vehicle_turret_zoom_fov_scale());
             if (zoom > 1.0f) {
                 if (g_alpine_game_config.scope_static_sensitivity) {
                     // Static: flat multiplier regardless of zoom level
                     sens *= scope_sensitivity_value;
                 } else {
                     // Dynamic: proportional to zoom level, matches stock formula
-                    constexpr float zoom_scale = 30.0f;
-                    float divisor = (zoom - 1.0f) * applied_dynamic_sensitivity_value * zoom_scale;
+                    float divisor = dynamic_scope_sensitivity_divisor(zoom);
                     if (divisor > 1.0f) {
                         sens /= divisor;
                     }
@@ -462,6 +469,14 @@ CodeInjection static_zoom_sensitivity_patch2 {
             if (g_alpine_game_config.scope_static_sensitivity) {
                 regs.al = static_cast<int8_t>(1); // make cmp at 0x004309DA test true
             }
+        }
+        else if (player && player == rf::local_player && vehicle_turret_zoom_fov_scale() > 1.0f) {
+            // No fpgun zoom for the stock dynamic branch to read, so both scope rules are applied here.
+            const float divisor = dynamic_scope_sensitivity_divisor(vehicle_turret_zoom_fov_scale());
+            applied_static_sensitivity_value = g_alpine_game_config.scope_static_sensitivity
+                ? scope_sensitivity_value
+                : (divisor > 1.0f ? 1.0f / divisor : 1.0f);
+            regs.al = static_cast<int8_t>(1);
         }
         else {
             applied_static_sensitivity_value = scanner_sensitivity_value;

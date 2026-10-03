@@ -50,14 +50,9 @@ namespace
     constexpr int64_t vehicle_pending_seats_ttl_ms = 5000;
 
     // Lowest UNOCCUPIED seat, or -1. Free == leech_handle -1, the condition entity_attach_leech takes.
-    // Capped at the wire's seat count: a seat the occupancy packet cannot state would be released by
-    // every client on every packet.
     int vehicle_lowest_free_seat(const rf::Entity* vehicle)
     {
-        if (!vehicle) {
-            return -1;
-        }
-        const int seats = std::min<int>(vehicle->interface_points.size(), af_vehicle_state_max_seats);
+        const int seats = vehicle_seat_count(vehicle);
         for (int i = 0; i < seats; ++i) {
             if (vehicle_seat_leech(vehicle, i) == -1) {
                 return i;
@@ -72,7 +67,7 @@ namespace
         if (!vehicle || !rider) {
             return -1;
         }
-        for (int i = 0; i < vehicle->interface_points.size(); ++i) {
+        for (int i = 0; i < vehicle_seat_count(vehicle); ++i) {
             if (vehicle_seat_leech(vehicle, i) == rider->handle) {
                 return i;
             }
@@ -394,11 +389,7 @@ namespace
     // THE 0x65 payload derivation, shared by both senders: the seats themselves, never an event.
     uint8_t vehicle_build_seat_occupancy(const rf::Entity* vehicle, int32_t* out)
     {
-        if (!vehicle) {
-            return 0;
-        }
-        const int seats =
-            std::min<int>(vehicle->interface_points.size(), af_vehicle_state_max_seats);
+        const int seats = vehicle_seat_count(vehicle);
         for (int i = 0; i < seats; ++i) {
             out[i] = vehicle_seat_leech(vehicle, i);
         }
@@ -953,7 +944,7 @@ bool vehicle_occupied_by_enemy(const rf::Player* pp, const rf::Entity* vehicle)
         return false;
     }
     const bool team_game = multi_is_team_game_type();
-    for (int i = 0; i < vehicle->interface_points.size(); ++i) {
+    for (int i = 0; i < vehicle_seat_count(vehicle); ++i) {
         // A stale handle or a non-player occupant is not an enemy.
         const rf::Player* occupant = vehicle_seat_occupant_player(vehicle, i);
         if (!occupant || occupant == pp || (team_game && occupant->team == pp->team)) {
@@ -1000,10 +991,7 @@ af_vehicle_state_attrs vehicle_build_hull_attrs(int vehicle_handle)
 
 bool vehicle_hull_occupied(const rf::Entity* vehicle)
 {
-    if (!vehicle) {
-        return false;
-    }
-    const int seats = std::min<int>(vehicle->interface_points.size(), af_vehicle_state_max_seats);
+    const int seats = vehicle_seat_count(vehicle);
     for (int i = 0; i < seats; ++i) {
         if (vehicle_seat_leech(vehicle, i) != -1) {
             return true;
@@ -1225,7 +1213,7 @@ void vehicle_poll_seat_hotkeys()
             break;
         }
     }
-    if (seat < 0 || seat >= vehicle->interface_points.size()) {
+    if (seat < 0 || seat >= vehicle_seat_count(vehicle)) {
         return; // this hull has no such seat
     }
     if (vehicle_seat_of_rider(vehicle, rf::local_player_entity) == seat) {
@@ -1267,9 +1255,10 @@ int vehicle_seat_index_from_tag(const rf::Entity* vehicle, int tag_handle)
     if (!vehicle || tag_handle == -1) {
         return -1;
     }
+    // Every interface point, not only the seats: the use scan can land on a turret's spare tag.
     for (int i = 0; i < vehicle->interface_points.size(); ++i) {
-        const rf::EntityInterfacePoint* seat = vehicle_seat(vehicle, i);
-        if (seat && seat->tag_handle == tag_handle) {
+        const rf::EntityInterfacePoint* point = vehicle->interface_points[i];
+        if (point && point->tag_handle == tag_handle) {
             return i;
         }
     }
@@ -1394,7 +1383,7 @@ void vehicle_apply_seat_occupancy_from_packet(int vehicle_handle, const int32_t*
     //    SOMEWHERE on this hull is moving, not leaving: pass 3 makes that move atomically.
     //    Only the seats the packet actually states: a seat past seat_count is one the occupancy says
     //    nothing about, and releasing it would repeat on every packet.
-    for (int i = 0; i < seat_count && i < vehicle->interface_points.size(); ++i) {
+    for (int i = 0; i < seat_count && i < vehicle_seat_count(vehicle); ++i) {
         const int cur = vehicle_seat_leech(vehicle, i);
         if (cur == -1 || want[i] == cur) {
             continue;
@@ -1425,7 +1414,7 @@ void vehicle_apply_seat_occupancy_from_packet(int vehicle_handle, const int32_t*
     // 3. Moves first, then fresh boardings: a rider vacating seat N is what frees it for whoever
     //    the occupancy puts there.
     for (int pass = 0; pass < 2; ++pass) {
-        for (int i = 0; i < seat_count && i < vehicle->interface_points.size(); ++i) {
+        for (int i = 0; i < seat_count && i < vehicle_seat_count(vehicle); ++i) {
             if (want[i] == -1 || vehicle_seat_leech(vehicle, i) == want[i]) {
                 continue;
             }

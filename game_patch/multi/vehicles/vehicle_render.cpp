@@ -653,7 +653,7 @@ rf::Entity* vehicle_outline_occupant(rf::Entity* vehicle)
     }
     const rf::Player* bag_carrier = gt_is_bagman_any() ? g_bagman_info.carrier : nullptr;
     rf::Entity* first = nullptr;
-    for (int i = 0; i < vehicle->interface_points.size(); ++i) {
+    for (int i = 0; i < vehicle_seat_count(vehicle); ++i) {
         rf::Entity* occupant = rf::entity_from_handle(vehicle_seat_leech(vehicle, i));
         if (!occupant) {
             continue;

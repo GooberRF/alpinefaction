@@ -158,7 +158,7 @@ namespace
         driller.gravity_scale = 1.95f;
         driller.downforce_accel = 11.0f;
         driller.air_gravity = 1.35f;
-        driller.engine_force = 12.0f;
+        driller.engine_force = 18.0f;
         driller.brake_force = 20.0f;
         driller.idle_brake_force = 10.0f;
         driller.handbrake_force = 16.0f;
@@ -192,8 +192,8 @@ namespace
         // The front trim is NEGATIVE: the contact box must reach a wall before the drill tips do.
         driller.chassis_trim_front = -1.30f;
         driller.chassis_trim_rear = 0.20f;
-        driller.chassis_trim_side = 0.20f;
-        driller.chassis_trim_top = 0.30f;
+        driller.chassis_trim_side = 0.40f;
+        driller.chassis_trim_top = 0.55f;
         driller.chassis_clearance = 0.10f;
         driller.step_climb_height = 1.20f;
         driller.drill_probe_reach = 8.97f;

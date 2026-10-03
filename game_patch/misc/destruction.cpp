@@ -655,6 +655,20 @@ CodeInjection boolean_skip_non_detail_faces_for_rf2{
     },
 };
 
+// State 3's flood (FUN_004e1920) spreads a face's side through shared vertices whatever the room. A
+// non-target face is sided 2 uncut, so one inside the crater (a welded terrain neighbour's wall) would
+// flood "keep" into target faces the crater removes.
+CallHook<void __fastcall(rf::GFace*)> boolean_flood_target_seeds_only_hook{
+    {0x004dd574, 0x004dd69b, 0x004dd73a},
+    [](rf::GFace* face) FASTCALL_LAMBDA {
+        if (g_rf2_style_boolean_active && !(face->attributes.flags & rf::FACE_BOOLEAN_TYPE_1) &&
+            face->which_room != g_rf2_target_detail_room) {
+            return;
+        }
+        boolean_flood_target_seeds_only_hook.call_target(face);
+    },
+};
+
 // FUN_004e0d00 (called from boolean States 3 & 5 for TYPE 1 / crater faces) uses
 // room BSP trees to reclassify unclassified TYPE 1 faces as INSIDE or OUTSIDE the
 // level solid. It explicitly filters out detail rooms via FUN_00494a50 at 004e0e24,
@@ -4114,6 +4128,7 @@ void destruction_do_patch()
     state5_force_clear_type1_for_rf2.install();
     state5_reclassify_type1_for_rf2.install();
     boolean_skip_non_detail_faces_for_rf2.install();
+    boolean_flood_target_seeds_only_hook.install();
     boolean_state5_allow_detail_for_rf2.install();
     boolean_state5_protect_detail_cache_for_rf2.install();
     boolean_face_create_surface_hook.install();

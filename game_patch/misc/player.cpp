@@ -567,9 +567,19 @@ FunHook<void(rf::Player*, rf::ControlConfigAction, bool)> player_execute_action_
         if (demo_controls_ui_execute_action(action, was_pressed)) {
             return; // demo playback controls (USE popup toggle, seek/pause keys)
         }
-        if (!multi_spectate_execute_action(action, was_pressed)) {
-            player_execute_action_hook.call_target(player, action, was_pressed);
+        if (multi_spectate_execute_action(action, was_pressed)) {
+            return;
         }
+        // A turret operator's alt is his zoom, read from the raw control state. Stock would run his
+        // hand weapon's alt route, which can fire the turret locally where the server never hears it.
+        // A dying operator still needs alt: it is his respawn request.
+        if (action == rf::CC_ACTION_SECONDARY_ATTACK && rf::is_multi) {
+            rf::Entity* ep = rf::entity_from_handle(player->entity_handle);
+            if (ep && !rf::entity_is_dying(ep) && vehicle_hull_is_turret(vehicle_ridden_hull(ep))) {
+                return;
+            }
+        }
+        player_execute_action_hook.call_target(player, action, was_pressed);
     },
 };
 

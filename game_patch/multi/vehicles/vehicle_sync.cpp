@@ -9,6 +9,7 @@
 #include <patch_common/CodeInjection.h>
 #include <patch_common/FunHook.h>
 #include <patch_common/MemUtils.h>
+#include <common/utils/list-utils.h>
 #include "vehicle.h"
 #include "vehicle_physics.h"
 #include "vehicle_internal.h"
@@ -696,22 +697,20 @@ namespace
         // Only the server's ammo is authoritative; every client call is a replay of a shot or burst
         // the server already validated.
         if (!force && rf::is_server) {
-            const int weapon = alt && vehicle->info->use_function == rf::ENTITY_USE_VEHICLE
-                ? vehicle->ai.current_secondary_weapon
-                : vehicle->ai.current_primary_weapon;
+            const int weapon = alt ? vehicle->ai.current_secondary_weapon : vehicle->ai.current_primary_weapon;
             if (vehicle_weapon_ammo(vehicle, weapon) == 0) { // -1 = no pool, never empty
                 return false;
             }
         }
         // RAW for the instant the muzzle is read; the next frame's application puts the eased back.
         vehicle_apply_aim_orient(vehicle, VehicleAimSource::raw);
-        if (alt && vehicle->info->use_function == rf::ENTITY_USE_VEHICLE) {
+        if (alt) {
             const int before = vehicle->ai.next_fire_secondary.value;
             rf::entity_fire_secondary_weapon(vehicle, force ? 1 : 0);
             return vehicle->ai.next_fire_secondary.value != before;
         }
         const float before = vehicle->ai.last_fire_time;
-        rf::entity_fire_weapon(vehicle, force ? 1 : 0, alt ? 1 : 0, nullptr, nullptr, nullptr);
+        rf::entity_fire_weapon(vehicle, force ? 1 : 0, 0, nullptr, nullptr, nullptr);
         return vehicle->ai.last_fire_time != before;
     }
 
@@ -719,10 +718,11 @@ namespace
     // next_fire_secondary), so holding both is not a conflict.
     void vehicle_server_apply_trigger(rf::Entity* vehicle, bool alt, bool held, uint8_t requester_id)
     {
-        // Only a vehicle's alt trigger has a weapon of its own; a turret's is a mode of its primary.
-        const bool use_secondary = alt && vehicle->info->use_function == rf::ENTITY_USE_VEHICLE;
-        const int weapon = use_secondary ? vehicle->ai.current_secondary_weapon
-                                         : vehicle->ai.current_primary_weapon;
+        // A turret's alt trigger is its operator's local zoom and drives no weapon.
+        if (alt && vehicle_hull_is_turret(vehicle)) {
+            return;
+        }
+        const int weapon = alt ? vehicle->ai.current_secondary_weapon : vehicle->ai.current_primary_weapon;
         if (weapon < 0) {
             return;
         }
@@ -737,14 +737,13 @@ namespace
         }
 
         if (!held) {
-            // A trigger that shares the other's weapon must not cancel it.
-            if ((!alt || use_secondary) && rf::entity_weapon_is_on(vehicle->handle, weapon)) {
+            if (rf::entity_weapon_is_on(vehicle->handle, weapon)) {
                 rf::entity_turn_weapon_off(vehicle->handle, weapon);
             }
             return;
         }
 
-        if (!use_secondary && rf::weapon_is_on_off_weapon(weapon, alt)) {
+        if (!alt && rf::weapon_is_on_off_weapon(weapon, alt)) {
             // Turning the gun on sends the START other machines replay. The direct fire below shares
             // next_fire_primary with entity_process_post's loop-fire, so the two never double the rate.
             if (!rf::entity_weapon_is_on(vehicle->handle, weapon)) {
@@ -786,13 +785,6 @@ void vehicle_server_apply_fire(rf::Entity* vehicle, const VehicleFireState& stat
     if (vphys_hull_submerged(vehicle)) {
         vehicle_server_apply_trigger(vehicle, false, false, state.requester_id);
         vehicle_server_apply_trigger(vehicle, true, false, state.requester_id);
-        return;
-    }
-    // A turret's two channels address ONE weapon, so alt-held + primary-released would switch it off
-    // then on every frame. One decision from either trigger, primary winning when both are down.
-    if (vehicle->info->use_function != rf::ENTITY_USE_VEHICLE) {
-        const bool alt_mode = state.alt_held && !state.primary_held;
-        vehicle_server_apply_trigger(vehicle, alt_mode, state.any_held(), state.requester_id);
         return;
     }
     vehicle_server_apply_trigger(vehicle, false, state.primary_held, state.requester_id);
@@ -956,6 +948,42 @@ namespace
             return obj_should_sim_physics_hook.call_target(obj);
         },
     };
+
+    void entity_update_ground_carry();
+    FunHook<decltype(entity_update_ground_carry)> entity_update_ground_carry_hook{
+        0x0041E370,
+        entity_update_ground_carry,
+    };
+
+    // Stock copies the ground object's current velocity into local_vel every frame, so a player who
+    // jumped off a hull kept tracking it until the next floor hit. Falling off a hull now keeps the
+    // carry of the last grounded frame; walking or riding on it still tracks it every frame.
+    void entity_update_ground_carry()
+    {
+        if (!rf::is_multi || !vehicle_level_has_factories()) {
+            entity_update_ground_carry_hook.call_target();
+            return;
+        }
+        for (rf::Entity& ep : DoublyLinkedList{rf::entity_list}) {
+            const int mode = ep.move_mode->mode;
+            if (mode != rf::MOVE_MODE_RUN && mode != rf::MOVE_MODE_FALL) {
+                continue;
+            }
+            rf::Object* ground = rf::obj_from_handle(ep.control_data.standing_on_obj_handle);
+            if (!ground) {
+                continue;
+            }
+            rf::Entity* hull = ground->type == rf::OT_ENTITY ? static_cast<rf::Entity*>(ground) : nullptr;
+            if (mode == rf::MOVE_MODE_FALL && vehicle_is_synced_entity_type(hull)) {
+                // An interpolated hull's velocity can spike for a sample; never launch past its class cap.
+                vehicle_clamp_row_velocity(hull, ep.control_data.local_vel);
+            }
+            else {
+                ep.control_data.local_vel = ground->p_data.vel;
+            }
+            rf::obj_physics_activate(&ep);
+        }
+    }
 
     // The stock drill-contact halt suspends physics while a crater forms, which on an interp-driven
     // copy freezes ObjInterp instead. Ignored for that copy, CLIENTS ONLY. ESI is the object;
@@ -1500,7 +1528,7 @@ bool vehicle_is_driver_obj_update_row(const rf::Player* pp, const rf::Entity* ep
 
 rf::Entity* vehicle_firing_seat_occupant(rf::Entity* vehicle)
 {
-    if (!vehicle || vehicle->interface_points.size() < 1) {
+    if (vehicle_seat_count(vehicle) < 1) {
         return nullptr;
     }
     // The jeep gun belongs to the gunner's seat alone; every other class holds its gun on seat 0.
@@ -1568,6 +1596,10 @@ void vehicle_server_handle_fire_request(rf::Player* pp, int vehicle_handle, uint
 
     const bool held = action == AF_VEHICLE_FIRE_START;
     const bool alt = alt_fire != 0;
+    // Never stored, so it can neither fire nor hold off the ammo refill.
+    if (alt && vehicle_hull_is_turret(vehicle)) {
+        return;
+    }
 
     // No rate limit: the client reports EDGES and never re-asserts, so a dropped START holds the
     // trigger down forever, and the engine's fire-wait already bounds the per-frame apply pass.
@@ -1591,11 +1623,7 @@ void vehicle_server_announce_weapon_edge(int entity_handle, int weapon_type, boo
     if (!vehicle || weapon_type != vehicle->ai.current_primary_weapon) {
         return;
     }
-    // STOP for either mode, so no START can go unpaired.
-    const bool continuous = on ? rf::weapon_is_on_off_weapon(weapon_type, alt_fire)
-                               : rf::weapon_is_on_off_weapon(weapon_type, false)
-                                     || rf::weapon_is_on_off_weapon(weapon_type, true);
-    if (!continuous) {
+    if (!rf::weapon_is_on_off_weapon(weapon_type, alt_fire)) {
         return;
     }
     af_send_vehicle_fire_packet_to_all(vehicle_firing_seat_player(vehicle), vehicle->handle,
@@ -1625,9 +1653,8 @@ void vehicle_apply_fire_from_packet(int vehicle_handle, uint8_t action, uint8_t 
         vehicle_fire_discrete(vehicle, alt, true);
         return;
     }
-    // Only a turret's alt is a mode of its continuous primary. The firing seat predicts its own.
-    if (action != AF_VEHICLE_FIRE_START || vehicle_local_owns_firing_seat(vehicle)
-        || (alt && vehicle->info->use_function == rf::ENTITY_USE_VEHICLE)) {
+    // No alt trigger drives a continuous weapon. The firing seat predicts its own.
+    if (action != AF_VEHICLE_FIRE_START || vehicle_local_owns_firing_seat(vehicle) || alt) {
         return;
     }
     multi_turn_weapon_on(vehicle, nullptr, alt);
@@ -1801,6 +1828,7 @@ void vehicle_sync_apply_patch()
     process_entity_create_packet_vehicle_hook.install();
     physics_world_collision_vehicle_injection.install();
     obj_should_sim_physics_hook.install();
+    entity_update_ground_carry_hook.install();
     driller_interp_no_movement_halt_injection.install();
     driller_mp_geomod_cap_injection.install();
     send_obj_update_packet_vehicle_row_injection.install();

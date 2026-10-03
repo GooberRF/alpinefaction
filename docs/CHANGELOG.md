@@ -162,6 +162,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Stop writing FactionFiles link tokens to the launcher log
 - Fix RF2-style geomod craters near the edge of a geoable brush not carving a neighboring geoable brush that the crater reaches
 - Fix RF2-style geomod giving up on geoable rooms with more than 5000 faces
+- Fix RF2-style geomod craters sometimes leaving stray faces and holes where geoable geometry meets neighboring geometry
 - Fix crash when a decal is created in a room containing a very large number of detail brushes
 - Fix Direct3D 8/9 renderer geometry cache overflowing with more than 256 rooms or detail rooms in view
 - Fix Direct3D 8/9 renderer rebuilding every room's render cache each frame while a room with more than 8000 vertices is in view

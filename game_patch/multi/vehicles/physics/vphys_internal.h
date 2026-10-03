@@ -158,7 +158,7 @@ struct VehiclePhysicsParams
     // Max height of a climbable obstruction; read only by the obstacle registry's height filter.
     float step_climb_height = 0.0f;
 
-    // Scales the driller's top speed AND engine force while the drills are on.
+    // Scales the driller's top speed while the drills are on; the engine force is left whole to climb.
     float drill_speed_scale = 1.0f;
 
     // The engine's drill-bit reach ahead of the hull ORIGIN; not used by the simulation.

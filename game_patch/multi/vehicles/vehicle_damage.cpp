@@ -230,7 +230,7 @@ namespace
         if (!attacker) {
             return false;
         }
-        for (int i = 0; i < vehicle->interface_points.size(); ++i) {
+        for (int i = 0; i < vehicle_seat_count(vehicle); ++i) {
             const int leech_handle = vehicle_seat_leech(vehicle, i);
             if (leech_handle == -1 || leech_handle == killer_handle) {
                 continue;
@@ -264,7 +264,7 @@ namespace
             return false;
         }
         const bool team_game = multi_is_team_game_type();
-        for (int i = 0; i < vehicle->interface_points.size(); ++i) {
+        for (int i = 0; i < vehicle_seat_count(vehicle); ++i) {
             const int leech_handle = vehicle_seat_leech(vehicle, i);
             if (leech_handle == -1 || leech_handle == killer_handle) {
                 continue;
@@ -1529,7 +1529,7 @@ namespace
             && wi.ammo_type < static_cast<int>(std::extent_v<decltype(rf::AiInfo::ammo)>);
     }
 
-    // Slot 0 is the primary weapon, slot 1 the secondary; a turret's two triggers both drive its primary.
+    // Slot 0 is the primary weapon, slot 1 the secondary; a turret's alt trigger is never stored.
     bool vehicle_ammo_slot_trigger_held(const rf::Entity* ep, int slot_index)
     {
         auto it = g_vehicle_state.fire.find(ep->handle);
@@ -1537,9 +1537,6 @@ namespace
             return false;
         }
         const VehicleFireState& state = it->second;
-        if (ep->info->use_function != rf::ENTITY_USE_VEHICLE) {
-            return slot_index == 0 && state.any_held();
-        }
         return slot_index == 0 ? state.primary_held : state.alt_held;
     }
 

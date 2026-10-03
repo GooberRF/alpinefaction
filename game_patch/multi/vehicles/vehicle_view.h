@@ -24,4 +24,9 @@ VehicleFpShotStart vehicle_fp_own_shot_start(rf::Entity* hull, rf::Entity* shoot
 // The memoized view_forward prop indices must not outlive the level's meshes.
 void vehicle_view_level_init();
 
+// Client, once per frame: the local turret operator's alt trigger toggles his zoom.
+void vehicle_turret_zoom_do_frame();
+// The local operator's turret zoom as a FOV divisor: 1 unless he has toggled it on in the turret he mans.
+float vehicle_turret_zoom_fov_scale();
+
 void vehicle_view_apply_patch();

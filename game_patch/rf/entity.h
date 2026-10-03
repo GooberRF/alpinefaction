@@ -287,6 +287,27 @@ namespace rf
     // Shared jeep gun mesh; entity_create loads it lazily (0x00423A44), level release nulls it (0x0042B2E0).
     static auto& jeep_gun_vmesh = addr_as_ref<VMesh*>(0x0062F3B0);
 
+    // MoveMode::mode — index into the name table at 0x00596384.
+    enum MoveModeId
+    {
+        MOVE_MODE_NONE = 0,
+        MOVE_MODE_RUN = 1,
+        MOVE_MODE_CLIMB = 2,
+        MOVE_MODE_FALL = 3,
+        MOVE_MODE_SWIM = 4,
+        MOVE_MODE_APC = 5,
+        MOVE_MODE_APC_FALL = 6,
+        MOVE_MODE_SUB = 7,
+        MOVE_MODE_SUB_FALL = 8,
+        MOVE_MODE_FIGHTER = 9,
+        MOVE_MODE_TURRET = 10,
+        MOVE_MODE_ROBOT_FLY = 11,
+        MOVE_MODE_HOVER = 12,
+        MOVE_MODE_FREELOOK_CAM = 13,
+        MOVE_MODE_DEAD_CAM = 14,
+        MOVE_MODE_JOHNS_DESCENT_FLYING = 15,
+    };
+
     struct MoveMode
     {
         bool valid;
@@ -298,6 +319,7 @@ namespace rf
         int rot_ref_y;
         int rot_ref_z;
     };
+    static_assert(offsetof(MoveMode, mode) == 0x4);
 
     struct EntityControlData
     {
@@ -315,6 +337,8 @@ namespace rf
         Timestamp shake_timestamp;
     };
     static_assert(sizeof(EntityControlData) == 0x60);
+    static_assert(offsetof(EntityControlData, local_vel) == 0x40);
+    static_assert(offsetof(EntityControlData, standing_on_obj_handle) == 0x4C);
 
     struct EntityAnim
     {
@@ -447,6 +471,8 @@ namespace rf
     static_assert(sizeof(Entity) == 0x1494);
     static_assert(offsetof(Entity, interface_points) == 0x8CC);
     static_assert(offsetof(Entity, entity_flags2) == 0x814);
+    static_assert(offsetof(Entity, move_mode) == 0x858);
+    static_assert(offsetof(Entity, control_data) == 0x860);
     static_assert(offsetof(Entity, driller_sound_handle) == 0x13D0);
     static_assert(offsetof(Entity, driller_geomod_count) == 0x1470);
 

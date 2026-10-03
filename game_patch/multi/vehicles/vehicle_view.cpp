@@ -16,6 +16,7 @@
 #include "vehicle.h"
 #include "vehicle_physics.h"
 #include "vehicle_internal.h"
+#include "vehicle_sync.h"
 #include "vehicle_view.h"
 #include "../alpine_packets.h"
 #include "../server_internal.h"
@@ -26,12 +27,15 @@
 #include "../../os/console.h"
 #include "../../rf/ai.h"
 #include "../../rf/entity.h"
+#include "../../rf/gameseq.h"
 #include "../../rf/gr/gr.h"
 #include "../../rf/item.h"
 #include "../../rf/multi.h"
 #include "../../rf/object.h"
+#include "../../rf/os/console.h"
 #include "../../rf/physics.h"
 #include "../../rf/player/camera.h"
+#include "../../rf/player/control_config.h"
 #include "../../rf/player/player.h"
 #include "../../rf/vmesh.h"
 #include "../../rf/weapon.h"
@@ -618,12 +622,50 @@ namespace
         }
         return host && rf::entity_is_jeep(host);
     }
+
+    // The first step of the freelook spectate zoom.
+    constexpr float vehicle_turret_zoom_fov_divisor = 2.0f;
+
+    rf::Entity* vehicle_local_operated_turret()
+    {
+        if (!rf::is_multi || rf::is_dedicated_server || multi_spectate_is_spectating()) {
+            return nullptr;
+        }
+        rf::Entity* hull = vehicle_local_firing_vehicle();
+        return vehicle_hull_is_turret(hull) ? hull : nullptr;
+    }
 } // namespace
 
 void vehicle_view_level_init()
 {
     g_driller_view_forward_cache = VehicleViewPropCache{};
     g_driver_view_forward_cache.clear();
+}
+
+float vehicle_turret_zoom_fov_scale()
+{
+    const rf::Entity* turret = vehicle_local_operated_turret();
+    return turret && turret->handle == g_vehicle_state.turret_zoom_handle ? vehicle_turret_zoom_fov_divisor
+                                                                          : 1.0f;
+}
+
+void vehicle_turret_zoom_do_frame()
+{
+    // Any frame without the zoomed turret manned drops the zoom, whatever ended the operator's turn.
+    const rf::Entity* turret = vehicle_local_operated_turret();
+    if (!turret || turret->handle != g_vehicle_state.turret_zoom_handle) {
+        g_vehicle_state.turret_zoom_handle = -1;
+    }
+    // Tracked off the turret and through pauses too, so a press held from before is never an edge.
+    const bool alt_down = rf::local_player
+        && rf::control_is_control_down(&rf::local_player->settings.controls, rf::CC_ACTION_SECONDARY_ATTACK);
+    const bool pressed = alt_down && !g_vehicle_state.turret_zoom_alt_down;
+    g_vehicle_state.turret_zoom_alt_down = alt_down;
+    if (!pressed || !turret || rf::game_paused || rf::gameseq_get_state() != rf::GS_GAMEPLAY
+        || rf::console::console_is_visible() || rf::multi_chat_is_say_visible()) {
+        return;
+    }
+    g_vehicle_state.turret_zoom_handle = g_vehicle_state.turret_zoom_handle == -1 ? turret->handle : -1;
 }
 
 VehicleFpShotStart vehicle_fp_own_shot_start(rf::Entity* hull, rf::Entity* shooter, const rf::Vector3& fire_pos,
