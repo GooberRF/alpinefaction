@@ -261,6 +261,33 @@ namespace
         rf::player_cockpit_get_view(pp, driller, out_pos, out_orient);
     }
 
+    // The driller view of the driver a first-person spectator watches, as his own machine builds it.
+    bool vehicle_spectated_driller_view(rf::Vector3* out_pos, rf::Matrix3* out_orient)
+    {
+        rf::Player* pp = vehicle_cockpit_view_player();
+        rf::Entity* rider = pp ? rf::entity_from_handle(pp->entity_handle) : nullptr;
+        rf::Entity* vehicle = rider ? rf::entity_from_handle(rider->host_handle) : nullptr;
+        if (!vehicle || !rf::entity_is_driller(vehicle)) {
+            return false;
+        }
+        vehicle_driller_view_apply(pp, vehicle, out_pos, out_orient);
+        return true;
+    }
+
+    // gameplay_render_frame's driller view (0x00431C09..0x00431C3D) asks the render player's own entity,
+    // which a spectator's is not. Hooked at the eye orient copy, the eye's last write before it. The eye
+    // is pushed forward by the pullback it then still gets (0x00431C75), which the driller's skips.
+    CallHook<void __fastcall(rf::Matrix3*, int, const rf::Matrix3*)> gameplay_render_eye_orient_copy_hook{
+        0x00431BDF,
+        [](rf::Matrix3* eye_orient, int edx, const rf::Matrix3* src) FASTCALL_LAMBDA {
+            gameplay_render_eye_orient_copy_hook.call_target(eye_orient, edx, src);
+            static auto& eye_pos = addr_as_ref<rf::Vector3>(0x0062FD90);
+            if (rf::is_multi && vehicle_spectated_driller_view(&eye_pos, eye_orient)) {
+                eye_pos += eye_orient->fvec * vehicle_scene_eye_pullback();
+            }
+        },
+    };
+
     // Keyed by the shared mesh data the lookup reads (0x00501220), so hulls of one class share an entry.
     std::vector<std::pair<const void*, int>> g_driver_view_forward_cache;
 
@@ -744,6 +771,7 @@ bool vehicle_cockpit_view_pose(rf::Vector3* out_pos, rf::Matrix3* out_orient)
     if (rf::entity_is_driller(vehicle)) {
         *out_pos = rf::camera_get_pos(pp->cam);
         *out_orient = rf::camera_get_orient(pp->cam);
+        vehicle_driller_view_apply(pp, vehicle, out_pos, out_orient);
         return true;
     }
 
@@ -857,6 +885,7 @@ bool vehicle_pin_rider_body(rf::Entity* ep)
 void vehicle_view_apply_patch()
 {
     entity_render_fp_vehicle_hide_injection.install();
+    gameplay_render_eye_orient_copy_hook.install();
     player_fpgun_load_weapon_mesh_null_guard.install();
     entity_eject_shell_fpgun_null_guard.install();
     entity_process_path_hook.install();

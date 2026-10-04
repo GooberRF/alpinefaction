@@ -850,15 +850,8 @@ static std::pair<bool, int> find_rotation_index_for_level(std::string_view level
     if (!g_dedicated_launched_from_ads)
         return {false, -1};
 
-    const auto wanted = normalize_level_filename(level_name);
-    const auto& cfg = g_alpine_server_config;
-
-    for (int i = 0; i < (int)cfg.levels.size(); ++i) {
-        if (string_iequals(cfg.levels[i].level_filename, wanted)) {
-            return {true, i};
-        }
-    }
-    return {false, -1};
+    const int index = rotation_index_for_level(level_name);
+    return {index >= 0, index};
 }
 
 static void queue_level_switch_preferring_rotation(std::string_view level_name)

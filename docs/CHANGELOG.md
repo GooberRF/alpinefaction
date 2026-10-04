@@ -87,6 +87,8 @@ Version 1.5.0 (Trillium): Not yet released
 - Make level editor refuse to open levels saved by a newer version of Alpine Faction instead of misreading them
 - Show assists on suicide and environmental death lines in chat and the kill feed, as on other kill messages
 - Add multiplayer minimap, configured in `Level Properties`
+- Dedicated server base rules now apply to every level under every game type unless a level overrides them
+- A level loaded by a vote, the `level` or `sv_gametype` commands now use that level's own rotation rules if available
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Add `ui_color_console` console command to set the console background color
@@ -177,6 +179,14 @@ Version 1.5.0 (Trillium): Not yet released
 - Fix a possible out-of-bounds read when drawing dynamic decals (Direct3D 11 renderer only)
 - Fix some multiplayer characters' upper bodies staying bent toward where they were last aiming instead of straightening out
 - Fix level editor crashing when more than 128 semi-transparent detail brushes in one room are in view
+- Fix dedicated server base rules being dropped on levels configured for a different game type
+- Fix a level's `spawn_weapon` removing a weapon the base `spawn_loadout` lists
+- Fix the `level` command keeping the game type and rules of a previous level vote
+- Fix `map_rest` reverting a game type set with `sv_gametype`
+- Fix `sv_loadconfig` applying stale vote rules, or another rotation entry's rules after the rotation changed
+- Fix a level listed more than once in the rotation using its first entry's rules when restarted, voted, or reloaded
+- Fix confirming the vote panel's pre-selected mutators layering them differently from the configured rules
+- Fix the configured restart vote using the base game type for a level outside the rotation
 
 [@is-this-c](https://github.com/is-this-c)
 - Let `Caps Lock` capitalize
