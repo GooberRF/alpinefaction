@@ -34,6 +34,9 @@ namespace rf
         CC_ACTION_MP_STATS = 0x16,
         CC_ACTION_QUICK_SAVE = 0x17,
         CC_ACTION_QUICK_LOAD = 0x18,
+        // 4 weapon-category selects, then the per-weapon selects control_config_init (0x0043D060) appends
+        CC_ACTION_SELECT_WEAPON_FIRST = 0x19,
+        CC_ACTION_SELECT_WEAPON_LAST = 0x3C,
     };
 
     enum AlpineControlConfigAction
@@ -45,7 +48,7 @@ namespace rf
         AF_ACTION_VOTE_NO = 0x4,
         AF_ACTION_READY = 0x5,
         AF_ACTION_DROP_FLAG = 0x6,
-		AF_ACTION_CHAT_MENU = 0x7,
+		    AF_ACTION_CHAT_MENU = 0x7,
         AF_ACTION_TAUNT_MENU = 0x8,
         AF_ACTION_COMMAND_MENU = 0x9,
         AF_ACTION_PING_LOCATION = 0xA,
@@ -58,8 +61,9 @@ namespace rf
         AF_ACTION_SPECTATE_CHANGE_VIEW = 0x11,
         AF_ACTION_SPRAY = 0x12,
         AF_ACTION_VOTE_MENU = 0x13,
-        AF_ACTION_CENTER_VIEW = 0x14,
-        AF_ACTION_GYRO_RATCHETING = 0x15,
+        AF_ACTION_BIG_MAP = 0x14,
+        AF_ACTION_CENTER_VIEW = 0x15,
+        AF_ACTION_GYRO_RATCHETING = 0x16,
         _AF_ACTION_LAST_VARIANT = AF_ACTION_GYRO_RATCHETING
     };
 

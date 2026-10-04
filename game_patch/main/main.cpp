@@ -27,6 +27,7 @@
 #include "../graphics/d3d11/gr_d3d11_mesh.h"
 #include "../hud/hud.h"
 #include "../hud/hud_world.h"
+#include "../hud/minimap.h"
 #include "../hud/multi_scoreboard.h"
 #include "../hud/multi_spectate.h"
 #include "../object/object.h"
@@ -37,6 +38,10 @@
 #include "../multi/bagman.h"
 #include "../multi/jetpack.h"
 #include "../multi/salvage.h"
+#include "../multi/vehicles/vehicle.h"
+#include "../multi/vehicles/vehicle_markers.h"
+#include "../multi/vehicles/vehicle_physics.h"
+#include "../multi/vehicles/vehicle_tracers.h"
 #include "../multi/server.h"
 #include "../multi/server_internal.h"
 #include "../multi/alpine_packets.h"
@@ -175,6 +180,8 @@ FunHook<int()> rf_do_frame_hook{
         bagman_do_frame();
         jetpack_do_frame();
         salvage_client_do_frame();      // client-side Salvage carried-flag attachment
+        vehicle_client_do_frame();      // vehicle trigger state of the local firing seat owner
+        vehicle_physics_do_frame();     // Bullet vehicle sim: body lifecycle (the step runs after the input read)
         hud_pit_queue_auto_spectate();  // client-side Pit auto-spectate
         gungame_client_do_frame();      // client-side Gun Game level-up notification watcher
         alpine_mesh_do_frame();
@@ -205,9 +212,12 @@ CodeInjection after_level_render_hook{
         alpine_rope_render();
         alpine_terrain_decorations_render_legacy();
         crits_client_render();
+        vehicle_tracers_render();
         debug_render();
         waypoints_render_debug();
         client_bot_render_debug();
+        vehicle_physics_render_debug();
+        vehicle_markers_render();   // 3D phase: leftovers only; the room pass below draws the rest
         hud_world_do_frame();
     },
 };
@@ -296,8 +306,15 @@ FunHook<int(rf::String&, rf::String&, char*)> level_load_hook{
         }
 
         int ret = level_load_hook.call_target(level_filename, save_filename, error);
-        if (ret != 0)
+        if (ret != 0) {
             xlog::warn("Loading failed: {}", error);
+            // level_init_post never runs on a failed load, so refresh here instead: the advertised
+            // flags would otherwise stay as they were for whatever level loaded last.
+            if (rf::is_multi && rf::is_server) {
+                initialize_game_info_server_flags();
+                af_send_server_info_packet_to_all();
+            }
+        }
         else {
             af_lightmap_resolve_terrains();
             multi_spectate_level_init();
@@ -368,6 +385,7 @@ FunHook<void(bool)> level_init_post_hook{
                 toggle_chat_menu(ChatMenuType::None);
                 player_multi_level_post_init();
                 multi_hud_level_init();
+                minimap_level_init_post();
                 // listen server host spawns before this init, so we need to run on_local_spawn for them again
                 if (rf::is_server) {
                     multi_hud_on_local_spawn();

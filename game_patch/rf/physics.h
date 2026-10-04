@@ -77,6 +77,10 @@ namespace rf
         PF_COLLIDE_OBJECTS = 0x20,       // participate in object-object collision pairs
         PF_UNK_40          = 0x40,
         PF_BOUNCE          = 0x100,      // bounce on impact (added when debris_flags & 0x04)
+        PF_AUTOMOBILE      = 0x4000,     // entity_create sets it for jeep/apc/driller info flags; selects
+                                         // physics_simulate_vehicle_rotation/translation (0x0049E180/0x0049E9F0)
+        PF_NET_PLAYER      = 0x8000,     // multi_obj_interp_frame_start/end (0x00484560/0x004845E0) drive this
+                                         // object from its ObjInterp keyframes instead of simulating it
         PF_USE_CUSTOM_MAX_VEL = 0x200000, // movement clamps use Entity::custom_max_vel instead of EntityInfo::max_vel; cleared by entity_land (0x00419830)
         PF_SKIP_SIM_ONCE = 0x800000, // set by camera_enter_freelook/deadlook; obj_move_all skips one physics frame, then clears it
         PF_ACCEL_APPLIED = 0x1000000, // dispatcher tail sets this; stock acceleration blocks bail when set (once-per-frame gate)

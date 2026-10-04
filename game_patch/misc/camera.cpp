@@ -21,6 +21,7 @@
 #include "../misc/vote_panel.h"
 #include "../misc/spray_picker.h"
 #include "../multi/multi.h"
+#include "../multi/vehicles/vehicle_physics.h"
 #include "../rf/player/player.h"
 #include "../rf/player/camera.h"
 #include "../rf/player/control_config.h"
@@ -509,6 +510,10 @@ CodeInjection linear_pitch_patch{
             yaw_delta += gamepad_yaw;
         }
 
+        if (vehicle_physics_camera_take_rider_look(entity, pitch_delta, yaw_delta)) {
+            return;
+        }
+
         // Apply linear pitch correction to combined delta
         if (g_alpine_game_config.mouse_linear_pitch && pitch_delta != 0.0f) {
             const float current_yaw = entity->control_data.phb.y;
@@ -646,6 +651,12 @@ FunHook<void(rf::Camera*)> camera_do_frame_hook{
             // Camera left third person for some other reason (death, cutscene, level change, etc).
             // Disengage and fall back to stock behaviour.
             g_static_camera_mode = AlpineStaticCameraMode::None;
+        }
+        multi_spectate_povcomp_frame(camera);
+        // The vehicle orbit camera (passengers, third-person drivers and jeep gunners, and a third-person
+        // spectator of any of them) positions the camera itself, so it must run ahead of spectate below.
+        if (vehicle_physics_camera_do_frame(camera)) {
+            return;
         }
         // Third-person orbit spectate positions the camera itself each frame.
         if (multi_spectate_camera_do_frame(camera)) {

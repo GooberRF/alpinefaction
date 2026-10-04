@@ -35,6 +35,7 @@
 #include "../multi/gungame.h"
 #include "../multi/awards.h"
 #include "../multi/mutators.h"
+#include "../multi/vehicles/vehicle.h"
 #include "../hud/multi_spectate.h"
 #include "../hud/hud_internal.h"
 #include "../hud/hud.h"
@@ -283,6 +284,7 @@ FunHook<void(rf::Player*)> player_destroy_hook{
         sprays_on_player_destroyed(player);
         pit_on_player_disconnect(player);
         gungame_on_player_disconnect(player);
+        vehicle_on_player_disconnect(player);
         accuracy_stats_on_player_destroy(player);
         awards_on_player_destroy(player);
         mutators_on_player_destroy(player);
@@ -397,8 +399,30 @@ bool is_player_weapon_on(rf::Player* player, bool alt_fire) {
 FunHook<void(rf::Player*, bool, bool)> player_fire_primary_weapon_hook{
     0x004A4E80,
     [](rf::Player* player, bool alt_fire, bool was_pressed) {
+        // A listen host would otherwise fire twice: here and from the vehicle module's server pass.
+        if (vehicle_suppress_local_fire(player)) {
+            return;
+        }
         if (should_swap_weapon_alt_fire(player)) {
             alt_fire = !alt_fire;
+        }
+        // The stock path writes its post-shot fire-wait onto ai.next_fire_primary whichever trigger
+        // fired, so restore the untouched trigger's timestamp across the predicted shot.
+        rf::Entity* vehicle = nullptr;
+        if (rf::is_multi && !rf::is_server) {
+            vehicle = vehicle_ridden_hull(rf::entity_from_handle(player->entity_handle));
+        }
+        if (vehicle) {
+            const rf::Timestamp saved_primary = vehicle->ai.next_fire_primary;
+            const rf::Timestamp saved_secondary = vehicle->ai.next_fire_secondary;
+            player_fire_primary_weapon_hook.call_target(player, alt_fire, was_pressed);
+            if (alt_fire) {
+                vehicle->ai.next_fire_primary = saved_primary;
+            }
+            else {
+                vehicle->ai.next_fire_secondary = saved_secondary;
+            }
+            return;
         }
         player_fire_primary_weapon_hook.call_target(player, alt_fire, was_pressed);
     },
@@ -543,9 +567,19 @@ FunHook<void(rf::Player*, rf::ControlConfigAction, bool)> player_execute_action_
         if (demo_controls_ui_execute_action(action, was_pressed)) {
             return; // demo playback controls (USE popup toggle, seek/pause keys)
         }
-        if (!multi_spectate_execute_action(action, was_pressed)) {
-            player_execute_action_hook.call_target(player, action, was_pressed);
+        if (multi_spectate_execute_action(action, was_pressed)) {
+            return;
         }
+        // A turret operator's alt is his zoom, read from the raw control state. Stock would run his
+        // hand weapon's alt route, which can fire the turret locally where the server never hears it.
+        // A dying operator still needs alt: it is his respawn request.
+        if (action == rf::CC_ACTION_SECONDARY_ATTACK && rf::is_multi) {
+            rf::Entity* ep = rf::entity_from_handle(player->entity_handle);
+            if (ep && !rf::entity_is_dying(ep) && vehicle_hull_is_turret(vehicle_ridden_hull(ep))) {
+                return;
+            }
+        }
+        player_execute_action_hook.call_target(player, action, was_pressed);
     },
 };
 
@@ -854,6 +888,14 @@ ConsoleCommand2 death_bars_cmd{
 CallHook<void(rf::VMesh*, rf::Vector3*, rf::Matrix3*, void*)> player_cockpit_vmesh_render_hook{
     0x004A7907,
     [](rf::VMesh *vmesh, rf::Vector3 *pos, rf::Matrix3 *orient, void *params) {
+        // Must land ahead of the driller stretch below, which has to be the last correction applied.
+        rf::Vector3 view_pos;
+        rf::Matrix3 view_orient;
+        if (vehicle_cockpit_view_pose(&view_pos, &view_orient)) {
+            pos = &view_pos;
+            orient = &view_orient;
+        }
+
         rf::Matrix3 new_orient = *orient;
 
         if (string_iequals(rf::vmesh_get_name(vmesh), "driller01.vfx")) {

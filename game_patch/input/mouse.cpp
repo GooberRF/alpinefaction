@@ -16,6 +16,9 @@
 #include "../hud/multi_spectate.h"
 #include "mouse.h"
 #include "../multi/multi.h"
+#include "../multi/vehicles/vehicle.h"
+#include "../multi/vehicles/vehicle_physics.h"
+#include "../multi/vehicles/vehicle_view.h"
 #include "input.h"
 
 // Raw mouse delta accumulators — captured in mouse_get_delta_hook, then consumed
@@ -23,6 +26,8 @@
 // directly for the freelook camera) which writes scaled values into RF's control
 // pipeline so the controlled entity/camera picks them up.
 static int g_camera_mouse_dx = 0, g_camera_mouse_dy = 0;
+// A third-person vehicle driver's look: his ControlInfo is the hull's, so nothing else would read it.
+static int g_vehicle_orbit_mouse_dx = 0, g_vehicle_orbit_mouse_dy = 0;
 
 // Use the camera-mode accessor so single-player camera2 freelook matches spectator freelook.
 static bool is_freelook_camera()
@@ -31,8 +36,10 @@ static bool is_freelook_camera()
         && rf::camera_get_mode(*rf::local_player->cam) == rf::CameraMode::CAMERA_FREELOOK;
 }
 
-// Sub-pixel remainder accumulators for vehicle mouse sensitivity scaling.
-static float g_vehicle_mouse_dx_rem = 0.0f, g_vehicle_mouse_dy_rem = 0.0f;
+// The seat that steers a hull reads the mouse as a RATE (controls_read 0x00430B79): counts x sensitivity
+// x this / frametime. Modern mode scales it here rather than the integer counts, which would quantize.
+static constexpr float stock_hull_steer_mouse_scale = 100.0f; // 0x005894B4, a pooled constant
+static float g_hull_steer_mouse_scale = stock_hull_steer_mouse_scale;
 
 static float scope_sensitivity_value = 0.25f;
 static float scanner_sensitivity_value = 0.25f;
@@ -41,12 +48,60 @@ static void reset_mouse_delta_accumulators()
 {
     g_camera_mouse_dx = 0;
     g_camera_mouse_dy = 0;
-    g_vehicle_mouse_dx_rem = 0.0f;
-    g_vehicle_mouse_dy_rem = 0.0f;
 }
 
 static float applied_static_sensitivity_value = 0.25f; // value written by AsmWriter
 static float applied_dynamic_sensitivity_value = 1.0f; // value written by AsmWriter
+
+// Before mouse sensitivity. Classic is controls_read's on-foot look factor (0x00589568, 0.01), without
+// its optional mouse acceleration curve.
+static float mouse_look_radians_per_count()
+{
+    constexpr float deg2rad = 3.14159265f / 180.0f;
+    constexpr float id_tech_deg_per_pixel = 0.022f;
+    constexpr float stock_classic_look_scale = 0.01f;
+    switch (g_alpine_game_config.mouse_scale) {
+        case 0:
+            return stock_classic_look_scale;
+        case 1:
+            return deg2rad;
+        default:
+            return id_tech_deg_per_pixel * deg2rad;
+    }
+}
+
+// Raw counts to look angle deltas (radians) at the given sensitivity, honouring the invert-Y setting.
+static void mouse_counts_to_look_angles(int dx, int dy, float sens, float& out_pitch, float& out_yaw)
+{
+    const float scale = mouse_look_radians_per_count();
+    float fy = static_cast<float>(dy);
+    if (rf::local_player->settings.controls.axes[1].invert) {
+        fy = -fy;
+    }
+    out_pitch = -fy * sens * scale;
+    out_yaw = static_cast<float>(dx) * sens * scale;
+}
+
+void consume_vehicle_orbit_mouse_deltas(float& out_pitch, float& out_yaw)
+{
+    const int dx = g_vehicle_orbit_mouse_dx;
+    const int dy = g_vehicle_orbit_mouse_dy;
+    g_vehicle_orbit_mouse_dx = 0;
+    g_vehicle_orbit_mouse_dy = 0;
+    out_pitch = 0.0f;
+    out_yaw = 0.0f;
+    if (!rf::local_player || (dx == 0 && dy == 0)) {
+        return;
+    }
+    mouse_counts_to_look_angles(dx, dy, rf::local_player->settings.controls.mouse_sensitivity, out_pitch, out_yaw);
+}
+
+// Stock controls_read's dynamic scope divisor, the setting standing in for its 0x005895C0 constant.
+static float dynamic_scope_sensitivity_divisor(float zoom)
+{
+    constexpr float zoom_scale = 30.0f;
+    return (zoom - 1.0f) * applied_dynamic_sensitivity_value * zoom_scale;
+}
 
 // Converts accumulated raw mouse deltas to camera angle deltas (radians).
 // For the player entity, this is called from linear_pitch_patch inside the entity
@@ -67,25 +122,19 @@ void consume_raw_mouse_deltas(float& out_pitch, float& out_yaw, bool apply_scope
     }
 
     float sens = rf::local_player->settings.controls.mouse_sensitivity;
-    constexpr float deg2rad = 3.14159265f / 180.0f;
-    constexpr float id_tech_deg_per_pixel = 0.022f;
-    float scale = (g_alpine_game_config.mouse_scale == 1)
-        ? deg2rad
-        : id_tech_deg_per_pixel * deg2rad;
 
     if (apply_scope_sens) {
         if (rf::local_player->fpgun_data.scanning_for_target) {
             sens *= scanner_sensitivity_value;
         } else {
-            float zoom = rf::local_player->fpgun_data.zoom_factor;
+            float zoom = std::max(rf::local_player->fpgun_data.zoom_factor, vehicle_turret_zoom_fov_scale());
             if (zoom > 1.0f) {
                 if (g_alpine_game_config.scope_static_sensitivity) {
                     // Static: flat multiplier regardless of zoom level
                     sens *= scope_sensitivity_value;
                 } else {
                     // Dynamic: proportional to zoom level, matches stock formula
-                    constexpr float zoom_scale = 30.0f;
-                    float divisor = (zoom - 1.0f) * applied_dynamic_sensitivity_value * zoom_scale;
+                    float divisor = dynamic_scope_sensitivity_divisor(zoom);
                     if (divisor > 1.0f) {
                         sens /= divisor;
                     }
@@ -94,12 +143,7 @@ void consume_raw_mouse_deltas(float& out_pitch, float& out_yaw, bool apply_scope
         }
     }
 
-    float dy = static_cast<float>(g_camera_mouse_dy);
-    if (rf::local_player->settings.controls.axes[1].invert)
-        dy = -dy;
-
-    out_pitch = -dy * sens * scale;
-    out_yaw = static_cast<float>(g_camera_mouse_dx) * sens * scale;
+    mouse_counts_to_look_angles(g_camera_mouse_dx, g_camera_mouse_dy, sens, out_pitch, out_yaw);
 
     g_camera_mouse_dx = 0;
     g_camera_mouse_dy = 0;
@@ -231,6 +275,23 @@ FunHook<void(int&, int&, int&)> mouse_get_delta_hook{
     [](int& dx, int& dy, int& dz) {
         mouse_get_delta_hook.call_target(dx, dy, dz); // fills dz (scroll wheel)
 
+        constexpr float modern_hull_steer_factor = 0.08f;
+        g_hull_steer_mouse_scale = g_alpine_game_config.mouse_scale == 2
+            ? stock_hull_steer_mouse_scale * modern_hull_steer_factor
+            : stock_hull_steer_mouse_scale;
+
+        // Every mouse mode: without this the counts would reach the hull as steer/eye rates.
+        if (rf::keep_mouse_centered && vehicle_physics_camera_owns_driver_look()) {
+            g_vehicle_orbit_mouse_dx += dx;
+            g_vehicle_orbit_mouse_dy += dy;
+            dx = 0;
+            dy = 0;
+            reset_mouse_delta_accumulators();
+            return;
+        }
+        g_vehicle_orbit_mouse_dx = 0;
+        g_vehicle_orbit_mouse_dy = 0;
+
         // Nothing to do in Classic mode or outside gameplay.
         if (!rf::keep_mouse_centered || g_alpine_game_config.mouse_scale == 0) {
             reset_mouse_delta_accumulators();
@@ -238,10 +299,10 @@ FunHook<void(int&, int&, int&)> mouse_get_delta_hook{
         }
 
         // If the player entity is not valid (dead/spawn transition), pause raw delta.
-        // Exception: the spectator freelook camera and third-person orbit spectate both drive
-        // the camera with mouse input, so let their deltas through.
+        // Exception: the spectator freelook camera and third-person spectate (its orbit, and the vehicle
+        // camera it hands a seated target to) drive the camera with mouse input, so let their deltas through.
         if (!rf::local_player_entity || rf::entity_is_dying(rf::local_player_entity)) {
-            if (!is_freelook_camera() && !multi_spectate_is_third_person_orbit()) {
+            if (!is_freelook_camera() && !multi_spectate_is_third_person()) {
                 reset_mouse_delta_accumulators();
                 dx = 0;
                 dy = 0;
@@ -259,24 +320,17 @@ FunHook<void(int&, int&, int&)> mouse_get_delta_hook{
 
         // In Raw/Modern mode: capture raw deltas for centralized angle
         // computation and zero them so RF does not apply its own scaling.
-        // Skip when in a vehicle (RF needs the deltas to steer), but scale
-        // them down to stay consistent with the camera formula feel.
-        bool in_vehicle = rf::local_player_entity &&
-            rf::entity_in_vehicle(rf::local_player_entity);
-        if (!in_vehicle) {
+        // Skipped ONLY for the seat that steers: player_process_controls re-points that one man's
+        // ControlInfo at the hull (0x004A6101), whose field_18 is 0, so controls_read takes the RATE
+        // branch. Every other rider keeps his own mouse-look ControlInfo and takes the on-foot path.
+        rf::Entity* local_ep = rf::local_player_entity;
+        const bool steers_hull = local_ep && rf::entity_in_vehicle(local_ep)
+            && !vehicle_rider_keeps_own_orient(local_ep);
+        if (!steers_hull) {
             g_camera_mouse_dx += dx;
             g_camera_mouse_dy += dy;
             dx = 0;
             dy = 0;
-        } else if (g_alpine_game_config.mouse_scale == 2) {
-            // Modern mode: scale vehicle steering down to match camera formula feel.
-            constexpr float vehicle_sens_scale = 0.08f;
-            g_vehicle_mouse_dx_rem += dx * vehicle_sens_scale;
-            g_vehicle_mouse_dy_rem += dy * vehicle_sens_scale;
-            dx = static_cast<int>(g_vehicle_mouse_dx_rem);
-            dy = static_cast<int>(g_vehicle_mouse_dy_rem);
-            g_vehicle_mouse_dx_rem -= dx;
-            g_vehicle_mouse_dy_rem -= dy;
         }
 
         // For freelook camera, apply deltas now (its control path doesn't go
@@ -417,6 +471,14 @@ CodeInjection static_zoom_sensitivity_patch2 {
                 regs.al = static_cast<int8_t>(1); // make cmp at 0x004309DA test true
             }
         }
+        else if (player && player == rf::local_player && vehicle_turret_zoom_fov_scale() > 1.0f) {
+            // No fpgun zoom for the stock dynamic branch to read, so both scope rules are applied here.
+            const float divisor = dynamic_scope_sensitivity_divisor(vehicle_turret_zoom_fov_scale());
+            applied_static_sensitivity_value = g_alpine_game_config.scope_static_sensitivity
+                ? scope_sensitivity_value
+                : (divisor > 1.0f ? 1.0f / divisor : 1.0f);
+            regs.al = static_cast<int8_t>(1);
+        }
         else {
             applied_static_sensitivity_value = scanner_sensitivity_value;
         }
@@ -451,6 +513,7 @@ void mouse_apply_patch()
     mouse_keep_centered_enable_hook.install();
     mouse_keep_centered_disable_hook.install();
     mouse_get_delta_hook.install();
+    AsmWriter{0x00430B7B}.fmul<float>(AsmRegMem{&g_hull_steer_mouse_scale});
 
     // Do not limit the cursor to the game window if in menu (Win32 mouse)
     AsmWriter(0x0051DD7C).jmp(0x0051DD8E);

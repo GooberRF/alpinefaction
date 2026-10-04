@@ -32,6 +32,10 @@ Version 1.5.0 (Trillium): Not yet released
 - Additional Controller settings are available in `alpine_settings.ini` and/or console commands
 - 
 [@GooberRF](https://github.com/GooberRF)
+- Add multiplayer vehicles and turrets
+  - Jeeps, APCs, drillers, fighters, submarines, and stationary turrets, spawned by the new `Vehicle Factory` object
+  - Simulate vehicle physics with the Bullet physics engine
+  - Multi-seat vehicles with driver, gunner, and passenger seats; `Use` boards the lowest free seat and number keys `1`-`6` switch seats
 - Add ray cast lightmap baking to level editor
   - Add `Invisible faces block light` and `Alpha-textured faces block light` level properties to control whether those faces occlude baked light
   - Add `No shadow cast` brush property for solid detail brushes and movers
@@ -49,6 +53,7 @@ Version 1.5.0 (Trillium): Not yet released
   - Import 8/16-bit greyscale PNG and RAW16 heightmaps, export 16-bit PNG and RAW16 heightmaps, and import splat maps
   - Generate heightmaps using fractal noise with optional splat map from height, slope and ridges
   - Sculpt heights, paint texture layers and holes, and pick geoable chunks in the viewport with `Terrain Tools`
+  - Mirror `Terrain Tools` brush strokes across the terrain's X and/or Z axis, with movable mirror lines
   - Up to 4 detail overlays (leaves, debris) and 8 mesh decoration layers per terrain (grass, rocks, bushes)
   - `Geoable` terrains are carved by RF2-style geomod craters, with their own underside and crater textures
 
@@ -71,6 +76,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Add `Brush` collision mode for Alpine Mesh objects
 - Add `Brush Geo` source selection for Alpine Mesh objects using `Brush` collision, allowing custom collision hulls
 - Raise level editor per-room and per-mesh render vertex limit from 8000 to 32768
+- Add `Limit vehicle flight ceiling` and `Ceiling height (Y)` options to level editor `Level Properties` to cap how high flying vehicles can climb
 - Add `-bake in.rfl -bakeout out.rfl` launcher command line switches to build a level's geometry and calculate its lighting without user interaction, writing the result to a new level file and progress to a log beside it
 - Add `High-resolution lightmaps` level property, used in lightmap bake in level editor
 - Deprecate and remove `-smoothlights` level editor switch
@@ -106,6 +112,10 @@ Version 1.5.0 (Trillium): Not yet released
 - Improve level loading and `Build Geometry` times in the level editor on levels with many faces
 - Draw large rooms in fewer draw calls, and skip rooms without dynamic decals when drawing them (Direct3D 11 renderer only)
 - Make level editor refuse to open levels saved by a newer version of Alpine Faction instead of misreading them
+- Show assists on suicide and environmental death lines in chat and the kill feed, as on other kill messages
+- Add multiplayer minimap, configured in `Level Properties`
+- Dedicated server base rules now apply to every level under every game type unless a level overrides them
+- A level loaded by a vote, the `level` or `sv_gametype` commands now use that level's own rotation rules if available
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Add `ui_color_console` console command to set the console background color
@@ -139,6 +149,8 @@ Version 1.5.0 (Trillium): Not yet released
 - Fix level editor crashing when a mesh is played with an animation that does not fit its skeleton
 - Fix level editor crashing when a Direct3D buffer lock fails
 - Fix level editor crashing when a Weather Region's snow `Bitmap` names a loose file instead of one inside a packfile
+- Fix level editor crashing while saving a level containing a clutter class that is missing from the loaded `clutter.tbl`
+- Report each clutter object whose class is missing from the loaded `clutter.tbl` in the level editor log
 - Fix a one frame flash to the default pose each time an animation loops on a mesh being simulated in the level editor
 - Update Weather Region bounds in viewport live when values are changed
 - Fix the fusion not being in-scope for the `Delayed Supers` mutator
@@ -151,6 +163,10 @@ Version 1.5.0 (Trillium): Not yet released
 - Fix objects and effects behind see-through faces of mover brushes being hidden by those faces
 - Fix alpha textures on detail brushes in moving groups rendering opaque in game
 - Fix player outlines seen through see-through geometry disappearing depending on view direction
+- Fix the sustained weapon fire sound of fighter-class vehicles playing at full volume with no direction regardless of how far away it is
+- Fix every entity with a flying sound permanently consuming one of the 25 ambient sound slots each time it is destroyed
+- Fix engine sounds keeping the direction they had when they started instead of following the vehicle when DirectSound 3D is enabled
+- Fix the driller's drilling sound looping forever when the driller is destroyed while drilling
 - Fix headless bot crash when a level references a texture by a file extension the stock bitmap loader does not support (e.g. `.dds`) and it cannot be loaded
 - Fix `Fuse` and `Carve` in the level editor dumping the textures and texture coordinates of faces taken from the later brush
 - Fix undoing `Fuse` in the level editor taking two steps
@@ -158,6 +174,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Fix bolt emitters imported as part of a group in the level editor keeping their old target when the target object is renumbered to avoid a UID conflict
 - Fix bolt emitters pasted in the level editor together with their target still targeting the original object
 - Fix geoable brush supports not being properly recognized if buried in level geometry
+- Fix level editor not prompting to save changes made in `Level Properties`
 - Fix level editor crashing when moving decals in a level with more than 128 decals
 - Fix copying and pasting face textures in level editor texture mode removing Alpine objects from the clipboard or unintentionally pasting them into the level
 - Remove the level editor warning about levels with too many decals
@@ -178,6 +195,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Stop writing FactionFiles link tokens to the launcher log
 - Fix RF2-style geomod craters near the edge of a geoable brush not carving a neighboring geoable brush that the crater reaches
 - Fix RF2-style geomod giving up on geoable rooms with more than 5000 faces
+- Fix RF2-style geomod craters sometimes leaving stray faces and holes where geoable geometry meets neighboring geometry
 - Fix crash when a decal is created in a room containing a very large number of detail brushes
 - Fix Direct3D 8/9 renderer geometry cache overflowing with more than 256 rooms or detail rooms in view
 - Fix Direct3D 8/9 renderer rebuilding every room's render cache each frame while a room with more than 8000 vertices is in view
@@ -190,7 +208,16 @@ Version 1.5.0 (Trillium): Not yet released
 - Fix memory corruption when more than 1024 rooms are visible at once
 - Fix geomod crater relighting converting lightmap texels beyond the relit surface, which could write past the end of the lightmap for a surface at the bottom of a lightmap page
 - Fix a possible out-of-bounds read when drawing dynamic decals (Direct3D 11 renderer only)
+- Fix some multiplayer characters' upper bodies staying bent toward where they were last aiming instead of straightening out
 - Fix level editor crashing when more than 128 semi-transparent detail brushes in one room are in view
+- Fix dedicated server base rules being dropped on levels configured for a different game type
+- Fix a level's `spawn_weapon` removing a weapon the base `spawn_loadout` lists
+- Fix the `level` command keeping the game type and rules of a previous level vote
+- Fix `map_rest` reverting a game type set with `sv_gametype`
+- Fix `sv_loadconfig` applying stale vote rules, or another rotation entry's rules after the rotation changed
+- Fix a level listed more than once in the rotation using its first entry's rules when restarted, voted, or reloaded
+- Fix confirming the vote panel's pre-selected mutators layering them differently from the configured rules
+- Fix the configured restart vote using the base game type for a level outside the rotation
 
 [@is-this-c](https://github.com/is-this-c)
 - Let `Caps Lock` capitalize
@@ -203,6 +230,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Fix third-person crouch animations on remote players flickering and snapping
 
 ### Imported libraries
+- [Bullet Physics 3.25](https://github.com/bulletphysics/bullet3) by Erwin Coumans
 - [bc7enc_rdo](https://github.com/richgel999/bc7enc_rdo) by Richard Geldreich, Jr.
 
 

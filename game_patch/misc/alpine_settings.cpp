@@ -407,6 +407,26 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.speed_display = std::stoi(settings["ShowSpeed"]);
         processed_keys.insert("ShowSpeed");
     }
+    if (settings.count("ShowMinimap")) {
+        g_alpine_game_config.minimap = std::stoi(settings["ShowMinimap"]);
+        processed_keys.insert("ShowMinimap");
+    }
+    if (settings.count("MinimapRotate")) {
+        g_alpine_game_config.minimap_rotate = std::stoi(settings["MinimapRotate"]);
+        processed_keys.insert("MinimapRotate");
+    }
+    if (settings.count("MinimapLabels")) {
+        g_alpine_game_config.minimap_labels = std::stoi(settings["MinimapLabels"]);
+        processed_keys.insert("MinimapLabels");
+    }
+    if (settings.count("MinimapSize")) {
+        g_alpine_game_config.set_minimap_size(std::stof(settings["MinimapSize"]));
+        processed_keys.insert("MinimapSize");
+    }
+    if (settings.count("MinimapZoom")) {
+        g_alpine_game_config.set_minimap_zoom(std::stof(settings["MinimapZoom"]));
+        processed_keys.insert("MinimapZoom");
+    }
     if (settings.count("FPSCounterAverageMs")) {
         g_alpine_game_config.set_fps_counter_average_ms(std::stoi(settings["FPSCounterAverageMs"]));
         processed_keys.insert("FPSCounterAverageMs");
@@ -977,6 +997,85 @@ bool alpine_player_settings_load(rf::Player* player)
     if (settings.count("WorldHUDDamageNumbers")) {
         g_alpine_game_config.world_hud_damage_numbers = std::stoi(settings["WorldHUDDamageNumbers"]);
         processed_keys.insert("WorldHUDDamageNumbers");
+    }
+    if (settings.count("VehicleRespawnMarkers")) {
+        g_alpine_game_config.vehicle_respawn_markers = std::stoi(settings["VehicleRespawnMarkers"]);
+        processed_keys.insert("VehicleRespawnMarkers");
+    }
+    if (settings.count("VehicleHealthBars")) {
+        g_alpine_game_config.vehicle_health_bars = std::stoi(settings["VehicleHealthBars"]);
+        processed_keys.insert("VehicleHealthBars");
+    }
+    if (settings.count("VehicleDriverThirdPerson")) {
+        g_alpine_game_config.vehicle_driver_third_person = std::stoi(settings["VehicleDriverThirdPerson"]);
+        processed_keys.insert("VehicleDriverThirdPerson");
+    }
+    if (settings.count("VehicleGunnerThirdPerson")) {
+        g_alpine_game_config.vehicle_gunner_third_person = std::stoi(settings["VehicleGunnerThirdPerson"]);
+        processed_keys.insert("VehicleGunnerThirdPerson");
+    }
+    if (settings.count("VehicleCamRecenter")) {
+        g_alpine_game_config.vehicle_cam_recenter = std::stoi(settings["VehicleCamRecenter"]);
+        processed_keys.insert("VehicleCamRecenter");
+    }
+    if (settings.count("VehicleCamFollow")) {
+        g_alpine_game_config.set_vehicle_cam_follow(std::stof(settings["VehicleCamFollow"]));
+        processed_keys.insert("VehicleCamFollow");
+    }
+    if (settings.count("VehicleCamVelocity")) {
+        g_alpine_game_config.set_vehicle_cam_velocity(std::stof(settings["VehicleCamVelocity"]));
+        processed_keys.insert("VehicleCamVelocity");
+    }
+    if (settings.count("VehicleCamMinSpeed")) {
+        g_alpine_game_config.set_vehicle_cam_min_speed(std::stof(settings["VehicleCamMinSpeed"]));
+        processed_keys.insert("VehicleCamMinSpeed");
+    }
+    if (settings.count("VehicleCamLookahead")) {
+        g_alpine_game_config.set_vehicle_cam_lookahead(std::stof(settings["VehicleCamLookahead"]));
+        processed_keys.insert("VehicleCamLookahead");
+    }
+    if (settings.count("VehicleCamLookaheadMax")) {
+        g_alpine_game_config.set_vehicle_cam_lookahead_max(std::stof(settings["VehicleCamLookaheadMax"]));
+        processed_keys.insert("VehicleCamLookaheadMax");
+    }
+    if (settings.count("VehicleCamPitchFollow")) {
+        g_alpine_game_config.set_vehicle_cam_pitch_follow(std::stof(settings["VehicleCamPitchFollow"]));
+        processed_keys.insert("VehicleCamPitchFollow");
+    }
+    if (settings.count("VehicleCamPitchSmooth")) {
+        g_alpine_game_config.set_vehicle_cam_pitch_smooth(std::stof(settings["VehicleCamPitchSmooth"]));
+        processed_keys.insert("VehicleCamPitchSmooth");
+    }
+    if (settings.count("VehicleCamBounce")) {
+        g_alpine_game_config.set_vehicle_cam_bounce(std::stof(settings["VehicleCamBounce"]));
+        processed_keys.insert("VehicleCamBounce");
+    }
+    if (settings.count("VehicleCamLag")) {
+        g_alpine_game_config.set_vehicle_cam_lag(std::stof(settings["VehicleCamLag"]));
+        processed_keys.insert("VehicleCamLag");
+    }
+    if (settings.count("VehicleTracers")) {
+        g_alpine_game_config.vehicle_tracers = std::stoi(settings["VehicleTracers"]);
+        processed_keys.insert("VehicleTracers");
+    }
+    if (settings.count("VehicleTracerFrequency")) {
+        g_alpine_game_config.set_vehicle_tracer_frequency(std::stoi(settings["VehicleTracerFrequency"]));
+        processed_keys.insert("VehicleTracerFrequency");
+    }
+    if (settings.count("VehicleTracerColor")) {
+        auto c = parse_hex_color_string(settings["VehicleTracerColor"]);
+        if (c) {
+            g_alpine_game_config.vehicle_tracer_color = *c;
+        }
+        processed_keys.insert("VehicleTracerColor");
+    }
+    if (settings.count("VehicleTracerLength")) {
+        g_alpine_game_config.set_vehicle_tracer_length(std::stof(settings["VehicleTracerLength"]));
+        processed_keys.insert("VehicleTracerLength");
+    }
+    if (settings.count("VehicleHorns")) {
+        g_alpine_game_config.vehicle_horns = std::stoi(settings["VehicleHorns"]);
+        processed_keys.insert("VehicleHorns");
     }
     if (settings.count("WorldHUDSpectateLabels")) {
         g_alpine_game_config.world_hud_spectate_player_labels = std::stoi(settings["WorldHUDSpectateLabels"]);
@@ -1676,6 +1775,11 @@ void alpine_player_settings_save(rf::Player* player)
     file << "SpectatePovComp=" << g_alpine_game_config.spectate_povcomp << "\n";
     file << "ShowFPS=" << g_alpine_game_config.fps_counter << "\n";
     file << "ShowSpeed=" << g_alpine_game_config.speed_display << "\n";
+    file << "ShowMinimap=" << g_alpine_game_config.minimap << "\n";
+    file << "MinimapRotate=" << g_alpine_game_config.minimap_rotate << "\n";
+    file << "MinimapLabels=" << g_alpine_game_config.minimap_labels << "\n";
+    file << "MinimapSize=" << g_alpine_game_config.minimap_size << "\n";
+    file << "MinimapZoom=" << g_alpine_game_config.minimap_zoom << "\n";
     file << "FPSCounterAverageMs=" << g_alpine_game_config.fps_counter_average_ms << "\n";
     file << "SaveConsoleHistory=" << g_alpine_game_config.save_console_history << "\n";
     file << "ConsoleColor=" << format_hex_color_string(g_alpine_game_config.console_color) << "\n";
@@ -1848,6 +1952,25 @@ void alpine_player_settings_save(rf::Player* player)
     file << "WorldHUDFlagOverdraw=" << g_alpine_game_config.world_hud_flag_overdraw << "\n";
     file << "WorldHUDHillOverdraw=" << g_alpine_game_config.world_hud_hill_overdraw << "\n";
     file << "WorldHUDDamageNumbers=" << g_alpine_game_config.world_hud_damage_numbers << "\n";
+    file << "VehicleRespawnMarkers=" << g_alpine_game_config.vehicle_respawn_markers << "\n";
+    file << "VehicleHealthBars=" << g_alpine_game_config.vehicle_health_bars << "\n";
+    file << "VehicleDriverThirdPerson=" << g_alpine_game_config.vehicle_driver_third_person << "\n";
+    file << "VehicleGunnerThirdPerson=" << g_alpine_game_config.vehicle_gunner_third_person << "\n";
+    file << "VehicleCamRecenter=" << g_alpine_game_config.vehicle_cam_recenter << "\n";
+    file << "VehicleCamFollow=" << g_alpine_game_config.vehicle_cam_follow << "\n";
+    file << "VehicleCamVelocity=" << g_alpine_game_config.vehicle_cam_velocity << "\n";
+    file << "VehicleCamMinSpeed=" << g_alpine_game_config.vehicle_cam_min_speed << "\n";
+    file << "VehicleCamLookahead=" << g_alpine_game_config.vehicle_cam_lookahead << "\n";
+    file << "VehicleCamLookaheadMax=" << g_alpine_game_config.vehicle_cam_lookahead_max << "\n";
+    file << "VehicleCamPitchFollow=" << g_alpine_game_config.vehicle_cam_pitch_follow << "\n";
+    file << "VehicleCamPitchSmooth=" << g_alpine_game_config.vehicle_cam_pitch_smooth << "\n";
+    file << "VehicleCamBounce=" << g_alpine_game_config.vehicle_cam_bounce << "\n";
+    file << "VehicleCamLag=" << g_alpine_game_config.vehicle_cam_lag << "\n";
+    file << "VehicleTracers=" << g_alpine_game_config.vehicle_tracers << "\n";
+    file << "VehicleTracerFrequency=" << g_alpine_game_config.vehicle_tracer_frequency << "\n";
+    file << "VehicleTracerColor=" << format_hex_color_string(g_alpine_game_config.vehicle_tracer_color) << "\n";
+    file << "VehicleTracerLength=" << g_alpine_game_config.vehicle_tracer_length << "\n";
+    file << "VehicleHorns=" << g_alpine_game_config.vehicle_horns << "\n";
     file << "WorldHUDSpectateLabels=" << g_alpine_game_config.world_hud_spectate_player_labels << "\n";
     file << "WorldHUDDemoPlayerInfo=" << g_alpine_game_config.world_hud_demo_player_info << "\n";
     file << "WorldHUDDemoSpawns=" << g_alpine_game_config.world_hud_demo_spawns << "\n";

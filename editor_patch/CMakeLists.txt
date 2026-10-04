@@ -31,6 +31,8 @@ set(SRCS
     bag.h
     weather_region.cpp
     weather_region.h
+    vehicle_factory.cpp
+    vehicle_factory.h
     projection_camera.cpp
     projection_camera.h
     rope_emitter.cpp
@@ -53,6 +55,8 @@ set(SRCS
     bitmap_loaders.h
     meshes.cpp
     meshes.h
+    minimap_bake.cpp
+    minimap_bake.h
     tbl.cpp
     tbl.h
     trigger.cpp

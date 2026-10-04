@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <memory>
 #include <unordered_map>
@@ -24,10 +25,25 @@
 #include "gr_d3d11_context.h"
 #include "gr_d3d11_shader.h"
 #include "../../object/object.h"
+#include "../../multi/vehicles/vehicle_render.h"
+#include "../gr_ghost_mesh.h"
 
 namespace gr::d3d11
 {
     bool g_level_vertex_lighting = false;
+
+    namespace
+    {
+        struct GhostFillState
+        {
+            bool active = false;
+            float fill_y = 0.0f;
+            float alpha_ratio = 0.0f;
+            bool has_tint = false;
+            rf::Color tint{255, 255, 255, 255};
+        };
+        GhostFillState g_ghost_fill;
+    }
 
     void evaluate_mesh_lighting(const std::string& level_filename)
     {
@@ -744,7 +760,12 @@ namespace gr::d3d11
 
         auto render_cache = reinterpret_cast<MeshRenderCache*>(lod_mesh->render_cache);
 
-        draw_cached_mesh(lod_mesh, *render_cache, params, lod_index, skip_ambient_cache);
+        // Null outside an entity_render call, so static meshes and our own ghost draws never scroll.
+        UvScroll uv_scroll;
+        uv_scroll.active =
+            vehicle_tread_scroll_for_draw(uv_scroll.config, uv_scroll.u, uv_scroll.v);
+
+        draw_cached_mesh(lod_mesh, *render_cache, params, lod_index, skip_ambient_cache, uv_scroll);
     }
 
     void MeshRenderer::render_character_vif(rf::VifLodMesh *lod_mesh, int lod_index, const rf::Vector3& pos, const rf::Matrix3& orient, const rf::CharacterInstance *ci, const rf::MeshRenderParams& params, bool skip_ambient_cache)
@@ -772,7 +793,7 @@ namespace gr::d3d11
         render_cache->update_bone_transforms_buffer(ci, render_context_);
         render_cache->bind_buffers(render_context_, morphed);
 
-        draw_cached_mesh(lod_mesh, *render_cache, params, lod_index, skip_ambient_cache);
+        draw_cached_mesh(lod_mesh, *render_cache, params, lod_index, skip_ambient_cache, {});
     }
 
     const std::vector<BaseMeshRenderCache::Batch>* MeshRenderer::prepare_character_for_draw(
@@ -846,7 +867,7 @@ namespace gr::d3d11
     }
 
 
-    void MeshRenderer::draw_cached_mesh(rf::VifLodMesh *lod_mesh, BaseMeshRenderCache& cache, const rf::MeshRenderParams& params, int lod_index, bool skip_ambient_cache)
+    void MeshRenderer::draw_cached_mesh(rf::VifLodMesh *lod_mesh, BaseMeshRenderCache& cache, const rf::MeshRenderParams& params, int lod_index, bool skip_ambient_cache, const UvScroll& uv_scroll)
     {
         bool is_character_mesh = dynamic_cast<const CharacterMeshRenderCache*>(&cache) != nullptr;
         // picmip does not apply to game objects (entities, items, held weapons, fpgun)
@@ -930,6 +951,15 @@ namespace gr::d3d11
                 color = is_character_mesh ? params.self_illum : rf::Color{255, 255, 255, 255};
                 color.alpha = static_cast<rf::ubyte>(params.alpha);
             }
+        }
+
+        if (g_ghost_fill.active && g_ghost_fill.has_tint) {
+            color.red = static_cast<rf::ubyte>(color.red * g_ghost_fill.tint.red / 255);
+            color.green = static_cast<rf::ubyte>(color.green * g_ghost_fill.tint.green / 255);
+            color.blue = static_cast<rf::ubyte>(color.blue * g_ghost_fill.tint.blue / 255);
+        }
+        if (g_ghost_fill.active) {
+            render_context_.set_ghost_fill(g_ghost_fill.fill_y, g_ghost_fill.alpha_ratio);
         }
 
         bool use_vertex_colors = params.vertex_colors != nullptr;
@@ -1017,6 +1047,14 @@ namespace gr::d3d11
 
         const auto& batches = *batches_ptr;
 
+        if (uv_scroll.active) {
+            constexpr int max_tex_handles = std::extent_v<decltype(rf::VifMesh::tex_handles)>;
+            const int num_tex_handles =
+                std::clamp(lod_mesh->meshes[lod_index]->num_textures_handles, 0, max_tex_handles);
+            vehicle_tread_resolve_mesh_bitmaps(uv_scroll.config, lod_mesh->meshes[lod_index],
+                                               tex_handles, num_tex_handles);
+        }
+
         for (auto& b : batches) {
             // ccrunch tool chunkifies mesh and inits render mode flags
             // 0x110C21 is used for materials with additive blending (except admin_poshlight01.v3d):
@@ -1054,11 +1092,27 @@ namespace gr::d3d11
                 self_illum = 1.0f;
             }
 
+            rf::gr::Mode batch_mode = forced_mode.value_or(b.mode);
+            if (g_ghost_fill.active) {
+                // Depth test stays on, depth write off, so ghosts never occlude each other or the world.
+                batch_mode.set_alpha_blend(rf::gr::ALPHA_BLEND_ALPHA);
+                batch_mode.set_zbuffer_type(rf::gr::ZBUFFER_TYPE_READ);
+            }
             // Static-mesh light scale is skipped for first person meshes too: fpguns are character meshes, and
             // static fpgun attachments (silencer) must match them
-            render_context_.set_mode(forced_mode.value_or(b.mode), color, false, gpu_dynamic_lighting, self_illum, !is_character_mesh && !is_fp_weapon, emissive);
+            render_context_.set_mode(batch_mode, color, false, gpu_dynamic_lighting, self_illum, !is_character_mesh && !is_fp_weapon, emissive);
             render_context_.set_textures(texture, -1);
+            // Per batch, not per mesh: the rest of the hull draws from the atlas and must not scroll.
+            if (uv_scroll.active) {
+                const bool is_tread = vehicle_is_tread_bitmap(texture, uv_scroll.config);
+                render_context_.set_model_uv0_offset(is_tread ? uv_scroll.u : 0.0f,
+                                                     is_tread ? uv_scroll.v : 0.0f);
+            }
             render_context_.draw_indexed(b.num_indices, b.start_index, b.base_vertex);
+        }
+        if (uv_scroll.active) {
+            // Or the powerup overlay below, and anything queued after this mesh, inherits the offset.
+            render_context_.set_model_uv0_offset(0.0f, 0.0f);
         }
         if (params.powerup_bitmaps[0] != -1 && !ir_scanner) {
             rf::gr::Mode powerup_mode{
@@ -1082,6 +1136,9 @@ namespace gr::d3d11
                     render_context_.draw_indexed(b.num_indices, b.start_index, b.base_vertex);
                 }
             }
+        }
+        if (g_ghost_fill.active) {
+            render_context_.set_ghost_fill(0.0f, 0.0f);
         }
     }
 
@@ -1268,5 +1325,47 @@ namespace gr::d3d11
                 context->DrawIndexed(batch.num_indices, batch.start_index, batch.base_vertex);
             }
         }
+    }
+}
+
+namespace gr
+{
+    bool render_ghost_mesh(rf::VMesh* mesh, const rf::Vector3& pos, const rf::Matrix3& orient,
+                           float alpha_below, float alpha_above, float fill_y, const rf::Color* tint)
+    {
+        if (!mesh || rf::gr::screen.mode != rf::gr::DIRECT3D || !is_d3d11()) {
+            return false;
+        }
+        if (rf::vmesh_get_type(mesh) == rf::MESH_TYPE_ANIM_FX) {
+            return false;
+        }
+        if (!std::isfinite(alpha_below) || !std::isfinite(alpha_above) || !std::isfinite(fill_y)) {
+            return false;
+        }
+        alpha_below = std::clamp(alpha_below, 0.0f, 1.0f);
+        alpha_above = std::clamp(alpha_above, 0.0f, alpha_below);
+        if (alpha_below <= 0.0f) {
+            return false;
+        }
+
+        d3d11::g_ghost_fill.active = true;
+        d3d11::g_ghost_fill.fill_y = fill_y;
+        // Ratio 0 is the shader's "not a ghost draw" sentinel, so fully transparent clamps just above it.
+        d3d11::g_ghost_fill.alpha_ratio = std::max(alpha_above / alpha_below, 1.0f / 512.0f);
+        d3d11::g_ghost_fill.has_tint = tint != nullptr;
+        if (tint) {
+            d3d11::g_ghost_fill.tint = *tint;
+        }
+
+        rf::MeshRenderParams params{};
+        params.init_defaults();
+        params.alpha = static_cast<int>(alpha_below * 255.0f + 0.5f);
+        params.orient = orient;
+        rf::Vector3 draw_pos = pos;
+        rf::Matrix3 draw_orient = orient;
+        rf::vmesh_render(mesh, &draw_pos, &draw_orient, &params);
+
+        d3d11::g_ghost_fill = d3d11::GhostFillState{};
+        return true;
     }
 }

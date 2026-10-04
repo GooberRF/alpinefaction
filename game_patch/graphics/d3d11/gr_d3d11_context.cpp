@@ -107,8 +107,11 @@ namespace gr::d3d11
     {
         // model to world
         GpuMatrix4x3 world_mat;
+        // Added to the vertex UV in standard_vs. Only x/y are read; z/w pad to a whole 16-byte register.
+        std::array<float, 4> uv0_offset;
     };
     static_assert(sizeof(ModelTransformBufferData) % 16 == 0);
+    static_assert(offsetof(ModelTransformBufferData, uv0_offset) == 48);
 
     ModelTransformBuffer::ModelTransformBuffer(ID3D11Device* device) :
         current_model_pos_{NAN, NAN, NAN},
@@ -127,6 +130,7 @@ namespace gr::d3d11
     {
         ModelTransformBufferData data;
         data.world_mat = build_world_matrix(current_model_pos_, current_model_orient_);
+        data.uv0_offset = {current_uv0_offset_u_, current_uv0_offset_v_, 0.0f, 0.0f};
 
         D3D11_MAPPED_SUBRESOURCE mapped_subres;
         DF_GR_D3D11_CHECK_HR(
@@ -380,15 +384,20 @@ namespace gr::d3d11
     struct alignas(16) TextureScaleBufferData
     {
         std::array<float, 2> tex0_uv_scale;
-        std::array<float, 2> pad;
+        float ghost_fill_y;
+        float ghost_alpha_ratio;
     };
+    static_assert(sizeof(TextureScaleBufferData) == 16);
+    static_assert(offsetof(TextureScaleBufferData, ghost_fill_y) == 8);
+    static_assert(offsetof(TextureScaleBufferData, ghost_alpha_ratio) == 12);
     static_assert(sizeof(TextureScaleBufferData) % 16 == 0);
 
     TextureScaleBuffer::TextureScaleBuffer(ID3D11Device* device)
     {
         TextureScaleBufferData init_data{};
         init_data.tex0_uv_scale = {1.0f, 1.0f};
-        init_data.pad = {0.0f, 0.0f};
+        init_data.ghost_fill_y = 0.0f;
+        init_data.ghost_alpha_ratio = 0.0f;
         D3D11_SUBRESOURCE_DATA subres_data{&init_data, 0, 0};
         CD3D11_BUFFER_DESC desc{
             sizeof(TextureScaleBufferData),
@@ -403,7 +412,8 @@ namespace gr::d3d11
     {
         TextureScaleBufferData data{};
         data.tex0_uv_scale = {current_u_scale_, current_v_scale_};
-        data.pad = {0.0f, 0.0f};
+        data.ghost_fill_y = current_ghost_fill_y_;
+        data.ghost_alpha_ratio = current_ghost_alpha_ratio_;
 
         D3D11_MAPPED_SUBRESOURCE mapped_subres;
         DF_GR_D3D11_CHECK_HR(

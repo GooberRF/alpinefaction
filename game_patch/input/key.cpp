@@ -30,6 +30,7 @@
 #include "../multi/pit.h"
 #include "../multi/sprays.h"
 #include "../multi/vote_client.h"
+#include "../multi/vehicles/vehicle_physics.h"
 #include "../misc/vote_panel.h"
 #include "../os/console.h"
 #include "gamepad.h"
@@ -334,13 +335,15 @@ CodeInjection control_config_init_patch{
                                        rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_ATTACH);
         alpine_control_config_add_item(ccp, "Toggle Spectate", false, rf::KEY_DIVIDE, -1, -1,
                                        rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_TOGGLE);
-        alpine_control_config_add_item(ccp, "Change Spectate View", false, rf::KEY_SEMICOL, -1, -1,
+        alpine_control_config_add_item(ccp, "Change View", false, rf::KEY_SEMICOL, -1, -1,
                                        rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_CHANGE_VIEW);
         alpine_control_config_add_item(ccp, "Spray", 0, rf::KEY_Z, -1, -1,
                                        rf::AlpineControlConfigAction::AF_ACTION_SPRAY);
         alpine_control_config_add_item(ccp, "Call Vote Menu", false, rf::KEY_F4, -1, -1,
                                        rf::AlpineControlConfigAction::AF_ACTION_VOTE_MENU);
-        alpine_control_config_add_item(ccp, "Center View", false, -1, -1, -1,
+        alpine_control_config_add_item(ccp, "Show Map", false, rf::KEY_Q, -1, -1,
+                                       rf::AlpineControlConfigAction::AF_ACTION_BIG_MAP);
+        alpine_control_config_add_item(ccp, "Center View", false, -1, -1, -1, 
                                        rf::AlpineControlConfigAction::AF_ACTION_CENTER_VIEW);
         alpine_control_config_add_item(ccp, "Gyro Ratcheting", false, -1, -1, -1,
                                        rf::AlpineControlConfigAction::AF_ACTION_GYRO_RATCHETING);
@@ -548,9 +551,12 @@ CodeInjection player_execute_action_patch3{
                 multi_spectate_toggle_attach();
             } else if (alpine_action_index
                 == static_cast<int>(rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_CHANGE_VIEW)
-                && !rf::is_dedicated_server
-                && multi_spectate_is_spectating()) {
-                multi_spectate_change_view();
+                && !rf::is_dedicated_server) {
+                if (multi_spectate_is_spectating()) {
+                    multi_spectate_change_view();
+                } else {
+                    vehicle_physics_camera_toggle_view();
+                }
             } else if (alpine_action_index
                 == static_cast<int>(rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_TOGGLE)
                 && !rf::is_dedicated_server) {
