@@ -9,6 +9,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <optional>
+#include <common/utils/string-utils.h>
 #include "alpine_color_picker.h"
 #include "vtypes.h"
 #include "level.h"
@@ -24,18 +26,49 @@ void alpine_hide_objects(CDedLevel* level);
 // Singular display name for an object type, as the object lists show it.
 const char* get_type_display_name(DedObjectType type);
 
+// An Alpine object taken out of the level stays allocated here, since undo records may still point at
+// it; stock undo cleanup frees it, or the next DeleteContents does.
+void alpine_graveyard_add(DedObject* obj);
+void alpine_graveyard_clear();
+
 inline void alpine_remove_from_groups(CDedLevel* level, DedObject* obj)
 {
     auto& mg = level->moving_groups;
     for (int i = 0; i < mg.size; i++) {
         auto* group = mg[i];
         if (!group) continue;
+        bool was_member = false;
         for (int j = group->objects.size - 1; j >= 0; j--) {
             if (group->objects[j] == obj) {
                 group->objects.remove_at(j);
+                was_member = true;
+            }
+        }
+        // As stock FUN_0041c570 does: a stale entry would win the first-match uid lookup if the uid rejoins.
+        // An emptied group is kept, since stock's group deletion can't be undone.
+        if (was_member && group->keyframes) {
+            auto& members = group->keyframes->members;
+            for (int j = 0; j < members.size; j++) {
+                if (members[j]->uid == obj->uid) {
+                    editor_free(members[j]);
+                    members.remove_at(j);
+                    break;
+                }
             }
         }
     }
+}
+
+// Takes `obj` out of its type list, every group and master_objects, into the graveyard.
+template<typename T>
+inline void alpine_detach_object(CDedLevel* level, std::vector<T*>& objects, T* obj)
+{
+    auto it = std::find(objects.begin(), objects.end(), obj);
+    if (it != objects.end()) {
+        objects.erase(it);
+    }
+    level->master_objects.remove_by_value(obj);
+    alpine_graveyard_add(obj);
 }
 
 // ─── Shared selection helper ────────────────────────────────────────────────
@@ -59,24 +92,6 @@ inline void alpine_ensure_uid(const std::vector<T*>& objects, int& uid)
     }
 }
 
-// Deletes every selected object of one type, compacting the selection in place. Reverse
-// iteration is required: `destroy` frees the object, and each removal shifts the tail down.
-template<typename T, typename DestroyFn>
-inline void alpine_compact_selection(CDedLevel* level, DedObjectType type, DestroyFn destroy)
-{
-    auto& sel = level->selection;
-    for (int i = sel.size - 1; i >= 0; i--) {
-        DedObject* obj = sel.data_ptr[i];
-        if (obj && obj->type == type) {
-            for (int j = i; j < sel.size - 1; j++) {
-                sel.data_ptr[j] = sel.data_ptr[j + 1];
-            }
-            sel.size--;
-            destroy(static_cast<T*>(obj));
-        }
-    }
-}
-
 template<typename T>
 inline Vector3 alpine_obj_pos(const T& obj)
 {
@@ -86,13 +101,14 @@ inline Vector3 alpine_obj_pos(const T& obj)
 // Closest object whose position (pos_of, the placed position by default) projects within radius_sq of
 // the click, in pixels.
 template<typename T, typename PosFn = Vector3 (*)(const T&)>
-inline T* alpine_click_pick_point(const std::vector<T*>& objects, float click_x, float click_y,
+inline T* alpine_click_pick_point(T* const* first, T* const* last, float click_x, float click_y,
                                   float radius_sq, PosFn pos_of = alpine_obj_pos<T>)
 {
     float best_dist_sq = 1e30f;
     T* best = nullptr;
 
-    for (auto* obj : objects) {
+    for (; first != last; ++first) {
+        T* obj = *first;
         if (obj->hidden_in_editor) continue;
 
         const Vector3 pos = pos_of(*obj);
@@ -111,6 +127,14 @@ inline T* alpine_click_pick_point(const std::vector<T*>& objects, float click_x,
     }
 
     return best;
+}
+
+template<typename T, typename PosFn = Vector3 (*)(const T&)>
+inline T* alpine_click_pick_point(const std::vector<T*>& objects, float click_x, float click_y,
+                                  float radius_sq, PosFn pos_of = alpine_obj_pos<T>)
+{
+    return alpine_click_pick_point(objects.data(), objects.data() + objects.size(), click_x, click_y, radius_sq,
+                                   pos_of);
 }
 
 // Screen radius the point-picked Alpine object types share (20 px).
@@ -157,6 +181,17 @@ inline float alpine_dlg_get_float_field(HWND hdlg, int idc)
 {
     char buf[32] = {};
     GetDlgItemTextA(hdlg, idc, buf, sizeof(buf));
+    return static_cast<float>(std::atof(buf));
+}
+
+// Empty for a blank field.
+inline std::optional<float> alpine_dlg_get_optional_float_field(HWND hdlg, int idc)
+{
+    char buf[32] = {};
+    GetDlgItemTextA(hdlg, idc, buf, sizeof(buf));
+    if (trim(buf).empty()) {
+        return std::nullopt;
+    }
     return static_cast<float>(std::atof(buf));
 }
 
@@ -347,6 +382,36 @@ inline void draw_wireframe_sphere(float cx, float cy, float cz, float radius, in
         draw_3d_line(cx + c0, cy + s0, cz, cx + c1, cy + s1, cz, r, g, b);
         draw_3d_line(cx + c0, cy, cz + s0, cx + c1, cy, cz + s1, r, g, b);
         draw_3d_line(cx, cy + c0, cz + s0, cx, cy + c1, cz + s1, r, g, b);
+    }
+}
+
+// Cylinder along orient.fvec, centred on center, its end circles in the rvec/uvec plane; drawn with
+// the clipped line routine the stock shapes use, in the set_draw_color colour.
+inline void draw_wireframe_cylinder_3d(const Vector3& center, const Matrix3& orient, float radius, float length,
+                                       uint32_t mode)
+{
+    constexpr int segments = 24;
+    constexpr float pi2 = 6.2831853f;
+    const float h = length * 0.5f;
+    const Vector3& a = orient.fvec;
+    Vector3 prev_top, prev_bottom;
+    for (int i = 0; i <= segments; i++) {
+        const float ang = pi2 * static_cast<float>(i) / segments;
+        const float c = std::cos(ang) * radius;
+        const float s = std::sin(ang) * radius;
+        const Vector3 off{orient.rvec.x * c + orient.uvec.x * s, orient.rvec.y * c + orient.uvec.y * s,
+                          orient.rvec.z * c + orient.uvec.z * s};
+        const Vector3 top{center.x + off.x + a.x * h, center.y + off.y + a.y * h, center.z + off.z + a.z * h};
+        const Vector3 bottom{center.x + off.x - a.x * h, center.y + off.y - a.y * h, center.z + off.z - a.z * h};
+        if (i > 0) {
+            gr_line_3d(&prev_top, &top, mode);
+            gr_line_3d(&prev_bottom, &bottom, mode);
+        }
+        if (i < segments && i % (segments / 4) == 0) {
+            gr_line_3d(&bottom, &top, mode);
+        }
+        prev_top = top;
+        prev_bottom = bottom;
     }
 }
 

@@ -29,6 +29,7 @@
 #include "terrain.h"
 #include "terrain_build.h"
 #include "terrain_decorations.h"
+#include "dir_light.h"
 #include "alpine_lightmaps.h"
 #include "alpine_obj.h"
 #include "headless_bake.h"
@@ -121,24 +122,11 @@ CodeInjection CDedLevel_construct_patch{
     },
 };
 
-// Clear alpine properties when the level is reset (File > New or File > Open).
-// FUN_00418960 is CDedLevel::DeleteContents (thiscall, ECX = CDedLevel*).
-// Called via the virtual DeleteContents override at vtable[27] (FUN_0041CDF0).
-//
-// Strategy: wrap with FunHook so we can run cleanup both BEFORE and AFTER stock code.
-//
-// BEFORE: Null out vmesh on Alpine objects so stock FUN_0041c360 (called from
-// DeleteContents loop 3 on master_objects) won't try to free it via FUN_004bfec0.
-// Alpine objects are LEFT in master_objects so that undo cleanup (FUN_0043d170)
-// finds them there and skips processing entirely — avoiding the "orphan" path
-// (FUN_00491020 + FUN_0041c360) that causes heap corruption.
-// FUN_0041c360 switches on [obj+0x5C] (type): types > 0x16 fall through to
-// default → return without calling the virtual destructor, so Alpine objects
-// survive stock cleanup.
-//
-// AFTER: Call LoadDefaults() to properly free the Alpine objects. At this point
-// stock code has finished processing all undo entries and VArrays, so the Alpine
-// objects are no longer referenced anywhere.
+// Clear alpine properties when the level is reset (File > New, File > Open, document close).
+// FUN_00418960 is CDedLevel::DeleteContents (thiscall), reached via vtable[27] (FUN_0041CDF0).
+// Alpine objects stay in master_objects through the stock body so undo cleanup (FUN_0043d170) never
+// takes them for orphans, and level_destroy_object_hook keeps stock FUN_0041c360 off them. They are
+// freed after it, when no undo record can reach them any more.
 void __fastcall CDedLevel_DeleteContents_hooked(CDedLevel* level, void* edx_unused);
 FunHook<decltype(CDedLevel_DeleteContents_hooked)> CDedLevel_DeleteContents_hook{
     0x00418960,
@@ -148,27 +136,15 @@ void __fastcall CDedLevel_DeleteContents_hooked(CDedLevel* level, void* edx_unus
 {
     auto& props = level->GetAlpineLevelProperties();
     terrain_decorations_level_reset();
+    sun_arrow_detach(level);
 
-    // Null out vmesh BEFORE stock code runs, but leave objects in master_objects.
-    // This makes Alpine objects safe for stock FUN_0041c360 (loop 3):
-    //   - [obj+0x0C] (vmesh) = NULL → skips FUN_004bfec0 free
-    //   - [obj+0x5C] (type) > 0x16 → switch defaults to return (no destructor)
-    // Keeping objects in master_objects means FUN_0043d170 (undo cleanup) finds
-    // them and skips the orphan processing path entirely (no heap corruption).
+    // Released while the level is still intact; the stock body only ever sees [obj+0xC] null on Alpine meshes.
     for (auto* m : props.mesh_objects)
-        static_cast<DedObject*>(m)->vmesh = nullptr;
-    for (auto* n : props.note_objects)
-        static_cast<DedObject*>(n)->vmesh = nullptr;
-    for (auto* c : props.corona_objects)
-        static_cast<DedObject*>(c)->vmesh = nullptr;
-    for (auto* b : props.bag_objects)
-        static_cast<DedObject*>(b)->vmesh = nullptr;
+        mesh_release_vmesh(m);
 
-    // Let stock DeleteContents run — undo/redo cleanup skips Alpine objects
-    // (found in master_objects), and loop 3 safely returns early for type > 0x16.
     CDedLevel_DeleteContents_hook.call_target(level, edx_unused);
 
-    // Now stock code is done. Free the Alpine objects properly.
+    alpine_graveyard_clear();
     props.LoadDefaults();
     lightmap_reset_level_state();
     // Also runs as the document closes at exit, when the views may be gone, so nothing is repainted.
@@ -294,6 +270,10 @@ CodeInjection CDedLevel_LoadLevel_patch2{
                 }
                 if (chunk_id == alpine_terrain_chunk_id) {
                     terrain_deserialize_chunk(level, file, chunk_size);
+                    regs.eip = 0x0043090C;
+                }
+                if (chunk_id == alpine_directional_light_chunk_id) {
+                    directional_light_deserialize_chunk(level, file, chunk_size, file.get_version());
                     regs.eip = 0x0043090C;
                 }
                 if (chunk_id == alpine_lightmaps_chunk_id) {
@@ -847,6 +827,14 @@ static void merge_geoable_interior_rooms(GSolid* solid)
     }
 }
 
+// The GRoom constructor never initialises is_airlock, so a room no airlock Room Effect reaches saved heap garbage.
+CodeInjection groom_ctor_clear_airlock_injection{
+    0x004855d8,
+    [](auto& regs) {
+        reinterpret_cast<GRoom*>(static_cast<uintptr_t>(regs.ebp))->is_airlock = false;
+    },
+};
+
 // Skip empty detail rooms in the room builder's loop 2 (parent association).
 // After merging geoable brush rooms, secondary rooms are empty (no faces) but
 // remain as detail in all_rooms. Loop 2 at 0x485f44 dereferences the face list
@@ -953,7 +941,8 @@ CodeInjection skip_alpine_objects_bounds_check{
             obj->type == DedObjectType::DED_WEATHER_REGION ||
             obj->type == DedObjectType::DED_PROJECTION_CAMERA ||
             obj->type == DedObjectType::DED_ROPE_EMITTER ||
-            obj->type == DedObjectType::DED_TERRAIN) {
+            obj->type == DedObjectType::DED_TERRAIN ||
+            obj->type == DedObjectType::DED_DIRECTIONAL_LIGHT) {
             regs.eip = 0x0041dcfa;
         }
     },
@@ -972,6 +961,9 @@ CodeInjection CDedLevel_SaveLevel_patch{
         // section write a few instructions later depends on.
         alpine_lm_save_begin(level);
 
+        // A rotation of the sun arrow not yet repainted still belongs in the saved sun direction.
+        sun_arrow_sync(&level);
+
         // Compute room UIDs and scrub stale data before serializing
         auto& alpine_level_props = level.GetAlpineLevelProperties();
         compute_geoable_room_uids(level, alpine_level_props);
@@ -986,8 +978,8 @@ CodeInjection CDedLevel_SaveLevel_patch{
             for (int i = 0; i < mg.size; i++) {
                 auto* group = mg[i];
                 if (group && group->is_moving_group() && group->keyframes &&
-                    group->keyframes->size > 0) {
-                    DedObject* first_kf = (*group->keyframes)[0];
+                    group->keyframes->objects.size > 0) {
+                    DedObject* first_kf = group->keyframes->objects[0];
                     if (first_kf)
                         valid_kf_uids.insert(first_kf->uid);
                 }
@@ -1025,6 +1017,9 @@ CodeInjection CDedLevel_SaveLevel_patch{
 
         // Write terrain objects chunk
         terrain_serialize_chunk(level, file);
+
+        // Write directional light objects chunk
+        directional_light_serialize_chunk(level, file);
 
         // Re-write any foreign-editor chunks
         retained_chunks_serialize(level, file);
@@ -1095,23 +1090,10 @@ static void set_sun_angles_from_camera(HWND hdlg)
         return;
     }
 
-    const Vector3& fwd = viewport->view_data->camera_orient.fvec;
-    float len = std::sqrt(fwd.x * fwd.x + fwd.y * fwd.y + fwd.z * fwd.z);
-    if (!std::isfinite(len) || len <= 0.0f) {
+    float yaw = 0.0f, pitch = 0.0f;
+    if (!alpine_light_dir_to_sun_angles(viewport->view_data->camera_orient.fvec, yaw, pitch)) {
         return;
     }
-    float x = -fwd.x / len;
-    float y = -fwd.y / len;
-    float z = -fwd.z / len;
-
-    constexpr float rad_to_deg = 180.0f / 3.14159265358979f;
-    float yaw = std::atan2(x, z) * rad_to_deg;
-    yaw = std::fmod(yaw, 360.0f);
-    if (yaw < 0.0f) {
-        yaw += 360.0f;
-    }
-    // Aiming above the horizon keeps the heading and parks the sun on the horizon.
-    float pitch = std::clamp(std::asin(std::clamp(y, -1.0f, 1.0f)) * rad_to_deg, 0.0f, 90.0f);
 
     char buffer[32];
     std::snprintf(buffer, sizeof(buffer), "%.3f", yaw);
@@ -1283,6 +1265,7 @@ CodeInjection CLevelDialog_OnInitDialog_patch{
         std::string version = std::to_string(level_version);
         SetDlgItemTextA(hdlg, IDC_LEVEL_VERSION, version.c_str());
 
+        sun_arrow_sync(CDedLevel::Get());
         auto& alpine_level_props = CDedLevel::Get()->GetAlpineLevelProperties();
         CheckDlgButton(hdlg, IDC_LEGACY_CYCLIC_TIMERS, alpine_level_props.legacy_cyclic_timers ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hdlg, IDC_LEGACY_MOVERS, alpine_level_props.legacy_movers ? BST_CHECKED : BST_UNCHECKED);
@@ -1401,6 +1384,10 @@ static bool is_link_allowed(const DedObject* src, const DedObject* dst)
 {
     const auto t0 = src->type;
     const auto t1 = dst->type;
+
+    if (t0 == DedObjectType::DED_SUN_ARROW || t1 == DedObjectType::DED_SUN_ARROW) {
+        return false;
+    }
 
     return
         t0 == DedObjectType::DED_TRIGGER ||
@@ -1619,6 +1606,8 @@ void ApplyLevelPatches()
     adjacency_test_hook.install();
     isolate_rooms_injection.install();
     skip_empty_detail_rooms_in_loop2.install();
+
+    groom_ctor_clear_airlock_injection.install();
 
     // Ensure the face_id assignment phase (Phase 1 of FUN_004399b0) always runs.
     // Phase 1 assigns unique sequential face_ids to brush geometry faces, which our

@@ -112,6 +112,7 @@ namespace gr::d3d11
         void flush_caches();
         void reset_static_vertex_color_tracking();
         void clear_mesh_lights();
+        void set_mesh_bounds(const rf::Vector3& center, float radius);
         void set_pow2_tex_active(bool active);
         float z_far() const;
         bool supports_sample_count(uint32_t sample_count);

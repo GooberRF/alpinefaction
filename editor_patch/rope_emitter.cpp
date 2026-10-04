@@ -1645,22 +1645,6 @@ DedRopeEmitter* CloneRopeEmitterObject(DedRopeEmitter* source, bool add_to_level
     return rope;
 }
 
-void DeleteRopeEmitterObject(DedRopeEmitter* rope)
-{
-    if (!rope) return;
-    auto* level = CDedLevel::Get();
-    if (!level) return;
-
-    auto& ropes = level->GetAlpineLevelProperties().rope_emitter_objects;
-    auto it = std::find(ropes.begin(), ropes.end(), rope);
-    if (it != ropes.end()) {
-        ropes.erase(it);
-    }
-    alpine_remove_from_groups(level, static_cast<DedObject*>(rope));
-    level->master_objects.remove_by_value(static_cast<DedObject*>(rope));
-    DestroyDedRopeEmitter(rope);
-}
-
 // ─── Rendering ──────────────────────────────────────────────────────────────
 
 void rope_emitter_render(CDedLevel* level)
@@ -1868,12 +1852,6 @@ void rope_emitter_handle_delete_or_cut(DedObject* obj)
     if (it != ropes.end()) {
         ropes.erase(it);
     }
-}
-
-void rope_emitter_handle_delete_selection(CDedLevel* level)
-{
-    alpine_compact_selection<DedRopeEmitter>(level, DedObjectType::DED_ROPE_EMITTER,
-                                             DeleteRopeEmitterObject);
 }
 
 void rope_emitter_ensure_uid(int& uid)

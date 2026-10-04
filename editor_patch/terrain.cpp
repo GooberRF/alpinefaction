@@ -458,12 +458,17 @@ void terrain_prepare(DedTerrain& terrain)
 
 // ─── Cleanup ─────────────────────────────────────────────────────────────────
 
-void DestroyDedTerrain(DedTerrain* terrain)
+void terrain_release_editor_state(const DedTerrain* terrain)
 {
-    if (!terrain) return;
     terrain_paint_forget(terrain);
     terrain_preview_forget(terrain);
     terrain_decorations_forget(terrain);
+}
+
+void DestroyDedTerrain(DedTerrain* terrain)
+{
+    if (!terrain) return;
+    terrain_release_editor_state(terrain);
     terrain->field_4.free();
     terrain->script_name.free();
     terrain->class_name.free();
@@ -3016,6 +3021,24 @@ static bool terrain_can_add(CDedLevel* level, const DedTerrainData& d, bool inte
     return false;
 }
 
+bool terrain_can_restore(CDedLevel* level, const DedTerrain& terrain)
+{
+    try {
+        return terrain_can_add(level, terrain.data, false);
+    }
+    catch (const std::bad_alloc&) {
+        return false;
+    }
+}
+
+void terrain_report_not_restored(int count)
+{
+    terrain_report(std::format("Undo did not restore {} terrain(s): the level would exceed its limit of {} terrains "
+                               "or {} MB of terrain data.",
+                               count, at::max_terrains, at::max_level_raw_bytes >> 20),
+                   true);
+}
+
 static void terrain_place_new(CDedLevel* level)
 {
     auto& terrains = level->GetAlpineLevelProperties().terrain_objects;
@@ -3095,15 +3118,7 @@ void DeleteTerrainObject(DedTerrain* terrain)
     if (!terrain) return;
     auto* level = CDedLevel::Get();
     if (!level) return;
-
-    auto& terrains = level->GetAlpineLevelProperties().terrain_objects;
-    auto it = std::find(terrains.begin(), terrains.end(), terrain);
-    if (it != terrains.end()) {
-        terrains.erase(it);
-    }
-    alpine_remove_from_groups(level, static_cast<DedObject*>(terrain));
-    level->master_objects.remove_by_value(static_cast<DedObject*>(terrain));
-    DestroyDedTerrain(terrain);
+    alpine_detach_object(level, level->GetAlpineLevelProperties().terrain_objects, terrain);
 }
 
 // ─── Rendering ──────────────────────────────────────────────────────────────
@@ -3297,11 +3312,6 @@ void terrain_handle_delete_or_cut(DedObject* obj)
     if (it != terrains.end()) {
         terrains.erase(it);
     }
-}
-
-void terrain_handle_delete_selection(CDedLevel* level)
-{
-    alpine_compact_selection<DedTerrain>(level, DedObjectType::DED_TERRAIN, DeleteTerrainObject);
 }
 
 void terrain_ensure_uid(int& uid)

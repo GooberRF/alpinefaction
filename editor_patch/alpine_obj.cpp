@@ -13,6 +13,7 @@
 #include <common/scope_guard.h>
 #include <common/utils/string-utils.h>
 #include <common/version/version.h>
+#include <patch_common/CallHook.h>
 #include <patch_common/CodeInjection.h>
 #include <patch_common/FunHook.h>
 #include <patch_common/AsmWriter.h>
@@ -26,6 +27,7 @@
 #include "projection_camera.h"
 #include "rope_emitter.h"
 #include "terrain.h"
+#include "dir_light.h"
 #include "terrain_preview.h"
 #include "event.h"
 #include "mfc_types.h"
@@ -69,6 +71,7 @@ static std::vector<CopyLinkEntry> g_copy_weather_region_entries;
 static std::vector<CopyLinkEntry> g_copy_projection_camera_entries;
 static std::vector<CopyLinkEntry> g_copy_rope_emitter_entries;
 static std::vector<CopyLinkEntry> g_copy_terrain_entries;
+static std::vector<CopyLinkEntry> g_copy_directional_light_entries;
 
 // Set of all UIDs that were part of the copied selection (for filtering external links)
 static std::set<int> g_copy_all_uids;
@@ -82,7 +85,8 @@ static bool is_alpine_type(DedObjectType type)
            type == DedObjectType::DED_WEATHER_REGION ||
            type == DedObjectType::DED_PROJECTION_CAMERA ||
            type == DedObjectType::DED_ROPE_EMITTER ||
-           type == DedObjectType::DED_TERRAIN;
+           type == DedObjectType::DED_TERRAIN ||
+           type == DedObjectType::DED_DIRECTIONAL_LIGHT;
 }
 
 // -1 means unset and is never remapped.
@@ -153,6 +157,7 @@ static void capture_copy_link_snapshot()
     g_copy_projection_camera_entries.clear();
     g_copy_rope_emitter_entries.clear();
     g_copy_terrain_entries.clear();
+    g_copy_directional_light_entries.clear();
     g_copy_all_uids.clear();
 
     auto* level = CDedLevel::Get();
@@ -165,6 +170,7 @@ static void capture_copy_link_snapshot()
         auto* obj = sel.data_ptr[i];
         if (!obj) continue;
         if (obj->type == DedObjectType::DED_KEYFRAME) continue;
+        if (obj->type == DedObjectType::DED_SUN_ARROW) continue;
         g_copy_all_uids.insert(obj->uid);
     }
 
@@ -173,6 +179,7 @@ static void capture_copy_link_snapshot()
         auto* obj = sel.data_ptr[i];
         if (!obj) continue;
         if (obj->type == DedObjectType::DED_KEYFRAME) continue;
+        if (obj->type == DedObjectType::DED_SUN_ARROW) continue;
 
         CopyLinkEntry entry;
         entry.original_uid = obj->uid;
@@ -208,6 +215,9 @@ static void capture_copy_link_snapshot()
             case DedObjectType::DED_TERRAIN:
                 g_copy_terrain_entries.push_back(std::move(entry));
                 break;
+            case DedObjectType::DED_DIRECTIONAL_LIGHT:
+                g_copy_directional_light_entries.push_back(std::move(entry));
+                break;
             default:
                 g_copy_stock_entries.push_back(std::move(entry));
                 break;
@@ -225,7 +235,7 @@ static void capture_copy_link_snapshot()
 static void fix_paste_links(CDedLevel* level, int stock_count, int mesh_count,
                             int note_count, int corona_count, int bag_count,
                             int weather_region_count, int projection_camera_count,
-                            int rope_emitter_count, int terrain_count)
+                            int rope_emitter_count, int terrain_count, int directional_light_count)
 {
     // Verify counts match the snapshot (mismatch means the clipboard state diverged).
     // This is the safety guard for the selection-ordering assumption: if anything is
@@ -238,10 +248,11 @@ static void fix_paste_links(CDedLevel* level, int stock_count, int mesh_count,
         weather_region_count != static_cast<int>(g_copy_weather_region_entries.size()) ||
         projection_camera_count != static_cast<int>(g_copy_projection_camera_entries.size()) ||
         rope_emitter_count != static_cast<int>(g_copy_rope_emitter_entries.size()) ||
-        terrain_count != static_cast<int>(g_copy_terrain_entries.size())) {
+        terrain_count != static_cast<int>(g_copy_terrain_entries.size()) ||
+        directional_light_count != static_cast<int>(g_copy_directional_light_entries.size())) {
         xlog::warn("[AlpineObj] Paste link fixup skipped: count mismatch "
             "(stock {}/{}, mesh {}/{}, note {}/{}, corona {}/{}, bag {}/{}, weather region {}/{}, "
-            "projection camera {}/{}, rope emitter {}/{}, terrain {}/{})",
+            "projection camera {}/{}, rope emitter {}/{}, terrain {}/{}, directional light {}/{})",
             stock_count, g_copy_stock_entries.size(),
             mesh_count, g_copy_mesh_entries.size(),
             note_count, g_copy_note_entries.size(),
@@ -250,16 +261,18 @@ static void fix_paste_links(CDedLevel* level, int stock_count, int mesh_count,
             weather_region_count, g_copy_weather_region_entries.size(),
             projection_camera_count, g_copy_projection_camera_entries.size(),
             rope_emitter_count, g_copy_rope_emitter_entries.size(),
-            terrain_count, g_copy_terrain_entries.size());
+            terrain_count, g_copy_terrain_entries.size(),
+            directional_light_count, g_copy_directional_light_entries.size());
         return;
     }
 
     bool has_alpine = (mesh_count + note_count + corona_count + bag_count + weather_region_count
-        + projection_camera_count + rope_emitter_count + terrain_count) > 0;
+        + projection_camera_count + rope_emitter_count + terrain_count + directional_light_count) > 0;
 
     auto& sel = level->selection;
     int total = stock_count + mesh_count + note_count + corona_count + bag_count
-        + weather_region_count + projection_camera_count + rope_emitter_count + terrain_count;
+        + weather_region_count + projection_camera_count + rope_emitter_count + terrain_count
+        + directional_light_count;
     if (sel.size < total) return;
 
     // Build old_uid → new_uid mapping from all entry lists.
@@ -286,6 +299,8 @@ static void fix_paste_links(CDedLevel* level, int stock_count, int mesh_count,
         uid_map[g_copy_rope_emitter_entries[i].original_uid] = sel.data_ptr[idx]->uid;
     for (int i = 0; i < terrain_count; i++, idx++)
         uid_map[g_copy_terrain_entries[i].original_uid] = sel.data_ptr[idx]->uid;
+    for (int i = 0; i < directional_light_count; i++, idx++)
+        uid_map[g_copy_directional_light_entries[i].original_uid] = sel.data_ptr[idx]->uid;
 
     // An event UID field follows its referent only when that was pasted too; otherwise it keeps
     // naming the original, like a link to an object outside the copy.
@@ -342,6 +357,7 @@ static void fix_paste_links(CDedLevel* level, int stock_count, int mesh_count,
     apply_links(g_copy_projection_camera_entries, projection_camera_count, idx);
     apply_links(g_copy_rope_emitter_entries, rope_emitter_count, idx);
     apply_links(g_copy_terrain_entries, terrain_count, idx);
+    apply_links(g_copy_directional_light_entries, directional_light_count, idx);
 
     // A rope's far anchor is a UID reference outside the links array, so it needs the same
     // translation. Pasting a rope without its target leaves the reference pointing at the
@@ -353,9 +369,9 @@ static void fix_paste_links(CDedLevel* level, int stock_count, int mesh_count,
     }
 
     xlog::trace("[AlpineObj] Fixed paste links for {} stock + {} mesh + {} note + {} corona + {} bag "
-        "+ {} weather region + {} projection camera + {} rope emitter + {} terrain objects",
+        "+ {} weather region + {} projection camera + {} rope emitter + {} terrain + {} directional light objects",
         stock_count, mesh_count, note_count, corona_count, bag_count, weather_region_count,
-        projection_camera_count, rope_emitter_count, terrain_count);
+        projection_camera_count, rope_emitter_count, terrain_count, directional_light_count);
 }
 
 // ─── UID Generation ─────────────────────────────────────────────────────────
@@ -377,6 +393,7 @@ FunHook<int()> alpine_generate_uid_hook{
             projection_camera_ensure_uid(uid);
             rope_emitter_ensure_uid(uid);
             terrain_ensure_uid(uid);
+            directional_light_ensure_uid(uid);
         }
         return uid;
     },
@@ -436,6 +453,18 @@ CodeInjection alpine_properties_patch{
             regs.eip = 0x00402293;
             return;
         }
+        if (regs.eax == static_cast<int>(DedObjectType::DED_DIRECTIONAL_LIGHT)) {
+            auto* level = reinterpret_cast<CDedLevel*>(static_cast<uintptr_t>(regs.esi));
+            ShowDirectionalLightPropertiesDialog(level);
+            regs.eip = 0x00402293;
+            return;
+        }
+        if (regs.eax == static_cast<int>(DedObjectType::DED_SUN_ARROW)) {
+            auto* level = reinterpret_cast<CDedLevel*>(static_cast<uintptr_t>(regs.esi));
+            level->show_level_properties_dialog();
+            regs.eip = 0x00402293;
+            return;
+        }
     },
 };
 
@@ -461,6 +490,7 @@ CodeInjection alpine_tree_patch{
         projection_camera_tree_populate(tree, master_groups, level);
         rope_emitter_tree_populate(tree, master_groups, level);
         terrain_tree_populate(tree, master_groups, level);
+        directional_light_tree_populate(tree, master_groups, level);
         tree->sort_children(master_groups);
     },
 };
@@ -487,6 +517,7 @@ CodeInjection alpine_pick_patch{
         projection_camera_pick(level, param1, param2);
         rope_emitter_pick(level, param1, param2);
         terrain_pick(level, param1, param2);
+        directional_light_pick(level, param1, param2);
     },
 };
 
@@ -535,6 +566,9 @@ CodeInjection alpine_click_pick_patch{
 
             // Check terrain objects by their origin handle using fixed screen radius
             DedTerrain* best_terrain = terrain_click_pick(level, click_x, click_y);
+
+            DedDirectionalLight* best_directional_light = directional_light_click_pick(level, click_x, click_y);
+            DedSunArrow* best_sun_arrow = sun_arrow_click_pick(click_x, click_y);
 
             // Determine best Alpine hit
             DedObject* best_alpine = nullptr;
@@ -635,6 +669,21 @@ CodeInjection alpine_click_pick_patch{
                 }
             }
 
+            for (DedObject* point_obj : {static_cast<DedObject*>(best_directional_light),
+                                         static_cast<DedObject*>(best_sun_arrow)}) {
+                if (!point_obj) continue;
+                float obj_pos[3] = {point_obj->pos.x, point_obj->pos.y, point_obj->pos.z};
+                float osx = 0.0f, osy = 0.0f;
+                if (project_to_screen_2d(obj_pos, &osx, &osy)) {
+                    float odx = osx - click_x, ody = osy - click_y;
+                    float obj_dist = odx * odx + ody * ody;
+                    if (!best_alpine || obj_dist < best_dist_sq) {
+                        best_alpine = point_obj;
+                        best_dist_sq = obj_dist;
+                    }
+                }
+            }
+
             // Nothing with a handle under the cursor: fall back to a terrain surface.
             if (!best_alpine) {
                 best_alpine = terrain_surface_pick(*level, click_x, click_y);
@@ -693,6 +742,7 @@ CodeInjection alpine_copy_begin_hook{
         projection_camera_clear_clipboard();
         rope_emitter_clear_clipboard();
         terrain_clear_clipboard();
+        directional_light_clear_clipboard();
         capture_copy_link_snapshot();
     },
 };
@@ -744,6 +794,15 @@ CodeInjection alpine_copy_hook{
             terrain_copy_object(source);
             regs.eip = 0x00412edb;
         }
+        else if (source && source->type == DedObjectType::DED_DIRECTIONAL_LIGHT) {
+            regs.ebx = reinterpret_cast<uintptr_t>(source);
+            directional_light_copy_object(source);
+            regs.eip = 0x00412edb;
+        }
+        else if (source && source->type == DedObjectType::DED_SUN_ARROW) {
+            regs.ebx = reinterpret_cast<uintptr_t>(source);
+            regs.eip = 0x00412edb;
+        }
     },
 };
 
@@ -792,27 +851,117 @@ static void __fastcall alpine_paste_wrapper(void* ecx_level, void* /*edx_unused*
         - corona_count - bag_count - weather_region_count - projection_camera_count
         - rope_emitter_count;
 
+    directional_light_paste_objects(level);
+    int directional_light_count = level->selection.size - stock_count - mesh_count - note_count
+        - corona_count - bag_count - weather_region_count - projection_camera_count
+        - rope_emitter_count - terrain_count;
+
     // Fix links that the stock paste missed (involving alpine object types)
     fix_paste_links(level, stock_count, mesh_count, note_count, corona_count, bag_count,
-        weather_region_count, projection_camera_count, rope_emitter_count, terrain_count);
+        weather_region_count, projection_camera_count, rope_emitter_count, terrain_count,
+        directional_light_count);
 }
 
 // ─── Delete / Cut ───────────────────────────────────────────────────────────
 
-// Flags to detect delete and cut operations in FUN_0041be70.
-static bool g_alpine_delete_mode = false;
-static bool g_alpine_cut_mode = false;
+static std::vector<DedObject*> g_graveyard;
 
-// Hook FUN_0041bd00 to detect delete/cut mode before FUN_0041bbb0 processes selection items.
-CodeInjection alpine_delete_mode_patch{
+static void alpine_destroy_object(DedObject* obj)
+{
+    switch (obj->type) {
+        case DedObjectType::DED_MESH:
+            DestroyDedMesh(static_cast<DedMesh*>(obj));
+            break;
+        case DedObjectType::DED_NOTE:
+            DestroyDedNote(static_cast<DedNote*>(obj));
+            break;
+        case DedObjectType::DED_CORONA:
+            DestroyDedCorona(static_cast<DedCorona*>(obj));
+            break;
+        case DedObjectType::DED_BAG:
+            DestroyDedBag(static_cast<DedBag*>(obj));
+            break;
+        case DedObjectType::DED_WEATHER_REGION:
+            DestroyDedWeatherRegion(static_cast<DedWeatherRegion*>(obj));
+            break;
+        case DedObjectType::DED_PROJECTION_CAMERA:
+            DestroyDedProjectionCamera(static_cast<DedProjectionCamera*>(obj));
+            break;
+        case DedObjectType::DED_ROPE_EMITTER:
+            DestroyDedRopeEmitter(static_cast<DedRopeEmitter*>(obj));
+            break;
+        case DedObjectType::DED_TERRAIN:
+            DestroyDedTerrain(static_cast<DedTerrain*>(obj));
+            break;
+        case DedObjectType::DED_DIRECTIONAL_LIGHT:
+            DestroyDedDirectionalLight(static_cast<DedDirectionalLight*>(obj));
+            break;
+        default:
+            break;
+    }
+}
+
+void alpine_graveyard_add(DedObject* obj)
+{
+    if (!obj || !is_alpine_type(obj->type)) return;
+    // Undo of a create and redo of a delete unlink without stock's group removal; a group must not outlive its object.
+    if (auto* level = CDedLevel::Get()) {
+        alpine_remove_from_groups(level, obj);
+    }
+    if (std::find(g_graveyard.begin(), g_graveyard.end(), obj) != g_graveyard.end()) return;
+    if (obj->type == DedObjectType::DED_MESH) {
+        mesh_release_vmesh(static_cast<DedMesh*>(obj));
+    }
+    else if (obj->type == DedObjectType::DED_TERRAIN) {
+        terrain_release_editor_state(static_cast<DedTerrain*>(obj));
+    }
+    g_graveyard.push_back(obj);
+}
+
+static bool graveyard_take(const DedObject* obj)
+{
+    auto it = std::find(g_graveyard.begin(), g_graveyard.end(), obj);
+    if (it == g_graveyard.end()) return false;
+    g_graveyard.erase(it);
+    return true;
+}
+
+void alpine_graveyard_clear()
+{
+    std::vector<DedObject*> dead;
+    dead.swap(g_graveyard);
+    for (auto* obj : dead) {
+        alpine_destroy_object(obj);
+    }
+}
+
+// FUN_0041c360 frees an object that undo cleanup (aging, redo flush, DeleteContents) found detached.
+void __fastcall level_destroy_object_hooked(CDedLevel* level, int edx, DedObject* obj);
+FunHook<decltype(level_destroy_object_hooked)> level_destroy_object_hook{
+    0x0041c360,
+    level_destroy_object_hooked,
+};
+void __fastcall level_destroy_object_hooked(CDedLevel* level, int edx, DedObject* obj)
+{
+    // Live Alpine objects (and the sun arrow) are the Alpine side's to free; the stock body would free
+    // [obj+0xC] as a vmesh.
+    if (static_cast<uint32_t>(obj->type) > static_cast<uint32_t>(DedObjectType::DED_PUSH_REGION)) {
+        if (graveyard_take(obj)) {
+            alpine_destroy_object(obj);
+        }
+        return;
+    }
+    level_destroy_object_hook.call_target(level, edx, obj);
+}
+
+// Delete and Cut (FUN_0041bd00) never take the sun arrow.
+CodeInjection alpine_delete_strip_sun_arrow_patch{
     0x0041bd00,
     [](auto& regs) {
-        auto esp_val = static_cast<uintptr_t>(regs.esp);
-        auto param_2 = *reinterpret_cast<int*>(esp_val + 4);
         auto* level = reinterpret_cast<CDedLevel*>(static_cast<uintptr_t>(regs.ecx));
-        const bool object_mode = level->edit_mode == DedEditMode::Object;
-        g_alpine_delete_mode = (object_mode && param_2 == 1);
-        g_alpine_cut_mode = (object_mode && param_2 == 0);
+        if (level->edit_mode == DedEditMode::Object || level->edit_mode == DedEditMode::Group) {
+            sun_arrow_remove_from_selection(level);
+        }
     },
 };
 
@@ -847,6 +996,10 @@ CodeInjection alpine_paste_finalize_patch{
         else if (obj && obj->type == DedObjectType::DED_TERRAIN) {
             terrain_handle_delete_or_cut(obj);
         }
+        else if (obj && obj->type == DedObjectType::DED_DIRECTIONAL_LIGHT) {
+            directional_light_handle_delete_or_cut(obj);
+        }
+        alpine_graveyard_add(obj);
     },
 };
 
@@ -860,6 +1013,33 @@ CodeInjection alpine_undo_readd_patch{
         auto* level = CDedLevel::Get();
         if (!level) return;
         auto& props = level->GetAlpineLevelProperties();
+        if (obj->type == DedObjectType::DED_TERRAIN) {
+            auto* terrain = static_cast<DedTerrain*>(obj);
+            auto& terrains = props.terrain_objects;
+            if (std::find(terrains.begin(), terrains.end(), terrain) == terrains.end()) {
+                bool restore = terrain_can_restore(level, *terrain);
+                if (restore) {
+                    try {
+                        terrains.reserve(terrains.size() + 1);
+                    }
+                    catch (const std::bad_alloc&) {
+                        restore = false;
+                    }
+                }
+                if (!restore) {
+                    // Stays in the graveyard, out of every list; level_undo_apply_hooked reports it.
+                    // 0x004157dd is the epilogue past the master_objects add and the selection.
+                    regs.eip = 0x004157dd;
+                    return;
+                }
+                terrains.push_back(terrain);
+            }
+            graveyard_take(obj);
+            return;
+        }
+        if (is_alpine_type(obj->type)) {
+            graveyard_take(obj);
+        }
         if (obj->type == DedObjectType::DED_MESH) {
             auto* mesh = static_cast<DedMesh*>(obj);
             if (std::find(props.mesh_objects.begin(), props.mesh_objects.end(), mesh)
@@ -911,15 +1091,43 @@ CodeInjection alpine_undo_readd_patch{
                 props.rope_emitter_objects.push_back(rope);
             }
         }
-        else if (obj->type == DedObjectType::DED_TERRAIN) {
-            auto* terrain = static_cast<DedTerrain*>(obj);
-            if (std::find(props.terrain_objects.begin(), props.terrain_objects.end(), terrain)
-                == props.terrain_objects.end()) {
-                props.terrain_objects.push_back(terrain);
+        else if (obj->type == DedObjectType::DED_DIRECTIONAL_LIGHT) {
+            auto* light = static_cast<DedDirectionalLight*>(obj);
+            if (std::find(props.directional_light_objects.begin(), props.directional_light_objects.end(), light)
+                == props.directional_light_objects.end()) {
+                props.directional_light_objects.push_back(light);
             }
         }
     },
 };
+
+// FUN_0043d550 re-adds an undo record's objects through the injection above (for Alpine objects only ever
+// an undo of a delete: no create record holds one); any terrain it refused is still out of the level.
+void __fastcall level_undo_apply_hooked(CDedLevel* level, int edx, UndoEntry* record);
+FunHook<decltype(level_undo_apply_hooked)> level_undo_apply_hook{
+    0x0043d550,
+    level_undo_apply_hooked,
+};
+void __fastcall level_undo_apply_hooked(CDedLevel* level, int edx, UndoEntry* record)
+{
+    level_undo_apply_hook.call_target(level, edx, record);
+    const auto& terrains = level->GetAlpineLevelProperties().terrain_objects;
+    int refused = 0;
+    for (int i = 0; i < record->objects.size; i++) {
+        DedObject* obj = record->objects.data_ptr[i];
+        if (obj && obj->type == DedObjectType::DED_TERRAIN
+            && std::find(terrains.begin(), terrains.end(), static_cast<DedTerrain*>(obj)) == terrains.end()) {
+            refused++;
+        }
+    }
+    if (refused > 0) {
+        try {
+            terrain_report_not_restored(refused);
+        }
+        catch (const std::bad_alloc&) {
+        }
+    }
+}
 
 // Check if an object is the sole non-keyframe member of a moving group
 static bool is_sole_moving_group_member(CDedLevel* level, DedObject* obj)
@@ -938,22 +1146,22 @@ static bool is_sole_moving_group_member(CDedLevel* level, DedObject* obj)
     return false;
 }
 
-// Hook the delete command handler (command ID 0x8018) at 0x00448690.
-// Before stock code runs, remove Alpine objects from the selection and delete them.
-CodeInjection alpine_delete_patch{
-    0x00448690,
-    [](auto& regs) {
-        auto* level = CDedLevel::Get();
-        if (!level) return;
+// Create Group (FUN_00415b20) and Add To Group (FUN_00415e20) copy the whole selection into the group, so
+// the sun arrow leaves the selection first. With nothing else selected Create Group makes an empty group,
+// as it does for an empty selection.
+CallHook<void __fastcall(CDedLevel*)> alpine_create_group_hook{
+    0x004404da,
+    [](CDedLevel* level) FASTCALL_LAMBDA {
+        sun_arrow_remove_from_selection(level);
+        alpine_create_group_hook.call_target(level);
+    },
+};
 
-        note_handle_delete_selection(level);
-        mesh_handle_delete_selection(level);
-        corona_handle_delete_selection(level);
-        bag_handle_delete_selection(level);
-        weather_region_handle_delete_selection(level);
-        projection_camera_handle_delete_selection(level);
-        rope_emitter_handle_delete_selection(level);
-        terrain_handle_delete_selection(level);
+CallHook<void __fastcall(CDedLevel*, int, void*)> alpine_add_to_group_hook{
+    0x00441f92,
+    [](CDedLevel* level, int edx, void* group) FASTCALL_LAMBDA {
+        sun_arrow_remove_from_selection(level);
+        alpine_add_to_group_hook.call_target(level, edx, group);
     },
 };
 
@@ -972,12 +1180,14 @@ CodeInjection alpine_object_tree_patch{
         projection_camera_tree_add_object_type(tree);
         rope_emitter_tree_add_object_type(tree);
         terrain_tree_add_object_type(tree);
+        directional_light_tree_add_object_type(tree);
         tree->sort_children(static_cast<int>(reinterpret_cast<intptr_t>(TVI_ROOT)));
     },
 };
 
 // Track which Alpine object type the tree view is creating.
-// 0=Mesh, 2=Note, 3=Corona, 4=Bag, 5=Weather Region, 6=reserved, 7=Projection Camera, 8=Rope Emitter, 9=Terrain
+// 0=Mesh, 2=Note, 3=Corona, 4=Bag, 5=Weather Region, 6=reserved, 7=Projection Camera, 8=Rope Emitter, 9=Terrain,
+// 10=Directional Light
 static int g_alpine_create_type = 0;
 
 // Hook factory FUN_00442a40 to detect Alpine object types by tree item text.
@@ -1020,6 +1230,9 @@ int __fastcall alpine_factory_hooked(void* ecx_panel, void* edx, void* tree_item
         else if (strcmp(text, "Terrain") == 0) {
             g_alpine_create_type = 9;
         }
+        else if (strcmp(text, "Directional Light") == 0) {
+            g_alpine_create_type = 10;
+        }
     }
 
     return alpine_factory_hook.call_target(ecx_panel, edx, tree_item);
@@ -1052,6 +1265,9 @@ CodeInjection alpine_create_object_patch{
             else if (g_alpine_create_type == 9) {
                 PlaceNewTerrainObject();
             }
+            else if (g_alpine_create_type == 10) {
+                PlaceNewDirectionalLightObject();
+            }
             else {
                 PlaceNewMeshObject();
             }
@@ -1082,6 +1298,8 @@ CodeInjection alpine_render_patch{
         auto* level = CDedLevel::Get();
         if (!level) return;
 
+        sun_arrow_sync(level);
+
         mesh_render(level);
         note_render(level);
         corona_render(level);
@@ -1090,6 +1308,8 @@ CodeInjection alpine_render_patch{
         projection_camera_render(level);
         rope_emitter_render(level);
         terrain_render(level);
+        directional_light_render(level);
+        sun_arrow_render(level);
     },
 };
 
@@ -1128,6 +1348,8 @@ const char* get_type_display_name(DedObjectType type)
         case DedObjectType::DED_PROJECTION_CAMERA:  return "Projection Camera";
         case DedObjectType::DED_ROPE_EMITTER:       return "Rope Emitter";
         case DedObjectType::DED_TERRAIN:            return "Terrain";
+        case DedObjectType::DED_DIRECTIONAL_LIGHT:  return "Directional Light";
+        case DedObjectType::DED_SUN_ARROW:          return "Sun";
         default:                                    return "Unknown";
     }
 }
@@ -1144,6 +1366,7 @@ static const struct { DedObjectType type; const char* label; } g_type_filters[] 
     {DedObjectType::DED_CORONA,           "Coronas"},
     {DedObjectType::DED_CUTSCENE_CAMERA,  "Cutscene Cameras"},
     {DedObjectType::DED_DECAL,            "Decals"},
+    {DedObjectType::DED_DIRECTIONAL_LIGHT, "Directional Lights"},
     {DedObjectType::DED_EAX_EFFECT,       "EAX Effects"},
     {DedObjectType::DED_ENTITY,           "Entities"},
     {DedObjectType::DED_EVENT,            "Events"},
@@ -1238,7 +1461,7 @@ static void collect_all_objects(CDedLevel* level, bool include_hidden,
     for (int i = 0; i < mg.size; i++) {
         auto* group = mg.data_ptr[i];
         if (!group || !group->keyframes) continue;
-        auto& kfs = *group->keyframes;
+        auto& kfs = group->keyframes->objects;
         for (int j = 0; j < kfs.size; j++)
             add_obj(kfs.data_ptr[j]);
     }
@@ -1267,7 +1490,7 @@ static void count_objects_by_type(CDedLevel* level, int counts[])
     for (int i = 0; i < mg.size; i++) {
         auto* group = mg.data_ptr[i];
         if (!group || !group->keyframes) continue;
-        auto& kfs = *group->keyframes;
+        auto& kfs = group->keyframes->objects;
         for (int j = 0; j < kfs.size; j++)
             bump(kfs.data_ptr[j]);
     }
@@ -2324,7 +2547,7 @@ void alpine_hide_objects(CDedLevel* level)
 // FUN_00435630 (per-group serializer) has a switch on obj->type that handles types 0..0x16.
 // Alpine types (0x17=DED_MESH, 0x18=DED_NOTE, 0x19=DED_CORONA, 0x1A=DED_BAG,
 // 0x1B=DED_WEATHER_REGION, 0x1D=DED_PROJECTION_CAMERA, 0x1E=DED_ROPE_EMITTER,
-// 0x1F=DED_TERRAIN) fall through and are silently dropped.
+// 0x1F=DED_TERRAIN, 0x20=DED_DIRECTIONAL_LIGHT) fall through and are silently dropped.
 static std::vector<DedMesh*> g_group_save_meshes;
 static std::vector<DedNote*> g_group_save_notes;
 static std::vector<DedCorona*> g_group_save_coronas;
@@ -2333,6 +2556,7 @@ static std::vector<DedWeatherRegion*> g_group_save_weather_regions;
 static std::vector<DedProjectionCamera*> g_group_save_projection_cameras;
 static std::vector<DedRopeEmitter*> g_group_save_rope_emitters;
 static std::vector<DedTerrain*> g_group_save_terrains;
+static std::vector<DedDirectionalLight*> g_group_save_directional_lights;
 
 // Brush UIDs captured in serialization order during group save.
 // Used to write brush metadata (geoable/breakable flags) to the .rfg brush group chunk.
@@ -2353,6 +2577,7 @@ CodeInjection alpine_group_save_clear_hook{
         g_group_save_projection_cameras.clear();
         g_group_save_rope_emitters.clear();
         g_group_save_terrains.clear();
+        g_group_save_directional_lights.clear();
         g_group_save_brush_uids.clear();
     },
 };
@@ -2393,6 +2618,8 @@ CodeInjection alpine_group_type_collect_hook{
                 g_group_save_rope_emitters.push_back(static_cast<DedRopeEmitter*>(obj));
             else if (type == static_cast<int>(DedObjectType::DED_TERRAIN))
                 g_group_save_terrains.push_back(static_cast<DedTerrain*>(obj));
+            else if (type == static_cast<int>(DedObjectType::DED_DIRECTIONAL_LIGHT))
+                g_group_save_directional_lights.push_back(static_cast<DedDirectionalLight*>(obj));
             regs.eip = 0x00435be1; // skip to loop continue
         }
         // types <= 0x16 fall through to jump table at 0x00435a88
@@ -2461,6 +2688,14 @@ CodeInjection alpine_group_save_hook{
                 g_group_save_rope_emitters.end());
             rope_emitter_serialize_chunk(*level, *file);
             props.rope_emitter_objects = std::move(saved);
+        }
+
+        if (!g_group_save_directional_lights.empty()) {
+            auto saved = std::move(props.directional_light_objects);
+            props.directional_light_objects.assign(g_group_save_directional_lights.begin(),
+                g_group_save_directional_lights.end());
+            directional_light_serialize_chunk(*level, *file);
+            props.directional_light_objects = std::move(saved);
         }
 
         if (!g_group_save_terrains.empty()) {
@@ -2543,7 +2778,7 @@ CodeInjection alpine_group_save_hook{
         }
 
         xlog::info("[AlpineObj] Saved {} meshes, {} notes, {} coronas, {} bags, {} weather regions, "
-            "{} projection cameras, {} rope emitters, {} terrains to group",
+            "{} projection cameras, {} rope emitters, {} terrains, {} directional lights to group",
             g_group_save_meshes.size(),
             g_group_save_notes.size(),
             g_group_save_coronas.size(),
@@ -2551,7 +2786,8 @@ CodeInjection alpine_group_save_hook{
             g_group_save_weather_regions.size(),
             g_group_save_projection_cameras.size(),
             g_group_save_rope_emitters.size(),
-            g_group_save_terrains.size()
+            g_group_save_terrains.size(),
+            g_group_save_directional_lights.size()
         );
 
         g_group_save_meshes.clear();
@@ -2562,6 +2798,7 @@ CodeInjection alpine_group_save_hook{
         g_group_save_projection_cameras.clear();
         g_group_save_rope_emitters.clear();
         g_group_save_terrains.clear();
+        g_group_save_directional_lights.clear();
         g_group_save_brush_uids.clear();
     },
 };
@@ -2653,6 +2890,7 @@ CodeInjection alpine_group_load_hook{
         auto projection_camera_start = props.projection_camera_objects.size();
         auto rope_emitter_start = props.rope_emitter_objects.size();
         auto terrain_start = props.terrain_objects.size();
+        auto directional_light_start = props.directional_light_objects.size();
 
         // Brush group entries parsed from the .rfg brush metadata chunk.
         std::vector<BrushGroupEntry> brush_group_entries;
@@ -2688,6 +2926,9 @@ CodeInjection alpine_group_load_hook{
             }
             else if (chunk_id == alpine_rope_emitter_chunk_id) {
                 rope_emitter_deserialize_chunk(*level, *file, chunk_size);
+            }
+            else if (chunk_id == alpine_directional_light_chunk_id) {
+                directional_light_deserialize_chunk(*level, *file, chunk_size, MAXIMUM_RFL_VERSION);
             }
             else if (chunk_id == alpine_terrain_chunk_id) {
                 if (!terrain_deserialize_chunk(*level, *file, chunk_size, true))
@@ -2761,6 +3002,8 @@ CodeInjection alpine_group_load_hook{
         int projection_cameras_loaded = static_cast<int>(props.projection_camera_objects.size() - projection_camera_start);
         int rope_emitters_loaded = static_cast<int>(props.rope_emitter_objects.size() - rope_emitter_start);
         int terrains_loaded = static_cast<int>(props.terrain_objects.size() - terrain_start);
+        int directional_lights_loaded =
+            static_cast<int>(props.directional_light_objects.size() - directional_light_start);
         bool has_brush_props = !brush_group_entries.empty();
 
         if (!meshes_loaded &&
@@ -2771,6 +3014,7 @@ CodeInjection alpine_group_load_hook{
             !projection_cameras_loaded &&
             !rope_emitters_loaded &&
             !terrains_loaded &&
+            !directional_lights_loaded &&
             !has_brush_props) {
             // A stock-only group can carry bolt emitters and UID-referencing events.
             remap_imported_uid_refs(level, {}, rope_emitter_start);
@@ -2799,6 +3043,7 @@ CodeInjection alpine_group_load_hook{
         renumber(props.projection_camera_objects, projection_camera_start);
         renumber(props.rope_emitter_objects, rope_emitter_start);
         renumber(props.terrain_objects, terrain_start);
+        renumber(props.directional_light_objects, directional_light_start);
 
         // Unfiltered copy for references stock never rewrote (rope targets, event UID fields), which
         // still hold source UIDs, so the ambiguity filter below would wrongly drop a correct renumbering.
@@ -2857,6 +3102,8 @@ CodeInjection alpine_group_load_hook{
             level->add_to_selection(static_cast<DedObject*>(props.rope_emitter_objects[i]));
         for (auto i = terrain_start; i < props.terrain_objects.size(); i++)
             level->add_to_selection(static_cast<DedObject*>(props.terrain_objects[i]));
+        for (auto i = directional_light_start; i < props.directional_light_objects.size(); i++)
+            level->add_to_selection(static_cast<DedObject*>(props.directional_light_objects[i]));
 
         // Refresh console display to include newly selected Alpine objects
         // (stock FUN_00423460 runs inside FUN_00438340, before our hook loads them)
@@ -2894,6 +3141,8 @@ CodeInjection alpine_group_load_hook{
                     entry->objects.push_back(static_cast<DedObject*>(props.rope_emitter_objects[i]));
                 for (auto i = terrain_start; i < props.terrain_objects.size(); i++)
                     entry->objects.push_back(static_cast<DedObject*>(props.terrain_objects[i]));
+                for (auto i = directional_light_start; i < props.directional_light_objects.size(); i++)
+                    entry->objects.push_back(static_cast<DedObject*>(props.directional_light_objects[i]));
 
                 // Apply brush group properties: map serialization index → final brush UID
                 // via the group entry's brushes VArray (same order as serialized).
@@ -2940,9 +3189,9 @@ CodeInjection alpine_group_load_hook{
         }
 
         xlog::info("[AlpineObj] Loaded {} meshes, {} notes, {} coronas, {} bags, {} weather regions, "
-            "{} projection cameras, {} rope emitters, {} terrains from group",
+            "{} projection cameras, {} rope emitters, {} terrains, {} directional lights from group",
             meshes_loaded, notes_loaded, coronas_loaded, bags_loaded, weather_regions_loaded,
-            projection_cameras_loaded, rope_emitters_loaded, terrains_loaded);
+            projection_cameras_loaded, rope_emitters_loaded, terrains_loaded, directional_lights_loaded);
     },
 };
 
@@ -2958,10 +3207,13 @@ void ApplyAlpineObjectPatches()
     alpine_copy_begin_hook.install();
     alpine_copy_hook.install();
     AsmWriter(0x00448659).jmp(alpine_paste_wrapper);
-    alpine_delete_mode_patch.install();
+    alpine_delete_strip_sun_arrow_patch.install();
     alpine_paste_finalize_patch.install();
     alpine_undo_readd_patch.install();
-    alpine_delete_patch.install();
+    level_undo_apply_hook.install();
+    level_destroy_object_hook.install();
+    alpine_create_group_hook.install();
+    alpine_add_to_group_hook.install();
     alpine_object_tree_patch.install();
     alpine_factory_hook.install();
     alpine_create_object_patch.install();

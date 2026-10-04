@@ -33,6 +33,8 @@ set(SRCS
     weather_region.h
     projection_camera.cpp
     projection_camera.h
+    dir_light.cpp
+    dir_light.h
     rope_emitter.cpp
     rope_emitter.h
     terrain.cpp

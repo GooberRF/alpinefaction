@@ -325,6 +325,8 @@ set(SRCS
     object/alpine_projection_camera.h
     object/alpine_rope.cpp
     object/alpine_rope.h
+    object/alpine_dir_light.cpp
+    object/alpine_dir_light.h
     object/clock.cpp
     misc/achievements.h
     misc/achievements.cpp

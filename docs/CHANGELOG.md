@@ -10,8 +10,7 @@ Version 1.5.0 (Trillium): Not yet released
   - Add `No shadow cast` brush property for solid detail brushes and movers
   - Add `Meshes block light` level property to make Alpine Mesh objects cast baked shadows
   - Add `No shadow cast` checkbox to Alpine Mesh object properties to exclude individual objects
-- Add per-level directional sunlight, configured in the `Sunlight` section of Level Properties
-  - `Directional sunlight` checkbox, with `Yaw`, `Pitch`, `Intensity`, `Spread` (soft shadow angle) and `Color` fields, plus a `Set from camera` button that takes the sun direction from the perspective viewport
+- Add global per-level directional sunlight and individual `Directional Light` objects with bounded ranges
   - `Casts shadows (lightmaps)` bakes the sun into the level's lightmaps with ray traced shadows
   - `Affects mesh lighting` lights meshes and entities per pixel from the sun direction, with `Scale mesh sunlight by lightmaps` to keep sunlight out of unlit interiors
   - `Aligns dynamic shadows` points entity shadows along the sun instead of the fixed default direction
@@ -79,6 +78,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Improve level loading and `Build Geometry` times in the level editor on levels with many faces
 - Draw large rooms in fewer draw calls, and skip rooms without dynamic decals when drawing them (Direct3D 11 renderer only)
 - Make level editor refuse to open levels saved by a newer version of Alpine Faction instead of misreading them
+- Allow undoing deletion of Alpine objects in the level editor
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Add `ui_color_console` console command to set the console background color
@@ -160,6 +160,10 @@ Version 1.5.0 (Trillium): Not yet released
 - Fix geomod crater relighting converting lightmap texels beyond the relit surface, which could write past the end of the lightmap for a surface at the bottom of a lightmap page
 - Fix a possible out-of-bounds read when drawing dynamic decals (Direct3D 11 renderer only)
 - Fix level editor crashing when more than 128 semi-transparent detail brushes in one room are in view
+- Fix possible level editor crash after deleting Alpine objects
+- Fix level editor leaking memory for Alpine mesh objects each time a level is created or opened
+- Fix shadows randomly appearing or disappearing in some level editor lightmap bakes
+- Fix level editor lightmap bakes sometimes drawing a light or dark streak across a light's glow on smoothed surfaces
 
 [@is-this-c](https://github.com/is-this-c)
 - Let `Caps Lock` capitalize
