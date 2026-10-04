@@ -854,7 +854,35 @@ void* __fastcall DedClutter_ct(void* this_, int edx)
     return result;
 }
 
-// Surface the silent clutter.tbl lookup failure above in the editor log.
+// An entry of the class list 0x004151C0 searches at this+0x5CC: the template is what a match copies from.
+struct RedClutterClass
+{
+    VString name;
+    void* template_clutter;
+};
+
+// 0x004B74E0: two empty strings match, otherwise a case-insensitive compare.
+static bool red_vstring_iequals(const VString& a, const VString& b)
+{
+    if (a.max_len == 0 || b.max_len == 0) {
+        return a.max_len == 0 && b.max_len == 0;
+    }
+    return _stricmp(a.buf, b.buf) == 0;
+}
+
+static bool red_clutter_class_known(void* level, const VString& class_name)
+{
+    const auto& classes = *reinterpret_cast<const VArray<RedClutterClass*>*>(static_cast<char*>(level) + 0x5CC);
+    for (int i = 0; i < classes.size; ++i) {
+        if (red_vstring_iequals(class_name, classes.data_ptr[i]->name)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Surface the silent failures above in the editor log: a class missing from clutter.tbl, or a known
+// class whose mesh did not load (0x004BFC30 returns null for that too).
 void __fastcall CDedLevel_AddClutter(void* this_, int edx, DedObject* obj, int flag);
 FunHook CDedLevel_AddClutter_hook{
     0x004151C0,
@@ -863,7 +891,13 @@ FunHook CDedLevel_AddClutter_hook{
 void __fastcall CDedLevel_AddClutter(void* this_, int edx, DedObject* obj, int flag)
 {
     CDedLevel_AddClutter_hook.call_target(this_, edx, obj, flag);
-    if (!obj->vmesh) {
+    if (obj->vmesh) {
+        return;
+    }
+    if (red_clutter_class_known(this_, obj->class_name)) {
+        LogDlg_Append(GetLogDlg(), "Clutter mesh failed to load: %s (UID %d)\n", obj->class_name.c_str(), obj->uid);
+    }
+    else {
         LogDlg_Append(GetLogDlg(), "Unknown clutter class: %s (UID %d)\n", obj->class_name.c_str(), obj->uid);
     }
 }

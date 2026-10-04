@@ -220,16 +220,28 @@ namespace
         }
     }
 
-    // Highest world-space Y of the local bbox once the object's orient is applied, relative to its origin.
-    float rotated_bbox_top(const rf::Vector3& bbox_min, const rf::Vector3& bbox_max, const rf::Matrix3& orient)
+    // World-height extent of the oriented box's eight corners, relative to its origin.
+    void rotated_bbox_height_range(const rf::Vector3& bbox_min, const rf::Vector3& bbox_max,
+                                   const rf::Matrix3& orient, float& out_bottom, float& out_top)
     {
-        float top = std::numeric_limits<float>::lowest();
+        out_bottom = std::numeric_limits<float>::max();
+        out_top = std::numeric_limits<float>::lowest();
         for (int c = 0; c < 8; ++c) {
             const float lx = (c & 1) ? bbox_max.x : bbox_min.x;
             const float ly = (c & 2) ? bbox_max.y : bbox_min.y;
             const float lz = (c & 4) ? bbox_max.z : bbox_min.z;
-            top = std::max(top, orient.rvec.y * lx + orient.uvec.y * ly + orient.fvec.y * lz);
+            const float y = orient.rvec.y * lx + orient.uvec.y * ly + orient.fvec.y * lz;
+            out_bottom = std::min(out_bottom, y);
+            out_top = std::max(out_top, y);
         }
+    }
+
+    // Highest world-space Y of the local bbox once the object's orient is applied, relative to its origin.
+    float rotated_bbox_top(const rf::Vector3& bbox_min, const rf::Vector3& bbox_max, const rf::Matrix3& orient)
+    {
+        float bottom = 0.0f;
+        float top = 0.0f;
+        rotated_bbox_height_range(bbox_min, bbox_max, orient, bottom, top);
         return top;
     }
 
@@ -541,8 +553,11 @@ static void vehicle_markers_render_pass(rf::GRoom* room_filter)
                 alpha_below += ghost_pulse_amplitude * (pulse * 2.0f - 1.0f);
             }
             const float progress = vehicle_factory_ui_progress(i, now);
-            const float fill_y =
-                info->pos.y + m.bbox_min.y + progress * (m.bbox_max.y - m.bbox_min.y);
+            // The shader compares WORLD height, so a pitched or rolled factory needs the oriented extent.
+            float bottom = 0.0f;
+            float top = 0.0f;
+            rotated_bbox_height_range(m.bbox_min, m.bbox_max, info->orient, bottom, top);
+            const float fill_y = info->pos.y + bottom + progress * (top - bottom);
             gr::render_ghost_mesh(m.mesh, info->pos, info->orient, alpha_below, ghost_alpha_above,
                                   fill_y, &team);
         }
