@@ -7,6 +7,8 @@ set(SRCS
     include/common/rfl_chunk_reader.h
     include/common/tlv.h
     include/common/scope_guard.h
+    include/common/vehicle_meshes.h
+    include/common/vehicle_orient.h
     include/common/config/BuildConfig.h
     include/common/config/CfgVar.h
     include/common/config/GameConfig.h
@@ -28,6 +30,7 @@ set(SRCS
     include/common/lightmap/alpine_lightmap.h
     include/common/lightmap/alpine_lightmap_decode.h
     include/common/lightmap/alpine_lightmap_reader.h
+    include/common/lighting/alpine_lighting.h
     include/common/terrain/alpine_terrain.h
     include/common/terrain/alpine_terrain_reader.h
     include/common/atx/spec.h

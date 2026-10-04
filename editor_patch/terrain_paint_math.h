@@ -77,6 +77,28 @@ inline std::uint32_t chunk_at(const at::ChunkLayout& l, float x, float z)
     return axis(z, l.cells_z, down) * across + axis(x, l.cells_x, across);
 }
 
+// Clips the segment (x0, z0)-(x1, z1) to [0, w] x [0, h] (Liang-Barsky). False when none of it is inside.
+inline bool clip_segment(float& x0, float& z0, float& x1, float& z1, float w, float h)
+{
+    const float dx = x1 - x0, dz = z1 - z0;
+    float t0 = 0.0f, t1 = 1.0f;
+    // p * t <= q for t in [t0, t1]
+    auto edge = [&](float p, float q) {
+        if (p == 0.0f) return q >= 0.0f;
+        const float t = q / p;
+        if (p < 0.0f) t0 = std::max(t0, t);
+        else t1 = std::min(t1, t);
+        return t0 <= t1;
+    };
+    if (!(edge(-dx, x0) && edge(dx, w - x0) && edge(-dz, z0) && edge(dz, h - z0))) return false;
+    const float ax = x0, az = z0;
+    x0 = ax + t0 * dx;
+    z0 = az + t0 * dz;
+    x1 = ax + t1 * dx;
+    z1 = az + t1 * dz;
+    return true;
+}
+
 // visit(k) for every chunk whose closed cell rect the segment (x0, z0)-(x1, z1) touches.
 template<typename Visit>
 void chunks_on_segment(const at::ChunkLayout& l, float x0, float z0, float x1, float z1, Visit&& visit)
@@ -188,31 +210,237 @@ struct Dab
     Falloff falloff = Falloff::smooth;
 };
 
-// Samples of `count` along one axis whose centres, at (i + 0.5) / per_cell cells, lie within the dab.
-inline void dab_span(float c, float r, std::uint32_t per_cell, std::uint32_t count, std::uint32_t& lo,
-                     std::uint32_t& hi)
+// At sample (i, j), which may lie off the grid.
+inline float dab_amount(const Dab& d, std::uint32_t per_cell, float i, float j)
 {
-    const float a = (c - r) * static_cast<float>(per_cell) - 0.5f;
-    const float b = (c + r) * static_cast<float>(per_cell) - 0.5f;
-    lo = static_cast<std::uint32_t>(std::clamp(std::ceil(a), 0.0f, static_cast<float>(count)));
-    hi = static_cast<std::uint32_t>(std::clamp(std::floor(b) + 1.0f, 0.0f, static_cast<float>(count)));
-}
-
-inline Rect dab_rect(const Dab& d, std::uint32_t per_cell, std::uint32_t w, std::uint32_t h)
-{
-    Rect r;
-    dab_span(d.cx, d.radius, per_cell, w, r.x0, r.x1);
-    dab_span(d.cz, d.radius, per_cell, h, r.z0, r.z1);
-    return r;
-}
-
-inline float dab_amount(const Dab& d, std::uint32_t per_cell, std::uint32_t i, std::uint32_t j)
-{
-    const float x = (static_cast<float>(i) + 0.5f) / static_cast<float>(per_cell) - d.cx;
-    const float z = (static_cast<float>(j) + 0.5f) / static_cast<float>(per_cell) - d.cz;
+    const float x = (i + 0.5f) / static_cast<float>(per_cell) - d.cx;
+    const float z = (j + 0.5f) / static_cast<float>(per_cell) - d.cz;
     const float t = std::sqrt(x * x + z * z) / std::max(d.radius, 1e-6f);
     return std::clamp(d.strength, 0.0f, 1.0f) * falloff_weight(d.falloff, t);
 }
+
+inline bool rect_has(const Rect& r, std::uint32_t i, std::uint32_t j)
+{
+    return i >= r.x0 && i < r.x1 && j >= r.z0 && j < r.z1;
+}
+
+// ─── Mirror painting ──────────────────────────────────────────────────────────
+// A dab also applies at each mirror image: image k flips x on bit 0 and z on bit 1 (image 0 is the dab).
+// Samples are worked folded into the dab's frame, and overlapping images apply in an order that depends only
+// on their contributions, so mirror partners get the same bits.
+
+inline constexpr int max_images = 4;
+
+struct Mirror
+{
+    bool x = false, z = false;
+    std::int32_t x2 = 0, z2 = 0; // twice each line's position, in cells from the grid origin
+};
+
+inline bool mirror_on(const Mirror* m)
+{
+    return m && (m->x || m->z);
+}
+
+inline bool image_on(const Mirror* m, int k)
+{
+    return k == 0 || (mirror_on(m) && (!(k & 1) || m->x) && (!(k & 2) || m->z));
+}
+
+// A sample lattice: `per_cell` samples per cell, centred in their share of a cell, or on the grid lines
+// (vertices).
+struct Lattice
+{
+    std::uint32_t per_cell = 1;
+    bool centred = true;
+};
+
+// Sample i's mirror across a line at line2 / 2 cells is fold - i.
+inline std::int64_t lattice_fold(std::int32_t line2, const Lattice& l)
+{
+    return static_cast<std::int64_t>(line2) * l.per_cell - (l.centred ? 1 : 0);
+}
+
+// Signed sample indices [x0, x1) x [z0, z1), not clipped to the grid.
+struct Span
+{
+    std::int64_t x0 = 0, z0 = 0, x1 = 0, z1 = 0;
+
+    bool has(std::int64_t i, std::int64_t j) const { return i >= x0 && i < x1 && j >= z0 && j < z1; }
+};
+
+// Indices ceil(a) through floor(b); none for a bound that is not finite.
+inline void signed_span(float a, float b, std::int64_t& lo, std::int64_t& hi)
+{
+    lo = hi = 0;
+    if (!std::isfinite(a) || !std::isfinite(b)) return;
+    constexpr float lim = 1073741824.0f;
+    lo = static_cast<std::int64_t>(std::clamp(std::ceil(a), -lim, lim));
+    hi = static_cast<std::int64_t>(std::clamp(std::floor(b) + 1.0f, -lim, lim));
+}
+
+// Samples whose centres, at (i + 0.5) / per_cell cells, lie within the dab.
+inline Span dab_reach(const Dab& d, std::uint32_t per_cell)
+{
+    const float pc = static_cast<float>(per_cell);
+    Span s;
+    signed_span((d.cx - d.radius) * pc - 0.5f, (d.cx + d.radius) * pc - 0.5f, s.x0, s.x1);
+    signed_span((d.cz - d.radius) * pc - 0.5f, (d.cz + d.radius) * pc - 0.5f, s.z0, s.z1);
+    return s;
+}
+
+// The samples a dab reaches in each image, on a w x h lattice.
+struct ImageSet
+{
+    const Mirror* mirror = nullptr; // null when no line is on
+    std::int64_t fold_x = 0, fold_z = 0;
+    Span reach;                     // in the dab's own frame
+    Rect rects[max_images];         // empty for images that are off
+};
+
+inline ImageSet image_set(const Mirror* m, const Lattice& l, const Span& reach, std::uint32_t w, std::uint32_t h)
+{
+    ImageSet s;
+    s.mirror = mirror_on(m) ? m : nullptr;
+    if (s.mirror) {
+        s.fold_x = lattice_fold(m->x2, l);
+        s.fold_z = lattice_fold(m->z2, l);
+    }
+    s.reach = reach;
+    auto clip = [](std::int64_t v, std::uint32_t n) {
+        return static_cast<std::uint32_t>(std::clamp<std::int64_t>(v, 0, n));
+    };
+    for (int k = 0; k < max_images; k++) {
+        if (!image_on(s.mirror, k)) continue;
+        std::int64_t x0 = reach.x0, x1 = reach.x1, z0 = reach.z0, z1 = reach.z1;
+        if (k & 1) {
+            x0 = s.fold_x - reach.x1 + 1;
+            x1 = s.fold_x - reach.x0 + 1;
+        }
+        if (k & 2) {
+            z0 = s.fold_z - reach.z1 + 1;
+            z1 = s.fold_z - reach.z0 + 1;
+        }
+        s.rects[k] = {clip(x0, w), clip(z0, h), clip(x1, w), clip(z1, h)};
+    }
+    return s;
+}
+
+inline bool image_set_empty(const ImageSet& s)
+{
+    for (const Rect& r : s.rects) {
+        if (!r.empty()) return false;
+    }
+    return true;
+}
+
+// A sample as image k's dab sees it: folded into the dab's frame, and whether the dab reaches it there.
+struct Fold
+{
+    std::int64_t i = 0, j = 0;
+    bool reached = false;
+};
+
+// visit(i, j, k, folds) once for every sample some image reaches, k being the first image whose rect
+// holds it; true when it changed the sample. Returns the samples changed and adds each to per_image[k].
+template<typename Visit>
+Rect visit_images(const ImageSet& s, Rect* per_image, Visit&& visit)
+{
+    Rect changed;
+    for (int k = 0; k < max_images; k++) {
+        const Rect& r = s.rects[k];
+        for (std::uint32_t j = r.z0; j < r.z1; j++) {
+            for (std::uint32_t i = r.x0; i < r.x1; i++) {
+                bool seen = false;
+                for (int e = 0; e < k && !seen; e++) seen = rect_has(s.rects[e], i, j);
+                if (seen) continue;
+                Fold f[max_images];
+                for (int e = 0; e < max_images; e++) {
+                    if (!image_on(s.mirror, e)) continue;
+                    f[e].i = (e & 1) ? s.fold_x - i : i;
+                    f[e].j = (e & 2) ? s.fold_z - j : j;
+                    f[e].reached = s.reach.has(f[e].i, f[e].j);
+                }
+                if (!visit(i, j, k, f)) continue;
+                changed = rect_union(changed, {i, j, i + 1, j + 1});
+                if (per_image) per_image[k] = rect_union(per_image[k], {i, j, i + 1, j + 1});
+            }
+        }
+    }
+    return changed;
+}
+
+// One image's share of a sample: its weight, its target (sculpting), and where the sample sits in its frame.
+struct Contrib
+{
+    float w = 0.0f;
+    double target = 0.0;
+    std::int64_t i = 0, j = 0;
+    int image = 0;
+};
+
+inline bool contrib_before(const Contrib& a, const Contrib& b)
+{
+    if (a.w != b.w) return a.w > b.w;
+    if (a.i != b.i) return a.i < b.i;
+    if (a.j != b.j) return a.j < b.j;
+    return a.target < b.target;
+}
+
+inline void order_contribs(Contrib* c, int n)
+{
+    for (int a = 1; a < n; a++) {
+        for (int b = a; b > 0 && contrib_before(c[b], c[b - 1]); b--) std::swap(c[b], c[b - 1]);
+    }
+}
+
+// The images that reach a sample, weighed by weigh(fold, image, target) and put in application order.
+template<typename Weigh>
+int gather_contribs(const ImageSet& s, const Fold (&f)[max_images], Contrib (&out)[max_images], Weigh&& weigh)
+{
+    int n = 0;
+    for (int e = 0; e < max_images; e++) {
+        if (!image_on(s.mirror, e) || !f[e].reached) continue;
+        Contrib& c = out[n++];
+        c = Contrib{};
+        c.i = f[e].i;
+        c.j = f[e].j;
+        c.image = e;
+        c.w = weigh(f[e], e, c.target);
+    }
+    order_contribs(out, n);
+    return n;
+}
+
+// Per image, the samples a dab reached, padded by `pad` and clipped to the grid, as they were before it.
+template<typename T>
+struct Snapshots
+{
+    Rect box[max_images];
+    std::vector<T> data[max_images];
+
+    template<typename Read>
+    void take(const ImageSet& s, std::uint32_t pad, std::uint32_t w, std::uint32_t h, std::size_t stride, Read&& read)
+    {
+        for (int k = 0; k < max_images; k++) {
+            const Rect& r = s.rects[k];
+            box[k] = {};
+            if (r.empty()) continue;
+            box[k] = {r.x0 > pad ? r.x0 - pad : 0, r.z0 > pad ? r.z0 - pad : 0, std::min(r.x1 + pad, w),
+                      std::min(r.z1 + pad, h)};
+            data[k].resize(box[k].area() * stride);
+            for (std::uint32_t j = box[k].z0; j < box[k].z1; j++) {
+                for (std::uint32_t i = box[k].x0; i < box[k].x1; i++) read(i, j, at(k, i, j, stride));
+            }
+        }
+    }
+
+    T* at(int k, std::uint32_t i, std::uint32_t j, std::size_t stride)
+    {
+        const Rect& b = box[k];
+        return &data[k][(static_cast<std::size_t>(j - b.z0) * (b.x1 - b.x0) + (i - b.x0)) * stride];
+    }
+};
 
 // Both RGBA8 weight maps of a grid, as the blob stores them.
 struct WeightMaps
@@ -241,80 +469,87 @@ inline constexpr float min_amount = 0.5f / 255.0f;
 // Moves each texel toward pure `layer` by the dab amount: every other channel (layers past
 // layer_count included) is scaled down and rounded down, and `layer` takes the rest, so the texel
 // sums to 255 and any amount above min_amount makes progress. Returns the texels changed.
-inline Rect paint_layer(WeightMaps& m, const Dab& d, std::uint32_t layer)
+inline Rect paint_layer(WeightMaps& m, const Dab& d, std::uint32_t layer, const Mirror* mirror = nullptr,
+                        Rect* per_image = nullptr)
 {
     if (layer >= at::max_layers || layer >= m.layer_count) return {};
-    const Rect r = dab_rect(d, m.mul, m.w, m.h);
-    Rect changed;
-    for (std::uint32_t j = r.z0; j < r.z1; j++) {
-        for (std::uint32_t i = r.x0; i < r.x1; i++) {
-            const float a = dab_amount(d, m.mul, i, j);
+    const ImageSet s = image_set(mirror, {m.mul, true}, dab_reach(d, m.mul), m.w, m.h);
+    return visit_images(s, per_image, [&](std::uint32_t i, std::uint32_t j, int, const Fold(&f)[max_images]) {
+        Contrib c[max_images];
+        const int n = gather_contribs(s, f, c, [&](const Fold& p, int, double&) {
+            return dab_amount(d, m.mul, static_cast<float>(p.i), static_cast<float>(p.j));
+        });
+        const std::size_t t = static_cast<std::size_t>(j) * m.w + i;
+        std::uint8_t v[at::max_layers];
+        m.get(t, v);
+        std::uint8_t cur[at::max_layers];
+        std::memcpy(cur, v, sizeof(v));
+        for (int q = 0; q < n; q++) {
+            const float a = c[q].w;
             if (a < min_amount) continue;
-            const std::size_t t = static_cast<std::size_t>(j) * m.w + i;
-            std::uint8_t v[at::max_layers];
-            m.get(t, v);
             std::uint8_t out[at::max_layers];
             unsigned rest = 0;
-            for (std::uint32_t c = 0; c < at::max_layers; c++) {
-                if (c == layer) continue;
-                out[c] = static_cast<std::uint8_t>(std::floor(static_cast<float>(v[c]) * (1.0f - a)));
-                rest += out[c];
+            for (std::uint32_t ch = 0; ch < at::max_layers; ch++) {
+                if (ch == layer) continue;
+                out[ch] = static_cast<std::uint8_t>(std::floor(static_cast<float>(cur[ch]) * (1.0f - a)));
+                rest += out[ch];
             }
             out[layer] = static_cast<std::uint8_t>(255u - std::min(rest, 255u));
             at::normalize_weights(out);
-            if (std::memcmp(out, v, sizeof(v)) == 0) continue;
-            m.set(t, out);
-            changed = rect_union(changed, {i, j, i + 1, j + 1});
+            std::memcpy(cur, out, sizeof(out));
         }
-    }
-    return changed;
+        if (std::memcmp(cur, v, sizeof(v)) == 0) return false;
+        m.set(t, cur);
+        return true;
+    });
 }
 
-// Blends each texel toward the 3x3 average of the texels around it (as they were before the dab),
-// then renormalizes. Returns the texels changed.
-inline Rect smooth_weights(WeightMaps& m, const Dab& d)
+// Blends each texel toward the 3x3 average of the texels around it (as they were before the dab, kept in
+// `src`, the stroke's scratch), then renormalizes. Returns the texels changed.
+inline Rect smooth_weights(WeightMaps& m, const Dab& d, Snapshots<std::uint8_t>& src, const Mirror* mirror = nullptr,
+                           Rect* per_image = nullptr)
 {
-    const Rect r = dab_rect(d, m.mul, m.w, m.h);
-    if (r.empty()) return {};
-    const std::uint32_t sx0 = r.x0 > 0 ? r.x0 - 1 : 0, sz0 = r.z0 > 0 ? r.z0 - 1 : 0;
-    const std::uint32_t sx1 = std::min(r.x1 + 1, m.w), sz1 = std::min(r.z1 + 1, m.h);
-    const std::uint32_t sw = sx1 - sx0;
-    std::vector<std::uint8_t> src(static_cast<std::size_t>(sw) * (sz1 - sz0) * at::max_layers);
-    for (std::uint32_t j = sz0; j < sz1; j++) {
-        for (std::uint32_t i = sx0; i < sx1; i++) {
-            std::uint8_t v[at::max_layers];
-            m.get(static_cast<std::size_t>(j) * m.w + i, v);
-            std::memcpy(&src[(static_cast<std::size_t>(j - sz0) * sw + (i - sx0)) * at::max_layers], v, sizeof(v));
-        }
-    }
-    Rect changed;
-    for (std::uint32_t j = r.z0; j < r.z1; j++) {
-        for (std::uint32_t i = r.x0; i < r.x1; i++) {
-            const float a = dab_amount(d, m.mul, i, j);
-            if (a < min_amount) continue;
-            float avg[at::max_layers] = {};
-            int n = 0;
-            for (std::uint32_t z = (j > sz0 ? j - 1 : j); z <= std::min(j + 1, sz1 - 1); z++) {
-                for (std::uint32_t x = (i > sx0 ? i - 1 : i); x <= std::min(i + 1, sx1 - 1); x++) {
-                    const std::uint8_t* s = &src[(static_cast<std::size_t>(z - sz0) * sw + (x - sx0)) * at::max_layers];
-                    for (std::uint32_t c = 0; c < at::max_layers; c++) avg[c] += s[c];
-                    n++;
-                }
+    const ImageSet s = image_set(mirror, {m.mul, true}, dab_reach(d, m.mul), m.w, m.h);
+    if (image_set_empty(s)) return {};
+    src.take(s, 1, m.w, m.h, at::max_layers, [&](std::uint32_t i, std::uint32_t j, std::uint8_t* out) {
+        std::uint8_t v[at::max_layers];
+        m.get(static_cast<std::size_t>(j) * m.w + i, v);
+        std::memcpy(out, v, sizeof(v));
+    });
+    return visit_images(s, per_image, [&](std::uint32_t i, std::uint32_t j, int k, const Fold(&f)[max_images]) {
+        Contrib c[max_images];
+        const int n = gather_contribs(s, f, c, [&](const Fold& p, int, double&) {
+            return dab_amount(d, m.mul, static_cast<float>(p.i), static_cast<float>(p.j));
+        });
+        const Rect& b = src.box[k];
+        float avg[at::max_layers] = {};
+        int count = 0;
+        for (std::uint32_t z = (j > b.z0 ? j - 1 : j); z <= std::min(j + 1, b.z1 - 1); z++) {
+            for (std::uint32_t x = (i > b.x0 ? i - 1 : i); x <= std::min(i + 1, b.x1 - 1); x++) {
+                const std::uint8_t* p = src.at(k, x, z, at::max_layers);
+                for (std::uint32_t ch = 0; ch < at::max_layers; ch++) avg[ch] += p[ch];
+                count++;
             }
-            const std::uint8_t* cur = &src[(static_cast<std::size_t>(j - sz0) * sw + (i - sx0)) * at::max_layers];
+        }
+        const std::uint8_t* was = src.at(k, i, j, at::max_layers);
+        std::uint8_t cur[at::max_layers];
+        std::memcpy(cur, was, sizeof(cur));
+        for (int q = 0; q < n; q++) {
+            const float a = c[q].w;
+            if (a < min_amount) continue;
             std::uint8_t out[at::max_layers];
-            for (std::uint32_t c = 0; c < at::max_layers; c++) {
-                const float target = avg[c] / static_cast<float>(n);
-                const float v = static_cast<float>(cur[c]) + (target - static_cast<float>(cur[c])) * a;
-                out[c] = static_cast<std::uint8_t>(std::clamp(std::lround(v), 0L, 255L));
+            for (std::uint32_t ch = 0; ch < at::max_layers; ch++) {
+                const float target = avg[ch] / static_cast<float>(count);
+                const float v = static_cast<float>(cur[ch]) + (target - static_cast<float>(cur[ch])) * a;
+                out[ch] = static_cast<std::uint8_t>(std::clamp(std::lround(v), 0L, 255L));
             }
             at::normalize_weights(out);
-            if (std::memcmp(out, cur, sizeof(out)) == 0) continue;
-            m.set(static_cast<std::size_t>(j) * m.w + i, out);
-            changed = rect_union(changed, {i, j, i + 1, j + 1});
+            std::memcpy(cur, out, sizeof(out));
         }
-    }
-    return changed;
+        if (std::memcmp(cur, was, sizeof(cur)) == 0) return false;
+        m.set(static_cast<std::size_t>(j) * m.w + i, cur);
+        return true;
+    });
 }
 
 // One channel of a coverage map laid out as a weight map with `stride` channels per texel: the overlay
@@ -331,84 +566,88 @@ struct CoverageMap
 // Moves each texel's coverage toward 255 (raise) or 0 by the dab amount, rounding in favour of the
 // move as paint_layer does, so any amount above min_amount makes progress. No normalization. Returns
 // the texels changed.
-inline Rect paint_coverage(CoverageMap& m, const Dab& d, bool raise)
+inline Rect paint_coverage(CoverageMap& m, const Dab& d, bool raise, const Mirror* mirror = nullptr,
+                           Rect* per_image = nullptr)
 {
     if (m.channel >= m.stride) return {};
-    const Rect r = dab_rect(d, m.mul, m.w, m.h);
-    Rect changed;
-    for (std::uint32_t j = r.z0; j < r.z1; j++) {
-        for (std::uint32_t i = r.x0; i < r.x1; i++) {
-            const float a = dab_amount(d, m.mul, i, j);
+    const ImageSet s = image_set(mirror, {m.mul, true}, dab_reach(d, m.mul), m.w, m.h);
+    return visit_images(s, per_image, [&](std::uint32_t i, std::uint32_t j, int, const Fold(&f)[max_images]) {
+        Contrib c[max_images];
+        const int n = gather_contribs(s, f, c, [&](const Fold& p, int, double&) {
+            return dab_amount(d, m.mul, static_cast<float>(p.i), static_cast<float>(p.j));
+        });
+        std::uint8_t& v = m.data[(static_cast<std::size_t>(j) * m.w + i) * m.stride + m.channel];
+        std::uint8_t cur = v;
+        for (int q = 0; q < n; q++) {
+            const float a = c[q].w;
             if (a < min_amount) continue;
-            std::uint8_t& v = m.data[(static_cast<std::size_t>(j) * m.w + i) * m.stride + m.channel];
-            const float rest = raise ? 255.0f - v : static_cast<float>(v);
+            const float rest = raise ? 255.0f - cur : static_cast<float>(cur);
             const auto left = static_cast<std::uint8_t>(std::floor(rest * (1.0f - a)));
-            const std::uint8_t out = raise ? static_cast<std::uint8_t>(255 - left) : left;
-            if (out == v) continue;
-            v = out;
-            changed = rect_union(changed, {i, j, i + 1, j + 1});
+            cur = raise ? static_cast<std::uint8_t>(255 - left) : left;
         }
-    }
-    return changed;
+        if (cur == v) return false;
+        v = cur;
+        return true;
+    });
 }
 
 // Blends each texel's coverage toward the 3x3 average around it (as it was before the dab), as
 // smooth_weights does. Returns the texels changed.
-inline Rect smooth_coverage(CoverageMap& m, const Dab& d)
+inline Rect smooth_coverage(CoverageMap& m, const Dab& d, Snapshots<std::uint8_t>& src, const Mirror* mirror = nullptr,
+                            Rect* per_image = nullptr)
 {
     if (m.channel >= m.stride) return {};
-    const Rect r = dab_rect(d, m.mul, m.w, m.h);
-    if (r.empty()) return {};
-    const std::uint32_t sx0 = r.x0 > 0 ? r.x0 - 1 : 0, sz0 = r.z0 > 0 ? r.z0 - 1 : 0;
-    const std::uint32_t sx1 = std::min(r.x1 + 1, m.w), sz1 = std::min(r.z1 + 1, m.h);
-    const std::uint32_t sw = sx1 - sx0;
+    const ImageSet s = image_set(mirror, {m.mul, true}, dab_reach(d, m.mul), m.w, m.h);
+    if (image_set_empty(s)) return {};
     auto at_ = [&](std::uint32_t i, std::uint32_t j) -> std::uint8_t& {
         return m.data[(static_cast<std::size_t>(j) * m.w + i) * m.stride + m.channel];
     };
-    std::vector<std::uint8_t> src(static_cast<std::size_t>(sw) * (sz1 - sz0));
-    for (std::uint32_t j = sz0; j < sz1; j++) {
-        for (std::uint32_t i = sx0; i < sx1; i++) src[static_cast<std::size_t>(j - sz0) * sw + (i - sx0)] = at_(i, j);
-    }
-    Rect changed;
-    for (std::uint32_t j = r.z0; j < r.z1; j++) {
-        for (std::uint32_t i = r.x0; i < r.x1; i++) {
-            const float a = dab_amount(d, m.mul, i, j);
-            if (a < min_amount) continue;
-            float sum = 0.0f;
-            int n = 0;
-            for (std::uint32_t z = (j > sz0 ? j - 1 : j); z <= std::min(j + 1, sz1 - 1); z++) {
-                for (std::uint32_t x = (i > sx0 ? i - 1 : i); x <= std::min(i + 1, sx1 - 1); x++) {
-                    sum += src[static_cast<std::size_t>(z - sz0) * sw + (x - sx0)];
-                    n++;
-                }
+    src.take(s, 1, m.w, m.h, 1, [&](std::uint32_t i, std::uint32_t j, std::uint8_t* out) { *out = at_(i, j); });
+    return visit_images(s, per_image, [&](std::uint32_t i, std::uint32_t j, int k, const Fold(&f)[max_images]) {
+        Contrib c[max_images];
+        const int n = gather_contribs(s, f, c, [&](const Fold& p, int, double&) {
+            return dab_amount(d, m.mul, static_cast<float>(p.i), static_cast<float>(p.j));
+        });
+        const Rect& b = src.box[k];
+        float sum = 0.0f;
+        int count = 0;
+        for (std::uint32_t z = (j > b.z0 ? j - 1 : j); z <= std::min(j + 1, b.z1 - 1); z++) {
+            for (std::uint32_t x = (i > b.x0 ? i - 1 : i); x <= std::min(i + 1, b.x1 - 1); x++) {
+                sum += *src.at(k, x, z, 1);
+                count++;
             }
-            const float cur = src[static_cast<std::size_t>(j - sz0) * sw + (i - sx0)];
-            const float v = cur + (sum / static_cast<float>(n) - cur) * a;
-            const auto out = static_cast<std::uint8_t>(std::clamp(std::lround(v), 0L, 255L));
-            if (out == at_(i, j)) continue;
-            at_(i, j) = out;
-            changed = rect_union(changed, {i, j, i + 1, j + 1});
         }
-    }
-    return changed;
+        std::uint8_t out = *src.at(k, i, j, 1);
+        for (int q = 0; q < n; q++) {
+            const float a = c[q].w;
+            if (a < min_amount) continue;
+            const float cur = out;
+            const float v = cur + (sum / static_cast<float>(count) - cur) * a;
+            out = static_cast<std::uint8_t>(std::clamp(std::lround(v), 0L, 255L));
+        }
+        if (out == at_(i, j)) return false;
+        at_(i, j) = out;
+        return true;
+    });
 }
 
 // Sets or clears the hole bit of every cell whose centre is inside the dab (strength and falloff do
 // not apply to holes). Returns the cells changed.
-inline Rect paint_holes(std::uint8_t* holes, std::uint32_t cells_x, std::uint32_t cells_z, const Dab& d, bool hole)
+inline Rect paint_holes(std::uint8_t* holes, std::uint32_t cells_x, std::uint32_t cells_z, const Dab& d, bool hole,
+                        const Mirror* mirror = nullptr, Rect* per_image = nullptr)
 {
-    const Rect r = dab_rect(d, 1, cells_x, cells_z);
-    Rect changed;
-    for (std::uint32_t z = r.z0; z < r.z1; z++) {
-        for (std::uint32_t x = r.x0; x < r.x1; x++) {
-            const float dx = static_cast<float>(x) + 0.5f - d.cx, dz = static_cast<float>(z) + 0.5f - d.cz;
-            if (dx * dx + dz * dz >= d.radius * d.radius) continue;
-            if (at::get_cell_bit(holes, cells_x, x, z) == hole) continue;
-            at::set_cell_bit(holes, cells_x, x, z, hole);
-            changed = rect_union(changed, {x, z, x + 1, z + 1});
+    const ImageSet s = image_set(mirror, {1, true}, dab_reach(d, 1), cells_x, cells_z);
+    return visit_images(s, per_image, [&](std::uint32_t x, std::uint32_t z, int, const Fold(&f)[max_images]) {
+        bool inside = false;
+        for (int e = 0; e < max_images && !inside; e++) {
+            if (!image_on(s.mirror, e) || !f[e].reached) continue;
+            const float dx = static_cast<float>(f[e].i) + 0.5f - d.cx, dz = static_cast<float>(f[e].j) + 0.5f - d.cz;
+            inside = dx * dx + dz * dz < d.radius * d.radius;
         }
-    }
-    return changed;
+        if (!inside || at::get_cell_bit(holes, cells_x, x, z) == hole) return false;
+        at::set_cell_bit(holes, cells_x, x, z, hole);
+        return true;
+    });
 }
 
 // ─── Sculpting ────────────────────────────────────────────────────────────────
@@ -494,30 +733,19 @@ inline double sculpt_offset(const HeightGrid& g, const double* exact, std::size_
     return exact && !std::isnan(exact[i]) ? exact[i] : grid_offset(g, i);
 }
 
-// Vertices inside [x0, x1] x [z0, z1] (in cells), as a rect of vertex indices.
-inline Rect vertex_box(float x0, float z0, float x1, float z1, std::uint32_t nx, std::uint32_t nz)
+// Vertices inside [x0, x1] x [z0, z1] (in cells).
+inline Span vertex_span(float x0, float z0, float x1, float z1)
 {
-    if (!std::isfinite(x0) || !std::isfinite(z0) || !std::isfinite(x1) || !std::isfinite(z1)) return {};
-    auto span = [](float a, float b, std::uint32_t n, std::uint32_t& lo, std::uint32_t& hi) {
-        lo = static_cast<std::uint32_t>(std::clamp(std::ceil(a), 0.0f, static_cast<float>(n)));
-        hi = static_cast<std::uint32_t>(std::clamp(std::floor(b) + 1.0f, 0.0f, static_cast<float>(n)));
-    };
-    Rect r;
-    span(x0, x1, nx, r.x0, r.x1);
-    span(z0, z1, nz, r.z0, r.z1);
+    Span r;
+    if (!std::isfinite(x0) || !std::isfinite(z0) || !std::isfinite(x1) || !std::isfinite(z1)) return r;
+    signed_span(x0, x1, r.x0, r.x1);
+    signed_span(z0, z1, r.z0, r.z1);
     return r;
 }
 
-// Vertices within the dab's radius, as a rect of vertex indices.
-inline Rect dab_vertex_rect(const Dab& d, std::uint32_t nx, std::uint32_t nz)
+inline float vertex_falloff(const Dab& d, float i, float j)
 {
-    if (!std::isfinite(d.cx) || !std::isfinite(d.cz) || !std::isfinite(d.radius)) return {};
-    return vertex_box(d.cx - d.radius, d.cz - d.radius, d.cx + d.radius, d.cz + d.radius, nx, nz);
-}
-
-inline float vertex_falloff(const Dab& d, std::uint32_t i, std::uint32_t j)
-{
-    const float x = static_cast<float>(i) - d.cx, z = static_cast<float>(j) - d.cz;
+    const float x = i - d.cx, z = j - d.cz;
     return falloff_weight(d.falloff, std::sqrt(x * x + z * z) / std::max(d.radius, 1e-6f));
 }
 
@@ -543,9 +771,9 @@ inline float value_noise(float x, float z, std::uint32_t seed)
 }
 
 // Three octaves of value noise at a vertex, in [-1, 1].
-inline float sculpt_noise(std::uint32_t i, std::uint32_t j, float feature_cells, std::uint32_t seed)
+inline float sculpt_noise(float i, float j, float feature_cells, std::uint32_t seed)
 {
-    const float x = static_cast<float>(i) / feature_cells, z = static_cast<float>(j) / feature_cells;
+    const float x = i / feature_cells, z = j / feature_cells;
     float sum = 0.0f, amp = 1.0f, freq = 1.0f;
     for (std::uint32_t o = 0; o < 3; o++) {
         sum += amp * value_noise(x * freq, z * freq, seed + o * 0x9E3779B9u);
@@ -559,11 +787,13 @@ struct HeightTarget
 {
     std::uint32_t index;
     double offset;
+    std::uint8_t image = 0; // the mirror image it was reached under
 };
 
 struct HeightWrite
 {
     Rect verts;              // vertices whose stored height changed
+    Rect image_verts[max_images]; // the same by target image, leaving out a re-quantization
     bool requantized = false; // the mapping grew: every height was re-encoded
     bool clamped = false;     // an offset did not fit the mapping limits
 };
@@ -605,6 +835,8 @@ inline HeightWrite write_heights(HeightGrid& g, const std::vector<HeightTarget>&
         g.heights[t.index] = v;
         const std::uint32_t x = t.index % g.nx, z = t.index / g.nx;
         out.verts = rect_union(out.verts, {x, z, x + 1, z + 1});
+        Rect& image = out.image_verts[t.image < max_images ? t.image : 0];
+        image = rect_union(image, {x, z, x + 1, z + 1});
     }
     return out;
 }
@@ -624,7 +856,8 @@ struct SculptDab
     float seg_x = 0.0f, seg_z = 0.0f;
     float target_end = 0.0f;
     // Noise: the heights and mapping at the stroke's start, and per vertex the largest falloff the
-    // stroke has reached (nx * nz, zero at its start). A vertex sits at base + amount * noise * coverage.
+    // stroke has reached (nx * nz, zero at its start; one such plane per image when mirrored). A vertex
+    // sits at base + amount * noise * coverage, summed over the images.
     const std::uint16_t* base = nullptr;
     float base_min = 0.0f, base_range = 1.0f;
     float* coverage = nullptr;
@@ -633,12 +866,16 @@ struct SculptDab
     // Per vertex (nx * nz) the offset the stroke has built up, NaN where it has not touched: dabs
     // accumulate here and the stored heights are encoded from it, so moves under a storage step add up.
     double* exact = nullptr;
+    // Mirrored flatten, ramp and bridge points: image k > 0's own `target` and `target_end`.
+    const Mirror* mirror = nullptr;
+    float image_target[max_images] = {};
+    float image_target_end[max_images] = {};
 };
 
-inline double plane_target(const SculptDab& s, std::uint32_t i, std::uint32_t j)
+inline double plane_target(const SculptDab& s, float target, double i, double j)
 {
-    return static_cast<double>(s.target) + static_cast<double>(s.slope_x) * (static_cast<double>(i) - s.plane_x) +
-           static_cast<double>(s.slope_z) * (static_cast<double>(j) - s.plane_z);
+    return static_cast<double>(target) + static_cast<double>(s.slope_x) * (i - s.plane_x) +
+           static_cast<double>(s.slope_z) * (j - s.plane_z);
 }
 
 inline bool segment_long_enough(const SculptDab& s)
@@ -648,97 +885,148 @@ inline bool segment_long_enough(const SculptDab& s)
 
 // Bridge points: a vertex's falloff by its distance from the segment, and the target where it
 // projects onto it.
-inline float segment_falloff(const SculptDab& s, std::uint32_t i, std::uint32_t j, double& target)
+inline float segment_falloff(const SculptDab& s, float from, float to, float i, float j, double& target)
 {
     float dist = 0.0f;
-    const float t =
-        segment_t(s.dab.cx, s.dab.cz, s.seg_x, s.seg_z, static_cast<float>(i), static_cast<float>(j), dist);
-    target = static_cast<double>(s.target) + (static_cast<double>(s.target_end) - s.target) * t;
+    const float t = segment_t(s.dab.cx, s.dab.cz, s.seg_x, s.seg_z, i, j, dist);
+    target = static_cast<double>(from) + (static_cast<double>(to) - from) * t;
     return falloff_weight(s.dab.falloff, dist / std::max(s.dab.radius, 1e-6f));
 }
 
 // The vertices a dab can reach: its circle, or for a Bridge Points stroke the segment's capsule.
-inline Rect sculpt_vertex_rect(const SculptDab& s, std::uint32_t nx, std::uint32_t nz)
+inline Span sculpt_vertex_span(const SculptDab& s)
 {
-    if (s.tool != Tool::ramp_between) return dab_vertex_rect(s.dab, nx, nz);
-    if (!segment_long_enough(s) || !std::isfinite(s.dab.radius)) return {};
-    const float bx = s.dab.cx + s.seg_x, bz = s.dab.cz + s.seg_z, r = s.dab.radius;
-    return vertex_box(std::min(s.dab.cx, bx) - r, std::min(s.dab.cz, bz) - r, std::max(s.dab.cx, bx) + r,
-                      std::max(s.dab.cz, bz) + r, nx, nz);
+    const Dab& d = s.dab;
+    if (s.tool != Tool::ramp_between) {
+        if (!std::isfinite(d.cx) || !std::isfinite(d.cz) || !std::isfinite(d.radius)) return {};
+        return vertex_span(d.cx - d.radius, d.cz - d.radius, d.cx + d.radius, d.cz + d.radius);
+    }
+    if (!segment_long_enough(s) || !std::isfinite(d.radius)) return {};
+    const float bx = d.cx + s.seg_x, bz = d.cz + s.seg_z, r = d.radius;
+    return vertex_span(std::min(d.cx, bx) - r, std::min(d.cz, bz) - r, std::max(d.cx, bx) + r,
+                       std::max(d.cz, bz) + r);
 }
 
 struct SculptScratch
 {
     std::vector<HeightTarget> targets;
-    std::vector<double> src;
+    Snapshots<double> src;
 };
 
 inline HeightWrite sculpt_dab(HeightGrid& g, const SculptDab& s, SculptScratch& scratch)
 {
     scratch.targets.clear();
-    const Rect r = sculpt_vertex_rect(s, g.nx, g.nz);
-    if (r.empty() || !tool_edits_heights(s.tool)) return {};
+    if (!tool_edits_heights(s.tool)) return {};
+    const ImageSet set = image_set(s.mirror, {1, false}, sculpt_vertex_span(s), g.nx, g.nz);
+    if (image_set_empty(set)) return {};
     const float strength = std::clamp(s.dab.strength, 0.0f, 1.0f);
+    const std::size_t count = at::vertex_count(g.nx, g.nz);
 
     // Smooth reads the heights as they were before this dab.
-    std::uint32_t k = 0, sx0 = 0, sz0 = 0, sx1 = 0, sz1 = 0;
+    std::uint32_t k = 0;
     if (s.tool == Tool::smooth_heights) {
         k = smooth_kernel(s.dab.radius);
-        sx0 = r.x0 > k ? r.x0 - k : 0;
-        sz0 = r.z0 > k ? r.z0 - k : 0;
-        sx1 = std::min(r.x1 + k, g.nx);
-        sz1 = std::min(r.z1 + k, g.nz);
-        scratch.src.resize(static_cast<std::size_t>(sx1 - sx0) * (sz1 - sz0));
-        for (std::uint32_t j = sz0; j < sz1; j++) {
-            for (std::uint32_t i = sx0; i < sx1; i++) {
-                scratch.src[static_cast<std::size_t>(j - sz0) * (sx1 - sx0) + (i - sx0)] =
-                    sculpt_offset(g, s.exact, static_cast<std::size_t>(j) * g.nx + i);
-            }
-        }
+        scratch.src.take(set, k, g.nx, g.nz, 1, [&](std::uint32_t i, std::uint32_t j, double* out) {
+            *out = sculpt_offset(g, s.exact, static_cast<std::size_t>(j) * g.nx + i);
+        });
     }
-
-    for (std::uint32_t j = r.z0; j < r.z1; j++) {
-        for (std::uint32_t i = r.x0; i < r.x1; i++) {
-            double seg_target = 0.0;
-            const float w =
-                s.tool == Tool::ramp_between ? segment_falloff(s, i, j, seg_target) : vertex_falloff(s.dab, i, j);
-            if (!(w > 0.0f)) continue;
-            const std::size_t idx = static_cast<std::size_t>(j) * g.nx + i;
-            const double cur = sculpt_offset(g, s.exact, idx);
-            double next = cur;
-            switch (s.tool) {
-            case Tool::raise: next = cur + static_cast<double>(s.amount) * w; break;
-            case Tool::lower: next = cur - static_cast<double>(s.amount) * w; break;
-            case Tool::smooth_heights: {
-                double sum = 0.0;
-                std::uint32_t n = 0;
-                for (std::uint32_t z = (j > sz0 + k ? j - k : sz0); z <= std::min(j + k, sz1 - 1); z++) {
-                    for (std::uint32_t x = (i > sx0 + k ? i - k : sx0); x <= std::min(i + k, sx1 - 1); x++) {
-                        sum += scratch.src[static_cast<std::size_t>(z - sz0) * (sx1 - sx0) + (x - sx0)];
-                        n++;
-                    }
+    // Mirrored, the box is summed in pairs either side of the vertex so a mirrored box gives the same bits.
+    auto box_average = [&](int image, std::uint32_t i, std::uint32_t j) {
+        const Rect& b = scratch.src.box[image];
+        const std::uint32_t z0 = j > b.z0 + k ? j - k : b.z0, z1 = std::min(j + k, b.z1 - 1);
+        const std::uint32_t x0 = i > b.x0 + k ? i - k : b.x0, x1 = std::min(i + k, b.x1 - 1);
+        auto at_ = [&](std::uint32_t x, std::uint32_t z) { return *scratch.src.at(image, x, z, 1); };
+        double sum = 0.0;
+        std::uint32_t n = 0;
+        if (!set.mirror) {
+            for (std::uint32_t z = z0; z <= z1; z++) {
+                for (std::uint32_t x = x0; x <= x1; x++) {
+                    sum += at_(x, z);
+                    n++;
                 }
-                next = cur + (sum / n - cur) * strength * w;
-                break;
             }
-            case Tool::flatten:
-            case Tool::set_height:
-            case Tool::ramp: next = cur + (plane_target(s, i, j) - cur) * strength * w; break;
-            case Tool::ramp_between: next = cur + (seg_target - cur) * strength * w; break;
-            case Tool::noise: {
-                if (!s.base || !s.coverage || !(w > s.coverage[idx])) continue;
-                s.coverage[idx] = w;
-                next = at::height_offset_exact(s.base[idx], s.base_min, s.base_range) +
-                       static_cast<double>(s.amount) * sculpt_noise(i, j, s.feature_cells, s.seed) * w;
-                break;
-            }
-            default: continue;
-            }
-            if (!std::isfinite(next) || next == cur) continue;
-            scratch.targets.push_back({static_cast<std::uint32_t>(idx), next});
-            if (s.exact) s.exact[idx] = next;
+            return sum / n;
         }
-    }
+        auto row = [&](std::uint32_t z) {
+            double r = at_(i, z);
+            for (std::uint32_t d = 1; d <= k; d++) {
+                r += (i >= x0 + d ? at_(i - d, z) : 0.0) + (i + d <= x1 ? at_(i + d, z) : 0.0);
+            }
+            return r;
+        };
+        sum = row(j);
+        for (std::uint32_t d = 1; d <= k; d++) {
+            sum += (j >= z0 + d ? row(j - d) : 0.0) + (j + d <= z1 ? row(j + d) : 0.0);
+        }
+        n = (x1 - x0 + 1) * (z1 - z0 + 1);
+        return sum / n;
+    };
+    auto image_target = [&](int e) { return e == 0 ? s.target : s.image_target[e]; };
+    auto image_target_end = [&](int e) { return e == 0 ? s.target_end : s.image_target_end[e]; };
+
+    visit_images(set, nullptr, [&](std::uint32_t i, std::uint32_t j, int image, const Fold(&f)[max_images]) {
+        Contrib c[max_images];
+        const int n = gather_contribs(set, f, c, [&](const Fold& p, int e, double& target) {
+            const float fi = static_cast<float>(p.i), fj = static_cast<float>(p.j);
+            switch (s.tool) {
+            case Tool::ramp_between: return segment_falloff(s, image_target(e), image_target_end(e), fi, fj, target);
+            case Tool::flatten:
+            case Tool::ramp:
+                target = plane_target(s, image_target(e), static_cast<double>(p.i), static_cast<double>(p.j));
+                break;
+            case Tool::set_height:
+                target = plane_target(s, s.target, static_cast<double>(p.i), static_cast<double>(p.j));
+                break;
+            default: break;
+            }
+            return vertex_falloff(s.dab, fi, fj);
+        });
+        const std::size_t idx = static_cast<std::size_t>(j) * g.nx + i;
+        const double cur = sculpt_offset(g, s.exact, idx);
+        double next = cur;
+        if (s.tool == Tool::noise) {
+            if (!s.base || !s.coverage) return false;
+            bool raised = false;
+            for (int q = 0; q < n; q++) {
+                float& cov = s.coverage[c[q].image * count + idx];
+                if (!(c[q].w > 0.0f) || !(c[q].w > cov)) continue;
+                cov = c[q].w;
+                raised = true;
+            }
+            if (!raised) return false;
+            Contrib parts[max_images];
+            int m = 0;
+            for (int e = 0; e < max_images; e++) {
+                if (!image_on(set.mirror, e) || !(s.coverage[e * count + idx] > 0.0f)) continue;
+                parts[m++] = {s.coverage[e * count + idx], 0.0, f[e].i, f[e].j, e};
+            }
+            order_contribs(parts, m);
+            next = at::height_offset_exact(s.base[idx], s.base_min, s.base_range);
+            for (int q = 0; q < m; q++) {
+                next += static_cast<double>(s.amount) *
+                        sculpt_noise(static_cast<float>(parts[q].i), static_cast<float>(parts[q].j), s.feature_cells,
+                                     s.seed) *
+                        parts[q].w;
+            }
+        }
+        else {
+            const double avg = s.tool == Tool::smooth_heights ? box_average(image, i, j) : 0.0;
+            for (int q = 0; q < n; q++) {
+                const float w = c[q].w;
+                if (!(w > 0.0f)) continue;
+                switch (s.tool) {
+                case Tool::raise: next = next + static_cast<double>(s.amount) * w; break;
+                case Tool::lower: next = next - static_cast<double>(s.amount) * w; break;
+                case Tool::smooth_heights: next = next + (avg - next) * strength * w; break;
+                default: next = next + (c[q].target - next) * strength * w; break;
+                }
+            }
+        }
+        if (!std::isfinite(next) || next == cur) return false;
+        scratch.targets.push_back({static_cast<std::uint32_t>(idx), next, static_cast<std::uint8_t>(image)});
+        if (s.exact) s.exact[idx] = next;
+        return true;
+    });
     const HeightWrite w = write_heights(g, scratch.targets, s.exact);
     if (s.exact) {
         // Past the mapping's limits an offset stops within half a step of them, so pushing on does not
@@ -750,11 +1038,89 @@ inline HeightWrite sculpt_dab(HeightGrid& g, const SculptDab& s, SculptScratch& 
     return w;
 }
 
+// Mirrored sculpting keeps cell splits mirrored: each cell next to `verts` off the dab's side takes the
+// diagonal of its mirror on that side (or the nearest in-grid one), flipped once per line between them.
+// A line through a cell's centre leaves that axis out. Returns the cells changed.
+inline Rect mirror_diagonals(std::uint8_t* diag, std::uint32_t cells_x, std::uint32_t cells_z, const Mirror& m,
+                             float cx, float cz, const Rect& verts)
+{
+    if (!mirror_on(&m) || verts.empty() || cells_x == 0 || cells_z == 0) return {};
+    const std::uint32_t x0 = verts.x0 > 0 ? verts.x0 - 1 : 0, z0 = verts.z0 > 0 ? verts.z0 - 1 : 0;
+    const std::uint32_t x1 = std::min(verts.x1, cells_x), z1 = std::min(verts.z1, cells_z);
+    // The side of each line the dab is on: +1 above it, -1 below or on it.
+    const int side_x = 2.0f * cx > static_cast<float>(m.x2) ? 1 : -1;
+    const int side_z = 2.0f * cz > static_cast<float>(m.z2) ? 1 : -1;
+    auto side = [](std::int64_t cell, std::int32_t line2) {
+        const std::int64_t d = 2 * cell + 1 - line2;
+        return d > 0 ? 1 : d < 0 ? -1 : 0;
+    };
+    Rect changed;
+    for (std::uint32_t z = z0; z < z1; z++) {
+        for (std::uint32_t x = x0; x < x1; x++) {
+            const int sx = side(x, m.x2), sz = side(z, m.z2);
+            const bool on_x = m.x && sx != 0, on_z = m.z && sz != 0;
+            const bool dx = on_x && sx != side_x, dz = on_z && sz != side_z;
+            if (!dx && !dz) continue;
+            const std::int64_t ax = dx ? static_cast<std::int64_t>(m.x2) - 1 - x : x;
+            const std::int64_t az = dz ? static_cast<std::int64_t>(m.z2) - 1 - z : z;
+            for (int u = 0; u < max_images; u++) {
+                if (((u & 1) && !on_x) || ((u & 2) && !on_z)) continue;
+                const std::int64_t px = (u & 1) ? static_cast<std::int64_t>(m.x2) - 1 - ax : ax;
+                const std::int64_t pz = (u & 2) ? static_cast<std::int64_t>(m.z2) - 1 - az : az;
+                if (px < 0 || pz < 0 || px >= cells_x || pz >= cells_z) continue;
+                const int flips = (((u & 1) != 0) != dx ? 1 : 0) + (((u & 2) != 0) != dz ? 1 : 0);
+                if (flips == 0) break;
+                const bool want = at::get_cell_bit(diag, cells_x, static_cast<std::uint32_t>(px),
+                                                   static_cast<std::uint32_t>(pz)) != (flips == 1);
+                if (at::get_cell_bit(diag, cells_x, x, z) != want) {
+                    at::set_cell_bit(diag, cells_x, x, z, want);
+                    changed = rect_union(changed, {x, z, x + 1, z + 1});
+                }
+                break;
+            }
+        }
+    }
+    return changed;
+}
+
+// at::height_at at image k's mirror of world (x, z), worked in (x, z)'s frame (exactly height_at(x, z) on a
+// mirrored terrain); mirrored samples off the grid clamp to it.
+inline float mirrored_height_at(const at::GridView& g, const Mirror& m, int k, float world_x, float world_z)
+{
+    const std::uint32_t cx = at::cells(g.nx), cz = at::cells(g.nz);
+    float fx = std::clamp((world_x - g.origin[0]) / g.cell_size, 0.0f, static_cast<float>(cx));
+    float fz = std::clamp((world_z - g.origin[2]) / g.cell_size, 0.0f, static_cast<float>(cz));
+    if (std::isnan(fx) || std::isnan(fz)) return NAN;
+    const float ulps = at::coord_ulps / g.cell_size;
+    const float tol_x = std::clamp((std::fabs(world_x) + std::fabs(g.origin[0])) * ulps, 1e-4f, 0.1f);
+    const float tol_z = std::clamp((std::fabs(world_z) + std::fabs(g.origin[2])) * ulps, 1e-4f, 0.1f);
+    if (std::fabs(fx - std::round(fx)) < tol_x) fx = std::round(fx);
+    if (std::fabs(fz - std::round(fz)) < tol_z) fz = std::round(fz);
+    const std::uint32_t x = std::min(static_cast<std::uint32_t>(fx), cx - 1);
+    const std::uint32_t z = std::min(static_cast<std::uint32_t>(fz), cz - 1);
+    const float u = fx - static_cast<float>(x), v = fz - static_cast<float>(z);
+    auto fold = [](bool flip, std::int64_t line, std::int64_t i, std::uint32_t n) {
+        return static_cast<std::uint32_t>(std::clamp<std::int64_t>(flip ? line - i : i, 0, n - 1));
+    };
+    auto y = [&](std::uint32_t a, std::uint32_t b) {
+        return at::top_y(g, fold(k & 1, m.x2, a, g.nx), fold(k & 2, m.z2, b, g.nz));
+    };
+    const float h00 = y(x, z), h10 = y(x + 1, z), h11 = y(x + 1, z + 1), h01 = y(x, z + 1);
+    const bool diag = at::get_cell_bit(g.diag, cx, fold(k & 1, m.x2 - 1, x, cx), fold(k & 2, m.z2 - 1, z, cz)) !=
+                      (k == 1 || k == 2);
+    if (!diag) {
+        return u >= v ? h00 + u * (h10 - h00) + v * (h11 - h10) : h00 + v * (h01 - h00) + u * (h11 - h01);
+    }
+    return u + v <= 1.0f ? h00 + u * (h10 - h00) + v * (h01 - h00)
+                         : h11 + (1.0f - u) * (h01 - h11) + (1.0f - v) * (h10 - h11);
+}
+
 // ─── Undo diffs ───────────────────────────────────────────────────────────────
 // A stroke's before and after state inside the rectangles it touched: 8 weight bytes per texel
 // (map 0 channels then map 1 channels), then the texel's 4 overlay coverage bytes when the terrain has
-// overlays and a byte per decoration plane when it has decorations; one byte per hole cell and the heights
-// of the vertices. A stroke that grew the height mapping covers every vertex and records both mappings.
+// overlays and a byte per decoration plane when it has decorations; one byte per hole cell, the heights
+// of the vertices and one byte per cell diagonal. A stroke that grew the height mapping covers every vertex
+// and records both mappings. A mirrored stroke is kept as a few such parts, one per area it reached.
 
 // The captured bytes per texel.
 inline std::size_t weight_diff_stride(bool overlay, std::uint32_t deco_planes)
@@ -861,6 +1227,8 @@ struct StrokeDiff
     float height_min_after = 0.0f, height_range_after = 0.0f;
     // A geoable terrain's thickness follows a downward growth (at::thickness_after_growth).
     float thickness_before = 0.0f, thickness_after = 0.0f;
+    Rect diag_cells;
+    std::vector<std::uint8_t> diag_before, diag_after;
 
     bool mapping_changed() const
     {
@@ -871,20 +1239,25 @@ struct StrokeDiff
     std::size_t bytes() const
     {
         return sizeof(*this) + weights_before.capacity() + weights_after.capacity() + holes_before.capacity() +
-               holes_after.capacity() + (heights_before.capacity() + heights_after.capacity()) * sizeof(std::uint16_t);
+               holes_after.capacity() + (heights_before.capacity() + heights_after.capacity()) * sizeof(std::uint16_t) +
+               diag_before.capacity() + diag_after.capacity();
     }
 };
 
-// Applies one side of a diff to a grid's weight maps, overlay coverage, decoration planes and hole mask.
+// Applies one side of a diff to a grid's weight maps, overlay coverage, decoration planes, hole mask and
+// diagonals.
 inline void apply_diff(const StrokeDiff& d, bool after, std::uint8_t* weights, std::uint32_t w, std::uint32_t h,
                        std::uint8_t* holes, std::uint32_t cells_x, std::uint8_t* overlay = nullptr,
-                       std::uint8_t* planes = nullptr)
+                       std::uint8_t* planes = nullptr, std::uint8_t* diag = nullptr)
 {
     if (!d.texels.empty()) {
         restore_weights(weights, w, h, d.texels, after ? d.weights_after : d.weights_before,
                         d.overlay ? overlay : nullptr, planes, d.deco_planes);
     }
     if (!d.cells.empty()) restore_holes(holes, cells_x, d.cells, after ? d.holes_after : d.holes_before);
+    if (diag && !d.diag_cells.empty()) {
+        restore_holes(diag, cells_x, d.diag_cells, after ? d.diag_after : d.diag_before);
+    }
 }
 
 // Applies one side of a diff's heights and, when the stroke grew it, the height mapping and thickness.

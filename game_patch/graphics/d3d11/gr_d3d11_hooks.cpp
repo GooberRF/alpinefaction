@@ -285,6 +285,11 @@ namespace gr::d3d11
         renderer->bitmap(bitmap_handle, x, y, w, h, sx, sy, sw, sh, flip_x, flip_y, mode);
     }
 
+    void poly_2d(int bitmap_handle, int nv, const rf::gr::Vertex* vertices, rf::gr::Mode mode)
+    {
+        renderer->poly_2d(bitmap_handle, nv, vertices, mode);
+    }
+
     void set_clip()
     {
         renderer->set_clip();

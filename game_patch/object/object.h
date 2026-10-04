@@ -49,8 +49,7 @@ void entity_rate_limit_clear();
 constexpr size_t old_obj_limit = 1024;
 constexpr size_t obj_limit = 65536;
 
-// Length limits for names read from untrusted alpine level chunks.
-constexpr size_t max_bitmap_name = 32;
+// Length limits for names read from untrusted alpine level chunks (max_bitmap_name: misc/level.h).
 constexpr size_t max_mesh_name = 65;
 constexpr size_t max_anim_name = 60;
 constexpr size_t max_file_ext_tail = 14;   // rf::File::open-style 16-byte extension buffer bound

@@ -28,7 +28,7 @@ namespace gr::d3d11
 
     private:
         ID3D11Buffer* instance_buffer(int terrain);
-        void set_submesh(const rf::Vector3& center, float draw_distance);
+        void set_submesh(const rf::Vector3& center, float draw_distance, bool dither_fade);
 
         ComPtr<ID3D11Device> device_;
         RenderContext& render_context_;
@@ -41,7 +41,7 @@ namespace gr::d3d11
         std::vector<ComPtr<ID3D11Buffer>> instance_buffers_;
         std::vector<AlpineTerrainRoomRef> sorted_chunks_;
         std::vector<float> chunk_distance_;
-        float cbuffer_state_[4] = {};
+        float cbuffer_state_[5] = {};
         bool cbuffer_valid_ = false;
         bool shaders_ok_ = false;
     };
