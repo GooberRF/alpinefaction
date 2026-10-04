@@ -503,6 +503,11 @@ void vehicle_tracers_on_weapon_created(int weapon_type, int parent_handle, const
             eye_offset = start;
             break;
         case VehicleFpShotStart::stock:
+            // Everyone else sees the APC minigun's rounds leave its barrel, converging on where they land.
+            if (vehicle_apc_minigun_muzzle_pos(hull, &start)
+                && (start - pos).len_sq() <= tracer_muzzle_max_dist * tracer_muzzle_max_dist) {
+                tracer_restart(origin, dir, end_dist, start);
+            }
             break;
         }
     }

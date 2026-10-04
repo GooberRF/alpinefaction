@@ -34,6 +34,7 @@
 #include "../../rf/object.h"
 #include "../../rf/os/console.h"
 #include "../../rf/physics.h"
+#include "../../rf/glare.h"
 #include "../../rf/player/camera.h"
 #include "../../rf/player/control_config.h"
 #include "../../rf/player/player.h"
@@ -185,6 +186,78 @@ namespace
         },
     };
 
+    static auto& entity_jeep_has_gunner = addr_as_ref<bool(rf::Entity*)>(0x0042AD20);
+
+    int vehicle_apc_minigun_tag(rf::Entity* hull);
+
+    // The hull entity_render's hide block (0x00421996..0x004219F8, as patched above) leaves out of this view.
+    bool vehicle_hull_hidden_from_view(rf::Entity* hull)
+    {
+        if (!rf::is_multi || !hull || !rf::local_player || !vehicle_is_synced_entity_type(hull)
+            || rf::entity_is_driller(hull) || rf::entity_is_turret(hull)) {
+            return false;
+        }
+        if (!multi_spectate_is_spectating()
+            && (!rf::local_player->cam || rf::local_player->cam->mode != rf::CAMERA_FIRST_PERSON)) {
+            return false;
+        }
+        rf::Entity* viewer = vehicle_fp_view_entity();
+        if (!viewer) {
+            return false;
+        }
+        // Locally the hide is also reached only through his own host link (0x0048AA30).
+        const bool local = viewer == rf::local_player_entity;
+        if (local && viewer->host_handle != hull->handle) {
+            return false;
+        }
+        return vehicle_driver_entity(hull) == viewer || (local && !entity_jeep_has_gunner(hull));
+    }
+
+    // A hull's attached glares are objects of their own that its hide never reaches, so its headlights
+    // floated in the cockpit view. Skipping the queue leaves flag 0x80000000 clear, which the flare pass
+    // (0x004154F0) answers by zeroing the fade. Replaces MOV AL,[ESI+0x28C] (6 bytes, no jump in).
+    CodeInjection obj_render_hidden_hull_glare_injection{
+        0x00488489,
+        [](auto& regs) {
+            auto* glare = reinterpret_cast<rf::Glare*>(regs.esi.value);
+            if (vehicle_hull_hidden_from_view(rf::entity_from_handle(glare->parent_handle))) {
+                regs.eip = 0x004884EC;
+            }
+        },
+    };
+
+    // A hull with no weapon mesh gets its third-person muzzle glare at EntityInfo +0xF4 (`muzzle_1`); the
+    // APC minigun's goes where its rounds are drawn from. EAX is that tag; replaces the two LEAs at
+    // 0x00488A7A (8 bytes, no jump in).
+    CodeInjection obj_render_apc_muzzle_glare_tag_injection{
+        0x00488A7A,
+        [](auto& regs) {
+            rf::Entity* ep = regs.esi;
+            if (rf::is_multi && vehicle_is_synced_entity_type(ep)) {
+                if (const int tag = vehicle_apc_minigun_tag(ep); tag >= 0) {
+                    regs.eax = tag;
+                }
+            }
+        },
+    };
+
+    // The fire point sits beside the first-person eye, so the cockpit flash is drawn out along the gun's
+    // line instead: in view, and clear of the cockpit glass.
+    constexpr float apc_cockpit_flash_ahead = 3.0f;
+
+    // 0x004A7860's cockpit muzzle glare, just posed at `muzzle_1` into its out pos ([ESP+0x2C] here, the
+    // six arguments still pushed). Replaces MOV EDX,[EDI+0x3C] + LEA EAX,[ESP+0x38] (7 bytes, no jump in).
+    CodeInjection player_cockpit_apc_muzzle_flash_pos_injection{
+        0x004A799A,
+        [](auto& regs) {
+            rf::Entity* hull = regs.esi;
+            rf::Vector3 pos{};
+            if (rf::is_multi && vehicle_is_synced_entity_type(hull) && vehicle_apc_minigun_muzzle_pos(hull, &pos)) {
+                addr_as_ref<rf::Vector3>(regs.esp + 0x2C) = pos + hull->orient.fvec * apc_cockpit_flash_ahead;
+            }
+        },
+    };
+
     // gameplay_render_frame's cockpit gate (0x0043294F..0x0043297F) requires local_player_entity to
     // exist and be riding a use_function-1 vehicle, which a spectator fails outright.
     rf::Player* vehicle_cockpit_view_player()
@@ -298,9 +371,11 @@ namespace
     };
 
     // Keyed by the shared mesh data the lookup reads (0x00501220), so hulls of one class share an entry.
-    std::vector<std::pair<const void*, int>> g_driver_view_forward_cache;
+    using VehiclePropIndexCache = std::vector<std::pair<const void*, int>>;
+    VehiclePropIndexCache g_driver_view_forward_cache;
+    VehiclePropIndexCache g_apc_minigun_cache;
 
-    int vehicle_driver_view_forward_index(rf::Entity* hull)
+    int vehicle_cached_prop_index(rf::Entity* hull, const char* name, VehiclePropIndexCache& cache)
     {
         rf::VMesh* vmesh = hull->vmesh;
         const void* key = vmesh->type == rf::MESH_TYPE_CHARACTER ? vmesh->mesh
@@ -308,15 +383,29 @@ namespace
                                                                  : nullptr;
         // An anim fx mesh is per instance, so caching it would grow with every respawn.
         if (!key) {
-            return rf::vmesh_lookup_prop_point(vmesh, "view_forward");
+            return rf::vmesh_lookup_prop_point(vmesh, name);
         }
-        auto it = std::find_if(g_driver_view_forward_cache.begin(), g_driver_view_forward_cache.end(),
-                               [key](const auto& e) { return e.first == key; });
-        if (it == g_driver_view_forward_cache.end()) {
-            g_driver_view_forward_cache.emplace_back(key, rf::vmesh_lookup_prop_point(vmesh, "view_forward"));
-            return g_driver_view_forward_cache.back().second;
+        auto it = std::find_if(cache.begin(), cache.end(), [key](const auto& e) { return e.first == key; });
+        if (it == cache.end()) {
+            cache.emplace_back(key, rf::vmesh_lookup_prop_point(vmesh, name));
+            return cache.back().second;
         }
         return it->second;
+    }
+
+    int vehicle_driver_view_forward_index(rf::Entity* hull)
+    {
+        return vehicle_cached_prop_index(hull, "view_forward", g_driver_view_forward_cache);
+    }
+
+    // The APC minigun is from_eye, so a player driver's rounds leave his eye; stock only uses this prop for
+    // an AI driver (0x0041B350), and it is where the gun sits on the hull.
+    int vehicle_apc_minigun_tag(rf::Entity* hull)
+    {
+        if (!hull || !hull->vmesh || vehicle_damage_class(hull) != VDC_APC) {
+            return -1;
+        }
+        return vehicle_cached_prop_index(hull, "primary_1", g_apc_minigun_cache);
     }
 
     // A driven hull whose mesh carries `view_forward` puts its driver's eye there, not on his seat.
@@ -672,10 +761,22 @@ namespace
     }
 } // namespace
 
+bool vehicle_apc_minigun_muzzle_pos(rf::Entity* hull, rf::Vector3* out_pos)
+{
+    const int tag = vehicle_apc_minigun_tag(hull);
+    if (tag < 0) {
+        return false;
+    }
+    rf::Matrix3 tag_orient{};
+    rf::vmesh_get_prop_point_transform(hull->vmesh, tag, &hull->orient, &hull->pos, &tag_orient, out_pos);
+    return std::isfinite(out_pos->x + out_pos->y + out_pos->z);
+}
+
 void vehicle_view_level_init()
 {
     g_driller_view_forward_cache = VehicleViewPropCache{};
     g_driver_view_forward_cache.clear();
+    g_apc_minigun_cache.clear();
 }
 
 float vehicle_turret_zoom_fov_scale()
@@ -953,6 +1054,9 @@ void vehicle_view_apply_patch()
     entity_apply_aim_bend_hook.install();
     entity_weapon_fire_pos_eye_player_injection.install();
     obj_render_turret_muzzle_glare_frame_injection.install();
+    obj_render_hidden_hull_glare_injection.install();
+    obj_render_apc_muzzle_glare_tag_injection.install();
+    player_cockpit_apc_muzzle_flash_pos_injection.install();
 
     // The two seated-state gates in the remote (0x0041F400) and local (0x004A5CD0) state pickers. Per-site
     // retargets, so entity_is_jeep_driver's and entity_is_jeep_gunner's other callers keep stock answers.

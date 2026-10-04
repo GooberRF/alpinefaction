@@ -34,6 +34,7 @@
 #include "../../rf/geometry.h"
 #include "../../rf/level.h"
 #include "../../rf/multi.h"
+#include "../../rf/os/console.h"
 #include "../../rf/object.h"
 #include "../../rf/os/frametime.h"
 #include "../../rf/physics.h"
@@ -407,6 +408,12 @@ rf::Entity* vehicle_ridden_live_hull(const rf::Entity* rider)
     return rider ? vehicle_live_synced_entity(rider->host_handle) : nullptr;
 }
 
+bool vehicle_local_input_live()
+{
+    return !rf::game_paused && rf::gameseq_get_state() == rf::GS_GAMEPLAY && !rf::console::console_is_visible()
+        && !rf::multi_chat_is_say_visible();
+}
+
 void vehicle_client_do_frame()
 {
     if (!rf::is_multi) {
@@ -492,7 +499,7 @@ void vehicle_client_do_frame()
     rf::Entity* vehicle = vehicle_local_firing_vehicle();
     bool primary_held = false;
     bool alt_held = false;
-    if (vehicle && rf::local_player && !rf::game_paused) {
+    if (vehicle && rf::local_player && vehicle_local_input_live()) {
         rf::ControlConfig* controls = &rf::local_player->settings.controls;
         primary_held = rf::control_is_control_down(controls, rf::CC_ACTION_PRIMARY_ATTACK);
         alt_held = rf::control_is_control_down(controls, rf::CC_ACTION_SECONDARY_ATTACK);

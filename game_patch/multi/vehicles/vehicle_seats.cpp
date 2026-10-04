@@ -27,12 +27,10 @@
 #include "../../os/os.h"
 #include "../../rf/ai.h"
 #include "../../rf/entity.h"
-#include "../../rf/gameseq.h"
 #include "../../rf/geometry.h"
 #include "../../rf/input.h"
 #include "../../rf/multi.h"
 #include "../../rf/object.h"
-#include "../../rf/os/console.h"
 #include "../../rf/physics.h"
 #include "../../rf/player/camera.h"
 #include "../../rf/player/control_config.h"
@@ -1189,8 +1187,7 @@ void vehicle_poll_seat_hotkeys()
     if (!pressed) {
         return;
     }
-    if (rf::game_paused || rf::gameseq_get_state() != rf::GS_GAMEPLAY
-        || rf::console::console_is_visible() || rf::multi_chat_is_say_visible()) {
+    if (!vehicle_local_input_live()) {
         return;
     }
     rf::Entity* vehicle = vehicle_local_seated_vehicle();

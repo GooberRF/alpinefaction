@@ -90,7 +90,7 @@ namespace
     {
         rf::Entity* hull = vehicle_local_horn_vehicle();
         bool held = false;
-        if (hull && rf::local_player && !rf::game_paused) {
+        if (hull && rf::local_player && vehicle_local_input_live()) {
             held = rf::control_is_control_down(&rf::local_player->settings.controls, rf::CC_ACTION_PRIMARY_ATTACK);
         }
         const int handle = hull ? hull->handle : -1;

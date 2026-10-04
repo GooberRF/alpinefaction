@@ -21,7 +21,11 @@ enum class VehicleFpShotStart
 VehicleFpShotStart vehicle_fp_own_shot_start(rf::Entity* hull, rf::Entity* shooter, const rf::Vector3& fire_pos,
                                              float max_dist, rf::Vector3* out_pos);
 
-// The memoized view_forward prop indices must not outlive the level's meshes.
+// The APC minigun's drawn muzzle (`primary_1`, its authored fire point) in world space; false for any
+// other hull or a mesh without the prop.
+bool vehicle_apc_minigun_muzzle_pos(rf::Entity* hull, rf::Vector3* out_pos);
+
+// The memoized prop indices must not outlive the level's meshes.
 void vehicle_view_level_init();
 
 // Client, once per frame: the local turret operator's alt trigger toggles his zoom.

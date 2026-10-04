@@ -393,6 +393,10 @@ const rf::EntityInterfacePoint* vehicle_seat(const rf::Entity* vehicle, int inde
 int vehicle_seat_leech(const rf::Entity* vehicle, int index);
 rf::Entity* vehicle_driver_entity(const rf::Entity* vehicle);
 
+// The local player's held vehicle controls count: active gameplay with no menu, console or chat on
+// top. game_paused alone is never set in multiplayer (0x00436270 returns on is_multi).
+bool vehicle_local_input_live();
+
 // This hull's replicated attributes, or null when it has none (a dbg_vehicle_spawn hull).
 inline VehicleState* vehicle_hull_state(int vehicle_handle)
 {
