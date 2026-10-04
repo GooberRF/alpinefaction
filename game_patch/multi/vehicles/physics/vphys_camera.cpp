@@ -9,6 +9,7 @@
 #include "../../multi.h"
 #include "../../../graphics/gr.h"
 #include "../../../hud/multi_spectate.h"
+#include "../../../input/gamepad.h"
 #include "../../../input/mouse.h"
 #include "../../../misc/alpine_settings.h"
 #include "../../../os/console.h"
@@ -855,6 +856,12 @@ bool vphys_chase_camera_do_frame(rf::Camera* camera)
             float pitch = 0.0f;
             float yaw = 0.0f;
             consume_vehicle_orbit_mouse_deltas(pitch, yaw);
+            float pad_pitch = 0.0f;
+            float pad_yaw = 0.0f;
+            // Same dedicated read as the mouse, so the stick and gyro don't share the on-foot path.
+            consume_vehicle_orbit_gamepad_deltas(pad_pitch, pad_yaw);
+            pitch += pad_pitch;
+            yaw += pad_yaw;
             // His look keys land in the hull's ControlInfo; scaled as 0x0049DE50 scales a passenger's.
             const float key_scale = rider->info->rot_acceleration * dt;
             vcam_add_look(pitch + vehicle->ai.ci.rot.x * key_scale, yaw + vehicle->ai.ci.rot.y * key_scale);

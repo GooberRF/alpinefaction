@@ -22,7 +22,11 @@ void gamepad_stop_rumble(); // immediately silence all rumble motors
 
 void gamepad_do_frame();
 void consume_raw_gamepad_deltas(float& pitch_delta, float& yaw_delta);
+void consume_vehicle_orbit_gamepad_deltas(float& pitch_delta, float& yaw_delta);
 void flush_freelook_gamepad_deltas();
+
+namespace rf { struct Entity; }
+void gamepad_apply_vehicle_driver_input(rf::Entity* vehicle);
 bool gamepad_is_motionsensors_supported();
 bool gamepad_is_trigger_rumble_supported();
 bool gamepad_is_touchpad_touched();

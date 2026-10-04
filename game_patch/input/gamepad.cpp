@@ -4,6 +4,9 @@
 #include "input.h"
 #include "glyph.h"
 #include "../hud/multi_spectate.h"
+#include "../multi/vehicles/vehicle.h"
+#include "../multi/vehicles/vehicle_physics.h"
+#include "../multi/vehicles/vehicle_view.h"
 #include <algorithm>
 #include <cmath>
 #include <optional>
@@ -798,7 +801,7 @@ static void set_movement_key(rf::ControlConfigAction action, bool down)
     g_action_curr[idx] = down;
 }
 
-static void release_movement_keys()
+static void release_movement_keys(bool force_key_release = false)
 {
     g_move_lx = g_move_ly = 0.0f;
     g_move_mag = 0.0f;
@@ -809,7 +812,7 @@ static void release_movement_keys()
         rf::CC_ACTION_SLIDE_LEFT,
         rf::CC_ACTION_SLIDE_RIGHT,
     };
-    bool needs_key_release = movement_uses_digital_fallback();
+    bool needs_key_release = force_key_release || movement_uses_digital_fallback();
     for (rf::ControlConfigAction action : k_move_actions) {
         int idx = static_cast<int>(action);
         if (needs_key_release && g_action_curr[idx] && rf::local_player) {
@@ -823,8 +826,16 @@ static void release_movement_keys()
 
 static void update_stick_movement()
 {
+    static bool previous_fallback_active = false;
+
     if (!rf::local_player)
         return;
+
+    const bool fallback_active = movement_uses_digital_fallback();
+    if (fallback_active != previous_fallback_active) {
+        release_movement_keys(true);
+        previous_fallback_active = fallback_active;
+    }
 
     if (!rf::gameseq_in_gameplay() || is_gamepad_menu_state()) {
         if (!is_freelook_camera()) {
@@ -1408,7 +1419,8 @@ static float compute_zoom_sensitivity_scale(bool has_player_entity, float scanne
     if (rf::local_player->fpgun_data.scanning_for_target)
         return scanner_sens_value;
 
-    float zoom = rf::local_player->fpgun_data.zoom_factor;
+    // Same zoom the mouse uses: a vehicle turret's zoom has no fpgun zoom_factor behind it.
+    float zoom = std::max(rf::local_player->fpgun_data.zoom_factor, vehicle_turret_zoom_fov_scale());
     if (zoom <= 1.0f)
         return 1.0f;
 
@@ -1447,6 +1459,35 @@ static void gamepad_apply_gyro(bool has_player_entity, float& yaw_delta, float& 
     pitch_delta += out_pitch;
 }
 
+// Multiplayer vehicle look follows the same two diversions as mouse_get_delta_hook.
+static bool gamepad_vehicle_look_is_external()
+{
+    if (!rf::is_multi)
+        return false;
+    if (rf::keep_mouse_centered && vehicle_physics_camera_owns_driver_look())
+        return true;
+    rf::Entity* ep = rf::local_player_entity;
+    return ep && rf::entity_in_vehicle(ep) && !vehicle_rider_keeps_own_orient(ep);
+}
+
+static bool gamepad_driver_steers_hull()
+{
+    return rf::is_multi && rf::local_player_entity
+        && rf::entity_in_vehicle(rf::local_player_entity)
+        && !vehicle_rider_keeps_own_orient(rf::local_player_entity);
+}
+
+// Gyro look. The vehicle camera (hull-steering and orbit seats) is opt-in via gyro_vehicle_camera; a gunner's
+// turret aim and everything on the entity route follow the normal gyro settings.
+static bool gyro_look_allowed(bool vehicle_camera)
+{
+    return g_motion_sensors_supported
+        && g_alpine_game_config.gamepad_gyro_enabled
+        && g_alpine_game_config.gamepad_gyro_sensitivity > 0.0f
+        && (!vehicle_camera || g_alpine_game_config.gamepad_gyro_vehicle_camera)
+        && gyro_ratcheting_is_active();
+}
+
 void consume_raw_gamepad_deltas(float& pitch_delta, float& yaw_delta)
 {
     pitch_delta = 0.0f;
@@ -1469,6 +1510,12 @@ void consume_raw_gamepad_deltas(float& pitch_delta, float& yaw_delta)
     // Suppress camera input while viewing a security camera
     if (rf::local_player && rf::local_player->view_from_handle != -1) {
         release_movement_keys();
+        reset_gamepad_camera_state();
+        return;
+    }
+
+    // The seats that steer the hull or orbit get their look elsewhere, as the mouse's do.
+    if (!freelook_camera_active && gamepad_vehicle_look_is_external()) {
         reset_gamepad_camera_state();
         return;
     }
@@ -1496,13 +1543,10 @@ void consume_raw_gamepad_deltas(float& pitch_delta, float& yaw_delta)
         gamepad_apply_joystick(cam_x, cam_y, cam_dz, gamepad_zoom_sens, yaw_delta, pitch_delta);
     }
 
-    bool allow_gyro = !freelook_camera_active
-        && g_motion_sensors_supported
-        && g_alpine_game_config.gamepad_gyro_enabled
-        && g_alpine_game_config.gamepad_gyro_sensitivity > 0.0f
-        && gyro_ratcheting_is_active();
-
-    if (allow_gyro)
+    // Single-player vehicles keep their gyro opt-in; in multiplayer this is never the vehicle camera,
+    // so a turret's aim follows normal gyro.
+    const bool sp_vehicle = !rf::is_multi && has_player_entity && rf::entity_in_vehicle(rf::local_player_entity);
+    if (!freelook_camera_active && gyro_look_allowed(sp_vehicle))
         gamepad_apply_gyro(has_player_entity, yaw_delta, pitch_delta);
 
     g_camera_gamepad_dx += pitch_delta;
@@ -1511,6 +1555,28 @@ void consume_raw_gamepad_deltas(float& pitch_delta, float& yaw_delta)
     yaw_delta = g_camera_gamepad_dy;
     g_camera_gamepad_dx = 0.0f;
     g_camera_gamepad_dy = 0.0f;
+}
+
+// Orbit-view vehicle driver's look: its own read, like consume_vehicle_orbit_mouse_deltas, so no
+// flick stick or scope scaling. Gyro follows gyro_vehicle_camera.
+void consume_vehicle_orbit_gamepad_deltas(float& pitch_delta, float& yaw_delta)
+{
+    pitch_delta = 0.0f;
+    yaw_delta   = 0.0f;
+
+    if (g_message_log_close_cooldown > 0.0f || !is_gamepad_input_active() || !rf::keep_mouse_centered
+        || !rf::local_player_entity || rf::entity_is_dying(rf::local_player_entity)) {
+        return;
+    }
+
+    SDL_GamepadAxis cam_x, cam_y;
+    float cam_dz;
+    get_stick_axes(true, cam_x, cam_y, cam_dz);
+    gamepad_apply_joystick(cam_x, cam_y, cam_dz, 1.0f, yaw_delta, pitch_delta);
+
+    if (gyro_look_allowed(true)) {
+        gamepad_apply_gyro(false, yaw_delta, pitch_delta); // false: no scope/scanner scaling, like the mouse
+    }
 }
 
 void flush_freelook_gamepad_deltas()
@@ -1597,7 +1663,8 @@ static bool is_local_player_vehicle(rf::Entity* entity)
 }
 
 // Inject stick + gyro into vehicle rotation (ci.rot, range ±1.0 like keyboard input).
-static void apply_vehicle_camera_input(rf::Entity* entity)
+// pitch_scale maps the pitch axis into the range the consumer expects of ci.rot.x.
+static void apply_vehicle_camera_input(rf::Entity* entity, float pitch_scale = 1.0f)
 {
     SDL_GamepadAxis rot_x, rot_y;
     float rot_dz;
@@ -1611,14 +1678,11 @@ static void apply_vehicle_camera_input(rf::Entity* entity)
     constexpr float k_default_sens = 2.5f;
     float joy_sens = g_alpine_game_config.gamepad_joy_sensitivity / k_default_sens;
     entity->ai.ci.rot.y += std::clamp(joy_yaw_sign * rx * joy_sens, -1.0f, 1.0f);
-    entity->ai.ci.rot.x += std::clamp(joy_pitch_sign * ry * joy_sens, -1.0f, 1.0f);
+    entity->ai.ci.rot.x += std::clamp(joy_pitch_sign * ry * joy_sens, -1.0f, 1.0f) * pitch_scale;
 
     // 1/90 scale: 90 deg/s gyro = full keyboard deflection at default sensitivity.
     // Normalized by k_default_sens so gyro and joystick sensitivity values are equivalent.
-    if (g_motion_sensors_supported && g_alpine_game_config.gamepad_gyro_enabled
-        && g_alpine_game_config.gamepad_gyro_vehicle_camera
-        && g_alpine_game_config.gamepad_gyro_sensitivity > 0.0f
-        && gyro_ratcheting_is_active()) {
+    if (gyro_look_allowed(true)) {
         float gyro_pitch, gyro_yaw;
         gyro_get_axis_orientation(gyro_pitch, gyro_yaw);
         gyro_apply_smoothing(gyro_pitch, gyro_yaw);
@@ -1630,8 +1694,20 @@ static void apply_vehicle_camera_input(rf::Entity* entity)
         float yaw_sign = g_alpine_game_config.gamepad_gyro_invert_x ? -1.0f : 1.0f;
         float pitch_sign = g_alpine_game_config.gamepad_gyro_invert_y ? -1.0f : 1.0f;
         entity->ai.ci.rot.y += std::clamp(yaw_sign * -gyro_yaw * gyro_to_rot * sens, -1.0f, 1.0f);
-        entity->ai.ci.rot.x += std::clamp(pitch_sign * gyro_pitch * gyro_to_rot * sens, -1.0f, 1.0f);
+        entity->ai.ci.rot.x += std::clamp(pitch_sign * gyro_pitch * gyro_to_rot * sens, -1.0f, 1.0f) * pitch_scale;
     }
+}
+
+// Multiplayer vphys hulls skip physics_simulate_entity, so the seat that steers one gets its stick and
+// gyro here, from the vphys step. An orbit-view driver's look is read by the vehicle camera instead.
+void gamepad_apply_vehicle_driver_input(rf::Entity* vehicle)
+{
+    // The engine halves the pitch axis (0x00430BE8) before it lands in ci.rot.x, and the multiplayer
+    // flight model doubles it back; mouse and keys arrive halved, so the stick and gyro must too.
+    constexpr float engine_pitch_axis_scale = 0.5f;
+    if (is_gamepad_input_active() && is_local_player_vehicle(vehicle)
+        && gamepad_driver_steers_hull())
+        apply_vehicle_camera_input(vehicle, engine_pitch_axis_scale);
 }
 
 FunHook<void(rf::Entity*)> physics_simulate_entity_hook{
