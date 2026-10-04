@@ -587,9 +587,9 @@ FunHook<void(rf::Camera*)> camera_do_frame_hook{
             // Disengage and fall back to stock behaviour.
             g_static_camera_mode = AlpineStaticCameraMode::None;
         }
-        // The vehicle orbit camera (passengers, and third-person drivers and jeep gunners) positions
-        // the camera itself, for the local player or a first-person spectated passenger, so it must
-        // run ahead of the orbit spectate below.
+        multi_spectate_povcomp_frame(camera);
+        // The vehicle orbit camera (passengers, third-person drivers and jeep gunners, and a third-person
+        // spectator of any of them) positions the camera itself, so it must run ahead of spectate below.
         if (vehicle_physics_camera_do_frame(camera)) {
             return;
         }

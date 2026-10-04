@@ -54,6 +54,38 @@ namespace
         return vphys_class_top_speed(cls) * (vphys_class_is_automobile(cls) ? 1.5f : 1.25f);
     }
 
+    // A car's cap is on GROUND speed; fall speed has its own. One cap on the whole vector made a falling
+    // hull trade its forward speed for fall speed in mid-air.
+    constexpr float vphys_car_vertical_speed_cap = 30.0f;
+
+    bool vphys_clamp_class_velocity(int cls, rf::Vector3& vel)
+    {
+        const float cap = vphys_class_speed_cap(cls);
+        if (cap <= 0.0f) {
+            return false;
+        }
+        if (!vphys_class_is_automobile(cls)) {
+            const float speed = vel.len();
+            if (speed <= cap) {
+                return false;
+            }
+            vel *= cap / speed;
+            return true;
+        }
+        bool clamped = false;
+        const float ground = std::hypot(vel.x, vel.z);
+        if (ground > cap) {
+            vel.x *= cap / ground;
+            vel.z *= cap / ground;
+            clamped = true;
+        }
+        if (std::fabs(vel.y) > vphys_car_vertical_speed_cap) {
+            vel.y = std::copysign(vphys_car_vertical_speed_cap, vel.y);
+            clamped = true;
+        }
+        return clamped;
+    }
+
     rf::Entity* vphys_target(int* out_class)
     {
         if (!rf::is_multi) {
@@ -531,12 +563,11 @@ namespace
             return;
         }
 
-        const float speed = vel.len();
-        const float speed_cap = vphys_class_speed_cap(cls);
-        const bool speed_clamped = speed_cap > 0.0f && speed > speed_cap;
+        rf::Vector3 capped_vel = vel;
+        const bool speed_clamped = vphys_clamp_class_velocity(cls, capped_vel);
         vphys_impact_measure(b, speed_clamped, step_time, impacts);
         if (speed_clamped) {
-            vel *= speed_cap / speed;
+            vel = capped_vel;
             body->setLinearVelocity(to_bt(vel));
         }
 
@@ -985,9 +1016,34 @@ float vehicle_physics_class_bounce_gain(int vdc_class)
     return 1.0f + std::clamp(params_for_class(cls).restitution, 0.0f, 0.95f);
 }
 
+void vehicle_physics_clamp_class_velocity(int vdc_class, rf::Vector3& vel)
+{
+    const int cls = vphys_class_from_vdc(vdc_class);
+    if (cls < 0 || vphys_class_speed_cap(cls) <= 0.0f || !vehicle_vector_is_finite(vel)) {
+        vel = rf::Vector3{};
+        return;
+    }
+    vphys_clamp_class_velocity(cls, vel);
+}
+
+rf::Vector3 vehicle_physics_cap_class_speed(int vdc_class, const rf::Vector3& vel)
+{
+    const float limit = vehicle_physics_class_max_speed(vdc_class);
+    const float speed = vel.len();
+    if (speed <= limit) {
+        return vel;
+    }
+    return speed > 0.0f && std::isfinite(speed) ? vel * (limit / speed) : rf::Vector3{};
+}
+
 float vehicle_physics_class_max_impact_speed(int vdc_class)
 {
-    return vehicle_physics_class_max_speed(vdc_class) * vehicle_physics_class_bounce_gain(vdc_class);
+    const int cls = vphys_class_from_vdc(vdc_class);
+    float speed = vehicle_physics_class_max_speed(vdc_class);
+    if (cls >= 0 && vphys_class_is_automobile(cls)) {
+        speed = std::hypot(speed, vphys_car_vertical_speed_cap);
+    }
+    return speed * vehicle_physics_class_bounce_gain(vdc_class);
 }
 
 void vehicle_physics_level_reset()

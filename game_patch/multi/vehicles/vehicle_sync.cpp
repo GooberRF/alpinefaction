@@ -74,6 +74,9 @@ void vehicle_update_interp_ownership(rf::Entity* vehicle, bool driver_boarding)
         return;
     }
     const rf::Entity* driver = vehicle_driver_entity(vehicle);
+    if (driver_boarding || !driver || driver != rf::local_player_entity) {
+        vehicle_physics_camera_fp_aim_reset(vehicle->handle);
+    }
     if (driver && driver == rf::local_player_entity) {
         // The sim continues from control_data.phb through physics_make_orient, so this must be its
         // exact inverse of the hull, or the first frame teleports it.
@@ -279,12 +282,7 @@ namespace
     // Bytes (127, 127) drive the decoder's z = sqrt(1 - (x*x + y*y)) (0x0047E140-0x0047E1DD) to NaN.
     void vehicle_clamp_row_velocity(const rf::Entity* ep, rf::Vector3& vel)
     {
-        const float limit = vehicle_physics_class_max_speed(vehicle_damage_class(ep));
-        const float speed = vel.len();
-        if (speed <= limit) {
-            return;
-        }
-        vel = speed > 0.0f ? vel * (limit / speed) : rf::Vector3{};
+        vehicle_physics_clamp_class_velocity(vehicle_damage_class(ep), vel);
     }
 
     // Above any live stream's arrival gap; a parked hull's next row always exceeds it.
@@ -976,7 +974,8 @@ namespace
             rf::Entity* hull = ground->type == rf::OT_ENTITY ? static_cast<rf::Entity*>(ground) : nullptr;
             if (mode == rf::MOVE_MODE_FALL && vehicle_is_synced_entity_type(hull)) {
                 // An interpolated hull's velocity can spike for a sample; never launch past its class cap.
-                vehicle_clamp_row_velocity(hull, ep.control_data.local_vel);
+                ep.control_data.local_vel =
+                    vehicle_physics_cap_class_speed(vehicle_damage_class(hull), ep.control_data.local_vel);
             }
             else {
                 ep.control_data.local_vel = ground->p_data.vel;

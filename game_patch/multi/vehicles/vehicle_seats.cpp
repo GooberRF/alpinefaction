@@ -161,12 +161,11 @@ namespace
         if (!vehicle_is_synced_entity_type(vehicle)) {
             return rf::Vector3{};
         }
-        rf::Vector3 vel{};
-        if (vehicle_driver_entity(vehicle) == rider
-            && vehicle_physics_driven_velocity(vehicle->handle, &vel)) {
-            return vel;
+        rf::Vector3 vel = vehicle->p_data.vel;
+        if (vehicle_driver_entity(vehicle) == rider) {
+            vehicle_physics_driven_velocity(vehicle->handle, &vel);
         }
-        return vehicle->p_data.vel;
+        return vehicle_physics_cap_class_speed(vehicle_damage_class(vehicle), vel);
     }
 
     // Applied AFTER vehicle_exit_restore, which zeroes the freed rider's motion. Local player only:
@@ -224,11 +223,7 @@ namespace
         rf::Vector3 vel{static_cast<float>(q[0]) / af_vehicle_state_vel_quant,
                         static_cast<float>(q[1]) / af_vehicle_state_vel_quant,
                         static_cast<float>(q[2]) / af_vehicle_state_vel_quant};
-        const float limit = vehicle_physics_class_max_speed(vehicle_damage_class(vehicle));
-        const float speed = vel.len();
-        if (speed > limit) {
-            vel = speed > 0.0f ? vel * (limit / speed) : rf::Vector3{};
-        }
+        vehicle_physics_clamp_class_velocity(vehicle_damage_class(vehicle), vel);
         return vel;
     }
 

@@ -109,6 +109,7 @@ struct AlpineGameSettings
     bool vehicle_gunner_third_person = false;
 
     // Third-person vehicle camera. Times are smoothing times in seconds (0 = rigid).
+    bool vehicle_cam_recenter = true; // idle drift back behind the vehicle
     static constexpr float default_vehicle_cam_follow = 0.3f;
     static constexpr float max_vehicle_cam_follow = 2.0f;
     float vehicle_cam_follow = default_vehicle_cam_follow;

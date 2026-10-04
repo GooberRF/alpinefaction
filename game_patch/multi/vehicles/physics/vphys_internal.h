@@ -95,7 +95,8 @@ struct VehiclePhysicsParams
     float suspension_compression = 4.4f;   // compression damping
     float suspension_rest_length = 0.25f;  // the wheel hangs this far below its connection point
     float suspension_max_travel_cm = 40.0f;
-    float suspension_max_force = 100000.0f; // high, so a heavy hull's weight is never clamped short
+    // Newtons per reference wheel, NOT per unit mass: 1e5 bottomed a 10-15 t hull at about 2 g.
+    float suspension_max_force = 3.0e5f;
     float wheel_radius = 0.0f;          // <= 0 (the default) uses each spring csphere's own radius
     float wheel_friction = 5.0f;        // tyre grip (btRaycastVehicle frictionSlip)
     // Rear-axle grip at LOW speed, absolute; <= 0 means "same as wheel_friction".
@@ -318,6 +319,7 @@ struct VehicleSimBody
     // How long the hull has been at rest with no wheel on the ground, at ANY attitude.
     float upright_prop_timer = 0.0f;
     bool upright_recovering = false;
+    float tread_cover = 1.0f; // smoothed tread_ground cover: the share of upright servo authority kept
 
     // Frame time banked since the last stepping frame, so the gated model integrates the same total.
     float pre_step_dt = 0.0f;
@@ -417,6 +419,8 @@ struct VehicleChaseCamera
 
     // False: a spectated passenger, viewed along his own eye frame with no orbit of our own.
     bool orbit = false;
+    bool spectator = false; // a third-person spectator's orbit: spectate owns the camera mode
+
     VehicleOrbitSeat seat = VehicleOrbitSeat::none;
     int cls = -1;
     // Hull reference: springs (with their rates) toward a heading target that a land vehicle holds
@@ -426,6 +430,9 @@ struct VehicleChaseCamera
     float ref_yaw_vel = 0.0f;
     float ref_pitch_vel = 0.0f;
     float target_yaw = 0.0f;
+    // The heading is following a hull driving forward above a crawl: the only time drift may run, or
+    // it eases the view behind a heading the hull has since turned away from.
+    bool ref_tracking = false;
     // The hull as the camera measures it: last flat heading, smoothed yaw rate and velocity.
     float hull_yaw = 0.0f;
     float hull_yaw_rate = 0.0f;

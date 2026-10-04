@@ -10,7 +10,7 @@ struct VehicleCrashTuning
     float ground_threshold; // the same for a landing; every wheel contact is a landing
     float wall_ref_dv;      // measured flat-out cruise speed, i.e. a full-speed head-on wall hit
     float wall_frac;        // fraction of max life a wall hit at wall_ref_dv takes
-    float land_ref_dv;      // cars: a 10 m drop's fall speed (capped at 1.5 x top); fighter/sub: top speed
+    float land_ref_dv;      // cars: a 10 m drop's fall speed at the class air_gravity; fighter/sub: top speed
     float land_frac;        // fraction of max life a landing at land_ref_dv takes
 };
 
@@ -18,8 +18,8 @@ struct VehicleCrashTuning
 inline constexpr VehicleCrashTuning vehicle_crash_tuning[VDC_COUNT] = {
     // wall thr, ground thr, wall ref, wall frac, land ref, land frac
     {8.0f, 9.0f, 18.0f, 0.275f, 15.34f, 0.11f},   // VDC_JEEP: cruises at ~18
-    {5.5f, 9.0f, 12.3f, 0.275f, 15.75f, 0.225f},  // VDC_APC: cruises at ~12.3 (car_max_speed 10.5)
-    {4.5f, 9.0f, 9.6f, 0.275f, 12.75f, 0.225f},   // VDC_DRILLER: cruises at ~9.6 (8.5); drops over ~6.1 m cap
+    {5.5f, 9.0f, 12.3f, 0.275f, 17.15f, 0.225f},  // VDC_APC: cruises at ~12.3 (car_max_speed 10.5)
+    {4.5f, 9.0f, 9.6f, 0.275f, 17.15f, 0.225f},   // VDC_DRILLER: cruises at ~9.6 (8.5)
     {10.0f, 10.0f, 25.0f, 0.275f, 25.0f, 0.275f}, // VDC_FIGHTER
     {6.0f, 6.0f, 15.0f, 0.275f, 15.0f, 0.275f},   // VDC_SUB
     {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f},         // VDC_TURRET: no body, never measured

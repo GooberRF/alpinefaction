@@ -423,14 +423,13 @@ namespace
 
     // A hull the SERVER simulates carries its velocity only in Bullet - vehicle_server_body_do_frame
     // leaves p_data.vel at zero for one. Every other hull's p_data.vel is its own client's row,
-    // clamped on receipt, so it is bounded but not trustworthy.
+    // clamped on receipt, so it is bounded but not trustworthy. Whole-vector capped: a fall must not
+    // multiply what a ram or a roadkill bills.
     rf::Vector3 vehicle_server_hull_velocity(const rf::Entity* ep)
     {
-        rf::Vector3 vel{};
-        if (vehicle_physics_server_velocity(ep->handle, &vel)) {
-            return vel;
-        }
-        return ep->p_data.vel;
+        rf::Vector3 vel = ep->p_data.vel;
+        vehicle_physics_server_velocity(ep->handle, &vel);
+        return vehicle_physics_cap_class_speed(vehicle_damage_class(ep), vel);
     }
 
     // The one place a server-side roadkill is minted: the report path and the coast sweep share the

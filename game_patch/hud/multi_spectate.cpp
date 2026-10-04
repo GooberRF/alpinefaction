@@ -143,6 +143,11 @@ bool multi_spectate_is_third_person_orbit()
         && g_spectate_third_person_orbit;
 }
 
+bool multi_spectate_is_third_person()
+{
+    return g_spectate_mode_enabled && g_spectate_view_mode == SpectateViewMode::third_person;
+}
+
 bool multi_spectate_is_static()
 {
     return g_spectate_static_active;
@@ -1147,6 +1152,39 @@ static void spectate_set_camera_entity(rf::Entity* ce, const rf::Vector3& pos, c
     ce->update_room();
 }
 
+void multi_spectate_povcomp_frame(rf::Camera* camera)
+{
+    if (rf::local_player && camera == rf::local_player->cam && camera->camera_entity)
+        povcomp_do_frame();
+}
+
+void multi_spectate_consume_look_deltas(float& dpitch, float& dyaw)
+{
+    // While we're a dead spectator nothing else pumps mouse_get_delta, so the raw delta accumulator
+    // stays empty. Pump it here, then read it. In Raw/Modern mouse mode the hook fills the accumulator
+    // (read via consume_raw_mouse_deltas); Classic mode returns the raw pixel delta in mdx/mdy instead.
+    int mdx = 0, mdy = 0, mdz = 0;
+    rf::mouse_get_delta(mdx, mdy, mdz);
+    dpitch = 0.0f;
+    dyaw = 0.0f;
+    consume_raw_mouse_deltas(dpitch, dyaw, false);
+    if (dpitch == 0.0f && dyaw == 0.0f && (mdx != 0 || mdy != 0)) {
+        const float sens = rf::local_player->settings.controls.mouse_sensitivity;
+        constexpr float classic_scale = 0.0035f;
+        float fy = static_cast<float>(mdy);
+        if (rf::local_player->settings.controls.axes[1].invert)
+            fy = -fy;
+        dpitch = -fy * sens * classic_scale;
+        dyaw = static_cast<float>(mdx) * sens * classic_scale;
+    }
+}
+
+void multi_spectate_reseed_orbit()
+{
+    if (rf::local_player && rf::local_player->cam && rf::local_player->cam->camera_entity)
+        spectate_init_orbit(rf::local_player->cam);
+}
+
 // Per-frame camera positioning for third person (over-the-shoulder and orbit), called from
 // camera_do_frame_hook. Returns true if it positioned the camera, so the stock per-frame
 // third-person logic is skipped.
@@ -1154,7 +1192,6 @@ bool multi_spectate_camera_do_frame(rf::Camera* camera)
 {
     if (!rf::local_player || camera != rf::local_player->cam || !camera->camera_entity)
         return false;
-    povcomp_do_frame();
     rf::Entity* ce = camera->camera_entity;
 
     // Static spectate on a player-dropped camera (level .rfl cameras are drawn by the engine's
@@ -1179,32 +1216,12 @@ bool multi_spectate_camera_do_frame(rf::Camera* camera)
         rf::Entity* target = g_spectate_mode_target
             ? rf::entity_from_handle(g_spectate_mode_target->entity_handle)
             : nullptr;
-        if (!target) {
-            // Target dead/gone this frame - drain the mouse accumulator so motion during the dead
-            // interval doesn't bank up and snap the view on respawn; hold the camera in place.
-            int mdx = 0, mdy = 0, mdz = 0;
-            rf::mouse_get_delta(mdx, mdy, mdz);
-            float dpitch = 0.0f, dyaw = 0.0f;
-            consume_raw_mouse_deltas(dpitch, dyaw, false);
-            return true;
-        }
-
-        // While we're a dead third-person spectator nothing else pumps mouse_get_delta, so the raw
-        // delta accumulator stays empty. Pump it here, then read it. In Raw/Modern mouse mode the
-        // hook fills the accumulator (read via consume_raw_mouse_deltas); Classic mode returns the
-        // raw pixel delta in mdx/mdy instead.
-        int mdx = 0, mdy = 0, mdz = 0;
-        rf::mouse_get_delta(mdx, mdy, mdz);
         float dpitch = 0.0f, dyaw = 0.0f;
-        consume_raw_mouse_deltas(dpitch, dyaw, false);
-        if (dpitch == 0.0f && dyaw == 0.0f && (mdx != 0 || mdy != 0)) {
-            const float sens = rf::local_player->settings.controls.mouse_sensitivity;
-            constexpr float classic_scale = 0.0035f;
-            float fy = static_cast<float>(mdy);
-            if (rf::local_player->settings.controls.axes[1].invert)
-                fy = -fy;
-            dpitch = -fy * sens * classic_scale;
-            dyaw = static_cast<float>(mdx) * sens * classic_scale;
+        multi_spectate_consume_look_deltas(dpitch, dyaw);
+        if (!target) {
+            // Target dead/gone this frame - the drain above keeps motion during the dead interval from
+            // banking up and snapping the view on respawn; hold the camera in place.
+            return true;
         }
 
         g_spectate_orbit_yaw += dyaw;

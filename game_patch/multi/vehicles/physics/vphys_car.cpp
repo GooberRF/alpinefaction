@@ -20,6 +20,7 @@ constexpr float wheel_arc_fwd_deg = 55.0f;
 constexpr float wheel_arc_back_deg = 25.0f;
 // How long the handbrake must hold a hull grounded and still before it pins it.
 constexpr float handbrake_settle_s = 0.5f;
+constexpr float tread_cover_rate = 6.0f; // 1/s
 
 // 0x00498E80 stops at every mover brush, solid or not, and returns only the nearest hit, so a mover
 // the chassis passes through is re-cast past rather than discarded.
@@ -211,6 +212,7 @@ void car_teardown(VehicleSimBody& b)
     b.upright_recover_timer = 0.0f;
     b.upright_prop_timer = 0.0f;
     b.upright_recovering = false;
+    b.tread_cover = 1.0f;
     b.chassis_ground_contact = false;
 }
 
@@ -437,6 +439,89 @@ namespace
             b.wheel_center_y.push_back(w.y);
         }
         b.num_wheels = b.raycast_vehicle->getNumWheels();
+    }
+
+    struct TreadGround
+    {
+        bool plane = false;
+        btVector3 up{0.0f, 1.0f, 0.0f};
+        float cover = 1.0f; // 0..1: how much of the hull's length the in-contact rows span
+    };
+
+    // The plane the contacts span, not their normals: a leading arc reads a bump face as the slope.
+    TreadGround tread_ground(const btRaycastVehicle& veh, const btMatrix3x3& basis)
+    {
+        TreadGround g;
+        const btVector3 right = basis.getColumn(0);
+        const btVector3 up = basis.getColumn(1);
+        const btVector3 fwd = basis.getColumn(2);
+        float full_lo = 1e30f;
+        float full_hi = -1e30f;
+        float lo = 1e30f;
+        float hi = -1e30f;
+        float n = 0.0f;
+        float sx = 0.0f;
+        float sy = 0.0f;
+        float sz = 0.0f;
+        float sxx = 0.0f;
+        float szz = 0.0f;
+        float sxz = 0.0f;
+        float sxy = 0.0f;
+        float szy = 0.0f;
+        btVector3 origin(0.0f, 0.0f, 0.0f);
+        for (int i = 0; i < veh.getNumWheels(); ++i) {
+            const btWheelInfo& w = veh.getWheelInfo(i);
+            const float row_z = w.m_chassisConnectionPointCS.z();
+            full_lo = std::min(full_lo, row_z);
+            full_hi = std::max(full_hi, row_z);
+            if (!w.m_raycastInfo.m_isInContact) {
+                continue;
+            }
+            lo = std::min(lo, row_z);
+            hi = std::max(hi, row_z);
+            if (n == 0.0f) {
+                origin = w.m_raycastInfo.m_contactPointWS;
+            }
+            const btVector3 d = w.m_raycastInfo.m_contactPointWS - origin;
+            const float x = right.dot(d);
+            const float y = up.dot(d);
+            const float z = fwd.dot(d);
+            n += 1.0f;
+            sx += x;
+            sy += y;
+            sz += z;
+            sxx += x * x;
+            szz += z * z;
+            sxz += x * z;
+            sxy += x * y;
+            szy += z * y;
+        }
+        const float span = full_hi - full_lo;
+        if (span > 0.1f && hi >= lo) {
+            const float t = std::clamp(((hi - lo) / span - 0.3f) / 0.45f, 0.0f, 1.0f);
+            g.cover = t * t * (3.0f - 2.0f * t);
+        }
+        if (n < 3.0f) {
+            return g;
+        }
+        // Least squares y = a + b*x + c*z in the hull frame; both tracks and a length of each needed.
+        const float cxx = sxx - sx * sx / n;
+        const float czz = szz - sz * sz / n;
+        const float cxz = sxz - sx * sz / n;
+        const float cxy = sxy - sx * sy / n;
+        const float czy = szy - sz * sy / n;
+        const float det = cxx * czz - cxz * cxz;
+        if (det <= 0.05f * n * n) {
+            return g;
+        }
+        const float slope_x = (cxy * czz - czy * cxz) / det;
+        const float slope_z = (czy * cxx - cxy * cxz) / det;
+        const btVector3 normal = up - right * slope_x - fwd * slope_z;
+        if (normal.length2() > 0.0001f) {
+            g.up = normal.normalized();
+            g.plane = true;
+        }
+        return g;
     }
 } // namespace
 
@@ -850,13 +935,30 @@ void apply_car_model(VehicleSimBody& b, const VehiclePhysicsParams& p, float dt,
     num_driven = std::max(num_driven, 1);
 
     const float engine_each = b.engine_accel * mass / num_driven;
+    // A track drives through whichever rows carry the hull; an even split loses an unloaded row's share.
+    const bool tread = car_tread_wheels_per_side(p) >= 2;
+    float driven_load = 0.0f;
+    if (tread) {
+        for (int i = 0; i < nwheels; ++i) {
+            const btWheelInfo& w = veh->getWheelInfo(i);
+            if (is_driven(w.m_bIsFrontWheel) && w.m_raycastInfo.m_isInContact) {
+                driven_load += w.m_wheelsSuspensionForce;
+            }
+        }
+    }
     // btRaycastVehicle's two drivetrain inputs are NOT in the same units: updateFriction scales the
     // engine force by the timestep but hands m_brake to calcRollingFriction as an UNSCALED impulse.
     const float brake_each = b.brake_accel * mass / nwheels * vphys_fixed_timestep;
 
     for (int i = 0; i < nwheels; ++i) {
         btWheelInfo& w = veh->getWheelInfo(i);
-        veh->applyEngineForce(is_driven(w.m_bIsFrontWheel) ? engine_each : 0.0f, i);
+        float engine = is_driven(w.m_bIsFrontWheel) ? engine_each : 0.0f;
+        if (engine != 0.0f && driven_load > 0.0f) {
+            engine = w.m_raycastInfo.m_isInContact
+                         ? b.engine_accel * mass * (w.m_wheelsSuspensionForce / driven_load)
+                         : 0.0f;
+        }
+        veh->applyEngineForce(engine, i);
         veh->setBrake(brake_each, i);
         if (w.m_bIsFrontWheel) {
             veh->setSteeringValue(b.steer_current, i);
@@ -914,15 +1016,19 @@ void apply_car_model(VehicleSimBody& b, const VehiclePhysicsParams& p, float dt,
     const btVector3 up = basis.getColumn(1);
     const btVector3 world_up(0.0f, 1.0f, 0.0f);
 
-    // The averaged in-contact wheel normals ARE the surface, so a ramp asks for no correction.
+    // The contacts ARE the surface, so a ramp asks for no correction.
     btVector3 ref_up = world_up;
     float agree = 0.0f;
     // Three contacts describe a plane; with one wheel down `agree` is trivially 1.0 and meaningless.
     const int ref_min_wheels = std::min(3, std::max(nwheels, 1));
+    const TreadGround tg =
+        tread && grounded_wheels >= ref_min_wheels ? tread_ground(*veh, basis) : TreadGround{};
+    // Smoothed: contacts exist only at row positions, so the raw cover steps as a row flickers.
+    b.tread_cover += (tg.cover - b.tread_cover) * (1.0f - std::exp(-tread_cover_rate * dt));
     if (grounded_wheels >= ref_min_wheels) {
         agree = normal_sum.length() / static_cast<float>(grounded_wheels);
-        if (agree >= std::clamp(p.upright_normal_agree, 0.0f, 1.0f)) {
-            const btVector3 ground_up = normal_sum.normalized();
+        if (tg.plane || agree >= std::clamp(p.upright_normal_agree, 0.0f, 1.0f)) {
+            const btVector3 ground_up = tg.plane ? tg.up : normal_sum.normalized();
             const float blend = std::clamp(p.upright_ground_blend, 0.0f, 1.0f);
             btVector3 mixed = world_up * (1.0f - blend) + ground_up * blend;
             if (mixed.length2() > 0.0001f) {
@@ -991,11 +1097,13 @@ void apply_car_model(VehicleSimBody& b, const VehiclePhysicsParams& p, float dt,
                                 : (recovering ? std::clamp(p.upright_air_scale, 0.0f, 1.0f) : 0.0f);
     const float damp = grounded_wheels > 0 ? std::max(p.tilt_damp, 0.0f) * grounded_authority : 0.0f;
     const float servo = std::max(p.upright_servo, 0.0f);
-    const auto leg = [&](const btVector3& axis) {
+    const auto leg = [&](const btVector3& axis, float gain) {
         const float w = omega.dot(axis);
-        return (rate_target.dot(axis) - w) * servo - w * damp;
+        return (rate_target.dot(axis) - w) * gain - w * damp;
     };
-    btVector3 alpha = (right * leg(right) + forward * leg(forward)) * authority;
+    // Pitch only: a track hanging off a crest or straddling a ridge must tip under gravity, not be held level.
+    const float pitch_servo = servo * (tread ? b.tread_cover : 1.0f);
+    btVector3 alpha = (right * leg(right, pitch_servo) + forward * leg(forward, servo)) * authority;
 
     // `slip` is 0 down the nose and 1 across it, so a clean turn is never resisted.
     float slip = 0.0f;

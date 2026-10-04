@@ -35,6 +35,12 @@ bool vehicle_physics_camera_take_rider_look(rf::Entity* ep, float& pitch_delta, 
 bool vehicle_physics_camera_driver_aim(const rf::Entity* vehicle, const rf::Entity* driver,
                                        rf::Vector3* out_dir, bool* out_capped = nullptr);
 
+// The local first-person APC driver's mouse yaw, which swings his aim off the hull's nose.
+void vehicle_physics_camera_fp_aim_input(const rf::Entity* vehicle, float yaw_delta);
+
+// A new driver, or the local one gone: that hull's held first-person aim goes back to the nose.
+void vehicle_physics_camera_fp_aim_reset(int vehicle_handle);
+
 // Screen offset of the reticle from the view centre; false hides it.
 bool vehicle_physics_camera_reticle_offset(float* out_dx, float* out_dy);
 
@@ -70,9 +76,16 @@ void vehicle_physics_notify_room_geometry_changed(rf::GRoom* room);
 // True when this CLASS has its DRIVER's eye frame described by the af_vehicle_orient supplement.
 bool vehicle_physics_class_syncs_driver_aim(const rf::Entity* vehicle);
 
-// Fastest a VehicleDamageClass may legitimately travel: the cap the post-step enforces on the
-// LIVE tuning, so a wire-side check and the simulation agree. 0 for a class that cannot move.
+// Fastest a VehicleDamageClass may legitimately travel (a car's GROUND speed): the cap the post-step
+// enforces on the LIVE tuning. 0 for a class that cannot move.
 float vehicle_physics_class_max_speed(int vdc_class);
+
+// The post-step's clamp, for wire-side checks: non-finite input or an immobile class gives zero.
+void vehicle_physics_clamp_class_velocity(int vdc_class, rf::Vector3& vel);
+
+// The class cap on the WHOLE vector, for what a hull's motion bills or hands on (damage, a rider's
+// launch): a car's separately capped fall speed must not multiply it. Non-finite gives zero.
+rf::Vector3 vehicle_physics_cap_class_speed(int vdc_class, const rf::Vector3& vel);
 
 // The speed the model drives a VehicleDamageClass at, below that cap. 0 for a class that cannot move.
 float vehicle_physics_class_top_speed(int vdc_class);
@@ -80,7 +93,7 @@ float vehicle_physics_class_top_speed(int vdc_class);
 // 1 + the class restitution: the largest velocity change a contact gives per unit of approach speed.
 float vehicle_physics_class_bounce_gain(int vdc_class);
 
-// The largest velocity change a contact can give this class: its cap, plus the bounce off it.
+// The largest velocity change a contact can give this class: its fastest motion, plus the bounce off it.
 float vehicle_physics_class_max_impact_speed(int vdc_class);
 
 // The drown test: the hull ORIGIN below a liquid room's plane, and never the sub.

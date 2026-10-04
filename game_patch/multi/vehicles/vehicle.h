@@ -86,6 +86,15 @@ rf::Entity* vehicle_passenger_vehicle(rf::Entity* rider);
 // Passenger seat this machine draws the view from - own or spectated; out_rider gets its occupant.
 rf::Entity* vehicle_fp_view_passenger_vehicle(rf::Entity** out_rider);
 
+// The first-person APC driver this machine draws the view of (own, or a first-person spectator's
+// target). His aim yaws off the hull's nose while the view stays on it.
+bool vehicle_fp_apc_view(rf::Entity** out_vehicle, rf::Entity** out_driver);
+
+// The hull's aim as fired, and the view frame on its nose at the same hull-relative pitch; false when
+// there is no usable frame.
+bool vehicle_fp_apc_aim_split(const rf::Entity* vehicle, const rf::Entity* driver, rf::Vector3* out_aim,
+                              rf::Matrix3* out_view);
+
 // How far the hull's cspheres reach beyond the origin along dir (a UNIT vector).
 float vehicle_collision_reach_along(rf::Entity* ep, const rf::Vector3& dir);
 

@@ -298,10 +298,10 @@ FunHook<void(int&, int&, int&)> mouse_get_delta_hook{
         }
 
         // If the player entity is not valid (dead/spawn transition), pause raw delta.
-        // Exception: the spectator freelook camera and third-person orbit spectate both drive
-        // the camera with mouse input, so let their deltas through.
+        // Exception: the spectator freelook camera and third-person spectate (its orbit, and the vehicle
+        // camera it hands a seated target to) drive the camera with mouse input, so let their deltas through.
         if (!rf::local_player_entity || rf::entity_is_dying(rf::local_player_entity)) {
-            if (!is_freelook_camera() && !multi_spectate_is_third_person_orbit()) {
+            if (!is_freelook_camera() && !multi_spectate_is_third_person()) {
                 reset_mouse_delta_accumulators();
                 dx = 0;
                 dy = 0;

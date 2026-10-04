@@ -55,10 +55,13 @@ void vehicle_feed_automobile_eye_input(rf::Entity* ep)
         return;
     }
     rf::EntityControlData& cd = ep->control_data;
-    const float look = vehicle_physics_camera_owns_driver_look() ? 0.0f : ep->ai.ci.rot.x;
+    const bool camera_owns_look = vehicle_physics_camera_owns_driver_look();
+    const float look = camera_owns_look ? 0.0f : ep->ai.ci.rot.x;
     cd.delta_eye_phb.x = ep->info->rot_acceleration * look * ep->p_data.frame_time_left;
     cd.delta_eye_phb.y = 0.0f;
     cd.delta_eye_phb.z = 0.0f;
+    const float yaw_look = camera_owns_look ? 0.0f : ep->ai.ci.rot.y;
+    vehicle_physics_camera_fp_aim_input(ep, ep->info->rot_acceleration * yaw_look * ep->p_data.frame_time_left);
 }
 
 rf::Entity* vehicle_local_driven_vehicle()
@@ -284,6 +287,12 @@ namespace
             static auto& eye_pos = addr_as_ref<rf::Vector3>(0x0062FD90);
             if (rf::is_multi && vehicle_spectated_driller_view(&eye_pos, eye_orient)) {
                 eye_pos += eye_orient->fvec * vehicle_scene_eye_pullback();
+            }
+            rf::Entity* apc = nullptr;
+            rf::Entity* driver = nullptr;
+            rf::Vector3 aim{};
+            if (vehicle_fp_apc_view(&apc, &driver)) {
+                vehicle_fp_apc_aim_split(apc, driver, &aim, eye_orient);
             }
         },
     };
@@ -809,6 +818,52 @@ bool vehicle_is_turret_rider_state(rf::Entity* ep, int state)
         return false;
     }
     return vehicle_hull_is_turret(vehicle_ridden_hull(ep));
+}
+
+bool vehicle_fp_apc_view(rf::Entity** out_vehicle, rf::Entity** out_driver)
+{
+    if (!rf::is_multi || !rf::local_player) {
+        return false;
+    }
+    // Spectated, the first-person test is the view mode's; locally, the camera's own.
+    if (!multi_spectate_is_spectating()
+        && (!rf::local_player->cam || rf::local_player->cam->mode != rf::CAMERA_FIRST_PERSON)) {
+        return false;
+    }
+    rf::Entity* viewer = vehicle_fp_view_entity();
+    rf::Entity* vehicle = viewer ? vehicle_ridden_live_hull(viewer) : nullptr;
+    if (!vehicle || vehicle_driver_entity(vehicle) != viewer || vehicle_damage_class(vehicle) != VDC_APC) {
+        return false;
+    }
+    *out_vehicle = vehicle;
+    *out_driver = viewer;
+    return true;
+}
+
+bool vehicle_fp_apc_aim_split(const rf::Entity* vehicle, const rf::Entity* driver, rf::Vector3* out_aim,
+                              rf::Matrix3* out_view)
+{
+    // A watched driver's eased aim is measured against the hull sample it was applied on, as his cockpit is.
+    rf::Matrix3 hull = vehicle->orient;
+    if (driver != rf::local_player_entity) {
+        auto it = g_vehicle_state.orient.find(vehicle->handle);
+        if (it != g_vehicle_state.orient.end() && it->second.eye_hull_valid) {
+            hull = it->second.eye_hull_orient;
+        }
+    }
+    const rf::Vector3& aim = vehicle->eye_orient.fvec;
+    const float pitch_sin = std::clamp(aim.dot_prod(hull.uvec), -1.0f, 1.0f);
+    const rf::Vector3 view = hull.uvec * pitch_sin + hull.fvec * std::sqrt(1.0f - pitch_sin * pitch_sin);
+    rf::Vector3 up = hull.uvec - view * hull.uvec.dot_prod(view);
+    const float up_len = up.len();
+    if (!(up_len >= 0.01f) || !(view.len() > 0.5f)) {
+        return false;
+    }
+    *out_aim = aim;
+    out_view->fvec = view;
+    out_view->uvec = up / up_len;
+    out_view->rvec = out_view->uvec.cross(view);
+    return true;
 }
 
 rf::Entity* vehicle_fp_view_passenger_vehicle(rf::Entity** out_rider)

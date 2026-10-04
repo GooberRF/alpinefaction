@@ -172,7 +172,37 @@ namespace
         int cls = -1;
         VehicleOrbitSeat seat = VehicleOrbitSeat::none;
         bool local = false;
+        bool spectator = false; // a third-person spectator: the orbit runs, steered by his own mouse
     };
+
+    // The seat a third-person spectator is watching, when it is one with the vehicle camera.
+    VehicleOrbitSeat vcam_spectated_seat(rf::Entity*& out_vehicle, rf::Entity*& out_rider)
+    {
+        if (!multi_spectate_is_third_person()) {
+            return VehicleOrbitSeat::none;
+        }
+        rf::Player* target = multi_spectate_get_target_player();
+        rf::Entity* rider = target ? rf::entity_from_handle(target->entity_handle) : nullptr;
+        if (!rider || rf::entity_is_dying(rider)) {
+            return VehicleOrbitSeat::none;
+        }
+        rf::Entity* vehicle = vehicle_ridden_live_hull(rider);
+        const int cls = vehicle ? vphys_class_for(vehicle) : -1;
+        if (cls < 0 || params_for_class(cls).cam_enable == 0.0f) {
+            return VehicleOrbitSeat::none;
+        }
+        out_vehicle = vehicle;
+        out_rider = rider;
+        if (vehicle_driver_entity(vehicle) == rider) {
+            // Only the seats whose own player drives this camera: a mouse-steered class has none.
+            return vphys_class_is_automobile(cls) && params_for_class(cls).steer_from_mouse == 0.0f
+                ? VehicleOrbitSeat::driver : VehicleOrbitSeat::none;
+        }
+        if (rf::entity_is_jeep_gunner(rider)) {
+            return VehicleOrbitSeat::gunner;
+        }
+        return vehicle_passenger_vehicle(rider) == vehicle ? VehicleOrbitSeat::passenger : VehicleOrbitSeat::none;
+    }
 
     bool vphys_chase_camera_target(VcamTarget& t)
     {
@@ -192,6 +222,13 @@ namespace
             t = VcamTarget{vehicle, rider, cls, VehicleOrbitSeat::passenger, local};
             return true;
         }
+        rf::Entity* watched_vehicle = nullptr;
+        rf::Entity* watched_rider = nullptr;
+        const VehicleOrbitSeat watched = vcam_spectated_seat(watched_vehicle, watched_rider);
+        if (watched != VehicleOrbitSeat::none) {
+            t = VcamTarget{watched_vehicle, watched_rider, vphys_class_for(watched_vehicle), watched, false, true};
+            return true;
+        }
         const VehicleOrbitSeat seat = vcam_local_choice_seat(true);
         if (seat == VehicleOrbitSeat::none) {
             return false;
@@ -206,6 +243,9 @@ namespace
     {
         if (!g_vcam.active) {
             return;
+        }
+        if (g_vcam.spectator) {
+            multi_spectate_reseed_orbit();
         }
         // 0x0040DDF0 returns 0 and writes NOTHING when the rider's handle is dead, so stamping the
         // mode ourselves would leave first person looking out of an unmoved chase pose.
@@ -296,11 +336,14 @@ namespace
         const rf::Vector3& f = vehicle->orient.fvec;
         const float hlen = std::sqrt(f.x * f.x + f.z * f.z);
         float lookahead = 0.0f;
+        g_vcam.ref_tracking = false;
         if (hlen >= vcam_min_heading_len) {
             const rf::Vector3& v = g_vcam.hull_vel;
             const float speed = std::sqrt(v.x * v.x + v.z * v.z);
             const float fwd = (v.x * f.x + v.z * f.z) / hlen;
             const float min_speed = cfg.vehicle_cam_min_speed;
+            // A min speed of 0 follows the hull at every speed, so the reference is behind it even parked.
+            g_vcam.ref_tracking = min_speed <= 0.0f || (fwd > 0.0f && speed >= std::max(min_speed, vcam_velocity_ramp_floor));
             if (snap || min_speed <= 0.0f || (speed >= min_speed && fwd > 0.0f)) {
                 float target = g_vcam.hull_yaw;
                 if (fwd > 0.0f) {
@@ -546,6 +589,38 @@ namespace
         return true;
     }
 
+    // The local first-person APC driver's aim yaw off the hull's nose, within the third-person cap.
+    struct ApcFpAim
+    {
+        int vehicle_handle = -1;
+        float yaw = 0.0f;
+    };
+    ApcFpAim g_apc_fp_aim;
+
+    bool vcam_apc_fp_aim_active(const rf::Entity* vehicle, const rf::Entity* driver)
+    {
+        return vehicle && driver && driver == rf::local_player_entity && vphys_class_for(vehicle) == VPHYS_CLASS_APC
+            && vehicle_driver_entity(vehicle) == driver && vehicle_ridden_live_hull(driver) == vehicle
+            && !vehicle_physics_camera_owns_driver_look() && rf::local_player && rf::local_player->cam
+            && rf::local_player->cam->mode == rf::CAMERA_FIRST_PERSON;
+    }
+
+    // The rebuilt eye's hull-relative pitch, swung by the held yaw about the hull's up axis.
+    bool vcam_apc_fp_aim(const rf::Entity* vehicle, const rf::Entity* driver, rf::Vector3& out_dir)
+    {
+        if (!vcam_apc_fp_aim_active(vehicle, driver) || g_apc_fp_aim.vehicle_handle != vehicle->handle) {
+            return false;
+        }
+        const rf::Matrix3& hull = vehicle->orient;
+        const rf::EntityControlData& cd = vehicle->control_data;
+        rf::Matrix3 eye = hull;
+        eye.rotate_about_local_x(cd.automobile_eye_phb.x + cd.eye_phb.x);
+        const float pitch = std::asin(std::clamp(eye.fvec.dot_prod(hull.uvec), -1.0f, 1.0f));
+        const rf::Vector3 local = dir_from_yaw_pitch(g_apc_fp_aim.yaw, pitch);
+        out_dir = hull.rvec * local.x + hull.uvec * local.y + hull.fvec * local.z;
+        return std::isfinite(out_dir.x + out_dir.y + out_dir.z);
+    }
+
     void vcam_setting_cmd(std::optional<float> value, void (AlpineGameSettings::*setter)(float),
                           float AlpineGameSettings::*field, float def, std::string_view what,
                           std::string_view unit)
@@ -663,6 +738,17 @@ namespace
         "Set how much the vehicle camera smooths out the vehicle's sideways and fore-aft jolts",
         "cl_vehiclecam_lag [0.0-0.5]",
     };
+
+    ConsoleCommand2 vehiclecam_recenter_cmd{
+        "cl_vehiclecam_recenter",
+        [](std::optional<bool> enabled) {
+            g_alpine_game_config.vehicle_cam_recenter = enabled.value_or(!g_alpine_game_config.vehicle_cam_recenter);
+            rf::console::print("Vehicle camera recentering is {}",
+                               g_alpine_game_config.vehicle_cam_recenter ? "enabled" : "disabled");
+        },
+        "Ease an idle third-person vehicle camera back behind the vehicle while it drives forward",
+        "cl_vehiclecam_recenter [bool]",
+    };
 } // namespace
 
 bool vphys_chase_camera_do_frame(rf::Camera* camera)
@@ -691,8 +777,9 @@ bool vphys_chase_camera_do_frame(rf::Camera* camera)
     const float height = vphys_cam_height(p, box);
     const float dt = std::isfinite(rf::frametime) ? std::max(rf::frametime, 0.0f) : 0.0f;
 
+    const bool orbit = t.local || t.spectator;
     const bool fresh = !g_vcam.active || g_vcam.vehicle_handle != vehicle->handle
-        || g_vcam.rider_handle != rider->handle || g_vcam.orbit != t.local;
+        || g_vcam.rider_handle != rider->handle || g_vcam.orbit != orbit;
     if (fresh) {
         // Read before the mode change: the orbit starts from what is on screen, so nothing snaps.
         const rf::Matrix3 view = rf::camera_get_orient(camera);
@@ -702,15 +789,18 @@ bool vphys_chase_camera_do_frame(rf::Camera* camera)
         if (prev_mode != rf::CAMERA_THIRD_PERSON && !rf::camera_enter_third_person(camera)) {
             return false;
         }
-        const rf::CameraMode saved_mode = g_vcam.active ? g_vcam.saved_mode : prev_mode;
+        // A spectator's view mode is spectate's, never something to drop back to on release.
+        const rf::CameraMode saved_mode =
+            t.spectator ? rf::CAMERA_THIRD_PERSON : (g_vcam.active ? g_vcam.saved_mode : prev_mode);
         g_vcam = VehicleChaseCamera{};
         g_vcam.saved_mode = saved_mode;
+        g_vcam.spectator = t.spectator;
         g_vcam.dist = want_dist;
         g_vcam.active = true;
         g_vcam.vehicle_handle = vehicle->handle;
         g_vcam.rider_handle = rider->handle;
-        g_vcam.orbit = t.local;
-        if (t.local) {
+        g_vcam.orbit = orbit;
+        if (orbit) {
             vcam_seed(view, vehicle);
         }
     }
@@ -741,7 +831,7 @@ bool vphys_chase_camera_do_frame(rf::Camera* camera)
 
     rf::Vector3 look_dir;
     if (g_vcam.orbit) {
-        const bool gunner = g_vcam.seat == VehicleOrbitSeat::gunner;
+        const bool gunner = g_vcam.seat == VehicleOrbitSeat::gunner && t.local;
         if (!fresh) {
             const float prev_ref_yaw = g_vcam.ref_yaw;
             const float prev_ref_pitch = g_vcam.ref_pitch;
@@ -752,7 +842,16 @@ bool vphys_chase_camera_do_frame(rf::Camera* camera)
                 g_vcam.rel_pitch -= g_vcam.ref_pitch - prev_ref_pitch;
             }
         }
-        if (g_vcam.seat == VehicleOrbitSeat::driver) {
+        if (t.spectator) {
+            float pitch = 0.0f;
+            float yaw = 0.0f;
+            multi_spectate_consume_look_deltas(pitch, yaw);
+            // Motion banked while nothing read the mouse would snap the view it was just seeded from.
+            if (!fresh) {
+                vcam_add_look(pitch, yaw);
+            }
+        }
+        else if (g_vcam.seat == VehicleOrbitSeat::driver) {
             float pitch = 0.0f;
             float yaw = 0.0f;
             consume_vehicle_orbit_mouse_deltas(pitch, yaw);
@@ -761,9 +860,18 @@ bool vphys_chase_camera_do_frame(rf::Camera* camera)
             vcam_add_look(pitch + vehicle->ai.ci.rot.x * key_scale, yaw + vehicle->ai.ci.rot.y * key_scale);
         }
         g_vcam.idle_s += dt;
-        if (!gunner && g_vcam.idle_s >= vcam_drift_delay_s) {
+        const bool watched_gunner = t.spectator && g_vcam.seat == VehicleOrbitSeat::gunner;
+        if (!gunner && g_alpine_game_config.vehicle_cam_recenter && g_vcam.idle_s >= vcam_drift_delay_s
+            && (g_vcam.ref_tracking || watched_gunner)) {
             const float k = 1.0f - std::exp(-vcam_drift_rate * dt);
-            g_vcam.rel_yaw -= g_vcam.rel_yaw * k;
+            // A watched gunner's camera turns toward his aim, where his own would be looking.
+            float drift_yaw = 0.0f;
+            if (watched_gunner) {
+                const rf::Vector3& aim = rider->eye_orient.fvec;
+                const float aim_yaw = std::atan2(aim.x, aim.z);
+                drift_yaw = std::isfinite(aim_yaw) ? vehicle_wrap_pi(aim_yaw - g_vcam.ref_yaw) : 0.0f;
+            }
+            g_vcam.rel_yaw = vehicle_wrap_pi(g_vcam.rel_yaw + vehicle_wrap_pi(drift_yaw - g_vcam.rel_yaw) * k);
             g_vcam.rel_pitch += (vcam_default_pitch - g_vcam.rel_pitch) * k;
         }
         vcam_clamp_rel_pitch();
@@ -807,8 +915,11 @@ bool vphys_chase_camera_do_frame(rf::Camera* camera)
 
     g_vcam.pos = cam_pos;
     g_vcam.look = look_dir;
-    if (g_vcam.orbit) {
+    if (t.local) {
         vcam_update_aim_point(vehicle, focus);
+    }
+    else {
+        g_vcam.aim_valid = false;
     }
     return true;
 }
@@ -895,7 +1006,7 @@ bool vehicle_physics_camera_driver_aim(const rf::Entity* vehicle, const rf::Enti
 {
     bool capped = false;
     float weight = 1.0f;
-    if (!vcam_apc_aim(vehicle, driver, *out_dir, capped, weight)) {
+    if (!vcam_apc_aim(vehicle, driver, *out_dir, capped, weight) && !vcam_apc_fp_aim(vehicle, driver, *out_dir)) {
         return false;
     }
     if (out_capped) {
@@ -904,10 +1015,50 @@ bool vehicle_physics_camera_driver_aim(const rf::Entity* vehicle, const rf::Enti
     return true;
 }
 
+void vehicle_physics_camera_fp_aim_input(const rf::Entity* vehicle, float yaw_delta)
+{
+    if (!vcam_apc_fp_aim_active(vehicle, rf::local_player_entity)) {
+        g_apc_fp_aim = ApcFpAim{};
+        return;
+    }
+    if (g_apc_fp_aim.vehicle_handle != vehicle->handle) {
+        g_apc_fp_aim = ApcFpAim{vehicle->handle, 0.0f};
+    }
+    if (std::isfinite(yaw_delta)) {
+        g_apc_fp_aim.yaw = std::clamp(g_apc_fp_aim.yaw + yaw_delta, -apc_aim_yaw_cap, apc_aim_yaw_cap);
+    }
+}
+
+void vehicle_physics_camera_fp_aim_reset(int vehicle_handle)
+{
+    if (g_apc_fp_aim.vehicle_handle == vehicle_handle) {
+        g_apc_fp_aim = ApcFpAim{};
+    }
+}
+
 bool vehicle_physics_camera_reticle_offset(float* out_dx, float* out_dy)
 {
     *out_dx = 0.0f;
     *out_dy = 0.0f;
+    rf::Entity* fp_vehicle = nullptr;
+    rf::Entity* fp_driver = nullptr;
+    if (!(g_vcam.active && g_vcam.orbit) && vehicle_fp_apc_view(&fp_vehicle, &fp_driver)) {
+        // The view sits on the hull's nose, so the reticle is the aim's own direction on screen.
+        rf::Vector3 aim{};
+        rf::Matrix3 view{};
+        float ax = 0.0f;
+        float ay = 0.0f;
+        float vx = 0.0f;
+        float vy = 0.0f;
+        if (!vehicle_fp_apc_aim_split(fp_vehicle, fp_driver, &aim, &view)
+            || !gr_project_world_to_screen(rf::gr::view_pos + aim * vcam_reticle_project_dist, ax, ay)
+            || !gr_project_world_to_screen(rf::gr::view_pos + view.fvec * vcam_reticle_project_dist, vx, vy)) {
+            return true;
+        }
+        *out_dx = ax - vx;
+        *out_dy = ay - vy;
+        return true;
+    }
     rf::Entity* rider = rf::local_player_entity;
     rf::Entity* vehicle = g_vcam.active ? rf::entity_from_handle(g_vcam.vehicle_handle) : nullptr;
     rf::Vector3 dir{};
@@ -978,4 +1129,5 @@ void vphys_camera_install_patches()
     vehiclecam_pitch_smooth_cmd.register_cmd();
     vehiclecam_bounce_cmd.register_cmd();
     vehiclecam_lag_cmd.register_cmd();
+    vehiclecam_recenter_cmd.register_cmd();
 }

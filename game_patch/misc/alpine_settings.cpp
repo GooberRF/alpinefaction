@@ -1012,6 +1012,10 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.vehicle_gunner_third_person = std::stoi(settings["VehicleGunnerThirdPerson"]);
         processed_keys.insert("VehicleGunnerThirdPerson");
     }
+    if (settings.count("VehicleCamRecenter")) {
+        g_alpine_game_config.vehicle_cam_recenter = std::stoi(settings["VehicleCamRecenter"]);
+        processed_keys.insert("VehicleCamRecenter");
+    }
     if (settings.count("VehicleCamFollow")) {
         g_alpine_game_config.set_vehicle_cam_follow(std::stof(settings["VehicleCamFollow"]));
         processed_keys.insert("VehicleCamFollow");
@@ -1717,6 +1721,7 @@ void alpine_player_settings_save(rf::Player* player)
     file << "VehicleHealthBars=" << g_alpine_game_config.vehicle_health_bars << "\n";
     file << "VehicleDriverThirdPerson=" << g_alpine_game_config.vehicle_driver_third_person << "\n";
     file << "VehicleGunnerThirdPerson=" << g_alpine_game_config.vehicle_gunner_third_person << "\n";
+    file << "VehicleCamRecenter=" << g_alpine_game_config.vehicle_cam_recenter << "\n";
     file << "VehicleCamFollow=" << g_alpine_game_config.vehicle_cam_follow << "\n";
     file << "VehicleCamVelocity=" << g_alpine_game_config.vehicle_cam_velocity << "\n";
     file << "VehicleCamMinSpeed=" << g_alpine_game_config.vehicle_cam_min_speed << "\n";
