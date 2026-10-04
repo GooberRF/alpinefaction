@@ -529,10 +529,6 @@ bool player_inside_hill_trigger(const HillInfo& h, const rf::Player& p)
     if (!ent || !h.trigger)
         return false;
 
-    // Only players on foot hold a hill; any seat of any vehicle or turret does not.
-    if (ent->host_handle != -1)
-        return false;
-
     if (h.trigger->type == 0 && h.handler->sphere_to_cylinder) {
         return trigger_sphere_as_full_cylinder_check_if_activated(h.trigger, ent, g_koth_info.rules.cyl_use_trigger_up);
     }

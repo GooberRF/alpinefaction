@@ -537,14 +537,14 @@ namespace
         bool clear_homing;                  // $Homing: false
     };
 
-    // Exactly the mods/gg diff. Anything not listed keeps its stock value.
+    // The mods/gg diff, with the APC and fighter minigun pools doubled. Anything not listed keeps its stock value.
     constexpr VehicleWeaponOverride vehicle_weapon_overrides[] = {
         {"Torpedo",         17.0f, 1.25f, 275.0f, 5,   12.0f, 8.5f,  true},
         {"Fighter Rocket",  {},    2.0f,  275.0f, 5,   {},    10.0f, true},
         {"APC Rocket",      {},    {},    275.0f, 5,   {},    {},    false},
-        {"APC Minigun",     {},    {},    45.0f,  100, {},    {},    false},
+        {"APC Minigun",     {},    {},    45.0f,  200, {},    {},    false},
         {"Jeep Gun",        {},    {},    45.0f,  150, {},    {},    false},
-        {"Fighter Minigun", {},    {},    45.0f,  100, {},    {},    false},
+        {"Fighter Minigun", {},    {},    45.0f,  200, {},    {},    false},
         {"Vauss",           {},    {},    45.0f,  150, {},    {},    false},
     };
 
