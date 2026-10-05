@@ -29,10 +29,11 @@ static int g_camera_mouse_dx = 0, g_camera_mouse_dy = 0;
 // A third-person vehicle driver's look: his ControlInfo is the hull's, so nothing else would read it.
 static int g_vehicle_orbit_mouse_dx = 0, g_vehicle_orbit_mouse_dy = 0;
 
+// Use the camera-mode accessor so single-player camera2 freelook matches spectator freelook.
 static bool is_freelook_camera()
 {
     return rf::local_player && rf::local_player->cam
-        && rf::local_player->cam->mode == rf::CameraMode::CAMERA_FREELOOK;
+        && rf::camera_get_mode(*rf::local_player->cam) == rf::CameraMode::CAMERA_FREELOOK;
 }
 
 // The seat that steers a hull reads the mouse as a RATE (controls_read 0x00430B79): counts x sensitivity

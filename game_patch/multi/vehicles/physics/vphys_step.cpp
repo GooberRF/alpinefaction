@@ -8,6 +8,7 @@
 #include "../vehicle_physics.h"
 #include "../vehicle.h"
 #include "../vehicle_crash_tuning.h"
+#include "../../../input/gamepad.h"
 #include "../../../misc/destruction.h"
 #include "../../../misc/level.h"
 #include "../../../os/os.h"
@@ -689,6 +690,11 @@ namespace
         0x00433633,
         [](rf::Player* pp) {
             player_process_controls_vphys_hook.call_target(pp);
+            rf::Entity* driven = vehicle_local_driven_vehicle();
+            // Stock fills the hull's ci.rot from the keyboard and mouse only; the gamepad adds its own.
+            if (driven && !rf::entity_is_dying(driven) && vehicle_physics_drives(driven)) {
+                gamepad_apply_vehicle_driver_input(driven);
+            }
             vphys_step_frame();
         },
     };
