@@ -197,6 +197,9 @@ namespace gr::d3d11
                         const DecorationChunk& chunk = td.chunks[sorted_chunks_[i].chunk];
                         const float distance = chunk_distance_[i - begin];
                         if (chunk.count[d] == 0 || distance > draw_distance) continue;
+                        const rf::Vector3 lo = chunk.lo_vec();
+                        const rf::Vector3 hi = chunk.hi_vec();
+                        render_context_.update_dir_lights((lo + hi) * 0.5f, (hi - lo).len() * 0.5f);
                         const int lod = select_lod(*lod_mesh, distance * apparent_per_meter);
                         const auto* batches = mesh_renderer_.bind_v3d_buffers(
                             lod_mesh, lod, submesh.num_materials > 0 ? materials : nullptr, submesh.num_materials);

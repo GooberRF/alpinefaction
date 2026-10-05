@@ -21,6 +21,10 @@ bool terrain_deserialize_chunk(CDedLevel& level, rf::File& file, std::size_t chu
 void PlaceNewTerrainObject();
 DedTerrain* CloneTerrainObject(DedTerrain* source, bool add_to_level = true);
 void DeleteTerrainObject(DedTerrain* terrain);
+void terrain_release_editor_state(const DedTerrain* terrain);
+// Whether undo or redo may put `terrain` back without passing the level's terrain count or data budget.
+bool terrain_can_restore(CDedLevel* level, const DedTerrain& terrain);
+void terrain_report_not_restored(int count);
 
 // Properties dialog, for `terrain` or for the first selected terrain
 void terrain_show_properties(CDedLevel* level, DedTerrain* terrain);
@@ -40,5 +44,4 @@ bool terrain_copy_object(DedObject* source);
 void terrain_paste_objects(CDedLevel* level);
 void terrain_clear_clipboard();
 void terrain_handle_delete_or_cut(DedObject* obj);
-void terrain_handle_delete_selection(CDedLevel* level);
 void terrain_ensure_uid(int& uid);

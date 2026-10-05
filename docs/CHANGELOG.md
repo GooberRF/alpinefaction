@@ -5,17 +5,12 @@ Version 1.5.0 (Trillium): Not yet released
 --------------------------------
 ### Major features
 [@GooberRF](https://github.com/GooberRF)
-- Add multiplayer vehicles and turrets
-  - Jeeps, APCs, drillers, fighters, submarines, and stationary turrets, spawned by the new `Vehicle Factory` object
-  - Simulate vehicle physics with the Bullet physics engine
-  - Multi-seat vehicles with driver, gunner, and passenger seats; `Use` boards the lowest free seat and number keys `1`-`6` switch seats
 - Add ray cast lightmap baking to level editor
   - Add `Invisible faces block light` and `Alpha-textured faces block light` level properties to control whether those faces occlude baked light
   - Add `No shadow cast` brush property for solid detail brushes and movers
   - Add `Meshes block light` level property to make Alpine Mesh objects cast baked shadows
   - Add `No shadow cast` checkbox to Alpine Mesh object properties to exclude individual objects
-- Add per-level directional sunlight, configured in the `Sunlight` section of Level Properties
-  - `Directional sunlight` checkbox, with `Yaw`, `Pitch`, `Intensity`, `Spread` (soft shadow angle) and `Color` fields, plus a `Set from camera` button that takes the sun direction from the perspective viewport
+- Add global per-level directional sunlight and individual `Directional Light` objects with bounded ranges
   - `Casts shadows (lightmaps)` bakes the sun into the level's lightmaps with ray traced shadows
   - `Affects mesh lighting` lights meshes and entities per pixel from the sun direction, with `Scale mesh sunlight by lightmaps` to keep sunlight out of unlit interiors
   - `Aligns dynamic shadows` points entity shadows along the sun instead of the fixed default direction
@@ -29,6 +24,12 @@ Version 1.5.0 (Trillium): Not yet released
   - Mirror `Terrain Tools` brush strokes across the terrain's X and/or Z axis, with movable mirror lines
   - Up to 4 detail overlays (leaves, debris) and 8 mesh decoration layers per terrain (grass, rocks, bushes)
   - `Geoable` terrains are carved by RF2-style geomod craters, with their own underside and crater textures
+
+[@GooberRF](https://github.com/GooberRF) & [@nickalreadyinuse](https://github.com/nickalreadyinuse)
+- Add multiplayer vehicles and turrets
+  - Jeeps, APCs, drillers, fighters, submarines, and stationary turrets, spawned by the new `Vehicle Factory` object
+  - Simulate vehicle physics with the Bullet physics engine
+  - Multi-seat vehicles with driver, gunner, and passenger seats; `Use` boards the lowest free seat and number keys `1`-`6` switch seats
 
 ### Minor features, changes, and enhancements
 [@GooberRF](https://github.com/GooberRF)
@@ -85,6 +86,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Improve level loading and `Build Geometry` times in the level editor on levels with many faces
 - Draw large rooms in fewer draw calls, and skip rooms without dynamic decals when drawing them (Direct3D 11 renderer only)
 - Make level editor refuse to open levels saved by a newer version of Alpine Faction instead of misreading them
+- Allow undoing deletion of Alpine objects in the level editor
 - Show assists on suicide and environmental death lines in chat and the kill feed, as on other kill messages
 - Add multiplayer minimap, configured in `Level Properties`
 - Dedicated server base rules now apply to every level under every game type unless a level overrides them
@@ -179,6 +181,10 @@ Version 1.5.0 (Trillium): Not yet released
 - Fix a possible out-of-bounds read when drawing dynamic decals (Direct3D 11 renderer only)
 - Fix some multiplayer characters' upper bodies staying bent toward where they were last aiming instead of straightening out
 - Fix level editor crashing when more than 128 semi-transparent detail brushes in one room are in view
+- Fix possible level editor crash after deleting Alpine objects
+- Fix level editor leaking memory for Alpine mesh objects each time a level is created or opened
+- Fix shadows randomly appearing or disappearing in some level editor lightmap bakes
+- Fix level editor lightmap bakes sometimes drawing a light or dark streak across a light's glow on smoothed surfaces
 - Fix dedicated server base rules being dropped on levels configured for a different game type
 - Fix a level's `spawn_weapon` removing a weapon the base `spawn_loadout` lists
 - Fix the `level` command keeping the game type and rules of a previous level vote

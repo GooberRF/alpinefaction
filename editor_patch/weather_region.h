@@ -14,7 +14,6 @@ void ShowWeatherRegionPropertiesDialog(CDedLevel* level);
 // Weather region object lifecycle
 void PlaceNewWeatherRegionObject();
 DedWeatherRegion* CloneWeatherRegionObject(DedWeatherRegion* source, bool add_to_level = true);
-void DeleteWeatherRegionObject(DedWeatherRegion* weather_region);
 
 // Handlers called from shared hook points in alpine_obj.cpp
 void weather_region_render(CDedLevel* level);
@@ -26,5 +25,4 @@ bool weather_region_copy_object(DedObject* source);
 void weather_region_paste_objects(CDedLevel* level);
 void weather_region_clear_clipboard();
 void weather_region_handle_delete_or_cut(DedObject* obj);
-void weather_region_handle_delete_selection(CDedLevel* level);
 void weather_region_ensure_uid(int& uid);

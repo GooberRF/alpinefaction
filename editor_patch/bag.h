@@ -9,7 +9,6 @@ void bag_deserialize_chunk(CDedLevel& level, rf::File& file, std::size_t chunk_l
 
 void PlaceNewBagObject();
 DedBag* CloneBagObject(DedBag* source, bool add_to_level = true);
-void DeleteBagObject(DedBag* bag);
 
 void bag_render(CDedLevel* level);
 void bag_pick(CDedLevel* level, int param1, int param2);
@@ -20,5 +19,4 @@ bool bag_copy_object(DedObject* source);
 void bag_paste_objects(CDedLevel* level);
 void bag_clear_clipboard();
 void bag_handle_delete_or_cut(DedObject* obj);
-void bag_handle_delete_selection(CDedLevel* level);
 void bag_ensure_uid(int& uid);

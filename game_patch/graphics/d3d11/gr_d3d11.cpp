@@ -1478,6 +1478,12 @@ namespace gr::d3d11
     void Renderer::clear_mesh_lights()
     {
         render_context_->update_lights();
+        render_context_->clear_mesh_bounds();
+    }
+
+    void Renderer::set_mesh_bounds(const rf::Vector3& center, float radius)
+    {
+        render_context_->set_mesh_bounds(center, radius);
     }
 
     float Renderer::z_far() const

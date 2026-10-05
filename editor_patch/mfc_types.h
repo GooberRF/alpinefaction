@@ -10,6 +10,7 @@
 #include <string>
 #include <vector>
 #include <common/terrain/alpine_terrain.h>
+#include <common/alpine_dir_light.h>
 
 extern "C" IMAGE_DOS_HEADER __ImageBase;
 
@@ -184,7 +185,9 @@ enum class DedObjectType : int
     DED_VEHICLE_FACTORY = 0x1C, // Alpine 1.5
     DED_PROJECTION_CAMERA = 0x1D, // Alpine 1.5
     DED_ROPE_EMITTER = 0x1E, // Alpine 1.5
-    DED_TERRAIN = 0x1F // Alpine 1.5
+    DED_TERRAIN = 0x1F, // Alpine 1.5
+    DED_DIRECTIONAL_LIGHT = 0x20, // Alpine 1.5
+    DED_SUN_ARROW = 0x21, // editor-only viewport handle for the level sun, never serialized
 };
 
 struct Vector3
@@ -769,6 +772,33 @@ struct DedTerrain : DedObject
     DedTerrainData data;
     // Not serialized: a save already showed the "no compiled geometry" message box for it
     bool unbuilt_save_warned = false;
+};
+
+// orient.fvec is the direction the light travels. Fields mirror alpine_dir_light::Record.
+struct DedDirectionalLight : DedObject
+{
+    uint8_t color_r = 255, color_g = 255, color_b = 255;
+    float intensity = alpine_dir_light::default_intensity;
+    bool initially_on = true;
+    alpine_dir_light::Shape shape = alpine_dir_light::Shape::none;
+    float extent_x = alpine_dir_light::default_extent; // box width, sphere/cylinder radius
+    float extent_y = alpine_dir_light::default_extent; // box height, cylinder length
+    float extent_z = alpine_dir_light::default_extent; // box depth
+    float box_yaw = 0.0f;                              // degrees about world Y, box only
+    float feather = 0.0f;
+    float spread = 0.0f;                               // degrees, baked penumbra
+    bool cast_baked_shadows = true;
+    bool liquid_occludes = true;
+    bool sky_passes = true;
+    bool outside_casts = true;
+    bool affects_meshes = true;
+    alpine_dir_light::MeshMode mesh_mode = alpine_dir_light::MeshMode::lightmap_scaled;
+    bool always_show_range = false;
+};
+
+// The level sun's viewport handle: pos and orient are derived from the level properties every frame.
+struct DedSunArrow : DedObject
+{
 };
 
 struct DedBoltEmitter : DedObject

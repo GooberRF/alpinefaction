@@ -14,7 +14,8 @@ void ShowVehicleFactoryPropertiesDialog(CDedLevel* level);
 // Vehicle factory object lifecycle
 void PlaceNewVehicleFactoryObject();
 DedVehicleFactory* CloneVehicleFactoryObject(DedVehicleFactory* source, bool add_to_level = true);
-void DeleteVehicleFactoryObject(DedVehicleFactory* factory);
+// Frees the preview mesh; the next render loads it again.
+void vehicle_factory_release_preview(DedVehicleFactory* factory);
 
 // Handlers called from shared hook points in alpine_obj.cpp
 void vehicle_factory_render(CDedLevel* level);
@@ -27,5 +28,4 @@ bool vehicle_factory_copy_object(DedObject* source);
 void vehicle_factory_paste_objects(CDedLevel* level);
 void vehicle_factory_clear_clipboard();
 void vehicle_factory_handle_delete_or_cut(DedObject* obj);
-void vehicle_factory_handle_delete_selection(CDedLevel* level);
 void vehicle_factory_ensure_uid(int& uid);

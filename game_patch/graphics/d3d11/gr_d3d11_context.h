@@ -1,5 +1,7 @@
 #pragma once
 
+#include <array>
+#include <cstdint>
 #include <optional>
 #include <d3d11.h>
 #include <common/ComPtr.h>
@@ -99,6 +101,28 @@ namespace gr::d3d11
 
     private:
         ComPtr<ID3D11Buffer> buffer_;
+    };
+
+    // Directional Light objects over a GPU-lit mesh draw (b8)
+    class DirLightsBuffer
+    {
+    public:
+        static constexpr int max_lights = 8;
+
+        DirLightsBuffer(ID3D11Device* device);
+        // Without bounds only unbounded lights are chosen.
+        void update(ID3D11DeviceContext* device_context, const rf::Vector3* center, float radius);
+
+        operator ID3D11Buffer*() const
+        {
+            return buffer_;
+        }
+
+    private:
+        ComPtr<ID3D11Buffer> buffer_;
+        std::array<int, max_lights> current_{};
+        int current_count_ = -1;
+        std::uint32_t current_generation_ = 0;
     };
 
     class RenderModeBuffer
@@ -699,6 +723,30 @@ namespace gr::d3d11
             lights_buffer_.update(device_context_, force_neutral, ambient_override, sun_scale);
         }
 
+        // Bounding sphere of the mesh whose GPU-lit draws follow, set alongside its point light gather
+        void set_mesh_bounds(const rf::Vector3& center, float radius)
+        {
+            mesh_bounds_center_ = center;
+            mesh_bounds_radius_ = radius;
+            has_mesh_bounds_ = true;
+        }
+
+        void clear_mesh_bounds()
+        {
+            has_mesh_bounds_ = false;
+        }
+
+        void update_dir_lights()
+        {
+            dir_lights_buffer_.update(device_context_, has_mesh_bounds_ ? &mesh_bounds_center_ : nullptr,
+                                      mesh_bounds_radius_);
+        }
+
+        void update_dir_lights(const rf::Vector3& center, float radius)
+        {
+            dir_lights_buffer_.update(device_context_, &center, radius);
+        }
+
         void draw_indexed(int index_count, int index_start_location, int base_vertex_location)
         {
             device_context_->DrawIndexed(index_count, index_start_location, base_vertex_location);
@@ -784,6 +832,10 @@ namespace gr::d3d11
         GasRegionBuffer gas_region_buffer_;
         CausticsRenderer caustics_renderer_;
         LiquidFxRenderer liquid_fx_renderer_;
+        DirLightsBuffer dir_lights_buffer_;
+        rf::Vector3 mesh_bounds_center_{};
+        float mesh_bounds_radius_ = 0.0f;
+        bool has_mesh_bounds_ = false;
 
         ID3D11RenderTargetView* render_target_view_ = nullptr;
         ID3D11DepthStencilView* depth_stencil_view_ = nullptr;

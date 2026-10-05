@@ -8,6 +8,7 @@
 #include <unordered_set>
 #include <xlog/xlog.h>
 #include <common/rfl_chunk_reader.h>
+#include <common/alpine_dir_light.h>
 #include <common/lightmap/alpine_lightmap.h>
 #include <common/terrain/alpine_terrain.h>
 #include "../rf/geometry.h"
@@ -26,6 +27,7 @@ constexpr int alpine_projection_camera_chunk_id = 0x0AFBAE08;
 constexpr int alpine_rope_emitter_chunk_id = 0x0AFBAE0A;
 constexpr int alpine_terrain_chunk_id = static_cast<int>(alpine_terrain::chunk_id); // 0x0AFBAE0B
 constexpr int alpine_lightmaps_chunk_id = static_cast<int>(alpine_lightmap::chunk_id); // 0x0AFBAE09
+constexpr int alpine_directional_light_chunk_id = static_cast<int>(alpine_dir_light::chunk_id); // 0x0AFBAE0C
 constexpr int stock_lightmaps_chunk_id = 0x1200;
 
 // Length limit (with the terminator) for bitmap names read from untrusted alpine level chunks.

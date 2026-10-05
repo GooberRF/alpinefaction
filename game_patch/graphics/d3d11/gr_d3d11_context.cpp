@@ -8,6 +8,7 @@
 #include "../../rf/os/frametime.h"
 #include "../../rf/multi.h"
 #include "../../misc/level.h"
+#include "../../object/alpine_dir_light.h"
 #include "../af_lightmap.h"
 #include "../gr.h"
 #include "gr_d3d11.h"
@@ -18,6 +19,54 @@
 
 namespace gr::d3d11
 {
+    namespace
+    {
+        constexpr UINT dir_lights_cbuffer_slot = 8;
+
+        // Must stay byte for byte with DirLightsBuffer (b8) in standard_ps.hlsl
+        struct DirLightsBufferData
+        {
+            struct DirLight
+            {
+                std::array<float, 3> travel_dir; // also the cylinder's axis
+                float shape;                     // alpine_dir_light::Shape
+                std::array<float, 3> color;      // premultiplied by intensity
+                float mesh_mode;                 // alpine_dir_light::MeshMode
+                std::array<float, 3> center;
+                float feather;
+                std::array<float, 3> box_right;
+                float half_x;
+                std::array<float, 3> box_forward;
+                float half_y;
+                float half_z;
+                float radius;
+                float half_length;
+                float _pad;
+            };
+
+            float num_dir_lights;
+            std::array<float, 3> _pad;
+            std::array<DirLight, DirLightsBuffer::max_lights> lights;
+        };
+        static_assert(offsetof(DirLightsBufferData::DirLight, travel_dir) == 0);
+        static_assert(offsetof(DirLightsBufferData::DirLight, shape) == 12);
+        static_assert(offsetof(DirLightsBufferData::DirLight, color) == 16);
+        static_assert(offsetof(DirLightsBufferData::DirLight, mesh_mode) == 28);
+        static_assert(offsetof(DirLightsBufferData::DirLight, center) == 32);
+        static_assert(offsetof(DirLightsBufferData::DirLight, feather) == 44);
+        static_assert(offsetof(DirLightsBufferData::DirLight, box_right) == 48);
+        static_assert(offsetof(DirLightsBufferData::DirLight, half_x) == 60);
+        static_assert(offsetof(DirLightsBufferData::DirLight, box_forward) == 64);
+        static_assert(offsetof(DirLightsBufferData::DirLight, half_y) == 76);
+        static_assert(offsetof(DirLightsBufferData::DirLight, half_z) == 80);
+        static_assert(offsetof(DirLightsBufferData::DirLight, radius) == 84);
+        static_assert(offsetof(DirLightsBufferData::DirLight, half_length) == 88);
+        static_assert(sizeof(DirLightsBufferData::DirLight) == 96);
+        static_assert(offsetof(DirLightsBufferData, num_dir_lights) == 0);
+        static_assert(offsetof(DirLightsBufferData, lights) == 16);
+        static_assert(sizeof(DirLightsBufferData) == 16 + 96 * DirLightsBuffer::max_lights);
+    }
+
     RenderContext::RenderContext(
         ComPtr<ID3D11Device> device, ComPtr<ID3D11DeviceContext> device_context,
         StateManager& state_manager, ShaderManager& shader_manager,
@@ -33,7 +82,8 @@ namespace gr::d3d11
         texture_scale_cbuffer_{device_},
         gas_region_buffer_{device_},
         caustics_renderer_{device_},
-        liquid_fx_renderer_{device_}
+        liquid_fx_renderer_{device_},
+        dir_lights_buffer_{device_}
     {
         bind_cbuffers();
     }
@@ -66,6 +116,10 @@ namespace gr::d3d11
         // Liquid buffer at b6
         ID3D11Buffer* liquid_cbuffer = liquid_fx_renderer_;
         device_context_->PSSetConstantBuffers(6, 1, &liquid_cbuffer);
+
+        // Directional lights buffer (b7 is the terrain buffer)
+        ID3D11Buffer* dir_lights_cbuffer = dir_lights_buffer_;
+        device_context_->PSSetConstantBuffers(dir_lights_cbuffer_slot, 1, &dir_lights_cbuffer);
     }
 
     void RenderContext::clear()
@@ -344,6 +398,118 @@ namespace gr::d3d11
 
         std::memcpy(mapped_subres.pData, &data, sizeof(data));
 
+        device_context->Unmap(buffer_, 0);
+    }
+
+    DirLightsBuffer::DirLightsBuffer(ID3D11Device* device)
+    {
+        DirLightsBufferData init_data{};
+        D3D11_SUBRESOURCE_DATA subres_data{&init_data, 0, 0};
+        CD3D11_BUFFER_DESC desc{
+            sizeof(DirLightsBufferData),
+            D3D11_BIND_CONSTANT_BUFFER,
+            D3D11_USAGE_DYNAMIC,
+            D3D11_CPU_ACCESS_WRITE,
+        };
+        DF_GR_D3D11_CHECK_HR(device->CreateBuffer(&desc, &subres_data, &buffer_));
+    }
+
+    // Chosen: lights that are on, reach meshes with a colour, and whose volume's bounding sphere meets
+    // the draw's. Past max_lights, unbounded lights win, then the higher intensity, then list order.
+    void DirLightsBuffer::update(ID3D11DeviceContext* device_context, const rf::Vector3* center, float radius)
+    {
+        const auto& all = alpine_dir_light_get_all();
+
+        struct Candidate
+        {
+            int index;
+            bool unbounded;
+            float intensity;
+        };
+        std::array<Candidate, max_lights> chosen{};
+        int count = 0;
+        auto ranks_before = [](const Candidate& a, const Candidate& b) {
+            if (a.unbounded != b.unbounded) {
+                return a.unbounded;
+            }
+            if (a.intensity != b.intensity) {
+                return a.intensity > b.intensity;
+            }
+            return a.index < b.index;
+        };
+
+        for (int i = 0; i < static_cast<int>(all.size()); ++i) {
+            const AlpineDirLight& light = all[i];
+            if (!light.on || !light.affects_meshes || !(light.intensity > 0.0f)
+                || (light.color[0] <= 0.0f && light.color[1] <= 0.0f && light.color[2] <= 0.0f)) {
+                continue;
+            }
+            const bool unbounded = light.volume.shape == alpine_dir_light::Shape::none;
+            if (!unbounded) {
+                if (!center) {
+                    continue;
+                }
+                const float dx = light.volume.center.x - center->x;
+                const float dy = light.volume.center.y - center->y;
+                const float dz = light.volume.center.z - center->z;
+                const float reach = light.bounding_radius + std::max(radius, 0.0f);
+                if (dx * dx + dy * dy + dz * dz > reach * reach) {
+                    continue;
+                }
+            }
+            const Candidate cand{i, unbounded, light.intensity};
+            if (count < max_lights) {
+                chosen[count++] = cand;
+            }
+            else {
+                // Replace the lowest ranked when this one ranks above it
+                auto worst = std::max_element(chosen.begin(), chosen.end(), ranks_before);
+                if (ranks_before(cand, *worst)) {
+                    *worst = cand;
+                }
+            }
+        }
+        std::sort(chosen.begin(), chosen.begin() + count,
+                  [](const Candidate& a, const Candidate& b) { return a.index < b.index; });
+
+        const std::uint32_t generation = alpine_dir_light_generation();
+        if (count == current_count_ && generation == current_generation_
+            && std::equal(chosen.begin(), chosen.begin() + count, current_.begin(),
+                          [](const Candidate& a, int b) { return a.index == b; })) {
+            return;
+        }
+        current_count_ = count;
+        current_generation_ = generation;
+        for (int i = 0; i < count; ++i) {
+            current_[i] = chosen[i].index;
+        }
+
+        DirLightsBufferData data{};
+        data.num_dir_lights = static_cast<float>(count);
+        for (int i = 0; i < count; ++i) {
+            const AlpineDirLight& src = all[chosen[i].index];
+            const alpine_dir_light::Volume& v = src.volume;
+            DirLightsBufferData::DirLight& dst = data.lights[i];
+            dst.travel_dir = {v.axis.x, v.axis.y, v.axis.z};
+            dst.shape = static_cast<float>(v.shape);
+            dst.color = {src.color[0] * src.intensity, src.color[1] * src.intensity, src.color[2] * src.intensity};
+            dst.mesh_mode = static_cast<float>(src.mesh_mode);
+            dst.center = {v.center.x, v.center.y, v.center.z};
+            dst.feather = v.feather;
+            dst.box_right = {v.box_right.x, v.box_right.y, v.box_right.z};
+            dst.half_x = v.half_x;
+            dst.box_forward = {v.box_forward.x, v.box_forward.y, v.box_forward.z};
+            dst.half_y = v.half_y;
+            dst.half_z = v.half_z;
+            dst.radius = v.radius;
+            dst.half_length = v.half_length;
+        }
+
+        D3D11_MAPPED_SUBRESOURCE mapped_subres;
+        DF_GR_D3D11_CHECK_HR(
+            device_context->Map(buffer_, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped_subres)
+        );
+        std::memcpy(mapped_subres.pData, &data, sizeof(data));
         device_context->Unmap(buffer_, 0);
     }
 

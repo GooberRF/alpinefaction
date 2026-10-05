@@ -868,6 +868,9 @@ constexpr uint32_t mode_vertex_alpha = gr_mode(0, 0, 0, 3, 1, 0);
 // Depth of the pushed instance transforms (0x004edf50 pushes, 0x004ee0a0 pops): nonzero while a mover's
 // is pushed, when the scene lights are kept in its frame too (GrLight::local_vec).
 static auto& gr_transform_stack_depth = addr_as_ref<int>(0x0158f414);
+// The pushed frame the lights are moved into: local = orient (rows) * (world - pos).
+static auto& gr_transform_pos = addr_as_ref<Vector3>(0x0158f2b8);
+static auto& gr_transform_orient = addr_as_ref<Matrix3>(0x0158f2c8);
 
 // Computes clip flags from view-space coords in a GrVertex
 static auto& gr_compute_clip_flags = addr_as_ref<uint32_t(void*)>(0x004c5df0);
@@ -900,7 +903,10 @@ struct GrLight
     Vector3 vec2; // +0x18  tube end
     char _pad_24[0x3C - 0x24];
     float rad_2; // +0x3C  radius
-    char _pad_40[0x50 - 0x40];
+    float r;     // +0x40
+    float g;     // +0x44
+    float b;     // +0x48
+    char _pad_4C[0x50 - 0x4C];
     int shadow_condition; // +0x50  0 casts no shadows
     char _pad_54[0x5C - 0x54];
     Vector3 local_vec;  // +0x5C  vec in the pushed instance frame (room_lights_to_local)
@@ -912,6 +918,9 @@ static_assert(offsetof(GrLight, type) == 0x08);
 static_assert(offsetof(GrLight, vec) == 0x0C);
 static_assert(offsetof(GrLight, vec2) == 0x18);
 static_assert(offsetof(GrLight, rad_2) == 0x3C);
+static_assert(offsetof(GrLight, r) == 0x40);
+static_assert(offsetof(GrLight, g) == 0x44);
+static_assert(offsetof(GrLight, b) == 0x48);
 static_assert(offsetof(GrLight, shadow_condition) == 0x50);
 static_assert(offsetof(GrLight, local_vec) == 0x5C);
 static_assert(offsetof(GrLight, local_vec2) == 0x68);
@@ -925,6 +934,8 @@ static auto& light_free = addr_as_ref<void __cdecl(int light_handle, int unk)>(0
 static auto& light_accum_at_texel =
     addr_as_ref<void __cdecl(float* r, float* g, float* b, const Vector3* pos, const Vector3* normal,
                              void* masks, int texel_index, const void* smooth_flag)>(0x004894C0);
+// Length of the per-face light list FUN_00488810 gathers and light_accum_at_texel walks.
+static auto& face_light_count = addr_as_ref<int>(0x007432ec);
 // Copies out the level's ambient light color.
 static auto& light_get_ambient = addr_as_ref<void __cdecl(float* r, float* g, float* b)>(0x00487920);
 // RED's shared read-only 0.5f, which FUN_004ac470 halves the ambient seed by.
