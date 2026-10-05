@@ -677,9 +677,14 @@ namespace rf
     static auto& geomod_queue_add = addr_as_ref<void(GeomodParams* params)>(0x00437230);
     // geomod_create's (0x00467020) own flag, not a GeomodParams flag: crater scale 1.0 instead of radius-derived.
     constexpr int geomod_create_flag_unit_scale = 0x8;
+    // WARNING: a SENTINEL, not a record. Only next/prev are real - the rest of the declared 0x84
+    // bytes overlay unrelated globals in [0x00637170, 0x006371EC). Never read .parameters off it.
     static auto& g_geomod_pending_list = addr_as_ref<GeomodEvent>(0x00637168);
 
     // Geomod state machine globals
+    // Set at 0x0043720d before geomod_begin, cleared at 0x004371f0 when the outer state machine
+    // reports done, so it is 1 for at least as long as a carve is mutating the solid.
+    static auto& g_geomod_processing = addr_as_ref<bool>(0x006371EC);
     static auto& g_geomod_pos = addr_as_ref<Vector3>(0x006485A0);
     static auto& g_geomod_outer_state = addr_as_ref<int>(0x0059C9F4);        // states 0-3, -1=done
     static auto& g_boolean_inner_state = addr_as_ref<int>(0x005A3A34);       // states 0-7 in FUN_004dbc50
@@ -797,6 +802,12 @@ namespace rf
         bool flag11)>(0x004D3560);
 
     static auto& find_room = addr_as_ref<GRoom*(GSolid* solid, const Vector3* pos)>(0x004E1630);
+
+    // __thiscall on the room (RET 4 verified): pos is under the room's liquid surface.
+    inline bool point_in_liquid(GRoom* room, const Vector3* pos)
+    {
+        return AddrCaller{0x004CE080}.this_call<bool>(room, pos);
+    }
 
     static auto& g_solid_portal_render =
         addr_as_ref<void(GSolid* solid, GRoom* eye_room, int flags, const Matrix3* sky_rotation)>(0x004D45D0);

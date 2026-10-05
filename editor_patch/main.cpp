@@ -840,6 +840,69 @@ CodeInjection CCutscenePropertiesDialog_ct_crash_fix{
     },
 };
 
+// Stock DedClutter ctor leaves +0xB8..+0xDF uninitialized, including the skin count at +0xDC, so the
+// save-time texture gather walks a garbage count past the 7 skin slots. Zeroing makes it inert.
+void* __fastcall DedClutter_ct(void* this_, int edx);
+FunHook DedClutter_ct_hook{
+    0x0044D9F0,
+    DedClutter_ct,
+};
+void* __fastcall DedClutter_ct(void* this_, int edx)
+{
+    void* result = DedClutter_ct_hook.call_target(this_, edx);
+    auto* clutter = static_cast<DedClutter*>(this_);
+    std::memset(clutter->skin_block, 0, sizeof(clutter->skin_block));
+    return result;
+}
+
+// An entry of the class list 0x004151C0 searches at this+0x5CC: the template is what a match copies from.
+struct RedClutterClass
+{
+    VString name;
+    void* template_clutter;
+};
+
+// 0x004B74E0: two empty strings match, otherwise a case-insensitive compare.
+static bool red_vstring_iequals(const VString& a, const VString& b)
+{
+    if (a.max_len == 0 || b.max_len == 0) {
+        return a.max_len == 0 && b.max_len == 0;
+    }
+    return _stricmp(a.buf, b.buf) == 0;
+}
+
+static bool red_clutter_class_known(void* level, const VString& class_name)
+{
+    const auto& classes = *reinterpret_cast<const VArray<RedClutterClass*>*>(static_cast<char*>(level) + 0x5CC);
+    for (int i = 0; i < classes.size; ++i) {
+        if (red_vstring_iequals(class_name, classes.data_ptr[i]->name)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Surface the silent failures above in the editor log: a class missing from clutter.tbl, or a known
+// class whose mesh did not load (0x004BFC30 returns null for that too).
+void __fastcall CDedLevel_AddClutter(void* this_, int edx, DedObject* obj, int flag);
+FunHook CDedLevel_AddClutter_hook{
+    0x004151C0,
+    CDedLevel_AddClutter,
+};
+void __fastcall CDedLevel_AddClutter(void* this_, int edx, DedObject* obj, int flag)
+{
+    CDedLevel_AddClutter_hook.call_target(this_, edx, obj, flag);
+    if (obj->vmesh) {
+        return;
+    }
+    if (red_clutter_class_known(this_, obj->class_name)) {
+        LogDlg_Append(GetLogDlg(), "Clutter mesh failed to load: %s (UID %d)\n", obj->class_name.c_str(), obj->uid);
+    }
+    else {
+        LogDlg_Append(GetLogDlg(), "Unknown clutter class: %s (UID %d)\n", obj->class_name.c_str(), obj->uid);
+    }
+}
+
 enum class ColorPickerSrc : uint8_t { dialog_ebx, dialog_esi, level };
 
 struct ColorPickerSite
@@ -1514,8 +1577,8 @@ static GroupEntry* find_moving_group_from_selection()
         }
 
         if (group->keyframes) {
-            for (int j = 0; j < group->keyframes->size; j++) {
-                if ((*group->keyframes)[j] == selected)
+            for (int j = 0; j < group->keyframes->objects.size; j++) {
+                if (group->keyframes->objects[j] == selected)
                     return group;
             }
         }
@@ -1529,10 +1592,10 @@ static GroupEntry* find_moving_group_from_selection()
 static int get_editing_group_first_keyframe_uid([[maybe_unused]] HWND hdlg)
 {
     auto* group = find_moving_group_from_selection();
-    if (!group || !group->keyframes || group->keyframes->size <= 0)
+    if (!group || !group->keyframes || group->keyframes->objects.size <= 0)
         return -1;
 
-    DedObject* first_kf = (*group->keyframes)[0];
+    DedObject* first_kf = group->keyframes->objects[0];
     return first_kf ? first_kf->uid : -1;
 }
 
@@ -1801,15 +1864,14 @@ void install_editor_bitmap_loader_hooks();
 void LoadAlpineEditorPackfile()
 {
     static auto& vpackfile_add = addr_as_ref<int __cdecl(const char *name, const char *dir)>(0x004CA930);
-    static auto& root_path = addr_as_ref<char[256]>(0x0158CA10);
 
     auto af_dir = get_module_dir(g_module);
-    std::string old_root_path = root_path;
-    std::strncpy(root_path, af_dir.c_str(), sizeof(root_path) - 1);
+    std::string old_root_path = file_root_path;
+    std::strncpy(file_root_path, af_dir.c_str(), sizeof(file_root_path) - 1);
     if (!vpackfile_add("alpinefaction.vpp", nullptr)) {
         xlog::error("Failed to load alpinefaction.vpp from {}", af_dir);
     }
-    std::strncpy(root_path, old_root_path.c_str(), sizeof(root_path) - 1);
+    std::strncpy(file_root_path, old_root_path.c_str(), sizeof(file_root_path) - 1);
 }
 
 CodeInjection vpackfile_init_injection{
@@ -2227,6 +2289,10 @@ extern "C" DWORD AF_DLL_EXPORT Init([[maybe_unused]] void* unused)
 
     // Fix random crash when opening cutscene properties
     CCutscenePropertiesDialog_ct_crash_fix.install();
+
+    // Fix save crash on clutter with a class missing from clutter.tbl (uninitialized skin count)
+    DedClutter_ct_hook.install();
+    CDedLevel_AddClutter_hook.install();
 
     // Load alpinefaction.vpp
     vpackfile_init_injection.install();

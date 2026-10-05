@@ -171,22 +171,6 @@ DedProjectionCamera* CloneProjectionCameraObject(DedProjectionCamera* source, bo
     return camera;
 }
 
-void DeleteProjectionCameraObject(DedProjectionCamera* camera)
-{
-    if (!camera) return;
-    auto* level = CDedLevel::Get();
-    if (!level) return;
-
-    auto& cameras = level->GetAlpineLevelProperties().projection_camera_objects;
-    auto it = std::find(cameras.begin(), cameras.end(), camera);
-    if (it != cameras.end()) {
-        cameras.erase(it);
-    }
-    alpine_remove_from_groups(level, static_cast<DedObject*>(camera));
-    level->master_objects.remove_by_value(static_cast<DedObject*>(camera));
-    DestroyDedProjectionCamera(camera);
-}
-
 static void draw_facing_arrow(const DedProjectionCamera* camera)
 {
     const Vector3& p = camera->pos;
@@ -323,21 +307,6 @@ void projection_camera_handle_delete_or_cut(DedObject* obj)
     auto it = std::find(cameras.begin(), cameras.end(), static_cast<DedProjectionCamera*>(obj));
     if (it != cameras.end()) {
         cameras.erase(it);
-    }
-}
-
-void projection_camera_handle_delete_selection(CDedLevel* level)
-{
-    auto& sel = level->selection;
-    for (int i = sel.size - 1; i >= 0; i--) {
-        DedObject* obj = sel.data_ptr[i];
-        if (obj && obj->type == DedObjectType::DED_PROJECTION_CAMERA) {
-            for (int j = i; j < sel.size - 1; j++) {
-                sel.data_ptr[j] = sel.data_ptr[j + 1];
-            }
-            sel.size--;
-            DeleteProjectionCameraObject(static_cast<DedProjectionCamera*>(obj));
-        }
     }
 }
 

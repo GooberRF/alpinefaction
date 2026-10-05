@@ -12,9 +12,12 @@
 #include "../rf/entity.h"
 #include "../rf/os/frametime.h"
 #include "../multi/multi.h"
+#include "../multi/vehicles/vehicle.h"
+#include "../multi/vehicles/vehicle_physics.h"
 #include "../main/main.h"
 #include "../misc/alpine_settings.h"
 #include "../hud/hud.h"
+#include "../hud/minimap.h"
 #include <xlog/xlog.h>
 
 static float g_frametime_history[1024];
@@ -26,9 +29,10 @@ static int frametime_hud_counter_base_y()
 {
     int y = 10;
     if (rf::gameseq_in_gameplay()) {
-        y = g_alpine_game_config.big_hud ? 110 : 60;
-        if (hud_weapons_is_double_ammo()) {
-            y += g_alpine_game_config.big_hud ? 80 : 40;
+        const int gap = g_alpine_game_config.big_hud ? 10 : 6;
+        y = std::max(g_alpine_game_config.big_hud ? 110 : 60, hud_ammo_counter_bottom_y() + gap);
+        if (const auto minimap = minimap_panel_rect()) {
+            y = std::max(y, minimap->y + minimap->size + gap);
         }
     }
     return y;
@@ -51,10 +55,25 @@ static bool frametime_speed_meter_visible()
     return rf::entity_from_handle(player->entity_handle) != nullptr;
 }
 
+// A seated rider is motionless; read the hull, whose velocity a local or server body may hold instead.
+static rf::Vector3 frametime_speed_meter_velocity(const rf::Entity* entity)
+{
+    const rf::Entity* const hull = rf::is_multi ? vehicle_ridden_hull(entity) : nullptr;
+    if (!hull) {
+        return entity->p_data.vel;
+    }
+    rf::Vector3 vel{};
+    if (vehicle_physics_driven_velocity(hull->handle, &vel)
+        || vehicle_physics_server_velocity(hull->handle, &vel)) {
+        return vel;
+    }
+    return hull->p_data.vel;
+}
+
 static void frametime_render_speed_meter(int y)
 {
     rf::Entity* const entity = rf::entity_from_handle(rf::local_player->entity_handle);
-    const rf::Vector3& velocity = entity->p_data.vel;
+    const rf::Vector3 velocity = frametime_speed_meter_velocity(entity);
     float horizontal_speed = std::sqrt(velocity.x * velocity.x + velocity.z * velocity.z);
     float speed_mps = std::clamp(horizontal_speed, 0.0f, 9999.9f);
     std::string text = std::format("{:.2f}", speed_mps);

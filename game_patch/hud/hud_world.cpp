@@ -232,7 +232,23 @@ void build_world_hud_sprite_icons() {
     }
 }
 
-static rf::Vector3 koth_hill_icon_pos(const HillInfo& h)
+rf::Color hud_color_from_packed(uint32_t packed, rf::ubyte alpha)
+{
+    const auto [r, g, b, a] = extract_color_components(packed);
+    return {static_cast<rf::ubyte>(r), static_cast<rf::ubyte>(g), static_cast<rf::ubyte>(b), alpha};
+}
+
+rf::Color hud_team_color(int team, rf::ubyte alpha)
+{
+    if (team != rf::TEAM_RED && team != rf::TEAM_BLUE) {
+        return {255, 255, 255, alpha};
+    }
+    const uint32_t packed = team == rf::TEAM_RED ? g_alpine_game_config.outlines_color_team_r
+                                                 : g_alpine_game_config.outlines_color_team_b;
+    return hud_color_from_packed(packed, alpha);
+}
+
+rf::Vector3 koth_hill_icon_pos(const HillInfo& h)
 {
     rf::Vector3 p{0.f, 0.f, 0.f};
 
@@ -261,7 +277,7 @@ static float koth_fill_scale_from_progress(uint8_t progress01_100, float base_ic
     return base_icon_scale * g_koth_hud_tuning.fill_vs_ring_scale * r;
 }
 
-void render_string_3d_pos_new(const rf::Vector3& pos, const std::string& text, int offset_x, int offset_y,
+static void render_string_3d_pos_new(const rf::Vector3& pos, const std::string& text, int offset_x, int offset_y,
     int font, rf::ubyte r, rf::ubyte g, rf::ubyte b, rf::ubyte a)
 {
     rf::gr::Vertex dest;
@@ -306,6 +322,16 @@ static WorldHUDView make_world_hud_view(rf::Vector3 pos, bool stay_inside_fog = 
 
     v.dist_factor = std::max(distance, 1.0f) / WorldHUDRender::reference_distance;
     return v;
+}
+
+static inline float world_hud_label_scale_from(const WorldHUDView& view)
+{
+    return std::clamp(view.dist_factor, WorldHUDRender::min_scale, WorldHUDRender::max_scale);
+}
+
+float world_hud_label_scale(const rf::Vector3& pos, bool stay_inside_fog)
+{
+    return world_hud_label_scale_from(make_world_hud_view(pos, stay_inside_fog));
 }
 
 static inline void koth_owner_color(HillOwner owner, HillLockStatus lock_status, rf::ubyte& r, rf::ubyte& g, rf::ubyte& b, rf::ubyte& a)
@@ -357,52 +383,138 @@ static inline rf::Vector3 camera_up()
 
 static NameLabelTex& ensure_hill_name_tex(const HillInfo& h, int font)
 {
-    const int key = hill_key(h);
-    auto& slot = g_koth_name_labels[key];
-
-    if (slot.bm == -1 || slot.text != h.name || slot.font != font) {
-        const auto [tw, th] = rf::gr::get_string_size(h.name, font);
-
-        const int pad = 2;
-        const int bw = std::max(1, tw + pad * 2);
-        const int bh = std::max(1, th + pad * 2);
-
-        if (slot.bm != -1) {
-            rf::bm::release(slot.bm);
-            slot.bm = -1;
-        }
-
-        slot.bm = rf::bm::create(rf::bm::FORMAT_8888_ARGB, bw, bh);
-
-        // Mip chain so the label stays stable when minified.
-        bm_set_user_mipmap(slot.bm, true);
-
-        // keep resident
-        rf::bm::texture_add_ref(slot.bm);
-
-        // Transparent white so filtering and mips never bleed black into glyph edges.
-        bm_fill(slot.bm, 0x00FFFFFFu);
-
-        // render name text
-        rf::gr::set_color(255, 255, 255, 255);
-        rf::gr::string_render_into_bitmap(pad, pad, slot.bm, h.name.c_str(), font);
-
-        slot.w_px = bw;
-        slot.h_px = bh;
-        slot.text = h.name;
-        slot.font = font;
-    }
-
+    auto& slot = g_koth_name_labels[hill_key(h)];
+    world_hud_ensure_text_label(slot, h.name, font);
     return slot;
 }
 
 void clear_koth_name_textures()
 {
     for (auto& kv : g_koth_name_labels) {
-        if (kv.second.bm != -1)
-            rf::bm::release(kv.second.bm);
+        world_hud_release_text_label(kv.second);
     }
     g_koth_name_labels.clear();
+}
+
+void world_hud_release_text_label(NameLabelTex& slot)
+{
+    if (slot.bm != -1) {
+        // bm::release does not evict the D3D11 slot-keyed texture cache, so the GPU texture would
+        // leak and a reused cache slot would inherit it.
+        rf::gr::mark_texture_dirty(slot.bm);
+        rf::bm::release(slot.bm);
+    }
+
+    slot.bm = -1;
+    slot.w_px = 0;
+    slot.h_px = 0;
+    slot.text.clear();
+}
+
+bool world_hud_ensure_text_label(NameLabelTex& slot, const std::string& text, int font)
+{
+    if (slot.bm != -1 && slot.w_px > 0 && slot.h_px > 0 && slot.text == text && slot.font == font)
+        return true;
+
+    // Unclamped: the hooked string_render_into_bitmap (0x005203A0) also renders Alpine TrueType font ids.
+    const auto [tw, th] = rf::gr::get_string_size(text, font);
+
+    // A zero measurement means the font is not usable yet, so leave the slot unbuilt and retry later.
+    if (tw <= 0 || th <= 0) {
+        world_hud_release_text_label(slot);
+        return false;
+    }
+
+    const int pad = 2;
+    const int bw = tw + pad * 2;
+    const int bh = th + pad * 2;
+
+    world_hud_release_text_label(slot);
+
+    slot.bm = rf::bm::create(rf::bm::FORMAT_8888_ARGB, bw, bh);
+    if (slot.bm == -1)
+        return false;
+
+    // Mip chain so the label stays stable when minified.
+    bm_set_user_mipmap(slot.bm, true);
+
+    // keep resident
+    rf::bm::texture_add_ref(slot.bm);
+
+    // Transparent white so filtering and mips never bleed black into glyph edges.
+    bm_fill(slot.bm, 0x00FFFFFFu);
+
+    // white text so the draw-time vertex colour is a straight tint
+    rf::gr::set_color(255, 255, 255, 255);
+    rf::gr::string_render_into_bitmap(pad, pad, slot.bm, text.c_str(), font);
+
+    slot.w_px = bw;
+    slot.h_px = bh;
+    slot.text = text;
+    slot.font = font;
+    return true;
+}
+
+void do_render_world_hud_text_label(const NameLabelTex& label, const rf::Vector3& pos, float vertical_offset,
+    float height_world, WorldHUDRenderMode render_mode, bool stay_inside_fog, bool distance_scaling, rf::Color color)
+{
+    if (label.bm == -1 || label.w_px <= 0 || label.h_px <= 0)
+        return;
+
+    const WorldHUDView view = make_world_hud_view(pos, stay_inside_fog);
+    const float scale = distance_scaling ? world_hud_label_scale_from(view) : 1.0f;
+    const float h_world = height_world * scale;
+    const float w_world = h_world * (static_cast<float>(label.w_px) / static_cast<float>(label.h_px));
+
+    rf::Vector3 draw_pos = view.pos + camera_up() * (vertical_offset * scale);
+
+    rf::gr::set_color(color.red, color.green, color.blue, color.alpha);
+    rf::gr::set_texture(label.bm, -1);
+    rf::gr::bitmap_3d_angle_wh(&draw_pos, 0.0f, w_world, h_world, bitmap_mode_from(render_mode));
+}
+
+// Session-lifetime, like the font atlases: lets a solid quad share the textured labels' render modes.
+static int world_hud_white_bitmap()
+{
+    static int white_bm = -1;
+    static bool failed = false;
+    if (white_bm == -1 && !failed) {
+        const int bm = rf::bm::create(rf::bm::FORMAT_8888_ARGB, 8, 8);
+        if (bm == -1) {
+            failed = true;
+            return -1;
+        }
+        if (!bm_fill(bm, 0xFFFFFFFFu)) {
+            rf::gr::mark_texture_dirty(bm);
+            rf::bm::release(bm);
+            failed = true;
+            return -1;
+        }
+        rf::bm::texture_add_ref(bm);
+        white_bm = bm;
+    }
+    return white_bm;
+}
+
+void do_render_world_hud_rect(const rf::Vector3& pos, float vertical_offset, float horizontal_offset,
+    float width_world, float height_world, WorldHUDRenderMode render_mode, bool stay_inside_fog,
+    bool distance_scaling, rf::Color color)
+{
+    if (width_world <= 0.0f || height_world <= 0.0f)
+        return;
+    const int bm = world_hud_white_bitmap();
+    if (bm == -1)
+        return;
+
+    const WorldHUDView view = make_world_hud_view(pos, stay_inside_fog);
+    const float scale = distance_scaling ? world_hud_label_scale_from(view) : 1.0f;
+    rf::Vector3 draw_pos =
+        view.pos + camera_up() * (vertical_offset * scale) + camera_right() * (horizontal_offset * scale);
+
+    rf::gr::set_color(color.red, color.green, color.blue, color.alpha);
+    rf::gr::set_texture(bm, -1);
+    rf::gr::bitmap_3d_angle_wh(&draw_pos, 0.0f, width_world * scale, height_world * scale,
+                               bitmap_mode_from(render_mode));
 }
 
 bool hill_vis_contested(HillInfo& h)
@@ -425,7 +537,8 @@ bool hill_vis_contested(HillInfo& h)
     return h.vis_contested;
 }
 
-static int get_world_hud_font(const float world_hud_text_scale) {
+static int get_world_hud_font(const float world_hud_text_scale)
+{
     static constexpr int base_font_size = 14;
     static std::unordered_map<int, int> font_cache;
 
@@ -438,6 +551,13 @@ static int get_world_hud_font(const float world_hud_text_scale) {
     const std::string font_name = "boldfont.ttf:" + std::to_string(font_size);
     const int font_id = rf::gr::load_font(font_name.c_str());
     font_cache.emplace(font_size, font_id);
+    return font_id;
+}
+
+int get_world_hud_label_bitmap_font()
+{
+    // Texture resolution for world-space label quads, not a screen size; mips handle distance.
+    static const int font_id = rf::gr::load_font("boldfont.ttf:56");
     return font_id;
 }
 
@@ -528,21 +648,23 @@ static void render_koth_icon_for_hill(const HillInfo& h, WorldHUDRenderMode rm)
     }
 
     // hill name label
-    // Texture resolution for the world-space quad, not a screen size; mips handle distance.
-    static const int font = rf::gr::load_font("boldfont.ttf:56");
+    const int font = get_world_hud_label_bitmap_font();
     NameLabelTex& lbl = ensure_hill_name_tex(h, font);
 
-    const float text_h_world = ring_scale * 0.55f;
-    const float aspect = (lbl.w_px > 0 && lbl.h_px > 0) ? float(lbl.w_px) / float(lbl.h_px) : 1.0f;
-    const float text_w_world = text_h_world * aspect;
-
-    const rf::Vector3 up = camera_up();
-    const float margin = ring_scale * -0.4f;
-    const rf::Vector3 text_pos = view.pos + up * (ring_scale + margin + 0.5f * text_h_world);
-
     rf::gr::set_color(255, 255, 255, 255);
-    rf::gr::set_texture(lbl.bm, -1);
-    rf::gr::bitmap_3d_angle_wh(&const_cast<rf::Vector3&>(text_pos), 0.0f, text_w_world, text_h_world, bitmap_mode_from(rm));
+    if (lbl.bm != -1) {
+        const float text_h_world = ring_scale * 0.55f;
+        const float aspect = (lbl.w_px > 0 && lbl.h_px > 0) ? float(lbl.w_px) / float(lbl.h_px) : 1.0f;
+        const float text_w_world = text_h_world * aspect;
+
+        const rf::Vector3 up = camera_up();
+        const float margin = ring_scale * -0.4f;
+        const rf::Vector3 text_pos = view.pos + up * (ring_scale + margin + 0.5f * text_h_world);
+
+        rf::gr::set_texture(lbl.bm, -1);
+        rf::gr::bitmap_3d_angle_wh(&const_cast<rf::Vector3&>(text_pos), 0.0f, text_w_world, text_h_world,
+                                   bitmap_mode_from(rm));
+    }
 
     // icon ring
     rf::gr::set_texture(ring_bmp, -1);
@@ -829,7 +951,8 @@ void build_bag_icon()
         rf::Vector3 text_pos = vec;
         text_pos.y += WorldHUDRender::bag_countdown_offset;
 
-        render_string_3d_pos_new(text_pos, label, -half_text_width, -25, font, 255, 220, 64, 255);
+        render_string_3d_pos_new(text_pos, label, -half_text_width, -25, font, hud_amber_color.red,
+                                 hud_amber_color.green, hud_amber_color.blue, hud_amber_color.alpha);
     }
 }
 
@@ -845,7 +968,8 @@ static void render_world_hud_countdown(const rf::Vector3& anchor, float y_offset
     rf::Vector3 text_pos = anchor;
     text_pos.y += y_offset;
 
-    render_string_3d_pos_new(text_pos, label, -half_text_width, -25, font, 255, 220, 64, 255);
+    render_string_3d_pos_new(text_pos, label, -half_text_width, -25, font, hud_amber_color.red,
+                             hud_amber_color.green, hud_amber_color.blue, hud_amber_color.alpha);
 }
 
 static int sal_icon_carrier(bool carrier_is_friendly)
@@ -1424,8 +1548,8 @@ void add_location_ping_world_hud_sprite(rf::Vector3 pos, std::string player_name
     ephemeral_world_hud_sprites.push_back(es);
 }
 
-void add_damage_notify_world_hud_string(rf::Vector3 pos, uint8_t damaged_player_id, uint16_t damage, bool died,
-                                       bool crit)
+void add_damage_notify_world_hud_string(rf::Vector3 pos, uint8_t damaged_player_id, int hull_handle, uint16_t damage,
+                                       bool died, bool crit)
 {
     if (!g_alpine_game_config.world_hud_damage_numbers) {
         return; // turned off
@@ -1435,10 +1559,12 @@ void add_damage_notify_world_hud_string(rf::Vector3 pos, uint8_t damaged_player_
 
     // Use cumulative damage values for the same player_id unless disabled
     if (!g_alpine_game_config.world_hud_alt_damage_indicators) {
-        // Search for an existing entry with the same player_id
+        // Search for an existing entry with the same victim
         auto it = std::find_if(
             ephemeral_world_hud_strings.begin(), ephemeral_world_hud_strings.end(),
-            [damaged_player_id](const EphemeralWorldHUDString& es) { return es.player_id == damaged_player_id; });
+            [damaged_player_id, hull_handle](const EphemeralWorldHUDString& es) {
+                return es.player_id == damaged_player_id && es.hull_handle == hull_handle;
+            });
 
         if (it != ephemeral_world_hud_strings.end()) {
             // If found, sum the damage values and remove the old entry
@@ -1451,6 +1577,7 @@ void add_damage_notify_world_hud_string(rf::Vector3 pos, uint8_t damaged_player_
     EphemeralWorldHUDString es;
     es.pos = pos;
     es.player_id = damaged_player_id;
+    es.hull_handle = hull_handle;
     es.damage = damage;
     es.timestamp.set_ms(1000);
     es.float_away = true;

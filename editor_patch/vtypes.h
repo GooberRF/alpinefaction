@@ -41,7 +41,7 @@ namespace rf
 
         // Opens a file by name, searching loose files and .vpp archives.
         // path_id: search path identifier (0x98967f = default mesh/anim paths)
-        // Returns true if the file was found and opened.
+        // Returns true if the file was found. Only a lookup: no stream is opened, so never close() after it.
         bool open(const char* filename, int path_id = 0x98967f)
         {
             return AddrCaller{0x004CF9A0}.this_call<bool>(this, filename, path_id);
@@ -468,6 +468,8 @@ static auto& bm_release = addr_as_ref<void __cdecl(int bm_handle)>(0x004BDEB0);
 // Returns the pixel format.
 static auto& bm_lock = addr_as_ref<int __cdecl(int bm_handle, void** pixels, void** palette)>(0x004BCCD0);
 static auto& bm_unlock = addr_as_ref<void __cdecl(int bm_handle)>(0x004BDC50);
+// The RF root directory, always with its trailing separator.
+static auto& file_root_path = addr_as_ref<char[256]>(0x0158CA10);
 
 struct GrLockInfo
 {
@@ -604,6 +606,9 @@ static auto& gr_half_width = addr_as_ref<float>(0x0158F2EC);
 enum LevelRenderMode : int
 {
     LEVEL_RENDER_BRUSHES_ONLY = 0, // Render Nothing (Except brushes)
+    LEVEL_RENDER_EVERYTHING = 1,
+    LEVEL_RENDER_CURRENT_ROOM = 2,
+    LEVEL_RENDER_PORTALS = 3,
 };
 static auto& level_render_mode = addr_as_ref<int>(0x0057B9B8); // LevelRenderMode
 static auto& view_see_through = addr_as_ref<int>(0x006C9A94);
@@ -693,7 +698,9 @@ static_assert(offsetof(EditorViewData, camera_pos) == 0x28);
 // Editor viewport — returned by get_active_viewport()
 struct EditorViewport
 {
-    uint8_t pad_00[0x54];               // +0x00
+    uint8_t pad_00[0x4C];               // +0x00
+    int view_type;                      // +0x4C  editor_view_type_perspective for the 3D view
+    int view_index;                     // +0x50  its slot in the main frame, as painting_view_index
     EditorViewData* view_data;          // +0x54
     uint8_t pad_58[0x6C - 0x58];        // +0x58
     uint8_t needs_repaint;              // +0x6C  repainted from RED's idle loop while set
@@ -722,8 +729,12 @@ struct EditorViewport
         AddrCaller{0x0047DAE0}.this_call(this, begin_frame);
     }
 };
+static_assert(offsetof(EditorViewport, view_type) == 0x4C);
+static_assert(offsetof(EditorViewport, view_index) == 0x50);
 static_assert(offsetof(EditorViewport, view_data) == 0x54);
 static_assert(offsetof(EditorViewport, needs_repaint) == 0x6C);
+
+constexpr int editor_view_type_perspective = 0;
 
 static auto& get_active_viewport = addr_as_ref<EditorViewport* __cdecl()>(0x004835B0);
 
@@ -819,6 +830,8 @@ static auto& d3d_device_ptr = addr_as_ref<void*>(0x0183b914);
 // Batch management
 static auto& gr_flush_batch = addr_as_ref<void()>(0x004e99d0);
 static auto& gr_begin_batch = addr_as_ref<void(int, int)>(0x004e98e0);
+// Set while a batch holds the vertex buffers locked; gr_flush_batch draws it and clears this.
+static auto& gr_batch_open = addr_as_ref<bool>(0x0183930d);
 
 static auto& gr_d3d_render_mode_cache = addr_as_ref<int>(0x01838dc0);
 
@@ -828,24 +841,36 @@ static auto& gr_set_mode = addr_as_ref<void(int)>(0x004BA730);
 static auto& gr_poly_render = addr_as_ref<uint8_t __cdecl(int count, GrVertex** verts, uint32_t tmap_flags,
                                                           uint32_t mode, int override_z, float z)>(0x004CB1C0);
 
-// gr_poly_render's tmap_flags: the vertices carry uv, and colour
+// gr_poly_render's tmap_flags: the vertices carry uv, colour, and alpha (without it, 0x004e1540 takes the
+// alpha of the current draw colour)
 constexpr uint32_t tmap_uv = 0x1;
 constexpr uint32_t tmap_rgb = 0x4;
+constexpr uint32_t tmap_alpha = 0x8;
 
+// gr_mode's colour-source field, and its value for colour taken from the texture
+constexpr uint32_t gr_mode_color_shift = 5;
+constexpr uint32_t gr_mode_color_mask = 0x1F;
+constexpr uint32_t gr_mode_color_texture = 1;
 // FUN_0047e140's packing of a gr_poly_render mode
 constexpr uint32_t gr_mode(uint32_t tex, uint32_t color, uint32_t alpha, uint32_t blend, uint32_t zbuf, uint32_t fog)
 {
-    return tex | color << 5 | alpha << 10 | blend << 15 | zbuf << 20 | fog << 25;
+    return tex | color << gr_mode_color_shift | alpha << 10 | blend << 15 | zbuf << 20 | fog << 25;
 }
 // clamped texture times vertex colour, full z-buffer
 constexpr uint32_t mode_textured = gr_mode(2, 2, 0, 0, 4, 0);
 // wrapped texture times vertex colour, full z-buffer
 constexpr uint32_t mode_textured_wrap = gr_mode(1, 2, 0, 0, 4, 0);
 constexpr uint32_t mode_vertex = gr_mode(0, 0, 0, 0, 4, 0);
+// vertex colour and alpha, alpha blended (0x004deda0: SRCALPHA / INVSRCALPHA), z-buffer read without write.
+// RED never culls (0x004ecdae sets D3DCULL_NONE), so each polygon shows from both sides.
+constexpr uint32_t mode_vertex_alpha = gr_mode(0, 0, 0, 3, 1, 0);
 
 // Depth of the pushed instance transforms (0x004edf50 pushes, 0x004ee0a0 pops): nonzero while a mover's
 // is pushed, when the scene lights are kept in its frame too (GrLight::local_vec).
 static auto& gr_transform_stack_depth = addr_as_ref<int>(0x0158f414);
+// The pushed frame the lights are moved into: local = orient (rows) * (world - pos).
+static auto& gr_transform_pos = addr_as_ref<Vector3>(0x0158f2b8);
+static auto& gr_transform_orient = addr_as_ref<Matrix3>(0x0158f2c8);
 
 // Computes clip flags from view-space coords in a GrVertex
 static auto& gr_compute_clip_flags = addr_as_ref<uint32_t(void*)>(0x004c5df0);
@@ -878,7 +903,10 @@ struct GrLight
     Vector3 vec2; // +0x18  tube end
     char _pad_24[0x3C - 0x24];
     float rad_2; // +0x3C  radius
-    char _pad_40[0x50 - 0x40];
+    float r;     // +0x40
+    float g;     // +0x44
+    float b;     // +0x48
+    char _pad_4C[0x50 - 0x4C];
     int shadow_condition; // +0x50  0 casts no shadows
     char _pad_54[0x5C - 0x54];
     Vector3 local_vec;  // +0x5C  vec in the pushed instance frame (room_lights_to_local)
@@ -890,6 +918,9 @@ static_assert(offsetof(GrLight, type) == 0x08);
 static_assert(offsetof(GrLight, vec) == 0x0C);
 static_assert(offsetof(GrLight, vec2) == 0x18);
 static_assert(offsetof(GrLight, rad_2) == 0x3C);
+static_assert(offsetof(GrLight, r) == 0x40);
+static_assert(offsetof(GrLight, g) == 0x44);
+static_assert(offsetof(GrLight, b) == 0x48);
 static_assert(offsetof(GrLight, shadow_condition) == 0x50);
 static_assert(offsetof(GrLight, local_vec) == 0x5C);
 static_assert(offsetof(GrLight, local_vec2) == 0x68);
@@ -903,6 +934,8 @@ static auto& light_free = addr_as_ref<void __cdecl(int light_handle, int unk)>(0
 static auto& light_accum_at_texel =
     addr_as_ref<void __cdecl(float* r, float* g, float* b, const Vector3* pos, const Vector3* normal,
                              void* masks, int texel_index, const void* smooth_flag)>(0x004894C0);
+// Length of the per-face light list FUN_00488810 gathers and light_accum_at_texel walks.
+static auto& face_light_count = addr_as_ref<int>(0x007432ec);
 // Copies out the level's ambient light color.
 static auto& light_get_ambient = addr_as_ref<void __cdecl(float* r, float* g, float* b)>(0x00487920);
 // RED's shared read-only 0.5f, which FUN_004ac470 halves the ambient seed by.

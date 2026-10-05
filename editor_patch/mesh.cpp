@@ -136,17 +136,22 @@ EditorVMesh* mesh_load_vmesh_file(const char* filename)
     return vmesh;
 }
 
-void mesh_load_vmesh(DedMesh* mesh)
+void mesh_release_vmesh(DedMesh* mesh)
 {
-    if (!mesh) return;
-
-    // Free existing vmesh if any
     if (auto* v = get_vmesh(mesh)) {
         g_v3c_action_cache.erase(v);
         g_v3c_action_simulating.erase(v);
         vmesh_free(v);
         mesh->vmesh = nullptr;
     }
+}
+
+void mesh_load_vmesh(DedMesh* mesh)
+{
+    if (!mesh) return;
+
+    // Free existing vmesh if any
+    mesh_release_vmesh(mesh);
 
     const char* filename = mesh->mesh_filename.c_str();
     if (!filename || filename[0] == '\0') return;
@@ -254,13 +259,7 @@ static void mesh_apply_texture_overrides(DedMesh* mesh)
 void DestroyDedMesh(DedMesh* mesh)
 {
     if (!mesh) return;
-    // Free vmesh
-    if (auto* v = get_vmesh(mesh)) {
-        g_v3c_action_cache.erase(v);
-        g_v3c_action_simulating.erase(v);
-        vmesh_free(v);
-        mesh->vmesh = nullptr;
-    }
+    mesh_release_vmesh(mesh);
     // Free VString members from DedObject base
     mesh->field_4.free();
     mesh->script_name.free();
@@ -1456,16 +1455,7 @@ void DeleteMeshObject(DedMesh* mesh)
     if (!mesh) return;
     auto* level = CDedLevel::Get();
     if (!level) return;
-
-    auto& meshes = level->GetAlpineLevelProperties().mesh_objects;
-    auto it = std::find(meshes.begin(), meshes.end(), mesh);
-    if (it != meshes.end()) {
-        meshes.erase(it);
-    }
-    alpine_remove_from_groups(level, static_cast<DedObject*>(mesh));
-    // Remove from master objects list
-    level->master_objects.remove_by_value(static_cast<DedObject*>(mesh));
-    DestroyDedMesh(mesh);
+    alpine_detach_object(level, level->GetAlpineLevelProperties().mesh_objects, mesh);
 }
 
 // ─── Editor Hooks ───────────────────────────────────────────────────────────
@@ -1855,22 +1845,6 @@ void mesh_handle_delete_or_cut(DedObject* obj)
     auto it = std::find(mesh_objects.begin(), mesh_objects.end(), mesh);
     if (it != mesh_objects.end()) {
         mesh_objects.erase(it);
-    }
-}
-
-void mesh_handle_delete_selection(CDedLevel* level)
-{
-    auto& sel = level->selection;
-    for (int i = sel.size - 1; i >= 0; i--) {
-        DedObject* obj = sel.data_ptr[i];
-        if (obj && obj->type == DedObjectType::DED_MESH) {
-            // Remove from selection
-            for (int j = i; j < sel.size - 1; j++) {
-                sel.data_ptr[j] = sel.data_ptr[j + 1];
-            }
-            sel.size--;
-            DeleteMeshObject(static_cast<DedMesh*>(obj));
-        }
     }
 }
 
