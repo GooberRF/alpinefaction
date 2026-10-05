@@ -140,6 +140,32 @@ inline std::string string_replace(const std::string_view& str, const std::string
     return result;
 }
 
+// Escapes control characters so the string logs on one line
+inline std::string string_escape_control_chars(std::string_view str)
+{
+    constexpr std::string_view hex_digits = "0123456789ABCDEF";
+    std::string result;
+    result.reserve(str.size());
+    for (const char c : str) {
+        const auto uc = static_cast<unsigned char>(c);
+        if (uc == '\r') {
+            result += "\\r";
+        }
+        else if (uc == '\n') {
+            result += "\\n";
+        }
+        else if (uc < 0x20 || uc == 0x7F) {
+            result += "\\x";
+            result += hex_digits[uc >> 4];
+            result += hex_digits[uc & 0xF];
+        }
+        else {
+            result += c;
+        }
+    }
+    return result;
+}
+
 inline std::string string_add_suffix_before_extension(std::string_view filename, std::string_view suffix)
 {
     if (suffix.empty())

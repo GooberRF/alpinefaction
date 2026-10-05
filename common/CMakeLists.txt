@@ -28,6 +28,7 @@ set(SRCS
     include/common/utils/string-utils.h
     include/common/utils/bool-utils.h
     include/common/bitmap/formats.h
+    include/common/bitmap/tga.h
     include/common/lightmap/alpine_lightmap.h
     include/common/lightmap/alpine_lightmap_decode.h
     include/common/lightmap/alpine_lightmap_reader.h

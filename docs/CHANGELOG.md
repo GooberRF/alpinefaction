@@ -193,6 +193,10 @@ Version 1.5.0 (Trillium): Not yet released
 - Fix a level listed more than once in the rotation using its first entry's rules when restarted, voted, or reloaded
 - Fix confirming the vote panel's pre-selected mutators layering them differently from the configured rules
 - Fix the configured restart vote using the base game type for a level outside the rotation
+- Improve validation of TGA textures in game and level editor
+- Fix level editor crash when a texture is too large to load
+- Fix 8-bit greyscale TGA textures with mipmap files sometimes loading with garbage pixels
+- Show control characters in texture filenames as escape sequences in log warnings
 
 [@is-this-c](https://github.com/is-this-c)
 - Let `Caps Lock` capitalize
