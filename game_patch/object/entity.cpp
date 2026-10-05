@@ -947,6 +947,11 @@ void entity_do_patch()
     // which has correct data and is already used by entity_crouch.
     AsmWriter(0x00428A7A).mov(asm_regs::ecx, *(asm_regs::edi + 0x29C));
 
+    // Fix aim bend sticking at full weight: the pose pass clears the aim bones named by entity->info,
+    // but entity_apply_aim_bend sets the ones named by info2, which differ for some MP characters.
+    AsmWriter(0x0041DE56).mov(asm_regs::ecx, *(asm_regs::esi + 0x29C));
+    AsmWriter(0x0041DED5).mov(asm_regs::eax, *(asm_regs::esi + 0x29C));
+
     // Regulate FPS-dependent head-jump launch velocity in multiplayer
     entity_collision_push_rate_limit.install();
 

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <d3d11.h>
 #include <unordered_map>
 #include <vector>
@@ -82,5 +83,8 @@ namespace gr::d3d11
         std::vector<rf::Vector3> face_normals_;
         std::vector<rf::Vector3> record_normals_;
         std::vector<rf::Color> record_lit_;
+        std::vector<float> sort_depth_;
+        std::vector<std::uint32_t> sort_keys_;
+        std::vector<std::uint32_t> sort_scratch_;
     };
 }

@@ -619,6 +619,12 @@ namespace gr::d3d11
         dyn_geo_renderer_->bitmap(bm_handle, x, y, w, h, sx, sy, sw, sh, flip_x, flip_y, mode);
     }
 
+    void Renderer::poly_2d(int bm_handle, int nv, const rf::gr::Vertex* vertices, rf::gr::Mode mode)
+    {
+        flush_outlines_before_2d();
+        dyn_geo_renderer_->poly_2d(bm_handle, nv, vertices, mode);
+    }
+
     void Renderer::flush_outlines_before_2d()
     {
         outline_renderer_->flush(*mesh_renderer_);
@@ -1359,6 +1365,12 @@ namespace gr::d3d11
 
         // Skip outline queuing when rendering to a texture (e.g. rail gun scanner).
         if (render_target_bm_handle_ != -1) {
+            return;
+        }
+
+        // Vehicle and turret hulls are static meshes, claimed by the rendering entity handle. A claimed draw must
+        // return before the weapon-mesh inheritance below, which would paint a character's outline on it.
+        if (outline_renderer_->maybe_queue_static_outline(lod_mesh, lod_index, pos, orient)) {
             return;
         }
 

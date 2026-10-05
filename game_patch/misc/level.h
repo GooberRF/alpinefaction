@@ -22,6 +22,7 @@ constexpr int alpine_mesh_chunk_id = 0x0AFBAE01;
 constexpr int alpine_corona_chunk_id = 0x0AFBAE03;
 constexpr int alpine_bag_chunk_id = 0x0AFBAE04;
 constexpr int alpine_weather_region_chunk_id = 0x0AFBAE06;
+constexpr int alpine_vehicle_factory_chunk_id = 0x0AFBAE07;
 constexpr int alpine_projection_camera_chunk_id = 0x0AFBAE08;
 constexpr int alpine_rope_emitter_chunk_id = 0x0AFBAE0A;
 constexpr int alpine_terrain_chunk_id = static_cast<int>(alpine_terrain::chunk_id); // 0x0AFBAE0B
@@ -29,18 +30,10 @@ constexpr int alpine_lightmaps_chunk_id = static_cast<int>(alpine_lightmap::chun
 constexpr int alpine_directional_light_chunk_id = static_cast<int>(alpine_dir_light::chunk_id); // 0x0AFBAE0C
 constexpr int stock_lightmaps_chunk_id = 0x1200;
 
-using AlpineChunkReader = RflChunkReader<rf::File>;
+// Length limit (with the terminator) for bitmap names read from untrusted alpine level chunks.
+constexpr std::size_t max_bitmap_name = 32;
 
-// Unit vector pointing TOWARD the sun. The light travel direction is its negation.
-// should match helper in editor_patch\level.h
-inline rf::Vector3 alpine_sun_to_light_dir(float yaw_deg, float pitch_deg)
-{
-    constexpr float deg_to_rad = 3.14159265358979f / 180.0f;
-    const float yaw = yaw_deg * deg_to_rad;
-    const float pitch = pitch_deg * deg_to_rad;
-    const float cp = std::cos(pitch);
-    return {cp * std::sin(yaw), std::sin(pitch), cp * std::cos(yaw)};
-}
+using AlpineChunkReader = RflChunkReader<rf::File>;
 
 // should match structure in editor_patch\level.h
 struct AlpineLevelProperties
@@ -88,6 +81,15 @@ struct AlpineLevelProperties
     uint8_t lightmap_density = 0; // editor-side bake switch, no effect in game
     bool d3d11_only_lightmaps = false; // level has no stock 0x1200 lightmaps section
     uint8_t lightmap_compression = 0; // editor-side bake switch, no effect in game
+
+    // v6
+    bool vehicle_flight_ceiling_enabled = false;   // mapper opted into an altitude ceiling for flyers
+    float vehicle_flight_ceiling = 0.0f;           // world Y (RF up axis) the ceiling sits at
+    bool minimap_enabled = false;
+    std::string minimap_bitmap;
+    rf::Vector3 minimap_world_min{};
+    rf::Vector3 minimap_world_max{};
+    float minimap_cut_height = 0.0f; // editor-side bake parameter, no effect in game
 
     // should match SanitizeSunProperties in editor_patch\level.h
     // A level file can carry anything; these floats end up in the lights constant buffer and in the
@@ -353,6 +355,52 @@ struct AlpineLevelProperties
             lightmap_compression =
                 static_cast<std::uint8_t>(alpine_lightmap::compression_mode_from_wire(lightmap_compression));
         }
+
+        if (version >= 6) {
+            std::uint8_t u8 = 0;
+            if (!reader.read_bytes(&u8, sizeof(u8)))
+                return;
+            vehicle_flight_ceiling_enabled = (u8 != 0);
+            if (!reader.read_bytes(&vehicle_flight_ceiling, sizeof(vehicle_flight_ceiling)))
+                return;
+            xlog::debug("[AlpineLevelProps] vehicle_flight_ceiling {} (enabled {})",
+                        vehicle_flight_ceiling, vehicle_flight_ceiling_enabled);
+
+            if (!reader.read_bytes(&u8, sizeof(u8)))
+                return;
+            const bool enabled = (u8 != 0);
+            std::string bitmap;
+            if (!reader.read_string(bitmap))
+                return;
+            rf::Vector3 world_min{}, world_max{};
+            if (!reader.read_bytes(&world_min, sizeof(world_min)))
+                return;
+            if (!reader.read_bytes(&world_max, sizeof(world_max)))
+                return;
+            if (!reader.read_bytes(&minimap_cut_height, sizeof(minimap_cut_height)))
+                return;
+            if (bitmap.size() >= max_bitmap_name || bitmap.find_first_of("\\/:") != std::string::npos) {
+                xlog::warn("[AlpineLevelProps] Ignoring invalid minimap bitmap name");
+                bitmap.clear();
+            }
+            // Bounded, so the extent and the panel scale derived from it stay finite and non-zero.
+            constexpr float max_coord = 1e6f;
+            constexpr float min_extent = 1.0f;
+            auto in_range = [](const rf::Vector3& v) {
+                return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z) &&
+                    std::fabs(v.x) <= max_coord && std::fabs(v.z) <= max_coord;
+            };
+            const bool bounds_ok = in_range(world_min) && in_range(world_max) &&
+                world_max.x - world_min.x >= min_extent && world_max.z - world_min.z >= min_extent;
+            if (enabled && !bounds_ok) {
+                xlog::warn("[AlpineLevelProps] Minimap disabled: invalid world bounds");
+            }
+            minimap_bitmap = std::move(bitmap);
+            minimap_world_min = world_min;
+            minimap_world_max = world_max;
+            minimap_enabled = enabled && bounds_ok;
+            xlog::debug("[AlpineLevelProps] minimap {} bitmap '{}'", minimap_enabled, minimap_bitmap);
+        }
     }
 };
 
@@ -470,6 +518,24 @@ struct AlpineCoronaInfo {
 
 void alpine_corona_load_chunk(rf::File& file, std::size_t chunk_len);
 void alpine_corona_clear_state();
+
+// Alpine vehicle factory info, loaded from RFL (v306+).
+struct AlpineVehicleFactoryInfo {
+    int32_t uid = -1;
+    rf::Vector3 pos{};
+    rf::Matrix3 orient{};
+    std::string script_name;
+    std::string vehicle_class;
+    float respawn_delay_s = 30.0f;
+    // -1 none, 0 red, 1 blue; the wire and the RFL carry this as a u8 with 0xFF for none.
+    int32_t team = -1;
+    bool lock_to_team = false;
+    bool active_by_default = true;
+};
+
+void vehicle_factory_load_chunk(rf::File& file, std::size_t chunk_len);
+void vehicle_factory_clear_state();
+bool vehicle_level_has_factories();
 
 // Gas region info, loaded from stock RFL chunk 0xB00
 struct GasRegionInfo {

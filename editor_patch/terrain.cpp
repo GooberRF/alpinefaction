@@ -808,6 +808,7 @@ static void terrain_from_record(at::Record& rec, DedTerrain* terrain)
         deco.align_to_slope = src.align_to_slope;
         deco.random_yaw = src.random_yaw;
         deco.casts_shadows = src.casts_shadows;
+        deco.dither_fade = src.dither_fade;
     }
     d.build_mapping = std::move(rec.build_mapping);
     d.grid = std::move(g);
@@ -1253,6 +1254,7 @@ static constexpr TerrainDecoCheck terrain_deco_checks[] = {
     {IDC_TERRAIN_DECO_ALIGN, &DedTerrainDecoration::align_to_slope},
     {IDC_TERRAIN_DECO_RANDOM_YAW, &DedTerrainDecoration::random_yaw},
     {IDC_TERRAIN_DECO_CASTS_SHADOWS, &DedTerrainDecoration::casts_shadows},
+    {IDC_TERRAIN_DECO_DITHER_FADE, &DedTerrainDecoration::dither_fade},
 };
 
 // Enabled while there is a decoration to edit.
@@ -1263,6 +1265,7 @@ static constexpr int terrain_deco_controls[] = {
     IDC_TERRAIN_DECO_SLOPE_SPIN, IDC_TERRAIN_DECO_DRAW_DIST,      IDC_TERRAIN_DECO_DRAW_DIST_SPIN,
     IDC_TERRAIN_DECO_OFFSET,     IDC_TERRAIN_DECO_OFFSET_SPIN,    IDC_TERRAIN_DECO_LINK,
     IDC_TERRAIN_DECO_ALIGN,      IDC_TERRAIN_DECO_RANDOM_YAW,     IDC_TERRAIN_DECO_CASTS_SHADOWS,
+    IDC_TERRAIN_DECO_DITHER_FADE,
 };
 
 // Staging for the open dialog: only IDOK writes the terrain. The viewport box follows the staged
@@ -2614,6 +2617,7 @@ static INT_PTR terrain_dlg_command(HWND hdlg, WPARAM wp)
     case IDC_TERRAIN_DECO_ALIGN:
     case IDC_TERRAIN_DECO_RANDOM_YAW:
     case IDC_TERRAIN_DECO_CASTS_SHADOWS:
+    case IDC_TERRAIN_DECO_DITHER_FADE:
         terrain_dlg_store_decoration_fields(hdlg);
         return TRUE;
     case IDC_TERRAIN_DECO_MESH_BROWSE:
@@ -2708,6 +2712,8 @@ static constexpr DialogTooltip terrain_dlg_tooltips[] = {
     {IDC_TERRAIN_DECO_OFFSET, terrain_tip_deco_offset},
     {IDC_TERRAIN_DECO_OFFSET_LABEL, terrain_tip_deco_offset},
     {IDC_TERRAIN_DECO_CASTS_SHADOWS, "Shadows are baked by Calculate Lighting."},
+    {IDC_TERRAIN_DECO_DITHER_FADE,
+     "Dissolve out toward the draw distance instead of shrinking (Direct3D 11 renderer)."},
     {IDC_TERRAIN_DECO_ALIGN, "Tilt to the ground slope."},
 };
 
@@ -3161,10 +3167,18 @@ void terrain_render_surfaces(CDedLevel* level)
         bool selected = false;
         const DedTerrainData& data = terrain_shown_data(level, terrain, selected);
         terrain_preview_draw(*level, *terrain, data, selected);
-        terrain_decorations_collect(*terrain, data);
+    }
+    terrain_preview_frame_end(*level);
+}
+
+void terrain_render_decorations(CDedLevel* level)
+{
+    for (auto* terrain : level->GetAlpineLevelProperties().terrain_objects) {
+        if (terrain->hidden_in_editor) continue;
+        bool selected = false;
+        terrain_decorations_collect(*terrain, terrain_shown_data(level, terrain, selected));
     }
     terrain_decorations_frame_end(*level, g_terrain_dlg.active ? &g_terrain_dlg.data : nullptr);
-    terrain_preview_frame_end(*level);
 }
 
 void terrain_render(CDedLevel* level)

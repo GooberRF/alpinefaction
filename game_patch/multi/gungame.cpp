@@ -19,6 +19,7 @@
 #include "alpine_packets.h"
 #include "../fflink/afstats_events.h"
 #include "../main/main.h"
+#include "../misc/level.h"
 #include "../sound/sound.h"
 #include "../hud/hud.h"
 #include "../rf/multi.h"
@@ -515,7 +516,6 @@ void gungame_level_init()
 {
     revert_jeep_gun_overrides();
     forget_jeep_gun_mesh();
-    apply_jeep_gun_overrides(); // no-ops outside GunGame
     revert_gungame_weapon_tweaks();
     apply_gungame_weapon_tweaks(); // no-ops outside GunGame
 
@@ -542,6 +542,11 @@ void gungame_on_multi_shutdown()
 
 void gungame_level_init_post()
 {
+    // A third-person mesh reroutes the jeep hull's Jeep Gun muzzle (0x0041B040 -> 0x0041B5A0).
+    if (!vehicle_level_has_factories()) {
+        apply_jeep_gun_overrides(); // no-ops outside GunGame
+    }
+
     if (!rf::is_server) return;
     if (!gt_is_gungame()) return;
 

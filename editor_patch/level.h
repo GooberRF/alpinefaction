@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <patch_common/MemUtils.h>
 #include <xlog/xlog.h>
+#include <common/lighting/alpine_lighting.h>
 #include <common/lightmap/alpine_lightmap.h>
 #include "vtypes.h"
 #include "mfc_types.h"
@@ -20,6 +21,7 @@ void DestroyDedNote(DedNote* note);
 void DestroyDedCorona(DedCorona* corona);
 void DestroyDedBag(DedBag* bag);
 void DestroyDedWeatherRegion(DedWeatherRegion* weather_region);
+void DestroyDedVehicleFactory(DedVehicleFactory* factory);
 void DestroyDedProjectionCamera(DedProjectionCamera* camera);
 void DestroyDedRopeEmitter(DedRopeEmitter* rope);
 void DestroyDedTerrain(DedTerrain* terrain);
@@ -32,6 +34,7 @@ constexpr int alpine_corona_chunk_id = 0x0AFBAE03;
 constexpr int alpine_bag_chunk_id = 0x0AFBAE04;
 constexpr int alpine_brush_group_chunk_id = 0x0AFBAE05; // brush metadata in .rfg group files only
 constexpr int alpine_weather_region_chunk_id = 0x0AFBAE06;
+constexpr int alpine_vehicle_factory_chunk_id = 0x0AFBAE07;
 constexpr int alpine_projection_camera_chunk_id = 0x0AFBAE08;
 constexpr int alpine_rope_emitter_chunk_id = 0x0AFBAE0A;
 constexpr int alpine_terrain_chunk_id = static_cast<int>(alpine_terrain::chunk_id); // 0x0AFBAE0B
@@ -640,18 +643,7 @@ static_assert(offsetof(BrushNode, state) == 0x48);
 static_assert(offsetof(BrushNode, next) == 0x4C);
 static_assert(offsetof(BrushNode, prev) == 0x50);
 
-// Unit vector pointing TOWARD the sun. The light travel direction is its negation.
-// should match helper in game_patch\misc\level.h
-inline Vector3 alpine_sun_to_light_dir(float yaw_deg, float pitch_deg)
-{
-    constexpr float deg_to_rad = 3.14159265358979f / 180.0f;
-    const float yaw = yaw_deg * deg_to_rad;
-    const float pitch = pitch_deg * deg_to_rad;
-    const float cp = std::cos(pitch);
-    return {cp * std::sin(yaw), std::sin(pitch), cp * std::cos(yaw)};
-}
-
-// Inverse of alpine_sun_to_light_dir for a light travelling along `travel_dir`: yaw wrapped like
+// Inverse of alpine_lighting::sun_to_light_dir for a light travelling along `travel_dir`: yaw wrapped like
 // SanitizeSunProperties, pitch clamped to [0, 90] (a direction travelling upward parks the sun on the
 // horizon). False for a zero or non-finite direction.
 inline bool alpine_light_dir_to_sun_angles(const Vector3& travel_dir, float& yaw_deg, float& pitch_deg)
@@ -718,6 +710,15 @@ struct AlpineLevelProperties
     bool stock_lightmaps_omitted = false; // load-time only: the file had no stock lightmaps section
     uint8_t lightmap_compression = 0; // alpine_lightmap::CompressionMode
 
+    // v6
+    bool vehicle_flight_ceiling_enabled = false;   // mapper opted into an altitude ceiling for flyers
+    float vehicle_flight_ceiling = 0.0f;           // world Y (RF up axis) the ceiling sits at
+    bool minimap_enabled = false;
+    std::string minimap_bitmap;
+    Vector3 minimap_world_min{};
+    Vector3 minimap_world_max{};
+    float minimap_cut_height = 0.0f;
+
     // Alpine mesh objects (stored separately from stock object VArrays)
     std::vector<DedMesh*> mesh_objects;
 
@@ -732,6 +733,9 @@ struct AlpineLevelProperties
 
     // Alpine weather region objects
     std::vector<DedWeatherRegion*> weather_region_objects;
+
+    // Alpine vehicle factory objects
+    std::vector<DedVehicleFactory*> vehicle_factory_objects;
 
     // Alpine projection camera objects
     std::vector<DedProjectionCamera*> projection_camera_objects;
@@ -755,11 +759,13 @@ struct AlpineLevelProperties
     // Retained foreign-editor RFL sections
     std::vector<RetainedRflChunk> retained_chunks;
 
-    static constexpr std::uint32_t current_alpine_chunk_version = 5u;
+    static constexpr std::uint32_t current_alpine_chunk_version = 6u;
 
+    // Unit vector pointing TOWARD the sun. The light travel direction is its negation.
     Vector3 sun_to_light_dir() const
     {
-        return alpine_sun_to_light_dir(sun_yaw, sun_pitch);
+        const alpine_lighting::Direction d = alpine_lighting::sun_to_light_dir(sun_yaw, sun_pitch);
+        return {d.x, d.y, d.z};
     }
 
     // Calculate Lighting gives the surfaces alpine charts; D3D11-only lightmaps can only apply then.
@@ -843,6 +849,13 @@ struct AlpineLevelProperties
         alpha_faces_occlude = false;
         no_shadow_cast_brush_uids.clear();
         meshes_occlude = false;
+        vehicle_flight_ceiling_enabled = false;
+        vehicle_flight_ceiling = 0.0f;
+        minimap_enabled = false;
+        minimap_bitmap.clear();
+        minimap_world_min = {};
+        minimap_world_max = {};
+        minimap_cut_height = 0.0f;
         lightmap_density = 0;
         d3d11_only_lightmaps = false;
         stock_lightmaps_omitted = false;
@@ -871,6 +884,11 @@ struct AlpineLevelProperties
             DestroyDedWeatherRegion(w);
         }
         weather_region_objects.clear();
+
+        for (auto* f : vehicle_factory_objects) {
+            DestroyDedVehicleFactory(f);
+        }
+        vehicle_factory_objects.clear();
 
         for (auto* c : projection_camera_objects) {
             DestroyDedProjectionCamera(c);
@@ -965,6 +983,18 @@ struct AlpineLevelProperties
             (stock_lightmaps_suppressed ? alpine_lightmap::d3d11_only_stock_omitted : 0u) |
             (d3d11_only_lightmaps ? alpine_lightmap::d3d11_only_setting : 0u)));
         file.write<std::uint8_t>(lightmap_compression);
+        // v6
+        file.write<std::uint8_t>(vehicle_flight_ceiling_enabled ? 1u : 0u);
+        file.write<float>(vehicle_flight_ceiling);
+        file.write<std::uint8_t>(minimap_enabled ? 1u : 0u);
+        write_rfl_string(file, minimap_bitmap);
+        file.write<float>(minimap_world_min.x);
+        file.write<float>(minimap_world_min.y);
+        file.write<float>(minimap_world_min.z);
+        file.write<float>(minimap_world_max.x);
+        file.write<float>(minimap_world_max.y);
+        file.write<float>(minimap_world_max.z);
+        file.write<float>(minimap_cut_height);
     }
 
     void Deserialize(rf::File& file, std::size_t chunk_len)
@@ -1196,6 +1226,38 @@ struct AlpineLevelProperties
                 return;
             lightmap_compression =
                 static_cast<std::uint8_t>(alpine_lightmap::compression_mode_from_wire(lightmap_compression));
+        }
+
+        if (version >= 6) {
+            std::uint8_t u8 = 0;
+            if (!read_bytes(&u8, sizeof(u8)))
+                return;
+            vehicle_flight_ceiling_enabled = (u8 != 0);
+            if (!read_bytes(&vehicle_flight_ceiling, sizeof(vehicle_flight_ceiling)))
+                return;
+
+            if (!read_bytes(&u8, sizeof(u8)))
+                return;
+            minimap_enabled = (u8 != 0);
+            std::string bitmap = read_rfl_string(file, remaining);
+            if (rfl_name_over_long(bitmap) || bitmap.find_first_of("\\/:") != std::string::npos) {
+                xlog::warn("[AlpineLevelProps] Ignoring invalid minimap bitmap name");
+                bitmap.clear();
+            }
+            minimap_bitmap = std::move(bitmap);
+            float bounds[6] = {};
+            for (float& f : bounds) {
+                if (!read_bytes(&f, sizeof(f)))
+                    return;
+                if (!std::isfinite(f))
+                    f = 0.0f;
+            }
+            minimap_world_min = {bounds[0], bounds[1], bounds[2]};
+            minimap_world_max = {bounds[3], bounds[4], bounds[5]};
+            if (!read_bytes(&minimap_cut_height, sizeof(minimap_cut_height)))
+                return;
+            if (!std::isfinite(minimap_cut_height))
+                minimap_cut_height = 0.0f;
         }
     }
 };

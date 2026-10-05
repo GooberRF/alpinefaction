@@ -409,7 +409,8 @@ Matrix3 sun_arrow_orient_from_props(const AlpineLevelProperties& props)
 {
     const Vector3 to_sun = props.sun_to_light_dir();
     const Vector3 f{-to_sun.x, -to_sun.y, -to_sun.z};
-    const Vector3 r = alpine_sun_to_light_dir(props.sun_yaw - 90.0f, 0.0f);
+    const alpine_lighting::Direction rd = alpine_lighting::sun_to_light_dir(props.sun_yaw - 90.0f, 0.0f);
+    const Vector3 r{rd.x, rd.y, rd.z};
     return {r, from_adl(adl::cross(to_adl(f), to_adl(r))), f};
 }
 

@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <cstdint>
 #include <cmath>
 #include <cstring>
 #include <map>
@@ -200,6 +201,46 @@ namespace gr::d3d11
         return t;
     }
 
+    // Draw order only shows through a blend that is not commutative.
+    static bool vfx_mode_is_ordered(rf::gr::Mode mode)
+    {
+        const auto blend = mode.get_alpha_blend();
+        return blend != rf::gr::ALPHA_BLEND_NONE && blend != rf::gr::ALPHA_BLEND_ADDITIVE &&
+            blend != rf::gr::ALPHA_BLEND_ALPHA_ADDITIVE;
+    }
+
+    static bool vfx_slot_is_ordered(const rf::VfxSfxoChunk* chunk, const rf::MeshMaterial* m, float frame)
+    {
+        if (m->refl_tex_handle > 0) {
+            return true; // the chrome pass alpha-blends over the base
+        }
+        if (m->material_type == 1) {
+            return vfx_mode_is_ordered(vfx_crossfade_mode(m, texmap_get_bitmap(&m->texture_maps[0], frame))) ||
+                vfx_mode_is_ordered(vfx_crossfade_mode(m, texmap_get_bitmap(&m->texture_maps[1], frame)));
+        }
+        const int bm = m->material_type == 2 ? -1 : texmap_get_bitmap(&m->texture_maps[0], frame);
+        return vfx_mode_is_ordered(vfx_base_mode(chunk, m, bm));
+    }
+
+    // Stable two-pass LSD radix sort on the high 16 bits; the low 16 carry the face index.
+    static void radix_sort_high16(std::vector<std::uint32_t>& keys, std::vector<std::uint32_t>& tmp)
+    {
+        tmp.resize(keys.size());
+        for (int shift = 16; shift < 32; shift += 8) {
+            std::uint32_t count[257] = {};
+            for (std::uint32_t k : keys) {
+                count[((k >> shift) & 0xFF) + 1]++;
+            }
+            for (int i = 0; i < 256; ++i) {
+                count[i + 1] += count[i];
+            }
+            for (std::uint32_t k : keys) {
+                tmp[count[(k >> shift) & 0xFF]++] = k;
+            }
+            keys.swap(tmp);
+        }
+    }
+
     void VfxMeshRenderer::render(rf::VfxSfxoRenderObj* obj, float frame)
     {
         rf::VfxSfxoChunk* chunk = obj->chunk;
@@ -246,6 +287,7 @@ namespace gr::d3d11
             int cursor = 0;
             bool specular = false;
             bool chrome = false;
+            bool ordered = false;
             bool spec_any = false;
             float opacity = 1.0f;
             float self_illum = 0.0f;
@@ -273,6 +315,7 @@ namespace gr::d3d11
             }
             sl.specular = sl.material->specular_level > 0.0f;
             sl.chrome = sl.material->refl_tex_handle > 0;
+            sl.ordered = vfx_slot_is_ordered(chunk, sl.material, frame);
             any_specular |= sl.specular;
             any_chrome |= sl.chrome;
             sl.offset = total_indices;
@@ -346,15 +389,52 @@ namespace gr::d3d11
                 }
             }
         }
+        // Back to front within each blending slot, like stock: each face keyed by its farthest corner's view
+        // depth (0x00554A80), largest first (0x0053C840). Stock's slot bias of 61 per slot only orders the
+        // slots, which the per-slot draws below already do; opaque slots keep their order, which z-testing hides.
         index_scratch_.resize(total_indices);
         rf::ushort* inds = index_scratch_.data();
-        for (const Topology::Face& face : topo.faces) {
+        auto emit = [&](const Topology::Face& face) {
             Slot& sl = slots[face.slot];
             rf::ushort* out = inds + sl.offset + sl.cursor;
             out[0] = static_cast<rf::ushort>(face.corner[0]);
             out[1] = static_cast<rf::ushort>(face.corner[1]);
             out[2] = static_cast<rf::ushort>(face.corner[2]);
             sl.cursor += 3;
+        };
+        const rf::Vector3& view_fvec = rf::gr::eye_matrix.fvec;
+        const rf::Matrix3& ro = obj->render_orient;
+        const rf::Vector3 depth_axis{ro.rvec.dot_prod(view_fvec), ro.uvec.dot_prod(view_fvec), ro.fvec.dot_prod(view_fvec)};
+        sort_keys_.clear();
+        sort_depth_.clear();
+        float depth_min = 0.0f;
+        float depth_max = 0.0f;
+        for (int f = 0; f < num_faces; ++f) {
+            const Topology::Face& face = topo.faces[f];
+            if (!slots[face.slot].ordered) {
+                emit(face);
+                continue;
+            }
+            float d = pos[face.vertex[0]].dot_prod(depth_axis);
+            d = std::max(d, pos[face.vertex[1]].dot_prod(depth_axis));
+            d = std::max(d, pos[face.vertex[2]].dot_prod(depth_axis));
+            depth_min = sort_depth_.empty() ? d : std::min(depth_min, d);
+            depth_max = sort_depth_.empty() ? d : std::max(depth_max, d);
+            sort_depth_.push_back(d);
+            sort_keys_.push_back(static_cast<std::uint32_t>(f));
+        }
+        if (!sort_keys_.empty()) {
+            // Farthest first: 0 at depth_max. Depths closer than range/65535 tie and keep face order.
+            const float range = depth_max - depth_min;
+            const float scale = range > 0.0f ? 65535.0f / range : 0.0f;
+            for (std::size_t i = 0; i < sort_keys_.size(); ++i) {
+                const auto q = static_cast<std::uint32_t>((depth_max - sort_depth_[i]) * scale);
+                sort_keys_[i] |= std::min(q, 65535u) << 16;
+            }
+            radix_sort_high16(sort_keys_, sort_scratch_);
+            for (std::uint32_t k : sort_keys_) {
+                emit(topo.faces[k & 0xFFFF]);
+            }
         }
         std::memcpy(vertex_ring_buffer_.alloc(total_verts), verts, total_verts * sizeof(GpuVertex));
         std::memcpy(index_ring_buffer_.alloc(total_indices), inds, total_indices * sizeof(rf::ushort));
@@ -393,20 +473,6 @@ namespace gr::d3d11
                 const rf::ubyte w = to_byte(weight);
                 const rf::Color color{w, w, w, to_byte(weight * sl.opacity)};
                 render_context_.set_textures(bm, -1);
-                // No per-face depth sort like stock: split soft alpha into an opaque cutout pass and a z-read
-                // edge pass so blended edges don't reject what's behind them. Fading materials stay single-pass.
-                if (sl.opacity >= 1.0f && mode.get_alpha_blend() == rf::gr::ALPHA_BLEND_ALPHA &&
-                    mode.get_zbuffer_type() == rf::gr::ZBUFFER_TYPE_FULL_ALPHA_TEST) {
-                    rf::gr::Mode cutout = mode;
-                    cutout.set_alpha_blend(rf::gr::ALPHA_BLEND_NONE);
-                    const float saved_threshold = g_alpha_test_threshold;
-                    g_alpha_test_threshold = 0.5f;
-                    render_context_.set_mode(cutout, color, false, gpu_lit, gpu_lit ? sl.self_illum : 0.0f, gpu_lit, false,
-                        vfx_light_scale);
-                    render_context_.draw_indexed(sl.count, ib_start + sl.offset, vb_start);
-                    g_alpha_test_threshold = saved_threshold;
-                    mode.set_zbuffer_type(rf::gr::ZBUFFER_TYPE_READ);
-                }
                 render_context_.set_mode(mode, color, false, gpu_lit, gpu_lit ? sl.self_illum : 0.0f, gpu_lit, false,
                     vfx_light_scale);
                 render_context_.draw_indexed(sl.count, ib_start + sl.offset, vb_start);

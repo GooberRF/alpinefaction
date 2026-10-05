@@ -1,5 +1,6 @@
 #pragma once
 
+#include <span>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -80,6 +81,20 @@ namespace gr::d3d11
         bool naturally_rendered = false;
     };
 
+    // One synced vehicle hull. Its draws are attributed by the entity whose entity_render is
+    // running, so the mesh list exists only for flush_forced_xray to redraw a portal-culled hull.
+    struct VehicleOutlineTarget
+    {
+        int entity_handle = -1;
+        rf::Vector3 pos{};
+        rf::Matrix3 orient{};
+        std::vector<rf::VifLodMesh*> lod_meshes;
+        // False means "claim this draw, but draw no outline"; an unclaimed draw leaks a character's outline
+        bool has_info = false;
+        OutlineInfo info{};
+        bool naturally_rendered = false;
+    };
+
     class OutlineRenderer
     {
     public:
@@ -99,6 +114,11 @@ namespace gr::d3d11
         void maybe_queue_bag_outline(
             rf::VifLodMesh* lod_mesh, int lod_index,
             const rf::Vector3& pos, const rf::Matrix3& orient);
+        // True when this draw belongs to a synced vehicle, whether or not an outline was queued.
+        // Ownership comes from vehicle_rendering_entity(), not from the pose.
+        bool maybe_queue_static_outline(
+            rf::VifLodMesh* lod_mesh, int lod_index,
+            const rf::Vector3& pos, const rf::Matrix3& orient);
 
         // The main-scene camera saved at begin_frame. Anything drawn after the fpgun has to
         // use these: the fpgun's own gr_setup_3d has already overwritten the engine globals
@@ -111,7 +131,10 @@ namespace gr::d3d11
         void queue_unrendered_xray_outlines();
         void refresh_vfx_transforms();
         void render_outline(const QueuedOutline& outline, MeshRenderer& mesh_renderer);
-        void render_v3d_outline(const QueuedV3dOutline& outline, MeshRenderer& mesh_renderer);
+        // Two passes: parts of a multi-part hull share a stencil ref, so all must mark before any draws.
+        void render_v3d_outline_mark(const QueuedV3dOutline& outline, MeshRenderer& mesh_renderer);
+        void render_v3d_outline_draw(const QueuedV3dOutline& outline, MeshRenderer& mesh_renderer);
+        void render_v3d_queue(MeshRenderer& mesh_renderer);
         void render_vfx_outline(const QueuedVfxOutline& outline);
 
         ID3D11Device* device_;
@@ -148,5 +171,17 @@ namespace gr::d3d11
         const OutlineInfo* current_character_outline_ = nullptr; // outline info of last rendered character
         ForcedV3dXrayEntry bagman_pickup_xray_{};
         ForcedV3dXrayEntry bagman_carrier_xray_{};
+        // Frame-persistent: this renders every frame, so elements are reset and reused instead of
+        // destroyed, and each one's lod_meshes keeps its buffer. vehicle_target_count_ is the live prefix.
+        std::vector<VehicleOutlineTarget> vehicle_targets_;
+        size_t vehicle_target_count_ = 0;
+        std::vector<UINT> v3d_done_refs_; // render_v3d_queue scratch, reused across frames
+
+        // The live prefix of the target store; elements past it are reusable storage.
+        std::span<VehicleOutlineTarget> vehicle_targets()
+        {
+            return {vehicle_targets_.data(), vehicle_target_count_};
+        }
+        VehicleOutlineTarget& vehicle_target_push();
     };
 }
