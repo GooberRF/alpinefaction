@@ -5,10 +5,6 @@ Version 1.5.0 (Trillium): Not yet released
 --------------------------------
 ### Major features
 [@GooberRF](https://github.com/GooberRF)
-- Add multiplayer vehicles and turrets
-  - Jeeps, APCs, drillers, fighters, submarines, and stationary turrets, spawned by the new `Vehicle Factory` object
-  - Simulate vehicle physics with the Bullet physics engine
-  - Multi-seat vehicles with driver, gunner, and passenger seats; `Use` boards the lowest free seat and number keys `1`-`6` switch seats
 - Add ray cast lightmap baking to level editor
   - Add `Invisible faces block light` and `Alpha-textured faces block light` level properties to control whether those faces occlude baked light
   - Add `No shadow cast` brush property for solid detail brushes and movers
@@ -28,6 +24,12 @@ Version 1.5.0 (Trillium): Not yet released
   - Mirror `Terrain Tools` brush strokes across the terrain's X and/or Z axis, with movable mirror lines
   - Up to 4 detail overlays (leaves, debris) and 8 mesh decoration layers per terrain (grass, rocks, bushes)
   - `Geoable` terrains are carved by RF2-style geomod craters, with their own underside and crater textures
+
+[@GooberRF](https://github.com/GooberRF) & [@nickalreadyinuse](https://github.com/nickalreadyinuse)
+- Add multiplayer vehicles and turrets
+  - Jeeps, APCs, drillers, fighters, submarines, and stationary turrets, spawned by the new `Vehicle Factory` object
+  - Simulate vehicle physics with the Bullet physics engine
+  - Multi-seat vehicles with driver, gunner, and passenger seats; `Use` boards the lowest free seat and number keys `1`-`6` switch seats
 
 ### Minor features, changes, and enhancements
 [@GooberRF](https://github.com/GooberRF)
