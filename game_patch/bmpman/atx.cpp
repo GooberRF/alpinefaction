@@ -24,6 +24,8 @@
 #include "../rf/gr/gr.h"
 #include "../rf/os/frametime.h"
 
+static_assert(ATX_MAX_FILENAME_LEN + 1 == sizeof(rf::bm::BitmapEntry::name));
+
 namespace
 {
     // Alias to the shared schema enum so editor and game can't drift on values.

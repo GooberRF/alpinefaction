@@ -1305,6 +1305,16 @@ void salvage_on_player_disconnect(rf::Player* player)
     }
 }
 
+void salvage_force_drop_flag(rf::Player* player)
+{
+    if (!rf::is_server || !gt_is_salvage()) return;
+    if (g_salvage_info.state != SalFlagState::Carried) return;
+    if (g_salvage_info.carrier != player) return;
+
+    rf::Entity* ep = alive_entity_for(player);
+    drop_flag_at(player, ep ? ep->pos : g_salvage_info.last_carrier_pos);
+}
+
 void salvage_handle_drop_flag_request(rf::Player* player)
 {
     if (!rf::is_server || !gt_is_salvage()) return;

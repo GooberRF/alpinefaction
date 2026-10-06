@@ -11,6 +11,7 @@ void ApplyFileDialogPatches();
 
 // The shim entry point itself, for callers whose import of GetSaveFileNameA is not RED's.
 BOOL alpine_get_save_file_name(OPENFILENAMEA* ofn);
+BOOL alpine_get_open_file_name(OPENFILENAMEA* ofn);
 
 struct AlpineFileFilter
 {

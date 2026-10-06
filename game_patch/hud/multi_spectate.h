@@ -41,6 +41,14 @@ void multi_spectate_leave();
 bool multi_spectate_is_freelook();
 bool multi_spectate_is_static();
 bool multi_spectate_is_third_person_orbit();
+// Attached third person, shoulder or orbit.
+bool multi_spectate_is_third_person();
+// The spectator's own look input this frame, pumped and drained; no other path reads it while spectating.
+void multi_spectate_consume_look_deltas(float& dpitch, float& dyaw);
+// Live spectate's ping compensation, once per frame for the local camera, whoever then poses it.
+void multi_spectate_povcomp_frame(rf::Camera* camera);
+// Re-seeds the third-person orbit from what is on screen, after another camera owned the view.
+void multi_spectate_reseed_orbit();
 float multi_spectate_get_view_fov_scale();
 bool multi_spectate_camera_do_frame(rf::Camera* camera);
 bool multi_spectate_execute_action(rf::ControlConfigAction action, bool was_pressed);

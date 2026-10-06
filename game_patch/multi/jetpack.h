@@ -41,6 +41,8 @@ void jetpack_render_attachment(rf::Entity* ep);
 // reveal and the first-use keybind hint). Drawn from the multiplayer HUD render
 // path in multiplayer, and from the shared hud_render path in single player.
 void jetpack_render_hud();
+// Screen y of the fuel gauge's label top, where the gauge draws when shown.
+int jetpack_fuel_gauge_label_top_y();
 
 // Registers the single player `jetpack` console command.
 void jetpack_apply_patch();

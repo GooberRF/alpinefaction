@@ -351,6 +351,11 @@ BOOL alpine_get_save_file_name(OPENFILENAMEA* ofn)
     return run_dialog(ofn, true, &GetSaveFileNameA);
 }
 
+BOOL alpine_get_open_file_name(OPENFILENAMEA* ofn)
+{
+    return run_dialog(ofn, false, &GetOpenFileNameA);
+}
+
 void ApplyFileDialogPatches()
 {
     static bool installed = false;

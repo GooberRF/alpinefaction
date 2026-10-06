@@ -8,7 +8,6 @@
 #include <string_view>
 #include <format>
 #include <patch_common/MemUtils.h>
-#include <patch_common/FunHook.h>
 #include <xlog/xlog.h>
 #include "headless_bake.h"
 #include "level.h"
@@ -37,6 +36,7 @@ bool g_bake_started = false;
 // there" is not evidence that anything loaded; the load's own return value is.
 bool g_load_reported = false;
 bool g_load_ok = false;
+bool g_bake_refused = false;
 std::string g_input_path;
 std::string g_output_path;
 std::string g_log_path;
@@ -110,6 +110,34 @@ void restore_view_cameras()
     ExitProcess(static_cast<UINT>(code));
 }
 
+// Build Geometry as the Build command runs it, then GeoBuild_Driver ticked until build_running clears.
+bool run_build_geometry()
+{
+    constexpr DWORD build_timeout_ms = 60u * 60u * 1000u;
+
+    CDedLevel* level = CDedLevel::Get();
+    if (!level) {
+        return false;
+    }
+    if (level->build_running) {
+        return false;
+    }
+    level->start_build_geometry();
+    // the build refused to start (too little address space)
+    if (!level->build_running) {
+        return false;
+    }
+    const DWORD begin = GetTickCount();
+    while (level->build_running) {
+        if (GetTickCount() - begin > build_timeout_ms) {
+            bake_log("error: Build Geometry did not finish within an hour");
+            return false;
+        }
+        level->build_geometry_tick();
+    }
+    return !level->build_cancelling();
+}
+
 int WINAPI MessageBoxA_headless(HWND, LPCSTR text, LPCSTR caption, UINT type)
 {
     bake_log(std::format("dialog suppressed: [{}] {}", caption ? caption : "", text ? text : ""));
@@ -154,9 +182,21 @@ void run_bake()
     }
     bake_log(std::format("loaded {}", g_input_path));
 
+    DWORD build_begin = GetTickCount();
+    bake_log("building geometry");
+    if (!run_build_geometry()) {
+        bake_log("error: Build Geometry failed, nothing was saved");
+        bake_finish(6);
+    }
+    bake_log(std::format("built in {:.1f}s", (GetTickCount() - build_begin) / 1000.0));
+
     DWORD bake_begin = GetTickCount();
     bake_log("baking");
     main_frame->OnCalculateLighting();
+    if (g_bake_refused) {
+        bake_log("error: lighting was refused, nothing was saved");
+        bake_finish(5);
+    }
     bake_log(std::format("baked in {:.1f}s", (GetTickCount() - bake_begin) / 1000.0));
 
     DWORD save_begin = GetTickCount();
@@ -210,45 +250,6 @@ bool path_is_bake_input(const char* path)
     return !*a && !*b;
 }
 
-char __fastcall CDedDoc_LoadSaveLevel_new(void* self, int edx, const char* path, int is_load,
-                                          int is_autosave);
-FunHook<char __fastcall(void*, int, const char*, int, int)> CDedDoc_LoadSaveLevel_hook{
-    0x0041CCE0, CDedDoc_LoadSaveLevel_new}; // CDedDoc::LoadSaveLevel
-
-char __fastcall CDedDoc_LoadSaveLevel_new(void* self, int edx, const char* path, int is_load,
-                                          int is_autosave)
-{
-    char result = CDedDoc_LoadSaveLevel_hook.call_target(self, edx, path, is_load, is_autosave);
-    // only the load of the level named on the command line decides the bake's fate
-    if (is_load && !is_autosave && path && path_is_bake_input(path)) {
-        g_load_reported = true;
-        g_load_ok = result != 0;
-        if (result) {
-            capture_view_cameras();
-        }
-    }
-    return result;
-}
-
-int __fastcall CEditorApp_OnIdle_new(void* self, int edx, int count);
-FunHook<int __fastcall(void*, int, int)> CEditorApp_OnIdle_hook{0x00482F00, CEditorApp_OnIdle_new};
-
-int __fastcall CEditorApp_OnIdle_new(void* self, int edx, int count)
-{
-    if (!g_bake_started) {
-        if (!g_first_idle_ticks) {
-            g_first_idle_ticks = GetTickCount() | 1;
-        }
-        // The document is opened during InitInstance, so it is already there by the first idle;
-        // the short delay only lets a failed open finish reporting itself.
-        if (GetTickCount() - g_first_idle_ticks >= 500) {
-            g_bake_started = true;
-            run_bake();
-        }
-    }
-    return CEditorApp_OnIdle_hook.call_target(self, edx, count);
-}
-
 void parse_args()
 {
     int argc = 0;
@@ -276,9 +277,52 @@ bool headless_bake_active()
     return g_active;
 }
 
+bool headless_bake_idle()
+{
+    if (!g_active) {
+        return false;
+    }
+    if (!g_bake_started) {
+        if (!g_first_idle_ticks) {
+            g_first_idle_ticks = GetTickCount() | 1;
+        }
+        // The document is opened during InitInstance, so it is already there by the first idle;
+        // the short delay only lets a failed open finish reporting itself.
+        if (GetTickCount() - g_first_idle_ticks >= 500) {
+            g_bake_started = true;
+            run_bake();
+        }
+    }
+    return true;
+}
+
+void headless_bake_level_loaded(const char* path, bool ok)
+{
+    // only the load of the level named on the command line decides the bake's fate
+    if (g_active && path && path_is_bake_input(path)) {
+        g_load_reported = true;
+        g_load_ok = ok;
+        if (ok) {
+            capture_view_cameras();
+        }
+    }
+}
+
 const char* headless_bake_input_path()
 {
     return g_input_path.c_str();
+}
+
+void headless_bake_note(const char* line)
+{
+    if (g_active && line) {
+        bake_log(line);
+    }
+}
+
+void headless_bake_mark_refused()
+{
+    g_bake_refused = true;
 }
 
 void ApplyHeadlessBakePatches()
@@ -311,8 +355,7 @@ void ApplyHeadlessBakePatches()
 
     bake_log(std::format("started in={} out={}", g_input_path, g_output_path));
 
-    // RED.exe IAT slot for USER32!MessageBoxA (call sites 0x0041CD58, 0x0041CD9B)
-    write_mem_ptr(0x005545F4, &MessageBoxA_headless);
-    CDedDoc_LoadSaveLevel_hook.install();
-    CEditorApp_OnIdle_hook.install();
+    // MessageBoxA call sites 0x0041CD58, 0x0041CD9B.
+    // Overrides the face list cache's pause wrapper on purpose: headless boxes never pump messages.
+    write_mem_ptr(red_message_box_iat_slot, &MessageBoxA_headless);
 }

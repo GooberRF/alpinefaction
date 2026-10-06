@@ -36,6 +36,7 @@
 #include "../graphics/gr.h"
 #include "../graphics/weather.h"
 #include "alpine_rope.h"
+#include "alpine_dir_light.h"
 #include "../misc/level.h"
 #include "../misc/destruction.h"
 #include "../misc/alpine_settings.h"
@@ -279,6 +280,9 @@ struct EventCloneEntity : rf::Event
                 rf::Entity* entity = static_cast<rf::Entity*>(obj);
                 rf::Entity* new_entity =
                     rf::entity_create(entity->info_index, entity->name, -1, pos, this->orient, 0, -1);
+                if (!new_entity) {
+                    continue;
+                }
                 new_entity->entity_flags = entity->entity_flags;
                 new_entity->entity_flags2 = entity->entity_flags2;
                 new_entity->info->flags = entity->info->flags;
@@ -343,7 +347,7 @@ struct EventCloneEntity : rf::Event
                     rf::entity_make_run(new_entity);
                 }
 
-                if (hostile_to_player) {
+                if (hostile_to_player && rf::local_player_entity) {
                     new_entity->ai.hate_list.add(rf::local_player_entity->handle);
                 }
             }
@@ -356,11 +360,15 @@ struct EventSetCollisionPlayer : rf::Event
 {
     void turn_on() override
     {
-        rf::local_player->collides_with_world = true;
+        if (rf::local_player) {
+            rf::local_player->collides_with_world = true;
+        }
     }
     void turn_off() override
     {
-        rf::local_player->collides_with_world = false;
+        if (rf::local_player) {
+            rf::local_player->collides_with_world = false;
+        }
     }
 };
 
@@ -2062,19 +2070,22 @@ struct EventLightState : rf::Event
 {
     void turn_on() override
     {
-        for (const auto& linked_uid : this->links) {
-            if (auto* light = static_cast<rf::gr::Light*>(rf::gr::light_get_from_handle(rf::gr::level_get_light_handle_from_uid(linked_uid)))) {
-                light->on = true;
-            }
-        }
+        set_linked_lights_on(true);
     }
 
     void turn_off() override
     {
+        set_linked_lights_on(false);
+    }
+
+    void set_linked_lights_on(bool on)
+    {
         for (const auto& linked_uid : this->links) {
-            if (auto* light = static_cast<rf::gr::Light*>(rf::gr::light_get_from_handle(rf::gr::level_get_light_handle_from_uid(linked_uid)))) {
-                light->on = false;
+            const int handle = rf::gr::level_get_light_handle_from_uid(linked_uid);
+            if (handle >= 0) {
+                rf::gr::light_get_from_handle(handle)->on = on;
             }
+            alpine_dir_light_set_on(linked_uid, on);
         }
     }
 };
@@ -2159,6 +2170,7 @@ struct EventSetLightColor : rf::Event
             for (const auto& linked_uid : this->links) {
                 auto* level_light = rf::gr::level_light_lookup_from_uid(linked_uid);
                 if (!level_light) {
+                    alpine_dir_light_set_color(linked_uid, hue_r, hue_g, hue_b);
                     continue;
                 }
                 // light_get_from_handle is pure arithmetic, so a bad handle must be rejected here
@@ -2423,29 +2435,72 @@ struct EventOwnerGate : rf::Event
         }
     }
 
-private:
-    bool condition_passes() const
+protected:
+    // Stock link activation (0x004B8B00), minus the linked handlers the gate only reads. Indexed
+    // like stock because a signalled link can add or remove this gate's links mid-loop.
+    void do_activate_links(int trigger_handle, int triggered_by_handle, bool on) override
     {
-        if (handler_uid < 0) {
-            return false;
+        for (int i = 0; i < this->links.size(); ++i) {
+            const int link_handle = this->links[i];
+            if (as_handler(rf::obj_from_handle(link_handle))) {
+                continue;
+            }
+            if (on) {
+                rf::event_signal_on(link_handle, trigger_handle, triggered_by_handle);
+            }
+            else {
+                rf::event_signal_off(link_handle, trigger_handle, triggered_by_handle, true);
+            }
         }
+    }
 
-        Object* obj = rf::obj_lookup_from_uid(handler_uid);
+private:
+    static EventCapturePointHandler* as_handler(Object* obj)
+    {
         if (!obj || obj->type != rf::ObjectType::OT_EVENT) {
-            return false;
+            return nullptr;
         }
 
-        auto* linked_event = static_cast<Event*>(obj);
-        if (linked_event->event_type != std::to_underlying(rf::EventType::Capture_Point_Handler)) {
-            return false;
+        auto* event = static_cast<Event*>(obj);
+        if (event->event_type != std::to_underlying(rf::EventType::Capture_Point_Handler)) {
+            return nullptr;
         }
 
-        auto* handler = static_cast<EventCapturePointHandler*>(linked_event);
+        return static_cast<EventCapturePointHandler*>(event);
+    }
+
+    bool owned_by_required(const EventCapturePointHandler* handler) const
+    {
         if (auto* hill = koth_find_hill_by_handler(handler)) {
             return static_cast<int>(hill->ownership) == required_owner;
         }
 
         return false;
+    }
+
+    // Linked handlers must all be owned by required_owner; handler_uid is only consulted when
+    // none are linked, so a leftover int1 cannot veto a linked setup.
+    bool condition_passes() const
+    {
+        bool any_linked = false;
+        for (int link_handle : this->links) {
+            if (auto* handler = as_handler(rf::obj_from_handle(link_handle))) {
+                if (!owned_by_required(handler)) {
+                    return false;
+                }
+                any_linked = true;
+            }
+        }
+        if (any_linked) {
+            return true;
+        }
+
+        if (handler_uid < 0) {
+            return false;
+        }
+
+        auto* handler = as_handler(rf::obj_lookup_from_uid(handler_uid));
+        return handler && owned_by_required(handler);
     }
 };
 

@@ -6,6 +6,38 @@
 
 namespace rf
 {
+    struct MeshMaterial;
+    struct VfxGeo;
+    struct VfxSubObject;
+
+    // Per-vertex normal/lighting record shared by the face corners of one smoothing group.
+    // Size: 0x2C. Array at VfxSfxoChunk::vertex_records. The stock renderer (FUN_00553ee0)
+    // recomputes `normal` every frame as the normalized average of the adjacent face normals
+    // and caches the CPU-lit colour at +0x19..+0x1B.
+    struct VfxVertexRecord
+    {
+        char pad_00[0x04];              // 0x00
+        int vertex_index;               // 0x04: index into VfxSfxoRenderObj::vertex_positions
+        int normal_valid;               // 0x08: per-frame "normal computed" flag (stock only)
+        Vector3 normal;                 // 0x0C: smoothed vertex normal, object space
+        char lit;                       // 0x18: per-frame "lit" flag (stock only)
+        unsigned char lit_rgb[3];       // 0x19: stock CPU-lit colour
+        char pad_1C[0x08];              // 0x1C
+        int num_adjacent_faces;         // 0x24
+        VfxSubObject** adjacent_faces;  // 0x28: faces whose normals average into `normal`
+    };
+    static_assert(sizeof(VfxVertexRecord) == 0x2C);
+    static_assert(offsetof(VfxVertexRecord, normal) == 0x0C);
+    static_assert(offsetof(VfxVertexRecord, adjacent_faces) == 0x28);
+
+    // Per-face UV set as refreshed every tick by the SFXO instance update (FUN_0053f060).
+    struct VfxFaceUv
+    {
+        float u[3];
+        float v[3];
+    };
+    static_assert(sizeof(VfxFaceUv) == 0x18);
+
     // VFX sub-object: represents a single triangle face in VFX geometry.
     // These are stored in a shared pool at VfxGeo::sub_objects.
     // Size: 0x90 bytes (stride used in the sub-object pool).
@@ -18,16 +50,28 @@ namespace rf
     //   0x14  int[3]   per-chunk vertex indices
     //   0x24  float[3] per-corner U, refilled every frame from VfxSfxoRenderObj::face_uvs
     //   0x30  float[3] per-corner V, same source
-    //   0x60  facing plane, tested by gr::project_vertex-adjacent FUN_00518460
-    //   0x84  ptr[3]   per-corner vertex records (each holds a vertex index at +0x04
-    //                  and its lighting colour at +0x19..+0x1B)
+    //   0x60  face normal, recomputed from the animated positions by set_face_normal (0x00559F50)
+    //         and back-face tested by gr_is_normal_facing (FUN_00518460)
+    //   0x84  ptr[3]   per-corner vertex records (VfxVertexRecord)
     struct VfxSubObject
     {
         char pad_00[0x14];          // 0x00: per-face bookkeeping
         int vertex_indices[3];      // 0x14: triangle corner indices into per-chunk vertex array
-        char pad_20[0x70];          // 0x20: uvs, facing plane, vertex records, material refs, etc.
+        int material_slot;          // 0x20: index into VfxSfxoChunk::material_indices (-1 = no material,
+                                    //       face is skipped). Also biases the stock depth sort key (slot * 61).
+        float u[3];                 // 0x24: per-corner U, refilled every frame from VfxSfxoRenderObj::face_uvs
+        float v[3];                 // 0x30: per-corner V, same source
+        char pad_3C[0x24];          // 0x3C
+        Vector3 normal;             // 0x60: face normal, object space (see above)
+        char pad_6C[0x10];          // 0x6C
+        unsigned int normal_flags;  // 0x7C: bit 0 = normal valid this frame (stock only)
+        char pad_80[0x04];          // 0x80
+        VfxVertexRecord* corner_records[3]; // 0x84
     };
     static_assert(sizeof(VfxSubObject) == 0x90);
+    static_assert(offsetof(VfxSubObject, material_slot) == 0x20);
+    static_assert(offsetof(VfxSubObject, normal) == 0x60);
+    static_assert(offsetof(VfxSubObject, corner_records) == 0x84);
 
     // VFX SFXO chunk: one mesh component within a .vfx file.
     // Multiple SFXO chunks may exist per file (e.g. "Box02", "Box03", "Cylinder01").
@@ -39,32 +83,42 @@ namespace rf
     {
         char name[65];              // 0x00: chunk name (null-terminated)
         char parent_name[65];       // 0x41: parent node name (null-terminated)
-        char pad_82[0x06];          // 0x82
+        char pad_82[0x02];          // 0x82
+        VfxGeo* geo;                // 0x84: owning VfxGeo (materials live there)
         unsigned short flags;       // 0x88: bits 0-1 are load-time booleans, bits 2+ hold the
-                                    //       animation frame count (FUN_0053d0c0 stores it as
-                                    //       flags = (flags & 3) | num_frames * 4). NOT render flags.
+                                    //       animation frame rate (FUN_0053d0c0 stores it as
+                                    //       flags = (flags & 3) | rate * 4). NOT render flags.
         char pad_8A[0x02];          // 0x8A
         int render_type;            // 0x8C: 0 = triangle mesh, 1 = alternate object
                                     //       (FUN_0053ee90 switches on this)
-        char pad_90[0x20];          // 0x90
+        char pad_90[0x14];          // 0x90
+        int num_anim_keys;          // 0xA4: keyframe count (FUN_0053f060 disables the chunk outside it)
+        float start_time;           // 0xA8: animation start time in seconds
+        char pad_AC[0x04];          // 0xAC
         int num_vertices;           // 0xB0: vertex count for this chunk
         int num_faces;              // 0xB4: triangle count for this chunk
         VfxSubObject* faces;        // 0xB8: pointer into VfxGeo::sub_objects pool
         int num_materials;          // 0xBC
         int* material_indices;      // 0xC0: indices into VfxGeo material array
-        int num_joints;             // 0xC4
-        void* joints;               // 0xC8: joint data array (0x2C bytes each)
-        void* anim_data;            // 0xCC: per-frame animation entries (0x28 bytes each)
+        int num_vertex_records;     // 0xC4
+        VfxVertexRecord* vertex_records; // 0xC8: per-vertex normal/lighting records (0x2C each)
+        void* anim_keys;            // 0xCC: per-keyframe entries (0x28 bytes each: visibility bit,
+                                    //       compressed int16[3] vertex stream, scale, offset, billboard w/h)
         void* compressed_verts;     // 0xD0: compressed vertex data (ushort[3] per vertex)
-        void* vertex_data_ptrs;     // 0xD4: vertex data indirection pointers
+        void* uv_frames;            // 0xD4: array of per-keyframe VfxFaceUv buffers
         void* vertex_positions;     // 0xD8
-        char pad_DC[0x38];          // 0xDC
+        char pad_DC[0x34];          // 0xDC
+        int glow_bitmap;            // 0x110: > 0 adds a glow sprite pass (gr_d3d_render_vfx_glow)
         unsigned int render_flags;  // 0x114: render behaviour bits. FUN_0053ee90 sends a chunk with
                                     //        (render_flags & 0x801) down the facing/glow path
                                     //        (camera-aligned sprite) instead of the mesh path.
         char pad_118[0x0C];         // 0x118
     };
     static_assert(sizeof(VfxSfxoChunk) == 0x124);
+    static_assert(offsetof(VfxSfxoChunk, geo) == 0x84);
+    static_assert(offsetof(VfxSfxoChunk, start_time) == 0xA8);
+    static_assert(offsetof(VfxSfxoChunk, vertex_records) == 0xC8);
+    static_assert(offsetof(VfxSfxoChunk, render_flags) == 0x114);
 
     // VFX geometry base structure: the shared template loaded from .vfx files.
     // Size: 0x134 bytes. Stored in VMesh::mesh for MESH_TYPE_ANIM_FX.
@@ -91,9 +145,9 @@ namespace rf
         void* sels_chunks;          // 0x78: SELS chunks (0x90 bytes each)
         int num_sels;               // 0x7C
         void* mmod;                 // 0x80: MMOD mesh model (0x8C bytes, optional)
-        int num_materials_total;    // 0x84
+        int num_anim_frames;        // 0x84: total animation frame count (15 fps units)
         int num_vertices_alloc;     // 0x88: allocated vertex slot count
-        void* materials;            // 0x8C: material array (0xC8 bytes each)
+        MeshMaterial* materials;    // 0x8C: material array (0xC8 bytes each)
         int num_material_indices;   // 0x90
         void* material_index_buf;   // 0x94
         int num_vertex_slots;       // 0x98
@@ -135,8 +189,8 @@ namespace rf
         Vector3 render_pos;         // 0x50: object world position this chunk was last drawn at
         Matrix3 render_orient;      // 0x5C: object orientation this chunk was last drawn with
         Vector3* vertex_positions;  // 0x80: decompressed vertex positions, object space (stride 0x0C)
-        void* face_uvs;             // 0x84: per-FACE uv array (stride 0x18: float u[3] then float v[3]),
-                                    //       copied into VfxSubObject +0x24/+0x30 every frame
+        VfxFaceUv* face_uvs;        // 0x84: per-FACE uv array, refreshed every tick by FUN_0053f060 and
+                                    //       copied into VfxSubObject u/v by the stock renderer
         char pad_88[0x08];          // 0x88
         char active;                // 0x90: non-zero if render object is active
         char pad_91[0x07];          // 0x91
@@ -165,8 +219,9 @@ namespace rf
         int flags;                      // 0x00: instance flags
         int field_04;                   // 0x04: initialized to 0
         VfxGeo* vfx_geo;               // 0x08: pointer to shared VFX geometry
-        float field_0c;                 // 0x0C: num_materials * constant
-        float field_10;                 // 0x10: num_materials as float (NOT a pointer)
+        float anim_time;                // 0x0C: accumulated animation time in seconds
+        float anim_frame;               // 0x10: current frame = anim_time * 15; the `frame` argument
+                                        //       threaded through gr_render_mesh_chunk / gr_d3d_render_vfx
         VfxSfxoRenderObj* sfxo_instances; // 0x14: per-chunk render instances (0x98 each)
         void* algt_instances;           // 0x18: per-ALGT chunk instances (0x3C each)
         void* part_instances;           // 0x1C: per-PART chunk instances (0xA4 each)

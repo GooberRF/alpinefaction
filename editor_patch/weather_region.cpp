@@ -1,7 +1,6 @@
 #include <windows.h>
 #include <commctrl.h>
 #include <commdlg.h>
-#include <cctype>
 #include <cstdio>
 #include <cstring>
 #include <cmath>
@@ -230,26 +229,14 @@ struct WeatherRegionDimsPreview
 };
 static WeatherRegionDimsPreview g_dims_preview;
 
-static std::optional<float> weather_region_get_dim_input(HWND hdlg, int idc)
-{
-    char buf[32] = {};
-    GetDlgItemTextA(hdlg, idc, buf, sizeof(buf));
-    for (const char* p = buf; *p != '\0'; p++) {
-        if (!isspace(static_cast<unsigned char>(*p))) {
-            return static_cast<float>(atof(buf));
-        }
-    }
-    return std::nullopt;
-}
-
 static void weather_region_capture_dims_preview(HWND hdlg)
 {
     int shape_sel = static_cast<int>(SendDlgItemMessage(hdlg, IDC_WEATHER_SHAPE, CB_GETCURSEL, 0, 0));
     g_dims_preview.shape = static_cast<WeatherRegionShape>(shape_sel < 0 ? 0 : shape_sel);
-    g_dims_preview.width = weather_region_get_dim_input(hdlg, IDC_WEATHER_WIDTH);
-    g_dims_preview.height = weather_region_get_dim_input(hdlg, IDC_WEATHER_HEIGHT);
-    g_dims_preview.depth = weather_region_get_dim_input(hdlg, IDC_WEATHER_DEPTH);
-    g_dims_preview.radius = weather_region_get_dim_input(hdlg, IDC_WEATHER_RADIUS);
+    g_dims_preview.width = alpine_dlg_get_optional_float_field(hdlg, IDC_WEATHER_WIDTH);
+    g_dims_preview.height = alpine_dlg_get_optional_float_field(hdlg, IDC_WEATHER_HEIGHT);
+    g_dims_preview.depth = alpine_dlg_get_optional_float_field(hdlg, IDC_WEATHER_DEPTH);
+    g_dims_preview.radius = alpine_dlg_get_optional_float_field(hdlg, IDC_WEATHER_RADIUS);
 }
 
 static void weather_region_refresh_dims_preview(HWND hdlg)
@@ -531,10 +518,10 @@ static INT_PTR CALLBACK WeatherRegionDialogProc(HWND hdlg, UINT msg, WPARAM wp, 
             if (type_sel < 0) type_sel = 0;
             if (shape_sel < 0) shape_sel = 0;
 
-            auto width = weather_region_get_dim_input(hdlg, IDC_WEATHER_WIDTH);
-            auto height = weather_region_get_dim_input(hdlg, IDC_WEATHER_HEIGHT);
-            auto depth = weather_region_get_dim_input(hdlg, IDC_WEATHER_DEPTH);
-            auto radius = weather_region_get_dim_input(hdlg, IDC_WEATHER_RADIUS);
+            auto width = alpine_dlg_get_optional_float_field(hdlg, IDC_WEATHER_WIDTH);
+            auto height = alpine_dlg_get_optional_float_field(hdlg, IDC_WEATHER_HEIGHT);
+            auto depth = alpine_dlg_get_optional_float_field(hdlg, IDC_WEATHER_DEPTH);
+            auto radius = alpine_dlg_get_optional_float_field(hdlg, IDC_WEATHER_RADIUS);
             float density_scale = std::clamp(weather_region_get_float_field(hdlg, IDC_WEATHER_DENSITY_SCALE),
                 weather_density_scale_min, weather_density_scale_max);
             float active_distance = weather_region_get_float_field(hdlg, IDC_WEATHER_ACTIVE_DISTANCE);
@@ -764,22 +751,6 @@ DedWeatherRegion* CloneWeatherRegionObject(DedWeatherRegion* source, bool add_to
     return region;
 }
 
-void DeleteWeatherRegionObject(DedWeatherRegion* weather_region)
-{
-    if (!weather_region) return;
-    auto* level = CDedLevel::Get();
-    if (!level) return;
-
-    auto& regions = level->GetAlpineLevelProperties().weather_region_objects;
-    auto it = std::find(regions.begin(), regions.end(), weather_region);
-    if (it != regions.end()) {
-        regions.erase(it);
-    }
-    alpine_remove_from_groups(level, static_cast<DedObject*>(weather_region));
-    level->master_objects.remove_by_value(static_cast<DedObject*>(weather_region));
-    DestroyDedWeatherRegion(weather_region);
-}
-
 // ─── Rendering ──────────────────────────────────────────────────────────────
 
 constexpr float weather_region_icon_size = 1.0f;
@@ -956,21 +927,6 @@ void weather_region_handle_delete_or_cut(DedObject* obj)
     auto it = std::find(regions.begin(), regions.end(), static_cast<DedWeatherRegion*>(obj));
     if (it != regions.end()) {
         regions.erase(it);
-    }
-}
-
-void weather_region_handle_delete_selection(CDedLevel* level)
-{
-    auto& sel = level->selection;
-    for (int i = sel.size - 1; i >= 0; i--) {
-        DedObject* obj = sel.data_ptr[i];
-        if (obj && obj->type == DedObjectType::DED_WEATHER_REGION) {
-            for (int j = i; j < sel.size - 1; j++) {
-                sel.data_ptr[j] = sel.data_ptr[j + 1];
-            }
-            sel.size--;
-            DeleteWeatherRegionObject(static_cast<DedWeatherRegion*>(obj));
-        }
     }
 }
 

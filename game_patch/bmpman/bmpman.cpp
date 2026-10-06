@@ -8,6 +8,7 @@
 #include <cstring>
 #include <common/utils/string-utils.h>
 #include <common/bitmap/formats.h>
+#include <common/bitmap/tga.h>
 #include <common/scope_guard.h>
 #include "../graphics/gr.h"
 #include "../rf/file/file.h"
@@ -95,6 +96,20 @@ std::string_view bm_strip_texture_ext(std::string_view filename)
     return filename;
 }
 
+// Applies the stock TGA pixel loaders' (0x0055A6D0, 0x0055ABF0) checks up front, because bm_lock
+// allocates the pixel buffer from the header dimensions before those loaders reject the file.
+static bool tga_header_loadable(const char* filename, int path_id)
+{
+    rf::File file;
+    if (file.open(filename, rf::File::mode_read, path_id) != 0) {
+        return true;
+    }
+    uint8_t hdr[tga_header_size];
+    const int bytes_read = file.read(hdr, sizeof(hdr));
+    file.close();
+    return bytes_read == sizeof(hdr) && tga_header_supported(hdr);
+}
+
 FunHook<rf::bm::Type(const char*, int*, int*, rf::bm::Format*, int*, int*, int*, int*, int*, int*, int)>
 bm_read_header_hook{
     0x0050FCB0,
@@ -158,7 +173,7 @@ bm_read_header_hook{
         // Avoid a fatal error for non-stock texture formats in headless mode
         if (rf::bm::get_type_from_filename(filename) == rf::bm::TYPE_NONE) {
             if (!is_known_missing_stock_asset(filename)) {
-                xlog::warn("Failed to load bitmap header for '{}'", filename);
+                xlog::warn("Failed to load bitmap header for '{}'", string_escape_control_chars(filename));
             }
             return rf::bm::TYPE_NONE;
         }
@@ -170,6 +185,10 @@ bm_read_header_hook{
         xlog::trace("Bitmap header for '{}': type {} size {}x{} pixel_fmt {} levels {} frames {}",
             filename, bm_type, *width_out, *height_out, *pixel_fmt_out, *num_levels_out, *num_frames_out);
 
+        if (bm_type == rf::bm::TYPE_TGA && !tga_header_loadable(filename, a11)) {
+            bm_type = rf::bm::TYPE_NONE;
+        }
+
         // Sanity checks
         // Prevents heap corruption when width = 0 or height = 0
         if (*width_out <= 0 || *height_out <= 0 || *pixel_fmt_out == rf::bm::FORMAT_NONE || *num_levels_out < 1 || *num_frames_out < 1) {
@@ -177,7 +196,7 @@ bm_read_header_hook{
         }
 
         if (bm_type == rf::bm::TYPE_NONE && !is_known_missing_stock_asset(filename)) {
-            xlog::warn("Failed to load bitmap header for '{}'", filename);
+            xlog::warn("Failed to load bitmap header for '{}'", string_escape_control_chars(filename));
         }
 
         return bm_type;
@@ -286,9 +305,15 @@ FunHook<void(int)> bm_free_entry_hook{
 // the validation accepts types 3/11 but they fall through the dispatch with no pixel
 // copy performed. Additionally, 8-bit greyscale is classified as FORMAT_8_PALETTED
 // but the loader never generates a palette for it.
+// Also fails the load when the colormap the loader is about to copy does not fit the palette.
 CodeInjection tga_greyscale_fix{
     0x0055A95E,
     [](auto& regs) {
+        if (addr_as_ref<uint8_t>(regs.esp + 0x1d)
+            && !tga_colormap_fits(addr_as_ref<void*>(regs.esp + 0x36c), regs.si)) {
+            regs.eip = 0x0055A980;
+            return;
+        }
         uint8_t image_type = regs.bl;
         if (image_type != 3 && image_type != 11) {
             return;
@@ -310,6 +335,11 @@ CodeInjection tga_greyscale_fix{
 CodeInjection tga_greyscale_fix_mipmap{
     0x0055AEAE,
     [](auto& regs) {
+        if (addr_as_ref<uint8_t>(regs.esp + 0x2d)
+            && !tga_colormap_fits(addr_as_ref<void*>(regs.esp + 0x37c), regs.si)) {
+            regs.eip = 0x0055AED0;
+            return;
+        }
         uint8_t image_type = regs.bl;
         if (image_type != 3 && image_type != 11) {
             return;
@@ -325,7 +355,44 @@ CodeInjection tga_greyscale_fix_mipmap{
             }
         }
         regs.bl = static_cast<int8_t>((image_type == 3) ? 2 : 10);
+        // The colormap path reloads the image type from here (0x0055AF4B)
+        addr_as_ref<uint8_t>(regs.esp + 0x2e) = static_cast<uint8_t>(regs.bl);
     },
+};
+
+// Replaces the stock row decode, which trusts the header dimensions and RLE packet lengths.
+// Runs right after the file body is read: EDI = buffer, ESI = requested size, EAX = bytes read.
+template<typename Regs>
+static void tga_decode(Regs& regs, int width, int height, uint8_t bpp, uint8_t descriptor)
+{
+    const int bytes_read = regs.eax;
+    const int requested = regs.esi;
+    const uint8_t* src = regs.edi;
+    const auto src_size = static_cast<std::size_t>(std::clamp(bytes_read, 0, std::max(requested, 0)));
+    tga_decode_pixels(addr_as_ref<uint8_t*>(regs.esp + 0x36c), src, src_size, width, height, bpp >> 3,
+        regs.bl, (descriptor & tga_descriptor_top_down) != 0);
+}
+
+CodeInjection tga_decode_fix{
+    0x0055AA67,
+    [](auto& regs) {
+        tga_decode(regs, addr_as_ref<int16_t>(regs.esp + 0x2e), addr_as_ref<int16_t>(regs.esp + 0x30),
+            addr_as_ref<uint8_t>(regs.esp + 0x32), addr_as_ref<uint8_t>(regs.esp + 0x33));
+        regs.eip = 0x0055AB9C;
+    },
+    // no trampoline: cannot be relocated; the handler always sets eip
+    false,
+};
+
+CodeInjection tga_decode_fix_mipmap{
+    0x0055AFBC,
+    [](auto& regs) {
+        tga_decode(regs, addr_as_ref<int>(regs.esp + 0x1c), addr_as_ref<int>(regs.esp + 0x14),
+            addr_as_ref<uint8_t>(regs.esp + 0x3e), addr_as_ref<uint8_t>(regs.esp + 0x3f));
+        regs.eip = 0x0055B0CA;
+    },
+    // no trampoline: the handler always sets eip
+    false,
 };
 
 CodeInjection load_tga_alloc_fail_fix{
@@ -544,9 +611,13 @@ void bm_apply_patch()
     bm_has_alpha_hook.install();
     bm_free_entry_hook.install();
 
-    // Fix greyscale TGA files not loading (types 3 and 11)
+    // Fix greyscale TGA files not loading (types 3 and 11) and validate TGA colormaps
     tga_greyscale_fix.install();
     tga_greyscale_fix_mipmap.install();
+
+    // Improve TGA pixel data validation
+    tga_decode_fix.install();
+    tga_decode_fix_mipmap.install();
 
     // Fix crash when loading very big TGA files
     load_tga_alloc_fail_fix.install();

@@ -223,6 +223,7 @@ FunHook<rf::Event*(int event_type)> event_allocate_hook{
 FunHook<void(rf::Event*)> event_deallocate_hook{
     0x004B7750,
     [](rf::Event* eventp) {
+        rf::Event::variable_handler_storage.erase(eventp);
         if (af_rfl_version(rf::level.version)) {
             if (!eventp)
                 return;

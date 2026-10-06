@@ -797,16 +797,33 @@ void jetpack_draw_shadowed_string(int x, int y, const char* text, int font, int 
     rf::gr::string_aligned(rf::gr::ALIGN_CENTER, x, y, text, font);
 }
 
-void jetpack_draw_fuel_gauge(float fuel, int alpha_scale)
+struct JetpackGaugeRect
+{
+    int x;
+    int y;
+    int w;
+    int h;
+};
+
+JetpackGaugeRect jetpack_fuel_gauge_rect()
 {
     const bool big = g_alpine_game_config.big_hud;
     const int bar_w = big ? 16 : 10;
     const int bar_h = big ? 180 : 120;
     const int margin = big ? 60 : 40;
-    const int border = big ? 2 : 1;
+    return {rf::gr::clip_width() - margin - bar_w, (rf::gr::clip_height() - bar_h) / 2, bar_w, bar_h};
+}
 
-    const int x = rf::gr::clip_width() - margin - bar_w;
-    const int y = (rf::gr::clip_height() - bar_h) / 2;
+int jetpack_fuel_gauge_label_y(int bar_y, int font)
+{
+    return bar_y - rf::gr::get_font_height(font) - JETPACK_LABEL_GAP_PX;
+}
+
+void jetpack_draw_fuel_gauge(float fuel, int alpha_scale)
+{
+    const bool big = g_alpine_game_config.big_hud;
+    const auto [x, y, bar_w, bar_h] = jetpack_fuel_gauge_rect();
+    const int border = big ? 2 : 1;
 
     rf::gr::set_color(0, 0, 0, static_cast<rf::ubyte>((128 * alpha_scale) / 255));
     rf::gr::rect(x, y, bar_w, bar_h);
@@ -823,7 +840,7 @@ void jetpack_draw_fuel_gauge(float fuel, int alpha_scale)
 
     // Names the bar, sitting directly above it and centered on it.
     const int font = hud_get_small_font();
-    const int label_y = y - rf::gr::get_font_height(font) - JETPACK_LABEL_GAP_PX;
+    const int label_y = jetpack_fuel_gauge_label_y(y, font);
     jetpack_draw_shadowed_string(x + bar_w / 2, label_y, JETPACK_GAUGE_LABEL, font, alpha_scale);
 }
 
@@ -844,6 +861,11 @@ void jetpack_draw_thrust_hint(int alpha_scale)
 }
 
 } // namespace
+
+int jetpack_fuel_gauge_label_top_y()
+{
+    return jetpack_fuel_gauge_label_y(jetpack_fuel_gauge_rect().y, hud_get_small_font());
+}
 
 bool jetpacks_are_active()
 {
@@ -1004,12 +1026,12 @@ void jetpack_render_hud()
         return;
     }
 
-    // First-person spectate and demo playback both follow through multi_spectate:
-    // the gauge tracks the viewed player's estimated fuel, the local-only overlays
-    // (spawn reveal, keybind hint) stay hidden.
+    // Attached spectate (first or third person) and demo playback both follow through
+    // multi_spectate: the gauge tracks the viewed player's estimated fuel, the local-only
+    // overlays (spawn reveal, keybind hint) stay hidden.
     if (multi_spectate_is_spectating()) {
         g_jetpack_hint_fade = 0.0f;
-        if (!multi_spectate_is_first_person() || g_alpine_game_config.spectate_mode_minimal_ui) {
+        if (!multi_spectate_is_following_player()) {
             return;
         }
         rf::Player* target = multi_spectate_get_target_player();

@@ -744,14 +744,14 @@ static std::optional<rf::NetGameType> title_gametype(std::optional<rf::NetGameTy
     return std::nullopt;
 }
 
-// An explicit voted set replaces the baseline; a chat vote names none and inherits.
-static std::vector<MutatorDeclaration> effective_vote_mutators(
-    const std::vector<MutatorDeclaration>& voted, bool voted_set_is_explicit)
+// An explicit voted set replaces the baseline; a chat vote names none and gets the level's own.
+static std::vector<MutatorDeclaration> effective_vote_mutators(const std::vector<MutatorDeclaration>& voted,
+    bool voted_set_is_explicit, std::string_view level_name, rf::NetGameType game_type)
 {
     if (voted_set_is_explicit) {
         return voted;
     }
-    return g_alpine_server_config_active_rules.mutators.declarations;
+    return build_level_rules(level_name, game_type, nullptr).mutators.declarations;
 }
 
 struct VoteMatch : public Vote
@@ -816,8 +816,8 @@ struct VoteMatch : public Vote
         }
 
         const std::vector<MutatorDeclaration> effective_mutators =
-            effective_vote_mutators(m_mutators, m_mutators_explicit);
-        // Always derived, like a level vote: never the rotation slot's own rules.
+            effective_vote_mutators(m_mutators, m_mutators_explicit, m_level_name, effective_game_type);
+        // Built like a level vote: the level's rotation slot settings with the voted game type and mutators.
         m_manual_rules_override =
             load_vote_rules_override(m_level_name, effective_mutators, effective_game_type);
         m_manual_rules_override.explicit_session = m_gametype.has_value() || m_mutators_explicit;
@@ -1136,7 +1136,7 @@ struct VoteLevel : public Vote
         }
 
         const std::vector<MutatorDeclaration> effective_mutators =
-            effective_vote_mutators(m_mutators, m_mutators_explicit);
+            effective_vote_mutators(m_mutators, m_mutators_explicit, m_level_name, effective_game_type);
         m_manual_rules_override =
             load_vote_rules_override(m_level_name, effective_mutators, effective_game_type);
         m_manual_rules_override.explicit_session = m_gametype.has_value() || m_mutators_explicit;
@@ -1800,7 +1800,7 @@ static void build_vote_options_blob(std::vector<uint8_t>& blob)
             blob_u8(blob, static_cast<uint8_t>(i));
             blob_u8(blob, multi_game_type_is_team_type(game_type) ? AF_VOTE_GAMETYPE_FLAG_TEAM : 0);
             blob_str(blob, multi_game_type_name(game_type));
-            blob_i32(blob, g_alpine_server_config_active_rules.get_score_limit(game_type).value_or(0));
+            blob_i32(blob, build_level_rules({}, game_type, nullptr).get_score_limit(game_type).value_or(0));
         });
     }
 
@@ -1882,13 +1882,8 @@ static void build_vote_options_blob(std::vector<uint8_t>& blob)
 
             // Which mutator set the panel pre-selects for this level.
             const std::vector<MutatorDeclaration>* level_decls = nullptr;
-            for (const auto& entry : g_alpine_server_config.levels) {
-                // Same lookup as resolve_level_default_game_type: first match wins.
-                if (string_iequals(entry.level_filename, level)) {
-                    level_decls = &entry.rule_overrides.mutators.declarations;
-                    break;
-                }
-            }
+            if (const int index = rotation_index_for_level(level); index >= 0)
+                level_decls = &g_alpine_server_config.levels[index].rule_overrides.mutators.declarations;
             const auto& base_decls = g_alpine_server_config.base_rules.mutators.declarations;
             if (!level_decls || *level_decls == base_decls) {
                 blob_u8(blob, static_cast<uint8_t>(AfVoteLevelBaseline::InheritBase));
