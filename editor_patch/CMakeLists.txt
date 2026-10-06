@@ -65,6 +65,9 @@ set(SRCS
     lightmap_mesh_occluders.h
     alpine_lightmaps.cpp
     alpine_lightmaps.h
+    overflow_charts.cpp
+    overflow_charts.h
+    overflow_preview.cpp
     face_list_cache.cpp
     face_list_cache.h
     work_pool.cpp

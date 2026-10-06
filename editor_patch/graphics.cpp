@@ -355,6 +355,33 @@ CodeInjection detail_room_overflow_check{
     },
 };
 
+// FUN_0049b550 numbers a room cache's vertices in an int16, so past 0x8000 its writes land before the cache. Such
+// a room gets no cache, and only Render Everything draws it.
+static const void* g_oversize_room_warned_solid = nullptr;
+CodeInjection room_cache_vertex_limit{
+    0x0049bb19, // MOV EAX, [0x010a84c0] — the pool end; EBX is the room's vertex count
+    [](auto& regs) {
+        const auto esp = static_cast<uintptr_t>(regs.esp);
+        if (static_cast<u32>(regs.ebx) > static_cast<u32>(max_room_render_verts)) {
+            const auto* solid = *reinterpret_cast<const void**>(esp + 0xb0);
+            if (solid != g_oversize_room_warned_solid) {
+                g_oversize_room_warned_solid = solid;
+                const auto* room = *reinterpret_cast<const GRoom**>(esp + 0xb4);
+                xlog::warn("[Viewport] The room centred at ({:.1f}, {:.1f}, {:.1f}) has more than {} vertices with "
+                           "its detail rooms, so only Render Everything draws it",
+                           (room->bbox_min.x + room->bbox_max.x) * 0.5f, (room->bbox_min.y + room->bbox_max.y) * 0.5f,
+                           (room->bbox_min.z + room->bbox_max.z) * 0.5f, max_room_render_verts);
+            }
+            // nothing is taken from the pool yet; a null cache makes the caller skip the room without a flush-all retry
+            regs.eip = 0x0049c553;
+            return;
+        }
+        regs.eax = reinterpret_cast<uintptr_t>(geo_cache_pool_end);
+        regs.eip = 0x0049bb1e;
+    },
+    false, // no trampoline: the injection replays the load
+};
+
 CodeInjection gr_d3d_prepare_buffers_lock_hr{
     0x004E9982, // MOV ECX, [gr_d3d_max_hw_index] — first instruction after the vertex Lock
     [](auto& regs) {
@@ -613,6 +640,7 @@ void ApplyGraphicsPatches()
     write_mem_ptr(0x0049b760, &detail_room_count);  // FUN_0049b550: count store after inc
     // Bounds check (must install after write_mem_ptr so saved bytes have new addresses)
     detail_room_overflow_check.install();
+    room_cache_vertex_limit.install();
 
     // Expand geo_cache limits for large room geometry rendering
 

@@ -1228,6 +1228,34 @@ void level_face_draw_hooked(GSolid* solid, GFace* face, char outline)
 
 } // namespace
 
+bool editor_bitmap_texture_live(int bm)
+{
+    const GrTextureSlot* slot = bm >= 0 ? gr_texture_slot_of(bm) : nullptr;
+    return slot && slot->bm_handle == bm && slot->section_count == 1 && slot->sections && slot->sections[0].texture;
+}
+
+bool editor_bitmap_upload_rgb(int bm, std::uint32_t w, std::uint32_t h, const std::uint8_t* rgb)
+{
+    if (!rgb || !preview_texture_ready(bm)) return false;
+    GrLockInfo lock{};
+    if (!gr_lock(bm, 0, &lock, 2)) return false;
+    const int bpp = texel_bytes(lock.format);
+    if (!bpp || !lock.data || lock.w < static_cast<int>(w) || lock.h < static_cast<int>(h)) {
+        gr_unlock(&lock);
+        return false;
+    }
+    for (std::uint32_t y = 0; y < h; y++) {
+        std::uint8_t* row = lock.data + static_cast<std::size_t>(y) * lock.stride_in_bytes;
+        for (std::uint32_t x = 0; x < w; x++) {
+            const std::uint8_t* src = rgb + (static_cast<std::size_t>(y) * w + x) * 3;
+            const float c[3] = {static_cast<float>(src[0]), static_cast<float>(src[1]), static_cast<float>(src[2])};
+            write_texel(row + static_cast<std::size_t>(x) * bpp, lock.format, c);
+        }
+    }
+    gr_unlock(&lock);
+    return true;
+}
+
 bool terrain_view_draws_solid()
 {
     return gr_perspective && level_render_mode != LEVEL_RENDER_BRUSHES_ONLY && !view_see_through;

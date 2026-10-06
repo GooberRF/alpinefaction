@@ -709,22 +709,19 @@ bool gets_stock_surface(GFace* face, const std::vector<int32_t>& terrain_uids)
     return face_gets_surface_hook.call_target(&face->flags) && !in_terrain_room(face, terrain_uids);
 }
 
-// After the surface pass: faces left without a surface by the caps above.
-void report_surface_overflow(CDedLevel& level)
+// Faces RED's surface pass left without a surface once its surfaces ran out.
+uint32_t surface_overflow_faces(CDedLevel& level)
 {
     const GSolid* solid = level.solid;
-    if (!solid) return;
+    if (!solid) return 0;
     const auto& terrain_uids = level.GetAlpineLevelProperties().terrain_room_uids;
     uint32_t unlit = 0;
     for (GFace* f = solid->face_list_head; f; f = f->next_solid) {
-        if (f->surface_index == -1 && gets_stock_surface(f, terrain_uids)) unlit++;
+        if (f->surface_index == -1 && gets_stock_surface(f, terrain_uids)) {
+            unlit++;
+        }
     }
-    if (!unlit) return;
-    const std::string msg = std::format("The level needs more than RED's {} lightmap surfaces; {} faces got no "
-                                        "lightmap. Leftover geometry of a deleted, moved or converted terrain is "
-                                        "the usual cause: run Build Geometry, then Calculate Lighting again.",
-                                        red_max_level_surfaces, unlit);
-    lighting_calc_report_refusal(msg.c_str());
+    return unlit;
 }
 
 // A terrain with no build state may still have an older build in the compiled solid (saved stale,
@@ -789,7 +786,13 @@ void __fastcall lighting_surfaces_hooked(void* self)
     alpine_lm_note_lighting_refused(refused);
     if (refused) return;
     lighting_surfaces_hook.call_target(self);
-    if (CDedLevel* level = CDedLevel::Get()) report_surface_overflow(*level);
+    // on a D3D11-only level they get overflow charts, and alpine_lm_bake_begin reports any that do not
+    if (CDedLevel* level = CDedLevel::Get()) {
+        const auto& props = level->GetAlpineLevelProperties();
+        if (!props.d3d11_only_lightmaps || !props.surface_charts_enabled()) {
+            report_surface_overflow(*level, false);
+        }
+    }
 }
 
 // A stored mask sized for another layout than its own is ignored (every chunk).
@@ -840,6 +843,38 @@ auto decoration_plane(Grid& g, std::size_t k)
 }
 
 } // namespace
+
+void report_surface_overflow(CDedLevel& level, bool overflow_expected)
+{
+    const uint32_t unlit = surface_overflow_faces(level);
+    if (!unlit) return;
+    const auto& props = level.GetAlpineLevelProperties();
+    std::string cause;
+    if (overflow_expected) {
+        cause = "Alpine overflow lightmaps could not be laid out for them.";
+    }
+    else if (props.d3d11_only_lightmaps) {
+        cause = "Turn off legacy lighting and give the level a lightmap density to light them with Alpine overflow "
+                "lightmaps.";
+    }
+    else if (props.terrain_objects.empty()) {
+        cause = "Reduce the level's faces, or tick D3D11-only lightmaps to light them with Alpine overflow lightmaps.";
+    }
+    else {
+        cause = "Leftover geometry of a deleted, moved or converted terrain is a common cause: run Build Geometry, "
+                "then Calculate Lighting again. Otherwise tick D3D11-only lightmaps to light them with Alpine "
+                "overflow lightmaps.";
+    }
+    const std::string msg = std::format("The level needs more than RED's {} lightmap surfaces; {} faces got no "
+                                        "lightmap. {}",
+                                        red_max_level_surfaces, unlit, cause);
+    lighting_calc_report_refusal(msg.c_str());
+}
+
+bool face_gets_stock_surface(GFace* face, const std::vector<int32_t>& terrain_uids)
+{
+    return gets_stock_surface(face, terrain_uids);
+}
 
 std::string terrain_label(const DedTerrain& t)
 {

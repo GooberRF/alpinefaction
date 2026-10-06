@@ -30,6 +30,7 @@
 #include "terrain_build.h"
 #include "terrain_decorations.h"
 #include "alpine_lightmaps.h"
+#include "overflow_charts.h"
 #include "alpine_obj.h"
 #include "headless_bake.h"
 
@@ -75,12 +76,12 @@ void editor_report_blocking(const char* tag, const char* caption, const std::str
     }
 }
 
-std::string editor_address_space_shortfall(std::uint64_t largest, std::uint64_t total, const char* advice)
+void editor_address_space_free(std::uint64_t& free_largest, std::uint64_t& free_total)
 {
     SYSTEM_INFO si{};
     GetSystemInfo(&si);
-    std::uint64_t free_largest = 0;
-    std::uint64_t free_total = 0;
+    free_largest = 0;
+    free_total = 0;
     auto addr = reinterpret_cast<std::uintptr_t>(si.lpMinimumApplicationAddress);
     const auto end = reinterpret_cast<std::uintptr_t>(si.lpMaximumApplicationAddress);
     MEMORY_BASIC_INFORMATION mbi{};
@@ -95,6 +96,13 @@ std::string editor_address_space_shortfall(std::uint64_t largest, std::uint64_t 
         }
         addr = next;
     }
+}
+
+std::string editor_address_space_shortfall(std::uint64_t largest, std::uint64_t total, const char* advice)
+{
+    std::uint64_t free_largest = 0;
+    std::uint64_t free_total = 0;
+    editor_address_space_free(free_largest, free_total);
     constexpr std::uint64_t mb = 1u << 20;
     char msg[512];
     if (free_largest < largest) {
@@ -912,6 +920,8 @@ void __fastcall build_geometry_start_hooked(CDedLevel* level, void* edx_unused)
         editor_report_blocking("Build Geometry", "Build Geometry", shortfall);
         return;
     }
+    // the build frees the faces the overflow preview is keyed on
+    overflow_preview_clear();
     build_geometry_start_hook.call_target(level, edx_unused);
 }
 

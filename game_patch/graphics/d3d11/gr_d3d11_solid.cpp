@@ -307,6 +307,25 @@ namespace gr::d3d11
         // The surface index of each face add_face() found an alpine chart for, so build() cannot reach a
         // different answer if is_sky_ flips between them.
         std::unordered_map<rf::GFace*, int> af_surfaces_;
+        // Likewise the overflow chart of each surfaceless face add_face() found one for.
+        std::unordered_map<rf::GFace*, AfOverflowFace> af_overflow_;
+
+        // The alpine chart placement of `face` as add_face() decided it; none keeps its stock lightmap UVs.
+        struct AfFacePlacement
+        {
+            enum class Kind
+            {
+                none,
+                surface,
+                overflow,
+            };
+            Kind kind = Kind::none;
+            AfLightmapFace surface;
+            AfOverflowFace overflow;
+        };
+        AfFacePlacement af_face_placement(rf::GFace* face);
+        static void af_vertex_lightmap(const AfFacePlacement& placement, const rf::GFaceVertex* fvert,
+                                       GpuVertex& gpu_vert);
 
     public:
         void enable_terrain(TerrainRenderer& terrain_renderer)
@@ -440,6 +459,14 @@ namespace gr::d3d11
                 af_surfaces_[face] = face->attributes.surface_index;
             }
         }
+        else if (!is_sky_ && render_type != FaceRenderType::liquid && face->attributes.surface_index < 0
+            && !(terrain_room_ && render_type == FaceRenderType::opaque)) {
+            AfOverflowFace overflow;
+            if (af_lightmap_overflow_face(solid, face, overflow)) {
+                af_chart = overflow.chart;
+                af_overflow_[face] = overflow;
+            }
+        }
         // Charted faces all sample the same atlas, so the stock page they were derived from does
         // not have to split them into batches. The key stays negative-but-not--1 so the alpha
         // render mode a face gets is still the one it would have had.
@@ -490,7 +517,9 @@ namespace gr::d3d11
         while (dp) {
             if (dp->my_decal->flags & rf::DF_LEVEL_DECAL) {
                 rf::gr::Mode mode = determine_decal_mode(dp->my_decal);
-                std::array<int, 2> textures = normalize_texture_handles_for_mode(mode, {dp->my_decal->bitmap_id, lightmap_tex});
+                // a level decal is lit by the chart of the face it lies on, when its mode takes a lightmap at all
+                std::array<int, 2> textures = normalize_texture_handles_for_mode(
+                    mode, {dp->my_decal->bitmap_id, af_chart >= 0 ? af_lightmap_batch_key : lightmap_tex});
                 DecalPolyBatchKey dp_key = std::make_tuple(render_type, textures[0], textures[1], mode);
                 batched_decal_polys_[dp_key].push_back(dp);
                 ++num_dp;
@@ -499,6 +528,42 @@ namespace gr::d3d11
         }
         num_verts_ += (1 + num_dp) * num_fverts;
         num_inds_ += (1 + num_dp) * (num_fverts - 2) * 3;
+    }
+
+    GRenderCacheBuilder::AfFacePlacement GRenderCacheBuilder::af_face_placement(rf::GFace* face)
+    {
+        AfFacePlacement placement;
+        if (auto it = af_surfaces_.find(face); it != af_surfaces_.end()) {
+            if (af_lightmap_face_setup(solid_, it->second, placement.surface)) {
+                placement.kind = AfFacePlacement::Kind::surface;
+            }
+        }
+        else if (auto it = af_overflow_.find(face); it != af_overflow_.end()) {
+            placement.overflow = it->second;
+            placement.kind = AfFacePlacement::Kind::overflow;
+        }
+        return placement;
+    }
+
+    void GRenderCacheBuilder::af_vertex_lightmap(const AfFacePlacement& placement, const rf::GFaceVertex* fvert,
+                                                 GpuVertex& gpu_vert)
+    {
+        const rf::Vector3& pos = fvert->vertex->pos;
+        if (placement.kind == AfFacePlacement::Kind::surface) {
+            // Re-projected from the surface's own affine: the per-vertex UVs the RFL stores are clamped into
+            // the stock fragment and would shear a refined chart.
+            af_lightmap_face_texel(placement.surface, pos, gpu_vert.u1, gpu_vert.v1);
+            gpu_vert.lm_chart = static_cast<float>(placement.surface.chart);
+            return;
+        }
+        if (placement.kind == AfFacePlacement::Kind::overflow
+            && af_lightmap_overflow_texel(placement.overflow, pos, gpu_vert.u1, gpu_vert.v1)) {
+            gpu_vert.lm_chart = static_cast<float>(placement.overflow.chart);
+            return;
+        }
+        gpu_vert.u1 = fvert->lightmap_u;
+        gpu_vert.v1 = fvert->lightmap_v;
+        gpu_vert.lm_chart = -1.0f;
     }
 
     static void report_long_edge_loop()
@@ -555,10 +620,7 @@ namespace gr::d3d11
                 rf::GTextureMover* texture_mover = face->attributes.texture_mover;
                 float u_pan_speed = texture_mover ? texture_mover->u_pan_speed : 0.0f;
                 float v_pan_speed = texture_mover ? texture_mover->v_pan_speed : 0.0f;
-                AfLightmapFace af_face;
-                auto af_it = af_surfaces_.find(face);
-                bool has_af = af_it != af_surfaces_.end()
-                    && af_lightmap_face_setup(solid_, af_it->second, af_face);
+                const AfFacePlacement placement = af_face_placement(face);
                 emit_face_fan(face, vb_data, ib_data, base_vertex, rf::max_face_vertices, report_long_edge_loop,
                     [&](GpuVertex& gpu_vert, rf::GFaceVertex* fvert, int) {
                         gpu_vert.x = fvert->vertex->pos.x;
@@ -569,18 +631,7 @@ namespace gr::d3d11
                         gpu_vert.diffuse = 0xFFFFFFFF;
                         gpu_vert.u0 = fvert->texture_u;
                         gpu_vert.v0 = fvert->texture_v;
-                        if (has_af) {
-                            // Re-projected from the surface's own affine: the per-vertex UVs the RFL
-                            // stores are clamped into the stock fragment and would shear a refined
-                            // chart.
-                            af_lightmap_face_texel(af_face, fvert->vertex->pos, gpu_vert.u1, gpu_vert.v1);
-                            gpu_vert.lm_chart = static_cast<float>(af_face.chart);
-                        }
-                        else {
-                            gpu_vert.u1 = fvert->lightmap_u;
-                            gpu_vert.v1 = fvert->lightmap_v;
-                            gpu_vert.lm_chart = -1.0f;
-                        }
+                        af_vertex_lightmap(placement, fvert, gpu_vert);
                         gpu_vert.u0_pan_speed = u_pan_speed;
                         gpu_vert.v0_pan_speed = v_pan_speed;
                     });
@@ -607,6 +658,7 @@ namespace gr::d3d11
                 int diffuse = pack_color(rf::Color{255, 255, 255, alpha});
                 auto face = dp->face;
                 if (!face->edge_loop) continue;
+                const AfFacePlacement placement = texture_2 != -1 ? af_face_placement(face) : AfFacePlacement{};
                 emit_face_fan(face, vb_data, ib_data, base_vertex, static_cast<int>(std::size(dp->uvs)),
                     [dp] {
                         xlog::error("build decal: face has more vertices than decal uvs capacity ({})", std::size(dp->uvs));
@@ -622,9 +674,7 @@ namespace gr::d3d11
                         gpu_vert.v0 = dp->uvs[fvert_index].y;
                         gpu_vert.u0_pan_speed = 0.0f;
                         gpu_vert.v0_pan_speed = 0.0f;
-                        gpu_vert.u1 = fvert->lightmap_u;
-                        gpu_vert.v1 = fvert->lightmap_v;
-                        gpu_vert.lm_chart = -1.0f;
+                        af_vertex_lightmap(placement, fvert, gpu_vert);
                     });
             }
             std::size_t num_indices = ib_data.size() - start_index;

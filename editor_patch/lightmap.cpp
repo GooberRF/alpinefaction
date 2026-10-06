@@ -1680,7 +1680,7 @@ bool lighting_calc_memory_admits()
     auto* level = CDedLevel::Get();
     const auto* props = level ? &level->GetAlpineLevelProperties() : nullptr;
     const bool alpine_pages = props && (props->surface_charts_enabled() || !props->terrain_objects.empty());
-    return lighting_calc_fits(alpine_pages ? alpine_lightmap::max_pages : 0, lighting_surface_pass_headroom,
+    return lighting_calc_fits(alpine_pages ? alpine_lightmap::stage_page_budget : 0, lighting_surface_pass_headroom,
                               "Save the level and restart RED.");
 }
 

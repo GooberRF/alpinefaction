@@ -17,6 +17,7 @@ Version 1.5.0 (Trillium): Not yet released
   - `Aligns dynamic shadows` points entity shadows along the sun instead of the fixed default direction
   - `Water blocks sunlight` stops sun rays at liquid surfaces during the bake
 - Add Alpine Lightmaps, providing higher-resolution, BC7-compressed lightmaps for brushwork, movers, and terrain
+  - On levels with `D3D11-only lightmaps`, faces past the level editor's 32767 lightmap surfaces are lit by Alpine overflow lightmaps
 - Add heightmap-based `Terrain` object to level editor
   - Support blended texture layers, holes, optional skirts, per-terrain lightmap density, and optional fullbright
   - Import 8/16-bit greyscale PNG and RAW16 heightmaps, export 16-bit PNG and RAW16 heightmaps, and import splat maps
@@ -154,12 +155,14 @@ Version 1.5.0 (Trillium): Not yet released
 - Fix level editor crashing when Direct3D fails to create a texture
 - Stop `Build Geometry` and `Calculate Lighting` in the level editor with a message when too little memory is left to finish them (instead of crashing)
 - Reduce the memory `Calculate Lighting` needs in the level editor, and how much of it must be in one piece
-- Fix level editor crashing in `Calculate Lighting` when a level needs more than 32767 lightmap surfaces; faces past the limit are left without a lightmap and the editor warns
+- Fix level editor crashing in `Calculate Lighting` when a level needs more than 32767 lightmap surfaces
 - Fix geomod craters creating new lightmap surfaces on every crater once a level holds more than 32767 of them
 - Fix memory corruption when more than 1024 rooms are visible at once
 - Fix geomod crater relighting converting lightmap texels beyond the relit surface, which could write past the end of the lightmap for a surface at the bottom of a lightmap page
 - Fix a possible out-of-bounds read when drawing dynamic decals (Direct3D 11 renderer only)
 - Fix level editor crashing when more than 128 semi-transparent detail brushes in one room are in view
+- Fix lightmaps picking up neighbouring lightmap texels along face edges when anti-aliasing is enabled (Direct3D 11 renderer only)
+- Fix level editor crashing when drawing a room with more than 32768 vertices including its detail brushes; such a room is drawn only in `Render Everything` mode
 
 [@is-this-c](https://github.com/is-this-c)
 - Let `Caps Lock` capitalize

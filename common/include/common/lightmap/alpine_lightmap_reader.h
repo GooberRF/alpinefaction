@@ -6,6 +6,7 @@
 // Every derived quantity still comes from alpine_lightmap.h; nothing is re-derived here.
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -76,6 +77,19 @@ struct ReadResult
     std::vector<MoverSurfaceChart> mover_charts;     // flattened, record then surface order
     std::vector<ChartGeometry> mover_geoms;          // derived, parallel to mover_charts
     std::vector<std::uint32_t> mover_bases;          // absolute first tile, parallel to mover_charts
+    // The overflow table, all empty unless its layout is known (overflow_reason says why not). Its
+    // fingerprint and face count are the caller's to check against the loaded geometry.
+    const char* overflow_reason = "";
+    std::uint32_t overflow_record_offset = 0;
+    std::uint64_t overflow_body_off = 0; // where the table's header sits in the section; 0 without one
+
+    OverflowTableHeader overflow_head{};
+    std::vector<OverflowChart> overflow;              // as stored
+    std::vector<std::uint32_t> overflow_first_face;   // per record, into overflow_faces
+    std::vector<std::uint32_t> overflow_faces;        // face ordinals, record then stored order
+    std::vector<ChartGeometry> overflow_geoms;
+    std::vector<std::uint32_t> overflow_bases;        // absolute first tile
+    std::vector<std::uint8_t> overflow_ok;            // per record: usable
     std::vector<Tile> tiles;
     LayerRef layer{};
 };
@@ -85,6 +99,23 @@ inline bool terrain_chart_fields_ok(const TerrainChart& t)
 {
     return std::isfinite(t.origin_x) && std::isfinite(t.origin_z) && std::isfinite(t.texel_size)
         && t.texel_size > 0.0f && !terrain_chart_geometry(t.w, t.h).empty();
+}
+
+// Checks an overflow record's own fields: its tiling is derived and checked with the table.
+inline bool overflow_chart_fields_ok(const OverflowChart& c)
+{
+    const auto finite3 = [](const float* v) {
+        return std::isfinite(v[0]) && std::isfinite(v[1]) && std::isfinite(v[2]);
+    };
+    if (c.num_faces == 0 || !finite3(c.origin) || !finite3(c.axis_u) || !finite3(c.axis_v)
+        || !std::isfinite(c.texel_size) || !(c.texel_size >= min_overflow_texel_size)) {
+        return false;
+    }
+    const auto dot = [](const float* a, const float* b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; };
+    constexpr float tolerance = 1e-3f;
+    return std::fabs(std::sqrt(dot(c.axis_u, c.axis_u)) - 1.0f) <= tolerance
+        && std::fabs(std::sqrt(dot(c.axis_v, c.axis_v)) - 1.0f) <= tolerance
+        && std::fabs(dot(c.axis_u, c.axis_v)) <= tolerance;
 }
 
 // Checked before a section body is allocated: it can never be longer than what is left of the file.
@@ -407,6 +438,100 @@ inline void clear_terrain(ReadResult& r)
     r.terrain_ok.clear();
 }
 
+// The overflow table whose body is data[body_off, body_off + th.byte_len), its tiles from first_tile:
+// nullptr when its layout is known (each record is then usable or not on its own), else why not.
+// r.tiles must be loaded.
+inline const char* parse_overflow(ReadResult& r, const std::uint8_t* data, std::uint64_t body_off,
+                                  const TableHeader& th, std::uint32_t first_tile)
+{
+    OverflowTableHeader head{};
+    if (th.byte_len < sizeof(head)) {
+        return "truncated overflow table";
+    }
+    load(head, data + body_off);
+    if (head.num_charts > max_overflow_charts || head.num_faces > max_overflow_faces) {
+        return "too many overflow charts";
+    }
+    if (th.byte_len != overflow_table_bytes(head.num_charts, head.num_faces)) {
+        return "overflow table length";
+    }
+    // sized only now: the checks above bound them by the table's byte_len
+    r.overflow_head = head;
+    r.overflow.resize(head.num_charts);
+    const std::uint8_t* records = data + body_off + sizeof(head);
+    for (std::uint32_t i = 0; i < head.num_charts; i++) {
+        load(r.overflow[i], records + static_cast<std::size_t>(i) * sizeof(OverflowChart));
+    }
+    r.overflow_faces.resize(head.num_faces);
+    if (head.num_faces > 0) {
+        const std::size_t ordinals_at = static_cast<std::size_t>(head.num_charts) * sizeof(OverflowChart);
+        std::memcpy(r.overflow_faces.data(), records + ordinals_at,
+                    static_cast<std::size_t>(head.num_faces) * sizeof(std::uint32_t));
+    }
+    for (std::uint32_t ordinal : r.overflow_faces) {
+        if (ordinal >= head.src_num_faces) {
+            return "overflow face ordinal";
+        }
+    }
+
+    r.overflow_first_face.assign(head.num_charts, 0);
+    r.overflow_geoms.assign(head.num_charts, ChartGeometry{});
+    r.overflow_bases.assign(head.num_charts, first_tile);
+    // Charts pack by the blocks their faces sample, so their rects overlap on the pages and their texel sum is no
+    // bound; nothing decodes an overflow chart on the CPU.
+    std::uint64_t faces = 0;
+    std::uint64_t tiles = 0;
+    for (std::uint32_t i = 0; i < head.num_charts; i++) {
+        const OverflowChart& c = r.overflow[i];
+        if (c.num_faces > head.num_faces - faces) {
+            return "overflow face count";
+        }
+        r.overflow_first_face[i] = static_cast<std::uint32_t>(faces);
+        const auto first = static_cast<std::size_t>(faces);
+        for (std::size_t k = first + 1; k < first + c.num_faces; k++) {
+            if (r.overflow_faces[k] <= r.overflow_faces[k - 1]) {
+                return "overflow face order";
+            }
+        }
+        faces += c.num_faces;
+        const ChartGeometry g = overflow_chart_geometry(c.w, c.h, r.tile_step, r.gutter);
+        if (g.empty()) {
+            return "overflow chart size";
+        }
+        r.overflow_geoms[i] = g;
+        r.overflow_bases[i] = first_tile + static_cast<std::uint32_t>(tiles);
+        tiles += static_cast<std::uint64_t>(g.nx) * g.ny;
+        if (tiles > th.num_tiles) {
+            return "overflow tiles do not match their table";
+        }
+    }
+    if (faces != head.num_faces) {
+        return "overflow face count";
+    }
+    if (tiles != th.num_tiles) {
+        return "overflow tiles do not match their table";
+    }
+    r.overflow_ok.assign(head.num_charts, 0);
+    for (std::uint32_t i = 0; i < head.num_charts; i++) {
+        const bool usable = overflow_chart_fields_ok(r.overflow[i])
+                         && chart_tiles_on_pages(r, r.overflow_geoms[i], r.overflow_bases[i]);
+        r.overflow_ok[i] = usable ? 1 : 0;
+    }
+    return nullptr;
+}
+
+inline void clear_overflow(ReadResult& r)
+{
+    r.overflow_body_off = 0;
+    r.overflow_head = OverflowTableHeader{};
+    r.overflow.clear();
+    r.overflow_first_face.clear();
+    r.overflow_faces.clear();
+    r.overflow_geoms.clear();
+    r.overflow_bases.clear();
+    r.overflow_ok.clear();
+}
+
 } // namespace detail
 
 // `expect_surface_hash` is the xxhash32 the reader computed over the same bytes the writer
@@ -535,6 +660,20 @@ inline ReadResult read_section(const std::uint8_t* data, std::size_t len, const 
             terrain_k = -1;
         }
     }
+    std::int32_t overflow_k = find_table(TableTag::overflow_faces, overflow_table_version,
+                                         "more than one overflow table", "unsupported overflow table version",
+                                         r.overflow_reason);
+    if (overflow_k >= 0) {
+        const TableRef& t = dir_tables[overflow_k];
+        if (const char* reason = detail::parse_overflow(r, data, t.body_off, t.head, surface_end + t.first_tile)) {
+            detail::clear_overflow(r);
+            r.overflow_reason = reason;
+            overflow_k = -1;
+        }
+        else {
+            r.overflow_body_off = t.body_off;
+        }
+    }
     for (std::uint32_t k = 0; k < num_tables; k++) {
         if (static_cast<std::int32_t>(k) == mover_k) {
             r.mover_record_offset = r.table_records;
@@ -543,6 +682,10 @@ inline ReadResult read_section(const std::uint8_t* data, std::size_t len, const 
         else if (static_cast<std::int32_t>(k) == terrain_k) {
             r.terrain_record_offset = r.table_records;
             r.table_records += static_cast<std::uint32_t>(r.terrain.size());
+        }
+        else if (static_cast<std::int32_t>(k) == overflow_k) {
+            r.overflow_record_offset = r.table_records;
+            r.table_records += static_cast<std::uint32_t>(r.overflow.size());
         }
     }
 
@@ -562,7 +705,11 @@ inline ReadResult read_section(const std::uint8_t* data, std::size_t len, const 
     for (std::uint8_t v : r.mover_ok) {
         any_mover = any_mover || v != 0;
     }
-    if (!r.surfaces_ok && !any_terrain && !any_mover) {
+    bool any_overflow = false;
+    for (std::uint8_t v : r.overflow_ok) {
+        any_overflow = any_overflow || v != 0;
+    }
+    if (!r.surfaces_ok && !any_terrain && !any_mover && !any_overflow) {
         return fail(*r.terrain_reason ? r.terrain_reason : r.surface_reason);
     }
 
@@ -624,6 +771,7 @@ inline ReadResult read_section(const std::uint8_t* data, std::size_t len, const 
 //   [S, S + R)      the tables' records in directory order, one table after another:
 //                   movers: one per mover surface, record then surface order (gpu_mover_chart)
 //                   terrain: one per terrain chart, record order (gpu_terrain_chart)
+//                   overflow: one per overflow chart, record order (gpu_overflow_chart)
 //       .x = nx, .y = ny                  0 means no usable chart
 //       .z = absolute index IN THIS BUFFER of the chart's first tile record
 //       .w = pad_u | (pad_v << 16)
@@ -639,6 +787,11 @@ inline std::uint32_t gpu_surface_records(const ReadResult& r)
 inline std::uint32_t gpu_terrain_chart(const ReadResult& r, std::uint32_t terrain_index)
 {
     return gpu_surface_records(r) + r.terrain_record_offset + terrain_index;
+}
+
+inline std::uint32_t gpu_overflow_chart(const ReadResult& r, std::uint32_t overflow_index)
+{
+    return gpu_surface_records(r) + r.overflow_record_offset + overflow_index;
 }
 
 // `record` < movers.size(), `surface` < that record's num_surfaces.
@@ -679,6 +832,11 @@ inline std::vector<std::uint32_t> build_gpu_index(const ReadResult& r)
         const std::uint32_t first = r.mover_first_surface[i];
         for (std::uint32_t s = 0; s < r.movers[i].num_surfaces; s++) {
             put_chart(gpu_mover_chart(r, i, s), r.mover_geoms[first + s], r.mover_bases[first + s]);
+        }
+    }
+    for (std::uint32_t i = 0; i < r.overflow_ok.size(); i++) {
+        if (r.overflow_ok[i]) {
+            put_chart(gpu_overflow_chart(r, i), r.overflow_geoms[i], r.overflow_bases[i]);
         }
     }
     for (std::uint32_t i = 0; i < num_tiles; i++) {
@@ -880,6 +1038,95 @@ inline bool terrain_chart_matches(const TerrainChart& c, const alpine_terrain::G
                                   std::uint64_t decoration_hash)
 {
     return terrain_chart_fit(c, g, decoration_hash) == TerrainChartFit::match;
+}
+
+// ─── Overflow charts: face identity ───────────────────────────────────────────
+// All an overflow table knows of the faces it lights is their vertex positions as the static geometry
+// section stores them: float bits, in loop order from the face's first vertex. Frozen for
+// overflow_table_version 1; a new input needs a new table version.
+
+// pos(i) is vertex i's xyz, i < num_verts.
+template<typename Pos>
+inline constexpr std::uint64_t overflow_face_hash(std::uint32_t num_verts, Pos&& pos)
+{
+    std::uint64_t h = 0x243F6A8885A308D3ull;
+    auto mix = [&h](std::uint64_t v) { h = alpine_terrain::splitmix64(h ^ v); };
+    mix(num_verts);
+    for (std::uint32_t i = 0; i < num_verts; i++) {
+        const float* p = pos(i);
+        mix(std::bit_cast<std::uint32_t>(p[0])
+            | (static_cast<std::uint64_t>(std::bit_cast<std::uint32_t>(p[1])) << 32));
+        mix(std::bit_cast<std::uint32_t>(p[2]));
+    }
+    return h;
+}
+
+// OverflowTableHeader::face_fingerprint of `count` ordinals as stored; face_hash(ordinal) is that face's
+// overflow_face_hash.
+template<typename FaceHash>
+inline constexpr std::uint64_t overflow_fingerprint(std::uint32_t src_num_faces, const std::uint32_t* ordinals,
+                                                    std::uint32_t count, FaceHash&& face_hash)
+{
+    std::uint64_t h = 0x13198A2E03707344ull;
+    auto mix = [&h](std::uint64_t v) { h = alpine_terrain::splitmix64(h ^ v); };
+    mix(src_num_faces);
+    mix(count);
+    for (std::uint32_t k = 0; k < count; k++) {
+        mix(ordinals[k]);
+        mix(face_hash(ordinals[k]));
+    }
+    return h;
+}
+
+// Stored in every overflow table, so pinned.
+static_assert([] {
+    const float quad[12] = {-12.5f, -0.0f, 1024.0f, 3.0f, 0.25f, -7.75f, 1e-7f, 65536.0f, -1.5f, 0.0f, 2.0f, 1.0f};
+    return overflow_face_hash(4, [&](std::uint32_t i) { return quad + i * 3; });
+}() == 0x2754B2BEEC0E05A2ull);
+static_assert([] {
+    const std::uint32_t ordinals[3] = {0, 7, 0xFFFFFFFEu};
+    return overflow_fingerprint(0xFFFFFFFFu, ordinals, 3,
+                                [](std::uint32_t o) { return 0x9E3779B97F4A7C15ull * (o + 1ull); });
+}() == 0x298769CEFDE7CE2Aull);
+
+inline constexpr std::uint32_t max_overflow_face_verts = 4096;
+
+// A face's vertices in loop order, from edge_loop along next, as the static geometry section stores them;
+// false for a loop longer than max_overflow_face_verts or with a missing vertex. Face is the game's or the
+// editor's GFace.
+template<typename Face, typename Vertex>
+bool overflow_face_loop(const Face* face, std::vector<const Vertex*>& out)
+{
+    out.clear();
+    const auto* start = face->edge_loop;
+    for (const auto* fv = start; fv;) {
+        if (out.size() >= max_overflow_face_verts || !fv->vertex) {
+            return false;
+        }
+        out.push_back(fv->vertex);
+        fv = fv->next;
+        if (fv == start) {
+            break;
+        }
+    }
+    return true;
+}
+
+// overflow_face_hash of a face's loop; `scratch` holds its vertices after.
+template<typename Face, typename Vertex>
+bool overflow_face_loop_hash(const Face* face, std::vector<const Vertex*>& scratch, std::uint64_t& out)
+{
+    if (!overflow_face_loop(face, scratch)) {
+        return false;
+    }
+    float p[3];
+    out = overflow_face_hash(static_cast<std::uint32_t>(scratch.size()), [&](std::uint32_t i) {
+        p[0] = scratch[i]->pos.x;
+        p[1] = scratch[i]->pos.y;
+        p[2] = scratch[i]->pos.z;
+        return static_cast<const float*>(p);
+    });
+    return true;
 }
 
 } // namespace alpine_lightmap

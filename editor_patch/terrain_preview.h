@@ -33,6 +33,11 @@ inline double elapsed_ms(const LARGE_INTEGER& since)
     return static_cast<double>(now.QuadPart - since.QuadPart) * 1000.0 / static_cast<double>(freq.QuadPart);
 }
 
+// Whether user bitmap `bm` still has the texture editor_bitmap_upload_rgb wrote.
+bool editor_bitmap_texture_live(int bm);
+// Writes w x h RGB8 texels, rows top down, into user bitmap `bm`'s texture; false when it could not be made or locked.
+bool editor_bitmap_upload_rgb(int bm, std::uint32_t w, std::uint32_t h, const std::uint8_t* rgb);
+
 // Whether the viewport being painted draws level surfaces solid: perspective, not brushes only, not see-through.
 bool terrain_view_draws_solid();
 

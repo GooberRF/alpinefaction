@@ -542,6 +542,22 @@ static auto& room_setup_bbox = addr_as_ref<int __cdecl(void* room, const Vector3
 // Transforms each light in the render light list into the current local frame.
 static auto& room_lights_to_local = addr_as_ref<void __cdecl()>(0x00488BE0);
 
+// Frees every room's viewport geometry cache (FUN_0049b550 builds them), so each is rebuilt when next drawn.
+static auto& geo_cache_flush_all = addr_as_ref<void __cdecl()>(0x0049B4E0);
+// End of the viewport geometry cache pool.
+static auto& geo_cache_pool_end = addr_as_ref<char*>(0x010A84C0);
+// A batch record of a viewport geometry cache, as FUN_0049b550 fills it.
+struct RedCacheBatch
+{
+    char _pad_00[0x40];
+    int texture;  // +0x40
+    int lightmap; // +0x44
+    char _pad_48[0x8];
+};
+static_assert(sizeof(RedCacheBatch) == 0x50);
+static_assert(offsetof(RedCacheBatch, texture) == 0x40);
+static_assert(offsetof(RedCacheBatch, lightmap) == 0x44);
+
 // The Preferences page holding the editor's user configurable colours; the viewport painter
 // (0x0047DAE0) feeds the background one to set_draw_color before its clear.
 struct EditorColorPrefs

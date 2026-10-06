@@ -29,8 +29,11 @@ inline constexpr std::uint32_t gutter    = 4;   // G, overlap stored on each sid
 static_assert(tile_step % 4 == 0 && gutter % 4 == 0 && page_size % 4 == 0);
 static_assert(tile_step + 2 * gutter <= page_size);
 
-// RED's page budget for one section, and the most pages any reader accepts.
-inline constexpr std::uint32_t max_pages = 1024;
+// The most pages a section may hold (D3D11's Texture2DArray limit), which only overflow charts reach.
+inline constexpr std::uint32_t max_pages = 2048;
+// RED's page budget for the surface, mover and terrain charts; overflow charts pack after them.
+inline constexpr std::uint32_t stage_page_budget = 1024;
+static_assert(stage_page_budget <= max_pages);
 
 // Edge of the stock lightmap pages that surface uv_scale/uv_add normalize against (highres doubles it).
 inline constexpr std::uint32_t stock_page_size(bool highres)
@@ -111,6 +114,7 @@ enum class TableTag : std::uint32_t
 {
     movers = 1,
     terrain = 2,
+    overflow_faces = 3,
 };
 
 // ─── Wire records ─────────────────────────────────────────────────────────────
@@ -156,6 +160,35 @@ struct TerrainChart
     float origin_z;
     float texel_size;
     std::uint64_t geometry_fingerprint;
+};
+
+// Overflow table (TableTag::overflow_faces) body: this header, num_charts OverflowChart, then num_faces
+// u32 face ordinals. It charts static geometry faces that got no stock surface. A face's ordinal is its
+// 0-based position in the static geometry section's face records; each chart owns the next num_faces
+// ordinals, strictly ascending within the chart. face_fingerprint is overflow_fingerprint over the ordinals in stored
+// order. Tiles run in record order.
+struct OverflowTableHeader
+{
+    std::uint32_t num_charts;
+    std::uint32_t num_faces;
+    std::uint32_t src_num_faces; // face records in the static geometry section the table was baked for
+    std::uint32_t reserved;      // written 0, ignored by readers
+    std::uint64_t face_fingerprint;
+};
+
+// A w x h texel chart on a plane: world point p lies at chart coordinate
+// (dot(p - origin, axis_u), dot(p - origin, axis_v)) / texel_size (overflow_chart_coord).
+struct OverflowChart
+{
+    std::uint32_t num_faces;
+    std::uint16_t w;
+    std::uint16_t h;
+    float origin[3];
+    float axis_u[3];
+    float axis_v[3];
+    float texel_size;
+    std::uint8_t mean_rgb[3]; // mean of the chart's texels as the layer stores them
+    std::uint8_t reserved;    // written 0, ignored by readers
 };
 
 // The table directory follows the surface charts: u32 num_tables, then per table this header and
@@ -220,6 +253,10 @@ struct LayerDirEntry
 static_assert(sizeof(SectionHeader) == 38);
 static_assert(sizeof(Chart) == 4);
 static_assert(sizeof(TerrainChart) == 28);
+static_assert(sizeof(OverflowTableHeader) == 24);
+static_assert(sizeof(OverflowChart) == 52);
+static_assert(offsetof(OverflowChart, origin) == 8 && offsetof(OverflowChart, texel_size) == 44
+              && offsetof(OverflowChart, mean_rgb) == 48);
 static_assert(sizeof(TableHeader) == 16);
 static_assert(sizeof(MoverChart) == 12);
 static_assert(sizeof(MoverSurfaceChart) == 8);
@@ -246,15 +283,28 @@ inline constexpr std::uint64_t mover_table_bytes(std::uint64_t num_movers, std::
 }
 
 // A terrain is at most 256 cells per axis at 8 texels per cell. The texel total a section's terrain
-// charts may declare is what the page budget can hold, which bounds a reader's decoded copies.
+// charts may declare is what their stage's page budget can hold, which bounds a reader's decoded copies.
 inline constexpr std::uint32_t max_terrain_charts = 64;
 inline constexpr std::uint32_t max_terrain_chart_dim = 2048;
 inline constexpr std::uint64_t max_terrain_chart_texels =
-    static_cast<std::uint64_t>(max_pages) * tile_step * tile_step;
+    static_cast<std::uint64_t>(stage_page_budget) * tile_step * tile_step;
 
 inline constexpr std::uint64_t terrain_table_bytes(std::uint64_t num_terrain)
 {
     return sizeof(std::uint32_t) + num_terrain * sizeof(TerrainChart);
+}
+
+inline constexpr std::uint16_t overflow_table_version = 1;
+
+inline constexpr std::uint32_t max_overflow_charts = 1u << 20;
+inline constexpr std::uint32_t max_overflow_faces = 1u << 22;
+inline constexpr std::uint32_t max_overflow_chart_dim = 4096;
+// Densities past density_max are not baked, so a finer record is malformed.
+inline constexpr float min_overflow_texel_size = 1.0f / density_max;
+
+inline constexpr std::uint64_t overflow_table_bytes(std::uint64_t num_charts, std::uint64_t num_faces)
+{
+    return sizeof(OverflowTableHeader) + num_charts * sizeof(OverflowChart) + num_faces * sizeof(std::uint32_t);
 }
 
 static_assert(sizeof(LayerDirHeader) == 4);
@@ -338,6 +388,17 @@ inline constexpr ChartGeometry terrain_chart_geometry(std::uint32_t w, std::uint
                                                       std::uint32_t g = gutter)
 {
     if (w > max_terrain_chart_dim || h > max_terrain_chart_dim) {
+        return ChartGeometry{};
+    }
+    return chart_geometry_from_extent(w, h, step, g);
+}
+
+// Empty for a record whose size no reader accepts.
+inline constexpr ChartGeometry overflow_chart_geometry(std::uint32_t w, std::uint32_t h,
+                                                       std::uint32_t step = tile_step,
+                                                       std::uint32_t g = gutter)
+{
+    if (w > max_overflow_chart_dim || h > max_overflow_chart_dim) {
         return ChartGeometry{};
     }
     return chart_geometry_from_extent(w, h, step, g);
@@ -585,6 +646,17 @@ inline float terrain_chart_coord(float origin, float texel_size, float world)
     return (world - origin) / texel_size;
 }
 
+// ─── Overflow charts: the planar mapping ──────────────────────────────────────
+// Texel i spans chart coordinates [i, i + 1) with its centre at i + 0.5, as for terrain charts.
+
+inline ChartTexel overflow_chart_coord(const OverflowChart& c, const float* pos)
+{
+    const float d[3] = {pos[0] - c.origin[0], pos[1] - c.origin[1], pos[2] - c.origin[2]};
+    const float u = d[0] * c.axis_u[0] + d[1] * c.axis_u[1] + d[2] * c.axis_u[2];
+    const float v = d[0] * c.axis_v[0] + d[1] * c.axis_v[1] + d[2] * c.axis_v[2];
+    return ChartTexel{u / c.texel_size, v / c.texel_size};
+}
+
 // Bilinear read of a decoded w x h RGB8 chart at chart coordinate (cu, cv), clamped to the edge
 // texels as the padding a stored tile carries past the chart replicates them. 0..1 per channel.
 inline void chart_sample_bilinear(const std::uint8_t* rgb, std::uint32_t w, std::uint32_t h, float cu,
@@ -704,6 +776,15 @@ inline constexpr std::uint32_t max_layer_pages(Codec codec)
     const std::uint64_t per_page = layer_payload_size(codec, 1);
     return per_page == 0 ? 0u
                          : static_cast<std::uint32_t>(std::min<std::uint64_t>(max_pages, max_layer_bytes / per_page));
+}
+
+// The stage budget in pages of `codec`: as many as a BC7 atlas of stage_page_budget pages holds in bytes.
+inline constexpr std::uint32_t stage_layer_pages(Codec codec)
+{
+    const std::uint64_t per_page = layer_payload_size(codec, 1);
+    return per_page == 0 ? 0u
+                         : static_cast<std::uint32_t>(std::min<std::uint64_t>(
+                               stage_page_budget, layer_payload_size(Codec::bc7_unorm, stage_page_budget) / per_page));
 }
 
 // ─── Compression modes (level property `lightmap_compression`) ────────────────
