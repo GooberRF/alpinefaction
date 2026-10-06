@@ -228,6 +228,7 @@ CodeInjection after_frame_render_hook{
             && state != rf::GS_QUITING
             && state != rf::GS_NEW_LEVEL
             && state != rf::GS_MULTI_GETTING_STATE_INFO) {
+            multi_limbo_leave_render_overlay();
             // Draw on top (after scene)
             demo_playback_render_seek_overlay(); // first: covers the stale frame, UI below stays on top
             frametime_render_ui();

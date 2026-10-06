@@ -166,6 +166,7 @@ enum class AlpineRestrictVerdict : uint8_t
 
 extern rf::Timestamp g_select_weapon_done_timestamp[rf::multi_max_player_id];
 extern bool g_multi_limbo_just_joined_req_leave;
+extern bool g_multi_limbo_req_leave;
 
 void set_local_pending_game_type(rf::NetGameType game_type, int win_condition);
 void reset_local_pending_game_type();
@@ -190,6 +191,7 @@ void send_chat_line_packet(std::string_view msg, rf::Player* target, rf::Player*
 const std::optional<AlpineFactionServerInfo>& get_af_server_info();
 std::optional<AlpineFactionServerInfo>& get_af_server_info_mutable();
 void multi_limbo_just_joined_do_frame();
+void multi_limbo_leave_render_overlay();
 void multi_level_download_do_frame();
 void multi_level_download_abort();
 void multi_level_download_manager_start(std::string filename);

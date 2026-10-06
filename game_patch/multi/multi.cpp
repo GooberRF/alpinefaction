@@ -1416,6 +1416,32 @@ void multi_limbo_just_joined_handle_input(const int key) {
 }
 
 bool g_multi_limbo_just_joined_req_leave = false;
+bool g_multi_limbo_req_leave = false;
+
+void multi_limbo_leave_render_overlay() {
+    if (!g_multi_limbo_req_leave) {
+        return;
+    }
+
+    constexpr std::string_view text = "LOADING...";
+    const auto [text_w, text_h] = rf::gr::get_string_size(text, rf::ui::large_font);
+    const int unscaled_text_w = static_cast<int>(text_w / rf::ui::scale_x);
+    const int unscaled_text_h = static_cast<int>(text_h / rf::ui::scale_y);
+    const int x = (640 - unscaled_text_w) / 2;
+    const int y = (480 - unscaled_text_h) / 2 - 64;
+
+    rf::gr::set_color(255, 255, 255, 255);
+    rf::gr::string_aligned(
+        rf::gr::ALIGN_LEFT,
+        static_cast<int>(x * rf::ui::scale_x) + static_cast<int>(1.f * rf::ui::scale_x),
+        static_cast<int>(y * rf::ui::scale_y),
+        text.data(),
+        rf::ui::large_font
+    );
+
+    g_multi_limbo_req_leave = false;
+    rf::gameseq_set_state(rf::GS_NEW_LEVEL, false);
+}
 
 void multi_limbo_just_joined_do_frame() {
     rf::game_poll(multi_limbo_just_joined_handle_input);

@@ -1401,6 +1401,11 @@ CallHook<void(rf::GameState, bool)> process_leave_limbo_packet_gameseq_set_next_
             multi_level_download_manager_start(rf::level.next_level_filename);
         } else if (rf::gameseq_get_state() == rf::GS_MULTI_LIMBO_JUST_JOINED) {
             g_multi_limbo_just_joined_req_leave = true;
+        } else if (rf::gameseq_get_state() == rf::GS_MULTI_LIMBO) {
+            // `gameseq_set_state` switches immediately, before `rf_do_frame` can
+            // draw its loading label.  Defer transition, until after a limbo
+            // frame has rendered "LOADING...".
+            g_multi_limbo_req_leave = true;
         } else {
             process_leave_limbo_packet_gameseq_set_next_state_hook.call_target(state, force);
         }
