@@ -196,7 +196,7 @@ ConsoleCommand2 bighud_health_cmd{
         set_big_hud(g_alpine_game_config.big_hud);
         if (!g_alpine_game_config.big_hud && g_alpine_game_config.big_hud_health) {
             rf::console::print(
-                "Big HUD health is enabled but ignored, because Big HUD is disabled"
+                "Big HUD health is enabled but ignored, because big HUD is disabled"
             );
         } else {
             rf::console::print(
@@ -216,7 +216,7 @@ ConsoleCommand2 bighud_ammo_cmd{
         set_big_hud(g_alpine_game_config.big_hud);
         if (!g_alpine_game_config.big_hud && g_alpine_game_config.big_hud_ammo) {
             rf::console::print(
-                "Big HUD ammo is enabled but ignored, because Big HUD is disabled"
+                "Big HUD ammo is enabled but ignored, because big HUD is disabled"
             );
         } else {
             rf::console::print(
