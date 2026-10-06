@@ -191,8 +191,9 @@ ConsoleCommand2 bighud_cmd{
 
 ConsoleCommand2 bighud_health_cmd{
     "bighud_health",
-    [] {
-        g_alpine_game_config.big_hud_health = !g_alpine_game_config.big_hud_health;
+    [] (const std::optional<bool> enabled) {
+        g_alpine_game_config.big_hud_health =
+            enabled.value_or(!g_alpine_game_config.big_hud_health);
         set_big_hud(g_alpine_game_config.big_hud);
         if (!g_alpine_game_config.big_hud && g_alpine_game_config.big_hud_health) {
             rf::console::print(
@@ -211,8 +212,9 @@ ConsoleCommand2 bighud_health_cmd{
 
 ConsoleCommand2 bighud_ammo_cmd{
     "bighud_ammo",
-    [] {
-        g_alpine_game_config.big_hud_ammo = !g_alpine_game_config.big_hud_ammo;
+    [] (const std::optional<bool> enabled) {
+        g_alpine_game_config.big_hud_ammo =
+            enabled.value_or(!g_alpine_game_config.big_hud_ammo);
         set_big_hud(g_alpine_game_config.big_hud);
         if (!g_alpine_game_config.big_hud && g_alpine_game_config.big_hud_ammo) {
             rf::console::print(
