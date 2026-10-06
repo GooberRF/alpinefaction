@@ -24,15 +24,21 @@
 #include "corona.h"
 #include "bag.h"
 #include "weather_region.h"
+#include "vehicle_factory.h"
 #include "projection_camera.h"
 #include "rope_emitter.h"
+#include "alpine_obj.h"
+#include "alpine_spinner.h"
+#include "textures.h"
+#include "minimap_bake.h"
 #include "terrain.h"
 #include "terrain_build.h"
 #include "terrain_decorations.h"
+#include "dir_light.h"
 #include "alpine_lightmaps.h"
 #include "overflow_charts.h"
-#include "alpine_obj.h"
 #include "headless_bake.h"
+#include "face_list_cache.h"
 
 // Forward declarations
 int get_level_rfl_version();
@@ -129,24 +135,11 @@ CodeInjection CDedLevel_construct_patch{
     },
 };
 
-// Clear alpine properties when the level is reset (File > New or File > Open).
-// FUN_00418960 is CDedLevel::DeleteContents (thiscall, ECX = CDedLevel*).
-// Called via the virtual DeleteContents override at vtable[27] (FUN_0041CDF0).
-//
-// Strategy: wrap with FunHook so we can run cleanup both BEFORE and AFTER stock code.
-//
-// BEFORE: Null out vmesh on Alpine objects so stock FUN_0041c360 (called from
-// DeleteContents loop 3 on master_objects) won't try to free it via FUN_004bfec0.
-// Alpine objects are LEFT in master_objects so that undo cleanup (FUN_0043d170)
-// finds them there and skips processing entirely — avoiding the "orphan" path
-// (FUN_00491020 + FUN_0041c360) that causes heap corruption.
-// FUN_0041c360 switches on [obj+0x5C] (type): types > 0x16 fall through to
-// default → return without calling the virtual destructor, so Alpine objects
-// survive stock cleanup.
-//
-// AFTER: Call LoadDefaults() to properly free the Alpine objects. At this point
-// stock code has finished processing all undo entries and VArrays, so the Alpine
-// objects are no longer referenced anywhere.
+// Clear alpine properties when the level is reset (File > New, File > Open, document close).
+// FUN_00418960 is CDedLevel::DeleteContents (thiscall), reached via vtable[27] (FUN_0041CDF0).
+// Alpine objects stay in master_objects through the stock body so undo cleanup (FUN_0043d170) never
+// takes them for orphans, and level_destroy_object_hook keeps stock FUN_0041c360 off them. They are
+// freed after it, when no undo record can reach them any more.
 void __fastcall CDedLevel_DeleteContents_hooked(CDedLevel* level, void* edx_unused);
 FunHook<decltype(CDedLevel_DeleteContents_hooked)> CDedLevel_DeleteContents_hook{
     0x00418960,
@@ -156,27 +149,15 @@ void __fastcall CDedLevel_DeleteContents_hooked(CDedLevel* level, void* edx_unus
 {
     auto& props = level->GetAlpineLevelProperties();
     terrain_decorations_level_reset();
+    sun_arrow_detach(level);
 
-    // Null out vmesh BEFORE stock code runs, but leave objects in master_objects.
-    // This makes Alpine objects safe for stock FUN_0041c360 (loop 3):
-    //   - [obj+0x0C] (vmesh) = NULL → skips FUN_004bfec0 free
-    //   - [obj+0x5C] (type) > 0x16 → switch defaults to return (no destructor)
-    // Keeping objects in master_objects means FUN_0043d170 (undo cleanup) finds
-    // them and skips the orphan processing path entirely (no heap corruption).
+    // Released while the level is still intact; the stock body only ever sees [obj+0xC] null on Alpine meshes.
     for (auto* m : props.mesh_objects)
-        static_cast<DedObject*>(m)->vmesh = nullptr;
-    for (auto* n : props.note_objects)
-        static_cast<DedObject*>(n)->vmesh = nullptr;
-    for (auto* c : props.corona_objects)
-        static_cast<DedObject*>(c)->vmesh = nullptr;
-    for (auto* b : props.bag_objects)
-        static_cast<DedObject*>(b)->vmesh = nullptr;
+        mesh_release_vmesh(m);
 
-    // Let stock DeleteContents run — undo/redo cleanup skips Alpine objects
-    // (found in master_objects), and loop 3 safely returns early for type > 0x16.
     CDedLevel_DeleteContents_hook.call_target(level, edx_unused);
 
-    // Now stock code is done. Free the Alpine objects properly.
+    alpine_graveyard_clear();
     props.LoadDefaults();
     lightmap_reset_level_state();
     // Also runs as the document closes at exit, when the views may be gone, so nothing is repainted.
@@ -304,8 +285,19 @@ CodeInjection CDedLevel_LoadLevel_patch2{
                     terrain_deserialize_chunk(level, file, chunk_size);
                     regs.eip = 0x0043090C;
                 }
+                if (chunk_id == alpine_directional_light_chunk_id) {
+                    directional_light_deserialize_chunk(level, file, chunk_size, file.get_version());
+                    regs.eip = 0x0043090C;
+                }
                 if (chunk_id == alpine_lightmaps_chunk_id) {
                     alpine_lm_deserialize_chunk(level, file, chunk_size);
+                    regs.eip = 0x0043090C;
+                }
+            }
+            // Vehicle factory chunk was introduced in rfl v306
+            if (file.check_version(306)) {
+                if (chunk_id == alpine_vehicle_factory_chunk_id) {
+                    vehicle_factory_deserialize_chunk(level, file, chunk_size);
                     regs.eip = 0x0043090C;
                 }
             }
@@ -666,6 +658,24 @@ static void recompute_room_bbox(GRoom* room)
     room->bbox_max = vmax;
 }
 
+// Leaves the room exactly as add_face's per-face unlinks would, in one pass.
+static void unlink_room_faces(GRoom* room, const std::unordered_set<GFace*>& faces)
+{
+    GFace** link = &room->face_list_head;
+    while (GFace* f = *link) {
+        if (faces.count(f)) {
+            *link = f->next_room;
+            f->next_room = nullptr;
+            f->which_room = nullptr;
+            room->face_list_count--;
+        }
+        else {
+            link = &f->next_room;
+        }
+    }
+    face_list_cache_forget(&room->face_list_head);
+}
+
 static void isolate_marked_rooms(GSolid* solid)
 {
     // Group faces by room, then by isolated brush UID (-1 = not isolated)
@@ -695,24 +705,37 @@ static void isolate_marked_rooms(GSolid* solid)
         if (isolated_count == 0) continue;                 // no isolated faces
         if (!has_unmarked && isolated_count <= 1) continue; // single isolated brush, no mixing
 
-        // Room has mixed content — split each isolated brush into its own room
-        bool first_isolated = true;
-        for (auto& [uid, faces] : fg.by_brush) {
-            if (uid == -1) continue;
+        // If room has only isolated faces (no unmarked), keep the first
+        // isolated group in the original room to avoid creating an empty room
+        int kept_uid = -1;
+        if (!has_unmarked) {
+            kept_uid = fg.by_brush.begin()->first;
+        }
 
-            // If room has only isolated faces (no unmarked), keep the first
-            // isolated group in the original room to avoid creating an empty room
-            if (!has_unmarked && first_isolated) {
-                first_isolated = false;
-                continue;
+        // add_face's stock unlink walks the room list from its head for every face, which is quadratic
+        // when a terrain room is split, so every moving face leaves the room list in one pass first.
+        std::unordered_set<GFace*> moving;
+        for (auto& [uid, faces] : fg.by_brush) {
+            if (uid != -1 && uid != kept_uid) {
+                moving.insert(faces.begin(), faces.end());
             }
-            first_isolated = false;
+        }
+        unlink_room_faces(room, moving);
+
+        // Room has mixed content — split each isolated brush into its own room
+        for (auto& [uid, faces] : fg.by_brush) {
+            if (uid == -1 || uid == kept_uid) continue;
 
             // Use first face's bbox to initialize the new room
             GFace* seed = faces[0];
 
             GRoom* new_room = GRoom::alloc();
-            if (!new_room) continue;
+            if (!new_room) {
+                for (GFace* f : faces) {
+                    room->add_face(f);
+                }
+                continue;
+            }
             new_room->init(solid, &seed->bounding_box_min, &seed->bounding_box_max);
 
             // Copy life from original room so breakable brushes retain their HP.
@@ -855,6 +878,14 @@ static void merge_geoable_interior_rooms(GSolid* solid)
     }
 }
 
+// The GRoom constructor never initialises is_airlock, so a room no airlock Room Effect reaches saved heap garbage.
+CodeInjection groom_ctor_clear_airlock_injection{
+    0x004855d8,
+    [](auto& regs) {
+        reinterpret_cast<GRoom*>(static_cast<uintptr_t>(regs.ebp))->is_airlock = false;
+    },
+};
+
 // Skip empty detail rooms in the room builder's loop 2 (parent association).
 // After merging geoable brush rooms, secondary rooms are empty (no faces) but
 // remain as detail in all_rooms. Loop 2 at 0x485f44 dereferences the face list
@@ -963,7 +994,8 @@ CodeInjection skip_alpine_objects_bounds_check{
             obj->type == DedObjectType::DED_WEATHER_REGION ||
             obj->type == DedObjectType::DED_PROJECTION_CAMERA ||
             obj->type == DedObjectType::DED_ROPE_EMITTER ||
-            obj->type == DedObjectType::DED_TERRAIN) {
+            obj->type == DedObjectType::DED_TERRAIN ||
+            obj->type == DedObjectType::DED_DIRECTIONAL_LIGHT) {
             regs.eip = 0x0041dcfa;
         }
     },
@@ -982,6 +1014,9 @@ CodeInjection CDedLevel_SaveLevel_patch{
         // section write a few instructions later depends on.
         alpine_lm_save_begin(level);
 
+        // A rotation of the sun arrow not yet repainted still belongs in the saved sun direction.
+        sun_arrow_sync(&level);
+
         // Compute room UIDs and scrub stale data before serializing
         auto& alpine_level_props = level.GetAlpineLevelProperties();
         compute_geoable_room_uids(level, alpine_level_props);
@@ -996,8 +1031,8 @@ CodeInjection CDedLevel_SaveLevel_patch{
             for (int i = 0; i < mg.size; i++) {
                 auto* group = mg[i];
                 if (group && group->is_moving_group() && group->keyframes &&
-                    group->keyframes->size > 0) {
-                    DedObject* first_kf = (*group->keyframes)[0];
+                    group->keyframes->objects.size > 0) {
+                    DedObject* first_kf = group->keyframes->objects[0];
                     if (first_kf)
                         valid_kf_uids.insert(first_kf->uid);
                 }
@@ -1027,6 +1062,9 @@ CodeInjection CDedLevel_SaveLevel_patch{
         // Write weather region objects chunk
         weather_region_serialize_chunk(level, file);
 
+        // Write vehicle factory objects chunk
+        vehicle_factory_serialize_chunk(level, file);
+
         // Write projection camera objects chunk
         projection_camera_serialize_chunk(level, file);
 
@@ -1035,6 +1073,9 @@ CodeInjection CDedLevel_SaveLevel_patch{
 
         // Write terrain objects chunk
         terrain_serialize_chunk(level, file);
+
+        // Write directional light objects chunk
+        directional_light_serialize_chunk(level, file);
 
         // Re-write any foreign-editor chunks
         retained_chunks_serialize(level, file);
@@ -1105,23 +1146,10 @@ static void set_sun_angles_from_camera(HWND hdlg)
         return;
     }
 
-    const Vector3& fwd = viewport->view_data->camera_orient.fvec;
-    float len = std::sqrt(fwd.x * fwd.x + fwd.y * fwd.y + fwd.z * fwd.z);
-    if (!std::isfinite(len) || len <= 0.0f) {
+    float yaw = 0.0f, pitch = 0.0f;
+    if (!alpine_light_dir_to_sun_angles(viewport->view_data->camera_orient.fvec, yaw, pitch)) {
         return;
     }
-    float x = -fwd.x / len;
-    float y = -fwd.y / len;
-    float z = -fwd.z / len;
-
-    constexpr float rad_to_deg = 180.0f / 3.14159265358979f;
-    float yaw = std::atan2(x, z) * rad_to_deg;
-    yaw = std::fmod(yaw, 360.0f);
-    if (yaw < 0.0f) {
-        yaw += 360.0f;
-    }
-    // Aiming above the horizon keeps the heading and parks the sun on the horizon.
-    float pitch = std::clamp(std::asin(std::clamp(y, -1.0f, 1.0f)) * rad_to_deg, 0.0f, 90.0f);
 
     char buffer[32];
     std::snprintf(buffer, sizeof(buffer), "%.3f", yaw);
@@ -1195,6 +1223,294 @@ static void pick_sun_color(HWND hdlg)
     }
 }
 
+static bool read_dlg_float(HWND hdlg, int id, float& out, float min_value, float max_value)
+{
+    char buffer[64] = {};
+    GetDlgItemTextA(hdlg, id, buffer, static_cast<int>(sizeof(buffer)));
+    char* end = nullptr;
+    float value = std::strtof(buffer, &end);
+    if (end == buffer || !std::isfinite(value)) {
+        return false;
+    }
+    out = std::clamp(value, min_value, max_value);
+    return true;
+}
+
+struct MinimapStaging
+{
+    bool enabled = false;
+    std::string bitmap;
+    Vector3 world_min{};
+    Vector3 world_max{};
+    float cut_height = 0.0f;
+};
+static MinimapStaging g_minimap_staging;
+
+static AlpineBitmapPreview g_minimap_preview;
+
+constexpr float minimap_coord_step = 1.0f;
+constexpr float minimap_coord_min = -100000.0f;
+constexpr float minimap_coord_max = 100000.0f;
+
+static void minimap_update_bitmap_preview(HWND hdlg, bool force)
+{
+    g_minimap_preview.update(hdlg, IDC_MINIMAP_BITMAP, IDC_MINIMAP_BITMAP_PREVIEW, force);
+}
+
+static void minimap_set_coord_field(HWND hdlg, int idc_edit, int idc_spin, float value)
+{
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "%.2f", value);
+    SetDlgItemTextA(hdlg, idc_edit, buf);
+    alpine_spinner_init(hdlg, idc_edit, idc_spin, minimap_coord_step, minimap_coord_min,
+                        minimap_coord_max, 2);
+}
+
+// Leaves `out` untouched and says which field is wrong when the text does not parse.
+static bool minimap_read_coord(HWND hdlg, int idc, const char* label, float& out)
+{
+    if (read_dlg_float(hdlg, idc, out, minimap_coord_min, minimap_coord_max)) {
+        return true;
+    }
+    char msg[96];
+    std::snprintf(msg, sizeof(msg), "%s is not a number.", label);
+    MessageBoxA(hdlg, msg, "Minimap", MB_OK | MB_ICONWARNING);
+    return false;
+}
+
+static bool minimap_read_bounds(HWND hdlg, Vector3& world_min, Vector3& world_max)
+{
+    return minimap_read_coord(hdlg, IDC_MINIMAP_MIN_X, "Min X", world_min.x) &&
+           minimap_read_coord(hdlg, IDC_MINIMAP_MIN_Z, "Min Z", world_min.z) &&
+           minimap_read_coord(hdlg, IDC_MINIMAP_MAX_X, "Max X", world_max.x) &&
+           minimap_read_coord(hdlg, IDC_MINIMAP_MAX_Z, "Max Z", world_max.z);
+}
+
+// The game disables a minimap narrower than 1 unit on either axis.
+static bool minimap_bounds_valid(HWND hdlg, const Vector3& world_min, const Vector3& world_max)
+{
+    if (world_max.x - world_min.x >= 1.0f && world_max.z - world_min.z >= 1.0f) {
+        return true;
+    }
+    MessageBoxA(hdlg, "World bounds need Max X and Max Z at least 1 unit above Min X and Min Z.", "Minimap",
+                MB_OK | MB_ICONWARNING);
+    return false;
+}
+
+constexpr int minimap_bake_sizes[] = {512, 1024, 2048};
+static int g_minimap_bake_size_index = 1;
+static bool g_minimap_bake_use_bounds = false;
+
+static void minimap_bake_from_dialog(HWND hdlg)
+{
+    auto* level = CDedLevel::Get();
+    if (!level) return;
+
+    const LRESULT sel = SendDlgItemMessageA(hdlg, IDC_MINIMAP_BAKE_RES, CB_GETCURSEL, 0, 0);
+    if (sel >= 0 && sel < static_cast<LRESULT>(std::size(minimap_bake_sizes))) {
+        g_minimap_bake_size_index = static_cast<int>(sel);
+    }
+    MinimapBakeParams params;
+    params.resolution = minimap_bake_sizes[g_minimap_bake_size_index];
+    if (!minimap_read_coord(hdlg, IDC_MINIMAP_CUT_HEIGHT, "Cut height", params.cut_height)) {
+        return;
+    }
+    params.use_bounds = IsDlgButtonChecked(hdlg, IDC_MINIMAP_BAKE_USE_BOUNDS) == BST_CHECKED;
+    g_minimap_bake_use_bounds = params.use_bounds;
+    if (params.use_bounds && (!minimap_read_bounds(hdlg, params.bounds_min, params.bounds_max) ||
+                              !minimap_bounds_valid(hdlg, params.bounds_min, params.bounds_max))) {
+        return;
+    }
+
+    // RED sets it on brush edits and clears it at Build Geometry (0x00439A5F); a cancelled build sets it again.
+    if (level->geometry_needs_rebuild &&
+        MessageBoxA(hdlg,
+                    "The geometry has changed since the last Build Geometry, and the bake uses the last "
+                    "built geometry.\n\nBake anyway?",
+                    "Bake minimap", MB_YESNO | MB_ICONQUESTION) != IDYES) {
+        return;
+    }
+
+    std::string bitmap_name;
+    std::string path;
+    std::string error;
+    if (!minimap_bake_target(bitmap_name, path, error)) {
+        MessageBoxA(hdlg, error.c_str(), "Bake minimap", MB_OK | MB_ICONWARNING);
+        return;
+    }
+    if (GetFileAttributesA(path.c_str()) != INVALID_FILE_ATTRIBUTES) {
+        const std::string prompt = path + " already exists.\n\nReplace it with a new bake?";
+        if (MessageBoxA(hdlg, prompt.c_str(), "Bake minimap", MB_YESNO | MB_ICONQUESTION) != IDYES) {
+            return;
+        }
+    }
+
+    MinimapBakeResult result;
+    HCURSOR old_cursor = SetCursor(LoadCursor(nullptr, IDC_WAIT));
+    const bool ok = minimap_bake(*level, params, result, error);
+    SetCursor(old_cursor);
+    if (!ok) {
+        MessageBoxA(hdlg, error.c_str(), "Bake minimap", MB_OK | MB_ICONWARNING);
+        return;
+    }
+
+    // The image is already on disk, so its bitmap, bounds and cut height go into the level and the
+    // staging copy at once: no Cancel can pair the new image with the old bounds.
+    auto& props = level->GetAlpineLevelProperties();
+    props.minimap_bitmap = result.bitmap_name;
+    props.minimap_world_min = result.world_min;
+    props.minimap_world_max = result.world_max;
+    props.minimap_cut_height = params.cut_height;
+    mark_level_modified();
+    g_minimap_staging.bitmap = result.bitmap_name;
+    g_minimap_staging.world_min = result.world_min;
+    g_minimap_staging.world_max = result.world_max;
+    g_minimap_staging.cut_height = params.cut_height;
+
+    SetDlgItemTextA(hdlg, IDC_MINIMAP_BITMAP, result.bitmap_name.c_str());
+    minimap_set_coord_field(hdlg, IDC_MINIMAP_MIN_X, IDC_MINIMAP_MIN_X_SPIN, result.world_min.x);
+    minimap_set_coord_field(hdlg, IDC_MINIMAP_MIN_Z, IDC_MINIMAP_MIN_Z_SPIN, result.world_min.z);
+    minimap_set_coord_field(hdlg, IDC_MINIMAP_MAX_X, IDC_MINIMAP_MAX_X_SPIN, result.world_max.x);
+    minimap_set_coord_field(hdlg, IDC_MINIMAP_MAX_Z, IDC_MINIMAP_MAX_Z_SPIN, result.world_max.z);
+    minimap_update_bitmap_preview(hdlg, true);
+
+    char cut_text[48];
+    if (result.cut_applied) {
+        std::snprintf(cut_text, sizeof(cut_text), "cut at Y = %.2f", result.cut_height);
+    }
+    else {
+        std::snprintf(cut_text, sizeof(cut_text), "no cut");
+    }
+    const char* lighting = result.lightmaps_placeholder
+                               ? "The level has no usable brush lightmaps (D3D11-only or missing), so brushes are "
+                                 "unlit. Build Geometry and Calculate Lighting for lit brushes."
+                           : result.faces_lightmapped > 0 ? "Brushes are lit with the level's lightmaps."
+                                                          : "No brush lightmaps found: brushes are unlit.";
+    char terrain_note[160] = "";
+    if (result.terrains_unlit > 0) {
+        std::snprintf(terrain_note, sizeof(terrain_note),
+                      "\n%d terrain(s) have no baked lighting and use the level ambient and sun.",
+                      result.terrains_unlit);
+    }
+    char stale_note[160] = "";
+    if (result.terrains_stale > 0) {
+        std::snprintf(stale_note, sizeof(stale_note),
+                      "\n%d terrain(s) changed since the last Build Geometry are drawn as plain geometry, as the "
+                      "game would. Rebuild, then bake again.",
+                      result.terrains_stale);
+    }
+    char deco_text[96] = "";
+    if (result.decorations_drawn + result.decorations_blended > 0) {
+        std::snprintf(deco_text, sizeof(deco_text), " %d terrain decorations (%d drawn, %d blended),",
+                      result.decorations_drawn + result.decorations_blended, result.decorations_drawn,
+                      result.decorations_blended);
+    }
+    char summary[768];
+    std::snprintf(summary, sizeof(summary),
+                  "Wrote user_maps\\textures\\%s\n%d x %d, %d faces,%s %s, %.2f s.\n%s%s%s\n"
+                  "The bitmap and bounds are applied to the level now; Cancel does not undo them.",
+                  result.bitmap_name.c_str(), params.resolution, params.resolution, result.faces_drawn, deco_text,
+                  cut_text, result.seconds, lighting, terrain_note, stale_note);
+    MessageBoxA(hdlg, summary, "Bake minimap", MB_OK | MB_ICONINFORMATION);
+}
+
+static INT_PTR CALLBACK MinimapDialogProc(HWND hdlg, UINT msg, WPARAM wp, LPARAM lp)
+{
+    switch (msg) {
+    case WM_INITDIALOG: {
+        const auto& s = g_minimap_staging;
+        CheckDlgButton(hdlg, IDC_MINIMAP_ENABLE, s.enabled ? BST_CHECKED : BST_UNCHECKED);
+        SetDlgItemTextA(hdlg, IDC_MINIMAP_BITMAP, s.bitmap.c_str());
+        minimap_set_coord_field(hdlg, IDC_MINIMAP_MIN_X, IDC_MINIMAP_MIN_X_SPIN, s.world_min.x);
+        minimap_set_coord_field(hdlg, IDC_MINIMAP_MIN_Z, IDC_MINIMAP_MIN_Z_SPIN, s.world_min.z);
+        minimap_set_coord_field(hdlg, IDC_MINIMAP_MAX_X, IDC_MINIMAP_MAX_X_SPIN, s.world_max.x);
+        minimap_set_coord_field(hdlg, IDC_MINIMAP_MAX_Z, IDC_MINIMAP_MAX_Z_SPIN, s.world_max.z);
+        minimap_set_coord_field(hdlg, IDC_MINIMAP_CUT_HEIGHT, IDC_MINIMAP_CUT_HEIGHT_SPIN, s.cut_height);
+        minimap_update_bitmap_preview(hdlg, true);
+        for (int size : minimap_bake_sizes) {
+            char label[24];
+            std::snprintf(label, sizeof(label), "%d x %d", size, size);
+            SendDlgItemMessageA(hdlg, IDC_MINIMAP_BAKE_RES, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(label));
+        }
+        SendDlgItemMessageA(hdlg, IDC_MINIMAP_BAKE_RES, CB_SETCURSEL, g_minimap_bake_size_index, 0);
+        CheckDlgButton(hdlg, IDC_MINIMAP_BAKE_USE_BOUNDS, g_minimap_bake_use_bounds ? BST_CHECKED : BST_UNCHECKED);
+        return TRUE;
+    }
+    case WM_COMMAND:
+        switch (LOWORD(wp)) {
+        case IDC_MINIMAP_BITMAP:
+            if (HIWORD(wp) == EN_CHANGE) {
+                minimap_update_bitmap_preview(hdlg, false);
+            }
+            break;
+        case IDC_MINIMAP_BITMAP_BROWSE:
+            if (HIWORD(wp) == BN_CLICKED) {
+                if (alpine_dlg_browse_bitmap(hdlg, IDC_MINIMAP_BITMAP, nullptr, g_minimap_preview.handle)) {
+                    minimap_update_bitmap_preview(hdlg, true);
+                }
+                return TRUE;
+            }
+            break;
+        case IDC_MINIMAP_BAKE:
+            if (HIWORD(wp) == BN_CLICKED) {
+                minimap_bake_from_dialog(hdlg);
+                return TRUE;
+            }
+            break;
+        case IDOK: {
+            MinimapStaging s = g_minimap_staging;
+            s.enabled = IsDlgButtonChecked(hdlg, IDC_MINIMAP_ENABLE) == BST_CHECKED;
+            char bmp_buf[256] = {};
+            GetDlgItemTextA(hdlg, IDC_MINIMAP_BITMAP, bmp_buf, sizeof(bmp_buf));
+            s.bitmap = bmp_buf;
+            if (!minimap_read_bounds(hdlg, s.world_min, s.world_max) ||
+                !minimap_read_coord(hdlg, IDC_MINIMAP_CUT_HEIGHT, "Cut height", s.cut_height)) {
+                return TRUE;
+            }
+
+            if (rfl_name_over_long(s.bitmap) || s.bitmap.find_first_of("\\/:") != std::string::npos) {
+                MessageBoxA(hdlg, "The minimap bitmap must be a bare file name of at most 31 characters.",
+                            "Minimap", MB_OK | MB_ICONWARNING);
+                return TRUE;
+            }
+            if (s.enabled && s.bitmap.empty()) {
+                MessageBoxA(hdlg, "An enabled minimap needs a bitmap: pick one or bake it from the level.",
+                            "Minimap", MB_OK | MB_ICONWARNING);
+                return TRUE;
+            }
+            if (s.enabled && !minimap_bounds_valid(hdlg, s.world_min, s.world_max)) {
+                return TRUE;
+            }
+            g_minimap_staging = std::move(s);
+            EndDialog(hdlg, IDOK);
+            return TRUE;
+        }
+        case IDCANCEL:
+            EndDialog(hdlg, IDCANCEL);
+            return TRUE;
+        }
+        break;
+    case WM_NOTIFY:
+        if (alpine_spinner_handle_notify(hdlg, lp)) return TRUE;
+        break;
+    case WM_DRAWITEM: {
+        auto* dis = reinterpret_cast<DRAWITEMSTRUCT*>(lp);
+        if (dis && dis->CtlID == IDC_MINIMAP_BITMAP_PREVIEW) {
+            alpine_dlg_draw_bitmap_preview(dis->hwndItem, dis->rcItem, g_minimap_preview.handle);
+            return TRUE;
+        }
+        break;
+    }
+    }
+    return FALSE;
+}
+
+static void edit_minimap_properties(HWND level_dlg)
+{
+    DialogBoxParam(reinterpret_cast<HINSTANCE>(&__ImageBase), MAKEINTRESOURCE(IDD_ALPINE_MINIMAP),
+                   level_dlg, MinimapDialogProc, 0);
+}
+
 // Both lightmap combos carry their stored property value as item data, so no index-to-value
 // table is needed on the way back out.
 static void init_lightmap_combos(HWND hdlg, const AlpineLevelProperties& props)
@@ -1259,6 +1575,10 @@ static WNDPROC g_level_dlg_orig_wndproc = nullptr;
 static LRESULT CALLBACK LevelDialogSubclassProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 {
     WNDPROC orig = g_level_dlg_orig_wndproc;
+    if (msg == WM_COMMAND && LOWORD(wparam) == IDC_LEVEL_MINIMAP && HIWORD(wparam) == BN_CLICKED) {
+        edit_minimap_properties(hwnd);
+        return 0;
+    }
     if (msg == WM_COMMAND && LOWORD(wparam) == IDC_SUN_SET_FROM_CAMERA && HIWORD(wparam) == BN_CLICKED) {
         set_sun_angles_from_camera(hwnd);
         return 0;
@@ -1293,6 +1613,7 @@ CodeInjection CLevelDialog_OnInitDialog_patch{
         std::string version = std::to_string(level_version);
         SetDlgItemTextA(hdlg, IDC_LEVEL_VERSION, version.c_str());
 
+        sun_arrow_sync(CDedLevel::Get());
         auto& alpine_level_props = CDedLevel::Get()->GetAlpineLevelProperties();
         CheckDlgButton(hdlg, IDC_LEGACY_CYCLIC_TIMERS, alpine_level_props.legacy_cyclic_timers ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hdlg, IDC_LEGACY_MOVERS, alpine_level_props.legacy_movers ? BST_CHECKED : BST_UNCHECKED);
@@ -1302,6 +1623,10 @@ CodeInjection CLevelDialog_OnInitDialog_patch{
         std::snprintf(buffer, sizeof(buffer), "%.3f", alpine_level_props.static_mesh_ambient_light_modifier);
         SetDlgItemTextA(hdlg, IDC_MESH_AMBIENT_LIGHT_MODIFIER, buffer);
         CheckDlgButton(hdlg, IDC_RF2_STYLE_GEOMOD, alpine_level_props.rf2_style_geomod ? BST_CHECKED : BST_UNCHECKED);
+        CheckDlgButton(hdlg, IDC_VEHICLE_FLIGHT_CEILING_ENABLE, alpine_level_props.vehicle_flight_ceiling_enabled ? BST_CHECKED : BST_UNCHECKED);
+        char ceiling_buffer[32];
+        std::snprintf(ceiling_buffer, sizeof(ceiling_buffer), "%.3f", alpine_level_props.vehicle_flight_ceiling);
+        SetDlgItemTextA(hdlg, IDC_VEHICLE_FLIGHT_CEILING, ceiling_buffer);
         CheckDlgButton(hdlg, IDC_LEGACY_LIGHTING, alpine_level_props.legacy_lighting ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hdlg, IDC_HIGHRES_LIGHTMAPS, alpine_level_props.highres_lightmaps ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hdlg, IDC_INVISIBLE_FACES_OCCLUDE, alpine_level_props.invisible_faces_occlude ? BST_CHECKED : BST_UNCHECKED);
@@ -1331,25 +1656,18 @@ CodeInjection CLevelDialog_OnInitDialog_patch{
         CheckDlgButton(hdlg, IDC_SUN_DRIVES_SHADOWMAP_DIR, alpine_level_props.sun_drives_shadowmap_dir ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hdlg, IDC_SUN_LIQUID_OCCLUDES, alpine_level_props.sun_liquid_occludes ? BST_CHECKED : BST_UNCHECKED);
 
+        g_minimap_staging.enabled = alpine_level_props.minimap_enabled;
+        g_minimap_staging.bitmap = alpine_level_props.minimap_bitmap;
+        g_minimap_staging.world_min = alpine_level_props.minimap_world_min;
+        g_minimap_staging.world_max = alpine_level_props.minimap_world_max;
+        g_minimap_staging.cut_height = alpine_level_props.minimap_cut_height;
+
         if (reinterpret_cast<WNDPROC>(GetWindowLongPtrA(hdlg, GWLP_WNDPROC)) != LevelDialogSubclassProc) {
             g_level_dlg_orig_wndproc = reinterpret_cast<WNDPROC>(
                 SetWindowLongPtrA(hdlg, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(LevelDialogSubclassProc)));
         }
     },
 };
-
-static bool read_dlg_float(HWND hdlg, int id, float& out, float min_value, float max_value)
-{
-    char buffer[64] = {};
-    GetDlgItemTextA(hdlg, id, buffer, static_cast<int>(sizeof(buffer)));
-    char* end = nullptr;
-    float value = std::strtof(buffer, &end);
-    if (end == buffer || !std::isfinite(value)) {
-        return false;
-    }
-    out = std::clamp(value, min_value, max_value);
-    return true;
-}
 
 // save AlpineLevelProperties settings when closing level properties dialog
 CodeInjection CLevelDialog_OnOK_patch{
@@ -1372,6 +1690,8 @@ CodeInjection CLevelDialog_OnOK_patch{
             alpine_level_props.static_mesh_ambient_light_modifier = modifier;
         }
         alpine_level_props.rf2_style_geomod = IsDlgButtonChecked(hdlg, IDC_RF2_STYLE_GEOMOD) == BST_CHECKED;
+        alpine_level_props.vehicle_flight_ceiling_enabled = IsDlgButtonChecked(hdlg, IDC_VEHICLE_FLIGHT_CEILING_ENABLE) == BST_CHECKED;
+        read_dlg_float(hdlg, IDC_VEHICLE_FLIGHT_CEILING, alpine_level_props.vehicle_flight_ceiling, -FLT_MAX, FLT_MAX);
         alpine_level_props.legacy_lighting = IsDlgButtonChecked(hdlg, IDC_LEGACY_LIGHTING) == BST_CHECKED;
         alpine_level_props.highres_lightmaps = IsDlgButtonChecked(hdlg, IDC_HIGHRES_LIGHTMAPS) == BST_CHECKED;
         alpine_level_props.invisible_faces_occlude = IsDlgButtonChecked(hdlg, IDC_INVISIBLE_FACES_OCCLUDE) == BST_CHECKED;
@@ -1404,6 +1724,15 @@ CodeInjection CLevelDialog_OnOK_patch{
         alpine_level_props.sun_mesh_mode = IsDlgButtonChecked(hdlg, IDC_SUN_MESH_MODE_SCALE) == BST_CHECKED ? 0 : 1;
         alpine_level_props.sun_drives_shadowmap_dir = IsDlgButtonChecked(hdlg, IDC_SUN_DRIVES_SHADOWMAP_DIR) == BST_CHECKED;
         alpine_level_props.sun_liquid_occludes = IsDlgButtonChecked(hdlg, IDC_SUN_LIQUID_OCCLUDES) == BST_CHECKED;
+
+        alpine_level_props.minimap_enabled = g_minimap_staging.enabled;
+        alpine_level_props.minimap_bitmap = g_minimap_staging.bitmap;
+        alpine_level_props.minimap_world_min = g_minimap_staging.world_min;
+        alpine_level_props.minimap_world_max = g_minimap_staging.world_max;
+        alpine_level_props.minimap_cut_height = g_minimap_staging.cut_height;
+
+        // Stock OnOK (and the menu path, 0x00402300) never marks the document modified.
+        mark_level_modified();
     },
 };
 
@@ -1411,6 +1740,10 @@ static bool is_link_allowed(const DedObject* src, const DedObject* dst)
 {
     const auto t0 = src->type;
     const auto t1 = dst->type;
+
+    if (t0 == DedObjectType::DED_SUN_ARROW || t1 == DedObjectType::DED_SUN_ARROW) {
+        return false;
+    }
 
     return
         t0 == DedObjectType::DED_TRIGGER ||
@@ -1629,6 +1962,8 @@ void ApplyLevelPatches()
     adjacency_test_hook.install();
     isolate_rooms_injection.install();
     skip_empty_detail_rooms_in_loop2.install();
+
+    groom_ctor_clear_airlock_injection.install();
 
     // Ensure the face_id assignment phase (Phase 1 of FUN_004399b0) always runs.
     // Phase 1 assigns unique sequential face_ids to brush geometry faces, which our

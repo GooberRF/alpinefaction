@@ -236,6 +236,8 @@ namespace rf
     struct PlayerNetData;
     struct AiInfo;
     struct Camera;
+    struct Object;
+    struct Entity;
 
     /* Settings */
 
@@ -340,6 +342,7 @@ namespace rf
     {
         PF_HIDE_FROM_CAMERA = 0x10,
         PF_KILL_AFTER_BLACKOUT = 0x200,
+        PF_IN_ENCLOSED_VEHICLE = 0x400, // set while boarding a $Use: "vehicle" entity, not turrets
         PF_END_LEVEL_AFTER_BLACKOUT = 0x1000,
     };
 
@@ -398,6 +401,7 @@ namespace rf
         PlayerNetData *net_data;
     };
     static_assert(sizeof(PlayerBase) == 0x1204);
+    static_assert(offsetof(PlayerBase, weapon_mesh_handle) == 0x34);
 
     struct Player
         : PlayerBase
@@ -410,6 +414,10 @@ namespace rf
     static auto& player_list = addr_as_ref<Player*>(0x007C75CC);
     static auto& local_player = addr_as_ref<Player*>(0x007C75D4);
     static auto& render_player = addr_as_ref<Player*>(0x007C763C); // player whose view is being rendered.
+    // Over the LOCAL players array: obj is one's entity, or the host that entity rides.
+    static auto& obj_is_local_player_or_mount = addr_as_ref<bool(Object* obj)>(0x0048AA30);
+    // The local player obj_is_local_player_or_mount matched, or null.
+    static auto& player_from_local_obj_or_mount = addr_as_ref<Player*(Object* obj)>(0x0048AA90);
 
     // Allocates the Player (Alpine-extended size via patch at 0x004A3329) together with its
     // PlayerNetData (reliable_socket = -1, buffers zeroed) and links it into player_list.
@@ -444,7 +452,24 @@ namespace rf
     static auto& game_get_gore_level = addr_as_ref<int()>(0x00436A20);
     static auto& game_set_gore_level = addr_as_ref<void(int gore_setting)>(0x00436A10);
     static auto& player_settings_apply_graphics_options = addr_as_ref<void(Player* player)>(0x004A8D20);
+    // Both are part of the vanilla boarding sequence (0x004A1DD8): zero the fpgun pivot data for
+    // the cockpit view, then drop any active zoom.
+    static auto& player_cockpit_reset = addr_as_ref<void(Player* player)>(0x004A8670);
+    static auto& player_cockpit_process = addr_as_ref<void(Player* player)>(0x004A77A0);
+    static auto& player_cockpit_render = addr_as_ref<void(Player* player)>(0x004A7860);
+    // The driller's view_left/view_rear/view_right camera pose for cockpit_data.camera_index 1-3.
+    static auto& player_cockpit_get_view = addr_as_ref<void(Player* player, Entity* vehicle, Vector3* out_pos,
+                                                            Matrix3* out_orient)>(0x004A8690);
+    static auto& player_fpgun_reset_zoom = addr_as_ref<void(Player* player)>(0x004AD8A0);
+    // ((int)floor(value * weight + eps)) % 10 + 1, a 1-based cockpit VFX digit frame; 1 for a negative value.
+    static auto& cockpit_vfx_digit_frame = addr_as_ref<int __cdecl(int value, float weight)>(0x004A7EB0);
+    // Cockpit digit strip bitmaps (apc_digits.vbm, Fighter01_digits.vbm), -1 until 0x004A7E00 / 0x004A7D80 load them.
+    static auto& cockpit_digit_strip_base = addr_as_ref<int>(0x005A068C);
+    static auto& cockpit_digit_strip_base_fighter = addr_as_ref<int>(0x005A073C);
     static auto& local_screen_flash = addr_as_ref<void(Player* pp, uint8_t r, uint8_t g, uint8_t b, uint8_t a)>(0x00416450);
+    // 4-way mask (1 front, 2 left, 4 back, 8 right) of a hit travelling along dir, in pp's entity frame.
+    static auto& player_damage_dir_mask = addr_as_ref<unsigned(Player* pp, const Vector3* dir)>(0x004A5A20);
+    static auto& player_start_hud_damage_indicators = addr_as_ref<void(Player* pp, unsigned dir_mask)>(0x004A5AF0);
     static auto& g_player_flashlight_intensity = addr_as_ref<float>(0x005A00FC);
     static auto& g_player_flashlight_range = addr_as_ref<float>(0x005A0108);
 }

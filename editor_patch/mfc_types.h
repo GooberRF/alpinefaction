@@ -10,6 +10,7 @@
 #include <string>
 #include <vector>
 #include <common/terrain/alpine_terrain.h>
+#include <common/alpine_dir_light.h>
 
 extern "C" IMAGE_DOS_HEADER __ImageBase;
 
@@ -181,10 +182,12 @@ enum class DedObjectType : int
     DED_CORONA = 0x19, // Alpine 1.3
     DED_BAG = 0x1A,    // Alpine 1.4
     DED_WEATHER_REGION = 0x1B, // Alpine 1.4
-    // 0x1C is reserved
+    DED_VEHICLE_FACTORY = 0x1C, // Alpine 1.5
     DED_PROJECTION_CAMERA = 0x1D, // Alpine 1.5
     DED_ROPE_EMITTER = 0x1E, // Alpine 1.5
-    DED_TERRAIN = 0x1F // Alpine 1.5
+    DED_TERRAIN = 0x1F, // Alpine 1.5
+    DED_DIRECTIONAL_LIGHT = 0x20, // Alpine 1.5
+    DED_SUN_ARROW = 0x21, // editor-only viewport handle for the level sun, never serialized
 };
 
 struct Vector3
@@ -436,6 +439,13 @@ struct DedEvent : DedObject
 };
 static_assert(sizeof(DedEvent) == 0xC4, "DedEvent size mismatch");
 
+struct DedClutter : DedObject
+{
+    char pad_94[0xB8 - 0x94];
+    char skin_block[0x28]; // 0xB8 — includes the skin count at 0xDC; the stock ctor (0x0044D9F0) leaves it unset
+};
+static_assert(offsetof(DedClutter, skin_block) == 0xB8);
+
 struct DedRoomEffect : DedObject
 {
     int effect_type;                   // 0x94 — 2 = Liquid Room, 3 = Ambient Light
@@ -570,6 +580,30 @@ struct DedWeatherRegion : DedObject
     float column_width = 0.5f;
 };
 
+// Team a Vehicle Factory's spawned vehicle belongs to. Serialized as a u8, 0xFF for none.
+enum class VehicleFactoryTeam : int
+{
+    none = -1,
+    red = 0,
+    blue = 1,
+};
+
+struct DedVehicleFactory : DedObject
+{
+    std::string vehicle_class = "Jeep01";
+    float respawn_delay_s = 30.0f;
+    VehicleFactoryTeam team = VehicleFactoryTeam::none;
+    bool lock_to_team = false;
+    bool active_by_default = true;
+
+    // Kept out of DedObject::vmesh so stock cleanup paths never free it; vehicle_factory.cpp owns it.
+    void* preview_vmesh = nullptr;
+    std::string preview_class;   // class the preview was loaded for
+    bool preview_load_failed = false;
+    float preview_bound_center[3] = {}; // preview mesh bounding sphere, object space
+    float preview_bound_radius = 0.0f;  // 0 = no preview loaded, use the fixed fallback radius
+};
+
 struct DedProjectionCamera : DedObject
 {
     // All projection settings live on the linked Display_Projection event.
@@ -695,6 +729,7 @@ struct DedTerrainDecoration
     bool align_to_slope = false;
     bool random_yaw = true;
     bool casts_shadows = false;
+    bool dither_fade = false;
 
     bool operator==(const DedTerrainDecoration&) const = default;
 };
@@ -737,6 +772,33 @@ struct DedTerrain : DedObject
     DedTerrainData data;
     // Not serialized: a save already showed the "no compiled geometry" message box for it
     bool unbuilt_save_warned = false;
+};
+
+// orient.fvec is the direction the light travels. Fields mirror alpine_dir_light::Record.
+struct DedDirectionalLight : DedObject
+{
+    uint8_t color_r = 255, color_g = 255, color_b = 255;
+    float intensity = alpine_dir_light::default_intensity;
+    bool initially_on = true;
+    alpine_dir_light::Shape shape = alpine_dir_light::Shape::none;
+    float extent_x = alpine_dir_light::default_extent; // box width, sphere/cylinder radius
+    float extent_y = alpine_dir_light::default_extent; // box height, cylinder length
+    float extent_z = alpine_dir_light::default_extent; // box depth
+    float box_yaw = 0.0f;                              // degrees about world Y, box only
+    float feather = 0.0f;
+    float spread = 0.0f;                               // degrees, baked penumbra
+    bool cast_baked_shadows = true;
+    bool liquid_occludes = true;
+    bool sky_passes = true;
+    bool outside_casts = true;
+    bool affects_meshes = true;
+    alpine_dir_light::MeshMode mesh_mode = alpine_dir_light::MeshMode::lightmap_scaled;
+    bool always_show_range = false;
+};
+
+// The level sun's viewport handle: pos and orient are derived from the level properties every frame.
+struct DedSunArrow : DedObject
+{
 };
 
 struct DedBoltEmitter : DedObject

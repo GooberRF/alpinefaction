@@ -153,6 +153,12 @@ static void mirror_object(DedObject* obj, int axis)
         orient[i * 3 + axis] = -orient[i * 3 + axis];
     }
 
+    // A reflection across X or Z reverses the box yaw's sense.
+    if (obj->type == DedObjectType::DED_DIRECTIONAL_LIGHT && axis != 1) {
+        auto* light = static_cast<DedDirectionalLight*>(obj);
+        light->box_yaw = alpine_dir_light::normalize_degrees(-light->box_yaw);
+    }
+
     // For lights, sync the updated position/orient to the level_light object
     // so lightmap calculation uses the new values
     if (obj->type == DedObjectType::DED_LIGHT) {
@@ -1250,9 +1256,6 @@ void handle_vertex_bridge()
 // ============================================================================
 // Brush mode: Fuse / Carve
 // ============================================================================
-
-constexpr int undo_delete_brushes = 4;
-constexpr int undo_modify_brushes = 10;
 
 // Fuse records a modify snapshot and then a separate delete of the absorbed brushes. The delete
 // entry carries this block in raw_blocks so undo/redo can treat the pair as one step. Stock

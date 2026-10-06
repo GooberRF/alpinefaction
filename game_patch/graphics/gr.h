@@ -16,8 +16,12 @@ int gr_render_target_generation();
 void gr_flush_outlines_before_fpgun();
 bool gr_is_texture_format_supported(rf::bm::Format format);
 void gr_bitmap_scaled_float(int bitmap_handle, float x, float y, float w, float h, float sx, float sy, float sw, float sh, bool flip_x, bool flip_y, rf::gr::Mode mode);
+// Convex screen-space fan; sx/sy are clip-relative, u1/v1 used when bitmap_handle >= 0, colour from gr::set_color.
+void gr_poly_2d(int bitmap_handle, int nv, const rf::gr::Vertex* vertices, rf::gr::Mode mode);
 float gr_scale_fov_hor_plus(float horizontal_fov);
 bool gr_3d_bitmap_oriented_wh(const rf::Vector3* pnt, const rf::Matrix3* M, float half_w, float half_h, rf::gr::Mode mode);
+// Current view's screen position of a world point; false when behind the camera or not projected.
+bool gr_project_world_to_screen(const rf::Vector3& world_pos, float& out_sx, float& out_sy);
 int gr_fit_string(std::string& text, int max_width, int font_id = -1, std::string_view suffix = "-");
 void explosion_flash_lights_level_init();
 void explosion_flash_lights_destroy_all();

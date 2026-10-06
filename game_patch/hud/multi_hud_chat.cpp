@@ -30,6 +30,18 @@ FunHook<void(uint16_t)> multi_chat_say_add_char_hook{
     },
 };
 
+static int chatbox_width(int clip_w)
+{
+    return clip_w - (g_big_chatbox ? 600 : 313);
+}
+
+int multi_hud_chat_box_right_x()
+{
+    const int clip_w = rf::gr::clip_width();
+    const int box_w = chatbox_width(clip_w);
+    return (clip_w - box_w) / 2 + box_w;
+}
+
 FunHook<void(const char*, bool)> multi_chat_say_accept_hook{
     0x00444440,
     [](const char* msg, bool is_team_msg) {
@@ -68,7 +80,7 @@ void multi_hud_render_chat()
     int clip_w = rf::gr::clip_width();
     int font_h = rf::gr::get_font_height(chatbox_font);
     int border = g_big_chatbox ? 3 : 2;
-    int box_w = clip_w - (g_big_chatbox ? 600 : 313);
+    int box_w = chatbox_width(clip_w);
     int box_h = 8 * font_h + 2 * border + 6;
     int content_w = box_w - 2 * border;
     int content_h = box_h - 2 * border;
@@ -145,7 +157,7 @@ void multi_hud_render_chat_inputbox(rf::String::Pod label_pod, rf::String::Pod m
     int clip_w = rf::gr::clip_width();
     int font_h = rf::gr::get_font_height(chatbox_font); // 12
     int border = g_big_chatbox ? 3 : 2;
-    int box_w = clip_w - (g_big_chatbox ? 600 : 313);
+    int box_w = chatbox_width(clip_w);
     int content_w = box_w - 2 * border; // clip_w - 317
     int hist_box_y = 10;
     int hist_box_h = 8 * font_h + 2 * border + 6;

@@ -113,8 +113,11 @@ inline constexpr std::uint8_t decoration_coverage_full = 255;
 inline constexpr std::uint8_t decoration_flag_align_to_slope = 0x1;
 inline constexpr std::uint8_t decoration_flag_random_yaw = 0x2;
 inline constexpr std::uint8_t decoration_flag_casts_shadows = 0x4;
-inline constexpr std::uint8_t decoration_flag_mask =
-    decoration_flag_align_to_slope | decoration_flag_random_yaw | decoration_flag_casts_shadows;
+// Dithered out over the end of the draw distance instead of shrunk (Direct3D 11). Drawing only: placement and
+// lighting ignore it.
+inline constexpr std::uint8_t decoration_flag_dither_fade = 0x8;
+inline constexpr std::uint8_t decoration_flag_mask = decoration_flag_align_to_slope | decoration_flag_random_yaw |
+                                                     decoration_flag_casts_shadows | decoration_flag_dither_fade;
 // Instances per m² at full coverage
 inline constexpr float max_decoration_density = 16.0f;
 inline constexpr float min_decoration_scale = 0.01f;
@@ -870,12 +873,12 @@ inline const char* validate_decoration(float density, float scale_min, float sca
     return nullptr;
 }
 
-// A decoration's wire flags from its align_to_slope, random_yaw and casts_shadows.
+// A decoration's wire flags from its align_to_slope, random_yaw, casts_shadows and dither_fade.
 template<typename Decoration>
 constexpr std::uint32_t decoration_flags(const Decoration& d)
 {
     return (d.align_to_slope ? decoration_flag_align_to_slope : 0u) | (d.random_yaw ? decoration_flag_random_yaw : 0u) |
-           (d.casts_shadows ? decoration_flag_casts_shadows : 0u);
+           (d.casts_shadows ? decoration_flag_casts_shadows : 0u) | (d.dither_fade ? decoration_flag_dither_fade : 0u);
 }
 
 // The chunk grid a record was built with, its stored chunk_cells: the build mapping and the chunk geo
@@ -1900,7 +1903,7 @@ inline constexpr std::uint64_t decoration_lighting_hash(std::int32_t uid, const 
         mix(position_bits(v.scale_max));
         mix(position_bits(v.max_slope_deg));
         mix(position_bits(v.vertical_offset));
-        mix(v.flags);
+        mix(v.flags & ~static_cast<std::uint32_t>(decoration_flag_dither_fade));
         mix(v.link_layer);
         mix_le_words(mix, v.coverage, texels);
         if (v.link_layer != decoration_link_none && g.weights && v.link_layer < max_layers) {
@@ -1918,16 +1921,20 @@ inline constexpr std::uint64_t chart_fingerprint(const GridView& g, std::uint64_
     return decoration_hash == 0 ? lighting_fingerprint(g) : splitmix64(lighting_fingerprint(g) ^ decoration_hash);
 }
 
-// Stored in every baked terrain chart, so pinned.
+// Stored in every baked terrain chart, so pinned. dither_fade only changes drawing, so it must not move it.
 static_assert([] {
     const std::uint16_t heights[9] = {0, 1, 0xFFFF, 0x1234, 0x8000, 0xABCD, 7, 0x0100, 0x7FFF};
     const std::uint8_t holes[1] = {0x04}, diag[1] = {0x09}, plane[4] = {255, 0, 17, 128};
     const GridView g{heights, nullptr, holes, diag, 3, 3, 1, {-12.5f, -0.0f, 1024.0f}, 2.0f, -3.0f, 64.0f,
                      flag_geoable, 16.0f, 8.0f, 1, 0, {}};
-    const DecorationView d{plane, "rock.v3m", 0.5f, 0.75f, 1.5f, 35.0f, 0.5f, decoration_link_none,
-                           decoration_flag_random_yaw | decoration_flag_casts_shadows};
-    return chart_fingerprint(g, decoration_lighting_hash(-7, g, &d, 1));
-}() == 0x2BD621293A0026F6ull);
+    const auto fingerprint = [&](std::uint32_t flags) {
+        const DecorationView d{plane, "rock.v3m", 0.5f, 0.75f, 1.5f, 35.0f, 0.5f, decoration_link_none, flags};
+        return chart_fingerprint(g, decoration_lighting_hash(-7, g, &d, 1));
+    };
+    const std::uint32_t flags = decoration_flag_random_yaw | decoration_flag_casts_shadows;
+    return fingerprint(flags) == 0x2BD621293A0026F6ull &&
+           fingerprint(flags | decoration_flag_dither_fade) == 0x2BD621293A0026F6ull;
+}());
 
 // ─── Build fingerprints ───────────────────────────────────────────────────────
 // Geometry: every input of the compiled positions and chunk -> room layout (the build mapping is valid

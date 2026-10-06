@@ -808,20 +808,11 @@ static void rope_emitter_pick_color(HWND hdlg)
                           g_rope_color_g, g_rope_color_b);
 }
 
-// Bitmap currently shown in the preview, tracked so an edit-box keystroke only touches the bitmap
-// manager when the name actually changed.
-static std::string g_rope_bitmap_preview_name;
-static int g_rope_bitmap_preview_handle = -1;
+static AlpineBitmapPreview g_rope_bitmap_preview;
 
 static void rope_emitter_update_bitmap_preview(HWND hdlg, bool force)
 {
-    char buf[256] = {};
-    GetDlgItemTextA(hdlg, IDC_ROPE_BITMAP, buf, sizeof(buf));
-    if (!force && g_rope_bitmap_preview_name == buf) return;
-
-    g_rope_bitmap_preview_name = buf;
-    g_rope_bitmap_preview_handle = alpine_dlg_resolve_bitmap(buf);
-    InvalidateRect(GetDlgItem(hdlg, IDC_ROPE_BITMAP_PREVIEW), nullptr, TRUE);
+    g_rope_bitmap_preview.update(hdlg, IDC_ROPE_BITMAP, IDC_ROPE_BITMAP_PREVIEW, force);
 }
 
 // ─── Per-slot FX popup ──────────────────────────────────────────────────────
@@ -864,22 +855,11 @@ static void rope_fx_popup_update_state(HWND hdlg)
     }
 }
 
-// The texture browser runs its own modal loop off the main frame, which would leave this dialog
-// clickable; same disable/re-activate dance the rope bitmap field does.
 static void rope_fx_browse_bitmap(HWND hdlg, int field_idc)
 {
     char current[MAX_PATH] = {};
     GetDlgItemTextA(hdlg, field_idc, current, sizeof(current));
-    const int current_handle = alpine_dlg_resolve_bitmap(current);
-
-    EnableWindow(hdlg, FALSE);
-    int picked = texture_browser_pick("Effects", current_handle);
-    EnableWindow(hdlg, TRUE);
-    SetActiveWindow(hdlg);
-    if (picked >= 0) {
-        const char* name = bm_get_filename(picked);
-        SetDlgItemTextA(hdlg, field_idc, name ? name : "");
-    }
+    alpine_dlg_browse_bitmap(hdlg, field_idc, "Effects", alpine_dlg_resolve_bitmap(current));
 }
 
 // The popup's controls as one clamped struct. Shared by OK and by Apply to all slots, so the two
@@ -1398,19 +1378,11 @@ static INT_PTR CALLBACK RopeEmitterDialogProc(HWND hdlg, UINT msg, WPARAM wp, LP
                 rope_emitter_update_bitmap_preview(hdlg, false);
             }
             break;
-        case IDC_ROPE_BITMAP_BROWSE: {
-            // Same modal-loop dance as rope_fx_browse_bitmap.
-            EnableWindow(hdlg, FALSE);
-            int picked = texture_browser_pick("Effects", g_rope_bitmap_preview_handle);
-            EnableWindow(hdlg, TRUE);
-            SetActiveWindow(hdlg);
-            if (picked >= 0) {
-                const char* name = bm_get_filename(picked);
-                SetDlgItemTextA(hdlg, IDC_ROPE_BITMAP, name ? name : "");
+        case IDC_ROPE_BITMAP_BROWSE:
+            if (alpine_dlg_browse_bitmap(hdlg, IDC_ROPE_BITMAP, "Effects", g_rope_bitmap_preview.handle)) {
                 rope_emitter_update_bitmap_preview(hdlg, true);
             }
             return TRUE;
-        }
         case IDOK: {
             const bool single = g_selected_rope_emitters.size() == 1;
 
@@ -1522,7 +1494,7 @@ static INT_PTR CALLBACK RopeEmitterDialogProc(HWND hdlg, UINT msg, WPARAM wp, LP
     case WM_DRAWITEM: {
         auto* dis = reinterpret_cast<DRAWITEMSTRUCT*>(lp);
         if (dis && dis->CtlID == IDC_ROPE_BITMAP_PREVIEW) {
-            alpine_dlg_draw_bitmap_preview(dis->hwndItem, dis->rcItem, g_rope_bitmap_preview_handle);
+            alpine_dlg_draw_bitmap_preview(dis->hwndItem, dis->rcItem, g_rope_bitmap_preview.handle);
             return TRUE;
         }
         break;
@@ -1643,22 +1615,6 @@ DedRopeEmitter* CloneRopeEmitterObject(DedRopeEmitter* source, bool add_to_level
     }
 
     return rope;
-}
-
-void DeleteRopeEmitterObject(DedRopeEmitter* rope)
-{
-    if (!rope) return;
-    auto* level = CDedLevel::Get();
-    if (!level) return;
-
-    auto& ropes = level->GetAlpineLevelProperties().rope_emitter_objects;
-    auto it = std::find(ropes.begin(), ropes.end(), rope);
-    if (it != ropes.end()) {
-        ropes.erase(it);
-    }
-    alpine_remove_from_groups(level, static_cast<DedObject*>(rope));
-    level->master_objects.remove_by_value(static_cast<DedObject*>(rope));
-    DestroyDedRopeEmitter(rope);
 }
 
 // ─── Rendering ──────────────────────────────────────────────────────────────
@@ -1868,12 +1824,6 @@ void rope_emitter_handle_delete_or_cut(DedObject* obj)
     if (it != ropes.end()) {
         ropes.erase(it);
     }
-}
-
-void rope_emitter_handle_delete_selection(CDedLevel* level)
-{
-    alpine_compact_selection<DedRopeEmitter>(level, DedObjectType::DED_ROPE_EMITTER,
-                                             DeleteRopeEmitterObject);
 }
 
 void rope_emitter_ensure_uid(int& uid)

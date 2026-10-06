@@ -197,6 +197,11 @@ namespace gr::d3d11
 
     static std::optional<Renderer> renderer;
 
+    static void set_mesh_bounds(const rf::VifLodMesh& lod_mesh, const rf::Vector3& pos, const rf::Matrix3& orient)
+    {
+        renderer->set_mesh_bounds(pos + orient.transform_vector(lod_mesh.center), lod_mesh.radius);
+    }
+
     void update_window_mode();
 
     void msg_handler(UINT msg, WPARAM w_param, LPARAM l_param)
@@ -283,6 +288,11 @@ namespace gr::d3d11
     void bitmap_float(int bitmap_handle, float x, float y, float w, float h, float sx, float sy, float sw, float sh, bool flip_x, bool flip_y, rf::gr::Mode mode)
     {
         renderer->bitmap(bitmap_handle, x, y, w, h, sx, sy, sw, sh, flip_x, flip_y, mode);
+    }
+
+    void poly_2d(int bitmap_handle, int nv, const rf::gr::Vertex* vertices, rf::gr::Mode mode)
+    {
+        renderer->poly_2d(bitmap_handle, nv, vertices, mode);
     }
 
     void set_clip()
@@ -547,6 +557,7 @@ namespace gr::d3d11
             bool lights_gathered = false;
             if (rf::level.geometry && !skip_mesh_light_gather) {
                 gather_mesh_lights(pos, lod_mesh->radius);
+                set_mesh_bounds(*lod_mesh, pos, orient);
                 lights_gathered = true;
             }
 
@@ -617,6 +628,7 @@ namespace gr::d3d11
             bool lights_gathered = false;
             if (!use_vertex_lighting && rf::level.geometry && !skip_mesh_light_gather) {
                 gather_mesh_lights(pos, lod_mesh->radius);
+                set_mesh_bounds(*lod_mesh, pos, orient);
                 lights_gathered = true;
             }
 
@@ -719,6 +731,7 @@ namespace gr::d3d11
             bool lights_gathered = rf::level.geometry && !skip_mesh_light_gather && !level_uses_vertex_lighting();
             if (lights_gathered) {
                 gather_mesh_lights(obj->render_pos, radius);
+                renderer->set_mesh_bounds(obj->render_pos, radius);
             }
             renderer->render_vfx(obj, frame);
             if (lights_gathered) {

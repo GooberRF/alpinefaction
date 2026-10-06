@@ -82,6 +82,8 @@ namespace rf::bm
     static_assert(sizeof(BitmapEntry) == 0x6C);
 
     static auto& load = addr_as_ref<int(const char *filename, int a2, bool generate_mipmaps)>(0x0050F6A0);
+    // -1 when the name is not resident; lets a caller tell a fresh load from a handout of an existing entry
+    static auto& find_by_filename = addr_as_ref<int(const char *filename)>(0x0050F580);
     static auto& create = addr_as_ref<int(Format format, int w, int h)>(0x005119C0);
     static auto& convert_format = addr_as_ref<void(void *dst_bits, Format dst_fmt, const void *src_bits, Format src_fmt, int num_pixels)>(0x0055DD20);
     static auto& get_dimensions = addr_as_ref<void(int bm_handle, int *w, int *h)>(0x00510630);

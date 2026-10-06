@@ -60,6 +60,9 @@ void salvage_client_do_frame();
 void salvage_on_entity_will_die(rf::Entity* ep);
 void salvage_on_player_disconnect(rf::Player* player);
 void salvage_handle_drop_flag_request(rf::Player* player);
+// Forced drop at the carrier's feet, recorded as a death drop: no flag_dropping rule gate, because
+// the cause is not the player asking. A no-op unless this player is the carrier.
+void salvage_force_drop_flag(rf::Player* player);
 
 // Reverts, then (re)applies the class-wide overrides Salvage puts on the flag_red
 // item class: IIF_SPINS_IN_MULTI and the Salvage flag mesh. Must run after the

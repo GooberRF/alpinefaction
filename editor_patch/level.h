@@ -10,17 +10,22 @@
 #include <algorithm>
 #include <patch_common/MemUtils.h>
 #include <xlog/xlog.h>
+#include <common/lighting/alpine_lighting.h>
 #include <common/lightmap/alpine_lightmap.h>
 #include "vtypes.h"
 #include "mfc_types.h"
 #include "resources.h"
 
 void DestroyDedMesh(DedMesh* mesh);
+void DestroyDedNote(DedNote* note);
 void DestroyDedCorona(DedCorona* corona);
+void DestroyDedBag(DedBag* bag);
 void DestroyDedWeatherRegion(DedWeatherRegion* weather_region);
+void DestroyDedVehicleFactory(DedVehicleFactory* factory);
 void DestroyDedProjectionCamera(DedProjectionCamera* camera);
 void DestroyDedRopeEmitter(DedRopeEmitter* rope);
 void DestroyDedTerrain(DedTerrain* terrain);
+void DestroyDedDirectionalLight(DedDirectionalLight* light);
 
 constexpr int alpine_props_chunk_id = 0x0AFBA5ED;
 constexpr int alpine_mesh_chunk_id = 0x0AFBAE01;
@@ -29,10 +34,12 @@ constexpr int alpine_corona_chunk_id = 0x0AFBAE03;
 constexpr int alpine_bag_chunk_id = 0x0AFBAE04;
 constexpr int alpine_brush_group_chunk_id = 0x0AFBAE05; // brush metadata in .rfg group files only
 constexpr int alpine_weather_region_chunk_id = 0x0AFBAE06;
+constexpr int alpine_vehicle_factory_chunk_id = 0x0AFBAE07;
 constexpr int alpine_projection_camera_chunk_id = 0x0AFBAE08;
 constexpr int alpine_rope_emitter_chunk_id = 0x0AFBAE0A;
 constexpr int alpine_terrain_chunk_id = static_cast<int>(alpine_terrain::chunk_id); // 0x0AFBAE0B
 constexpr int alpine_lightmaps_chunk_id = static_cast<int>(alpine_lightmap::chunk_id); // 0x0AFBAE09
+constexpr int alpine_directional_light_chunk_id = static_cast<int>(alpine_dir_light::chunk_id); // 0x0AFBAE0C
 
 // Other editors save RFL chunks of their own that Alpine Faction can neither read nor parse.
 // AlpineEditor retains them verbatim on load and re-emits them on save, so the originating
@@ -212,6 +219,7 @@ static_assert(offsetof(GRoom, uid) == 0x24);
 static_assert(offsetof(GRoom, face_list_head) == 0x28);
 static_assert(offsetof(GRoom, face_list_count) == 0x2C);
 static_assert(offsetof(GRoom, is_cold) == 0x41);
+static_assert(offsetof(GRoom, is_airlock) == 0x43);
 static_assert(offsetof(GRoom, ambient_light_defined) == 0x45);
 static_assert(offsetof(GRoom, ambient_light) == 0x46);
 static_assert(offsetof(GRoom, eax_effect) == 0x4A);
@@ -357,7 +365,7 @@ struct GSurface
     int index; // +0x00  the GFace::surface_index of its faces
     char _pad_04[0x08 - 0x04];
     std::uint8_t flags;     // +0x08  GSurfaceFlags
-    char _pad_09;
+    std::uint8_t smooth;    // +0x09  nonzero: FUN_004ad160 takes its smooth (vertex interpolating) path
     std::uint8_t fullbright; // +0x0A  nonzero: FUN_004ac470 never shades it
     char _pad_0B;
     GLightmap* lightmap;    // +0x0C
@@ -379,6 +387,7 @@ struct GSurface
 };
 static_assert(offsetof(GSurface, index) == 0x00);
 static_assert(offsetof(GSurface, flags) == 0x08);
+static_assert(offsetof(GSurface, smooth) == 0x09);
 static_assert(offsetof(GSurface, fullbright) == 0x0A);
 static_assert(offsetof(GSurface, lightmap) == 0x0C);
 static_assert(offsetof(GSurface, xstart) == 0x10);
@@ -400,6 +409,48 @@ static_assert(offsetof(GSurface, room_index) == 0x68);
 // `mode` is the shadow mode, 0 for none.
 static auto& lightmap_shade_surface =
     addr_as_ref<void __fastcall(GSurface* surface, int edx, void* solid, int mode)>(0x004ac470);
+
+// A face or occluder polygon in a surface's lightmap texel space, as the stock shadow projector
+// FUN_004ae360 builds them (operator new 0x104, ctor FUN_004af490 zeroes count).
+struct LightmapPolygon
+{
+    float verts[32][2]; // +0x00
+    int count;          // +0x100
+};
+static_assert(sizeof(LightmapPolygon) == 0x104);
+static_assert(offsetof(LightmapPolygon, count) == 0x100);
+
+// FUN_004ae360's locals as seen from ESP inside its per-face clip loop (0x004af1db..0x004af2b0).
+struct ShadowProjectorFrame
+{
+    char _pad_00[0x40];
+    VArray<LightmapPolygon*> faces; // +0x40  the surface's own faces
+};
+static_assert(offsetof(ShadowProjectorFrame, faces) == 0x40);
+
+// FUN_004ae360's cdecl arguments as seen from its frame pointer (PUSH EBP; MOV EBP,ESP).
+struct ShadowProjectorArgs
+{
+    void* saved_ebp;   // +0x00
+    void* return_addr; // +0x04
+    GSolid* solid;     // +0x08
+    GSurface* surface; // +0x0C
+    GrLight* light;    // +0x10
+};
+static_assert(offsetof(ShadowProjectorArgs, light) == 0x10);
+
+// FUN_004ad160's smooth path locals around the lumel it passes the accumulator at 0x004adb30: the normal
+// argument points at `normal` (ESP+0xE0), the position argument at `pos`.
+struct SmoothLumelLocals
+{
+    Vector3 normal;          // +0x00
+    Vector3 crossing_normal; // +0x0C  normal at the row's first edge crossing
+    Vector3 pos;             // +0x18
+    Vector3 crossing_pos;    // +0x24  position of the row's first edge crossing
+};
+static_assert(offsetof(SmoothLumelLocals, crossing_normal) == 0x0C);
+static_assert(offsetof(SmoothLumelLocals, pos) == 0x18);
+static_assert(offsetof(SmoothLumelLocals, crossing_pos) == 0x24);
 
 // One smoothed surface of the blend pass: FUN_004aabf0 builds the array (ctor FUN_004ab980) and
 // hands it to FUN_004aae80.
@@ -592,15 +643,28 @@ static_assert(offsetof(BrushNode, state) == 0x48);
 static_assert(offsetof(BrushNode, next) == 0x4C);
 static_assert(offsetof(BrushNode, prev) == 0x50);
 
-// Unit vector pointing TOWARD the sun. The light travel direction is its negation.
-// should match helper in game_patch\misc\level.h
-inline Vector3 alpine_sun_to_light_dir(float yaw_deg, float pitch_deg)
+// Inverse of alpine_lighting::sun_to_light_dir for a light travelling along `travel_dir`: yaw wrapped like
+// SanitizeSunProperties, pitch clamped to [0, 90] (a direction travelling upward parks the sun on the
+// horizon). False for a zero or non-finite direction.
+inline bool alpine_light_dir_to_sun_angles(const Vector3& travel_dir, float& yaw_deg, float& pitch_deg)
 {
-    constexpr float deg_to_rad = 3.14159265358979f / 180.0f;
-    const float yaw = yaw_deg * deg_to_rad;
-    const float pitch = pitch_deg * deg_to_rad;
-    const float cp = std::cos(pitch);
-    return {cp * std::sin(yaw), std::sin(pitch), cp * std::cos(yaw)};
+    const Vector3& d = travel_dir;
+    const float len = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z);
+    if (!std::isfinite(len) || len <= 0.0f) {
+        return false;
+    }
+    const float x = -d.x / len;
+    const float y = -d.y / len;
+    const float z = -d.z / len;
+
+    constexpr float rad_to_deg = 180.0f / 3.14159265358979f;
+    yaw_deg = std::atan2(x, z) * rad_to_deg;
+    yaw_deg = std::fmod(yaw_deg, 360.0f);
+    if (yaw_deg < 0.0f) {
+        yaw_deg += 360.0f;
+    }
+    pitch_deg = std::clamp(std::asin(std::clamp(y, -1.0f, 1.0f)) * rad_to_deg, 0.0f, 90.0f);
+    return true;
 }
 
 // should match structure in game_patch\misc\level.h
@@ -646,6 +710,15 @@ struct AlpineLevelProperties
     bool stock_lightmaps_omitted = false; // load-time only: the file had no stock lightmaps section
     uint8_t lightmap_compression = 0; // alpine_lightmap::CompressionMode
 
+    // v6
+    bool vehicle_flight_ceiling_enabled = false;   // mapper opted into an altitude ceiling for flyers
+    float vehicle_flight_ceiling = 0.0f;           // world Y (RF up axis) the ceiling sits at
+    bool minimap_enabled = false;
+    std::string minimap_bitmap;
+    Vector3 minimap_world_min{};
+    Vector3 minimap_world_max{};
+    float minimap_cut_height = 0.0f;
+
     // Alpine mesh objects (stored separately from stock object VArrays)
     std::vector<DedMesh*> mesh_objects;
 
@@ -660,6 +733,9 @@ struct AlpineLevelProperties
 
     // Alpine weather region objects
     std::vector<DedWeatherRegion*> weather_region_objects;
+
+    // Alpine vehicle factory objects
+    std::vector<DedVehicleFactory*> vehicle_factory_objects;
 
     // Alpine projection camera objects
     std::vector<DedProjectionCamera*> projection_camera_objects;
@@ -677,14 +753,19 @@ struct AlpineLevelProperties
     // the game knows a chunk by its mapped room alone.
     std::vector<int32_t> terrain_split_room_uids;
 
+    // Alpine directional light objects
+    std::vector<DedDirectionalLight*> directional_light_objects;
+
     // Retained foreign-editor RFL sections
     std::vector<RetainedRflChunk> retained_chunks;
 
-    static constexpr std::uint32_t current_alpine_chunk_version = 5u;
+    static constexpr std::uint32_t current_alpine_chunk_version = 6u;
 
+    // Unit vector pointing TOWARD the sun. The light travel direction is its negation.
     Vector3 sun_to_light_dir() const
     {
-        return alpine_sun_to_light_dir(sun_yaw, sun_pitch);
+        const alpine_lighting::Direction d = alpine_lighting::sun_to_light_dir(sun_yaw, sun_pitch);
+        return {d.x, d.y, d.z};
     }
 
     // Calculate Lighting gives the surfaces alpine charts; D3D11-only lightmaps can only apply then.
@@ -768,6 +849,13 @@ struct AlpineLevelProperties
         alpha_faces_occlude = false;
         no_shadow_cast_brush_uids.clear();
         meshes_occlude = false;
+        vehicle_flight_ceiling_enabled = false;
+        vehicle_flight_ceiling = 0.0f;
+        minimap_enabled = false;
+        minimap_bitmap.clear();
+        minimap_world_min = {};
+        minimap_world_max = {};
+        minimap_cut_height = 0.0f;
         lightmap_density = 0;
         d3d11_only_lightmaps = false;
         stock_lightmaps_omitted = false;
@@ -778,10 +866,7 @@ struct AlpineLevelProperties
         mesh_objects.clear();
 
         for (auto* n : note_objects) {
-            n->field_4.free();
-            n->script_name.free();
-            n->class_name.free();
-            delete n;
+            DestroyDedNote(n);
         }
         note_objects.clear();
 
@@ -791,10 +876,7 @@ struct AlpineLevelProperties
         corona_objects.clear();
 
         for (auto* b : bag_objects) {
-            b->field_4.free();
-            b->script_name.free();
-            b->class_name.free();
-            delete b;
+            DestroyDedBag(b);
         }
         bag_objects.clear();
 
@@ -802,6 +884,11 @@ struct AlpineLevelProperties
             DestroyDedWeatherRegion(w);
         }
         weather_region_objects.clear();
+
+        for (auto* f : vehicle_factory_objects) {
+            DestroyDedVehicleFactory(f);
+        }
+        vehicle_factory_objects.clear();
 
         for (auto* c : projection_camera_objects) {
             DestroyDedProjectionCamera(c);
@@ -819,6 +906,11 @@ struct AlpineLevelProperties
         terrain_objects.clear();
         terrain_room_uids.clear();
         terrain_split_room_uids.clear();
+
+        for (auto* d : directional_light_objects) {
+            DestroyDedDirectionalLight(d);
+        }
+        directional_light_objects.clear();
 
         retained_chunks.clear();
     }
@@ -891,6 +983,18 @@ struct AlpineLevelProperties
             (stock_lightmaps_suppressed ? alpine_lightmap::d3d11_only_stock_omitted : 0u) |
             (d3d11_only_lightmaps ? alpine_lightmap::d3d11_only_setting : 0u)));
         file.write<std::uint8_t>(lightmap_compression);
+        // v6
+        file.write<std::uint8_t>(vehicle_flight_ceiling_enabled ? 1u : 0u);
+        file.write<float>(vehicle_flight_ceiling);
+        file.write<std::uint8_t>(minimap_enabled ? 1u : 0u);
+        write_rfl_string(file, minimap_bitmap);
+        file.write<float>(minimap_world_min.x);
+        file.write<float>(minimap_world_min.y);
+        file.write<float>(minimap_world_min.z);
+        file.write<float>(minimap_world_max.x);
+        file.write<float>(minimap_world_max.y);
+        file.write<float>(minimap_world_max.z);
+        file.write<float>(minimap_cut_height);
     }
 
     void Deserialize(rf::File& file, std::size_t chunk_len)
@@ -1123,6 +1227,38 @@ struct AlpineLevelProperties
             lightmap_compression =
                 static_cast<std::uint8_t>(alpine_lightmap::compression_mode_from_wire(lightmap_compression));
         }
+
+        if (version >= 6) {
+            std::uint8_t u8 = 0;
+            if (!read_bytes(&u8, sizeof(u8)))
+                return;
+            vehicle_flight_ceiling_enabled = (u8 != 0);
+            if (!read_bytes(&vehicle_flight_ceiling, sizeof(vehicle_flight_ceiling)))
+                return;
+
+            if (!read_bytes(&u8, sizeof(u8)))
+                return;
+            minimap_enabled = (u8 != 0);
+            std::string bitmap = read_rfl_string(file, remaining);
+            if (rfl_name_over_long(bitmap) || bitmap.find_first_of("\\/:") != std::string::npos) {
+                xlog::warn("[AlpineLevelProps] Ignoring invalid minimap bitmap name");
+                bitmap.clear();
+            }
+            minimap_bitmap = std::move(bitmap);
+            float bounds[6] = {};
+            for (float& f : bounds) {
+                if (!read_bytes(&f, sizeof(f)))
+                    return;
+                if (!std::isfinite(f))
+                    f = 0.0f;
+            }
+            minimap_world_min = {bounds[0], bounds[1], bounds[2]};
+            minimap_world_max = {bounds[3], bounds[4], bounds[5]};
+            if (!read_bytes(&minimap_cut_height, sizeof(minimap_cut_height)))
+                return;
+            if (!std::isfinite(minimap_cut_height))
+                minimap_cut_height = 0.0f;
+        }
     }
 };
 
@@ -1141,6 +1277,29 @@ enum class DedEditMode : int
     Group = 5,
 };
 
+// A moving group member's position and orientation relative to the first keyframe (ctor FUN_004162c0)
+struct MovingGroupMember
+{
+    int uid;          // +0x00  member object or brush uid
+    Vector3 rel_pos;  // +0x04
+    Matrix3 orient;   // +0x10
+};
+static_assert(sizeof(MovingGroupMember) == 0x34);
+static_assert(offsetof(MovingGroupMember, uid) == 0x00);
+static_assert(offsetof(MovingGroupMember, rel_pos) == 0x04);
+static_assert(offsetof(MovingGroupMember, orient) == 0x10);
+
+// GroupEntry::keyframes target (ctor FUN_004162e0)
+struct MovingGroupKeyframes
+{
+    VArray<DedObject*> objects;           // +0x00  keyframe objects
+    VArray<MovingGroupMember*> members;   // +0x0C  looked up first match by uid (FUN_0042a690)
+    char _pad_18[0x40];                   // +0x18
+};
+static_assert(sizeof(MovingGroupKeyframes) == 0x58);
+static_assert(offsetof(MovingGroupKeyframes, objects) == 0x00);
+static_assert(offsetof(MovingGroupKeyframes, members) == 0x0C);
+
 // Group entry struct (0x34 bytes) — element of CDedLevel::moving_groups
 // Constructor: FUN_0043dec0 (zeros 4 x 12-byte blocks at +0x04, +0x10, +0x1C, +0x28)
 // Creation: FUN_0043ccf0 (allocs 0x34, calls constructor, sets type, pushes to moving_groups)
@@ -1150,8 +1309,7 @@ struct GroupEntry
     int type;                               // +0x00  set by FUN_0043ccf0 (values: 3,4,5,10)
     VArray<BrushNode*> brushes;             // +0x04  brushes in this group
     VArray<DedObject*> objects;             // +0x10  objects in this group
-    VArray<DedObject*>* keyframes;          // +0x1C  NULL=user-defined group, non-NULL=moving group
-                                            //        points to dynamically allocated VArray of keyframe objects
+    MovingGroupKeyframes* keyframes;        // +0x1C  NULL=user-defined group, non-NULL=moving group
     VString name;                           // +0x20  group display name
     VArray<void*> field_28;                 // +0x28  purpose unknown (zeroed by constructor)
 
@@ -1166,10 +1324,26 @@ static_assert(offsetof(GroupEntry, keyframes) == 0x1C);
 static_assert(offsetof(GroupEntry, name) == 0x20);
 static_assert(offsetof(GroupEntry, field_28) == 0x28);
 
+// UndoEntry::type, as Undo (FUN_0043d210) and Redo (FUN_0043d320) dispatch on it
+enum UndoEntryType : int
+{
+    undo_create_objects = 0,
+    undo_create_brushes = 1,
+    undo_create_objects_and_brushes = 2,
+    undo_delete_objects = 3,
+    undo_delete_brushes = 4,
+    undo_delete_objects_and_brushes = 5,
+    undo_transform_objects = 6,
+    undo_transform_brushes = 7,
+    undo_transform_group = 8,
+    undo_reorder_brushes = 9,
+    undo_modify_brushes = 10,
+};
+
 // Undo entry (0x34 bytes), created by FUN_0043ccf0(type)
 struct UndoEntry
 {
-    int type;                               // +0x00  4 = delete brushes, 7 = brush transform, 10 = modify snapshot, ...
+    UndoEntryType type;                     // +0x00
     VArray<DedObject*> objects;             // +0x04
     VArray<BrushNode*> brushes;             // +0x10  type 10: live clones
     VArray<BrushNode*> brushes_aux;         // +0x1C  type 10: originals, type 4: list predecessors
@@ -1231,7 +1405,10 @@ struct CDedLevel
     BrushNode* brush_list;                        // +0x118 (head of brush linked list)
 
     // --- editor strings + containers ---
-    char _pad_11C[0x1AC - 0x11C];                // +0x11C (3 CString+container pairs at +0x11C/+0x128, +0x14C/+0x158, +0x17C/+0x188)
+    // Vector3+Matrix3 pos/orient pairs: brush-mode cursor +0x11C/+0x128, texture-mode gizmo +0x14C/+0x158
+    char _pad_11C[0x17C - 0x11C];                // +0x11C
+    Vector3 player_start_pos;                     // +0x17C
+    Matrix3 player_start_orient;                  // +0x188
     void* unk_obj_1AC;                            // +0x1AC (0x14-byte allocated object)
     char _pad_1B0[0x1C0 - 0x1B0];               // +0x1B0 (CString + int)
     int unk_1C0;                                  // +0x1C0 (init 0, file filter related)
@@ -1364,6 +1541,12 @@ struct CDedLevel
         AddrCaller{0x00423460}.this_call(this);
     }
 
+    // Modal Level Properties dialog (FUN_00402300).
+    void show_level_properties_dialog()
+    {
+        AddrCaller{0x00402300}.this_call(this);
+    }
+
     bool hit_test_point(int screen_x, int screen_y, const Vector3* pos)
     {
         return AddrCaller{0x0042AC00}.this_call<bool>(this, screen_x, screen_y, pos);
@@ -1476,6 +1659,7 @@ static_assert(sizeof(CDedLevel) == 0x608);
 static_assert(offsetof(CDedLevel, ambient_color) == 0x30);
 static_assert(offsetof(CDedLevel, build_running) == 0x232);
 static_assert(offsetof(CDedLevel, texture_groups) == 0x1C4);
+static_assert(offsetof(CDedLevel, player_start_pos) == 0x17C);
 static_assert(offsetof(CDedLevel, geo_regions) == 0x3A0);
 static_assert(offsetof(CDedLevel, dialog_panels) == 0x444);
 

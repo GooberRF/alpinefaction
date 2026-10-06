@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
 struct CDedLevel;
 struct DedTerrain;
@@ -42,7 +43,8 @@ bool editor_bitmap_upload_rgb(int bm, std::uint32_t w, std::uint32_t h, const st
 bool terrain_view_draws_solid();
 
 // Draws one terrain into the viewport being painted, from `data` (the terrain's own, or the
-// properties dialog's staged copy). Called from the terrain surfaces pass (0x0041f6f9).
+// properties dialog's staged copy). Drawn before the level in a solid 3D view (0x0047ae96, or 0x00425a83 in the
+// portal modes), otherwise at 0x0041f6f9.
 void terrain_preview_draw(CDedLevel& level, const DedTerrain& terrain, const DedTerrainData& data, bool selected);
 
 // After the surfaces pass: frees the previews of terrains no longer in the level and asks for another paint
@@ -73,6 +75,19 @@ void terrain_preview_textures_reloaded();
 // terrain_preview_invalidate says: the preview keeps its composites instead of redoing them all.
 void terrain_preview_rebind_grid(const DedTerrain* terrain, const TerrainGrid* old_grid,
                                  const std::shared_ptr<const TerrainGrid>& new_grid);
+
+// A layer texture box-filtered down to at most 128 texels square: RGB, and for overlays RGB
+// premultiplied by alpha plus alpha.
+struct TerrainLayerTile
+{
+    int size = 0;
+    std::vector<std::uint8_t> rgb;
+    std::vector<std::uint8_t> rgba_premul;
+};
+
+// The tile the preview composites `texture` from, null when it cannot be read; valid until the next
+// viewport paint or Reload Textures.
+const TerrainLayerTile* terrain_preview_layer_tile(const std::string& texture);
 
 // The average colour of a layer texture as the preview blends it; false when it cannot be read.
 bool terrain_preview_layer_color(const std::string& texture, std::uint8_t (&rgb)[3]);

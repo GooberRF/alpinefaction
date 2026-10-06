@@ -21,6 +21,7 @@
 #include "../graphics/d3d11/gr_d3d11_hooks.h"
 #include "../multi/multi.h"
 #include "../multi/server_internal.h"
+#include "../multi/vehicles/vehicle_physics.h"
 #include "../main/main.h"
 #include "../misc/misc.h"
 #include "../rf/geometry.h"
@@ -43,6 +44,7 @@
 #include "alpine_terrain_decorations.h"
 #include "../sound/sound_foley.h"
 #include "../graphics/af_lightmap.h"
+#include "../hud/minimap.h"
 
 // Set by geomod_init hook; checked by boolean engine injections.
 static bool g_rf2_style_boolean_active = false;
@@ -651,6 +653,20 @@ CodeInjection boolean_skip_non_detail_faces_for_rf2{
             AddrCaller{0x004de9e0}.this_call(face_attrs, 2);
             regs.eip = 0x004dc521; // skip to next face in loop
         }
+    },
+};
+
+// State 3's flood (FUN_004e1920) spreads a face's side through shared vertices whatever the room. A
+// non-target face is sided 2 uncut, so one inside the crater (a welded terrain neighbour's wall) would
+// flood "keep" into target faces the crater removes.
+CallHook<void __fastcall(rf::GFace*)> boolean_flood_target_seeds_only_hook{
+    {0x004dd574, 0x004dd69b, 0x004dd73a},
+    [](rf::GFace* face) FASTCALL_LAMBDA {
+        if (g_rf2_style_boolean_active && !(face->attributes.flags & rf::FACE_BOOLEAN_TYPE_1) &&
+            face->which_room != g_rf2_target_detail_room) {
+            return;
+        }
+        boolean_flood_target_seeds_only_hook.call_target(face);
     },
 };
 
@@ -2254,6 +2270,9 @@ CodeInjection process_destroy_cleanup_injection{
             room->room_to_render_with = nullptr;
             room->geo_cache = nullptr;
             room->face_list.clear();
+
+            // The pane is off face_list already, so the rebuild finds no faces and drops the body.
+            vehicle_physics_notify_room_geometry_changed(room);
         }
     },
 };
@@ -2294,6 +2313,9 @@ CodeInjection pregame_glass_render_cleanup_injection{
             }
             room->room_to_render_with = nullptr;
             room->geo_cache = nullptr;
+
+            // This client's level mesh was built before the server named the already-broken panes.
+            vehicle_physics_notify_room_geometry_changed(room);
         }
     },
 };
@@ -2848,8 +2870,9 @@ static void process_pending_geomod_effects()
     // Smoke emitters: replay FUN_00437230 with saved crater params.
     // Must run from per-frame hook (not State 3) because FUN_00437230 creates
     // emitter records that interact with FUN_00437180's linked list lifecycle.
+    // Raw: the carve already landed, so this record must not trigger a second vphys rebuild.
     while (!g_rf2_smoke_confirmed.empty()) {
-        rf::geomod_queue_add(&g_rf2_smoke_confirmed.front());
+        vehicle_physics_geomod_queue_add_raw(&g_rf2_smoke_confirmed.front());
         g_rf2_smoke_record_ptrs.push_back(&rf::g_geomod_pending_list.prev->parameters);
         g_rf2_smoke_confirmed.pop_front();
     }
@@ -3139,6 +3162,16 @@ static bool should_enable_geo_chunk_physics()
     return false;
 }
 
+// params.scale is radius / shape radius, so this undoes it.
+std::optional<float> geomod_crater_radius(const rf::GeomodParams& params)
+{
+    const rf::GSolid* shape = rf::geomod_get_crater_solid(params.shape_index);
+    if (!shape) {
+        return std::nullopt;
+    }
+    return params.scale * shape->bounding_sphere_radius;
+}
+
 // Hook geomod_init (FUN_00466b00) to activate RF2-style boolean targeting.
 // By this point, geomod_create_hook has already verified geoable rooms exist,
 // so overlapping should always be non-empty when RF2-style is active.
@@ -3160,8 +3193,9 @@ FunHook<void(rf::GeomodParams*)> geomod_init_hook{
         geomod_init_hook.call_target(params);
 
         // The carve can open or close a roof over a blocked-by-geometry weather region.
-        if (rf::g_geomod_crater_solid) {
-            weather_notify_geomod(params->pos, params->scale * rf::g_geomod_crater_solid->bounding_sphere_radius);
+        if (const auto radius = geomod_crater_radius(*params)) {
+            weather_notify_geomod(params->pos, *radius);
+            minimap_notify_geomod(params->pos, *radius);
         }
 
         // Clear the modification flag at the start of each geomod.
@@ -3746,6 +3780,16 @@ static void invalidate_rf2_render_caches()
     std::vector<rf::GRoom*> split_rooms = std::move(g_rf2_split_rooms);
     g_rf2_split_rooms.clear();
 
+    // A cascaded or split room can lie outside the crater cells the vehicle level mesh rebuilds.
+    for (rf::GRoom* room : cascaded_rooms) {
+        if (room != g_rf2_target_detail_room) {
+            vehicle_physics_notify_room_geometry_changed(room);
+        }
+    }
+    for (rf::GRoom* room : split_rooms) {
+        vehicle_physics_notify_room_geometry_changed(room);
+    }
+
     if (!is_d3d11()) {
         rf::g_cache_clear();
         return;
@@ -4087,6 +4131,7 @@ void destruction_do_patch()
     state5_force_clear_type1_for_rf2.install();
     state5_reclassify_type1_for_rf2.install();
     boolean_skip_non_detail_faces_for_rf2.install();
+    boolean_flood_target_seeds_only_hook.install();
     boolean_state5_allow_detail_for_rf2.install();
     boolean_state5_protect_detail_cache_for_rf2.install();
     boolean_face_create_surface_hook.install();
