@@ -191,7 +191,6 @@ void send_chat_line_packet(std::string_view msg, rf::Player* target, rf::Player*
 const std::optional<AlpineFactionServerInfo>& get_af_server_info();
 std::optional<AlpineFactionServerInfo>& get_af_server_info_mutable();
 void multi_limbo_just_joined_do_frame();
-void multi_limbo_leave_render_overlay();
 void multi_level_download_do_frame();
 void multi_level_download_abort();
 void multi_level_download_manager_start(std::string filename);
