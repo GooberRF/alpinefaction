@@ -157,7 +157,7 @@ static bool is_screen_resolution_too_low_for_big_hud()
 
 void set_big_hud(bool is_big)
 {
-    hud_status_set_big(is_big);
+    hud_status_set_big(is_big && g_alpine_game_config.big_hud_health);
     multi_hud_chat_set_big(is_big);
     hud_personas_set_big(is_big);
     weapon_select_set_big(is_big);
@@ -167,7 +167,7 @@ void set_big_hud(bool is_big)
     g_target_player_name_font = hud_get_default_font();
 
     hud_setup_positions(rf::gr::screen_width());
-    hud_weapons_set_big(is_big);
+    hud_weapons_set_big(is_big && g_alpine_game_config.big_hud_ammo);
     set_big_countdown_counter(is_big);
 
     // TODO: Message Log - Note: it remembers text height in save files so method of recalculation is needed
@@ -187,6 +187,46 @@ ConsoleCommand2 bighud_cmd{
     },
     "Toggle big HUD",
     "bighud",
+};
+
+ConsoleCommand2 bighud_health_cmd{
+    "bighud_health",
+    [] {
+        g_alpine_game_config.big_hud_health = !g_alpine_game_config.big_hud_health;
+        set_big_hud(g_alpine_game_config.big_hud);
+        if (!g_alpine_game_config.big_hud && g_alpine_game_config.big_hud_health) {
+            rf::console::print(
+                "Big HUD health is enabled but ignored, because Big HUD is disabled"
+            );
+        } else {
+            rf::console::print(
+                "Big HUD health is {}",
+                g_alpine_game_config.big_hud_health ? "enabled" : "disabled"
+            );
+        }
+    },
+    "Toggle big HUD for health",
+    "bighud_health",
+};
+
+ConsoleCommand2 bighud_ammo_cmd{
+    "bighud_ammo",
+    [] {
+        g_alpine_game_config.big_hud_ammo = !g_alpine_game_config.big_hud_ammo;
+        set_big_hud(g_alpine_game_config.big_hud);
+        if (!g_alpine_game_config.big_hud && g_alpine_game_config.big_hud_ammo) {
+            rf::console::print(
+                "Big HUD ammo is enabled but ignored, because Big HUD is disabled"
+            );
+        } else {
+            rf::console::print(
+                "Big HUD ammo is {}",
+                g_alpine_game_config.big_hud_ammo ? "enabled" : "disabled"
+            );
+        }
+    },
+    "Toggle big HUD for ammo",
+    "bighud_ammo",
 };
 
 ConsoleCommand2 ui_realarmor_cmd{
@@ -462,6 +502,8 @@ void hud_apply_patches()
 
     // Other commands
     bighud_cmd.register_cmd();
+    bighud_health_cmd.register_cmd();
+    bighud_ammo_cmd.register_cmd();
     ui_realarmor_cmd.register_cmd();
 #ifndef NDEBUG
     hud_coords_cmd.register_cmd();
