@@ -200,6 +200,7 @@ Version 1.5.0 (Trillium): Not yet released
 
 [@is-this-c](https://github.com/is-this-c)
 - Let `Caps Lock` capitalize
+- Fix floating damage numbers not swaying in the wind
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Cap FPS-dependent launch velocity when head jumping

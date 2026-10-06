@@ -277,32 +277,6 @@ static float koth_fill_scale_from_progress(uint8_t progress01_100, float base_ic
     return base_icon_scale * g_koth_hud_tuning.fill_vs_ring_scale * r;
 }
 
-// Use `render_string_3d`.
-static void render_projected_string(
-    const rf::Vector3& pos,
-    const std::string& text,
-    const int offset_x,
-    const int offset_y,
-    const int font,
-    const rf::ubyte r,
-    const rf::ubyte g,
-    const rf::ubyte b,
-    const rf::ubyte a
-) {
-    rf::gr::Vertex dest{};
-    // Transform to screen space.
-    if (!rf::gr::rotate_vertex(&dest, &pos)) {
-        rf::gr::project_vertex(&dest);
-        // Check if projection was successful
-        if (dest.flags & 1) {
-            const int screen_x = std::lround(dest.sx) + offset_x;
-            const int screen_y = std::lround(dest.sy) + offset_y;
-            rf::gr::set_color(r, g, b, a);
-            rf::gr::string(screen_x, screen_y, text.c_str(), font);
-        }
-    }
-}
-
 // Assumes `rf::gr::screen.aspect` to be 1, so x and y scales are equal.
 static float world_units_per_pixel(const rf::Vector3& pos) {
     const rf::Vector3 delta = pos - rf::gr::view_pos;
@@ -313,56 +287,39 @@ static float world_units_per_pixel(const rf::Vector3& pos) {
     return 2.f * z / (rf::gr::screen.clip_height * rf::gr::matrix_scale.y);
 }
 
-constexpr bool WH_2D_TEXT = false;
-
 static void render_string_3d(
     rf::Vector3 pos,
     const char* const string,
     const int screen_offset_x,
     const int screen_offset_y,
     const int font_num,
-    const rf::gr::Color color,
-    const rf::Matrix3* const orient = &rf::gr::eye_matrix
+    const rf::gr::Color color
 ) {
-    if constexpr (WH_2D_TEXT) {
-        render_projected_string(
-            pos,
-            string,
-            screen_offset_x,
-            screen_offset_y,
-            font_num,
-            color.red,
-            color.green,
-            color.blue,
-            color.alpha
-        );
-    } else {
-        const float scale = world_units_per_pixel(pos);
-        if (scale <= .0f) {
-            return;
-        }
-        if (screen_offset_x != 0) {
-            pos += rf::gr::eye_matrix.rvec
-                * static_cast<float>(screen_offset_x)
-                * scale;
-        }
-        if (screen_offset_y != 0) {
-            pos -= rf::gr::eye_matrix.uvec
-                * static_cast<float>(screen_offset_y)
-                * scale;
-        }
-        const rf::gr::Color prev_color{rf::gr::screen.current_color};
-        rf::gr::set_color(color);
-        rf::gr::string_3d(
-            &pos,
-            orient,
-            scale,
-            string,
-            font_num,
-            rf::gr::bitmap_clamp_mode
-        );
-        rf::gr::set_color(prev_color);
+    const float scale = world_units_per_pixel(pos);
+    if (scale <= .0f) {
+        return;
     }
+    if (screen_offset_x != 0) {
+        pos += rf::gr::eye_matrix.rvec
+            * static_cast<float>(screen_offset_x)
+            * scale;
+    }
+    if (screen_offset_y != 0) {
+        pos -= rf::gr::eye_matrix.uvec
+            * static_cast<float>(screen_offset_y)
+            * scale;
+    }
+    const rf::gr::Color prev_color{rf::gr::screen.current_color};
+    rf::gr::set_color(color);
+    rf::gr::string_3d(
+        &pos,
+        &rf::gr::eye_matrix,
+        scale,
+        string,
+        font_num,
+        rf::gr::bitmap_clamp_mode
+    );
+    rf::gr::set_color(prev_color);
 }
 
 static WorldHUDView make_world_hud_view(rf::Vector3 pos, bool stay_inside_fog = true)
