@@ -19,7 +19,7 @@ static void bag_load_icon()
     }
 }
 
-static void destroy_ded_bag(DedBag* bag)
+void DestroyDedBag(DedBag* bag)
 {
     if (!bag) return;
     bag->field_4.free();
@@ -85,19 +85,19 @@ void bag_deserialize_chunk(CDedLevel& level, rf::File& file, std::size_t chunk_l
         bag->vtbl = reinterpret_cast<void*>(ded_object_vtbl_addr);
         bag->type = DedObjectType::DED_BAG;
 
-        if (!read_bytes(&bag->uid, sizeof(bag->uid))) { destroy_ded_bag(bag); return; }
-        if (!read_bytes(&bag->pos.x, sizeof(float))) { destroy_ded_bag(bag); return; }
-        if (!read_bytes(&bag->pos.y, sizeof(float))) { destroy_ded_bag(bag); return; }
-        if (!read_bytes(&bag->pos.z, sizeof(float))) { destroy_ded_bag(bag); return; }
-        if (!read_bytes(&bag->orient.rvec.x, sizeof(float))) { destroy_ded_bag(bag); return; }
-        if (!read_bytes(&bag->orient.rvec.y, sizeof(float))) { destroy_ded_bag(bag); return; }
-        if (!read_bytes(&bag->orient.rvec.z, sizeof(float))) { destroy_ded_bag(bag); return; }
-        if (!read_bytes(&bag->orient.uvec.x, sizeof(float))) { destroy_ded_bag(bag); return; }
-        if (!read_bytes(&bag->orient.uvec.y, sizeof(float))) { destroy_ded_bag(bag); return; }
-        if (!read_bytes(&bag->orient.uvec.z, sizeof(float))) { destroy_ded_bag(bag); return; }
-        if (!read_bytes(&bag->orient.fvec.x, sizeof(float))) { destroy_ded_bag(bag); return; }
-        if (!read_bytes(&bag->orient.fvec.y, sizeof(float))) { destroy_ded_bag(bag); return; }
-        if (!read_bytes(&bag->orient.fvec.z, sizeof(float))) { destroy_ded_bag(bag); return; }
+        if (!read_bytes(&bag->uid, sizeof(bag->uid))) { DestroyDedBag(bag); return; }
+        if (!read_bytes(&bag->pos.x, sizeof(float))) { DestroyDedBag(bag); return; }
+        if (!read_bytes(&bag->pos.y, sizeof(float))) { DestroyDedBag(bag); return; }
+        if (!read_bytes(&bag->pos.z, sizeof(float))) { DestroyDedBag(bag); return; }
+        if (!read_bytes(&bag->orient.rvec.x, sizeof(float))) { DestroyDedBag(bag); return; }
+        if (!read_bytes(&bag->orient.rvec.y, sizeof(float))) { DestroyDedBag(bag); return; }
+        if (!read_bytes(&bag->orient.rvec.z, sizeof(float))) { DestroyDedBag(bag); return; }
+        if (!read_bytes(&bag->orient.uvec.x, sizeof(float))) { DestroyDedBag(bag); return; }
+        if (!read_bytes(&bag->orient.uvec.y, sizeof(float))) { DestroyDedBag(bag); return; }
+        if (!read_bytes(&bag->orient.uvec.z, sizeof(float))) { DestroyDedBag(bag); return; }
+        if (!read_bytes(&bag->orient.fvec.x, sizeof(float))) { DestroyDedBag(bag); return; }
+        if (!read_bytes(&bag->orient.fvec.y, sizeof(float))) { DestroyDedBag(bag); return; }
+        if (!read_bytes(&bag->orient.fvec.z, sizeof(float))) { DestroyDedBag(bag); return; }
 
         bag->script_name.assign_0("Bag");
 
@@ -163,21 +163,6 @@ DedBag* CloneBagObject(DedBag* source, bool add_to_level)
     }
 
     return bag;
-}
-
-void DeleteBagObject(DedBag* bag)
-{
-    if (!bag) return;
-    auto* level = CDedLevel::Get();
-    if (!level) return;
-
-    auto& bags = level->GetAlpineLevelProperties().bag_objects;
-    auto it = std::find(bags.begin(), bags.end(), bag);
-    if (it != bags.end()) {
-        bags.erase(it);
-    }
-    level->master_objects.remove_by_value(static_cast<DedObject*>(bag));
-    destroy_ded_bag(bag);
 }
 
 void bag_render(CDedLevel* level)
@@ -296,7 +281,7 @@ void bag_paste_objects(CDedLevel* level)
 void bag_clear_clipboard()
 {
     for (auto* bag : g_bag_clipboard) {
-        destroy_ded_bag(bag);
+        DestroyDedBag(bag);
     }
     g_bag_clipboard.clear();
 }
@@ -311,21 +296,6 @@ void bag_handle_delete_or_cut(DedObject* obj)
     auto it = std::find(bag_objects.begin(), bag_objects.end(), static_cast<DedBag*>(obj));
     if (it != bag_objects.end()) {
         bag_objects.erase(it);
-    }
-}
-
-void bag_handle_delete_selection(CDedLevel* level)
-{
-    auto& sel = level->selection;
-    for (int i = sel.size - 1; i >= 0; i--) {
-        DedObject* obj = sel.data_ptr[i];
-        if (obj && obj->type == DedObjectType::DED_BAG) {
-            for (int j = i; j < sel.size - 1; j++) {
-                sel.data_ptr[j] = sel.data_ptr[j + 1];
-            }
-            sel.size--;
-            DeleteBagObject(static_cast<DedBag*>(obj));
-        }
     }
 }
 

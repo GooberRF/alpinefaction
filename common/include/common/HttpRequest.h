@@ -58,6 +58,7 @@ public:
     void set_connect_timeout(unsigned long timeout_ms);
     void set_send_timeout(unsigned long timeout_ms);
     void set_receive_timeout(unsigned long timeout_ms);
+    void set_connect_retries(unsigned long retries);
 
     HINTERNET get_internet_handle()
     {

@@ -177,11 +177,18 @@ static uint32_t vpackfile_process_header(rf::VPackfile* packfile, const void* ra
         uint32_t total_size;
     };
     constexpr unsigned VPP_SIG = 0x51890ACE;
+    // Bound the file count. 1M entries (~24 MB of VPackfileEntry) is far above any legitimate packfile.
+    constexpr unsigned VPP_MAX_FILES = 0x100000;
     const auto& hdr = *static_cast<const VppHeader*>(raw_header);
     packfile->num_files = hdr.num_files;
     packfile->file_size = hdr.total_size;
     if (hdr.sig != VPP_SIG || hdr.unk < 1u)
         return 0;
+    if (hdr.num_files > VPP_MAX_FILES) {
+        xlog::error("VPP rejected: num_files {} exceeds maximum {}", hdr.num_files, VPP_MAX_FILES);
+        packfile->num_files = 0;
+        return 0;
+    }
     return hdr.num_files;
 }
 
@@ -479,6 +486,10 @@ bool vpackfile_supercede_allowed(const char* requested_filename, const char* sib
 static void vpackfile_add_to_lookup_table(rf::VPackfileEntry* entry)
 {
     std::string filename_str = string_to_lower(entry->name);
+    // dedicated servers don't need .awp files.
+    if (rf::is_dedicated_server && filename_str.ends_with(".awp")) {
+        return;
+    }
     auto [it, inserted] = g_loopup_table.insert({filename_str, entry});
     if (!inserted) {
         ++g_num_name_collisions;
@@ -506,11 +517,25 @@ static int vpackfile_add_entries_new(rf::VPackfile* packfile, const void* block,
 
     for (unsigned i = 0; i < num_files; ++i) {
         const char* file_name = record->name;
+
+        // Bound the length to the field size before any copy.
+        const size_t name_len = strnlen(file_name, sizeof(record->name));
+
+        // Bound the per-entry size. The size drives a single allocation when the file is later read.
+        constexpr uint32_t vpp_max_entry_size = 0x60000000u; // 1.5 GiB
+        if (record->size > vpp_max_entry_size) {
+            xlog::error("VPP rejected: entry '{}' size {} exceeds maximum {} (index untrustworthy)",
+                        std::string(file_name, name_len), record->size, vpp_max_entry_size);
+            // Fail the load rather than skipping just this entry. This VPP is corrupt or crafted.
+            return 0;
+        }
+
         rf::VPackfileEntry& entry = packfile->files[num_added_files];
 
         // Note: we can't use string pool from RF because it's too small
-        char* file_name_buf = new char[strlen(file_name) + 1];
-        std::strcpy(file_name_buf, file_name);
+        char* file_name_buf = new char[name_len + 1];
+        std::memcpy(file_name_buf, file_name, name_len);
+        file_name_buf[name_len] = '\0';
         entry.name = file_name_buf;
         entry.name_checksum = rf::vpackfile_calc_file_name_checksum(entry.name);
         entry.size = record->size;
@@ -672,8 +697,9 @@ static void vpackfile_init_new()
     if (!rf::is_dedicated_server) {
         rf::vpackfile_add("music.vpp", nullptr);
         rf::vpackfile_add("ui.vpp", nullptr);
-        load_alpinefaction_vpp();
     }
+
+    load_alpinefaction_vpp();
     rf::vpackfile_add("tables.vpp", nullptr);
     addr_as_ref<int>(0x01BDB218) = 1;          // VPackfilesLoaded
     addr_as_ref<uint32_t>(0x01BDB210) = 10000; // NumFilesInVfs

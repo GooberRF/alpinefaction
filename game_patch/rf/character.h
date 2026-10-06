@@ -25,7 +25,9 @@ namespace rf
 
         bool has_morph_vertices() const
         {
-            return AddrCaller{0x0053A820}.this_call<bool>(this);
+            // Fix null reference crash when referencing unloaded skeletons.
+            const int* morph_data = AddrCaller{0x00539DF0}.this_call<const int*>(this);
+            return morph_data != nullptr && morph_data[7] > 0;
         }
 
         void morph(rf::Vector3 *morphed_vecs, int num_vecs, int time, short *orig_vecs_map, int num_orig_vecs) const
@@ -88,6 +90,9 @@ namespace rf
         int root;
     };
     static_assert(sizeof(Character) == 0x1A58);
+    static_assert(offsetof(Character, flags) == 0x44);
+    static_assert(offsetof(Character, num_bones) == 0x48);
+    static_assert(offsetof(Character, num_tags) == 0x12B8);
 
     struct CharacterInstance
     {
@@ -117,6 +122,8 @@ namespace rf
         CharacterInstance *next;
         CharacterInstance *prev;
     };
+
+    static auto& base_characters = addr_as_ref<Character[64]>(0x0181BDC0);
 
     static auto& g_fast_animations = addr_as_ref<bool>(0x005A4459);
 

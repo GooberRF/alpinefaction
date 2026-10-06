@@ -1,6 +1,7 @@
 #include "waypoints_utils.h"
 #include "waypoints_internal.h"
 #include "alpine_settings.h"
+#include "vote_panel.h"
 #include "../hud/multi_spectate.h"
 #include "../rf/collide.h"
 #include "../rf/entity.h"
@@ -944,6 +945,14 @@ void handle_waypoint_editor_input()
         return;
     }
 
+    // Raw key read, so the control veto does not cover it: a focused vote panel box
+    // owns the keyboard. Consumed and discarded rather than left standing, which
+    // would delete the selection on the frame after the box loses focus.
+    if (vote_panel_is_capturing_text()) {
+        rf::key_get_and_reset_down_counter(rf::KEY_DELETE);
+        return;
+    }
+
     if (rf::key_get_and_reset_down_counter(rf::KEY_DELETE) > 0) {
         delete_selected_waypoint_editor_object();
     }
@@ -1208,20 +1217,6 @@ rf::Vector3 gizmo_axis_dir(const WaypointGizmoAxis axis)
     }
 }
 
-bool project_world_to_screen(const rf::Vector3& world_pos, float& out_sx, float& out_sy)
-{
-    rf::gr::Vertex v{};
-    if (!rf::gr::rotate_vertex(&v, &world_pos)) {
-        rf::gr::project_vertex(&v);
-        if (v.flags & rf::gr::VF_PROJECTED) {
-            out_sx = v.sx;
-            out_sy = v.sy;
-            return true;
-        }
-    }
-    return false;
-}
-
 float distance_sq_point_to_segment_2d(
     const float px,
     const float py,
@@ -1262,7 +1257,7 @@ std::optional<GizmoAxisHover> determine_hovered_gizmo_axis(
 {
     float center_sx = 0.0f;
     float center_sy = 0.0f;
-    if (!project_world_to_screen(gizmo_center, center_sx, center_sy)) {
+    if (!gr_project_world_to_screen(gizmo_center, center_sx, center_sy)) {
         return std::nullopt;
     }
 
@@ -1280,7 +1275,7 @@ std::optional<GizmoAxisHover> determine_hovered_gizmo_axis(
         const rf::Vector3 axis_end = gizmo_center + gizmo_axis_dir(axis) * axis_length;
         float end_sx = 0.0f;
         float end_sy = 0.0f;
-        if (!project_world_to_screen(axis_end, end_sx, end_sy)) {
+        if (!gr_project_world_to_screen(axis_end, end_sx, end_sy)) {
             continue;
         }
 
@@ -1907,9 +1902,41 @@ void append_text_from_count(std::string& field, const int count, const char ch)
     }
 }
 
+// These pumps are raw key reads, so the control veto does not cover them.
+bool drain_dialog_keys_while_panel_captures(const bool with_minus = false)
+{
+    if (!vote_panel_is_capturing_text()) {
+        return false;
+    }
+
+    rf::key_get_and_reset_down_counter(rf::KEY_ESC);
+    rf::key_get_and_reset_down_counter(rf::KEY_ENTER);
+    rf::key_get_and_reset_down_counter(rf::KEY_PADENTER);
+    rf::key_get_and_reset_down_counter(rf::KEY_BACKSP);
+    if (with_minus) {
+        rf::key_get_and_reset_down_counter(rf::KEY_MINUS);
+        rf::key_get_and_reset_down_counter(rf::KEY_PADMINUS);
+    }
+    // Both halves of every digit: the raw counter and anything key.cpp stashed
+    // before the box took focus.
+    for (int key = rf::KEY_1; key <= rf::KEY_0; ++key) {
+        rf::key_get_and_reset_down_counter(static_cast<rf::Key>(key));
+        waypoints_utils_consume_numeric_key(key);
+    }
+    // Keypad digits are not contiguous in the scancode order.
+    for (const rf::Key key : {rf::KEY_PAD0, rf::KEY_PAD1, rf::KEY_PAD2, rf::KEY_PAD3, rf::KEY_PAD4,
+                              rf::KEY_PAD5, rf::KEY_PAD6, rf::KEY_PAD7, rf::KEY_PAD8, rf::KEY_PAD9}) {
+        rf::key_get_and_reset_down_counter(key);
+    }
+    return true;
+}
+
 void process_link_editor_keyboard_input()
 {
     if (!g_waypoint_link_editor_dialog.open || !g_waypoint_editor_mouse_ui_mode) {
+        return;
+    }
+    if (drain_dialog_keys_while_panel_captures(true)) {
         return;
     }
 
@@ -2010,6 +2037,9 @@ void process_zone_create_trigger_uid_keyboard_input()
     if (!g_waypoint_zone_create_dialog.open
         || g_waypoint_zone_create_dialog.stage != WaypointZoneCreateDialogStage::enter_trigger_uid
         || !g_waypoint_editor_mouse_ui_mode) {
+        return;
+    }
+    if (drain_dialog_keys_while_panel_captures()) {
         return;
     }
 
@@ -2150,6 +2180,9 @@ void process_bridge_waypoint_keyboard_input()
         || !g_waypoint_editor_mouse_ui_mode) {
         return;
     }
+    if (drain_dialog_keys_while_panel_captures()) {
+        return;
+    }
 
     if (rf::key_get_and_reset_down_counter(rf::KEY_ESC) > 0) {
         close_waypoint_zone_create_dialog();
@@ -2220,6 +2253,9 @@ void open_target_link_editor_dialog(const int target_uid)
 void process_target_link_editor_keyboard_input()
 {
     if (!g_waypoint_target_link_editor_dialog.open || !g_waypoint_editor_mouse_ui_mode) {
+        return;
+    }
+    if (drain_dialog_keys_while_panel_captures()) {
         return;
     }
 
@@ -2296,6 +2332,9 @@ void open_zone_bridge_editor_dialog(const int zone_uid)
 void process_zone_bridge_editor_keyboard_input()
 {
     if (!g_waypoint_zone_bridge_editor_dialog.open || !g_waypoint_editor_mouse_ui_mode) {
+        return;
+    }
+    if (drain_dialog_keys_while_panel_captures()) {
         return;
     }
 
@@ -3012,7 +3051,7 @@ void draw_waypoint_editor_gizmo()
 
             float sx = 0.0f;
             float sy = 0.0f;
-            if (project_world_to_screen(axis_end, sx, sy)) {
+            if (gr_project_world_to_screen(axis_end, sx, sy)) {
                 const char axis_label[2]{
                     axis == WaypointGizmoAxis::x ? 'X' : axis == WaypointGizmoAxis::y ? 'Y' : 'Z',
                     '\0'

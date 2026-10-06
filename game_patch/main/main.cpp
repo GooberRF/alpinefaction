@@ -22,25 +22,35 @@
 #include "../bmpman/bmpman.h"
 #include "../debug/debug.h"
 #include "../graphics/gr.h"
+#include "../graphics/weather.h"
+#include "../graphics/scene_capture.h"
 #include "../graphics/d3d11/gr_d3d11_mesh.h"
 #include "../hud/hud.h"
 #include "../hud/hud_world.h"
+#include "../hud/minimap.h"
 #include "../hud/multi_scoreboard.h"
 #include "../hud/multi_spectate.h"
 #include "../object/object.h"
 #include "../multi/multi.h"
+#include "../multi/demo/demo.h"
 #include "../multi/gametype.h"
 #include "../multi/mutators.h"
 #include "../multi/bagman.h"
 #include "../multi/jetpack.h"
 #include "../multi/salvage.h"
+#include "../multi/vehicles/vehicle.h"
+#include "../multi/vehicles/vehicle_markers.h"
+#include "../multi/vehicles/vehicle_physics.h"
+#include "../multi/vehicles/vehicle_tracers.h"
 #include "../multi/server.h"
 #include "../multi/server_internal.h"
 #include "../multi/alpine_packets.h"
+#include "../multi/awards.h"
 #include "../fflink/fflink.h"
 #include "../misc/misc.h"
 #include "../misc/achievements.h"
 #include "../misc/spray_picker.h"
+#include "../multi/demo/demo_browser.h"
 #include "../misc/alpine_options.h"
 #include "../misc/alpine_settings.h"
 #include "../misc/vpackfile.h"
@@ -48,7 +58,10 @@
 #include "../misc/player.h"
 #include "../misc/waypoints.h"
 #include "../misc/level.h"
+#include "../misc/alpine_terrain_decorations.h"
+#include "../graphics/af_lightmap.h"
 #include "../object/alpine_corona.h"
+#include "../object/alpine_rope.h"
 #include "../input/input.h"
 #include "../rf/gr/gr.h"
 #include "../rf/multi.h"
@@ -164,9 +177,13 @@ FunHook<int()> rf_do_frame_hook{
         bagman_do_frame();
         jetpack_do_frame();
         salvage_client_do_frame();      // client-side Salvage carried-flag attachment
+        vehicle_client_do_frame();      // vehicle trigger state of the local firing seat owner
+        vehicle_physics_do_frame();     // Bullet vehicle sim: body lifecycle (the step runs after the input read)
         hud_pit_queue_auto_spectate();  // client-side Pit auto-spectate
         gungame_client_do_frame();      // client-side Gun Game level-up notification watcher
         alpine_mesh_do_frame();
+        alpine_rope_do_frame();
+        item_do_frame();
         atx_do_frame();
         fflink::do_frame();
         int result = rf_do_frame_hook.call_target();
@@ -188,9 +205,16 @@ CodeInjection after_level_render_hook{
 #if !defined(NDEBUG) && defined(HAS_EXPERIMENTAL)
         experimental_render_in_game();
 #endif
+        weather_render();
+        alpine_rope_render();
+        alpine_terrain_decorations_render_legacy();
+        crits_client_render();
+        vehicle_tracers_render();
         debug_render();
         waypoints_render_debug();
         client_bot_render_debug();
+        vehicle_physics_render_debug();
+        vehicle_markers_render();   // 3D phase: leftovers only; the room pass below draws the rest
         hud_world_do_frame();
     },
 };
@@ -205,11 +229,14 @@ CodeInjection after_frame_render_hook{
             && state != rf::GS_NEW_LEVEL
             && state != rf::GS_MULTI_GETTING_STATE_INFO) {
             // Draw on top (after scene)
+            demo_playback_render_seek_overlay(); // first: covers the stale frame, UI below stays on top
             frametime_render_ui();
             achievement_system_do_frame();
+            awards_client_do_frame();
             fullscreen_overlay_do_frame();
             gas_region_transition_do_frame();
             spray_picker_render();
+            demo_browser_render();
 #if !defined(NDEBUG) && defined(HAS_EXPERIMENTAL)
             experimental_render();
 #endif
@@ -225,6 +252,7 @@ FunHook<int(rf::String&, rf::String&, char*)> level_load_hook{
         xlog::info("Loading level: {}", level_filename);
         evaluate_pow2tex(level_filename);
         waypoints_level_reset();
+        projector_clear_all();
         atx_level_reset();
         alpine_camera_clear_static_mode();
         if (!save_filename.empty())
@@ -275,9 +303,17 @@ FunHook<int(rf::String&, rf::String&, char*)> level_load_hook{
         }
 
         int ret = level_load_hook.call_target(level_filename, save_filename, error);
-        if (ret != 0)
+        if (ret != 0) {
             xlog::warn("Loading failed: {}", error);
+            // level_init_post never runs on a failed load, so refresh here instead: the advertised
+            // flags would otherwise stay as they were for whatever level loaded last.
+            if (rf::is_multi && rf::is_server) {
+                initialize_game_info_server_flags();
+                af_send_server_info_packet_to_all();
+            }
+        }
         else {
+            af_lightmap_resolve_terrains();
             multi_spectate_level_init();
         }
         return ret;
@@ -313,20 +349,28 @@ FunHook<void(bool)> level_init_post_hook{
         // Create corona objects (clutter + glare pairs) now that geometry is loaded
         alpine_corona_create_all();
 
+        // Ropes resolve their target uids here, once every level object exists
+        alpine_rope_level_init();
+
         apply_maximum_fps(); // set maximum FPS based on game state
         process_queued_spawn_points_from_items();
         populate_world_hud_sprite_events();
         populate_fullscreen_overlay_events();
         reset_achievement_state_info();
         multi_level_init_post_gametypes();
+        // After gametype init so the demo snapshot includes koth/bagman/salvage/pit state
+        demo_server_on_level_init_post();
+        gib_flames_level_init();
         // Multiplayer resets the jetpack from its own level-init injection.
         if (!rf::is_multi) {
             jetpack_level_init();
         }
         apply_geoable_flags();
         apply_breakable_materials();
+        destruction_level_init_post();
 
         if (!rf::is_dedicated_server && !is_headless_mode()) {
+            alpine_terrain_decorations_level_init();
             explosion_flash_lights_level_init();
             evaluate_fullbright_meshes();
             set_levelmod_autotexture_ppm();
@@ -337,6 +381,7 @@ FunHook<void(bool)> level_init_post_hook{
                 toggle_chat_menu(ChatMenuType::None);
                 player_multi_level_post_init();
                 multi_hud_level_init();
+                minimap_level_init_post();
                 // listen server host spawns before this init, so we need to run on_local_spawn for them again
                 if (rf::is_server) {
                     multi_hud_on_local_spawn();
@@ -593,6 +638,7 @@ extern "C" DWORD __declspec(dllexport) Init([[maybe_unused]] void* unused)
     multi_spectate_appy_patch();
     high_fps_init();
     object_do_patch();
+    alpine_rope_apply_patch();
     misc_init();
     server_init();
     dedi_cfg_init();

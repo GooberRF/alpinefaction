@@ -2,6 +2,7 @@
 #include "../main/main.h"
 #include "../misc/player.h"
 #include "../misc/vpackfile.h"
+#include "../multi/demo/demo_file.h"
 #include "../rf/player/player.h"
 #include <patch_common/FunHook.h>
 #include <cstring>
@@ -114,6 +115,29 @@ void console_auto_complete_level(int offset)
     }
 }
 
+void console_auto_complete_demo_file(int offset)
+{
+    std::string demo_name;
+    console_auto_complete_get_component(offset, demo_name);
+    // Empty prefix intentionally lists the whole demos folder
+
+    bool first = true;
+    std::string common_prefix;
+    std::vector<std::string> matches = demo_file_list_names(demo_name);
+    for (const auto& name : matches) {
+        console_auto_complete_update_common_prefix(common_prefix, name, first);
+    }
+
+    if (matches.size() == 1) {
+        // A folder match (trailing backslash) stays unfinished so the next Tab completes inside it
+        console_auto_complete_put_component(offset, matches[0], !matches[0].ends_with('\\'));
+    }
+    else if (!matches.empty()) {
+        console_auto_complete_print_suggestions(matches, [](std::string& name) { return name.c_str(); });
+        console_auto_complete_put_component(offset, common_prefix, false);
+    }
+}
+
 void console_auto_complete_player(int offset)
 {
     std::string player_name;
@@ -166,6 +190,8 @@ void console_auto_complete_command(int offset)
             console_auto_complete_level(next_offset);
         else if (!_stricmp(cmd_name.c_str(), "kick") || !_stricmp(cmd_name.c_str(), "ban"))
             console_auto_complete_player(next_offset);
+        else if (!_stricmp(cmd_name.c_str(), "demo_play") || !_stricmp(cmd_name.c_str(), "demo_info"))
+            console_auto_complete_demo_file(next_offset);
         else if (!_stricmp(cmd_name.c_str(), "rcon") || !_stricmp(cmd_name.c_str(), "help"))
             console_auto_complete_command(next_offset);
         else if (matching_cmds.size() != 1)

@@ -10,6 +10,8 @@
 #include "../misc/alpine_settings.h"
 #include "../misc/waypoints_utils.h"
 #include "../multi/multi.h"
+#include "../multi/demo/demo.h"
+#include "../multi/demo/demo_ui.h"
 #include "../multi/endgame_votes.h"
 #include "../rf/input.h"
 #include "../rf/entity.h"
@@ -24,6 +26,7 @@
 #include "../multi/pit.h"
 #include "../multi/sprays.h"
 #include "../multi/vote_client.h"
+#include "../multi/vehicles/vehicle_physics.h"
 #include "../misc/vote_panel.h"
 #include "../os/console.h"
 #include "input.h"
@@ -92,6 +95,8 @@ FunHook<int(int16_t)> key_to_ascii_hook{
         if (key & rf::KEY_CTRLED) {
             key_state[VK_CONTROL] = 0x80;
         }
+        // HACKFIX.  Must be set for `ToUnicode` to produce capitalized letters.
+        key_state[VK_CAPITAL] = GetKeyState(VK_CAPITAL) & 1;
         int scan_code = key & 0x7F;
         auto vk = MapVirtualKeyA(scan_code, MAPVK_VSC_TO_VK);
         WCHAR unicode_chars[3];
@@ -282,12 +287,14 @@ CodeInjection control_config_init_patch{
                                        rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_ATTACH);
         alpine_control_config_add_item(ccp, "Toggle Spectate", false, rf::KEY_DIVIDE, -1, -1,
                                        rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_TOGGLE);
-        alpine_control_config_add_item(ccp, "Change Spectate View", false, rf::KEY_SEMICOL, -1, -1,
+        alpine_control_config_add_item(ccp, "Change View", false, rf::KEY_SEMICOL, -1, -1,
                                        rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_CHANGE_VIEW);
         alpine_control_config_add_item(ccp, "Spray", 0, rf::KEY_Z, -1, -1,
                                        rf::AlpineControlConfigAction::AF_ACTION_SPRAY);
         alpine_control_config_add_item(ccp, "Call Vote Menu", false, rf::KEY_F4, -1, -1,
                                        rf::AlpineControlConfigAction::AF_ACTION_VOTE_MENU);
+        alpine_control_config_add_item(ccp, "Show Map", false, rf::KEY_Q, -1, -1,
+                                       rf::AlpineControlConfigAction::AF_ACTION_BIG_MAP);
     },
 };
 
@@ -465,16 +472,19 @@ CodeInjection player_execute_action_patch3{
                 toggle_chat_menu(ChatMenuType::Spectate);
             } else if (alpine_action_index
                 == static_cast<int>(rf::AlpineControlConfigAction::AF_ACTION_REMOTE_SERVER_CFG)
-                && is_server_minimum_af_version(1, 2)) {
+                && is_server_minimum_af_version(1, 2)
+                && !demo_playback_active()) {
                 if (vote_panel_is_gameplay_overlay_active()) {
                     vote_panel_close();
                 }
+                demo_controls_ui_close();
                 g_remote_server_cfg_popup.toggle();
             } else if (alpine_action_index
                 == static_cast<int>(rf::AlpineControlConfigAction::AF_ACTION_VOTE_MENU)
                 && rf::is_multi
                 && !rf::is_server
-                && rf::gameseq_get_state() == rf::GS_GAMEPLAY) {
+                && rf::gameseq_get_state() == rf::GS_GAMEPLAY
+                && !demo_playback_active()) {
                 vote_panel_toggle_gameplay();
             } else if (alpine_action_index
                 == static_cast<int>(rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_ATTACH)
@@ -483,9 +493,12 @@ CodeInjection player_execute_action_patch3{
                 multi_spectate_toggle_attach();
             } else if (alpine_action_index
                 == static_cast<int>(rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_CHANGE_VIEW)
-                && !rf::is_dedicated_server
-                && multi_spectate_is_spectating()) {
-                multi_spectate_change_view();
+                && !rf::is_dedicated_server) {
+                if (multi_spectate_is_spectating()) {
+                    multi_spectate_change_view();
+                } else {
+                    vehicle_physics_camera_toggle_view();
+                }
             } else if (alpine_action_index
                 == static_cast<int>(rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_TOGGLE)
                 && !rf::is_dedicated_server) {
@@ -519,9 +532,11 @@ CodeInjection controls_process_chat_menu_patch{
         const bool chat_menu_numeric_capture_active =
             get_chat_menu_is_active()
             && !rf::console::console_is_visible()
-            && !rf::multi_chat_is_say_visible();
+            && !rf::multi_chat_is_say_visible()
+            && !vote_panel_is_capturing_text();
         const bool waypoint_link_numeric_capture_active =
-            waypoints_utils_link_editor_text_input_active();
+            waypoints_utils_link_editor_text_input_active()
+            && !vote_panel_is_capturing_text();
 
         // Consume top-row number keys for active overlay input modes so they do
         // not trigger gameplay bindings.

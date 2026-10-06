@@ -6,6 +6,7 @@
 #include <common/utils/string-utils.h>
 #include <common/bitmap/formats.h>
 #include "stb_image_loader.h"
+#include "bmpman.h"
 #include "../rf/bmpman.h"
 #include "../rf/crt.h"
 #include "../rf/math/vector.h"
@@ -22,8 +23,15 @@ namespace
         if (file.open(filename) != 0) {
             return false;
         }
+        
+        // 128MB filesize limit for JPG/PNG files
+        constexpr int max_texture_file_size = 128 * 1024 * 1024;
         const int file_size = file.size();
-        if (file_size <= 0) {
+        if (file_size <= 0 || file_size > max_texture_file_size) {
+            if (file_size > max_texture_file_size) {
+                xlog::warn("stb_image: '{}' rejected (declared size {} exceeds {}-byte cap)",
+                           filename, file_size, max_texture_file_size);
+            }
             file.close();
             return false;
         }
@@ -39,7 +47,7 @@ namespace
     // type.
     std::string read_stb_sibling(const char* requested_filename, std::vector<uint8_t>& out)
     {
-        std::string base{get_filename_without_ext(requested_filename)};
+        std::string base{bm_strip_texture_ext(requested_filename)};
         for (const char* ext : {".png", ".jpg", ".jpeg"}) {
             auto candidate = base + ext;
             if (!vpackfile_supercede_allowed(requested_filename, candidate.c_str())) {

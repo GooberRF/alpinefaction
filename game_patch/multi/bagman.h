@@ -53,6 +53,7 @@ void bagman_on_player_disconnect(rf::Player* player);
 void bagman_on_entity_will_die(rf::Entity* ep);
 int bagman_get_red_team_score();
 int bagman_get_blue_team_score();
+int bagman_get_score_tick_ms();
 void bagman_set_red_team_score(int v);
 void bagman_set_blue_team_score(int v);
 void bagman_force_state_sync_to(rf::Player* player);
@@ -63,7 +64,6 @@ bool bagman_get_client_pickup_pos(rf::Vector3* out_pos);
 bool bagman_query_pickup_bag_outline(rf::VifLodMesh** out_lod_mesh, rf::Vector3* out_pos, rf::Matrix3* out_orient);
 bool bagman_query_carrier_bag_outline(rf::VifLodMesh** out_lod_mesh, rf::Vector3* out_pos, rf::Matrix3* out_orient);
 rf::VMesh* bagman_get_carrier_mesh();
-void bagman_tick_pickup_spin();
 void bagman_update_dynamic_light();
 void bagman_play_return_sound();
 

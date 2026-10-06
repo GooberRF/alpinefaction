@@ -200,6 +200,16 @@ namespace rf
         float multi_bbox_size_factor;
     };
     static_assert(sizeof(WeaponInfo) == 0x550);
+    static_assert(offsetof(WeaponInfo, first_person_fov) == 0x74);
+    static_assert(offsetof(WeaponInfo, clip_size_multi) == 0x84);
+    static_assert(offsetof(WeaponInfo, max_speed) == 0xC0);
+    static_assert(offsetof(WeaponInfo, max_speed_multi) == 0xC4);
+    static_assert(offsetof(WeaponInfo, fire_wait) == 0xD0);
+    static_assert(offsetof(WeaponInfo, damage_multi) == 0x10C);
+    static_assert(offsetof(WeaponInfo, crater_radius) == 0x14C);
+    static_assert(offsetof(WeaponInfo, damage_radius_multi) == 0x210);
+    static_assert(offsetof(WeaponInfo, max_ammo_multi) == 0x25C);
+    static_assert(offsetof(WeaponInfo, flags) == 0x264);
 
     enum WeaponTypeFlags
     {
@@ -235,6 +245,20 @@ namespace rf
         WTF_TRACERS = 0x40000000,
         WTF_PIERCING = 0x80000000,
     };
+    enum WeaponTypeFlags2
+    {
+        WTF2_PIERCES_ALL = 0x1,
+        WTF2_RANDOM_BMP_ORIENT = 0x2,
+        WTF2_CYCLE_ALPHA = 0x4,
+        WTF2_NO_FIRE_THROUGH = 0x8,
+        WTF2_NO_WORLD_COLLIDE = 0x10,
+        WTF2_UNDEVIATING = 0x20,
+        WTF2_FLAME = 0x40,
+        WTF2_HAS_SCANNER = 0x80,
+        WTF2_DAMAGE_SELF = 0x100,
+        WTF2_HAS_PILOT_FLAME = 0x200,
+        WTF2_MULTI_MESH_COLLIDE = 0x400,
+    };
     struct Weapon : Object
     {
         Weapon *next;
@@ -259,6 +283,7 @@ namespace rf
         Vector3 firing_pos;
     };
     static_assert(sizeof(Weapon) == 0x314);
+    static_assert(offsetof(Weapon, target_handle) == 0x2E8);
 
     enum WeaponState
     {
@@ -267,7 +292,9 @@ namespace rf
         WS_LOOP_FIRE = 2,
     };
 
-    static auto& weapon_types = addr_as_ref<WeaponInfo[64]>(0x0085CD08);
+    constexpr int max_weapon_types = 64;
+
+    static auto& weapon_types = addr_as_ref<WeaponInfo[max_weapon_types]>(0x0085CD08);
     static auto& remote_charge_det_weapon_type = addr_as_ref<int>(0x0085CCE0);
     static auto& machine_pistol_special_weapon_type = addr_as_ref<int>(0x0085CD00);
     static auto& machine_pistol_weapon_type = addr_as_ref<int>(0x0085CCD8);

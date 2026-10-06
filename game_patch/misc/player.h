@@ -44,5 +44,8 @@ void player_multi_level_post_init();
 void update_player_flashlight();
 void ping_looked_at_location();
 void fpgun_play_random_idle_anim();
+// The horizontal FOV the fpgun is drawn with, from the weapon's $1st Person FOV.
+float player_fpgun_render_fov(float base_fov);
 void set_headlamp_toggle_enabled(bool enabled);
 bool player_is_idle(const rf::Player* player);
+void player_damage_feedback();

@@ -1,6 +1,9 @@
+#include <algorithm>
 #include <memory>
 #include <unordered_map>
+#include <unordered_set>
 #include <cstddef>
+#include <cstdint>
 #include <exception>
 #include <cctype>
 #include <stdexcept>
@@ -9,6 +12,7 @@
 #include <patch_common/CodeInjection.h>
 #include <patch_common/AsmWriter.h>
 #include <common/utils/string-utils.h>
+#include <common/scope_guard.h>
 #include "../rf/gr/gr_font.h"
 #include "../rf/bmpman.h"
 #include "../rf/multi.h"
@@ -53,6 +57,14 @@ class GrNewFont
 {
 public:
     GrNewFont(std::string_view name);
+    void draw_into_bitmap(int x, int y, int bm_handle, std::string_view text) const;
+    void draw_3d(
+        const rf::Vector3& pos,
+        const rf::Matrix3& orient,
+        float scale,
+        std::string_view text,
+        rf::gr::Mode state
+    ) const;
     void draw(int x, int y, std::string_view text, rf::gr::Mode state) const;
     void draw_aligned(rf::gr::TextAlignment align, int x, int y, std::string_view text, rf::gr::Mode state) const;
     void get_size(int* w, int* h, std::string_view text) const;
@@ -88,7 +100,7 @@ private:
     int char_map_[256];
 };
 
-constexpr int ttf_font_flag = 0x1000;
+constexpr int TTF_FONT_FLAG = 0x1000;
 
 FT_Library g_freetype_lib = nullptr;
 int g_default_font_id = 0;
@@ -213,6 +225,8 @@ inline void TextureAtlasPacker<T>::update_size()
     atlas_size_ = std::pair{size, size};
 }
 
+constexpr int ATLAS_PADDING = 2;
+
 GrNewFont::GrNewFont(std::string_view name) :
     name_{name}
 {
@@ -241,7 +255,7 @@ GrNewFont::GrNewFont(std::string_view name) :
     xlog::trace("scaled height {} ascender {} descender {}", face->size->metrics.height / 64,
         face->size->metrics.ascender / 64, face->size->metrics.descender / 64);
     line_spacing_ = face->size->metrics.height / 64;
-    height_ = line_spacing_; //(face->size->metrics.ascender - face->size->metrics.descender) / 64;
+    height_ = line_spacing_;
     baseline_y_ = face->size->metrics.ascender / 64;
     xlog::trace("line_spacing {} height {} baseline_y {}", line_spacing_, height_, baseline_y_);
 
@@ -290,6 +304,7 @@ GrNewFont::GrNewFont(std::string_view name) :
     }
 
     TextureAtlasPacker atlas_packer;
+    std::unordered_set<wchar_t> packed_codepoints;
 
     for (auto codepoint : unicode_code_points) {
         error = FT_Load_Char(face, codepoint, FT_LOAD_BITMAP_METRICS_ONLY);
@@ -298,11 +313,16 @@ GrNewFont::GrNewFont(std::string_view name) :
             continue;
         }
         FT_GlyphSlot slot = face->glyph;
-        atlas_packer.add(slot->bitmap.width, slot->bitmap.rows, codepoint);
+        atlas_packer.add(
+            slot->bitmap.width + 2 * ATLAS_PADDING,
+            slot->bitmap.rows + 2 * ATLAS_PADDING,
+            codepoint
+        );
+        packed_codepoints.insert(codepoint);
     }
 
     atlas_packer.pack();
-    auto [atlas_w, atlas_h] = atlas_packer.get_size();
+    const auto [atlas_w, atlas_h] = atlas_packer.get_size();
 
     xlog::trace("Creating font texture atlas {}x{}", atlas_w, atlas_h);
     bitmap_ = rf::bm::create(rf::bm::FORMAT_8888_ARGB, atlas_w, atlas_h);
@@ -310,6 +330,12 @@ GrNewFont::GrNewFont(std::string_view name) :
         xlog::error("bm_create failed for font texture");
         throw std::runtime_error{"failed to load font"};
     }
+
+    if (!bm_fill(bitmap_, 0x00FFFFFFu)) {
+        xlog::error("bm_fill failed for font atlas");
+        throw std::runtime_error{"failed to initialize font atlas"};
+    }
+
     rf::gr::LockInfo lock;
     if (!rf::gr::lock(bitmap_, 0, &lock, rf::gr::LOCK_WRITE_ONLY)) {
         xlog::error("gr_lock failed for font texture");
@@ -322,15 +348,31 @@ GrNewFont::GrNewFont(std::string_view name) :
     for (auto codepoint : unicode_code_points) {
         error = FT_Load_Char(face, codepoint, FT_LOAD_RENDER);
         if (error) {
-            xlog::error("FT_Load_Char failed: {}", error);
+            // char_map_ stores indices into unicode_code_points, so glyphs_ has to stay
+            // index aligned with it. Skipping an entry here would shift every later glyph
+            // by one and push the last char_map_ entries past the end of glyphs_ -- an out
+            // of range operator[] read that does not throw and is not otherwise detectable.
+            // A zero filled glyph draws nothing and advances the pen by nothing.
+            xlog::error("FT_Load_Char failed for codepoint {:#x}: {}", codepoint, error);
+            glyphs_.push_back(GlyphInfo{});
+            continue;
+        }
+        if (!packed_codepoints.contains(codepoint)) {
+            // Metrics failed for this codepoint but the render succeeded, so no atlas slot
+            // was ever sized for it. Emit the same zero filled glyph as above rather than
+            // blitting into space reserved for another glyph.
+            xlog::error("Skipping codepoint {:#x}: no texture atlas slot was reserved", codepoint);
+            glyphs_.push_back(GlyphInfo{});
             continue;
         }
         FT_GlyphSlot slot = face->glyph;
         FT_Bitmap& bitmap = slot->bitmap;
-        int glyph_bm_w = static_cast<int>(bitmap.width);
-        int glyph_bm_h = static_cast<int>(bitmap.rows);
+        const int glyph_bm_w = static_cast<int>(bitmap.width);
+        const int glyph_bm_h = static_cast<int>(bitmap.rows);
 
-        auto [glyph_bm_x, glyph_bm_y] = atlas_packer.get_pos(codepoint);
+        const auto [slot_x, slot_y] = atlas_packer.get_pos(codepoint);
+        const int glyph_bm_x = slot_x + ATLAS_PADDING;
+        const int glyph_bm_y = slot_y + ATLAS_PADDING;
 
         xlog::trace("glyph {:x} bitmap x {} y {} w {} h {} left {} top {} advance {}", codepoint, glyph_bm_x, glyph_bm_y,
             glyph_bm_w, glyph_bm_h, slot->bitmap_left, slot->bitmap_top, slot->advance.x >> 6);
@@ -344,15 +386,143 @@ GrNewFont::GrNewFont(std::string_view name) :
         glyph_info.x = slot->bitmap_left;
         glyph_info.y = -slot->bitmap_top;
 
-        int pixel_size = bm_bytes_per_pixel(lock.format);
-        auto* dst_ptr = bitmap_bits + glyph_bm_y * lock.stride_in_bytes + glyph_bm_x * pixel_size;
-        bm_convert_format(dst_ptr, lock.format, bitmap.buffer, rf::bm::FORMAT_8_ALPHA, bitmap.width, bitmap.rows, lock.stride_in_bytes, bitmap.pitch);
+        if (glyph_bm_w > 0 && glyph_bm_h > 0) {
+            const int pixel_size = bm_bytes_per_pixel(lock.format);
+            uint8_t* const dst_ptr = bitmap_bits
+                + glyph_bm_y
+                * lock.stride_in_bytes
+                + glyph_bm_x
+                * pixel_size;
+            bm_convert_format(
+                dst_ptr,
+                lock.format,
+                bitmap.buffer,
+                rf::bm::FORMAT_8_ALPHA,
+                glyph_bm_w,
+                glyph_bm_h,
+                lock.stride_in_bytes,
+                bitmap.pitch
+            );
+        }
 
         glyphs_.push_back(glyph_info);
     }
 
     rf::gr::unlock(&lock);
     rf::gr::tcache_add_ref(bitmap_);
+}
+
+void GrNewFont::draw_into_bitmap(int x, int y, int bm_handle, std::string_view text) const
+{
+    if (text.empty() || bm_handle < 0 || bitmap_ == bm_handle) {
+        return;
+    }
+
+    rf::gr::LockInfo src_lock{};
+    if (!rf::gr::lock(bitmap_, 0, &src_lock, rf::gr::LOCK_READ_ONLY)) {
+        return;
+    }
+
+    ScopeGuard src_guard{[&] { rf::gr::unlock(&src_lock); }};
+
+    rf::gr::LockInfo dst_lock{};
+    if (!rf::gr::lock(bm_handle, 0, &dst_lock, rf::gr::LOCK_READ_ONLY_WRITE)) {
+        return;
+    }
+
+    ScopeGuard dst_guard{[&] { rf::gr::unlock(&dst_lock); }};
+
+    int pen_x = x;
+    const int pen_y = y + baseline_y_;
+    for (char ch : text) {
+        const int glyph_idx = char_map_[static_cast<uint8_t>(ch)];
+        if (glyph_idx != -1) {
+            const GlyphInfo& glyph_info = glyphs_[glyph_idx];
+            if (glyph_info.bm_w) {
+                bm_blend_pixels(dst_lock, pen_x + glyph_info.x, pen_y + glyph_info.y, src_lock, glyph_info.bm_x,
+                                glyph_info.bm_y, glyph_info.bm_w, glyph_info.bm_h);
+            }
+            pen_x += glyph_info.advance_x;
+            if (pen_x >= dst_lock.w) {
+                break;
+            }
+        }
+    }
+}
+
+// Note.  Mipmaps are not used at this time.
+void GrNewFont::draw_3d(
+    const rf::Vector3& pos,
+    const rf::Matrix3& orient,
+    const float scale,
+    const std::string_view text,
+    const rf::gr::Mode state
+) const {
+    int bm_width = 0, bm_height = 0;
+    rf::bm::get_dimensions(bitmap_, &bm_width, &bm_height);
+    if (bm_width <= 0 || bm_height <= 0) {
+        return;
+    }
+
+    const rf::Vector3 right = orient.rvec * scale;
+    const rf::Vector3 up = orient.uvec * scale;
+
+    rf::Vector3 pen_origin = pos - up * static_cast<float>(baseline_y_);
+
+    float pen_x = 0.f;
+    for (const char ch : text) {
+        if (ch == '\n') {
+            pen_x = 0.f;
+            pen_origin -= up * static_cast<float>(line_spacing_);
+            continue;
+        }
+
+        const int glyph_idx = char_map_[static_cast<unsigned char>(ch)];
+        if (glyph_idx == -1) {
+            continue;
+        }
+
+        const GlyphInfo& glyph = glyphs_[glyph_idx];
+        if (glyph.bm_w > 0 && glyph.bm_h > 0) {
+            // Negative `g.y` moves glyph up.
+            const rf::Vector3 top_left = pen_origin
+                + right
+                * (pen_x + static_cast<float>(glyph.x))
+                - up
+                * static_cast<float>(glyph.y);
+            const rf::Vector3 top_right =
+                top_left + right * static_cast<float>(glyph.bm_w);
+            const rf::Vector3 bottom_left = top_left - up * static_cast<float>(glyph.bm_h);
+            const rf::Vector3 bottom_right =
+                bottom_left + right * static_cast<float>(glyph.bm_w);
+
+            const rf::Vector3 positions[4] = {
+                top_left,
+                top_right,
+                bottom_right,
+                bottom_left
+            };
+
+            // Map a quad to our glyph's bitmap.
+            const float u0 = glyph.bm_x / static_cast<float>(bm_width);
+            const float v0 = glyph.bm_y / static_cast<float>(bm_height);
+            const float u1 = (glyph.bm_x + glyph.bm_w) / static_cast<float>(bm_width);
+            const float v1 = (glyph.bm_y + glyph.bm_h) / static_cast<float>(bm_height);
+
+            const rf::Vector2 uvs[4] = { {u0, v0}, {u1, v0}, {u1, v1}, {u0, v1} };
+
+            rf::gr::world_poly(
+                bitmap_,
+                4,
+                positions,
+                uvs,
+                state,
+                rf::gr::screen.current_color
+            );
+        }
+
+        pen_x += static_cast<float>(glyph.advance_x);
+    }
 }
 
 void GrNewFont::draw(int x, int y, std::string_view text, rf::gr::Mode state) const
@@ -471,13 +641,13 @@ FunHook<int(const char*, int)> gr_init_font_hook{
         for (unsigned i = 0; i < g_fonts.size(); ++i) {
             auto& font = g_fonts[i];
             if (font.get_name() == name) {
-                return static_cast<int>(i | ttf_font_flag);
+                return static_cast<int>(i | TTF_FONT_FLAG);
             }
         }
         try {
             GrNewFont font{name};
             g_fonts.push_back(font);
-            return static_cast<int>((g_fonts.size() - 1) | ttf_font_flag);
+            return static_cast<int>((g_fonts.size() - 1) | TTF_FONT_FLAG);
         }
         catch (std::exception& e) {
             xlog::error("Failed to load font {}: {}", name, e.what());
@@ -498,31 +668,127 @@ FunHook<bool(const char*)> gr_set_default_font_hook{
     },
 };
 
+// A bad font id is typically a stuck value in a HUD element, so it recurs every frame.
+// The log appender flushes synchronously, so reporting it unconditionally would be
+// thousands of disk writes per second. Report each distinct id once.
+static bool report_bad_font_id_once(int font_num)
+{
+    static std::unordered_set<int> reported;
+    return reported.insert(font_num).second;
+}
+
+static const GrNewFont* resolve_ttf_font(const int font_num, const char* const caller) {
+    if (font_num & TTF_FONT_FLAG) {
+        const unsigned idx = static_cast<unsigned>(font_num & ~TTF_FONT_FLAG);
+        if (idx >= g_fonts.size()) {
+            if (report_bad_font_id_once(font_num)) {
+                xlog::error(
+                    "{}: bad TTF font id {:#x} (have {})",
+                    caller,
+                    font_num,
+                    g_fonts.size()
+                );
+            }
+        } else {
+            return &g_fonts[idx];
+        }
+    }
+    return nullptr;
+}
+
 FunHook<int(int)> gr_get_font_height_hook{
     0x0051F4D0,
-    [](int font_num) {
+    [] (int font_num) {
         if (font_num == -1) {
             font_num = g_default_font_id;
         }
-        if (font_num & ttf_font_flag) {
-            auto& font = g_fonts[font_num & ~ttf_font_flag];
-            return font.get_height();
+        if (font_num & TTF_FONT_FLAG) {
+            const GrNewFont* const font =
+                resolve_ttf_font(font_num, "gr_get_font_height_hook");
+            if (font) {
+                return font->get_height();
+            } else {
+                return 0;
+            } 
+        } else {
+            return gr_get_font_height_hook.call_target(font_num);
         }
-        return gr_get_font_height_hook.call_target(font_num);
+    },
+};
+
+FunHook<void(int, int, int, const char*, int)> gr_string_render_into_bitmap_hook{
+    0x005203A0,
+    [] (
+        const int x,
+        const int y,
+        const int bm_handle,
+        const char* const text,
+        int font_num
+    ) {
+        if (font_num == -1) {
+            font_num = g_default_font_id;
+        }
+        if (font_num & TTF_FONT_FLAG) {
+            const GrNewFont* const font =
+                resolve_ttf_font(font_num, "gr_string_render_into_bitmap_hook");
+            if (font) {
+                font->draw_into_bitmap(x, y, bm_handle, text);
+            }
+        } else {
+            gr_string_render_into_bitmap_hook
+                .call_target(x, y, bm_handle, text, font_num);
+        }
+    },
+};
+
+FunHook<
+    void(const rf::Vector3*, const rf::Matrix3*, float, const char*, int, rf::gr::Mode)
+> gr_string_3d_hook{
+    0x00520020,
+    [] (
+        const rf::Vector3* const pos,
+        const rf::Matrix3* const orient,
+        const float scale,
+        const char* const s,
+        int font_num,
+        const rf::gr::Mode mode
+    ) {
+        if (font_num == -1) {
+            font_num = g_default_font_id;
+        }
+        if (font_num & TTF_FONT_FLAG) {
+            const GrNewFont* const font =
+                resolve_ttf_font(font_num, "gr_string_3d_hook");
+            if (font) {
+                font->draw_3d(*pos, *orient, scale, s, mode);
+            }
+        } else {
+            // Stock centers each glyph upon a pen advanced by its spacing, so proportional
+            // glyphs are mis-spaced; but `draw_3d` anchors at the top-left, like `draw`.
+            gr_string_3d_hook.call_target(pos, orient, scale, s, font_num, mode);
+        }
     },
 };
 
 FunHook<void(int, int, const char*, int, rf::gr::Mode)> gr_string_hook{
     0x0051FEB0,
-    [](int x, int y, const char *text, int font_num, rf::gr::Mode mode) {
+    [] (
+        const int x,
+        const int y,
+        const char* const text,
+        int font_num,
+        const rf::gr::Mode mode
+    ) {
         if (font_num == -1) {
             font_num = g_default_font_id;
         }
-        if (font_num & ttf_font_flag) {
-            auto& font = g_fonts[font_num & ~ttf_font_flag];
-            font.draw(x, y, text, mode);
-        }
-        else {
+        if (font_num & TTF_FONT_FLAG) {
+            const GrNewFont* const font =
+                resolve_ttf_font(font_num, "gr_string_hook");
+            if (font) {
+                font->draw(x, y, text, mode);
+            }
+        } else {
             gr_string_hook.call_target(x, y, text, font_num, mode);
         }
     },
@@ -534,19 +800,24 @@ FunHook<void(int*, int*, const char*, int, int)> gr_get_string_size_hook{
         if (font_num == -1) {
             font_num = g_default_font_id;
         }
-        if (font_num & ttf_font_flag) {
-            auto& font = g_fonts[font_num & ~ttf_font_flag];
-            std::string_view text_sv;
-            if (text_len < 0) {
-                text_sv = std::string_view{text};
+        if (font_num & TTF_FONT_FLAG) {
+            const GrNewFont* const font =
+                resolve_ttf_font(font_num, "gr_get_string_size_hook");
+            if (font) {
+                std::string_view text_sv{};
+                if (text_len < 0) {
+                    text_sv = std::string_view{text};
+                } else {
+                    text_sv = std::string_view{text, static_cast<size_t>(text_len)};
+                }
+                font->get_size(out_width, out_height, text_sv);
+            } else {
+                *out_width = 0;
+                *out_height = 0;
             }
-            else {
-                text_sv = std::string_view{text, static_cast<size_t>(text_len)};
-            }
-            font.get_size(out_width, out_height, text_sv);
-        }
-        else {
-            gr_get_string_size_hook.call_target(out_width, out_height, text, text_len, font_num);
+        } else {
+            gr_get_string_size_hook
+                .call_target(out_width, out_height, text, text_len, font_num);
         }
     },
 };
@@ -574,7 +845,7 @@ int gr_fit_string(
         return text_w;
     }
 
-    while (text_w + suffix_w > max_width && !text.empty()) {
+    while (!text.empty() && (text_w + suffix_w > max_width || text.back() == ' ')) {
         const auto [last_w, last_h] = rf::gr::get_char_size(text.back(), font_id);
         text_w -= last_w;
         text.pop_back();
@@ -596,6 +867,8 @@ void gr_font_apply_patch()
     gr_init_font_hook.install();
     gr_set_default_font_hook.install();
     gr_get_font_height_hook.install();
+    gr_string_render_into_bitmap_hook.install();
+    gr_string_3d_hook.install();
     gr_string_hook.install();
     gr_get_string_size_hook.install();
     init_freetype_lib();

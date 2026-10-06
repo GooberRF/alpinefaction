@@ -1,8 +1,11 @@
 #include "multi_spectate.h"
 #include "../misc/vote_panel.h"
+#include "../multi/demo/demo.h"
+#include "../multi/demo/demo_ui.h"
 #include "hud.h"
 #include "hud_internal.h"
 #include "multi_scoreboard.h"
+#include "../graphics/gr.h"
 #include "../input/input.h"
 #include "../os/console.h"
 #include "../rf/entity.h"
@@ -30,12 +33,16 @@
 #include "../misc/alpine_settings.h"
 #include "../multi/gametype.h"
 #include "../multi/saved_info.h"
+#include "../multi/vehicles/vehicle.h"
 #include <common/config/BuildConfig.h>
 #include <xlog/xlog.h>
 #include <algorithm>
+#include <charconv>
 #include <cmath>
 #include <limits>
+#include <optional>
 #include <vector>
+#include "../rf/os/frametime.h"
 #include <common/utils/list-utils.h>
 #include <toml++/toml.hpp>
 #include "../rf/input.h"
@@ -55,7 +62,7 @@ static rf::Player* g_spectate_freelook_saved_target = nullptr;
 
 // Two spectate groups, each with its own submode. The "attached" group watches a player
 // (first or third person); the "detached" group is a free camera (free look or static).
-// The Attach bind swaps between groups; Change Spectate View flips the submode in the group.
+// The Attach bind swaps between groups; Change View flips the submode in the group.
 enum class SpectateViewMode
 {
     first_person,
@@ -106,6 +113,15 @@ static constexpr float k_spectate_orbit_distance = 4.5f;
 static constexpr float k_spectate_orbit_focus_height = 1.0f;
 static constexpr float k_spectate_orbit_pitch_limit = 1.4f; // ~80 degrees
 
+// Third person over-the-shoulder camera. The boom length is pulled in instantly by level geometry
+// and eased back out when clear.
+static constexpr float k_spectate_shoulder_distance = 2.2f;
+static constexpr float k_spectate_shoulder_right = 0.6f;
+static constexpr float k_spectate_shoulder_up = 0.2f;
+static constexpr float k_spectate_shoulder_ease_rate = 8.0f;
+static constexpr float k_spectate_camera_radius = 0.2f;
+static float g_spectate_shoulder_boom = k_spectate_shoulder_distance;
+
 // Free look stepped zoom: tapping "next" (primary attack) steps through these FOV divisors and wraps.
 static constexpr float k_spectate_freelook_zoom_steps[] = {1.0f, 2.0f, 4.0f};
 static int g_spectate_freelook_zoom_index = 0;
@@ -127,6 +143,11 @@ bool multi_spectate_is_third_person_orbit()
         && g_spectate_third_person_orbit;
 }
 
+bool multi_spectate_is_third_person()
+{
+    return g_spectate_mode_enabled && g_spectate_view_mode == SpectateViewMode::third_person;
+}
+
 bool multi_spectate_is_static()
 {
     return g_spectate_static_active;
@@ -145,6 +166,17 @@ static bool g_prev_weapon_is_on = false;
 static bool g_prev_is_reloading = false;
 static bool g_prev_alt_fire_is_on = false;
 static int g_prev_weapon_type = -1;
+
+// Forget the fire/reload/weapon edges tracked for the spectated player. Used after a demo
+// seek: the pre-seek edges are stale and would otherwise trigger spurious fire/draw anims
+// on the first post-seek frame. g_prev_weapon_type = -1 suppresses the draw-anim edge.
+void multi_spectate_reset_action_anim_edge_state()
+{
+    g_prev_weapon_is_on = false;
+    g_prev_is_reloading = false;
+    g_prev_alt_fire_is_on = false;
+    g_prev_weapon_type = -1;
+}
 
 void player_fpgun_set_player(rf::Player* pp);
 
@@ -204,9 +236,22 @@ static bool state_animation_is_crouch(int state)
 // Hook entity_set_next_state_anim to remap non-crouch animations to crouch
 // variants for the spectated entity when it's crouching. This prevents the
 // movement state machine from constantly overriding the crouch animation.
+//
+// SINGLE OWNER of 0x0042A580: the vehicles module needs its early-out here, not a second FunHook.
 FunHook<void(rf::Entity*, int, float)> spectate_entity_set_next_state_anim_hook{
     0x0042A580,
     [](rf::Entity* entity, int state_anim_index, float transition_time) {
+        // A seated rider whose character lacks the seated anims re-requests the state every frame and
+        // never finishes. Seat-locked MP riders only, or an SP NPC would freeze mid STAND->WALK.
+        const bool turret_rider = vehicle_is_turret_rider_state(entity, state_anim_index);
+        if ((turret_rider || vehicle_rider_pose_is_seat_locked(entity))
+            && state_anim_index > rf::ENTITY_STATE_STAND
+            && state_anim_index <= rf::ENTITY_STATE_CUSTOM
+            && entity->state_anims[state_anim_index].vmesh_anim_index == -1
+            && (entity->current_state_anim == rf::ENTITY_STATE_STAND
+                || entity->next_state_anim == rf::ENTITY_STATE_STAND)) {
+            return;
+        }
         if (g_spectate_mode_enabled && g_spectate_mode_target && rf::entity_is_crouching(entity)
             && entity->current_state_anim != rf::ENTITY_STATE_FREEFALL) {
             rf::Entity* target = rf::entity_from_handle(g_spectate_mode_target->entity_handle);
@@ -320,8 +365,11 @@ void multi_spectate_set_target_player(rf::Player* player)
     player->weapon_mesh_handle = nullptr;
     rf::Entity* entity = rf::entity_from_handle(player->entity_handle);
     if (entity) {
-        // make sure weapon mesh is loaded now
-        rf::player_fpgun_set_state(player, entity->ai.current_primary_weapon);
+        // make sure weapon mesh is loaded now (bounded)
+        const int weapon_type = entity->ai.current_primary_weapon;
+        if (weapon_type >= 0 && weapon_type < rf::num_weapon_types) {
+            rf::player_fpgun_set_state(player, weapon_type);
+        }
         xlog::trace("FpgunMesh {}", player->weapon_mesh_handle);
 
         // Hide target player from camera
@@ -349,7 +397,7 @@ static void spectate_next_player(const bool dir, const bool try_alive_players_fi
         }
         if (new_target == g_spectate_mode_target) {
             break; // nothing found
-        } else if (new_target->is_browser) {
+        } else if (new_target->is_non_participant()) {
             continue;
         } else if (try_alive_players_first && rf::player_is_dead(new_target)) {
             continue;
@@ -460,7 +508,13 @@ static void spectate_apply_player_view_mode()
         g_spectate_mode_target->fpgun_data.fpgun_weapon_type = -1;
         g_spectate_mode_target->weapon_mesh_handle = nullptr;
         if (entity) {
-            rf::player_fpgun_set_state(g_spectate_mode_target, entity->ai.current_primary_weapon);
+            // The target is remote, so current_primary_weapon comes off the wire. player_fpgun_set_state
+            // indexes its state table by weapon type with no bounds check of its own, and we NOP out its
+            // local-player guard for spectate, so bound it here.
+            const int weapon_type = entity->ai.current_primary_weapon;
+            if (weapon_type >= 0 && weapon_type < rf::num_weapon_types) {
+                rf::player_fpgun_set_state(g_spectate_mode_target, weapon_type);
+            }
             entity->local_player = g_spectate_mode_target;
         }
         player_fpgun_set_player(g_spectate_mode_target);
@@ -477,6 +531,7 @@ static void spectate_apply_player_view_mode()
         player_fpgun_set_player(rf::local_player);
 #endif
         rf::camera_enter_third_person(camera);
+        g_spectate_shoulder_boom = k_spectate_shoulder_distance;
         if (g_spectate_view_mode == SpectateViewMode::third_person && g_spectate_third_person_orbit)
             spectate_init_orbit(camera);
     }
@@ -672,8 +727,43 @@ static void spectate_drop_freelook_camera()
         static_cast<int>(g_spectate_dropped_cameras.size()), spectate_static_camera_count());
 }
 
+// Start free look at a given view. The free look camera rebuilds its view from control_data every
+// frame (phb.y = yaw, eye_phb.x = RF's non-linear pitch, + = up) and moves from p_data.pos.
+static void spectate_place_freelook_camera(rf::Entity* ce, const rf::Vector3& pos, const rf::Matrix3& view)
+{
+    const rf::Vector3& f = view.fvec;
+    // From rvec (cos(yaw), 0, -sin(yaw)): fvec loses the heading when looking straight up/down
+    const float yaw = std::atan2(-view.rvec.z, view.rvec.x);
+    // Inverse of the engine's fvec ~ (k sin(yaw), sin(pitch), k cos(yaw)) with k = 1 - |sin(pitch)|
+    const float h = std::sqrt(f.x * f.x + f.z * f.z);
+    float pitch = std::copysign(1.5707964f, f.y);
+    if (h > 1e-6f) {
+        const float t = std::abs(f.y) / h;
+        pitch = std::copysign(std::asin(t / (1.0f + t)), f.y);
+    }
+    rf::Matrix3 body;
+    body.set_from_angles(0.0f, 0.0f, yaw);
+
+    ce->pos = pos;
+    ce->eye_pos = pos;
+    ce->p_data.pos = pos;
+    ce->p_data.next_pos = pos;
+    ce->orient = body;
+    ce->p_data.orient = body;
+    ce->p_data.next_orient = body;
+    ce->eye_orient = view;
+    ce->control_data.phb.set(0.0f, yaw, 0.0f);
+    ce->control_data.eye_phb.set(pitch, 0.0f, 0.0f);
+    ce->control_data.delta_phb.zero();
+    ce->control_data.delta_eye_phb.zero();
+    ce->p_data.vel.zero();
+    ce->set_room(nullptr);
+    ce->update_room();
+}
+
 // Transition from the current spectate view to `to`, handling target binding/unbinding.
-static void spectate_set_view_mode(SpectateViewMode to)
+// `keep_view`: a player view -> free look switch starts free look at the view on screen.
+static void spectate_set_view_mode(SpectateViewMode to, bool keep_view = false)
 {
     if (!rf::local_player || !rf::local_player->cam)
         return;
@@ -698,7 +788,7 @@ static void spectate_set_view_mode(SpectateViewMode to)
             // Coming from a free view - acquire and bind a target.
             rf::Player* resume = (g_spectate_freelook_saved_target
                 && g_spectate_freelook_saved_target != rf::local_player
-                && !g_spectate_freelook_saved_target->is_browser)
+                && !g_spectate_freelook_saved_target->is_non_participant())
                 ? g_spectate_freelook_saved_target
                 : nullptr;
             g_spectate_freelook_saved_target = nullptr;
@@ -716,16 +806,50 @@ static void spectate_set_view_mode(SpectateViewMode to)
     }
     else {
         // Entering a free view (free look or static) - release any player target.
+        rf::Camera* cam = rf::local_player->cam;
+        keep_view = keep_view && from_player && to == SpectateViewMode::freelook && cam->camera_entity;
+        const rf::Vector3 view_pos = keep_view ? rf::camera_get_pos(cam) : rf::Vector3{};
+        const rf::Matrix3 view_orient = keep_view ? rf::camera_get_orient(cam) : rf::Matrix3{};
         if (from_player) {
             g_spectate_freelook_saved_target = g_spectate_mode_target;
             spectate_unbind_target();
             g_spectate_mode_enabled = false;
             g_spectate_mode_target = rf::local_player;
         }
-        if (to == SpectateViewMode::freelook)
+        if (to == SpectateViewMode::freelook) {
             multi_spectate_enter_freelook();
+            if (keep_view && cam->mode == rf::CAMERA_FREELOOK && cam->camera_entity)
+                spectate_place_freelook_camera(cam->camera_entity, view_pos, view_orient);
+        }
         else
             spectate_enter_static();
+    }
+}
+
+SpectateCameraState multi_spectate_get_camera_state()
+{
+    SpectateCameraState state;
+    state.attached = g_spectate_mode_enabled && spectate_is_player_view(g_spectate_view_mode);
+    state.third_person = g_spectate_view_mode == SpectateViewMode::third_person;
+    return state;
+}
+
+void multi_spectate_apply_camera_state(const SpectateCameraState& state, rf::Player* target)
+{
+    if (!state.attached || !target || target == rf::local_player || target->is_non_participant()) {
+        multi_spectate_enter_freelook();
+        return;
+    }
+    // set_target_player handles entering attached spectate from a free view (defaults
+    // the view mode to first person and syncs the attached-submode memory)
+    multi_spectate_set_target_player(target);
+    if (!g_spectate_mode_enabled)
+        return; // attach was blocked (no camera yet etc.) - caller may retry
+    g_spectate_last_attached = true;
+    if (state.third_person && g_spectate_view_mode != SpectateViewMode::third_person) {
+        g_spectate_third_person_orbit = false;
+        g_spectate_attached_submode = SpectateViewMode::third_person;
+        spectate_set_view_mode(SpectateViewMode::third_person);
     }
 }
 
@@ -740,7 +864,7 @@ void multi_spectate_toggle_attach()
     if (attached) {
         g_spectate_attached_submode = g_spectate_view_mode;   // remember first/third
         g_spectate_last_attached = false;
-        spectate_set_view_mode(g_spectate_detached_submode);  // restore free/static
+        spectate_set_view_mode(g_spectate_detached_submode, true); // restore free/static
     }
     else {
         g_spectate_detached_submode = g_spectate_static_active
@@ -751,7 +875,7 @@ void multi_spectate_toggle_attach()
     }
 }
 
-// Change Spectate View bind: flip the submode within the active group.
+// Change View bind while spectating: flip the submode within the active group.
 void multi_spectate_change_view()
 {
     if (!multi_spectate_is_spectating())
@@ -822,8 +946,248 @@ static void spectate_delete_current_dropped_camera()
     rf::console::print("Deleted camera ({} static cameras remain).", total);
 }
 
-// Per-frame camera positioning for third-person orbit (called from camera_do_frame_hook). Returns
-// true if it positioned the camera, so the stock per-frame third-person logic is skipped.
+// ---- POV ping compensation ("povcomp") ----
+//
+// While following a player, the spectator renders the target and every other entity on
+// one common timeline (each interp ring is evaluated ~own ping/2 + interp headroom behind
+// the server, uniformly - so the spectator's own latency cancels out of the relative
+// alignment). But the pose the target produced at server tick T was aimed at a world they
+// saw at T - (their ping + their client's interp delay). Realign by evaluating every
+// other player entity's interp ring that far in the past, so the crosshair lines up with
+// targets the way the shooter saw them - the same rewind the server's lag compensation
+// applied when it validated their hits. The ring holds real received history (20
+// keyframes, ~500ms at 40 netfps), so this stays smooth. Projectiles/corpses/
+// movers are not biased: tracers must leave the (un-delayed) POV muzzle, and alignment
+// only matters against players.
+//
+
+static int g_povcomp_override_ms = -1; // >= 0: fixed delay instead of ping-derived
+// Delay currently applied to non-target entities, slewed toward the desired value each
+// frame so the world glides on target/ping changes
+static float g_povcomp_applied_ms = 0.0f;
+
+constexpr int povcomp_max_ms = 450; // interp ring depth bounds usable delay anyway
+constexpr float povcomp_slew_ms_per_s = 300.0f;
+
+// The engine anchors each ring's interp_time at 2.2x the average sample-arrival interval
+// behind the newest keyframe (flt_59F50C), so the target's client viewed remote entities
+// ~ping + 2.2 * update interval in the past relative to the server timeline.
+constexpr float povcomp_interp_headroom = 2.2f;
+
+static int povcomp_desired_ms()
+{
+    // Demo playback runs its own povcomp (demo_povcomp) with its own applied delay
+    if (demo_playback_active())
+        return 0;
+    if (!g_alpine_game_config.spectate_povcomp || !rf::is_multi || !multi_spectate_is_following_player())
+        return 0;
+    rf::Player* target = multi_spectate_get_target_player();
+    if (!target || !target->net_data || target == rf::local_player)
+        return 0;
+    int desired = g_povcomp_override_ms;
+    if (desired < 0) {
+        // The server's netfps isn't known client-side; the measured average arrival
+        // interval of the target's own ring is the same cadence their client observed
+        float interval_ms = 25.0f; // fallback: netfps 40
+        rf::Entity* target_entity = rf::entity_from_handle(target->entity_handle);
+        if (target_entity && target_entity->obj_interp && target_entity->obj_interp->num_frames() >= 2) {
+            interval_ms = std::clamp(target_entity->obj_interp->arrive_time_avg_diff,
+                                     1000.0f / 300.0f, 1000.0f / 12.0f);
+        }
+        desired = target->net_data->ping + static_cast<int>(povcomp_interp_headroom * interval_ms);
+    }
+    return std::clamp(desired, 0, povcomp_max_ms);
+}
+
+// Slew the applied delay so the world glides instead of popping when the followed
+// target (and thus ping) changes, a netgame_update revises the ping, or the mode
+// is toggled. Snap to zero when not following: the local player may be about to
+// respawn and other players must not linger in the past.
+static void povcomp_do_frame()
+{
+    if (!multi_spectate_is_following_player()) {
+        g_povcomp_applied_ms = 0.0f;
+        return;
+    }
+    const auto desired = static_cast<float>(povcomp_desired_ms());
+    const float step = povcomp_slew_ms_per_s * rf::frametime;
+    if (g_povcomp_applied_ms < desired) {
+        g_povcomp_applied_ms = std::min(g_povcomp_applied_ms + step, desired);
+    }
+    else {
+        g_povcomp_applied_ms = std::max(g_povcomp_applied_ms - step, desired);
+    }
+}
+
+// Clamp the bias so the biased evaluation time stays within the ring's recorded
+// span. interp_time and time_array are 16-bit server ms ticks; blind subtraction
+// near a numeric wrap would read as ~65s in the future and trip determine_frame's
+// 5000ms staleness cutoff. time_array[0] is always the oldest sample (insertion
+// shifts the arrays down when full). Returns 0 when biasing is unsafe this frame.
+static uint16_t povcomp_safe_bias(rf::ObjInterp* interp, int desired_ms)
+{
+    // flags bit 0 = ring empty/unanchored: set by Clear(), cleared once a sample
+    // anchors interp_time (frame_start skips processing while it is set)
+    if ((interp->flags & 1) != 0 || interp->num < 2)
+        return 0; // ring unusable; the stock path holds the current pos anyway
+    const auto avail = static_cast<uint16_t>(interp->interp_time - interp->time_array[0]);
+    if (avail > 0x1388)
+        return 0; // stale/wrapped ring - leave it to the stock staleness handling
+    return static_cast<uint16_t>(std::min<int>(desired_ms, avail));
+}
+
+static int povcomp_bias_for(rf::Entity* entity)
+{
+    if (demo_playback_active())
+        return demo_playback_povcomp_bias(entity);
+    if (g_povcomp_applied_ms < 1.0f)
+        return 0;
+    // Resolved fresh per call: target switches take effect instantly and a dead
+    // target (entity_handle resolving to nothing) just leaves the whole world
+    // coherently delayed
+    rf::Player* target = multi_spectate_get_target_player();
+    if (target && entity->handle == target->entity_handle)
+        return 0; // the POV entity stays on the common timeline
+    return static_cast<int>(g_povcomp_applied_ms);
+}
+
+static void povcomp_interp_call(rf::Entity* entity, auto& hook)
+{
+    // povcomp only biases interp state during demo playback or while following a
+    // player in spectate; leave every other frame's interp untouched.
+    if (!demo_playback_active() && !multi_spectate_is_following_player()) {
+        hook.call_target(entity);
+        return;
+    }
+    rf::ObjInterp* interp = entity->obj_interp;
+    const int desired = interp ? povcomp_bias_for(entity) : 0;
+    const uint16_t bias = desired > 0 ? povcomp_safe_bias(interp, desired) : 0;
+    if (bias == 0) {
+        hook.call_target(entity);
+        return;
+    }
+    // Save/call/restore keeps every other consumer of interp_time (frame_start
+    // progression, sample-insertion staleness, lag comp) seeing the true value
+    const uint16_t saved = interp->interp_time;
+    interp->interp_time = static_cast<uint16_t>(saved - bias);
+    hook.call_target(entity);
+    interp->interp_time = saved;
+}
+
+// The two evaluation entry points physics_simulate_entity calls for every remote
+// entity with the network-interpolated physics flag - exactly the player entities.
+// Single hook site shared with demo povcomp: povcomp_bias_for delegates to
+// demo_playback_povcomp_bias during playback.
+static FunHook<void(rf::Entity*)> multi_obj_interp_orient_hook{
+    0x00484650,
+    [](rf::Entity* entity) { povcomp_interp_call(entity, multi_obj_interp_orient_hook); },
+};
+
+static FunHook<void(rf::Entity*)> multi_obj_interp_pos_hook{
+    0x00484770,
+    [](rf::Entity* entity) { povcomp_interp_call(entity, multi_obj_interp_pos_hook); },
+};
+
+static ConsoleCommand2 spectate_povcomp_cmd{
+    "spectate_povcomp",
+    [](std::optional<std::string> arg) {
+        if (arg) {
+            if (*arg == "on" || *arg == "auto") {
+                g_alpine_game_config.spectate_povcomp = true;
+                g_povcomp_override_ms = -1;
+            }
+            else if (*arg == "off") {
+                g_alpine_game_config.spectate_povcomp = false;
+            }
+            else {
+                int value = 0;
+                auto [ptr, ec] = std::from_chars(arg->data(), arg->data() + arg->size(), value);
+                if (ec != std::errc{} || ptr != arg->data() + arg->size()) {
+                    rf::console::print("Usage: spectate_povcomp [on|off|<delay ms>]");
+                    return;
+                }
+                g_alpine_game_config.spectate_povcomp = true;
+                g_povcomp_override_ms = std::clamp(value, 0, povcomp_max_ms);
+            }
+        }
+        if (!g_alpine_game_config.spectate_povcomp) {
+            rf::console::print("Spectate POV ping compensation: off");
+        }
+        else if (g_povcomp_override_ms >= 0) {
+            rf::console::print("Spectate POV ping compensation: on (override {} ms)", g_povcomp_override_ms);
+        }
+        else {
+            rf::console::print("Spectate POV ping compensation: on (auto, currently ~{} ms)",
+                               static_cast<int>(g_povcomp_applied_ms));
+        }
+    },
+    "Ping compensation while spectating a player",
+    "spectate_povcomp [on|off|<delay ms>]",
+};
+
+// How far the camera can travel from `from` toward `to` before level geometry, keeping
+// k_spectate_camera_radius clear of the hit.
+static float spectate_camera_clear_distance(const rf::Vector3& from, const rf::Vector3& to)
+{
+    const rf::Vector3 delta = to - from;
+    const float full = delta.len();
+    if (full < 0.001f)
+        return full;
+    const rf::Vector3 dir = delta / full;
+    rf::Vector3 p0 = from;
+    rf::Vector3 p1 = from + dir * (full + k_spectate_camera_radius);
+    rf::GCollisionOutput col{};
+    if (!rf::collide_linesegment_level_solid(p0, p1, rf::CF_PROCESS_INVISIBLE_FACES, &col))
+        return full;
+    return std::clamp((col.hit_point - from).len() - k_spectate_camera_radius, 0.0f, full);
+}
+
+static void spectate_set_camera_entity(rf::Entity* ce, const rf::Vector3& pos, const rf::Matrix3& orient)
+{
+    ce->pos = pos;
+    ce->orient = orient;
+    ce->eye_pos = pos;
+    ce->eye_orient = orient;
+    ce->set_room(nullptr);
+    ce->update_room();
+}
+
+void multi_spectate_povcomp_frame(rf::Camera* camera)
+{
+    if (rf::local_player && camera == rf::local_player->cam && camera->camera_entity)
+        povcomp_do_frame();
+}
+
+void multi_spectate_consume_look_deltas(float& dpitch, float& dyaw)
+{
+    // While we're a dead spectator nothing else pumps mouse_get_delta, so the raw delta accumulator
+    // stays empty. Pump it here, then read it. In Raw/Modern mouse mode the hook fills the accumulator
+    // (read via consume_raw_mouse_deltas); Classic mode returns the raw pixel delta in mdx/mdy instead.
+    int mdx = 0, mdy = 0, mdz = 0;
+    rf::mouse_get_delta(mdx, mdy, mdz);
+    dpitch = 0.0f;
+    dyaw = 0.0f;
+    consume_raw_mouse_deltas(dpitch, dyaw, false);
+    if (dpitch == 0.0f && dyaw == 0.0f && (mdx != 0 || mdy != 0)) {
+        const float sens = rf::local_player->settings.controls.mouse_sensitivity;
+        constexpr float classic_scale = 0.0035f;
+        float fy = static_cast<float>(mdy);
+        if (rf::local_player->settings.controls.axes[1].invert)
+            fy = -fy;
+        dpitch = -fy * sens * classic_scale;
+        dyaw = static_cast<float>(mdx) * sens * classic_scale;
+    }
+}
+
+void multi_spectate_reseed_orbit()
+{
+    if (rf::local_player && rf::local_player->cam && rf::local_player->cam->camera_entity)
+        spectate_init_orbit(rf::local_player->cam);
+}
+
+// Per-frame camera positioning for third person (over-the-shoulder and orbit), called from
+// camera_do_frame_hook. Returns true if it positioned the camera, so the stock per-frame
+// third-person logic is skipped.
 bool multi_spectate_camera_do_frame(rf::Camera* camera)
 {
     if (!rf::local_player || camera != rf::local_player->cam || !camera->camera_entity)
@@ -838,17 +1202,12 @@ bool multi_spectate_camera_do_frame(rf::Camera* camera)
         const int di = g_spectate_static_index - rf::fixed_camera_count;
         if (di >= 0 && di < static_cast<int>(g_spectate_dropped_cameras.size())) {
             const SpectateStaticCamera& sc = g_spectate_dropped_cameras[di];
-            ce->pos = sc.pos;
-            ce->orient = sc.orient;
-            ce->eye_pos = sc.pos;
-            ce->eye_orient = sc.orient;
-            ce->set_room(nullptr);
-            ce->update_room();
+            spectate_set_camera_entity(ce, sc.pos, sc.orient);
             return true;
         }
     }
 
-    // Third-person orbit is only driven during active gameplay; at round end let the engine run
+    // Third person is only driven during active gameplay; at round end let the engine run
     // its own endgame fixed-camera flyby.
     if (rf::gameseq_get_state() != rf::GS_GAMEPLAY)
         return false;
@@ -857,32 +1216,12 @@ bool multi_spectate_camera_do_frame(rf::Camera* camera)
         rf::Entity* target = g_spectate_mode_target
             ? rf::entity_from_handle(g_spectate_mode_target->entity_handle)
             : nullptr;
-        if (!target) {
-            // Target dead/gone this frame - drain the mouse accumulator so motion during the dead
-            // interval doesn't bank up and snap the view on respawn; hold the camera in place.
-            int mdx = 0, mdy = 0, mdz = 0;
-            rf::mouse_get_delta(mdx, mdy, mdz);
-            float dpitch = 0.0f, dyaw = 0.0f;
-            consume_raw_mouse_deltas(dpitch, dyaw, false);
-            return true;
-        }
-
-        // While we're a dead third-person spectator nothing else pumps mouse_get_delta, so the raw
-        // delta accumulator stays empty. Pump it here, then read it. In Raw/Modern mouse mode the
-        // hook fills the accumulator (read via consume_raw_mouse_deltas); Classic mode returns the
-        // raw pixel delta in mdx/mdy instead.
-        int mdx = 0, mdy = 0, mdz = 0;
-        rf::mouse_get_delta(mdx, mdy, mdz);
         float dpitch = 0.0f, dyaw = 0.0f;
-        consume_raw_mouse_deltas(dpitch, dyaw, false);
-        if (dpitch == 0.0f && dyaw == 0.0f && (mdx != 0 || mdy != 0)) {
-            const float sens = rf::local_player->settings.controls.mouse_sensitivity;
-            constexpr float classic_scale = 0.0035f;
-            float fy = static_cast<float>(mdy);
-            if (rf::local_player->settings.controls.axes[1].invert)
-                fy = -fy;
-            dpitch = -fy * sens * classic_scale;
-            dyaw = static_cast<float>(mdx) * sens * classic_scale;
+        multi_spectate_consume_look_deltas(dpitch, dyaw);
+        if (!target) {
+            // Target dead/gone this frame - the drain above keeps motion during the dead interval from
+            // banking up and snapping the view on respawn; hold the camera in place.
+            return true;
         }
 
         g_spectate_orbit_yaw += dyaw;
@@ -900,17 +1239,42 @@ bool multi_spectate_camera_do_frame(rf::Camera* camera)
             std::sin(g_spectate_orbit_pitch),
             std::cos(g_spectate_orbit_pitch) * std::cos(g_spectate_orbit_yaw),
         };
-        rf::Vector3 cam_pos = focus - look_dir * k_spectate_orbit_distance;
+        const float distance = spectate_camera_clear_distance(focus, focus - look_dir * k_spectate_orbit_distance);
+        const rf::Vector3 cam_pos = focus - look_dir * distance;
 
         rf::Matrix3 orient;
         orient.make_quick(look_dir);
 
-        ce->pos = cam_pos;
-        ce->orient = orient;
-        ce->eye_pos = cam_pos;
-        ce->eye_orient = orient;
-        ce->set_room(nullptr);
-        ce->update_room();
+        spectate_set_camera_entity(ce, cam_pos, orient);
+        return true;
+    }
+
+    if (g_spectate_mode_enabled && g_spectate_view_mode == SpectateViewMode::third_person
+        && camera->mode == rf::CAMERA_THIRD_PERSON) {
+        rf::Entity* target = g_spectate_mode_target
+            ? rf::entity_from_handle(g_spectate_mode_target->entity_handle)
+            : nullptr;
+        if (!target)
+            return true; // target dead/gone this frame - hold the camera in place
+
+        // Shoulder offset uses the horizontal right vector and world up, so pitch swings the camera
+        // around the shoulder pivot.
+        const rf::Matrix3& aim = target->eye_orient;
+        rf::Vector3 right{aim.rvec.x, 0.0f, aim.rvec.z};
+        const float right_len = right.len();
+        right = right_len > 0.001f ? right / right_len : aim.rvec;
+        const rf::Vector3 shoulder = right * k_spectate_shoulder_right + rf::Vector3{0.0f, k_spectate_shoulder_up, 0.0f};
+        const float shoulder_clear = spectate_camera_clear_distance(target->eye_pos, target->eye_pos + shoulder);
+        const rf::Vector3 pivot = target->eye_pos + shoulder * (shoulder_clear / shoulder.len());
+
+        const float allowed = spectate_camera_clear_distance(pivot, pivot - aim.fvec * k_spectate_shoulder_distance);
+        if (allowed < g_spectate_shoulder_boom)
+            g_spectate_shoulder_boom = allowed;
+        else
+            g_spectate_shoulder_boom += (allowed - g_spectate_shoulder_boom)
+                * std::min(1.0f, rf::frametime * k_spectate_shoulder_ease_rate);
+
+        spectate_set_camera_entity(ce, pivot - aim.fvec * g_spectate_shoulder_boom, aim);
         return true;
     }
 
@@ -942,6 +1306,10 @@ void multi_spectate_leave()
 void multi_spectate_toggle()
 {
     if (!rf::is_multi || rf::is_dedicated_server || !rf::player_is_dead(rf::local_player))
+        return;
+
+    // Spectate is forced on during demo playback - exiting it makes no sense there.
+    if (demo_playback_active())
         return;
 
     if (multi_spectate_is_spectating()) {
@@ -1019,6 +1387,15 @@ void multi_spectate_on_player_kill(rf::Player* victim, rf::Player* killer)
 
 void multi_spectate_on_destroy_player(rf::Player* player)
 {
+    if (rf::is_server) {
+        // Server side, `spectatee` is a raw pointer to the player being freed.
+        for (rf::Player& p : SinglyLinkedList{rf::player_list}) {
+            if (p.spectatee.value_or(nullptr) == player) {
+                p.spectatee = nullptr;
+            }
+        }
+    }
+
     if (player != rf::local_player) {
         // Drop any numpad binds pointing at the leaving player so they can't dangle.
         for (int i = 0; i < k_spectate_numpad_count; ++i) {
@@ -1105,6 +1482,8 @@ ConsoleCommand2 spectate_cmd{
         }
 
         auto print_exit_hint = [] {
+            if (demo_playback_active())
+                return;
             std::string bind = get_action_bind_name(
                 get_af_control(rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_TOGGLE)
             );
@@ -1124,6 +1503,11 @@ ConsoleCommand2 spectate_cmd{
             print_exit_hint();
         }
         else if (g_spectate_mode_enabled || multi_spectate_is_freelook()) {
+            // spectate is forced on during demo playback - it cannot be exited
+            if (demo_playback_active()) {
+                rf::console::output("Spectate mode cannot be exited during demo playback.", nullptr);
+                return;
+            }
             // leave spectate mode
             multi_spectate_leave();
         }
@@ -1265,7 +1649,7 @@ static void spectate_populate_default_binds()
     // Seed numpad 0-9 with the current top-scoring spectatable players (highest first).
     std::vector<rf::Player*> players;
     for (rf::Player& p : SinglyLinkedList{rf::player_list}) {
-        if (&p == rf::local_player || p.is_browser || !p.stats) {
+        if (&p == rf::local_player || p.is_non_participant() || !p.stats) {
             continue;
         }
         players.push_back(&p);
@@ -1277,20 +1661,6 @@ static void spectate_populate_default_binds()
     for (int i = 0; i < n; ++i) {
         g_spectate_player_binds[i] = players[i];
     }
-}
-
-static bool spectate_project_to_screen(const rf::Vector3& world_pos, float& sx, float& sy)
-{
-    rf::gr::Vertex v{};
-    if (!rf::gr::rotate_vertex(&v, &world_pos)) { // 0 => in front of the camera
-        rf::gr::project_vertex(&v);
-        if (v.flags & rf::gr::VF_PROJECTED) {
-            sx = v.sx;
-            sy = v.sy;
-            return true;
-        }
-    }
-    return false;
 }
 
 // Returns the numpad bind suffix for a player for the nameplate, e.g. " (1, 3)" (or "" if none).
@@ -1352,7 +1722,7 @@ static void spectate_render_camera_mesh(const rf::Vector3& pos, const rf::Matrix
     }
 
     float sx = 0.0f, sy = 0.0f;
-    if (spectate_project_to_screen(label_pos, sx, sy)) {
+    if (gr_project_world_to_screen(label_pos, sx, sy)) {
         rf::gr::set_color(0xFF, 0xF0, 0x50, 0xFF);
         rf::gr::string_aligned(rf::gr::ALIGN_CENTER, static_cast<int>(sx), static_cast<int>(sy),
             label.c_str(), hud_get_default_font());
@@ -1403,9 +1773,12 @@ void multi_spectate_process_bind_input()
     const bool player_mode = g_spectate_mode_enabled;   // first/third person
     const bool static_mode = g_spectate_static_active;   // static cameras
     const bool bindable = player_mode || static_mode;
-    // Still consume the numpad counters while typing (so they don't queue up), but don't act on
-    // them - the console/chat-say box uses the separate character buffer for typing.
-    const bool typing = rf::console::console_is_visible() || rf::multi_chat_is_say_visible();
+    // Still consume the numpad counters while an overlay owns input (so they don't queue up), but
+    // don't act on them - the console/chat-say box reads the separate character buffer, and the
+    // vote panel's own rows sit under the numpad keys whether or not a text box has focus.
+    const bool typing = rf::console::console_is_visible() ||
+    rf::multi_chat_is_say_visible() ||
+    vote_panel_is_gameplay_overlay_active();
 
     if (rf::key_get_and_reset_down_counter(rf::KEY_PADENTER) > 0 && !typing) {
         g_spectate_bind_dialog_open = bindable && !g_spectate_bind_dialog_open;
@@ -1600,7 +1973,11 @@ static void player_render_new(rf::Player* player)
                 // AIF_ALT_FIRE distinguishes primary vs alt fire on the same weapon_is_on state.
                 // For continuous alt fire weapons (baton taser): skip WA_CUSTOM_START intro, go
                 // straight to WS_LOOP_FIRE on rising edge, play WA_CUSTOM_LEAVE on falling edge.
-                bool weapon_is_on = rf::entity_weapon_is_on(entity->handle, weapon_type);
+                // While demo pause has the sim frozen the fire latch keeps its last value -
+                // treat it as not firing so pausing reads as a falling edge (muzzle flash and
+                // fire anim stop) and resuming as a rising edge, instead of firing forever
+                bool weapon_is_on = rf::entity_weapon_is_on(entity->handle, weapon_type)
+                    && !demo_playback_sim_frozen();
                 bool is_alt_fire = (entity->ai.ai_flags & rf::AIF_ALT_FIRE) != 0;
                 bool is_continuous_alt_fire_weapon =
                     rf::weapon_is_on_off_weapon(weapon_type, true);
@@ -1669,7 +2046,8 @@ static void player_render_new(rf::Player* player)
         // The state anim hook inside process should already set this, but the animation transition
         // system may not complete in time for the render check. Directly writing the state fields
         // guarantees player_fpgun_render's is_in_state_anim(WS_LOOP_FIRE) check passes.
-        if (entity && rf::entity_weapon_is_on(entity->handle, entity->ai.current_primary_weapon)) {
+        if (entity && rf::entity_weapon_is_on(entity->handle, entity->ai.current_primary_weapon)
+            && !demo_playback_sim_frozen()) {
             g_spectate_mode_target->fpgun_current_state_anim = rf::WS_LOOP_FIRE;
         }
 
@@ -1761,7 +2139,12 @@ void multi_spectate_appy_patch()
     spectate_mode_minimal_ui_cmd.register_cmd();
     spectate_mode_follow_killer_cmd.register_cmd();
     spectate_cameras_cmd.register_cmd();
+    spectate_povcomp_cmd.register_cmd();
     spectate_render_camera_meshes_patch.install();
+
+    // POV ping compensation: bias non-target entities' interp evaluation into the past
+    multi_obj_interp_orient_hook.install();
+    multi_obj_interp_pos_hook.install();
 
     // Handle scanner state in entity state flags (both sending and receiving)
     entity_state_flags_sync_hook.install();
@@ -1820,6 +2203,7 @@ void multi_spectate_player_create_entity_post(rf::Player* player, [[maybe_unused
 void multi_spectate_level_init()
 {
     g_spawned_in_current_level = false;
+    g_povcomp_applied_ms = 0.0f; // interp rings start empty - ramp the delay back up
     g_spectate_freelook_saved_target = nullptr;
     g_spectate_view_mode = SpectateViewMode::first_person;
     g_spectate_third_person_orbit = false;
@@ -1949,6 +2333,36 @@ static int spectate_raise_hints_above_hud(int hints_y, int line_count, int line_
     return hints_y;
 }
 
+// Bind-name strings backing the demo playback hint rows; must outlive the
+// hints array they are pushed into (the pairs hold raw c_str() pointers).
+struct DemoPlaybackHintBinds
+{
+    std::string popup;
+    std::string rewind;
+    std::string forward;
+    std::string pause;
+};
+
+// Appends the demo playback control hints (demo controls popup + its keyboard
+// shortcuts) to a spectate hint column. No-op outside demo playback.
+static int append_demo_playback_hints(std::pair<const char*, const char*>* hints, int nh,
+    DemoPlaybackHintBinds& binds)
+{
+    if (!demo_playback_active())
+        return nh;
+    binds.popup = get_action_bind_name(rf::ControlConfigAction::CC_ACTION_USE).c_str();
+    binds.rewind = get_action_bind_name(
+        get_af_control(rf::AlpineControlConfigAction::AF_ACTION_VOTE_YES)).c_str();
+    binds.forward = get_action_bind_name(
+        get_af_control(rf::AlpineControlConfigAction::AF_ACTION_VOTE_NO)).c_str();
+    binds.pause = get_action_bind_name(rf::ControlConfigAction::CC_ACTION_RELOAD).c_str();
+    hints[nh++] = {binds.popup.c_str(), "Demo Controls"};
+    hints[nh++] = {binds.rewind.c_str(), "Rewind 10s"};
+    hints[nh++] = {binds.forward.c_str(), "Forward 10s"};
+    hints[nh++] = {binds.pause.c_str(), "Pause / Resume"};
+    return nh;
+}
+
 // Draw a column of bind/label hint rows (bind right-aligned at left_x, label at right_x).
 static void draw_spectate_hints(const std::pair<const char*, const char*>* hints, int count,
     int left_x, int right_x, int y, int font, int font_h)
@@ -1989,7 +2403,7 @@ void multi_spectate_render() {
     spectate_render_bind_dialog();
 
     if (multi_spectate_is_static()) {
-        if (!g_alpine_game_config.spectate_mode_minimal_ui && !g_remote_server_cfg_popup.is_active() && !vote_panel_is_gameplay_overlay_active()) {
+        if (!g_alpine_game_config.spectate_mode_minimal_ui && !g_remote_server_cfg_popup.is_active() && !vote_panel_is_gameplay_overlay_active() && !demo_controls_ui_is_open()) {
             int medium_font = hud_get_default_font();
             int medium_font_h = rf::gr::get_font_height(medium_font);
             int large_font = hud_get_large_font();
@@ -2037,7 +2451,8 @@ void multi_spectate_render() {
             std::string prev_cam_text =
                 get_action_bind_name(rf::ControlConfigAction::CC_ACTION_SECONDARY_ATTACK);
 
-            std::pair<const char*, const char*> hints[12];
+            DemoPlaybackHintBinds demo_binds;
+            std::pair<const char*, const char*> hints[16];
             int nh = 0;
             hints[nh++] = {attach_text.c_str(), "Attach to Player"};
             hints[nh++] = {change_text.c_str(), "Free / Static Camera"};
@@ -2048,7 +2463,9 @@ void multi_spectate_render() {
             hints[nh++] = {"NUM 0-9", "Jump to Camera"};
             hints[nh++] = {"NUM ENTER", "Camera Quick-Binds"};
             hints[nh++] = {spec_menu_text.c_str(), "Open Spectate Options Menu"};
-            hints[nh++] = {exit_spec_text.c_str(), "Exit Spectate Mode"};
+            if (!demo_playback_active())
+                hints[nh++] = {exit_spec_text.c_str(), "Exit Spectate Mode"};
+            nh = append_demo_playback_hints(hints, nh, demo_binds);
             hints_y = spectate_raise_hints_above_hud(hints_y, nh, medium_font_h);
             draw_spectate_hints(hints, nh, hints_left_x, hints_right_x, hints_y, medium_font, medium_font_h);
         }
@@ -2056,7 +2473,7 @@ void multi_spectate_render() {
     }
 
     if (multi_spectate_is_freelook()) {
-        if (!g_alpine_game_config.spectate_mode_minimal_ui && !g_remote_server_cfg_popup.is_active() && !vote_panel_is_gameplay_overlay_active()) {
+        if (!g_alpine_game_config.spectate_mode_minimal_ui && !g_remote_server_cfg_popup.is_active() && !vote_panel_is_gameplay_overlay_active() && !demo_controls_ui_is_open()) {
             int medium_font = hud_get_default_font();
             int medium_font_h = rf::gr::get_font_height(medium_font);
             int large_font = hud_get_large_font();
@@ -2098,14 +2515,17 @@ void multi_spectate_render() {
             std::string drop_text =
                 get_action_bind_name(rf::ControlConfigAction::CC_ACTION_SECONDARY_ATTACK);
 
-            std::pair<const char*, const char*> hints[12];
+            DemoPlaybackHintBinds demo_binds;
+            std::pair<const char*, const char*> hints[16];
             int nh = 0;
             hints[nh++] = {attach_text.c_str(), "Attach to Player"};
             hints[nh++] = {change_text.c_str(), "Free / Static Camera"};
             hints[nh++] = {zoom_text.c_str(), "Zoom"};
             hints[nh++] = {drop_text.c_str(), "Drop Camera"};
             hints[nh++] = {spec_menu_text.c_str(), "Open Spectate Options Menu"};
-            hints[nh++] = {exit_spec_text.c_str(), "Exit Spectate Mode"};
+            if (!demo_playback_active())
+                hints[nh++] = {exit_spec_text.c_str(), "Exit Spectate Mode"};
+            nh = append_demo_playback_hints(hints, nh, demo_binds);
             int hints_y = scr_h - (g_alpine_game_config.big_hud ? 200 : 120) + medium_font_h * 2;
             hints_y = spectate_raise_hints_above_hud(hints_y, nh, medium_font_h);
             draw_spectate_hints(hints, nh, hints_left_x, hints_right_x, hints_y, medium_font, medium_font_h);
@@ -2123,7 +2543,7 @@ void multi_spectate_render() {
 
     if (!g_spectate_mode_enabled) {
         if (rf::player_is_dead(rf::local_player)
-            && !g_remote_server_cfg_popup.is_active() && !vote_panel_is_gameplay_overlay_active()) {
+            && !g_remote_server_cfg_popup.is_active() && !vote_panel_is_gameplay_overlay_active() && !demo_controls_ui_is_open()) {
             const std::string spectate_bind_text = get_action_bind_name(
                 get_af_control(rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_TOGGLE)
             );
@@ -2208,14 +2628,17 @@ void multi_spectate_render() {
         );
 
         // Current-view subtitle just below the title.
-        const char* view_subtitle = g_spectate_view_mode == SpectateViewMode::first_person
+        std::string view_subtitle = g_spectate_view_mode == SpectateViewMode::first_person
             ? "First Person"
             : (g_spectate_third_person_orbit ? "Third Person (Orbit)" : "Third Person");
+        if (g_povcomp_applied_ms >= 1.0f) {
+            view_subtitle += "  [povcomp ~" + std::to_string(static_cast<int>(g_povcomp_applied_ms)) + "ms]";
+        }
         rf::gr::set_color(0xFF, 0xFF, 0xFF, 0xB0);
         rf::gr::string_aligned(rf::gr::ALIGN_CENTER, title_x, title_y + large_font_h,
-            view_subtitle, medium_font);
+            view_subtitle.c_str(), medium_font);
 
-        if (!g_remote_server_cfg_popup.is_active() && !vote_panel_is_gameplay_overlay_active()) {
+        if (!g_remote_server_cfg_popup.is_active() && !vote_panel_is_gameplay_overlay_active() && !demo_controls_ui_is_open()) {
             int hints_left_x = g_alpine_game_config.big_hud ? 120 : 70;
             int hints_right_x = g_alpine_game_config.big_hud ? 140 : 80;
             std::string attach_text = get_action_bind_name(
@@ -2233,7 +2656,8 @@ void multi_spectate_render() {
             std::string next_player_text =
                 get_action_bind_name(rf::ControlConfigAction::CC_ACTION_PRIMARY_ATTACK);
 
-            std::pair<const char*, const char*> hints[12];
+            DemoPlaybackHintBinds demo_binds;
+            std::pair<const char*, const char*> hints[16];
             int nh = 0;
             hints[nh++] = {attach_text.c_str(), "Detach Camera"};
             hints[nh++] = {change_text.c_str(), "First / Third Person View"};
@@ -2243,7 +2667,9 @@ void multi_spectate_render() {
             hints[nh++] = {"NUM 0-9", "Jump to Player"};
             hints[nh++] = {"NUM ENTER", "Player Quick-Binds"};
             hints[nh++] = {spec_menu_text.c_str(), "Open Spectate Options Menu"};
-            hints[nh++] = {exit_spec_text.c_str(), "Exit Spectate Mode"};
+            if (!demo_playback_active())
+                hints[nh++] = {exit_spec_text.c_str(), "Exit Spectate Mode"};
+            nh = append_demo_playback_hints(hints, nh, demo_binds);
             int hints_y = scr_h - (g_alpine_game_config.big_hud ? 200 : 120) + medium_font_h * 2;
             hints_y = spectate_raise_hints_above_hud(hints_y, nh, medium_font_h);
             draw_spectate_hints(hints, nh, hints_left_x, hints_right_x, hints_y, medium_font, medium_font_h);
@@ -2327,7 +2753,7 @@ void multi_spectate_render() {
     render_spectate_powerup_icons(entity, bar_x, bar_y, bar_h);
 
     // Draw next/prev player hints flanking the nameplate bar
-    if (!g_alpine_game_config.spectate_mode_minimal_ui && !g_remote_server_cfg_popup.is_active() && !vote_panel_is_gameplay_overlay_active()) {
+    if (!g_alpine_game_config.spectate_mode_minimal_ui && !g_remote_server_cfg_popup.is_active() && !vote_panel_is_gameplay_overlay_active() && !demo_controls_ui_is_open()) {
         std::string prev_player_text =
             get_action_bind_name(rf::ControlConfigAction::CC_ACTION_SECONDARY_ATTACK);
         std::string next_player_text =

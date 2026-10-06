@@ -1,7 +1,219 @@
 ⚙️⛏ Alpine Faction Changelog ⛏⚙️
 ===================================
 
-Version 1.4.0 (Lupin): Not yet released
+Version 1.5.0 (Trillium): Not yet released
+--------------------------------
+### Major features
+[@GooberRF](https://github.com/GooberRF)
+- Add ray cast lightmap baking to level editor
+  - Add `Invisible faces block light` and `Alpha-textured faces block light` level properties to control whether those faces occlude baked light
+  - Add `No shadow cast` brush property for solid detail brushes and movers
+  - Add `Meshes block light` level property to make Alpine Mesh objects cast baked shadows
+  - Add `No shadow cast` checkbox to Alpine Mesh object properties to exclude individual objects
+- Add global per-level directional sunlight and individual `Directional Light` objects with bounded ranges
+  - `Casts shadows (lightmaps)` bakes the sun into the level's lightmaps with ray traced shadows
+  - `Affects mesh lighting` lights meshes and entities per pixel from the sun direction, with `Scale mesh sunlight by lightmaps` to keep sunlight out of unlit interiors
+  - `Aligns dynamic shadows` points entity shadows along the sun instead of the fixed default direction
+  - `Water blocks sunlight` stops sun rays at liquid surfaces during the bake
+- Add Alpine Lightmaps, providing higher-resolution, BC7-compressed lightmaps for brushwork, movers, and terrain
+- Add heightmap-based `Terrain` object to level editor
+  - Support blended texture layers, holes, optional skirts, per-terrain lightmap density, and optional fullbright
+  - Import 8/16-bit greyscale PNG and RAW16 heightmaps, export 16-bit PNG and RAW16 heightmaps, and import splat maps
+  - Generate heightmaps using fractal noise with optional splat map from height, slope and ridges
+  - Sculpt heights, paint texture layers and holes, and pick geoable chunks in the viewport with `Terrain Tools`
+  - Mirror `Terrain Tools` brush strokes across the terrain's X and/or Z axis, with movable mirror lines
+  - Up to 4 detail overlays (leaves, debris) and 8 mesh decoration layers per terrain (grass, rocks, bushes)
+  - `Geoable` terrains are carved by RF2-style geomod craters, with their own underside and crater textures
+
+[@GooberRF](https://github.com/GooberRF) & [@nickalreadyinuse](https://github.com/nickalreadyinuse)
+- Add multiplayer vehicles and turrets
+  - Jeeps, APCs, drillers, fighters, submarines, and stationary turrets, spawned by the new `Vehicle Factory` object
+  - Simulate vehicle physics with the Bullet physics engine
+  - Multi-seat vehicles with driver, gunner, and passenger seats; `Use` boards the lowest free seat and number keys `1`-`6` switch seats
+
+### Minor features, changes, and enhancements
+[@GooberRF](https://github.com/GooberRF)
+- Notify players in a server that is recording demos
+- Restore cut first person weapon aim sway, toggleable with `cl_weaponsway`
+- Add `cl_freelookslide` to scale the acceleration and deceleration slide of the freelook camera
+- Add terms of use and notices document to installer
+- Add compatibility table (lightmap clamp floor) for `dm-halloween.rfl`
+- Bump RFL version to 306
+- Add `Display_Projection` event and `Projection Camera` object for rendering live camera views onto ATX textures (Direct3D 11 renderer only)
+- Add `Rope_State` event to switch `Rope Emitter` objects on and off at runtime
+- Add `Rope Emitter` object for ropes, cables, and power lines, with optional decorations
+- Add flames to gib chunks thrown by exploding entities, toggleable with `cl_gibflames`
+- Add `Jetpacks explode` option to the Jetpacks mutator
+- Add underwater rendering effects — animated caustics, depth-based water fog with a waterline, screen tint/vignette and distortion — with quality levels 0-3 via `r_underwater` (Direct3D 11 renderer only)
+- Extend view distance while submerged at `r_underwater` 2 or higher, up to 4x the liquid visibility, with the extension capped at the normal far clip
+- Add edge-vignette damage feedback as `cl_damageflash 2` (Direct3D 11 renderer only); `cl_damageflash` is now a level: 0 off, 1 screen flash, 2 vignette
+- Add `Brush` collision mode for Alpine Mesh objects
+- Add `Brush Geo` source selection for Alpine Mesh objects using `Brush` collision, allowing custom collision hulls
+- Raise level editor per-room and per-mesh render vertex limit from 8000 to 32768
+- Add `Limit vehicle flight ceiling` and `Ceiling height (Y)` options to level editor `Level Properties` to cap how high flying vehicles can climb
+- Add `-bake in.rfl -bakeout out.rfl` launcher command line switches to build a level's geometry and calculate its lighting without user interaction, writing the result to a new level file and progress to a log beside it
+- Add `High-resolution lightmaps` level property, used in lightmap bake in level editor
+- Deprecate and remove `-smoothlights` level editor switch
+- Add `dbg_collision_pairs` console command to print object collision pair pool statistics
+- Add `sv_afstats_events_reset` console command to clear a stuck stats event send, a 401 pause, or a stretched retry pulse and resume the stream without discarding queued events
+- Add rcon profile access to `sv_afstats` and `sv_fflink` commands and make status commands return their output to the rcon holder
+- Use the modern Windows file dialogs for every open and save in the level editor
+- Always render meshes at their highest LOD in the level editor
+- Make a mesh exported from a brush in the level editor immediately usable as a `Mesh` object
+- Add `To Brush` to the `Select Objects` window in the level editor, converting `Mesh` objects into detail brushes
+- Add a mesh browser to the level editor for picking meshes and animations for `Mesh` objects
+- Add a new and modern color picker to the level editor
+- Add click and drag spinner arrows to the numeric fields on the `Corona` and `Weather Region` object dialogs in the level editor
+- Show a live viewport preview while editing `Corona` and `Rope Emitter` properties in the level editor, so the fields being typed are what the viewport draws
+- Draw `Weather Region` sprites in the level editor at the same size as `Room Effect` sprites, and highlight selected regions in aqua
+- Consolidate duplicated Alpine object internals into shared machinery in the game and level editor, and harden level file parsing for `Corona`, `Bag` and `Weather Region` objects against corrupted data
+- Turning off `Mesh_Animate` now pauses the animation playing on the meshes it links to, and turning it back on with the same animation and type resumes it from the frozen pose
+- Add `Climbing_Region_State` event to toggle climbing regions
+- Support moving climbing regions with `Anchor_Marker` and `Anchor_Marker_Orient`
+- Add `When_Destroyed` catalyst event, which activates its links when the destructible detail brushes it links to are destroyed
+- Support linking events and triggers to detail brushes in the level editor
+- Linking a `Bolt Emitter` or `Rope Emitter` to a `Target` in the level editor sets the emitter's target to it
+- `Owner_Gate` can now take its capture points from linked `Capture_Point_Handler` events
+- Retain RED+-specific chunks when RFLs are loaded and re-saved in the level editor
+- Make third person spectate an over-the-shoulder camera, and stop third person and orbit spectate cameras from clipping through walls
+- Switching from a spectated player to free look starts the free look camera at the current view instead of where free look was last left
+- Show the spectated player's jetpack fuel gauge in third person spectate and when `spectate_minui` is enabled
+- Add `cl_dominationmsgs` console command to toggle display of dominating and revenge server messages in chat
+- Add `dbg_terrain_batches` console command to tint terrain faces by render batch (Direct3D 11 renderer only)
+- Add `dbg_terrain_decorations` console command to toggle terrain mesh decorations and print their draw statistics
+- Levels saved with `D3D11-only lightmaps` refuse to load with the Direct3D 8/9 renderers
+- Speed up `Calculate Lighting` in the level editor, especially on large levels and levels with very many lightmap surfaces
+- Improve level loading and `Build Geometry` times in the level editor on levels with many faces
+- Draw large rooms in fewer draw calls, and skip rooms without dynamic decals when drawing them (Direct3D 11 renderer only)
+- Make level editor refuse to open levels saved by a newer version of Alpine Faction instead of misreading them
+- Allow undoing deletion of Alpine objects in the level editor
+- Show assists on suicide and environmental death lines in chat and the kill feed, as on other kill messages
+- Add multiplayer minimap, configured in `Level Properties`
+- Dedicated server base rules now apply to every level under every game type unless a level overrides them
+- A level loaded by a vote, the `level` or `sv_gametype` commands now use that level's own rotation rules if available
+
+[@nickalreadyinuse](https://github.com/nickalreadyinuse)
+- Add `ui_color_console` console command to set the console background color
+- Render animated (`.vfx`) meshes on the GPU with per-pixel lighting, and apply their materials' reflection maps (Direct3D 11 renderer only)
+- Load levels with very large face counts or many level sounds much faster
+
+[@is-this-c](https://github.com/is-this-c)
+- Support TrueType fonts in 3D text rendering
+- Render world HUD text (player labels, damage numbers, ping labels, countdowns) in 3D for smooth sub-pixel motion
+- Allow TrueType fonts to be rendered into bitmaps with mipmaps (D3D11 only)
+- Do not kick a player, if they join right before limbo
+
+### Bug fixes
+[@GooberRF](https://github.com/GooberRF)
+- Fix phantom visual flag mesh being visible after Salvage flag is picked up on rare occasions
+- Fix scrolling textures jumping forward when the Direct3D 11 renderer rebuilds a room's render cache, most visibly after a brush-based geomod crater
+- Fix deleting an Alpine object in the level editor leaving a stale reference to it in any moving group it belonged to
+- Fix filter box in the level editor texture browser not filtering the texture list by partial filename
+- Fix level editor crashing without an error message when drawing a room or mesh containing more than 8000 vertices
+- Fix level editor crashing while calculating lighting for a level containing a smoothed face with more than 32 vertices
+- Lightmap baking fixes in the level editor, based on the `Glacier` level editor
+  - Fix grey speckling on smoothed faces and the dark edges around lightmap fragments
+  - Fix several accuracy issues on face edges that resulted in dark bands and splotches along polygon boundaries
+  - Blend coplanar surfaces across room boundaries
+- Fix object collision pairs silently running out on levels with many collidable clutter objects, triggers, and items when many players are connected
+- Fix FactionFiles stats event reporting stalling permanently when a send attempt hangs inside WinINet
+- Fix level editor crashing when a mesh is played with an animation that does not fit its skeleton
+- Fix level editor crashing when a Direct3D buffer lock fails
+- Fix level editor crashing when a Weather Region's snow `Bitmap` names a loose file instead of one inside a packfile
+- Fix level editor crashing while saving a level containing a clutter class that is missing from the loaded `clutter.tbl`
+- Report each clutter object whose class is missing from the loaded `clutter.tbl` in the level editor log
+- Fix a one frame flash to the default pose each time an animation loops on a mesh being simulated in the level editor
+- Update Weather Region bounds in viewport live when values are changed
+- Fix the fusion not being in-scope for the `Delayed Supers` mutator
+- Fix `Set_Light_Color` discarding the intensity of the lights it links to
+- Fix level editor packfile creation to include the frames and alpha mask of ATX textures used on faces and decals, and to include `.atx` files referenced by a legacy texture name
+- Fix crash when a bone, tag, or prop point is queried on a character whose mesh file contains no submeshes, or when such a character's weapon or textures are preloaded for rendering
+- Fix items not rotating correctly when out of view or when viewed through a Projection Camera
+- Fix Alpine Mesh objects using skeletal meshes receiving no light from the level in the `Ambient` and `Vertex` mesh lighting modes
+- Fix meshes keeping stale vertex lighting after the mesh lighting mode is changed until the level is reloaded
+- Fix objects and effects behind see-through faces of mover brushes being hidden by those faces
+- Fix alpha textures on detail brushes in moving groups rendering opaque in game
+- Fix player outlines seen through see-through geometry disappearing depending on view direction
+- Fix the sustained weapon fire sound of fighter-class vehicles playing at full volume with no direction regardless of how far away it is
+- Fix every entity with a flying sound permanently consuming one of the 25 ambient sound slots each time it is destroyed
+- Fix engine sounds keeping the direction they had when they started instead of following the vehicle when DirectSound 3D is enabled
+- Fix the driller's drilling sound looping forever when the driller is destroyed while drilling
+- Fix headless bot crash when a level references a texture by a file extension the stock bitmap loader does not support (e.g. `.dds`) and it cannot be loaded
+- Fix `Fuse` and `Carve` in the level editor dumping the textures and texture coordinates of faces taken from the later brush
+- Fix undoing `Fuse` in the level editor taking two steps
+- Fix level editor crashing or corrupting undo history when undoing, redoing, or autosaving while moving, rotating, or scaling in a viewport
+- Fix bolt emitters imported as part of a group in the level editor keeping their old target when the target object is renumbered to avoid a UID conflict
+- Fix bolt emitters pasted in the level editor together with their target still targeting the original object
+- Fix geoable brush supports not being properly recognized if buried in level geometry
+- Fix level editor not prompting to save changes made in `Level Properties`
+- Fix level editor crashing when moving decals in a level with more than 128 decals
+- Fix copying and pasting face textures in level editor texture mode removing Alpine objects from the clipboard or unintentionally pasting them into the level
+- Remove the level editor warning about levels with too many decals
+- Fix `Owner_Gate`, `Add_Link`, `Clone_Entity`, `Valid_Gate`, the trigger of `Inside_Gate`, and the eye anchor of `Set_Skybox` keeping the old UID when the object they reference is renumbered by a group import or pasted along with them in the level editor
+- Fix `Score Limit Override` mutator not working in Wipeout
+- Fix faces created by `Split` and `Bridge` in the level editor sharing an ID, which made them share scrolling texture settings and could map geoable or breakable brushes to the wrong room when saving before rebuilding
+- Fix dedicated servers and headless bots using the Win32 console hanging when printing certain text
+- Fix dedicated server crashing when a `Clone_Entity` or `Set_Player_World_Collide` event is activated, and `Clone_Entity` crashing when the entity cannot be created
+- Fix `HUD_Message` crashing the game with certain message text
+- Improve validation of ATX texture files
+- Improve validation of `mapname_info.tbl`
+- Fix dedicated server crashes in certain level rotation configurations
+- Improve rcon failed login attempt handling
+- Fix a player joining mid-match occasionally being treated as a match participant after a participant leaves
+- Fix weapon select HUD reading and writing out of bounds for weapons past the 32nd entry in `weapons.tbl`
+- Fix Alpine event variable handler data leaking across level loads
+- Harden team change and server info packet handling against malformed data
+- Stop writing FactionFiles link tokens to the launcher log
+- Fix RF2-style geomod craters near the edge of a geoable brush not carving a neighboring geoable brush that the crater reaches
+- Fix RF2-style geomod giving up on geoable rooms with more than 5000 faces
+- Fix RF2-style geomod craters sometimes leaving stray faces and holes where geoable geometry meets neighboring geometry
+- Fix crash when a decal is created in a room containing a very large number of detail brushes
+- Fix Direct3D 8/9 renderer geometry cache overflowing with more than 256 rooms or detail rooms in view
+- Fix Direct3D 8/9 renderer rebuilding every room's render cache each frame while a room with more than 8000 vertices is in view
+- Fix level editor memory use growing with every `Build Geometry` and `Calculate Lighting` because the Direct3D textures of discarded lightmaps were never released
+- Fix level editor crashing when Direct3D fails to create a texture
+- Stop `Build Geometry` and `Calculate Lighting` in the level editor with a message when too little memory is left to finish them (instead of crashing)
+- Reduce the memory `Calculate Lighting` needs in the level editor, and how much of it must be in one piece
+- Fix level editor crashing in `Calculate Lighting` when a level needs more than 32767 lightmap surfaces; faces past the limit are left without a lightmap and the editor warns
+- Fix geomod craters creating new lightmap surfaces on every crater once a level holds more than 32767 of them
+- Fix memory corruption when more than 1024 rooms are visible at once
+- Fix geomod crater relighting converting lightmap texels beyond the relit surface, which could write past the end of the lightmap for a surface at the bottom of a lightmap page
+- Fix a possible out-of-bounds read when drawing dynamic decals (Direct3D 11 renderer only)
+- Fix some multiplayer characters' upper bodies staying bent toward where they were last aiming instead of straightening out
+- Fix level editor crashing when more than 128 semi-transparent detail brushes in one room are in view
+- Fix possible level editor crash after deleting Alpine objects
+- Fix level editor leaking memory for Alpine mesh objects each time a level is created or opened
+- Fix shadows randomly appearing or disappearing in some level editor lightmap bakes
+- Fix level editor lightmap bakes sometimes drawing a light or dark streak across a light's glow on smoothed surfaces
+- Fix dedicated server base rules being dropped on levels configured for a different game type
+- Fix a level's `spawn_weapon` removing a weapon the base `spawn_loadout` lists
+- Fix the `level` command keeping the game type and rules of a previous level vote
+- Fix `map_rest` reverting a game type set with `sv_gametype`
+- Fix `sv_loadconfig` applying stale vote rules, or another rotation entry's rules after the rotation changed
+- Fix a level listed more than once in the rotation using its first entry's rules when restarted, voted, or reloaded
+- Fix confirming the vote panel's pre-selected mutators layering them differently from the configured rules
+- Fix the configured restart vote using the base game type for a level outside the rotation
+- Improve validation of TGA textures in game and level editor
+- Fix level editor crash when a texture is too large to load
+- Fix 8-bit greyscale TGA textures with mipmap files sometimes loading with garbage pixels
+- Show control characters in texture filenames as escape sequences in log warnings
+
+[@is-this-c](https://github.com/is-this-c)
+- Let `Caps Lock` capitalize
+- Fix floating damage numbers not swaying in the wind
+
+[@nickalreadyinuse](https://github.com/nickalreadyinuse)
+- Cap FPS-dependent launch velocity when head jumping
+- Fix landing sound spam on ramps and jump pads at high FPS
+- Fix reload animation playing in third person for other players when client tries to reload with a full clip/magazine
+- Fix lighting for pistol silencer and remote charge detonator
+- Fix third-person crouch animations on remote players flickering and snapping
+
+### Imported libraries
+- [Bullet Physics 3.25](https://github.com/bulletphysics/bullet3) by Erwin Coumans
+- [bc7enc_rdo](https://github.com/richgel999/bc7enc_rdo) by Richard Geldreich, Jr.
+
+Version 1.4.0 (Lupin): Released Aug-25-2026
 --------------------------------
 ### Major features
 [@GooberRF](https://github.com/GooberRF)
@@ -24,6 +236,7 @@ Version 1.4.0 (Lupin): Not yet released
   - One Weapon
   - Arena
   - Vampire
+  - Critical Hits
   - Super Drain
   - Armored
   - Super Rail
@@ -44,7 +257,35 @@ Version 1.4.0 (Lupin): Not yet released
   - Servers describe their votable levels, game types, and mutator options to clients
   - `Level` and `Match` can now select a game type and any number of mutators (with their options) for the voted level
   - Add a vote panel for calling any vote the server allows, opened during gameplay with the bindable `Call Vote Menu` control (`F4` by default)
+  - The `Restart`, `Next`, `Random`, and `Previous` rotation votes share a single `Rotation` tab, with a `Preserve current gametype and mutators` option to carry the voted rules onto the next level
+  - Add a `Saved` tab to name and store votes for later recall, persisted in `alpine_settings.ini`
+  - The vote panel pre-selects the chosen level's game type and the server's currently active mutator set, with buttons to reset the game type and restore the `Base` or `Current` mutator set
   - Vote HUD notification now shows live tally, time remaining, and whether you have already voted
+- Add FactionFiles-integrated multiplayer statistics tracking
+  - Dedicated servers with a configured `fflink_gsk` report a gameplay event stream to FactionFiles
+  - Clients joining a stats-enabled server obtain a stats session key from FactionFiles and deliver it to the server, attributing their stats to their linked FactionFiles account (or anonymously to their game installation when unlinked)
+  - Players on legacy clients can join and play normally, and are tracked per-connection without cross-session identity
+  - Auto-recorded demos upload to FactionFiles (`fflink_demo_upload`) and associate with the game record
+  - `afstats_status` console command shows the local stats session state
+  - `sv_afstats_trace` console command logs outgoing report batches (with session keys redacted) on dedicated servers
+- Add multiplayer awards
+  - Reported to FactionFiles as part of multiplayer statistics
+  - `cl_awards` console command to toggle local display and audio
+
+[@nickalreadyinuse](https://github.com/nickalreadyinuse)
+- Add server-side demo recording and client-side playback
+  - Dedicated servers record gameplay to `.afd` files in the `demos` folder, automatically per level via the `demo_auto_record` config option or manually with the `sv_record` toggle command
+  - Chat is included in recordings by default; servers can exclude it with the `demo_chat_record` config option
+  - Auto-recorded demos are discarded if no player was connected during the recording
+  - On servers running match mode, demos are only auto-recorded for live matches
+  - Play back demos with `demo_play`, and control playback with `demo_pause`, `demo_seek` (absolute, relative, or `mm:ss`), `demo_timescale` (0.05x-10x), and `demo_stop`; `demo_info` prints a demo file's metadata
+  - During playback, all spectate controls are available: follow any player in first or third person, or use a free camera
+  - Add in-game playback controls popup (opened with the `Use` key during playback) with pause and skip buttons and a clickable timeline scrubber
+  - Add `demo_povcomp` command for ping compensation while following a player - delays other players to approximate what the followed player saw when they aimed
+  - Add optional playback overlays: powerup respawn timers (`spectate_powerups`), player health/armor bars (`spectate_playerinfo`), and respawn point indicators (`spectate_spawns`)
+  - Add in-game Demos menu (Extras -> Demos) for browsing demos and launching playback, with per-demo details including level, date, duration, server name, players, and final scoreboard
+  - Demos can be organized into subfolders of the `demos` folder, browsable in the Demos menu and usable with `demo_play`/`demo_info` (e.g. `demo_play tourney\match1`)
+  - Register `.afd` file association in Windows registry to allow double clicking on demos to play them
 
 ### Minor features, changes, and enhancements
 [@GooberRF](https://github.com/GooberRF)
@@ -57,10 +298,10 @@ Version 1.4.0 (Lupin): Not yet released
 - Add support for round-based game types
 - Add dedicated server config fields `max_rounds`, `round_time`, `post_round_time`, and `intermission_time`
 - Add dedicated server config fields `sal_cap_limit`, `sal_flag_spawn_delay`, `sal_flag_capture_respawn_delay`, and `sal_flag_return_time` for the Salvage game type
-- Require a matching `bot_shared_secret` for clients to join dedicated servers in bot mode, rejecting bot join requests when the server has no secret configured
-- Add HUD notification messages via `AF_SERVER_MSG_TYPE_HUD_NOTIFICATION` server message type
-- Add server-initiated HUD countdown via `AF_SERVER_MSG_TYPE_ROUND_COUNTDOWN` server message type
-- Add server-initiated custom sound play via `AF_SERVER_MSG_TYPE_PLAY_CUSTOM_SOUND` server message type
+- Add support for server-sent HUD notification messages
+- Add support for server-initiated HUD countdowns
+- Add support for server-initiated custom sound playback
+- Show a help notification for the game type when spawning into a new one, toggleable via the `Gametype Help` option
 - Add per-type object count next to each entry in the `Show In List` filter in the editor's Select Objects and Show/Hide Objects windows
 - Add `Sort` options (by name or by UID, with an optional `Group by type` toggle) to the editor's Select Objects and Show/Hide Objects windows
 - Add `camera4` console command for static camera in single player
@@ -78,7 +319,7 @@ Version 1.4.0 (Lupin): Not yet released
 - Require a fresh `Alt` press to kill an unresponsive process
 - Add mini scoreboard HUD element to FFA game types
 - Add `ui_minisb_dm` console command to toggle whether mini scoreboard is displayed in DM mode
-- Retain Glacier-specific chunks when RFLs loaded and re-saved in level editor
+- Retain Glacier-specific chunks when RFLs are loaded and re-saved in the level editor
 - Add `Attach Spectate Camera` control to toggle spectate between following a player and a detached free camera
 - Add `Change Spectate View` control to switch first/third person while following a player, or free look/static camera while detached
 - Add a middle mouse toggled orbit camera to third person spectate
@@ -86,9 +327,11 @@ Version 1.4.0 (Lupin): Not yet released
 - Add the ability to drop reusable static cameras in free look spectate, then cycle level-placed and player-dropped cameras in static camera view
 - Add numpad quick-binds to jump directly to bound players or cameras while spectating, with dropped cameras and binds persisted per level
 - Add `spectate_cameras` console command to toggle showing camera meshes at static camera locations while free look spectating
-- Deprecated and removed legacy GunGame dedicated server config items now that `GG` is an actual gametype.
+- Deprecated and removed legacy GunGame dedicated server config items now that `GG` is an actual gametype
+- Deprecated and removed legacy critical hits dedicated server config items now that it is a mutator
+- Deprecated and removed the `rules_presets` dedicated server config item and its `rules_preset_aliases` table
 - Default inactivity tracking for players in dedicated servers to `true`, but kicking inactive players to `false`
-- Add `-debug` command line switch to enable additional debug logging, intended to help identify long-standing netcode issues that are difficult to nail down.
+- Add `-debug` command line switch to enable additional debug logging
 - Add automatic team balance option which handles unbalanced teams mid-game and stops players from switching teams if it would unbalance them
 - Rate limit spawn-denied notifications (Alpine restriction, anti-cheat, match in progress, respawn delay) to one message per 5 seconds per player so repeated spawn attempts no longer flood chat
 - Truncate over-long names from dedicated server config files when they are quoted in console warnings
@@ -102,10 +345,28 @@ Version 1.4.0 (Lupin): Not yet released
 - Add an `Asst` column to the scoreboard showing each player's assist count
 - Add `ui_assist_names` console command to toggle listing the players who assisted in kill messages
 - Add `ui_assist_highlight` console command to toggle highlighting of kill messages for kills you assisted
-- Show a label on the HUD indicating the name of the selected weapon if it has no FP mesh.
+- Add a `Session overrides` section to the dedicated server config display, listing the game type and mutators currently in force when a vote has changed them
+- Show a label on the HUD indicating the name of the selected weapon if it has no first person mesh
 - Tweak weapon values for some SP-intended weapon classes that are used in Weird Gun Game
 - Add dedicated server config field `add_installed_to_allowed_levels` to allow voting for every installed level whose filename matches a game type prefix, including levels installed while the server is running
+- Support a reduced set of `vote` chat commands for pre-1.4 clients, which cannot use the vote panel
+- Add a dedicated third person weapon mesh for the jeep gun in Gun Game
 - Do not allow `vote kick` targeting bots
+- Add dedicated server config field `spawn_loadout_blue` to give the blue team its own spawn loadout, with `spawn_loadout` applying to every player when it is not specified
+- Indicate in the dedicated server config printout whether the spawn loadout is granted by the loadout or by the stock spawn weapons, and list the red and blue team loadouts separately when both are configured
+- Add Alpine Faction 1.4.0 clients to the `sv_restrict_status` common test cases
+- Respect DNS TTL for the multiplayer tracker hostname
+- Load mesh files from subdirectories of `user_maps\meshes` and `red\meshes` in the level editor
+- Add Weather Regions for rain and snow environmental particle effects
+- Add `Weather_Region_State` event
+- Add `r_weather` console command to toggle rendering of weather effects
+- Rework multiplayer accuracy statistics with one shared definition feeding the scoreboard and FactionFiles stats reporting
+- Support af://demo/ID on the af protocol to play demos from FactionFiles
+- Add an `Autoplay AF Demos` launcher option to skip the confirmation prompt and play `af://demo` links immediately
+- Set client netfps to 40, server default netfps to 40 (configurable)
+- Make color pickers in the level editor open at the current color instead of black
+- A voted level now derives its rules from the server's base rules plus the voted mutator set, rather than inheriting the rules of whichever rotation slot happens to name that level
+- `sv_gametype` against a level in the rotation now rebuilds the rules from the base rules for the new game type instead of retargeting the old game type's rules in place
 
 [@is-this-c](https://github.com/is-this-c)
 - Rewrite `VArray` to fix crashes due to MinGW
@@ -127,6 +388,12 @@ Version 1.4.0 (Lupin): Not yet released
 [@AL2009man](https://github.com/AL2009man)
 - Add support for binding controls to additional mouse buttons and `Alt` keys
 
+[@nickalreadyinuse](https://github.com/nickalreadyinuse)
+- Improve netfps consistency by making the effective object update send rate match the target netfps on both servers and clients, instead of falling short by a frame rate dependent amount
+- Skip server object update records that carry no new movement keyframe, so `sv_netfps` values above the client send rate no longer degrade interpolation smoothness with duplicate keyframes
+- Reduce latency on continuous fire weapons by sending an object update immediately when one starts or stops firing instead of waiting for the next scheduled send
+- Add `spectate_povcomp` command for ping compensation while following a player in spectate mode - delays other players to approximate what the followed player saw when they aimed
+
 ### Bug fixes
 [@GooberRF](https://github.com/GooberRF)
 - Fix team balance not properly randomizing the distribution order of equal-scoring human players
@@ -140,14 +407,50 @@ Version 1.4.0 (Lupin): Not yet released
 - Fix client crash when a bot targets a player whose name contains `$`
 - Fix crash when a collision query targets an object whose mesh failed to load
 - Fix skybox rendering issues with Direct3D 11 renderer on community level `ctf-stronghold.rfl`
-- Fix unbounded read when a request to play a sound above `g_num_sounds` is made
+- Fix animated (`atx`) textures sometimes failing to display after a level change
+- Fix out-of-bounds read when playing a 2D or 3D sound with an id past the last loaded sound
+- Fix dedicated server crash caused by player names or vote text containing printf-style format specifiers
+- Fix the player name loaded from `alpine_settings.ini` not being sanitized
+- Fix out-of-bounds texture and vertex reads when the Direct3D 11 renderer draws malformed meshes
+- Fix crash in the Direct3D 11 renderer when drawing a character whose animation morph data is not yet loaded
+- Fix heap overflows when loading malformed `v3m`/`v3c`/`v3d` meshes in the game and level editor
+- Fix out-of-bounds writes when loading or opening a level whose weather regions, coronas, or meshes reference an over-long bitmap, mesh, or (in the level editor) animation name
+- Fix the game and level editor hanging or exhausting memory when a level file declares an oversized Alpine object chunk
+- Fix out-of-bounds write when loading an `emitters.tbl` that defines more than 64 particle emitter types
+- Fix path traversal and out-of-bounds reads when extracting archives
+- Fix crash when loading a packfile that declares an invalid number of files
+- Fix uninitialized texture data being uploaded to the GPU when loading a truncated `dds` file
+- Fix unbounded client memory growth from streamed remote server config messages
+- Fix unbounded server memory growth from repeated `/save` commands using unique names
+- Fix missing size limit when autodownloading maps from FactionFiles
+- Fix `sv_loadconfig` being available to rcon profiles without full admin privileges
+- Fix rcon password authentication allowing unlimited rapid guess (brute force) attempts
+- Fix clients being able to join dedicated servers in bot mode without a matching `bot_shared_secret`, and reject bot joins entirely when the server has no secret configured
+- Fix unvalidated URL scheme handling when parsing FactionFiles download URLs
+- Fix demo upload tickets from FactionFiles not being validated before they are used in a request header
+- Fix arbitrary file overwrite via path traversal in the waypoint (`awp`) autodownloader
+- Fix a server-supplied level name containing path components escaping the waypoint, saved server info, and demo directories
+- Fix out-of-bounds reads/writes and crashes when a server sends object update, reload, entity create, or weapon fire packets with out-of-range weapon or ammo indices, a malformed record count, or an entity not owned by a player
+- Fix server crash when a player disconnects while being spectated by another player
+- Fix out-of-bounds reads in multiplayer packet handlers when a packet declares a size larger than the data actually received
+- Fix client crash when loading a malformed `dds` texture that declares oversized dimensions
+- Fix crash when loading an excessively large `png`, `jpg`, or `atx` texture
+- Fix out-of-bounds read when a packfile contains a malformed entry name
+- Fix crash from an oversized allocation when a packfile entry declares an implausibly large size
+- Fix out-of-bounds stack write in the level editor when a mesh or texture subdirectory path is too long
+- Fix the level editor packing textures from outside the textures directory when a level or mesh file references a texture by path
 - Fix camera angle snapping when switching between free look and third person camera modes
+- Fix crash on exit from a null pointer dereference when a bitmap is released after the bitmap system has been shut down
+- Fix the game failing to start when a value in `alpine_settings.ini` is malformed
+- Fix dedicated server crash when the path to a server config file cannot be resolved
 - Fix a server crash that could be triggered by a zero-length UDP packet in the packet receive pump
 - Fix overlapping decals rendering with the oldest on top instead of the newest
 - Fix crash on MinGW builds when launching a dedicated server
 - Fix server version checks comparing each version field independently, which would have rejected a future major version
-- Fix out of bounds read when applying level rules if the rotation shrank while a level was running
+- Fix out-of-bounds read when applying level rules if the rotation shrank while a level was running
 - Fix the remote server config display sometimes being treated as complete before all of its content had arrived
+- Fix disjointed reload deny sounds when the server refreshes the displayed ammo count for a weapon without a clip
+- Fix autodownloaded packfiles failing to load when the archive stores them under a directory path
 - Fix rcon feedback for the `info` command being cut off when the output exceeded a single packet
 - Fix damage to riot shields not being replicated to clients in multiplayer
 - Fix riot shield third person models being left behind when their holder disconnects
@@ -156,18 +459,53 @@ Version 1.4.0 (Lupin): Not yet released
 - Fix servers relaying weapon shots twice, which made shots spawn duplicate projectiles, muzzle flashes, fire sounds, and shell casings in third person
 - Fix first person spectate sometimes showing a silencer on the pistol
 - Fix `$Fall Damage Slam Multiplier` `af_game.tbl` option not working in single player
+- Fix `r_picmip` reducing the resolution of glass and grating textures
+- Fix flags and other backpack attachments facing the wrong way on the `Eos` multiplayer character
+- Fix granting a weapon with no ammo type, such as the riot shield, corrupting the holder's secondary weapon slot, which showed an unselectable empty Remote Charge in the weapon select menu
+- Fix game type default rules, including the spawn loadout and spawn weapon, not being applied to dedicated servers configured for the `DM`, `CTF`, or `TDM` game types
+- Fix `spawn_weapon` not replacing the game type's default weapon in the spawn loadout, which granted both
+- Fix `ammo` in a `spawn_loadout` entry being ignored when the weapon was already in the loadout from game type defaults or a broader rules scope
+- Fix `include = false` in a `spawn_loadout` entry still granting the weapon on the server while never sending it to clients
+- Fix an unrecognized `weapon_name` in a `spawn_loadout` entry being silently ignored, which could leave players spawning with no weapons
+- Fix clients keeping weapons the server did not grant when a spawn loadout replaces the stock spawn weapons, which left unusable weapons in the weapon select menu
+- Fix `infinite_reloads` not filling reserve ammo on weapon pickup
+- Fix `MultiplayerTracker` values longer than 63 characters overflowing an internal game buffer
+- Fix team kills awarding a point to the killer in team game types
+- Fix level editor crash on startup when many custom texture subdirectories exist under `user_maps\textures`
+- Fix level editor saving a collision mode on animated (`.vfx`) meshes, which do not support collision
+- Fix the game feed rendering on top of the scoreboard
+- Fix textures referenced by custom `.vfx` mesh files not being included when the level editor packs a VPP
+- Fix chat and console showing only a bare player name when a player leaves after timing out waiting for game state
+- Fix an over-long console line overflowing the fixed-size console output buffer
+- Fix level editor crash when a custom mesh or texture subdirectory cannot be registered because the editor's internal path table is full
+- Fix plankton bunching into a small drifting cluster instead of distributing around the camera in some liquids
+- Fix links targeting Alpine objects breaking when a group containing them is imported in the level editor
+- Fix several multiplayer accuracy calculation issues
+- Fix `Active Distance` on level-placed particle emitters being ignored when hosting a listen server
+- Fix particle emitters created from `emitters.tbl` templates inheriting uninitialized UID and `Active Distance` values that could make their particles silently fail to spawn in rare cases
+- Fix spacebar (when bound to `Jump`) moving freelook camera upward when typing in chat
+- Fix crash risk when leaving a match or changing levels by keeping animation skeletons loaded while animation instances are still playing them, instead of unloading as soon as no character references them
+- Fix dedicated servers not loading `alpinefaction.vpp`, which prevented `af_level_quirks.tbl` from loading and left known run maps unrecognized
+- Fix potential crash when an Alpine options `.tbl` file contains an unrecognized option name
+- Fix crash when a non-player entity spawns while any weapon in `weapons.tbl` has a clip size of exactly 2
+- Fix a buffer overflow when opening a file whose name has an over-long extension
+- Fix the game failing to launch from an `rf://` link that specifies an out-of-range port
+- Fix location ping requests that carry invalid coordinates, or that are sent at an extremely high rate, being relayed to other players
 
 [@is-this-c](https://github.com/is-this-c)
 - Clear cached server config output after a shuffle of a server's rotation
 - For `Refresh Selected`, re-enable `Get Servers` etc. immediately upon response instead of waiting for timeout
 - Disable weapon cycle selection, if `Mouse 3` is pressed
 - For `Run` games, rename `Score` column to `Deaths`, and compare `Loads` in `std::ranges::sort`
+- Report file sizes in the launcher as MB and KB (base 1000) to match their labels
 
 [@AL2009man](https://github.com/AL2009man)
 - Fix brief game freeze whenever an `Alt` key is pressed
 
 [@jyh9521](https://github.com/jyh9521)
 - Fix crash on join for builds compiled on Windows systems using a Japanese, Chinese, or Korean locale
+- Fix crash when an out-of-range TrueType font id is requested
+- Fix TrueType fonts rendering the wrong glyphs when a character fails to load
 
 Version 1.3.0 (Bakeapple): Released Apr-22-2026
 --------------------------------
@@ -211,7 +549,7 @@ Version 1.3.0 (Bakeapple): Released Apr-22-2026
 - Support rcon profiles for dedicated servers
 - Support `info` command execution via rcon to display server information
 - Add `sv_checkmaps` console command to check all maps in server rotation against autodownloader database
-- Use unqiue user agents for clients vs. dedicated servers when communicating with FactionFiles autodownloader API
+- Use unique user agents for clients vs. dedicated servers when communicating with FactionFiles autodownloader API
 - Add `dbg_togglerendering` and `dbg_togglesound` commands, persist in `alpine_settings.ini`
 - Add `BackgroundMouse` to `alpine_settings.ini` to control whether mouse is hooked when process is in the background
 - Add `mp_character` console command to set multiplayer character by index
@@ -372,6 +710,10 @@ Version 1.3.0 (Bakeapple): Released Apr-22-2026
 - Sync animation state for crouched players in first person spectate view
 - Fix Alt+Enter crash in Direct3D 11 renderer
 - Fix premature idle transition in first person weapon running animations
+
+### Imported libraries
+- [json](https://github.com/nlohmann/json) by Niels Lohmann
+- [stb_image](https://github.com/nothings/stb) by Sean Barrett
 
 Version 1.2.2 (Willow): Released Jan-04-2026
 --------------------------------

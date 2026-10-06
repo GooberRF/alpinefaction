@@ -1,0 +1,84 @@
+Alpine Faction - Terms of Use & Notices
+Last updated: 2026-08-27
+
+Alpine Faction is a community modification for Red Faction. It does not
+include the game. You must own an authentic copy of Red Faction to use it; by
+installing or using Alpine Faction you confirm that you do. Alpine Faction is
+not affiliated with or endorsed by THQ Nordic, Embracer Group, or Volition.
+
+Alpine Faction's source code is licensed under the Mozilla Public License 2.0.
+Nothing in this document limits your rights under that license. Refer to
+licensing-info.txt for more information.
+
+
+ONLINE FEATURES
+
+Multiplayer stats: on servers with stats tracking enabled, your stats are
+recorded by that server and sent to FactionFiles to be displayed publicly
+on the MP Stats page, associated with your player name. Stats are matched
+across sessions and name changes. If you link a FactionFiles account, your
+stats are associated with that account.
+
+Achievements and map ratings: if you link a FactionFiles account, Alpine
+Faction reports achievement progress to FactionFiles while you play.
+Achievement progress is shown on FactionFiles, associated with your account.
+Map ratings you provide at the end of a multiplayer game are sent and also
+are associated with your account, along with the level, server and mod name.
+
+Auto-download: when you join a server running a level you don't have, Alpine
+Faction downloads it from FactionFiles into your user_maps\multi folder. If
+you use the client bot feature, or enable the waypoints download option, bot
+waypoint (.awp) files for those levels are downloaded as well.
+
+af:// links: opening an af:// link in your browser hands it to the Alpine
+Faction launcher, which can link your FactionFiles account, download and
+install a level or mod into your game folder, or download a game demo into
+demos\downloaded and start playback.
+
+Servers may record game demos, which may include in-game chat. Server
+operators are responsible for how they choose to use these demos, which may
+include distributing them publicly. Server operators may choose to upload
+game demos to FactionFiles. Where they do, those game demos may be associated
+with your multiplayer stats data and/or made available for public download.
+
+Crash reports are sent only if you confirm at the time of a crash. The
+launcher checks for available updates on start.
+
+
+YOUR RESPONSIBILITY
+
+You are responsible for how you use Alpine Faction, including complying with
+the terms of your copy of Red Faction and the rules of any server or service
+you connect to.
+
+Game servers: multiplayer servers are run by their operators, not by the
+Alpine Faction team. When you join a server, your player name, chat and
+gameplay are sent to it, and the operator controls what happens to that
+information. Operators decide who may play, what rules apply, and what their
+server records, keeps or shares. A server may be running a modified build of
+Alpine Faction, a different patch, or the unmodified game; the Alpine Faction
+team cannot verify or control server software, so a server may not behave as
+described in this document. Data a server forwards to FactionFiles is handled
+as described under Online Features.
+
+Modified builds: this document covers Alpine Faction as distributed by the
+Alpine Faction team. We are not under any circumstances responsible for
+modified or third-party builds, or for anything done with them.
+
+Downloaded community content: you should never assume that any downloaded
+community content has been reviewed by anyone, is necessarily safe to use,
+or is appropriate for any particular audience. This includes content
+downloaded through auto-download features contained with Alpine Faction,
+as well as content installed or executed through opening af:// links.
+
+
+NO WARRANTY
+
+Alpine Faction is provided as-is, without warranty of any kind. Installation
+modifies your Red Faction executable (a backup is kept and restored on
+uninstall). To the maximum extent permitted by law, the Alpine Faction and
+FactionFiles teams are not liable for any loss or damage arising from your
+use of the software or related services, or content obtained through them,
+including data loss, game or account problems, and actions or negligence on
+our part or on the part of third parties (including but not limited to
+multiplayer server operators and the authors of downloaded community content).

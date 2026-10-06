@@ -13,9 +13,12 @@
 #include <common/utils/string-utils.h>
 #include <xlog/xlog.h>
 #include "../multi/multi.h"
+#include "../multi/demo/demo.h"
+#include "../multi/demo/demo_ui.h"
 #include "../multi/gametype.h"
 #include "../multi/bagman.h"
 #include "../multi/jetpack.h"
+#include "../multi/vehicles/vehicle_seats.h"
 #include "../multi/salvage.h"
 #include "../multi/wipeout.h"
 #include "../input/input.h"
@@ -52,6 +55,7 @@
 #include "../misc/vote_panel.h"
 #include "../multi/network.h"
 #include "../multi/bots/bot_main.h"
+#include "../multi/mutators.h"
 #include "multi_spectate.h"
 
 static bool g_big_team_scores_hud = false;
@@ -69,8 +73,8 @@ struct ActiveHudNotification
 {
     HudNotificationType type = HudNotificationType::None;
     std::string text;
-    rf::TimestampRealtime expiry; // invalid for perpetual
-    rf::TimestampRealtime fade_start; // invalid while not fading
+    rf::Timestamp expiry; // invalid for perpetual
+    rf::Timestamp fade_start; // invalid while not fading
     bool fade_on_expire = false;
 };
 static ActiveHudNotification g_hud_notification;
@@ -95,6 +99,21 @@ static void hud_notification_clear()
 static void hud_big_notification_clear()
 {
     hud_notification_clear_slot(g_hud_big_notification);
+}
+
+// Third slot, under the reticle: the vehicle Use prompt. It is local-only and re-asserted every
+// frame it applies, so it carries no HudNotificationType and never competes for the two slots above.
+static struct {
+    bool active = false;
+    std::string text;
+    rf::Timestamp fade_start; // invalid while not fading
+} g_hud_vehicle_prompt;
+
+static void hud_vehicle_prompt_clear()
+{
+    g_hud_vehicle_prompt.active = false;
+    g_hud_vehicle_prompt.text.clear();
+    g_hud_vehicle_prompt.fade_start.invalidate();
 }
 
 // Latest Pit duel-queue state pushed by the server (af_sreq_pit_queue_state).
@@ -472,6 +491,9 @@ static const ChatMenuList spectate_menu{
         {false, ChatMenuListName::Null, ChatMenuListType::Basic, "Follow killer", "spectate_followkiller"},
         {false, ChatMenuListName::Null, ChatMenuListType::Basic, "Minimal UI", "spectate_minui"},
         {false, ChatMenuListName::Null, ChatMenuListType::Basic, "Player labels", "spectate_playerlabels"},
+        {false, ChatMenuListName::Null, ChatMenuListType::DemoPlayback, "Player healthbars", "spectate_playerinfo"},
+        {false, ChatMenuListName::Null, ChatMenuListType::DemoPlayback, "Powerup timers", "spectate_powerups"},
+        {false, ChatMenuListName::Null, ChatMenuListType::DemoPlayback, "Spawn points", "spectate_spawns"},
     }
 };
 
@@ -557,6 +579,9 @@ bool is_element_valid(const ChatMenuElement& element) {
         return true;
     }
     if (element.type == ChatMenuListType::Map && g_level_chat_menu_present && !element.display_string.empty()) {
+        return true;
+    }
+    if (element.type == ChatMenuListType::DemoPlayback && demo_playback_active()) {
         return true;
     }
     return false;
@@ -1132,7 +1157,9 @@ void multi_hud_render_team_scores()
         size_t entry_count = 0;
         for (rf::Player& p : SinglyLinkedList{rf::player_list}) {
             if (!p.stats) continue;
-            if (p.is_browser) continue;
+            if (p.is_non_participant()) continue;
+            // The demo viewer is not part of the recorded match - no phantom row
+            if (demo_playback_active() && &p == rf::local_player) continue;
             if (entry_count >= kMaxEntries) break;
             entries[entry_count++] = &p;
         }
@@ -1147,7 +1174,7 @@ void multi_hud_render_team_scores()
         const auto entries_end = entries.begin() + entry_count;
         const auto local_it = std::find(entries.begin(), entries_end, rf::local_player);
         const auto local_rank_idx = std::distance(entries.begin(), local_it);
-        if (local_rank_idx >= 2) {
+        if (local_it != entries_end && local_rank_idx >= 2) {
             if (entry_count >= 1) display_rows[display_count++] = entries[0];
             if (entry_count >= 2) display_rows[display_count++] = entries[1];
             display_rows[display_count++] = rf::local_player;
@@ -1303,10 +1330,17 @@ void draw_respawn_timer_notification(bool can_respawn, bool force_respawn, int s
     g_draw_respawn_timer_can_respawn = can_respawn;
 }
 
+HudNotificationType hud_big_notification_current_type()
+{
+    return g_hud_big_notification.type;
+}
+
 void hud_notification_show(std::string text, int duration_seconds,
     HudNotificationType type, bool fade_on_expire)
 {
-    const bool big_slot = type == HudNotificationType::Rampage || type == HudNotificationType::GenericBig;
+    const bool big_slot = type == HudNotificationType::Rampage ||
+                          type == HudNotificationType::GenericBig ||
+                          type == HudNotificationType::Award;
     ActiveHudNotification& slot = big_slot ? g_hud_big_notification : g_hud_notification;
     slot.type = type;
     slot.text = std::move(text);
@@ -1321,7 +1355,9 @@ void hud_notification_show(std::string text, int duration_seconds,
 
 void hud_notification_remove(HudNotificationType type, bool instant)
 {
-    const bool big_slot_type = type == HudNotificationType::Rampage || type == HudNotificationType::GenericBig;
+    const bool big_slot_type = type == HudNotificationType::Rampage ||
+                               type == HudNotificationType::GenericBig ||
+                               type == HudNotificationType::Award;
     if ((big_slot_type || type == HudNotificationType::None)
         && g_hud_big_notification.type != HudNotificationType::None
         && (!big_slot_type || g_hud_big_notification.type == type)) {
@@ -1455,6 +1491,63 @@ static void hud_render_big_notification()
     rf::gr::set_color(255, 255, 255, alpha);
     rf::gr::string_aligned(rf::gr::ALIGN_CENTER, center_x, y,
                            g_hud_big_notification.text.c_str(), big_font);
+}
+
+// Keep the under-reticle vehicle prompt alive while the local player is looking at a vehicle he
+// could act on; the render pass fades it out once this stops asserting it.
+static void hud_vehicle_prompt_ensure()
+{
+    if (rf::is_dedicated_server) return;
+
+    const std::string& text = vehicle_use_prompt_text();
+    if (text.empty()) {
+        if (g_hud_vehicle_prompt.active && !g_hud_vehicle_prompt.fade_start.valid()) {
+            g_hud_vehicle_prompt.fade_start.set(0);
+        }
+        return;
+    }
+    if (g_hud_vehicle_prompt.text != text) {
+        g_hud_vehicle_prompt.text = text;
+    }
+    g_hud_vehicle_prompt.active = true;
+    g_hud_vehicle_prompt.fade_start.invalidate();
+}
+
+// Under-reticle slot: the big slot's fade and shadow-then-main draw, placed below screen centre.
+static void hud_vehicle_prompt_render()
+{
+    if (!g_hud_vehicle_prompt.active) return;
+
+    int alpha = 225;
+    if (g_hud_vehicle_prompt.fade_start.valid()) {
+        const int elapsed = g_hud_vehicle_prompt.fade_start.time_since();
+        if (elapsed >= kHudNotificationFadeMs) {
+            hud_vehicle_prompt_clear();
+            return;
+        }
+        const float t = static_cast<float>(elapsed) / static_cast<float>(kHudNotificationFadeMs);
+        alpha = static_cast<int>(225.0f * (1.0f - t));
+    }
+
+    const int font = hud_get_default_font();
+    const int font_h = rf::gr::get_font_height(font);
+    // clip_height, not screen_height: the jetpack hint anchors on the clip region too.
+    const int center_y = rf::gr::clip_height() / 2;
+    // The jetpack thrust hint owns centre + 48/72 (big_hud); sit a full line under it so the two
+    // never collide whether or not the hint is up.
+    const int jetpack_hint_offset = g_alpine_game_config.big_hud ? 72 : 48;
+    int y = center_y + jetpack_hint_offset + font_h + 6;
+    // Never reach the respawn-timer line at 0.925 * height.
+    const int max_y = static_cast<int>(rf::gr::screen_height() * 0.925f) - font_h - 4;
+    y = std::min(y, std::max(center_y + font_h, max_y));
+
+    const int center_x = rf::gr::clip_width() / 2;
+    rf::gr::set_color(0, 0, 0, alpha / 2);
+    rf::gr::string_aligned(rf::gr::ALIGN_CENTER, center_x + 2, y + 2,
+                           g_hud_vehicle_prompt.text.c_str(), font);
+    rf::gr::set_color(255, 255, 255, alpha);
+    rf::gr::string_aligned(rf::gr::ALIGN_CENTER, center_x, y,
+                           g_hud_vehicle_prompt.text.c_str(), font);
 }
 
 void draw_hud_ready_notification(bool draw)
@@ -1965,8 +2058,8 @@ CallHook<void(int *dx, int *dy, int *dz)> control_config_get_mouse_delta_hook{
             }
         }
 
-        // The vote panel overlay owns aiming while it is up.
-        if (vote_panel_is_gameplay_overlay_active()) {
+        // The vote panel / demo controls popup owns aiming while it is up.
+        if (vote_panel_is_gameplay_overlay_active() || demo_controls_ui_is_open()) {
             if (dx) {
                 *dx = 0;
             }
@@ -1976,7 +2069,8 @@ CallHook<void(int *dx, int *dy, int *dz)> control_config_get_mouse_delta_hook{
         }
 
         // If active, do not use mouse wheel scroll delta.
-        if ((g_remote_server_cfg_popup.is_active() || vote_panel_is_gameplay_overlay_active())
+        if ((g_remote_server_cfg_popup.is_active() || vote_panel_is_gameplay_overlay_active()
+             || demo_controls_ui_is_open())
             && dz) {
             *dz = 0;
         }
@@ -2021,8 +2115,10 @@ CodeInjection multi_hud_render_patch{
         hud_ready_prompt_ensure();
         hud_pit_queue_ensure();
         hud_salvage_carrier_ensure();
+        hud_vehicle_prompt_ensure();
         hud_render_notification();
         hud_render_big_notification();
+        hud_vehicle_prompt_render();
 
         if (g_draw_respawn_timer_notification) {
             hud_render_respawn_timer_notification();
@@ -2036,8 +2132,8 @@ CodeInjection multi_hud_render_patch{
             }
         }
 
-        multi_hud_render_killfeed();
         jetpack_render_hud();
+        crits_client_render_reticle_flash();
     }
 };
 
@@ -2049,6 +2145,7 @@ void multi_hud_level_init() {
     g_run_timer_fade_active = false;
     hud_notification_clear();
     hud_big_notification_clear();
+    hud_vehicle_prompt_clear();
     reset_local_pit_queue_state();
     reset_local_pit_roster();
     reset_local_gungame_order();
@@ -2317,7 +2414,10 @@ void chat_menu_action_handler(rf::Key key) {
         else {
             // Default chat behavior
             volatile bool use_team_chat = (g_active_menu->type != ChatMenuListType::Basic);
-            const std::string msg = "\xA8 " + selected_element.long_string;
+            std::string msg = "\xA8 " + selected_element.long_string;
+            if (msg.size() > chat_msg_max_len) {
+                msg.resize(chat_msg_max_len);
+            }
             if (!msg.empty()) {
                 if (!g_rad_msg_timer.valid() || g_rad_msg_timer.elapsed()) {
                     g_rad_msg_timer.set(1000);
@@ -2490,6 +2590,29 @@ ConsoleCommand2 ui_runtimer_cmd{
     "ui_runtimer",
 };
 
+ConsoleCommand2 cl_vehiclemarkers_cmd{
+    "cl_vehiclemarkers",
+    [](std::optional<bool> enabled) {
+        g_alpine_game_config.vehicle_respawn_markers =
+            enabled.value_or(!g_alpine_game_config.vehicle_respawn_markers);
+        rf::console::print("Vehicle factory respawn markers are {}",
+            g_alpine_game_config.vehicle_respawn_markers ? "enabled" : "disabled");
+    },
+    "Toggle vehicle factory respawn markers and their spawn cues",
+    "cl_vehiclemarkers [bool]",
+};
+
+ConsoleCommand2 cl_vehiclehealthbars_cmd{
+    "cl_vehiclehealthbars",
+    [](std::optional<bool> enabled) {
+        g_alpine_game_config.vehicle_health_bars = enabled.value_or(!g_alpine_game_config.vehicle_health_bars);
+        rf::console::print("Vehicle health bars are {}",
+            g_alpine_game_config.vehicle_health_bars ? "enabled" : "disabled");
+    },
+    "Toggle health bars over damaged vehicles and turrets",
+    "cl_vehiclehealthbars [bool]",
+};
+
 ConsoleCommand2 ui_gametype_help_cmd{
     "ui_gametype_help",
     [] {
@@ -2580,6 +2703,8 @@ void multi_hud_apply_patches()
     ui_verbosetimer_cmd.register_cmd();
     ui_runtimer_cmd.register_cmd();
     ui_gametype_help_cmd.register_cmd();
+    cl_vehiclemarkers_cmd.register_cmd();
+    cl_vehiclehealthbars_cmd.register_cmd();
     ui_miniscoreboard_cmd.register_cmd();
     ui_always_show_specators_cmd.register_cmd();
     ui_simple_server_chat_messages_cmd.register_cmd();

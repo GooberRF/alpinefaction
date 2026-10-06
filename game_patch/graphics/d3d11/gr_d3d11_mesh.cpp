@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <memory>
 #include <unordered_map>
@@ -10,7 +11,6 @@
 #include <common/ComPtr.h>
 #include <xlog/xlog.h>
 #include "../../rf/gr/gr.h"
-#include "../../rf/gr/gr_light.h"
 #include "../../rf/math/quaternion.h"
 #include "../../rf/v3d.h"
 #include "../../rf/vmesh.h"
@@ -19,15 +19,31 @@
 #include "../../misc/alpine_settings.h"
 #include "../../misc/alpine_options.h"
 #include "../../rf/level.h"
+#include "../gr.h"
 #include "gr_d3d11.h"
 #include "gr_d3d11_mesh.h"
 #include "gr_d3d11_context.h"
 #include "gr_d3d11_shader.h"
 #include "../../object/object.h"
+#include "../../multi/vehicles/vehicle_render.h"
+#include "../gr_ghost_mesh.h"
 
 namespace gr::d3d11
 {
     bool g_level_vertex_lighting = false;
+
+    namespace
+    {
+        struct GhostFillState
+        {
+            bool active = false;
+            float fill_y = 0.0f;
+            float alpha_ratio = 0.0f;
+            bool has_tint = false;
+            rf::Color tint{255, 255, 255, 255};
+        };
+        GhostFillState g_ghost_fill;
+    }
 
     void evaluate_mesh_lighting(const std::string& level_filename)
     {
@@ -256,6 +272,7 @@ namespace gr::d3d11
                     gpu_vert.v0_pan_speed = 0.0f;
                     gpu_vert.u1 = 0.0f;
                     gpu_vert.v1 = 0.0f;
+                    gpu_vert.lm_chart = -1.0f;
                 }
                 for (int face_index = 0; face_index < chunk.num_faces; ++face_index) {
                     auto& face = chunk.faces[face_index];
@@ -520,7 +537,8 @@ namespace gr::d3d11
                 for (int vert_index = 0; vert_index < chunk.num_vecs; ++vert_index) {
                     int pos_vert_index = vert_index;
                     int pos_vert_offset = chunk.same_vertex_offsets[vert_index];
-                    if (pos_vert_offset > 0) {
+                    // Clamp the file-supplied back-reference so vert_index - offset can't go negative.
+                    if (pos_vert_offset > 0 && pos_vert_offset <= vert_index) {
                         pos_vert_index -= pos_vert_offset;
                     }
                     GpuCharacterVertex0& gpu_vert_0 = gpu_verts_0.emplace_back();
@@ -696,7 +714,8 @@ namespace gr::d3d11
             skeleton->morph(morphed_vecs.data(), chunk.num_vecs, time, chunk.orig_map, mesh->num_original_vecs);
             for (int vert_index = 0; vert_index < chunk.num_vecs; ++vert_index) {
                 int pos_vert_offset = chunk.same_vertex_offsets[vert_index];
-                if (pos_vert_offset > 0) {
+                // Clamp the file-supplied back-reference so vert_index - offset can't go negative.
+                if (pos_vert_offset > 0 && pos_vert_offset <= vert_index) {
                     morphed_vecs[vert_index] = morphed_vecs[vert_index - pos_vert_offset];
                 }
             }
@@ -741,7 +760,12 @@ namespace gr::d3d11
 
         auto render_cache = reinterpret_cast<MeshRenderCache*>(lod_mesh->render_cache);
 
-        draw_cached_mesh(lod_mesh, *render_cache, params, lod_index, skip_ambient_cache);
+        // Null outside an entity_render call, so static meshes and our own ghost draws never scroll.
+        UvScroll uv_scroll;
+        uv_scroll.active =
+            vehicle_tread_scroll_for_draw(uv_scroll.config, uv_scroll.u, uv_scroll.v);
+
+        draw_cached_mesh(lod_mesh, *render_cache, params, lod_index, skip_ambient_cache, uv_scroll);
     }
 
     void MeshRenderer::render_character_vif(rf::VifLodMesh *lod_mesh, int lod_index, const rf::Vector3& pos, const rf::Matrix3& orient, const rf::CharacterInstance *ci, const rf::MeshRenderParams& params, bool skip_ambient_cache)
@@ -759,7 +783,7 @@ namespace gr::d3d11
             for (int i = 0; i < ci->num_active_anims; ++i) {
                 const rf::CiAnimInfo& anim_info = ci->active_anims[i];
                 rf::Skeleton* skeleton = ci->base_character->animations[anim_info.anim_index];
-                if (skeleton->has_morph_vertices()) {
+                if (skeleton && skeleton->has_morph_vertices()) {
                     morphed = true;
                     render_cache->update_morphed_vertices_buffer(skeleton, anim_info.cur_time, render_context_);
                     break;
@@ -769,7 +793,7 @@ namespace gr::d3d11
         render_cache->update_bone_transforms_buffer(ci, render_context_);
         render_cache->bind_buffers(render_context_, morphed);
 
-        draw_cached_mesh(lod_mesh, *render_cache, params, lod_index, skip_ambient_cache);
+        draw_cached_mesh(lod_mesh, *render_cache, params, lod_index, skip_ambient_cache, {});
     }
 
     const std::vector<BaseMeshRenderCache::Batch>* MeshRenderer::prepare_character_for_draw(
@@ -790,7 +814,7 @@ namespace gr::d3d11
             for (int i = 0; i < ci->num_active_anims; ++i) {
                 const rf::CiAnimInfo& anim_info = ci->active_anims[i];
                 rf::Skeleton* skeleton = ci->base_character->animations[anim_info.anim_index];
-                if (skeleton->has_morph_vertices()) {
+                if (skeleton && skeleton->has_morph_vertices()) {
                     morphed = true;
                     render_cache->update_morphed_vertices_buffer(skeleton, anim_info.cur_time, render_context_);
                     break;
@@ -807,13 +831,22 @@ namespace gr::d3d11
         rf::VifLodMesh* lod_mesh, int lod_index,
         const rf::Vector3& pos, const rf::Matrix3& orient)
     {
-        page_in_v3d_mesh(lod_mesh);
+        const auto* batches = bind_v3d_buffers(lod_mesh, lod_index);
+        if (batches) {
+            render_context_.set_model_transform(pos, orient);
+        }
+        return batches;
+    }
+
+    const std::vector<BaseMeshRenderCache::Batch>* MeshRenderer::bind_v3d_buffers(
+        rf::VifLodMesh* lod_mesh, int lod_index, rf::MeshMaterial* materials, int num_materials)
+    {
+        page_in_v3d_mesh(lod_mesh, materials, num_materials);
         auto render_cache = reinterpret_cast<MeshRenderCache*>(lod_mesh->render_cache);
         if (!render_cache) {
             return nullptr;
         }
 
-        render_context_.set_model_transform(pos, orient);
         render_context_.set_vertex_buffer(v3d_vb_.buffer(), sizeof(GpuVertex));
         render_context_.set_index_buffer(v3d_ib_.buffer());
 
@@ -834,7 +867,7 @@ namespace gr::d3d11
     }
 
 
-    void MeshRenderer::draw_cached_mesh(rf::VifLodMesh *lod_mesh, BaseMeshRenderCache& cache, const rf::MeshRenderParams& params, int lod_index, bool skip_ambient_cache)
+    void MeshRenderer::draw_cached_mesh(rf::VifLodMesh *lod_mesh, BaseMeshRenderCache& cache, const rf::MeshRenderParams& params, int lod_index, bool skip_ambient_cache, const UvScroll& uv_scroll)
     {
         bool is_character_mesh = dynamic_cast<const CharacterMeshRenderCache*>(&cache) != nullptr;
         // picmip does not apply to game objects (entities, items, held weapons, fpgun)
@@ -879,8 +912,12 @@ namespace gr::d3d11
         if (!ir_scanner) {
             if (use_vtx_lighting) {
                 // Old (master) vertex lighting: approximate lighting via mode color
-                if (is_character_mesh) {
-                    color = add_clamped(params.ambient_color, {224, 224, 224, 224});
+                if (is_character_mesh || is_fp_weapon) {
+                    // Character clutter has baked vertex colors and no custom ambient; its
+                    // ambient_color is uninitialized, so fall back to the level ambient
+                    color = (params.flags & rf::MeshRenderFlags::MRF_CUSTOM_AMBIENT_COLOR)
+                        ? add_clamped(params.ambient_color, {224, 224, 224, 224})
+                        : add_clamped(rf::level.ambient_light, {224, 224, 224, 224});
                 } else {
                     if (params.flags & rf::MeshRenderFlags::MRF_CUSTOM_AMBIENT_COLOR) {
                         color = g_character_meshes_are_fullbright
@@ -916,6 +953,15 @@ namespace gr::d3d11
             }
         }
 
+        if (g_ghost_fill.active && g_ghost_fill.has_tint) {
+            color.red = static_cast<rf::ubyte>(color.red * g_ghost_fill.tint.red / 255);
+            color.green = static_cast<rf::ubyte>(color.green * g_ghost_fill.tint.green / 255);
+            color.blue = static_cast<rf::ubyte>(color.blue * g_ghost_fill.tint.blue / 255);
+        }
+        if (g_ghost_fill.active) {
+            render_context_.set_ghost_fill(g_ghost_fill.fill_y, g_ghost_fill.alpha_ratio);
+        }
+
         bool use_vertex_colors = params.vertex_colors != nullptr;
         if (gpu_dynamic_lighting) {
             // Stock engine uses the per-entity lightmap-sampled ambient_color for
@@ -930,33 +976,30 @@ namespace gr::d3d11
                                  params.ambient_color.green == 255 &&
                                  params.ambient_color.blue == 255);
                 if (!is_white) {
-                    float global_amb[3];
-                    rf::gr::light_get_ambient(&global_amb[0], &global_amb[1], &global_amb[2]);
-                    constexpr float blend = 0.45f;
-                    float mesh_ambient[3] = {
-                        global_amb[0] * (1.0f - blend) + (params.ambient_color.red / 255.0f) * blend,
-                        global_amb[1] * (1.0f - blend) + (params.ambient_color.green / 255.0f) * blend,
-                        global_amb[2] * (1.0f - blend) + (params.ambient_color.blue / 255.0f) * blend,
-                    };
+                    const float lightmap[3] = {params.ambient_color.red / 255.0f, params.ambient_color.green / 255.0f,
+                                               params.ambient_color.blue / 255.0f};
+                    float mesh_ambient[3];
+                    gr_mesh_blend_ambient(lightmap, mesh_ambient);
                     if (!skip_ambient_cache) {
                         entity_ambient_cache[&params] = {mesh_ambient[0], mesh_ambient[1], mesh_ambient[2]};
                     }
-                    render_context_.update_lights(false, mesh_ambient);
+                    render_context_.update_lights(false, mesh_ambient, gr_sun_get_mesh_scale(mesh_ambient));
                 } else {
                     if (!skip_ambient_cache) {
                         auto it = entity_ambient_cache.find(&params);
                         if (it != entity_ambient_cache.end()) {
-                            render_context_.update_lights(false, it->second.data());
+                            render_context_.update_lights(false, it->second.data(), gr_sun_get_mesh_scale(it->second.data()));
                         } else {
-                            render_context_.update_lights();
+                            render_context_.update_lights(false, nullptr, gr_sun_get_mesh_scale(nullptr));
                         }
                     } else {
-                        render_context_.update_lights();
+                        render_context_.update_lights(false, nullptr, gr_sun_get_mesh_scale(nullptr));
                     }
                 }
             } else {
-                render_context_.update_lights();
+                render_context_.update_lights(false, nullptr, gr_sun_get_mesh_scale(nullptr));
             }
+            render_context_.update_dir_lights();
         } else {
             render_context_.update_lights();
         }
@@ -1005,6 +1048,14 @@ namespace gr::d3d11
 
         const auto& batches = *batches_ptr;
 
+        if (uv_scroll.active) {
+            constexpr int max_tex_handles = std::extent_v<decltype(rf::VifMesh::tex_handles)>;
+            const int num_tex_handles =
+                std::clamp(lod_mesh->meshes[lod_index]->num_textures_handles, 0, max_tex_handles);
+            vehicle_tread_resolve_mesh_bitmaps(uv_scroll.config, lod_mesh->meshes[lod_index],
+                                               tex_handles, num_tex_handles);
+        }
+
         for (auto& b : batches) {
             // ccrunch tool chunkifies mesh and inits render mode flags
             // 0x110C21 is used for materials with additive blending (except admin_poshlight01.v3d):
@@ -1023,7 +1074,9 @@ namespace gr::d3d11
             // - FOG_ALLOWED
             // This information may be useful for simplifying shaders
             render_context_.set_cull_mode(b.double_sided ? D3D11_CULL_NONE : D3D11_CULL_BACK);
-            int texture = tex_handles[b.texture_index];
+            // Bounds-check the file-supplied texture index against the tex_handles array
+            constexpr int max_textures = std::extent_v<decltype(rf::VifMesh::tex_handles)>;
+            int texture = (b.texture_index >= 0 && b.texture_index < max_textures) ? tex_handles[b.texture_index] : -1;
 
             // Self-illumination from material emissive_factor (set at cache build time),
             // or force fullbright for COLOR_SOURCE_TEXTURE batches (no vertex color influence).
@@ -1040,9 +1093,27 @@ namespace gr::d3d11
                 self_illum = 1.0f;
             }
 
-            render_context_.set_mode(forced_mode.value_or(b.mode), color, false, gpu_dynamic_lighting, self_illum, !is_character_mesh, emissive);
+            rf::gr::Mode batch_mode = forced_mode.value_or(b.mode);
+            if (g_ghost_fill.active) {
+                // Depth test stays on, depth write off, so ghosts never occlude each other or the world.
+                batch_mode.set_alpha_blend(rf::gr::ALPHA_BLEND_ALPHA);
+                batch_mode.set_zbuffer_type(rf::gr::ZBUFFER_TYPE_READ);
+            }
+            // Static-mesh light scale is skipped for first person meshes too: fpguns are character meshes, and
+            // static fpgun attachments (silencer) must match them
+            render_context_.set_mode(batch_mode, color, false, gpu_dynamic_lighting, self_illum, !is_character_mesh && !is_fp_weapon, emissive);
             render_context_.set_textures(texture, -1);
+            // Per batch, not per mesh: the rest of the hull draws from the atlas and must not scroll.
+            if (uv_scroll.active) {
+                const bool is_tread = vehicle_is_tread_bitmap(texture, uv_scroll.config);
+                render_context_.set_model_uv0_offset(is_tread ? uv_scroll.u : 0.0f,
+                                                     is_tread ? uv_scroll.v : 0.0f);
+            }
             render_context_.draw_indexed(b.num_indices, b.start_index, b.base_vertex);
+        }
+        if (uv_scroll.active) {
+            // Or the powerup overlay below, and anything queued after this mesh, inherits the offset.
+            render_context_.set_model_uv0_offset(0.0f, 0.0f);
         }
         if (params.powerup_bitmaps[0] != -1 && !ir_scanner) {
             rf::gr::Mode powerup_mode{
@@ -1066,6 +1137,9 @@ namespace gr::d3d11
                     render_context_.draw_indexed(b.num_indices, b.start_index, b.base_vertex);
                 }
             }
+        }
+        if (g_ghost_fill.active) {
+            render_context_.set_ghost_fill(0.0f, 0.0f);
         }
     }
 
@@ -1252,5 +1326,47 @@ namespace gr::d3d11
                 context->DrawIndexed(batch.num_indices, batch.start_index, batch.base_vertex);
             }
         }
+    }
+}
+
+namespace gr
+{
+    bool render_ghost_mesh(rf::VMesh* mesh, const rf::Vector3& pos, const rf::Matrix3& orient,
+                           float alpha_below, float alpha_above, float fill_y, const rf::Color* tint)
+    {
+        if (!mesh || rf::gr::screen.mode != rf::gr::DIRECT3D || !is_d3d11()) {
+            return false;
+        }
+        if (rf::vmesh_get_type(mesh) == rf::MESH_TYPE_ANIM_FX) {
+            return false;
+        }
+        if (!std::isfinite(alpha_below) || !std::isfinite(alpha_above) || !std::isfinite(fill_y)) {
+            return false;
+        }
+        alpha_below = std::clamp(alpha_below, 0.0f, 1.0f);
+        alpha_above = std::clamp(alpha_above, 0.0f, alpha_below);
+        if (alpha_below <= 0.0f) {
+            return false;
+        }
+
+        d3d11::g_ghost_fill.active = true;
+        d3d11::g_ghost_fill.fill_y = fill_y;
+        // Ratio 0 is the shader's "not a ghost draw" sentinel, so fully transparent clamps just above it.
+        d3d11::g_ghost_fill.alpha_ratio = std::max(alpha_above / alpha_below, 1.0f / 512.0f);
+        d3d11::g_ghost_fill.has_tint = tint != nullptr;
+        if (tint) {
+            d3d11::g_ghost_fill.tint = *tint;
+        }
+
+        rf::MeshRenderParams params{};
+        params.init_defaults();
+        params.alpha = static_cast<int>(alpha_below * 255.0f + 0.5f);
+        params.orient = orient;
+        rf::Vector3 draw_pos = pos;
+        rf::Matrix3 draw_orient = orient;
+        rf::vmesh_render(mesh, &draw_pos, &draw_orient, &params);
+
+        d3d11::g_ghost_fill = d3d11::GhostFillState{};
+        return true;
     }
 }

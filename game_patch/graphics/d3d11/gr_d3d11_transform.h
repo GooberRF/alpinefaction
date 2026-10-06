@@ -13,10 +13,12 @@ namespace gr::d3d11
 
     class Projection
     {
+        // Defaults are independent placeholders, not derived from zn_/zf_
         float sx_ = 1.0f;
         float sy_ = 1.0f;
         float sz_ = -0.1f;
         float tz_ = 1.0f;
+        float zn_ = 0.1f;
         float zf_ = 1.0f;
 
     public:
@@ -25,6 +27,7 @@ namespace gr::d3d11
             sx_{sx}, sy_{sy},
             sz_{-zn / (zf - zn)},
             tz_{zf * zn / (zf - zn)},
+            zn_{zn},
             zf_{zf}
         {}
 
@@ -65,6 +68,11 @@ namespace gr::d3d11
             }};
         }
 
+        float z_near() const
+        {
+            return zn_;
+        }
+
         float z_far() const
         {
             return zf_;
@@ -72,6 +80,8 @@ namespace gr::d3d11
 
         float scale_x() const { return sx_; }
         float scale_y() const { return sy_; }
+        float scale_z() const { return sz_; }
+        float translate_z() const { return tz_; }
     };
 
     inline GpuMatrix4x4 build_identity_matrix()

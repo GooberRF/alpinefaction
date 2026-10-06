@@ -352,6 +352,7 @@ namespace rf::gr
 
     static auto& screen = addr_as_ref<Screen>(0x017C7BC0);
     static auto& gamma_ramp = addr_as_ref<uint32_t[256]>(0x017C7C68);
+    static auto& gameplay_fov = addr_as_ref<float>(0x0059613C); // horizontal FOV the scene is rendered with
     static auto& default_wfar = addr_as_ref<float>(0x00596140);
     static auto& gamma = addr_as_ref<float>(0x005A445C);
 
@@ -387,7 +388,11 @@ namespace rf::gr
     static auto& set_alpha = addr_as_ref<void(ubyte a)>(0x0050D030);
     static auto& read_backbuffer = addr_as_ref<int(int x, int y, int w, int h, void* buffer)>(0x0050DFF0);
     static auto& clear = addr_as_ref<void()>(0x0050CDF0);
+    static auto& setup_3d = addr_as_ref<void(const Matrix3* orient, const Vector3* pos, float fov, int zbuffer, int z_scale)>(0x00517EB0);
+    static auto& flush = addr_as_ref<void()>(0x0050E4B0);
     static auto& cull_sphere = addr_as_ref<bool(const Vector3& pos, float radius)>(0x005186A0);
+    // Distance from the eye scaled by the projection, as LOD selection (0x0052FA40) compares it
+    static auto& get_apparent_distance_from_camera = addr_as_ref<float(const Vector3& pos)>(0x005182F0);
     static auto& set_texture_mip_filter = addr_as_ref<void(bool linear)>(0x0050E830);
     static auto& lock = addr_as_ref<bool(int bm_handle, int section, LockInfo* lock, LockMode mode)>(0x0050E2E0);
     static auto& unlock = addr_as_ref<void(LockInfo* lock)>(0x0050E310);
@@ -412,10 +417,12 @@ namespace rf::gr
     static auto& project_vertex = addr_as_ref<ubyte (Vertex *p)>(0x00518440);
     static auto& show_lightmaps = *reinterpret_cast<bool*>(0x009BB5A4);
     static auto& light_set_ambient = addr_as_ref<void(float r, float g, float b)>(0x004D8CE0);
+    static auto& light_frame_begin = addr_as_ref<void()>(0x004D8050); // empty in the retail build
+    static auto& light_filter_for_camera = addr_as_ref<void()>(0x005174D0);
     static auto& line_arrow = addr_as_ref<void(float x1, float y1, float z1, float x2, float y2, float z2, int r, int g, int b)>(0x00516AD0);
     static auto& cursor_3d = addr_as_ref<void(Vector3* pos, Matrix3* orient, float scale)>(0x00516B10);
     static auto& string_render_into_bitmap = addr_as_ref<void(int x, int y, int bm_handle, const char* s, int font)>(0x005203A0);
-    static auto& string_3d = addr_as_ref<void(Vector3* pos, Matrix3* orient, float scale, const char* string, int font_num, Mode mode)>(0x00520020);
+    static auto& string_3d = addr_as_ref<void(const Vector3* pos, const Matrix3* orient, float scale, const char* string, int font_num, Mode mode)>(0x00520020);
     static auto& bitmap_3d = addr_as_ref<void(Vector3* pos, Matrix3* orient, float scale, Mode mode)>(0x00515B10);
     static auto& bitmap_3d_angle = addr_as_ref<void(Vector3* pos, float angle, float scale, Mode mode)>(0x00515B40);
     static auto& bitmap_3d_angle_wh = addr_as_ref<void(Vector3* pos, float angle, float width, float height, Mode mode)>(0x00555B20);

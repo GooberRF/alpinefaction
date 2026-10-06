@@ -2,7 +2,7 @@
 #define SrcRootDir ".."
 #define BinDir "..\build\Release\bin"
 #define PatchesDir "patches\output"
-#define AppVer "1.4.0_Lupin"
+#define AppVer "1.5.0_Trillium"
 
 [Setup]
 AppId={{005AA7-D71920-FFC72C-4B6E-82D3-9F7B12A3C8D1}}
@@ -17,6 +17,7 @@ UninstallDisplayIcon={app}\AlpineFactionLauncher.exe
 DefaultDirName={autopf}\Alpine Faction
 DefaultGroupName=Alpine Faction
 DisableWelcomePage=no
+LicenseFile={#SrcRootDir}\resources\terms.txt
 OutputBaseFilename=AlpineFaction-{#AppVer}-setup
 Compression=lzma2/max
 SolidCompression=yes
@@ -31,6 +32,7 @@ WizardStyle=modern
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
 Name: "replacerflauncher"; Description: "Replace Red Faction launcher with the Alpine Faction launcher (required for Steam support)"; GroupDescription: "Other options:"
 Name: "rflassoc"; Description: "Associate the .rfl file extension with the Alpine Faction level editor"; GroupDescription: "Other options:"
+Name: "afdassoc"; Description: "Associate the .afd demo file extension with Alpine Faction"; GroupDescription: "Other options:"
 Name: "redvisualstyles"; Description: "Enable Windows visual styles for the level editor (experimental)"; GroupDescription: "Other options:"; Flags: unchecked
 
 [Files]
@@ -41,6 +43,7 @@ Source: "{#BinDir}\AlpineFaction.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#BinDir}\d3d8to9.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#BinDir}\alpinefaction.vpp"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#BinDir}\licensing-info.txt"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#BinDir}\terms.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SrcRootDir}\LICENSE.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SrcRootDir}\resources\RED.exe.manifest"; DestDir: "{code:GetGameDir}"; Flags: ignoreversion; Tasks: redvisualstyles
 ; RTPatch patches (extracted from official 1.20 patches)
@@ -86,6 +89,11 @@ Root: HKCR; Subkey: "af"; ValueType: "string"; ValueData: "URL:Red Faction Proto
 Root: HKCR; Subkey: "af"; ValueType: "string"; ValueName: "URL Protocol"; ValueData: ""
 Root: HKCR; Subkey: "af\DefaultIcon"; ValueType: "string"; ValueData: "{app}\AlpineFactionLauncher.exe,0"
 Root: HKCR; Subkey: "af\shell\open\command"; ValueType: "string"; ValueData: """{app}\AlpineFactionLauncher.exe"" -aflink %1"
+; afd demo file extension association
+Root: HKCR; Subkey: ".afd"; ValueType: "string"; ValueData: "AlpineFactionDemo"; Flags: uninsdeletekey; Tasks: afdassoc
+Root: HKCR; Subkey: "AlpineFactionDemo"; ValueType: "string"; ValueData: "Alpine Faction Demo"; Flags: uninsdeletekey; Tasks: afdassoc
+Root: HKCR; Subkey: "AlpineFactionDemo\DefaultIcon"; ValueType: "string"; ValueData: "{app}\AlpineFactionLauncher.exe,0"; Tasks: afdassoc
+Root: HKCR; Subkey: "AlpineFactionDemo\shell\open\command"; ValueType: "string"; ValueData: """{app}\AlpineFactionLauncher.exe"" -play-demo ""%1"""; Tasks: afdassoc
 ; rfl file extension association
 Root: HKCR; Subkey: ".rfl"; ValueType: "string"; ValueData: "AlpineFactionLevelEditor"; Flags: uninsdeletekey; Tasks: rflassoc
 Root: HKCR; Subkey: "AlpineFactionLevelEditor"; ValueType: "string"; ValueData: "Alpine Faction Level Editor"; Flags: uninsdeletekey; Tasks: rflassoc

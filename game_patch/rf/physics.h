@@ -8,6 +8,8 @@ namespace rf
 {
     struct ObjectCreateInfo;
     struct GFace;
+    struct Object;
+    struct Entity;
 
     struct PCollisionOut
     {
@@ -75,9 +77,22 @@ namespace rf
         PF_COLLIDE_OBJECTS = 0x20,       // participate in object-object collision pairs
         PF_UNK_40          = 0x40,
         PF_BOUNCE          = 0x100,      // bounce on impact (added when debris_flags & 0x04)
+        PF_AUTOMOBILE      = 0x4000,     // entity_create sets it for jeep/apc/driller info flags; selects
+                                         // physics_simulate_vehicle_rotation/translation (0x0049E180/0x0049E9F0)
+        PF_NET_PLAYER      = 0x8000,     // multi_obj_interp_frame_start/end (0x00484560/0x004845E0) drive this
+                                         // object from its ObjInterp keyframes instead of simulating it
         PF_USE_CUSTOM_MAX_VEL = 0x200000, // movement clamps use Entity::custom_max_vel instead of EntityInfo::max_vel; cleared by entity_land (0x00419830)
+        PF_SKIP_SIM_ONCE = 0x800000, // set by camera_enter_freelook/deadlook; obj_move_all skips one physics frame, then clears it
         PF_ACCEL_APPLIED = 0x1000000, // dispatcher tail sets this; stock acceleration blocks bail when set (once-per-frame gate)
+        PF_SIMULATED_THIS_FRAME = 0x40000000, // set before the physics tick in obj_move_all, cleared at the end of obj_process_physics
     };
+
+    static auto& physics_frame_init = addr_as_ref<void(PhysicsData* pd)>(0x0049F1E0);
+    // Full per-entity physics step: movemode input conversion (ai.ci), mouselook
+    // rotation, acceleration and velocity integration
+    static auto& physics_simulate_entity = addr_as_ref<void(Entity* ep)>(0x0049F3C0);
+    static auto& physics_update_entity = addr_as_ref<void(Entity* ep)>(0x0049FE40);
+    static auto& collide_object_world = addr_as_ref<char(Object* objp)>(0x0049BB70);
 
     static auto& gravity = addr_as_ref<float>(0x005A00DC);
     static auto& level_set_gravity = addr_as_ref<void(float value)>(0x004A0E20);

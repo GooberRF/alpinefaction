@@ -14,6 +14,7 @@
 #include "../rf/file/file.h"
 #include "../rf/object.h"
 #include "../rf/event.h"
+#include "../rf/hud.h"
 #include "../rf/entity.h"
 #include "../rf/level.h"
 #include "../rf/multi.h"
@@ -132,13 +133,17 @@ CodeInjection switch_model_event_obj_lighting_and_physics_fix{
 
             // D3D11 renderer: update vertex color state for the swapped mesh.
             // Self-illumination is detected at render time from CPU vertex colors.
-            if (g_game_config.renderer == GameConfig::Renderer::d3d11 &&
-                obj->vmesh &&
-                rf::vmesh_get_type(obj->vmesh) == rf::MESH_TYPE_STATIC) {
-
-                auto* v3d = static_cast<rf::V3d*>(obj->vmesh->instance);
-                if (v3d && v3d->num_meshes > 0 && v3d->meshes[0].vu) {
-                    gr::d3d11::on_static_vertex_color_state_changed(v3d->meshes[0].vu);
+            if (g_game_config.renderer == GameConfig::Renderer::d3d11 && obj->vmesh) {
+                auto mesh_type = rf::vmesh_get_type(obj->vmesh);
+                if (mesh_type == rf::MESH_TYPE_STATIC) {
+                    auto* v3d = static_cast<rf::V3d*>(obj->vmesh->instance);
+                    if (v3d && v3d->num_meshes > 0 && v3d->meshes[0].vu) {
+                        gr::d3d11::on_static_vertex_color_state_changed(v3d->meshes[0].vu);
+                    }
+                }
+                else if (mesh_type == rf::MESH_TYPE_CHARACTER) {
+                    // Cached character vertex colors are keyed by buffer pointer; force a rebuild
+                    gr::d3d11::on_character_fullbright_state_changed();
                 }
             }
         }
@@ -571,6 +576,48 @@ FunHook<char*(char*)> hud_translate_special_character_token_hook{
     },
 };
 
+// Stock hud_msg aborts on an unterminated $ and expands tokens into its 256-byte slot unbounded.
+// Messages it handles safely are passed through untouched.
+FunHook<void(const char*, int, int, rf::Color*)> hud_msg_hook{
+    0x004383C0,
+    [](const char* text, int unk, int duration, rf::Color* color) {
+        if (!text || std::strlen(text) >= 256) {
+            hud_msg_hook.call_target(text, unk, duration, color);
+            return;
+        }
+        std::string_view text_sv{text};
+        std::string expanded;
+        bool unterminated = false;
+        size_t pos = 0;
+        while (pos < text_sv.size()) {
+            size_t open_pos = text_sv.find('$', pos);
+            expanded += text_sv.substr(pos, open_pos - pos);
+            if (open_pos == std::string_view::npos) {
+                break;
+            }
+            size_t close_pos = text_sv.find('$', open_pos + 1);
+            if (close_pos == std::string_view::npos) {
+                unterminated = true;
+                expanded += text_sv.substr(open_pos + 1);
+                break;
+            }
+            char token[256]{};
+            text_sv.copy(token, close_pos - open_pos - 1, open_pos + 1);
+            std::string_view replacement{rf::hud_translate_special_character_token(token)};
+            expanded += replacement.substr(0, replacement.find('$'));
+            pos = close_pos + 1;
+        }
+        if (!unterminated && expanded.size() < 256) {
+            hud_msg_hook.call_target(text, unk, duration, color);
+            return;
+        }
+        if (expanded.size() > 255) {
+            expanded.resize(255);
+        }
+        hud_msg_hook.call_target(expanded.c_str(), unk, duration, color);
+    },
+};
+
 void apply_event_patches()
 {
     // allow custom directional events
@@ -578,6 +625,7 @@ void apply_event_patches()
 
     // HUD Message magic word handling
     hud_translate_special_character_token_hook.install();
+    hud_msg_hook.install();
 
     // fix some events not working if delay value is specified (alpine levels only)
     EventUnhide__process_patch.install();

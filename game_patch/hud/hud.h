@@ -36,14 +36,18 @@ enum class HudNotificationType : int
     GametypeHelp,   // local only
     Queue,          // local only, persistent (Pit duel queue overlay)
     GunGame,        // Gun Game weapon-progression notifications
-    Rampage,        // big center-screen callout (renders in its own slot)
+    Rampage,        // big center-screen callout (unused)
     Generic,        // standard slot (under the chat box)
     GenericBig,     // big center-screen slot
     SalvageCarrier, // local only, persistent (Salvage flag carrier overlay)
+    Award,          // local only, big center-screen slot (awards.cpp owns the queue)
 };
 
 void hud_notification_show(std::string text, int duration_seconds, HudNotificationType type, bool fade_on_expire);
 void hud_notification_remove(HudNotificationType type, bool instant);
+// Current occupant of the big center-screen slot; None once a notification has fully expired and
+// faded (the render pass owns that transition).
+HudNotificationType hud_big_notification_current_type();
 
 // Returns true if HUD should be hidden (cl_hud off, or cinematic spectate freelook)
 bool is_hud_effectively_hidden();
@@ -53,6 +57,8 @@ int hud_get_small_font();
 int hud_get_default_font();
 int hud_get_large_font();
 bool hud_weapons_is_double_ammo();
+int hud_ammo_counter_bottom_y();
+int hud_ammo_counter_right_x();
 void draw_hud_vote_notification(std::string vote_type);
 void remove_hud_vote_notification();
 void stop_draw_respawn_timer_notification();

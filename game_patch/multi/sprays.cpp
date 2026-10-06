@@ -8,6 +8,7 @@
 #include <patch_common/CodeInjection.h>
 #include "sprays.h"
 #include "alpine_packets.h"
+#include "awards.h"
 #include "server.h"
 #include "multi.h"
 #include "../misc/player.h"
@@ -427,6 +428,7 @@ void sprays_handle_spray_request(rf::Player* player, uint16_t texture_id, const 
 
     // Spray accepted.
     player->last_spray_ms = now;
+    awards_on_spray(player);
     const uint8_t player_id = player->net_data->player_id;
     g_server_sprays[player_id] = ServerSprayState{texture_id, pos_in, normal};
     //xlog::info("sprays: accepted spray from '{}' (player_id={}), broadcasting", player->name, player_id);

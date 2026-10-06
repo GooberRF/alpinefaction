@@ -7,6 +7,7 @@
 #include <common/utils/list-utils.h>
 #include <common/version/version.h>
 #include "gametype.h"
+#include "awards.h"
 #include "bagman.h"
 #include "jetpack.h"
 #include "rounds.h"
@@ -14,9 +15,15 @@
 #include "wipeout.h"
 #include "gungame.h"
 #include "salvage.h"
+#include "vehicles/vehicle.h"
+#include "vehicles/vehicle_render.h"
+#include "vehicles/vehicle_markers.h"
+#include "vehicles/vehicle_physics.h"
 #include "multi.h"
 #include "mutators.h"
 #include "alpine_packets.h"
+#include "server_internal.h"
+#include "../fflink/afstats_events.h"
 #include "../hud/hud_internal.h"
 #include "../hud/multi_spectate.h"
 #include "../sound/sound.h"
@@ -314,7 +321,7 @@ const char* multi_gametype_help_text(rf::NetGameType game_type)
 
 bool gt_uses_custom_scoring()
 {
-    return gt_is_bagman_any() || gt_is_pit() || gt_is_wipeout();
+    return gt_is_bagman_any() || gt_is_pit();
 }
 
 bool gt_type_uses_rounds(rf::NetGameType game_type)
@@ -1069,6 +1076,27 @@ static void esc_apply_initial_ownerships()
     }
 }
 
+static uint8_t afstats_team_for_owner(HillOwner owner)
+{
+    switch (owner) {
+        case HillOwner::HO_Red:  return afstats::team_red;
+        case HillOwner::HO_Blue: return afstats::team_blue;
+        default:                 return afstats::team_none;
+    }
+}
+
+static std::vector<rf::Player*> players_from_ids(const std::vector<uint8_t>& ids)
+{
+    std::vector<rf::Player*> players;
+    players.reserve(ids.size());
+    for (uint8_t id : ids) {
+        if (rf::Player* p = rf::multi_find_player_by_id(id)) {
+            players.push_back(p);
+        }
+    }
+    return players;
+}
+
 static void server_maybe_broadcast_state(HillInfo& h, const Presence& pres)
 {
     const uint8_t prog_bucket = static_cast<uint8_t>(h.capture_progress / 5);
@@ -1083,6 +1111,23 @@ static void server_maybe_broadcast_state(HillInfo& h, const Presence& pres)
 
     if (!changed)
         return;
+
+    // Contest is a per-tick derived condition with nothing latched to hook, so the
+    // edge is taken against the same snapshot the network dedup already keeps.
+    const bool was_contested = h.net_last_red > 0 && h.net_last_blue > 0;
+    const bool is_contested = pres.red > 0 && pres.blue > 0;
+    if (was_contested != is_contested) {
+        afstats::on_point_event(h.hill_uid,
+            is_contested ? afstats::PointEventKind::contest_start
+                         : afstats::PointEventKind::contest_end,
+            afstats_team_for_owner(h.ownership), {},
+            h.lock_status != HillLockStatus::HLS_Available);
+    }
+    if (h.net_last_lock_status != h.lock_status) {
+        afstats::on_point_event(h.hill_uid, afstats::PointEventKind::lock_change,
+            afstats_team_for_owner(h.ownership), {},
+            h.lock_status != HillLockStatus::HLS_Available);
+    }
 
     af_send_koth_hill_state_packet_to_all(h, pres);
 
@@ -1141,6 +1186,44 @@ static void esc_recalculate_stage_locks()
     }
 }
 
+// Lockdown: one team controls all control points (DC only).
+static void koth_maybe_grant_lockdown(const HillInfo& captured, HillOwner new_owner)
+{
+    if (!gt_is_dc() || !captured.trigger || !captured.handler) {
+        return;
+    }
+    int valid_hills = 0;
+    for (const HillInfo& hill : g_koth_info.hills) {
+        if (!hill.trigger || !hill.handler) {
+            continue;
+        }
+        if (hill.ownership != new_owner) {
+            return;
+        }
+        ++valid_hills;
+    }
+    if (valid_hills == 0) {
+        return;
+    }
+
+    const int capping_team = (new_owner == HillOwner::HO_Red) ? 0 : 1;
+    for (rf::Player& pl : SinglyLinkedList{rf::player_list}) {
+        if (pl.team != capping_team || !player_is_countable(pl)) {
+            continue;
+        }
+        if (!player_inside_hill_trigger(captured, pl)) {
+            continue;
+        }
+        grant_award(&pl, AwardId::lockdown);
+    }
+}
+
+// HO_Neutral 0 / HO_Red 1 / HO_Blue 2 maps onto a Vehicle Factory's -1 none / 0 red / 1 blue.
+static int hill_owner_factory_team(HillOwner owner)
+{
+    return static_cast<int>(owner) - 1;
+}
+
 static void koth_apply_ownership(HillInfo& h, HillOwner new_owner, bool announce = true, HillOwner scoring_team = HillOwner::HO_Neutral)
 {
     if (gt_is_rev() && new_owner == HillOwner::HO_Blue)
@@ -1181,10 +1264,16 @@ static void koth_apply_ownership(HillInfo& h, HillOwner new_owner, bool announce
             koth_update_respawn_points(&h);
         }
 
+        // Linked Vehicle Factories follow the point's owner.
+        for (int factory_index : h.vehicle_factories) {
+            vehicle_factory_set_team(factory_index, hill_owner_factory_team(new_owner));
+        }
+
         if (new_owner == HillOwner::HO_Red || new_owner == HillOwner::HO_Blue) {
             notify_capture_point_captured(h, new_owner);
+            koth_maybe_grant_lockdown(h, new_owner);
         }
-    
+
         if (announce) {
             //auto ids = on_capture_collect_player_ids_on_hill_for_team(h, new_owner);
             HillOwner reward_team = scoring_team;
@@ -1196,6 +1285,15 @@ static void koth_apply_ownership(HillInfo& h, HillOwner new_owner, bool announce
                 ids = on_capture_collect_player_ids_on_hill_for_team(h, reward_team);
             const uint8_t uid8 = static_cast<uint8_t>(std::clamp(h.hill_uid, 0, 255));
             af_send_koth_hill_captured_packet_to_all(uid8, new_owner, ids);
+            afstats::on_point_event(h.hill_uid, afstats::PointEventKind::owner_change,
+                afstats_team_for_owner(new_owner), players_from_ids(ids),
+                h.lock_status != HillLockStatus::HLS_Available);
+        }
+        else {
+            // A silent flip (script/event driven) still changes ownership.
+            afstats::on_point_event(h.hill_uid, afstats::PointEventKind::owner_change,
+                afstats_team_for_owner(new_owner), {},
+                h.lock_status != HillLockStatus::HLS_Available);
         }
     }
 }
@@ -1945,10 +2043,16 @@ static int build_hills_from_capture_point_events()
         h.hold_ms_accum = 0;
 
         // build vector of respawn points associated with hill
+        // Alpine respawn points and vehicle factories are not engine objects, so level_load leaves
+        // their links as raw RFL uids while engine-object links become handles.
         if (!e->links.empty()) {
             for (int linked_uid : e->links) {
                 if (auto* rp = get_alpine_respawn_point_by_uid(linked_uid)) {
                     h.mp_spawn_uids.push_back(rp->uid);
+                }
+                const int factory_index = vehicle_factory_index_by_uid(linked_uid);
+                if (factory_index >= 0) {
+                    h.vehicle_factories.push_back(factory_index);
                 }
             }
         }
@@ -2024,6 +2128,20 @@ void hill_mode_level_init_post()
     //xlog::warn("KOTH: {} capture points found in this map, gt {}", n, static_cast<int>(rf::netgame.type));
 }
 
+// Hills are built before the factory slots exist, so an initial ownership (ESC bases, or any hill
+// a gametype starts owned) is pushed to its linked factories here instead of from the hill build.
+static void hill_mode_apply_linked_factory_teams()
+{
+    for (const auto& hill : g_koth_info.hills) {
+        if (hill.ownership == HillOwner::HO_Neutral)
+            continue; // a neutral hill leaves the factory's authored team alone
+
+        for (int factory_index : hill.vehicle_factories) {
+            vehicle_factory_set_team(factory_index, hill_owner_factory_team(hill.ownership), false);
+        }
+    }
+}
+
 void multi_level_init_post_gametypes()
 {
     hill_mode_level_init_post();
@@ -2032,18 +2150,37 @@ void multi_level_init_post_gametypes()
     pit_level_init_post();
     wipeout_level_init_post();
     gungame_level_init_post();
+    // Before the factory spawns below: entity_create seeds each hull's life from EntityInfo.
+    vehicle_tbl_overrides_level_init_post();
+    vehicle_level_init_post();
+    vehicle_markers_level_init_post(); // after the mesh overrides and the factory mirror
+    vehicle_physics_level_init_post(); // after the factory records exist
+    hill_mode_apply_linked_factory_teams(); // after vehicle_level_init_post: needs the slots
     // Rounds must initialise AFTER per-gametype level-init so the gametype
     // has registered its callbacks before round 1 begins.
     rounds_level_init_post();
     // Mutator pickup suppression runs last so its policy applies on top of any
     // gametype-specific item handling.
     mutators_level_init_post();
+
+    // After everything above, so the round_start snapshot sees the level, the
+    // game type, the active rules and every gametype's own state as final.
+    if (rf::is_multi && rf::is_server) {
+        // Not from multi_level_init: that runs before level_load, so the factory-driven client
+        // requirement in server_features_require_alpine_client would read one level late.
+        initialize_game_info_server_flags();
+        af_send_server_info_packet_to_all();
+        enforce_alpine_hard_reject_for_all_players_on_current_level();
+        afstats::on_game_start();
+    }
 }
 
 // pre level being loaded
 CodeInjection multi_level_init_gametypes_injection{
     0x0046E466,
     [] {
+        // Before gungame_level_init: weapons.tbl overrides restore LIFO.
+        vehicle_tbl_overrides_revert();
         rounds_level_init();
         hill_mode_level_init();
         bagman_level_init();
@@ -2052,6 +2189,8 @@ CodeInjection multi_level_init_gametypes_injection{
         pit_level_init();
         wipeout_level_init();
         gungame_level_init();
+        vehicle_level_init();
+        vehicle_physics_level_reset();
         riot_shield_on_multi_level_init();
     },
 };
@@ -2098,6 +2237,11 @@ CodeInjection send_team_score_state_info_patch{
             if (rf::Player* pp = regs.edi) {
                 salvage_force_state_sync_to(pp);
             }
+        }
+
+        // replay occupied vehicle and turret seats on join
+        if (rf::Player* pp = regs.edi) {
+            vehicle_send_seat_states_to(pp);
         }
 
         // send Pit queue state and roster on join.
@@ -2212,6 +2356,9 @@ CodeInjection carrier_attachment_render_patch{
         // command uses this same hook. jetpack_render_attachment() does its own
         // active/first-person checks and yields to the bag on the carrier.
         jetpack_render_attachment(ep);
+
+        // Same attachment point: AF's jeep hull carries no tires, so they are drawn right after it.
+        vehicle_render_jeep_tires(ep);
 
         if (!rf::is_multi || !gt_is_bagman_any()) return;
 

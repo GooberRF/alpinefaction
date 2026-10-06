@@ -2,20 +2,27 @@
 #include <patch_common/CodeInjection.h>
 #include <patch_common/AsmWriter.h>
 #include <common/utils/string-utils.h>
+#include <common/utils/list-utils.h>
 #include <xlog/xlog.h>
 #include <algorithm>
 #include <string_view>
+#include "../fflink/afstats_events.h"
 #include "../rf/event.h"
 #include "../rf/item.h"
 #include "../rf/misc.h"
 #include "../rf/entity.h"
+#include "../rf/gameseq.h"
 #include "../rf/multi.h"
 #include "../rf/weapon.h"
+#include "../rf/os/frametime.h"
 #include "../rf/player/player.h"
 #include "../misc/achievements.h"
 #include "../misc/misc.h"
+#include "../multi/gametype.h"
 #include "../multi/mutators.h"
 #include "../multi/server.h"
+#include "../multi/demo/demo.h"
+#include "object.h"
 
 int item_lookup_type(const char* name)
 {
@@ -36,7 +43,16 @@ int item_lookup_type(const char* name)
 FunHook<int(int, int, int, int)> item_touch_weapon_hook{
     0x0045A6D0,
     [](int entity_handle, int item_handle, int weapon_type, int count) {
-        if (server_weapon_items_give_full_ammo() && weapon_type != rf::shoulder_cannon_weapon_type) {
+        // Exclude fusion from "weapon items give full ammo", and from "infinite magazines"
+        // everywhere except GunGame.
+        const bool not_fusion = weapon_type != rf::shoulder_cannon_weapon_type;
+        const bool full_ammo_pickup = server_weapon_items_give_full_ammo() && not_fusion;
+        const bool infinite_mag_top_up = server_weapon_infinite_magazines()
+            && (not_fusion || (rf::is_multi && gt_is_gungame()));
+        // Infinite magazines is only meaningful if there is a magazine to reload from, so it
+        // tops the weapon up.
+        if ((full_ammo_pickup || infinite_mag_top_up)
+            && weapon_type >= 0 && weapon_type < rf::num_weapon_types) {
             rf::WeaponInfo& winfo = rf::weapon_types[weapon_type];
             count = winfo.max_ammo + winfo.clip_size;
         }
@@ -117,6 +133,11 @@ static void on_item_picked_up(rf::Item* item, rf::Entity* entity)
     }
     else {
         mutators_on_item_picked_up(item, entity);
+        if (rf::is_server) {
+            // respawn_time_ms is the per-instance value and already reflects any
+            // server-config or mutator override; negative means it never respawns.
+            afstats::on_item_pickup(rf::player_from_entity_handle(entity->handle), item->info_index, item->pos, item->respawn_time_ms);
+        }
     }
 }
 
@@ -160,6 +181,22 @@ CodeInjection multi_powerup_add_mp_check {
     }
 };
 
+void item_do_frame()
+{
+    if (rf::is_dedicated_server || !rf::is_multi || rf::game_paused) {
+        return;
+    }
+    constexpr float spin_rate = 2.35619449f;
+    constexpr float two_pi = 6.28318548f;
+    const float delta = rf::frametime * demo_playback_sim_time_scale() * spin_rate;
+    for (auto& item : DoublyLinkedList{rf::item_list}) {
+        if (item.info && (item.info->flags & rf::IIF_SPINS_IN_MULTI)) {
+            const float angle = item.spin_angle + delta;
+            item.spin_angle = angle > two_pi ? angle - two_pi : angle;
+        }
+    }
+}
+
 void item_do_patch()
 {
     // activate When_Picked_Up events
@@ -176,4 +213,7 @@ void item_do_patch()
 
     // Sort objects by mesh name to improve rendering performance
     item_create_sort_injection.install();
+
+    // Skip item_render's spin advance in favour of item_do_frame.
+    AsmWriter{0x00459071, 0x00459073}.jmp(0x004590A8);
 }

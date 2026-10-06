@@ -1,6 +1,7 @@
 #include "waypoints.h"
 #include "waypoints_utils.h"
 #include "alpine_settings.h"
+#include "alpine_terrain.h"
 #include "level.h"
 #include "../multi/bots/bot_waypoint_route.h"
 #include "../main/main.h"
@@ -3974,9 +3975,20 @@ std::optional<std::string> get_waypoint_dir()
     return waypoints_path;
 }
 
+// Return the final path component of a name.
+static std::string_view strip_path_components(std::string_view name)
+{
+    auto pos = name.find_last_of("/\\:");
+    if (pos != std::string_view::npos) {
+        return name.substr(pos + 1);
+    }
+    return name;
+}
+
 std::filesystem::path get_waypoint_filename()
 {
-    std::filesystem::path map_name = std::string{get_filename_without_ext(rf::level.filename.c_str())};
+    std::filesystem::path map_name =
+        std::string{get_filename_without_ext(strip_path_components(rf::level.filename.c_str()))};
     auto waypoint_dir = get_waypoint_dir();
     if (!waypoint_dir) {
         return map_name.string() + ".awp";
@@ -3986,7 +3998,8 @@ std::filesystem::path get_waypoint_filename()
 
 static std::filesystem::path get_waypoint_filename_for_rfl(const std::string& rfl_filename)
 {
-    std::filesystem::path map_name = std::string{get_filename_without_ext(rfl_filename.c_str())};
+    std::filesystem::path map_name =
+        std::string{get_filename_without_ext(strip_path_components(rfl_filename))};
     auto waypoint_dir = get_waypoint_dir();
     if (!waypoint_dir) {
         return map_name.string() + ".awp";
@@ -6150,6 +6163,13 @@ int link_jump_pads_to_trajectory_destinations()
     return total_links;
 }
 
+// A geoable detail brush a blast can open a path through. Terrain chunks are geoable but far too
+// thick for that.
+static bool is_blastable_geoable_room(const rf::GRoom* room)
+{
+    return room->is_detail && room->is_geoable && !alpine_terrain_is_chunk_room(room);
+}
+
 // Check if any detail brush blocks the line segment.
 // If skip_geoable is true, geoable detail brushes (RF2-style) are ignored.
 bool trace_segment_hits_detail_brush(const rf::Vector3& from, const rf::Vector3& to,
@@ -6184,7 +6204,7 @@ bool trace_segment_hits_detail_brush(const rf::Vector3& from, const rf::Vector3&
         }
 
         if (collision.face && collision.face->which_room && collision.face->which_room->is_detail) {
-            if (!skip_geoable || !collision.face->which_room->is_geoable) {
+            if (!skip_geoable || !is_blastable_geoable_room(collision.face->which_room)) {
                 return true;
             }
         }
@@ -6217,8 +6237,7 @@ bool trace_segment_blocked_by_geoable_brush(const rf::Vector3& from, const rf::V
     }
     return collision.face
         && collision.face->which_room
-        && collision.face->which_room->is_detail
-        && collision.face->which_room->is_geoable;
+        && is_blastable_geoable_room(collision.face->which_room);
 }
 
 // Check if the ONLY geometry blocking a segment is geoable detail brushes.
@@ -6255,8 +6274,7 @@ bool segment_blocked_only_by_geoable_brushes(const rf::Vector3& from, const rf::
         }
 
         if (collision.face && collision.face->which_room) {
-            if (collision.face->which_room->is_detail
-                && collision.face->which_room->is_geoable) {
+            if (is_blastable_geoable_room(collision.face->which_room)) {
                 // Geoable brush — skip past it and continue tracing.
                 hit_any_geoable = true;
             }

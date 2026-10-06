@@ -12,6 +12,7 @@
 #include "../rf/input.h"
 #include "../rf/collide.h"
 #include "../rf/gr/gr_light.h"
+#include "../graphics/d3d11/gr_d3d11_hooks.h"
 #include "../rf/os/os.h"
 #include "../rf/os/frametime.h"
 #include "../rf/gameseq.h"
@@ -22,6 +23,9 @@
 #include "../sound/sound.h"
 #include "../input/input.h"
 #include "../multi/multi.h"
+#include "../multi/network.h"
+#include "../multi/demo/demo_ui.h"
+#include "../multi/demo/demo.h"
 #include "../multi/gametype.h"
 #include "../multi/server_internal.h"
 #include "../multi/bagman.h"
@@ -29,10 +33,14 @@
 #include "../multi/sprays.h"
 #include "../multi/pit.h"
 #include "../multi/gungame.h"
+#include "../multi/awards.h"
+#include "../multi/mutators.h"
+#include "../multi/vehicles/vehicle.h"
 #include "../hud/multi_spectate.h"
 #include "../hud/hud_internal.h"
 #include "../hud/hud.h"
 #include "../multi/alpine_packets.h"
+#include "../fflink/afstats_events.h"
 #include "../hud/hud_world.h"
 #include <common/utils/list-utils.h>
 #include <common/version/version.h>
@@ -74,7 +82,11 @@ bool is_player_minimum_af_client_version(
         return false;
     }
 
-    if (player->version_info.software != ClientSoftware::AlpineFaction) {
+    // The demo listener runs the current AF build's code and reports its version,
+    // so AF version gates must treat it as an Alpine client - otherwise no
+    // AF-gated packet would ever reach the demo recorder.
+    if (player->version_info.software != ClientSoftware::AlpineFaction
+        && player->version_info.software != ClientSoftware::Observer) {
         return false;
     }
 
@@ -262,13 +274,24 @@ FunHook<rf::Player*(bool)> player_create_hook{
 FunHook<void(rf::Player*)> player_destroy_hook{
     0x004A35C0,
     [](rf::Player* player) {
+        // Must run before any other subsystem frees state: if the engine is deleting
+        // the virtual demo recorder, the demo module has to drop its raw pointer here
+        // or it dangles (C1). Cheap no-op when no recording is active.
+        demo_record_on_player_deleted(player);
         multi_spectate_on_destroy_player(player);
         bagman_on_player_disconnect(player);
         salvage_on_player_disconnect(player);
         sprays_on_player_destroyed(player);
         pit_on_player_disconnect(player);
         gungame_on_player_disconnect(player);
+        vehicle_on_player_disconnect(player);
+        accuracy_stats_on_player_destroy(player);
+        awards_on_player_destroy(player);
+        mutators_on_player_destroy(player);
         if (rf::is_server) {
+            // Must run while PlayerAdditionalData is still alive, since the leave
+            // event carries the player's partial-game summary.
+            afstats::on_player_leave(player);
             remove_ready_player_silent(player);
             server_vote_on_player_leave(player);
             if (player->is_bot) {
@@ -276,6 +299,8 @@ FunHook<void(rf::Player*)> player_destroy_hook{
             }
             if (player->net_data) {
                 g_select_weapon_done_timestamp[player->net_data->player_id].invalidate();
+                // Reset the rcon brute-force throttle/session for this address.
+                clear_rcon_state_for_addr(player->net_data->addr);
             }
         }
         // Before the engine frees this player, drop any dangling spectatee
@@ -374,8 +399,30 @@ bool is_player_weapon_on(rf::Player* player, bool alt_fire) {
 FunHook<void(rf::Player*, bool, bool)> player_fire_primary_weapon_hook{
     0x004A4E80,
     [](rf::Player* player, bool alt_fire, bool was_pressed) {
+        // A listen host would otherwise fire twice: here and from the vehicle module's server pass.
+        if (vehicle_suppress_local_fire(player)) {
+            return;
+        }
         if (should_swap_weapon_alt_fire(player)) {
             alt_fire = !alt_fire;
+        }
+        // The stock path writes its post-shot fire-wait onto ai.next_fire_primary whichever trigger
+        // fired, so restore the untouched trigger's timestamp across the predicted shot.
+        rf::Entity* vehicle = nullptr;
+        if (rf::is_multi && !rf::is_server) {
+            vehicle = vehicle_ridden_hull(rf::entity_from_handle(player->entity_handle));
+        }
+        if (vehicle) {
+            const rf::Timestamp saved_primary = vehicle->ai.next_fire_primary;
+            const rf::Timestamp saved_secondary = vehicle->ai.next_fire_secondary;
+            player_fire_primary_weapon_hook.call_target(player, alt_fire, was_pressed);
+            if (alt_fire) {
+                vehicle->ai.next_fire_primary = saved_primary;
+            }
+            else {
+                vehicle->ai.next_fire_secondary = saved_secondary;
+            }
+            return;
         }
         player_fire_primary_weapon_hook.call_target(player, alt_fire, was_pressed);
     },
@@ -517,9 +564,22 @@ CallHook<void __fastcall(rf::Timestamp*, int, int)> player_execute_action_timest
 FunHook<void(rf::Player*, rf::ControlConfigAction, bool)> player_execute_action_hook{
     0x004A6210,
     [](rf::Player* player, rf::ControlConfigAction action, bool was_pressed) {
-        if (!multi_spectate_execute_action(action, was_pressed)) {
-            player_execute_action_hook.call_target(player, action, was_pressed);
+        if (demo_controls_ui_execute_action(action, was_pressed)) {
+            return; // demo playback controls (USE popup toggle, seek/pause keys)
         }
+        if (multi_spectate_execute_action(action, was_pressed)) {
+            return;
+        }
+        // A turret operator's alt is his zoom, read from the raw control state. Stock would run his
+        // hand weapon's alt route, which can fire the turret locally where the server never hears it.
+        // A dying operator still needs alt: it is his respawn request.
+        if (action == rf::CC_ACTION_SECONDARY_ATTACK && rf::is_multi) {
+            rf::Entity* ep = rf::entity_from_handle(player->entity_handle);
+            if (ep && !rf::entity_is_dying(ep) && vehicle_hull_is_turret(vehicle_ridden_hull(ep))) {
+                return;
+            }
+        }
+        player_execute_action_hook.call_target(player, action, was_pressed);
     },
 };
 
@@ -593,22 +653,52 @@ FunHook<void()> players_do_frame_hook{
     },
 };
 
+// Stock 0x004A7520 is exactly local_screen_flash(local_player, 255, 0, 0, 128), so the fallback
+// here is what every caller drew before.
+void player_damage_feedback()
+{
+    if (g_alpine_game_config.damage_flash == 0) {
+        return;
+    }
+    // Mask 0 arms a radial hit. The directional indicator call that follows on both the SP and
+    // MP damage paths converts it to screen edges when it lands in the same frame. Falls back to
+    // the flash when the vignette has no D3D11 renderer to draw on.
+    if (g_alpine_game_config.damage_flash == 2 && gr::d3d11::trigger_damage_vignette(0)) {
+        return;
+    }
+    rf::local_screen_flash(rf::local_player, 255, 0, 0, 128);
+}
+
 FunHook<void()> player_do_damage_screen_flash_hook{
     0x004A7520,
     []() {
-        if (g_alpine_game_config.damage_screen_flash) {
-            player_do_damage_screen_flash_hook.call_target();
+        player_damage_feedback();
+    },
+};
+
+// Sets Player::flags bits 13-16 from a 4-way front/left/back/right mask. Only fires for the
+// local player with a non-zero mask, so it is the directional feed for the vignette.
+FunHook<void(rf::Player*, unsigned)> player_start_hud_damage_indicators_hook{
+    0x004A5AF0,
+    [](rf::Player* pp, unsigned dir_mask) {
+        player_start_hud_damage_indicators_hook.call_target(pp, dir_mask);
+        // Stock is a no-op for mask 0; only player_damage_feedback's explicit 0 means "radial".
+        if (pp == rf::local_player && g_alpine_game_config.damage_flash == 2 && (dir_mask & 0xF) != 0) {
+            gr::d3d11::trigger_damage_vignette(dir_mask);
         }
     },
 };
 
 ConsoleCommand2 damage_screen_flash_cmd{
     "cl_damageflash",
-    []() {
-        g_alpine_game_config.damage_screen_flash = !g_alpine_game_config.damage_screen_flash;
-        rf::console::print("Damage screen flash effect is {}", g_alpine_game_config.damage_screen_flash ? "enabled" : "disabled");
+    [](std::optional<int> level_opt) {
+        if (level_opt) {
+            g_alpine_game_config.set_damage_flash(level_opt.value());
+        }
+        rf::console::print("Damage feedback level is {}", g_alpine_game_config.damage_flash);
     },
-    "Toggle damage screen flash effect",
+    "Damage feedback: 0 off, 1 screen flash, 2 edge vignette (D3D11 only)",
+    "cl_damageflash <0-2>",
 };
 
 ConsoleCommand2 spectate_damage_screen_flash_cmd{
@@ -798,6 +888,14 @@ ConsoleCommand2 death_bars_cmd{
 CallHook<void(rf::VMesh*, rf::Vector3*, rf::Matrix3*, void*)> player_cockpit_vmesh_render_hook{
     0x004A7907,
     [](rf::VMesh *vmesh, rf::Vector3 *pos, rf::Matrix3 *orient, void *params) {
+        // Must land ahead of the driller stretch below, which has to be the last correction applied.
+        rf::Vector3 view_pos;
+        rf::Matrix3 view_orient;
+        if (vehicle_cockpit_view_pose(&view_pos, &view_orient)) {
+            pos = &view_pos;
+            orient = &view_orient;
+        }
+
         rf::Matrix3 new_orient = *orient;
 
         if (string_iequals(rf::vmesh_get_name(vmesh), "driller01.vfx")) {
@@ -926,6 +1024,11 @@ void update_player_flashlight() {
 
 bool player_is_idle(const rf::Player* const player) {
     if (rf::is_server) {
+        // The demo recorder never spawns and never sends activity; its idle timer
+        // is never armed either, but keep the exemption explicit.
+        if (player->is_observer()) {
+            return false;
+        }
         // Check if the player's idle timer has elapsed
         const bool is_idle = player->idle.check_timer.valid()
             && player->idle.check_timer.elapsed();
@@ -1026,6 +1129,9 @@ void player_do_patch()
 
     // Support disabling of damage screen flash effect
     player_do_damage_screen_flash_hook.install();
+
+    // Directional feed for the damage vignette
+    player_start_hud_damage_indicators_hook.install();
 
     // Stretch driller cockpit when using a wide-screen
     player_cockpit_vmesh_render_hook.install();

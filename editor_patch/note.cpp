@@ -39,7 +39,7 @@ static void note_load_icon()
 
 // ─── Cleanup ─────────────────────────────────────────────────────────────────
 
-static void destroy_ded_note(DedNote* note)
+void DestroyDedNote(DedNote* note)
 {
     if (!note) return;
     note->field_4.free();
@@ -113,25 +113,25 @@ void note_deserialize_chunk(CDedLevel& level, rf::File& file, std::size_t chunk_
         note->vtbl = reinterpret_cast<void*>(ded_object_vtbl_addr);
         note->type = DedObjectType::DED_NOTE;
 
-        if (!read_bytes(&note->uid, sizeof(note->uid))) { destroy_ded_note(note); return; }
-        if (!read_bytes(&note->pos.x, sizeof(float))) { destroy_ded_note(note); return; }
-        if (!read_bytes(&note->pos.y, sizeof(float))) { destroy_ded_note(note); return; }
-        if (!read_bytes(&note->pos.z, sizeof(float))) { destroy_ded_note(note); return; }
-        if (!read_bytes(&note->orient.rvec.x, sizeof(float))) { destroy_ded_note(note); return; }
-        if (!read_bytes(&note->orient.rvec.y, sizeof(float))) { destroy_ded_note(note); return; }
-        if (!read_bytes(&note->orient.rvec.z, sizeof(float))) { destroy_ded_note(note); return; }
-        if (!read_bytes(&note->orient.uvec.x, sizeof(float))) { destroy_ded_note(note); return; }
-        if (!read_bytes(&note->orient.uvec.y, sizeof(float))) { destroy_ded_note(note); return; }
-        if (!read_bytes(&note->orient.uvec.z, sizeof(float))) { destroy_ded_note(note); return; }
-        if (!read_bytes(&note->orient.fvec.x, sizeof(float))) { destroy_ded_note(note); return; }
-        if (!read_bytes(&note->orient.fvec.y, sizeof(float))) { destroy_ded_note(note); return; }
-        if (!read_bytes(&note->orient.fvec.z, sizeof(float))) { destroy_ded_note(note); return; }
+        if (!read_bytes(&note->uid, sizeof(note->uid))) { DestroyDedNote(note); return; }
+        if (!read_bytes(&note->pos.x, sizeof(float))) { DestroyDedNote(note); return; }
+        if (!read_bytes(&note->pos.y, sizeof(float))) { DestroyDedNote(note); return; }
+        if (!read_bytes(&note->pos.z, sizeof(float))) { DestroyDedNote(note); return; }
+        if (!read_bytes(&note->orient.rvec.x, sizeof(float))) { DestroyDedNote(note); return; }
+        if (!read_bytes(&note->orient.rvec.y, sizeof(float))) { DestroyDedNote(note); return; }
+        if (!read_bytes(&note->orient.rvec.z, sizeof(float))) { DestroyDedNote(note); return; }
+        if (!read_bytes(&note->orient.uvec.x, sizeof(float))) { DestroyDedNote(note); return; }
+        if (!read_bytes(&note->orient.uvec.y, sizeof(float))) { DestroyDedNote(note); return; }
+        if (!read_bytes(&note->orient.uvec.z, sizeof(float))) { DestroyDedNote(note); return; }
+        if (!read_bytes(&note->orient.fvec.x, sizeof(float))) { DestroyDedNote(note); return; }
+        if (!read_bytes(&note->orient.fvec.y, sizeof(float))) { DestroyDedNote(note); return; }
+        if (!read_bytes(&note->orient.fvec.z, sizeof(float))) { DestroyDedNote(note); return; }
 
         std::string sname = read_rfl_string(file, remaining);
         note->script_name.assign_0(sname.c_str());
 
         uint32_t note_count = 0;
-        if (!read_bytes(&note_count, sizeof(note_count))) { destroy_ded_note(note); return; }
+        if (!read_bytes(&note_count, sizeof(note_count))) { DestroyDedNote(note); return; }
         if (note_count > 10000) note_count = 10000;
         for (uint32_t ni = 0; ni < note_count; ni++) {
             std::string text = read_rfl_string(file, remaining);
@@ -393,21 +393,6 @@ DedNote* CloneNoteObject(DedNote* source, bool add_to_level)
     return note;
 }
 
-void DeleteNoteObject(DedNote* note)
-{
-    if (!note) return;
-    auto* level = CDedLevel::Get();
-    if (!level) return;
-
-    auto& notes = level->GetAlpineLevelProperties().note_objects;
-    auto it = std::find(notes.begin(), notes.end(), note);
-    if (it != notes.end()) {
-        notes.erase(it);
-    }
-    level->master_objects.remove_by_value(static_cast<DedObject*>(note));
-    destroy_ded_note(note);
-}
-
 // ─── Handler functions called from mesh.cpp hooks ───────────────────────────
 
 void note_render(CDedLevel* level)
@@ -526,7 +511,7 @@ void note_paste_objects(CDedLevel* level)
 void note_clear_clipboard()
 {
     for (auto* note : g_note_clipboard) {
-        destroy_ded_note(note);
+        DestroyDedNote(note);
     }
     g_note_clipboard.clear();
 }
@@ -541,21 +526,6 @@ void note_handle_delete_or_cut(DedObject* obj)
     auto it = std::find(note_objects.begin(), note_objects.end(), static_cast<DedNote*>(obj));
     if (it != note_objects.end()) {
         note_objects.erase(it);
-    }
-}
-
-void note_handle_delete_selection(CDedLevel* level)
-{
-    auto& sel = level->selection;
-    for (int i = sel.size - 1; i >= 0; i--) {
-        DedObject* obj = sel.data_ptr[i];
-        if (obj && obj->type == DedObjectType::DED_NOTE) {
-            for (int j = i; j < sel.size - 1; j++) {
-                sel.data_ptr[j] = sel.data_ptr[j + 1];
-            }
-            sel.size--;
-            DeleteNoteObject(static_cast<DedNote*>(obj));
-        }
     }
 }
 

@@ -23,6 +23,34 @@ enum ParticleEmitterFlags
     PEF_ACCEL_WITH_PARENT = 0x80,
 };
 
+enum ParticleFlags : unsigned
+{
+    PTF_GLOW = 0x2,
+    PTF_CLR_CHANGE = 0x4,
+    PTF_GRAVITY = 0x8,
+    PTF_COLLIDE = 0x10,
+    PTF_ACCELERATE = 0x40,
+    PTF_EXPLODE = 0x80,
+    PTF_LOOP = 0x100,
+    PTF_RANDOM_ORIENT = 0x200,
+    PTF_COLLIDE_LIQUID = 0x400,
+    PTF_COLLIDE_AND_DIE = 0x800,
+    PTF_NO_Z_CHECK = 0x2000,
+    PTF_VEL_STRETCH = 0x4000,
+    PTF_BOUNCINESS_MASK = 0x000F0000, // $bounciness 0-15 << 16
+    PTF_STICKINESS_MASK = 0x00F00000, // $stickiness 0-15 << 20
+    PTF_SWIRLINESS_MASK = 0x0F000000, // $swirliness 0-15 << 24
+    PTF_WIND = 0xF0000000,
+};
+
+enum ParticleFlags2
+{
+    PTF2_DAMAGES = 0x1,
+    PTF2_HOLD_LAST_FRAME = 0x4,
+    PTF2_FIRE_DAMAGE = 0x8,
+    PTF2_DAMAGE_FACTOR_MASK = 0xF000, // $damage_factor 0-15 << 12
+};
+
 struct ParticleEmitterType
 {
     int uid;
@@ -106,6 +134,19 @@ struct Particle
     Vector3 last_pos;
 };
 static_assert(sizeof(Particle) == 0x78);
+
+// Underwater plankton mote. Not emitter driven.
+struct PlanktonParticle
+{
+    Vector3 pos;
+    Vector3 vel;
+    float size;
+    ubyte r;
+    ubyte g;
+    ubyte b;
+    ubyte a;
+};
+static_assert(sizeof(PlanktonParticle) == 0x20);
 
 struct ParticleEmitter
 {
@@ -214,8 +255,21 @@ struct BoltEmitter
     Timestamp spawn_timer;
     float source_dir_mag;
     float target_dir_mag;
+
+    // returns room && room->visited_this_frame
+    bool should_render()
+    {
+        return AddrCaller{0x0048D620}.this_call<bool>(this);
+    }
+
+    void render(const Vector3* eye_pos)
+    {
+        AddrCaller{0x0048D4B0}.this_call(this, eye_pos);
+    }
 };
 static_assert(sizeof(BoltEmitter) == 0x18C);
+
+static auto& bolt_emitter_list = addr_as_ref<VArray<BoltEmitter*>>(0x0064608C);
 
 static auto& level_get_particle_emitter_from_uid = addr_as_ref<ParticleEmitter*(int uid)>(0x0045D630);
 static auto& level_get_bolt_emitter_from_uid = addr_as_ref<BoltEmitter*(int uid)>(0x0045D680);
@@ -224,9 +278,9 @@ static auto& particle_create = addr_as_ref<void(int pool_id, ParticleCreateInfo&
     GRoom* room, Vector3* a4, int parent_obj, Particle** result,
     ParticleEmitter* emitter)>(0x00496840);
 
-// Array of particle emitter type template pointers loaded from emitters.tbl
-// (64 slots; live count is at 0x007BD99C, checked by particle_emitter_type_lookup)
+// Array of particle emitter type template pointers loaded from emitters.tbl (64 slots)
 static auto& g_particle_emitter_types = addr_as_ref<ParticleEmitterType*[64]>(0x007B2770);
+static auto& g_num_particle_emitter_types = addr_as_ref<int>(0x007BD99C);
 static auto& particle_emitter_type_lookup = addr_as_ref<int(const char* name)>(0x00497550);
 
 static auto& particle_emitter_create = addr_as_ref<ParticleEmitter*(
@@ -235,5 +289,22 @@ static auto& particle_emitter_create = addr_as_ref<ParticleEmitter*(
 // spawn particle explosion from explosion.tbl by name.
 static auto& particle_explosion_create = addr_as_ref<void(
     const char* name, Vector3* pos, Vector3* dir, float radius_scale, GRoom* room, unsigned int flags)>(0x0048e640);
+
+// Plankton pool capacity; the max_plankton command clamps g_max_plankton to this.
+constexpr int num_plankton_particles = 1024;
+static auto& g_plankton_particles = addr_as_ref<PlanktonParticle[num_plankton_particles]>(0x007BD9E8);
+static auto& g_max_plankton = addr_as_ref<int>(0x005A00B0);
+// Half extent of the box a mote is respawned into when it leaves the camera box.
+static auto& g_plankton_box_extent = addr_as_ref<float>(0x005A00C0);
+
+// Returns every live particle (main list, per-emitter lists and the secondary list) to the
+// free pool via particle_emitter_level_release. Emitter records themselves are NOT destroyed,
+// so pointers held by entities/fires/explosions stay valid (verified in disassembly).
+static auto& particle_level_release = addr_as_ref<void()>(0x004950A0);
+
+// Destroys each live explosion's owned particle emitters, then zeroes the explosion slot pool
+// and rebuilds the free list (supersets explosion_level_init 0x0048E150). Used by level_release;
+// safe mid-level.
+static auto& explosion_shut_down = addr_as_ref<void()>(0x0048E1C0);
 
 }

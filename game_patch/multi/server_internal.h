@@ -38,6 +38,7 @@ struct AFGameInfoFlags
     bool saving_enabled         = false;
     bool gaussian_spread        = false;
     bool damage_notifications   = false;
+    bool stats_enabled          = false;
 
     uint32_t game_info_flags_to_uint32() const
     {
@@ -49,7 +50,8 @@ struct AFGameInfoFlags
                (static_cast<uint32_t>(match_mode)               << 5) |
                (static_cast<uint32_t>(saving_enabled)           << 6) |
                (static_cast<uint32_t>(gaussian_spread)          << 7) |
-               (static_cast<uint32_t>(damage_notifications)     << 8);
+               (static_cast<uint32_t>(damage_notifications)     << 8) |
+               (static_cast<uint32_t>(stats_enabled)            << 9);
     }
 };
 
@@ -189,34 +191,6 @@ struct SprayConfig
     int cooldown_ms = 500;
 };
 
-struct CriticalHitsConfig
-{
-    bool enabled = false;
-    //int sound_id = 35; // hardcoded
-    //int rate_limit = 10; // hardcoded
-    uint32_t reward_duration = 1500;
-    float base_chance = 0.1f;
-    bool dynamic_scale = true;
-    float dynamic_damage_bonus_ceiling = 1200.0f;
-
-    // =============================================
-
-    void set_reward_duration(int new_ms)
-    {
-        reward_duration = std::clamp(new_ms, 50, 60000); // max 1 min
-    }
-
-    void set_base_chance(float in_value)
-    {
-        base_chance = std::clamp(in_value, 0.01f, 1.0f); // percentile
-    }
-
-    void set_damage_bonus_ceiling(float in_value)
-    {
-        dynamic_damage_bonus_ceiling = std::clamp(in_value, 100.0f, 100000.0f);
-    }
-};
-
 struct WeaponStayExemptionConfigOld
 {
     bool enabled = false;
@@ -246,6 +220,9 @@ struct RoundConfig
     // =============================================
 
     void set_max_rounds(int v) { max_rounds = std::clamp(v, 1, 999); }
+    // Best-of-N: round wins that take the match.
+    int wins_to_take_match() const { return max_rounds / 2 + 1; }
+    void set_wins_to_take_match(int wins) { set_max_rounds(std::clamp(wins, 1, 500) * 2 - 1); }
     void set_round_time(int v) { round_time = static_cast<uint16_t>(std::clamp(v, 10, 3600)); }
     void set_post_round_time(int v) { post_round_time = static_cast<uint8_t>(std::clamp(v, 0, 10)); }
     void set_intermission_time(int v) { intermission_time = static_cast<uint8_t>(std::clamp(v, 0, 10)); }
@@ -470,44 +447,82 @@ struct WeaponLoadoutEntry
     int index;
     int reserve_ammo;
     bool enabled = true;
+    // Named by an operator's spawn_loadout entry rather than implied by a spawn weapon or game type.
+    bool listed = false;
 
     auto operator<=>(const WeaponLoadoutEntry&) const = default;
 };
 
 struct WeaponLoadoutConfig
 {
-    bool loadouts_active = false;
     std::vector<WeaponLoadoutEntry> red_weapons; // todo: teams
     std::vector<WeaponLoadoutEntry> blue_weapons;
 
     // =============================================
 
-    bool add(std::string_view name, int ammo, bool blue_team, bool enabled = true)
+    // Entries are keyed by resolved weapon type rather than by the spelling used to declare
+    // them. weapon_lookup_type is case insensitive, so "riot stick" and "Riot Stick" name the
+    // same weapon and must not produce two entries - a duplicate would also make
+    // spawn_loadout_is_active() over-count and needlessly lock legacy clients out.
+    bool contains(std::string_view name, bool blue_team = false) const
     {
-        auto weapons_array = blue_team ? &blue_weapons : &red_weapons;
-
-        // only add one instance of the weapon
-        auto it = std::find_if(weapons_array->begin(), weapons_array->end(), [&](auto const& e) { return e.weapon_name == name; });
-        if (it != weapons_array->end()) {
-            // already present, just update the enabled flag
-            it->enabled = enabled;
-            return false;
-        }
-
-        // not found, add a new one
-        int idx = rf::weapon_lookup_type(name.data());
+        const int idx = rf::weapon_lookup_type(name.data());
         if (idx < 0)
             return false;
 
-        weapons_array->emplace_back(WeaponLoadoutEntry{std::string{name}, idx, ammo, enabled});
+        auto const& weapons_array = blue_team ? blue_weapons : red_weapons;
+        return std::any_of(weapons_array.begin(), weapons_array.end(),
+                           [&](auto const& e) { return e.index == idx; });
+    }
+
+    // set_ammo false means the caller had no ammo value of its own (the TOML entry omitted
+    // the key), so an inherited reserve is kept instead of being reset to `ammo`.
+    bool add(std::string_view name, int ammo, bool blue_team, bool enabled = true, bool set_ammo = true,
+             bool listed = false)
+    {
+        const int idx = rf::weapon_lookup_type(name.data());
+        if (idx < 0)
+            return false;
+
+        auto& weapons_array = blue_team ? blue_weapons : red_weapons;
+
+        // only add one instance of the weapon
+        auto it = std::find_if(weapons_array.begin(), weapons_array.end(),
+                               [&](auto const& e) { return e.index == idx; });
+        if (it != weapons_array.end()) {
+            // Already present, so this is a later layer restating it. Rules layer
+            // gametype defaults -> base mutators -> base rules -> level mutators ->
+            // level rules -> voted mutators, each overriding the last, so take the
+            // values the newer layer actually specified.
+            if (set_ammo) {
+                it->reserve_ammo = ammo;
+            }
+            it->enabled = enabled;
+            it->listed = it->listed || listed;
+            return false;
+        }
+
+        weapons_array.emplace_back(WeaponLoadoutEntry{std::string{name}, idx, ammo, enabled, listed});
         return true;
+    }
+
+    bool is_listed(std::string_view name, bool blue_team) const
+    {
+        const int idx = rf::weapon_lookup_type(name.data());
+        auto const& weapons_array = blue_team ? blue_weapons : red_weapons;
+        return idx >= 0 && std::any_of(weapons_array.begin(), weapons_array.end(),
+                                       [&](auto const& e) { return e.index == idx && e.listed; });
     }
 
     bool remove(std::string_view name, bool blue_team)
     {
+        const int idx = rf::weapon_lookup_type(name.data());
+        if (idx < 0)
+            return false;
+
         auto& weapons_array = blue_team ? blue_weapons : red_weapons;
         auto it = std::find_if(weapons_array.begin(), weapons_array.end(),
-            [&](auto const& e) { return e.weapon_name == name; });
+            [&](auto const& e) { return e.index == idx; });
 
         if (it == weapons_array.end())
             return false;
@@ -562,6 +577,12 @@ struct GibConfig
     {
         damage_threshold = std::clamp(threshold, 1.0f, 6000.0f);
     }
+};
+
+struct VehicleConfig
+{
+    // Hulls take damage from hitting the level or a mover hard, and from hard landings.
+    bool crash_damage = true;
 };
 
 // Controls which level pickups survive under a mutator. Enforced server-side in
@@ -652,6 +673,9 @@ struct MutatorConfig
     float vampire_heal_ratio = 0.0f; // effective health granted per point of damage dealt
     bool hide_health_armor_pickups = false;
 
+    // Critical Hits: random crits rolled at fire time.
+    bool crits_enabled = false;
+
     // Super Drain: rot health/armor above the entity's max back down to it.
     bool super_drain_enabled = false;
 
@@ -663,6 +687,9 @@ struct MutatorConfig
 
     // Jetpacks: every player wears a jetpack; holding jump while falling thrusts.
     bool jetpacks_enabled = false;
+
+    // Jetpacks: a direct shot in the back or burning to death gibs the victim.
+    bool jetpack_explode = false;
 
     // Humans vs. Bots: bots always play on Blue, humans always on Red.
     bool humans_vs_bots_enabled = false;
@@ -701,6 +728,10 @@ struct AlpineServerConfigRules
 {
     // stock game rules
     rf::NetGameType game_type = rf::NetGameType::NG_TYPE_DM;
+    // Gametype defaults are normally rebuilt when game_type changes, but a config that
+    // never leaves the NG_TYPE_DM default would otherwise never get them at all - no
+    // baton in the spawn loadout, no default spawn weapon.
+    bool game_type_defaults_applied = false;
     float time_limit = 600.0f;
     OvertimeConfig overtime;
     RoundConfig rounds;
@@ -736,6 +767,7 @@ struct AlpineServerConfigRules
     SpawnProtectionConfig spawn_protection;
     NewSpawnLogicConfig spawn_logic;
     GibConfig gibbing;
+    VehicleConfig vehicles;
     WelcomeMessageConfig welcome_message;
     bool weapon_items_give_full_ammo = false;
     bool weapon_infinite_magazines = false;
@@ -749,7 +781,6 @@ struct AlpineServerConfigRules
     std::map<std::string, int> item_respawn_time_overrides;
     DelayedItemsConfig delayed_items;
     ForceCharacterConfig force_character;
-    CriticalHitsConfig critical_hits;
     bool gungame_rampage_rewards = true;
     std::vector<std::vector<std::string>> gungame_tiers; // uses built-in tiers if not specified
     std::string gungame_final_weapon = "Riot Stick";
@@ -758,6 +789,64 @@ struct AlpineServerConfigRules
     MutatorConfig mutators;
 
     // =============================================
+
+    // The reserve ammo the stock spawn grant hands out. apply_defaults_for_game_type seeds
+    // the loadout with these exact values, and spawn_loadout_is_active() compares against
+    // them, so the two must stay in step.
+    static int stock_riot_stick_reserve()
+    {
+        return rf::riot_stick_weapon_type >= 0
+            ? rf::weapon_types[rf::riot_stick_weapon_type].clip_size_multi
+            : 0;
+    }
+
+    int stock_spawn_weapon_reserve() const
+    {
+        return default_player_weapon.index >= 0
+            ? rf::weapon_types[default_player_weapon.index].clip_size_multi * default_player_weapon.num_clips
+            : 0;
+    }
+
+    // True when the loadout cannot be reproduced by the stock spawn grant, which hands out
+    // the spawn weapon plus the Riot Stick and nothing else. That is exactly when the server
+    // has to replace the grant and tell Alpine clients what it gave them - anything that
+    // reads false is still playable by legacy (pre-AF 1.2) clients.
+    bool spawn_loadout_is_active() const
+    {
+        if (!spawn_loadout.blue_weapons.empty()) {
+            return true;
+        }
+
+        const int stick = rf::riot_stick_weapon_type;
+        const int spawn = default_player_weapon.index;
+        if (stick < 0 || spawn < 0) {
+            // No stock equivalent to compare against, so treat it as a real loadout.
+            return true;
+        }
+
+        int enabled_count = 0;
+        bool have_stick = false;
+        bool have_spawn_weapon = false;
+        for (auto const& e : spawn_loadout.red_weapons) {
+            if (!e.enabled) {
+                continue;
+            }
+            ++enabled_count;
+            if (e.index == stick && e.reserve_ammo == stock_riot_stick_reserve()) {
+                have_stick = true;
+            }
+            else if (e.index == spawn && e.reserve_ammo == stock_spawn_weapon_reserve()) {
+                have_spawn_weapon = true;
+            }
+        }
+
+        // A spawn weapon that IS the Riot Stick collapses to a single entry.
+        if (spawn == stick) {
+            return !(enabled_count == 1 && have_stick);
+        }
+        return !(enabled_count == 2 && have_stick && have_spawn_weapon);
+    }
+
     void set_time_limit(float count)
     {
         time_limit = std::max(count, 10.0f);
@@ -816,6 +905,7 @@ struct AlpineServerConfigRules
             case rf::NetGameType::NG_TYPE_GG:      return gungame_score_limit;
             case rf::NetGameType::NG_TYPE_BAG:     return bagman.bag_score_limit;
             case rf::NetGameType::NG_TYPE_TBAG:    return bagman.tbag_score_limit;
+            case rf::NetGameType::NG_TYPE_WO:      return rounds.wins_to_take_match();
             case rf::NetGameType::NG_TYPE_RUN:
             case rf::NetGameType::NG_TYPE_REV:
             case rf::NetGameType::NG_TYPE_ESC:     return std::nullopt;
@@ -838,6 +928,7 @@ struct AlpineServerConfigRules
             case rf::NetGameType::NG_TYPE_GG:      set_gungame_score_limit(count); return true;
             case rf::NetGameType::NG_TYPE_BAG:     bagman.set_bag_score_limit(count); return true;
             case rf::NetGameType::NG_TYPE_TBAG:    bagman.set_tbag_score_limit(count); return true;
+            case rf::NetGameType::NG_TYPE_WO:      rounds.set_wins_to_take_match(count); return true;
             case rf::NetGameType::NG_TYPE_RUN:
             case rf::NetGameType::NG_TYPE_REV:
             case rf::NetGameType::NG_TYPE_ESC:     return false;
@@ -878,12 +969,7 @@ struct AlpineServerConfigLevelEntry
 {
     std::string level_filename;
     AlpineServerConfigRules rule_overrides;
-    // The same rules re-resolved with every config-declared mutator stripped.
-    // Starting point for a level/match vote that carries mutators, so the voted
-    // mutators replace (rather than stack on) whatever the config declared while
-    // the rest of this level's rules — notably its game type — are preserved.
-    AlpineServerConfigRules rule_overrides_no_mutators;
-    std::vector<std::pair<std::filesystem::path, std::optional<std::string>>> applied_rules_preset_paths;
+    int scope_table = -1; // this entry's TOML, kept with the config for rebuilding its rules
 };
 
 struct AlpineRconProfile
@@ -931,6 +1017,12 @@ struct AlpineServerConfig
     std::string fflink_gsk = "";
     std::vector<ServerBotConfig> bot_configs;
     bool upnp_enabled = false;
+    bool demo_auto_record = false;
+    bool demo_chat_record = true;
+    bool fflink_demo_upload = true;
+    int fflink_demo_max_mb = 100;
+    int fflink_demo_queue_max = 32;
+    bool fflink_demo_delete_after_send = false;
     bool require_client_mod = true;
     bool dynamic_rotation = false;
     bool gaussian_spread = true;
@@ -959,12 +1051,6 @@ struct AlpineServerConfig
     VoteConfig vote_previous;
 
     AlpineServerConfigRules base_rules;
-    // Base rules re-parsed with all mutators stripped. Used as the starting point
-    // for a mutator applied via a level/match vote, so the voted mutator replaces
-    // (rather than stacks on) any mutator the base rules declared.
-    AlpineServerConfigRules base_rules_no_mutators;
-    std::vector<std::pair<std::filesystem::path, std::optional<std::string>>> base_rules_preset_paths;
-    std::map<std::string, std::filesystem::path> rules_preset_aliases;
     std::vector<AlpineServerConfigLevelEntry> levels;
 
     std::string printed_cfg{};
@@ -1005,11 +1091,11 @@ struct AlpineServerConfig
 struct ManualRulesOverride
 {
     AlpineServerConfigRules rules;
-    std::vector<std::pair<std::filesystem::path, std::optional<std::string>>> applied_preset_paths;
-    // Mutually exclusive: an override comes either from a named rules preset or
-    // from voted mutators, and the two are described differently to operators.
-    std::optional<std::string> preset_alias;
     std::optional<std::string> mutator_labels;
+    // The vote that installed this named a game type or submitted its own mutator
+    // set. A plain vote installs derived rules too, but arms no session set, so a
+    // rotation preserve vote after one carries nothing.
+    bool explicit_session = false;
 };
 
 struct MatchInfo
@@ -1064,7 +1150,29 @@ extern bool g_manually_loaded_level;
 extern std::string g_ads_config_name;
 extern AFGameInfoFlags g_game_info_server_flags;
 extern std::string g_prev_level;
+extern bool g_is_overtime;
 extern MatchInfo g_match_info;
+// Set while rules are re-parsed or re-derived over a scope the config's own Full pass
+// already reported on; that pass is the one that reports problems.
+extern bool g_rules_parse_quiet;
+
+struct RulesParseQuietGuard
+{
+    bool previous;
+    RulesParseQuietGuard() : previous(g_rules_parse_quiet) { g_rules_parse_quiet = true; }
+    ~RulesParseQuietGuard() { g_rules_parse_quiet = previous; }
+    RulesParseQuietGuard(const RulesParseQuietGuard&) = delete;
+    RulesParseQuietGuard& operator=(const RulesParseQuietGuard&) = delete;
+};
+
+// A level's rotation entry: the slot it is running as when listed more than once, else its first; -1 if none.
+int rotation_index_for_level(std::string_view level_filename);
+// `level_filename` under `game_type`: its defaults, the base settings, then the level's rotation entry
+// (rotation_index_for_level) if it has one. A voted mutator set replaces every base and level mutator.
+AlpineServerConfigRules build_level_rules(std::string_view level_filename, rf::NetGameType game_type,
+    const std::vector<MutatorDeclaration>* voted_mutators);
+// Drops the installed config's base settings, for a server running without one.
+void reset_base_scope_tables();
 
 enum class UpcomingGameTypeSelection {
     Rotation,
@@ -1076,6 +1184,9 @@ UpcomingGameTypeSelection get_upcoming_game_type_selection();
 bool is_rcon_command_masterlisted(std::string_view command);
 bool set_upcoming_game_type(rf::NetGameType gt, UpcomingGameTypeSelection selection = UpcomingGameTypeSelection::Rotation);
 void apply_defaults_for_game_type(rf::NetGameType game_type, AlpineServerConfigRules& rules);
+// Grants one spawn loadout weapon. Use instead of rf::player_add_weapon, which writes
+// ai.ammo[-1] for weapons with no ammo type.
+void af_give_loadout_weapon(rf::Player* pp, int weapon_type, int reserve_ammo);
 int get_active_rules_generation();
 // Appends the "Session overrides" section of the config print, or nothing when no
 // session override is in effect.
@@ -1097,13 +1208,18 @@ void server_vote_handle_options_request(rf::Player* sender, bool has_cache, uint
 // discard a stream that was superseded mid-flight.
 const std::vector<uint8_t>& server_vote_get_options_blob(uint32_t& generation);
 void server_vote_invalidate_options_blob();
+// Rebuild the blob if invalid and report whether the bytes actually changed. The build
+// is content-addressed, so most invalidations answer false.
+bool server_vote_refresh_options_blob();
+// The mutator set currently in force, in the options blob's declaration-set encoding.
+// Session state, not config, so it is pushed separately from that blob.
+void server_vote_build_active_mutators_blob(std::vector<uint8_t>& blob);
 void vote_level_refresh_allowed_maps();
 // Push the current vote state to a player who joined while a vote is running.
 void server_vote_send_state_to_new_player(rf::Player* player);
 void handle_player_set_handicap(rf::Player* player, uint8_t amount);
 std::vector<rf::Player*> get_clients(bool include_browsers, bool include_bots);
 std::pair<bool, std::string> is_level_name_valid(std::string_view level_name_input);
-std::optional<ManualRulesOverride> load_rules_preset_alias(std::string_view preset_name);
 void set_manual_rules_override(ManualRulesOverride override_rules);
 void clear_manual_rules_override();
 void set_pending_rotation_preserve(PendingRotationPreserve pending);
@@ -1118,6 +1234,9 @@ void update_pre_match_powerups(rf::Player* player);
 void start_match();
 void cancel_match();
 void start_pre_match();
+// The afstats::MatchState value describing the ready-up match system right now,
+// as a raw uint8 so this header stays free of the stats API. Read at round_start.
+uint8_t af_match_state_for_stats();
 void set_ready_status(rf::Player* player, bool is_ready);
 void remove_ready_player_silent(rf::Player* player);
 void toggle_ready_status(rf::Player* player);
@@ -1138,6 +1257,7 @@ void process_delayed_kicks();
 void kick_player_delayed(const rf::Player* player);
 bool ends_with(const rf::String& str, const std::string& suffix);
 const AlpineServerConfig& server_get_alpine_config();
+bool server_is_modded();
 rf::CmdLineParam& get_ads_cmd_line_param();
 rf::CmdLineParam& get_min_cmd_line_param();
 rf::CmdLineParam& get_log_cmd_line_param();
@@ -1152,3 +1272,16 @@ bool multi_set_gametype_alpine(std::string_view gametype_name);
 bool is_gametype_name_valid(std::string_view gametype_name);
 void launch_alpine_dedicated_server();
 std::string build_info_command_output();
+
+// Called once per melee swing counted as fired. entity_damage_hook spends the credit when that
+// swing's deferred projectile connects, so melee hits can never outrun melee swings. Keyed per
+// weapon, because accuracy buckets are.
+void melee_grant_hit_credit(rf::Player* attacker, int weapon_type);
+
+// Combined accuracy/efficiency exclude flamethrower, riot stick, riot shield.
+bool accuracy_excluded_from_combined(int weapon_type);
+
+// The per-player accuracy ledgers are indexed by player id, which the engine reuses -- both must
+// be cleared on player destroy and on level load so a joiner cannot inherit them.
+void accuracy_stats_on_player_destroy(rf::Player* player);
+void accuracy_stats_level_init();

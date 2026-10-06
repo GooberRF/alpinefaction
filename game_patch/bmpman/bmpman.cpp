@@ -1,16 +1,22 @@
 #include <cassert>
+#include <algorithm>
+#include <vector>
 #include <patch_common/FunHook.h>
 #include <patch_common/CodeInjection.h>
 #include <patch_common/AsmWriter.h>
 #include <xlog/xlog.h>
+#include <cstring>
 #include <common/utils/string-utils.h>
 #include <common/bitmap/formats.h>
+#include <common/bitmap/tga.h>
+#include <common/scope_guard.h>
 #include "../graphics/gr.h"
 #include "../rf/file/file.h"
 #include "../misc/vpackfile.h"
 #include "atx.h"
 #include "dds.h"
 #include "stb_image_loader.h"
+#include "bmpman.h"
 
 int bm_calculate_pitch(int w, rf::bm::Format format)
 {
@@ -75,6 +81,35 @@ bool bm_is_compressed_format(rf::bm::Format format)
     }
 }
 
+// Everything bm_read_header_hook can resolve a texture from, in its own precedence order.
+static constexpr const char* g_texture_extensions[] = {
+    ".atx", ".dds", ".png", ".jpg", ".jpeg", ".vbm", ".tga", ".pcx", ".vaf", ".m2v",
+};
+
+std::string_view bm_strip_texture_ext(std::string_view filename)
+{
+    for (const char* ext : g_texture_extensions) {
+        if (string_iends_with(filename, ext)) {
+            return filename.substr(0, filename.size() - std::strlen(ext));
+        }
+    }
+    return filename;
+}
+
+// Applies the stock TGA pixel loaders' (0x0055A6D0, 0x0055ABF0) checks up front, because bm_lock
+// allocates the pixel buffer from the header dimensions before those loaders reject the file.
+static bool tga_header_loadable(const char* filename, int path_id)
+{
+    rf::File file;
+    if (file.open(filename, rf::File::mode_read, path_id) != 0) {
+        return true;
+    }
+    uint8_t hdr[tga_header_size];
+    const int bytes_read = file.read(hdr, sizeof(hdr));
+    file.close();
+    return bytes_read == sizeof(hdr) && tga_header_supported(hdr);
+}
+
 FunHook<rf::bm::Type(const char*, int*, int*, rf::bm::Format*, int*, int*, int*, int*, int*, int*, int)>
 bm_read_header_hook{
     0x0050FCB0,
@@ -89,7 +124,7 @@ bm_read_header_hook{
         *total_bytes_m2v_out = -1;
         *vbm_ver_out = 1;
 
-        std::string filename_without_ext{get_filename_without_ext(filename)};
+        std::string filename_without_ext{bm_strip_texture_ext(filename)};
 
         // ATX supercedes DDS, PNG, JPG, VBM, and TGA. Each candidate sibling is gated by
         // vpackfile_supercede_allowed so user_maps content can't override stock when the
@@ -135,12 +170,24 @@ bm_read_header_hook{
             }
         }
 
+        // Avoid a fatal error for non-stock texture formats in headless mode
+        if (rf::bm::get_type_from_filename(filename) == rf::bm::TYPE_NONE) {
+            if (!is_known_missing_stock_asset(filename)) {
+                xlog::warn("Failed to load bitmap header for '{}'", string_escape_control_chars(filename));
+            }
+            return rf::bm::TYPE_NONE;
+        }
+
         // Precedence chain: ATX > DDS > PNG/JPG > VBM > TGA.
         xlog::trace("Loading bitmap header for '{}'", filename);
         auto bm_type = bm_read_header_hook.call_target(filename, width_out, height_out, pixel_fmt_out, num_levels_out,
             num_levels_external_mips_out, num_frames_out, fps_out, total_bytes_m2v_out, vbm_ver_out, a11);
         xlog::trace("Bitmap header for '{}': type {} size {}x{} pixel_fmt {} levels {} frames {}",
             filename, bm_type, *width_out, *height_out, *pixel_fmt_out, *num_levels_out, *num_frames_out);
+
+        if (bm_type == rf::bm::TYPE_TGA && !tga_header_loadable(filename, a11)) {
+            bm_type = rf::bm::TYPE_NONE;
+        }
 
         // Sanity checks
         // Prevents heap corruption when width = 0 or height = 0
@@ -149,7 +196,7 @@ bm_read_header_hook{
         }
 
         if (bm_type == rf::bm::TYPE_NONE && !is_known_missing_stock_asset(filename)) {
-            xlog::warn("Failed to load bitmap header for '{}'", filename);
+            xlog::warn("Failed to load bitmap header for '{}'", string_escape_control_chars(filename));
         }
 
         return bm_type;
@@ -235,11 +282,20 @@ FunHook<void(int)> bm_unlock_hook{
 FunHook<void(int)> bm_free_entry_hook{
     0x0050F240,
     [](int bm_index) {
+        // Avoid a crash when exiting the game and attempting to free bitmaps already freed.
+        if (!rf::bm::bitmaps) {
+            return;
+        }
         auto& bm_entry = rf::bm::bitmaps[bm_index];
         if (bm_entry.bm_type == rf::bm::TYPE_ATX) {
             atx_free(bm_entry);
         }
         bm_entry.dynamic = false;
+        bm_entry.user_mipmap = false;
+
+        if (!bm_entry.prev || !bm_entry.next) {
+            return;
+        }
         bm_free_entry_hook.call_target(bm_index);
     },
 };
@@ -249,9 +305,15 @@ FunHook<void(int)> bm_free_entry_hook{
 // the validation accepts types 3/11 but they fall through the dispatch with no pixel
 // copy performed. Additionally, 8-bit greyscale is classified as FORMAT_8_PALETTED
 // but the loader never generates a palette for it.
+// Also fails the load when the colormap the loader is about to copy does not fit the palette.
 CodeInjection tga_greyscale_fix{
     0x0055A95E,
     [](auto& regs) {
+        if (addr_as_ref<uint8_t>(regs.esp + 0x1d)
+            && !tga_colormap_fits(addr_as_ref<void*>(regs.esp + 0x36c), regs.si)) {
+            regs.eip = 0x0055A980;
+            return;
+        }
         uint8_t image_type = regs.bl;
         if (image_type != 3 && image_type != 11) {
             return;
@@ -273,6 +335,11 @@ CodeInjection tga_greyscale_fix{
 CodeInjection tga_greyscale_fix_mipmap{
     0x0055AEAE,
     [](auto& regs) {
+        if (addr_as_ref<uint8_t>(regs.esp + 0x2d)
+            && !tga_colormap_fits(addr_as_ref<void*>(regs.esp + 0x37c), regs.si)) {
+            regs.eip = 0x0055AED0;
+            return;
+        }
         uint8_t image_type = regs.bl;
         if (image_type != 3 && image_type != 11) {
             return;
@@ -288,7 +355,44 @@ CodeInjection tga_greyscale_fix_mipmap{
             }
         }
         regs.bl = static_cast<int8_t>((image_type == 3) ? 2 : 10);
+        // The colormap path reloads the image type from here (0x0055AF4B)
+        addr_as_ref<uint8_t>(regs.esp + 0x2e) = static_cast<uint8_t>(regs.bl);
     },
+};
+
+// Replaces the stock row decode, which trusts the header dimensions and RLE packet lengths.
+// Runs right after the file body is read: EDI = buffer, ESI = requested size, EAX = bytes read.
+template<typename Regs>
+static void tga_decode(Regs& regs, int width, int height, uint8_t bpp, uint8_t descriptor)
+{
+    const int bytes_read = regs.eax;
+    const int requested = regs.esi;
+    const uint8_t* src = regs.edi;
+    const auto src_size = static_cast<std::size_t>(std::clamp(bytes_read, 0, std::max(requested, 0)));
+    tga_decode_pixels(addr_as_ref<uint8_t*>(regs.esp + 0x36c), src, src_size, width, height, bpp >> 3,
+        regs.bl, (descriptor & tga_descriptor_top_down) != 0);
+}
+
+CodeInjection tga_decode_fix{
+    0x0055AA67,
+    [](auto& regs) {
+        tga_decode(regs, addr_as_ref<int16_t>(regs.esp + 0x2e), addr_as_ref<int16_t>(regs.esp + 0x30),
+            addr_as_ref<uint8_t>(regs.esp + 0x32), addr_as_ref<uint8_t>(regs.esp + 0x33));
+        regs.eip = 0x0055AB9C;
+    },
+    // no trampoline: cannot be relocated; the handler always sets eip
+    false,
+};
+
+CodeInjection tga_decode_fix_mipmap{
+    0x0055AFBC,
+    [](auto& regs) {
+        tga_decode(regs, addr_as_ref<int>(regs.esp + 0x1c), addr_as_ref<int>(regs.esp + 0x14),
+            addr_as_ref<uint8_t>(regs.esp + 0x3e), addr_as_ref<uint8_t>(regs.esp + 0x3f));
+        regs.eip = 0x0055B0CA;
+    },
+    // no trampoline: the handler always sets eip
+    false,
 };
 
 CodeInjection load_tga_alloc_fail_fix{
@@ -317,6 +421,21 @@ bool bm_is_dynamic(int bm_handle)
     return rf::bm::bitmaps[bm_index].dynamic;
 }
 
+void bm_set_user_mipmap(int bm_handle, bool mipmap)
+{
+    int bm_index = rf::bm::get_cache_slot(bm_handle);
+    if (rf::bm::bitmaps[bm_index].user_mipmap != mipmap) {
+        rf::bm::bitmaps[bm_index].user_mipmap = mipmap;
+        rf::gr::mark_texture_dirty(bm_handle);
+    }
+}
+
+bool bm_is_user_mipmap(int bm_handle)
+{
+    int bm_index = rf::bm::get_cache_slot(bm_handle);
+    return rf::bm::bitmaps[bm_index].user_mipmap;
+}
+
 void bm_change_format(int bm_handle, rf::bm::Format format)
 {
     int bm_idx = rf::bm::get_cache_slot(bm_handle);
@@ -328,6 +447,161 @@ void bm_change_format(int bm_handle, rf::bm::Format format)
     }
 }
 
+// Uncompressed, non-paletted formats bm_bytes_per_pixel and bm_convert_format agree on.
+static bool bm_is_blit_format(rf::bm::Format f)
+{
+    switch (f) {
+        case rf::bm::FORMAT_8888_ARGB:
+        case rf::bm::FORMAT_888_RGB:
+        case rf::bm::FORMAT_565_RGB:
+        case rf::bm::FORMAT_1555_ARGB:
+        case rf::bm::FORMAT_4444_ARGB:
+        case rf::bm::FORMAT_8_ALPHA:
+            return true;
+        default:
+            return false;
+    }
+}
+
+static bool bm_clip_copy_rect(const rf::gr::LockInfo& dst_lock, int& dst_x, int& dst_y,
+                              const rf::gr::LockInfo& src_lock, int& src_x, int& src_y, int& w, int& h)
+{
+    if (!dst_lock.data || !src_lock.data || dst_lock.bm_handle == src_lock.bm_handle
+        || !bm_is_blit_format(dst_lock.format) || !bm_is_blit_format(src_lock.format) || w <= 0 || h <= 0) {
+        return false;
+    }
+
+    int64_t sx = src_x;
+    int64_t sy = src_y;
+    int64_t dx = dst_x;
+    int64_t dy = dst_y;
+    int64_t cw = w;
+    int64_t ch = h;
+    const int64_t src_w = src_lock.w;
+    const int64_t src_h = src_lock.h;
+    const int64_t dst_w = dst_lock.w;
+    const int64_t dst_h = dst_lock.h;
+
+    if (sx < 0) {
+        const int64_t shift = -sx;
+        cw -= shift;
+        dx += shift;
+        sx = 0;
+    }
+    if (dx < 0) {
+        const int64_t shift = -dx;
+        cw -= shift;
+        sx += shift;
+        dx = 0;
+    }
+    if (sy < 0) {
+        const int64_t shift = -sy;
+        ch -= shift;
+        dy += shift;
+        sy = 0;
+    }
+    if (dy < 0) {
+        const int64_t shift = -dy;
+        ch -= shift;
+        sy += shift;
+        dy = 0;
+    }
+
+    cw = std::min({cw, src_w - sx, dst_w - dx});
+    ch = std::min({ch, src_h - sy, dst_h - dy});
+
+    if (cw <= 0 || ch <= 0) {
+        return false;
+    }
+
+    src_x = static_cast<int>(sx);
+    src_y = static_cast<int>(sy);
+    dst_x = static_cast<int>(dx);
+    dst_y = static_cast<int>(dy);
+    w = static_cast<int>(cw);
+    h = static_cast<int>(ch);
+    return true;
+}
+
+bool bm_blend_pixels(const rf::gr::LockInfo& dst_lock, int dst_x, int dst_y, const rf::gr::LockInfo& src_lock,
+                     int src_x, int src_y, int w, int h)
+{
+    if (!bm_clip_copy_rect(dst_lock, dst_x, dst_y, src_lock, src_x, src_y, w, h)) {
+        return false;
+    }
+
+    const uint8_t* src_ptr = src_lock.data + (src_x * bm_bytes_per_pixel(src_lock.format))
+        + (src_y * src_lock.stride_in_bytes);
+    uint8_t* dst_ptr = dst_lock.data + (dst_x * bm_bytes_per_pixel(dst_lock.format))
+        + (dst_y * dst_lock.stride_in_bytes);
+
+    std::vector<uint32_t> scratch_src(static_cast<size_t>(w));
+    std::vector<uint32_t> scratch_dst(static_cast<size_t>(w));
+
+    for (int y = 0; y < h; ++y) {
+        if (!bm_convert_format(scratch_src.data(), rf::bm::FORMAT_8888_ARGB, src_ptr, src_lock.format, w, 1, w * 4,
+                               src_lock.stride_in_bytes, nullptr)) {
+            return false;
+        }
+        if (!bm_convert_format(scratch_dst.data(), rf::bm::FORMAT_8888_ARGB, dst_ptr, dst_lock.format, w, 1, w * 4,
+                               dst_lock.stride_in_bytes, nullptr)) {
+            return false;
+        }
+
+        for (size_t i = 0; i < scratch_src.size(); ++i) {
+            const uint32_t s = scratch_src[i];
+            const int sa = static_cast<int>((s >> 24) & 0xFF);
+            const uint32_t d = scratch_dst[i];
+            const int da = static_cast<int>((d >> 24) & 0xFF);
+            if (sa == 0) {
+                if (da == 0) {
+                    scratch_dst[i] = s & 0x00FFFFFFu;
+                }
+                continue;
+            }
+            const int da_weighted = da * (255 - sa) / 255;
+            const int out_a = sa + da_weighted;
+            uint32_t out = static_cast<uint32_t>(out_a) << 24;
+            for (int shift = 16; shift >= 0; shift -= 8) {
+                const int sc = static_cast<int>((s >> shift) & 0xFF);
+                const int dc = static_cast<int>((d >> shift) & 0xFF);
+                const int oc = (sc * sa + dc * da_weighted) / out_a;
+                out |= static_cast<uint32_t>(oc) << shift;
+            }
+            scratch_dst[i] = out;
+        }
+
+        if (!bm_convert_format(dst_ptr, dst_lock.format, scratch_dst.data(), rf::bm::FORMAT_8888_ARGB, w, 1,
+                               dst_lock.stride_in_bytes, w * 4, nullptr)) {
+            return false;
+        }
+
+        src_ptr += src_lock.stride_in_bytes;
+        dst_ptr += dst_lock.stride_in_bytes;
+    }
+
+    return true;
+}
+
+bool bm_fill(int bm_handle, uint32_t argb)
+{
+    rf::gr::LockInfo lock{};
+    if (!rf::gr::lock(bm_handle, 0, &lock, rf::gr::LOCK_READ_ONLY_WRITE)) {
+        return false;
+    }
+
+    ScopeGuard lock_guard{[&] { rf::gr::unlock(&lock); }};
+
+    if (!bm_is_blit_format(lock.format) || lock.w <= 0 || lock.h <= 0) {
+        return false;
+    }
+
+    // Source pitch 0 makes every destination row read the same scratch row.
+    std::vector<uint32_t> row(static_cast<size_t>(lock.w), argb);
+    return bm_convert_format(lock.data, lock.format, row.data(), rf::bm::FORMAT_8888_ARGB,
+                             lock.w, lock.h, lock.stride_in_bytes, 0, nullptr);
+}
+
 void bm_apply_patch()
 {
     bm_read_header_hook.install();
@@ -337,9 +611,13 @@ void bm_apply_patch()
     bm_has_alpha_hook.install();
     bm_free_entry_hook.install();
 
-    // Fix greyscale TGA files not loading (types 3 and 11)
+    // Fix greyscale TGA files not loading (types 3 and 11) and validate TGA colormaps
     tga_greyscale_fix.install();
     tga_greyscale_fix_mipmap.install();
+
+    // Improve TGA pixel data validation
+    tga_decode_fix.install();
+    tga_decode_fix_mipmap.install();
 
     // Fix crash when loading very big TGA files
     load_tga_alloc_fail_fix.install();

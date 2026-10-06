@@ -8,8 +8,10 @@
 #include "../multi/gametype.h"
 #include "../rf/player/player.h"
 #include "../rf/player/camera.h"
+#include "../rf/os/frametime.h"
 #include "../rf/sound/sound.h"
 #include "../rf/vmesh.h"
+#include "../rf/v3d.h"
 #include "../rf/weapon.h"
 #include "../rf/entity.h"
 #include "../rf/multi.h"
@@ -214,6 +216,104 @@ CodeInjection player_fpgun_skip_premature_idle_injection{
     },
 };
 
+static constexpr float sway_cam_jump_dist = 3.0f;
+static constexpr float sway_scale = 0.008f;
+static constexpr float sway_max = 0.07f;
+static constexpr float sway_smooth_tau = 0.07f;
+
+// Removed grenade / remote charge / detonator exemptions from the stock gate.
+static FunHook<bool(rf::Player*)> player_fpgun_sway_enabled_hook{
+    0x004AB100,
+    [](rf::Player* player) {
+        if (player != rf::local_player) {
+            return false;
+        }
+        if (!rf::entity_from_handle(player->entity_handle)) {
+            return false;
+        }
+        if (!g_alpine_game_config.weapon_sway) {
+            return false;
+        }
+        return !rf::player_fpgun_action_anim_is_playing(player, rf::WA_RELOAD) &&
+               !rf::player_fpgun_action_anim_is_playing(player, rf::WA_CUSTOM_START) &&
+               !rf::player_fpgun_action_anim_is_playing(player, rf::WA_CUSTOM_LEAVE);
+    },
+};
+
+// Refreshes old_cam_pos/old_cam_orient after sway block, so on entry they still hold
+// the previous frame's values.
+static FunHook<void(rf::Player*)> player_fpgun_process_hook{
+    0x004AA6D0,
+    [](rf::Player* player) {
+        if (player != rf::local_player) {
+            player_fpgun_process_hook.call_target(player);
+            return;
+        }
+
+        auto& fpgun_data = player->fpgun_data;
+        if (!player->cam ||
+            rf::camera_get_mode(*player->cam) != rf::CAMERA_FIRST_PERSON ||
+            !g_alpine_game_config.weapon_sway) {
+            fpgun_data.goal_sway_xrot = 0.0f;
+            fpgun_data.goal_sway_yrot = 0.0f;
+            player->sway_pitch_vel = 0.0f;
+            player->sway_yaw_vel = 0.0f;
+            player_fpgun_process_hook.call_target(player);
+            return;
+        }
+
+        const rf::Matrix3 cam_orient = rf::camera_get_orient(player->cam);
+        const rf::Vector3 cam_pos = rf::camera_get_pos(player->cam);
+        const float dt = rf::frametime;
+
+        if (dt <= 0.0f ||
+            (cam_pos - fpgun_data.old_cam_pos).len_sq() > sway_cam_jump_dist * sway_cam_jump_dist ||
+            cam_orient.fvec.dot_prod(fpgun_data.old_cam_orient.fvec) < 0.5f) {
+            fpgun_data.goal_sway_xrot = 0.0f;
+            fpgun_data.goal_sway_yrot = 0.0f;
+            fpgun_data.cur_sway_xrot = 0.0f;
+            fpgun_data.cur_sway_yrot = 0.0f;
+            player->sway_pitch_vel = 0.0f;
+            player->sway_yaw_vel = 0.0f;
+            player_fpgun_process_hook.call_target(player);
+            return;
+        }
+
+        auto yaw_of = [](const rf::Vector3& fvec) { return std::atan2(fvec.x, fvec.z); };
+        auto pitch_of = [](const rf::Vector3& fvec) { return std::asin(std::clamp(-fvec.y, -1.0f, 1.0f)); };
+        auto ang_vel = [dt](float cur, float prev) {
+            return std::remainder(cur - prev, 2.0f * std::numbers::pi_v<float>) / dt;
+        };
+
+        const rf::Vector3& old_fvec = fpgun_data.old_cam_orient.fvec;
+        const float pitch_vel = ang_vel(pitch_of(cam_orient.fvec), pitch_of(old_fvec));
+        const float yaw_vel = ang_vel(yaw_of(cam_orient.fvec), yaw_of(old_fvec));
+
+        // The stock rate limiter only clips large slews, so per-frame mouse quantization has to be
+        // filtered here or it reaches the gun unchanged.
+        const float alpha = 1.0f - std::exp(-dt / sway_smooth_tau);
+        player->sway_pitch_vel += (pitch_vel - player->sway_pitch_vel) * alpha;
+        player->sway_yaw_vel += (yaw_vel - player->sway_yaw_vel) * alpha;
+
+        // Positive xrot tilts the fpgun up and positive yrot swings it left, while positive pitch
+        // is downward, so matching the turn rate sign makes the gun trail the view.
+        fpgun_data.goal_sway_xrot = std::clamp(player->sway_pitch_vel * sway_scale, -sway_max, sway_max);
+        fpgun_data.goal_sway_yrot = std::clamp(player->sway_yaw_vel * sway_scale, -sway_max, sway_max);
+
+        player_fpgun_process_hook.call_target(player);
+    },
+};
+
+ConsoleCommand2 weapon_sway_cmd{
+    "cl_weaponsway",
+    []() {
+        g_alpine_game_config.weapon_sway = !g_alpine_game_config.weapon_sway;
+        rf::console::print("Weapon aim sway: {}",
+            g_alpine_game_config.weapon_sway ? "enabled" : "disabled");
+    },
+    "Toggle first person weapon aim sway",
+};
+
 ConsoleCommand2 legacy_bob_cmd{
     "cl_legacy_bob",
     []() {
@@ -282,13 +382,17 @@ CodeInjection after_game_render_to_dynamic_textures{
     },
 };
 
+float player_fpgun_render_fov(float base_fov)
+{
+    return gr_scale_fov_hor_plus(base_fov * g_alpine_game_config.fpgun_fov_scale);
+}
+
 CallHook<void(rf::Matrix3&, rf::Vector3&, float, bool, bool)> player_fpgun_render_gr_setup_3d_hook{
     0x004AB411,
     [](rf::Matrix3& viewer_orient, rf::Vector3& viewer_pos, float horizontal_fov, bool zbuffer_flag, bool z_scale) {
         // Flush VFX mesh outlines so they don't render on top of fpguns.
         gr_flush_outlines_before_fpgun();
-        horizontal_fov *= g_alpine_game_config.fpgun_fov_scale;
-        horizontal_fov = gr_scale_fov_hor_plus(horizontal_fov);
+        horizontal_fov = player_fpgun_render_fov(horizontal_fov);
         player_fpgun_render_gr_setup_3d_hook
             .call_target(viewer_orient, viewer_pos, horizontal_fov, zbuffer_flag, z_scale);
     },
@@ -314,6 +418,22 @@ CodeInjection player_fpgun_render_main_player_entity_injection{
         regs.eip = 0x004ABB5E;
     },
 };
+
+// Stock renders fpgun attachments (silencer, remote charge detonator) with default MeshRenderParams, so the
+// renderer lights them like world meshes (near fullbright). Give them the same params as the fpgun itself.
+static void fpgun_attachment_render_params(BaseCodeInjection::Regs& regs)
+{
+    static_assert(offsetof(rf::Entity, ambient_color) == 0x1474);
+    static_assert(offsetof(rf::MeshRenderParams, orient) == 0x2C);
+    auto& entity = addr_as_ref<rf::Entity>(addr_as_ref<int>(regs.esp + 0x38));
+    auto& params = addr_as_ref<rf::MeshRenderParams>(regs.esp + 0xA0);
+    params.flags |= rf::MRF_CUSTOM_AMBIENT_COLOR | rf::MRF_CLIP_VERTICES | rf::MRF_FIRST_PERSON;
+    params.ambient_color = entity.ambient_color;
+    params.orient = entity.orient;
+}
+
+CodeInjection player_fpgun_render_silencer_params_injection{0x004AC22E, fpgun_attachment_render_params};
+CodeInjection player_fpgun_render_detonator_params_injection{0x004ABD70, fpgun_attachment_render_params};
 
 CodeInjection player_fpgun_render_ir_cull_patch_1{
     0x004AF137,
@@ -352,6 +472,20 @@ CodeInjection players_cleanup_injection{
     },
 };
 
+// player_fpgun_get_muzzle_tag_pos tests pp->weapon_mesh_handle at 0x004AD705 but re-reads it at
+// 0x004AD752, after an intervening call can have cleared it. Exit through the function's own false
+// tail at 0x004AD731, which expects the one argument already pushed here.
+CodeInjection player_fpgun_get_muzzle_tag_pos_null_guard{
+    0x004AD74B,
+    [](auto& regs) {
+        rf::Player* pp = regs.esi;
+        if (!pp->weapon_mesh_handle) {
+            regs.esp += 4;
+            regs.eip = 0x004AD731;
+        }
+    },
+};
+
 void player_fpgun_do_patch()
 {
 #if SPECTATE_MODE_SHOW_WEAPON
@@ -383,6 +517,10 @@ void player_fpgun_do_patch()
     players_cleanup_injection.install(); // fixes crash at 0x004AEB8F in player_fpgun_delete_meshes
 
     player_fpgun_render_main_player_entity_injection.install();
+
+    // Light fpgun attachments like the fpgun instead of fullbright
+    player_fpgun_render_silencer_params_injection.install();
+    player_fpgun_render_detonator_params_injection.install();
 
     player_fpgun_update_state_anim_hook.install();
 
@@ -449,9 +587,17 @@ void player_fpgun_do_patch()
     player_fpgun_render_gr_setup_3d_hook.install();
     fpgun_fov_scale_cmd.register_cmd();
 
+    // Weapon aim sway
+    player_fpgun_process_hook.install();
+    player_fpgun_sway_enabled_hook.install();
+    weapon_sway_cmd.register_cmd();
+
     // Do not cull entities too early.
     player_fpgun_render_ir_cull_patch_1.install();
     player_fpgun_render_ir_cull_patch_2.install();
+
+    // A player with no fpgun mesh has no fpgun muzzle
+    player_fpgun_get_muzzle_tag_pos_null_guard.install();
 
 #ifndef NDEBUG
     reload_fpgun_cmd.register_cmd();

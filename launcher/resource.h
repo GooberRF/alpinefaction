@@ -74,6 +74,7 @@
 // #define IDC_INPUT_OPTIONS_BOX           1056
 // #define IDC_INTERFACE_OPTIONS_BOX       1057
 #define IDC_RENDERER_COMBO              1058
+#define IDC_AUTOPLAY_AF_DEMOS_CHECK     1059
 // #define IDC_ALPINE_BRAND_CHECK          3083
 // #define IDC_FULLBRIGHT                  1060
 // #define IDC_LIGHTMAPS                   1061
@@ -178,7 +179,7 @@
 #ifndef APSTUDIO_READONLY_SYMBOLS
 #define _APS_NEXT_RESOURCE_VALUE        112
 #define _APS_NEXT_COMMAND_VALUE         32771
-#define _APS_NEXT_CONTROL_VALUE         1059
+#define _APS_NEXT_CONTROL_VALUE         1060
 #define _APS_NEXT_SYMED_VALUE           101
 #endif
 #endif

@@ -1,16 +1,21 @@
+#include <algorithm>
 #include <cassert>
 #include <dxgi1_4.h>
 #include <dxgi1_5.h>
 #include <xlog/xlog.h>
 #include "../../rf/gr/gr.h"
 #include "../../rf/v3d.h"
+#include "../../rf/gameseq.h"
+#include "../../rf/level.h"
 #include "../../rf/os/frametime.h"
 #include "../../rf/os/os.h"
 #include "../../bmpman/bmpman.h"
 #include "../../main/main.h"
 #include "../../misc/alpine_settings.h"
+#include "../../os/os.h"
 #include "../gr.h"
 #include "gr_d3d11.h"
+#include "gr_d3d11_af_lightmap.h"
 #include "gr_d3d11_context.h"
 #include "gr_d3d11_shader.h"
 #include "gr_d3d11_texture.h"
@@ -18,13 +23,33 @@
 #include "gr_d3d11_dynamic_geometry.h"
 #include "gr_d3d11_solid.h"
 #include "gr_d3d11_mesh.h"
+#include "gr_d3d11_decoration.h"
+#include "gr_d3d11_vfx.h"
 #include "gr_d3d11_entity_shadow.h"
 #include "gr_d3d11_outline.h"
 #include "gr_d3d11_gamma.h"
+#include "gr_d3d11_scenefx.h"
+
+extern void monitor_refresh_all();
 
 namespace gr::d3d11
 {
     constexpr DXGI_FORMAT swap_chain_format = DXGI_FORMAT_B8G8R8A8_UNORM;
+
+    // Post-pass viewport in render-target pixels, inset half a texel so clamped samples stay on
+    // texel centres inside the 3D clip.
+    static std::array<float, 4> current_viewport_rect()
+    {
+        const auto origin = viewport_origin();
+        const float left = origin[0];
+        const float top = origin[1];
+        return {
+            left + 0.5f,
+            top + 0.5f,
+            left + rf::gr::screen.clip_width - 0.5f,
+            top + rf::gr::screen.clip_height - 0.5f,
+        };
+    }
 
     Renderer::Renderer(HWND hwnd) : hwnd_{hwnd}, d3d11_lib_{L"d3d11.dll"}
     {
@@ -54,11 +79,16 @@ namespace gr::d3d11
         texture_manager_ = std::make_unique<TextureManager>(device_, context_);
         render_context_ = std::make_unique<RenderContext>(device_, context_, *state_manager_, *shader_manager_, *texture_manager_);
         dyn_geo_renderer_ = std::make_unique<DynamicGeometryRenderer>(device_, *shader_manager_, *render_context_);
-        solid_renderer_ = std::make_unique<SolidRenderer>(device_, *shader_manager_, *state_manager_, *dyn_geo_renderer_, *render_context_);
+        af_lightmap_renderer_ = std::make_unique<AfLightmapRenderer>(device_, context_);
+        solid_renderer_ = std::make_unique<SolidRenderer>(device_, *shader_manager_, *state_manager_, *dyn_geo_renderer_, *render_context_, *af_lightmap_renderer_);
         mesh_renderer_ = std::make_unique<MeshRenderer>(device_, *shader_manager_, *state_manager_, *render_context_);
+        decoration_renderer_ =
+            std::make_unique<DecorationRenderer>(device_, *shader_manager_, *render_context_, *mesh_renderer_);
+        vfx_renderer_ = std::make_unique<VfxMeshRenderer>(device_, *shader_manager_, *render_context_);
         entity_shadow_renderer_ = std::make_unique<EntityShadowRenderer>(device_, *shader_manager_, *mesh_renderer_);
         outline_renderer_ = std::make_unique<OutlineRenderer>(device_, *shader_manager_, *state_manager_, *render_context_);
         gamma_pass_ = std::make_unique<GammaPass>(device_, *shader_manager_);
+        scene_post_pass_ = std::make_unique<ScenePostPass>(device_, *shader_manager_);
 
         // Flush pending outlines before each dyn_geo draw. This ensures outlines
         // render behind transparent effects (smoke, particles, explosions) that are
@@ -415,6 +445,35 @@ namespace gr::d3d11
         DF_GR_D3D11_CHECK_HR(
             device_->CreateShaderResourceView(scene_texture_, nullptr, &scene_texture_srv_)
         );
+
+        // The post pass's scene copy is allocated on demand, so drop it here and let the next
+        // distort frame rebuild it at the new size.
+        postfx_source_srv_.release();
+        postfx_source_.release();
+        rt_width_ = desc.Width;
+        rt_height_ = desc.Height;
+    }
+
+    bool Renderer::ensure_postfx_source()
+    {
+        if (postfx_source_) {
+            return true;
+        }
+        if (!back_buffer_) {
+            return false;
+        }
+        // Read and write cannot be the same resource; also the MSAA resolve destination
+        D3D11_TEXTURE2D_DESC desc;
+        back_buffer_->GetDesc(&desc);
+        desc.SampleDesc.Count = 1;
+        desc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+        DF_GR_D3D11_CHECK_HR(
+            device_->CreateTexture2D(&desc, nullptr, &postfx_source_)
+        );
+        DF_GR_D3D11_CHECK_HR(
+            device_->CreateShaderResourceView(postfx_source_, nullptr, &postfx_source_srv_)
+        );
+        return true;
     }
 
     void Renderer::init_depth_stencil_buffer(const uint32_t sample_count)
@@ -436,19 +495,46 @@ namespace gr::d3d11
         depth_stencil_desc.Usage = D3D11_USAGE_DEFAULT;
         depth_stencil_desc.BindFlags = D3D11_BIND_DEPTH_STENCIL;
 
+        // A multisampled depth buffer the liquid pass can resolve out of.
         ComPtr<ID3D11Texture2D> depth_stencil;
-        DF_GR_D3D11_CHECK_HR(
-            device_->CreateTexture2D(&depth_stencil_desc, nullptr, &depth_stencil)
-        );
+        bool msaa_depth_readable = false;
+        if (use_msaa && device_->GetFeatureLevel() >= D3D_FEATURE_LEVEL_10_1) {
+            D3D11_TEXTURE2D_DESC readable_desc = depth_stencil_desc;
+            readable_desc.Format = DXGI_FORMAT_R24G8_TYPELESS;
+            readable_desc.BindFlags |= D3D11_BIND_SHADER_RESOURCE;
+            msaa_depth_readable =
+                SUCCEEDED(device_->CreateTexture2D(&readable_desc, nullptr, &depth_stencil));
+        }
 
         D3D11_DEPTH_STENCIL_VIEW_DESC view_desc{};
         view_desc.ViewDimension = use_msaa
             ? D3D11_DSV_DIMENSION_TEXTURE2DMS
             : D3D11_DSV_DIMENSION_TEXTURE2D;
+        if (msaa_depth_readable) {
+            // A typeless resource has no view format to inherit
+            view_desc.Format = DXGI_FORMAT_D24_UNORM_S8_UINT;
+            const HRESULT hr =
+                device_->CreateDepthStencilView(depth_stencil, &view_desc, &depth_stencil_view_);
+            if (FAILED(hr)) {
+                // The depth buffer itself must not be lost over this, so drop the readable form
+                xlog::warn("Failed to create a depth stencil view on the readable depth buffer: {:x}",
+                           static_cast<uint32_t>(hr));
+                depth_stencil.release();
+                msaa_depth_readable = false;
+                view_desc.Format = DXGI_FORMAT_UNKNOWN;
+            }
+        }
 
-        DF_GR_D3D11_CHECK_HR(
-            device_->CreateDepthStencilView(depth_stencil, &view_desc, &depth_stencil_view_)
-        );
+        if (!msaa_depth_readable) {
+            DF_GR_D3D11_CHECK_HR(
+                device_->CreateTexture2D(&depth_stencil_desc, nullptr, &depth_stencil)
+            );
+            DF_GR_D3D11_CHECK_HR(
+                device_->CreateDepthStencilView(depth_stencil, &view_desc, &depth_stencil_view_)
+            );
+        }
+
+        scene_depth_.reset(device_, context_, depth_stencil);
     }
 
     bool Renderer::supports_sample_count(const uint32_t sample_count) {
@@ -504,6 +590,8 @@ namespace gr::d3d11
             init_depth_stencil_buffer(1);
         }
         texture_manager_->flush_render_targets();
+        // Their targets are gone, but MF_BM_RENDERED is still latched from the last render.
+        monitor_refresh_all();
         render_context_
             ->set_render_target(default_render_target_view_, depth_stencil_view_);
     }
@@ -529,6 +617,12 @@ namespace gr::d3d11
     {
         flush_outlines_before_2d();
         dyn_geo_renderer_->bitmap(bm_handle, x, y, w, h, sx, sy, sw, sh, flip_x, flip_y, mode);
+    }
+
+    void Renderer::poly_2d(int bm_handle, int nv, const rf::gr::Vertex* vertices, rf::gr::Mode mode)
+    {
+        flush_outlines_before_2d();
+        dyn_geo_renderer_->poly_2d(bm_handle, nv, vertices, mode);
     }
 
     void Renderer::flush_outlines_before_2d()
@@ -843,8 +937,34 @@ namespace gr::d3d11
         if (render_target_bm_handle_ != -1) {
             texture_manager_->finish_render_target(render_target_bm_handle_);
         }
+        // Render-to-texture passes (monitors, rail/IR scanner) draw the world from their own
+        // camera, so the player-camera liquid state in b6 has to stand down for their duration.
+        if ((bm_handle != -1) != (render_target_bm_handle_ != -1)) {
+            if (bm_handle != -1) {
+                render_context_->suspend_liquid_fx();
+            }
+            else {
+                render_context_->resume_liquid_fx();
+            }
+        }
         render_target_bm_handle_ = bm_handle;
+        texture_manager_->set_active_render_target(bm_handle);
+        // Only a live ATX feed makes a handle's SRV depend on the bound target, so with no feed
+        // active this would just force redundant rebinds on every monitor/scanner switch.
+        if (atx_any_live_feed()) {
+            render_context_->invalidate_texture_cache();
+        }
         return true;
+    }
+
+    int Renderer::render_target_generation()
+    {
+        return texture_manager_->render_target_generation();
+    }
+
+    void Renderer::invalidate_texture_cache()
+    {
+        render_context_->invalidate_texture_cache();
     }
 
     rf::bm::Format Renderer::read_back_buffer([[maybe_unused]] int x, [[maybe_unused]] int y, int w, int h, rf::ubyte *data)
@@ -879,8 +999,26 @@ namespace gr::d3d11
 
     void Renderer::setup_3d(Projection proj)
     {
+        // Once per frame: the fpgun's setup_3d must not overwrite the scene camera. Returns the
+        // projection to apply, so the widened far plane reaches begin_frame and the frustum setup.
+        if (render_target_bm_handle_ == -1 && liquid_update_frame_ != rf::frame_count) {
+            liquid_update_frame_ = rf::frame_count;
+            // The depth copy is only worth allocating where a liquid surface will read it. The
+            // state still holds last frame's answer here, so the frame a liquid room first comes
+            // into range runs without the clamp; the buffer is ready from the next one on.
+            const LiquidState& prev = render_context_->liquid_state();
+            const bool want_depth = g_alpine_game_config.underwater_fx >= 2
+                && prev.mode != 0 && !prev.eye_under
+                && scene_depth_.ensure(device_, context_, *shader_manager_);
+            // The capture gate reads this so it can only run when the frame's uploaded
+            // depth_mode is non-zero — prev state makes re-deriving it later disagree.
+            scene_depth_wanted_ = want_depth;
+            proj = render_context_->update_liquid_fx(proj, rf::gr::eye_pos, rf::gr::eye_matrix,
+                                                    want_depth ? scene_depth_.mode() : 0.0f);
+        }
         render_context_->update_view_proj_transform(proj);
-        // Only initialize outlines when rendering to the back buffer.
+        // Only initialize outlines when rendering to the back buffer, and only after the
+        // projection is applied: begin_frame saves render_context_->projection() as the scene's.
         // The rail gun scanner calls setup_3d while rendering to a small texture;
         // running begin_frame there would save the wrong projection and cause
         // outlines to be queued (and potentially flushed) into the scanner texture.
@@ -916,16 +1054,38 @@ namespace gr::d3d11
         entity_shadow_renderer_->bind_shadow_resources(context_);
 
         solid_renderer_->render_solid(solid, rooms, num_rooms);
+        // With the opaque world, before objects and alpha detail draw over it
+        if (solid == rf::level.geometry && !solid_renderer_->decoration_chunks().empty()) {
+            decoration_renderer_->render(solid, solid_renderer_->decoration_chunks());
+        }
     }
 
-    void Renderer::render_movable_solid(rf::GSolid* solid, const rf::Vector3& pos, const rf::Matrix3& orient)
+    void Renderer::render_movable_solid(rf::GSolid* solid, const rf::Vector3& pos, const rf::Matrix3& orient,
+        bool include_alpha)
     {
         dyn_geo_renderer_->flush();
-        solid_renderer_->render_movable_solid(solid, pos, orient);
+        solid_renderer_->render_movable_solid(solid, pos, orient, include_alpha);
+    }
+
+    bool Renderer::movable_solid_has_alpha(rf::GSolid* solid)
+    {
+        return solid_renderer_->movable_solid_has_alpha(solid);
+    }
+
+    void Renderer::render_movable_solid_alpha(rf::GSolid* solid, const rf::Vector3& pos, const rf::Matrix3& orient)
+    {
+        // Flush outlines before see-through solid faces render. Those faces write depth
+        // (ZBUFFER_TYPE_FULL_ALPHA_TEST), so a depth-tested outline queued during the object
+        // phase is rejected wherever they got there first. Draining the queue here instead of
+        // leaving it to whichever sorted item happens to flush next keeps outlines in front.
+        outline_renderer_->flush(*mesh_renderer_);
+        dyn_geo_renderer_->flush();
+        solid_renderer_->render_movable_solid_alpha(solid, pos, orient);
     }
 
     void Renderer::render_alpha_detail_room(rf::GRoom *room, rf::GSolid *solid)
     {
+        outline_renderer_->flush(*mesh_renderer_);
         dyn_geo_renderer_->flush();
         solid_renderer_->render_alpha_detail(room, solid);
     }
@@ -945,6 +1105,21 @@ namespace gr::d3d11
         // contaminating outline colors.
         outline_renderer_->flush(*mesh_renderer_);
         dyn_geo_renderer_->flush();
+        // Snapshot the depth buffer once, before the first surface of the frame reads it: the
+        // world, its objects and the outlines are all in by now, and taking it here keeps a
+        // surface from bounding its own column on a surface drawn earlier this frame.
+        if (scene_depth_wanted_ && render_target_bm_handle_ == -1
+            && scene_depth_frame_ != rf::frame_count) {
+            scene_depth_frame_ = rf::frame_count;
+            if (scene_depth_.capture(context_)) {
+                // The multisampled resolve drew with its own pipeline state. Only reachable with
+                // the back buffer as the target, so the default view is the one to come back to.
+                render_context_->invalidate_cached_state();
+                render_context_->set_render_target(default_render_target_view_, depth_stencil_view_);
+                render_context_->set_clip();
+                render_context_->set_cull_mode(D3D11_CULL_BACK);
+            }
+        }
         // Disable shadows for liquid surfaces — shadows pass through water/lava
         // and land on the solid geometry below
         entity_shadow_renderer_->disable_shadow_rendering(context_);
@@ -952,9 +1127,207 @@ namespace gr::d3d11
         entity_shadow_renderer_->bind_shadow_resources(context_);
     }
 
+    void Renderer::trigger_damage_vignette(unsigned dir_mask)
+    {
+        const unsigned mask = dir_mask & 0xF;
+        if (mask == 0 || mask == 0xF) {
+            damage_vignette_.radial = 1.0f;
+            damage_vignette_.radial_frame = rf::frame_count;
+            return;
+        }
+        // The flash arms a radial hit just before the indicator call (0x0047E4E2 then 0x0047E4FC);
+        // edges replace it rather than stacking on it.
+        if (damage_vignette_.radial_frame == rf::frame_count) {
+            damage_vignette_.radial = 0.0f;
+        }
+        if (mask & 1) {
+            damage_vignette_.edges[0] = 1.0f; // front
+        }
+        if (mask & 2) {
+            damage_vignette_.edges[1] = 1.0f; // left
+        }
+        if (mask & 4) {
+            damage_vignette_.edges[2] = 1.0f; // back
+        }
+        if (mask & 8) {
+            damage_vignette_.edges[3] = 1.0f; // right
+        }
+    }
+
+    bool Renderer::liquid_background_color(rf::Vector3& out) const
+    {
+        return render_context_->liquid_background_color(out);
+    }
+
+    void Renderer::set_sky_room(bool sky_room)
+    {
+        render_context_->set_sky_room(sky_room);
+    }
+
+    void Renderer::set_draw_room_uid(int room_uid)
+    {
+        render_context_->set_draw_room_uid(room_uid);
+    }
+
+    void Renderer::run_damage_vignette_pass()
+    {
+        // The option can go off mid-decay; the trigger hooks only stop feeding it
+        if (g_alpine_game_config.damage_flash != 2) {
+            damage_vignette_ = {};
+            return;
+        }
+
+        // Once per frame: split screen calls screen_flash_render for each player
+        if (damage_vignette_decay_frame_ != rf::frame_count) {
+            damage_vignette_decay_frame_ = rf::frame_count;
+            // Same decay rate and pause behaviour as the stock screen flash (0x004163C0)
+            if (!rf::game_paused) {
+                const float step = rf::frametime * scenefx_damage_decay_per_sec;
+                for (float& edge : damage_vignette_.edges) {
+                    edge = std::max(edge - step, 0.0f);
+                }
+                damage_vignette_.radial = std::max(damage_vignette_.radial - step, 0.0f);
+            }
+        }
+
+        if (render_target_bm_handle_ != -1 || !damage_vignette_.active()) {
+            return;
+        }
+
+        SceneFxBufferData data{};
+        data.rt_size = {static_cast<float>(rt_width_), static_cast<float>(rt_height_)};
+        data.viewport_rect = current_viewport_rect();
+        // Overlay only, no liquid flags: the camera fields just have to stay finite
+        data.proj_sx = 1.0f;
+        data.proj_sy = 1.0f;
+        data.near_dist = scenefx_near_dist;
+        data.damage_edges = damage_vignette_.edges;
+        data.damage = {1.0f, 0.0f, 0.0f, damage_vignette_.radial};
+        data.flags = static_cast<float>(scenefx_flag_damage);
+
+        // Drains the batched HUD so the vignette composites on top of it, exactly where the
+        // stock flash lands.
+        dyn_geo_renderer_->flush();
+        render_context_->set_clip();
+        scene_post_pass_->render(context_, nullptr, default_render_target_view_, data);
+
+        render_context_->invalidate_cached_state();
+        render_context_->set_render_target(default_render_target_view_, depth_stencil_view_);
+        render_context_->set_clip();
+    }
+
+    bool Renderer::liquid_post_pass_pending() const
+    {
+        // Monitors and the rail/IR scanner render to textures before this point
+        if (render_target_bm_handle_ != -1 || g_alpine_game_config.underwater_fx < 2) {
+            return false;
+        }
+        const LiquidState& liquid = render_context_->liquid_state();
+        // The overlay is about the liquid the camera is standing in; a room it can only see into
+        // still feeds the fog volumes but must not put a waterline on the screen.
+        if (liquid.mode == 0 || !liquid.eye_room_liquid) {
+            return false;
+        }
+        // The near plane reaches near_dist / proj_sy above the eye, so liquid can still cover
+        // part of the screen with the eye itself above the surface.
+        const float proj_sy = outline_renderer_->scene_projection().scale_y();
+        const float near_extent = (proj_sy > 0.0f ? scenefx_near_dist / proj_sy : 0.0f)
+            + scenefx_waterline_band;
+        return outline_renderer_->scene_eye_pos().y < liquid.surface_y + near_extent;
+    }
+
+    void Renderer::run_scene_post_pass()
+    {
+        if (!liquid_post_pass_pending()) {
+            return;
+        }
+
+        const LiquidState& liquid = render_context_->liquid_state();
+
+        // rf::gr::eye_* and the context projection are the fpgun's by the time this hook runs
+        const Projection& proj = outline_renderer_->scene_projection();
+        const rf::Vector3& eye_pos = outline_renderer_->scene_eye_pos();
+        const rf::Matrix3& eye_orient = outline_renderer_->scene_eye_orient();
+        const float proj_sy = proj.scale_y();
+
+        const bool distort = g_alpine_game_config.underwater_fx >= 3 && ensure_postfx_source();
+
+        SceneFxBufferData data{};
+        data.rt_size = {static_cast<float>(rt_width_), static_cast<float>(rt_height_)};
+        if (distort) {
+            // Wrapped hourly: the shader takes time as a float, and an unbounded ms count loses
+            // the resolution the wobble needs after a few hours of uptime.
+            data.time = static_cast<float>(timer::get_i64(1000) % 3600000) / 1000.0f;
+        }
+        data.distort_amp = scenefx_distort_amp;
+        data.distort_freq = scenefx_distort_freq;
+        data.distort_speed = scenefx_distort_speed;
+        data.eye_pos = {eye_pos.x, eye_pos.y, eye_pos.z};
+        data.surface_y = liquid.surface_y;
+        data.cam_right = {eye_orient.rvec.x, eye_orient.rvec.y, eye_orient.rvec.z};
+        data.cam_up = {eye_orient.uvec.x, eye_orient.uvec.y, eye_orient.uvec.z};
+        data.cam_fwd = {eye_orient.fvec.x, eye_orient.fvec.y, eye_orient.fvec.z};
+        data.proj_sx = proj.scale_x();
+        data.proj_sy = proj_sy;
+        data.near_dist = scenefx_near_dist;
+
+        data.viewport_rect = current_viewport_rect();
+
+        // Replaces the stock pre-HUD rect (skipped at 0x004328FD), so the tint has to use the
+        // room's own color and alpha.
+        unsigned flags = scenefx_flag_liquid_tint | scenefx_flag_liquid_vignette;
+        data.tint = {
+            liquid.blended_color.x,
+            liquid.blended_color.y,
+            liquid.blended_color.z,
+            liquid.blended_alpha,
+        };
+        data.vignette = {
+            liquid.blended_color.x * scenefx_vignette_darken,
+            liquid.blended_color.y * scenefx_vignette_darken,
+            liquid.blended_color.z * scenefx_vignette_darken,
+            scenefx_vignette_strength,
+        };
+        if (distort) {
+            flags |= scenefx_flag_distort;
+        }
+        data.flags = static_cast<float>(flags);
+
+        // Both modes draw over the finished scene, so drain pending 2D geometry first
+        dyn_geo_renderer_->flush();
+        render_context_->set_clip();
+
+        if (distort) {
+            // CopyResource forbids the source being bound as a render target, and without MSAA
+            // scene_texture_ is exactly that.
+            context_->OMSetRenderTargets(0, nullptr, nullptr);
+            if (msaa_render_target_) {
+                context_->ResolveSubresource(postfx_source_, 0, msaa_render_target_, 0, swap_chain_format);
+            }
+            else {
+                context_->CopyResource(postfx_source_, scene_texture_);
+            }
+            scene_post_pass_->render(context_, postfx_source_srv_, default_render_target_view_, data);
+        }
+        else {
+            scene_post_pass_->render(context_, nullptr, default_render_target_view_, data);
+        }
+
+        liquid_tint_drawn_frame_ = rf::frame_count;
+
+        render_context_->invalidate_cached_state();
+        render_context_->set_render_target(default_render_target_view_, depth_stencil_view_);
+        render_context_->set_clip();
+    }
+
     void Renderer::clear_solid_cache()
     {
         solid_renderer_->clear_cache();
+    }
+
+    void Renderer::release_detail_room_cache(rf::GRoom* room)
+    {
+        solid_renderer_->release_detail_room_cache(room);
     }
 
     void Renderer::reset_solid_cache_after_boolean()
@@ -962,13 +1335,42 @@ namespace gr::d3d11
         solid_renderer_->reset_cache_after_boolean();
     }
 
+    void Renderer::release_terrain_gpu()
+    {
+        solid_renderer_->release_terrain_gpu();
+        decoration_renderer_->release();
+    }
+
+    bool Renderer::upload_af_lightmap_atlas(const alpine_lightmap::ReadResult& section,
+                                            const std::vector<std::uint8_t>& blocks)
+    {
+        return af_lightmap_renderer_->upload(section, blocks);
+    }
+
+    void Renderer::release_af_lightmap_atlas()
+    {
+        af_lightmap_renderer_->release();
+    }
+
+    bool Renderer::af_lightmap_atlas_live() const
+    {
+        return af_lightmap_renderer_->live();
+    }
+
     void Renderer::render_v3d_vif(rf::VifLodMesh *lod_mesh, int lod_index, const rf::Vector3& pos, const rf::Matrix3& orient, const rf::MeshRenderParams& params, bool skip_ambient_cache)
     {
         dyn_geo_renderer_->flush();
+        render_context_->set_draw_room_uid(object_room_uid_);
         mesh_renderer_->render_v3d_vif(lod_mesh, lod_index, pos, orient, params, skip_ambient_cache);
 
         // Skip outline queuing when rendering to a texture (e.g. rail gun scanner).
         if (render_target_bm_handle_ != -1) {
+            return;
+        }
+
+        // Vehicle and turret hulls are static meshes, claimed by the rendering entity handle. A claimed draw must
+        // return before the weapon-mesh inheritance below, which would paint a character's outline on it.
+        if (outline_renderer_->maybe_queue_static_outline(lod_mesh, lod_index, pos, orient)) {
             return;
         }
 
@@ -991,9 +1393,18 @@ namespace gr::d3d11
         outline_renderer_->maybe_queue_bag_outline(lod_mesh, lod_index, pos, orient);
     }
 
+    void Renderer::render_vfx(rf::VfxSfxoRenderObj* obj, float frame)
+    {
+        // Keep ordering against gr_poly-drawn geometry (billboard vfx chunks, particles)
+        dyn_geo_renderer_->flush();
+        render_context_->set_draw_room_uid(object_room_uid_);
+        vfx_renderer_->render(obj, frame);
+    }
+
     void Renderer::render_character_vif(rf::VifLodMesh *lod_mesh, int lod_index, const rf::Vector3& pos, const rf::Matrix3& orient, const rf::CharacterInstance *ci, const rf::MeshRenderParams& params, bool skip_ambient_cache)
     {
         dyn_geo_renderer_->flush();
+        render_context_->set_draw_room_uid(object_room_uid_);
         mesh_renderer_->render_character_vif(lod_mesh, lod_index, pos, orient, ci, params, skip_ambient_cache);
 
         // Skip outline queuing when rendering to a texture (e.g. rail gun scanner).
@@ -1054,6 +1465,9 @@ namespace gr::d3d11
     void Renderer::flush_caches()
     {
         mesh_renderer_->flush_caches();
+        vfx_renderer_->clear_cache();
+        // Runs from level_page_out_injection, so it doubles as the level-change reset
+        damage_vignette_ = {};
     }
 
     void Renderer::reset_static_vertex_color_tracking()
@@ -1064,6 +1478,12 @@ namespace gr::d3d11
     void Renderer::clear_mesh_lights()
     {
         render_context_->update_lights();
+        render_context_->clear_mesh_bounds();
+    }
+
+    void Renderer::set_mesh_bounds(const rf::Vector3& center, float radius)
+    {
+        render_context_->set_mesh_bounds(center, radius);
     }
 
     float Renderer::z_far() const

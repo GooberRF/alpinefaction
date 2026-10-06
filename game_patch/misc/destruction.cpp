@@ -1,11 +1,15 @@
+#include <array>
 #include <vector>
 #include <deque>
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <map>
 #include <set>
 #include <unordered_set>
 #include <unordered_map>
+#include <limits>
+#include <string>
 #include <patch_common/FunHook.h>
 #include <patch_common/CallHook.h>
 #include <patch_common/CodeInjection.h>
@@ -13,11 +17,15 @@
 #include <xlog/xlog.h>
 #include "../misc/alpine_options.h"
 #include "../misc/alpine_settings.h"
+#include "../graphics/weather.h"
+#include "../graphics/d3d11/gr_d3d11_hooks.h"
 #include "../multi/multi.h"
 #include "../multi/server_internal.h"
+#include "../multi/vehicles/vehicle_physics.h"
 #include "../main/main.h"
 #include "../misc/misc.h"
 #include "../rf/geometry.h"
+#include "../rf/event.h"
 #include "../rf/level.h"
 #include "../rf/particle_emitter.h"
 #include "../rf/bmpman.h"
@@ -28,9 +36,14 @@
 #include "../rf/player/player.h"
 #include "../rf/player/camera.h"
 #include "../os/console.h"
+#include "../fflink/afstats_events.h"
+#include "../fflink/fflink_session.h"
 #include "destruction.h"
 #include "level.h"
+#include "alpine_terrain.h"
+#include "alpine_terrain_decorations.h"
 #include "../sound/sound_foley.h"
+#include "../hud/minimap.h"
 
 // Set by geomod_init hook; checked by boolean engine injections.
 static bool g_rf2_style_boolean_active = false;
@@ -87,7 +100,7 @@ static std::vector<void*> g_rf2_smoke_record_ptrs;
 static bool g_rf2_decal_deferred = false;
 static rf::GDecalCreateInfo g_rf2_deferred_decal_info;
 
-// Face snapshot taken before each boolean pass. Used by remap_components_by_anchor_status
+// Face snapshot taken before each boolean pass. Used by rf2_mark_unsupported_pieces
 // to distinguish pre-existing disconnected components (e.g. interior faces of a hollow box)
 // from components created by the crater split. Only components with at least one NEW face
 // (not in this set) are eligible for extraction as debris.
@@ -112,11 +125,14 @@ static std::unordered_set<rf::GFace*> g_rf2_pre_boolean_faces;
 static rf::GRoom* g_rf2_target_detail_room = nullptr;
 static std::vector<rf::GRoom*> g_rf2_pending_detail_rooms;
 
-// Anchor data per geoable room. "Anchor faces" are faces of the detail brush that
-// are coplanar with AND overlap faces of normal world geometry (walls/floor/ceiling).
-// When craters isolate a chunk of the detail brush, it falls only if that chunk
-// has NO anchor faces.
-static std::vector<RF2AnchorInfo> g_rf2_anchor_info;
+// Support model (see rf2_snapshot_support / rf2_mark_unsupported_pieces).
+// Faces of non-target geoable pieces that were supported before the current boolean pass.
+static std::unordered_set<rf::GFace*> g_rf2_pre_supported_faces;
+static bool g_rf2_target_supported_pre = false;
+// Non-target geoable rooms that had pieces extracted this pass (render cache invalidation).
+static std::vector<rf::GRoom*> g_rf2_cascaded_rooms;
+// Rooms other than the target with faces split by boolean state 2 this pass (render cache invalidation).
+static std::vector<rf::GRoom*> g_rf2_split_rooms;
 
 // Find geoable detail rooms whose bboxes overlap the given position with padding
 // scaled by level hardness. Base padding is 3 units at hardness 50 (baseline).
@@ -226,6 +242,35 @@ static rf::DetailMaterial g_breaking_material = rf::DetailMaterial::Glass;
 static rf::GRoom* g_breaking_room = nullptr;
 static bool g_breaking_from_explosion = false;
 
+// Best-effort attribution for the current detail-brush break, for the stats stream.
+// Set at the damage entry points -- exactly where g_breaking_from_explosion is -- and
+// read once at the server-side break commit (glass_sound). A damage-driven break
+// is synchronous within the damage call tree, so `capture_tick` (GetTickCount64, the same
+// source s_last_vfx_tick uses) stamped at the damage entry equals the tick at the commit.
+// The commit only trusts the attribution when the ticks match: a break that is NOT
+// damage-driven this frame (level logic reaching glass_sound directly, or a stale capture
+// from an earlier near-miss whose validate_destroy failed) reads a mismatched tick and is
+// reported with null attribution -- wrong attribution is worse than null. Reset on level load.
+struct BreakAttribution
+{
+    int killer_handle = -1;   // responsible entity handle; resolved to a player, null if not
+    int weapon_type = -1;     // TC-mod weapon id, or -1 when not in scope (radius path)
+    int damage_type = -1;     // stats registry value, or -1 (unknown)
+    uint64_t capture_tick = 0; // GetTickCount64 at the damage entry; break commit must match
+};
+static BreakAttribution g_break_attr;
+
+// The single predicate for both the capture sites and the commit site. Keeping them
+// identical is what makes the capture side safe to skip: when this is false nothing is
+// stamped, but nothing reads it either, and if it flips to true later the stale
+// capture_tick can no longer match so the first break is simply reported anonymously.
+// Gating the captures keeps the feature a strict no-op on a stats-disabled host and in
+// single player, where apply_radius_damage runs on every explosion.
+static bool afstats_break_attr_enabled()
+{
+    return rf::is_server && fflink::afstats_server_enabled();
+}
+
 // Per-room dedup: prevents multiple projectiles from creating effects on the same room
 // in the same frame (e.g., pistol creating two weapon entities per shot).
 static rf::GRoom* s_last_vfx_room = nullptr;
@@ -273,7 +318,9 @@ static bool is_point_inside_room_geometry(const rf::Vector3& pt, rf::GRoom* room
     constexpr float ray_dz = 1.0f;
 
     // Safety limits to prevent infinite loops from corrupted linked lists
-    constexpr int max_faces = 5000;
+    constexpr int max_face_count = 1 << 20;
+    constexpr int face_margin = 1024;
+    const int max_faces = std::clamp(room->face_list.size(), 0, max_face_count) + face_margin;
     constexpr int max_verts_per_face = 500;
 
     int crossing_count = 0;
@@ -608,6 +655,20 @@ CodeInjection boolean_skip_non_detail_faces_for_rf2{
     },
 };
 
+// State 3's flood (FUN_004e1920) spreads a face's side through shared vertices whatever the room. A
+// non-target face is sided 2 uncut, so one inside the crater (a welded terrain neighbour's wall) would
+// flood "keep" into target faces the crater removes.
+CallHook<void __fastcall(rf::GFace*)> boolean_flood_target_seeds_only_hook{
+    {0x004dd574, 0x004dd69b, 0x004dd73a},
+    [](rf::GFace* face) FASTCALL_LAMBDA {
+        if (g_rf2_style_boolean_active && !(face->attributes.flags & rf::FACE_BOOLEAN_TYPE_1) &&
+            face->which_room != g_rf2_target_detail_room) {
+            return;
+        }
+        boolean_flood_target_seeds_only_hook.call_target(face);
+    },
+};
+
 // FUN_004e0d00 (called from boolean States 3 & 5 for TYPE 1 / crater faces) uses
 // room BSP trees to reclassify unclassified TYPE 1 faces as INSIDE or OUTSIDE the
 // level solid. It explicitly filters out detail rooms via FUN_00494a50 at 004e0e24,
@@ -744,61 +805,28 @@ static bool face_bboxes_overlap(const rf::GFace& a, const rf::GFace& b)
            a.bounding_box_min.z - pad <= b.bounding_box_max.z;
 }
 
-// Test whether a detail face is coplanar with and overlaps any face in normal rooms
-// or non-geoable detail rooms. This identifies faces that are flush against
-// walls/floor/ceiling or against non-geoable detail brushes — the structural
-// contact points that anchor the detail brush in place.
-static bool is_face_on_normal_surface(const rf::GFace& detail_face)
+// Crater face bitmap per terrain (alpine_terrain_get_all index), -1 = level geomod texture.
+static std::vector<int> g_terrain_crater_bitmaps;
+
+static void apply_terrain_geoable_flags(rf::GSolid* solid)
 {
-    auto* solid = rf::level.geometry;
-    if (!solid) return false;
-
-    for (auto& room : solid->all_rooms) {
-        if (room->is_detail && room->is_geoable) continue;
-
-        // Quick AABB rejection: skip rooms whose bbox doesn't overlap the face's bbox
-        constexpr float room_pad = 0.5f;
-        if (detail_face.bounding_box_max.x + room_pad < room->bbox_min.x ||
-            detail_face.bounding_box_min.x - room_pad > room->bbox_max.x ||
-            detail_face.bounding_box_max.y + room_pad < room->bbox_min.y ||
-            detail_face.bounding_box_min.y - room_pad > room->bbox_max.y ||
-            detail_face.bounding_box_max.z + room_pad < room->bbox_min.z ||
-            detail_face.bounding_box_min.z - room_pad > room->bbox_max.z)
-            continue;
-
-        for (rf::GFace& normal_face : room->face_list) {
-            if (planes_are_coplanar(detail_face.plane, normal_face.plane) &&
-                face_bboxes_overlap(detail_face, normal_face)) {
-                return true;
-            }
+    const auto& terrains = alpine_terrain_get_all();
+    for (rf::GRoom* room : solid->all_rooms) {
+        const AlpineTerrainRoomRef* ref = alpine_terrain_find_room(room);
+        if (!ref) continue;
+        const AlpineTerrain& t = terrains[ref->terrain];
+        const auto chunk = static_cast<std::size_t>(ref->chunk);
+        if ((t.header.flags & alpine_terrain::flag_geoable) && chunk / 8 < t.geo_chunks.size() &&
+            alpine_terrain::get_bit(t.geo_chunks.data(), chunk)) {
+            room->is_geoable = true;
         }
     }
-    return false;
-}
-
-// Pre-compute anchor faces for all geoable detail rooms.
-// Called from apply_geoable_flags() after geoable flags are set.
-// A face is anchored if it's coplanar with and overlaps a face in a normal room
-// or a non-geoable detail room.
-static void compute_rf2_anchor_faces()
-{
-    g_rf2_anchor_info.clear();
-    auto* solid = rf::level.geometry;
-    if (!solid) return;
-
-    for (auto& detail_room : solid->all_rooms) {
-        if (!detail_room->is_detail || !detail_room->is_geoable) continue;
-
-        RF2AnchorInfo info;
-        info.room = detail_room;
-
-        for (rf::GFace& face : detail_room->face_list) {
-            if (is_face_on_normal_surface(face)) {
-                info.anchor_faces.insert(&face);
-            }
+    g_terrain_crater_bitmaps.assign(terrains.size(), -1);
+    for (std::size_t i = 0; i < terrains.size(); i++) {
+        const AlpineTerrain& t = terrains[i];
+        if (t.resolved && (t.header.flags & alpine_terrain::flag_geoable) && !t.crater_texture.empty()) {
+            g_terrain_crater_bitmaps[i] = rf::bm::load(t.crater_texture.c_str(), -1, true);
         }
-
-        g_rf2_anchor_info.push_back(std::move(info));
     }
 }
 
@@ -806,6 +834,7 @@ static void compute_rf2_anchor_faces()
 // Called from level_init_post_hook after both rooms and Alpine props are loaded.
 void apply_geoable_flags()
 {
+    g_terrain_crater_bitmaps.clear();
     auto* solid = rf::level.geometry;
     if (!solid) return;
 
@@ -837,8 +866,7 @@ void apply_geoable_flags()
         }
     }
 
-    // Pre-compute anchor faces for separated solids detection
-    compute_rf2_anchor_faces();
+    apply_terrain_geoable_flags(solid);
 }
 
 // Reset all breakable material global state. Called on level load to prevent stale pointers
@@ -848,6 +876,7 @@ void reset_breakable_material_state()
     g_breaking_material = rf::DetailMaterial::Glass;
     g_breaking_room = nullptr;
     g_breaking_from_explosion = false;
+    g_break_attr = BreakAttribution{};
     s_last_vfx_room = nullptr;
     s_last_vfx_tick = 0;
     g_current_radius_damage_type = -1;
@@ -894,7 +923,16 @@ void apply_breakable_materials()
 
     for (std::size_t i = 0; i < props.breakable_room_uids.size(); i++) {
         int32_t uid = props.breakable_room_uids[i];
+        if (uid == 0) {
+            continue; // the editor found no compiled room for this brush
+        }
         uint8_t raw = (i < props.breakable_materials.size()) ? props.breakable_materials[i] : 0;
+        if (raw == 0) {
+            // Mapping-only row: every room was defaulted to Glass with no flags above, so this
+            // can only ever be a no-op — or, if its room UID came from the editor's position
+            // fallback and landed on a neighbour, reset a real material. Skip it.
+            continue;
+        }
         uint8_t mat = raw & 0x7F;
         bool no_debris = (raw & 0x80) != 0;
         if (mat >= static_cast<uint8_t>(rf::DetailMaterial::Count)) {
@@ -919,6 +957,122 @@ void apply_breakable_materials()
     }
 }
 
+// Destruction registry for the When_Destroyed catalyst event.
+struct DestructibleBrushState
+{
+    std::vector<int> brush_uids;
+    bool destroyed = false;
+};
+
+static std::unordered_map<int, DestructibleBrushState> g_brush_destruction; // room uid -> state
+static std::unordered_map<int, int> g_brush_uid_to_room_uid;
+// Every breakable brush UID the level declares, mapped or not. A row whose room mapping failed
+// still names a brush, and a brush is never an activation target.
+static std::unordered_set<int> g_breakable_brush_uids;
+
+static DestructibleBrushState* brush_state_from_brush_uid(int brush_uid)
+{
+    auto uit = g_brush_uid_to_room_uid.find(brush_uid);
+    if (uit == g_brush_uid_to_room_uid.end()) return nullptr;
+
+    auto it = g_brush_destruction.find(uit->second);
+    return it == g_brush_destruction.end() ? nullptr : &it->second;
+}
+
+bool brush_is_tracked(int brush_uid)
+{
+    return brush_state_from_brush_uid(brush_uid) != nullptr;
+}
+
+bool brush_uid_is_breakable(int brush_uid)
+{
+    return g_breakable_brush_uids.count(brush_uid) != 0;
+}
+
+bool brush_is_destroyed(int brush_uid)
+{
+    const DestructibleBrushState* state = brush_state_from_brush_uid(brush_uid);
+    return state && state->destroyed;
+}
+
+static void fire_when_destroyed_for_room(int room_uid)
+{
+    auto it = g_brush_destruction.find(room_uid);
+    if (it == g_brush_destruction.end()) return;
+
+    // Copy: event activation is synchronous and a chained break can rehash the registry.
+    const std::vector<int> brush_uids = it->second.brush_uids;
+    for (int brush_uid : brush_uids) {
+        rf::activate_all_events_of_type(rf::EventType::When_Destroyed, brush_uid, -1, true);
+    }
+}
+
+// A destructible brush that breaks counts as fully destroyed. Guarded so a room can only
+// commit once even if the break path were ever re-entered. `fire` is false on paths that
+// only observe an already-destroyed room (save restore), where firing would replay links.
+static void note_brush_break(int room_uid, bool fire = true)
+{
+    auto it = g_brush_destruction.find(room_uid);
+    if (it == g_brush_destruction.end()) return;
+    if (it->second.destroyed) return;
+
+    it->second.destroyed = true;
+    if (fire) {
+        fire_when_destroyed_for_room(room_uid);
+    }
+}
+
+// Build the brush uid -> room uid bridge. Called from level_init_post after
+// apply_breakable_materials, which is what fills the pair lists this reads.
+void destruction_level_init_post()
+{
+    g_brush_destruction.clear();
+    g_brush_uid_to_room_uid.clear();
+    g_breakable_brush_uids.clear();
+
+    auto& props = AlpineLevelProperties::instance();
+    g_breakable_brush_uids.insert(props.breakable_brush_uids.begin(), props.breakable_brush_uids.end());
+
+    auto* solid = rf::level.geometry;
+    if (!solid) return;
+
+    std::unordered_map<int, std::vector<int>> room_to_brushes;
+    auto add_pairs = [&](const std::vector<int32_t>& brush_uids, const std::vector<int32_t>& room_uids) {
+        const std::size_t n = std::min(brush_uids.size(), room_uids.size());
+        for (std::size_t i = 0; i < n; i++) {
+            if (room_uids[i] == 0) continue; // editor found no matching compiled room
+
+            auto [it, inserted] = g_brush_uid_to_room_uid.emplace(brush_uids[i], room_uids[i]);
+            if (!inserted) {
+                if (it->second != room_uids[i]) {
+                    xlog::warn("[Destroyed] brush uid={} maps to room {} and room {}, keeping {}",
+                        brush_uids[i], it->second, room_uids[i], it->second);
+                }
+                continue; // already recorded under the room it first claimed
+            }
+            room_to_brushes[room_uids[i]].push_back(brush_uids[i]);
+        }
+    };
+    // Breakable entries only: When_Destroyed tracks destructible detail brushes (life != -1).
+    // Geoable brushes belong to the RF2 geomod feature and are not tracked here.
+    add_pairs(props.breakable_brush_uids, props.breakable_room_uids);
+
+    if (room_to_brushes.empty()) return;
+
+    for (auto& room : solid->all_rooms) {
+        if (!room || !room->is_detail) continue;
+
+        auto bit = room_to_brushes.find(room->uid);
+        if (bit == room_to_brushes.end()) continue;
+
+        DestructibleBrushState state;
+        state.brush_uids = bit->second;
+        g_brush_destruction.emplace(room->uid, state);
+    }
+
+    xlog::debug("[Destroyed] tracking {} destructible brushes", g_brush_destruction.size());
+}
+
 CodeInjection validate_destroy_vertex_count_fix{
     0x00490BBF,
     [](auto& regs) {
@@ -932,11 +1086,22 @@ CodeInjection validate_destroy_vertex_count_fix{
     },
 };
 
-// Capture damage_type at entry of apply_radius_damage (0x00488dc0).
+// Capture damage_type at entry of apply_radius_damage (0x00488dc0). Also stashes the
+// radius blow's killer_handle and damage_type for the stats stream: the room
+// break happens deeper in this call (room_apply_radius_damage -> glass_kill) with neither
+// in scope. Stack: SUB ESP,0x18 has run but the four register pushes at 0x00488ded have
+// not, so the cdecl args killer_handle (arg 4) and damage_type (arg 5) sit at esp+0x28 and
+// esp+0x2C. The radius path carries no weapon type, so that stays null.
 CodeInjection capture_damage_type_injection{
     0x00488ded,
     [](auto& regs) {
         g_current_radius_damage_type = *reinterpret_cast<int*>(regs.esp + 0x2C);
+        if (afstats_break_attr_enabled()) {
+            g_break_attr.killer_handle = *reinterpret_cast<int*>(regs.esp + 0x28);
+            g_break_attr.weapon_type = -1;
+            g_break_attr.damage_type = g_current_radius_damage_type;
+            g_break_attr.capture_tick = GetTickCount64();
+        }
     },
 };
 
@@ -967,9 +1132,7 @@ static void invalidate_room_rendering(rf::GRoom* room)
             }
         }
         if (valid && parent->geo_cache) {
-            auto* state_ptr = reinterpret_cast<int*>(
-                reinterpret_cast<char*>(parent->geo_cache) + 0x20);
-            *state_ptr = 2; // triggers cache rebuild
+            parent->geo_cache->state = 2; // triggers cache rebuild
         }
     }
 
@@ -1801,11 +1964,41 @@ CodeInjection glass_kill_material_injection{
             g_breaking_material = face->which_room->material_type;
             g_breaking_room = face->which_room;
         }
+        else {
+            // Leaving the previous break's room behind would aim this break's effects, stats and
+            // When_Destroyed commit at the wrong brush. The material is read unguarded by the
+            // downstream glass suppression hooks, so it goes back to the stock default too.
+            g_breaking_room = nullptr;
+            g_breaking_material = rf::DetailMaterial::Glass;
+        }
         // Detect if this break is from an explosion:
         // - Local: g_current_radius_damage_type >= 0 (set by capture_damage_type_injection)
         // - Network: force_in_multi=1 (glass_kill only called from packet when explosion_flag=1)
         bool force_in_multi = *reinterpret_cast<char*>(regs.esp + 0x14) != 0;
         g_breaking_from_explosion = (g_current_radius_damage_type >= 0) || force_in_multi;
+    },
+};
+
+// The glass_kill packet handler (0x004723C3) picks one of two commit functions for a break a
+// client is replaying: glass_kill (explosion flag set), which the injection above covers, or
+// FUN_00491ed0 (flag clear), which the local direct-hit setter at 0x004c4f85 never precedes on a
+// client — so without this the break globals would still describe the previous break.
+CodeInjection glass_kill_packet_material_injection{
+    0x00491efe,
+    [](auto& regs) {
+        // This branch is only taken when the packet's explosion flag is clear. Glass rooms never
+        // reach the consumer that resets this, so a stale true would push later debris outward.
+        g_breaking_from_explosion = false;
+
+        auto* face = reinterpret_cast<rf::GFace*>(static_cast<void*>(regs.edi));
+        if (face && face->which_room) {
+            g_breaking_material = face->which_room->material_type;
+            g_breaking_room = face->which_room;
+        }
+        else {
+            g_breaking_room = nullptr;
+            g_breaking_material = rf::DetailMaterial::Glass;
+        }
     },
 };
 
@@ -1822,10 +2015,52 @@ CodeInjection glass_kill_material_injection{
 CodeInjection glass_sound_entry_injection{
     0x00490c00,
     [](auto& regs) {
+        auto* pos = *reinterpret_cast<rf::Vector3**>(regs.esp + 4);
+
+        // Stats stream: one detail_brush_destroyed per committed break, for
+        // EVERY material (glass included). glass_sound is the sole point both break paths
+        // reach, and only after validate_destroy has succeeded, so it fires exactly once
+        // per kill. Server-side only: a client applying a received glass_kill packet also
+        // runs glass_sound, so gating on the deciding server avoids emitting the broadcast
+        // twice. material is g_breaking_material; the room uid and best-effort attribution
+        // come from the globals finalized above. Read before the non-glass shatter below,
+        // which frees the room's faces. on_detail_brush_destroyed self-gates on a
+        // stats-enabled server.
+        if (afstats_break_attr_enabled() && g_breaking_room && pos) {
+            // Trust the stashed attribution only when its damage entry landed on THIS tick:
+            // a break not driven by damage this frame (level logic reaching glass_sound, or a
+            // stale capture from an earlier near-miss) would otherwise inherit whoever last
+            // damaged glass. Wrong attribution is worse than null, so a tick mismatch reports
+            // the break as anonymous. material and room_uid are always fresh, so they stand.
+            const bool fresh = g_break_attr.capture_tick == GetTickCount64();
+            afstats::on_detail_brush_destroyed(
+                static_cast<uint8_t>(g_breaking_material), g_breaking_room->uid,
+                fresh ? g_break_attr.killer_handle : -1, fresh ? g_break_attr.weapon_type : -1,
+                fresh ? g_break_attr.damage_type : -1, *pos);
+        }
+
+        // The broken brush can open a ceiling over a blocked-by-geometry weather region.
+        if (g_breaking_room) {
+            const rf::Vector3 room_center = (g_breaking_room->bbox_min + g_breaking_room->bbox_max) * 0.5f;
+            const float dx = g_breaking_room->bbox_max.x - g_breaking_room->bbox_min.x;
+            const float dz = g_breaking_room->bbox_max.z - g_breaking_room->bbox_min.z;
+            weather_notify_geomod(room_center, 0.5f * std::sqrt(dx * dx + dz * dz));
+
+            // When_Destroyed: glass_sound is the one point both break paths reach, and only
+            // after validate_destroy succeeded, so a detail brush commits here exactly once
+            // whatever its material. Event activation runs synchronously, so a chained break
+            // inside it would leave these globals pointing at the other room; the shatter and
+            // glass_kill packet below still need this room's values, so stash and restore them.
+            const rf::DetailMaterial saved_material = g_breaking_material;
+            rf::GRoom* const saved_room = g_breaking_room;
+            note_brush_break(saved_room->uid);
+            g_breaking_material = saved_material;
+            g_breaking_room = saved_room;
+        }
+
         auto* mat_cfg = get_material_config(g_breaking_material);
         if (mat_cfg && g_breaking_room) {
             auto* mat_state = get_material_state(g_breaking_material);
-            auto* pos = *reinterpret_cast<rf::Vector3**>(regs.esp + 4);
 
             // Send glass_kill packet before face extraction frees the original faces
             if (rf::is_multi && rf::is_server) {
@@ -1868,6 +2103,16 @@ CodeInjection glass_decal_material_injection{
         // Check if the projectile's weapon type has a damage radius > 0.
         auto* weapon = reinterpret_cast<rf::Weapon*>(static_cast<void*>(regs.esi));
         g_breaking_from_explosion = (weapon && weapon->info && weapon->info->damage_radius > 0.0f);
+
+        // Stash direct-hit attribution for the stats stream: the shooter is the
+        // projectile's parent entity, and the weapon and its damage type come off the
+        // weapon info. Consumed at the server-side break commit (glass_sound).
+        if (weapon && afstats_break_attr_enabled()) {
+            g_break_attr.killer_handle = weapon->parent_handle;
+            g_break_attr.weapon_type = weapon->info_index;
+            g_break_attr.damage_type = weapon->info ? weapon->info->damage_type : -1;
+            g_break_attr.capture_tick = GetTickCount64();
+        }
 
         if (room->material_type != rf::DetailMaterial::Glass) {
             auto* proj = reinterpret_cast<uint8_t*>(static_cast<void*>(regs.esi));
@@ -1984,7 +2229,7 @@ CodeInjection glass_shards_entry_injection{
 // For opaque detail rooms (new for Alpine), the parent room's RoomRenderCache includes
 // detail room faces baked in (via GRenderCacheBuilder::add_room recursion). We must:
 //
-// 1. Invalidate parent room's render cache: set state_ (offset 0x20 in GCache) to 2.
+// 1. Invalidate parent room's render cache: set GCache::state to 2.
 //    This triggers a cache rebuild on the next render frame. The rebuild calls add_room,
 //    which iterates detail_rooms — the destroyed room has empty face_list, so no faces
 //    are added. Works for both D3D11 (RoomRenderCache) and D3D9 (stock GCache).
@@ -1996,6 +2241,11 @@ CodeInjection process_destroy_cleanup_injection{
     [](auto& regs) {
         auto* room = reinterpret_cast<rf::GRoom*>(static_cast<void*>(regs.ebx));
         if (room) {
+            // Keep the When_Destroyed registry consistent when a savegame restore tears
+            // down rooms that were already broken. The break path sets this at glass_sound,
+            // so this is a no-op there; it never fires links, only records the state.
+            note_brush_break(room->uid, false);
+
             // Invalidate parent room's render cache so the destroyed detail room's faces
             // are excluded on the next cache rebuild. room_to_render_with may be stale during
             // save/load (the save restore at FUN_004b47a0 destroys killed rooms AFTER
@@ -2011,9 +2261,7 @@ CodeInjection process_destroy_cleanup_injection{
                     }
                 }
                 if (valid && parent->geo_cache) {
-                    auto* state_ptr = reinterpret_cast<int*>(
-                        reinterpret_cast<char*>(parent->geo_cache) + 0x20);
-                    *state_ptr = 2;
+                    parent->geo_cache->state = 2;
                 }
             }
 
@@ -2021,6 +2269,9 @@ CodeInjection process_destroy_cleanup_injection{
             room->room_to_render_with = nullptr;
             room->geo_cache = nullptr;
             room->face_list.clear();
+
+            // The pane is off face_list already, so the rebuild finds no faces and drops the body.
+            vehicle_physics_notify_room_geometry_changed(room);
         }
     },
 };
@@ -2053,9 +2304,7 @@ CodeInjection pregame_glass_render_cleanup_injection{
                     if (!r || r->is_detail || !r->geo_cache) continue;
                     for (auto* dr : r->detail_rooms) {
                         if (dr == room) {
-                            auto* state_ptr = reinterpret_cast<int*>(
-                                reinterpret_cast<char*>(r->geo_cache) + 0x20);
-                            *state_ptr = 2; // mark dirty — rebuilt on next render
+                            r->geo_cache->state = 2; // mark dirty — rebuilt on next render
                             break;
                         }
                     }
@@ -2063,215 +2312,403 @@ CodeInjection pregame_glass_render_cleanup_injection{
             }
             room->room_to_render_with = nullptr;
             room->geo_cache = nullptr;
+
+            // This client's level mesh was built before the server named the already-broken panes.
+            vehicle_physics_notify_room_geometry_changed(room);
         }
     },
 };
 
-// Recompute anchor faces after a boolean operation changes the face set.
-// The boolean creates new faces (from crater intersection) and may remove old ones.
-// We clear the anchor set and re-check all current faces in the room.
-static void update_anchors_after_boolean(rf::GRoom* room)
+// Support model. A geoable piece stays up if it touches, crosses or is buried in
+// world geometry, a non-geoable detail brush or a terrain chunk, or touches another geoable
+// piece that does.
+// All face normals point out of solid volume (world faces into air, brush faces outward).
+struct RF2SupportNode {
+    rf::GRoom* room;
+    std::vector<rf::GFace*> faces;
+    rf::Vector3 bbox_min;
+    rf::Vector3 bbox_max;
+};
+
+struct RF2SupportState {
+    std::vector<bool> in_cluster; // connected to the target room through geoable contact
+    std::vector<bool> supported;
+};
+
+static bool rf2_is_support_face(const rf::GFace& face)
 {
-    if (!room) return;
-
-    RF2AnchorInfo* info = nullptr;
-    for (auto& ai : g_rf2_anchor_info) {
-        if (ai.room == room) { info = &ai; break; }
-    }
-    if (!info) return;
-
-    // Clear and recompute — old faces may have been removed by the boolean
-    info->anchor_faces.clear();
-
-    for (rf::GFace& face : room->face_list) {
-        if (is_face_on_normal_surface(face)) {
-            info->anchor_faces.insert(&face);
-        }
-    }
+    return !face.attributes.is_liquid() && face.attributes.portal_id <= 0;
 }
 
-// Room-scoped BFS: detect disconnected face components within a single room.
-// Unlike stock FUN_004d0990, this only traverses faces belonging to the target room,
-// preventing the BFS from leaking into normal world geometry through shared vertices.
-// Returns total number of components found. Sets face->attributes.group_id for room faces.
-static int detect_room_components(rf::GRoom* room, rf::GSolid* solid)
+static bool rf2_bboxes_overlap(const rf::Vector3& a_min, const rf::Vector3& a_max,
+    const rf::Vector3& b_min, const rf::Vector3& b_max, float pad)
 {
-    if (!room || !solid) return 0;
+    return a_max.x + pad >= b_min.x && a_min.x - pad <= b_max.x &&
+           a_max.y + pad >= b_min.y && a_min.y - pad <= b_max.y &&
+           a_max.z + pad >= b_min.z && a_min.z - pad <= b_max.z;
+}
 
-    // Initialize ALL faces in the solid to group_id = -1 (same as stock).
-    // This ensures FUN_004d0590 won't accidentally match non-room faces.
-    for (rf::GFace* face = solid->face_list.first(); face; face = solid->face_list.next(face)) {
-        face->attributes.group_id = -1;
+// Point must lie on the face plane. Crossing-number test projected along the dominant axis.
+static bool rf2_point_in_face(const rf::GFace& face, const rf::Vector3& p)
+{
+    float ax = std::abs(face.plane.normal.x);
+    float ay = std::abs(face.plane.normal.y);
+    float az = std::abs(face.plane.normal.z);
+    auto project = [&](const rf::Vector3& v, float& u, float& w) {
+        if (ax >= ay && ax >= az) { u = v.y; w = v.z; }
+        else if (ay >= az) { u = v.x; w = v.z; }
+        else { u = v.x; w = v.y; }
+    };
+
+    rf::GFaceVertex* fv = face.edge_loop;
+    if (!fv) return false;
+    float pu, pw;
+    project(p, pu, pw);
+    bool inside = false;
+    do {
+        rf::GFaceVertex* next = fv->next;
+        if (!next || !fv->vertex || !next->vertex) return false;
+        float u1, w1, u2, w2;
+        project(fv->vertex->pos, u1, w1);
+        project(next->vertex->pos, u2, w2);
+        if ((w1 > pw) != (w2 > pw)) {
+            float cross_u = u1 + (pw - w1) * (u2 - u1) / (w2 - w1);
+            if (pu < cross_u) inside = !inside;
+        }
+        fv = next;
+    } while (fv != face.edge_loop);
+    return inside;
+}
+
+// True if any edge of `a` passes through or ends on the polygon of `b`.
+static bool rf2_edges_cross_face(const rf::GFace& a, const rf::GFace& b)
+{
+    constexpr float eps = 0.01f;
+    rf::GFaceVertex* fv = a.edge_loop;
+    if (!fv) return false;
+    do {
+        rf::GFaceVertex* next = fv->next;
+        if (!next || !fv->vertex || !next->vertex) return false;
+        const rf::Vector3& p0 = fv->vertex->pos;
+        const rf::Vector3& p1 = next->vertex->pos;
+        float d0 = b.plane.distance_to_point(p0);
+        float d1 = b.plane.distance_to_point(p1);
+        bool in_plane = std::abs(d0) <= eps && std::abs(d1) <= eps;
+        bool same_side = (d0 > eps && d1 > eps) || (d0 < -eps && d1 < -eps);
+        if (!in_plane && !same_side) {
+            float denom = d0 - d1;
+            float t = std::abs(denom) > 1e-6f ? std::clamp(d0 / denom, 0.0f, 1.0f) : 0.0f;
+            rf::Vector3 hit{p0.x + (p1.x - p0.x) * t, p0.y + (p1.y - p0.y) * t, p0.z + (p1.z - p0.z) * t};
+            if (rf2_point_in_face(b, hit)) return true;
+        }
+        fv = next;
+    } while (fv != a.edge_loop);
+    return false;
+}
+
+static bool rf2_faces_touch(const rf::GFace& a, const rf::GFace& b)
+{
+    if (!face_bboxes_overlap(a, b)) return false;
+    if (planes_are_coplanar(a.plane, b.plane)) return true;
+    return rf2_edges_cross_face(a, b) || rf2_edges_cross_face(b, a);
+}
+
+struct RF2RayHit {
+    float dist = std::numeric_limits<float>::max();
+    bool inside = false;
+    bool hit = false;
+};
+
+// Ray cast straight down from p. A nearest hit on a downward-facing face means p is inside
+// the volume that face bounds.
+static void rf2_ray_down_test(const rf::GFace& face, const rf::Vector3& p, RF2RayHit& best)
+{
+    if (p.x < face.bounding_box_min.x || p.x > face.bounding_box_max.x ||
+        p.z < face.bounding_box_min.z || p.z > face.bounding_box_max.z ||
+        face.bounding_box_min.y > p.y)
+        return;
+    float ny = face.plane.normal.y;
+    if (std::abs(ny) < 1e-4f) return;
+    float dist = face.plane.distance_to_point(p) / ny;
+    if (dist <= 0.001f || dist >= best.dist) return;
+    if (!rf2_point_in_face(face, rf::Vector3{p.x, p.y - dist, p.z})) return;
+    best.dist = dist;
+    best.inside = ny < 0.0f;
+    best.hit = true;
+}
+
+static bool rf2_point_inside_faces(const std::vector<rf::GFace*>& faces, const rf::Vector3& p)
+{
+    RF2RayHit best;
+    for (rf::GFace* face : faces) {
+        rf2_ray_down_test(*face, p, best);
     }
+    return best.hit && best.inside;
+}
 
-    // Build a set of faces belonging to this room for fast membership testing
+static bool rf2_point_inside_room(rf::GRoom* room, const rf::Vector3& p)
+{
+    RF2RayHit best;
+    for (rf::GFace& face : room->face_list) {
+        if (rf2_is_support_face(face)) rf2_ray_down_test(face, p, best);
+    }
+    return best.hit && best.inside;
+}
+
+static bool rf2_point_in_world_solid(rf::GSolid* solid, const rf::Vector3& p)
+{
+    constexpr float pad = 0.1f;
+    RF2RayHit best;
+    for (auto& room : solid->all_rooms) {
+        if (room->is_detail) continue;
+        if (p.x < room->bbox_min.x - pad || p.x > room->bbox_max.x + pad ||
+            p.z < room->bbox_min.z - pad || p.z > room->bbox_max.z + pad ||
+            room->bbox_min.y - pad > p.y)
+            continue;
+        for (rf::GFace& face : room->face_list) {
+            if (rf2_is_support_face(face)) rf2_ray_down_test(face, p, best);
+        }
+    }
+    // The world is sealed, so nothing below p means p is outside every room.
+    return !best.hit || best.inside;
+}
+
+static rf::Vector3 rf2_face_center(const rf::GFace& face)
+{
+    rf::Vector3 sum{0.0f, 0.0f, 0.0f};
+    int count = 0;
+    rf::GFaceVertex* fv = face.edge_loop;
+    if (!fv) return sum;
+    do {
+        if (fv->vertex) {
+            sum.x += fv->vertex->pos.x;
+            sum.y += fv->vertex->pos.y;
+            sum.z += fv->vertex->pos.z;
+            count++;
+        }
+        fv = fv->next;
+    } while (fv && fv != face.edge_loop);
+    if (count > 0) {
+        sum.x /= count;
+        sum.y /= count;
+        sum.z /= count;
+    }
+    return sum;
+}
+
+// Without any surface contact, one piece is either fully inside the other or apart,
+// so a single sample point settles containment.
+static bool rf2_nodes_touch(const RF2SupportNode& a, const RF2SupportNode& b)
+{
+    if (!rf2_bboxes_overlap(a.bbox_min, a.bbox_max, b.bbox_min, b.bbox_max, 0.1f)) return false;
+    for (rf::GFace* fa : a.faces) {
+        for (rf::GFace* fb : b.faces) {
+            if (rf2_faces_touch(*fa, *fb)) return true;
+        }
+    }
+    return rf2_point_inside_faces(b.faces, rf2_face_center(*a.faces[0])) ||
+           rf2_point_inside_faces(a.faces, rf2_face_center(*b.faces[0]));
+}
+
+static bool rf2_node_has_static_support(const RF2SupportNode& node, rf::GSolid* solid)
+{
+    constexpr float pad = 0.1f;
+    rf::Vector3 sample = rf2_face_center(*node.faces[0]);
+    for (auto& room : solid->all_rooms) {
+        // Terrain chunks are always anchored: never support-model pieces, always static support.
+        if (room->is_detail && room->is_geoable && !alpine_terrain_is_chunk_room(room)) continue;
+        if (!rf2_bboxes_overlap(node.bbox_min, node.bbox_max, room->bbox_min, room->bbox_max, pad)) continue;
+        for (rf::GFace& face : room->face_list) {
+            if (!rf2_is_support_face(face)) continue;
+            if (!rf2_bboxes_overlap(node.bbox_min, node.bbox_max, face.bounding_box_min, face.bounding_box_max, pad)) continue;
+            for (rf::GFace* node_face : node.faces) {
+                if (rf2_faces_touch(*node_face, face)) return true;
+            }
+        }
+        if (room->is_detail && rf2_point_inside_room(room, sample)) return true;
+    }
+    return rf2_point_in_world_solid(solid, sample);
+}
+
+static void rf2_collect_room_nodes(rf::GRoom* room, std::vector<RF2SupportNode>& nodes)
+{
     std::unordered_set<rf::GFace*> room_faces;
     for (rf::GFace& face : room->face_list) {
-        room_faces.insert(&face);
+        if (rf2_is_support_face(face)) room_faces.insert(&face);
     }
 
-    if (room_faces.empty()) return 0;
-
-    int component_count = 0;
-
+    std::unordered_set<rf::GFace*> visited;
     for (rf::GFace& face : room->face_list) {
-        if (face.attributes.group_id != -1) continue; // already assigned
+        if (!room_faces.count(&face) || !visited.insert(&face).second) continue;
 
-        // Skip liquid and portal faces (same filter as stock FUN_004ce480)
-        if ((face.attributes.flags & 0xc) != 0) continue;
-        if (face.attributes.portal_id > 0) continue;
+        RF2SupportNode node{room, {&face}, face.bounding_box_min, face.bounding_box_max};
+        for (size_t i = 0; i < node.faces.size(); i++) {
+            rf::GFace* current = node.faces[i];
+            node.bbox_min.x = std::min(node.bbox_min.x, current->bounding_box_min.x);
+            node.bbox_min.y = std::min(node.bbox_min.y, current->bounding_box_min.y);
+            node.bbox_min.z = std::min(node.bbox_min.z, current->bounding_box_min.z);
+            node.bbox_max.x = std::max(node.bbox_max.x, current->bounding_box_max.x);
+            node.bbox_max.y = std::max(node.bbox_max.y, current->bounding_box_max.y);
+            node.bbox_max.z = std::max(node.bbox_max.z, current->bounding_box_max.z);
 
-        // BFS from this face
-        int component_id = component_count;
-        face.attributes.group_id = component_id;
-
-        std::vector<rf::GFace*> queue;
-        queue.push_back(&face);
-        size_t queue_idx = 0;
-
-        while (queue_idx < queue.size()) {
-            rf::GFace* current = queue[queue_idx++];
-
-            // Traverse edge loop vertices
             rf::GFaceVertex* fv = current->edge_loop;
             if (!fv) continue;
             do {
                 if (fv->vertex) {
-                    // Check all adjacent faces of this vertex
-                    for (int i = 0; i < fv->vertex->adjacent_faces.size(); i++) {
-                        rf::GFace* adj = fv->vertex->adjacent_faces[i];
-                        if (!adj) continue;
-                        if (adj->attributes.group_id != -1) continue; // already assigned
-                        if (!room_faces.count(adj)) continue; // not in this room — KEY FILTER
-
-                        // Skip liquid and portal faces
-                        if ((adj->attributes.flags & 0xc) != 0) continue;
-                        if (adj->attributes.portal_id > 0) continue;
-
-                        adj->attributes.group_id = component_id;
-                        queue.push_back(adj);
+                    for (int j = 0; j < fv->vertex->adjacent_faces.size(); j++) {
+                        rf::GFace* adj = fv->vertex->adjacent_faces[j];
+                        if (adj && room_faces.count(adj) && visited.insert(adj).second) {
+                            node.faces.push_back(adj);
+                        }
                     }
                 }
                 fv = fv->next;
             } while (fv && fv != current->edge_loop);
         }
-
-        component_count++;
+        nodes.push_back(std::move(node));
     }
-
-    return component_count;
 }
 
-// Remap component IDs from detect_room_components to use anchor-based selection.
-// Anchored components stay (group_id = -1), unanchored ones get extraction indices.
-static int remap_components_by_anchor_status(int total_components)
+static std::vector<RF2SupportNode> rf2_collect_geoable_nodes(rf::GSolid* solid)
 {
-    auto* room = g_rf2_target_detail_room;
-    if (!room) return 0;
-
-    // Find anchor info for this room
-    RF2AnchorInfo* info = nullptr;
-    for (auto& ai : g_rf2_anchor_info) {
-        if (ai.room == room) { info = &ai; break; }
+    std::vector<RF2SupportNode> nodes;
+    for (auto& room : solid->all_rooms) {
+        if (room->is_detail && room->is_geoable && !alpine_terrain_is_chunk_room(room)) {
+            rf2_collect_room_nodes(room, nodes);
+        }
     }
-    if (!info) {
-        xlog::debug("[RF2] no anchor info for room index={}", room->room_index);
-        return 0; // no anchor data, don't extract anything
-    }
+    return nodes;
+}
 
-    // Collect faces per component ID (assigned by detect_room_components: 0, 1, 2, ...).
-    // Skip faces with group_id < 0 — portal/liquid/special faces left unassigned by BFS.
-    std::unordered_map<int, std::vector<rf::GFace*>> components;
-    for (rf::GFace& face : room->face_list) {
-        if (face.attributes.group_id >= 0)
-            components[face.attributes.group_id].push_back(&face);
-    }
-
-    // Determine anchor status per component.
-    // A component is anchored if ANY face in it is an anchor face (coplanar with and
-    // overlapping a normal world geometry face). This represents genuine structural
-    // contact — the face is flush against a wall/floor/ceiling.
-    //
-    // A component made entirely of PRE-EXISTING faces (all in g_rf2_pre_boolean_faces)
-    // is also treated as anchored. These are disconnected components that existed before
-    // the geomod — e.g. interior faces of a hollow box that don't share edges with
-    // exterior faces. They're part of the original brush, not debris broken off by
-    // the crater.
-    struct CompInfo {
-        int original_id;
-        bool is_anchored;
-        int face_count;
-    };
-    std::vector<CompInfo> comp_list;
-    for (auto& [id, faces] : components) {
-        bool anchored = false;
-        for (rf::GFace* face : faces) {
-            if (info->anchor_faces.count(face)) {
-                anchored = true;
-                break;
+// Support can only change for nodes connected to `target`, so everything else is skipped.
+static RF2SupportState rf2_compute_support(const std::vector<RF2SupportNode>& nodes, rf::GRoom* target, rf::GSolid* solid)
+{
+    size_t n = nodes.size();
+    std::vector<std::vector<size_t>> adjacency(n);
+    for (size_t i = 0; i < n; i++) {
+        for (size_t j = i + 1; j < n; j++) {
+            if (rf2_nodes_touch(nodes[i], nodes[j])) {
+                adjacency[i].push_back(j);
+                adjacency[j].push_back(i);
             }
         }
+    }
 
-        // Don't extract pre-existing disconnected components
-        if (!anchored && !g_rf2_pre_boolean_faces.empty()) {
-            bool has_new_face = false;
-            for (rf::GFace* face : faces) {
-                if (!g_rf2_pre_boolean_faces.count(face)) {
-                    has_new_face = true;
-                    break;
-                }
+    RF2SupportState state{std::vector<bool>(n, false), std::vector<bool>(n, false)};
+    std::vector<size_t> queue;
+    for (size_t i = 0; i < n; i++) {
+        if (nodes[i].room == target) {
+            state.in_cluster[i] = true;
+            queue.push_back(i);
+        }
+    }
+    for (size_t q = 0; q < queue.size(); q++) {
+        for (size_t nb : adjacency[queue[q]]) {
+            if (!state.in_cluster[nb]) {
+                state.in_cluster[nb] = true;
+                queue.push_back(nb);
             }
-            if (!has_new_face) {
-                anchored = true; // all faces pre-existing → treat as anchored
+        }
+    }
+
+    queue.clear();
+    for (size_t i = 0; i < n; i++) {
+        if (state.in_cluster[i] && rf2_node_has_static_support(nodes[i], solid)) {
+            state.supported[i] = true;
+            queue.push_back(i);
+        }
+    }
+    for (size_t q = 0; q < queue.size(); q++) {
+        for (size_t nb : adjacency[queue[q]]) {
+            if (!state.supported[nb]) {
+                state.supported[nb] = true;
+                queue.push_back(nb);
             }
         }
-
-        comp_list.push_back({id, anchored, static_cast<int>(faces.size())});
     }
+    return state;
+}
 
-    // Count unanchored components
-    int num_unanchored = 0;
-    for (int i = 0; i < static_cast<int>(comp_list.size()); i++) {
-        if (!comp_list[i].is_anchored) {
-            num_unanchored++;
+// Taken before each boolean pass; compared afterwards to find pieces that lost support.
+static void rf2_snapshot_support(rf::GRoom* target)
+{
+    g_rf2_pre_supported_faces.clear();
+    g_rf2_target_supported_pre = false;
+    rf::GSolid* solid = rf::level.geometry;
+    if (!target || !solid || alpine_terrain_is_chunk_room(target)) return;
+
+    auto nodes = rf2_collect_geoable_nodes(solid);
+    auto state = rf2_compute_support(nodes, target, solid);
+    for (size_t i = 0; i < nodes.size(); i++) {
+        if (!state.supported[i]) continue;
+        if (nodes[i].room == target) {
+            g_rf2_target_supported_pre = true;
+        }
+        else {
+            g_rf2_pre_supported_faces.insert(nodes[i].faces.begin(), nodes[i].faces.end());
         }
     }
+}
 
-    // Edge case: all anchored → nothing to extract
-    if (num_unanchored == 0) {
-        for (rf::GFace& face : room->face_list) {
-            face.attributes.group_id = -1;
-        }
-        return 0;
+// Gives each falling piece (target room or cascaded from another geoable room) an
+// extraction index 0..n-1 in its faces' group_id and returns n.
+static int rf2_mark_unsupported_pieces(rf::GRoom* target, rf::GSolid* solid)
+{
+    for (rf::GFace* face = solid->face_list.first(); face; face = solid->face_list.next(face)) {
+        face->attributes.group_id = -1;
+    }
+    if (!target || alpine_terrain_is_chunk_room(target)) return 0;
+
+    auto nodes = rf2_collect_geoable_nodes(solid);
+    auto state = rf2_compute_support(nodes, target, solid);
+
+    int target_pieces = 0;
+    for (auto& node : nodes) {
+        if (node.room == target) target_pieces++;
     }
 
-    // Build face→new_id mapping
-    // Anchored → -1 (keep). Unanchored → extraction indices 0, 1, 2...
-    // When all components are unanchored, everything gets extracted (the entire
-    // brush has no structural support and should fall).
-    std::unordered_map<rf::GFace*, int> face_new_id;
     int extract_idx = 0;
-    for (int i = 0; i < static_cast<int>(comp_list.size()); i++) {
-        auto& ci = comp_list[i];
-        int new_id;
-        if (ci.is_anchored) {
-            new_id = -1;
-        } else {
-            new_id = extract_idx++;
+    std::unordered_set<rf::GRoom*> rooms_with_kept_piece;
+    for (size_t i = 0; i < nodes.size(); i++) {
+        auto& node = nodes[i];
+        bool extract = false;
+        if (state.in_cluster[i] && !state.supported[i]) {
+            if (node.room == target) {
+                // Pieces made only of pre-existing faces (e.g. hollow brush interiors) stay.
+                // A brush that was never supported keeps the legacy rule: it only sheds
+                // pieces once the crater splits it.
+                bool has_new_face = g_rf2_pre_boolean_faces.empty() ||
+                    std::any_of(node.faces.begin(), node.faces.end(),
+                        [](rf::GFace* f) { return !g_rf2_pre_boolean_faces.count(f); });
+                extract = has_new_face && (g_rf2_target_supported_pre || target_pieces > 1);
+            }
+            else {
+                extract = g_rf2_pre_supported_faces.count(node.faces[0]) != 0;
+            }
         }
-        for (rf::GFace* face : components[ci.original_id]) {
-            face_new_id[face] = new_id;
+
+        if (!extract) {
+            rooms_with_kept_piece.insert(node.room);
+            continue;
+        }
+        for (rf::GFace* face : node.faces) {
+            face->attributes.group_id = extract_idx;
+        }
+        extract_idx++;
+        if (node.room != target &&
+            std::find(g_rf2_cascaded_rooms.begin(), g_rf2_cascaded_rooms.end(), node.room) == g_rf2_cascaded_rooms.end()) {
+            g_rf2_cascaded_rooms.push_back(node.room);
         }
     }
 
-    // Apply remapped IDs
-    for (auto& [face, new_id] : face_new_id) {
-        face->attributes.group_id = new_id;
-    }
+    // A pending room that fell completely has nothing left to carve.
+    std::erase_if(g_rf2_pending_detail_rooms, [&](rf::GRoom* room) {
+        return !rooms_with_kept_piece.count(room) &&
+            std::find(g_rf2_cascaded_rooms.begin(), g_rf2_cascaded_rooms.end(), room) != g_rf2_cascaded_rooms.end();
+    });
 
-    xlog::debug("[RF2] separated solids: {} components, {} unanchored, {} to extract",
-        comp_list.size(), num_unanchored, extract_idx);
-
+    xlog::debug("[RF2] support: {} geoable pieces, {} to extract ({} cascaded rooms, target supported pre={})",
+        nodes.size(), extract_idx, g_rf2_cascaded_rooms.size(), g_rf2_target_supported_pre);
     return extract_idx;
 }
 
@@ -2282,11 +2719,67 @@ static float get_hardness_scaled_padding()
     return geoable_bbox_base_padding * scale;
 }
 
-// Results are sorted by distance from pos to bbox center (closest first).
-static std::vector<rf::GRoom*> find_overlapping_detail_rooms(const rf::Vector3& pos)
+static bool sphere_overlaps_aabb(const rf::Vector3& center, float radius, const rf::Vector3& min,
+                                 const rf::Vector3& max)
+{
+    float dx = std::max({min.x - center.x, 0.0f, center.x - max.x});
+    float dy = std::max({min.y - center.y, 0.0f, center.y - max.y});
+    float dz = std::max({min.z - center.z, 0.0f, center.z - max.z});
+    return dx * dx + dy * dy + dz * dz <= radius * radius;
+}
+
+// Radius about the explosion pos bounding the crater solid as boolean State 0 (FUN_004dbdf0) places it:
+// each vertex is rotated, scaled (only when scale > 1e-4) and offset by pos, then pushed along
+// field_4C/field_58 by at most |push| * |v - pos| / (scale * bounding_sphere_radius). 0 = unknown.
+static float get_crater_extent_radius(rf::GSolid* crater, float scale, const rf::Vector3& push_a,
+    const rf::Vector3& push_b)
+{
+    constexpr float epsilon = 0.01f;
+    if (!crater) return 0.0f;
+    float max_len_sq = 0.0f;
+    for (const rf::GVertex* vertex : crater->vertices) {
+        max_len_sq = std::max(max_len_sq, vertex->pos.len_sq());
+    }
+    float radius = std::sqrt(max_len_sq) * (scale > 1e-4f ? scale : 1.0f);
+    float push_base = scale * crater->bounding_sphere_radius;
+    if (push_base > 0.0f) {
+        for (const rf::Vector3* push : {&push_a, &push_b}) {
+            float push_len = push->len();
+            if (std::isfinite(push_len)) {
+                radius *= 1.0f + push_len / push_base;
+            }
+        }
+    }
+    return std::isfinite(radius) ? radius + epsilon : 0.0f;
+}
+
+static float get_crater_extent_radius(const rf::GeomodParams& params)
+{
+    return get_crater_extent_radius(rf::geomod_get_crater_solid(params.shape_index), params.scale,
+        params.field_4C, params.field_58);
+}
+
+// The boolean's face broad phase (FUN_004dc670) against the crater sphere, plus a face-plane distance cull.
+static bool crater_overlaps_room_faces(const rf::Vector3& pos, float crater_radius, rf::GRoom* room)
+{
+    if (!sphere_overlaps_aabb(pos, crater_radius, room->bbox_min, room->bbox_max)) return false;
+    for (rf::GFace& face : room->face_list) {
+        if (sphere_overlaps_aabb(pos, crater_radius, face.bounding_box_min, face.bounding_box_max)
+            && std::abs(face.plane.distance_to_point(pos)) <= crater_radius) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Rooms whose padded bbox contains pos come first, then rooms only reached by the crater extent
+// (crater_radius, 0 = off). Each group is sorted by distance from pos to bbox center (closest first).
+// A terrain chunk's bbox spans its whole height, so with a known extent it is reached by the extent only.
+static std::vector<rf::GRoom*> find_overlapping_detail_rooms(const rf::Vector3& pos, float crater_radius)
 {
     float padding = get_hardness_scaled_padding();
     std::vector<rf::GRoom*> result;
+    std::vector<rf::GRoom*> extent_only;
     auto* solid = rf::level.geometry;
     if (!solid) return result;
 
@@ -2294,6 +2787,13 @@ static std::vector<rf::GRoom*> find_overlapping_detail_rooms(const rf::Vector3& 
     for (auto& room : solid->all_rooms) {
         if (!room->is_detail || !room->is_geoable) continue;
         geoable_count++;
+
+        if (crater_radius > 0.0f && alpine_terrain_is_chunk_room(room)) {
+            if (crater_overlaps_room_faces(pos, crater_radius, room)) {
+                extent_only.push_back(room);
+            }
+            continue;
+        }
 
         // Check if position is within room bbox + hardness-scaled padding
         bool in_x = pos.x >= room->bbox_min.x - padding && pos.x <= room->bbox_max.x + padding;
@@ -2303,14 +2803,16 @@ static std::vector<rf::GRoom*> find_overlapping_detail_rooms(const rf::Vector3& 
         if (in_x && in_y && in_z) {
             result.push_back(room);
         }
+        else if (crater_radius > 0.0f && crater_overlaps_room_faces(pos, crater_radius, room)) {
+            extent_only.push_back(room);
+        }
     }
 
     if (geoable_count == 0) {
         xlog::debug("[RF2] find_rooms: no geoable detail rooms in level");
     }
 
-    // Sort by distance from pos to bbox center (closest first)
-    std::sort(result.begin(), result.end(), [&pos](rf::GRoom* a, rf::GRoom* b) {
+    auto closest_first = [&pos](rf::GRoom* a, rf::GRoom* b) {
         auto center_a = rf::Vector3{
             (a->bbox_min.x + a->bbox_max.x) * 0.5f,
             (a->bbox_min.y + a->bbox_max.y) * 0.5f,
@@ -2324,7 +2826,10 @@ static std::vector<rf::GRoom*> find_overlapping_detail_rooms(const rf::Vector3& 
         float dist_sq_a = dx_a * dx_a + dy_a * dy_a + dz_a * dz_a;
         float dist_sq_b = dx_b * dx_b + dy_b * dy_b + dz_b * dz_b;
         return dist_sq_a < dist_sq_b;
-    });
+    };
+    std::sort(result.begin(), result.end(), closest_first);
+    std::sort(extent_only.begin(), extent_only.end(), closest_first);
+    result.insert(result.end(), extent_only.begin(), extent_only.end());
 
     return result;
 }
@@ -2364,8 +2869,9 @@ static void process_pending_geomod_effects()
     // Smoke emitters: replay FUN_00437230 with saved crater params.
     // Must run from per-frame hook (not State 3) because FUN_00437230 creates
     // emitter records that interact with FUN_00437180's linked list lifecycle.
+    // Raw: the carve already landed, so this record must not trigger a second vphys rebuild.
     while (!g_rf2_smoke_confirmed.empty()) {
-        rf::geomod_queue_add(&g_rf2_smoke_confirmed.front());
+        vehicle_physics_geomod_queue_add_raw(&g_rf2_smoke_confirmed.front());
         g_rf2_smoke_record_ptrs.push_back(&rf::g_geomod_pending_list.prev->parameters);
         g_rf2_smoke_confirmed.pop_front();
     }
@@ -2418,7 +2924,10 @@ CallHook<int(rf::Vector3*, float, rf::Vector3*, int, int)> packet_rock_debris_de
         if (rf2_enabled && pos) {
             bool in_geo_region = is_pos_in_any_geo_region(*pos);
             if (!in_geo_region) {
-                auto overlapping = find_overlapping_detail_rooms(*pos);
+                // pos is &params.pos of the handler's stack GeomodParams (the same params geomod_init gets).
+                const auto& params = *reinterpret_cast<const rf::GeomodParams*>(
+                    reinterpret_cast<const char*>(pos) - offsetof(rf::GeomodParams, pos));
+                auto overlapping = find_overlapping_detail_rooms(*pos, get_crater_extent_radius(params));
                 if (!overlapping.empty()) {
                     // RF2 geomod near geoable brush — defer debris until carving confirmed
                     g_rf2_suppress_geomod_create_effects = true;
@@ -2507,7 +3016,19 @@ FunHook<bool(float, int, rf::GRoom*, rf::Vector3*, rf::Vector3*, int, int)> geom
                 // Effects gate: check if explosion is near any geoable detail room
                 // using bbox + padding. Reliable for all geometry shapes including
                 // concave brushes and touching detail brushes.
-                auto overlapping = find_overlapping_detail_rooms(*pos);
+                // Crater scale as geomod_create derives it: 1.0 with the unit-scale flag, otherwise radius / bsphere
+                // times the FUN_0045cff0 hardness factor (level default outside Geo Regions).
+                float crater_radius = 0.0f;
+                rf::GSolid* crater = rf::geomod_get_crater_solid(shape_index);
+                if (crater && crater->bounding_sphere_radius > 0.0f) {
+                    float scale = 1.0f;
+                    if (!(flags & rf::geomod_create_flag_unit_scale)) {
+                        float hardness_factor = std::clamp(1.0f - rf::level.default_rock_hardness * 0.01f, 0.0f, 1.0f);
+                        scale = radius / crater->bounding_sphere_radius * hardness_factor;
+                    }
+                    crater_radius = get_crater_extent_radius(crater, scale, rf::Vector3{}, rf::Vector3{});
+                }
+                auto overlapping = find_overlapping_detail_rooms(*pos, crater_radius);
                 if (overlapping.empty()) {
                     return false; // skip entire geomod (no effects, no boolean, no state machine)
                 }
@@ -2516,9 +3037,9 @@ FunHook<bool(float, int, rf::GRoom*, rf::Vector3*, rf::Vector3*, int, int)> geom
 
         // For RF2-style geomods: bypass both the soft multiplayer limit and the hard
         // 128 crater record limit by temporarily zeroing g_num_geomods_this_level and
-        // raising multi_geo_limit. The stock function writes a crater record at slot 0
-        // (which gets overwritten by future geomods — RF2 geomods don't need persistent
-        // crater records since the carved geometry IS the visual result).
+        // raising multi_geo_limit. The stock function then writes the crater's records at
+        // slot 0, which is restored afterwards so a stock crater there is kept; RF2 craters
+        // keep no record.
         //
         // For normal geomods in RF2-enabled levels: compensate the soft limit for RF2
         // entries in the persistent counter (DAT_0063715c) so RF2 geomods don't consume
@@ -2527,6 +3048,8 @@ FunHook<bool(float, int, rf::GRoom*, rf::Vector3*, rf::Vector3*, int, int)> geom
         auto& stock_limit = rf::multi_geo_limit;
         int saved_limit = stock_limit;
         int saved_crater_count = rf::g_num_geomods_this_level;
+        const auto saved_crater_record = std::to_array(rf::g_geomod_crater_records[0]);
+        const auto saved_crater_pushes = std::to_array(rf::g_geomod_crater_pushes[0]);
 
         if (is_rf2_geomod) {
             if (stock_limit > 0) stock_limit = INT_MAX;
@@ -2558,9 +3081,34 @@ FunHook<bool(float, int, rf::GRoom*, rf::Vector3*, rf::Vector3*, int, int)> geom
 
         auto result = geomod_create_hook.call_target(radius, parent_handle, src_room, pos, hit_normal, shape_index, flags);
         stock_limit = saved_limit;
+        if (is_rf2_geomod) {
+            std::ranges::copy(saved_crater_record, rf::g_geomod_crater_records[0]);
+            std::ranges::copy(saved_crater_pushes, rf::g_geomod_crater_pushes[0]);
+        }
         g_rf2_suppress_geomod_create_effects = false;
         rf::g_geomod_emitter_default_idx = saved_default_emitter;
         rf::g_geomod_emitter_driller_idx = saved_driller_emitter;
+
+        // Stats stream: one geomod event per confirmed carve, on both the
+        // classic and rf2-brush paths. geomod_create is the sole caller of the queue and
+        // returns early for MP clients, so this is a server-side-only choke point with no
+        // double-emit against the geomod broadcast. Attribution is best-effort: the source
+        // handle is a weapon whose parent is the shooter entity and whose info_index is the
+        // weapon type; other callers (level logic, etc.) fall back to null.
+        if (result && pos) {
+            rf::Player* shooter = nullptr;
+            int weapon_type = -1;
+            if (rf::Object* src = rf::obj_from_handle(parent_handle)) {
+                if (src->type == rf::OT_WEAPON) {
+                    weapon_type = static_cast<rf::Weapon*>(src)->info_index;
+                    shooter = rf::player_from_entity_handle(src->parent_handle);
+                }
+                else {
+                    shooter = rf::player_from_entity_handle(parent_handle);
+                }
+            }
+            afstats::on_geomod(*pos, radius, is_rf2_geomod, shooter, weapon_type);
+        }
 
         if (is_rf2_geomod) {
             rf::g_num_geomods_this_level = saved_crater_count;
@@ -2613,6 +3161,16 @@ static bool should_enable_geo_chunk_physics()
     return false;
 }
 
+// params.scale is radius / shape radius, so this undoes it.
+std::optional<float> geomod_crater_radius(const rf::GeomodParams& params)
+{
+    const rf::GSolid* shape = rf::geomod_get_crater_solid(params.shape_index);
+    if (!shape) {
+        return std::nullopt;
+    }
+    return params.scale * shape->bounding_sphere_radius;
+}
+
 // Hook geomod_init (FUN_00466b00) to activate RF2-style boolean targeting.
 // By this point, geomod_create_hook has already verified geoable rooms exist,
 // so overlapping should always be non-empty when RF2-style is active.
@@ -2632,6 +3190,12 @@ FunHook<void(rf::GeomodParams*)> geomod_init_hook{
         }
 
         geomod_init_hook.call_target(params);
+
+        // The carve can open or close a roof over a blocked-by-geometry weather region.
+        if (const auto radius = geomod_crater_radius(*params)) {
+            weather_notify_geomod(params->pos, *radius);
+            minimap_notify_geomod(params->pos, *radius);
+        }
 
         // Clear the modification flag at the start of each geomod.
         g_rf2_boolean_modified_detail = false;
@@ -2656,8 +3220,12 @@ FunHook<void(rf::GeomodParams*)> geomod_init_hook{
             }
 
             // Find detail rooms overlapping the crater and select the first target.
-            auto overlapping = find_overlapping_detail_rooms(rf::g_geomod_pos);
+            const float crater_radius = get_crater_extent_radius(*params);
+            auto overlapping = find_overlapping_detail_rooms(rf::g_geomod_pos, crater_radius);
+            alpine_terrain_decorations_notify_crater(rf::g_geomod_pos, crater_radius, overlapping);
             g_rf2_pending_detail_rooms.clear();
+            g_rf2_cascaded_rooms.clear();
+            g_rf2_split_rooms.clear();
             if (!overlapping.empty()) {
                 g_rf2_target_detail_room = overlapping[0];
                 for (size_t i = 1; i < overlapping.size(); i++) {
@@ -2693,6 +3261,407 @@ static void clear_corrupted_detail_rooms()
     }
 }
 
+// Boolean state 5 gives each new crater face a GSurface (0x004DE21A), and state 7 every face that still
+// has none (0x004DE50C; 0x005A3A58 is cleared only on dedicated servers): a noise lightmap relit from
+// stock lights only. Terrain faces are lit from the terrain's chart and keep surface -1.
+// GFace::surface_index is a short: a surface past 0x7FFF would wrap negative, and state 7 would make the
+// face another one on every boolean, so faces keep surface -1 once the solid is full.
+CallHook<void __fastcall(rf::GSolid*, int, rf::GFace*, float)> boolean_face_create_surface_hook{
+    {0x004DE21A, 0x004DE50C},
+    [](rf::GSolid* solid, int edx, rf::GFace* face, float ppm) FASTCALL_LAMBDA {
+        if (solid->surfaces.size() > 0x7FFF) {
+            return;
+        }
+        // A crater face no target face was cut for has no room yet.
+        const rf::GRoom* room = face->which_room;
+        if (!room && g_rf2_style_boolean_active) {
+            room = g_rf2_target_detail_room;
+        }
+        if (!alpine_terrain_is_chunk_room(room)) {
+            boolean_face_create_surface_hook.call_target(solid, edx, face, ppm);
+        }
+    },
+};
+
+// Boolean state 5 ends by linking every overlapping detail room into each affected room's detail list,
+// comparing the bboxes of every face pair. RF2 carves affect only their target, a detail room, whose
+// detail list clear_corrupted_detail_rooms empties after this state anyway; against a terrain chunk's
+// neighbours the pass is hundreds of thousands of tests.
+CodeInjection boolean_state5_skip_detail_relink_for_terrain{
+    0x004DE2B9,
+    [](auto& regs) {
+        if (!g_rf2_style_boolean_active) {
+            return;
+        }
+        auto& affected = rf::g_boolean_affected_rooms;
+        const int count = rf::g_boolean_num_affected_rooms;
+        if (count <= 0 || count > static_cast<int>(std::size(affected))) {
+            return;
+        }
+        for (int i = 0; i < count; i++) {
+            if (!affected[i] || !affected[i]->is_detail || !alpine_terrain_is_chunk_room(affected[i])) {
+                return;
+            }
+        }
+        regs.eip = 0x004DE454;
+    },
+};
+
+// Boolean state 2 splits every listed face of more than 16 vertices, in whatever room it is.
+CallHook<void(rf::GSolid*, rf::GFace*, rf::GFace**, rf::GFace**)> boolean_split_big_face_hook{
+    0x004DBBEB,
+    [](rf::GSolid* solid, rf::GFace* face, rf::GFace** a, rf::GFace** b) {
+        rf::GRoom* room = face->which_room;
+        if (g_rf2_style_boolean_active && solid == rf::g_level_solid && room && room != g_rf2_target_detail_room &&
+            std::find(g_rf2_split_rooms.begin(), g_rf2_split_rooms.end(), room) == g_rf2_split_rooms.end()) {
+            try {
+                g_rf2_split_rooms.push_back(room);
+            }
+            catch (...) {
+            }
+        }
+        boolean_split_big_face_hook.call_target(solid, face, a, b);
+    },
+};
+
+// Fast boolean iteration for terrain targets: inner states 0, 1 and 5 see only the faces they can change,
+// and the level face list is what stock leaves at every frame boundary.
+namespace
+{
+    struct Entry
+    {
+        rf::GFace* face;
+        bool in_tprime;
+        bool survived;
+    };
+
+    // Faces chained through next[FACE_LIST_SOLID] in link order.
+    struct FaceChain
+    {
+        rf::GFace* head = nullptr;
+        rf::GFace* tail = nullptr;
+
+        void link(rf::GFace* f)
+        {
+            (tail ? tail->next[rf::FACE_LIST_SOLID] : head) = f;
+            tail = f;
+        }
+
+        // Links all of `other`, keeping its internal next[FACE_LIST_SOLID] links.
+        void splice(const FaceChain& other)
+        {
+            if (other.head) {
+                link(other.head);
+                tail = other.tail;
+            }
+        }
+
+        // Points the last face (or head, when empty) at `rest` and returns the head.
+        rf::GFace* end_with(rf::GFace* rest)
+        {
+            (tail ? tail->next[rf::FACE_LIST_SOLID] : head) = rest;
+            return head;
+        }
+    };
+
+    struct Pass
+    {
+        bool active = false;
+        rf::GSolid* solid = nullptr;
+        std::vector<Entry> faces;
+        // T' face -> index in faces (-1: adjacent to the target but not in the list)
+        std::unordered_map<rf::GFace*, int> tprime;
+        int num_tprime = 0;
+        int last_tprime = -1;
+        int num_clones = 0;
+        int num_survivors = 0;
+    };
+    Pass g_pass;
+
+    // What 0x004DBBB0 acts on: more than 16 vertices (0x004E03E0), or a pending decal fixup.
+    bool needs_sweep(const rf::GFace* face)
+    {
+        constexpr uint32_t stale_decal = rf::FACE_HAS_LEVEL_DECAL | rf::FACE_LEVEL_DECAL_UVS_STALE;
+        if ((face->attributes.flags & stale_decal) == stale_decal) {
+            return true;
+        }
+        return face->vertex_count() > 16;
+    }
+
+    // Inner state 0 on a face that isn't the target's, with boolean_clear_detail_bit3_for_rf2.
+    uint32_t registered_flags(uint32_t flags, const rf::GRoom* room)
+    {
+        flags &= ~(rf::FACE_BOOLEAN_INTERSECTED | rf::FACE_BOOLEAN_TYPE_1 | rf::FACE_BOOLEAN_SIDE);
+        if (room && (!room->is_detail || room->is_geoable)) {
+            flags &= ~rf::FACE_IS_DETAIL;
+        }
+        return flags;
+    }
+
+    void reset()
+    {
+        g_pass.active = false;
+        g_pass.solid = nullptr;
+        g_pass.faces.clear();
+        g_pass.tprime.clear();
+    }
+
+    bool applicable(rf::GRoom* target)
+    {
+        return alpine_terrain_is_chunk_room(target) && !target->contains_liquid &&
+            rf::g_level_solid && rf::g_boolean_solid == rf::g_level_solid &&
+            rf::g_boolean_op == rf::GBooleanOperation::BOP_DIFFERENCE && !target->face_list.empty();
+    }
+
+    // Before inner state 0: remember the order, give every other face what state 0 would, and hand the
+    // boolean T' (the target, faces sharing a vertex with it, and faces state 2's sweep would change).
+    // False leaves the pass to the stock path.
+    bool begin(rf::GRoom* target)
+    {
+        Pass& p = g_pass;
+        rf::GSolid* solid = rf::g_level_solid;
+        auto& list = solid->face_list;
+        const int n = list.size();
+        try {
+            p.faces.reserve(n);
+            for (rf::GFace& face : target->face_list) {
+                if (face.which_room != target) {
+                    return false;
+                }
+                p.tprime.emplace(&face, -1);
+                int guard = 0;
+                for (rf::GFaceVertex* fv = face.edge_loop; fv && guard++ < 1000;) {
+                    for (rf::GFace* adj : fv->vertex->adjacent_faces) {
+                        p.tprime.emplace(adj, -1);
+                    }
+                    fv = fv->next;
+                    if (fv == face.edge_loop) {
+                        break;
+                    }
+                }
+            }
+            // A bail-out from here on is harmless: stock state 0 gives other faces these same flags.
+            int by_room = 0;
+            for (rf::GFace* face = list.first(); face; face = face->next[rf::FACE_LIST_SOLID]) {
+                const int index = static_cast<int>(p.faces.size());
+                if (index >= n) {
+                    return false;
+                }
+                auto it = p.tprime.find(face);
+                bool in = it != p.tprime.end();
+                if (face->which_room == target) {
+                    by_room++;
+                }
+                else if (!in && needs_sweep(face)) {
+                    it = p.tprime.emplace(face, -1).first;
+                    in = true;
+                }
+                if (in) {
+                    it->second = index;
+                    p.num_tprime++;
+                    p.last_tprime = index;
+                }
+                else {
+                    face->attributes.flags = registered_flags(face->attributes.flags, face->which_room);
+                }
+                p.faces.push_back({face, in, false});
+            }
+            if (static_cast<int>(p.faces.size()) != n || by_room != target->face_list.size() || p.num_tprime == 0) {
+                return false;
+            }
+        }
+        catch (...) {
+            return false;
+        }
+
+        FaceChain chain;
+        for (const Entry& e : p.faces) {
+            if (e.in_tprime) {
+                chain.link(e.face);
+            }
+        }
+        list.assign(chain.end_with(nullptr), p.num_tprime);
+        p.solid = solid;
+        p.active = true;
+        return true;
+    }
+
+    // After inner state 0: the full list again, with the crater clones state 0 appended after T'.
+    void after_register()
+    {
+        Pass& p = g_pass;
+        auto& list = p.solid->face_list;
+        rf::GFace* first_clone = p.faces[p.last_tprime].face->next[rf::FACE_LIST_SOLID];
+        int num_clones = 0;
+        for (rf::GFace* f = first_clone; f; f = f->next[rf::FACE_LIST_SOLID]) {
+            num_clones++;
+        }
+        if (num_clones != list.size() - p.num_tprime) {
+            xlog::warn("[RF2] fast geomod: {} crater clones but the list count says {}", num_clones,
+                list.size() - p.num_tprime);
+        }
+        const int n = static_cast<int>(p.faces.size());
+        for (int i = 0; i + 1 < n; i++) {
+            p.faces[i].face->next[rf::FACE_LIST_SOLID] = p.faces[i + 1].face;
+        }
+        p.faces[n - 1].face->next[rf::FACE_LIST_SOLID] = first_clone;
+        list.assign(p.faces[0].face, n + num_clones);
+        p.num_clones = num_clones;
+        rf::g_boolean_num_registered_faces = n;
+    }
+
+    // Before inner state 1: T' and the clones only. False puts the rest of the pass on the stock path.
+    bool before_classify()
+    {
+        Pass& p = g_pass;
+        auto& list = p.solid->face_list;
+        const int n = static_cast<int>(p.faces.size());
+        if (list.size() != n + p.num_clones) {
+            return false;
+        }
+        // Stock state 1 gives these side 2 (boolean_skip_non_detail_faces_for_rf2) on either path.
+        rf::GFace* f = list.first();
+        for (int i = 0; i < n; i++, f = f->next[rf::FACE_LIST_SOLID]) {
+            if (f != p.faces[i].face) {
+                return false;
+            }
+            if (!p.faces[i].in_tprime) {
+                f->attributes.flags =
+                    (f->attributes.flags & ~rf::FACE_BOOLEAN_SIDE) | (2u << rf::face_boolean_side_shift);
+            }
+        }
+        rf::GFace* first_clone = f;
+        int num_clones = 0;
+        for (; f && num_clones <= p.num_clones; f = f->next[rf::FACE_LIST_SOLID]) {
+            num_clones++;
+        }
+        if (num_clones != p.num_clones) {
+            return false;
+        }
+
+        FaceChain chain;
+        for (const Entry& e : p.faces) {
+            if (e.in_tprime) {
+                chain.link(e.face);
+            }
+        }
+        list.assign(chain.end_with(first_clone), p.num_tprime + p.num_clones);
+        return true;
+    }
+
+    void before_collect()
+    {
+        g_pass.num_survivors = rf::g_boolean_outside_list.size();
+    }
+
+    // After inner state 5: the list is state 1's outside faces (first num_survivors), then the kept and
+    // new faces. Stock's outside list also held every other face, in the original order.
+    void after_collect()
+    {
+        Pass& p = g_pass;
+        auto& list = p.solid->face_list;
+        const int s = p.num_survivors;
+        const int m = list.size();
+        const int num_other = static_cast<int>(p.faces.size()) - p.num_tprime;
+        auto survivor_index = [&](rf::GFace* f) {
+            auto it = p.tprime.find(f);
+            return it == p.tprime.end() ? -1 : it->second;
+        };
+
+        bool consistent = s >= 0 && s <= m;
+        rf::GFace* node = list.first();
+        for (int k = 0; consistent && k < s; k++) {
+            if (!node) {
+                consistent = false;
+                break;
+            }
+            const int index = survivor_index(node);
+            if (index >= 0) {
+                p.faces[index].survived = true;
+            }
+            node = node->next[rf::FACE_LIST_SOLID];
+        }
+        rf::GFace* rest = node;
+        int num_rest = 0;
+        for (rf::GFace* f = rest; consistent && f && num_rest <= m; f = f->next[rf::FACE_LIST_SOLID]) {
+            num_rest++;
+        }
+        consistent = consistent && s + num_rest == m;
+
+        FaceChain chain;
+        if (!consistent) {
+            // Never lose a face: the other faces in their order, then the list as it is.
+            xlog::warn("[RF2] fast geomod: unexpected list after state 5 (count {}, outside {})", m, s);
+            rf::GFace* old_head = list.first();
+            for (const Entry& e : p.faces) {
+                if (!e.in_tprime) {
+                    chain.link(e.face);
+                }
+            }
+            list.assign(chain.end_with(old_head), m + num_other);
+            return;
+        }
+
+        FaceChain extra;
+        node = list.first();
+        for (int k = 0; k < s; k++) {
+            rf::GFace* next = node->next[rf::FACE_LIST_SOLID];
+            if (survivor_index(node) < 0) {
+                extra.link(node);
+            }
+            node = next;
+        }
+        for (const Entry& e : p.faces) {
+            if (!e.in_tprime || e.survived) {
+                chain.link(e.face);
+            }
+        }
+        chain.splice(extra);
+        list.assign(chain.end_with(rest), m + num_other);
+    }
+}
+
+// Runs before the boolean state `inner_state`; false when the fast path is not in use for it.
+static bool geomod_fast_before_state(int inner_state)
+{
+    if (inner_state == 0) {
+        reset();
+        if (!g_rf2_style_boolean_active) {
+            return false;
+        }
+        if (g_rf2_target_detail_room && applicable(g_rf2_target_detail_room)) {
+            g_pass.num_tprime = g_pass.num_clones = 0;
+            g_pass.last_tprime = -1;
+            if (!begin(g_rf2_target_detail_room)) {
+                reset();
+            }
+        }
+        return g_pass.active;
+    }
+    if (!g_pass.active) {
+        return false;
+    }
+    if (inner_state == 1 && !before_classify()) {
+        reset();
+        return false;
+    }
+    if (inner_state == 5) {
+        before_collect();
+    }
+    return true;
+}
+
+static void geomod_fast_after_state(int inner_state)
+{
+    if (inner_state == 0) {
+        after_register();
+    }
+    else if (inner_state == 5) {
+        after_collect();
+        reset();
+    }
+}
+
 // Hook FUN_004dbc50 (boolean_iterate) to clear corrupted detail_rooms after every call.
 // States: 0=face_register, 1=intersection_detect, 2=face_split_setup,
 //         3=classify_dispatch, 4=classify_action, 5=reclassify_and_collect,
@@ -2711,7 +3680,7 @@ FunHook<int()> boolean_iterate_hook{
     []() -> int {
         if (g_rf2_style_boolean_active && rf::g_boolean_inner_state == 0) {
             // Snapshot target room's faces before the boolean modifies them.
-            // Used by remap_components_by_anchor_status to avoid extracting
+            // Used by rf2_mark_unsupported_pieces to avoid extracting
             // pre-existing disconnected components (e.g. interior faces of hollow boxes
             // where interior and exterior faces don't share edges).
             g_rf2_pre_boolean_faces.clear();
@@ -2721,9 +3690,35 @@ FunHook<int()> boolean_iterate_hook{
                     g_rf2_pre_boolean_faces.insert(&face);
                 }
             }
+            rf2_snapshot_support(g_rf2_target_detail_room);
         }
 
+        // A terrain's crater texture replaces the level geomod texture on the crater faces
+        // State 5 textures (FUN_004f8740) while that terrain's chunk is the target.
+        int crater_bitmap = -1;
+        if (g_rf2_style_boolean_active) {
+            const AlpineTerrainRoomRef* ref = alpine_terrain_find_room(g_rf2_target_detail_room);
+            if (ref && static_cast<std::size_t>(ref->terrain) < g_terrain_crater_bitmaps.size()) {
+                crater_bitmap = g_terrain_crater_bitmaps[ref->terrain];
+            }
+        }
+        auto& crater_face_bitmaps = rf::g_boolean_crater_face_bitmaps;
+        int saved_crater_face_bitmaps[3];
+        if (crater_bitmap >= 0) {
+            std::copy(std::begin(crater_face_bitmaps), std::end(crater_face_bitmaps), saved_crater_face_bitmaps);
+            std::fill(std::begin(crater_face_bitmaps), std::end(crater_face_bitmaps), crater_bitmap);
+        }
+
+        const int inner_state = rf::g_boolean_inner_state;
+        const bool fast = geomod_fast_before_state(inner_state);
         int result = boolean_iterate_hook.call_target();
+        if (fast) {
+            geomod_fast_after_state(inner_state);
+        }
+
+        if (crater_bitmap >= 0) {
+            std::copy(std::begin(saved_crater_face_bitmaps), std::end(saved_crater_face_bitmaps), crater_face_bitmaps);
+        }
 
         if (g_rf2_style_boolean_active) {
             // Clear corrupted detail_rooms after EVERY inner state, not just when done.
@@ -2738,10 +3733,34 @@ FunHook<int()> boolean_iterate_hook{
 // Invalidate render caches after RF2-style boolean modifies detail room faces.
 // D3D9: Call stock g_render_cache_clear — parent room caches include detail room
 //       faces via recursive geo_cache_prepare_room, so clearing forces a rebuild.
-// D3D11: Invalidate surgically — null detail room caches (lazily recreated) and
-//        mark normal room caches as invalid (state_ = 2 at offset 0x20 triggers
-//        rebuild on next render). We CANNOT call the full clear_cache() because
+// D3D11: Free the carved detail room's cache and invalidate only the normal rooms
+//        that embed it (state = 2 triggers rebuild on next render).
+//        Rebuilding every room is a whole-level rebuild per crater and re-bakes the
+//        accumulated scrolled UVs. We CANNOT call the full clear_cache() because
 //        destroying and recreating all RoomRenderCache objects causes a freeze.
+static void invalidate_detail_room_render_cache_d3d11(rf::GSolid* solid, rf::GRoom* target)
+{
+    gr::d3d11::release_detail_room_render_cache(target);
+
+    // Normal rooms embed the detail room's faces in their own cache
+    // (GRenderCacheBuilder::add_room recurses into detail_rooms), and the stock
+    // boolean never marks them because their own faces weren't modified.
+    for (int i = 0; i < solid->all_rooms.size(); i++) {
+        rf::GRoom* room = solid->all_rooms[i];
+        if (!room || room->is_detail || !room->geo_cache)
+            continue;
+        for (rf::GRoom* detail_room : room->detail_rooms) {
+            if (detail_room == target) {
+                // A separate terrain chunk is not part of its parent's cache.
+                if (!alpine_terrain_is_separate_chunk(room, target)) {
+                    room->geo_cache->state = 2;
+                }
+                break;
+            }
+        }
+    }
+}
+
 static void invalidate_rf2_render_caches()
 {
     rf::GSolid* solid = rf::level.geometry;
@@ -2753,21 +3772,44 @@ static void invalidate_rf2_render_caches()
     // any edge cases (e.g., multi-room redirect between boolean passes).
     clear_corrupted_detail_rooms();
 
+    std::vector<rf::GRoom*> cascaded_rooms = std::move(g_rf2_cascaded_rooms);
+    g_rf2_cascaded_rooms.clear();
+    std::vector<rf::GRoom*> split_rooms = std::move(g_rf2_split_rooms);
+    g_rf2_split_rooms.clear();
+
+    // A cascaded or split room can lie outside the crater cells the vehicle level mesh rebuilds.
+    for (rf::GRoom* room : cascaded_rooms) {
+        if (room != g_rf2_target_detail_room) {
+            vehicle_physics_notify_room_geometry_changed(room);
+        }
+    }
+    for (rf::GRoom* room : split_rooms) {
+        vehicle_physics_notify_room_geometry_changed(room);
+    }
+
     if (!is_d3d11()) {
-        AddrCaller{0x004f0b90}.c_call();
+        rf::g_cache_clear();
         return;
     }
 
-    for (int i = 0; i < solid->all_rooms.size(); i++) {
-        rf::GRoom* room = solid->all_rooms[i];
-        if (!room || !room->geo_cache)
+    rf::GRoom* target = g_rf2_target_detail_room;
+    if (target) {
+        invalidate_detail_room_render_cache_d3d11(solid, target);
+    }
+    for (rf::GRoom* room : cascaded_rooms) {
+        if (room != target) {
+            invalidate_detail_room_render_cache_d3d11(solid, room);
+        }
+    }
+    for (rf::GRoom* room : split_rooms) {
+        if (std::find(cascaded_rooms.begin(), cascaded_rooms.end(), room) != cascaded_rooms.end()) {
             continue;
+        }
         if (room->is_detail) {
-            room->geo_cache = nullptr;
-        } else {
-            auto* state = reinterpret_cast<int*>(
-                reinterpret_cast<char*>(room->geo_cache) + 0x20);
-            *state = 2;
+            invalidate_detail_room_render_cache_d3d11(solid, room);
+        }
+        else if (room->geo_cache) {
+            room->geo_cache->state = 2;
         }
     }
 }
@@ -2794,9 +3836,8 @@ CallHook<rf::GDecal*(rf::GDecalCreateInfo*)> state0_decal_defer_hook{
 // For RF2-style: the stock FUN_004d0990 can't be used because it does BFS across the
 // entire level solid's face graph (through vertex adjacency), so the detail room's
 // faces appear connected to normal world geometry as one giant component.
-// Instead, we run our own room-scoped BFS (detect_room_components) that only considers
-// faces within the target detail room, then apply anchor-based selection to determine
-// which components stay vs. fall.
+// Instead, rf2_mark_unsupported_pieces splits geoable rooms into pieces with a room-scoped
+// BFS and extracts the pieces that are (or just became) unsupported.
 //
 // Disassembly at injection point:
 //   00466dcd: MOV ECX, dword ptr [0x006460e8]  ; ECX = level solid (6 bytes)
@@ -2809,23 +3850,7 @@ CodeInjection state2_rf2_separated_solids_injection{
         if (!g_rf2_style_boolean_active)
             return; // let stock code run normally
 
-        rf::GSolid* solid = rf::g_level_solid;
-        auto* room = g_rf2_target_detail_room;
-
-        // Update anchor faces after the boolean modifies the face set
-        update_anchors_after_boolean(room);
-
-        // Room-scoped BFS: detect components only within the target detail room
-        int total_components = detect_room_components(room, solid);
-
-        int count = 0;
-        if (total_components > 1) {
-            // Multiple disconnected pieces detected — apply anchor logic.
-            count = remap_components_by_anchor_status(total_components);
-        }
-
-        xlog::debug("[RF2] State 2: {} components, {} to extract (room index={})",
-            total_components, count, room ? room->room_index : -1);
+        int count = rf2_mark_unsupported_pieces(g_rf2_target_detail_room, rf::g_level_solid);
 
         // Set EAX and ESI to the extraction count
         regs.eax = count;
@@ -3052,8 +4077,13 @@ void destruction_level_cleanup()
     g_rf2_target_detail_room = nullptr;
     g_rf2_pending_detail_rooms.clear();
     g_rf2_geo_count = 0;
-    g_rf2_anchor_info.clear();
     g_rf2_pre_boolean_faces.clear();
+    g_rf2_pre_supported_faces.clear();
+    g_rf2_target_supported_pre = false;
+    g_rf2_cascaded_rooms.clear();
+    g_rf2_split_rooms.clear();
+    reset();
+    g_terrain_crater_bitmaps.clear();
     g_rf2_boolean_modified_detail = false;
     g_rf2_suppress_geomod_create_effects = false;
     g_rf2_deferred_debris.pending = false;
@@ -3062,7 +4092,15 @@ void destruction_level_cleanup()
     g_rf2_smoke_confirmed.clear();
     g_rf2_smoke_record_ptrs.clear();
     g_rf2_decal_deferred = false;
-    AlpineLevelProperties::instance().geoable_room_uids.clear();
+    g_brush_destruction.clear();
+    g_brush_uid_to_room_uid.clear();
+    g_breakable_brush_uids.clear();
+    auto& props = AlpineLevelProperties::instance();
+    props.geoable_room_uids.clear();
+    props.geoable_brush_uids.clear();
+    props.breakable_room_uids.clear();
+    props.breakable_brush_uids.clear();
+    props.breakable_materials.clear();
 }
 
 void g_solid_set_rf2_geo_limit(int limit)
@@ -3090,8 +4128,12 @@ void destruction_do_patch()
     state5_force_clear_type1_for_rf2.install();
     state5_reclassify_type1_for_rf2.install();
     boolean_skip_non_detail_faces_for_rf2.install();
+    boolean_flood_target_seeds_only_hook.install();
     boolean_state5_allow_detail_for_rf2.install();
     boolean_state5_protect_detail_cache_for_rf2.install();
+    boolean_face_create_surface_hook.install();
+    boolean_state5_skip_detail_relink_for_terrain.install();
+    boolean_split_big_face_hook.install();
     state0_decal_defer_hook.install();
     state2_rf2_separated_solids_injection.install();
     geomod_state3_clear_detail_caches_injection.install();
@@ -3126,6 +4168,7 @@ void destruction_do_patch()
     AsmWriter{0x00492090, 0x004920A1}.jmp(radius_damage_trampoline_code.get());
     direct_hit_material_injection.install();
     glass_kill_material_injection.install();
+    glass_kill_packet_material_injection.install();
     glass_sound_entry_injection.install();
     glass_decal_material_injection.install();
     weapon_decal_glass_to_scorch_injection.install();

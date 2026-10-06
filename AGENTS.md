@@ -33,6 +33,12 @@ This file is intended to help Codex, Claude, and other assistants (and other aut
      - `cmake --build build-msvc --config Release`
 - If you cannot build in the environment, document that in your final response
   and mention the recommended MSVC steps above.
+- Changes should always be rigorously reviewed before a merge is considered:
+  - As surgical as possible to achieve the goal
+  - Effective, necessary, safe, and properly/robustly written
+  - Consolidates code where reasonable using `common/`
+  - Reuses existing shared logic where possible (such as the utilities in `common/utils`)
+  - Adheres to existing codebase style convention and `STYLE.md`
 
 ## Change guidelines
 - Keep changes minimal and focused on the requested task.

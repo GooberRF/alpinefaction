@@ -43,6 +43,12 @@ enum class af_packet_type : uint8_t
     af_pit_roster = 0x61,               // Alpine 1.4
     af_gungame_order = 0x62,            // Alpine 1.4
     af_salvage_state = 0x63,            // Alpine 1.4
+    af_crit_shot = 0x64,                // Alpine 1.4
+    af_vehicle_state = 0x65,            // Alpine 1.5
+    af_vehicle_fire = 0x66,             // Alpine 1.5
+    af_vehicle_health = 0x67,           // Alpine 1.5
+    af_vehicle_orient = 0x68,           // Alpine 1.5
+    af_vehicle_factory_state = 0x69,    // Alpine 1.5
 };
 
 struct af_ping_location_req_packet
@@ -58,13 +64,45 @@ struct af_ping_location_packet
     RF_Vector pos;
 };
 
+enum af_damage_notify_flags : uint8_t
+{
+    AF_DAMAGE_NOTIFY_DIED = 1 << 0,
+    AF_DAMAGE_NOTIFY_CRIT = 1 << 1,
+    // Victim is not a player: player_id is af_damage_notify_no_player and the hull tail follows
+    AF_DAMAGE_NOTIFY_WORLD_POS = 1 << 2,
+};
+
+// Not a valid player id, so an older client's multi_find_player_by_id answers null for it.
+constexpr uint8_t af_damage_notify_no_player = 0xFF;
+
 struct af_damage_notify_packet
 {
     RF_GamePacketHeader header;
     uint8_t player_id;
     uint16_t damage;
-    uint8_t flags;
+    uint8_t flags; // af_damage_notify_flags
+    // Optional tails, in this order:
+    //   float[3] world_pos, int32_t hull_handle - present iff AF_DAMAGE_NOTIFY_WORLD_POS
+    //   uint8_t attacker_id                     - present in recorded demos only
 };
+
+// A non-player victim: where its number is anchored, and its server handle, which keys the merge of
+// its numbers apart from every other hull's.
+struct AfDamageNotifyHull
+{
+    rf::Vector3 pos;
+    int handle;
+};
+
+// Critical Hits mutator, in-flight telegraph. Sent once per crit-rolled projectile fire
+// event; clients hold it as a short-lived marker for the weapon object that shot spawns.
+struct af_crit_shot_packet
+{
+    RF_GamePacketHeader header;
+    uint8_t shooter_player_id;
+    uint8_t weapon_type;
+};
+static_assert(sizeof(af_crit_shot_packet) == sizeof(RF_GamePacketHeader) + 2);
 
 struct af_obj_update // members of af_obj_update_packet
 {
@@ -93,7 +131,10 @@ enum class af_client_req_type : uint8_t
     af_req_vote_cast = 0x7,    // Alpine 1.4 (1 byte: 0 = no, 1 = yes)
     af_req_vote_cancel = 0x8,  // Alpine 1.4 (no additional data)
     af_req_vote_options = 0x9, // Alpine 1.4 (5 bytes: flags + known_generation)
-    af_req_jetpack_state = 0xA, // Alpine 1.4 (1 byte: on 0/1)
+    af_req_jetpack_state = 0xA, // Alpine 1.4 (2 bytes: on 0/1, fuel_pct 0-100)
+    af_req_stats_pssk = 0xB,    // Alpine 1.4 (32 bytes: player stats session key, no NUL)
+    af_req_vehicle_use = 0xC,   // Alpine 1.5 (5 bytes: vehicle server handle + seat index)
+    af_req_vehicle_crush = 0xD, // Alpine 1.5 (13 bytes: VehicleCrushReqPayload)
 };
 
 // Frozen wire constants, values can NEVER be reordered or changed.
@@ -164,7 +205,10 @@ enum af_vote_end_flags : uint8_t
 // Repeated records in the blob are length-prefixed, so additions to the blob
 // are not compatibility breaking. This version should be incremented only if
 // the core format changes - like redefining a field or reordering/removing them.
-constexpr uint8_t af_vote_options_blob_version = 1;
+//
+// 2: the trailing base mutator section gained a u16 length prefix of its own,
+//    which redefines bytes version 1 wrote as a bare declaration set.
+constexpr uint8_t af_vote_options_blob_version = 2;
 
 // af_sreq_vote_options_data stream framing. The blob is pushed as
 // Begin -> Data* -> End over the ordered reliable channel, so no chunk index or
@@ -199,6 +243,15 @@ enum af_vote_level_flags : uint8_t
     // naming this level is rejected outright whatever game type is selected —
     // the blob still lists it (it is in the rotation) but it is not votable.
     AF_VOTE_LEVEL_FLAG_ALLOWED = 1 << 0,
+};
+
+// The optional trailing flags byte of a Level/Match vote call. Reserved bits are
+// ignored; an ABSENT byte means "explicit iff the vote named any mutator".
+enum af_vote_call_flags : uint8_t
+{
+    // `mutators` is the complete selection, empty included. Clear means "keep
+    // whatever set the session is running".
+    AF_VOTE_CALL_FLAG_MUTATORS_EXPLICIT = 1 << 0,
 };
 
 // The `baseline_kind` byte appended after a level entry's flags: which mutator
@@ -268,11 +321,49 @@ struct VoteOptionsReqPayload
 struct JetpackStateReqPayload
 {
     uint8_t on = 0;
+    uint8_t fuel_pct = 0; // 0-100, display only
 };
+
+// The player stats session key minted by FactionFiles for this join, handed to the
+// server so it can report this player's stats. Raw, not NUL terminated.
+struct StatsPsskPayload
+{
+    char pssk[32] = {};
+};
+static_assert(sizeof(StatsPsskPayload) == 32);
+
+// Board, change seat or exit request. Naming a vehicle the sender is already aboard is a seat swap.
+struct VehicleUseReqPayload
+{
+    int32_t vehicle_handle = -1; // server handle; -1 = "let me out of whatever I am in"
+    uint8_t seat_index = 0;      // index into interface_points; 0xFF = vehicle_seat_auto
+};
+static_assert(sizeof(VehicleUseReqPayload) == 5);
+
+// VehicleCrushReqPayload::kind
+enum af_vehicle_crush_kind : uint8_t
+{
+    AF_VEHICLE_CRUSH_RUNOVER = 0, // victim_handle names who the hull ran over
+    AF_VEHICLE_CRUSH_WALL = 1,    // impact_dv: the hull hit the level or a mover
+    AF_VEHICLE_CRUSH_GROUND = 2,  // impact_dv: the hull landed
+};
+
+// Roadkill or hull impact report from the hull's driver; handles are server handles, and the server
+// revalidates before applying.
+struct VehicleCrushReqPayload
+{
+    int32_t vehicle_handle = -1;
+    int32_t victim_handle = -1; // -1 unless kind is AF_VEHICLE_CRUSH_RUNOVER
+    uint8_t kind = AF_VEHICLE_CRUSH_RUNOVER;
+    float impact_dv = 0.0f;     // u/s along the contact normal; 0 for a run-over
+};
+static_assert(sizeof(VehicleCrushReqPayload) == 13);
 
 using af_client_payload = std::variant<HandicapPayload, SprayReqPayload, CharacterPayload,
                                        ReadyReqPayload, PitQueueReqPayload, VoteCastReqPayload,
-                                       VoteOptionsReqPayload, JetpackStateReqPayload, std::monostate>;
+                                       VoteOptionsReqPayload, JetpackStateReqPayload,
+                                       StatsPsskPayload, VehicleUseReqPayload,
+                                       VehicleCrushReqPayload, std::monostate>;
 
 struct af_client_req_packet
 {
@@ -292,8 +383,10 @@ enum class af_server_req_type : uint8_t
     af_sreq_vote_options_data = 0x6,   // Alpine 1.4 (chunked vote-options blob)
     af_sreq_kill_info = 0x7,           // Alpine 1.4 (5 bytes: victim, killer, weapon, flags, damage_type)
     af_sreq_entity_on_fire = 0x8,      // Alpine 1.4 (5 bytes: obj_handle, on)
-    af_sreq_jetpack_state = 0x9,       // Alpine 1.4 (5 bytes: obj_handle, on)
+    af_sreq_jetpack_state = 0x9,       // Alpine 1.4 (6 bytes: obj_handle, on, fuel_pct)
     af_sreq_riot_shield_state = 0xA,   // Alpine 1.4 (20 bytes: obj_handle, life, impact_pos)
+    af_sreq_award = 0xB,               // Alpine 1.4 (2 bytes: award_id, victim_player_id; 0xFF = no victim)
+    af_sreq_active_mutators = 0xC,     // Alpine 1.4 (variable: one declaration set, see blob_declaration_set)
 };
 
 struct ShouldGibPayload
@@ -349,16 +442,25 @@ enum af_kill_info_flags : uint8_t
     AF_KILL_FLAG_SUICIDE  = 1 << 3,
     AF_KILL_FLAG_LEGSHOT  = 1 << 4, // meaningful only for direct hits
     AF_KILL_FLAG_GIBBED   = 1 << 5,
+    AF_KILL_FLAG_VEHICLE  = 1 << 6, // vehicle kill; the class rides in damage_type, not weapon_type
+    AF_KILL_FLAG_SQUASHED = 1 << 7, // run over or drilled by a vehicle, and not gibbed
 };
+
+// KillInfoPayload::damage_type is two nibbles:
+//   bits 0-3  rf::DamageType, or af_kill_damage_type_unknown
+//   bits 4-7  VehicleDamageClass id, meaningful only with AF_KILL_FLAG_VEHICLE
+constexpr uint8_t af_kill_damage_type_mask = 0x0F;
+constexpr uint8_t af_kill_damage_type_unknown = 0x0F; // no damage type the server could name
+constexpr uint8_t af_kill_vehicle_class_shift = 4;
 
 // Decorates the stock obj_kill packet, which carries no weapon.
 struct KillInfoPayload
 {
     uint8_t killed_player_id = 0xFF;
     uint8_t killer_player_id = 0xFF; // 0xFF = no killer player (world death)
-    uint8_t weapon_type = 0xFF;
+    uint8_t weapon_type = 0xFF; // weapons.tbl index, 0xFF when no weapon fired (a run-over)
     uint8_t flags = 0;  // af_kill_info_flags
-    uint8_t damage_type = 0xFF;
+    uint8_t damage_type = af_kill_damage_type_unknown; // packed: see the nibble split above
 };
 static_assert(sizeof(KillInfoPayload) == 5);
 
@@ -379,8 +481,9 @@ struct EntityJetpackPayload
 {
     uint32_t obj_handle = 0;
     uint8_t on = 0; // 1 = thrusting, 0 = idle
+    uint8_t fuel_pct = 0; // 0-100, display only
 };
-static_assert(sizeof(EntityJetpackPayload) == 5);
+static_assert(sizeof(EntityJetpackPayload) == 6);
 
 // Riot shield durability is server authoritative.
 struct RiotShieldStatePayload
@@ -391,9 +494,19 @@ struct RiotShieldStatePayload
 };
 static_assert(sizeof(RiotShieldStatePayload) == 20);
 
+// The client owns the text and the sound for each id, so only the id and the opposing player go
+// over the wire. Ids are the wire-frozen AwardId registry in awards.h; the victim id is there for
+// the awards whose callout names them, and is award_no_victim for the rest.
+struct AwardPayload
+{
+    uint8_t award_id = 0;
+    uint8_t victim_player_id = 0xFF; // award_no_victim
+};
+static_assert(sizeof(AwardPayload) == 2);
+
 using af_server_req_payload = std::variant<ShouldGibPayload, TeleportEntityPayload, SprayPayload,
                                            ReadyPromptPayload, PitQueueStatePayload, EntityOnFirePayload,
-                                           EntityJetpackPayload, RiotShieldStatePayload>;
+                                           EntityJetpackPayload, RiotShieldStatePayload, AwardPayload>;
 
 struct af_server_req_packet
 {
@@ -505,6 +618,119 @@ struct af_salvage_state_packet
     float flag_z;
 };
 static_assert(sizeof(af_salvage_state_packet) == 35);
+
+// Seat occupancy, server -> client. Handles are server handles. The packet states the hull's FULL
+// occupancy rather than an enter/exit event, so a receiver converges on it with no event history.
+constexpr int af_vehicle_state_max_seats = 6;
+constexpr uint8_t af_vehicle_state_changed_none = 0xFF;
+constexpr uint8_t af_vehicle_state_team_none = 0xFF;
+// Hull velocity units per world u/s: int16 then spans +-255.99 u/s, an order above any class cap.
+constexpr float af_vehicle_state_vel_quant = 128.0f;
+
+enum af_vehicle_state_flag : uint8_t
+{
+    AF_VEHICLE_STATE_LOCK_TO_TEAM = 0x01,
+    AF_VEHICLE_STATE_ENTERED_ONCE = 0x02,
+    AF_VEHICLE_STATE_UNOCCUPIED_RUNNING = 0x04,
+    AF_VEHICLE_STATE_HORN = 0x08, // the jeep driver's horn is sounding
+};
+
+// The replicated per-hull attributes af_vehicle_state carries beside the seat array.
+struct af_vehicle_state_attrs
+{
+    uint8_t team = af_vehicle_state_team_none; // 0 red, 1 blue, 0xFF none
+    uint8_t flags = 0;                         // af_vehicle_state_flag bits
+    uint16_t unoccupied_s = 0;                 // seconds with no occupant, saturating; read only with the running bit
+    int16_t vel[3] = {0, 0, 0};                // hull velocity, af_vehicle_state_vel_quant per u/s
+};
+
+struct af_vehicle_state_packet
+{
+    RF_GamePacketHeader header;
+    int32_t vehicle_handle;
+    int32_t seat_rider[af_vehicle_state_max_seats]; // per seat: rider handle, -1 = empty
+    uint8_t seat_count;   // seats this hull has, clamped to af_vehicle_state_max_seats
+    uint8_t changed_seat; // seat whose occupant just changed, for cues; 0xFF = bulk assert
+    uint8_t team;         // 0 red, 1 blue, 0xFF none
+    uint8_t flags;        // af_vehicle_state_flag bits
+    uint16_t unoccupied_s;
+    // The hull's linear velocity, af_vehicle_state_vel_quant units per world u/s, saturating. Read
+    // ONLY by the client this packet makes the new seat-0 rider: a server-simulated hull replicates
+    // zero velocity on its obj_update rows, so nothing else carries its momentum across a handoff.
+    int16_t vel[3];
+};
+static_assert(sizeof(af_vehicle_state_packet) == sizeof(RF_GamePacketHeader) + 40);
+
+// Vehicle weapon control. Client -> server: trigger edges, and the jeep driver's horn edges (alt_fire 0).
+// Server -> client: a discrete shot, or a continuous weapon's actual on/off edge (STOP's alt_fire is 0
+// and ignored); the horn reaches clients as AF_VEHICLE_STATE_HORN.
+enum af_vehicle_fire_action : uint8_t
+{
+    AF_VEHICLE_FIRE_STOP = 0,
+    AF_VEHICLE_FIRE_START = 1,
+    AF_VEHICLE_FIRE_SHOT = 2,
+    AF_VEHICLE_HORN_STOP = 3,
+    AF_VEHICLE_HORN_START = 4,
+};
+
+struct af_vehicle_fire_packet
+{
+    RF_GamePacketHeader header;
+    int32_t vehicle_handle; // server handle
+    uint8_t action; // af_vehicle_fire_action
+    uint8_t alt_fire;
+};
+static_assert(sizeof(af_vehicle_fire_packet) == sizeof(RF_GamePacketHeader) + 6);
+
+// Vehicle health for the HUD: obj_update packs health into one byte (0x0047DC96), vehicles have 400-5000 life.
+struct af_vehicle_health_packet
+{
+    RF_GamePacketHeader header;
+    int32_t vehicle_handle; // server handle
+    float life;
+    float max_life;
+    int32_t primary_ammo;   // -1 = this hull has no such weapon
+    int32_t secondary_ammo;
+    int8_t hit_dir[3];      // world travel direction of the latest attributed hit, x127; all zero = none
+    uint16_t refill_ms[2];  // per weapon slot, ms until its ammo refills; 0 = none pending
+};
+static_assert(sizeof(af_vehicle_health_packet) == sizeof(RF_GamePacketHeader) + 27);
+
+// Hull angles the stock obj_update row has no slot for; tick keys them to the matching ObjInterp keyframe.
+struct af_vehicle_orient_packet
+{
+    RF_GamePacketHeader header;
+    int32_t vehicle_handle; // server handle
+    uint16_t tick;          // 16-bit ms tick of the obj_update sample these angles belong to
+    int16_t pitch;          // hull phb.x, quantized as angle * 32767 / pi
+    int16_t bank;           // hull phb.z, same scale
+    // driver aim, absolute world angles, same scale; always written (hull-forward if there is no aim)
+    int16_t aim_pitch;
+    int16_t aim_head;
+    int8_t steer;           // quantized as angle * 127 / 0.75, a fixed scale independent of steer_lock
+};
+static_assert(sizeof(af_vehicle_orient_packet) == sizeof(RF_GamePacketHeader) + 15);
+
+// Vehicle factory respawn state, server -> client. Factories are parsed on every machine, so the
+// index is the receiver's own g_vehicle_factories index.
+enum af_vehicle_factory_state_value : uint8_t
+{
+    AF_VEHICLE_FACTORY_ALIVE_READY = 0, // a hull stands on the factory and nobody has been in it
+    AF_VEHICLE_FACTORY_PENDING = 1,
+    AF_VEHICLE_FACTORY_GIVEN_UP = 2,
+    AF_VEHICLE_FACTORY_ALIVE_TAKEN = 3, // alive, entered at least once
+};
+
+struct af_vehicle_factory_state_packet
+{
+    RF_GamePacketHeader header;
+    uint16_t factory_index;
+    uint8_t state;        // af_vehicle_factory_state_value
+    uint16_t s_remaining; // pending only; whole seconds, rounded up, saturates at 65535
+    // The factory's affiliation; a capture point can change it, so the client's own RFL copy goes stale.
+    uint8_t team;          // 0 red, 1 blue, 0xFF none
+};
+static_assert(sizeof(af_vehicle_factory_state_packet) == sizeof(RF_GamePacketHeader) + 6);
 
 struct af_koth_hill_captured_packet
 {
@@ -763,6 +989,8 @@ struct AfVoteCallParams
     uint8_t gametype = af_vote_gametype_none;
     uint8_t extend_minutes = af_vote_extend_default_minutes;
     std::vector<VoteMutatorInput> mutators;
+    // False means "inherit the session's set", the legacy/chat-vote meaning.
+    bool mutators_explicit = false;
     bool preserve = true;
 };
 
@@ -774,8 +1002,18 @@ static void af_process_ping_location_req_packet(const void* data, size_t len, co
 void af_send_ping_location_packet_to_team(rf::Vector3* pos, uint8_t player_id, rf::ubyte team);
 void af_send_ping_location_packet_to_all(rf::Vector3* pos, uint8_t player_id);
 static void af_process_ping_location_packet(const void* data, size_t len, const rf::NetAddr& addr);
-void af_send_damage_notify_packet(uint8_t player_id, float damage, bool died, rf::Player* player);
+// hull non-null replaces the victim player id with a non-player victim's position and handle
+void af_send_damage_notify_packet(uint8_t player_id, float damage, bool died, bool crit, rf::Player* player,
+                                  const AfDamageNotifyHull* hull = nullptr);
+// Demo-recorder variant: same payload plus a trailing attacker id, so playback can
+// filter notifications down to the player currently being spectated. Live clients
+// never receive this form (their copy is implicitly "attacker = you").
+void af_send_damage_notify_packet_for_demo(uint8_t victim_id, float damage, bool died, bool crit,
+                                           uint8_t attacker_id, rf::Player* recorder,
+                                           const AfDamageNotifyHull* hull = nullptr);
 static void af_process_damage_notify_packet(const void* data, size_t len, const rf::NetAddr& addr);
+void af_send_crit_shot_packet(uint8_t shooter_player_id, uint8_t weapon_type, rf::Player* player);
+static void af_process_crit_shot_packet(const void* data, size_t len, const rf::NetAddr& addr);
 void af_send_obj_update_packet(rf::Player* player);
 static void af_process_obj_update_packet(const void* data, size_t len, const rf::NetAddr& addr);
 void af_send_client_req_packet(const af_client_req_packet& packet, bool is_reliable = false);
@@ -784,10 +1022,12 @@ void af_send_character_request(int character_index);
 void af_send_server_req_packet(const af_server_req_packet& packet, rf::Player* player, bool reliable = true);
 void af_send_should_gib_req(uint32_t obj_handle);
 void af_send_kill_info(rf::Player* killed_player);
-void af_send_entity_on_fire(uint32_t obj_handle, bool on);
-void af_send_jetpack_state_request(bool on);
-void af_send_jetpack_state(uint32_t obj_handle, bool on);
+void af_send_entity_on_fire(uint32_t obj_handle, bool on, bool reliable = true);
+void af_send_jetpack_state_request(bool on, uint8_t fuel_pct);
+void af_send_jetpack_state(uint32_t obj_handle, bool on, uint8_t fuel_pct);
 void af_send_riot_shield_state(uint32_t obj_handle, float life, const rf::Vector3& impact_pos);
+void af_send_award(rf::Player* player, uint8_t award_id, uint8_t victim_player_id);
+void af_send_award_for_demo(rf::Player* recorder, uint8_t award_id, uint8_t victim_player_id, uint8_t earner_id);
 void af_send_teleport_entity_req(uint32_t obj_handle, const rf::Vector3& pos, const rf::Matrix3& orient, const rf::Vector3& vel);
 void af_send_spray_to_player(uint8_t player_id, uint16_t texture_id, const rf::Vector3& pos, const rf::Vector3& normal, uint8_t flags, rf::Player* player);
 void af_broadcast_spray(uint8_t player_id, uint16_t texture_id, const rf::Vector3& pos, const rf::Vector3& normal);
@@ -808,12 +1048,47 @@ void af_process_gungame_order_packet(const void* data, size_t len, const rf::Net
 void af_send_salvage_state_packet(rf::Player* player);
 void af_send_salvage_state_packet_to_all();
 void af_process_salvage_state_packet(const void* data, size_t len, const rf::NetAddr&);
+void af_send_vehicle_state_packet(rf::Player* player, int vehicle_handle, const int32_t* seat_rider,
+                                  uint8_t seat_count, uint8_t changed_seat,
+                                  const af_vehicle_state_attrs& attrs);
+void af_send_vehicle_state_packet_to_all(int vehicle_handle, const int32_t* seat_rider,
+                                         uint8_t seat_count, uint8_t changed_seat,
+                                         const af_vehicle_state_attrs& attrs);
+void af_process_vehicle_state_packet(const void* data, size_t len, const rf::NetAddr&);
+// client -> server: trigger state of the vehicle whose firing seat the local player owns
+void af_send_vehicle_fire_request(int vehicle_handle, uint8_t action, uint8_t alt_fire);
+// server -> every vehicle-capable client except `except` (the firing seat, which predicts its own)
+void af_send_vehicle_fire_packet_to_all(rf::Player* except, int vehicle_handle, uint8_t action,
+                                        uint8_t alt_fire);
+void af_send_vehicle_fire_packet(rf::Player* player, int vehicle_handle, uint8_t action, uint8_t alt_fire);
+void af_process_vehicle_fire_packet(const void* data, size_t len, const rf::NetAddr& addr);
+void af_send_vehicle_health_packet(rf::Player* player, int vehicle_handle, float life, float max_life,
+                                   int primary_ammo, int secondary_ammo, const uint16_t refill_ms[2]);
+void af_send_vehicle_health_packet_to_all(int vehicle_handle, float life, float max_life,
+                                          int primary_ammo, int secondary_ammo, const uint16_t refill_ms[2],
+                                          bool is_reliable, const rf::Vector3* hit_dir = nullptr);
+void af_process_vehicle_health_packet(const void* data, size_t len, const rf::NetAddr&);
+// client -> server: the hull pitch/bank of the vehicle the local player drives
+void af_send_vehicle_orient_request(int vehicle_handle, uint16_t tick, int16_t pitch, int16_t bank,
+                                    int16_t aim_pitch, int16_t aim_head, int8_t steer);
+// server -> every vehicle-capable client except `except` (the driver already has these angles)
+void af_send_vehicle_orient_packet_to_all(rf::Player* except, int vehicle_handle, uint16_t tick,
+                                          int16_t pitch, int16_t bank, int16_t aim_pitch,
+                                          int16_t aim_head, int8_t steer);
+void af_process_vehicle_orient_packet(const void* data, size_t len, const rf::NetAddr& addr);
+// server -> client: the respawn state and affiliation of one vehicle factory, sent on either change
+void af_send_vehicle_factory_state_packet(rf::Player* player, uint16_t factory_index, uint8_t state,
+                                          uint16_t s_remaining, uint8_t team);
+void af_send_vehicle_factory_state_packet_to_all(uint16_t factory_index, uint8_t state,
+                                                 uint16_t s_remaining, uint8_t team);
+void af_process_vehicle_factory_state_packet(const void* data, size_t len, const rf::NetAddr&);
 void af_send_koth_hill_captured_packet_to_all(uint8_t hill_uid, HillOwner owner, const std::vector<uint8_t>& new_owner_player_ids);
 static void af_process_koth_hill_captured_packet(const void* data, size_t len, const rf::NetAddr&);
 void af_send_just_died_info_packet(rf::Player* to_player, bool respawn_allowed, bool force_respawn, uint16_t spawn_delay);
 static void af_process_just_died_info_packet(const void* data, size_t len, const rf::NetAddr& addr);
 void af_send_server_info_packet(rf::Player* player);
 void af_send_server_info_packet_to_all();
+uint32_t af_compute_server_info_flags();
 void af_reset_session_overrides_snapshot();
 static void af_process_server_info_packet(const void* data, size_t len, const rf::NetAddr&);
 void af_send_spectate_start_packet(const rf::Player* spectatee);
@@ -843,6 +1118,11 @@ void af_send_server_cfg_request();
 void af_send_spray_request(uint16_t texture_id, const rf::Vector3& pos, const rf::Vector3& normal);
 void af_send_ready_request(uint8_t action);      // 0 = unready, 1 = ready, 2 = toggle
 void af_send_pit_queue_request(uint8_t action);  // 0 = leave, 1 = join, 2 = toggle
+void af_send_stats_pssk(const std::string& pssk);
+// vehicle_handle -1 = exit request
+void af_send_vehicle_use_request(int vehicle_handle, uint8_t seat_index);
+void af_send_vehicle_crush_report(int vehicle_handle, int victim_handle);
+void af_send_vehicle_crash_report(int vehicle_handle, bool ground, float impact_dv);
 
 // vote system (client -> server)
 void af_send_vote_call(const AfVoteCallParams& params);
@@ -862,6 +1142,10 @@ void af_send_vote_state_update(rf::Player* player, uint8_t yes, uint8_t no, uint
 void af_send_vote_state_end(rf::Player* player, AfVoteResult result, bool passed,
                             std::string_view detail);
 void af_send_vote_options_data(rf::Player* player);
+// Push the mutator set currently in force. Called on join and whenever the active
+// rules are (re)applied.
+void af_send_active_mutators(rf::Player* player);
+void af_send_active_mutators_to_all();
 
 // server -> client state (Pit + match ready system)
 void af_send_ready_prompt(rf::Player* player, uint8_t state); // 0/1/2 (see ReadyPromptPayload)

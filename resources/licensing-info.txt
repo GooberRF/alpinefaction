@@ -28,6 +28,7 @@ Rafalh:
 nick:
 * Extensive support and advice on virtually every aspect of the project
 * Being a firm sounding board for even the most outlandish and ambitious ideas
+* Code contributions
 
 natalie <webmistress@natalie.ee>:
 * Technical assistance and extensive advice
@@ -39,12 +40,21 @@ natalie <webmistress@natalie.ee>:
 is-this-c:
 * Code contributions
 
+AL2009man:
+* Code contributions
+
+jyh9521:
+* Code contributions
+
 HeyItsDuke:
 * Rocket launcher lock on reticle for Big HUD
 * Assistance evaluating levels for `pow2tex` fix
 
 Hiro:
 * Assistance evaluating levels for `pow2tex` fix
+
+Intharth:
+* Multiplayer team color variants of vehicle textures (resources/images/vehicle_teams)
 
 Beta testers:
 * nick
@@ -62,6 +72,8 @@ Beta testers:
 * ED BUNGHOLE
 * icesolate
 * DVL_IAC
+* OK
+* Willson
 * Everyone who tried a test build and provided feedback
 
 The entire Red Faction community:
@@ -92,8 +104,17 @@ soneproject:
 theplax:
 * af_spray1.ogg (CC-BY 4.0: https://freesound.org/s/657793/)
 
+LittleRobotSoundFactory:
+* af_award1.ogg (CC-BY 4.0: https://freesound.org/s/270404/)
+
 Drummyfish:
 * af-jetpack1skin1.tga and af-jetpack1.v3m (CC0: https://opengameart.org/content/oldschool-afps-weapons/)
+
+leeor_net:
+* af_caust00.png - af_caust15.png (CC0: https://opengameart.org/content/water-caustics-effect-small/)
+
+mcpable:
+* af_jeep_horn.ogg (CC0: https://freesound.org/s/131930/)
 
 ###############################################################################
 ## stb_image, stb_vorbis
@@ -519,3 +540,61 @@ freely, subject to the following restrictions:
 3. This notice may not be removed or altered from any source distribution.
 
 René Nyffenegger rene.nyffenegger@adp-gmbh.ch
+
+###############################################################################
+## Bullet Physics
+###############################################################################
+
+Source code: https://github.com/bulletphysics/bullet3
+
+Bullet Continuous Collision Detection and Physics Library, version 3.25
+Copyright (c) 2003-2006 Erwin Coumans  https://bulletphysics.org
+
+This software is provided 'as-is', without any express or implied warranty.
+In no event will the authors be held liable for any damages arising from the
+use of this software.
+
+Permission is granted to anyone to use this software for any purpose,
+including commercial applications, and to alter it and redistribute it freely,
+subject to the following restrictions:
+
+1. The origin of this software must not be misrepresented; you must not claim
+   that you wrote the original software. If you use this software in a product,
+   an acknowledgment in the product documentation would be appreciated but is
+   not required.
+
+2. Altered source versions must be plainly marked as such, and must not be
+   misrepresented as being the original software.
+
+3. This notice may not be removed or altered from any source distribution.
+
+###############################################################################
+## bc7enc_rdo
+###############################################################################
+
+Source code: https://github.com/richgel999/bc7enc_rdo
+
+Copyright (c) 2020-2021 Richard Geldreich, Jr.
+
+bc7enc_rdo is offered under two licenses; Alpine Faction uses it under the MIT
+License (ALTERNATIVE A), reproduced below. Only the BC7 encoder, the BC7
+decoder, the entropy reduction transform and the two support headers they
+include, and the BC1/DXT1 encoder (rgbcx, with its smaller table header
+rgbcx_table4_small.h) are used; bc7e.ispc (Apache 2.0) and LodePNG are not
+included.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files(the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and / or sell copies
+of the Software, and to permit persons to whom the Software is furnished to do
+so, subject to the following conditions :
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

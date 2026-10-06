@@ -1,6 +1,10 @@
 #pragma once
 
+#include <concepts>
+#include <cstdint>
 #include <optional>
+#include <type_traits>
+#include <utility>
 #include <vector>
 
 template <typename E>

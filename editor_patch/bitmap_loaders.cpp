@@ -14,6 +14,7 @@
 #include <patch_common/FunHook.h>
 #include <common/utils/string-utils.h>
 #include <common/bitmap/formats.h>
+#include <common/bitmap/tga.h>
 #include <common/atx/parse.h>
 #include "bitmap_loaders.h"
 #include "vtypes.h"
@@ -451,6 +452,25 @@ namespace
         ".atx", ".dds", ".png", ".jpg", ".jpeg"
     };
 
+    // What the GAME's loader resolves, in its precedence order — mirrors g_texture_extensions
+    // in bmpman.cpp. Used only for pack-time probes, which have to agree with the game's
+    // lookup rather than with RED's narrower preview chain above.
+    constexpr std::array<std::string_view, 10> game_texture_extensions = {
+        ".atx", ".dds", ".png", ".jpg", ".jpeg", ".vbm", ".tga", ".pcx", ".vaf", ".m2v"
+    };
+
+    // Mirrors bm_strip_texture_ext: drops a trailing extension only when it is one the game can
+    // resolve a texture from.
+    std::string_view strip_game_texture_ext(std::string_view filename)
+    {
+        for (auto ext : game_texture_extensions) {
+            if (string_iends_with(filename, ext)) {
+                return filename.substr(0, filename.size() - ext.size());
+            }
+        }
+        return filename;
+    }
+
     std::string find_supercede_sibling(const char* requested_name)
     {
         std::string base{get_filename_without_ext(requested_name)};
@@ -508,11 +528,25 @@ namespace
         return true;
     }
 
-    FunHook<int(const char*, int*, int*, int*, int*, void*, int*, int*, int*, void*, const char*)>
+    // Applies the stock TGA pixel loaders' checks up front, because bm_lock allocates the pixel
+    // buffer from the header dimensions before those loaders reject the file.
+    bool tga_header_loadable(const char* filename, int path_id)
+    {
+        rf::File file;
+        if (file.open_mode(filename, 1, path_id) != 0) {
+            return true;
+        }
+        uint8_t hdr[tga_header_size];
+        const int bytes_read = file.read(hdr, sizeof(hdr));
+        file.close();
+        return bytes_read == sizeof(hdr) && tga_header_supported(hdr);
+    }
+
+    FunHook<int(const char*, int*, int*, int*, int*, void*, int*, int*, int*, void*, int)>
     editor_bm_read_header_hook{
         0x004BC200,
         [](const char* name, int* w, int* h, int* format, int* num_levels, void* pal_buf,
-           int* num_frames, int* fps, int* total_bytes, void* vbm_ver_buf, const char* default_path)
+           int* num_frames, int* fps, int* total_bytes, void* vbm_ver_buf, int path_id)
         {
             if (is_stb_filename(name)) {
                 if (fill_stb_header(name, w, h, format, num_levels, num_frames, fps, total_bytes)) {
@@ -561,8 +595,13 @@ namespace
                     // sibling probe failed; fall through to stock dispatch below
                 }
             }
-            return editor_bm_read_header_hook.call_target(name, w, h, format, num_levels, pal_buf,
-                num_frames, fps, total_bytes, vbm_ver_buf, default_path);
+            const int bm_type = editor_bm_read_header_hook.call_target(name, w, h, format, num_levels, pal_buf,
+                num_frames, fps, total_bytes, vbm_ver_buf, path_id);
+            if (bm_type == EDITOR_BM_TYPE_TGA && !tga_header_loadable(name, path_id)) {
+                xlog::warn("[Bitmap] Failed to load bitmap header for '{}'", string_escape_control_chars(name));
+                return 0;
+            }
+            return bm_type;
         }
     };
 
@@ -634,7 +673,12 @@ namespace
             return dispatch_lock(child, child_handle, pixels_out, palette_out);
         }
         // Stock bm_type — safe to invoke RED's original lock.
-        return editor_bm_lock_hook.call_target(handle, pixels_out, palette_out);
+        const int format = editor_bm_lock_hook.call_target(handle, pixels_out, palette_out);
+        if (!format) {
+            *pixels_out = nullptr;
+            *palette_out = nullptr;
+        }
+        return format;
     }
 }
 
@@ -649,6 +693,16 @@ void clear_editor_bitmap_redirects()
 {
     g_atx_redirects.clear();
     g_file_redirects.clear();
+}
+
+std::string find_atx_sibling(const char* requested_name)
+{
+    if (!requested_name || !requested_name[0] || string_iends_with(requested_name, ".atx")) {
+        return {};
+    }
+    std::string candidate{strip_game_texture_ext(requested_name)};
+    candidate += ".atx";
+    return sibling_file_exists(candidate.c_str()) ? candidate : std::string{};
 }
 
 std::vector<std::string> parse_atx_dependencies(const char* atx_filename)

@@ -4,6 +4,7 @@
 #include <common/utils/list-utils.h>
 #include <common/utils/os-utils.h>
 #include <common/config/BuildConfig.h>
+#include <common/lighting/alpine_lighting.h>
 #include <common/ComPtr.h>
 #include <patch_common/CallHook.h>
 #include <patch_common/FunHook.h>
@@ -11,6 +12,7 @@
 #include <patch_common/ShortTypes.h>
 #include <patch_common/AsmWriter.h>
 #include <xlog/xlog.h>
+#include <iterator>
 #include <optional>
 #include <shellapi.h>
 #include "../os/console.h"
@@ -18,7 +20,9 @@
 #include "../main/main.h"
 #include "../multi/multi.h"
 #include "../misc/alpine_settings.h"
+#include "../misc/level.h"
 #include "../rf/gr/gr.h"
+#include "../rf/gr/gr_light.h"
 #include "../rf/gameseq.h"
 #include "../rf/level.h"
 #include "../rf/geometry.h"
@@ -31,8 +35,12 @@
 #include "../rf/ui.h"
 #include "gr.h"
 #include "gr_internal.h"
+#include "weather.h"
+#include "scene_capture.h"
 #include "../misc/alpine_options.h"
 #include "../hud/multi_spectate.h"
+#include "../multi/demo/demo.h"
+#include "../multi/vehicles/vehicle_view.h"
 #include "legacy/gr_d3d.h"
 #include "d3d11/gr_d3d11_hooks.h"
 
@@ -58,7 +66,6 @@ CodeInjection gr_init_stretched_window_injection{
             SetWindowLongA(rf::main_wnd, GWL_STYLE, WS_POPUP | WS_SYSMENU);
             SetWindowLongA(rf::main_wnd, GWL_EXSTYLE, 0);
             SetWindowPos(rf::main_wnd, HWND_NOTOPMOST, 0, 0, cx, cy, SWP_SHOWWINDOW);
-            rf::gr::screen.aspect = static_cast<float>(cx) / static_cast<float>(cy) * 0.75f;
             regs.eip = 0x0050C551;
         }
     },
@@ -147,6 +154,21 @@ bool gr_3d_bitmap_oriented_wh(const rf::Vector3* pnt, const rf::Matrix3* M, floa
     return rf::gr::poly(4, verts, rf::gr::TMapperFlags::TMAP_FLAG_TEXTURED, mode, 0, 0.0f);
 }
 
+bool gr_project_world_to_screen(const rf::Vector3& world_pos, float& out_sx, float& out_sy)
+{
+    rf::gr::Vertex v{};
+    if (rf::gr::rotate_vertex(&v, &world_pos)) { // behind the near plane
+        return false;
+    }
+    rf::gr::project_vertex(&v);
+    if (!(v.flags & rf::gr::VF_PROJECTED)) {
+        return false;
+    }
+    out_sx = v.sx;
+    out_sy = v.sy;
+    return true;
+}
+
 float gr_scale_fov_hor_plus(float horizontal_fov)
 {
     // Use Hor+ FOV scaling method to improve user experience for wide screens
@@ -185,10 +207,10 @@ CodeInjection gameplay_render_frame_fov_injection{
     0x00431BA1,
     []() {
         // Scale world FOV
-        auto& rf_fov = addr_as_ref<float>(0x0059613C);
-        rf_fov = gr_scale_world_fov(rf_fov);
-        // Free-look spectate stepped zoom narrows the FOV (1.0 when not zoomed)
-        rf_fov /= multi_spectate_get_view_fov_scale();
+        rf::gr::gameplay_fov = gr_scale_world_fov(rf::gr::gameplay_fov);
+        // Free-look spectate stepped zoom and the turret zoom narrow the FOV (1.0 when not zoomed)
+        rf::gr::gameplay_fov /= multi_spectate_get_view_fov_scale();
+        rf::gr::gameplay_fov /= vehicle_turret_zoom_fov_scale();
     },
 };
 
@@ -316,7 +338,7 @@ ConsoleCommand2 disable_rendering_cmd{
 FunHook<void(rf::Player*, int)> gameplay_render_frame_hook{
     0x00431A00,
     [](rf::Player* pp, int flags) {
-        if (is_headless_mode() || !g_alpine_game_config.rendering_enabled) {
+        if (is_headless_mode() || !g_alpine_game_config.rendering_enabled || demo_playback_is_seeking()) {
             return;
         }
 
@@ -328,7 +350,7 @@ FunHook<void(rf::Player*, int)> gameplay_render_frame_hook{
 FunHook<void()> gameplay_render_frame_pre_hook{
     0x00431820,
     []() {
-        if (is_headless_mode() || !g_alpine_game_config.rendering_enabled) {
+        if (is_headless_mode() || !g_alpine_game_config.rendering_enabled || demo_playback_is_seeking()) {
             return;
         }
 
@@ -356,6 +378,22 @@ FunHook<void()> explosion_do_frame_hook{
     []() {
         explosion_do_frame_hook.call_target();
         explosion_flash_lights_do_frame();
+    },
+};
+
+// Vclips (explosion sprites etc.) spawned during a demo seek burst barely age before the
+// seek ends and would all pop on screen at once afterwards. Failing the call here also
+// suppresses the flash lights the two CallHooks below add on success, and the particles
+// and explosions vclip_play_3d itself creates.
+FunHook<int(int index, rf::GRoom* src_room, rf::Vector3* src_pos, rf::Vector3* pos,
+    float radius, int parent_handle, rf::Vector3* dir, bool play_sound)> vclip_play_3d_hook{
+    0x004C16E0,
+    [](int index, rf::GRoom* src_room, rf::Vector3* src_pos, rf::Vector3* pos,
+        float radius, int parent_handle, rf::Vector3* dir, bool play_sound) {
+        if (demo_playback_in_seek_burst()) {
+            return -1;
+        }
+        return vclip_play_3d_hook.call_target(index, src_room, src_pos, pos, radius, parent_handle, dir, play_sound);
     },
 };
 
@@ -431,8 +469,22 @@ bool gr_set_render_target(int bm_handle)
     return false;
 }
 
-// Drain the queued .vfx x-ray outlines (the salvage flag) now, so they land under the
-// first-person weapon instead of over it.
+int gr_render_target_generation()
+{
+    if (rf::gr::screen.mode == rf::gr::DIRECT3D && is_d3d11()) {
+        return gr::d3d11::render_target_generation();
+    }
+    return 0;
+}
+
+// Drop the renderer's cached texture-handle pair; see the declaration in gr.h.
+void gr_invalidate_texture_cache()
+{
+    if (rf::gr::screen.mode == rf::gr::DIRECT3D && is_d3d11()) {
+        gr::d3d11::invalidate_texture_cache();
+    }
+}
+
 void gr_flush_outlines_before_fpgun()
 {
     if (rf::gr::screen.mode == rf::gr::DIRECT3D && is_d3d11()) {
@@ -449,6 +501,18 @@ void gr_bitmap_scaled_float(int bitmap_handle, float x, float y, float w, float 
         }
         else {
             gr_d3d_bitmap_float(bitmap_handle, x, y, w, h, sx, sy, sw, sh, flip_x, flip_y, mode);
+        }
+    }
+}
+
+void gr_poly_2d(int bitmap_handle, int nv, const rf::gr::Vertex* vertices, rf::gr::Mode mode)
+{
+    if (rf::gr::screen.mode == rf::gr::DIRECT3D) {
+        if (is_d3d11()) {
+            gr::d3d11::poly_2d(bitmap_handle, nv, vertices, mode);
+        }
+        else {
+            gr_d3d_poly_2d(bitmap_handle, nv, vertices, mode);
         }
     }
 }
@@ -559,6 +623,40 @@ CodeInjection gr_d3d_render_lod_vif_injection{
     },
 };
 
+SunLightState gr_get_sun_state()
+{
+    SunLightState state;
+    if (!(rf::level.flags & rf::LEVEL_LOADED)) {
+        return state;
+    }
+    const alpine_lighting::SunState sun = alpine_lighting::sun_state(AlpineLevelProperties::instance());
+    state.enabled = sun.enabled;
+    state.affects_meshes = sun.affects_meshes;
+    state.drives_shadowmap_dir = sun.drives_shadowmap_dir;
+    state.mesh_mode = sun.mesh_mode;
+    state.travel_dir = {sun.travel_dir[0], sun.travel_dir[1], sun.travel_dir[2]};
+    std::copy(std::begin(sun.color), std::end(sun.color), state.color);
+    return state;
+}
+
+float gr_sun_get_mesh_scale(const float* ambient)
+{
+    const SunLightState sun = gr_get_sun_state();
+    float global_ambient[3];
+    if (!ambient) {
+        rf::gr::light_get_ambient(&global_ambient[0], &global_ambient[1], &global_ambient[2]);
+        ambient = global_ambient;
+    }
+    return alpine_lighting::sun_mesh_scale(sun.enabled && sun.affects_meshes, sun.mesh_mode, ambient);
+}
+
+void gr_mesh_blend_ambient(const float (&lightmap)[3], float (&out)[3])
+{
+    float global_ambient[3];
+    rf::gr::light_get_ambient(&global_ambient[0], &global_ambient[1], &global_ambient[2]);
+    alpine_lighting::mesh_blend_ambient(global_ambient, lightmap, out);
+}
+
 // Power of 2 texture enforcement
 // Access p2t flag directly to avoid pulling in D3D8 types from gr_direct3d.h
 namespace rf::gr::d3d {
@@ -596,14 +694,29 @@ ConsoleCommand2 pow2_tex_cmd{
     "Manual debug override for power of 2 texture enforcement. Only affects new level loads. If you don't know what this does, do not use this command.",
 };
 
+ConsoleCommand2 underwater_fx_cmd{
+    "r_underwater",
+    [](std::optional<int> level_opt) {
+        if (level_opt) {
+            g_alpine_game_config.set_underwater_fx(level_opt.value());
+        }
+        rf::console::print(
+            "Underwater effects level is {} (Direct3D 11 renderer only, 0 = stock)",
+            g_alpine_game_config.underwater_fx
+        );
+    },
+    "Sets the underwater effects level: 0 stock, 1 caustics, 2 + fog/tint/vignette, 3 + distortion "
+    "(Direct3D 11 renderer only)",
+    "r_underwater <0-3>",
+};
+
 // checked during level load
 void evaluate_pow2tex(const rf::String& level_filename) {
     // if dbg_pow2tex is active, use manual override instead of level filename lookup
     if (!override_pow2tex) {
-        bool should_p2t_fix = false;
-
-        if (is_p2t_fix_level(level_filename)) {
-            should_p2t_fix = true;
+        const bool should_p2t_fix = is_p2t_fix_level(level_filename);
+        // Renderer-only, so a dedicated server has nothing to report.
+        if (!rf::is_dedicated_server && should_p2t_fix) {
             rf::console::print("Applying power of 2 texture fix to known affected level {}", level_filename);
         }
 
@@ -613,7 +726,7 @@ void evaluate_pow2tex(const rf::String& level_filename) {
     // Always sync D3D11 state with current p2t value at level load
     if (g_game_config.renderer == GameConfig::Renderer::d3d11) {
         gr::d3d11::set_pow2_tex_active(rf::gr::d3d::p2t != 0);
-        if (is_sky_fix_level(level_filename)) {
+        if (!rf::is_dedicated_server && is_sky_fix_level(level_filename)) {
             rf::console::print("Applying sky fix to known affected level {}", level_filename);
         }
     }
@@ -678,6 +791,12 @@ void gr_apply_patch()
     // Lights
     gr_light_apply_patch();
 
+    // Plankton fix and weather regions
+    weather_apply_patch();
+
+    // Display_Projection scene capture
+    scene_capture_apply_patch();
+
     if (!headless_bot_graphics_bypass) {
         const bool use_d3d11_renderer =
             g_game_config.renderer == GameConfig::Renderer::d3d11;
@@ -727,8 +846,23 @@ void gr_apply_patch()
     // Handle explosion dynamic light flashes
     vclip_init_hook.install();
     explosion_do_frame_hook.install();
+    vclip_play_3d_hook.install();
     vclip_play_3d_weapon_hook.install();
     vclip_play_3d_env_hook.install();
+
+    // ---
+    // Render bolts steady instead of flickering: vanilla rolls a random
+    // brightness (10-100% of bolt color) and width (50-100% of thickness) for
+    // every bolt on every rendered frame. Collapse the random ranges to the
+    // constants the engine uses for its static bolt path (visible while the
+    // game is paused). Designer-controlled shape jitter is unaffected.
+    // ---
+    // Logic works, disabled until a mechanism to apply it on-demand by level designers exists
+    // Todo
+    //write_mem<u32>(0x00558090 + 1, 0x3F000000); // brightness max: 1.0 -> 0.5
+    //write_mem<u32>(0x00558095 + 1, 0x3F000000); // brightness min: 0.1 -> 0.5
+    //write_mem<u32>(0x0055815C + 1, 0x3F400000); // width max: 1.0 -> 0.75
+    //write_mem<u32>(0x00558161 + 1, 0x3F400000); // width min: 0.5 -> 0.75
 
     // Fix gr_rect_border not drawing left border
     AsmWriter{0x0050DF2D}.push(asm_regs::ebp).push(asm_regs::ebx);
@@ -750,6 +884,7 @@ void gr_apply_patch()
     precache_rooms_cmd.register_cmd();
     disable_rendering_cmd.register_cmd();
     pow2_tex_cmd.register_cmd();
+    underwater_fx_cmd.register_cmd();
 
     // Fix `rf::gr::text_2d_mode`.
     AsmWriter{0x0050BB40}.push<int8_t>(rf::gr::FOG_NOT_ALLOWED);

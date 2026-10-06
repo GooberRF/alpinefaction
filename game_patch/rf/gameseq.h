@@ -54,4 +54,5 @@ namespace rf
     static auto& gameseq_process_deferred_change = addr_as_ref<GameState()>(0x00434310);
 
     static auto& game_shutdown = addr_as_ref<void()>(0x004359E0);
+    static auto& game_paused = addr_as_ref<bool>(0x00637086);
 }

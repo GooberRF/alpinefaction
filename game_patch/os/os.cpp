@@ -249,6 +249,9 @@ bool headless_bot_requested_from_raw_cmdline()
 
 bool awpgen_requested_from_raw_cmdline()
 {
+    if (rf::is_dedicated_server) {
+        return false;
+    }
     return raw_command_line_has_switch(L"-awpgen");
 }
 

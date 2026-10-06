@@ -7,6 +7,7 @@
 #include "multi_scoreboard.h"
 #include "../input/input.h"
 #include "../multi/endgame_votes.h"
+#include "../multi/demo/demo.h"
 #include "../multi/multi.h"
 #include "../multi/gametype.h"
 #include "../multi/bagman.h"
@@ -578,6 +579,14 @@ ScoreboardPlayerList filter_and_sort_players(const std::optional<int> team_id)
     player_list.players.reserve(32);
 
     for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
+        // The demo viewer is not part of the recorded match - no phantom row
+        if (demo_playback_active() && &player == rf::local_player) {
+            continue;
+        }
+        // A recording listen-server host must not list its own virtual recorder
+        if (player.is_observer()) {
+            continue;
+        }
         if (!team_id || player.team == team_id.value()) {
             player_list.players.push_back(&player);
         }

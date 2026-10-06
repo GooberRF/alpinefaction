@@ -14,6 +14,7 @@
 #include "../../os/os.h"
 #include "../../purefaction/pf_packets.h"
 #include "../multi.h"
+#include <limits>
 #include <map>
 
 constexpr float BOT_LEVEL_START_WAIT_TIME_SEC = 5.f;
@@ -30,7 +31,12 @@ enum class ClientSoftware {
     Browser = 1,
     PureFaction = 2,
     DashFaction = 3,
-    AlpineFaction = 4
+    AlpineFaction = 4,
+    // Server-side virtual player that records demos (game_patch/multi/demo/).
+    // Runs the current AF build's code: AF version gates treat it as AlpineFaction
+    // (see is_player_minimum_af_client_version). Never has an entity, never
+    // reaches a real socket; multi_io_send* taps divert its traffic to the demo file.
+    Observer = 5
 };
 
 struct ClientVersionInfoProfile {
@@ -43,6 +49,56 @@ struct ClientVersionInfoProfile {
     bool is_d3d11 = false;
 };
 
+// Per-game, per-player counters for the FactionFiles event stream. Reset at
+// every game start; serialized whole into the game_end / player_leave summary
+// block. Score and caps are read live from the engine at summary time instead of
+// being duplicated here.
+struct AfstatsGameCounters {
+    uint32_t kills = 0;
+    uint32_t deaths = 0;
+    uint32_t assists = 0;
+    uint32_t caps = 0;
+    uint32_t shots_fired = 0;
+    uint32_t shots_hit = 0;
+    float damage_dealt = 0.0f;
+    float damage_taken = 0.0f;
+    // Efficiency = damage actually dealt to other players / damage those shots could have dealt.
+    // Full-scope weapons only, so numerator and denominator describe the same weapon set.
+    float efficiency_dealt = 0.0f;
+    float damage_potential = 0.0f;
+    uint32_t highest_streak = 0;
+    uint32_t current_streak = 0;
+    int64_t time_played_ms = 0;
+    int64_t time_spectating_ms = 0;
+    int64_t time_idle_ms = 0;
+    int64_t ping_sum = 0;
+    uint32_t ping_samples = 0;
+    // The same, but only over the current player_pings window: sampled every frame and
+    // cleared each time that event is emitted, so it averages the window, not the game.
+    int64_t interval_ping_sum = 0;
+    uint32_t interval_ping_samples = 0;
+    // Accepted pong measurements in the current player_pings window and the extremes of
+    // their raw round-trip times; zero pongs makes the window report all latencies as -1.
+    uint32_t interval_pong_count = 0;
+    int interval_ping_min = std::numeric_limits<int>::max();
+    int interval_ping_max = -1;
+
+    // Bookkeeping. The time accumulators above are advanced by sampling the
+    // player's state on the sender pulse, so these mark where the last sample
+    // landed rather than when a state was entered.
+    int64_t present_since_ms = 0;
+    int64_t last_sample_ms = 0;
+    int64_t last_ping_sample_ms = 0;
+
+    // Idle is a computed predicate with no stored engine state, so the sampler
+    // edge-detects it against this.
+    bool was_idle = false;
+
+    // Last score and caps a player_score_change reported for this player.
+    int last_reported_score = 0;
+    int last_reported_caps = 0;
+};
+
 struct PlayerAdditionalData {
     // Shared variables.
     bool is_bot = false;
@@ -52,9 +108,26 @@ struct PlayerAdditionalData {
     bool is_spectator = false;
     bool is_human_player = true;
 
+    // Demo observer: the server-side virtual recorder only. NOT for packet-send
+    // gates - the observer must RECEIVE what a real client would see.
+    bool is_observer() const
+    {
+        return version_info.software == ClientSoftware::Observer;
+    }
+    // Any non-participating connection (browser or demo observer): exempt from
+    // spawning, votes, team balance, rosters, gametype participation.
+    bool is_non_participant() const
+    {
+        return is_browser || is_observer();
+    }
+
     // Client-side variables.
     std::optional<pf_pure_status> received_pf_status{};
     bool is_muted = false;
+
+    // Smoothed view angular velocity feeding fpgun aim sway, in rad/s.
+    float sway_pitch_vel = 0.0f;
+    float sway_yaw_vel = 0.0f;
 
     // Server-side variables.
     bool in_grace_period = true;
@@ -63,8 +136,17 @@ struct PlayerAdditionalData {
     std::optional<std::chrono::steady_clock::time_point> spectate_start_time{};
 
     std::optional<int64_t> last_hit_sound_ms{};
-    std::optional<int64_t> last_critical_sound_ms{};
+    // Floor rate limit for broadcast 3d world sounds (broadcast_sound_packet_3d).
+    std::optional<int64_t> last_world_sound_ms{};
     std::optional<int64_t> last_spray_ms{};
+    // Floor rate limit for af_req_stats_pssk so a client cannot flood the handler.
+    std::optional<int64_t> last_pssk_ms{};
+    // Separate floor for the af_req_stats_pssk rejection warns, so a rejected packet
+    // never eats the delivery budget above.
+    std::optional<int64_t> last_pssk_warn_ms{};
+    // Floor rate limit for stats player_rename emission so a client cannot turn a rename
+    // flood into an event flood. Uses the afstats uptime clock (resets per session).
+    std::optional<int64_t> last_rename_ms{};
 
     struct {
         std::map<std::string, PlayerNetGameSaveData> saves{};
@@ -128,6 +210,21 @@ struct PlayerAdditionalData {
     // Throttles the spawn-decline notices in multi_spawn_player_server_side
     // (Alpine restriction, anti-cheat, match in progress, bot, respawn delay).
     rf::Timestamp spawn_decline_msg_timer{};
+
+    // FactionFiles player stats session key delivered by the client on join.
+    // Never persisted, unique per join.
+    std::optional<std::string> afstats_pssk{};
+
+    // How the event stream refers to this player: a UPSSK minted by this server at
+    // join, replaced by the PSSK above once the client delivers one. Empty for
+    // browsers and whenever stats reporting is off.
+    std::string afstats_key{};
+    AfstatsGameCounters afstats_game{};
+
+    // Value from the stats stream's leave-reason registry. First writer wins, so a
+    // specific reason (banned, vote_kicked) survives the generic kick that follows
+    // it; -1 means the player vanished without any local notice, i.e. a timeout.
+    int8_t afstats_leave_reason = -1;
 };
 static_assert(alignof(PlayerAdditionalData) == 0x8);
 #endif
@@ -139,6 +236,8 @@ namespace rf
     struct PlayerNetData;
     struct AiInfo;
     struct Camera;
+    struct Object;
+    struct Entity;
 
     /* Settings */
 
@@ -243,6 +342,7 @@ namespace rf
     {
         PF_HIDE_FROM_CAMERA = 0x10,
         PF_KILL_AFTER_BLACKOUT = 0x200,
+        PF_IN_ENCLOSED_VEHICLE = 0x400, // set while boarding a $Use: "vehicle" entity, not turrets
         PF_END_LEVEL_AFTER_BLACKOUT = 0x1000,
     };
 
@@ -301,6 +401,7 @@ namespace rf
         PlayerNetData *net_data;
     };
     static_assert(sizeof(PlayerBase) == 0x1204);
+    static_assert(offsetof(PlayerBase, weapon_mesh_handle) == 0x34);
 
     struct Player
         : PlayerBase
@@ -312,6 +413,18 @@ namespace rf
 
     static auto& player_list = addr_as_ref<Player*>(0x007C75CC);
     static auto& local_player = addr_as_ref<Player*>(0x007C75D4);
+    static auto& render_player = addr_as_ref<Player*>(0x007C763C); // player whose view is being rendered.
+    // Over the LOCAL players array: obj is one's entity, or the host that entity rides.
+    static auto& obj_is_local_player_or_mount = addr_as_ref<bool(Object* obj)>(0x0048AA30);
+    // The local player obj_is_local_player_or_mount matched, or null.
+    static auto& player_from_local_obj_or_mount = addr_as_ref<Player*(Object* obj)>(0x0048AA90);
+
+    // Allocates the Player (Alpine-extended size via patch at 0x004A3329) together with its
+    // PlayerNetData (reliable_socket = -1, buffers zeroed) and links it into player_list.
+    static auto& player_allocate = addr_as_ref<Player*(bool is_local)>(0x004A3310);
+    // Unlinks from player_list and frees net_data/stats/player. Closes net_data->reliable_socket
+    // if != -1 (the demo recorder holds a real slot, which this releases).
+    static auto& player_delete = addr_as_ref<void(Player* player)>(0x004A35C0);
 
     static auto& player_from_entity_handle = addr_as_ref<Player*(int entity_handle)>(0x004A3740);
     static auto& player_is_undercover = addr_as_ref<bool()>(0x004B0580);
@@ -339,7 +452,24 @@ namespace rf
     static auto& game_get_gore_level = addr_as_ref<int()>(0x00436A20);
     static auto& game_set_gore_level = addr_as_ref<void(int gore_setting)>(0x00436A10);
     static auto& player_settings_apply_graphics_options = addr_as_ref<void(Player* player)>(0x004A8D20);
+    // Both are part of the vanilla boarding sequence (0x004A1DD8): zero the fpgun pivot data for
+    // the cockpit view, then drop any active zoom.
+    static auto& player_cockpit_reset = addr_as_ref<void(Player* player)>(0x004A8670);
+    static auto& player_cockpit_process = addr_as_ref<void(Player* player)>(0x004A77A0);
+    static auto& player_cockpit_render = addr_as_ref<void(Player* player)>(0x004A7860);
+    // The driller's view_left/view_rear/view_right camera pose for cockpit_data.camera_index 1-3.
+    static auto& player_cockpit_get_view = addr_as_ref<void(Player* player, Entity* vehicle, Vector3* out_pos,
+                                                            Matrix3* out_orient)>(0x004A8690);
+    static auto& player_fpgun_reset_zoom = addr_as_ref<void(Player* player)>(0x004AD8A0);
+    // ((int)floor(value * weight + eps)) % 10 + 1, a 1-based cockpit VFX digit frame; 1 for a negative value.
+    static auto& cockpit_vfx_digit_frame = addr_as_ref<int __cdecl(int value, float weight)>(0x004A7EB0);
+    // Cockpit digit strip bitmaps (apc_digits.vbm, Fighter01_digits.vbm), -1 until 0x004A7E00 / 0x004A7D80 load them.
+    static auto& cockpit_digit_strip_base = addr_as_ref<int>(0x005A068C);
+    static auto& cockpit_digit_strip_base_fighter = addr_as_ref<int>(0x005A073C);
     static auto& local_screen_flash = addr_as_ref<void(Player* pp, uint8_t r, uint8_t g, uint8_t b, uint8_t a)>(0x00416450);
+    // 4-way mask (1 front, 2 left, 4 back, 8 right) of a hit travelling along dir, in pp's entity frame.
+    static auto& player_damage_dir_mask = addr_as_ref<unsigned(Player* pp, const Vector3* dir)>(0x004A5A20);
+    static auto& player_start_hud_damage_indicators = addr_as_ref<void(Player* pp, unsigned dir_mask)>(0x004A5AF0);
     static auto& g_player_flashlight_intensity = addr_as_ref<float>(0x005A00FC);
     static auto& g_player_flashlight_range = addr_as_ref<float>(0x005A0108);
 }

@@ -5,12 +5,14 @@
 #include <patch_common/ShortTypes.h>
 #include <patch_common/StaticBufferResizePatch.h>
 #include <algorithm>
+#include <vector>
 #include "sound.h"
 #include "../rf/sound/sound.h"
 #include "../rf/sound/sound_ds.h"
 #include "../rf/entity.h"
 #include "../rf/multi.h"
 #include "../rf/os/frametime.h"
+#include "../rf/os/timestamp.h"
 #include "../multi/multi.h"
 #include "../misc/alpine_settings.h"
 #include "../main/main.h"
@@ -22,6 +24,8 @@ static int g_custom_sound_entry_start = -1;
 static int g_taunt_sound_start = -1;
 static int g_radmsg_sound_start = -1;
 static int g_spray_sound_id = -1;
+static int g_award_sound_id = -1;
+static int g_jeep_horn_sound_id = -1;
 #ifdef DEBUG
 int g_sound_test = 0;
 #endif
@@ -251,7 +255,8 @@ FunHook<int(int, const rf::Vector3&, float, const rf::Vector3&, int)> snd_play_3
     [](int handle, const rf::Vector3& pos, float volume, const rf::Vector3&, int group) {
         xlog::trace("snd_play_3d {} {:.2f} {}", handle, volume, group);
 
-        if (!rf::sound_enabled || handle < 0) {
+        // Upper-bound guard
+        if (!rf::sound_enabled || handle < 0 || handle >= rf::g_num_sounds) {
             return -1;
         }
         if (rf::snd_load_hint(handle) != 0) {
@@ -382,6 +387,15 @@ void snd_update_ambient_sounds(const rf::Vector3& camera_pos)
                     float pan = rf::snd_pc_calculate_pan(ambient_snd.pos);
                     rf::snd_pc_set_pan(ambient_snd.sig, pan);
                 }
+                else if (ambient_snd.sig >= 0) {
+                    // The DS3D buffer position is only set when the sound starts, so without this
+                    // a moving ambient sound (e.g. a vehicle engine loop) keeps its initial direction
+                    int chnl = rf::snd_ds_get_channel(ambient_snd.sig);
+                    if (chnl >= 0) {
+                        rf::snd_ds3d_update_buffer(chnl, sound.min_range, sound.max_range, ambient_snd.pos,
+                            rf::zero_vector);
+                    }
+                }
             }
             else if (ambient_snd.sig >= 0) {
                 rf::snd_pc_stop(ambient_snd.sig);
@@ -390,6 +404,19 @@ void snd_update_ambient_sounds(const rf::Vector3& camera_pos)
         }
     }
 }
+
+// Stock starts the fighter's held-fire loop with the 2D snd_play, so it plays at full volume everywhere; start it 3D.
+// No trampoline: this replaces the whole relative CALL, and the caller's add esp,0x10 (0x0041E685) pops its args.
+CodeInjection entity_process_post_fighter_fire_loop_injection{
+    0x0041E680,
+    [](auto& regs) {
+        rf::Entity* ep = regs.esi;
+        int sound_handle = regs.eax;
+        regs.eax = rf::snd_play_3d(sound_handle, ep->pos, 1.0f, rf::zero_vector, 0);
+        regs.eip = 0x0041E685;
+    },
+    false,
+};
 
 #ifdef DEBUG
 
@@ -418,6 +445,36 @@ void sound_test_do_frame()
 
 #endif // DEBUG
 
+// Defer sound preloads issued while reading level events: sound-heavy maps preload many MB
+// of ogg/wav synchronously during load. Queue the ids and warm them one per 10 ms after the
+// level is up; a sound played before it is warmed just loads on demand like in the stock game.
+static std::vector<int> g_deferred_snd_loads;
+static bool g_defer_snd_loads = false;
+
+FunHook<int(int)> snd_load_hint_defer_hook{
+    0x005054D0,
+    [](int snd_id) {
+        if (g_defer_snd_loads && rf::sound_enabled && snd_id >= 0) {
+            g_deferred_snd_loads.push_back(snd_id);
+            return 0;
+        }
+        return snd_load_hint_defer_hook.call_target(snd_id);
+    },
+};
+
+FunHook<void(void*)> level_read_events_snd_defer_hook{
+    0x00462150,
+    [](void* file) {
+        g_deferred_snd_loads.clear();
+        g_defer_snd_loads = true;
+        level_read_events_snd_defer_hook.call_target(file);
+        g_defer_snd_loads = false;
+        std::ranges::sort(g_deferred_snd_loads);
+        auto dupes = std::ranges::unique(g_deferred_snd_loads);
+        g_deferred_snd_loads.erase(dupes.begin(), dupes.end());
+    },
+};
+
 FunHook<void(const rf::Vector3&, const rf::Vector3&, const rf::Matrix3&)> snd_update_sounds_hook{
      0x00505EC0,
     [](const rf::Vector3& camera_pos, const rf::Vector3& camera_vel, const rf::Matrix3& camera_orient) {
@@ -434,6 +491,17 @@ FunHook<void(const rf::Vector3&, const rf::Vector3&, const rf::Matrix3&)> snd_up
 
         rf::sound_listener_pos = camera_pos;
         rf::sound_listener_rvec = camera_orient.rvec;
+
+        // Warm one deferred level sound per 10 ms
+        if (!g_deferred_snd_loads.empty()) {
+            static rf::Timestamp warm_timer;
+            if (!warm_timer.valid() || warm_timer.elapsed()) {
+                warm_timer.set(10);
+                int snd_id = g_deferred_snd_loads.back();
+                g_deferred_snd_loads.pop_back();
+                snd_load_hint_defer_hook.call_target(snd_id);
+            }
+        }
 
         // Update DirectSound 3D listener parameters
         rf::snd_pc_change_listener(camera_pos, camera_vel, camera_orient);
@@ -484,7 +552,8 @@ bool is_valid_custom_sound_id(int custom_id) {
         return false;
     }
     const int handle = g_custom_sound_entry_start + custom_id;
-    return handle >= 0 && handle < rf::g_num_sounds;
+    // A looping entry played from a packet would never be stopped.
+    return handle >= 0 && handle < rf::g_num_sounds && !rf::sounds[handle].is_looping;
 }
 
 int get_custom_chat_message_sound_id(int custom_id, bool is_taunt)
@@ -495,6 +564,30 @@ int get_custom_chat_message_sound_id(int custom_id, bool is_taunt)
 int get_spray_sound_id()
 {
     return g_spray_sound_id;
+}
+
+int get_award_sound_id()
+{
+    return g_award_sound_id;
+}
+
+int get_jeep_horn_sound_id()
+{
+    return g_jeep_horn_sound_id;
+}
+
+bool snd_instance_is_playing(int instance_handle)
+{
+    if (instance_handle < 0) {
+        return false;
+    }
+    const auto instance_index = static_cast<uint8_t>(instance_handle);
+    if (instance_index >= std::size(rf::sound_instances)) {
+        return false;
+    }
+    const auto& instance = rf::sound_instances[instance_index];
+    return instance.handle >= 0 && instance.use_count == (instance_handle >> 8)
+        && rf::snd_pc_is_playing(instance.sig);
 }
 
 void gamesound_parse_custom_sounds() 
@@ -621,6 +714,8 @@ void gamesound_parse_custom_sounds()
         {"MP_TAUNT_73.wav", 10.0f, 1.0f, 1.0f},
         {"MP_TAUNT_74.wav", 10.0f, 1.0f, 1.0f},
         {"af_spray1.ogg", 10.0f, 1.0f, 1.0f},
+        {"af_award1.ogg", 10.0f, 1.0f, 1.0f},
+        {"af_jeep_horn.ogg", 15.0f, 1.0f, 1.0f},
     };
 
     for (const auto& sound : custom_sounds) 
@@ -636,6 +731,12 @@ void gamesound_parse_custom_sounds()
     g_taunt_sound_start = rf::snd_pc_find_by_name("MP_TAUNT_16.wav");
     g_radmsg_sound_start = rf::snd_pc_find_by_name("af_radmsg_000.ogg");
     g_spray_sound_id = rf::snd_pc_find_by_name("af_spray1.ogg");
+    g_award_sound_id = rf::snd_pc_find_by_name("af_award1.ogg");
+    g_jeep_horn_sound_id = rf::snd_pc_find_by_name("af_jeep_horn.ogg");
+    if (g_jeep_horn_sound_id >= 0) {
+        // Looping comes from the stock sound database, which has no record for an AF file.
+        rf::sounds[g_jeep_horn_sound_id].is_looping = true;
+    }
 
     //xlog::warn("Custom sounds added, starting at ID {}. Taunts start at ID {}", g_custom_sound_entry_start, g_taunt_sound_start);
 }
@@ -849,6 +950,10 @@ void apply_sound_patches()
     snd_change_3d_hook.install();
     snd_update_sounds_hook.install();
 
+    // Defer level-event sound preloads to after level load
+    snd_load_hint_defer_hook.install();
+    level_read_events_snd_defer_hook.install();
+
     // Apply patch for DirectSound specific code
     snd_ds_apply_patch();
 
@@ -869,6 +974,9 @@ void apply_sound_patches()
 
     // Add custom sounds to sounds array
     gamesound_parse_sounds_table_patch.install();
+
+    // Play the fighter's held-fire weapon loop in 3D so it attenuates with distance
+    entity_process_post_fighter_fire_loop_injection.install();
 }
 
 void register_sound_commands()

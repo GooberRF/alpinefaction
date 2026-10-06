@@ -92,6 +92,8 @@ struct HillInfo
     int hold_ms_accum = 0;
     int capture_milli = 0; // 0 - 100000 (100% = 100000)
     std::vector<int> mp_spawn_uids;
+    // g_vehicle_factories indices of the Vehicle Factories linked from this point's handler
+    std::vector<int> vehicle_factories;
     int stage = 0; // order of hills in REV
     int cap_gain_sfx_handle = -1;
     bool cap_gain_sfx_playing = false;
@@ -163,6 +165,11 @@ static inline bool hostile_progress_present_server(const HillInfo& h)
 }
 
 extern KothInfo g_koth_info;
+
+// Containment and liveness tests the hill frame code itself runs, so anything asking "was this
+// player on that hill" agrees with the capture logic by construction.
+bool player_inside_hill_trigger(const HillInfo& h, const rf::Player& p);
+bool player_is_countable(rf::Player& p);
 
 bool multi_game_type_is_team_type(rf::NetGameType game_type);
 bool multi_game_type_has_hills(rf::NetGameType game_type);

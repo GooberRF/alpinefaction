@@ -1,11 +1,47 @@
 #pragma once
 
 #include <windows.h>
+#include <commdlg.h>
 #include <patch_common/MemUtils.h>
 #include <mbstring.h>
 #include <algorithm>
+#include <memory>
+#include <stdexcept>
+#include <string>
+#include <vector>
+#include <common/terrain/alpine_terrain.h>
+#include <common/alpine_dir_light.h>
 
 extern "C" IMAGE_DOS_HEADER __ImageBase;
+
+// Alpine's dialog templates carry no DS_CENTER, so a modal opens at its owner's top left unless it
+// is placed in WM_INITDIALOG.
+inline void alpine_center_dialog_on_owner(HWND hdlg)
+{
+    HWND owner = GetWindow(hdlg, GW_OWNER);
+    if (!owner) {
+        owner = GetDesktopWindow();
+    }
+    RECT owner_rect;
+    RECT dlg_rect;
+    if (!owner || !GetWindowRect(owner, &owner_rect) || !GetWindowRect(hdlg, &dlg_rect)) {
+        return;
+    }
+    const int width = dlg_rect.right - dlg_rect.left;
+    const int height = dlg_rect.bottom - dlg_rect.top;
+    int x = static_cast<int>(owner_rect.left) + ((owner_rect.right - owner_rect.left) - width) / 2;
+    int y = static_cast<int>(owner_rect.top) + ((owner_rect.bottom - owner_rect.top) - height) / 2;
+
+    MONITORINFO info{};
+    info.cbSize = sizeof(info);
+    if (GetMonitorInfoA(MonitorFromWindow(owner, MONITOR_DEFAULTTONEAREST), &info)) {
+        const int left = static_cast<int>(info.rcWork.left);
+        const int top = static_cast<int>(info.rcWork.top);
+        x = std::clamp(x, left, std::max(left, static_cast<int>(info.rcWork.right) - width));
+        y = std::clamp(y, top, std::max(top, static_cast<int>(info.rcWork.bottom) - height));
+    }
+    SetWindowPos(hdlg, nullptr, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+}
 
 struct CWnd_mbrs
 {
@@ -144,7 +180,14 @@ enum class DedObjectType : int
     DED_MESH = 0x17,   // Alpine 1.3
     DED_NOTE = 0x18,   // Alpine 1.3
     DED_CORONA = 0x19, // Alpine 1.3
-    DED_BAG = 0x1A     // Alpine 1.4
+    DED_BAG = 0x1A,    // Alpine 1.4
+    DED_WEATHER_REGION = 0x1B, // Alpine 1.4
+    DED_VEHICLE_FACTORY = 0x1C, // Alpine 1.5
+    DED_PROJECTION_CAMERA = 0x1D, // Alpine 1.5
+    DED_ROPE_EMITTER = 0x1E, // Alpine 1.5
+    DED_TERRAIN = 0x1F, // Alpine 1.5
+    DED_DIRECTIONAL_LIGHT = 0x20, // Alpine 1.5
+    DED_SUN_ARROW = 0x21, // editor-only viewport handle for the level sun, never serialized
 };
 
 struct Vector3
@@ -184,6 +227,8 @@ struct Matrix3
     }
 };
 static_assert(sizeof(Matrix3) == 0x24, "Matrix3 size mismatch!");
+
+inline const Matrix3 identity_orient{{1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f, 1.0f}};
 
 struct Plane
 {
@@ -355,7 +400,7 @@ static constexpr uintptr_t ded_object_vtbl_addr = 0x55712C;
 struct DedObject
 {
     void* vtbl;
-    VString field_4;
+    VString field_4; // unsure what this is
     void* vmesh;
     int field_10;
     Vector3 pos;
@@ -394,14 +439,44 @@ struct DedEvent : DedObject
 };
 static_assert(sizeof(DedEvent) == 0xC4, "DedEvent size mismatch");
 
+struct DedClutter : DedObject
+{
+    char pad_94[0xB8 - 0x94];
+    char skin_block[0x28]; // 0xB8 — includes the skin count at 0xDC; the stock ctor (0x0044D9F0) leaves it unset
+};
+static_assert(offsetof(DedClutter, skin_block) == 0xB8);
+
 struct DedRoomEffect : DedObject
 {
-    int effect_type;                   // 0x94 — 2 = Liquid Room
-    char pad_98[0xA8 - 0x98];
+    int effect_type;                   // 0x94 — 2 = Liquid Room, 3 = Ambient Light
+    uint32_t ambient_color;            // 0x98 — ambient color for effect_type 3
+    char pad_9C[0xA8 - 0x9C];
     VString liquid_bitmap;             // 0xA8 — liquid surface texture filename
     char pad_B0[0xD4 - 0xB0];
 };
 static_assert(sizeof(DedRoomEffect) == 0xD4, "DedRoomEffect size mismatch");
+
+enum class GeoRegionShape : int
+{
+    sphere = 2,
+    box = 4,
+};
+
+// Partial; field use from the geo region reader/writer FUN_00454340
+struct DedGeoRegion : DedObject
+{
+    GeoRegionShape shape;              // 0x94
+    float radius;                      // 0x98 — sphere only
+    float height;                      // 0x9C — box only, full size
+    float width;                       // 0xA0
+    float depth;                       // 0xA4
+};
+static_assert(offsetof(DedGeoRegion, shape) == 0x94);
+static_assert(sizeof(GeoRegionShape) == sizeof(int));
+static_assert(offsetof(DedGeoRegion, radius) == 0x98);
+static_assert(offsetof(DedGeoRegion, height) == 0x9C);
+static_assert(offsetof(DedGeoRegion, width) == 0xA0);
+static_assert(offsetof(DedGeoRegion, depth) == 0xA4);
 
 // Per-slot texture override for editor mesh objects
 struct EditorTextureOverride {
@@ -428,13 +503,16 @@ struct DedMesh : DedObject
 {
     VString mesh_filename;          // .v3m / .v3c / .vfx path
     VString state_anim;             // animation name (for .v3c skeletal meshes)
-    uint8_t collision_mode;         // 0=None, 1=Only Weapons, 2=All
+    uint8_t collision_mode;         // 0=None, 1=Only Weapons, 2=All, 3=Brush
     bool vmesh_load_failed;         // true if vmesh load was attempted and failed
     char padding_mesh[2];
     std::vector<EditorTextureOverride> texture_overrides;
     bool simulate_in_editor = false;   // v3c only: play animation continuously instead of freezing frame 0
     int material = 0;                  // material type for impact sounds (0=default, applies to all meshes)
     MeshClutterProps clutter_props;
+    bool no_shadow_cast = false;       // excluded from the lightmap bake's mesh occluders
+    uint8_t brush_geo_source = 0;      // collision_mode 3 only: 0=Highest LOD, 1=Lowest LOD, 2=Collision Mesh
+    std::string collision_mesh_filename; // brush_geo_source 2 only: static .v3m collided instead of the render mesh
 };
 
 struct DedNote : DedObject
@@ -462,26 +540,320 @@ struct DedCorona : DedObject
     bool show_in_editor = false;       // not serialized — local editor toggle
 };
 
+enum class WeatherRegionShape : int
+{
+    box = 0,
+    sphere = 1,
+};
+
+enum class WeatherRegionType : int
+{
+    rain = 0,
+    snow = 1,
+};
+
+struct DedWeatherRegion : DedObject
+{
+    WeatherRegionShape shape = WeatherRegionShape::box;
+    WeatherRegionType weather_type = WeatherRegionType::rain;
+    float width = 10.0f;
+    float height = 10.0f;
+    float depth = 10.0f;
+    float radius = 5.0f;
+    float density_scale = 1.0f;
+    float active_distance = 0.0f;   // 0 = auto: visible distance plus the game's activity margin
+    float visible_distance = 0.0f;  // 0 = auto: the weather type's own sim box half extent
+    uint8_t rain_color_r = 170, rain_color_g = 190, rain_color_b = 215, rain_color_a = 110;
+    float rain_fall_speed = 14.0f;
+    float rain_wind_x = 1.1f;
+    float rain_wind_z = 0.4f;
+    float rain_streak_seconds = 0.035f;
+    uint8_t snow_color_r = 235, snow_color_g = 240, snow_color_b = 255, snow_color_a = 190;
+    float snow_fall_speed = 1.2f;
+    float snow_sway_amplitude = 0.55f;
+    float snow_sway_speed = 1.7f;
+    float snow_sprite_radius = 0.035f;
+    std::string snow_bitmap = "af_gbrsnowfl01.tga";
+    bool always_show_range = false;
+    bool initially_enabled = true;
+    bool block_by_geometry = false;
+    float column_width = 0.5f;
+};
+
+// Team a Vehicle Factory's spawned vehicle belongs to. Serialized as a u8, 0xFF for none.
+enum class VehicleFactoryTeam : int
+{
+    none = -1,
+    red = 0,
+    blue = 1,
+};
+
+struct DedVehicleFactory : DedObject
+{
+    std::string vehicle_class = "Jeep01";
+    float respawn_delay_s = 30.0f;
+    VehicleFactoryTeam team = VehicleFactoryTeam::none;
+    bool lock_to_team = false;
+    bool active_by_default = true;
+
+    // Kept out of DedObject::vmesh so stock cleanup paths never free it; vehicle_factory.cpp owns it.
+    void* preview_vmesh = nullptr;
+    std::string preview_class;   // class the preview was loaded for
+    bool preview_load_failed = false;
+    float preview_bound_center[3] = {}; // preview mesh bounding sphere, object space
+    float preview_bound_radius = 0.0f;  // 0 = no preview loaded, use the fixed fallback radius
+};
+
+struct DedProjectionCamera : DedObject
+{
+    // All projection settings live on the linked Display_Projection event.
+};
+
+// flags bits, shared with the game runtime's rope_flag_* constants
+constexpr uint32_t ded_rope_flag_dynamic = 0x1;
+constexpr uint32_t ded_rope_flag_glow = 0x2;
+constexpr uint32_t ded_rope_flag_sway = 0x4;
+
+// Fields the solved preview polyline depends on: pos (3), has_target, target pos (3), slack,
+// segments, dangle length, target uid.
+constexpr int ded_rope_preview_key_len = 11;
+
+// Per-slot decoration extras: an instance-local transform offset plus the two optional effects.
+// A plain aggregate so clone/copy/paste carry it with a single assignment.
+struct DedRopeSlotFx
+{
+    float pos_x = 0.0f, pos_y = 0.0f, pos_z = 0.0f;
+    float rot_pitch = 0.0f, rot_yaw = 0.0f, rot_roll = 0.0f;
+    uint8_t flags = 0;                  // 0x1 glare, 0x2 light
+
+    std::string glare_bitmap = "LightCorona04.tga";
+    uint8_t glare_r = 255, glare_g = 255, glare_b = 255, glare_a = 255;
+    float cone_angle = 90.0f;           // degrees, halved by the game at creation
+    // Stock authoring factors, matching DedCorona and rope_curve.h's deco_fx defaults: negative
+    // diminish distance is how stock effects.tbl spells "always visible".
+    float intensity = 1.0f;
+    float radius_distance = 0.6f;
+    float radius_scale = 0.8f;
+    float diminish_distance = -0.05f;
+    std::string volumetric_bitmap;
+    float volumetric_height = 0.0f;
+    float volumetric_length = 0.0f;
+
+    uint8_t light_r = 255, light_g = 255, light_b = 255;
+    float light_radius = 5.0f;
+    float light_intensity = 1.0f;
+
+    bool has_glare() const { return (flags & 0x1) != 0; }
+    bool has_light() const { return (flags & 0x2) != 0; }
+};
+
+struct DedRopeEmitter : DedObject
+{
+    int32_t target_uid = -1;           // -1 = free hanging dangle
+    float dangle_length = 3.0f;        // only used when target_uid is -1
+    float slack = 0.5f;
+    float weight = 1.0f;
+    float thickness = 0.03f;
+    int32_t segments = 24;
+    float uv_tiles_per_meter = 0.0f;   // 0 = stretch the texture once over the full length
+    uint8_t color_r = 255, color_g = 255, color_b = 255, color_a = 255;
+    std::string bitmap;
+    float sway_amplitude = 0.05f;
+    float sway_speed = 1.0f;
+    uint32_t flags = 0;
+    bool initially_on = true;
+
+    // Decorations: up to six meshes duplicated along the rope. The name slots are kept compacted,
+    // so the used ones are always deco_meshes[0..n-1] and the first empty slot ends the list.
+    bool decorations_enabled = false;
+    std::string deco_meshes[6];
+    // Index-locked to deco_meshes: compaction moves a name and its effects together, and the wire
+    // carries them as one unit.
+    DedRopeSlotFx deco_fx[6];
+    // 0 = fixed count, 1 = every N meters, 2 = both ends, 3 = only start, 4 = only target
+    uint8_t deco_spacing_mode = 0;
+    int32_t deco_count = 10;
+    float deco_spacing = 1.0f;
+    bool deco_random_order = false;
+    uint8_t deco_orient_mode = 0;    // 0 = follow curve, 1 = upright
+
+    // Viewport preview cache, never serialized: the solved polyline plus the quantized inputs it
+    // was solved from, so a repaint only re-solves when something the curve depends on moved.
+    std::vector<Vector3> preview_points;
+    float preview_length = 0.0f;
+    int32_t preview_key[ded_rope_preview_key_len] = {};
+    bool preview_valid = false;
+};
+
+// Heavy per-terrain arrays. Shared copy-on-write between a terrain, the properties dialog's staging
+// and clipboard copies: an edit builds a new grid and swaps the pointer, never mutating a shared one.
+struct TerrainGrid
+{
+    uint32_t nx = 0;
+    uint32_t nz = 0;
+    uint32_t weight_res_mul = 1;
+    std::vector<uint16_t> heights; // nx * nz
+    std::vector<uint8_t> weights;  // alpine_terrain::blob_weights_bytes: two RGBA8 maps
+    std::vector<uint8_t> holes;    // alpine_terrain::bitmask_bytes
+    std::vector<uint8_t> diag;     // alpine_terrain::bitmask_bytes
+    // alpine_terrain::overlay_map_bytes while the terrain has overlays, else empty
+    std::vector<uint8_t> overlay;
+    // One alpine_terrain::decoration_plane_bytes coverage plane per decoration, in list order
+    std::vector<uint8_t> decoration;
+};
+
+struct DedTerrainLayer
+{
+    std::string texture = alpine_terrain::default_layer_texture;
+    float uv_scale = alpine_terrain::default_uv_scale;
+    bool triplanar = false;
+};
+
+struct DedTerrainOverlay : DedTerrainLayer
+{
+    bool break_tiling = true;
+
+    DedTerrainOverlay() { texture.clear(); }
+};
+
+struct DedTerrainDecoration
+{
+    std::string mesh; // empty = none picked yet
+    float density = alpine_terrain::default_decoration_density;
+    float scale_min = alpine_terrain::default_decoration_scale;
+    float scale_max = alpine_terrain::default_decoration_scale;
+    float max_slope = alpine_terrain::default_decoration_slope_deg;
+    float draw_distance = alpine_terrain::default_decoration_draw_distance;
+    float vertical_offset = 0.0f;
+    uint8_t link_layer = alpine_terrain::decoration_link_none;
+    bool align_to_slope = false;
+    bool random_yaw = true;
+    bool casts_shadows = false;
+    bool dither_fade = false;
+
+    bool operator==(const DedTerrainDecoration&) const = default;
+};
+
+// Everything a terrain carries beyond DedObject, as one copyable value.
+struct DedTerrainData
+{
+    float cell_size = alpine_terrain::default_cell_size;
+    float height_min = 0.0f;
+    float height_range = alpine_terrain::default_height_range;
+    uint32_t chunk_cells = alpine_terrain::default_chunk_cells;
+    uint8_t lightmap_density = alpine_terrain::lightmap_density_default;
+    uint8_t flags = 0; // alpine_terrain::flag_mask bits
+    bool fullbright = false; // alpine_terrain::flag_fullbright
+    float thickness = alpine_terrain::default_thickness;
+    float skirt_depth = alpine_terrain::default_skirt_depth;
+    std::string underside_texture = alpine_terrain::default_layer_texture;
+    std::string crater_texture; // empty = level geomod texture
+    std::vector<DedTerrainLayer> layers;
+    std::vector<DedTerrainOverlay> overlays;
+    std::vector<DedTerrainDecoration> decorations;
+    std::shared_ptr<const TerrainGrid> grid;
+    // Chunk geo mask (alpine_terrain.h) over geo_chunks_layout, the layout it was set on; read through
+    // terrain_chunk_geoable, which remaps it to the current one. Empty = every chunk.
+    std::vector<uint8_t> geo_chunks;
+    alpine_terrain::ChunkLayout geo_chunks_layout{};
+    // Written at save from the compiled rooms (terrain_build.cpp); read from the level on load.
+    std::vector<alpine_terrain::ChunkMapping> build_mapping;
+    // Not serialized: per chunk, the uid of the compiled room holding it in the current solid
+    // (alpine_terrain::no_room_uid for a chunk with no faces), and the geometry and material
+    // fingerprints (alpine_terrain.h) of the terrain it was built from.
+    std::vector<int32_t> built_room_uids;
+    uint64_t built_geometry_fingerprint = 0;
+    uint64_t built_material_fingerprint = 0;
+};
+
+// Axis-aligned: pos is the grid origin and orient is kept at identity.
+struct DedTerrain : DedObject
+{
+    DedTerrainData data;
+    // Not serialized: a save already showed the "no compiled geometry" message box for it
+    bool unbuilt_save_warned = false;
+};
+
+// orient.fvec is the direction the light travels. Fields mirror alpine_dir_light::Record.
+struct DedDirectionalLight : DedObject
+{
+    uint8_t color_r = 255, color_g = 255, color_b = 255;
+    float intensity = alpine_dir_light::default_intensity;
+    bool initially_on = true;
+    alpine_dir_light::Shape shape = alpine_dir_light::Shape::none;
+    float extent_x = alpine_dir_light::default_extent; // box width, sphere/cylinder radius
+    float extent_y = alpine_dir_light::default_extent; // box height, cylinder length
+    float extent_z = alpine_dir_light::default_extent; // box depth
+    float box_yaw = 0.0f;                              // degrees about world Y, box only
+    float feather = 0.0f;
+    float spread = 0.0f;                               // degrees, baked penumbra
+    bool cast_baked_shadows = true;
+    bool liquid_occludes = true;
+    bool sky_passes = true;
+    bool outside_casts = true;
+    bool affects_meshes = true;
+    alpine_dir_light::MeshMode mesh_mode = alpine_dir_light::MeshMode::lightmap_scaled;
+    bool always_show_range = false;
+};
+
+// The level sun's viewport handle: pos and orient are derived from the level properties every frame.
+struct DedSunArrow : DedObject
+{
+};
+
 struct DedBoltEmitter : DedObject
 {
-    char pad_94[0xC4 - 0x94];
+    char pad_94[0x98 - 0x94];
+    int target_uid;                    // 0x98 — -1 when unset
+    char pad_9C[0xC4 - 0x9C];
     VString bitmap;                    // 0xC4 — bolt texture filename
     char pad_CC[0xD4 - 0xCC];
+
+    // Copies every field, the bolt's own uid and its target included, into the runtime bolt the
+    // viewport draws (+0x94), which looks both endpoints up by those uids every frame.
+    // The properties dialog runs this on close; a field changed anywhere else must run it too.
+    void sync_preview()
+    {
+        AddrCaller{0x0044D0D0}.this_call(this);
+    }
 };
 static_assert(sizeof(DedBoltEmitter) == 0xD4, "DedBoltEmitter size mismatch");
 
 
 struct CDialog_mbrs
 {
-    char padding[0x58]; // placeholder
+    char padding[0x4C]; // placeholder
+    CWnd* m_pParentWnd; // owner PreModal disables, read at 0x0052F3C2
+    HWND m_hWndTop;     // the window PostModal re-enables, written through at 0x0052F3CC
+    char padding2[0x4];
 };
 
 struct CDialog
 {
     void* _vft;
     CDialog_mbrs _d;
+
+    // Disables the owner and registers the modal state, returning the window to parent the dialog
+    // to. Both halves are the whole of what CColorDialog::DoModal does around ChooseColorA.
+    HWND PreModal()
+    {
+        return AddrCaller{0x0052F3A9}.this_call<HWND>(this);
+    }
+
+    void PostModal()
+    {
+        AddrCaller{0x0052F3E3}.this_call(this);
+    }
 };
 static_assert(sizeof(CDialog) == 0x5C, "CDialog size mismatch!");
+static_assert(offsetof(CDialog, _d.m_pParentWnd) == 0x50, "m_pParentWnd offset mismatch!");
+static_assert(offsetof(CDialog, _d.m_hWndTop) == 0x54, "m_hWndTop offset mismatch!");
+
+struct CColorDialog : CDialog
+{
+    CHOOSECOLORA m_cc;
+};
+static_assert(offsetof(CColorDialog, m_cc) == 0x5C, "CColorDialog m_cc offset mismatch!");
 
 struct CEdit : CWnd
 {
@@ -700,6 +1072,15 @@ struct CDocument
 };
 static_assert(sizeof(CDocument) == 0x50);
 
+struct CDedDoc : CDocument
+{
+    char LoadSaveLevel(const char* path, int is_load, int is_autosave)
+    {
+        return AddrCaller{0x0041CCE0}.this_call<char>(this, path, is_load, is_autosave);
+    }
+};
+static_assert(sizeof(CDedDoc) == sizeof(CDocument));
+
 struct VFile
 {
     int DirId;
@@ -735,7 +1116,7 @@ struct CMainFrame : CFrameWnd
 {
     void* views[4];
     void* unk_view;
-    CDocument* doc;
+    CDedDoc* doc;
     VString field_D4;
     char dialog_bar[0x88]; // CDialogBar
     char status_bar[0x7C]; // CStatusBar
@@ -749,11 +1130,11 @@ struct CMainFrame : CFrameWnd
     float camera_speed_allowed_values[6];
     int camera_speed_index;
     float grid_brightness;
-    int custom_colors[16];
+    COLORREF custom_colors[16];
     int favorite_textures[8];
     bool play_no_tnl;
     char padding_tail[3];
-    void* preferences_dlg;
+    struct PreferencesDialog* preferences_dlg;
 
     void MaximizeActiveViewport()
     {
@@ -764,8 +1145,14 @@ struct CMainFrame : CFrameWnd
     {
         AddrCaller{0x00447670}.this_call(this);
     }
+
+    void OnCalculateLighting()
+    {
+        AddrCaller{0x00449680}.this_call(this);
+    }
 };
 static_assert(sizeof(CMainFrame) == 0x550);
+static_assert(offsetof(CMainFrame, custom_colors) == 0x4E8, "custom_colors offset mismatch!");
 
 static auto& g_main_frame = addr_as_ref<CMainFrame*>(0x006F9E68);
 static auto& g_maximized_viewport = addr_as_ref<int>(0x0057B9C0);
