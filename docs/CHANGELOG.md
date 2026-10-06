@@ -98,10 +98,10 @@ Version 1.5.0 (Trillium): Not yet released
 - Load levels with very large face counts or many level sounds much faster
 
 [@is-this-c](https://github.com/is-this-c)
-- Do not kick a player, if they join right before limbo
-
-[@is-this-c](https://github.com/is-this-c)
+- Support TrueType fonts in 3D text rendering
+- Render world HUD text (player labels, damage numbers, ping labels, countdowns) in 3D for smooth sub-pixel motion
 - Allow TrueType fonts to be rendered into bitmaps with mipmaps (D3D11 only)
+- Do not kick a player, if they join right before limbo
 
 ### Bug fixes
 [@GooberRF](https://github.com/GooberRF)
@@ -200,6 +200,7 @@ Version 1.5.0 (Trillium): Not yet released
 
 [@is-this-c](https://github.com/is-this-c)
 - Let `Caps Lock` capitalize
+- Fix floating damage numbers not swaying in the wind
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Cap FPS-dependent launch velocity when head jumping
