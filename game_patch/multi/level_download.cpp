@@ -1394,7 +1394,7 @@ CallHook<void(rf::GameState, bool)> process_enter_limbo_packet_gameseq_set_next_
 
 CallHook<void(rf::GameState, bool)> process_leave_limbo_packet_gameseq_set_next_state_hook{
     0x0047C24F,
-    [](rf::GameState state, bool force) {
+    [] (const rf::GameState state, const bool force) {
         xlog::trace("Leave limbo - next level: {}", rf::level.next_level_filename);
         if (!multi_next_level_exists()) {
             rf::gameseq_set_state(rf::GS_MULTI_LEVEL_DOWNLOAD, false);
@@ -1402,12 +1402,12 @@ CallHook<void(rf::GameState, bool)> process_leave_limbo_packet_gameseq_set_next_
         } else if (rf::gameseq_get_state() == rf::GS_MULTI_LIMBO_JUST_JOINED) {
             g_multi_limbo_just_joined_req_leave = true;
         } else if (rf::gameseq_get_state() == rf::GS_MULTI_LIMBO) {
-            // `gameseq_set_state` switches immediately, before `rf_do_frame` can
+            // `gameseq_set_state` switches, immediately before `rf_do_frame` can
             // draw its loading label.  Defer transition, until after a limbo
             // frame has rendered "LOADING...".
             g_multi_limbo_req_leave = true;
         } else {
-            process_leave_limbo_packet_gameseq_set_next_state_hook.call_target(state, force);
+            rf::gameseq_set_state(state, force);
         }
     },
 };
