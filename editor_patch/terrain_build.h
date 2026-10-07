@@ -19,6 +19,8 @@ struct BrushNode;
 struct GFace;
 
 void ApplyTerrainBuildPatches();
+// Calculate Lighting's surface pass (FUN_00448ca0) as stock runs it, without the checks its hook adds.
+void lighting_surfaces_stock(void* self);
 
 // "Terrain <uid> '<script name>'" for messages.
 std::string terrain_label(const DedTerrain& t);

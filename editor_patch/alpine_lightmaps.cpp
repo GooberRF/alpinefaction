@@ -28,6 +28,7 @@
 #include <common/terrain/alpine_terrain.h>
 
 #include "alpine_lightmaps.h"
+#include "bake_progress.h"
 #include "work_pool.h"
 #include "level.h"
 #include "mfc_types.h"
@@ -1247,7 +1248,8 @@ void shade_terrain_charts()
         return;
     }
     lightmap_prepare_terrain_bake();
-    for (std::size_t k = 0; k < g_af.terrains.size(); k++) {
+    bake_progress_phase(BakePhase::terrain, g_af.terrains.size());
+    for (std::size_t k = 0; k < g_af.terrains.size() && !bake_progress_cancelled(); k++, bake_progress_step()) {
         AfTerrain& a = g_af.terrains[k];
         const std::size_t ci = g_af.first_terrain_chart + k;
         const DWORD t0 = GetTickCount();
@@ -1337,17 +1339,27 @@ PageBuffers encode_bc7(const alm::EncoderSettings& s, std::uint32_t& out_modifie
 
     // The ranges follow the core count, which cannot change the bytes: the encoder is an RNG free
     // exhaustive search over one block at a time, so each block's bytes depend on its own pixels alone.
+    // Batches of pages keep the progress window current.
     unsigned workers = std::thread::hardware_concurrency();
     workers = std::max(1u, std::min(workers, 32u));
-    const std::uint32_t chunk = (total + workers - 1) / workers;
+    constexpr std::uint32_t batch_blocks = page_blocks * 16;
     std::vector<std::pair<std::uint32_t, std::uint32_t>> ranges;
-    for (std::uint32_t start = 0; start < total; start += chunk) {
-        ranges.emplace_back(start, std::min(total, start + chunk));
+    for (std::uint32_t first = 0; first < total; first += batch_blocks) {
+        const std::uint32_t last = std::min(total, first + batch_blocks);
+        const std::uint32_t chunk = (last - first + workers - 1) / workers;
+        ranges.clear();
+        for (std::uint32_t start = first; start < last; start += chunk) {
+            ranges.emplace_back(start, std::min(last, start + chunk));
+        }
+        work_pool_run(static_cast<int>(ranges.size()), [&](int i) {
+            const auto r = ranges[static_cast<std::size_t>(i)];
+            run(r.first, r.second);
+        });
+        bake_progress_step(last - first);
+        if (bake_progress_cancelled()) {
+            return blocks;
+        }
     }
-    work_pool_run(static_cast<int>(ranges.size()), [&](int i) {
-        const auto r = ranges[static_cast<std::size_t>(i)];
-        run(r.first, r.second);
-    });
 
     if (s.rdo_lambda > 0.0f) {
         ert::reduce_entropy_params ep;
@@ -1384,11 +1396,20 @@ PageBuffers encode_bc7(const alm::EncoderSettings& s, std::uint32_t& out_modifie
         // One page per task on fixed block ranges, so the output is deterministic; no match crosses a page.
         const int pages = static_cast<int>(blocks.size());
         std::vector<std::uint32_t> modified(static_cast<std::size_t>(pages), 0);
-        work_pool_run(pages, [&](int page) {
-            const std::uint32_t first = static_cast<std::uint32_t>(page) * page_blocks;
-            rdo(blocks[static_cast<std::size_t>(page)].data(), first, std::min(page_blocks, total - first),
-                modified[static_cast<std::size_t>(page)]);
-        });
+        constexpr int batch_pages = 16;
+        for (int batch = 0; batch < pages; batch += batch_pages) {
+            const int count = std::min(batch_pages, pages - batch);
+            work_pool_run(count, [&](int i) {
+                const int page = batch + i;
+                const std::uint32_t first = static_cast<std::uint32_t>(page) * page_blocks;
+                rdo(blocks[static_cast<std::size_t>(page)].data(), first, std::min(page_blocks, total - first),
+                    modified[static_cast<std::size_t>(page)]);
+            });
+            bake_progress_step(static_cast<std::uint64_t>(count) * page_blocks);
+            if (bake_progress_cancelled()) {
+                return blocks;
+            }
+        }
         for (const std::uint32_t m : modified) {
             out_modified += m;
         }
@@ -2401,14 +2422,30 @@ void alpine_lm_bake_end()
     }
 
     shade_terrain_charts();
+    if (bake_progress_cancelled()) {
+        alpine_lm_bake_abort();
+        return;
+    }
 
+    const AlpineBakePlan plan = alpine_lm_bake_plan();
+    if (overflow_has_table()) {
+        bake_progress_phase(BakePhase::overflow, overflow_table_tiles());
+    }
+    else {
+        bake_progress_phase(BakePhase::encode, plan.encode_steps);
+    }
     const DWORD t0 = GetTickCount();
     const std::uint64_t replicated = replicate_chart_edges();
     const std::uint64_t copied = reconcile_gutters();
     // after reconcile_gutters, which starts the shared blocks afresh
-    if (!overflow_shade(g_af.pages, g_shared_blocks)) {
+    if (!overflow_shade(g_af.pages, g_shared_blocks) && !bake_progress_cancelled()) {
         overflow_mark_unusable();
     }
+    if (bake_progress_cancelled()) {
+        alpine_lm_bake_abort();
+        return;
+    }
+    bake_progress_phase(BakePhase::encode, plan.encode_steps);
 
     auto* props = level_props();
     const alm::CompressionMode mode = alm::compression_mode_from_wire(props ? props->lightmap_compression : 0);
@@ -2424,6 +2461,10 @@ void alpine_lm_bake_end()
         // the encoder is the last reader of the RGB pages, and at the page budget they are 200 MB
         g_af.pages.clear();
         g_af.pages.shrink_to_fit();
+    }
+    if (bake_progress_cancelled()) {
+        alpine_lm_bake_abort();
+        return;
     }
     const std::uint64_t raw_size = page_buffers_size(raw);
     if (raw_size != alm::layer_payload_size(codec, g_af.num_pages) || raw_size > 0xffffffffull) {
@@ -2469,6 +2510,35 @@ void alpine_lm_bake_end()
                   rdo_modified, static_cast<unsigned>(g_af.body.size()),
                   (GetTickCount() - t0) / 1000.0);
     af_log(buf);
+}
+
+std::uint64_t mover_bake_surfaces()
+{
+    CDedLevel* level = CDedLevel::Get();
+    std::uint64_t n = 0;
+    if (level) {
+        for_each_mover_brush(*level, [&](const BrushNode& brush) {
+            n += solid_surfaces(static_cast<const GSolid*>(brush.geometry)).size();
+        });
+    }
+    return n;
+}
+
+AlpineBakePlan alpine_lm_bake_plan()
+{
+    AlpineBakePlan plan;
+    plan.active = g_af.active;
+    if (!plan.active) {
+        return plan;
+    }
+    plan.terrains = static_cast<std::uint32_t>(g_af.terrains.size());
+    if (!g_raw_codec) {
+        auto* props = level_props();
+        const alm::EncoderSettings s =
+            alm::encoder_settings(alm::compression_mode_from_wire(props ? props->lightmap_compression : 0));
+        plan.encode_steps = alm::bc7_block_count(g_af.num_pages) * (s.rdo_lambda > 0.0f ? 2u : 1u);
+    }
+    return plan;
 }
 
 void alpine_lm_bake_abort()

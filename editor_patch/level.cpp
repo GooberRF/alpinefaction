@@ -9,6 +9,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <new>
 #include <unordered_map>
 #include <unordered_set>
 #include <windows.h>
@@ -932,6 +933,57 @@ void __fastcall build_rooms_hooked(GSolid* solid, void* edx_unused)
     build_rooms_hook.call_target(solid, edx_unused);
     g_isolated_face_map.clear();
 }
+
+// After the room builder, GeoBuild_Driver hands each detail brush to CDedLevel::SyncBrushLife
+// (0x0043c2a0), which walks the level solid's face list for the first face with the id of the brush's
+// first face and gives that face's room the brush's life. This runs the same loop against an index of
+// first faces by id, or the stock loop (from 0x0043a040) if building the index runs out of memory. Replaces
+// "MOV EDI,[ESI+0x118]" (6 bytes); 0x0043a065 is the loop exit.
+CodeInjection sync_brush_life_injection{
+    0x0043a03a,
+    [](auto& regs) {
+        auto* level = reinterpret_cast<CDedLevel*>(static_cast<uintptr_t>(regs.esi));
+        BrushNode* const head = level->brush_list;
+        try {
+            std::unordered_map<int, GFace*> first_face;
+            bool indexed = false;
+            BrushNode* brush = head;
+            while (brush) {
+                auto* geometry = static_cast<GSolid*>(brush->geometry);
+                if (brush->is_detail == 1 && geometry && geometry->face_list_head) {
+                    if (!indexed) {
+                        for (GFace* face = level->solid ? level->solid->face_list_head : nullptr; face;
+                             face = face->next_solid) {
+                            first_face.try_emplace(face->face_id, face);
+                        }
+                        indexed = true;
+                    }
+                    auto it = first_face.find(geometry->face_list_head->face_id);
+                    GRoom* room = it != first_face.end() ? it->second->which_room : nullptr;
+                    if (room) {
+                        room->life = static_cast<float>(brush->life);
+                        if (brush->life > 0) {
+                            room->is_invincible = false;
+                        }
+                    }
+                }
+                brush = brush->next;
+                if (brush == head) {
+                    break;
+                }
+            }
+            regs.edi = reinterpret_cast<uintptr_t>(brush);
+            regs.ebp = 0;
+            regs.eip = 0x0043a065;
+        }
+        catch (const std::bad_alloc&) {
+            // only the index allocates, and no room is written before it is complete
+            regs.edi = reinterpret_cast<uintptr_t>(head);
+            regs.eip = 0x0043a040;
+        }
+    },
+    false, // no trampoline: the injection fully replaces the 6 byte load
+};
 
 // FUN_0043a710 starts a Build Geometry (thiscall on CDedLevel*). The minimums cover the first build after
 // a load, the largest measured.
@@ -1961,6 +2013,7 @@ void ApplyLevelPatches()
     build_rooms_hook.install();
     adjacency_test_hook.install();
     isolate_rooms_injection.install();
+    sync_brush_life_injection.install();
     skip_empty_detail_rooms_in_loop2.install();
 
     groom_ctor_clear_airlock_injection.install();

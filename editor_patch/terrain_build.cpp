@@ -19,6 +19,7 @@
 #include <xlog/xlog.h>
 #include "alpine_lightmaps.h"
 #include "alpine_obj.h"
+#include "bake_progress.h"
 #include "brush_import.h"
 #include "face_list_cache.h"
 #include "headless_bake.h"
@@ -774,6 +775,10 @@ void __fastcall lighting_surfaces_hooked(void* self);
 FunHook<decltype(lighting_surfaces_hooked)> lighting_surfaces_hook{0x00448ca0, lighting_surfaces_hooked};
 void __fastcall lighting_surfaces_hooked(void* self)
 {
+    // it frees the lightmaps a running bake is writing
+    if (bake_progress_active()) {
+        return;
+    }
     bool refused = !lighting_calc_memory_admits();
     if (CDedLevel* level = refused ? nullptr : CDedLevel::Get()) {
         try {
@@ -843,6 +848,11 @@ auto decoration_plane(Grid& g, std::size_t k)
 }
 
 } // namespace
+
+void lighting_surfaces_stock(void* self)
+{
+    lighting_surfaces_hook.call_target(self);
+}
 
 void report_surface_overflow(CDedLevel& level, bool overflow_expected)
 {

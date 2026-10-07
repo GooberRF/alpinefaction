@@ -19,9 +19,11 @@
 
 #include "overflow_charts.h"
 #include "alpine_lightmaps.h"
+#include "bake_progress.h"
 #include "level.h"
 #include "mfc_types.h"
 #include "terrain_build.h"
+#include "work_pool.h"
 
 namespace alm = alpine_lightmap;
 
@@ -51,6 +53,8 @@ constexpr float seam_own = 9.0f / 16.0f;
 constexpr float seam_other = 7.0f / 16.0f;
 constexpr std::uint32_t page_blocks = alm::page_size / 4;
 constexpr std::size_t light_batch = 4096;
+// Grid texels of the tiles prepared ahead on the work pool at a time.
+constexpr std::uint64_t prepare_run_texels = 1u << 18;
 // Texels this close to a chart's faces are lit even outside its stored blocks, so the 3x3 filter sees light.
 constexpr double shade_reach = 2.0;
 
@@ -1310,21 +1314,44 @@ bool shade_all(Pages& pages)
         pending_points = 0;
         return true;
     };
-    std::vector<std::vector<D2>> polys;
-    for (const std::uint32_t ci : order) {
-        const Chart& c = g_ov.charts[ci];
-        polys.resize(c.num_members);
-        for (std::uint32_t m = 0; m < c.num_members; m++) {
-            chart_poly(c, g_ov.faces[g_ov.members[c.first_member + m]], polys[m]);
+    // a run of tiles is prepared on the pool, then lit in chart order as if prepared one by one
+    std::vector<Job> ready;
+    std::size_t chart_at = 0;
+    std::uint32_t tile_at = 0;
+    while (chart_at < order.size()) {
+        ready.clear();
+        std::uint64_t texels = 0;
+        while (chart_at < order.size() && (ready.empty() || texels < prepare_run_texels)) {
+            const Chart& c = g_ov.charts[order[chart_at]];
+            if (tile_at == c.geom.tile_count()) {
+                chart_at++;
+                tile_at = 0;
+                continue;
+            }
+            const alm::TileDims td = alm::tile_dims(c.geom, tile_at % c.geom.nx, tile_at / c.geom.nx);
+            texels += static_cast<std::uint64_t>(td.w_t + 2) * (td.h_t + 2);
+            Job& job = ready.emplace_back();
+            job.chart = order[chart_at];
+            job.tile = tile_at++;
         }
-        for (std::uint32_t t = 0; t < c.geom.tile_count(); t++) {
-            Job job;
-            job.chart = ci;
-            job.tile = t;
+        work_pool_run(static_cast<int>(ready.size()), [&](int i) {
+            Job& job = ready[i];
+            const Chart& c = g_ov.charts[job.chart];
+            std::vector<std::vector<D2>> polys(c.num_members);
+            for (std::uint32_t m = 0; m < c.num_members; m++) {
+                chart_poly(c, g_ov.faces[g_ov.members[c.first_member + m]], polys[m]);
+            }
             prepare_job(job, polys);
+        });
+        for (Job& job : ready) {
+            bake_progress_step();
+            if (bake_progress_cancelled()) {
+                return false;
+            }
             if (job.points.empty()) {
                 continue;
             }
+            const Chart& c = g_ov.charts[job.chart];
             if (job.points.size() > light_batch) {
                 if (!flush()) {
                     return false;
@@ -1736,7 +1763,9 @@ bool overflow_shade(std::vector<std::vector<std::uint8_t>>& pages, std::vector<s
     try {
         lightmap_prepare_terrain_bake();
         if (!shade_all(pages)) {
-            ov_warn("the overflow charts could not be lit");
+            if (!bake_progress_cancelled()) {
+                ov_warn("the overflow charts could not be lit");
+            }
             return false;
         }
         const DWORD t1 = GetTickCount();
