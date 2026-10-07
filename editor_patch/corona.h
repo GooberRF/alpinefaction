@@ -17,7 +17,6 @@ void ShowCoronaPropertiesDialog(CDedLevel* level);
 // Corona object lifecycle
 void PlaceNewCoronaObject();
 DedCorona* CloneCoronaObject(DedCorona* source, bool add_to_level = true);
-void DeleteCoronaObject(DedCorona* corona);
 void DestroyDedCorona(DedCorona* corona);
 
 // Handlers called from shared hook points in alpine_obj.cpp
@@ -30,7 +29,6 @@ bool corona_copy_object(DedObject* source);
 void corona_paste_objects(CDedLevel* level);
 void corona_clear_clipboard();
 void corona_handle_delete_or_cut(DedObject* obj);
-void corona_handle_delete_selection(CDedLevel* level);
 void corona_ensure_uid(int& uid);
 
 // Create corona objects for all "corona_N" tag points found in a vmesh.

@@ -2,6 +2,7 @@ set(SRCS
     include/common/HttpRequest.h
     include/common/rfproto.h
     include/common/rope_curve.h
+    include/common/alpine_dir_light.h
     include/common/ComPtr.h
     include/common/afd_format.h
     include/common/rfl_chunk_reader.h
@@ -27,6 +28,7 @@ set(SRCS
     include/common/utils/string-utils.h
     include/common/utils/bool-utils.h
     include/common/bitmap/formats.h
+    include/common/bitmap/tga.h
     include/common/lightmap/alpine_lightmap.h
     include/common/lightmap/alpine_lightmap_decode.h
     include/common/lightmap/alpine_lightmap_reader.h

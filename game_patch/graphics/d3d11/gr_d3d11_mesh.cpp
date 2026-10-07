@@ -999,6 +999,7 @@ namespace gr::d3d11
             } else {
                 render_context_.update_lights(false, nullptr, gr_sun_get_mesh_scale(nullptr));
             }
+            render_context_.update_dir_lights();
         } else {
             render_context_.update_lights();
         }

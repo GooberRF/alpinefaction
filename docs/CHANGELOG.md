@@ -10,8 +10,7 @@ Version 1.5.0 (Trillium): Not yet released
   - Add `No shadow cast` brush property for solid detail brushes and movers
   - Add `Meshes block light` level property to make Alpine Mesh objects cast baked shadows
   - Add `No shadow cast` checkbox to Alpine Mesh object properties to exclude individual objects
-- Add per-level directional sunlight, configured in the `Sunlight` section of Level Properties
-  - `Directional sunlight` checkbox, with `Yaw`, `Pitch`, `Intensity`, `Spread` (soft shadow angle) and `Color` fields, plus a `Set from camera` button that takes the sun direction from the perspective viewport
+- Add global per-level directional sunlight and individual `Directional Light` objects with bounded ranges
   - `Casts shadows (lightmaps)` bakes the sun into the level's lightmaps with ray traced shadows
   - `Affects mesh lighting` lights meshes and entities per pixel from the sun direction, with `Scale mesh sunlight by lightmaps` to keep sunlight out of unlit interiors
   - `Aligns dynamic shadows` points entity shadows along the sun instead of the fixed default direction
@@ -87,6 +86,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Improve level loading and `Build Geometry` times in the level editor on levels with many faces
 - Draw large rooms in fewer draw calls, and skip rooms without dynamic decals when drawing them (Direct3D 11 renderer only)
 - Make level editor refuse to open levels saved by a newer version of Alpine Faction instead of misreading them
+- Allow undoing deletion of Alpine objects in the level editor
 - Show assists on suicide and environmental death lines in chat and the kill feed, as on other kill messages
 - Add multiplayer minimap, configured in `Level Properties`
 - Dedicated server base rules now apply to every level under every game type unless a level overrides them
@@ -98,10 +98,10 @@ Version 1.5.0 (Trillium): Not yet released
 - Load levels with very large face counts or many level sounds much faster
 
 [@is-this-c](https://github.com/is-this-c)
-- Do not kick a player, if they join right before limbo
-
-[@is-this-c](https://github.com/is-this-c)
+- Support TrueType fonts in 3D text rendering
+- Render world HUD text (player labels, damage numbers, ping labels, countdowns) in 3D for smooth sub-pixel motion
 - Allow TrueType fonts to be rendered into bitmaps with mipmaps (D3D11 only)
+- Do not kick a player, if they join right before limbo
 
 ### Bug fixes
 [@GooberRF](https://github.com/GooberRF)
@@ -181,6 +181,10 @@ Version 1.5.0 (Trillium): Not yet released
 - Fix a possible out-of-bounds read when drawing dynamic decals (Direct3D 11 renderer only)
 - Fix some multiplayer characters' upper bodies staying bent toward where they were last aiming instead of straightening out
 - Fix level editor crashing when more than 128 semi-transparent detail brushes in one room are in view
+- Fix possible level editor crash after deleting Alpine objects
+- Fix level editor leaking memory for Alpine mesh objects each time a level is created or opened
+- Fix shadows randomly appearing or disappearing in some level editor lightmap bakes
+- Fix level editor lightmap bakes sometimes drawing a light or dark streak across a light's glow on smoothed surfaces
 - Fix dedicated server base rules being dropped on levels configured for a different game type
 - Fix a level's `spawn_weapon` removing a weapon the base `spawn_loadout` lists
 - Fix the `level` command keeping the game type and rules of a previous level vote
@@ -192,9 +196,14 @@ Version 1.5.0 (Trillium): Not yet released
 - Fix RF2-style geomod craters occasionally deleting a piece of the crater wall, leaving a hole, or keeping a stray piece inside the crater
 - Fix seeking in a demo skipping geomod craters, leaving players appearing inside solid geometry
 - Fix the launcher failing with a `timeout` error when the game process is slow to start, and leaving that process running
+- Improve validation of TGA textures in game and level editor
+- Fix level editor crash when a texture is too large to load
+- Fix 8-bit greyscale TGA textures with mipmap files sometimes loading with garbage pixels
+- Show control characters in texture filenames as escape sequences in log warnings
 
 [@is-this-c](https://github.com/is-this-c)
 - Let `Caps Lock` capitalize
+- Fix floating damage numbers not swaying in the wind
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Cap FPS-dependent launch velocity when head jumping

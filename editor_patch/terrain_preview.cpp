@@ -388,6 +388,7 @@ bool same_casting(const std::vector<std::pair<std::size_t, DedTerrainDecoration>
         DedTerrainDecoration deco = d.decorations[i];
         deco.draw_distance = 0.0f;
         deco.dither_fade = false;
+        deco.edges = {};
         if (cast[n++].second != deco) return false;
     }
     return n == cast.size();
@@ -401,6 +402,7 @@ std::vector<std::pair<std::size_t, DedTerrainDecoration>> casting_decorations(co
         out.emplace_back(i, d.decorations[i]);
         out.back().second.draw_distance = 0.0f;
         out.back().second.dither_fade = false;
+        out.back().second.edges = {};
     }
     return out;
 }

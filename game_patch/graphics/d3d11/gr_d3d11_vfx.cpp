@@ -456,6 +456,7 @@ namespace gr::d3d11
         const bool gpu_lit = !vertex_lit && !fullbright;
         if (gpu_lit) {
             render_context_.update_lights(false, nullptr, gr_sun_get_mesh_scale(nullptr));
+            render_context_.update_dir_lights();
         }
         else {
             render_context_.update_lights(true); // vertex colours are the whole result

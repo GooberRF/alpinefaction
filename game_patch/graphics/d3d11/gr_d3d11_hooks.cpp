@@ -197,6 +197,11 @@ namespace gr::d3d11
 
     static std::optional<Renderer> renderer;
 
+    static void set_mesh_bounds(const rf::VifLodMesh& lod_mesh, const rf::Vector3& pos, const rf::Matrix3& orient)
+    {
+        renderer->set_mesh_bounds(pos + orient.transform_vector(lod_mesh.center), lod_mesh.radius);
+    }
+
     void update_window_mode();
 
     void msg_handler(UINT msg, WPARAM w_param, LPARAM l_param)
@@ -552,6 +557,7 @@ namespace gr::d3d11
             bool lights_gathered = false;
             if (rf::level.geometry && !skip_mesh_light_gather) {
                 gather_mesh_lights(pos, lod_mesh->radius);
+                set_mesh_bounds(*lod_mesh, pos, orient);
                 lights_gathered = true;
             }
 
@@ -622,6 +628,7 @@ namespace gr::d3d11
             bool lights_gathered = false;
             if (!use_vertex_lighting && rf::level.geometry && !skip_mesh_light_gather) {
                 gather_mesh_lights(pos, lod_mesh->radius);
+                set_mesh_bounds(*lod_mesh, pos, orient);
                 lights_gathered = true;
             }
 
@@ -724,6 +731,7 @@ namespace gr::d3d11
             bool lights_gathered = rf::level.geometry && !skip_mesh_light_gather && !level_uses_vertex_lighting();
             if (lights_gathered) {
                 gather_mesh_lights(obj->render_pos, radius);
+                renderer->set_mesh_bounds(obj->render_pos, radius);
             }
             renderer->render_vfx(obj, frame);
             if (lights_gathered) {
@@ -1020,6 +1028,19 @@ namespace gr::d3d11
         },
     };
 
+    // The room's unsorted items are drawn and its sorted ones (alpha detail, glass, liquid, see-through objects)
+    // are next: decoration soft edges go between, over the room's opaque objects and under its translucent ones.
+    static CodeInjection g_render_room_objects_decoration_edges_injection{
+        0x004D3D1F,
+        [](auto& regs) {
+            auto* room = addr_as_ref<rf::GRoom*>(regs.esp + 0x9C);
+            auto* solid = addr_as_ref<rf::GSolid*>(regs.esp + 0xA0);
+            if (renderer && room) {
+                renderer->render_room_decoration_edges(solid, room);
+            }
+        },
+    };
+
     static CodeInjection gr_d3d_setup_3d_injection{
         0x005473E4,
         []() {
@@ -1288,6 +1309,7 @@ void gr_d3d11_apply_patch()
     g_render_room_objects_hook.install();
     obj_render_all_hook.install();
     g_render_room_objects_render_liquid_injection.install();
+    g_render_room_objects_decoration_edges_injection.install();
     gr_d3d_setup_3d_injection.install();
     gr_d3d_setup_fustrum_injection.install();
     vif_lod_mesh_ctor_injection.install();

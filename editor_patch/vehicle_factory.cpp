@@ -387,6 +387,11 @@ void ShowVehicleFactoryPropertiesDialog(CDedLevel* level)
 
 // ─── Cleanup ─────────────────────────────────────────────────────────────────
 
+void vehicle_factory_release_preview(DedVehicleFactory* factory)
+{
+    vehicle_factory_free_preview(factory);
+}
+
 void DestroyDedVehicleFactory(DedVehicleFactory* factory)
 {
     if (!factory) return;
@@ -583,22 +588,6 @@ DedVehicleFactory* CloneVehicleFactoryObject(DedVehicleFactory* source, bool add
     return factory;
 }
 
-void DeleteVehicleFactoryObject(DedVehicleFactory* factory)
-{
-    if (!factory) return;
-    auto* level = CDedLevel::Get();
-    if (!level) return;
-
-    auto& factories = level->GetAlpineLevelProperties().vehicle_factory_objects;
-    auto it = std::find(factories.begin(), factories.end(), factory);
-    if (it != factories.end()) {
-        factories.erase(it);
-    }
-    alpine_remove_from_groups(level, static_cast<DedObject*>(factory));
-    level->master_objects.remove_by_value(static_cast<DedObject*>(factory));
-    DestroyDedVehicleFactory(factory);
-}
-
 // ─── Rendering ──────────────────────────────────────────────────────────────
 
 void vehicle_factory_render(CDedLevel* level)
@@ -792,12 +781,6 @@ void vehicle_factory_handle_delete_or_cut(DedObject* obj)
     if (it != factories.end()) {
         factories.erase(it);
     }
-}
-
-void vehicle_factory_handle_delete_selection(CDedLevel* level)
-{
-    alpine_compact_selection<DedVehicleFactory>(level, DedObjectType::DED_VEHICLE_FACTORY,
-                                                DeleteVehicleFactoryObject);
 }
 
 void vehicle_factory_ensure_uid(int& uid)

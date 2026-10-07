@@ -61,6 +61,9 @@ namespace gr::d3d11
         {
             return decoration_chunks_;
         }
+        // Of those, the ones `room` claimed, while `solid` is still on the pass that found them: its object pass
+        // draws their soft edges
+        const std::vector<AlpineTerrainRoomRef>& room_decoration_chunks(const rf::GSolid* solid, const rf::GRoom* room);
 
     private:
         void before_render(const rf::Vector3& pos, const rf::Matrix3& orient);
@@ -78,7 +81,7 @@ namespace gr::d3d11
         GRenderCache* get_or_create_movable_solid_cache(rf::GSolid* solid);
         bool claim_terrain_chunk(std::vector<int>& stamps, const rf::GRoom* room);
         bool terrain_chunk_drawn(const rf::GRoom* room) const;
-        void collect_decoration_chunk(const rf::GRoom* room);
+        void collect_decoration_chunk(const rf::GRoom* room, const rf::GRoom* portal_room);
 
         ComPtr<ID3D11Device> device_;
         ComPtr<ID3D11DeviceContext> context_;
@@ -98,6 +101,11 @@ namespace gr::d3d11
         std::vector<int> terrain_decals_drawn_;
         std::vector<int> terrain_decorations_seen_;
         std::vector<AlpineTerrainRoomRef> decoration_chunks_;
+        // Per decoration_chunks_ entry, the normal room of the pass that claimed it
+        std::vector<const rf::GRoom*> decoration_chunk_rooms_;
+        // The GSolid::current_frame of the pass that found them: the sky room drains before the pass's render_solid
+        int decoration_chunks_frame_ = 0;
+        std::vector<AlpineTerrainRoomRef> room_decoration_chunks_;
         // Sorted rooms that hold a dynamic decal, gathered by each render_dynamic_decals call
         std::vector<rf::GRoom*> dynamic_decal_rooms_;
         DynamicGeometryRenderer& dyn_geo_renderer_;

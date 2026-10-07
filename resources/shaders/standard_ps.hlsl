@@ -176,6 +176,27 @@ cbuffer LiquidBuffer : register(b6)
     float  liq_depth_mode;     float _liq_pad2;        // 0 none, 1 Texture2D
 };
 
+// Directional Light objects over this draw, GPU-lit meshes only. Layout owned by gr_d3d11_context.cpp
+// (DirLightsBufferData).
+struct DirLight
+{
+    float3 travel_dir;  float shape;        // 0 none, 1 box, 2 sphere, 3 cylinder (along travel_dir)
+    float3 color;       float mesh_mode;    // color premultiplied by intensity; mode 0 lightmap scaled, 1 everywhere
+    float3 center;      float feather;
+    float3 box_right;   float half_x;
+    float3 box_forward; float half_y;
+    float half_z;       float radius;       float half_length; float _dl_pad;
+};
+
+#define MAX_DIR_LIGHTS 8
+
+cbuffer DirLightsBuffer : register(b8)
+{
+    float num_dir_lights;
+    float3 _dir_lights_pad;
+    DirLight dir_lights[MAX_DIR_LIGHTS];
+};
+
 Texture2D tex0;
 Texture2D tex1;
 Texture2D shadow_map : register(t2);
@@ -215,6 +236,35 @@ static const float2 pcf_offsets[15] = {
 };
 
 #ifdef INSTANCE_LIGHT
+// Layout owned by gr_d3d11_decoration.cpp (DecorationBufferData), also the vertex shader's b4
+cbuffer DecorationBuffer : register(b9)
+{
+    float3 decoration_submesh_center;
+    float decoration_draw_distance;
+    float decoration_fade_band;
+    float decoration_dither_fade;
+    // An AlphaPass of gr_d3d11_decoration.cpp
+    float decoration_alpha_pass;
+};
+
+static const int decoration_pass_soft_core = 1;
+static const int decoration_pass_soft_edge = 2;
+static const int decoration_pass_hard = 3;
+static const int decoration_pass_hard_coverage = 4;
+// Where a blended material is cut: the solid side writes depth
+static const float decoration_edge_alpha = 0.5f;
+
+// A hard cutout's alpha, grown with the mip level so averaged mips keep the blade's coverage at range
+float decoration_cutout_alpha(float a, float2 uv)
+{
+    float2 tex_size;
+    tex0.GetDimensions(tex_size.x, tex_size.y);
+    float2 texel_dx = ddx(uv * tex_size);
+    float2 texel_dy = ddy(uv * tex_size);
+    float mip = 0.5f * log2(max(dot(texel_dx, texel_dx), dot(texel_dy, texel_dy)));
+    return a * (1.0f + max(mip, 0.0f) * 0.25f);
+}
+
 static const float bayer4x4[16] = {
      0.0f,  8.0f,  2.0f, 10.0f,
     12.0f,  4.0f, 14.0f,  6.0f,
@@ -327,15 +377,65 @@ float3 af_lm_sample(float2 chart_uv, uint chart)
     return af_lm_pages.SampleLevel(af_lm_samp, float3(p / af_lm_page_size, (float)tile.x), 0).rgb;
 }
 
-// The scene lights over a base light: the sun where the pass enables it, the dynamic lights, and
-// for dynamic-lit meshes the light scale and overbright compression.
-float3 add_scene_lights(float3 light_color, float3 pixel_pos, float3 norm)
+// Transcriptions of alpine_dir_light::volume_inside_distance / volume_weight (common/alpine_dir_light.h);
+// the bake weighs texels with the same functions. Inside distance is never asked of an unbounded light.
+float dir_light_inside_distance(int i, float3 p)
+{
+    float3 d = p - dir_lights[i].center;
+    float shape = dir_lights[i].shape;
+    float inside;
+    if (shape < 1.5f) {
+        float lx = dot(d, dir_lights[i].box_right);
+        float lz = dot(d, dir_lights[i].box_forward);
+        inside = min(min(dir_lights[i].half_x - abs(lx), dir_lights[i].half_y - abs(d.y)),
+                     dir_lights[i].half_z - abs(lz));
+    } else if (shape < 2.5f) {
+        inside = dir_lights[i].radius - sqrt(dot(d, d));
+    } else {
+        float3 axis = dir_lights[i].travel_dir;
+        float t = dot(d, axis);
+        float3 radial = d - axis * t;
+        inside = min(dir_lights[i].radius - sqrt(dot(radial, radial)), dir_lights[i].half_length - abs(t));
+    }
+    return inside;
+}
+
+float dir_light_weight(int i, float3 p)
+{
+    float weight = 1.0f;
+    if (dir_lights[i].shape >= 0.5f) {
+        float inside = dir_light_inside_distance(i, p);
+        float feather = dir_lights[i].feather;
+        weight = feather > 0.0f ? clamp(inside / feather, 0.0f, 1.0f) : (inside >= 0.0f ? 1.0f : 0.0f);
+    }
+    return weight;
+}
+
+// Lit exactly like the sun term, with mode 0's scale being gr_sun_get_mesh_scale's on the draw's mesh ambient.
+float3 add_dir_lights(float3 light_color, float3 pixel_pos, float3 norm, float3 mesh_ambient)
+{
+    float lm_scale = saturate(dot(mesh_ambient, float3(0.299f, 0.587f, 0.114f)) * 2.0f);
+    int count = min((int)num_dir_lights, MAX_DIR_LIGHTS);
+    for (int i = 0; i < count; ++i) {
+        float scale = dir_lights[i].mesh_mode < 0.5f ? lm_scale : 1.0f;
+        light_color += dir_lights[i].color * scale * saturate(dot(norm, -dir_lights[i].travel_dir)) *
+                       dir_light_weight(i, pixel_pos);
+    }
+    return light_color;
+}
+
+// The scene lights over a base light: the sun where the pass enables it, the directional lights and
+// dynamic lights, and for dynamic-lit meshes the light scale and overbright compression.
+float3 add_scene_lights(float3 light_color, float3 pixel_pos, float3 norm, float3 mesh_ambient)
 {
 #ifndef INSTANCE_LIGHT
     if (sun_scale > 0.0f) {
         light_color += sun_color * sun_scale * saturate(dot(norm, -sun_travel_dir));
     }
 #endif
+    if (use_dynamic_lighting > 0.5f && num_dir_lights > 0.5f) {
+        light_color = add_dir_lights(light_color, pixel_pos, norm, mesh_ambient);
+    }
     for (int i = 0; i < num_point_lights; ++i) {
         float ltype = point_lights[i].light_type;
         float dist;
@@ -870,13 +970,36 @@ float4 main(VsOutput input) : SV_TARGET
         target.a *= input.world_pos_and_depth.y < ghost_fill_y ? 1.0f : ghost_alpha_ratio;
     }
 
+#ifdef INSTANCE_LIGHT
+    // Blended materials that write depth hide what is drawn behind their edges later, so by their layer's edges they
+    // are cut at decoration_edge_alpha unblended (hard), or cut and the rest blended without depth after the opaque
+    // objects (soft). Under MSAA a hard cut is alpha to coverage, its alpha sharpened to about a pixel.
+    int alpha_pass = (int)(decoration_alpha_pass + 0.5f);
+    if (alpha_pass == decoration_pass_hard_coverage) {
+        float a = decoration_cutout_alpha(target.a, scaled_uv0);
+        target.a = saturate((a - decoration_edge_alpha) / max(fwidth(a), 1e-4f) + 0.5f);
+        clip(target.a - 1.0f / 255.0f);
+    } else if (alpha_pass == decoration_pass_hard) {
+        clip(decoration_cutout_alpha(target.a, scaled_uv0) - decoration_edge_alpha);
+    } else if (alpha_pass == decoration_pass_soft_edge) {
+        if (target.a >= decoration_edge_alpha || target.a < 1.0f / 255.0f) {
+            discard;
+        }
+    } else if (alpha_pass == decoration_pass_soft_core) {
+        clip(target.a - decoration_edge_alpha);
+    } else {
+        clip(target.a - alpha_test);
+    }
+#else
     clip(target.a - alpha_test);
+#endif
 
     float3 light_color;
 #ifdef INSTANCE_LIGHT
     // Per instance, what the mesh path uploads per mesh as ambient_light and sun_scale
     light_color = input.inst_light.rgb + sun_color * input.inst_light.a * saturate(dot(input.norm, -sun_travel_dir));
     if (disable_textures < 0.5f) {
+        float3 mesh_ambient = input.inst_light.rgb;
 #else
     // The alpine branch is taken before the *2 modulate below, so show_lightmaps still emits the
     // raw atlas texel exactly as it emits the raw stock texel.
@@ -895,8 +1018,9 @@ float4 main(VsOutput input) : SV_TARGET
             // Static meshes: use baked lightmap
             light_color *= 2;
         }
+        float3 mesh_ambient = ambient_light;
 #endif
-        light_color = add_scene_lights(light_color, input.world_pos_and_depth.xyz, input.norm);
+        light_color = add_scene_lights(light_color, input.world_pos_and_depth.xyz, input.norm, mesh_ambient);
     }
     return finish_fragment(input, target, tex0_color.rgb, light_color, input.norm);
 }
@@ -1245,7 +1369,7 @@ float4 main(VsOutput input) : SV_TARGET
         }
     }
     if (disable_textures < 0.5f) {
-        light_color = add_scene_lights(light_color, wp, n);
+        light_color = add_scene_lights(light_color, wp, n, ambient_light);
     }
     return finish_fragment(input, target, albedo, light_color, n);
 }

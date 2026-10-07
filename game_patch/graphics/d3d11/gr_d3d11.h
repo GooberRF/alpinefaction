@@ -93,6 +93,7 @@ namespace gr::d3d11
         void render_alpha_detail_room(rf::GRoom *room, rf::GSolid *solid);
         void render_sky_room(rf::GRoom *room, rf::Vector3& out_sky_transform_pos, rf::Matrix3& out_sky_transform_orient);
         void render_room_liquid_surface(rf::GSolid* solid, rf::GRoom* room);
+        void render_room_decoration_edges(rf::GSolid* solid, rf::GRoom* room);
         void clear_solid_cache();
         void release_detail_room_cache(rf::GRoom* room);
         void reset_solid_cache_after_boolean();
@@ -113,6 +114,7 @@ namespace gr::d3d11
         void flush_caches();
         void reset_static_vertex_color_tracking();
         void clear_mesh_lights();
+        void set_mesh_bounds(const rf::Vector3& center, float radius);
         void set_pow2_tex_active(bool active);
         float z_far() const;
         bool supports_sample_count(uint32_t sample_count);
