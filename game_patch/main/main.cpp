@@ -231,17 +231,17 @@ CodeInjection after_frame_render_hook{
 
             if (!is_headless_mode()) {
                 // Draw on top (after scene)
-                fullscreen_overlay_do_frame();
-                awards_client_do_frame();
-                achievement_system_do_frame();
-                spray_picker_render();
-                demo_playback_render_seek_overlay(); // first: covers the stale frame, UI below stays on top
-                demo_browser_render();
-                frametime_render_ui();
-    #if !defined(NDEBUG) && defined(HAS_EXPERIMENTAL)
-                experimental_render();
-    #endif
                 g_solid_render_ui();
+                awards_client_do_frame();
+                fullscreen_overlay_do_frame();
+                achievement_system_do_frame();
+                demo_playback_render_seek_overlay();
+                frametime_render_ui();
+                demo_browser_render();
+                spray_picker_render();
+#if !defined(NDEBUG) && defined(HAS_EXPERIMENTAL)
+                experimental_render();
+#endif
                 debug_render_ui();
             }
 
