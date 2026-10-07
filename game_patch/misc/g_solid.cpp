@@ -342,6 +342,10 @@ CodeInjection GSolid_get_ambient_color_from_lightmap_patch{
 FunHook<rf::Color* __fastcall(rf::GSolid*, int, rf::Color*, rf::GFace*, rf::Vector3*)> GSolid_get_ambient_color_hook{
     0x004E5C60,
     [](rf::GSolid* solid, int edx, rf::Color* out, rf::GFace* face, rf::Vector3* pos) FASTCALL_LAMBDA -> rf::Color* {
+        // Capped below 255 so the D3D11 mesh path never reads it as "no lightmap"
+        const auto to_byte = [](float v) {
+            return static_cast<rf::ubyte>(std::clamp(v * 255.0f + 0.5f, 0.0f, 254.0f));
+        };
         if (face && pos && face->attributes.surface_index < 0) {
             if (const AlpineTerrainRoomRef* ref = alpine_terrain_find_room(face->which_room)) {
                 const AlpineTerrain& t = alpine_terrain_get_all()[ref->terrain];
@@ -350,18 +354,11 @@ FunHook<rf::Color* __fastcall(rf::GSolid*, int, rf::Color*, rf::GFace*, rf::Vect
                 float texel[3];
                 const auto kind = alpine_terrain_face_kind(alpine_terrain_grid(t), *face);
                 alpine_terrain_sample_light(ref->terrain, kind, p, n, texel);
-                // Capped below 255 so the D3D11 mesh path never reads it as "no lightmap"
-                auto to_byte = [](float v) {
-                    return static_cast<rf::ubyte>(std::clamp(v * 255.0f + 0.5f, 0.0f, 254.0f));
-                };
                 out->set(to_byte(texel[0]), to_byte(texel[1]), to_byte(texel[2]), 255);
                 return out;
             }
             float texel[3];
             if (af_lightmap_overflow_light(solid, face, texel)) {
-                auto to_byte = [](float v) {
-                    return static_cast<rf::ubyte>(std::clamp(v * 255.0f + 0.5f, 0.0f, 254.0f));
-                };
                 out->set(to_byte(texel[0]), to_byte(texel[1]), to_byte(texel[2]), 255);
                 return out;
             }

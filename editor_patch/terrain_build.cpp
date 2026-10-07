@@ -705,11 +705,6 @@ bool __fastcall face_gets_surface_hooked(const int* flags)
     return !in_terrain_room(face, *g_terrain_gate_uids);
 }
 
-bool gets_stock_surface(GFace* face, const std::vector<int32_t>& terrain_uids)
-{
-    return face_gets_surface_hook.call_target(&face->flags) && !in_terrain_room(face, terrain_uids);
-}
-
 // Faces RED's surface pass left without a surface once its surfaces ran out.
 uint32_t surface_overflow_faces(CDedLevel& level)
 {
@@ -718,7 +713,7 @@ uint32_t surface_overflow_faces(CDedLevel& level)
     const auto& terrain_uids = level.GetAlpineLevelProperties().terrain_room_uids;
     uint32_t unlit = 0;
     for (GFace* f = solid->face_list_head; f; f = f->next_solid) {
-        if (f->surface_index == -1 && gets_stock_surface(f, terrain_uids)) {
+        if (f->surface_index == -1 && face_gets_stock_surface(f, terrain_uids)) {
             unlit++;
         }
     }
@@ -752,7 +747,9 @@ bool terrain_lighting_refused(CDedLevel& level)
     uint32_t candidates = 0;
     if (const GSolid* solid = level.solid) {
         for (GFace* f = solid->face_list_head; f; f = f->next_solid) {
-            if (gets_stock_surface(f, props.terrain_room_uids)) candidates++;
+            if (face_gets_stock_surface(f, props.terrain_room_uids)) {
+                candidates++;
+            }
         }
     }
     if (candidates > red_max_level_surfaces) {
@@ -849,6 +846,11 @@ auto decoration_plane(Grid& g, std::size_t k)
 
 } // namespace
 
+bool face_gets_stock_surface(GFace* face, const std::vector<int32_t>& terrain_uids)
+{
+    return face_gets_surface_hook.call_target(&face->flags) && !in_terrain_room(face, terrain_uids);
+}
+
 void lighting_surfaces_stock(void* self)
 {
     lighting_surfaces_hook.call_target(self);
@@ -879,11 +881,6 @@ void report_surface_overflow(CDedLevel& level, bool overflow_expected)
                                         "lightmap. {}",
                                         red_max_level_surfaces, unlit, cause);
     lighting_calc_report_refusal(msg.c_str());
-}
-
-bool face_gets_stock_surface(GFace* face, const std::vector<int32_t>& terrain_uids)
-{
-    return gets_stock_surface(face, terrain_uids);
 }
 
 std::string terrain_label(const DedTerrain& t)

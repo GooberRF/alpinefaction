@@ -710,7 +710,7 @@ inline ReadResult read_section(const std::uint8_t* data, std::size_t len, const 
         any_overflow = any_overflow || v != 0;
     }
     if (!r.surfaces_ok && !any_terrain && !any_mover && !any_overflow) {
-        return fail(*r.terrain_reason ? r.terrain_reason : r.surface_reason);
+        return fail(*r.terrain_reason ? r.terrain_reason : *r.overflow_reason ? r.overflow_reason : r.surface_reason);
     }
 
     if (off + sizeof(LayerDirHeader) > len) {

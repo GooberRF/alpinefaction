@@ -1050,10 +1050,9 @@ std::vector<std::uint8_t> g_shared_blocks;
 
 void mark_shared_block(std::uint32_t page, std::uint32_t x, std::uint32_t y)
 {
-    constexpr std::uint32_t bpr = alm::page_size / 4;
-    const std::size_t i = (static_cast<std::size_t>(page) * bpr + y / 4) * bpr + x / 4;
+    const std::uint64_t i = alm::bc7_block_index(page, x, y);
     if (i < g_shared_blocks.size()) {
-        g_shared_blocks[i] = 1;
+        g_shared_blocks[static_cast<std::size_t>(i)] = 1;
     }
 }
 

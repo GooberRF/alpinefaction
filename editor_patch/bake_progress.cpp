@@ -26,16 +26,16 @@ struct PhaseInfo
     double seconds_per_step;
 };
 
-// Rough costs from the A/B levels; the estimate rescales them by how the finished phases compared.
+// Rough costs measured on large test levels; the estimate rescales them by how the finished phases compared.
 constexpr std::array<PhaseInfo, phase_count> phase_info{{
-    {"Preparing the lightmap layout", 3.0, 0.0},
-    {"Lighting surfaces", 0.0, 2.0e-3},
-    {"Blending surface edges", 0.0, 2.0e-5},
-    {"Smoothing surfaces", 0.0, 1.0e-3},
-    {"Lighting movers", 0.0, 2.0e-3},
+    {"Preparing the lightmap layout", 2.0, 0.0},
+    {"Lighting surfaces", 0.0, 1.8e-3},
+    {"Blending surface edges", 0.0, 7.0e-4},
+    {"Smoothing surfaces", 0.0, 2.5e-5},
+    {"Lighting movers", 0.0, 5.0e-3},
     {"Lighting terrain", 0.0, 5.0},
-    {"Lighting overflow faces", 0.0, 1.4e-3},
-    {"Encoding lightmaps", 0.0, 1.0e-6},
+    {"Lighting overflow faces", 0.0, 1.6e-3},
+    {"Encoding lightmaps", 0.0, 1.3e-6},
 }};
 
 enum class Status
@@ -62,9 +62,10 @@ struct State
 {
     bool active = false;
     bool cancelled = false;
-    // Cancel was pressed once at `armed_at`; a second, separate press before `confirm_until` confirms it
-    ULONGLONG armed_at = 0;
-    ULONGLONG confirm_until = 0;
+    // Cancel was pressed once, at tick `armed_at`; a second, separate press confirms it
+    bool armed = false;
+    DWORD armed_at = 0;
+    std::vector<std::pair<std::string, std::string>> deferred;
     HWND dlg = nullptr;
     std::vector<HWND> disabled;
     std::array<Phase, phase_count> phases{};
@@ -78,6 +79,7 @@ State g_progress;
 
 // Posted by the taskbar button's shift-right-click.
 constexpr UINT wm_popup_system_menu = 0x0313;
+constexpr DWORD confirm_window_ms = 4000;
 constexpr const char* confirm_text = "Press Confirm Cancel to discard the bake and leave the level unlit";
 
 std::size_t index_of(BakePhase phase)
@@ -238,7 +240,8 @@ bool list_click(const MSG& msg)
 void pump_messages()
 {
     MSG msg;
-    // messages sent from other threads (WM_QUERYENDSESSION among them) wait for the bake
+    // messages sent from other threads (WM_QUERYENDSESSION among them) wait for the bake; the dialog keeps every
+    // modal loop that would dispatch them out of reach, but for holding down its close button
     constexpr UINT flags = PM_REMOVE | PM_QS_INPUT | PM_QS_PAINT | PM_QS_POSTMESSAGE;
     while (g_progress.dlg && PeekMessageA(&msg, g_progress.dlg, 0, 0, flags)) {
         // a held key repeats, and must not confirm the Cancel it armed
@@ -271,8 +274,8 @@ void refresh_window(bool force)
         }
     }
     update_rows(now);
-    if (g_progress.confirm_until && now >= g_progress.confirm_until) {
-        g_progress.confirm_until = 0;
+    if (g_progress.armed && GetTickCount() - g_progress.armed_at >= confirm_window_ms) {
+        g_progress.armed = false;
         SetDlgItemTextA(g_progress.dlg, IDCANCEL, "Cancel");
     }
     std::string phase_text;
@@ -280,7 +283,7 @@ void refresh_window(bool force)
     if (g_progress.cancelled) {
         phase_text = "Cancelling...";
     }
-    else if (g_progress.confirm_until) {
+    else if (g_progress.armed) {
         phase_text = confirm_text;
     }
     else if (g_progress.current >= 0) {
@@ -322,23 +325,28 @@ void press_cancel(HWND hdlg)
     if (g_progress.cancelled) {
         return;
     }
-    const ULONGLONG now = GetTickCount64();
+    const DWORD now = GetTickCount();
+    const DWORD since = now - g_progress.armed_at;
     // a double click is one press
-    if (g_progress.confirm_until && now < g_progress.armed_at + 700) {
+    if (g_progress.armed && since < 700) {
         return;
     }
-    if (!g_progress.confirm_until || now >= g_progress.confirm_until) {
+    if (!g_progress.armed || since >= confirm_window_ms) {
+        g_progress.armed = true;
         g_progress.armed_at = now;
-        g_progress.confirm_until = now + 4000;
         SetDlgItemTextA(hdlg, IDCANCEL, "Confirm Cancel");
         SetDlgItemTextA(hdlg, IDC_BAKE_PHASE_TEXT, confirm_text);
         return;
     }
     g_progress.cancelled = true;
-    g_progress.confirm_until = 0;
+    g_progress.armed = false;
     SetDlgItemTextA(hdlg, IDCANCEL, "Cancel");
     EnableWindow(GetDlgItem(hdlg, IDCANCEL), FALSE);
-    xlog::info("Lightmap: Calculate Lighting cancelled");
+    try {
+        xlog::info("Lightmap: Calculate Lighting cancelled");
+    }
+    catch (...) {
+    }
 }
 
 INT_PTR CALLBACK progress_proc(HWND hdlg, UINT msg, WPARAM wparam, LPARAM)
@@ -457,7 +465,11 @@ void finish_current()
         char buf[160];
         std::snprintf(buf, sizeof(buf), "phase: %s, %llu steps in %.1fs", phase_info[i].name,
                       static_cast<unsigned long long>(p.done), seconds_between(p.start, p.end));
-        headless_bake_note(buf);
+        try {
+            headless_bake_note(buf);
+        }
+        catch (...) {
+        }
     }
 }
 
@@ -509,6 +521,7 @@ BakeProgressScope::~BakeProgressScope()
     if (!owner_) {
         return;
     }
+    auto deferred = std::move(g_progress.deferred);
     try {
         finish_current();
         if (headless_bake_active()) {
@@ -521,6 +534,9 @@ BakeProgressScope::~BakeProgressScope()
     }
     close_window();
     g_progress = State{};
+    for (const auto& [caption, msg] : deferred) {
+        MessageBoxA(GetMainFrameHandle(), msg.c_str(), caption.c_str(), MB_OK | MB_ICONWARNING);
+    }
 }
 
 void bake_progress_phase(BakePhase phase, std::uint64_t total)
@@ -582,6 +598,15 @@ BakePhase bake_progress_current()
 bool bake_progress_cancelled()
 {
     return g_progress.cancelled;
+}
+
+void bake_progress_defer_message(const char* caption, const std::string& msg)
+{
+    try {
+        g_progress.deferred.emplace_back(caption, msg);
+    }
+    catch (...) {
+    }
 }
 
 void ApplyBakeProgressPatches()

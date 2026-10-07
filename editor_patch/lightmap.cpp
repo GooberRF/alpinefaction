@@ -2028,7 +2028,7 @@ static void lighting_calc_expect(std::uint64_t mover_surfaces)
     const std::uint64_t surfaces = level && level->solid ? solid_surfaces(level->solid).size() : 0;
     bake_progress_expect(BakePhase::surfaces, surfaces);
     bake_progress_expect(BakePhase::blend, surfaces);
-    bake_progress_expect(BakePhase::smoothing, surfaces / 2);
+    bake_progress_expect(BakePhase::smoothing, surfaces);
     bake_progress_expect(BakePhase::movers, mover_surfaces);
     const AlpineBakePlan plan = alpine_lm_bake_plan();
     if (plan.terrains) {

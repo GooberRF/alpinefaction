@@ -39,6 +39,7 @@
 #include "alpine_lightmaps.h"
 #include "overflow_charts.h"
 #include "headless_bake.h"
+#include "bake_progress.h"
 #include "face_list_cache.h"
 
 // Forward declarations
@@ -78,7 +79,14 @@ void editor_report(EditorReportLevel level, const char* tag, const std::string& 
 void editor_report_blocking(const char* tag, const char* caption, const std::string& msg)
 {
     editor_report(EditorReportLevel::error, tag, msg, true);
-    if (!headless_bake_active()) {
+    if (headless_bake_active()) {
+        return;
+    }
+    // a message box mid-bake would run a modal loop that dispatches every window's messages
+    if (bake_progress_active()) {
+        bake_progress_defer_message(caption, msg);
+    }
+    else {
         MessageBoxA(GetMainFrameHandle(), msg.c_str(), caption, MB_OK | MB_ICONWARNING);
     }
 }

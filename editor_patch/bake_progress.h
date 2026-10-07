@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <limits>
+#include <string>
 
 // The phases of one Calculate Lighting, in the order they run.
 enum class BakePhase
@@ -54,5 +55,7 @@ void bake_progress_step(std::uint64_t steps = 1);
 BakePhase bake_progress_current();
 // Cancel was confirmed: the bake skips the rest of its work and leaves nothing behind.
 bool bake_progress_cancelled();
+// A message box to show once the progress window has closed.
+void bake_progress_defer_message(const char* caption, const std::string& msg);
 
 void ApplyBakeProgressPatches();

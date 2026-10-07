@@ -84,6 +84,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Add `dbg_terrain_decorations` console command to toggle terrain mesh decorations and print their draw statistics
 - Levels saved with `D3D11-only lightmaps` refuse to load with the Direct3D 8/9 renderers
 - Speed up `Calculate Lighting` in the level editor, especially on large levels and levels with very many lightmap surfaces
+- Show `Calculate Lighting` progress in the level editor: each phase with its progress and an estimated time remaining, and a `Cancel` button (pressed twice) that stops the bake and leaves the level without baked lighting
 - Improve level loading and `Build Geometry` times in the level editor on levels with many faces
 - Draw large rooms in fewer draw calls, and skip rooms without dynamic decals when drawing them (Direct3D 11 renderer only)
 - Make level editor refuse to open levels saved by a newer version of Alpine Faction instead of misreading them
@@ -175,7 +176,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Fix level editor crashing when Direct3D fails to create a texture
 - Stop `Build Geometry` and `Calculate Lighting` in the level editor with a message when too little memory is left to finish them (instead of crashing)
 - Reduce the memory `Calculate Lighting` needs in the level editor, and how much of it must be in one piece
-- Fix level editor crashing in `Calculate Lighting` when a level needs more than 32767 lightmap surfaces
+- Fix level editor crashing in `Calculate Lighting` when a level needs more than 32767 lightmap surfaces; without `D3D11-only lightmaps`, faces past the limit are left without a lightmap and the editor warns
 - Fix geomod craters creating new lightmap surfaces on every crater once a level holds more than 32767 of them
 - Fix memory corruption when more than 1024 rooms are visible at once
 - Fix geomod crater relighting converting lightmap texels beyond the relit surface, which could write past the end of the lightmap for a surface at the bottom of a lightmap page

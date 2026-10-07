@@ -751,6 +751,13 @@ inline constexpr std::uint64_t bc7_block_count(std::uint32_t num_pages, std::uin
     return static_cast<std::uint64_t>(num_pages) * (p / 4) * (p / 4);
 }
 
+// The layer-wide index of the BC7 block holding texel (x, y) of `page`.
+inline constexpr std::uint64_t bc7_block_index(std::uint32_t page, std::uint32_t x, std::uint32_t y,
+                                               std::uint32_t p = page_size)
+{
+    return (static_cast<std::uint64_t>(page) * (p / 4) + y / 4) * (p / 4) + x / 4;
+}
+
 // Exact decoded size of one layer, i.e. what LayerDirEntry::uncompressed_size must hold.
 // That field is u32 while this returns u64: raw_rgb8 overflows it at 21846 pages, so a writer
 // must reject a page count whose payload does not fit before narrowing.

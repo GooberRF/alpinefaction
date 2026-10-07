@@ -451,11 +451,15 @@ std::vector<D2> convex_hull(std::vector<D2> pts)
         return (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
     };
     for (std::size_t i = 0; i < pts.size(); i++) {
-        while (k >= 2 && turn(h[k - 2], h[k - 1], pts[i]) <= 0.0) k--;
+        while (k >= 2 && turn(h[k - 2], h[k - 1], pts[i]) <= 0.0) {
+            k--;
+        }
         h[k++] = pts[i];
     }
     for (std::size_t i = pts.size() - 1, t = k + 1; i > 0; i--) {
-        while (k >= t && turn(h[k - 2], h[k - 1], pts[i - 1]) <= 0.0) k--;
+        while (k >= t && turn(h[k - 2], h[k - 1], pts[i - 1]) <= 0.0) {
+            k--;
+        }
         h[k++] = pts[i - 1];
     }
     h.resize(k - 1);
@@ -948,7 +952,9 @@ bool fit_and_pack(std::uint32_t budget, bool& lowered, std::uint32_t& dropped_ch
             }
             // nothing can shrink: drop the smallest charts until the rest fit
             std::vector<std::uint32_t> by_area(g_ov.charts.size());
-            for (std::uint32_t i = 0; i < by_area.size(); i++) by_area[i] = i;
+            for (std::uint32_t i = 0; i < by_area.size(); i++) {
+                by_area[i] = i;
+            }
             std::stable_sort(by_area.begin(), by_area.end(), [](std::uint32_t a, std::uint32_t b) {
                 return g_ov.charts[a].area < g_ov.charts[b].area;
             });
@@ -1261,7 +1267,9 @@ std::vector<std::uint32_t> chart_order()
     }
     std::sort(keys.begin(), keys.end());
     std::vector<std::uint32_t> out(keys.size());
-    for (std::size_t i = 0; i < keys.size(); i++) out[i] = keys[i].second;
+    for (std::size_t i = 0; i < keys.size(); i++) {
+        out[i] = keys[i].second;
+    }
     return out;
 }
 
@@ -1520,9 +1528,9 @@ std::uint32_t blend_seams(Pages& pages)
 
 void mark_shared(std::vector<std::uint8_t>& shared, std::uint32_t page, std::uint32_t x, std::uint32_t y)
 {
-    const std::size_t i = (static_cast<std::size_t>(page) * page_blocks + y / 4) * page_blocks + x / 4;
+    const std::uint64_t i = alm::bc7_block_index(page, x, y);
     if (i < shared.size()) {
-        shared[i] = 1;
+        shared[static_cast<std::size_t>(i)] = 1;
     }
 }
 
@@ -1722,7 +1730,11 @@ bool overflow_bake_begin(const GSolid* solid, const std::vector<std::int32_t>& t
                 by_ordinal[f.ordinal] = f.face;
             }
         }
-        live_fingerprint(by_ordinal, g_ov.src_num_faces, ordinals, g_ov.fingerprint);
+        if (!live_fingerprint(by_ordinal, g_ov.src_num_faces, ordinals, g_ov.fingerprint)) {
+            ov_warn("the overflow faces could not be fingerprinted and stay unlit");
+            overflow_bake_reset();
+            return false;
+        }
 
         std::uint32_t at_base = 0;
         float d_min = density;
