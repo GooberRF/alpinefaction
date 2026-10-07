@@ -93,6 +93,7 @@ namespace gr::d3d11
         void render_alpha_detail_room(rf::GRoom *room, rf::GSolid *solid);
         void render_sky_room(rf::GRoom *room, rf::Vector3& out_sky_transform_pos, rf::Matrix3& out_sky_transform_orient);
         void render_room_liquid_surface(rf::GSolid* solid, rf::GRoom* room);
+        void render_room_decoration_edges(rf::GSolid* solid, rf::GRoom* room);
         void clear_solid_cache();
         void release_detail_room_cache(rf::GRoom* room);
         void reset_solid_cache_after_boolean();

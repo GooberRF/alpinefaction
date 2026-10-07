@@ -454,6 +454,14 @@ namespace gr::d3d11
             }
         }
 
+        // Alpha to coverage in place of the blend the last set_mode applied. Forgets that mode, so the next
+        // set_mode applies its own blend again.
+        void set_alpha_to_coverage()
+        {
+            set_blend_state(state_manager_.get_alpha_to_coverage_blend_state());
+            current_mode_.reset();
+        }
+
         void set_sampler_states(std::array<ID3D11SamplerState*, 2> sampler_states)
         {
             if (current_sampler_states_ != sampler_states) {
@@ -523,6 +531,12 @@ namespace gr::d3d11
         {
             ID3D11Buffer* vs_cbuffers[] = { cbuffer };
             device_context_->VSSetConstantBuffers(index, std::size(vs_cbuffers), vs_cbuffers);
+        }
+
+        void bind_ps_cbuffer(int index, ID3D11Buffer* cbuffer)
+        {
+            ID3D11Buffer* ps_cbuffers[] = { cbuffer };
+            device_context_->PSSetConstantBuffers(index, std::size(ps_cbuffers), ps_cbuffers);
         }
 
         void clear();
