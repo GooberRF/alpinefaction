@@ -710,6 +710,22 @@ ConsoleCommand2 underwater_fx_cmd{
     "r_underwater <0-3>",
 };
 
+ConsoleCommand2 scope_glass_cmd{
+    "r_scopeglass",
+    [](std::optional<int> level_opt) {
+        if (level_opt) {
+            g_alpine_game_config.set_scope_glass(level_opt.value());
+        }
+        rf::console::print(
+            "Scope lens effect level is {} (Direct3D 11 renderer only, 0 = off)",
+            g_alpine_game_config.scope_glass
+        );
+    },
+    "Sets the lens distortion, chromatic aberration and vignetting seen through rifle scopes: "
+    "0 off, 1 light, 2 heavy (Direct3D 11 renderer only)",
+    "r_scopeglass <0-2>",
+};
+
 // checked during level load
 void evaluate_pow2tex(const rf::String& level_filename) {
     // if dbg_pow2tex is active, use manual override instead of level filename lookup
@@ -885,6 +901,7 @@ void gr_apply_patch()
     disable_rendering_cmd.register_cmd();
     pow2_tex_cmd.register_cmd();
     underwater_fx_cmd.register_cmd();
+    scope_glass_cmd.register_cmd();
 
     // Fix `rf::gr::text_2d_mode`.
     AsmWriter{0x0050BB40}.push<int8_t>(rf::gr::FOG_NOT_ALLOWED);

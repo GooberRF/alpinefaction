@@ -592,6 +592,10 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.set_underwater_fx(std::stoi(settings["UnderwaterFx"]));
         processed_keys.insert("UnderwaterFx");
     }
+    if (settings.count("ScopeGlass")) {
+        g_alpine_game_config.set_scope_glass(std::stoi(settings["ScopeGlass"]));
+        processed_keys.insert("ScopeGlass");
+    }
     if (settings.count("MeshLightingMode")) {
         g_alpine_game_config.mesh_lighting_mode = std::clamp(std::stoi(settings["MeshLightingMode"]), 0, 2);
         recalc_mesh_static_lighting();
@@ -1600,6 +1604,7 @@ void alpine_player_settings_save(rf::Player* player)
     file << "ShowGlares=" << g_alpine_game_config.show_glares << "\n";
     file << "Weather=" << g_alpine_game_config.weather << "\n";
     file << "UnderwaterFx=" << g_alpine_game_config.underwater_fx << "\n";
+    file << "ScopeGlass=" << g_alpine_game_config.scope_glass << "\n";
     file << "MeshLightingMode=" << g_alpine_game_config.mesh_lighting_mode << "\n";
     file << "DynamicLightNdotL=" << g_alpine_game_config.dynamic_light_ndotl << "\n";
     file << "PixelLightOverbright=" << g_alpine_game_config.pixel_light_overbright << "\n";

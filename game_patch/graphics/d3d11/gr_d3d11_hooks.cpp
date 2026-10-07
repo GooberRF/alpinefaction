@@ -916,6 +916,18 @@ namespace gr::d3d11
         },
     };
 
+    static void scope_glass_pass()
+    {
+        if (renderer) {
+            renderer->run_scope_glass_pass();
+        }
+    }
+
+    // Sniper and precision scope overlays, after the full-screen tint and before the scope ring.
+    // The tint is the glass's colour, so it is vignetted along with the scene.
+    static CodeInjection sniper_scope_overlay_glass_injection{0x004AC472, scope_glass_pass};
+    static CodeInjection precision_scope_overlay_glass_injection{0x004AC86A, scope_glass_pass};
+
     // Stock clamps the far clip to liquid_visibility while submerged, hidden by its fog being
     // fully opaque there; the exponential fog is not, so the clip would show. Widen it instead of
     // dropping it, so murky water still culls close and clear water reaches the stock baseline.
@@ -1293,6 +1305,8 @@ void gr_d3d11_apply_patch()
     gameplay_render_frame_liquid_fog_hook.install();
     gameplay_render_frame_liquid_bg_color_hook.install();
     screen_flash_render_hook.install();
+    sniper_scope_overlay_glass_injection.install();
+    precision_scope_overlay_glass_injection.install();
     g_render_room_objects_hook.install();
     obj_render_all_hook.install();
     g_render_room_objects_render_liquid_injection.install();

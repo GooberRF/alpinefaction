@@ -123,6 +123,7 @@ namespace gr::d3d11
         void run_scene_post_pass();
         // Same predicate run_scene_post_pass uses, so the reticle deferral cannot disagree with it
         bool liquid_post_pass_pending() const;
+        void run_scope_glass_pass();
 
         void defer_reticle(rf::Player* pp)
         {
@@ -167,6 +168,7 @@ namespace gr::d3d11
         void init_depth_stencil_buffer(const uint32_t sample_count);
         void flush_outlines_before_2d();
         bool ensure_postfx_source();
+        void copy_scene_to_postfx_source();
 
         HWND hwnd_;
         DynamicLinkLibrary d3d11_lib_;
