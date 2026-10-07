@@ -730,6 +730,7 @@ struct DedTerrainDecoration
     bool random_yaw = true;
     bool casts_shadows = false;
     bool dither_fade = false;
+    alpine_terrain::DecorationEdges edges = alpine_terrain::DecorationEdges::hard;
 
     bool operator==(const DedTerrainDecoration&) const = default;
 };

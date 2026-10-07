@@ -1056,7 +1056,22 @@ namespace gr::d3d11
         solid_renderer_->render_solid(solid, rooms, num_rooms);
         // With the opaque world, before objects and alpha detail draw over it
         if (solid == rf::level.geometry && !solid_renderer_->decoration_chunks().empty()) {
-            decoration_renderer_->render(solid, solid_renderer_->decoration_chunks());
+            const bool multisampled = msaa_render_target_ && render_target_bm_handle_ == -1;
+            decoration_renderer_->render(solid, solid_renderer_->decoration_chunks(), DecorationPass::core,
+                                         multisampled);
+        }
+    }
+
+    void Renderer::render_room_decoration_edges(rf::GSolid* solid, rf::GRoom* room)
+    {
+        if (solid != rf::level.geometry) {
+            return;
+        }
+        const auto& chunks = solid_renderer_->room_decoration_chunks(solid, room);
+        if (decoration_renderer_->has_soft_edges(chunks)) {
+            dyn_geo_renderer_->flush();
+            decoration_renderer_->render(solid, chunks, DecorationPass::edge);
+            render_context_->set_draw_room_uid(object_room_uid_);
         }
     }
 

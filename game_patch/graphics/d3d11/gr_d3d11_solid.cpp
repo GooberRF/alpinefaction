@@ -988,7 +988,7 @@ namespace gr::d3d11
     }
 
     // Decorations reach past their chunk's faces, so they are culled by their own box, once per pass.
-    void SolidRenderer::collect_decoration_chunk(const rf::GRoom* room)
+    void SolidRenderer::collect_decoration_chunk(const rf::GRoom* room, const rf::GRoom* portal_room)
     {
         const AlpineTerrainRoomRef* ref = alpine_terrain_find_room(room);
         const DecorationChunk* chunk = ref ? alpine_terrain_decorations_chunk(*ref) : nullptr;
@@ -998,7 +998,24 @@ namespace gr::d3d11
         if (!rf::gr::cull_bounding_box(chunk->lo_vec(), chunk->hi_vec()) &&
             claim_terrain_chunk(terrain_decorations_seen_, room)) {
             decoration_chunks_.push_back(*ref);
+            decoration_chunk_rooms_.push_back(portal_room);
         }
+    }
+
+    const std::vector<AlpineTerrainRoomRef>& SolidRenderer::room_decoration_chunks(const rf::GSolid* solid,
+                                                                                  const rf::GRoom* room)
+    {
+        room_decoration_chunks_.clear();
+        if (solid->current_frame != decoration_chunks_frame_) {
+            return room_decoration_chunks_;
+        }
+        for (std::size_t i = 0; i < decoration_chunks_.size(); i++) {
+            // The core pass drops a terrain's chunks if its instance buffer cannot be created
+            if (decoration_chunk_rooms_[i] == room && alpine_terrain_decorations_chunk(decoration_chunks_[i])) {
+                room_decoration_chunks_.push_back(decoration_chunks_[i]);
+            }
+        }
+        return room_decoration_chunks_;
     }
 
     // Whether render_solid drew terrain chunk `room` this pass.
@@ -1058,6 +1075,8 @@ namespace gr::d3d11
         mover_render_cache_.clear();
         geo_cache_rooms_.clear();
         rf::geo_cache_num_rooms = 0;
+        decoration_chunks_.clear();
+        decoration_chunk_rooms_.clear();
         xlog::debug("Room render cache clear complete");
     }
 
@@ -1241,6 +1260,8 @@ namespace gr::d3d11
         bound_crater_texture_ = no_crater_texture;
         ++terrain_pass_;
         decoration_chunks_.clear();
+        decoration_chunk_rooms_.clear();
+        decoration_chunks_frame_ = solid->current_frame;
         const bool decorations = alpine_terrain_decorations_active();
         render_context_.set_sky_room(false);
         render_context_.set_draw_room_uid(-1);
@@ -1259,7 +1280,7 @@ namespace gr::d3d11
             for (rf::GRoom* detail_room : room->detail_rooms) {
                 const bool separate_chunk = alpine_terrain_is_separate_chunk(room, detail_room);
                 if (decorations && separate_chunk) {
-                    collect_decoration_chunk(detail_room);
+                    collect_decoration_chunk(detail_room, room);
                 }
                 if (detail_room->face_list.empty()) {
                     // Happens when a breakable detail brush is destroyed

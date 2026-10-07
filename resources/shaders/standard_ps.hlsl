@@ -236,6 +236,35 @@ static const float2 pcf_offsets[15] = {
 };
 
 #ifdef INSTANCE_LIGHT
+// Layout owned by gr_d3d11_decoration.cpp (DecorationBufferData), also the vertex shader's b4
+cbuffer DecorationBuffer : register(b9)
+{
+    float3 decoration_submesh_center;
+    float decoration_draw_distance;
+    float decoration_fade_band;
+    float decoration_dither_fade;
+    // An AlphaPass of gr_d3d11_decoration.cpp
+    float decoration_alpha_pass;
+};
+
+static const int decoration_pass_soft_core = 1;
+static const int decoration_pass_soft_edge = 2;
+static const int decoration_pass_hard = 3;
+static const int decoration_pass_hard_coverage = 4;
+// Where a blended material is cut: the solid side writes depth
+static const float decoration_edge_alpha = 0.5f;
+
+// A hard cutout's alpha, grown with the mip level so averaged mips keep the blade's coverage at range
+float decoration_cutout_alpha(float a, float2 uv)
+{
+    float2 tex_size;
+    tex0.GetDimensions(tex_size.x, tex_size.y);
+    float2 texel_dx = ddx(uv * tex_size);
+    float2 texel_dy = ddy(uv * tex_size);
+    float mip = 0.5f * log2(max(dot(texel_dx, texel_dx), dot(texel_dy, texel_dy)));
+    return a * (1.0f + max(mip, 0.0f) * 0.25f);
+}
+
 static const float bayer4x4[16] = {
      0.0f,  8.0f,  2.0f, 10.0f,
     12.0f,  4.0f, 14.0f,  6.0f,
@@ -941,7 +970,29 @@ float4 main(VsOutput input) : SV_TARGET
         target.a *= input.world_pos_and_depth.y < ghost_fill_y ? 1.0f : ghost_alpha_ratio;
     }
 
+#ifdef INSTANCE_LIGHT
+    // Blended materials that write depth hide what is drawn behind their edges later, so by their layer's edges they
+    // are cut at decoration_edge_alpha unblended (hard), or cut and the rest blended without depth after the opaque
+    // objects (soft). Under MSAA a hard cut is alpha to coverage, its alpha sharpened to about a pixel.
+    int alpha_pass = (int)(decoration_alpha_pass + 0.5f);
+    if (alpha_pass == decoration_pass_hard_coverage) {
+        float a = decoration_cutout_alpha(target.a, scaled_uv0);
+        target.a = saturate((a - decoration_edge_alpha) / max(fwidth(a), 1e-4f) + 0.5f);
+        clip(target.a - 1.0f / 255.0f);
+    } else if (alpha_pass == decoration_pass_hard) {
+        clip(decoration_cutout_alpha(target.a, scaled_uv0) - decoration_edge_alpha);
+    } else if (alpha_pass == decoration_pass_soft_edge) {
+        if (target.a >= decoration_edge_alpha || target.a < 1.0f / 255.0f) {
+            discard;
+        }
+    } else if (alpha_pass == decoration_pass_soft_core) {
+        clip(target.a - decoration_edge_alpha);
+    } else {
+        clip(target.a - alpha_test);
+    }
+#else
     clip(target.a - alpha_test);
+#endif
 
     float3 light_color;
 #ifdef INSTANCE_LIGHT

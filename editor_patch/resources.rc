@@ -1295,7 +1295,7 @@ FONT 8, "MS Sans Serif"
 
 // Terrain properties. Edits a staging copy; the terrain changes only on OK.
 LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
-IDD_ALPINE_TERRAIN_PROPERTIES DIALOGEX 0, 0, 593, 432
+IDD_ALPINE_TERRAIN_PROPERTIES DIALOGEX 0, 0, 593, 448
 STYLE DS_MODALFRAME | WS_CAPTION | WS_VISIBLE | WS_POPUP | WS_SYSMENU
 CAPTION "Terrain Properties"
 FONT 8, "MS Sans Serif", 0, 0, 0
@@ -1382,7 +1382,7 @@ FONT 8, "MS Sans Serif", 0, 0, 0
     AUTOCHECKBOX    "Triplanar", IDC_TERRAIN_OVERLAY_TRIPLANAR, 397, 247, 48, 10
     AUTOCHECKBOX    "Break up tiling", IDC_TERRAIN_OVERLAY_BREAK_TILING, 449, 247, 66, 10
 
-    GROUPBOX        "Decorations", -1, 7, 287, 579, 106
+    GROUPBOX        "Decorations", -1, 7, 287, 579, 122
     LISTBOX         IDC_TERRAIN_DECO_LIST, 14, 301, 200, 72, LBS_NOTIFY | WS_VSCROLL | WS_BORDER | WS_TABSTOP
     PUSHBUTTON      "Add", IDC_TERRAIN_DECO_ADD, 220, 301, 66, 13
     PUSHBUTTON      "Remove", IDC_TERRAIN_DECO_REMOVE, 220, 315, 66, 13
@@ -1415,13 +1415,15 @@ FONT 8, "MS Sans Serif", 0, 0, 0
     AUTOCHECKBOX    "Random yaw", IDC_TERRAIN_DECO_RANDOM_YAW, 375, 377, 56, 10
     AUTOCHECKBOX    "Casts shadows", IDC_TERRAIN_DECO_CASTS_SHADOWS, 437, 377, 64, 10
     AUTOCHECKBOX    "Dither fade", IDC_TERRAIN_DECO_DITHER_FADE, 507, 377, 56, 10
+    LTEXT           "Edges:", IDC_TERRAIN_DECO_EDGES_LABEL, 307, 395, 40, 8, SS_NOTIFY
+    COMBOBOX        IDC_TERRAIN_DECO_EDGES, 349, 393, 100, 60, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
 
-    LTEXT           "", IDC_TERRAIN_STATUS, 7, 398, 579, 8
+    LTEXT           "", IDC_TERRAIN_STATUS, 7, 414, 579, 8
     // Both apply the dialog's changes first, as OK does
-    PUSHBUTTON      "Terrain Tools...", IDC_TERRAIN_TOOLS, 7, 411, 64, 14
-    PUSHBUTTON      "Convert to Brushes...", IDC_TERRAIN_CONVERT, 75, 411, 80, 14
-    DEFPUSHBUTTON   "OK", IDOK, 481, 411, 50, 14
-    PUSHBUTTON      "Cancel", IDCANCEL, 536, 411, 50, 14
+    PUSHBUTTON      "Terrain Tools...", IDC_TERRAIN_TOOLS, 7, 427, 64, 14
+    PUSHBUTTON      "Convert to Brushes...", IDC_TERRAIN_CONVERT, 75, 427, 80, 14
+    DEFPUSHBUTTON   "OK", IDOK, 481, 427, 50, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 536, 427, 50, 14
 }
 
 // Vertex count prompt for New Flat and heightmap import
