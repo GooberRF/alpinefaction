@@ -359,6 +359,12 @@ namespace rf
             return (flags & FACE_SHOW_SKY) != 0;
         }
 
+        // The boolean's side (or crater-face class) in FACE_BOOLEAN_SIDE.
+        void set_boolean_side(int side)
+        {
+            AddrCaller{0x004de9e0}.this_call(this, side);
+        }
+
         bool is_liquid() const
         {
             return (flags & FACE_LIQUID) != 0;
@@ -674,7 +680,11 @@ namespace rf
     };
     static_assert(sizeof(GeomodEvent) == 0x84);
 
+    // Keeps at most geomod_queue_capacity events waiting; queueing one more destroys the oldest unstarted one.
     static auto& geomod_queue_add = addr_as_ref<void(GeomodParams* params)>(0x00437230);
+    constexpr int geomod_queue_capacity = 6;
+    // Per frame: starts the oldest waiting event (geomod_init) or runs one outer state step of the carve in progress.
+    static auto& geomod_do_frame = addr_as_ref<void(float frametime)>(0x00437180);
     // geomod_create's (0x00467020) own flag, not a GeomodParams flag: crater scale 1.0 instead of radius-derived.
     constexpr int geomod_create_flag_unit_scale = 0x8;
     // WARNING: a SENTINEL, not a record. Only next/prev are real - the rest of the declared 0x84

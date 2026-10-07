@@ -5,10 +5,6 @@ Version 1.5.0 (Trillium): Not yet released
 --------------------------------
 ### Major features
 [@GooberRF](https://github.com/GooberRF)
-- Add multiplayer vehicles and turrets
-  - Jeeps, APCs, drillers, fighters, submarines, and stationary turrets, spawned by the new `Vehicle Factory` object
-  - Simulate vehicle physics with the Bullet physics engine
-  - Multi-seat vehicles with driver, gunner, and passenger seats; `Use` boards the lowest free seat and number keys `1`-`6` switch seats
 - Add ray cast lightmap baking to level editor
   - Add `Invisible faces block light` and `Alpha-textured faces block light` level properties to control whether those faces occlude baked light
   - Add `No shadow cast` brush property for solid detail brushes and movers
@@ -29,6 +25,12 @@ Version 1.5.0 (Trillium): Not yet released
   - Mirror `Terrain Tools` brush strokes across the terrain's X and/or Z axis, with movable mirror lines
   - Up to 4 detail overlays (leaves, debris) and 8 mesh decoration layers per terrain (grass, rocks, bushes)
   - `Geoable` terrains are carved by RF2-style geomod craters, with their own underside and crater textures
+
+[@GooberRF](https://github.com/GooberRF) & [@nickalreadyinuse](https://github.com/nickalreadyinuse)
+- Add multiplayer vehicles and turrets
+  - Jeeps, APCs, drillers, fighters, submarines, and stationary turrets, spawned by the new `Vehicle Factory` object
+  - Simulate vehicle physics with the Bullet physics engine
+  - Multi-seat vehicles with driver, gunner, and passenger seats; `Use` boards the lowest free seat and number keys `1`-`6` switch seats
 
 ### Minor features, changes, and enhancements
 [@GooberRF](https://github.com/GooberRF)
@@ -187,6 +189,9 @@ Version 1.5.0 (Trillium): Not yet released
 - Fix a level listed more than once in the rotation using its first entry's rules when restarted, voted, or reloaded
 - Fix confirming the vote panel's pre-selected mutators layering them differently from the configured rules
 - Fix the configured restart vote using the base game type for a level outside the rotation
+- Fix RF2-style geomod craters occasionally deleting a piece of the crater wall, leaving a hole, or keeping a stray piece inside the crater
+- Fix seeking in a demo skipping geomod craters, leaving players appearing inside solid geometry
+- Fix the launcher failing with a `timeout` error when the game process is slow to start, and leaving that process running
 
 [@is-this-c](https://github.com/is-this-c)
 - Let `Caps Lock` capitalize

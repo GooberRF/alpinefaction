@@ -542,7 +542,9 @@ namespace
         if (face.attributes.portal_id != 0) {
             return false; // portals are not solid
         }
-        return true;
+        // Bullet's triangles are two-sided, so the buried wall between two chunks snags a hull on the edge a
+        // crater exposes where its tunnel crosses the seam.
+        return !alpine_terrain_is_interior_seam_face(face);
     }
 
     // The verts/indices survive, so a chunk being REBUILT in place can be freed and finished again.
@@ -906,6 +908,7 @@ void level_mesh_build()
         return;
     }
     g_level_mesh_built = true;
+    const AlpineTerrainSeamScope seam_scope;
     int rooms = 0;
     // A null level solid is not a reason to skip the movers, so only the room pass is guarded.
     if (rf::GSolid* solid = rf::level.geometry) {
@@ -1050,6 +1053,7 @@ void level_mesh_rebuild_pending()
         changed_lo.setMin(to_bt(m.aabb_min));
         changed_hi.setMax(to_bt(m.aabb_max));
     };
+    const AlpineTerrainSeamScope seam_scope;
     for (auto& pending : g_remesh_pending) {
         rf::GRoom* room = pending.first;
         const RemeshRequest& req = pending.second;
@@ -1712,9 +1716,6 @@ void vehicle_physics_notify_geomod(const rf::Vector3& pos, float radius)
         }
         // (b) every face the crater touches, marked in the cell owning its CENTROID - possibly far away.
         for (rf::GFace& face : room->face_list) {
-            if (!level_mesh_face_is_solid(face)) {
-                continue;
-            }
             rf::Vector3 centroid;
             rf::Vector3 flo;
             rf::Vector3 fhi;
@@ -1723,6 +1724,9 @@ void vehicle_physics_notify_geomod(const rf::Vector3& pos, float radius)
             }
             if (fhi.x < lo.x || flo.x > hi.x || fhi.y < lo.y || flo.y > hi.y || fhi.z < lo.z
                 || flo.z > hi.z) {
+                continue;
+            }
+            if (!level_mesh_face_is_solid(face)) {
                 continue;
             }
             remesh_mark_cell(req, level_mesh_cell_of(centroid));

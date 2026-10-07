@@ -19,7 +19,9 @@
 #define ERROR_ELEVATION_REQUIRED 740
 #endif
 
-#define INIT_TIMEOUT 10000
+// Process start-up can stall for well over 10 s on a busy system, before any of the game's code runs. Also bounds
+// each of inject_dll's remote-thread waits.
+#define INIT_TIMEOUT 60000
 #define RF_120_NA_SHA1  "f94f2e3f565d18f75ab6066e77f73a62a593fe03"
 #define RF_120_NA_4GB_SHA1  "4140f7619b6427c170542c66178b47bd48795a99"
 #define RED_120_NA_SHA1 "b4f421bfa9343362d7cc565e9f7ab8c6cc36f3a2"
