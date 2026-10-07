@@ -1475,7 +1475,6 @@ void multi_limbo_just_joined_do_frame() {
         } else {
             rf::gameseq_set_state(rf::GS_NEW_LEVEL, false);
         }
-        g_multi_limbo_just_joined_req_leave = false;
     }
 }
 

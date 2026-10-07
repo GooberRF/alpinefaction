@@ -224,29 +224,31 @@ CodeInjection after_frame_render_hook{
     [] {
         const rf::GameState state = rf::gameseq_get_state();
         if (!rf::is_dedicated_server
-            && !is_headless_mode()
             && state != rf::GS_QUITING
             && state != rf::GS_NEW_LEVEL
             && state != rf::GS_MULTI_GETTING_STATE_INFO) {
+            gas_region_transition_do_frame();
+
+            if (!is_headless_mode()) {
+                // Draw on top (after scene)
+                fullscreen_overlay_do_frame();
+                awards_client_do_frame();
+                achievement_system_do_frame();
+                spray_picker_render();
+                demo_playback_render_seek_overlay(); // first: covers the stale frame, UI below stays on top
+                demo_browser_render();
+                frametime_render_ui();
+    #if !defined(NDEBUG) && defined(HAS_EXPERIMENTAL)
+                experimental_render();
+    #endif
+                g_solid_render_ui();
+                debug_render_ui();
+            }
+
             // To dim our screen, and display "LOADING...", exit limbo here instead.
             if (g_multi_limbo_req_leave) {
                 rf::gameseq_set_state(rf::GS_NEW_LEVEL, false);
-                g_multi_limbo_req_leave = false;
             }
-            // Draw on top (after scene)
-            demo_playback_render_seek_overlay(); // first: covers the stale frame, UI below stays on top
-            frametime_render_ui();
-            achievement_system_do_frame();
-            awards_client_do_frame();
-            fullscreen_overlay_do_frame();
-            gas_region_transition_do_frame();
-            spray_picker_render();
-            demo_browser_render();
-#if !defined(NDEBUG) && defined(HAS_EXPERIMENTAL)
-            experimental_render();
-#endif
-            debug_render_ui();
-            g_solid_render_ui();
         }
     },
 };

@@ -169,6 +169,22 @@ bool multi_join_game(const rf::NetAddr& addr, const std::string& password)
     return true;
 }
 
+FunHook<void(rf::GameState, rf::GameState, bool)> gameseq_close_state_hook{
+    0x004B1BF0,
+    [] (const rf::GameState state, const rf::GameState new_state, const bool winded) {
+        const bool discarded = winded || !rf::gameseq_is_push_state;
+        if (discarded) {
+            if (state == rf::GS_MULTI_LIMBO_JUST_JOINED) {
+                g_multi_limbo_just_joined_req_leave = false;
+            } else if (state == rf::GS_MULTI_LIMBO) {
+                g_multi_limbo_req_leave = false;
+            }
+        }
+
+        gameseq_close_state_hook.call_target(state, new_state, winded);
+    }
+};
+
 FunHook<void(rf::GameState, rf::GameState)> rf_init_state_hook{
     0x004B1AC0,
     [] (rf::GameState state, rf::GameState old_state) {
@@ -180,10 +196,6 @@ FunHook<void(rf::GameState, rf::GameState)> rf_init_state_hook{
             std::to_underlying(old_state),
             g_jump_to_multi_server_list
         );
-
-        if (old_state == rf::GS_MULTI_LIMBO_JUST_JOINED) {
-            g_multi_limbo_just_joined_req_leave = false;
-        }
 
         const bool exiting_game = state == rf::GS_MAIN_MENU
             && (old_state == rf::GS_END_GAME || old_state == rf::GS_NEW_LEVEL);
@@ -783,6 +795,8 @@ void misc_init()
     // Disable Flamethower debug sphere drawing (optimization)
     // It is not visible in game because other things are drawn over it
     AsmWriter(0x0041AE47, 0x0041AE4C).nop();
+
+    gameseq_close_state_hook.install();
 
     // Open server list menu instead of main menu when leaving multiplayer game
     rf_init_state_hook.install();

@@ -44,7 +44,7 @@ namespace rf
     };
     static_assert(GS_NUM_STATES == 0x23, "more states will corrupt gameseq_state_info variable");
 
-    static auto& gameseq_close_state = addr_as_ref<void(GameState state, GameState new_state, bool force)>(0x004B1BF0);
+    static auto& gameseq_close_state = addr_as_ref<void(GameState state, GameState new_state, bool winded)>(0x004B1BF0);
     static auto& gameseq_set_state = addr_as_ref<void(GameState state, bool force)>(0x00434190);
     static auto& gameseq_get_state = addr_as_ref<GameState()>(0x00434200);
     static auto& gameseq_get_pending_state = addr_as_ref<GameState()>(0x00434220);
@@ -52,6 +52,8 @@ namespace rf
     static auto& gameseq_push_state = addr_as_ref<void(GameState state, bool transparent, bool pause_beneath)>(0x00434410);
     static auto& gameseq_process = addr_as_ref<GameState()>(0x00434230);
     static auto& gameseq_process_deferred_change = addr_as_ref<GameState()>(0x00434310);
+
+    static auto& gameseq_is_push_state = addr_as_ref<bool>(0x006300EB);
 
     static auto& game_shutdown = addr_as_ref<void()>(0x004359E0);
     static auto& game_paused = addr_as_ref<bool>(0x00637086);
