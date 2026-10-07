@@ -14,15 +14,6 @@ namespace rf
 // Alpine Lightmaps (RFL section 0x0AFBAE09), game side. The D3D11 renderer holds the atlas
 // (gr::d3d11::AfLightmapRenderer); terrain charts also feed the CPU light sampler on every renderer.
 
-// A level whose alpine props set d3d11_only_lightmaps carries no stock 0x1200 lightmaps section,
-// so the legacy renderers would draw its whole world fullbright. Pure, so the matrix that decides
-// it can be exercised without a device.
-constexpr bool af_lightmap_level_refused(bool d3d11_only, bool dedicated_server, bool headless,
-                                         bool renderer_is_d3d11)
-{
-    return d3d11_only && !dedicated_server && !headless && !renderer_is_d3d11;
-}
-
 void af_lightmap_level_reset();
 
 // Called for the stock 0x1200 lightmaps chunk; without one, stock pages sample a neutral texture.

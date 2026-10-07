@@ -411,34 +411,6 @@ void place_collected()
     }
 }
 
-// vmesh_render with a scaled orient: each submesh gets the position that puts its centre where the engine's
-// camera transform needs it (see vmesh_render_submesh). Placement is exact, but with a scale other than 1 the
-// engine picks LOD and lights from that moved position, so those are approximate.
-void render_scaled(EditorVMesh* vm, const Instance& inst)
-{
-    const auto* v3d = static_cast<const EditorV3d*>(vm->instance);
-    if (!v3d || v3d->num_meshes <= 0 || !v3d->meshes) return;
-    const float k = 1.0f / (inst.scale * inst.scale);
-    const Matrix3& o = inst.orient;
-    EditorRenderParams params = editor_mesh_render_params();
-    for (int i = 0; i < v3d->num_meshes; i++) {
-        Vector3 pos = inst.pos;
-        if (inst.scale != 1.0f) {
-            const EditorVifLodMesh* lod = v3d->meshes[i].lod_mesh;
-            const Vector3 c = lod ? lod->center : Vector3{};
-            const float mc[3] = {o.rvec.x * c.x + o.uvec.x * c.y + o.fvec.x * c.z,
-                                 o.rvec.y * c.x + o.uvec.y * c.y + o.fvec.y * c.z,
-                                 o.rvec.z * c.x + o.uvec.z * c.y + o.fvec.z * c.z};
-            float* p = &pos.x;
-            for (int a = 0; a < 3; a++) {
-                const float centre = p[a] + mc[a];
-                p[a] = ed_cam_pos[a] + (centre - ed_cam_pos[a]) * k - mc[a];
-            }
-        }
-        vmesh_render_submesh(vm, i, &pos, &o, &params);
-    }
-}
-
 // The nearest candidates, a chunk's at a time under the lights reaching it.
 void draw_candidates()
 {
@@ -461,7 +433,11 @@ void draw_candidates()
         const Vector3 center{(ch.lo.x + ch.hi.x) * 0.5f, (ch.lo.y + ch.hi.y) * 0.5f, (ch.lo.z + ch.hi.z) * 0.5f};
         const float hx = ch.hi.x - center.x, hy = ch.hi.y - center.y, hz = ch.hi.z - center.z;
         room_setup(nullptr, &center, std::sqrt(hx * hx + hy * hy + hz * hz) + reach, 1, 1);
-        for (; i < end; i++) render_scaled(g_candidates[i].mesh->vmesh, *g_candidates[i].inst);
+        for (; i < end; i++) {
+            const Instance& inst = *g_candidates[i].inst;
+            vmesh_render_scaled(g_candidates[i].mesh->vmesh, inst.pos, inst.orient, inst.scale,
+                                editor_mesh_render_params());
+        }
         room_cleanup();
     }
 }

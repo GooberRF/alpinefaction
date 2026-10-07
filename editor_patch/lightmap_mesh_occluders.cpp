@@ -791,7 +791,9 @@ void lightmap_collect_mesh_occluders(std::vector<MeshOccluderTri>& out)
         // same composition the editor renders these objects with (mesh.cpp bounds transform)
         const Matrix3& o = mesh->orient;
         const Vector3& p = mesh->pos;
-        auto to_world = [&](const Vector3& v) {
+        const float scale = mesh->draw_scale;
+        auto to_world = [&](const Vector3& local) {
+            const Vector3 v{local.x * scale, local.y * scale, local.z * scale};
             return Vector3{p.x + o.rvec.x * v.x + o.uvec.x * v.y + o.fvec.x * v.z,
                            p.y + o.rvec.y * v.x + o.uvec.y * v.y + o.fvec.y * v.z,
                            p.z + o.rvec.z * v.x + o.uvec.z * v.y + o.fvec.z * v.z};

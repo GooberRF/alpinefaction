@@ -645,6 +645,7 @@ struct AlpineLevelProperties
     bool d3d11_only_lightmaps = false; // skip writing the stock 0x1200 lightmaps section
     bool stock_lightmaps_omitted = false; // load-time only: the file had no stock lightmaps section
     uint8_t lightmap_compression = 0; // alpine_lightmap::CompressionMode
+    bool require_d3d11 = false; // the mapper's "Require Direct3D 11" setting
 
     // Alpine mesh objects (stored separately from stock object VArrays)
     std::vector<DedMesh*> mesh_objects;
@@ -681,6 +682,10 @@ struct AlpineLevelProperties
     std::vector<RetainedRflChunk> retained_chunks;
 
     static constexpr std::uint32_t current_alpine_chunk_version = 5u;
+
+    // Level property `require_d3d11` (u8): the game refuses the level on other renderers when it is non-zero.
+    static constexpr std::uint8_t require_d3d11_needed = 1u << 0;  // any reason, recomputed on every save
+    static constexpr std::uint8_t require_d3d11_setting = 1u << 1; // the mapper's setting
 
     Vector3 sun_to_light_dir() const
     {
@@ -772,6 +777,7 @@ struct AlpineLevelProperties
         d3d11_only_lightmaps = false;
         stock_lightmaps_omitted = false;
         lightmap_compression = 0;
+        require_d3d11 = false;
         for (auto* m : mesh_objects) {
             DestroyDedMesh(m);
         }
@@ -823,7 +829,7 @@ struct AlpineLevelProperties
         retained_chunks.clear();
     }
 
-    void Serialize(rf::File& file, bool stock_lightmaps_suppressed) const
+    void Serialize(rf::File& file, bool stock_lightmaps_suppressed, bool needs_d3d11) const
     {
         file.write<std::uint32_t>(current_alpine_chunk_version);
 
@@ -891,6 +897,8 @@ struct AlpineLevelProperties
             (stock_lightmaps_suppressed ? alpine_lightmap::d3d11_only_stock_omitted : 0u) |
             (d3d11_only_lightmaps ? alpine_lightmap::d3d11_only_setting : 0u)));
         file.write<std::uint8_t>(lightmap_compression);
+        file.write<std::uint8_t>(static_cast<std::uint8_t>((needs_d3d11 ? require_d3d11_needed : 0u) |
+                                                           (require_d3d11 ? require_d3d11_setting : 0u)));
     }
 
     void Deserialize(rf::File& file, std::size_t chunk_len)
@@ -1122,6 +1130,9 @@ struct AlpineLevelProperties
                 return;
             lightmap_compression =
                 static_cast<std::uint8_t>(alpine_lightmap::compression_mode_from_wire(lightmap_compression));
+            if (!read_bytes(&u8, sizeof(u8)))
+                return;
+            require_d3d11 = (u8 & require_d3d11_setting) != 0;
         }
     }
 };

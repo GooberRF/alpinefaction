@@ -40,6 +40,14 @@ inline rf::Vector3 alpine_sun_to_light_dir(float yaw_deg, float pitch_deg)
     return {cp * std::sin(yaw), std::sin(pitch), cp * std::cos(yaw)};
 }
 
+// A level that needs D3D11 (D3D11-only lightmaps leave no stock lightmaps section, mesh draw scale
+// misplaces meshes on the legacy renderers) is refused there; servers and headless runs draw nothing.
+constexpr bool level_refused_without_d3d11(bool require_d3d11, bool dedicated_server, bool headless,
+                                           bool renderer_is_d3d11)
+{
+    return require_d3d11 && !dedicated_server && !headless && !renderer_is_d3d11;
+}
+
 // should match structure in editor_patch\level.h
 struct AlpineLevelProperties
 {
@@ -84,8 +92,9 @@ struct AlpineLevelProperties
     // no_shadow_cast_brush_uids is editor-only (bake occluder exclusion); read and discarded
     bool meshes_occlude = false; // editor-side bake switch, no effect in game
     uint8_t lightmap_density = 0; // editor-side bake switch, no effect in game
-    bool d3d11_only_lightmaps = false; // level has no stock 0x1200 lightmaps section
+    // the D3D11-only lightmaps byte is read and discarded; require_d3d11 covers it
     uint8_t lightmap_compression = 0; // editor-side bake switch, no effect in game
+    bool require_d3d11 = false; // refuse the level on the other renderers
 
     // should match SanitizeSunProperties in editor_patch\level.h
     // A level file can carry anything; these floats end up in the lights constant buffer and in the
@@ -345,11 +354,14 @@ struct AlpineLevelProperties
                 return;
             if (!reader.read_bytes(&u8, sizeof(u8)))
                 return;
-            d3d11_only_lightmaps = (u8 & alpine_lightmap::d3d11_only_stock_omitted) != 0;
             if (!reader.read_bytes(&lightmap_compression, sizeof(lightmap_compression)))
                 return;
             lightmap_compression =
                 static_cast<std::uint8_t>(alpine_lightmap::compression_mode_from_wire(lightmap_compression));
+            // Any bit set means the editor found a reason the level needs D3D11
+            if (!reader.read_bytes(&u8, sizeof(u8)))
+                return;
+            require_d3d11 = u8 != 0;
         }
     }
 };
@@ -416,7 +428,7 @@ void alpine_mesh_clear_state();
 void alpine_mesh_free_collision_proxies();
 
 // Mesh event helpers
-namespace rf { struct Object; struct PhysicsData; }
+namespace rf { struct Object; struct PhysicsData; struct VMesh; struct VMeshCollisionInput; }
 bool alpine_mesh_is_collision_mesh(rf::Object* objp);
 void alpine_mesh_free_collision_solid(int obj_handle);
 bool alpine_mesh_has_collision_solids();
@@ -444,6 +456,18 @@ bool alpine_mesh_resume_anim(rf::Object* obj, int type, const std::string& anim_
 void alpine_mesh_set_texture(rf::Object* obj, int slot, const std::string& texture_filename);
 void alpine_mesh_clear_texture(rf::Object* obj, int slot);
 void alpine_mesh_set_collision(rf::Object* obj, int collision_type);
+void alpine_mesh_set_scale(rf::Object* obj, float scale);
+// 1 for unscaled meshes and any other object
+float alpine_mesh_draw_scale(const rf::Object* obj);
+// 1 when the vmesh does not belong to a scaled mesh
+float alpine_mesh_vmesh_draw_scale(const rf::VMesh* vmesh);
+// Called when an object's vmesh is deleted
+void alpine_mesh_release_scale_vmesh(const rf::Object* obj);
+// Re-applies a kept draw scale after Switch_Model gives the object a new vmesh
+void alpine_mesh_rebind_scale(rf::Object* obj);
+// Called when the object itself is deleted; its handle can be reused
+void alpine_mesh_free_scale(const rf::Object* obj);
+void alpine_mesh_scale_collision_input(rf::VMeshCollisionInput& in, float scale);
 
 // Alpine corona object info, loaded from RFL
 struct AlpineCoronaInfo {

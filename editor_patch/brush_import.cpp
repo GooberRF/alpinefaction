@@ -270,6 +270,12 @@ BrushNode* mesh_to_brush(CDedLevel* level, DedMesh* mesh, const MeshToBrushOptio
         return nullptr;
     }
 
+    if (mesh->draw_scale != 1.0f) {
+        for (Vector3& p : geom.positions) {
+            p = {p.x * mesh->draw_scale, p.y * mesh->draw_scale, p.z * mesh->draw_scale};
+        }
+    }
+
     stats.degenerate += geom.degenerate;
     stats.double_sided += geom.double_sided;
     stats.missing_texture = stats.missing_texture || geom.missing_texture;
@@ -282,7 +288,7 @@ BrushNode* mesh_to_brush(CDedLevel* level, DedMesh* mesh, const MeshToBrushOptio
         return nullptr;
     }
 
-    // Vertices stay in mesh-local space, so the brush inherits the object's transform unchanged.
+    // Vertices stay in mesh-local space (draw scale applied), so the brush inherits the object's transform.
     //
     // No undo record (see CDedLevel::insert_brush): the record would only cover the brush, and
     // deleting the source Mesh object is not undoable, so undoing would take the brush away and

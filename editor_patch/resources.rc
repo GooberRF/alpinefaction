@@ -162,6 +162,7 @@ FONT 8, "MS Sans Serif"
     COMBOBOX        IDC_LIGHTMAP_DENSITY, 74, 429, 74, 90, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
     LTEXT           "Compression:", -1, 156, 432, 45, 8
     COMBOBOX        IDC_LIGHTMAP_COMPRESSION, 204, 429, 74, 60, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    AUTOCHECKBOX    "Require Direct3D 11 (refuse other renderers)", IDC_REQUIRE_D3D11, 13, 446, 200, 10
 
     GROUPBOX        "Sunlight", -1, 7, 462, 284, 100
     AUTOCHECKBOX    "Enable directional sunlight", IDC_SUN_ENABLE, 13, 474, 160, 10
@@ -445,6 +446,8 @@ FONT 8, "MS Sans Serif", 0, 0, 0
 
     AUTOCHECKBOX    "Destructible", IDC_MESH_IS_CLUTTER, 7, 230, 60, 10
     AUTO3STATE      "No shadow cast", IDC_MESH_NO_SHADOW_CAST, 90, 230, 74, 10
+    LTEXT           "Draw Scale:", -1, 170, 230, 40, 8
+    EDITTEXT        IDC_MESH_DRAW_SCALE, 212, 228, 48, 12, ES_AUTOHSCROLL
 
     GROUPBOX        "Destructible Properties", IDC_MESH_CLUTTER_GROUP, 7, 242, 260, 190
 

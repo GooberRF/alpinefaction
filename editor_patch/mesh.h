@@ -37,6 +37,13 @@ void apply_mesh_parser_hardening();
 // Rendering (called from alpine_obj.cpp render hook)
 void mesh_render(CDedLevel* level);
 
+// vmesh_render with an orient already multiplied by `scale`, for static and character meshes (a .vfx draws as
+// given; its part hook handles the scaled orient). Placement is exact, but with a scale other than 1 the engine
+// picks LOD and lights from a moved position, so those are approximate.
+struct EditorRenderParams;
+void vmesh_render_scaled(EditorVMesh* vm, const Vector3& pos, const Matrix3& orient, float scale,
+                         const EditorRenderParams& params);
+
 // Handlers called from shared hook points in alpine_obj.cpp
 DedMesh* mesh_click_pick(CDedLevel* level, float click_x, float click_y, float* out_dist_sq);
 void mesh_pick(CDedLevel* level, int param1, int param2);

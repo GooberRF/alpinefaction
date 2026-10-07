@@ -29,6 +29,14 @@ namespace rf
     };
     static_assert(sizeof(VMesh) == 0x58);   
 
+    // VMeshCollisionInput::flags
+    enum VMeshCollisionFlags : int
+    {
+        VMCF_STOP_AT_FIRST_HIT = 0x1,
+        // start_pos and dir are already mesh-local; the static collider sets it after converting them in place
+        VMCF_LOCAL_INPUT = 0x2,
+    };
+
     struct VMeshCollisionInput
     {
         Vector3 mesh_pos;

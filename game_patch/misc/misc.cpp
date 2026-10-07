@@ -467,6 +467,18 @@ CodeInjection vif_chunk_tex_count_overflow_fix{
     },
 };
 
+// A .vfx ribbon (CHNE) chunk's vertices are copied into a 16-entry stack buffer when drawn (0x0053EF90).
+CodeInjection vfx_ribbon_vertex_count_overflow_fix{
+    0x0053E53F,
+    [](auto& regs) {
+        const int num_vertices = regs.eax;
+        if (num_vertices < 0 || num_vertices > 16) {
+            xlog::warn("Clamping vfx ribbon vertex count {} to 16", num_vertices);
+            regs.eax = std::clamp(num_vertices, 0, 16);
+        }
+    },
+};
+
 FunHook<void(const char*, int)> lcl_add_message_bof_fix{
     0x004B0720,
     [](const char* str, int id) {
@@ -817,6 +829,7 @@ void misc_init()
     v3d_csphere_count_overflow_fix.install();
     vif_chunk_reader_hook.install();
     vif_chunk_tex_count_overflow_fix.install();
+    vfx_ribbon_vertex_count_overflow_fix.install();
 
     // Fix killed glass restoration from a save file
     AsmWriter(0x0043604A).nop(5);
