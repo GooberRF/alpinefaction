@@ -738,6 +738,14 @@ bool alpine_player_settings_load(rf::Player* player)
     }
 
     // Load UI settings
+    if (settings.count("BigHUDHealth")) {
+        g_alpine_game_config.big_hud_health = std::stoi(settings["BigHUDHealth"]);
+        processed_keys.insert("BigHUDHealth");
+    }
+    if (settings.count("BigHUDAmmo")) {
+        g_alpine_game_config.big_hud_ammo = std::stoi(settings["BigHUDAmmo"]);
+        processed_keys.insert("BigHUDAmmo");
+    }
     if (settings.count("BigHUD")) {
         g_alpine_game_config.big_hud = std::stoi(settings["BigHUD"]);
         set_big_hud(g_alpine_game_config.big_hud);
@@ -1643,6 +1651,8 @@ void alpine_player_settings_save(rf::Player* player)
     // UI
     file << "\n[UISettings]\n";
     file << "BigHUD=" << g_alpine_game_config.big_hud << "\n";
+    file << "BigHUDHealth=" << g_alpine_game_config.big_hud_health << "\n";
+    file << "BigHUDAmmo=" << g_alpine_game_config.big_hud_ammo << "\n";
     if (g_alpine_game_config.sniper_scope_color_override) {
         file << "SniperScopeColor=" << format_hex_color_string(*g_alpine_game_config.sniper_scope_color_override) << "\n";
     }
