@@ -435,7 +435,7 @@ bool sun_arrow_write_props(AlpineLevelProperties& props, const Vector3& fvec)
 void DestroyDedDirectionalLight(DedDirectionalLight* light)
 {
     if (!light) return;
-    light->field_4.free();
+    light->class_mesh_filename.free();
     light->script_name.free();
     light->class_name.free();
     delete light;

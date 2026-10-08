@@ -42,6 +42,9 @@ struct ClimbRegionEntry {
 static std::vector<ClimbRegionEntry> g_climb_regions;
 static std::vector<rf::ClimbRegion*> g_disabled_climb_regions;
 
+// The fog near clip the level file sets; Set_Fog_Far_Clip can move the far clip below it and back
+static float g_level_fog_near_clip = 0.0f;
+
 CodeInjection level_read_data_check_restore_status_patch{
     0x00461195,
     [](auto& regs) {
@@ -129,6 +132,7 @@ CodeInjection level_load_init_patch{
     []() {
         AlpineLevelProperties::instance() = {};
         DashLevelProps::instance() = {};
+        g_level_fog_near_clip = 0.0f;
         alpine_mesh_clear_state();
         alpine_corona_clear_state();
         alpine_bag_clear_state();
@@ -375,6 +379,33 @@ FunHook<void(rf::File*)> level_read_mp_respawns_hook{
                 blue,
                 true
             );
+        }
+    },
+};
+
+// gr_fog_set (0x0050E020) keeps the previous near/far pair when near > far, so fog would stop following the level.
+// Below RFL 306 the near clip has no effect, and stock behaviour stays as it is.
+void level_sanitize_fog_near_clip()
+{
+    if (rf::level.version < 306) {
+        return;
+    }
+    const float near_clip = g_level_fog_near_clip;
+    const float far_clip = rf::level.distance_fog_far_clip;
+    const bool usable = near_clip == 0.0f
+        || (std::isfinite(near_clip) && near_clip > 0.0f && (!(far_clip > 0.0f) || near_clip < far_clip));
+    rf::level.distance_fog_near_clip = usable ? near_clip : 0.0f;
+}
+
+CallHook<void(rf::File*)> level_read_geometry_header_hook{
+    0x00460943,
+    [](rf::File* file) {
+        level_read_geometry_header_hook.call_target(file);
+        g_level_fog_near_clip = rf::level.distance_fog_near_clip;
+        level_sanitize_fog_near_clip();
+        if (rf::level.distance_fog_near_clip != g_level_fog_near_clip) {
+            xlog::warn("[Level] Fog near clip {} is not below the far clip {}, using 0", g_level_fog_near_clip,
+                       rf::level.distance_fog_far_clip);
         }
     },
 };
@@ -654,6 +685,9 @@ void level_apply_patch()
 
     // Allow level hardness 0 for version 304+ levels
     level_load_hardness_zero_patch.install();
+
+    // Fog near clip at or past the far clip in 306+ levels
+    level_read_geometry_header_hook.install();
 
     // Hook stock gas region loader to capture gas region data for volumetric fog
     gas_region_load_hook.install();

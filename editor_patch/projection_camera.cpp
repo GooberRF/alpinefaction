@@ -22,7 +22,7 @@ static void projection_camera_load_icon()
 void DestroyDedProjectionCamera(DedProjectionCamera* camera)
 {
     if (!camera) return;
-    camera->field_4.free();
+    camera->class_mesh_filename.free();
     camera->script_name.free();
     camera->class_name.free();
     delete camera;

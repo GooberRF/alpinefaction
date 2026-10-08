@@ -21,6 +21,7 @@
 #include "../multi/multi.h"
 #include "../misc/alpine_settings.h"
 #include "../misc/level.h"
+#include "../misc/misc.h"
 #include "../rf/gr/gr.h"
 #include "../rf/gr/gr_light.h"
 #include "../rf/gameseq.h"
@@ -31,6 +32,7 @@
 #include "../rf/os/os.h"
 #include "../rf/os/frametime.h"
 #include "../rf/item.h"
+#include "../rf/misc.h"
 #include "../rf/clutter.h"
 #include "../rf/ui.h"
 #include "gr.h"
@@ -748,6 +750,98 @@ void evaluate_pow2tex(const rf::String& level_filename) {
     }
 }
 
+// ─── Camera far clip ───
+
+// gr_d3d_setup_3d (0x00547150) clamps the legacy renderers' z range to 1000
+constexpr float legacy_max_camera_far_clip = 1000.0f;
+constexpr float stock_default_wfar = 275.0f;
+constexpr float d3d11_default_projection_far = 1700.0f;
+
+float level_camera_far_clip()
+{
+    const float far_clip = AlpineLevelProperties::instance().camera_far_clip;
+    return is_d3d11() ? far_clip : std::min(far_clip, legacy_max_camera_far_clip);
+}
+
+float gr_fog_near_clip()
+{
+    return rfl_version_minimum(306) ? rf::gr::screen.fog_near : 0.0f;
+}
+
+// 0x0045BB00 swaps its own value into gr::default_wfar until 0x0045BE76 restores it, and that window keeps it.
+float level_default_far_clip()
+{
+    const float camera_far_clip = level_camera_far_clip();
+    return camera_far_clip > 0.0f && rf::gr::default_wfar == stock_default_wfar ? camera_far_clip
+                                                                                : rf::gr::default_wfar;
+}
+
+float level_dry_far_clip()
+{
+    const float camera_far_clip = level_camera_far_clip();
+    if (camera_far_clip > 0.0f) {
+        return camera_far_clip;
+    }
+    if (!rf::level.has_skyroom && rf::level.distance_fog_far_clip > 0.0f) {
+        return rf::level.distance_fog_far_clip;
+    }
+    return rf::gr::default_wfar;
+}
+
+float level_projection_far()
+{
+    const float camera_far_clip = level_camera_far_clip();
+    if (camera_far_clip > 0.0f) {
+        return camera_far_clip;
+    }
+    return rf::level.distance_fog_far_clip > 0.0f ? rf::level.distance_fog_far_clip : d3d11_default_projection_far;
+}
+
+// gameplay_render_frame starts each frame at gr::default_wfar
+CallHook<void(float)> gameplay_render_frame_default_far_clip_hook{
+    0x00431AF4,
+    []([[maybe_unused]] float far_clip) {
+        gameplay_render_frame_default_far_clip_hook.call_target(level_default_far_clip());
+    },
+};
+
+// The sky room pass (0x00516DC0) switches to gr::default_wfar for the sky solid only when the level has fog
+// (0x004318C9), so without fog the sky would be clipped at the camera far clip. gr_far_clip_dist is 0 while the
+// far clip is off, which gr_set_far_clip(0) restores.
+CallHook<void(rf::GRoom*)> g_solid_render_sky_room_hook{
+    0x004D3A62,
+    [](rf::GRoom* room) {
+        if (!(level_camera_far_clip() > 0.0f) || rf::level.distance_fog_far_clip > 0.0f) {
+            g_solid_render_sky_room_hook.call_target(room);
+            return;
+        }
+        const float far_clip = rf::gr_far_clip_dist;
+        rf::gr_set_far_clip(rf::gr::default_wfar);
+        g_solid_render_sky_room_hook.call_target(room);
+        rf::gr_set_far_clip(far_clip);
+    },
+};
+
+// The fog far clip set as the far clip: dry with fog (0x00431F33), after the sky solid (0x00431911) and after
+// glares (0x004319C8). The sky solid itself keeps gr::default_wfar (0x004318EA).
+CallHook<void(float)> gameplay_render_frame_fog_far_clip_hook{
+    {0x00431F33, 0x00431911, 0x004319C8},
+    [](float far_clip) {
+        const float camera_far_clip = level_camera_far_clip();
+        gameplay_render_frame_fog_far_clip_hook.call_target(camera_far_clip > 0.0f ? camera_far_clip : far_clip);
+    },
+};
+
+// Glares and volumetric lights draw with twice the far clip
+CallHook<void(float)> gameplay_render_frame_glare_far_clip_hook{
+    0x00431988,
+    [](float far_clip) {
+        const float camera_far_clip = level_camera_far_clip();
+        gameplay_render_frame_glare_far_clip_hook.call_target(camera_far_clip > 0.0f ? 2.0f * camera_far_clip
+                                                                                     : far_clip);
+    },
+};
+
 bool gr_is_antialiasing_err() {
     if (rf::is_dedicated_server || is_headless_mode()) {
         return false;
@@ -886,6 +980,12 @@ void gr_apply_patch()
     // Allow client to disable rendering
     gameplay_render_frame_hook.install();
     gameplay_render_frame_pre_hook.install();
+
+    // Level camera far clip
+    gameplay_render_frame_default_far_clip_hook.install();
+    g_solid_render_sky_room_hook.install();
+    gameplay_render_frame_fog_far_clip_hook.install();
+    gameplay_render_frame_glare_far_clip_hook.install();
 
     // Commands
     fov_cmd.register_cmd();

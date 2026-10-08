@@ -36,7 +36,6 @@ namespace
     constexpr float tracer_fade_in_dist = 3.0f;
     constexpr float tracer_muzzle_max_dist = 3.0f;
     constexpr float tracer_range = 2000.0f;
-    constexpr float tracer_default_far_clip = 1700.0f; // D3D11's far plane when the level sets none
     constexpr float tracer_max_frame_delta = 0.1f;
     // Past twice the frame-delta clamp, tracers would crawl and pile up rather than fly.
     constexpr int64_t tracer_render_stale_ms = static_cast<int64_t>(2.0f * tracer_max_frame_delta * 1000.0f);
@@ -553,10 +552,9 @@ void vehicle_tracers_render()
     }
     const rf::Vector3 eye = rf::gr::eye_pos;
     const bool fog = rf::gr::screen.fog_mode;
-    const float fog_near = rf::gr::screen.fog_near;
+    const float fog_near = gr_fog_near_clip();
     const float fog_far = rf::gr::screen.fog_far;
-    const float far_clip =
-        rf::level.distance_fog_far_clip > 0.0f ? rf::level.distance_fog_far_clip : tracer_default_far_clip;
+    const float far_clip = level_projection_far();
     const float px_scale = rf::gr::screen.clip_height / tracer_px_reference_height;
     int draw_count = 0;
     for (VehicleTracer& t : g_tracers) {

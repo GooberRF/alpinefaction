@@ -95,6 +95,11 @@ Version 1.5.0 (Trillium): Not yet released
 - Add multiplayer minimap, configured in `Level Properties`
 - Dedicated server base rules now apply to every level under every game type unless a level overrides them
 - A level loaded by a vote, the `level` or `sv_gametype` commands now use that level's own rotation rules if available
+- Reorganize the level editor `Level Properties` window into tabs
+- Make the level fog near clip plane take effect on the Direct3D 11 renderer (RFL v306+)
+- Add `Camera far clip` level property to set how far the level is drawn independently of the fog far clip
+- Add an object placement panel to object mode in the level editor
+- Allow dragging objects from the level editor's object tree into a viewport
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Add `ui_color_console` console command to set the console background color
@@ -210,6 +215,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Fix level editor crash when a texture is too large to load
 - Fix 8-bit greyscale TGA textures with mipmap files sometimes loading with garbage pixels
 - Show control characters in texture filenames as escape sequences in log warnings
+- Fix new levels in the level editor defaulting to legacy `Cyclic_Timer` and mover behaviour
 
 [@is-this-c](https://github.com/is-this-c)
 - Let `Caps Lock` capitalize

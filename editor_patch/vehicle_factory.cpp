@@ -128,45 +128,6 @@ void vehicle_factory_bound_sphere(const DedVehicleFactory* factory, float* out_c
                                                        : vehicle_factory_fallback_radius;
 }
 
-// The AF override the game will apply wins; otherwise entity.tbl is authoritative (it carries the
-// extension) and the fallback table covers the stock classes.
-std::string vehicle_factory_mesh_for_class(const std::string& class_name)
-{
-    std::string filename;
-    // The game rewrites $V3D Filename for these classes at level init, so the preview has to show
-    // the hull that will actually spawn.
-    for (const auto& entry : alpine_vehicle_class_meshes) {
-        if (!string_iequals(entry.class_name, class_name)) {
-            continue;
-        }
-        // Probed, so an install without the AF assets still previews the stock hull.
-        rf::File file;
-        if (file.open(entry.vmesh_filename)) {
-            filename = entry.vmesh_filename;
-        }
-        break;
-    }
-    if (filename.empty()) {
-        if (const auto* ei = entity_tbl_find(class_name.c_str())) {
-            filename = ei->v3d_filename;
-        }
-    }
-    if (filename.empty()) {
-        for (const auto& entry : g_fallback_meshes) {
-            if (string_iequals(entry.class_name, class_name)) {
-                filename = entry.vmesh_filename;
-                break;
-            }
-        }
-    }
-    if (filename.empty()) {
-        return filename;
-    }
-    replace_ext_if(filename, "v3d", "v3m");
-    replace_ext_if(filename, "vcm", "v3c");
-    return filename;
-}
-
 void vehicle_factory_load_preview(DedVehicleFactory* factory)
 {
     vehicle_factory_free_preview(factory);
@@ -324,20 +285,8 @@ INT_PTR CALLBACK VehicleFactoryDialogProc(HWND hdlg, UINT msg, WPARAM wp, LPARAM
         // The classes this install's entity.tbl offers the game, less the unsupported ones; a class
         // already on the object (unsupported or not) is appended rather than dropped.
         HWND cls = GetDlgItem(hdlg, IDC_VEHICLE_FACTORY_CLASS);
-        const std::vector<std::string> tbl_classes =
-            entity_tbl_class_names_with_use({ENTITY_USE_VEHICLE, ENTITY_USE_TURRET});
-        if (tbl_classes.empty()) {
-            // entity.tbl is missing or its .vpp is not mounted, so nothing was parsed.
-            for (const char* name : g_stock_vehicle_classes) {
-                SendMessageA(cls, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(name));
-            }
-        }
-        else {
-            for (const std::string& name : tbl_classes) {
-                if (!vehicle_factory_class_is_unsupported(name)) {
-                    SendMessageA(cls, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(name.c_str()));
-                }
-            }
+        for (const std::string& name : vehicle_factory_class_choices()) {
+            SendMessageA(cls, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(name.c_str()));
         }
         if (uniform(&DedVehicleFactory::vehicle_class)) {
             int cls_sel = static_cast<int>(SendMessageA(cls, CB_FINDSTRINGEXACT, static_cast<WPARAM>(-1),
@@ -497,6 +446,57 @@ INT_PTR CALLBACK VehicleFactoryDialogProc(HWND hdlg, UINT msg, WPARAM wp, LPARAM
 
 } // namespace
 
+std::vector<std::string> vehicle_factory_class_choices()
+{
+    std::vector<std::string> classes =
+        entity_tbl_class_names_with_use({ENTITY_USE_VEHICLE, ENTITY_USE_TURRET});
+    if (classes.empty()) {
+        // entity.tbl is missing or its .vpp is not mounted, so nothing was parsed.
+        return std::vector<std::string>(std::begin(g_stock_vehicle_classes), std::end(g_stock_vehicle_classes));
+    }
+    std::erase_if(classes, vehicle_factory_class_is_unsupported);
+    return classes;
+}
+
+// The AF override the game will apply wins; otherwise entity.tbl is authoritative (it carries the
+// extension) and the fallback table covers the stock classes.
+std::string vehicle_factory_mesh_for_class(const std::string& class_name)
+{
+    std::string filename;
+    // The game rewrites $V3D Filename for these classes at level init, so the preview has to show
+    // the hull that will actually spawn.
+    for (const auto& entry : alpine_vehicle_class_meshes) {
+        if (!string_iequals(entry.class_name, class_name)) {
+            continue;
+        }
+        // Probed, so an install without the AF assets still previews the stock hull.
+        rf::File file;
+        if (file.open(entry.vmesh_filename)) {
+            filename = entry.vmesh_filename;
+        }
+        break;
+    }
+    if (filename.empty()) {
+        if (const auto* ei = entity_tbl_find(class_name.c_str())) {
+            filename = ei->v3d_filename;
+        }
+    }
+    if (filename.empty()) {
+        for (const auto& entry : g_fallback_meshes) {
+            if (string_iequals(entry.class_name, class_name)) {
+                filename = entry.vmesh_filename;
+                break;
+            }
+        }
+    }
+    if (filename.empty()) {
+        return filename;
+    }
+    replace_ext_if(filename, "v3d", "v3m");
+    replace_ext_if(filename, "vcm", "v3c");
+    return filename;
+}
+
 void ShowVehicleFactoryPropertiesDialog(CDedLevel* level)
 {
     auto& sel = level->selection;
@@ -535,7 +535,7 @@ void DestroyDedVehicleFactory(DedVehicleFactory* factory)
 {
     if (!factory) return;
     vehicle_factory_free_preview(factory);
-    factory->field_4.free();
+    factory->class_mesh_filename.free();
     factory->script_name.free();
     factory->class_name.free();
     delete factory;
@@ -666,10 +666,11 @@ void vehicle_factory_deserialize_chunk(CDedLevel& level, rf::File& file, std::si
 
 // ─── Object Lifecycle ───────────────────────────────────────────────────────
 
-void PlaceNewVehicleFactoryObject()
+DedVehicleFactory* PlaceNewVehicleFactoryObject(const std::string& vehicle_class, const Vector3& pos,
+                                                const Matrix3& orient)
 {
     auto* level = CDedLevel::Get();
-    if (!level) return;
+    if (!level) return nullptr;
 
     auto* factory = new DedVehicleFactory();
     memset(static_cast<DedObject*>(factory), 0, sizeof(DedObject));
@@ -677,17 +678,11 @@ void PlaceNewVehicleFactoryObject()
     factory->type = DedObjectType::DED_VEHICLE_FACTORY;
 
     factory->script_name.assign_0("Vehicle Factory");
-
-    auto* viewport = get_active_viewport();
-    if (viewport && viewport->view_data) {
-        factory->pos = viewport->view_data->camera_pos;
-        factory->orient = viewport->view_data->camera_orient;
+    if (!vehicle_class.empty()) {
+        factory->vehicle_class = vehicle_class;
     }
-    else {
-        factory->orient.rvec = {1.0f, 0.0f, 0.0f};
-        factory->orient.uvec = {0.0f, 1.0f, 0.0f};
-        factory->orient.fvec = {0.0f, 0.0f, 1.0f};
-    }
+    factory->pos = pos;
+    factory->orient = orient;
 
     factory->uid = generate_uid();
 
@@ -697,6 +692,7 @@ void PlaceNewVehicleFactoryObject()
     level->clear_selection();
     level->add_to_selection(static_cast<DedObject*>(factory));
     level->update_console_display();
+    return factory;
 }
 
 DedVehicleFactory* CloneVehicleFactoryObject(DedVehicleFactory* source, bool add_to_level)

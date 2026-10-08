@@ -155,7 +155,7 @@ static void rope_clamp_properties(DedRopeEmitter* rope)
 void DestroyDedRopeEmitter(DedRopeEmitter* rope)
 {
     if (!rope) return;
-    rope->field_4.free();
+    rope->class_mesh_filename.free();
     rope->script_name.free();
     rope->class_name.free();
     delete rope;

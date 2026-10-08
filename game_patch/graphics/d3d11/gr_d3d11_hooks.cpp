@@ -1070,7 +1070,7 @@ namespace gr::d3d11
             static auto& zm = addr_as_ref<float>(0x005A7DD8);
             float zn = 0.1f; // static near plane (RF uses: zm / matrix_scale.z)
             zm = 1.0f; // let's not use zm at all to simplify software projections
-            float zf = rf::level.distance_fog_far_clip > 0.0f ? rf::level.distance_fog_far_clip : 1700.0f;
+            float zf = level_projection_far();
             renderer->setup_3d(Projection{sx, sy, zn, zf});
         },
     };

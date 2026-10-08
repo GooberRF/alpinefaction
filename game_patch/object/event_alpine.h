@@ -1287,6 +1287,7 @@ struct EventSetFogFarClip : rf::Event
     void turn_on() override
     {
         rf::level.distance_fog_far_clip = far_clip;
+        level_sanitize_fog_near_clip();
     }
 };
 

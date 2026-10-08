@@ -9,6 +9,7 @@
 #include <xlog/xlog.h>
 #include <common/rfl_chunk_reader.h>
 #include <common/alpine_dir_light.h>
+#include <common/alpine_camera_far_clip.h>
 #include <common/lightmap/alpine_lightmap.h>
 #include <common/terrain/alpine_terrain.h>
 #include "../rf/geometry.h"
@@ -99,6 +100,7 @@ struct AlpineLevelProperties
     rf::Vector3 minimap_world_max{};
     float minimap_cut_height = 0.0f; // editor-side bake parameter, no effect in game
     bool require_d3d11 = false; // refuse the level on the other renderers
+    float camera_far_clip = 0.0f; // 0 = the stock far clip (fog far clip, else gr::default_wfar)
 
     // should match SanitizeSunProperties in editor_patch\level.h
     // A level file can carry anything; these floats end up in the lights constant buffer and in the
@@ -413,6 +415,13 @@ struct AlpineLevelProperties
             if (!reader.read_bytes(&u8, sizeof(u8)))
                 return;
             require_d3d11 = u8 != 0;
+            float far_clip = 0.0f;
+            if (!reader.read_bytes(&far_clip, sizeof(far_clip)))
+                return;
+            camera_far_clip = alpine_camera_far_clip::sanitize(far_clip);
+            if (!(camera_far_clip == far_clip)) {
+                xlog::warn("[AlpineLevelProps] Camera far clip {} corrected to {}", far_clip, camera_far_clip);
+            }
         }
     }
 };
@@ -473,6 +482,7 @@ struct AlpineMeshInfo {
 };
 
 void level_shutdown();
+void level_sanitize_fog_near_clip();
 void alpine_mesh_load_chunk(rf::File& file, std::size_t chunk_len, int content_version);
 void alpine_mesh_do_frame();
 void alpine_mesh_clear_state();

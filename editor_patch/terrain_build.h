@@ -133,6 +133,10 @@ bool terrain_build_resolves(CDedLevel& level, const DedTerrain& terrain);
 // Nearest t in [0, t_max] where the ray meets a face of the compiled level the viewport draws
 // opaque and front facing (terrain rooms excluded), else t_max.
 float terrain_build_level_ray_hit(CDedLevel& level, const float (&o)[3], const float (&d)[3], float t_max);
+// As above, but a face whose normal's y is below min_normal_y does not stop the ray; the nearest t of
+// those it passed is written to skipped_t (t_max when none).
+float terrain_build_level_ray_hit(CDedLevel& level, const float (&o)[3], const float (&d)[3], float t_max,
+                                  float min_normal_y, float& skipped_t);
 
 // Convert to Brushes: the faces the terrain would emit and the stock lightmap surfaces they would
 // make, and the level's surfaces now (numbered by the last Calculate Lighting when measured, else an

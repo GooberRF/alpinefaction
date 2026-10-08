@@ -50,6 +50,8 @@
 #include "terrain_build.h"
 #include "terrain_paint.h"
 #include "terrain_preview.h"
+#include "mesh_browser.h"
+#include "placement_panel.h"
 
 #define LAUNCHER_FILENAME "AlpineFactionLauncher.exe"
 HMODULE g_module;
@@ -666,7 +668,7 @@ CodeInjection CFormView_Create_injection{
 
 // Post-creation hook for CFormView panels. At 0x0052F0A9 (after CreateDlgIndirect),
 // EDI = CWnd*, EBX = template name. CWnd::m_hWnd is at CWnd+0x1C.
-// Subclasses group panel immediately after creation.
+// Subclasses group panel immediately after creation, and builds the placement panel into the object panel.
 static LRESULT CALLBACK GroupPanelSubclassProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 static void subclass_group_panel_post_create(HWND hwnd);
 
@@ -680,6 +682,10 @@ CodeInjection CFormView_PostCreate_injection{
             if (hwnd) {
                 subclass_group_panel_post_create(hwnd);
             }
+        }
+        else if (lpszTemplateName == MAKEINTRESOURCE(editor_object_panel_template)) {
+            auto* panel = reinterpret_cast<EditorObjectPanel*>(static_cast<uintptr_t>(regs.edi));
+            placement_panel_create(panel, WndToHandle(reinterpret_cast<CWnd*>(panel)));
         }
     },
 };
@@ -856,13 +862,6 @@ void* __fastcall DedClutter_ct(void* this_, int edx)
     return result;
 }
 
-// An entry of the class list 0x004151C0 searches at this+0x5CC: the template is what a match copies from.
-struct RedClutterClass
-{
-    VString name;
-    void* template_clutter;
-};
-
 // 0x004B74E0: two empty strings match, otherwise a case-insensitive compare.
 static bool red_vstring_iequals(const VString& a, const VString& b)
 {
@@ -874,7 +873,7 @@ static bool red_vstring_iequals(const VString& a, const VString& b)
 
 static bool red_clutter_class_known(void* level, const VString& class_name)
 {
-    const auto& classes = *reinterpret_cast<const VArray<RedClutterClass*>*>(static_cast<char*>(level) + 0x5CC);
+    const auto& classes = static_cast<CDedLevel*>(level)->object_classes;
     for (int i = 0; i < classes.size; ++i) {
         if (red_vstring_iequals(class_name, classes.data_ptr[i]->name)) {
             return true;
@@ -1413,6 +1412,21 @@ bool level_autosave_in_progress()
     return g_autosaving;
 }
 
+// Stock RED kept the fog near clip, but nothing drew it before RFL 306; the level saves as 306, where it applies.
+static void reset_legacy_fog_near_clip()
+{
+    auto* level = CDedLevel::Get();
+    if (!level || get_level_rfl_version() >= 306 || level->fog_near_clip == 0.0f) {
+        return;
+    }
+    editor_report(EditorReportLevel::warn, "Level",
+                  std::format("Fog near clip {:.2f} reset to 0: it had no effect before RFL 306 and would now "
+                              "apply on Direct3D 11.",
+                              level->fog_near_clip),
+                  true);
+    level->fog_near_clip = 0.0f;
+}
+
 char __fastcall CDedDoc_LoadSaveLevel_new(void* self, int edx, const char* path, int is_load, int is_autosave);
 FunHook<char __fastcall(void*, int, const char*, int, int)> CDedDoc_LoadSaveLevel_hook{
     0x0041CCE0, CDedDoc_LoadSaveLevel_new}; // CDedDoc::LoadSaveLevel
@@ -1422,6 +1436,9 @@ char __fastcall CDedDoc_LoadSaveLevel_new(void* self, int edx, const char* path,
     const bool was_autosaving = std::exchange(g_autosaving, !is_load && is_autosave);
     char result = CDedDoc_LoadSaveLevel_hook.call_target(self, edx, path, is_load, is_autosave);
     g_autosaving = was_autosaving;
+    if (is_load && result) {
+        reset_legacy_fog_near_clip();
+    }
     if (is_load && !is_autosave) {
         headless_bake_level_loaded(path, result != 0);
     }
@@ -2259,6 +2276,8 @@ extern "C" DWORD AF_DLL_EXPORT Init([[maybe_unused]] void* unused)
     ApplyTerrainBuildPatches();
     ApplyTerrainPreviewPatches();
     ApplyTerrainPaintPatches();
+    ApplyMeshPreviewPatches();
+    ApplyPlacementPanelPatches();
     ApplyEventsPatches();
     ApplyAlpineObjectPatches();
     ApplyTexturesPatches();

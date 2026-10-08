@@ -23,6 +23,8 @@ set(SRCS
     mesh.h
     mesh_browser.cpp
     mesh_browser.h
+    placement_panel.cpp
+    placement_panel.h
     note.cpp
     note.h
     corona.cpp

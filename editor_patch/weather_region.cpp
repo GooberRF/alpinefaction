@@ -37,7 +37,7 @@ static void weather_region_load_icon()
 void DestroyDedWeatherRegion(DedWeatherRegion* weather_region)
 {
     if (!weather_region) return;
-    weather_region->field_4.free();
+    weather_region->class_mesh_filename.free();
     weather_region->script_name.free();
     weather_region->class_name.free();
     delete weather_region;

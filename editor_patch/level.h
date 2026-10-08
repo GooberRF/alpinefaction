@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <patch_common/MemUtils.h>
 #include <xlog/xlog.h>
+#include <common/alpine_camera_far_clip.h>
 #include <common/lighting/alpine_lighting.h>
 #include <common/lightmap/alpine_lightmap.h>
 #include "vtypes.h"
@@ -719,6 +720,7 @@ struct AlpineLevelProperties
     Vector3 minimap_world_max{};
     float minimap_cut_height = 0.0f;
     bool require_d3d11 = false; // the mapper's "Require Direct3D 11" setting
+    float camera_far_clip = 0.0f; // 0 = the stock far clip (fog far clip, else 275)
 
     // Alpine mesh objects (stored separately from stock object VArrays)
     std::vector<DedMesh*> mesh_objects;
@@ -817,6 +819,14 @@ struct AlpineLevelProperties
         }
     }
 
+    // A new level (File > New, and the document RED starts with) gets the current behaviour, not the legacy one
+    void LoadNewLevelDefaults()
+    {
+        LoadDefaults();
+        legacy_cyclic_timers = false;
+        legacy_movers = false;
+    }
+
     // defaults for existing levels, overwritten for maps with these fields in their alpine level props chunk
     // relevant for maps without alpine level props and maps with older alpine level props versions
     // should always match stock game behaviour
@@ -866,6 +876,7 @@ struct AlpineLevelProperties
         stock_lightmaps_omitted = false;
         lightmap_compression = 0;
         require_d3d11 = false;
+        camera_far_clip = 0.0f;
         for (auto* m : mesh_objects) {
             DestroyDedMesh(m);
         }
@@ -1003,6 +1014,7 @@ struct AlpineLevelProperties
         file.write<float>(minimap_cut_height);
         file.write<std::uint8_t>(static_cast<std::uint8_t>((needs_d3d11 ? require_d3d11_needed : 0u) |
                                                            (require_d3d11 ? require_d3d11_setting : 0u)));
+        file.write<float>(camera_far_clip);
     }
 
     void Deserialize(rf::File& file, std::size_t chunk_len)
@@ -1269,6 +1281,9 @@ struct AlpineLevelProperties
             if (!read_bytes(&u8, sizeof(u8)))
                 return;
             require_d3d11 = (u8 & require_d3d11_setting) != 0;
+            if (!read_bytes(&camera_far_clip, sizeof(camera_far_clip)))
+                return;
+            camera_far_clip = alpine_camera_far_clip::sanitize(camera_far_clip);
         }
     }
 };
@@ -1376,6 +1391,16 @@ struct BuildProgressDialog
 static_assert(offsetof(BuildProgressDialog, cancelled) == 0x5C);
 constexpr int build_dialog_panel_index = (0x4A4 - 0x444) / 4;
 
+// A clutter, entity or item class: the add paths (0x004151C0, 0x00414F00, 0x00414C20) find the entry
+// whose name matches the new object's class_name and copy the template into it.
+struct DedObjectClass
+{
+    VString name;
+    DedObject* tmpl;
+};
+static_assert(sizeof(DedObjectClass) == 0xC);
+static_assert(offsetof(DedObjectClass, tmpl) == 0x8);
+
 struct CDedLevel
 {
     // --- vtable + string properties ---
@@ -1388,8 +1413,9 @@ struct CDedLevel
     char _pad_2C[0x30 - 0x2C];                   // +0x2C
     Color ambient_color;                          // +0x30 (level properties, FUN_004b9380)
     int unk_34;                                   // +0x34
-    int unk_38;                                   // +0x38
-    char _pad_3C[0x44 - 0x3C];                   // +0x3C
+    Color fog_color;                              // +0x38
+    float fog_near_clip;                          // +0x3C
+    float fog_far_clip;                           // +0x40
     int unk_44;                                   // +0x44 (init 0)
     char unk_48;                                  // +0x48 (init 0)
     char _pad_49[0x4C - 0x49];                   // +0x49
@@ -1507,7 +1533,9 @@ struct CDedLevel
 
     // --- moving groups (Keyframes) ---
     VArray<GroupEntry*> moving_groups;             // +0x4B4 (0x34-byte GroupEntry structs)
-    char _pad_4C0[0x608 - 0x4C0];                // +0x4C0 (VArrays, containers, strings to end)
+    char _pad_4C0[0x5CC - 0x4C0];                // +0x4C0 (VArrays, containers, strings)
+    VArray<DedObjectClass*> object_classes;       // +0x5CC searched by name when a clutter, entity or item is added
+    char _pad_5D8[0x608 - 0x5D8];                // +0x5D8 (VArrays, containers, strings to end)
 
     std::size_t BeginRflSection(rf::File& file, int chunk_id)
     {
@@ -1668,11 +1696,15 @@ struct CDedLevel
 };
 static_assert(sizeof(CDedLevel) == 0x608);
 static_assert(offsetof(CDedLevel, ambient_color) == 0x30);
+static_assert(offsetof(CDedLevel, fog_color) == 0x38);
+static_assert(offsetof(CDedLevel, fog_near_clip) == 0x3C);
+static_assert(offsetof(CDedLevel, fog_far_clip) == 0x40);
 static_assert(offsetof(CDedLevel, build_running) == 0x232);
 static_assert(offsetof(CDedLevel, texture_groups) == 0x1C4);
 static_assert(offsetof(CDedLevel, player_start_pos) == 0x17C);
 static_assert(offsetof(CDedLevel, geo_regions) == 0x3A0);
 static_assert(offsetof(CDedLevel, dialog_panels) == 0x444);
+static_assert(offsetof(CDedLevel, object_classes) == 0x5CC);
 
 // "No shadow cast" is resolved back to a brush through the face ids CSG carried onto the compiled
 // geometry, so it can only mean anything for a brush whose geometry survives CSG as its own thing.
@@ -1761,6 +1793,11 @@ static auto& LogDlg_Append = addr_as_ref<int(void* self, const char* format, ...
 
 // FUN_00453200: sync DedLight properties (pos, orient, color, etc.) to its internal level_light
 static auto& DedLight_UpdateLevelLight = addr_as_ref<void __fastcall(void* this_)>(0x00453200);
+
+// FUN_0042a390 / FUN_0042a460: what the move tool and transform undo run after an object's pos or orient
+// changes (lights, nav points, particle emitters, gas regions, decals); no-ops for every other type.
+static auto& ded_object_pos_changed = addr_as_ref<void __stdcall(DedObject* obj)>(0x0042A390);
+static auto& ded_object_orient_changed = addr_as_ref<void __stdcall(DedObject* obj)>(0x0042A460);
 
 // DirectInput keyboard state buffer, non-zero value at [scancode] means the key is held
 static auto& g_dinput_keys = addr_as_ref<uint8_t[256]>(0x0147ce8c);

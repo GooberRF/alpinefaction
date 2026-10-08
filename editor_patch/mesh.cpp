@@ -263,7 +263,7 @@ void DestroyDedMesh(DedMesh* mesh)
     if (!mesh) return;
     mesh_release_vmesh(mesh);
     // Free VString members from DedObject base
-    mesh->field_4.free();
+    mesh->class_mesh_filename.free();
     mesh->script_name.free();
     mesh->class_name.free();
     // Free VString members from DedMesh
@@ -1394,10 +1394,10 @@ void mesh_ensure_uid(int& uid)
 
 // ─── Object Lifecycle ───────────────────────────────────────────────────────
 
-void PlaceNewMeshObject()
+DedMesh* PlaceNewMeshObject(const char* filename, const Vector3& pos, const Matrix3& orient)
 {
     auto* level = CDedLevel::Get();
-    if (!level) return;
+    if (!level) return nullptr;
 
     auto* mesh = new DedMesh();
     memset(static_cast<DedObject*>(mesh), 0, sizeof(DedObject));
@@ -1407,21 +1407,9 @@ void PlaceNewMeshObject()
 
     // Default values
     mesh->script_name.assign_0("Mesh");
-    mesh->mesh_filename.assign_0("barrel.v3m");
-
-    // Get camera position and orientation from the active viewport
-    auto* viewport = get_active_viewport();
-    if (viewport && viewport->view_data) {
-        mesh->pos = viewport->view_data->camera_pos;
-        mesh->orient = viewport->view_data->camera_orient;
-    }
-
-    // Fallback if no viewport data
-    if (mesh->pos.x == 0.0f && mesh->pos.y == 0.0f && mesh->pos.z == 0.0f) {
-        mesh->orient.rvec = {1.0f, 0.0f, 0.0f};
-        mesh->orient.uvec = {0.0f, 1.0f, 0.0f};
-        mesh->orient.fvec = {0.0f, 0.0f, 1.0f};
-    }
+    mesh->mesh_filename.assign_0(filename);
+    mesh->pos = pos;
+    mesh->orient = orient;
 
     mesh->uid = generate_uid();
 
@@ -1436,6 +1424,7 @@ void PlaceNewMeshObject()
 
     // Update console display to show selected object info
     level->update_console_display();
+    return mesh;
 }
 
 DedMesh* CloneMeshObject(DedMesh* source, bool add_to_level)
@@ -1888,7 +1877,7 @@ void mesh_clear_clipboard()
             g_v3c_action_simulating.erase(v);
             vmesh_free(v);
         }
-        mesh->field_4.free();
+        mesh->class_mesh_filename.free();
         mesh->script_name.free();
         mesh->class_name.free();
         mesh->mesh_filename.free();

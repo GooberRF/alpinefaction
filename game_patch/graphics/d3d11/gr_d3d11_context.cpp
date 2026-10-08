@@ -531,9 +531,11 @@ namespace gr::d3d11
         float sky_room;
         float draw_room_uid;
         float liquid_surface;
-        std::array<float, 3> _pad;
+        float fog_near;
+        std::array<float, 2> _pad;
     };
     static_assert(sizeof(RenderModeBufferData) == 96);
+    static_assert(offsetof(RenderModeBufferData, fog_near) == 84);
     static_assert(sizeof(RenderModeBufferData) % 16 == 0);
 
     RenderModeBuffer::RenderModeBuffer(ID3D11Device* device)
@@ -760,10 +762,12 @@ namespace gr::d3d11
         data.alpha_test = current_alpha_test_ ? current_alpha_test_threshold_ : 0.0f;
         if (!current_fog_allowed_ || !rf::gr::screen.fog_mode) {
             data.fog_far = std::numeric_limits<float>::infinity();
+            data.fog_near = 0.0f;
             data.fog_color = {0.0f, 0.0f, 0.0f};
         }
         else {
             data.fog_far = rf::gr::screen.fog_far;
+            data.fog_near = gr_fog_near_clip();
             data.fog_color = {
                 static_cast<float>(rf::gr::screen.fog_color.red) / 255.0f,
                 static_cast<float>(rf::gr::screen.fog_color.green) / 255.0f,

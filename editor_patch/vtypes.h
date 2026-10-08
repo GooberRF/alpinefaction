@@ -479,6 +479,8 @@ static auto& vmesh_render = addr_as_ref<void(EditorVMesh* vmesh, const void* pos
 static auto& vmesh_render_submesh = addr_as_ref<void(EditorVMesh* vmesh, int submesh, const void* pos,
                                                      const void* orient, const EditorRenderParams* params)>(0x004BFED0);
 static auto& vmesh_get_bound_sphere = addr_as_ref<void(EditorVMesh* vmesh, void* center_out, void* radius_out)>(0x004C0680);
+// Object-space box of any mesh kind (0x004BED10); a .vfx's is the cube around its bounding sphere.
+static auto& vmesh_get_bbox = addr_as_ref<void(EditorVMesh* vmesh, Vector3* min_out, Vector3* max_out)>(0x004C06C0);
 static auto& vmesh_process = addr_as_ref<void(EditorVMesh* vmesh, float time, int param3, const void* pos, const void* orient, int param6)>(0x004C0710);
 static auto& vmesh_anim_init = addr_as_ref<void(EditorVMesh* vmesh, int start_frame, float speed)>(0x004C0740);
 static auto& vmesh_get_type = addr_as_ref<EditorVMeshType(EditorVMesh* vmesh)>(0x004BFEB0);
@@ -732,6 +734,25 @@ struct EditorTreeCtrl : CWnd
 };
 static_assert(sizeof(EditorTreeCtrl) == sizeof(CWnd));
 
+// The object mode side panel, a CFormView (ctor 0x004429A0) whose tree lists the object classes.
+constexpr int editor_object_panel_template = 173;
+constexpr int editor_object_tree_id = 1015;
+
+struct EditorObjectPanel
+{
+    uint8_t pad_00[0x5C];
+    EditorTreeCtrl tree; // +0x5C
+
+    // The tree's NM_DBLCLK handler (0x004431C0): creates an object of the class under the cursor at the
+    // active viewport's camera through CDedLevel::add_object (0x004146B0), which records its undo.
+    void create_object_under_cursor()
+    {
+        LRESULT result = 0;
+        AddrCaller{0x004431C0}.this_call(this, static_cast<void*>(nullptr), &result);
+    }
+};
+static_assert(offsetof(EditorObjectPanel, tree) == 0x5C);
+
 // ─── Viewport ────────────────────────────────────────────────────────────────
 
 // Editor view data — accessed from the active viewport at +0x54
@@ -787,6 +808,18 @@ constexpr int editor_view_type_perspective = 0;
 
 static auto& get_active_viewport = addr_as_ref<EditorViewport* __cdecl()>(0x004835B0);
 
+// Where the object tree puts a new object: the active viewport's camera, else the origin.
+inline void editor_new_object_pose(Vector3& pos, Matrix3& orient)
+{
+    pos = {};
+    orient = identity_orient;
+    const EditorViewport* viewport = get_active_viewport();
+    if (viewport && viewport->view_data) {
+        pos = viewport->view_data->camera_pos;
+        orient = viewport->view_data->camera_orient;
+    }
+}
+
 // The main frame's four views
 constexpr int editor_num_views = 4;
 inline void* editor_view_at(int i)
@@ -804,6 +837,20 @@ inline void editor_views_mark_repaint_all()
     for (int i = 0; i < editor_num_views; i++) {
         editor_view_mark_repaint(editor_view_at(i));
     }
+}
+inline HWND editor_view_hwnd(void* view)
+{
+    return view ? WndToHandle(static_cast<CWnd*>(view)) : nullptr;
+}
+// The visible view whose window is under a screen point.
+inline void* editor_view_under_cursor(POINT cursor)
+{
+    const HWND over = WindowFromPoint(cursor);
+    for (int i = 0; over && i < editor_num_views; i++) {
+        void* view = editor_view_at(i);
+        if (view && editor_view_hwnd(view) == over && IsWindowVisible(over)) return view;
+    }
+    return nullptr;
 }
 
 // ─── Editor GrVertex ─────────────────────────────────────────────────────────

@@ -12,6 +12,7 @@
 #include <string>
 #include <vector>
 #include <xlog/xlog.h>
+#include <patch_common/CallHook.h>
 #include <patch_common/MemUtils.h>
 #include <common/utils/string-utils.h>
 #include "mesh_browser.h"
@@ -751,40 +752,15 @@ Vector3 vec_scale(const Vector3& v, float s)
 
 void preview_free(BrowserState& st)
 {
-    if (st.vmesh) {
-        vmesh_free(st.vmesh);
-        st.vmesh = nullptr;
-    }
-    if (st.owned_character) {
-        character_free(st.owned_character);
-        st.owned_character = nullptr;
-    }
+    mesh_preview_free(st.vmesh, st.owned_character);
     st.anim_index = -1;
 }
 
-// A .v3c's base character stays in a table of 64 slots that nothing frees before the editor's own
-// atexit handler runs, so browsing characters ends in the fatal "No more base character room" at
-// the 64th distinct one. Take ownership of the slot this load brings in and release it on the next
-// swap; one that was already resident belongs to whatever loaded it.
+// Browsing characters would otherwise end in the fatal "No more base character room" at the 64th
+// distinct one.
 EditorVMesh* preview_load_vmesh(BrowserState& st, const std::string& name)
 {
-    const std::uint64_t before = editor_base_characters_in_use();
-    EditorVMesh* vmesh = mesh_load_vmesh_file(name.c_str());
-    const std::uint64_t claimed = editor_base_characters_in_use() & ~before;
-    if (!claimed) {
-        return vmesh;
-    }
-    if (vmesh && vmesh->mesh && vmesh_get_type(vmesh) == VMESH_TYPE_CHARACTER) {
-        st.owned_character = vmesh->mesh;
-        return vmesh;
-    }
-    // The load claimed a slot and then failed, so nothing is left holding it.
-    for (unsigned i = 0; i < editor_max_base_characters; ++i) {
-        if (claimed & (1ull << i)) {
-            character_free(&editor_base_characters[i]);
-        }
-    }
-    return vmesh;
+    return mesh_preview_load(name.c_str(), st.owned_character);
 }
 
 // Nothing removes an entry from a character's action list, so browsing distinct animations on one
@@ -1001,17 +977,17 @@ void preview_load(HWND hdlg, BrowserState& st, const std::string& name)
     }
 }
 
-void preview_draw_mesh(BrowserState& st)
+void preview_draw_mesh(EditorVMesh* vmesh, const MeshPreviewCamera& camera)
 {
-    const float yaw = st.yaw * pi / 180.0f;
-    const float pitch = st.pitch * pi / 180.0f;
+    const float yaw = camera.yaw * pi / 180.0f;
+    const float pitch = camera.pitch * pi / 180.0f;
     const float cy = std::cos(yaw);
     const float sy = std::sin(yaw);
     const float cp = std::cos(pitch);
     const float sp = std::sin(pitch);
 
     const Vector3 to_camera{cp * sy, sp, cp * cy};
-    const Vector3 camera_pos = st.bound_center + vec_scale(to_camera, st.bound_radius * st.zoom);
+    const Vector3 camera_pos = camera.bound_center + vec_scale(to_camera, camera.bound_radius * camera.zoom);
     // Basis taken straight from the two angles: right stays level and unit length for every
     // pitch, where a look-at built against a fixed world up rolls over as forward nears vertical.
     const Matrix3 camera_orient{{-cy, 0.0f, sy},
@@ -1024,14 +1000,14 @@ void preview_draw_mesh(BrowserState& st)
     params.flags |= ERF_CUSTOM_AMBIENT;
     params.ambient_color = preview_ambient;
 
-    const bool anim_fx = vmesh_get_type(st.vmesh) == VMESH_TYPE_ANIM_FX;
+    const bool anim_fx = vmesh_get_type(vmesh) == VMESH_TYPE_ANIM_FX;
     if (anim_fx) {
         vfx_render_transparent = 1;
     }
     // Empties the light list the viewport left behind, so the one dynamic light 0x00505920 would
     // otherwise pick up cannot reach the preview.
     room_cleanup();
-    vmesh_render(st.vmesh, &preview_origin, &identity_orient, &params);
+    vmesh_render(vmesh, &preview_origin, &identity_orient, &params);
     if (anim_fx) {
         vfx_render_transparent = 0;
     }
@@ -1045,46 +1021,27 @@ Color preview_background_color()
     if (g_preview_background == preview_bg_black) {
         return {0x00, 0x00, 0x00, 0xff};
     }
-    // Same source the viewport painter uses.
-    if (const EditorColorPrefs* prefs = editor_color_prefs()) {
-        const COLORREF color = prefs->background;
-        return {GetRValue(color), GetGValue(color), GetBValue(color), 0xff};
-    }
-    return {0x00, 0x00, 0x00, 0xff};
+    return mesh_preview_editor_background();
 }
 
 void preview_draw(HWND ctrl, BrowserState& st)
 {
-    RECT rc;
-    GetClientRect(ctrl, &rc);
-    const int w = std::min<int>(rc.right - rc.left, gr_get_max_width());
-    const int h = std::min<int>(rc.bottom - rc.top, gr_get_max_height());
-    if (w <= 0 || h <= 0) {
-        return;
-    }
-
-    const Color background = preview_background_color();
-    // The viewport painter clears before it sets its own colour, so leave the global as found.
-    const auto saved_color = static_cast<unsigned>(red::gr_screen.current_color);
-    // A level with a short far clip would otherwise cut the preview and squeeze its depth range.
-    const float saved_far = gr_far_clip_dist;
-    gr_set_far_clip(0.0f);
-
-    gr_set_viewport_wnd(ctrl);
-    // Two draw passes then one flip, as CBitmapPreviewDialog::OnPaint (0x0044C1B0) does.
-    for (int pass = 0; pass < 2; ++pass) {
-        gr_set_clip(0, 0, w, h);
-        set_draw_color(background.r, background.g, background.b, background.a);
-        gr_clear();
-        if (st.vmesh) {
-            preview_draw_mesh(st);
-        }
-    }
-    gr_flip();
-    gr_set_far_clip(saved_far);
-    set_draw_color(saved_color & 0xff, (saved_color >> 8) & 0xff, (saved_color >> 16) & 0xff,
-                   (saved_color >> 24) & 0xff);
+    mesh_preview_draw(ctrl, st.vmesh, {st.bound_center, st.bound_radius, st.yaw, st.pitch, st.zoom},
+                      preview_background_color());
 }
+
+// Characters a preview loaded and still owns; a load elsewhere that finds one makes it shared.
+std::vector<void*> g_preview_owned_characters;
+
+// The base character lookup (0x004C2C70) inside character_load (0x004C2CC0).
+CallHook<EditorCharacter*(const char*)> character_find_hook{
+    0x004C2CC6,
+    [](const char* name) {
+        EditorCharacter* character = character_find_hook.call_target(name);
+        std::erase(g_preview_owned_characters, static_cast<void*>(character));
+        return character;
+    },
+};
 
 LRESULT preview_surface_message(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 {
@@ -1482,4 +1439,85 @@ bool alpine_browse_mesh(HWND parent, std::string& filename, unsigned kinds, std:
         xlog::error("Mesh browser: out of memory opening the browser");
         return false;
     }
+}
+
+void ApplyMeshPreviewPatches()
+{
+    character_find_hook.install();
+}
+
+EditorVMesh* mesh_preview_load(const char* filename, void*& owned_character)
+{
+    const std::uint64_t before = editor_base_characters_in_use();
+    EditorVMesh* vmesh = mesh_load_vmesh_file(filename);
+    const std::uint64_t claimed = editor_base_characters_in_use() & ~before;
+    if (!claimed) {
+        return vmesh;
+    }
+    if (vmesh && vmesh->mesh && vmesh_get_type(vmesh) == VMESH_TYPE_CHARACTER) {
+        g_preview_owned_characters.push_back(vmesh->mesh);
+        owned_character = vmesh->mesh;
+        return vmesh;
+    }
+    // The load claimed a slot and then failed, so nothing is left holding it.
+    for (unsigned i = 0; i < editor_max_base_characters; ++i) {
+        if (claimed & (1ull << i)) {
+            character_free(&editor_base_characters[i]);
+        }
+    }
+    return vmesh;
+}
+
+void mesh_preview_free(EditorVMesh*& vmesh, void*& owned_character)
+{
+    if (vmesh) {
+        vmesh_free(vmesh);
+        vmesh = nullptr;
+    }
+    if (owned_character && std::erase(g_preview_owned_characters, owned_character) != 0) {
+        character_free(owned_character);
+    }
+    owned_character = nullptr;
+}
+
+Color mesh_preview_editor_background()
+{
+    // Same source the viewport painter uses.
+    if (const EditorColorPrefs* prefs = editor_color_prefs()) {
+        const COLORREF color = prefs->background;
+        return {GetRValue(color), GetGValue(color), GetBValue(color), 0xff};
+    }
+    return {0x00, 0x00, 0x00, 0xff};
+}
+
+void mesh_preview_draw(HWND ctrl, EditorVMesh* vmesh, const MeshPreviewCamera& camera, const Color& background)
+{
+    RECT rc;
+    GetClientRect(ctrl, &rc);
+    const int w = std::min<int>(rc.right - rc.left, gr_get_max_width());
+    const int h = std::min<int>(rc.bottom - rc.top, gr_get_max_height());
+    if (w <= 0 || h <= 0) {
+        return;
+    }
+
+    // The viewport painter clears before it sets its own colour, so leave the global as found.
+    const auto saved_color = static_cast<unsigned>(red::gr_screen.current_color);
+    // A level with a short far clip would otherwise cut the preview and squeeze its depth range.
+    const float saved_far = gr_far_clip_dist;
+    gr_set_far_clip(0.0f);
+
+    gr_set_viewport_wnd(ctrl);
+    // Two draw passes then one flip, as CBitmapPreviewDialog::OnPaint (0x0044C1B0) does.
+    for (int pass = 0; pass < 2; ++pass) {
+        gr_set_clip(0, 0, w, h);
+        set_draw_color(background.r, background.g, background.b, background.a);
+        gr_clear();
+        if (vmesh) {
+            preview_draw_mesh(vmesh, camera);
+        }
+    }
+    gr_flip();
+    gr_set_far_clip(saved_far);
+    set_draw_color(saved_color & 0xff, (saved_color >> 8) & 0xff, (saved_color >> 16) & 0xff,
+                   (saved_color >> 24) & 0xff);
 }
