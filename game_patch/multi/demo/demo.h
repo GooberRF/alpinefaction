@@ -12,7 +12,10 @@ namespace rf
     struct Player;
     struct NetAddr;
     struct Entity;
+    struct Vector3;
 }
+
+struct AfDamageNotifyHull;
 
 // Installs all demo hooks and console commands. Called from multi_do_patch().
 void demo_do_patch();
@@ -35,6 +38,8 @@ void demo_record_server_do_frame();
 void demo_record_on_player_deleted(rf::Player* player);
 // True while a demo file is being written.
 bool demo_record_active();
+// Chat line notifying on demo recording to a joining player; empty when nothing.
+std::string demo_record_join_notice();
 // The virtual recorder Player*, or null when not recording. Used by the netgame_update
 // broadcast hook to deliver a targeted full-roster update to the recorder for capture.
 rf::Player* demo_record_recorder();
@@ -54,7 +59,9 @@ void demo_record_capture_team_scoped(const void* data, size_t len, unsigned char
 // Mirrors a PvP damage notification into the demo, tagged with the attacker so playback
 // can filter to the spectated player. Called from the server damage path next to the
 // live attacker/spectator sends; no-op unless recording.
-void demo_record_pvp_damage_notify(unsigned char victim_id, float damage, bool died, bool crit, unsigned char attacker_id);
+// hull non-null anchors the notification on a non-player victim instead of a victim player
+void demo_record_pvp_damage_notify(unsigned char victim_id, float damage, bool died, bool crit,
+                                   unsigned char attacker_id, const AfDamageNotifyHull* hull = nullptr);
 // Mirrors a crit-shot telegraph into the demo, tagged with the shooter so playback can
 // filter to the spectated player. Called from crits_broadcast_shot for every weapon class;
 // no-op unless recording.

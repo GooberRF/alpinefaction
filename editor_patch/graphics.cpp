@@ -9,10 +9,15 @@
 #include <d3d8.h>
 #include <algorithm>
 #include <cmath>
+#include <initializer_list>
 #include "vtypes.h"
+#include "level.h"
 #include "alpine_obj.h"
+#include "terrain_preview.h"
 
 HWND GetMainFrameHandle();
+
+bool g_editor_force_lod0 = true;
 
 // After geometry rebuild, rooms allocated from recycled heap memory may have stale
 // non-NULL geo_cache pointers left over from the previous cycle. The D3D8 renderer
@@ -33,49 +38,35 @@ static constexpr int max_detail_rooms = 8192;
 static void* detail_room_list[max_detail_rooms];
 static int detail_room_count;
 
+// RED transforms each room into parallel per-vertex arrays hardcoded to 8000 entries, and the
+// per-vertex loops have no bounds check: a bigger room runs the 20-byte screen vert array off the
+// top of FUN_00502040's stack frame and smashes its callers. 32768 is the int16 index ceiling.
+static constexpr int max_room_render_verts = 0x8000;
+static u8 room_vert_flags[max_room_render_verts];              // stack, frame+0x98c
+alignas(16) static u8 room_screen_verts[max_room_render_verts * 20];  // stack, frame+0x51cc
+alignas(16) static u8 room_xformed_verts[max_room_render_verts * 12]; // static, 0x01a85500
+static u8 shared_vert_flags[max_room_render_verts];             // static, 0x01ab4354
+
+// Same pattern in the v3d mesh LOD renderers (FUN_00505c60 / FUN_00506830), which also share
+// room_xformed_verts and shared_vert_flags. Mesh chunk vertex counts are u16.
+alignas(16) static u8 mesh_verts_a[max_room_render_verts * 12]; // static, 0x01a520b0
+static u8 mesh_vert_flags[max_room_render_verts];               // static, 0x01a697b0
+alignas(16) static u8 mesh_verts_d[max_room_render_verts * 12]; // static, 0x01a6de00
+alignas(16) static u8 mesh_verts_c[max_room_render_verts * 12]; // static, 0x01a9cc00
+static u8 mesh_vert_rgb[max_room_render_verts * 3];             // static, 0x01ab6294
+
+// Repoint references to a relocated static array. Sites are operand addresses; the field offset
+// the instruction uses is recovered from its current value rather than repeated per site.
+static void repoint_array_refs(std::initializer_list<uintptr_t> sites, uintptr_t old_base,
+                               const u8* new_base)
+{
+    for (uintptr_t operand : sites) {
+        write_mem_ptr(operand, new_base + (addr_as_ref<u32>(operand) - old_base));
+    }
+}
+
 namespace red
 {
-    struct GrScreen
-    {
-        int signature;
-        int max_width;
-        int max_height;
-        int mode;
-        int window_mode;
-        int field_14;
-        float aspect;
-        int field_1c;
-        int bits_per_pixel;
-        int bytes_ber_pixel;
-        int field_28;
-        int offset_x;
-        int offset_y;
-        int clip_width;
-        int clip_height;
-        int max_tex_width;
-        int max_tex_height;
-        int clip_left;
-        int clip_right;
-        int clip_top;
-        int clip_bottom;
-        int current_color;
-        int current_bitmap;
-        int current_bitmap2;
-        int fog_mode;
-        int fog_color;
-        float fog_near;
-        float fog_far;
-        float fog_far_scaled;
-        bool recolor_enabled;
-        float recolor_red;
-        float recolor_green;
-        float recolor_blue;
-        int field_84;
-        int field_88;
-        int zbuffer_mode;
-    };
-    static_assert(sizeof(GrScreen) == 0x90);
-
     struct Vector3;
     struct Matrix3;
 
@@ -85,8 +76,45 @@ namespace red
     auto& gr_d3d_max_hw_index = addr_as_ref<int>(0x01621FAC);
     auto& gr_d3d_num_vertices = addr_as_ref<int>(0x01839310);
     auto& gr_d3d_num_indices = addr_as_ref<int>(0x01839314);
-    auto& gr_screen = addr_as_ref<GrScreen>(0x014CF748);
+    auto& gr_d3d_vertex_buffer_data = addr_as_ref<u8*>(0x0183B908);
+    auto& gr_d3d_index_buffer_data = addr_as_ref<u8*>(0x0183B90C);
 
+}
+
+// All six sites that lock the global dynamic vertex/index buffers discard the Lock HRESULT and
+// write through the returned pointer, so a failed Lock crashes on a null store. Substitute scratch
+// for whichever side failed: the batch lands in our own memory and the editor survives until the
+// device recovers. Scratch is sized for the largest possible write: u16 section vertex/face counts
+// (40 bytes per vertex, three u16 indices per face) plus the clipping pass's 0x300-entry slack.
+static constexpr int lock_clip_slack = 0x300;
+static constexpr int max_lock_verts = 0x10000 + lock_clip_slack;
+static constexpr int max_lock_indices = 0x10000 * 3 + lock_clip_slack;
+alignas(16) static u8 lock_vert_scratch[max_lock_verts * 40];
+static u8 lock_index_scratch[max_lock_indices * 2];
+
+// Only gr_d3d_prepare_buffers has a hook site where the HRESULT is still in a register.
+static int last_vertex_lock_hr;
+
+// Pointers are passed by address because half the sites keep them in a stack local.
+static void substitute_failed_locks(u8** vertex_data, u8** index_data, const char* site)
+{
+    if (vertex_data && !*vertex_data) {
+        WARN_ONCE("Vertex buffer lock failed in {} (last lock hr 0x{:08x}), discarding geometry "
+                  "until the device recovers", site, static_cast<unsigned>(last_vertex_lock_hr));
+        *vertex_data = lock_vert_scratch;
+    }
+    if (index_data && !*index_data) {
+        WARN_ONCE("Index buffer lock failed in {}, discarding geometry until the device recovers",
+            site);
+        *index_data = lock_index_scratch;
+    }
+}
+
+// Both submit families hold the lock pointers in their own frame; the hook sites sit on the first
+// instruction after the pair of Lock calls, where ESP is back at the frame base.
+static u8** frame_slot(uintptr_t esp, unsigned offset)
+{
+    return reinterpret_cast<u8**>(esp + offset);
 }
 
 CallHook<void()> frametime_calculate_hook{
@@ -314,10 +342,160 @@ CodeInjection geo_build_reset_render_cache{
 CodeInjection detail_room_overflow_check{
     0x0049b757, // MOV [EAX*4+array], ESI — unbounded detail room array write
     [](auto& regs) {
+        // A terrain chunk's compiled room stays out of its parents' caches: the terrain preview draws
+        // it. 0x0049b838 moves on to the next detail room.
+        if (terrain_preview_hides_room(reinterpret_cast<const GRoom*>(static_cast<uintptr_t>(regs.esi)))) {
+            regs.eip = 0x0049b838;
+            return;
+        }
         if (static_cast<int>(regs.eax) >= max_detail_rooms) {
             WARN_ONCE("Detail rooms limit reached ({}), additional detail rooms will not be rendered", max_detail_rooms);
             regs.eip = 0x0049b764; // skip write + inc + store
         }
+    },
+};
+
+// FUN_0049b550 numbers a room cache's vertices in an int16, so past 0x8000 its writes land before the cache. Such
+// a room gets no cache, and only Render Everything draws it.
+static const void* g_oversize_room_warned_solid = nullptr;
+CodeInjection room_cache_vertex_limit{
+    0x0049bb19, // MOV EAX, [0x010a84c0] — the pool end; EBX is the room's vertex count
+    [](auto& regs) {
+        const auto esp = static_cast<uintptr_t>(regs.esp);
+        if (static_cast<u32>(regs.ebx) > static_cast<u32>(max_room_render_verts)) {
+            const auto* solid = *reinterpret_cast<const void**>(esp + 0xb0);
+            if (solid != g_oversize_room_warned_solid) {
+                g_oversize_room_warned_solid = solid;
+                const auto* room = *reinterpret_cast<const GRoom**>(esp + 0xb4);
+                xlog::warn("[Viewport] The room centred at ({:.1f}, {:.1f}, {:.1f}) has more than {} vertices with "
+                           "its detail rooms, so only Render Everything draws it",
+                           (room->bbox_min.x + room->bbox_max.x) * 0.5f, (room->bbox_min.y + room->bbox_max.y) * 0.5f,
+                           (room->bbox_min.z + room->bbox_max.z) * 0.5f, max_room_render_verts);
+            }
+            // nothing is taken from the pool yet; a null cache makes the caller skip the room without a flush-all retry
+            regs.eip = 0x0049c553;
+            return;
+        }
+        regs.eax = reinterpret_cast<uintptr_t>(geo_cache_pool_end);
+        regs.eip = 0x0049bb1e;
+    },
+    false, // no trampoline: the injection replays the load
+};
+
+CodeInjection gr_d3d_prepare_buffers_lock_hr{
+    0x004E9982, // MOV ECX, [gr_d3d_max_hw_index] — first instruction after the vertex Lock
+    [](auto& regs) {
+        last_vertex_lock_hr = regs.eax;
+    },
+};
+
+CodeInjection gr_d3d_lock_failure_guard{
+    0x004E99BC, // MOV byte [gr_d3d_buffers_locked], 1 — after both Lock calls
+    []() {
+        substitute_failed_locks(&red::gr_d3d_vertex_buffer_data, &red::gr_d3d_index_buffer_data,
+                                "gr_d3d_prepare_buffers");
+    },
+};
+
+// FUN_00505c60 — v3d LOD submit. The dump's fault site.
+CodeInjection mesh_submit_lock_failure_guard{
+    0x00505F1B,
+    [](auto& regs) {
+        substitute_failed_locks(frame_slot(static_cast<uintptr_t>(regs.esp), 0x58), frame_slot(static_cast<uintptr_t>(regs.esp), 0x68),
+                                "the mesh submit path");
+    },
+};
+
+// FUN_00506830 — the morph-target twin of FUN_00505c60.
+CodeInjection morph_mesh_submit_lock_failure_guard{
+    0x00506B9A,
+    [](auto& regs) {
+        substitute_failed_locks(frame_slot(static_cast<uintptr_t>(regs.esp), 0x68), frame_slot(static_cast<uintptr_t>(regs.esp), 0x78),
+                                "the morphed mesh submit path");
+    },
+};
+
+CodeInjection room_submit_lock_failure_guard{
+    0x00502C46,
+    [](auto& regs) {
+        substitute_failed_locks(frame_slot(static_cast<uintptr_t>(regs.esp), 0x7C), frame_slot(static_cast<uintptr_t>(regs.esp), 0x8C),
+                                "a room submit path");
+    },
+};
+
+CodeInjection room_submit_lock_failure_guard_2{
+    0x00503718,
+    [](auto& regs) {
+        substitute_failed_locks(frame_slot(static_cast<uintptr_t>(regs.esp), 0x18), frame_slot(static_cast<uintptr_t>(regs.esp), 0x60),
+                                "a room submit path");
+    },
+};
+
+// FUN_005040b0 locks only the vertex buffer, and into the same global gr_d3d_prepare_buffers uses.
+CodeInjection geometry_submit_lock_failure_guard{
+    0x00504219,
+    []() {
+        substitute_failed_locks(&red::gr_d3d_vertex_buffer_data, nullptr,
+                                "the level geometry submit path");
+    },
+};
+
+CodeInjection geometry_submit_lock_failure_guard_2{
+    0x005044B4,
+    []() {
+        substitute_failed_locks(&red::gr_d3d_vertex_buffer_data, nullptr,
+                                "the level geometry submit path");
+    },
+};
+
+// FUN_004f5ae0's return when the upload cannot lock its new texture leaks that texture.
+CodeInjection gr_texture_section_upload_failure_release{
+    0x004F5C57,
+    [](auto& regs) {
+        auto& texture = *reinterpret_cast<IUnknown**>(static_cast<uintptr_t>(regs.esp) + 0x10);
+        if (texture) {
+            texture->Release();
+            texture = nullptr;
+        }
+    },
+};
+
+// FUN_004f4940's two failure returns after bm_lock skip the bm_unlock its success path makes.
+static void gr_texture_mip_failure_unlock(BaseCodeInjection::Regs& regs)
+{
+    bm_unlock(*reinterpret_cast<int*>(static_cast<uintptr_t>(regs.esp) + 0x60));
+}
+
+CodeInjection gr_texture_mip_create_failure_unlock{0x004F49FA, gr_texture_mip_failure_unlock};
+CodeInjection gr_texture_mip_upload_failure_unlock{0x004F4ADA, gr_texture_mip_failure_unlock};
+
+// FUN_004f5e40 can report success with a null section texture, which the next gr_lock calls through.
+// A failed slot keeps the bitmap's handle with no sections, so it is not retried until it is freed,
+// another bitmap takes it, or it is marked dirty.
+FunHook<int __cdecl(int, GrTextureSlot*)> gr_texture_create_hook{
+    0x004F5E40,
+    [](int bm_handle, GrTextureSlot* slot) {
+        if (bm_handle >= 0 && slot->bm_handle == bm_handle && slot->section_count == 0 && !slot->dirty) {
+            return 0;
+        }
+        const int result = gr_texture_create_hook.call_target(bm_handle, slot);
+        bool missing = false;
+        for (int i = 0; i < slot->section_count; i++) {
+            missing = missing || !slot->sections[i].texture;
+        }
+        if (result && !missing) {
+            return result;
+        }
+        gr_texture_free(slot);
+        slot->bm_handle = bm_handle;
+        static bool warned = false;
+        if (result && !warned) {
+            warned = true;
+            editor_report(EditorReportLevel::warn, "Direct3D",
+                          "Direct3D could not create a texture (RED may be low on memory): save and restart RED.",
+                          true);
+        }
+        return 0;
     },
 };
 
@@ -408,6 +586,22 @@ void ApplyGraphicsPatches()
     gr_d3d_render_geometry_face_patch_1.install();
     gr_d3d_render_geometry_face_patch_2.install();
 
+    // Keep the batch lock pointers non-null when a D3D buffer lock fails
+    gr_d3d_prepare_buffers_lock_hr.install();
+    gr_d3d_lock_failure_guard.install();
+    mesh_submit_lock_failure_guard.install();
+    morph_mesh_submit_lock_failure_guard.install();
+    room_submit_lock_failure_guard.install();
+    room_submit_lock_failure_guard_2.install();
+    geometry_submit_lock_failure_guard.install();
+    geometry_submit_lock_failure_guard_2.install();
+
+    // Never leave a texture slot holding a null texture after a failed CreateTexture
+    gr_texture_create_hook.install();
+    gr_texture_section_upload_failure_release.install();
+    gr_texture_mip_create_failure_unlock.install();
+    gr_texture_mip_upload_failure_unlock.install();
+
     // Fix editor not using all space for rendering when used with a big monitor
     gr_init_hook.install();
 
@@ -429,6 +623,11 @@ void ApplyGraphicsPatches()
     // Reset render cache pool after geometry rebuild so stale geo_cache pointers are detected
     geo_build_reset_render_cache.install();
 
+    // When rendering semi-transparent objects do not group them behind alpha detail rooms, same as the game.
+    // Stock stores up to 128 groups per room without a limit check.
+    AsmWriter{0x00425789}.jmp(0x00425831);
+    AsmWriter{0x00425847}.nop(2);
+
     // Expand detail rooms array from 256 entries (0x010cee5c)
     // Array base references
     write_mem_ptr(0x0049b046, detail_room_list);  // FUN_0049afb0: read loop base
@@ -441,6 +640,7 @@ void ApplyGraphicsPatches()
     write_mem_ptr(0x0049b760, &detail_room_count);  // FUN_0049b550: count store after inc
     // Bounds check (must install after write_mem_ptr so saved bytes have new addresses)
     detail_room_overflow_check.install();
+    room_cache_vertex_limit.install();
 
     // Expand geo_cache limits for large room geometry rendering
 
@@ -512,6 +712,68 @@ void ApplyGraphicsPatches()
     write_mem_ptr(0x0049c026, editor_geo_vertex_chain);
     write_mem_ptr(0x0049c034, editor_geo_vertex_chain);
     write_mem_ptr(0x0049c226, editor_geo_vertex_chain);
+
+    // Point the level renderer's per-vertex loops at the relocated arrays (FUN_00502040). Four
+    // sites are a byte shorter as an absolute form, so they pass an end address to be padded.
+    using namespace asm_regs;
+    AsmWriter(0x005021f4, 0x005021fb).lea(edi, room_vert_flags);
+    AsmWriter(0x005022c1).cmp_byte(*(ecx * 1 + room_vert_flags), 0);
+    AsmWriter(0x005022c9).lea(ecx, *(ecx * 1 + room_vert_flags));
+    AsmWriter(0x005024cf).cmp_byte(*(ecx * 1 + room_vert_flags), 0);
+    AsmWriter(0x005024d7).lea(ecx, *(ecx * 1 + room_vert_flags));
+    AsmWriter(0x00502785).mov(al, *(ecx * 1 + room_vert_flags));
+    AsmWriter(0x005028ea).mov(cl, *(eax * 1 + room_vert_flags));
+    AsmWriter(0x00502c8b, 0x00502c92).lea(edi, room_vert_flags);
+    AsmWriter(0x00502ccf).mov_byte(*(edi * 1 + room_vert_flags), 0);
+    AsmWriter(0x00502d2a).mov(dl, *(ecx * 1 + room_vert_flags));
+    AsmWriter(0x00502dc5).mov(dl, *(ecx * 1 + room_vert_flags));
+    AsmWriter(0x0050277a, 0x00502781).lea(edi, room_screen_verts + 0x10);
+    AsmWriter(0x005028e3, 0x005028ea).lea(esi, room_screen_verts + 4);
+    AsmWriter(0x00502d43).lea(edi, *(edx * 4 + room_screen_verts));
+    AsmWriter(0x00502d4a).mov(dl, *(edx * 4 + room_screen_verts + 0x11));
+    AsmWriter(0x00502dda).lea(edi, *(edx * 4 + room_screen_verts));
+    AsmWriter(0x00502de1).mov(edx, *(edx * 4 + room_screen_verts));
+    AsmWriter(0x00503912).lea(esi, *(ecx * 4 + room_screen_verts));
+    AsmWriter(0x00503919).mov(cl, *(ecx * 4 + room_screen_verts + 0x11));
+    AsmWriter(0x005039e8).mov(al, *(edx * 4 + room_screen_verts + 0x11));
+    AsmWriter(0x00503c4d).mov(ecx, *(edx * 4 + room_screen_verts));
+    AsmWriter(0x00503c54).lea(eax, *(edx * 4 + room_screen_verts));
+
+    // Statics, shared between the level and mesh renderers
+    repoint_array_refs({0x0050275b, 0x00502f35, 0x005039c1, 0x0050588d, 0x005060d5, 0x005063fa,
+                        0x00506bdc, 0x00507462},
+                       0x01a85500, room_xformed_verts);
+    repoint_array_refs({0x00502d55, 0x00502ead, 0x00502ebe, 0x00502f49, 0x00505f84, 0x00505f8c,
+                        0x005060ae, 0x005060cd, 0x00506187, 0x005062f3, 0x00506305, 0x00506317,
+                        0x00506332, 0x00506338, 0x00506341, 0x00506378, 0x0050637e, 0x00506387,
+                        0x00506412, 0x00506c1b, 0x00506c27, 0x00506c3f, 0x00507073, 0x00507090,
+                        0x00507164, 0x005072d4, 0x005072e6, 0x005072f8, 0x00507317, 0x00507320,
+                        0x00507326, 0x005073e1, 0x005073ea, 0x005073f0, 0x0050747a},
+                       0x01ab4354, shared_vert_flags);
+    repoint_array_refs({0x0050582d, 0x00505f54, 0x00506c6e, 0x00506cf7, 0x00506d09, 0x00506d0f,
+                        0x00506ed9, 0x00506edf, 0x00506eee, 0x00506ef4, 0x00506f41, 0x00506f4d,
+                        0x00506f53, 0x00506f5f, 0x00506f71, 0x00506fb0, 0x00506fbc, 0x00506fc2,
+                        0x00506fd2, 0x00506fde, 0x00507000, 0x00507026, 0x00507048, 0x0050704e,
+                        0x00507063, 0x005070a1, 0x005070b3, 0x005070d3, 0x005070ed, 0x00507105,
+                        0x0050714d, 0x005071a5, 0x005071b1, 0x005071cd},
+                       0x01a520b0, mesh_verts_a);
+    repoint_array_refs({0x00505fa6, 0x005060f5, 0x00506c68, 0x005070c7},
+                       0x01a697b0, mesh_vert_flags);
+    repoint_array_refs({0x005058bd, 0x00506bf0, 0x00506c21, 0x00506f95, 0x00507353, 0x00507363,
+                        0x00507385, 0x00507395, 0x005073b5},
+                       0x01a6de00, mesh_verts_d);
+    repoint_array_refs({0x0050585d, 0x00506be8, 0x00506cff, 0x00506d15, 0x00506f03, 0x00506f09,
+                        0x00506f1f, 0x00506f25, 0x00506f65, 0x00506f77, 0x00506f87, 0x00506f9e,
+                        0x00507170, 0x0050718e},
+                       0x01a9cc00, mesh_verts_c);
+    repoint_array_refs({0x00505f4f, 0x00505f63, 0x00505ffc, 0x00506444, 0x00506bd1, 0x00506cc3,
+                        0x005074b1},
+                       0x01ab6294, mesh_vert_rgb);
+
+    if (g_editor_force_lod0) {
+        write_mem<u8>(0x00507907, 0xEB);
+        write_mem<u8>(0x00507915, 0xEB);
+    }
 
     // Restore render state after D3D device Reset()
     gr_d3d_device_reset_state_recovery.install();

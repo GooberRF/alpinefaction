@@ -64,7 +64,6 @@ bool bagman_get_client_pickup_pos(rf::Vector3* out_pos);
 bool bagman_query_pickup_bag_outline(rf::VifLodMesh** out_lod_mesh, rf::Vector3* out_pos, rf::Matrix3* out_orient);
 bool bagman_query_carrier_bag_outline(rf::VifLodMesh** out_lod_mesh, rf::Vector3* out_pos, rf::Matrix3* out_orient);
 rf::VMesh* bagman_get_carrier_mesh();
-void bagman_tick_pickup_spin();
 void bagman_update_dynamic_light();
 void bagman_play_return_sound();
 

@@ -73,6 +73,7 @@ namespace rf::bm
         ubyte cached_material_idx;
 #ifdef ALPINE_FACTION
         bool dynamic;
+        bool user_mipmap;
 #endif
         int total_bytes_for_all_levels;
         int file_open_unk_arg;
@@ -81,13 +82,19 @@ namespace rf::bm
     static_assert(sizeof(BitmapEntry) == 0x6C);
 
     static auto& load = addr_as_ref<int(const char *filename, int a2, bool generate_mipmaps)>(0x0050F6A0);
+    // -1 when the name is not resident; lets a caller tell a fresh load from a handout of an existing entry
+    static auto& find_by_filename = addr_as_ref<int(const char *filename)>(0x0050F580);
     static auto& create = addr_as_ref<int(Format format, int w, int h)>(0x005119C0);
     static auto& convert_format = addr_as_ref<void(void *dst_bits, Format dst_fmt, const void *src_bits, Format src_fmt, int num_pixels)>(0x0055DD20);
     static auto& get_dimensions = addr_as_ref<void(int bm_handle, int *w, int *h)>(0x00510630);
     static auto& get_filename = addr_as_ref<const char*(int bm_handle)>(0x00511710);
     static auto& get_format = addr_as_ref<Format(int bm_handle)>(0x005106F0);
     static auto& get_type = addr_as_ref<Type(int bm_handle)>(0x0050F350);
+    static auto& get_type_from_filename = addr_as_ref<Type(const char* filename)>(0x0050FBF0);
     static auto& get_cache_slot = addr_as_ref<int(int bm_handle)>(0x0050F440);
+    // Handle to cache slot WITHOUT resolving an animated bitmap's current frame, which
+    // get_cache_slot does for an animated head entry. Frame k of such a head lives at slot + 1 + k.
+    static auto& handle_to_index = addr_as_ref<int(int bm_handle)>(0x0050EEE0);
     static auto& release = addr_as_ref<void(int bm_handle)>(0x00511960);
     static auto& clear_user_bitmap = addr_as_ref<void(int bm_handle)>(0x00511C30);
     static auto& texture_add_ref = addr_as_ref<void(int bm_handle)>(0x0050E850);
@@ -102,4 +109,9 @@ namespace rf::bm
     static auto& bm_set_resolution_level_for_all = addr_as_ref<void(int level)>(0x0050EF10);
 
     static auto& bitmaps = addr_as_ref<BitmapEntry*>(0x017C80C4);
+
+    // Slot count handle_to_index (0x0050EEE0) reduces a non-user handle against - it returns
+    // `handle % this`, and bm_get_cache_slot (0x0050F440) indexes `bitmaps` with the result, so the
+    // table is exactly this many entries. The bound for walking an animated head's frame slots.
+    static auto& num_cache_slots = addr_as_ref<int>(0x005A4554);
 }

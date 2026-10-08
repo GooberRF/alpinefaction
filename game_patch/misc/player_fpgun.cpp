@@ -11,6 +11,7 @@
 #include "../rf/os/frametime.h"
 #include "../rf/sound/sound.h"
 #include "../rf/vmesh.h"
+#include "../rf/v3d.h"
 #include "../rf/weapon.h"
 #include "../rf/entity.h"
 #include "../rf/multi.h"
@@ -381,13 +382,17 @@ CodeInjection after_game_render_to_dynamic_textures{
     },
 };
 
+float player_fpgun_render_fov(float base_fov)
+{
+    return gr_scale_fov_hor_plus(base_fov * g_alpine_game_config.fpgun_fov_scale);
+}
+
 CallHook<void(rf::Matrix3&, rf::Vector3&, float, bool, bool)> player_fpgun_render_gr_setup_3d_hook{
     0x004AB411,
     [](rf::Matrix3& viewer_orient, rf::Vector3& viewer_pos, float horizontal_fov, bool zbuffer_flag, bool z_scale) {
         // Flush VFX mesh outlines so they don't render on top of fpguns.
         gr_flush_outlines_before_fpgun();
-        horizontal_fov *= g_alpine_game_config.fpgun_fov_scale;
-        horizontal_fov = gr_scale_fov_hor_plus(horizontal_fov);
+        horizontal_fov = player_fpgun_render_fov(horizontal_fov);
         player_fpgun_render_gr_setup_3d_hook
             .call_target(viewer_orient, viewer_pos, horizontal_fov, zbuffer_flag, z_scale);
     },
@@ -413,6 +418,22 @@ CodeInjection player_fpgun_render_main_player_entity_injection{
         regs.eip = 0x004ABB5E;
     },
 };
+
+// Stock renders fpgun attachments (silencer, remote charge detonator) with default MeshRenderParams, so the
+// renderer lights them like world meshes (near fullbright). Give them the same params as the fpgun itself.
+static void fpgun_attachment_render_params(BaseCodeInjection::Regs& regs)
+{
+    static_assert(offsetof(rf::Entity, ambient_color) == 0x1474);
+    static_assert(offsetof(rf::MeshRenderParams, orient) == 0x2C);
+    auto& entity = addr_as_ref<rf::Entity>(addr_as_ref<int>(regs.esp + 0x38));
+    auto& params = addr_as_ref<rf::MeshRenderParams>(regs.esp + 0xA0);
+    params.flags |= rf::MRF_CUSTOM_AMBIENT_COLOR | rf::MRF_CLIP_VERTICES | rf::MRF_FIRST_PERSON;
+    params.ambient_color = entity.ambient_color;
+    params.orient = entity.orient;
+}
+
+CodeInjection player_fpgun_render_silencer_params_injection{0x004AC22E, fpgun_attachment_render_params};
+CodeInjection player_fpgun_render_detonator_params_injection{0x004ABD70, fpgun_attachment_render_params};
 
 CodeInjection player_fpgun_render_ir_cull_patch_1{
     0x004AF137,
@@ -451,6 +472,20 @@ CodeInjection players_cleanup_injection{
     },
 };
 
+// player_fpgun_get_muzzle_tag_pos tests pp->weapon_mesh_handle at 0x004AD705 but re-reads it at
+// 0x004AD752, after an intervening call can have cleared it. Exit through the function's own false
+// tail at 0x004AD731, which expects the one argument already pushed here.
+CodeInjection player_fpgun_get_muzzle_tag_pos_null_guard{
+    0x004AD74B,
+    [](auto& regs) {
+        rf::Player* pp = regs.esi;
+        if (!pp->weapon_mesh_handle) {
+            regs.esp += 4;
+            regs.eip = 0x004AD731;
+        }
+    },
+};
+
 void player_fpgun_do_patch()
 {
 #if SPECTATE_MODE_SHOW_WEAPON
@@ -482,6 +517,10 @@ void player_fpgun_do_patch()
     players_cleanup_injection.install(); // fixes crash at 0x004AEB8F in player_fpgun_delete_meshes
 
     player_fpgun_render_main_player_entity_injection.install();
+
+    // Light fpgun attachments like the fpgun instead of fullbright
+    player_fpgun_render_silencer_params_injection.install();
+    player_fpgun_render_detonator_params_injection.install();
 
     player_fpgun_update_state_anim_hook.install();
 
@@ -556,6 +595,9 @@ void player_fpgun_do_patch()
     // Do not cull entities too early.
     player_fpgun_render_ir_cull_patch_1.install();
     player_fpgun_render_ir_cull_patch_2.install();
+
+    // A player with no fpgun mesh has no fpgun muzzle
+    player_fpgun_get_muzzle_tag_pos_null_guard.install();
 
 #ifndef NDEBUG
     reload_fpgun_cmd.register_cmd();

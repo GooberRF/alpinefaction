@@ -361,23 +361,7 @@ const char* status_to_str(SessionStatus s)
 ConsoleCommand2 sv_fflink_status_cmd{
     "sv_fflink_status",
     []() {
-        const auto state = snapshot_state();
-        rf::console::print("FactionFiles link: {}", status_to_str(state.status));
-        if (state.status == SessionStatus::valid) {
-            rf::console::print("  Server id: {}", state.server_id);
-        }
-        if (!state.last_error.empty()) {
-            rf::console::print("  Last error: {}", state.last_error);
-        }
-        if (rf::is_multi && rf::is_server) {
-            int with_pssk = 0;
-            for (const rf::Player& player : SinglyLinkedList{rf::player_list}) {
-                if (player.afstats_pssk) {
-                    ++with_pssk;
-                }
-            }
-            rf::console::print("  Connected players with a stats session key: {}", with_pssk);
-        }
+        rf::console::print("{}", build_fflink_status_output());
     },
     "Show the current FactionFiles server session link status.",
 };
@@ -392,6 +376,33 @@ ConsoleCommand2 sv_fflink_resync_cmd{
 };
 
 } // namespace
+
+std::string build_fflink_status_output()
+{
+    std::string output;
+    auto line = std::back_inserter(output);
+    const auto state = snapshot_state();
+
+    std::format_to(line, "FactionFiles link: {}\n", status_to_str(state.status));
+    if (state.status == SessionStatus::valid) {
+        std::format_to(line, "  Server id: {}\n", state.server_id);
+    }
+    if (!state.last_error.empty()) {
+        std::format_to(line, "  Last error: {}\n", state.last_error);
+    }
+    if (rf::is_multi && rf::is_server) {
+        int with_pssk = 0;
+        for (const rf::Player& player : SinglyLinkedList{rf::player_list}) {
+            if (player.afstats_pssk) {
+                ++with_pssk;
+            }
+        }
+        std::format_to(line, "  Connected players with a stats session key: {}\n", with_pssk);
+    }
+
+    output.pop_back();
+    return output;
+}
 
 void session_do_patch()
 {

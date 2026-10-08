@@ -227,10 +227,9 @@ void kill_current_bag_item()
 {
     rf::Item* item = item_from_handle_or_null(g_bagman_info.bag_item_handle);
     if (item) {
-        // Broadcast the item-apply packet (entity_handle = 0 to indicate "no
-        // player picked it up — it just goes away") so clients remove the item
+        // Broadcast the item-apply packet to remove the item
         // visually. obj_flag_dead alone only affects the server.
-        rf::send_item_apply_packet(nullptr, item->handle, 0, -1, -1, -1);
+        rf::send_item_apply_packet(nullptr, item->handle, -1, -1, -1, -1);
         rf::obj_flag_dead(item);
     }
     g_bagman_info.bag_item_handle = -1;
@@ -768,24 +767,6 @@ bool bagman_query_pickup_bag_outline(
         *out_orient = bag_item->orient;
     }
     return true;
-}
-
-void bagman_tick_pickup_spin()
-{
-    if (!gt_is_bagman_any()) return;
-    if (g_bagman_info.state != BagState::BS_At_Spawn
-        && g_bagman_info.state != BagState::BS_Dropped) return;
-
-    rf::Item* bag = find_client_side_bag_pickup_item();
-    if (!bag || !bag->info) return;
-    if (!(bag->info->flags & rf::IIF_SPINS_IN_MULTI)) return;
-
-    const float spin_rate = addr_as_ref<float>(0x005897A8);
-    const float two_pi = addr_as_ref<float>(0x005894AC);
-    bag->spin_angle += spin_rate * rf::frametime;
-    if (bag->spin_angle > two_pi) {
-        bag->spin_angle -= two_pi;
-    }
 }
 
 bool bagman_query_carrier_bag_outline(

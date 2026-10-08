@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <string_view>
 
 namespace rf
 {
@@ -133,3 +134,4 @@ void awards_client_on_award_received(uint8_t award_id, uint8_t victim_player_id)
 // Drains the display queue, one award at a time. Ticked from the client frame.
 void awards_client_do_frame();
 void awards_client_reset();
+bool awards_is_domination_chat_msg(std::string_view msg);

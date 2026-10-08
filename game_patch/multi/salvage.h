@@ -60,6 +60,9 @@ void salvage_client_do_frame();
 void salvage_on_entity_will_die(rf::Entity* ep);
 void salvage_on_player_disconnect(rf::Player* player);
 void salvage_handle_drop_flag_request(rf::Player* player);
+// Forced drop at the carrier's feet, recorded as a death drop: no flag_dropping rule gate, because
+// the cause is not the player asking. A no-op unless this player is the carrier.
+void salvage_force_drop_flag(rf::Player* player);
 
 // Reverts, then (re)applies the class-wide overrides Salvage puts on the flag_red
 // item class: IIF_SPINS_IN_MULTI and the Salvage flag mesh. Must run after the
@@ -113,9 +116,8 @@ bool salvage_viewer_is_carrier_first_person();
 // looking out of their own eyes.
 bool salvage_query_flag_outline(rf::VMesh** out_vmesh, rf::Vector3* out_pos, rf::Matrix3* out_orient);
 // True when item_render drew the flag this frame; false means it was portal-culled and
-// its spin (and the engine's cached chunk transforms) went unadvanced.
+// the engine's cached chunk transforms went unrefreshed.
 bool salvage_flag_was_rendered_this_frame();
-void salvage_tick_flag_spin();
 // Glues the carried flag item to the carrier's $prop_flag, the same alignment
 // stock CTF performs in multi_ctf_move_flags. Runs on both sides: the attachment
 // is local and derives entirely from the replicated carrier entity.

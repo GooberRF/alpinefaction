@@ -14,6 +14,7 @@ public:
         auto args = Win32xx::GetCommandLineArgs();
         bool has_level_arg = false;
         bool has_dedicated_arg = false;
+        bool has_bake_arg = false;
         bool value_expected = false;
         for (unsigned i = 1; i < args.size(); ++i) {
             std::string_view arg = args[i].c_str();
@@ -44,6 +45,20 @@ public:
                     has_level_arg = true;
                     value_expected = true;
                 }
+                // only -bake with a path implies the editor; a bare one must not open an editor
+                // that would silently never bake
+                else if (arg == "-bake") {
+                    if (i + 1 < args.size()) {
+                        has_bake_arg = true;
+                        value_expected = true;
+                    }
+                    else {
+                        m_bad_bake_arg = true;
+                    }
+                }
+                else if (arg == "-bakeout") {
+                    value_expected = true;
+                }
                 else if (arg == "-dedicated" || arg == "-ads") {
                     has_dedicated_arg = true;
                 }
@@ -55,7 +70,10 @@ public:
                 m_pass_through_args.emplace_back(arg);
             }
         }
-        if (!m_game && !m_editor && (has_level_arg || has_dedicated_arg)) {
+        if (!m_game && !m_editor && has_bake_arg) {
+            m_editor = true;
+        }
+        else if (!m_game && !m_editor && (has_level_arg || has_dedicated_arg)) {
             m_game = true;
         }
     }
@@ -99,6 +117,11 @@ public:
     [[nodiscard]] bool HasHelpFlag() const
     {
         return m_help;
+    }
+
+    [[nodiscard]] bool HasBadBakeArg() const
+    {
+        return m_bad_bake_arg;
     }
 
     [[nodiscard]] bool HasAFFlag() const
@@ -158,6 +181,7 @@ private:
     bool m_game = false;
     bool m_editor = false;
     bool m_help = false;
+    bool m_bad_bake_arg = false;
     std::optional<std::string> m_afdownload_arg;
     std::optional<std::string> m_aflink_arg;
     std::optional<std::string> m_afdemo_arg;

@@ -1,4 +1,4 @@
-file(GLOB EXPERIMENTAL_SRCS experimental/*.cpp experimental/*.h)
+file(GLOB_RECURSE EXPERIMENTAL_SRCS experimental/*.cpp experimental/*.h)
 
 set(SRCS
     main/main.cpp
@@ -59,9 +59,14 @@ set(SRCS
     graphics/gr_font.cpp
     graphics/gr.cpp
     graphics/gr.h
+    graphics/gr_ghost_mesh.h
     graphics/gr_light.cpp
+    graphics/af_lightmap.cpp
+    graphics/af_lightmap.h
     graphics/weather.cpp
     graphics/weather.h
+    graphics/scene_capture.cpp
+    graphics/scene_capture.h
     graphics/legacy/gr_d3d.cpp
     graphics/legacy/gr_d3d_texture.cpp
     graphics/legacy/gr_d3d_capture.cpp
@@ -85,8 +90,20 @@ set(SRCS
     graphics/d3d11/gr_d3d11_solid.h
     graphics/d3d11/gr_d3d11_mesh.cpp
     graphics/d3d11/gr_d3d11_mesh.h
+    graphics/d3d11/gr_d3d11_vfx.cpp
+    graphics/d3d11/gr_d3d11_vfx.h
     graphics/d3d11/gr_d3d11_entity_shadow.cpp
     graphics/d3d11/gr_d3d11_entity_shadow.h
+    graphics/d3d11/gr_d3d11_caustics.cpp
+    graphics/d3d11/gr_d3d11_caustics.h
+    graphics/d3d11/gr_d3d11_af_lightmap.cpp
+    graphics/d3d11/gr_d3d11_af_lightmap.h
+    graphics/d3d11/gr_d3d11_terrain.cpp
+    graphics/d3d11/gr_d3d11_terrain.h
+    graphics/d3d11/gr_d3d11_decoration.cpp
+    graphics/d3d11/gr_d3d11_decoration.h
+    graphics/d3d11/gr_d3d11_liquid.cpp
+    graphics/d3d11/gr_d3d11_liquid.h
     graphics/d3d11/gr_d3d11_vertex.h
     graphics/d3d11/gr_d3d11_buffer.h
     graphics/d3d11/gr_d3d11_hooks.cpp
@@ -95,6 +112,8 @@ set(SRCS
     graphics/d3d11/gr_d3d11_outline.cpp
     graphics/d3d11/gr_d3d11_gamma.h
     graphics/d3d11/gr_d3d11_gamma.cpp
+    graphics/d3d11/gr_d3d11_scenefx.h
+    graphics/d3d11/gr_d3d11_scenefx.cpp
     input/input.h
     input/mouse.h
     input/mouse.cpp
@@ -111,6 +130,8 @@ set(SRCS
     hud/hud.h
     hud/hud_world.cpp
     hud/hud_world.h
+    hud/minimap.cpp
+    hud/minimap.h
     hud/remote_server_cfg_ui.cpp
     hud/remote_server_cfg_ui.h
     hud/multi_scoreboard.cpp
@@ -151,6 +172,36 @@ set(SRCS
     multi/gungame.cpp
     multi/salvage.h
     multi/salvage.cpp
+    multi/vehicles/vehicle.h
+    multi/vehicles/vehicle.cpp
+    multi/vehicles/vehicle_internal.h
+    multi/vehicles/vehicle_seats.h
+    multi/vehicles/vehicle_seats.cpp
+    multi/vehicles/vehicle_sync.h
+    multi/vehicles/vehicle_sync.cpp
+    multi/vehicles/vehicle_damage.h
+    multi/vehicles/vehicle_damage.cpp
+    multi/vehicles/vehicle_crash_tuning.h
+    multi/vehicles/vehicle_view.h
+    multi/vehicles/vehicle_view.cpp
+    multi/vehicles/vehicle_render.h
+    multi/vehicles/vehicle_render.cpp
+    multi/vehicles/vehicle_spawn.h
+    multi/vehicles/vehicle_spawn.cpp
+    multi/vehicles/vehicle_markers.h
+    multi/vehicles/vehicle_markers.cpp
+    multi/vehicles/vehicle_tracers.h
+    multi/vehicles/vehicle_tracers.cpp
+    multi/vehicles/vehicle_horn.h
+    multi/vehicles/vehicle_horn.cpp
+    multi/vehicles/vehicle_physics.h
+    multi/vehicles/physics/vphys_internal.h
+    multi/vehicles/physics/vphys_world.cpp
+    multi/vehicles/physics/vphys_car.cpp
+    multi/vehicles/physics/vphys_flight.cpp
+    multi/vehicles/physics/vphys_step.cpp
+    multi/vehicles/physics/vphys_camera.cpp
+    multi/vehicles/physics/vphys_debug.cpp
     multi/sprays.h
     multi/sprays.cpp
     multi/mutators.h
@@ -294,11 +345,21 @@ set(SRCS
     object/monitor.cpp
     object/particle.cpp
     object/obj_light.cpp
+    object/obj_collision.cpp
+    object/obj_collision.h
+    object/alpine_obj_common.cpp
+    object/alpine_obj_common.h
     object/alpine_mesh.cpp
     object/alpine_corona.cpp
     object/alpine_corona.h
     object/alpine_bag.cpp
     object/alpine_bag.h
+    object/alpine_projection_camera.cpp
+    object/alpine_projection_camera.h
+    object/alpine_rope.cpp
+    object/alpine_rope.h
+    object/alpine_dir_light.cpp
+    object/alpine_dir_light.h
     object/clock.cpp
     misc/achievements.h
     misc/achievements.cpp
@@ -328,6 +389,12 @@ set(SRCS
     misc/saved_votes.h
     misc/game.cpp
     misc/level.cpp
+    misc/alpine_terrain.cpp
+    misc/alpine_terrain.h
+    misc/alpine_terrain_decorations.cpp
+    misc/alpine_terrain_decorations.h
+    misc/decoration_mesh_cache.cpp
+    misc/decoration_mesh_cache.h
     misc/waypoints.cpp
     misc/waypoints.h
     misc/waypoints_internal.h
@@ -394,6 +461,7 @@ target_link_libraries(AlpineFaction
     Common
     CrashHandlerStub
     xxhash
+    bc7enc_rdo
     gdi32
     winmm
     iphlpapi
@@ -402,4 +470,7 @@ target_link_libraries(AlpineFaction
     freetype
     stb_vorbis
     stb_image
+    BulletDynamics
+    BulletCollision
+    LinearMath
 )

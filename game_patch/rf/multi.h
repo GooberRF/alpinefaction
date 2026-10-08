@@ -187,6 +187,12 @@ namespace rf
         NPF_RCON_HOLDER = 0x100
     };
 
+    enum NetPlayerState : int {
+        NETPLAYER_STATE_WAITING = 0x0,
+        NETPLAYER_STATE_SYNC = 0x1,
+        NETPLAYER_STATE_IN_GAME = 0x2,
+    };
+
     struct NetGameInfo
     {
         String name;
@@ -234,6 +240,19 @@ namespace rf
     };
     static_assert(sizeof(NetReliableSocketStatus) == 4);
 
+    // obj_update row flags byte.
+    enum ObjUpdateFlags
+    {
+        OUF_POS_ROT_ANIM = 0x01,
+        OUF_CONNECTION_COUNTER = 0x02,
+        OUF_WEAPON_TYPE = 0x04,
+        OUF_WEAPON_LAG_COMP = 0x08,
+        OUF_ALT_FIRE = 0x10,
+        OUF_HEALTH_ARMOR = 0x20,
+        OUF_FIRE = 0x40,
+        OUF_ARMOR_STATE = 0x80,
+    };
+
     #pragma pack(push, 1)
     struct NetReliableSocket {
         void* sbuffers[75];
@@ -261,11 +280,14 @@ namespace rf
     constexpr size_t max_packet_size = 512;
 
     static auto& multi_get_game_type = addr_as_ref<NetGameType()>(0x00470770);
+    // What the stock friendly-fire gate in obj_damage consults (call at 0x004893A8): netgame.flags
+    // bit 9 alone, never the 0x240 pair the config writes.
+    static auto& multi_is_team_damage_on = addr_as_ref<bool()>(0x004826B0);
     static auto& multi_io_send = addr_as_ref<void(Player *player, const void *packet, int len)>(0x00479370);
     static auto& multi_io_send_reliable =
-        addr_as_ref<void(Player *player, const void *data, int len, int not_limbo)>(0x00479480);
+        addr_as_ref<void(Player *player, const void *data, int len, bool require_in_game)>(0x00479480);
     static auto& multi_io_send_reliable_to_all =
-        addr_as_ref<void(const void *data, int len, int a4)>(0x004795A0);
+        addr_as_ref<void(const void *data, int len, bool require_in_game)>(0x004795A0);
     static auto& multi_io_send_buffered_reliable_packets = addr_as_ref<void(Player *pp)>(0x004796C0);
     static auto& multi_find_player_by_addr = addr_as_ref<Player*(const NetAddr& addr)>(0x00484850);
     static auto& multi_find_player_by_id = addr_as_ref<Player*(uint8_t id)>(0x00484890);
@@ -333,6 +355,7 @@ namespace rf
     static auto& send_obj_kill_packet = addr_as_ref<void(Entity* killed_entity, Item* item, int* a3)>(0x0047E8C0);
     static auto& send_obj_update_packet = addr_as_ref<void()>(0x0047E5B0); // client -> server
     static auto& send_obj_update_packet_timestamp = addr_as_ref<TimestampRealtime>(0x006FB424);
+    static auto& multi_pack_obj_update_data = addr_as_ref<int(Player* pp, Object* obj, uint8_t* out)>(0x0047DB20);
     static auto& send_item_create_packet = addr_as_ref<void(Item* item, Player* recipient, int16_t level_item_index)>(0x00479A20);
     static auto& send_item_apply_packet = addr_as_ref<void(Player* to, int item_handle, int entity_handle, int weapon, int ammo, int clip_ammo)>(0x00479810);
     static auto& send_respawn_req_packet = addr_as_ref<void(uint32_t multi_character, uint8_t player_id)>(0x004809D0); // client -> server

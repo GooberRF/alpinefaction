@@ -59,26 +59,83 @@ struct AsmReg8 : public AsmReg
 struct AsmRegMem
 {
     bool memory;
-    std::optional<AsmReg> reg_opt;
+    std::optional<AsmReg> reg_opt; // base register
     int32_t displacement;
+    std::optional<AsmReg> index_opt; // scaled index register, if any
+    uint8_t scale;                   // 1, 2, 4 or 8; only meaningful with index_opt
 
-    AsmRegMem(bool memory, std::optional<AsmReg> reg_opt, int32_t displacement = 0) :
-        memory(memory), reg_opt(reg_opt), displacement(displacement)
+    AsmRegMem(bool memory, std::optional<AsmReg> reg_opt, int32_t displacement = 0,
+              std::optional<AsmReg> index_opt = {}, uint8_t scale = 1) :
+        memory(memory), reg_opt(reg_opt), displacement(displacement), index_opt(index_opt), scale(scale)
     {}
 
     AsmRegMem(AsmReg reg) :
-        memory(false), reg_opt({reg}), displacement(0)
+        memory(false), reg_opt({reg}), displacement(0), scale(1)
     {}
 
     explicit AsmRegMem(uint32_t addr) :
-        memory(true), displacement(static_cast<int32_t>(addr))
+        memory(true), displacement(static_cast<int32_t>(addr)), scale(1)
     {}
 
     template<typename T>
     AsmRegMem(T* ptr) :
-        memory(true), displacement(reinterpret_cast<int32_t>(ptr))
+        memory(true), displacement(reinterpret_cast<int32_t>(ptr)), scale(1)
     {}
 };
+
+// Accumulates base/index/scale/displacement so `*(ebx + edx * 4 + 0x10)` can be written directly.
+struct AsmMemExpr
+{
+    std::optional<AsmReg> base;
+    std::optional<AsmReg> index;
+    uint8_t scale = 1;
+    int32_t displacement = 0;
+};
+
+// Validating wrapper: the consteval constructor turns an unencodable scale into a compile error
+// instead of a silent encoding of scale 1, while `edx * 4` still reads naturally.
+struct AsmScale
+{
+    uint8_t value;
+
+    consteval AsmScale(int scale) : value(static_cast<uint8_t>(scale))
+    {
+        if (scale != 1 && scale != 2 && scale != 4 && scale != 8) {
+            throw "SIB scale must be 1, 2, 4 or 8";
+        }
+    }
+};
+
+inline AsmMemExpr operator*(AsmReg32 index, AsmScale scale)
+{
+    return {{}, {index}, scale.value, 0};
+}
+
+inline AsmMemExpr operator+(AsmReg32 base, AsmMemExpr e)
+{
+    assert(!e.base); // `eax + (ebx + ecx * 4)` would otherwise silently drop one of the bases
+    e.base = {base};
+    return e;
+}
+
+inline AsmMemExpr operator+(AsmMemExpr e, int n)
+{
+    e.displacement += n;
+    return e;
+}
+
+inline AsmMemExpr operator-(AsmMemExpr e, int n)
+{
+    e.displacement -= n;
+    return e;
+}
+
+template<typename T>
+inline AsmMemExpr operator+(AsmMemExpr e, T* ptr)
+{
+    e.displacement += reinterpret_cast<int32_t>(ptr);
+    return e;
+}
 
 inline AsmRegMem operator*(AsmReg32 reg)
 {
@@ -88,6 +145,11 @@ inline AsmRegMem operator*(AsmReg32 reg)
 inline AsmRegMem operator*(std::pair<AsmReg32, int> p)
 {
     return {true, {p.first}, p.second};
+}
+
+inline AsmRegMem operator*(AsmMemExpr e)
+{
+    return {true, e.base, e.displacement, e.index, e.scale};
 }
 
 namespace asm_regs
@@ -384,6 +446,31 @@ public:
         return *this;
     }
 
+    AsmWriter& mov(const AsmReg8& dst_reg, const AsmRegMem& src_rm)
+    {
+        write<u8>(0x8A); // Opcode
+        write_mod_rm(src_rm, dst_reg);
+        return *this;
+    }
+
+    // Byte-operand immediate forms. The AsmRegMem/int8_t overloads above are the 0x83 sign-extended
+    // encodings, which operate on a dword, so the 8 bit operand size needs its own name.
+    AsmWriter& mov_byte(const AsmRegMem& dst_rm, int8_t imm)
+    {
+        write<u8>(0xC6); // Opcode
+        write_mod_rm(dst_rm, 0);
+        write<i8>(imm);
+        return *this;
+    }
+
+    AsmWriter& cmp_byte(const AsmRegMem& dst_rm, int8_t imm)
+    {
+        write<u8>(0x80); // Opcode
+        write_mod_rm(dst_rm, 7);
+        write<i8>(imm);
+        return *this;
+    }
+
     AsmWriter& lea(const AsmReg32& dst_reg, const AsmRegMem& src_rm)
     {
         write<u8>(0x8D);
@@ -555,34 +642,44 @@ private:
 
     void write_mod_rm(const AsmRegMem& rm, uint8_t reg_field)
     {
-        uint8_t mod_field = 0;
-        if (!rm.memory)
-            mod_field = 3;
-        else if (rm.displacement == 0 || !rm.reg_opt)
+        constexpr uint8_t esp_num = 4; // rm 100b selects a SIB byte, so esp needs one to be a base
+        constexpr uint8_t ebp_num = 5; // rm 101b with mod 00b means disp32, so ebp needs a disp8
+
+        if (!rm.memory) {
+            write<u8>((3 << 6) | (reg_field << 3) | rm.reg_opt.value().reg_num);
+            return;
+        }
+
+        bool has_base = rm.reg_opt.has_value();
+        bool has_index = rm.index_opt.has_value();
+        assert(!has_index || rm.index_opt.value().reg_num != esp_num); // esp cannot be an index
+        assert(rm.scale == 1 || rm.scale == 2 || rm.scale == 4 || rm.scale == 8);
+        bool need_sib = has_index || (has_base && rm.reg_opt.value().reg_num == esp_num);
+
+        uint8_t mod_field;
+        if (!has_base)
+            mod_field = 0;
+        else if (rm.displacement == 0 && rm.reg_opt.value().reg_num != ebp_num)
             mod_field = 0;
         else if (abs(rm.displacement) < 128)
             mod_field = 1;
         else
             mod_field = 2;
 
-        uint8_t rm_field = rm.reg_opt ? rm.reg_opt.value().reg_num : 5;
-        uint8_t mod_reg_rm_byte = (mod_field << 6) | (reg_field << 3) | rm_field;
-        write<u8>(mod_reg_rm_byte); // 0xD
+        uint8_t rm_field = need_sib ? 4 : (has_base ? rm.reg_opt.value().reg_num : 5);
+        write<u8>((mod_field << 6) | (reg_field << 3) | rm_field);
 
-        // TODO: full SIB support?
-        if (rm_field == 4 && mod_field != 3) {
-            uint8_t scale_field = 0;
-            uint8_t index_field = 4; // no index
-            uint8_t base_field = 4;  // esp
-            uint8_t sib_byte = (scale_field << 6) | (index_field << 3) | base_field;
-            write<u8>(sib_byte);
+        if (need_sib) {
+            auto scale_field = static_cast<uint8_t>(rm.scale == 8 ? 3 : rm.scale == 4 ? 2 : rm.scale == 2 ? 1 : 0);
+            auto index_field = static_cast<uint8_t>(has_index ? rm.index_opt.value().reg_num : 4); // 100b = none
+            auto base_field = static_cast<uint8_t>(has_base ? rm.reg_opt.value().reg_num : 5);     // 101b = none
+            write<u8>((scale_field << 6) | (index_field << 3) | base_field);
         }
 
         if (mod_field == 1)
             write<i8>(rm.displacement);
-        else if (mod_field == 2 || !rm.reg_opt) {
+        else if (mod_field == 2 || !has_base)
             write<i32>(rm.displacement);
-        }
     }
 
     void write_mod_rm(const AsmRegMem& rm, const AsmReg& reg)

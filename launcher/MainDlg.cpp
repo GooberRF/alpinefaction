@@ -657,7 +657,7 @@ void MainDlg::OnBnClickedFFLinkBtn()
 
     // Generate token
     m_fflink_token = GenerateLinkToken();
-    xlog::info("Generated link token: {}", m_fflink_token);
+    xlog::info("Generated link token");
 
     // Open browser
     std::string url = "https://link.factionfiles.com/aflauncher/v1/link_request.php?token=" + m_fflink_token;

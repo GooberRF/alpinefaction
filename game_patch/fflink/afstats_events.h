@@ -175,10 +175,12 @@ void on_game_end();
 // A lethal blow landed. Arguments mirror what the af_kill_info path already
 // computed: `weapon_type` < 0 and a null `killer` are reported as JSON null,
 // `kill_flags` is the af_kill_info_flags bitfield and goes on the wire verbatim,
-// and `assist_player_ids` is the attribution list in most-recent-first order.
+// `assist_player_ids` is the attribution list in most-recent-first order, and
+// `vehicle_class` is the wire-frozen VehicleDamageClass of the killing vehicle, or -1
+// (reported as JSON null).
 void on_kill(rf::Player* victim, rf::Player* killer, int weapon_type, int damage_type,
              uint8_t kill_flags, const std::vector<uint8_t>& assist_player_ids,
-             const rf::Vector3& victim_pos, const rf::Vector3* killer_pos);
+             const rf::Vector3& victim_pos, const rf::Vector3* killer_pos, int vehicle_class);
 
 // A player earned an award. `award_id` is the wire-frozen AwardId registry in multi/awards.h and
 // goes on the wire verbatim; `victim` is the opposing player the award was earned against, null
@@ -298,6 +300,10 @@ void on_clutter_destroyed(rf::Clutter* clutter, int killer_handle, int weapon_ty
 // null attacker are reported as JSON null. `damage_type` is the registry value.
 void on_detail_brush_destroyed(uint8_t material, int room_uid, int killer_handle,
                                int weapon_type, int damage_type, const rf::Vector3& pos);
+
+// The text `sv_afstats_events_status` prints, as one newline-joined string with no
+// trailing newline, so the rcon handler can return it to the caller.
+std::string build_afstats_events_status_output();
 
 // Register console commands. Called from fflink::do_patch().
 void do_patch();

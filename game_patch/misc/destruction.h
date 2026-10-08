@@ -1,10 +1,12 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 
 // Forward declarations
 namespace rf {
     struct ImpactSoundSet;
+    struct GeomodParams;
     enum class DetailMaterial : uint8_t;
 }
 
@@ -57,6 +59,12 @@ BreakableMaterialState* get_material_state(rf::DetailMaterial mat);
 
 void destruction_do_patch();
 void destruction_level_cleanup();
+void destruction_level_init_post();
+bool brush_is_destroyed(int brush_uid);
+bool brush_is_tracked(int brush_uid);
+bool brush_uid_is_breakable(int brush_uid);
 void apply_geoable_flags();
 void apply_breakable_materials();
 void g_solid_set_rf2_geo_limit(int limit);
+// World radius of a geomod's crater; nullopt when its shape index has no solid.
+std::optional<float> geomod_crater_radius(const rf::GeomodParams& params);

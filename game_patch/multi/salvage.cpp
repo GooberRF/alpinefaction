@@ -237,9 +237,7 @@ void kill_current_flag_item()
 {
     rf::Item* item = item_from_handle_or_null(g_salvage_info.flag_item_handle);
     if (item) {
-        // entity_handle = 0 tells clients the item just goes away rather than
-        // being consumed by a player. obj_flag_dead alone is server-only.
-        rf::send_item_apply_packet(nullptr, item->handle, 0, -1, -1, -1);
+        rf::send_item_apply_packet(nullptr, item->handle, -1, -1, -1, -1);
         rf::obj_flag_dead(item);
         // item_create re-pointed the engine's red flag global at our neutral flag;
         // don't leave it dangling at a dead object.
@@ -963,25 +961,6 @@ bool salvage_flag_was_rendered_this_frame()
     return g_flag_rendered_frame == rf::frame_count;
 }
 
-void salvage_tick_flag_spin()
-{
-    if (!gt_is_salvage()) return;
-
-    const SalFlagState state = g_salvage_info.state;
-    if (state != SalFlagState::AtSpawn && state != SalFlagState::Dropped) return;
-
-    rf::Item* item = current_flag_item();
-    if (!item || !item->info) return;
-    if (!(item->info->flags & rf::IIF_SPINS_IN_MULTI)) return;
-
-    const float spin_rate = addr_as_ref<float>(0x005897A8);
-    const float two_pi = addr_as_ref<float>(0x005894AC);
-    item->spin_angle += spin_rate * rf::frametime;
-    if (item->spin_angle > two_pi) {
-        item->spin_angle -= two_pi;
-    }
-}
-
 void salvage_move_carried_flag()
 {
     if (!rf::is_multi || !gt_is_salvage()) return;
@@ -1324,6 +1303,16 @@ void salvage_on_player_disconnect(rf::Player* player)
         // render/HUD paths don't touch it before the next state packet arrives.
         set_carrier(nullptr);
     }
+}
+
+void salvage_force_drop_flag(rf::Player* player)
+{
+    if (!rf::is_server || !gt_is_salvage()) return;
+    if (g_salvage_info.state != SalFlagState::Carried) return;
+    if (g_salvage_info.carrier != player) return;
+
+    rf::Entity* ep = alive_entity_for(player);
+    drop_flag_at(player, ep ? ep->pos : g_salvage_info.last_carrier_pos);
 }
 
 void salvage_handle_drop_flag_request(rf::Player* player)

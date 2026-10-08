@@ -8,6 +8,9 @@
 #include "../../rf/os/frametime.h"
 #include "../../rf/multi.h"
 #include "../../misc/level.h"
+#include "../../object/alpine_dir_light.h"
+#include "../af_lightmap.h"
+#include "../gr.h"
 #include "gr_d3d11.h"
 #include "gr_d3d11_context.h"
 #include "gr_d3d11_texture.h"
@@ -16,6 +19,54 @@
 
 namespace gr::d3d11
 {
+    namespace
+    {
+        constexpr UINT dir_lights_cbuffer_slot = 8;
+
+        // Must stay byte for byte with DirLightsBuffer (b8) in standard_ps.hlsl
+        struct DirLightsBufferData
+        {
+            struct DirLight
+            {
+                std::array<float, 3> travel_dir; // also the cylinder's axis
+                float shape;                     // alpine_dir_light::Shape
+                std::array<float, 3> color;      // premultiplied by intensity
+                float mesh_mode;                 // alpine_dir_light::MeshMode
+                std::array<float, 3> center;
+                float feather;
+                std::array<float, 3> box_right;
+                float half_x;
+                std::array<float, 3> box_forward;
+                float half_y;
+                float half_z;
+                float radius;
+                float half_length;
+                float _pad;
+            };
+
+            float num_dir_lights;
+            std::array<float, 3> _pad;
+            std::array<DirLight, DirLightsBuffer::max_lights> lights;
+        };
+        static_assert(offsetof(DirLightsBufferData::DirLight, travel_dir) == 0);
+        static_assert(offsetof(DirLightsBufferData::DirLight, shape) == 12);
+        static_assert(offsetof(DirLightsBufferData::DirLight, color) == 16);
+        static_assert(offsetof(DirLightsBufferData::DirLight, mesh_mode) == 28);
+        static_assert(offsetof(DirLightsBufferData::DirLight, center) == 32);
+        static_assert(offsetof(DirLightsBufferData::DirLight, feather) == 44);
+        static_assert(offsetof(DirLightsBufferData::DirLight, box_right) == 48);
+        static_assert(offsetof(DirLightsBufferData::DirLight, half_x) == 60);
+        static_assert(offsetof(DirLightsBufferData::DirLight, box_forward) == 64);
+        static_assert(offsetof(DirLightsBufferData::DirLight, half_y) == 76);
+        static_assert(offsetof(DirLightsBufferData::DirLight, half_z) == 80);
+        static_assert(offsetof(DirLightsBufferData::DirLight, radius) == 84);
+        static_assert(offsetof(DirLightsBufferData::DirLight, half_length) == 88);
+        static_assert(sizeof(DirLightsBufferData::DirLight) == 96);
+        static_assert(offsetof(DirLightsBufferData, num_dir_lights) == 0);
+        static_assert(offsetof(DirLightsBufferData, lights) == 16);
+        static_assert(sizeof(DirLightsBufferData) == 16 + 96 * DirLightsBuffer::max_lights);
+    }
+
     RenderContext::RenderContext(
         ComPtr<ID3D11Device> device, ComPtr<ID3D11DeviceContext> device_context,
         StateManager& state_manager, ShaderManager& shader_manager,
@@ -29,7 +80,10 @@ namespace gr::d3d11
         render_mode_cbuffer_{device_},
         per_frame_buffer_{device_},
         texture_scale_cbuffer_{device_},
-        gas_region_buffer_{device_}
+        gas_region_buffer_{device_},
+        caustics_renderer_{device_},
+        liquid_fx_renderer_{device_},
+        dir_lights_buffer_{device_}
     {
         bind_cbuffers();
     }
@@ -54,6 +108,18 @@ namespace gr::d3d11
         // Gas region buffer at b4 (b3 is used by shadow renderer)
         ID3D11Buffer* gas_cbuffer = gas_region_buffer_;
         device_context_->PSSetConstantBuffers(4, 1, &gas_cbuffer);
+
+        // Caustics buffer at b5
+        ID3D11Buffer* caustics_cbuffer = caustics_renderer_;
+        device_context_->PSSetConstantBuffers(5, 1, &caustics_cbuffer);
+
+        // Liquid buffer at b6
+        ID3D11Buffer* liquid_cbuffer = liquid_fx_renderer_;
+        device_context_->PSSetConstantBuffers(6, 1, &liquid_cbuffer);
+
+        // Directional lights buffer (b7 is the terrain buffer)
+        ID3D11Buffer* dir_lights_cbuffer = dir_lights_buffer_;
+        device_context_->PSSetConstantBuffers(dir_lights_cbuffer_slot, 1, &dir_lights_cbuffer);
     }
 
     void RenderContext::clear()
@@ -95,8 +161,11 @@ namespace gr::d3d11
     {
         // model to world
         GpuMatrix4x3 world_mat;
+        // Added to the vertex UV in standard_vs. Only x/y are read; z/w pad to a whole 16-byte register.
+        std::array<float, 4> uv0_offset;
     };
     static_assert(sizeof(ModelTransformBufferData) % 16 == 0);
+    static_assert(offsetof(ModelTransformBufferData, uv0_offset) == 48);
 
     ModelTransformBuffer::ModelTransformBuffer(ID3D11Device* device) :
         current_model_pos_{NAN, NAN, NAN},
@@ -115,6 +184,7 @@ namespace gr::d3d11
     {
         ModelTransformBufferData data;
         data.world_mat = build_world_matrix(current_model_pos_, current_model_orient_);
+        data.uv0_offset = {current_uv0_offset_u_, current_uv0_offset_v_, 0.0f, 0.0f};
 
         D3D11_MAPPED_SUBRESOURCE mapped_subres;
         DF_GR_D3D11_CHECK_HR(
@@ -215,8 +285,19 @@ namespace gr::d3d11
         std::array<float, 3> ambient_light;
         float num_point_lights;
         PointLight point_lights[max_point_lights];
+        std::array<float, 3> sun_travel_dir;
+        float sun_scale;
+        std::array<float, 3> sun_color;       // premultiplied by sun intensity
+        // Alpine lightmap atlas constants; must stay byte for byte with the b1 tail in
+        // standard_ps.hlsl, which both pixel shader permutations share.
+        float af_lm_enabled;
+        float af_lm_page_size;
+        float af_lm_tile_step;
+        float af_lm_gutter;
+        float _af_lm_pad;
     };
     static_assert(sizeof(LightsBufferData::PointLight) % 16 == 0);
+    static_assert(sizeof(LightsBufferData) % 16 == 0);
 
     LightsBuffer::LightsBuffer(ID3D11Device* device)
     {
@@ -229,7 +310,8 @@ namespace gr::d3d11
         DF_GR_D3D11_CHECK_HR(device->CreateBuffer(&desc, nullptr, &buffer_));
     }
 
-    void LightsBuffer::update(ID3D11DeviceContext* device_context, bool force_neutral, const float* ambient_override)
+    void LightsBuffer::update(ID3D11DeviceContext* device_context, bool force_neutral, const float* ambient_override,
+        float sun_scale)
     {
         D3D11_MAPPED_SUBRESOURCE mapped_subres;
         DF_GR_D3D11_CHECK_HR(
@@ -299,8 +381,135 @@ namespace gr::d3d11
             data.num_point_lights = 0.0f;
         }
 
+        if (sun_scale > 0.0f && !force_neutral) {
+            const SunLightState sun = gr_get_sun_state();
+            data.sun_travel_dir = {sun.travel_dir.x, sun.travel_dir.y, sun.travel_dir.z};
+            data.sun_scale = sun_scale;
+            data.sun_color = {sun.color[0], sun.color[1], sun.color[2]};
+        }
+
+        // Outside the force_neutral branch: a neutral upload still has to describe the atlas,
+        // because the draws that follow one carry the same charted vertices.
+        const AfLightmapConstants af_lm = af_lightmap_constants();
+        data.af_lm_enabled = af_lm.enabled;
+        data.af_lm_page_size = af_lm.page_size;
+        data.af_lm_tile_step = af_lm.tile_step;
+        data.af_lm_gutter = af_lm.gutter;
+
         std::memcpy(mapped_subres.pData, &data, sizeof(data));
 
+        device_context->Unmap(buffer_, 0);
+    }
+
+    DirLightsBuffer::DirLightsBuffer(ID3D11Device* device)
+    {
+        DirLightsBufferData init_data{};
+        D3D11_SUBRESOURCE_DATA subres_data{&init_data, 0, 0};
+        CD3D11_BUFFER_DESC desc{
+            sizeof(DirLightsBufferData),
+            D3D11_BIND_CONSTANT_BUFFER,
+            D3D11_USAGE_DYNAMIC,
+            D3D11_CPU_ACCESS_WRITE,
+        };
+        DF_GR_D3D11_CHECK_HR(device->CreateBuffer(&desc, &subres_data, &buffer_));
+    }
+
+    // Chosen: lights that are on, reach meshes with a colour, and whose volume's bounding sphere meets
+    // the draw's. Past max_lights, unbounded lights win, then the higher intensity, then list order.
+    void DirLightsBuffer::update(ID3D11DeviceContext* device_context, const rf::Vector3* center, float radius)
+    {
+        const auto& all = alpine_dir_light_get_all();
+
+        struct Candidate
+        {
+            int index;
+            bool unbounded;
+            float intensity;
+        };
+        std::array<Candidate, max_lights> chosen{};
+        int count = 0;
+        auto ranks_before = [](const Candidate& a, const Candidate& b) {
+            if (a.unbounded != b.unbounded) {
+                return a.unbounded;
+            }
+            if (a.intensity != b.intensity) {
+                return a.intensity > b.intensity;
+            }
+            return a.index < b.index;
+        };
+
+        for (int i = 0; i < static_cast<int>(all.size()); ++i) {
+            const AlpineDirLight& light = all[i];
+            if (!light.on || !light.affects_meshes || !(light.intensity > 0.0f)
+                || (light.color[0] <= 0.0f && light.color[1] <= 0.0f && light.color[2] <= 0.0f)) {
+                continue;
+            }
+            const bool unbounded = light.volume.shape == alpine_dir_light::Shape::none;
+            if (!unbounded) {
+                if (!center) {
+                    continue;
+                }
+                const float dx = light.volume.center.x - center->x;
+                const float dy = light.volume.center.y - center->y;
+                const float dz = light.volume.center.z - center->z;
+                const float reach = light.bounding_radius + std::max(radius, 0.0f);
+                if (dx * dx + dy * dy + dz * dz > reach * reach) {
+                    continue;
+                }
+            }
+            const Candidate cand{i, unbounded, light.intensity};
+            if (count < max_lights) {
+                chosen[count++] = cand;
+            }
+            else {
+                // Replace the lowest ranked when this one ranks above it
+                auto worst = std::max_element(chosen.begin(), chosen.end(), ranks_before);
+                if (ranks_before(cand, *worst)) {
+                    *worst = cand;
+                }
+            }
+        }
+        std::sort(chosen.begin(), chosen.begin() + count,
+                  [](const Candidate& a, const Candidate& b) { return a.index < b.index; });
+
+        const std::uint32_t generation = alpine_dir_light_generation();
+        if (count == current_count_ && generation == current_generation_
+            && std::equal(chosen.begin(), chosen.begin() + count, current_.begin(),
+                          [](const Candidate& a, int b) { return a.index == b; })) {
+            return;
+        }
+        current_count_ = count;
+        current_generation_ = generation;
+        for (int i = 0; i < count; ++i) {
+            current_[i] = chosen[i].index;
+        }
+
+        DirLightsBufferData data{};
+        data.num_dir_lights = static_cast<float>(count);
+        for (int i = 0; i < count; ++i) {
+            const AlpineDirLight& src = all[chosen[i].index];
+            const alpine_dir_light::Volume& v = src.volume;
+            DirLightsBufferData::DirLight& dst = data.lights[i];
+            dst.travel_dir = {v.axis.x, v.axis.y, v.axis.z};
+            dst.shape = static_cast<float>(v.shape);
+            dst.color = {src.color[0] * src.intensity, src.color[1] * src.intensity, src.color[2] * src.intensity};
+            dst.mesh_mode = static_cast<float>(src.mesh_mode);
+            dst.center = {v.center.x, v.center.y, v.center.z};
+            dst.feather = v.feather;
+            dst.box_right = {v.box_right.x, v.box_right.y, v.box_right.z};
+            dst.half_x = v.half_x;
+            dst.box_forward = {v.box_forward.x, v.box_forward.y, v.box_forward.z};
+            dst.half_y = v.half_y;
+            dst.half_z = v.half_z;
+            dst.radius = v.radius;
+            dst.half_length = v.half_length;
+        }
+
+        D3D11_MAPPED_SUBRESOURCE mapped_subres;
+        DF_GR_D3D11_CHECK_HR(
+            device_context->Map(buffer_, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped_subres)
+        );
+        std::memcpy(mapped_subres.pData, &data, sizeof(data));
         device_context->Unmap(buffer_, 0);
     }
 
@@ -319,8 +528,12 @@ namespace gr::d3d11
         float pixel_light_overbright;
         float emissive_override;
         float gas_fog_allowed;
-        float _pad[2];
+        float sky_room;
+        float draw_room_uid;
+        float liquid_surface;
+        std::array<float, 3> _pad;
     };
+    static_assert(sizeof(RenderModeBufferData) == 96);
     static_assert(sizeof(RenderModeBufferData) % 16 == 0);
 
     RenderModeBuffer::RenderModeBuffer(ID3D11Device* device)
@@ -337,15 +550,20 @@ namespace gr::d3d11
     struct alignas(16) TextureScaleBufferData
     {
         std::array<float, 2> tex0_uv_scale;
-        std::array<float, 2> pad;
+        float ghost_fill_y;
+        float ghost_alpha_ratio;
     };
+    static_assert(sizeof(TextureScaleBufferData) == 16);
+    static_assert(offsetof(TextureScaleBufferData, ghost_fill_y) == 8);
+    static_assert(offsetof(TextureScaleBufferData, ghost_alpha_ratio) == 12);
     static_assert(sizeof(TextureScaleBufferData) % 16 == 0);
 
     TextureScaleBuffer::TextureScaleBuffer(ID3D11Device* device)
     {
         TextureScaleBufferData init_data{};
         init_data.tex0_uv_scale = {1.0f, 1.0f};
-        init_data.pad = {0.0f, 0.0f};
+        init_data.ghost_fill_y = 0.0f;
+        init_data.ghost_alpha_ratio = 0.0f;
         D3D11_SUBRESOURCE_DATA subres_data{&init_data, 0, 0};
         CD3D11_BUFFER_DESC desc{
             sizeof(TextureScaleBufferData),
@@ -360,7 +578,8 @@ namespace gr::d3d11
     {
         TextureScaleBufferData data{};
         data.tex0_uv_scale = {current_u_scale_, current_v_scale_};
-        data.pad = {0.0f, 0.0f};
+        data.ghost_fill_y = current_ghost_fill_y_;
+        data.ghost_alpha_ratio = current_ghost_alpha_ratio_;
 
         D3D11_MAPPED_SUBRESOURCE mapped_subres;
         DF_GR_D3D11_CHECK_HR(
@@ -389,9 +608,11 @@ namespace gr::d3d11
         std::array<float, 3> cam_right;   float proj_scale_x;      // 1 float4
         std::array<float, 3> cam_up;      float proj_scale_y;      // 1 float4
         std::array<float, 3> cam_forward; float viewport_w;        // 1 float4
-        float viewport_h; float _header_pad[3];                     // 1 float4
+        float viewport_h; float viewport_x; float viewport_y; float _header_pad;  // 1 float4
         GasRegionGPUData regions[GasRegionBuffer::max_gas_regions];
     };
+    static_assert(offsetof(GasRegionBufferData, regions) == 80);
+    static_assert(sizeof(GasRegionBufferData) == 80 + sizeof(GasRegionGPUData) * GasRegionBuffer::max_gas_regions);
     static_assert(sizeof(GasRegionBufferData) % 16 == 0);
 
     GasRegionBuffer::GasRegionBuffer(ID3D11Device* device)
@@ -440,6 +661,9 @@ namespace gr::d3d11
         data.cam_forward = {m.fvec.x, m.fvec.y, m.fvec.z};
         data.proj_scale_x = projection.scale_x();
         data.proj_scale_y = projection.scale_y();
+        const auto origin = viewport_origin();
+        data.viewport_x = origin[0];
+        data.viewport_y = origin[1];
         data.viewport_w = static_cast<float>(rf::gr::screen.clip_width);
         data.viewport_h = static_cast<float>(rf::gr::screen.clip_height);
 
@@ -556,7 +780,9 @@ namespace gr::d3d11
         // When apply_light_scale is false (character meshes), use 1.0 to skip scaling.
         if (current_apply_light_scale_) {
             const auto& level_props = AlpineLevelProperties::instance();
-            if (level_props.override_static_mesh_ambient_light_modifier) {
+            if (current_fixed_light_scale_ > 0.0f) {
+                data.light_scale = current_fixed_light_scale_;
+            } else if (level_props.override_static_mesh_ambient_light_modifier) {
                 data.light_scale = level_props.static_mesh_ambient_light_modifier;
             } else {
                 data.light_scale = rf::is_multi ? 3.2f : 2.0f;
@@ -568,6 +794,9 @@ namespace gr::d3d11
         data.pixel_light_overbright = g_level_pixel_light_overbright;
         data.emissive_override = current_emissive_override_ ? 1.0f : 0.0f;
         data.gas_fog_allowed = current_fog_allowed_ ? 1.0f : 0.0f;
+        data.sky_room = current_sky_room_ ? 1.0f : 0.0f;
+        data.draw_room_uid = static_cast<float>(current_draw_room_uid_);
+        data.liquid_surface = current_liquid_surface_ ? 1.0f : 0.0f;
 
         D3D11_MAPPED_SUBRESOURCE mapped_subres;
         DF_GR_D3D11_CHECK_HR(

@@ -8,6 +8,7 @@
 #include "../misc/vote_panel.h"
 #include "../multi/demo/demo.h"
 #include "../multi/jetpack.h"
+#include "minimap.h"
 #include "multi_scoreboard.h"
 #include "multi_spectate.h"
 #include "remote_server_cfg_ui.h"
@@ -451,6 +452,8 @@ void hud_render_00437BC0()
 
     scoreboard_maybe_render(show_scoreboard && !g_remote_server_cfg_popup.is_active()
         && !vote_panel_is_gameplay_overlay_active());
+
+    minimap_render();
 }
 
 void hud_apply_patches()
@@ -494,4 +497,5 @@ void hud_apply_patches()
     hud_world_apply_patch();
     hud_colors_apply_patch();
     hud_scale_apply_patch();
+    minimap_apply_patches();
 }

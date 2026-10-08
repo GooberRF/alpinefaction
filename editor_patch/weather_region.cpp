@@ -4,10 +4,13 @@
 #include <cstdio>
 #include <cstring>
 #include <cmath>
+#include <optional>
 #include <string>
 #include <algorithm>
 #include <vector>
 #include <xlog/xlog.h>
+#include "alpine_color_picker.h"
+#include "alpine_spinner.h"
 #include "weather_region.h"
 #include "level.h"
 #include "resources.h"
@@ -218,67 +221,35 @@ void weather_region_deserialize_chunk(CDedLevel& level, rf::File& file, std::siz
 
 static std::vector<DedWeatherRegion*> g_selected_weather_regions;
 
+struct WeatherRegionDimsPreview
+{
+    bool active = false;
+    WeatherRegionShape shape = WeatherRegionShape::box;
+    std::optional<float> width, height, depth, radius;
+};
+static WeatherRegionDimsPreview g_dims_preview;
+
+static void weather_region_capture_dims_preview(HWND hdlg)
+{
+    int shape_sel = static_cast<int>(SendDlgItemMessage(hdlg, IDC_WEATHER_SHAPE, CB_GETCURSEL, 0, 0));
+    g_dims_preview.shape = static_cast<WeatherRegionShape>(shape_sel < 0 ? 0 : shape_sel);
+    g_dims_preview.width = alpine_dlg_get_optional_float_field(hdlg, IDC_WEATHER_WIDTH);
+    g_dims_preview.height = alpine_dlg_get_optional_float_field(hdlg, IDC_WEATHER_HEIGHT);
+    g_dims_preview.depth = alpine_dlg_get_optional_float_field(hdlg, IDC_WEATHER_DEPTH);
+    g_dims_preview.radius = alpine_dlg_get_optional_float_field(hdlg, IDC_WEATHER_RADIUS);
+}
+
+static void weather_region_refresh_dims_preview(HWND hdlg)
+{
+    if (!g_dims_preview.active) return;
+    weather_region_capture_dims_preview(hdlg);
+    redraw_all_viewports();
+}
+
 // Bitmap currently shown in the snow bitmap preview, tracked so an edit-box keystroke only
 // touches the bitmap manager when the name actually changed.
 static std::string g_snow_bitmap_preview_name;
 static int g_snow_bitmap_preview_handle = -1;
-
-// Names that aren't on disk or in a vpp stay at -1 rather than going through bm_load, which
-// would manufacture (and permanently cache) a placeholder entry for every half-typed name.
-// A -1 handle takes the same empty-preview path the stock panel uses when nothing is selected.
-static int weather_region_resolve_bitmap(const char* name)
-{
-    if (!name || name[0] == '\0') return -1;
-    if (strlen(name) > rfl_name_max_len) return -1;
-    const char* ext = strrchr(name, '.');
-    if (ext && strlen(ext) > rfl_ext_max_len) return -1;
-    rf::File file;
-    if (!file.open(name)) return -1;
-    file.close(); // rf::File has no destructor, so the probe leaks the OS handle otherwise
-    return bm_load(name, -1, 1);
-}
-
-// Mirrors CBitmapPreviewDialog::OnPaint (0x0044C1B0): the editor renderer draws into the
-// control's own window, letterboxed so the texture keeps its aspect ratio.
-static void weather_region_draw_bitmap_preview(HWND ctrl, const RECT& rc, int bm_handle)
-{
-    int w = std::min<int>(rc.right - rc.left, gr_get_max_width());
-    int h = std::min<int>(rc.bottom - rc.top, gr_get_max_height());
-    if (w <= 0 || h <= 0) return;
-
-    gr_set_viewport_wnd(ctrl);
-
-    if (bm_handle < 0) {
-        gr_set_clip(0, 0, w, h);
-        gr_clear();
-        gr_flip();
-        return;
-    }
-
-    for (int pass = 0; pass < 2; pass++) {
-        gr_set_clip(0, 0, w, h);
-        gr_clear();
-
-        int src_w = 0, src_h = 0, num_pixels = 0, mip_levels = 0;
-        bm_get_mipmap_info(bm_handle, &src_w, &src_h, &num_pixels, &mip_levels);
-        if (src_w <= 0 || src_h <= 0) break;
-
-        int dst_x = 0, dst_y = 0, dst_w = w, dst_h = h;
-        if (src_h > src_w) {
-            dst_w = static_cast<int>(std::lround(static_cast<float>(h) / src_h * src_w));
-            dst_x = static_cast<int>(std::lround((w - dst_w) * 0.5f));
-        }
-        else if (src_w > src_h) {
-            dst_h = static_cast<int>(std::lround(static_cast<float>(w) / src_w * src_h));
-            dst_y = static_cast<int>(std::lround((h - dst_h) * 0.5f));
-        }
-
-        gr_bitmap_scaled(bm_handle, dst_x, dst_y, dst_w, dst_h, 0, 0, src_w, src_h,
-                         0.0f, 0.0f, gr_bitmap_preview_mode);
-    }
-
-    gr_flip();
-}
 
 static void weather_region_update_bitmap_preview(HWND hdlg, bool force)
 {
@@ -287,7 +258,7 @@ static void weather_region_update_bitmap_preview(HWND hdlg, bool force)
     if (!force && g_snow_bitmap_preview_name == buf) return;
 
     g_snow_bitmap_preview_name = buf;
-    g_snow_bitmap_preview_handle = weather_region_resolve_bitmap(buf);
+    g_snow_bitmap_preview_handle = alpine_dlg_resolve_bitmap(buf);
     InvalidateRect(GetDlgItem(hdlg, IDC_WEATHER_SNOW_BITMAP_PREVIEW), nullptr, TRUE);
 }
 
@@ -327,28 +298,10 @@ static void weather_region_set_dim_field(HWND hdlg, int idc, float value)
     SetDlgItemTextA(hdlg, idc, buf);
 }
 
-static int weather_region_spin_field(int idc_spin)
-{
-    switch (idc_spin) {
-    case IDC_WEATHER_WIDTH_SPIN: return IDC_WEATHER_WIDTH;
-    case IDC_WEATHER_DEPTH_SPIN: return IDC_WEATHER_DEPTH;
-    case IDC_WEATHER_HEIGHT_SPIN: return IDC_WEATHER_HEIGHT;
-    case IDC_WEATHER_RADIUS_SPIN: return IDC_WEATHER_RADIUS;
-    default: return 0;
-    }
-}
-
-// The spinner never moves itself (UDN_DELTAPOS is refused), so its own range only has to be wide
-// enough that both arrows always report a delta. Accel matches stock: 1 unit, 10 while held.
 static void weather_region_init_spinner(HWND hdlg, int idc_edit, int idc_spin)
 {
-    HWND spin = GetDlgItem(hdlg, idc_spin);
-    if (!spin) return;
-    SendMessage(spin, UDM_SETRANGE32, static_cast<WPARAM>(-0x10000), static_cast<LPARAM>(0x10000));
-    SendMessage(spin, UDM_SETPOS32, 0, 0);
-    UDACCEL accel[2] = {{0, 1}, {1, 10}};
-    SendMessage(spin, UDM_SETACCEL, 2, reinterpret_cast<LPARAM>(accel));
-    SendMessage(spin, UDM_SETBUDDY, reinterpret_cast<WPARAM>(GetDlgItem(hdlg, idc_edit)), 0);
+    alpine_spinner_init(hdlg, idc_edit, idc_spin, weather_dim_step, weather_dim_min,
+                        weather_dim_max, 2);
 }
 
 // Only the fields the selected shape uses stay enabled.
@@ -404,20 +357,14 @@ static void weather_region_update_type_fields(HWND hdlg)
 
 static void weather_region_pick_color(HWND hdlg, int idc_r, int idc_g, int idc_b)
 {
-    CHOOSECOLORA cc = {};
-    static COLORREF custom_colors[16] = {};
-    cc.lStructSize = sizeof(cc);
-    cc.hwndOwner = hdlg;
-    cc.rgbResult = RGB(
-        GetDlgItemInt(hdlg, idc_r, nullptr, FALSE),
-        GetDlgItemInt(hdlg, idc_g, nullptr, FALSE),
-        GetDlgItemInt(hdlg, idc_b, nullptr, FALSE));
-    cc.lpCustColors = custom_colors;
-    cc.Flags = CC_RGBINIT | CC_FULLOPEN;
-    if (ChooseColorA(&cc)) {
-        SetDlgItemInt(hdlg, idc_r, GetRValue(cc.rgbResult), FALSE);
-        SetDlgItemInt(hdlg, idc_g, GetGValue(cc.rgbResult), FALSE);
-        SetDlgItemInt(hdlg, idc_b, GetBValue(cc.rgbResult), FALSE);
+    COLORREF color = RGB(
+        std::min(GetDlgItemInt(hdlg, idc_r, nullptr, FALSE), 255u),
+        std::min(GetDlgItemInt(hdlg, idc_g, nullptr, FALSE), 255u),
+        std::min(GetDlgItemInt(hdlg, idc_b, nullptr, FALSE), 255u));
+    if (alpine_pick_color(hdlg, color, alpine_shared_custom_colors())) {
+        SetDlgItemInt(hdlg, idc_r, GetRValue(color), FALSE);
+        SetDlgItemInt(hdlg, idc_g, GetGValue(color), FALSE);
+        SetDlgItemInt(hdlg, idc_b, GetBValue(color), FALSE);
     }
 }
 
@@ -487,6 +434,9 @@ static INT_PTR CALLBACK WeatherRegionDialogProc(HWND hdlg, UINT msg, WPARAM wp, 
         weather_region_update_type_fields(hdlg);
         weather_region_update_bitmap_preview(hdlg, true);
 
+        weather_region_capture_dims_preview(hdlg);
+        g_dims_preview.active = true;
+
         return TRUE;
     }
     case WM_COMMAND:
@@ -494,6 +444,15 @@ static INT_PTR CALLBACK WeatherRegionDialogProc(HWND hdlg, UINT msg, WPARAM wp, 
         case IDC_WEATHER_SHAPE:
             if (HIWORD(wp) == CBN_SELCHANGE) {
                 weather_region_update_shape_fields(hdlg);
+                weather_region_refresh_dims_preview(hdlg);
+            }
+            break;
+        case IDC_WEATHER_WIDTH:
+        case IDC_WEATHER_HEIGHT:
+        case IDC_WEATHER_DEPTH:
+        case IDC_WEATHER_RADIUS:
+            if (HIWORD(wp) == EN_CHANGE) {
+                weather_region_refresh_dims_preview(hdlg);
             }
             break;
         case IDC_WEATHER_TYPE:
@@ -559,10 +518,10 @@ static INT_PTR CALLBACK WeatherRegionDialogProc(HWND hdlg, UINT msg, WPARAM wp, 
             if (type_sel < 0) type_sel = 0;
             if (shape_sel < 0) shape_sel = 0;
 
-            float width = weather_region_get_float_field(hdlg, IDC_WEATHER_WIDTH);
-            float height = weather_region_get_float_field(hdlg, IDC_WEATHER_HEIGHT);
-            float depth = weather_region_get_float_field(hdlg, IDC_WEATHER_DEPTH);
-            float radius = weather_region_get_float_field(hdlg, IDC_WEATHER_RADIUS);
+            auto width = alpine_dlg_get_optional_float_field(hdlg, IDC_WEATHER_WIDTH);
+            auto height = alpine_dlg_get_optional_float_field(hdlg, IDC_WEATHER_HEIGHT);
+            auto depth = alpine_dlg_get_optional_float_field(hdlg, IDC_WEATHER_DEPTH);
+            auto radius = alpine_dlg_get_optional_float_field(hdlg, IDC_WEATHER_RADIUS);
             float density_scale = std::clamp(weather_region_get_float_field(hdlg, IDC_WEATHER_DENSITY_SCALE),
                 weather_density_scale_min, weather_density_scale_max);
             float active_distance = weather_region_get_float_field(hdlg, IDC_WEATHER_ACTIVE_DISTANCE);
@@ -601,10 +560,10 @@ static INT_PTR CALLBACK WeatherRegionDialogProc(HWND hdlg, UINT msg, WPARAM wp, 
                 }
                 w->weather_type = static_cast<WeatherRegionType>(type_sel);
                 w->shape = static_cast<WeatherRegionShape>(shape_sel);
-                w->width = width;
-                w->height = height;
-                w->depth = depth;
-                w->radius = radius;
+                w->width = width.value_or(w->width);
+                w->height = height.value_or(w->height);
+                w->depth = depth.value_or(w->depth);
+                w->radius = radius.value_or(w->radius);
                 w->density_scale = density_scale;
                 w->active_distance = active_distance;
                 w->visible_distance = visible_distance;
@@ -638,22 +597,14 @@ static INT_PTR CALLBACK WeatherRegionDialogProc(HWND hdlg, UINT msg, WPARAM wp, 
             return TRUE;
         }
         break;
-    case WM_NOTIFY: {
-        auto* nm = reinterpret_cast<NMHDR*>(lp);
-        if (!nm || nm->code != UDN_DELTAPOS) break;
-        int idc_edit = weather_region_spin_field(static_cast<int>(nm->idFrom));
-        if (!idc_edit) break;
-        float value = weather_region_get_float_field(hdlg, idc_edit) +
-            reinterpret_cast<NMUPDOWN*>(lp)->iDelta * weather_dim_step;
-        weather_region_set_dim_field(hdlg, idc_edit, std::clamp(value, weather_dim_min, weather_dim_max));
-        SetWindowLongPtr(hdlg, DWLP_MSGRESULT, 1); // refuse the spinner's own position change
-        return TRUE;
-    }
+    case WM_NOTIFY:
+        if (alpine_spinner_handle_notify(hdlg, lp)) return TRUE;
+        break;
     case WM_DRAWITEM: {
         auto* dis = reinterpret_cast<DRAWITEMSTRUCT*>(lp);
         if (!dis) break;
         if (dis->CtlID == IDC_WEATHER_SNOW_BITMAP_PREVIEW) {
-            weather_region_draw_bitmap_preview(dis->hwndItem, dis->rcItem, g_snow_bitmap_preview_handle);
+            alpine_dlg_draw_bitmap_preview(dis->hwndItem, dis->rcItem, g_snow_bitmap_preview_handle);
             return TRUE;
         }
         int idc_r = 0, idc_g = 0, idc_b = 0;
@@ -701,6 +652,7 @@ void ShowWeatherRegionPropertiesDialog(CDedLevel* level)
             WeatherRegionDialogProc,
             0
         );
+        g_dims_preview.active = false;
     }
 
     g_selected_weather_regions.clear();
@@ -799,22 +751,14 @@ DedWeatherRegion* CloneWeatherRegionObject(DedWeatherRegion* source, bool add_to
     return region;
 }
 
-void DeleteWeatherRegionObject(DedWeatherRegion* weather_region)
-{
-    if (!weather_region) return;
-    auto* level = CDedLevel::Get();
-    if (!level) return;
-
-    auto& regions = level->GetAlpineLevelProperties().weather_region_objects;
-    auto it = std::find(regions.begin(), regions.end(), weather_region);
-    if (it != regions.end()) {
-        regions.erase(it);
-    }
-    level->master_objects.remove_by_value(static_cast<DedObject*>(weather_region));
-    DestroyDedWeatherRegion(weather_region);
-}
-
 // ─── Rendering ──────────────────────────────────────────────────────────────
+
+constexpr float weather_region_icon_size = 1.0f;
+
+// Per-type selection color
+constexpr int weather_region_selected_r = 0x00;
+constexpr int weather_region_selected_g = 0xdc;
+constexpr int weather_region_selected_b = 0xdc;
 
 void weather_region_render(CDedLevel* level)
 {
@@ -831,7 +775,9 @@ void weather_region_render(CDedLevel* level)
 
         const bool selected = is_object_selected(level, region);
 
-        int r = 0xff, g = 0x00, b = 0x00; // selected always wins
+        int r = weather_region_selected_r,
+            g = weather_region_selected_g,
+            b = weather_region_selected_b;
         if (!selected) {
             switch (region->weather_type) {
                 case WeatherRegionType::rain:
@@ -846,15 +792,26 @@ void weather_region_render(CDedLevel* level)
         if (selected || region->always_show_range) {
             set_draw_color(r, g, b, 0xff);
 
-            switch (region->shape) {
-                case WeatherRegionShape::box: {
-                    Vector3 dims{region->width, region->height, region->depth};
+            WeatherRegionShape shape = region->shape;
+            Vector3 dims{region->width, region->height, region->depth};
+            float radius = region->radius;
+            if (g_dims_preview.active &&
+                std::find(g_selected_weather_regions.begin(), g_selected_weather_regions.end(), region) !=
+                    g_selected_weather_regions.end()) {
+                shape = g_dims_preview.shape;
+                dims.x = g_dims_preview.width.value_or(dims.x);
+                dims.y = g_dims_preview.height.value_or(dims.y);
+                dims.z = g_dims_preview.depth.value_or(dims.z);
+                radius = g_dims_preview.radius.value_or(radius);
+            }
+
+            switch (shape) {
+                case WeatherRegionShape::box:
                     draw_wireframe_box_3d(&region->pos, &region->orient, &dims, mode);
                     break;
-                }
                 case WeatherRegionShape::sphere:
                     // Rotation-invariant, so the stored orientation is ignored.
-                    draw_wireframe_sphere_3d(&region->pos, region->radius, mode);
+                    draw_wireframe_sphere_3d(&region->pos, radius, mode);
                     break;
             }
         }
@@ -864,7 +821,7 @@ void weather_region_render(CDedLevel* level)
         if (g_weather_region_icon_handle >= 0) {
             gr_set_bitmap(g_weather_region_icon_handle, -1);
         }
-        gr_render_billboard(&region->pos, 0, 0.25f, cam_param);
+        gr_render_billboard(&region->pos, 0, weather_region_icon_size, cam_param);
     }
 }
 
@@ -970,21 +927,6 @@ void weather_region_handle_delete_or_cut(DedObject* obj)
     auto it = std::find(regions.begin(), regions.end(), static_cast<DedWeatherRegion*>(obj));
     if (it != regions.end()) {
         regions.erase(it);
-    }
-}
-
-void weather_region_handle_delete_selection(CDedLevel* level)
-{
-    auto& sel = level->selection;
-    for (int i = sel.size - 1; i >= 0; i--) {
-        DedObject* obj = sel.data_ptr[i];
-        if (obj && obj->type == DedObjectType::DED_WEATHER_REGION) {
-            for (int j = i; j < sel.size - 1; j++) {
-                sel.data_ptr[j] = sel.data_ptr[j + 1];
-            }
-            sel.size--;
-            DeleteWeatherRegionObject(static_cast<DedWeatherRegion*>(obj));
-        }
     }
 }
 

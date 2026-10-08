@@ -36,6 +36,8 @@
 #include "server.h"
 #include "server_internal.h"
 #include "salvage.h"
+#include "vehicles/vehicle.h"
+#include "vehicles/vehicle_physics.h"
 #include "bagman.h"
 #include "gungame.h"
 #include "sprays.h"
@@ -45,6 +47,7 @@
 #include "../os/os.h"
 #include "../hud/hud.h"
 #include "../hud/multi_spectate.h"
+#include "../hud/minimap.h"
 #include "../rf/multi.h"
 #include "../rf/gameseq.h"
 #include "../rf/misc.h"
@@ -65,6 +68,7 @@
 #include "../misc/waypoints.h"
 #include "../object/object.h"
 #include "../graphics/weather.h"
+#include "../graphics/scene_capture.h"
 #include "../os/console.h"
 #include "../purefaction/pf.h"
 #include "../sound/sound.h"
@@ -288,7 +292,12 @@ enum packet_type : uint8_t {
     af_pit_roster          = 0x61,
     af_gungame_order       = 0x62,
     af_salvage_state       = 0x63,
-    af_crit_shot           = 0x64
+    af_crit_shot           = 0x64,
+    af_vehicle_state       = 0x65,
+    af_vehicle_fire        = 0x66,
+    af_vehicle_health      = 0x67,
+    af_vehicle_orient      = 0x68,
+    af_vehicle_factory_state = 0x69
 };
 
 // client -> server
@@ -315,7 +324,9 @@ std::array g_server_side_packet_whitelist{
     rcon,
     af_ping_location_req,
     af_client_req,
-    af_spectate_start
+    af_spectate_start,
+    af_vehicle_fire,
+    af_vehicle_orient
 };
 
 // server -> client
@@ -378,7 +389,12 @@ std::array g_client_side_packet_whitelist{
     af_pit_roster,
     af_gungame_order,
     af_salvage_state,
-    af_crit_shot
+    af_crit_shot,
+    af_vehicle_state,
+    af_vehicle_fire,
+    af_vehicle_health,
+    af_vehicle_orient,
+    af_vehicle_factory_state
 };
 // clang-format on
 
@@ -557,25 +573,22 @@ static void handle_rcon_request_packet(const uint8_t* pkt, size_t len, const rf:
 
     const auto lookup = lookup_rcon_password(password);
     if (!lookup.profile_index) {
-        // A wrong password from an address that already holds an authenticated rcon session is not
-        // a legitimate re-auth. Do not revoke the live session or count it toward the lockout.
-        if (g_rcon_access_by_addr.find(attempt_key) != g_rcon_access_by_addr.end()) {
-            rf::console::print("{} sent an incorrect rcon password while already holding rcon access; ignoring.", rcon_player_name(addr));
-            return;
-        }
         const int failures = ++g_rcon_failed_attempts_by_addr[attempt_key];
-        g_rcon_access_by_addr.erase(addr_key(addr));
-        set_rcon_holder_flag(addr, false);
-        rf::console::print("{} requested rcon with password '{}', DENIED because the password is not correct for any profile.", rcon_player_name(addr), password);
+        // A wrong password from a current holder counts toward the lockout but doesn't revoke the live session.
+        if (g_rcon_access_by_addr.find(attempt_key) != g_rcon_access_by_addr.end()) {
+            rf::console::print("{} sent an incorrect rcon password while already holding rcon access; counted toward lockout, session kept.", rcon_player_name(addr));
+            send_rcon_feedback(addr, "Rcon access denied: wrong password (current session kept).");
+        }
+        else {
+            set_rcon_holder_flag(addr, false);
+            rf::console::print("{} requested rcon with password '{}', DENIED because the password is not correct for any profile.", rcon_player_name(addr), password);
+            send_rcon_feedback(addr, "Rcon access denied: wrong password.");
+        }
         if (failures == kRconMaxFailedAttempts) {
             rf::console::print("{} reached {} failed rcon password attempts and is now locked out of rcon until they reconnect.", rcon_player_name(addr), kRconMaxFailedAttempts);
         }
-        send_rcon_feedback(addr, "Rcon access denied: wrong password.");
         return;
     }
-
-    // Successful authentication: reset the brute-force throttle for this connection.
-    g_rcon_failed_attempts_by_addr.erase(attempt_key);
 
     const uint64_t key = addr_key(addr);
     // ensure a client can only hold a single rcon profile at a time
@@ -1070,6 +1083,10 @@ FunHook<MultiIoPacketHandler> process_team_change_packet_hook{
     0x004825B0,
     [](char* data, const rf::NetAddr& addr) {
         // server-side and client-side
+        size_t remaining;
+        if (multi_io_subpacket_remaining(data, remaining) && remaining < 2) {
+            return;
+        }
         if (rf::is_server) {
             verify_player_id_in_packet(&data[0], addr, "team_change");
             data[1] = std::clamp(data[1], '\0', '\1'); // team validation (fixes "green team")
@@ -1327,9 +1344,15 @@ CodeInjection process_rcon_packet_injection{
 
                     if (check_result == RconCommandCheckResult::Allowed) {
                         std::string payload_str{payload.value()};
-                        // special handling for "info" command, so rcon holder gets server output
+                        // special handling for status commands, so rcon holder gets server output
                         if (cmd_lower == "info") {
                             send_rcon_feedback(*addr, build_info_command_output());
+                        }
+                        else if (cmd_lower == "sv_afstats_events_status") {
+                            send_rcon_feedback(*addr, afstats::build_afstats_events_status_output());
+                        }
+                        else if (cmd_lower == "sv_fflink_status") {
+                            send_rcon_feedback(*addr, fflink::build_fflink_status_output());
                         }
                         // otherwise just execute it on the server
                         else {
@@ -1362,7 +1385,9 @@ CodeInjection process_obj_update_check_flags_injection{
         [](auto& regs) {
             auto stack_frame = regs.esp + 0x9C;
             rf::Player* pp = addr_as_ref<rf::Player*>(stack_frame - 0x6C);
-            int flags = regs.ebx;
+            // Only BL carries this row's flags byte; the rest of EBX is stale from the previous row.
+            const int ebx = regs.ebx;
+            int flags = ebx & 0xFF;
             rf::Entity* ep = regs.edi;
             bool valid = true;
             if (rf::is_server) {
@@ -1372,9 +1397,11 @@ CodeInjection process_obj_update_check_flags_injection{
                     valid = false;
                 }
                 else if (ep && ep->handle != pp->entity_handle) {
-                    xlog::trace("Invalid obj_update entity {:x} {:x} {}", ep->handle, pp->entity_handle,
-                        pp->name.c_str());
-                    valid = false;
+                    if (!vehicle_is_driver_obj_update_row(pp, ep, flags)) {
+                        xlog::trace("Invalid obj_update entity {:x} {:x} {}", ep->handle, pp->entity_handle,
+                            pp->name.c_str());
+                        valid = false;
+                    }
                 }
                 else if (flags & (0x4 | 0x20 | 0x80)) { // OUF_WEAPON_TYPE | OUF_HEALTH_ARMOR | OUF_ARMOR_STATE
                     xlog::info("Invalid obj_update flags {:x}", flags);
@@ -1423,7 +1450,7 @@ CodeInjection process_obj_update_health_armor_injection{
         if (!spectated || spectated == rf::local_player || multi_spectate_is_freelook())
             return;
         if (entity == rf::entity_from_handle(spectated->entity_handle))
-            rf::local_screen_flash(rf::local_player, 255, 0, 0, 128);
+            player_damage_feedback();
     },
 };
 
@@ -1440,13 +1467,15 @@ CodeInjection process_obj_update_weapon_fire_injection{
 
         bool is_on = flags & ouf_fire;
         bool alt_fire = flags & ouf_alt_fire;
-        void multi_turn_weapon_on(rf::Entity* ep, rf::Player* pp, bool alt_fire);
-        void multi_turn_weapon_off(rf::Entity* ep);
-        if (is_on) {
-            multi_turn_weapon_on(entity, pp, alt_fire);
-        }
-        else {
-            multi_turn_weapon_off(entity);
+        // Vehicle weapon state comes from af_vehicle_fire edges both ways; a sampled bit misses a
+        // one-frame burst and a late row could re-arm a stopped gun.
+        if (!vehicle_is_synced_entity_type(entity)) {
+            if (is_on) {
+                multi_turn_weapon_on(entity, pp, alt_fire);
+            }
+            else {
+                multi_turn_weapon_off(entity);
+            }
         }
         regs.eip = 0x0047E346;
     },
@@ -2945,10 +2974,15 @@ FunHook<void()> multi_stop_hook{
         reset_local_pending_game_type(); // clear pending game type when leaving
         salvage_on_multi_shutdown(); // put the flag_red item class back to items.tbl
         bagman_on_multi_shutdown();  // put the amp aura bitmap back to its stock value
-        gungame_on_multi_shutdown(); // put the Jeep Gun mesh + damage back to weapons.tbl
+        vehicle_on_multi_shutdown(); // drop the per-level vehicle/turret records
+        vehicle_physics_on_multi_shutdown(); // tear down the Bullet world with the session
+        gungame_on_multi_shutdown(); // after the vehicle revert: weapons.tbl overrides restore LIFO
         mutators_on_multi_shutdown(); // put the level's own gravity back
         weather_clear_regions(); // weather regions belong to the level being left
+        minimap_level_reset();
+        projector_clear_all(); // Display_Projection feeds and their render targets are level-scoped
         riot_shield_on_multi_level_init(); // drop any pending riot shield break suppressions
+        entity_rate_limit_clear(); // drop per-entity collision/landing-sound rate limit state
         afstats::on_shutdown(); // best-effort final flush of the stats event stream
         fflink::afstats_client_reset(); // a stats session key is only ever valid for the join it was minted for
         g_sent_obj_update_ticks.clear(); // drop per-recipient obj_update keyframe-dedup state from the session being left
@@ -3021,11 +3055,11 @@ void send_chat_line_packet(const std::string_view msg, rf::Player* target, rf::P
     std::strncpy(packet_msg, msg.data(), len);
     packet_msg[len] = '\0';
     if (target == nullptr && rf::is_server) {
-        rf::multi_io_send_reliable_to_all(buf, packet.header.size + sizeof(packet.header), 0);
+        rf::multi_io_send_reliable_to_all(buf, packet.header.size + sizeof(packet.header), false);
         rf::console::print("Server: {}", msg);
     }
     else {
-        rf::multi_io_send_reliable(target, buf, packet.header.size + sizeof(packet.header), 0);
+        rf::multi_io_send_reliable(target, buf, packet.header.size + sizeof(packet.header), false);
     }
 }
 
@@ -3070,10 +3104,11 @@ FunHook<void __cdecl(int, int, bool)> entity_turn_weapon_on_hook{
         // called every frame while the trigger is held; only the off->on edge matters
         bool was_on = rf::entity_weapon_is_on(entity_handle, weapon_type);
         entity_turn_weapon_on_hook.call_target(entity_handle, weapon_type, alt_fire);
-        if (!was_on && is_local_entity(entity_handle)
-            && rf::weapon_is_on_off_weapon(weapon_type, alt_fire)
-            && rf::entity_weapon_is_on(entity_handle, weapon_type)) {
-            multi_force_fire_state_send();
+        if (!was_on && rf::entity_weapon_is_on(entity_handle, weapon_type)) {
+            if (is_local_entity(entity_handle) && rf::weapon_is_on_off_weapon(weapon_type, alt_fire)) {
+                multi_force_fire_state_send();
+            }
+            vehicle_server_announce_weapon_edge(entity_handle, weapon_type, true, alt_fire);
         }
     },
 };
@@ -3083,9 +3118,11 @@ FunHook<void __cdecl(int, int)> entity_turn_weapon_off_hook{
     [](int entity_handle, int weapon_type) {
         bool was_on = rf::entity_weapon_is_on(entity_handle, weapon_type);
         entity_turn_weapon_off_hook.call_target(entity_handle, weapon_type);
-        if (was_on && is_local_entity(entity_handle)
-            && !rf::entity_weapon_is_on(entity_handle, weapon_type)) {
-            multi_force_fire_state_send();
+        if (was_on && !rf::entity_weapon_is_on(entity_handle, weapon_type)) {
+            if (is_local_entity(entity_handle)) {
+                multi_force_fire_state_send();
+            }
+            vehicle_server_announce_weapon_edge(entity_handle, weapon_type, false, false);
         }
     },
 };
@@ -3177,7 +3214,7 @@ CodeInjection obj_interp_too_fast_fix{
     0x00483C3B,
     [] (auto& regs) {
         // Make all calculations on milliseconds instead of using microseconds and rounding them up
-        const int now = rf::timer::get(1000);
+        const int now = static_cast<int>(timer::get_i64(1000));
         const int frame_time_us = regs.ebp;
         regs.eax = now - frame_time_us;
         regs.edi = now;
@@ -3191,6 +3228,29 @@ CodeInjection send_state_info_injection{
         trigger_send_state_info(player);
         sprays_force_state_sync_to(player);
     },
+};
+
+CodeInjection process_state_info_req_between_levels_patch{
+    0x00481C03,
+    [] (auto& regs) {
+        rf::Player* const player = regs.ebx;
+        rf::send_state_info(player);
+
+        // Set `NETPLAYER_STATE_WAITING` like `mp_change_level`.
+        player->net_data->state = rf::NETPLAYER_STATE_WAITING;
+
+        const RF_GamePacketHeader enter_limbo_packet =
+            {.type = RF_GPT_ENTER_LIMBO, .size = 0};
+        rf::multi_io_send_reliable(
+            player,
+            &enter_limbo_packet,
+            enter_limbo_packet.size + sizeof(RF_GamePacketHeader),
+            false
+        );
+
+        regs.eip = 0x00481C4B;
+    },
+    false
 };
 
 FunHook<void(rf::Player*)> send_players_packet_hook{
@@ -3778,8 +3838,10 @@ void network_init()
     bot_shared_secret_cmd.register_cmd();
     disconnect_cmd.register_cmd();
 
-    // print join_req denial reasons
+    // Print join denials.
     check_access_for_new_player_hook.install();
+    // Do not kick a player, if they join right before limbo.
+    process_state_info_req_between_levels_patch.install();
     // Move our limbo check to `check_join_request_restrict_status`.
     AsmWriter{0x0047AE64}.nop(6);
 

@@ -1,8 +1,10 @@
 
 if (CMAKE_HOST_SYSTEM_NAME STREQUAL "Windows")
     set(SHADER_COMPILER shader_compiler)
+    set(SHADER_HOST_DEFS)
 else()
     set(SHADER_COMPILER wine ${CMAKE_BINARY_DIR}/bin/shader_compiler.exe)
+    set(SHADER_HOST_DEFS -DARRAY_GRAD_FLOAT3)
 endif()
 
 function(add_shader TARGET_NAME SRC_FILE TARGET_LEVEL)
@@ -10,7 +12,7 @@ function(add_shader TARGET_NAME SRC_FILE TARGET_LEVEL)
     file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/shaders")
     add_custom_command(
         OUTPUT ${SHADER_OUTPUT}
-        COMMAND ${SHADER_COMPILER} -O3 -t ${TARGET_LEVEL} ${ARGN} ${CMAKE_CURRENT_SOURCE_DIR}/${SRC_FILE} -o ${SHADER_OUTPUT}
+        COMMAND ${SHADER_COMPILER} -O3 -t ${TARGET_LEVEL} ${SHADER_HOST_DEFS} ${ARGN} ${CMAKE_CURRENT_SOURCE_DIR}/${SRC_FILE} -o ${SHADER_OUTPUT}
         MAIN_DEPENDENCY ${CMAKE_CURRENT_SOURCE_DIR}/${SRC_FILE}
     )
     add_custom_target(${TARGET_NAME} ALL DEPENDS ${SHADER_OUTPUT})
@@ -18,6 +20,7 @@ function(add_shader TARGET_NAME SRC_FILE TARGET_LEVEL)
 endfunction()
 
 add_shader(standard_vs standard_vs.hlsl vs_4_0)
+add_shader(decoration_vs standard_vs.hlsl vs_4_0 -DINSTANCED)
 add_shader(character_vs character_vs.hlsl vs_4_0)
 add_shader(transformed_vs transformed_vs.hlsl vs_4_0)
 add_shader(shadow_standard_vs shadow_standard_vs.hlsl vs_4_0)
@@ -28,9 +31,17 @@ add_shader(outline_standard_vs outline_standard_vs.hlsl vs_4_0)
 
 add_shader(standard_ps standard_ps.hlsl ps_4_0)
 add_shader(standard_nogas_ps standard_ps.hlsl ps_4_0 -DMAX_GAS_REGIONS=0)
+add_shader(terrain_ps standard_ps.hlsl ps_4_0 -DTERRAIN)
+add_shader(terrain_nogas_ps standard_ps.hlsl ps_4_0 -DTERRAIN -DMAX_GAS_REGIONS=0)
+add_shader(decoration_ps standard_ps.hlsl ps_4_0 -DINSTANCE_LIGHT)
+add_shader(decoration_nogas_ps standard_ps.hlsl ps_4_0 -DINSTANCE_LIGHT -DMAX_GAS_REGIONS=0)
 add_shader(ui_ps ui_ps.hlsl ps_4_0)
 add_shader(shadow_debug_ps shadow_debug_ps.hlsl ps_4_0)
 add_shader(outline_ps outline_ps.hlsl ps_4_0)
 
 add_shader(gamma_vs gamma_vs.hlsl vs_4_0)
 add_shader(gamma_ps gamma_ps.hlsl ps_4_0)
+
+add_shader(scenefx_ps scenefx_ps.hlsl ps_4_0)
+
+add_shader(depth_resolve_ps depth_resolve_ps.hlsl ps_4_1)

@@ -64,6 +64,9 @@ namespace rf
         OF_IS_PLAYER = 0x8,            // checked by obj_is_player (FUN_004895d0)
         OF_WAS_RENDERED = 0x10,
         OF_UNK_80 = 0x80,
+        // An attached object keeps its own orientation (0x0048771B) and stays simulated
+        // (obj_should_sim_physics 0x0048807C). Set 0x004A61BA / cleared 0x004A61D0, local player only.
+        OF_KEEP_ORIENT_ON_HOST = 0x100,
         OF_HIDDEN = 0x4000,              // set by obj_hide, cleared by obj_unhide
         OF_NO_COLLIDE_SP = 0x4000,     // same bit as OF_HIDDEN — context-dependent alias used for SP collision skip
         OF_START_HIDDEN = 0x8000,
@@ -266,8 +269,36 @@ namespace rf
     static auto& obj_create = addr_as_ref<Object*(int type, int sub_type, int parent, ObjectCreateInfo* oci, int flags, GRoom* room)>(0x00486DA0);
     static auto& obj_collision_register = addr_as_ref<void(Object* obj)>(0x0048C9A0);
     static auto& obj_collision_deregister = addr_as_ref<void(Object* obj)>(0x0048C9F0);
+    // The stock object-pair filter: true means "these two never collide".
+    static auto& obj_pair_should_skip = addr_as_ref<bool(Object* a, Object* b, unsigned* out_flags)>(0x0048BE00);
+
+    struct ObjCollisionPair
+    {
+        ObjCollisionPair* next;
+        Object* a;
+        Object* b;
+        uint32_t flags;
+    };
+    static_assert(sizeof(ObjCollisionPair) == 0x10);
+
+    struct ObjCollisionPairList
+    {
+        ObjCollisionPair* head;
+        int count;
+
+        void push(ObjCollisionPair* node)
+        {
+            AddrCaller{0x0048CC70}.this_call(this, node);
+        }
+    };
+    static_assert(sizeof(ObjCollisionPairList) == 0x8);
+
+    static auto& obj_collision_pair_free_list = addr_as_ref<ObjCollisionPairList>(0x0075DB30);
+    static auto& obj_collision_pair_active_list = addr_as_ref<ObjCollisionPairList>(0x0073DB28);
     static auto& obj_lookup_from_uid = addr_as_ref<Object*(int uid)>(0x0048A4A0);
     static auto& obj_from_handle = addr_as_ref<Object*(int handle)>(0x0040A0E0);
+    static auto& obj_reset_render_flags = addr_as_ref<void()>(0x00488200);
+    static auto& obj_should_render_in_room = addr_as_ref<bool(Object* obj, GRoom* room, bool include_player_mover)>(0x00488D10);
     static auto& obj_from_remote_handle = addr_as_ref<Object*(int handle)>(0x00484B00); // from server handle
     static auto& obj_delete_mesh = addr_as_ref<void(Object* obj)>(0x00489FC0);
     static auto& obj_create_mesh = addr_as_ref<VMesh*(Object* obj, const char* filename, VMeshType type)>(0x00489FE0);
@@ -286,6 +317,8 @@ namespace rf
     static auto& physics_force_to_ground = addr_as_ref<void(Object* obj)>(0x004A0770);
 
     static auto& obj_set_friendliness = addr_as_ref<void(Object* obj, int friendliness)>(0x00489F70);
+    // Wakes a sleeping physics object: p_data.flags |= 0x80000000, obj_flags |= 0x6000000
+    static auto& obj_physics_activate = addr_as_ref<void(Object* obj)>(0x0040A420);
 
     static auto& obj_damage = addr_as_ref<float(int victim_handle, float damage, int killer_handle,
         int weapon_type, int damage_type, Vector3* pos, int killer_uid, char flags)>(0x004892C0);

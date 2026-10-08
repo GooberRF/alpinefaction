@@ -10,6 +10,7 @@
 #include <patch_common/AsmWriter.h>
 #include <common/version/version.h>
 #include <common/utils/list-utils.h>
+#include <common/rfproto.h>
 #include "multi.h"
 #include "demo/demo.h"
 #include "endgame_votes.h"
@@ -22,6 +23,8 @@
 #include "gametype.h"
 #include "rounds.h"
 #include "salvage.h"
+#include "vehicles/vehicle.h"
+#include "vehicles/vehicle_physics.h"
 #include "mutators.h"
 #include "bots/bot_chat_manager.h"
 #include "../fflink/afstats_events.h"
@@ -569,7 +572,7 @@ void multi_hide_level_items(const std::vector<int>& allowed_item_type_indices, b
         }
 
         if (is_dropped) {
-            rf::send_item_apply_packet(nullptr, it->handle, 0, -1, -1, -1);
+            rf::send_item_apply_packet(nullptr, it->handle, -1, -1, -1, -1);
             rf::obj_flag_dead(it);
         }
         else {
@@ -646,6 +649,24 @@ FunHook<void(rf::Player*, rf::Entity*, int)> multi_select_weapon_server_side_hoo
     },
 };
 
+CallHook<void(rf::Entity*, int, int, int)> entity_reload_resync_send_hook{
+    0x00425403,
+    [](rf::Entity* ep, int weapon_type, int ammo, int clip_ammo) {
+        rf::Player* pp = rf::player_from_entity_handle(ep->handle);
+        if (!pp || pp == rf::local_player) {
+            return; // no owner, or listen server host (authoritative, nothing to resync)
+        }
+        RF_ReloadPacket packet;
+        packet.header.type = RF_GPT_RELOAD;
+        packet.header.size = sizeof(packet) - sizeof(packet.header);
+        packet.entity_handle = ep->handle;
+        packet.weapon = weapon_type;
+        packet.clip_ammo = ammo;      // rfproto field names are swapped: wire order is reserve, then clip
+        packet.ammo = clip_ammo;
+        rf::multi_io_send(pp, &packet, sizeof(packet));
+    },
+};
+
 void multi_reload_weapon_server_side(rf::Player* pp, int weapon_type)
 {
     rf::Entity* ep = rf::entity_from_handle(pp->entity_handle);
@@ -702,6 +723,9 @@ void multi_turn_weapon_on(rf::Entity* ep, rf::Player* pp, bool alt_fire)
 {
     // Note: pp is always null client-side
     auto weapon_type = ep->ai.current_primary_weapon;
+    if (weapon_type < 0) {
+        return; // weaponless entity (an unarmed vehicle hull, a stripped NPC)
+    }
     if (!rf::weapon_is_on_off_weapon(weapon_type, alt_fire)) {
         xlog::debug("Player {} attempted to turn on weapon {} which has no continous fire flag", ep->name, weapon_type);
     }
@@ -724,6 +748,9 @@ void multi_turn_weapon_on(rf::Entity* ep, rf::Player* pp, bool alt_fire)
 void multi_turn_weapon_off(rf::Entity* ep)
 {
     auto current_primary_weapon = ep->ai.current_primary_weapon;
+    if (current_primary_weapon < 0) {
+        return;
+    }
     if (rf::weapon_is_on_off_weapon(current_primary_weapon, false)
         || rf::weapon_is_on_off_weapon(current_primary_weapon, true)) {
 
@@ -1187,6 +1214,7 @@ int multi_num_spawned_players() {
 void configure_custom_gametype_listen_server_settings() {
     // reset to defaults
     g_alpine_server_config = AlpineServerConfig{};
+    reset_base_scope_tables();
     g_alpine_server_config_active_rules = AlpineServerConfigRules{};
     set_upcoming_game_type(rf::netgame.type);
 
@@ -1367,8 +1395,11 @@ CallHook<float(int, float, int, int, int, rf::PCollisionOut*, int, bool)> obj_ap
 CallHook<void(const char* filename)> level_cmd_multi_change_level_hook{
     0x00435108,
     [](const char* filename) {
-        if (rf::is_multi)
-            set_manually_loaded_level(true); // "level" console command
+        if (rf::is_multi) {
+            // "level" console command: a previous vote's rules must not follow it here.
+            clear_manual_rules_override();
+            set_manually_loaded_level(true);
+        }
         level_cmd_multi_change_level_hook.call_target(filename);
     }
 };
@@ -1469,6 +1500,9 @@ void multi_do_patch()
     // Weapon select server-side handling
     multi_select_weapon_server_side_hook.install();
 
+    // Send the "nothing to reload" ammo resync only to the requesting player
+    entity_reload_resync_send_hook.install();
+
     // Check ammo server-side when handling weapon fire packets
     multi_process_remote_weapon_fire_hook.install();
 
@@ -1496,6 +1530,8 @@ void multi_do_patch()
     network_init();
     demo_do_patch();
     multi_tdm_apply_patch();
+    vehicle_apply_patches();
+    vehicle_physics_apply_patches();
 
     level_download_init();
     multi_ban_apply_patch();

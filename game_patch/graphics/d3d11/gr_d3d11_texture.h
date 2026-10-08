@@ -3,6 +3,7 @@
 #include <unordered_map>
 #include <d3d11.h>
 #include <common/ComPtr.h>
+#include "../../bmpman/atx.h"
 
 namespace gr::d3d11
 {
@@ -18,12 +19,28 @@ namespace gr::d3d11
             float v_scale = 1.0f;
         };
 
+        // An ATX with a Display_Projection feed resolves to the feed's render target instead.
+        // Done here rather than at batch build time so toggling the event takes effect without
+        // rebuilding the static geometry cache, which stores raw bm handles and binds them per
+        // draw. A handle that is itself the bound render target is left alone — D3D11 would
+        // unbind the SRV, and it is the camera looking at its own screen.
+        int resolve_bm_handle(int bm_handle) const
+        {
+            const int live = atx_lookup_live_feed(bm_handle);
+            return (live < 0 || live == active_render_target_) ? bm_handle : live;
+        }
+
+        void set_active_render_target(int bm_handle)
+        {
+            active_render_target_ = bm_handle;
+        }
+
         ID3D11ShaderResourceView* lookup_texture(int bm_handle)
         {
             if (bm_handle < 0) {
                 return nullptr;
             }
-            Texture& texture = get_or_load_texture(bm_handle, false);
+            Texture& texture = get_or_load_texture(resolve_bm_handle(bm_handle), false);
             return texture.get_or_create_texture_view(device_, device_context_);
         }
 
@@ -32,7 +49,7 @@ namespace gr::d3d11
             if (bm_handle < 0) {
                 return {};
             }
-            Texture& texture = get_or_load_texture(bm_handle, false);
+            Texture& texture = get_or_load_texture(resolve_bm_handle(bm_handle), false);
             return {texture.get_or_create_texture_view(device_, device_context_), texture.u_scale, texture.v_scale};
         }
 
@@ -72,9 +89,23 @@ namespace gr::d3d11
             return black_texture_view_;
         }
 
+        // Paging and refcounting address the engine's own handle. The redirect only decides
+        // what a draw samples, so resolving here would land the ref on the feed's slot and
+        // leave the raw one unprotected.
         void page_in(int bm_handle)
         {
-            lookup_texture(bm_handle);
+            if (bm_handle < 0) {
+                return;
+            }
+            Texture& texture = get_or_load_texture(bm_handle, false);
+            texture.get_or_create_texture_view(device_, device_context_);
+        }
+
+        // Bumped whenever a render target leaves the cache, so owners can notice theirs was
+        // dropped and re-render instead of waiting out their update interval.
+        int render_target_generation() const
+        {
+            return render_target_generation_;
         }
 
         void flush_pow2_padded_textures()
@@ -141,6 +172,7 @@ namespace gr::d3d11
             float v_scale = 1.0f;
             short save_cache_count = 0;
             short ref_count = 0;
+            bool warned_missing = false;
 
             void init_shader_resource_view(ID3D11Device* device, ID3D11DeviceContext* device_context);
             void init_gpu_texture(ID3D11Device* device, ID3D11DeviceContext* device_context);
@@ -173,6 +205,8 @@ namespace gr::d3d11
         std::unordered_map<int, Texture> texture_cache_;
         ComPtr<ID3D11Texture2D> back_buffer_staging_texture_;
         std::unordered_map<rf::bm::Format, std::pair<DXGI_FORMAT, rf::bm::Format>> supported_texture_format_cache_;
+        int active_render_target_ = -1;
+        int render_target_generation_ = 0;
         ComPtr<ID3D11ShaderResourceView> white_texture_view_;
         ComPtr<ID3D11ShaderResourceView> gray_texture_view_;
         ComPtr<ID3D11ShaderResourceView> black_texture_view_;

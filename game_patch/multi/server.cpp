@@ -35,9 +35,12 @@
 #include "wipeout.h"
 #include "gungame.h"
 #include "salvage.h"
+#include "vehicles/vehicle.h"
+#include "vehicles/vehicle_tracers.h"
 #include "../os/console.h"
 #include "../hud/hud.h"
 #include "../misc/player.h"
+#include "../misc/level.h"
 #include "../misc/alpine_options.h"
 #include "../main/main.h"
 #include "../misc/achievements.h"
@@ -92,6 +95,11 @@ const std::vector<std::string> g_rcon_cmd_masterlist = {
     "sv_timelimit",
     "download_level",
     "sv_loadconfig",
+    "sv_afstats_events_status",
+    "sv_afstats_events_reset",
+    "sv_afstats_trace",
+    "sv_fflink_status",
+    "sv_fflink_resync",
 };
 
 std::vector<rf::AlpineRespawnPoint> g_alpine_respawn_points;
@@ -515,6 +523,10 @@ std::pair<std::string_view, std::string_view> strip_by_space(std::string_view st
 
 void handle_next_map_command(rf::Player* player)
 {
+    if (rf::netgame.levels.empty()) {
+        af_send_automated_chat_msg("This server has no level rotation.", player);
+        return;
+    }
     int next_idx = (rf::netgame.current_level_index + 1) % rf::netgame.levels.size();
     rf::String next_level_filename = rf::netgame.levels[next_idx];
     const uint32_t version = get_level_file_version(next_level_filename).value_or(0);
@@ -682,6 +694,27 @@ static void handle_drop_flag_request(rf::Player* player)
     }
 }
 
+void multi_force_drop_carried_flag(rf::Player* player)
+{
+    if (!rf::is_server || !player) {
+        return;
+    }
+    if (gt_is_salvage()) {
+        salvage_force_drop_flag(player);
+        return;
+    }
+    if (rf::multi_get_game_type() != rf::NG_TYPE_CTF) {
+        return;
+    }
+    // The carrier test is the hook's attribution key too, so a non-carrier must never reach it.
+    if (rf::multi_ctf_get_red_flag_player() == player
+        || rf::multi_ctf_get_blue_flag_player() == player) {
+        // No ctf_flag_cooldown_timestamp: that window is the MANUAL drop's re-pickup guard, it is
+        // global across both flags, and a death drop does not set it either.
+        rf::multi_ctf_drop_flag(player);
+    }
+}
+
 CodeInjection process_obj_update_set_pos_injection{
     0x0047E563,
     [](auto& regs) {
@@ -691,6 +724,9 @@ CodeInjection process_obj_update_set_pos_injection{
         auto& entity = addr_as_ref<rf::Entity>(regs.edi);
         auto& pos = addr_as_ref<rf::Vector3>(regs.esp + 0x9C - 0x60);
         auto player = rf::player_from_entity_handle(entity.handle);
+        if (!player) {
+            return; // a driving client's vehicle row; no player owns that entity
+        }
         if (player->saving.last_teleport_timer.valid()) {
             float dist = (pos - player->saving.last_teleport_pos).len();
             if (!player->saving.last_teleport_timer.elapsed() && dist > 1.0f) {
@@ -814,15 +850,8 @@ static std::pair<bool, int> find_rotation_index_for_level(std::string_view level
     if (!g_dedicated_launched_from_ads)
         return {false, -1};
 
-    const auto wanted = normalize_level_filename(level_name);
-    const auto& cfg = g_alpine_server_config;
-
-    for (int i = 0; i < (int)cfg.levels.size(); ++i) {
-        if (string_iequals(cfg.levels[i].level_filename, wanted)) {
-            return {true, i};
-        }
-    }
-    return {false, -1};
+    const int index = rotation_index_for_level(level_name);
+    return {index >= 0, index};
 }
 
 static void queue_level_switch_preferring_rotation(std::string_view level_name)
@@ -1023,6 +1052,7 @@ static void print_alpine_restrict_status_summary()
     rf::console::print("  Require stable AF build: {}", enforce_release ? "yes" : "no");
     rf::console::print("  Require D3D11: {}", require_d3d11 ? "yes" : "no");
 
+    const uint32_t alpine_v150_max_rfl = 306u;
     const uint32_t alpine_v140_max_rfl = 305u;
     const uint32_t alpine_v130_max_rfl = 304u;
     const uint32_t alpine_v122_max_rfl = 303u;
@@ -1036,6 +1066,8 @@ static void print_alpine_restrict_status_summary()
     };
 
     rf::console::print("Common test cases:");
+    rf::console::print("{}", describe_client("Alpine Faction 1.5.0 (D3D11)", ClientVersionInfoProfile{ClientSoftware::AlpineFaction, 1u, 5u, 0u, VERSION_TYPE_RELEASE, alpine_v150_max_rfl, true}));
+    rf::console::print("{}", describe_client("Alpine Faction 1.5.0 (D3D8)", ClientVersionInfoProfile{ClientSoftware::AlpineFaction, 1u, 5u, 0u, VERSION_TYPE_RELEASE, alpine_v150_max_rfl}));
     rf::console::print("{}", describe_client("Alpine Faction 1.4.0 (D3D11)", ClientVersionInfoProfile{ClientSoftware::AlpineFaction, 1u, 4u, 0u, VERSION_TYPE_RELEASE, alpine_v140_max_rfl, true}));
     rf::console::print("{}", describe_client("Alpine Faction 1.4.0 (D3D8)", ClientVersionInfoProfile{ClientSoftware::AlpineFaction, 1u, 4u, 0u, VERSION_TYPE_RELEASE, alpine_v140_max_rfl}));
     rf::console::print("{}", describe_client("Alpine Faction 1.4.0-dev", ClientVersionInfoProfile{ClientSoftware::AlpineFaction, 1u, 4u, 0u, VERSION_TYPE_DEV, alpine_v140_max_rfl}));
@@ -1663,12 +1695,35 @@ static void fire_ticks_do_frame()
     }
 }
 
+// Jetpacks back-kill gib: the killer stands inside a 120-degree cone directly behind the
+// victim's body facing, judged in the horizontal plane.
+static bool entity_killed_from_behind(rf::Entity* victim, int killer_handle)
+{
+    rf::Entity* killer = rf::entity_from_handle(killer_handle);
+    if (!killer || killer == victim) {
+        return false;
+    }
+    rf::Vector3 to_victim = victim->pos - killer->pos;
+    to_victim.y = 0.0f;
+    rf::Vector3 facing = victim->orient.fvec;
+    facing.y = 0.0f;
+    if (to_victim.len_sq() < 1e-4f || facing.len_sq() < 1e-4f) {
+        return false;
+    }
+    to_victim.normalize();
+    facing.normalize();
+    return to_victim.dot_prod(facing) > 0.5f;
+}
+
 FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
     0x0041A350,
     [](rf::Entity* damaged_ep, float damage, int killer_handle, int damage_type, int killer_uid) {
+        // vehicle_filter_obj_damage has already run, so killer_handle names the responsible occupant.
         rf::Player* damaged_player = rf::player_from_entity_handle(damaged_ep->handle);
         rf::Player* killer_player = rf::player_from_entity_handle(killer_handle);
-        bool is_pvp_damage = damaged_player && killer_player && damaged_player != killer_player;
+        // The occupant death blast is a guaranteed kill; keep it out of the damage reducers.
+        bool is_pvp_damage = damaged_player && killer_player && damaged_player != killer_player
+            && !vehicle_is_occupant_death_blast(damaged_ep, damage_type);
         bool crit_applied = false;
         if (rf::is_server && is_pvp_damage) {
             damage *= g_alpine_server_config_active_rules.pvp_damage_modifier;
@@ -1707,6 +1762,15 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
         // A gib destroys the entity, so the death position has to be taken before
         // damage is applied to still be available afterwards.
         rf::Vector3 victim_pos_before_damage = damaged_ep->pos;
+        // Same reason: a destroyed vehicle is gone by the time the attacker's feedback is sent.
+        const bool victim_is_synced_vehicle = rf::is_multi && vehicle_is_synced_entity_type(damaged_ep);
+        // Same reason: the roadkill derivation needs a live victim.
+        const int roadkill_vehicle_class = damage_type == rf::DT_CRUSH
+            ? vehicle_roadkill_damage_class(damaged_ep_handle, killer_handle) : -1;
+        const bool crush_squashes = damage_type == rf::DT_CRUSH
+            && vehicle_crush_squashes(damaged_ep_handle, killer_handle);
+        const float roadkill_speed = damage_type == rf::DT_CRUSH
+            ? vehicle_roadkill_speed(damaged_ep_handle, killer_handle) : 0.0f;
         // The kill is judged against the team the victim had when the damage landed: death
         // processing can move them (auto team balance), and awards must not see that.
         const int victim_team_before_damage = damaged_player ? damaged_player->team : 0;
@@ -1715,6 +1779,13 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
 
         // Re-fetch pointer: entity may have been destroyed during damage processing, making the original pointer dangling
         damaged_ep = rf::entity_from_handle(damaged_ep_handle);
+
+        // Hoisted out of the lethal-blow block below: the stats stream needs the same
+        // weapon attribution for every damage application, not just the last one.
+        const DamageWeaponContext damage_ctx = kill_attribution_get_damage_context();
+        // A weapon type on the obj_damage call itself means a direct hit; splash damage
+        // only ever gets its weapon from the enclosing detonation context.
+        const bool direct_weapon_hit = damage_ctx.weapon_type >= 0 && !damage_ctx.splash;
 
         // should entity gib?
         bool did_gib = false;
@@ -1731,13 +1802,30 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
                     entity_set_gib_flag(damaged_ep);
                 }
             }
-            else if (rf::is_server && g_alpine_server_config_active_rules.gibbing.enabled) { // MP gibbing
-                const auto& gibbing = g_alpine_server_config_active_rules.gibbing;
-                if (damaged_ep->life < 0.0f &&                      // dead
+            else if (rf::is_server) { // MP gibbing
+                const auto& rules = g_alpine_server_config_active_rules;
+                const auto& gibbing = rules.gibbing;
+                const bool overkill_gib =
+                    gibbing.enabled &&
                     damage > gibbing.damage_threshold &&            // big damage (default 100.0)
-                    (gibbing.all_damage || damage_type == 3) &&     // explosive
+                    (gibbing.all_damage || damage_type == 3);       // explosive
+                const bool jetpack_explode_gib =
+                    rules.mutators.jetpacks_enabled &&
+                    rules.mutators.jetpack_explode &&
+                    // the jetpack was shot
+                    ((direct_weapon_hit &&
+                      !kill_attribution_is_melee_weapon(damage_ctx.weapon_type) &&
+                      kill_attribution_get_hit_region(damaged_ep_handle) == kill_attribution_hit_region_torso &&
+                      entity_killed_from_behind(damaged_ep, killer_handle))
+                     // or a fire damage death
+                     || damage_type == rf::DT_FIRE);
+                const bool roadkill_speed_gib =
+                    gibbing.enabled &&
+                    vehicle_roadkill_speed_gibs(roadkill_vehicle_class, roadkill_speed);
+                if (damaged_ep->life < 0.0f &&                      // dead
                     damaged_ep->material == 3 &&                    // flesh
-                    !(damaged_ep->entity_flags & rf::EF_DYING))
+                    !(damaged_ep->entity_flags & rf::EF_DYING) &&
+                    (overkill_gib || jetpack_explode_gib || roadkill_speed_gib))
                 {
                     entity_set_gib_flag(damaged_ep);
                     af_send_should_gib_req(static_cast<uint32_t>(damaged_ep->handle));
@@ -1754,13 +1842,6 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
 
         bool is_dead = damaged_ep ? damaged_ep->life <= 0.0f : true;
 
-        // Hoisted out of the lethal-blow block below: the stats stream needs the same
-        // weapon attribution for every damage application, not just the last one.
-        const DamageWeaponContext damage_ctx = kill_attribution_get_damage_context();
-        // A weapon type on the obj_damage call itself means a direct hit; splash damage
-        // only ever gets its weapon from the enclosing detonation context.
-        const bool direct_weapon_hit = damage_ctx.weapon_type >= 0 && !damage_ctx.splash;
-
         // Feed the combat chain that assists are computed from. Must run before the record
         // step below so the killing hit itself keeps the chain alive. Friendly fire in team
         // games never earns an assist.
@@ -1770,6 +1851,10 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
             kill_attribution_note_pvp_damage(damaged_player->net_data->player_id,
                                              killer_player->net_data->player_id);
         }
+        if (victim_is_synced_vehicle) {
+            vehicle_note_hull_damage(damaged_ep, life_before, killer_handle, real_damage, damage_ctx.weapon_type,
+                                     damage_ctx.splash);
+        }
 
         // Record what landed the killing blow so the kill message can name the real weapon
         // instead of whatever the killer happens to be holding when it renders. Only on the
@@ -1777,14 +1862,31 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
         if (rf::is_multi && rf::is_server && damaged_player && damaged_player->net_data
             && is_dead && life_before > 0.0f) {
             int weapon = damage_ctx.weapon_type;
-            uint8_t kill_flags = damage_ctx.splash ? AF_KILL_FLAG_SPLASH : 0;
-            if (weapon < 0 && killer_player && killer_player != damaged_player) {
+            bool splash = damage_ctx.splash;
+            // Seated is sufficient: a rider can only fire the vehicle's gun. Roadkill stays
+            // separate - a coasting kill's ex-driver is seated in nothing.
+            int vehicle_kill_class = roadkill_vehicle_class;
+            if (vehicle_kill_class < 0 && damage_type != rf::DT_FIRE) {
+                vehicle_kill_class =
+                    vehicle_occupied_damage_class(rf::entity_from_handle(killer_handle));
+            }
+            const int blast_hull = vehicle_occupant_death_blast_hull(damaged_ep_handle, damage_type);
+            // A destroyed hull's riders are named the blow that destroyed it, not the blast.
+            if (blast_hull != -1 && killer_player != damaged_player) {
+                vehicle_lethal_blow_attribution(blast_hull, killer_player, weapon, splash, vehicle_kill_class);
+            }
+            // A run-over or a vehicle gun keeps `weapon` as is, so the feed names the vehicle.
+            if (vehicle_kill_class < 0 && weapon < 0 && killer_player && killer_player != damaged_player) {
                 // No weapon context (fire damage over time, odd paths): the killer's held weapon
                 // at damage time is still better than the client's at-render-time guess.
                 rf::Entity* killer_ep = rf::entity_from_handle(killer_handle);
                 if (killer_ep) {
                     weapon = killer_ep->ai.current_primary_weapon;
                 }
+            }
+            uint8_t kill_flags = splash ? AF_KILL_FLAG_SPLASH : 0;
+            if (vehicle_kill_class >= 0) {
+                kill_flags |= AF_KILL_FLAG_VEHICLE;
             }
             if (kill_attribution_is_melee_weapon(weapon)) {
                 kill_flags |= AF_KILL_FLAG_MELEE;
@@ -1796,6 +1898,13 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
             // it rides along in the kill info instead of costing 1.4+ clients their own packet.
             if (did_gib) {
                 kill_flags |= AF_KILL_FLAG_GIBBED;
+            }
+            else if (crush_squashes) {
+                kill_flags |= AF_KILL_FLAG_SQUASHED;
+                // A listen host gets no kill info, and its stock crush leaves the sound to this.
+                if (!rf::is_dedicated_server) {
+                    vehicle_play_squash_sound(damaged_ep);
+                }
             }
 
             // Hit location is only meaningful for a direct weapon hit, and only when the
@@ -1813,7 +1922,7 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
             const uint8_t killed_id = damaged_player->net_data->player_id;
             const uint8_t killer_id = (killer_player && killer_player->net_data)
                 ? killer_player->net_data->player_id : 0xFF;
-            std::vector<uint8_t> assists = kill_attribution_take_assists(killed_id, killer_id);
+            std::vector<uint8_t> assists = kill_attribution_take_assists(killed_id, killer_id, blast_hull);
 
             for (uint8_t assist_id : assists) {
                 rf::Player* assister = rf::multi_find_player_by_id(assist_id);
@@ -1827,15 +1936,16 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
             const rf::Vector3 victim_pos = damaged_ep ? damaged_ep->pos : victim_pos_before_damage;
             const rf::Entity* killer_ep_for_pos = rf::entity_from_handle(killer_handle);
             afstats::on_kill(damaged_player, killer_player, weapon, damage_type, kill_flags, assists,
-                             victim_pos, killer_ep_for_pos ? &killer_ep_for_pos->pos : nullptr);
+                             victim_pos, killer_ep_for_pos ? &killer_ep_for_pos->pos : nullptr,
+                             vehicle_kill_class);
 
             kill_attribution_record(killed_id, killer_id, weapon, kill_flags, damage_type,
-                                    std::move(assists));
+                                    vehicle_kill_class, std::move(assists));
 
             // Same resolved killer, weapon and splash decision the attribution above is built
             // from. Runs for every death, so the victim-side award resets cover world deaths and
             // suicides too.
-            awards_on_kill(damaged_player, killer_player, weapon, damage_ctx.splash, killer_handle,
+            awards_on_kill(damaged_player, killer_player, weapon, splash, killer_handle,
                            victim_team_before_damage, damage, life_before, armor_before);
 
             // Arena's reload-on-kill is applied from on_player_kill, which the engine only runs
@@ -2093,7 +2203,38 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
                 }
             }
         }
-        
+
+        // Anchored on the hull's world position because the victim is not a player.
+        if (rf::is_server && rf::is_multi && victim_is_synced_vehicle && real_damage > 0.0f
+            && killer_player && killer_player->net_data
+            && g_alpine_server_config.damage_notification_config.enabled) {
+            const AfDamageNotifyHull hull{damaged_ep ? damaged_ep->pos : victim_pos_before_damage,
+                                          damaged_ep_handle};
+
+            if (is_player_minimum_af_client_version(killer_player, 1, 1, 0)) {
+                af_send_damage_notify_packet(af_damage_notify_no_player, effective_damage, is_dead, false,
+                                             killer_player, &hull);
+            }
+            else if (g_alpine_server_config.damage_notification_config.support_legacy_clients) {
+                send_legacy_hit_sound_packet(killer_player);
+            }
+
+            for (auto& player : SinglyLinkedList{rf::player_list}) {
+                if (!player.net_data || &player == killer_player) {
+                    continue;
+                }
+                if (player.spectatee.value_or(nullptr) == killer_player
+                    && is_player_minimum_af_client_version(&player, 1, 1, 0)) {
+                    af_send_damage_notify_packet(af_damage_notify_no_player, effective_damage, is_dead, false,
+                                                 &player, &hull);
+                }
+            }
+
+            demo_record_pvp_damage_notify(af_damage_notify_no_player, effective_damage, is_dead,
+                                          false, killer_player->net_data->player_id,
+                                          &hull);
+        }
+
         if (is_achievement_system_initialized() &&
             !rf::is_multi &&
             damaged_ep &&
@@ -2314,7 +2455,7 @@ CodeInjection send_ping_time_wrap_fix{
             if (!player->is_observer()) { // recorder's phantom socket must not be pinged
                 rf::multi_ping_player(player);
             }
-            io_stats.last_ping_time = rf::timer::get(1000);
+            io_stats.last_ping_time = static_cast<int>(timer::get_i64(1000));
 
             // check if player is idle
             player_idle_check(player);
@@ -2606,6 +2747,7 @@ void remove_ready_player_silent(rf::Player* player)
     // handled by remove_ready_player instead.
     g_match_info.ready_players_red.erase(player);
     g_match_info.ready_players_blue.erase(player);
+    g_match_info.active_match_players.erase(player);
 }
 
 void remove_ready_player(rf::Player* player)
@@ -2839,7 +2981,7 @@ void player_idle_check(rf::Player* const player) {
     }
 
     // Use unsigned delta to handle timer wrap correctly (~25 days)
-    const uint32_t time_since_join = static_cast<uint32_t>(rf::timer::get(1000))
+    const uint32_t time_since_join = static_cast<uint32_t>(timer::get_i64(1000))
         - static_cast<uint32_t>(player->net_data->join_time_ms);
     if (player->in_grace_period
         && time_since_join < inactivity_cfg.new_player_grace_ms) {
@@ -3199,6 +3341,9 @@ CallHook<rf::Weapon*(int, int, rf::Vector3*, rf::Matrix3*, int, int)>
         rf::Weapon* wp = weapon_fire_projectile_create_hook.call_target(
             weapon_type, parent_handle, pos, orient, alt_fire, a6);
         crits_on_weapon_created(wp, parent_handle);
+        if (wp && pos && orient) {
+            vehicle_tracers_on_weapon_created(weapon_type, parent_handle, *pos, *orient);
+        }
         if (wp && rf::is_server) {
             if (rf::Player* pp = rf::player_from_entity_handle(parent_handle)) {
                 // Low byte compared against 1, matching the engine's own contract -- the pushed
@@ -3408,7 +3553,7 @@ static void broadcast_name_change(rf::Player* player)
     offset += safe_name_len;
     buf[offset++] = '\0';
 
-    rf::multi_io_send_reliable_to_all(buf, static_cast<int>(offset), 0);
+    rf::multi_io_send_reliable_to_all(buf, static_cast<int>(offset), false);
 }
 
 static void send_bot_config_with_identity(rf::Player* player, const ServerBotConfig& config, int slot)
@@ -3471,6 +3616,11 @@ void server_reliable_socket_ready(rf::Player* player)
         }
     }
 
+    // notify joining players that demos are being recorded
+    if (const std::string notice = demo_record_join_notice(); !notice.empty()) {
+        af_send_automated_chat_msg(notice, player);
+    }
+
     // bring a player who joined during a vote up to date (AF 1.4+ only)
     server_vote_send_state_to_new_player(player);
     // the vote panel pre-selects the session's mutator set, which is not in the
@@ -3516,9 +3666,6 @@ CodeInjection multi_level_init_injection{
                 g_alpine_server_config.signal_cfg_changed = true;
                 server_vote_invalidate_options_blob(); // rotation order feeds the votable level list
             }
-            initialize_game_info_server_flags();
-            af_send_server_info_packet_to_all();
-            enforce_alpine_hard_reject_for_all_players_on_current_level();
         }
     },
 };
@@ -4782,7 +4929,7 @@ void send_nonclip_ammo_sync(rf::Player* player, rf::Entity* entity, int weapon_t
     packet.weapon = weapon_type;
     packet.ammo = entity->ai.clip_ammo[weapon_type];
     packet.clip_ammo = (winfo.ammo_type >= 0 && winfo.ammo_type < 32) ? entity->ai.ammo[winfo.ammo_type] : 0;
-    rf::multi_io_send_reliable(player, reinterpret_cast<uint8_t*>(&packet), sizeof(packet), 0);
+    rf::multi_io_send_reliable(player, reinterpret_cast<uint8_t*>(&packet), sizeof(packet), false);
 }
 
 static void server_topup_nonclip_ammo()
@@ -5332,6 +5479,7 @@ void server_do_frame()
     gungame_do_frame();
     server_topup_nonclip_ammo(); // after gungame's per-frame weapon grants
     salvage_do_frame();
+    vehicle_do_frame();
     rounds_do_frame();
     auto_team_balance_do_frame();
     mutators_do_frame();
@@ -5559,6 +5707,13 @@ std::tuple<bool, int, bool, bool> server_features_require_alpine_client()
         requires_alpine = true;
         hard_reject = true;
         min_minor_version = std::max(min_minor_version, 4);
+    }
+
+    // Only v306+ levels carry vehicle factories, so a legacy client is already excluded by version.
+    if (vehicle_level_has_factories()) {
+        requires_alpine = true;
+        hard_reject = true;
+        min_minor_version = std::max(min_minor_version, 5);
     }
 
     // Mutators declare their own client requirement in the registry.

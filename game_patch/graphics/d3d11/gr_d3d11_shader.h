@@ -26,6 +26,7 @@ namespace gr::d3d11
         outline_character,
         outline_standard,
         gamma,
+        decoration,
     };
 
     enum class PixelShaderId
@@ -36,6 +37,12 @@ namespace gr::d3d11
         shadow_debug,
         outline,
         gamma,
+        scenefx,
+        depth_resolve,
+        terrain,
+        terrain_no_gas,
+        decoration,
+        decoration_no_gas,
     };
 
     inline const char* get_vertex_shader_filename(VertexShaderId vertex_shader_id)
@@ -57,6 +64,8 @@ namespace gr::d3d11
                 return "outline_standard_vs.bin";
             case VertexShaderId::gamma:
                 return "gamma_vs.bin";
+            case VertexShaderId::decoration:
+                return "decoration_vs.bin";
             default:
                 return nullptr;
         }
@@ -79,6 +88,8 @@ namespace gr::d3d11
                 return VertexLayout::standard;
             case VertexShaderId::gamma:
                 return VertexLayout::standard; // unused — gamma VS uses SV_VertexID, no input layout
+            case VertexShaderId::decoration:
+                return VertexLayout::standard_instanced;
             default:
                 return VertexLayout::standard;
         }
@@ -99,6 +110,18 @@ namespace gr::d3d11
                 return "outline_ps.bin";
             case PixelShaderId::gamma:
                 return "gamma_ps.bin";
+            case PixelShaderId::scenefx:
+                return "scenefx_ps.bin";
+            case PixelShaderId::depth_resolve:
+                return "depth_resolve_ps.bin";
+            case PixelShaderId::terrain:
+                return "terrain_ps.bin";
+            case PixelShaderId::terrain_no_gas:
+                return "terrain_nogas_ps.bin";
+            case PixelShaderId::decoration:
+                return "decoration_ps.bin";
+            case PixelShaderId::decoration_no_gas:
+                return "decoration_nogas_ps.bin";
             default:
                 return nullptr;
         }

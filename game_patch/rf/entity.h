@@ -22,12 +22,15 @@ namespace rf
         EF_GIB_ON_DEATH = 0x80,
         EF_IN_WATER = 0x1000,
         EF_EYE_UNDER_WATER = 0x2000,
+        EF_BOARDED = 0x10000, // set by boarding (0x004A1E7F) and the level's "boarded" property (0x0041895D)
         EF_CUSTOM_CORPSE = 0x2000000,
     };
 
     enum EntityFlags2
     {
         EF2_NO_SHADOW = 0x2,
+        EF2_DRILL_CONTACT = 0x40, // the driller's bit is touching something (0x004214F0)
+        EF2_NO_EXIT = 0x80,       // riders cannot get out of this host (0x004A19AB)
         EF2_POWERUP_DAMAGE_AMP = 0x20000,
         EF2_POWERUP_INVULNERABLE = 0x40000,
         EF2_POWERUP_NANO_SHIELD = 0x80000,
@@ -71,6 +74,7 @@ namespace rf
         EntityAnimTrigger triggers[2];
         int field_30;
     };
+    static_assert(sizeof(EntityAnimInfo) == 0x34);
 
     struct NanoShieldInfo
     {
@@ -119,6 +123,33 @@ namespace rf
         ENTITY_STATE_JEEP_DRIVE = 0x14,
         ENTITY_STATE_JEEP_GUN = 0x15,
         ENTITY_STATE_CUSTOM = 0x16,
+    };
+
+    // EntityInfo::flags — entities.tbl flag names, parser name table at 0x00594598 (bit i = 1 << i).
+    enum EntityInfoFlags
+    {
+        // "holds_weapons": the class draws its weapon's third-person v3d as a separate mesh
+        EIF_HOLDS_WEAPONS = 0x8,
+        EIF_WATER_ONLY = 0x40,
+        EIF_APC        = 0x200,
+        EIF_SUB        = 0x400,
+        EIF_FIGHTER    = 0x800,
+        EIF_DRILLER    = 0x1000,
+        EIF_TURRET     = 0x2000,
+        EIF_MOUSELOOK  = 0x4000,
+        EIF_JEEP       = 0x400000,
+    };
+
+    // EntityInfo::use_function — parsed from "$Use:", value table at 0x0059F978.
+    enum EntityUseFunction
+    {
+        ENTITY_USE_NONE = 0x0,
+        ENTITY_USE_VEHICLE = 0x1,
+        ENTITY_USE_SWITCH = 0x2,
+        ENTITY_USE_COMMAND = 0x3,
+        ENTITY_USE_TURRET = 0x4,
+        ENTITY_USE_MONITOR = 0x5,
+        ENTITY_USE_MEDIC = 0x6,
     };
 
     struct EntityInfo
@@ -240,10 +271,42 @@ namespace rf
         float weapon_specific_spine_adjustments[64];
     };
     static_assert(sizeof(EntityInfo) == 0x1514);
+    static_assert(offsetof(EntityInfo, vmesh_filename) == 0x8);
+    static_assert(offsetof(EntityInfo, max_life) == 0x44);
+    static_assert(offsetof(EntityInfo, use_function) == 0x1B4);
+    static_assert(offsetof(EntityInfo, flags) == 0x724);
+    static_assert(offsetof(EntityInfo, num_state_anims) == 0x754);
+    static_assert(offsetof(EntityInfo, state_anims) == 0x75C);
+    static_assert(offsetof(EntityInfo, squash_sounds_id) == 0x174);
+    static_assert(offsetof(EntityInfo, cockpit_vfx_filename) == 0x13CC);
 
     constexpr int MAX_ENTITY_TYPES = 75;
     static auto& num_entity_types = addr_as_ref<int>(0x0062F2D0);
     static auto& entity_types = addr_as_ref<EntityInfo[MAX_ENTITY_TYPES]>(0x005CC500);
+
+    // Shared jeep gun mesh; entity_create loads it lazily (0x00423A44), level release nulls it (0x0042B2E0).
+    static auto& jeep_gun_vmesh = addr_as_ref<VMesh*>(0x0062F3B0);
+
+    // MoveMode::mode — index into the name table at 0x00596384.
+    enum MoveModeId
+    {
+        MOVE_MODE_NONE = 0,
+        MOVE_MODE_RUN = 1,
+        MOVE_MODE_CLIMB = 2,
+        MOVE_MODE_FALL = 3,
+        MOVE_MODE_SWIM = 4,
+        MOVE_MODE_APC = 5,
+        MOVE_MODE_APC_FALL = 6,
+        MOVE_MODE_SUB = 7,
+        MOVE_MODE_SUB_FALL = 8,
+        MOVE_MODE_FIGHTER = 9,
+        MOVE_MODE_TURRET = 10,
+        MOVE_MODE_ROBOT_FLY = 11,
+        MOVE_MODE_HOVER = 12,
+        MOVE_MODE_FREELOOK_CAM = 13,
+        MOVE_MODE_DEAD_CAM = 14,
+        MOVE_MODE_JOHNS_DESCENT_FLYING = 15,
+    };
 
     struct MoveMode
     {
@@ -256,6 +319,7 @@ namespace rf
         int rot_ref_y;
         int rot_ref_z;
     };
+    static_assert(offsetof(MoveMode, mode) == 0x4);
 
     struct EntityControlData
     {
@@ -273,6 +337,8 @@ namespace rf
         Timestamp shake_timestamp;
     };
     static_assert(sizeof(EntityControlData) == 0x60);
+    static_assert(offsetof(EntityControlData, local_vel) == 0x40);
+    static_assert(offsetof(EntityControlData, standing_on_obj_handle) == 0x4C);
 
     struct EntityAnim
     {
@@ -327,7 +393,8 @@ namespace rf
         float max_vel;
         EntitySpeed current_speed;
         int max_speed_scale;
-        VArray<EntityInterfacePoint> interface_points;
+        // Array of POINTERS: accessors index with a 4-byte stride and dereference (0x00427268).
+        VArray<EntityInterfacePoint*> interface_points;
         VArray<VMesh*> thruster_fx_handles;
         EntityAnim state_anims[23];
         EntityAnim action_anims[45];
@@ -391,7 +458,7 @@ namespace rf
         float time_since_spine_bend;
         int field_1468;
         int masako_in_fighter_entity_handle;
-        int driller_max_geomods;
+        int driller_geomod_count; // running count of craters this driller has carved; stock refuses past 25 (0x004214F3)
         Color ambient_color;
         int sub_hit_sound_instance;
         int bot_index;
@@ -402,6 +469,12 @@ namespace rf
         Timestamp field_1490;
     };
     static_assert(sizeof(Entity) == 0x1494);
+    static_assert(offsetof(Entity, interface_points) == 0x8CC);
+    static_assert(offsetof(Entity, entity_flags2) == 0x814);
+    static_assert(offsetof(Entity, move_mode) == 0x858);
+    static_assert(offsetof(Entity, control_data) == 0x860);
+    static_assert(offsetof(Entity, driller_sound_handle) == 0x13D0);
+    static_assert(offsetof(Entity, driller_geomod_count) == 0x1470);
 
     struct EntityFireInfo
     {
@@ -448,10 +521,13 @@ namespace rf
 
     static auto& entity_from_handle = addr_as_ref<Entity*(int handle)>(0x00426FC0);
     static auto& entity_lookup_type = addr_as_ref<int(const char* name)>(0x004251C0);
+    // use_function == ENTITY_USE_VEHICLE; the MP level entity filter (0x00464657) drops these, turrets excluded
+    static auto& entity_type_has_vehicle_use = addr_as_ref<bool __cdecl(int type_index)>(0x0042CDD0);
     static auto& entity_create =
         addr_as_ref<Entity*(int entity_type, const char* name, int parent_handle, const Vector3& pos,
         const Matrix3& orient, int create_flags, int mp_character)>(0x00422360);
     static auto& entity_maybe_die = addr_as_ref<void(Entity* ep)>(0x0041FDC0);
+    static auto& entity_calc_eye_pos = addr_as_ref<void(Entity* ep)>(0x004194E0);
     static auto& entity_get_first_leech = addr_as_ref<int(Entity* ep)>(0x00427DA0);
     static auto& entity_is_dying = addr_as_ref<bool(Entity *ep)>(0x00427020);
     static auto& entity_is_on_turret = addr_as_ref<bool(Entity* ep)>(0x00429F90);
@@ -463,6 +539,9 @@ namespace rf
     static auto& entity_is_jeep_gunner = addr_as_ref<bool(Entity *ep)>(0x0042ACD0);
     static auto& entity_is_local_player = addr_as_ref<bool(Entity* ep)>(0x0042A8E0);
     static auto& entity_is_driller = addr_as_ref<bool(Entity *ep)>(0x0042D780);
+    static auto& entity_maybe_drill_geomod = addr_as_ref<void(Entity* ep)>(0x00421310);
+    // info->flags & (jeep|apc|driller); these are the PF_AUTOMOBILE types
+    static auto& entity_is_automobile = addr_as_ref<bool(Entity *ep)>(0x0042D7B0);
     static auto& entity_is_sub = addr_as_ref<bool(Entity *ep)>(0x0040A270);
     static auto& entity_is_jeep = addr_as_ref<bool(Entity *ep)>(0x0040A2F0);
     static auto& entity_is_fighter = addr_as_ref<bool(Entity *ep)>(0x0040A210);
@@ -497,15 +576,42 @@ namespace rf
     static auto& entity_update_liquid_status = addr_as_ref<void(Entity* ep)>(0x00429100);
     static auto& entity_is_playing_action_animation = addr_as_ref<bool(Entity* entity, int action)>(0x00428D10);
     static auto& entity_set_next_state_anim = addr_as_ref<void(Entity* entity, int state, float transition_time)>(0x0042A580);
-    static auto& entity_play_action_animation = addr_as_ref<void(Entity* entity, int action, float transition_time, bool hold_last_frame, bool with_sound)>(0x00428C90);
+    static auto& entity_play_action_animation = addr_as_ref<void(Entity* entity, int action, float weight, bool hold_last_frame, bool with_sound)>(0x00428C90);
     static auto& entity_is_reloading = addr_as_ref<bool(Entity* entity)>(0x00425250);
     static auto& entity_weapon_is_on = addr_as_ref<bool(int entity_handle, int weapon_type)>(0x0041A830);
     static auto& entity_reload_current_primary = addr_as_ref<bool __cdecl(Entity *entity, bool no_sound, bool is_reload_packet)>(0x00425280);
     static auto& entity_add_to_reserve_ammo = addr_as_ref<void(Entity *entity, int weapon_type, int count)>(0x00428D90);
     static auto& entity_turn_weapon_on = addr_as_ref<void __cdecl(int entity_handle, int weapon_type, bool alt_fire)>(0x0041A870);
     static auto& entity_turn_weapon_off = addr_as_ref<void __cdecl(int entity_handle, int weapon_type)>(0x0041AE70);
+    // One trigger pull of ai.current_primary_weapon. force != 0 skips the fire-wait gate and the
+    // continuous-weapon turn-on; pos/orient override the muzzle; last_fire_time moves only on a shot.
+    static auto& entity_fire_weapon = addr_as_ref<void __cdecl(Entity* ep, int force, int alt_fire,
+        void** out_weapon, Vector3* pos, Matrix3* orient)>(0x00425830);
+    // One shot of ai.current_secondary_weapon. force != 0 skips the fire-wait gate; next_fire_secondary re-arms only on a shot.
+    static auto& entity_fire_secondary_weapon = addr_as_ref<void __cdecl(Entity* ep, char force)>(0x00426CA0);
     static auto& entity_restore_mesh = addr_as_ref<void(Entity *ep, const char *mesh_name)>(0x0042C570);
-    static auto& entity_detach_from_host = addr_as_ref<void(Entity* ep)>(0x004279D0);
+    // bool, not void: the exit-spot search can refuse, and it answers in AL only.
+    static auto& entity_detach_from_host = addr_as_ref<bool(Entity* ep)>(0x004279D0);
+
+    // __thiscall on the vehicle (RET 8 verified). Fails if the tag is unknown or the seat is taken.
+    inline bool entity_attach_leech(Entity* vehicle, int leech_handle, int tag_handle)
+    {
+        return AddrCaller{0x00427240}.this_call<bool>(vehicle, leech_handle, tag_handle);
+    }
+
+    // __thiscall on the vehicle (RET 8 verified). The bookkeeping half of entity_detach_from_host.
+    inline bool entity_detach_leech(Entity* vehicle, int leech_handle, bool play_sound)
+    {
+        return AddrCaller{0x00427380}.this_call<bool>(vehicle, leech_handle, play_sound);
+    }
+
+    // Best "$Use" target: interface points, corpses, items, clutter, triggers. out_tag_handle is -1 when it has none.
+    static auto& player_find_use_target =
+        addr_as_ref<Object* __cdecl(Entity* player_entity, int* out_tag_handle)>(0x004897D0);
+
+    // Jeep gunner eye clamps; the boarding code uses these instead of the vehicle's own limits.
+    static auto& jeep_gunner_min_rel_eye_phb = addr_as_ref<Vector3>(0x007C7618);
+    static auto& jeep_gunner_max_rel_eye_phb = addr_as_ref<Vector3>(0x007C75F0);
     static auto& entity_set_skin = addr_as_ref<void(Entity* ep, const char* skin_name)>(0x00428FB0);
     static auto& entity_sim_distance = addr_as_ref<float>(0x00589548);
 

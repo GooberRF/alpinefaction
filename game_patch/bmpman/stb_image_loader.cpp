@@ -6,6 +6,7 @@
 #include <common/utils/string-utils.h>
 #include <common/bitmap/formats.h>
 #include "stb_image_loader.h"
+#include "bmpman.h"
 #include "../rf/bmpman.h"
 #include "../rf/crt.h"
 #include "../rf/math/vector.h"
@@ -46,7 +47,7 @@ namespace
     // type.
     std::string read_stb_sibling(const char* requested_filename, std::vector<uint8_t>& out)
     {
-        std::string base{get_filename_without_ext(requested_filename)};
+        std::string base{bm_strip_texture_ext(requested_filename)};
         for (const char* ext : {".png", ".jpg", ".jpeg"}) {
             auto candidate = base + ext;
             if (!vpackfile_supercede_allowed(requested_filename, candidate.c_str())) {

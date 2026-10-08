@@ -2,6 +2,7 @@
 #include <patch_common/CodeInjection.h>
 #include <patch_common/AsmWriter.h>
 #include <common/utils/string-utils.h>
+#include <common/utils/list-utils.h>
 #include <xlog/xlog.h>
 #include <algorithm>
 #include <string_view>
@@ -10,14 +11,18 @@
 #include "../rf/item.h"
 #include "../rf/misc.h"
 #include "../rf/entity.h"
+#include "../rf/gameseq.h"
 #include "../rf/multi.h"
 #include "../rf/weapon.h"
+#include "../rf/os/frametime.h"
 #include "../rf/player/player.h"
 #include "../misc/achievements.h"
 #include "../misc/misc.h"
 #include "../multi/gametype.h"
 #include "../multi/mutators.h"
 #include "../multi/server.h"
+#include "../multi/demo/demo.h"
+#include "object.h"
 
 int item_lookup_type(const char* name)
 {
@@ -176,6 +181,22 @@ CodeInjection multi_powerup_add_mp_check {
     }
 };
 
+void item_do_frame()
+{
+    if (rf::is_dedicated_server || !rf::is_multi || rf::game_paused) {
+        return;
+    }
+    constexpr float spin_rate = 2.35619449f;
+    constexpr float two_pi = 6.28318548f;
+    const float delta = rf::frametime * demo_playback_sim_time_scale() * spin_rate;
+    for (auto& item : DoublyLinkedList{rf::item_list}) {
+        if (item.info && (item.info->flags & rf::IIF_SPINS_IN_MULTI)) {
+            const float angle = item.spin_angle + delta;
+            item.spin_angle = angle > two_pi ? angle - two_pi : angle;
+        }
+    }
+}
+
 void item_do_patch()
 {
     // activate When_Picked_Up events
@@ -192,4 +213,7 @@ void item_do_patch()
 
     // Sort objects by mesh name to improve rendering performance
     item_create_sort_injection.install();
+
+    // Skip item_render's spin advance in favour of item_do_frame.
+    AsmWriter{0x00459071, 0x00459073}.jmp(0x004590A8);
 }

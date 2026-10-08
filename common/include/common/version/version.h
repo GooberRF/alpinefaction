@@ -28,7 +28,7 @@
 #define VERSION_PATCH          0
 #define VERSION_TYPE           VERSION_TYPE_DEV
 #define VERSION_TYPE_REVISION  0
-#define VERSION_CODE           "TBD"
+#define VERSION_CODE           "Trillium"
 
 // Version used for Alpine settings files
 #define ADS_VERSION            2      // .toml dedicated server config files
@@ -47,7 +47,8 @@
 // 303 = Alpine 1.2.2
 // 304 = Alpine 1.3.0
 // 305 = Alpine 1.4.0
-#define MAXIMUM_RFL_VERSION    305
+// 306 = Alpine 1.5.0
+#define MAXIMUM_RFL_VERSION    306
 
 // clang-format on
 

@@ -85,6 +85,7 @@ namespace gr::d3d11
         ID3D11DepthStencilState* get_outline_depth_test_state();
         ID3D11DepthStencilState* get_outline_xray_state();
         ID3D11BlendState* get_no_color_write_blend_state();
+        ID3D11BlendState* get_alpha_to_coverage_blend_state();
 
     private:
         ComPtr<ID3D11RasterizerState> create_rasterizer_state(D3D11_CULL_MODE cull_mode, int depth_bias, bool depth_clip_enable);
@@ -104,5 +105,6 @@ namespace gr::d3d11
         ComPtr<ID3D11DepthStencilState> outline_depth_test_state_;
         ComPtr<ID3D11DepthStencilState> outline_xray_state_;
         ComPtr<ID3D11BlendState> no_color_write_blend_state_;
+        ComPtr<ID3D11BlendState> alpha_to_coverage_blend_state_;
     };
 }

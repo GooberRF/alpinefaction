@@ -4,6 +4,7 @@
 #include <common/utils/list-utils.h>
 #include <common/utils/os-utils.h>
 #include <common/config/BuildConfig.h>
+#include <common/lighting/alpine_lighting.h>
 #include <common/ComPtr.h>
 #include <patch_common/CallHook.h>
 #include <patch_common/FunHook.h>
@@ -11,6 +12,7 @@
 #include <patch_common/ShortTypes.h>
 #include <patch_common/AsmWriter.h>
 #include <xlog/xlog.h>
+#include <iterator>
 #include <optional>
 #include <shellapi.h>
 #include "../os/console.h"
@@ -18,7 +20,9 @@
 #include "../main/main.h"
 #include "../multi/multi.h"
 #include "../misc/alpine_settings.h"
+#include "../misc/level.h"
 #include "../rf/gr/gr.h"
+#include "../rf/gr/gr_light.h"
 #include "../rf/gameseq.h"
 #include "../rf/level.h"
 #include "../rf/geometry.h"
@@ -32,9 +36,11 @@
 #include "gr.h"
 #include "gr_internal.h"
 #include "weather.h"
+#include "scene_capture.h"
 #include "../misc/alpine_options.h"
 #include "../hud/multi_spectate.h"
 #include "../multi/demo/demo.h"
+#include "../multi/vehicles/vehicle_view.h"
 #include "legacy/gr_d3d.h"
 #include "d3d11/gr_d3d11_hooks.h"
 
@@ -60,7 +66,6 @@ CodeInjection gr_init_stretched_window_injection{
             SetWindowLongA(rf::main_wnd, GWL_STYLE, WS_POPUP | WS_SYSMENU);
             SetWindowLongA(rf::main_wnd, GWL_EXSTYLE, 0);
             SetWindowPos(rf::main_wnd, HWND_NOTOPMOST, 0, 0, cx, cy, SWP_SHOWWINDOW);
-            rf::gr::screen.aspect = static_cast<float>(cx) / static_cast<float>(cy) * 0.75f;
             regs.eip = 0x0050C551;
         }
     },
@@ -149,6 +154,21 @@ bool gr_3d_bitmap_oriented_wh(const rf::Vector3* pnt, const rf::Matrix3* M, floa
     return rf::gr::poly(4, verts, rf::gr::TMapperFlags::TMAP_FLAG_TEXTURED, mode, 0, 0.0f);
 }
 
+bool gr_project_world_to_screen(const rf::Vector3& world_pos, float& out_sx, float& out_sy)
+{
+    rf::gr::Vertex v{};
+    if (rf::gr::rotate_vertex(&v, &world_pos)) { // behind the near plane
+        return false;
+    }
+    rf::gr::project_vertex(&v);
+    if (!(v.flags & rf::gr::VF_PROJECTED)) {
+        return false;
+    }
+    out_sx = v.sx;
+    out_sy = v.sy;
+    return true;
+}
+
 float gr_scale_fov_hor_plus(float horizontal_fov)
 {
     // Use Hor+ FOV scaling method to improve user experience for wide screens
@@ -187,10 +207,10 @@ CodeInjection gameplay_render_frame_fov_injection{
     0x00431BA1,
     []() {
         // Scale world FOV
-        auto& rf_fov = addr_as_ref<float>(0x0059613C);
-        rf_fov = gr_scale_world_fov(rf_fov);
-        // Free-look spectate stepped zoom narrows the FOV (1.0 when not zoomed)
-        rf_fov /= multi_spectate_get_view_fov_scale();
+        rf::gr::gameplay_fov = gr_scale_world_fov(rf::gr::gameplay_fov);
+        // Free-look spectate stepped zoom and the turret zoom narrow the FOV (1.0 when not zoomed)
+        rf::gr::gameplay_fov /= multi_spectate_get_view_fov_scale();
+        rf::gr::gameplay_fov /= vehicle_turret_zoom_fov_scale();
     },
 };
 
@@ -449,8 +469,22 @@ bool gr_set_render_target(int bm_handle)
     return false;
 }
 
-// Drain the queued .vfx x-ray outlines (the salvage flag) now, so they land under the
-// first-person weapon instead of over it.
+int gr_render_target_generation()
+{
+    if (rf::gr::screen.mode == rf::gr::DIRECT3D && is_d3d11()) {
+        return gr::d3d11::render_target_generation();
+    }
+    return 0;
+}
+
+// Drop the renderer's cached texture-handle pair; see the declaration in gr.h.
+void gr_invalidate_texture_cache()
+{
+    if (rf::gr::screen.mode == rf::gr::DIRECT3D && is_d3d11()) {
+        gr::d3d11::invalidate_texture_cache();
+    }
+}
+
 void gr_flush_outlines_before_fpgun()
 {
     if (rf::gr::screen.mode == rf::gr::DIRECT3D && is_d3d11()) {
@@ -467,6 +501,18 @@ void gr_bitmap_scaled_float(int bitmap_handle, float x, float y, float w, float 
         }
         else {
             gr_d3d_bitmap_float(bitmap_handle, x, y, w, h, sx, sy, sw, sh, flip_x, flip_y, mode);
+        }
+    }
+}
+
+void gr_poly_2d(int bitmap_handle, int nv, const rf::gr::Vertex* vertices, rf::gr::Mode mode)
+{
+    if (rf::gr::screen.mode == rf::gr::DIRECT3D) {
+        if (is_d3d11()) {
+            gr::d3d11::poly_2d(bitmap_handle, nv, vertices, mode);
+        }
+        else {
+            gr_d3d_poly_2d(bitmap_handle, nv, vertices, mode);
         }
     }
 }
@@ -577,6 +623,40 @@ CodeInjection gr_d3d_render_lod_vif_injection{
     },
 };
 
+SunLightState gr_get_sun_state()
+{
+    SunLightState state;
+    if (!(rf::level.flags & rf::LEVEL_LOADED)) {
+        return state;
+    }
+    const alpine_lighting::SunState sun = alpine_lighting::sun_state(AlpineLevelProperties::instance());
+    state.enabled = sun.enabled;
+    state.affects_meshes = sun.affects_meshes;
+    state.drives_shadowmap_dir = sun.drives_shadowmap_dir;
+    state.mesh_mode = sun.mesh_mode;
+    state.travel_dir = {sun.travel_dir[0], sun.travel_dir[1], sun.travel_dir[2]};
+    std::copy(std::begin(sun.color), std::end(sun.color), state.color);
+    return state;
+}
+
+float gr_sun_get_mesh_scale(const float* ambient)
+{
+    const SunLightState sun = gr_get_sun_state();
+    float global_ambient[3];
+    if (!ambient) {
+        rf::gr::light_get_ambient(&global_ambient[0], &global_ambient[1], &global_ambient[2]);
+        ambient = global_ambient;
+    }
+    return alpine_lighting::sun_mesh_scale(sun.enabled && sun.affects_meshes, sun.mesh_mode, ambient);
+}
+
+void gr_mesh_blend_ambient(const float (&lightmap)[3], float (&out)[3])
+{
+    float global_ambient[3];
+    rf::gr::light_get_ambient(&global_ambient[0], &global_ambient[1], &global_ambient[2]);
+    alpine_lighting::mesh_blend_ambient(global_ambient, lightmap, out);
+}
+
 // Power of 2 texture enforcement
 // Access p2t flag directly to avoid pulling in D3D8 types from gr_direct3d.h
 namespace rf::gr::d3d {
@@ -612,6 +692,38 @@ ConsoleCommand2 pow2_tex_cmd{
         }
     },
     "Manual debug override for power of 2 texture enforcement. Only affects new level loads. If you don't know what this does, do not use this command.",
+};
+
+ConsoleCommand2 underwater_fx_cmd{
+    "r_underwater",
+    [](std::optional<int> level_opt) {
+        if (level_opt) {
+            g_alpine_game_config.set_underwater_fx(level_opt.value());
+        }
+        rf::console::print(
+            "Underwater effects level is {} (Direct3D 11 renderer only, 0 = stock)",
+            g_alpine_game_config.underwater_fx
+        );
+    },
+    "Sets the underwater effects level: 0 stock, 1 caustics, 2 + fog/tint/vignette, 3 + distortion "
+    "(Direct3D 11 renderer only)",
+    "r_underwater <0-3>",
+};
+
+ConsoleCommand2 scope_glass_cmd{
+    "r_scopeglass",
+    [](std::optional<int> level_opt) {
+        if (level_opt) {
+            g_alpine_game_config.set_scope_glass(level_opt.value());
+        }
+        rf::console::print(
+            "Scope lens effect level is {} (Direct3D 11 renderer only, 0 = off)",
+            g_alpine_game_config.scope_glass
+        );
+    },
+    "Sets the lens distortion, chromatic aberration and vignetting seen through rifle scopes: "
+    "0 off, 1 light, 2 heavy (Direct3D 11 renderer only)",
+    "r_scopeglass <0-2>",
 };
 
 // checked during level load
@@ -697,6 +809,9 @@ void gr_apply_patch()
 
     // Plankton fix and weather regions
     weather_apply_patch();
+
+    // Display_Projection scene capture
+    scene_capture_apply_patch();
 
     if (!headless_bot_graphics_bypass) {
         const bool use_d3d11_renderer =
@@ -785,6 +900,8 @@ void gr_apply_patch()
     precache_rooms_cmd.register_cmd();
     disable_rendering_cmd.register_cmd();
     pow2_tex_cmd.register_cmd();
+    underwater_fx_cmd.register_cmd();
+    scope_glass_cmd.register_cmd();
 
     // Fix `rf::gr::text_2d_mode`.
     AsmWriter{0x0050BB40}.push<int8_t>(rf::gr::FOG_NOT_ALLOWED);
