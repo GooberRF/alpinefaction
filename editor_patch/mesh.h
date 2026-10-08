@@ -22,6 +22,7 @@ void DestroyDedMesh(DedMesh* mesh);
 struct EditorVMesh;
 EditorVMesh* mesh_load_vmesh_file(const char* filename);
 void mesh_load_vmesh(DedMesh* mesh);
+void mesh_release_vmesh(DedMesh* mesh);
 
 // Looping playback of a one-shot .rfa action. An animation's own ramp_in_time/ramp_out_time
 // envelope is exactly zero at both ends of its span, and a zero weighted action is left out of
@@ -53,5 +54,4 @@ bool mesh_copy_object(DedObject* source);
 void mesh_paste_objects(CDedLevel* level);
 void mesh_clear_clipboard();
 void mesh_handle_delete_or_cut(DedObject* obj);
-void mesh_handle_delete_selection(CDedLevel* level);
 void mesh_ensure_uid(int& uid);

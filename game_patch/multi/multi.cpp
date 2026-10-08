@@ -23,6 +23,8 @@
 #include "gametype.h"
 #include "rounds.h"
 #include "salvage.h"
+#include "vehicles/vehicle.h"
+#include "vehicles/vehicle_physics.h"
 #include "mutators.h"
 #include "bots/bot_chat_manager.h"
 #include "../fflink/afstats_events.h"
@@ -721,6 +723,9 @@ void multi_turn_weapon_on(rf::Entity* ep, rf::Player* pp, bool alt_fire)
 {
     // Note: pp is always null client-side
     auto weapon_type = ep->ai.current_primary_weapon;
+    if (weapon_type < 0) {
+        return; // weaponless entity (an unarmed vehicle hull, a stripped NPC)
+    }
     if (!rf::weapon_is_on_off_weapon(weapon_type, alt_fire)) {
         xlog::debug("Player {} attempted to turn on weapon {} which has no continous fire flag", ep->name, weapon_type);
     }
@@ -743,6 +748,9 @@ void multi_turn_weapon_on(rf::Entity* ep, rf::Player* pp, bool alt_fire)
 void multi_turn_weapon_off(rf::Entity* ep)
 {
     auto current_primary_weapon = ep->ai.current_primary_weapon;
+    if (current_primary_weapon < 0) {
+        return;
+    }
     if (rf::weapon_is_on_off_weapon(current_primary_weapon, false)
         || rf::weapon_is_on_off_weapon(current_primary_weapon, true)) {
 
@@ -1206,6 +1214,7 @@ int multi_num_spawned_players() {
 void configure_custom_gametype_listen_server_settings() {
     // reset to defaults
     g_alpine_server_config = AlpineServerConfig{};
+    reset_base_scope_tables();
     g_alpine_server_config_active_rules = AlpineServerConfigRules{};
     set_upcoming_game_type(rf::netgame.type);
 
@@ -1386,8 +1395,11 @@ CallHook<float(int, float, int, int, int, rf::PCollisionOut*, int, bool)> obj_ap
 CallHook<void(const char* filename)> level_cmd_multi_change_level_hook{
     0x00435108,
     [](const char* filename) {
-        if (rf::is_multi)
-            set_manually_loaded_level(true); // "level" console command
+        if (rf::is_multi) {
+            // "level" console command: a previous vote's rules must not follow it here.
+            clear_manual_rules_override();
+            set_manually_loaded_level(true);
+        }
         level_cmd_multi_change_level_hook.call_target(filename);
     }
 };
@@ -1518,6 +1530,8 @@ void multi_do_patch()
     network_init();
     demo_do_patch();
     multi_tdm_apply_patch();
+    vehicle_apply_patches();
+    vehicle_physics_apply_patches();
 
     level_download_init();
     multi_ban_apply_patch();

@@ -273,6 +273,22 @@ namespace gr::d3d11
         return no_color_write_blend_state_;
     }
 
+    // Unblended; the pixel shader's alpha picks the samples it covers. Alpha is not written, as everywhere.
+    ID3D11BlendState* StateManager::get_alpha_to_coverage_blend_state()
+    {
+        if (!alpha_to_coverage_blend_state_) {
+            CD3D11_BLEND_DESC desc{D3D11_DEFAULT};
+            desc.AlphaToCoverageEnable = TRUE;
+            desc.RenderTarget[0].RenderTargetWriteMask =
+                D3D11_COLOR_WRITE_ENABLE_RED | D3D11_COLOR_WRITE_ENABLE_GREEN | D3D11_COLOR_WRITE_ENABLE_BLUE;
+            check_hr(
+                device_->CreateBlendState(&desc, &alpha_to_coverage_blend_state_),
+                []() { xlog::error("Failed to create alpha-to-coverage blend state"); }
+            );
+        }
+        return alpha_to_coverage_blend_state_;
+    }
+
     ComPtr<ID3D11DepthStencilState> StateManager::create_depth_stencil_state(rf::gr::ZbufferType zbt)
     {
         CD3D11_DEPTH_STENCIL_DESC desc{CD3D11_DEFAULT()};

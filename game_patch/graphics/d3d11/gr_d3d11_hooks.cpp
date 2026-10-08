@@ -199,6 +199,12 @@ namespace gr::d3d11
 
     static std::optional<Renderer> renderer;
 
+    static void set_mesh_bounds(const rf::VifLodMesh& lod_mesh, const rf::Vector3& pos, const rf::Matrix3& orient,
+                                float radius)
+    {
+        renderer->set_mesh_bounds(pos + orient.transform_vector(lod_mesh.center), radius);
+    }
+
     void update_window_mode();
 
     void msg_handler(UINT msg, WPARAM w_param, LPARAM l_param)
@@ -285,6 +291,11 @@ namespace gr::d3d11
     void bitmap_float(int bitmap_handle, float x, float y, float w, float h, float sx, float sy, float sw, float sh, bool flip_x, bool flip_y, rf::gr::Mode mode)
     {
         renderer->bitmap(bitmap_handle, x, y, w, h, sx, sy, sw, sh, flip_x, flip_y, mode);
+    }
+
+    void poly_2d(int bitmap_handle, int nv, const rf::gr::Vertex* vertices, rf::gr::Mode mode)
+    {
+        renderer->poly_2d(bitmap_handle, nv, vertices, mode);
     }
 
     void set_clip()
@@ -552,7 +563,9 @@ namespace gr::d3d11
             bool lights_gathered = false;
             if (rf::level.geometry && !skip_mesh_light_gather) {
                 // A scaled orient scales the mesh's extent too
-                gather_mesh_lights(pos, lod_mesh->radius * orient.rvec.len());
+                const float radius = lod_mesh->radius * orient.rvec.len();
+                gather_mesh_lights(pos, radius);
+                set_mesh_bounds(*lod_mesh, pos, orient, radius);
                 lights_gathered = true;
             }
 
@@ -622,7 +635,9 @@ namespace gr::d3d11
             bool is_first_person = (params.flags & rf::MeshRenderFlags::MRF_FIRST_PERSON) != 0;
             bool lights_gathered = false;
             if (!use_vertex_lighting && rf::level.geometry && !skip_mesh_light_gather) {
-                gather_mesh_lights(pos, lod_mesh->radius * orient.rvec.len());
+                const float radius = lod_mesh->radius * orient.rvec.len();
+                gather_mesh_lights(pos, radius);
+                set_mesh_bounds(*lod_mesh, pos, orient, radius);
                 lights_gathered = true;
             }
 
@@ -725,6 +740,7 @@ namespace gr::d3d11
             bool lights_gathered = rf::level.geometry && !skip_mesh_light_gather && !level_uses_vertex_lighting();
             if (lights_gathered) {
                 gather_mesh_lights(obj->render_pos, radius);
+                renderer->set_mesh_bounds(obj->render_pos, radius);
             }
             renderer->render_vfx(obj, frame);
             if (lights_gathered) {
@@ -909,6 +925,18 @@ namespace gr::d3d11
         },
     };
 
+    static void scope_glass_pass()
+    {
+        if (renderer) {
+            renderer->run_scope_glass_pass();
+        }
+    }
+
+    // Sniper and precision scope overlays, after the full-screen tint and before the scope ring.
+    // The tint is the glass's colour, so it is vignetted along with the scene.
+    static CodeInjection sniper_scope_overlay_glass_injection{0x004AC472, scope_glass_pass};
+    static CodeInjection precision_scope_overlay_glass_injection{0x004AC86A, scope_glass_pass};
+
     // Stock clamps the far clip to liquid_visibility while submerged, hidden by its fog being
     // fully opaque there; the exponential fog is not, so the clip would show. Widen it instead of
     // dropping it, so murky water still culls close and clear water reaches the stock baseline.
@@ -1018,6 +1046,19 @@ namespace gr::d3d11
             rf::GSolid* solid = regs.ebx;
             renderer->render_room_liquid_surface(solid, room);
             regs.eip = 0x004D414F;
+        },
+    };
+
+    // The room's unsorted items are drawn and its sorted ones (alpha detail, glass, liquid, see-through objects)
+    // are next: decoration soft edges go between, over the room's opaque objects and under its translucent ones.
+    static CodeInjection g_render_room_objects_decoration_edges_injection{
+        0x004D3D1F,
+        [](auto& regs) {
+            auto* room = addr_as_ref<rf::GRoom*>(regs.esp + 0x9C);
+            auto* solid = addr_as_ref<rf::GSolid*>(regs.esp + 0xA0);
+            if (renderer && room) {
+                renderer->render_room_decoration_edges(solid, room);
+            }
         },
     };
 
@@ -1286,9 +1327,12 @@ void gr_d3d11_apply_patch()
     gameplay_render_frame_liquid_fog_hook.install();
     gameplay_render_frame_liquid_bg_color_hook.install();
     screen_flash_render_hook.install();
+    sniper_scope_overlay_glass_injection.install();
+    precision_scope_overlay_glass_injection.install();
     g_render_room_objects_hook.install();
     obj_render_all_hook.install();
     g_render_room_objects_render_liquid_injection.install();
+    g_render_room_objects_decoration_edges_injection.install();
     gr_d3d_setup_3d_injection.install();
     gr_d3d_setup_fustrum_injection.install();
     vif_lod_mesh_ctor_injection.install();

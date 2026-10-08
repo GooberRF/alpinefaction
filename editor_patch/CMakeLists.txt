@@ -31,8 +31,12 @@ set(SRCS
     bag.h
     weather_region.cpp
     weather_region.h
+    vehicle_factory.cpp
+    vehicle_factory.h
     projection_camera.cpp
     projection_camera.h
+    dir_light.cpp
+    dir_light.h
     rope_emitter.cpp
     rope_emitter.h
     terrain.cpp
@@ -53,6 +57,8 @@ set(SRCS
     bitmap_loaders.h
     meshes.cpp
     meshes.h
+    minimap_bake.cpp
+    minimap_bake.h
     tbl.cpp
     tbl.h
     trigger.cpp
@@ -65,6 +71,11 @@ set(SRCS
     lightmap_mesh_occluders.h
     alpine_lightmaps.cpp
     alpine_lightmaps.h
+    overflow_charts.cpp
+    overflow_charts.h
+    overflow_preview.cpp
+    bake_progress.cpp
+    bake_progress.h
     face_list_cache.cpp
     face_list_cache.h
     work_pool.cpp

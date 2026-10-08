@@ -21,6 +21,16 @@ void alpine_lm_bake_allocate();
 void alpine_lm_bake_end();
 // Drops a bake that did not run to completion without encoding it.
 void alpine_lm_bake_abort();
+// What bake_begin laid out, for the progress window.
+struct AlpineBakePlan
+{
+    bool active = false;
+    std::uint32_t terrains = 0;
+    std::uint64_t encode_steps = 0;
+};
+AlpineBakePlan alpine_lm_bake_plan();
+// The surfaces the stock bake lights on movers, each moving group's brushes counted as the bake visits them.
+std::uint64_t mover_bake_surfaces();
 void alpine_lm_shade_surface(GSolid* solid, GSurface* surface, int mode);
 // Calculate Lighting's address-space check before anything is freed; reports and returns false on a refusal.
 bool lighting_calc_memory_admits();

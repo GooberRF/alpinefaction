@@ -16,14 +16,24 @@ struct DedTerrainDecoration;
 struct TerrainGrid;
 struct Vector3;
 struct BrushNode;
+struct GFace;
 
 void ApplyTerrainBuildPatches();
+// Calculate Lighting's surface pass (FUN_00448ca0) as stock runs it, without the checks its hook adds.
+void lighting_surfaces_stock(void* self);
 
 // "Terrain <uid> '<script name>'" for messages.
 std::string terrain_label(const DedTerrain& t);
 
 // RED numbers a level's lightmap surfaces as int16 (FUN_004aa610).
 inline constexpr uint32_t red_max_level_surfaces = 32767;
+
+// Whether RED's surface pass gives `face` a lightmap surface when it has room: stock rules, and not in a
+// terrain room.
+bool face_gets_stock_surface(GFace* face, const std::vector<int32_t>& terrain_uids);
+// Refuses lighting when faces got no surface; `overflow_expected` for a D3D11-only level whose overflow charts
+// should have lit them.
+void report_surface_overflow(CDedLevel& level, bool overflow_expected);
 
 // The wire header of `d` placed at `pos` with grid `g`: chunk_cells the edge a build uses, no
 // flag_chunk_geo_mask, overlays or decorations; zero sizes without a grid.

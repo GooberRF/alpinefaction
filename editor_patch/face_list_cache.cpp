@@ -331,6 +331,11 @@ FaceListCacheWindow::~FaceListCacheWindow()
     clear_all();
 }
 
+void face_list_cache_forget(void* list)
+{
+    forget(reinterpret_cast<std::uintptr_t>(list));
+}
+
 void ApplyFaceListCachePatches()
 {
     solid_append_hook.install();

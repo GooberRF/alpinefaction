@@ -18,6 +18,7 @@
 #include "../multi/gametype.h"
 #include "../multi/bagman.h"
 #include "../multi/jetpack.h"
+#include "../multi/vehicles/vehicle_seats.h"
 #include "../multi/salvage.h"
 #include "../multi/wipeout.h"
 #include "../input/input.h"
@@ -98,6 +99,21 @@ static void hud_notification_clear()
 static void hud_big_notification_clear()
 {
     hud_notification_clear_slot(g_hud_big_notification);
+}
+
+// Third slot, under the reticle: the vehicle Use prompt. It is local-only and re-asserted every
+// frame it applies, so it carries no HudNotificationType and never competes for the two slots above.
+static struct {
+    bool active = false;
+    std::string text;
+    rf::Timestamp fade_start; // invalid while not fading
+} g_hud_vehicle_prompt;
+
+static void hud_vehicle_prompt_clear()
+{
+    g_hud_vehicle_prompt.active = false;
+    g_hud_vehicle_prompt.text.clear();
+    g_hud_vehicle_prompt.fade_start.invalidate();
 }
 
 // Latest Pit duel-queue state pushed by the server (af_sreq_pit_queue_state).
@@ -1477,6 +1493,63 @@ static void hud_render_big_notification()
                            g_hud_big_notification.text.c_str(), big_font);
 }
 
+// Keep the under-reticle vehicle prompt alive while the local player is looking at a vehicle he
+// could act on; the render pass fades it out once this stops asserting it.
+static void hud_vehicle_prompt_ensure()
+{
+    if (rf::is_dedicated_server) return;
+
+    const std::string& text = vehicle_use_prompt_text();
+    if (text.empty()) {
+        if (g_hud_vehicle_prompt.active && !g_hud_vehicle_prompt.fade_start.valid()) {
+            g_hud_vehicle_prompt.fade_start.set(0);
+        }
+        return;
+    }
+    if (g_hud_vehicle_prompt.text != text) {
+        g_hud_vehicle_prompt.text = text;
+    }
+    g_hud_vehicle_prompt.active = true;
+    g_hud_vehicle_prompt.fade_start.invalidate();
+}
+
+// Under-reticle slot: the big slot's fade and shadow-then-main draw, placed below screen centre.
+static void hud_vehicle_prompt_render()
+{
+    if (!g_hud_vehicle_prompt.active) return;
+
+    int alpha = 225;
+    if (g_hud_vehicle_prompt.fade_start.valid()) {
+        const int elapsed = g_hud_vehicle_prompt.fade_start.time_since();
+        if (elapsed >= kHudNotificationFadeMs) {
+            hud_vehicle_prompt_clear();
+            return;
+        }
+        const float t = static_cast<float>(elapsed) / static_cast<float>(kHudNotificationFadeMs);
+        alpha = static_cast<int>(225.0f * (1.0f - t));
+    }
+
+    const int font = hud_get_default_font();
+    const int font_h = rf::gr::get_font_height(font);
+    // clip_height, not screen_height: the jetpack hint anchors on the clip region too.
+    const int center_y = rf::gr::clip_height() / 2;
+    // The jetpack thrust hint owns centre + 48/72 (big_hud); sit a full line under it so the two
+    // never collide whether or not the hint is up.
+    const int jetpack_hint_offset = g_alpine_game_config.big_hud ? 72 : 48;
+    int y = center_y + jetpack_hint_offset + font_h + 6;
+    // Never reach the respawn-timer line at 0.925 * height.
+    const int max_y = static_cast<int>(rf::gr::screen_height() * 0.925f) - font_h - 4;
+    y = std::min(y, std::max(center_y + font_h, max_y));
+
+    const int center_x = rf::gr::clip_width() / 2;
+    rf::gr::set_color(0, 0, 0, alpha / 2);
+    rf::gr::string_aligned(rf::gr::ALIGN_CENTER, center_x + 2, y + 2,
+                           g_hud_vehicle_prompt.text.c_str(), font);
+    rf::gr::set_color(255, 255, 255, alpha);
+    rf::gr::string_aligned(rf::gr::ALIGN_CENTER, center_x, y,
+                           g_hud_vehicle_prompt.text.c_str(), font);
+}
+
 void draw_hud_ready_notification(bool draw)
 {
     // Record the desired state so hud_ready_prompt_ensure() can keep the prompt
@@ -2042,8 +2115,10 @@ CodeInjection multi_hud_render_patch{
         hud_ready_prompt_ensure();
         hud_pit_queue_ensure();
         hud_salvage_carrier_ensure();
+        hud_vehicle_prompt_ensure();
         hud_render_notification();
         hud_render_big_notification();
+        hud_vehicle_prompt_render();
 
         if (g_draw_respawn_timer_notification) {
             hud_render_respawn_timer_notification();
@@ -2070,6 +2145,7 @@ void multi_hud_level_init() {
     g_run_timer_fade_active = false;
     hud_notification_clear();
     hud_big_notification_clear();
+    hud_vehicle_prompt_clear();
     reset_local_pit_queue_state();
     reset_local_pit_roster();
     reset_local_gungame_order();
@@ -2514,6 +2590,29 @@ ConsoleCommand2 ui_runtimer_cmd{
     "ui_runtimer",
 };
 
+ConsoleCommand2 cl_vehiclemarkers_cmd{
+    "cl_vehiclemarkers",
+    [](std::optional<bool> enabled) {
+        g_alpine_game_config.vehicle_respawn_markers =
+            enabled.value_or(!g_alpine_game_config.vehicle_respawn_markers);
+        rf::console::print("Vehicle factory respawn markers are {}",
+            g_alpine_game_config.vehicle_respawn_markers ? "enabled" : "disabled");
+    },
+    "Toggle vehicle factory respawn markers and their spawn cues",
+    "cl_vehiclemarkers [bool]",
+};
+
+ConsoleCommand2 cl_vehiclehealthbars_cmd{
+    "cl_vehiclehealthbars",
+    [](std::optional<bool> enabled) {
+        g_alpine_game_config.vehicle_health_bars = enabled.value_or(!g_alpine_game_config.vehicle_health_bars);
+        rf::console::print("Vehicle health bars are {}",
+            g_alpine_game_config.vehicle_health_bars ? "enabled" : "disabled");
+    },
+    "Toggle health bars over damaged vehicles and turrets",
+    "cl_vehiclehealthbars [bool]",
+};
+
 ConsoleCommand2 ui_gametype_help_cmd{
     "ui_gametype_help",
     [] {
@@ -2604,6 +2703,8 @@ void multi_hud_apply_patches()
     ui_verbosetimer_cmd.register_cmd();
     ui_runtimer_cmd.register_cmd();
     ui_gametype_help_cmd.register_cmd();
+    cl_vehiclemarkers_cmd.register_cmd();
+    cl_vehiclehealthbars_cmd.register_cmd();
     ui_miniscoreboard_cmd.register_cmd();
     ui_always_show_specators_cmd.register_cmd();
     ui_simple_server_chat_messages_cmd.register_cmd();

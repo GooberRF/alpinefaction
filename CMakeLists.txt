@@ -38,7 +38,9 @@ if(MSVC)
     # Statically link Microsoft's CRT.
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 else()
-    add_compile_options(-msse2)
+    # RF.exe calls our hooks with a 4-byte aligned stack, so GCC must not assume its ABI default
+    # of 16, or aligned locals (Bullet's btVector3/btTransform) get no realignment prologue.
+    add_compile_options(-msse2 -mincoming-stack-boundary=2)
 endif()
 
 # Macros

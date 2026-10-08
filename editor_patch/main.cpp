@@ -18,6 +18,7 @@
 #include <common/version/version.h>
 #include <common/config/BuildConfig.h>
 #include <common/utils/os-utils.h>
+#include <common/bitmap/tga.h>
 #include <xlog/xlog.h>
 #include <xlog/ConsoleAppender.h>
 #include <xlog/FileAppender.h>
@@ -44,6 +45,7 @@
 #include "meshes.h"
 #include "headless_bake.h"
 #include "face_list_cache.h"
+#include "bake_progress.h"
 #include "alpine_lightmaps.h"
 #include "terrain_build.h"
 #include "terrain_paint.h"
@@ -839,6 +841,69 @@ CodeInjection CCutscenePropertiesDialog_ct_crash_fix{
     },
 };
 
+// Stock DedClutter ctor leaves +0xB8..+0xDF uninitialized, including the skin count at +0xDC, so the
+// save-time texture gather walks a garbage count past the 7 skin slots. Zeroing makes it inert.
+void* __fastcall DedClutter_ct(void* this_, int edx);
+FunHook DedClutter_ct_hook{
+    0x0044D9F0,
+    DedClutter_ct,
+};
+void* __fastcall DedClutter_ct(void* this_, int edx)
+{
+    void* result = DedClutter_ct_hook.call_target(this_, edx);
+    auto* clutter = static_cast<DedClutter*>(this_);
+    std::memset(clutter->skin_block, 0, sizeof(clutter->skin_block));
+    return result;
+}
+
+// An entry of the class list 0x004151C0 searches at this+0x5CC: the template is what a match copies from.
+struct RedClutterClass
+{
+    VString name;
+    void* template_clutter;
+};
+
+// 0x004B74E0: two empty strings match, otherwise a case-insensitive compare.
+static bool red_vstring_iequals(const VString& a, const VString& b)
+{
+    if (a.max_len == 0 || b.max_len == 0) {
+        return a.max_len == 0 && b.max_len == 0;
+    }
+    return _stricmp(a.buf, b.buf) == 0;
+}
+
+static bool red_clutter_class_known(void* level, const VString& class_name)
+{
+    const auto& classes = *reinterpret_cast<const VArray<RedClutterClass*>*>(static_cast<char*>(level) + 0x5CC);
+    for (int i = 0; i < classes.size; ++i) {
+        if (red_vstring_iequals(class_name, classes.data_ptr[i]->name)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Surface the silent failures above in the editor log: a class missing from clutter.tbl, or a known
+// class whose mesh did not load (0x004BFC30 returns null for that too).
+void __fastcall CDedLevel_AddClutter(void* this_, int edx, DedObject* obj, int flag);
+FunHook CDedLevel_AddClutter_hook{
+    0x004151C0,
+    CDedLevel_AddClutter,
+};
+void __fastcall CDedLevel_AddClutter(void* this_, int edx, DedObject* obj, int flag)
+{
+    CDedLevel_AddClutter_hook.call_target(this_, edx, obj, flag);
+    if (obj->vmesh) {
+        return;
+    }
+    if (red_clutter_class_known(this_, obj->class_name)) {
+        LogDlg_Append(GetLogDlg(), "Clutter mesh failed to load: %s (UID %d)\n", obj->class_name.c_str(), obj->uid);
+    }
+    else {
+        LogDlg_Append(GetLogDlg(), "Unknown clutter class: %s (UID %d)\n", obj->class_name.c_str(), obj->uid);
+    }
+}
+
 enum class ColorPickerSrc : uint8_t { dialog_ebx, dialog_esi, level };
 
 struct ColorPickerSite
@@ -1139,9 +1204,15 @@ FunHook<bool __cdecl(const Vector3*, const Vector3*, const Vector3*, const Vecto
     line_aabb_intersect_hook{0x004c9af0, line_aabb_intersect};
 
 // Fix greyscale TGA files (image types 3 and 11) not loading.
+// Also fails the load when the colormap the loader is about to copy does not fit the palette.
 CodeInjection tga_greyscale_fix{
     0x004F3B9E,
     [](auto& regs) {
+        if (addr_as_ref<uint8_t>(regs.esp + 0x1d)
+            && !tga_colormap_fits(addr_as_ref<void*>(regs.esp + 0x36c), regs.si)) {
+            regs.eip = 0x004F3BC0;
+            return;
+        }
         uint8_t image_type = regs.bl;
         if (image_type != 3 && image_type != 11) {
             return;
@@ -1163,6 +1234,11 @@ CodeInjection tga_greyscale_fix{
 CodeInjection tga_greyscale_fix_mipmap{
     0x004F40EE,
     [](auto& regs) {
+        if (addr_as_ref<uint8_t>(regs.esp + 0x2d)
+            && !tga_colormap_fits(addr_as_ref<void*>(regs.esp + 0x37c), regs.si)) {
+            regs.eip = 0x004F4110;
+            return;
+        }
         uint8_t image_type = regs.bl;
         if (image_type != 3 && image_type != 11) {
             return;
@@ -1178,6 +1254,54 @@ CodeInjection tga_greyscale_fix_mipmap{
             }
         }
         regs.bl = static_cast<int8_t>((image_type == 3) ? 2 : 10);
+        // The colormap path reloads the image type from here (0x004F418B)
+        addr_as_ref<uint8_t>(regs.esp + 0x2e) = static_cast<uint8_t>(regs.bl);
+    },
+};
+
+// Replaces the stock row decode, which trusts the header dimensions and RLE packet lengths.
+// Runs right after the file body is read: EDI = buffer, ESI = requested size, EAX = bytes read.
+template<typename Regs>
+static void tga_decode(Regs& regs, int width, int height, uint8_t bpp, uint8_t descriptor)
+{
+    const int bytes_read = regs.eax;
+    const int requested = regs.esi;
+    const uint8_t* src = regs.edi;
+    const auto src_size = static_cast<std::size_t>(std::clamp(bytes_read, 0, std::max(requested, 0)));
+    tga_decode_pixels(addr_as_ref<uint8_t*>(regs.esp + 0x36c), src, src_size, width, height, bpp >> 3,
+        regs.bl, (descriptor & tga_descriptor_top_down) != 0);
+}
+
+CodeInjection tga_decode_fix{
+    0x004F3CA7,
+    [](auto& regs) {
+        tga_decode(regs, addr_as_ref<int16_t>(regs.esp + 0x2e), addr_as_ref<int16_t>(regs.esp + 0x30),
+            addr_as_ref<uint8_t>(regs.esp + 0x32), addr_as_ref<uint8_t>(regs.esp + 0x33));
+        regs.eip = 0x004F3DDC;
+    },
+    // no trampoline: cannot be relocated; the handler always sets eip
+    false,
+};
+
+CodeInjection tga_decode_fix_mipmap{
+    0x004F41FC,
+    [](auto& regs) {
+        tga_decode(regs, addr_as_ref<int>(regs.esp + 0x1c), addr_as_ref<int>(regs.esp + 0x14),
+            addr_as_ref<uint8_t>(regs.esp + 0x3e), addr_as_ref<uint8_t>(regs.esp + 0x3f));
+        regs.eip = 0x004F430A;
+    },
+    // no trampoline: the handler always sets eip
+    false,
+};
+
+CodeInjection bm_lock_alloc_fail_fix{
+    0x004BCEAD,
+    [](auto& regs) {
+        if (regs.eax == 0) {
+            xlog::warn("[Bitmap] Failed to allocate buffer for a bitmap: {} bytes!", addr_as_ref<unsigned>(regs.esp));
+            regs.esp += 4;
+            regs.eip = 0x004BCE94;
+        }
     },
 };
 
@@ -1454,8 +1578,8 @@ static GroupEntry* find_moving_group_from_selection()
         }
 
         if (group->keyframes) {
-            for (int j = 0; j < group->keyframes->size; j++) {
-                if ((*group->keyframes)[j] == selected)
+            for (int j = 0; j < group->keyframes->objects.size; j++) {
+                if (group->keyframes->objects[j] == selected)
                     return group;
             }
         }
@@ -1469,10 +1593,10 @@ static GroupEntry* find_moving_group_from_selection()
 static int get_editing_group_first_keyframe_uid([[maybe_unused]] HWND hdlg)
 {
     auto* group = find_moving_group_from_selection();
-    if (!group || !group->keyframes || group->keyframes->size <= 0)
+    if (!group || !group->keyframes || group->keyframes->objects.size <= 0)
         return -1;
 
-    DedObject* first_kf = (*group->keyframes)[0];
+    DedObject* first_kf = group->keyframes->objects[0];
     return first_kf ? first_kf->uid : -1;
 }
 
@@ -1741,15 +1865,14 @@ void install_editor_bitmap_loader_hooks();
 void LoadAlpineEditorPackfile()
 {
     static auto& vpackfile_add = addr_as_ref<int __cdecl(const char *name, const char *dir)>(0x004CA930);
-    static auto& root_path = addr_as_ref<char[256]>(0x0158CA10);
 
     auto af_dir = get_module_dir(g_module);
-    std::string old_root_path = root_path;
-    std::strncpy(root_path, af_dir.c_str(), sizeof(root_path) - 1);
+    std::string old_root_path = file_root_path;
+    std::strncpy(file_root_path, af_dir.c_str(), sizeof(file_root_path) - 1);
     if (!vpackfile_add("alpinefaction.vpp", nullptr)) {
         xlog::error("Failed to load alpinefaction.vpp from {}", af_dir);
     }
-    std::strncpy(root_path, old_root_path.c_str(), sizeof(root_path) - 1);
+    std::strncpy(file_root_path, old_root_path.c_str(), sizeof(file_root_path) - 1);
 }
 
 CodeInjection vpackfile_init_injection{
@@ -2143,6 +2266,7 @@ extern "C" DWORD AF_DLL_EXPORT Init([[maybe_unused]] void* unused)
     ApplyGeometryPatches();
     ApplyAlpineLightmapPatches();
     ApplyFaceListCachePatches();
+    ApplyBakeProgressPatches();
     install_editor_bitmap_loader_hooks();
 
     // Browse for .v3m files instead of .v3d
@@ -2167,6 +2291,10 @@ extern "C" DWORD AF_DLL_EXPORT Init([[maybe_unused]] void* unused)
 
     // Fix random crash when opening cutscene properties
     CCutscenePropertiesDialog_ct_crash_fix.install();
+
+    // Fix save crash on clutter with a class missing from clutter.tbl (uninitialized skin count)
+    DedClutter_ct_hook.install();
+    CDedLevel_AddClutter_hook.install();
 
     // Load alpinefaction.vpp
     vpackfile_init_injection.install();
@@ -2256,9 +2384,16 @@ extern "C" DWORD AF_DLL_EXPORT Init([[maybe_unused]] void* unused)
     // Disable red background if geometry limits are crossed
     AsmWriter{0x0043A528, 0x0043A546}.nop();
 
-    // Fix greyscale TGA files not loading (types 3 and 11)
+    // Fix greyscale TGA files not loading (types 3 and 11) and validate TGA colormaps
     tga_greyscale_fix.install();
     tga_greyscale_fix_mipmap.install();
+
+    // Improve TGA pixel data validation
+    tga_decode_fix.install();
+    tga_decode_fix_mipmap.install();
+
+    // Fix crash when loading very big bitmaps
+    bm_lock_alloc_fail_fix.install();
 
     // Fix clip tool sometimes doing nothing on diagonal clip lines
     line_aabb_intersect_hook.install();

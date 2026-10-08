@@ -458,12 +458,17 @@ void terrain_prepare(DedTerrain& terrain)
 
 // ─── Cleanup ─────────────────────────────────────────────────────────────────
 
-void DestroyDedTerrain(DedTerrain* terrain)
+void terrain_release_editor_state(const DedTerrain* terrain)
 {
-    if (!terrain) return;
     terrain_paint_forget(terrain);
     terrain_preview_forget(terrain);
     terrain_decorations_forget(terrain);
+}
+
+void DestroyDedTerrain(DedTerrain* terrain)
+{
+    if (!terrain) return;
+    terrain_release_editor_state(terrain);
     terrain->field_4.free();
     terrain->script_name.free();
     terrain->class_name.free();
@@ -803,6 +808,8 @@ static void terrain_from_record(at::Record& rec, DedTerrain* terrain)
         deco.align_to_slope = src.align_to_slope;
         deco.random_yaw = src.random_yaw;
         deco.casts_shadows = src.casts_shadows;
+        deco.dither_fade = src.dither_fade;
+        deco.edges = src.edges;
     }
     d.build_mapping = std::move(rec.build_mapping);
     d.grid = std::move(g);
@@ -1248,6 +1255,7 @@ static constexpr TerrainDecoCheck terrain_deco_checks[] = {
     {IDC_TERRAIN_DECO_ALIGN, &DedTerrainDecoration::align_to_slope},
     {IDC_TERRAIN_DECO_RANDOM_YAW, &DedTerrainDecoration::random_yaw},
     {IDC_TERRAIN_DECO_CASTS_SHADOWS, &DedTerrainDecoration::casts_shadows},
+    {IDC_TERRAIN_DECO_DITHER_FADE, &DedTerrainDecoration::dither_fade},
 };
 
 // Enabled while there is a decoration to edit.
@@ -1258,6 +1266,7 @@ static constexpr int terrain_deco_controls[] = {
     IDC_TERRAIN_DECO_SLOPE_SPIN, IDC_TERRAIN_DECO_DRAW_DIST,      IDC_TERRAIN_DECO_DRAW_DIST_SPIN,
     IDC_TERRAIN_DECO_OFFSET,     IDC_TERRAIN_DECO_OFFSET_SPIN,    IDC_TERRAIN_DECO_LINK,
     IDC_TERRAIN_DECO_ALIGN,      IDC_TERRAIN_DECO_RANDOM_YAW,     IDC_TERRAIN_DECO_CASTS_SHADOWS,
+    IDC_TERRAIN_DECO_DITHER_FADE, IDC_TERRAIN_DECO_EDGES,
 };
 
 // Staging for the open dialog: only IDOK writes the terrain. The viewport box follows the staged
@@ -1510,6 +1519,8 @@ static void terrain_dlg_load_decoration_fields(HWND hdlg)
     for (const TerrainDecoCheck& c : terrain_deco_checks) {
         CheckDlgButton(hdlg, c.check, deco && deco->*c.value ? BST_CHECKED : BST_UNCHECKED);
     }
+    alpine_dlg_combo_select(hdlg, IDC_TERRAIN_DECO_EDGES,
+                            static_cast<LPARAM>(deco ? deco->edges : at::DecorationEdges::hard));
 }
 
 static void terrain_dlg_load_layer_fields(HWND hdlg, int kind)
@@ -1990,6 +2001,10 @@ static void terrain_dlg_store_decoration_fields(HWND hdlg)
     terrain_set_decoration_link(d, static_cast<std::size_t>(sel), new_link);
     for (const TerrainDecoCheck& c : terrain_deco_checks) {
         deco.*c.value = IsDlgButtonChecked(hdlg, c.check) == BST_CHECKED;
+    }
+    const LRESULT edges = alpine_dlg_combo_data(hdlg, IDC_TERRAIN_DECO_EDGES, static_cast<LRESULT>(deco.edges));
+    if (edges >= 0 && edges < static_cast<LRESULT>(at::DecorationEdges::count)) {
+        deco.edges = static_cast<at::DecorationEdges>(edges);
     }
     terrain_dlg_refresh_layer_row(hdlg, terrain_list_decorations, sel);
     terrain_dlg_update_readouts(hdlg);
@@ -2604,11 +2619,13 @@ static INT_PTR terrain_dlg_command(HWND hdlg, WPARAM wp)
         if (HIWORD(wp) == EN_CHANGE && g_terrain_dlg.active) terrain_dlg_store_decoration_fields(hdlg);
         break;
     case IDC_TERRAIN_DECO_LINK:
+    case IDC_TERRAIN_DECO_EDGES:
         if (HIWORD(wp) == CBN_SELCHANGE && g_terrain_dlg.active) terrain_dlg_store_decoration_fields(hdlg);
         break;
     case IDC_TERRAIN_DECO_ALIGN:
     case IDC_TERRAIN_DECO_RANDOM_YAW:
     case IDC_TERRAIN_DECO_CASTS_SHADOWS:
+    case IDC_TERRAIN_DECO_DITHER_FADE:
         terrain_dlg_store_decoration_fields(hdlg);
         return TRUE;
     case IDC_TERRAIN_DECO_MESH_BROWSE:
@@ -2663,6 +2680,10 @@ static constexpr const char* terrain_tip_deco_scale = "Each instance's size is p
 static constexpr const char* terrain_tip_deco_link = "Also scaled by this texture layer's painted weight.";
 static constexpr const char* terrain_tip_deco_slope = "No instances on ground steeper than this (degrees).";
 static constexpr const char* terrain_tip_deco_draw_dist = "Instances fade out by this distance (m).";
+static constexpr const char* terrain_tip_deco_edges =
+    "How alpha-blended materials draw their edges (Direct3D 11). Hard: cut out, anti-aliased with MSAA. "
+    "Soft: blended edges, about twice the draw cost. Soft, unsorted: blended in one pass, but the edges can "
+    "hide what is behind them.";
 static constexpr const char* terrain_tip_deco_offset =
     "Raises each mesh along its up axis (mesh units, scaled). For meshes centred on their origin.";
 
@@ -2703,7 +2724,11 @@ static constexpr DialogTooltip terrain_dlg_tooltips[] = {
     {IDC_TERRAIN_DECO_OFFSET, terrain_tip_deco_offset},
     {IDC_TERRAIN_DECO_OFFSET_LABEL, terrain_tip_deco_offset},
     {IDC_TERRAIN_DECO_CASTS_SHADOWS, "Shadows are baked by Calculate Lighting."},
+    {IDC_TERRAIN_DECO_DITHER_FADE,
+     "Dissolve out toward the draw distance instead of shrinking (Direct3D 11 renderer)."},
     {IDC_TERRAIN_DECO_ALIGN, "Tilt to the ground slope."},
+    {IDC_TERRAIN_DECO_EDGES, terrain_tip_deco_edges},
+    {IDC_TERRAIN_DECO_EDGES_LABEL, terrain_tip_deco_edges},
 };
 
 static INT_PTR CALLBACK TerrainDialogProc(HWND hdlg, UINT msg, WPARAM wp, LPARAM lp)
@@ -2742,6 +2767,11 @@ static INT_PTR CALLBACK TerrainDialogProc(HWND hdlg, UINT msg, WPARAM wp, LPARAM
             alpine_dlg_combo_add(hdlg, IDC_TERRAIN_WEIGHT_RES, buf, mul);
         }
         alpine_dlg_combo_select(hdlg, IDC_TERRAIN_WEIGHT_RES, d.grid->weight_res_mul);
+
+        alpine_dlg_combo_add(hdlg, IDC_TERRAIN_DECO_EDGES, "Hard", static_cast<LPARAM>(at::DecorationEdges::hard));
+        alpine_dlg_combo_add(hdlg, IDC_TERRAIN_DECO_EDGES, "Soft", static_cast<LPARAM>(at::DecorationEdges::soft));
+        alpine_dlg_combo_add(hdlg, IDC_TERRAIN_DECO_EDGES, "Soft, unsorted",
+                             static_cast<LPARAM>(at::DecorationEdges::soft_unsorted));
 
         alpine_spinner_init(hdlg, IDC_TERRAIN_CELL_SIZE, IDC_TERRAIN_CELL_SIZE_SPIN, 0.25f, at::min_cell_size,
                             at::max_cell_size, 3);
@@ -3016,6 +3046,24 @@ static bool terrain_can_add(CDedLevel* level, const DedTerrainData& d, bool inte
     return false;
 }
 
+bool terrain_can_restore(CDedLevel* level, const DedTerrain& terrain)
+{
+    try {
+        return terrain_can_add(level, terrain.data, false);
+    }
+    catch (const std::bad_alloc&) {
+        return false;
+    }
+}
+
+void terrain_report_not_restored(int count)
+{
+    terrain_report(std::format("Undo did not restore {} terrain(s): the level would exceed its limit of {} terrains "
+                               "or {} MB of terrain data.",
+                               count, at::max_terrains, at::max_level_raw_bytes >> 20),
+                   true);
+}
+
 static void terrain_place_new(CDedLevel* level)
 {
     auto& terrains = level->GetAlpineLevelProperties().terrain_objects;
@@ -3095,15 +3143,7 @@ void DeleteTerrainObject(DedTerrain* terrain)
     if (!terrain) return;
     auto* level = CDedLevel::Get();
     if (!level) return;
-
-    auto& terrains = level->GetAlpineLevelProperties().terrain_objects;
-    auto it = std::find(terrains.begin(), terrains.end(), terrain);
-    if (it != terrains.end()) {
-        terrains.erase(it);
-    }
-    alpine_remove_from_groups(level, static_cast<DedObject*>(terrain));
-    level->master_objects.remove_by_value(static_cast<DedObject*>(terrain));
-    DestroyDedTerrain(terrain);
+    alpine_detach_object(level, level->GetAlpineLevelProperties().terrain_objects, terrain);
 }
 
 // ─── Rendering ──────────────────────────────────────────────────────────────
@@ -3146,10 +3186,18 @@ void terrain_render_surfaces(CDedLevel* level)
         bool selected = false;
         const DedTerrainData& data = terrain_shown_data(level, terrain, selected);
         terrain_preview_draw(*level, *terrain, data, selected);
-        terrain_decorations_collect(*terrain, data);
+    }
+    terrain_preview_frame_end(*level);
+}
+
+void terrain_render_decorations(CDedLevel* level)
+{
+    for (auto* terrain : level->GetAlpineLevelProperties().terrain_objects) {
+        if (terrain->hidden_in_editor) continue;
+        bool selected = false;
+        terrain_decorations_collect(*terrain, terrain_shown_data(level, terrain, selected));
     }
     terrain_decorations_frame_end(*level, g_terrain_dlg.active ? &g_terrain_dlg.data : nullptr);
-    terrain_preview_frame_end(*level);
 }
 
 void terrain_render(CDedLevel* level)
@@ -3297,11 +3345,6 @@ void terrain_handle_delete_or_cut(DedObject* obj)
     if (it != terrains.end()) {
         terrains.erase(it);
     }
-}
-
-void terrain_handle_delete_selection(CDedLevel* level)
-{
-    alpine_compact_selection<DedTerrain>(level, DedObjectType::DED_TERRAIN, DeleteTerrainObject);
 }
 
 void terrain_ensure_uid(int& uid)

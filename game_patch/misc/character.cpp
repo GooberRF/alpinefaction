@@ -232,6 +232,9 @@ entity_create_prop_fix_hook{
         rf::Entity* ep = entity_create_prop_fix_hook.call_target(
             entity_type, name, parent_handle, pos, orient, create_flags, mp_character);
         if (ep) {
+            // entity_create never initializes +0x13D0, so a recycled block leaves a stale
+            // sound handle that entity_delete would stop.
+            ep->driller_sound_handle = -1;
             fix_eos_prop_flag(ep->vmesh);
         }
         return ep;

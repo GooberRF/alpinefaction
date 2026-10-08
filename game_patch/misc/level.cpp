@@ -17,12 +17,15 @@
 #include "misc.h"
 #include "player.h"
 #include "../multi/server.h"
+#include "../multi/vehicles/vehicle_physics.h"
 #include "../object/alpine_corona.h"
 #include "../object/alpine_bag.h"
 #include "../object/alpine_projection_camera.h"
 #include "../object/alpine_rope.h"
+#include "../object/alpine_dir_light.h"
 #include "../object/mover.h"
 #include "../hud/hud_world.h"
+#include "../hud/minimap.h"
 #include "../graphics/af_lightmap.h"
 #include "../graphics/d3d11/gr_d3d11_hooks.h"
 #include "../graphics/weather.h"
@@ -129,14 +132,17 @@ CodeInjection level_load_init_patch{
         alpine_mesh_clear_state();
         alpine_corona_clear_state();
         alpine_bag_clear_state();
+        vehicle_factory_clear_state();
         alpine_projection_camera_clear_state();
         alpine_rope_clear_state();
+        alpine_dir_light_clear_state();
         alpine_terrain_decorations_clear_state();
         alpine_terrain_clear_state();
         gr::d3d11::release_terrain_gpu();
         gas_region_clear_state();
         climb_region_clear_state();
         weather_clear_regions();
+        minimap_level_reset();
         af_lightmap_level_reset();
         projector_clear_all();
         alpine_mover_clear_hold_open();
@@ -152,10 +158,12 @@ void level_shutdown()
     af_lightmap_level_reset();
     projector_clear_all();
     alpine_rope_clear_state();
+    alpine_dir_light_clear_state();
     alpine_terrain_decorations_clear_state();
     alpine_terrain_clear_state();
     gr::d3d11::release_terrain_gpu();
     alpine_mesh_free_collision_proxies();
+    vehicle_physics_level_reset(); // the Bullet world keys on GRoom*, so it goes before the rooms
 }
 
 // Reached from quit-to-menu and leaving for the multiplayer menu (via game_shutdown), the
@@ -225,6 +233,13 @@ CodeInjection level_load_chunk_patch{
             regs.eip = 0x004608EF;
         }
 
+        // handling for alpine vehicle factory objects chunk
+        if (chunk_id == alpine_vehicle_factory_chunk_id) {
+            xlog::debug("[Level] Loading alpine vehicle factory chunk: len={}", chunk_len);
+            vehicle_factory_load_chunk(file, chunk_len);
+            regs.eip = 0x004608EF;
+        }
+
         // handling for alpine projection camera objects chunk
         if (chunk_id == alpine_projection_camera_chunk_id) {
             xlog::debug("[Level] Loading alpine projection camera chunk: len={}", chunk_len);
@@ -243,6 +258,13 @@ CodeInjection level_load_chunk_patch{
         if (chunk_id == alpine_terrain_chunk_id) {
             xlog::debug("[Level] Loading alpine terrain chunk: len={}", chunk_len);
             alpine_terrain_load_chunk(file, chunk_len);
+            regs.eip = 0x004608EF;
+        }
+
+        // handling for alpine directional light objects chunk
+        if (chunk_id == alpine_directional_light_chunk_id) {
+            xlog::debug("[Level] Loading alpine directional light chunk: len={}", chunk_len);
+            alpine_dir_light_load_chunk(file, chunk_len, file.get_version());
             regs.eip = 0x004608EF;
         }
 

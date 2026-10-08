@@ -47,6 +47,8 @@ struct TerrainDecorations
     int mesh_slot[alpine_terrain::max_decorations] = {-1, -1, -1, -1, -1, -1, -1, -1};
     float draw_distance[alpine_terrain::max_decorations] = {};
     float vertical_offset[alpine_terrain::max_decorations] = {};
+    bool dither_fade[alpine_terrain::max_decorations] = {};
+    alpine_terrain::DecorationEdges edges[alpine_terrain::max_decorations] = {};
     // Chunks whose instance ranges changed since the D3D11 renderer last uploaded them
     std::vector<std::uint32_t> dirty_chunks;
 };

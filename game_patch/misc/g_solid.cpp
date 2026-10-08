@@ -31,6 +31,7 @@
 #include "destruction.h"
 #include "level.h"
 #include "alpine_terrain.h"
+#include "../graphics/af_lightmap.h"
 
 constexpr auto reference_fps = 30.0f;
 constexpr auto reference_frametime = 1.0f / reference_fps;
@@ -337,10 +338,14 @@ CodeInjection GSolid_get_ambient_color_from_lightmap_patch{
     },
 };
 
-// Terrain faces have no surface, so stock returns white ("no lightmap") for anything on them.
+// Terrain and overflow-charted faces have no surface, so stock returns white ("no lightmap") for anything on them.
 FunHook<rf::Color* __fastcall(rf::GSolid*, int, rf::Color*, rf::GFace*, rf::Vector3*)> GSolid_get_ambient_color_hook{
     0x004E5C60,
     [](rf::GSolid* solid, int edx, rf::Color* out, rf::GFace* face, rf::Vector3* pos) FASTCALL_LAMBDA -> rf::Color* {
+        // Capped below 255 so the D3D11 mesh path never reads it as "no lightmap"
+        const auto to_byte = [](float v) {
+            return static_cast<rf::ubyte>(std::clamp(v * 255.0f + 0.5f, 0.0f, 254.0f));
+        };
         if (face && pos && face->attributes.surface_index < 0) {
             if (const AlpineTerrainRoomRef* ref = alpine_terrain_find_room(face->which_room)) {
                 const AlpineTerrain& t = alpine_terrain_get_all()[ref->terrain];
@@ -349,10 +354,11 @@ FunHook<rf::Color* __fastcall(rf::GSolid*, int, rf::Color*, rf::GFace*, rf::Vect
                 float texel[3];
                 const auto kind = alpine_terrain_face_kind(alpine_terrain_grid(t), *face);
                 alpine_terrain_sample_light(ref->terrain, kind, p, n, texel);
-                // Capped below 255 so the D3D11 mesh path never reads it as "no lightmap"
-                auto to_byte = [](float v) {
-                    return static_cast<rf::ubyte>(std::clamp(v * 255.0f + 0.5f, 0.0f, 254.0f));
-                };
+                out->set(to_byte(texel[0]), to_byte(texel[1]), to_byte(texel[2]), 255);
+                return out;
+            }
+            float texel[3];
+            if (af_lightmap_overflow_light(solid, face, texel)) {
                 out->set(to_byte(texel[0]), to_byte(texel[1]), to_byte(texel[2]), 255);
                 return out;
             }
@@ -1137,6 +1143,7 @@ static void face_list_shadow_reset()
 FunHook<void __fastcall(GFaceListRaw*, int, rf::GFace*)> solid_face_list_add_hook{
     0x004D3160,
     [](GFaceListRaw* list, int edx, rf::GFace* face) FASTCALL_LAMBDA {
+        af_lightmap_overflow_capture_face(face);
         if (!g_face_list_shadow_active) {
             solid_face_list_add_hook.call_target(list, edx, face);
             return;
@@ -1148,6 +1155,7 @@ FunHook<void __fastcall(GFaceListRaw*, int, rf::GFace*)> solid_face_list_add_hoo
 FunHook<void __fastcall(GFaceListRaw*, int, rf::GFace*)> solid_face_list_remove_hook{
     0x004CE2A0,
     [](GFaceListRaw* list, int edx, rf::GFace* face) FASTCALL_LAMBDA {
+        af_lightmap_overflow_capture_drop(face);
         if (!g_face_list_shadow_active) {
             solid_face_list_remove_hook.call_target(list, edx, face);
             return;
@@ -1209,6 +1217,57 @@ FunHook<void*(void*, void*, int)> geo_load_static_geometry_section_hook{
         void* result = geo_load_static_geometry_section_hook.call_target(file, solid, unk);
         face_list_shadow_reset();
         return result;
+    },
+};
+
+// The level's static geometry section; the movers section reads mover solids through the same loader.
+CallHook<void*(void*, void*, int)> level_geometry_load_hook{
+    0x00461A9E,
+    [](void* file, void* solid, int unk) {
+        // a level load passes no solid; a second geometry section passes the first one's and frees its own faces
+        const bool capture = !solid;
+        if (capture) {
+            af_lightmap_overflow_capture_begin();
+        }
+        void* result = level_geometry_load_hook.call_target(file, solid, unk);
+        if (capture) {
+            af_lightmap_overflow_capture_end();
+        }
+        return result;
+    },
+};
+
+// Every face the engine frees passes here (the only caller of the face pool's release, 0x004E3CB0).
+FunHook<void(rf::GFace*)> face_destroy_hook{
+    0x004DFC70,
+    [](rf::GFace* face) {
+        af_lightmap_overflow_face_destroyed(face);
+        face_destroy_hook.call_target(face);
+    },
+};
+
+// Copies a face's attributes and loop into a new face in its plane (thiscall on the source, RET 4).
+FunHook<rf::GFace* __fastcall(rf::GFace*, int, int)> face_clone_hook{
+    0x004E2A80,
+    [](rf::GFace* source, int edx, int arg) FASTCALL_LAMBDA -> rf::GFace* {
+        rf::GFace* clone = face_clone_hook.call_target(source, edx, arg);
+        af_lightmap_overflow_face_cloned(source, clone);
+        return clone;
+    },
+};
+
+// Splits a face in two along a chord (thiscall on the source, RET 0x18), for booleans and oversized faces; the
+// caller then deletes the source.
+FunHook<bool __fastcall(rf::GFace*, int, void*, int, int, void*, rf::GFace**, rf::GFace**)> face_split_hook{
+    0x004E2650,
+    [](rf::GFace* source, int edx, void* solid, int a, int b, void* verts, rf::GFace** out1,
+       rf::GFace** out2) FASTCALL_LAMBDA -> bool {
+        const bool split = face_split_hook.call_target(source, edx, solid, a, b, verts, out1, out2);
+        if (split) {
+            af_lightmap_overflow_face_cloned(source, *out1);
+            af_lightmap_overflow_face_cloned(source, *out2);
+        }
+        return split;
     },
 };
 
@@ -1337,6 +1396,12 @@ void g_solid_do_patch()
     bbox_face_list_remove_hook.install();
     room_face_list_add_hook.install();
     room_face_list_remove_hook.install();
+
+    // Alpine overflow lightmaps know the level's faces by their place in the geometry section
+    level_geometry_load_hook.install();
+    face_destroy_hook.install();
+    face_clone_hook.install();
+    face_split_hook.install();
 
     // Commands
     max_decals_cmd.register_cmd();

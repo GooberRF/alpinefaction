@@ -1,10 +1,16 @@
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstring>
+#include <limits>
+#include <map>
 #include <new>
+#include <tuple>
 #include <unordered_map>
 #include <utility>
+#include <vector>
 #include <xlog/xlog.h>
+#include <common/lighting/alpine_lighting.h>
 #include <common/terrain/alpine_terrain_reader.h>
 #include "alpine_settings.h"
 #include "alpine_terrain.h"
@@ -248,6 +254,321 @@ bool alpine_terrain_is_separate_chunk(const rf::GRoom* parent, const rf::GRoom* 
     return parent && !parent->is_sky && alpine_terrain_is_chunk_room(detail_room);
 }
 
+namespace
+{
+
+using SeamPoint = std::array<double, 2>;
+
+// A chunk wall's outline in its seam plane: (u, y), u being z on an x line and x on a z line.
+struct SeamWall
+{
+    std::vector<SeamPoint> pts;
+    double lo_u, hi_u, lo_y, hi_y;
+};
+
+// What an AlpineTerrainSeamScope gathers once: the live chunk rooms, and a room's walls on a boundary line.
+struct SeamCache
+{
+    bool rooms_built = false;
+    std::unordered_map<std::uint64_t, rf::GRoom*> chunk_rooms; // (terrain << 32) | chunk
+    std::map<std::tuple<const rf::GRoom*, int, std::int64_t, int>, std::vector<SeamWall>> walls;
+    // Scratch, reused so a rebuild's hundreds of seam faces don't each allocate.
+    std::vector<SeamPoint> outline;
+    std::vector<SeamPoint> clip_a;
+    std::vector<SeamPoint> clip_b;
+};
+SeamCache* g_seam_cache = nullptr;
+
+std::uint64_t seam_chunk_key(int terrain, std::int64_t chunk)
+{
+    return (static_cast<std::uint64_t>(static_cast<std::uint32_t>(terrain)) << 32) |
+        static_cast<std::uint32_t>(chunk);
+}
+
+// The faces of `room` lying on grid line `line` of `axis` (0 x, 2 z) whose normal points `sign` along it.
+std::vector<SeamWall> gather_seam_walls(rf::GRoom* room, const at::GridView& g, int axis, std::int64_t line, int sign)
+{
+    std::vector<SeamWall> out;
+    const float line_c = g.origin[axis] + static_cast<float>(line) * g.cell_size;
+    for (rf::GFace& f : room->face_list) {
+        const float n_axis = axis == 0 ? f.plane.normal.x : f.plane.normal.z;
+        if (!(n_axis * static_cast<float>(sign) > 0.999f)) continue;
+        SeamWall w;
+        w.lo_u = w.lo_y = std::numeric_limits<double>::max();
+        w.hi_u = w.hi_y = -std::numeric_limits<double>::max();
+        bool on_line = true;
+        int n = 0;
+        for (const rf::GFaceVertex* fv = f.edge_loop; fv;) {
+            if (++n > rf::max_face_vertices || !fv->vertex) {
+                on_line = false;
+                break;
+            }
+            const rf::Vector3& p = fv->vertex->pos;
+            const float c = axis == 0 ? p.x : p.z;
+            if (!(std::fabs(c - line_c) <= at::coord_tolerance(c, line_c))) {
+                on_line = false;
+                break;
+            }
+            const SeamPoint q{axis == 0 ? p.z : p.x, p.y};
+            w.pts.push_back(q);
+            w.lo_u = std::min(w.lo_u, q[0]);
+            w.hi_u = std::max(w.hi_u, q[0]);
+            w.lo_y = std::min(w.lo_y, q[1]);
+            w.hi_y = std::max(w.hi_y, q[1]);
+            fv = fv->next;
+            if (fv == f.edge_loop) break;
+        }
+        if (on_line && w.pts.size() >= 3) out.push_back(std::move(w));
+    }
+    return out;
+}
+
+double seam_signed_area(const std::vector<SeamPoint>& p)
+{
+    double a = 0.0;
+    for (std::size_t i = 0, n = p.size(); i < n; i++) {
+        const SeamPoint& u = p[i];
+        const SeamPoint& v = p[(i + 1) % n];
+        a += u[0] * v[1] - v[0] * u[1];
+    }
+    return a * 0.5;
+}
+
+// Sutherland-Hodgman: `subject` clipped to the convex, counter-clockwise `clip`, each edge pushed out by 0.01 mm
+// so a subject lying exactly on `clip` (a carve's sliver and its twin in the next chunk) is not rounded away.
+// Returns the clipped area; `source` is moved by -`origin` first. `subject` and `input` are scratch.
+double seam_clipped_area(const std::vector<SeamPoint>& source, const SeamPoint& origin,
+                         const std::vector<SeamPoint>& clip, std::vector<SeamPoint>& subject,
+                         std::vector<SeamPoint>& input)
+{
+    constexpr double edge_slack = 1e-5;
+    subject.clear();
+    for (const SeamPoint& q : source) subject.push_back({q[0] - origin[0], q[1] - origin[1]});
+    for (std::size_t i = 0, m = clip.size(); i < m && !subject.empty(); i++) {
+        const SeamPoint& a = clip[i];
+        const SeamPoint& b = clip[(i + 1) % m];
+        const double slack = edge_slack * std::hypot(b[0] - a[0], b[1] - a[1]);
+        const auto side = [&](const SeamPoint& p) {
+            return (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0]) + slack;
+        };
+        input.swap(subject);
+        subject.clear();
+        for (std::size_t j = 0, n = input.size(); j < n; j++) {
+            const SeamPoint& cur = input[j];
+            const SeamPoint& prev = input[(j + n - 1) % n];
+            const double sc = side(cur), sp = side(prev);
+            if ((sc >= 0.0) != (sp >= 0.0)) {
+                const double t = sp / (sp - sc);
+                subject.push_back({prev[0] + (cur[0] - prev[0]) * t, prev[1] + (cur[1] - prev[1]) * t});
+            }
+            if (sc >= 0.0) subject.push_back(cur);
+        }
+    }
+    return std::fabs(seam_signed_area(subject));
+}
+
+// 0 inside the convex wall `w`, else the distance from `p` to its outline.
+double seam_distance_to_wall(const SeamWall& w, const SeamPoint& p)
+{
+    bool inside = false;
+    double best = std::numeric_limits<double>::max();
+    for (std::size_t i = 0, n = w.pts.size(); i < n; i++) {
+        const SeamPoint& a = w.pts[i];
+        const SeamPoint& b = w.pts[(i + 1) % n];
+        if ((a[1] > p[1]) != (b[1] > p[1]) && p[0] < a[0] + (p[1] - a[1]) / (b[1] - a[1]) * (b[0] - a[0])) {
+            inside = !inside;
+        }
+        const double du = b[0] - a[0], dy = b[1] - a[1];
+        const double len_sq = du * du + dy * dy;
+        const double t = len_sq > 0.0 ? std::clamp(((p[0] - a[0]) * du + (p[1] - a[1]) * dy) / len_sq, 0.0, 1.0) : 0.0;
+        best = std::min(best, std::hypot(a[0] + du * t - p[0], a[1] + dy * t - p[1]));
+    }
+    return inside ? 0.0 : best;
+}
+
+bool seam_face_is_backed(const rf::GFace& face, SeamCache& cache)
+{
+    const rf::GRoom* room = face.which_room;
+    const AlpineTerrainRoomRef* ref = alpine_terrain_find_room(room);
+    if (!ref || !room->is_geoable) return false;
+    const AlpineTerrain& t = g_terrains[static_cast<std::size_t>(ref->terrain)];
+    if (!(t.header.flags & at::flag_geoable)) return false;
+    const at::ChunkLayout layout = at::header_chunk_layout(t.header);
+    const std::uint32_t across = at::chunks_along(layout.cells_x, layout.edge);
+    if (across == 0) return false;
+    const auto chunk = static_cast<std::uint32_t>(ref->chunk);
+    const at::ChunkRect r = at::chunk_rect(layout.cells_x, layout.cells_z, layout.edge, chunk);
+    const at::GridView g = alpine_terrain_grid(t);
+    if (!(g.cell_size > 0.0f)) return false;
+    const float max_line = static_cast<float>(std::max(g.nx, g.nz));
+
+    // Every vertex on one grid line of `axis` (0 x, 2 z); the line's cell index, or -1.
+    auto line_of = [&](int axis) -> std::int64_t {
+        std::int64_t line = -1;
+        int n = 0;
+        for (const rf::GFaceVertex* fv = face.edge_loop; fv;) {
+            if (++n > rf::max_face_vertices || !fv->vertex) return -1;
+            const float c = axis == 0 ? fv->vertex->pos.x : fv->vertex->pos.z;
+            const float o = g.origin[axis];
+            const float f = (c - o) / g.cell_size;
+            if (!(f > -1.0f && f < max_line)) return -1;
+            const auto k = static_cast<std::int64_t>(std::lround(f));
+            if ((line >= 0 && k != line) || k < 0
+                || std::fabs(c - (o + static_cast<float>(k) * g.cell_size)) > at::coord_tolerance(c, o)) {
+                return -1;
+            }
+            line = k;
+            fv = fv->next;
+            if (fv == face.edge_loop) break;
+        }
+        return n >= 3 ? line : -1;
+    };
+    std::int64_t neighbour = -1;
+    int axis = 0;
+    std::int64_t line = line_of(0);
+    if (line >= 0) {
+        if (line == r.x0 && r.x0 > 0) neighbour = chunk - 1;
+        else if (line == r.x1 && r.x1 < layout.cells_x) neighbour = chunk + 1;
+    }
+    else {
+        axis = 2;
+        line = line_of(2);
+        if (line >= 0 && line == r.z0 && r.z0 > 0) neighbour = chunk - across;
+        else if (line >= 0 && line == r.z1 && r.z1 < layout.cells_z) neighbour = chunk + across;
+    }
+    if (neighbour < 0 || !rf::level.geometry) return false;
+    const float n_axis = axis == 0 ? face.plane.normal.x : face.plane.normal.z;
+    if (!(std::fabs(n_axis) > 0.999f)) return false;
+
+    // From the live room list: the engine frees a room a carve emptied (0x004D0590), so a stored pointer may dangle.
+    if (!cache.rooms_built) {
+        for (rf::GRoom* candidate : rf::level.geometry->all_rooms) {
+            if (const AlpineTerrainRoomRef* c = alpine_terrain_find_room(candidate)) {
+                cache.chunk_rooms.emplace(seam_chunk_key(c->terrain, c->chunk), candidate);
+            }
+        }
+        cache.rooms_built = true;
+    }
+    const auto it = cache.chunk_rooms.find(seam_chunk_key(ref->terrain, neighbour));
+    if (it == cache.chunk_rooms.end() || !it->second->is_geoable) return false;
+
+    // The neighbour's opposite walls on this line must cover the whole face: a carve that reached one chunk and
+    // not the other leaves the other's wall partly or wholly open.
+    const int back_sign = n_axis > 0.0f ? -1 : 1;
+    const auto key = std::make_tuple(static_cast<const rf::GRoom*>(it->second), axis, line, back_sign);
+    auto walls_it = cache.walls.find(key);
+    if (walls_it == cache.walls.end()) {
+        walls_it = cache.walls.emplace(key, gather_seam_walls(it->second, g, axis, line, back_sign)).first;
+    }
+
+    // In (u, y) about the face's first vertex, counter-clockwise. line_of checked every vertex.
+    std::vector<SeamPoint>& outline = cache.outline;
+    outline.clear();
+    SeamPoint origin{};
+    for (const rf::GFaceVertex* fv = face.edge_loop; fv;) {
+        const SeamPoint q{axis == 0 ? fv->vertex->pos.z : fv->vertex->pos.x, fv->vertex->pos.y};
+        if (outline.empty()) origin = q;
+        outline.push_back({q[0] - origin[0], q[1] - origin[1]});
+        fv = fv->next;
+        if (fv == face.edge_loop || outline.size() >= static_cast<std::size_t>(rf::max_face_vertices)) break;
+    }
+    double area = seam_signed_area(outline);
+    if (area < 0.0) {
+        std::reverse(outline.begin(), outline.end());
+        area = -area;
+    }
+    // A sliver thinner than any hull, as a carve leaves where the two chunks' cuts differ by float error: its
+    // degenerate triangles give two-sided collision bogus normals. Dropped only while every vertex is within the
+    // same width of the neighbour's wall, so the slit is that thin and a run of exposed slivers can't add up.
+    constexpr double sliver_width = 0.01;
+    double perimeter = 0.0;
+    for (std::size_t i = 0, n = outline.size(); i < n; i++) {
+        const SeamPoint& u = outline[i];
+        const SeamPoint& v = outline[(i + 1) % n];
+        perimeter += std::hypot(v[0] - u[0], v[1] - u[1]);
+    }
+    if (!(2.0 * area >= sliver_width * perimeter)) {
+        for (const SeamPoint& q : outline) {
+            const SeamPoint p{q[0] + origin[0], q[1] + origin[1]};
+            bool by_wall = false;
+            for (const SeamWall& w : walls_it->second) {
+                if (p[0] < w.lo_u - sliver_width || p[0] > w.hi_u + sliver_width || p[1] < w.lo_y - sliver_width ||
+                    p[1] > w.hi_y + sliver_width) {
+                    continue;
+                }
+                if (seam_distance_to_wall(w, p) <= sliver_width) {
+                    by_wall = true;
+                    break;
+                }
+            }
+            if (!by_wall) return false;
+        }
+        return true;
+    }
+    double lo_u = 0.0, hi_u = 0.0, lo_y = 0.0, hi_y = 0.0;
+    for (const SeamPoint& q : outline) {
+        lo_u = std::min(lo_u, q[0]);
+        hi_u = std::max(hi_u, q[0]);
+        lo_y = std::min(lo_y, q[1]);
+        hi_y = std::max(hi_y, q[1]);
+    }
+    // At most 0.1% of the face, and never more than 10 cm^2, may be open.
+    const double needed = area - std::min(area * 1e-3, 1e-3);
+    double covered = 0.0;
+    for (const SeamWall& w : walls_it->second) {
+        if (w.hi_u - origin[0] < lo_u || w.lo_u - origin[0] > hi_u || w.hi_y - origin[1] < lo_y ||
+            w.lo_y - origin[1] > hi_y) {
+            continue;
+        }
+        covered += seam_clipped_area(w.pts, origin, outline, cache.clip_a, cache.clip_b);
+        if (covered >= needed) {
+            break;
+        }
+    }
+    return covered >= needed;
+}
+
+} // namespace
+
+AlpineTerrainSeamScope::AlpineTerrainSeamScope()
+{
+    if (!g_seam_cache) {
+        try {
+            g_seam_cache = new SeamCache;
+            owner_ = true;
+        }
+        catch (const std::bad_alloc&) {
+        }
+    }
+}
+
+AlpineTerrainSeamScope::~AlpineTerrainSeamScope()
+{
+    if (owner_) {
+        delete g_seam_cache;
+        g_seam_cache = nullptr;
+    }
+}
+
+bool alpine_terrain_is_interior_seam_face(const rf::GFace& face)
+{
+    // A chunk boundary wall faces along x or z; this turns away nearly every face before any lookup.
+    if (!(std::fabs(face.plane.normal.x) > 0.999f || std::fabs(face.plane.normal.z) > 0.999f)
+        || !alpine_terrain_is_chunk_room(face.which_room)) {
+        return false;
+    }
+    try {
+        if (g_seam_cache) {
+            return seam_face_is_backed(face, *g_seam_cache);
+        }
+        SeamCache local;
+        return seam_face_is_backed(face, local);
+    }
+    catch (const std::bad_alloc&) {
+        return false;
+    }
+}
+
 at::GridView alpine_terrain_grid(const AlpineTerrain& t)
 {
     return at::make_grid_view(t.header, t.heights.data(), t.weights.empty() ? nullptr : t.weights.data(),
@@ -298,14 +619,10 @@ void alpine_terrain_sample_light(int terrain, at::FaceKind kind, const float (&p
         return;
     }
 
-    // Otherwise identical to ter_base_light without a chart: level ambient plus the sun's N.L. The
-    // shader draws that light as is, a lightmap texel doubled, hence the half.
+    // Otherwise identical to ter_base_light without a chart.
     float light[3];
     rf::gr::light_get_ambient(&light[0], &light[1], &light[2]);
     const SunLightState sun = gr_get_sun_state();
-    const float n_dot_l =
-        std::clamp(-(n[0] * sun.travel_dir.x + n[1] * sun.travel_dir.y + n[2] * sun.travel_dir.z), 0.0f, 1.0f);
-    for (int i = 0; i < 3; i++) {
-        texel[i] = (light[i] + sun.color[i] * n_dot_l) * 0.5f * scale;
-    }
+    const float travel[3] = {sun.travel_dir.x, sun.travel_dir.y, sun.travel_dir.z};
+    alpine_lighting::terrain_fallback_texel(light, travel, sun.color, n, scale, texel);
 }

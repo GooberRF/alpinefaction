@@ -44,6 +44,8 @@ struct RecordDecoration
     bool align_to_slope = false;
     bool random_yaw = false;
     bool casts_shadows = false;
+    bool dither_fade = false;
+    DecorationEdges edges = DecorationEdges::hard;
 };
 
 // One validated record; array sizes match `header` exactly.
@@ -154,6 +156,8 @@ const char* read_record(Reader& r, Record& out, std::uint64_t& total_raw)
         d.align_to_slope = (flags_byte & decoration_flag_align_to_slope) != 0;
         d.random_yaw = (flags_byte & decoration_flag_random_yaw) != 0;
         d.casts_shadows = (flags_byte & decoration_flag_casts_shadows) != 0;
+        d.dither_fade = (flags_byte & decoration_flag_dither_fade) != 0;
+        d.edges = static_cast<DecorationEdges>((flags_byte & decoration_flag_edges) >> decoration_edges_shift);
     }
 
     std::uint32_t mapping_count = 0;
