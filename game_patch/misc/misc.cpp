@@ -174,8 +174,7 @@ FunHook<void(rf::GameState, rf::GameState, bool)> rf_close_state_hook{
     [] (const rf::GameState state, const rf::GameState new_state, const bool immediately) {
         const bool discarded = immediately || !rf::gameseq_pending_push;
         if (discarded
-            && (state == rf::GS_MULTI_LIMBO
-            || state == rf::GS_MULTI_LIMBO_JUST_JOINED))
+            && (state == rf::GS_MULTI_LIMBO || state == rf::GS_MULTI_LIMBO_JUST_JOINED))
         {
             g_multi_limbo_req_leave = false;
         }
