@@ -6,7 +6,7 @@
 #include "destruction.h"
 
 namespace rf {
-    enum GameState;
+    enum GameState : int;
 }
 
 extern bool g_character_meshes_are_fullbright;

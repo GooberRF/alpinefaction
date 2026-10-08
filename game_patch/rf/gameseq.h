@@ -4,7 +4,7 @@
 
 namespace rf
 {
-    enum GameState
+    enum GameState : int
     {
         GS_INIT = 0x1,
         GS_MAIN_MENU = 0x2,
