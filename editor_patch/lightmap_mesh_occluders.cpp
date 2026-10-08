@@ -28,6 +28,10 @@ struct LocalTri
 {
     Vector3 v0, v1, v2;
     bool alpha;
+    bool additive = false;
+    int bitmap = -1;
+    int material = -1; // the texture override slot, -1 for none
+    float uv[3][2] = {};
 };
 
 struct MeshGeom
@@ -56,25 +60,44 @@ bool bitmap_has_alpha(int handle)
 
 // The double-sided face flag 0x20 is deliberately ignored: a mesh occluder blocks either way.
 // Positions come from the walker with the submesh center added, so they sit where the mesh is drawn.
-void collect_lod(const EditorVifLodMesh* lod, int level, MeshGeom& out)
+// `textures` resolves the texture each chunk draws, which only alpha-tested occlusion reads.
+void collect_lod(const EditorV3dMesh& sub, int level, MeshGeom& out, bool textures)
 {
-    vmesh_for_each_lod_chunk(lod, level, [&](const EditorVifMesh& vm, const EditorVifChunk& chunk,
-                                             auto&& vertex) {
-        const bool alpha = chunk.texture_idx >= 0 && chunk.texture_idx < vm.num_texture_handles &&
-                           chunk.texture_idx < 7 &&
-                           bitmap_has_alpha(vm.tex_handles[chunk.texture_idx]);
+    vmesh_for_each_lod_chunk(sub.lod_mesh, level, [&](const EditorVifMesh& vm, const EditorVifChunk& chunk,
+                                                      auto&& vertex) {
+        const int idx = chunk.texture_idx;
+        const bool textured = idx >= 0 && idx < vm.num_texture_handles && idx < 7;
+        const bool alpha = textured && bitmap_has_alpha(vm.tex_handles[idx]);
+        const auto* uvs = textures ? static_cast<const float*>(chunk.uvs) : nullptr;
+        const std::uint32_t blend =
+            (static_cast<std::uint32_t>(chunk.mode) >> gr_mode_blend_shift) & gr_mode_blend_mask;
+        LocalTri t{};
+        t.alpha = alpha;
+        t.additive = blend == gr_mode_blend_additive || blend == gr_mode_blend_alpha_additive;
+        if (textured && uvs) {
+            t.bitmap = vmesh_chunk_bitmap(sub, vm, chunk);
+            // the engine draws a chunk with alt_tex[tex_ids[texture_idx]], the override slot
+            t.material = vm.tex_ids[idx];
+        }
         for (int f = 0; f < chunk.num_faces; f++) {
             const EditorVifFace& face = chunk.faces[f];
             if (!vmesh_face_valid(chunk, face)) {
                 continue;
             }
-            out.tris.push_back(
-                {vertex(face.vindex1), vertex(face.vindex2), vertex(face.vindex3), alpha});
+            const std::uint16_t vi[3] = {face.vindex1, face.vindex2, face.vindex3};
+            t.v0 = vertex(vi[0]);
+            t.v1 = vertex(vi[1]);
+            t.v2 = vertex(vi[2]);
+            for (int k = 0; k < 3 && uvs; k++) {
+                t.uv[k][0] = uvs[vi[k] * 2];
+                t.uv[k][1] = uvs[vi[k] * 2 + 1];
+            }
+            out.tris.push_back(t);
         }
     });
 }
 
-bool collect_v3m(EditorVMesh* vmesh, int lod_level, MeshGeom& out)
+bool collect_v3m(EditorVMesh* vmesh, int lod_level, MeshGeom& out, bool textures)
 {
     const auto* v3d = static_cast<const EditorV3d*>(vmesh->instance);
     if (!v3d) {
@@ -84,13 +107,13 @@ bool collect_v3m(EditorVMesh* vmesh, int lod_level, MeshGeom& out)
         return false;
     }
     for (int i = 0; i < v3d->num_meshes; i++) {
-        collect_lod(v3d->meshes[i].lod_mesh, lod_level, out);
+        collect_lod(v3d->meshes[i], lod_level, out, textures);
     }
     return true;
 }
 
 // Only one character mesh is ever drawn and FUN_004c03f0 defaults to entry 0.
-bool collect_v3c(EditorVMesh* vmesh, MeshGeom& out)
+bool collect_v3c(EditorVMesh* vmesh, MeshGeom& out, bool textures)
 {
     const auto* character = static_cast<const EditorCharacter*>(vmesh->mesh);
     if (!character || character->num_character_meshes <= 0) {
@@ -100,7 +123,7 @@ bool collect_v3c(EditorVMesh* vmesh, MeshGeom& out)
     if (!v3d_mesh) {
         return false;
     }
-    collect_lod(v3d_mesh->lod_mesh, 0, out);
+    collect_lod(*v3d_mesh, 0, out, textures);
     return true;
 }
 
@@ -322,26 +345,33 @@ void vfx_skip_mesh_material_old(VfxReader& r, std::uint32_t version, int num_fra
     }
 }
 
-std::string vfx_read_material(VfxReader& r, std::uint32_t version)
+struct VfxMaterial
 {
+    std::string texture; // empty for an untextured material
+    bool additive = false;
+};
+
+VfxMaterial vfx_read_material(VfxReader& r, std::uint32_t version)
+{
+    VfxMaterial m;
     const std::int32_t type = r.s4();
     if (version >= 0x40003) {
         r.take(4);
     }
     if (type == 0 || type == 1 || version >= 0x40006) {
-        r.take(1);
+        m.additive = r.u1() != 0;
     }
-    if (type != 0 && type != 1) {
-        return {};
+    if (type == 0 || type == 1) {
+        m.texture = r.strz();
     }
-    std::string name = r.strz();
-    return r.bad() ? std::string{} : name;
+    return r.bad() ? VfxMaterial{} : m;
 }
 
 struct VfxMesh
 {
     std::vector<Vector3> positions;
     std::vector<int> faces;          // 3 indices per face
+    std::vector<float> face_uvs;     // 3 (u, v) pairs per face, empty when the file has none
     std::vector<int> face_material;  // index into materials
     std::vector<int> materials;      // index into the file's material sections
     std::vector<VfxStage> stages;
@@ -383,6 +413,13 @@ bool vfx_read_mesh(VfxReader& r, std::uint32_t version, VfxMesh& m)
         std::int32_t mat;
         std::memcpy(&mat, base + face_size - 20, 4);
         m.face_material.push_back(mat);
+    }
+    if (version < 0x3000d) {
+        m.face_uvs.resize(static_cast<std::size_t>(num_faces) * 6);
+        for (std::int32_t f = 0; f < num_faces; f++) {
+            std::memcpy(&m.face_uvs[static_cast<std::size_t>(f) * 6],
+                        r.at(faces_at + static_cast<std::size_t>(f) * face_size + 12), 24);
+        }
     }
     if (version >= 0x30009) {
         r.take(4); // frames_per_second
@@ -489,7 +526,11 @@ bool vfx_read_mesh(VfxReader& r, std::uint32_t version, VfxMesh& m)
             r.take(12);
         }
         if ((dump_uvs || frame == 0) && version >= 0x3000d) {
-            r.take(static_cast<std::uint64_t>(num_faces) * 24);
+            const std::size_t at = r.pos();
+            if (r.take(static_cast<std::uint64_t>(num_faces) * 24) && frame == 0) {
+                m.face_uvs.resize(static_cast<std::size_t>(num_faces) * 6);
+                std::memcpy(m.face_uvs.data(), r.at(at), static_cast<std::size_t>(num_faces) * 24);
+            }
         }
         if (!morph && (!is_keyframed || (version < 0x3000e && frame == 0))) {
             const Vector3 t = r.vec3();
@@ -583,7 +624,7 @@ bool vfx_read_mesh(VfxReader& r, std::uint32_t version, VfxMesh& m)
     return !r.bad();
 }
 
-bool collect_vfx(const char* filename, MeshGeom& out, int uid)
+bool collect_vfx(const char* filename, MeshGeom& out, int uid, bool textures)
 {
     std::vector<std::uint8_t> buffer;
     {
@@ -621,7 +662,7 @@ bool collect_vfx(const char* filename, MeshGeom& out, int uid)
         return false;
     }
 
-    std::vector<std::string> materials;
+    std::vector<VfxMaterial> materials;
     std::vector<VfxMesh> meshes;
     std::size_t pos = head.pos();
     while (pos + 8 <= buffer.size()) {
@@ -659,7 +700,7 @@ bool collect_vfx(const char* filename, MeshGeom& out, int uid)
         return true;
     }
 
-    std::map<std::string, bool> alpha_by_texture;
+    std::map<std::string, int> bitmap_by_texture;
     for (const VfxMesh& m : meshes) {
         if (!m.geometry) {
             continue;
@@ -680,29 +721,36 @@ bool collect_vfx(const char* filename, MeshGeom& out, int uid)
                     v[k] = apply_stage(s, v[k]);
                 }
             }
-            bool alpha = false;
+            int bitmap = -1;
+            bool additive = false;
             const int local = m.face_material[f];
             if (local >= 0 && static_cast<std::size_t>(local) < m.materials.size()) {
                 const int global = m.materials[static_cast<std::size_t>(local)];
-                if (global >= 0 && static_cast<std::size_t>(global) < materials.size() &&
-                    !materials[static_cast<std::size_t>(global)].empty()) {
-                    const std::string& tex = materials[static_cast<std::size_t>(global)];
-                    auto it = alpha_by_texture.find(tex);
-                    if (it == alpha_by_texture.end()) {
-                        it = alpha_by_texture
-                                 .emplace(tex, bitmap_has_alpha(bm_load(tex.c_str(), -1, 1)))
-                                 .first;
+                if (global >= 0 && static_cast<std::size_t>(global) < materials.size()) {
+                    const VfxMaterial& mat = materials[static_cast<std::size_t>(global)];
+                    additive = mat.additive;
+                    if (!mat.texture.empty()) {
+                        auto it = bitmap_by_texture.find(mat.texture);
+                        if (it == bitmap_by_texture.end()) {
+                            it = bitmap_by_texture.emplace(mat.texture, bm_load(mat.texture.c_str(), -1, 1)).first;
+                        }
+                        bitmap = it->second;
                     }
-                    alpha = it->second;
                 }
             }
-            out.tris.push_back({v[0], v[1], v[2], alpha});
+            LocalTri t{v[0], v[1], v[2], bitmap_has_alpha(bitmap)};
+            t.additive = additive;
+            if (textures && m.face_uvs.size() == m.faces.size() * 2) {
+                t.bitmap = bitmap;
+                std::memcpy(t.uv, &m.face_uvs[f * 6], sizeof(t.uv));
+            }
+            out.tris.push_back(t);
         }
     }
     return true;
 }
 
-const MeshGeom& mesh_geometry(DedMesh* mesh)
+const MeshGeom& mesh_geometry(DedMesh* mesh, bool textures)
 {
     std::string key = string_to_lower(mesh->mesh_filename.c_str());
     auto it = g_geom_cache.find(key);
@@ -712,7 +760,7 @@ const MeshGeom& mesh_geometry(DedMesh* mesh)
     MeshGeom geom;
     const auto ext = get_ext_from_filename(mesh->mesh_filename.c_str());
     if (string_iequals(ext, "vfx")) {
-        geom.ok = collect_vfx(mesh->mesh_filename.c_str(), geom, mesh->uid);
+        geom.ok = collect_vfx(mesh->mesh_filename.c_str(), geom, mesh->uid, textures);
     }
     else {
         if (!mesh->vmesh && !mesh->vmesh_load_failed) {
@@ -724,10 +772,10 @@ const MeshGeom& mesh_geometry(DedMesh* mesh)
                        mesh->mesh_filename.c_str());
         }
         else if (vmesh->type == VMESH_TYPE_STATIC) {
-            geom.ok = collect_v3m(vmesh, 0, geom);
+            geom.ok = collect_v3m(vmesh, 0, geom, textures);
         }
         else if (vmesh->type == VMESH_TYPE_CHARACTER) {
-            geom.ok = collect_v3c(vmesh, geom);
+            geom.ok = collect_v3c(vmesh, geom, textures);
         }
         else {
             xlog::warn("[MeshOccluders] object {}: '{}' loaded as an unexpected mesh type {}",
@@ -742,7 +790,7 @@ const MeshGeom& mesh_geometry(DedMesh* mesh)
 }
 
 // A decoration mesh's triangles at its lowest LOD, enough for baked shadows.
-const MeshGeom& decoration_geometry(const std::string& name)
+const MeshGeom& decoration_geometry(const std::string& name, bool textures)
 {
     std::string key = string_to_lower(name);
     auto it = g_decoration_geom.find(key);
@@ -751,9 +799,16 @@ const MeshGeom& decoration_geometry(const std::string& name)
     }
     MeshGeom geom;
     if (EditorVMesh* vmesh = terrain_decorations_mesh(name)) {
-        geom.ok = collect_v3m(vmesh, vmesh_lowest_lod, geom);
+        geom.ok = collect_v3m(vmesh, vmesh_lowest_lod, geom, textures);
     }
     return g_decoration_geom.emplace(std::move(key), std::move(geom)).first->second;
+}
+
+MeshOccluderTri occluder_tri(const LocalTri& t, const Vector3 (&v)[3], int uid, int bitmap)
+{
+    MeshOccluderTri o{v[0], v[1], v[2], uid, t.alpha, t.additive, bitmap, {}};
+    std::memcpy(o.uv, t.uv, sizeof(o.uv));
+    return o;
 }
 
 } // namespace
@@ -770,6 +825,7 @@ void lightmap_collect_mesh_occluders(std::vector<MeshOccluderTri>& out)
     if (!level || !level->GetAlpineLevelProperties().meshes_occlude) {
         return;
     }
+    const bool textures = level->GetAlpineLevelProperties().alpha_tested_occlusion_active();
     for (DedMesh* mesh : level->GetAlpineLevelProperties().mesh_objects) {
         if (!mesh || mesh->mesh_filename.empty()) {
             g_skipped++;
@@ -781,7 +837,7 @@ void lightmap_collect_mesh_occluders(std::vector<MeshOccluderTri>& out)
                         mesh->mesh_filename.c_str());
             continue;
         }
-        const MeshGeom& geom = mesh_geometry(mesh);
+        const MeshGeom& geom = mesh_geometry(mesh, textures);
         if (geom.tris.empty()) {
             g_skipped++;
             xlog::debug("[MeshOccluders] object {} '{}' contributed nothing", mesh->uid,
@@ -798,6 +854,19 @@ void lightmap_collect_mesh_occluders(std::vector<MeshOccluderTri>& out)
                            p.y + o.rvec.y * v.x + o.uvec.y * v.y + o.fvec.y * v.z,
                            p.z + o.rvec.z * v.x + o.uvec.z * v.y + o.fvec.z * v.z};
         };
+        // the object's texture overrides by slot, when mesh_apply_texture_overrides got them drawn
+        std::map<int, int> overrides;
+        const auto* vmesh = static_cast<const EditorVMesh*>(mesh->vmesh);
+        if (textures && vmesh && vmesh->use_replacement_materials) {
+            for (const auto& ovr : mesh->texture_overrides) {
+                if (!ovr.filename.empty()) {
+                    const int handle = bm_load(ovr.filename.c_str(), -1, 1);
+                    if (handle >= 0) {
+                        overrides[ovr.slot] = handle;
+                    }
+                }
+            }
+        }
         Vector3 lo{1e30f, 1e30f, 1e30f};
         Vector3 hi{-1e30f, -1e30f, -1e30f};
         int alpha_tris = 0;
@@ -808,7 +877,13 @@ void lightmap_collect_mesh_occluders(std::vector<MeshOccluderTri>& out)
                 hi = {std::max(hi.x, w.x), std::max(hi.y, w.y), std::max(hi.z, w.z)};
             }
             alpha_tris += t.alpha ? 1 : 0;
-            out.push_back({v[0], v[1], v[2], mesh->uid, t.alpha});
+            int bitmap = t.bitmap;
+            if (bitmap != -1 && t.material >= 0) {
+                if (const auto it = overrides.find(t.material); it != overrides.end()) {
+                    bitmap = it->second;
+                }
+            }
+            out.push_back(occluder_tri(t, v, mesh->uid, bitmap));
         }
         g_objects++;
         g_tris += static_cast<int>(geom.tris.size());
@@ -838,6 +913,7 @@ void lightmap_collect_decoration_occluders(std::vector<MeshOccluderTri>& out)
     }
     // Placed as the game places them (resolvable terrains in record order, every decoration sharing the level
     // budget), so only instances the game draws cast.
+    const bool textures = level->GetAlpineLevelProperties().alpha_tested_occlusion_active();
     at::DecorationBudget budget;
     uint32_t casters = 0;
     std::size_t tris = 0;
@@ -854,7 +930,7 @@ void lightmap_collect_decoration_occluders(std::vector<MeshOccluderTri>& out)
         const MeshGeom* geoms[at::max_decorations] = {};
         for (uint32_t k = 0; k < p.count; k++) {
             if (at::decoration_casts(p.views[k])) {
-                geoms[k] = &decoration_geometry(t->data.decorations[k].mesh);
+                geoms[k] = &decoration_geometry(t->data.decorations[k].mesh, textures);
             }
         }
         auto emit = [&](uint32_t, uint32_t k, const at::DecorationInstance& inst) {
@@ -873,7 +949,8 @@ void lightmap_collect_decoration_occluders(std::vector<MeshOccluderTri>& out)
                                inst.pos[2] + (inst.rvec[2] * v.x + inst.uvec[2] * v.y + inst.fvec[2] * v.z) * s};
             };
             for (const LocalTri& lt : geom->tris) {
-                out.push_back({to_world(lt.v0), to_world(lt.v1), to_world(lt.v2), -1, lt.alpha});
+                const Vector3 v[3] = {to_world(lt.v0), to_world(lt.v1), to_world(lt.v2)};
+                out.push_back(occluder_tri(lt, v, -1, lt.bitmap));
             }
             tris += geom->tris.size();
             casters++;
@@ -905,13 +982,14 @@ void lightmap_mesh_occluder_report()
     xlog::info("[MeshOccluders] {} mesh objects contributed {} triangles ({} skipped)", g_objects,
                g_tris, g_skipped);
     // A triangle whose texture carries an alpha channel is in the class "Alpha-textured faces
-    // block light" governs, so with that property off the object is in the tree yet blocks
-    // nothing - loud, because it is otherwise a silent no-op like an unresolved brush flag.
-    if (g_alpha_tris == 0 || level->GetAlpineLevelProperties().alpha_faces_occlude) {
+    // block light" and "Alpha-tested light occlusion" govern, so with both off the object is in the
+    // tree yet blocks nothing - loud, because it is otherwise a silent no-op like an unresolved brush flag.
+    const auto& props = level->GetAlpineLevelProperties();
+    if (g_alpha_tris == 0 || props.alpha_faces_occlude || props.alpha_tested_occlusion_active()) {
         return;
     }
     xlog::warn("[MeshOccluders] {} of {} triangles are alpha-textured and cast no shadow - enable "
-               "'Alpha-textured faces block light' if they should",
+               "'Alpha-tested light occlusion' or 'Alpha-textured faces block light' if they should",
                g_alpha_tris, g_tris);
     for (const auto& e : g_all_alpha_objects) {
         xlog::warn("[MeshOccluders] object {} '{}' is entirely alpha-textured and casts no shadow "

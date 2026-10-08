@@ -55,6 +55,7 @@ set(SRCS
     textures.cpp
     bitmap_loaders.cpp
     bitmap_loaders.h
+    bitmap_texels.h
     meshes.cpp
     meshes.h
     minimap_bake.cpp
@@ -69,6 +70,8 @@ set(SRCS
     lightmap.cpp
     lightmap_mesh_occluders.cpp
     lightmap_mesh_occluders.h
+    lightmap_alpha_masks.cpp
+    lightmap_alpha_masks.h
     alpine_lightmaps.cpp
     alpine_lightmaps.h
     overflow_charts.cpp

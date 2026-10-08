@@ -156,7 +156,8 @@ FONT 8, "MS Sans Serif"
     AUTOCHECKBOX    "Legacy lighting", IDC_LEGACY_LIGHTING, 13, 356, 200, 10
     AUTOCHECKBOX    "High-resolution lightmaps", IDC_HIGHRES_LIGHTMAPS, 13, 368, 200, 10
     AUTOCHECKBOX    "Invisible faces block light", IDC_INVISIBLE_FACES_OCCLUDE, 13, 380, 200, 10
-    AUTOCHECKBOX    "Alpha-textured faces block light", IDC_ALPHA_FACES_OCCLUDE, 13, 392, 200, 10
+    AUTOCHECKBOX    "Alpha-textured faces block light", IDC_ALPHA_FACES_OCCLUDE, 13, 392, 138, 10
+    AUTOCHECKBOX    "Alpha-tested light occlusion", IDC_ALPHA_TESTED_OCCLUSION, 153, 392, 132, 10
     AUTOCHECKBOX    "Meshes block light", IDC_MESHES_OCCLUDE, 13, 404, 200, 10
     AUTOCHECKBOX    "D3D11-only lightmaps (omit stock lightmaps)", IDC_D3D11_ONLY_LIGHTMAPS, 13, 416, 200, 10
     LTEXT           "Lightmap density:", -1, 13, 432, 58, 8

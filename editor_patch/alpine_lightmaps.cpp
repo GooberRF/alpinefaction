@@ -1194,8 +1194,8 @@ bool shade_terrain_chart(const AfTerrain& a, const AfChart& c)
             br.resize(pts.size());
             bg.resize(pts.size());
             bb.resize(pts.size());
-            if (!lightmap_light_terrain_points(pts.data(), static_cast<int>(pts.size()), lift, br.data(), bg.data(),
-                                               bb.data())) {
+            if (!lightmap_light_terrain_points(pts.data(), static_cast<int>(pts.size()), lift, ts, br.data(),
+                                               bg.data(), bb.data())) {
                 return false;
             }
             for (std::uint32_t j = 0; j < bh; j++) {

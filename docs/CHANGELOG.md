@@ -9,6 +9,7 @@ Version 1.5.0 (Trillium): Not yet released
   - Add `Invisible faces block light` and `Alpha-textured faces block light` level properties to control whether those faces occlude baked light
   - Add `No shadow cast` brush property for solid detail brushes and movers
   - Add `Meshes block light` level property to make Alpine Mesh objects cast baked shadows
+  - Add `Alpha-tested light occlusion` level property so see-through faces, meshes and terrain decorations block baked light only where their textures are opaque
   - Add `No shadow cast` checkbox to Alpine Mesh object properties to exclude individual objects
 - Add global per-level directional sunlight and individual `Directional Light` objects with bounded ranges
   - `Casts shadows (lightmaps)` bakes the sun into the level's lightmaps with ray traced shadows

@@ -257,6 +257,18 @@ static void mesh_apply_texture_overrides(DedMesh* mesh)
     }
 }
 
+int vmesh_chunk_bitmap(const EditorV3dMesh& sub, const EditorVifMesh& vm, const EditorVifChunk& chunk)
+{
+    const int idx = chunk.texture_idx;
+    if (idx < 0 || idx >= 7 || idx >= vm.num_texture_handles) return -1;
+    if (vm.tex_handles[idx] != -1) return vm.tex_handles[idx];
+    const int material = vm.tex_ids[idx];
+    if (sub.materials && material < sub.num_materials) {
+        return alpine_dlg_resolve_bitmap(sub.materials[material].texture_maps[0].name);
+    }
+    return -1;
+}
+
 // Free all VString members before deleting a DedMesh
 void DestroyDedMesh(DedMesh* mesh)
 {

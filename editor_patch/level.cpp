@@ -1660,13 +1660,16 @@ static std::uint8_t read_combo_u8(HWND hdlg, int id, std::uint8_t fallback)
 }
 
 // D3D11-only lightmaps stands in for the stock section with the surface charts, which legacy lighting
-// and an Off density never bake.
+// and an Off density never bake. Alpha-tested occlusion needs the ray traced shadows legacy lighting drops.
 static void update_lightmap_controls(HWND hdlg)
 {
     const bool legacy = IsDlgButtonChecked(hdlg, IDC_LEGACY_LIGHTING) == BST_CHECKED;
     const bool off = alpine_dlg_combo_data(hdlg, IDC_LIGHTMAP_DENSITY, 0) == alpine_lightmap::density_off;
     if (HWND d3d11_only = GetDlgItem(hdlg, IDC_D3D11_ONLY_LIGHTMAPS)) {
         EnableWindow(d3d11_only, !legacy && !off);
+    }
+    if (HWND alpha_tested = GetDlgItem(hdlg, IDC_ALPHA_TESTED_OCCLUSION)) {
+        EnableWindow(alpha_tested, !legacy);
     }
 }
 
@@ -1732,6 +1735,8 @@ CodeInjection CLevelDialog_OnInitDialog_patch{
         CheckDlgButton(hdlg, IDC_INVISIBLE_FACES_OCCLUDE, alpine_level_props.invisible_faces_occlude ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hdlg, IDC_ALPHA_FACES_OCCLUDE, alpine_level_props.alpha_faces_occlude ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hdlg, IDC_MESHES_OCCLUDE, alpine_level_props.meshes_occlude ? BST_CHECKED : BST_UNCHECKED);
+        CheckDlgButton(hdlg, IDC_ALPHA_TESTED_OCCLUSION,
+                       alpine_level_props.alpha_tested_occlusion ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hdlg, IDC_D3D11_ONLY_LIGHTMAPS,
                        alpine_level_props.d3d11_only_lightmaps ? BST_CHECKED : BST_UNCHECKED);
         init_lightmap_combos(hdlg, alpine_level_props);
@@ -1798,6 +1803,8 @@ CodeInjection CLevelDialog_OnOK_patch{
         alpine_level_props.invisible_faces_occlude = IsDlgButtonChecked(hdlg, IDC_INVISIBLE_FACES_OCCLUDE) == BST_CHECKED;
         alpine_level_props.alpha_faces_occlude = IsDlgButtonChecked(hdlg, IDC_ALPHA_FACES_OCCLUDE) == BST_CHECKED;
         alpine_level_props.meshes_occlude = IsDlgButtonChecked(hdlg, IDC_MESHES_OCCLUDE) == BST_CHECKED;
+        alpine_level_props.alpha_tested_occlusion =
+            IsDlgButtonChecked(hdlg, IDC_ALPHA_TESTED_OCCLUSION) == BST_CHECKED;
         alpine_level_props.d3d11_only_lightmaps = IsDlgButtonChecked(hdlg, IDC_D3D11_ONLY_LIGHTMAPS) == BST_CHECKED;
         alpine_level_props.lightmap_density =
             read_combo_u8(hdlg, IDC_LIGHTMAP_DENSITY, alpine_level_props.lightmap_density);
