@@ -187,7 +187,7 @@ CodeInjection gameplay_render_frame_death_letterbox_injection{
     },
 };
 
-bool gameseq_is_stacked(const rf::GameState state) {
+bool gameseq_is_in_stack(const rf::GameState state) {
     for (int i = 0; i <= rf::gameseq_stack_top_index; ++i) {
         if (rf::gameseq_state_stack[i] == state) {
             return true;

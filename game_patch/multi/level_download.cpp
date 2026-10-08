@@ -1394,13 +1394,13 @@ CallHook<void(rf::GameState, bool)> process_enter_limbo_packet_gameseq_set_next_
 
 CallHook<void(rf::GameState, bool)> process_leave_limbo_packet_gameseq_set_next_state_hook{
     0x0047C24F,
-    [] (const rf::GameState state, const bool force) {
+    [] (const rf::GameState state, [[maybe_unused]] const bool force) {
         xlog::trace("Leave limbo - next level: {}", rf::level.next_level_filename);
         if (!multi_next_level_exists()) {
             rf::gameseq_set_state(rf::GS_MULTI_LEVEL_DOWNLOAD, false);
             multi_level_download_manager_start(rf::level.next_level_filename);
-        } else if (gameseq_is_stacked(rf::GS_MULTI_LIMBO)
-            || gameseq_is_stacked(rf::GS_MULTI_LIMBO_JUST_JOINED))
+        } else if (gameseq_is_in_stack(rf::GS_MULTI_LIMBO)
+            || gameseq_is_in_stack(rf::GS_MULTI_LIMBO_JUST_JOINED))
         {
             // `gameseq_set_state` switches, immediately before `rf_do_frame` can
             // dim our screen, and draw "LOADING...", so defer transition.
