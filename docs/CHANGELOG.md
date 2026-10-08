@@ -105,6 +105,9 @@ Version 1.5.0 (Trillium): Not yet released
 - Allow TrueType fonts to be rendered into bitmaps with mipmaps (D3D11 only)
 - Do not kick a player, if they join right before limbo
 
+[@GooberRF](https://github.com/GooberRF) & [@is-this-c](https://github.com/is-this-c)
+- Add lens distortion, chromatic aberration and vignetting to the sniper and precision rifle scope views, with levels 0-2 via `r_scopeglass`: 0 off, 1 light, 2 heavy (Direct3D 11 renderer only)
+
 ### Bug fixes
 [@GooberRF](https://github.com/GooberRF)
 - Fix phantom visual flag mesh being visible after Salvage flag is picked up on rare occasions
