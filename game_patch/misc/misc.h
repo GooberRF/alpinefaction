@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <string>
+#include "../rf/gameseq.h"
 #include "../rf/multi.h"
 #include "destruction.h"
 
