@@ -2,9 +2,12 @@
 
 #include <cstddef>
 #include <string>
-#include "../rf/gameseq.h"
 #include "../rf/multi.h"
 #include "destruction.h"
+
+namespace rf {
+    enum GameState;
+}
 
 extern bool g_character_meshes_are_fullbright;
 void misc_init();
