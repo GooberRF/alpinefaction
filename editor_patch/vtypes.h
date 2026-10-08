@@ -306,6 +306,39 @@ static_assert(sizeof(EditorV3d) == 0x90);
 static_assert(offsetof(EditorV3d, num_meshes) == 0x48);
 static_assert(offsetof(EditorV3d, meshes) == 0x4C);
 
+// .vfx SFXO/CHNE chunk, shared by every instance of the effect. Same layout as the game's rf::VfxSfxoChunk.
+struct EditorVfxChunk
+{
+    char pad_00[0xA0];
+    float radius;              // 0xA0: billboard and glow sprite radius
+    char pad_A4[0x0C];
+    int num_vertices;          // 0xB0
+    char pad_B4[0x58];
+    float ribbon_width;        // 0x10C: CHNE ribbon width
+    char pad_110[0x14];
+};
+static_assert(sizeof(EditorVfxChunk) == 0x124);
+static_assert(offsetof(EditorVfxChunk, radius) == 0xA0);
+static_assert(offsetof(EditorVfxChunk, num_vertices) == 0xB0);
+static_assert(offsetof(EditorVfxChunk, ribbon_width) == 0x10C);
+
+// Per-instance render state of one .vfx chunk, drawn by FUN_004fb060. Same layout as the game's rf::VfxSfxoRenderObj.
+struct EditorVfxPart
+{
+    EditorVfxChunk* chunk;     // 0x00
+    Vector3 pivot;             // 0x04: object space
+    float width;               // 0x10: billboard width, or beam width
+    float height;              // 0x14: billboard height, or beam length
+    char pad_18[0x68];
+    Vector3* vertex_positions; // 0x80: object space, chunk->num_vertices entries
+    char pad_84[0x14];
+};
+static_assert(sizeof(EditorVfxPart) == 0x98);
+static_assert(offsetof(EditorVfxPart, pivot) == 0x04);
+static_assert(offsetof(EditorVfxPart, width) == 0x10);
+static_assert(offsetof(EditorVfxPart, height) == 0x14);
+static_assert(offsetof(EditorVfxPart, vertex_positions) == 0x80);
+
 // EditorVifFace::flags bit marking a face the renderer draws from both sides.
 constexpr int VIF_FACE_DOUBLE_SIDED = 0x20;
 

@@ -19,6 +19,7 @@
 #include "../misc/level.h"
 #include "alpine_obj_common.h"
 #include "object.h"
+#include <common/alpine_mesh_scale.h>
 #include <common/utils/string-utils.h>
 
 // ─── Globals ────────────────────────────────────────────────────────────────
@@ -128,6 +129,105 @@ static std::unordered_map<int, MeshCollisionEntry> g_mesh_collision_meshes;
 
 // Proxy collision meshes shared by filename.
 static std::unordered_map<std::string, rf::VMesh*> g_mesh_collision_proxies;
+
+// Draw scale. Bases are the unscaled bounds, recorded the first time a mesh is scaled.
+namespace
+{
+struct MeshScale
+{
+    rf::VMesh* render_vmesh;
+    float scale;
+    float base_obj_radius;
+    float base_pd_radius;
+};
+} // namespace
+static std::unordered_map<int, MeshScale> g_mesh_scales;
+// Render vmesh -> scale, only for scales other than 1
+static std::unordered_map<const rf::VMesh*, float> g_mesh_scale_by_vmesh;
+
+static void alpine_mesh_set_physics_bound(rf::Object* objp, float radius)
+{
+    objp->p_data.radius = radius;
+    objp->p_data.bbox_min = {objp->pos.x - radius, objp->pos.y - radius, objp->pos.z - radius};
+    objp->p_data.bbox_max = {objp->pos.x + radius, objp->pos.y + radius, objp->pos.z + radius};
+}
+
+// Single csphere at the origin sized to the object's radius
+static void alpine_mesh_init_collision_sphere(rf::Object* objp)
+{
+    const float radius = objp->radius;
+    objp->p_data.mass = 10000.0f;
+    objp->p_data.cspheres.clear();
+    rf::PCollisionSphere sphere{};
+    sphere.center = {0.0f, 0.0f, 0.0f};
+    sphere.radius = radius;
+    objp->p_data.cspheres.add(sphere);
+    alpine_mesh_set_physics_bound(objp, radius);
+}
+
+float alpine_mesh_vmesh_draw_scale(const rf::VMesh* vmesh)
+{
+    if (g_mesh_scale_by_vmesh.empty()) {
+        return 1.0f;
+    }
+    auto it = g_mesh_scale_by_vmesh.find(vmesh);
+    return it != g_mesh_scale_by_vmesh.end() ? it->second : 1.0f;
+}
+
+float alpine_mesh_draw_scale(const rf::Object* obj)
+{
+    if (g_mesh_scales.empty() || !obj) {
+        return 1.0f;
+    }
+    auto it = g_mesh_scales.find(obj->handle);
+    return it != g_mesh_scales.end() ? it->second.scale : 1.0f;
+}
+
+// The scale itself is kept for alpine_mesh_rebind_scale.
+void alpine_mesh_release_scale_vmesh(const rf::Object* obj)
+{
+    auto it = g_mesh_scales.find(obj->handle);
+    if (it == g_mesh_scales.end()) {
+        return;
+    }
+    g_mesh_scale_by_vmesh.erase(it->second.render_vmesh);
+    it->second.render_vmesh = nullptr;
+}
+
+void alpine_mesh_free_scale(const rf::Object* obj)
+{
+    alpine_mesh_release_scale_vmesh(obj);
+    g_mesh_scales.erase(obj->handle);
+}
+
+void alpine_mesh_rebind_scale(rf::Object* obj)
+{
+    auto it = g_mesh_scales.find(obj->handle);
+    if (it == g_mesh_scales.end()) {
+        return;
+    }
+    const float scale = it->second.scale;
+    // Bases are re-recorded from the new model's unscaled bounds
+    g_mesh_scales.erase(it);
+    if (scale != 1.0f) {
+        alpine_mesh_set_scale(obj, scale);
+    }
+}
+
+// Maps a collision query against a mesh drawn at `scale` onto its unscaled geometry. The hit
+// fraction is unchanged; a mesh-local hit_point must be multiplied back by `scale`.
+void alpine_mesh_scale_collision_input(rf::VMeshCollisionInput& in, float scale)
+{
+    const float inv_scale = 1.0f / scale;
+    if (in.flags & rf::VMCF_LOCAL_INPUT) {
+        in.start_pos *= inv_scale;
+    }
+    else {
+        in.start_pos = in.mesh_pos + (in.start_pos - in.mesh_pos) * inv_scale;
+    }
+    in.dir *= inv_scale;
+    in.radius *= inv_scale;
+}
 
 void alpine_mesh_free_collision_proxies()
 {
@@ -278,6 +378,13 @@ bool alpine_mesh_collide_sphere_world(const rf::Vector3& start, const rf::Vector
         }
         vin.radius = radius;
         vin.flags = 0;
+        // A proxy isn't keyed by the render vmesh, so vmesh_collide_hook can't scale for it
+        if (entry.collide_vmesh != entry.render_vmesh) {
+            const float scale = alpine_mesh_draw_scale(mesh_objp);
+            if (scale != 1.0f) {
+                alpine_mesh_scale_collision_input(vin, scale);
+            }
+        }
 
         rf::VMeshCollisionOutput vout;
         // Force LOD0 for this Brush mesh's collision only. Restored immediately after the call so
@@ -376,9 +483,7 @@ static void alpine_mesh_grow_bound_for_proxy(rf::Object* objp, rf::VMesh* proxy)
     }
 
     if (radius > objp->p_data.radius) {
-        objp->p_data.radius = radius;
-        objp->p_data.bbox_min = {objp->pos.x - radius, objp->pos.y - radius, objp->pos.z - radius};
-        objp->p_data.bbox_max = {objp->pos.x + radius, objp->pos.y + radius, objp->pos.z + radius};
+        alpine_mesh_set_physics_bound(objp, radius);
     }
 }
 
@@ -550,8 +655,9 @@ void alpine_mesh_load_chunk(rf::File& file, std::size_t chunk_len, int content_v
         }
     }
 
-    // Trailing per-object brush geometry source block, appended after the flag block in rfl v306.
-    if (content_version >= 306 && loaded == count && remaining >= static_cast<std::size_t>(count) * 3) {
+    // Trailing per-object brush geometry source and draw scale block, appended after the flag block in
+    // rfl v306.
+    if (content_version >= 306 && loaded == count && remaining >= static_cast<std::size_t>(count) * 7) {
         for (uint32_t i = 0; i < count; i++) {
             uint8_t source = 0;
             if (!reader.read_bytes(&source, sizeof(source))) return;
@@ -565,6 +671,12 @@ void alpine_mesh_load_chunk(rf::File& file, std::size_t chunk_len, int content_v
             }
             if (source != 0 && created[i].first != -1) {
                 alpine_mesh_apply_brush_geo_source(created[i].first, source, collision_mesh, created[i].second);
+            }
+            float draw_scale = 1.0f;
+            if (!reader.read_bytes(&draw_scale, sizeof(draw_scale))) return;
+            draw_scale = alpine_mesh_scale::sanitize(draw_scale);
+            if (draw_scale != 1.0f && created[i].first != -1) {
+                alpine_mesh_set_scale(rf::obj_from_handle(created[i].first), draw_scale);
             }
         }
     }
@@ -739,16 +851,7 @@ static int alpine_mesh_create_object(const AlpineMeshInfo& info)
     }
 
     if (info.collision_mode > 0) {
-        float r = obj->radius;
-        obj->p_data.radius = r;
-        obj->p_data.mass = 10000.0f;
-        obj->p_data.cspheres.clear();
-        rf::PCollisionSphere sphere{};
-        sphere.center = {0.0f, 0.0f, 0.0f};
-        sphere.radius = r;
-        obj->p_data.cspheres.add(sphere);
-        obj->p_data.bbox_min = {obj->pos.x - r, obj->pos.y - r, obj->pos.z - r};
-        obj->p_data.bbox_max = {obj->pos.x + r, obj->pos.y + r, obj->pos.z + r};
+        alpine_mesh_init_collision_sphere(obj);
 
         if (info.collision_mode == 1) {
             obj->obj_flags = static_cast<rf::ObjectFlags>(
@@ -939,6 +1042,8 @@ void alpine_mesh_clear_state()
     g_alpine_corpse_data.clear();
     g_original_tex_handles.clear();
     g_mesh_collision_meshes.clear();
+    g_mesh_scales.clear();
+    g_mesh_scale_by_vmesh.clear();
     alpine_mesh_free_collision_proxies();
     // Free per-mesh ClutterInfo objects
     for (auto* ci : g_mesh_clutter_infos) {
@@ -1011,16 +1116,7 @@ bool alpine_mesh_spawn_corpse(rf::Object* obj)
 
     // Set up collision
     if (corpse_data.collision > 0) {
-        float r = corpse_obj->radius;
-        corpse_obj->p_data.radius = r;
-        corpse_obj->p_data.mass = 10000.0f;
-        corpse_obj->p_data.cspheres.clear();
-        rf::PCollisionSphere sphere{};
-        sphere.center = {0.0f, 0.0f, 0.0f};
-        sphere.radius = r;
-        corpse_obj->p_data.cspheres.add(sphere);
-        corpse_obj->p_data.bbox_min = {corpse_obj->pos.x - r, corpse_obj->pos.y - r, corpse_obj->pos.z - r};
-        corpse_obj->p_data.bbox_max = {corpse_obj->pos.x + r, corpse_obj->pos.y + r, corpse_obj->pos.z + r};
+        alpine_mesh_init_collision_sphere(corpse_obj);
 
         if (corpse_data.collision == 1) {
             corpse_obj->obj_flags = static_cast<rf::ObjectFlags>(
@@ -1029,6 +1125,10 @@ bool alpine_mesh_spawn_corpse(rf::Object* obj)
         }
 
         rf::obj_collision_register(corpse_obj);
+    }
+
+    if (const float scale = alpine_mesh_draw_scale(obj); scale != 1.0f) {
+        alpine_mesh_set_scale(corpse_obj, scale);
     }
 
     // Start corpse state anim if specified (v3c only)
@@ -1315,10 +1415,7 @@ void alpine_mesh_set_collision(rf::Object* obj, int collision_type)
     // A Brush proxy may have grown the physics bound past the render mesh; that inflated
     // footprint must not outlive Brush mode.
     if (was_brush) {
-        const float r = obj->radius;
-        obj->p_data.radius = r;
-        obj->p_data.bbox_min = {obj->pos.x - r, obj->pos.y - r, obj->pos.z - r};
-        obj->p_data.bbox_max = {obj->pos.x + r, obj->pos.y + r, obj->pos.z + r};
+        alpine_mesh_set_physics_bound(obj, obj->radius);
     }
 
     if (collision_type > 0) {
@@ -1327,15 +1424,7 @@ void alpine_mesh_set_collision(rf::Object* obj, int collision_type)
 
         // Set up collision sphere if not already present
         if (obj->p_data.cspheres.size() == 0) {
-            float r = obj->radius;
-            obj->p_data.radius = r;
-            obj->p_data.mass = 10000.0f;
-            rf::PCollisionSphere sphere{};
-            sphere.center = {0.0f, 0.0f, 0.0f};
-            sphere.radius = r;
-            obj->p_data.cspheres.add(sphere);
-            obj->p_data.bbox_min = {obj->pos.x - r, obj->pos.y - r, obj->pos.z - r};
-            obj->p_data.bbox_max = {obj->pos.x + r, obj->pos.y + r, obj->pos.z + r};
+            alpine_mesh_init_collision_sphere(obj);
         }
 
         if (collision_type == 1) {
@@ -1347,5 +1436,43 @@ void alpine_mesh_set_collision(rf::Object* obj, int collision_type)
         rf::obj_collision_register(obj);
     }
 
+    // The physics bound may have been rebuilt from the already scaled radius
+    auto scale_it = g_mesh_scales.find(obj->handle);
+    if (scale_it != g_mesh_scales.end()) {
+        scale_it->second.base_pd_radius = obj->p_data.radius / scale_it->second.scale;
+    }
+
     xlog::debug("[AlpineMesh] Set collision type {} on obj handle {}", collision_type, obj->handle);
+}
+
+// Baked vertex lighting is left alone: it is computed with the unscaled orient, so it doesn't change.
+void alpine_mesh_set_scale(rf::Object* obj, float scale)
+{
+    if (!obj || obj->type != rf::OT_CLUTTER || !obj->vmesh) {
+        return;
+    }
+    scale = alpine_mesh_scale::sanitize(scale);
+
+    auto [it, inserted] = g_mesh_scales.try_emplace(obj->handle);
+    MeshScale& entry = it->second;
+    if (inserted) {
+        entry = {obj->vmesh, 1.0f, obj->radius, obj->p_data.radius};
+    }
+
+    const float ratio = scale / entry.scale;
+    entry.scale = scale;
+    obj->radius = entry.base_obj_radius * scale;
+    for (rf::PCollisionSphere& csphere : obj->p_data.cspheres) {
+        csphere.center *= ratio;
+        csphere.radius *= ratio;
+    }
+    alpine_mesh_set_physics_bound(obj, entry.base_pd_radius * scale);
+
+    if (scale == 1.0f) {
+        g_mesh_scale_by_vmesh.erase(entry.render_vmesh);
+    }
+    else {
+        g_mesh_scale_by_vmesh[entry.render_vmesh] = scale;
+    }
+    xlog::debug("[AlpineMesh] Set draw scale {} on obj handle {}", scale, obj->handle);
 }

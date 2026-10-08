@@ -39,6 +39,7 @@
 #include "alpine_lightmaps.h"
 #include "overflow_charts.h"
 #include "headless_bake.h"
+#include "event.h"
 #include "bake_progress.h"
 #include "face_list_cache.h"
 
@@ -1061,6 +1062,43 @@ CodeInjection skip_alpine_objects_bounds_check{
     },
 };
 
+// The game refuses a level that needs D3D11 on the other renderers; logs every reason it does.
+static bool level_needs_d3d11(CDedLevel& level, bool stock_lightmaps_suppressed)
+{
+    const auto& props = level.GetAlpineLevelProperties();
+    std::string reasons;
+    auto add_reason = [&](const char* reason) {
+        if (!reasons.empty()) {
+            reasons += ", ";
+        }
+        reasons += reason;
+    };
+    if (props.require_d3d11) {
+        add_reason("Require Direct3D 11 setting");
+    }
+    if (stock_lightmaps_suppressed) {
+        add_reason("D3D11-only lightmaps");
+    }
+    if (std::any_of(props.mesh_objects.begin(), props.mesh_objects.end(),
+                    [](const DedMesh* mesh) { return mesh->draw_scale != 1.0f; })) {
+        add_reason("mesh draw scale");
+    }
+    auto& objects = level.master_objects;
+    for (int i = 0; i < objects.get_size(); i++) {
+        const DedObject* obj = objects.data_ptr[i];
+        if (obj && obj->type == DedObjectType::DED_EVENT &&
+            static_cast<const DedEvent*>(obj)->event_type == static_cast<int>(AlpineDedEventID::Mesh_Set_Scale)) {
+            add_reason("Mesh_Set_Scale event");
+            break;
+        }
+    }
+    if (reasons.empty()) {
+        return false;
+    }
+    xlog::info("[Level] Level requires Direct3D 11: {}", reasons);
+    return true;
+}
+
 // save AlpineLevelProperties when saving rfl file
 // At 0x00430CBD, all_objects is already populated but link UIDs haven't been
 // converted to indices yet (that happens later in 0x10000/0x20000 chunks).
@@ -1104,7 +1142,9 @@ CodeInjection CDedLevel_SaveLevel_patch{
         }
 
         auto start_pos = level.BeginRflSection(file, alpine_props_chunk_id);
-        alpine_level_props.Serialize(file, alpine_lm_stock_suppressed());
+        const bool stock_lightmaps_suppressed = alpine_lm_stock_suppressed();
+        alpine_level_props.Serialize(file, stock_lightmaps_suppressed,
+                                     level_needs_d3d11(level, stock_lightmaps_suppressed));
         level.EndRflSection(file, start_pos);
 
         // Write mesh objects chunk
@@ -1696,6 +1736,7 @@ CodeInjection CLevelDialog_OnInitDialog_patch{
                        alpine_level_props.d3d11_only_lightmaps ? BST_CHECKED : BST_UNCHECKED);
         init_lightmap_combos(hdlg, alpine_level_props);
         update_lightmap_controls(hdlg);
+        CheckDlgButton(hdlg, IDC_REQUIRE_D3D11, alpine_level_props.require_d3d11 ? BST_CHECKED : BST_UNCHECKED);
 
         CheckDlgButton(hdlg, IDC_SUN_ENABLE, alpine_level_props.enable_sun ? BST_CHECKED : BST_UNCHECKED);
         std::snprintf(buffer, sizeof(buffer), "%.3f", alpine_level_props.sun_yaw);
@@ -1762,6 +1803,7 @@ CodeInjection CLevelDialog_OnOK_patch{
             read_combo_u8(hdlg, IDC_LIGHTMAP_DENSITY, alpine_level_props.lightmap_density);
         alpine_level_props.lightmap_compression =
             read_combo_u8(hdlg, IDC_LIGHTMAP_COMPRESSION, alpine_level_props.lightmap_compression);
+        alpine_level_props.require_d3d11 = IsDlgButtonChecked(hdlg, IDC_REQUIRE_D3D11) == BST_CHECKED;
 
         alpine_level_props.enable_sun = IsDlgButtonChecked(hdlg, IDC_SUN_ENABLE) == BST_CHECKED;
         float yaw = alpine_level_props.sun_yaw;

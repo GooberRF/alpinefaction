@@ -419,6 +419,8 @@ struct DedObject
     VArray<std::string> field_88;
 };
 static_assert(sizeof(DedObject) == 0x94, "DedObject size mismatch!");
+static_assert(offsetof(DedObject, pos) == 0x14);
+static_assert(offsetof(DedObject, type) == 0x5C);
 
 
 struct DedEvent : DedObject
@@ -513,6 +515,7 @@ struct DedMesh : DedObject
     bool no_shadow_cast = false;       // excluded from the lightmap bake's mesh occluders
     uint8_t brush_geo_source = 0;      // collision_mode 3 only: 0=Highest LOD, 1=Lowest LOD, 2=Collision Mesh
     std::string collision_mesh_filename; // brush_geo_source 2 only: static .v3m collided instead of the render mesh
+    float draw_scale = 1.0f;           // uniform scale, sanitized by alpine_mesh_scale::sanitize
 };
 
 struct DedNote : DedObject

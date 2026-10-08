@@ -50,6 +50,8 @@ Version 1.5.0 (Trillium): Not yet released
 - Add edge-vignette damage feedback as `cl_damageflash 2` (Direct3D 11 renderer only); `cl_damageflash` is now a level: 0 off, 1 screen flash, 2 vignette
 - Add `Brush` collision mode for Alpine Mesh objects
 - Add `Brush Geo` source selection for Alpine Mesh objects using `Brush` collision, allowing custom collision hulls
+- Add `Draw Scale` property to Alpine Mesh objects
+- Add `Mesh_Set_Scale` event to change an Alpine Mesh object's scale at runtime
 - Raise level editor per-room and per-mesh render vertex limit from 8000 to 32768
 - Add `Limit vehicle flight ceiling` and `Ceiling height (Y)` options to level editor `Level Properties` to cap how high flying vehicles can climb
 - Add `-bake in.rfl -bakeout out.rfl` launcher command line switches to build a level's geometry and calculate its lighting without user interaction, writing the result to a new level file and progress to a log beside it
@@ -82,7 +84,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Add `cl_dominationmsgs` console command to toggle display of dominating and revenge server messages in chat
 - Add `dbg_terrain_batches` console command to tint terrain faces by render batch (Direct3D 11 renderer only)
 - Add `dbg_terrain_decorations` console command to toggle terrain mesh decorations and print their draw statistics
-- Levels saved with `D3D11-only lightmaps` refuse to load with the Direct3D 8/9 renderers
+- Add `Require Direct3D 11` level property
 - Speed up `Calculate Lighting` in the level editor, especially on large levels and levels with very many lightmap surfaces
 - Show `Calculate Lighting` progress in the level editor: each phase with its progress and an estimated time remaining, and a `Cancel` button (pressed twice) that stops the bake and leaves the level without baked lighting
 - Improve level loading and `Build Geometry` times in the level editor on levels with many faces
@@ -168,6 +170,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Fix weapon select HUD reading and writing out of bounds for weapons past the 32nd entry in `weapons.tbl`
 - Fix Alpine event variable handler data leaking across level loads
 - Harden team change and server info packet handling against malformed data
+- Harden `vfx` mesh loading in the game and level editor against malformed data
 - Stop writing FactionFiles link tokens to the launcher log
 - Fix RF2-style geomod craters near the edge of a geoable brush not carving a neighboring geoable brush that the crater reaches
 - Fix RF2-style geomod giving up on geoable rooms with more than 5000 faces

@@ -100,7 +100,7 @@ FONT 8, "MS Sans Serif", 0, 0, 1
 }
 
 LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
-IDD_LEVEL_PROPERTIES DIALOGEX 0, 0, 298, 589
+IDD_LEVEL_PROPERTIES DIALOGEX 0, 0, 298, 600
 STYLE DS_MODALFRAME | DS_SETFONT | WS_CAPTION | WS_VISIBLE | WS_POPUP | WS_SYSMENU
 CAPTION "Level Properties"
 FONT 8, "MS Sans Serif"
@@ -145,7 +145,7 @@ FONT 8, "MS Sans Serif"
     PUSHBUTTON      "Cancel", IDCANCEL, 241, 24, 50, 14
     PUSHBUTTON      "Minimap...", IDC_LEVEL_MINIMAP, 241, 41, 50, 14
 
-    GROUPBOX        "Advanced Options", -1, 7, 268, 284, 209
+    GROUPBOX        "Advanced Options", -1, 7, 268, 284, 220
     AUTOCHECKBOX    "Legacy Cyclic_Timer events", IDC_LEGACY_CYCLIC_TIMERS, 13, 280, 175, 10
     AUTOCHECKBOX    "Legacy movers", IDC_LEGACY_MOVERS, 13, 292, 175, 10
     AUTOCHECKBOX    "Player starts with headlamp", IDC_STARTS_WITH_HEADLAMP, 13, 304, 175, 10
@@ -163,31 +163,32 @@ FONT 8, "MS Sans Serif"
     COMBOBOX        IDC_LIGHTMAP_DENSITY, 74, 429, 74, 90, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
     LTEXT           "Compression:", -1, 156, 432, 45, 8
     COMBOBOX        IDC_LIGHTMAP_COMPRESSION, 204, 429, 74, 60, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    AUTOCHECKBOX    "Require Direct3D 11 (refuse other renderers)", IDC_REQUIRE_D3D11, 13, 446, 200, 10
 
-    AUTOCHECKBOX    "Limit vehicle flight ceiling", IDC_VEHICLE_FLIGHT_CEILING_ENABLE, 13, 447, 190, 10
-    LTEXT           "Ceiling height (Y):", -1, 30, 462, 58, 8
-    EDITTEXT        IDC_VEHICLE_FLIGHT_CEILING, 90, 459, 40, 14, ES_AUTOHSCROLL
+    AUTOCHECKBOX    "Limit vehicle flight ceiling", IDC_VEHICLE_FLIGHT_CEILING_ENABLE, 13, 458, 190, 10
+    LTEXT           "Ceiling height (Y):", -1, 30, 473, 58, 8
+    EDITTEXT        IDC_VEHICLE_FLIGHT_CEILING, 90, 470, 40, 14, ES_AUTOHSCROLL
 
-    GROUPBOX        "Sunlight", -1, 7, 481, 284, 100
-    AUTOCHECKBOX    "Enable directional sunlight", IDC_SUN_ENABLE, 13, 493, 160, 10
-    PUSHBUTTON      "Set from camera", IDC_SUN_SET_FROM_CAMERA, 178, 490, 70, 14
-    LTEXT           "Yaw:", -1, 13, 509, 18, 8
-    EDITTEXT        IDC_SUN_YAW, 34, 507, 34, 14, ES_AUTOHSCROLL
-    LTEXT           "Pitch:", -1, 74, 509, 21, 8
-    EDITTEXT        IDC_SUN_PITCH, 97, 507, 34, 14, ES_AUTOHSCROLL
-    LTEXT           "Intensity:", -1, 137, 509, 33, 8
-    EDITTEXT        IDC_SUN_INTENSITY, 172, 507, 34, 14, ES_AUTOHSCROLL
-    LTEXT           "Spread:", -1, 212, 509, 28, 8
-    EDITTEXT        IDC_SUN_SPREAD_ANGLE, 242, 507, 34, 14, ES_AUTOHSCROLL
-    LTEXT           "Color:", -1, 13, 528, 22, 8
-    CONTROL         "List1", IDC_SUN_COLOR_SWATCH, WC_LISTVIEW, WS_BORDER | LVS_NOSCROLL | LVS_ICON, 43, 525, 40, 14, WS_EX_STATICEDGE
-    PUSHBUTTON      "Change color", IDC_SUN_COLOR_CHANGE, 89, 525, 50, 14
-    EDITTEXT        IDC_SUN_COLOR_VALUE, 145, 525, 57, 14, ES_AUTOHSCROLL
-    AUTOCHECKBOX    "Casts shadows (lightmaps)", IDC_SUN_CAST_BAKED_SHADOWS, 13, 543, 120, 10
-    AUTOCHECKBOX    "Affects mesh lighting", IDC_SUN_AFFECTS_MESHES, 148, 543, 130, 10
-    AUTOCHECKBOX    "Scale mesh sunlight by lightmaps", IDC_SUN_MESH_MODE_SCALE, 13, 555, 130, 10
-    AUTOCHECKBOX    "Aligns dynamic shadows", IDC_SUN_DRIVES_SHADOWMAP_DIR, 148, 555, 130, 10
-    AUTOCHECKBOX    "Water blocks sunlight", IDC_SUN_LIQUID_OCCLUDES, 13, 567, 130, 10
+    GROUPBOX        "Sunlight", -1, 7, 492, 284, 100
+    AUTOCHECKBOX    "Enable directional sunlight", IDC_SUN_ENABLE, 13, 504, 160, 10
+    PUSHBUTTON      "Set from camera", IDC_SUN_SET_FROM_CAMERA, 178, 501, 70, 14
+    LTEXT           "Yaw:", -1, 13, 520, 18, 8
+    EDITTEXT        IDC_SUN_YAW, 34, 518, 34, 14, ES_AUTOHSCROLL
+    LTEXT           "Pitch:", -1, 74, 520, 21, 8
+    EDITTEXT        IDC_SUN_PITCH, 97, 518, 34, 14, ES_AUTOHSCROLL
+    LTEXT           "Intensity:", -1, 137, 520, 33, 8
+    EDITTEXT        IDC_SUN_INTENSITY, 172, 518, 34, 14, ES_AUTOHSCROLL
+    LTEXT           "Spread:", -1, 212, 520, 28, 8
+    EDITTEXT        IDC_SUN_SPREAD_ANGLE, 242, 518, 34, 14, ES_AUTOHSCROLL
+    LTEXT           "Color:", -1, 13, 539, 22, 8
+    CONTROL         "List1", IDC_SUN_COLOR_SWATCH, WC_LISTVIEW, WS_BORDER | LVS_NOSCROLL | LVS_ICON, 43, 536, 40, 14, WS_EX_STATICEDGE
+    PUSHBUTTON      "Change color", IDC_SUN_COLOR_CHANGE, 89, 536, 50, 14
+    EDITTEXT        IDC_SUN_COLOR_VALUE, 145, 536, 57, 14, ES_AUTOHSCROLL
+    AUTOCHECKBOX    "Casts shadows (lightmaps)", IDC_SUN_CAST_BAKED_SHADOWS, 13, 554, 120, 10
+    AUTOCHECKBOX    "Affects mesh lighting", IDC_SUN_AFFECTS_MESHES, 148, 554, 130, 10
+    AUTOCHECKBOX    "Scale mesh sunlight by lightmaps", IDC_SUN_MESH_MODE_SCALE, 13, 566, 130, 10
+    AUTOCHECKBOX    "Aligns dynamic shadows", IDC_SUN_DRIVES_SHADOWMAP_DIR, 148, 566, 130, 10
+    AUTOCHECKBOX    "Water blocks sunlight", IDC_SUN_LIQUID_OCCLUDES, 13, 578, 130, 10
 }
 
 LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
@@ -467,6 +468,8 @@ FONT 8, "MS Sans Serif", 0, 0, 0
 
     AUTOCHECKBOX    "Destructible", IDC_MESH_IS_CLUTTER, 7, 230, 60, 10
     AUTO3STATE      "No shadow cast", IDC_MESH_NO_SHADOW_CAST, 90, 230, 74, 10
+    LTEXT           "Draw Scale:", -1, 170, 230, 40, 8
+    EDITTEXT        IDC_MESH_DRAW_SCALE, 212, 228, 48, 12, ES_AUTOHSCROLL
 
     GROUPBOX        "Destructible Properties", IDC_MESH_CLUTTER_GROUP, 7, 242, 260, 190
 

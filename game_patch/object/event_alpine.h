@@ -2712,6 +2712,41 @@ struct EventMeshSetCollision : rf::Event
     }
 };
 
+// id 163
+struct EventMeshSetScale : rf::Event
+{
+    char padding_align[3];
+    float scale = 1.0f;
+
+    void register_variable_handlers() override
+    {
+        rf::Event::register_variable_handlers();
+        auto& handlers = variable_handler_storage[this];
+        handlers[SetVarOpts::float1] = [](rf::Event* event, const std::string& value) {
+            auto* e = static_cast<EventMeshSetScale*>(event);
+            e->scale = std::stof(value);
+        };
+    }
+
+    void turn_on() override
+    {
+        xlog::debug("[EventMeshSetScale] turn_on: uid={} scale={} links={}", this->uid, scale, this->links.size());
+        if (!std::isfinite(scale) || scale <= 0.0f) {
+            xlog::warn("[EventMeshSetScale] uid {} has no positive scale ({}); linked meshes reset to 1", this->uid,
+                       scale);
+        }
+        for (int i = 0; i < static_cast<int>(this->links.size()); i++) {
+            int link_handle = this->links[i];
+            Object* obj = rf::obj_from_handle(link_handle);
+            if (obj) {
+                alpine_mesh_set_scale(obj, scale);
+            } else {
+                xlog::warn("[EventMeshSetScale] link[{}]: handle={} -> NULL", i, link_handle);
+            }
+        }
+    }
+};
+
 // Base class for fullscreen overlay events
 struct EventFullscreenOverlayBase : rf::Event
 {

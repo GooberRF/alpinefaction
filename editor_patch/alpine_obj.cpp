@@ -10,6 +10,7 @@
 #include <vector>
 #include <string>
 #include <xlog/xlog.h>
+#include <common/alpine_mesh_scale.h>
 #include <common/scope_guard.h>
 #include <common/utils/string-utils.h>
 #include <common/version/version.h>
@@ -1399,6 +1400,49 @@ CodeInjection alpine_render_surfaces_patch{
         const bool view_3d = !*reinterpret_cast<const bool*>(regs.esp + 0x50);
         if (!view_3d || !terrain_view_draws_solid()) terrain_render_surfaces(level);
         terrain_render_decorations(level);
+    },
+};
+
+// The stock vmesh pass walks master_objects and passes each object's own pos to these calls.
+static DedObject* stock_vmesh_pass_object(const Vector3* pos)
+{
+    return reinterpret_cast<DedObject*>(reinterpret_cast<uintptr_t>(pos) - offsetof(DedObject, pos));
+}
+
+// Mesh objects are drawn by mesh_render, with their draw scale.
+CallHook<void(EditorVMesh*, const Vector3*, const Matrix3*, const EditorRenderParams*)> stock_vmesh_pass_render_hook{
+    0x0041f23c,
+    [](EditorVMesh* vmesh, const Vector3* pos, const Matrix3* orient, const EditorRenderParams* params) {
+        if (stock_vmesh_pass_object(pos)->type != DedObjectType::DED_MESH) {
+            stock_vmesh_pass_render_hook.call_target(vmesh, pos, orient, params);
+        }
+    },
+};
+
+CallHook<bool(const Vector3*, float, uint32_t)> stock_vmesh_pass_selection_sphere_hook{
+    0x0041f211,
+    [](const Vector3* center, float radius, uint32_t mode) {
+        DedObject* obj = stock_vmesh_pass_object(center);
+        if (obj->type == DedObjectType::DED_MESH) {
+            radius *= static_cast<DedMesh*>(obj)->draw_scale;
+        }
+        return stock_vmesh_pass_selection_sphere_hook.call_target(center, radius, mode);
+    },
+};
+
+// .vfx part draws invert their instance transform with the orient's transpose, which a scaled orient breaks.
+// Draw with the orthonormal orient and the part's object-space data scaled instead, as the game does.
+FunHook<void __fastcall(EditorVfxPart*, int, float, Vector3*, Matrix3*)> vfx_part_render_hook{
+    0x004FB060,
+    [](EditorVfxPart* part, int edx, float frame, Vector3* pos, Matrix3* orient) FASTCALL_LAMBDA {
+        const float scale = orient ? alpine_mesh_scale::orient_scale(*orient) : 1.0f;
+        if (scale == 1.0f || !part->chunk) {
+            vfx_part_render_hook.call_target(part, edx, frame, pos, orient);
+            return;
+        }
+        Matrix3 unit_orient = alpine_mesh_scale::scale_orient(*orient, 1.0f / scale);
+        alpine_mesh_scale::ScopedVfxPartScale scaled_part{*part, scale};
+        vfx_part_render_hook.call_target(part, edx, frame, pos, &unit_orient);
     },
 };
 
@@ -3364,6 +3408,9 @@ void ApplyAlpineObjectPatches()
     alpine_render_surfaces_portal_hook.install();
     alpine_render_surfaces_patch.install();
     alpine_render_patch.install();
+    stock_vmesh_pass_render_hook.install();
+    stock_vmesh_pass_selection_sphere_hook.install();
+    vfx_part_render_hook.install();
     alpine_group_save_clear_hook.install();
     alpine_group_brush_save_capture_hook.install();
     alpine_group_type_collect_hook.install();

@@ -6,6 +6,7 @@
 #include <patch_common/CodeInjection.h>
 #include <patch_common/FunHook.h>
 #include <common/utils/list-utils.h>
+#include <common/alpine_mesh_scale.h>
 #include <float.h>
 #include "../../rf/gr/gr.h"
 #include "../../rf/gr/gr_light.h"
@@ -22,6 +23,7 @@
 #include "../../bmpman/bmpman.h"
 #include "../../main/main.h"
 #include "../../misc/misc.h"
+#include "../../misc/level.h"
 #include "../../misc/alpine_settings.h"
 #include "../../os/console.h"
 #include "../gr.h"
@@ -197,9 +199,10 @@ namespace gr::d3d11
 
     static std::optional<Renderer> renderer;
 
-    static void set_mesh_bounds(const rf::VifLodMesh& lod_mesh, const rf::Vector3& pos, const rf::Matrix3& orient)
+    static void set_mesh_bounds(const rf::VifLodMesh& lod_mesh, const rf::Vector3& pos, const rf::Matrix3& orient,
+                                float radius)
     {
-        renderer->set_mesh_bounds(pos + orient.transform_vector(lod_mesh.center), lod_mesh.radius);
+        renderer->set_mesh_bounds(pos + orient.transform_vector(lod_mesh.center), radius);
     }
 
     void update_window_mode();
@@ -540,6 +543,9 @@ namespace gr::d3d11
             rf::Vector3 transformed_pos = sky_transform_orient.transform_vector(obj->pos) + sky_transform_pos;
             rf::Matrix3 transformed_orient = sky_transform_orient;
             transformed_orient.mul(obj->orient);
+            if (const float scale = alpine_mesh_draw_scale(obj); scale != 1.0f) {
+                transformed_orient = alpine_mesh_scale::scale_orient(transformed_orient, scale);
+            }
             rf::vmesh_render(obj->vmesh, &transformed_pos, &transformed_orient, &render_params);
 
             skip_mesh_light_gather = false;
@@ -556,8 +562,10 @@ namespace gr::d3d11
         if (lod_mesh && lod_index >= 0 && lod_index < lod_mesh->num_levels && !level_uses_vertex_lighting()) {
             bool lights_gathered = false;
             if (rf::level.geometry && !skip_mesh_light_gather) {
-                gather_mesh_lights(pos, lod_mesh->radius);
-                set_mesh_bounds(*lod_mesh, pos, orient);
+                // A scaled orient scales the mesh's extent too
+                const float radius = lod_mesh->radius * orient.rvec.len();
+                gather_mesh_lights(pos, radius);
+                set_mesh_bounds(*lod_mesh, pos, orient, radius);
                 lights_gathered = true;
             }
 
@@ -627,8 +635,9 @@ namespace gr::d3d11
             bool is_first_person = (params.flags & rf::MeshRenderFlags::MRF_FIRST_PERSON) != 0;
             bool lights_gathered = false;
             if (!use_vertex_lighting && rf::level.geometry && !skip_mesh_light_gather) {
-                gather_mesh_lights(pos, lod_mesh->radius);
-                set_mesh_bounds(*lod_mesh, pos, orient);
+                const float radius = lod_mesh->radius * orient.rvec.len();
+                gather_mesh_lights(pos, radius);
+                set_mesh_bounds(*lod_mesh, pos, orient, radius);
                 lights_gathered = true;
             }
 

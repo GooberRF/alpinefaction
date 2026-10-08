@@ -56,7 +56,7 @@ inline constexpr bool stock_page_edge_valid(std::uint32_t edge)
 }
 
 // ─── Level property `d3d11_only_lightmaps` (u8 bit field) ─────────────────────
-// bit0: the file carries no stock 0x1200 lightmaps section, which is all the game reads.
+// bit0: the file carries no stock 0x1200 lightmaps section. The game reads require_d3d11 instead.
 // bit1: the editor setting, kept apart so a save that still wrote the stock section keeps it.
 // bits 2-7: reserved, written as 0.
 

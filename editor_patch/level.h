@@ -718,6 +718,7 @@ struct AlpineLevelProperties
     Vector3 minimap_world_min{};
     Vector3 minimap_world_max{};
     float minimap_cut_height = 0.0f;
+    bool require_d3d11 = false; // the mapper's "Require Direct3D 11" setting
 
     // Alpine mesh objects (stored separately from stock object VArrays)
     std::vector<DedMesh*> mesh_objects;
@@ -760,6 +761,10 @@ struct AlpineLevelProperties
     std::vector<RetainedRflChunk> retained_chunks;
 
     static constexpr std::uint32_t current_alpine_chunk_version = 6u;
+
+    // Level property `require_d3d11` (u8): the game refuses the level on other renderers when it is non-zero.
+    static constexpr std::uint8_t require_d3d11_needed = 1u << 0;  // any reason, recomputed on every save
+    static constexpr std::uint8_t require_d3d11_setting = 1u << 1; // the mapper's setting
 
     // Unit vector pointing TOWARD the sun. The light travel direction is its negation.
     Vector3 sun_to_light_dir() const
@@ -860,6 +865,7 @@ struct AlpineLevelProperties
         d3d11_only_lightmaps = false;
         stock_lightmaps_omitted = false;
         lightmap_compression = 0;
+        require_d3d11 = false;
         for (auto* m : mesh_objects) {
             DestroyDedMesh(m);
         }
@@ -915,7 +921,7 @@ struct AlpineLevelProperties
         retained_chunks.clear();
     }
 
-    void Serialize(rf::File& file, bool stock_lightmaps_suppressed) const
+    void Serialize(rf::File& file, bool stock_lightmaps_suppressed, bool needs_d3d11) const
     {
         file.write<std::uint32_t>(current_alpine_chunk_version);
 
@@ -995,6 +1001,8 @@ struct AlpineLevelProperties
         file.write<float>(minimap_world_max.y);
         file.write<float>(minimap_world_max.z);
         file.write<float>(minimap_cut_height);
+        file.write<std::uint8_t>(static_cast<std::uint8_t>((needs_d3d11 ? require_d3d11_needed : 0u) |
+                                                           (require_d3d11 ? require_d3d11_setting : 0u)));
     }
 
     void Deserialize(rf::File& file, std::size_t chunk_len)
@@ -1258,6 +1266,9 @@ struct AlpineLevelProperties
                 return;
             if (!std::isfinite(minimap_cut_height))
                 minimap_cut_height = 0.0f;
+            if (!read_bytes(&u8, sizeof(u8)))
+                return;
+            require_d3d11 = (u8 & require_d3d11_setting) != 0;
         }
     }
 };

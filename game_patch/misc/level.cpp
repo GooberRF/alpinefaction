@@ -192,12 +192,11 @@ CodeInjection level_load_chunk_patch{
         if (chunk_id == alpine_props_chunk_id) {
             AlpineLevelProperties::instance().deserialize(file, chunk_len);
             set_headlamp_toggle_enabled(AlpineLevelProperties::instance().starts_with_headlamp);
-            // A d3d11-only level ships no stock lightmaps section at all, so the legacy renderers
-            // would draw its whole world fullbright. Refuse it the way an unsupported version is
-            // refused: the string lands in level_load's error buffer and the failure path unwinds.
-            if (af_lightmap_level_refused(AlpineLevelProperties::instance().d3d11_only_lightmaps,
-                                          rf::is_dedicated_server, is_headless_mode(),
-                                          g_game_config.renderer == GameConfig::Renderer::d3d11)) {
+            // Refused the way an unsupported version is: the string lands in level_load's error buffer
+            // and the failure path unwinds. The props chunk precedes every alpine object chunk.
+            if (level_refused_without_d3d11(AlpineLevelProperties::instance().require_d3d11,
+                                            rf::is_dedicated_server, is_headless_mode(),
+                                            g_game_config.renderer == GameConfig::Renderer::d3d11)) {
                 char* error_info = *reinterpret_cast<char**>(regs.esp + 0x2B0 + 0xC);
                 std::strcpy(error_info, "This level requires the D3D11 renderer");
                 regs.eip = 0x004608CC;
