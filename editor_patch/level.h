@@ -1783,6 +1783,8 @@ void editor_report_blocking(const char* tag, const char* caption, const std::str
 // otherwise the shortfall followed by `advice`.
 std::string editor_address_space_shortfall(std::uint64_t largest, std::uint64_t total,
                                            const char* advice = "Save the level and restart RED.");
+// RED's largest free block and total free address space.
+void editor_address_space_free(std::uint64_t& free_largest, std::uint64_t& free_total);
 
 // Inside RED's autosave (CDedDoc::LoadSaveLevel with is_autosave set).
 bool level_autosave_in_progress();

@@ -1,5 +1,7 @@
 #include <algorithm>
 #include <cstring>
+#include <functional>
+#include <limits>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -37,8 +39,8 @@ namespace
         return XXH32(bytes > 0 ? static_cast<const void*>(records) : static_cast<const void*>(&empty), bytes, 0);
     }
 
-    // The bake's own page budget is 1024 slices, which is 67 MB of BC7, so a longer section is a
-    // malformed length rather than one this build could ever consume.
+    // A section holds at most 2048 slices, 134 MB of BC7, plus tables and tiles well under the rest, so a
+    // longer section is a malformed length rather than one this build could ever consume.
     constexpr std::size_t af_max_section_bytes = 320u * 1024u * 1024u;
 
     struct AfFingerprint
@@ -76,6 +78,124 @@ namespace
     // The matched mover record of each mover solid; a solid missing here has no chart.
     std::unordered_map<rf::GSolid*, std::uint32_t> g_mover_record;
 
+    // ─── overflow charts: faces known by their ordinal in the static geometry section ───
+
+    constexpr std::uint32_t no_ordinal = std::numeric_limits<std::uint32_t>::max();
+
+    // The level solid's faces by ordinal while its geometry section loads, null where the loader dropped one; a
+    // dropped face is hashed before it is freed, so the table still verifies and only that face goes unlit.
+    bool g_capturing = false;
+    std::vector<rf::GFace*> g_captured;
+    std::vector<std::pair<std::uint32_t, std::uint64_t>> g_dropped_hash;
+    // Per ordinal: the face's overflow_face_hash as loaded, and whether it has one; until the section is matched,
+    // since booleans later in the load (liquid surfaces, a savegame's geomods) may cut the faces.
+    std::vector<std::uint64_t> g_face_hash;
+    std::vector<std::uint8_t> g_face_hashed;
+    // Face -> ordinal, sorted by face; a destroyed face keeps its slot with no_ordinal, since the face pool hands
+    // its address straight back out. Clones made after load (geomod splits and remnants) are looked up first.
+    bool g_tracking = false;
+    std::vector<std::pair<const rf::GFace*, std::uint32_t>> g_face_ordinal;
+    std::unordered_map<const rf::GFace*, std::uint32_t> g_clone_ordinal;
+    // Per ordinal: the overflow record lighting it, or no_ordinal; empty unless the table matched.
+    std::vector<std::uint32_t> g_ordinal_record;
+
+    void overflow_reset()
+    {
+        g_capturing = false;
+        g_captured.clear();
+        g_captured.shrink_to_fit();
+        g_dropped_hash.clear();
+        g_face_hash.clear();
+        g_face_hash.shrink_to_fit();
+        g_face_hashed.clear();
+        g_face_hashed.shrink_to_fit();
+        g_tracking = false;
+        g_face_ordinal.clear();
+        g_face_ordinal.shrink_to_fit();
+        g_clone_ordinal.clear();
+        g_ordinal_record.clear();
+        g_ordinal_record.shrink_to_fit();
+    }
+
+    std::uint32_t face_ordinal(const rf::GFace* face)
+    {
+        if (!g_clone_ordinal.empty()) {
+            const auto it = g_clone_ordinal.find(face);
+            if (it != g_clone_ordinal.end()) {
+                return it->second;
+            }
+        }
+        const auto it = std::lower_bound(g_face_ordinal.begin(), g_face_ordinal.end(), face,
+                                         [](const auto& e, const rf::GFace* f) { return std::less<>{}(e.first, f); });
+        return it != g_face_ordinal.end() && it->first == face ? it->second : no_ordinal;
+    }
+
+    // The overflow table lights faces only while it was baked for the faces this level loaded: the same count,
+    // every ordinal a face the section holds, once, and their positions hashing to the table's fingerprint.
+    void af_match_overflow()
+    {
+        g_ordinal_record.clear();
+        if (!g_section.overflow.empty()) {
+            const auto drop = [](const char* why) {
+                xlog::warn("[AlpineLightmaps] ignoring the overflow charts: {}", why);
+                std::fill(g_section.overflow_ok.begin(), g_section.overflow_ok.end(), std::uint8_t{0});
+            };
+            const alm::OverflowTableHeader& head = g_section.overflow_head;
+            const auto num_ordinals = static_cast<std::uint32_t>(g_face_hash.size());
+            bool ok = true;
+            if (g_face_hash.empty()) {
+                drop("the level's faces were not captured");
+                ok = false;
+            }
+            else if (head.src_num_faces != num_ordinals) {
+                drop("they were baked for a different face count, re-bake the level");
+                ok = false;
+            }
+            if (ok) {
+                std::vector<std::uint8_t> seen(num_ordinals, 0);
+                for (const std::uint32_t o : g_section.overflow_faces) {
+                    if (o >= num_ordinals || !g_face_hashed[o] || seen[o]) {
+                        drop("a face ordinal is out of range, repeated, or of a face the level could not read");
+                        ok = false;
+                        break;
+                    }
+                    seen[o] = 1;
+                }
+            }
+            if (ok) {
+                const std::uint64_t fp = alm::overflow_fingerprint(
+                    head.src_num_faces, g_section.overflow_faces.data(),
+                    static_cast<std::uint32_t>(g_section.overflow_faces.size()),
+                    [](std::uint32_t o) { return g_face_hash[o]; });
+                if (fp != head.face_fingerprint) {
+                    drop("the geometry changed since they were baked, re-bake the level");
+                    ok = false;
+                }
+            }
+            if (ok) {
+                g_ordinal_record.assign(num_ordinals, no_ordinal);
+                for (std::uint32_t i = 0; i < g_section.overflow.size(); i++) {
+                    if (!g_section.overflow_ok[i]) {
+                        continue;
+                    }
+                    const std::uint32_t first = g_section.overflow_first_face[i];
+                    for (std::uint32_t k = 0; k < g_section.overflow[i].num_faces; k++) {
+                        g_ordinal_record[g_section.overflow_faces[first + k]] = i;
+                    }
+                }
+            }
+        }
+        // matched once per level; with nothing to light, the faces need not be tracked any further
+        if (g_ordinal_record.empty()) {
+            overflow_reset();
+            return;
+        }
+        g_face_hash.clear();
+        g_face_hash.shrink_to_fit();
+        g_face_hashed.clear();
+        g_face_hashed.shrink_to_fit();
+    }
+
     // Always paired with release_af_lightmap_atlas, which stops the charts being handed out.
     void af_drop_section()
     {
@@ -86,6 +206,7 @@ namespace
         g_terrain_reduction.clear();
         g_terrain_record.clear();
         g_mover_record.clear();
+        g_ordinal_record.clear();
     }
 
     // The chart record matched to terrain `index`, or null.
@@ -359,6 +480,10 @@ namespace
             std::fill(g_section.mover_ok.begin(), g_section.mover_ok.end(), std::uint8_t{0});
         }
         af_match_movers(bake_page);
+        if (*g_section.overflow_reason) {
+            xlog::warn("[AlpineLightmaps] ignoring the overflow charts: {}", g_section.overflow_reason);
+        }
+        af_match_overflow();
         const auto drop_surfaces = [](const char* why) {
             xlog::warn("[AlpineLightmaps] ignoring the surface charts: {}", why);
             af_drop_surface_charts();
@@ -389,7 +514,7 @@ namespace
         }
         const bool any_terrain = std::any_of(g_section.terrain_ok.begin(), g_section.terrain_ok.end(),
                                              [](std::uint8_t v) { return v != 0; });
-        if (!g_section.surfaces_ok && !any_terrain && g_mover_record.empty()) {
+        if (!g_section.surfaces_ok && !any_terrain && g_mover_record.empty() && g_ordinal_record.empty()) {
             af_drop_section();
             return;
         }
@@ -437,12 +562,13 @@ namespace
                        "lightmaps");
             af_drop_surface_charts();
             g_mover_record.clear();
+            g_ordinal_record.clear();
         }
         xlog::info("[AlpineLightmaps] {} pages, {} surface charts{}, {} terrain charts, {} mover charts ({} matched), "
-                   "{} tiles, density {} px/m",
+                   "{} overflow charts{}, {} tiles, density {} px/m",
                    g_section.head.num_pages, g_section.head.num_charts, g_section.surfaces_ok ? "" : " (unused)",
-                   g_section.terrain.size(), g_section.movers.size(), g_mover_record.size(), g_section.head.num_tiles,
-                   g_section.head.base_density);
+                   g_section.terrain.size(), g_section.movers.size(), g_mover_record.size(), g_section.overflow.size(),
+                   g_ordinal_record.empty() ? " (unused)" : "", g_section.head.num_tiles, g_section.head.base_density);
     }
 }
 
@@ -563,6 +689,7 @@ void af_lightmap_level_reset()
     g_stock_section_seen = false;
     g_synth_page_bm = -1;
     g_mover_captures.clear();
+    overflow_reset();
 }
 
 void af_lightmap_capture_mover(int uid, rf::GSolid* solid, const rf::VFile& reader)
@@ -589,7 +716,11 @@ void af_lightmap_capture_mover(int uid, rf::GSolid* solid, const rf::VFile& read
 
 void af_lightmap_resolve_terrains()
 {
-    // matched when the section loaded, so this only reports
+    // matched when the section loaded, so this only reports, and releases what an unused overflow capture kept
+    // with no overflow table in use, nothing needs to know the level's faces any more
+    if (g_ordinal_record.empty()) {
+        overflow_reset();
+    }
     const auto& terrains = alpine_terrain_get_all();
     int matched = 0;
     int lit = 0;
@@ -696,4 +827,160 @@ void af_lightmap_load_chunk(rf::File& file, std::size_t chunk_len)
         af_drop_section();
         gr::d3d11::release_af_lightmap_atlas();
     }
+}
+
+// ─── overflow charts ──────────────────────────────────────────────────────────
+
+void af_lightmap_overflow_capture_begin()
+{
+    overflow_reset();
+    // only a D3D11-only level can carry overflow charts, and only the D3D11 renderer draws them
+    g_capturing = !rf::is_dedicated_server && !is_headless_mode() && is_d3d11()
+               && AlpineLevelProperties::instance().d3d11_only_lightmaps;
+}
+
+void af_lightmap_overflow_capture_face(rf::GFace* face)
+{
+    if (!g_capturing) {
+        return;
+    }
+    try {
+        g_captured.push_back(face);
+    }
+    catch (...) {
+        overflow_reset();
+    }
+}
+
+void af_lightmap_overflow_capture_drop(rf::GFace* face)
+{
+    // the loader drops a face it just appended, before freeing it
+    for (std::size_t k = g_captured.size(); g_capturing && k > 0 && k + 4 > g_captured.size(); k--) {
+        if (g_captured[k - 1] == face) {
+            std::vector<const rf::GVertex*> scratch;
+            std::uint64_t h = 0;
+            try {
+                if (alm::overflow_face_loop_hash(face, scratch, h)) {
+                    g_dropped_hash.emplace_back(static_cast<std::uint32_t>(k - 1), h);
+                }
+            }
+            catch (...) {
+            }
+            g_captured[k - 1] = nullptr;
+            return;
+        }
+    }
+}
+
+void af_lightmap_overflow_capture_end()
+{
+    if (!g_capturing) {
+        return;
+    }
+    g_capturing = false;
+    try {
+        const auto n = static_cast<std::uint32_t>(g_captured.size());
+        g_face_hash.assign(n, 0);
+        g_face_hashed.assign(n, 0);
+        g_face_ordinal.reserve(n);
+        std::vector<const rf::GVertex*> scratch;
+        for (std::uint32_t o = 0; o < n; o++) {
+            rf::GFace* face = g_captured[o];
+            if (!face || !alm::overflow_face_loop_hash(face, scratch, g_face_hash[o])) {
+                continue;
+            }
+            g_face_hashed[o] = 1;
+            g_face_ordinal.emplace_back(face, o);
+        }
+        for (const auto& [o, h] : g_dropped_hash) {
+            if (o < n && !g_captured[o]) {
+                g_face_hash[o] = h;
+                g_face_hashed[o] = 1;
+            }
+        }
+        g_dropped_hash.clear();
+        std::sort(g_face_ordinal.begin(), g_face_ordinal.end(),
+                  [](const auto& a, const auto& b) { return std::less<>{}(a.first, b.first); });
+        g_tracking = true;
+    }
+    catch (...) {
+        overflow_reset();
+    }
+    g_captured.clear();
+    g_captured.shrink_to_fit();
+}
+
+void af_lightmap_overflow_face_destroyed(rf::GFace* face)
+{
+    if (!g_tracking) {
+        return;
+    }
+    if (!g_clone_ordinal.empty()) {
+        g_clone_ordinal.erase(face);
+    }
+    const auto it = std::lower_bound(g_face_ordinal.begin(), g_face_ordinal.end(), face,
+                                     [](const auto& e, const rf::GFace* f) { return std::less<>{}(e.first, f); });
+    if (it != g_face_ordinal.end() && it->first == face) {
+        it->second = no_ordinal;
+    }
+}
+
+void af_lightmap_overflow_face_cloned(rf::GFace* source, rf::GFace* clone)
+{
+    if (!g_tracking || !clone) {
+        return;
+    }
+    // a clone lies in its source's plane, so the source's chart projection covers it
+    const std::uint32_t o = face_ordinal(source);
+    if (o == no_ordinal) {
+        return;
+    }
+    try {
+        g_clone_ordinal[clone] = o;
+    }
+    catch (...) {
+    }
+}
+
+bool af_lightmap_overflow_face(const rf::GSolid* solid, const rf::GFace* face, AfOverflowFace& out)
+{
+    out = AfOverflowFace{};
+    if (!gr::d3d11::af_lightmap_atlas_live() || !solid || solid != g_solid || !face || g_ordinal_record.empty()) {
+        return false;
+    }
+    const std::uint32_t o = face_ordinal(face);
+    if (o >= g_ordinal_record.size()) {
+        return false;
+    }
+    const std::uint32_t record = g_ordinal_record[o];
+    if (record >= g_section.overflow.size() || !g_section.overflow_ok[record]) {
+        return false;
+    }
+    out.chart = static_cast<int>(alm::gpu_overflow_chart(g_section, record));
+    out.record = record;
+    return true;
+}
+
+bool af_lightmap_overflow_texel(const AfOverflowFace& face, const rf::Vector3& pos, float& out_u, float& out_v)
+{
+    if (face.chart < 0 || face.record >= g_section.overflow.size()) {
+        return false;
+    }
+    const alm::ChartTexel t = alm::overflow_chart_coord(g_section.overflow[face.record], &pos.x);
+    out_u = t.u;
+    out_v = t.v;
+    return true;
+}
+
+bool af_lightmap_overflow_light(const rf::GSolid* solid, const rf::GFace* face, float (&texel)[3])
+{
+    AfOverflowFace f;
+    if (!af_lightmap_overflow_face(solid, face, f)) {
+        return false;
+    }
+    const alm::OverflowChart& c = g_section.overflow[f.record];
+    for (int ch = 0; ch < 3; ch++) {
+        texel[ch] = c.mean_rgb[ch] / 255.0f;
+    }
+    return true;
 }

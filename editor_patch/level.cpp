@@ -9,6 +9,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <new>
 #include <unordered_map>
 #include <unordered_set>
 #include <windows.h>
@@ -36,7 +37,9 @@
 #include "terrain_decorations.h"
 #include "dir_light.h"
 #include "alpine_lightmaps.h"
+#include "overflow_charts.h"
 #include "headless_bake.h"
+#include "bake_progress.h"
 #include "face_list_cache.h"
 
 // Forward declarations
@@ -76,17 +79,24 @@ void editor_report(EditorReportLevel level, const char* tag, const std::string& 
 void editor_report_blocking(const char* tag, const char* caption, const std::string& msg)
 {
     editor_report(EditorReportLevel::error, tag, msg, true);
-    if (!headless_bake_active()) {
+    if (headless_bake_active()) {
+        return;
+    }
+    // a message box mid-bake would run a modal loop that dispatches every window's messages
+    if (bake_progress_active()) {
+        bake_progress_defer_message(caption, msg);
+    }
+    else {
         MessageBoxA(GetMainFrameHandle(), msg.c_str(), caption, MB_OK | MB_ICONWARNING);
     }
 }
 
-std::string editor_address_space_shortfall(std::uint64_t largest, std::uint64_t total, const char* advice)
+void editor_address_space_free(std::uint64_t& free_largest, std::uint64_t& free_total)
 {
     SYSTEM_INFO si{};
     GetSystemInfo(&si);
-    std::uint64_t free_largest = 0;
-    std::uint64_t free_total = 0;
+    free_largest = 0;
+    free_total = 0;
     auto addr = reinterpret_cast<std::uintptr_t>(si.lpMinimumApplicationAddress);
     const auto end = reinterpret_cast<std::uintptr_t>(si.lpMaximumApplicationAddress);
     MEMORY_BASIC_INFORMATION mbi{};
@@ -101,6 +111,13 @@ std::string editor_address_space_shortfall(std::uint64_t largest, std::uint64_t 
         }
         addr = next;
     }
+}
+
+std::string editor_address_space_shortfall(std::uint64_t largest, std::uint64_t total, const char* advice)
+{
+    std::uint64_t free_largest = 0;
+    std::uint64_t free_total = 0;
+    editor_address_space_free(free_largest, free_total);
     constexpr std::uint64_t mb = 1u << 20;
     char msg[512];
     if (free_largest < largest) {
@@ -925,6 +942,57 @@ void __fastcall build_rooms_hooked(GSolid* solid, void* edx_unused)
     g_isolated_face_map.clear();
 }
 
+// After the room builder, GeoBuild_Driver hands each detail brush to CDedLevel::SyncBrushLife
+// (0x0043c2a0), which walks the level solid's face list for the first face with the id of the brush's
+// first face and gives that face's room the brush's life. This runs the same loop against an index of
+// first faces by id, or the stock loop (from 0x0043a040) if building the index runs out of memory. Replaces
+// "MOV EDI,[ESI+0x118]" (6 bytes); 0x0043a065 is the loop exit.
+CodeInjection sync_brush_life_injection{
+    0x0043a03a,
+    [](auto& regs) {
+        auto* level = reinterpret_cast<CDedLevel*>(static_cast<uintptr_t>(regs.esi));
+        BrushNode* const head = level->brush_list;
+        try {
+            std::unordered_map<int, GFace*> first_face;
+            bool indexed = false;
+            BrushNode* brush = head;
+            while (brush) {
+                auto* geometry = static_cast<GSolid*>(brush->geometry);
+                if (brush->is_detail == 1 && geometry && geometry->face_list_head) {
+                    if (!indexed) {
+                        for (GFace* face = level->solid ? level->solid->face_list_head : nullptr; face;
+                             face = face->next_solid) {
+                            first_face.try_emplace(face->face_id, face);
+                        }
+                        indexed = true;
+                    }
+                    auto it = first_face.find(geometry->face_list_head->face_id);
+                    GRoom* room = it != first_face.end() ? it->second->which_room : nullptr;
+                    if (room) {
+                        room->life = static_cast<float>(brush->life);
+                        if (brush->life > 0) {
+                            room->is_invincible = false;
+                        }
+                    }
+                }
+                brush = brush->next;
+                if (brush == head) {
+                    break;
+                }
+            }
+            regs.edi = reinterpret_cast<uintptr_t>(brush);
+            regs.ebp = 0;
+            regs.eip = 0x0043a065;
+        }
+        catch (const std::bad_alloc&) {
+            // only the index allocates, and no room is written before it is complete
+            regs.edi = reinterpret_cast<uintptr_t>(head);
+            regs.eip = 0x0043a040;
+        }
+    },
+    false, // no trampoline: the injection fully replaces the 6 byte load
+};
+
 // FUN_0043a710 starts a Build Geometry (thiscall on CDedLevel*). The minimums cover the first build after
 // a load, the largest measured.
 constexpr std::uint64_t build_geometry_min_free_block = 100u << 20;
@@ -943,6 +1011,8 @@ void __fastcall build_geometry_start_hooked(CDedLevel* level, void* edx_unused)
         editor_report_blocking("Build Geometry", "Build Geometry", shortfall);
         return;
     }
+    // the build frees the faces the overflow preview is keyed on
+    overflow_preview_clear();
     build_geometry_start_hook.call_target(level, edx_unused);
 }
 
@@ -1951,6 +2021,7 @@ void ApplyLevelPatches()
     build_rooms_hook.install();
     adjacency_test_hook.install();
     isolate_rooms_injection.install();
+    sync_brush_life_injection.install();
     skip_empty_detail_rooms_in_loop2.install();
 
     groom_ctor_clear_airlock_injection.install();

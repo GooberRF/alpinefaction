@@ -27,7 +27,10 @@
 #include "level.h"
 #include "lightmap_mesh_occluders.h"
 #include "alpine_lightmaps.h"
+#include "bake_progress.h"
 #include "headless_bake.h"
+#include "overflow_charts.h"
+#include "terrain_build.h"
 #include "textures.h"
 #include "work_pool.h"
 
@@ -540,11 +543,24 @@ static void lightmap_collect_room_ambient(uintptr_t gsolid)
     delete[] room_bboxes;
 }
 
+// FUN_004aabf0 lights the level solid first, then each mover's.
+static void lightmap_progress_batch(uintptr_t solid)
+{
+    auto* level = CDedLevel::Get();
+    if (level && reinterpret_cast<GSolid*>(solid) == level->solid) {
+        bake_progress_phase(BakePhase::surfaces, solid_surfaces(level->solid).size());
+    }
+    else {
+        bake_progress_phase(BakePhase::movers);
+    }
+}
+
 CodeInjection lightmap_apply_room_ambient_injection{
     0x004aabf0, // entry of FUN_004aabf0 (batch lightmap calculator)
     [](auto& regs) {
         // ECX at FUN_004aabf0 entry is the GSolid used for lightmap calculation.
         lightmap_collect_room_ambient(regs.ecx);
+        lightmap_progress_batch(regs.ecx);
     },
 };
 
@@ -1371,6 +1387,8 @@ struct SolidCache {
     OccluderTree tree;
     bool tree_built = false;
     std::unordered_map<int, std::vector<uintptr_t>> faces_by_surface;
+    // the whole face list was indexed
+    bool complete = false;
 };
 
 static std::unordered_map<uintptr_t, std::unique_ptr<SolidCache>> g_solid_cache;
@@ -1387,18 +1405,24 @@ static SolidCache* lightmap_solid_cache(uintptr_t solid)
     try {
         auto cache = std::make_unique<SolidCache>();
         int guard = 0;
-        for (uintptr_t face = *reinterpret_cast<uintptr_t*>(solid + 0x70); face && guard < (1 << 21);
-             face = *reinterpret_cast<uintptr_t*>(face + 0x54), guard++) {
-            const int surf_id = *reinterpret_cast<std::int16_t*>(face + 0x36);
-            if (surf_id >= 0) {
-                cache->faces_by_surface[surf_id].push_back(face);
+        GFace* face = reinterpret_cast<GSolid*>(solid)->face_list_head;
+        for (; face && guard < (1 << 21); face = face->next_solid, guard++) {
+            if (face->surface_index >= 0) {
+                cache->faces_by_surface[face->surface_index].push_back(reinterpret_cast<uintptr_t>(face));
             }
         }
+        cache->complete = !face;
         return g_solid_cache.emplace(solid, std::move(cache)).first->second.get();
     }
     catch (...) {
         xlog::error("Lightmap: out of memory indexing a solid's faces, falling back to the stock "
                     "bake for it");
+        // remembered, so the per-surface callers do not retry it
+        try {
+            g_solid_cache.emplace(solid, nullptr);
+        }
+        catch (...) {
+        }
         return nullptr;
     }
 }
@@ -1840,7 +1864,7 @@ bool lighting_calc_memory_admits()
     auto* level = CDedLevel::Get();
     const auto* props = level ? &level->GetAlpineLevelProperties() : nullptr;
     const bool alpine_pages = props && (props->surface_charts_enabled() || !props->terrain_objects.empty());
-    return lighting_calc_fits(alpine_pages ? alpine_lightmap::max_pages : 0, lighting_surface_pass_headroom,
+    return lighting_calc_fits(alpine_pages ? alpine_lightmap::stage_page_budget : 0, lighting_surface_pass_headroom,
                               "Save the level and restart RED.");
 }
 
@@ -1972,24 +1996,102 @@ static FunHook<void __fastcall(void*)> lighting_calc_shadows_hook{0x00448f20, li
 static void __fastcall lighting_calc_no_shadows_new(void* self);
 static FunHook<void __fastcall(void*)> lighting_calc_no_shadows_hook{0x004492d0, lighting_calc_no_shadows_new};
 
-static void lighting_calc_bake(void* self, bool shadows, bool surface_pass_ran)
+// The phases a bake of the level goes through, as far as the level's settings tell before the layout.
+static unsigned lighting_calc_phases(std::uint64_t mover_surfaces)
 {
-    if (lighting_calc_refused()) {
-        return;
+    unsigned phases = bake_phase_bit(BakePhase::layout) | bake_phase_bit(BakePhase::surfaces) |
+                      bake_phase_bit(BakePhase::blend) | bake_phase_bit(BakePhase::smoothing);
+    if (mover_surfaces) {
+        phases |= bake_phase_bit(BakePhase::movers);
     }
-    BakeScope bake;
-    g_bake_mode = shadows ? 1 : 0;
-    AlpineBakeScope af_bake{surface_pass_ran};
-    if (!af_bake.admitted()) {
-        return;
+    auto* level = CDedLevel::Get();
+    if (!level) {
+        return phases;
     }
-    if (shadows) {
-        lighting_calc_shadows_hook.call_target(self);
+    const auto& props = level->GetAlpineLevelProperties();
+    if (!props.terrain_objects.empty()) {
+        phases |= bake_phase_bit(BakePhase::terrain) | bake_phase_bit(BakePhase::encode);
+    }
+    if (props.surface_charts_enabled()) {
+        phases |= bake_phase_bit(BakePhase::encode);
+        if (props.d3d11_only_lightmaps) {
+            phases |= bake_phase_bit(BakePhase::overflow);
+        }
+    }
+    return phases;
+}
+
+// After the layout: the phases it left nothing for are marked, the rest get their expected steps.
+static void lighting_calc_expect(std::uint64_t mover_surfaces)
+{
+    auto* level = CDedLevel::Get();
+    const std::uint64_t surfaces = level && level->solid ? solid_surfaces(level->solid).size() : 0;
+    bake_progress_expect(BakePhase::surfaces, surfaces);
+    bake_progress_expect(BakePhase::blend, surfaces);
+    bake_progress_expect(BakePhase::smoothing, surfaces);
+    bake_progress_expect(BakePhase::movers, mover_surfaces);
+    const AlpineBakePlan plan = alpine_lm_bake_plan();
+    if (plan.terrains) {
+        bake_progress_expect(BakePhase::terrain, plan.terrains);
     }
     else {
-        lighting_calc_no_shadows_hook.call_target(self);
+        bake_progress_skip(BakePhase::terrain);
     }
-    af_bake.finish();
+    if (plan.active && overflow_has_table()) {
+        bake_progress_expect(BakePhase::overflow, overflow_table_tiles());
+    }
+    else {
+        bake_progress_skip(BakePhase::overflow);
+    }
+    if (plan.active) {
+        bake_progress_expect(BakePhase::encode, plan.encode_steps);
+    }
+    else {
+        bake_progress_skip(BakePhase::encode);
+    }
+}
+
+// A cancelled bake leaves the level as its surface pass does: blank lightmaps and no alpine section. The stock pass
+// runs without the hook's checks: they guard a bake that no longer runs, and a refusal would only leave the
+// cancelled bake's partial lighting behind.
+static void lighting_calc_discard(void* self)
+{
+    lighting_surfaces_stock(self);
+    editor_report(EditorReportLevel::info, "Lightmap",
+                  "Calculate Lighting was cancelled, the level has no baked lighting", true);
+}
+
+static void lighting_calc_bake(void* self, bool shadows, bool surface_pass_ran)
+{
+    if (bake_progress_active() || lighting_calc_refused()) {
+        return;
+    }
+    bool cancelled = false;
+    {
+        const std::uint64_t mover_surfaces = mover_bake_surfaces();
+        BakeProgressScope progress{lighting_calc_phases(mover_surfaces)};
+        BakeScope bake;
+        g_bake_mode = shadows ? 1 : 0;
+        bake_progress_phase(BakePhase::layout, 0);
+        AlpineBakeScope af_bake{surface_pass_ran};
+        if (!af_bake.admitted()) {
+            return;
+        }
+        lighting_calc_expect(mover_surfaces);
+        if (shadows) {
+            lighting_calc_shadows_hook.call_target(self);
+        }
+        else {
+            lighting_calc_no_shadows_hook.call_target(self);
+        }
+        if (!bake_progress_cancelled()) {
+            af_bake.finish();
+        }
+        cancelled = bake_progress_cancelled();
+    }
+    if (cancelled) {
+        lighting_calc_discard(self);
+    }
 }
 
 // Entered directly (the Calculate Lighting menu items and Shift+L), the bake runs without the surface
@@ -2837,7 +2939,6 @@ public:
     bool build(uintptr_t entries, int count)
     {
         try {
-            entries_ = entries;
             count_ = count;
             for (int e = 0; e < count; e++) {
                 const auto& faces = reinterpret_cast<const LightmapBlendEntry*>(entries)[e].faces;
@@ -2867,13 +2968,16 @@ public:
         }
     }
 
-    bool entry_has_candidates(uintptr_t fa, uintptr_t entry)
+    // The first entry at or after `e` that can hold a candidate, `last` when none can; `e` itself when the pass
+    // is left to stock for this face.
+    int next_candidate_entry(uintptr_t fa, int e, int last)
     {
         if (!select(fa)) {
-            return true;
+            return e;
         }
-        const auto e = static_cast<std::size_t>((entry - entries_) / blend_entry_stride);
-        return e < candidate_entries_.size() && candidate_entries_[e];
+        const auto end = candidate_entries_.begin() + std::min(last, count_);
+        const auto it = std::find(candidate_entries_.begin() + std::min(e, count_), end, char{1});
+        return it == end ? last : static_cast<int>(it - candidate_entries_.begin());
     }
 
     bool face_is_candidate(uintptr_t fa, uintptr_t fb)
@@ -2957,7 +3061,6 @@ private:
         return selected_ok_;
     }
 
-    uintptr_t entries_ = 0;
     int count_ = 0;
     std::unordered_map<Cell, std::vector<uintptr_t>, CellHash> cells_;
     std::unordered_multimap<uintptr_t, int> face_entry_;
@@ -2980,19 +3083,35 @@ uintptr_t blend_current_face(uintptr_t esp)
 
 } // namespace
 
-// Replaces "MOV EAX,[EBX-4]; MOV ECX,[EDI]" (5 bytes) at the head of the B-entry loop (EDI = entry),
-// which is also the loop's back-edge target; 0x004ab07c moves to the next entry, as the stock room check does.
+// Replaces "MOV EAX,[EBX-4]; MOV ECX,[EDI]" (5 bytes) at the head of the B-entry loop, which is also its
+// back-edge target. EDI and [ESP+0x1c] are the entry, [ESP+0x24] the entries left including it, [ESP+0xc8] the
+// array. A run of entries without candidates is stepped over at once, as 0x004ab07c (where the stock room check
+// sends them) would one at a time; when none are left the loop exits to 0x004ab092 as its JNZ would.
 CodeInjection lightmap_blend_entry_cull_injection{
     0x004aaf05,
     [](auto& regs) {
         const uintptr_t esp = static_cast<uintptr_t>(regs.esp);
-        const uintptr_t entry = static_cast<uintptr_t>(regs.edi);
+        uintptr_t entry = static_cast<uintptr_t>(regs.edi);
+        if (g_blend_cull) {
+            const uintptr_t base = *reinterpret_cast<uintptr_t*>(esp + 0xc8);
+            int& left = *reinterpret_cast<int*>(esp + 0x24);
+            const int at = static_cast<int>((entry - base) / blend_entry_stride);
+            const int next = g_blend_cull->next_candidate_entry(blend_current_face(esp), at, at + left);
+            if (next != at) {
+                left -= next - at;
+                entry = base + static_cast<uintptr_t>(next) * blend_entry_stride;
+                regs.edi = entry;
+                *reinterpret_cast<uintptr_t*>(esp + 0x1c) = entry;
+                if (left == 0) {
+                    regs.eax = 0;
+                    regs.eip = 0x004ab092;
+                    return;
+                }
+            }
+        }
         regs.eax = *reinterpret_cast<uintptr_t*>(static_cast<uintptr_t>(regs.ebx) - 4);
         regs.ecx = *reinterpret_cast<uintptr_t*>(entry);
         regs.eip = 0x004aaf0a;
-        if (g_blend_cull && !g_blend_cull->entry_has_candidates(blend_current_face(esp), entry)) {
-            regs.eip = 0x004ab07c;
-        }
     },
     false, // no trampoline: the injection replaces the two loads
 };
@@ -3382,6 +3501,18 @@ static FunHook<void __cdecl(void*, int)> lightmap_blend_pass_hook{0x004aae80, li
 
 static void __cdecl lightmap_blend_pass_new(void* entries, int count)
 {
+    if (bake_progress_cancelled()) {
+        return;
+    }
+    // the level's blend and second pass are phases of their own; a mover's count as the movers phase
+    const bool level_pass = bake_progress_current() == BakePhase::surfaces;
+    if (level_pass) {
+        std::uint64_t faces = 0;
+        for (int e = 0; e < count; e++) {
+            faces += reinterpret_cast<const LightmapBlendEntry*>(entries)[e].faces.size;
+        }
+        bake_progress_phase(BakePhase::blend, faces);
+    }
     g_blend_edges.clear();
     blend_sides_clear();
     {
@@ -3392,6 +3523,9 @@ static void __cdecl lightmap_blend_pass_new(void* entries, int count)
     }
     g_blend_edges.clear();
     blend_sides_clear();
+    if (level_pass) {
+        bake_progress_phase(BakePhase::smoothing, static_cast<std::uint64_t>(std::max(count, 0)));
+    }
 }
 
 // Skips the per-pair done list scan at 0x004aaf29-0x004aaf56 so every shared edge of a pair reaches
@@ -3417,6 +3551,9 @@ static uintptr_t g_face_vert_nodes[lm_max_face_verts];
 CodeInjection lightmap_blend_face_verts_injection{
     0x004aaecb,
     [](auto& regs) {
+        if (bake_progress_current() == BakePhase::blend) {
+            bake_progress_step();
+        }
         regs.eip = 0x004aaeef;
         const uintptr_t face = *reinterpret_cast<uintptr_t*>(static_cast<uintptr_t>(regs.eax));
         const uintptr_t head = face ? *reinterpret_cast<uintptr_t*>(face + 0x40) : 0;
@@ -3607,6 +3744,10 @@ static FunHook<void __fastcall(GSurface*, int, void*, int)> lightmap_shade_surfa
 
 static void __fastcall lightmap_shade_surface_new(GSurface* surface, int edx, void* solid, int mode)
 {
+    // a cancelled bake is discarded, so nothing more is shaded
+    if (bake_progress_cancelled()) {
+        return;
+    }
     if (alpine_lm_tile_pass_active()) {
         lightmap_shade_surface_hook.call_target(surface, edx, solid, mode);
         return;
@@ -3642,6 +3783,10 @@ static void __fastcall lightmap_shade_surface_new(GSurface* surface, int edx, vo
     lightmap_shade_surface_hook.call_target(surface, edx, solid, mode);
     if ((state & (SURFACE_SHADE | SURFACE_SHADE_RUNTIME)) && !fullbright) {
         alpine_lm_shade_surface(static_cast<GSolid*>(solid), surface, mode);
+    }
+    // FUN_004aabf0's second pass (state 8) re-shades a mover's smoothed surfaces, which its count already holds
+    if (state != 8 || bake_progress_current() != BakePhase::movers) {
+        bake_progress_step();
     }
 }
 
@@ -3703,8 +3848,8 @@ CodeInjection lightmap_force_should_smooth_injection{
 };
 
 // Merged surfaces span rooms, so the per-room light and face lists no longer describe them. These
-// three sites each branch on surface->room_index == -1 to pick the global list instead; the branch
-// is forced when merging is on. Every handler reproduces the skipped stock instructions exactly.
+// sites each branch on surface->room_index == -1 to pick the global list instead; the branch is
+// forced when merging is on.
 
 // FUN_004ac470 shadow-pass gather: "MOV ECX,[ESI+0x68]; XOR EAX,EAX" (5 bytes).
 CodeInjection lightmap_global_lights_shadow_injection{
@@ -3739,13 +3884,35 @@ CodeInjection lightmap_global_faces_shadow_injection{
     false, // no trampoline: the injection fully replaces the 11 byte store
 };
 
-// FUN_004ad160 lumel face list: "MOV dword ptr [ESP+0x28c],EBX" (a single 7 byte store, EBX = 0).
+// FUN_004ad160 lumel face list: "MOV dword ptr [ESP+0x28c],EBX" (a single 7 byte store, EBX = 0;
+// EAX = surface->room_index). The global list is the solid's faces carrying this surface's index in
+// list order, which the bake's face index already holds, so it fills the stack VArray at [ESP+0x5c]
+// from that and skips the walk (0x004ad262-0x004ad297), leaving EDI and EBP as the walk does.
 CodeInjection lightmap_global_faces_lumel_injection{
     0x004ad20f,
     [](auto& regs) {
-        *reinterpret_cast<std::uint32_t*>(static_cast<uintptr_t>(regs.esp) + 0x28c) =
-            static_cast<std::uint32_t>(static_cast<int>(regs.ebx));
-        regs.eip = bake_fixes_active() ? 0x004ad262 : 0x004ad216;
+        const uintptr_t esp = static_cast<uintptr_t>(regs.esp);
+        *reinterpret_cast<std::uint32_t*>(esp + 0x28c) = static_cast<std::uint32_t>(static_cast<int>(regs.ebx));
+        if (!bake_fixes_active() && static_cast<int>(regs.eax) != -1) {
+            regs.eip = 0x004ad216;
+            return;
+        }
+        auto* solid = *reinterpret_cast<GSolid**>(esp + 0x294);
+        const int surf_id = reinterpret_cast<const GSurface*>(static_cast<uintptr_t>(regs.esi))->index;
+        const SolidCache* cache = surf_id >= 0 ? lightmap_solid_cache(reinterpret_cast<uintptr_t>(solid)) : nullptr;
+        if (!cache || !cache->complete) {
+            regs.eip = 0x004ad262;
+            return;
+        }
+        if (auto faces = cache->faces_by_surface.find(surf_id); faces != cache->faces_by_surface.end()) {
+            auto* list = reinterpret_cast<VArray<GFace*>*>(esp + 0x5c);
+            for (uintptr_t face : faces->second) {
+                list->push_back(reinterpret_cast<GFace*>(face));
+            }
+        }
+        regs.edi = 0;
+        regs.ebp = reinterpret_cast<uintptr_t>(&solid->face_list_head);
+        regs.eip = 0x004ad299;
     },
     false, // no trampoline: the injection fully replaces the 7 byte store
 };

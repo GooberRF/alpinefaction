@@ -28,9 +28,11 @@
 #include <common/terrain/alpine_terrain.h>
 
 #include "alpine_lightmaps.h"
+#include "bake_progress.h"
 #include "work_pool.h"
 #include "level.h"
 #include "mfc_types.h"
+#include "overflow_charts.h"
 #include "terrain_build.h"
 
 namespace alm = alpine_lightmap;
@@ -165,10 +167,10 @@ std::vector<std::uint8_t> g_tile_view;
 // output exactly comparable with the stock lightmaps it is derived from.
 bool g_raw_codec = false;
 
-// Slices of 256x256 the bake may spend before it halves the density and starts over.
+// Slices of 256x256 the surface, mover and terrain stages may spend before they halve the density and start over.
 std::uint32_t page_budget()
 {
-    return alm::max_layer_pages(g_raw_codec ? alm::Codec::raw_rgb8 : alm::Codec::bc7_unorm);
+    return alm::stage_layer_pages(g_raw_codec ? alm::Codec::raw_rgb8 : alm::Codec::bc7_unorm);
 }
 
 // Save-time state.
@@ -1048,10 +1050,9 @@ std::vector<std::uint8_t> g_shared_blocks;
 
 void mark_shared_block(std::uint32_t page, std::uint32_t x, std::uint32_t y)
 {
-    constexpr std::uint32_t bpr = alm::page_size / 4;
-    const std::size_t i = (static_cast<std::size_t>(page) * bpr + y / 4) * bpr + x / 4;
+    const std::uint64_t i = alm::bc7_block_index(page, x, y);
     if (i < g_shared_blocks.size()) {
-        g_shared_blocks[i] = 1;
+        g_shared_blocks[static_cast<std::size_t>(i)] = 1;
     }
 }
 
@@ -1246,7 +1247,8 @@ void shade_terrain_charts()
         return;
     }
     lightmap_prepare_terrain_bake();
-    for (std::size_t k = 0; k < g_af.terrains.size(); k++) {
+    bake_progress_phase(BakePhase::terrain, g_af.terrains.size());
+    for (std::size_t k = 0; k < g_af.terrains.size() && !bake_progress_cancelled(); k++, bake_progress_step()) {
         AfTerrain& a = g_af.terrains[k];
         const std::size_t ci = g_af.first_terrain_chart + k;
         const DWORD t0 = GetTickCount();
@@ -1336,17 +1338,27 @@ PageBuffers encode_bc7(const alm::EncoderSettings& s, std::uint32_t& out_modifie
 
     // The ranges follow the core count, which cannot change the bytes: the encoder is an RNG free
     // exhaustive search over one block at a time, so each block's bytes depend on its own pixels alone.
+    // Batches of pages keep the progress window current.
     unsigned workers = std::thread::hardware_concurrency();
     workers = std::max(1u, std::min(workers, 32u));
-    const std::uint32_t chunk = (total + workers - 1) / workers;
+    constexpr std::uint32_t batch_blocks = page_blocks * 16;
     std::vector<std::pair<std::uint32_t, std::uint32_t>> ranges;
-    for (std::uint32_t start = 0; start < total; start += chunk) {
-        ranges.emplace_back(start, std::min(total, start + chunk));
+    for (std::uint32_t first = 0; first < total; first += batch_blocks) {
+        const std::uint32_t last = std::min(total, first + batch_blocks);
+        const std::uint32_t chunk = (last - first + workers - 1) / workers;
+        ranges.clear();
+        for (std::uint32_t start = first; start < last; start += chunk) {
+            ranges.emplace_back(start, std::min(last, start + chunk));
+        }
+        work_pool_run(static_cast<int>(ranges.size()), [&](int i) {
+            const auto r = ranges[static_cast<std::size_t>(i)];
+            run(r.first, r.second);
+        });
+        bake_progress_step(last - first);
+        if (bake_progress_cancelled()) {
+            return blocks;
+        }
     }
-    work_pool_run(static_cast<int>(ranges.size()), [&](int i) {
-        const auto r = ranges[static_cast<std::size_t>(i)];
-        run(r.first, r.second);
-    });
 
     if (s.rdo_lambda > 0.0f) {
         ert::reduce_entropy_params ep;
@@ -1383,11 +1395,20 @@ PageBuffers encode_bc7(const alm::EncoderSettings& s, std::uint32_t& out_modifie
         // One page per task on fixed block ranges, so the output is deterministic; no match crosses a page.
         const int pages = static_cast<int>(blocks.size());
         std::vector<std::uint32_t> modified(static_cast<std::size_t>(pages), 0);
-        work_pool_run(pages, [&](int page) {
-            const std::uint32_t first = static_cast<std::uint32_t>(page) * page_blocks;
-            rdo(blocks[static_cast<std::size_t>(page)].data(), first, std::min(page_blocks, total - first),
-                modified[static_cast<std::size_t>(page)]);
-        });
+        constexpr int batch_pages = 16;
+        for (int batch = 0; batch < pages; batch += batch_pages) {
+            const int count = std::min(batch_pages, pages - batch);
+            work_pool_run(count, [&](int i) {
+                const int page = batch + i;
+                const std::uint32_t first = static_cast<std::uint32_t>(page) * page_blocks;
+                rdo(blocks[static_cast<std::size_t>(page)].data(), first, std::min(page_blocks, total - first),
+                    modified[static_cast<std::size_t>(page)]);
+            });
+            bake_progress_step(static_cast<std::uint64_t>(count) * page_blocks);
+            if (bake_progress_cancelled()) {
+                return blocks;
+            }
+        }
         for (const std::uint32_t m : modified) {
             out_modified += m;
         }
@@ -1504,12 +1525,15 @@ void build_body(const PageBuffers& raw, alm::Codec codec)
     }
     const auto num_terrain = static_cast<std::uint32_t>(g_af.terrains.size());
     const std::uint64_t terrain_bytes = num_terrain ? alm::terrain_table_bytes(num_terrain) : 0;
+    const bool has_overflow = overflow_has_table();
+    const std::uint64_t overflow_bytes = has_overflow ? overflow_table_bytes() : 0;
 
     auto& body = g_af.body;
     body.clear();
     body.reserve(sizeof(head) + g_af.num_surface_charts * sizeof(alm::Chart) + sizeof(std::uint32_t) +
                  (g_af.movers.empty() ? 0 : sizeof(alm::TableHeader) + static_cast<std::size_t>(mover_bytes)) +
                  (num_terrain ? sizeof(alm::TableHeader) + static_cast<std::size_t>(terrain_bytes) : 0) +
+                 (has_overflow ? sizeof(alm::TableHeader) + static_cast<std::size_t>(overflow_bytes) : 0) +
                  g_af.tiles.size() * sizeof(alm::Tile) +
                  sizeof(dir) + sizeof(layer) + payload_size);
     auto append = [&body](const void* p, std::size_t n) {
@@ -1524,7 +1548,7 @@ void build_body(const PageBuffers& raw, alm::Codec codec)
         append(&wire, sizeof(wire));
     }
     // the tables in the order their tiles follow the surface tiles
-    const std::uint32_t num_tables = (g_af.movers.empty() ? 0 : 1) + (num_terrain ? 1 : 0);
+    const std::uint32_t num_tables = (g_af.movers.empty() ? 0 : 1) + (num_terrain ? 1 : 0) + (has_overflow ? 1 : 0);
     append(&num_tables, sizeof(num_tables));
     if (!g_af.movers.empty()) {
         const alm::TableHeader table{static_cast<std::uint32_t>(alm::TableTag::movers), alm::mover_table_version,
@@ -1555,6 +1579,13 @@ void build_body(const PageBuffers& raw, alm::Codec codec)
         for (const AfTerrain& a : g_af.terrains) {
             append(&a.wire, sizeof(a.wire));
         }
+    }
+    if (has_overflow) {
+        const alm::TableHeader table{static_cast<std::uint32_t>(alm::TableTag::overflow_faces),
+                                     alm::overflow_table_version, 0, static_cast<std::uint32_t>(overflow_bytes),
+                                     overflow_table_tiles()};
+        append(&table, sizeof(table));
+        overflow_append_table(body);
     }
     for (const alm::Tile& t : g_af.tiles) {
         append(&t, sizeof(t));
@@ -1855,6 +1886,14 @@ struct MoverStamp
     std::uint32_t hash;
 };
 
+// Bytes of the body replaced as it is written.
+struct BodyStamp
+{
+    std::size_t offset;
+    std::uint8_t bytes[8];
+    std::size_t len;
+};
+
 // A fresh bake's records, by body offset. A mover whose solid changed since the bake gets a hash no
 // solid can have, so it keeps its stock lightmap in game rather than a chart for other surfaces.
 std::vector<MoverStamp> fresh_mover_stamps()
@@ -2037,13 +2076,15 @@ bool alpine_lm_take_lighting_refused()
     return std::exchange(g_lighting_refused, false);
 }
 
-std::uint32_t alpine_lm_bake_begin()
+static std::uint32_t bake_begin_layout()
 {
     // a re-bake supersedes the loaded section even when it ends up emitting nothing
     g_retained.clear();
     g_retained.shrink_to_fit();
     terrain_light_clear();
     g_af = AfBake{};
+    overflow_bake_reset();
+    overflow_preview_clear();
     g_tile_pass = false;
 
     auto* props = level_props();
@@ -2196,6 +2237,18 @@ std::uint32_t alpine_lm_bake_begin()
         }
     }
 
+    // Faces the surface pass left without a surface (its 32767 are used up) get overflow charts in pages of
+    // their own after everything else; only a d3d11-only level, whose stock section they stand in for, has them.
+    if (has_surface && props->d3d11_only_lightmaps && surface_count >= red_max_level_surfaces) {
+        const std::uint32_t cap = alm::max_layer_pages(g_raw_codec ? alm::Codec::raw_rgb8 : alm::Codec::bc7_unorm);
+        if (pages < cap && overflow_bake_begin(solid, props->terrain_room_uids, static_cast<float>(density), pages,
+                                               cap - pages)) {
+            const OverflowLayout& ol = overflow_layout();
+            tiles.insert(tiles.end(), ol.tiles.begin(), ol.tiles.end());
+            pages += ol.num_pages;
+        }
+    }
+
     for (AfMover& m : movers) {
         m.first_chart += surface_count;
     }
@@ -2244,6 +2297,18 @@ std::uint32_t alpine_lm_bake_begin()
     for (const AfTerrain& a : g_af.terrains) {
         af_log(terrain_label(*a.terrain) + ": " + std::to_string(a.wire.w) + "x" + std::to_string(a.wire.h) +
                " texels, " + std::to_string(a.density) + " per cell");
+    }
+    return pages;
+}
+
+std::uint32_t alpine_lm_bake_begin()
+{
+    const std::uint32_t pages = bake_begin_layout();
+    // the faces past RED's surfaces on a D3D11-only level are lit only by the overflow charts laid out above
+    auto* props = level_props();
+    CDedLevel* level = CDedLevel::Get();
+    if (props && level && props->d3d11_only_lightmaps && props->surface_charts_enabled() && !overflow_has_table()) {
+        report_surface_overflow(*level, true);
     }
     return pages;
 }
@@ -2350,15 +2415,36 @@ void alpine_lm_bake_end()
     g_tile_view.clear();
     g_tile_view.shrink_to_fit();
     if (!g_af.active) {
+        overflow_bake_reset();
         g_af = AfBake{};
         return;
     }
 
     shade_terrain_charts();
+    if (bake_progress_cancelled()) {
+        alpine_lm_bake_abort();
+        return;
+    }
 
+    const AlpineBakePlan plan = alpine_lm_bake_plan();
+    if (overflow_has_table()) {
+        bake_progress_phase(BakePhase::overflow, overflow_table_tiles());
+    }
+    else {
+        bake_progress_phase(BakePhase::encode, plan.encode_steps);
+    }
     const DWORD t0 = GetTickCount();
     const std::uint64_t replicated = replicate_chart_edges();
     const std::uint64_t copied = reconcile_gutters();
+    // after reconcile_gutters, which starts the shared blocks afresh
+    if (!overflow_shade(g_af.pages, g_shared_blocks) && !bake_progress_cancelled()) {
+        overflow_mark_unusable();
+    }
+    if (bake_progress_cancelled()) {
+        alpine_lm_bake_abort();
+        return;
+    }
+    bake_progress_phase(BakePhase::encode, plan.encode_steps);
 
     auto* props = level_props();
     const alm::CompressionMode mode = alm::compression_mode_from_wire(props ? props->lightmap_compression : 0);
@@ -2375,13 +2461,25 @@ void alpine_lm_bake_end()
         g_af.pages.clear();
         g_af.pages.shrink_to_fit();
     }
+    if (bake_progress_cancelled()) {
+        alpine_lm_bake_abort();
+        return;
+    }
     const std::uint64_t raw_size = page_buffers_size(raw);
     if (raw_size != alm::layer_payload_size(codec, g_af.num_pages) || raw_size > 0xffffffffull) {
         af_error("the encoded layer does not fit its size field, dropping the section");
+        overflow_bake_reset();
         g_af = AfBake{};
         return;
     }
     build_body(raw, codec);
+    try {
+        overflow_preview_from_bake();
+    }
+    catch (const std::bad_alloc&) {
+        overflow_preview_clear();
+    }
+    overflow_bake_reset();
     try {
         terrain_light_store(g_af.body, raw);
     }
@@ -2413,8 +2511,38 @@ void alpine_lm_bake_end()
     af_log(buf);
 }
 
+std::uint64_t mover_bake_surfaces()
+{
+    CDedLevel* level = CDedLevel::Get();
+    std::uint64_t n = 0;
+    if (level) {
+        for_each_mover_brush(*level, [&](const BrushNode& brush) {
+            n += solid_surfaces(static_cast<const GSolid*>(brush.geometry)).size();
+        });
+    }
+    return n;
+}
+
+AlpineBakePlan alpine_lm_bake_plan()
+{
+    AlpineBakePlan plan;
+    plan.active = g_af.active;
+    if (!plan.active) {
+        return plan;
+    }
+    plan.terrains = static_cast<std::uint32_t>(g_af.terrains.size());
+    if (!g_raw_codec) {
+        auto* props = level_props();
+        const alm::EncoderSettings s =
+            alm::encoder_settings(alm::compression_mode_from_wire(props ? props->lightmap_compression : 0));
+        plan.encode_steps = alm::bc7_block_count(g_af.num_pages) * (s.rdo_lambda > 0.0f ? 2u : 1u);
+    }
+    return plan;
+}
+
 void alpine_lm_bake_abort()
 {
+    overflow_bake_reset();
     g_tile_pass = false;
     g_tile_view.clear();
     g_tile_view.shrink_to_fit();
@@ -2430,6 +2558,8 @@ void alpine_lm_reset_level_state()
     g_retained_suppressed = false;
     g_retained_signature = 0;
     g_af = AfBake{};
+    overflow_bake_reset();
+    overflow_preview_clear();
     terrain_light_reset();
 }
 
@@ -2501,34 +2631,52 @@ void alpine_lm_serialize_chunk(CDedLevel& level, rf::File& file)
             return;
         }
     }
-    std::vector<MoverStamp> stamps;
+    std::vector<BodyStamp> stamps;
     try {
         if (g_emit_retained) {
             check_retained_movers(body);
         }
         else {
-            stamps = fresh_mover_stamps();
+            for (const MoverStamp& m : fresh_mover_stamps()) {
+                BodyStamp st{m.offset, {}, sizeof(m.hash)};
+                std::memcpy(st.bytes, &m.hash, sizeof(m.hash));
+                stamps.push_back(st);
+            }
         }
     }
     catch (const std::bad_alloc&) {
         // unstamped mover records match no mover, which then keeps its stock lighting
         stamps.clear();
     }
+    try {
+        std::size_t offset = 0;
+        std::uint64_t value = 0;
+        if (overflow_save_stamp(body.data(), body.size(), level.solid, offset, value) == OverflowStamp::stale) {
+            BodyStamp st{offset, {}, sizeof(value)};
+            std::memcpy(st.bytes, &value, sizeof(value));
+            stamps.push_back(st);
+            af_warn("the overflow lighting no longer matches the geometry being saved: the faces past RED's 32767 "
+                    "lightmap surfaces render fullbright until Calculate Lighting runs again");
+        }
+    }
+    catch (const std::bad_alloc&) {
+    }
+    std::sort(stamps.begin(), stamps.end(), [](const BodyStamp& a, const BodyStamp& b) { return a.offset < b.offset; });
     std::uint8_t head[sizeof(alm::SectionHeader)];
     section_header_as_written(body.data(), restamp, g_save_num_faces, g_save_num_surfaces, g_save_surface_hash,
                               head);
     auto start_pos = level.BeginRflSection(file, alpine_lightmaps_chunk_id);
     file.write(head, sizeof(head));
     std::size_t pos = sizeof(head);
-    for (const MoverStamp& st : stamps) {
-        if (st.offset < pos || st.offset + sizeof(st.hash) > body.size()) {
+    for (const BodyStamp& st : stamps) {
+        if (st.offset < pos || st.offset + st.len > body.size()) {
             continue;
         }
         if (st.offset > pos) {
             file.write(body.data() + pos, st.offset - pos);
         }
-        file.write(&st.hash, sizeof(st.hash));
-        pos = st.offset + sizeof(st.hash);
+        file.write(st.bytes, st.len);
+        pos = st.offset + st.len;
     }
     if (body.size() > pos) {
         file.write(body.data() + pos, body.size() - pos);
@@ -2591,9 +2739,11 @@ void alpine_lm_deserialize_chunk(CDedLevel& level, rf::File& file, std::size_t c
            " byte alpine lightmap section, it is re-emitted unchanged if nothing re-bakes it");
     try {
         terrain_light_store_section(g_retained, level);
+        overflow_preview_from_section(g_retained.data(), g_retained.size(), level.solid);
     }
     catch (const std::bad_alloc&) {
         terrain_light_clear();
+        overflow_preview_clear();
     }
 }
 
@@ -2608,4 +2758,5 @@ void ApplyAlpineLightmapPatches()
     stock_lightmaps_section_injection.install();
     mover_brush_write_hook.install();
     alpine_lightmaps_section_injection.install();
+    overflow_preview_install();
 }

@@ -43,6 +43,7 @@
 #include "alpine_terrain.h"
 #include "alpine_terrain_decorations.h"
 #include "../sound/sound_foley.h"
+#include "../graphics/af_lightmap.h"
 #include "../hud/minimap.h"
 
 // Set by geomod_init hook; checked by boolean engine injections.
@@ -3277,7 +3278,9 @@ CallHook<void __fastcall(rf::GSolid*, int, rf::GFace*, float)> boolean_face_crea
         if (!room && g_rf2_style_boolean_active) {
             room = g_rf2_target_detail_room;
         }
-        if (!alpine_terrain_is_chunk_room(room)) {
+        // an overflow-charted face keeps its chart; a cut remnant inherits it
+        AfOverflowFace overflow;
+        if (!alpine_terrain_is_chunk_room(room) && !af_lightmap_overflow_face(solid, face, overflow)) {
             boolean_face_create_surface_hook.call_target(solid, edx, face, ppm);
         }
     },

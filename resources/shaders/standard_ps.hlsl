@@ -6,7 +6,8 @@ struct VsOutput
     float2 uv0 : TEXCOORD0;
     // xy: stock lightmap page UV, or alpine chart texel coords when z >= 0
     // z:  alpine lightmap chart (its af_lm_index chart record), -1 for the stock path
-    float3 uv1 : TEXCOORD1;
+    // centroid: under MSAA an edge sample stays on the face, so it cannot read a neighbouring chart's texels
+    centroid float3 uv1 : TEXCOORD1;
     float4 world_pos_and_depth : TEXCOORD2;
 #ifdef INSTANCE_LIGHT
     // Terrain decoration: rgb its mesh ambient, a its sun scale
