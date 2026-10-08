@@ -169,19 +169,18 @@ bool multi_join_game(const rf::NetAddr& addr, const std::string& password)
     return true;
 }
 
-FunHook<void(rf::GameState, rf::GameState, bool)> gameseq_close_state_hook{
+FunHook<void(rf::GameState, rf::GameState, bool)> rf_close_state_hook{
     0x004B1BF0,
-    [] (const rf::GameState state, const rf::GameState new_state, const bool winded) {
-        const bool discarded = winded || !rf::gameseq_is_push_state;
-        if (discarded) {
-            if (state == rf::GS_MULTI_LIMBO_JUST_JOINED) {
-                g_multi_limbo_just_joined_req_leave = false;
-            } else if (state == rf::GS_MULTI_LIMBO) {
-                g_multi_limbo_req_leave = false;
-            }
+    [] (const rf::GameState state, const rf::GameState new_state, const bool immediately) {
+        const bool discarded = immediately || !rf::gameseq_pending_push;
+        if (discarded
+            && (state == rf::GS_MULTI_LIMBO
+            || state == rf::GS_MULTI_LIMBO_JUST_JOINED))
+        {
+            g_multi_limbo_req_leave = false;
         }
 
-        gameseq_close_state_hook.call_target(state, new_state, winded);
+        rf_close_state_hook.call_target(state, new_state, immediately);
     }
 };
 
@@ -213,7 +212,7 @@ FunHook<void(rf::GameState, rf::GameState)> rf_init_state_hook{
                 xlog::trace("jump to mp menu!");
                 set_sound_enabled(false);
                 AddrCaller{0x00443C20}.c_call(); // open_multi_menu
-                rf::gameseq_close_state(state, old_state, false);
+                rf::rf_close_state(state, old_state, false);
                 old_state = state;
                 state = rf::gameseq_process_deferred_change();
                 rf_init_state_hook.call_target(state, old_state);
@@ -221,7 +220,7 @@ FunHook<void(rf::GameState, rf::GameState)> rf_init_state_hook{
 
             if (state == rf::GS_MULTI_MENU) {
                 AddrCaller{0x00448B70}.c_call(); // on_mp_join_game_btn_click
-                rf::gameseq_close_state(state, old_state, false);
+                rf::rf_close_state(state, old_state, false);
                 old_state = state;
                 state = rf::gameseq_process_deferred_change();
                 rf_init_state_hook.call_target(state, old_state);
@@ -255,7 +254,7 @@ FunHook<void(rf::GameState, rf::GameState)> rf_init_state_hook{
                     rf::game_shutdown();
                 }
                 AddrCaller{0x00443C70}.c_call(); // mainmenu_open_extras
-                rf::gameseq_close_state(state, old_state, false);
+                rf::rf_close_state(state, old_state, false);
                 old_state = state;
                 state = rf::gameseq_process_deferred_change();
                 rf_init_state_hook.call_target(state, old_state);
@@ -796,7 +795,7 @@ void misc_init()
     // It is not visible in game because other things are drawn over it
     AsmWriter(0x0041AE47, 0x0041AE4C).nop();
 
-    gameseq_close_state_hook.install();
+    rf_close_state_hook.install();
 
     // Open server list menu instead of main menu when leaving multiplayer game
     rf_init_state_hook.install();

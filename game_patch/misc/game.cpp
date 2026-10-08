@@ -153,7 +153,7 @@ CodeInjection gameplay_render_frame_display_full_screen_image_injection{
 
 static FunHook<void(rf::GameState, bool)> rf_do_state_hook{
     0x004B1E70,
-    [](rf::GameState state, bool paused) {
+    [] (const rf::GameState state, const bool paused) {
         if (state == rf::GS_MULTI_LIMBO_JUST_JOINED) {
             multi_limbo_just_joined_do_frame();
         } else if (state == rf::GS_MULTI_LEVEL_DOWNLOAD) {
@@ -186,6 +186,15 @@ CodeInjection gameplay_render_frame_death_letterbox_injection{
         regs.edi = letterbox_clip_height();
     },
 };
+
+bool gameseq_is_stacked(const rf::GameState state) {
+    for (int i = 0; i <= rf::gameseq_stack_top_index; ++i) {
+        if (rf::gameseq_state_stack[i] == state) {
+            return true;
+        }
+    }
+    return false;
+}
 
 void game_apply_patch()
 {

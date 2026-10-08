@@ -1415,7 +1415,6 @@ void multi_limbo_just_joined_handle_input(const int key) {
     }
 }
 
-bool g_multi_limbo_just_joined_req_leave = false;
 bool g_multi_limbo_req_leave = false;
 
 void multi_limbo_just_joined_do_frame() {
@@ -1443,7 +1442,7 @@ void multi_limbo_just_joined_do_frame() {
         rf::multi_chat_say_render();
     }
 
-    const std::string_view text = g_multi_limbo_just_joined_req_leave
+    const std::string_view text = g_multi_limbo_req_leave
         ? "LOADING..."
         : "BETWEEN LEVELS...";
     const auto [text_w, text_h] = rf::gr::get_string_size(text, rf::ui::large_font);
@@ -1467,22 +1466,14 @@ void multi_limbo_just_joined_do_frame() {
     if (rf::control_config_check_pressed(&controls, rf::CC_ACTION_MP_STATS, nullptr)) {
         rf::scoreboard_render_internal(true);
     }
-
-    if (g_multi_limbo_just_joined_req_leave) {
-        if (!multi_next_level_exists()) {
-            rf::gameseq_set_state(rf::GS_MULTI_LEVEL_DOWNLOAD, false);
-            multi_level_download_manager_start(rf::level.next_level_filename);
-        } else {
-            rf::gameseq_set_state(rf::GS_NEW_LEVEL, false);
-        }
-    }
 }
 
-CodeInjection rf_do_frame_dim_screen_patch{
+CodeInjection rf_do_frame_dim_screen_and_render_loading_text_patch{
     0x004B2E26,
     [] (auto& regs) {
-        const rf::GameState state = rf::gameseq_get_state();
-        if (state == rf::GS_MULTI_LIMBO_JUST_JOINED) {
+        // If our top state is `GS_MULTI_LIMBO_JUST_JOINED`, jump to `game_flip`,
+        // because `multi_limbo_just_joined_do_frame` draws its own "LOADING...".
+        if (regs.esi == rf::GS_MULTI_LIMBO_JUST_JOINED) {
             regs.eip = 0x004B2E3F;
         }
     },
@@ -1490,7 +1481,7 @@ CodeInjection rf_do_frame_dim_screen_patch{
 
 void multi_do_patch()
 {
-    rf_do_frame_dim_screen_patch.install();
+    rf_do_frame_dim_screen_and_render_loading_text_patch.install();
     multi_limbo_init.install();
     multi_start_injection.install();
 

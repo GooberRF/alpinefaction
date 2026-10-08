@@ -219,6 +219,15 @@ CodeInjection after_level_render_hook{
     },
 };
 
+FunHook<void()> game_render_cursor_hook{
+    0x00435460,
+    [] {
+        if (rf::gameseq_get_state() != rf::GS_MULTI_GETTING_STATE_INFO) {
+            game_render_cursor_hook.call_target();
+        }
+    },
+};
+
 CodeInjection after_frame_render_hook{
     0x004B2DC2,
     [] {
@@ -247,7 +256,12 @@ CodeInjection after_frame_render_hook{
 
             // To dim our screen, and display "LOADING...", exit limbo here instead.
             if (g_multi_limbo_req_leave) {
-                rf::gameseq_set_state(rf::GS_NEW_LEVEL, false);
+                if (!multi_next_level_exists()) {
+                    rf::gameseq_set_state(rf::GS_MULTI_LEVEL_DOWNLOAD, false);
+                    multi_level_download_manager_start(rf::level.next_level_filename);
+                } else {
+                    rf::gameseq_set_state(rf::GS_NEW_LEVEL, false);
+                }
             }
         }
     },
@@ -626,6 +640,7 @@ extern "C" DWORD __declspec(dllexport) Init([[maybe_unused]] void* unused)
     rf_do_frame_hook.install();
     after_level_render_hook.install();
     after_frame_render_hook.install();
+    game_render_cursor_hook.install();
     level_load_hook.install();
     level_init_post_hook.install();
 
