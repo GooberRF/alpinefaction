@@ -1415,7 +1415,7 @@ void multi_limbo_just_joined_handle_input(const int key) {
     }
 }
 
-bool g_multi_limbo_req_leave = false;
+bool g_gameseq_req_new_level = false;
 
 void multi_limbo_just_joined_do_frame() {
     rf::game_poll(multi_limbo_just_joined_handle_input);
@@ -1442,7 +1442,7 @@ void multi_limbo_just_joined_do_frame() {
         rf::multi_chat_say_render();
     }
 
-    const std::string_view text = g_multi_limbo_req_leave
+    const std::string_view text = g_gameseq_req_new_level
         ? "LOADING..."
         : "BETWEEN LEVELS...";
     const auto [text_w, text_h] = rf::gr::get_string_size(text, rf::ui::large_font);
@@ -1472,7 +1472,8 @@ CodeInjection rf_do_frame_dim_screen_and_render_loading_text_patch{
     0x004B2E26,
     [] (auto& regs) {
         // If our top state is `GS_MULTI_LIMBO_JUST_JOINED`, jump to `game_flip`,
-        // because `multi_limbo_just_joined_do_frame` draws its own "LOADING...".
+        // because we do not want to dim our screen, and `multi_limbo_just_joined_do_frame`
+        // draws "LOADING...".
         if (regs.esi == rf::GS_MULTI_LIMBO_JUST_JOINED) {
             regs.eip = 0x004B2E3F;
         }

@@ -255,13 +255,8 @@ CodeInjection after_frame_render_hook{
             }
 
             // To dim our screen, and display "LOADING...", exit limbo here instead.
-            if (g_multi_limbo_req_leave) {
-                if (!multi_next_level_exists()) {
-                    rf::gameseq_set_state(rf::GS_MULTI_LEVEL_DOWNLOAD, false);
-                    multi_level_download_manager_start(rf::level.next_level_filename);
-                } else {
-                    rf::gameseq_set_state(rf::GS_NEW_LEVEL, false);
-                }
+            if (g_gameseq_req_new_level) {
+                rf::gameseq_set_state(rf::GS_NEW_LEVEL, false);
             }
         }
     },

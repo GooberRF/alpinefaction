@@ -31,4 +31,5 @@ void clear_explicit_upcoming_game_type_request();
 bool file_loaded_from_alpinefaction_vpp(const char* filename);
 bool weapon_reticle_is_customized(int weapon_id, bool bighud);
 bool rocket_locked_reticle_is_customized(bool bighud);
-bool gameseq_is_in_stack(rf::GameState state);
+bool gameseq_state_is_stacked(rf::GameState state);
+bool gameseq_state_is_buried(rf::GameState state);

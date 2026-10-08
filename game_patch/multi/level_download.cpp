@@ -1074,7 +1074,11 @@ public:
             return;
         }
         xlog::trace("Changing game state to GS_NEW_LEVEL");
-        rf::gameseq_set_state(rf::GS_NEW_LEVEL, false);
+        if (rf::gameseq_get_state() == rf::GS_MULTI_LEVEL_DOWNLOAD) {
+            rf::gameseq_set_state(rf::GS_NEW_LEVEL, false);
+        } else {
+            g_gameseq_req_new_level = true;
+        }
     }
 };
 
@@ -1378,15 +1382,14 @@ bool multi_next_level_exists() {
 
 CallHook<void(rf::GameState, bool)> process_enter_limbo_packet_gameseq_set_next_state_hook{
     0x0047C091,
-    [](rf::GameState state, bool force) {
+    [] (const rf::GameState state, const bool force) {
         xlog::trace("Enter limbo");
-        if (rf::gameseq_get_state() == rf::GS_MULTI_LEVEL_DOWNLOAD) {
-            // Level changes before we finish downloading the previous one
-            // Do not enter the limbo game state because it would crash the game if there is currently no level loaded
-            // Instead stay in the level download state until we get the leave limbo packet and download the correct level
+        if (gameseq_state_is_stacked(rf::GS_MULTI_LEVEL_DOWNLOAD)) {
+            // Do not enter `GS_MULTI_LIMBO`, because we would crash, if no level is loaded.
             LevelDownloadManager::instance().abort();
-        }
-        else {
+            // Enter `GS_MULTI_LIMBO_JUST_JOINED`, in order to draw "BETWEEN LEVELS..." etc.
+            rf::gameseq_set_state(rf::GS_MULTI_LIMBO_JUST_JOINED, false);
+        } else {
             process_enter_limbo_packet_gameseq_set_next_state_hook.call_target(state, force);
         }
     },
@@ -1399,12 +1402,16 @@ CallHook<void(rf::GameState, bool)> process_leave_limbo_packet_gameseq_set_next_
         if (!multi_next_level_exists()) {
             rf::gameseq_set_state(rf::GS_MULTI_LEVEL_DOWNLOAD, false);
             multi_level_download_manager_start(rf::level.next_level_filename);
-        } else if (gameseq_is_in_stack(rf::GS_MULTI_LIMBO)
-            || gameseq_is_in_stack(rf::GS_MULTI_LIMBO_JUST_JOINED))
+        } else if (rf::gameseq_get_state() == rf::GS_MULTI_LEVEL_DOWNLOAD) {
+            // Do not defer, since we do not need to dim our screen, or draw "LOADING...".
+            rf::gameseq_set_state(state, force);
+        } else if (gameseq_state_is_buried(rf::GS_MULTI_LEVEL_DOWNLOAD)
+            || gameseq_state_is_stacked(rf::GS_MULTI_LIMBO_JUST_JOINED)
+            || gameseq_state_is_stacked(rf::GS_MULTI_LIMBO))
         {
             // `gameseq_set_state` switches, immediately before `rf_do_frame` can
             // dim our screen, and draw "LOADING...", so defer transition.
-            g_multi_limbo_req_leave = true;
+            g_gameseq_req_new_level = true;
         }
     },
 };
@@ -1416,7 +1423,7 @@ void multi_level_download_manager_start(std::string filename) {
         .start(std::move(filename), std::move(listener));
 }
 
-CallHook<void(rf::GameState, bool)> game_new_game_gameseq_set_next_state_hook{
+CallHook<void(rf::GameState, bool)> game_new_game_gameseq_set_state_hook{
     0x00436959,
     [] (const rf::GameState state, const bool force) {
         if (rf::is_multi && !rf::is_server) {
@@ -1431,7 +1438,7 @@ CallHook<void(rf::GameState, bool)> game_new_game_gameseq_set_next_state_hook{
             }
         } else {
         DEFAULT:
-            game_new_game_gameseq_set_next_state_hook.call_target(state, force);
+            rf::gameseq_set_state(state, force);
         }
     },
 };
@@ -1689,7 +1696,7 @@ void poll_awp_download()
 void level_download_do_patch()
 {
     join_failed_injection.install();
-    game_new_game_gameseq_set_next_state_hook.install();
+    game_new_game_gameseq_set_state_hook.install();
     process_enter_limbo_packet_gameseq_set_next_state_hook.install();
     process_leave_limbo_packet_gameseq_set_next_state_hook.install();
 }

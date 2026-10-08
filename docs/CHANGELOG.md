@@ -98,7 +98,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Load levels with very large face counts or many level sounds much faster
 
 [@is-this-c](https://github.com/is-this-c)
-- Render `LOADING...` upon limbo exit
+- Render `LOADING...` upon level changes in multi
 - Support TrueType fonts in 3D text rendering
 - Render world HUD text (player labels, damage numbers, ping labels, countdowns) in 3D for smooth sub-pixel motion
 - Allow TrueType fonts to be rendered into bitmaps with mipmaps (D3D11 only)
