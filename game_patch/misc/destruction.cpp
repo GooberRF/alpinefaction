@@ -296,6 +296,97 @@ static float get_material_damage_factor(rf::DetailMaterial mat, int damage_type)
     return 1.0f; // Glass or unknown = stock behavior
 }
 
+// Slightly tilted ray direction to avoid axis-aligned edge/vertex degeneracies
+static const rf::Vector3 inside_test_ray_dir{0.00137f, 0.00259f, 1.0f};
+
+// Whether the ray from `origin` along `dir` passes through `face`'s polygon.
+static bool ray_crosses_face(const rf::Vector3& origin, const rf::Vector3& dir, const rf::GFace& face)
+{
+    constexpr int max_verts_per_face = 500;
+
+    const rf::Plane& plane = face.plane;
+
+    // Ray-plane intersection: t = -(dot(origin, normal) + offset) / dot(dir, normal)
+    float denom = dir.x * plane.normal.x + dir.y * plane.normal.y + dir.z * plane.normal.z;
+    if (denom > -1e-8f && denom < 1e-8f)
+        return false; // ray nearly parallel to plane
+
+    float numer = -(origin.x * plane.normal.x + origin.y * plane.normal.y + origin.z * plane.normal.z + plane.offset);
+    float t = numer / denom;
+    if (t < 0.0f)
+        return false; // intersection behind ray origin
+
+    // Compute intersection point on the plane
+    float hit_x = origin.x + dir.x * t;
+    float hit_y = origin.y + dir.y * t;
+    float hit_z = origin.z + dir.z * t;
+
+    // Project onto 2D by dropping the axis with the largest normal component.
+    // This gives the best-conditioned 2D polygon for the crossing test.
+    float abs_nx = plane.normal.x >= 0.0f ? plane.normal.x : -plane.normal.x;
+    float abs_ny = plane.normal.y >= 0.0f ? plane.normal.y : -plane.normal.y;
+    float abs_nz = plane.normal.z >= 0.0f ? plane.normal.z : -plane.normal.z;
+
+    bool drop_x = (abs_nx >= abs_ny && abs_nx >= abs_nz);
+    bool drop_y = (!drop_x && abs_ny >= abs_nz);
+    // drop_z implied when !drop_x && !drop_y
+
+    float test_u, test_v;
+    if (drop_x) {
+        test_u = hit_y; test_v = hit_z;
+    } else if (drop_y) {
+        test_u = hit_x; test_v = hit_z;
+    } else {
+        test_u = hit_x; test_v = hit_y;
+    }
+
+    // Even-odd crossing number test against the face polygon
+    rf::GFaceVertex* start = face.edge_loop;
+    if (!start) return false;
+
+    bool inside_polygon = false;
+    int vert_count = 0;
+    rf::GFaceVertex* fv = start;
+    do {
+        if (++vert_count > max_verts_per_face) {
+            xlog::warn("[RF2] ray_crosses_face: vertex iteration limit hit ({}) - possible edge_loop corruption",
+                max_verts_per_face);
+            break;
+        }
+
+        rf::GFaceVertex* fv_next = fv->next;
+        if (!fv_next) break;
+        if (!fv->vertex || !fv_next->vertex) break;
+
+        const rf::Vector3& p0 = fv->vertex->pos;
+        const rf::Vector3& p1 = fv_next->vertex->pos;
+
+        float v0_u, v0_v, v1_u, v1_v;
+        if (drop_x) {
+            v0_u = p0.y; v0_v = p0.z;
+            v1_u = p1.y; v1_v = p1.z;
+        } else if (drop_y) {
+            v0_u = p0.x; v0_v = p0.z;
+            v1_u = p1.x; v1_v = p1.z;
+        } else {
+            v0_u = p0.x; v0_v = p0.y;
+            v1_u = p1.x; v1_v = p1.y;
+        }
+
+        // Does a horizontal ray from (test_u, test_v) in +u direction cross this edge?
+        if ((v0_v > test_v) != (v1_v > test_v)) {
+            float edge_u = v0_u + (test_v - v0_v) / (v1_v - v0_v) * (v1_u - v0_u);
+            if (test_u < edge_u) {
+                inside_polygon = !inside_polygon;
+            }
+        }
+
+        fv = fv_next;
+    } while (fv != start);
+
+    return inside_polygon;
+}
+
 // Test if a point is inside a room's current geometry using ray casting.
 // Works correctly for non-convex geometry (rooms modified by previous craters).
 // Casts a ray from the test point and counts face polygon intersections; odd = inside.
@@ -420,6 +511,383 @@ static bool is_point_inside_room_geometry(const rf::Vector3& pt, rf::GRoom* room
     }
 
     return (crossing_count & 1) != 0;
+}
+
+// Even-odd vote directions; the first is the one is_point_inside_room_geometry casts.
+static const std::array<rf::Vector3, 5> rf2_inside_vote_dirs{{
+    inside_test_ray_dir,
+    -inside_test_ray_dir,
+    {1.0f, 0.00211f, 0.00173f},
+    {-1.0f, 0.00173f, -0.00211f},
+    {0.00193f, 1.0f, 0.00149f},
+}};
+
+template<typename F>
+static void for_each_face_edge(const rf::GFace& face, F&& fn)
+{
+    int guard = 0;
+    for (rf::GFaceVertex* fv = face.edge_loop; fv && fv->vertex && guard++ < rf::max_face_vertices;) {
+        rf::GFaceVertex* next = fv->next;
+        if (!next || !next->vertex) {
+            break;
+        }
+        fn(fv->vertex->pos, next->vertex->pos);
+        fv = next;
+        if (fv == face.edge_loop) {
+            break;
+        }
+    }
+}
+
+static rf::Vector3 face_centroid(const rf::GFace& face)
+{
+    rf::Vector3 sum{0.0f, 0.0f, 0.0f};
+    int count = 0;
+    for_each_face_edge(face, [&](const rf::Vector3& p, const rf::Vector3&) {
+        sum += p;
+        count++;
+    });
+    return count > 0 ? sum / static_cast<float>(count) : sum;
+}
+
+static bool point_in_box(const rf::Vector3& p, const rf::Vector3& lo, const rf::Vector3& hi, float eps)
+{
+    return p.x >= lo.x - eps && p.x <= hi.x + eps && p.y >= lo.y - eps && p.y <= hi.y + eps && p.z >= lo.z - eps
+        && p.z <= hi.z + eps;
+}
+
+// Whether every one of rf2_inside_vote_dirs sees `pt` outside the closed surface `faces`; stops at the first
+// that sees it inside, which is most of the faces stock deletes.
+static bool rf2_outside_unanimous(const rf::Vector3& pt, const std::vector<rf::GFace*>& faces)
+{
+    for (const rf::Vector3& dir : rf2_inside_vote_dirs) {
+        int crossings = 0;
+        for (const rf::GFace* face : faces) {
+            if (ray_crosses_face(pt, dir, *face)) {
+                crossings++;
+            }
+        }
+        if (crossings & 1) {
+            return false;
+        }
+    }
+    return true;
+}
+
+namespace
+{
+// The crater (TYPE 1) faces in the level solid's list, and their bounds.
+struct RF2Crater
+{
+    std::vector<rf::GFace*> faces;
+    rf::Vector3 lo{};
+    rf::Vector3 hi{};
+};
+
+// A room's faces for is_point_inside_room_geometry's ray: each face's plane and drop axis, and the bounds of its
+// vertices in that projection, so a ray whose hit falls outside them skips the polygon walk it cannot pass.
+struct RF2RoomRayCache
+{
+    struct Entry
+    {
+        const rf::GFace* face;
+        rf::Plane plane;
+        bool drop_x;
+        bool drop_y;
+        // False for a face the polygon walk stops early on: it is always walked.
+        bool bounded;
+        float u_lo, u_hi, v_lo, v_hi;
+        // Covers edge_u's rounding, which scales with the face's width.
+        float u_margin;
+        rf::Vector3 lo, hi;
+    };
+    rf::GRoom* room = nullptr;
+    std::vector<Entry> entries;
+    rf::Vector3 lo, hi;
+};
+}
+
+static void rf2_collect_crater(RF2Crater& crater, rf::GSolid* solid)
+{
+    constexpr float big = std::numeric_limits<float>::max();
+    crater.faces.clear();
+    crater.lo = {big, big, big};
+    crater.hi = {-big, -big, -big};
+    for (rf::GFace& face : solid->face_list) {
+        if (face.attributes.flags & rf::FACE_BOOLEAN_TYPE_1) {
+            crater.faces.push_back(&face);
+            crater.lo = {std::min(crater.lo.x, face.bounding_box_min.x),
+                std::min(crater.lo.y, face.bounding_box_min.y), std::min(crater.lo.z, face.bounding_box_min.z)};
+            crater.hi = {std::max(crater.hi.x, face.bounding_box_max.x),
+                std::max(crater.hi.y, face.bounding_box_max.y), std::max(crater.hi.z, face.bounding_box_max.z)};
+        }
+    }
+}
+
+// rf2_outside_unanimous against the crater surface; outside its bounds is outside.
+static bool rf2_outside_crater(const RF2Crater& crater, const rf::Vector3& pt)
+{
+    return !point_in_box(pt, crater.lo, crater.hi, 1e-3f) || rf2_outside_unanimous(pt, crater.faces);
+}
+
+// Whether `pt` lies on a crater face's plane within that face's bounds, where ray parity is meaningless.
+static bool rf2_on_crater_surface(const RF2Crater& crater, const rf::Vector3& pt)
+{
+    constexpr float eps = 0.01f;
+    for (const rf::GFace* face : crater.faces) {
+        if (point_in_box(pt, face->bounding_box_min, face->bounding_box_max, eps)
+            && std::abs(face->plane.distance_to_point(pt)) < eps) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// The crater of the boolean_iterate call in progress, collected on first use by rf2_classify_type0_face.
+static RF2Crater g_rf2_crater;
+static bool g_rf2_crater_valid = false;
+
+static bool rf2_crater_ready(rf::GSolid* solid)
+{
+    if (!g_rf2_crater_valid) {
+        if (!solid) {
+            return false;
+        }
+        try {
+            rf2_collect_crater(g_rf2_crater, solid);
+            g_rf2_crater_valid = true;
+        }
+        catch (...) {
+            g_rf2_crater.faces.clear();
+        }
+    }
+    return g_rf2_crater_valid;
+}
+
+// False if the room's face list looks corrupt (is_point_inside_room_geometry then runs instead).
+static bool rf2_build_room_ray_cache(RF2RoomRayCache& cache, rf::GRoom* room)
+{
+    constexpr int max_face_count = 1 << 20;
+    constexpr int face_margin = 1024;
+    constexpr int max_verts_per_face = 500;
+    constexpr float big = std::numeric_limits<float>::max();
+    cache.room = room;
+    cache.entries.clear();
+    cache.lo = {big, big, big};
+    cache.hi = {-big, -big, -big};
+    const int max_faces = std::clamp(room->face_list.size(), 0, max_face_count) + face_margin;
+    int face_count = 0;
+    for (rf::GFace& face : room->face_list) {
+        if (++face_count > max_faces) {
+            return false;
+        }
+        rf::GFaceVertex* start = face.edge_loop;
+        if (!start) {
+            continue;
+        }
+        RF2RoomRayCache::Entry& e = cache.entries.emplace_back();
+        e.face = &face;
+        e.plane = face.plane;
+        const float abs_nx = e.plane.normal.x >= 0.0f ? e.plane.normal.x : -e.plane.normal.x;
+        const float abs_ny = e.plane.normal.y >= 0.0f ? e.plane.normal.y : -e.plane.normal.y;
+        const float abs_nz = e.plane.normal.z >= 0.0f ? e.plane.normal.z : -e.plane.normal.z;
+        e.drop_x = abs_nx >= abs_ny && abs_nx >= abs_nz;
+        e.drop_y = !e.drop_x && abs_ny >= abs_nz;
+        e.u_lo = e.v_lo = big;
+        e.u_hi = e.v_hi = -big;
+        e.lo = {big, big, big};
+        e.hi = {-big, -big, -big};
+        e.bounded = false;
+        int vert_count = 0;
+        rf::GFaceVertex* fv = start;
+        do {
+            if (++vert_count > max_verts_per_face) {
+                break;
+            }
+            rf::GFaceVertex* fv_next = fv->next;
+            if (!fv_next || !fv->vertex || !fv_next->vertex) {
+                break;
+            }
+            const rf::Vector3& p = fv->vertex->pos;
+            const float u = e.drop_x ? p.y : p.x;
+            const float v = e.drop_x || e.drop_y ? p.z : p.y;
+            e.u_lo = std::min(e.u_lo, u);
+            e.u_hi = std::max(e.u_hi, u);
+            e.v_lo = std::min(e.v_lo, v);
+            e.v_hi = std::max(e.v_hi, v);
+            e.lo = {std::min(e.lo.x, p.x), std::min(e.lo.y, p.y), std::min(e.lo.z, p.z)};
+            e.hi = {std::max(e.hi.x, p.x), std::max(e.hi.y, p.y), std::max(e.hi.z, p.z)};
+            fv = fv_next;
+            e.bounded = fv == start;
+        } while (fv != start);
+        e.u_margin = 1e-3f + 2.4e-7f * (e.u_hi - e.u_lo);
+        cache.lo = {std::min(cache.lo.x, e.lo.x), std::min(cache.lo.y, e.lo.y), std::min(cache.lo.z, e.lo.z)};
+        cache.hi = {std::max(cache.hi.x, e.hi.x), std::max(cache.hi.y, e.hi.y), std::max(cache.hi.z, e.hi.z)};
+    }
+    return true;
+}
+
+// is_point_inside_room_geometry along `dir`, the same arithmetic face by face (bit-identical with MSVC's SSE2
+// maths). A crossing needs the hit's v in [v_lo, v_hi) and its u left of an edge, so a hit right of every vertex
+// never toggles, and one left of every vertex toggles once per edge straddling v, an even count on a closed loop.
+static bool rf2_inside_room_cached(const rf::Vector3& pt, const rf::Vector3& dir, const RF2RoomRayCache& cache,
+    const rf::Vector3* sweep_lo = nullptr, const rf::Vector3* sweep_hi = nullptr)
+{
+    constexpr int max_verts_per_face = 500;
+    const rf::GRoom* room = cache.room;
+    constexpr float bbox_eps = 0.5f;
+    if (pt.x < room->bbox_min.x - bbox_eps || pt.x > room->bbox_max.x + bbox_eps ||
+        pt.y < room->bbox_min.y - bbox_eps || pt.y > room->bbox_max.y + bbox_eps ||
+        pt.z < room->bbox_min.z - bbox_eps || pt.z > room->bbox_max.z + bbox_eps) {
+        return false;
+    }
+    int crossing_count = 0;
+    for (const RF2RoomRayCache::Entry& e : cache.entries) {
+        if (sweep_lo && e.bounded && (e.hi.x < sweep_lo->x || e.lo.x > sweep_hi->x || e.hi.y < sweep_lo->y
+            || e.lo.y > sweep_hi->y || e.hi.z < sweep_lo->z || e.lo.z > sweep_hi->z)) {
+            continue;
+        }
+        const rf::Plane& plane = e.plane;
+        float denom = dir.x * plane.normal.x + dir.y * plane.normal.y + dir.z * plane.normal.z;
+        if (denom > -1e-8f && denom < 1e-8f)
+            continue;
+        float numer = -(pt.x * plane.normal.x + pt.y * plane.normal.y + pt.z * plane.normal.z + plane.offset);
+        float t = numer / denom;
+        if (t < 0.0f)
+            continue;
+        float hit_x = pt.x + dir.x * t;
+        float hit_y = pt.y + dir.y * t;
+        float hit_z = pt.z + dir.z * t;
+        float test_u, test_v;
+        if (e.drop_x) {
+            test_u = hit_y; test_v = hit_z;
+        } else if (e.drop_y) {
+            test_u = hit_x; test_v = hit_z;
+        } else {
+            test_u = hit_x; test_v = hit_y;
+        }
+        if (e.bounded && (test_v >= e.v_hi || test_v < e.v_lo || test_u > e.u_hi + e.u_margin
+            || test_u < e.u_lo - e.u_margin)) {
+            continue;
+        }
+        bool inside_polygon = false;
+        int vert_count = 0;
+        rf::GFaceVertex* start = e.face->edge_loop;
+        rf::GFaceVertex* fv = start;
+        do {
+            if (++vert_count > max_verts_per_face) {
+                xlog::warn("[RF2] is_point_inside_room_geometry: vertex iteration limit hit ({}) - possible "
+                    "edge_loop corruption", max_verts_per_face);
+                break;
+            }
+            rf::GFaceVertex* fv_next = fv->next;
+            if (!fv_next) break;
+            if (!fv->vertex || !fv_next->vertex) break;
+            const rf::Vector3& p0 = fv->vertex->pos;
+            const rf::Vector3& p1 = fv_next->vertex->pos;
+            float v0_u, v0_v, v1_u, v1_v;
+            if (e.drop_x) {
+                v0_u = p0.y; v0_v = p0.z;
+                v1_u = p1.y; v1_v = p1.z;
+            } else if (e.drop_y) {
+                v0_u = p0.x; v0_v = p0.z;
+                v1_u = p1.x; v1_v = p1.z;
+            } else {
+                v0_u = p0.x; v0_v = p0.y;
+                v1_u = p1.x; v1_v = p1.y;
+            }
+            if ((v0_v > test_v) != (v1_v > test_v)) {
+                float edge_u = v0_u + (test_v - v0_v) / (v1_v - v0_v) * (v1_u - v0_u);
+                if (test_u < edge_u) {
+                    inside_polygon = !inside_polygon;
+                }
+            }
+            fv = fv_next;
+        } while (fv != start);
+        if (inside_polygon) {
+            crossing_count++;
+        }
+    }
+    return (crossing_count & 1) != 0;
+}
+
+// The RF2 target room's cache for the boolean_iterate call in progress; state 5 classifies every crater face
+// against the same faces.
+static RF2RoomRayCache g_rf2_target_ray_cache;
+static bool g_rf2_target_ray_cache_valid = false;
+
+static bool rf2_point_inside_target(const rf::Vector3& pt, rf::GRoom* room)
+{
+    if (!room) {
+        return false;
+    }
+    if (!g_rf2_target_ray_cache_valid || g_rf2_target_ray_cache.room != room) {
+        bool built = false;
+        try {
+            built = rf2_build_room_ray_cache(g_rf2_target_ray_cache, room);
+        }
+        catch (...) {
+        }
+        if (!built) {
+            g_rf2_target_ray_cache.entries.clear();
+            g_rf2_target_ray_cache_valid = false;
+            return is_point_inside_room_geometry(pt, room);
+        }
+        g_rf2_target_ray_cache_valid = true;
+    }
+    return rf2_inside_room_cached(pt, inside_test_ray_dir, g_rf2_target_ray_cache);
+}
+
+// Whether the other four of rf2_inside_vote_dirs overturn `inside`, the verdict of the first (the ray
+// rf2_point_inside_target casts): three seeing `pt` inside overturn an outside verdict, all four seeing it outside an
+// inside one. Never while the target has no cache, or where `pt` lies on a target face, where parity is meaningless.
+static bool rf2_target_vote_overturns(const rf::Vector3& pt, rf::GRoom* room, bool inside)
+{
+    if (!g_rf2_target_ray_cache_valid || g_rf2_target_ray_cache.room != room) {
+        return false;
+    }
+    // A face a vote ray can cross lies in the box the ray sweeps through the cached faces' bounds, give or take
+    // the margin, which covers a face's drift from its plane.
+    constexpr float margin = 0.05f;
+    const RF2RoomRayCache& cache = g_rf2_target_ray_cache;
+    // The vertical ray crosses the fewest faces, so it goes first; the decision does not depend on the order.
+    constexpr std::array<std::size_t, 4> order{4, 1, 2, 3};
+    const int needed = inside ? 4 : 3;
+    int against = 0;
+    int agree = 0;
+    for (std::size_t k = 0; k < order.size() && against < needed && agree <= 4 - needed; k++) {
+        const rf::Vector3& dir = rf2_inside_vote_dirs[order[k]];
+        float t_max = std::numeric_limits<float>::max();
+        const auto limit = [&](float d, float p, float lo, float hi) {
+            if (d > 0.0f) {
+                t_max = std::min(t_max, std::max(hi - p, 0.0f) / d);
+            }
+            else if (d < 0.0f) {
+                t_max = std::min(t_max, std::max(p - lo, 0.0f) / -d);
+            }
+        };
+        limit(dir.x, pt.x, cache.lo.x - margin, cache.hi.x + margin);
+        limit(dir.y, pt.y, cache.lo.y - margin, cache.hi.y + margin);
+        limit(dir.z, pt.z, cache.lo.z - margin, cache.hi.z + margin);
+        const rf::Vector3 end = pt + dir * t_max;
+        const rf::Vector3 sweep_lo{std::min(pt.x, end.x) - margin, std::min(pt.y, end.y) - margin,
+            std::min(pt.z, end.z) - margin};
+        const rf::Vector3 sweep_hi{std::max(pt.x, end.x) + margin, std::max(pt.y, end.y) + margin,
+            std::max(pt.z, end.z) + margin};
+        (rf2_inside_room_cached(pt, dir, cache, &sweep_lo, &sweep_hi) != inside ? against : agree)++;
+    }
+    if (against < needed) {
+        return false;
+    }
+    constexpr float eps = 0.01f;
+    for (const RF2RoomRayCache::Entry& e : cache.entries) {
+        const rf::Vector3& lo = e.bounded ? e.lo : e.face->bounding_box_min;
+        const rf::Vector3& hi = e.bounded ? e.hi : e.face->bounding_box_max;
+        if (point_in_box(pt, lo, hi, eps) && std::abs(e.plane.distance_to_point(pt)) < eps) {
+            return false;
+        }
+    }
+    return true;
 }
 
 // Classification lookup table: DAT_005a38f4, indexed by (op_mode + face_type*8)*5 + classification.
@@ -561,7 +1029,7 @@ CodeInjection state5_force_clear_type1_for_rf2{
         int type = AddrCaller{0x004de9d0}.this_call<int>(face_attrs);
         if (type == 1) {
             // Force classification to 0 (unclassified)
-            AddrCaller{0x004de9e0}.this_call(face_attrs, 0);
+            static_cast<rf::GFaceAttributes*>(face_attrs)->set_boolean_side(0);
             regs.eip = 0x004dd938; // skip to next face in clearing loop
         }
     },
@@ -619,10 +1087,14 @@ CodeInjection state5_reclassify_type1_for_rf2{
 
         // Classify against the target detail room's current geometry (ray casting).
         // Uses live face_list which correctly reflects previous craters (non-convex).
-        int classification = is_point_inside_room_geometry(centroid, g_rf2_target_detail_room) ? 2 : 1;
+        // The other vote rays can overturn the one ray: a crater face most see inside is kept (deleting it would
+        // leave a hole), and one the other four all see outside is deleted (keeping it would leave a stray face).
+        const bool inside = rf2_point_inside_target(centroid, g_rf2_target_detail_room);
+        const bool keep = inside != rf2_target_vote_overturns(centroid, g_rf2_target_detail_room, inside);
+        const int classification = keep ? 2 : 1;
 
         // Set classification on face attributes via FUN_004de9e0
-        AddrCaller{0x004de9e0}.this_call(face_attrs, classification);
+        static_cast<rf::GFaceAttributes*>(face_attrs)->set_boolean_side(classification);
         regs.eip = 0x004dd990; // skip stock classifiers, go to loop continuation
     },
 };
@@ -650,7 +1122,7 @@ CodeInjection boolean_skip_non_detail_faces_for_rf2{
             !face->which_room->is_geoable ||
             face->which_room != g_rf2_target_detail_room) {
             void* face_attrs = regs.esi;
-            AddrCaller{0x004de9e0}.this_call(face_attrs, 2);
+            static_cast<rf::GFaceAttributes*>(face_attrs)->set_boolean_side(2);
             regs.eip = 0x004dc521; // skip to next face in loop
         }
     },
@@ -667,6 +1139,37 @@ CallHook<void __fastcall(rf::GFace*)> boolean_flood_target_seeds_only_hook{
             return;
         }
         boolean_flood_target_seeds_only_hook.call_target(face);
+    },
+};
+
+// FUN_004E0980 sides an unclassified TYPE 0 face (state 3 slow path, state 5 reclassification) from the first
+// crater face one ray hits. On a cut target face that ray can land inside and delete a piece the crater keeps,
+// so a unanimous 5-ray parity vote for outside turns that delete into a keep. Only that way round: the fix can
+// never remove a face stock keeps. A face on the crater surface keeps stock's side, since parity can't place
+// it. Thiscall on the face with the solid and 0 on the stack (RET 8); it always sets a side and returns true.
+template<typename Hook>
+static bool rf2_classify_type0_face(Hook& hook, rf::GFace* face, int edx, rf::GSolid* solid, int flags)
+{
+    const bool classified = hook.call_target(face, edx, solid, flags);
+    if (!classified || !g_rf2_style_boolean_active || !g_rf2_target_detail_room
+        || face->which_room != g_rf2_target_detail_room || (face->attributes.flags & rf::FACE_BOOLEAN_TYPE_1)) {
+        return classified;
+    }
+    const uint32_t side = (face->attributes.flags & rf::FACE_BOOLEAN_SIDE) >> rf::face_boolean_side_shift;
+    if (side == 1 && rf2_crater_ready(solid)) {
+        const rf::Vector3 centroid = face_centroid(*face);
+        if (rf2_outside_crater(g_rf2_crater, centroid) && !rf2_on_crater_surface(g_rf2_crater, centroid)) {
+            face->attributes.set_boolean_side(2);
+        }
+    }
+    return classified;
+}
+
+// Not the third call, in state 5's liquid branch (0x004DE0E0): there side 1 keeps the face.
+CallHook<bool __fastcall(rf::GFace*, int, rf::GSolid*, int)> boolean_classify_type0_hook{
+    {0x004dd724, 0x004dd98b},
+    [](rf::GFace* face, int edx, rf::GSolid* solid, int flags) FASTCALL_LAMBDA {
+        return rf2_classify_type0_face(boolean_classify_type0_hook, face, edx, solid, flags);
     },
 };
 
@@ -3714,7 +4217,11 @@ FunHook<int()> boolean_iterate_hook{
 
         const int inner_state = rf::g_boolean_inner_state;
         const bool fast = geomod_fast_before_state(inner_state);
+        g_rf2_crater_valid = false;
+        g_rf2_target_ray_cache_valid = false;
         int result = boolean_iterate_hook.call_target();
+        g_rf2_crater_valid = false;
+        g_rf2_target_ray_cache_valid = false;
         if (fast) {
             geomod_fast_after_state(inner_state);
         }
@@ -4132,6 +4639,7 @@ void destruction_do_patch()
     state5_reclassify_type1_for_rf2.install();
     boolean_skip_non_detail_faces_for_rf2.install();
     boolean_flood_target_seeds_only_hook.install();
+    boolean_classify_type0_hook.install();
     boolean_state5_allow_detail_for_rf2.install();
     boolean_state5_protect_detail_cache_for_rf2.install();
     boolean_face_create_surface_hook.install();

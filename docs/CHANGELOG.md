@@ -197,6 +197,9 @@ Version 1.5.0 (Trillium): Not yet released
 - Fix a level listed more than once in the rotation using its first entry's rules when restarted, voted, or reloaded
 - Fix confirming the vote panel's pre-selected mutators layering them differently from the configured rules
 - Fix the configured restart vote using the base game type for a level outside the rotation
+- Fix RF2-style geomod craters occasionally deleting a piece of the crater wall, leaving a hole, or keeping a stray piece inside the crater
+- Fix seeking in a demo skipping geomod craters, leaving players appearing inside solid geometry
+- Fix the launcher failing with a `timeout` error when the game process is slow to start, and leaving that process running
 - Improve validation of TGA textures in game and level editor
 - Fix level editor crash when a texture is too large to load
 - Fix 8-bit greyscale TGA textures with mipmap files sometimes loading with garbage pixels
