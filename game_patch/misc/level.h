@@ -556,6 +556,8 @@ struct AlpineVehicleFactoryInfo {
     int32_t team = -1;
     bool lock_to_team = false;
     bool active_by_default = true;
+    // Turret classes only: degrees the turret may yaw either side of its spawn facing; 0 = unrestricted.
+    uint8_t turret_yaw_limit_deg = 0;
 };
 
 void vehicle_factory_load_chunk(rf::File& file, std::size_t chunk_len);

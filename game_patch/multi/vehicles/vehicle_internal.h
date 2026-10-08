@@ -1,7 +1,9 @@
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
 #include <map>
+#include <numbers>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -154,7 +156,25 @@ struct VehicleState
     int64_t unoccupied_since_ms = 0;    // server: when the hull was last left empty; 0 = not running
     int64_t unoccupied_deadline_ms = 0; // client: local clock the auto-return is due at; 0 = none
     bool horn = false;                  // client: the server states the driver's horn is sounding
+    // Turret: degrees it may yaw either side of yaw_base, its spawn heading as the wire carries it, so
+    // every machine holds the same one; 0 = unrestricted.
+    uint8_t yaw_limit_deg = 0;
+    int16_t yaw_base = 0;
+    float yaw_rel = 0.0f; // the heading off yaw_base last clamped, for telling which stop it crossed
 };
+
+// int16 across [-pi, pi], finer than the stock row's own angle slots.
+constexpr float vehicle_orient_quant = 32767.0f / std::numbers::pi_v<float>;
+
+inline int16_t vehicle_quantize_angle(float radians)
+{
+    return static_cast<int16_t>(std::clamp(radians * vehicle_orient_quant, -32767.0f, 32767.0f));
+}
+
+inline float vehicle_dequantize_angle(int16_t quantized)
+{
+    return static_cast<float>(quantized) / vehicle_orient_quant;
+}
 
 // Server: a jeep horn whose driver holds the button; `on` stays false while his START waits out the
 // rate window.

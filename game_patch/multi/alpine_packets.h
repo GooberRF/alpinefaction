@@ -642,6 +642,8 @@ struct af_vehicle_state_attrs
     uint8_t flags = 0;                         // af_vehicle_state_flag bits
     uint16_t unoccupied_s = 0;                 // seconds with no occupant, saturating; read only with the running bit
     int16_t vel[3] = {0, 0, 0};                // hull velocity, af_vehicle_state_vel_quant per u/s
+    int16_t yaw_base = 0;                      // turret spawn heading, angle * 32767 / pi
+    uint8_t yaw_limit_deg = 0;                 // turret yaw either side of yaw_base; 0 = unrestricted
 };
 
 struct af_vehicle_state_packet
@@ -658,8 +660,10 @@ struct af_vehicle_state_packet
     // ONLY by the client this packet makes the new seat-0 rider: a server-simulated hull replicates
     // zero velocity on its obj_update rows, so nothing else carries its momentum across a handoff.
     int16_t vel[3];
+    int16_t yaw_base;      // as af_vehicle_state_attrs
+    uint8_t yaw_limit_deg;
 };
-static_assert(sizeof(af_vehicle_state_packet) == sizeof(RF_GamePacketHeader) + 40);
+static_assert(sizeof(af_vehicle_state_packet) == sizeof(RF_GamePacketHeader) + 43);
 
 // Vehicle weapon control. Client -> server: trigger edges, and the jeep driver's horn edges (alt_fire 0).
 // Server -> client: a discrete shot, or a continuous weapon's actual on/off edge (STOP's alt_fire is 0

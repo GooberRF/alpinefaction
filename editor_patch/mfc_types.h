@@ -598,6 +598,8 @@ struct DedVehicleFactory : DedObject
     VehicleFactoryTeam team = VehicleFactoryTeam::none;
     bool lock_to_team = false;
     bool active_by_default = true;
+    // Turret classes only: degrees the turret may yaw either side of its spawn facing; 0 = unrestricted.
+    uint8_t turret_yaw_limit_deg = 0;
 
     // Kept out of DedObject::vmesh so stock cleanup paths never free it; vehicle_factory.cpp owns it.
     void* preview_vmesh = nullptr;

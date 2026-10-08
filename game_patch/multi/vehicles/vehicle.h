@@ -171,7 +171,7 @@ int vehicle_factory_index_by_uid(int uid);
 // Client: the per-hull attributes af_vehicle_state carries beside the seat array.
 void vehicle_apply_hull_attrs_from_packet(int vehicle_handle, uint8_t team, uint8_t flags,
                                           uint16_t unoccupied_s, const int32_t* seat_rider,
-                                          int seat_count);
+                                          int seat_count, int16_t yaw_base, uint8_t yaw_limit_deg);
 
 // Client: converge this hull's seats on the occupancy an af_vehicle_state states. Idempotent.
 // changed_seat is af_vehicle_state_changed_none for a bulk assert with no event to cue.
