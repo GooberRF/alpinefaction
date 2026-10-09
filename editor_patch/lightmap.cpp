@@ -1256,8 +1256,9 @@ bool OccluderTree::occluded(const OccQuery& qy) const
                     continue;
                 }
                 // reject the receiving surface's own plane rather than everything within a ray
-                // distance of it, so geometry a few hundredths above the surface still occludes
-                if (lm_ray_lift + dist * qy.nd < lm_ray_band &&
+                // distance of it, so geometry a few hundredths above the surface still occludes;
+                // both sides, or rays toward a light behind the face pass the far side of a slab
+                if (std::abs(lm_ray_lift + dist * qy.nd) < lm_ray_band &&
                     std::abs(vdot(t.normal, qy.surf_normal)) > 0.999f) {
                     continue;
                 }
