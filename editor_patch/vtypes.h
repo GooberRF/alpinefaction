@@ -650,8 +650,22 @@ inline uint32_t editor_line_mode()
 static auto& gr_line_3d = addr_as_ref<uint8_t __cdecl(const Vector3* p0, const Vector3* p1, uint32_t mode)>(0x004CB180);
 // Origin at +0, unit direction at +0xC, for the view last set up
 static auto& screen_to_ray = addr_as_ref<void __cdecl(float* ray_out, float x, float y)>(0x004C5FB0);
+struct EditorRay
+{
+    Vector3 o;
+    Vector3 d; // unit
+};
+// The world ray through a client point of the view last set up.
+inline EditorRay editor_screen_ray(float x, float y)
+{
+    float r[8] = {};
+    screen_to_ray(r, x, y);
+    return {{r[0], r[1], r[2]}, {r[3], r[4], r[5]}};
+}
 static auto& gr_perspective = addr_as_ref<uint8_t>(0x0057E0ED);
+// The screen centre of the view last set up, which screen_to_ray measures from
 static auto& gr_half_width = addr_as_ref<float>(0x0158F2EC);
+static auto& gr_half_height = addr_as_ref<float>(0x0158F2B4);
 
 // View menu state
 enum LevelRenderMode : int
@@ -772,11 +786,15 @@ struct EditorViewport
     int view_type;                      // +0x4C  editor_view_type_perspective for the 3D view
     int view_index;                     // +0x50  its slot in the main frame, as painting_view_index
     EditorViewData* view_data;          // +0x54
-    uint8_t pad_58[0x6C - 0x58];        // +0x58
+    uint8_t pad_58[0x60 - 0x58];        // +0x58
+    // Latched by the button handlers; while any is set RED's idle loop warps the cursor back to its anchor
+    uint8_t rbutton_held;               // +0x60
+    uint8_t mbutton_held;               // +0x61
+    uint8_t lbutton_held;               // +0x62
+    uint8_t pad_63[0x6C - 0x63];        // +0x63
     uint8_t needs_repaint;              // +0x6C  repainted from RED's idle loop while set
 
-    // The message map's (0x0055C170) WM_LBUTTONDOWN, WM_LBUTTONUP and WM_LBUTTONDBLCLK handlers,
-    // thiscall (UINT flags, CPoint point)
+    // The message map's (0x0055C170) mouse button handlers, thiscall (UINT flags, CPoint point)
     void on_lbutton_down(UINT flags, int x, int y)
     {
         AddrCaller{0x0047CF20}.this_call(this, flags, x, y);
@@ -792,6 +810,36 @@ struct EditorViewport
         AddrCaller{0x0047D590}.this_call(this, flags, x, y);
     }
 
+    void on_rbutton_down(UINT flags, int x, int y)
+    {
+        AddrCaller{0x0047D2A0}.this_call(this, flags, x, y);
+    }
+
+    void on_rbutton_up(UINT flags, int x, int y)
+    {
+        AddrCaller{0x0047D420}.this_call(this, flags, x, y);
+    }
+
+    void on_rbutton_dblclk(UINT flags, int x, int y)
+    {
+        AddrCaller{0x0047D570}.this_call(this, flags, x, y);
+    }
+
+    void on_mbutton_down(UINT flags, int x, int y)
+    {
+        AddrCaller{0x0047D1F0}.this_call(this, flags, x, y);
+    }
+
+    void on_mbutton_up(UINT flags, int x, int y)
+    {
+        AddrCaller{0x0047D260}.this_call(this, flags, x, y);
+    }
+
+    void on_mbutton_dblclk(UINT flags, int x, int y)
+    {
+        AddrCaller{0x0047D5B0}.this_call(this, flags, x, y);
+    }
+
     // FUN_0047dae0: sets up gr for the view (window, viewport, camera), as the RBUTTONUP handler does
     // before it casts a ray (0x0047d476)
     void setup_gr(char begin_frame)
@@ -802,6 +850,9 @@ struct EditorViewport
 static_assert(offsetof(EditorViewport, view_type) == 0x4C);
 static_assert(offsetof(EditorViewport, view_index) == 0x50);
 static_assert(offsetof(EditorViewport, view_data) == 0x54);
+static_assert(offsetof(EditorViewport, rbutton_held) == 0x60);
+static_assert(offsetof(EditorViewport, mbutton_held) == 0x61);
+static_assert(offsetof(EditorViewport, lbutton_held) == 0x62);
 static_assert(offsetof(EditorViewport, needs_repaint) == 0x6C);
 
 constexpr int editor_view_type_perspective = 0;
@@ -825,6 +876,13 @@ constexpr int editor_num_views = 4;
 inline void* editor_view_at(int i)
 {
     return g_main_frame && i >= 0 && i < editor_num_views ? g_main_frame->views[i] : nullptr;
+}
+inline bool editor_is_view(const void* view)
+{
+    for (int i = 0; view && i < editor_num_views; i++) {
+        if (editor_view_at(i) == view) return true;
+    }
+    return false;
 }
 inline void editor_view_mark_repaint(void* view)
 {
@@ -1107,6 +1165,10 @@ constexpr int editor_packfile_entry_max = 0x34BC;
 struct GFace;
 // The CSG's global face list (the head, then the count, as GSolid::face_list_head)
 static auto& csg_face_list_head = addr_as_ref<GFace*>(0x01131388);
+
+// The Brush Clip dialog while it is open: viewport clicks place clip points, and the brush transform finalize
+// (0x00427390) leaves geometry_needs_rebuild alone.
+static auto& brush_clip_dialog = addr_as_ref<void*>(0x006C9DD8);
 
 static auto& generate_uid = addr_as_ref<int()>(0x00484230);
 // True if uid is already taken. Scans master objects, brush list, undo/redo stacks.

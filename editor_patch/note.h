@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <vector>
 #include "mfc_types.h"
 #include "level.h"
 
@@ -24,5 +25,7 @@ void note_tree_add_object_type(EditorTreeCtrl* tree);
 bool note_copy_object(DedObject* source);
 void note_paste_objects(CDedLevel* level);
 void note_clear_clipboard();
+// Swaps the staged clones with `other`, so a duplicate can copy and paste with the user's clipboard set aside.
+void note_swap_clipboard(std::vector<DedNote*>& other);
 void note_handle_delete_or_cut(DedObject* obj);
 void note_ensure_uid(int& uid);

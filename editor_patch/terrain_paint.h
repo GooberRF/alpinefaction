@@ -6,8 +6,6 @@ struct DedTerrain;
 // Terrain paint mode: the modeless Terrain Tools panel (layer, hole, height and geoable chunk tools), viewport input
 // while it is open, the brush cursor and the per-terrain paint undo stacks.
 
-void ApplyTerrainPaintPatches();
-
 // Opens the panel on `terrain` (or retargets an open one).
 void terrain_paint_open(CDedLevel* level, DedTerrain* terrain);
 // Tools > Terrain Tools: the first selected terrain.
@@ -17,6 +15,13 @@ void terrain_paint_show_properties(CDedLevel* level);
 
 // The panel is open: left-drag in a viewport paints, and Undo/Redo act on paint strokes.
 bool terrain_paint_active();
+// The panel window exists, with or without a target.
+bool terrain_paint_panel_open();
+
+// Left button input from the shared view dispatcher: while the panel is open it keeps every press
+// (true), and the release ends the stroke the press began on `view`.
+bool terrain_paint_view_lbutton_down(void* view, unsigned flags);
+void terrain_paint_view_lbutton_up(void* view);
 
 // Run from RED's idle loop (CEditorApp::OnIdle 0x00482F00, hooked in main.cpp).
 void terrain_paint_idle();

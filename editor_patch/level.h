@@ -2,7 +2,10 @@
 
 #include <cstdint>
 #include <cmath>
+#include <cstring>
+#include <initializer_list>
 #include <map>
+#include <type_traits>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -1382,6 +1385,41 @@ inline UndoEntry* undo_stack_top(const VArray<UndoEntry*>& stack)
     return stack.size > 0 ? stack.data_ptr[stack.size - 1] : nullptr;
 }
 
+// An Alpine block in an undo entry's raw_blocks, which stock frees with the entry. Stock move/rotate code indexes
+// raw_blocks of whatever entry is on top, reading +0x00 and writing +0x30..+0x5F of its 0x60 byte move records, so
+// the link is shaped like one and keeps its fields clear of those ranges.
+struct UndoLink
+{
+    char move_record_pos[0x0C];         // +0x00
+    uint32_t magic;                     // +0x0C
+    uintptr_t value;                    // +0x10
+    char move_record_rest[0x60 - 0x14]; // +0x14
+};
+static_assert(offsetof(UndoLink, value) == 0x10);
+static_assert(sizeof(UndoLink) == 0x60);
+
+// The spare array slots are nulled, so any further index faults as in stock. False when the allocation failed.
+inline bool undo_link_append(UndoEntry& entry, uint32_t magic, uintptr_t value)
+{
+    auto* link = static_cast<UndoLink*>(rf_alloc(sizeof(UndoLink)));
+    if (!link) return false;
+    std::memset(link, 0, sizeof(UndoLink));
+    link->magic = magic;
+    link->value = value;
+    auto& blocks = entry.raw_blocks;
+    blocks.push_back(link);
+    std::fill(blocks.data_ptr + blocks.size, blocks.data_ptr + blocks.capacity, nullptr);
+    return true;
+}
+
+// The value of the link with `magic` at raw_blocks[index], or 0.
+inline uintptr_t undo_link_value(const UndoEntry& entry, int index, uint32_t magic)
+{
+    if (index < 0 || index >= entry.raw_blocks.size) return 0;
+    const auto* link = static_cast<const UndoLink*>(entry.raw_blocks.data_ptr[index]);
+    return link && link->magic == magic ? link->value : 0;
+}
+
 // Build Geometry's progress dialog, CDedLevel::dialog_panels[build_dialog_panel_index]
 struct BuildProgressDialog
 {
@@ -1429,10 +1467,12 @@ struct CDedLevel
     float default_angles[32];                     // +0x78 (all init 89.9f, 128 bytes to +0xF8)
     DedEditMode edit_mode;                        // +0xF8 (init 0)
     int unk_FC;                                   // +0xFC (init 3)
-    int unk_100;                                  // +0x100 (init 0)
-    int unk_104;                                  // +0x104 (init 0)
-    float unk_108;                                // +0x108 (init 1.0f)
-    float unk_10C;                                // +0x10C (init 0.2625f)
+    // Top bar Coords (0x411, G toggles): 0 Global = the viewing camera's axes, 1 Local = each item's own
+    int coords_local;                             // +0x100
+    // From the held key, each tick (0x0047BA70): 0 none, 1 move, 2 rotate, 3 scale, 5 P, 6 S in Object mode, 7 clip
+    int transform_mode;                           // +0x104
+    float grid_size;                              // +0x108 top bar Grid, metres (init 1.0f)
+    float rotate_step;                            // +0x10C top bar Rotate, radians (init pi/12, 15 degrees)
     int unk_110;                                  // +0x110 (init 16)
     char unk_114;                                 // +0x114 (init 0)
     char unk_115;                                 // +0x115 (init 0)
@@ -1500,7 +1540,12 @@ struct CDedLevel
     VArray<int> import_renumbered_new_uids;       // +0x2BC
     char _pad_2C8[0x2E0 - 0x2C8];                // +0x2C8
     VArray<DedObject*> master_objects;            // +0x2E0 (all DedObjects, searched by FUN_00483920 for link validation)
-    char _pad_2EC[0x340 - 0x2EC];                // +0x2EC
+    // Ctrl+C's clipboard (FUN_00412e20 fills it, FUN_00414140 empties it): object and brush clones, and a third
+    // array of clones freed through their vtable
+    VArray<DedObject*> object_clipboard;          // +0x2EC
+    VArray<BrushNode*> brush_clipboard;           // +0x2F8
+    VArray<void*> clipboard_304;                  // +0x304
+    char _pad_310[0x340 - 0x310];                // +0x310
 
     // --- object VArrays (21 contiguous, 12 bytes each) ---
     // Offsets verified against save function FUN_00430bf0 chunk IDs
@@ -1601,6 +1646,31 @@ struct CDedLevel
         AddrCaller{0x00413050}.this_call(this);
     }
 
+    // FUN_00412e20: Ctrl+C. Empties the clipboard, then clones the selection into it (objects in Object / Group mode,
+    // keyframes skipped; selected brushes in Brush / Group mode).
+    void copy_selection()
+    {
+        AddrCaller{0x00412E20}.this_call(this);
+    }
+
+    // FUN_00414140: frees the clipboard's clones and empties its arrays (their buffers are kept)
+    void clear_clipboard()
+    {
+        AddrCaller{0x00414140}.this_call(this);
+    }
+
+    // FUN_0043d210: Edit > Undo of the top entry (AF-hooked in geometry.cpp)
+    void undo()
+    {
+        AddrCaller{0x0043D210}.this_call(this);
+    }
+
+    // FUN_0043cf60: frees every redo entry, as pushing a new undo entry does first (0x0043CD0C)
+    void clear_redo_stack()
+    {
+        AddrCaller{0x0043CF60}.this_call(this);
+    }
+
     // FUN_0043a710: starts Build Geometry as the Build command does; sets build_running
     void start_build_geometry()
     {
@@ -1639,15 +1709,52 @@ struct CDedLevel
     // FUN_0042d6b0 only checks face selection (+0xD8), so this is custom.
     bool has_vertex_selection()
     {
-        BrushNode* head = brush_list;
-        if (!head) return false;
-        BrushNode* b = head;
-        do {
-            auto* solid = static_cast<GSolid*>(b->geometry);
-            if (solid && solid->vertex_selection.size > 0)
+        return for_each_brush([](BrushNode& b) {
+            auto* solid = static_cast<GSolid*>(b.geometry);
+            return solid && solid->vertex_selection.size > 0;
+        });
+    }
+
+    // Calls fn(brush) once around the circular brush list from its head, bounded against a corrupt link. A bool fn
+    // returning true stops it, and then this returns true. A const level passes const brushes.
+    template<typename Fn>
+    bool for_each_brush(Fn&& fn)
+    {
+        return walk_brush_list<BrushNode>(brush_list, fn);
+    }
+
+    template<typename Fn>
+    bool for_each_brush(Fn&& fn) const
+    {
+        return walk_brush_list<const BrushNode>(brush_list, fn);
+    }
+
+    // In brush list order
+    std::vector<BrushNode*> selected_brushes() const
+    {
+        std::vector<BrushNode*> out;
+        walk_brush_list<BrushNode>(brush_list, [&](BrushNode& brush) {
+            if (brush.state == BRUSH_STATE_SELECTED) {
+                out.push_back(&brush);
+            }
+        });
+        return out;
+    }
+
+    template<typename Node, typename Fn>
+    static bool walk_brush_list(Node* head, Fn&& fn)
+    {
+        Node* brush = head;
+        for (int guard = 0; brush && guard < 1000000; guard++) {
+            if constexpr (std::is_void_v<std::invoke_result_t<Fn&, Node&>>) {
+                fn(*brush);
+            }
+            else if (fn(*brush)) {
                 return true;
-            b = b->next;
-        } while (b != head);
+            }
+            brush = brush->next;
+            if (brush == head) break;
+        }
         return false;
     }
 
@@ -1661,6 +1768,14 @@ struct CDedLevel
     void create_undo_snapshot()
     {
         AddrCaller{0x0043bbe0}.this_call(this);
+    }
+
+    // FUN_00426a30: by edit mode, pushes the undo entry of a viewport transform of the selection (type 6 / 7 / 8 for
+    // object / brush / group), records each item's "before" state and sets transform_in_progress. Nothing is pushed
+    // without a selected object (Object) or brush (Brush), or either (Group).
+    void begin_transform()
+    {
+        AddrCaller{0x00426A30}.this_call(this);
     }
 
     // FUN_00427260: commit the viewport transform in progress into its undo entry
@@ -1700,6 +1815,18 @@ static_assert(offsetof(CDedLevel, fog_color) == 0x38);
 static_assert(offsetof(CDedLevel, fog_near_clip) == 0x3C);
 static_assert(offsetof(CDedLevel, fog_far_clip) == 0x40);
 static_assert(offsetof(CDedLevel, build_running) == 0x232);
+static_assert(offsetof(CDedLevel, edit_mode) == 0xF8);
+static_assert(offsetof(CDedLevel, coords_local) == 0x100);
+static_assert(offsetof(CDedLevel, transform_mode) == 0x104);
+static_assert(offsetof(CDedLevel, grid_size) == 0x108);
+static_assert(offsetof(CDedLevel, rotate_step) == 0x10C);
+static_assert(offsetof(CDedLevel, brush_list) == 0x118);
+static_assert(offsetof(CDedLevel, transform_in_progress) == 0x230);
+static_assert(offsetof(CDedLevel, undo_stack) == 0x280);
+static_assert(offsetof(CDedLevel, selection) == 0x298);
+static_assert(offsetof(CDedLevel, master_objects) == 0x2E0);
+static_assert(offsetof(CDedLevel, object_clipboard) == 0x2EC);
+static_assert(offsetof(CDedLevel, clipboard_304) == 0x304);
 static_assert(offsetof(CDedLevel, texture_groups) == 0x1C4);
 static_assert(offsetof(CDedLevel, player_start_pos) == 0x17C);
 static_assert(offsetof(CDedLevel, geo_regions) == 0x3A0);
@@ -1798,17 +1925,49 @@ static auto& DedLight_UpdateLevelLight = addr_as_ref<void __fastcall(void* this_
 // changes (lights, nav points, particle emitters, gas regions, decals); no-ops for every other type.
 static auto& ded_object_pos_changed = addr_as_ref<void __stdcall(DedObject* obj)>(0x0042A390);
 static auto& ded_object_orient_changed = addr_as_ref<void __stdcall(DedObject* obj)>(0x0042A460);
+// Both updaters write through these without a check; stock never moves one that lacks it.
+inline bool ded_object_updaters_safe(const DedObject& obj)
+{
+    if (obj.type == DedObjectType::DED_PARTICLE_EMITTER) {
+        return static_cast<const DedParticleEmitter&>(obj).emitter != nullptr;
+    }
+    if (obj.type == DedObjectType::DED_GAS_REGION) {
+        return static_cast<const DedGasRegion&>(obj).region != nullptr;
+    }
+    return true;
+}
 
 // DirectInput keyboard state buffer, non-zero value at [scancode] means the key is held
 static auto& g_dinput_keys = addr_as_ref<uint8_t[256]>(0x0147ce8c);
 
 // DirectInput scan codes for edit operation hold-keys
 constexpr uint8_t DIK_R = 0x13;     // rotate
+constexpr uint8_t DIK_E = 0x12;     // rotate about the first axis dragged
 constexpr uint8_t DIK_M = 0x32;     // move
+constexpr uint8_t DIK_N = 0x31;     // move along the first axis dragged
 constexpr uint8_t DIK_S = 0x1F;     // scale
+constexpr uint8_t DIK_P = 0x19;     // place at the clicked point
 constexpr uint8_t DIK_LSHIFT = 0x2A;
+constexpr uint8_t DIK_RSHIFT = 0x36;
+constexpr uint8_t DIK_LCONTROL = 0x1D;
+constexpr uint8_t DIK_RCONTROL = 0x9D;
+constexpr uint8_t DIK_LMENU = 0x38;
+constexpr uint8_t DIK_RMENU = 0xB8;
 constexpr uint8_t DIK_LBRACKET = 0x1A;
 constexpr uint8_t DIK_RBRACKET = 0x1B;
+constexpr uint8_t DIK_ESCAPE = 0x01;
+// The top row digits run on from DIK_1 (DIK_1 + 4 is 5)
+constexpr uint8_t DIK_1 = 0x02;
+
+// A key RED's viewport input (0x0047BA70) holds a transform or click action on: M/N move, R/E rotate, S scale or
+// drop, P place.
+inline bool editor_transform_key_held()
+{
+    for (uint8_t key : {DIK_M, DIK_N, DIK_R, DIK_E, DIK_S, DIK_P}) {
+        if (g_dinput_keys[key]) return true;
+    }
+    return false;
+}
 
 // Editor app globals
 void* GetMainFrame();

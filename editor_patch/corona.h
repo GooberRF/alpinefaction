@@ -28,6 +28,8 @@ void corona_tree_add_object_type(EditorTreeCtrl* tree);
 bool corona_copy_object(DedObject* source);
 void corona_paste_objects(CDedLevel* level);
 void corona_clear_clipboard();
+// Swaps the staged clones with `other`, so a duplicate can copy and paste with the user's clipboard set aside.
+void corona_swap_clipboard(std::vector<DedCorona*>& other);
 void corona_handle_delete_or_cut(DedObject* obj);
 void corona_ensure_uid(int& uid);
 

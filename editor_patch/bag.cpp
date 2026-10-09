@@ -278,6 +278,11 @@ void bag_paste_objects(CDedLevel* level)
     }
 }
 
+void bag_swap_clipboard(std::vector<DedBag*>& other)
+{
+    g_bag_clipboard.swap(other);
+}
+
 void bag_clear_clipboard()
 {
     for (auto* bag : g_bag_clipboard) {

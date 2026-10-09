@@ -100,6 +100,8 @@ Version 1.5.0 (Trillium): Not yet released
 - Add `Camera far clip` level property to set how far the level is drawn independently of the fog far clip
 - Add an object placement panel to object mode in the level editor
 - Allow dragging objects from the level editor's object tree into a viewport
+- Add a move, rotate and scale gizmo with toggleable snapping and Shift-drag duplicate to the level editor
+- Allow undoing paste of Alpine objects in the level editor
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Add `ui_color_console` console command to set the console background color

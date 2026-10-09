@@ -1805,6 +1805,11 @@ void rope_emitter_paste_objects(CDedLevel* level)
     }
 }
 
+void rope_emitter_swap_clipboard(std::vector<DedRopeEmitter*>& other)
+{
+    g_rope_emitter_clipboard.swap(other);
+}
+
 void rope_emitter_clear_clipboard()
 {
     for (auto* rope : g_rope_emitter_clipboard) {

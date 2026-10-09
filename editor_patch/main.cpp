@@ -41,6 +41,7 @@
 #include "mesh.h"
 #include "alpine_obj.h"
 #include "geometry.h"
+#include "gizmo.h"
 #include "textures.h"
 #include "meshes.h"
 #include "headless_bake.h"
@@ -52,6 +53,7 @@
 #include "terrain_preview.h"
 #include "mesh_browser.h"
 #include "placement_panel.h"
+#include "viewport_input.h"
 
 #define LAUNCHER_FILENAME "AlpineFactionLauncher.exe"
 HMODULE g_module;
@@ -1119,6 +1121,11 @@ void __fastcall CMainFrame_OnEditUndo_new(CWnd* this_, void* edx_unused);
 FunHook<decltype(CMainFrame_OnEditUndo_new)> CMainFrame_OnEditUndo_hook{0x00447830, CMainFrame_OnEditUndo_new};
 void __fastcall CMainFrame_OnEditUndo_new(CWnd* this_, void* edx_unused)
 {
+    // Pressed during a gizmo drag it only cancels the drag.
+    if (gizmo_dragging()) {
+        gizmo_cancel_drag();
+        return;
+    }
     // While Terrain Tools is open, Ctrl+Z / Edit > Undo undo paint strokes instead
     if (terrain_paint_active()) {
         terrain_paint_undo();
@@ -1134,6 +1141,10 @@ void __fastcall CMainFrame_OnEditRedo_new(CWnd* this_, void* edx_unused);
 FunHook<decltype(CMainFrame_OnEditRedo_new)> CMainFrame_OnEditRedo_hook{0x00447870, CMainFrame_OnEditRedo_new};
 void __fastcall CMainFrame_OnEditRedo_new(CWnd* this_, void* edx_unused)
 {
+    if (gizmo_dragging()) {
+        gizmo_cancel_drag();
+        return;
+    }
     if (terrain_paint_active()) {
         terrain_paint_redo();
         return;
@@ -1433,10 +1444,14 @@ FunHook<char __fastcall(void*, int, const char*, int, int)> CDedDoc_LoadSaveLeve
 
 char __fastcall CDedDoc_LoadSaveLevel_new(void* self, int edx, const char* path, int is_load, int is_autosave)
 {
+    if (is_load) {
+        gizmo_cancel_drag();
+    }
     const bool was_autosaving = std::exchange(g_autosaving, !is_load && is_autosave);
     char result = CDedDoc_LoadSaveLevel_hook.call_target(self, edx, path, is_load, is_autosave);
     g_autosaving = was_autosaving;
     if (is_load && result) {
+        gizmo_level_loaded();
         reset_legacy_fog_near_clip();
     }
     if (is_load && !is_autosave) {
@@ -1452,6 +1467,7 @@ int __fastcall CEditorApp_OnIdle_new(void* self, int edx, int count)
 {
     if (!headless_bake_idle()) {
         terrain_paint_idle();
+        gizmo_idle();
     }
     return CEditorApp_OnIdle_hook.call_target(self, edx, count);
 }
@@ -1461,7 +1477,7 @@ CodeInjection autosave_defer_during_edit_injection{
     [](auto& regs) {
         auto* level = CDedLevel::Get();
         if (headless_bake_active() || is_edit_key_held() || (level && level->transform_in_progress) ||
-            terrain_paint_stroke_active()) {
+            terrain_paint_stroke_active() || gizmo_dragging()) {
             regs.eip = 0x004831B4; // defer autosave until the text tick we are not in an edit operation
         }
         else {
@@ -1729,7 +1745,20 @@ BOOL __fastcall CMainFrame_OnCmdMsg(CWnd* this_, int, UINT nID, int nCode, void*
         return TRUE;
     }
 
+    if (nID == IDC_GIZMO_SCALE_STEP && nCode == CBN_SELCHANGE) {
+        gizmo_scale_step_changed();
+        return TRUE;
+    }
+
     if (nCode == CN_COMMAND) {
+        // A command mid-drag would act on what the drag holds; put it back first, and skip the command if that
+        // failed.
+        if (!pHandlerInfo && (nID < ID_GIZMO_SELECT || nID > ID_GIZMO_SNAP) && gizmo_dragging()) {
+            // Undo / Redo during the drag only cancel it.
+            if (!gizmo_cancel_drag() || nID == ID_EDIT_UNDO || nID == ID_EDIT_REDO) {
+                return TRUE;
+            }
+        }
         std::function<void()> handler;
         switch (nID) {
             case ID_WIKI_EDITING_MAIN_PAGE:
@@ -1816,6 +1845,13 @@ BOOL __fastcall CMainFrame_OnCmdMsg(CWnd* this_, int, UINT nID, int nCode, void*
                 break;
             case ID_TOGGLE_MAXIMIZE_VIEWPORT:
                 handler = std::bind(CMainFrame_ToggleMaximizeViewport, reinterpret_cast<CMainFrame*>(this_));
+                break;
+            case ID_GIZMO_SELECT:
+            case ID_GIZMO_MOVE:
+            case ID_GIZMO_ROTATE:
+            case ID_GIZMO_SCALE:
+            case ID_GIZMO_SNAP:
+                handler = [nID]() { gizmo_button_clicked(nID); };
                 break;
             case ID_TERRAIN_TOOLS:
                 handler = [this_]() {
@@ -2275,7 +2311,8 @@ extern "C" DWORD AF_DLL_EXPORT Init([[maybe_unused]] void* unused)
     ApplyLevelPatches();
     ApplyTerrainBuildPatches();
     ApplyTerrainPreviewPatches();
-    ApplyTerrainPaintPatches();
+    ApplyViewportInputPatches();
+    ApplyGizmoPatches();
     ApplyMeshPreviewPatches();
     ApplyPlacementPanelPatches();
     ApplyEventsPatches();

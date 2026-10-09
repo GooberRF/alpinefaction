@@ -642,9 +642,7 @@ void move_new_object(DedObject& obj, const Vector3& pos, const Matrix3& orient)
         obj.pos.z -= half;
         obj.orient = identity_orient;
     }
-    // Both updaters write through these without a check; stock never moves one that lacks it.
-    if (obj.type == DedObjectType::DED_PARTICLE_EMITTER && !static_cast<DedParticleEmitter&>(obj).emitter) return;
-    if (obj.type == DedObjectType::DED_GAS_REGION && !static_cast<DedGasRegion&>(obj).region) return;
+    if (!ded_object_updaters_safe(obj)) return;
     ded_object_pos_changed(&obj);
     ded_object_orient_changed(&obj);
 }

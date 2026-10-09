@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <vector>
 #include "mfc_types.h"
 #include "level.h"
 
@@ -24,5 +25,7 @@ void rope_emitter_tree_add_object_type(EditorTreeCtrl* tree);
 bool rope_emitter_copy_object(DedObject* source);
 void rope_emitter_paste_objects(CDedLevel* level);
 void rope_emitter_clear_clipboard();
+// Swaps the staged clones with `other`, so a duplicate can copy and paste with the user's clipboard set aside.
+void rope_emitter_swap_clipboard(std::vector<DedRopeEmitter*>& other);
 void rope_emitter_handle_delete_or_cut(DedObject* obj);
 void rope_emitter_ensure_uid(int& uid);

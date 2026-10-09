@@ -8,6 +8,7 @@
 #include <patch_common/MemUtils.h>
 #include <xlog/xlog.h>
 #include "geometry.h"
+#include "gizmo.h"
 #include "level.h"
 #include "mfc_types.h"
 #include "resources.h"
@@ -166,19 +167,10 @@ static void mirror_object(DedObject* obj, int axis)
     }
 }
 
-// Collect selected brushes from the level's brush list.
-static std::vector<BrushNode*> collect_selected_brushes(CDedLevel* level)
+std::vector<BrushNode*> collect_selected_brushes(CDedLevel* level)
 {
-    std::vector<BrushNode*> selected;
-    BrushNode* head = level->brush_list;
-    if (!head) return selected;
-    BrushNode* b = head;
-    do {
-        if (b->state == BRUSH_STATE_SELECTED && b->geometry) {
-            selected.push_back(b);
-        }
-        b = b->next;
-    } while (b != head);
+    std::vector<BrushNode*> selected = level->selected_brushes();
+    std::erase_if(selected, [](const BrushNode* b) { return !b->geometry; });
     return selected;
 }
 
@@ -1258,18 +1250,7 @@ void handle_vertex_bridge()
 // ============================================================================
 
 // Fuse records a modify snapshot and then a separate delete of the absorbed brushes. The delete
-// entry carries this block in raw_blocks so undo/redo can treat the pair as one step. Stock
-// move/rotate code indexes raw_blocks of whatever entry is on top, reading +0x00 and writing
-// +0x30..+0x5F of its 0x60 byte move records, so the link is shaped like one and keeps its fields
-// clear of those ranges. The spare array slots are nulled so any further index faults as in stock.
-struct FuseUndoLink
-{
-    char move_record_pos[0x0C];
-    uint32_t magic;
-    UndoEntry* snapshot;
-    char move_record_rest[0x4C];
-};
-static_assert(sizeof(FuseUndoLink) == 0x60);
+// entry carries an undo link to the snapshot so undo/redo can treat the pair as one step.
 constexpr uint32_t fuse_undo_link_magic = 0x45535546;
 
 static UndoEntry* fuse_linked_snapshot(UndoEntry* entry)
@@ -1277,8 +1258,7 @@ static UndoEntry* fuse_linked_snapshot(UndoEntry* entry)
     if (!entry || entry->type != undo_delete_brushes || entry->raw_blocks.size != 1) {
         return nullptr;
     }
-    auto* link = static_cast<FuseUndoLink*>(entry->raw_blocks.data_ptr[0]);
-    return link && link->magic == fuse_undo_link_magic ? link->snapshot : nullptr;
+    return reinterpret_cast<UndoEntry*>(undo_link_value(*entry, 0, fuse_undo_link_magic));
 }
 
 // The boolean hands every face taken from the second solid to this texturer. Mode 4 stamps the
@@ -1316,16 +1296,7 @@ void __fastcall brush_fuse_hooked(CDedLevel* level, void* edx_unused)
         snapshot->type != undo_modify_brushes || deletion->raw_blocks.size != 0) {
         return;
     }
-    auto* link = static_cast<FuseUndoLink*>(rf_alloc(sizeof(FuseUndoLink)));
-    if (!link) {
-        return;
-    }
-    std::memset(link, 0, sizeof(FuseUndoLink));
-    link->magic = fuse_undo_link_magic;
-    link->snapshot = snapshot;
-    auto& blocks = deletion->raw_blocks;
-    blocks.push_back(link);
-    std::fill(blocks.data_ptr + blocks.size, blocks.data_ptr + blocks.capacity, nullptr);
+    undo_link_append(*deletion, fuse_undo_link_magic, reinterpret_cast<uintptr_t>(snapshot));
 }
 
 void __fastcall brush_carve_hooked(CDedLevel* level, void* edx_unused);
@@ -1340,8 +1311,12 @@ void __fastcall level_undo_hooked(CDedLevel* level, void* edx_unused);
 FunHook<decltype(level_undo_hooked)> level_undo_hook{0x0043D210, level_undo_hooked};
 void __fastcall level_undo_hooked(CDedLevel* level, void* edx_unused)
 {
-    UndoEntry* snapshot = fuse_linked_snapshot(undo_stack_top(level->undo_stack));
+    UndoEntry* undone = undo_stack_top(level->undo_stack);
+    UndoEntry* snapshot = fuse_linked_snapshot(undone);
     level_undo_hook.call_target(level, edx_unused);
+    if (undone && undo_stack_top(level->redo_stack) == undone) {
+        gizmo_undo_entry_applied(undone, true);
+    }
     if (snapshot && undo_stack_top(level->undo_stack) == snapshot) {
         level_undo_hook.call_target(level, edx_unused);
     }
@@ -1353,6 +1328,9 @@ void __fastcall level_redo_hooked(CDedLevel* level, void* edx_unused)
 {
     UndoEntry* redone = undo_stack_top(level->redo_stack);
     level_redo_hook.call_target(level, edx_unused);
+    if (redone && undo_stack_top(level->undo_stack) == redone) {
+        gizmo_undo_entry_applied(redone, false);
+    }
     if (redone && fuse_linked_snapshot(undo_stack_top(level->redo_stack)) == redone) {
         level_redo_hook.call_target(level, edx_unused);
     }

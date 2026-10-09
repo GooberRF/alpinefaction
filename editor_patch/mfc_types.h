@@ -5,6 +5,7 @@
 #include <patch_common/MemUtils.h>
 #include <mbstring.h>
 #include <algorithm>
+#include <cmath>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -200,8 +201,37 @@ struct Vector3
     Vector3(float x_, float y_, float z_) : x(x_), y(y_), z(z_) {}
 
     Vector3 operator+(const Vector3& b) const { return {x + b.x, y + b.y, z + b.z}; }
+    Vector3 operator-(const Vector3& b) const { return {x - b.x, y - b.y, z - b.z}; }
+    Vector3 operator*(float s) const { return {x * s, y * s, z * s}; }
 };
 static_assert(sizeof(Vector3) == 0xC, "Vector3 size mismatch!");
+
+inline bool operator==(const Vector3& a, const Vector3& b)
+{
+    return a.x == b.x && a.y == b.y && a.z == b.z;
+}
+
+inline float dot(const Vector3& a, const Vector3& b)
+{
+    return a.x * b.x + a.y * b.y + a.z * b.z;
+}
+
+inline Vector3 cross(const Vector3& a, const Vector3& b)
+{
+    return {a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x};
+}
+
+inline float length(const Vector3& a)
+{
+    return std::sqrt(dot(a, a));
+}
+
+// Zero for a vector too short to have a direction.
+inline Vector3 normalized(const Vector3& a)
+{
+    const float len = length(a);
+    return len > 1e-12f && std::isfinite(len) ? a * (1.0f / len) : Vector3{};
+}
 
 struct Matrix3
 {
@@ -489,13 +519,86 @@ struct DedParticleEmitter : DedObject
 };
 static_assert(offsetof(DedParticleEmitter, emitter) == 0x94);
 
+enum class GasRegionShape : int
+{
+    sphere = 1,
+    box = 2,
+};
+
 // Partial. The ctor (0x00451AC0) leaves `region` NULL; add_object's 0x004154B0 creates it for a sphere or box
-// shape (0x004C6970 / 0x004C6A10).
+// shape (0x004C6970 / 0x004C6A10). Box sizes are full size along the object's own axes, as the viewport draws them
+// (0x00421120): width x, height y, depth z.
 struct DedGasRegion : DedObject
 {
-    void* region; // 0x94
+    void* region;         // 0x94
+    GasRegionShape shape; // 0x98
+    float radius;         // 0x9C
+    float height;         // 0xA0
+    float width;          // 0xA4
+    float depth;          // 0xA8
+
+    // FUN_00451d00: copies the sizes into `region`, which must exist
+    void sync_region_sizes()
+    {
+        AddrCaller{0x00451D00}.this_call(this, radius, height, width, depth);
+    }
 };
 static_assert(offsetof(DedGasRegion, region) == 0x94);
+static_assert(offsetof(DedGasRegion, shape) == 0x98);
+static_assert(offsetof(DedGasRegion, radius) == 0x9C);
+static_assert(offsetof(DedGasRegion, height) == 0xA0);
+static_assert(offsetof(DedGasRegion, width) == 0xA4);
+static_assert(offsetof(DedGasRegion, depth) == 0xA8);
+
+// Partial; sizes as the viewport draws them (0x004208C0).
+struct DedTrigger : DedObject
+{
+    int is_box;   // 0x94  0 sphere, 1 box
+    float radius; // 0x98
+    float height; // 0x9C
+    float width;  // 0xA0
+    float depth;  // 0xA4
+};
+static_assert(offsetof(DedTrigger, is_box) == 0x94);
+static_assert(offsetof(DedTrigger, radius) == 0x98);
+static_assert(offsetof(DedTrigger, height) == 0x9C);
+static_assert(offsetof(DedTrigger, width) == 0xA0);
+static_assert(offsetof(DedTrigger, depth) == 0xA4);
+
+// Partial; always a box, sizes as the viewport draws them (0x00421450).
+struct DedClimbingRegion : DedObject
+{
+    int climb_type; // 0x94  1 ladder, 2 chain fence
+    float height;   // 0x98
+    float width;    // 0x9C
+    float depth;    // 0xA0
+};
+static_assert(offsetof(DedClimbingRegion, climb_type) == 0x94);
+static_assert(offsetof(DedClimbingRegion, height) == 0x98);
+static_assert(offsetof(DedClimbingRegion, width) == 0x9C);
+static_assert(offsetof(DedClimbingRegion, depth) == 0xA0);
+
+enum class PushRegionShape : int
+{
+    sphere = 1,
+    axis_aligned_box = 2, // drawn and applied with world axes whatever the orient
+    oriented_box = 3,
+};
+
+// Partial; sizes as the viewport draws them (0x004216B0).
+struct DedPushRegion : DedObject
+{
+    PushRegionShape shape; // 0x94
+    float radius;          // 0x98
+    float height;          // 0x9C
+    float width;           // 0xA0
+    float depth;           // 0xA4
+};
+static_assert(offsetof(DedPushRegion, shape) == 0x94);
+static_assert(offsetof(DedPushRegion, radius) == 0x98);
+static_assert(offsetof(DedPushRegion, height) == 0x9C);
+static_assert(offsetof(DedPushRegion, width) == 0xA0);
+static_assert(offsetof(DedPushRegion, depth) == 0xA4);
 
 // Per-slot texture override for editor mesh objects
 struct EditorTextureOverride {
@@ -1209,8 +1312,23 @@ struct CMainFrame : CFrameWnd
     {
         AddrCaller{0x00449680}.this_call(this);
     }
+
+    // The top bar (IDD_MAIN_FRAME_TOP_BAR), created by CMainFrame::OnCreate at 0x00447197
+    HWND top_bar_hwnd()
+    {
+        return WndToHandle(reinterpret_cast<CWnd*>(dialog_bar));
+    }
+
+    // AFX_IDW_STATUS_BAR (0x00447277); WM_SETTEXT / WM_GETTEXT address its message pane
+    HWND status_bar_hwnd()
+    {
+        return WndToHandle(reinterpret_cast<CWnd*>(status_bar));
+    }
 };
 static_assert(sizeof(CMainFrame) == 0x550);
+static_assert(offsetof(CMainFrame, doc) == 0xD0);
+static_assert(offsetof(CMainFrame, dialog_bar) == 0xDC);
+static_assert(offsetof(CMainFrame, status_bar) == 0x164);
 static_assert(offsetof(CMainFrame, custom_colors) == 0x4E8, "custom_colors offset mismatch!");
 
 static auto& g_main_frame = addr_as_ref<CMainFrame*>(0x006F9E68);

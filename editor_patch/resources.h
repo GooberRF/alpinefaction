@@ -77,6 +77,14 @@
 #define ID_TERRAIN_TOOLS           0x900B
 #define ID_TERRAIN_TOOLS_PROPERTIES 0x900C
 
+// Top bar transform gizmo controls
+#define ID_GIZMO_SELECT            0x900D
+#define ID_GIZMO_MOVE              0x900E
+#define ID_GIZMO_ROTATE            0x900F
+#define ID_GIZMO_SCALE             0x9010
+#define ID_GIZMO_SNAP              0x9011
+#define IDC_GIZMO_SCALE_STEP       0x9012
+
 #define ID_CREATE_LEVEL_PACKFILE    0x8083
 #define ID_CALCULATE_MAPS_AND_LIGHT 0x807A
 

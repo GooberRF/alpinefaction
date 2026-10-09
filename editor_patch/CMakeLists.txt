@@ -14,6 +14,8 @@ set(SRCS
     file_dialogs.cpp
     file_dialogs.h
     geometry.cpp
+    gizmo.cpp
+    gizmo.h
     graphics.cpp
     headless_bake.cpp
     headless_bake.h
@@ -25,6 +27,8 @@ set(SRCS
     mesh_browser.h
     placement_panel.cpp
     placement_panel.h
+    viewport_input.cpp
+    viewport_input.h
     note.cpp
     note.h
     corona.cpp
