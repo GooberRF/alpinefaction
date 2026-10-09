@@ -48,6 +48,12 @@ struct EditorRenderParams;
 void vmesh_render_scaled(EditorVMesh* vm, const Vector3& pos, const Matrix3& orient, float scale,
                          const EditorRenderParams& params);
 
+// The texture a v3d chunk draws: its loaded handle, else the one its material names, if that file exists; -1 for none.
+struct EditorV3dMesh;
+struct EditorVifMesh;
+struct EditorVifChunk;
+int vmesh_chunk_bitmap(const EditorV3dMesh& sub, const EditorVifMesh& vm, const EditorVifChunk& chunk);
+
 // Handlers called from shared hook points in alpine_obj.cpp
 DedMesh* mesh_click_pick(CDedLevel* level, float click_x, float click_y, float* out_dist_sq);
 void mesh_pick(CDedLevel* level, int param1, int param2);

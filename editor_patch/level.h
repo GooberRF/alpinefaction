@@ -724,6 +724,7 @@ struct AlpineLevelProperties
     float minimap_cut_height = 0.0f;
     bool require_d3d11 = false; // the mapper's "Require Direct3D 11" setting
     float camera_far_clip = 0.0f; // 0 = the stock far clip (fog far clip, else 275)
+    bool alpha_tested_occlusion = false; // see-through faces and alpha mesh triangles occlude by texel alpha
 
     // Alpine mesh objects (stored separately from stock object VArrays)
     std::vector<DedMesh*> mesh_objects;
@@ -776,6 +777,12 @@ struct AlpineLevelProperties
     {
         const alpine_lighting::Direction d = alpine_lighting::sun_to_light_dir(sun_yaw, sun_pitch);
         return {d.x, d.y, d.z};
+    }
+
+    // Needs the ray traced shadows: the stock projector legacy lighting keeps cannot sample a texture.
+    bool alpha_tested_occlusion_active() const
+    {
+        return alpha_tested_occlusion && !legacy_lighting;
     }
 
     // Calculate Lighting gives the surfaces alpine charts; D3D11-only lightmaps can only apply then.
@@ -880,6 +887,7 @@ struct AlpineLevelProperties
         lightmap_compression = 0;
         require_d3d11 = false;
         camera_far_clip = 0.0f;
+        alpha_tested_occlusion = false;
         for (auto* m : mesh_objects) {
             DestroyDedMesh(m);
         }
@@ -1018,6 +1026,7 @@ struct AlpineLevelProperties
         file.write<std::uint8_t>(static_cast<std::uint8_t>((needs_d3d11 ? require_d3d11_needed : 0u) |
                                                            (require_d3d11 ? require_d3d11_setting : 0u)));
         file.write<float>(camera_far_clip);
+        file.write<std::uint8_t>(alpha_tested_occlusion ? 1u : 0u);
     }
 
     void Deserialize(rf::File& file, std::size_t chunk_len)
@@ -1287,6 +1296,9 @@ struct AlpineLevelProperties
             if (!read_bytes(&camera_far_clip, sizeof(camera_far_clip)))
                 return;
             camera_far_clip = alpine_camera_far_clip::sanitize(camera_far_clip);
+            if (!read_bytes(&u8, sizeof(u8)))
+                return;
+            alpha_tested_occlusion = (u8 != 0);
         }
     }
 };

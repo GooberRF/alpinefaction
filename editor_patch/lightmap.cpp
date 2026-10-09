@@ -26,6 +26,7 @@
 #include "dir_light.h"
 #include "level.h"
 #include "lightmap_mesh_occluders.h"
+#include "lightmap_alpha_masks.h"
 #include "alpine_lightmaps.h"
 #include "bake_progress.h"
 #include "headless_bake.h"
@@ -122,6 +123,12 @@ static bool alpha_faces_occlude_active()
 {
     auto* level = CDedLevel::Get();
     return level && level->GetAlpineLevelProperties().alpha_faces_occlude;
+}
+
+static bool alpha_tested_occlusion_active()
+{
+    auto* level = CDedLevel::Get();
+    return level && level->GetAlpineLevelProperties().alpha_tested_occlusion_active();
 }
 
 // Which compiled faces belong to a brush flagged "No shadow cast".
@@ -793,6 +800,20 @@ static constexpr float lm_oneside_eps = 1.0e-4f;
 // Synthetic OccTri flag, outside the 16 bit face flags word: the face's texture carries an alpha
 // channel, which is what the stock occluder filter rejects it for (FUN_004bcc60 at 0x004aed62).
 static constexpr unsigned lm_occ_alpha_texture = 0x80000000u;
+// A ray that keeps less of its light than this is fully shadowed.
+static constexpr float lm_alpha_blocked = 1.0f / 512.0f;
+// The alpha is averaged over this many receiving texels: one alone leaves moire where a grate's holes
+// land a few texels apart.
+static constexpr float lm_alpha_filter_width = 2.0f;
+// Grazing hits are filtered as if at this cosine, so their footprint stays finite.
+static constexpr float lm_alpha_min_cosine = 0.25f;
+// Parallel hits on one texture this close along their normal are one layer: both faces of a thin grate brush
+// or back to back mesh cards, whose holes line up. So are hits at one point, either side of a shared edge.
+static constexpr float lm_alpha_layer_gap = 0.25f;
+static constexpr float lm_alpha_layer_parallel = 0.9f;
+static constexpr float lm_alpha_layer_coincident = 1.0e-3f;
+// Distinct layers a ray keeps apart before folding the rest straight into its transmittance.
+static constexpr int lm_alpha_max_layers = 8;
 
 namespace {
 
@@ -834,6 +855,16 @@ struct OccTri {
     int surf_id;
     int mesh_uid; // owning alpine mesh object, -1 for a brush face
     unsigned flags;
+    int alpha = -1; // OccluderTree::alpha_tris_ index of a triangle that blocks by its texture's alpha
+};
+
+// The texture mapping of an alpha-tested triangle: uv = uv0 + u * duv1 + v * duv2 at barycentrics (u, v).
+struct OccAlphaTri {
+    const LightmapAlphaMask* mask;
+    float u0, v0, du1, dv1, du2, dv2;
+    float density; // texels of the mask's finest level per world unit
+    bool in_rect;  // the triangle maps inside one texture repeat, so it samples only its own texture area
+    LightmapAlphaMask::Rect rect;
 };
 
 // A node build_range never got to finish (bad_alloc deeper in the recursion) has to read as an
@@ -858,6 +889,8 @@ struct OccQuery {
     int skip_surf;
     unsigned skip_flags;    // face flags that make a triangle transparent to this light
     unsigned oneside_flags; // face flags that make it block only rays hitting its front
+    float footprint = 0.0f; // world width of the receiving texel, which alpha-tested hits are filtered over
+    float converge = 0.0f;  // 1 / distance to a point light the footprint narrows onto, 0 for parallel rays
 };
 
 class OccluderTree
@@ -868,18 +901,23 @@ public:
     void clear()
     {
         tris_.clear();
+        alpha_tris_.clear();
         order_.clear();
         nodes_.clear();
         skipped_faces_ = 0;
     }
     int skipped_faces() const { return skipped_faces_; }
-    bool occluded(const OccQuery& q) const;
+    // The fraction of the ray's light that reaches tmax: 0 at an opaque hit, the product of what the
+    // alpha-tested triangles it crosses let through otherwise.
+    float transmittance(const OccQuery& q) const;
 
 private:
     int build_range(int begin, int end, int depth);
+    bool add_alpha(OccTri& t, const LightmapAlphaMask* mask, const float* uv0, const float* uv1, const float* uv2);
 
     int skipped_faces_ = 0;
     std::vector<OccTri> tris_;
+    std::vector<OccAlphaTri> alpha_tris_;
     std::vector<int> order_;
     std::vector<OccNode> nodes_;
 };
@@ -1003,15 +1041,55 @@ bool occ_make_tri(const Vec3f& a, const Vec3f& b, const Vec3f& c, OccTri& t)
     return true;
 }
 
+// False, leaving `t` as it is, for non-finite texture coordinates.
+bool OccluderTree::add_alpha(OccTri& t, const LightmapAlphaMask* mask, const float* uv0, const float* uv1,
+                             const float* uv2)
+{
+    for (const float* uv : {uv0, uv1, uv2}) {
+        if (!std::isfinite(uv[0]) || !std::isfinite(uv[1])) {
+            return false;
+        }
+    }
+    OccAlphaTri a{mask, uv0[0], uv0[1], uv1[0] - uv0[0], uv1[1] - uv0[1], uv2[0] - uv0[0], uv2[1] - uv0[1], 0.0f,
+                  false, {}};
+    // an atlas part or a card: filtering must not reach the texture around it
+    const float lo_u = std::min({uv0[0], uv1[0], uv2[0]});
+    const float lo_v = std::min({uv0[1], uv1[1], uv2[1]});
+    const float tile_u = std::floor(lo_u + 1e-4f);
+    const float tile_v = std::floor(lo_v + 1e-4f);
+    const float hi_u = std::max({uv0[0], uv1[0], uv2[0]}) - tile_u;
+    const float hi_v = std::max({uv0[1], uv1[1], uv2[1]}) - tile_v;
+    if (hi_u <= 1.0f + 1e-4f && hi_v <= 1.0f + 1e-4f) {
+        a.in_rect = true;
+        a.u0 -= tile_u;
+        a.v0 -= tile_v;
+        a.rect = {std::max(lo_u - tile_u, 0.0f), std::max(lo_v - tile_v, 0.0f), std::min(hi_u, 1.0f),
+                  std::min(hi_v, 1.0f)};
+    }
+    const Vec3f n = vcross(t.e1, t.e2);
+    const float world = std::sqrt(vdot(n, n));
+    const auto& finest = mask->levels.front();
+    const float texels = std::abs(a.du1 * a.dv2 - a.du2 * a.dv1) * static_cast<float>(finest.w) *
+                         static_cast<float>(finest.h);
+    const float density = std::sqrt(texels / world);
+    a.density = std::isfinite(density) ? density : 0.0f;
+    t.alpha = static_cast<int>(alpha_tris_.size());
+    alpha_tris_.push_back(a);
+    return true;
+}
+
 bool OccluderTree::build(uintptr_t solid, const NoShadowCastFilter& no_shadow_cast, bool local_space)
 {
     tris_.clear();
+    alpha_tris_.clear();
     order_.clear();
     nodes_.clear();
     skipped_faces_ = 0;
     if (!solid) {
         return false;
     }
+    const bool alpha_tested = alpha_tested_occlusion_active();
+    int alpha_face_tris = 0;
     constexpr int max_faces = 1 << 21;
     int guard = 0;
     for (uintptr_t face = *reinterpret_cast<uintptr_t*>(solid + 0x70); face && guard < max_faces;
@@ -1019,8 +1097,15 @@ bool OccluderTree::build(uintptr_t solid, const NoShadowCastFilter& no_shadow_ca
         // the engine's face flags are the 16 bit RFL word, so the synthetic bits below own
         // everything above it; masking keeps a stray high bit out of the alpha texture test
         unsigned flags = *reinterpret_cast<unsigned*>(face + 0x28) & 0xffffu;
-        if (flags & 0x40u) {
-            continue;
+        const int bitmap = *reinterpret_cast<int*>(face + 0x30);
+        // A see-through face is drawn alpha blended, so alpha-tested occlusion lets it block by its texels'
+        // alpha. Glass (no FACE_HAS_HOLES) keeps letting light through.
+        const LightmapAlphaMask* alpha_mask = nullptr;
+        if (flags & FACE_SEE_THRU) {
+            alpha_mask = alpha_tested && (flags & FACE_HAS_HOLES) ? lightmap_alpha_mask(bitmap) : nullptr;
+            if (!alpha_mask) {
+                continue;
+            }
         }
         if (*reinterpret_cast<std::int16_t*>(face + 0x34) > 0) {
             continue;
@@ -1034,10 +1119,9 @@ bool OccluderTree::build(uintptr_t solid, const NoShadowCastFilter& no_shadow_ca
                 continue;
             }
         }
-        const int bitmap = *reinterpret_cast<int*>(face + 0x30);
         // liquid and invisible faces answer to their own level property, so the stock rejection
         // never gets to overrule it - a water texture is alpha capable practically by definition
-        if (!(flags & 0x2004u) && bitmap != -1 && bm_has_alpha(bitmap) != 0) {
+        if (!alpha_mask && !(flags & 0x2004u) && bitmap != -1 && bm_has_alpha(bitmap) != 0) {
             flags |= lm_occ_alpha_texture;
         }
         const int surf_id = *reinterpret_cast<std::int16_t*>(face + 0x36);
@@ -1045,6 +1129,7 @@ bool OccluderTree::build(uintptr_t solid, const NoShadowCastFilter& no_shadow_ca
         // half of them; the face's own plane normal is what "front" has to mean
         const auto* face_normal = reinterpret_cast<const float*>(face);
         Vec3f verts[occ_max_face_verts];
+        float uvs[occ_max_face_verts][2];
         int n = 0;
         bool truncated = false;
         const uintptr_t head = *reinterpret_cast<uintptr_t*>(face + 0x40);
@@ -1057,6 +1142,8 @@ bool OccluderTree::build(uintptr_t solid, const NoShadowCastFilter& no_shadow_ca
             if (!pos) {
                 break;
             }
+            uvs[n][0] = reinterpret_cast<const GFaceVertex*>(node)->u;
+            uvs[n][1] = reinterpret_cast<const GFaceVertex*>(node)->v;
             verts[n++] = {pos[0], pos[1], pos[2]};
             node = *reinterpret_cast<uintptr_t*>(node + 0x14);
             if (node == head) {
@@ -1087,9 +1174,16 @@ bool OccluderTree::build(uintptr_t solid, const NoShadowCastFilter& no_shadow_ca
             t.surf_id = surf_id;
             t.mesh_uid = -1;
             t.flags = flags;
+            if (alpha_mask) {
+                if (!add_alpha(t, alpha_mask, uvs[fan[i * 3]], uvs[fan[i * 3 + 1]], uvs[fan[i * 3 + 2]])) {
+                    continue;
+                }
+                alpha_face_tris++;
+            }
             tris_.push_back(t);
         }
     }
+    int alpha_mesh_tris = 0;
     // Alpine mesh objects and terrain decorations live in world space, so they only belong to the
     // static solid's tree; a mover's tree is brush local and answers only the rays cast onto that mover.
     if (!local_space) {
@@ -1097,18 +1191,39 @@ bool OccluderTree::build(uintptr_t solid, const NoShadowCastFilter& no_shadow_ca
         lightmap_collect_mesh_occluders(mesh_tris);
         lightmap_collect_decoration_occluders(mesh_tris);
         for (const MeshOccluderTri& m : mesh_tris) {
+            // additive glows and beams add light, they never stop it
+            if (alpha_tested && m.additive) {
+                continue;
+            }
             OccTri t{};
             if (!occ_make_tri({m.v0.x, m.v0.y, m.v0.z}, {m.v1.x, m.v1.y, m.v1.z}, {m.v2.x, m.v2.y, m.v2.z},
                               t)) {
                 continue;
             }
             // no surface owns a mesh triangle and none of the face flag classes apply to it,
-            // so it is a plain two-sided occluder that only answers to the alpha property
+            // so it is a plain two-sided occluder that only answers to the alpha properties
             t.surf_id = -1;
             t.mesh_uid = m.uid;
             t.flags = m.alpha ? lm_occ_alpha_texture : 0u;
+            // the texture drawn decides, an override included; one whose alpha cannot be sampled keeps
+            // the whole-triangle rule of "Alpha-textured faces block light"
+            if (alpha_tested && m.bitmap != -1) {
+                const LightmapAlphaMask* mask = lightmap_alpha_mask(m.bitmap);
+                if (mask && add_alpha(t, mask, m.uv[0], m.uv[1], m.uv[2])) {
+                    t.flags = 0u;
+                    alpha_mesh_tris++;
+                }
+                else {
+                    t.flags = bm_has_alpha(m.bitmap) != 0 ? lm_occ_alpha_texture : 0u;
+                }
+            }
             tris_.push_back(t);
         }
+    }
+    if (alpha_face_tris + alpha_mesh_tris > 0) {
+        xlog::info("[AlphaOcclusion] solid {:#x}: {} see-through face triangles and {} mesh triangles block "
+                   "light by their texture's alpha",
+                   solid, alpha_face_tris, alpha_mesh_tris);
     }
     if (tris_.empty()) {
         return true;
@@ -1176,10 +1291,10 @@ int OccluderTree::build_range(int begin, int end, int depth)
     return self;
 }
 
-bool OccluderTree::occluded(const OccQuery& qy) const
+float OccluderTree::transmittance(const OccQuery& qy) const
 {
     if (nodes_.empty()) {
-        return false;
+        return 1.0f;
     }
     // axis aligned rays are the common case here, and a zero component would turn the slab test
     // into 0 * inf = NaN on any node whose face lies exactly on the ray origin
@@ -1197,6 +1312,22 @@ bool OccluderTree::occluded(const OccQuery& qy) const
     constexpr int stack_size = static_cast<int>(sizeof(stack) / sizeof(stack[0]));
     int sp = 0;
     stack[sp++] = 0;
+    struct Layer {
+        const LightmapAlphaMask* mask;
+        Vec3f normal;
+        float dist;
+        float cover;
+    };
+    Layer layers[lm_alpha_max_layers];
+    int layer_count = 0;
+    float folded = 1.0f;
+    auto passed = [&] {
+        float p = folded;
+        for (int k = 0; k < layer_count; k++) {
+            p *= 1.0f - layers[k].cover;
+        }
+        return p;
+    };
     while (sp > 0) {
         const int node_index = stack[--sp];
         if (node_index < 0 || static_cast<std::size_t>(node_index) >= nodes_.size()) {
@@ -1262,7 +1393,47 @@ bool OccluderTree::occluded(const OccQuery& qy) const
                     std::abs(vdot(t.normal, qy.surf_normal)) > 0.999f) {
                     continue;
                 }
-                return true;
+                if (t.alpha < 0 || static_cast<std::size_t>(t.alpha) >= alpha_tris_.size()) {
+                    return 0.0f;
+                }
+                // The alpha is averaged over the receiving texel's footprint where the ray meets the
+                // triangle, laid onto its plane, so detail finer than a lightmap texel shades evenly.
+                const OccAlphaTri& a = alpha_tris_[t.alpha];
+                const float facing = std::abs(vdot(d, t.normal));
+                const float width = qy.footprint * std::max(0.0f, 1.0f - dist * qy.converge);
+                float lod = 0.0f;
+                if (a.density > 0.0f && width > 0.0f) {
+                    const float texels =
+                        lm_alpha_filter_width * width / std::max(facing, lm_alpha_min_cosine) * a.density;
+                    lod = texels > 1.0f ? std::log2(texels) : 0.0f;
+                }
+                const float cover =
+                    a.mask->coverage(a.u0 + a.du1 * u + a.du2 * v, a.v0 + a.dv1 * u + a.dv2 * v, lod,
+                                     a.in_rect ? &a.rect : nullptr);
+                // a layer that lines up with one already crossed casts its holes onto the same spots
+                bool merged = false;
+                for (int k = 0; k < layer_count && !merged; k++) {
+                    Layer& l = layers[k];
+                    const float gap = std::abs(dist - l.dist);
+                    if (l.mask == a.mask &&
+                        (gap <= lm_alpha_layer_coincident ||
+                         (gap * facing <= lm_alpha_layer_gap &&
+                          std::abs(vdot(t.normal, l.normal)) > lm_alpha_layer_parallel))) {
+                        l.cover = std::max(l.cover, cover);
+                        merged = true;
+                    }
+                }
+                if (!merged) {
+                    if (layer_count < lm_alpha_max_layers) {
+                        layers[layer_count++] = {a.mask, t.normal, dist, cover};
+                    }
+                    else {
+                        folded *= 1.0f - cover;
+                    }
+                }
+                if (passed() < lm_alpha_blocked) {
+                    return 0.0f;
+                }
             }
         }
         else {
@@ -1276,7 +1447,7 @@ bool OccluderTree::occluded(const OccQuery& qy) const
             }
         }
     }
-    return false;
+    return passed();
 }
 
 // Soft directional light sampling: the axis plus two rings of four, all fixed - bakes must be reproducible.
@@ -1463,6 +1634,7 @@ static void lightmap_release_occluders()
 {
     g_solid_cache.clear();
     lightmap_mesh_occluders_release();
+    lightmap_alpha_masks_release();
 }
 
 // Face ids only reach the compiled solid through Build Geometry, so a brush flagged after the last
@@ -1581,12 +1753,12 @@ static bool light_rays_setup(uintptr_t light, LightRays& lr)
 }
 
 // The light's mask byte at one receiving point: 255 fully lit, 0 fully shadowed. The rays start
-// `lift` off the point along the receiver's normal `ns`.
+// `lift` off the point along the receiver's normal `ns`; `footprint` is the receiving texel's width.
 static std::uint8_t light_rays_visibility(const OccluderTree& tree, const LightRays& lr, const Vec3f& pos,
-                                          const Vec3f& ns, float lift, int skip_surf)
+                                          const Vec3f& ns, float lift, int skip_surf, float footprint)
 {
     const Vec3f origin{pos.x + ns.x * lift, pos.y + ns.y * lift, pos.z + ns.z * lift};
-    int lit = 0;
+    float lit = 0.0f;
     int taken = 0;
     OccQuery q{};
     q.origin = origin;
@@ -1595,6 +1767,7 @@ static std::uint8_t light_rays_visibility(const OccluderTree& tree, const LightR
     q.skip_surf = skip_surf;
     q.skip_flags = lr.skip_flags;
     q.oneside_flags = lr.oneside_flags;
+    q.footprint = std::isfinite(footprint) && footprint > 0.0f ? footprint : 0.0f;
     if (lr.type == LT_DIRECTIONAL) {
         q.tmax = 1.0e6f;
         const alpine_dir_light::Vec3 world_origin =
@@ -1608,9 +1781,7 @@ static std::uint8_t light_rays_visibility(const OccluderTree& tree, const LightR
                 q.tmax = std::min(1.0e6f, exit);
             }
             taken++;
-            if (!tree.occluded(q)) {
-                lit++;
-            }
+            lit += tree.transmittance(q);
         }
     }
     else {
@@ -1621,7 +1792,7 @@ static std::uint8_t light_rays_visibility(const OccluderTree& tree, const LightR
             const float len = std::sqrt(vdot(d, d));
             if (!(len >= 1e-4f)) {
                 taken++;
-                lit++;
+                lit += 1.0f;
                 continue;
             }
             if (lr.radius > 0.0f && len > lr.radius) {
@@ -1630,24 +1801,35 @@ static std::uint8_t light_rays_visibility(const OccluderTree& tree, const LightR
             q.dir = {d.x / len, d.y / len, d.z / len};
             q.nd = vdot(ns, q.dir);
             q.tmax = len - lm_ray_eps;
+            q.converge = 1.0f / len;
             taken++;
-            if (!tree.occluded(q)) {
-                lit++;
-            }
+            lit += tree.transmittance(q);
         }
     }
-    return taken == 0 ? 0xffu : static_cast<std::uint8_t>((lit * 255 + taken / 2) / taken);
+    if (taken == 0) {
+        return 0xffu;
+    }
+    // exact for whole rays, so a bake without alpha-tested occluders rounds as it always has
+    const int lit255 = static_cast<int>(std::lround(lit * 255.0f));
+    return static_cast<std::uint8_t>((lit255 + taken / 2) / taken);
 }
 
-// Farthest the accumulator may weigh a texel from its texel_to_world point (a diagonal, or the smooth vertex snap).
-static float texel_weight_point_reach(const SurfaceUVParams& p)
+// A texel's world space edges along its column and row.
+static void texel_edges(const SurfaceUVParams& p, Vec3f& ec, Vec3f& er)
 {
     float x0, y0, z0, x1, y1, z1, x2, y2, z2;
     texel_to_world(p, 0, 0, x0, y0, z0);
     texel_to_world(p, 1, 0, x1, y1, z1);
     texel_to_world(p, 0, 1, x2, y2, z2);
-    const Vec3f ec{x1 - x0, y1 - y0, z1 - z0};
-    const Vec3f er{x2 - x0, y2 - y0, z2 - z0};
+    ec = {x1 - x0, y1 - y0, z1 - z0};
+    er = {x2 - x0, y2 - y0, z2 - z0};
+}
+
+// Farthest the accumulator may weigh a texel from its texel_to_world point (a diagonal, or the smooth vertex snap).
+static float texel_weight_point_reach(const SurfaceUVParams& p)
+{
+    Vec3f ec, er;
+    texel_edges(p, ec, er);
     const float edges2 = vdot(ec, ec) + vdot(er, er);
     const float diag = std::sqrt(edges2 + 2.0f * std::abs(vdot(ec, er)));
     const float tu = p.inv_lm_w;
@@ -1685,6 +1867,9 @@ static bool lightmap_raycast_mask(uintptr_t solid, uintptr_t surface, uintptr_t 
     }
     const int skip_surf = surf->index;
     const Vec3f ns{p.nx, p.ny, p.nz};
+    Vec3f ec, er;
+    texel_edges(p, ec, er);
+    const float footprint = std::sqrt(std::sqrt(vdot(ec, ec)) * std::sqrt(vdot(er, er)));
 
     // Texels the accumulator will weight 0 anyway need no rays. Its weight point is within
     // texel_weight_point_reach of the texel centre, and the inside distance is 1-Lipschitz.
@@ -1703,7 +1888,8 @@ static bool lightmap_raycast_mask(uintptr_t solid, uintptr_t surface, uintptr_t 
                     mask[row * width + col] = 0;
                     continue;
                 }
-                mask[row * width + col] = light_rays_visibility(*tree, lr, {wx, wy, wz}, ns, lm_ray_lift, skip_surf);
+                mask[row * width + col] =
+                    light_rays_visibility(*tree, lr, {wx, wy, wz}, ns, lm_ray_lift, skip_surf, footprint);
             }
         }
     };
@@ -3625,8 +3811,8 @@ CodeInjection lightmap_blend_face_vert_index_injection{
 // command casts shadows, and light_accum_at_texel with the point's own normal and a smooth receiver,
 // clamped at zero.
 
-bool lightmap_light_terrain_points(const LightmapPoint* points, int count, float lift, float* out_r,
-                                   float* out_g, float* out_b)
+bool lightmap_light_terrain_points(const LightmapPoint* points, int count, float lift, float texel_size,
+                                   float* out_r, float* out_g, float* out_b)
 {
     auto* level = CDedLevel::Get();
     if (!g_bake_active || !level || !level->solid || !points || count <= 0) {
@@ -3707,7 +3893,7 @@ bool lightmap_light_terrain_points(const LightmapPoint* points, int count, float
             }
             ray_masks[w] = light_rays_visibility(*tree, rays[k], {pt.pos[0], pt.pos[1], pt.pos[2]},
                                                  {pt.normal[0], pt.normal[1], pt.normal[2]}, lift,
-                                                 std::numeric_limits<int>::min());
+                                                 std::numeric_limits<int>::min(), texel_size);
         }
     };
     constexpr std::size_t items_per_task = 256;

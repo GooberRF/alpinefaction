@@ -1005,10 +1005,14 @@ constexpr uint32_t tmap_alpha = 0x8;
 constexpr uint32_t gr_mode_color_shift = 5;
 constexpr uint32_t gr_mode_color_mask = 0x1F;
 constexpr uint32_t gr_mode_color_texture = 1;
+constexpr uint32_t gr_mode_blend_shift = 15;
+constexpr uint32_t gr_mode_blend_mask = 0x1F;
+constexpr uint32_t gr_mode_blend_additive = 1;
+constexpr uint32_t gr_mode_blend_alpha_additive = 2;
 // FUN_0047e140's packing of a gr_poly_render mode
 constexpr uint32_t gr_mode(uint32_t tex, uint32_t color, uint32_t alpha, uint32_t blend, uint32_t zbuf, uint32_t fog)
 {
-    return tex | color << gr_mode_color_shift | alpha << 10 | blend << 15 | zbuf << 20 | fog << 25;
+    return tex | color << gr_mode_color_shift | alpha << 10 | blend << gr_mode_blend_shift | zbuf << 20 | fog << 25;
 }
 // clamped texture times vertex colour, full z-buffer
 constexpr uint32_t mode_textured = gr_mode(2, 2, 0, 0, 4, 0);
