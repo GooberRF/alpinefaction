@@ -23,7 +23,9 @@
 #include "minimap_bake.h"
 #include "alpine_lightmaps.h"
 #include "alpine_obj.h"
+#include "bitmap_texels.h"
 #include "level.h"
+#include "mesh.h"
 #include "meshes.h"
 #include "mfc_types.h"
 #include "terrain_build.h"
@@ -64,80 +66,6 @@ struct Texture
     float opaque_rgb[3] = {128.0f, 128.0f, 128.0f};
     float opaque_fraction = 1.0f;
 };
-
-uint32_t argb(int a, int r, int g, int b)
-{
-    return (static_cast<uint32_t>(a) << 24) | (static_cast<uint32_t>(r) << 16) |
-           (static_cast<uint32_t>(g) << 8) | static_cast<uint32_t>(b);
-}
-
-int expand5(int v) { return (v << 3) | (v >> 2); }
-int expand6(int v) { return (v << 2) | (v >> 4); }
-
-int bytes_per_texel(int format)
-{
-    switch (format) {
-    case BitmapEntry::FORMAT_8_PALETTED:
-    case BitmapEntry::FORMAT_8_ALPHA:
-        return 1;
-    case BitmapEntry::FORMAT_565_RGB:
-    case BitmapEntry::FORMAT_4444_ARGB:
-    case BitmapEntry::FORMAT_1555_ARGB:
-        return 2;
-    case BitmapEntry::FORMAT_888_RGB:
-        return 3;
-    case BitmapEntry::FORMAT_8888_ARGB:
-        return 4;
-    default:
-        return 0;
-    }
-}
-
-// Channel layouts match the D3D texture upload 0x004F4C50.
-void decode_texels(int format, const uint8_t* src, const uint8_t* pal, int count, uint32_t* out)
-{
-    switch (format) {
-    case BitmapEntry::FORMAT_8_PALETTED:
-        for (int i = 0; i < count; ++i) {
-            const uint8_t* c = pal + src[i] * 3;
-            out[i] = argb(255, c[0], c[1], c[2]);
-        }
-        break;
-    case BitmapEntry::FORMAT_8_ALPHA:
-        for (int i = 0; i < count; ++i) out[i] = argb(src[i], 255, 255, 255);
-        break;
-    case BitmapEntry::FORMAT_565_RGB:
-    case BitmapEntry::FORMAT_4444_ARGB:
-    case BitmapEntry::FORMAT_1555_ARGB:
-        for (int i = 0; i < count; ++i) {
-            uint16_t p;
-            std::memcpy(&p, src + i * 2, 2);
-            if (format == BitmapEntry::FORMAT_565_RGB) {
-                out[i] = argb(255, expand5(p >> 11), expand6((p >> 5) & 0x3F), expand5(p & 0x1F));
-            }
-            else if (format == BitmapEntry::FORMAT_4444_ARGB) {
-                out[i] = argb(((p >> 12) & 0xF) * 17, ((p >> 8) & 0xF) * 17, ((p >> 4) & 0xF) * 17,
-                              (p & 0xF) * 17);
-            }
-            else {
-                out[i] = argb((p & 0x8000) ? 255 : 0, expand5((p >> 10) & 0x1F), expand5((p >> 5) & 0x1F),
-                              expand5(p & 0x1F));
-            }
-        }
-        break;
-    case BitmapEntry::FORMAT_888_RGB:
-        for (int i = 0; i < count; ++i) {
-            const uint8_t* c = src + i * 3;
-            out[i] = argb(255, c[2], c[1], c[0]);
-        }
-        break;
-    case BitmapEntry::FORMAT_8888_ARGB:
-        std::memcpy(out, src, static_cast<std::size_t>(count) * 4);
-        break;
-    default:
-        break;
-    }
-}
 
 TexLevel downsample(const TexLevel& s)
 {
@@ -180,12 +108,12 @@ public:
 
     bool run(int format, const uint8_t* src, const uint8_t* pal, bool& alpha_tested)
     {
-        const int bpp = bytes_per_texel(format);
+        const int bpp = bitmap_bytes_per_texel(format);
         if (bpp == 0 || (format == BitmapEntry::FORMAT_8_PALETTED && !pal)) return false;
         const std::size_t stride = static_cast<std::size_t>(src_w_) * bpp;
         int band_rows = 0;
         for (int y = 0; y < src_h_; ++y) {
-            decode_texels(format, src + y * stride, pal, src_w_, row_.data());
+            bitmap_decode_texels(format, src + y * stride, pal, src_w_, row_.data());
             for (int x = 0; x < src_w_; ++x) {
                 const uint32_t t = row_[x];
                 if (static_cast<int>(t >> 24) < alpha_test_ref) alpha_tested = true;
@@ -469,7 +397,7 @@ public:
                 const float under = static_cast<float>((dst >> (16 - 8 * c)) & 0xFF);
                 out[c] = static_cast<int>(under + (rgb[c] - under) * w + 0.5f);
             }
-            dst = argb(255, out[0], out[1], out[2]);
+            dst = texel_argb(255, out[0], out[1], out[2]);
         }
     }
 
@@ -576,7 +504,7 @@ private:
                     bl = lit_channel(bl, shade.light[2]);
                 }
                 depth_[i] = y;
-                color_[i] = argb(255, r, g, bl);
+                color_[i] = texel_argb(255, r, g, bl);
                 terrain_[i] = 0;
             }
         }
@@ -587,8 +515,8 @@ private:
     {
         uint32_t& dst = color_[i];
         if (!std::isfinite(depth_[i])) {
-            dst = argb(255, static_cast<int>(shade.liquid_rgb[0]), static_cast<int>(shade.liquid_rgb[1]),
-                       static_cast<int>(shade.liquid_rgb[2]));
+            dst = texel_argb(255, static_cast<int>(shade.liquid_rgb[0]), static_cast<int>(shade.liquid_rgb[1]),
+                             static_cast<int>(shade.liquid_rgb[2]));
         }
         else {
             const float a = shade.liquid_alpha;
@@ -597,7 +525,7 @@ private:
                 const float under = static_cast<float>((dst >> (16 - 8 * c)) & 0xFF);
                 rgb[c] = static_cast<int>(under + (shade.liquid_rgb[c] - under) * a + 0.5f);
             }
-            dst = argb(255, rgb[0], rgb[1], rgb[2]);
+            dst = texel_argb(255, rgb[0], rgb[1], rgb[2]);
         }
         depth_[i] = y;
     }
@@ -1116,7 +1044,7 @@ uint32_t shade_terrain_pixel(const TerrainShade& s, const LevelLight& ll, float 
     for (int ch = 0; ch < 3; ++ch) {
         rgb[ch] = static_cast<int>(std::clamp(c[ch] * 2.0f * texel[ch], 0.0f, 255.0f) + 0.5f);
     }
-    return argb(255, rgb[0], rgb[1], rgb[2]);
+    return texel_argb(255, rgb[0], rgb[1], rgb[2]);
 }
 
 struct DecoTri
@@ -1147,18 +1075,6 @@ struct DecoMesh
     float self_illum = 0.0f;
 };
 
-int chunk_bitmap(const EditorV3dMesh& sub, const EditorVifMesh& vm, const EditorVifChunk& chunk)
-{
-    const int idx = chunk.texture_idx;
-    if (idx < 0 || idx >= 7 || idx >= vm.num_texture_handles) return -1;
-    if (vm.tex_handles[idx] != -1) return vm.tex_handles[idx];
-    const int material = vm.tex_ids[idx];
-    if (sub.materials && material < sub.num_materials) {
-        return alpine_dlg_resolve_bitmap(sub.materials[material].texture_maps[0].name);
-    }
-    return -1;
-}
-
 // The floor the D3D11 renderer gives a chunk's light (gr_d3d11_decoration.cpp render, gr_d3d11_mesh.cpp batches).
 float chunk_self_illumination(const EditorV3dMesh& sub, const EditorVifMesh& vm, const EditorVifChunk& chunk)
 {
@@ -1186,7 +1102,7 @@ void gather_deco_tris(const EditorV3d& v3d, int level, GetTexture& get_texture, 
         const EditorV3dMesh& sub = v3d.meshes[s];
         vmesh_for_each_lod_chunk(sub.lod_mesh, level, [&](const EditorVifMesh& vm, const EditorVifChunk& chunk,
                                                           auto&& vertex) {
-            const int bm = chunk_bitmap(sub, vm, chunk);
+            const int bm = vmesh_chunk_bitmap(sub, vm, chunk);
             const Texture* tex = bm >= 0 ? get_texture(bm) : nullptr;
             const float self_illum = chunk_self_illumination(sub, vm, chunk);
             const auto* uvs = static_cast<const float*>(chunk.uvs);

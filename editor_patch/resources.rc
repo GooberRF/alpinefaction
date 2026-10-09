@@ -181,15 +181,16 @@ FONT 8, "MS Sans Serif"
 
     // Lightmaps
     AUTOCHECKBOX    "High-resolution lightmaps", IDC_HIGHRES_LIGHTMAPS, 14, 28, 200, 10
-    GROUPBOX        "Light Blocking", IDC_LIGHT_BLOCKING_GROUP, 14, 44, 270, 52
+    GROUPBOX        "Light Blocking", IDC_LIGHT_BLOCKING_GROUP, 14, 44, 270, 64
     AUTOCHECKBOX    "Invisible faces block light", IDC_INVISIBLE_FACES_OCCLUDE, 21, 56, 200, 10
     AUTOCHECKBOX    "Alpha-textured faces block light", IDC_ALPHA_FACES_OCCLUDE, 21, 68, 200, 10
     AUTOCHECKBOX    "Meshes block light", IDC_MESHES_OCCLUDE, 21, 80, 200, 10
-    AUTOCHECKBOX    "D3D11-only lightmaps (omit stock lightmaps)", IDC_D3D11_ONLY_LIGHTMAPS, 14, 104, 200, 10
-    LTEXT           "Lightmap density:", IDC_LIGHTMAP_DENSITY_LABEL, 14, 125, 58, 8
-    COMBOBOX        IDC_LIGHTMAP_DENSITY, 74, 122, 74, 90, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
-    LTEXT           "Compression:", IDC_LIGHTMAP_COMPRESSION_LABEL, 158, 125, 45, 8
-    COMBOBOX        IDC_LIGHTMAP_COMPRESSION, 206, 122, 74, 60, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    AUTOCHECKBOX    "Alpha-tested light occlusion", IDC_ALPHA_TESTED_OCCLUSION, 21, 92, 200, 10
+    AUTOCHECKBOX    "D3D11-only lightmaps (omit stock lightmaps)", IDC_D3D11_ONLY_LIGHTMAPS, 14, 116, 200, 10
+    LTEXT           "Lightmap density:", IDC_LIGHTMAP_DENSITY_LABEL, 14, 137, 58, 8
+    COMBOBOX        IDC_LIGHTMAP_DENSITY, 74, 134, 74, 90, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "Compression:", IDC_LIGHTMAP_COMPRESSION_LABEL, 158, 137, 45, 8
+    COMBOBOX        IDC_LIGHTMAP_COMPRESSION, 206, 134, 74, 60, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
 
     // Gameplay
     AUTOCHECKBOX    "Player starts with headlamp", IDC_STARTS_WITH_HEADLAMP, 14, 28, 200, 10

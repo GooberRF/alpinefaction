@@ -72,10 +72,11 @@ struct LightmapPoint
 // Refreshes the per-room ambient table for the level solid; run once before the terrain texels.
 void lightmap_prepare_terrain_bake();
 // Lights `count` world points exactly as that bake lights a texel of the level solid's surfaces,
-// shadow rays leaving `lift` off each point along its normal; writes the float accumulators (the
-// values FUN_004ac470 converts at x255) to out_r/g/b[count]. False outside a bake.
-bool lightmap_light_terrain_points(const LightmapPoint* points, int count, float lift, float* out_r,
-                                   float* out_g, float* out_b);
+// shadow rays leaving `lift` off each point along its normal, each point standing for a texel
+// `texel_size` wide; writes the float accumulators (the values FUN_004ac470 converts at x255) to
+// out_r/g/b[count]. False outside a bake.
+bool lightmap_light_terrain_points(const LightmapPoint* points, int count, float lift, float texel_size,
+                                   float* out_r, float* out_g, float* out_b);
 // The fixed pipeline's texel conversion (3x3 box, renormalised at the edges) of a width x height
 // float chart to RGB8.
 void lightmap_encode_float_texels(const float* r, const float* g, const float* b, int width, int height,

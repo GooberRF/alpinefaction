@@ -1276,7 +1276,8 @@ std::vector<std::uint32_t> chart_order()
 bool light_points(Job& job, std::size_t first, std::size_t count, float lift)
 {
     return lightmap_light_terrain_points(job.points.data() + first, static_cast<int>(count), lift,
-                                         job.r.data() + first, job.g.data() + first, job.b.data() + first);
+                                         1.0f / g_ov.charts[job.chart].density, job.r.data() + first,
+                                         job.g.data() + first, job.b.data() + first);
 }
 
 bool shade_all(Pages& pages)
@@ -1293,7 +1294,8 @@ bool shade_all(Pages& pages)
         }
         std::size_t i = 0;
         while (i < pending.size()) {
-            const float lift = ray_lift(1.0f / g_ov.charts[pending[i].chart].density);
+            const float texel_size = 1.0f / g_ov.charts[pending[i].chart].density;
+            const float lift = ray_lift(texel_size);
             batch.clear();
             std::size_t j = i;
             while (j < pending.size() && ray_lift(1.0f / g_ov.charts[pending[j].chart].density) == lift) {
@@ -1304,7 +1306,7 @@ bool shade_all(Pages& pages)
             bg.assign(batch.size(), 0.0f);
             bb.assign(batch.size(), 0.0f);
             if (!batch.empty() && !lightmap_light_terrain_points(batch.data(), static_cast<int>(batch.size()), lift,
-                                                                 br.data(), bg.data(), bb.data())) {
+                                                                 texel_size, br.data(), bg.data(), bb.data())) {
                 return false;
             }
             std::size_t at = 0;
