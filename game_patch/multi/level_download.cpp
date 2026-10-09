@@ -1397,7 +1397,7 @@ CallHook<void(rf::GameState, bool)> process_enter_limbo_packet_gameseq_set_next_
 
 CallHook<void(rf::GameState, bool)> process_leave_limbo_packet_gameseq_set_next_state_hook{
     0x0047C24F,
-    [] (const rf::GameState state, [[maybe_unused]] const bool force) {
+    [] (const rf::GameState state, const bool force) {
         xlog::trace("Leave limbo - next level: {}", rf::level.next_level_filename);
         if (!multi_next_level_exists()) {
             rf::gameseq_set_state(rf::GS_MULTI_LEVEL_DOWNLOAD, false);
