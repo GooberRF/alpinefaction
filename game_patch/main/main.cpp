@@ -255,7 +255,7 @@ CodeInjection after_frame_render_hook{
             }
 
             // To dim our screen, and display "LOADING...", exit limbo here instead.
-            if (g_gameseq_req_new_level) {
+            if (g_gameseq_defer_new_level) {
                 rf::gameseq_set_state(rf::GS_NEW_LEVEL, false);
             }
         }

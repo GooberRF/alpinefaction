@@ -1415,7 +1415,7 @@ void multi_limbo_just_joined_handle_input(const int key) {
     }
 }
 
-bool g_gameseq_req_new_level = false;
+bool g_gameseq_defer_new_level = false;
 
 void multi_limbo_just_joined_do_frame() {
     rf::game_poll(multi_limbo_just_joined_handle_input);
@@ -1442,7 +1442,7 @@ void multi_limbo_just_joined_do_frame() {
         rf::multi_chat_say_render();
     }
 
-    const std::string_view text = g_gameseq_req_new_level
+    const std::string_view text = g_gameseq_defer_new_level
         ? "LOADING..."
         : "BETWEEN LEVELS...";
     const auto [text_w, text_h] = rf::gr::get_string_size(text, rf::ui::large_font);

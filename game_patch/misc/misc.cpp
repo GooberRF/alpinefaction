@@ -178,7 +178,7 @@ FunHook<void(rf::GameState, rf::GameState, bool)> rf_close_state_hook{
                 || state == rf::GS_MULTI_LIMBO_JUST_JOINED
                 || state == rf::GS_MULTI_LIMBO))
         {
-            g_gameseq_req_new_level = false;
+            g_gameseq_defer_new_level = false;
         }
 
         rf_close_state_hook.call_target(state, new_state, immediately);

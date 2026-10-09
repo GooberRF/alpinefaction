@@ -187,7 +187,7 @@ CodeInjection gameplay_render_frame_death_letterbox_injection{
     },
 };
 
-bool gameseq_state_is_stacked(const rf::GameState state) {
+bool gameseq_stack_contains(const rf::GameState state) {
     for (int i = 0; i <= rf::gameseq_stack_top_index; ++i) {
         if (rf::gameseq_state_stack[i] == state) {
             return true;
@@ -196,7 +196,8 @@ bool gameseq_state_is_stacked(const rf::GameState state) {
     return false;
 }
 
-bool gameseq_state_is_buried(const rf::GameState state) {
+// Does not include `gameseq_state_stack`'s top state.
+bool gameseq_stack_conceals(const rf::GameState state) {
     for (int i = 0; i < rf::gameseq_stack_top_index; ++i) {
         if (rf::gameseq_state_stack[i] == state) {
             return true;
