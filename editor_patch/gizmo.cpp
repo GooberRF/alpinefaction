@@ -72,6 +72,8 @@ constexpr float scale_box_half = 0.04f;
 
 constexpr DWORD hover_refresh_ms = 150;
 constexpr uint8_t occluded_alpha = 70;
+// A plane handle's fill, as a fraction of the pass alpha until hovered.
+constexpr float plane_fill_alpha = 0.6f;
 // Alpha blended; the overlay ignores the depth buffer, the depth tested pass reads it without writing.
 constexpr uint32_t mode_overlay = gr_mode(0, 0, 0, 3, 0, 0);
 constexpr uint32_t mode_depth_tested = mode_vertex_alpha;
@@ -1392,15 +1394,18 @@ void draw_handle(const Layout& l, Handle h, bool hot, uint8_t alpha, uint32_t mo
         }
         case HandleKind::plane: {
             const std::array<Vector3, 4> q = plane_corners(l, h.axis);
+            const auto a = static_cast<uint8_t>(hot ? alpha : alpha * plane_fill_alpha);
+            GrVertex gv[4] = {};
             for (int i = 0; i < 4; i++) {
-                thick_line(l, q[i], q[(i + 1) % 4], mode, hot ? 1 : 0);
+                project_to_screen(&gv[i], &q[i]);
+                gv[i].r = c.r;
+                gv[i].g = c.g;
+                gv[i].b = c.b;
+                gv[i].a = a;
             }
-            if (hot) {
-                for (float f : {0.25f, 0.5f, 0.75f}) {
-                    line(q[0] + (q[1] - q[0]) * f, q[3] + (q[2] - q[3]) * f, mode);
-                    line(q[0] + (q[3] - q[0]) * f, q[1] + (q[2] - q[1]) * f, mode);
-                }
-            }
+            GrVertex* poly[4] = {&gv[0], &gv[1], &gv[2], &gv[3]};
+            gr_set_bitmap(-1, -1);
+            gr_poly_render(4, poly, tmap_rgb | tmap_alpha, mode, 0, 0.0f);
             break;
         }
         case HandleKind::view:
