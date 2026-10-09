@@ -32,6 +32,7 @@
 #include "dir_light.h"
 #include "terrain_preview.h"
 #include "event.h"
+#include "placement_panel.h"
 #include "mfc_types.h"
 #include "level.h"
 #include "vtypes.h"
@@ -1326,7 +1327,10 @@ CodeInjection alpine_create_object_patch{
                 PlaceNewWeatherRegionObject();
             }
             else if (g_alpine_create_type == 6) {
-                PlaceNewVehicleFactoryObject();
+                Vector3 pos;
+                Matrix3 orient;
+                editor_new_object_pose(pos, orient);
+                PlaceNewVehicleFactoryObject({}, pos, orient);
             }
             else if (g_alpine_create_type == 7) {
                 PlaceNewProjectionCameraObject();
@@ -1341,7 +1345,10 @@ CodeInjection alpine_create_object_patch{
                 PlaceNewDirectionalLightObject();
             }
             else {
-                PlaceNewMeshObject();
+                Vector3 pos;
+                Matrix3 orient;
+                editor_new_object_pose(pos, orient);
+                PlaceNewMeshObject(mesh_object_default_filename, pos, orient);
             }
             g_alpine_create_type = 0;
             regs.eip = 0x004435be;
@@ -1467,6 +1474,7 @@ CodeInjection alpine_render_patch{
         terrain_render(level);
         directional_light_render(level);
         sun_arrow_render(level);
+        placement_panel_render_ghost();
     },
 };
 

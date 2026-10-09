@@ -44,7 +44,7 @@ static void corona_load_icon()
 void DestroyDedCorona(DedCorona* corona)
 {
     if (!corona) return;
-    corona->field_4.free();
+    corona->class_mesh_filename.free();
     corona->script_name.free();
     corona->class_name.free();
     delete corona;

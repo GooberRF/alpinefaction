@@ -17,6 +17,7 @@
 #include "alpine_spinner.h"
 #include "level.h"
 #include "mfc_types.h"
+#include "placement_panel.h"
 #include "resources.h"
 #include "terrain.h"
 #include "terrain_build.h"
@@ -40,11 +41,6 @@ namespace
 constexpr uintptr_t msgmap_lbutton_down_pfn = 0x0055C19C;
 constexpr uintptr_t msgmap_lbutton_up_pfn = 0x0055C1B4;
 constexpr uintptr_t msgmap_lbutton_dblclk_pfn = 0x0055C274;
-
-HWND view_hwnd(void* view)
-{
-    return view ? WndToHandle(static_cast<CWnd*>(view)) : nullptr;
-}
 
 bool is_view(void* view)
 {
@@ -1051,20 +1047,10 @@ bool ramp_between_apply()
 
 // ─── Cursor tracking ────────────────────────────────────────────────────────
 
-void* view_under_cursor(POINT cursor)
-{
-    const HWND over = WindowFromPoint(cursor);
-    for (int i = 0; over && i < editor_num_views; i++) {
-        void* view = editor_view_at(i);
-        if (view && view_hwnd(view) == over && IsWindowVisible(over)) return view;
-    }
-    return nullptr;
-}
-
 // Hole cells count as surface, so the brush keeps working over them.
 bool cast_at_terrain(void* view, POINT cursor, const DedTerrain& t, float (&hit)[3])
 {
-    const HWND hwnd = view_hwnd(view);
+    const HWND hwnd = editor_view_hwnd(view);
     POINT client = cursor;
     if (!hwnd || !ScreenToClient(hwnd, &client)) return false;
     static_cast<EditorViewport*>(view)->setup_gr(0);
@@ -1081,7 +1067,7 @@ void paint_tick()
     DedTerrain* t = g_panel.target;
     POINT cursor{};
     GetCursorPos(&cursor);
-    void* view = g_stroke.active ? g_stroke.view : view_under_cursor(cursor);
+    void* view = g_stroke.active ? g_stroke.view : editor_view_under_cursor(cursor);
     if (!terrain_paintable(t)) view = nullptr;
     const DWORD now = GetTickCount();
 
@@ -2027,7 +2013,7 @@ void stroke_begin(void* view)
     g_stroke = Stroke{};
     g_stroke.active = true;
     g_stroke.view = view;
-    g_stroke.hwnd = view_hwnd(view);
+    g_stroke.hwnd = editor_view_hwnd(view);
     g_stroke.terrain = g_panel.target;
     if (g_panel.target) g_stroke.mirror = terrain_mirror(*g_panel.target);
     g_swallow_up_view = view;
@@ -2107,11 +2093,13 @@ void __fastcall view_lbutton_up(void* view, void* /*edx*/, UINT flags, int x, in
 
 // RED's idle loop focuses whichever view's rect holds the cursor, even under another window such as
 // this panel, which cancels that window's button clicks mid-press. Stock behaviour while it is closed.
+// A drag out of the placement panel leaves the focus where it was until it ends.
 void* __fastcall view_hover_focus(void* view, void* edx);
 CallHook<void* __fastcall(void*, void*)> view_hover_focus_hook{0x004834E1, view_hover_focus};
 void* __fastcall view_hover_focus(void* view, void* edx)
 {
-    const HWND hwnd = view_hwnd(view);
+    if (placement_panel_dragging()) return nullptr;
+    const HWND hwnd = editor_view_hwnd(view);
     POINT cursor{};
     if (g_panel.hwnd && hwnd && GetCursorPos(&cursor)) {
         const HWND over = WindowFromPoint(cursor);

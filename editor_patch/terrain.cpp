@@ -469,7 +469,7 @@ void DestroyDedTerrain(DedTerrain* terrain)
 {
     if (!terrain) return;
     terrain_release_editor_state(terrain);
-    terrain->field_4.free();
+    terrain->class_mesh_filename.free();
     terrain->script_name.free();
     terrain->class_name.free();
     delete terrain;

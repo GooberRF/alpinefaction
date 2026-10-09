@@ -13,7 +13,9 @@ void ShowMeshPropertiesDialog(DedMesh* mesh);
 void ShowMeshPropertiesForSelection(CDedLevel* level);
 
 // Mesh object lifecycle
-void PlaceNewMeshObject();
+// The mesh a Mesh object created from the object tree starts with.
+inline constexpr const char* mesh_object_default_filename = "barrel.v3m";
+DedMesh* PlaceNewMeshObject(const char* filename, const Vector3& pos, const Matrix3& orient);
 DedMesh* CloneMeshObject(DedMesh* source, bool add_to_level = true);
 void DeleteMeshObject(DedMesh* mesh);
 void DestroyDedMesh(DedMesh* mesh);

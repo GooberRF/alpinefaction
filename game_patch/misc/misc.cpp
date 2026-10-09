@@ -696,13 +696,6 @@ CodeInjection level_read_header_patch{
     }
 };
 
-CodeInjection level_read_geometry_header_patch{
-    0x00461A62, [](auto& regs) {
-
-        write_mem<float>(0x00646018, 1120403456.0f);
-    }
-};
-
 CodeInjection static_bomb_code_patch{
     0x0043B4C7,
     [](auto& regs) {
@@ -747,20 +740,9 @@ void misc_init()
     // GeoMod chunk physics
     geo_chunk_physics_cmd.register_cmd();
 
-    //gr_set_far_clip_hook.install();
-    //AsmWriter{0x0051806F}.jmp(0x00518083); // stops far clip from derendering geometry covered by fog, buggy
-
     // Allow loading of rfl files with supported AF-specific versions
     level_read_header_patch.install();
     AsmWriter{0x004461BF}.jmp(0x00446200); // load Level Name from all rfls (any version) on listen server create panel
-
-
-    // fog experimentation - attempting to stop fp weapon cutoff. Success when using static values but not when rfl has specified values
-    //fog_near_clip_patch.install();
-    //gr_fog_set_hook.install();
-    //AsmWriter{0x00461A5C}.nop(6);
-    //level_read_geometry_header_patch.install();
-    //AsmWriter(0x00461A5C).nop(6);
 
     // Display a more informative message to user if they try to load an unsupported rfl
     static char new_unsupported_version_message[] =

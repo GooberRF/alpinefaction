@@ -100,96 +100,140 @@ FONT 8, "MS Sans Serif", 0, 0, 1
 }
 
 LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
-IDD_LEVEL_PROPERTIES DIALOGEX 0, 0, 298, 600
+IDD_LEVEL_PROPERTIES DIALOGEX 0, 0, 298, 339
 STYLE DS_MODALFRAME | DS_SETFONT | WS_CAPTION | WS_VISIBLE | WS_POPUP | WS_SYSMENU
 CAPTION "Level Properties"
 FONT 8, "MS Sans Serif"
 {
-    LTEXT           "Level name:", -1, 7, 9, 41, 8
-    EDITTEXT        1095, 64, 7, 96, 14, ES_AUTOHSCROLL
-    LTEXT           "Author:", -1, 7, 27, 37, 8
-    EDITTEXT        1094, 64, 25, 96, 14, ES_AUTOHSCROLL
-    LTEXT           "Date:", -1, 7, 44, 18, 8
-    LTEXT           "Date", 1026, 64, 44, 96, 8
-    LTEXT           "RFL version:", -1, 170, 9, 50, 8
-    LTEXT           "-1", IDC_LEVEL_VERSION, 213, 9, 50, 8
-    GROUPBOX        "Ambient Light", -1, 7, 57, 284, 49
-    LTEXT           "Color:", -1, 25, 72, 19, 8
-    CONTROL         "List1", 1088, WC_LISTVIEW, WS_BORDER | LVS_NOSCROLL | LVS_ICON, 87, 69, 40, 14, WS_EX_STATICEDGE
-    PUSHBUTTON      "Change color", 1086, 133, 69, 50, 14
-    EDITTEXT        1652, 189, 69, 57, 14, ES_AUTOHSCROLL
-    PUSHBUTTON      "Default", 1091, 133, 86, 50, 14
-    AUTOCHECKBOX    "Directional light", 1214, 189, 88, 67, 10, NOT WS_VISIBLE
-    GROUPBOX        "Distance Based Fog", -1, 7, 111, 284, 63
-    LTEXT           "Color:", -1, 23, 126, 19, 8
-    CONTROL         "List1", 1090, WC_LISTVIEW, WS_BORDER | LVS_NOSCROLL | LVS_ICON, 88, 120, 40, 14, WS_EX_STATICEDGE
-    PUSHBUTTON      "Change color", 1089, 133, 120, 50, 14
-    EDITTEXT        1653, 189, 120, 56, 14, ES_AUTOHSCROLL
-    LTEXT           "Near clip plane:", -1, 23, 140, 52, 8
-    LTEXT           "Static", 1616, 88, 137, 40, 14
-    LTEXT           "(Ignored on PC)", -1, 133, 140, 50, 8
-    LTEXT           "Far clip plane:", -1, 24, 157, 44, 8
-    LTEXT           "Static", 1205, 88, 154, 40, 14
-    GROUPBOX        "Level Flags", -1, 7, 177, 284, 30
-    PUSHBUTTON      "Outside", 1215, 23, 189, 47, 14
-    PUSHBUTTON      "Inside", 1217, 84, 189, 47, 14
-    LTEXT           "GeoMod texture:", -1, 7, 216, 58, 8
-    EDITTEXT        1096, 63, 213, 96, 14, ES_AUTOHSCROLL
-    PUSHBUTTON      "Browse...", 1087, 161, 213, 40, 14
-    LTEXT           "Level hardness:", -1, 7, 235, 50, 8
-    EDITTEXT        1083, 63, 233, 40, 14, ES_AUTOHSCROLL
-    CONTROL         "Spin3", 1157, UPDOWN_CLASS, UDS_ARROWKEYS, 103, 233, 11, 14
-    LTEXT           "0 (large craters) - 100 (no craters)", -1, 122, 235, 200, 8
-    AUTOCHECKBOX    "&Multiplayer level", 1670, 7, 252, 105, 10
-    DEFPUSHBUTTON   "OK", IDOK, 241, 7, 50, 14
-    PUSHBUTTON      "Cancel", IDCANCEL, 241, 24, 50, 14
-    PUSHBUTTON      "Minimap...", IDC_LEVEL_MINIMAP, 241, 41, 50, 14
+    // Every tab's controls share the page area; level.cpp shows one tab's set at a time.
+    // General
+    LTEXT           "Level name:", IDC_LEVEL_NAME_LABEL, 14, 31, 44, 8
+    EDITTEXT        IDC_LEVEL_NAME, 62, 28, 110, 14, ES_AUTOHSCROLL
+    LTEXT           "Author:", IDC_LEVEL_AUTHOR_LABEL, 14, 49, 44, 8
+    EDITTEXT        IDC_LEVEL_AUTHOR, 62, 46, 110, 14, ES_AUTOHSCROLL
+    LTEXT           "Date:", IDC_LEVEL_DATE_LABEL, 14, 67, 44, 8
+    LTEXT           "Date", IDC_LEVEL_DATE, 62, 67, 110, 8
+    LTEXT           "RFL version:", IDC_LEVEL_VERSION_LABEL, 182, 31, 44, 8
+    LTEXT           "-1", IDC_LEVEL_VERSION, 228, 31, 49, 8
+    AUTOCHECKBOX    "&Multiplayer level", IDC_LEVEL_MULTIPLAYER, 182, 48, 95, 10
+    GROUPBOX        "Level Flags", IDC_LEVEL_FLAGS_GROUP, 14, 82, 270, 32
+    PUSHBUTTON      "Outside", IDC_LEVEL_OUTSIDE, 21, 94, 47, 14
+    PUSHBUTTON      "Inside", IDC_LEVEL_INSIDE, 72, 94, 47, 14
+    GROUPBOX        "GeoMod", IDC_LEVEL_GEOMOD_GROUP, 14, 120, 270, 66
+    LTEXT           "GeoMod texture:", IDC_LEVEL_GEOMOD_TEXTURE_LABEL, 21, 135, 56, 8
+    EDITTEXT        IDC_LEVEL_GEOMOD_TEXTURE, 80, 132, 110, 14, ES_AUTOHSCROLL
+    PUSHBUTTON      "Browse...", IDC_LEVEL_GEOMOD_TEXTURE_BROWSE, 194, 132, 40, 14
+    LTEXT           "Level hardness:", IDC_LEVEL_HARDNESS_LABEL, 21, 153, 56, 8
+    EDITTEXT        IDC_LEVEL_HARDNESS, 80, 150, 40, 14, ES_AUTOHSCROLL
+    CONTROL         "Spin3", IDC_LEVEL_HARDNESS_SPIN, UPDOWN_CLASS, UDS_ARROWKEYS, 120, 150, 11, 14
+    LTEXT           "0 (large craters) - 100 (no craters)", IDC_LEVEL_HARDNESS_HINT, 136, 153, 141, 8
+    AUTOCHECKBOX    "Brush-based geomod (RF2-style)", IDC_RF2_STYLE_GEOMOD, 21, 170, 200, 10
+    AUTOCHECKBOX    "Require Direct3D 11 Renderer", IDC_REQUIRE_D3D11, 14, 194, 200, 10
 
-    GROUPBOX        "Advanced Options", -1, 7, 268, 284, 220
-    AUTOCHECKBOX    "Legacy Cyclic_Timer events", IDC_LEGACY_CYCLIC_TIMERS, 13, 280, 175, 10
-    AUTOCHECKBOX    "Legacy movers", IDC_LEGACY_MOVERS, 13, 292, 175, 10
-    AUTOCHECKBOX    "Player starts with headlamp", IDC_STARTS_WITH_HEADLAMP, 13, 304, 175, 10
-    AUTOCHECKBOX    "Override static mesh ambient light scale", IDC_OVERRIDE_MESH_AMBIENT_LIGHT_MODIFIER, 13, 316, 190, 10
-    LTEXT           "New scale value:", -1, 30, 331, 120, 8
-    EDITTEXT        IDC_MESH_AMBIENT_LIGHT_MODIFIER, 90, 328, 30, 14, ES_AUTOHSCROLL
-    AUTOCHECKBOX    "Brush-based geomod (RF2-style)", IDC_RF2_STYLE_GEOMOD, 13, 344, 200, 10
-    AUTOCHECKBOX    "Legacy lighting", IDC_LEGACY_LIGHTING, 13, 356, 200, 10
-    AUTOCHECKBOX    "High-resolution lightmaps", IDC_HIGHRES_LIGHTMAPS, 13, 368, 200, 10
-    AUTOCHECKBOX    "Invisible faces block light", IDC_INVISIBLE_FACES_OCCLUDE, 13, 380, 200, 10
-    AUTOCHECKBOX    "Alpha-textured faces block light", IDC_ALPHA_FACES_OCCLUDE, 13, 392, 138, 10
-    AUTOCHECKBOX    "Alpha-tested light occlusion", IDC_ALPHA_TESTED_OCCLUSION, 153, 392, 132, 10
-    AUTOCHECKBOX    "Meshes block light", IDC_MESHES_OCCLUDE, 13, 404, 200, 10
-    AUTOCHECKBOX    "D3D11-only lightmaps (omit stock lightmaps)", IDC_D3D11_ONLY_LIGHTMAPS, 13, 416, 200, 10
-    LTEXT           "Lightmap density:", -1, 13, 432, 58, 8
-    COMBOBOX        IDC_LIGHTMAP_DENSITY, 74, 429, 74, 90, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
-    LTEXT           "Compression:", -1, 156, 432, 45, 8
-    COMBOBOX        IDC_LIGHTMAP_COMPRESSION, 204, 429, 74, 60, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
-    AUTOCHECKBOX    "Require Direct3D 11 (refuse other renderers)", IDC_REQUIRE_D3D11, 13, 446, 200, 10
+    // Lighting
+    GROUPBOX        "Ambient Light", IDC_LEVEL_AMBIENT_GROUP, 14, 28, 270, 32
+    LTEXT           "Color:", IDC_LEVEL_AMBIENT_COLOR_LABEL, 21, 43, 24, 8
+    CONTROL         "List1", IDC_LEVEL_AMBIENT_SWATCH, WC_LISTVIEW, WS_BORDER | LVS_NOSCROLL | LVS_ICON, 76, 40, 40, 14, WS_EX_STATICEDGE
+    PUSHBUTTON      "Change color", IDC_LEVEL_AMBIENT_CHANGE, 120, 40, 50, 14
+    EDITTEXT        IDC_LEVEL_AMBIENT_VALUE, 174, 40, 57, 14, ES_AUTOHSCROLL
+    PUSHBUTTON      "Default", IDC_LEVEL_AMBIENT_DEFAULT, 235, 40, 40, 14
+    AUTOCHECKBOX    "Directional light", IDC_LEVEL_DIRECTIONAL_LIGHT, 21, 40, 67, 10, NOT WS_VISIBLE
+    GROUPBOX        "Distance Based Fog", IDC_LEVEL_FOG_GROUP, 14, 66, 270, 86
+    LTEXT           "Color:", IDC_LEVEL_FOG_COLOR_LABEL, 21, 81, 24, 8
+    CONTROL         "List1", IDC_LEVEL_FOG_SWATCH, WC_LISTVIEW, WS_BORDER | LVS_NOSCROLL | LVS_ICON, 76, 78, 40, 14, WS_EX_STATICEDGE
+    PUSHBUTTON      "Change color", IDC_LEVEL_FOG_CHANGE, 120, 78, 50, 14
+    EDITTEXT        IDC_LEVEL_FOG_VALUE, 174, 78, 57, 14, ES_AUTOHSCROLL
+    LTEXT           "Near clip plane:", IDC_LEVEL_FOG_NEAR_CLIP_LABEL, 21, 99, 53, 8
+    LTEXT           "Static", IDC_LEVEL_FOG_NEAR_CLIP, 76, 96, 40, 14
+    LTEXT           "(Direct3D 11 only)", IDC_LEVEL_FOG_NEAR_CLIP_HINT, 120, 99, 80, 8
+    LTEXT           "Far clip plane:", IDC_LEVEL_FOG_FAR_CLIP_LABEL, 21, 117, 53, 8
+    LTEXT           "Static", IDC_LEVEL_FOG_FAR_CLIP, 76, 114, 40, 14
+    LTEXT           "Camera far clip:", IDC_LEVEL_CAMERA_FAR_CLIP_LABEL, 21, 135, 53, 8
+    EDITTEXT        IDC_LEVEL_CAMERA_FAR_CLIP, 76, 132, 29, 14, ES_AUTOHSCROLL
+    CONTROL         "Spin", IDC_LEVEL_CAMERA_FAR_CLIP_SPIN, UPDOWN_CLASS, UDS_ARROWKEYS, 105, 132, 11, 14
+    LTEXT           "(0 = use fog far clip)", IDC_LEVEL_CAMERA_FAR_CLIP_HINT, 120, 135, 100, 8
+    CONTROL         "", IDC_LEVEL_CAMERA_FAR_CLIP_WARNING_ICON, "Static", SS_ICON | SS_CENTERIMAGE, 120, 134, 11, 10
+    LTEXT           "Shorter than the fog far clip", IDC_LEVEL_CAMERA_FAR_CLIP_WARNING, 134, 135, 143, 8
+    GROUPBOX        "Static Meshes", IDC_MESH_AMBIENT_GROUP, 14, 158, 270, 32
+    AUTOCHECKBOX    "Override static mesh ambient light scale", IDC_OVERRIDE_MESH_AMBIENT_LIGHT_MODIFIER, 21, 172, 150, 10
+    LTEXT           "New scale value:", IDC_MESH_AMBIENT_LIGHT_MODIFIER_LABEL, 175, 173, 56, 8
+    EDITTEXT        IDC_MESH_AMBIENT_LIGHT_MODIFIER, 233, 170, 40, 14, ES_AUTOHSCROLL
+    GROUPBOX        "Sunlight", IDC_SUN_GROUP, 14, 196, 270, 108
+    AUTOCHECKBOX    "Enable directional sunlight", IDC_SUN_ENABLE, 21, 210, 150, 10
+    PUSHBUTTON      "Set from camera", IDC_SUN_SET_FROM_CAMERA, 203, 208, 70, 14
+    LTEXT           "Yaw:", IDC_SUN_YAW_LABEL, 21, 229, 17, 8
+    EDITTEXT        IDC_SUN_YAW, 40, 226, 34, 14, ES_AUTOHSCROLL
+    LTEXT           "Pitch:", IDC_SUN_PITCH_LABEL, 80, 229, 21, 8
+    EDITTEXT        IDC_SUN_PITCH, 102, 226, 34, 14, ES_AUTOHSCROLL
+    LTEXT           "Intensity:", IDC_SUN_INTENSITY_LABEL, 142, 229, 31, 8
+    EDITTEXT        IDC_SUN_INTENSITY, 174, 226, 34, 14, ES_AUTOHSCROLL
+    LTEXT           "Spread:", IDC_SUN_SPREAD_ANGLE_LABEL, 214, 229, 26, 8
+    EDITTEXT        IDC_SUN_SPREAD_ANGLE, 241, 226, 34, 14, ES_AUTOHSCROLL
+    LTEXT           "Color:", IDC_SUN_COLOR_LABEL, 21, 247, 24, 8
+    CONTROL         "List1", IDC_SUN_COLOR_SWATCH, WC_LISTVIEW, WS_BORDER | LVS_NOSCROLL | LVS_ICON, 76, 244, 40, 14, WS_EX_STATICEDGE
+    PUSHBUTTON      "Change color", IDC_SUN_COLOR_CHANGE, 120, 244, 50, 14
+    EDITTEXT        IDC_SUN_COLOR_VALUE, 174, 244, 57, 14, ES_AUTOHSCROLL
+    AUTOCHECKBOX    "Casts shadows (lightmaps)", IDC_SUN_CAST_BAKED_SHADOWS, 21, 264, 125, 10
+    AUTOCHECKBOX    "Affects mesh lighting", IDC_SUN_AFFECTS_MESHES, 150, 264, 125, 10
+    AUTOCHECKBOX    "Scale mesh sunlight by lightmaps", IDC_SUN_MESH_MODE_SCALE, 21, 276, 125, 10
+    AUTOCHECKBOX    "Aligns dynamic shadows", IDC_SUN_DRIVES_SHADOWMAP_DIR, 150, 276, 125, 10
+    AUTOCHECKBOX    "Water blocks sunlight", IDC_SUN_LIQUID_OCCLUDES, 21, 288, 125, 10
 
-    AUTOCHECKBOX    "Limit vehicle flight ceiling", IDC_VEHICLE_FLIGHT_CEILING_ENABLE, 13, 458, 190, 10
-    LTEXT           "Ceiling height (Y):", -1, 30, 473, 58, 8
-    EDITTEXT        IDC_VEHICLE_FLIGHT_CEILING, 90, 470, 40, 14, ES_AUTOHSCROLL
+    // Lightmaps
+    AUTOCHECKBOX    "High-resolution lightmaps", IDC_HIGHRES_LIGHTMAPS, 14, 28, 200, 10
+    GROUPBOX        "Light Blocking", IDC_LIGHT_BLOCKING_GROUP, 14, 44, 270, 64
+    AUTOCHECKBOX    "Invisible faces block light", IDC_INVISIBLE_FACES_OCCLUDE, 21, 56, 200, 10
+    AUTOCHECKBOX    "Alpha-textured faces block light", IDC_ALPHA_FACES_OCCLUDE, 21, 68, 200, 10
+    AUTOCHECKBOX    "Meshes block light", IDC_MESHES_OCCLUDE, 21, 80, 200, 10
+    AUTOCHECKBOX    "Alpha-tested light occlusion", IDC_ALPHA_TESTED_OCCLUSION, 21, 92, 200, 10
+    AUTOCHECKBOX    "D3D11-only lightmaps (omit stock lightmaps)", IDC_D3D11_ONLY_LIGHTMAPS, 14, 116, 200, 10
+    LTEXT           "Lightmap density:", IDC_LIGHTMAP_DENSITY_LABEL, 14, 137, 58, 8
+    COMBOBOX        IDC_LIGHTMAP_DENSITY, 74, 134, 74, 90, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "Compression:", IDC_LIGHTMAP_COMPRESSION_LABEL, 158, 137, 45, 8
+    COMBOBOX        IDC_LIGHTMAP_COMPRESSION, 206, 134, 74, 60, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
 
-    GROUPBOX        "Sunlight", -1, 7, 492, 284, 100
-    AUTOCHECKBOX    "Enable directional sunlight", IDC_SUN_ENABLE, 13, 504, 160, 10
-    PUSHBUTTON      "Set from camera", IDC_SUN_SET_FROM_CAMERA, 178, 501, 70, 14
-    LTEXT           "Yaw:", -1, 13, 520, 18, 8
-    EDITTEXT        IDC_SUN_YAW, 34, 518, 34, 14, ES_AUTOHSCROLL
-    LTEXT           "Pitch:", -1, 74, 520, 21, 8
-    EDITTEXT        IDC_SUN_PITCH, 97, 518, 34, 14, ES_AUTOHSCROLL
-    LTEXT           "Intensity:", -1, 137, 520, 33, 8
-    EDITTEXT        IDC_SUN_INTENSITY, 172, 518, 34, 14, ES_AUTOHSCROLL
-    LTEXT           "Spread:", -1, 212, 520, 28, 8
-    EDITTEXT        IDC_SUN_SPREAD_ANGLE, 242, 518, 34, 14, ES_AUTOHSCROLL
-    LTEXT           "Color:", -1, 13, 539, 22, 8
-    CONTROL         "List1", IDC_SUN_COLOR_SWATCH, WC_LISTVIEW, WS_BORDER | LVS_NOSCROLL | LVS_ICON, 43, 536, 40, 14, WS_EX_STATICEDGE
-    PUSHBUTTON      "Change color", IDC_SUN_COLOR_CHANGE, 89, 536, 50, 14
-    EDITTEXT        IDC_SUN_COLOR_VALUE, 145, 536, 57, 14, ES_AUTOHSCROLL
-    AUTOCHECKBOX    "Casts shadows (lightmaps)", IDC_SUN_CAST_BAKED_SHADOWS, 13, 554, 120, 10
-    AUTOCHECKBOX    "Affects mesh lighting", IDC_SUN_AFFECTS_MESHES, 148, 554, 130, 10
-    AUTOCHECKBOX    "Scale mesh sunlight by lightmaps", IDC_SUN_MESH_MODE_SCALE, 13, 566, 130, 10
-    AUTOCHECKBOX    "Aligns dynamic shadows", IDC_SUN_DRIVES_SHADOWMAP_DIR, 148, 566, 130, 10
-    AUTOCHECKBOX    "Water blocks sunlight", IDC_SUN_LIQUID_OCCLUDES, 13, 578, 130, 10
+    // Gameplay
+    AUTOCHECKBOX    "Player starts with headlamp", IDC_STARTS_WITH_HEADLAMP, 14, 28, 200, 10
+    AUTOCHECKBOX    "Limit vehicle flight ceiling", IDC_VEHICLE_FLIGHT_CEILING_ENABLE, 14, 44, 200, 10
+    LTEXT           "Ceiling height (Y):", IDC_VEHICLE_FLIGHT_CEILING_LABEL, 26, 61, 62, 8
+    EDITTEXT        IDC_VEHICLE_FLIGHT_CEILING, 90, 58, 40, 14, ES_AUTOHSCROLL
+
+    // Minimap
+    AUTOCHECKBOX    "Enable minimap", IDC_MINIMAP_ENABLE, 14, 28, 180, 10
+    LTEXT           "Bitmap:", IDC_MINIMAP_BITMAP_LABEL, 14, 49, 40, 8
+    EDITTEXT        IDC_MINIMAP_BITMAP, 57, 46, 110, 14, ES_AUTOHSCROLL
+    PUSHBUTTON      "Browse...", IDC_MINIMAP_BITMAP_BROWSE, 171, 46, 40, 14
+    GROUPBOX        "World bounds", IDC_MINIMAP_BOUNDS_GROUP, 14, 67, 188, 69
+    LTEXT           "Min X:", IDC_MINIMAP_MIN_X_LABEL, 21, 82, 24, 8
+    EDITTEXT        IDC_MINIMAP_MIN_X, 48, 80, 45, 14, ES_AUTOHSCROLL
+    CONTROL         "Spin1", IDC_MINIMAP_MIN_X_SPIN, UPDOWN_CLASS, UDS_ARROWKEYS, 93, 80, 11, 14
+    LTEXT           "Min Z:", IDC_MINIMAP_MIN_Z_LABEL, 112, 82, 24, 8
+    EDITTEXT        IDC_MINIMAP_MIN_Z, 139, 80, 45, 14, ES_AUTOHSCROLL
+    CONTROL         "Spin2", IDC_MINIMAP_MIN_Z_SPIN, UPDOWN_CLASS, UDS_ARROWKEYS, 184, 80, 11, 14
+    LTEXT           "Max X:", IDC_MINIMAP_MAX_X_LABEL, 21, 101, 24, 8
+    EDITTEXT        IDC_MINIMAP_MAX_X, 48, 98, 45, 14, ES_AUTOHSCROLL
+    CONTROL         "Spin3", IDC_MINIMAP_MAX_X_SPIN, UPDOWN_CLASS, UDS_ARROWKEYS, 93, 98, 11, 14
+    LTEXT           "Max Z:", IDC_MINIMAP_MAX_Z_LABEL, 112, 101, 24, 8
+    EDITTEXT        IDC_MINIMAP_MAX_Z, 139, 98, 45, 14, ES_AUTOHSCROLL
+    CONTROL         "Spin4", IDC_MINIMAP_MAX_Z_SPIN, UPDOWN_CLASS, UDS_ARROWKEYS, 184, 98, 11, 14
+    LTEXT           "Cut height (Y):", IDC_MINIMAP_CUT_HEIGHT_LABEL, 21, 119, 52, 8
+    EDITTEXT        IDC_MINIMAP_CUT_HEIGHT, 75, 116, 45, 14, ES_AUTOHSCROLL
+    CONTROL         "Spin5", IDC_MINIMAP_CUT_HEIGHT_SPIN, UPDOWN_CLASS, UDS_ARROWKEYS, 120, 116, 11, 14
+    LTEXT           "(0 = no cut)", IDC_MINIMAP_CUT_HEIGHT_HINT, 137, 119, 58, 8
+    CONTROL         "", IDC_MINIMAP_BITMAP_PREVIEW, "Static", SS_OWNERDRAW | WS_BORDER, 210, 72, 64, 64
+    LTEXT           "Bake size:", IDC_MINIMAP_BAKE_RES_LABEL, 14, 147, 36, 8
+    COMBOBOX        IDC_MINIMAP_BAKE_RES, 52, 144, 60, 60, WS_TABSTOP | CBS_DROPDOWNLIST
+    PUSHBUTTON      "Bake from level", IDC_MINIMAP_BAKE, 116, 144, 64, 14
+    AUTOCHECKBOX    "Bake into the world bounds above (else fit the level)", IDC_MINIMAP_BAKE_USE_BOUNDS, 14, 162, 236, 10
+
+    // Compatibility
+    AUTOCHECKBOX    "Legacy Cyclic_Timer events", IDC_LEGACY_CYCLIC_TIMERS, 14, 28, 200, 10
+    AUTOCHECKBOX    "Legacy movers", IDC_LEGACY_MOVERS, 14, 40, 200, 10
+    AUTOCHECKBOX    "Legacy lighting", IDC_LEGACY_LIGHTING, 14, 52, 200, 10
+
+    DEFPUSHBUTTON   "OK", IDOK, 187, 318, 50, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 241, 318, 50, 14
+    CONTROL         "", IDC_LEVEL_TABS, "SysTabControl32", WS_TABSTOP | WS_CLIPSIBLINGS, 7, 7, 284, 304
 }
 
 LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
@@ -1265,47 +1309,6 @@ FONT 8, "MS Sans Serif", 0, 0, 0
     PUSHBUTTON      "Cancel", IDCANCEL, 183, 136, 50, 14
 }
 
-LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
-IDD_ALPINE_MINIMAP DIALOGEX 0, 0, 250, 184
-STYLE DS_MODALFRAME | WS_CAPTION | WS_VISIBLE | WS_POPUP | WS_SYSMENU
-CAPTION "Minimap"
-FONT 8, "MS Sans Serif", 0, 0, 0
-{
-    AUTOCHECKBOX    "Enable minimap (multiplayer)", IDC_MINIMAP_ENABLE, 7, 9, 180, 10
-
-    LTEXT           "Bitmap:", -1, 7, 30, 40, 8
-    EDITTEXT        IDC_MINIMAP_BITMAP, 50, 28, 110, 14, ES_AUTOHSCROLL
-    PUSHBUTTON      "Browse...", IDC_MINIMAP_BITMAP_BROWSE, 163, 28, 38, 14
-
-    GROUPBOX        "World bounds", -1, 7, 48, 182, 74
-    LTEXT           "Min X:", -1, 13, 63, 24, 8
-    EDITTEXT        IDC_MINIMAP_MIN_X, 40, 61, 45, 14, ES_AUTOHSCROLL
-    CONTROL         "Spin1", IDC_MINIMAP_MIN_X_SPIN, UPDOWN_CLASS, UDS_ARROWKEYS, 85, 61, 11, 14
-    LTEXT           "Min Z:", -1, 101, 63, 24, 8
-    EDITTEXT        IDC_MINIMAP_MIN_Z, 128, 61, 45, 14, ES_AUTOHSCROLL
-    CONTROL         "Spin2", IDC_MINIMAP_MIN_Z_SPIN, UPDOWN_CLASS, UDS_ARROWKEYS, 173, 61, 11, 14
-    LTEXT           "Max X:", -1, 13, 82, 24, 8
-    EDITTEXT        IDC_MINIMAP_MAX_X, 40, 80, 45, 14, ES_AUTOHSCROLL
-    CONTROL         "Spin3", IDC_MINIMAP_MAX_X_SPIN, UPDOWN_CLASS, UDS_ARROWKEYS, 85, 80, 11, 14
-    LTEXT           "Max Z:", -1, 101, 82, 24, 8
-    EDITTEXT        IDC_MINIMAP_MAX_Z, 128, 80, 45, 14, ES_AUTOHSCROLL
-    CONTROL         "Spin4", IDC_MINIMAP_MAX_Z_SPIN, UPDOWN_CLASS, UDS_ARROWKEYS, 173, 80, 11, 14
-    LTEXT           "Cut height (Y):", -1, 13, 101, 50, 8
-    EDITTEXT        IDC_MINIMAP_CUT_HEIGHT, 66, 99, 45, 14, ES_AUTOHSCROLL
-    CONTROL         "Spin5", IDC_MINIMAP_CUT_HEIGHT_SPIN, UPDOWN_CLASS, UDS_ARROWKEYS, 111, 99, 11, 14
-    LTEXT           "(0 = no cut)", -1, 126, 101, 58, 8
-
-    CONTROL         "", IDC_MINIMAP_BITMAP_PREVIEW, "Static", SS_OWNERDRAW | WS_BORDER, 194, 53, 49, 49
-
-    LTEXT           "Bake size:", -1, 7, 131, 36, 8
-    COMBOBOX        IDC_MINIMAP_BAKE_RES, 45, 129, 60, 60, WS_TABSTOP | CBS_DROPDOWNLIST
-    PUSHBUTTON      "Bake from level", IDC_MINIMAP_BAKE, 109, 129, 64, 14
-    AUTOCHECKBOX    "Bake into the world bounds above (else fit the level)", IDC_MINIMAP_BAKE_USE_BOUNDS, 7, 147, 236, 10
-
-    DEFPUSHBUTTON   "OK", IDOK, 139, 163, 50, 14
-    PUSHBUTTON      "Cancel", IDCANCEL, 193, 163, 50, 14
-}
-
 // Brush-to-mesh export options dialog
 LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
 IDD_BRUSH_CONVERT_OPTIONS DIALOGEX 0, 0, 180, 72
@@ -1793,6 +1796,25 @@ FONT 8, "MS Sans Serif"
     LTEXT           "", IDC_MESH_BROWSER_COUNT, 7, 268, 250, 8, WS_GROUP
     DEFPUSHBUTTON   "OK", IDOK, 339, 264, 50, 14
     PUSHBUTTON      "Cancel", IDCANCEL, 394, 264, 50, 14
+}
+
+// Object mode placement panel, a child of the object panel (stock template 173) above its tree.
+// Laid out for the narrowest pane; the panel stretches the controls to the pane's width.
+LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
+IDD_ALPINE_PLACEMENT_PANEL DIALOGEX 0, 0, 130, 140
+STYLE DS_SETFONT | DS_CONTROL | WS_CHILD | WS_VISIBLE
+FONT 8, "MS Sans Serif"
+{
+    PUSHBUTTON      "", IDC_PLACEMENT_COLLAPSE, 2, 2, 11, 14, BS_OWNERDRAW | WS_TABSTOP
+    CONTROL         "", IDC_PLACEMENT_TABS, "SysTabControl32", WS_TABSTOP, 15, 2, 113, 14
+    CONTROL         "Placement", IDC_PLACEMENT_TITLE, "Static", SS_LEFT | SS_NOTIFY | NOT WS_VISIBLE, 16, 5, 80, 8
+    COMBOBOX        IDC_PLACEMENT_CLASS, 2, 19, 126, 150, CBS_DROPDOWN | CBS_AUTOHSCROLL | WS_VSCROLL | WS_TABSTOP
+    PUSHBUTTON      "Browse...", IDC_PLACEMENT_BROWSE, 90, 19, 38, 13
+    // SS_NOTIFY makes the static take the mouse rather than pass it to the panel.
+    CONTROL         "", IDC_PLACEMENT_PREVIEW, "Static", SS_OWNERDRAW | SS_NOTIFY | WS_BORDER, 2, 35, 126, 86
+    LTEXT           "Height (m):", IDC_PLACEMENT_HEIGHT_LABEL, 2, 126, 36, 8
+    EDITTEXT        IDC_PLACEMENT_HEIGHT, 39, 124, 36, 12, ES_AUTOHSCROLL
+    AUTOCHECKBOX    "Override", IDC_PLACEMENT_HEIGHT_OVERRIDE, 80, 125, 48, 10, WS_TABSTOP
 }
 
 // VERSIONINFO

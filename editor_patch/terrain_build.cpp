@@ -1121,7 +1121,15 @@ bool terrain_build_is_current(const DedTerrain& terrain)
 
 float terrain_build_level_ray_hit(CDedLevel& level, const float (&o)[3], const float (&d)[3], float t_max)
 {
+    float skipped_t = t_max;
+    return terrain_build_level_ray_hit(level, o, d, t_max, -INFINITY, skipped_t);
+}
+
+float terrain_build_level_ray_hit(CDedLevel& level, const float (&o)[3], const float (&d)[3], float t_max,
+                                  float min_normal_y, float& skipped_t)
+{
     float best = t_max;
+    skipped_t = t_max;
     const GSolid* solid = level.solid;
     if (!solid) return best;
     const auto& props = level.GetAlpineLevelProperties();
@@ -1150,8 +1158,9 @@ float terrain_build_level_ray_hit(CDedLevel& level, const float (&o)[3], const f
             }
         });
         if (loop.size() < 3) continue;
+        float& bound = n.y < min_normal_y ? skipped_t : best;
         constexpr float margin = 1e-3f;
-        float t0 = 0.0f, t1 = best;
+        float t0 = 0.0f, t1 = bound;
         for (int i = 0; i < 3 && t0 <= t1; i++) {
             if (std::fabs(d[i]) < 1e-12f) {
                 if (o[i] < lo[i] - margin || o[i] > hi[i] + margin) t0 = INFINITY;
@@ -1165,7 +1174,7 @@ float terrain_build_level_ray_hit(CDedLevel& level, const float (&o)[3], const f
         if (t0 > t1) continue;
         for (std::size_t k = 1; k + 1 < loop.size(); k++) {
             float t = 0.0f;
-            if (at::ray_triangle(o, d, loop[0].v, loop[k].v, loop[k + 1].v, 0.0f, best, t)) best = t;
+            if (at::ray_triangle(o, d, loop[0].v, loop[k].v, loop[k + 1].v, 0.0f, bound, t)) bound = t;
         }
     }
     return best;

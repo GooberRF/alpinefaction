@@ -1121,6 +1121,11 @@ namespace gr::d3d11
     void Renderer::render_sky_room(rf::GRoom *room, rf::Vector3& out_sky_transform_pos, rf::Matrix3& out_sky_transform_orient)
     {
         dyn_geo_renderer_->flush();
+        // The projection ends at the camera far clip, which must not cut the sky; the far clip set after the sky
+        // pass re-enables depth clipping
+        if (level_camera_far_clip() > 0.0f) {
+            set_far_clip(false);
+        }
         solid_renderer_->render_sky_room(room, out_sky_transform_pos, out_sky_transform_orient);
     }
 

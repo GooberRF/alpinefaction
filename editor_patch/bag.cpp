@@ -22,7 +22,7 @@ static void bag_load_icon()
 void DestroyDedBag(DedBag* bag)
 {
     if (!bag) return;
-    bag->field_4.free();
+    bag->class_mesh_filename.free();
     bag->script_name.free();
     bag->class_name.free();
     delete bag;

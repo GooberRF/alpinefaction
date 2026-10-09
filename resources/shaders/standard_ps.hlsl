@@ -35,6 +35,7 @@ cbuffer RenderModeBuffer : register(b0)
     float sky_room;             // sky fragments carry authored, not viewed, world positions
     float draw_room_uid;        // room this draw belongs to, -1 when it has none
     float liquid_surface;       // this draw is the liquid surface pass
+    float fog_near;             // view depth the fog starts at, 0 below RFL 306
 };
 
 struct PointLight {
@@ -174,7 +175,7 @@ cbuffer LiquidBuffer : register(b6)
     float  liq_dark_surface_y; float liq_viewport_y;   // blended surface, depth darkening only
     LiquidVolume liq_volumes[MAX_LIQUID_VOLUMES];
     float  liq_depth_sz;       float liq_depth_tz;     // view z = tz / (device depth - sz)
-    float  liq_depth_mode;     float _liq_pad2;        // 0 none, 1 Texture2D
+    float  liq_depth_mode;     float liq_over_fog_near; // 0 none, 1 Texture2D; level fog start
 };
 
 // Directional Light objects over this draw, GPU-lit meshes only. Layout owned by gr_d3d11_context.cpp
@@ -801,7 +802,8 @@ float4 finish_fragment(VsOutput input, float4 target, float3 tex0_rgb, float3 li
         // by the liquid fog in b0, so the level values come from b6 instead.
         float3 over_color = liq_eye_under > 0.5f ? liq_over_fog_color : fog_color;
         float over_far = liq_eye_under > 0.5f ? liq_over_fog_far : fog_far;
-        float over_fog = over_far < 1e30f ? saturate(over_len / over_far) : 0.0f;
+        float over_near = liq_eye_under > 0.5f ? liq_over_fog_near : fog_near;
+        float over_fog = over_far < 1e30f ? saturate((over_len - over_near) / max(over_far - over_near, 1e-3f)) : 0.0f;
 
         // Below-surface part: per-channel Beer-Lambert, dominant channels of the liquid color
         // surviving longest, in-scatter darkened with depth below the surface.
@@ -861,7 +863,7 @@ float4 finish_fragment(VsOutput input, float4 target, float3 tex0_rgb, float3 li
         }
     }
     else {
-        float fog = saturate(input.world_pos_and_depth.w / fog_far);
+        float fog = saturate((input.world_pos_and_depth.w - fog_near) / max(fog_far - fog_near, 1e-3f));
         target.rgb = fog * fog_color + (1 - fog) * target.rgb;
     }
 

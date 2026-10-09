@@ -400,7 +400,7 @@ static constexpr uintptr_t ded_object_vtbl_addr = 0x55712C;
 struct DedObject
 {
     void* vtbl;
-    VString field_4; // unsure what this is
+    VString class_mesh_filename; // clutter, entity and item: the class template's mesh file (copied by 0x00452680)
     void* vmesh;
     int field_10;
     Vector3 pos;
@@ -413,14 +413,16 @@ struct DedObject
     DedObjectType type;
     Vector3 field_60;
     Vector3 field_6C;
-    char field_78;
+    char listed_in_tree; // class templates: the object tree (0x00443610) lists the class
     char padding2[3];
     VArray<int> links;
     VArray<std::string> field_88;
 };
 static_assert(sizeof(DedObject) == 0x94, "DedObject size mismatch!");
+static_assert(offsetof(DedObject, class_mesh_filename) == 0x04);
 static_assert(offsetof(DedObject, pos) == 0x14);
 static_assert(offsetof(DedObject, type) == 0x5C);
+static_assert(offsetof(DedObject, listed_in_tree) == 0x78);
 
 
 struct DedEvent : DedObject
@@ -479,6 +481,21 @@ static_assert(offsetof(DedGeoRegion, radius) == 0x98);
 static_assert(offsetof(DedGeoRegion, height) == 0x9C);
 static_assert(offsetof(DedGeoRegion, width) == 0xA0);
 static_assert(offsetof(DedGeoRegion, depth) == 0xA4);
+
+// Partial. The ctor (0x0044EC20) takes `emitter` from the 128-slot pool (0x00481E10), NULL when it is full.
+struct DedParticleEmitter : DedObject
+{
+    void* emitter; // 0x94
+};
+static_assert(offsetof(DedParticleEmitter, emitter) == 0x94);
+
+// Partial. The ctor (0x00451AC0) leaves `region` NULL; add_object's 0x004154B0 creates it for a sphere or box
+// shape (0x004C6970 / 0x004C6A10).
+struct DedGasRegion : DedObject
+{
+    void* region; // 0x94
+};
+static_assert(offsetof(DedGasRegion, region) == 0x94);
 
 // Per-slot texture override for editor mesh objects
 struct EditorTextureOverride {
@@ -591,9 +608,11 @@ enum class VehicleFactoryTeam : int
     blue = 1,
 };
 
+inline constexpr const char* vehicle_factory_default_class = "Jeep01";
+
 struct DedVehicleFactory : DedObject
 {
-    std::string vehicle_class = "Jeep01";
+    std::string vehicle_class = vehicle_factory_default_class;
     float respawn_delay_s = 30.0f;
     VehicleFactoryTeam team = VehicleFactoryTeam::none;
     bool lock_to_team = false;
@@ -860,6 +879,40 @@ struct CColorDialog : CDialog
     CHOOSECOLORA m_cc;
 };
 static_assert(offsetof(CColorDialog, m_cc) == 0x5C, "CColorDialog m_cc offset mismatch!");
+
+// RED's float spinner: a runtime child dialog (id 0) holding edit 1234 and up-down 1228. It parses the edit's text
+// into `value` only on EN_KILLFOCUS (0x0044B060, message map 0x005569A8), clearing `valid` when it does not parse.
+struct DedFloatSpinner
+{
+    char _pad_00[0xAC];
+    CWnd edit;          // +0xAC
+    bool modified;      // +0xE8
+    bool valid;         // +0xE9 (FUN_0044AE00)
+    char _pad_EA[2];
+    float min_value;    // +0xEC
+    float max_value;    // +0xF0
+    float step;         // +0xF4
+    int decimals;       // +0xF8
+    void (*on_change)(); // +0xFC
+    char _pad_100[0x110 - 0x100];
+    float value;        // +0x110
+};
+static_assert(offsetof(DedFloatSpinner, edit) == 0xAC);
+static_assert(offsetof(DedFloatSpinner, valid) == 0xE9);
+static_assert(offsetof(DedFloatSpinner, min_value) == 0xEC);
+static_assert(offsetof(DedFloatSpinner, max_value) == 0xF0);
+static_assert(offsetof(DedFloatSpinner, on_change) == 0xFC);
+static_assert(offsetof(DedFloatSpinner, value) == 0x110);
+
+// Level Properties (FUN_00402300 runs it modally; OnInitDialog 0x00467540 builds the fog spinners)
+struct CLevelDialog : CDialog
+{
+    char _pad_5C[0x264 - 0x5C];
+    DedFloatSpinner* fog_near_spinner; // +0x264
+    DedFloatSpinner* fog_far_spinner;  // +0x268
+};
+static_assert(offsetof(CLevelDialog, fog_near_spinner) == 0x264);
+static_assert(offsetof(CLevelDialog, fog_far_spinner) == 0x268);
 
 struct CEdit : CWnd
 {

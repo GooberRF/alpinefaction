@@ -42,7 +42,7 @@ static void note_load_icon()
 void DestroyDedNote(DedNote* note)
 {
     if (!note) return;
-    note->field_4.free();
+    note->class_mesh_filename.free();
     note->script_name.free();
     note->class_name.free();
     delete note;
