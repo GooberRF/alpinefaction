@@ -352,6 +352,13 @@ void bagman_set_blue_team_score(int v)
     g_bagman_info.blue_team_score = v;
 }
 
+void bagman_add_team_score(rf::Player* player, int delta)
+{
+    if (!player) return;
+    auto& score = player->team == 0 ? g_bagman_info.red_team_score : g_bagman_info.blue_team_score;
+    score = std::max(0, score + delta);
+}
+
 void bagman_level_init()
 {
     g_bagman_info = BagmanInfo{};
@@ -576,11 +583,7 @@ void bagman_do_frame()
                 if (g_bagman_info.score_tick.elapsed()) {
                     rf::player_add_score(g_bagman_info.carrier, 1);
                     if (gt_is_tbag()) {
-                        if (g_bagman_info.carrier->team == 0) {
-                            g_bagman_info.red_team_score++;
-                        } else {
-                            g_bagman_info.blue_team_score++;
-                        }
+                        bagman_add_team_score(g_bagman_info.carrier, 1);
                     }
                     apply_effective_health_reward(g_bagman_info.carrier, kCarrierTickEffectiveHealth);
                     g_bagman_info.score_tick.set(kScoreTickMs);

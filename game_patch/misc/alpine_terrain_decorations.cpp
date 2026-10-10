@@ -45,7 +45,7 @@ struct Crater
 bool g_draw_enabled = true;
 std::uint32_t g_placed = 0;
 std::vector<TerrainDecorations> g_decorations;
-DecorationMeshCache g_meshes{max_mesh_radius};
+DecorationMeshCache g_meshes{max_mesh_radius, at::max_level_decoration_meshes};
 // Every crater of the level so far, for those a savegame replays before the instances exist
 std::vector<Crater> g_craters;
 DecorationFrameStats g_stats;
