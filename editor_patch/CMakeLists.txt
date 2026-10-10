@@ -64,6 +64,10 @@ set(SRCS
     bitmap_texels.h
     meshes.cpp
     meshes.h
+    search_paths.cpp
+    search_paths.h
+    sounds.cpp
+    sounds.h
     minimap_bake.cpp
     minimap_bake.h
     tbl.cpp
@@ -87,6 +91,8 @@ set(SRCS
     bake_progress.h
     face_list_cache.cpp
     face_list_cache.h
+    memory_guard.cpp
+    memory_guard.h
     work_pool.cpp
     work_pool.h
 )

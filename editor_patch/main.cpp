@@ -44,8 +44,10 @@
 #include "gizmo.h"
 #include "textures.h"
 #include "meshes.h"
+#include "sounds.h"
 #include "headless_bake.h"
 #include "face_list_cache.h"
+#include "memory_guard.h"
 #include "bake_progress.h"
 #include "alpine_lightmaps.h"
 #include "terrain_build.h"
@@ -122,6 +124,7 @@ CodeInjection CEditorApp_InitInstance_additional_file_paths_injection{
     0x0048290D,
     []() {
         meshes_init_paths();
+        sounds_init_paths();
     },
 };
 
@@ -1465,11 +1468,19 @@ FunHook<int __fastcall(void*, int, int)> CEditorApp_OnIdle_hook{0x00482F00, CEdi
 
 int __fastcall CEditorApp_OnIdle_new(void* self, int edx, int count)
 {
-    if (!headless_bake_idle()) {
-        terrain_paint_idle();
-        gizmo_idle();
+    // MFC's Run loop does not catch: an exception from a headless bake, the views' render, autosave or a build tick
+    // would abort RED. Autosave and command-line updates write level files, so this cannot say none changed.
+    try {
+        memory_guard_idle();
+        if (!headless_bake_idle()) {
+            terrain_paint_idle();
+            gizmo_idle();
+        }
+        return CEditorApp_OnIdle_hook.call_target(self, edx, count);
     }
-    return CEditorApp_OnIdle_hook.call_target(self, edx, count);
+    catch (...) {
+        memory_guard_fatal("updating the editor", false);
+    }
 }
 
 CodeInjection autosave_defer_during_edit_injection{
@@ -1902,9 +1913,34 @@ void InitCrashHandler()
     std::snprintf(config.output_dir, std::size(config.output_dir), "%s\\logs", current_dir);
     std::snprintf(config.app_name, std::size(config.app_name), "AlpineEditor");
     config.add_known_module("RED");
+    config.add_known_module("RED_laa");
     config.add_known_module("AlpineEditor");
 
     CrashHandlerStubInstall(config);
+}
+
+// With 4 GB of address space, no block may straddle 2 GB: stock RED orders pointers by signed compares in places, which
+// only goes wrong for two addresses on either side of the boundary.
+void ReserveAddressSpaceBoundary()
+{
+    if (!editor_large_address_aware()) {
+        return;
+    }
+    constexpr uintptr_t begin = 0x7FFF0000;
+    constexpr uintptr_t end = 0x80010000;
+    if (VirtualAlloc(reinterpret_cast<void*>(begin), end - begin, MEM_RESERVE, PAGE_NOACCESS)) {
+        xlog::info("[Memory] large address aware, reserved the 2 GB boundary");
+        return;
+    }
+    xlog::warn("[Memory] large address aware, but could not reserve the 2 GB boundary ({})", GetLastError());
+    MEMORY_BASIC_INFORMATION mbi{};
+    for (auto addr = begin; addr < end && VirtualQuery(reinterpret_cast<void*>(addr), &mbi, sizeof(mbi)) == sizeof(mbi);
+         addr = reinterpret_cast<uintptr_t>(mbi.BaseAddress) + mbi.RegionSize) {
+        if (mbi.State != MEM_FREE) {
+            xlog::warn("[Memory] occupied: {:p} size {:x} allocation base {:p} state {:x} type {:x}", mbi.BaseAddress,
+                       mbi.RegionSize, mbi.AllocationBase, mbi.State, mbi.Type);
+        }
+    }
 }
 
 void ApplyGraphicsPatches();
@@ -2250,6 +2286,7 @@ void apply_af_level_editor_changes()
 extern "C" DWORD AF_DLL_EXPORT Init([[maybe_unused]] void* unused)
 {
     InitLogging();
+    ReserveAddressSpaceBoundary();
     InitCrashHandler();
 
     // Apply AF-specific changes only if legacy mode isn't active
@@ -2306,6 +2343,7 @@ extern "C" DWORD AF_DLL_EXPORT Init([[maybe_unused]] void* unused)
     CMainFrame_OnEditRedo_hook.install();
 
     // Apply patches defined in other files
+    ApplyMemoryGuardPatches();
     ApplyGraphicsPatches();
     ApplyTriggerPatches();
     ApplyLevelPatches();
@@ -2465,7 +2503,7 @@ extern "C" DWORD AF_DLL_EXPORT Init([[maybe_unused]] void* unused)
     // Defer autosave while an edit operation is in progress to prevent teleporting
     autosave_defer_during_edit_injection.install();
 
-    // Idle tick (headless bake, Terrain Tools) and level load/save bracketing
+    // Idle tick (memory guard, headless bake, Terrain Tools) and level load/save bracketing
     CEditorApp_OnIdle_hook.install();
     CDedDoc_LoadSaveLevel_hook.install();
 

@@ -24,6 +24,7 @@
 #include "face_list_cache.h"
 #include "headless_bake.h"
 #include "level.h"
+#include "memory_guard.h"
 #include "mfc_types.h"
 #include "terrain.h"
 #include "terrain_build.h"
@@ -563,12 +564,20 @@ void finish_build(CDedLevel& level)
 
 // ─── Hooks ──────────────────────────────────────────────────────────────────
 
+// The last Build Geometry to finish was cancelled because RED ran out of memory.
+bool g_build_out_of_memory = false;
+
 // GeoBuild_Driver, once per idle tick: chunk brushes go in before its first tick, out once it clears build_running.
 void __fastcall geobuild_driver_hooked(CDedLevel* level);
 FunHook<decltype(geobuild_driver_hooked)> geobuild_driver_hook{0x004399b0, geobuild_driver_hooked};
 void __fastcall geobuild_driver_hooked(CDedLevel* level)
 {
     FaceListCacheWindow face_list_cache;
+    // an allocation since the last tick was served from the memory guard's reserve: this tick cancels the build
+    const bool out_of_memory = level->build_running && memory_guard_take_tripped();
+    if (out_of_memory) {
+        level->cancel_build();
+    }
     const bool cancelling = level->build_cancelling();
     if (!cancelling && g_build_first_tick_pending) {
         try {
@@ -577,14 +586,28 @@ void __fastcall geobuild_driver_hooked(CDedLevel* level)
         catch (const std::bad_alloc&) {
             xlog::error("[Terrain] out of memory inserting terrain chunks");
         }
+        // RED's operator new throws MFC's CMemoryException once the memory guard's reserve is spent
+        catch (...) {
+            memory_guard_fatal("Build Geometry");
+        }
     }
-    geobuild_driver_hook.call_target(level);
+    // an exception reaching RED's idle loop would abort it, and the half-built state cannot be trusted
+    try {
+        geobuild_driver_hook.call_target(level);
+    }
+    catch (...) {
+        memory_guard_fatal("Build Geometry");
+    }
     if (level->build_running) return;
+    g_build_out_of_memory = out_of_memory;
     try {
         if (!cancelling) finish_build(*level);
     }
     catch (const std::bad_alloc&) {
         terrain_report("Out of memory finishing the terrain build; rebuild before saving.", false);
+    }
+    catch (...) {
+        memory_guard_fatal("Build Geometry");
     }
     try {
         remove_temp_brushes(*level);
@@ -592,8 +615,16 @@ void __fastcall geobuild_driver_hooked(CDedLevel* level)
     catch (const std::bad_alloc&) {
         xlog::error("[Terrain] out of memory removing temporary chunk brushes; saving strips them");
     }
+    catch (...) {
+        memory_guard_fatal("Build Geometry");
+    }
     g_built_terrains.clear();
     g_build_notes.clear();
+    if (out_of_memory) {
+        editor_report_blocking("Build Geometry", "Build Geometry",
+                               std::string{"Build Geometry ran out of memory and was cancelled. "} +
+                                   memory_guard_advice());
+    }
 }
 
 // Sorted uids of the level solid's terrain rooms while FUN_004aa610 builds its surfaces, else null.
@@ -787,7 +818,7 @@ void __fastcall lighting_surfaces_hooked(void* self)
     }
     alpine_lm_note_lighting_refused(refused);
     if (refused) return;
-    lighting_surfaces_hook.call_target(self);
+    lighting_surfaces_stock(self);
     // on a D3D11-only level they get overflow charts, and alpine_lm_bake_begin reports any that do not
     if (CDedLevel* level = CDedLevel::Get()) {
         const auto& props = level->GetAlpineLevelProperties();
@@ -853,7 +884,20 @@ bool face_gets_stock_surface(GFace* face, const std::vector<int32_t>& terrain_ui
 
 void lighting_surfaces_stock(void* self)
 {
-    lighting_surfaces_hook.call_target(self);
+    lightmap_surfaces_shrunk_reset();
+    const MemoryGuardQuietScope quiet;
+    // an interrupted pass leaves surfaces without lightmaps, which the renderer dereferences
+    try {
+        lighting_surfaces_hook.call_target(self);
+    }
+    catch (...) {
+        memory_guard_fatal("Calculate Lighting");
+    }
+}
+
+bool build_geometry_out_of_memory()
+{
+    return g_build_out_of_memory;
 }
 
 void report_surface_overflow(CDedLevel& level, bool overflow_expected)

@@ -44,6 +44,7 @@
 #include "event.h"
 #include "bake_progress.h"
 #include "face_list_cache.h"
+#include "memory_guard.h"
 
 // Forward declarations
 int get_level_rfl_version();
@@ -114,6 +115,13 @@ void editor_address_space_free(std::uint64_t& free_largest, std::uint64_t& free_
         }
         addr = next;
     }
+}
+
+bool editor_large_address_aware()
+{
+    SYSTEM_INFO si{};
+    GetSystemInfo(&si);
+    return reinterpret_cast<std::uintptr_t>(si.lpMaximumApplicationAddress) > 0x80000000u;
 }
 
 std::string editor_address_space_shortfall(std::uint64_t largest, std::uint64_t total, const char* advice)
@@ -1009,6 +1017,11 @@ FunHook<decltype(build_geometry_start_hooked)> build_geometry_start_hook{
 };
 void __fastcall build_geometry_start_hooked(CDedLevel* level, void* edx_unused)
 {
+    if (!memory_guard_ready()) {
+        editor_report_blocking("Build Geometry", "Build Geometry",
+                               std::string{"Build Geometry was not started: "} + memory_guard_warning);
+        return;
+    }
     const std::string shortfall =
         editor_address_space_shortfall(build_geometry_min_free_block, build_geometry_min_free_total);
     if (!shortfall.empty()) {

@@ -1182,6 +1182,9 @@ static auto& file_scan_path = addr_as_ref<void(int slot_index)>(0x004CF800);
 static auto& rf_alloc = addr_as_ref<void* __cdecl(size_t size)>(0x0052ee74);
 static auto& log_dlg_append = addr_as_ref<int __cdecl(void*, const char*, ...)>(0x00444980);
 static auto& log_dlg_clear = addr_as_ref<void __fastcall(void* self)>(0x00444940);
+// What Create Level Packfile (FUN_004482c0) gathers and FUN_0044cb10 writes. FUN_00438640 adds a name
+// unless it is already listed.
+static auto& vpp_file_list = addr_as_ref<VArray<VString>>(0x006C9BA8);
 // Whether segment a-b crosses segment (x1,y1)-(x2,y2) in the xy plane, ends included; parallel
 // segments never do.
 static auto& segments_intersect_2d =

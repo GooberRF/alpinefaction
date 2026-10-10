@@ -473,6 +473,13 @@ struct DedEvent : DedObject
 };
 static_assert(sizeof(DedEvent) == 0xC4, "DedEvent size mismatch");
 
+// Partial; the viewport emitter (0x00455030) plays `sound_filename` by name.
+struct DedAmbientSound : DedObject
+{
+    VString sound_filename; // 0x94
+};
+static_assert(offsetof(DedAmbientSound, sound_filename) == 0x94);
+
 struct DedClutter : DedObject
 {
     char pad_94[0xB8 - 0x94];

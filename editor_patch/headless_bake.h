@@ -5,7 +5,8 @@
 // lightmap fragments repacked), Calculate Lighting with shadows, save the output.
 // Exit codes: 0 saved, 1 bad arguments or input not found, 2 load failed, 3 too many dialogs,
 // 4 save failed, 5 Calculate Lighting refused the level (nothing saved), 6 Build Geometry did not
-// complete (nothing saved).
+// complete (nothing saved), 7 RED ran out of memory part-way through a stock pass and closed (nothing
+// saved; memory_guard_fatal).
 bool headless_bake_active();
 const char* headless_bake_input_path();
 // Appends a line to the bake's own log; a no-op outside bake mode.

@@ -1330,16 +1330,28 @@ static_assert(offsetof(MovingGroupMember, uid) == 0x00);
 static_assert(offsetof(MovingGroupMember, rel_pos) == 0x04);
 static_assert(offsetof(MovingGroupMember, orient) == 0x10);
 
+// One of a moving group's mover sounds, as the ctor (FUN_004162e0) builds four of them
+struct MovingGroupSound
+{
+    VString filename;   // +0x00
+    char _pad_08[4];    // +0x08
+};
+static_assert(sizeof(MovingGroupSound) == 0xC);
+
 // GroupEntry::keyframes target (ctor FUN_004162e0)
 struct MovingGroupKeyframes
 {
     VArray<DedObject*> objects;           // +0x00  keyframe objects
     VArray<MovingGroupMember*> members;   // +0x0C  looked up first match by uid (FUN_0042a690)
-    char _pad_18[0x40];                   // +0x18
+    char _pad_18[0x10];                   // +0x18
+    // +0x28  start, loop, stop and close; the level check FUN_0041d4c0 reads start, stop and close as
+    // sound names
+    MovingGroupSound sounds[4];
 };
 static_assert(sizeof(MovingGroupKeyframes) == 0x58);
 static_assert(offsetof(MovingGroupKeyframes, objects) == 0x00);
 static_assert(offsetof(MovingGroupKeyframes, members) == 0x0C);
+static_assert(offsetof(MovingGroupKeyframes, sounds) == 0x28);
 
 // Group entry struct (0x34 bytes) — element of CDedLevel::moving_groups
 // Constructor: FUN_0043dec0 (zeros 4 x 12-byte blocks at +0x04, +0x10, +0x1C, +0x28)
@@ -1816,6 +1828,14 @@ struct CDedLevel
         return dialog && dialog->cancelled != 0;
     }
 
+    // As the progress dialog's Cancel button: the next GeoBuild_Driver tick takes its "Build Canceled" branch
+    void cancel_build()
+    {
+        if (auto* dialog = static_cast<BuildProgressDialog*>(dialog_panels[build_dialog_panel_index])) {
+            dialog->cancelled = 1;
+        }
+    }
+
     static CDedLevel* Get()
     {
         return AddrCaller{0x004835F0}.c_call<CDedLevel*>();
@@ -2004,6 +2024,8 @@ std::string editor_address_space_shortfall(std::uint64_t largest, std::uint64_t 
                                            const char* advice = "Save the level and restart RED.");
 // RED's largest free block and total free address space.
 void editor_address_space_free(std::uint64_t& free_largest, std::uint64_t& free_total);
+// RED runs large address aware, with 4 GB of address space instead of 2 GB. Allocation-free.
+bool editor_large_address_aware();
 
 // Inside RED's autosave (CDedDoc::LoadSaveLevel with is_autosave set).
 bool level_autosave_in_progress();

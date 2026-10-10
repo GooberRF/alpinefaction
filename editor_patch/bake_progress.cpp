@@ -10,6 +10,7 @@
 #include "bake_progress.h"
 #include "headless_bake.h"
 #include "level.h"
+#include "memory_guard.h"
 #include "resources.h"
 
 extern "C" IMAGE_DOS_HEADER __ImageBase;
@@ -62,6 +63,8 @@ struct State
 {
     bool active = false;
     bool cancelled = false;
+    // the memory guard tripped, which cancelled the bake
+    bool out_of_memory = false;
     // Cancel was pressed once, at tick `armed_at`; a second, separate press confirms it
     bool armed = false;
     DWORD armed_at = 0;
@@ -308,9 +311,35 @@ void refresh_window(bool force)
     pump_messages();
 }
 
+// A confirmed Cancel, or the memory guard's reserve serving an allocation: the bake skips the rest of its work.
+void cancel(HWND hdlg, bool out_of_memory)
+{
+    g_progress.cancelled = true;
+    g_progress.out_of_memory = out_of_memory;
+    g_progress.armed = false;
+    if (hdlg) {
+        SetDlgItemTextA(hdlg, IDCANCEL, "Cancel");
+        EnableWindow(GetDlgItem(hdlg, IDCANCEL), FALSE);
+    }
+    try {
+        if (out_of_memory) {
+            xlog::warn("Lightmap: Calculate Lighting ran out of memory, cancelling");
+        }
+        else {
+            xlog::info("Lightmap: Calculate Lighting cancelled");
+        }
+    }
+    catch (...) {
+    }
+}
+
 // Called from the bake's hooks, so nothing may unwind into the engine's frames.
 void refresh(bool force)
 {
+    if (!g_progress.cancelled && memory_guard_take_tripped()) {
+        cancel(g_progress.dlg, true);
+        force = true;
+    }
     try {
         refresh_window(force);
     }
@@ -338,15 +367,7 @@ void press_cancel(HWND hdlg)
         SetDlgItemTextA(hdlg, IDC_BAKE_PHASE_TEXT, confirm_text);
         return;
     }
-    g_progress.cancelled = true;
-    g_progress.armed = false;
-    SetDlgItemTextA(hdlg, IDCANCEL, "Cancel");
-    EnableWindow(GetDlgItem(hdlg, IDCANCEL), FALSE);
-    try {
-        xlog::info("Lightmap: Calculate Lighting cancelled");
-    }
-    catch (...) {
-    }
+    cancel(hdlg, false);
 }
 
 INT_PTR CALLBACK progress_proc(HWND hdlg, UINT msg, WPARAM wparam, LPARAM)
@@ -598,6 +619,11 @@ BakePhase bake_progress_current()
 bool bake_progress_cancelled()
 {
     return g_progress.cancelled;
+}
+
+bool bake_progress_out_of_memory()
+{
+    return g_progress.out_of_memory;
 }
 
 void bake_progress_defer_message(const char* caption, const std::string& msg)

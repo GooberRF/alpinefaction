@@ -103,6 +103,9 @@ Version 1.5.0 (Trillium): Not yet released
 - Allow dragging objects from the level editor's object tree into a viewport
 - Add a move, rotate and scale gizmo with toggleable snapping and Shift-drag duplicate to the level editor
 - Allow undoing paste of Alpine objects in the level editor
+- Load sounds from `user_maps\sounds` and its subdirectories in the level editor
+- Add launcher option to let the level editor use up to 4 GB of memory instead of 2 GB (large address aware copy of `RED.exe` as `RED_laa.exe`)
+- Accept `RED.exe` patched to be large address aware in the launcher
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Add `ui_color_console` console command to set the console background color
@@ -142,6 +145,9 @@ Version 1.5.0 (Trillium): Not yet released
 - Fix the fusion not being in-scope for the `Delayed Supers` mutator
 - Fix `Set_Light_Color` discarding the intensity of the lights it links to
 - Fix level editor packfile creation to include the frames and alpha mask of ATX textures used on faces and decals, and to include `.atx` files referenced by a legacy texture name
+- Fix level editor packfile creation to include custom sounds used by `Ambient Sound`, moving groups, and `Play_Sound`, `Switch` and `Music_Start` events, and to report referenced sounds that cannot be found
+- Fix level editor packfile creation to include `Mesh` object texture overrides, `Mesh_Set_Texture` and `World_HUD_Sprite` event textures, snow `Weather Region` bitmaps, and `Set_Debris` event meshes and their textures
+- Fix level editor packfile creation reporting textures that ship with the game as missing files
 - Fix crash when a bone, tag, or prop point is queried on a character whose mesh file contains no submeshes, or when such a character's weapon or textures are preloaded for rendering
 - Fix items not rotating correctly when out of view or when viewed through a Projection Camera
 - Fix Alpine Mesh objects using skeletal meshes receiving no light from the level in the `Ambient` and `Vertex` mesh lighting modes
@@ -190,6 +196,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Fix level editor crashing when Direct3D fails to create a texture
 - Stop `Build Geometry` and `Calculate Lighting` in the level editor with a message when too little memory is left to finish them (instead of crashing)
 - Reduce the memory `Calculate Lighting` needs in the level editor, and how much of it must be in one piece
+- Fix level editor crashing or freezing when it runs out of memory; it now cancels `Build Geometry` or `Calculate Lighting` and explains why, or closes with an explanation when it cannot recover
 - Fix level editor crashing in `Calculate Lighting` when a level needs more than 32767 lightmap surfaces; without `D3D11-only lightmaps`, faces past the limit are left without a lightmap and the editor warns
 - Fix geomod craters creating new lightmap surfaces on every crater once a level holds more than 32767 of them
 - Fix memory corruption when more than 1024 rooms are visible at once
@@ -219,6 +226,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Fix 8-bit greyscale TGA textures with mipmap files sometimes loading with garbage pixels
 - Show control characters in texture filenames as escape sequences in log warnings
 - Fix new levels in the level editor defaulting to legacy `Cyclic_Timer` and mover behaviour
+- Fix crash reports leaving out memory regions and backtrace frames above 2 GB when the game or level editor runs with 4 GB of address space
 
 [@is-this-c](https://github.com/is-this-c)
 - Let `Caps Lock` capitalize
