@@ -197,7 +197,7 @@ bool gameseq_stack_contains(const rf::GameState state) {
 }
 
 // Does not include `gameseq_state_stack`'s top state.
-bool gameseq_stack_conceals(const rf::GameState state) {
+bool gameseq_is_deep_stacked(const rf::GameState state) {
     for (int i = 0; i < rf::gameseq_stack_top_index; ++i) {
         if (rf::gameseq_state_stack[i] == state) {
             return true;
