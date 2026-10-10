@@ -31,6 +31,7 @@
 #include "awards.h"
 #include "sprays.h"
 #include "gungame.h"
+#include "bagman.h"
 #include "../misc/player.h"
 #include "../misc/misc.h"
 #include "kill.h"
@@ -479,19 +480,25 @@ void on_player_kill(rf::Player* killed_player, rf::Player* killer_player)
 
     if (killer_player) {
         auto* killer_stats = static_cast<PlayerStatsNew*>(killer_player->stats);
-        const bool score_from_kills = !gt_uses_custom_scoring();
+        // Bagman scores frags on top of bag time; a client mirrors that only for servers that award it.
+        const bool frags_score = !gt_uses_custom_scoring()
+            || (gt_is_bagman_any() && (rf::is_server || is_server_minimum_af_version(1, 5)));
         if (killer_player != killed_player) {
-            if (score_from_kills) {
+            if (frags_score) {
                 // No score for team kills for individual or team
                 const bool team_kill = multi_is_team_game_type() && killer_player->team == killed_player->team;
                 if (!team_kill) {
                     rf::player_add_score(killer_player, 1);
+                    if (gt_is_tbag()) {
+                        bagman_add_team_score(killer_player, 1);
+                    }
                 }
             }
             killer_stats->inc_kills();
         }
         else {
-            if (score_from_kills) {
+            // Custom-scored modes keep suicides free: their score tracks the objective, not a frag balance.
+            if (!gt_uses_custom_scoring()) {
                 rf::player_add_score(killer_player, -1);
 
                 // decrement TDM team score on self kill in match mode servers

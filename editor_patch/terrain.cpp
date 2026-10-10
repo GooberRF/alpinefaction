@@ -13,6 +13,7 @@
 #include <new>
 #include <random>
 #include <span>
+#include <unordered_set>
 #include <vector>
 #include <zlib.h>
 #include <stb_image.h>
@@ -649,9 +650,24 @@ void terrain_serialize_chunk(CDedLevel& level, rf::File& file, bool group)
     at::DecorationBudget budget;
     budget.instances++;
     uint32_t instances = 0;
+    // The distinct meshes the game loads for them (DecorationMeshCache), by lowercased name
+    std::unordered_set<std::string> meshes;
     for (const auto& rec : records) {
         if (!rec.write_mapping || budget.spent()) continue;
         const DedTerrain& t = *rec.terrain;
+        for (const DedTerrainDecoration& deco : t.data.decorations) {
+            const std::string& m = deco.mesh;
+            if (group || deco.density <= 0.0f || m.empty() || !at::decoration_mesh_valid(m.c_str(), m.size()) ||
+                at::decoration_mesh_is_vfx(m.c_str(), m.size())) {
+                continue;
+            }
+            try {
+                meshes.insert(string_to_lower(m));
+            }
+            catch (const std::bad_alloc&) {
+                xlog::error("[Terrain] out of memory counting the decoration meshes");
+            }
+        }
         instances += terrain_decoration_instances(t.uid, t.pos, t.data, budget);
     }
     try {
@@ -665,6 +681,12 @@ void terrain_serialize_chunk(CDedLevel& level, rf::File& file, bool group)
                                            "(most on ground steeper than their slope limit); the game draws the "
                                            "{} instances found first.",
                                            at::max_level_decoration_candidates, instances));
+        }
+        if (meshes.size() > at::max_level_decoration_meshes) {
+            problems.push_back(std::format("The level's terrain decorations use {} different meshes; the game loads "
+                                           "the first {} (by terrain, then list order) and draws nothing for the "
+                                           "rest.",
+                                           meshes.size(), at::max_level_decoration_meshes));
         }
     }
     catch (const std::bad_alloc&) {

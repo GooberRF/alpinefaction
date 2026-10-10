@@ -101,6 +101,11 @@ namespace
         jeep.upright_air_scale = 0.50f;
         jeep.tilt_damp = 2.5f;
         jeep.chassis_trim_side = 0.20f;
+        jeep.chassis_trim_top = 0.15f;
+        // Only the roll cage, windshield and gun mount rise above the hood and rear deck.
+        jeep.chassis_cab_z_min = -1.10f;
+        jeep.chassis_cab_z_max = 1.10f;
+        jeep.chassis_body_top = 0.80f;
         jeep.chassis_clearance = 0.10f;
         jeep.step_climb_height = 0.60f;
         jeep.cam_enable = 1.0f;
@@ -407,11 +412,6 @@ namespace
             if (!owned->body) {
                 continue;
             }
-            // WANTS_DEACTIVATION too: buildIslands puts such a body to sleep on the next substep.
-            const int state = owned->body->getActivationState();
-            if (state != ISLAND_SLEEPING && state != WANTS_DEACTIVATION) {
-                continue;
-            }
             btVector3 blo;
             btVector3 bhi;
             owned->body->getAabb(blo, bhi);
@@ -419,8 +419,15 @@ namespace
             blo.setY(blo.y() - (owned->wheel_reach + 0.5f));
             blo -= bpad;
             bhi += bpad;
-            if (blo.x() <= hi.x() && bhi.x() >= lo.x() && blo.y() <= hi.y()
-                && bhi.y() >= lo.y() && blo.z() <= hi.z() && bhi.z() >= lo.z()) {
+            if (blo.x() > hi.x() || bhi.x() < lo.x() || blo.y() > hi.y() || bhi.y() < lo.y()
+                || blo.z() > hi.z() || bhi.z() < lo.z()) {
+                continue;
+            }
+            // Awake or not: a hull resting here may be replaying wheel casts against what just changed.
+            owned->wheel_casts.clear();
+            // WANTS_DEACTIVATION too: buildIslands puts such a body to sleep on the next substep.
+            const int state = owned->body->getActivationState();
+            if (state == ISLAND_SLEEPING || state == WANTS_DEACTIVATION) {
                 owned->body->activate(true);
             }
         }
@@ -1178,6 +1185,16 @@ void level_mesh_poll_remesh()
 bool level_mesh_active()
 {
     return g_level_mesh_built && !(level_mesh_chunk_count() == 0 && g_mover_mesh.empty());
+}
+
+uint32_t level_mesh_rebuild_serial()
+{
+    return g_level_mesh_rebuild_serial;
+}
+
+bool level_mesh_remesh_pending()
+{
+    return !g_remesh_pending.empty();
 }
 
 void level_mesh_debug_collect(const rf::Vector3& center, float radius,

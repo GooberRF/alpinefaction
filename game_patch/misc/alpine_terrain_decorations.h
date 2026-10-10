@@ -1,8 +1,10 @@
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <iterator>
 #include <vector>
 #include <common/terrain/alpine_terrain.h>
 #include "alpine_terrain.h"
@@ -44,15 +46,19 @@ struct TerrainDecorations
 {
     std::vector<GpuDecorationInstance> inst; // chunk-major, then decoration
     std::vector<DecorationChunk> chunks;     // by chunk index, empty for an undecorated terrain
-    int mesh_slot[alpine_terrain::max_decorations] = {-1, -1, -1, -1, -1, -1, -1, -1};
+    int mesh_slot[alpine_terrain::max_decorations];
     float draw_distance[alpine_terrain::max_decorations] = {};
     float vertical_offset[alpine_terrain::max_decorations] = {};
     bool dither_fade[alpine_terrain::max_decorations] = {};
     alpine_terrain::DecorationEdges edges[alpine_terrain::max_decorations] = {};
     // Chunks whose instance ranges changed since the D3D11 renderer last uploaded them
     std::vector<std::uint32_t> dirty_chunks;
+
+    TerrainDecorations()
+    {
+        std::fill(std::begin(mesh_slot), std::end(mesh_slot), -1);
+    }
 };
-static_assert(alpine_terrain::max_decorations == 8, "TerrainDecorations::mesh_slot initializes each slot to -1");
 
 struct DecorationFrameStats
 {

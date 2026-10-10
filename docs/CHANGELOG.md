@@ -101,6 +101,9 @@ Version 1.5.0 (Trillium): Not yet released
 - Add `Camera far clip` level property to set how far the level is drawn independently of the fog far clip
 - Add an object placement panel to object mode in the level editor
 - Allow dragging objects from the level editor's object tree into a viewport
+- Award a point per frag in Bagman and Team Bagman, and a team point in Team Bagman
+- Show `Your team has the bag` in Team Bagman
+- Add team-relative bag carrier icons and outline colors
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Add `ui_color_console` console command to set the console background color
