@@ -18,6 +18,7 @@
 #include "../main/main.h"
 #include "../os/console.h"
 #include "../misc/vpackfile.h"
+#include "../hud/subtitles.h"
 
 static int g_cutscene_bg_sound_sig = -1;
 static int g_custom_sound_entry_start = -1;
@@ -106,10 +107,16 @@ CallHook<void()> cutscene_play_music_hook{
 FunHook<int(const char*, float)> snd_music_play_cutscene_hook{
     0x00505D70,
     [](const char *filename, float volume) {
+        subtitles_cutscene_begin(filename);
         g_cutscene_bg_sound_sig = snd_music_play_cutscene_hook.call_target(filename, volume);
         return g_cutscene_bg_sound_sig;
     },
 };
+
+bool is_cutscene_music_playing()
+{
+    return g_cutscene_bg_sound_sig != -1;
+}
 
 void disable_sound_before_cutscene_skip()
 {
@@ -201,6 +208,10 @@ FunHook<int(int, int, float, float)> snd_play_hook{
             return -1;
         }
 
+        // Only once the sound is actually playing: a saturated channel pool returns
+        // -1, and a subtitle for a line nobody heard is worse than none.
+        subtitles_on_sound_play(handle, nullptr);
+
         instance.sig = sig;
         instance.handle = handle;
         instance.group = group;
@@ -264,7 +275,6 @@ FunHook<int(int, const rf::Vector3&, float, const rf::Vector3&, int)> snd_play_3
             return -1;
         }
 
-
         bool looping = rf::sounds[handle].is_looping;
         int instance_index = snd_get_free_instance();
         if (instance_index < 0) {
@@ -296,6 +306,8 @@ FunHook<int(int, const rf::Vector3&, float, const rf::Vector3&, int)> snd_play_3
         if (sig < 0) {
             return -1;
         }
+
+        subtitles_on_sound_play(handle, &pos);
 
         instance.sig = sig;
         instance.handle = handle;
@@ -912,6 +924,8 @@ void play_chat_sound(const std::string_view msg, const bool is_taunt) {
 
 extern void snd_ds_apply_patch();
 extern void sound_foley_apply_patches();
+
+
 
 void apply_sound_patches()
 {
