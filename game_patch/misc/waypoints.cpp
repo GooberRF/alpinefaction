@@ -9131,7 +9131,7 @@ static void awpgen_do_frame()
         xlog::error("-awpgen: timed out after 60 minutes, quitting");
         g_awpgen.state = AwpgenState::idle;
         g_awpgen_active = false;
-        rf::gameseq_set_state(rf::GS_QUITING, false);
+        rf::gameseq_set_state(rf::GS_QUIT_GAME, false);
         return;
     }
 
@@ -9168,7 +9168,7 @@ static void awpgen_do_frame()
 
         g_awpgen.state = AwpgenState::idle;
         g_awpgen_active = false;
-        rf::gameseq_set_state(rf::GS_QUITING, false);
+        rf::gameseq_set_state(rf::GS_QUIT_GAME, false);
         return;
     }
 }

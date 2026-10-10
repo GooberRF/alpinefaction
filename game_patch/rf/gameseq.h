@@ -4,17 +4,18 @@
 
 namespace rf
 {
-    enum GameState
+    enum GameState : int
     {
-        GS_INIT = 0x1,
+        GS_NONE = 0x0,
+        GS_GAME_START = 0x1,
         GS_MAIN_MENU = 0x2,
         GS_EXTRAS_MENU = 0x3,
         GS_INTRO_VIDEO = 0x4,
         GS_NEW_LEVEL = 0x5,
         GS_SAVE_GAME_MENU = 0x6,
         GS_LOAD_GAME_MENU = 0x7,
-        GS_QUICK_SAVE = 0x8, // unused
-        GS_QUICK_RESTORE = 0x9, // unused
+        GS_QUICK_SAVE = 0x8,
+        GS_QUICK_RESTORE = 0x9,
         GS_LEVEL_TRANSITION = 0xA,
         GS_GAMEPLAY = 0xB,
         GS_C = 0xC, // unused
@@ -22,7 +23,7 @@ namespace rf
         GS_OPTIONS_MENU = 0xE,
         GS_MULTI_MENU = 0xF,
         GS_HELP = 0x10,
-        GS_QUITING = 0x11,
+        GS_QUIT_GAME = 0x11,
         GS_MULTI_SPLITSCREEN_GAMEPLAY = 0x12,
         GS_GAME_OVER = 0x13,
         GS_MESSAGE_LOG = 0x14,
@@ -44,7 +45,6 @@ namespace rf
     };
     static_assert(GS_NUM_STATES == 0x23, "more states will corrupt gameseq_state_info variable");
 
-    static auto& gameseq_close_state = addr_as_ref<void(GameState state, GameState new_state, bool force)>(0x004B1BF0);
     static auto& gameseq_set_state = addr_as_ref<void(GameState state, bool force)>(0x00434190);
     static auto& gameseq_get_state = addr_as_ref<GameState()>(0x00434200);
     static auto& gameseq_get_pending_state = addr_as_ref<GameState()>(0x00434220);
@@ -52,6 +52,12 @@ namespace rf
     static auto& gameseq_push_state = addr_as_ref<void(GameState state, bool transparent, bool pause_beneath)>(0x00434410);
     static auto& gameseq_process = addr_as_ref<GameState()>(0x00434230);
     static auto& gameseq_process_deferred_change = addr_as_ref<GameState()>(0x00434310);
+
+    static auto& gameseq_pending_push = addr_as_ref<bool>(0x006300EB);
+    static auto& gameseq_state_stack = addr_as_ref<GameState[16]>(0x00630064);
+    static auto& gameseq_stack_top_index = addr_as_ref<int>(0x005967A4);
+
+    static auto& rf_close_state = addr_as_ref<void(GameState state, GameState new_state, bool immediately)>(0x004B1BF0);
 
     static auto& game_shutdown = addr_as_ref<void()>(0x004359E0);
     static auto& game_paused = addr_as_ref<bool>(0x00637086);

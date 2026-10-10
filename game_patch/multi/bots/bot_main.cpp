@@ -2745,7 +2745,7 @@ void client_bot_do_frame()
         else if (g_client_bot_state.server_config_timeout_timer.elapsed()) {
             if (g_alpine_game_config.bot_quit_when_disconnected) {
                 WARN_ONCE("Bot did not receive config from server within timeout - auto-quitting");
-                rf::gameseq_set_state(rf::GS_QUITING, false);
+                rf::gameseq_set_state(rf::GS_QUIT_GAME, false);
             }
             else {
                 xlog::warn("Bot did not receive config from server within timeout - disconnecting");
@@ -2764,7 +2764,7 @@ void client_bot_do_frame()
             if (g_alpine_game_config.bot_quit_when_disconnected) {
                 xlog::warn("Bot connection watchdog expired (no gameplay for {}s after config) - auto-quitting",
                     kBotConnectionWatchdogMs / 1000);
-                rf::gameseq_set_state(rf::GS_QUITING, false);
+                rf::gameseq_set_state(rf::GS_QUIT_GAME, false);
             }
             else {
                 xlog::warn("Bot connection watchdog expired - disconnecting");

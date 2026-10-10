@@ -184,7 +184,7 @@ FunHook<rf::Key()> key_get_hook{
         if ((key & rf::KEY_MASK) == rf::KEY_ESC
             && key & rf::KEY_SHIFTED
             && g_alpine_game_config.quick_exit) {
-            rf::gameseq_set_state(rf::GameState::GS_QUITING, false);
+            rf::gameseq_set_state(rf::GameState::GS_QUIT_GAME, false);
         MAYBE_CANCEL_BINK:
             // If we are playing a video, cancel it.
             const int bink_handle = addr_as_ref<int>(0x018871E4);
