@@ -1077,7 +1077,7 @@ public:
         if (rf::gameseq_get_state() == rf::GS_MULTI_LEVEL_DOWNLOAD) {
             rf::gameseq_set_state(rf::GS_NEW_LEVEL, false);
         } else {
-            // `GS_MULTI_LEVEL_DOWNLOAD` is stacked.
+            // `GS_MULTI_LEVEL_DOWNLOAD` is deep stacked.
             g_gameseq_defer_new_level = true;
         }
     }
