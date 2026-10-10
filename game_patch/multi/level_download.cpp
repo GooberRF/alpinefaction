@@ -1385,7 +1385,7 @@ CallHook<void(rf::GameState, bool)> process_enter_limbo_packet_gameseq_set_state
     0x0047C091,
     [] (const rf::GameState state, const bool force) {
         xlog::trace("Enter limbo");
-        if (gameseq_stack_contains(rf::GS_MULTI_LEVEL_DOWNLOAD)) {
+        if (gameseq_is_stacked(rf::GS_MULTI_LEVEL_DOWNLOAD)) {
             // Do not enter `GS_MULTI_LIMBO`, because we would crash, if no level is loaded.
             LevelDownloadManager::instance().abort();
             // Enter `GS_MULTI_LIMBO_JUST_JOINED`, so as to draw "BETWEEN LEVELS..." etc.
