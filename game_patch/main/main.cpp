@@ -222,7 +222,7 @@ CodeInjection after_level_render_hook{
 FunHook<void()> game_render_cursor_hook{
     0x00435460,
     [] {
-        if (gameseq_renders_frame()) {
+        if (gameseq_is_visible()) {
             game_render_cursor_hook.call_target();
         }
     },
@@ -234,7 +234,7 @@ CodeInjection after_frame_render_hook{
         if (!rf::is_dedicated_server) {
             gas_region_transition_do_frame();
 
-            if (gameseq_renders_frame() && !is_headless_mode()) {
+            if (gameseq_is_visible() && !is_headless_mode()) {
                 // Draw on top (after scene)
                 g_solid_render_ui();
                 awards_client_do_frame();

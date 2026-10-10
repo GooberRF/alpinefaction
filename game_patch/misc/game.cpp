@@ -206,7 +206,7 @@ bool gameseq_is_deep_stacked(const rf::GameState state) {
     return false;
 }
 
-bool gameseq_renders_frame() {
+bool gameseq_is_visible() {
     const rf::GameState state =
         rf::gameseq_state_stack[rf::gameseq_stack_top_index];
     return state != rf::GS_MULTI_GETTING_STATE_INFO

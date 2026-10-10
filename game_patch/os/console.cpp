@@ -264,7 +264,7 @@ static FunHook<void()> console_draw_client_hook{
         // Fixes console rendering in endgame state
         rf::gr::reset_clip();
 
-        if (gameseq_renders_frame()) {
+        if (gameseq_is_visible()) {
             console_draw_client_hook.call_target();
         }
     },
