@@ -1,6 +1,8 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
+#include <limits>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -23,9 +25,14 @@ struct DecorationMesh
 class DecorationMeshCache
 {
 public:
-    explicit DecorationMeshCache(float max_radius) : max_radius_{max_radius} {}
+    explicit DecorationMeshCache(float max_radius,
+                                 std::uint32_t max_loads = std::numeric_limits<std::uint32_t>::max()) :
+        max_radius_{max_radius}, max_loads_{max_loads}
+    {
+    }
 
-    // The slot of `name`'s mesh, loaded on first use; -1 for a name that does not load, warned once as `log_tag`.
+    // The slot of `name`'s mesh, loaded on first use; -1 for a name that does not load or comes after max_loads
+    // others were tried, warned once as `log_tag`.
     int resolve(const std::string& name, const char* log_tag);
     // Records `name` as not loading without trying; false when it was already known.
     bool reject(const std::string& name);
@@ -37,6 +44,9 @@ public:
 
 private:
     float max_radius_;
+    std::uint32_t max_loads_;
+    std::uint32_t loads_ = 0;
+    bool over_max_loads_ = false;
     std::vector<DecorationMesh> meshes_;
     // Lowercased name -> slot, or -1 for a name known not to load
     std::unordered_map<std::string, int> lookup_;

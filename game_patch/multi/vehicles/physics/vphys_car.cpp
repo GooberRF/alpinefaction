@@ -21,6 +21,8 @@ constexpr float wheel_arc_back_deg = 25.0f;
 // How long the handbrake must hold a hull grounded and still before it pins it.
 constexpr float handbrake_settle_s = 0.5f;
 constexpr float tread_cover_rate = 6.0f; // 1/s
+// No contact box, nor any part a box is split into, is thinner than twice this on any axis.
+constexpr float contact_min_half = 0.05f;
 
 // 0x00498E80 stops at every mover brush, solid or not, and returns only the nearest hit, so a mover
 // the chassis passes through is re-cast past rather than discarded.
@@ -63,15 +65,70 @@ struct RfVehicleRaycaster : public btVehicleRaycaster
 
     explicit RfVehicleRaycaster(VehicleSimBody* owning_body) : owner(owning_body) {}
 
+    // A hull at rest asks the same rays every substep, and each one is several RF world casts.
     void* castRay(const btVector3& from, const btVector3& to,
                   btVehicleRaycasterResult& result) override
+    {
+        constexpr float reuse_eps_sq = 0.001f * 0.001f;
+        WheelCastCache* cache = wheel_cache_for(from);
+        const uint32_t serial = level_mesh_rebuild_serial();
+        // A queued crater is carved before the remesh that bumps the serial, so nothing is replayed meanwhile.
+        if (cache && cache->valid && !level_mesh_remesh_pending() && cache->mesh_serial == serial
+            && cache->rest_len == owner->wheel_rest_len
+            && (from - cache->from).length2() < reuse_eps_sq && (to - cache->to).length2() < reuse_eps_sq
+            && (owner->wheel_fwd - cache->fwd).len_sq() < reuse_eps_sq) {
+            if (!cache->hit) {
+                return nullptr;
+            }
+            result.m_hitPointInWorld = cache->hit_point;
+            result.m_hitNormalInWorld = cache->hit_normal;
+            result.m_distFraction = cache->dist_fraction;
+            return this;
+        }
+        bool on_mover = false;
+        const bool hit = cast(from, to, result, on_mover);
+        if (cache) {
+            // A mover moves on its own, so a ray that met one is never replayed.
+            cache->valid = !on_mover;
+            cache->from = from;
+            cache->to = to;
+            cache->fwd = owner->wheel_fwd;
+            cache->rest_len = owner->wheel_rest_len;
+            cache->mesh_serial = serial;
+            cache->hit = hit;
+            cache->hit_point = result.m_hitPointInWorld;
+            cache->hit_normal = result.m_hitNormalInWorld;
+            cache->dist_fraction = result.m_distFraction;
+        }
+        // Any non-null pointer means "hit"; btRaycastVehicle never dereferences what we return.
+        return hit ? this : nullptr;
+    }
+
+private:
+    // btRaycastVehicle::rayCast passes its wheel's own m_hardPointWS as `from`, which names the wheel.
+    WheelCastCache* wheel_cache_for(const btVector3& from)
+    {
+        const btRaycastVehicle* veh = owner->raycast_vehicle;
+        const int n = veh ? veh->getNumWheels() : 0;
+        for (int i = 0; i < n; ++i) {
+            if (&veh->getWheelInfo(i).m_raycastInfo.m_hardPointWS == &from) {
+                if (static_cast<int>(owner->wheel_casts.size()) < n) {
+                    owner->wheel_casts.resize(n);
+                }
+                return &owner->wheel_casts[i];
+            }
+        }
+        return nullptr;
+    }
+
+    bool cast(const btVector3& from, const btVector3& to, btVehicleRaycasterResult& result, bool& on_mover)
     {
         rf::Vector3 a = from_bt(from);
         rf::Vector3 b = from_bt(to);
         const rf::Vector3 seg = b - a;
         const float raylen = seg.len();
         if (raylen < 0.0001f) {
-            return nullptr;
+            return false;
         }
         const rf::Vector3 dir = seg * (1.0f / raylen); // suspension axis, ~down
         const rf::Vector3 up = dir * -1.0f;
@@ -106,6 +163,7 @@ struct RfVehicleRaycaster : public btVehicleRaycaster
                 if (!vphys_collide_solid_segment(pa, pb, wheel_probe_flags, o)) {
                     continue;
                 }
+                on_mover |= o.obj_handle >= 0;
                 const float d_hit = (o.hit_point - pa).dot_prod(dir);
                 const float susp_len = d_hit - radius * ct; // suspension length this arc point implies
                 if (theta == 0.0f) {
@@ -120,7 +178,7 @@ struct RfVehicleRaycaster : public btVehicleRaycaster
                 }
             }
             if (best_len > 1e29f) {
-                return nullptr;
+                return false;
             }
             // Scale the extra lift a forward edge asks for by cos(theta); never below the straight-down floor.
             if (best_theta > 0.15f && straight_len < 1e29f && best_len < straight_len) {
@@ -130,8 +188,9 @@ struct RfVehicleRaycaster : public btVehicleRaycaster
         else {
             rf::PCollisionOut o{};
             if (!vphys_collide_solid_segment(a, b, wheel_probe_flags, o)) {
-                return nullptr;
+                return false;
             }
+            on_mover = o.obj_handle >= 0;
             best_len = (o.hit_point - a).dot_prod(dir) - radius;
             contact = o.hit_point;
             surf_normal = o.hit_normal;
@@ -139,7 +198,7 @@ struct RfVehicleRaycaster : public btVehicleRaycaster
         }
 
         if (best_len > rest + 0.001f) {
-            return nullptr;
+            return false;
         }
         owner->wheel_on_mover |= best_mover;
         const float susp_len = std::clamp(best_len, 0.0f, rest);
@@ -170,8 +229,7 @@ struct RfVehicleRaycaster : public btVehicleRaycaster
         result.m_hitPointInWorld = to_bt(contact);
         result.m_hitNormalInWorld = to_bt(normal);
         result.m_distFraction = std::clamp((susp_len + radius) / raylen, 0.0f, 1.0f);
-        // Any non-null pointer means "hit"; btRaycastVehicle never dereferences what we return.
-        return this;
+        return true;
     }
 };
 
@@ -187,14 +245,18 @@ void car_teardown(VehicleSimBody& b)
     b.car_action_in_world = false;
     delete b.raycaster;
     b.raycaster = nullptr;
+    b.wheel_casts.clear();
     // The compound owns no child memory; the order only keeps the body from seeing a freed shape.
     delete b.car_compound;
     b.car_compound = nullptr;
-    delete b.car_shape;
-    b.car_shape = nullptr;
+    for (int i = 0; i < car_max_shape_parts; ++i) {
+        delete b.car_shapes[i];
+        b.car_shapes[i] = nullptr;
+        b.car_shape_parts[i] = HullBox{};
+    }
+    b.car_shape_count = 0;
     b.car_box = HullBox{};
     b.car_box_base = HullBox{};
-    b.car_shape_box = HullBox{};
     b.wheel_center_y.clear();
     b.num_wheels = 0;
     b.wheel_ref_count = 0;
@@ -206,6 +268,7 @@ void car_teardown(VehicleSimBody& b)
     b.brake_accel = 0.0f;
     b.engine_cmd = 0.0f;
     b.handbrake = false;
+    b.auto_handbrake = false;
     b.handbrake_pin = false;
     b.handbrake_settle = 0.0f;
     b.wheel_on_mover = false;
@@ -227,11 +290,10 @@ HullBox hull_contact_box(const HullBox& base, const VehiclePhysicsParams& p, flo
     float hi_z = base.center.z() + base.half.z();
 
     // A NEGATIVE trim is an expansion; the clamps only stop a face crossing the midline.
-    constexpr float min_half = 0.05f;
     const auto shrink = [](float& lo, float& hi, float from_lo, float from_hi) {
         const float mid = (lo + hi) * 0.5f;
-        lo = std::min(lo + from_lo, mid - min_half);
-        hi = std::max(hi - from_hi, mid + min_half);
+        lo = std::min(lo + from_lo, mid - contact_min_half);
+        hi = std::max(hi - from_hi, mid + contact_min_half);
     };
     shrink(lo_x, hi_x, p.chassis_trim_side, p.chassis_trim_side);
     // The bottom face is the box/wheel jurisdiction line; the contact line itself is wheel_reach.
@@ -242,6 +304,32 @@ HullBox hull_contact_box(const HullBox& base, const VehiclePhysicsParams& p, flo
     box.half = btVector3((hi_x - lo_x) * 0.5f, (hi_y - lo_y) * 0.5f, (hi_z - lo_z) * 0.5f);
     box.center = btVector3((hi_x + lo_x) * 0.5f, (hi_y + lo_y) * 0.5f, (hi_z + lo_z) * 0.5f);
     return box;
+}
+
+// Stacked, not overlapping: two children under the same ground would double its contact impulse.
+int hull_contact_parts(const HullBox& outer, const VehiclePhysicsParams& p, HullBox out[car_max_shape_parts])
+{
+    out[0] = outer;
+    if (p.chassis_cab_z_max <= p.chassis_cab_z_min) {
+        return 1;
+    }
+    const float lo_y = outer.center.y() - outer.half.y();
+    const float hi_y = outer.center.y() + outer.half.y();
+    const float cab_lo_z = std::max(p.chassis_cab_z_min, outer.center.z() - outer.half.z());
+    const float cab_hi_z = std::min(p.chassis_cab_z_max, outer.center.z() + outer.half.z());
+    if (cab_hi_z - cab_lo_z < 2.0f * contact_min_half) {
+        return 1;
+    }
+    // min/max rather than std::clamp: rounding can still put the bounds an ulp out of order.
+    const float body_top = std::min(std::max(p.chassis_body_top, lo_y + contact_min_half), hi_y - contact_min_half);
+    if (body_top - lo_y < 2.0f * contact_min_half || hi_y - body_top < 2.0f * contact_min_half) {
+        return 1;
+    }
+    out[0].half.setY((body_top - lo_y) * 0.5f);
+    out[0].center.setY((body_top + lo_y) * 0.5f);
+    out[1].half = btVector3(outer.half.x(), (hi_y - body_top) * 0.5f, (cab_hi_z - cab_lo_z) * 0.5f);
+    out[1].center = btVector3(outer.center.x(), (hi_y + body_top) * 0.5f, (cab_hi_z + cab_lo_z) * 0.5f);
+    return 2;
 }
 
 // The one statement of the rule; `b` hands back the radius measured when the body was built.
@@ -523,6 +611,32 @@ namespace
         }
         return g;
     }
+
+    // The body (if any) is handed the new compound before the old one is freed.
+    void car_set_shape_parts(VehicleSimBody& b, const HullBox parts[car_max_shape_parts], int count)
+    {
+        btCompoundShape* compound = new btCompoundShape();
+        btBoxShape* shapes[car_max_shape_parts]{};
+        for (int i = 0; i < count; ++i) {
+            // btBoxShape centres on the body origin, so the compound carries the offset (body origin = pos).
+            shapes[i] = new btBoxShape(parts[i].half);
+            btTransform child;
+            child.setIdentity();
+            child.setOrigin(parts[i].center);
+            compound->addChildShape(child, shapes[i]);
+        }
+        if (b.body) {
+            b.body->setCollisionShape(compound);
+        }
+        delete b.car_compound;
+        b.car_compound = compound;
+        for (int i = 0; i < car_max_shape_parts; ++i) {
+            delete b.car_shapes[i];
+            b.car_shapes[i] = shapes[i];
+            b.car_shape_parts[i] = i < count ? parts[i] : HullBox{};
+        }
+        b.car_shape_count = count;
+    }
 } // namespace
 
 float hull_radius_for(const VehiclePhysicsParams& p, const rf::Object* op)
@@ -551,6 +665,7 @@ void body_seed_from_entity(VehicleSimBody& b, rf::Entity* ep)
     b.body->setInterpolationAngularVelocity(btVector3(0, 0, 0));
     b.body->clearForces();
     b.written_pos = ep->pos;
+    b.wheel_casts.clear();
 }
 
 void body_apply_mass(VehicleSimBody& b, const VehiclePhysicsParams& p, const rf::Entity* ep)
@@ -700,14 +815,9 @@ void car_body_create(VehicleSimBody& b, rf::Entity* ep, int cls)
     const HullBox box = hull_contact_box(base, p, hull_bottom_raise(p, ep, &b));
     b.car_box_base = base;
     b.car_box = box;
-    b.car_shape_box = box;
-    // btBoxShape centres on the body origin, so the compound carries the offset (body origin = pos).
-    b.car_shape = new btBoxShape(box.half);
-    b.car_compound = new btCompoundShape();
-    btTransform child;
-    child.setIdentity();
-    child.setOrigin(box.center);
-    b.car_compound->addChildShape(child, b.car_shape);
+    HullBox parts[car_max_shape_parts];
+    const int part_count = hull_contact_parts(box, p, parts);
+    car_set_shape_parts(b, parts, part_count);
 
     b.motion_state = new btDefaultMotionState();
     btRigidBody::btRigidBodyConstructionInfo ci(1.0f, b.motion_state, b.car_compound,
@@ -719,10 +829,12 @@ void car_body_create(VehicleSimBody& b, rf::Entity* ep, int cls)
     b.body->setUserPointer(&b);
     // A car at rest would otherwise be slept by the island manager and stop answering input.
     b.body->setActivationState(DISABLE_DEACTIVATION);
-    // CCD: threshold is half the box's smallest dimension, swept proxy half of that (Bullet's guidance).
+    // CCD: threshold is half the smallest dimension of any part, swept proxy half of that (Bullet's guidance).
     {
-        const float min_half =
-            std::min({box.half.x(), box.half.y(), box.half.z()});
+        float min_half = std::min({parts[0].half.x(), parts[0].half.y(), parts[0].half.z()});
+        for (int i = 1; i < part_count; ++i) {
+            min_half = std::min({min_half, parts[i].half.x(), parts[i].half.y(), parts[i].half.z()});
+        }
         b.body->setCcdMotionThreshold(min_half);
         b.body->setCcdSweptSphereRadius(min_half * 0.5f);
     }
@@ -748,23 +860,18 @@ void car_body_create(VehicleSimBody& b, rf::Entity* ep, int cls)
 void car_apply_box_shape(VehicleSimBody& b, const VehiclePhysicsParams& p, rf::Entity* ep,
                          const HullBox& box)
 {
-    const HullBox& cur = b.car_shape_box;
-    if ((box.half - cur.half).length() < 0.005f && (box.center - cur.center).length() < 0.005f) {
+    HullBox parts[car_max_shape_parts];
+    const int count = hull_contact_parts(box, p, parts);
+    bool same = count == b.car_shape_count;
+    for (int i = 0; same && i < count; ++i) {
+        const HullBox& cur = b.car_shape_parts[i];
+        same = (parts[i].half - cur.half).length() < 0.005f && (parts[i].center - cur.center).length() < 0.005f;
+    }
+    if (same) {
         return;
     }
     g_vphys.world->removeRigidBody(b.body);
-    btBoxShape* shape = new btBoxShape(box.half);
-    btCompoundShape* compound = new btCompoundShape();
-    btTransform child;
-    child.setIdentity();
-    child.setOrigin(box.center);
-    compound->addChildShape(child, shape);
-    b.body->setCollisionShape(compound);
-    delete b.car_compound;
-    delete b.car_shape;
-    b.car_compound = compound;
-    b.car_shape = shape;
-    b.car_shape_box = box;
+    car_set_shape_parts(b, parts, count);
     b.body_mass = 0.0f; // force the inertia tensor to be rebuilt against the new box
     body_apply_mass(b, p, ep);
     g_vphys.world->addRigidBody(b.body, vphys_group_hull, vphys_mask_no_hull);
@@ -825,6 +932,7 @@ bool apply_car_controls(VehicleSimBody& b, rf::Entity* ep, const VehiclePhysicsP
     // A hull nobody has entered since it spawned holds its spot; a ram shove's grace releases it.
     const VehicleState* hull_st = b.server_owned ? vehicle_hull_state(ep->handle) : nullptr;
     const bool auto_handbrake = hull_st && !hull_st->entered_once && !shove_grace;
+    b.auto_handbrake = auto_handbrake && p.handbrake_force > 0.0f;
     // While seated, controls_read adds held jump to ci.move.y (0x004A60EF forces its hold mode).
     b.handbrake = (ci.move.y > 0.5f || auto_handbrake) && p.handbrake_force > 0.0f;
     if (!b.handbrake) {

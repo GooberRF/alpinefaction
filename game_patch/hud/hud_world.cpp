@@ -956,6 +956,25 @@ void build_ephemeral_world_hud_strings() {
     }
 }
 
+static rf::Player* world_hud_viewed_player()
+{
+    if (multi_spectate_is_spectating()) {
+        return multi_spectate_get_target_player();
+    }
+    return rf::local_player;
+}
+
+static int world_hud_viewer_team()
+{
+    const rf::Player* viewer = world_hud_viewed_player();
+    return viewer ? static_cast<int>(viewer->team) : -1;
+}
+
+static int objective_carrier_icon(bool carrier_is_friendly)
+{
+    return carrier_is_friendly ? g_world_hud_assets.sal_wait : g_world_hud_assets.bag_player_icon;
+}
+
 void build_bag_icon()
 {
     bagman_update_dynamic_light();
@@ -970,8 +989,9 @@ void build_bag_icon()
         rf::Vector3 pos = carrier_ep->pos;
         pos.y += WorldHUDRender::bag_player_icon_offset;
 
-        const int bitmap_handle = g_world_hud_assets.bag_player_icon;
-        do_render_world_hud_sprite(pos, 0.6f, bitmap_handle, WorldHUDRenderMode::overdraw, true, true, true);
+        const bool carrier_is_friendly = gt_is_tbag() && g_bagman_info.carrier->team == world_hud_viewer_team();
+        do_render_world_hud_sprite(pos, 0.6f, objective_carrier_icon(carrier_is_friendly),
+            WorldHUDRenderMode::overdraw, true, true, true);
         return;
     }
 
@@ -1014,11 +1034,6 @@ static void render_world_hud_countdown(const rf::Vector3& anchor, float y_offset
     render_string_3d(text_pos, label.c_str(), -half_text_width, -25, font, hud_amber_color);
 }
 
-static int sal_icon_carrier(bool carrier_is_friendly)
-{
-    return carrier_is_friendly ? g_world_hud_assets.sal_wait : g_world_hud_assets.bag_player_icon;
-}
-
 static int sal_icon_on_ground()    { return g_world_hud_assets.sal_take; }
 static int sal_icon_spawn_wait()   { return g_world_hud_assets.sal_wait; }
 static int sal_icon_base_red()     { return g_world_hud_assets.koth_red; }
@@ -1031,24 +1046,10 @@ static void render_salvage_sprite(const rf::Vector3& pos, int bitmap_handle, Wor
     do_render_world_hud_sprite(pos, 0.6f, bitmap_handle, render_mode, true, true, true);
 }
 
-static rf::Player* salvage_viewed_player()
-{
-    if (multi_spectate_is_spectating()) {
-        return multi_spectate_get_target_player();
-    }
-    return rf::local_player;
-}
-
-static int salvage_viewer_team()
-{
-    const rf::Player* viewer = salvage_viewed_player();
-    return viewer ? static_cast<int>(viewer->team) : -1;
-}
-
 // Team whose base should show the capture sprite.
 static int salvage_deliver_base_team()
 {
-    rf::Player* viewer = salvage_viewed_player();
+    rf::Player* viewer = world_hud_viewed_player();
     if (salvage_player_is_carrier(viewer)) {
         return viewer->team;
     }
@@ -1081,10 +1082,10 @@ void build_salvage_icons()
                 rf::Vector3 pos = carrier_ep->pos;
                 pos.y += WorldHUDRender::bag_player_icon_offset;
                 // Team-relative marker.
-                const int viewer_team = salvage_viewer_team();
+                const int viewer_team = world_hud_viewer_team();
                 const bool carrier_is_friendly =
                     viewer_team >= 0 && viewer_team == static_cast<int>(carrier->team);
-                render_salvage_sprite(pos, sal_icon_carrier(carrier_is_friendly), render_mode);
+                render_salvage_sprite(pos, objective_carrier_icon(carrier_is_friendly), render_mode);
             }
         }
         return; // nothing marks the vacant spawn while somebody is running the flag

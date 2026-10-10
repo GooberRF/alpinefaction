@@ -56,6 +56,7 @@ int bagman_get_blue_team_score();
 int bagman_get_score_tick_ms();
 void bagman_set_red_team_score(int v);
 void bagman_set_blue_team_score(int v);
+void bagman_add_team_score(rf::Player* player, int delta);
 void bagman_force_state_sync_to(rf::Player* player);
 void bagman_broadcast_state();
 bool bagman_local_player_is_carrier();
