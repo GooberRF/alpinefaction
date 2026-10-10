@@ -821,7 +821,7 @@ FunHook<MultiIoPacketHandler> process_join_deny_packet_hook{
             // Auto-quit for bots when join is denied (server full, wrong password, level changing, etc.)
             if (client_bot_launch_enabled() && g_alpine_game_config.bot_quit_when_disconnected) {
                 xlog::info("Bot join denied by server - auto-quitting (BotQuitWhenDisconnected=1)");
-                rf::gameseq_set_state(rf::GS_QUITING, false);
+                rf::gameseq_set_state(rf::GS_QUIT_GAME, false);
             }
         }
     },
@@ -3000,7 +3000,7 @@ FunHook<void()> multi_stop_hook{
         // Auto-quit for bots when disconnected from server
         if (client_bot_launch_enabled() && g_alpine_game_config.bot_quit_when_disconnected) {
             xlog::info("Bot disconnected from server - auto-quitting (BotQuitWhenDisconnected=1)");
-            rf::gameseq_set_state(rf::GS_QUITING, false);
+            rf::gameseq_set_state(rf::GS_QUIT_GAME, false);
         }
     },
 };
@@ -3013,7 +3013,7 @@ void multi_disconnect_from_server()
     }
     xlog::info("Disconnecting from server");
     rf::multi_stop();
-    // multi_stop_hook may have already set GS_QUITING for bot auto-quit.
+    // multi_stop_hook may have already set GS_QUIT_GAME for bot auto-quit.
     // Only transition to main menu for non-bot clients.
     if (!client_bot_launch_enabled() || !g_alpine_game_config.bot_quit_when_disconnected) {
         rf::gameseq_set_state(rf::GS_MAIN_MENU, false);

@@ -169,7 +169,7 @@ static bool handle_bot_cmd_line_params()
             g_client_bot_launch_enabled = false;
             g_alpine_game_config.rendering_enabled = false;
             rf::sound_enabled = false;
-            rf::gameseq_set_state(rf::GS_QUITING, false);
+            rf::gameseq_set_state(rf::GS_QUIT_GAME, false);
             return false;
         }
     }
@@ -277,7 +277,7 @@ bool handle_awpgen_param()
     const char* arg = get_awpgen_cmd_line_param().get_arg();
     if (!arg || arg[0] == '\0') {
         xlog::error("-awpgen: missing level filename, quitting");
-        rf::gameseq_set_state(rf::GS_QUITING, false);
+        rf::gameseq_set_state(rf::GS_QUIT_GAME, false);
         return true;
     }
 
@@ -286,7 +286,7 @@ bool handle_awpgen_param()
     // Validate level file is installed
     if (rf::get_file_checksum(level_filename.c_str()) == 0) {
         xlog::error("-awpgen: unknown level {}, quitting", level_filename);
-        rf::gameseq_set_state(rf::GS_QUITING, false);
+        rf::gameseq_set_state(rf::GS_QUIT_GAME, false);
         return true;
     }
 

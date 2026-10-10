@@ -6,15 +6,16 @@ namespace rf
 {
     enum GameState : int
     {
-        GS_INIT = 0x1,
+        GS_NONE = 0x0,
+        GS_GAME_START = 0x1,
         GS_MAIN_MENU = 0x2,
         GS_EXTRAS_MENU = 0x3,
         GS_INTRO_VIDEO = 0x4,
         GS_NEW_LEVEL = 0x5,
         GS_SAVE_GAME_MENU = 0x6,
         GS_LOAD_GAME_MENU = 0x7,
-        GS_QUICK_SAVE = 0x8, // unused
-        GS_QUICK_RESTORE = 0x9, // unused
+        GS_QUICK_SAVE = 0x8,
+        GS_QUICK_RESTORE = 0x9,
         GS_LEVEL_TRANSITION = 0xA,
         GS_GAMEPLAY = 0xB,
         GS_C = 0xC, // unused
@@ -22,7 +23,7 @@ namespace rf
         GS_OPTIONS_MENU = 0xE,
         GS_MULTI_MENU = 0xF,
         GS_HELP = 0x10,
-        GS_QUITING = 0x11,
+        GS_QUIT_GAME = 0x11,
         GS_MULTI_SPLITSCREEN_GAMEPLAY = 0x12,
         GS_GAME_OVER = 0x13,
         GS_MESSAGE_LOG = 0x14,

@@ -607,7 +607,7 @@ public:
             }
         }
         // Release bitmaps if not shutting down (bitmap system may be torn down during exit)
-        if (rf::gameseq_get_state() != rf::GS_QUITING) {
+        if (rf::gameseq_get_state() != rf::GS_QUIT_GAME) {
             if (image_bm_ != -1) {
                 rf::bm::release(image_bm_);
             }
@@ -1452,7 +1452,7 @@ CodeInjection join_failed_injection{
     []() {
         if (client_bot_launch_enabled() && g_alpine_game_config.bot_quit_when_disconnected) {
             xlog::info("Bot failed to join server - auto-quitting (BotQuitWhenDisconnected=1)");
-            rf::gameseq_set_state(rf::GS_QUITING, false);
+            rf::gameseq_set_state(rf::GS_QUIT_GAME, false);
             return;
         }
         set_jump_to_multi_server_list(true);

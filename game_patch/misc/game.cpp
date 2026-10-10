@@ -207,12 +207,15 @@ bool gameseq_is_deep_stacked(const rf::GameState state) {
 }
 
 bool gameseq_is_visible() {
-    const rf::GameState state =
-        rf::gameseq_state_stack[rf::gameseq_stack_top_index];
-    return state != rf::GS_MULTI_GETTING_STATE_INFO
+    const rf::GameState state = rf::gameseq_get_state();
+    return state != rf::GS_NONE
         && state != rf::GS_NEW_LEVEL
+        && state != rf::GS_QUICK_SAVE
+        && state != rf::GS_QUICK_RESTORE
         && state != rf::GS_LEVEL_TRANSITION
-        && state != rf::GS_QUITING;
+        && state != rf::GS_QUIT_GAME
+        && state != rf::GS_FRAMERATE_TEST_END
+        && state != rf::GS_MULTI_GETTING_STATE_INFO;
 }
 
 void game_apply_patch()
