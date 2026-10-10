@@ -206,6 +206,15 @@ bool gameseq_stack_conceals(const rf::GameState state) {
     return false;
 }
 
+bool gameseq_renders_frame() {
+    const rf::GameState state =
+        rf::gameseq_state_stack[rf::gameseq_stack_top_index];
+    return state != rf::GS_MULTI_GETTING_STATE_INFO
+        && state != rf::GS_NEW_LEVEL
+        && state != rf::GS_LEVEL_TRANSITION
+        && state != rf::GS_QUITING;
+}
+
 void game_apply_patch()
 {
     // Override screenshot filename and directory

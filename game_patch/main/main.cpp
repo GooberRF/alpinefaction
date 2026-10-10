@@ -222,7 +222,7 @@ CodeInjection after_level_render_hook{
 FunHook<void()> game_render_cursor_hook{
     0x00435460,
     [] {
-        if (rf::gameseq_get_state() != rf::GS_MULTI_GETTING_STATE_INFO) {
+        if (gameseq_renders_frame()) {
             game_render_cursor_hook.call_target();
         }
     },
@@ -231,14 +231,10 @@ FunHook<void()> game_render_cursor_hook{
 CodeInjection after_frame_render_hook{
     0x004B2DC2,
     [] {
-        const rf::GameState state = rf::gameseq_get_state();
-        if (!rf::is_dedicated_server
-            && state != rf::GS_QUITING
-            && state != rf::GS_NEW_LEVEL
-            && state != rf::GS_MULTI_GETTING_STATE_INFO) {
+        if (!rf::is_dedicated_server) {
             gas_region_transition_do_frame();
 
-            if (!is_headless_mode()) {
+            if (gameseq_renders_frame() && !is_headless_mode()) {
                 // Draw on top (after scene)
                 g_solid_render_ui();
                 awards_client_do_frame();

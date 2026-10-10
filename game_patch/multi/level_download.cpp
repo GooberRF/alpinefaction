@@ -1077,6 +1077,7 @@ public:
         if (rf::gameseq_get_state() == rf::GS_MULTI_LEVEL_DOWNLOAD) {
             rf::gameseq_set_state(rf::GS_NEW_LEVEL, false);
         } else {
+            // `GS_MULTI_LEVEL_DOWNLOAD` is stacked.
             g_gameseq_defer_new_level = true;
         }
     }
@@ -1402,16 +1403,15 @@ CallHook<void(rf::GameState, bool)> process_leave_limbo_packet_gameseq_set_next_
         if (!multi_next_level_exists()) {
             rf::gameseq_set_state(rf::GS_MULTI_LEVEL_DOWNLOAD, false);
             multi_level_download_manager_start(rf::level.next_level_filename);
-        } else if (rf::gameseq_get_state() == rf::GS_MULTI_LEVEL_DOWNLOAD) {
-            // Do not defer, since we do not need to dim our screen, or draw "LOADING...".
-            rf::gameseq_set_state(state, force);
-        } else if (gameseq_stack_conceals(rf::GS_MULTI_LEVEL_DOWNLOAD)
+        } else if (gameseq_stack_contains(rf::GS_MULTI_LIMBO)
             || gameseq_stack_contains(rf::GS_MULTI_LIMBO_JUST_JOINED)
-            || gameseq_stack_contains(rf::GS_MULTI_LIMBO))
+            || gameseq_stack_conceals(rf::GS_MULTI_LEVEL_DOWNLOAD))
         {
             // `gameseq_set_state` switches, immediately before `rf_do_frame` can
             // dim our screen, and draw "LOADING...", so defer transition.
             g_gameseq_defer_new_level = true;
+        } else {
+            rf::gameseq_set_state(state, force);
         }
     },
 };
