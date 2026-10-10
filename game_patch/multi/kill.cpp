@@ -489,9 +489,8 @@ void on_player_kill(rf::Player* killed_player, rf::Player* killer_player)
                 const bool team_kill = multi_is_team_game_type() && killer_player->team == killed_player->team;
                 if (!team_kill) {
                     rf::player_add_score(killer_player, 1);
-                    if (rf::is_server && gt_is_tbag()) {
+                    if (gt_is_tbag()) {
                         bagman_add_team_score(killer_player, 1);
-                        bagman_broadcast_state();
                     }
                 }
             }

@@ -2195,7 +2195,7 @@ CodeInjection multi_level_init_gametypes_injection{
     },
 };
 
-// sync scores every 5ms during gameplay to account for clientside prediction errors
+// sync scores every 2.5 s during gameplay to account for clientside prediction errors
 CodeInjection send_team_score_server_do_frame_patch{
     0x0046E5B4,
     [](auto& regs) {
