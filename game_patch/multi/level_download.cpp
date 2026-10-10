@@ -1391,8 +1391,8 @@ CallHook<void(rf::GameState, bool)> process_enter_limbo_packet_gameseq_set_state
             // Enter `GS_MULTI_LIMBO_JUST_JOINED`, so as to draw "BETWEEN LEVELS..." etc.
             rf::gameseq_set_state(rf::GS_MULTI_LIMBO_JUST_JOINED, false);
         } else if (rf::gameseq_get_pending_state() == rf::GS_GAMEPLAY) {
-            // Force a transition, in case we are a SINGLE frame after `state_info_done`,
-            // because it sets `GS_GAMEPLAY`.
+            // Force a transition, in case we are a SINGLE frame after
+            // `multi_getting_state_info_do_frame`, because it sets `GS_GAMEPLAY`.
             rf::gameseq_set_state(state, true);
         } else {
             rf::gameseq_set_state(state, force);
