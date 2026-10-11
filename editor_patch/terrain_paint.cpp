@@ -9,15 +9,12 @@
 #include <new>
 #include <string>
 #include <vector>
-#include <patch_common/CallHook.h>
-#include <patch_common/MemUtils.h>
 #include <common/terrain/alpine_terrain.h>
 #include <xlog/xlog.h>
 #include "alpine_obj.h"
 #include "alpine_spinner.h"
 #include "level.h"
 #include "mfc_types.h"
-#include "placement_panel.h"
 #include "resources.h"
 #include "terrain.h"
 #include "terrain_build.h"
@@ -32,23 +29,6 @@ namespace tp = terrain_paint;
 
 namespace
 {
-
-// ─── RED viewports ──────────────────────────────────────────────────────────
-// Mouse handlers only latch state (+0x58 cursor, +0x60..+0x62 buttons) that RED polls from its idle loop.
-
-// The view message map (0x0055C170): AFX_MSGMAP_ENTRY pfn slots of WM_LBUTTONDOWN, WM_LBUTTONUP and
-// WM_LBUTTONDBLCLK, each a thiscall (UINT flags, CPoint point) handler that returns 0xC bytes.
-constexpr uintptr_t msgmap_lbutton_down_pfn = 0x0055C19C;
-constexpr uintptr_t msgmap_lbutton_up_pfn = 0x0055C1B4;
-constexpr uintptr_t msgmap_lbutton_dblclk_pfn = 0x0055C274;
-
-bool is_view(void* view)
-{
-    for (int i = 0; view && i < editor_num_views; i++) {
-        if (editor_view_at(i) == view) return true;
-    }
-    return false;
-}
 
 // ─── State ──────────────────────────────────────────────────────────────────
 
@@ -220,9 +200,6 @@ struct Stroke
 };
 Stroke g_stroke;
 uint32_t g_stroke_count = 0;
-// The view whose WM_LBUTTONDOWN paint mode took, so its matching WM_LBUTTONUP never reaches RED's
-// click-select code either.
-void* g_swallow_up_view = nullptr;
 
 struct KeyRepeat
 {
@@ -2003,7 +1980,7 @@ INT_PTR CALLBACK TerrainToolsProc(HWND hdlg, UINT msg, WPARAM wp, LPARAM lp)
 bool paint_takes_clicks(void* view)
 {
     CDedLevel* level = CDedLevel::Get();
-    return g_panel.hwnd && is_view(view) && target_in_level(level, g_panel.target) &&
+    return g_panel.hwnd && editor_is_view(view) && target_in_level(level, g_panel.target) &&
            IsWindowEnabled(GetMainFrameHandle());
 }
 
@@ -2016,7 +1993,6 @@ void stroke_begin(void* view)
     g_stroke.hwnd = editor_view_hwnd(view);
     g_stroke.terrain = g_panel.target;
     if (g_panel.target) g_stroke.mirror = terrain_mirror(*g_panel.target);
-    g_swallow_up_view = view;
     if (g_stroke.hwnd) SetCapture(g_stroke.hwnd);
     if (tp::tool_repeats_in_place(g_settings.tool)) SetTimer(g_panel.hwnd, repeat_timer_id, repeat_ms, nullptr);
     g_note.clear();
@@ -2028,12 +2004,10 @@ void panel_click(void* view, UINT flags)
 {
     try {
         if ((flags & MK_CONTROL) && g_settings.tool == tp::Tool::set_height) {
-            g_swallow_up_view = view;
             sample_set_height(view);
             return;
         }
         if ((flags & MK_SHIFT) && (g_settings.mirror_x || g_settings.mirror_z)) {
-            g_swallow_up_view = view;
             place_mirror_lines(view);
             return;
         }
@@ -2055,57 +2029,6 @@ void stroke_release()
     catch (const std::bad_alloc&) {
         paint_out_of_memory();
     }
-}
-
-void __fastcall view_lbutton_down(void* view, void* /*edx*/, UINT flags, int x, int y)
-{
-    if (paint_takes_clicks(view)) {
-        panel_click(view, flags);
-        return;
-    }
-    g_swallow_up_view = nullptr;
-    static_cast<EditorViewport*>(view)->on_lbutton_down(flags, x, y);
-}
-
-void __fastcall view_lbutton_dblclk(void* view, void* /*edx*/, UINT flags, int x, int y)
-{
-    // The second press of a double click arrives as this instead of WM_LBUTTONDOWN.
-    if (paint_takes_clicks(view)) {
-        panel_click(view, flags);
-        return;
-    }
-    g_swallow_up_view = nullptr;
-    static_cast<EditorViewport*>(view)->on_lbutton_dblclk(flags, x, y);
-}
-
-void __fastcall view_lbutton_up(void* view, void* /*edx*/, UINT flags, int x, int y)
-{
-    if (view && view == g_swallow_up_view) {
-        g_swallow_up_view = nullptr;
-        if (g_stroke.active && g_stroke.view == view) {
-            stroke_release();
-            stroke_end();
-        }
-        return;
-    }
-    static_cast<EditorViewport*>(view)->on_lbutton_up(flags, x, y);
-}
-
-// RED's idle loop focuses whichever view's rect holds the cursor, even under another window such as
-// this panel, which cancels that window's button clicks mid-press. Stock behaviour while it is closed.
-// A drag out of the placement panel leaves the focus where it was until it ends.
-void* __fastcall view_hover_focus(void* view, void* edx);
-CallHook<void* __fastcall(void*, void*)> view_hover_focus_hook{0x004834E1, view_hover_focus};
-void* __fastcall view_hover_focus(void* view, void* edx)
-{
-    if (placement_panel_dragging()) return nullptr;
-    const HWND hwnd = editor_view_hwnd(view);
-    POINT cursor{};
-    if (g_panel.hwnd && hwnd && GetCursorPos(&cursor)) {
-        const HWND over = WindowFromPoint(cursor);
-        if (over && over != hwnd && !IsChild(hwnd, over)) return nullptr;
-    }
-    return view_hover_focus_hook.call_target(view, edx);
 }
 
 } // namespace
@@ -2294,10 +2217,22 @@ void terrain_paint_forget(const DedTerrain* terrain)
     }
 }
 
-void ApplyTerrainPaintPatches()
+bool terrain_paint_panel_open()
 {
-    write_mem_ptr(msgmap_lbutton_down_pfn, &view_lbutton_down);
-    write_mem_ptr(msgmap_lbutton_up_pfn, &view_lbutton_up);
-    write_mem_ptr(msgmap_lbutton_dblclk_pfn, &view_lbutton_dblclk);
-    view_hover_focus_hook.install();
+    return g_panel.hwnd != nullptr;
+}
+
+bool terrain_paint_view_lbutton_down(void* view, unsigned flags)
+{
+    if (!paint_takes_clicks(view)) return false;
+    panel_click(view, flags);
+    return true;
+}
+
+void terrain_paint_view_lbutton_up(void* view)
+{
+    if (g_stroke.active && g_stroke.view == view) {
+        stroke_release();
+        stroke_end();
+    }
 }

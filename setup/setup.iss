@@ -70,6 +70,13 @@ Name: "{code:GetGameDir}\client_mods"; Permissions: users-modify
 Name: "{code:GetGameDir}\screenshots"; Permissions: users-modify
 Name: "{code:GetGameDir}\logs"; Permissions: users-modify
 
+; Large address aware copy of RED.exe written by the launcher
+[UninstallDelete]
+Type: files; Name: "{code:GetGameDir}\RED_laa.exe"
+Type: files; Name: "{code:GetGameDir}\RED_laa.exe.manifest"
+Type: files; Name: "{code:GetGameDir}\RED_laa.exe.tmp"
+Type: files; Name: "{code:GetGameDir}\RED_laa.exe.manifest.tmp"
+
 [Icons]
 Name: "{group}\Alpine Faction"; Filename: "{app}\AlpineFactionLauncher.exe"
 Name: "{autodesktop}\Alpine Faction"; Filename: "{app}\AlpineFactionLauncher.exe"; Tasks: desktopicon

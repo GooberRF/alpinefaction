@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cstring>
 #include <algorithm>
+#include <array>
 #include <map>
 #include <new>
 #include <set>
@@ -80,6 +81,30 @@ static std::vector<CopyLinkEntry> g_copy_directional_light_entries;
 // Set of all UIDs that were part of the copied selection (for filtering external links)
 static std::set<int> g_copy_all_uids;
 
+// Every per-type snapshot list, in paste order
+constexpr int copy_link_list_count = 11;
+static std::array<std::vector<CopyLinkEntry>*, copy_link_list_count> copy_link_lists()
+{
+    return {&g_copy_stock_entries,           &g_copy_mesh_entries,          &g_copy_note_entries,
+            &g_copy_corona_entries,          &g_copy_bag_entries,           &g_copy_weather_region_entries,
+            &g_copy_vehicle_factory_entries, &g_copy_projection_camera_entries, &g_copy_rope_emitter_entries,
+            &g_copy_terrain_entries,         &g_copy_directional_light_entries};
+}
+
+static void alpine_clear_clipboards()
+{
+    mesh_clear_clipboard();
+    note_clear_clipboard();
+    corona_clear_clipboard();
+    bag_clear_clipboard();
+    weather_region_clear_clipboard();
+    vehicle_factory_clear_clipboard();
+    projection_camera_clear_clipboard();
+    rope_emitter_clear_clipboard();
+    terrain_clear_clipboard();
+    directional_light_clear_clipboard();
+}
+
 static bool is_alpine_type(DedObjectType type)
 {
     return type == DedObjectType::DED_MESH ||
@@ -153,17 +178,9 @@ static int remap_event_uid_fields(DedObject* const* objects, int count,
 // the original objects with their original links.
 static void capture_copy_link_snapshot()
 {
-    g_copy_stock_entries.clear();
-    g_copy_mesh_entries.clear();
-    g_copy_note_entries.clear();
-    g_copy_corona_entries.clear();
-    g_copy_bag_entries.clear();
-    g_copy_weather_region_entries.clear();
-    g_copy_vehicle_factory_entries.clear();
-    g_copy_projection_camera_entries.clear();
-    g_copy_rope_emitter_entries.clear();
-    g_copy_terrain_entries.clear();
-    g_copy_directional_light_entries.clear();
+    for (auto* list : copy_link_lists()) {
+        list->clear();
+    }
     g_copy_all_uids.clear();
 
     auto* level = CDedLevel::Get();
@@ -774,16 +791,7 @@ CodeInjection alpine_copy_begin_hook{
         auto* level = reinterpret_cast<CDedLevel*>(static_cast<uintptr_t>(regs.ecx));
         if (level->edit_mode == DedEditMode::Texture)
             return;
-        mesh_clear_clipboard();
-        note_clear_clipboard();
-        corona_clear_clipboard();
-        bag_clear_clipboard();
-        weather_region_clear_clipboard();
-        vehicle_factory_clear_clipboard();
-        projection_camera_clear_clipboard();
-        rope_emitter_clear_clipboard();
-        terrain_clear_clipboard();
-        directional_light_clear_clipboard();
+        alpine_clear_clipboards();
         capture_copy_link_snapshot();
     },
 };
@@ -860,6 +868,7 @@ static void __fastcall alpine_paste_wrapper(void* ecx_level, void* /*edx_unused*
 
     // Stock paste: clones stock clipboard entries, assigns new UIDs, remaps stock→stock links.
     // After this, selection contains newly pasted stock objects in clipboard order.
+    const UndoEntry* top_before = undo_stack_top(level->undo_stack);
     level->paste_objects();
     // Stock pastes a copied face texture in texture mode and no objects, so neither do we.
     if (level->edit_mode == DedEditMode::Texture)
@@ -910,6 +919,104 @@ static void __fastcall alpine_paste_wrapper(void* ecx_level, void* /*edx_unused*
     fix_paste_links(level, stock_count, mesh_count, note_count, corona_count, bag_count,
         weather_region_count, vehicle_factory_count, projection_camera_count, rope_emitter_count, terrain_count,
         directional_light_count);
+
+    // Alpine copies join stock's create entry so one Undo removes the whole paste; undo, redo and flush go through the
+    // graveyard hooks.
+    UndoEntry* entry = undo_stack_top(level->undo_stack);
+    if (entry && entry != top_before && entry->type == undo_create_objects_and_brushes) {
+        for (int i = stock_count; i < level->selection.size; i++) {
+            entry->objects.push_back(level->selection.data_ptr[i]);
+        }
+    }
+}
+
+// ─── Duplicate ──────────────────────────────────────────────────────────────
+
+namespace
+{
+
+// Everything Ctrl+C fills, set aside while a duplicate copies and pastes.
+struct ClipboardStash
+{
+    std::vector<DedObject*> stock_objects;
+    std::vector<BrushNode*> stock_brushes;
+    std::vector<void*> stock_304;
+    std::vector<DedMesh*> meshes;
+    std::vector<DedNote*> notes;
+    std::vector<DedCorona*> coronas;
+    std::vector<DedBag*> bags;
+    std::vector<DedWeatherRegion*> weather_regions;
+    std::vector<DedVehicleFactory*> vehicle_factories;
+    std::vector<DedProjectionCamera*> projection_cameras;
+    std::vector<DedRopeEmitter*> rope_emitters;
+    std::vector<DedTerrain*> terrains;
+    std::vector<DedDirectionalLight*> directional_lights;
+    std::array<std::vector<CopyLinkEntry>, copy_link_list_count> link_entries;
+    std::set<int> link_uids;
+
+    // Each Alpine clipboard and the link snapshot trade places with this one.
+    void swap_alpine()
+    {
+        mesh_swap_clipboard(meshes);
+        note_swap_clipboard(notes);
+        corona_swap_clipboard(coronas);
+        bag_swap_clipboard(bags);
+        weather_region_swap_clipboard(weather_regions);
+        vehicle_factory_swap_clipboard(vehicle_factories);
+        projection_camera_swap_clipboard(projection_cameras);
+        rope_emitter_swap_clipboard(rope_emitters);
+        terrain_swap_clipboard(terrains);
+        directional_light_swap_clipboard(directional_lights);
+        const auto live = copy_link_lists();
+        for (int i = 0; i < copy_link_list_count; i++) {
+            live[i]->swap(link_entries[i]);
+        }
+        g_copy_all_uids.swap(link_uids);
+    }
+};
+
+// The stock clipboard's pointers come out and its arrays are emptied in place (their buffers stay stock's), so
+// FUN_00414140 at the start of the copy frees nothing of the user's.
+template<typename T>
+void take_stock_array(VArray<T>& array, std::vector<T>& out)
+{
+    out.assign(array.data_ptr, array.data_ptr + std::max(array.size, 0));
+    array.size = 0;
+}
+
+template<typename T>
+void put_stock_array(VArray<T>& array, const std::vector<T>& items)
+{
+    for (T item : items) {
+        array.push_back(item);
+    }
+}
+
+} // namespace
+
+UndoEntry* alpine_duplicate_selection(CDedLevel* level)
+{
+    if (!level) return nullptr;
+    ClipboardStash stash;
+    take_stock_array(level->object_clipboard, stash.stock_objects);
+    take_stock_array(level->brush_clipboard, stash.stock_brushes);
+    take_stock_array(level->clipboard_304, stash.stock_304);
+    stash.swap_alpine();
+    // The duplicate's own clipboard is freed and the user's put back, however the paste ends.
+    ScopeGuard restore{[&] {
+        level->clear_clipboard();
+        alpine_clear_clipboards();
+        stash.swap_alpine();
+        put_stock_array(level->object_clipboard, stash.stock_objects);
+        put_stock_array(level->brush_clipboard, stash.stock_brushes);
+        put_stock_array(level->clipboard_304, stash.stock_304);
+    }};
+
+    const UndoEntry* top_before = undo_stack_top(level->undo_stack);
+    level->copy_selection();
+    alpine_paste_wrapper(level, nullptr);
+    UndoEntry* top = undo_stack_top(level->undo_stack);
+    return top != top_before ? top : nullptr;
 }
 
 // ─── Delete / Cut ───────────────────────────────────────────────────────────
@@ -1167,8 +1274,8 @@ CodeInjection alpine_undo_readd_patch{
     },
 };
 
-// FUN_0043d550 re-adds an undo record's objects through the injection above (for Alpine objects only ever
-// an undo of a delete: no create record holds one); any terrain it refused is still out of the level.
+// FUN_0043d550 re-adds an undo record's objects through the injection above (an undo of a delete, or a redo of a
+// paste); any terrain it refused is still out of the level.
 void __fastcall level_undo_apply_hooked(CDedLevel* level, int edx, UndoEntry* record);
 FunHook<decltype(level_undo_apply_hooked)> level_undo_apply_hook{
     0x0043d550,

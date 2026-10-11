@@ -21,6 +21,8 @@ struct GFace;
 void ApplyTerrainBuildPatches();
 // Calculate Lighting's surface pass (FUN_00448ca0) as stock runs it, without the checks its hook adds.
 void lighting_surfaces_stock(void* self);
+// The last Build Geometry to finish was cancelled because RED ran out of memory.
+bool build_geometry_out_of_memory();
 
 // "Terrain <uid> '<script name>'" for messages.
 std::string terrain_label(const DedTerrain& t);

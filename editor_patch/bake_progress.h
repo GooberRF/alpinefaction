@@ -55,6 +55,8 @@ void bake_progress_step(std::uint64_t steps = 1);
 BakePhase bake_progress_current();
 // Cancel was confirmed: the bake skips the rest of its work and leaves nothing behind.
 bool bake_progress_cancelled();
+// The bake was cancelled because RED ran out of memory (the memory guard tripped).
+bool bake_progress_out_of_memory();
 // A message box to show once the progress window has closed.
 void bake_progress_defer_message(const char* caption, const std::string& msg);
 

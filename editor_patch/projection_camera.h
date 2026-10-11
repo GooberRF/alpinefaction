@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <vector>
 #include "mfc_types.h"
 #include "level.h"
 
@@ -21,5 +22,7 @@ void projection_camera_tree_add_object_type(EditorTreeCtrl* tree);
 bool projection_camera_copy_object(DedObject* source);
 void projection_camera_paste_objects(CDedLevel* level);
 void projection_camera_clear_clipboard();
+// Swaps the staged clones with `other`, so a duplicate can copy and paste with the user's clipboard set aside.
+void projection_camera_swap_clipboard(std::vector<DedProjectionCamera*>& other);
 void projection_camera_handle_delete_or_cut(DedObject* obj);
 void projection_camera_ensure_uid(int& uid);

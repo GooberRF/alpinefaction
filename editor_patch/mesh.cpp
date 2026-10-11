@@ -1881,6 +1881,11 @@ DedMesh* mesh_click_pick(CDedLevel* level, float click_x, float click_y, float* 
 // Mesh clipboard: stores staged clones (with add_to_level=false) for Ctrl+V paste.
 static std::vector<DedMesh*> g_mesh_clipboard;
 
+void mesh_swap_clipboard(std::vector<DedMesh*>& other)
+{
+    g_mesh_clipboard.swap(other);
+}
+
 void mesh_clear_clipboard()
 {
     for (auto* mesh : g_mesh_clipboard) {

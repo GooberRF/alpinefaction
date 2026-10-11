@@ -1,5 +1,6 @@
 #include <cstring>
 #include <cctype>
+#include <format>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -15,6 +16,7 @@
 #include "level.h"
 #include "textures.h"
 #include "meshes.h"
+#include "sounds.h"
 #include "event.h"
 #include "bitmap_loaders.h"
 #include <common/utils/string-utils.h>
@@ -530,13 +532,13 @@ CodeInjection vpp_texture_path_fix{
     }
 };
 
-// Texture names come out of level and mesh files, which are shared content.
+// File names come out of level and mesh files, which are shared content.
 // Only bare filenames should be packable, not paths.
 static bool has_packable_path(const char* filename)
 {
     if (!filename || !filename[0]) return false;
     if (strpbrk(filename, "\\/:") != nullptr) {
-        xlog::warn("Refusing to pack texture with a path in its name: '{}'", filename);
+        xlog::warn("Refusing to pack file with a path in its name: '{}'", filename);
         return false;
     }
     return true;
@@ -636,15 +638,23 @@ static void expand_atx_deps_in_pack_list(void* temp_list)
     }
 }
 
-// Clear the RED console log at the start of VPP packfile creation (FUN_0044cb10),
-// before "Creating Packfile..." is printed. FUN_00444940 is __thiscall LogDlg_Clear.
+// Clear the RED console log at the start of Create Level Packfile (FUN_004482c0), so the warnings
+// its file gathering reports stay above "Creating Packfile...", which the writer FUN_0044cb10 prints.
+// FUN_00444940 is __thiscall LogDlg_Clear.
 CodeInjection vpp_clear_log_injection{
-    0x0044cb10,
+    0x004482c0,
     [](auto& regs) {
-        void* log_dlg = struct_field_ref<void*>(g_main_frame, 0x2b4);
-        log_dlg_clear(log_dlg);
+        log_dlg_clear(GetLogDlg());
     }
 };
+
+// Ships with the game: inside a packfile the editor mounted (the stock ones, alpinefaction.vpp). A file only loose in
+// an editor folder (red\textures, say) does not count, since the game will not have it either. FUN_004caae0 looks in
+// the packfiles alone, where File::open would find a loose copy first; it copies the name into 256 bytes.
+static bool shipped_in_packfile(const char* name)
+{
+    return name && std::strlen(name) < 256 && AddrCaller{0x004caae0}.c_call<void*>(name) != nullptr;
+}
 
 // FUN_0044c7a0 (process single VPP file) fails fatally when fopen returns NULL, which
 // causes two bugs: a blank VPP is left on disk, and the file list is never cleaned up
@@ -658,19 +668,18 @@ CodeInjection vpp_skip_missing_file_injection{
         auto* vstr = reinterpret_cast<VString*>(static_cast<int>(regs.esp) + 0x20);
         const char* filename = vstr->c_str();
 
-        // Silently skip known stock textures that the editor incorrectly tries to pack
-        const char* bare_name = std::strrchr(filename, '\\');
-        bare_name = bare_name ? bare_name + 1 : filename;
-        if (_stricmp(bare_name, "rock02.tga") != 0) {
-            // Only log during the data pass (param_4 != 0, param_5 == 0) to avoid
-            // duplicate warnings from count and directory passes
-            int file_handle = *reinterpret_cast<int*>(static_cast<int>(regs.esp) + 0x2C);
-            int mode = *reinterpret_cast<int*>(static_cast<int>(regs.esp) + 0x30);
-            if (file_handle != 0 && mode == 0) {
-                xlog::warn("Packfile: Skipping missing file: {}", filename);
-
-                void* log_dlg = struct_field_ref<void*>(g_main_frame, 0x2b4);
-                log_dlg_append(log_dlg, "Warning: Skipping missing file %s\n", filename);
+        // Only log during the data pass (param_4 != 0, param_5 == 0) to avoid
+        // duplicate warnings from count and directory passes
+        int file_handle = *reinterpret_cast<int*>(static_cast<int>(regs.esp) + 0x2C);
+        int mode = *reinterpret_cast<int*>(static_cast<int>(regs.esp) + 0x30);
+        if (file_handle != 0 && mode == 0) {
+            // The stock texture filter misses some textures that ship with the game (rock02.tga in
+            // ui.vpp, alpinefaction.vpp's), which then get pushed as missing user_maps\textures files
+            const char* bare_name = std::strrchr(filename, '\\');
+            bare_name = bare_name ? bare_name + 1 : filename;
+            if (!shipped_in_packfile(bare_name)) {
+                editor_report(EditorReportLevel::warn, "Packfile",
+                              std::format("Warning: Skipping missing file {}", filename), true);
             }
         }
 
@@ -681,19 +690,13 @@ CodeInjection vpp_skip_missing_file_injection{
 
 // ─── Mesh file VPP helpers ──────────────────────────────────────────────────
 
-// Add a mesh file to the global VPP file list (0x006c9ba8) if it exists on disk.
+// Add a mesh file to the global VPP file list if it exists on disk.
 static void add_mesh_to_vpp_list(const char* filename)
 {
     std::string full_path = find_mesh_on_disk(filename);
     if (full_path.empty()) return;
 
-    VString str;
-    str.assign_0(full_path.c_str());
-    int ml = str.max_len;
-    char* b = str.buf;
-    str.max_len = 0;
-    str.buf = nullptr;
-    AddrCaller{0x00438640}.this_call<int>(reinterpret_cast<void*>(0x006c9ba8), ml, b);
+    push_to_pack_list(&vpp_file_list, full_path.c_str());
     xlog::info("VPP: Added mesh file '{}'", full_path);
 }
 
@@ -748,8 +751,16 @@ CodeInjection vpp_extra_textures_injection{
                     add_texture_to_pack_list(temp_list, evt->str1.c_str());
                     add_texture_to_pack_list(temp_list, evt->str2.c_str());
                 }
-                else if (evt->event_type == af_ded_event_to_int(AlpineDedEventID::Switch_Model)) {
+                else if (evt->event_type == af_ded_event_to_int(AlpineDedEventID::Switch_Model)
+                         || evt->event_type == af_ded_event_to_int(AlpineDedEventID::Set_Debris)) {
                     add_mesh_textures_to_pack_list(temp_list, evt->str1.c_str());
+                }
+                else if (evt->event_type == af_ded_event_to_int(AlpineDedEventID::Mesh_Set_Texture)) {
+                    add_texture_to_pack_list(temp_list, evt->str1.c_str());
+                }
+                else if (evt->event_type == af_ded_event_to_int(AlpineDedEventID::World_HUD_Sprite)) {
+                    add_texture_to_pack_list(temp_list, evt->str1.c_str());
+                    add_texture_to_pack_list(temp_list, evt->str2.c_str());
                 }
             }
         }
@@ -757,13 +768,22 @@ CodeInjection vpp_extra_textures_injection{
         // Geomod default crater texture (VString at CDedLevel+0x24)
         add_texture_to_pack_list(temp_list, level->geomod_texture.c_str());
 
-        // Textures referenced by custom mesh files (.v3m/.v3c)
+        // Textures referenced by custom mesh files (.v3m/.v3c), and per-object texture overrides
         for (auto* mesh : level->GetAlpineLevelProperties().mesh_objects) {
             add_mesh_textures_to_pack_list(temp_list, mesh->mesh_filename.c_str());
             add_mesh_textures_to_pack_list(temp_list, mesh->clutter_props.debris_filename.c_str());
             add_mesh_textures_to_pack_list(temp_list, mesh->clutter_props.corpse_filename.c_str());
             if (mesh->brush_geo_source == 2 && !mesh->collision_mesh_filename.empty()) {
                 add_mesh_textures_to_pack_list(temp_list, mesh->collision_mesh_filename.c_str());
+            }
+            for (const auto& ovr : mesh->texture_overrides) {
+                add_texture_to_pack_list(temp_list, ovr.filename.c_str());
+            }
+        }
+
+        for (auto* region : level->GetAlpineLevelProperties().weather_region_objects) {
+            if (region->weather_type == WeatherRegionType::snow) {
+                add_texture_to_pack_list(temp_list, region->snow_bitmap.c_str());
             }
         }
 
@@ -812,7 +832,68 @@ CodeInjection vpp_extra_textures_injection{
     }
 };
 
-CodeInjection vpp_mesh_files_injection{
+// ─── Sound file VPP helpers ─────────────────────────────────────────────────
+
+// A sound is custom, and packed, when a file of its name sits loose under user_maps\sounds. A name in a mounted
+// packfile (audio.vpp, music.vpp, alpinefaction.vpp) ships with the game; any other is reported as not found, with
+// `describe_owner()` naming what references it.
+template<typename DescribeOwner>
+static void add_sound_to_vpp_list(const char* filename, DescribeOwner describe_owner,
+                                  std::unordered_set<std::string>& seen)
+{
+    if (!filename || !filename[0]) return;
+    if (!seen.insert(string_to_lower(filename)).second) return;
+    if (!has_packable_path(filename)) return;
+
+    std::string full_path = find_sound_on_disk(filename);
+    if (!full_path.empty()) {
+        push_to_pack_list(&vpp_file_list, full_path.c_str());
+        xlog::info("VPP: Added sound file '{}'", full_path);
+        return;
+    }
+
+    if (shipped_in_packfile(filename)) return;
+    editor_report(EditorReportLevel::warn, "Packfile",
+                  std::format("Warning: Sound file {} not found ({})", filename, describe_owner()), true);
+}
+
+// Every sound file name a level holds: ambient sounds, Play_Sound, Switch and Music_Start events (str1, which
+// the game's event loader, RF.exe 0x00462150, hands on as the file name), and each moving group's start, loop,
+// stop and close sounds.
+static void add_level_sounds_to_vpp_list(CDedLevel& level)
+{
+    // Picks up sounds and subdirectories added since startup
+    reload_custom_sounds();
+
+    std::unordered_set<std::string> seen;
+    for (int i = 0; i < level.master_objects.get_size(); i++) {
+        auto* obj = level.master_objects[i];
+        if (obj->type == DedObjectType::DED_AMBIENT_SOUND) {
+            add_sound_to_vpp_list(static_cast<DedAmbientSound*>(obj)->sound_filename.c_str(),
+                                  [obj] { return std::format("ambient sound uid {}", obj->uid); }, seen);
+        }
+        else if (obj->type == DedObjectType::DED_EVENT) {
+            auto* evt = static_cast<DedEvent*>(obj);
+            if (evt->event_type == af_ded_event_to_int(AlpineDedEventID::Play_Sound)
+                || evt->event_type == af_ded_event_to_int(AlpineDedEventID::Switch)
+                || evt->event_type == af_ded_event_to_int(AlpineDedEventID::Music_Start)) {
+                add_sound_to_vpp_list(evt->str1.c_str(), [obj] { return std::format("event uid {}", obj->uid); },
+                                      seen);
+            }
+        }
+    }
+
+    for (int i = 0; i < level.moving_groups.get_size(); i++) {
+        const GroupEntry* group = level.moving_groups[i];
+        if (!group || !group->is_moving_group()) continue;
+        for (const auto& sound : group->keyframes->sounds) {
+            add_sound_to_vpp_list(sound.filename.c_str(),
+                                  [group] { return std::format("moving group '{}'", group->name.c_str()); }, seen);
+        }
+    }
+}
+
+CodeInjection vpp_extra_files_injection{
     0x004485e2,
     [](auto& regs) {
         auto* level = CDedLevel::Get();
@@ -844,13 +925,14 @@ CodeInjection vpp_mesh_files_injection{
             }
         }
 
-        // Events: Switch_Model (str1=mesh), Play_Animation (str1=anim),
+        // Events: Switch_Model and Set_Debris (str1=mesh), Play_Animation (str1=anim),
         // Mesh_Animate (str1=anim)
         for (int i = 0; i < level->master_objects.get_size(); i++) {
             auto* obj = level->master_objects[i];
             if (obj->type != DedObjectType::DED_EVENT) continue;
             auto* evt = static_cast<DedEvent*>(obj);
-            if (evt->event_type == af_ded_event_to_int(AlpineDedEventID::Switch_Model)) {
+            if (evt->event_type == af_ded_event_to_int(AlpineDedEventID::Switch_Model)
+                || evt->event_type == af_ded_event_to_int(AlpineDedEventID::Set_Debris)) {
                 add_mesh_to_vpp_list(evt->str1.c_str());
             }
             else if (evt->event_type == af_ded_event_to_int(AlpineDedEventID::Play_Animation)) {
@@ -860,6 +942,8 @@ CodeInjection vpp_mesh_files_injection{
                 add_mesh_to_vpp_list(evt->str1.c_str());
             }
         }
+
+        add_level_sounds_to_vpp_list(*level);
     }
 };
 
@@ -1016,7 +1100,7 @@ void ApplyTexturesPatches() {
     vpp_extra_textures_injection.install();
     vpp_skip_missing_file_injection.install();
     vpp_clear_log_injection.install();
-    vpp_mesh_files_injection.install();
+    vpp_extra_files_injection.install();
     config_save_skip_custom_subdirs.install();
     folder_group_build_skip_custom_subdirs.install();
     texture_refresh_all_iterate_custom_injection.install();

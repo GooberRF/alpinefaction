@@ -1440,9 +1440,8 @@ bool terrain_preview_hides_room(const GRoom* room)
 
 TerrainRay terrain_screen_ray(float screen_x, float screen_y)
 {
-    float ray[8] = {};
-    screen_to_ray(ray, screen_x, screen_y);
-    return TerrainRay{{ray[0], ray[1], ray[2]}, {ray[3], ray[4], ray[5]}};
+    const EditorRay ray = editor_screen_ray(screen_x, screen_y);
+    return TerrainRay{{ray.o.x, ray.o.y, ray.o.z}, {ray.d.x, ray.d.y, ray.d.z}};
 }
 
 bool terrain_ray_hit(const DedTerrain& t, const TerrainRay& ray, float t_max, float& hit_t, bool ignore_holes)

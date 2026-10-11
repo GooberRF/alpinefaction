@@ -34,6 +34,8 @@ std::uint64_t mover_bake_surfaces();
 void alpine_lm_shade_surface(GSolid* solid, GSurface* surface, int mode);
 // Calculate Lighting's address-space check before anything is freed; reports and returns false on a refusal.
 bool lighting_calc_memory_admits();
+// A full surface pass is starting: surfaces an out-of-memory pass left at the minimum size are about to be redone.
+void lightmap_surfaces_shrunk_reset();
 // Reports why Calculate Lighting was not run, and marks a headless bake refused.
 void lighting_calc_report_refusal(const char* msg);
 void alpine_lm_blend_edge(const GSurface* surf_a, const GSurface* surf_b, const float* p0, const float* p1);

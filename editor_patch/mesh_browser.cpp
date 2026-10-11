@@ -745,11 +745,6 @@ void update_anim_pane(HWND hdlg, BrowserState& st)
 
 // ─── Preview ─────────────────────────────────────────────────────────────────
 
-Vector3 vec_scale(const Vector3& v, float s)
-{
-    return {v.x * s, v.y * s, v.z * s};
-}
-
 void preview_free(BrowserState& st)
 {
     mesh_preview_free(st.vmesh, st.owned_character);
@@ -987,7 +982,7 @@ void preview_draw_mesh(EditorVMesh* vmesh, const MeshPreviewCamera& camera)
     const float sp = std::sin(pitch);
 
     const Vector3 to_camera{cp * sy, sp, cp * cy};
-    const Vector3 camera_pos = camera.bound_center + vec_scale(to_camera, camera.bound_radius * camera.zoom);
+    const Vector3 camera_pos = camera.bound_center + to_camera * (camera.bound_radius * camera.zoom);
     // Basis taken straight from the two angles: right stays level and unit length for every
     // pitch, where a look-at built against a fixed world up rolls over as forward nears vertical.
     const Matrix3 camera_orient{{-cy, 0.0f, sy},

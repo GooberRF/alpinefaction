@@ -14,6 +14,8 @@ set(SRCS
     file_dialogs.cpp
     file_dialogs.h
     geometry.cpp
+    gizmo.cpp
+    gizmo.h
     graphics.cpp
     headless_bake.cpp
     headless_bake.h
@@ -25,6 +27,8 @@ set(SRCS
     mesh_browser.h
     placement_panel.cpp
     placement_panel.h
+    viewport_input.cpp
+    viewport_input.h
     note.cpp
     note.h
     corona.cpp
@@ -60,6 +64,10 @@ set(SRCS
     bitmap_texels.h
     meshes.cpp
     meshes.h
+    search_paths.cpp
+    search_paths.h
+    sounds.cpp
+    sounds.h
     minimap_bake.cpp
     minimap_bake.h
     tbl.cpp
@@ -83,6 +91,8 @@ set(SRCS
     bake_progress.h
     face_list_cache.cpp
     face_list_cache.h
+    memory_guard.cpp
+    memory_guard.h
     work_pool.cpp
     work_pool.h
 )

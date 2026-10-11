@@ -405,11 +405,11 @@ DedSunArrow* sun_arrow_object()
 }
 
 // Roll-free: right stays horizontal, taken from the yaw alone so it is defined at the zenith too.
-Matrix3 sun_arrow_orient_from_props(const AlpineLevelProperties& props)
+Matrix3 sun_arrow_orient(float sun_yaw, float sun_pitch)
 {
-    const Vector3 to_sun = props.sun_to_light_dir();
+    const alpine_lighting::Direction to_sun = alpine_lighting::sun_to_light_dir(sun_yaw, sun_pitch);
     const Vector3 f{-to_sun.x, -to_sun.y, -to_sun.z};
-    const alpine_lighting::Direction rd = alpine_lighting::sun_to_light_dir(props.sun_yaw - 90.0f, 0.0f);
+    const alpine_lighting::Direction rd = alpine_lighting::sun_to_light_dir(sun_yaw - 90.0f, 0.0f);
     const Vector3 r{rd.x, rd.y, rd.z};
     return {r, from_adl(adl::cross(to_adl(f), to_adl(r))), f};
 }
@@ -757,6 +757,11 @@ void directional_light_paste_objects(CDedLevel* level)
     }
 }
 
+void directional_light_swap_clipboard(std::vector<DedDirectionalLight*>& other)
+{
+    g_directional_light_clipboard.swap(other);
+}
+
 void directional_light_clear_clipboard()
 {
     for (auto* light : g_directional_light_clipboard) {
@@ -820,7 +825,7 @@ void sun_arrow_sync(CDedLevel* level)
     }
     g_sun_arrow_active = true;
 
-    arrow->orient = sun_arrow_orient_from_props(props);
+    arrow->orient = sun_arrow_orient(props.sun_yaw, props.sun_pitch);
     g_sun_arrow_synced_fvec = arrow->orient.fvec;
 
     Vector3 base = level->player_start_pos;
@@ -855,6 +860,42 @@ void sun_arrow_render(CDedLevel* level)
         gr_set_bitmap(g_directional_light_icon_handle, -1);
     }
     gr_render_billboard(&g_sun_arrow->pos, 0, sun_arrow_icon_size, gr_cam_param);
+}
+
+SunArrowState sun_arrow_state(CDedLevel* level)
+{
+    SunArrowState state;
+    if (level) {
+        const auto& props = level->GetAlpineLevelProperties();
+        state.sun_yaw = props.sun_yaw;
+        state.sun_pitch = props.sun_pitch;
+    }
+    state.synced_fvec = g_sun_arrow_synced_fvec;
+    return state;
+}
+
+SunArrowState sun_arrow_state_toward(CDedLevel* level, const Vector3& fvec)
+{
+    SunArrowState state = sun_arrow_state(level);
+    float yaw = 0.0f, pitch = 0.0f;
+    if (alpine_light_dir_to_sun_angles(fvec, yaw, pitch)) {
+        state.sun_yaw = yaw;
+        state.sun_pitch = pitch;
+    }
+    state.synced_fvec = sun_arrow_orient(state.sun_yaw, state.sun_pitch).fvec;
+    return state;
+}
+
+void sun_arrow_restore(CDedLevel* level, const SunArrowState& state)
+{
+    if (!level) return;
+    auto& props = level->GetAlpineLevelProperties();
+    props.sun_yaw = state.sun_yaw;
+    props.sun_pitch = state.sun_pitch;
+    if (g_sun_arrow) {
+        g_sun_arrow->orient = sun_arrow_orient(state.sun_yaw, state.sun_pitch);
+    }
+    g_sun_arrow_synced_fvec = state.synced_fvec;
 }
 
 DedSunArrow* sun_arrow_click_pick(float click_x, float click_y)

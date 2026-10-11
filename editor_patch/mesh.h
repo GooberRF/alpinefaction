@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <vector>
 #include "mfc_types.h"
 #include "level.h"
 
@@ -61,5 +62,7 @@ void mesh_tree_add_object_type(EditorTreeCtrl* tree);
 bool mesh_copy_object(DedObject* source);
 void mesh_paste_objects(CDedLevel* level);
 void mesh_clear_clipboard();
+// Swaps the staged clones with `other`, so a duplicate can copy and paste with the user's clipboard set aside.
+void mesh_swap_clipboard(std::vector<DedMesh*>& other);
 void mesh_handle_delete_or_cut(DedObject* obj);
 void mesh_ensure_uid(int& uid);

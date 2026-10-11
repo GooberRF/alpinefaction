@@ -932,6 +932,11 @@ void vehicle_factory_paste_objects(CDedLevel* level)
     }
 }
 
+void vehicle_factory_swap_clipboard(std::vector<DedVehicleFactory*>& other)
+{
+    g_vehicle_factory_clipboard.swap(other);
+}
+
 void vehicle_factory_clear_clipboard()
 {
     for (auto* factory : g_vehicle_factory_clipboard) {

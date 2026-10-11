@@ -508,6 +508,11 @@ void note_paste_objects(CDedLevel* level)
     }
 }
 
+void note_swap_clipboard(std::vector<DedNote*>& other)
+{
+    g_note_clipboard.swap(other);
+}
+
 void note_clear_clipboard()
 {
     for (auto* note : g_note_clipboard) {

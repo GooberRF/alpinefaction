@@ -34,5 +34,7 @@ void vehicle_factory_tree_add_object_type(EditorTreeCtrl* tree);
 bool vehicle_factory_copy_object(DedObject* source);
 void vehicle_factory_paste_objects(CDedLevel* level);
 void vehicle_factory_clear_clipboard();
+// Swaps the staged clones with `other`, so a duplicate can copy and paste with the user's clipboard set aside.
+void vehicle_factory_swap_clipboard(std::vector<DedVehicleFactory*>& other);
 void vehicle_factory_handle_delete_or_cut(DedObject* obj);
 void vehicle_factory_ensure_uid(int& uid);

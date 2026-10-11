@@ -3348,6 +3348,11 @@ void terrain_paste_objects(CDedLevel* level)
     }
 }
 
+void terrain_swap_clipboard(std::vector<DedTerrain*>& other)
+{
+    g_terrain_clipboard.swap(other);
+}
+
 void terrain_clear_clipboard()
 {
     for (auto* terrain : g_terrain_clipboard) {

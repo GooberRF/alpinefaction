@@ -734,6 +734,11 @@ void corona_paste_objects(CDedLevel* level)
     }
 }
 
+void corona_swap_clipboard(std::vector<DedCorona*>& other)
+{
+    g_corona_clipboard.swap(other);
+}
+
 void corona_clear_clipboard()
 {
     for (auto* corona : g_corona_clipboard) {

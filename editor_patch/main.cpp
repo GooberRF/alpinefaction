@@ -41,10 +41,13 @@
 #include "mesh.h"
 #include "alpine_obj.h"
 #include "geometry.h"
+#include "gizmo.h"
 #include "textures.h"
 #include "meshes.h"
+#include "sounds.h"
 #include "headless_bake.h"
 #include "face_list_cache.h"
+#include "memory_guard.h"
 #include "bake_progress.h"
 #include "alpine_lightmaps.h"
 #include "terrain_build.h"
@@ -52,6 +55,7 @@
 #include "terrain_preview.h"
 #include "mesh_browser.h"
 #include "placement_panel.h"
+#include "viewport_input.h"
 
 #define LAUNCHER_FILENAME "AlpineFactionLauncher.exe"
 HMODULE g_module;
@@ -120,6 +124,7 @@ CodeInjection CEditorApp_InitInstance_additional_file_paths_injection{
     0x0048290D,
     []() {
         meshes_init_paths();
+        sounds_init_paths();
     },
 };
 
@@ -1119,6 +1124,11 @@ void __fastcall CMainFrame_OnEditUndo_new(CWnd* this_, void* edx_unused);
 FunHook<decltype(CMainFrame_OnEditUndo_new)> CMainFrame_OnEditUndo_hook{0x00447830, CMainFrame_OnEditUndo_new};
 void __fastcall CMainFrame_OnEditUndo_new(CWnd* this_, void* edx_unused)
 {
+    // Pressed during a gizmo drag it only cancels the drag.
+    if (gizmo_dragging()) {
+        gizmo_cancel_drag();
+        return;
+    }
     // While Terrain Tools is open, Ctrl+Z / Edit > Undo undo paint strokes instead
     if (terrain_paint_active()) {
         terrain_paint_undo();
@@ -1134,6 +1144,10 @@ void __fastcall CMainFrame_OnEditRedo_new(CWnd* this_, void* edx_unused);
 FunHook<decltype(CMainFrame_OnEditRedo_new)> CMainFrame_OnEditRedo_hook{0x00447870, CMainFrame_OnEditRedo_new};
 void __fastcall CMainFrame_OnEditRedo_new(CWnd* this_, void* edx_unused)
 {
+    if (gizmo_dragging()) {
+        gizmo_cancel_drag();
+        return;
+    }
     if (terrain_paint_active()) {
         terrain_paint_redo();
         return;
@@ -1433,10 +1447,14 @@ FunHook<char __fastcall(void*, int, const char*, int, int)> CDedDoc_LoadSaveLeve
 
 char __fastcall CDedDoc_LoadSaveLevel_new(void* self, int edx, const char* path, int is_load, int is_autosave)
 {
+    if (is_load) {
+        gizmo_cancel_drag();
+    }
     const bool was_autosaving = std::exchange(g_autosaving, !is_load && is_autosave);
     char result = CDedDoc_LoadSaveLevel_hook.call_target(self, edx, path, is_load, is_autosave);
     g_autosaving = was_autosaving;
     if (is_load && result) {
+        gizmo_level_loaded();
         reset_legacy_fog_near_clip();
     }
     if (is_load && !is_autosave) {
@@ -1450,10 +1468,19 @@ FunHook<int __fastcall(void*, int, int)> CEditorApp_OnIdle_hook{0x00482F00, CEdi
 
 int __fastcall CEditorApp_OnIdle_new(void* self, int edx, int count)
 {
-    if (!headless_bake_idle()) {
-        terrain_paint_idle();
+    // MFC's Run loop does not catch: an exception from a headless bake, the views' render, autosave or a build tick
+    // would abort RED. Autosave and command-line updates write level files, so this cannot say none changed.
+    try {
+        memory_guard_idle();
+        if (!headless_bake_idle()) {
+            terrain_paint_idle();
+            gizmo_idle();
+        }
+        return CEditorApp_OnIdle_hook.call_target(self, edx, count);
     }
-    return CEditorApp_OnIdle_hook.call_target(self, edx, count);
+    catch (...) {
+        memory_guard_fatal("updating the editor", false);
+    }
 }
 
 CodeInjection autosave_defer_during_edit_injection{
@@ -1461,7 +1488,7 @@ CodeInjection autosave_defer_during_edit_injection{
     [](auto& regs) {
         auto* level = CDedLevel::Get();
         if (headless_bake_active() || is_edit_key_held() || (level && level->transform_in_progress) ||
-            terrain_paint_stroke_active()) {
+            terrain_paint_stroke_active() || gizmo_dragging()) {
             regs.eip = 0x004831B4; // defer autosave until the text tick we are not in an edit operation
         }
         else {
@@ -1729,7 +1756,20 @@ BOOL __fastcall CMainFrame_OnCmdMsg(CWnd* this_, int, UINT nID, int nCode, void*
         return TRUE;
     }
 
+    if (nID == IDC_GIZMO_SCALE_STEP && nCode == CBN_SELCHANGE) {
+        gizmo_scale_step_changed();
+        return TRUE;
+    }
+
     if (nCode == CN_COMMAND) {
+        // A command mid-drag would act on what the drag holds; put it back first, and skip the command if that
+        // failed.
+        if (!pHandlerInfo && (nID < ID_GIZMO_SELECT || nID > ID_GIZMO_SNAP) && gizmo_dragging()) {
+            // Undo / Redo during the drag only cancel it.
+            if (!gizmo_cancel_drag() || nID == ID_EDIT_UNDO || nID == ID_EDIT_REDO) {
+                return TRUE;
+            }
+        }
         std::function<void()> handler;
         switch (nID) {
             case ID_WIKI_EDITING_MAIN_PAGE:
@@ -1817,6 +1857,13 @@ BOOL __fastcall CMainFrame_OnCmdMsg(CWnd* this_, int, UINT nID, int nCode, void*
             case ID_TOGGLE_MAXIMIZE_VIEWPORT:
                 handler = std::bind(CMainFrame_ToggleMaximizeViewport, reinterpret_cast<CMainFrame*>(this_));
                 break;
+            case ID_GIZMO_SELECT:
+            case ID_GIZMO_MOVE:
+            case ID_GIZMO_ROTATE:
+            case ID_GIZMO_SCALE:
+            case ID_GIZMO_SNAP:
+                handler = [nID]() { gizmo_button_clicked(nID); };
+                break;
             case ID_TERRAIN_TOOLS:
                 handler = [this_]() {
                     terrain_paint_open_for_selection(reinterpret_cast<CDedLevel*>(GetLevelFromMainFrame(this_)));
@@ -1866,9 +1913,34 @@ void InitCrashHandler()
     std::snprintf(config.output_dir, std::size(config.output_dir), "%s\\logs", current_dir);
     std::snprintf(config.app_name, std::size(config.app_name), "AlpineEditor");
     config.add_known_module("RED");
+    config.add_known_module("RED_laa");
     config.add_known_module("AlpineEditor");
 
     CrashHandlerStubInstall(config);
+}
+
+// With 4 GB of address space, no block may straddle 2 GB: stock RED orders pointers by signed compares in places, which
+// only goes wrong for two addresses on either side of the boundary.
+void ReserveAddressSpaceBoundary()
+{
+    if (!editor_large_address_aware()) {
+        return;
+    }
+    constexpr uintptr_t begin = 0x7FFF0000;
+    constexpr uintptr_t end = 0x80010000;
+    if (VirtualAlloc(reinterpret_cast<void*>(begin), end - begin, MEM_RESERVE, PAGE_NOACCESS)) {
+        xlog::info("[Memory] large address aware, reserved the 2 GB boundary");
+        return;
+    }
+    xlog::warn("[Memory] large address aware, but could not reserve the 2 GB boundary ({})", GetLastError());
+    MEMORY_BASIC_INFORMATION mbi{};
+    for (auto addr = begin; addr < end && VirtualQuery(reinterpret_cast<void*>(addr), &mbi, sizeof(mbi)) == sizeof(mbi);
+         addr = reinterpret_cast<uintptr_t>(mbi.BaseAddress) + mbi.RegionSize) {
+        if (mbi.State != MEM_FREE) {
+            xlog::warn("[Memory] occupied: {:p} size {:x} allocation base {:p} state {:x} type {:x}", mbi.BaseAddress,
+                       mbi.RegionSize, mbi.AllocationBase, mbi.State, mbi.Type);
+        }
+    }
 }
 
 void ApplyGraphicsPatches();
@@ -2214,6 +2286,7 @@ void apply_af_level_editor_changes()
 extern "C" DWORD AF_DLL_EXPORT Init([[maybe_unused]] void* unused)
 {
     InitLogging();
+    ReserveAddressSpaceBoundary();
     InitCrashHandler();
 
     // Apply AF-specific changes only if legacy mode isn't active
@@ -2270,12 +2343,14 @@ extern "C" DWORD AF_DLL_EXPORT Init([[maybe_unused]] void* unused)
     CMainFrame_OnEditRedo_hook.install();
 
     // Apply patches defined in other files
+    ApplyMemoryGuardPatches();
     ApplyGraphicsPatches();
     ApplyTriggerPatches();
     ApplyLevelPatches();
     ApplyTerrainBuildPatches();
     ApplyTerrainPreviewPatches();
-    ApplyTerrainPaintPatches();
+    ApplyViewportInputPatches();
+    ApplyGizmoPatches();
     ApplyMeshPreviewPatches();
     ApplyPlacementPanelPatches();
     ApplyEventsPatches();
@@ -2428,7 +2503,7 @@ extern "C" DWORD AF_DLL_EXPORT Init([[maybe_unused]] void* unused)
     // Defer autosave while an edit operation is in progress to prevent teleporting
     autosave_defer_during_edit_injection.install();
 
-    // Idle tick (headless bake, Terrain Tools) and level load/save bracketing
+    // Idle tick (memory guard, headless bake, Terrain Tools) and level load/save bracketing
     CEditorApp_OnIdle_hook.install();
     CDedDoc_LoadSaveLevel_hook.install();
 

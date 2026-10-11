@@ -30,6 +30,7 @@
 #include "alpine_lightmaps.h"
 #include "bake_progress.h"
 #include "headless_bake.h"
+#include "memory_guard.h"
 #include "overflow_charts.h"
 #include "terrain_build.h"
 #include "textures.h"
@@ -41,6 +42,14 @@ static constexpr int lm_highres_page_size = static_cast<int>(alpine_lightmap::st
 static constexpr int lm_stock_fragment_max = 64;
 static constexpr int lm_highres_fragment_max = 254;
 static constexpr int lm_max_fragment_texels = lm_highres_fragment_max * lm_highres_fragment_max;
+
+// A surface pass gave the level's surfaces the minimum size: a bake must not reuse them until another pass has run.
+static bool g_lightmaps_shrunk = false;
+
+void lightmap_surfaces_shrunk_reset()
+{
+    g_lightmaps_shrunk = false;
+}
 
 // Max lights that can be processed per face (shadow mask buffer limit).
 // Faces with more lights than this get the pink fill safety fallback.
@@ -1387,8 +1396,9 @@ float OccluderTree::transmittance(const OccQuery& qy) const
                     continue;
                 }
                 // reject the receiving surface's own plane rather than everything within a ray
-                // distance of it, so geometry a few hundredths above the surface still occludes
-                if (lm_ray_lift + dist * qy.nd < lm_ray_band &&
+                // distance of it, so geometry a few hundredths above the surface still occludes;
+                // both sides, or rays toward a light behind the face pass the far side of a slab
+                if (std::abs(lm_ray_lift + dist * qy.nd) < lm_ray_band &&
                     std::abs(vdot(t.normal, qy.surf_normal)) > 0.999f) {
                     continue;
                 }
@@ -2036,6 +2046,8 @@ static bool lighting_calc_fits(std::uint32_t pages, std::uint64_t headroom, cons
     if (shortfall.empty()) {
         return true;
     }
+    // explains any allocation the emergency reserve served on the way here too, so the idle warning stays quiet
+    memory_guard_take_tripped();
     lighting_calc_report_refusal(shortfall.c_str());
     return false;
 }
@@ -2047,6 +2059,11 @@ static constexpr std::uint64_t lighting_surface_pass_headroom = 64ull << 20;
 // after the surface pass. Only surface charts (which movers follow) and terrain charts take pages.
 bool lighting_calc_memory_admits()
 {
+    if (!memory_guard_ready()) {
+        lighting_calc_report_refusal(
+            (std::string{"Calculate Lighting was not started: "} + memory_guard_warning).c_str());
+        return false;
+    }
     auto* level = CDedLevel::Get();
     const auto* props = level ? &level->GetAlpineLevelProperties() : nullptr;
     const bool alpine_pages = props && (props->surface_charts_enabled() || !props->terrain_objects.empty());
@@ -2132,10 +2149,23 @@ private:
 
 // The blend and ring copy passes after FUN_004ac470 address every flagged surface's rect in its
 // page with no bound, so a layout that does not fit its pages must not be baked at all.
-static bool lighting_calc_refused()
+static bool lighting_calc_refused(bool surface_pass_ran)
 {
     // the surface-pass hook already reported it
     if (alpine_lm_take_lighting_refused()) {
+        return true;
+    }
+    // a surface pass that ran out of memory left lightmaps at the smallest size, which no bake may light
+    if (g_lightmaps_shrunk) {
+        memory_guard_take_tripped();
+        lighting_calc_report_refusal(
+            (surface_pass_ran ? std::string{"Calculate Lighting ran out of memory preparing the lightmaps and was "
+                                            "not run; the level has no baked lighting. "} +
+                                    memory_guard_advice()
+                              : std::string{"Calculate Lighting was not run: RED ran out of memory while preparing "
+                                            "the lightmaps, and some were left at the smallest size. Run Calculate "
+                                            "Maps and Light instead."})
+                .c_str());
         return true;
     }
     auto* level = CDedLevel::Get();
@@ -2240,19 +2270,34 @@ static void lighting_calc_expect(std::uint64_t mover_surfaces)
 // A cancelled bake leaves the level as its surface pass does: blank lightmaps and no alpine section. The stock pass
 // runs without the hook's checks: they guard a bake that no longer runs, and a refusal would only leave the
 // cancelled bake's partial lighting behind.
-static void lighting_calc_discard(void* self)
+static void lighting_calc_discard(void* self, bool out_of_memory)
 {
+    // the pass allocates every surface's lightmap again, which the spent reserve may be needed for once more
+    if (out_of_memory) {
+        memory_guard_rearm();
+    }
     lighting_surfaces_stock(self);
-    editor_report(EditorReportLevel::info, "Lightmap",
-                  "Calculate Lighting was cancelled, the level has no baked lighting", true);
+    if (out_of_memory) {
+        // a trip in this pass only shrank the lightmaps it was blanking; the report below covers it
+        memory_guard_take_tripped();
+        lighting_calc_report_refusal(
+            (std::string{"Calculate Lighting ran out of memory and was cancelled; the level has no baked lighting. "} +
+             memory_guard_advice())
+                .c_str());
+    }
+    else {
+        editor_report(EditorReportLevel::info, "Lightmap",
+                      "Calculate Lighting was cancelled, the level has no baked lighting", true);
+    }
 }
 
 static void lighting_calc_bake(void* self, bool shadows, bool surface_pass_ran)
 {
-    if (bake_progress_active() || lighting_calc_refused()) {
+    if (bake_progress_active() || lighting_calc_refused(surface_pass_ran)) {
         return;
     }
     bool cancelled = false;
+    bool out_of_memory = false;
     {
         const std::uint64_t mover_surfaces = mover_bake_surfaces();
         BakeProgressScope progress{lighting_calc_phases(mover_surfaces)};
@@ -2264,19 +2309,26 @@ static void lighting_calc_bake(void* self, bool shadows, bool surface_pass_ran)
             return;
         }
         lighting_calc_expect(mover_surfaces);
-        if (shadows) {
-            lighting_calc_shadows_hook.call_target(self);
+        // an interrupted stock bake leaves the movers in world space; nothing may run on that state
+        try {
+            if (shadows) {
+                lighting_calc_shadows_hook.call_target(self);
+            }
+            else {
+                lighting_calc_no_shadows_hook.call_target(self);
+            }
         }
-        else {
-            lighting_calc_no_shadows_hook.call_target(self);
+        catch (...) {
+            memory_guard_fatal("Calculate Lighting");
         }
         if (!bake_progress_cancelled()) {
             af_bake.finish();
         }
         cancelled = bake_progress_cancelled();
+        out_of_memory = bake_progress_out_of_memory();
     }
     if (cancelled) {
-        lighting_calc_discard(self);
+        lighting_calc_discard(self, out_of_memory);
     }
 }
 
@@ -2323,6 +2375,7 @@ void lightmap_reset_level_state()
     s_ambient_room_count = 0;
     g_stock_layout_synthesized = false;
     g_synth_page = nullptr;
+    g_lightmaps_shrunk = false;
     alpine_lm_note_lighting_refused(false);
     g_no_shadow_cast_dropped.clear();
     g_occluder_tree_built = false;
@@ -3043,6 +3096,8 @@ CodeInjection lightmap_alpha_texture_occluder_injection{
 
 // High resolution lightmaps
 static float g_lm_fragment_max_f = static_cast<float>(lm_stock_fragment_max);
+// Texels per metre that round every surface down to FUN_004a9d30's minimum size (4 or 8 texels across).
+static constexpr float lm_min_density = 1e-6f;
 
 CodeInjection lightmap_highres_setup_injection{
     0x004a9d49,
@@ -3056,6 +3111,16 @@ CodeInjection lightmap_highres_setup_injection{
         }
         else {
             *reinterpret_cast<int*>(0x0144ac24) = lm_stock_page_size;
+        }
+        // Past an allocation the emergency reserve served, the rest of this pass gives each surface the smallest
+        // lightmap RED allows, so it can finish instead of running out again. A CSG step's surfaces (a build, which is
+        // then cancelled, or a brush tool) are redone by the next build or surface pass; the surface pass's
+        // (FUN_004aa610, returning to 0x004aab73) stay until the next surface pass, and a bake must not reuse them.
+        if (memory_guard_tripped()) {
+            *reinterpret_cast<float*>(esp + 0x9c) = lm_min_density;
+            if (*reinterpret_cast<std::uint32_t*>(esp + 0x8c) == 0x004aab73) {
+                g_lightmaps_shrunk = true;
+            }
         }
         regs.eip = 0x004a9d50;
     },

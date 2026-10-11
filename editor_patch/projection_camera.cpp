@@ -289,6 +289,11 @@ void projection_camera_paste_objects(CDedLevel* level)
     }
 }
 
+void projection_camera_swap_clipboard(std::vector<DedProjectionCamera*>& other)
+{
+    g_projection_camera_clipboard.swap(other);
+}
+
 void projection_camera_clear_clipboard()
 {
     for (auto* camera : g_projection_camera_clipboard) {

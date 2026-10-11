@@ -87,9 +87,14 @@ protected:
     std::string get_app_path();
     virtual std::string get_default_app_path() = 0;
     virtual bool check_app_hash(const std::string&) = 0;
+    // The executable to start, given the verified app executable and its SHA1
+    virtual std::string get_launch_path(const std::string& app_path, [[maybe_unused]] const std::string& app_sha1)
+    {
+        return app_path;
+    }
 
 private:
-    void verify_before_launch();
+    std::string verify_before_launch();
     static void setup_startup_info(_STARTUPINFOA& startup_info);
     std::string build_cmd_line(const std::string& app_path);
 
@@ -116,6 +121,7 @@ public:
     EditorLauncher();
     std::string get_default_app_path() override;
     bool check_app_hash(const std::string& sha1) override;
+    std::string get_launch_path(const std::string& app_path, const std::string& app_sha1) override;
 
 private:
     GameConfig m_conf;

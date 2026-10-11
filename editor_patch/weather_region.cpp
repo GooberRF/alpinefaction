@@ -909,6 +909,11 @@ void weather_region_paste_objects(CDedLevel* level)
     }
 }
 
+void weather_region_swap_clipboard(std::vector<DedWeatherRegion*>& other)
+{
+    g_weather_region_clipboard.swap(other);
+}
+
 void weather_region_clear_clipboard()
 {
     for (auto* region : g_weather_region_clipboard) {

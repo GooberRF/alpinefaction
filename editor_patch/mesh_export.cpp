@@ -9,6 +9,7 @@
 #include <commdlg.h>
 #include <xlog/xlog.h>
 #include "file_dialogs.h"
+#include "geometry.h"
 #include "level.h"
 #include "textures.h"
 #include "resources.h"
@@ -559,21 +560,6 @@ static bool create_mesh_object_at(CDedLevel* level, const char* mesh_filename,
 }
 
 // ─── Handler ────────────────────────────────────────────────────────────────
-
-static std::vector<BrushNode*> collect_selected_brushes(CDedLevel* level)
-{
-    std::vector<BrushNode*> selected;
-    BrushNode* head = level->brush_list;
-    if (!head) return selected;
-    BrushNode* b = head;
-    do {
-        if (b->state == BRUSH_STATE_SELECTED && b->geometry) {
-            selected.push_back(b);
-        }
-        b = b->next;
-    } while (b != head);
-    return selected;
-}
 
 void handle_brush_convert()
 {
