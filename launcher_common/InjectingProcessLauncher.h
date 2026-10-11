@@ -25,12 +25,8 @@ public:
 
     ~InjectingProcessLauncher()
     {
-        try {
-            if (!m_resumed && m_process)
-                m_process.terminate(1);
-        }
-        catch (const std::exception& e) {
-            xlog::error("{}", e.what());
+        if (!m_resumed) {
+            terminate_if_running();
         }
     }
 
@@ -53,4 +49,15 @@ public:
 
 private:
     void wait_for_process_initialization(uintptr_t entry_point, uint32_t timeout);
+
+    void terminate_if_running() noexcept
+    {
+        try {
+            if (m_process && WaitForSingleObject(m_process.get_handle(), 0) == WAIT_TIMEOUT)
+                m_process.terminate(1);
+        }
+        catch (const std::exception& e) {
+            xlog::error("{}", e.what());
+        }
+    }
 };

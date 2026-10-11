@@ -92,6 +92,8 @@ struct HillInfo
     int hold_ms_accum = 0;
     int capture_milli = 0; // 0 - 100000 (100% = 100000)
     std::vector<int> mp_spawn_uids;
+    // g_vehicle_factories indices of the Vehicle Factories linked from this point's handler
+    std::vector<int> vehicle_factories;
     int stage = 0; // order of hills in REV
     int cap_gain_sfx_handle = -1;
     bool cap_gain_sfx_playing = false;

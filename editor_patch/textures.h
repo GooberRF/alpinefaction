@@ -129,7 +129,13 @@ constexpr size_t MAX_TEXTURE_NAME_LEN = 31;
 
 struct BitmapEntry {
     static constexpr int TYPE_USER = 3;
+    static constexpr int FORMAT_8_PALETTED = 1;
+    static constexpr int FORMAT_8_ALPHA = 2;
+    static constexpr int FORMAT_565_RGB = 3;
+    static constexpr int FORMAT_4444_ARGB = 4;
+    static constexpr int FORMAT_1555_ARGB = 5;
     static constexpr int FORMAT_888_RGB = 6;
+    static constexpr int FORMAT_8888_ARGB = 7;
 
     char name[32];                  // 0x00
     int name_checksum;              // 0x20
@@ -161,6 +167,8 @@ struct BitmapEntry {
     int resolution_level;           // 0x68
 
     inline static auto& load = addr_as_ref<int(const char* filename, int a2)>(0x004BBC30);
+    // The handle of the visible entry with this name, or -1; never loads.
+    inline static auto& find = addr_as_ref<int(const char* filename)>(0x004BBAD0);
     inline static auto& handle_to_index = addr_as_ref<int(int bm_handle)>(0x004BB990);
     inline static auto& hash_table = addr_as_ref<BitmapEntry**>(0x014cfc24);
     inline static auto& hash_table_size_m1 = addr_as_ref<int>(0x0057dbb0);
@@ -191,3 +199,5 @@ inline GrTextureSlot* gr_texture_slot_of(int bm_handle)
 }
 
 void reload_custom_textures();
+// Re-reads a bitmap from disk into its existing (or a newly loaded) entry, keeping the handle.
+bool reload_bitmap_in_place(const char* filename);

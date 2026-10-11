@@ -16,4 +16,7 @@ private:
     int outer_pause_depth_ = 0;
 };
 
+// A face list header whose links were edited without the hooked helpers; its cached tail is dropped.
+void face_list_cache_forget(void* list);
+
 void ApplyFaceListCachePatches();

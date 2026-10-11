@@ -18,6 +18,7 @@
 #include <common/version/version.h>
 #include <common/config/BuildConfig.h>
 #include <common/utils/os-utils.h>
+#include <common/bitmap/tga.h>
 #include <xlog/xlog.h>
 #include <xlog/ConsoleAppender.h>
 #include <xlog/FileAppender.h>
@@ -40,14 +41,21 @@
 #include "mesh.h"
 #include "alpine_obj.h"
 #include "geometry.h"
+#include "gizmo.h"
 #include "textures.h"
 #include "meshes.h"
+#include "sounds.h"
 #include "headless_bake.h"
 #include "face_list_cache.h"
+#include "memory_guard.h"
+#include "bake_progress.h"
 #include "alpine_lightmaps.h"
 #include "terrain_build.h"
 #include "terrain_paint.h"
 #include "terrain_preview.h"
+#include "mesh_browser.h"
+#include "placement_panel.h"
+#include "viewport_input.h"
 
 #define LAUNCHER_FILENAME "AlpineFactionLauncher.exe"
 HMODULE g_module;
@@ -116,6 +124,7 @@ CodeInjection CEditorApp_InitInstance_additional_file_paths_injection{
     0x0048290D,
     []() {
         meshes_init_paths();
+        sounds_init_paths();
     },
 };
 
@@ -664,7 +673,7 @@ CodeInjection CFormView_Create_injection{
 
 // Post-creation hook for CFormView panels. At 0x0052F0A9 (after CreateDlgIndirect),
 // EDI = CWnd*, EBX = template name. CWnd::m_hWnd is at CWnd+0x1C.
-// Subclasses group panel immediately after creation.
+// Subclasses group panel immediately after creation, and builds the placement panel into the object panel.
 static LRESULT CALLBACK GroupPanelSubclassProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 static void subclass_group_panel_post_create(HWND hwnd);
 
@@ -678,6 +687,10 @@ CodeInjection CFormView_PostCreate_injection{
             if (hwnd) {
                 subclass_group_panel_post_create(hwnd);
             }
+        }
+        else if (lpszTemplateName == MAKEINTRESOURCE(editor_object_panel_template)) {
+            auto* panel = reinterpret_cast<EditorObjectPanel*>(static_cast<uintptr_t>(regs.edi));
+            placement_panel_create(panel, WndToHandle(reinterpret_cast<CWnd*>(panel)));
         }
     },
 };
@@ -838,6 +851,62 @@ CodeInjection CCutscenePropertiesDialog_ct_crash_fix{
         this_num_shots = 0;
     },
 };
+
+// Stock DedClutter ctor leaves +0xB8..+0xDF uninitialized, including the skin count at +0xDC, so the
+// save-time texture gather walks a garbage count past the 7 skin slots. Zeroing makes it inert.
+void* __fastcall DedClutter_ct(void* this_, int edx);
+FunHook DedClutter_ct_hook{
+    0x0044D9F0,
+    DedClutter_ct,
+};
+void* __fastcall DedClutter_ct(void* this_, int edx)
+{
+    void* result = DedClutter_ct_hook.call_target(this_, edx);
+    auto* clutter = static_cast<DedClutter*>(this_);
+    std::memset(clutter->skin_block, 0, sizeof(clutter->skin_block));
+    return result;
+}
+
+// 0x004B74E0: two empty strings match, otherwise a case-insensitive compare.
+static bool red_vstring_iequals(const VString& a, const VString& b)
+{
+    if (a.max_len == 0 || b.max_len == 0) {
+        return a.max_len == 0 && b.max_len == 0;
+    }
+    return _stricmp(a.buf, b.buf) == 0;
+}
+
+static bool red_clutter_class_known(void* level, const VString& class_name)
+{
+    const auto& classes = static_cast<CDedLevel*>(level)->object_classes;
+    for (int i = 0; i < classes.size; ++i) {
+        if (red_vstring_iequals(class_name, classes.data_ptr[i]->name)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Surface the silent failures above in the editor log: a class missing from clutter.tbl, or a known
+// class whose mesh did not load (0x004BFC30 returns null for that too).
+void __fastcall CDedLevel_AddClutter(void* this_, int edx, DedObject* obj, int flag);
+FunHook CDedLevel_AddClutter_hook{
+    0x004151C0,
+    CDedLevel_AddClutter,
+};
+void __fastcall CDedLevel_AddClutter(void* this_, int edx, DedObject* obj, int flag)
+{
+    CDedLevel_AddClutter_hook.call_target(this_, edx, obj, flag);
+    if (obj->vmesh) {
+        return;
+    }
+    if (red_clutter_class_known(this_, obj->class_name)) {
+        LogDlg_Append(GetLogDlg(), "Clutter mesh failed to load: %s (UID %d)\n", obj->class_name.c_str(), obj->uid);
+    }
+    else {
+        LogDlg_Append(GetLogDlg(), "Unknown clutter class: %s (UID %d)\n", obj->class_name.c_str(), obj->uid);
+    }
+}
 
 enum class ColorPickerSrc : uint8_t { dialog_ebx, dialog_esi, level };
 
@@ -1055,6 +1124,11 @@ void __fastcall CMainFrame_OnEditUndo_new(CWnd* this_, void* edx_unused);
 FunHook<decltype(CMainFrame_OnEditUndo_new)> CMainFrame_OnEditUndo_hook{0x00447830, CMainFrame_OnEditUndo_new};
 void __fastcall CMainFrame_OnEditUndo_new(CWnd* this_, void* edx_unused)
 {
+    // Pressed during a gizmo drag it only cancels the drag.
+    if (gizmo_dragging()) {
+        gizmo_cancel_drag();
+        return;
+    }
     // While Terrain Tools is open, Ctrl+Z / Edit > Undo undo paint strokes instead
     if (terrain_paint_active()) {
         terrain_paint_undo();
@@ -1070,6 +1144,10 @@ void __fastcall CMainFrame_OnEditRedo_new(CWnd* this_, void* edx_unused);
 FunHook<decltype(CMainFrame_OnEditRedo_new)> CMainFrame_OnEditRedo_hook{0x00447870, CMainFrame_OnEditRedo_new};
 void __fastcall CMainFrame_OnEditRedo_new(CWnd* this_, void* edx_unused)
 {
+    if (gizmo_dragging()) {
+        gizmo_cancel_drag();
+        return;
+    }
     if (terrain_paint_active()) {
         terrain_paint_redo();
         return;
@@ -1139,9 +1217,15 @@ FunHook<bool __cdecl(const Vector3*, const Vector3*, const Vector3*, const Vecto
     line_aabb_intersect_hook{0x004c9af0, line_aabb_intersect};
 
 // Fix greyscale TGA files (image types 3 and 11) not loading.
+// Also fails the load when the colormap the loader is about to copy does not fit the palette.
 CodeInjection tga_greyscale_fix{
     0x004F3B9E,
     [](auto& regs) {
+        if (addr_as_ref<uint8_t>(regs.esp + 0x1d)
+            && !tga_colormap_fits(addr_as_ref<void*>(regs.esp + 0x36c), regs.si)) {
+            regs.eip = 0x004F3BC0;
+            return;
+        }
         uint8_t image_type = regs.bl;
         if (image_type != 3 && image_type != 11) {
             return;
@@ -1163,6 +1247,11 @@ CodeInjection tga_greyscale_fix{
 CodeInjection tga_greyscale_fix_mipmap{
     0x004F40EE,
     [](auto& regs) {
+        if (addr_as_ref<uint8_t>(regs.esp + 0x2d)
+            && !tga_colormap_fits(addr_as_ref<void*>(regs.esp + 0x37c), regs.si)) {
+            regs.eip = 0x004F4110;
+            return;
+        }
         uint8_t image_type = regs.bl;
         if (image_type != 3 && image_type != 11) {
             return;
@@ -1178,6 +1267,54 @@ CodeInjection tga_greyscale_fix_mipmap{
             }
         }
         regs.bl = static_cast<int8_t>((image_type == 3) ? 2 : 10);
+        // The colormap path reloads the image type from here (0x004F418B)
+        addr_as_ref<uint8_t>(regs.esp + 0x2e) = static_cast<uint8_t>(regs.bl);
+    },
+};
+
+// Replaces the stock row decode, which trusts the header dimensions and RLE packet lengths.
+// Runs right after the file body is read: EDI = buffer, ESI = requested size, EAX = bytes read.
+template<typename Regs>
+static void tga_decode(Regs& regs, int width, int height, uint8_t bpp, uint8_t descriptor)
+{
+    const int bytes_read = regs.eax;
+    const int requested = regs.esi;
+    const uint8_t* src = regs.edi;
+    const auto src_size = static_cast<std::size_t>(std::clamp(bytes_read, 0, std::max(requested, 0)));
+    tga_decode_pixels(addr_as_ref<uint8_t*>(regs.esp + 0x36c), src, src_size, width, height, bpp >> 3,
+        regs.bl, (descriptor & tga_descriptor_top_down) != 0);
+}
+
+CodeInjection tga_decode_fix{
+    0x004F3CA7,
+    [](auto& regs) {
+        tga_decode(regs, addr_as_ref<int16_t>(regs.esp + 0x2e), addr_as_ref<int16_t>(regs.esp + 0x30),
+            addr_as_ref<uint8_t>(regs.esp + 0x32), addr_as_ref<uint8_t>(regs.esp + 0x33));
+        regs.eip = 0x004F3DDC;
+    },
+    // no trampoline: cannot be relocated; the handler always sets eip
+    false,
+};
+
+CodeInjection tga_decode_fix_mipmap{
+    0x004F41FC,
+    [](auto& regs) {
+        tga_decode(regs, addr_as_ref<int>(regs.esp + 0x1c), addr_as_ref<int>(regs.esp + 0x14),
+            addr_as_ref<uint8_t>(regs.esp + 0x3e), addr_as_ref<uint8_t>(regs.esp + 0x3f));
+        regs.eip = 0x004F430A;
+    },
+    // no trampoline: the handler always sets eip
+    false,
+};
+
+CodeInjection bm_lock_alloc_fail_fix{
+    0x004BCEAD,
+    [](auto& regs) {
+        if (regs.eax == 0) {
+            xlog::warn("[Bitmap] Failed to allocate buffer for a bitmap: {} bytes!", addr_as_ref<unsigned>(regs.esp));
+            regs.esp += 4;
+            regs.eip = 0x004BCE94;
+        }
     },
 };
 
@@ -1289,15 +1426,37 @@ bool level_autosave_in_progress()
     return g_autosaving;
 }
 
+// Stock RED kept the fog near clip, but nothing drew it before RFL 306; the level saves as 306, where it applies.
+static void reset_legacy_fog_near_clip()
+{
+    auto* level = CDedLevel::Get();
+    if (!level || get_level_rfl_version() >= 306 || level->fog_near_clip == 0.0f) {
+        return;
+    }
+    editor_report(EditorReportLevel::warn, "Level",
+                  std::format("Fog near clip {:.2f} reset to 0: it had no effect before RFL 306 and would now "
+                              "apply on Direct3D 11.",
+                              level->fog_near_clip),
+                  true);
+    level->fog_near_clip = 0.0f;
+}
+
 char __fastcall CDedDoc_LoadSaveLevel_new(void* self, int edx, const char* path, int is_load, int is_autosave);
 FunHook<char __fastcall(void*, int, const char*, int, int)> CDedDoc_LoadSaveLevel_hook{
     0x0041CCE0, CDedDoc_LoadSaveLevel_new}; // CDedDoc::LoadSaveLevel
 
 char __fastcall CDedDoc_LoadSaveLevel_new(void* self, int edx, const char* path, int is_load, int is_autosave)
 {
+    if (is_load) {
+        gizmo_cancel_drag();
+    }
     const bool was_autosaving = std::exchange(g_autosaving, !is_load && is_autosave);
     char result = CDedDoc_LoadSaveLevel_hook.call_target(self, edx, path, is_load, is_autosave);
     g_autosaving = was_autosaving;
+    if (is_load && result) {
+        gizmo_level_loaded();
+        reset_legacy_fog_near_clip();
+    }
     if (is_load && !is_autosave) {
         headless_bake_level_loaded(path, result != 0);
     }
@@ -1309,10 +1468,19 @@ FunHook<int __fastcall(void*, int, int)> CEditorApp_OnIdle_hook{0x00482F00, CEdi
 
 int __fastcall CEditorApp_OnIdle_new(void* self, int edx, int count)
 {
-    if (!headless_bake_idle()) {
-        terrain_paint_idle();
+    // MFC's Run loop does not catch: an exception from a headless bake, the views' render, autosave or a build tick
+    // would abort RED. Autosave and command-line updates write level files, so this cannot say none changed.
+    try {
+        memory_guard_idle();
+        if (!headless_bake_idle()) {
+            terrain_paint_idle();
+            gizmo_idle();
+        }
+        return CEditorApp_OnIdle_hook.call_target(self, edx, count);
     }
-    return CEditorApp_OnIdle_hook.call_target(self, edx, count);
+    catch (...) {
+        memory_guard_fatal("updating the editor", false);
+    }
 }
 
 CodeInjection autosave_defer_during_edit_injection{
@@ -1320,7 +1488,7 @@ CodeInjection autosave_defer_during_edit_injection{
     [](auto& regs) {
         auto* level = CDedLevel::Get();
         if (headless_bake_active() || is_edit_key_held() || (level && level->transform_in_progress) ||
-            terrain_paint_stroke_active()) {
+            terrain_paint_stroke_active() || gizmo_dragging()) {
             regs.eip = 0x004831B4; // defer autosave until the text tick we are not in an edit operation
         }
         else {
@@ -1454,8 +1622,8 @@ static GroupEntry* find_moving_group_from_selection()
         }
 
         if (group->keyframes) {
-            for (int j = 0; j < group->keyframes->size; j++) {
-                if ((*group->keyframes)[j] == selected)
+            for (int j = 0; j < group->keyframes->objects.size; j++) {
+                if (group->keyframes->objects[j] == selected)
                     return group;
             }
         }
@@ -1469,10 +1637,10 @@ static GroupEntry* find_moving_group_from_selection()
 static int get_editing_group_first_keyframe_uid([[maybe_unused]] HWND hdlg)
 {
     auto* group = find_moving_group_from_selection();
-    if (!group || !group->keyframes || group->keyframes->size <= 0)
+    if (!group || !group->keyframes || group->keyframes->objects.size <= 0)
         return -1;
 
-    DedObject* first_kf = (*group->keyframes)[0];
+    DedObject* first_kf = group->keyframes->objects[0];
     return first_kf ? first_kf->uid : -1;
 }
 
@@ -1588,7 +1756,20 @@ BOOL __fastcall CMainFrame_OnCmdMsg(CWnd* this_, int, UINT nID, int nCode, void*
         return TRUE;
     }
 
+    if (nID == IDC_GIZMO_SCALE_STEP && nCode == CBN_SELCHANGE) {
+        gizmo_scale_step_changed();
+        return TRUE;
+    }
+
     if (nCode == CN_COMMAND) {
+        // A command mid-drag would act on what the drag holds; put it back first, and skip the command if that
+        // failed.
+        if (!pHandlerInfo && (nID < ID_GIZMO_SELECT || nID > ID_GIZMO_SNAP) && gizmo_dragging()) {
+            // Undo / Redo during the drag only cancel it.
+            if (!gizmo_cancel_drag() || nID == ID_EDIT_UNDO || nID == ID_EDIT_REDO) {
+                return TRUE;
+            }
+        }
         std::function<void()> handler;
         switch (nID) {
             case ID_WIKI_EDITING_MAIN_PAGE:
@@ -1676,6 +1857,13 @@ BOOL __fastcall CMainFrame_OnCmdMsg(CWnd* this_, int, UINT nID, int nCode, void*
             case ID_TOGGLE_MAXIMIZE_VIEWPORT:
                 handler = std::bind(CMainFrame_ToggleMaximizeViewport, reinterpret_cast<CMainFrame*>(this_));
                 break;
+            case ID_GIZMO_SELECT:
+            case ID_GIZMO_MOVE:
+            case ID_GIZMO_ROTATE:
+            case ID_GIZMO_SCALE:
+            case ID_GIZMO_SNAP:
+                handler = [nID]() { gizmo_button_clicked(nID); };
+                break;
             case ID_TERRAIN_TOOLS:
                 handler = [this_]() {
                     terrain_paint_open_for_selection(reinterpret_cast<CDedLevel*>(GetLevelFromMainFrame(this_)));
@@ -1725,9 +1913,34 @@ void InitCrashHandler()
     std::snprintf(config.output_dir, std::size(config.output_dir), "%s\\logs", current_dir);
     std::snprintf(config.app_name, std::size(config.app_name), "AlpineEditor");
     config.add_known_module("RED");
+    config.add_known_module("RED_laa");
     config.add_known_module("AlpineEditor");
 
     CrashHandlerStubInstall(config);
+}
+
+// With 4 GB of address space, no block may straddle 2 GB: stock RED orders pointers by signed compares in places, which
+// only goes wrong for two addresses on either side of the boundary.
+void ReserveAddressSpaceBoundary()
+{
+    if (!editor_large_address_aware()) {
+        return;
+    }
+    constexpr uintptr_t begin = 0x7FFF0000;
+    constexpr uintptr_t end = 0x80010000;
+    if (VirtualAlloc(reinterpret_cast<void*>(begin), end - begin, MEM_RESERVE, PAGE_NOACCESS)) {
+        xlog::info("[Memory] large address aware, reserved the 2 GB boundary");
+        return;
+    }
+    xlog::warn("[Memory] large address aware, but could not reserve the 2 GB boundary ({})", GetLastError());
+    MEMORY_BASIC_INFORMATION mbi{};
+    for (auto addr = begin; addr < end && VirtualQuery(reinterpret_cast<void*>(addr), &mbi, sizeof(mbi)) == sizeof(mbi);
+         addr = reinterpret_cast<uintptr_t>(mbi.BaseAddress) + mbi.RegionSize) {
+        if (mbi.State != MEM_FREE) {
+            xlog::warn("[Memory] occupied: {:p} size {:x} allocation base {:p} state {:x} type {:x}", mbi.BaseAddress,
+                       mbi.RegionSize, mbi.AllocationBase, mbi.State, mbi.Type);
+        }
+    }
 }
 
 void ApplyGraphicsPatches();
@@ -1741,15 +1954,14 @@ void install_editor_bitmap_loader_hooks();
 void LoadAlpineEditorPackfile()
 {
     static auto& vpackfile_add = addr_as_ref<int __cdecl(const char *name, const char *dir)>(0x004CA930);
-    static auto& root_path = addr_as_ref<char[256]>(0x0158CA10);
 
     auto af_dir = get_module_dir(g_module);
-    std::string old_root_path = root_path;
-    std::strncpy(root_path, af_dir.c_str(), sizeof(root_path) - 1);
+    std::string old_root_path = file_root_path;
+    std::strncpy(file_root_path, af_dir.c_str(), sizeof(file_root_path) - 1);
     if (!vpackfile_add("alpinefaction.vpp", nullptr)) {
         xlog::error("Failed to load alpinefaction.vpp from {}", af_dir);
     }
-    std::strncpy(root_path, old_root_path.c_str(), sizeof(root_path) - 1);
+    std::strncpy(file_root_path, old_root_path.c_str(), sizeof(file_root_path) - 1);
 }
 
 CodeInjection vpackfile_init_injection{
@@ -2074,6 +2286,7 @@ void apply_af_level_editor_changes()
 extern "C" DWORD AF_DLL_EXPORT Init([[maybe_unused]] void* unused)
 {
     InitLogging();
+    ReserveAddressSpaceBoundary();
     InitCrashHandler();
 
     // Apply AF-specific changes only if legacy mode isn't active
@@ -2130,12 +2343,16 @@ extern "C" DWORD AF_DLL_EXPORT Init([[maybe_unused]] void* unused)
     CMainFrame_OnEditRedo_hook.install();
 
     // Apply patches defined in other files
+    ApplyMemoryGuardPatches();
     ApplyGraphicsPatches();
     ApplyTriggerPatches();
     ApplyLevelPatches();
     ApplyTerrainBuildPatches();
     ApplyTerrainPreviewPatches();
-    ApplyTerrainPaintPatches();
+    ApplyViewportInputPatches();
+    ApplyGizmoPatches();
+    ApplyMeshPreviewPatches();
+    ApplyPlacementPanelPatches();
     ApplyEventsPatches();
     ApplyAlpineObjectPatches();
     ApplyTexturesPatches();
@@ -2143,6 +2360,7 @@ extern "C" DWORD AF_DLL_EXPORT Init([[maybe_unused]] void* unused)
     ApplyGeometryPatches();
     ApplyAlpineLightmapPatches();
     ApplyFaceListCachePatches();
+    ApplyBakeProgressPatches();
     install_editor_bitmap_loader_hooks();
 
     // Browse for .v3m files instead of .v3d
@@ -2167,6 +2385,10 @@ extern "C" DWORD AF_DLL_EXPORT Init([[maybe_unused]] void* unused)
 
     // Fix random crash when opening cutscene properties
     CCutscenePropertiesDialog_ct_crash_fix.install();
+
+    // Fix save crash on clutter with a class missing from clutter.tbl (uninitialized skin count)
+    DedClutter_ct_hook.install();
+    CDedLevel_AddClutter_hook.install();
 
     // Load alpinefaction.vpp
     vpackfile_init_injection.install();
@@ -2256,9 +2478,16 @@ extern "C" DWORD AF_DLL_EXPORT Init([[maybe_unused]] void* unused)
     // Disable red background if geometry limits are crossed
     AsmWriter{0x0043A528, 0x0043A546}.nop();
 
-    // Fix greyscale TGA files not loading (types 3 and 11)
+    // Fix greyscale TGA files not loading (types 3 and 11) and validate TGA colormaps
     tga_greyscale_fix.install();
     tga_greyscale_fix_mipmap.install();
+
+    // Improve TGA pixel data validation
+    tga_decode_fix.install();
+    tga_decode_fix_mipmap.install();
+
+    // Fix crash when loading very big bitmaps
+    bm_lock_alloc_fail_fix.install();
 
     // Fix clip tool sometimes doing nothing on diagonal clip lines
     line_aabb_intersect_hook.install();
@@ -2274,7 +2503,7 @@ extern "C" DWORD AF_DLL_EXPORT Init([[maybe_unused]] void* unused)
     // Defer autosave while an edit operation is in progress to prevent teleporting
     autosave_defer_during_edit_injection.install();
 
-    // Idle tick (headless bake, Terrain Tools) and level load/save bracketing
+    // Idle tick (memory guard, headless bake, Terrain Tools) and level load/save bracketing
     CEditorApp_OnIdle_hook.install();
     CDedDoc_LoadSaveLevel_hook.install();
 

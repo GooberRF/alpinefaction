@@ -110,6 +110,14 @@ struct MutatorInfo
 
 void mutators_do_patch();
 void apply_mutators_from_toml(const toml::array& mutators_arr, AlpineServerConfigRules& rules);
+// The canonical name of the mutator a [[rules.mutators]] entry switches off with enabled = false.
+std::optional<std::string> mutator_disabled_by_entry(const toml::node& entry);
+// True when the entry declares the mutator `canonical_name`, enabled or not.
+bool mutator_entry_names(const toml::node& entry, std::string_view canonical_name);
+// The same mutators in force under `game_type` with the same option values, an omitted option counting
+// as its default.
+bool mutator_declarations_equivalent(const std::vector<MutatorDeclaration>& a,
+                                     const std::vector<MutatorDeclaration>& b, rf::NetGameType game_type);
 void mutators_level_init_post();
 void mutators_do_frame();
 void mutators_update_low_gravity();
@@ -248,11 +256,6 @@ std::optional<std::string> mutators_active_labels_string(const AlpineServerConfi
 // rotation entry's type, else Run for a quirks-table run map, else the base type if it
 // can host the level, else the filename prefix's type, else the base type.
 rf::NetGameType resolve_level_default_game_type(std::string_view level_filename);
-
-// Rules for `game_type` built without inheriting any other game type's fields.
-// `mutators` is applied last, in MUTATOR_APPLY_ORDER.
-AlpineServerConfigRules build_derived_server_rules(rf::NetGameType game_type,
-                                                   const std::vector<MutatorDeclaration>& mutators);
 
 // Rules a level/match vote (or a manual level load) installs. `gametype` falls back
 // to resolve_level_default_game_type.

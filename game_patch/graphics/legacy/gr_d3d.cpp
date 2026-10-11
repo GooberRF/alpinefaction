@@ -825,8 +825,7 @@ bool gr_d3d_is_d3d8to9()
 void gr_d3d_bitmap_float(int bitmap_handle, float x, float y, float w, float h,
                          float sx, float sy, float sw, float sh, bool flip_x, bool flip_y, rf::gr::Mode mode)
 {
-    auto& gr_d3d_get_num_texture_sections = addr_as_ref<int(int bm_handle)>(0x0055CA60);
-    if (gr_d3d_get_num_texture_sections(bitmap_handle) != 1) {
+    if (rf::gr::d3d::get_num_texture_sections(bitmap_handle) != 1) {
         // If bitmap is sectioned fall back to the old implementation...
         rf::gr::bitmap_scaled(bitmap_handle,
             static_cast<int>(x), static_cast<int>(y), static_cast<int>(w), static_cast<int>(h),
@@ -878,6 +877,45 @@ void gr_d3d_bitmap_float(int bitmap_handle, float x, float y, float w, float h,
     verts[3].u1 = u_left;
     verts[3].v1 = v_bottom;
     rf::gr::tmapper(std::size(verts_ptrs), verts_ptrs, rf::gr::TMAP_FLAG_TEXTURED, mode);
+}
+
+void gr_d3d_poly_2d(int bitmap_handle, int nv, const rf::gr::Vertex* vertices, rf::gr::Mode mode)
+{
+    constexpr int max_verts = 32;
+    if (nv < 3 || nv > max_verts) {
+        return;
+    }
+    if (bitmap_handle >= 0) {
+        // Only the state/texture setup pages the bitmap in (via 0x0055CAD0); set_texture just
+        // records the handle, and the section count is stale until paging has run.
+        rf::gr::d3d::set_state_and_texture(mode, bitmap_handle, -1);
+        if (rf::gr::d3d::get_num_texture_sections(bitmap_handle) != 1) {
+            static bool warned = false;
+            if (!warned) {
+                warned = true;
+                xlog::warn("[gr] gr_poly_2d: bitmap {} is too large for one texture on this renderer, not drawn",
+                           bitmap_handle);
+            }
+            return;
+        }
+        rf::gr::set_texture(bitmap_handle, -1);
+    }
+    else {
+        // tmapper pages the last gr::set_texture handle; stock gr_rect clears it the same way.
+        rf::gr::set_texture(-1, -1);
+    }
+
+    rf::gr::Vertex verts[max_verts];
+    rf::gr::Vertex* verts_ptrs[max_verts];
+    for (int i = 0; i < nv; ++i) {
+        verts[i] = vertices[i];
+        verts[i].sx = rf::gr::screen.offset_x + vertices[i].sx;
+        verts[i].sy = rf::gr::screen.offset_y + vertices[i].sy;
+        verts[i].sw = 1.0f;
+        verts_ptrs[i] = &verts[i];
+    }
+    const auto flags = bitmap_handle >= 0 ? rf::gr::TMAP_FLAG_TEXTURED : static_cast<rf::gr::TMapperFlags>(0);
+    rf::gr::tmapper(nv, verts_ptrs, flags, mode);
 }
 
 void gr_d3d_apply_patch()

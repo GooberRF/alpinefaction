@@ -9,6 +9,9 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <new>
+#include <optional>
 #include <unordered_map>
 #include <unordered_set>
 #include <windows.h>
@@ -24,14 +27,24 @@
 #include "corona.h"
 #include "bag.h"
 #include "weather_region.h"
+#include "vehicle_factory.h"
 #include "projection_camera.h"
 #include "rope_emitter.h"
+#include "alpine_obj.h"
+#include "alpine_spinner.h"
+#include "textures.h"
+#include "minimap_bake.h"
 #include "terrain.h"
 #include "terrain_build.h"
 #include "terrain_decorations.h"
+#include "dir_light.h"
 #include "alpine_lightmaps.h"
-#include "alpine_obj.h"
+#include "overflow_charts.h"
 #include "headless_bake.h"
+#include "event.h"
+#include "bake_progress.h"
+#include "face_list_cache.h"
+#include "memory_guard.h"
 
 // Forward declarations
 int get_level_rfl_version();
@@ -70,17 +83,24 @@ void editor_report(EditorReportLevel level, const char* tag, const std::string& 
 void editor_report_blocking(const char* tag, const char* caption, const std::string& msg)
 {
     editor_report(EditorReportLevel::error, tag, msg, true);
-    if (!headless_bake_active()) {
+    if (headless_bake_active()) {
+        return;
+    }
+    // a message box mid-bake would run a modal loop that dispatches every window's messages
+    if (bake_progress_active()) {
+        bake_progress_defer_message(caption, msg);
+    }
+    else {
         MessageBoxA(GetMainFrameHandle(), msg.c_str(), caption, MB_OK | MB_ICONWARNING);
     }
 }
 
-std::string editor_address_space_shortfall(std::uint64_t largest, std::uint64_t total, const char* advice)
+void editor_address_space_free(std::uint64_t& free_largest, std::uint64_t& free_total)
 {
     SYSTEM_INFO si{};
     GetSystemInfo(&si);
-    std::uint64_t free_largest = 0;
-    std::uint64_t free_total = 0;
+    free_largest = 0;
+    free_total = 0;
     auto addr = reinterpret_cast<std::uintptr_t>(si.lpMinimumApplicationAddress);
     const auto end = reinterpret_cast<std::uintptr_t>(si.lpMaximumApplicationAddress);
     MEMORY_BASIC_INFORMATION mbi{};
@@ -95,6 +115,20 @@ std::string editor_address_space_shortfall(std::uint64_t largest, std::uint64_t 
         }
         addr = next;
     }
+}
+
+bool editor_large_address_aware()
+{
+    SYSTEM_INFO si{};
+    GetSystemInfo(&si);
+    return reinterpret_cast<std::uintptr_t>(si.lpMaximumApplicationAddress) > 0x80000000u;
+}
+
+std::string editor_address_space_shortfall(std::uint64_t largest, std::uint64_t total, const char* advice)
+{
+    std::uint64_t free_largest = 0;
+    std::uint64_t free_total = 0;
+    editor_address_space_free(free_largest, free_total);
     constexpr std::uint64_t mb = 1u << 20;
     char msg[512];
     if (free_largest < largest) {
@@ -117,28 +151,15 @@ CodeInjection CDedLevel_construct_patch{
     0x004181B8,
     [](auto& regs) {
         set_initial_level_rfl_version();
-        g_alpine_level_props.LoadDefaults();
+        g_alpine_level_props.LoadNewLevelDefaults();
     },
 };
 
-// Clear alpine properties when the level is reset (File > New or File > Open).
-// FUN_00418960 is CDedLevel::DeleteContents (thiscall, ECX = CDedLevel*).
-// Called via the virtual DeleteContents override at vtable[27] (FUN_0041CDF0).
-//
-// Strategy: wrap with FunHook so we can run cleanup both BEFORE and AFTER stock code.
-//
-// BEFORE: Null out vmesh on Alpine objects so stock FUN_0041c360 (called from
-// DeleteContents loop 3 on master_objects) won't try to free it via FUN_004bfec0.
-// Alpine objects are LEFT in master_objects so that undo cleanup (FUN_0043d170)
-// finds them there and skips processing entirely — avoiding the "orphan" path
-// (FUN_00491020 + FUN_0041c360) that causes heap corruption.
-// FUN_0041c360 switches on [obj+0x5C] (type): types > 0x16 fall through to
-// default → return without calling the virtual destructor, so Alpine objects
-// survive stock cleanup.
-//
-// AFTER: Call LoadDefaults() to properly free the Alpine objects. At this point
-// stock code has finished processing all undo entries and VArrays, so the Alpine
-// objects are no longer referenced anywhere.
+// Clear alpine properties when the level is reset (File > New, File > Open, document close).
+// FUN_00418960 is CDedLevel::DeleteContents (thiscall), reached via vtable[27] (FUN_0041CDF0).
+// Alpine objects stay in master_objects through the stock body so undo cleanup (FUN_0043d170) never
+// takes them for orphans, and level_destroy_object_hook keeps stock FUN_0041c360 off them. They are
+// freed after it, when no undo record can reach them any more.
 void __fastcall CDedLevel_DeleteContents_hooked(CDedLevel* level, void* edx_unused);
 FunHook<decltype(CDedLevel_DeleteContents_hooked)> CDedLevel_DeleteContents_hook{
     0x00418960,
@@ -148,28 +169,17 @@ void __fastcall CDedLevel_DeleteContents_hooked(CDedLevel* level, void* edx_unus
 {
     auto& props = level->GetAlpineLevelProperties();
     terrain_decorations_level_reset();
+    sun_arrow_detach(level);
 
-    // Null out vmesh BEFORE stock code runs, but leave objects in master_objects.
-    // This makes Alpine objects safe for stock FUN_0041c360 (loop 3):
-    //   - [obj+0x0C] (vmesh) = NULL → skips FUN_004bfec0 free
-    //   - [obj+0x5C] (type) > 0x16 → switch defaults to return (no destructor)
-    // Keeping objects in master_objects means FUN_0043d170 (undo cleanup) finds
-    // them and skips the orphan processing path entirely (no heap corruption).
+    // Released while the level is still intact; the stock body only ever sees [obj+0xC] null on Alpine meshes.
     for (auto* m : props.mesh_objects)
-        static_cast<DedObject*>(m)->vmesh = nullptr;
-    for (auto* n : props.note_objects)
-        static_cast<DedObject*>(n)->vmesh = nullptr;
-    for (auto* c : props.corona_objects)
-        static_cast<DedObject*>(c)->vmesh = nullptr;
-    for (auto* b : props.bag_objects)
-        static_cast<DedObject*>(b)->vmesh = nullptr;
+        mesh_release_vmesh(m);
 
-    // Let stock DeleteContents run — undo/redo cleanup skips Alpine objects
-    // (found in master_objects), and loop 3 safely returns early for type > 0x16.
     CDedLevel_DeleteContents_hook.call_target(level, edx_unused);
 
-    // Now stock code is done. Free the Alpine objects properly.
-    props.LoadDefaults();
+    alpine_graveyard_clear();
+    // File > Open applies the existing-level defaults again before it reads the file (0x0042F136)
+    props.LoadNewLevelDefaults();
     lightmap_reset_level_state();
     // Also runs as the document closes at exit, when the views may be gone, so nothing is repainted.
     alpine_lm_reset_level_state();
@@ -296,8 +306,19 @@ CodeInjection CDedLevel_LoadLevel_patch2{
                     terrain_deserialize_chunk(level, file, chunk_size);
                     regs.eip = 0x0043090C;
                 }
+                if (chunk_id == alpine_directional_light_chunk_id) {
+                    directional_light_deserialize_chunk(level, file, chunk_size, file.get_version());
+                    regs.eip = 0x0043090C;
+                }
                 if (chunk_id == alpine_lightmaps_chunk_id) {
                     alpine_lm_deserialize_chunk(level, file, chunk_size);
+                    regs.eip = 0x0043090C;
+                }
+            }
+            // Vehicle factory chunk was introduced in rfl v306
+            if (file.check_version(306)) {
+                if (chunk_id == alpine_vehicle_factory_chunk_id) {
+                    vehicle_factory_deserialize_chunk(level, file, chunk_size);
                     regs.eip = 0x0043090C;
                 }
             }
@@ -658,6 +679,24 @@ static void recompute_room_bbox(GRoom* room)
     room->bbox_max = vmax;
 }
 
+// Leaves the room exactly as add_face's per-face unlinks would, in one pass.
+static void unlink_room_faces(GRoom* room, const std::unordered_set<GFace*>& faces)
+{
+    GFace** link = &room->face_list_head;
+    while (GFace* f = *link) {
+        if (faces.count(f)) {
+            *link = f->next_room;
+            f->next_room = nullptr;
+            f->which_room = nullptr;
+            room->face_list_count--;
+        }
+        else {
+            link = &f->next_room;
+        }
+    }
+    face_list_cache_forget(&room->face_list_head);
+}
+
 static void isolate_marked_rooms(GSolid* solid)
 {
     // Group faces by room, then by isolated brush UID (-1 = not isolated)
@@ -687,24 +726,37 @@ static void isolate_marked_rooms(GSolid* solid)
         if (isolated_count == 0) continue;                 // no isolated faces
         if (!has_unmarked && isolated_count <= 1) continue; // single isolated brush, no mixing
 
-        // Room has mixed content — split each isolated brush into its own room
-        bool first_isolated = true;
-        for (auto& [uid, faces] : fg.by_brush) {
-            if (uid == -1) continue;
+        // If room has only isolated faces (no unmarked), keep the first
+        // isolated group in the original room to avoid creating an empty room
+        int kept_uid = -1;
+        if (!has_unmarked) {
+            kept_uid = fg.by_brush.begin()->first;
+        }
 
-            // If room has only isolated faces (no unmarked), keep the first
-            // isolated group in the original room to avoid creating an empty room
-            if (!has_unmarked && first_isolated) {
-                first_isolated = false;
-                continue;
+        // add_face's stock unlink walks the room list from its head for every face, which is quadratic
+        // when a terrain room is split, so every moving face leaves the room list in one pass first.
+        std::unordered_set<GFace*> moving;
+        for (auto& [uid, faces] : fg.by_brush) {
+            if (uid != -1 && uid != kept_uid) {
+                moving.insert(faces.begin(), faces.end());
             }
-            first_isolated = false;
+        }
+        unlink_room_faces(room, moving);
+
+        // Room has mixed content — split each isolated brush into its own room
+        for (auto& [uid, faces] : fg.by_brush) {
+            if (uid == -1 || uid == kept_uid) continue;
 
             // Use first face's bbox to initialize the new room
             GFace* seed = faces[0];
 
             GRoom* new_room = GRoom::alloc();
-            if (!new_room) continue;
+            if (!new_room) {
+                for (GFace* f : faces) {
+                    room->add_face(f);
+                }
+                continue;
+            }
             new_room->init(solid, &seed->bounding_box_min, &seed->bounding_box_max);
 
             // Copy life from original room so breakable brushes retain their HP.
@@ -847,6 +899,14 @@ static void merge_geoable_interior_rooms(GSolid* solid)
     }
 }
 
+// The GRoom constructor never initialises is_airlock, so a room no airlock Room Effect reaches saved heap garbage.
+CodeInjection groom_ctor_clear_airlock_injection{
+    0x004855d8,
+    [](auto& regs) {
+        reinterpret_cast<GRoom*>(static_cast<uintptr_t>(regs.ebp))->is_airlock = false;
+    },
+};
+
 // Skip empty detail rooms in the room builder's loop 2 (parent association).
 // After merging geoable brush rooms, secondary rooms are empty (no faces) but
 // remain as detail in all_rooms. Loop 2 at 0x485f44 dereferences the face list
@@ -894,6 +954,57 @@ void __fastcall build_rooms_hooked(GSolid* solid, void* edx_unused)
     g_isolated_face_map.clear();
 }
 
+// After the room builder, GeoBuild_Driver hands each detail brush to CDedLevel::SyncBrushLife
+// (0x0043c2a0), which walks the level solid's face list for the first face with the id of the brush's
+// first face and gives that face's room the brush's life. This runs the same loop against an index of
+// first faces by id, or the stock loop (from 0x0043a040) if building the index runs out of memory. Replaces
+// "MOV EDI,[ESI+0x118]" (6 bytes); 0x0043a065 is the loop exit.
+CodeInjection sync_brush_life_injection{
+    0x0043a03a,
+    [](auto& regs) {
+        auto* level = reinterpret_cast<CDedLevel*>(static_cast<uintptr_t>(regs.esi));
+        BrushNode* const head = level->brush_list;
+        try {
+            std::unordered_map<int, GFace*> first_face;
+            bool indexed = false;
+            BrushNode* brush = head;
+            while (brush) {
+                auto* geometry = static_cast<GSolid*>(brush->geometry);
+                if (brush->is_detail == 1 && geometry && geometry->face_list_head) {
+                    if (!indexed) {
+                        for (GFace* face = level->solid ? level->solid->face_list_head : nullptr; face;
+                             face = face->next_solid) {
+                            first_face.try_emplace(face->face_id, face);
+                        }
+                        indexed = true;
+                    }
+                    auto it = first_face.find(geometry->face_list_head->face_id);
+                    GRoom* room = it != first_face.end() ? it->second->which_room : nullptr;
+                    if (room) {
+                        room->life = static_cast<float>(brush->life);
+                        if (brush->life > 0) {
+                            room->is_invincible = false;
+                        }
+                    }
+                }
+                brush = brush->next;
+                if (brush == head) {
+                    break;
+                }
+            }
+            regs.edi = reinterpret_cast<uintptr_t>(brush);
+            regs.ebp = 0;
+            regs.eip = 0x0043a065;
+        }
+        catch (const std::bad_alloc&) {
+            // only the index allocates, and no room is written before it is complete
+            regs.edi = reinterpret_cast<uintptr_t>(head);
+            regs.eip = 0x0043a040;
+        }
+    },
+    false, // no trampoline: the injection fully replaces the 6 byte load
+};
+
 // FUN_0043a710 starts a Build Geometry (thiscall on CDedLevel*). The minimums cover the first build after
 // a load, the largest measured.
 constexpr std::uint64_t build_geometry_min_free_block = 100u << 20;
@@ -906,12 +1017,19 @@ FunHook<decltype(build_geometry_start_hooked)> build_geometry_start_hook{
 };
 void __fastcall build_geometry_start_hooked(CDedLevel* level, void* edx_unused)
 {
+    if (!memory_guard_ready()) {
+        editor_report_blocking("Build Geometry", "Build Geometry",
+                               std::string{"Build Geometry was not started: "} + memory_guard_warning);
+        return;
+    }
     const std::string shortfall =
         editor_address_space_shortfall(build_geometry_min_free_block, build_geometry_min_free_total);
     if (!shortfall.empty()) {
         editor_report_blocking("Build Geometry", "Build Geometry", shortfall);
         return;
     }
+    // the build frees the faces the overflow preview is keyed on
+    overflow_preview_clear();
     build_geometry_start_hook.call_target(level, edx_unused);
 }
 
@@ -953,11 +1071,49 @@ CodeInjection skip_alpine_objects_bounds_check{
             obj->type == DedObjectType::DED_WEATHER_REGION ||
             obj->type == DedObjectType::DED_PROJECTION_CAMERA ||
             obj->type == DedObjectType::DED_ROPE_EMITTER ||
-            obj->type == DedObjectType::DED_TERRAIN) {
+            obj->type == DedObjectType::DED_TERRAIN ||
+            obj->type == DedObjectType::DED_DIRECTIONAL_LIGHT) {
             regs.eip = 0x0041dcfa;
         }
     },
 };
+
+// The game refuses a level that needs D3D11 on the other renderers; logs every reason it does.
+static bool level_needs_d3d11(CDedLevel& level, bool stock_lightmaps_suppressed)
+{
+    const auto& props = level.GetAlpineLevelProperties();
+    std::string reasons;
+    auto add_reason = [&](const char* reason) {
+        if (!reasons.empty()) {
+            reasons += ", ";
+        }
+        reasons += reason;
+    };
+    if (props.require_d3d11) {
+        add_reason("Require Direct3D 11 setting");
+    }
+    if (stock_lightmaps_suppressed) {
+        add_reason("D3D11-only lightmaps");
+    }
+    if (std::any_of(props.mesh_objects.begin(), props.mesh_objects.end(),
+                    [](const DedMesh* mesh) { return mesh->draw_scale != 1.0f; })) {
+        add_reason("mesh draw scale");
+    }
+    auto& objects = level.master_objects;
+    for (int i = 0; i < objects.get_size(); i++) {
+        const DedObject* obj = objects.data_ptr[i];
+        if (obj && obj->type == DedObjectType::DED_EVENT &&
+            static_cast<const DedEvent*>(obj)->event_type == static_cast<int>(AlpineDedEventID::Mesh_Set_Scale)) {
+            add_reason("Mesh_Set_Scale event");
+            break;
+        }
+    }
+    if (reasons.empty()) {
+        return false;
+    }
+    xlog::info("[Level] Level requires Direct3D 11: {}", reasons);
+    return true;
+}
 
 // save AlpineLevelProperties when saving rfl file
 // At 0x00430CBD, all_objects is already populated but link UIDs haven't been
@@ -971,6 +1127,9 @@ CodeInjection CDedLevel_SaveLevel_patch{
         // Decides whether the alpine lightmap section is emitted, which the stock lightmaps
         // section write a few instructions later depends on.
         alpine_lm_save_begin(level);
+
+        // A rotation of the sun arrow not yet repainted still belongs in the saved sun direction.
+        sun_arrow_sync(&level);
 
         // Compute room UIDs and scrub stale data before serializing
         auto& alpine_level_props = level.GetAlpineLevelProperties();
@@ -986,8 +1145,8 @@ CodeInjection CDedLevel_SaveLevel_patch{
             for (int i = 0; i < mg.size; i++) {
                 auto* group = mg[i];
                 if (group && group->is_moving_group() && group->keyframes &&
-                    group->keyframes->size > 0) {
-                    DedObject* first_kf = (*group->keyframes)[0];
+                    group->keyframes->objects.size > 0) {
+                    DedObject* first_kf = group->keyframes->objects[0];
                     if (first_kf)
                         valid_kf_uids.insert(first_kf->uid);
                 }
@@ -999,7 +1158,9 @@ CodeInjection CDedLevel_SaveLevel_patch{
         }
 
         auto start_pos = level.BeginRflSection(file, alpine_props_chunk_id);
-        alpine_level_props.Serialize(file, alpine_lm_stock_suppressed());
+        const bool stock_lightmaps_suppressed = alpine_lm_stock_suppressed();
+        alpine_level_props.Serialize(file, stock_lightmaps_suppressed,
+                                     level_needs_d3d11(level, stock_lightmaps_suppressed));
         level.EndRflSection(file, start_pos);
 
         // Write mesh objects chunk
@@ -1017,6 +1178,9 @@ CodeInjection CDedLevel_SaveLevel_patch{
         // Write weather region objects chunk
         weather_region_serialize_chunk(level, file);
 
+        // Write vehicle factory objects chunk
+        vehicle_factory_serialize_chunk(level, file);
+
         // Write projection camera objects chunk
         projection_camera_serialize_chunk(level, file);
 
@@ -1025,6 +1189,9 @@ CodeInjection CDedLevel_SaveLevel_patch{
 
         // Write terrain objects chunk
         terrain_serialize_chunk(level, file);
+
+        // Write directional light objects chunk
+        directional_light_serialize_chunk(level, file);
 
         // Re-write any foreign-editor chunks
         retained_chunks_serialize(level, file);
@@ -1095,23 +1262,10 @@ static void set_sun_angles_from_camera(HWND hdlg)
         return;
     }
 
-    const Vector3& fwd = viewport->view_data->camera_orient.fvec;
-    float len = std::sqrt(fwd.x * fwd.x + fwd.y * fwd.y + fwd.z * fwd.z);
-    if (!std::isfinite(len) || len <= 0.0f) {
+    float yaw = 0.0f, pitch = 0.0f;
+    if (!alpine_light_dir_to_sun_angles(viewport->view_data->camera_orient.fvec, yaw, pitch)) {
         return;
     }
-    float x = -fwd.x / len;
-    float y = -fwd.y / len;
-    float z = -fwd.z / len;
-
-    constexpr float rad_to_deg = 180.0f / 3.14159265358979f;
-    float yaw = std::atan2(x, z) * rad_to_deg;
-    yaw = std::fmod(yaw, 360.0f);
-    if (yaw < 0.0f) {
-        yaw += 360.0f;
-    }
-    // Aiming above the horizon keeps the heading and parks the sun on the horizon.
-    float pitch = std::clamp(std::asin(std::clamp(y, -1.0f, 1.0f)) * rad_to_deg, 0.0f, 90.0f);
 
     char buffer[32];
     std::snprintf(buffer, sizeof(buffer), "%.3f", yaw);
@@ -1185,6 +1339,668 @@ static void pick_sun_color(HWND hdlg)
     }
 }
 
+static bool read_window_float(HWND hwnd, float& out, float min_value, float max_value)
+{
+    char buffer[64] = {};
+    if (hwnd) {
+        GetWindowTextA(hwnd, buffer, static_cast<int>(sizeof(buffer)));
+    }
+    char* end = nullptr;
+    float value = std::strtof(buffer, &end);
+    if (end == buffer || !std::isfinite(value)) {
+        return false;
+    }
+    out = std::clamp(value, min_value, max_value);
+    return true;
+}
+
+static bool read_dlg_float(HWND hdlg, int id, float& out, float min_value, float max_value)
+{
+    return read_window_float(GetDlgItem(hdlg, id), out, min_value, max_value);
+}
+
+// ─── Level Properties tabs ───
+
+namespace
+{
+
+enum class LevelTab : int
+{
+    general,
+    lighting,
+    lightmaps,
+    gameplay,
+    minimap,
+    compatibility,
+};
+
+struct LevelTabControl
+{
+    int id;
+    LevelTab tab;
+};
+
+} // namespace
+
+constexpr const char* level_tab_names[] = {"General", "Lighting", "Lightmaps", "Gameplay", "Minimap",
+                                               "Compatibility"};
+
+// IDC_LEVEL_DIRECTIONAL_LIGHT is left out so it stays hidden on every tab.
+constexpr LevelTabControl level_tab_controls[] = {
+    {IDC_LEVEL_NAME_LABEL, LevelTab::general},
+    {IDC_LEVEL_NAME, LevelTab::general},
+    {IDC_LEVEL_AUTHOR_LABEL, LevelTab::general},
+    {IDC_LEVEL_AUTHOR, LevelTab::general},
+    {IDC_LEVEL_DATE_LABEL, LevelTab::general},
+    {IDC_LEVEL_DATE, LevelTab::general},
+    {IDC_LEVEL_VERSION_LABEL, LevelTab::general},
+    {IDC_LEVEL_VERSION, LevelTab::general},
+    {IDC_LEVEL_MULTIPLAYER, LevelTab::general},
+    {IDC_LEVEL_FLAGS_GROUP, LevelTab::general},
+    {IDC_LEVEL_OUTSIDE, LevelTab::general},
+    {IDC_LEVEL_INSIDE, LevelTab::general},
+    {IDC_LEVEL_GEOMOD_GROUP, LevelTab::general},
+    {IDC_LEVEL_GEOMOD_TEXTURE_LABEL, LevelTab::general},
+    {IDC_LEVEL_GEOMOD_TEXTURE, LevelTab::general},
+    {IDC_LEVEL_GEOMOD_TEXTURE_BROWSE, LevelTab::general},
+    {IDC_LEVEL_HARDNESS_LABEL, LevelTab::general},
+    {IDC_LEVEL_HARDNESS, LevelTab::general},
+    {IDC_LEVEL_HARDNESS_SPIN, LevelTab::general},
+    {IDC_LEVEL_HARDNESS_HINT, LevelTab::general},
+    {IDC_RF2_STYLE_GEOMOD, LevelTab::general},
+    {IDC_REQUIRE_D3D11, LevelTab::general},
+
+    {IDC_LEVEL_AMBIENT_GROUP, LevelTab::lighting},
+    {IDC_LEVEL_AMBIENT_COLOR_LABEL, LevelTab::lighting},
+    {IDC_LEVEL_AMBIENT_SWATCH, LevelTab::lighting},
+    {IDC_LEVEL_AMBIENT_CHANGE, LevelTab::lighting},
+    {IDC_LEVEL_AMBIENT_VALUE, LevelTab::lighting},
+    {IDC_LEVEL_AMBIENT_DEFAULT, LevelTab::lighting},
+    {IDC_LEVEL_FOG_GROUP, LevelTab::lighting},
+    {IDC_LEVEL_FOG_COLOR_LABEL, LevelTab::lighting},
+    {IDC_LEVEL_FOG_SWATCH, LevelTab::lighting},
+    {IDC_LEVEL_FOG_CHANGE, LevelTab::lighting},
+    {IDC_LEVEL_FOG_VALUE, LevelTab::lighting},
+    {IDC_LEVEL_FOG_NEAR_CLIP_LABEL, LevelTab::lighting},
+    {IDC_LEVEL_FOG_NEAR_CLIP, LevelTab::lighting},
+    {IDC_LEVEL_FOG_NEAR_CLIP_HINT, LevelTab::lighting},
+    {IDC_LEVEL_FOG_FAR_CLIP_LABEL, LevelTab::lighting},
+    {IDC_LEVEL_FOG_FAR_CLIP, LevelTab::lighting},
+    {IDC_LEVEL_CAMERA_FAR_CLIP_LABEL, LevelTab::lighting},
+    {IDC_LEVEL_CAMERA_FAR_CLIP, LevelTab::lighting},
+    {IDC_LEVEL_CAMERA_FAR_CLIP_SPIN, LevelTab::lighting},
+    {IDC_LEVEL_CAMERA_FAR_CLIP_HINT, LevelTab::lighting},
+    {IDC_LEVEL_CAMERA_FAR_CLIP_WARNING_ICON, LevelTab::lighting},
+    {IDC_LEVEL_CAMERA_FAR_CLIP_WARNING, LevelTab::lighting},
+    {IDC_MESH_AMBIENT_GROUP, LevelTab::lighting},
+    {IDC_OVERRIDE_MESH_AMBIENT_LIGHT_MODIFIER, LevelTab::lighting},
+    {IDC_MESH_AMBIENT_LIGHT_MODIFIER_LABEL, LevelTab::lighting},
+    {IDC_MESH_AMBIENT_LIGHT_MODIFIER, LevelTab::lighting},
+    {IDC_SUN_GROUP, LevelTab::lighting},
+    {IDC_SUN_ENABLE, LevelTab::lighting},
+    {IDC_SUN_SET_FROM_CAMERA, LevelTab::lighting},
+    {IDC_SUN_YAW_LABEL, LevelTab::lighting},
+    {IDC_SUN_YAW, LevelTab::lighting},
+    {IDC_SUN_PITCH_LABEL, LevelTab::lighting},
+    {IDC_SUN_PITCH, LevelTab::lighting},
+    {IDC_SUN_INTENSITY_LABEL, LevelTab::lighting},
+    {IDC_SUN_INTENSITY, LevelTab::lighting},
+    {IDC_SUN_SPREAD_ANGLE_LABEL, LevelTab::lighting},
+    {IDC_SUN_SPREAD_ANGLE, LevelTab::lighting},
+    {IDC_SUN_COLOR_LABEL, LevelTab::lighting},
+    {IDC_SUN_COLOR_SWATCH, LevelTab::lighting},
+    {IDC_SUN_COLOR_CHANGE, LevelTab::lighting},
+    {IDC_SUN_COLOR_VALUE, LevelTab::lighting},
+    {IDC_SUN_CAST_BAKED_SHADOWS, LevelTab::lighting},
+    {IDC_SUN_AFFECTS_MESHES, LevelTab::lighting},
+    {IDC_SUN_MESH_MODE_SCALE, LevelTab::lighting},
+    {IDC_SUN_DRIVES_SHADOWMAP_DIR, LevelTab::lighting},
+    {IDC_SUN_LIQUID_OCCLUDES, LevelTab::lighting},
+
+    {IDC_HIGHRES_LIGHTMAPS, LevelTab::lightmaps},
+    {IDC_LIGHT_BLOCKING_GROUP, LevelTab::lightmaps},
+    {IDC_INVISIBLE_FACES_OCCLUDE, LevelTab::lightmaps},
+    {IDC_ALPHA_FACES_OCCLUDE, LevelTab::lightmaps},
+    {IDC_MESHES_OCCLUDE, LevelTab::lightmaps},
+    {IDC_ALPHA_TESTED_OCCLUSION, LevelTab::lightmaps},
+    {IDC_D3D11_ONLY_LIGHTMAPS, LevelTab::lightmaps},
+    {IDC_LIGHTMAP_DENSITY_LABEL, LevelTab::lightmaps},
+    {IDC_LIGHTMAP_DENSITY, LevelTab::lightmaps},
+    {IDC_LIGHTMAP_COMPRESSION_LABEL, LevelTab::lightmaps},
+    {IDC_LIGHTMAP_COMPRESSION, LevelTab::lightmaps},
+
+    {IDC_STARTS_WITH_HEADLAMP, LevelTab::gameplay},
+    {IDC_VEHICLE_FLIGHT_CEILING_ENABLE, LevelTab::gameplay},
+    {IDC_VEHICLE_FLIGHT_CEILING_LABEL, LevelTab::gameplay},
+    {IDC_VEHICLE_FLIGHT_CEILING, LevelTab::gameplay},
+    {IDC_LEGACY_CYCLIC_TIMERS, LevelTab::compatibility},
+    {IDC_LEGACY_MOVERS, LevelTab::compatibility},
+    {IDC_LEGACY_LIGHTING, LevelTab::compatibility},
+
+    {IDC_MINIMAP_ENABLE, LevelTab::minimap},
+    {IDC_MINIMAP_BITMAP_LABEL, LevelTab::minimap},
+    {IDC_MINIMAP_BITMAP, LevelTab::minimap},
+    {IDC_MINIMAP_BITMAP_BROWSE, LevelTab::minimap},
+    {IDC_MINIMAP_BOUNDS_GROUP, LevelTab::minimap},
+    {IDC_MINIMAP_MIN_X_LABEL, LevelTab::minimap},
+    {IDC_MINIMAP_MIN_X, LevelTab::minimap},
+    {IDC_MINIMAP_MIN_X_SPIN, LevelTab::minimap},
+    {IDC_MINIMAP_MIN_Z_LABEL, LevelTab::minimap},
+    {IDC_MINIMAP_MIN_Z, LevelTab::minimap},
+    {IDC_MINIMAP_MIN_Z_SPIN, LevelTab::minimap},
+    {IDC_MINIMAP_MAX_X_LABEL, LevelTab::minimap},
+    {IDC_MINIMAP_MAX_X, LevelTab::minimap},
+    {IDC_MINIMAP_MAX_X_SPIN, LevelTab::minimap},
+    {IDC_MINIMAP_MAX_Z_LABEL, LevelTab::minimap},
+    {IDC_MINIMAP_MAX_Z, LevelTab::minimap},
+    {IDC_MINIMAP_MAX_Z_SPIN, LevelTab::minimap},
+    {IDC_MINIMAP_CUT_HEIGHT_LABEL, LevelTab::minimap},
+    {IDC_MINIMAP_CUT_HEIGHT, LevelTab::minimap},
+    {IDC_MINIMAP_CUT_HEIGHT_SPIN, LevelTab::minimap},
+    {IDC_MINIMAP_CUT_HEIGHT_HINT, LevelTab::minimap},
+    {IDC_MINIMAP_BITMAP_PREVIEW, LevelTab::minimap},
+    {IDC_MINIMAP_BAKE_RES_LABEL, LevelTab::minimap},
+    {IDC_MINIMAP_BAKE_RES, LevelTab::minimap},
+    {IDC_MINIMAP_BAKE, LevelTab::minimap},
+    {IDC_MINIMAP_BAKE_USE_BOUNDS, LevelTab::minimap},
+};
+
+static const LevelTabControl* level_tab_control_find(int id)
+{
+    const auto it = std::find_if(std::begin(level_tab_controls), std::end(level_tab_controls),
+                                 [id](const LevelTabControl& control) { return control.id == id; });
+    return it != std::end(level_tab_controls) ? it : nullptr;
+}
+
+static HWND g_level_fog_far_edit = nullptr;
+
+// The stored value while the field still shows it exactly, 0 (automatic) when emptied, else the typed value;
+// text that is not a number keeps the stored value, as the other Level Properties fields do.
+static float read_camera_far_clip_field(HWND hdlg, float stored)
+{
+    char text[32] = {};
+    char shown[32];
+    GetDlgItemTextA(hdlg, IDC_LEVEL_CAMERA_FAR_CLIP, text, static_cast<int>(sizeof(text)));
+    alpine_format_float_exact(shown, stored);
+    if (std::strcmp(text, shown) == 0) {
+        return stored;
+    }
+    if (text[std::strspn(text, " \t")] == '\0') {
+        return 0.0f;
+    }
+    float value = stored;
+    read_dlg_float(hdlg, IDC_LEVEL_CAMERA_FAR_CLIP, value, 0.0f, FLT_MAX);
+    return value;
+}
+
+// On the Lighting tab, the warning takes the place of the hint while the camera far clip ends before the fog does.
+static void level_dialog_update_camera_far_clip_warning(HWND hdlg)
+{
+    const bool lighting = SendDlgItemMessageA(hdlg, IDC_LEVEL_TABS, TCM_GETCURSEL, 0, 0) ==
+                          static_cast<LRESULT>(LevelTab::lighting);
+    const float camera_far_clip = alpine_camera_far_clip::sanitize(
+        read_camera_far_clip_field(hdlg, CDedLevel::Get()->GetAlpineLevelProperties().camera_far_clip));
+    float fog_far_clip = 0.0f;
+    const bool warn = read_window_float(g_level_fog_far_edit, fog_far_clip, 0.0f, FLT_MAX) && camera_far_clip > 0.0f &&
+                      camera_far_clip < std::min(fog_far_clip, alpine_camera_far_clip::max_value);
+    auto show = [hdlg](int id, bool visible) {
+        if (HWND control = GetDlgItem(hdlg, id)) {
+            ShowWindow(control, visible ? SW_SHOWNA : SW_HIDE);
+        }
+    };
+    show(IDC_LEVEL_CAMERA_FAR_CLIP_HINT, lighting && !warn);
+    show(IDC_LEVEL_CAMERA_FAR_CLIP_WARNING_ICON, lighting && warn);
+    show(IDC_LEVEL_CAMERA_FAR_CLIP_WARNING, lighting && warn);
+}
+
+// RED's fog far clip spinner is a dialog of its own, so its edit's notifications never reach the level dialog.
+static LRESULT CALLBACK fog_far_spinner_subclass_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam,
+                                                      UINT_PTR subclass_id, DWORD_PTR hdlg)
+{
+    if (msg == WM_NCDESTROY) {
+        RemoveWindowSubclass(hwnd, fog_far_spinner_subclass_proc, subclass_id);
+    }
+    const LRESULT result = DefSubclassProc(hwnd, msg, wparam, lparam);
+    if (msg == WM_COMMAND && HIWORD(wparam) == EN_CHANGE) {
+        level_dialog_update_camera_far_clip_warning(reinterpret_cast<HWND>(hdlg));
+    }
+    return result;
+}
+
+// The up-down in RED's float spinner container (dialog 209), beside its edit 1234
+constexpr int red_float_spinner_updown_id = 1228;
+
+// Lays the camera far clip edit and arrows out exactly like the fog clip spinners above them.
+static void level_dialog_match_fog_spinner_layout(HWND hdlg, HWND fog_edit)
+{
+    HWND fog_spin = fog_edit ? GetDlgItem(GetParent(fog_edit), red_float_spinner_updown_id) : nullptr;
+    HWND edit = GetDlgItem(hdlg, IDC_LEVEL_CAMERA_FAR_CLIP);
+    HWND spin = GetDlgItem(hdlg, IDC_LEVEL_CAMERA_FAR_CLIP_SPIN);
+    if (!fog_spin || !edit || !spin) return;
+    auto rect_in_dialog = [hdlg](HWND hwnd) {
+        RECT r{};
+        GetWindowRect(hwnd, &r);
+        MapWindowPoints(nullptr, hdlg, reinterpret_cast<POINT*>(&r), 2);
+        return r;
+    };
+    const RECT fog_edit_rect = rect_in_dialog(fog_edit);
+    const RECT fog_spin_rect = rect_in_dialog(fog_spin);
+    const int top = rect_in_dialog(edit).top;
+    constexpr UINT flags = SWP_NOZORDER | SWP_NOACTIVATE;
+    SetWindowPos(edit, nullptr, fog_edit_rect.left, top, fog_edit_rect.right - fog_edit_rect.left,
+                 fog_edit_rect.bottom - fog_edit_rect.top, flags);
+    SetWindowPos(spin, nullptr, fog_spin_rect.left, top + (fog_spin_rect.top - fog_edit_rect.top),
+                 fog_spin_rect.right - fog_spin_rect.left, fog_spin_rect.bottom - fog_spin_rect.top, flags);
+}
+
+static void level_dialog_init_camera_far_clip(HWND hdlg, const CLevelDialog& dlg, float camera_far_clip)
+{
+    alpine_dlg_set_float_field_exact(hdlg, IDC_LEVEL_CAMERA_FAR_CLIP, camera_far_clip);
+    alpine_spinner_init(hdlg, IDC_LEVEL_CAMERA_FAR_CLIP, IDC_LEVEL_CAMERA_FAR_CLIP_SPIN, 1.0f, 0.0f,
+                        alpine_camera_far_clip::max_value, 2);
+    // LoadIconWithScaleDown would tie the editor to comctl32 6; a shared icon is never destroyed
+    const auto warning_icon = static_cast<HICON>(LoadImageA(nullptr, reinterpret_cast<LPCSTR>(IDI_WARNING),
+                                                            IMAGE_ICON, GetSystemMetrics(SM_CXSMICON),
+                                                            GetSystemMetrics(SM_CYSMICON), LR_SHARED));
+    SendDlgItemMessageA(hdlg, IDC_LEVEL_CAMERA_FAR_CLIP_WARNING_ICON, STM_SETICON,
+                        reinterpret_cast<WPARAM>(warning_icon), 0);
+    g_level_fog_far_edit = dlg.fog_far_spinner ? dlg.fog_far_spinner->edit._d.m_hWnd : nullptr;
+    level_dialog_match_fog_spinner_layout(hdlg, g_level_fog_far_edit);
+    if (HWND container = g_level_fog_far_edit ? GetParent(g_level_fog_far_edit) : nullptr) {
+        SetWindowSubclass(container, fog_far_spinner_subclass_proc, 1, reinterpret_cast<DWORD_PTR>(hdlg));
+    }
+}
+
+// What stock stores for a fog spinner after DoModal (0x004024E5). The spinner parses its text only on
+// EN_KILLFOCUS (0x0044B060), which an edit still focused when OK is pressed gets during teardown, so the text is
+// what counts: empty keeps the level's value, anything else goes through atof and the spinner's range (0x0044B180).
+static float fog_spinner_stored_value(const DedFloatSpinner& spinner, float level_value)
+{
+    char buffer[64] = {};
+    GetWindowTextA(spinner.edit._d.m_hWnd, buffer, static_cast<int>(sizeof(buffer)));
+    if (!buffer[0]) {
+        return level_value;
+    }
+    const float value = std::strtof(buffer, nullptr);
+    return std::isnan(value) ? spinner.min_value : std::clamp(value, spinner.min_value, spinner.max_value);
+}
+
+// The game drops a fog near clip that is not below the far clip, so pull it just below.
+static void level_dialog_clamp_fog_near_clip(const CLevelDialog& dlg)
+{
+    DedFloatSpinner* near_spinner = dlg.fog_near_spinner;
+    DedFloatSpinner* far_spinner = dlg.fog_far_spinner;
+    const CDedLevel* level = CDedLevel::Get();
+    if (!near_spinner || !far_spinner || !level) return;
+    const float far_clip = fog_spinner_stored_value(*far_spinner, level->fog_far_clip);
+    const float near_clip = fog_spinner_stored_value(*near_spinner, level->fog_near_clip);
+    float clamped = near_clip > 0.0f ? near_clip : 0.0f;
+    if (far_clip > 0.0f && clamped >= far_clip) {
+        clamped = std::max(far_clip - 0.01f, 0.0f);
+    }
+    if (clamped == near_clip) {
+        return;
+    }
+    // The text is what a later EN_KILLFOCUS parses
+    char buffer[32];
+    std::snprintf(buffer, sizeof(buffer), "%.2f", clamped);
+    clamped = std::strtof(buffer, nullptr);
+    if (far_clip > 0.0f && clamped >= far_clip) {
+        clamped = 0.0f;
+        std::snprintf(buffer, sizeof(buffer), "%.2f", clamped);
+    }
+    SetWindowTextA(near_spinner->edit._d.m_hWnd, buffer);
+    near_spinner->value = clamped;
+    near_spinner->valid = true;
+}
+
+// Stock OnInitDialog replaces the fog clip placeholders with id-less spinner windows inserted after the fog
+// Change color button in z-order, so a child missing from the table takes the tab of the listed one before it.
+static void level_dialog_show_tab(HWND hdlg, LevelTab tab)
+{
+    SendDlgItemMessageA(hdlg, IDC_LEVEL_TABS, TCM_SETCURSEL, static_cast<WPARAM>(tab), 0);
+    std::optional<LevelTab> owner;
+    for (HWND child = GetWindow(hdlg, GW_CHILD); child; child = GetWindow(child, GW_HWNDNEXT)) {
+        const int id = GetDlgCtrlID(child);
+        if (const LevelTabControl* control = level_tab_control_find(id)) {
+            owner = control->tab;
+        }
+        else if (!owner || id == IDOK || id == IDCANCEL || id == IDC_LEVEL_TABS || id == IDC_LEVEL_DIRECTIONAL_LIGHT) {
+            continue;
+        }
+        ShowWindow(child, *owner == tab ? SW_SHOWNA : SW_HIDE);
+    }
+    level_dialog_update_camera_far_clip_warning(hdlg);
+}
+
+static HBRUSH g_level_tab_pane_brush = nullptr;
+static COLORREF g_level_tab_pane_color = 0;
+
+// The pages are siblings of the tab control, not children of it, so their statics and buttons would paint the
+// dialog's face color over the pane, which is white under visual styles.
+static void level_dialog_sample_tab_pane(HWND tabs)
+{
+    RECT client{};
+    GetClientRect(tabs, &client);
+    RECT pane = client;
+    SendMessageA(tabs, TCM_ADJUSTRECT, FALSE, reinterpret_cast<LPARAM>(&pane));
+    COLORREF color = GetSysColor(COLOR_3DFACE);
+    if (HDC tabs_dc = GetDC(tabs)) {
+        if (HDC mem_dc = CreateCompatibleDC(tabs_dc)) {
+            if (HBITMAP bitmap = CreateCompatibleBitmap(tabs_dc, client.right, client.bottom)) {
+                HGDIOBJ old_bitmap = SelectObject(mem_dc, bitmap);
+                FillRect(mem_dc, &client, GetSysColorBrush(COLOR_3DFACE));
+                SendMessageA(tabs, WM_PRINTCLIENT, reinterpret_cast<WPARAM>(mem_dc), PRF_CLIENT | PRF_ERASEBKGND);
+                const COLORREF sampled = GetPixel(mem_dc, (pane.left + pane.right) / 2, (pane.top + pane.bottom) / 2);
+                if (sampled != CLR_INVALID) {
+                    color = sampled;
+                }
+                SelectObject(mem_dc, old_bitmap);
+                DeleteObject(bitmap);
+            }
+            DeleteDC(mem_dc);
+        }
+        ReleaseDC(tabs, tabs_dc);
+    }
+    if (g_level_tab_pane_brush) {
+        DeleteObject(g_level_tab_pane_brush);
+    }
+    g_level_tab_pane_color = color;
+    g_level_tab_pane_brush = CreateSolidBrush(color);
+}
+
+// Group boxes leave their inside to the parent, and the tab control under them is clipped away.
+static void level_dialog_fill_tab_pane(HWND hdlg, HDC dc)
+{
+    HWND tabs = GetDlgItem(hdlg, IDC_LEVEL_TABS);
+    if (!tabs) return;
+    RECT pane{};
+    GetWindowRect(tabs, &pane);
+    MapWindowPoints(nullptr, hdlg, reinterpret_cast<POINT*>(&pane), 2);
+    SendMessageA(tabs, TCM_ADJUSTRECT, FALSE, reinterpret_cast<LPARAM>(&pane));
+    FillRect(dc, &pane, g_level_tab_pane_brush);
+}
+
+static bool level_dialog_paints_on_pane(HWND control)
+{
+    const int id = GetDlgCtrlID(control);
+    if (id == IDOK || id == IDCANCEL) {
+        return false;
+    }
+    char class_name[16] = {};
+    GetClassNameA(control, class_name, static_cast<int>(sizeof(class_name)));
+    return string_iequals(class_name, "Static") || string_iequals(class_name, "Button");
+}
+
+static void level_dialog_init_tabs(HWND hdlg)
+{
+    HWND tabs = GetDlgItem(hdlg, IDC_LEVEL_TABS);
+    if (!tabs) return;
+    for (std::size_t i = 0; i < std::size(level_tab_names); ++i) {
+        TCITEMA item{};
+        item.mask = TCIF_TEXT;
+        item.pszText = const_cast<char*>(level_tab_names[i]);
+        SendMessageA(tabs, TCM_INSERTITEMA, static_cast<WPARAM>(i), reinterpret_cast<LPARAM>(&item));
+    }
+    // The pages overlap the tab control, which paints over any of them it sits above.
+    SetWindowPos(tabs, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    level_dialog_sample_tab_pane(tabs);
+    level_dialog_show_tab(hdlg, LevelTab::general);
+}
+
+static AlpineBitmapPreview g_minimap_preview;
+
+constexpr float minimap_coord_step = 1.0f;
+constexpr float minimap_coord_min = -100000.0f;
+constexpr float minimap_coord_max = 100000.0f;
+
+static void minimap_update_bitmap_preview(HWND hdlg, bool force)
+{
+    g_minimap_preview.update(hdlg, IDC_MINIMAP_BITMAP, IDC_MINIMAP_BITMAP_PREVIEW, force);
+}
+
+static void minimap_format_coord(float value, char (&buf)[32])
+{
+    std::snprintf(buf, sizeof(buf), "%.2f", value);
+}
+
+static void minimap_set_coord_field(HWND hdlg, int idc_edit, int idc_spin, float value)
+{
+    char buf[32];
+    minimap_format_coord(value, buf);
+    SetDlgItemTextA(hdlg, idc_edit, buf);
+    alpine_spinner_init(hdlg, idc_edit, idc_spin, minimap_coord_step, minimap_coord_min,
+                        minimap_coord_max, 2);
+}
+
+// A field still showing the stored value, rounded for display, keeps that value at full precision.
+static bool minimap_field_value(HWND hdlg, int idc, float stored, float& out)
+{
+    char shown[32];
+    minimap_format_coord(stored, shown);
+    char text[32] = {};
+    GetDlgItemTextA(hdlg, idc, text, static_cast<int>(sizeof(text)));
+    if (!std::isnan(stored) && std::strcmp(text, shown) == 0) {
+        out = std::clamp(stored, minimap_coord_min, minimap_coord_max);
+        return true;
+    }
+    return read_dlg_float(hdlg, idc, out, minimap_coord_min, minimap_coord_max);
+}
+
+// The same value minimap_validate checked.
+static void minimap_store_coord(HWND hdlg, int idc, float& value)
+{
+    minimap_field_value(hdlg, idc, value, value);
+}
+
+// Shows the Minimap tab first, so the field is in view when it takes the focus.
+static void minimap_reject_field(HWND hdlg, int idc, const char* message)
+{
+    level_dialog_show_tab(hdlg, LevelTab::minimap);
+    MessageBoxA(hdlg, message, "Minimap", MB_OK | MB_ICONWARNING);
+    if (HWND field = GetDlgItem(hdlg, idc)) {
+        SendMessageA(hdlg, WM_NEXTDLGCTL, reinterpret_cast<WPARAM>(field), TRUE);
+    }
+}
+
+// Leaves `out` untouched and says which field is wrong when the text does not parse.
+static bool minimap_read_coord(HWND hdlg, int idc, const char* label, float stored, float& out)
+{
+    if (minimap_field_value(hdlg, idc, stored, out)) {
+        return true;
+    }
+    char msg[96];
+    std::snprintf(msg, sizeof(msg), "%s is not a number.", label);
+    minimap_reject_field(hdlg, idc, msg);
+    return false;
+}
+
+static bool minimap_read_bounds(HWND hdlg, const AlpineLevelProperties& props, Vector3& world_min,
+                                Vector3& world_max)
+{
+    return minimap_read_coord(hdlg, IDC_MINIMAP_MIN_X, "Min X", props.minimap_world_min.x, world_min.x) &&
+           minimap_read_coord(hdlg, IDC_MINIMAP_MIN_Z, "Min Z", props.minimap_world_min.z, world_min.z) &&
+           minimap_read_coord(hdlg, IDC_MINIMAP_MAX_X, "Max X", props.minimap_world_max.x, world_max.x) &&
+           minimap_read_coord(hdlg, IDC_MINIMAP_MAX_Z, "Max Z", props.minimap_world_max.z, world_max.z);
+}
+
+// The game disables a minimap narrower than 1 unit on either axis.
+static bool minimap_bounds_valid(HWND hdlg, const Vector3& world_min, const Vector3& world_max)
+{
+    if (world_max.x - world_min.x >= 1.0f && world_max.z - world_min.z >= 1.0f) {
+        return true;
+    }
+    minimap_reject_field(hdlg, world_max.x - world_min.x >= 1.0f ? IDC_MINIMAP_MAX_Z : IDC_MINIMAP_MAX_X,
+                         "World bounds need Max X and Max Z at least 1 unit above Min X and Min Z.");
+    return false;
+}
+
+static std::string minimap_read_bitmap(HWND hdlg)
+{
+    char buf[256] = {};
+    GetDlgItemTextA(hdlg, IDC_MINIMAP_BITMAP, buf, static_cast<int>(sizeof(buf)));
+    return buf;
+}
+
+// Runs before stock OnOK, so a bad field keeps the dialog open.
+static bool minimap_validate(HWND hdlg)
+{
+    const auto& props = CDedLevel::Get()->GetAlpineLevelProperties();
+    Vector3 world_min{};
+    Vector3 world_max{};
+    float cut_height = 0.0f;
+    if (!minimap_read_bounds(hdlg, props, world_min, world_max) ||
+        !minimap_read_coord(hdlg, IDC_MINIMAP_CUT_HEIGHT, "Cut height", props.minimap_cut_height, cut_height)) {
+        return false;
+    }
+    const std::string bitmap = minimap_read_bitmap(hdlg);
+    if (rfl_name_over_long(bitmap) || bitmap.find_first_of("\\/:") != std::string::npos) {
+        minimap_reject_field(hdlg, IDC_MINIMAP_BITMAP,
+                             "The minimap bitmap must be a bare file name of at most 31 characters.");
+        return false;
+    }
+    const bool enabled = IsDlgButtonChecked(hdlg, IDC_MINIMAP_ENABLE) == BST_CHECKED;
+    if (enabled && bitmap.empty()) {
+        minimap_reject_field(hdlg, IDC_MINIMAP_BITMAP,
+                             "An enabled minimap needs a bitmap: pick one or bake it from the level.");
+        return false;
+    }
+    return !enabled || minimap_bounds_valid(hdlg, world_min, world_max);
+}
+
+constexpr int minimap_bake_sizes[] = {512, 1024, 2048};
+static int g_minimap_bake_size_index = 1;
+static bool g_minimap_bake_use_bounds = false;
+
+static void minimap_bake_from_dialog(HWND hdlg)
+{
+    auto* level = CDedLevel::Get();
+    if (!level) return;
+
+    const LRESULT sel = SendDlgItemMessageA(hdlg, IDC_MINIMAP_BAKE_RES, CB_GETCURSEL, 0, 0);
+    if (sel >= 0 && sel < static_cast<LRESULT>(std::size(minimap_bake_sizes))) {
+        g_minimap_bake_size_index = static_cast<int>(sel);
+    }
+    MinimapBakeParams params;
+    params.resolution = minimap_bake_sizes[g_minimap_bake_size_index];
+    auto& props = level->GetAlpineLevelProperties();
+    if (!minimap_read_coord(hdlg, IDC_MINIMAP_CUT_HEIGHT, "Cut height", props.minimap_cut_height,
+                            params.cut_height)) {
+        return;
+    }
+    params.use_bounds = IsDlgButtonChecked(hdlg, IDC_MINIMAP_BAKE_USE_BOUNDS) == BST_CHECKED;
+    g_minimap_bake_use_bounds = params.use_bounds;
+    if (params.use_bounds && (!minimap_read_bounds(hdlg, props, params.bounds_min, params.bounds_max) ||
+                              !minimap_bounds_valid(hdlg, params.bounds_min, params.bounds_max))) {
+        return;
+    }
+
+    // RED sets it on brush edits and clears it at Build Geometry (0x00439A5F); a cancelled build sets it again.
+    if (level->geometry_needs_rebuild &&
+        MessageBoxA(hdlg,
+                    "The geometry has changed since the last Build Geometry, and the bake uses the last "
+                    "built geometry.\n\nBake anyway?",
+                    "Bake minimap", MB_YESNO | MB_ICONQUESTION) != IDYES) {
+        return;
+    }
+
+    std::string bitmap_name;
+    std::string path;
+    std::string error;
+    if (!minimap_bake_target(bitmap_name, path, error)) {
+        MessageBoxA(hdlg, error.c_str(), "Bake minimap", MB_OK | MB_ICONWARNING);
+        return;
+    }
+    if (GetFileAttributesA(path.c_str()) != INVALID_FILE_ATTRIBUTES) {
+        const std::string prompt = path + " already exists.\n\nReplace it with a new bake?";
+        if (MessageBoxA(hdlg, prompt.c_str(), "Bake minimap", MB_YESNO | MB_ICONQUESTION) != IDYES) {
+            return;
+        }
+    }
+
+    MinimapBakeResult result;
+    HCURSOR old_cursor = SetCursor(LoadCursor(nullptr, IDC_WAIT));
+    const bool ok = minimap_bake(*level, params, result, error);
+    SetCursor(old_cursor);
+    if (!ok) {
+        MessageBoxA(hdlg, error.c_str(), "Bake minimap", MB_OK | MB_ICONWARNING);
+        return;
+    }
+
+    // The image is already on disk, so its bitmap, bounds and cut height go into the level at once:
+    // no Cancel can pair the new image with the old bounds.
+    props.minimap_bitmap = result.bitmap_name;
+    props.minimap_world_min = result.world_min;
+    props.minimap_world_max = result.world_max;
+    props.minimap_cut_height = params.cut_height;
+    mark_level_modified();
+
+    SetDlgItemTextA(hdlg, IDC_MINIMAP_BITMAP, result.bitmap_name.c_str());
+    minimap_set_coord_field(hdlg, IDC_MINIMAP_MIN_X, IDC_MINIMAP_MIN_X_SPIN, result.world_min.x);
+    minimap_set_coord_field(hdlg, IDC_MINIMAP_MIN_Z, IDC_MINIMAP_MIN_Z_SPIN, result.world_min.z);
+    minimap_set_coord_field(hdlg, IDC_MINIMAP_MAX_X, IDC_MINIMAP_MAX_X_SPIN, result.world_max.x);
+    minimap_set_coord_field(hdlg, IDC_MINIMAP_MAX_Z, IDC_MINIMAP_MAX_Z_SPIN, result.world_max.z);
+    minimap_update_bitmap_preview(hdlg, true);
+
+    char cut_text[48];
+    if (result.cut_applied) {
+        std::snprintf(cut_text, sizeof(cut_text), "cut at Y = %.2f", result.cut_height);
+    }
+    else {
+        std::snprintf(cut_text, sizeof(cut_text), "no cut");
+    }
+    const char* lighting = result.lightmaps_placeholder
+                               ? "The level has no usable brush lightmaps (D3D11-only or missing), so brushes are "
+                                 "unlit. Build Geometry and Calculate Lighting for lit brushes."
+                           : result.faces_lightmapped > 0 ? "Brushes are lit with the level's lightmaps."
+                                                          : "No brush lightmaps found: brushes are unlit.";
+    char terrain_note[160] = "";
+    if (result.terrains_unlit > 0) {
+        std::snprintf(terrain_note, sizeof(terrain_note),
+                      "\n%d terrain(s) have no baked lighting and use the level ambient and sun.",
+                      result.terrains_unlit);
+    }
+    char stale_note[160] = "";
+    if (result.terrains_stale > 0) {
+        std::snprintf(stale_note, sizeof(stale_note),
+                      "\n%d terrain(s) changed since the last Build Geometry are drawn as plain geometry, as the "
+                      "game would. Rebuild, then bake again.",
+                      result.terrains_stale);
+    }
+    char deco_text[96] = "";
+    if (result.decorations_drawn + result.decorations_blended > 0) {
+        std::snprintf(deco_text, sizeof(deco_text), " %d terrain decorations (%d drawn, %d blended),",
+                      result.decorations_drawn + result.decorations_blended, result.decorations_drawn,
+                      result.decorations_blended);
+    }
+    char summary[768];
+    std::snprintf(summary, sizeof(summary),
+                  "Wrote user_maps\\textures\\%s\n%d x %d, %d faces,%s %s, %.2f s.\n%s%s%s\n"
+                  "The bitmap and bounds are applied to the level now; Cancel does not undo them.",
+                  result.bitmap_name.c_str(), params.resolution, params.resolution, result.faces_drawn, deco_text,
+                  cut_text, result.seconds, lighting, terrain_note, stale_note);
+    MessageBoxA(hdlg, summary, "Bake minimap", MB_OK | MB_ICONINFORMATION);
+}
+
+static void minimap_init_controls(HWND hdlg, const AlpineLevelProperties& props)
+{
+    CheckDlgButton(hdlg, IDC_MINIMAP_ENABLE, props.minimap_enabled ? BST_CHECKED : BST_UNCHECKED);
+    SetDlgItemTextA(hdlg, IDC_MINIMAP_BITMAP, props.minimap_bitmap.c_str());
+    minimap_set_coord_field(hdlg, IDC_MINIMAP_MIN_X, IDC_MINIMAP_MIN_X_SPIN, props.minimap_world_min.x);
+    minimap_set_coord_field(hdlg, IDC_MINIMAP_MIN_Z, IDC_MINIMAP_MIN_Z_SPIN, props.minimap_world_min.z);
+    minimap_set_coord_field(hdlg, IDC_MINIMAP_MAX_X, IDC_MINIMAP_MAX_X_SPIN, props.minimap_world_max.x);
+    minimap_set_coord_field(hdlg, IDC_MINIMAP_MAX_Z, IDC_MINIMAP_MAX_Z_SPIN, props.minimap_world_max.z);
+    minimap_set_coord_field(hdlg, IDC_MINIMAP_CUT_HEIGHT, IDC_MINIMAP_CUT_HEIGHT_SPIN, props.minimap_cut_height);
+    minimap_update_bitmap_preview(hdlg, true);
+    for (int size : minimap_bake_sizes) {
+        char label[24];
+        std::snprintf(label, sizeof(label), "%d x %d", size, size);
+        SendDlgItemMessageA(hdlg, IDC_MINIMAP_BAKE_RES, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(label));
+    }
+    SendDlgItemMessageA(hdlg, IDC_MINIMAP_BAKE_RES, CB_SETCURSEL, g_minimap_bake_size_index, 0);
+    CheckDlgButton(hdlg, IDC_MINIMAP_BAKE_USE_BOUNDS, g_minimap_bake_use_bounds ? BST_CHECKED : BST_UNCHECKED);
+}
+
 // Both lightmap combos carry their stored property value as item data, so no index-to-value
 // table is needed on the way back out.
 static void init_lightmap_combos(HWND hdlg, const AlpineLevelProperties& props)
@@ -1234,13 +2050,16 @@ static std::uint8_t read_combo_u8(HWND hdlg, int id, std::uint8_t fallback)
 }
 
 // D3D11-only lightmaps stands in for the stock section with the surface charts, which legacy lighting
-// and an Off density never bake.
+// and an Off density never bake. Alpha-tested occlusion needs the ray traced shadows legacy lighting drops.
 static void update_lightmap_controls(HWND hdlg)
 {
     const bool legacy = IsDlgButtonChecked(hdlg, IDC_LEGACY_LIGHTING) == BST_CHECKED;
     const bool off = alpine_dlg_combo_data(hdlg, IDC_LIGHTMAP_DENSITY, 0) == alpine_lightmap::density_off;
     if (HWND d3d11_only = GetDlgItem(hdlg, IDC_D3D11_ONLY_LIGHTMAPS)) {
         EnableWindow(d3d11_only, !legacy && !off);
+    }
+    if (HWND alpha_tested = GetDlgItem(hdlg, IDC_ALPHA_TESTED_OCCLUSION)) {
+        EnableWindow(alpha_tested, !legacy);
     }
 }
 
@@ -1249,6 +2068,57 @@ static WNDPROC g_level_dlg_orig_wndproc = nullptr;
 static LRESULT CALLBACK LevelDialogSubclassProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 {
     WNDPROC orig = g_level_dlg_orig_wndproc;
+    if (msg == WM_COMMAND && LOWORD(wparam) == IDOK && HIWORD(wparam) == BN_CLICKED && !minimap_validate(hwnd)) {
+        return 0;
+    }
+    if (msg == WM_NOTIFY) {
+        const auto* nm = reinterpret_cast<const NMHDR*>(lparam);
+        if (nm && nm->idFrom == IDC_LEVEL_TABS && nm->code == TCN_SELCHANGE) {
+            const LRESULT sel = SendMessageA(nm->hwndFrom, TCM_GETCURSEL, 0, 0);
+            if (sel >= 0 && sel < static_cast<LRESULT>(std::size(level_tab_names))) {
+                level_dialog_show_tab(hwnd, static_cast<LevelTab>(sel));
+            }
+            return 0;
+        }
+        if (alpine_spinner_handle_notify(hwnd, lparam)) {
+            return TRUE;
+        }
+    }
+    if ((msg == WM_CTLCOLORSTATIC || msg == WM_CTLCOLORBTN) && g_level_tab_pane_brush &&
+        level_dialog_paints_on_pane(reinterpret_cast<HWND>(lparam))) {
+        const auto dc = reinterpret_cast<HDC>(wparam);
+        SetTextColor(dc, GetSysColor(COLOR_WINDOWTEXT));
+        SetBkColor(dc, g_level_tab_pane_color);
+        return reinterpret_cast<LRESULT>(g_level_tab_pane_brush);
+    }
+    if (msg == WM_ERASEBKGND && g_level_tab_pane_brush) {
+        const LRESULT erased = CallWindowProcA(orig, hwnd, msg, wparam, lparam);
+        level_dialog_fill_tab_pane(hwnd, reinterpret_cast<HDC>(wparam));
+        return erased;
+    }
+    if (msg == WM_DRAWITEM) {
+        const auto* dis = reinterpret_cast<const DRAWITEMSTRUCT*>(lparam);
+        if (dis && dis->CtlID == IDC_MINIMAP_BITMAP_PREVIEW) {
+            alpine_dlg_draw_bitmap_preview(dis->hwndItem, dis->rcItem, g_minimap_preview.handle);
+            return TRUE;
+        }
+    }
+    if (msg == WM_COMMAND && LOWORD(wparam) == IDC_MINIMAP_BITMAP && HIWORD(wparam) == EN_CHANGE) {
+        minimap_update_bitmap_preview(hwnd, false);
+    }
+    if (msg == WM_COMMAND && LOWORD(wparam) == IDC_LEVEL_CAMERA_FAR_CLIP && HIWORD(wparam) == EN_CHANGE) {
+        level_dialog_update_camera_far_clip_warning(hwnd);
+    }
+    if (msg == WM_COMMAND && LOWORD(wparam) == IDC_MINIMAP_BITMAP_BROWSE && HIWORD(wparam) == BN_CLICKED) {
+        if (alpine_dlg_browse_bitmap(hwnd, IDC_MINIMAP_BITMAP, nullptr, g_minimap_preview.handle)) {
+            minimap_update_bitmap_preview(hwnd, true);
+        }
+        return 0;
+    }
+    if (msg == WM_COMMAND && LOWORD(wparam) == IDC_MINIMAP_BAKE && HIWORD(wparam) == BN_CLICKED) {
+        minimap_bake_from_dialog(hwnd);
+        return 0;
+    }
     if (msg == WM_COMMAND && LOWORD(wparam) == IDC_SUN_SET_FROM_CAMERA && HIWORD(wparam) == BN_CLICKED) {
         set_sun_angles_from_camera(hwnd);
         return 0;
@@ -1269,6 +2139,11 @@ static LRESULT CALLBACK LevelDialogSubclassProc(HWND hwnd, UINT msg, WPARAM wpar
     if (msg == WM_NCDESTROY) {
         SetWindowLongPtrA(hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(orig));
         g_level_dlg_orig_wndproc = nullptr;
+        if (g_level_tab_pane_brush) {
+            DeleteObject(g_level_tab_pane_brush);
+            g_level_tab_pane_brush = nullptr;
+        }
+        g_level_fog_far_edit = nullptr;
         return CallWindowProcA(orig, hwnd, msg, wparam, lparam);
     }
     return CallWindowProcA(orig, hwnd, msg, wparam, lparam);
@@ -1283,6 +2158,7 @@ CodeInjection CLevelDialog_OnInitDialog_patch{
         std::string version = std::to_string(level_version);
         SetDlgItemTextA(hdlg, IDC_LEVEL_VERSION, version.c_str());
 
+        sun_arrow_sync(CDedLevel::Get());
         auto& alpine_level_props = CDedLevel::Get()->GetAlpineLevelProperties();
         CheckDlgButton(hdlg, IDC_LEGACY_CYCLIC_TIMERS, alpine_level_props.legacy_cyclic_timers ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hdlg, IDC_LEGACY_MOVERS, alpine_level_props.legacy_movers ? BST_CHECKED : BST_UNCHECKED);
@@ -1292,15 +2168,24 @@ CodeInjection CLevelDialog_OnInitDialog_patch{
         std::snprintf(buffer, sizeof(buffer), "%.3f", alpine_level_props.static_mesh_ambient_light_modifier);
         SetDlgItemTextA(hdlg, IDC_MESH_AMBIENT_LIGHT_MODIFIER, buffer);
         CheckDlgButton(hdlg, IDC_RF2_STYLE_GEOMOD, alpine_level_props.rf2_style_geomod ? BST_CHECKED : BST_UNCHECKED);
+        CheckDlgButton(hdlg, IDC_VEHICLE_FLIGHT_CEILING_ENABLE, alpine_level_props.vehicle_flight_ceiling_enabled ? BST_CHECKED : BST_UNCHECKED);
+        char ceiling_buffer[32];
+        std::snprintf(ceiling_buffer, sizeof(ceiling_buffer), "%.3f", alpine_level_props.vehicle_flight_ceiling);
+        SetDlgItemTextA(hdlg, IDC_VEHICLE_FLIGHT_CEILING, ceiling_buffer);
         CheckDlgButton(hdlg, IDC_LEGACY_LIGHTING, alpine_level_props.legacy_lighting ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hdlg, IDC_HIGHRES_LIGHTMAPS, alpine_level_props.highres_lightmaps ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hdlg, IDC_INVISIBLE_FACES_OCCLUDE, alpine_level_props.invisible_faces_occlude ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hdlg, IDC_ALPHA_FACES_OCCLUDE, alpine_level_props.alpha_faces_occlude ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hdlg, IDC_MESHES_OCCLUDE, alpine_level_props.meshes_occlude ? BST_CHECKED : BST_UNCHECKED);
+        CheckDlgButton(hdlg, IDC_ALPHA_TESTED_OCCLUSION,
+                       alpine_level_props.alpha_tested_occlusion ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hdlg, IDC_D3D11_ONLY_LIGHTMAPS,
                        alpine_level_props.d3d11_only_lightmaps ? BST_CHECKED : BST_UNCHECKED);
         init_lightmap_combos(hdlg, alpine_level_props);
         update_lightmap_controls(hdlg);
+        CheckDlgButton(hdlg, IDC_REQUIRE_D3D11, alpine_level_props.require_d3d11 ? BST_CHECKED : BST_UNCHECKED);
+        const CLevelDialog* dlg = regs.esi;
+        level_dialog_init_camera_far_clip(hdlg, *dlg, alpine_level_props.camera_far_clip);
 
         CheckDlgButton(hdlg, IDC_SUN_ENABLE, alpine_level_props.enable_sun ? BST_CHECKED : BST_UNCHECKED);
         std::snprintf(buffer, sizeof(buffer), "%.3f", alpine_level_props.sun_yaw);
@@ -1321,25 +2206,15 @@ CodeInjection CLevelDialog_OnInitDialog_patch{
         CheckDlgButton(hdlg, IDC_SUN_DRIVES_SHADOWMAP_DIR, alpine_level_props.sun_drives_shadowmap_dir ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hdlg, IDC_SUN_LIQUID_OCCLUDES, alpine_level_props.sun_liquid_occludes ? BST_CHECKED : BST_UNCHECKED);
 
+        minimap_init_controls(hdlg, alpine_level_props);
+        level_dialog_init_tabs(hdlg);
+
         if (reinterpret_cast<WNDPROC>(GetWindowLongPtrA(hdlg, GWLP_WNDPROC)) != LevelDialogSubclassProc) {
             g_level_dlg_orig_wndproc = reinterpret_cast<WNDPROC>(
                 SetWindowLongPtrA(hdlg, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(LevelDialogSubclassProc)));
         }
     },
 };
-
-static bool read_dlg_float(HWND hdlg, int id, float& out, float min_value, float max_value)
-{
-    char buffer[64] = {};
-    GetDlgItemTextA(hdlg, id, buffer, static_cast<int>(sizeof(buffer)));
-    char* end = nullptr;
-    float value = std::strtof(buffer, &end);
-    if (end == buffer || !std::isfinite(value)) {
-        return false;
-    }
-    out = std::clamp(value, min_value, max_value);
-    return true;
-}
 
 // save AlpineLevelProperties settings when closing level properties dialog
 CodeInjection CLevelDialog_OnOK_patch{
@@ -1362,16 +2237,25 @@ CodeInjection CLevelDialog_OnOK_patch{
             alpine_level_props.static_mesh_ambient_light_modifier = modifier;
         }
         alpine_level_props.rf2_style_geomod = IsDlgButtonChecked(hdlg, IDC_RF2_STYLE_GEOMOD) == BST_CHECKED;
+        alpine_level_props.vehicle_flight_ceiling_enabled = IsDlgButtonChecked(hdlg, IDC_VEHICLE_FLIGHT_CEILING_ENABLE) == BST_CHECKED;
+        read_dlg_float(hdlg, IDC_VEHICLE_FLIGHT_CEILING, alpine_level_props.vehicle_flight_ceiling, -FLT_MAX, FLT_MAX);
         alpine_level_props.legacy_lighting = IsDlgButtonChecked(hdlg, IDC_LEGACY_LIGHTING) == BST_CHECKED;
         alpine_level_props.highres_lightmaps = IsDlgButtonChecked(hdlg, IDC_HIGHRES_LIGHTMAPS) == BST_CHECKED;
         alpine_level_props.invisible_faces_occlude = IsDlgButtonChecked(hdlg, IDC_INVISIBLE_FACES_OCCLUDE) == BST_CHECKED;
         alpine_level_props.alpha_faces_occlude = IsDlgButtonChecked(hdlg, IDC_ALPHA_FACES_OCCLUDE) == BST_CHECKED;
         alpine_level_props.meshes_occlude = IsDlgButtonChecked(hdlg, IDC_MESHES_OCCLUDE) == BST_CHECKED;
+        alpine_level_props.alpha_tested_occlusion =
+            IsDlgButtonChecked(hdlg, IDC_ALPHA_TESTED_OCCLUSION) == BST_CHECKED;
         alpine_level_props.d3d11_only_lightmaps = IsDlgButtonChecked(hdlg, IDC_D3D11_ONLY_LIGHTMAPS) == BST_CHECKED;
         alpine_level_props.lightmap_density =
             read_combo_u8(hdlg, IDC_LIGHTMAP_DENSITY, alpine_level_props.lightmap_density);
         alpine_level_props.lightmap_compression =
             read_combo_u8(hdlg, IDC_LIGHTMAP_COMPRESSION, alpine_level_props.lightmap_compression);
+        alpine_level_props.require_d3d11 = IsDlgButtonChecked(hdlg, IDC_REQUIRE_D3D11) == BST_CHECKED;
+        alpine_level_props.camera_far_clip =
+            alpine_camera_far_clip::sanitize(read_camera_far_clip_field(hdlg, alpine_level_props.camera_far_clip));
+        const CLevelDialog* dlg = regs.ecx;
+        level_dialog_clamp_fog_near_clip(*dlg);
 
         alpine_level_props.enable_sun = IsDlgButtonChecked(hdlg, IDC_SUN_ENABLE) == BST_CHECKED;
         float yaw = alpine_level_props.sun_yaw;
@@ -1394,6 +2278,17 @@ CodeInjection CLevelDialog_OnOK_patch{
         alpine_level_props.sun_mesh_mode = IsDlgButtonChecked(hdlg, IDC_SUN_MESH_MODE_SCALE) == BST_CHECKED ? 0 : 1;
         alpine_level_props.sun_drives_shadowmap_dir = IsDlgButtonChecked(hdlg, IDC_SUN_DRIVES_SHADOWMAP_DIR) == BST_CHECKED;
         alpine_level_props.sun_liquid_occludes = IsDlgButtonChecked(hdlg, IDC_SUN_LIQUID_OCCLUDES) == BST_CHECKED;
+
+        alpine_level_props.minimap_enabled = IsDlgButtonChecked(hdlg, IDC_MINIMAP_ENABLE) == BST_CHECKED;
+        alpine_level_props.minimap_bitmap = minimap_read_bitmap(hdlg);
+        minimap_store_coord(hdlg, IDC_MINIMAP_MIN_X, alpine_level_props.minimap_world_min.x);
+        minimap_store_coord(hdlg, IDC_MINIMAP_MIN_Z, alpine_level_props.minimap_world_min.z);
+        minimap_store_coord(hdlg, IDC_MINIMAP_MAX_X, alpine_level_props.minimap_world_max.x);
+        minimap_store_coord(hdlg, IDC_MINIMAP_MAX_Z, alpine_level_props.minimap_world_max.z);
+        minimap_store_coord(hdlg, IDC_MINIMAP_CUT_HEIGHT, alpine_level_props.minimap_cut_height);
+
+        // Stock OnOK (and the menu path, 0x00402300) never marks the document modified.
+        mark_level_modified();
     },
 };
 
@@ -1401,6 +2296,10 @@ static bool is_link_allowed(const DedObject* src, const DedObject* dst)
 {
     const auto t0 = src->type;
     const auto t1 = dst->type;
+
+    if (t0 == DedObjectType::DED_SUN_ARROW || t1 == DedObjectType::DED_SUN_ARROW) {
+        return false;
+    }
 
     return
         t0 == DedObjectType::DED_TRIGGER ||
@@ -1618,7 +2517,10 @@ void ApplyLevelPatches()
     build_rooms_hook.install();
     adjacency_test_hook.install();
     isolate_rooms_injection.install();
+    sync_brush_life_injection.install();
     skip_empty_detail_rooms_in_loop2.install();
+
+    groom_ctor_clear_airlock_injection.install();
 
     // Ensure the face_id assignment phase (Phase 1 of FUN_004399b0) always runs.
     // Phase 1 assigns unique sequential face_ids to brush geometry faces, which our
@@ -1629,6 +2531,10 @@ void ApplyLevelPatches()
 
     // Avoid clamping lightmaps when loading rfl files
     AsmWriter{0x004A5D6A}.jmp(0x004A5D6E);
+
+    // Fog clip spinners reach the camera far clip maximum instead of 1000 (the push of their max at 0x0040240B, 0x0040242B)
+    write_mem<float>(0x0040240B + 1, alpine_camera_far_clip::max_value);
+    write_mem<float>(0x0040242B + 1, alpine_camera_far_clip::max_value);
 
     // Default level fog color to flat black
     constexpr std::uint8_t default_fog = 0;

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <vector>
 #include "mfc_types.h"
 #include "level.h"
 
@@ -13,7 +14,9 @@ void ShowMeshPropertiesDialog(DedMesh* mesh);
 void ShowMeshPropertiesForSelection(CDedLevel* level);
 
 // Mesh object lifecycle
-void PlaceNewMeshObject();
+// The mesh a Mesh object created from the object tree starts with.
+inline constexpr const char* mesh_object_default_filename = "barrel.v3m";
+DedMesh* PlaceNewMeshObject(const char* filename, const Vector3& pos, const Matrix3& orient);
 DedMesh* CloneMeshObject(DedMesh* source, bool add_to_level = true);
 void DeleteMeshObject(DedMesh* mesh);
 void DestroyDedMesh(DedMesh* mesh);
@@ -22,6 +25,7 @@ void DestroyDedMesh(DedMesh* mesh);
 struct EditorVMesh;
 EditorVMesh* mesh_load_vmesh_file(const char* filename);
 void mesh_load_vmesh(DedMesh* mesh);
+void mesh_release_vmesh(DedMesh* mesh);
 
 // Looping playback of a one-shot .rfa action. An animation's own ramp_in_time/ramp_out_time
 // envelope is exactly zero at both ends of its span, and a zero weighted action is left out of
@@ -37,6 +41,19 @@ void apply_mesh_parser_hardening();
 // Rendering (called from alpine_obj.cpp render hook)
 void mesh_render(CDedLevel* level);
 
+// vmesh_render with an orient already multiplied by `scale`, for static and character meshes (a .vfx draws as
+// given; its part hook handles the scaled orient). Placement is exact, but with a scale other than 1 the engine
+// picks LOD and lights from a moved position, so those are approximate.
+struct EditorRenderParams;
+void vmesh_render_scaled(EditorVMesh* vm, const Vector3& pos, const Matrix3& orient, float scale,
+                         const EditorRenderParams& params);
+
+// The texture a v3d chunk draws: its loaded handle, else the one its material names, if that file exists; -1 for none.
+struct EditorV3dMesh;
+struct EditorVifMesh;
+struct EditorVifChunk;
+int vmesh_chunk_bitmap(const EditorV3dMesh& sub, const EditorVifMesh& vm, const EditorVifChunk& chunk);
+
 // Handlers called from shared hook points in alpine_obj.cpp
 DedMesh* mesh_click_pick(CDedLevel* level, float click_x, float click_y, float* out_dist_sq);
 void mesh_pick(CDedLevel* level, int param1, int param2);
@@ -45,6 +62,7 @@ void mesh_tree_add_object_type(EditorTreeCtrl* tree);
 bool mesh_copy_object(DedObject* source);
 void mesh_paste_objects(CDedLevel* level);
 void mesh_clear_clipboard();
+// Swaps the staged clones with `other`, so a duplicate can copy and paste with the user's clipboard set aside.
+void mesh_swap_clipboard(std::vector<DedMesh*>& other);
 void mesh_handle_delete_or_cut(DedObject* obj);
-void mesh_handle_delete_selection(CDedLevel* level);
 void mesh_ensure_uid(int& uid);

@@ -53,6 +53,23 @@ inline bool alpine_terrain_is_chunk_room(const rf::GRoom* room)
 // A detail room of `parent` that every renderer draws from its own cache, once per pass, and never
 // as part of the parent's. Never under the sky room, whose renderers draw its detail rooms with it.
 bool alpine_terrain_is_separate_chunk(const rf::GRoom* parent, const rf::GRoom* detail_room);
+// A closed terrain's chunk wall on the boundary with a geoable chunk that is backed by that chunk's opposite wall
+// (inside rock even once craters cut both), or a sliver a carve left there (2 x area < 1 cm x perimeter) lying
+// within 1 cm of that wall. Either is only a snag to two-sided collision where a crater exposes its edge.
+bool alpine_terrain_is_interior_seam_face(const rf::GFace& face);
+// While one is alive, alpine_terrain_is_interior_seam_face gathers each neighbouring wall once. The level
+// geometry must not change during its lifetime.
+class AlpineTerrainSeamScope
+{
+public:
+    AlpineTerrainSeamScope();
+    ~AlpineTerrainSeamScope();
+    AlpineTerrainSeamScope(const AlpineTerrainSeamScope&) = delete;
+    AlpineTerrainSeamScope& operator=(const AlpineTerrainSeamScope&) = delete;
+
+private:
+    bool owner_ = false;
+};
 // weights is null when freed; only emission (dominant_layer) and material_fingerprint read it.
 alpine_terrain::GridView alpine_terrain_grid(const AlpineTerrain& t);
 // Views of t's decorations over its coverage planes (none once freed); returns how many.

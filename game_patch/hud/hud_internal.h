@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <string>
 #include "../rf/gr/gr.h"
 #include "../rf/input.h"
@@ -63,9 +64,15 @@ struct ChatMenuList
 inline constexpr int chat_msg_max_len = 224;
 
 extern bool g_pre_match_active;
+extern float g_hud_ammo_scale;
 
 void hud_status_apply_patches();
 void hud_status_set_big(bool is_big);
+// How long a vehicle bar takes to rise over its previous alpha, and to fade once full.
+inline constexpr int64_t hud_vehicle_bar_rise_ms = 150;
+inline constexpr int64_t hud_vehicle_bar_fade_ms = 1000;
+// Fill colour of a vehicle health bar at this fraction of max life; a is the HUD bar's alpha.
+void hud_vehicle_bar_fill_color(float frac, rf::ubyte& r, rf::ubyte& g, rf::ubyte& b, rf::ubyte& a);
 void hud_personas_apply_patches();
 void hud_personas_set_big(bool is_big);
 void hud_weapons_apply_patches();
@@ -74,6 +81,7 @@ void weapon_select_apply_patches();
 void weapon_select_set_big(bool is_big);
 void multi_hud_chat_apply_patches();
 void multi_hud_chat_set_big(bool is_big);
+int multi_hud_chat_box_right_x();
 void multi_hud_apply_patches();
 void multi_hud_set_big(bool is_big);
 void hud_scaled_bitmap(int bmh, int x, int y, float scale, rf::gr::Mode mode = rf::gr::bitmap_clamp_mode);

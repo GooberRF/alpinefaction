@@ -18,6 +18,8 @@
 #include "../jetpack.h"
 #include "../alpine_packets.h"
 #include "../awards.h"
+#include "../vehicles/vehicle.h"
+#include "../vehicles/vehicle_tracers.h"
 #include "../../misc/misc.h"
 #include "../../misc/alpine_settings.h"
 #include "../../hud/multi_spectate.h"
@@ -269,6 +271,30 @@ namespace
         return true;
     }
 
+    int geomod_queue_size()
+    {
+        const rf::GeomodEvent* sentinel = &rf::g_geomod_pending_list;
+        int count = 0;
+        for (const rf::GeomodEvent* e = sentinel->next; e && e != sentinel && count <= rf::geomod_queue_capacity;
+             e = e->next) {
+            count++;
+        }
+        return count;
+    }
+
+    // Carves every queued crater now, like stock's saved-game crater replay (0x004674B0), which carves synchronously.
+    void drain_geomod_queue()
+    {
+        constexpr int max_steps = 4096;
+        for (int i = 0; i < max_steps; i++) {
+            if (!rf::g_geomod_processing && geomod_queue_size() == 0) {
+                return;
+            }
+            rf::geomod_do_frame(0.0f);
+        }
+        xlog::warn("Demo playback: geomod queue did not drain");
+    }
+
     // Returns true only when the record was actually handed to the engine dispatcher
     // (feed_one_packet accepted it). Transition detectors are computed from the raw
     // record, so callers that advance the state machine (players_fed, state_info_done)
@@ -303,6 +329,13 @@ namespace
                 || packet_type == static_cast<uint8_t>(af_packet_type::af_obj_update))) {
             g_ctx.seek_obj_update_seen = true;
         }
+        // Craters carve over several frames and the engine drops the oldest waiting one past its queue
+        // capacity, so a seek burst or a high timescale carves them on arrival instead. One slot stays free
+        // for the RF2 smoke record a finished carve queues.
+        const bool is_crater = packet_type == RF_GPT_BOOLEAN;
+        if (is_crater && !fast_forward && geomod_queue_size() >= rf::geomod_queue_capacity - 1) {
+            drain_geomod_queue();
+        }
         std::optional<rf::ubyte> saved_local_team;
         if (team_scope.spoof_local_team && rf::local_player) {
             saved_local_team = rf::local_player->team;
@@ -311,6 +344,9 @@ namespace
         const bool fed = feed_one_packet(rec.packet_data(), rec.packet_len());
         if (saved_local_team)
             rf::local_player->team = *saved_local_team;
+        if (is_crater && fed && fast_forward) {
+            drain_geomod_queue();
+        }
         return fed;
     }
 
@@ -717,15 +753,20 @@ namespace
         // re-prime on their spawn timers)
         rf::particle_level_release();
         explosion_flash_lights_destroy_all();
+        vehicle_tracers_clear();
     }
 
     // A burst that ends between a fire-ON and fire-OFF obj_update leaves the entity's
     // weapon latch stuck on - entity_process_post would keep firing it forever. Clear
     // every latch; a genuinely-firing entity is re-latched by the first normal-paced
-    // obj_update, which is exactly what the settle window waits for.
+    // obj_update, which is exactly what the settle window waits for. A synced vehicle ignores
+    // those bits; its latch already follows the af_vehicle_fire edges the fast-forward fed.
     void cull_seek_fire_latches()
     {
         for (auto& entity : DoublyLinkedList{rf::entity_list}) {
+            if (vehicle_is_synced_entity_type(&entity)) {
+                continue;
+            }
             for (int weapon_type = 0; weapon_type < 64; ++weapon_type) {
                 if (entity.ai.weapon_is_on[weapon_type]) {
                     rf::entity_turn_weapon_off(entity.handle, weapon_type);

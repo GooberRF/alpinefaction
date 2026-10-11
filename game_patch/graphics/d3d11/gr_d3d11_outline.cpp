@@ -14,10 +14,16 @@
 #include "../../multi/gametype.h"
 #include "../../multi/bagman.h"
 #include "../../multi/salvage.h"
+#include "../../multi/vehicles/vehicle.h"
+#include "../../multi/vehicles/vehicle_render.h"
+#include "../../misc/level.h"
 #include "../../hud/multi_spectate.h"
 #include "../../rf/multi.h"
 #include "../../rf/player/player.h"
 #include "../../rf/entity.h"
+#include "../../rf/object.h"
+#include "../../rf/v3d.h"
+#include "../../rf/weapon.h"
 #include "../../rf/character.h"
 #include "../../rf/vmesh.h"
 #include "../../rf/vfx.h"
@@ -78,6 +84,23 @@ namespace gr::d3d11
         outline_ps_color_buffer_ = create_dynamic_cbuffer(device, sizeof(OutlinePSColor));
     }
 
+    VehicleOutlineTarget& OutlineRenderer::vehicle_target_push()
+    {
+        if (vehicle_target_count_ == vehicle_targets_.size()) {
+            // Reserved once per element, then kept for the life of the renderer.
+            vehicle_targets_.emplace_back().lod_meshes.reserve(16);
+        }
+        VehicleOutlineTarget& target = vehicle_targets_[vehicle_target_count_++];
+        target.entity_handle = -1;
+        target.pos = rf::Vector3{};
+        target.orient = rf::Matrix3{};
+        target.lod_meshes.clear(); // keeps the buffer
+        target.has_info = false;
+        target.info = OutlineInfo{};
+        target.naturally_rendered = false;
+        return target;
+    }
+
     void OutlineRenderer::begin_frame()
     {
         // Only run once per game frame. The fpgun's setup_3d triggers a second
@@ -92,6 +115,7 @@ namespace gr::d3d11
         v3d_queue_.clear();
         vfx_queue_.clear();
         xray_forced_.clear();
+        vehicle_target_count_ = 0;
         flushed_cis_.clear();
         current_character_outline_ = nullptr;
         next_stencil_ref_ = 1;
@@ -115,123 +139,100 @@ namespace gr::d3d11
 
         bool is_spectating = multi_spectate_is_spectating();
 
-        // The objective carrier is outlined green through walls for everybody, no
-        // toggle and no team distinction: whoever holds the bag or the salvage flag
-        // is what the whole server is chasing.
-        auto outline_objective_carrier = [&](rf::Player* carrier) {
-            if (!carrier || next_stencil_ref_ > 255) {
-                return;
+        // BEFORE the outline permission gates: even a hull that gets no outline must be claimed, or
+        // render_v3d_vif hands it the last drawn character's. The colour decision is a second pass below.
+        // Factories are the sole source of hulls; every other per-frame vehicle path gates on this too.
+        const bool walk_vehicle_hulls = vehicle_level_has_factories();
+        for (rf::Object* obj = rf::object_list.next_obj;
+             walk_vehicle_hulls && obj != &rf::object_list; obj = obj->next_obj) {
+            if (obj->type != rf::OT_ENTITY) {
+                continue;
             }
-            rf::Entity* entity = rf::entity_from_handle(carrier->entity_handle);
-            if (!entity || rf::entity_is_dying(entity)) {
-                return;
+            auto* vehicle = static_cast<rf::Entity*>(obj);
+            if (!vehicle_is_synced_entity_type(vehicle)) {
+                continue;
             }
-            if (!entity->vmesh || entity->vmesh->type != rf::MESH_TYPE_CHARACTER) {
-                return;
+            if (!vehicle->vmesh || vehicle->vmesh->type != rf::MESH_TYPE_STATIC) {
+                continue;
             }
-            auto* ci = static_cast<rf::CharacterInstance*>(entity->vmesh->instance);
-            if (!ci) {
-                return;
+            auto* v3d = static_cast<rf::V3d*>(vehicle->vmesh->instance);
+            if (!v3d || v3d->num_meshes < 1 || !v3d->meshes) {
+                continue;
             }
+            VehicleOutlineTarget& target = vehicle_target_push();
+            target.entity_handle = vehicle->handle;
+            target.pos = vehicle->pos;
+            target.orient = vehicle->orient;
 
-            OutlineInfo info{};
-            info.r = 0.0f;
-            info.g = 1.0f;
-            info.b = 0.0f;
-            info.a = 1.0f;
-            info.xray = true;
-            info.stencil_ref = next_stencil_ref_++;
-            ci_map_.emplace(ci, info);
-
-            if (ci->base_character
-                && ci->base_character->num_character_meshes > 0
-                && ci->base_character->character_meshes[0].mesh) {
-                ForcedXrayEntry forced{};
-                forced.lod_mesh = ci->base_character->character_meshes[0].mesh->vu;
-                forced.pos = entity->pos;
-                forced.orient = entity->orient;
-                forced.ci = ci;
-                forced.info = info;
-                if (forced.lod_mesh) {
-                    xray_forced_.push_back(forced);
+            auto register_mesh = [&](rf::VifLodMesh* mesh) {
+                if (mesh) {
+                    target.lod_meshes.push_back(mesh);
                 }
-            }
-        };
-
-        // Outline the bag carrier player.
-        if (gt_is_bagman_any() && !bagman_viewer_is_carrier_first_person()) {
-            outline_objective_carrier(g_bagman_info.carrier);
-        }
-
-        // Outline the salvage flag carrier player, the same way.
-        if (gt_is_salvage() && !salvage_viewer_is_carrier_first_person()) {
-            outline_objective_carrier(g_salvage_info.carrier);
-        }
-
-        // Cache the bagman bag outlines for this frame.
-        bagman_pickup_xray_ = ForcedV3dXrayEntry{};
-        bagman_carrier_xray_ = ForcedV3dXrayEntry{};
-        if (gt_is_bagman_any()) {
-            rf::VifLodMesh* lod = nullptr;
-            rf::Vector3 bp{};
-            rf::Matrix3 bo{};
-            if (bagman_query_pickup_bag_outline(&lod, &bp, &bo)) {
-                bagman_pickup_xray_.lod_mesh = lod;
-                bagman_pickup_xray_.pos = bp;
-                bagman_pickup_xray_.orient = bo;
-            }
-            if (bagman_query_carrier_bag_outline(&lod, &bp, &bo)) {
-                bagman_carrier_xray_.lod_mesh = lod;
-                bagman_carrier_xray_.pos = bp;
-                bagman_carrier_xray_.orient = bo;
-            }
-        }
-
-        // Queue the salvage flag outline for this frame. Unlike the bag there is no
-        // natural-render path to piggyback on: the flag is a .vfx mesh drawn by
-        // gr_poly, which never reaches render_v3d_vif, so nothing queues it while the
-        // object pass runs. It is drawn by flush_vfx(), from an explicit drain point
-        // once the scene is complete (normally just before the fpgun renders — see
-        // Renderer::flush_outlines_before_fpgun), which rebinds the scene camera
-        // explicitly because the engine has moved on by then. Its stencil ref
-        // must be its own — a shared ref would let the flag and the carrier erase
-        // each other's silhouettes.
-        if (gt_is_salvage() && next_stencil_ref_ <= 255) {
-            rf::VMesh* flag_vmesh = nullptr;
-            rf::Vector3 fp{};
-            rf::Matrix3 fo{};
-            if (salvage_query_flag_outline(&flag_vmesh, &fp, &fo)) {
-                QueuedVfxOutline entry{};
-                entry.vmesh = flag_vmesh;
-                entry.pos = fp;
-                entry.orient = fo;
-                entry.info.r = 0.0f;
-                entry.info.g = 1.0f;
-                entry.info.b = 0.0f;
-                entry.info.a = 1.0f;
-                entry.info.xray = true;
-                entry.info.stencil_ref = next_stencil_ref_++;
-                vfx_queue_.push_back(std::move(entry));
-            }
-        }
-
-        if (is_spectating) {
-            // Spectator outlines: client toggle only, no server permission needed
-            if (!g_alpine_game_config.outlines_spectator) {
-                return;
-            }
-        }
-        else {
-            // Spawned player outlines: requires client toggle AND server permission
-            if (!g_alpine_game_config.try_outlines) {
-                return;
-            }
-            if (!rf::is_server) {
-                auto& server_info = get_af_server_info();
-                if (!server_info.has_value() || !server_info->allow_outlines) {
+            };
+            auto register_static_mesh = [&](rf::VMesh* mesh) {
+                if (!mesh || mesh->type != rf::MESH_TYPE_STATIC) {
                     return;
                 }
+                auto* mesh_v3d = static_cast<rf::V3d*>(mesh->instance);
+                if (!mesh_v3d || mesh_v3d->num_meshes < 1 || !mesh_v3d->meshes) {
+                    return;
+                }
+                for (int i = 0; i < mesh_v3d->num_meshes; ++i) {
+                    register_mesh(mesh_v3d->meshes[i].vu);
+                }
+            };
+
+            // Every sub-mesh, not just meshes[0]: 0x00502B20 loops the whole array, so a culled
+            // multi-part hull needs one forced draw per part.
+            for (int i = 0; i < v3d->num_meshes; ++i) {
+                register_mesh(v3d->meshes[i].vu);
             }
+
+            // "holds_weapons" means the third-person v3d is its own render_v3d_vif call at the
+            // weapon tag, so a hull without the flag has no weapon draw to recover.
+            if (vehicle->info && (vehicle->info->flags & rf::EIF_HOLDS_WEAPONS)) {
+                auto register_weapon_mesh = [&](int weapon_type) {
+                    if (weapon_type < 0 || weapon_type >= rf::num_weapon_types) {
+                        return;
+                    }
+                    register_static_mesh(rf::weapon_types[weapon_type].third_person_vmesh_handle);
+                };
+                const int primary = vehicle->ai.current_primary_weapon;
+                const int secondary = vehicle->ai.current_secondary_weapon;
+                register_weapon_mesh(primary);
+                if (secondary != primary) {
+                    register_weapon_mesh(secondary);
+                }
+            }
+
+            // The jeep's tires and gun are their own vmesh_render calls. Listed ONCE per jeep, not
+            // per wheel: the forced pass draws every listed mesh, so duplicates leave phantom tires.
+            if (rf::entity_is_jeep(vehicle)) {
+                register_static_mesh(vehicle_jeep_tire_mesh());
+                register_static_mesh(rf::jeep_gun_vmesh);
+            }
+        }
+
+        // When spectating in first-person view, skip the spectated player's mesh
+        rf::Player* spectate_target = is_spectating ? multi_spectate_get_target_player() : nullptr;
+
+        // A spectate target's vehicle counts as the viewer's, as his mesh counts as the viewer's.
+        rf::Entity* viewer_entity =
+            rf::local_player ? rf::entity_from_handle(rf::local_player->entity_handle) : nullptr;
+        rf::Entity* spectate_entity =
+            spectate_target ? rf::entity_from_handle(spectate_target->entity_handle) : nullptr;
+        auto viewer_aboard = [&](const rf::Entity* vehicle) {
+            return (viewer_entity && viewer_entity->host_handle == vehicle->handle)
+                || (spectate_entity && spectate_entity->host_handle == vehicle->handle);
+        };
+
+        // Spectator outlines need only the client toggle; a spawned player's also need server permission.
+        bool player_outlines = is_spectating
+            ? g_alpine_game_config.outlines_spectator
+            : g_alpine_game_config.try_outlines;
+        if (player_outlines && !is_spectating && !rf::is_server) {
+            auto& server_info = get_af_server_info();
+            player_outlines = server_info.has_value() && server_info->allow_outlines;
         }
 
         // Determine xray permission (spectators always allowed, servers always allowed)
@@ -244,64 +245,10 @@ namespace gr::d3d11
         }
 
         bool is_team_mode = multi_is_team_game_type();
-        const bool is_salvage = gt_is_salvage();
-        rf::Player* local_player = rf::local_player;
-        if (!local_player) {
-            return;
-        }
+        int local_team = rf::local_player ? rf::local_player->team : -1;
 
-        int local_team = local_player->team;
-
-        // When spectating in first-person view, skip the spectated player's mesh
-        rf::Player* spectate_target = is_spectating ? multi_spectate_get_target_player() : nullptr;
-
-        // Iterate all players, build CI map
-        for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
-            // Skip local player (don't outline yourself)
-            if (&player == local_player) {
-                continue;
-            }
-
-            // Skip the player we are spectating (their mesh is our first-person view)
-            if (spectate_target && &player == spectate_target) {
-                continue;
-            }
-
-            if (gt_is_bagman_any() && g_bagman_info.carrier == &player) {
-                continue;
-            }
-
-            // Same for the salvage flag carrier: the green objective outline above
-            // must not be replaced by a team-coloured one here.
-            if (is_salvage && g_salvage_info.carrier == &player) {
-                continue;
-            }
-
-            // Get entity
-            rf::Entity* entity = rf::entity_from_handle(player.entity_handle);
-            if (!entity) {
-                continue;
-            }
-
-            // Skip dying/dead entities
-            if (rf::entity_is_dying(entity)) {
-                continue;
-            }
-
-            // Get CharacterInstance from vmesh
-            if (!entity->vmesh || entity->vmesh->type != rf::MESH_TYPE_CHARACTER) {
-                continue;
-            }
-            auto* ci = static_cast<rf::CharacterInstance*>(entity->vmesh->instance);
-            if (!ci) {
-                continue;
-            }
-
-            // Assign stencil ref (1-255)
-            if (next_stencil_ref_ > 255) {
-                break; // max 255 outlined characters
-            }
-
+        // Single derivation of colour and xray for both passes; the stencil ref stays the caller's.
+        auto outline_info_for_player = [&](const rf::Player& player) {
             // Determine if this player is an enemy or teammate
             bool is_enemy = true;
             if (is_team_mode && !is_spectating) {
@@ -359,13 +306,162 @@ namespace gr::d3d11
             info.b = b;
             info.a = a;
             info.xray = xray;
-            info.stencil_ref = next_stencil_ref_++;
+            info.stencil_ref = 0;
+            return info;
+        };
 
+        auto objective_info = []() {
+            OutlineInfo info{};
+            info.r = 0.0f;
+            info.g = 1.0f;
+            info.b = 0.0f;
+            info.a = 1.0f;
+            info.xray = true;
+            return info;
+        };
+
+        // The objective carrier is outlined through walls for everybody, no toggle
+        // needed: whoever holds the bag or the salvage flag is what the whole server
+        // is chasing.
+        auto outline_objective_carrier = [&](rf::Player* carrier, OutlineInfo info) {
+            if (!carrier || next_stencil_ref_ > 255) {
+                return;
+            }
+            rf::Entity* entity = rf::entity_from_handle(carrier->entity_handle);
+            if (!entity || rf::entity_is_dying(entity)) {
+                return;
+            }
+            if (!entity->vmesh || entity->vmesh->type != rf::MESH_TYPE_CHARACTER) {
+                return;
+            }
+            auto* ci = static_cast<rf::CharacterInstance*>(entity->vmesh->instance);
+            if (!ci) {
+                return;
+            }
+
+            info.stencil_ref = next_stencil_ref_++;
             ci_map_.emplace(ci, info);
 
-            // Store data for xray players so we can queue their outlines even if
+            if (ci->base_character
+                && ci->base_character->num_character_meshes > 0
+                && ci->base_character->character_meshes[0].mesh) {
+                ForcedXrayEntry forced{};
+                forced.lod_mesh = ci->base_character->character_meshes[0].mesh->vu;
+                forced.pos = entity->pos;
+                forced.orient = entity->orient;
+                forced.ci = ci;
+                forced.info = info;
+                if (forced.lod_mesh) {
+                    xray_forced_.push_back(forced);
+                }
+            }
+        };
+
+        // Outline the bag carrier player, and any hull he rides in.
+        bool bag_carrier_enclosed = false;
+        if (gt_is_bagman_any() && !bagman_viewer_is_carrier_first_person() && g_bagman_info.carrier) {
+            // Green, unless a Team Bagman player's own outlines can tell him whose side holds it.
+            OutlineInfo carrier_info = objective_info();
+            if (gt_is_tbag() && !is_spectating && player_outlines) {
+                carrier_info = outline_info_for_player(*g_bagman_info.carrier);
+                carrier_info.xray = true;
+            }
+            for (VehicleOutlineTarget& target : vehicle_targets()) {
+                rf::Entity* vehicle = rf::entity_from_handle(target.entity_handle);
+                if (!vehicle || rf::entity_is_dying(vehicle) || viewer_aboard(vehicle)) {
+                    continue;
+                }
+                rf::Entity* occupant = vehicle_outline_occupant(vehicle);
+                if (!occupant || occupant->handle != g_bagman_info.carrier->entity_handle) {
+                    continue;
+                }
+                if (next_stencil_ref_ > 255) {
+                    break;
+                }
+                target.info = carrier_info;
+                target.info.stencil_ref = next_stencil_ref_++;
+                target.has_info = true;
+                // Only a jeep's or a turret's rider sits outside the hull.
+                bag_carrier_enclosed = vehicle->info
+                    && vehicle->info->use_function == rf::ENTITY_USE_VEHICLE
+                    && !rf::entity_is_jeep(vehicle);
+                break;
+            }
+            if (!bag_carrier_enclosed) {
+                outline_objective_carrier(g_bagman_info.carrier, carrier_info);
+            }
+        }
+
+        // Outline the salvage flag carrier player, the same way.
+        if (gt_is_salvage() && !salvage_viewer_is_carrier_first_person()) {
+            outline_objective_carrier(g_salvage_info.carrier, objective_info());
+        }
+
+        // Cache the bagman bag outlines for this frame.
+        bagman_pickup_xray_ = ForcedV3dXrayEntry{};
+        bagman_carrier_xray_ = ForcedV3dXrayEntry{};
+        if (gt_is_bagman_any()) {
+            rf::VifLodMesh* lod = nullptr;
+            rf::Vector3 bp{};
+            rf::Matrix3 bo{};
+            if (bagman_query_pickup_bag_outline(&lod, &bp, &bo)) {
+                bagman_pickup_xray_.lod_mesh = lod;
+                bagman_pickup_xray_.pos = bp;
+                bagman_pickup_xray_.orient = bo;
+            }
+            if (!bag_carrier_enclosed && bagman_query_carrier_bag_outline(&lod, &bp, &bo)) {
+                bagman_carrier_xray_.lod_mesh = lod;
+                bagman_carrier_xray_.pos = bp;
+                bagman_carrier_xray_.orient = bo;
+            }
+        }
+
+        // Queue the salvage flag outline for this frame. Unlike the bag there is no
+        // natural-render path to piggyback on: the flag is a .vfx mesh drawn by
+        // gr_poly, which never reaches render_v3d_vif, so nothing queues it while the
+        // object pass runs. It is drawn by flush_vfx(), from an explicit drain point
+        // once the scene is complete (normally just before the fpgun renders — see
+        // Renderer::flush_outlines_before_fpgun), which rebinds the scene camera
+        // explicitly because the engine has moved on by then. Its stencil ref
+        // must be its own — a shared ref would let the flag and the carrier erase
+        // each other's silhouettes.
+        if (gt_is_salvage() && next_stencil_ref_ <= 255) {
+            rf::VMesh* flag_vmesh = nullptr;
+            rf::Vector3 fp{};
+            rf::Matrix3 fo{};
+            if (salvage_query_flag_outline(&flag_vmesh, &fp, &fo)) {
+                QueuedVfxOutline entry{};
+                entry.vmesh = flag_vmesh;
+                entry.pos = fp;
+                entry.orient = fo;
+                entry.info.r = 0.0f;
+                entry.info.g = 1.0f;
+                entry.info.b = 0.0f;
+                entry.info.a = 1.0f;
+                entry.info.xray = true;
+                entry.info.stencil_ref = next_stencil_ref_++;
+                vfx_queue_.push_back(std::move(entry));
+            }
+        }
+
+        if (!player_outlines) {
+            return;
+        }
+
+        const bool is_salvage = gt_is_salvage();
+        rf::Player* local_player = rf::local_player;
+        if (!local_player) {
+            return;
+        }
+
+        // Character meshes only; hulls go through vehicle_targets_ instead.
+        auto add_outline = [&](rf::Entity* entity, rf::CharacterInstance* ci, OutlineInfo info) {
+            info.stencil_ref = next_stencil_ref_++;
+            ci_map_.emplace(ci, info);
+
+            // Store data for xray targets so we can queue their outlines even if
             // the portal renderer culls them (entity in a different room/portal).
-            if (xray && ci->base_character &&
+            if (info.xray && ci->base_character &&
                 ci->base_character->num_character_meshes > 0 &&
                 ci->base_character->character_meshes[0].mesh) {
                 ForcedXrayEntry forced{};
@@ -378,8 +474,123 @@ namespace gr::d3d11
                     xray_forced_.push_back(forced);
                 }
             }
+        };
+
+        // Iterate all players, build CI map
+        for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
+            // Skip local player (don't outline yourself)
+            if (&player == local_player) {
+                continue;
+            }
+
+            // Skip the player we are spectating (their mesh is our first-person view)
+            if (spectate_target && &player == spectate_target) {
+                continue;
+            }
+
+            if (gt_is_bagman_any() && g_bagman_info.carrier == &player) {
+                continue;
+            }
+
+            // Same for the salvage flag carrier: the green objective outline above
+            // must not be replaced by a team-coloured one here.
+            if (is_salvage && g_salvage_info.carrier == &player) {
+                continue;
+            }
+
+            // Get entity
+            rf::Entity* entity = rf::entity_from_handle(player.entity_handle);
+            if (!entity) {
+                continue;
+            }
+
+            // Skip dying/dead entities
+            if (rf::entity_is_dying(entity)) {
+                continue;
+            }
+
+            // Get CharacterInstance from vmesh
+            if (!entity->vmesh || entity->vmesh->type != rf::MESH_TYPE_CHARACTER) {
+                continue;
+            }
+            auto* ci = static_cast<rf::CharacterInstance*>(entity->vmesh->instance);
+            if (!ci) {
+                continue;
+            }
+
+            // Assign stencil ref (1-255)
+            if (next_stencil_ref_ > 255) {
+                break; // max 255 outlined characters
+            }
+
+            add_outline(entity, ci, outline_info_for_player(player));
         }
 
+        // Vehicles, second pass: a hull's outline is its representative occupant's, except that one
+        // the viewer is aboard (from any seat) and an unoccupied one never outline.
+        for (VehicleOutlineTarget& target : vehicle_targets()) {
+            if (target.has_info) {
+                continue;
+            }
+            rf::Entity* vehicle = rf::entity_from_handle(target.entity_handle);
+            if (!vehicle || rf::entity_is_dying(vehicle)) {
+                continue;
+            }
+            if (viewer_aboard(vehicle)) {
+                continue;
+            }
+            rf::Entity* occupant = vehicle_outline_occupant(vehicle);
+            rf::Player* occupant_player =
+                occupant ? rf::player_from_entity_handle(occupant->handle) : nullptr;
+            if (!occupant_player) {
+                continue;
+            }
+            if (next_stencil_ref_ > 255) {
+                break;
+            }
+            // One stencil ref for the whole hull, or each part cuts the others' outline away.
+            target.info = outline_info_for_player(*occupant_player);
+            target.info.stencil_ref = next_stencil_ref_++;
+            target.has_info = true;
+        }
+    }
+
+    bool OutlineRenderer::maybe_queue_static_outline(
+        rf::VifLodMesh* lod_mesh, int lod_index,
+        const rf::Vector3& pos, const rf::Matrix3& orient)
+    {
+        if (!lod_mesh || vehicle_target_count_ == 0) {
+            return false;
+        }
+        // Static meshes are cached by filename, so two jeeps share one VifLodMesh and the draw pose cannot
+        // tell them apart; the entity_render on the stack names the owner instead.
+        rf::Entity* vehicle = vehicle_rendering_entity();
+        if (!vehicle) {
+            return false;
+        }
+        VehicleOutlineTarget* owner = nullptr;
+        for (auto& target : vehicle_targets()) {
+            if (target.entity_handle == vehicle->handle) {
+                owner = &target;
+                break;
+            }
+        }
+        if (!owner) {
+            return false;
+        }
+        owner->naturally_rendered = true;
+
+        // Claimed either way, so the caller keeps its held-weapon outline off an un-outlined hull.
+        if (owner->has_info) {
+            QueuedV3dOutline entry{};
+            entry.lod_mesh = lod_mesh;
+            entry.lod_index = lod_index;
+            entry.pos = pos;
+            entry.orient = orient;
+            entry.info = owner->info;
+            v3d_queue_.push_back(std::move(entry));
+        }
+        return true;
     }
 
     const OutlineInfo* OutlineRenderer::lookup(const rf::CharacterInstance* ci) const
@@ -502,9 +713,7 @@ namespace gr::d3d11
             render_outline(outline, mesh_renderer);
         }
 
-        for (const auto& outline : v3d_queue_) {
-            render_v3d_outline(outline, mesh_renderer);
-        }
+        render_v3d_queue(mesh_renderer);
 
         queue_.clear();
         v3d_queue_.clear();
@@ -554,9 +763,18 @@ namespace gr::d3d11
         const bool need_forced_carrier =
             bagman_carrier_xray_.lod_mesh && !bagman_carrier_xray_.naturally_rendered;
 
+        // Only xray hulls qualify: a depth-tested outline drawn this late has no scene depth to test.
+        const bool need_forced_static = std::ranges::any_of(
+            vehicle_targets(),
+            [](const VehicleOutlineTarget& target) {
+                return target.has_info && target.info.xray && !target.naturally_rendered
+                    && !target.lod_meshes.empty();
+            });
+
         if (queue_.empty() && v3d_queue_.empty() && vfx_queue_.empty()
-            && !need_forced_pickup && !need_forced_carrier) {
+            && !need_forced_pickup && !need_forced_carrier && !need_forced_static) {
             xray_forced_.clear();
+            vehicle_target_count_ = 0;
             return;
         }
 
@@ -620,9 +838,23 @@ namespace gr::d3d11
         bagman_pickup_xray_ = ForcedV3dXrayEntry{};
         bagman_carrier_xray_ = ForcedV3dXrayEntry{};
 
-        for (const auto& outline : v3d_queue_) {
-            render_v3d_outline(outline, mesh_renderer);
+        for (const auto& target : vehicle_targets()) {
+            if (!target.has_info || !target.info.xray || target.naturally_rendered) {
+                continue;
+            }
+            for (rf::VifLodMesh* lod_mesh : target.lod_meshes) {
+                QueuedV3dOutline entry{};
+                entry.lod_mesh = lod_mesh;
+                entry.lod_index = 0;
+                entry.pos = target.pos;
+                entry.orient = target.orient;
+                entry.info = target.info;
+                v3d_queue_.push_back(std::move(entry));
+            }
         }
+        vehicle_target_count_ = 0;
+
+        render_v3d_queue(mesh_renderer);
         v3d_queue_.clear();
 
         // VFX (.vfx) outlines. Normally already drained before the fpgun renders, or
@@ -729,10 +961,33 @@ namespace gr::d3d11
         render_context_.set_cull_mode(D3D11_CULL_BACK);
     }
 
-    void OutlineRenderer::render_v3d_outline(const QueuedV3dOutline& outline, MeshRenderer& mesh_renderer)
+    void OutlineRenderer::render_v3d_queue(MeshRenderer& mesh_renderer)
     {
-        auto* ctx = render_context_.device_context();
+        // Pass 1 for a whole stencil-ref group before pass 2 of any of it: interleaving lets an early
+        // part's inflated shell land on a later part's pixels before that part marks the stencil.
+        std::vector<UINT>& done_refs = v3d_done_refs_;
+        done_refs.clear();
+        for (const auto& first : v3d_queue_) {
+            const UINT ref = first.info.stencil_ref;
+            if (std::find(done_refs.begin(), done_refs.end(), ref) != done_refs.end()) {
+                continue;
+            }
+            done_refs.push_back(ref);
+            for (const auto& outline : v3d_queue_) {
+                if (outline.info.stencil_ref == ref) {
+                    render_v3d_outline_mark(outline, mesh_renderer);
+                }
+            }
+            for (const auto& outline : v3d_queue_) {
+                if (outline.info.stencil_ref == ref) {
+                    render_v3d_outline_draw(outline, mesh_renderer);
+                }
+            }
+        }
+    }
 
+    void OutlineRenderer::render_v3d_outline_mark(const QueuedV3dOutline& outline, MeshRenderer& mesh_renderer)
+    {
         // Prepare static mesh: set model transform, bind vertex/index buffers
         const auto* batches = mesh_renderer.prepare_v3d_for_draw(
             outline.lod_mesh, outline.lod_index,
@@ -759,6 +1014,22 @@ namespace gr::d3d11
         for (const auto& batch : *batches) {
             render_context_.draw_indexed(batch.num_indices, batch.start_index, batch.base_vertex);
         }
+    }
+
+    void OutlineRenderer::render_v3d_outline_draw(const QueuedV3dOutline& outline, MeshRenderer& mesh_renderer)
+    {
+        auto* ctx = render_context_.device_context();
+
+        // Re-prepare: pass 1 may have run for a different part of the same hull since.
+        const auto* batches = mesh_renderer.prepare_v3d_for_draw(
+            outline.lod_mesh, outline.lod_index,
+            outline.pos, outline.orient);
+        if (!batches || batches->empty()) {
+            return;
+        }
+        render_context_.set_primitive_topology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+        bool depth_disabled = outline.info.xray;
 
         // ---- Pass 2: Outline ----
         auto depth_stencil = depth_disabled

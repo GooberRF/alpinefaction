@@ -14,6 +14,8 @@ set(SRCS
     file_dialogs.cpp
     file_dialogs.h
     geometry.cpp
+    gizmo.cpp
+    gizmo.h
     graphics.cpp
     headless_bake.cpp
     headless_bake.h
@@ -23,6 +25,10 @@ set(SRCS
     mesh.h
     mesh_browser.cpp
     mesh_browser.h
+    placement_panel.cpp
+    placement_panel.h
+    viewport_input.cpp
+    viewport_input.h
     note.cpp
     note.h
     corona.cpp
@@ -31,8 +37,12 @@ set(SRCS
     bag.h
     weather_region.cpp
     weather_region.h
+    vehicle_factory.cpp
+    vehicle_factory.h
     projection_camera.cpp
     projection_camera.h
+    dir_light.cpp
+    dir_light.h
     rope_emitter.cpp
     rope_emitter.h
     terrain.cpp
@@ -51,8 +61,15 @@ set(SRCS
     textures.cpp
     bitmap_loaders.cpp
     bitmap_loaders.h
+    bitmap_texels.h
     meshes.cpp
     meshes.h
+    search_paths.cpp
+    search_paths.h
+    sounds.cpp
+    sounds.h
+    minimap_bake.cpp
+    minimap_bake.h
     tbl.cpp
     tbl.h
     trigger.cpp
@@ -63,10 +80,19 @@ set(SRCS
     lightmap.cpp
     lightmap_mesh_occluders.cpp
     lightmap_mesh_occluders.h
+    lightmap_alpha_masks.cpp
+    lightmap_alpha_masks.h
     alpine_lightmaps.cpp
     alpine_lightmaps.h
+    overflow_charts.cpp
+    overflow_charts.h
+    overflow_preview.cpp
+    bake_progress.cpp
+    bake_progress.h
     face_list_cache.cpp
     face_list_cache.h
+    memory_guard.cpp
+    memory_guard.h
     work_pool.cpp
     work_pool.h
 )

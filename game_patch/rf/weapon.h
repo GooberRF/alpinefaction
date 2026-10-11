@@ -200,6 +200,16 @@ namespace rf
         float multi_bbox_size_factor;
     };
     static_assert(sizeof(WeaponInfo) == 0x550);
+    static_assert(offsetof(WeaponInfo, first_person_fov) == 0x74);
+    static_assert(offsetof(WeaponInfo, clip_size_multi) == 0x84);
+    static_assert(offsetof(WeaponInfo, max_speed) == 0xC0);
+    static_assert(offsetof(WeaponInfo, max_speed_multi) == 0xC4);
+    static_assert(offsetof(WeaponInfo, fire_wait) == 0xD0);
+    static_assert(offsetof(WeaponInfo, damage_multi) == 0x10C);
+    static_assert(offsetof(WeaponInfo, crater_radius) == 0x14C);
+    static_assert(offsetof(WeaponInfo, damage_radius_multi) == 0x210);
+    static_assert(offsetof(WeaponInfo, max_ammo_multi) == 0x25C);
+    static_assert(offsetof(WeaponInfo, flags) == 0x264);
 
     enum WeaponTypeFlags
     {
@@ -273,6 +283,7 @@ namespace rf
         Vector3 firing_pos;
     };
     static_assert(sizeof(Weapon) == 0x314);
+    static_assert(offsetof(Weapon, target_handle) == 0x2E8);
 
     enum WeaponState
     {

@@ -107,14 +107,37 @@ inline constexpr std::uint8_t overlay_flag_mask = overlay_flag_triplanar | overl
 
 // Decorations: a static mesh scattered over the surface by its painted coverage plane, optionally scaled by a
 // texture layer's weight. Visual only.
-inline constexpr std::uint32_t max_decorations = 8;
+inline constexpr std::uint32_t max_decorations = 255;
+// The wire count and RED's per-instance decoration index are bytes.
+static_assert(max_decorations <= 0xFF);
 inline constexpr std::uint8_t decoration_link_none = 0xFF;
 inline constexpr std::uint8_t decoration_coverage_full = 255;
 inline constexpr std::uint8_t decoration_flag_align_to_slope = 0x1;
 inline constexpr std::uint8_t decoration_flag_random_yaw = 0x2;
 inline constexpr std::uint8_t decoration_flag_casts_shadows = 0x4;
-inline constexpr std::uint8_t decoration_flag_mask =
-    decoration_flag_align_to_slope | decoration_flag_random_yaw | decoration_flag_casts_shadows;
+// Dithered out over the end of the draw distance instead of shrunk (Direct3D 11). Drawing only: placement and
+// lighting ignore it.
+inline constexpr std::uint8_t decoration_flag_dither_fade = 0x8;
+// How a blended mesh material draws its edges (Direct3D 11), a DecorationEdges in these bits. Drawing only:
+// placement and lighting ignore it.
+inline constexpr std::uint8_t decoration_flag_edges = 0x30;
+inline constexpr std::uint8_t decoration_edges_shift = 4;
+inline constexpr std::uint8_t decoration_flag_mask = decoration_flag_align_to_slope | decoration_flag_random_yaw |
+                                                     decoration_flag_casts_shadows | decoration_flag_dither_fade |
+                                                     decoration_flag_edges;
+// Flags that only change drawing, which lighting hashes must not see
+inline constexpr std::uint8_t decoration_draw_only_flags = decoration_flag_dither_fade | decoration_flag_edges;
+
+enum class DecorationEdges : std::uint8_t
+{
+    // Cut out at half alpha, depth-written; anti-aliased by alpha to coverage under MSAA
+    hard,
+    // The cutout plus a blended pass of the rest, drawn after the opaque objects: about twice the cost
+    soft,
+    // One blended, depth-written pass: its edges hide whatever is drawn behind them afterwards
+    soft_unsorted,
+    count,
+};
 // Instances per m² at full coverage
 inline constexpr float max_decoration_density = 16.0f;
 inline constexpr float min_decoration_scale = 0.01f;
@@ -129,6 +152,9 @@ inline constexpr std::uint32_t max_decoration_instances_per_texel = 256;
 // tried this many candidates, placed or dropped by the slope limit (DecorationBudget).
 inline constexpr std::uint32_t max_level_decoration_instances = 250000;
 inline constexpr std::uint32_t max_level_decoration_candidates = 4 * max_level_decoration_instances;
+// Distinct decoration meshes a level loads, in the order the game places them; the rest draw nothing. The engine
+// appends every loaded mesh file to a 500 entry table (0x0053AB40) without a bounds check.
+inline constexpr std::uint32_t max_level_decoration_meshes = 128;
 
 // Decompressed bytes summed over every 0x0AFBAE0B chunk; a chunk that would pass it is dropped whole.
 inline constexpr std::uint64_t max_level_raw_bytes = 128ull * 1024 * 1024;
@@ -729,9 +755,10 @@ inline constexpr std::size_t blob_decoration_bytes(std::uint32_t nx, std::uint32
     return (flags & flag_decorations) ? decoration_plane_bytes(nx, nz, mul) * decoration_count : 0;
 }
 
-static_assert(blob_raw_size(max_verts, max_verts, 4) + chunk_mask_bytes(max_chunks) +
+static_assert(static_cast<std::uint64_t>(blob_raw_size(max_verts, max_verts, 4)) + chunk_mask_bytes(max_chunks) +
                   overlay_map_bytes(max_verts, max_verts, 4) +
-                  max_decorations * decoration_plane_bytes(max_verts, max_verts, 4) < 0xFFFFFFFFull);
+                  std::uint64_t{max_decorations} * decoration_plane_bytes(max_verts, max_verts, 4) <
+              0xFFFFFFFFull);
 
 // ─── Validation (every reader, and the editor before it writes) ──────────────
 
@@ -867,15 +894,20 @@ inline const char* validate_decoration(float density, float scale_min, float sca
     if (scale_max < scale_min) return "decoration scale max below scale min";
     if (link_layer != decoration_link_none && link_layer >= layer_count) return "decoration link layer out of range";
     if ((flags & ~static_cast<std::uint32_t>(decoration_flag_mask)) != 0) return "unknown decoration flags";
+    if (((flags & decoration_flag_edges) >> decoration_edges_shift) >=
+        static_cast<std::uint32_t>(DecorationEdges::count)) {
+        return "decoration edges out of range";
+    }
     return nullptr;
 }
 
-// A decoration's wire flags from its align_to_slope, random_yaw and casts_shadows.
+// A decoration's wire flags from its align_to_slope, random_yaw, casts_shadows, dither_fade and edges.
 template<typename Decoration>
 constexpr std::uint32_t decoration_flags(const Decoration& d)
 {
     return (d.align_to_slope ? decoration_flag_align_to_slope : 0u) | (d.random_yaw ? decoration_flag_random_yaw : 0u) |
-           (d.casts_shadows ? decoration_flag_casts_shadows : 0u);
+           (d.casts_shadows ? decoration_flag_casts_shadows : 0u) | (d.dither_fade ? decoration_flag_dither_fade : 0u) |
+           (static_cast<std::uint32_t>(d.edges) << decoration_edges_shift);
 }
 
 // The chunk grid a record was built with, its stored chunk_cells: the build mapping and the chunk geo
@@ -1900,7 +1932,7 @@ inline constexpr std::uint64_t decoration_lighting_hash(std::int32_t uid, const 
         mix(position_bits(v.scale_max));
         mix(position_bits(v.max_slope_deg));
         mix(position_bits(v.vertical_offset));
-        mix(v.flags);
+        mix(v.flags & ~static_cast<std::uint32_t>(decoration_draw_only_flags));
         mix(v.link_layer);
         mix_le_words(mix, v.coverage, texels);
         if (v.link_layer != decoration_link_none && g.weights && v.link_layer < max_layers) {
@@ -1918,16 +1950,22 @@ inline constexpr std::uint64_t chart_fingerprint(const GridView& g, std::uint64_
     return decoration_hash == 0 ? lighting_fingerprint(g) : splitmix64(lighting_fingerprint(g) ^ decoration_hash);
 }
 
-// Stored in every baked terrain chart, so pinned.
+// Stored in every baked terrain chart, so pinned. dither_fade and edges only change drawing, so they must not
+// move it.
 static_assert([] {
     const std::uint16_t heights[9] = {0, 1, 0xFFFF, 0x1234, 0x8000, 0xABCD, 7, 0x0100, 0x7FFF};
     const std::uint8_t holes[1] = {0x04}, diag[1] = {0x09}, plane[4] = {255, 0, 17, 128};
     const GridView g{heights, nullptr, holes, diag, 3, 3, 1, {-12.5f, -0.0f, 1024.0f}, 2.0f, -3.0f, 64.0f,
                      flag_geoable, 16.0f, 8.0f, 1, 0, {}};
-    const DecorationView d{plane, "rock.v3m", 0.5f, 0.75f, 1.5f, 35.0f, 0.5f, decoration_link_none,
-                           decoration_flag_random_yaw | decoration_flag_casts_shadows};
-    return chart_fingerprint(g, decoration_lighting_hash(-7, g, &d, 1));
-}() == 0x2BD621293A0026F6ull);
+    const auto fingerprint = [&](std::uint32_t flags) {
+        const DecorationView d{plane, "rock.v3m", 0.5f, 0.75f, 1.5f, 35.0f, 0.5f, decoration_link_none, flags};
+        return chart_fingerprint(g, decoration_lighting_hash(-7, g, &d, 1));
+    };
+    const std::uint32_t flags = decoration_flag_random_yaw | decoration_flag_casts_shadows;
+    return fingerprint(flags) == 0x2BD621293A0026F6ull &&
+           fingerprint(flags | decoration_flag_dither_fade) == 0x2BD621293A0026F6ull &&
+           fingerprint(flags | decoration_flag_edges) == 0x2BD621293A0026F6ull;
+}());
 
 // ─── Build fingerprints ───────────────────────────────────────────────────────
 // Geometry: every input of the compiled positions and chunk -> room layout (the build mapping is valid

@@ -58,6 +58,7 @@ namespace gr::d3d11
         void set_fullscreen_state(bool fullscreen);
         void bitmap(int bm_handle, int x, int y, int w, int h, int sx, int sy, int sw, int sh, bool flip_x, bool flip_y, rf::gr::Mode mode);
         void bitmap(int bm_handle, float x, float y, float w, float h, float sx, float sy, float sw, float sh, bool flip_x, bool flip_y, rf::gr::Mode mode);
+        void poly_2d(int bm_handle, int nv, const rf::gr::Vertex* vertices, rf::gr::Mode mode);
         void page_in(int bm_handle);
         void clear();
         void zbuffer_clear();
@@ -92,6 +93,7 @@ namespace gr::d3d11
         void render_alpha_detail_room(rf::GRoom *room, rf::GSolid *solid);
         void render_sky_room(rf::GRoom *room, rf::Vector3& out_sky_transform_pos, rf::Matrix3& out_sky_transform_orient);
         void render_room_liquid_surface(rf::GSolid* solid, rf::GRoom* room);
+        void render_room_decoration_edges(rf::GSolid* solid, rf::GRoom* room);
         void clear_solid_cache();
         void release_detail_room_cache(rf::GRoom* room);
         void reset_solid_cache_after_boolean();
@@ -112,6 +114,7 @@ namespace gr::d3d11
         void flush_caches();
         void reset_static_vertex_color_tracking();
         void clear_mesh_lights();
+        void set_mesh_bounds(const rf::Vector3& center, float radius);
         void set_pow2_tex_active(bool active);
         float z_far() const;
         bool supports_sample_count(uint32_t sample_count);
@@ -121,6 +124,7 @@ namespace gr::d3d11
         void run_scene_post_pass();
         // Same predicate run_scene_post_pass uses, so the reticle deferral cannot disagree with it
         bool liquid_post_pass_pending() const;
+        void run_scope_glass_pass();
 
         void defer_reticle(rf::Player* pp)
         {
@@ -165,6 +169,7 @@ namespace gr::d3d11
         void init_depth_stencil_buffer(const uint32_t sample_count);
         void flush_outlines_before_2d();
         bool ensure_postfx_source();
+        void copy_scene_to_postfx_source();
 
         HWND hwnd_;
         DynamicLinkLibrary d3d11_lib_;

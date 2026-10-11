@@ -11,6 +11,7 @@
 #include <xlog/xlog.h>
 #include "headless_bake.h"
 #include "level.h"
+#include "terrain_build.h"
 #include "vtypes.h"
 
 namespace
@@ -56,19 +57,17 @@ std::string narrow(const wchar_t* wide)
     return result;
 }
 
+// The file first: formatting the xlog line allocates, and memory_guard_fatal's line must reach the file.
 void bake_log(std::string_view line)
 {
+    if (!g_log_path.empty()) {
+        if (FILE* f = std::fopen(g_log_path.c_str(), "a")) {
+            std::fprintf(f, "[%9.3f] %.*s\n", (GetTickCount() - g_start_ticks) / 1000.0,
+                         static_cast<int>(line.size()), line.data());
+            std::fclose(f);
+        }
+    }
     xlog::info("[bake] {}", line);
-    if (g_log_path.empty()) {
-        return;
-    }
-    FILE* f = std::fopen(g_log_path.c_str(), "a");
-    if (!f) {
-        return;
-    }
-    std::fprintf(f, "[%9.3f] %.*s\n", (GetTickCount() - g_start_ticks) / 1000.0,
-                 static_cast<int>(line.size()), line.data());
-    std::fclose(f);
 }
 
 EditorViewData* view_camera(int index)
@@ -135,7 +134,7 @@ bool run_build_geometry()
         }
         level->build_geometry_tick();
     }
-    return !level->build_cancelling();
+    return !level->build_cancelling() && !build_geometry_out_of_memory();
 }
 
 int WINAPI MessageBoxA_headless(HWND, LPCSTR text, LPCSTR caption, UINT type)

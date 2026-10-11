@@ -25,6 +25,7 @@ static int g_taunt_sound_start = -1;
 static int g_radmsg_sound_start = -1;
 static int g_spray_sound_id = -1;
 static int g_award_sound_id = -1;
+static int g_jeep_horn_sound_id = -1;
 #ifdef DEBUG
 int g_sound_test = 0;
 #endif
@@ -386,6 +387,15 @@ void snd_update_ambient_sounds(const rf::Vector3& camera_pos)
                     float pan = rf::snd_pc_calculate_pan(ambient_snd.pos);
                     rf::snd_pc_set_pan(ambient_snd.sig, pan);
                 }
+                else if (ambient_snd.sig >= 0) {
+                    // The DS3D buffer position is only set when the sound starts, so without this
+                    // a moving ambient sound (e.g. a vehicle engine loop) keeps its initial direction
+                    int chnl = rf::snd_ds_get_channel(ambient_snd.sig);
+                    if (chnl >= 0) {
+                        rf::snd_ds3d_update_buffer(chnl, sound.min_range, sound.max_range, ambient_snd.pos,
+                            rf::zero_vector);
+                    }
+                }
             }
             else if (ambient_snd.sig >= 0) {
                 rf::snd_pc_stop(ambient_snd.sig);
@@ -394,6 +404,19 @@ void snd_update_ambient_sounds(const rf::Vector3& camera_pos)
         }
     }
 }
+
+// Stock starts the fighter's held-fire loop with the 2D snd_play, so it plays at full volume everywhere; start it 3D.
+// No trampoline: this replaces the whole relative CALL, and the caller's add esp,0x10 (0x0041E685) pops its args.
+CodeInjection entity_process_post_fighter_fire_loop_injection{
+    0x0041E680,
+    [](auto& regs) {
+        rf::Entity* ep = regs.esi;
+        int sound_handle = regs.eax;
+        regs.eax = rf::snd_play_3d(sound_handle, ep->pos, 1.0f, rf::zero_vector, 0);
+        regs.eip = 0x0041E685;
+    },
+    false,
+};
 
 #ifdef DEBUG
 
@@ -529,7 +552,8 @@ bool is_valid_custom_sound_id(int custom_id) {
         return false;
     }
     const int handle = g_custom_sound_entry_start + custom_id;
-    return handle >= 0 && handle < rf::g_num_sounds;
+    // A looping entry played from a packet would never be stopped.
+    return handle >= 0 && handle < rf::g_num_sounds && !rf::sounds[handle].is_looping;
 }
 
 int get_custom_chat_message_sound_id(int custom_id, bool is_taunt)
@@ -545,6 +569,25 @@ int get_spray_sound_id()
 int get_award_sound_id()
 {
     return g_award_sound_id;
+}
+
+int get_jeep_horn_sound_id()
+{
+    return g_jeep_horn_sound_id;
+}
+
+bool snd_instance_is_playing(int instance_handle)
+{
+    if (instance_handle < 0) {
+        return false;
+    }
+    const auto instance_index = static_cast<uint8_t>(instance_handle);
+    if (instance_index >= std::size(rf::sound_instances)) {
+        return false;
+    }
+    const auto& instance = rf::sound_instances[instance_index];
+    return instance.handle >= 0 && instance.use_count == (instance_handle >> 8)
+        && rf::snd_pc_is_playing(instance.sig);
 }
 
 void gamesound_parse_custom_sounds() 
@@ -672,6 +715,7 @@ void gamesound_parse_custom_sounds()
         {"MP_TAUNT_74.wav", 10.0f, 1.0f, 1.0f},
         {"af_spray1.ogg", 10.0f, 1.0f, 1.0f},
         {"af_award1.ogg", 10.0f, 1.0f, 1.0f},
+        {"af_jeep_horn.ogg", 15.0f, 1.0f, 1.0f},
     };
 
     for (const auto& sound : custom_sounds) 
@@ -688,6 +732,11 @@ void gamesound_parse_custom_sounds()
     g_radmsg_sound_start = rf::snd_pc_find_by_name("af_radmsg_000.ogg");
     g_spray_sound_id = rf::snd_pc_find_by_name("af_spray1.ogg");
     g_award_sound_id = rf::snd_pc_find_by_name("af_award1.ogg");
+    g_jeep_horn_sound_id = rf::snd_pc_find_by_name("af_jeep_horn.ogg");
+    if (g_jeep_horn_sound_id >= 0) {
+        // Looping comes from the stock sound database, which has no record for an AF file.
+        rf::sounds[g_jeep_horn_sound_id].is_looping = true;
+    }
 
     //xlog::warn("Custom sounds added, starting at ID {}. Taunts start at ID {}", g_custom_sound_entry_start, g_taunt_sound_start);
 }
@@ -925,6 +974,9 @@ void apply_sound_patches()
 
     // Add custom sounds to sounds array
     gamesound_parse_sounds_table_patch.install();
+
+    // Play the fighter's held-fire weapon loop in 3D so it attenuates with distance
+    entity_process_post_fighter_fire_loop_injection.install();
 }
 
 void register_sound_commands()

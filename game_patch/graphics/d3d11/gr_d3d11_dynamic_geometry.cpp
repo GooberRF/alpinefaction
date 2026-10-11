@@ -293,4 +293,37 @@ namespace gr::d3d11
         *(gpu_ind_ptr++) = base_vertex + 2;
         *(gpu_ind_ptr++) = base_vertex + 3;
     }
+
+    void DynamicGeometryRenderer::poly_2d(int bm_handle, int nv, const rf::gr::Vertex* vertices, rf::gr::Mode mode)
+    {
+        const int num_index = (nv - 2) * 3;
+        if (nv < 3 || nv > batch_max_vertex || num_index > batch_max_index) {
+            return;
+        }
+
+        State new_state{
+            D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST,
+            {bm_handle, -1},
+            mode,
+            ui_pixel_shader_,
+        };
+        auto [gpu_verts, gpu_ind_ptr, base_vertex] = setup(nv, num_index, new_state);
+
+        const int diffuse = pack_color(get_vertex_color_from_screen(mode));
+        for (int i = 0; i < nv; ++i) {
+            GpuTransformedVertex& gpu_vert = gpu_verts[i];
+            gpu_vert.x = vertices[i].sx / rf::gr::screen.clip_width * 2.0f - 1.0f;
+            gpu_vert.y = vertices[i].sy / rf::gr::screen.clip_height * -2.0f + 1.0f;
+            gpu_vert.z = 1.0f;
+            gpu_vert.w = 1.0f;
+            gpu_vert.diffuse = diffuse;
+            gpu_vert.u0 = vertices[i].u1;
+            gpu_vert.v0 = vertices[i].v1;
+            if (i >= 2) {
+                *(gpu_ind_ptr++) = base_vertex;
+                *(gpu_ind_ptr++) = base_vertex + i - 1;
+                *(gpu_ind_ptr++) = base_vertex + i;
+            }
+        }
+    }
 }

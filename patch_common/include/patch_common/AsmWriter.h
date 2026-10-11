@@ -377,7 +377,7 @@ public:
 
     AsmWriter& add(const AsmRegMem& dst_rm, int32_t imm32)
     {
-        if (abs(imm32) < 128)
+        if (fits_in_i8(imm32))
             return add(dst_rm, static_cast<int8_t>(imm32));
         write<u8>(0x81); // Opcode
         write_mod_rm(dst_rm, 0);
@@ -387,7 +387,7 @@ public:
 
     AsmWriter& sub(const AsmRegMem& dst_rm, int32_t imm32)
     {
-        if (abs(imm32) < 128)
+        if (fits_in_i8(imm32))
             return sub(dst_rm, static_cast<int8_t>(imm32));
         write<u8>(0x81); // Opcode
         write_mod_rm(dst_rm, 5);
@@ -549,7 +549,7 @@ public:
 
     AsmWriter& jmp(uint32_t addr)
     {
-        if (std::abs(static_cast<int>(addr - (m_addr + 0x2))) < 127) {
+        if (fits_in_i8(static_cast<int32_t>(addr - (m_addr + 0x2)))) {
             return jmp_short(addr);
         }
         return jmp_long(addr);
@@ -661,7 +661,7 @@ private:
             mod_field = 0;
         else if (rm.displacement == 0 && rm.reg_opt.value().reg_num != ebp_num)
             mod_field = 0;
-        else if (abs(rm.displacement) < 128)
+        else if (fits_in_i8(rm.displacement))
             mod_field = 1;
         else
             mod_field = 2;
@@ -694,11 +694,10 @@ private:
         m_addr += sizeof(value);
     }
 
-    template<typename T>
-    static bool can_imm_fit_in_one_byte(T imm)
+    // not abs(value) < 128: abs(INT32_MIN) is undefined and in practice negative
+    static constexpr bool fits_in_i8(int32_t value)
     {
-        static_assert(sizeof(T) <= 4);
-        return abs(static_cast<int32_t>(imm)) < 128;
+        return value >= -128 && value <= 127;
     }
 };
 
@@ -711,7 +710,7 @@ inline AsmWriter& AsmWriter::push<int8_t>(const int8_t imm) {
 
 template <>
 inline AsmWriter& AsmWriter::push<int32_t>(const int32_t imm) {
-    if (std::abs(imm) < 128) {
+    if (fits_in_i8(imm)) {
         return push<int8_t>(imm);
     }
     write<u8>(0x68); // Opcode

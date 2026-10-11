@@ -44,7 +44,7 @@ static void corona_load_icon()
 void DestroyDedCorona(DedCorona* corona)
 {
     if (!corona) return;
-    corona->field_4.free();
+    corona->class_mesh_filename.free();
     corona->script_name.free();
     corona->class_name.free();
     delete corona;
@@ -553,22 +553,6 @@ DedCorona* CloneCoronaObject(DedCorona* source, bool add_to_level)
     return corona;
 }
 
-void DeleteCoronaObject(DedCorona* corona)
-{
-    if (!corona) return;
-    auto* level = CDedLevel::Get();
-    if (!level) return;
-
-    auto& coronas = level->GetAlpineLevelProperties().corona_objects;
-    auto it = std::find(coronas.begin(), coronas.end(), corona);
-    if (it != coronas.end()) {
-        coronas.erase(it);
-    }
-    alpine_remove_from_groups(level, static_cast<DedObject*>(corona));
-    level->master_objects.remove_by_value(static_cast<DedObject*>(corona));
-    DestroyDedCorona(corona);
-}
-
 // ─── Rendering ──────────────────────────────────────────────────────────────
 
 void corona_render(CDedLevel* level)
@@ -750,6 +734,11 @@ void corona_paste_objects(CDedLevel* level)
     }
 }
 
+void corona_swap_clipboard(std::vector<DedCorona*>& other)
+{
+    g_corona_clipboard.swap(other);
+}
+
 void corona_clear_clipboard()
 {
     for (auto* corona : g_corona_clipboard) {
@@ -768,21 +757,6 @@ void corona_handle_delete_or_cut(DedObject* obj)
     auto it = std::find(corona_objects.begin(), corona_objects.end(), static_cast<DedCorona*>(obj));
     if (it != corona_objects.end()) {
         corona_objects.erase(it);
-    }
-}
-
-void corona_handle_delete_selection(CDedLevel* level)
-{
-    auto& sel = level->selection;
-    for (int i = sel.size - 1; i >= 0; i--) {
-        DedObject* obj = sel.data_ptr[i];
-        if (obj && obj->type == DedObjectType::DED_CORONA) {
-            for (int j = i; j < sel.size - 1; j++) {
-                sel.data_ptr[j] = sel.data_ptr[j + 1];
-            }
-            sel.size--;
-            DeleteCoronaObject(static_cast<DedCorona*>(obj));
-        }
     }
 }
 

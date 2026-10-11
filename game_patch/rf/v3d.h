@@ -121,6 +121,10 @@ namespace rf
 
     constexpr int VIF_FACE_DOUBLE_SIDED = 0x20;
 
+    // VifMesh::flags (+0x40), read off the LAST LOD by the mesh collision entry 0x0054DAA0: set
+    // means the trace uses the most detailed LOD instead of the least detailed one.
+    constexpr int VIF_COLLIDE_LOD0 = 0x10;
+
     struct VifLodMesh
     {
         int num_levels;

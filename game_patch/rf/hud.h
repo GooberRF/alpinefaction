@@ -96,6 +96,10 @@ namespace rf
     static auto& hud_health_driller_bmh = addr_as_ref<int>(0x005974D4);
     static auto& hud_health_veh_frame_bmh = addr_as_ref<int>(0x005974D8);
     static auto& hud_body_indicator_bmh = addr_as_ref<int>(0x005974CC);
+    static auto& hud_ammo_bar_bmh = addr_as_ref<int>(0x005975AC);
+    static auto& hud_ammo_bar_power_bmh = addr_as_ref<int>(0x005975C0);
+    static auto& hud_noclip_ammo_bar_bmh = addr_as_ref<int>(0x005975D8);
+    static auto& hud_ammo_signal_green_bmh = addr_as_ref<int>(0x005975F0);
 
     struct ChatMsg
     {

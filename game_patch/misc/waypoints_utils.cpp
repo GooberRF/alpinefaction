@@ -1217,20 +1217,6 @@ rf::Vector3 gizmo_axis_dir(const WaypointGizmoAxis axis)
     }
 }
 
-bool project_world_to_screen(const rf::Vector3& world_pos, float& out_sx, float& out_sy)
-{
-    rf::gr::Vertex v{};
-    if (!rf::gr::rotate_vertex(&v, &world_pos)) {
-        rf::gr::project_vertex(&v);
-        if (v.flags & rf::gr::VF_PROJECTED) {
-            out_sx = v.sx;
-            out_sy = v.sy;
-            return true;
-        }
-    }
-    return false;
-}
-
 float distance_sq_point_to_segment_2d(
     const float px,
     const float py,
@@ -1271,7 +1257,7 @@ std::optional<GizmoAxisHover> determine_hovered_gizmo_axis(
 {
     float center_sx = 0.0f;
     float center_sy = 0.0f;
-    if (!project_world_to_screen(gizmo_center, center_sx, center_sy)) {
+    if (!gr_project_world_to_screen(gizmo_center, center_sx, center_sy)) {
         return std::nullopt;
     }
 
@@ -1289,7 +1275,7 @@ std::optional<GizmoAxisHover> determine_hovered_gizmo_axis(
         const rf::Vector3 axis_end = gizmo_center + gizmo_axis_dir(axis) * axis_length;
         float end_sx = 0.0f;
         float end_sy = 0.0f;
-        if (!project_world_to_screen(axis_end, end_sx, end_sy)) {
+        if (!gr_project_world_to_screen(axis_end, end_sx, end_sy)) {
             continue;
         }
 
@@ -3065,7 +3051,7 @@ void draw_waypoint_editor_gizmo()
 
             float sx = 0.0f;
             float sy = 0.0f;
-            if (project_world_to_screen(axis_end, sx, sy)) {
+            if (gr_project_world_to_screen(axis_end, sx, sy)) {
                 const char axis_label[2]{
                     axis == WaypointGizmoAxis::x ? 'X' : axis == WaypointGizmoAxis::y ? 'Y' : 'Z',
                     '\0'

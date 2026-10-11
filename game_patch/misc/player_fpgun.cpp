@@ -382,13 +382,17 @@ CodeInjection after_game_render_to_dynamic_textures{
     },
 };
 
+float player_fpgun_render_fov(float base_fov)
+{
+    return gr_scale_fov_hor_plus(base_fov * g_alpine_game_config.fpgun_fov_scale);
+}
+
 CallHook<void(rf::Matrix3&, rf::Vector3&, float, bool, bool)> player_fpgun_render_gr_setup_3d_hook{
     0x004AB411,
     [](rf::Matrix3& viewer_orient, rf::Vector3& viewer_pos, float horizontal_fov, bool zbuffer_flag, bool z_scale) {
         // Flush VFX mesh outlines so they don't render on top of fpguns.
         gr_flush_outlines_before_fpgun();
-        horizontal_fov *= g_alpine_game_config.fpgun_fov_scale;
-        horizontal_fov = gr_scale_fov_hor_plus(horizontal_fov);
+        horizontal_fov = player_fpgun_render_fov(horizontal_fov);
         player_fpgun_render_gr_setup_3d_hook
             .call_target(viewer_orient, viewer_pos, horizontal_fov, zbuffer_flag, z_scale);
     },
@@ -465,6 +469,20 @@ CodeInjection players_cleanup_injection{
     0x004A259C,
     []() {
         g_fpgun_main_player = nullptr;
+    },
+};
+
+// player_fpgun_get_muzzle_tag_pos tests pp->weapon_mesh_handle at 0x004AD705 but re-reads it at
+// 0x004AD752, after an intervening call can have cleared it. Exit through the function's own false
+// tail at 0x004AD731, which expects the one argument already pushed here.
+CodeInjection player_fpgun_get_muzzle_tag_pos_null_guard{
+    0x004AD74B,
+    [](auto& regs) {
+        rf::Player* pp = regs.esi;
+        if (!pp->weapon_mesh_handle) {
+            regs.esp += 4;
+            regs.eip = 0x004AD731;
+        }
     },
 };
 
@@ -577,6 +595,9 @@ void player_fpgun_do_patch()
     // Do not cull entities too early.
     player_fpgun_render_ir_cull_patch_1.install();
     player_fpgun_render_ir_cull_patch_2.install();
+
+    // A player with no fpgun mesh has no fpgun muzzle
+    player_fpgun_get_muzzle_tag_pos_null_guard.install();
 
 #ifndef NDEBUG
     reload_fpgun_cmd.register_cmd();

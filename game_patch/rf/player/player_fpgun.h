@@ -80,6 +80,9 @@ namespace rf
     static auto& player_fpgun_process = addr_as_ref<void(Player* player)>(0x004AA6D0);
     static auto& player_fpgun_is_zoomed = addr_as_ref<bool(Player* player)>(0x004ACE90);
     static auto& player_fpgun_render_ir = addr_as_ref<void(Player* player)>(0x004AEEF0);
+    // World position of the current weapon's fpgun muzzle tag; false when it has none.
+    static auto& player_fpgun_get_muzzle_tag_pos =
+        addr_as_ref<bool(Player* player, Vector3* out_pos, Matrix3* out_orient)>(0x004AD6D0);
     static auto& player_fpgun_set_next_state_anim  = addr_as_ref<void(Player* player, int anim_index)>(0x004AA560);
     static auto& player_fpgun_is_in_state_anim = addr_as_ref<bool(Player* player, int anim_index)>(0x004A9520);
     static auto& player_fpgun_is_in_custom_anim = addr_as_ref<bool(Player* player)>(0x004ADB60);

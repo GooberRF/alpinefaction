@@ -447,6 +447,8 @@ struct WeaponLoadoutEntry
     int index;
     int reserve_ammo;
     bool enabled = true;
+    // Named by an operator's spawn_loadout entry rather than implied by a spawn weapon or game type.
+    bool listed = false;
 
     auto operator<=>(const WeaponLoadoutEntry&) const = default;
 };
@@ -475,7 +477,8 @@ struct WeaponLoadoutConfig
 
     // set_ammo false means the caller had no ammo value of its own (the TOML entry omitted
     // the key), so an inherited reserve is kept instead of being reset to `ammo`.
-    bool add(std::string_view name, int ammo, bool blue_team, bool enabled = true, bool set_ammo = true)
+    bool add(std::string_view name, int ammo, bool blue_team, bool enabled = true, bool set_ammo = true,
+             bool listed = false)
     {
         const int idx = rf::weapon_lookup_type(name.data());
         if (idx < 0)
@@ -495,11 +498,20 @@ struct WeaponLoadoutConfig
                 it->reserve_ammo = ammo;
             }
             it->enabled = enabled;
+            it->listed = it->listed || listed;
             return false;
         }
 
-        weapons_array.emplace_back(WeaponLoadoutEntry{std::string{name}, idx, ammo, enabled});
+        weapons_array.emplace_back(WeaponLoadoutEntry{std::string{name}, idx, ammo, enabled, listed});
         return true;
+    }
+
+    bool is_listed(std::string_view name, bool blue_team) const
+    {
+        const int idx = rf::weapon_lookup_type(name.data());
+        auto const& weapons_array = blue_team ? blue_weapons : red_weapons;
+        return idx >= 0 && std::any_of(weapons_array.begin(), weapons_array.end(),
+                                       [&](auto const& e) { return e.index == idx && e.listed; });
     }
 
     bool remove(std::string_view name, bool blue_team)
@@ -565,6 +577,12 @@ struct GibConfig
     {
         damage_threshold = std::clamp(threshold, 1.0f, 6000.0f);
     }
+};
+
+struct VehicleConfig
+{
+    // Hulls take damage from hitting the level or a mover hard, and from hard landings.
+    bool crash_damage = true;
 };
 
 // Controls which level pickups survive under a mutator. Enforced server-side in
@@ -749,6 +767,7 @@ struct AlpineServerConfigRules
     SpawnProtectionConfig spawn_protection;
     NewSpawnLogicConfig spawn_logic;
     GibConfig gibbing;
+    VehicleConfig vehicles;
     WelcomeMessageConfig welcome_message;
     bool weapon_items_give_full_ammo = false;
     bool weapon_infinite_magazines = false;
@@ -950,6 +969,7 @@ struct AlpineServerConfigLevelEntry
 {
     std::string level_filename;
     AlpineServerConfigRules rule_overrides;
+    int scope_table = -1; // this entry's TOML, kept with the config for rebuilding its rules
 };
 
 struct AlpineRconProfile
@@ -1031,13 +1051,6 @@ struct AlpineServerConfig
     VoteConfig vote_previous;
 
     AlpineServerConfigRules base_rules;
-    // Base rules re-parsed with all mutators stripped. Used as the starting point
-    // for a mutator applied via a level/match vote, so the voted mutator replaces
-    // (rather than stacks on) any mutator the base rules declared.
-    AlpineServerConfigRules base_rules_no_mutators;
-    // The operator's explicit base keys over struct defaults and NOTHING else. Rules
-    // for any other game type are built from this, so nothing can leak in.
-    AlpineServerConfigRules base_rules_keys_only;
     std::vector<AlpineServerConfigLevelEntry> levels;
 
     std::string printed_cfg{};
@@ -1151,6 +1164,15 @@ struct RulesParseQuietGuard
     RulesParseQuietGuard(const RulesParseQuietGuard&) = delete;
     RulesParseQuietGuard& operator=(const RulesParseQuietGuard&) = delete;
 };
+
+// A level's rotation entry: the slot it is running as when listed more than once, else its first; -1 if none.
+int rotation_index_for_level(std::string_view level_filename);
+// `level_filename` under `game_type`: its defaults, the base settings, then the level's rotation entry
+// (rotation_index_for_level) if it has one. A voted mutator set replaces every base and level mutator.
+AlpineServerConfigRules build_level_rules(std::string_view level_filename, rf::NetGameType game_type,
+    const std::vector<MutatorDeclaration>* voted_mutators);
+// Drops the installed config's base settings, for a server running without one.
+void reset_base_scope_tables();
 
 enum class UpcomingGameTypeSelection {
     Rotation,

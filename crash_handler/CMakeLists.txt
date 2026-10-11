@@ -21,6 +21,13 @@ set_target_properties(CrashHandler PROPERTIES CXX_EXTENSIONS NO)
 enable_warnings(CrashHandler)
 setup_debug_info(CrashHandler)
 
+# Its own address-space bounds limit the memory walk, and a large-address-aware RF.exe or RED.exe can use up to 4 GB
+if(MSVC)
+    target_link_options(CrashHandler PRIVATE /LARGEADDRESSAWARE)
+else()
+    target_link_options(CrashHandler PRIVATE -Wl,--large-address-aware)
+endif()
+
 target_include_directories(CrashHandler SYSTEM PRIVATE
     ${CMAKE_SOURCE_DIR}/vendor/zlib
     ${CMAKE_SOURCE_DIR}/vendor/zlib/contrib/minizip

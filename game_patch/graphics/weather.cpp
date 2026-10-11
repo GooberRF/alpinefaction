@@ -211,16 +211,6 @@ rf::GRoom* weather_find_room(const rf::Vector3& pos)
     return rf::g_level_solid ? rf::find_room(rf::g_level_solid, &pos) : nullptr;
 }
 
-// Mirrors the engine point_in_liquid test at 0x004CE080
-bool room_liquid_surface_y(rf::GRoom* room, float& out_y)
-{
-    if (!room || !room->contains_liquid) {
-        return false;
-    }
-    out_y = room->bbox_min.y + room->liquid_depth;
-    return true;
-}
-
 void plankton_reseed(const rf::Vector3& camera_pos, rf::GRoom* room)
 {
     std::uniform_real_distribution<float> offset_dist{-rf::g_plankton_box_extent, rf::g_plankton_box_extent};
@@ -795,6 +785,16 @@ ConsoleCommand2 r_weather_cmd{
     "Toggle rendering of level weather regions",
 };
 
+}
+
+// Mirrors the engine point_in_liquid test at 0x004CE080
+bool room_liquid_surface_y(rf::GRoom* room, float& out_y)
+{
+    if (!room || !room->contains_liquid) {
+        return false;
+    }
+    out_y = room->bbox_min.y + room->liquid_depth;
+    return true;
 }
 
 // Weather regions authored in the editor. The registry is cleared at level init before any chunk is

@@ -6,6 +6,7 @@
 #include "gr_d3d11_liquid.h"
 #include "gr_d3d11_shader.h"
 #include "../../misc/alpine_settings.h"
+#include "../../misc/misc.h"
 #include "../../os/os.h"
 #include "../../rf/geometry.h"
 #include "../../rf/gr/gr.h"
@@ -39,17 +40,6 @@ namespace gr::d3d11
 
         // Keeps the liquid surface polygon outside the volume, so a grazing ray cannot tint it
         constexpr float liquid_surface_epsilon = 0.01f;
-
-        // Far clip the engine applies with the eye dry, as 0x00431A00 computes it: the level fog
-        // range where it is used, else the room cull distance. The projection's own z_far is not
-        // the same thing - in skyroom levels it stays at the fog range while the cull is 275.
-        float above_water_far_clip()
-        {
-            if (!rf::level.has_skyroom && rf::level.distance_fog_far_clip > 0.0f) {
-                return rf::level.distance_fog_far_clip;
-            }
-            return rf::gr::default_wfar;
-        }
 
         float aabb_distance(const rf::Vector3& bbox_min, const rf::Vector3& bbox_max, const rf::Vector3& p)
         {
@@ -317,7 +307,9 @@ namespace gr::d3d11
 
         rf::Camera* cam = rf::local_player ? rf::local_player->cam : nullptr;
         rf::GRoom* cam_room = cam && cam->camera_entity ? rf::camera_get_room(cam) : nullptr;
-        const float dry_far_clip = std::min(above_water_far_clip(), projection.z_far());
+        // The projection's own z_far is not the cull distance: in skyroom levels it stays at the fog
+        // range while the cull is 275.
+        const float dry_far_clip = std::min(level_dry_far_clip(), projection.z_far());
 
         // The room the liquid appearance comes from. The camera's own room wins; a dry camera
         // takes the nearest liquid room in range instead, so water seen through a portal is
@@ -367,21 +359,24 @@ namespace gr::d3d11
                 rf::level.distance_fog_color.blue / 255.0f,
             };
             state_.over_fog_far = rf::level.distance_fog_far_clip;
+            state_.over_fog_near = rfl_version_minimum(306) ? rf::level.distance_fog_near_clip : 0.0f;
         }
         else {
             state_.over_fog_color = {0.0f, 0.0f, 0.0f};
             state_.over_fog_far = 0.0f;
+            state_.over_fog_near = 0.0f;
         }
 
         // Submerged, a level far clip shorter than the engine's cull distance depth-clips geometry
         // into a hole instead of fogging it out. Decided here so far_clip below targets it.
         Projection out_projection = projection;
+        const float cull_far_clip = level_default_far_clip();
         if (g_alpine_game_config.underwater_fx >= 2 && state_.eye_under
-            && std::isfinite(rf::gr::default_wfar)
-            && projection.z_far() < rf::gr::default_wfar
-            && rf::gr::default_wfar > projection.z_near()) {
+            && std::isfinite(cull_far_clip)
+            && projection.z_far() < cull_far_clip
+            && cull_far_clip > projection.z_near()) {
             out_projection = Projection{projection.scale_x(), projection.scale_y(),
-                                        projection.z_near(), rf::gr::default_wfar};
+                                        projection.z_near(), cull_far_clip};
         }
 
         // Entering liquid from dry snaps: there is nothing meaningful to fade from.
@@ -450,6 +445,10 @@ namespace gr::d3d11
         data.over_fog_far = state_.blended_over_fog_far > 1e-3f
             ? state_.blended_over_fog_far
             : std::numeric_limits<float>::infinity();
+        // Scaled with the far while it eases up, or the fog starts as a wall at the near clip
+        data.over_fog_near = state_.blended_over_fog_far > 1e-3f && state_.over_fog_far > 0.0f
+            ? state_.over_fog_near * std::min(state_.blended_over_fog_far / state_.over_fog_far, 1.0f)
+            : 0.0f;
         data.params = {liquid_sigma_k, liquid_absorb_hi, liquid_absorb_lo, liquid_depth_darken};
         data.dark_surface_y = state_.blended_surface_y;
         // Nearest of the room/object cull and the depth-clip plane. Recomputed rather than read

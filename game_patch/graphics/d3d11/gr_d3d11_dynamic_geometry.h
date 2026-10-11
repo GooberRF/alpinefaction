@@ -22,6 +22,7 @@ namespace gr::d3d11
         void line_3d(const rf::gr::Vertex& v0, const rf::gr::Vertex& v1, rf::gr::Mode mode);
         void line_2d(float x1, float y1, float x2, float y2, rf::gr::Mode mode);
         void bitmap(int bm_handle, float x, float y, float w, float h, float sx, float sy, float sw, float sh, bool flip_x, bool flip_y, rf::gr::Mode mode);
+        void poly_2d(int bm_handle, int nv, const rf::gr::Vertex* vertices, rf::gr::Mode mode);
         void set_pre_flush_callback(std::function<void()> callback);
         void set_cull_mode(D3D11_CULL_MODE cull_mode);
         void flush();

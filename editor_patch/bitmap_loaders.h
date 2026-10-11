@@ -5,6 +5,9 @@
 #include <string>
 #include <vector>
 
+// Stock bitmap type
+constexpr int EDITOR_BM_TYPE_TGA = 0x2;
+
 // Editor-side bitmap format extensions
 constexpr int EDITOR_BM_TYPE_STB = 0x12;
 constexpr int EDITOR_BM_TYPE_DDS = 0x10;

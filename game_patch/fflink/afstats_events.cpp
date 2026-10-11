@@ -41,6 +41,7 @@
 #include "../multi/salvage.h"
 #include "../multi/server_config_snapshot.h"
 #include "../multi/server_internal.h"
+#include "../multi/vehicles/vehicle.h"
 #include "../multi/wipeout.h"
 #include "../os/console.h"
 #include "../rf/clutter.h"
@@ -261,7 +262,12 @@ struct EvKill
     Vec3 victim_pos;
     bool has_killer_pos = false;
     Vec3 killer_pos;
+    int vehicle = -1; // VehicleDamageClass; negative = not a vehicle kill, reported as null
 };
+
+// The kill event's `vehicle` ids are part of the FactionFiles contract.
+static_assert(VDC_JEEP == 0 && VDC_APC == 1 && VDC_DRILLER == 2 && VDC_FIGHTER == 3 && VDC_SUB == 4
+              && VDC_TURRET == 5);
 
 struct EvAward
 {
@@ -1387,6 +1393,7 @@ nlohmann::json event_to_json(const Event& e)
                 j["assists"] = p.assists;
                 j["victim_pos"] = pos_to_json(p.victim_pos);
                 j["killer_pos"] = p.has_killer_pos ? pos_to_json(p.killer_pos) : nlohmann::json(nullptr);
+                j["vehicle"] = p.vehicle < 0 ? nlohmann::json(nullptr) : nlohmann::json(p.vehicle);
             }
             else if constexpr (std::is_same_v<T, EvAward>) {
                 j["type"] = "award";
@@ -2690,7 +2697,7 @@ void on_game_end()
 
 void on_kill(rf::Player* victim, rf::Player* killer, int weapon_type, int damage_type, uint8_t kill_flags,
              const std::vector<uint8_t>& assist_player_ids, const rf::Vector3& victim_pos,
-             const rf::Vector3* killer_pos)
+             const rf::Vector3* killer_pos, int vehicle_class)
 {
     if (!victim || !ensure_session() || victim->afstats_key.empty()) {
         return;
@@ -2711,6 +2718,7 @@ void on_kill(rf::Player* victim, rf::Player* killer, int weapon_type, int damage
         ev.has_killer_pos = true;
         ev.killer_pos = Vec3{killer_pos->x, killer_pos->y, killer_pos->z};
     }
+    ev.vehicle = vehicle_class;
 
     for (uint8_t assist_id : assist_player_ids) {
         rf::Player* assister = rf::multi_find_player_by_id(assist_id);

@@ -851,6 +851,13 @@ bool salvage_spawn_is_known()
     return g_salvage_info.spawn_known;
 }
 
+bool salvage_reserves_item_slot(int item_type)
+{
+    return g_salvage_info.active && g_salvage_info.spawn_known
+        && g_salvage_info.flag_item_type >= 0 && item_type != g_salvage_info.flag_item_type
+        && item_from_handle_or_null(g_salvage_info.flag_item_handle) == nullptr;
+}
+
 bool salvage_get_base_positions(rf::Vector3* out_red, rf::Vector3* out_blue)
 {
     if (!g_salvage_info.bases_known && gt_is_salvage()) {
@@ -1303,6 +1310,16 @@ void salvage_on_player_disconnect(rf::Player* player)
         // render/HUD paths don't touch it before the next state packet arrives.
         set_carrier(nullptr);
     }
+}
+
+void salvage_force_drop_flag(rf::Player* player)
+{
+    if (!rf::is_server || !gt_is_salvage()) return;
+    if (g_salvage_info.state != SalFlagState::Carried) return;
+    if (g_salvage_info.carrier != player) return;
+
+    rf::Entity* ep = alive_entity_for(player);
+    drop_flag_at(player, ep ? ep->pos : g_salvage_info.last_carrier_pos);
 }
 
 void salvage_handle_drop_flag_request(rf::Player* player)

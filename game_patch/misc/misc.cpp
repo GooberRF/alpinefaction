@@ -467,6 +467,18 @@ CodeInjection vif_chunk_tex_count_overflow_fix{
     },
 };
 
+// A .vfx ribbon (CHNE) chunk's vertices are copied into a 16-entry stack buffer when drawn (0x0053EF90).
+CodeInjection vfx_ribbon_vertex_count_overflow_fix{
+    0x0053E53F,
+    [](auto& regs) {
+        const int num_vertices = regs.eax;
+        if (num_vertices < 0 || num_vertices > 16) {
+            xlog::warn("Clamping vfx ribbon vertex count {} to 16", num_vertices);
+            regs.eax = std::clamp(num_vertices, 0, 16);
+        }
+    },
+};
+
 FunHook<void(const char*, int)> lcl_add_message_bof_fix{
     0x004B0720,
     [](const char* str, int id) {
@@ -684,13 +696,6 @@ CodeInjection level_read_header_patch{
     }
 };
 
-CodeInjection level_read_geometry_header_patch{
-    0x00461A62, [](auto& regs) {
-
-        write_mem<float>(0x00646018, 1120403456.0f);
-    }
-};
-
 CodeInjection static_bomb_code_patch{
     0x0043B4C7,
     [](auto& regs) {
@@ -735,20 +740,9 @@ void misc_init()
     // GeoMod chunk physics
     geo_chunk_physics_cmd.register_cmd();
 
-    //gr_set_far_clip_hook.install();
-    //AsmWriter{0x0051806F}.jmp(0x00518083); // stops far clip from derendering geometry covered by fog, buggy
-
     // Allow loading of rfl files with supported AF-specific versions
     level_read_header_patch.install();
     AsmWriter{0x004461BF}.jmp(0x00446200); // load Level Name from all rfls (any version) on listen server create panel
-
-
-    // fog experimentation - attempting to stop fp weapon cutoff. Success when using static values but not when rfl has specified values
-    //fog_near_clip_patch.install();
-    //gr_fog_set_hook.install();
-    //AsmWriter{0x00461A5C}.nop(6);
-    //level_read_geometry_header_patch.install();
-    //AsmWriter(0x00461A5C).nop(6);
 
     // Display a more informative message to user if they try to load an unsupported rfl
     static char new_unsupported_version_message[] =
@@ -817,6 +811,7 @@ void misc_init()
     v3d_csphere_count_overflow_fix.install();
     vif_chunk_reader_hook.install();
     vif_chunk_tex_count_overflow_fix.install();
+    vfx_ribbon_vertex_count_overflow_fix.install();
 
     // Fix killed glass restoration from a save file
     AsmWriter(0x0043604A).nop(5);

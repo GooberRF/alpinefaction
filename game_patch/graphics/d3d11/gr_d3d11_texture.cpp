@@ -1,5 +1,6 @@
 #include <cstring>
 #include <cassert>
+#include <common/utils/string-utils.h>
 #include "gr_d3d11.h"
 #include "gr_d3d11_texture.h"
 #include "../gr.h"
@@ -280,7 +281,8 @@ namespace gr::d3d11
         int w, h, num_pixels, mip_levels;
         rf::bm::get_mipmap_info(bm_handle, &w, &h, &num_pixels, &mip_levels);
         if (w <= 0 || h <= 0) {
-            xlog::warn("Bad bitmap dimensions: handle {} filename {} dimensions {}x{}", bm_handle, rf::bm::get_filename(bm_handle), w, h);
+            xlog::warn("Bad bitmap dimensions: handle {} filename {} dimensions {}x{}", bm_handle,
+                string_escape_control_chars(rf::bm::get_filename(bm_handle)), w, h);
             return {};
         }
 
@@ -705,7 +707,8 @@ namespace gr::d3d11
             // once rather than once per draw for the rest of the level.
             if (!warned_missing) {
                 warned_missing = true;
-                xlog::warn("Both GPU and CPU textures are missing for {}", rf::bm::get_filename(bm_handle));
+                xlog::warn("Both GPU and CPU textures are missing for {}",
+                    string_escape_control_chars(rf::bm::get_filename(bm_handle)));
             }
             return;
         }

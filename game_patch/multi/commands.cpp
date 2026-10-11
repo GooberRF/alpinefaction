@@ -9,6 +9,7 @@
 #include "../rf/os/string.h"
 #include "server.h"
 #include "multi.h"
+#include "mutators.h"
 #include <common/utils/string-utils.h>
 #include <patch_common/AsmWriter.h>
 #include <patch_common/CallHook.h>
@@ -31,6 +32,13 @@ void restart_current_level()
     if (g_manual_rules_override)
         manual_rules_override = *g_manual_rules_override;
 
+    // A restart keeps the game type the level is running under (an sv_gametype switch, say)
+    // unless a change is already queued.
+    if (get_upcoming_game_type() == rf::netgame.type
+        && get_upcoming_game_type_selection() != UpcomingGameTypeSelection::ExplicitRequest) {
+        set_upcoming_game_type(rf::netgame.type, UpcomingGameTypeSelection::ExplicitRequest);
+    }
+
     multi_change_level_alpine(rf::level.filename.c_str());
 
     if (manual_rules_override)
@@ -46,24 +54,10 @@ void restart_current_level_configured()
     const std::string filename = rf::level.filename.c_str();
 
     if (g_dedicated_launched_from_ads) {
-        const auto& levels = g_alpine_server_config.levels;
-        const int idx = rf::netgame.current_level_index;
-        const AlpineServerConfigRules* configured = &g_alpine_server_config.base_rules;
-        if (idx >= 0 && idx < static_cast<int>(levels.size())
-            && string_iequals(levels[idx].level_filename, filename)) {
-            configured = &levels[idx].rule_overrides;
-        }
-        else {
-            for (const auto& entry : levels) {
-                if (string_iequals(entry.level_filename, filename)) {
-                    configured = &entry.rule_overrides;
-                    break;
-                }
-            }
-        }
+        const rf::NetGameType configured = resolve_level_default_game_type(filename);
         // Explicit so a game type the session voted in cannot survive as the
         // still-queued upcoming type.
-        set_upcoming_game_type(configured->game_type, UpcomingGameTypeSelection::ExplicitRequest);
+        set_upcoming_game_type(configured, UpcomingGameTypeSelection::ExplicitRequest);
     }
 
     multi_change_level_alpine(filename.c_str());

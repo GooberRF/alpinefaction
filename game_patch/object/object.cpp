@@ -5,6 +5,7 @@
 #include <patch_common/StaticBufferResizePatch.h>
 #include <common/utils/string-utils.h>
 #include <common/utils/list-utils.h>
+#include <common/alpine_mesh_scale.h>
 #include <xlog/xlog.h>
 #include <unordered_map>
 #include <algorithm>
@@ -20,6 +21,7 @@
 #include "../rf/geometry.h"
 #include "../rf/collide.h"
 #include "../rf/vmesh.h"
+#include "../rf/vfx.h"
 #include "../rf/math/ix.h"
 #include "../rf/gameseq.h"
 #include "../rf/entity.h"
@@ -32,6 +34,7 @@
 #include "../multi/gametype.h"
 #include "../multi/server_internal.h"
 #include "../multi/mutators.h"
+#include "../multi/vehicles/vehicle.h"
 #include "../graphics/weather.h"
 #include "../misc/alpine_options.h"
 #include "../misc/misc.h"
@@ -216,13 +219,11 @@ bool level_allows_extra_items()
     return rf::level.version >= 306;
 }
 
-static auto& item_pool_num_used = addr_as_ref<int>(0x00730D70);
-
 CodeInjection obj_create_item_limit_patch{
     0x004871D9,
     [](auto& regs) {
         const int limit = level_allows_extra_items() ? extended_item_limit : stock_item_limit;
-        regs.eip = item_pool_num_used < limit ? 0x004871E9 : 0x004872BC;
+        regs.eip = rf::item_pool_num_used < limit ? 0x004871E9 : 0x004872BC;
     },
     false
 };
@@ -315,7 +316,92 @@ FunHook<bool(rf::VMesh*, rf::VMeshCollisionInput*, rf::VMeshCollisionOutput*, bo
             }
             return false;
         }
+        const float scale = alpine_mesh_vmesh_draw_scale(vmesh);
+        if (scale != 1.0f && in) {
+            // Collide against the unscaled geometry with a copy, leaving the caller's input untouched
+            rf::VMeshCollisionInput scaled_in = *in;
+            alpine_mesh_scale_collision_input(scaled_in, scale);
+            const bool hit = vmesh_collide_hook.call_target(vmesh, &scaled_in, out, clear);
+            if (hit && out) {
+                // hit_point is mesh-local
+                out->hit_point *= scale;
+            }
+            return hit;
+        }
         return vmesh_collide_hook.call_target(vmesh, in, out, clear);
+    },
+};
+
+// vmesh_render call in clutter_render; also covers D3D11, whose mesh backends sit below vmesh_render
+CallHook<void(rf::VMesh*, rf::Vector3*, rf::Matrix3*, rf::MeshRenderParams*)> clutter_render_vmesh_hook{
+    0x0041048C,
+    [](rf::VMesh* vmesh, rf::Vector3* pos, rf::Matrix3* orient, rf::MeshRenderParams* params) {
+        const float scale = alpine_mesh_vmesh_draw_scale(vmesh);
+        if (scale == 1.0f) {
+            clutter_render_vmesh_hook.call_target(vmesh, pos, orient, params);
+            return;
+        }
+        rf::Matrix3 scaled_orient = alpine_mesh_scale::scale_orient(*orient, scale);
+        clutter_render_vmesh_hook.call_target(vmesh, pos, &scaled_orient, params);
+    },
+};
+
+// vmesh_process call in obj_render for .vfx meshes: particle emitters and lights are placed with this orient
+CallHook<void(rf::VMesh*, float, int, rf::Vector3*, rf::Matrix3*, int)> obj_render_vfx_process_hook{
+    0x00488B93,
+    [](rf::VMesh* vmesh, float frametime, int increment_only, rf::Vector3* pos, rf::Matrix3* orient, int lod_level) {
+        const float scale = alpine_mesh_vmesh_draw_scale(vmesh);
+        if (scale == 1.0f) {
+            obj_render_vfx_process_hook.call_target(vmesh, frametime, increment_only, pos, orient, lod_level);
+            return;
+        }
+        rf::Matrix3 scaled_orient = alpine_mesh_scale::scale_orient(*orient, scale);
+        obj_render_vfx_process_hook.call_target(vmesh, frametime, increment_only, pos, &scaled_orient, lod_level);
+    },
+};
+
+// .vfx part draws invert their instance transform with the orient's transpose, which a scaled orient breaks.
+// Draw with the orthonormal orient and the part's object-space data scaled instead.
+FunHook<void __fastcall(rf::VfxSfxoRenderObj*, int, float, rf::Vector3*, rf::Matrix3*)> vfx_part_render_hook{
+    0x0053EE90,
+    [](rf::VfxSfxoRenderObj* part, int edx, float frame, rf::Vector3* pos, rf::Matrix3* orient) FASTCALL_LAMBDA {
+        const float scale = orient ? alpine_mesh_scale::orient_scale(*orient) : 1.0f;
+        if (scale == 1.0f || !part->chunk) {
+            vfx_part_render_hook.call_target(part, edx, frame, pos, orient);
+            return;
+        }
+        rf::Matrix3 unit_orient = alpine_mesh_scale::scale_orient(*orient, 1.0f / scale);
+        alpine_mesh_scale::ScopedVfxPartScale scaled_part{*part, scale};
+        vfx_part_render_hook.call_target(part, edx, frame, pos, &unit_orient);
+    },
+};
+
+// Particles are drawn without a transform, so their size takes the scale of the orient their emitter was processed with
+FunHook<void __fastcall(rf::VfxPartInstance*, int, int, float)> vfx_particle_render_hook{
+    0x005431D0,
+    [](rf::VfxPartInstance* emitter, int edx, int index, float frame) FASTCALL_LAMBDA {
+        const float scale = alpine_mesh_scale::orient_scale(emitter->orient);
+        if (scale == 1.0f) {
+            vfx_particle_render_hook.call_target(emitter, edx, index, frame);
+            return;
+        }
+        const float radius = emitter->particle_radius;
+        emitter->particle_radius = radius * scale;
+        vfx_particle_render_hook.call_target(emitter, edx, index, frame);
+        emitter->particle_radius = radius;
+    },
+};
+
+// An emitter whose bounding sphere is off screen stops simulating and drawing its particles; scale that sphere's
+// radius (pushed just below) like the emission it bounds
+CodeInjection vfx_particle_cull_radius_injection{
+    0x00543150,
+    [](auto& regs) {
+        const rf::VfxPartInstance* emitter = regs.esi;
+        const float scale = alpine_mesh_scale::orient_scale(emitter->orient);
+        if (scale != 1.0f) {
+            addr_as_ref<float>(regs.esp + 0x68) *= scale;
+        }
     },
 };
 
@@ -476,6 +562,16 @@ FunHook<void(rf::Object*)> obj_delete_mesh_hook{
         obj_delete_mesh_hook.call_target(objp);
         obj_mesh_lighting_free_one(objp);
         alpine_mesh_free_collision_solid(objp->handle);
+        alpine_mesh_release_scale_vmesh(objp);
+    },
+};
+
+// obj_delete's own obj_delete_mesh call: the object is going away, so its draw scale goes too
+CallHook<void(rf::Object*)> obj_delete_free_mesh_hook{
+    0x00486708,
+    [](rf::Object* objp) {
+        obj_delete_free_mesh_hook.call_target(objp);
+        alpine_mesh_free_scale(objp);
     },
 };
 
@@ -617,7 +713,11 @@ FunHook<void(rf::Entity*)> entity_on_dead_hook{
             rf::activate_all_events_of_type(rf::EventType::AF_When_Dead, ep->handle, -1, true);
         }
 
+        // entity_die kills the occupants and then frees the seats with entity_detach_leech,
+        // which the vehicle module's exit broadcast never sees, so it announces them here.
+        vehicle_before_entity_die(ep);
         entity_on_dead_hook.call_target(ep);
+        vehicle_after_entity_die(ep);
     },
 };
 
@@ -932,8 +1032,15 @@ CallHook<void(rf::Player*, int, bool, bool)> fpgun_riot_shield_break_switch_weap
 FunHook<void(rf::Entity*)> entity_delete_hook{
     0x00424F40,
     [](rf::Entity* ep) {
+        int fly_sound_slot = -1;
         if (ep) {
             entity_rate_limit_on_entity_delete(ep->handle);
+            fly_sound_slot = ep->fly_sound_ambient_handle;
+            // Stock entity_delete never stops the drill loop, and a dead driller no longer runs the code that would.
+            if (ep->driller_sound_handle >= 0) {
+                rf::snd_stop(ep->driller_sound_handle);
+                ep->driller_sound_handle = -1;
+            }
             if (rf::is_multi) {
                 // Silent removal, no shatter debris: the shield did not break.
                 riot_shield_remove_silently(ep);
@@ -942,6 +1049,17 @@ FunHook<void(rf::Entity*)> entity_delete_hook{
         }
 
         entity_delete_hook.call_target(ep);
+
+        // Stock entity_delete only zeroes the fly sound's ambient volume and clears the entity's
+        // slot index - it never frees the slot itself, so every destroyed entity with a $FlySnd
+        // permanently consumes one of the 25 ambient slots.
+        if (fly_sound_slot >= 0 && fly_sound_slot < static_cast<int>(std::size(rf::ambient_sounds))) {
+            auto& ambient_snd = rf::ambient_sounds[fly_sound_slot];
+            if (ambient_snd.sig >= 0) {
+                rf::snd_pc_stop(ambient_snd.sig);
+            }
+            rf::ambient_sound_reset(&ambient_snd);
+        }
     },
 };
 
@@ -1195,12 +1313,20 @@ void object_do_patch()
     // Calculate lighting when object mesh is changed, handle per-map mesh replacements
     obj_create_mesh_hook.install();
     obj_delete_mesh_hook.install();
+    obj_delete_free_mesh_hook.install();
 
     // Print a warning to console when an invalid mesh would have been loaded
     obj_create_mesh_check_valid.install();
 
-    // Skip vmesh_collide when the mesh is invalid (fix crash from null deref)
+    // Skip vmesh_collide when the mesh is invalid (fix crash from null deref); collide scaled meshes
     vmesh_collide_hook.install();
+
+    // Draw Alpine meshes at their draw scale
+    clutter_render_vmesh_hook.install();
+    obj_render_vfx_process_hook.install();
+    vfx_part_render_hook.install();
+    vfx_particle_render_hook.install();
+    vfx_particle_cull_radius_injection.install();
 
     // Mode 3 (brush) mesh collision, and improved mesh collision
     collide_object_object_mesh_hook.install();
