@@ -23,6 +23,7 @@ bool gr_3d_bitmap_oriented_wh(const rf::Vector3* pnt, const rf::Matrix3* M, floa
 // Current view's screen position of a world point; false when behind the camera or not projected.
 bool gr_project_world_to_screen(const rf::Vector3& world_pos, float& out_sx, float& out_sy);
 int gr_fit_string(std::string& text, int max_width, int font_id = -1, std::string_view suffix = "-");
+size_t gr_last_code_point_offset(std::string_view text);
 void explosion_flash_lights_level_init();
 void explosion_flash_lights_destroy_all();
 

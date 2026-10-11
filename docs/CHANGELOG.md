@@ -124,6 +124,12 @@ Version 1.5.0 (Trillium): Not yet released
 [@GooberRF](https://github.com/GooberRF) & [@is-this-c](https://github.com/is-this-c)
 - Add lens distortion, chromatic aberration and vignetting to the sniper and precision rifle scope views, with levels 0-2 via `r_scopeglass`: 0 off, 1 light, 2 heavy (Direct3D 11 renderer only)
 
+[@jyh9521](https://github.com/jyh9521)
+- Render text as UTF-8, so TrueType fonts can display non-Latin scripts
+  - Glyphs are rasterized on demand instead of up front, so a large character set does not cost hundreds of megabytes
+  - Line breaking and truncation happen on code point boundaries, including the usual CJK rules
+  - General purpose `.vf` bitmap fonts resolve to their TrueType equivalents
+
 ### Bug fixes
 [@GooberRF](https://github.com/GooberRF)
 - Fix phantom visual flag mesh being visible after Salvage flag is picked up on rare occasions
