@@ -6,6 +6,7 @@
 #include <unordered_map>
 #include <vector>
 #include <common/lightmap/alpine_lightmap.h>
+#include "lightmap_pages.h"
 
 struct GSolid;
 struct GFace;
@@ -27,7 +28,7 @@ bool overflow_bake_begin(const GSolid* solid, const std::vector<std::int32_t>& t
 const OverflowLayout& overflow_layout();
 // Shades every chart into `pages` (page_size^2 RGB8 each), blends the seams between charts and makes a tiled
 // chart's shared gutter texels agree, marking their blocks in `shared_blocks`. False when it failed (reported).
-bool overflow_shade(std::vector<std::vector<std::uint8_t>>& pages, std::vector<std::uint8_t>& shared_blocks);
+bool overflow_shade(LightmapPages& pages, std::vector<std::uint8_t>& shared_blocks);
 // After a failed shade: the table keeps its layout but carries a fingerprint no faces match.
 void overflow_mark_unusable();
 // Whether the bake has a table to write, and its tile count.

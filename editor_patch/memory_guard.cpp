@@ -141,6 +141,11 @@ bool memory_guard_tripped()
     return g_tripped.load(std::memory_order_relaxed);
 }
 
+void memory_guard_trip()
+{
+    g_tripped = true;
+}
+
 bool memory_guard_rearm()
 {
     if (g_reserve.load()) {

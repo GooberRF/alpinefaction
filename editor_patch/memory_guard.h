@@ -9,10 +9,14 @@ const char* memory_guard_advice();
 inline constexpr const char* memory_guard_warning =
     "RED is nearly out of memory. Save your work under a new name and restart RED.";
 
-// An allocation was served from the reserve since the last call, cleared for the caller to report.
+// The guard tripped (the reserve served an allocation, or memory_guard_trip) since the last call; cleared for the
+// caller to report.
 bool memory_guard_take_tripped();
 // The same, left for the reporter: a pass that allocates as it goes scales down for the rest of its run.
 bool memory_guard_tripped();
+// An allocation failed that the reserve did not serve, and was handled by doing less: trips the guard so the running
+// operation is cancelled as out of memory rather than finishing degraded. Any thread.
+void memory_guard_trip();
 // False when an unreported trip is pending (taken here) or the block is spent and cannot be held again: an operation
 // that needs a lot of memory must not start.
 bool memory_guard_ready();

@@ -1070,7 +1070,7 @@ V3 smoothed_normal(const Face& f, const std::vector<D2>& p, D2 q)
     return dot(n, f.normal) > 0.0f ? n : f.normal;
 }
 
-using Pages = std::vector<std::vector<std::uint8_t>>;
+using Pages = LightmapPages;
 
 std::uint8_t* page_texel(Pages& pages, std::uint32_t page, std::uint32_t x, std::uint32_t y)
 {
@@ -1705,11 +1705,26 @@ bool overflow_bake_begin(const GSolid* solid, const std::vector<std::int32_t>& t
         bool lowered = false;
         std::uint32_t dropped_charts = 0, dropped_faces = 0;
         const bool fitted = budget > 0 && fit_and_pack(budget, lowered, dropped_charts, dropped_faces);
-        // only worth saying when the memory cap may have cost density or charts
+        // only worth saying when the memory cap may have cost density or charts, and worth a message box when it cut
+        // a real share of the pages (lowered also covers what the section cap alone would have cost)
         if (budget < max_pages && (!fitted || lowered || dropped_charts)) {
-            ov_warn("RED's free memory allows " + std::to_string(budget) + " overflow pages of the "
-                    + std::to_string(max_pages) + " a section could hold; restarting RED before Calculate Lighting "
-                    "raises that");
+            const std::string msg =
+                "RED's free memory allows only " + std::to_string(budget) + " of the " + std::to_string(max_pages) +
+                " overflow lightmap pages left in the lightmap section, so the faces past RED's 32767 lightmap "
+                "surfaces " +
+                (!fitted         ? "get no lightmaps. "
+                 : dropped_charts ? "get less lightmap detail, some none. "
+                                  : "get less lightmap detail. ") +
+                (editor_large_address_aware()
+                     ? "Save, restart RED and run Calculate Lighting again for more detail."
+                     : "Save, restart RED and run Calculate Lighting again, or turn on \"Run level editor with 4 GB "
+                       "address space\" in the launcher options, for more detail.");
+            if (!fitted || budget < max_pages / 4 * 3) {
+                editor_report_blocking("AlpineLightmaps", "Calculate Lighting", msg);
+            }
+            else {
+                ov_warn(msg);
+            }
         }
         if (!fitted) {
             ov_warn(std::to_string(g_ov.faces.size()) + " faces past RED's 32767 lightmap surfaces do not fit the "
@@ -1768,7 +1783,7 @@ bool overflow_bake_begin(const GSolid* solid, const std::vector<std::int32_t>& t
     }
 }
 
-bool overflow_shade(std::vector<std::vector<std::uint8_t>>& pages, std::vector<std::uint8_t>& shared_blocks)
+bool overflow_shade(LightmapPages& pages, std::vector<std::uint8_t>& shared_blocks)
 {
     if (!overflow_has_table()) {
         return true;

@@ -736,7 +736,7 @@ bool __fastcall face_gets_surface_hooked(const int* flags)
     return !in_terrain_room(face, *g_terrain_gate_uids);
 }
 
-// Faces RED's surface pass left without a surface once its surfaces ran out.
+// Faces RED's surface pass would give a surface that have none: past its 32767, or since Build Geometry.
 uint32_t surface_overflow_faces(CDedLevel& level)
 {
     const GSolid* solid = level.solid;
@@ -893,6 +893,17 @@ void lighting_surfaces_stock(void* self)
     catch (...) {
         memory_guard_fatal("Calculate Lighting");
     }
+}
+
+void lighting_surfaces_checked(void* self)
+{
+    lighting_surfaces_hooked(self);
+}
+
+bool lighting_surfaces_missing(CDedLevel& level)
+{
+    return level.solid && static_cast<uint32_t>(level.solid->surfaces.get_size()) < red_max_level_surfaces &&
+           surface_overflow_faces(level) > 0;
 }
 
 bool build_geometry_out_of_memory()

@@ -213,6 +213,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Fix level editor leaking memory for Alpine mesh objects each time a level is created or opened
 - Fix shadows randomly appearing or disappearing in some level editor lightmap bakes
 - Fix level editor lightmap bakes sometimes drawing a light or dark streak across a light's glow on smoothed surfaces
+- Fix level editor `Calculate Lighting` leaving the level unlit when run after `Build Geometry`
 - Fix dedicated server base rules being dropped on levels configured for a different game type
 - Fix a level's `spawn_weapon` removing a weapon the base `spawn_loadout` lists
 - Fix the `level` command keeping the game type and rules of a previous level vote

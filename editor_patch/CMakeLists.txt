@@ -80,6 +80,8 @@ set(SRCS
     lightmap.cpp
     lightmap_mesh_occluders.cpp
     lightmap_mesh_occluders.h
+    lightmap_pages.cpp
+    lightmap_pages.h
     lightmap_alpha_masks.cpp
     lightmap_alpha_masks.h
     alpine_lightmaps.cpp
