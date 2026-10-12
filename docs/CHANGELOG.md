@@ -198,7 +198,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Fix level editor memory use growing with every `Build Geometry` and `Calculate Lighting` because the Direct3D textures of discarded lightmaps were never released
 - Fix level editor crashing when Direct3D fails to create a texture
 - Stop `Build Geometry` and `Calculate Lighting` in the level editor with a message when too little memory is left to finish them (instead of crashing)
-- Reduce the memory `Calculate Lighting` needs in the level editor, and how much of it must be in one piece
+- Reduce the memory `Build Geometry` and `Calculate Lighting` need in the level editor and free more of it once they finish
 - Fix level editor crashing or freezing when it runs out of memory; it now cancels `Build Geometry` or `Calculate Lighting` and explains why, or closes with an explanation when it cannot recover
 - Fix level editor crashing in `Calculate Lighting` when a level needs more than 32767 lightmap surfaces; without `D3D11-only lightmaps`, faces past the limit are left without a lightmap and the editor warns
 - Fix geomod craters creating new lightmap surfaces on every crater once a level holds more than 32767 of them

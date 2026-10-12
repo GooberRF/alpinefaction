@@ -3134,10 +3134,18 @@ CodeInjection lightmap_highres_setup_injection{
         // lightmap RED allows, so it can finish instead of running out again. A CSG step's surfaces (a build, which is
         // then cancelled, or a brush tool) are redone by the next build or surface pass; the surface pass's
         // (FUN_004aa610, returning to 0x004aab73) stay until the next surface pass, and a bake must not reuse them.
+        const std::uint32_t caller = *reinterpret_cast<std::uint32_t*>(esp + 0x8c);
         if (memory_guard_tripped()) {
             *reinterpret_cast<float*>(esp + 0x9c) = lm_min_density;
-            if (*reinterpret_cast<std::uint32_t*>(esp + 0x8c) == 0x004aab73) {
+            if (caller == 0x004aab73) {
                 g_lightmaps_shrunk = true;
+            }
+        }
+        // Build Geometry's CSG steps (FUN_004ab6d0, returning to 0x004ab757) give each new face of the build's working
+        // solid a lightmap that its final tick frees unused; at high resolution they would take over a gigabyte.
+        else if (caller == 0x004ab757) {
+            if (auto* level = CDedLevel::Get(); level && level->build_running) {
+                *reinterpret_cast<float*>(esp + 0x9c) = lm_min_density;
             }
         }
         regs.eip = 0x004a9d50;
