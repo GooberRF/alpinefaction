@@ -52,7 +52,7 @@ constexpr size_t obj_limit = 65536;
 
 // Item limit of pre-v306 levels, and of v306+ levels (see level_allows_extra_items).
 constexpr int stock_item_limit = 200;
-constexpr int extended_item_limit = 1500;
+constexpr int extended_item_limit = 2000;
 
 // Length limits for names read from untrusted alpine level chunks (max_bitmap_name: misc/level.h).
 constexpr size_t max_mesh_name = 65;

@@ -109,7 +109,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Award a point per frag in Bagman and Team Bagman, and a team point in Team Bagman
 - Show `Your team has the bag` in Team Bagman
 - Add team-relative bag carrier icons and outline colors
-- Raise the limit on items per level from 200 to 1500
+- Raise the limit on items per level from 200 to 2000 for v306+ levels
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Add `ui_color_console` console command to set the console background color
