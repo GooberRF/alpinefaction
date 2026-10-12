@@ -16,6 +16,7 @@
 #include "vehicle_render.h"
 #include "vehicle_spawn.h"
 #include "vehicle_tracers.h"
+#include "vehicle_fx.h"
 #include "../alpine_packets.h"
 #include "../multi.h"
 #include "../server_internal.h"
@@ -428,6 +429,7 @@ void vehicle_client_do_frame()
     if (!rf::is_dedicated_server) {
         vehicle_update_jeep_wheels();
         vehicle_update_treads();
+        vehicle_fx_do_frame();
         // Ahead of the engine frame the hook wraps (0x004B2D90), so the cockpit is stepped first.
         vehicle_process_spectated_cockpit();
     }
@@ -697,6 +699,7 @@ void vehicle_level_init()
     vehicle_view_level_init();
     vehicle_markers_level_init();
     vehicle_tracers_level_init();
+    vehicle_fx_level_init();
     // The bm cache is rebuilt per level, so a handle resolved for the last one means nothing here.
     vehicle_tread_runtime_reset();
     vehicle_ammo_regen_runtime_reset();
@@ -928,5 +931,6 @@ void vehicle_apply_patches()
 
     vehicle_spawn_install();
     vehicle_tracers_install();
+    vehicle_fx_install();
     vehicle_horn_install();
 }

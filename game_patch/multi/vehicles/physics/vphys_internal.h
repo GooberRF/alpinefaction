@@ -535,8 +535,6 @@ void vehicle_physics_notify_geomod(const rf::Vector3& pos, float radius);
 bool mover_brush_is_solid(const rf::Object& mb);
 
 // ---- vphys_car.cpp ----
-// collide_linesegment_world plus the mover-brush solidity rule above. `flags` are rf::CollideFlags.
-bool vphys_collide_solid_segment(const rf::Vector3& a, const rf::Vector3& b, int flags, rf::PCollisionOut& out);
 void car_teardown(VehicleSimBody& b);
 HullBox hull_contact_box(const HullBox& base, const VehiclePhysicsParams& p, float bottom_raise);
 // Splits the trimmed contact box into the chassis's collision parts; returns how many (1 or 2).

@@ -1060,6 +1060,10 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.vehicle_tracers = std::stoi(settings["VehicleTracers"]);
         processed_keys.insert("VehicleTracers");
     }
+    if (settings.count("VehicleEffects")) {
+        g_alpine_game_config.vehicle_effects = std::stoi(settings["VehicleEffects"]);
+        processed_keys.insert("VehicleEffects");
+    }
     if (settings.count("VehicleTracerFrequency")) {
         g_alpine_game_config.set_vehicle_tracer_frequency(std::stoi(settings["VehicleTracerFrequency"]));
         processed_keys.insert("VehicleTracerFrequency");
@@ -1737,6 +1741,7 @@ void alpine_player_settings_save(rf::Player* player)
     file << "VehicleCamBounce=" << g_alpine_game_config.vehicle_cam_bounce << "\n";
     file << "VehicleCamLag=" << g_alpine_game_config.vehicle_cam_lag << "\n";
     file << "VehicleTracers=" << g_alpine_game_config.vehicle_tracers << "\n";
+    file << "VehicleEffects=" << g_alpine_game_config.vehicle_effects << "\n";
     file << "VehicleTracerFrequency=" << g_alpine_game_config.vehicle_tracer_frequency << "\n";
     file << "VehicleTracerColor=" << format_hex_color_string(g_alpine_game_config.vehicle_tracer_color) << "\n";
     file << "VehicleTracerLength=" << g_alpine_game_config.vehicle_tracer_length << "\n";

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include "math/vector.h"
 #include "os/timestamp.h"
 #include "os/array.h"
@@ -274,6 +275,23 @@ static auto& bolt_emitter_list = addr_as_ref<VArray<BoltEmitter*>>(0x0064608C);
 static auto& level_get_particle_emitter_from_uid = addr_as_ref<ParticleEmitter*(int uid)>(0x0045D630);
 static auto& level_get_bolt_emitter_from_uid = addr_as_ref<BoltEmitter*(int uid)>(0x0045D680);
 
+// particle_pools_init 0x00494E70: pool 0 holds 500, pool 1 (every emitter's particles) 1100.
+// particle_create silently creates nothing once a pool's free list is empty. Only pool 0's used_list is
+// simulated and drawn, so a pool 1 particle must be created into an emitter.
+struct ParticlePool
+{
+    Particle* storage;  // +0x00
+    int capacity;       // +0x04
+    Particle free_list; // +0x08 sentinel
+    Particle used_list; // +0x80 sentinel of the particles no emitter owns
+    int num_live;       // +0xF8
+};
+static_assert(offsetof(ParticlePool, free_list) == 0x08);
+static_assert(offsetof(ParticlePool, used_list) == 0x80);
+static_assert(offsetof(ParticlePool, num_live) == 0xF8);
+static_assert(sizeof(ParticlePool) == 0xFC);
+static auto& particle_pools = addr_as_ref<ParticlePool[2]>(0x007A3B00);
+
 static auto& particle_create = addr_as_ref<void(int pool_id, ParticleCreateInfo& pci,
     GRoom* room, Vector3* a4, int parent_obj, Particle** result,
     ParticleEmitter* emitter)>(0x00496840);
@@ -282,6 +300,11 @@ static auto& particle_create = addr_as_ref<void(int pool_id, ParticleCreateInfo&
 static auto& g_particle_emitter_types = addr_as_ref<ParticleEmitterType*[64]>(0x007B2770);
 static auto& g_num_particle_emitter_types = addr_as_ref<int>(0x007BD99C);
 static auto& particle_emitter_type_lookup = addr_as_ref<int(const char* name)>(0x00497550);
+
+// Fixed records for every emitter (pool init 0x004973F0); particle_emitter_create returns null once
+// all are in use.
+constexpr int particle_emitter_capacity = 128;
+static auto& particle_emitter_num_used = addr_as_ref<int>(0x007BD998);
 
 static auto& particle_emitter_create = addr_as_ref<ParticleEmitter*(
     int parent_handle, ParticleEmitterType& type, GRoom* room, Vector3& pos, bool is_on)>(0x00497CA0);
