@@ -198,14 +198,17 @@ struct AlpineFactionJoinAcceptPacketExt
         pogo                = 1u << 25,
         dodging             = 1u << 26,
         stats_enabled       = 1u << 27,
+        projectile_lag_comp = 1u << 28,
+        delta_obj_update    = 1u << 29, // server sends af_obj_update_delta to clients that asked
     } flags = Flags::none;
 
     float max_fov = 0.0f;
     int32_t semi_auto_cooldown = 0;
-
+    uint16_t server_netfps = 0; // 0: server predates this field, clients then send at 40
+    uint16_t projectile_lag_comp_max_ms = 0; // server's cap on the projectile advance; 0: uncapped (older server)
 };
 #pragma pack(pop)
-static_assert(sizeof(AlpineFactionJoinAcceptPacketExt) == 20, "unexpected AlpineFactionJoinAcceptPacketExt size");
+static_assert(sizeof(AlpineFactionJoinAcceptPacketExt) == 24, "unexpected AlpineFactionJoinAcceptPacketExt size");
 template<>
 struct EnableEnumBitwiseOperators<AlpineFactionJoinAcceptPacketExt::Flags> : std::true_type {};
 
@@ -248,6 +251,7 @@ struct AlpineFactionJoinReqPacketExt // used for stashed data during join proces
         none = 0,
         client_bot = 1u << 0,
         client_d3d11 = 1u << 1,
+        client_delta_obj_update = 1u << 2,
     };
 
     uint32_t af_signature = 0u;

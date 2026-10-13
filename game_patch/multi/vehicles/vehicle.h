@@ -11,7 +11,9 @@
 namespace rf
 {
     struct Entity;
+    struct Object;
     struct Player;
+    struct LevelCollisionOut;
 }
 
 struct AlpineVehicleFactoryInfo;
@@ -94,6 +96,17 @@ bool vehicle_fp_apc_view(rf::Entity** out_vehicle, rf::Entity** out_driver);
 // there is no usable frame.
 bool vehicle_fp_apc_aim_split(const rf::Entity* vehicle, const rf::Entity* driver, rf::Vector3* out_aim,
                               rf::Matrix3* out_view);
+
+// Server: a synced hull whose obj_update rows this server samples itself (no remote driver).
+bool vehicle_server_samples_rows(const rf::Entity* ep);
+
+// collide_linesegment_level_for_multi (0x0049C690) without use_mesh_collide tests every entity as a
+// human-sized pillar at its origin, not its mesh: re-test synced hulls against their meshes and merge any
+// hit nearer than out.distance into out. Call it after that function, which resets out.distance and
+// clips p1 to a world hit. True when a hull took the hit.
+bool vehicle_collide_segment_hulls(const rf::Vector3& p0, const rf::Vector3& p1, const rf::Object* ignore1,
+                                   const rf::Object* ignore2, float collision_radius, rf::LevelCollisionOut& out,
+                                   bool (*skip_hull)(int handle) = nullptr);
 
 // How far the hull's cspheres reach beyond the origin along dir (a UNIT vector).
 float vehicle_collision_reach_along(rf::Entity* ep, const rf::Vector3& dir);

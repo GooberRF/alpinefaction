@@ -142,9 +142,7 @@ namespace
         net_data->flags = rf::NPF_CLIENT_IS_LOADED;
         net_data->player_id = rf::multi_alloc_player_id();
         net_data->join_time_ms = static_cast<int>(timer::get_i64(1000));
-        // Full server tick rate: server_update_rate_injection clamps the interval
-        // to 1000 / server_netfps
-        net_data->max_update_rate = 1000000;
+        // Full server tick rate: update_player_rate_hook sets the interval to 1000 / server_netfps
         rf::update_player_rate(player);
         return player;
     }

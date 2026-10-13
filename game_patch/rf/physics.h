@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include "math/vector.h"
 #include "math/matrix.h"
 #include "os/array.h"
@@ -26,6 +27,8 @@ namespace rf
         short *hit_face_v3d;
     };
     static_assert(sizeof(PCollisionOut) == 0x44);
+    static_assert(offsetof(PCollisionOut, hit_point) == 0);
+    static_assert(offsetof(PCollisionOut, obj_handle) == 0x30);
 
     struct PCollisionSphere
     {
@@ -64,6 +67,11 @@ namespace rf
         PCollisionOut collide_out;
     };
     static_assert(sizeof(PhysicsData) == 0x170);
+    static_assert(offsetof(PhysicsData, pos) == 0x5C);
+    static_assert(offsetof(PhysicsData, next_pos) == 0x68);
+    static_assert(offsetof(PhysicsData, bbox_min) == 0x108);
+    static_assert(offsetof(PhysicsData, bbox_max) == 0x114);
+    static_assert(offsetof(PhysicsData, collide_out) == 0x12C);
 
     // PhysicsData.flags — controls physics simulation behavior.
     // Set via ObjectCreateInfo.physics_flags, copied to p_data.flags by physics_create_object.
@@ -77,6 +85,8 @@ namespace rf
         PF_COLLIDE_OBJECTS = 0x20,       // participate in object-object collision pairs
         PF_UNK_40          = 0x40,
         PF_BOUNCE          = 0x100,      // bounce on impact (added when debris_flags & 0x04)
+        PF_UNK_400         = 0x400,      // collide_object_object_mesh (0x0049AFE0): a pair with it hits at
+                                         // time 0, no hit point
         PF_AUTOMOBILE      = 0x4000,     // entity_create sets it for jeep/apc/driller info flags; selects
                                          // physics_simulate_vehicle_rotation/translation (0x0049E180/0x0049E9F0)
         PF_NET_PLAYER      = 0x8000,     // multi_obj_interp_frame_start/end (0x00484560/0x004845E0) drive this
