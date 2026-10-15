@@ -48,6 +48,24 @@ uint vertex_codes(float3 v)
         | (far_clip_on > 0.5f && v.z > far_clip_z ? 0x02u : 0u);
 }
 
+// One of a quad's four corners by vertex index. A select, not an index into a local array: vkd3d-shader (the GNU
+// build's compiler, under Wine) crashes unrolling and propagating through the indexed form.
+float3 pick_corner3(uint corner, float3 c0, float3 c1, float3 c2, float3 c3)
+{
+    return corner == 0 ? c0 : corner == 1 ? c1 : corner == 2 ? c2 : c3;
+}
+
+float2 pick_corner2(uint corner, float2 c0, float2 c1, float2 c2, float2 c3)
+{
+    return corner == 0 ? c0 : corner == 1 ? c1 : corner == 2 ? c2 : c3;
+}
+
+// Renderer::poly drops a quad wholly outside one clip plane
+uint quad_and_codes(float3 c0, float3 c1, float3 c2, float3 c3)
+{
+    return 0xFF & vertex_codes(c0) & vertex_codes(c1) & vertex_codes(c2) & vertex_codes(c3);
+}
+
 #ifdef WEATHER
 
 struct VsInput
@@ -187,17 +205,15 @@ VsOutput main(VsInput input)
         centre = pos - fall_dir * streak_half_len;
     }
 
-    float3 rotated[4];
-    uint and_codes = 0xFF;
-    [unroll] for (int i = 0; i < 4; i++) {
-        rotated[i] = rotate(centre + right * (weather_corner[i].x * half_width)
-            + up * (weather_corner[i].y * half_height));
-        and_codes &= vertex_codes(rotated[i]);
-    }
+    float3 r0 = rotate(centre + right * (weather_corner[0].x * half_width) + up * (weather_corner[0].y * half_height));
+    float3 r1 = rotate(centre + right * (weather_corner[1].x * half_width) + up * (weather_corner[1].y * half_height));
+    float3 r2 = rotate(centre + right * (weather_corner[2].x * half_width) + up * (weather_corner[2].y * half_height));
+    float3 r3 = rotate(centre + right * (weather_corner[3].x * half_width) + up * (weather_corner[3].y * half_height));
+    uint and_codes = quad_and_codes(r0, r1, r2, r3);
 
     // Renderer::poly without constant sw: each corner keeps its own depth
     uint corner = input.vertex_id & 3;
-    float3 unscaled = rotated[corner] / matrix_scale;
+    float3 unscaled = pick_corner3(corner, r0, r1, r2, r3) / matrix_scale;
     float w = unscaled.z;
     VsOutput output;
     // A hidden or rejected quad collapses to one point, which rasterises nothing
@@ -205,7 +221,8 @@ VsOutput main(VsInput input)
         : float4(unscaled.xy * proj.xy, w * proj.z + proj.w, w);
     output.norm = float3(0, 0, 0); // pre-transformed, like transformed_vs
     output.color = weather_color;
-    output.uv0 = weather_corner_uv[corner];
+    output.uv0 = pick_corner2(corner, weather_corner_uv[0], weather_corner_uv[1], weather_corner_uv[2],
+                              weather_corner_uv[3]);
     output.uv1 = float3(0, 0, -1);
     output.world_pos_and_depth = float4(0, 0, 0, w);
     return output;
@@ -243,7 +260,10 @@ VsOutput main(VsInput input)
 {
     VsOutput output;
     uint corner = input.vertex_id & 3;
-    float3 rotated[4];
+    float3 r0;
+    float3 r1;
+    float3 r2;
+    float3 r3;
 #ifdef STRETCHED
     // A world space square from pos along the streak, turned to face the view direction
     float3 pos = input.inst_pos.xyz;
@@ -252,10 +272,10 @@ VsOutput main(VsInput input)
     float3 right = normalize_rf(cross(back, normalize_rf(dir)));
     float3 up = normalize_rf(cross(right, back));
     float half_radius = input.inst_pos.w * 0.5f;
-    rotated[0] = rotate(pos + up * (dot(up, dir) + half_radius));
-    rotated[1] = rotate(pos + right * half_radius);
-    rotated[2] = rotate(pos - up * half_radius);
-    rotated[3] = rotate(pos - right * half_radius);
+    r0 = rotate(pos + up * (dot(up, dir) + half_radius));
+    r1 = rotate(pos + right * half_radius);
+    r2 = rotate(pos - up * half_radius);
+    r3 = rotate(pos - right * half_radius);
 #else
     // Camera facing corners around the rotated centre, offset in unscaled view units
     float3 centre = rotate(input.inst_pos.xyz);
@@ -263,20 +283,14 @@ VsOutput main(VsInput input)
     float e0 = input.inst_axes.y;
     float e4 = input.inst_axes.z;
     float f2 = input.inst_axes.w;
-    float2 offsets[4] = {float2(-dc - e0, f2 - e4), float2(dc - e0, f2 + e4), float2(dc + e0, e4 - f2),
-                         float2(e0 - dc, -e4 - f2)};
-    [unroll] for (int i = 0; i < 4; i++) {
-        rotated[i] = float3(offsets[i] * matrix_scale.xy + centre.xy, centre.z);
-    }
+    r0 = float3(float2(-dc - e0, f2 - e4) * matrix_scale.xy + centre.xy, centre.z);
+    r1 = float3(float2(dc - e0, f2 + e4) * matrix_scale.xy + centre.xy, centre.z);
+    r2 = float3(float2(dc + e0, e4 - f2) * matrix_scale.xy + centre.xy, centre.z);
+    r3 = float3(float2(e0 - dc, -e4 - f2) * matrix_scale.xy + centre.xy, centre.z);
 #endif
 
-    // Renderer::poly drops a quad wholly outside one clip plane
-    uint and_codes = 0xFF;
-    [unroll] for (int k = 0; k < 4; k++) {
-        and_codes &= vertex_codes(rotated[k]);
-    }
-
-    float3 unscaled = rotated[corner] / matrix_scale;
+    uint and_codes = quad_and_codes(r0, r1, r2, r3);
+    float3 unscaled = pick_corner3(corner, r0, r1, r2, r3) / matrix_scale;
 #ifdef STRETCHED
     // Each corner keeps its own depth (Renderer::poly without constant sw), so x/z * z needs no divide
     float w = unscaled.z;
@@ -295,7 +309,7 @@ VsOutput main(VsInput input)
     output.pos = and_codes != 0 ? float4(0, 0, -1, 1) : float4(clip_xy, w * proj.z + proj.w, w);
     output.norm = float3(0, 0, 0); // pre-transformed, like transformed_vs
     output.color = input.inst_color;
-    output.uv0 = corner_uv[corner];
+    output.uv0 = pick_corner2(corner, corner_uv[0], corner_uv[1], corner_uv[2], corner_uv[3]);
     output.uv1 = float3(0, 0, -1);
     output.world_pos_and_depth = float4(0, 0, 0, w);
     return output;
