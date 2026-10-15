@@ -11,7 +11,6 @@ extern std::vector<WaypointTargetDefinition> g_waypoint_targets;
 extern int g_debug_waypoints_mode;
 extern bool g_drop_waypoints;
 
-bool is_waypoint_bot_mode_active();
 bool is_multiplayer_client();
 bool are_waypoint_commands_enabled_for_local_client();
 float sanitize_waypoint_link_radius(float link_radius);

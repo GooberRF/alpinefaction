@@ -276,6 +276,9 @@ set(SRCS
     multi/bots/bot_combat.h
     multi/bots/bot_combat_manager.cpp
     multi/bots/bot_combat_manager.h
+    multi/bots/bot_context.cpp
+    multi/bots/bot_context.h
+    multi/bots/bot_context_fwd.h
     multi/bots/bot_decision_eval.cpp
     multi/bots/bot_decision_eval.h
     multi/bots/bot_fsm.cpp
@@ -319,6 +322,8 @@ set(SRCS
     multi/bots/bot_waypoint_route.cpp
     multi/bots/bot_waypoint_route.h
     multi/bots/bot_weapon_profiles.h
+    multi/bots/server_bots.cpp
+    multi/bots/server_bots.h
     os/console.cpp
     os/console.h
     os/commands.cpp

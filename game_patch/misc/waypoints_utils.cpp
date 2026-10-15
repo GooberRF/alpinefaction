@@ -196,7 +196,7 @@ void push_waypoint_editor_log(std::string message)
 
 bool waypoint_editor_runtime_mode_active()
 {
-    if (is_waypoint_bot_mode_active() || !g_alpine_game_config.waypoints_edit_mode) {
+    if (is_waypoint_local_bot_mode_active() || !g_alpine_game_config.waypoints_edit_mode) {
         return false;
     }
 

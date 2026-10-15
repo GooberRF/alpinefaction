@@ -466,7 +466,7 @@ struct BotTopGoalEntry
     int target_identifier = -1;
 };
 
-struct ClientBotState
+struct BotState
 {
     std::vector<int> waypoint_path{};
     int waypoint_next_index = 0;
@@ -676,8 +676,6 @@ struct ItemGoalCandidate
     rf::Vector3 item_pos{};
     float score = -std::numeric_limits<float>::infinity();
 };
-
-extern ClientBotState g_client_bot_state;
 
 void bot_internal_clear_waypoint_route();
 bool bot_internal_start_recovery_anchor_reroute(const rf::Entity& entity, int avoid_waypoint);

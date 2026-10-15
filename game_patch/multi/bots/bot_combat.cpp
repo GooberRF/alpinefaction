@@ -1,5 +1,6 @@
 #include "bot_combat.h"
 
+#include "bot_context.h"
 #include "bot_internal.h"
 #include "bot_math.h"
 #include "bot_utils.h"
@@ -8,8 +9,6 @@
 #include "../../rf/collide.h"
 #include "../../rf/item.h"
 #include "../../rf/multi.h"
-#include "../../rf/os/frametime.h"
-#include "../../rf/player/player_fpgun.h"
 #include "../../rf/entity.h"
 #include "../../rf/weapon.h"
 #include <xlog/xlog.h>
@@ -577,15 +576,15 @@ int select_personality_preferred_weapon(rf::Player& player, rf::Entity& entity)
 
 void initialize_known_weapons_snapshot(const rf::Entity& entity)
 {
-    g_client_bot_state.known_weapons.fill(false);
+    bot_state().known_weapons.fill(false);
     const int max_weapon = std::min(
         rf::num_weapon_types,
-        static_cast<int>(g_client_bot_state.known_weapons.size())
+        static_cast<int>(bot_state().known_weapons.size())
     );
     for (int weapon_type = 0; weapon_type < max_weapon; ++weapon_type) {
-        g_client_bot_state.known_weapons[weapon_type] = entity.ai.has_weapon[weapon_type];
+        bot_state().known_weapons[weapon_type] = entity.ai.has_weapon[weapon_type];
     }
-    g_client_bot_state.known_weapons_initialized = true;
+    bot_state().known_weapons_initialized = true;
 }
 
 std::vector<int> collect_newly_acquired_weapons(const rf::Entity& entity)
@@ -593,29 +592,22 @@ std::vector<int> collect_newly_acquired_weapons(const rf::Entity& entity)
     std::vector<int> newly_acquired;
     const int max_weapon = std::min(
         rf::num_weapon_types,
-        static_cast<int>(g_client_bot_state.known_weapons.size())
+        static_cast<int>(bot_state().known_weapons.size())
     );
-    if (!g_client_bot_state.known_weapons_initialized) {
+    if (!bot_state().known_weapons_initialized) {
         initialize_known_weapons_snapshot(entity);
         return newly_acquired;
     }
 
     for (int weapon_type = 0; weapon_type < max_weapon; ++weapon_type) {
         const bool has_weapon_now = entity.ai.has_weapon[weapon_type];
-        const bool had_weapon_before = g_client_bot_state.known_weapons[weapon_type];
+        const bool had_weapon_before = bot_state().known_weapons[weapon_type];
         if (has_weapon_now && !had_weapon_before) {
             newly_acquired.push_back(weapon_type);
         }
-        g_client_bot_state.known_weapons[weapon_type] = has_weapon_now;
+        bot_state().known_weapons[weapon_type] = has_weapon_now;
     }
     return newly_acquired;
-}
-
-bool bot_weapon_action_anim_is_blocking_fire_or_switch(rf::Player& player)
-{
-    return rf::player_fpgun_action_anim_is_playing(&player, rf::WeaponAction::WA_RELOAD)
-        || rf::player_fpgun_action_anim_is_playing(&player, rf::WeaponAction::WA_HOLSTER)
-        || rf::player_fpgun_action_anim_is_playing(&player, rf::WeaponAction::WA_DRAW);
 }
 
 bool bot_weapon_fire_wait_is_blocking_switch(const rf::Entity& entity)
@@ -638,7 +630,7 @@ void switch_to_weapon(
     rf::Entity& entity,
     const int weapon_type)
 {
-    if (bot_weapon_action_anim_is_blocking_fire_or_switch(player)) {
+    if (bot_backend_weapon_busy(player, entity)) {
         return;
     }
     if (bot_weapon_fire_wait_is_blocking_switch(entity)) {
@@ -654,37 +646,30 @@ void switch_to_weapon(
         return;
     }
 
-    if (rf::is_multi && !rf::is_server) {
-        // Match multiplayer direct-weapon selection behavior: request selection from server.
-        rf::multi_set_next_weapon(weapon_type);
-    }
-    else {
-        rf::player_make_weapon_current_selection(&player, weapon_type);
-        entity.ai.current_primary_weapon = weapon_type;
-    }
-    g_client_bot_state.firing.wants_fire = false;
-    g_client_bot_state.fire_decision_timer.invalidate();
-    g_client_bot_state.firing.explosive_fire_delay_timer.invalidate();
-    g_client_bot_state.firing.explosive_fire_delay_weapon = -1;
-    g_client_bot_state.firing.explosive_fire_delay_alt = false;
-    g_client_bot_state.firing.explosive_release_hold_timer.invalidate();
-    g_client_bot_state.firing.explosive_release_hold_target = {};
-    g_client_bot_state.firing.explosive_release_hold_weapon = -1;
-    g_client_bot_state.firing.explosive_release_hold_alt = false;
+    bot_backend_switch_weapon(player, entity, weapon_type);
+    bot_state().firing.wants_fire = false;
+    bot_state().fire_decision_timer.invalidate();
+    bot_state().firing.explosive_fire_delay_timer.invalidate();
+    bot_state().firing.explosive_fire_delay_weapon = -1;
+    bot_state().firing.explosive_fire_delay_alt = false;
+    bot_state().firing.explosive_release_hold_timer.invalidate();
+    bot_state().firing.explosive_release_hold_target = {};
+    bot_state().firing.explosive_release_hold_weapon = -1;
+    bot_state().firing.explosive_release_hold_alt = false;
     clear_semi_auto_click_state();
-    g_client_bot_state.weapon_switch_timer.set(get_weapon_switch_cooldown_ms());
+    bot_state().weapon_switch_timer.set(get_weapon_switch_cooldown_ms());
 }
 
 void maybe_switch_weapon_for_personality(rf::Player& player, rf::Entity& entity)
 {
-    if (g_client_bot_state.active_goal == BotGoalType::create_crater
-        || g_client_bot_state.active_goal == BotGoalType::shatter_glass
-        || g_client_bot_state.fsm_state == BotFsmState::create_crater
-        || g_client_bot_state.fsm_state == BotFsmState::shatter_glass) {
+    if (bot_state().active_goal == BotGoalType::create_crater
+        || bot_state().active_goal == BotGoalType::shatter_glass
+        || bot_state().fsm_state == BotFsmState::create_crater
+        || bot_state().fsm_state == BotFsmState::shatter_glass) {
         return;
     }
 
-    if (bot_weapon_action_anim_is_blocking_fire_or_switch(player)) {
+    if (bot_backend_weapon_busy(player, entity)) {
         collect_newly_acquired_weapons(entity);
         return;
     }
@@ -693,8 +678,8 @@ void maybe_switch_weapon_for_personality(rf::Player& player, rf::Entity& entity)
         return;
     }
 
-    if (g_client_bot_state.weapon_switch_timer.valid()
-        && !g_client_bot_state.weapon_switch_timer.elapsed()) {
+    if (bot_state().weapon_switch_timer.valid()
+        && !bot_state().weapon_switch_timer.elapsed()) {
         collect_newly_acquired_weapons(entity);
         return;
     }
@@ -753,13 +738,13 @@ bool should_press_semi_auto_trigger(const int weapon_type, const float skill_fac
         return true;
     }
 
-    if (weapon_type != g_client_bot_state.firing.semi_auto_click_weapon) {
-        g_client_bot_state.firing.semi_auto_click_weapon = weapon_type;
-        g_client_bot_state.firing.semi_auto_click_timer.invalidate();
+    if (weapon_type != bot_state().firing.semi_auto_click_weapon) {
+        bot_state().firing.semi_auto_click_weapon = weapon_type;
+        bot_state().firing.semi_auto_click_timer.invalidate();
     }
 
-    if (g_client_bot_state.firing.semi_auto_click_timer.valid()
-        && !g_client_bot_state.firing.semi_auto_click_timer.elapsed()) {
+    if (bot_state().firing.semi_auto_click_timer.valid()
+        && !bot_state().firing.semi_auto_click_timer.elapsed()) {
         return false;
     }
 
@@ -780,7 +765,7 @@ bool should_press_semi_auto_trigger(const int weapon_type, const float skill_fac
         kSemiAutoClickMinMs,
         kSemiAutoClickMaxMs
     );
-    g_client_bot_state.firing.semi_auto_click_timer.set(click_interval_ms);
+    bot_state().firing.semi_auto_click_timer.set(click_interval_ms);
     return true;
 }
 
@@ -818,13 +803,13 @@ rf::Vector3 compute_skill_adjusted_enemy_aim_target(
         }
     }
 
-    if (g_client_bot_state.firing.aim_error_target_handle != enemy_target.handle) {
-        g_client_bot_state.firing.aim_error_target_handle = enemy_target.handle;
-        g_client_bot_state.firing.aim_error_timer.invalidate();
+    if (bot_state().firing.aim_error_target_handle != enemy_target.handle) {
+        bot_state().firing.aim_error_target_handle = enemy_target.handle;
+        bot_state().firing.aim_error_timer.invalidate();
     }
 
-    if (!g_client_bot_state.firing.aim_error_timer.valid()
-        || g_client_bot_state.firing.aim_error_timer.elapsed()) {
+    if (!bot_state().firing.aim_error_timer.valid()
+        || bot_state().firing.aim_error_timer.elapsed()) {
         const float distance_scale = std::clamp(
             dist / kAimErrorDistanceNorm,
             0.65f,
@@ -839,12 +824,12 @@ rf::Vector3 compute_skill_adjusted_enemy_aim_target(
 
         std::normal_distribution<float> lateral_dist(0.0f, max_error * 0.42f);
         std::normal_distribution<float> vertical_dist(0.0f, vertical_max_error * 0.44f);
-        g_client_bot_state.firing.aim_error_right = std::clamp(
+        bot_state().firing.aim_error_right = std::clamp(
             lateral_dist(g_rng),
             -max_error,
             max_error
         );
-        g_client_bot_state.firing.aim_error_up = std::clamp(
+        bot_state().firing.aim_error_up = std::clamp(
             vertical_dist(g_rng),
             -vertical_max_error,
             vertical_max_error
@@ -854,13 +839,13 @@ rf::Vector3 compute_skill_adjusted_enemy_aim_target(
         std::uniform_real_distribution<float> roll_dist(0.0f, 1.0f);
         if (roll_dist(g_rng) < low_skill_factor * 0.20f) {
             std::uniform_real_distribution<float> extra_dist(-max_error, max_error);
-            g_client_bot_state.firing.aim_error_right = std::clamp(
-                g_client_bot_state.firing.aim_error_right + extra_dist(g_rng) * 0.45f,
+            bot_state().firing.aim_error_right = std::clamp(
+                bot_state().firing.aim_error_right + extra_dist(g_rng) * 0.45f,
                 -max_error,
                 max_error
             );
-            g_client_bot_state.firing.aim_error_up = std::clamp(
-                g_client_bot_state.firing.aim_error_up + extra_dist(g_rng) * 0.35f,
+            bot_state().firing.aim_error_up = std::clamp(
+                bot_state().firing.aim_error_up + extra_dist(g_rng) * 0.35f,
                 -vertical_max_error,
                 vertical_max_error
             );
@@ -873,7 +858,7 @@ rf::Vector3 compute_skill_adjusted_enemy_aim_target(
                 skill_factor
             )
         );
-        g_client_bot_state.firing.aim_error_timer.set(update_ms);
+        bot_state().firing.aim_error_timer.set(update_ms);
     }
 
     rf::Vector3 forward = to_target;
@@ -887,8 +872,8 @@ rf::Vector3 compute_skill_adjusted_enemy_aim_target(
     rf::Vector3 up = forward.cross_prod(right);
     up.normalize_safe();
 
-    aim_target += right * g_client_bot_state.firing.aim_error_right;
-    aim_target += up * g_client_bot_state.firing.aim_error_up;
+    aim_target += right * bot_state().firing.aim_error_right;
+    aim_target += up * bot_state().firing.aim_error_up;
     return aim_target;
 }
 
@@ -914,10 +899,10 @@ bool update_aim_towards(
     );
 
     const bool combat_tracking =
-        g_client_bot_state.active_goal == BotGoalType::eliminate_target
-        || g_client_bot_state.fsm_state == BotFsmState::engage_enemy
-        || g_client_bot_state.fsm_state == BotFsmState::pursue_enemy
-        || g_client_bot_state.fsm_state == BotFsmState::seek_enemy;
+        bot_state().active_goal == BotGoalType::eliminate_target
+        || bot_state().fsm_state == BotFsmState::engage_enemy
+        || bot_state().fsm_state == BotFsmState::pursue_enemy
+        || bot_state().fsm_state == BotFsmState::seek_enemy;
     const float interp_alpha = std::clamp(
         combat_tracking
             ? std::lerp(0.14f, 0.32f, skill_factor)
@@ -939,7 +924,7 @@ bool update_aim_towards(
         1.45f
     );
 
-    const float frame_dt = std::clamp(rf::frametime, 0.001f, 0.05f);
+    const float frame_dt = std::clamp(bot_frame_dt(), 0.001f, 0.05f);
     const float yaw_speed = std::lerp(1.8f, 10.0f, skill_factor);
     const float pitch_speed = std::lerp(1.3f, 7.0f, skill_factor);
 
@@ -1032,13 +1017,13 @@ bool decide_fire(
     const float range)
 {
     if (!has_aim_solution || range <= 0.0f) {
-        g_client_bot_state.firing.wants_fire = false;
-        g_client_bot_state.fire_decision_timer.invalidate();
+        bot_state().firing.wants_fire = false;
+        bot_state().fire_decision_timer.invalidate();
         return false;
     }
 
-    if (!g_client_bot_state.fire_decision_timer.valid()
-        || g_client_bot_state.fire_decision_timer.elapsed()) {
+    if (!bot_state().fire_decision_timer.valid()
+        || bot_state().fire_decision_timer.elapsed()) {
         const float distance = std::sqrt(std::max(dist_sq, 0.0f));
         const float distance_ratio = distance / std::max(range, 1.0f);
         const float distance_factor = 1.0f - std::clamp(distance_ratio, 0.0f, 1.0f);
@@ -1050,15 +1035,15 @@ bool decide_fire(
         fire_chance = std::clamp(fire_chance, 0.01f, 1.0f);
 
         std::uniform_real_distribution<float> roll_dist(0.0f, 1.0f);
-        g_client_bot_state.firing.wants_fire = roll_dist(g_rng) <= fire_chance;
+        bot_state().firing.wants_fire = roll_dist(g_rng) <= fire_chance;
 
         const int fire_eval_interval_ms = static_cast<int>(
             std::lerp(260.0f, 45.0f, skill_factor)
         );
-        g_client_bot_state.fire_decision_timer.set(fire_eval_interval_ms);
+        bot_state().fire_decision_timer.set(fire_eval_interval_ms);
     }
 
-    return g_client_bot_state.firing.wants_fire;
+    return bot_state().firing.wants_fire;
 }
 
 struct CombatFireMode
@@ -1141,22 +1126,22 @@ bool should_hold_automatic_fire(const bool engage_now)
 {
     if (engage_now) {
         // Automatic fire should behave like held input while we are in kill mode.
-        g_client_bot_state.auto_fire_release_guard_timer.set(350);
-        g_client_bot_state.firing.wants_fire = true;
-        g_client_bot_state.fire_decision_timer.invalidate();
+        bot_state().auto_fire_release_guard_timer.set(350);
+        bot_state().firing.wants_fire = true;
+        bot_state().fire_decision_timer.invalidate();
         return true;
     }
 
-    if (g_client_bot_state.auto_fire_release_guard_timer.valid()
-        && !g_client_bot_state.auto_fire_release_guard_timer.elapsed()) {
-        g_client_bot_state.firing.wants_fire = true;
-        g_client_bot_state.fire_decision_timer.invalidate();
+    if (bot_state().auto_fire_release_guard_timer.valid()
+        && !bot_state().auto_fire_release_guard_timer.elapsed()) {
+        bot_state().firing.wants_fire = true;
+        bot_state().fire_decision_timer.invalidate();
         return true;
     }
 
-    g_client_bot_state.auto_fire_release_guard_timer.invalidate();
-    g_client_bot_state.firing.wants_fire = false;
-    g_client_bot_state.fire_decision_timer.invalidate();
+    bot_state().auto_fire_release_guard_timer.invalidate();
+    bot_state().firing.wants_fire = false;
+    bot_state().fire_decision_timer.invalidate();
     return false;
 }
 
@@ -1306,36 +1291,36 @@ bool apply_explosive_pre_fire_delay(
     const bool wants_attack)
 {
     if (rf::weapon_is_detonator(weapon_type)) {
-        g_client_bot_state.firing.explosive_fire_delay_timer.invalidate();
-        g_client_bot_state.firing.explosive_fire_delay_weapon = -1;
-        g_client_bot_state.firing.explosive_fire_delay_alt = false;
+        bot_state().firing.explosive_fire_delay_timer.invalidate();
+        bot_state().firing.explosive_fire_delay_weapon = -1;
+        bot_state().firing.explosive_fire_delay_alt = false;
         return wants_attack;
     }
 
     if (!wants_attack || !weapon_can_create_craters(weapon_type)) {
-        g_client_bot_state.firing.explosive_fire_delay_timer.invalidate();
-        g_client_bot_state.firing.explosive_fire_delay_weapon = -1;
-        g_client_bot_state.firing.explosive_fire_delay_alt = false;
+        bot_state().firing.explosive_fire_delay_timer.invalidate();
+        bot_state().firing.explosive_fire_delay_weapon = -1;
+        bot_state().firing.explosive_fire_delay_alt = false;
         return wants_attack;
     }
 
     const bool fire_already_down = use_alt_fire
-        ? g_client_bot_state.firing.synthetic_secondary_fire_down
-        : g_client_bot_state.firing.synthetic_primary_fire_down;
+        ? bot_state().firing.synthetic_secondary_fire_down
+        : bot_state().firing.synthetic_primary_fire_down;
     if (fire_already_down) {
         return true;
     }
 
     const bool same_request =
-        g_client_bot_state.firing.explosive_fire_delay_weapon == weapon_type
-        && g_client_bot_state.firing.explosive_fire_delay_alt == use_alt_fire;
-    if (!same_request || !g_client_bot_state.firing.explosive_fire_delay_timer.valid()) {
-        g_client_bot_state.firing.explosive_fire_delay_weapon = weapon_type;
-        g_client_bot_state.firing.explosive_fire_delay_alt = use_alt_fire;
-        g_client_bot_state.firing.explosive_fire_delay_timer.set(25);
+        bot_state().firing.explosive_fire_delay_weapon == weapon_type
+        && bot_state().firing.explosive_fire_delay_alt == use_alt_fire;
+    if (!same_request || !bot_state().firing.explosive_fire_delay_timer.valid()) {
+        bot_state().firing.explosive_fire_delay_weapon = weapon_type;
+        bot_state().firing.explosive_fire_delay_alt = use_alt_fire;
+        bot_state().firing.explosive_fire_delay_timer.set(25);
         return false;
     }
-    if (!g_client_bot_state.firing.explosive_fire_delay_timer.elapsed()) {
+    if (!bot_state().firing.explosive_fire_delay_timer.elapsed()) {
         return false;
     }
     return true;
@@ -1428,20 +1413,20 @@ void maybe_switch_weapon_for_crater_goal(
     rf::Player& local_player,
     rf::Entity& local_entity)
 {
-    if (g_client_bot_state.active_goal != BotGoalType::create_crater) {
+    if (bot_state().active_goal != BotGoalType::create_crater) {
         return;
     }
-    if (bot_weapon_action_anim_is_blocking_fire_or_switch(local_player)) {
+    if (bot_backend_weapon_busy(local_player, local_entity)) {
         return;
     }
     if (bot_weapon_fire_wait_is_blocking_switch(local_entity)) {
         return;
     }
-    if (g_client_bot_state.weapon_switch_timer.valid()
-        && !g_client_bot_state.weapon_switch_timer.elapsed()) {
+    if (bot_state().weapon_switch_timer.valid()
+        && !bot_state().weapon_switch_timer.elapsed()) {
         return;
     }
-    if (g_client_bot_state.firing.remote_charge_pending_detonation
+    if (bot_state().firing.remote_charge_pending_detonation
         && rf::remote_charge_det_weapon_type >= 0
         && rf::remote_charge_det_weapon_type < rf::num_weapon_types
         && local_entity.ai.has_weapon[rf::remote_charge_det_weapon_type]
@@ -1450,7 +1435,7 @@ void maybe_switch_weapon_for_crater_goal(
         return;
     }
     if (rf::weapon_is_detonator(local_entity.ai.current_primary_weapon)
-        && g_client_bot_state.firing.remote_charge_pending_detonation) {
+        && bot_state().firing.remote_charge_pending_detonation) {
         // Do not preempt the stock remote-charge -> detonator flow.
         return;
     }
@@ -1465,17 +1450,17 @@ void maybe_switch_weapon_for_shatter_goal(
     rf::Player& local_player,
     rf::Entity& local_entity)
 {
-    if (g_client_bot_state.active_goal != BotGoalType::shatter_glass) {
+    if (bot_state().active_goal != BotGoalType::shatter_glass) {
         return;
     }
-    if (bot_weapon_action_anim_is_blocking_fire_or_switch(local_player)) {
+    if (bot_backend_weapon_busy(local_player, local_entity)) {
         return;
     }
     if (bot_weapon_fire_wait_is_blocking_switch(local_entity)) {
         return;
     }
-    if (g_client_bot_state.weapon_switch_timer.valid()
-        && !g_client_bot_state.weapon_switch_timer.elapsed()) {
+    if (bot_state().weapon_switch_timer.valid()
+        && !bot_state().weapon_switch_timer.elapsed()) {
         return;
     }
 
@@ -1491,20 +1476,20 @@ void maybe_switch_weapon_for_combat_context(
     const rf::Entity& enemy_target,
     const bool enemy_has_los)
 {
-    if (bot_weapon_action_anim_is_blocking_fire_or_switch(local_player)) {
+    if (bot_backend_weapon_busy(local_player, local_entity)) {
         return;
     }
     if (bot_weapon_fire_wait_is_blocking_switch(local_entity)) {
         return;
     }
 
-    if (g_client_bot_state.weapon_switch_timer.valid()
-        && !g_client_bot_state.weapon_switch_timer.elapsed()) {
+    if (bot_state().weapon_switch_timer.valid()
+        && !bot_state().weapon_switch_timer.elapsed()) {
         return;
     }
 
-    if (g_client_bot_state.combat_weapon_eval_timer.valid()
-        && !g_client_bot_state.combat_weapon_eval_timer.elapsed()) {
+    if (bot_state().combat_weapon_eval_timer.valid()
+        && !bot_state().combat_weapon_eval_timer.elapsed()) {
         return;
     }
 
@@ -1519,7 +1504,7 @@ void maybe_switch_weapon_for_combat_context(
     std::uniform_real_distribution<float> roll_dist(0.0f, 1.0f);
     if (roll_dist(g_rng) > switch_chance) {
         const int next_eval_ms = static_cast<int>(std::lround(std::lerp(760.0f, 260.0f, switch_chance)));
-        g_client_bot_state.combat_weapon_eval_timer.set(next_eval_ms);
+        bot_state().combat_weapon_eval_timer.set(next_eval_ms);
         return;
     }
 
@@ -1557,13 +1542,13 @@ void maybe_switch_weapon_for_combat_context(
     if (quirk_weapon >= 0 && quirk_weapon != local_entity.ai.current_primary_weapon) {
         switch_to_weapon(local_player, local_entity, quirk_weapon);
         const int next_eval_ms = static_cast<int>(std::lround(std::lerp(700.0f, 220.0f, switch_chance)));
-        g_client_bot_state.combat_weapon_eval_timer.set(next_eval_ms);
+        bot_state().combat_weapon_eval_timer.set(next_eval_ms);
         return;
     }
 
     if (!enemy_has_los) {
         const int next_eval_ms = static_cast<int>(std::lround(std::lerp(760.0f, 260.0f, switch_chance)));
-        g_client_bot_state.combat_weapon_eval_timer.set(next_eval_ms);
+        bot_state().combat_weapon_eval_timer.set(next_eval_ms);
         return;
     }
 
@@ -1573,7 +1558,7 @@ void maybe_switch_weapon_for_combat_context(
     }
 
     const int next_eval_ms = static_cast<int>(std::lround(std::lerp(700.0f, 220.0f, switch_chance)));
-    g_client_bot_state.combat_weapon_eval_timer.set(next_eval_ms);
+    bot_state().combat_weapon_eval_timer.set(next_eval_ms);
 }
 }
 
@@ -1589,16 +1574,16 @@ bool bot_has_usable_shatter_weapon(rf::Player& player, rf::Entity& entity)
 
 void clear_enemy_aim_error_state()
 {
-    g_client_bot_state.firing.aim_error_timer.invalidate();
-    g_client_bot_state.firing.aim_error_target_handle = -1;
-    g_client_bot_state.firing.aim_error_right = 0.0f;
-    g_client_bot_state.firing.aim_error_up = 0.0f;
+    bot_state().firing.aim_error_timer.invalidate();
+    bot_state().firing.aim_error_target_handle = -1;
+    bot_state().firing.aim_error_right = 0.0f;
+    bot_state().firing.aim_error_up = 0.0f;
 }
 
 void clear_semi_auto_click_state()
 {
-    g_client_bot_state.firing.semi_auto_click_timer.invalidate();
-    g_client_bot_state.firing.semi_auto_click_weapon = -1;
+    bot_state().firing.semi_auto_click_timer.invalidate();
+    bot_state().firing.semi_auto_click_weapon = -1;
 }
 
 void ensure_weapon_ready(rf::Player& player, rf::Entity& entity)
@@ -1638,9 +1623,9 @@ void ensure_weapon_ready(rf::Player& player, rf::Entity& entity)
         return;
     }
 
-    if (!g_client_bot_state.reload_timer.valid() || g_client_bot_state.reload_timer.elapsed()) {
-        rf::player_execute_action(&player, rf::CC_ACTION_RELOAD, true);
-        g_client_bot_state.reload_timer.set(800);
+    if (!bot_state().reload_timer.valid() || bot_state().reload_timer.elapsed()) {
+        bot_backend_reload(player);
+        bot_state().reload_timer.set(800);
     }
 }
 
@@ -1664,35 +1649,35 @@ void bot_process_combat(
     int attack_weapon_type = -1;
     bool attack_use_alt_fire = false;
     const bool crater_goal_active =
-        g_client_bot_state.active_goal == BotGoalType::create_crater
-        && g_client_bot_state.fsm_state == BotFsmState::create_crater
-        && g_client_bot_state.goal_target_identifier >= 0;
+        bot_state().active_goal == BotGoalType::create_crater
+        && bot_state().fsm_state == BotFsmState::create_crater
+        && bot_state().goal_target_identifier >= 0;
     const bool shatter_goal_active =
-        g_client_bot_state.active_goal == BotGoalType::shatter_glass
-        && g_client_bot_state.fsm_state == BotFsmState::shatter_glass
-        && g_client_bot_state.goal_target_identifier >= 0;
+        bot_state().active_goal == BotGoalType::shatter_glass
+        && bot_state().fsm_state == BotFsmState::shatter_glass
+        && bot_state().goal_target_identifier >= 0;
     const bool crater_has_waypoint_los = crater_goal_active
         && crater_target_has_linked_waypoint_los(
             local_entity,
-            g_client_bot_state.goal_target_identifier);
+            bot_state().goal_target_identifier);
     const bool shatter_has_waypoint_los = shatter_goal_active
         && shatter_target_has_linked_waypoint_los(
             local_entity,
-            g_client_bot_state.goal_target_identifier);
+            bot_state().goal_target_identifier);
     bool explosive_release_hold_active =
-        g_client_bot_state.firing.explosive_release_hold_timer.valid()
-        && !g_client_bot_state.firing.explosive_release_hold_timer.elapsed();
+        bot_state().firing.explosive_release_hold_timer.valid()
+        && !bot_state().firing.explosive_release_hold_timer.elapsed();
     if (!explosive_release_hold_active) {
-        g_client_bot_state.firing.explosive_release_hold_timer.invalidate();
+        bot_state().firing.explosive_release_hold_timer.invalidate();
     }
-    if (g_client_bot_state.firing.remote_charge_pending_detonation_timer.valid()
-        && g_client_bot_state.firing.remote_charge_pending_detonation_timer.elapsed()) {
-        g_client_bot_state.firing.remote_charge_pending_detonation = false;
-        g_client_bot_state.firing.remote_charge_pending_detonation_timer.invalidate();
+    if (bot_state().firing.remote_charge_pending_detonation_timer.valid()
+        && bot_state().firing.remote_charge_pending_detonation_timer.elapsed()) {
+        bot_state().firing.remote_charge_pending_detonation = false;
+        bot_state().firing.remote_charge_pending_detonation_timer.invalidate();
     }
     if (!crater_goal_active) {
-        g_client_bot_state.firing.remote_charge_pending_detonation = false;
-        g_client_bot_state.firing.remote_charge_pending_detonation_timer.invalidate();
+        bot_state().firing.remote_charge_pending_detonation = false;
+        bot_state().firing.remote_charge_pending_detonation_timer.invalidate();
     }
 
     if (crater_goal_active) {
@@ -1718,7 +1703,7 @@ void bot_process_combat(
     }
 
     if (explosive_release_hold_active) {
-        resolved_aim_target = g_client_bot_state.firing.explosive_release_hold_target;
+        resolved_aim_target = bot_state().firing.explosive_release_hold_target;
         has_aim_solution = update_aim_towards(
             local_entity,
             resolved_aim_target,
@@ -1728,8 +1713,8 @@ void bot_process_combat(
     }
     else if ((crater_goal_active && crater_has_waypoint_los)
         || (shatter_goal_active && shatter_has_waypoint_los)) {
-        if (g_client_bot_state.goal_target_pos.len_sq() > 0.0001f) {
-            resolved_aim_target = g_client_bot_state.goal_target_pos;
+        if (bot_state().goal_target_pos.len_sq() > 0.0001f) {
+            resolved_aim_target = bot_state().goal_target_pos;
             has_aim_solution = update_aim_towards(
                 local_entity,
                 resolved_aim_target,
@@ -1753,7 +1738,7 @@ void bot_process_combat(
         );
     }
     else if (has_move_target
-             && !g_client_bot_state.freefall_suppress_aim) {
+             && !bot_state().freefall_suppress_aim) {
         rf::Vector3 aim_target = move_target;
         const float vertical_delta = std::abs(move_target.y - local_entity.eye_pos.y);
         if (vertical_delta <= kNavigationAimVerticalThreshold) {
@@ -1761,11 +1746,11 @@ void bot_process_combat(
         }
 
         const bool precision_navigation_goal =
-            bot_goal_is_item_collection(g_client_bot_state.active_goal)
-            || bot_goal_is_ctf_objective(g_client_bot_state.active_goal)
-            || g_client_bot_state.active_goal == BotGoalType::activate_bridge
-            || g_client_bot_state.active_goal == BotGoalType::create_crater
-            || g_client_bot_state.active_goal == BotGoalType::shatter_glass;
+            bot_goal_is_item_collection(bot_state().active_goal)
+            || bot_goal_is_ctf_objective(bot_state().active_goal)
+            || bot_state().active_goal == BotGoalType::activate_bridge
+            || bot_state().active_goal == BotGoalType::create_crater
+            || bot_state().active_goal == BotGoalType::shatter_glass;
         if (!enemy_target && !precision_navigation_goal) {
             const BotPersonality& personality = get_active_bot_personality();
             const float nav_strafe_ratio = std::clamp(
@@ -1776,9 +1761,9 @@ void bot_process_combat(
             if (nav_strafe_ratio > 0.001f) {
                 constexpr float kTwoPi = 6.28318530718f;
                 const float scan_speed = std::lerp(0.8f, 1.7f, nav_strafe_ratio);
-                g_client_bot_state.nav_look_phase += rf::frametime * scan_speed;
-                if (g_client_bot_state.nav_look_phase > kTwoPi) {
-                    g_client_bot_state.nav_look_phase -= kTwoPi;
+                bot_state().nav_look_phase += bot_frame_dt() * scan_speed;
+                if (bot_state().nav_look_phase > kTwoPi) {
+                    bot_state().nav_look_phase -= kTwoPi;
                 }
 
                 rf::Vector3 to_move = move_target - local_entity.eye_pos;
@@ -1795,7 +1780,7 @@ void bot_process_combat(
                     const float lookahead = std::lerp(1.2f, 3.6f, dist_scale);
                     const float scan_amplitude = std::lerp(0.0f, 1.6f, nav_strafe_ratio);
                     const float scan_offset =
-                        std::sin(g_client_bot_state.nav_look_phase) * scan_amplitude;
+                        std::sin(bot_state().nav_look_phase) * scan_amplitude;
                     const rf::Vector3 curiosity_target =
                         local_entity.eye_pos + to_move * lookahead + right * scan_offset;
 
@@ -1823,17 +1808,17 @@ void bot_process_combat(
     // system turn towards the target first.
     bool within_acquisition_reaction = false;
     if (enemy_target && enemy_has_los) {
-        if (g_client_bot_state.firing.target_acquisition_handle != enemy_target->handle) {
-            g_client_bot_state.firing.target_acquisition_handle = enemy_target->handle;
-            g_client_bot_state.firing.target_acquisition_timer.set(kTargetAcquisitionReactionMs);
+        if (bot_state().firing.target_acquisition_handle != enemy_target->handle) {
+            bot_state().firing.target_acquisition_handle = enemy_target->handle;
+            bot_state().firing.target_acquisition_timer.set(kTargetAcquisitionReactionMs);
         }
         within_acquisition_reaction =
-            g_client_bot_state.firing.target_acquisition_timer.valid()
-            && !g_client_bot_state.firing.target_acquisition_timer.elapsed();
+            bot_state().firing.target_acquisition_timer.valid()
+            && !bot_state().firing.target_acquisition_timer.elapsed();
     }
     else if (!enemy_target) {
-        g_client_bot_state.firing.target_acquisition_handle = -1;
-        g_client_bot_state.firing.target_acquisition_timer.invalidate();
+        bot_state().firing.target_acquisition_handle = -1;
+        bot_state().firing.target_acquisition_timer.invalidate();
     }
 
     const bool bot_is_underwater = rf::entity_is_swimming(&local_entity);
@@ -1842,7 +1827,7 @@ void bot_process_combat(
         && (!bot_is_underwater || weapon_works_underwater(local_entity.ai.current_primary_weapon))) {
         const int weapon_type = local_entity.ai.current_primary_weapon;
         const rf::Vector3 fire_target_pos = (crater_goal_active || shatter_goal_active)
-            ? g_client_bot_state.goal_target_pos
+            ? bot_state().goal_target_pos
             : enemy_target->pos;
         const float weapon_range = get_weapon_range(weapon_type);
         const float dist_sq = rf::vec_dist_squared(&local_entity.pos, &fire_target_pos);
@@ -1854,15 +1839,15 @@ void bot_process_combat(
         attack_weapon_type = weapon_type;
         attack_use_alt_fire = fire_mode.use_alt_fire;
         const bool is_semi_auto = fire_mode.is_semi_auto;
-        const bool can_fire_now = !bot_weapon_action_anim_is_blocking_fire_or_switch(local_player);
+        const bool can_fire_now = !bot_backend_weapon_busy(local_player, local_entity);
         if (!can_fire_now) {
-            g_client_bot_state.firing.wants_fire = false;
-            g_client_bot_state.fire_decision_timer.invalidate();
-            g_client_bot_state.auto_fire_release_guard_timer.invalidate();
+            bot_state().firing.wants_fire = false;
+            bot_state().fire_decision_timer.invalidate();
+            bot_state().auto_fire_release_guard_timer.invalidate();
         }
         bool wants_attack = false;
         if (crater_goal_active) {
-            g_client_bot_state.auto_fire_release_guard_timer.invalidate();
+            bot_state().auto_fire_release_guard_timer.invalidate();
             const int remote_charge_weapon_type = get_remote_charge_weapon_type();
             const bool using_remote_charge =
                 weapon_type >= 0 && weapon_type == remote_charge_weapon_type;
@@ -1871,24 +1856,24 @@ void bot_process_combat(
                 && has_aim_solution
                 && weapon_can_create_craters(weapon_type)
                 && crater_has_waypoint_los;
-            if (using_remote_charge && g_client_bot_state.firing.remote_charge_pending_detonation) {
+            if (using_remote_charge && bot_state().firing.remote_charge_pending_detonation) {
                 // Wait for detonator phase before throwing another charge.
                 wants_attack = false;
             }
-            if (using_remote_detonator && !g_client_bot_state.firing.remote_charge_pending_detonation) {
+            if (using_remote_detonator && !bot_state().firing.remote_charge_pending_detonation) {
                 // Avoid pointless detonator spam when there is no pending charge.
                 wants_attack = false;
             }
         }
         else if (shatter_goal_active) {
-            g_client_bot_state.auto_fire_release_guard_timer.invalidate();
+            bot_state().auto_fire_release_guard_timer.invalidate();
             wants_attack = can_fire_now
                 && has_aim_solution
                 && weapon_can_shatter_glass(weapon_type)
                 && shatter_has_waypoint_los
                 && shatter_target_has_direct_los(
                     local_entity,
-                    g_client_bot_state.goal_target_identifier);
+                    bot_state().goal_target_identifier);
         }
         else if (within_acquisition_reaction) {
             // Suppress firing during the brief reaction window after acquiring a new target.
@@ -1938,16 +1923,16 @@ void bot_process_combat(
         }
     }
     else {
-        g_client_bot_state.firing.wants_fire = false;
-        g_client_bot_state.auto_fire_release_guard_timer.invalidate();
-        g_client_bot_state.firing.explosive_fire_delay_timer.invalidate();
-        g_client_bot_state.firing.explosive_fire_delay_weapon = -1;
-        g_client_bot_state.firing.explosive_fire_delay_alt = false;
+        bot_state().firing.wants_fire = false;
+        bot_state().auto_fire_release_guard_timer.invalidate();
+        bot_state().firing.explosive_fire_delay_timer.invalidate();
+        bot_state().firing.explosive_fire_delay_weapon = -1;
+        bot_state().firing.explosive_fire_delay_alt = false;
         clear_semi_auto_click_state();
     }
 
-    const bool previous_primary_fire_down = g_client_bot_state.firing.synthetic_primary_fire_down;
-    const bool previous_secondary_fire_down = g_client_bot_state.firing.synthetic_secondary_fire_down;
+    const bool previous_primary_fire_down = bot_state().firing.synthetic_primary_fire_down;
+    const bool previous_secondary_fire_down = bot_state().firing.synthetic_secondary_fire_down;
     const bool fired_primary_this_frame =
         next_primary_fire_down && !previous_primary_fire_down;
     const bool fired_secondary_this_frame =
@@ -1955,14 +1940,14 @@ void bot_process_combat(
     const bool fired_this_frame = fired_primary_this_frame || fired_secondary_this_frame;
     const int remote_charge_weapon_type = get_remote_charge_weapon_type();
     if (fired_this_frame && attack_weapon_type == remote_charge_weapon_type) {
-        g_client_bot_state.firing.remote_charge_pending_detonation = true;
-        g_client_bot_state.firing.remote_charge_pending_detonation_timer.set(
+        bot_state().firing.remote_charge_pending_detonation = true;
+        bot_state().firing.remote_charge_pending_detonation_timer.set(
             kRemoteChargeDetonationWindowMs
         );
     }
     else if (fired_this_frame && rf::weapon_is_detonator(attack_weapon_type)) {
-        g_client_bot_state.firing.remote_charge_pending_detonation = false;
-        g_client_bot_state.firing.remote_charge_pending_detonation_timer.invalidate();
+        bot_state().firing.remote_charge_pending_detonation = false;
+        bot_state().firing.remote_charge_pending_detonation_timer.invalidate();
     }
     if (fired_this_frame
         && attack_weapon_type >= 0
@@ -1976,22 +1961,22 @@ void bot_process_combat(
             get_active_impact_delay_remaining_ms(local_entity, attack_use_alt_fire)
         );
         if (hold_ms > 0) {
-            g_client_bot_state.firing.explosive_release_hold_target = resolved_aim_target;
-            g_client_bot_state.firing.explosive_release_hold_timer.set(hold_ms);
-            g_client_bot_state.firing.explosive_release_hold_weapon = attack_weapon_type;
-            g_client_bot_state.firing.explosive_release_hold_alt = attack_use_alt_fire;
+            bot_state().firing.explosive_release_hold_target = resolved_aim_target;
+            bot_state().firing.explosive_release_hold_timer.set(hold_ms);
+            bot_state().firing.explosive_release_hold_weapon = attack_weapon_type;
+            bot_state().firing.explosive_release_hold_alt = attack_use_alt_fire;
         }
     }
 
-    g_client_bot_state.firing.synthetic_primary_fire_down = next_primary_fire_down;
-    g_client_bot_state.firing.synthetic_secondary_fire_down = next_secondary_fire_down;
-    g_client_bot_state.firing.synthetic_primary_fire_just_pressed =
+    bot_state().firing.synthetic_primary_fire_down = next_primary_fire_down;
+    bot_state().firing.synthetic_secondary_fire_down = next_secondary_fire_down;
+    bot_state().firing.synthetic_primary_fire_just_pressed =
         fired_primary_this_frame;
-    g_client_bot_state.firing.synthetic_secondary_fire_just_pressed =
+    bot_state().firing.synthetic_secondary_fire_just_pressed =
         fired_secondary_this_frame;
 
     if (!next_primary_fire_down && !next_secondary_fire_down) {
-        g_client_bot_state.firing.synthetic_primary_fire_just_pressed = false;
-        g_client_bot_state.firing.synthetic_secondary_fire_just_pressed = false;
+        bot_state().firing.synthetic_primary_fire_just_pressed = false;
+        bot_state().firing.synthetic_secondary_fire_just_pressed = false;
     }
 }

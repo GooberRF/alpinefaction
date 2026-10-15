@@ -1,5 +1,6 @@
 #include "bot_decision_eval.h"
 
+#include "bot_context.h"
 #include "bot_internal.h"
 #include "bot_utils.h"
 #include "../../rf/player/player.h"
@@ -23,8 +24,8 @@ bool weapon_has_readiness_ammo(const rf::Entity& entity, const int weapon_type)
     if (entity.ai.clip_ammo[weapon_type] > 0) {
         return true;
     }
-    if (rf::local_player) {
-        return rf::player_get_weapon_total_ammo(rf::local_player, weapon_type) > 0;
+    if (bot_player()) {
+        return rf::player_get_weapon_total_ammo(bot_player(), weapon_type) > 0;
     }
     return false;
 }
@@ -140,9 +141,9 @@ float bot_decision_compute_weapon_readiness_score(
     const rf::Entity* enemy_target)
 {
     const int enemy_handle = enemy_target ? enemy_target->handle : -1;
-    if (g_client_bot_state.weapon_readiness_cached
-        && g_client_bot_state.weapon_readiness_cache_enemy_handle == enemy_handle) {
-        return g_client_bot_state.weapon_readiness_cache_score;
+    if (bot_state().weapon_readiness_cached
+        && bot_state().weapon_readiness_cache_enemy_handle == enemy_handle) {
+        return bot_state().weapon_readiness_cache_score;
     }
 
     float best_score = 0.0f;
@@ -154,9 +155,9 @@ float bot_decision_compute_weapon_readiness_score(
         best_score = std::max(best_score, score);
     }
     const float result = std::clamp(best_score, 0.0f, 1.0f);
-    g_client_bot_state.weapon_readiness_cached = true;
-    g_client_bot_state.weapon_readiness_cache_score = result;
-    g_client_bot_state.weapon_readiness_cache_enemy_handle = enemy_handle;
+    bot_state().weapon_readiness_cached = true;
+    bot_state().weapon_readiness_cache_score = result;
+    bot_state().weapon_readiness_cache_enemy_handle = enemy_handle;
     return result;
 }
 
@@ -222,9 +223,9 @@ bool bot_decision_is_combat_ready(
     // before re-entering combat. This prevents oscillation at the boundary.
     constexpr float kCombatReadinessHysteresisMargin = 0.06f;
     const bool was_combat_ready =
-        g_client_bot_state.fsm_state == BotFsmState::engage_enemy
-        || g_client_bot_state.fsm_state == BotFsmState::pursue_enemy
-        || g_client_bot_state.fsm_state == BotFsmState::find_power_position;
+        bot_state().fsm_state == BotFsmState::engage_enemy
+        || bot_state().fsm_state == BotFsmState::pursue_enemy
+        || bot_state().fsm_state == BotFsmState::find_power_position;
     if (was_combat_ready) {
         return readiness >= threshold;
     }

@@ -37,6 +37,7 @@
 #include "kill.h"
 #include "kill_attribution.h"
 #include "vehicles/vehicle.h"
+#include "bots/server_bots.h"
 
 bool kill_messages = true;
 
@@ -110,6 +111,10 @@ FunHook<void()> multi_level_init_hook{
                 player.death_time.reset();
                 if (player.is_bot) {
                     player.is_spawn_disabled = true;
+                }
+                // multi_change_level reset every player to WAITING; no state_info_req ever comes from a server bot.
+                if (server_bot_from_player(&player)) {
+                    player.net_data->state = rf::NETPLAYER_STATE_IN_GAME;
                 }
             }
         }

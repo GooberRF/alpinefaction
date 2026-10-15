@@ -1,5 +1,6 @@
 #include "bot_utils.h"
 
+#include "bot_context.h"
 #include "bot_internal.h"
 #include "../../misc/waypoints.h"
 #include "../../rf/collide.h"
@@ -50,14 +51,14 @@ int bot_find_closest_waypoint_with_fallback(const rf::Vector3& pos)
 int bot_find_closest_waypoint_with_los_fallback(const rf::Entity& entity)
 {
     const bool can_use_cache =
-        g_client_bot_state.closest_los_waypoint_cache_timer.valid()
-        && !g_client_bot_state.closest_los_waypoint_cache_timer.elapsed();
-    if (can_use_cache && g_client_bot_state.closest_los_waypoint_cache > 0) {
-        rf::Vector3 moved = entity.pos - g_client_bot_state.closest_los_waypoint_cache_pos;
+        bot_state().closest_los_waypoint_cache_timer.valid()
+        && !bot_state().closest_los_waypoint_cache_timer.elapsed();
+    if (can_use_cache && bot_state().closest_los_waypoint_cache > 0) {
+        rf::Vector3 moved = entity.pos - bot_state().closest_los_waypoint_cache_pos;
         moved.y = 0.0f;
         if (moved.len_sq()
             <= kClosestLosWaypointCacheMoveDist * kClosestLosWaypointCacheMoveDist) {
-            return g_client_bot_state.closest_los_waypoint_cache;
+            return bot_state().closest_los_waypoint_cache;
         }
     }
 
@@ -77,9 +78,9 @@ int bot_find_closest_waypoint_with_los_fallback(const rf::Entity& entity)
                     nearest_eye_pos,
                     &entity,
                     nullptr)) {
-                g_client_bot_state.closest_los_waypoint_cache = nearest_waypoint;
-                g_client_bot_state.closest_los_waypoint_cache_pos = entity.pos;
-                g_client_bot_state.closest_los_waypoint_cache_timer.set(
+                bot_state().closest_los_waypoint_cache = nearest_waypoint;
+                bot_state().closest_los_waypoint_cache_pos = entity.pos;
+                bot_state().closest_los_waypoint_cache_timer.set(
                     kClosestLosWaypointCacheMs
                 );
                 return nearest_waypoint;
@@ -132,17 +133,17 @@ int bot_find_closest_waypoint_with_los_fallback(const rf::Entity& entity)
     }
 
     if (best_waypoint > 0) {
-        g_client_bot_state.closest_los_waypoint_cache = best_waypoint;
-        g_client_bot_state.closest_los_waypoint_cache_pos = entity.pos;
-        g_client_bot_state.closest_los_waypoint_cache_timer.set(
+        bot_state().closest_los_waypoint_cache = best_waypoint;
+        bot_state().closest_los_waypoint_cache_pos = entity.pos;
+        bot_state().closest_los_waypoint_cache_timer.set(
             kClosestLosWaypointCacheMs
         );
         return best_waypoint;
     }
 
-    g_client_bot_state.closest_los_waypoint_cache = nearest_waypoint;
-    g_client_bot_state.closest_los_waypoint_cache_pos = entity.pos;
-    g_client_bot_state.closest_los_waypoint_cache_timer.set(
+    bot_state().closest_los_waypoint_cache = nearest_waypoint;
+    bot_state().closest_los_waypoint_cache_pos = entity.pos;
+    bot_state().closest_los_waypoint_cache_timer.set(
         kClosestLosWaypointCacheMs
     );
     return nearest_waypoint;

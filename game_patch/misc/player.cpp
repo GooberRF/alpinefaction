@@ -35,6 +35,7 @@
 #include "../multi/gungame.h"
 #include "../multi/awards.h"
 #include "../multi/mutators.h"
+#include "../multi/bots/server_bots.h"
 #include "../multi/vehicles/vehicle.h"
 #include "../hud/multi_spectate.h"
 #include "../hud/hud_internal.h"
@@ -296,6 +297,7 @@ FunHook<void(rf::Player*)> player_destroy_hook{
             server_vote_on_player_leave(player);
             if (player->is_bot) {
                 g_bot_profile_slots.release_slot(player);
+                server_bots_on_player_destroyed(player);
             }
             if (player->net_data) {
                 g_select_weapon_done_timestamp[player->net_data->player_id].invalidate();
@@ -344,6 +346,10 @@ FunHook<rf::Entity*(rf::Player*, int, const rf::Vector3*, const rf::Matrix3*, in
                 ep->ai.danger_weapon_handle = -1;
                 rf::ai_set_mode(&ep->ai, rf::AI_MODE_CHASE, -1, -1);
                 rf::ai_set_submode(&ep->ai, rf::AI_SUBMODE_NONE);
+            }
+            if (server_bot_from_player(pp)) {
+                // Simulated from its own ai.ci and control_data like the local player, not from interp.
+                ep->p_data.flags &= ~rf::PF_NET_PLAYER;
             }
         }
         if (pp == rf::local_player) {

@@ -19,6 +19,7 @@
 #include "vehicle_view.h"
 #include "../alpine_packets.h"
 #include "../multi.h"
+#include "../bots/server_bots.h"
 #include "../demo/demo.h"
 #include "../../hud/multi_spectate.h"
 #include "../../misc/alpine_settings.h"
@@ -424,21 +425,10 @@ namespace
         if (!vehicle || !vehicle->obj_interp) {
             return false;
         }
-        rf::Vector3 pos = vehicle->pos;
-        rf::Vector3 phb = vehicle_matrix_phb(vehicle->orient);
-        rf::Vector3 eye_phb = vehicle->control_data.eye_phb;
-        rf::Vector3 vel = vehicle->p_data.vel;
-        rf::Vector3 move = vehicle->ai.ci.move;
+        const rf::Vector3 phb = vehicle_matrix_phb(vehicle->orient);
         const auto tick = tick_override.value_or(static_cast<uint16_t>(timer::get_i64(1000)));
-        // The server packs one row per recipient; the tick keeps one frame from filling the ring.
-        rf::ObjInterp* interp = vehicle->obj_interp;
-        const bool inserted = interp->num_frames() == 0 || interp->newest_frame_time() != tick;
-        if (inserted) {
-            // call_target, never the raw address: an authored keyframe must not re-enter the hook.
-            obj_interp_set_next_pos_orient_hook.call_target(interp, 0, vehicle, &pos, &phb,
-                                                            &eye_phb, &vel, &move,
-                                                            static_cast<int>(tick), 0.0f);
-        }
+        const bool inserted = obj_interp_push_keyframe(vehicle, vehicle->pos, phb, vehicle->control_data.eye_phb,
+                                                       vehicle->p_data.vel, vehicle->ai.ci.move, tick);
         vehicle_send_orient_supplement(vehicle, phb, tick);
         return inserted;
     }
@@ -452,6 +442,20 @@ namespace
 
     bool vehicle_server_samples_vehicle(rf::Entity* vehicle);
 } // namespace
+
+// The server packs one row per recipient; deduping on the tick keeps one frame from filling the ring.
+bool obj_interp_push_keyframe(rf::Entity* ep, rf::Vector3 pos, rf::Vector3 phb, rf::Vector3 eye_phb,
+                              rf::Vector3 vel, rf::Vector3 move, uint16_t tick)
+{
+    rf::ObjInterp* interp = ep->obj_interp;
+    if (!interp || (interp->num_frames() > 0 && interp->newest_frame_time() == tick)) {
+        return false;
+    }
+    // call_target, never the raw address: an authored keyframe must not re-enter the hook.
+    obj_interp_set_next_pos_orient_hook.call_target(interp, 0, ep, &pos, &phb, &eye_phb, &vel, &move,
+                                                    static_cast<int>(tick), 0.0f);
+    return true;
+}
 
 // Server: replication only, for a fully-unmanned non-dying hull the server simulates in Bullet. The
 // physics post-step has already written pose, orientation and room into the entity.
@@ -971,13 +975,17 @@ namespace
 {
     // In MP the physics step runs world collision for the local player entity and non-entity objects
     // only. Injected on the OT_ENTITY half of that filter; EAX is the object. Remote entities must
-    // keep being skipped or they fight ObjInterp.
-    CodeInjection physics_world_collision_vehicle_injection{
+    // keep being skipped or they fight ObjInterp; the server simulates its own bots' entities.
+    CodeInjection physics_world_collision_entity_injection{
         0x0048788E,
         [](auto& regs) {
             rf::Object* obj = regs.eax;
-            if (obj && obj->type == rf::OT_ENTITY && vehicle_level_has_factories()
-                && vehicle_local_driven_vehicle() == static_cast<rf::Entity*>(obj)) {
+            if (!obj || obj->type != rf::OT_ENTITY) {
+                return;
+            }
+            auto* ep = static_cast<rf::Entity*>(obj);
+            if ((vehicle_level_has_factories() && vehicle_local_driven_vehicle() == ep)
+                || server_bot_from_entity(ep)) {
                 regs.eip = 0x00487895; // run the collision
             }
         },
@@ -1899,7 +1907,7 @@ void vehicle_sync_apply_patch()
 {
     send_entity_create_packet_vehicle_injection.install();
     process_entity_create_packet_vehicle_hook.install();
-    physics_world_collision_vehicle_injection.install();
+    physics_world_collision_entity_injection.install();
     obj_should_sim_physics_hook.install();
     entity_update_ground_carry_hook.install();
     driller_interp_no_movement_halt_injection.install();

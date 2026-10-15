@@ -95,9 +95,8 @@ bool salvage_reserves_item_slot(int item_type);
 // level-placed base items. Servers do it eagerly at level init and lazily on
 // first use before that; clients only lazily.
 bool salvage_get_base_positions(rf::Vector3* out_red, rf::Vector3* out_blue);
-// Base the local player's team delivers to. False when there is no local player
-// or the level is missing a base.
-bool salvage_get_local_team_base_pos(rf::Vector3* out_pos);
+// Base the given team delivers to. False when the level is missing a base.
+bool salvage_get_team_base_pos(int team, rf::Vector3* out_pos);
 
 // Milliseconds left on whichever timer the current state is running, or 0.
 int salvage_get_time_left_ms();

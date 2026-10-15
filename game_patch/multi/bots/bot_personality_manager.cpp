@@ -1,5 +1,6 @@
 #include "bot_personality_manager.h"
 
+#include "bot_context.h"
 #include "bot_internal.h"
 #include "bot_decision_eval.h"
 #include "bot_weapon_profiles.h"
@@ -205,7 +206,7 @@ bool bot_personality_manager_should_retreat_state(
     // Hysteresis: once retreating, require survivability to exceed threshold by a margin
     // before exiting retreat. This prevents oscillation at the boundary.
     constexpr float kRetreatHysteresisMargin = 0.06f;
-    const bool currently_retreating = g_client_bot_state.fsm_state == BotFsmState::retreat;
+    const bool currently_retreating = bot_state().fsm_state == BotFsmState::retreat;
     if (currently_retreating) {
         return weighted_survivability < (weighted_threshold + kRetreatHysteresisMargin);
     }

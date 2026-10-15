@@ -1,5 +1,6 @@
 #include "bot_alerts.h"
 
+#include "bot_context.h"
 #include "bot_math.h"
 #include "../gametype.h"
 #include <common/utils/list-utils.h>
@@ -67,7 +68,7 @@ bool is_enemy_candidate_player(
 
 void prune_alert_contacts()
 {
-    auto& contacts = g_client_bot_state.alert_contacts;
+    auto& contacts = bot_state().alert_contacts;
     contacts.erase(
         std::remove_if(
             contacts.begin(),
@@ -88,7 +89,7 @@ void prune_alert_contacts()
 
 void prune_alert_source_samples()
 {
-    auto& samples = g_client_bot_state.alert_source_samples;
+    auto& samples = bot_state().alert_source_samples;
     samples.erase(
         std::remove_if(
             samples.begin(),
@@ -105,7 +106,7 @@ void prune_alert_source_samples()
 
 BotAlertSourceSample* find_alert_source_sample(const int entity_handle)
 {
-    for (BotAlertSourceSample& sample : g_client_bot_state.alert_source_samples) {
+    for (BotAlertSourceSample& sample : bot_state().alert_source_samples) {
         if (sample.entity_handle == entity_handle) {
             return &sample;
         }
@@ -115,7 +116,7 @@ BotAlertSourceSample* find_alert_source_sample(const int entity_handle)
 
 BotAlertSourceSample& add_alert_source_sample(const rf::Entity& entity)
 {
-    auto& samples = g_client_bot_state.alert_source_samples;
+    auto& samples = bot_state().alert_source_samples;
     if (samples.size() >= kAlertSourceSampleCapacity) {
         samples.erase(samples.begin());
     }
@@ -140,7 +141,7 @@ void register_alert_contact(
     }
 
     prune_alert_contacts();
-    auto& contacts = g_client_bot_state.alert_contacts;
+    auto& contacts = bot_state().alert_contacts;
     for (BotAlertContact& contact : contacts) {
         if (contact.entity_handle != entity.handle) {
             continue;
@@ -243,29 +244,29 @@ float compute_damage_source_score(
 
 void bot_alerts_reset()
 {
-    g_client_bot_state.alert_source_samples.clear();
-    g_client_bot_state.alert_contacts.clear();
+    bot_state().alert_source_samples.clear();
+    bot_state().alert_contacts.clear();
 }
 
 void bot_alerts_update_context(const rf::Player& local_player, const rf::Entity& local_entity)
 {
-    if (g_client_bot_state.retaliation_timer.valid()
-        && g_client_bot_state.retaliation_timer.elapsed()) {
-        g_client_bot_state.retaliation_timer.invalidate();
-        g_client_bot_state.retaliation_target_handle = -1;
+    if (bot_state().retaliation_timer.valid()
+        && bot_state().retaliation_timer.elapsed()) {
+        bot_state().retaliation_timer.invalidate();
+        bot_state().retaliation_target_handle = -1;
     }
 
     const float current_health = std::max(local_entity.life, 0.0f);
     const float current_armor = std::max(local_entity.armor, 0.0f);
-    if (g_client_bot_state.last_recorded_health < 0.0f
-        || g_client_bot_state.last_recorded_armor < 0.0f) {
-        g_client_bot_state.last_recorded_health = current_health;
-        g_client_bot_state.last_recorded_armor = current_armor;
+    if (bot_state().last_recorded_health < 0.0f
+        || bot_state().last_recorded_armor < 0.0f) {
+        bot_state().last_recorded_health = current_health;
+        bot_state().last_recorded_armor = current_armor;
     }
 
     const bool took_damage =
-        current_health + kAlertDamageEpsilon < g_client_bot_state.last_recorded_health
-        || current_armor + kAlertDamageEpsilon < g_client_bot_state.last_recorded_armor;
+        current_health + kAlertDamageEpsilon < bot_state().last_recorded_health
+        || current_armor + kAlertDamageEpsilon < bot_state().last_recorded_armor;
 
     prune_alert_source_samples();
     prune_alert_contacts();
@@ -381,31 +382,31 @@ void bot_alerts_update_context(const rf::Player& local_player, const rf::Entity&
                 kAlertDamageAwarenessMs);
         }
 
-        g_client_bot_state.retaliation_target_handle = best_damage_source_handle;
-        g_client_bot_state.retaliation_timer.set(kAlertRetaliationDamageMs);
+        bot_state().retaliation_target_handle = best_damage_source_handle;
+        bot_state().retaliation_timer.set(kAlertRetaliationDamageMs);
     }
     else if (best_medium_handle >= 0) {
-        if (!g_client_bot_state.retaliation_timer.valid()
-            || g_client_bot_state.retaliation_timer.elapsed()
-            || g_client_bot_state.retaliation_timer.time_until()
+        if (!bot_state().retaliation_timer.valid()
+            || bot_state().retaliation_timer.elapsed()
+            || bot_state().retaliation_timer.time_until()
                 < kAlertRetaliationMediumRefreshMs) {
-            g_client_bot_state.retaliation_target_handle = best_medium_handle;
-            g_client_bot_state.retaliation_timer.set(kAlertRetaliationMediumMs);
+            bot_state().retaliation_target_handle = best_medium_handle;
+            bot_state().retaliation_timer.set(kAlertRetaliationMediumMs);
         }
     }
 
-    if (g_client_bot_state.retaliation_target_handle >= 0) {
+    if (bot_state().retaliation_target_handle >= 0) {
         rf::Entity* retaliation_entity =
-            rf::entity_from_handle(g_client_bot_state.retaliation_target_handle);
+            rf::entity_from_handle(bot_state().retaliation_target_handle);
         if (!retaliation_entity || rf::entity_is_dying(retaliation_entity)) {
-            g_client_bot_state.retaliation_target_handle = -1;
-            g_client_bot_state.retaliation_timer.invalidate();
+            bot_state().retaliation_target_handle = -1;
+            bot_state().retaliation_timer.invalidate();
         }
     }
 
     prune_alert_contacts();
-    g_client_bot_state.last_recorded_health = current_health;
-    g_client_bot_state.last_recorded_armor = current_armor;
+    bot_state().last_recorded_health = current_health;
+    bot_state().last_recorded_armor = current_armor;
 }
 
 bool bot_alerts_get_contact_awareness(
@@ -421,7 +422,7 @@ bool bot_alerts_get_contact_awareness(
         return false;
     }
 
-    for (const BotAlertContact& contact : g_client_bot_state.alert_contacts) {
+    for (const BotAlertContact& contact : bot_state().alert_contacts) {
         if (contact.entity_handle != entity_handle
             || !contact.awareness_timer.valid()
             || contact.awareness_timer.elapsed()) {

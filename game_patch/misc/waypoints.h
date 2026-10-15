@@ -210,7 +210,13 @@ int get_local_awp_revision(const std::string& rfl_filename);
 std::optional<std::string> get_waypoint_dir();
 void waypoints_do_frame();
 void waypoints_render_debug();
+// Bots in this process (a -bot client, or a server with server bots) need waypoints.
+bool is_waypoint_bot_mode_active();
+// This process is a -bot client: the local player is the bot.
+bool is_waypoint_local_bot_mode_active();
 void waypoints_level_init();
+// waypoints_level_init, starting the bots' AWP auto-download first.
+void waypoints_level_init_with_awp_download();
 void waypoints_level_reset();
 bool waypoints_missing_awp_from_level_init();
 bool waypoints_awp_download_pending();

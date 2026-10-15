@@ -2412,7 +2412,6 @@ CodeInjection multi_hud_render_target_name_color_patch{
 CallHook<int()> multi_get_game_type_non_team_mode_hook{
     {
         0x004A4234, // player_create_entity for team coloured player models
-        0x004808EF, // multi_spawn_player_server_side for "You are on team X" for listen server host
         0x00443FC9, // chat_add_msg for [Team] prefix on team chat
         0x00444A93, // multi_chat_say_show
         0x00476CA8, // multi_hud_level_init for "You are on team X" for client

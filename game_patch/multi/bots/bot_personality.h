@@ -3,6 +3,8 @@
 #include <cstdint>
 #include <vector>
 
+struct BotContext;
+
 enum class BotAttackStyle
 {
     balanced = 0,
@@ -109,9 +111,8 @@ struct BotWeaponPreferenceEntry
     float skill_weight;
 };
 
-extern const BotPersonality kDefaultBotPersonality;
-extern const BotSkillProfile kDefaultBotSkillProfile;
-
+const BotPersonality& bot_personality_get(BotContext& ctx);
+const BotSkillProfile& bot_skill_profile_get(BotContext& ctx);
 const BotPersonality& get_active_bot_personality();
 const BotSkillProfile& get_active_bot_skill_profile();
 bool bot_personality_has_quirk(BotPersonalityQuirk quirk);
@@ -126,17 +127,17 @@ float bot_get_decision_skill_factor();
 
 // Configure presets by name and immediately reinitialize.
 // Passing nullptr for either parameter leaves that preset unchanged.
-void bot_personality_set_presets(const char* personality_name, const char* skill_name);
+void bot_personality_set_presets(BotContext& ctx, const char* personality_name, const char* skill_name);
 
 // Mutable access for applying individual field overrides after preset selection.
 // Intended for server-driven per-field tweaks on top of a base preset.
-BotPersonality& bot_personality_get_mutable();
-BotSkillProfile& bot_skill_profile_get_mutable();
+BotPersonality& bot_personality_get_mutable(BotContext& ctx);
+BotSkillProfile& bot_skill_profile_get_mutable(BotContext& ctx);
 
 // Apply a single field override by numeric field ID.
 // Returns true if the field_id was recognized and applied.
-bool bot_personality_apply_field_override(uint8_t field_id, float value);
-bool bot_skill_apply_field_override(uint8_t field_id, float value);
+bool bot_personality_apply_field_override(BotContext& ctx, uint8_t field_id, float value);
+bool bot_skill_apply_field_override(BotContext& ctx, uint8_t field_id, float value);
 
 // Name-to-field-ID lookup for TOML config parsing.
 // Returns -1 if the name is not recognized.

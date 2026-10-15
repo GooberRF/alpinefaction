@@ -4,6 +4,7 @@
 #include "alpine_terrain.h"
 #include "level.h"
 #include "../multi/bots/bot_waypoint_route.h"
+#include "../multi/bots/server_bots.h"
 #include "../main/main.h"
 #include "../multi/gametype.h"
 #include "../multi/multi.h"
@@ -99,7 +100,6 @@ bool waypoint_has_link_to(int from, int to);
 rf::Mover* find_mover_by_uid(int mover_uid);
 void update_ctf_dropped_flag_temporary_waypoints();
 void update_salvage_flag_temporary_waypoint();
-bool is_waypoint_bot_mode_active();
 bool are_waypoint_commands_enabled_for_local_client();
 bool is_ctf_mode_for_waypoints();
 int get_ctf_flag_object_uid(bool red_flag);
@@ -118,7 +118,7 @@ constexpr int kWaypointWorldTraceFlags = rf::CF_ANY_HIT | rf::CF_PROCESS_INVISIB
 FunHook<void(rf::Vector3*, float)> glass_remove_floating_shards_hook{
     0x00492400,
     [](rf::Vector3* pos, float radius) {
-        // drop crater waypoints locally for bot clients and autolink them to the grid
+        // drop crater waypoints for bots and autolink them to the grid
         if (pos && is_waypoint_bot_mode_active()) {
             on_geomod_crater_created(*pos, radius);
         }
@@ -233,7 +233,19 @@ void add_waypoint_author_if_missing(std::string_view author_name)
 
 bool is_waypoint_bot_mode_active()
 {
+    return client_bot_launch_enabled()
+        || ((rf::is_dedicated_server || rf::is_server) && server_bots_configured());
+}
+
+bool is_waypoint_local_bot_mode_active()
+{
     return client_bot_launch_enabled();
+}
+
+// Automatic waypoint dropping from player movement: the -bot client's learning, or the editor.
+bool is_waypoint_recording_active()
+{
+    return is_waypoint_local_bot_mode_active() || g_alpine_game_config.waypoints_edit_mode;
 }
 
 bool are_waypoint_commands_enabled_for_local_client()
@@ -263,7 +275,7 @@ void waypoint_log(std::format_string<Args...> fmt, Args&&... args)
 
     // log with xlog
     xlog::info("{}", message);
-    if (is_waypoint_bot_mode_active() || !g_alpine_game_config.waypoints_edit_mode) {
+    if (is_waypoint_local_bot_mode_active() || !g_alpine_game_config.waypoints_edit_mode) {
         return;
     }
 
@@ -277,7 +289,7 @@ void waypoint_log(std::string_view message)
         return;
     }
     rf::console::print("{}", message);
-    if (is_waypoint_bot_mode_active()
+    if (is_waypoint_local_bot_mode_active()
         || !g_alpine_game_config.waypoints_edit_mode) {
         return;
     }
@@ -3310,7 +3322,10 @@ void on_geomod_crater_created(const rf::Vector3& crater_pos, float crater_radius
         return;
     }
 
-    remove_realized_waypoint_targets(crater_pos, crater_radius);
+    // A listen host editing waypoints keeps its targets: the next waypoints_save writes them.
+    if (!(g_alpine_game_config.waypoints_edit_mode && !rf::is_dedicated_server)) {
+        remove_realized_waypoint_targets(crater_pos, crater_radius);
+    }
 
     const int crater_index = add_waypoint(
         crater_pos,
@@ -4282,6 +4297,8 @@ void clear_waypoints()
     g_waypoint_authors.clear();
     g_next_waypoint_target_uid = 1;
     g_invisible_floor_faces.clear();
+    // Indices into the graph being replaced.
+    g_last_drop_waypoint_by_entity.clear();
     invalidate_cache();
 }
 
@@ -7472,16 +7489,22 @@ bool save_waypoints()
         return false;
     }
 
+    // The file stores only persistent nodes, and the loader numbers them by position: every stored waypoint
+    // reference goes through this map (0 = not saved).
+    std::vector<int> saved_uids(g_waypoints.size(), 0);
     int persistent_waypoint_count = 0;
     for (int i = 1; i < static_cast<int>(g_waypoints.size()); ++i) {
         const auto& node = g_waypoints[i];
         if (node.valid && !node.temporary) {
-            ++persistent_waypoint_count;
+            saved_uids[i] = ++persistent_waypoint_count;
         }
     }
     if (persistent_waypoint_count <= 0) {
         return false;
     }
+    const auto saved_uid = [&saved_uids](const int waypoint_uid) {
+        return (waypoint_uid > 0 && waypoint_uid < static_cast<int>(saved_uids.size())) ? saved_uids[waypoint_uid] : 0;
+    };
 
     refresh_all_waypoint_zone_refs();
     auto filename = get_waypoint_filename();
@@ -7507,7 +7530,8 @@ bool save_waypoints()
     }
 
     const int revision = g_waypoint_revision + 1;
-    const bool preserve_std_new_types = is_waypoint_bot_mode_active();
+    // Edit mode keeps editor semantics: the editor's drops save as std.
+    const bool preserve_std_new_types = is_waypoint_bot_mode_active() && !g_alpine_game_config.waypoints_edit_mode;
     toml::table header{
         {"revision", revision},
         {"awp_ver", kWptVersion},
@@ -7526,7 +7550,9 @@ bool save_waypoints()
         toml::array pos{compressed_pos.x, compressed_pos.y, compressed_pos.z};
         toml::array links;
         for (int link = 0; link < node.num_links; ++link) {
-            links.push_back(node.links[link]);
+            if (const int linked_uid = saved_uid(node.links[link]); linked_uid > 0) {
+                links.push_back(linked_uid);
+            }
         }
         int saved_type = waypoint_type_to_save_value(node.type, preserve_std_new_types);
         toml::table entry{
@@ -7599,13 +7625,9 @@ bool save_waypoints()
                 && !zone.bridge_waypoint_uids.empty()) {
                 toml::array bridge_waypoint_uids{};
                 for (const int waypoint_uid : zone.bridge_waypoint_uids) {
-                    if (waypoint_uid <= 0 || waypoint_uid >= static_cast<int>(g_waypoints.size())) {
-                        continue;
+                    if (const int bridge_uid = saved_uid(waypoint_uid); bridge_uid > 0) {
+                        bridge_waypoint_uids.push_back(bridge_uid);
                     }
-                    if (!g_waypoints[waypoint_uid].valid) {
-                        continue;
-                    }
-                    bridge_waypoint_uids.push_back(waypoint_uid);
                 }
                 if (!bridge_waypoint_uids.empty()) {
                     zone_entry.insert("w", bridge_waypoint_uids);
@@ -7624,13 +7646,9 @@ bool save_waypoints()
 
             toml::array waypoint_uids{};
             for (int waypoint_uid : target.waypoint_uids) {
-                if (waypoint_uid <= 0 || waypoint_uid >= static_cast<int>(g_waypoints.size())) {
-                    continue;
+                if (const int target_waypoint_uid = saved_uid(waypoint_uid); target_waypoint_uid > 0) {
+                    waypoint_uids.push_back(target_waypoint_uid);
                 }
-                if (!g_waypoints[waypoint_uid].valid) {
-                    continue;
-                }
-                waypoint_uids.push_back(waypoint_uid);
             }
 
             toml::table target_entry{
@@ -7704,7 +7722,7 @@ bool load_waypoints(bool include_std_new_waypoints = true)
             }
         }
     }
-    if (g_alpine_game_config.waypoints_edit_mode && !is_waypoint_bot_mode_active()
+    if (g_alpine_game_config.waypoints_edit_mode && !is_waypoint_local_bot_mode_active()
         && header_checksum && *header_checksum != rf::level.checksum) {
         waypoint_log("Level checksum mismatch for {}: file {}, level {}",
             bare_filename, *header_checksum, rf::level.checksum);
@@ -8025,6 +8043,12 @@ void remap_waypoints()
         node.num_links = write_idx;
     }
     g_waypoints = std::move(new_nodes);
+    for (auto& entry : g_last_drop_waypoint_by_entity) {
+        int& last_drop_waypoint = entry.second;
+        last_drop_waypoint = (last_drop_waypoint > 0 && last_drop_waypoint < static_cast<int>(remap.size()))
+            ? remap[last_drop_waypoint]
+            : 0;
+    }
     for (auto& target : g_waypoint_targets) {
         std::vector<int> remapped_waypoint_uids{};
         remapped_waypoint_uids.reserve(target.waypoint_uids.size());
@@ -8072,7 +8096,7 @@ void clean_waypoints()
 
 bool should_navigate()
 {
-    if (!are_waypoint_commands_enabled_for_local_client()) {
+    if (!is_waypoint_recording_active()) {
         return false;
     }
     return g_drop_waypoints || g_has_loaded_wpt;
@@ -8080,7 +8104,7 @@ bool should_navigate()
 
 bool should_drop()
 {
-    if (!are_waypoint_commands_enabled_for_local_client()) {
+    if (!is_waypoint_recording_active()) {
         return false;
     }
     return g_drop_waypoints || !g_has_loaded_wpt;
@@ -8092,7 +8116,7 @@ bool should_skip_local_bot_waypoint_drop()
         return false;
     }
 
-    return rf::local_player->is_bot || is_waypoint_bot_mode_active();
+    return rf::local_player->is_bot || is_waypoint_local_bot_mode_active();
 }
 
 void prune_drop_trackers(const std::unordered_set<int>& active_entity_handles)
@@ -8357,7 +8381,7 @@ ConsoleCommand2 waypoint_load_all_cmd{
 ConsoleCommand2 waypoint_edit_cmd{
     "waypoints_edit",
     [](std::optional<bool> enabled) {
-        if (is_waypoint_bot_mode_active()) {
+        if (is_waypoint_local_bot_mode_active()) {
             rf::console::print("waypoints_edit is not used in -bot mode.");
             return;
         }
@@ -9223,6 +9247,24 @@ void waypoints_level_init()
     waypoints_utils_level_init();
 }
 
+void waypoints_level_init_with_awp_download()
+{
+    // Cancel any in-flight AWP download from a previous map
+    cancel_awp_download();
+
+    // Bots: start the async AWP download before waypoints_level_init so it sees the pending
+    // flag and defers load_waypoints until the download resolves. Never over a file a host is editing.
+    if (rf::is_multi && is_waypoint_bot_mode_active()
+        && (rf::is_dedicated_server || !g_alpine_game_config.waypoints_edit_mode)) {
+        waypoints_set_awp_download_pending(true);
+        if (!start_awp_download_for_installed_map(std::string{rf::level.filename.c_str()}, 3)) {
+            waypoints_set_awp_download_pending(false);
+        }
+    }
+
+    waypoints_level_init();
+}
+
 void waypoints_level_reset()
 {
     clear_waypoints();
@@ -9307,7 +9349,7 @@ void waypoints_do_frame()
         awpgen_do_frame();
     }
 
-    if (!is_waypoint_bot_mode_active()
+    if (!is_waypoint_local_bot_mode_active()
         && g_alpine_game_config.waypoints_edit_mode
         && is_multiplayer_client()) {
         g_alpine_game_config.waypoints_edit_mode = false;

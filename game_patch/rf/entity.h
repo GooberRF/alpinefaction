@@ -587,6 +587,10 @@ namespace rf
     // continuous-weapon turn-on; pos/orient override the muzzle; last_fire_time moves only on a shot.
     static auto& entity_fire_weapon = addr_as_ref<void __cdecl(Entity* ep, int force, int alt_fire,
         void** out_weapon, Vector3* pos, Matrix3* orient)>(0x00425830);
+    // The muzzle entity_fire_weapon uses when it is given no pos (0x004264E3); is_primary selects
+    // ai.current_primary_weapon over current_secondary_weapon for the muzzle mesh.
+    static auto& entity_get_weapon_fire_pos_orient = addr_as_ref<void __cdecl(Entity* ep, int weapon_type,
+        Vector3* pos, Matrix3* orient, int muzzle_index, bool is_primary)>(0x0041B040);
     // One shot of ai.current_secondary_weapon. force != 0 skips the fire-wait gate; next_fire_secondary re-arms only on a shot.
     static auto& entity_fire_secondary_weapon = addr_as_ref<void __cdecl(Entity* ep, char force)>(0x00426CA0);
     static auto& entity_restore_mesh = addr_as_ref<void(Entity *ep, const char *mesh_name)>(0x0042C570);

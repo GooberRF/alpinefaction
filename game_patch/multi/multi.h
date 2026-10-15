@@ -1,9 +1,13 @@
 #pragma once
 
+#include <cstddef>
+#include <cstdint>
 #include <expected>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
+#include <vector>
 #include <xlog/xlog.h>
 #include "server_internal.h"
 #include "../rf/player/player.h"
@@ -186,6 +190,9 @@ bool client_bot_headless_enabled();
 bool is_awpgen_active();
 bool is_headless_mode();
 void multi_init_player(rf::Player* player);
+bool multi_is_selecting_weapon(rf::Player* pp);
+// chat_line wire packet (header + {player id, team flag, message}); the message is capped at 255 chars.
+std::vector<std::byte> build_chat_line_packet(uint8_t player_id, bool is_team_msg, std::string_view msg);
 void send_chat_line_packet(std::string_view msg, rf::Player* target, rf::Player* sender = nullptr, bool is_team_msg = false);
 const std::optional<AlpineFactionServerInfo>& get_af_server_info();
 std::optional<AlpineFactionServerInfo>& get_af_server_info_mutable();

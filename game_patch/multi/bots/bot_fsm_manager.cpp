@@ -1,5 +1,6 @@
 #include "bot_fsm_manager.h"
 
+#include "bot_context.h"
 #include "bot_fsm.h"
 #include "bot_personality_manager.h"
 #include "bot_state.h"
@@ -16,28 +17,28 @@ BotFsmState bot_fsm_manager_select_state(
 {
     if (pursuing_enemy_goal && enemy_has_los) {
         // Active target with LOS should not remain in stale recovery mode.
-        g_client_bot_state.recovery_pending_reroute = false;
-        g_client_bot_state.pursuit_recovery_timer.invalidate();
+        bot_state().recovery_pending_reroute = false;
+        bot_state().pursuit_recovery_timer.invalidate();
     }
 
-    if (g_client_bot_state.recovery_pending_reroute
-        && g_client_bot_state.recovery_anchor_waypoint <= 0) {
-        g_client_bot_state.recovery_pending_reroute = false;
+    if (bot_state().recovery_pending_reroute
+        && bot_state().recovery_anchor_waypoint <= 0) {
+        bot_state().recovery_pending_reroute = false;
     }
 
     // Recovery navigation is only forced for goals that need precise pathing (combat pursuit,
     // item collection, objectives). For roam goals, skip recovery — the bot can just pick any
     // nearby waypoint and walk there without the full recovery anchor system.
     const bool recovery_applicable =
-        g_client_bot_state.active_goal != BotGoalType::roam
-        && g_client_bot_state.active_goal != BotGoalType::none;
+        bot_state().active_goal != BotGoalType::roam
+        && bot_state().active_goal != BotGoalType::none;
     if (recovery_applicable
-        && (g_client_bot_state.recovery_pending_reroute
-            || (g_client_bot_state.pursuit_recovery_timer.valid()
-                && !g_client_bot_state.pursuit_recovery_timer.elapsed()))) {
+        && (bot_state().recovery_pending_reroute
+            || (bot_state().pursuit_recovery_timer.valid()
+                && !bot_state().pursuit_recovery_timer.elapsed()))) {
         return BotFsmState::recover_navigation;
     }
-    if (!recovery_applicable && g_client_bot_state.recovery_pending_reroute) {
+    if (!recovery_applicable && bot_state().recovery_pending_reroute) {
         bot_state_clear_recovery_reroute();
     }
 
@@ -61,17 +62,17 @@ BotFsmState bot_fsm_manager_select_state(
         return BotFsmState::retreat;
     }
 
-    if (g_client_bot_state.active_goal == BotGoalType::activate_bridge) {
+    if (bot_state().active_goal == BotGoalType::activate_bridge) {
         return BotFsmState::activate_bridge;
     }
-    if (g_client_bot_state.active_goal == BotGoalType::create_crater) {
+    if (bot_state().active_goal == BotGoalType::create_crater) {
         return BotFsmState::create_crater;
     }
-    if (g_client_bot_state.active_goal == BotGoalType::shatter_glass) {
+    if (bot_state().active_goal == BotGoalType::shatter_glass) {
         return BotFsmState::shatter_glass;
     }
-    if (bot_goal_is_ctf_objective(g_client_bot_state.active_goal)) {
-        if (g_client_bot_state.active_goal == BotGoalType::ctf_hold_enemy_flag
+    if (bot_goal_is_ctf_objective(bot_state().active_goal)) {
+        if (bot_state().active_goal == BotGoalType::ctf_hold_enemy_flag
             && !keep_pressure_on_enemy) {
             if (needs_replenish) {
                 return BotFsmState::replenish_health_armor;
@@ -82,8 +83,8 @@ BotFsmState bot_fsm_manager_select_state(
         }
         return BotFsmState::ctf_objective;
     }
-    if (bot_goal_is_bagman_objective(g_client_bot_state.active_goal)) {
-        if (g_client_bot_state.active_goal == BotGoalType::bag_camp
+    if (bot_goal_is_bagman_objective(bot_state().active_goal)) {
+        if (bot_state().active_goal == BotGoalType::bag_camp
             && !keep_pressure_on_enemy) {
             if (needs_replenish) {
                 return BotFsmState::replenish_health_armor;
@@ -94,11 +95,11 @@ BotFsmState bot_fsm_manager_select_state(
         }
         return BotFsmState::ctf_objective;
     }
-    if (bot_goal_is_salvage_objective(g_client_bot_state.active_goal)) {
+    if (bot_goal_is_salvage_objective(bot_state().active_goal)) {
         // The escape hatch is deliberately deliver-exempt: a carrier that breaks off
         // to top up health or grab a weapon loses the flag, so sal_deliver_flag stays
         // unconditional.
-        if (g_client_bot_state.active_goal != BotGoalType::sal_deliver_flag
+        if (bot_state().active_goal != BotGoalType::sal_deliver_flag
             && !keep_pressure_on_enemy) {
             if (needs_replenish) {
                 return BotFsmState::replenish_health_armor;
@@ -109,14 +110,14 @@ BotFsmState bot_fsm_manager_select_state(
         }
         return BotFsmState::ctf_objective;
     }
-    if (bot_goal_is_control_point_objective(g_client_bot_state.active_goal)) {
+    if (bot_goal_is_control_point_objective(bot_state().active_goal)) {
         return BotFsmState::control_point_objective;
     }
 
-    if (bot_goal_is_item_collection(g_client_bot_state.active_goal)) {
+    if (bot_goal_is_item_collection(bot_state().active_goal)) {
         return BotFsmState::collect_pickup;
     }
-    if (g_client_bot_state.active_goal == BotGoalType::roam) {
+    if (bot_state().active_goal == BotGoalType::roam) {
         return BotFsmState::roam;
     }
 
@@ -128,7 +129,7 @@ BotFsmState bot_fsm_manager_select_state(
         return BotFsmState::seek_weapon;
     }
 
-    if (g_client_bot_state.active_goal == BotGoalType::eliminate_target && !pursuing_enemy_goal) {
+    if (bot_state().active_goal == BotGoalType::eliminate_target && !pursuing_enemy_goal) {
         return BotFsmState::seek_enemy;
     }
 
@@ -163,7 +164,7 @@ BotFsmState bot_fsm_manager_select_state(
         return BotFsmState::seek_weapon;
     }
 
-    if (g_client_bot_state.combat_los_target_waypoint > 0) {
+    if (bot_state().combat_los_target_waypoint > 0) {
         return BotFsmState::reposition_los;
     }
 

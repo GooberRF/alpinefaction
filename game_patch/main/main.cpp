@@ -338,22 +338,11 @@ FunHook<void(bool)> level_init_post_hook{
         level_init_post_hook.call_target(transition);
         xlog::info("Level loaded: {}{}", rf::level.filename, transition ? " (transition)" : "");
 
-        // Cancel any in-flight AWP download from a previous map
-        cancel_awp_download();
-
-        // Flow 2A: Bot clients — start async AWP download before waypoints_level_init
-        // so it sees the pending flag and defers load_waypoints until download resolves
-        if (rf::is_multi && client_bot_launch_enabled()) {
-            waypoints_set_awp_download_pending(true);
-            if (!start_awp_download_for_installed_map(std::string{rf::level.filename.c_str()}, 3)) {
-                waypoints_set_awp_download_pending(false);
-            }
-        }
-
-        waypoints_level_init();
+        // Flow 2A: bots start their AWP download before the waypoints load
+        waypoints_level_init_with_awp_download();
 
         // Flow 2B: Normal clients with autodl_download_awps — fire-and-forget AWP download
-        if (rf::is_multi && !client_bot_launch_enabled() && !rf::is_dedicated_server
+        if (rf::is_multi && !is_waypoint_bot_mode_active() && !rf::is_dedicated_server
             && g_alpine_game_config.autodl_download_awps) {
             start_awp_download_for_installed_map(std::string{rf::level.filename.c_str()}, 1);
         }

@@ -27,6 +27,7 @@
 #include "vehicles/vehicle_physics.h"
 #include "mutators.h"
 #include "bots/bot_chat_manager.h"
+#include "bots/bot_context_fwd.h"
 #include "../fflink/afstats_events.h"
 #include "../hud/hud.h"
 #include "../hud/multi_spectate.h"
@@ -351,7 +352,7 @@ FunHook<void()> multi_limbo_init{
         if (!rf::local_player)
             return;
 
-        bot_chat_manager_on_limbo_enter(*rf::local_player);
+        bot_chat_manager_on_limbo_enter(client_bot_context(), *rf::local_player);
 
         rf::camera_enter_random_fixed_pos();
         rf::camera_enter_fixed(rf::local_player->cam);
@@ -947,7 +948,7 @@ FunHook<void(rf::Entity*, int, rf::Vector3&, rf::Matrix3&, bool)> multi_process_
         // Notify spectate system of weapon fire so the fpgun fire animation is triggered.
         // Skip thrown projectile weapons (grenade, C4, flamethrower canister alt-fire) because
         // their animation is driven earlier and at the correct time by entity_play_attack_anim_spectate_hook.
-        if (!rf::is_server) {
+        if (!rf::is_dedicated_server) {
             bool is_thrown = (weapon_type == rf::grenade_weapon_type)
                 || (weapon_type == rf::remote_charge_weapon_type)
                 || (rf::weapon_is_flamethrower(weapon_type) && alt_fire);

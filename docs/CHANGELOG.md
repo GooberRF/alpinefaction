@@ -26,6 +26,13 @@ Version 1.5.0 (Trillium): Not yet released
   - Mirror `Terrain Tools` brush strokes across the terrain's X and/or Z axis, with movable mirror lines
   - Up to 4 detail overlays (leaves, debris) and 8 mesh decoration layers per terrain (grass, rocks, bushes)
   - `Geoable` terrains are carved by RF2-style geomod craters, with their own underside and crater textures
+- Add server-side bots, which run inside the dedicated or listen server process in addition to (or instead of) bot clients
+  - `server_bots` ADS option (0-31) sets how many server bots join; they use the `bot_profiles` profiles and follow `ideal_player_count` like bot clients
+  - Server bots count toward `max_players`; when a human player joins a full server, a server bot leaves to make room and rejoins when a slot frees up (never beyond 32 players in total, so on a 32-slot server bots do not make room)
+  - Add `sv_bot_add [profile_index] [red|blue]`, `sv_bot_remove <name|all>` and `sv_bot_list` server console commands, also usable via rcon; changes last until the server restarts, and reloading the config resizes the bot list to its `server_bots` count (bots that still fit keep their profile and team)
+  - A kicked server bot stays removed until `sv_bot_add` or a config reload adds it again
+  - A listen server host can add and remove server bots with the same `sv_bot_*` console commands; they use automatic profiles there (no ADS config)
+  - Server bots load waypoints like bot clients, including the FactionFiles AWP autodownload, and sit out on levels without waypoints
 
 [@GooberRF](https://github.com/GooberRF) & [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Add multiplayer vehicles and turrets
@@ -236,6 +243,14 @@ Version 1.5.0 (Trillium): Not yet released
 - Fix crash reports leaving out memory regions and backtrace frames above 2 GB when the game or level editor runs with 4 GB of address space
 - Fix the Rail Driver beam veering away from the shot's path after piercing a surface, toggleable with `cl_railbeamfix`
 - Fix players keeping a phantom copy of an item created while they were loading the level
+- Fix a listen server host's respawn countdown restarting, and their queued spawn being dropped, whenever another player died while spawn delays were enabled
+- Fix a listen server host being respawned while still alive after another player died with spawn delays and forced respawns enabled
+- Fix a listen server host getting no damage numbers or hit sounds when damaging other players
+- Fix a listen server host not seeing private and broadcast server chat messages, such as end-of-round stats and spawn refusals
+- Fix a listen server host's "spectating you" list never filling
+- Fix chat commands (such as `/stats`) typed or picked from the Commands chat menu by a listen server host being sent as chat instead of running
+- Fix "You are on team" showing on every spawn of a listen server host in team modes; it now shows when their team is assigned or changes
+- Fix a spectating listen server host not seeing the spectated player's ammo, weapon fire animations, damage numbers, awards or critical hit flashes
 
 [@is-this-c](https://github.com/is-this-c)
 - Let `Caps Lock` capitalize

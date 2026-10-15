@@ -24,6 +24,7 @@
 #include "alpine_packets.h"
 #include "server.h"
 #include "demo/demo.h"
+#include "bots/server_bots.h"
 #include "../sound/sound.h"
 #include "../rf/weapon.h"
 #include "../rf/item.h"
@@ -1675,13 +1676,14 @@ CallHook<void(rf::Entity*)> ski_ground_move_hook{
     },
 };
 
-// Slam and rigid-body impact fall damage: immunity insingle player and multiplayer
-// when movement mutators are active. Note 0x004A0C28 (landing) fall damage is not
-// hooked, because we want it to still apply.
+// Slam and rigid-body impact fall damage: immunity in single player and multiplayer
+// when movement mutators are active, for the local player and server bots (simulated
+// on the server). Note 0x004A0C28 (landing) fall damage is not hooked, because we
+// want it to still apply.
 CallHook<void __cdecl(rf::Entity*, float)> ski_fall_damage_hook{
     {0x0049D4B6, 0x0049DE23, 0x0049DE39},
     [](rf::Entity* ep, float impact) {
-        if (ep && ep == rf::local_player_entity && any_movement_mutator_active())
+        if (ep && any_movement_mutator_active() && (ep == rf::local_player_entity || server_bot_from_entity(ep)))
             return;
         ski_fall_damage_hook.call_target(ep, impact);
     },
@@ -2758,11 +2760,15 @@ static void crits_send_shot_to_shooter(rf::Player* shooter, int weapon_type)
             static_cast<uint8_t>(weapon_type), shooter);
     }
 
-    // A listen host cannot spectate, so every spectator here is a real client.
     for (auto& player : SinglyLinkedList{rf::player_list}) {
-        if (!player.net_data || player.spectatee.value_or(nullptr) != shooter)
+        if (!player.net_data || !player_is_spectating(player, shooter))
             continue;
-        if (is_player_minimum_af_client_version(&player, 1, 4, 0)) {
+        // A spectating listen host, as crits_on_crit_shot treats a spectator.
+        if (&player == rf::local_player) {
+            if (multi_spectate_is_first_person())
+                crits_flash_reticle(crit_glow_color_for(shooter));
+        }
+        else if (is_player_minimum_af_client_version(&player, 1, 4, 0)) {
             af_send_crit_shot_packet(shooter->net_data->player_id,
                 static_cast<uint8_t>(weapon_type), &player);
         }
