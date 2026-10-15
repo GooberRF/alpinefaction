@@ -53,6 +53,9 @@
 #include "terrain_build.h"
 #include "terrain_paint.h"
 #include "terrain_preview.h"
+#include "texture_lock.h"
+#include "texture_mode.h"
+#include "brush_preview.h"
 #include "mesh_browser.h"
 #include "placement_panel.h"
 #include "viewport_input.h"
@@ -665,6 +668,7 @@ CodeInjection CFormView_Create_injection{
         if (lpszTemplateName == MAKEINTRESOURCE(IDD_BRUSH_MODE_PANEL)
             || lpszTemplateName == MAKEINTRESOURCE(IDD_FACE_MODE_PANEL)
             || lpszTemplateName == MAKEINTRESOURCE(IDD_VERTEX_MODE_PANEL)
+            || lpszTemplateName == MAKEINTRESOURCE(IDD_TEXTURE_MODE_PANEL)
             || lpszTemplateName == MAKEINTRESOURCE(IDD_GROUP_MODE_PANEL)) {
             hCurrentResourceHandle = reinterpret_cast<int>(g_module);
         }
@@ -673,7 +677,8 @@ CodeInjection CFormView_Create_injection{
 
 // Post-creation hook for CFormView panels. At 0x0052F0A9 (after CreateDlgIndirect),
 // EDI = CWnd*, EBX = template name. CWnd::m_hWnd is at CWnd+0x1C.
-// Subclasses group panel immediately after creation, and builds the placement panel into the object panel.
+// Subclasses the group and texture panels immediately after creation, and builds the placement panel into the object
+// panel.
 static LRESULT CALLBACK GroupPanelSubclassProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 static void subclass_group_panel_post_create(HWND hwnd);
 
@@ -691,6 +696,12 @@ CodeInjection CFormView_PostCreate_injection{
         else if (lpszTemplateName == MAKEINTRESOURCE(editor_object_panel_template)) {
             auto* panel = reinterpret_cast<EditorObjectPanel*>(static_cast<uintptr_t>(regs.edi));
             placement_panel_create(panel, WndToHandle(reinterpret_cast<CWnd*>(panel)));
+        }
+        else if (lpszTemplateName == MAKEINTRESOURCE(IDD_TEXTURE_MODE_PANEL)) {
+            auto* panel = reinterpret_cast<TextureModePanel*>(static_cast<uintptr_t>(regs.edi));
+            if (HWND hwnd = WndToHandle(reinterpret_cast<CWnd*>(panel))) {
+                texture_mode_panel_created(hwnd, panel->map_type);
+            }
         }
     },
 };
@@ -710,6 +721,7 @@ CodeInjection CDialog_DoModal_injection{
             lpszTemplateName == MAKEINTRESOURCE(IDD_BRUSH_PROPERTIES) ||
             lpszTemplateName == MAKEINTRESOURCE(IDD_FACE_SPLIT) ||
             lpszTemplateName == MAKEINTRESOURCE(IDD_BRUSH_MIRROR) ||
+            lpszTemplateName == MAKEINTRESOURCE(IDD_TEXTURE_BROWSER) ||
             lpszTemplateName == MAKEINTRESOURCE(IDD_KEYFRAME_PROPERTIES)
         ) {
             hCurrentResourceHandle = reinterpret_cast<int>(g_module);
@@ -717,6 +729,9 @@ CodeInjection CDialog_DoModal_injection{
         if (lpszTemplateName == MAKEINTRESOURCE(IDD_BRUSH_PROPERTIES)) {
             g_brush_props_msg_hook = SetWindowsHookExA(
                 WH_CALLWNDPROCRET, BrushPropsMsgHookProc, nullptr, GetCurrentThreadId());
+        }
+        if (lpszTemplateName == MAKEINTRESOURCE(IDD_UV_UNWRAP)) {
+            uv_unwrap_dialog_opening();
         }
         if (lpszTemplateName == MAKEINTRESOURCE(IDD_KEYFRAME_PROPERTIES)) {
             g_kf_props_msg_hook = SetWindowsHookExA(
@@ -1475,6 +1490,7 @@ int __fastcall CEditorApp_OnIdle_new(void* self, int edx, int count)
         if (!headless_bake_idle()) {
             terrain_paint_idle();
             gizmo_idle();
+            texture_mode_idle();
         }
         return CEditorApp_OnIdle_hook.call_target(self, edx, count);
     }
@@ -1747,12 +1763,17 @@ BOOL __fastcall CMainFrame_OnCmdMsg(CWnd* this_, int, UINT nID, int nCode, void*
     constexpr int CN_UPDATE_COMMAND_UI = -1;
 
     // RED disables Undo/Redo by its own lists (0x00447840, 0x00447880), and CWnd::OnCommand drops a
-    // disabled command before OnEditUndo/OnEditRedo run. pExtra is the CCmdUI; vtable slot 0 is
-    // Enable(BOOL).
-    if (nCode == CN_UPDATE_COMMAND_UI && (nID == ID_EDIT_UNDO || nID == ID_EDIT_REDO) && pExtra &&
+    // disabled command before OnEditUndo/OnEditRedo run.
+    auto* cmd_ui = static_cast<CCmdUI*>(pExtra);
+    if (nCode == CN_UPDATE_COMMAND_UI && (nID == ID_EDIT_UNDO || nID == ID_EDIT_REDO) && cmd_ui &&
         terrain_paint_active()) {
-        const BOOL enable = nID == ID_EDIT_UNDO ? terrain_paint_can_undo() : terrain_paint_can_redo();
-        AddrCaller{(*static_cast<uintptr_t**>(pExtra))[0]}.this_call(pExtra, enable);
+        cmd_ui->enable(nID == ID_EDIT_UNDO ? terrain_paint_can_undo() : terrain_paint_can_redo());
+        return TRUE;
+    }
+    // The View menu item's check mark
+    if (nCode == CN_UPDATE_COMMAND_UI && nID == ID_GIZMO_TEXPREVIEW && cmd_ui) {
+        cmd_ui->enable(TRUE);
+        cmd_ui->set_check(gizmo_textured_preview() ? 1 : 0);
         return TRUE;
     }
 
@@ -1764,7 +1785,8 @@ BOOL __fastcall CMainFrame_OnCmdMsg(CWnd* this_, int, UINT nID, int nCode, void*
     if (nCode == CN_COMMAND) {
         // A command mid-drag would act on what the drag holds; put it back first, and skip the command if that
         // failed.
-        if (!pHandlerInfo && (nID < ID_GIZMO_SELECT || nID > ID_GIZMO_SNAP) && gizmo_dragging()) {
+        if (!pHandlerInfo && (nID < ID_GIZMO_SELECT || nID > ID_GIZMO_SNAP) && nID != ID_GIZMO_TEXLOCK &&
+            nID != ID_GIZMO_TEXPREVIEW && gizmo_dragging()) {
             // Undo / Redo during the drag only cancel it.
             if (!gizmo_cancel_drag() || nID == ID_EDIT_UNDO || nID == ID_EDIT_REDO) {
                 return TRUE;
@@ -1862,6 +1884,8 @@ BOOL __fastcall CMainFrame_OnCmdMsg(CWnd* this_, int, UINT nID, int nCode, void*
             case ID_GIZMO_ROTATE:
             case ID_GIZMO_SCALE:
             case ID_GIZMO_SNAP:
+            case ID_GIZMO_TEXLOCK:
+            case ID_GIZMO_TEXPREVIEW:
                 handler = [nID]() { gizmo_button_clicked(nID); };
                 break;
             case ID_TERRAIN_TOOLS:
@@ -1949,6 +1973,7 @@ void ApplyLevelPatches();
 void ApplyEventsPatches();
 void ApplyTexturesPatches();
 void ApplyLightmapPatches();
+void ApplyParticlePatches();
 void install_editor_bitmap_loader_hooks();
 
 void LoadAlpineEditorPackfile()
@@ -2345,12 +2370,16 @@ extern "C" DWORD AF_DLL_EXPORT Init([[maybe_unused]] void* unused)
     // Apply patches defined in other files
     ApplyMemoryGuardPatches();
     ApplyGraphicsPatches();
+    ApplyParticlePatches();
     ApplyTriggerPatches();
     ApplyLevelPatches();
     ApplyTerrainBuildPatches();
     ApplyTerrainPreviewPatches();
     ApplyViewportInputPatches();
     ApplyGizmoPatches();
+    ApplyTextureModePatches();
+    ApplyBrushPreviewPatches();
+    ApplyTextureLockPatches();
     ApplyMeshPreviewPatches();
     ApplyPlacementPanelPatches();
     ApplyEventsPatches();

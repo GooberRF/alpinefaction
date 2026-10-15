@@ -45,10 +45,20 @@ struct TextureModePanel {
     int custom_path_handle;     // 0x98 — VFS path handle for custom texture enumeration
     char pad_9c[0x08];
     TextureManager* texture_manager; // 0xA4
+    TextureMapType map_type;         // 0xA8 — set from the map combo (FUN_00445660)
+    ResizeMapDialog* resize_map;     // 0xAC
 };
 static_assert(offsetof(TextureModePanel, category_index) == 0x94);
 static_assert(offsetof(TextureModePanel, custom_path_handle) == 0x98);
 static_assert(offsetof(TextureModePanel, texture_manager) == 0xA4);
+static_assert(offsetof(TextureModePanel, map_type) == 0xA8);
+static_assert(offsetof(TextureModePanel, resize_map) == 0xAC);
+
+// FUN_00483e80: the main frame's Texture mode panel
+inline TextureModePanel* texture_mode_panel()
+{
+    return AddrCaller{0x00483E80}.c_call<TextureModePanel*>();
+}
 
 // ─── Texture browser modal panel (FUN_0046fd10 — refresh-list dialog) ──────
 
@@ -87,12 +97,13 @@ struct TextureBrowserPanel {
     char pad_280[0x30];
     BitmapPreviewDialog* preview;       // 0x2b0 — seeded before DoModal, holds the pick after
     TextureManager* texture_manager;    // 0x2b4
-    char pad_2b8[0x04];
+    int display_size;                   // 0x2b8 — Display Size selection
     uint8_t listbox_dirty;              // 0x2bc — non-zero forces listbox repaint
 };
 static_assert(offsetof(TextureBrowserPanel, master_list) == 0x278);
 static_assert(offsetof(TextureBrowserPanel, preview) == 0x2b0);
 static_assert(offsetof(TextureBrowserPanel, texture_manager) == 0x2b4);
+static_assert(offsetof(TextureBrowserPanel, display_size) == 0x2b8);
 static_assert(offsetof(TextureBrowserPanel, listbox_dirty) == 0x2bc);
 
 // Run the stock texture browser the way EmitterPropertiesDialog::OnBrowseForBitmap
@@ -103,6 +114,24 @@ int texture_browser_pick(const char* folder, int current_bm);
 // The name of the category holding `filename`, matched without its extension, as texture mode finds
 // it; null when no category does.
 const char* texture_category_of(const char* filename);
+
+// FUN_0046fd10: rebuilds the browser's list through the validator and lays it out again
+inline void texture_browser_refresh(TextureBrowserPanel* panel)
+{
+    AddrCaller{0x0046fd10}.this_call(panel);
+}
+
+// A materials.tbl material, as the browser's Material filter lists them
+struct TextureBrowserMaterial {
+    VString name;
+    VArray<VString> bitmap_prefixes;    // 0x8
+};
+static_assert(offsetof(TextureBrowserMaterial, bitmap_prefixes) == 0x8);
+static auto& texture_browser_materials = addr_as_ref<VArray<TextureBrowserMaterial*>>(0x006ca3c8);
+// The Name filter's text (256 bytes, the Material filter's selection right after it)
+static auto& texture_browser_filter = addr_as_ref<char[256]>(0x006ca408);
+// The Material filter's selection, 0 for All
+static auto& texture_browser_material_index = addr_as_ref<int>(0x006ca508);
 
 // FUN_004712d0: __thiscall returning the file-scan flags byte (5 or 6) for this panel.
 // Bit 0 selects sort-by-name; passed straight to texture_browser_scan_path.

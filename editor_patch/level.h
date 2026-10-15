@@ -5,6 +5,7 @@
 #include <cstring>
 #include <initializer_list>
 #include <map>
+#include <unordered_map>
 #include <type_traits>
 #include <unordered_set>
 #include <utility>
@@ -263,6 +264,7 @@ enum GFaceFlags
     FACE_FULL_BRIGHT = 0x20,
     FACE_SEE_THRU = 0x40,
     FACE_HAS_HOLES = 0x80,
+    FACE_LIGHTMAP_RESOLUTION = 0x300, // lightmap resolution code - 1
     FACE_INVISIBLE = 0x2000,
 };
 
@@ -330,6 +332,21 @@ static_assert(offsetof(GFace, which_room) == 0x44);
 static_assert(offsetof(GFace, next_solid) == 0x54);
 static_assert(offsetof(GFace, next_bbox) == 0x58);
 static_assert(offsetof(GFace, next_room) == 0x5C);
+
+// Calls fn(GFaceVertex&) around the face's edge loop, bounded against a corrupt one
+template<typename Fn>
+void for_each_face_corner(const GFace& face, Fn&& fn)
+{
+    GFaceVertex* first = face.edge_loop;
+    GFaceVertex* fv = first;
+    for (int guard = 0; fv && guard < 100000; ++guard) {
+        fn(*fv);
+        fv = fv->next;
+        if (fv == first) {
+            break;
+        }
+    }
+}
 
 // Editor-side GLightmap (matches stock RED.exe / RF.exe GLightmap), one lightmap page
 // Full game-side definition: game_patch/rf/geometry.h
@@ -478,6 +495,49 @@ struct GTextureMover
 };
 static_assert(sizeof(GTextureMover) == 0x18);
 
+// GSolid::collide's segment query (ctor FUN_00416430), the solid placed at pos/orient
+struct SolidRayQuery
+{
+    GFace* hint;                 // +0x00
+    Vector3 pos;                 // +0x04
+    Matrix3 orient;              // +0x10
+    Vector3 p0;                  // +0x34
+    Vector3 dir;                 // +0x40  the segment runs p0 .. p0 + dir
+    float radius;                // +0x4C
+    uint32_t flags;              // +0x50  SolidRayQueryFlags
+    Vector3 local_p0;            // +0x54
+    Vector3 local_dir;           // +0x60
+
+    SolidRayQuery()
+    {
+        AddrCaller{0x00416430}.this_call(this);
+    }
+};
+static_assert(sizeof(SolidRayQuery) == 0x6C);
+static_assert(offsetof(SolidRayQuery, p0) == 0x34);
+static_assert(offsetof(SolidRayQuery, flags) == 0x50);
+enum SolidRayQueryFlags : uint32_t
+{
+    // as texture mode's click casts against the level solid
+    SRQ_LEVEL_SOLID = 0x8,
+};
+
+// GSolid::collide's result (ctor FUN_004162a0)
+struct SolidRayResult
+{
+    int num_hits;                // +0x00
+    float t;                     // +0x04  fraction of the segment
+    char _pad_08[0x24 - 0x08];
+    GFace* face;                 // +0x24
+
+    SolidRayResult()
+    {
+        AddrCaller{0x004162a0}.this_call(this);
+    }
+};
+static_assert(sizeof(SolidRayResult) == 0x28);
+static_assert(offsetof(SolidRayResult, face) == 0x24);
+
 // Editor-side GSolid partial layout (matches stock RED.exe / RF.exe GSolid)
 // Full game-side definition with ALPINE_FACTION extensions: game_patch/rf/geometry.h
 struct GSolid
@@ -530,6 +590,80 @@ struct GSolid
     void compute_bbox_sphere()
     {
         AddrCaller{0x00495e40}.this_call(this);
+    }
+
+    // FUN_00490c10: re-derives the UVs of this level solid's faces built from brush_face, of the brush at pos/orient
+    void update_faces_from_brush_face(GFace* brush_face, const Vector3* pos, const Matrix3* orient)
+    {
+        AddrCaller{0x00490c10}.this_call(this, brush_face, pos, orient);
+    }
+
+    // FUN_0049a760: draws the solid at pos/orient as editor views do: in lines of the color given (selected faces red,
+    // vertices marked with vertex_marks) when outline, else textured, with each face's edges over it with face_outlines
+    void draw(bool outline, bool face_outlines, bool vertex_marks, const Vector3* pos, const Matrix3* orient, int r,
+              int g, int b)
+    {
+        AddrCaller{0x0049a760}.this_call(this, static_cast<char>(outline), static_cast<int>(face_outlines),
+                                         static_cast<char>(vertex_marks), pos, orient, r, g, b);
+    }
+
+    // FUN_00485490: the scroll mover of the faces with face_id, or null
+    GTextureMover* find_texture_mover(int face_id)
+    {
+        return AddrCaller{0x00485490}.this_call<GTextureMover*>(this, face_id);
+    }
+
+    // As Face Properties adds one (0x00402E7D): ctor FUN_004851d0, appended, then FUN_004852d0 gathers the faces with
+    // face_id. The caller sets FACE_SCROLL_TEXTURE on them.
+    GTextureMover* add_texture_mover(int face_id, float u_speed, float v_speed)
+    {
+        void* mem = AddrCaller{0x0052ee74}.c_call<void*>(sizeof(GTextureMover));
+        if (!mem) return nullptr;
+        auto* mover = AddrCaller{0x004851d0}.this_call<GTextureMover*>(mem);
+        AddrCaller{0x00491020}.this_call(&texture_movers, mover);
+        mover->face_id = face_id;
+        mover->u_pan_speed = u_speed;
+        mover->v_pan_speed = v_speed;
+        AddrCaller{0x004852d0}.this_call(mover, this);
+        return mover;
+    }
+
+    // As Face Properties removes one (0x00402F31): FUN_0043df30, then the scalar deleting destructor FUN_00411560
+    void remove_texture_mover(GTextureMover* mover)
+    {
+        AddrCaller{0x0043df30}.this_call(&texture_movers, mover);
+        AddrCaller{0x00411560}.this_call(mover, 1);
+    }
+
+    // Calls fn(GFace&) along the face list, stopping when it returns true (and returning true then)
+    template<typename Fn>
+    bool for_each_face(Fn&& fn)
+    {
+        int guard = 0;
+        for (GFace* face = face_list_head; face && guard < 10000000; face = face->next_solid, ++guard) {
+            if (fn(*face)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // Its faces by face id
+    std::unordered_map<int, std::vector<GFace*>> faces_by_id()
+    {
+        std::unordered_map<int, std::vector<GFace*>> faces;
+        for_each_face([&](GFace& face) {
+            faces[face.face_id].push_back(&face);
+            return false;
+        });
+        return faces;
+    }
+
+    // FUN_004917a0: the nearest face the query's segment hits, as texture mode's click (0x0042C020) casts it
+    bool collide(SolidRayQuery& query, SolidRayResult& result)
+    {
+        AddrCaller{0x004917a0}.this_call(this, &query, &result, 1);
+        return result.num_hits > 0;
     }
 
     // FUN_00495500 on a 0x378 byte allocation, as every from-scratch solid in RED does
@@ -630,6 +764,12 @@ struct BrushNode
     static void destroy(BrushNode* brush)
     {
         AddrCaller{0x0044d8b0}.this_call(brush, 1);
+    }
+
+    // A point of its geometry placed in the world
+    Vector3 to_world(const Vector3& local) const
+    {
+        return orient * local + pos;
     }
 };
 static_assert(sizeof(BrushNode) == 0x54);
@@ -1463,6 +1603,15 @@ struct DedObjectClass
 static_assert(sizeof(DedObjectClass) == 0xC);
 static_assert(offsetof(DedObjectClass, tmpl) == 0x8);
 
+// One connected group of a face or vertex mode transform, its vertices' world positions moving until the finalize
+// (FUN_00427460) writes them to the brush
+struct TransformGroup
+{
+    VArray<void*> vertices;      // +0x00
+    BrushNode* brush;            // +0x0C
+};
+static_assert(offsetof(TransformGroup, brush) == 0x0C);
+
 struct CDedLevel
 {
     // --- vtable + string properties ---
@@ -1506,8 +1655,11 @@ struct CDedLevel
     BrushNode* brush_list;                        // +0x118 (head of brush linked list)
 
     // --- editor strings + containers ---
-    // Vector3+Matrix3 pos/orient pairs: brush-mode cursor +0x11C/+0x128, texture-mode gizmo +0x14C/+0x158
-    char _pad_11C[0x17C - 0x11C];                // +0x11C
+    // Vector3+Matrix3 pos/orient pair: brush-mode cursor +0x11C/+0x128
+    char _pad_11C[0x14C - 0x11C];                // +0x11C
+    // Texture mode's map gizmo (Cylinder Map's axis is uvec), reset at level init, not saved
+    Vector3 texture_map_pos;                      // +0x14C
+    Matrix3 texture_map_orient;                   // +0x158
     Vector3 player_start_pos;                     // +0x17C
     Matrix3 player_start_orient;                  // +0x188
     void* unk_obj_1AC;                            // +0x1AC (0x14-byte allocated object)
@@ -1562,7 +1714,8 @@ struct CDedLevel
     // a collision: old uid here, new uid at the same index below. Left filled until the next import.
     VArray<int> import_renumbered_old_uids;       // +0x2B0
     VArray<int> import_renumbered_new_uids;       // +0x2BC
-    char _pad_2C8[0x2E0 - 0x2C8];                // +0x2C8
+    char _pad_2C8[0x2D4 - 0x2C8];                // +0x2C8
+    VArray<TransformGroup*> transform_groups;     // +0x2D4 a face or vertex mode transform's, FUN_00426de0
     VArray<DedObject*> master_objects;            // +0x2E0 (all DedObjects, searched by FUN_00483920 for link validation)
     // Ctrl+C's clipboard (FUN_00412e20 fills it, FUN_00414140 empties it): object and brush clones, and a third
     // array of clones freed through their vtable
@@ -1604,7 +1757,11 @@ struct CDedLevel
     VArray<GroupEntry*> moving_groups;             // +0x4B4 (0x34-byte GroupEntry structs)
     char _pad_4C0[0x5CC - 0x4C0];                // +0x4C0 (VArrays, containers, strings)
     VArray<DedObjectClass*> object_classes;       // +0x5CC searched by name when a clutter, entity or item is added
-    char _pad_5D8[0x608 - 0x5D8];                // +0x5D8 (VArrays, containers, strings to end)
+    char _pad_5D8[0x5F0 - 0x5D8];                // +0x5D8
+    // Texture mode's Copy (FUN_004132a0): the one selected face's corner UVs from its canonical corner
+    // (FUN_00413380), which Paste (FUN_00413470) writes back around faces with as many corners
+    VArray<float> texture_clipboard_u;            // +0x5F0
+    VArray<float> texture_clipboard_v;            // +0x5FC
 
     std::size_t BeginRflSection(rf::File& file, int chunk_id)
     {
@@ -1856,11 +2013,16 @@ static_assert(offsetof(CDedLevel, brush_list) == 0x118);
 static_assert(offsetof(CDedLevel, transform_in_progress) == 0x230);
 static_assert(offsetof(CDedLevel, undo_stack) == 0x280);
 static_assert(offsetof(CDedLevel, selection) == 0x298);
+static_assert(offsetof(CDedLevel, transform_groups) == 0x2D4);
 static_assert(offsetof(CDedLevel, master_objects) == 0x2E0);
 static_assert(offsetof(CDedLevel, object_clipboard) == 0x2EC);
 static_assert(offsetof(CDedLevel, clipboard_304) == 0x304);
 static_assert(offsetof(CDedLevel, texture_groups) == 0x1C4);
 static_assert(offsetof(CDedLevel, player_start_pos) == 0x17C);
+static_assert(offsetof(CDedLevel, texture_map_pos) == 0x14C);
+static_assert(offsetof(CDedLevel, texture_map_orient) == 0x158);
+static_assert(offsetof(CDedLevel, texture_clipboard_u) == 0x5F0);
+static_assert(offsetof(CDedLevel, texture_clipboard_v) == 0x5FC);
 static_assert(offsetof(CDedLevel, geo_regions) == 0x3A0);
 static_assert(offsetof(CDedLevel, dialog_panels) == 0x444);
 static_assert(offsetof(CDedLevel, object_classes) == 0x5CC);
@@ -1919,6 +2081,13 @@ static auto& g_build_first_tick_pending = addr_as_ref<std::uint8_t>(0x005774a0);
 inline void redraw_all_viewports()
 {
     AddrCaller{0x00483560}.c_call();
+}
+
+// FUN_00413380: the corner Texture mode's Copy starts from and Paste lays the first copied UV on, by angle about the
+// face's center; null for a face with no corners
+inline GFaceVertex* texture_clipboard_first_corner(BrushNode* brush, GFace* face)
+{
+    return AddrCaller{0x00413380}.c_call<GFaceVertex*>(brush, face);
 }
 
 // FUN_00484890: the document's SetModifiedFlag(TRUE), so closing or replacing the level asks to save

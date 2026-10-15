@@ -89,6 +89,14 @@ set(SRCS
     overflow_charts.cpp
     overflow_charts.h
     overflow_preview.cpp
+    particles.cpp
+    texture_lock.cpp
+    texture_lock.h
+    uv_map.h
+    texture_mode.cpp
+    texture_mode.h
+    brush_preview.cpp
+    brush_preview.h
     bake_progress.cpp
     bake_progress.h
     face_list_cache.cpp

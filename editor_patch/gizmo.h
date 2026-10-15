@@ -26,12 +26,16 @@ bool gizmo_view_mbutton_down(EditorViewport* view);
 
 // A handle drag is in progress.
 bool gizmo_dragging();
+// The top bar's Texture Lock: scaling, stretching and face or vertex transforms keep textures in place in the world.
+bool gizmo_texture_lock();
+// The top bar's Textured Brush Preview (also on the View menu).
+bool gizmo_textured_preview();
 // RED's idle hover focus must leave the views alone: a drag holds capture, or the Scale step list is dropped down.
 bool gizmo_holds_view_focus();
 // Ends a drag in progress, putting back what it moved, with no undo step. False if that failed part way.
 bool gizmo_cancel_drag();
 
-// The top bar's gizmo buttons (ID_GIZMO_SELECT..ID_GIZMO_SNAP) and Scale step list, from CMainFrame::OnCmdMsg.
+// The top bar's gizmo, Texture Lock and Textured Preview buttons and Scale step list, from CMainFrame::OnCmdMsg.
 void gizmo_button_clicked(UINT id);
 void gizmo_scale_step_changed();
 

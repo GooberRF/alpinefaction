@@ -554,6 +554,23 @@ CallHook<void()> gr_d3d_device_reset_state_recovery{
     },
 };
 
+// Render Everything draws the level face by face without the sky the portal walk draws behind it (FUN_00425950);
+// its face loop already leaves out sky faces.
+CallHook<void __fastcall(GSolid*, int, char, int, char, const Vector3*, const Matrix3*, int, int, int)>
+    level_render_everything_hook{
+    0x0047AF79,
+    [](GSolid* solid, int edx, char outline, int face_outlines, char vertex_marks, const Vector3* pos,
+       const Matrix3* orient, int r, int g, int b) FASTCALL_LAMBDA {
+        if (GRoom* sky = level_sky_room(solid)) {
+            room_draw_clip_set(sky);
+            sky_room_draw(solid, sky, 0);
+            room_draw_clip_set(nullptr);
+        }
+        level_render_everything_hook.call_target(solid, edx, outline, face_outlines, vertex_marks, pos, orient, r, g,
+                                                 b);
+    },
+};
+
 
 void ApplyGraphicsPatches()
 {
@@ -777,4 +794,7 @@ void ApplyGraphicsPatches()
 
     // Restore render state after D3D device Reset()
     gr_d3d_device_reset_state_recovery.install();
+
+    // Draw the sky in Render Everything as the portal modes do
+    level_render_everything_hook.install();
 }

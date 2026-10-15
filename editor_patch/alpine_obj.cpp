@@ -38,6 +38,7 @@
 #include "level.h"
 #include "vtypes.h"
 #include "resources.h"
+#include "brush_preview.h"
 #include "tbl.h"
 
 // ─── Utilities ──────────────────────────────────────────────────────────────
@@ -1485,6 +1486,7 @@ CodeInjection alpine_render_surfaces_3d_patch{
         if (!level || view->view_type != editor_view_type_perspective) return;
         // Set by FUN_0041e4c0 only after the level; the preview's repaint requests read it.
         painting_view_index = view->view_index;
+        brush_preview_view_paint(*level);
         if (!terrain_view_draws_solid()) return;
         // The level pass draws level->solid (none: no level pass).
         const bool portal_walk = (level_render_mode == LEVEL_RENDER_CURRENT_ROOM ||
