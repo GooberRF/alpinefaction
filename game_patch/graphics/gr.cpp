@@ -210,9 +210,9 @@ CodeInjection gameplay_render_frame_fov_injection{
     []() {
         // Scale world FOV
         rf::gr::gameplay_fov = gr_scale_world_fov(rf::gr::gameplay_fov);
-        // Free-look spectate stepped zoom and the turret zoom narrow the FOV (1.0 when not zoomed)
+        // Free-look spectate stepped zoom and the vehicle gun zoom narrow the FOV (1.0 when not zoomed)
         rf::gr::gameplay_fov /= multi_spectate_get_view_fov_scale();
-        rf::gr::gameplay_fov /= vehicle_turret_zoom_fov_scale();
+        rf::gr::gameplay_fov /= vehicle_gun_zoom_fov_scale();
     },
 };
 

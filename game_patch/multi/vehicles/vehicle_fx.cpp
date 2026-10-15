@@ -13,10 +13,12 @@
 #include "vehicle_internal.h"
 #include "vehicle_physics.h"
 #include "../demo/demo.h"
+#include "../../graphics/gr.h"
 #include "../../graphics/weather.h"
 #include "../../main/main.h"
 #include "../../misc/alpine_settings.h"
 #include "../../misc/level.h"
+#include "../../object/particle_sim.h"
 #include "../../os/console.h"
 #include "../../rf/bmpman.h"
 #include "../../rf/collide.h"
@@ -30,6 +32,8 @@
 #include "../../rf/physics.h"
 #include "../../rf/player/camera.h"
 #include "../../rf/player/player.h"
+#include "../../rf/sound/sound.h"
+#include "../../sound/sound.h"
 
 namespace
 {
@@ -37,9 +41,11 @@ namespace
     constexpr int fx_particle_pool = 1;
     constexpr int fx_max_live_particles = 400;
     constexpr float fx_pool_headroom = 0.8f;
-    // The engine's emitter records serve everything, entity fire (four per burning entity) and the
-    // flamethrower included, and those silently go without when none is free.
-    constexpr int fx_max_emitters = 40;
+    // Engine records are plentiful, but each emitter is a room render item and is walked every frame, so this
+    // covers the busy layers of every hull in range and no more. At the cap, a hull near the camera takes one
+    // from the farthest hull rather than going without.
+    constexpr int fx_max_emitters = 96;
+    // Kept free for everything else that shares the records: entity fire, the flamethrower, explosions.
     constexpr int fx_min_free_engine_emitters = 32;
     // An emitter with nothing left to draw is handed back after this long.
     constexpr float fx_emitter_idle_s = 1.0f;
@@ -57,6 +63,8 @@ namespace
     constexpr float fx_impact_full_dv = 20.0f;
     constexpr float fx_impact_cooldown = 0.4f;
     constexpr float fx_impact_miss_cooldown = 0.1f;
+    // How fast the remembered peak speeds fall away (u/s per second), so they cover the ~0.3 s an impact takes.
+    constexpr float fx_peak_decay = 12.0f;
     // A landing needs the hull to have been off the ground this recently; the foot of a slope is not one.
     constexpr float fx_landing_airborne_window = 0.3f;
     constexpr float fx_ground_slack = 0.5f;
@@ -64,6 +72,45 @@ namespace
     constexpr float fx_downwash_height = 10.0f;
     // particle_create applies gravity as gravity_scale * 9.8 (0x00589858).
     constexpr float fx_gravity = 9.8f;
+
+    constexpr float fx_heavy_impact = 0.5f;
+    // Rock chips come from the engine's shared pool of 80 geomod rocks, and each burst also relaunches the
+    // rocks around it and recycles the oldest once the pool is full, so bursts are rationed across all hulls.
+    constexpr float fx_debris_min_strength = 0.4f;
+    constexpr float fx_debris_cooldown = 1.0f;
+    constexpr float fx_debris_global_cooldown = 0.5f;
+
+    enum FxSound
+    {
+        FXS_IMPACT_METAL,
+        FXS_IMPACT_ROCK,
+        FXS_IMPACT_GLASS,
+        FXS_SPLASH_SMALL,
+        FXS_SPLASH_MEDIUM,
+        FXS_SPLASH_LARGE,
+        FXS_SPLASH_HUGE,
+        FXS_SPARK,
+        FXS_BURNING,
+        FXS_COUNT,
+    };
+
+    constexpr const char* fx_foley_names[FXS_COUNT] = {
+        "Riot Impact Metal",
+        "Riot Impact Rock",
+        "Glass Land",
+        "Small Water Splash",
+        "Medium Water Splash",
+        "Large Water Splash",
+        "Huge Water Splash",
+        "Riot Spark",
+        "Burning",
+    };
+
+    // Stock ambient loops for the fighter's downwash: a rush of wind over ground, spray over water.
+    constexpr const char* fx_wash_sound_files[] = {
+        "Amb_Wind_02.wav",
+        "Amb_Water_Fall_02.wav",
+    };
 
     enum FxBitmap
     {
@@ -100,7 +147,7 @@ namespace
     };
 
     constexpr ParticleSpec spark_spec{
-        FXB_SPARK, {255, 255, 255, 255}, {128, 128, 128, 0}, 0.05f, 0.08f, 0.0f, 0.15f, 0.35f, 2.0f, 0.0f,
+        FXB_SPARK, {255, 255, 255, 255}, {128, 128, 128, 0}, 0.08f, 0.13f, 0.0f, 0.25f, 0.5f, 2.0f, 0.0f,
         rf::PTF_GLOW | rf::PTF_VEL_STRETCH,
     };
     // The bubble bitmap's white specks read as droplets; the stock corona has an orange core.
@@ -117,11 +164,11 @@ namespace
         rf::PTF_RANDOM_ORIENT,
     };
     constexpr ParticleSpec dark_smoke_spec{
-        FXB_DARK_SMOKE, {255, 255, 255, 120}, {255, 255, 255, 0}, 0.4f, 0.6f, 0.5f, 1.4f, 2.2f, -0.15f, -1.0f,
+        FXB_DARK_SMOKE, {255, 255, 255, 150}, {255, 255, 255, 0}, 0.4f, 0.6f, 0.9f, 2.4f, 3.4f, -0.3f, -1.0f,
         rf::PTF_RANDOM_ORIENT,
     };
     constexpr ParticleSpec fire_spec{
-        FXB_FIRE, {255, 255, 255, 170}, {255, 255, 255, 0}, 0.25f, 0.45f, -0.3f, 0.3f, 0.7f, -0.6f, -3.0f,
+        FXB_FIRE, {255, 255, 255, 190}, {255, 255, 255, 0}, 0.35f, 0.6f, -0.3f, 0.45f, 0.8f, -0.6f, -3.0f,
         rf::PTF_GLOW | rf::PTF_RANDOM_ORIENT,
     };
     constexpr ParticleSpec bubble_spec{
@@ -178,6 +225,17 @@ namespace
         return {FXB_SMOKE, clr, dest, 0.25f * size, 0.45f * size, 0.8f, 0.6f, 1.1f, -0.05f, -2.0f, flags};
     }
 
+    // A landing or crash throws a heavier, longer-lived cloud than a rolling wheel.
+    ParticleSpec impact_dust_spec(const SurfaceFx& s, float size, bool haze)
+    {
+        ParticleSpec spec = dust_spec(s, size, haze);
+        spec.growth_rate = 1.4f;
+        spec.min_life = 1.2f;
+        spec.max_life = 2.2f;
+        spec.acceleration = -2.5f;
+        return spec;
+    }
+
     struct GroundProbe
     {
         bool hit = false;
@@ -203,12 +261,18 @@ namespace
         std::array<float, fx_num_layers> emitter_idle{};
         rf::Timestamp emitter_retry;
         rf::GRoom* room = nullptr;
+        float cam_dist = 0.0f;
+        // Alternates spawn sites across frames: at these rates one frame rarely spawns more than one.
         uint32_t spawn_seq = 0;
 
         rf::Vector3 last_pos{};
         bool has_last = false;
         rf::Vector3 vel{};      // fast, what the hull is doing now
         rf::Vector3 vel_slow{}; // what it was doing a moment ago, for impacts
+        // Recent peak fall and horizontal speeds: an impact is detected as soon as the hull starts to slow,
+        // before the smoothed speeds show how hard it hit.
+        float peak_fall = 0.0f;
+        float peak_h = 0.0f;
 
         float probe_timer = 0.0f;
         GroundProbe ground;
@@ -216,7 +280,24 @@ namespace
         float airborne_age = fx_landing_airborne_window; // since the probe last saw the hull off the ground
         float scrape_timer = 0.0f;
         float impact_cooldown = 0.0f;
+        float debris_cooldown = 0.0f;
+        float scrape_snd_timer = 0.0f;
+        float scrape_flash_timer = 0.0f;
+        float splash_snd_timer = 0.0f;
+        float fire_light_timer = 0.0f;
         bool bottom_in_water = false;
+
+        // Wanted afresh every frame: a hull can go out of range or hidden without anything ending them.
+        float wash_level = 0.0f;
+        bool burning = false;
+        rf::Vector3 vent{};
+        int wash_snd = -1;
+        bool wash_snd_water = false;
+        float wash_snd_pitch = 0.0f; // last ratio set on wash_snd; 0 for none yet
+        int burn_snd = -1;
+        float wash_snd_retry = 0.0f;
+        float burn_snd_retry = 0.0f;
+        bool hold_loops = false; // a skipped frame decided nothing about them
 
         float dust_accum = 0.0f;
         float spray_accum = 0.0f;
@@ -226,11 +307,25 @@ namespace
         float bubble_accum = 0.0f;
     };
 
+    template<std::size_t N>
+    constexpr std::array<int, N> fx_unloaded()
+    {
+        std::array<int, N> handles{};
+        handles.fill(-1);
+        return handles;
+    }
+
     std::unordered_map<int, HullFx> g_hull_fx;
-    int g_fx_bitmaps[FXB_COUNT] = {-1, -1, -1, -1, -1};
+    std::array<int, FXB_COUNT> g_fx_bitmaps = fx_unloaded<FXB_COUNT>();
     bool g_fx_bitmaps_loaded = false;
     int g_fx_live_particles = 0;
     int g_fx_num_emitters = 0;
+    std::array<int, FXS_COUNT> g_fx_foley = fx_unloaded<FXS_COUNT>();
+    std::array<int, std::size(fx_wash_sound_files)> g_fx_wash_sounds = fx_unloaded<std::size(fx_wash_sound_files)>();
+    rf::ImpactSoundSet* g_fx_big_debris_iss = nullptr;
+    rf::ImpactSoundSet* g_fx_small_debris_iss = nullptr;
+    bool g_fx_sounds_loaded = false;
+    float g_fx_debris_cooldown = 0.0f;
     // This frame's simulated time: a paused demo stops the particles, and a demo timescale moves the hulls.
     float g_fx_dt = 0.0f;
 
@@ -266,12 +361,6 @@ namespace
         return n;
     }
 
-    // Alternates spawn sites across frames: at these rates one frame rarely spawns more than one.
-    uint32_t fx_next(HullFx& fx)
-    {
-        return fx.spawn_seq++;
-    }
-
     void fx_load_bitmaps()
     {
         if (g_fx_bitmaps_loaded) {
@@ -286,44 +375,129 @@ namespace
         }
     }
 
+    rf::ImpactSoundSet* fx_find_iss(const char* name)
+    {
+        rf::ImpactSoundSet* iss = rf::material_find_impact_sound_set(name);
+        if (!iss) {
+            xlog::warn("[vehicle_fx] no impact sound set '{}'", name);
+        }
+        return iss;
+    }
+
+    void fx_load_sounds()
+    {
+        if (g_fx_sounds_loaded) {
+            return;
+        }
+        g_fx_sounds_loaded = true;
+        for (int i = 0; i < FXS_COUNT; ++i) {
+            g_fx_foley[i] = rf::foley_lookup_by_name(fx_foley_names[i]);
+            if (g_fx_foley[i] < 0) {
+                xlog::warn("[vehicle_fx] no foley '{}'", fx_foley_names[i]);
+            }
+        }
+        for (std::size_t i = 0; i < std::size(fx_wash_sound_files); ++i) {
+            g_fx_wash_sounds[i] = rf::snd_get_handle(fx_wash_sound_files[i], 8.0f, 0.9f, 1.0f);
+            // With sound off the engine registers nothing, and that is no fault of the file.
+            if (g_fx_wash_sounds[i] < 0 && rf::sound_enabled) {
+                xlog::warn("[vehicle_fx] failed to load sound '{}'", fx_wash_sound_files[i]);
+            }
+        }
+        g_fx_big_debris_iss = fx_find_iss("big debris bounce");
+        g_fx_small_debris_iss = fx_find_iss("small debris bounce");
+    }
+
+    // A fresh pick each time, so a foley's variants alternate.
+    int fx_sound_handle(FxSound sound)
+    {
+        return g_fx_foley[sound] >= 0 ? rf::foley_get_sound_handle(g_fx_foley[sound]) : -1;
+    }
+
+    int fx_play_handle(int handle, const rf::Vector3& pos, float volume)
+    {
+        return handle >= 0 ? rf::snd_play_3d(handle, pos, std::min(volume, 1.0f), rf::zero_vector,
+                                             rf::SOUND_GROUP_EFFECTS)
+                           : -1;
+    }
+
+    void fx_play(FxSound sound, const rf::Vector3& pos, float volume)
+    {
+        fx_play_handle(fx_sound_handle(sound), pos, volume);
+    }
+
+    // Picks as a bouncing debris piece does.
+    void fx_play_iss(const rf::ImpactSoundSet* iss, int material, const rf::Vector3& pos, float volume)
+    {
+        if (!iss) {
+            return;
+        }
+        const int* sounds = nullptr;
+        int count = 0;
+        iss->get_material_sounds(material, sounds, count);
+        if (!sounds) {
+            return;
+        }
+        // The engine does not clamp the count.
+        count = std::min(count, static_cast<int>(std::end(iss->sounds) - sounds));
+        if (count <= 0) {
+            return;
+        }
+        const int pick = std::uniform_int_distribution<int>{0, count - 1}(g_rng);
+        fx_play_handle(sounds[pick], pos, volume);
+    }
+
+    // Kept going while wanted: `start` plays it afresh when it is not playing, as a one-shot foley ends.
+    void fx_update_loop(int& instance, float& retry, const rf::Vector3& pos, const rf::Vector3& vel, float volume,
+                        auto&& start)
+    {
+        if (snd_instance_is_playing(instance)) {
+            rf::snd_change_3d(instance, pos, vel, std::min(volume, 1.0f));
+            return;
+        }
+        retry = std::max(retry - g_fx_dt, 0.0f);
+        if (retry > 0.0f) {
+            return;
+        }
+        instance = start();
+        if (instance < 0) {
+            retry = 0.5f;
+        }
+    }
+
+    void fx_stop_loop(int& instance)
+    {
+        if (instance >= 0) {
+            rf::snd_stop(instance);
+            instance = -1;
+        }
+    }
+
+    // Only the D3D11 renderer draws (and retires) these lights.
+    void fx_light(const rf::Vector3& pos, float radius, float intensity, int duration_ms)
+    {
+        if (is_d3d11()) {
+            explosion_flash_light_create(pos, radius, intensity, 1.0f, 0.7f, 0.35f, duration_ms, false);
+        }
+    }
+
+    // Sparks and impacts.
+    void fx_flash(const rf::Vector3& pos, float radius, float intensity, int duration_ms)
+    {
+        if (g_alpine_game_config.explosion_env_flash_lights) {
+            fx_light(pos, radius, intensity, duration_ms);
+        }
+    }
+
+    void fx_tick(float& timer)
+    {
+        timer = std::max(timer - g_fx_dt, 0.0f);
+    }
+
     bool fx_budget_left()
     {
         const rf::ParticlePool& pool = rf::particle_pools[fx_particle_pool];
         return g_fx_live_particles < fx_max_live_particles
-            && pool.num_live < static_cast<int>(static_cast<float>(pool.capacity) * fx_pool_headroom);
-    }
-
-    // Created on the first particle a layer actually spawns, so a quiet hull holds no engine record.
-    rf::ParticleEmitter* fx_ensure_emitter(HullFx& fx, int layer)
-    {
-        rf::ParticleEmitter*& emitter = fx.emitters[layer];
-        if (emitter) {
-            return emitter;
-        }
-        if (!fx.room || g_fx_num_emitters >= fx_max_emitters
-            || rf::particle_emitter_num_used >= rf::particle_emitter_capacity - fx_min_free_engine_emitters
-            || (fx.emitter_retry.valid() && !fx.emitter_retry.elapsed())) {
-            return nullptr;
-        }
-        // A container only: never switched on and never updated, so it spawns nothing itself. Its
-        // particles come from particle_create, and the engine simulates, culls and draws them as its own.
-        rf::ParticleEmitterType type{};
-        type.min_spawn_delay = 1.0f;
-        type.max_spawn_delay = 1.0f;
-        type.bitmap = g_fx_bitmaps[FXB_SMOKE];
-        type.num_frames = 1;
-        rf::Vector3 pos = fx.last_pos;
-        // Unparented and carried by hand: particle_emitter_create never links an emitter for ticking.
-        emitter = rf::particle_emitter_create(0, type, fx.room, pos, false);
-        if (!emitter) {
-            fx.emitter_retry.set(1000);
-            return nullptr;
-        }
-        emitter->pos = fx.last_pos;
-        emitter->room = fx.room;
-        fx.emitter_idle[layer] = 0.0f;
-        ++g_fx_num_emitters;
-        return emitter;
+            && pool.num_used < static_cast<int>(static_cast<float>(pool.capacity) * fx_pool_headroom);
     }
 
     // Destroying hands the live particles to the engine's orphan list, which still simulates and
@@ -337,11 +511,80 @@ namespace
         }
     }
 
+    // Emitters go first come in entity order, so far hulls can hold them all while the one at the camera
+    // goes without: a near hull takes the idlest layer of the farthest hull beyond fx_near_dist.
+    bool fx_release_far_emitter(const HullFx& fx)
+    {
+        if (fx.cam_dist > fx_near_dist) {
+            return false;
+        }
+        HullFx* farthest = nullptr;
+        for (auto& [handle, other] : g_hull_fx) {
+            const bool holds =
+                std::ranges::any_of(other.emitters, [](const rf::ParticleEmitter* e) { return e != nullptr; });
+            if (holds && other.cam_dist > fx_near_dist && (!farthest || other.cam_dist > farthest->cam_dist)) {
+                farthest = &other;
+            }
+        }
+        if (!farthest) {
+            return false;
+        }
+        int idlest = -1;
+        for (int layer = 0; layer < fx_num_layers; ++layer) {
+            if (farthest->emitters[layer]
+                && (idlest < 0 || farthest->emitter_idle[layer] > farthest->emitter_idle[idlest])) {
+                idlest = layer;
+            }
+        }
+        fx_destroy_emitter(*farthest, idlest);
+        return true;
+    }
+
+    // Created on the first particle a layer actually spawns, so a quiet hull holds no engine record.
+    rf::ParticleEmitter* fx_ensure_emitter(HullFx& fx, int layer)
+    {
+        rf::ParticleEmitter*& emitter = fx.emitters[layer];
+        if (emitter) {
+            return emitter;
+        }
+        if (!fx.room
+            || rf::particle_emitter_num_used >= particle_sim_emitter_capacity() - fx_min_free_engine_emitters
+            || (fx.emitter_retry.valid() && !fx.emitter_retry.elapsed())
+            || (g_fx_num_emitters >= fx_max_emitters && !fx_release_far_emitter(fx))) {
+            return nullptr;
+        }
+        // A container only: never switched on and never updated, so it spawns nothing itself. Its
+        // particles come from particle_create, and the engine simulates, culls and draws them as its own.
+        rf::ParticleEmitterType type{};
+        type.pos = fx.last_pos;
+        type.min_spawn_delay = 1.0f;
+        type.max_spawn_delay = 1.0f;
+        type.bitmap = g_fx_bitmaps[FXB_SMOKE];
+        type.num_frames = 1;
+        // Parent 0 is no object (handle signatures start at 1) but counts as parented, which stock needs to fit
+        // the cull radius to the particles (0x00497E0A). Never ticked: particle_emitter_create does not link it.
+        emitter = rf::particle_emitter_create(0, type, fx.room, fx.last_pos, false);
+        if (!emitter) {
+            fx.emitter_retry.set(1000);
+            return nullptr;
+        }
+        fx.emitter_idle[layer] = 0.0f;
+        ++g_fx_num_emitters;
+        return emitter;
+    }
+
     void fx_destroy_emitters(HullFx& fx)
     {
         for (int layer = 0; layer < fx_num_layers; ++layer) {
             fx_destroy_emitter(fx, layer);
         }
+    }
+
+    void fx_release(HullFx& fx)
+    {
+        fx_destroy_emitters(fx);
+        fx_stop_loop(fx.wash_snd);
+        fx_stop_loop(fx.burn_snd);
     }
 
     void fx_spawn(HullFx& fx, const ParticleSpec& s, const rf::Vector3& pos, const rf::Vector3& vel,
@@ -378,8 +621,9 @@ namespace
         }
         // Decoration only: never a damaging particle.
         pci.flags2 = 0;
-        // Linked into the hull's emitter, so it is drawn whenever that emitter's room is.
-        rf::particle_create(fx_particle_pool, pci, emitter->room, &pci.pos, 0, nullptr, emitter);
+        // Linked into the hull's emitter, so it is drawn whenever that emitter's room is. No parent object: a
+        // particle's parent only names a damage source and ties it to a level emitter.
+        rf::particle_create(fx_particle_pool, pci, emitter->room, &pci.pos, -1, nullptr, emitter);
         ++g_fx_live_particles;
     }
 
@@ -408,13 +652,22 @@ namespace
                  float out_speed, float up_speed, float size = 1.0f)
     {
         for (int i = 0; i < count; ++i) {
-            const float a = fx_rand(0.0f, 6.2831853f);
+            const float a = fx_rand(0.0f, vehicle_two_pi);
             const rf::Vector3 out{std::cos(a), 0.0f, std::sin(a)};
             const rf::Vector3 pos = center + out * (radius * fx_rand(0.3f, 1.0f)) + rf::Vector3{0.0f, 0.1f, 0.0f};
             const rf::Vector3 vel =
                 out * (out_speed * fx_rand(0.5f, 1.0f)) + rf::Vector3{0.0f, up_speed * fx_rand(0.4f, 1.0f), 0.0f};
             fx_spawn(fx, s, pos, vel, size);
         }
+    }
+
+    // Water thrown off a hull cutting the surface at `pos`: to its right on even sequences, else its left.
+    void fx_side_spray(HullFx& fx, const rf::Entity& ep, uint32_t seq, const rf::Vector3& pos,
+                       const rf::Vector3& carry, float up)
+    {
+        const rf::Vector3 side = ep.orient.rvec * ((seq % 2) ? -1.0f : 1.0f);
+        fx_spawn(fx, spray_spec, pos,
+                 side * fx_rand(1.0f, 2.5f) + carry + rf::Vector3{0.0f, up + fx_rand(0.0f, 1.5f), 0.0f});
     }
 
     bool fx_cast(const rf::Vector3& from, const rf::Vector3& to, rf::PCollisionOut& out)
@@ -486,28 +739,87 @@ namespace
         return rf::local_player_entity && rf::local_player_entity->host_handle == ep.handle;
     }
 
+    FxSound fx_impact_sound(int material)
+    {
+        switch (material) {
+            case rf::MATERIAL_METAL:
+                return FXS_IMPACT_METAL;
+            case rf::MATERIAL_GLASS:
+                return FXS_IMPACT_GLASS;
+            default:
+                return FXS_IMPACT_ROCK;
+        }
+    }
+
+    // Chips knocked off a hard surface, borrowed from the geomod rock pool.
+    void fx_rock_debris(HullFx& fx, const rf::PCollisionOut& hit, float strength, float lod)
+    {
+        switch (hit.material) {
+            case rf::MATERIAL_DEFAULT:
+            case rf::MATERIAL_ROCK:
+            case rf::MATERIAL_SOLID:
+            case rf::MATERIAL_SAND:
+            case rf::MATERIAL_ICE:
+                break;
+            default:
+                return;
+        }
+        if (strength < fx_debris_min_strength || fx.debris_cooldown > 0.0f || g_fx_debris_cooldown > 0.0f
+            || !hit.hit_face || !hit.hit_face->which_room || hit.hit_face->attributes.bitmap_id < 0) {
+            return;
+        }
+        fx.debris_cooldown = fx_debris_cooldown;
+        g_fx_debris_cooldown = fx_debris_global_cooldown;
+        rf::Vector3 pos = hit.hit_point;
+        rf::Vector3 dir = hit.hit_normal;
+        // Off open ground a radius r throws about 8r rocks.
+        rf::geomod_create_rock_debris(&pos, (0.6f + 1.2f * strength) * lod, &dir, hit.hit_face->attributes.bitmap_id,
+                                      reinterpret_cast<int>(hit.hit_face->which_room));
+    }
+
+    // Spray thrown up and mist rolling out from `surface`. A bigger body (size > 1) throws a wider ring, more of
+    // it, and is heard a splash size up.
+    void fx_splash(HullFx& fx, const rf::Vector3& surface, float strength, float lod, float size)
+    {
+        const float amount = size * size * lod;
+        fx_ring(fx, spray_spec, static_cast<int>((12.0f + 30.0f * strength) * amount), surface, 2.0f * size,
+                3.0f + 4.0f * strength, (3.0f + 4.0f * strength) * size, size);
+        fx_ring(fx, mist_spec, static_cast<int>((4.0f + 8.0f * strength) * amount), surface, 2.0f * size, 1.5f,
+                1.0f * size, 1.5f * size);
+        constexpr FxSound splashes[] = {FXS_SPLASH_SMALL, FXS_SPLASH_MEDIUM, FXS_SPLASH_LARGE, FXS_SPLASH_HUGE};
+        const int tier = (strength < 0.35f ? 0 : strength < 0.7f ? 1 : 2) + (size > 1.0f ? 1 : 0);
+        fx_play(splashes[tier], surface, 0.5f + 0.5f * strength);
+    }
+
     void fx_impact(rf::Entity& ep, HullFx& fx, const rf::PCollisionOut& hit, float strength, float lod,
                    std::optional<float> water_y)
     {
         if (water_y) {
-            const rf::Vector3 surface{hit.hit_point.x, *water_y, hit.hit_point.z};
-            fx_ring(fx, spray_spec, static_cast<int>((12.0f + 30.0f * strength) * lod), surface, 2.0f,
-                    3.0f + 4.0f * strength, 3.0f + 4.0f * strength);
-            fx_ring(fx, mist_spec, static_cast<int>((4.0f + 8.0f * strength) * lod), surface, 2.0f, 1.5f, 1.0f, 1.5f);
+            fx_splash(fx, rf::Vector3{hit.hit_point.x, *water_y, hit.hit_point.z}, strength, lod, 1.0f);
         }
         else {
             const SurfaceFx s = surface_fx(hit.material);
             if (s.dust > 0.0f) {
-                const int count = static_cast<int>((3.0f + 9.0f * strength) * s.dust * lod);
+                // Out past the hull's footprint, or the hull hides most of its own cloud.
+                const float footprint = std::max(vehicle_collision_reach_along(&ep, ep.orient.rvec),
+                                                 vehicle_collision_reach_along(&ep, ep.orient.fvec));
+                const int count = static_cast<int>((6.0f + 22.0f * strength) * s.dust * lod);
                 for (const bool haze : {false, true}) {
-                    fx_ring(fx, dust_spec(s, 1.0f + strength, haze), count, hit.hit_point, 2.0f,
-                            2.0f + 4.0f * strength, 0.5f + 1.0f * strength);
+                    fx_ring(fx, impact_dust_spec(s, 1.5f + 1.5f * strength, haze), count, hit.hit_point,
+                            footprint + 1.0f, 3.0f + 6.0f * strength, 1.0f + 2.5f * strength);
                 }
             }
             if (s.sparks) {
                 fx_burst_off(fx, spark_spec, static_cast<int>((6.0f + 18.0f * strength) * lod), hit.hit_point,
                              hit.hit_normal, 6.0f + 8.0f * strength);
+                fx_flash(hit.hit_point + hit.hit_normal * 0.3f, 2.0f + 2.0f * strength, 0.6f + 0.6f * strength,
+                         static_cast<int>(80.0f + 70.0f * strength));
             }
+            fx_play(fx_impact_sound(hit.material), hit.hit_point, 0.4f + 0.6f * strength);
+            if (strength >= fx_heavy_impact) {
+                fx_play_iss(g_fx_big_debris_iss, hit.material, hit.hit_point, strength);
+            }
+            fx_rock_debris(fx, hit, strength, lod);
         }
         if (fx_local_player_rides(ep) && rf::local_player && rf::local_player->cam) {
             rf::camera_shake(rf::local_player->cam, 0.002f + 0.006f * strength, 0.35f);
@@ -517,7 +829,8 @@ namespace
     // A sudden loss of the speed the hull had a moment ago: a landing or a wall.
     void fx_detect_impacts(rf::Entity& ep, HullFx& fx, bool flyer, float lod, std::optional<float> liquid_y)
     {
-        fx.impact_cooldown = std::max(fx.impact_cooldown - g_fx_dt, 0.0f);
+        fx_tick(fx.impact_cooldown);
+        fx_tick(fx.debris_cooldown);
         if (fx.impact_cooldown > 0.0f) {
             return;
         }
@@ -526,27 +839,34 @@ namespace
         const rf::Vector3 slow_h{fx.vel_slow.x, 0.0f, fx.vel_slow.z};
         const float slow_h_speed = slow_h.len();
         float wall_dv = 0.0f;
+        float wall_kept = 0.0f;
         rf::Vector3 wall_dir{};
         if (slow_h_speed > fx_impact_min_dv) {
             wall_dir = slow_h * (1.0f / slow_h_speed);
-            wall_dv = slow_h_speed - std::max(rf::Vector3{fx.vel.x, 0.0f, fx.vel.z}.dot_prod(wall_dir), 0.0f);
+            wall_kept = std::max(rf::Vector3{fx.vel.x, 0.0f, fx.vel.z}.dot_prod(wall_dir), 0.0f);
+            wall_dv = slow_h_speed - wall_kept;
         }
         const float dv = std::max(land_dv, wall_dv);
         if (dv < fx_impact_min_dv) {
             return;
         }
+        // A wall only takes the speed it stopped.
+        const float impact_speed = land_dv >= wall_dv ? fx.peak_fall : fx.peak_h - wall_kept;
         const float strength =
-            std::clamp((dv - fx_impact_min_dv) / (fx_impact_full_dv - fx_impact_min_dv), 0.15f, 1.0f);
+            std::clamp((impact_speed - fx_impact_min_dv) / (fx_impact_full_dv - fx_impact_min_dv), 0.15f, 1.0f);
 
         const rf::Vector3 dir = land_dv >= wall_dv ? rf::Vector3{0.0f, -1.0f, 0.0f} : wall_dir;
         rf::PCollisionOut o{};
-        if (!fx_cast(ep.pos, ep.pos + dir * (vehicle_collision_reach_along(&ep, dir) + 1.5f), o)) {
+        // Generous reach: suspension and wheels start slowing a landing hull before its body is near the ground.
+        if (!fx_cast(ep.pos, ep.pos + dir * (vehicle_collision_reach_along(&ep, dir) + 2.5f), o)) {
             fx.impact_cooldown = fx_impact_miss_cooldown;
             return;
         }
         const bool water = liquid_y && o.hit_point.y <= *liquid_y + 0.3f;
         fx.impact_cooldown = fx_impact_cooldown;
         fx.vel_slow = fx.vel;
+        fx.peak_fall = std::max(-fx.vel.y, 0.0f);
+        fx.peak_h = rf::Vector3{fx.vel.x, 0.0f, fx.vel.z}.len();
         // A ground hull's water entry is fx_plunge's.
         if (water && !flyer) {
             return;
@@ -557,6 +877,8 @@ namespace
     // Body contact while moving along a wall (and, for flyers, a ceiling, or a floor while airborne).
     void fx_scrape(rf::Entity& ep, HullFx& fx, bool flyer, float lod)
     {
+        fx_tick(fx.scrape_snd_timer);
+        fx_tick(fx.scrape_flash_timer);
         fx.scrape_timer -= g_fx_dt;
         if (fx.scrape_timer > 0.0f) {
             return;
@@ -591,10 +913,23 @@ namespace
                                           + fx_rand_dir_off(o.hit_normal) * 1.5f;
                     fx_spawn(fx, spark_spec, o.hit_point, vel);
                 }
+                if (fx.scrape_snd_timer <= 0.0f) {
+                    fx.scrape_snd_timer = fx_rand(0.12f, 0.25f);
+                    fx_play(FXS_SPARK, o.hit_point, std::clamp(along_speed / 15.0f, 0.3f, 1.0f));
+                }
+                if (fx.scrape_flash_timer <= 0.0f) {
+                    fx.scrape_flash_timer = fx_rand(0.25f, 0.4f);
+                    fx_flash(o.hit_point + o.hit_normal * 0.3f, 2.5f, 0.5f, 90);
+                }
             }
             else if (s.dust > 0.0f) {
-                fx_spawn(fx, dust_spec(s, 0.8f, fx_next(fx) % 2 != 0), o.hit_point,
+                fx_spawn(fx, dust_spec(s, 0.8f, fx.spawn_seq++ % 2 != 0), o.hit_point,
                          o.hit_normal * 0.8f + along * -0.1f);
+                if (fx.scrape_snd_timer <= 0.0f) {
+                    fx.scrape_snd_timer = fx_rand(0.4f, 0.7f);
+                    fx_play_iss(g_fx_small_debris_iss, o.material, o.hit_point,
+                                std::clamp(along_speed / 20.0f, 0.2f, 0.6f));
+                }
             }
         }
     }
@@ -602,6 +937,7 @@ namespace
     // Wheels and tracks: dust behind them on dry ground, spray where they run through water.
     void fx_ground_contact(rf::Entity& ep, HullFx& fx, float lod, std::optional<float> liquid_y)
     {
+        fx_tick(fx.splash_snd_timer);
         const float reach_down = vehicle_collision_reach_along(&ep, ep.orient.uvec * -1.0f);
         const rf::Vector3 vel_h{fx.vel.x, 0.0f, fx.vel.z};
         const float speed = vel_h.len();
@@ -629,12 +965,15 @@ namespace
             }
             const int n = fx_take(fx.spray_accum, std::clamp((speed - 1.5f) * 4.0f, 0.0f, 50.0f) * lod);
             for (int i = 0; i < n; ++i) {
-                const uint32_t seq = fx_next(fx);
+                // Even sequences take the right-hand wheels, so each side throws outward.
+                const uint32_t seq = fx.spawn_seq++;
                 const rf::Vector3& c = contacts[seq % 4];
-                const rf::Vector3 side = ep.orient.rvec * ((seq % 2) ? -1.0f : 1.0f);
-                fx_spawn(fx, spray_spec, rf::Vector3{c.x, *liquid_y, c.z},
-                         side * fx_rand(1.0f, 2.5f) + vel_h * 0.3f
-                             + rf::Vector3{0.0f, fx_rand(2.0f, 3.5f) + speed * 0.1f, 0.0f});
+                fx_side_spray(fx, ep, seq, rf::Vector3{c.x, *liquid_y, c.z}, vel_h * 0.3f, 2.0f + speed * 0.1f);
+            }
+            if (speed > 1.5f && fx.splash_snd_timer <= 0.0f) {
+                const float pace = std::clamp((speed - 1.5f) / 12.0f, 0.0f, 1.0f);
+                fx.splash_snd_timer = 0.6f - 0.4f * pace;
+                fx_play(FXS_SPLASH_SMALL, rf::Vector3{ep.pos.x, *liquid_y, ep.pos.z}, 0.3f + 0.4f * pace);
             }
             return;
         }
@@ -653,7 +992,7 @@ namespace
         const float size = 1.0f + std::min(speed / 40.0f, 0.4f);
         for (int i = 0; i < n; ++i) {
             // Both layers at every wheel; rear wheels three times as often as the front, left and right alike.
-            const uint32_t seq = fx_next(fx);
+            const uint32_t seq = fx.spawn_seq++;
             const uint32_t k = seq >> 1;
             const int w = static_cast<int>(k % 8 < 6 ? k % 2 : 2 + k % 2);
             const rf::Vector3 vel = vel_h * -0.12f + rf::Vector3{0.0f, fx_rand(0.4f, 1.4f), 0.0f}
@@ -674,20 +1013,22 @@ namespace
         const float h = ep.pos.y - reach_down - fx.wash.surface_y;
         const float closeness = std::clamp(1.0f - h / fx_downwash_height, 0.0f, 1.0f);
         const SurfaceFx s = fx.wash.water ? SurfaceFx{1.0f, {}, false} : surface_fx(fx.wash.material);
+        const float intensity = closeness * closeness;
+        // Heard over any surface, seen only over one that throws something up.
+        fx.wash_level = intensity;
         if (closeness <= 0.0f || s.dust <= 0.0f) {
             fx.wash_accum = 0.0f;
             return;
         }
-        const float intensity = closeness * closeness;
         const rf::Vector3 center{ep.pos.x, fx.wash.surface_y, ep.pos.z};
         const float radius = 1.5f + 1.5f * intensity;
         const int n = fx_take(fx.wash_accum, 45.0f * intensity * lod * s.dust);
         for (int i = 0; i < n; ++i) {
             if (!fx.wash.water) {
-                fx_ring(fx, dust_spec(s, 1.2f, fx_next(fx) % 2 != 0), 1, center, radius, 3.0f + 5.0f * intensity,
-                        0.4f + 0.8f * intensity);
+                fx_ring(fx, dust_spec(s, 1.2f, fx.spawn_seq++ % 2 != 0), 1, center, radius,
+                        3.0f + 5.0f * intensity, 0.4f + 0.8f * intensity);
             }
-            else if (fx_next(fx) % 3 == 0) {
+            else if (fx.spawn_seq++ % 3 == 0) {
                 fx_ring(fx, mist_spec, 1, center, radius, 3.0f + 6.0f * intensity, 1.0f + 2.0f * intensity, 1.3f);
             }
             else {
@@ -699,6 +1040,7 @@ namespace
     // The sub: bubbles off the screws when submerged, bow spray when running on the surface.
     void fx_sub(rf::Entity& ep, HullFx& fx, float lod, std::optional<float> liquid_y)
     {
+        fx_tick(fx.splash_snd_timer);
         const float speed = fx.vel.len();
         if (!liquid_y || speed < 1.0f) {
             fx.bubble_accum = 0.0f;
@@ -718,9 +1060,11 @@ namespace
             const int n = fx_take(fx.spray_accum, std::clamp((speed - 1.5f) * 3.0f, 0.0f, 30.0f) * lod);
             const rf::Vector3 bow = ep.pos + ep.orient.fvec * vehicle_collision_reach_along(&ep, ep.orient.fvec);
             for (int i = 0; i < n; ++i) {
-                const rf::Vector3 side = ep.orient.rvec * ((fx_next(fx) % 2) ? -1.0f : 1.0f);
-                fx_spawn(fx, spray_spec, rf::Vector3{bow.x, *liquid_y, bow.z},
-                         side * fx_rand(1.0f, 2.5f) + rf::Vector3{0.0f, fx_rand(1.5f, 3.0f), 0.0f});
+                fx_side_spray(fx, ep, fx.spawn_seq++, rf::Vector3{bow.x, *liquid_y, bow.z}, rf::Vector3{}, 1.5f);
+            }
+            if (speed > 3.0f && fx.splash_snd_timer <= 0.0f) {
+                fx.splash_snd_timer = fx_rand(0.8f, 1.6f);
+                fx_play(FXS_SPLASH_SMALL, rf::Vector3{bow.x, *liquid_y, bow.z}, 0.3f);
             }
         }
     }
@@ -732,10 +1076,7 @@ namespace
         const bool in = liquid_y && ep.pos.y - reach_down < *liquid_y;
         if (in && !fx.bottom_in_water && fx.vel_slow.y < -3.0f) {
             const float strength = std::clamp((-fx.vel_slow.y - 3.0f) / 12.0f, 0.2f, 1.0f);
-            const rf::Vector3 surface{ep.pos.x, *liquid_y, ep.pos.z};
-            fx_ring(fx, spray_spec, static_cast<int>((20.0f + 40.0f * strength) * lod), surface, 2.5f,
-                    3.0f + 4.0f * strength, 4.0f + 5.0f * strength, 1.2f);
-            fx_ring(fx, mist_spec, static_cast<int>((6.0f + 10.0f * strength) * lod), surface, 2.5f, 1.5f, 1.5f, 1.6f);
+            fx_splash(fx, rf::Vector3{ep.pos.x, *liquid_y, ep.pos.z}, strength, lod, 1.25f);
         }
         fx.bottom_in_water = in;
     }
@@ -751,14 +1092,18 @@ namespace
             fx.fire_accum = 0.0f;
             return;
         }
-        // Aft of centre, so a first-person driver is not looking out through it.
-        const rf::Vector3 vent = ep.pos + ep.orient.uvec * (vehicle_collision_reach_along(&ep, ep.orient.uvec) * 0.7f)
-                               - ep.orient.fvec * (vehicle_collision_reach_along(&ep, ep.orient.fvec * -1.0f) * 0.4f);
+        // A jeep burns under its hood; elsewhere aft of centre, so a first-person driver is not looking out through it.
+        const float up = vehicle_collision_reach_along(&ep, ep.orient.uvec);
+        const rf::Vector3 vent = vehicle_damage_class(&ep) == VDC_JEEP
+            ? ep.pos + ep.orient.uvec * (up * 0.4f)
+                  + ep.orient.fvec * (vehicle_collision_reach_along(&ep, ep.orient.fvec) * 0.6f)
+            : ep.pos + ep.orient.uvec * (up * 0.7f)
+                  - ep.orient.fvec * (vehicle_collision_reach_along(&ep, ep.orient.fvec * -1.0f) * 0.4f);
         const float severity = dying ? 1.0f : std::clamp((0.5f - frac) / 0.5f, 0.0f, 1.0f);
         // An APC's flames have to be read against a roof three times the jeep's.
         const float hull_scale = std::clamp(ep.radius / 2.0f, 1.0f, 1.6f);
         const bool burning = dying || frac < 0.25f;
-        const int n_smoke = fx_take(fx.smoke_accum, (3.0f + 5.0f * severity) * lod);
+        const int n_smoke = fx_take(fx.smoke_accum, (3.0f + 7.0f * severity) * lod);
         if (liquid_y && vent.y < *liquid_y) {
             fx.fire_accum = 0.0f;
             for (int i = 0; i < n_smoke; ++i) {
@@ -775,10 +1120,60 @@ namespace
             fx.fire_accum = 0.0f;
             return;
         }
-        const int n_fire = fx_take(fx.fire_accum, 10.0f * lod);
+        const int n_fire = fx_take(fx.fire_accum, 20.0f * lod);
         for (int i = 0; i < n_fire; ++i) {
-            fx_spawn(fx, fire_spec, vent + fx_rand_dir() * (0.35f * hull_scale),
+            fx_spawn(fx, fire_spec, vent + fx_rand_dir() * (0.25f * hull_scale),
                      fx.vel * 0.7f + rf::Vector3{0.0f, 0.5f, 0.0f}, hull_scale);
+        }
+        fx.burning = true;
+        fx.vent = vent;
+        // Overlapping short flashes of random strength flicker; thinned-out distant smoke gets none.
+        fx_tick(fx.fire_light_timer);
+        if (g_alpine_game_config.burning_entity_lights && lod >= 1.0f && fx.fire_light_timer <= 0.0f) {
+            fx.fire_light_timer = fx_rand(0.12f, 0.18f);
+            const float life = fx.fire_light_timer + 0.16f;
+            // A light stays where it was made: lead it by half its life so a moving hull carries it.
+            fx_light(vent + fx.vel * (life * 0.5f), 3.0f * hull_scale, fx_rand(0.8f, 1.0f),
+                     static_cast<int>(life * 1000.0f));
+        }
+    }
+
+    void fx_update_loops(HullFx& fx)
+    {
+        if (fx.hold_loops) {
+            fx.hold_loops = false;
+            return;
+        }
+        if (fx.wash_level > 0.0f) {
+            // Swapped when the fighter crosses between ground and water; swelling as it closes on either.
+            if (fx.wash_snd_water != fx.wash.water) {
+                fx_stop_loop(fx.wash_snd);
+                fx.wash_snd_water = fx.wash.water;
+            }
+            // Linear in closeness from silence at the edge, so a fighter hovering there does not cut it in and out.
+            const float volume = std::sqrt(fx.wash_level);
+            fx_update_loop(fx.wash_snd, fx.wash_snd_retry, fx.last_pos, fx.vel, volume, [&] {
+                fx.wash_snd_pitch = 0.0f;
+                const int sound = g_fx_wash_sounds[fx.wash.water ? 1 : 0];
+                return sound >= 0 ? snd_play_3d_looping(sound, fx.last_pos, volume, rf::SOUND_GROUP_EFFECTS) : -1;
+            });
+            const float pitch = 0.85f + 0.25f * fx.wash_level;
+            if (pitch != fx.wash_snd_pitch) {
+                snd_instance_set_pitch(fx.wash_snd, pitch);
+                fx.wash_snd_pitch = pitch;
+            }
+        }
+        else {
+            fx_stop_loop(fx.wash_snd);
+            fx.wash_snd_retry = 0.0f;
+        }
+        if (fx.burning) {
+            fx_update_loop(fx.burn_snd, fx.burn_snd_retry, fx.vent, fx.vel, 1.0f,
+                           [&] { return fx_play_handle(fx_sound_handle(FXS_BURNING), fx.vent, 1.0f); });
+        }
+        else {
+            fx_stop_loop(fx.burn_snd);
+            fx.burn_snd_retry = 0.0f;
         }
     }
 
@@ -806,7 +1201,7 @@ namespace
             }
             rf::console::print("Vehicle effects are {}", g_alpine_game_config.vehicle_effects ? "enabled" : "disabled");
         },
-        "Show dust, sparks, spray, smoke and fire effects for vehicles in multiplayer",
+        "Show dust, sparks, spray, smoke and fire effects, with their sounds and lights, for vehicles in multiplayer",
         "cl_vehiclefx [bool]",
     };
 } // namespace
@@ -814,17 +1209,25 @@ namespace
 void vehicle_fx_clear()
 {
     for (auto& [handle, fx] : g_hull_fx) {
-        fx_destroy_emitters(fx);
+        fx_release(fx);
     }
     g_hull_fx.clear();
 }
 
-void vehicle_fx_level_init()
+void vehicle_fx_level_init(bool load_assets)
 {
-    // Emitter records outlive the level; the bitmap handles do not.
+    // Emitter records outlive the level; the bitmap and sound handles do not.
     vehicle_fx_clear();
-    std::fill(std::begin(g_fx_bitmaps), std::end(g_fx_bitmaps), -1);
+    g_fx_bitmaps.fill(-1);
     g_fx_bitmaps_loaded = false;
+    g_fx_sounds_loaded = false;
+    g_fx_debris_cooldown = 0.0f;
+    // Runs after the last level's unload frees its bitmaps and sounds, and ahead of this one's first frame.
+    // The factories are not parsed yet, so every multiplayer level loads them.
+    if (load_assets && rf::is_multi && !rf::is_dedicated_server && g_alpine_game_config.vehicle_effects) {
+        fx_load_bitmaps();
+        fx_load_sounds();
+    }
 }
 
 void vehicle_fx_do_frame()
@@ -835,19 +1238,24 @@ void vehicle_fx_do_frame()
         }
         return;
     }
+    // Level init has loaded them unless cl_vehiclefx was switched on since.
     fx_load_bitmaps();
+    fx_load_sounds();
 
     g_fx_dt = rf::frametime * demo_playback_sim_time_scale();
     const float dt = g_fx_dt;
+    fx_tick(g_fx_debris_cooldown);
     g_fx_live_particles = 0;
     for (auto it = g_hull_fx.begin(); it != g_hull_fx.end();) {
         HullFx& fx = it->second;
         rf::Entity* ep = rf::entity_from_handle(it->first);
         if (!ep || vehicle_damage_class(ep) < 0) {
-            fx_destroy_emitters(fx);
+            fx_release(fx);
             it = g_hull_fx.erase(it);
             continue;
         }
+        fx.wash_level = 0.0f;
+        fx.burning = false;
         for (int layer = 0; layer < fx_num_layers; ++layer) {
             if (const rf::ParticleEmitter* emitter = fx.emitters[layer]) {
                 const int n = fx_count_particles(emitter);
@@ -875,12 +1283,17 @@ void vehicle_fx_do_frame()
         const bool had_last = fx.has_last;
         fx.last_pos = entity.pos;
         fx.has_last = true;
+        fx.cam_dist = (entity.pos - cam_pos).len();
         if (entity.room) {
             fx.room = entity.room;
         }
-        for (rf::ParticleEmitter* emitter : fx.emitters) {
-            if (emitter) {
-                emitter->pos = entity.pos;
+        // The layers would tie in the back-to-front sort and swap from frame to frame; additive ones sort just nearer,
+        // so fire always lands on its smoke.
+        rf::Vector3 to_cam = cam_pos - entity.pos;
+        to_cam.normalize_safe();
+        for (int layer = 0; layer < fx_num_layers; ++layer) {
+            if (rf::ParticleEmitter* emitter = fx.emitters[layer]) {
+                emitter->pos = (layer & 1) ? entity.pos + to_cam * 0.1f : entity.pos;
                 emitter->room = fx.room;
             }
         }
@@ -892,14 +1305,19 @@ void vehicle_fx_do_frame()
         if (!had_last || raw_vel.len_sq() > fx_max_speed * fx_max_speed) {
             fx.vel = {};
             fx.vel_slow = {};
+            fx.peak_fall = 0.0f;
+            fx.peak_h = 0.0f;
             fx.impact_cooldown = fx_impact_cooldown;
+            fx.hold_loops = true;
             continue;
         }
         fx.vel += (raw_vel - fx.vel) * (1.0f - std::exp(-dt / 0.03f));
         fx.vel_slow += (fx.vel - fx.vel_slow) * (1.0f - std::exp(-dt / 0.2f));
+        fx.peak_fall = std::max(-fx.vel.y, fx.peak_fall - fx_peak_decay * dt);
+        fx.peak_h = std::max(rf::Vector3{fx.vel.x, 0.0f, fx.vel.z}.len(), fx.peak_h - fx_peak_decay * dt);
         fx.airborne_age += dt;
 
-        const float dist = (entity.pos - cam_pos).len();
+        const float dist = fx.cam_dist;
         if (dist > fx_smoke_far_dist) {
             continue;
         }
@@ -936,6 +1354,13 @@ void vehicle_fx_do_frame()
         }
         else {
             fx_ground_contact(entity, fx, lod, liquid_y);
+        }
+    }
+
+    // A paused demo has paused the loops with it.
+    if (dt > 0.0f) {
+        for (auto& [handle, fx] : g_hull_fx) {
+            fx_update_loops(fx);
         }
     }
 }

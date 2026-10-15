@@ -102,6 +102,8 @@ float vehicle_collision_reach_along(rf::Entity* ep, const rf::Vector3& dir);
 bool vehicle_is_flyer(rf::Entity* ep);
 
 bool vehicle_hull_is_turret(const rf::Entity* ep);
+// A turret's or jeep's alt trigger toggles its gunner's zoom and drives no weapon.
+bool vehicle_alt_fire_zooms(rf::Entity* hull);
 
 // Rebuild the fire frame from the AUTHORITATIVE hull matrix, never the interpolated angles.
 void vehicle_rebuild_eye_orient(rf::Entity* ep, const rf::Matrix3& hull);
@@ -259,6 +261,16 @@ void vehicle_store_health_from_packet(int vehicle_handle, float life, float max_
 int vehicle_weapon_ammo(const rf::Entity* vehicle, int weapon_type);
 float vehicle_hud_life(const rf::Entity* vehicle);
 float vehicle_hud_max_life(const rf::Entity* vehicle);
+// A hull's drown or strand clock as its riders see it; false while it is clear of its lethal medium.
+struct VehicleHazardView
+{
+    bool is_sub = false;
+    float warn_left = 0.0f;  // seconds of warning left, 0 once the drain has begun
+    float drain_frac = 0.0f; // 0..1 through the drain
+};
+bool vehicle_hazard_view(rf::Entity* vehicle, VehicleHazardView& out);
+// A demo seek leaves the clocks a client ran for the frames it skipped.
+void vehicle_hazard_clear_client_clocks();
 // False when weapon slot 0 (primary) or 1 (secondary) has no refill pending; else its 0..1 progress.
 bool vehicle_hud_ammo_refill_progress(const rf::Entity* vehicle, int slot_index, float& progress);
 
@@ -343,7 +355,8 @@ bool __cdecl vehicle_rider_keeps_own_orient(rf::Entity* ep);
 // with the HULL frame the view was composed from. False elsewhere; before the widescreen stretch.
 bool vehicle_cockpit_view_pose(rf::Vector3* out_pos, rf::Matrix3* out_orient);
 
-void vehicle_level_init();
+// load_assets is false when leaving multiplayer: nothing will draw what it would load.
+void vehicle_level_init(bool load_assets = true);
 void vehicle_level_init_post();
 void vehicle_do_frame();
 void vehicle_on_multi_shutdown();

@@ -31,6 +31,7 @@
 #include "../hud/multi_scoreboard.h"
 #include "../hud/multi_spectate.h"
 #include "../object/object.h"
+#include "../object/particle_sim.h"
 #include "../multi/multi.h"
 #include "../multi/demo/demo.h"
 #include "../multi/gametype.h"
@@ -248,6 +249,7 @@ CodeInjection after_frame_render_hook{
                 experimental_render();
 #endif
                 debug_render_ui();
+                particle_sim_render_ui();
             }
 
             // To dim our screen, and display "LOADING...", exit limbo here instead.
@@ -266,6 +268,7 @@ FunHook<int(rf::String&, rf::String&, char*)> level_load_hook{
         waypoints_level_reset();
         projector_clear_all();
         atx_level_reset();
+        particle_sim_level_reset();
         alpine_camera_clear_static_mode();
         if (!save_filename.empty())
             xlog::info("Restoring game from save file: {}", save_filename);

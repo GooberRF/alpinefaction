@@ -2635,6 +2635,17 @@ ConsoleCommand2 cl_vehiclehealthbars_cmd{
     "cl_vehiclehealthbars [bool]",
 };
 
+ConsoleCommand2 cl_vehiclehints_cmd{
+    "cl_vehiclehints",
+    [](std::optional<bool> enabled) {
+        g_alpine_game_config.vehicle_control_hints = enabled.value_or(!g_alpine_game_config.vehicle_control_hints);
+        rf::console::print("Vehicle control hints are {}",
+            g_alpine_game_config.vehicle_control_hints ? "enabled" : "disabled");
+    },
+    "Toggle the list of vehicle controls shown while riding a vehicle or turret",
+    "cl_vehiclehints [bool]",
+};
+
 ConsoleCommand2 ui_gametype_help_cmd{
     "ui_gametype_help",
     [] {
@@ -2727,6 +2738,7 @@ void multi_hud_apply_patches()
     ui_gametype_help_cmd.register_cmd();
     cl_vehiclemarkers_cmd.register_cmd();
     cl_vehiclehealthbars_cmd.register_cmd();
+    cl_vehiclehints_cmd.register_cmd();
     ui_miniscoreboard_cmd.register_cmd();
     ui_always_show_specators_cmd.register_cmd();
     ui_simple_server_chat_messages_cmd.register_cmd();

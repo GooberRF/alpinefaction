@@ -110,6 +110,16 @@ Version 1.5.0 (Trillium): Not yet released
 - Show `Your team has the bag` in Team Bagman
 - Add team-relative bag carrier icons and outline colors
 - Raise the limit on items per level from 200 to 2000 for v306+ levels
+- Improve particle handling and performance:
+  - Stop simulating level-placed decorative particle emitters while they are out of view (`cl_particlecull`)
+  - Step particles at a fixed rate (`cl_particlefixedstep`, `cl_particlerate`)
+  - Test distant particles for world collision less often (`cl_particlecollidelod`)
+  - Raise the particle pool size to 8192 (`cl_particlepoolsize`)
+  - Raise the particle emitter limit from 128 to 8192
+  - Render particles, plankton, rain and snow on the GPU with instancing, and simulate rain and snow motion on the GPU (Direct3D 11 renderer only)
+  - Add `dbg_particles` overlay and `dbg_particles_log` to measure particle performance, and `dbg_particlewarmup` to toggle replaying a hidden particle emitter when it comes back into view
+- Raise the pitch of hit sounds as consecutive hits land, toggleable with `cl_hitsounds_streakpitch`
+- Raise the limit of simultaneously playing sounds from 64 to 127
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Add `ui_color_console` console command to set the console background color
@@ -233,6 +243,8 @@ Version 1.5.0 (Trillium): Not yet released
 - Fix new levels in the level editor defaulting to legacy `Cyclic_Timer` and mover behaviour
 - Fix Salvage flag and Bagman bag failing to spawn when a level's item count is at the engine limit
 - Fix crash reports leaving out memory regions and backtrace frames above 2 GB when the game or level editor runs with 4 GB of address space
+- Fix spectate control hints overlapping the team scores in Wipeout
+- Fix long key names in spectate control hints running off the left edge of the screen
 
 [@is-this-c](https://github.com/is-this-c)
 - Let `Caps Lock` capitalize

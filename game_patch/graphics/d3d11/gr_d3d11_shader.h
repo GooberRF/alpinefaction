@@ -27,6 +27,9 @@ namespace gr::d3d11
         outline_standard,
         gamma,
         decoration,
+        particle,
+        particle_stretched,
+        weather,
     };
 
     enum class PixelShaderId
@@ -66,6 +69,12 @@ namespace gr::d3d11
                 return "gamma_vs.bin";
             case VertexShaderId::decoration:
                 return "decoration_vs.bin";
+            case VertexShaderId::particle:
+                return "particle_vs.bin";
+            case VertexShaderId::particle_stretched:
+                return "particle_stretched_vs.bin";
+            case VertexShaderId::weather:
+                return "weather_vs.bin";
             default:
                 return nullptr;
         }
@@ -90,6 +99,11 @@ namespace gr::d3d11
                 return VertexLayout::standard; // unused — gamma VS uses SV_VertexID, no input layout
             case VertexShaderId::decoration:
                 return VertexLayout::standard_instanced;
+            case VertexShaderId::particle:
+            case VertexShaderId::particle_stretched:
+                return VertexLayout::particle_instance;
+            case VertexShaderId::weather:
+                return VertexLayout::weather_seed;
             default:
                 return VertexLayout::standard;
         }

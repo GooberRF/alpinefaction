@@ -250,67 +250,77 @@ int snd_pc_play_3d_new(int handle, const rf::Vector3& pos, float vol_scale, bool
 }
 
 
+static int snd_play_3d_instance(int handle, const rf::Vector3& pos, float volume, int group, bool looping)
+{
+    xlog::trace("snd_play_3d {} {:.2f} {}", handle, volume, group);
+
+    // Upper-bound guard
+    if (!rf::sound_enabled || handle < 0 || handle >= rf::g_num_sounds) {
+        return -1;
+    }
+    if (rf::snd_load_hint(handle) != 0) {
+        xlog::warn("Failed to load sound {}", handle);
+        return -1;
+    }
+
+    int instance_index = snd_get_free_instance();
+    if (instance_index < 0) {
+        return -1;
+    }
+
+    float base_volume_2d;
+    float pan;
+    rf::snd_calculate_2d_from_3d_info(handle, pos, &pan, &base_volume_2d, volume);
+    // xlog::warn("snd_play_3d vol {:.2f}", vol_scale);
+    auto& instance = rf::sound_instances[instance_index];
+    int sig;
+    if (rf::ds3d_enabled) {
+        // Note that snd_pc_play_3d_new calls snd_calculate_2d_from_3d_info on its own
+        // so use volume here instead of base_volume_2d
+        float vol_scale = volume * rf::snd_group_volume[group];
+        sig = snd_pc_play_3d_new(handle, pos, vol_scale, looping);
+    }
+    else {
+        float vol_scale = base_volume_2d * rf::snd_group_volume[group];
+        if (looping) {
+            sig = rf::snd_pc_play_looping(handle, vol_scale, pan, 0.0f, true);
+        }
+        else {
+            sig = rf::snd_pc_play(handle, vol_scale, pan, 0.0f, true);
+        }
+    }
+    xlog::trace("snd_play_3d handle {} pos <{:.2f} {:.2f} {:.2f}> vol {:.2f} sig {}", handle, pos.x, pos.y, pos.z,
+                volume, sig);
+    if (sig < 0) {
+        return -1;
+    }
+
+    instance.sig = sig;
+    instance.handle = handle;
+    instance.group = group;
+    instance.base_volume = base_volume_2d;
+    instance.pan = pan;
+    instance.is_3d_sound = true;
+    instance.pos = pos;
+    instance.base_volume_3d = volume;
+    instance.use_count++;
+
+    int instance_handle = instance_index | (instance.use_count << 8);
+    return instance_handle;
+}
+
 FunHook<int(int, const rf::Vector3&, float, const rf::Vector3&, int)> snd_play_3d_hook{
     0x005056A0,
     [](int handle, const rf::Vector3& pos, float volume, const rf::Vector3&, int group) {
-        xlog::trace("snd_play_3d {} {:.2f} {}", handle, volume, group);
-
-        // Upper-bound guard
-        if (!rf::sound_enabled || handle < 0 || handle >= rf::g_num_sounds) {
-            return -1;
-        }
-        if (rf::snd_load_hint(handle) != 0) {
-            xlog::warn("Failed to load sound {}", handle);
-            return -1;
-        }
-
-
-        bool looping = rf::sounds[handle].is_looping;
-        int instance_index = snd_get_free_instance();
-        if (instance_index < 0) {
-            return -1;
-        }
-
-        float base_volume_2d;
-        float pan;
-        rf::snd_calculate_2d_from_3d_info(handle, pos, &pan, &base_volume_2d, volume);
-        // xlog::warn("snd_play_3d vol {:.2f}", vol_scale);
-        auto& instance = rf::sound_instances[instance_index];
-        int sig;
-        if (rf::ds3d_enabled) {
-            // Note that snd_pc_play_3d_new calls snd_calculate_2d_from_3d_info on its own
-            // so use volume here instead of base_volume_2d
-            float vol_scale = volume * rf::snd_group_volume[group];
-            sig = snd_pc_play_3d_new(handle, pos, vol_scale, looping);
-        }
-        else {
-            float vol_scale = base_volume_2d * rf::snd_group_volume[group];
-            if (looping) {
-                sig = rf::snd_pc_play_looping(handle, vol_scale, pan, 0.0f, true);
-            }
-            else {
-                sig = rf::snd_pc_play(handle, vol_scale, pan, 0.0f, true);
-            }
-        }
-        xlog::trace("snd_play_3d handle {} pos <{:.2f} {:.2f} {:.2f}> vol {:.2f} sig {}", handle, pos.x, pos.y, pos.z, volume, sig);
-        if (sig < 0) {
-            return -1;
-        }
-
-        instance.sig = sig;
-        instance.handle = handle;
-        instance.group = group;
-        instance.base_volume = base_volume_2d;
-        instance.pan = pan;
-        instance.is_3d_sound = true;
-        instance.pos = pos;
-        instance.base_volume_3d = volume;
-        instance.use_count++;
-
-        int instance_handle = instance_index | (instance.use_count << 8);
-        return instance_handle;
+        const bool looping = handle >= 0 && handle < rf::g_num_sounds && rf::sounds[handle].is_looping;
+        return snd_play_3d_instance(handle, pos, volume, group, looping);
     },
 };
+
+int snd_play_3d_looping(int handle, const rf::Vector3& pos, float volume, int group)
+{
+    return snd_play_3d_instance(handle, pos, volume, group, true);
+}
 
 FunHook<void(int, const rf::Vector3&, const rf::Vector3&, float)> snd_change_3d_hook{
     0x005058C0,
@@ -588,6 +598,26 @@ bool snd_instance_is_playing(int instance_handle)
     const auto& instance = rf::sound_instances[instance_index];
     return instance.handle >= 0 && instance.use_count == (instance_handle >> 8)
         && rf::snd_pc_is_playing(instance.sig);
+}
+
+void snd_instance_set_pitch(int instance_handle, float ratio)
+{
+    if (rf::sound_backend != rf::SOUND_BACKEND_DS || !snd_instance_is_playing(instance_handle)) {
+        return;
+    }
+    const int chnl = rf::snd_ds_get_channel(rf::sound_instances[static_cast<uint8_t>(instance_handle)].sig);
+    if (chnl < 0) {
+        return;
+    }
+    IDirectSoundBuffer* buffer = rf::ds_channels[chnl].pdsb;
+    // Room for a WAVEFORMATEXTENSIBLE: GetFormat fails rather than truncate.
+    alignas(WAVEFORMATEX) BYTE format[64]{};
+    if (!buffer || FAILED(buffer->GetFormat(reinterpret_cast<WAVEFORMATEX*>(format), sizeof(format), nullptr))) {
+        return;
+    }
+    const float freq = reinterpret_cast<const WAVEFORMATEX*>(format)->nSamplesPerSec * ratio;
+    buffer->SetFrequency(static_cast<DWORD>(std::clamp(freq, static_cast<float>(DSBFREQUENCY_MIN),
+                                                       static_cast<float>(DSBFREQUENCY_MAX))));
 }
 
 void gamesound_parse_custom_sounds() 

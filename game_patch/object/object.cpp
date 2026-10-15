@@ -43,6 +43,7 @@
 #include "obj_collision.h"
 #include "object.h"
 #include "object_private.h"
+#include "particle_sim.h"
 #include "../misc/level.h"
 
 std::string get_object_type_string(int type) {
@@ -1352,6 +1353,7 @@ void object_do_patch()
     monitor_do_patch();
     mover_do_patch();
     particle_do_patch();
+    particle_sim_do_patch();
     obj_light_apply_patch();
     obj_collision_apply_patch();
     clock_do_patch();

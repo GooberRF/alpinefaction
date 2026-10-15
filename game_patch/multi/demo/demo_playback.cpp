@@ -756,6 +756,7 @@ namespace
         explosion_flash_lights_destroy_all();
         vehicle_tracers_clear();
         vehicle_fx_clear();
+        vehicle_hazard_clear_client_clocks();
     }
 
     // A burst that ends between a fire-ON and fire-OFF obj_update leaves the entity's

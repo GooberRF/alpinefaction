@@ -27,6 +27,8 @@ bool vehicle_physics_camera_toggle_view();
 
 // Whether the local player's current seat is viewed through the orbit camera.
 bool vehicle_physics_camera_local_seat_is_orbit();
+// Whether the local player's seat offers a third-person view to toggle into.
+bool vehicle_physics_camera_local_can_toggle_view();
 
 // A third-person driver's mouse and look keys turn the orbit, not the hull.
 bool vehicle_physics_camera_owns_driver_look();

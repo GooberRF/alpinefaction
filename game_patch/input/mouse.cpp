@@ -126,7 +126,7 @@ void consume_raw_mouse_deltas(float& out_pitch, float& out_yaw, bool apply_scope
         if (rf::local_player->fpgun_data.scanning_for_target) {
             sens *= scanner_sensitivity_value;
         } else {
-            float zoom = std::max(rf::local_player->fpgun_data.zoom_factor, vehicle_turret_zoom_fov_scale());
+            float zoom = std::max(rf::local_player->fpgun_data.zoom_factor, vehicle_gun_zoom_fov_scale());
             if (zoom > 1.0f) {
                 if (g_alpine_game_config.scope_static_sensitivity) {
                     // Static: flat multiplier regardless of zoom level
@@ -470,9 +470,9 @@ CodeInjection static_zoom_sensitivity_patch2 {
                 regs.al = static_cast<int8_t>(1); // make cmp at 0x004309DA test true
             }
         }
-        else if (player && player == rf::local_player && vehicle_turret_zoom_fov_scale() > 1.0f) {
+        else if (player && player == rf::local_player && vehicle_gun_zoom_fov_scale() > 1.0f) {
             // No fpgun zoom for the stock dynamic branch to read, so both scope rules are applied here.
-            const float divisor = dynamic_scope_sensitivity_divisor(vehicle_turret_zoom_fov_scale());
+            const float divisor = dynamic_scope_sensitivity_divisor(vehicle_gun_zoom_fov_scale());
             applied_static_sensitivity_value = g_alpine_game_config.scope_static_sensitivity
                 ? scope_sensitivity_value
                 : (divisor > 1.0f ? 1.0f / divisor : 1.0f);

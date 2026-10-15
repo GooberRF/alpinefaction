@@ -102,11 +102,13 @@ struct AlpineGameSettings
     bool world_hud_team_player_labels = false;
     bool show_location_pings = true;
     bool play_hit_sounds = true;
+    bool hit_sound_streak_pitch = true;
     bool show_awards = true;
     bool vehicle_respawn_markers = true;
     bool vehicle_health_bars = true;
     bool vehicle_driver_third_person = false;
     bool vehicle_gunner_third_person = false;
+    bool vehicle_control_hints = true;
 
     // Third-person vehicle camera. Times are smoothing times in seconds (0 = rigid).
     bool vehicle_cam_recenter = true; // idle drift back behind the vehicle
@@ -283,6 +285,23 @@ struct AlpineGameSettings
     void set_scope_glass(int value)
     {
         scope_glass = std::clamp(value, 0, 2);
+    }
+    bool particle_sim_cull = true; // skip simulating level particle emitters that are not being rendered
+    bool particle_sim_fixed_step = true; // step cosmetic particle lists at a fixed rate instead of once per frame
+    bool particle_sim_collide_lod = true; // test cosmetic particle world collision less often with distance
+    static constexpr int min_particle_pool_size = 1100;
+    static constexpr int max_particle_pool_size = 16384;
+    int particle_pool_size = 8192; // 0 keeps the stock capacities (500 and 1100)
+    void set_particle_pool_size(int size)
+    {
+        particle_pool_size = size <= 0 ? 0 : std::clamp(size, min_particle_pool_size, max_particle_pool_size);
+    }
+    static constexpr int min_particle_sim_rate = 30;
+    static constexpr int max_particle_sim_rate = 240;
+    int particle_sim_rate = 60;
+    void set_particle_sim_rate(int hz)
+    {
+        particle_sim_rate = std::clamp(hz, min_particle_sim_rate, max_particle_sim_rate);
     }
     bool show_enemy_bullets = true;
     bool fps_counter = true;
