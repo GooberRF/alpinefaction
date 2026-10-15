@@ -6,7 +6,7 @@ IDR_MAIN_FRAME ICON "resources/icon.ico"
 
 // Main frame top bar
 LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
-IDD_MAIN_FRAME_TOP_BAR DIALOG 0, 0, 812, 21
+IDD_MAIN_FRAME_TOP_BAR DIALOG 0, 0, 840, 21
 STYLE DS_SETFONT | WS_CHILDWINDOW
 FONT 8, "MS Sans Serif"
 {
@@ -34,13 +34,15 @@ FONT 8, "MS Sans Serif"
     CONTROL     "", ID_GIZMO_ROTATE, "Button", BS_OWNERDRAW | WS_TABSTOP, 457, 4, 14, 14
     CONTROL     "", ID_GIZMO_SCALE, "Button", BS_OWNERDRAW | WS_TABSTOP, 471, 4, 14, 14
     CONTROL     "", ID_GIZMO_SNAP, "Button", BS_OWNERDRAW | WS_TABSTOP, 488, 4, 14, 14
-    PUSHBUTTON  "Lighting", ID_CALCULATE_MAPS_AND_LIGHT, 505, 4, 36, 14
-    PUSHBUTTON  "Save", ID_FILE_SAVE, 544, 4, 26, 14
-    PUSHBUTTON  "Pack", ID_CREATE_LEVEL_PACKFILE, 573, 4, 26, 14
-    PUSHBUTTON  "Play", 0x800B, 602, 4, 24, 14
-    PUSHBUTTON  "Play (camera)", 0x8078, 629, 4, 49, 14
-    PUSHBUTTON  "Play in multi", ID_PLAY_MULTI, 681, 4, 47, 14
-    PUSHBUTTON  "Play in multi (camera)", ID_PLAY_MULTI_CAMERA, 731, 4, 74, 14
+    CONTROL     "", ID_GIZMO_TEXLOCK, "Button", BS_OWNERDRAW | WS_TABSTOP, 502, 4, 14, 14
+    CONTROL     "", ID_GIZMO_TEXPREVIEW, "Button", BS_OWNERDRAW | WS_TABSTOP, 516, 4, 14, 14
+    PUSHBUTTON  "Lighting", ID_CALCULATE_MAPS_AND_LIGHT, 533, 4, 36, 14
+    PUSHBUTTON  "Save", ID_FILE_SAVE, 572, 4, 26, 14
+    PUSHBUTTON  "Pack", ID_CREATE_LEVEL_PACKFILE, 601, 4, 26, 14
+    PUSHBUTTON  "Play", 0x800B, 630, 4, 24, 14
+    PUSHBUTTON  "Play (camera)", 0x8078, 657, 4, 49, 14
+    PUSHBUTTON  "Play in multi", ID_PLAY_MULTI, 709, 4, 47, 14
+    PUSHBUTTON  "Play in multi (camera)", ID_PLAY_MULTI_CAMERA, 759, 4, 74, 14
 }
 
 LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
@@ -281,15 +283,22 @@ FONT 8, "MS Sans Serif"
     PUSHBUTTON  "Print (Ctrl+P)", 1515, 7, 164, 50, 14
     PUSHBUTTON  "Non-Uniform Scaling", 1212, 87, 164, 75, 14
     AUTOCHECKBOX "Show Tiled", 1214, 7, 187, 79, 10
+    AUTOCHECKBOX "Preserve aspect ratio when rotating", IDC_UV_ROTATE_KEEP_ASPECT, 7, 199, 150, 10
+    AUTOCHECKBOX "Color each face", IDC_UV_FACE_COLORS, 7, 211, 150, 10
 
-    LTEXT       "Click = Select One Vertex", -1, 7, 217, 98, 8
-    LTEXT       "Hold Shift = Move Camera", -1, 7, 228, 84, 8
-    LTEXT       "Hold Ctrl = Multi Select", -1, 7, 239, 95, 10
-    LTEXT       "Hold Alt = Multi Deselect", -1, 7, 250, 95, 10
-    LTEXT       "Hold M = Move Mode", -1, 7, 262, 95, 8
-    LTEXT       "Hold R = Rotate Mode", -1, 7, 273, 95, 8
-    LTEXT       "Hold S = Scale Mode", -1, 7, 284, 95, 8
-    LTEXT       "Shift+S = Non-Uniform Scaling", -1, 7, 295, 95, 8
+    LTEXT       "Click / Drag = Select", -1, 7, 229, 98, 8
+    LTEXT       "Hold Shift = Move Camera", -1, 7, 240, 84, 8
+    LTEXT       "Hold Ctrl = Multi Select", -1, 7, 251, 95, 10
+    LTEXT       "Hold Alt = Multi Deselect", -1, 7, 262, 95, 10
+    LTEXT       "Hold M = Move Mode", -1, 7, 274, 95, 8
+    LTEXT       "Hold R = Rotate Mode", -1, 7, 285, 95, 8
+    LTEXT       "Hold S = Scale Mode", -1, 7, 296, 95, 8
+    LTEXT       "Shift+S = Non-Uniform Scaling", -1, 7, 307, 95, 8
+
+    GROUPBOX    "UVs", -1, 7, 320, 156, 52
+    PUSHBUTTON  "Select All (Ctrl+A)", IDC_UV_SELECT_ALL, 15, 332, 68, 14
+    PUSHBUTTON  "Fit UVs", IDC_UV_FIT, 88, 332, 68, 14
+    PUSHBUTTON  "Auto Unwrap", IDC_UV_AUTO_UNWRAP, 15, 350, 68, 14
 
     CONTROL     "", 1393, WC_STATIC, SS_BLACKFRAME, 173, 8, 481, 410
 
@@ -372,6 +381,8 @@ IDR_MAIN_FRAME MENU
         MENUITEM "Show objects as &Bounding Boxes", 32891
         MENUITEM SEPARATOR
         MENUITEM "Show Path Node Connections", 32900
+        MENUITEM SEPARATOR
+        MENUITEM "Textured Brush Preview\t7", ID_GIZMO_TEXPREVIEW
     }
     POPUP "&Tools"
     {
@@ -1165,6 +1176,100 @@ FONT 8, "MS Sans Serif"
     PUSHBUTTON      "Save", 1387, 11, 264, 50, 14
     PUSHBUTTON      "Load", 1388, 67, 264, 50, 14
     PUSHBUTTON      "Mirror", IDC_GROUP_MIRROR, 11, 281, 50, 14
+}
+
+// Texture mode side panel (stock dialog 189 + Wrap, Fit and Justify)
+LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
+IDD_TEXTURE_MODE_PANEL DIALOGEX 0, 0, 129, 402
+STYLE DS_SETFONT | WS_CHILD | WS_VISIBLE | WS_BORDER
+EXSTYLE WS_EX_CLIENTEDGE
+FONT 8, "MS Sans Serif"
+{
+    GROUPBOX        "Texture Mode", -1, 4, 4, 121, 394
+    CONTROL         "", 1263, "Static", SS_ETCHEDFRAME | WS_CHILD | WS_VISIBLE, 9, 19, 110, 102
+    COMBOBOX        1457, 10, 127, 108, 183, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    PUSHBUTTON      "<", 1267, 93, 142, 10, 14
+    PUSHBUTTON      ">", 1268, 108, 142, 10, 14
+    COMBOBOX        1270, 10, 159, 108, 160, CBS_DROPDOWNLIST | CBS_SORT | WS_VSCROLL | WS_TABSTOP
+    PUSHBUTTON      "Apply", 1269, 9, 176, 49, 14
+    PUSHBUTTON      "Browse", 1485, 69, 176, 50, 14
+    COMBOBOX        1433, 10, 195, 49, 78, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    PUSHBUTTON      "Apply Map", 1403, 69, 193, 49, 14
+    PUSHBUTTON      "Resize Map", 1434, 10, 211, 50, 14
+    PUSHBUTTON      "Snap Map", 1435, 69, 211, 50, 14
+    LTEXT           "Axis:", -1, 11, 231, 17, 8
+    PUSHBUTTON      "X", IDC_TEXTURE_MAP_AXIS_X, 29, 228, 12, 14
+    PUSHBUTTON      "Y", IDC_TEXTURE_MAP_AXIS_Y, 42, 228, 12, 14
+    PUSHBUTTON      "Z", IDC_TEXTURE_MAP_AXIS_Z, 55, 228, 12, 14
+    LTEXT           "Wraps:", -1, 71, 231, 23, 8
+    EDITTEXT        IDC_TEXTURE_MAP_WRAPS, 94, 229, 15, 12, ES_AUTOHSCROLL | ES_NUMBER
+    CONTROL         "", IDC_TEXTURE_MAP_WRAPS_SPIN, UPDOWN_CLASS, UDS_ARROWKEYS, 109, 229, 10, 12
+    PUSHBUTTON      "Flip X", 1362, 11, 248, 31, 14
+    PUSHBUTTON      "Flip Y", 1363, 49, 248, 31, 14
+    PUSHBUTTON      "Wrap", IDC_TEXTURE_WRAP, 87, 248, 31, 14
+    PUSHBUTTON      "Select Faces", 1380, 11, 267, 50, 14
+    PUSHBUTTON      "Pick Texture", 1379, 68, 267, 50, 14
+    PUSHBUTTON      "Fit", IDC_TEXTURE_FIT, 11, 286, 50, 14
+    PUSHBUTTON      "Fit Aspect", IDC_TEXTURE_FIT_ASPECT, 68, 286, 50, 14
+    LTEXT           "Tiles U:", -1, 11, 306, 26, 8
+    EDITTEXT        IDC_TEXTURE_FIT_U, 37, 304, 24, 12, ES_AUTOHSCROLL
+    CONTROL         "", IDC_TEXTURE_FIT_U_SPIN, UPDOWN_CLASS, UDS_ARROWKEYS, 61, 304, 10, 12
+    LTEXT           "V:", -1, 76, 306, 8, 8
+    EDITTEXT        IDC_TEXTURE_FIT_V, 85, 304, 24, 12, ES_AUTOHSCROLL
+    CONTROL         "", IDC_TEXTURE_FIT_V_SPIN, UPDOWN_CLASS, UDS_ARROWKEYS, 109, 304, 10, 12
+    LTEXT           "Rotation:", -1, 11, 320, 30, 8
+    COMBOBOX        IDC_TEXTURE_FIT_ROTATION, 46, 318, 40, 80, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    AUTOCHECKBOX    "Each face separately", IDC_TEXTURE_EACH_FACE, 11, 333, 100, 10
+    AUTOCHECKBOX    "Paste texture", IDC_TEXTURE_PASTE_TEXTURE, 11, 345, 100, 10
+    LTEXT           "Justify:", -1, 11, 362, 26, 8
+    PUSHBUTTON      "L", IDC_TEXTURE_JUSTIFY_LEFT, 38, 359, 15, 14
+    PUSHBUTTON      "R", IDC_TEXTURE_JUSTIFY_RIGHT, 54, 359, 15, 14
+    PUSHBUTTON      "T", IDC_TEXTURE_JUSTIFY_TOP, 70, 359, 15, 14
+    PUSHBUTTON      "B", IDC_TEXTURE_JUSTIFY_BOTTOM, 86, 359, 15, 14
+    PUSHBUTTON      "C", IDC_TEXTURE_JUSTIFY_CENTER, 102, 359, 15, 14
+    PUSHBUTTON      "UV Unwrap", 1392, 11, 378, 50, 14
+    PUSHBUTTON      "Update", 1523, 68, 378, 50, 14
+    LTEXT           "Static", 1493, 12, 145, 77, 8, WS_GROUP
+}
+
+// Texture Browser (stock dialog 180 + Format filter)
+LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
+IDD_TEXTURE_BROWSER DIALOGEX 0, 0, 550, 508
+STYLE DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_VISIBLE | WS_CAPTION | WS_SYSMENU | WS_VSCROLL
+CAPTION "Texture Browser"
+FONT 8, "MS Sans Serif"
+{
+    GROUPBOX        "Current Texture", -1, 7, 7, 120, 147
+    CONTROL         "", 1488, "Static", SS_ETCHEDFRAME | WS_CHILD | WS_VISIBLE, 13, 17, 108, 104
+    CTEXT           "Static", 1043, 13, 126, 108, 8
+    CTEXT           "Static", 1493, 13, 141, 108, 8
+    GROUPBOX        "Filters", -1, 7, 159, 120, 113
+    AUTOCHECKBOX    "Show Only Used", 1214, 13, 172, 69, 10
+    LTEXT           "Folder:", -1, 14, 188, 22, 8
+    COMBOBOX        1494, 45, 186, 76, 160, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "Sort by:", -1, 13, 205, 25, 8
+    COMBOBOX        1495, 45, 202, 76, 160, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "Name:", -1, 14, 221, 22, 8
+    EDITTEXT        1234, 45, 218, 76, 14, ES_AUTOHSCROLL
+    LTEXT           "Material:", -1, 14, 238, 28, 8
+    COMBOBOX        1271, 45, 236, 76, 160, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "Format:", -1, 14, 256, 28, 8
+    COMBOBOX        IDC_TEXTURE_BROWSER_FORMAT, 45, 254, 76, 160, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "Display Size:", -1, 7, 279, 41, 8
+    COMBOBOX        1491, 54, 277, 73, 174, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    AUTOCHECKBOX    "Show Tiled", 1496, 7, 294, 51, 10
+    CONTROL         "", 1486, "Static", SS_BLACKFRAME | WS_CHILD | WS_VISIBLE, 139, 7, 389, 421
+    CONTROL         "", 1506, "Static", SS_BLACKFRAME | WS_CHILD | WS_VISIBLE, 139, 434, 389, 49
+    PUSHBUTTON      "Change", 1514, 148, 487, 36, 14
+    PUSHBUTTON      "Change", 1513, 196, 487, 35, 14
+    PUSHBUTTON      "Change", 1512, 245, 487, 35, 14
+    PUSHBUTTON      "Change", 1511, 293, 487, 35, 14
+    PUSHBUTTON      "Change", 1510, 341, 487, 35, 14
+    PUSHBUTTON      "Change", 1509, 389, 487, 35, 14
+    PUSHBUTTON      "Change", 1508, 437, 487, 35, 14
+    PUSHBUTTON      "Change", 1507, 484, 487, 35, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 15, 487, 50, 14
+    DEFPUSHBUTTON   "OK", IDOK, 69, 487, 50, 14
 }
 
 // Keyframe Properties dialog (stock dialog 280 + Hold Open checkbox)

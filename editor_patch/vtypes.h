@@ -492,6 +492,8 @@ static auto& editor_vmesh_get_materials_array = addr_as_ref<void(EditorVMesh* vm
 // Bitmap load: loads a texture file, returns handle (or -1 on failure)
 static auto& bm_load = addr_as_ref<int(const char* filename, int path_id, int generate_mipmaps)>(0x004BBBF0);
 static auto& bm_get_filename = addr_as_ref<const char*(int bm_handle)>(0x004BDC60);
+// A bitmap's size in pixels. The handle must be a loaded bitmap's: -1 is taken for an animation slot's.
+static auto& bm_get_dimensions = addr_as_ref<void __cdecl(int bm_handle, int* width, int* height)>(0x004BCB80);
 static auto& bm_get_mipmap_info = addr_as_ref<void(int bm_handle, int* width, int* height,
                                                   int* num_pixels_in_all_levels, int* mip_levels)>(0x004BCBD0);
 // Nonzero when the bitmap's pixel format carries alpha (formats 4, 5 and 7).
@@ -640,6 +642,10 @@ static auto& project_to_screen_2d = addr_as_ref<bool(const void* world_pos, floa
 // crossings that a raw project-and-draw pass loses. Colour comes from set_draw_color.
 // Box dimensions are full size; the routine halves them itself.
 static auto& draw_wireframe_sphere_3d = addr_as_ref<bool(const Vector3* center, float radius, uint32_t mode)>(0x004CB4F0);
+// A cylinder about orient's uvec, its height centered on pos
+static auto& draw_cylinder_gizmo =
+    addr_as_ref<bool __cdecl(const Vector3* pos, const Matrix3* orient, float radius, float height, uint32_t mode)>(
+        0x004CB490);
 static auto& draw_wireframe_box_3d =
     addr_as_ref<bool(const Vector3* center, const Matrix3* orient, const Vector3* dims, uint32_t mode)>(0x004CB840);
 // Draw mode the stock editor passes to the shape/line routines.
@@ -680,6 +686,144 @@ static auto& view_see_through = addr_as_ref<int>(0x006C9A94);
 static auto& view_room_colors = addr_as_ref<int>(0x006C9A98);
 static auto& view_lightmaps_only = addr_as_ref<int>(0x006C9AA4);
 static auto& painting_view_index = addr_as_ref<int>(0x006C9ACC);
+
+// ─── Texture mode panel ──────────────────────────────────────────────────────
+
+// Resize Map's dialog (252), kept for the session. Cylinder Map reads Radius; Height only sizes the gizmo.
+struct ResizeMapDialog
+{
+    char _pad_00[0x5C];
+    DedFloatSpinner* radius; // +0x5C
+    DedFloatSpinner* height; // +0x60
+};
+static_assert(offsetof(ResizeMapDialog, radius) == 0x5C);
+static_assert(offsetof(ResizeMapDialog, height) == 0x60);
+// The map combo's items; Sphere is Alpine's, added after the stock three
+enum TextureMapType : int
+{
+    TEXTURE_MAP_BOX = 0,
+    TEXTURE_MAP_CYLINDER = 1,
+    TEXTURE_MAP_PLANAR = 2,
+    TEXTURE_MAP_SPHERE = 3,
+};
+// Texels per meter Box, Cylinder and Planar Map lay textures out at
+static auto& texture_map_pixels_per_meter = addr_as_ref<float>(0x0057CADC);
+
+// ─── UV Unwrap ───────────────────────────────────────────────────────────────
+
+struct BrushNode;
+struct GFace;
+struct GFaceVertex;
+// A corner of a face being unwrapped, one per corner (FUN_00473f10); each face's corners are consecutive
+struct UvUnwrapVertex
+{
+    BrushNode* brush;         // +0x00
+    GFace* face;              // +0x04
+    GFaceVertex* face_vertex; // +0x08
+    float orig_u;             // +0x0C  restored by Cancel
+    float orig_v;             // +0x10
+    bool selected;            // +0x14
+};
+static_assert(offsetof(UvUnwrapVertex, face) == 0x04);
+static_assert(offsetof(UvUnwrapVertex, face_vertex) == 0x08);
+static_assert(offsetof(UvUnwrapVertex, orig_u) == 0x0C);
+static_assert(offsetof(UvUnwrapVertex, selected) == 0x14);
+static_assert(sizeof(UvUnwrapVertex) == 0x18);
+// The dialog, CDedLevel::dialog_panels[uv_unwrap_dialog_panel_index]
+struct UvUnwrapDialog
+{
+    char _pad_00[0xC0];
+    uint8_t line_color[4];    // +0xC0  r, g, b, a
+};
+static_assert(offsetof(UvUnwrapDialog, line_color) == 0xC0);
+constexpr int uv_unwrap_dialog_panel_index = (0x47C - 0x444) / 4;
+// UV Unwrap's drag mode while its key is held
+enum UvUnwrapDragMode : int
+{
+    UV_UNWRAP_DRAG_SELECT = 0,
+    UV_UNWRAP_DRAG_SELECT_ADD = 1,    // Ctrl
+    UV_UNWRAP_DRAG_SELECT_REMOVE = 2, // Alt
+    UV_UNWRAP_DRAG_MOVE = 3,
+    UV_UNWRAP_DRAG_ROTATE = 4,
+    UV_UNWRAP_DRAG_SCALE = 5,
+};
+static auto& uv_unwrap_vertices = addr_as_ref<VArray<UvUnwrapVertex*>>(0x006CA558);
+static auto& uv_unwrap_drag_mode = addr_as_ref<int>(0x006CA618); // UvUnwrapDragMode
+static auto& uv_unwrap_pivot_u = addr_as_ref<float>(0x006CA5B0);
+static auto& uv_unwrap_pivot_v = addr_as_ref<float>(0x006CA5B4);
+// 1 / the unwrapped face's texture width and height
+static auto& uv_unwrap_texel_u = addr_as_ref<float>(0x006CA584);
+static auto& uv_unwrap_texel_v = addr_as_ref<float>(0x006CA5D8);
+// The Rotation Increment list's degrees and its selection
+static auto& uv_unwrap_rotate_steps = addr_as_ref<float[8]>(0x0057AA68);
+static auto& uv_unwrap_rotate_step_index = addr_as_ref<int>(0x0057AA8C);
+// Set while a button pressed in the view is down
+static auto& uv_unwrap_dragging = addr_as_ref<bool>(0x006CA622);
+// Set from a move, rotate or scale's first step until its key comes up
+static auto& uv_unwrap_transforming = addr_as_ref<bool>(0x006CA621);
+// Non-zero in Decal UVs mode
+static auto& uv_unwrap_decal_mode = addr_as_ref<int>(0x006CA61C);
+// The view: UV at its top left, UV per pixel, and the center and extent FUN_00473ab0 frames it from
+static auto& uv_unwrap_view_u0 = addr_as_ref<float>(0x006CA578);
+static auto& uv_unwrap_view_v0 = addr_as_ref<float>(0x006CA57C);
+static auto& uv_unwrap_view_du = addr_as_ref<float>(0x006CA5F0);
+static auto& uv_unwrap_view_dv = addr_as_ref<float>(0x006CA5F4);
+static auto& uv_unwrap_view_center_u = addr_as_ref<float>(0x006CA600);
+static auto& uv_unwrap_view_center_v = addr_as_ref<float>(0x006CA604);
+static auto& uv_unwrap_view_extent = addr_as_ref<float>(0x006CA52C);
+// FUN_004741b0: selects a corner, and its vertex in its brush's vertex selection
+static auto& uv_unwrap_select = addr_as_ref<void __cdecl(UvUnwrapVertex* vertex)>(0x004741B0);
+// UV Unwrap's own undo: FUN_004757e0 opens a step from the selected corners' UVs, FUN_00475900 records what they
+// became (by selection order, so the selection must not change in between)
+inline void uv_unwrap_push_undo(UvUnwrapDialog* dialog)
+{
+    AddrCaller{0x004757E0}.this_call(dialog);
+}
+inline void uv_unwrap_record_undo(UvUnwrapDialog* dialog)
+{
+    AddrCaller{0x00475900}.this_call(dialog);
+}
+// FUN_00474e70: pushes the unwrapped faces' UVs to the level geometry
+inline void uv_unwrap_commit(UvUnwrapDialog* dialog)
+{
+    AddrCaller{0x00474E70}.this_call(dialog);
+}
+// FUN_00473ab0: lays the view out again from its center and extent
+inline void uv_unwrap_layout(UvUnwrapDialog* dialog)
+{
+    AddrCaller{0x00473AB0}.this_call(dialog);
+}
+// 2D line in the current viewport, with the mode at gr_line_2d_mode
+static auto& gr_line_2d = addr_as_ref<void __cdecl(float x1, float y1, float x2, float y2, uint32_t mode)>(0x004B9EF0);
+static auto& gr_line_2d_mode = addr_as_ref<uint32_t>(0x0147D688);
+
+// ─── Particles ───────────────────────────────────────────────────────────────
+
+enum EditorParticleEmitterFlags : int
+{
+    EPEF_CONTINUOUS = 0x4,
+};
+// Partial runtime emitter, the layout of RF's ParticleEmitter (0x00481E10 takes it from the pool)
+struct EditorParticleEmitter
+{
+    char _pad_00[0x30];
+    float min_spawn_delay; // +0x30
+    float max_spawn_delay; // +0x34
+    int emitter_flags;     // +0x38 EditorParticleEmitterFlags
+    char _pad_3c[0x154 - 0x3C];
+    int spawn_timer;       // +0x154 ms timestamp, negative while unset
+};
+static_assert(offsetof(EditorParticleEmitter, min_spawn_delay) == 0x30);
+static_assert(offsetof(EditorParticleEmitter, max_spawn_delay) == 0x34);
+static_assert(offsetof(EditorParticleEmitter, emitter_flags) == 0x38);
+static_assert(offsetof(EditorParticleEmitter, spawn_timer) == 0x154);
+// Partial particle, the layout of RF's Particle
+struct EditorParticle
+{
+    char _pad_00[0x18];
+    Vector3 velocity; // +0x18
+};
+static_assert(offsetof(EditorParticle, velocity) == 0x18);
 
 // ─── Render Params ───────────────────────────────────────────────────────────
 
@@ -1022,6 +1166,8 @@ constexpr uint32_t mode_vertex = gr_mode(0, 0, 0, 0, 4, 0);
 // vertex colour and alpha, alpha blended (0x004deda0: SRCALPHA / INVSRCALPHA), z-buffer read without write.
 // RED never culls (0x004ecdae sets D3DCULL_NONE), so each polygon shows from both sides.
 constexpr uint32_t mode_vertex_alpha = gr_mode(0, 0, 0, 3, 1, 0);
+// as mode_vertex_alpha, ignoring the depth buffer: drawn over everything
+constexpr uint32_t mode_overlay = gr_mode(0, 0, 0, 3, 0, 0);
 
 // Depth of the pushed instance transforms (0x004edf50 pushes, 0x004ee0a0 pops): nonzero while a mover's
 // is pushed, when the scene lights are kept in its frame too (GrLight::local_vec).
@@ -1039,6 +1185,15 @@ static auto& ed_view_mat = addr_as_ref<float[9]>(0x0158ef58); // row-major 3x3
 
 // Billboard camera parameter (used as depth sort / z-bias)
 static auto& gr_cam_param = addr_as_ref<float>(0x014cf7e0);
+
+struct GRoom;
+struct GSolid;
+// The solid's sky room while View > Draw Sky is on, else null
+static auto& level_sky_room = addr_as_ref<GRoom* __cdecl(GSolid* solid)>(0x00425F60);
+// Clips the room draws that follow to the room's portal bounds; null ends it
+static auto& room_draw_clip_set = addr_as_ref<void __cdecl(GRoom* room)>(0x00424630);
+// Draws the sky room from its eye, then clears depth for the level drawn over it
+static auto& sky_room_draw = addr_as_ref<void __cdecl(GSolid* solid, GRoom* sky_room, int unk)>(0x00424C90);
 
 // ─── Lighting ────────────────────────────────────────────────────────────────
 
@@ -1165,6 +1320,12 @@ static auto& num_packfiles = addr_as_ref<int>(0x01611F6C);
 constexpr int editor_packfile_entry_max = 0x34BC;
 
 // ─── Misc ────────────────────────────────────────────────────────────────────
+
+// FUN_004d1a50: sets a ms timestamp to elapse `ms` from now
+inline void timestamp_set(int* timestamp, int ms)
+{
+    AddrCaller{0x004D1A50}.this_call(timestamp, ms);
+}
 
 struct GFace;
 // The CSG's global face list (the head, then the count, as GSolid::face_list_head)

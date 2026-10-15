@@ -21,6 +21,7 @@
 #include "alpine_obj.h"
 #include "bake_progress.h"
 #include "brush_import.h"
+#include "brush_preview.h"
 #include "face_list_cache.h"
 #include "headless_bake.h"
 #include "level.h"
@@ -599,6 +600,7 @@ void __fastcall geobuild_driver_hooked(CDedLevel* level)
         memory_guard_fatal("Build Geometry");
     }
     if (level->build_running) return;
+    brush_preview_build_ended(!cancelling);
     g_build_out_of_memory = out_of_memory;
     try {
         if (!cancelling) finish_build(*level);

@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <unordered_set>
 #include <windows.h>
+#include <commctrl.h>
 #include <xlog/xlog.h>
 #include <patch_common/MemUtils.h>
 #include <patch_common/FunHook.h>
@@ -19,6 +20,7 @@
 #include "sounds.h"
 #include "event.h"
 #include "bitmap_loaders.h"
+#include "resources.h"
 #include <common/utils/string-utils.h>
 
 // Subdirectory names registered during init, used by VPP packing fix
@@ -180,14 +182,44 @@ static int __cdecl permissive_texture_browser_validator(void* entry)
     return browser_extension_allowed(ext) ? 1 : 0;
 }
 
+// The Format filter's choices after All; a .jpeg counts as JPG
+static constexpr const char* texture_browser_formats[] = {"TGA", "VBM", "DDS", "PNG", "JPG", "ATX"};
+// Its selection for the session, 0 for All
+static int g_texture_browser_format = 0;
+
+static bool texture_browser_format_matches(const char* filename)
+{
+    const int sel = g_texture_browser_format;
+    if (sel <= 0 || sel > static_cast<int>(std::size(texture_browser_formats))) return true;
+    const char* ext = std::strrchr(filename, '.');
+    if (!ext) return false;
+    const char* format = texture_browser_formats[sel - 1];
+    return _stricmp(ext + 1, format) == 0 || (std::strcmp(format, "JPG") == 0 && _stricmp(ext + 1, "jpeg") == 0);
+}
+
+// The stock validator's Material filter: one of the material's prefixes starts the name
+static bool texture_browser_material_matches(const char* filename)
+{
+    const int sel = texture_browser_material_index;
+    if (sel <= 0 || sel > texture_browser_materials.size) return true;
+    const TextureBrowserMaterial* material = texture_browser_materials.data_ptr[sel - 1];
+    if (!material) return true;
+    for (int i = 0; i < material->bitmap_prefixes.size; i++) {
+        const char* prefix = material->bitmap_prefixes.data_ptr[i].c_str();
+        if (_strnicmp(filename, prefix, std::strlen(prefix)) == 0) return true;
+    }
+    return false;
+}
+
 static int __cdecl filtered_texture_browser_validator(void* entry)
 {
     if (!permissive_texture_browser_validator(entry)) return 0;
 
-    auto& texture_browser_filter = addr_as_ref<char[256]>(0x006ca408);
+    const char* filename = static_cast<const char*>(entry) + 8;
+    if (!texture_browser_format_matches(filename) || !texture_browser_material_matches(filename)) return 0;
+
     if (!texture_browser_filter[0]) return 1;
 
-    const char* filename = static_cast<const char*>(entry) + 8;
     return string_icontains(filename, static_cast<const char*>(texture_browser_filter)) ? 1 : 0;
 }
 
@@ -200,6 +232,78 @@ FunHook<int __cdecl(void*)> texture_sidebar_validator_hook{
     0x004451C0,
     permissive_texture_browser_validator
 };
+
+// FUN_0046f880 lays the thumbnail grid out at 32, 64 or 128 px by Display Size; 256 and 512 follow those, and One To
+// One moves after them (its dispatch at 0x0046fccc compares with 5 instead of 3). No trampoline: it always resumes past
+// the size switch at 0x0046f8c2, so the replaced mov eax, [esi+0x2b8] is never needed.
+static constexpr int texture_browser_one_to_one = 5;
+CodeInjection texture_browser_thumbnail_size_injection{
+    0x0046f89e,
+    [](auto& regs) {
+        static constexpr int sizes[] = {32, 64, 128, 256, 512};
+        const TextureBrowserPanel* panel = regs.esi;
+        const int mode = panel->display_size;
+        regs.ebp = mode >= 0 && mode < static_cast<int>(std::size(sizes)) ? sizes[mode] : 64;
+        regs.eip = 0x0046f8c2;
+    },
+    false,
+};
+
+// A frame narrower than one 512 px cell would give no columns, which the layout divides by
+CodeInjection texture_browser_min_columns_injection{
+    0x0046f8f0,
+    [](auto& regs) {
+        if (static_cast<int>(regs.eax) < 1) {
+            regs.eax = 1;
+        }
+    },
+};
+
+static LRESULT CALLBACK texture_browser_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam, UINT_PTR subclass_id,
+                                             DWORD_PTR panel)
+{
+    if (msg == WM_COMMAND && LOWORD(wparam) == IDC_TEXTURE_BROWSER_FORMAT && HIWORD(wparam) == CBN_SELCHANGE) {
+        const int sel = static_cast<int>(SendMessageA(reinterpret_cast<HWND>(lparam), CB_GETCURSEL, 0, 0));
+        g_texture_browser_format = sel > 0 ? sel : 0;
+        texture_browser_refresh(reinterpret_cast<TextureBrowserPanel*>(panel));
+        return 0;
+    }
+    if (msg == WM_NCDESTROY) {
+        RemoveWindowSubclass(hwnd, texture_browser_proc, subclass_id);
+    }
+    return DefSubclassProc(hwnd, msg, wparam, lparam);
+}
+
+// FUN_00470a10: the browser's OnInitDialog
+static BOOL __fastcall texture_browser_init_dialog_hooked(TextureBrowserPanel* panel);
+FunHook<decltype(texture_browser_init_dialog_hooked)> texture_browser_init_dialog_hook{
+    0x00470a10,
+    texture_browser_init_dialog_hooked
+};
+static BOOL __fastcall texture_browser_init_dialog_hooked(TextureBrowserPanel* panel)
+{
+    const BOOL result = texture_browser_init_dialog_hook.call_target(panel);
+    HWND hdlg = WndToHandle(reinterpret_cast<CWnd*>(panel));
+
+    // stock selected the size before these existed
+    HWND sizes = GetDlgItem(hdlg, IDC_TEXTURE_BROWSER_SIZES);
+    SendMessageA(sizes, CB_INSERTSTRING, 3, reinterpret_cast<LPARAM>("256 x 256"));
+    SendMessageA(sizes, CB_INSERTSTRING, 4, reinterpret_cast<LPARAM>("512 x 512"));
+    SendMessageA(sizes, CB_SETCURSEL, panel->display_size, 0);
+
+    HWND formats = GetDlgItem(hdlg, IDC_TEXTURE_BROWSER_FORMAT);
+    SendMessageA(formats, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>("All"));
+    for (const char* format : texture_browser_formats) {
+        SendMessageA(formats, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(format));
+    }
+    SendMessageA(formats, CB_SETCURSEL, g_texture_browser_format, 0);
+
+    // The Name handler copies the text unbounded into its buffer
+    SendDlgItemMessageA(hdlg, IDC_TEXTURE_BROWSER_NAME, EM_LIMITTEXT, sizeof(texture_browser_filter) - 1, 0);
+
+    SetWindowSubclass(hdlg, texture_browser_proc, 1, reinterpret_cast<DWORD_PTR>(panel));
+    return result;
+}
 
 // FUN_00477460 saves texture categories to red.cfg. Skip "Custom - " subdirectory
 // categories so they don't pollute red.cfg (they're re-added dynamically at startup).
@@ -1092,6 +1196,10 @@ void ApplyTexturesPatches() {
     texture_config_init_hook.install();
     texture_browser_validator_hook.install();
     texture_sidebar_validator_hook.install();
+    texture_browser_thumbnail_size_injection.install();
+    texture_browser_min_columns_injection.install();
+    write_mem<int8_t>(0x0046fcce, texture_browser_one_to_one);
+    texture_browser_init_dialog_hook.install();
     custom_category_check_hook.install();
     sidebar_custom_texture_path_injection.install();
     texture_reverse_lookup_fix.install();

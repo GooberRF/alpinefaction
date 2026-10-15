@@ -110,6 +110,16 @@ Version 1.5.0 (Trillium): Not yet released
 - Show `Your team has the bag` in Team Bagman
 - Add team-relative bag carrier icons and outline colors
 - Raise the limit on items per level from 200 to 2000 for v306+ levels
+- Add `Fit`, `Fit Aspect`, `Justify`, and `Wrap` buttons to texture mode in the level editor
+- Show the texture, size and texel density of the face under the cursor (or the selected face) in the level editor status bar in texture mode, and outline it in the viewports
+- Add a `Texture lock` toggle (hotkey 6, off by default) to the level editor top bar
+- Add a `Textured brush preview` toggle (hotkey 7, also in the `View` menu, off by default) to the level editor top bar
+- Add `Sphere` mapping and X/Y/Z axis buttons to texture mode in the level editor, and make `Snap Map` also fit a cylinder or sphere map to the selected faces
+- Make texture paste in the level editor also apply the copied face's texture (toggleable with `Paste texture`), and align the copied texture onto faces with a different number of corners instead of skipping them
+- Add undo for texture paste and `Face Properties` in the level editor
+- Add `Select All`, `Fit UVs` and `Auto Unwrap`, and a `Color each face` option to the level editor `UV Unwrap` window
+- Add 256 x 256 and 512 x 512 thumbnail sizes and a `Format` filter to the level editor texture browser
+- Draw the sky in the level editor's `Render Everything` mode when `Draw Sky` is on, as the portal render modes do
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Add `ui_color_console` console command to set the console background color
@@ -236,6 +246,13 @@ Version 1.5.0 (Trillium): Not yet released
 - Fix crash reports leaving out memory regions and backtrace frames above 2 GB when the game or level editor runs with 4 GB of address space
 - Fix the Rail Driver beam veering away from the shot's path after piercing a surface, toggleable with `cl_railbeamfix`
 - Fix players keeping a phantom copy of an item created while they were loading the level
+- Fix level editor viewports only showing texture coordinate changes immediately in `Render Everything` mode
+- Fix undo and redo of texture changes in the level editor not updating the level geometry until it is rebuilt
+- Fix rotating texture coordinates in the level editor `UV Unwrap` window skewing non-square textures, toggleable with `Preserve aspect ratio when rotating`
+- Fix particle emitters in the level editor moving, expiring and spawning faster than in game
+- Fix the `Material` filter in the level editor texture browser not working properly
+- Fix a very long `Name` filter in the level editor texture browser corrupting the editor's memory
+- Fix the level editor `UV Unwrap` window selecting vertices when a mouse button pressed outside its view is released over it
 
 [@is-this-c](https://github.com/is-this-c)
 - Let `Caps Lock` capitalize

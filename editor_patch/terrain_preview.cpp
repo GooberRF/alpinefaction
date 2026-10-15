@@ -18,6 +18,7 @@
 #include <xlog/xlog.h>
 #include "alpine_lightmaps.h"
 #include "alpine_obj.h"
+#include "brush_preview.h"
 #include "level.h"
 #include "mfc_types.h"
 #include "terrain.h"
@@ -1216,7 +1217,7 @@ void draw_surface(CDedLevel& level, Preview& p, const DedTerrain& terrain, const
 
 void level_face_draw_hooked(GSolid* solid, GFace* face, char outline)
 {
-    if (face && terrain_preview_hides_room(face->which_room)) {
+    if (face && (terrain_preview_hides_room(face->which_room) || brush_preview_hides(*face))) {
         CDedLevel* level = CDedLevel::Get();
         if (level && solid == level->solid) return;
     }
