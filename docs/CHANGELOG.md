@@ -210,7 +210,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Fix level editor memory use growing with every `Build Geometry` and `Calculate Lighting` because the Direct3D textures of discarded lightmaps were never released
 - Fix level editor crashing when Direct3D fails to create a texture
 - Stop `Build Geometry` and `Calculate Lighting` in the level editor with a message when too little memory is left to finish them (instead of crashing)
-- Reduce the memory `Calculate Lighting` needs in the level editor, and how much of it must be in one piece
+- Reduce the memory `Build Geometry` and `Calculate Lighting` need in the level editor and free more of it once they finish
 - Fix level editor crashing or freezing when it runs out of memory; it now cancels `Build Geometry` or `Calculate Lighting` and explains why, or closes with an explanation when it cannot recover
 - Fix level editor crashing in `Calculate Lighting` when a level needs more than 32767 lightmap surfaces; without `D3D11-only lightmaps`, faces past the limit are left without a lightmap and the editor warns
 - Fix geomod craters creating new lightmap surfaces on every crater once a level holds more than 32767 of them
@@ -225,6 +225,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Fix level editor leaking memory for Alpine mesh objects each time a level is created or opened
 - Fix shadows randomly appearing or disappearing in some level editor lightmap bakes
 - Fix level editor lightmap bakes sometimes drawing a light or dark streak across a light's glow on smoothed surfaces
+- Fix level editor `Calculate Lighting` leaving the level unlit when run after `Build Geometry`
 - Fix dedicated server base rules being dropped on levels configured for a different game type
 - Fix a level's `spawn_weapon` removing a weapon the base `spawn_loadout` lists
 - Fix the `level` command keeping the game type and rules of a previous level vote
@@ -243,6 +244,8 @@ Version 1.5.0 (Trillium): Not yet released
 - Fix new levels in the level editor defaulting to legacy `Cyclic_Timer` and mover behaviour
 - Fix Salvage flag and Bagman bag failing to spawn when a level's item count is at the engine limit
 - Fix crash reports leaving out memory regions and backtrace frames above 2 GB when the game or level editor runs with 4 GB of address space
+- Fix the Rail Driver beam veering away from the shot's path after piercing a surface, toggleable with `cl_railbeamfix`
+- Fix players keeping a phantom copy of an item created while they were loading the level
 - Fix spectate control hints overlapping the team scores in Wipeout
 - Fix long key names in spectate control hints running off the left edge of the screen
 

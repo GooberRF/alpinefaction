@@ -3308,6 +3308,50 @@ FunHook<void(rf::Item*, rf::Player*, int16_t)> send_item_create_packet_hook{
     },
 };
 
+// The broadcast skips the in-game check item_apply and obj_kill use, so a loading player got the
+// create, then again from its join snapshot (send_state_info, which first sets state 2), and kept
+// both. Send it only to players in game.
+CallHook<void(const void*, int, bool)> send_item_create_packet_broadcast_hook{
+    0x00479F0E,
+    [](const void* data, int len, [[maybe_unused]] bool require_in_game) {
+        send_item_create_packet_broadcast_hook.call_target(data, len, true);
+    },
+};
+
+static_assert(sizeof(RF_ItemCreatePacketRest) == 68);
+static_assert(offsetof(RF_ItemCreatePacketRest, item_handle) == 13);
+
+// Older servers and demos still deliver those duplicate creates. Replace the existing copy of
+// the same server object instead of keeping both.
+FunHook<MultiIoPacketHandler> process_item_create_packet_hook{
+    0x00479F70,
+    [](char* data, const rf::NetAddr& addr) {
+        size_t remaining;
+        const bool have_remaining = multi_io_subpacket_remaining(data, remaining);
+        const size_t name_len = have_remaining ? strnlen(data, remaining) : std::strlen(data);
+        const size_t name_size = name_len + 1;
+        rf::Object* old_obj = nullptr;
+        int32_t server_handle = -1;
+        if (!have_remaining || name_size + sizeof(RF_ItemCreatePacketRest) <= remaining) {
+            RF_ItemCreatePacketRest rest;
+            std::memcpy(&rest, data + name_size, sizeof(rest));
+            server_handle = static_cast<int32_t>(rest.item_handle);
+            old_obj = rf::obj_from_remote_handle(server_handle);
+            // The remote handle table is indexed by slot only
+            if (old_obj && (old_obj->type != rf::OT_ITEM || old_obj->server_handle != server_handle)) {
+                old_obj = nullptr;
+            }
+        }
+        process_item_create_packet_hook.call_target(data, addr);
+        if (old_obj) {
+            rf::Object* new_obj = rf::obj_from_remote_handle(server_handle);
+            if (new_obj && new_obj != old_obj) {
+                rf::obj_flag_dead(old_obj);
+            }
+        }
+    },
+};
+
 // item_update replicates the level item table as a bitmap, which must fit in one packet.
 static constexpr int MAX_ITEM_UPDATE_BITMAP_LEN = (extended_item_limit + 7) / 8;
 static_assert(sizeof(RF_GamePacketHeader) + MAX_ITEM_UPDATE_BITMAP_LEN <= rf::max_packet_size);
@@ -4071,6 +4115,10 @@ void network_init()
 
     // Never replicate items that are already flagged dead
     send_item_create_packet_hook.install();
+
+    // Fix clients that load slowly keeping a duplicate of each item created during their load
+    send_item_create_packet_broadcast_hook.install();
+    process_item_create_packet_hook.install();
 
     // Raise the 200 level item limit for v306+ levels
     level_item_handles_resize_patch.install();

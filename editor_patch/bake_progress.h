@@ -51,6 +51,8 @@ void bake_progress_expect(BakePhase phase, std::uint64_t total);
 // A listed phase that turned out not to be needed.
 void bake_progress_skip(BakePhase phase);
 void bake_progress_step(std::uint64_t steps = 1);
+// Takes a memory guard trip, as each step does, without counting a step.
+void bake_progress_poll();
 // The running phase, BakePhase::count when none is.
 BakePhase bake_progress_current();
 // Cancel was confirmed: the bake skips the rest of its work and leaves nothing behind.

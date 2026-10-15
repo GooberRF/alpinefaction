@@ -80,6 +80,11 @@ static bool shadow_mask_reserve(int texels, int lights)
         }
         if (!shadow_mask_pool) {
             xlog::error("Lightmap: cannot allocate {} shadow masks of {} texels", lights, texels);
+            // the caller pink fills the surface: a bake is cancelled rather than kept (RED's viewport relight of a
+            // single surface, outside one, keeps the pink)
+            if (bake_progress_active()) {
+                memory_guard_trip();
+            }
             return false;
         }
         shadow_mask_pool_bytes = bytes;
@@ -1596,8 +1601,9 @@ static SolidCache* lightmap_solid_cache(uintptr_t solid)
         return g_solid_cache.emplace(solid, std::move(cache)).first->second.get();
     }
     catch (...) {
-        xlog::error("Lightmap: out of memory indexing a solid's faces, falling back to the stock "
-                    "bake for it");
+        xlog::error("Lightmap: out of memory indexing a solid's faces");
+        // the callers' stock fallbacks would bake visibly wrong shadows; the bake is cancelled instead
+        memory_guard_trip();
         // remembered, so the per-surface callers do not retry it
         try {
             g_solid_cache.emplace(solid, nullptr);
@@ -1628,11 +1634,12 @@ static const OccluderTree* lightmap_occluder_tree(uintptr_t solid)
         }
         catch (...) {
             // build() leaves the triangle list populated and the node array half written, which
-            // reads as a usable tree; drop it so empty() reports it and the stock projector, which
-            // the message promises, is what actually runs
+            // reads as a usable tree; drop it so empty() reports it. The stock projector covers the
+            // rest of this surface, its sun shadows visibly wrong; the trip cancels the bake at its
+            // next progress step.
             cache->tree.clear();
-            xlog::error("Lightmap: out of memory building the occluder tree, falling back to the "
-                        "stock shadow projector");
+            xlog::error("Lightmap: out of memory building the occluder tree");
+            memory_guard_trip();
         }
         cache->tree_built = true;
     }
@@ -2321,6 +2328,8 @@ static void lighting_calc_bake(void* self, bool shadows, bool surface_pass_ran)
         catch (...) {
             memory_guard_fatal("Calculate Lighting");
         }
+        // a trip after the last progress step still cancels
+        bake_progress_poll();
         if (!bake_progress_cancelled()) {
             af_bake.finish();
         }
@@ -2332,10 +2341,17 @@ static void lighting_calc_bake(void* self, bool shadows, bool surface_pass_ran)
     }
 }
 
-// Entered directly (the Calculate Lighting menu items and Shift+L), the bake runs without the surface
-// pass, whose hook otherwise makes this check.
+// Entered directly (the Calculate Lighting menu items and Shift+L). Without a surface pass first, the memory check
+// its hook makes is made here.
 static void lighting_calc_bake_alone(void* self, bool shadows)
 {
+    // faces Build Geometry left without a surface would stay unlit, so the surface pass runs first, as Calculate
+    // Maps and Light runs it
+    if (auto* level = CDedLevel::Get(); level && lighting_surfaces_missing(*level)) {
+        lighting_surfaces_checked(self);
+        lighting_calc_bake(self, shadows, true);
+        return;
+    }
     if (!lighting_calc_memory_admits()) {
         return;
     }
@@ -3069,6 +3085,8 @@ CodeInjection lightmap_border_duplicate_skip_injection{
             }
         }
         catch (...) {
+            // the ring is left unwritten, a visible seam: the bake is cancelled rather than kept
+            memory_guard_trip();
         }
     },
     false, // no trampoline: the injection fully replaces the 5 byte block
@@ -3116,10 +3134,18 @@ CodeInjection lightmap_highres_setup_injection{
         // lightmap RED allows, so it can finish instead of running out again. A CSG step's surfaces (a build, which is
         // then cancelled, or a brush tool) are redone by the next build or surface pass; the surface pass's
         // (FUN_004aa610, returning to 0x004aab73) stay until the next surface pass, and a bake must not reuse them.
+        const std::uint32_t caller = *reinterpret_cast<std::uint32_t*>(esp + 0x8c);
         if (memory_guard_tripped()) {
             *reinterpret_cast<float*>(esp + 0x9c) = lm_min_density;
-            if (*reinterpret_cast<std::uint32_t*>(esp + 0x8c) == 0x004aab73) {
+            if (caller == 0x004aab73) {
                 g_lightmaps_shrunk = true;
+            }
+        }
+        // Build Geometry's CSG steps (FUN_004ab6d0, returning to 0x004ab757) give each new face of the build's working
+        // solid a lightmap that its final tick frees unused; at high resolution they would take over a gigabyte.
+        else if (caller == 0x004ab757) {
+            if (auto* level = CDedLevel::Get(); level && level->build_running) {
+                *reinterpret_cast<float*>(esp + 0x9c) = lm_min_density;
             }
         }
         regs.eip = 0x004a9d50;

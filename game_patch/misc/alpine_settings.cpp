@@ -478,6 +478,10 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.weapon_sway = std::stoi(settings["WeaponSway"]);
         processed_keys.insert("WeaponSway");
     }
+    if (settings.count("RailBeamFix")) {
+        g_alpine_game_config.rail_beam_fix = std::stoi(settings["RailBeamFix"]);
+        processed_keys.insert("RailBeamFix");
+    }
 
     // Load weapon autoswitch priority
     if (settings.count("WeaponAutoswitchPriority")) {
@@ -1592,6 +1596,7 @@ void alpine_player_settings_save(rf::Player* player)
     file << "AlwaysAutoswitchEmpty=" << g_alpine_game_config.always_autoswitch_empty << "\n";
     file << "LegacyBob=" << g_alpine_game_config.legacy_bob << "\n";
     file << "WeaponSway=" << g_alpine_game_config.weapon_sway << "\n";
+    file << "RailBeamFix=" << g_alpine_game_config.rail_beam_fix << "\n";
 
     // Autoswitch priority
     file << "WeaponAutoswitchPriority=";

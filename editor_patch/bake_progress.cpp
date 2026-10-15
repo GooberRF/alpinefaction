@@ -606,6 +606,13 @@ void bake_progress_step(std::uint64_t steps)
     refresh(false);
 }
 
+void bake_progress_poll()
+{
+    if (g_progress.active) {
+        refresh(false);
+    }
+}
+
 bool bake_progress_active()
 {
     return g_progress.active;

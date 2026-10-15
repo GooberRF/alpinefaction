@@ -21,6 +21,11 @@ struct GFace;
 void ApplyTerrainBuildPatches();
 // Calculate Lighting's surface pass (FUN_00448ca0) as stock runs it, without the checks its hook adds.
 void lighting_surfaces_stock(void* self);
+// The surface pass as its command runs it, the checks its hook adds included.
+void lighting_surfaces_checked(void* self);
+// The level solid has faces the surface pass would give a surface but that have none while its surfaces are not
+// used up, as Build Geometry leaves them.
+bool lighting_surfaces_missing(CDedLevel& level);
 // The last Build Geometry to finish was cancelled because RED ran out of memory.
 bool build_geometry_out_of_memory();
 

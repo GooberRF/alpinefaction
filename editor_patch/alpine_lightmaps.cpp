@@ -31,6 +31,7 @@
 #include "bake_progress.h"
 #include "work_pool.h"
 #include "level.h"
+#include "lightmap_pages.h"
 #include "mfc_types.h"
 #include "overflow_charts.h"
 #include "terrain_build.h"
@@ -113,7 +114,7 @@ struct AfTerrain
 };
 
 // One buffer per page, so no allocation grows with the page count.
-using PageBuffers = std::vector<std::vector<std::uint8_t>>;
+using PageBuffers = LightmapPages;
 
 std::size_t page_buffers_size(const PageBuffers& pages)
 {
@@ -1436,7 +1437,7 @@ bool deflate_pages(const PageBuffers& pages, PageBuffers& out, std::size_t& out_
         return false;
     }
     ScopeGuard end{[&zs] { deflateEnd(&zs); }};
-    std::vector<std::uint8_t> buf(chunk);
+    LightmapPageBuffer buf(chunk);
     zs.next_out = buf.data();
     zs.avail_out = static_cast<uInt>(chunk);
     bool ok = true;
