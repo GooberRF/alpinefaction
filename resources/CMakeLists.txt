@@ -5,6 +5,9 @@ else()
 endif()
 
 function(add_packfile packfile_name)
+    if(NOT ALPINE_BUILD_PACKFILE)
+        return()
+    endif()
 
     list(TRANSFORM ARGN REPLACE "([^:]*):.*" "\\1" OUTPUT_VARIABLE input_deps)
     list(TRANSFORM ARGN REPLACE "[^:]*:(.*)" "\\1" OUTPUT_VARIABLE input_paths)
@@ -427,4 +430,6 @@ add_custom_command(
 )
 add_custom_target(TermsTxt ALL DEPENDS ${CMAKE_BINARY_DIR}/bin/terms.txt)
 
-add_subdirectory(shaders)
+if(ALPINE_BUILD_PACKFILE)
+    add_subdirectory(shaders)
+endif()
