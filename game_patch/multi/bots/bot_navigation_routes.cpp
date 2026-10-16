@@ -5,6 +5,7 @@
 #include "bot_waypoint_route.h"
 #include "../../main/main.h"
 #include "../../rf/collide.h"
+#include "../../rf/geometry.h"
 #include "../../rf/item.h"
 #include <algorithm>
 #include <array>
@@ -35,8 +36,48 @@ constexpr float kPowerPositionElevationScale = 8.0f;
 constexpr float kPowerPositionElevationClamp = 2.5f;
 constexpr float kPowerPositionZoneBonus = 1.35f;
 
-std::unordered_map<uint64_t, bool> g_route_gap_support_cache{};
-int g_route_gap_support_cache_waypoint_total = 0;
+// Probes depend on node positions and the level geometry only. Temporary nodes come and go and remapping shifts
+// indices, so entries are checked against their nodes' positions rather than dropped on every node count change;
+// a geomod drops them all.
+struct NodeProbeCache
+{
+    struct Entry
+    {
+        rf::Vector3 pos{};
+        float value = -1.0f;
+    };
+
+    std::vector<Entry> entries;
+    int waypoint_total = 0;
+    int num_geomods = 0;
+
+    void sync()
+    {
+        if (rf::g_num_geomods_this_level != num_geomods) {
+            num_geomods = rf::g_num_geomods_this_level;
+            entries.clear();
+            waypoint_total = 0;
+        }
+        const int total = waypoints_count();
+        if (total != waypoint_total) {
+            entries.resize(static_cast<size_t>(std::max(total, 0)));
+            waypoint_total = total;
+        }
+    }
+};
+
+NodeProbeCache g_corner_hug_penalty_cache{};
+NodeProbeCache g_edge_exposure_penalty_cache{};
+
+struct GapSupportEntry
+{
+    rf::Vector3 low_index_pos{};
+    rf::Vector3 high_index_pos{};
+    bool has_support = false;
+};
+
+std::unordered_map<uint64_t, GapSupportEntry> g_route_gap_support_cache{};
+int g_route_gap_support_cache_num_geomods = 0;
 
 struct LadderBounds
 {
@@ -771,31 +812,16 @@ float compute_waypoint_path_power_position_bonus(const std::vector<int>& path)
 
 float get_waypoint_corner_hug_penalty(const int waypoint)
 {
-    static int cached_waypoint_total = 0;
-    static std::vector<float> cached_penalties{};
-
-    const int waypoint_total = waypoints_count();
-    if (cached_waypoint_total != waypoint_total) {
-        cached_waypoint_total = waypoint_total;
-        cached_penalties.assign(
-            static_cast<size_t>(std::max(waypoint_total, 0)),
-            -1.0f
-        );
-    }
-
-    if (waypoint <= 0 || waypoint >= waypoint_total) {
+    g_corner_hug_penalty_cache.sync();
+    rf::Vector3 waypoint_pos{};
+    if (waypoint <= 0 || waypoint >= g_corner_hug_penalty_cache.waypoint_total
+        || !waypoints_get_pos(waypoint, waypoint_pos)) {
         return 0.0f;
     }
 
-    float& cached = cached_penalties[static_cast<size_t>(waypoint)];
-    if (cached >= 0.0f) {
-        return cached;
-    }
-
-    rf::Vector3 waypoint_pos{};
-    if (!waypoints_get_pos(waypoint, waypoint_pos)) {
-        cached = 0.0f;
-        return cached;
+    NodeProbeCache::Entry& cached = g_corner_hug_penalty_cache.entries[static_cast<size_t>(waypoint)];
+    if (cached.value >= 0.0f && cached.pos == waypoint_pos) {
+        return cached.value;
     }
 
     constexpr float kProbeDistance = 0.90f;
@@ -853,38 +879,21 @@ float get_waypoint_corner_hug_penalty(const int waypoint)
     const bool x_side_blocked = blocked_pos_x || blocked_neg_x;
     const bool z_side_blocked = blocked_pos_z || blocked_neg_z;
     const float corner_boost = (x_side_blocked && z_side_blocked) ? 0.65f : 0.0f;
-    cached = std::clamp(blocked_ratio + corner_boost, 0.0f, 2.0f);
-    return cached;
+    cached = {waypoint_pos, std::clamp(blocked_ratio + corner_boost, 0.0f, 2.0f)};
+    return cached.value;
 }
 
 float get_waypoint_edge_exposure_penalty(const int waypoint)
 {
-    static int cached_waypoint_total = 0;
-    static std::vector<float> cached_penalties{};
-
-    const int waypoint_total = waypoints_count();
-    if (cached_waypoint_total != waypoint_total) {
-        cached_waypoint_total = waypoint_total;
-        cached_penalties.assign(
-            static_cast<size_t>(std::max(waypoint_total, 0)),
-            -1.0f
-        );
-    }
-
-    if (waypoint <= 0 || waypoint >= waypoint_total) {
+    g_edge_exposure_penalty_cache.sync();
+    if (waypoint <= 0 || waypoint >= g_edge_exposure_penalty_cache.waypoint_total) {
         return 0.0f;
-    }
-
-    float& cached = cached_penalties[static_cast<size_t>(waypoint)];
-    if (cached >= 0.0f) {
-        return cached;
     }
 
     int type_raw = 0;
     int subtype = 0;
     if (!waypoints_get_type_subtype(waypoint, type_raw, subtype)) {
-        cached = 0.0f;
-        return cached;
+        return 0.0f;
     }
     (void)subtype;
     const WaypointType type = static_cast<WaypointType>(type_raw);
@@ -896,14 +905,17 @@ float get_waypoint_edge_exposure_penalty(const int waypoint)
         case WaypointType::ctf_flag:
             break;
         default:
-            cached = 0.0f;
-            return cached;
+            return 0.0f;
     }
 
     rf::Vector3 waypoint_pos{};
     if (!waypoints_get_pos(waypoint, waypoint_pos)) {
-        cached = 0.0f;
-        return cached;
+        return 0.0f;
+    }
+
+    NodeProbeCache::Entry& cached = g_edge_exposure_penalty_cache.entries[static_cast<size_t>(waypoint)];
+    if (cached.value >= 0.0f && cached.pos == waypoint_pos) {
+        return cached.value;
     }
 
     constexpr float kProbeRadius = 0.75f;
@@ -923,8 +935,8 @@ float get_waypoint_edge_exposure_penalty(const int waypoint)
             center_p1,
             kBotRouteProbeTraceFlags,
             &center_collision)) {
-        cached = 1.0f;
-        return cached;
+        cached = {waypoint_pos, 1.0f};
+        return cached.value;
     }
     const float center_floor_y = center_collision.hit_point.y;
 
@@ -958,8 +970,8 @@ float get_waypoint_edge_exposure_penalty(const int waypoint)
 
     const float exposed_ratio =
         static_cast<float>(exposed_count) / static_cast<float>(kProbeCount);
-    cached = std::clamp(exposed_ratio, 0.0f, 1.0f);
-    return cached;
+    cached = {waypoint_pos, std::clamp(exposed_ratio, 0.0f, 1.0f)};
+    return cached.value;
 }
 
 float compute_waypoint_path_corner_hug_penalty(const std::vector<int>& path)
@@ -1390,12 +1402,11 @@ bool bot_nav_link_midpoint_has_support(const int from_waypoint, const int to_way
         return true;
     }
 
-    const int waypoint_total = waypoints_count();
-    if (g_route_gap_support_cache_waypoint_total != waypoint_total) {
-        g_route_gap_support_cache_waypoint_total = waypoint_total;
+    if (rf::g_num_geomods_this_level != g_route_gap_support_cache_num_geomods) {
+        g_route_gap_support_cache_num_geomods = rf::g_num_geomods_this_level;
         g_route_gap_support_cache.clear();
     }
-    else if (static_cast<int>(g_route_gap_support_cache.size()) > kRouteGapEdgeCacheMaxEntries) {
+    if (static_cast<int>(g_route_gap_support_cache.size()) > kRouteGapEdgeCacheMaxEntries) {
         bool keep = false;
         for (auto it = g_route_gap_support_cache.begin();
              it != g_route_gap_support_cache.end(); ) {
@@ -1404,13 +1415,20 @@ bool bot_nav_link_midpoint_has_support(const int from_waypoint, const int to_way
         }
     }
 
+    rf::Vector3 low_index_pos{};
+    rf::Vector3 high_index_pos{};
+    if (!waypoints_get_pos(std::min(from_waypoint, to_waypoint), low_index_pos)
+        || !waypoints_get_pos(std::max(from_waypoint, to_waypoint), high_index_pos)) {
+        return true;
+    }
     const uint64_t edge_key = make_link_key(from_waypoint, to_waypoint);
-    if (auto it = g_route_gap_support_cache.find(edge_key); it != g_route_gap_support_cache.end()) {
-        return it->second;
+    if (auto it = g_route_gap_support_cache.find(edge_key); it != g_route_gap_support_cache.end()
+        && it->second.low_index_pos == low_index_pos && it->second.high_index_pos == high_index_pos) {
+        return it->second.has_support;
     }
 
     const bool has_support = compute_link_midpoint_support_uncached(from_waypoint, to_waypoint);
-    g_route_gap_support_cache.emplace(edge_key, has_support);
+    g_route_gap_support_cache[edge_key] = {low_index_pos, high_index_pos, has_support};
     return has_support;
 }
 

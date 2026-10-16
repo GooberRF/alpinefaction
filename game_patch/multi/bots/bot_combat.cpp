@@ -10,6 +10,7 @@
 #include "../../rf/item.h"
 #include "../../rf/multi.h"
 #include "../../rf/entity.h"
+#include "../../rf/os/frametime.h"
 #include "../../rf/weapon.h"
 #include <xlog/xlog.h>
 #include <algorithm>
@@ -926,7 +927,8 @@ bool update_aim_towards(
         1.45f
     );
 
-    const float frame_dt = std::clamp(bot_frame_dt(), 0.001f, 0.05f);
+    // One step per frame: server bots also step on the frames between their thinks (bot_track_aim_goal).
+    const float frame_dt = std::clamp(rf::frametime, 0.001f, 0.05f);
     const BotSkillProfile& skill_profile = get_active_bot_skill_profile();
     const float yaw_speed = std::lerp(1.8f, std::max(skill_profile.yaw_speed_cap, 1.8f), skill_factor);
     const float pitch_speed = std::lerp(1.3f, std::max(skill_profile.pitch_speed_cap, 1.3f), skill_factor);
@@ -1590,6 +1592,24 @@ void clear_semi_auto_click_state()
     bot_state().firing.semi_auto_click_weapon = -1;
 }
 
+void bot_track_aim_goal(rf::Entity& local_entity)
+{
+    const BotCombatFiringState& firing = bot_state().firing;
+    if (!firing.aim_goal_active) {
+        return;
+    }
+    rf::Vector3 aim_target = firing.aim_goal_point;
+    if (firing.aim_goal_enemy_handle >= 0) {
+        rf::Entity* const enemy = rf::entity_from_handle(firing.aim_goal_enemy_handle);
+        if (!enemy || rf::entity_is_dying(enemy)) {
+            return;
+        }
+        aim_target = compute_skill_adjusted_enemy_aim_target(local_entity, *enemy, firing.aim_goal_skill_factor);
+    }
+    float alignment = 0.0f;
+    update_aim_towards(local_entity, aim_target, firing.aim_goal_skill_factor, alignment);
+}
+
 void ensure_weapon_ready(rf::Player& player, rf::Entity& entity)
 {
     maybe_switch_weapon_for_personality(player, entity);
@@ -1706,8 +1726,17 @@ void bot_process_combat(
         );
     }
 
+    const auto set_aim_goal = [&](const rf::Vector3& point, const int enemy_handle) {
+        BotCombatFiringState& firing = bot_state().firing;
+        firing.aim_goal_active = true;
+        firing.aim_goal_point = point;
+        firing.aim_goal_enemy_handle = enemy_handle;
+        firing.aim_goal_skill_factor = active_skill_factor;
+    };
+    bot_state().firing.aim_goal_active = false;
     if (explosive_release_hold_active) {
         resolved_aim_target = bot_state().firing.explosive_release_hold_target;
+        set_aim_goal(resolved_aim_target, -1);
         has_aim_solution = update_aim_towards(
             local_entity,
             resolved_aim_target,
@@ -1719,6 +1748,7 @@ void bot_process_combat(
         || (shatter_goal_active && shatter_has_waypoint_los)) {
         if (bot_state().goal_target_pos.len_sq() > 0.0001f) {
             resolved_aim_target = bot_state().goal_target_pos;
+            set_aim_goal(resolved_aim_target, -1);
             has_aim_solution = update_aim_towards(
                 local_entity,
                 resolved_aim_target,
@@ -1734,6 +1764,7 @@ void bot_process_combat(
             active_skill_factor
         );
         resolved_aim_target = enemy_aim_target;
+        set_aim_goal(resolved_aim_target, enemy_target->handle);
         has_aim_solution = update_aim_towards(
             local_entity,
             enemy_aim_target,
@@ -1796,6 +1827,7 @@ void bot_process_combat(
         }
 
         resolved_aim_target = aim_target;
+        set_aim_goal(resolved_aim_target, -1);
         has_aim_solution = update_aim_towards(
             local_entity,
             aim_target,

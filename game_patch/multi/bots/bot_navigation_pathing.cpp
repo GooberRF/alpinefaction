@@ -1547,14 +1547,6 @@ bool pick_waypoint_route_to_los_goal(
         return false;
     }
 
-    std::sort(
-        raw_candidates.begin(),
-        raw_candidates.end(),
-        [](const RawCandidate& lhs, const RawCandidate& rhs) {
-            return lhs.dist_sq_to_target < rhs.dist_sq_to_target;
-        }
-    );
-
     int los_probe_limit = std::min<int>(static_cast<int>(raw_candidates.size()), 160);
     if (waypoint_total >= 1800) {
         los_probe_limit = std::min(los_probe_limit, 120);
@@ -1562,10 +1554,29 @@ bool pick_waypoint_route_to_los_goal(
     if (waypoint_total >= 2500) {
         los_probe_limit = std::min(los_probe_limit, 96);
     }
+    std::partial_sort(
+        raw_candidates.begin(),
+        raw_candidates.begin() + los_probe_limit,
+        raw_candidates.end(),
+        [](const RawCandidate& lhs, const RawCandidate& rhs) {
+            return lhs.dist_sq_to_target < rhs.dist_sq_to_target;
+        }
+    );
 
+    int max_candidates = std::min(kLosWaypointCandidateLimit, kWaypointPickAttempts);
+    if (waypoint_total >= 1800) {
+        max_candidates = std::min(max_candidates, 12);
+    }
+    if (waypoint_total >= 2500) {
+        max_candidates = std::min(max_candidates, 8);
+    }
+
+    // Only the nearest max_candidates visible waypoints are routed to.
     std::vector<Candidate> candidates;
-    candidates.reserve(los_probe_limit);
-    for (int probe_index = 0; probe_index < los_probe_limit; ++probe_index) {
+    candidates.reserve(max_candidates);
+    for (int probe_index = 0;
+         probe_index < los_probe_limit && static_cast<int>(candidates.size()) < max_candidates;
+         ++probe_index) {
         const RawCandidate& raw = raw_candidates[probe_index];
         if (!waypoint_has_visibility_to_target(
                 raw.pos,
@@ -1584,17 +1595,7 @@ bool pick_waypoint_route_to_los_goal(
     if (candidates.empty()) {
         return false;
     }
-
-    int max_candidates = std::min<int>(
-        static_cast<int>(candidates.size()),
-        std::min(kLosWaypointCandidateLimit, kWaypointPickAttempts)
-    );
-    if (waypoint_total >= 1800) {
-        max_candidates = std::min(max_candidates, 12);
-    }
-    if (waypoint_total >= 2500) {
-        max_candidates = std::min(max_candidates, 8);
-    }
+    max_candidates = static_cast<int>(candidates.size());
 
     struct RouteCandidate
     {

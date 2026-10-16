@@ -415,6 +415,11 @@ struct BotCombatFiringState
     bool explosive_release_hold_alt = false;
     bool remote_charge_pending_detonation = false;
     rf::Timestamp remote_charge_pending_detonation_timer{};
+    // What the last think aimed at: a point, or an enemy whose aim point is recomputed every frame.
+    bool aim_goal_active = false;
+    int aim_goal_enemy_handle = -1;
+    rf::Vector3 aim_goal_point{};
+    float aim_goal_skill_factor = 0.0f;
 
     void reset()
     {

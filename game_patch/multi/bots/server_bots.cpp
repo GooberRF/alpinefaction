@@ -1,5 +1,6 @@
 #include "server_bots.h"
 #include "bot_chat_manager.h"
+#include "bot_combat.h"
 #include "bot_context.h"
 #include "../gametype.h"
 #include "../multi.h"
@@ -30,6 +31,7 @@
 #include <common/version/version.h>
 #include <patch_common/CallHook.h>
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <format>
@@ -43,11 +45,14 @@ struct ServerBot
     BotContext ctx;
     int roster_id = 0;
     float pending_dt = 0.0f;
+    float think_wait = 0.0f;
 };
 
 namespace
 {
 constexpr int k_server_bot_create_interval_ms = 500;
+// Client bots think once per 30 fps frame, and the bot AI's timers are tuned to that rate.
+constexpr float k_server_bot_think_interval = 1.0f / 30.0f;
 // Bots that have not thought yet once this frame's thinks took this long think next frame, first in line.
 constexpr int64_t k_server_bot_think_budget_us = 3000;
 
@@ -136,8 +141,8 @@ void server_bot_refresh_keyframe(rf::Entity& ep, const int min_age_ms)
         && static_cast<uint16_t>(tick - interp->newest_frame_time()) < min_age_ms) {
         return;
     }
-    obj_interp_push_keyframe(&ep, ep.pos, ep.control_data.phb, ep.control_data.eye_phb, ep.p_data.vel,
-                             ep.ai.ci.move, tick);
+    obj_interp_push_simulated_keyframe(&ep, ep.pos, ep.control_data.phb, ep.control_data.eye_phb, ep.p_data.vel,
+                                       ep.ai.ci.move, tick);
 }
 
 // The server obj_update loop's row packing (0x0047E630). A recipient's rows are about one send interval apart,
@@ -183,6 +188,10 @@ void server_bot_apply_outputs(ServerBot& bot, const bool thought)
         : rf::Vector3{};
 
     if (!rf::entity_is_dying(ep)) {
+        if (!thought) {
+            BotActiveScope scope{ctx};
+            bot_track_aim_goal(*ep);
+        }
         server_bot_apply_fire(state.firing, *pp, *ep, thought);
     }
     // Keeps the ring non-empty (obj_update skips an entity without keyframes) and recent without recipients.
@@ -351,6 +360,8 @@ void server_bot_create(const ServerBotRosterEntry& entry)
     bot->ctx.player = pp;
     bot->ctx.is_server_bot = true;
     bot->roster_id = entry.id;
+    // Golden-ratio phases keep bots created together from thinking on the same frames.
+    bot->think_wait = k_server_bot_think_interval * std::fmod(static_cast<float>(entry.id) * 0.618034f, 1.0f);
     server_bot_apply_config(bot->ctx, config);
     g_server_bots.push_back(std::move(bot));
 
@@ -611,10 +622,14 @@ void server_bots_do_frame()
             continue;
         }
         bot.pending_dt += rf::frametime;
-        const bool thinks = think_us < k_server_bot_think_budget_us;
+        bot.think_wait -= rf::frametime;
+        const bool thinks = bot.think_wait <= 0.0f && think_us < k_server_bot_think_budget_us;
         if (thinks) {
+            // A late think keeps the cadence but never earns more than one catch-up think.
+            bot.think_wait = std::max(bot.think_wait, -k_server_bot_think_interval) + k_server_bot_think_interval;
             bot.ctx.frame_dt = bot.pending_dt;
             bot.pending_dt = 0.0f;
+            bot.ctx.state.firing.aim_goal_active = false;
             const int64_t think_start_us = timer::get_i64(1000000);
             bot_run_frame(bot.ctx);
             think_us += timer::get_i64(1000000) - think_start_us;
