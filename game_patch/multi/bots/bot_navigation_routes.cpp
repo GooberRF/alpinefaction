@@ -637,7 +637,7 @@ float compute_waypoint_path_special_penalty(const std::vector<int>& path)
 
     const BotPersonality& personality = get_active_bot_personality();
     const float decision_skill = bot_get_decision_skill_factor();
-    const float risk_tolerance = std::clamp(personality.decision_risk_tolerance, 0.25f, 2.5f);
+    const float risk_tolerance = std::clamp(personality.decision_risk_tolerance, 0.0f, 2.5f);
     const float crouch_route_avoidance = std::clamp(
         personality.crouch_route_avoidance_bias,
         0.0f,
@@ -1152,6 +1152,194 @@ bool waypoint_type_allows_blacklist(const int waypoint)
     const WaypointType type = static_cast<WaypointType>(type_raw);
     return type == WaypointType::std || type == WaypointType::std_new;
 }
+
+struct RouteScoreWeights
+{
+    float item = 0.0f;
+    float distance = 0.0f;
+    float target_distance = 0.0f;
+    float revisit = 0.0f;
+    float turn = 0.0f;
+    float density = 0.0f;
+    float detour = 0.0f;
+    float special = 0.0f;
+    float gap = 0.0f;
+    float corner = 0.0f;
+    float edge_exposure = 0.0f;
+    float power_position = 0.0f;
+};
+
+RouteScoreWeights compute_route_score_weights()
+{
+    const BotPersonality& personality = get_active_bot_personality();
+    RouteScoreWeights w{};
+    const float decision_skill = bot_get_decision_skill_factor();
+    const float efficiency = std::clamp(personality.decision_efficiency_bias, 0.35f, 2.25f);
+    const float smoothing = std::clamp(personality.path_smoothing_bias, 0.0f, 2.5f);
+    const float opportunism = std::clamp(personality.opportunism_bias, 0.0f, 2.5f);
+    const float roam_intensity = std::clamp(personality.roam_intensity_bias, 0.0f, 2.5f);
+    const float roam_intensity_norm = std::clamp((roam_intensity - 0.25f) / 2.25f, 0.0f, 1.0f);
+    const float camping_bias = std::clamp(personality.camping_bias, 0.0f, 2.5f);
+    w.revisit =
+        kRouteRecentVisitPenaltyWeight
+        * personality.revisit_avoidance_bias
+        * std::lerp(1.25f, 0.55f, std::clamp((camping_bias - 0.25f) / 2.25f, 0.0f, 1.0f))
+        * std::lerp(0.85f, 1.25f, decision_skill);
+    w.item = kRouteItemValueWeight * personality.super_pickup_bias * opportunism;
+    w.distance =
+        kRouteDistanceWeight
+        * std::lerp(0.85f, 1.45f, std::clamp(decision_skill * std::sqrt(efficiency), 0.0f, 1.0f));
+    w.target_distance = kRouteTargetDistanceWeight * std::lerp(0.9f, 1.4f, decision_skill);
+    w.turn = std::lerp(2.0f, 8.5f, decision_skill) * smoothing;
+    w.density = std::lerp(1.0f, 5.5f, decision_skill) * smoothing;
+    w.detour = std::lerp(4.0f, 15.0f, decision_skill) * efficiency;
+    w.special = std::lerp(2.0f, 7.5f, decision_skill) * std::max(0.4f, 2.0f - personality.decision_risk_tolerance);
+    const float risk_tolerance_norm =
+        std::clamp((personality.decision_risk_tolerance - 0.25f) / 2.25f, 0.0f, 1.0f);
+    w.gap = std::lerp(18.0f, 8.0f, risk_tolerance_norm);
+    w.corner =
+        kRouteCornerHugPenaltyWeight
+        * std::clamp(personality.corner_centering_bias, 0.0f, 3.0f)
+        * std::lerp(0.85f, 1.35f, decision_skill)
+        * smoothing;
+    w.edge_exposure =
+        kRouteEdgeExposurePenaltyWeight
+        * std::lerp(1.35f, 0.75f, risk_tolerance_norm)
+        * std::lerp(0.90f, 1.25f, std::clamp(personality.corner_centering_bias / 3.0f, 0.0f, 1.0f));
+
+    switch (bot_state().fsm_state) {
+        case BotFsmState::recover_navigation:
+            w.distance *= 1.45f;
+            w.target_distance *= 1.35f;
+            w.item *= 0.45f;
+            w.detour *= 1.8f;
+            w.corner *= 0.7f;
+            w.edge_exposure *= 0.75f;
+            w.gap *= 0.85f;
+            break;
+        case BotFsmState::retreat:
+            w.distance *= 1.35f;
+            w.target_distance *= 1.45f;
+            w.item *= 0.95f;
+            w.special *= 1.35f;
+            w.corner *= 0.85f;
+            w.edge_exposure *= 0.85f;
+            w.gap *= 0.95f;
+            break;
+        case BotFsmState::seek_weapon:
+            w.item *= 1.65f;
+            w.distance *= 0.92f;
+            w.special *= 0.85f;
+            break;
+        case BotFsmState::replenish_health_armor:
+            w.item *= 1.72f;
+            w.distance *= 0.95f;
+            w.special *= 0.82f;
+            break;
+        case BotFsmState::find_power_position:
+            w.target_distance *= 1.22f;
+            w.turn *= 0.88f;
+            w.detour *= 1.10f;
+            w.power_position = std::lerp(
+                4.0f,
+                10.0f,
+                std::clamp(personality.power_position_bias / 2.5f, 0.0f, 1.0f)
+            );
+            break;
+        case BotFsmState::create_crater:
+        case BotFsmState::shatter_glass:
+            w.target_distance *= 1.28f;
+            w.item *= 0.55f;
+            w.detour *= 0.92f;
+            break;
+        case BotFsmState::ctf_objective:
+            w.target_distance *= 1.36f;
+            w.item *= 0.62f;
+            w.detour *= 0.88f;
+            w.gap *= 1.10f;
+            w.edge_exposure *= 1.25f;
+            break;
+        case BotFsmState::collect_pickup:
+            w.item *= 1.5f;
+            w.distance *= 0.9f;
+            w.edge_exposure *= 1.20f;
+            w.gap *= 1.20f;
+            break;
+        case BotFsmState::engage_enemy:
+        case BotFsmState::pursue_enemy:
+        case BotFsmState::seek_enemy:
+            w.target_distance *= 1.25f;
+            w.special *= 0.8f;
+            break;
+        case BotFsmState::roam:
+            w.item *= 0.9f;
+            break;
+        default:
+            break;
+    }
+
+    if (bot_state().active_goal == BotGoalType::eliminate_target) {
+        w.target_distance *= 1.3f;
+        w.item *= 0.65f;
+    }
+    else if (bot_goal_is_item_collection(bot_state().active_goal)) {
+        w.item *= 1.35f;
+        w.target_distance *= 0.9f;
+    }
+    else if (bot_state().active_goal == BotGoalType::roam) {
+        // Roaming should favor exploration over shortest-path convergence.
+        w.item *= std::lerp(0.75f, 0.35f, roam_intensity_norm);
+        w.distance *= std::lerp(0.85f, 0.55f, roam_intensity_norm);
+        w.target_distance *= std::lerp(0.70f, 0.35f, roam_intensity_norm);
+        w.detour *= std::lerp(0.60f, 0.20f, roam_intensity_norm);
+        w.revisit *= std::lerp(1.45f, 2.35f, roam_intensity_norm);
+    }
+    else if (bot_goal_is_ctf_objective(bot_state().active_goal)) {
+        const bool sneaky_capper = bot_personality_has_quirk(BotPersonalityQuirk::sneaky_capper);
+        w.target_distance *= 1.40f;
+        w.item *= 0.68f;
+        if (bot_state().active_goal == BotGoalType::ctf_return_flag) {
+            w.target_distance *= 1.12f;
+            w.special *= 0.90f;
+        }
+        if (bot_state().active_goal == BotGoalType::ctf_capture_flag) {
+            w.target_distance *= 1.08f;
+            w.special *= 0.92f;
+        }
+
+        if (!sneaky_capper
+            && (bot_state().active_goal == BotGoalType::ctf_steal_flag
+                || bot_state().active_goal == BotGoalType::ctf_capture_flag)) {
+            // Non-sneaky CTF behavior should commit to direct, stable cap routes.
+            w.detour *= 2.25f;
+            w.turn *= 1.35f;
+            w.target_distance *= 1.18f;
+            w.revisit *= 0.35f;
+        }
+    }
+    else if (bot_goal_is_salvage_objective(bot_state().active_goal)
+        && bot_state().active_goal != BotGoalType::sal_stage_at_spawn) {
+        const bool sneaky_capper = bot_personality_has_quirk(BotPersonalityQuirk::sneaky_capper);
+        w.target_distance *= 1.40f;
+        w.item *= 0.68f;
+        if (bot_state().active_goal == BotGoalType::sal_deliver_flag) {
+            w.target_distance *= 1.08f;
+            w.special *= 0.92f;
+        }
+
+        if (!sneaky_capper
+            && (bot_state().active_goal == BotGoalType::sal_seek_flag
+                || bot_state().active_goal == BotGoalType::sal_deliver_flag)) {
+            // Non-sneaky salvage behavior should commit to direct, stable routes.
+            w.detour *= 2.25f;
+            w.turn *= 1.35f;
+            w.target_distance *= 1.18f;
+            w.revisit *= 0.35f;
+        }
+    }
+
+    return w;
+}
 }
 
 bool bot_nav_is_link_traversable_for_route(const int from_waypoint, const int to_waypoint)
@@ -1294,199 +1482,98 @@ float bot_nav_compute_route_score(
         }
     }
 
-    const float decision_skill = bot_get_decision_skill_factor();
-    const float efficiency = std::clamp(personality.decision_efficiency_bias, 0.35f, 2.25f);
-    const float smoothing = std::clamp(personality.path_smoothing_bias, 0.25f, 2.5f);
-    const float opportunism = std::clamp(personality.opportunism_bias, 0.25f, 2.5f);
-    const float roam_intensity = std::clamp(personality.roam_intensity_bias, 0.25f, 2.5f);
-    const float roam_intensity_norm = std::clamp((roam_intensity - 0.25f) / 2.25f, 0.0f, 1.0f);
-    const float camping_bias = std::clamp(personality.camping_bias, 0.25f, 2.5f);
-    float revisit_penalty_weight =
-        kRouteRecentVisitPenaltyWeight
-        * personality.revisit_avoidance_bias
-        * std::lerp(1.25f, 0.55f, std::clamp((camping_bias - 0.25f) / 2.25f, 0.0f, 1.0f))
-        * std::lerp(0.85f, 1.25f, decision_skill);
-    float item_weight = kRouteItemValueWeight * personality.super_pickup_bias * opportunism;
-    float distance_weight =
-        kRouteDistanceWeight
-        * std::lerp(0.85f, 1.45f, std::clamp(decision_skill * std::sqrt(efficiency), 0.0f, 1.0f));
-    float target_distance_weight = kRouteTargetDistanceWeight * std::lerp(0.9f, 1.4f, decision_skill);
-    float turn_weight = std::lerp(2.0f, 8.5f, decision_skill) * smoothing;
-    float density_weight = std::lerp(1.0f, 5.5f, decision_skill) * smoothing;
-    float detour_weight = std::lerp(4.0f, 15.0f, decision_skill) * efficiency;
-    float special_weight = std::lerp(2.0f, 7.5f, decision_skill) * std::max(0.4f, 2.0f - personality.decision_risk_tolerance);
-    const float risk_tolerance_norm =
-        std::clamp((personality.decision_risk_tolerance - 0.25f) / 2.25f, 0.0f, 1.0f);
-    float gap_weight = std::lerp(18.0f, 8.0f, risk_tolerance_norm);
-    float corner_weight =
-        kRouteCornerHugPenaltyWeight
-        * std::clamp(personality.corner_centering_bias, 0.0f, 3.0f)
-        * std::lerp(0.85f, 1.35f, decision_skill)
-        * smoothing;
-    float edge_exposure_weight =
-        kRouteEdgeExposurePenaltyWeight
-        * std::lerp(1.35f, 0.75f, risk_tolerance_norm)
-        * std::lerp(0.90f, 1.25f, std::clamp(personality.corner_centering_bias / 3.0f, 0.0f, 1.0f));
-    float power_position_weight = 0.0f;
-
-    switch (bot_state().fsm_state) {
-        case BotFsmState::recover_navigation:
-            distance_weight *= 1.45f;
-            target_distance_weight *= 1.35f;
-            item_weight *= 0.45f;
-            detour_weight *= 1.8f;
-            corner_weight *= 0.7f;
-            edge_exposure_weight *= 0.75f;
-            gap_weight *= 0.85f;
-            break;
-        case BotFsmState::retreat:
-            distance_weight *= 1.35f;
-            target_distance_weight *= 1.45f;
-            item_weight *= 0.95f;
-            special_weight *= 1.35f;
-            corner_weight *= 0.85f;
-            edge_exposure_weight *= 0.85f;
-            gap_weight *= 0.95f;
-            break;
-        case BotFsmState::seek_weapon:
-            item_weight *= 1.65f;
-            distance_weight *= 0.92f;
-            special_weight *= 0.85f;
-            break;
-        case BotFsmState::replenish_health_armor:
-            item_weight *= 1.72f;
-            distance_weight *= 0.95f;
-            special_weight *= 0.82f;
-            break;
-        case BotFsmState::find_power_position:
-            target_distance_weight *= 1.22f;
-            turn_weight *= 0.88f;
-            detour_weight *= 1.10f;
-            power_position_weight = std::lerp(
-                4.0f,
-                10.0f,
-                std::clamp(personality.power_position_bias / 2.5f, 0.0f, 1.0f)
-            );
-            break;
-        case BotFsmState::create_crater:
-        case BotFsmState::shatter_glass:
-            target_distance_weight *= 1.28f;
-            item_weight *= 0.55f;
-            detour_weight *= 0.92f;
-            break;
-        case BotFsmState::ctf_objective:
-            target_distance_weight *= 1.36f;
-            item_weight *= 0.62f;
-            detour_weight *= 0.88f;
-            gap_weight *= 1.10f;
-            edge_exposure_weight *= 1.25f;
-            break;
-        case BotFsmState::collect_pickup:
-            item_weight *= 1.5f;
-            distance_weight *= 0.9f;
-            edge_exposure_weight *= 1.20f;
-            gap_weight *= 1.20f;
-            break;
-        case BotFsmState::engage_enemy:
-        case BotFsmState::pursue_enemy:
-        case BotFsmState::seek_enemy:
-            target_distance_weight *= 1.25f;
-            special_weight *= 0.8f;
-            break;
-        case BotFsmState::roam:
-            item_weight *= 0.9f;
-            break;
-        default:
-            break;
+    const RouteScoreWeights w = compute_route_score_weights();
+    if (bot_goal_is_ctf_objective(bot_state().active_goal)
+        && bot_personality_has_quirk(BotPersonalityQuirk::sneaky_capper)
+        && (bot_state().active_goal == BotGoalType::ctf_steal_flag
+            || bot_state().active_goal == BotGoalType::ctf_capture_flag)
+        && bot_state().ctf_threat_handle >= 0) {
+        const float threat_penalty = compute_path_enemy_threat_penalty(
+            path,
+            bot_state().ctf_threat_pos
+        );
+        special_penalty += threat_penalty * 2.1f;
     }
 
-    if (bot_state().active_goal == BotGoalType::eliminate_target) {
-        target_distance_weight *= 1.3f;
-        item_weight *= 0.65f;
-    }
-    else if (bot_goal_is_item_collection(bot_state().active_goal)) {
-        item_weight *= 1.35f;
-        target_distance_weight *= 0.9f;
-    }
-    else if (bot_state().active_goal == BotGoalType::roam) {
-        // Roaming should favor exploration over shortest-path convergence.
-        item_weight *= std::lerp(0.75f, 0.35f, roam_intensity_norm);
-        distance_weight *= std::lerp(0.85f, 0.55f, roam_intensity_norm);
-        target_distance_weight *= std::lerp(0.70f, 0.35f, roam_intensity_norm);
-        detour_weight *= std::lerp(0.60f, 0.20f, roam_intensity_norm);
-        revisit_penalty_weight *= std::lerp(1.45f, 2.35f, roam_intensity_norm);
-    }
-    else if (bot_goal_is_ctf_objective(bot_state().active_goal)) {
-        const bool sneaky_capper = bot_personality_has_quirk(BotPersonalityQuirk::sneaky_capper);
-        target_distance_weight *= 1.40f;
-        item_weight *= 0.68f;
-        if (bot_state().active_goal == BotGoalType::ctf_return_flag) {
-            target_distance_weight *= 1.12f;
-            special_weight *= 0.90f;
-        }
-        if (bot_state().active_goal == BotGoalType::ctf_capture_flag) {
-            target_distance_weight *= 1.08f;
-            special_weight *= 0.92f;
-        }
-
-        if (!sneaky_capper
-            && (bot_state().active_goal == BotGoalType::ctf_steal_flag
-                || bot_state().active_goal == BotGoalType::ctf_capture_flag)) {
-            // Non-sneaky CTF behavior should commit to direct, stable cap routes.
-            detour_weight *= 2.25f;
-            turn_weight *= 1.35f;
-            target_distance_weight *= 1.18f;
-            revisit_penalty_weight *= 0.35f;
-        }
-
-        if (sneaky_capper
-            && (bot_state().active_goal == BotGoalType::ctf_steal_flag
-                || bot_state().active_goal == BotGoalType::ctf_capture_flag)
-            && bot_state().ctf_threat_handle >= 0) {
-            const float threat_penalty = compute_path_enemy_threat_penalty(
-                path,
-                bot_state().ctf_threat_pos
-            );
-            special_penalty += threat_penalty * 2.1f;
-        }
-    }
-    else if (bot_goal_is_salvage_objective(bot_state().active_goal)
-        && bot_state().active_goal != BotGoalType::sal_stage_at_spawn) {
-        const bool sneaky_capper = bot_personality_has_quirk(BotPersonalityQuirk::sneaky_capper);
-        target_distance_weight *= 1.40f;
-        item_weight *= 0.68f;
-        if (bot_state().active_goal == BotGoalType::sal_deliver_flag) {
-            target_distance_weight *= 1.08f;
-            special_weight *= 0.92f;
-        }
-
-        if (!sneaky_capper
-            && (bot_state().active_goal == BotGoalType::sal_seek_flag
-                || bot_state().active_goal == BotGoalType::sal_deliver_flag)) {
-            // Non-sneaky salvage behavior should commit to direct, stable routes.
-            detour_weight *= 2.25f;
-            turn_weight *= 1.35f;
-            target_distance_weight *= 1.18f;
-            revisit_penalty_weight *= 0.35f;
-        }
-    }
-
-    const float power_position_bonus = (power_position_weight > 0.0f)
+    const float power_position_bonus = (w.power_position > 0.0f)
         ? compute_waypoint_path_power_position_bonus(path)
         : 0.0f;
 
-    return item_score * item_weight
-        - geometry.route_length * distance_weight
-        - target_distance * target_distance_weight
-        - recent_visit_penalty * revisit_penalty_weight
-        - geometry.turn_penalty * turn_weight
-        - geometry.density_penalty * density_weight
-        - geometry.detour_penalty * detour_weight
-        - special_penalty * special_weight
-        - gap_penalty * gap_weight
-        - corner_hug_penalty * corner_weight
-        - edge_exposure_penalty * edge_exposure_weight
-        + power_position_bonus * power_position_weight;
+    return item_score * w.item
+        - geometry.route_length * w.distance
+        - target_distance * w.target_distance
+        - recent_visit_penalty * w.revisit
+        - geometry.turn_penalty * w.turn
+        - geometry.density_penalty * w.density
+        - geometry.detour_penalty * w.detour
+        - special_penalty * w.special
+        - gap_penalty * w.gap
+        - corner_hug_penalty * w.corner
+        - edge_exposure_penalty * w.edge_exposure
+        + power_position_bonus * w.power_position;
+}
+
+float bot_nav_compute_route_score_upper_bound(const std::vector<int>& path)
+{
+    const RouteScoreWeights w = compute_route_score_weights();
+    // Every other term is a penalty with a non-negative weight, except the power position bonus and the
+    // jump pad and crater affinity quirks, which can make the special penalty negative.
+    if (w.revisit < 0.0f
+        || bot_personality_has_quirk(BotPersonalityQuirk::jump_pad_pathing_affinity)
+        || bot_personality_has_quirk(BotPersonalityQuirk::crater_unlock_affinity)) {
+        return std::numeric_limits<float>::infinity();
+    }
+    const float route_length = compute_waypoint_path_length(path);
+    if (!std::isfinite(route_length)) {
+        return -std::numeric_limits<float>::infinity();
+    }
+    float bound = compute_waypoint_path_item_value(path) * w.item - route_length * w.distance;
+    if (w.power_position > 0.0f) {
+        bound += (kPowerPositionElevationClamp * 2.1f + kPowerPositionZoneBonus * 2.6f) * w.power_position;
+    }
+    return bound;
+}
+
+const BotWaypointDistanceField& bot_nav_distance_field(const int source_waypoint, const std::vector<int>& avoidset)
+{
+    // Fields depend only on the graph, so all bots share a few. A miss replaces the least recently used one.
+    struct CachedField
+    {
+        int graph_version = -1;
+        uint64_t last_use = 0;
+        BotWaypointDistanceField field{};
+    };
+    static std::array<CachedField, 8> cache{};
+    static uint64_t use_counter = 0;
+
+    const int graph_version = waypoints_graph_version();
+    CachedField* slot = &cache[0];
+    for (CachedField& entry : cache) {
+        if (entry.graph_version == graph_version
+            && entry.field.source == source_waypoint
+            && entry.field.avoidset == avoidset) {
+            entry.last_use = ++use_counter;
+            return entry.field;
+        }
+        if (entry.last_use < slot->last_use) {
+            slot = &entry;
+        }
+    }
+    bot_waypoint_compute_distance_field(source_waypoint, avoidset, slot->field);
+    slot->graph_version = graph_version;
+    slot->last_use = ++use_counter;
+    return slot->field;
+}
+
+bool bot_nav_is_waypoint_reachable(const int from_waypoint, const int to_waypoint)
+{
+    if (from_waypoint == to_waypoint) {
+        return true;
+    }
+    const BotWaypointDistanceField& field = bot_nav_distance_field(from_waypoint);
+    return to_waypoint > 0
+        && to_waypoint < static_cast<int>(field.dist.size())
+        && std::isfinite(field.dist[to_waypoint]);
 }
 
 void bot_nav_prune_failed_edge_cooldowns()
@@ -2154,11 +2241,11 @@ bool bot_nav_pick_waypoint_route(const int start_waypoint)
     route_candidates.reserve(max_attempts);
     auto collect_candidates = [&](const std::vector<int>& active_avoidset,
                                    const bool ignore_failed_edges) {
+        const BotWaypointDistanceField& distance_field = bot_nav_distance_field(start_waypoint, active_avoidset);
         std::vector<int> path;
         for (int attempt = 0; attempt < max_attempts; ++attempt) {
             const int candidate = candidates[attempt];
-            path.clear();
-            if (!bot_waypoint_route(start_waypoint, candidate, active_avoidset, path)) {
+            if (!bot_waypoint_distance_field_path(distance_field, candidate, path)) {
                 continue;
             }
             if (path.size() < 2
@@ -2176,7 +2263,7 @@ bool bot_nav_pick_waypoint_route(const int start_waypoint)
             if (bot_state().active_goal == BotGoalType::roam) {
                 const float roam_intensity = std::clamp(
                     get_active_bot_personality().roam_intensity_bias,
-                    0.25f,
+                    0.0f,
                     2.5f
                 );
                 const float roam_intensity_norm =

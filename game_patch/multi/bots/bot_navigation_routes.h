@@ -1,11 +1,20 @@
 #pragma once
 
+#include "bot_waypoint_route.h"
 #include "../../rf/entity.h"
 #include <vector>
 
 float bot_nav_compute_route_score(
     const std::vector<int>& path,
     float target_distance = 0.0f);
+// Never below bot_nav_compute_route_score(path) for a path without repeated waypoints.
+float bot_nav_compute_route_score_upper_bound(const std::vector<int>& path);
+
+// Distance field from a waypoint with a sorted avoid set, cached for the current waypoint graph version. The reference
+// stays valid until several other fields have been requested.
+const BotWaypointDistanceField& bot_nav_distance_field(int source_waypoint, const std::vector<int>& avoidset = {});
+// Answered from the distance field of from_waypoint.
+bool bot_nav_is_waypoint_reachable(int from_waypoint, int to_waypoint);
 
 void bot_nav_prune_failed_edge_cooldowns();
 void bot_nav_register_failed_edge_cooldown(

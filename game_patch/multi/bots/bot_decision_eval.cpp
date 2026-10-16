@@ -165,9 +165,9 @@ float bot_decision_compute_combat_readiness_threshold()
 {
     const BotPersonality& personality = get_active_bot_personality();
     const float base_threshold = std::clamp(personality.combat_readiness_threshold, 0.20f, 0.95f);
-    const float risk_tolerance = std::clamp(personality.decision_risk_tolerance, 0.25f, 2.5f);
+    const float risk_tolerance = std::clamp(personality.decision_risk_tolerance, 0.0f, 2.5f);
     const float risk_norm = std::clamp((risk_tolerance - 0.25f) / 2.25f, 0.0f, 1.0f);
-    const float raw_aggression = std::clamp(personality.raw_aggression_bias, 0.25f, 2.5f);
+    const float raw_aggression = std::clamp(personality.raw_aggression_bias, 0.0f, 2.5f);
     const float raw_aggression_norm = std::clamp((raw_aggression - 0.25f) / 2.25f, 0.0f, 1.0f);
     float threshold = base_threshold;
     threshold *= std::lerp(1.12f, 0.88f, risk_norm);
@@ -200,9 +200,9 @@ float bot_decision_compute_combat_readiness(
     const float weapon_score = bot_decision_compute_weapon_readiness_score(local_entity, enemy_target);
     float readiness = survivability_score * 0.56f + weapon_score * 0.44f;
 
-    const float risk_tolerance = std::clamp(personality.decision_risk_tolerance, 0.25f, 2.5f);
+    const float risk_tolerance = std::clamp(personality.decision_risk_tolerance, 0.0f, 2.5f);
     const float risk_norm = std::clamp((risk_tolerance - 0.25f) / 2.25f, 0.0f, 1.0f);
-    const float raw_aggression = std::clamp(personality.raw_aggression_bias, 0.25f, 2.5f);
+    const float raw_aggression = std::clamp(personality.raw_aggression_bias, 0.0f, 2.5f);
     const float raw_aggression_norm = std::clamp((raw_aggression - 0.25f) / 2.25f, 0.0f, 1.0f);
     const float decision_skill = bot_get_decision_skill_factor();
     readiness += std::lerp(-0.08f, 0.12f, risk_norm);
@@ -246,7 +246,7 @@ float bot_decision_compute_enemy_goal_score(
         score += kGoalEnemyVisibleBonus;
     }
 
-    const float aggression = std::clamp(personality.decision_aggression_bias, 0.25f, 2.5f);
+    const float aggression = std::clamp(personality.decision_aggression_bias, 0.0f, 2.5f);
     const float aggression_norm = std::clamp((aggression - 0.25f) / 2.25f, 0.0f, 1.0f);
     const float health_ratio = bot_decision_get_entity_health_ratio(local_entity);
     const float armor_ratio = bot_decision_get_entity_armor_ratio(local_entity);
@@ -263,10 +263,10 @@ float bot_decision_compute_enemy_goal_score(
     score += survivability_signal * std::lerp(20.0f, 65.0f, decision_skill);
     score += std::lerp(-14.0f, 18.0f, aggression_norm);
 
-    const float raw_aggression = std::clamp(personality.raw_aggression_bias, 0.25f, 2.5f);
+    const float raw_aggression = std::clamp(personality.raw_aggression_bias, 0.0f, 2.5f);
     score += std::lerp(-20.0f, 42.0f, std::clamp((raw_aggression - 0.25f) / 2.25f, 0.0f, 1.0f));
 
-    const float easy_frag_bias = std::clamp(personality.easy_frag_bias, 0.25f, 2.5f);
+    const float easy_frag_bias = std::clamp(personality.easy_frag_bias, 0.0f, 2.5f);
     const float enemy_health_ratio = bot_decision_get_entity_health_ratio(enemy_target);
     const float enemy_armor_ratio = bot_decision_get_entity_armor_ratio(enemy_target);
     const float enemy_survivability = enemy_health_ratio * 0.70f + enemy_armor_ratio * 0.30f;

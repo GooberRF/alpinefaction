@@ -74,13 +74,8 @@ const ServerBotConfig& server_bot_config_for(const rf::Player* player, const Ser
 
 void server_bot_apply_config(BotContext& ctx, const ServerBotConfig& config)
 {
-    bot_personality_set_presets(ctx, config.personality_preset.c_str(), config.skill_preset.c_str());
-    for (const BotConfigOverride& ovr : config.personality_overrides) {
-        bot_personality_apply_field_override(ctx, ovr.field_id, ovr.value);
-    }
-    for (const BotConfigOverride& ovr : config.skill_overrides) {
-        bot_skill_apply_field_override(ctx, ovr.field_id, ovr.value);
-    }
+    bot_personality_set_presets(ctx, config.personality_preset.c_str(), config.skill_preset.c_str(),
+        &config.personality_overrides, &config.skill_overrides);
 }
 
 void server_bot_apply_fire(const BotCombatFiringState& firing, rf::Player& pp, rf::Entity& ep, const bool thought)

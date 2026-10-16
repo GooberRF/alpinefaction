@@ -4,6 +4,18 @@
 #include "bot_goals.h"
 #include "bot_state.h"
 
+namespace
+{
+// A full goal evaluation is expensive: past the regular one, a bot gets at most one more per frame.
+void allow_forced_goal_refresh()
+{
+    if (!bot_state().forced_goal_refresh_this_frame) {
+        bot_state().forced_goal_refresh_this_frame = true;
+        bot_state().goal_refreshed_this_frame = false;
+    }
+}
+}
+
 void bot_goal_manager_refresh(
     const rf::Entity& local_entity,
     rf::Entity* enemy_target,
@@ -26,7 +38,7 @@ void bot_goal_manager_ensure_active(
     // Allow a fresh evaluation even if the per-frame dedup already ran this frame.
     // Recovery paths (watchdogs, invariant checks) clear the goal and need a real
     // reevaluation to pick a new objective.
-    bot_state().goal_refreshed_this_frame = false;
+    allow_forced_goal_refresh();
     bot_refresh_goal_state(local_entity, enemy_target, enemy_has_los);
     if (bot_state().active_goal == BotGoalType::none) {
         bot_state_set_roam_fallback_goal(fallback_eval_delay_ms);
@@ -56,7 +68,7 @@ void bot_goal_manager_force_refresh_and_ensure(
 {
     // Bypass per-frame dedup so watchdog recovery paths get a real reevaluation
     // even if the initial frame refresh already ran.
-    bot_state().goal_refreshed_this_frame = false;
+    allow_forced_goal_refresh();
     bot_goal_manager_refresh(local_entity, enemy_target, enemy_has_los);
     bot_goal_manager_ensure_active(
         local_entity,

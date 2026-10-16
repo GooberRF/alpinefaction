@@ -1079,19 +1079,19 @@ void bot_process_movement(
             || bot_state().combat_maneuver_timer.elapsed()) {
             const float dodge_chance = std::clamp(
                 skill_profile.dodge_likelihood
-                    * std::clamp(personality.dodge_combat_bias, 0.25f, 2.5f),
+                    * std::clamp(personality.dodge_combat_bias, 0.0f, 2.5f),
                 0.0f,
                 1.0f
             );
             const float crouch_chance = std::clamp(
                 skill_profile.crouch_likelihood
-                    * std::clamp(personality.crouch_combat_bias, 0.25f, 2.5f),
+                    * std::clamp(personality.crouch_combat_bias, 0.0f, 2.5f),
                 0.0f,
                 1.0f
             );
             const float jump_chance = std::clamp(
                 skill_profile.jump_likelihood
-                    * std::clamp(personality.jump_combat_bias, 0.25f, 2.5f),
+                    * std::clamp(personality.jump_combat_bias, 0.0f, 2.5f),
                 0.0f,
                 1.0f
             );

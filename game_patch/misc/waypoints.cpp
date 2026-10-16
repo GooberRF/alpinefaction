@@ -72,6 +72,8 @@ int g_awp_load_retries_remaining = 0;
 rf::Timestamp g_awp_load_retry_timer;
 bool g_drop_waypoints = true;
 int g_waypoint_revision = 0;
+// Bumped on every change to the nodes, their links or the bridge-zone state that gates links.
+int g_waypoint_graph_version = 0;
 std::vector<std::string> g_waypoint_authors{};
 
 int g_next_waypoint_target_uid = 1;
@@ -203,6 +205,7 @@ rf::Vector3 get_entity_feet_pos(const rf::Entity& entity)
 
 void invalidate_cache()
 {
+    ++g_waypoint_graph_version;
     g_cache_root = nullptr;
     g_cache_nodes.clear();
     g_cache_dirty = true;
@@ -1036,6 +1039,7 @@ int remove_waypoint_links_from_to(int from, int to)
     for (int i = write_index; i < kMaxWaypointLinks; ++i) {
         node.links[i] = 0;
     }
+    ++g_waypoint_graph_version;
     return removed;
 }
 
@@ -1049,6 +1053,7 @@ int remove_waypoint_links_from_all(int from)
     const int removed = node.num_links;
     node.num_links = 0;
     node.links.fill(0);
+    ++g_waypoint_graph_version;
     return removed;
 }
 
@@ -1195,6 +1200,7 @@ void link_waypoint(int from, int to)
     if (waypoint_link_exists(node, to)) {
         return;
     }
+    ++g_waypoint_graph_version;
     if (node.num_links < kMaxWaypointLinks) {
         node.links[node.num_links++] = to;
         return;
@@ -1785,6 +1791,7 @@ void update_bridge_zone_states()
         if (!zone.timer.valid() || zone.timer.elapsed()) {
             zone.on = false;
             zone.timer.invalidate();
+            ++g_waypoint_graph_version;
         }
     }
 }
@@ -1805,6 +1812,7 @@ void activate_bridge_zones_for_trigger_uid(int trigger_uid)
         }
 
         zone.on = true;
+        ++g_waypoint_graph_version;
         const int duration_ms = bridge_zone_duration_ms(zone);
         if (duration_ms > 0) {
             zone.timer.set(duration_ms);
@@ -1817,6 +1825,7 @@ void activate_bridge_zones_for_trigger_uid(int trigger_uid)
 
 void refresh_all_waypoint_zone_refs()
 {
+    ++g_waypoint_graph_version;
     for (int i = 1; i < static_cast<int>(g_waypoints.size()); ++i) {
         auto& node = g_waypoints[i];
         if (!node.valid) {
@@ -1902,6 +1911,7 @@ int clear_waypoint_zone_definitions()
     for (int i = 1; i < static_cast<int>(g_waypoints.size()); ++i) {
         g_waypoints[i].zones.clear();
     }
+    ++g_waypoint_graph_version;
     return removed;
 }
 
@@ -3420,6 +3430,7 @@ void on_geomod_crater_created(const rf::Vector3& crater_pos, float crater_radius
                 crater_node.links[write++] = crater_node.links[read];
             }
             crater_node.num_links = write;
+            ++g_waypoint_graph_version;
         }
     }
 }
@@ -3784,6 +3795,7 @@ void sanitize_waypoint_links_against_geometry()
         node.num_links = write_index;
     }
 
+    ++g_waypoint_graph_version;
     if (removed_links > 0) {
         xlog::info("Pruned {} blocked or invalid waypoint links", removed_links);
     }
@@ -5300,6 +5312,7 @@ bool link_waypoint_if_clear_no_replace(int from, int to)
     }
 
     node.links[node.num_links++] = to;
+    ++g_waypoint_graph_version;
     return true;
 }
 
@@ -5321,6 +5334,7 @@ bool add_waypoint_link_no_replace(int from, int to)
     }
 
     node.links[node.num_links++] = to;
+    ++g_waypoint_graph_version;
     return true;
 }
 
@@ -5438,6 +5452,7 @@ bool remove_waypoint_link_no_replace(int from, int to)
         if (node.num_links >= 0 && node.num_links < kMaxWaypointLinks) {
             node.links[node.num_links] = 0;
         }
+        ++g_waypoint_graph_version;
         return true;
     }
     return false;
@@ -9916,6 +9931,11 @@ bool waypoints_link_has_target_type(
 int waypoints_closest(const rf::Vector3& pos, float radius)
 {
     return closest_waypoint(pos, radius);
+}
+
+int waypoints_graph_version()
+{
+    return g_waypoint_graph_version;
 }
 
 int waypoints_count()

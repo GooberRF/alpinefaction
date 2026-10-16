@@ -2297,6 +2297,7 @@ void close_zone_bridge_editor_dialog(const bool save_changes)
             }
             normalize_zone_bridge_waypoint_refs(new_uids);
             zone.bridge_waypoint_uids = std::move(new_uids);
+            refresh_all_waypoint_zone_refs();
             push_waypoint_editor_log(std::format(
                 "Saved zone {} gated waypoints ({} refs)",
                 zone_uid,

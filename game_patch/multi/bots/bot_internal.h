@@ -1,6 +1,7 @@
 #pragma once
 
 #include "bot_personality.h"
+#include "bot_waypoint_route.h"
 #include "../../misc/waypoints.h"
 #include "../../rf/entity.h"
 #include "../../rf/item.h"
@@ -10,6 +11,7 @@
 #include <cassert>
 #include <cstring>
 #include <cstddef>
+#include <cstdint>
 #include <limits>
 #include <vector>
 
@@ -103,6 +105,9 @@ inline constexpr int kFailedWaypointBlacklistMs = 20000;
 inline constexpr int kFailedWaypointBlacklistCapacity = 48;
 inline constexpr int kFailedItemGoalCooldownMs = 12000;
 inline constexpr int kFailedItemGoalCooldownCapacity = 48;
+inline constexpr int kRouteFailureBackoffThreshold = 3;
+inline constexpr int kRouteFailureBackoffMs = 1500;
+inline constexpr int kFailedRouteSearchCapacity = 32;
 inline constexpr int kRecentItemGoalSelectionMs = 15000;
 inline constexpr int kRecentItemGoalSelectionCapacity = 64;
 inline constexpr int kSecondaryGoalTypeRepeatMs = 12000;
@@ -133,14 +138,10 @@ inline constexpr int kRoamFallbackGoalLockMs = 900;
 inline constexpr int kRecoveryRoamReevalLimitMs = 4000;
 inline constexpr int kAimErrorUpdateSlowMs = 240;  // low-skill: longer interval between aim error updates
 inline constexpr int kAimErrorUpdateFastMs = 55;   // high-skill: shorter interval between aim error updates
-inline constexpr float kAimErrorMinUnits = 0.035f;
-inline constexpr float kAimErrorMaxUnits = 2.65f;
 inline constexpr float kAimErrorDistanceNorm = 22.0f;
-inline constexpr float kSemiAutoClickIntervalScale = 3.0f;
 inline constexpr int kSemiAutoClickMinMs = 90;
 inline constexpr int kSemiAutoClickMaxMs = 900;
 inline constexpr int kRemoteChargeDetonationWindowMs = 5000;
-inline constexpr int kTargetAcquisitionReactionMs = 50;
 inline constexpr int kBotServerConfigTimeoutMs = 10000;
 inline constexpr int kBotConnectionWatchdogMs = 30000;
 
@@ -316,6 +317,45 @@ struct FailedWaypointCooldown
 struct FailedItemGoalCooldown
 {
     int item_handle = -1;
+    rf::Timestamp cooldown{};
+};
+
+struct BotReachableWaypointQuery
+{
+    int start_waypoint = 0;
+    int graph_version = 0;
+    rf::Vector3 target_pos{};
+    int preferred_waypoint = 0;
+    bool exclude_non_temporary_ctf_flag = false;
+    int excluded_ctf_flag_subtype = -1;
+
+    bool operator==(const BotReachableWaypointQuery& other) const
+    {
+        return start_waypoint == other.start_waypoint
+            && graph_version == other.graph_version
+            && target_pos.x == other.target_pos.x
+            && target_pos.y == other.target_pos.y
+            && target_pos.z == other.target_pos.z
+            && preferred_waypoint == other.preferred_waypoint
+            && exclude_non_temporary_ctf_flag == other.exclude_non_temporary_ctf_flag
+            && excluded_ctf_flag_subtype == other.excluded_ctf_flag_subtype;
+    }
+};
+
+struct BotReachableWaypointMemo
+{
+    BotReachableWaypointQuery query{};
+    rf::Timestamp timer{};
+    int waypoint = 0;
+    rf::Vector3 pos{};
+};
+
+struct FailedRouteSearch
+{
+    int from_waypoint = 0;
+    int to_waypoint = 0;
+    uint64_t avoidset_hash = 0;
+    int consecutive_failures = 0;
     rf::Timestamp cooldown{};
 };
 
@@ -573,6 +613,11 @@ struct BotState
     std::vector<FailedEdgeCooldown> failed_edge_cooldowns{};
     std::vector<FailedWaypointCooldown> failed_waypoint_cooldowns{};
     std::vector<FailedItemGoalCooldown> failed_item_goal_cooldowns{};
+    std::vector<FailedRouteSearch> failed_route_searches{};
+    int failed_route_searches_graph_version = 0;
+    // Objective navigation can ask two different questions per think (a preferred anchor, then any waypoint).
+    std::array<BotReachableWaypointMemo, 2> reachable_waypoint_memos{};
+    int reachable_waypoint_memo_next = 0;
     std::vector<RecentItemGoalSelection> recent_item_goal_selections{};
     std::vector<BotAlertSourceSample> alert_source_samples{};
     std::vector<BotAlertContact> alert_contacts{};
@@ -660,6 +705,7 @@ struct BotState
 
     // Per-frame dedup: prevent multiple expensive goal refreshes in a single frame.
     bool goal_refreshed_this_frame = false;
+    bool forced_goal_refresh_this_frame = false;
 
     // Per-frame cache for weapon readiness score (iterates all weapon types).
     bool weapon_readiness_cached = false;

@@ -9,9 +9,9 @@
 #include "bot_math.h"
 #include "bot_memory_manager.h"
 #include "bot_navigation_pathing.h"
+#include "bot_navigation_routes.h"
 #include "bot_state.h"
 #include "bot_utils.h"
-#include "bot_waypoint_route.h"
 #include "../bagman.h"
 #include "../gametype.h"
 #include "../salvage.h"
@@ -211,9 +211,6 @@ bool find_reachable_bridge_zone_waypoint(
             return lhs.dist_sq < rhs.dist_sq;
         });
 
-    static const std::vector<int> kEmptyAvoidset{};
-    std::vector<int> path{};
-    path.reserve(64);
     constexpr int kRouteProbeLimit = 24;
 
     int route_checks = 0;
@@ -222,8 +219,7 @@ bool find_reachable_bridge_zone_waypoint(
             break;
         }
 
-        const bool reachable = candidate.waypoint == start_waypoint
-            || bot_waypoint_route(start_waypoint, candidate.waypoint, kEmptyAvoidset, path);
+        const bool reachable = bot_nav_is_waypoint_reachable(start_waypoint, candidate.waypoint);
         if (!reachable) {
             continue;
         }
@@ -301,9 +297,6 @@ bool find_reachable_crater_target_waypoint(
             return lhs.dist_sq < rhs.dist_sq;
         });
 
-    static const std::vector<int> kEmptyAvoidset{};
-    std::vector<int> path{};
-    path.reserve(64);
     constexpr int kRouteProbeLimit = 16;
 
     int route_checks = 0;
@@ -312,8 +305,7 @@ bool find_reachable_crater_target_waypoint(
             break;
         }
 
-        const bool reachable = candidate.waypoint == start_waypoint
-            || bot_waypoint_route(start_waypoint, candidate.waypoint, kEmptyAvoidset, path);
+        const bool reachable = bot_nav_is_waypoint_reachable(start_waypoint, candidate.waypoint);
         if (!reachable) {
             continue;
         }
@@ -342,6 +334,31 @@ bool find_reachable_waypoint_near_position(
     if (start_waypoint <= 0) {
         return false;
     }
+
+    // Objective navigation asks the same question on every think while the bot stays near one waypoint.
+    constexpr int kReachableWaypointMemoMs = 500;
+    const BotReachableWaypointQuery query{
+        start_waypoint,
+        waypoints_graph_version(),
+        target_pos,
+        preferred_waypoint,
+        exclude_non_temporary_ctf_flag,
+        excluded_ctf_flag_subtype,
+    };
+    for (const BotReachableWaypointMemo& cached : bot_state().reachable_waypoint_memos) {
+        if (cached.timer.valid() && !cached.timer.elapsed() && cached.query == query) {
+            out_waypoint = cached.waypoint;
+            out_pos = cached.pos;
+            return out_waypoint > 0;
+        }
+    }
+    int& memo_next = bot_state().reachable_waypoint_memo_next;
+    BotReachableWaypointMemo& memo = bot_state().reachable_waypoint_memos[memo_next];
+    memo_next = (memo_next + 1) % static_cast<int>(bot_state().reachable_waypoint_memos.size());
+    memo.query = query;
+    memo.timer.set(kReachableWaypointMemoMs);
+    memo.waypoint = 0;
+    memo.pos = {};
 
     struct Candidate
     {
@@ -381,8 +398,12 @@ bool find_reachable_waypoint_near_position(
         return false;
     }
 
-    std::sort(
+    constexpr int kRouteProbeLimit = 48;
+    const auto probed_end =
+        candidates.begin() + std::min<std::ptrdiff_t>(kRouteProbeLimit, static_cast<std::ptrdiff_t>(candidates.size()));
+    std::partial_sort(
         candidates.begin(),
+        probed_end,
         candidates.end(),
         [&](const Candidate& lhs, const Candidate& rhs) {
             if (lhs.waypoint == preferred_waypoint) {
@@ -394,24 +415,15 @@ bool find_reachable_waypoint_near_position(
             return lhs.dist_sq < rhs.dist_sq;
         });
 
-    static const std::vector<int> kEmptyAvoidset{};
-    std::vector<int> path{};
-    path.reserve(64);
-    constexpr int kRouteProbeLimit = 48;
-    int route_checks = 0;
-    for (const Candidate& candidate : candidates) {
-        if (route_checks++ >= kRouteProbeLimit) {
-            break;
-        }
-
-        const bool reachable = candidate.waypoint == start_waypoint
-            || bot_waypoint_route(start_waypoint, candidate.waypoint, kEmptyAvoidset, path);
-        if (!reachable) {
+    for (auto it = candidates.begin(); it != probed_end; ++it) {
+        if (!bot_nav_is_waypoint_reachable(start_waypoint, it->waypoint)) {
             continue;
         }
 
-        out_waypoint = candidate.waypoint;
-        out_pos = candidate.pos;
+        out_waypoint = it->waypoint;
+        out_pos = it->pos;
+        memo.waypoint = out_waypoint;
+        memo.pos = out_pos;
         return true;
     }
 
@@ -686,9 +698,6 @@ bool find_control_point_patrol_waypoint(
         });
 
     const int start_waypoint = bot_find_closest_waypoint_with_fallback(local_entity.pos);
-    static const std::vector<int> kEmptyAvoidset{};
-    std::vector<int> path{};
-    path.reserve(64);
     constexpr int kRouteProbeLimit = 12;
     int route_checks = 0;
 
@@ -698,8 +707,7 @@ bool find_control_point_patrol_waypoint(
         }
 
         const bool reachable = start_waypoint <= 0
-            || candidate.waypoint == start_waypoint
-            || bot_waypoint_route(start_waypoint, candidate.waypoint, kEmptyAvoidset, path);
+            || bot_nav_is_waypoint_reachable(start_waypoint, candidate.waypoint);
         if (!reachable) {
             continue;
         }
@@ -964,11 +972,11 @@ bool find_best_contextual_item_goal(
     const float health_ratio = get_entity_health_ratio(local_entity);
     const float armor_ratio = get_entity_armor_ratio(local_entity);
     const float decision_skill = bot_get_decision_skill_factor();
-    const float seek_weapon_bias = std::clamp(personality.seek_weapon_bias, 0.25f, 2.5f);
-    const float replenish_bias = std::clamp(personality.replenish_bias, 0.25f, 2.5f);
+    const float seek_weapon_bias = std::clamp(personality.seek_weapon_bias, 0.0f, 2.5f);
+    const float replenish_bias = std::clamp(personality.replenish_bias, 0.0f, 2.5f);
     const float maintenance_bias = std::clamp(
         skill_profile.survivability_maintenance_bias,
-        0.25f,
+        0.0f,
         2.5f
     );
 
@@ -1222,7 +1230,7 @@ bool update_retreat_goal(
 
     const float risk_tolerance = std::clamp(
         get_active_bot_personality().decision_risk_tolerance,
-        0.25f,
+        0.0f,
         2.5f
     );
     const float retreat_distance = std::lerp(
@@ -1729,7 +1737,7 @@ bool update_ctf_objective_goal(
 
                 const float hold_safety_bias = std::clamp(
                     get_active_bot_personality().ctf_hold_enemy_flag_safety_bias,
-                    0.25f,
+                    0.0f,
                     2.5f
                 );
                 const bool prefer_spawn_anchor = own_spawn_waypoint > 0

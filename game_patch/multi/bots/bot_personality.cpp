@@ -256,10 +256,10 @@ PersonalityPresetDef make_berserker_preset()
     p.opportunism_bias = 1.70f;
     p.easy_frag_bias = 1.80f;
     p.retaliation_bias = 2.00f;
-    p.crouch_combat_bias = 0.20f;
+    p.crouch_combat_bias = 0.25f;
     p.jump_combat_bias = 0.70f;
     p.dodge_combat_bias = 0.70f;
-    p.camping_bias = 0.10f;
+    p.camping_bias = 0.25f;
     p.power_position_bias = 0.40f;
     p.combat_readiness_threshold = 0.25f;
     p.weapon_switch_bias = 1.50f;
@@ -397,7 +397,7 @@ PersonalityPresetDef make_guerrilla_preset()
     p.crouch_combat_bias = 0.60f;
     p.jump_combat_bias = 0.30f;
     p.dodge_combat_bias = 1.50f;
-    p.camping_bias = 0.20f;
+    p.camping_bias = 0.25f;
     p.power_position_bias = 0.60f;
     p.roam_intensity_bias = 1.50f;
     p.navigation_strafe_bias = 1.20f;
@@ -489,7 +489,7 @@ PersonalityPresetDef make_brawler_preset()
     p.opportunism_bias = 1.10f;
     p.retaliation_bias = 1.30f;
     p.crouch_combat_bias = 0.90f;
-    p.jump_combat_bias = 0.20f;
+    p.jump_combat_bias = 0.25f;
     p.dodge_combat_bias = 1.30f;
     p.camping_bias = 0.50f;
     p.weapon_switch_bias = 1.35f;
@@ -615,9 +615,7 @@ SkillPresetDef make_hard_skill()
     SkillPresetDef def{};
     auto& s = def.profile;
     s.name = "hard";
-    s.base_skill = 0.82f;
-    s.aim_profile_scale = 1.10f;
-    s.decision_profile_scale = 1.15f;
+    s.base_skill = 0.85f;
     s.survivability_maintenance_bias = 1.25f;
     s.alertness = 1.10f;
     s.fov_degrees = 130.0f;
@@ -634,9 +632,7 @@ SkillPresetDef make_expert_skill()
     SkillPresetDef def{};
     auto& s = def.profile;
     s.name = "expert";
-    s.base_skill = 0.92f;
-    s.aim_profile_scale = 1.20f;
-    s.decision_profile_scale = 1.25f;
+    s.base_skill = 0.93f;
     s.survivability_maintenance_bias = 1.50f;
     s.alertness = 1.20f;
     s.fov_degrees = 140.0f;
@@ -654,8 +650,6 @@ SkillPresetDef make_nightmare_skill()
     auto& s = def.profile;
     s.name = "nightmare";
     s.base_skill = 1.0f;
-    s.aim_profile_scale = 1.35f;
-    s.decision_profile_scale = 1.40f;
     s.survivability_maintenance_bias = 1.75f;
     s.alertness = 1.35f;
     s.fov_degrees = 150.0f;
@@ -865,6 +859,17 @@ void ensure_profile_weights_initialized(BotContext& ctx)
     resolve_preferred_weapons(ctx, *personality_preset);
     apply_weapon_overrides(ctx, *personality_preset);
 
+    for (const BotConfigOverride& ovr : ctx.personality_overrides) {
+        if (!bot_personality_apply_field_override(ctx, ovr.field_id, ovr.value)) {
+            xlog::debug("Bot profile: rejected personality field_id 0x{:02x}", ovr.field_id);
+        }
+    }
+    for (const BotConfigOverride& ovr : ctx.skill_overrides) {
+        if (!bot_skill_apply_field_override(ctx, ovr.field_id, ovr.value)) {
+            xlog::debug("Bot profile: rejected skill field_id 0x{:02x}", ovr.field_id);
+        }
+    }
+
     xlog::info("Bot profile: personality={}, skill={}",
         ctx.personality.name, ctx.skill.name);
 }
@@ -951,7 +956,12 @@ float bot_get_decision_skill_factor()
     return std::clamp(base_decision * profile_scale, 0.0f, 1.0f);
 }
 
-void bot_personality_set_presets(BotContext& ctx, const char* personality_name, const char* skill_name)
+void bot_personality_set_presets(
+    BotContext& ctx,
+    const char* personality_name,
+    const char* skill_name,
+    const std::vector<BotConfigOverride>* personality_overrides,
+    const std::vector<BotConfigOverride>* skill_overrides)
 {
     std::string& personality_preset =
         ctx.is_server_bot ? ctx.personality_preset : g_alpine_game_config.bot_personality_preset;
@@ -961,6 +971,12 @@ void bot_personality_set_presets(BotContext& ctx, const char* personality_name, 
     }
     if (skill_name) {
         skill_preset = skill_name;
+    }
+    if (personality_overrides) {
+        ctx.personality_overrides = *personality_overrides;
+    }
+    if (skill_overrides) {
+        ctx.skill_overrides = *skill_overrides;
     }
     ctx.profiles_initialized = false;
     ensure_profile_weights_initialized(ctx);
@@ -984,8 +1000,15 @@ BotSkillProfile& bot_skill_profile_get_mutable(BotContext& ctx)
 
 bool bot_personality_apply_field_override(BotContext& ctx, uint8_t field_id, float value)
 {
+    const auto field = static_cast<af_personality_field>(field_id);
+    // The quirk masks carry raw bits; every other field must be a number.
+    if (!std::isfinite(value)
+        && field != af_personality_field::quirk_mask_low
+        && field != af_personality_field::quirk_mask_high) {
+        return false;
+    }
     auto& p = bot_personality_get_mutable(ctx);
-    switch (static_cast<af_personality_field>(field_id)) {
+    switch (field) {
         case af_personality_field::attack_style:
             p.attack_style = static_cast<BotAttackStyle>(static_cast<int>(value));
             return true;
@@ -1055,6 +1078,9 @@ bool bot_personality_apply_field_override(BotContext& ctx, uint8_t field_id, flo
 
 bool bot_skill_apply_field_override(BotContext& ctx, uint8_t field_id, float value)
 {
+    if (!std::isfinite(value)) {
+        return false;
+    }
     auto& s = bot_skill_profile_get_mutable(ctx);
     switch (static_cast<af_skill_field>(field_id)) {
         case af_skill_field::base_skill:                    s.base_skill = value; return true;
@@ -1068,6 +1094,17 @@ bool bot_skill_apply_field_override(BotContext& ctx, uint8_t field_id, float val
         case af_skill_field::crouch_likelihood:             s.crouch_likelihood = value; return true;
         case af_skill_field::jump_likelihood:               s.jump_likelihood = value; return true;
         case af_skill_field::dodge_likelihood:              s.dodge_likelihood = value; return true;
+        case af_skill_field::reaction_time_ms:
+            s.reaction_time_ms = std::clamp(value, 0.0f, 5000.0f);
+            return true;
+        case af_skill_field::aim_error_min:                 s.aim_error_min = value; return true;
+        case af_skill_field::aim_error_max:                 s.aim_error_max = value; return true;
+        case af_skill_field::yaw_speed_cap:                 s.yaw_speed_cap = value; return true;
+        case af_skill_field::pitch_speed_cap:               s.pitch_speed_cap = value; return true;
+        case af_skill_field::fire_alignment_threshold:
+            s.fire_alignment_threshold = std::min(value, 0.999f);
+            return true;
+        case af_skill_field::semi_auto_click_interval_scale: s.semi_auto_click_interval_scale = value; return true;
         default:
             return false;
     }
@@ -1147,6 +1184,13 @@ static const FieldNameMapping g_skill_field_map[] = {
     {"crouch_likelihood",             static_cast<uint8_t>(af_skill_field::crouch_likelihood)},
     {"jump_likelihood",               static_cast<uint8_t>(af_skill_field::jump_likelihood)},
     {"dodge_likelihood",              static_cast<uint8_t>(af_skill_field::dodge_likelihood)},
+    {"reaction_time_ms",              static_cast<uint8_t>(af_skill_field::reaction_time_ms)},
+    {"aim_error_min",                 static_cast<uint8_t>(af_skill_field::aim_error_min)},
+    {"aim_error_max",                 static_cast<uint8_t>(af_skill_field::aim_error_max)},
+    {"yaw_speed_cap",                 static_cast<uint8_t>(af_skill_field::yaw_speed_cap)},
+    {"pitch_speed_cap",               static_cast<uint8_t>(af_skill_field::pitch_speed_cap)},
+    {"fire_alignment_threshold",      static_cast<uint8_t>(af_skill_field::fire_alignment_threshold)},
+    {"semi_auto_click_interval_scale", static_cast<uint8_t>(af_skill_field::semi_auto_click_interval_scale)},
 };
 
 int bot_personality_field_id_from_name(const char* name)

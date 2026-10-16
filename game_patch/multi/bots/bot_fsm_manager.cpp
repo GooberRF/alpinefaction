@@ -141,7 +141,7 @@ BotFsmState bot_fsm_manager_select_state(
             ));
             const float power_position_bias = std::clamp(
                 bot_personality_manager_get_active_personality().power_position_bias,
-                0.25f,
+                0.0f,
                 2.5f
             );
             const float trigger_distance = std::lerp(

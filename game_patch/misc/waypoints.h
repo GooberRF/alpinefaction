@@ -254,6 +254,8 @@ bool waypoints_link_has_target_type(int from_waypoint, int to_waypoint, Waypoint
 
 int waypoints_closest(const rf::Vector3& pos, float radius);
 int waypoints_count();
+// Changes whenever the waypoint graph or the link gating changes.
+int waypoints_graph_version();
 bool waypoints_get_pos(int index, rf::Vector3& out_pos);
 bool waypoints_get_type_subtype(int index, int& out_type, int& out_subtype);
 const std::vector<int>& waypoints_get_by_type(WaypointType type);

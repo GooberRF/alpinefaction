@@ -717,7 +717,7 @@ void maybe_switch_weapon_for_personality(rf::Player& player, rf::Entity& entity)
     const BotSkillProfile& skill_profile = get_active_bot_skill_profile();
     const float switch_chance = std::clamp(
         personality.pickup_switch_chance_without_preferences
-            * std::clamp(personality.weapon_switch_bias, 0.25f, 2.5f)
+            * std::clamp(personality.weapon_switch_bias, 0.0f, 2.5f)
             * std::clamp(skill_profile.weapon_switch_likelihood, 0.05f, 1.0f),
         0.0f,
         1.0f
@@ -755,7 +755,7 @@ bool should_press_semi_auto_trigger(const int weapon_type, const float skill_fac
 
     const float skill_scale = std::lerp(1.18f, 0.92f, skill_factor);
     const float base_interval = static_cast<float>(fire_wait_ms)
-        * kSemiAutoClickIntervalScale
+        * std::max(get_active_bot_skill_profile().semi_auto_click_interval_scale, 0.0f)
         * skill_scale;
     const float variance = std::lerp(0.24f, 0.10f, skill_factor);
     std::uniform_real_distribution<float> jitter_dist(-variance, variance);
@@ -815,9 +815,11 @@ rf::Vector3 compute_skill_adjusted_enemy_aim_target(
             0.65f,
             2.6f
         );
+        const BotSkillProfile& skill_profile = get_active_bot_skill_profile();
+        const float min_error = std::max(skill_profile.aim_error_min, 0.0f);
         const float max_error = std::clamp(
-            std::lerp(kAimErrorMaxUnits, kAimErrorMinUnits, skill_factor) * distance_scale,
-            kAimErrorMinUnits,
+            std::lerp(std::max(skill_profile.aim_error_max, min_error), min_error, skill_factor) * distance_scale,
+            min_error,
             5.0f
         );
         const float vertical_max_error = max_error * 0.82f;
@@ -925,8 +927,9 @@ bool update_aim_towards(
     );
 
     const float frame_dt = std::clamp(bot_frame_dt(), 0.001f, 0.05f);
-    const float yaw_speed = std::lerp(1.8f, 10.0f, skill_factor);
-    const float pitch_speed = std::lerp(1.3f, 7.0f, skill_factor);
+    const BotSkillProfile& skill_profile = get_active_bot_skill_profile();
+    const float yaw_speed = std::lerp(1.8f, std::max(skill_profile.yaw_speed_cap, 1.8f), skill_factor);
+    const float pitch_speed = std::lerp(1.3f, std::max(skill_profile.pitch_speed_cap, 1.3f), skill_factor);
 
     entity.control_data.phb.y = approach_angle(
         entity.control_data.phb.y,
@@ -949,7 +952,8 @@ bool update_aim_towards(
     );
 
     out_alignment = forward.dot_prod(look_dir);
-    const float required_alignment = std::lerp(0.985f, 0.80f, skill_factor);
+    const float required_alignment =
+        std::lerp(0.985f, std::clamp(skill_profile.fire_alignment_threshold, -1.0f, 0.999f), skill_factor);
     return out_alignment >= required_alignment;
 }
 
@@ -1497,7 +1501,7 @@ void maybe_switch_weapon_for_combat_context(
     const BotSkillProfile& skill_profile = get_active_bot_skill_profile();
     const float switch_chance = std::clamp(
         std::clamp(skill_profile.weapon_switch_likelihood, 0.05f, 1.0f)
-            * std::clamp(personality.weapon_switch_bias, 0.25f, 2.5f),
+            * std::clamp(personality.weapon_switch_bias, 0.0f, 2.5f),
         0.0f,
         1.0f
     );
@@ -1810,7 +1814,8 @@ void bot_process_combat(
     if (enemy_target && enemy_has_los) {
         if (bot_state().firing.target_acquisition_handle != enemy_target->handle) {
             bot_state().firing.target_acquisition_handle = enemy_target->handle;
-            bot_state().firing.target_acquisition_timer.set(kTargetAcquisitionReactionMs);
+            bot_state().firing.target_acquisition_timer.set(
+                std::max(static_cast<int>(get_active_bot_skill_profile().reaction_time_ms), 0));
         }
         within_acquisition_reaction =
             bot_state().firing.target_acquisition_timer.valid()

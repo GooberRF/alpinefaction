@@ -77,7 +77,7 @@ bool bot_perception_manager_get_enemy_los_cached(
         );
         const float alertness = std::clamp(
             bot_personality_manager_get_active_skill_profile().alertness,
-            0.25f,
+            0.0f,
             2.5f
         );
         const float alertness_norm = std::clamp((alertness - 0.25f) / 2.25f, 0.0f, 1.0f);
@@ -104,13 +104,13 @@ rf::Entity* bot_perception_manager_select_enemy_target(
     const bool team_mode = multi_is_team_game_type();
     const BotPersonality& personality = bot_personality_manager_get_active_personality();
     const BotSkillProfile& skill_profile = bot_personality_manager_get_active_skill_profile();
-    const float alertness = std::clamp(skill_profile.alertness, 0.25f, 2.5f);
+    const float alertness = std::clamp(skill_profile.alertness, 0.0f, 2.5f);
     const float alertness_norm = std::clamp((alertness - 0.25f) / 2.25f, 0.0f, 1.0f);
-    const float focus_bias = std::clamp(skill_profile.target_focus_bias, 0.25f, 2.5f);
+    const float focus_bias = std::clamp(skill_profile.target_focus_bias, 0.0f, 2.5f);
     const float focus_norm = std::clamp((focus_bias - 0.25f) / 2.25f, 0.0f, 1.0f);
     const float eliminate_commitment = std::clamp(
         personality.eliminate_target_commitment_bias,
-        0.25f,
+        0.0f,
         2.5f
     );
     const float eliminate_commitment_norm = std::clamp(
@@ -118,7 +118,7 @@ rf::Entity* bot_perception_manager_select_enemy_target(
         0.0f,
         1.0f
     );
-    const float retaliation_bias = std::clamp(personality.retaliation_bias, 0.25f, 2.5f);
+    const float retaliation_bias = std::clamp(personality.retaliation_bias, 0.0f, 2.5f);
     const float retaliation_norm = std::clamp((retaliation_bias - 0.25f) / 2.25f, 0.0f, 1.0f);
     const float adjusted_fov_deg = std::clamp(
         skill_profile.fov_degrees * std::lerp(0.85f, 1.20f, alertness_norm),
@@ -236,7 +236,7 @@ rf::Entity* bot_perception_manager_select_enemy_target(
         const float enemy_health_ratio = bot_decision_get_entity_health_ratio(*candidate_entity);
         const float enemy_armor_ratio = bot_decision_get_entity_armor_ratio(*candidate_entity);
         const float enemy_survivability = enemy_health_ratio * 0.70f + enemy_armor_ratio * 0.30f;
-        const float easy_frag_bias = std::clamp(personality.easy_frag_bias, 0.25f, 2.5f);
+        const float easy_frag_bias = std::clamp(personality.easy_frag_bias, 0.0f, 2.5f);
         const float easy_frag_norm = std::clamp((easy_frag_bias - 0.25f) / 2.25f, 0.0f, 1.0f);
         score *= std::lerp(
             1.0f,

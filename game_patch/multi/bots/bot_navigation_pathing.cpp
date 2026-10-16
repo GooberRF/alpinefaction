@@ -159,7 +159,8 @@ int find_recovery_anchor_alternative_waypoint(
         rf::Vector3 pos;
         signed char viable;
     };
-    // Best (lowest score, then lowest index) first, so the probes stop at the first acceptable waypoint.
+    // Visited best (lowest score, then lowest index) first, so the probes stop at the first acceptable waypoint.
+    // The order is produced lazily from a heap: the first few candidates usually pass.
     std::vector<Candidate> candidates;
     for (int waypoint = 1; waypoint < waypoint_total; ++waypoint) {
         rf::Vector3 waypoint_pos{};
@@ -176,13 +177,24 @@ int find_recovery_anchor_alternative_waypoint(
             candidates.push_back({score, waypoint, waypoint_pos, -1});
         }
     }
-    std::sort(candidates.begin(), candidates.end(), [](const Candidate& a, const Candidate& b) {
-        return a.score < b.score || (a.score == b.score && a.waypoint < b.waypoint);
-    });
+    const auto worse = [](const Candidate& a, const Candidate& b) {
+        return a.score > b.score || (a.score == b.score && a.waypoint > b.waypoint);
+    };
+    std::make_heap(candidates.begin(), candidates.end(), worse);
+    size_t num_ordered = 0;
+    // The ordered candidates collect at the back of the vector, best last.
+    const auto nth_best = [&](const size_t rank) -> Candidate& {
+        while (num_ordered <= rank) {
+            std::pop_heap(candidates.begin(), candidates.end() - num_ordered, worse);
+            ++num_ordered;
+        }
+        return candidates[candidates.size() - 1 - rank];
+    };
 
     const rf::Vector3 eye_offset = entity.eye_pos - entity.pos;
     auto choose_best = [&](const bool require_los) -> int {
-        for (Candidate& candidate : candidates) {
+        for (size_t rank = 0; rank < candidates.size(); ++rank) {
+            Candidate& candidate = nth_best(rank);
             if (candidate.viable < 0) {
                 candidate.viable = waypoint_has_viable_route_neighbor(candidate.waypoint) ? 1 : 0;
             }
@@ -1121,6 +1133,10 @@ void reset_client_bot_state()
     bot_state().failed_edge_cooldowns.clear();
     bot_state().failed_waypoint_cooldowns.clear();
     bot_state().failed_item_goal_cooldowns.clear();
+    bot_state().failed_route_searches.clear();
+    for (BotReachableWaypointMemo& memo : bot_state().reachable_waypoint_memos) {
+        memo.timer.invalidate();
+    }
     bot_state().recent_item_goal_selections.clear();
     bot_state().alert_source_samples.clear();
     bot_state().alert_contacts.clear();

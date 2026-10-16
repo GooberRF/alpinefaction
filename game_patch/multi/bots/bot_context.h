@@ -9,6 +9,7 @@
 #include <cassert>
 #include <string>
 #include <string_view>
+#include <vector>
 
 struct BotInfo
 {
@@ -30,6 +31,9 @@ struct BotContext
     bool profiles_initialized = false;
     std::string personality_preset = "balanced";
     std::string skill_preset = "average";
+    // Applied on top of the presets each time the profile is initialised.
+    std::vector<BotConfigOverride> personality_overrides;
+    std::vector<BotConfigOverride> skill_overrides;
 };
 
 // Set only while a specific bot's AI runs (bot_run_frame and the explicit-context helpers).

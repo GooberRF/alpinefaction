@@ -17,6 +17,7 @@
 #include "../rf/os/console.h"
 #include "../rf/multi.h"
 #include "../rf/weapon.h"
+#include "bots/bot_personality.h"
 
 // Forward declarations
 namespace rf
@@ -979,11 +980,6 @@ struct AlpineRconProfile
     bool full_admin = false;
     bool allow_multiple = false;
     std::vector<std::string> allowed_commands;
-};
-
-struct BotConfigOverride {
-    uint8_t field_id;
-    float value;
 };
 
 struct ServerBotConfig {

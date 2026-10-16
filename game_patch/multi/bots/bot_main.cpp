@@ -86,6 +86,7 @@ constexpr int kGlobalFailsafeRetryLimit = 2;
 constexpr float kGlobalFailsafeStillDistance = 0.5f;
 constexpr float kGlobalFailsafeAimDotThreshold = 0.9992f;
 constexpr int kIdleEscalationMs = 150;
+constexpr int kIdleEscalationRepeatMs = 1000;
 constexpr int kCombatLockWatchdogOverrideMs = 6000;
 constexpr int kPositionStallWatchdogRecoveryMs = 1200;
 
@@ -1786,7 +1787,7 @@ float compute_collectible_item_goal_value(
     }
 
     const BotPersonality& personality = get_active_bot_personality();
-    const float replenish_bias = std::clamp(personality.replenish_bias, 0.25f, 2.5f);
+    const float replenish_bias = std::clamp(personality.replenish_bias, 0.0f, 2.5f);
     const bool super_item_hoarder =
         bot_personality_has_quirk(BotPersonalityQuirk::super_item_hoarder);
     const bool is_super_pickup = item_matches_super_pickup(item, item_info);
@@ -1970,8 +1971,33 @@ bool find_best_item_goal(
 
     bot_goal_memory_prune_failed_item_goal_cooldowns();
 
+    struct ScoredItem
+    {
+        const rf::Item* item;
+        BotGoalType goal_type;
+        int goal_waypoint;
+        float item_value;
+        float recent_penalty;
+        float repeat_penalty;
+        float enemy_adjustment;
+        float score_upper_bound;
+        int order;
+        std::vector<int> route;
+    };
+    const auto finish_score = [&](float route_score, const ScoredItem& scored) {
+        route_score = route_score
+            + scored.item_value
+            + kGoalItemBaseBonus * personality.opportunism_bias;
+        route_score -= scored.recent_penalty;
+        route_score -= scored.repeat_penalty;
+        route_score += scored.enemy_adjustment;
+        return route_score;
+    };
+
+    // Exact route scores are only computed while an item's upper bound can still beat the best score so far.
+    std::vector<ScoredItem> scored_items;
+    const BotWaypointDistanceField& distance_field = bot_nav_distance_field(start_waypoint);
     std::vector<int> route;
-    std::vector<int> avoidset;
     rf::Object* obj = rf::object_list.next_obj;
     while (obj != &rf::object_list) {
         if (obj->type == rf::OT_ITEM) {
@@ -2014,28 +2040,25 @@ bool find_best_item_goal(
                     continue;
                 }
                 if (goal_waypoint > 0) {
-                    route.clear();
                     if (start_waypoint == goal_waypoint) {
-                        route.push_back(start_waypoint);
-                        route.push_back(goal_waypoint);
+                        route.assign({start_waypoint, goal_waypoint});
                     }
-                    else if (!bot_waypoint_route(start_waypoint, goal_waypoint, avoidset, route)) {
+                    else if (!bot_waypoint_distance_field_path(distance_field, goal_waypoint, route)) {
                         obj = obj->next_obj;
                         continue;
                     }
 
-                    if (route.size() < 2 || path_contains_failed_edge_cooldown(route)) {
+                    if (route.size() < 2) {
                         obj = obj->next_obj;
                         continue;
                     }
 
-                    float route_score = compute_route_score(route)
-                        + item_value
-                        + kGoalItemBaseBonus * personality.opportunism_bias;
-                    route_score -=
+                    ScoredItem scored{item, item_goal_type, goal_waypoint, item_value};
+                    scored.recent_penalty =
                         bot_goal_memory_get_recent_item_goal_penalty(item->handle, item_goal_type);
-                    route_score -=
+                    scored.repeat_penalty =
                         bot_goal_memory_get_secondary_goal_repeat_penalty(item_goal_type);
+                    scored.enemy_adjustment = 0.0f;
                     if (enemy_target) {
                         const float enemy_dist = std::sqrt(
                             std::max(
@@ -2049,25 +2072,47 @@ bool find_best_item_goal(
                                 0.0f
                             )
                         );
-                        route_score += std::clamp(
+                        scored.enemy_adjustment = std::clamp(
                             (enemy_dist - pickup_dist) * 0.35f,
                             -18.0f,
                             20.0f
                         );
                     }
-
-                    if (route_score > out_candidate.score) {
-                        out_candidate.item_handle = item->handle;
-                        out_candidate.item_uid = item->uid;
-                        out_candidate.goal_type = item_goal_type;
-                        out_candidate.goal_waypoint = goal_waypoint;
-                        out_candidate.item_pos = item->pos;
-                        out_candidate.score = route_score;
-                    }
+                    scored.score_upper_bound =
+                        finish_score(bot_nav_compute_route_score_upper_bound(route), scored) + 0.01f;
+                    scored.order = static_cast<int>(scored_items.size());
+                    scored.route = route;
+                    scored_items.push_back(std::move(scored));
                 }
             }
         }
         obj = obj->next_obj;
+    }
+
+    std::sort(scored_items.begin(), scored_items.end(), [](const ScoredItem& lhs, const ScoredItem& rhs) {
+        return lhs.score_upper_bound > rhs.score_upper_bound;
+    });
+    const ScoredItem* best = nullptr;
+    for (const ScoredItem& scored : scored_items) {
+        if (scored.score_upper_bound < out_candidate.score) {
+            break;
+        }
+        if (path_contains_failed_edge_cooldown(scored.route)) {
+            continue;
+        }
+        const float route_score = finish_score(compute_route_score(scored.route), scored);
+        const bool wins = route_score > out_candidate.score
+            || (best && route_score == out_candidate.score && scored.order < best->order);
+        if (!wins) {
+            continue;
+        }
+        best = &scored;
+        out_candidate.item_handle = scored.item->handle;
+        out_candidate.item_uid = scored.item->uid;
+        out_candidate.goal_type = scored.goal_type;
+        out_candidate.goal_waypoint = scored.goal_waypoint;
+        out_candidate.item_pos = scored.item->pos;
+        out_candidate.score = route_score;
     }
 
     return out_candidate.item_handle >= 0;
@@ -2295,7 +2340,7 @@ void update_bot_status_console(
     const float armor_ratio = get_entity_armor_ratio(local_entity);
     const float maintenance_bias = std::clamp(
         bot_skill_profile_get(ctx).survivability_maintenance_bias,
-        0.25f,
+        0.0f,
         2.5f
     );
     const float maintenance_norm = std::clamp(
@@ -2569,6 +2614,7 @@ void reset_bot_frame_scratch(BotContext& ctx)
     clear_synthetic_movement_controls();
     ctx.info.can_spawn = false;
     ctx.state.goal_refreshed_this_frame = false;
+    ctx.state.forced_goal_refresh_this_frame = false;
     ctx.state.weapon_readiness_cached = false;
 }
 }
@@ -3060,7 +3106,8 @@ void bot_run_frame(BotContext& ctx)
             ctx.state.idle_escalation_timer.set(kIdleEscalationMs);
         }
         else if (ctx.state.idle_escalation_timer.elapsed()) {
-            ctx.state.idle_escalation_timer.set(kIdleEscalationMs);
+            // Each escalation forces a full goal evaluation; repeats while still idle come slower.
+            ctx.state.idle_escalation_timer.set(kIdleEscalationRepeatMs);
             ctx.state.goal_eval_timer.invalidate();
             ctx.state.goal_switch_lock_timer.invalidate();
             bot_state_clear_waypoint_route(true, true, false);

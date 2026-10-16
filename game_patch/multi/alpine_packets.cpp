@@ -5594,6 +5594,28 @@ void af_send_bot_config(rf::Player* player, const ServerBotConfig& config,
     af_send_bot_control_simple(player, af_bot_control_type::go_active);
 }
 
+// Both profile updates carry the full override list for their half of the profile.
+static std::vector<BotConfigOverride> read_bot_config_overrides(
+    const uint8_t* bytes,
+    size_t& offset,
+    const size_t payload_end,
+    const uint8_t num_overrides,
+    const char* kind)
+{
+    std::vector<BotConfigOverride> overrides;
+    for (uint8_t i = 0; i < num_overrides; ++i) {
+        if (offset + 1 + sizeof(float) > payload_end) {
+            xlog::warn("af_process_bot_control_packet: {} override {} truncated", kind, i);
+            break;
+        }
+        BotConfigOverride& ovr = overrides.emplace_back();
+        ovr.field_id = bytes[offset++];
+        std::memcpy(&ovr.value, bytes + offset, sizeof(float));
+        offset += sizeof(float);
+    }
+    return overrides;
+}
+
 void af_process_bot_control_packet(const void* data, size_t len, const rf::NetAddr&)
 {
     // Receive: client <- server (bot clients only)
@@ -5672,26 +5694,10 @@ void af_process_bot_control_packet(const void* data, size_t len, const rf::NetAd
                 return;
             }
             const uint8_t num_overrides = bytes[offset++];
-
-            // Apply preset first
-            bot_personality_set_presets(client_bot_context(), preset_name.c_str(), nullptr);
             xlog::info("Bot control: update_personality preset='{}' overrides={}", preset_name, num_overrides);
 
-            // Apply field overrides
-            for (uint8_t i = 0; i < num_overrides; ++i) {
-                if (offset + 5 > payload_end) {
-                    xlog::warn("af_process_bot_control_packet: override {} truncated", i);
-                    break;
-                }
-                const uint8_t field_id = bytes[offset++];
-                float value = 0.0f;
-                std::memcpy(&value, bytes + offset, sizeof(float));
-                offset += sizeof(float);
-
-                if (!bot_personality_apply_field_override(client_bot_context(), field_id, value)) {
-                    xlog::debug("af_process_bot_control_packet: unknown personality field_id 0x{:02x}", field_id);
-                }
-            }
+            const auto overrides = read_bot_config_overrides(bytes, offset, payload_end, num_overrides, "personality");
+            bot_personality_set_presets(client_bot_context(), preset_name.c_str(), nullptr, &overrides, nullptr);
             break;
         }
 
@@ -5713,26 +5719,10 @@ void af_process_bot_control_packet(const void* data, size_t len, const rf::NetAd
                 return;
             }
             const uint8_t num_overrides = bytes[offset++];
-
-            // Apply preset first
-            bot_personality_set_presets(client_bot_context(), nullptr, preset_name.c_str());
             xlog::info("Bot control: update_skill preset='{}' overrides={}", preset_name, num_overrides);
 
-            // Apply field overrides
-            for (uint8_t i = 0; i < num_overrides; ++i) {
-                if (offset + 5 > payload_end) {
-                    xlog::warn("af_process_bot_control_packet: skill override {} truncated", i);
-                    break;
-                }
-                const uint8_t field_id = bytes[offset++];
-                float value = 0.0f;
-                std::memcpy(&value, bytes + offset, sizeof(float));
-                offset += sizeof(float);
-
-                if (!bot_skill_apply_field_override(client_bot_context(), field_id, value)) {
-                    xlog::debug("af_process_bot_control_packet: unknown skill field_id 0x{:02x}", field_id);
-                }
-            }
+            const auto overrides = read_bot_config_overrides(bytes, offset, payload_end, num_overrides, "skill");
+            bot_personality_set_presets(client_bot_context(), nullptr, preset_name.c_str(), nullptr, &overrides);
             break;
         }
 

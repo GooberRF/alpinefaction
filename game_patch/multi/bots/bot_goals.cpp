@@ -3,6 +3,7 @@
 #include "bot_combat.h"
 #include "bot_context.h"
 #include "bot_internal.h"
+#include "bot_navigation_routes.h"
 #include "bot_state.h"
 #include "bot_utils.h"
 #include "bot_weapon_profiles.h"
@@ -729,9 +730,6 @@ bool find_reachable_bridge_zone_waypoint(
             return lhs.dist_sq < rhs.dist_sq;
         });
 
-    static const std::vector<int> kEmptyAvoidset{};
-    std::vector<int> path{};
-    path.reserve(64);
     constexpr int kRouteProbeLimit = 24;
 
     int route_checks = 0;
@@ -740,8 +738,7 @@ bool find_reachable_bridge_zone_waypoint(
             break;
         }
 
-        const bool reachable = candidate.waypoint == start_waypoint
-            || bot_waypoint_route(start_waypoint, candidate.waypoint, kEmptyAvoidset, path);
+        const bool reachable = bot_nav_is_waypoint_reachable(start_waypoint, candidate.waypoint);
         if (!reachable) {
             continue;
         }
@@ -846,9 +843,6 @@ bool find_reachable_explosion_target_waypoint(
             return lhs.dist_sq < rhs.dist_sq;
         });
 
-    static const std::vector<int> kEmptyAvoidset{};
-    std::vector<int> path{};
-    path.reserve(64);
     constexpr int kRouteProbeLimit = 16;
 
     int route_checks = 0;
@@ -857,8 +851,7 @@ bool find_reachable_explosion_target_waypoint(
             break;
         }
 
-        const bool reachable = candidate.waypoint == start_waypoint
-            || bot_waypoint_route(start_waypoint, candidate.waypoint, kEmptyAvoidset, path);
+        const bool reachable = bot_nav_is_waypoint_reachable(start_waypoint, candidate.waypoint);
         if (!reachable) {
             continue;
         }
@@ -981,7 +974,7 @@ void bot_refresh_goal_state(
     const BotPersonality& personality = get_active_bot_personality();
     const float decision_skill = bot_get_decision_skill_factor();
     const float decision_efficiency = std::clamp(personality.decision_efficiency_bias, 0.35f, 2.25f);
-    const float camping_bias = std::clamp(personality.camping_bias, 0.25f, 2.5f);
+    const float camping_bias = std::clamp(personality.camping_bias, 0.0f, 2.5f);
     const float camping_norm = std::clamp((camping_bias - 0.25f) / 2.25f, 0.0f, 1.0f);
     const float goal_commitment = std::clamp(
         personality.goal_commitment_bias * std::lerp(0.85f, 1.45f, camping_norm),
@@ -990,7 +983,7 @@ void bot_refresh_goal_state(
     );
     const float eliminate_commitment = std::clamp(
         personality.eliminate_target_commitment_bias,
-        0.25f,
+        0.0f,
         2.5f
     );
     const float eliminate_commitment_norm = std::clamp(
@@ -998,20 +991,20 @@ void bot_refresh_goal_state(
         0.0f,
         1.0f
     );
-    const float opportunism = std::clamp(personality.opportunism_bias, 0.25f, 2.5f);
+    const float opportunism = std::clamp(personality.opportunism_bias, 0.0f, 2.5f);
     const float opportunism_norm = std::clamp((opportunism - 0.25f) / 2.25f, 0.0f, 1.0f);
-    const float aggression = std::clamp(personality.decision_aggression_bias, 0.25f, 2.5f);
+    const float aggression = std::clamp(personality.decision_aggression_bias, 0.0f, 2.5f);
     const float aggression_norm = std::clamp((aggression - 0.25f) / 2.25f, 0.0f, 1.0f);
-    const float raw_aggression = std::clamp(personality.raw_aggression_bias, 0.25f, 2.5f);
-    const float seek_weapon_bias = std::clamp(personality.seek_weapon_bias, 0.25f, 2.5f);
+    const float raw_aggression = std::clamp(personality.raw_aggression_bias, 0.0f, 2.5f);
+    const float seek_weapon_bias = std::clamp(personality.seek_weapon_bias, 0.0f, 2.5f);
     const float seek_weapon_norm = std::clamp((seek_weapon_bias - 0.25f) / 2.25f, 0.0f, 1.0f);
-    const float replenish_bias = std::clamp(personality.replenish_bias, 0.25f, 2.5f);
+    const float replenish_bias = std::clamp(personality.replenish_bias, 0.0f, 2.5f);
     const float replenish_norm = std::clamp((replenish_bias - 0.25f) / 2.25f, 0.0f, 1.0f);
-    const float retaliation_bias = std::clamp(personality.retaliation_bias, 0.25f, 2.5f);
+    const float retaliation_bias = std::clamp(personality.retaliation_bias, 0.0f, 2.5f);
     const float retaliation_norm = std::clamp((retaliation_bias - 0.25f) / 2.25f, 0.0f, 1.0f);
     const float maintenance_bias = std::clamp(
         get_active_bot_skill_profile().survivability_maintenance_bias,
-        0.25f,
+        0.0f,
         2.5f
     );
     const float maintenance_norm = std::clamp((maintenance_bias - 0.25f) / 2.25f, 0.0f, 1.0f);
@@ -1068,7 +1061,7 @@ void bot_refresh_goal_state(
         && bot_has_usable_shatter_weapon(
             *bot_player(),
             const_cast<rf::Entity&>(local_entity));
-    const float kill_focus = std::clamp(personality.deathmatch_kill_focus_bias, 0.25f, 2.5f);
+    const float kill_focus = std::clamp(personality.deathmatch_kill_focus_bias, 0.0f, 2.5f);
     const float kill_focus_norm = std::clamp((kill_focus - 0.25f) / 2.25f, 0.0f, 1.0f);
     const bool alive_enemy_present =
         bot_player() && has_alive_enemy_players(*bot_player());
@@ -1534,6 +1527,35 @@ void bot_refresh_goal_state(
             reevaluate_goal = reevaluate_goal || !goal_valid;
         }
     }
+    else if (bot_goal_is_bagman_objective(bot_state().active_goal)) {
+        // Like the other objectives, re-evaluated once invalid or when the evaluation timer is due.
+        BagmanRuntimeState bagman_state{};
+        bool goal_valid = false;
+        if (build_bagman_runtime_state(bagman_state) && !bagman_state.unavailable) {
+            switch (bot_state().active_goal) {
+                case BotGoalType::bag_pickup:
+                    goal_valid = bagman_state.in_world;
+                    break;
+                case BotGoalType::bag_camp:
+                    goal_valid = bagman_state.we_carry;
+                    break;
+                case BotGoalType::bag_chase_carrier:
+                    goal_valid = bagman_state.enemy_carry
+                        && bagman_state.carrier_entity
+                        && bagman_state.carrier_entity->handle == bot_state().goal_target_handle
+                        && !rf::entity_is_dying(bagman_state.carrier_entity);
+                    break;
+                default:
+                    break;
+            }
+        }
+        // As for roam: an enemy in sight (other than the carrier being chased) can outrank the bag goal.
+        const bool new_enemy_pressure =
+            immediate_enemy_pressure
+            && !(bot_state().active_goal == BotGoalType::bag_chase_carrier
+                && enemy_target->handle == bot_state().goal_target_handle);
+        reevaluate_goal = reevaluate_goal || !goal_valid || new_enemy_pressure;
+    }
     else if (bot_goal_is_control_point_objective(bot_state().active_goal)) {
         if (!is_control_point_mode() || !bot_player()) {
             reevaluate_goal = true;
@@ -1926,9 +1948,9 @@ void bot_refresh_goal_state(
         : -std::numeric_limits<float>::infinity();
     CtfRuntimeState ctf_state{};
     const bool ctf_mode = build_ctf_runtime_state(local_entity, ctf_state);
-    const float ctf_capture_bias = std::clamp(personality.ctf_capture_priority_bias, 0.25f, 2.5f);
-    const float ctf_recovery_bias = std::clamp(personality.ctf_flag_recovery_bias, 0.25f, 2.5f);
-    const float ctf_hold_safety_bias = std::clamp(personality.ctf_hold_enemy_flag_safety_bias, 0.25f, 2.5f);
+    const float ctf_capture_bias = std::clamp(personality.ctf_capture_priority_bias, 0.0f, 2.5f);
+    const float ctf_recovery_bias = std::clamp(personality.ctf_flag_recovery_bias, 0.0f, 2.5f);
+    const float ctf_hold_safety_bias = std::clamp(personality.ctf_hold_enemy_flag_safety_bias, 0.0f, 2.5f);
     const float ctf_capture_norm = std::clamp((ctf_capture_bias - 0.25f) / 2.25f, 0.0f, 1.0f);
     const float ctf_recovery_norm = std::clamp((ctf_recovery_bias - 0.25f) / 2.25f, 0.0f, 1.0f);
     const float ctf_hold_safety_norm = std::clamp((ctf_hold_safety_bias - 0.25f) / 2.25f, 0.0f, 1.0f);

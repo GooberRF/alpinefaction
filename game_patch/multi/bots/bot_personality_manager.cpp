@@ -18,7 +18,7 @@ float get_survivability_maintenance_factor()
     const float skill = bot_get_decision_skill_factor();
     const float maintenance_bias = std::clamp(
         skill_profile.survivability_maintenance_bias,
-        0.25f,
+        0.0f,
         2.5f
     );
     return std::clamp(
@@ -123,7 +123,7 @@ bool bot_personality_manager_should_seek_weapon_state(
     const float weighted_weapon_value = best_ranged_weapon_value(local_entity);
     const float seek_bias = std::clamp(
         get_active_bot_personality().seek_weapon_bias,
-        0.25f,
+        0.0f,
         2.5f
     );
     return weighted_weapon_value < std::lerp(
@@ -138,7 +138,7 @@ bool bot_personality_manager_should_replenish_state(const rf::Entity& local_enti
     const BotPersonality& personality = get_active_bot_personality();
     const float health_ratio = bot_decision_get_entity_health_ratio(local_entity);
     const float armor_ratio = bot_decision_get_entity_armor_ratio(local_entity);
-    const float aggression = std::clamp(personality.decision_aggression_bias, 0.25f, 2.5f);
+    const float aggression = std::clamp(personality.decision_aggression_bias, 0.0f, 2.5f);
     const float health_threshold = bot_decision_apply_aggression_to_threshold(
         personality.replenish_health_threshold,
         aggression
@@ -177,7 +177,7 @@ bool bot_personality_manager_should_retreat_state(
     const BotPersonality& personality = get_active_bot_personality();
     const float health_ratio = bot_decision_get_entity_health_ratio(local_entity);
     const float armor_ratio = bot_decision_get_entity_armor_ratio(local_entity);
-    const float aggression = std::clamp(personality.decision_aggression_bias, 0.25f, 2.5f);
+    const float aggression = std::clamp(personality.decision_aggression_bias, 0.0f, 2.5f);
     const float health_threshold = bot_decision_apply_aggression_to_threshold(
         personality.retreat_health_threshold,
         aggression
@@ -189,7 +189,7 @@ bool bot_personality_manager_should_retreat_state(
 
     const float weighted_survivability = health_ratio * 0.7f + armor_ratio * 0.3f;
     float weighted_threshold = health_threshold * 0.7f + armor_threshold * 0.3f;
-    const float raw_aggression = std::clamp(personality.raw_aggression_bias, 0.25f, 2.5f);
+    const float raw_aggression = std::clamp(personality.raw_aggression_bias, 0.0f, 2.5f);
     weighted_threshold *= std::lerp(
         1.10f,
         0.65f,

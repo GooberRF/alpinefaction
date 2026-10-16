@@ -117,6 +117,10 @@ Version 1.5.0 (Trillium): Not yet released
 - Show `Your team has the bag` in Team Bagman
 - Add team-relative bag carrier icons and outline colors
 - Raise the limit on items per level from 200 to 2000 for v306+ levels
+- Reduce the CPU time bots spend choosing goals and planning routes, and stop bots from repeatedly searching for routes to destinations they cannot reach
+- Spread the `hard`, `expert` and `nightmare` bot skill presets apart; expert and nightmare previously aimed and decided identically, and hard almost so
+- Add `reaction_time_ms`, `aim_error_min`, `aim_error_max`, `yaw_speed_cap`, `pitch_speed_cap`, `fire_alignment_threshold` and `semi_auto_click_interval_scale` bot skill fields for `skill_overrides` in bot profiles
+- Allow bot personality and skill bias fields to be set to 0 to switch off what they scale, instead of being raised to 0.25
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Add `ui_color_console` console command to set the console background color
@@ -251,6 +255,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Fix chat commands (such as `/stats`) typed or picked from the Commands chat menu by a listen server host being sent as chat instead of running
 - Fix "You are on team" showing on every spawn of a listen server host in team modes; it now shows when their team is assigned or changes
 - Fix a spectating listen server host not seeing the spectated player's ammo, weapon fire animations, damage numbers, awards or critical hit flashes
+- Fix bot clients losing the `personality_overrides` and `skill_overrides` of their bot profile (such as `taunt_on_kill_chance`) when the server sent their skill preset
 
 [@is-this-c](https://github.com/is-this-c)
 - Let `Caps Lock` capitalize
