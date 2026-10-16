@@ -1,5 +1,6 @@
 #include "bot_movement.h"
 
+#include "bot_combat.h"
 #include "bot_context.h"
 #include "bot_internal.h"
 #include "bot_math.h"
@@ -19,6 +20,8 @@ namespace
 constexpr int kBotMovementTraceFlags = rf::CF_ANY_HIT | rf::CF_PROCESS_INVISIBLE_FACES;
 constexpr float kMaxWaypointStepJumpHeight = 1.5f;
 constexpr float kJumpPadFinalApproachStopDistance = 0.05f;
+constexpr float kWeaponStopDistanceCapScale = 1.5f;
+constexpr float kWeaponSafeStopDistanceScale = 1.25f;
 constexpr float kLadderClimbVerticalThreshold = 0.12f;
 constexpr int kJumpBlockedEdgeCooldownMs = 9000;
 constexpr int kWallAvoidSoftRepathMs = 100;
@@ -923,6 +926,7 @@ void bot_process_movement(
         || bot_state().fsm_state == BotFsmState::control_point_objective;
 
     float stop_distance = 2.5f;
+    float weapon_min_safe_distance = 0.0f;
     if (pursuing_enemy_goal && enemy_has_los) {
         const BotPersonality& personality = get_active_bot_personality();
         // LOS maintenance has priority over holding preferred engagement distance.
@@ -935,6 +939,16 @@ void bot_process_movement(
                 personality.preferred_engagement_near,
                 skill_factor
             );
+            // Close in to where the held weapon works best; the personality distance caps how far back it stays,
+            // and a splash weapon keeps its own blast clear.
+            const float weapon_distance =
+                bot_combat_engagement_distance(local_entity, weapon_min_safe_distance);
+            float safe_stop_distance = weapon_min_safe_distance * kWeaponSafeStopDistanceScale;
+            if (weapon_distance > 0.0f) {
+                stop_distance = std::min(weapon_distance, stop_distance * kWeaponStopDistanceCapScale);
+                safe_stop_distance = std::min(safe_stop_distance, weapon_distance);
+            }
+            stop_distance = std::max(stop_distance, safe_stop_distance);
         }
     }
     else if (pursuing_enemy_goal) {
@@ -1003,68 +1017,13 @@ void bot_process_movement(
         desired_move_z = std::clamp(desired_world_dir.dot_prod(view_forward), -1.0f, 1.0f);
         desired_move_x = std::clamp(desired_world_dir.dot_prod(view_right), -1.0f, 1.0f);
     }
-    else if (pursuing_enemy_goal && enemy_has_los && horizontal_dist < stop_distance * 0.45f) {
+    else if (pursuing_enemy_goal
+        && enemy_has_los
+        && (horizontal_dist < stop_distance * 0.45f || horizontal_dist < weapon_min_safe_distance)) {
         desired_move_z = -0.45f;
     }
 
     const BotPersonality& personality = get_active_bot_personality();
-    const bool allow_navigation_strafe =
-        !pursuing_enemy_goal
-        && !activating_bridge
-        && !creating_crater
-        && !shattering_glass
-        && !ladder_traversal_active
-        && horizontal_dist > stop_distance
-        && desired_move_z > 0.15f;
-    if (allow_navigation_strafe) {
-        // 1.0 means neutral split between direct forward and strafe-oriented navigation.
-        const float nav_strafe_ratio = std::clamp(
-            std::clamp(personality.navigation_strafe_bias, 0.0f, 2.0f) * 0.5f,
-            0.0f,
-            1.0f
-        );
-        if (nav_strafe_ratio > 0.001f) {
-            float strafe_sign = 0.0f;
-            if (std::fabs(desired_move_x) > 0.08f) {
-                strafe_sign = desired_move_x > 0.0f ? 1.0f : -1.0f;
-            }
-            else {
-                const int sign_basis = (has_active_link && active_to_waypoint > 0)
-                    ? active_to_waypoint
-                    : std::max(bot_state().waypoint_goal, 1);
-                strafe_sign = (sign_basis & 1) == 0 ? 1.0f : -1.0f;
-            }
-
-            const float proximity_scale = std::clamp(
-                (horizontal_dist - std::max(stop_distance, 0.2f)) / 3.0f,
-                0.0f,
-                1.0f
-            );
-            const float forward_mag = std::clamp(desired_move_z, 0.0f, 1.0f);
-            const float target_strafe_mag = std::clamp(
-                forward_mag
-                    * std::lerp(0.10f, 0.80f, nav_strafe_ratio)
-                    * proximity_scale,
-                0.0f,
-                0.95f
-            );
-            const float blend = std::clamp(0.25f + nav_strafe_ratio * 0.45f, 0.0f, 0.90f);
-            desired_move_x = std::clamp(
-                std::lerp(desired_move_x, strafe_sign * target_strafe_mag, blend),
-                -1.0f,
-                1.0f
-            );
-            desired_move_z = std::clamp(
-                std::lerp(
-                    desired_move_z,
-                    std::max(0.22f, forward_mag * std::lerp(1.0f, 0.60f, nav_strafe_ratio)),
-                    blend * 0.65f
-                ),
-                -1.0f,
-                1.0f
-            );
-        }
-    }
 
     const bool respawn_gearup_active =
         bot_state().respawn_gearup_timer.valid()

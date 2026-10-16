@@ -26,6 +26,7 @@
 #include "../gametype.h"
 #include "../multi.h"
 #include "../network.h"
+#include "../server_internal.h"
 #include <patch_common/FunHook.h>
 #include "../../main/main.h"
 #include "../../graphics/gr.h"
@@ -615,6 +616,25 @@ void capture_global_failsafe_watchdog_snapshot(const rf::Entity& entity)
     bot_state().global_failsafe_wd.timer.set(kGlobalFailsafeWatchdogMs);
 }
 
+// A carrier camping with the bag (at its spot) or a salvage bot staged at its spawn (anywhere in the arrival area) is
+// meant to stand still.
+bool bot_is_holding_position(const rf::Entity& entity)
+{
+    float hold_radius = 0.0f;
+    switch (bot_state().active_goal) {
+        case BotGoalType::bag_camp:
+            hold_radius = kWaypointReachRadius;
+            break;
+        case BotGoalType::sal_stage_at_spawn:
+            hold_radius = kWaypointReachRadius * 3.0f;
+            break;
+        default:
+            return false;
+    }
+    return bot_state().goal_target_pos.len_sq() > 0.0001f
+        && rf::vec_dist_squared(&entity.pos, &bot_state().goal_target_pos) <= hold_radius * hold_radius;
+}
+
 bool has_global_failsafe_context(
     const bool has_move_target,
     const bool pursuing_enemy_goal,
@@ -645,7 +665,8 @@ GlobalFailsafeWatchdogAction update_global_failsafe_watchdog(
     const rf::Vector3& aim_dir,
     const bool combat_lock_expired)
 {
-    if (!has_global_failsafe_context(has_move_target, pursuing_enemy_goal, enemy_has_los)) {
+    if (!has_global_failsafe_context(has_move_target, pursuing_enemy_goal, enemy_has_los)
+        || bot_is_holding_position(entity)) {
         reset_global_failsafe_watchdog(true);
         return GlobalFailsafeWatchdogAction::none;
     }
@@ -1606,35 +1627,50 @@ bool item_is_currently_available(const rf::Item& item)
 
 float get_weapon_ammo_fill_ratio(const rf::Entity& local_entity, const int weapon_type)
 {
-    if (weapon_type < 0 || weapon_type >= rf::num_weapon_types) {
-        return 1.0f;
-    }
-
-    const rf::WeaponInfo& weapon_info = rf::weapon_types[weapon_type];
-    const int ammo_type = weapon_info.ammo_type;
-    int reserve_ammo = 0;
-    if (ammo_type >= 0 && ammo_type < 32) {
-        reserve_ammo = std::max(local_entity.ai.ammo[ammo_type], 0);
-    }
-    const int clip_ammo = std::max(local_entity.ai.clip_ammo[weapon_type], 0);
-    const int current_ammo = reserve_ammo + clip_ammo;
-    int max_ammo = std::max(weapon_info.max_ammo_multi, weapon_info.max_ammo);
-    if (max_ammo <= 0) {
-        max_ammo = weapon_info.max_ammo_single;
-    }
-    if (max_ammo <= 0) {
-        return 1.0f;
-    }
-    return std::clamp(static_cast<float>(current_ammo) / static_cast<float>(max_ammo), 0.0f, 1.0f);
+    return bot_decision_get_weapon_ammo_fill_ratio(local_entity, weapon_type);
 }
 
-BotGoalType classify_collect_goal_for_item(const rf::Item& item, const rf::ItemInfo& item_info)
+// Weapon stay leaves exempt weapons to be picked up as usual. Client bots cannot see the server's rules and assume
+// the default exemption (the fusion launcher).
+bool weapon_stay_exempts(const int weapon_type)
+{
+    if (!bot_ctx().is_server_bot) {
+        return weapon_type == rf::shoulder_cannon_weapon_type;
+    }
+    const auto& exemptions = g_alpine_server_config_active_rules.weapon_stay_exemptions.exemptions;
+    return std::any_of(exemptions.begin(), exemptions.end(), [&](const WeaponStayExemptionEntry& entry) {
+        return entry.exemption_enabled && entry.index == weapon_type;
+    });
+}
+
+// Picking up a weapon the bot already owns gives its ammo, unless weapon stay keeps the bot from taking it.
+bool item_gives_owned_weapon_ammo(const rf::Entity& local_entity, const rf::ItemInfo& item_info)
+{
+    const int weapon_type = item_info.gives_weapon_id;
+    return weapon_type >= 0
+        && weapon_type < rf::num_weapon_types
+        && local_entity.ai.has_weapon[weapon_type]
+        && (!(rf::netgame.flags & rf::NG_FLAG_WEAPON_STAY) || weapon_stay_exempts(weapon_type));
+}
+
+// The weapon whose ammo a pickup refills: its ammo type, or the weapon a weapon pickup gives.
+int item_ammo_weapon_type(const rf::ItemInfo& item_info)
+{
+    return item_info.ammo_for_weapon_id >= 0 ? item_info.ammo_for_weapon_id : item_info.gives_weapon_id;
+}
+
+BotGoalType classify_collect_goal_for_item(
+    const rf::Entity& local_entity,
+    const rf::Item& item,
+    const rf::ItemInfo& item_info)
 {
     if (item_matches_super_pickup(item, &item_info)) {
         return BotGoalType::collect_super_item;
     }
     if (item_info.gives_weapon_id >= 0) {
-        return BotGoalType::collect_weapon;
+        return item_gives_owned_weapon_ammo(local_entity, item_info)
+            ? BotGoalType::collect_ammo
+            : BotGoalType::collect_weapon;
     }
     if (item_info.ammo_for_weapon_id >= 0) {
         return BotGoalType::collect_ammo;
@@ -1675,18 +1711,19 @@ bool is_item_goal_satisfied(
             // the pickup remains visible in weapon-stay modes.
             return has_given_weapon;
 
-        case BotGoalType::collect_ammo:
-            if (item_info->ammo_for_weapon_id < 0) {
+        case BotGoalType::collect_ammo: {
+            const int ammo_weapon = item_ammo_weapon_type(*item_info);
+            if (ammo_weapon < 0) {
                 return false;
             }
-            if (item_info->ammo_for_weapon_id >= rf::num_weapon_types) {
+            if (ammo_weapon >= rf::num_weapon_types) {
                 return true;
             }
-            if (item_info->ammo_for_weapon_id < rf::num_weapon_types
-                && !local_entity.ai.has_weapon[item_info->ammo_for_weapon_id]) {
+            if (!local_entity.ai.has_weapon[ammo_weapon]) {
                 return false;
             }
-            return get_weapon_ammo_fill_ratio(local_entity, item_info->ammo_for_weapon_id) >= 0.96f;
+            return get_weapon_ammo_fill_ratio(local_entity, ammo_weapon) >= 0.96f;
+        }
 
         case BotGoalType::collect_health:
             return item_info_is_health_pickup(*item_info)
@@ -1793,23 +1830,18 @@ float compute_collectible_item_goal_value(
     const bool is_super_pickup = item_matches_super_pickup(item, item_info);
     const bool is_super_item_hoarder_target =
         item_matches_super_item_hoarder_target(item, item_info);
-    const bool is_weapon_pickup = item_info->gives_weapon_id >= 0;
-    const bool is_ammo_pickup = item_info->ammo_for_weapon_id >= 0;
+    const bool gives_owned_weapon_ammo = item_gives_owned_weapon_ammo(local_entity, *item_info);
+    const bool is_weapon_pickup = item_info->gives_weapon_id >= 0 && !gives_owned_weapon_ammo;
+    const bool is_ammo_pickup = item_info->ammo_for_weapon_id >= 0 || gives_owned_weapon_ammo;
 
     if (weapon_context.has_satisfactory_weapon
         && !is_super_pickup
         && !is_super_item_hoarder_target) {
         if (is_weapon_pickup) {
-            const int weapon_type = item_info->gives_weapon_id;
-            const bool supports_preferred_ammo_need =
-                weapon_context.needs_preferred_weapon_ammo
-                && weapon_type == weapon_context.preferred_weapon_type;
-            if (!supports_preferred_ammo_need) {
-                return 0.0f;
-            }
+            return 0.0f;
         }
         if (is_ammo_pickup) {
-            const int weapon_type = item_info->ammo_for_weapon_id;
+            const int weapon_type = item_ammo_weapon_type(*item_info);
             const bool supports_preferred_ammo_need =
                 weapon_context.needs_preferred_weapon_ammo
                 && weapon_type == weapon_context.preferred_weapon_type;
@@ -1843,10 +1875,10 @@ float compute_collectible_item_goal_value(
 
     if (is_weapon_pickup) {
         const int weapon_type = item_info->gives_weapon_id;
-        const bool has_weapon =
-            weapon_type >= 0
-            && weapon_type < rf::num_weapon_types
-            && local_entity.ai.has_weapon[weapon_type];
+        // With weapon stay an owned weapon cannot be picked up again.
+        if (weapon_type >= 0 && weapon_type < rf::num_weapon_types && local_entity.ai.has_weapon[weapon_type]) {
+            return 0.0f;
+        }
         const float pickup_weight = bot_get_weapon_pickup_weight(weapon_type);
         const float preference_weight = bot_get_weapon_preference_weight(weapon_type);
         float contextual_range_bonus = 0.0f;
@@ -1870,27 +1902,11 @@ float compute_collectible_item_goal_value(
                 : -4.0f;
         }
 
-        if (has_weapon) {
-            const float ammo_fill = get_weapon_ammo_fill_ratio(local_entity, weapon_type);
-            const float ammo_need = std::clamp(1.0f - ammo_fill, 0.0f, 1.0f);
-            const bool should_seek_repeat_weapon_pickup =
-                is_super_item_hoarder_target || ammo_need > 0.35f;
-            if (!should_seek_repeat_weapon_pickup) {
-                return 0.0f;
-            }
-
-            value += std::lerp(2.5f, 11.0f, ammo_need)
-                * pickup_weight
-                * std::lerp(0.75f, 1.55f, std::clamp(preference_weight / 2.5f, 0.0f, 1.0f))
-                + contextual_range_bonus;
-        }
-        else {
-            value += 22.0f * pickup_weight * preference_weight + contextual_range_bonus;
-        }
+        value += 22.0f * pickup_weight * preference_weight + contextual_range_bonus;
     }
 
     if (is_ammo_pickup) {
-        const int weapon_type = item_info->ammo_for_weapon_id;
+        const int weapon_type = item_ammo_weapon_type(*item_info);
         const bool has_weapon =
             weapon_type >= 0
             && weapon_type < rf::num_weapon_types
@@ -2023,8 +2039,11 @@ bool find_best_item_goal(
                     obj = obj->next_obj;
                     continue;
                 }
-                const BotGoalType item_goal_type = classify_collect_goal_for_item(*item, *item_info);
-                if (item_goal_type == BotGoalType::none) {
+                const BotGoalType item_goal_type =
+                    classify_collect_goal_for_item(local_entity, *item, *item_info);
+                // A satisfied goal is dropped on the next think, so offering it only makes the goal flip.
+                if (item_goal_type == BotGoalType::none
+                    || is_item_goal_satisfied(local_entity, item_goal_type, *item)) {
                     obj = obj->next_obj;
                     continue;
                 }
@@ -2681,13 +2700,13 @@ bool bot_internal_is_collectible_goal_item(const rf::Item& item)
     return is_collectible_goal_item(item);
 }
 
-BotGoalType bot_internal_classify_collect_goal_item(const rf::Item& item)
+BotGoalType bot_internal_classify_collect_goal_item(const rf::Entity& local_entity, const rf::Item& item)
 {
     const rf::ItemInfo* item_info = resolve_item_info(item);
     if (!item_info || (item_info->flags & rf::IIF_NO_PICKUP)) {
         return BotGoalType::none;
     }
-    return classify_collect_goal_for_item(item, *item_info);
+    return classify_collect_goal_for_item(local_entity, item, *item_info);
 }
 
 bool bot_internal_is_item_goal_satisfied(
@@ -3018,6 +3037,11 @@ void bot_run_frame(BotContext& ctx)
         ctx.state.firing.explosive_release_hold_alt = false;
         ctx.state.firing.remote_charge_pending_detonation = false;
         ctx.state.firing.remote_charge_pending_detonation_timer.invalidate();
+        ctx.state.firing.weapon_pickup_pending = false;
+        ctx.state.firing.weapon_select_candidate = -1;
+        ctx.state.firing.weapon_select_target_handle = -1;
+        ctx.state.firing.aim_at_floor = false;
+        ctx.state.firing.weapon_ranges = {};
         ctx.state.crater_goal_timeout_timer.invalidate();
         ctx.state.shatter_goal_timeout_timer.invalidate();
         ctx.state.ctf_threat_handle = -1;

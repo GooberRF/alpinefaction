@@ -37,6 +37,14 @@ constexpr int kItemGoalApproachTimeoutMs = 3500;
 constexpr float kRecoveryAnchorFallbackHorizontalDeadlockRadius = 0.85f;
 constexpr float kRecoveryAnchorFallbackVerticalDeadlockHeight = 1.6f;
 
+// The walk check sees only static level geometry at step height; the eye-level test also catches clutter, movers and
+// head-height rails.
+bool can_move_directly_to(const rf::Entity& local_entity, const rf::Vector3& target_pos, const rf::Vector3& los_target)
+{
+    return bot_has_unobstructed_level_los(local_entity.eye_pos, los_target, nullptr, nullptr)
+        && bot_can_walk_direct(local_entity.pos, target_pos);
+}
+
 void abandon_eliminate_goal_for_forage(const char* heading_change_reason)
 {
     if (bot_state().active_goal != BotGoalType::eliminate_target) {
@@ -315,6 +323,88 @@ bool find_reachable_crater_target_waypoint(
         return true;
     }
 
+    return false;
+}
+
+// Nearest reachable waypoint at least `standoff` from a crater target that sees it; the last pick is kept while it
+// still qualifies, so the bot does not wander between candidates as it moves.
+bool find_crater_standoff_waypoint(
+    const rf::Entity& local_entity,
+    const WaypointTargetDefinition& target,
+    const float standoff,
+    const float max_distance,
+    int& out_waypoint,
+    rf::Vector3& out_pos)
+{
+    constexpr float kStandoffRingWidth = 12.0f;
+    constexpr int kStandoffProbeLimit = 12;
+    constexpr int kStandoffMemoMs = 2000;
+    constexpr float kWaypointEyeHeight = 1.0f;
+    constexpr float kTargetSurfaceOffset = 0.6f;
+
+    BotState& state = bot_state();
+    if (state.crater_standoff_target_uid == target.uid
+        && state.crater_standoff_distance == standoff
+        && state.crater_standoff_timer.valid()
+        && !state.crater_standoff_timer.elapsed()) {
+        out_waypoint = state.crater_standoff_waypoint;
+        return out_waypoint > 0 && waypoints_get_pos(out_waypoint, out_pos);
+    }
+    const int previous_waypoint = state.crater_standoff_target_uid == target.uid ? state.crater_standoff_waypoint : 0;
+    state.crater_standoff_target_uid = target.uid;
+    state.crater_standoff_distance = standoff;
+    state.crater_standoff_waypoint = 0;
+    state.crater_standoff_timer.set(kStandoffMemoMs);
+
+    const int start_waypoint = bot_find_closest_waypoint_with_fallback(local_entity.pos);
+    if (start_waypoint <= 0) {
+        return false;
+    }
+    struct Candidate
+    {
+        int waypoint = 0;
+        rf::Vector3 pos{};
+        float dist_sq = 0.0f;
+    };
+    std::vector<Candidate> candidates{};
+    const float ring_min_sq = standoff * standoff;
+    const float ring_max = std::min(standoff + kStandoffRingWidth, max_distance);
+    const float ring_max_sq = ring_max * ring_max;
+    const int waypoint_total = waypoints_count();
+    for (int waypoint = 1; waypoint < waypoint_total; ++waypoint) {
+        rf::Vector3 waypoint_pos{};
+        if (!waypoints_get_pos(waypoint, waypoint_pos)) {
+            continue;
+        }
+        const float target_dist_sq = rf::vec_dist_squared(&waypoint_pos, &target.pos);
+        if (target_dist_sq < ring_min_sq || target_dist_sq > ring_max_sq) {
+            continue;
+        }
+        candidates.push_back({waypoint, waypoint_pos, rf::vec_dist_squared(&waypoint_pos, &local_entity.pos)});
+    }
+    const auto probed_end = candidates.begin()
+        + std::min<std::ptrdiff_t>(kStandoffProbeLimit, static_cast<std::ptrdiff_t>(candidates.size()));
+    const auto nearer_or_previous = [&](const Candidate& lhs, const Candidate& rhs) {
+        const bool lhs_previous = lhs.waypoint == previous_waypoint;
+        if (lhs_previous != (rhs.waypoint == previous_waypoint)) {
+            return lhs_previous;
+        }
+        return lhs.dist_sq < rhs.dist_sq;
+    };
+    std::partial_sort(candidates.begin(), probed_end, candidates.end(), nearer_or_previous);
+    for (auto it = candidates.begin(); it != probed_end; ++it) {
+        const rf::Vector3 eye_pos = it->pos + rf::Vector3{0.0f, kWaypointEyeHeight, 0.0f};
+        rf::Vector3 to_eye = eye_pos - target.pos;
+        to_eye.normalize_safe();
+        if (!bot_has_unobstructed_level_los(eye_pos, target.pos + to_eye * kTargetSurfaceOffset, &local_entity, nullptr)
+            || !bot_nav_is_waypoint_reachable(start_waypoint, it->waypoint)) {
+            continue;
+        }
+        state.crater_standoff_waypoint = it->waypoint;
+        out_waypoint = it->waypoint;
+        out_pos = it->pos;
+        return true;
+    }
     return false;
 }
 
@@ -1538,21 +1628,22 @@ bool update_crater_goal(
 
     int target_waypoint = 0;
     rf::Vector3 target_waypoint_pos{};
-    if (!find_reachable_crater_target_waypoint(
-            local_entity,
-            target,
-            bot_state().goal_target_waypoint,
-            target_waypoint,
-            target_waypoint_pos)) {
-        if (!bot_state().crater_goal_abort_timer.valid()) {
-            bot_state().crater_goal_abort_timer.set(2000);
+    bool standoff = false;
+    if (!bot_nav_find_crater_fire_waypoint(local_entity, target, target_waypoint, target_waypoint_pos, standoff)) {
+        rf::Timestamp& abort_timer =
+            standoff ? bot_state().crater_standoff_abort_timer : bot_state().crater_goal_abort_timer;
+        if (!abort_timer.valid()) {
+            abort_timer.set(2000);
         }
-        else if (bot_state().crater_goal_abort_timer.elapsed()) {
+        else if (abort_timer.elapsed()) {
+            abort_timer.invalidate();
+            bot_nav_note_failed_crater_target(target.uid);
             return bot_goal_runtime_abort_crater_goal();
         }
         return false;
     }
     bot_state().crater_goal_abort_timer.invalidate();
+    bot_state().crater_standoff_abort_timer.invalidate();
 
     bot_state().goal_target_waypoint = target_waypoint;
     bot_state().goal_target_pos = target.pos;
@@ -1965,11 +2056,12 @@ bool update_ctf_objective_goal(
         &local_entity.pos,
         &bot_state().goal_target_pos
     );
-    // Only commit to direct movement toward the CTF objective if the bot has
-    // LOS — otherwise keep routing via waypoints to avoid walking into walls.
-    const bool direct_approach_allowed =
-        bot_has_unobstructed_level_los(local_entity.eye_pos, bot_state().goal_target_pos, nullptr, nullptr);
-    if (goal_dist_sq <= kWaypointLinkRadius * kWaypointLinkRadius && direct_approach_allowed) {
+    // Only commit to direct movement toward the CTF objective if the bot can
+    // walk there — otherwise keep routing via waypoints.
+    const auto direct_approach_allowed = [&]() {
+        return can_move_directly_to(local_entity, bot_state().goal_target_pos, bot_state().goal_target_pos);
+    };
+    if (goal_dist_sq <= kWaypointLinkRadius * kWaypointLinkRadius && direct_approach_allowed()) {
         bot_internal_clear_waypoint_route();
         move_target = bot_state().goal_target_pos;
         has_move_target = true;
@@ -1984,7 +2076,7 @@ bool update_ctf_objective_goal(
         );
         if (dist_to_goal_waypoint_sq
             <= kCtfFinalApproachWaypointProximity * kCtfFinalApproachWaypointProximity) {
-            if (direct_approach_allowed) {
+            if (direct_approach_allowed()) {
                 // Once we reach the anchor waypoint near the flag objective,
                 // commit to running directly over the live flag position.
                 bot_internal_clear_waypoint_route();
@@ -1992,8 +2084,8 @@ bool update_ctf_objective_goal(
                 has_move_target = true;
                 return true;
             }
-            // No LOS to objective: re-route to a waypoint closer to the
-            // target position rather than walking through walls.
+            // Objective not walkable from here: re-route to a waypoint closer
+            // to the target position rather than walking into obstacles.
             bot_state().goal_target_waypoint = bot_find_closest_waypoint_with_fallback(
                 bot_state().goal_target_pos
             );
@@ -2087,13 +2179,9 @@ bool update_ctf_objective_goal(
             return bot_goal_runtime_abort_ctf_goal();
         }
 
-        // Only move directly toward the objective if we have LOS — otherwise
-        // the bot walks into walls. Let navigation recovery handle it.
-        if (bot_has_unobstructed_level_los(
-                local_entity.eye_pos,
-                bot_state().goal_target_pos,
-                nullptr,
-                nullptr)) {
+        // Only move directly toward the objective if the bot can walk there.
+        // Otherwise let navigation recovery handle it.
+        if (can_move_directly_to(local_entity, bot_state().goal_target_pos, bot_state().goal_target_pos)) {
             move_target = bot_state().goal_target_pos;
             has_move_target = true;
         }
@@ -2201,22 +2289,11 @@ bool update_bagman_objective_goal(
 
         constexpr float kBagDirectApproachRadius = kWaypointLinkRadius * 2.0f;
         constexpr float kBagAnchorProximityRadius = kWaypointReachRadius * 2.0f;
-        // Hard-commit at close range regardless of LOS, using horizontal
-        // (xz) distance — bags can sit on small platforms or ledges so the
-        // bot's foot height often differs from the bag's by 2-4u even when
-        // they're effectively "right there" in plan view.
-        const float horizontal_dist_sq = bot_horizontal_dist_sq(target_pos, local_entity.pos);
-        constexpr float kBagHardCommitHorizontalRadius = 6.0f;
-        constexpr float kBagHardCommitVerticalRadius = 4.0f;
-        if (horizontal_dist_sq <= kBagHardCommitHorizontalRadius * kBagHardCommitHorizontalRadius
-            && std::abs(target_pos.y - local_entity.pos.y) <= kBagHardCommitVerticalRadius) {
-            bot_internal_clear_waypoint_route();
-            move_target = target_pos;
-            has_move_target = true;
-            return true;
-        }
+        // Close by, run straight at the bag only when it can be walked to. A bag on a small platform or
+        // ledge is taken from its anchor waypoint below.
         if (goal_dist_sq <= kBagDirectApproachRadius * kBagDirectApproachRadius
-            && direct_approach_allowed) {
+            && direct_approach_allowed
+            && bot_can_walk_direct(local_entity.pos, target_pos)) {
             bot_internal_clear_waypoint_route();
             move_target = target_pos;
             has_move_target = true;
@@ -2270,8 +2347,7 @@ bool update_bagman_objective_goal(
         } else if (bot_state().ctf_objective_route_fail_timer.elapsed()) {
             return bot_goal_runtime_abort_bagman_goal();
         }
-        if (bot_has_unobstructed_level_los(
-                local_entity.eye_pos, target_pos, nullptr, nullptr)) {
+        if (can_move_directly_to(local_entity, target_pos, target_pos)) {
             move_target = target_pos;
             has_move_target = true;
         }
@@ -2397,24 +2473,11 @@ bool update_salvage_objective_goal(
 
         constexpr float kSalvageDirectApproachRadius = kWaypointLinkRadius * 2.0f;
         constexpr float kSalvageAnchorProximityRadius = kWaypointReachRadius * 2.0f;
-        // Hard-commit at close range regardless of LOS, using horizontal (xz)
-        // distance — the flag can sit on a small platform or ledge, so the
-        // bot's foot height often differs from the flag's by 2-4u even when
-        // they're effectively "right there" in plan view.
-        const float horizontal_dist_sq = bot_horizontal_dist_sq(target_pos, local_entity.pos);
-        constexpr float kSalvageHardCommitHorizontalRadius = 6.0f;
-        constexpr float kSalvageHardCommitVerticalRadius = 4.0f;
-        if (horizontal_dist_sq
-                <= kSalvageHardCommitHorizontalRadius * kSalvageHardCommitHorizontalRadius
-            && std::abs(target_pos.y - local_entity.pos.y)
-                <= kSalvageHardCommitVerticalRadius) {
-            bot_internal_clear_waypoint_route();
-            move_target = target_pos;
-            has_move_target = true;
-            return true;
-        }
+        // Close by, run straight at the flag only when it can be walked to. A flag on a small platform or
+        // ledge is taken from its anchor waypoint below.
         if (goal_dist_sq <= kSalvageDirectApproachRadius * kSalvageDirectApproachRadius
-            && direct_approach_allowed) {
+            && direct_approach_allowed
+            && bot_can_walk_direct(local_entity.pos, target_pos)) {
             bot_internal_clear_waypoint_route();
             move_target = target_pos;
             has_move_target = true;
@@ -2471,11 +2534,12 @@ bool update_salvage_objective_goal(
     }
     else if (bot_state().active_goal == BotGoalType::sal_deliver_flag) {
         // Base anchor commit, mirroring the CTF capture approach: only run
-        // straight at the base once we have LOS to it.
+        // straight at the base once it can be walked to.
         const float goal_dist_sq = rf::vec_dist_squared(&local_entity.pos, &target_pos);
-        const bool direct_approach_allowed = bot_has_unobstructed_level_los(
-            local_entity.eye_pos, target_pos, nullptr, nullptr);
-        if (goal_dist_sq <= kWaypointLinkRadius * kWaypointLinkRadius && direct_approach_allowed) {
+        const auto direct_approach_allowed = [&]() {
+            return can_move_directly_to(local_entity, target_pos, target_pos);
+        };
+        if (goal_dist_sq <= kWaypointLinkRadius * kWaypointLinkRadius && direct_approach_allowed()) {
             bot_internal_clear_waypoint_route();
             move_target = target_pos;
             has_move_target = true;
@@ -2486,7 +2550,7 @@ bool update_salvage_objective_goal(
             const float dist_to_anchor_sq = rf::vec_dist_squared(&local_entity.pos, &waypoint_pos);
             if (dist_to_anchor_sq
                 <= kSalvageFinalApproachWaypointProximity * kSalvageFinalApproachWaypointProximity) {
-                if (direct_approach_allowed) {
+                if (direct_approach_allowed()) {
                     // Once we reach the anchor waypoint near the base, commit to
                     // running directly over it to score.
                     bot_internal_clear_waypoint_route();
@@ -2494,8 +2558,8 @@ bool update_salvage_objective_goal(
                     has_move_target = true;
                     return true;
                 }
-                // No LOS to the base: re-route to a waypoint closer to it rather
-                // than walking through walls.
+                // Base not walkable from here: re-route to a waypoint closer to
+                // it rather than walking into obstacles.
                 bot_state().goal_target_waypoint =
                     bot_find_closest_waypoint_with_fallback(target_pos);
                 waypoint_valid =
@@ -2546,8 +2610,7 @@ bool update_salvage_objective_goal(
             }
             return bot_goal_runtime_abort_salvage_goal();
         }
-        if (bot_has_unobstructed_level_los(
-                local_entity.eye_pos, target_pos, nullptr, nullptr)) {
+        if (can_move_directly_to(local_entity, target_pos, target_pos)) {
             move_target = target_pos;
             has_move_target = true;
         }
@@ -2608,8 +2671,10 @@ bool update_control_point_objective_goal(
 
         bot_state().goal_target_pos =
             resolve_control_point_objective_pos(*hill, bot_state().goal_target_pos);
-        move_target = bot_state().goal_target_pos;
-        has_move_target = true;
+        if (bot_can_walk_direct(local_entity.pos, bot_state().goal_target_pos)) {
+            move_target = bot_state().goal_target_pos;
+            has_move_target = true;
+        }
         return true;
     }
 
@@ -2686,7 +2751,9 @@ bool update_control_point_objective_goal(
         <= kControlPointFinalApproachWaypointProximity * kControlPointFinalApproachWaypointProximity) {
         bot_internal_clear_waypoint_route();
         bot_state().control_point_route_fail_timer.invalidate();
-        move_target = bot_state().goal_target_pos;
+        move_target = bot_can_walk_direct(local_entity.pos, bot_state().goal_target_pos)
+            ? bot_state().goal_target_pos
+            : objective_waypoint_pos;
         has_move_target = true;
         return true;
     }
@@ -2705,8 +2772,10 @@ bool update_control_point_objective_goal(
             return bot_goal_runtime_abort_control_point_goal();
         }
 
-        move_target = bot_state().goal_target_pos;
-        has_move_target = true;
+        if (bot_can_walk_direct(local_entity.pos, bot_state().goal_target_pos)) {
+            move_target = bot_state().goal_target_pos;
+            has_move_target = true;
+        }
         return true;
     }
 
@@ -2715,6 +2784,60 @@ bool update_control_point_objective_goal(
     has_move_target = true;
     return true;
 }
+}
+
+bool bot_nav_find_crater_fire_waypoint(
+    const rf::Entity& local_entity,
+    const WaypointTargetDefinition& target,
+    int& out_waypoint,
+    rf::Vector3& out_pos,
+    bool& out_standoff)
+{
+    out_standoff = false;
+    if (!bot_player()) {
+        return false;
+    }
+    float standoff_max_distance = 0.0f;
+    const float standoff = bot_crater_standoff_distance(
+        *bot_player(),
+        const_cast<rf::Entity&>(local_entity),
+        standoff_max_distance);
+    out_standoff = standoff > 0.0f;
+    return out_standoff
+        ? find_crater_standoff_waypoint(local_entity, target, standoff, standoff_max_distance, out_waypoint, out_pos)
+        : find_reachable_crater_target_waypoint(
+            local_entity,
+            target,
+            bot_state().goal_target_waypoint,
+            out_waypoint,
+            out_pos);
+}
+
+void bot_nav_note_failed_crater_target(const int target_uid)
+{
+    auto& failed = bot_state().failed_crater_targets;
+    FailedCraterTarget* slot = &failed[0];
+    for (FailedCraterTarget& entry : failed) {
+        if (entry.target_uid == target_uid || !entry.cooldown.valid() || entry.cooldown.elapsed()) {
+            slot = &entry;
+            break;
+        }
+        if (entry.cooldown.time_until() < slot->cooldown.time_until()) {
+            slot = &entry;
+        }
+    }
+    slot->target_uid = target_uid;
+    slot->cooldown.set(kFailedCraterTargetCooldownMs);
+}
+
+bool bot_nav_crater_target_failed_recently(const int target_uid)
+{
+    for (const FailedCraterTarget& entry : bot_state().failed_crater_targets) {
+        if (entry.target_uid == target_uid && entry.cooldown.valid() && !entry.cooldown.elapsed()) {
+            return true;
+        }
+    }
+    return false;
 }
 
 bool bot_sync_pursuit_target(rf::Entity* enemy_target)
@@ -2981,7 +3104,8 @@ void bot_update_move_target(
                 }
                 return;
             }
-            if (item_dist_sq <= direct_pickup_radius * direct_pickup_radius) {
+            if (item_dist_sq <= direct_pickup_radius * direct_pickup_radius
+                && bot_can_walk_direct(local_entity.pos, bot_state().goal_target_pos)) {
                 move_target = bot_state().goal_target_pos;
                 bot_state().waypoint_target_pos = bot_state().goal_target_pos;
                 // Final pickup approach must run through the item, not stop at waypoint tolerance.
@@ -3085,7 +3209,8 @@ void bot_update_move_target(
         else if (enemy_target && !abandoned_pursuit_for_forage) {
             // Last-resort near-corner fallback: keep pressure instead of freezing.
             const float close_press_dist_sq = 12.0f * 12.0f;
-            if (rf::vec_dist_squared(&local_entity.pos, &enemy_target->pos) <= close_press_dist_sq) {
+            if (rf::vec_dist_squared(&local_entity.pos, &enemy_target->pos) <= close_press_dist_sq
+                && bot_can_walk_direct(local_entity.pos, enemy_target->pos)) {
                 move_target = enemy_target->pos;
                 has_move_target = true;
             }
@@ -3126,7 +3251,8 @@ void bot_update_move_target(
                 }
                 return;
             }
-            if (item_dist_sq <= direct_pickup_radius * direct_pickup_radius) {
+            if (item_dist_sq <= direct_pickup_radius * direct_pickup_radius
+                && bot_can_walk_direct(local_entity.pos, bot_state().goal_target_pos)) {
                 move_target = bot_state().goal_target_pos;
                 bot_state().waypoint_target_pos = bot_state().goal_target_pos;
                 // Final pickup approach must run through the item, not stop at waypoint tolerance.

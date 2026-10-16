@@ -10,6 +10,13 @@ void bot_track_aim_goal(rf::Entity& local_entity);
 void ensure_weapon_ready(rf::Player& player, rf::Entity& entity);
 bool bot_has_usable_crater_weapon(rf::Player& player, rf::Entity& entity);
 bool bot_has_usable_shatter_weapon(rf::Player& player, rf::Entity& entity);
+// Expected damage per second of the best usable weapon at the distance, with the active bot's aim.
+float bot_best_combat_weapon_dps(rf::Player& player, rf::Entity& entity, float target_distance);
+// Distance the held weapon works best at (-1 if none) and the distance its own blast needs.
+float bot_combat_engagement_distance(const rf::Entity& entity, float& out_min_safe_distance);
+// Distance from a crater target to fire the crater weapon from (0 when it is used up close), and the farthest it
+// reaches.
+float bot_crater_standoff_distance(rf::Player& player, rf::Entity& entity, float& out_max_distance);
 void bot_process_combat(
     rf::Player& local_player,
     rf::Entity& local_entity,

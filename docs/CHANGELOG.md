@@ -121,6 +121,10 @@ Version 1.5.0 (Trillium): Not yet released
 - Spread the `hard`, `expert` and `nightmare` bot skill presets apart; expert and nightmare previously aimed and decided identically, and hard almost so
 - Add `reaction_time_ms`, `aim_error_min`, `aim_error_max`, `yaw_speed_cap`, `pitch_speed_cap`, `fire_alignment_threshold` and `semi_auto_click_interval_scale` bot skill fields for `skill_overrides` in bot profiles
 - Allow bot personality and skill bias fields to be set to 0 to switch off what they scale, instead of being raised to 0.25
+- Make bots choose weapons by their expected damage at the current distance (from the weapons' `weapons.tbl` stats, with personality preferences as a weight), switch on pickups and new targets, fire only within a weapon's effective range, and keep one remote charge out at a time, setting it off when an enemy is in the blast
+- Make bots use explosives safely (no splash fire where the blast would cost the bot more than a little health or reach a teammate, rockets aimed at the feet, geomod craters fired from a distance), top up their clip once the enemy is out of sight, and stop leaving fights for pickups that are not on the way
+- Make bots walk straight to objectives, items and enemies only when nothing (including glass and fences) is in the way and there is no ledge to drop off, and look ahead round corners or toward where a threat was last noticed instead of crab-walking and sweeping their view while moving; the `navigation_strafe_bias` personality field now only switches this look-ahead on (above 0) or off (0)
+- Ignore connected human players who are not playing (not spawned and not killed in the last 5 seconds) when picking a joining bot's team
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Add `ui_color_console` console command to set the console background color

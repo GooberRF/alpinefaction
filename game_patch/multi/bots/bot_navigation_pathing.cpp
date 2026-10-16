@@ -29,6 +29,7 @@ constexpr float kPathFallFastForwardLevelTolerance = 0.25f;
 constexpr int kFallFastForwardStuckTimeoutMs = 2000;
 constexpr float kRecoveryAnchorHorizontalDeadlockRadius = 0.85f;
 constexpr float kRecoveryAnchorVerticalDeadlockHeight = 1.6f;
+constexpr size_t kRecoveryAnchorWalkCheckCandidates = 8;
 
 int current_waypoint_progress_timeout_ms()
 {
@@ -130,7 +131,8 @@ int choose_recovery_anchor_escape_neighbor(
         float score = std::clamp(horizontal_sq, 0.0f, 256.0f) - vertical_delta * 2.2f;
 
         const rf::Vector3 neighbor_eye_pos = neighbor_pos + eye_offset;
-        if (bot_has_unobstructed_level_los(entity.eye_pos, neighbor_eye_pos, &entity, nullptr)) {
+        if (bot_has_unobstructed_level_los(entity.eye_pos, neighbor_eye_pos, &entity, nullptr)
+            && bot_can_walk_direct(entity.pos, neighbor_pos)) {
             score += 24.0f;
         }
 
@@ -158,6 +160,7 @@ int find_recovery_anchor_alternative_waypoint(
         int waypoint;
         rf::Vector3 pos;
         signed char viable;
+        signed char visible;
     };
     // Visited best (lowest score, then lowest index) first, so the probes stop at the first acceptable waypoint.
     // The order is produced lazily from a heap: the first few candidates usually pass.
@@ -174,7 +177,7 @@ int find_recovery_anchor_alternative_waypoint(
         const float score =
             dist_sq + std::max(0.0f, vertical_delta - 3.0f) * 18.0f;
         if (score < std::numeric_limits<float>::infinity()) {
-            candidates.push_back({score, waypoint, waypoint_pos, -1});
+            candidates.push_back({score, waypoint, waypoint_pos, -1, -1});
         }
     }
     const auto worse = [](const Candidate& a, const Candidate& b) {
@@ -192,8 +195,8 @@ int find_recovery_anchor_alternative_waypoint(
     };
 
     const rf::Vector3 eye_offset = entity.eye_pos - entity.pos;
-    auto choose_best = [&](const bool require_los) -> int {
-        for (size_t rank = 0; rank < candidates.size(); ++rank) {
+    auto choose_best = [&](const bool require_los, const bool require_walkable, const size_t max_rank) -> int {
+        for (size_t rank = 0; rank < std::min(candidates.size(), max_rank); ++rank) {
             Candidate& candidate = nth_best(rank);
             if (candidate.viable < 0) {
                 candidate.viable = waypoint_has_viable_route_neighbor(candidate.waypoint) ? 1 : 0;
@@ -202,24 +205,31 @@ int find_recovery_anchor_alternative_waypoint(
                 continue;
             }
             if (require_los) {
-                const rf::Vector3 waypoint_eye_pos = candidate.pos + eye_offset;
-                if (!bot_has_unobstructed_level_los(
-                        entity.eye_pos,
-                        waypoint_eye_pos,
-                        &entity,
-                        nullptr)) {
+                if (candidate.visible < 0) {
+                    const rf::Vector3 waypoint_eye_pos = candidate.pos + eye_offset;
+                    candidate.visible =
+                        bot_has_unobstructed_level_los(entity.eye_pos, waypoint_eye_pos, &entity, nullptr) ? 1 : 0;
+                }
+                if (!candidate.visible) {
                     continue;
                 }
+            }
+            if (require_walkable && !bot_can_walk_direct(entity.pos, candidate.pos)) {
+                continue;
             }
             return candidate.waypoint;
         }
         return 0;
     };
 
-    if (int waypoint = choose_best(true); waypoint > 0) {
+    constexpr size_t all_ranks = std::numeric_limits<size_t>::max();
+    if (int waypoint = choose_best(true, true, kRecoveryAnchorWalkCheckCandidates); waypoint > 0) {
         return waypoint;
     }
-    return choose_best(false);
+    if (int waypoint = choose_best(true, false, all_ranks); waypoint > 0) {
+        return waypoint;
+    }
+    return choose_best(false, false, all_ranks);
 }
 
 int choose_recovery_anchor_waypoint(
@@ -233,7 +243,9 @@ int choose_recovery_anchor_waypoint(
     rf::Vector3 seed_pos{};
     const bool seed_pos_valid = waypoints_get_pos(seed_waypoint, seed_pos);
     const bool seed_deadlock = !seed_pos_valid || is_recovery_anchor_vertical_deadlock(entity, seed_pos);
-    const bool seed_viable = !seed_deadlock && waypoint_has_viable_route_neighbor(seed_waypoint);
+    const bool seed_viable = !seed_deadlock
+        && waypoint_has_viable_route_neighbor(seed_waypoint)
+        && bot_can_walk_direct(entity.pos, seed_pos);
     if (seed_viable) {
         return seed_waypoint;
     }
@@ -1035,7 +1047,6 @@ void clear_synthetic_movement_controls()
     bot_state().move_input_x = 0.0f;
     bot_state().move_input_y = 0.0f;
     bot_state().move_input_z = 0.0f;
-    bot_state().nav_look_phase = 0.0f;
     bot_state().movement_override_active = false;
 }
 
@@ -1179,6 +1190,7 @@ void reset_client_bot_state()
     bot_state().eliminate_target_reacquire_timer.invalidate();
     bot_state().goal_eval_timer.invalidate();
     bot_state().goal_switch_lock_timer.invalidate();
+    bot_state().goal_min_dwell_timer.invalidate();
     bot_state().bridge.zone_uid = -1;
     bot_state().bridge.trigger_uid = -1;
     bot_state().bridge.trigger_pos = {};
@@ -1192,6 +1204,7 @@ void reset_client_bot_state()
     bot_state().bridge.post_open_priority_timer.invalidate();
     bot_state().crater_goal_abort_timer.invalidate();
     bot_state().crater_goal_timeout_timer.invalidate();
+    bot_state().crater_standoff_timer.invalidate();
     bot_state().shatter_goal_abort_timer.invalidate();
     bot_state().shatter_goal_timeout_timer.invalidate();
     bot_state().confusion_abort_timer.invalidate();

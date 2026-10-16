@@ -134,6 +134,8 @@ inline constexpr int kBotRetaliationNearMissWindowMs = 1400;
 inline constexpr float kNavigationAimVerticalThreshold = 1.6f;
 inline constexpr int kGoalSwitchLockMinMs = 320;
 inline constexpr int kGoalSwitchLockMaxMs = 1400;
+inline constexpr int kGoalMinDwellMs = 600;
+inline constexpr float kGoalSwitchScoreMarginShare = 0.10f;
 inline constexpr int kRoamFallbackGoalLockMs = 900;
 inline constexpr int kRecoveryRoamReevalLimitMs = 4000;
 inline constexpr int kAimErrorUpdateSlowMs = 240;  // low-skill: longer interval between aim error updates
@@ -141,7 +143,9 @@ inline constexpr int kAimErrorUpdateFastMs = 55;   // high-skill: shorter interv
 inline constexpr float kAimErrorDistanceNorm = 22.0f;
 inline constexpr int kSemiAutoClickMinMs = 90;
 inline constexpr int kSemiAutoClickMaxMs = 900;
-inline constexpr int kRemoteChargeDetonationWindowMs = 5000;
+inline constexpr int kRemoteChargeDetonationWindowMs = 3000;
+inline constexpr int kRemoteChargeCraterWindowMs = 6000;
+inline constexpr int kFailedCraterTargetCooldownMs = 15000;
 inline constexpr int kBotServerConfigTimeoutMs = 10000;
 inline constexpr int kBotConnectionWatchdogMs = 30000;
 
@@ -314,6 +318,12 @@ struct FailedWaypointCooldown
     rf::Timestamp cooldown{};
 };
 
+struct FailedCraterTarget
+{
+    int target_uid = -1;
+    rf::Timestamp cooldown{};
+};
+
 struct FailedItemGoalCooldown
 {
     int item_handle = -1;
@@ -391,6 +401,23 @@ struct BotAlertContact
     rf::Timestamp awareness_timer{};
 };
 
+struct BotWeaponRangeCache
+{
+    bool valid = false;
+    float skill_factor = 0.0f;
+    float peak_dps = 0.0f;
+    float ideal_range = 0.0f;
+    float effective_range = 0.0f;
+};
+
+struct BotWalkDirectCacheEntry
+{
+    rf::Vector3 from{};
+    rf::Vector3 to{};
+    bool walkable = false;
+    rf::Timestamp timer{};
+};
+
 struct BotCombatFiringState
 {
     bool wants_fire = false;
@@ -415,6 +442,21 @@ struct BotCombatFiringState
     bool explosive_release_hold_alt = false;
     bool remote_charge_pending_detonation = false;
     rf::Timestamp remote_charge_pending_detonation_timer{};
+    rf::Timestamp remote_charge_settle_timer{};
+    // Weapon choice: events that force an evaluation, and the challenger that must stay best for a while.
+    bool weapon_pickup_pending = false;
+    int weapon_select_target_handle = -1;
+    int weapon_select_candidate = -1;
+    rf::Timestamp weapon_select_candidate_timer{};
+    rf::Timestamp enemy_los_recent_timer{};
+    // A switch request stays pending until the backend confirms it, so it is not issued again every think.
+    int requested_weapon = -1;
+    rf::Timestamp weapon_request_timer{};
+    // Expected-damage range numbers per weapon type; they depend only on weapons.tbl and the bot's aim skill.
+    std::array<BotWeaponRangeCache, 64> weapon_ranges{};
+    // Splash weapons aim at the floor under a grounded target; the drop below its origin is measured per think.
+    bool aim_at_floor = false;
+    float aim_floor_drop = 0.0f;
     // What the last think aimed at: a point, or an enemy whose aim point is recomputed every frame.
     bool aim_goal_active = false;
     int aim_goal_enemy_handle = -1;
@@ -615,6 +657,8 @@ struct BotState
     rf::Timestamp closest_los_waypoint_cache_timer{};
     rf::Vector3 closest_los_waypoint_cache_pos{};
     int closest_los_waypoint_cache = 0;
+    std::array<BotWalkDirectCacheEntry, 4> walk_direct_cache{};
+    int walk_direct_cache_next = 0;
     std::vector<FailedEdgeCooldown> failed_edge_cooldowns{};
     std::vector<FailedWaypointCooldown> failed_waypoint_cooldowns{};
     std::vector<FailedItemGoalCooldown> failed_item_goal_cooldowns{};
@@ -645,7 +689,6 @@ struct BotState
     float move_input_x = 0.0f;
     float move_input_y = 0.0f;
     float move_input_z = 0.0f;
-    float nav_look_phase = 0.0f;
     bool movement_override_active = false;
 
     BotGoalType active_goal = BotGoalType::none;
@@ -657,6 +700,7 @@ struct BotState
     rf::Timestamp eliminate_target_reacquire_timer{};
     rf::Timestamp goal_eval_timer{};
     rf::Timestamp goal_switch_lock_timer{};
+    rf::Timestamp goal_min_dwell_timer{};
     std::array<bool, 64> known_weapons{};
     bool known_weapons_initialized = false;
     rf::Timestamp weapon_switch_timer{};
@@ -697,6 +741,12 @@ struct BotState
     BotBridgeGoalState bridge{};
     rf::Timestamp crater_goal_abort_timer{};
     rf::Timestamp crater_goal_timeout_timer{};
+    int crater_standoff_target_uid = -1;
+    float crater_standoff_distance = 0.0f;
+    int crater_standoff_waypoint = 0;
+    rf::Timestamp crater_standoff_timer{};
+    rf::Timestamp crater_standoff_abort_timer{};
+    std::array<FailedCraterTarget, 4> failed_crater_targets{};
     rf::Timestamp shatter_goal_abort_timer{};
     rf::Timestamp shatter_goal_timeout_timer{};
     rf::Timestamp confusion_abort_timer{};
@@ -746,7 +796,7 @@ bool bot_internal_try_recover_from_corner_probe(
     const rf::Vector3& move_target);
 bool bot_internal_is_following_waypoint_link(const rf::Entity& entity);
 bool bot_internal_is_collectible_goal_item(const rf::Item& item);
-BotGoalType bot_internal_classify_collect_goal_item(const rf::Item& item);
+BotGoalType bot_internal_classify_collect_goal_item(const rf::Entity& local_entity, const rf::Item& item);
 bool bot_internal_is_item_goal_satisfied(
     const rf::Entity& local_entity,
     BotGoalType goal_type,

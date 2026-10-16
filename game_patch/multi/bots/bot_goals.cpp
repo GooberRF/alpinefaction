@@ -3,6 +3,7 @@
 #include "bot_combat.h"
 #include "bot_context.h"
 #include "bot_internal.h"
+#include "bot_navigation.h"
 #include "bot_navigation_routes.h"
 #include "bot_state.h"
 #include "bot_utils.h"
@@ -58,6 +59,20 @@ bool has_committed_pickup_route()
         return false;
     }
     return bot_state().has_waypoint_target;
+}
+
+// A pickup is on the way when it is within reach or costs only a short detour on the way to the enemy.
+bool item_pickup_is_on_the_way(const rf::Vector3& from, const rf::Vector3& enemy_pos, const rf::Vector3& item_pos)
+{
+    constexpr float kOnTheWayReach = 3.0f;
+    constexpr float kOnTheWayMaxDetour = 4.0f;
+    const float to_item = std::sqrt(std::max(rf::vec_dist_squared(&from, &item_pos), 0.0f));
+    if (to_item <= kOnTheWayReach) {
+        return true;
+    }
+    const float item_to_enemy = std::sqrt(std::max(rf::vec_dist_squared(&item_pos, &enemy_pos), 0.0f));
+    const float to_enemy = std::sqrt(std::max(rf::vec_dist_squared(&from, &enemy_pos), 0.0f));
+    return to_item + item_to_enemy - to_enemy <= kOnTheWayMaxDetour;
 }
 
 float compute_goal_score_tie_epsilon(const float score)
@@ -1018,7 +1033,7 @@ void bot_refresh_goal_state(
         1.0f
     );
     float maintenance_pressure = survivability_need * maintenance_norm;
-    if (health_ratio > 0.75f && armor_ratio < 0.60f) {
+    if (health_ratio > 0.75f && armor_ratio < 0.45f) {
         maintenance_pressure += 0.18f * maintenance_norm;
     }
     maintenance_pressure = std::clamp(maintenance_pressure, 0.0f, 1.0f);
@@ -1310,11 +1325,13 @@ void bot_refresh_goal_state(
         }
         else {
             bot_state().goal_target_pos = current_target.pos;
-            if (find_reachable_explosion_target_waypoint(
+            bool standoff = false;
+            if (bot_nav_find_crater_fire_waypoint(
                     local_entity,
                     current_target,
                     target_waypoint,
-                    target_waypoint_pos)) {
+                    target_waypoint_pos,
+                    standoff)) {
                 bot_state().goal_target_waypoint = target_waypoint;
                 bot_state().crater_goal_abort_timer.invalidate();
                 reevaluate_goal = false;
@@ -1328,6 +1345,7 @@ void bot_refresh_goal_state(
                     reevaluate_goal = false;
                 }
                 else {
+                    bot_nav_note_failed_crater_target(current_target.uid);
                     reevaluate_goal = true;
                 }
 
@@ -1619,7 +1637,7 @@ void bot_refresh_goal_state(
                 const auto* goal_item = static_cast<const rf::Item*>(goal_obj);
                 const BotGoalType goal_item_type =
                     goal_item
-                        ? bot_internal_classify_collect_goal_item(*goal_item)
+                        ? bot_internal_classify_collect_goal_item(local_entity, *goal_item)
                         : BotGoalType::none;
                 if (goal_item_type == BotGoalType::none
                     || goal_item_type != bot_state().active_goal) {
@@ -1770,7 +1788,8 @@ void bot_refresh_goal_state(
         for (int target_index = 0; target_index < target_count; ++target_index) {
             WaypointTargetDefinition target{};
             if (!waypoints_get_target_by_index(target_index, target)
-                || target.type != WaypointTargetType::explosion) {
+                || target.type != WaypointTargetType::explosion
+                || bot_nav_crater_target_failed_recently(target.uid)) {
                 continue;
             }
 
@@ -2899,6 +2918,7 @@ void bot_refresh_goal_state(
             switch_margin *= 3.10f;
             switch_margin += 30.0f;
         }
+        switch_margin = std::max(switch_margin, std::abs(current_goal_score) * kGoalSwitchScoreMarginShare);
         if (selected_score < current_goal_score + switch_margin) {
             selected_goal = bot_state().active_goal;
             selected_handle = bot_state().goal_target_handle;
@@ -2956,6 +2976,9 @@ void bot_refresh_goal_state(
                 same_goal_switch_margin *= 2.75f;
                 same_goal_switch_margin += 24.0f;
             }
+            same_goal_switch_margin = std::max(
+                same_goal_switch_margin,
+                std::abs(current_goal_score) * kGoalSwitchScoreMarginShare);
 
             if (selected_score < current_goal_score + same_goal_switch_margin) {
                 selected_handle = bot_state().goal_target_handle;
@@ -2970,21 +2993,21 @@ void bot_refresh_goal_state(
         && bot_state().goal_switch_lock_timer.elapsed()) {
         bot_state().goal_switch_lock_timer.invalidate();
     }
+    const bool switch_to_critical_objective =
+        bot_goal_is_ctf_objective(selected_goal)
+        || bot_goal_is_bagman_objective(selected_goal)
+        || (bot_goal_is_salvage_objective(selected_goal)
+            && selected_goal != BotGoalType::sal_stage_at_spawn)
+        || bot_goal_is_control_point_objective(selected_goal);
+    const bool switch_to_immediate_enemy_threat =
+        selected_goal == BotGoalType::eliminate_target
+        && enemy_target
+        && (enemy_has_los || retaliation_matches_enemy);
     if (std::isfinite(current_goal_score)
         && bot_state().active_goal != BotGoalType::none
         && selected_goal != BotGoalType::none
         && selected_goal != bot_state().active_goal
         && bot_state().goal_switch_lock_timer.valid()) {
-        const bool switch_to_critical_objective =
-            bot_goal_is_ctf_objective(selected_goal)
-            || bot_goal_is_bagman_objective(selected_goal)
-            || (bot_goal_is_salvage_objective(selected_goal)
-                && selected_goal != BotGoalType::sal_stage_at_spawn)
-            || bot_goal_is_control_point_objective(selected_goal);
-        const bool switch_to_immediate_enemy_threat =
-            selected_goal == BotGoalType::eliminate_target
-            && enemy_target
-            && (enemy_has_los || retaliation_matches_enemy);
         const float lock_margin = std::clamp(
             std::lerp(145.0f, 52.0f, decision_skill)
                 * std::clamp(goal_commitment, 0.55f, 2.40f),
@@ -3000,6 +3023,43 @@ void bot_refresh_goal_state(
             selected_waypoint = bot_state().goal_target_waypoint;
             selected_pos = bot_state().goal_target_pos;
         }
+    }
+
+    // A new goal is held for a minimum time unless it became invalid, an objective calls or an enemy shows up.
+    if (std::isfinite(current_goal_score)
+        && bot_state().active_goal != BotGoalType::none
+        && selected_goal != bot_state().active_goal
+        && bot_state().goal_min_dwell_timer.valid()
+        && !bot_state().goal_min_dwell_timer.elapsed()
+        && !switch_to_critical_objective
+        && !switch_to_immediate_enemy_threat) {
+        selected_goal = bot_state().active_goal;
+        selected_handle = bot_state().goal_target_handle;
+        selected_identifier = bot_state().goal_target_identifier;
+        selected_waypoint = bot_state().goal_target_waypoint;
+        selected_pos = bot_state().goal_target_pos;
+    }
+
+    // With an enemy in sight and a weapon that can win the fight, pickups wait unless they are on the way or the bot is
+    // about to die. A weapon that needs longer than this to take a full-health enemy down (the spawn handgun) does not
+    // count.
+    constexpr float kArmedMaxTimeToKillSeconds = 2.5f;
+    if (enemy_target
+        && enemy_has_los
+        && bot_goal_is_item_collection(selected_goal)
+        && bot_player()
+        && health_ratio >= std::clamp(personality.retreat_health_threshold, 0.05f, 0.90f)
+        && !item_pickup_is_on_the_way(local_entity.pos, enemy_target->pos, selected_pos)
+        && bot_best_combat_weapon_dps(
+            *bot_player(),
+            const_cast<rf::Entity&>(local_entity),
+            std::sqrt(std::max(rf::vec_dist_squared(&local_entity.pos, &enemy_target->pos), 0.0f)))
+            >= kBotNominalMaxHealth / kArmedMaxTimeToKillSeconds) {
+        selected_goal = BotGoalType::eliminate_target;
+        selected_handle = enemy_target->handle;
+        selected_identifier = enemy_target->uid;
+        selected_waypoint = 0;
+        selected_pos = enemy_target->pos;
     }
 
     const bool goal_identity_changed =
@@ -3055,6 +3115,7 @@ void bot_refresh_goal_state(
             kGoalSwitchLockMaxMs
         );
         bot_state().goal_switch_lock_timer.set(goal_switch_lock_ms);
+        bot_state().goal_min_dwell_timer.set(kGoalMinDwellMs);
     }
 
     const bool item_goal_selection_changed =

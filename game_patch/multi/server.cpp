@@ -3719,12 +3719,26 @@ CodeInjection multi_level_init_injection{
     },
 };
 
-static int pick_weaker_team()
+// A human counts as playing once spawned, and for a short while after dying.
+static bool human_is_active_player(const rf::Player& player)
+{
+    const bool is_spawned = !rf::player_is_dead(&player) && !rf::player_is_dying(&player);
+    const bool was_just_unspawned = player.death_time
+        && std::chrono::steady_clock::now() - *player.death_time
+            < std::chrono::duration<float>(BOT_OPPONENT_DEATH_WAIT_TIME_SEC);
+    return is_spawned || was_just_unspawned;
+}
+
+static int pick_weaker_team(const bool for_bot)
 {
     int red_count = 0, blue_count = 0;
     int red_bots = 0, blue_bots = 0;
     for (const rf::Player& player : SinglyLinkedList{rf::player_list}) {
         if (player.is_non_participant() || player.is_spectator) {
+            continue;
+        }
+        // A connected human who never plays (an observer) does not balance against bots.
+        if (for_bot && !player.is_bot && !human_is_active_player(player)) {
             continue;
         }
         if (player.team == rf::TEAM_RED) {
@@ -3793,7 +3807,7 @@ static int pick_team_for_joiner(const JoiningClientKind kind)
                 break; // not a participant; the normal pick applies
         }
     }
-    return pick_weaker_team();
+    return pick_weaker_team(kind == JoiningClientKind::Bot);
 }
 
 FunHook<int()> pick_team_for_new_player_hook{
@@ -5497,17 +5511,8 @@ static void bot_decommission_check() {
             if (just_entered_spectate) {
                 ++active_persons_per_team[team];
             }
-        } else {
-            const bool is_spawned = !rf::player_is_dead(&player)
-                && !rf::player_is_dying(&player);
-            const auto now = std::chrono::steady_clock::now();
-            const bool was_just_unspawned = player.death_time
-                && now - *player.death_time
-                    < std::chrono::duration<float>(BOT_OPPONENT_DEATH_WAIT_TIME_SEC);
-
-            if (is_spawned || was_just_unspawned) {
-                ++active_persons_per_team[team];
-            }
+        } else if (human_is_active_player(player)) {
+            ++active_persons_per_team[team];
         }
     }
 

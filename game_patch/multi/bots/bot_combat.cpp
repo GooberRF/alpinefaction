@@ -1,17 +1,23 @@
 #include "bot_combat.h"
 
 #include "bot_context.h"
+#include "bot_decision_eval.h"
 #include "bot_internal.h"
 #include "bot_math.h"
 #include "bot_utils.h"
 #include "bot_weapon_profiles.h"
+#include "../gametype.h"
 #include "../../main/main.h"
+#include "../../misc/waypoints.h"
 #include "../../rf/collide.h"
 #include "../../rf/item.h"
 #include "../../rf/multi.h"
 #include "../../rf/entity.h"
+#include "../../rf/object.h"
+#include "../../rf/physics.h"
 #include "../../rf/os/frametime.h"
 #include "../../rf/weapon.h"
+#include <common/utils/list-utils.h>
 #include <xlog/xlog.h>
 #include <algorithm>
 #include <array>
@@ -19,6 +25,7 @@
 #include <limits>
 #include <random>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace
@@ -36,28 +43,8 @@ struct RawBotWeaponProfile
     BotWeaponFireMode primary_fire = BotWeaponFireMode::shoot;
     BotWeaponFireMode alt_fire = BotWeaponFireMode::none;
     int value_tier = 0;
-    uint8_t range_band_mask = 0;
     uint32_t special_property_mask = 0;
 };
-
-constexpr uint8_t range_band_bit(const BotWeaponRangeBand range)
-{
-    return static_cast<uint8_t>(1u << static_cast<uint8_t>(range));
-}
-
-constexpr uint8_t make_range_band_mask(
-    const bool melee,
-    const bool close,
-    const bool medium,
-    const bool long_range,
-    const bool very_long)
-{
-    return (melee ? range_band_bit(BotWeaponRangeBand::melee) : 0u)
-        | (close ? range_band_bit(BotWeaponRangeBand::close) : 0u)
-        | (medium ? range_band_bit(BotWeaponRangeBand::medium) : 0u)
-        | (long_range ? range_band_bit(BotWeaponRangeBand::long_range) : 0u)
-        | (very_long ? range_band_bit(BotWeaponRangeBand::very_long) : 0u);
-}
 
 constexpr uint32_t special_property_bit(const BotWeaponSpecialProperty property)
 {
@@ -74,7 +61,6 @@ const std::array<RawBotWeaponProfile, 15> kRawProfiles{{
         BotWeaponFireMode::throw_projectile,
         BotWeaponFireMode::none,
         2,
-        make_range_band_mask(false, true, false, false, false),
         special_property_bit(BotWeaponSpecialProperty::creates_craters),
     },
     {
@@ -86,7 +72,6 @@ const std::array<RawBotWeaponProfile, 15> kRawProfiles{{
         BotWeaponFireMode::swing,
         BotWeaponFireMode::use_taser,
         0,
-        make_range_band_mask(true, false, false, false, false),
         special_property_bit(BotWeaponSpecialProperty::taser_finisher),
     },
     {
@@ -98,7 +83,6 @@ const std::array<RawBotWeaponProfile, 15> kRawProfiles{{
         BotWeaponFireMode::shoot,
         BotWeaponFireMode::none,
         1,
-        make_range_band_mask(true, true, true, false, false),
         special_property_bit(BotWeaponSpecialProperty::none),
     },
     {
@@ -110,7 +94,6 @@ const std::array<RawBotWeaponProfile, 15> kRawProfiles{{
         BotWeaponFireMode::high_impact_shoot,
         BotWeaponFireMode::shoot,
         3,
-        make_range_band_mask(true, true, true, false, false),
         special_property_bit(BotWeaponSpecialProperty::multi_projectile_shot),
     },
     {
@@ -122,7 +105,6 @@ const std::array<RawBotWeaponProfile, 15> kRawProfiles{{
         BotWeaponFireMode::shoot,
         BotWeaponFireMode::engage_scope,
         4,
-        make_range_band_mask(false, false, true, true, true),
         special_property_bit(BotWeaponSpecialProperty::use_scope_for_long_range),
     },
     {
@@ -134,7 +116,6 @@ const std::array<RawBotWeaponProfile, 15> kRawProfiles{{
         BotWeaponFireMode::shoot,
         BotWeaponFireMode::none,
         3,
-        make_range_band_mask(false, false, true, false, false),
         special_property_bit(BotWeaponSpecialProperty::creates_craters),
     },
     {
@@ -146,7 +127,6 @@ const std::array<RawBotWeaponProfile, 15> kRawProfiles{{
         BotWeaponFireMode::shoot,
         BotWeaponFireMode::shoot,
         3,
-        make_range_band_mask(false, true, true, true, false),
         special_property_bit(BotWeaponSpecialProperty::always_use_alt_fire),
     },
     {
@@ -158,7 +138,6 @@ const std::array<RawBotWeaponProfile, 15> kRawProfiles{{
         BotWeaponFireMode::shoot,
         BotWeaponFireMode::none,
         2,
-        make_range_band_mask(false, true, true, false, false),
         special_property_bit(BotWeaponSpecialProperty::none),
     },
     {
@@ -170,7 +149,6 @@ const std::array<RawBotWeaponProfile, 15> kRawProfiles{{
         BotWeaponFireMode::throw_timed_detonation,
         BotWeaponFireMode::throw_impact_detonation,
         2,
-        make_range_band_mask(false, true, false, false, false),
         special_property_bit(BotWeaponSpecialProperty::creates_craters),
     },
     {
@@ -182,7 +160,6 @@ const std::array<RawBotWeaponProfile, 15> kRawProfiles{{
         BotWeaponFireMode::spray_flame_stream,
         BotWeaponFireMode::throw_impact_detonation,
         1,
-        make_range_band_mask(true, true, false, false, false),
         special_property_bit(BotWeaponSpecialProperty::avoid_alt_fire),
     },
     {
@@ -194,7 +171,6 @@ const std::array<RawBotWeaponProfile, 15> kRawProfiles{{
         BotWeaponFireMode::swing,
         BotWeaponFireMode::none,
         0,
-        make_range_band_mask(true, false, false, false, false),
         special_property_bit(BotWeaponSpecialProperty::avoid_alt_fire),
     },
     {
@@ -206,7 +182,6 @@ const std::array<RawBotWeaponProfile, 15> kRawProfiles{{
         BotWeaponFireMode::shoot,
         BotWeaponFireMode::none,
         5,
-        make_range_band_mask(false, false, true, true, false),
         special_property_bit(BotWeaponSpecialProperty::pierces_world),
     },
     {
@@ -218,7 +193,6 @@ const std::array<RawBotWeaponProfile, 15> kRawProfiles{{
         BotWeaponFireMode::shoot,
         BotWeaponFireMode::precision_alt_shoot,
         4,
-        make_range_band_mask(false, true, true, true, false),
         special_property_bit(BotWeaponSpecialProperty::alt_fire_for_long_range),
     },
     {
@@ -230,7 +204,6 @@ const std::array<RawBotWeaponProfile, 15> kRawProfiles{{
         BotWeaponFireMode::shoot,
         BotWeaponFireMode::engage_scope,
         4,
-        make_range_band_mask(false, true, true, true, true),
         special_property_bit(BotWeaponSpecialProperty::use_scope_for_long_range),
     },
     {
@@ -242,7 +215,6 @@ const std::array<RawBotWeaponProfile, 15> kRawProfiles{{
         BotWeaponFireMode::shoot,
         BotWeaponFireMode::none,
         5,
-        make_range_band_mask(false, false, true, true, false),
         special_property_bit(BotWeaponSpecialProperty::creates_craters),
     },
 }};
@@ -304,7 +276,6 @@ void bot_weapon_profiles_init_for_active_bot()
         profile.primary_fire = raw_profile.primary_fire;
         profile.alt_fire = raw_profile.alt_fire;
         profile.value_tier = raw_profile.value_tier;
-        profile.range_band_mask = raw_profile.range_band_mask;
         profile.special_property_mask = raw_profile.special_property_mask;
         profile.weapon_type = resolve_weapon_type(raw_profile);
         collect_item_ids_for_weapon(profile);
@@ -349,29 +320,97 @@ const BotWeaponProfile* bot_weapon_profile_for_weapon_type(const int weapon_type
     return &g_bot_weapon_profiles[profile_index];
 }
 
-bool bot_weapon_profile_supports_range(const BotWeaponProfile& profile, const BotWeaponRangeBand range)
-{
-    return (profile.range_band_mask & range_band_bit(range)) != 0;
-}
-
 bool bot_weapon_profile_has_special(const BotWeaponProfile& profile, const BotWeaponSpecialProperty property)
 {
     return (profile.special_property_mask & special_property_bit(property)) != 0;
 }
 
-int bot_weapon_profile_range_band_count(const BotWeaponProfile& profile)
-{
-    int count = 0;
-    uint8_t mask = profile.range_band_mask;
-    while (mask != 0) {
-        count += static_cast<int>(mask & 1u);
-        mask >>= 1u;
-    }
-    return count;
-}
-
 namespace
 {
+constexpr float kDegreesToRadians = 0.017453292519943295769f;
+// Hit model for the expected damage of a weapon at a distance.
+constexpr float kTargetHitRadius = 0.7f;
+constexpr float kSplashHitRadiusScale = 0.5f;
+constexpr float kAimErrorMissRadiusScale = 0.63f;
+constexpr float kTargetEvadeSpeed = 2.5f;
+constexpr float kThrownFlightTimeScale = 1.3f;
+constexpr float kRangeFalloffStart = 0.85f;
+constexpr float kMeleeMinReach = 1.5f;
+constexpr float kMeleeBodyReach = 0.6f;
+constexpr float kUnknownWeaponRange = 80.0f;
+constexpr float kStatsReferenceDistance = 15.0f;
+constexpr float kRemoteChargeDetonationDelaySeconds = 2.5f;
+constexpr float kRemoteChargeMinThrowScale = 0.6f;
+// Self damage falls off linearly to the blast edge; a shot may cost the shooter at most this much.
+constexpr float kSplashSelfDamageBudget = 20.0f;
+// The stream burns targets through its flame particles; the weapons.tbl damage and gravity describe the alt canister.
+constexpr float kFlameStreamDamagePerSecond = 120.0f;
+constexpr float kFlameStreamReach = 9.0f;
+constexpr float kMinShotIntervalMs = 50.0f;
+constexpr float kMeleeCandidateReachShare = 0.75f;
+constexpr float kSplashCandidateMaxRangeShare = 0.9f;
+constexpr float kThrownStandoffMaxRangeShare = 0.95f;
+constexpr float kThrownStandoffSafeScale = 1.1f;
+constexpr int kWeaponRequestPendingMs = 250;
+constexpr int kRangeSampleCount = 24;
+constexpr float kRangeSampleMaxDistance = 80.0f;
+// Shares of a weapon's best expected damage: where it is still worth firing, where it is at its best.
+constexpr float kEffectiveRangeDpsShare = 0.15f;
+constexpr float kIdealRangeDpsShare = 0.8f;
+constexpr float kRangeBandDpsShare = 0.35f;
+constexpr float kCraterStandoffScale = 1.5f;
+constexpr float kLeadProjectileMaxSpeed = 100.0f;
+constexpr float kFloorAimProbeDepth = 3.0f;
+constexpr float kFloorAimHeight = 0.1f;
+constexpr int kSplashClearanceTraceFlags = rf::CF_ANY_HIT | rf::CF_SKIP_SHOOT_THRU | rf::CF_PROCESS_INVISIBLE_FACES;
+// Weapon choice.
+constexpr float kPreferredWeaponRankBonus = 0.4f;
+constexpr float kAmmoFillUtilityExponent = 0.25f;
+constexpr float kEmptyClipCloseFightUtilityScale = 0.35f;
+constexpr float kEmptyClipUtilityScale = 0.85f;
+constexpr float kQuirkWeaponUtilityScale = 3.0f;
+constexpr float kSplashCandidateDistanceScale = 1.25f;
+constexpr float kWeaponSwitchUtilityMargin = 1.25f;
+constexpr float kCloseFightDistance = 15.0f;
+constexpr int kWeaponSelectCadenceMs = 1000;
+constexpr int kWeaponSelectDwellSlowMs = 900;
+constexpr int kWeaponSelectDwellFastMs = 150;
+constexpr int kTacticalReloadLosGapMs = 700;
+constexpr float kTacticalReloadClipShare = 0.3f;
+constexpr int kRemoteChargeThrowSettleMs = 400;
+constexpr int kThrownClearanceChords = 3;
+constexpr float kRemoteChargeEnemyRelevanceScale = 2.0f;
+constexpr float kRemoteChargeEnemyConsideredScale = 4.0f;
+constexpr float kThreatLookMinTravelDot = -0.17f;
+constexpr float kCornerLookAheadDistance = 4.0f;
+constexpr float kCornerLookMaxTurnDot = 0.82f;
+
+// Combat numbers of a weapon in the fire mode bots use at a distance, from the live multiplayer weapons.tbl values.
+struct BotWeaponStats
+{
+    int weapon_type = -1;
+    bool melee = false;
+    bool thrown = false; // gravity projectile, aimed on a ballistic arc
+    bool remote_charge = false;
+    float shot_damage = 0.0f; // all projectiles of one shot
+    float shot_interval = 0.0f; // seconds between the bot's shots
+    float sustain = 1.0f; // share of time spent firing rather than reloading
+    float spread = 0.0f; // cone angle, radians
+    float speed = 0.0f;
+    float max_range = 0.0f;
+    float splash_radius = 0.0f; // explosion only, flames excluded
+    float min_safe_distance = 0.0f;
+};
+
+BotWeaponStats weapon_stats_for_mode(int weapon_type, bool use_alt_fire);
+float bot_weapon_expected_dps(const BotWeaponStats& stats, float distance);
+
+// Distance at which the shooter's own blast costs at most the self-damage budget.
+float splash_self_safe_distance(const float radius, const float damage)
+{
+    return damage > 0.0f ? radius * std::max(1.0f - kSplashSelfDamageBudget / damage, 0.0f) : 0.0f;
+}
+
 float bot_profile_weapon_selection_bonus(const int weapon_type)
 {
     const BotWeaponProfile* profile = bot_weapon_profile_for_weapon_type(weapon_type);
@@ -380,7 +419,6 @@ float bot_profile_weapon_selection_bonus(const int weapon_type)
     }
 
     float bonus = static_cast<float>(profile->value_tier) * 6.0f;
-    bonus += static_cast<float>(bot_weapon_profile_range_band_count(*profile));
     if (bot_weapon_profile_has_special(*profile, BotWeaponSpecialProperty::pierces_world)) {
         bonus += 4.0f;
     }
@@ -389,38 +427,6 @@ float bot_profile_weapon_selection_bonus(const int weapon_type)
     }
     bonus += (bot_get_weapon_preference_weight(weapon_type) - 1.0f) * 14.0f;
     bonus += (bot_get_weapon_skill_weight(weapon_type) - 1.0f) * 10.0f;
-    return bonus;
-}
-
-BotWeaponRangeBand classify_distance_band(const float distance)
-{
-    if (distance <= 2.5f) {
-        return BotWeaponRangeBand::melee;
-    }
-    if (distance <= 10.0f) {
-        return BotWeaponRangeBand::close;
-    }
-    if (distance <= 28.0f) {
-        return BotWeaponRangeBand::medium;
-    }
-    if (distance <= 55.0f) {
-        return BotWeaponRangeBand::long_range;
-    }
-    return BotWeaponRangeBand::very_long;
-}
-
-float bot_profile_combat_range_bonus(const BotWeaponProfile& profile, const float distance)
-{
-    const BotWeaponRangeBand band = classify_distance_band(distance);
-    float bonus = bot_weapon_profile_supports_range(profile, band) ? 18.0f : -12.0f;
-    if (band == BotWeaponRangeBand::long_range || band == BotWeaponRangeBand::very_long) {
-        if (bot_weapon_profile_has_special(profile, BotWeaponSpecialProperty::use_scope_for_long_range)) {
-            bonus += 8.0f;
-        }
-        if (bot_weapon_profile_has_special(profile, BotWeaponSpecialProperty::alt_fire_for_long_range)) {
-            bonus += 6.0f;
-        }
-    }
     return bonus;
 }
 
@@ -487,53 +493,6 @@ bool weapon_works_underwater(int weapon_type)
     return false;
 }
 
-int select_best_weapon(rf::Player& player, rf::Entity& entity, const float desired_distance = -1.0f)
-{
-    const bool underwater = rf::entity_is_swimming(&entity);
-    int best_weapon = -1;
-    float best_score = -1.0f;
-
-    for (int weapon_type = 0; weapon_type < rf::num_weapon_types; ++weapon_type) {
-        if (!entity.ai.has_weapon[weapon_type]) {
-            continue;
-        }
-        if (bot_weapon_is_switch_blocked(weapon_type)) {
-            continue;
-        }
-
-        if (rf::weapon_is_detonator(weapon_type)) {
-            continue;
-        }
-
-        if (underwater && !weapon_works_underwater(weapon_type)) {
-            continue;
-        }
-
-        const bool is_melee = rf::weapon_is_melee(weapon_type);
-        const int total_ammo = rf::player_get_weapon_total_ammo(&player, weapon_type);
-        if (!is_melee && total_ammo <= 0) {
-            continue;
-        }
-
-        const float damage_score = rf::weapon_types[weapon_type].damage_multi;
-        const float ammo_score = is_melee ? 1.0f : static_cast<float>(total_ammo);
-        float weapon_score =
-            ammo_score + damage_score * 0.05f + bot_profile_weapon_selection_bonus(weapon_type);
-        if (desired_distance >= 0.0f) {
-            if (const BotWeaponProfile* profile = bot_weapon_profile_for_weapon_type(weapon_type)) {
-                weapon_score += bot_profile_combat_range_bonus(*profile, desired_distance);
-            }
-        }
-
-        if (weapon_score > best_score) {
-            best_score = weapon_score;
-            best_weapon = weapon_type;
-        }
-    }
-
-    return best_weapon;
-}
-
 bool weapon_has_usable_ammo(rf::Player& player, rf::Entity& entity, const int weapon_type)
 {
     if (weapon_type < 0 || weapon_type >= rf::num_weapon_types) {
@@ -552,27 +511,6 @@ bool weapon_has_usable_ammo(rf::Player& player, rf::Entity& entity, const int we
         return true;
     }
     return rf::player_get_weapon_total_ammo(&player, weapon_type) > 0;
-}
-
-bool personality_has_preferred_weapons(const BotPersonality& personality)
-{
-    return !personality.preferred_weapon_types.empty();
-}
-
-int select_personality_preferred_weapon(rf::Player& player, rf::Entity& entity)
-{
-    const BotPersonality& personality = get_active_bot_personality();
-    if (!personality_has_preferred_weapons(personality)) {
-        return -1;
-    }
-
-    for (const int preferred_weapon : personality.preferred_weapon_types) {
-        if (weapon_has_usable_ammo(player, entity, preferred_weapon)) {
-            return preferred_weapon;
-        }
-    }
-
-    return -1;
 }
 
 void initialize_known_weapons_snapshot(const rf::Entity& entity)
@@ -626,25 +564,47 @@ int get_weapon_switch_cooldown_ms()
     return std::clamp(configured_ms, 250, 15000);
 }
 
-void switch_to_weapon(
+bool weapon_request_pending(const int weapon_type)
+{
+    const BotCombatFiringState& firing = bot_state().firing;
+    return firing.requested_weapon == weapon_type
+        && firing.weapon_request_timer.valid()
+        && !firing.weapon_request_timer.elapsed();
+}
+
+bool switch_to_weapon(
     rf::Player& player,
     rf::Entity& entity,
     const int weapon_type)
 {
-    if (bot_backend_weapon_busy(player, entity)) {
-        return;
+    if (weapon_type != entity.ai.current_primary_weapon && weapon_request_pending(weapon_type)) {
+        return true;
     }
-    if (bot_weapon_fire_wait_is_blocking_switch(entity)) {
-        return;
+    if (bot_backend_weapon_busy(player, entity)) {
+        return false;
+    }
+    const int current_weapon = entity.ai.current_primary_weapon;
+    const bool throw_leaving_hand = std::any_of(
+        std::begin(entity.ai.create_weapon_delay_timestamps),
+        std::end(entity.ai.create_weapon_delay_timestamps),
+        [](const rf::Timestamp& delay) { return delay.valid() && !delay.elapsed(); });
+    const bool current_clip_empty =
+        current_weapon >= 0
+        && current_weapon < rf::num_weapon_types
+        && rf::weapon_uses_clip(current_weapon)
+        && entity.ai.clip_ammo[current_weapon] <= 0
+        && !throw_leaving_hand;
+    if (bot_weapon_fire_wait_is_blocking_switch(entity) && !current_clip_empty) {
+        return false;
     }
 
     if (weapon_type < 0
         || weapon_type >= rf::num_weapon_types
-        || weapon_type == entity.ai.current_primary_weapon) {
-        return;
+        || weapon_type == current_weapon) {
+        return false;
     }
     if (bot_weapon_is_switch_blocked(weapon_type)) {
-        return;
+        return false;
     }
 
     bot_backend_switch_weapon(player, entity, weapon_type);
@@ -658,79 +618,23 @@ void switch_to_weapon(
     bot_state().firing.explosive_release_hold_weapon = -1;
     bot_state().firing.explosive_release_hold_alt = false;
     clear_semi_auto_click_state();
+    bot_state().firing.weapon_select_candidate = -1;
+    bot_state().firing.requested_weapon = weapon_type;
+    bot_state().firing.weapon_request_timer.set(kWeaponRequestPendingMs);
     bot_state().weapon_switch_timer.set(get_weapon_switch_cooldown_ms());
+    return true;
 }
 
-void maybe_switch_weapon_for_personality(rf::Player& player, rf::Entity& entity)
+float semi_auto_click_base_interval_ms(const int weapon_type, const float skill_factor)
 {
-    if (bot_state().active_goal == BotGoalType::create_crater
-        || bot_state().active_goal == BotGoalType::shatter_glass
-        || bot_state().fsm_state == BotFsmState::create_crater
-        || bot_state().fsm_state == BotFsmState::shatter_glass) {
-        return;
+    int fire_wait_ms = rf::weapon_get_fire_wait_ms(weapon_type, false);
+    if (fire_wait_ms <= 0) {
+        fire_wait_ms = 120;
     }
-
-    if (bot_backend_weapon_busy(player, entity)) {
-        collect_newly_acquired_weapons(entity);
-        return;
-    }
-    if (bot_weapon_fire_wait_is_blocking_switch(entity)) {
-        collect_newly_acquired_weapons(entity);
-        return;
-    }
-
-    if (bot_state().weapon_switch_timer.valid()
-        && !bot_state().weapon_switch_timer.elapsed()) {
-        collect_newly_acquired_weapons(entity);
-        return;
-    }
-
-    const BotPersonality& personality = get_active_bot_personality();
-    const std::vector<int> newly_acquired = collect_newly_acquired_weapons(entity);
-
-    if (personality_has_preferred_weapons(personality)) {
-        const int preferred_weapon = select_personality_preferred_weapon(player, entity);
-        if (preferred_weapon >= 0 && preferred_weapon != entity.ai.current_primary_weapon) {
-            switch_to_weapon(player, entity, preferred_weapon);
-        }
-        return;
-    }
-
-    if (newly_acquired.empty()) {
-        return;
-    }
-
-    std::vector<int> switch_candidates;
-    switch_candidates.reserve(newly_acquired.size());
-    for (const int weapon_type : newly_acquired) {
-        if (weapon_type == entity.ai.current_primary_weapon) {
-            continue;
-        }
-        if (weapon_has_usable_ammo(player, entity, weapon_type)) {
-            switch_candidates.push_back(weapon_type);
-        }
-    }
-
-    if (switch_candidates.empty()) {
-        return;
-    }
-
-    const BotSkillProfile& skill_profile = get_active_bot_skill_profile();
-    const float switch_chance = std::clamp(
-        personality.pickup_switch_chance_without_preferences
-            * std::clamp(personality.weapon_switch_bias, 0.0f, 2.5f)
-            * std::clamp(skill_profile.weapon_switch_likelihood, 0.05f, 1.0f),
-        0.0f,
-        1.0f
-    );
-    std::uniform_real_distribution<float> roll_dist(0.0f, 1.0f);
-    if (roll_dist(g_rng) > switch_chance) {
-        return;
-    }
-
-    std::uniform_int_distribution<size_t> pick_dist(0, switch_candidates.size() - 1);
-    const int selected_weapon = switch_candidates[pick_dist(g_rng)];
-    switch_to_weapon(player, entity, selected_weapon);
+    const float skill_scale = std::lerp(1.18f, 0.92f, skill_factor);
+    return static_cast<float>(fire_wait_ms)
+        * std::max(get_active_bot_skill_profile().semi_auto_click_interval_scale, 0.0f)
+        * skill_scale;
 }
 
 bool should_press_semi_auto_trigger(const int weapon_type, const float skill_factor)
@@ -749,15 +653,7 @@ bool should_press_semi_auto_trigger(const int weapon_type, const float skill_fac
         return false;
     }
 
-    int fire_wait_ms = rf::weapon_get_fire_wait_ms(weapon_type, false);
-    if (fire_wait_ms <= 0) {
-        fire_wait_ms = 120;
-    }
-
-    const float skill_scale = std::lerp(1.18f, 0.92f, skill_factor);
-    const float base_interval = static_cast<float>(fire_wait_ms)
-        * std::max(get_active_bot_skill_profile().semi_auto_click_interval_scale, 0.0f)
-        * skill_scale;
+    const float base_interval = semi_auto_click_base_interval_ms(weapon_type, skill_factor);
     const float variance = std::lerp(0.24f, 0.10f, skill_factor);
     std::uniform_real_distribution<float> jitter_dist(-variance, variance);
     const float jittered_interval = base_interval * (1.0f + jitter_dist(g_rng));
@@ -770,17 +666,91 @@ bool should_press_semi_auto_trigger(const int weapon_type, const float skill_fac
     return true;
 }
 
+float compute_weapon_skill_adjusted_factor(const float base_skill, const int weapon_type)
+{
+    const float weapon_weight = std::clamp(bot_get_weapon_skill_weight(weapon_type), 0.35f, 1.65f);
+    return std::clamp(base_skill * weapon_weight, 0.0f, 1.0f);
+}
+
+float aim_error_bound(const float distance, const float skill_factor)
+{
+    const float distance_scale = std::clamp(distance / kAimErrorDistanceNorm, 0.65f, 2.6f);
+    const BotSkillProfile& skill_profile = get_active_bot_skill_profile();
+    const float min_error = std::max(skill_profile.aim_error_min, 0.0f);
+    return std::clamp(
+        std::lerp(std::max(skill_profile.aim_error_max, min_error), min_error, skill_factor) * distance_scale,
+        min_error,
+        5.0f
+    );
+}
+
+// Launch direction (as a point to aim at) that lands a gravity projectile on the target; the flatter arc wins.
+rf::Vector3 ballistic_aim_point(const rf::Vector3& from, const rf::Vector3& target, const float speed)
+{
+    rf::Vector3 horizontal = target - from;
+    const float rise = horizontal.y;
+    horizontal.y = 0.0f;
+    const float range = horizontal.len();
+    if (range < 0.01f || speed <= 1.0f || rf::gravity <= 0.0f) {
+        return target;
+    }
+    horizontal.normalize_safe();
+    const float speed_sq = speed * speed;
+    const float discriminant =
+        speed_sq * speed_sq - rf::gravity * (rf::gravity * range * range + 2.0f * rise * speed_sq);
+    // Out of reach: a 45 degree throw goes farthest.
+    const float tan_pitch = discriminant < 0.0f
+        ? 1.0f
+        : (speed_sq - std::sqrt(discriminant)) / (rf::gravity * range);
+    return from + horizontal * range + rf::Vector3{0.0f, range * tan_pitch, 0.0f};
+}
+
+// Projectile numbers read straight from the weapon info; the aim needs them every frame.
+struct ProjectileTraits
+{
+    bool melee = false;
+    bool flame = false;
+    bool thrown = false;
+    float speed = 0.0f;
+    float splash_radius = 0.0f; // explosion only, flames excluded
+};
+
+ProjectileTraits projectile_traits(const int weapon_type)
+{
+    ProjectileTraits traits{};
+    if (weapon_type < 0 || weapon_type >= rf::num_weapon_types || rf::weapon_is_detonator(weapon_type)) {
+        return traits;
+    }
+    const rf::WeaponInfo& info = rf::weapon_types[weapon_type];
+    traits.melee = rf::weapon_is_melee(weapon_type);
+    traits.flame = rf::weapon_is_flamethrower(weapon_type) || (info.flags2 & rf::WTF2_FLAME) != 0;
+    traits.thrown = !traits.melee && !traits.flame && (info.flags & rf::WTF_GRAVITY) != 0;
+    traits.speed = traits.flame ? 0.0f : std::max(info.max_speed, 0.0f);
+    if (info.damage_radius > 0.0f && !traits.flame) {
+        traits.splash_radius = info.damage_radius;
+    }
+    return traits;
+}
+
 rf::Vector3 compute_skill_adjusted_enemy_aim_target(
     const rf::Entity& local_entity,
     const rf::Entity& enemy_target,
     const float skill_factor)
 {
+    const ProjectileTraits projectile = projectile_traits(local_entity.ai.current_primary_weapon);
     rf::Vector3 aim_target = enemy_target.eye_pos;
     aim_target.y = std::lerp(
         enemy_target.pos.y,
         enemy_target.eye_pos.y,
         kEnemyAimHeightBlend
     );
+    if (projectile.splash_radius > 0.0f
+        && !projectile.thrown
+        && bot_state().firing.aim_at_floor
+        && rf::entity_on_ground(const_cast<rf::Entity*>(&enemy_target))) {
+        aim_target = enemy_target.pos;
+        aim_target.y -= bot_state().firing.aim_floor_drop;
+    }
 
     rf::Vector3 to_target = aim_target - local_entity.eye_pos;
     const float dist = to_target.len();
@@ -788,20 +758,10 @@ rf::Vector3 compute_skill_adjusted_enemy_aim_target(
         return aim_target;
     }
 
-    // Projectile leading for explosive/thrown weapons
-    const int weapon_type = local_entity.ai.current_primary_weapon;
-    if (weapon_type >= 0 && weapon_type < rf::num_weapon_types) {
-        const BotWeaponProfile* profile = bot_weapon_profile_for_weapon_type(weapon_type);
-        if (profile
-            && (profile->damage_class == BotWeaponDamageClass::explosive_projectile
-                || profile->damage_class == BotWeaponDamageClass::thrown_explosive_projectile)) {
-            const float projectile_speed = rf::weapon_types[weapon_type].max_speed;
-            if (projectile_speed > 1.0f) {
-                const float lead_time = std::min(dist / projectile_speed, 1.5f)
-                    * std::clamp(skill_factor, 0.15f, 1.0f);
-                aim_target += enemy_target.p_data.vel * lead_time;
-            }
-        }
+    if (!projectile.melee && projectile.speed > 1.0f && projectile.speed < kLeadProjectileMaxSpeed) {
+        const float flight_time = dist / projectile.speed * (projectile.thrown ? kThrownFlightTimeScale : 1.0f);
+        const float lead_time = std::min(flight_time, 1.5f) * std::clamp(skill_factor, 0.15f, 1.0f);
+        aim_target += enemy_target.p_data.vel * lead_time;
     }
 
     if (bot_state().firing.aim_error_target_handle != enemy_target.handle) {
@@ -811,18 +771,7 @@ rf::Vector3 compute_skill_adjusted_enemy_aim_target(
 
     if (!bot_state().firing.aim_error_timer.valid()
         || bot_state().firing.aim_error_timer.elapsed()) {
-        const float distance_scale = std::clamp(
-            dist / kAimErrorDistanceNorm,
-            0.65f,
-            2.6f
-        );
-        const BotSkillProfile& skill_profile = get_active_bot_skill_profile();
-        const float min_error = std::max(skill_profile.aim_error_min, 0.0f);
-        const float max_error = std::clamp(
-            std::lerp(std::max(skill_profile.aim_error_max, min_error), min_error, skill_factor) * distance_scale,
-            min_error,
-            5.0f
-        );
+        const float max_error = aim_error_bound(dist, skill_factor);
         const float vertical_max_error = max_error * 0.82f;
 
         std::normal_distribution<float> lateral_dist(0.0f, max_error * 0.42f);
@@ -877,6 +826,9 @@ rf::Vector3 compute_skill_adjusted_enemy_aim_target(
 
     aim_target += right * bot_state().firing.aim_error_right;
     aim_target += up * bot_state().firing.aim_error_up;
+    if (projectile.thrown) {
+        aim_target = ballistic_aim_point(local_entity.eye_pos, aim_target, projectile.speed);
+    }
     return aim_target;
 }
 
@@ -975,6 +927,18 @@ int get_remote_charge_weapon_type()
         remote_charge_weapon_type = rf::weapon_lookup_type("Remote Charge");
     }
     return remote_charge_weapon_type;
+}
+
+// The server lets a player holding remote charges select the detonator even when it was never granted on its own
+// (GunGame grants only the charges).
+bool owns_remote_charge_detonator(const rf::Entity& entity)
+{
+    const int detonator = rf::remote_charge_det_weapon_type;
+    const int charge = get_remote_charge_weapon_type();
+    return detonator >= 0
+        && detonator < rf::num_weapon_types
+        && (entity.ai.has_weapon[detonator]
+            || (charge >= 0 && charge < rf::num_weapon_types && entity.ai.has_weapon[charge]));
 }
 
 bool weapon_uses_projectile_release_hold(const int weapon_type)
@@ -1104,17 +1068,17 @@ CombatFireMode select_combat_fire_mode(const int weapon_type, const float distan
         alt_mode_locked = true;
     }
 
-    if (!alt_mode_locked) {
-        const BotWeaponRangeBand range_band = classify_distance_band(distance);
-        const bool is_long_range =
-            range_band == BotWeaponRangeBand::long_range
-            || range_band == BotWeaponRangeBand::very_long;
-        if (is_long_range
-            && bot_weapon_profile_has_special(
-                *profile,
-                BotWeaponSpecialProperty::alt_fire_for_long_range)) {
-            mode.use_alt_fire = true;
-        }
+    if (!alt_mode_locked
+        && bot_weapon_profile_has_special(*profile, BotWeaponSpecialProperty::alt_fire_for_long_range)) {
+        mode.use_alt_fire = bot_weapon_expected_dps(weapon_stats_for_mode(weapon_type, true), distance)
+            > bot_weapon_expected_dps(weapon_stats_for_mode(weapon_type, false), distance);
+    }
+
+    if (!alt_mode_locked
+        && profile->primary_fire == BotWeaponFireMode::throw_timed_detonation
+        && profile->alt_fire == BotWeaponFireMode::throw_impact_detonation) {
+        // A fuse gives a moving target time to leave; impact detonation lands where it was aimed.
+        mode.use_alt_fire = true;
     }
 
     const BotWeaponFireMode selected_fire_mode =
@@ -1151,24 +1115,107 @@ bool should_hold_automatic_fire(const bool engage_now)
     return false;
 }
 
-float get_weapon_range(const int weapon_type)
+BotWeaponStats weapon_stats_for_mode(const int weapon_type, const bool use_alt_fire)
 {
-    if (weapon_type < 0 || weapon_type >= rf::num_weapon_types) {
-        return 0.0f;
+    BotWeaponStats stats{};
+    if (weapon_type < 0 || weapon_type >= rf::num_weapon_types || rf::weapon_is_detonator(weapon_type)) {
+        return stats;
+    }
+    const rf::WeaponInfo& info = rf::weapon_types[weapon_type];
+    const ProjectileTraits projectile = projectile_traits(weapon_type);
+    stats.weapon_type = weapon_type;
+    stats.melee = projectile.melee;
+    stats.remote_charge = (info.flags & rf::WTF_REMOTE_CHARGE) != 0;
+    stats.thrown = projectile.thrown;
+
+    const float damage = use_alt_fire && info.alt_damage_multi > 0.0f ? info.alt_damage_multi : info.damage_multi;
+    stats.shot_damage = std::max(damage, 0.0f) * static_cast<float>(std::max(info.num_projectiles, 1));
+    float interval_ms = std::max(
+        static_cast<float>(rf::weapon_get_fire_wait_ms(weapon_type, use_alt_fire)),
+        kMinShotIntervalMs);
+    if (rf::weapon_is_semi_automatic(weapon_type)) {
+        const float skill = compute_weapon_skill_adjusted_factor(bot_get_skill_factor(), weapon_type);
+        interval_ms = std::max(interval_ms, std::clamp(
+            semi_auto_click_base_interval_ms(weapon_type, skill),
+            static_cast<float>(kSemiAutoClickMinMs),
+            static_cast<float>(kSemiAutoClickMaxMs)));
+    }
+    stats.shot_interval = interval_ms / 1000.0f;
+    if (projectile.flame) {
+        stats.shot_damage = kFlameStreamDamagePerSecond * stats.shot_interval;
+    }
+    if (stats.remote_charge) {
+        stats.shot_interval += kRemoteChargeDetonationDelaySeconds;
+    }
+    if (rf::weapon_uses_clip(weapon_type) && info.clip_size > 0 && info.clip_reload_time_secs > 0.0f) {
+        const float clip_fire_time = static_cast<float>(info.clip_size) * stats.shot_interval;
+        stats.sustain = clip_fire_time / (clip_fire_time + info.clip_reload_time_secs);
     }
 
-    const rf::WeaponInfo& wi = rf::weapon_types[weapon_type];
-    float range = std::max(wi.ai_max_range_multi, wi.ai_max_range);
-    if (range <= 0.0f) {
-        range = 80.0f;
+    const float spread_degrees = use_alt_fire ? info.alt_spread_degrees : info.spread_degrees;
+    stats.spread = std::max(spread_degrees, 0.0f) * kDegreesToRadians;
+    stats.speed = projectile.speed;
+    if (stats.melee) {
+        stats.max_range = std::max(stats.speed * info.lifetime_seconds, kMeleeMinReach) + kMeleeBodyReach;
     }
-    return range;
+    else if (projectile.flame) {
+        stats.max_range = kFlameStreamReach;
+    }
+    else {
+        stats.max_range = stats.speed * info.lifetime_seconds;
+        if (stats.max_range <= 0.0f) {
+            stats.max_range = kUnknownWeaponRange;
+        }
+        if (stats.thrown && rf::gravity > 0.0f) {
+            stats.max_range = std::min(stats.max_range, stats.speed * stats.speed / rf::gravity);
+        }
+    }
+    if (projectile.splash_radius > 0.0f) {
+        stats.splash_radius = projectile.splash_radius;
+        // A remote charge's blast is checked when it is set off; it is only thrown far enough to back off from.
+        stats.min_safe_distance = stats.remote_charge
+            ? stats.splash_radius * kRemoteChargeMinThrowScale
+            : splash_self_safe_distance(stats.splash_radius, stats.shot_damage);
+    }
+    return stats;
 }
 
-float compute_weapon_skill_adjusted_factor(const float base_skill, const int weapon_type)
+BotWeaponStats bot_weapon_stats(const int weapon_type, const float distance)
 {
-    const float weapon_weight = std::clamp(bot_get_weapon_skill_weight(weapon_type), 0.35f, 1.65f);
-    return std::clamp(base_skill * weapon_weight, 0.0f, 1.0f);
+    return weapon_stats_for_mode(weapon_type, select_combat_fire_mode(weapon_type, distance).use_alt_fire);
+}
+
+// Uses the active bot's aim error.
+float bot_weapon_expected_dps(const BotWeaponStats& stats, const float distance)
+{
+    if (stats.weapon_type < 0
+        || stats.shot_interval <= 0.0f
+        || stats.shot_damage <= 0.0f
+        || distance > stats.max_range
+        || distance < stats.min_safe_distance) {
+        return 0.0f;
+    }
+    float hit_chance = 1.0f;
+    if (!stats.melee) {
+        // Misses come from the spread cone, the bot's aim error and target movement during the flight.
+        const float skill = compute_weapon_skill_adjusted_factor(bot_get_skill_factor(), stats.weapon_type);
+        const float spread_miss = distance * std::tan(stats.spread * 0.5f);
+        const float aim_miss = aim_error_bound(distance, skill) * kAimErrorMissRadiusScale;
+        const float flight_time = stats.speed > 1.0f
+            ? distance / stats.speed * (stats.thrown ? kThrownFlightTimeScale : 1.0f)
+            : 0.0f;
+        const float evade_miss = flight_time * kTargetEvadeSpeed;
+        const float miss_sq = spread_miss * spread_miss + aim_miss * aim_miss + evade_miss * evade_miss;
+        const float hit_radius = kTargetHitRadius + stats.splash_radius * kSplashHitRadiusScale;
+        if (miss_sq > hit_radius * hit_radius) {
+            hit_chance = hit_radius * hit_radius / miss_sq;
+        }
+    }
+    const float falloff_start = stats.max_range * kRangeFalloffStart;
+    if (distance > falloff_start) {
+        hit_chance *= (stats.max_range - distance) / std::max(stats.max_range - falloff_start, 0.01f);
+    }
+    return stats.shot_damage * hit_chance * stats.sustain / stats.shot_interval;
 }
 
 float get_entity_health_ratio(const rf::Entity& entity)
@@ -1183,26 +1230,12 @@ float get_entity_armor_ratio(const rf::Entity& entity)
 
 // resolve_weapon_type_cached is defined in bot_utils.cpp
 
-int find_best_melee_weapon(rf::Player& local_player, rf::Entity& local_entity)
+// A thrown splash weapon fires a crater from between its blast distance and its reach; that band can be empty.
+bool crater_standoff_reachable(const BotWeaponStats& stats)
 {
-    int best_weapon = -1;
-    float best_score = -std::numeric_limits<float>::infinity();
-    for (int weapon_type = 0; weapon_type < rf::num_weapon_types; ++weapon_type) {
-        if (!rf::weapon_is_melee(weapon_type)
-            || !weapon_has_usable_ammo(local_player, local_entity, weapon_type)) {
-            continue;
-        }
-
-        float score = 1.0f + bot_profile_weapon_selection_bonus(weapon_type);
-        if (const BotWeaponProfile* profile = bot_weapon_profile_for_weapon_type(weapon_type)) {
-            score += static_cast<float>(profile->value_tier) * 2.0f;
-        }
-        if (score > best_score) {
-            best_score = score;
-            best_weapon = weapon_type;
-        }
-    }
-    return best_weapon;
+    return !stats.thrown
+        || stats.remote_charge
+        || stats.min_safe_distance * kThrownStandoffSafeScale < stats.max_range * kThrownStandoffMaxRangeShare;
 }
 
 int find_best_crater_weapon(rf::Player& local_player, rf::Entity& local_entity)
@@ -1215,7 +1248,8 @@ int find_best_crater_weapon(rf::Player& local_player, rf::Entity& local_entity)
         }
         const BotWeaponProfile* profile = bot_weapon_profile_for_weapon_type(weapon_type);
         if (!profile
-            || !bot_weapon_profile_has_special(*profile, BotWeaponSpecialProperty::creates_craters)) {
+            || !bot_weapon_profile_has_special(*profile, BotWeaponSpecialProperty::creates_craters)
+            || !crater_standoff_reachable(weapon_stats_for_mode(weapon_type, false))) {
             continue;
         }
 
@@ -1432,20 +1466,6 @@ void maybe_switch_weapon_for_crater_goal(
         && !bot_state().weapon_switch_timer.elapsed()) {
         return;
     }
-    if (bot_state().firing.remote_charge_pending_detonation
-        && rf::remote_charge_det_weapon_type >= 0
-        && rf::remote_charge_det_weapon_type < rf::num_weapon_types
-        && local_entity.ai.has_weapon[rf::remote_charge_det_weapon_type]
-        && local_entity.ai.current_primary_weapon != rf::remote_charge_det_weapon_type) {
-        switch_to_weapon(local_player, local_entity, rf::remote_charge_det_weapon_type);
-        return;
-    }
-    if (rf::weapon_is_detonator(local_entity.ai.current_primary_weapon)
-        && bot_state().firing.remote_charge_pending_detonation) {
-        // Do not preempt the stock remote-charge -> detonator flow.
-        return;
-    }
-
     const int crater_weapon = find_best_crater_weapon(local_player, local_entity);
     if (crater_weapon >= 0 && crater_weapon != local_entity.ai.current_primary_weapon) {
         switch_to_weapon(local_player, local_entity, crater_weapon);
@@ -1476,101 +1496,802 @@ void maybe_switch_weapon_for_shatter_goal(
     }
 }
 
-void maybe_switch_weapon_for_combat_context(
-    rf::Player& local_player,
-    rf::Entity& local_entity,
-    const rf::Entity& enemy_target,
+bool crater_target_has_direct_los(const rf::Entity& local_entity, const rf::Vector3& target_pos)
+{
+    // The target sits on a surface, so test a point just in front of it.
+    rf::Vector3 to_eye = local_entity.eye_pos - target_pos;
+    to_eye.normalize_safe();
+    return bot_has_unobstructed_level_los(
+        local_entity.eye_pos,
+        target_pos + to_eye * 0.6f,
+        &local_entity,
+        nullptr);
+}
+
+// Distance from the point to the nearest teammate or enemy within the radius (visible to the bot if required), or
+// infinity.
+float nearest_player_entity_distance(
+    const rf::Entity& local_entity,
+    const rf::Vector3& point,
+    const float radius,
+    const bool teammates,
+    const bool require_los)
+{
+    float nearest = std::numeric_limits<float>::infinity();
+    const rf::Player* const local_player = bot_player();
+    const bool team_mode = multi_is_team_game_type();
+    if (!local_player || (teammates && !team_mode)) {
+        return nearest;
+    }
+    float nearest_sq = radius * radius;
+    for (const rf::Player& player : SinglyLinkedList{rf::player_list}) {
+        if (&player == local_player || player.is_spectator) {
+            continue;
+        }
+        if ((team_mode && player.team == local_player->team) != teammates) {
+            continue;
+        }
+        rf::Entity* const entity = rf::entity_from_handle(player.entity_handle);
+        if (!entity || entity == &local_entity || rf::entity_is_dying(entity)) {
+            continue;
+        }
+        const float dist_sq = rf::vec_dist_squared(&entity->pos, &point);
+        if (dist_sq <= nearest_sq
+            && (!require_los
+                || bot_has_unobstructed_level_los(local_entity.eye_pos, entity->eye_pos, &local_entity, entity))) {
+            nearest_sq = dist_sq;
+            nearest = std::sqrt(dist_sq);
+        }
+    }
+    return nearest;
+}
+
+bool player_entity_within_radius(
+    const rf::Entity& local_entity,
+    const rf::Vector3& point,
+    const float radius,
+    const bool teammates,
+    const bool require_los = false)
+{
+    return nearest_player_entity_distance(local_entity, point, radius, teammates, require_los) <= radius;
+}
+
+// Splash weapons fire only with the shooter clear of the blast and no teammate in it. The shot must also clear the
+// blast distance from the muzzle along the current view (along the arc for a throw): the LOS test starts at the eye and
+// skips glass, and the bot may still be turning.
+bool splash_fire_is_safe(const rf::Entity& local_entity, const BotWeaponStats& stats, const rf::Vector3& impact_pos)
+{
+    if (stats.splash_radius <= 0.0f || stats.remote_charge) {
+        return true;
+    }
+    const float safe_sq = stats.min_safe_distance * stats.min_safe_distance;
+    if (rf::vec_dist_squared(&local_entity.pos, &impact_pos) < safe_sq
+        || player_entity_within_radius(local_entity, impact_pos, stats.splash_radius, true)
+        || player_entity_within_radius(local_entity, local_entity.pos, stats.min_safe_distance, false, true)) {
+        return false;
+    }
+    rf::Vector3 p0{};
+    rf::Matrix3 muzzle_orient{};
+    rf::entity_get_weapon_fire_pos_orient(
+        const_cast<rf::Entity*>(&local_entity),
+        stats.weapon_type,
+        &p0,
+        &muzzle_orient,
+        local_entity.ai.next_fire_primary_slot,
+        true);
+    const rf::Vector3 dir = forward_from_non_linear_yaw_pitch(
+        local_entity.control_data.phb.y,
+        local_entity.control_data.eye_phb.x);
+    rf::GCollisionOutput collision{};
+    const float horizontal_speed = stats.speed * std::sqrt(dir.x * dir.x + dir.z * dir.z);
+    if (!stats.thrown || horizontal_speed < 1.0f || rf::gravity <= 0.0f) {
+        rf::Vector3 p1 = p0 + dir * stats.min_safe_distance;
+        return !rf::collide_linesegment_level_solid(p0, p1, kSplashClearanceTraceFlags, &collision);
+    }
+    const float reach = std::min(stats.min_safe_distance, std::sqrt(bot_horizontal_dist_sq(p0, impact_pos)));
+    const float end_time = reach / horizontal_speed;
+    rf::Vector3 chord_start = p0;
+    for (int chord = 1; chord <= kThrownClearanceChords; ++chord) {
+        const float time = end_time * static_cast<float>(chord) / static_cast<float>(kThrownClearanceChords);
+        rf::Vector3 chord_end = p0 + dir * (stats.speed * time);
+        chord_end.y -= 0.5f * rf::gravity * time * time;
+        rf::Vector3 trace_start = chord_start;
+        if (rf::collide_linesegment_level_solid(trace_start, chord_end, kSplashClearanceTraceFlags, &collision)) {
+            return false;
+        }
+        chord_start = chord_end;
+    }
+    return true;
+}
+
+// The charge leaves the hand only after the throw's create delay.
+bool remote_charge_throw_in_progress()
+{
+    const BotCombatFiringState& firing = bot_state().firing;
+    return firing.explosive_release_hold_weapon == get_remote_charge_weapon_type()
+        && firing.explosive_release_hold_timer.valid()
+        && !firing.explosive_release_hold_timer.elapsed();
+}
+
+struct LiveRemoteCharges
+{
+    std::array<const rf::Weapon*, 8> charges{};
+    int count = 0;
+};
+
+LiveRemoteCharges find_live_remote_charges(const rf::Entity& local_entity);
+
+// One charge at a time: another is thrown only once the last one is set off or gone.
+bool remote_charge_already_out(const rf::Entity& local_entity)
+{
+    return bot_state().firing.remote_charge_pending_detonation || find_live_remote_charges(local_entity).count > 0;
+}
+
+LiveRemoteCharges find_live_remote_charges(const rf::Entity& local_entity)
+{
+    LiveRemoteCharges live{};
+    for (rf::Object* obj = rf::object_list.next_obj;
+         obj != &rf::object_list && live.count < static_cast<int>(live.charges.size());
+         obj = obj->next_obj) {
+        if (obj->type != rf::OT_WEAPON || obj->parent_handle != local_entity.handle) {
+            continue;
+        }
+        const rf::Weapon* const weapon = static_cast<const rf::Weapon*>(obj);
+        if (weapon->info && (weapon->info->flags & rf::WTF_REMOTE_CHARGE)) {
+            live.charges[live.count++] = weapon;
+        }
+    }
+    return live;
+}
+
+// Charges go off once the bot stands clear and no teammate is in a blast: at once for a crater, in combat when an
+// enemy is in a blast or the detonation window is over.
+bool should_detonate_remote_charges(
+    const rf::Entity& local_entity,
+    const LiveRemoteCharges& live,
+    const bool crater_goal)
+{
+    if (live.count == 0) {
+        return false;
+    }
+    bool enemy_in_blast = false;
+    for (int i = 0; i < live.count; ++i) {
+        const rf::Vector3& charge_pos = live.charges[i]->pos;
+        const float radius = live.charges[i]->info->damage_radius;
+        const float safe_distance = splash_self_safe_distance(radius, live.charges[i]->info->damage_multi);
+        if (rf::vec_dist_squared(&local_entity.pos, &charge_pos) < safe_distance * safe_distance
+            || player_entity_within_radius(local_entity, charge_pos, radius, true)) {
+            return false;
+        }
+        enemy_in_blast = enemy_in_blast || player_entity_within_radius(local_entity, charge_pos, radius, false);
+    }
+    const rf::Timestamp& window = bot_state().firing.remote_charge_pending_detonation_timer;
+    return crater_goal || enemy_in_blast || (window.valid() && window.elapsed());
+}
+
+// Every enemy near the charges (or in sight a little further out) is out of their blasts and moving further away, so
+// waiting for one is pointless.
+bool enemies_leaving_charges(const rf::Entity& local_entity, const LiveRemoteCharges& live)
+{
+    const rf::Player* const local_player = bot_player();
+    const bool team_mode = multi_is_team_game_type();
+    for (const rf::Player& player : SinglyLinkedList{rf::player_list}) {
+        const bool teammate = team_mode && local_player && player.team == local_player->team;
+        if (&player == local_player || player.is_spectator || teammate) {
+            continue;
+        }
+        rf::Entity* const entity = rf::entity_from_handle(player.entity_handle);
+        if (!entity || rf::entity_is_dying(entity)) {
+            continue;
+        }
+        bool near_charges = false;
+        bool considered = false;
+        for (int i = 0; i < live.count; ++i) {
+            const float radius = live.charges[i]->info->damage_radius;
+            const float dist_sq = rf::vec_dist_squared(&entity->pos, &live.charges[i]->pos);
+            near_charges = near_charges || dist_sq <= std::pow(radius * kRemoteChargeEnemyRelevanceScale, 2.0f);
+            considered = considered || dist_sq <= std::pow(radius * kRemoteChargeEnemyConsideredScale, 2.0f);
+        }
+        if (!considered
+            || (!near_charges
+                && !bot_has_unobstructed_level_los(local_entity.eye_pos, entity->eye_pos, &local_entity, entity))) {
+            continue;
+        }
+        for (int i = 0; i < live.count; ++i) {
+            const rf::Vector3 away = entity->pos - live.charges[i]->pos;
+            const float radius = live.charges[i]->info->damage_radius;
+            if (away.len_sq() <= radius * radius || away.dot_prod(entity->p_data.vel) <= 0.0f) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+// After a throw the bot holds the detonator until the charge goes off, the window ends without a moment it can set
+// it off, an enemy comes too close or every enemy walks away, or nothing it threw is left in the world.
+void update_remote_charge_state(
+    const rf::Entity& local_entity,
+    const LiveRemoteCharges& live,
+    const bool crater_goal,
+    const rf::Entity* enemy_target,
     const bool enemy_has_los)
 {
-    if (bot_backend_weapon_busy(local_player, local_entity)) {
+    BotCombatFiringState& firing = bot_state().firing;
+    if (!firing.remote_charge_pending_detonation) {
         return;
     }
-    if (bot_weapon_fire_wait_is_blocking_switch(local_entity)) {
-        return;
+    const rf::Timestamp& window = firing.remote_charge_pending_detonation_timer;
+    const bool settling = remote_charge_throw_in_progress()
+        || (firing.remote_charge_settle_timer.valid() && !firing.remote_charge_settle_timer.elapsed());
+    const bool window_over = !window.valid() || window.elapsed();
+    const int held_weapon = local_entity.ai.current_primary_weapon;
+    const bool can_detonate_now =
+        rf::weapon_is_detonator(held_weapon) && !rf::entity_is_swimming(const_cast<rf::Entity*>(&local_entity));
+    const float close_distance =
+        bot_weapon_stats(get_remote_charge_weapon_type(), kStatsReferenceDistance).min_safe_distance;
+    const bool enemy_too_close =
+        !crater_goal
+        && enemy_target
+        && enemy_has_los
+        && rf::vec_dist_squared(&local_entity.pos, &enemy_target->pos) < close_distance * close_distance;
+    const bool detonation_due = should_detonate_remote_charges(local_entity, live, crater_goal);
+    const bool enemies_leaving = !crater_goal && !settling && enemies_leaving_charges(local_entity, live);
+    if ((live.count == 0 && !settling)
+        || (window_over && !(detonation_due && can_detonate_now))
+        || (!detonation_due && (enemy_too_close || enemies_leaving))) {
+        firing.remote_charge_pending_detonation = false;
+        firing.remote_charge_pending_detonation_timer.invalidate();
+    }
+}
+
+void hold_remote_charge_detonator(rf::Player& local_player, rf::Entity& local_entity)
+{
+    const int detonator = rf::remote_charge_det_weapon_type;
+    if (!remote_charge_throw_in_progress()
+        && owns_remote_charge_detonator(local_entity)
+        && local_entity.ai.current_primary_weapon != detonator) {
+        switch_to_weapon(local_player, local_entity, detonator);
+    }
+}
+
+// Peak expected damage over the weapon's reach, the farthest distance keeping 80% of it (where the bot likes to
+// fight) and the farthest keeping 15% (where it still fires). Cached per life.
+const BotWeaponRangeCache& weapon_ranges(const int weapon_type)
+{
+    static const BotWeaponRangeCache no_ranges{};
+    auto& cache = bot_state().firing.weapon_ranges;
+    if (weapon_type < 0 || weapon_type >= std::min(rf::num_weapon_types, static_cast<int>(cache.size()))) {
+        return no_ranges;
+    }
+    BotWeaponRangeCache& ranges = cache[weapon_type];
+    const float skill_factor = bot_get_skill_factor();
+    if (ranges.valid && ranges.skill_factor == skill_factor) {
+        return ranges;
+    }
+    ranges = BotWeaponRangeCache{true, skill_factor};
+    const BotWeaponStats reference = bot_weapon_stats(weapon_type, kStatsReferenceDistance);
+    if (reference.weapon_type < 0) {
+        return ranges;
+    }
+    const float near_limit = std::max(reference.min_safe_distance, 1.0f);
+    const float far_limit = std::max(std::min(reference.max_range, kRangeSampleMaxDistance), near_limit);
+    std::array<float, kRangeSampleCount> distances{};
+    std::array<float, kRangeSampleCount> dps{};
+    for (int i = 0; i < kRangeSampleCount; ++i) {
+        distances[i] =
+            std::lerp(near_limit, far_limit, static_cast<float>(i) / static_cast<float>(kRangeSampleCount - 1));
+        dps[i] = bot_weapon_expected_dps(bot_weapon_stats(weapon_type, distances[i]), distances[i]);
+        ranges.peak_dps = std::max(ranges.peak_dps, dps[i]);
+    }
+    for (int i = kRangeSampleCount - 1; i >= 0 && ranges.peak_dps > 0.0f; --i) {
+        if (ranges.ideal_range <= 0.0f && dps[i] >= ranges.peak_dps * kIdealRangeDpsShare) {
+            ranges.ideal_range = distances[i];
+        }
+        if (ranges.effective_range <= 0.0f && dps[i] >= ranges.peak_dps * kEffectiveRangeDpsShare) {
+            ranges.effective_range = distances[i];
+        }
+    }
+    return ranges;
+}
+
+bool weapon_in_effective_range(const BotWeaponStats& stats, const float distance)
+{
+    const float dps = bot_weapon_expected_dps(stats, distance);
+    return dps > 0.0f && dps >= weapon_ranges(stats.weapon_type).peak_dps * kEffectiveRangeDpsShare;
+}
+
+// Preferred weapons weigh more the earlier they are listed.
+float personality_weapon_weight(const int weapon_type)
+{
+    float weight = std::sqrt(std::max(bot_get_weapon_preference_weight(weapon_type), 0.05f));
+    const std::vector<int>& preferred = get_active_bot_personality().preferred_weapon_types;
+    const auto it = std::find(preferred.begin(), preferred.end(), weapon_type);
+    if (it != preferred.end()) {
+        const float count = static_cast<float>(preferred.size());
+        weight *= 1.0f + kPreferredWeaponRankBonus * (count - static_cast<float>(it - preferred.begin())) / count;
+    }
+    return weight;
+}
+
+float quirk_weapon_weight(
+    const int weapon_type,
+    const float distance,
+    const rf::Entity* enemy_target,
+    const bool enemy_has_los)
+{
+    if (!enemy_target) {
+        return 1.0f;
+    }
+    const float enemy_survivability =
+        get_entity_health_ratio(*enemy_target) * 0.72f + get_entity_armor_ratio(*enemy_target) * 0.28f;
+    const bool finisher_shotgun =
+        bot_personality_has_quirk(BotPersonalityQuirk::shotgun_low_health_finisher)
+        && enemy_survivability <= 0.42f
+        && distance <= 20.0f
+        && weapon_type == bot_resolve_weapon_type_cached("Shotgun");
+    const bool finisher_melee =
+        bot_personality_has_quirk(BotPersonalityQuirk::melee_finisher)
+        && enemy_survivability <= 0.30f
+        && rf::weapon_is_melee(weapon_type);
+    const rf::Timestamp& los_recent = bot_state().firing.enemy_los_recent_timer;
+    const bool no_los_railgun =
+        bot_personality_has_quirk(BotPersonalityQuirk::railgun_no_los_hunter)
+        && !enemy_has_los
+        && (!los_recent.valid() || los_recent.elapsed())
+        && weapon_type == bot_resolve_weapon_type_cached("rail_gun");
+    return finisher_shotgun || finisher_melee || no_los_railgun ? kQuirkWeaponUtilityScale : 1.0f;
+}
+
+bool weapon_is_combat_candidate(rf::Player& player, rf::Entity& entity, const int weapon_type)
+{
+    if (!weapon_has_usable_ammo(player, entity, weapon_type) || rf::weapon_is_detonator(weapon_type)) {
+        return false;
+    }
+    if (rf::entity_is_swimming(&entity) && !weapon_works_underwater(weapon_type)) {
+        return false;
+    }
+    return !(weapon_type == get_remote_charge_weapon_type() && remote_charge_already_out(entity));
+}
+
+// The nearest enemy in sight inside the largest blast distance of the bot's usable splash weapons, shared by every
+// weapon of one evaluation; no traces without such a weapon.
+float nearest_visible_enemy_in_blast_range(rf::Player& player, rf::Entity& entity, const float distance)
+{
+    float max_safe_distance = 0.0f;
+    for (int weapon_type = 0; weapon_type < rf::num_weapon_types; ++weapon_type) {
+        if (!weapon_is_combat_candidate(player, entity, weapon_type)) {
+            continue;
+        }
+        const BotWeaponStats stats = bot_weapon_stats(weapon_type, distance);
+        if (!stats.remote_charge) {
+            max_safe_distance = std::max(max_safe_distance, stats.min_safe_distance);
+        }
+    }
+    if (max_safe_distance <= 0.0f) {
+        return std::numeric_limits<float>::infinity();
+    }
+    return nearest_player_entity_distance(entity, entity.pos, max_safe_distance, false, true);
+}
+
+bool clip_is_empty(const rf::Entity& entity, const int weapon_type)
+{
+    return rf::weapon_uses_clip(weapon_type) && entity.ai.clip_ammo[weapon_type] <= 0;
+}
+
+bool is_close_fight(const rf::Entity* enemy_target, const bool enemy_has_los, const float distance)
+{
+    return enemy_target && enemy_has_los && distance <= kCloseFightDistance;
+}
+
+// Expected damage per second at the distance, scaled by ammo left, reload state and personality.
+float weapon_combat_utility(
+    rf::Player& player,
+    rf::Entity& entity,
+    const int weapon_type,
+    const float distance,
+    const rf::Entity* enemy_target,
+    const bool enemy_has_los,
+    const float nearest_visible_enemy)
+{
+    if (!weapon_is_combat_candidate(player, entity, weapon_type)) {
+        return 0.0f;
+    }
+    const BotWeaponStats stats = bot_weapon_stats(weapon_type, distance);
+    const bool current = weapon_type == entity.ai.current_primary_weapon;
+    // A splash weapon is only taken up clear of its blast distance, so it is not dropped again at once, and is
+    // useless while any enemy stands inside that distance.
+    const float splash_take_up_distance = std::min(
+        stats.min_safe_distance * kSplashCandidateDistanceScale,
+        stats.max_range * kSplashCandidateMaxRangeShare);
+    if (stats.min_safe_distance > 0.0f
+        && !stats.remote_charge
+        && ((!current && distance < splash_take_up_distance)
+            || nearest_visible_enemy <= stats.min_safe_distance)) {
+        return 0.0f;
+    }
+    if (stats.melee && !current && distance > stats.max_range * kMeleeCandidateReachShare) {
+        return 0.0f;
+    }
+    float utility = bot_weapon_expected_dps(stats, distance);
+    if (utility <= 0.0f) {
+        return 0.0f;
+    }
+    if (!rf::weapon_is_melee(weapon_type)) {
+        const float fill = std::max(bot_decision_get_weapon_ammo_fill_ratio(entity, weapon_type), 0.02f);
+        utility *= std::pow(fill, kAmmoFillUtilityExponent);
+        if (clip_is_empty(entity, weapon_type)) {
+            const bool close_fight = is_close_fight(enemy_target, enemy_has_los, distance);
+            // Swapping to another empty weapon in a close fight still means a reload.
+            if (close_fight && !current) {
+                return 0.0f;
+            }
+            utility *= close_fight ? kEmptyClipCloseFightUtilityScale : kEmptyClipUtilityScale;
+        }
+    }
+    return utility
+        * personality_weapon_weight(weapon_type)
+        * quirk_weapon_weight(weapon_type, distance, enemy_target, enemy_has_los);
+}
+
+struct CombatWeaponChoice
+{
+    int weapon_type = -1;
+    float utility = 0.0f;
+};
+
+CombatWeaponChoice bot_select_combat_weapon(
+    rf::Player& player,
+    rf::Entity& entity,
+    const float target_distance,
+    const rf::Entity* enemy_target,
+    const bool enemy_has_los,
+    const float nearest_visible_enemy)
+{
+    CombatWeaponChoice best{};
+    for (int weapon_type = 0; weapon_type < rf::num_weapon_types; ++weapon_type) {
+        const float utility = weapon_combat_utility(
+            player,
+            entity,
+            weapon_type,
+            target_distance,
+            enemy_target,
+            enemy_has_los,
+            nearest_visible_enemy);
+        if (utility > best.utility) {
+            best = {weapon_type, utility};
+        }
+    }
+    return best;
+}
+
+// The usable weapon with the best expected damage at any distance, for when none reaches the current one.
+int strongest_usable_weapon(rf::Player& player, rf::Entity& entity)
+{
+    int best_weapon = -1;
+    float best_peak = 0.0f;
+    for (int weapon_type = 0; weapon_type < rf::num_weapon_types; ++weapon_type) {
+        if (!weapon_is_combat_candidate(player, entity, weapon_type)) {
+            continue;
+        }
+        const float peak = weapon_ranges(weapon_type).peak_dps;
+        if (peak > best_peak) {
+            best_peak = peak;
+            best_weapon = weapon_type;
+        }
+    }
+    return best_weapon;
+}
+
+float combat_reference_distance(const rf::Entity& entity, const rf::Entity* enemy_target)
+{
+    if (enemy_target) {
+        return std::sqrt(std::max(rf::vec_dist_squared(&entity.pos, &enemy_target->pos), 0.0f));
+    }
+    const BotPersonality& personality = get_active_bot_personality();
+    return 0.5f * (personality.preferred_engagement_near + personality.preferred_engagement_far);
+}
+
+// Evaluated on a new target in sight, a pickup, a weapon that cannot hit at this distance, an empty clip in a
+// close fight, and on a slow cadence. A useless or empty weapon is dropped at once; a new target or a pickup switches
+// once the switch cooldown is over; anything else must stay best for a skill-scaled dwell.
+void update_combat_weapon_choice(
+    rf::Player& player,
+    rf::Entity& entity,
+    const rf::Entity* enemy_target,
+    const bool enemy_has_los)
+{
+    BotCombatFiringState& firing = bot_state().firing;
+    const int current_weapon = entity.ai.current_primary_weapon;
+    const bool acquired =
+        enemy_target && enemy_has_los && enemy_target->handle != firing.weapon_select_target_handle;
+    if (enemy_target && enemy_has_los) {
+        firing.weapon_select_target_handle = enemy_target->handle;
+    }
+    else if (!enemy_target) {
+        firing.weapon_select_target_handle = -1;
     }
 
-    if (bot_state().weapon_switch_timer.valid()
-        && !bot_state().weapon_switch_timer.elapsed()) {
+    const float distance = combat_reference_distance(entity, enemy_target);
+    const float nearest_visible_enemy = nearest_visible_enemy_in_blast_range(player, entity, distance);
+    const float current_utility = weapon_combat_utility(
+        player,
+        entity,
+        current_weapon,
+        distance,
+        enemy_target,
+        enemy_has_los,
+        nearest_visible_enemy);
+    const bool dry_in_close_fight =
+        current_weapon >= 0
+        && current_weapon < rf::num_weapon_types
+        && clip_is_empty(entity, current_weapon)
+        && is_close_fight(enemy_target, enemy_has_los, distance);
+    const bool cadence_due =
+        !bot_state().combat_weapon_eval_timer.valid() || bot_state().combat_weapon_eval_timer.elapsed();
+    if (!acquired
+        && !firing.weapon_pickup_pending
+        && !dry_in_close_fight
+        && current_utility > 0.0f
+        && !cadence_due
+        && firing.weapon_select_candidate < 0) {
         return;
     }
+    if (cadence_due) {
+        bot_state().combat_weapon_eval_timer.set(kWeaponSelectCadenceMs);
+    }
 
-    if (bot_state().combat_weapon_eval_timer.valid()
-        && !bot_state().combat_weapon_eval_timer.elapsed()) {
+    const CombatWeaponChoice best =
+        bot_select_combat_weapon(player, entity, distance, enemy_target, enemy_has_los, nearest_visible_enemy);
+    if (best.weapon_type < 0 && !weapon_is_combat_candidate(player, entity, current_weapon)) {
+        switch_to_weapon(player, entity, strongest_usable_weapon(player, entity));
+        return;
+    }
+    if (best.weapon_type < 0
+        || best.weapon_type == current_weapon
+        || best.utility < current_utility * kWeaponSwitchUtilityMargin) {
+        firing.weapon_pickup_pending = false;
+        firing.weapon_select_candidate = -1;
         return;
     }
 
     const BotPersonality& personality = get_active_bot_personality();
-    const BotSkillProfile& skill_profile = get_active_bot_skill_profile();
-    const float switch_chance = std::clamp(
-        std::clamp(skill_profile.weapon_switch_likelihood, 0.05f, 1.0f)
+    if (current_utility <= 0.0f || dry_in_close_fight) {
+        switch_to_weapon(player, entity, best.weapon_type);
+        return;
+    }
+    if (firing.requested_weapon >= 0 && weapon_request_pending(firing.requested_weapon)) {
+        return;
+    }
+    // A pickup made during the cooldown stays pending until it is over.
+    if (bot_state().weapon_switch_timer.valid() && !bot_state().weapon_switch_timer.elapsed()) {
+        return;
+    }
+    const bool pickup = std::exchange(firing.weapon_pickup_pending, false);
+    const float switch_norm = std::clamp(
+        std::clamp(get_active_bot_skill_profile().weapon_switch_likelihood, 0.05f, 1.0f)
             * std::clamp(personality.weapon_switch_bias, 0.0f, 2.5f),
         0.0f,
         1.0f
     );
+    if (switch_norm <= 0.0f) {
+        return;
+    }
     std::uniform_real_distribution<float> roll_dist(0.0f, 1.0f);
-    if (roll_dist(g_rng) > switch_chance) {
-        const int next_eval_ms = static_cast<int>(std::lround(std::lerp(760.0f, 260.0f, switch_chance)));
-        bot_state().combat_weapon_eval_timer.set(next_eval_ms);
-        return;
-    }
-
-    const float enemy_dist = std::sqrt(std::max(
-        rf::vec_dist_squared(&local_entity.pos, &enemy_target.pos),
-        0.0f
-    ));
-    const float enemy_health_ratio = get_entity_health_ratio(enemy_target);
-    const float enemy_armor_ratio = get_entity_armor_ratio(enemy_target);
-    const float enemy_survivability = enemy_health_ratio * 0.72f + enemy_armor_ratio * 0.28f;
-
-    int quirk_weapon = -1;
-    if (bot_personality_has_quirk(BotPersonalityQuirk::shotgun_low_health_finisher)
-        && enemy_survivability <= 0.42f
-        && enemy_dist <= 20.0f) {
-        const int shotgun_type = bot_resolve_weapon_type_cached("Shotgun");
-        if (weapon_has_usable_ammo(local_player, local_entity, shotgun_type)) {
-            quirk_weapon = shotgun_type;
+    const bool immediate_pickup_switch =
+        pickup
+        && (!personality.preferred_weapon_types.empty()
+            || roll_dist(g_rng) <= std::clamp(personality.pickup_switch_chance_without_preferences, 0.0f, 1.0f));
+    if (acquired || immediate_pickup_switch) {
+        if (!switch_to_weapon(player, entity, best.weapon_type) && acquired) {
+            firing.weapon_select_target_handle = -1;
         }
-    }
-    if (quirk_weapon < 0
-        && bot_personality_has_quirk(BotPersonalityQuirk::melee_finisher)
-        && enemy_survivability <= 0.30f
-        && enemy_dist <= 3.2f) {
-        quirk_weapon = find_best_melee_weapon(local_player, local_entity);
-    }
-    if (quirk_weapon < 0
-        && !enemy_has_los
-        && bot_personality_has_quirk(BotPersonalityQuirk::railgun_no_los_hunter)) {
-        const int railgun_type = bot_resolve_weapon_type_cached("rail_gun");
-        if (weapon_has_usable_ammo(local_player, local_entity, railgun_type)) {
-            quirk_weapon = railgun_type;
-        }
-    }
-    if (quirk_weapon >= 0 && quirk_weapon != local_entity.ai.current_primary_weapon) {
-        switch_to_weapon(local_player, local_entity, quirk_weapon);
-        const int next_eval_ms = static_cast<int>(std::lround(std::lerp(700.0f, 220.0f, switch_chance)));
-        bot_state().combat_weapon_eval_timer.set(next_eval_ms);
         return;
     }
-
-    if (!enemy_has_los) {
-        const int next_eval_ms = static_cast<int>(std::lround(std::lerp(760.0f, 260.0f, switch_chance)));
-        bot_state().combat_weapon_eval_timer.set(next_eval_ms);
+    if (firing.weapon_select_candidate != best.weapon_type) {
+        firing.weapon_select_candidate = best.weapon_type;
+        firing.weapon_select_candidate_timer.set(static_cast<int>(std::lround(std::lerp(
+            static_cast<float>(kWeaponSelectDwellSlowMs),
+            static_cast<float>(kWeaponSelectDwellFastMs),
+            switch_norm))));
         return;
     }
-
-    const int best_weapon = select_best_weapon(local_player, local_entity, enemy_dist);
-    if (best_weapon >= 0 && best_weapon != local_entity.ai.current_primary_weapon) {
-        switch_to_weapon(local_player, local_entity, best_weapon);
+    if (firing.weapon_select_candidate_timer.elapsed()) {
+        switch_to_weapon(player, entity, best.weapon_type);
     }
-
-    const int next_eval_ms = static_cast<int>(std::lround(std::lerp(700.0f, 220.0f, switch_chance)));
-    bot_state().combat_weapon_eval_timer.set(next_eval_ms);
 }
+
+// Splash weapons aim at the floor under a grounded target when the shooter can see that spot.
+void update_floor_aim(const rf::Entity& local_entity, const rf::Entity& enemy_target)
+{
+    BotCombatFiringState& firing = bot_state().firing;
+    firing.aim_at_floor = false;
+    const ProjectileTraits projectile = projectile_traits(local_entity.ai.current_primary_weapon);
+    if (projectile.splash_radius <= 0.0f
+        || projectile.thrown
+        || !rf::entity_on_ground(const_cast<rf::Entity*>(&enemy_target))) {
+        return;
+    }
+    rf::Vector3 floor_pos{};
+    if (!trace_ground_below_point(enemy_target.pos, kFloorAimProbeDepth, &floor_pos)) {
+        return;
+    }
+    floor_pos.y += kFloorAimHeight;
+    if (!bot_has_unobstructed_level_los(local_entity.eye_pos, floor_pos, &local_entity, &enemy_target)) {
+        return;
+    }
+    firing.aim_at_floor = true;
+    firing.aim_floor_drop = enemy_target.pos.y - floor_pos.y;
+}
+
+// A dry clip is reloaded unless a close fight made the weapon choice switch away; a low clip is topped up once the
+// enemy has been out of sight for a while.
+void update_reload(rf::Player& player, rf::Entity& entity)
+{
+    const int weapon_type = entity.ai.current_primary_weapon;
+    if (weapon_type < 0 || weapon_type >= rf::num_weapon_types || !rf::weapon_uses_clip(weapon_type)) {
+        return;
+    }
+    const int requested_weapon = bot_state().firing.requested_weapon;
+    if ((bot_state().reload_timer.valid() && !bot_state().reload_timer.elapsed())
+        || bot_backend_weapon_busy(player, entity)
+        || (requested_weapon != weapon_type && weapon_request_pending(requested_weapon))) {
+        return;
+    }
+    const rf::WeaponInfo& info = rf::weapon_types[weapon_type];
+    const int clip = entity.ai.clip_ammo[weapon_type];
+    const int reserve = info.ammo_type >= 0 && info.ammo_type < static_cast<int>(std::size(entity.ai.ammo))
+        ? entity.ai.ammo[info.ammo_type]
+        : 0;
+    if (reserve <= 0 || clip >= info.clip_size) {
+        return;
+    }
+    const rf::Timestamp& los_recent = bot_state().firing.enemy_los_recent_timer;
+    const bool enemy_out_of_sight = !los_recent.valid() || los_recent.elapsed();
+    const bool tactical = enemy_out_of_sight
+        && static_cast<float>(clip) <= static_cast<float>(info.clip_size) * kTacticalReloadClipShare;
+    if (clip <= 0 || tactical) {
+        bot_backend_reload(player);
+        bot_state().reload_timer.set(800);
+    }
+}
+
+// While travelling, watch where a threat was last noticed if it is not behind, else look round the turn at the next
+// waypoint before taking it.
+rf::Vector3 navigation_look_point(const rf::Entity& local_entity, const rf::Vector3& move_target)
+{
+    rf::Vector3 travel_dir = move_target - local_entity.pos;
+    travel_dir.y = 0.0f;
+    if (travel_dir.len_sq() < 0.0001f) {
+        return move_target;
+    }
+    travel_dir.normalize_safe();
+
+    const BotAlertContact* threat = nullptr;
+    for (const BotAlertContact& contact : bot_state().alert_contacts) {
+        if (!contact.awareness_timer.valid() || contact.awareness_timer.elapsed()) {
+            continue;
+        }
+        rf::Vector3 to_contact = contact.last_known_pos - local_entity.pos;
+        to_contact.y = 0.0f;
+        if (to_contact.len_sq() < 1.0f) {
+            continue;
+        }
+        to_contact.normalize_safe();
+        if (to_contact.dot_prod(travel_dir) < kThreatLookMinTravelDot) {
+            continue;
+        }
+        if (!threat || contact.awareness_weight > threat->awareness_weight) {
+            threat = &contact;
+        }
+    }
+    if (threat) {
+        return threat->last_known_pos;
+    }
+
+    const std::vector<int>& path = bot_state().waypoint_path;
+    const int after_next_index = bot_state().waypoint_next_index + 1;
+    rf::Vector3 after_next_pos{};
+    if (after_next_index <= 0
+        || after_next_index >= static_cast<int>(path.size())
+        || rf::vec_dist_squared(&local_entity.pos, &move_target) >= kCornerLookAheadDistance * kCornerLookAheadDistance
+        || !waypoints_get_pos(path[after_next_index], after_next_pos)) {
+        return move_target;
+    }
+    rf::Vector3 next_leg_dir = after_next_pos - move_target;
+    next_leg_dir.y = 0.0f;
+    if (next_leg_dir.len_sq() < 0.0001f) {
+        return move_target;
+    }
+    next_leg_dir.normalize_safe();
+    return next_leg_dir.dot_prod(travel_dir) < kCornerLookMaxTurnDot ? after_next_pos : move_target;
+}
+}
+
+bool bot_weapon_profile_supports_range(const BotWeaponProfile& profile, const BotWeaponRangeBand range)
+{
+    // A band is supported when the weapon keeps a useful share of its best expected damage somewhere inside it.
+    const float peak = weapon_ranges(profile.weapon_type).peak_dps;
+    if (peak <= 0.0f) {
+        return false;
+    }
+    const float near_limit = range == BotWeaponRangeBand::melee
+        ? 0.5f
+        : bot_decision_combat_distance_band_far_limit(static_cast<BotWeaponRangeBand>(static_cast<int>(range) - 1));
+    const float far_limit = bot_decision_combat_distance_band_far_limit(range);
+    constexpr int kBandSamples = 5;
+    for (int i = 0; i < kBandSamples; ++i) {
+        const float distance =
+            std::lerp(near_limit, far_limit, static_cast<float>(i) / static_cast<float>(kBandSamples - 1));
+        if (bot_weapon_expected_dps(bot_weapon_stats(profile.weapon_type, distance), distance)
+            >= peak * kRangeBandDpsShare) {
+            return true;
+        }
+    }
+    return false;
+}
+
+float bot_combat_engagement_distance(const rf::Entity& entity, float& out_min_safe_distance)
+{
+    out_min_safe_distance = 0.0f;
+    const int weapon_type = entity.ai.current_primary_weapon;
+    if (rf::weapon_is_detonator(weapon_type)) {
+        if (!bot_state().firing.remote_charge_pending_detonation) {
+            return -1.0f;
+        }
+        // Stay clear of the thrown charge, which lies near the target.
+        const BotWeaponStats charge = bot_weapon_stats(get_remote_charge_weapon_type(), kStatsReferenceDistance);
+        out_min_safe_distance = splash_self_safe_distance(charge.splash_radius, charge.shot_damage);
+        return out_min_safe_distance * kCraterStandoffScale;
+    }
+    const BotWeaponStats stats = bot_weapon_stats(weapon_type, kStatsReferenceDistance);
+    if (stats.weapon_type < 0
+        || (!stats.melee && bot_decision_get_weapon_ammo_fill_ratio(entity, weapon_type) <= 0.0f)) {
+        return -1.0f;
+    }
+    out_min_safe_distance = stats.min_safe_distance;
+    const float ideal = weapon_ranges(weapon_type).ideal_range;
+    return ideal > 0.0f ? ideal : -1.0f;
+}
+
+float bot_best_combat_weapon_dps(rf::Player& player, rf::Entity& entity, const float target_distance)
+{
+    float best_dps = 0.0f;
+    for (int weapon_type = 0; weapon_type < rf::num_weapon_types; ++weapon_type) {
+        if (weapon_is_combat_candidate(player, entity, weapon_type)) {
+            best_dps = std::max(
+                best_dps,
+                bot_weapon_expected_dps(bot_weapon_stats(weapon_type, target_distance), target_distance));
+        }
+    }
+    return best_dps;
+}
+
+float bot_crater_standoff_distance(rf::Player& player, rf::Entity& entity, float& out_max_distance)
+{
+    out_max_distance = std::numeric_limits<float>::max();
+    // A remote charge is thrown from close by and set off from the standoff.
+    const bool remote_charge_live = bot_state().firing.remote_charge_pending_detonation;
+    const BotWeaponStats stats = bot_weapon_stats(
+        remote_charge_live ? get_remote_charge_weapon_type() : find_best_crater_weapon(player, entity),
+        kStatsReferenceDistance);
+    if (stats.splash_radius <= 0.0f || (stats.remote_charge && !remote_charge_live)) {
+        return 0.0f;
+    }
+    float standoff = stats.splash_radius * kCraterStandoffScale;
+    if (stats.thrown && !stats.remote_charge) {
+        // A short-range throw cannot reach from the full standoff; it only needs to be clear of its own blast.
+        out_max_distance = stats.max_range * kThrownStandoffMaxRangeShare;
+        standoff = std::min(standoff, stats.min_safe_distance * kThrownStandoffSafeScale);
+    }
+    return standoff;
 }
 
 bool bot_has_usable_crater_weapon(rf::Player& player, rf::Entity& entity)
 {
-    return find_best_crater_weapon(player, entity) >= 0;
+    const bool charge_to_set_off =
+        bot_state().firing.remote_charge_pending_detonation && owns_remote_charge_detonator(entity);
+    return charge_to_set_off || find_best_crater_weapon(player, entity) >= 0;
 }
 
 bool bot_has_usable_shatter_weapon(rf::Player& player, rf::Entity& entity)
@@ -1612,45 +2333,26 @@ void bot_track_aim_goal(rf::Entity& local_entity)
 
 void ensure_weapon_ready(rf::Player& player, rf::Entity& entity)
 {
-    maybe_switch_weapon_for_personality(player, entity);
-
-    int current_weapon = entity.ai.current_primary_weapon;
-    const bool has_current_weapon =
-        current_weapon >= 0
-        && current_weapon < rf::num_weapon_types
-        && entity.ai.has_weapon[current_weapon];
-
-    bool should_reselect_weapon = !has_current_weapon;
-    if (!should_reselect_weapon && !rf::weapon_is_melee(current_weapon)) {
-        should_reselect_weapon =
-            rf::player_get_weapon_total_ammo(&player, current_weapon) <= 0;
+    if (!collect_newly_acquired_weapons(entity).empty()) {
+        bot_state().firing.weapon_pickup_pending = true;
     }
-
-    if (should_reselect_weapon) {
-        const int best_weapon = select_best_weapon(player, entity);
-        if (best_weapon >= 0 && best_weapon != current_weapon) {
-            switch_to_weapon(player, entity, best_weapon);
-        }
-        current_weapon = entity.ai.current_primary_weapon;
-    }
-
-    if (current_weapon < 0 || current_weapon >= rf::num_weapon_types) {
+    const int current_weapon = entity.ai.current_primary_weapon;
+    if (bot_state().firing.remote_charge_pending_detonation || weapon_has_usable_ammo(player, entity, current_weapon)) {
         return;
     }
-
-    if (!rf::weapon_uses_clip(current_weapon)) {
-        return;
-    }
-
-    const int total_ammo = rf::player_get_weapon_total_ammo(&player, current_weapon);
-    if (entity.ai.clip_ammo[current_weapon] > 0 || total_ammo <= 0) {
-        return;
-    }
-
-    if (!bot_state().reload_timer.valid() || bot_state().reload_timer.elapsed()) {
-        bot_backend_reload(player);
-        bot_state().reload_timer.set(800);
-    }
+    // Nothing to fire: take the best weapon for a typical distance until combat refines the choice.
+    const float distance = combat_reference_distance(entity, nullptr);
+    const CombatWeaponChoice best = bot_select_combat_weapon(
+        player,
+        entity,
+        distance,
+        nullptr,
+        false,
+        nearest_visible_enemy_in_blast_range(player, entity, distance));
+    switch_to_weapon(
+        player,
+        entity,
+        best.weapon_type >= 0 ? best.weapon_type : strongest_usable_weapon(player, entity));
 }
 
 void bot_process_combat(
@@ -1680,10 +2382,9 @@ void bot_process_combat(
         bot_state().active_goal == BotGoalType::shatter_glass
         && bot_state().fsm_state == BotFsmState::shatter_glass
         && bot_state().goal_target_identifier >= 0;
-    const bool crater_has_waypoint_los = crater_goal_active
-        && crater_target_has_linked_waypoint_los(
-            local_entity,
-            bot_state().goal_target_identifier);
+    const bool crater_has_los = crater_goal_active
+        && (crater_target_has_linked_waypoint_los(local_entity, bot_state().goal_target_identifier)
+            || crater_target_has_direct_los(local_entity, bot_state().goal_target_pos));
     const bool shatter_has_waypoint_los = shatter_goal_active
         && shatter_target_has_linked_waypoint_los(
             local_entity,
@@ -1694,29 +2395,38 @@ void bot_process_combat(
     if (!explosive_release_hold_active) {
         bot_state().firing.explosive_release_hold_timer.invalidate();
     }
-    if (bot_state().firing.remote_charge_pending_detonation_timer.valid()
-        && bot_state().firing.remote_charge_pending_detonation_timer.elapsed()) {
-        bot_state().firing.remote_charge_pending_detonation = false;
-        bot_state().firing.remote_charge_pending_detonation_timer.invalidate();
+    if (enemy_target && enemy_has_los) {
+        bot_state().firing.enemy_los_recent_timer.set(kTacticalReloadLosGapMs);
     }
-    if (!crater_goal_active) {
-        bot_state().firing.remote_charge_pending_detonation = false;
-        bot_state().firing.remote_charge_pending_detonation_timer.invalidate();
+    BotCombatFiringState& firing_state = bot_state().firing;
+    const LiveRemoteCharges live_remote_charges = firing_state.remote_charge_pending_detonation || crater_goal_active
+        ? find_live_remote_charges(local_entity)
+        : LiveRemoteCharges{};
+    if (crater_goal_active && !firing_state.remote_charge_pending_detonation && live_remote_charges.count > 0) {
+        // A charge left from earlier is set off for the crater before another can be thrown.
+        firing_state.remote_charge_pending_detonation = true;
+        firing_state.remote_charge_pending_detonation_timer.set(kRemoteChargeCraterWindowMs);
     }
+    update_remote_charge_state(local_entity, live_remote_charges, crater_goal_active, enemy_target, enemy_has_los);
 
-    if (crater_goal_active) {
+    if (bot_state().firing.remote_charge_pending_detonation || crater_goal_active || shatter_goal_active) {
+        bot_state().firing.weapon_pickup_pending = false;
+    }
+    if (bot_state().firing.remote_charge_pending_detonation) {
+        hold_remote_charge_detonator(local_player, local_entity);
+    }
+    else if (crater_goal_active) {
         maybe_switch_weapon_for_crater_goal(local_player, local_entity);
     }
     else if (shatter_goal_active) {
         maybe_switch_weapon_for_shatter_goal(local_player, local_entity);
     }
-    else if (enemy_target) {
-        maybe_switch_weapon_for_combat_context(
-            local_player,
-            local_entity,
-            *enemy_target,
-            enemy_has_los
-        );
+    else {
+        update_combat_weapon_choice(local_player, local_entity, enemy_target, enemy_has_los);
+    }
+    update_reload(local_player, local_entity);
+    if (enemy_target && enemy_has_los) {
+        update_floor_aim(local_entity, *enemy_target);
     }
 
     if (local_entity.ai.current_primary_weapon >= 0) {
@@ -1744,10 +2454,14 @@ void bot_process_combat(
             aim_alignment
         );
     }
-    else if ((crater_goal_active && crater_has_waypoint_los)
+    else if ((crater_goal_active && crater_has_los)
         || (shatter_goal_active && shatter_has_waypoint_los)) {
         if (bot_state().goal_target_pos.len_sq() > 0.0001f) {
             resolved_aim_target = bot_state().goal_target_pos;
+            const ProjectileTraits projectile = projectile_traits(local_entity.ai.current_primary_weapon);
+            if (crater_goal_active && projectile.thrown) {
+                resolved_aim_target = ballistic_aim_point(local_entity.eye_pos, resolved_aim_target, projectile.speed);
+            }
             set_aim_goal(resolved_aim_target, -1);
             has_aim_solution = update_aim_towards(
                 local_entity,
@@ -1777,53 +2491,22 @@ void bot_process_combat(
         rf::Vector3 aim_target = move_target;
         const float vertical_delta = std::abs(move_target.y - local_entity.eye_pos.y);
         if (vertical_delta <= kNavigationAimVerticalThreshold) {
-            aim_target.y = local_entity.eye_pos.y;
-        }
-
-        const bool precision_navigation_goal =
-            bot_goal_is_item_collection(bot_state().active_goal)
-            || bot_goal_is_ctf_objective(bot_state().active_goal)
-            || bot_state().active_goal == BotGoalType::activate_bridge
-            || bot_state().active_goal == BotGoalType::create_crater
-            || bot_state().active_goal == BotGoalType::shatter_glass;
-        if (!enemy_target && !precision_navigation_goal) {
-            const BotPersonality& personality = get_active_bot_personality();
-            const float nav_strafe_ratio = std::clamp(
-                std::clamp(personality.navigation_strafe_bias, 0.0f, 2.0f) * 0.5f,
-                0.0f,
-                1.0f
-            );
-            if (nav_strafe_ratio > 0.001f) {
-                constexpr float kTwoPi = 6.28318530718f;
-                const float scan_speed = std::lerp(0.8f, 1.7f, nav_strafe_ratio);
-                bot_state().nav_look_phase += bot_frame_dt() * scan_speed;
-                if (bot_state().nav_look_phase > kTwoPi) {
-                    bot_state().nav_look_phase -= kTwoPi;
-                }
-
-                rf::Vector3 to_move = move_target - local_entity.eye_pos;
-                to_move.y = 0.0f;
-                if (to_move.len_sq() > 0.0001f) {
-                    to_move.normalize_safe();
-                    rf::Vector3 right{to_move.z, 0.0f, -to_move.x};
-                    right.normalize_safe();
-                    const float dist = std::sqrt(std::max(
-                        rf::vec_dist_squared(&local_entity.pos, &move_target),
-                        0.0f
-                    ));
-                    const float dist_scale = std::clamp(dist / 8.0f, 0.0f, 1.0f);
-                    const float lookahead = std::lerp(1.2f, 3.6f, dist_scale);
-                    const float scan_amplitude = std::lerp(0.0f, 1.6f, nav_strafe_ratio);
-                    const float scan_offset =
-                        std::sin(bot_state().nav_look_phase) * scan_amplitude;
-                    const rf::Vector3 curiosity_target =
-                        local_entity.eye_pos + to_move * lookahead + right * scan_offset;
-
-                    const float blend = std::clamp(0.10f + 0.35f * nav_strafe_ratio, 0.0f, 0.55f);
-                    aim_target = aim_target * (1.0f - blend) + curiosity_target * blend;
-                    aim_target.y = local_entity.eye_pos.y;
+            const bool precision_navigation_goal =
+                bot_goal_is_item_collection(bot_state().active_goal)
+                || bot_goal_is_ctf_objective(bot_state().active_goal)
+                || bot_state().active_goal == BotGoalType::activate_bridge
+                || bot_state().active_goal == BotGoalType::create_crater
+                || bot_state().active_goal == BotGoalType::shatter_glass;
+            // navigation_strafe_bias 0 keeps the bot looking where it goes.
+            if (!enemy_target
+                && !precision_navigation_goal
+                && get_active_bot_personality().navigation_strafe_bias > 0.0f) {
+                aim_target = navigation_look_point(local_entity, move_target);
+                if (std::abs(aim_target.y - local_entity.eye_pos.y) > kNavigationAimVerticalThreshold) {
+                    aim_target = move_target;
                 }
             }
+            aim_target.y = local_entity.eye_pos.y;
         }
 
         resolved_aim_target = aim_target;
@@ -1859,20 +2542,18 @@ void bot_process_combat(
     }
 
     const bool bot_is_underwater = rf::entity_is_swimming(&local_entity);
-    if ((enemy_target || crater_goal_active || shatter_goal_active)
+    const bool remote_charge_live = bot_state().firing.remote_charge_pending_detonation;
+    if ((enemy_target || crater_goal_active || shatter_goal_active || remote_charge_live)
         && local_entity.ai.current_primary_weapon >= 0
         && (!bot_is_underwater || weapon_works_underwater(local_entity.ai.current_primary_weapon))) {
         const int weapon_type = local_entity.ai.current_primary_weapon;
         const rf::Vector3 fire_target_pos = (crater_goal_active || shatter_goal_active)
             ? bot_state().goal_target_pos
-            : enemy_target->pos;
-        const float weapon_range = get_weapon_range(weapon_type);
+            : (enemy_target ? enemy_target->pos : local_entity.pos);
         const float dist_sq = rf::vec_dist_squared(&local_entity.pos, &fire_target_pos);
         const float distance = std::sqrt(std::max(dist_sq, 0.0f));
-        CombatFireMode fire_mode = select_combat_fire_mode(weapon_type, distance);
-        if (crater_goal_active && weapon_type == get_grenade_weapon_type()) {
-            fire_mode.use_alt_fire = true;
-        }
+        const BotWeaponStats weapon_stats = bot_weapon_stats(weapon_type, distance);
+        const CombatFireMode fire_mode = select_combat_fire_mode(weapon_type, distance);
         attack_weapon_type = weapon_type;
         attack_use_alt_fire = fire_mode.use_alt_fire;
         const bool is_semi_auto = fire_mode.is_semi_auto;
@@ -1883,24 +2564,21 @@ void bot_process_combat(
             bot_state().auto_fire_release_guard_timer.invalidate();
         }
         bool wants_attack = false;
-        if (crater_goal_active) {
+        if (rf::weapon_is_detonator(weapon_type)) {
             bot_state().auto_fire_release_guard_timer.invalidate();
-            const int remote_charge_weapon_type = get_remote_charge_weapon_type();
-            const bool using_remote_charge =
-                weapon_type >= 0 && weapon_type == remote_charge_weapon_type;
-            const bool using_remote_detonator = rf::weapon_is_detonator(weapon_type);
+            wants_attack = can_fire_now
+                && remote_charge_live
+                && should_detonate_remote_charges(local_entity, live_remote_charges, crater_goal_active);
+        }
+        else if (crater_goal_active) {
+            bot_state().auto_fire_release_guard_timer.invalidate();
             wants_attack = can_fire_now
                 && has_aim_solution
                 && weapon_can_create_craters(weapon_type)
-                && crater_has_waypoint_los;
-            if (using_remote_charge && bot_state().firing.remote_charge_pending_detonation) {
-                // Wait for detonator phase before throwing another charge.
-                wants_attack = false;
-            }
-            if (using_remote_detonator && !bot_state().firing.remote_charge_pending_detonation) {
-                // Avoid pointless detonator spam when there is no pending charge.
-                wants_attack = false;
-            }
+                && crater_has_los
+                && distance <= weapon_stats.max_range
+                && splash_fire_is_safe(local_entity, weapon_stats, fire_target_pos)
+                && !(weapon_stats.remote_charge && remote_charge_already_out(local_entity));
         }
         else if (shatter_goal_active) {
             bot_state().auto_fire_release_guard_timer.invalidate();
@@ -1918,16 +2596,33 @@ void bot_process_combat(
             wants_attack = false;
         }
         else {
-            const bool automatic_engage_now =
-                has_aim_solution && enemy_has_los && enemy_target != nullptr;
+            // Out of effective range the weapon choice switches or the bot closes in; it does not fire. The shot waits
+            // until the view's sideways miss at the aim point (which already carries the bot's aim error) is within a
+            // body.
+            const float lateral_miss =
+                distance * std::sqrt(std::max(1.0f - aim_alignment * aim_alignment, 0.0f));
+            const float lateral_tolerance = kTargetHitRadius + weapon_stats.splash_radius * kSplashHitRadiusScale;
+            const bool engage_now =
+                has_aim_solution
+                && enemy_has_los
+                && enemy_target != nullptr
+                && aim_alignment > 0.0f
+                && lateral_miss <= lateral_tolerance
+                && weapon_in_effective_range(weapon_stats, distance)
+                && !(weapon_stats.remote_charge && remote_charge_already_out(local_entity))
+                && splash_fire_is_safe(local_entity, weapon_stats, fire_target_pos);
+            if (!engage_now && weapon_stats.splash_radius > 0.0f) {
+                // The release guard must not carry a held trigger into a splash shot that is not cleared.
+                bot_state().auto_fire_release_guard_timer.invalidate();
+            }
             wants_attack = can_fire_now && (is_semi_auto
                 ? decide_fire(
                     active_skill_factor,
-                    has_aim_solution && enemy_has_los,
+                    engage_now,
                     dist_sq,
-                    weapon_range
+                    weapon_ranges(weapon_type).effective_range
                 )
-                : should_hold_automatic_fire(automatic_engage_now));
+                : should_hold_automatic_fire(engage_now));
         }
 
         wants_attack = apply_explosive_pre_fire_delay(
@@ -1979,8 +2674,9 @@ void bot_process_combat(
     if (fired_this_frame && attack_weapon_type == remote_charge_weapon_type) {
         bot_state().firing.remote_charge_pending_detonation = true;
         bot_state().firing.remote_charge_pending_detonation_timer.set(
-            kRemoteChargeDetonationWindowMs
+            crater_goal_active ? kRemoteChargeCraterWindowMs : kRemoteChargeDetonationWindowMs
         );
+        bot_state().firing.remote_charge_settle_timer.set(kRemoteChargeThrowSettleMs);
     }
     else if (fired_this_frame && rf::weapon_is_detonator(attack_weapon_type)) {
         bot_state().firing.remote_charge_pending_detonation = false;

@@ -14,6 +14,10 @@ bool bot_has_unobstructed_level_los(
     const rf::Object* ignore1,
     const rf::Object* ignore2);
 
+// Whether a bot at from can walk straight to to: nothing solid (glass and fences included) at step height, and floor
+// along the way with no ledge to climb or drop off.
+bool bot_can_walk_direct(const rf::Vector3& from, const rf::Vector3& to);
+
 int bot_find_closest_waypoint_with_fallback(const rf::Vector3& pos);
 
 int bot_find_closest_waypoint_with_los_fallback(const rf::Entity& entity);

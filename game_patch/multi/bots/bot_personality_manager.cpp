@@ -159,7 +159,8 @@ bool bot_personality_manager_should_replenish_state(const rf::Entity& local_enti
         0.98f
     );
     const float maintenance_norm = std::clamp((maintenance_factor - 0.35f) / 2.40f, 0.0f, 1.0f);
-    const float armor_topup_threshold = std::lerp(0.40f, 0.72f, maintenance_norm);
+    // A top-up is an errand, not a need; it only pulls a healthy bot away when armor is low.
+    const float armor_topup_threshold = std::lerp(0.25f, 0.45f, maintenance_norm);
     const bool wants_armor_topup = health_ratio > 0.70f && armor_ratio < armor_topup_threshold;
     return health_ratio < adjusted_health_threshold
         || armor_ratio < adjusted_armor_threshold

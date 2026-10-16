@@ -6,10 +6,15 @@
 #include "../../rf/player/player.h"
 #include "../../rf/weapon.h"
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <iterator>
 
 namespace
 {
+// The very long band has no far edge in play; it gets one for range sampling.
+constexpr std::array<float, 5> kCombatDistanceBandFarLimits{2.5f, 10.0f, 28.0f, 55.0f, 120.0f};
+
 bool weapon_has_readiness_ammo(const rf::Entity& entity, const int weapon_type)
 {
     if (weapon_type < 0
@@ -43,6 +48,30 @@ float bot_decision_get_entity_armor_ratio(const rf::Entity& entity)
     return std::clamp(entity.armor / kBotNominalMaxArmor, 0.0f, 1.0f);
 }
 
+float bot_decision_get_weapon_ammo_fill_ratio(const rf::Entity& entity, const int weapon_type)
+{
+    if (weapon_type < 0 || weapon_type >= rf::num_weapon_types) {
+        return 1.0f;
+    }
+
+    const rf::WeaponInfo& weapon_info = rf::weapon_types[weapon_type];
+    const int ammo_type = weapon_info.ammo_type;
+    int reserve_ammo = 0;
+    if (ammo_type >= 0 && ammo_type < static_cast<int>(std::size(entity.ai.ammo))) {
+        reserve_ammo = std::max(entity.ai.ammo[ammo_type], 0);
+    }
+    const int clip_ammo = std::max(entity.ai.clip_ammo[weapon_type], 0);
+    const int current_ammo = reserve_ammo + clip_ammo;
+    int max_ammo = std::max(weapon_info.max_ammo_multi, weapon_info.max_ammo);
+    if (max_ammo <= 0) {
+        max_ammo = weapon_info.max_ammo_single;
+    }
+    if (max_ammo <= 0) {
+        return 1.0f;
+    }
+    return std::clamp(static_cast<float>(current_ammo) / static_cast<float>(max_ammo), 0.0f, 1.0f);
+}
+
 float bot_decision_apply_aggression_to_threshold(
     const float threshold,
     const float aggression_bias)
@@ -53,19 +82,17 @@ float bot_decision_apply_aggression_to_threshold(
 
 BotWeaponRangeBand bot_decision_classify_combat_distance_band(const float distance)
 {
-    if (distance <= 2.5f) {
-        return BotWeaponRangeBand::melee;
-    }
-    if (distance <= 10.0f) {
-        return BotWeaponRangeBand::close;
-    }
-    if (distance <= 28.0f) {
-        return BotWeaponRangeBand::medium;
-    }
-    if (distance <= 55.0f) {
-        return BotWeaponRangeBand::long_range;
+    for (size_t band = 0; band + 1 < kCombatDistanceBandFarLimits.size(); ++band) {
+        if (distance <= kCombatDistanceBandFarLimits[band]) {
+            return static_cast<BotWeaponRangeBand>(band);
+        }
     }
     return BotWeaponRangeBand::very_long;
+}
+
+float bot_decision_combat_distance_band_far_limit(const BotWeaponRangeBand band)
+{
+    return kCombatDistanceBandFarLimits[std::min(static_cast<size_t>(band), kCombatDistanceBandFarLimits.size() - 1)];
 }
 
 float bot_decision_compute_weapon_readiness_score_for_type(

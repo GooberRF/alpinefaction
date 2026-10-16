@@ -83,6 +83,20 @@ void server_bot_apply_config(BotContext& ctx, const ServerBotConfig& config)
         &config.personality_overrides, &config.skill_overrides);
 }
 
+// The fire validator refuses an empty clip but does not check a reload in progress, so a server bot waits out its
+// reload and starts one for a spent clip itself.
+bool server_bot_clip_ready(rf::Player& pp, rf::Entity& ep, const int weapon_type)
+{
+    if (rf::entity_is_reloading(&ep)) {
+        return false;
+    }
+    if (rf::weapon_uses_clip(weapon_type) && ep.ai.clip_ammo[weapon_type] <= 0) {
+        multi_reload_weapon_server_side(&pp, weapon_type);
+        return false;
+    }
+    return true;
+}
+
 void server_bot_apply_fire(const BotCombatFiringState& firing, rf::Player& pp, rf::Entity& ep, const bool thought)
 {
     const int weapon_type = ep.ai.current_primary_weapon;
@@ -110,7 +124,9 @@ void server_bot_apply_fire(const BotCombatFiringState& firing, rf::Player& pp, r
     }
 
     const bool trigger = rf::weapon_is_semi_automatic(weapon_type) ? just_pressed : down;
-    if (!trigger || (ep.ai.next_fire_primary.valid() && !ep.ai.next_fire_primary.elapsed())) {
+    if (!trigger
+        || (ep.ai.next_fire_primary.valid() && !ep.ai.next_fire_primary.elapsed())
+        || !server_bot_clip_ready(pp, ep, weapon_type)) {
         return;
     }
     rf::Vector3 pos{};
