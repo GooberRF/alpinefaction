@@ -768,8 +768,8 @@ void play_local_hit_sound(bool died) {
         hit_sound_timestamp.invalidate();
     }
 
-    // Each hit within the damage number merge window of the last climbs a step in pitch; a kill tops the streak
-    // and ends it.
+    // Each hit within the damage number merge window of the last climbs a step in pitch; a kill ends the streak and
+    // always plays at its own pitch.
     constexpr float streak_pitch_step = 0.06f;
     constexpr int streak_max_steps = 6;
     static rf::TimestampRealtime streak_timestamp;
@@ -781,7 +781,7 @@ void play_local_hit_sound(bool died) {
     }
 
     const int instance = play_local_sound_2d(get_custom_sound_id(died ? 3 : 2), 0, 1.0f);
-    if (g_alpine_game_config.hit_sound_streak_pitch && streak > 0) {
+    if (g_alpine_game_config.hit_sound_streak_pitch && !died && streak > 0) {
         snd_instance_set_pitch(instance, 1.0f + streak_pitch_step * streak);
     }
     last_hit_sound_was_died = died;
