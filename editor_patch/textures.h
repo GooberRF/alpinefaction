@@ -121,6 +121,13 @@ inline void texture_browser_refresh(TextureBrowserPanel* panel)
     AddrCaller{0x0046fd10}.this_call(panel);
 }
 
+// FUN_0046fc50: sizes the thumbnail grid to its view and draws it. With reset it sets the scroll range again and goes
+// to the top, else it scrolls by a WM_VSCROLL code (SB_THUMBPOSITION to scroll_pos).
+inline void texture_browser_relayout(TextureBrowserPanel* panel, bool reset, int scroll_code, int scroll_pos)
+{
+    AddrCaller{0x0046fc50}.this_call(panel, static_cast<int>(reset), scroll_code, scroll_pos);
+}
+
 // A materials.tbl material, as the browser's Material filter lists them
 struct TextureBrowserMaterial {
     VString name;

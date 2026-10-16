@@ -259,9 +259,121 @@ CodeInjection texture_browser_min_columns_injection{
     },
 };
 
+// The Texture Browser resizes: its view grows with the window and the grid is laid out again for it, the favorites
+// strip and the buttons keep to the bottom. Its size is kept for the session, and the mouse wheel scrolls it.
+namespace
+{
+struct TextureBrowserLayout
+{
+    SIZE min_size{};
+    SIZE client{};
+    SIZE applied{};
+    int wheel = 0;
+    RECT view{};
+    std::vector<std::pair<int, POINT>> to_bottom;
+};
+TextureBrowserLayout g_texture_browser_layout;
+SIZE g_texture_browser_size{};
+
+// the favorites strip, its Change buttons, OK and Cancel
+constexpr int texture_browser_bottom_ids[] = {1506, 1507, 1508, 1509, 1510, 1511, 1512, 1513, 1514, IDOK, IDCANCEL};
+
+// As if the scroll bar were hidden: the grid's layout shows and hides it, which must not resize the view again
+SIZE texture_browser_client_size(HWND hdlg)
+{
+    RECT r{};
+    GetClientRect(hdlg, &r);
+    const bool scroll_bar = (GetWindowLongA(hdlg, GWL_STYLE) & WS_VSCROLL) != 0;
+    return {r.right + (scroll_bar ? GetSystemMetrics(SM_CXVSCROLL) : 0), r.bottom};
+}
+
+RECT texture_browser_child_rect(HWND hdlg, int id)
+{
+    RECT r{};
+    if (const HWND child = GetDlgItem(hdlg, id)) {
+        GetWindowRect(child, &r);
+        MapWindowPoints(nullptr, hdlg, reinterpret_cast<POINT*>(&r), 2);
+    }
+    return r;
+}
+
+void texture_browser_layout_init(HWND hdlg)
+{
+    TextureBrowserLayout& layout = g_texture_browser_layout;
+    RECT window{};
+    GetWindowRect(hdlg, &window);
+    layout.min_size = {window.right - window.left, window.bottom - window.top};
+    layout.client = texture_browser_client_size(hdlg);
+    layout.applied = layout.client;
+    layout.wheel = 0;
+    layout.view = texture_browser_child_rect(hdlg, IDC_TEXTURE_BROWSER_VIEW);
+    layout.to_bottom.clear();
+    for (int id : texture_browser_bottom_ids) {
+        const RECT r = texture_browser_child_rect(hdlg, id);
+        layout.to_bottom.emplace_back(id, POINT{r.left, r.top});
+    }
+}
+
+void texture_browser_layout_apply(HWND hdlg, SIZE size)
+{
+    const TextureBrowserLayout& layout = g_texture_browser_layout;
+    const int dx = std::max(0, static_cast<int>(size.cx - layout.client.cx));
+    const int dy = std::max(0, static_cast<int>(size.cy - layout.client.cy));
+    if (const HWND view = GetDlgItem(hdlg, IDC_TEXTURE_BROWSER_VIEW)) {
+        // no bigger than the back buffer it is drawn from
+        const int width = std::min(static_cast<int>(layout.view.right - layout.view.left) + dx, gr_get_max_width());
+        const int height = std::min(static_cast<int>(layout.view.bottom - layout.view.top) + dy, gr_get_max_height());
+        SetWindowPos(view, nullptr, 0, 0, width, height, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+    for (const auto& [id, pos] : layout.to_bottom) {
+        if (const HWND child = GetDlgItem(hdlg, id)) {
+            SetWindowPos(child, nullptr, pos.x, pos.y + dy, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+    }
+    InvalidateRect(hdlg, nullptr, TRUE);
+}
+} // namespace
+
 static LRESULT CALLBACK texture_browser_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam, UINT_PTR subclass_id,
                                              DWORD_PTR panel)
 {
+    if (msg == WM_GETMINMAXINFO) {
+        auto* info = reinterpret_cast<MINMAXINFO*>(lparam);
+        info->ptMinTrackSize = {g_texture_browser_layout.min_size.cx, g_texture_browser_layout.min_size.cy};
+        return 0;
+    }
+    if (msg == WM_MOUSEWHEEL) {
+        // a step per notch, as the scroll bar's arrows go
+        int& wheel = g_texture_browser_layout.wheel;
+        wheel += GET_WHEEL_DELTA_WPARAM(wparam);
+        for (; wheel >= WHEEL_DELTA; wheel -= WHEEL_DELTA) {
+            SendMessageA(hwnd, WM_VSCROLL, SB_LINEUP, 0);
+        }
+        for (; wheel <= -WHEEL_DELTA; wheel += WHEEL_DELTA) {
+            SendMessageA(hwnd, WM_VSCROLL, SB_LINEDOWN, 0);
+        }
+        return 0;
+    }
+    if (msg == WM_SIZE && wparam != SIZE_MINIMIZED && g_texture_browser_layout.client.cx > 0) {
+        const SIZE size = texture_browser_client_size(hwnd);
+        SIZE& applied = g_texture_browser_layout.applied;
+        if (size.cx != applied.cx || size.cy != applied.cy) {
+            applied = size;
+            texture_browser_layout_apply(hwnd, size);
+            // the scroll range follows the rows, and the view keeps its scroll position
+            auto* browser = reinterpret_cast<TextureBrowserPanel*>(panel);
+            const int scrolled = GetScrollPos(hwnd, SB_VERT);
+            texture_browser_relayout(browser, true, 0, 0);
+            if (scrolled > 0) {
+                texture_browser_relayout(browser, false, SB_THUMBPOSITION, scrolled);
+            }
+        }
+        if (wparam == SIZE_RESTORED) {
+            RECT window{};
+            GetWindowRect(hwnd, &window);
+            g_texture_browser_size = {window.right - window.left, window.bottom - window.top};
+        }
+    }
     if (msg == WM_COMMAND && LOWORD(wparam) == IDC_TEXTURE_BROWSER_FORMAT && HIWORD(wparam) == CBN_SELCHANGE) {
         const int sel = static_cast<int>(SendMessageA(reinterpret_cast<HWND>(lparam), CB_GETCURSEL, 0, 0));
         g_texture_browser_format = sel > 0 ? sel : 0;
@@ -301,7 +413,22 @@ static BOOL __fastcall texture_browser_init_dialog_hooked(TextureBrowserPanel* p
     // The Name handler copies the text unbounded into its buffer
     SendDlgItemMessageA(hdlg, IDC_TEXTURE_BROWSER_NAME, EM_LIMITTEXT, sizeof(texture_browser_filter) - 1, 0);
 
+    texture_browser_layout_init(hdlg);
     SetWindowSubclass(hdlg, texture_browser_proc, 1, reinterpret_cast<DWORD_PTR>(panel));
+    if (g_texture_browser_size.cx > 0) {
+        // a size kept from a bigger monitor still fits this one
+        SIZE size = g_texture_browser_size;
+        const HWND owner = GetWindow(hdlg, GW_OWNER);
+        MONITORINFO info{};
+        info.cbSize = sizeof(info);
+        if (GetMonitorInfoA(MonitorFromWindow(owner ? owner : hdlg, MONITOR_DEFAULTTONEAREST), &info)) {
+            const SIZE& min_size = g_texture_browser_layout.min_size;
+            size.cx = std::max(min_size.cx, std::min(size.cx, info.rcWork.right - info.rcWork.left));
+            size.cy = std::max(min_size.cy, std::min(size.cy, info.rcWork.bottom - info.rcWork.top));
+        }
+        SetWindowPos(hdlg, nullptr, 0, 0, size.cx, size.cy, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+        alpine_center_dialog_on_owner(hdlg);
+    }
     return result;
 }
 

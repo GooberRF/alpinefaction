@@ -243,11 +243,23 @@ CodeInjection gr_d3d_render_geometry_face_patch_2{
     },
 };
 
+static BOOL CALLBACK grow_to_monitor(HMONITOR, HDC, LPRECT rect, LPARAM size)
+{
+    auto& s = *reinterpret_cast<SIZE*>(size);
+    s.cx = std::max(s.cx, rect->right - rect->left);
+    s.cy = std::max(s.cy, rect->bottom - rect->top);
+    return TRUE;
+}
+
+// The back buffer the views draw into is as big as the largest monitor, so a view (or the Texture Browser) on any of
+// them can use all of it
 CallHook<void(int, int, int, int, int, HWND, float, bool, int, D3DFORMAT)> gr_init_hook{
     0x00482B78,
     [](int max_w, int max_h, int bit_depth, int mode, int window_mode, HWND hwnd, float far_zvalue, bool sync_blit, int video_card, D3DFORMAT backbuffer_format) {
-        max_w = GetSystemMetrics(SM_CXSCREEN);
-        max_h = GetSystemMetrics(SM_CYSCREEN);
+        SIZE largest{GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)};
+        EnumDisplayMonitors(nullptr, nullptr, grow_to_monitor, reinterpret_cast<LPARAM>(&largest));
+        max_w = largest.cx;
+        max_h = largest.cy;
         gr_init_hook.call_target(max_w, max_h, bit_depth, mode, window_mode, hwnd, far_zvalue, sync_blit, video_card, backbuffer_format);
     },
 };

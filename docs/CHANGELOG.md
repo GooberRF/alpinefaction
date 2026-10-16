@@ -118,7 +118,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Make texture paste in the level editor also apply the copied face's texture (toggleable with `Paste texture`), and align the copied texture onto faces with a different number of corners instead of skipping them
 - Add undo for texture paste and `Face Properties` in the level editor
 - Add `Select All`, `Fit UVs` and `Auto Unwrap`, and a `Color each face` option to the level editor `UV Unwrap` window
-- Add 256 x 256 and 512 x 512 thumbnail sizes and a `Format` filter to the level editor texture browser
+- Add 256 x 256 and 512 x 512 thumbnail sizes and a `Format` filter to the level editor texture browser, make it resizable and scroll it with the mouse wheel
 - Draw the sky in the level editor's `Render Everything` mode when `Draw Sky` is on, as the portal render modes do
 - Improve particle handling and performance:
   - Stop simulating level-placed decorative particle emitters while they are out of view (`cl_particlecull`)
@@ -258,6 +258,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Fix players keeping a phantom copy of an item created while they were loading the level
 - Fix level editor viewports only showing texture coordinate changes immediately in `Render Everything` mode
 - Fix undo and redo of texture changes in the level editor not updating the level geometry until it is rebuilt
+- Fix level editor viewports not using all of a monitor larger than the primary one
 - Fix rotating texture coordinates in the level editor `UV Unwrap` window skewing non-square textures, toggleable with `Preserve aspect ratio when rotating`
 - Fix particle emitters in the level editor moving, expiring and spawning faster than in game
 - Fix the `Material` filter in the level editor texture browser not working properly
