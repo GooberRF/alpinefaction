@@ -7,10 +7,12 @@
 #include "bot_utils.h"
 #include "bot_weapon_profiles.h"
 #include "../gametype.h"
+#include "../multi.h"
 #include "../../main/main.h"
 #include "../../misc/waypoints.h"
 #include "../../rf/collide.h"
 #include "../../rf/item.h"
+#include "../../rf/misc.h"
 #include "../../rf/multi.h"
 #include "../../rf/entity.h"
 #include "../../rf/object.h"
@@ -341,8 +343,19 @@ constexpr float kUnknownWeaponRange = 80.0f;
 constexpr float kStatsReferenceDistance = 15.0f;
 constexpr float kRemoteChargeDetonationDelaySeconds = 2.5f;
 constexpr float kRemoteChargeMinThrowScale = 0.6f;
-// Self damage falls off linearly to the blast edge; a shot may cost the shooter at most this much.
+// Self damage falls off linearly to the blast edge; the bot prefers distances where a shot costs it at most this much,
+// and a crater shot may not cost more.
 constexpr float kSplashSelfDamageBudget = 20.0f;
+// Effective health a combat splash shot or detonation must leave the bot.
+constexpr float kSplashSelfDamageMargin = 25.0f;
+// A level hit this close to the aim point is the target's blast.
+constexpr float kSplashTargetBurstSlack = 2.0f;
+// Level geometry closer than this to a blast is what the blast lies on, not cover from it.
+constexpr float kSplashCoverSlack = 1.0f;
+// A target running at the bot faster than this share of the bot's run speed cannot be backed away from.
+constexpr float kSplashTradeOutpaceScale = 1.2f;
+// A bot with no way out trades only with the target this close; farther out it holds fire.
+constexpr float kSplashTradeCorneredDistance = 5.0f;
 // The stream burns targets through its flame particles; the weapons.tbl damage and gravity describe the alt canister.
 constexpr float kFlameStreamDamagePerSecond = 120.0f;
 constexpr float kFlameStreamReach = 9.0f;
@@ -362,7 +375,7 @@ constexpr float kCraterStandoffScale = 1.5f;
 constexpr float kLeadProjectileMaxSpeed = 100.0f;
 constexpr float kFloorAimProbeDepth = 3.0f;
 constexpr float kFloorAimHeight = 0.1f;
-constexpr int kSplashClearanceTraceFlags = rf::CF_ANY_HIT | rf::CF_SKIP_SHOOT_THRU | rf::CF_PROCESS_INVISIBLE_FACES;
+constexpr int kSplashClearanceTraceFlags = rf::CF_SKIP_SHOOT_THRU | rf::CF_PROCESS_INVISIBLE_FACES;
 // Weapon choice.
 constexpr float kPreferredWeaponRankBonus = 0.4f;
 constexpr float kAmmoFillUtilityExponent = 0.25f;
@@ -603,7 +616,7 @@ bool switch_to_weapon(
         || weapon_type == current_weapon) {
         return false;
     }
-    if (bot_weapon_is_switch_blocked(weapon_type)) {
+    if (bot_weapon_is_switch_blocked(weapon_type) || multi_is_weapon_switch_locked(current_weapon, weapon_type)) {
         return false;
     }
 
@@ -941,43 +954,9 @@ bool owns_remote_charge_detonator(const rf::Entity& entity)
             || (charge >= 0 && charge < rf::num_weapon_types && entity.ai.has_weapon[charge]));
 }
 
-bool weapon_uses_projectile_release_hold(const int weapon_type)
+bool weapon_uses_projectile_release_hold(const int weapon_type, const bool alt_fire)
 {
-    return weapon_type == get_grenade_weapon_type()
-        || weapon_type == get_remote_charge_weapon_type();
-}
-
-int get_weapon_projectile_release_hold_ms(const int weapon_type, const bool use_alt_fire)
-{
-    if (weapon_type < 0 || weapon_type >= rf::num_weapon_types) {
-        return 0;
-    }
-
-    const rf::WeaponInfo& info = rf::weapon_types[weapon_type];
-    const int mode_index = rf::is_multi ? 1 : 0;
-    const int fallback_index = mode_index == 0 ? 1 : 0;
-
-    auto pick_delay_seconds = [&](const bool alt_fire) {
-        float delay = alt_fire
-            ? info.alt_create_weapon_delay_seconds[mode_index]
-            : info.create_weapon_delay_seconds[mode_index];
-        if (delay <= 0.0f) {
-            delay = alt_fire
-                ? info.alt_create_weapon_delay_seconds[fallback_index]
-                : info.create_weapon_delay_seconds[fallback_index];
-        }
-        return std::max(delay, 0.0f);
-    };
-
-    float delay_seconds = pick_delay_seconds(use_alt_fire);
-    if (delay_seconds <= 0.0f) {
-        delay_seconds = pick_delay_seconds(false);
-    }
-    if (delay_seconds <= 0.0f) {
-        return 0;
-    }
-
-    return static_cast<int>(std::lround(delay_seconds * 1000.0f));
+    return multi_weapon_fire_is_thrown(weapon_type, alt_fire);
 }
 
 bool decide_fire(
@@ -1556,20 +1535,63 @@ bool player_entity_within_radius(
     return nearest_player_entity_distance(local_entity, point, radius, teammates, require_los) <= radius;
 }
 
-// Splash weapons fire only with the shooter clear of the blast and no teammate in it. The shot must also clear the
-// blast distance from the muzzle along the current view (along the arc for a throw): the LOS test starts at the eye and
-// skips glass, and the bot may still be turning.
-bool splash_fire_is_safe(const rf::Entity& local_entity, const BotWeaponStats& stats, const rf::Vector3& impact_pos)
+// What the entity takes from a blast at the point: the engine's linear falloff to the blast edge, only with a clear
+// line from the blast to the entity (area damage 0x00488DC0 -> 0x00489010).
+float splash_damage_to_entity(
+    const rf::Entity& entity,
+    const float damage,
+    const float radius,
+    const rf::Vector3& blast_pos,
+    const bool check_los = true)
 {
-    if (stats.splash_radius <= 0.0f || stats.remote_charge) {
-        return true;
+    const float distance = std::sqrt(rf::vec_dist_squared(&entity.pos, &blast_pos));
+    if (damage <= 0.0f || radius <= 0.0f || distance >= radius) {
+        return 0.0f;
     }
-    const float safe_sq = stats.min_safe_distance * stats.min_safe_distance;
-    if (rf::vec_dist_squared(&local_entity.pos, &impact_pos) < safe_sq
-        || player_entity_within_radius(local_entity, impact_pos, stats.splash_radius, true)
-        || player_entity_within_radius(local_entity, local_entity.pos, stats.min_safe_distance, false, true)) {
-        return false;
+    if (check_los) {
+        rf::Vector3 p0 = entity.p_data.pos;
+        rf::Vector3 p1 = blast_pos;
+        rf::PCollisionOut collision{};
+        collision.obj_handle = -1;
+        if (rf::collide_linesegment_world(p0, p1, rf::CF_SKIP_SHOOT_THRU, &collision)
+            && rf::vec_dist_squared(&collision.hit_point, &blast_pos) > kSplashCoverSlack * kSplashCoverSlack) {
+            return 0.0f;
+        }
     }
+    return damage * (1.0f - distance / radius);
+}
+
+// The Damage Amplifier scales the area damage of its carrier's blasts by $Multi Damage Modifier, the carrier's own
+// share included (0x00489010; Bagman leaves it out, bagman.cpp).
+float splash_self_damage_scale(const rf::Entity& entity)
+{
+    return (entity.entity_flags2 & rf::EF2_POWERUP_DAMAGE_AMP) && !gt_is_bagman_any()
+        ? rf::g_multi_damage_modifier
+        : 1.0f;
+}
+
+// Damage the entity can take before it dies: on a multiplayer server armor absorbs two points each (0x0041A350).
+float entity_effective_health(const rf::Entity& entity)
+{
+    return std::max(entity.life, 0.0f) + 2.0f * std::max(entity.armor, 0.0f);
+}
+
+// A fight is worth some of the bot's own health, never its life; a crater is worth only the small budget.
+bool splash_self_damage_acceptable(const rf::Entity& entity, const float self_damage, const bool combat)
+{
+    return combat
+        ? self_damage < entity_effective_health(entity) - kSplashSelfDamageMargin
+        : self_damage <= kSplashSelfDamageBudget;
+}
+
+// Where the shot meets level geometry within the blast radius of the muzzle, up to the aim point, along the current
+// view (along the arc for a throw): the LOS test starts at the eye and skips glass, and the bot may still be turning.
+bool splash_level_burst(
+    const rf::Entity& local_entity,
+    const BotWeaponStats& stats,
+    const rf::Vector3& impact_pos,
+    rf::Vector3& out_burst_pos)
+{
     rf::Vector3 p0{};
     rf::Matrix3 muzzle_orient{};
     rf::entity_get_weapon_fire_pos_orient(
@@ -1583,25 +1605,127 @@ bool splash_fire_is_safe(const rf::Entity& local_entity, const BotWeaponStats& s
         local_entity.control_data.phb.y,
         local_entity.control_data.eye_phb.x);
     rf::GCollisionOutput collision{};
+    bool hit = false;
     const float horizontal_speed = stats.speed * std::sqrt(dir.x * dir.x + dir.z * dir.z);
     if (!stats.thrown || horizontal_speed < 1.0f || rf::gravity <= 0.0f) {
-        rf::Vector3 p1 = p0 + dir * stats.min_safe_distance;
-        return !rf::collide_linesegment_level_solid(p0, p1, kSplashClearanceTraceFlags, &collision);
+        const float reach = std::min(
+            stats.splash_radius,
+            std::sqrt(rf::vec_dist_squared(&p0, &impact_pos)) + kSplashTargetBurstSlack);
+        rf::Vector3 p1 = p0 + dir * reach;
+        hit = rf::collide_linesegment_level_solid(p0, p1, kSplashClearanceTraceFlags, &collision);
     }
-    const float reach = std::min(stats.min_safe_distance, std::sqrt(bot_horizontal_dist_sq(p0, impact_pos)));
-    const float end_time = reach / horizontal_speed;
-    rf::Vector3 chord_start = p0;
-    for (int chord = 1; chord <= kThrownClearanceChords; ++chord) {
-        const float time = end_time * static_cast<float>(chord) / static_cast<float>(kThrownClearanceChords);
-        rf::Vector3 chord_end = p0 + dir * (stats.speed * time);
-        chord_end.y -= 0.5f * rf::gravity * time * time;
-        rf::Vector3 trace_start = chord_start;
-        if (rf::collide_linesegment_level_solid(trace_start, chord_end, kSplashClearanceTraceFlags, &collision)) {
+    else {
+        const float reach = std::min(stats.splash_radius, std::sqrt(bot_horizontal_dist_sq(p0, impact_pos)));
+        const float end_time = reach / horizontal_speed;
+        rf::Vector3 chord_start = p0;
+        for (int chord = 1; chord <= kThrownClearanceChords && !hit; ++chord) {
+            const float time = end_time * static_cast<float>(chord) / static_cast<float>(kThrownClearanceChords);
+            rf::Vector3 chord_end = p0 + dir * (stats.speed * time);
+            chord_end.y -= 0.5f * rf::gravity * time * time;
+            rf::Vector3 trace_start = chord_start;
+            hit = rf::collide_linesegment_level_solid(trace_start, chord_end, kSplashClearanceTraceFlags, &collision);
+            chord_start = chord_end;
+        }
+    }
+    if (hit) {
+        out_burst_pos = collision.hit_point;
+    }
+    return hit;
+}
+
+bool weapon_is_combat_candidate(rf::Player& player, rf::Entity& entity, int weapon_type);
+
+// A player whose only weapon is a splash weapon (GunGame) backs off to fire safely (bot_movement.cpp) and trades its
+// life for a kill it is sure of only when it cannot open the distance: no way back or aside is clear with the target
+// close, or the target closes in faster than the bot can back away. A throw's arc and flight time leave the kill
+// unsure.
+bool splash_trade_allowed(
+    rf::Player& local_player,
+    rf::Entity& local_entity,
+    const BotWeaponStats& stats,
+    const rf::Entity& target)
+{
+    if (stats.thrown) {
+        return false;
+    }
+    rf::Vector3 away = local_entity.pos - target.pos;
+    away.y = 0.0f;
+    const float distance = away.len();
+    away.normalize_safe();
+    const rf::Vector3 target_vel{target.p_data.vel.x, 0.0f, target.p_data.vel.z};
+    // Running at the bot, not thrown about by a blast or a jump.
+    const bool outpaced = rf::entity_on_ground(const_cast<rf::Entity*>(&target))
+        && target_vel.dot_prod(away) > local_entity.max_vel * kSplashTradeOutpaceScale;
+    const rf::Timestamp& blocked = bot_state().splash_retreat_blocked_timer;
+    const bool cornered = blocked.valid() && !blocked.elapsed() && distance <= kSplashTradeCorneredDistance;
+    if (!cornered && !outpaced) {
+        return false;
+    }
+    const float target_damage =
+        stats.shot_damage * splash_self_damage_scale(local_entity) * (1.0f - kTargetHitRadius / stats.splash_radius);
+    if (target_damage < entity_effective_health(target)) {
+        return false;
+    }
+    for (int weapon_type = 0; weapon_type < rf::num_weapon_types; ++weapon_type) {
+        if (weapon_type != stats.weapon_type && weapon_is_combat_candidate(local_player, local_entity, weapon_type)) {
             return false;
         }
-        chord_start = chord_end;
     }
     return true;
+}
+
+// A splash shot needs no teammate in the blast and a self damage the bot accepts (or a trade). The blast is the first
+// level geometry on the way, else the target's surface, nearer still when the gap closes during the flight; an enemy in
+// sight closer than the target may take the shot first. The bot sees the target, so no cover is assumed.
+bool splash_fire_is_safe(
+    rf::Player& local_player,
+    rf::Entity& local_entity,
+    const BotWeaponStats& stats,
+    const rf::Vector3& impact_pos,
+    const rf::Entity* target)
+{
+    if (stats.splash_radius <= 0.0f || stats.remote_charge) {
+        return true;
+    }
+    const float radius = stats.splash_radius;
+    if (player_entity_within_radius(local_entity, impact_pos, radius, true)) {
+        return false;
+    }
+    const float damage = stats.shot_damage * splash_self_damage_scale(local_entity);
+    float self_damage = 0.0f;
+    bool blast_at_target = target != nullptr;
+    rf::Vector3 burst_pos{};
+    if (splash_level_burst(local_entity, stats, impact_pos, burst_pos)) {
+        self_damage = splash_damage_to_entity(local_entity, damage, radius, burst_pos, false);
+        blast_at_target = blast_at_target
+            && rf::vec_dist_squared(&burst_pos, &impact_pos) <= kSplashTargetBurstSlack * kSplashTargetBurstSlack;
+    }
+    else if (!target) {
+        self_damage = splash_damage_to_entity(local_entity, damage, radius, impact_pos, false);
+    }
+    const float target_distance = target
+        ? std::sqrt(rf::vec_dist_squared(&local_entity.pos, &target->pos))
+        : std::numeric_limits<float>::infinity();
+    if (target) {
+        // A hit bursts on the target's surface; the gap shrinks while the shot flies when the bot and the target close
+        // in.
+        const rf::Vector3 to_target = target->pos - local_entity.pos;
+        const float closing_speed = (local_entity.p_data.vel - target->p_data.vel).dot_prod(to_target)
+            / std::max(target_distance, 0.01f);
+        const float flight_time = stats.speed > 1.0f
+            ? target_distance / stats.speed * (stats.thrown ? kThrownFlightTimeScale : 1.0f)
+            : 0.0f;
+        const float closed_distance =
+            std::max(target_distance - target->radius - std::max(closing_speed, 0.0f) * flight_time, 0.0f);
+        self_damage = std::max(self_damage, damage * (1.0f - std::min(closed_distance / radius, 1.0f)));
+    }
+    const float nearest_enemy = nearest_player_entity_distance(local_entity, local_entity.pos, radius, false, true);
+    if (nearest_enemy < target_distance) {
+        self_damage = std::max(self_damage, damage * (1.0f - nearest_enemy / radius));
+        blast_at_target = false;
+    }
+    return splash_self_damage_acceptable(local_entity, self_damage, target != nullptr)
+        || (blast_at_target && splash_trade_allowed(local_player, local_entity, stats, *target));
 }
 
 // The charge leaves the hand only after the throw's create delay.
@@ -1613,60 +1737,88 @@ bool remote_charge_throw_in_progress()
         && !firing.explosive_release_hold_timer.elapsed();
 }
 
+constexpr int kMaxTrackedRemoteCharges = 8;
+
 struct LiveRemoteCharges
 {
-    std::array<const rf::Weapon*, 8> charges{};
+    std::array<const rf::Weapon*, kMaxTrackedRemoteCharges> charges{};
     int count = 0;
+    int total = 0; // also the charges past the array
 };
 
 LiveRemoteCharges find_live_remote_charges(const rf::Entity& local_entity);
 
-// One charge at a time: another is thrown only once the last one is set off or gone.
-bool remote_charge_already_out(const rf::Entity& local_entity)
+bool remote_charge_settling()
 {
-    return bot_state().firing.remote_charge_pending_detonation || find_live_remote_charges(local_entity).count > 0;
+    const rf::Timestamp& settle = bot_state().firing.remote_charge_settle_timer;
+    return remote_charge_throw_in_progress() || (settle.valid() && !settle.elapsed());
+}
+
+bool remote_charges_given_up()
+{
+    const rf::Timestamp& give_up = bot_state().firing.remote_charge_give_up_timer;
+    return give_up.valid() && give_up.elapsed();
+}
+
+// One charge at a time: another is thrown only once the last one is set off or gone (or given up). Reads the count of
+// this think's scan (bot_process_combat).
+bool remote_charge_already_out()
+{
+    // More charges than a detonation can judge are never added to, given up or not.
+    const int live = bot_state().firing.remote_charges_live;
+    return bot_state().firing.remote_charge_pending_detonation
+        || live > kMaxTrackedRemoteCharges
+        || (!remote_charges_given_up() && live > 0);
 }
 
 LiveRemoteCharges find_live_remote_charges(const rf::Entity& local_entity)
 {
     LiveRemoteCharges live{};
-    for (rf::Object* obj = rf::object_list.next_obj;
-         obj != &rf::object_list && live.count < static_cast<int>(live.charges.size());
-         obj = obj->next_obj) {
+    for (rf::Object* obj = rf::object_list.next_obj; obj != &rf::object_list; obj = obj->next_obj) {
         if (obj->type != rf::OT_WEAPON || obj->parent_handle != local_entity.handle) {
             continue;
         }
         const rf::Weapon* const weapon = static_cast<const rf::Weapon*>(obj);
         if (weapon->info && (weapon->info->flags & rf::WTF_REMOTE_CHARGE)) {
-            live.charges[live.count++] = weapon;
+            if (live.count < static_cast<int>(live.charges.size())) {
+                live.charges[live.count++] = weapon;
+            }
+            ++live.total;
         }
     }
     return live;
 }
 
-// Charges go off once the bot stands clear and no teammate is in a blast: at once for a crater, in combat when an
-// enemy is in a blast or the detonation window is over.
+// Charges go off once the bot accepts the damage of all their blasts and no teammate is in one: at once for a crater,
+// in combat when an enemy is in a blast, every enemy is walking away from them, or the detonation window is over.
 bool should_detonate_remote_charges(
     const rf::Entity& local_entity,
     const LiveRemoteCharges& live,
-    const bool crater_goal)
+    const bool crater_goal,
+    const bool enemies_leaving)
 {
-    if (live.count == 0) {
+    // Charges past the tracked ones cannot be judged.
+    if (live.count == 0 || live.total > live.count) {
         return false;
     }
     bool enemy_in_blast = false;
+    float self_damage = 0.0f;
+    const float damage_scale = splash_self_damage_scale(local_entity);
     for (int i = 0; i < live.count; ++i) {
         const rf::Vector3& charge_pos = live.charges[i]->pos;
         const float radius = live.charges[i]->info->damage_radius;
-        const float safe_distance = splash_self_safe_distance(radius, live.charges[i]->info->damage_multi);
-        if (rf::vec_dist_squared(&local_entity.pos, &charge_pos) < safe_distance * safe_distance
-            || player_entity_within_radius(local_entity, charge_pos, radius, true)) {
+        if (player_entity_within_radius(local_entity, charge_pos, radius, true)) {
             return false;
         }
+        const float damage = live.charges[i]->info->damage_multi * damage_scale;
+        self_damage += splash_damage_to_entity(local_entity, damage, radius, charge_pos);
         enemy_in_blast = enemy_in_blast || player_entity_within_radius(local_entity, charge_pos, radius, false);
     }
+    if (!splash_self_damage_acceptable(local_entity, self_damage, !crater_goal)) {
+        return false;
+    }
     const rf::Timestamp& window = bot_state().firing.remote_charge_pending_detonation_timer;
-    return crater_goal || enemy_in_blast || (window.valid() && window.elapsed());
+    return crater_goal || enemy_in_blast || enemies_leaving || !window.valid() || window.elapsed();
 }
 
 // Every enemy near the charges (or in sight a little further out) is out of their blasts and moving further away, so
@@ -1708,40 +1860,30 @@ bool enemies_leaving_charges(const rf::Entity& local_entity, const LiveRemoteCha
     return true;
 }
 
-// After a throw the bot holds the detonator until the charge goes off, the window ends without a moment it can set
-// it off, an enemy comes too close or every enemy walks away, or nothing it threw is left in the world.
-void update_remote_charge_state(
-    const rf::Entity& local_entity,
-    const LiveRemoteCharges& live,
-    const bool crater_goal,
-    const rf::Entity* enemy_target,
-    const bool enemy_has_los)
+// The bot sees its charges through: from the throw until nothing it threw is left (a charge from earlier, or one a
+// detonation did not set off, is taken up again). Charges it finds no moment to set off are given up after a while, so
+// the next throw (whose detonation sets them off too) stays possible.
+void update_remote_charge_state(const LiveRemoteCharges& live, const bool crater_goal)
 {
     BotCombatFiringState& firing = bot_state().firing;
-    if (!firing.remote_charge_pending_detonation) {
+    const bool settling = remote_charge_settling();
+    if (live.count == 0 || remote_charges_given_up()) {
+        if (live.count == 0 && !settling) {
+            firing.remote_charge_give_up_timer.invalidate();
+        }
+        if (!settling) {
+            firing.remote_charge_pending_detonation = false;
+            firing.remote_charge_pending_detonation_timer.invalidate();
+        }
         return;
     }
-    const rf::Timestamp& window = firing.remote_charge_pending_detonation_timer;
-    const bool settling = remote_charge_throw_in_progress()
-        || (firing.remote_charge_settle_timer.valid() && !firing.remote_charge_settle_timer.elapsed());
-    const bool window_over = !window.valid() || window.elapsed();
-    const int held_weapon = local_entity.ai.current_primary_weapon;
-    const bool can_detonate_now =
-        rf::weapon_is_detonator(held_weapon) && !rf::entity_is_swimming(const_cast<rf::Entity*>(&local_entity));
-    const float close_distance =
-        bot_weapon_stats(get_remote_charge_weapon_type(), kStatsReferenceDistance).min_safe_distance;
-    const bool enemy_too_close =
-        !crater_goal
-        && enemy_target
-        && enemy_has_los
-        && rf::vec_dist_squared(&local_entity.pos, &enemy_target->pos) < close_distance * close_distance;
-    const bool detonation_due = should_detonate_remote_charges(local_entity, live, crater_goal);
-    const bool enemies_leaving = !crater_goal && !settling && enemies_leaving_charges(local_entity, live);
-    if ((live.count == 0 && !settling)
-        || (window_over && !(detonation_due && can_detonate_now))
-        || (!detonation_due && (enemy_too_close || enemies_leaving))) {
-        firing.remote_charge_pending_detonation = false;
-        firing.remote_charge_pending_detonation_timer.invalidate();
+    if (!firing.remote_charge_pending_detonation) {
+        const int window_ms = crater_goal ? kRemoteChargeCraterWindowMs : kRemoteChargeDetonationWindowMs;
+        firing.remote_charge_pending_detonation = true;
+        firing.remote_charge_pending_detonation_timer.set(window_ms);
+        if (!firing.remote_charge_give_up_timer.valid()) {
+            firing.remote_charge_give_up_timer.set(window_ms + kRemoteChargeGiveUpMs);
+        }
     }
 }
 
@@ -1845,13 +1987,16 @@ float quirk_weapon_weight(
 
 bool weapon_is_combat_candidate(rf::Player& player, rf::Entity& entity, const int weapon_type)
 {
-    if (!weapon_has_usable_ammo(player, entity, weapon_type) || rf::weapon_is_detonator(weapon_type)) {
+    if (!weapon_has_usable_ammo(player, entity, weapon_type)
+        || rf::weapon_is_detonator(weapon_type)
+        || (weapon_type != entity.ai.current_primary_weapon
+            && multi_is_weapon_switch_locked(entity.ai.current_primary_weapon, weapon_type))) {
         return false;
     }
     if (rf::entity_is_swimming(&entity) && !weapon_works_underwater(weapon_type)) {
         return false;
     }
-    return !(weapon_type == get_remote_charge_weapon_type() && remote_charge_already_out(entity));
+    return !(weapon_type == get_remote_charge_weapon_type() && remote_charge_already_out());
 }
 
 // The nearest enemy in sight inside the largest blast distance of the bot's usable splash weapons, shared by every
@@ -1963,6 +2108,16 @@ CombatWeaponChoice bot_select_combat_weapon(
         }
     }
     return best;
+}
+
+bool owns_combat_weapon(rf::Player& player, rf::Entity& entity)
+{
+    for (int weapon_type = 0; weapon_type < rf::num_weapon_types; ++weapon_type) {
+        if (weapon_is_combat_candidate(player, entity, weapon_type)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 // The usable weapon with the best expected damage at any distance, for when none reaches the current one.
@@ -2231,6 +2386,16 @@ bool bot_weapon_profile_supports_range(const BotWeaponProfile& profile, const Bo
     return false;
 }
 
+int bot_weapon_create_delay_ms(const int weapon_type, const bool alt_fire)
+{
+    if (weapon_type < 0 || weapon_type >= rf::num_weapon_types) {
+        return 0;
+    }
+    const rf::WeaponInfo& info = rf::weapon_types[weapon_type];
+    const float delay = alt_fire ? info.alt_create_weapon_delay_seconds[0] : info.create_weapon_delay_seconds[0];
+    return delay > 0.0f ? static_cast<int>(std::lround(delay * 1000.0f)) : 0;
+}
+
 float bot_combat_engagement_distance(const rf::Entity& entity, float& out_min_safe_distance)
 {
     out_min_safe_distance = 0.0f;
@@ -2252,6 +2417,16 @@ float bot_combat_engagement_distance(const rf::Entity& entity, float& out_min_sa
     out_min_safe_distance = stats.min_safe_distance;
     const float ideal = weapon_ranges(weapon_type).ideal_range;
     return ideal > 0.0f ? ideal : -1.0f;
+}
+
+float bot_combat_splash_keep_distance(const rf::Entity& entity)
+{
+    const int weapon_type = entity.ai.current_primary_weapon;
+    if (rf::weapon_is_detonator(weapon_type)) {
+        return 0.0f;
+    }
+    const BotWeaponStats stats = bot_weapon_stats(weapon_type, kStatsReferenceDistance);
+    return stats.remote_charge || stats.thrown ? 0.0f : stats.min_safe_distance;
 }
 
 float bot_best_combat_weapon_dps(rf::Player& player, rf::Entity& entity, const float target_distance)
@@ -2398,21 +2573,35 @@ void bot_process_combat(
     if (enemy_target && enemy_has_los) {
         bot_state().firing.enemy_los_recent_timer.set(kTacticalReloadLosGapMs);
     }
-    BotCombatFiringState& firing_state = bot_state().firing;
-    const LiveRemoteCharges live_remote_charges = firing_state.remote_charge_pending_detonation || crater_goal_active
+    const LiveRemoteCharges live_remote_charges = owns_remote_charge_detonator(local_entity)
         ? find_live_remote_charges(local_entity)
         : LiveRemoteCharges{};
-    if (crater_goal_active && !firing_state.remote_charge_pending_detonation && live_remote_charges.count > 0) {
-        // A charge left from earlier is set off for the crater before another can be thrown.
-        firing_state.remote_charge_pending_detonation = true;
-        firing_state.remote_charge_pending_detonation_timer.set(kRemoteChargeCraterWindowMs);
+    bot_state().firing.remote_charges_live = live_remote_charges.total;
+    update_remote_charge_state(live_remote_charges, crater_goal_active);
+    const bool remote_charge_live = bot_state().firing.remote_charge_pending_detonation;
+    bool detonation_due = false;
+    bool fight_before_detonating = false;
+    if (remote_charge_live) {
+        const bool enemies_leaving = !crater_goal_active
+            && !remote_charge_settling()
+            && enemies_leaving_charges(local_entity, live_remote_charges);
+        detonation_due =
+            should_detonate_remote_charges(local_entity, live_remote_charges, crater_goal_active, enemies_leaving);
+        // An enemy too close to throw at is fought with another weapon while the charges cannot go off.
+        const float close_distance =
+            bot_weapon_stats(get_remote_charge_weapon_type(), kStatsReferenceDistance).min_safe_distance;
+        fight_before_detonating = !detonation_due
+            && !crater_goal_active
+            && enemy_target
+            && enemy_has_los
+            && rf::vec_dist_squared(&local_entity.pos, &enemy_target->pos) < close_distance * close_distance
+            && owns_combat_weapon(local_player, local_entity);
     }
-    update_remote_charge_state(local_entity, live_remote_charges, crater_goal_active, enemy_target, enemy_has_los);
 
-    if (bot_state().firing.remote_charge_pending_detonation || crater_goal_active || shatter_goal_active) {
+    if (remote_charge_live || crater_goal_active || shatter_goal_active) {
         bot_state().firing.weapon_pickup_pending = false;
     }
-    if (bot_state().firing.remote_charge_pending_detonation) {
+    if (remote_charge_live && !fight_before_detonating) {
         hold_remote_charge_detonator(local_player, local_entity);
     }
     else if (crater_goal_active) {
@@ -2444,6 +2633,22 @@ void bot_process_combat(
         firing.aim_goal_skill_factor = active_skill_factor;
     };
     bot_state().firing.aim_goal_active = false;
+    if (explosive_release_hold_active
+        && enemy_target
+        && enemy_has_los
+        && !crater_goal_active
+        && !shatter_goal_active) {
+        // The wind-up follows the target until the projectile leaves the hand; a server bot's throw that turned unsafe
+        // (a teammate in the blast, the target at point-blank) is not let go (server_bots.cpp).
+        BotCombatFiringState& firing = bot_state().firing;
+        firing.explosive_release_hold_target =
+            compute_skill_adjusted_enemy_aim_target(local_entity, *enemy_target, active_skill_factor);
+        const BotWeaponStats hold_stats =
+            weapon_stats_for_mode(firing.explosive_release_hold_weapon, firing.explosive_release_hold_alt);
+        if (!splash_fire_is_safe(local_player, local_entity, hold_stats, enemy_target->pos, enemy_target)) {
+            firing.explosive_release_aborted = true;
+        }
+    }
     if (explosive_release_hold_active) {
         resolved_aim_target = bot_state().firing.explosive_release_hold_target;
         set_aim_goal(resolved_aim_target, -1);
@@ -2542,7 +2747,6 @@ void bot_process_combat(
     }
 
     const bool bot_is_underwater = rf::entity_is_swimming(&local_entity);
-    const bool remote_charge_live = bot_state().firing.remote_charge_pending_detonation;
     if ((enemy_target || crater_goal_active || shatter_goal_active || remote_charge_live)
         && local_entity.ai.current_primary_weapon >= 0
         && (!bot_is_underwater || weapon_works_underwater(local_entity.ai.current_primary_weapon))) {
@@ -2568,7 +2772,7 @@ void bot_process_combat(
             bot_state().auto_fire_release_guard_timer.invalidate();
             wants_attack = can_fire_now
                 && remote_charge_live
-                && should_detonate_remote_charges(local_entity, live_remote_charges, crater_goal_active);
+                && detonation_due;
         }
         else if (crater_goal_active) {
             bot_state().auto_fire_release_guard_timer.invalidate();
@@ -2577,8 +2781,8 @@ void bot_process_combat(
                 && weapon_can_create_craters(weapon_type)
                 && crater_has_los
                 && distance <= weapon_stats.max_range
-                && splash_fire_is_safe(local_entity, weapon_stats, fire_target_pos)
-                && !(weapon_stats.remote_charge && remote_charge_already_out(local_entity));
+                && splash_fire_is_safe(local_player, local_entity, weapon_stats, fire_target_pos, nullptr)
+                && !(weapon_stats.remote_charge && remote_charge_already_out());
         }
         else if (shatter_goal_active) {
             bot_state().auto_fire_release_guard_timer.invalidate();
@@ -2596,9 +2800,9 @@ void bot_process_combat(
             wants_attack = false;
         }
         else {
-            // Out of effective range the weapon choice switches or the bot closes in; it does not fire. The shot waits
-            // until the view's sideways miss at the aim point (which already carries the bot's aim error) is within a
-            // body.
+            // Out of effective range the weapon choice switches or the bot closes in; it does not fire. Closer than
+            // the preferred blast distance the self damage decides (splash_fire_is_safe). The shot waits until the
+            // view's sideways miss at the aim point (which already carries the bot's aim error) is within a body.
             const float lateral_miss =
                 distance * std::sqrt(std::max(1.0f - aim_alignment * aim_alignment, 0.0f));
             const float lateral_tolerance = kTargetHitRadius + weapon_stats.splash_radius * kSplashHitRadiusScale;
@@ -2608,9 +2812,11 @@ void bot_process_combat(
                 && enemy_target != nullptr
                 && aim_alignment > 0.0f
                 && lateral_miss <= lateral_tolerance
-                && weapon_in_effective_range(weapon_stats, distance)
-                && !(weapon_stats.remote_charge && remote_charge_already_out(local_entity))
-                && splash_fire_is_safe(local_entity, weapon_stats, fire_target_pos);
+                && weapon_in_effective_range(
+                    weapon_stats,
+                    weapon_stats.remote_charge ? distance : std::max(distance, weapon_stats.min_safe_distance))
+                && !(weapon_stats.remote_charge && remote_charge_already_out())
+                && splash_fire_is_safe(local_player, local_entity, weapon_stats, fire_target_pos, enemy_target);
             if (!engage_now && weapon_stats.splash_radius > 0.0f) {
                 // The release guard must not carry a held trigger into a splash shot that is not cleared.
                 bot_state().auto_fire_release_guard_timer.invalidate();
@@ -2677,18 +2883,17 @@ void bot_process_combat(
             crater_goal_active ? kRemoteChargeCraterWindowMs : kRemoteChargeDetonationWindowMs
         );
         bot_state().firing.remote_charge_settle_timer.set(kRemoteChargeThrowSettleMs);
+        bot_state().firing.remote_charge_give_up_timer.set(
+            (crater_goal_active ? kRemoteChargeCraterWindowMs : kRemoteChargeDetonationWindowMs) + kRemoteChargeGiveUpMs
+        );
     }
-    else if (fired_this_frame && rf::weapon_is_detonator(attack_weapon_type)) {
-        bot_state().firing.remote_charge_pending_detonation = false;
-        bot_state().firing.remote_charge_pending_detonation_timer.invalidate();
+    if (fired_this_frame) {
+        bot_state().firing.explosive_release_aborted = false;
     }
     if (fired_this_frame
         && attack_weapon_type >= 0
-        && weapon_uses_projectile_release_hold(attack_weapon_type)) {
-        int hold_ms = get_weapon_projectile_release_hold_ms(
-            attack_weapon_type,
-            attack_use_alt_fire
-        );
+        && weapon_uses_projectile_release_hold(attack_weapon_type, attack_use_alt_fire)) {
+        int hold_ms = bot_weapon_create_delay_ms(attack_weapon_type, attack_use_alt_fire);
         hold_ms = std::max(
             hold_ms,
             get_active_impact_delay_remaining_ms(local_entity, attack_use_alt_fire)

@@ -14,6 +14,12 @@ bool bot_has_usable_shatter_weapon(rf::Player& player, rf::Entity& entity);
 float bot_best_combat_weapon_dps(rf::Player& player, rf::Entity& entity, float target_distance);
 // Distance the held weapon works best at (-1 if none) and the distance its own blast needs.
 float bot_combat_engagement_distance(const rf::Entity& entity, float& out_min_safe_distance);
+// Distance from an enemy inside which the held (fired, not thrown) splash weapon would cost the bot more than a little
+// health; 0 for other weapons.
+float bot_combat_splash_keep_distance(const rf::Entity& entity);
+// A fire mode's wind-up before its projectile leaves: the first $Impact Delay, which the player path arms
+// (0x004A579B-0x004A57F8); 0 for none.
+int bot_weapon_create_delay_ms(int weapon_type, bool alt_fire);
 // Distance from a crater target to fire the crater weapon from (0 when it is used up close), and the farthest it
 // reaches.
 float bot_crater_standoff_distance(rf::Player& player, rf::Entity& entity, float& out_max_distance);

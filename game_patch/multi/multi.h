@@ -210,6 +210,10 @@ void server_set_player_weapon(rf::Player* pp, rf::Entity* ep, int weapon_type);
 void multi_turn_weapon_on(rf::Entity* ep, rf::Player* pp, bool alt_fire);
 void multi_turn_weapon_off(rf::Entity* ep);
 bool is_remote_charge_pair(int weapon_a, int weapon_b);
+// The server refuses this weapon switch (multi_select_weapon_server_side) whatever the player owns.
+bool multi_is_weapon_switch_locked(int from_weapon, int to_weapon);
+// The remote-fire handler (0x0047D220) creates these itself instead of going through entity_fire_weapon.
+bool multi_weapon_fire_is_thrown(int weapon_type, bool alt_fire);
 void multi_hide_level_items(const std::vector<int>& allowed_item_type_indices, bool preserve_ctf_objects = false);
 void start_level_in_multi(std::string filename);
 std::optional<std::string> multi_ban_unban_last();

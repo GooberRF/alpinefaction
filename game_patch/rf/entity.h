@@ -577,6 +577,8 @@ namespace rf
     static auto& entity_is_playing_action_animation = addr_as_ref<bool(Entity* entity, int action)>(0x00428D10);
     static auto& entity_set_next_state_anim = addr_as_ref<void(Entity* entity, int state, float transition_time)>(0x0042A580);
     static auto& entity_play_action_animation = addr_as_ref<void(Entity* entity, int action, float weight, bool hold_last_frame, bool with_sound)>(0x00428C90);
+    // The current weapon's fire (or alt fire) action anim, unless it is already playing.
+    static auto& entity_play_attack_anim = addr_as_ref<void(Entity* entity, bool alt_fire)>(0x0042C3C0);
     static auto& entity_is_reloading = addr_as_ref<bool(Entity* entity)>(0x00425250);
     static auto& entity_weapon_is_on = addr_as_ref<bool(int entity_handle, int weapon_type)>(0x0041A830);
     static auto& entity_reload_current_primary = addr_as_ref<bool __cdecl(Entity *entity, bool no_sound, bool is_reload_packet)>(0x00425280);

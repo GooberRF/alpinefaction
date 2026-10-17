@@ -2900,6 +2900,7 @@ void bot_run_frame(BotContext& ctx)
         ctx.state.firing.explosive_release_hold_alt = false;
         ctx.state.firing.remote_charge_pending_detonation = false;
         ctx.state.firing.remote_charge_pending_detonation_timer.invalidate();
+        ctx.state.firing.remote_charge_give_up_timer.invalidate();
         ctx.state.crater_goal_timeout_timer.invalidate();
         ctx.state.shatter_goal_timeout_timer.invalidate();
         ctx.state.respawn_gearup_timer.invalidate();
@@ -2990,6 +2991,7 @@ void bot_run_frame(BotContext& ctx)
         ctx.state.firing.explosive_release_hold_alt = false;
         ctx.state.firing.remote_charge_pending_detonation = false;
         ctx.state.firing.remote_charge_pending_detonation_timer.invalidate();
+        ctx.state.firing.remote_charge_give_up_timer.invalidate();
         clear_enemy_aim_error_state();
         clear_semi_auto_click_state();
 
@@ -3037,6 +3039,7 @@ void bot_run_frame(BotContext& ctx)
         ctx.state.firing.explosive_release_hold_alt = false;
         ctx.state.firing.remote_charge_pending_detonation = false;
         ctx.state.firing.remote_charge_pending_detonation_timer.invalidate();
+        ctx.state.firing.remote_charge_give_up_timer.invalidate();
         ctx.state.firing.weapon_pickup_pending = false;
         ctx.state.firing.weapon_select_candidate = -1;
         ctx.state.firing.weapon_select_target_handle = -1;

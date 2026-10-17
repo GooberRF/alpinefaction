@@ -40,12 +40,22 @@
 #include <string>
 #include <vector>
 
+// A throw between the wind-up anim and the projectile leaving the hand.
+struct ServerBotPendingThrow
+{
+    rf::Timestamp release;
+    int entity_handle = -1;
+    int weapon_type = -1;
+    bool alt_fire = false;
+};
+
 struct ServerBot
 {
     BotContext ctx;
     int roster_id = 0;
     float pending_dt = 0.0f;
     float think_wait = 0.0f;
+    ServerBotPendingThrow pending_throw;
 };
 
 namespace
@@ -97,10 +107,64 @@ bool server_bot_clip_ready(rf::Player& pp, rf::Entity& ep, const int weapon_type
     return true;
 }
 
-void server_bot_apply_fire(const BotCombatFiringState& firing, rf::Player& pp, rf::Entity& ep, const bool thought)
+void server_bot_fire(rf::Entity& ep, const int weapon_type, const bool alt_fire)
 {
+    rf::Vector3 pos{};
+    rf::Matrix3 orient{};
+    rf::entity_get_weapon_fire_pos_orient(&ep, weapon_type, &pos, &orient, ep.ai.next_fire_primary_slot, true);
+    rf::multi_process_remote_weapon_fire(&ep, weapon_type, pos, orient, alt_fire);
+}
+
+// A player's client plays a throw's wind-up anim at the press and creates the projectile, sending its fire packet,
+// once the weapon's first create delay ($Impact Delay) is over (0x004A5727-0x004A5800); the server's copy of that anim
+// is what obj_update sends as the state byte's fire bits (0x00475930). The remote-fire handler plays no anim.
+void server_bot_throw(ServerBot& bot, rf::Entity& ep, const int weapon_type, const bool alt_fire)
+{
+    rf::entity_play_attack_anim(&ep, alt_fire);
+    const int delay_ms = bot_weapon_create_delay_ms(weapon_type, alt_fire);
+    if (delay_ms <= 0) {
+        server_bot_fire(ep, weapon_type, alt_fire);
+        return;
+    }
+    ServerBotPendingThrow& pending = bot.pending_throw;
+    pending.release.set(delay_ms);
+    pending.entity_handle = ep.handle;
+    pending.weapon_type = weapon_type;
+    pending.alt_fire = alt_fire;
+}
+
+// True while a throw is winding up; the projectile leaves at its end unless the bot died, respawned, switched or found
+// the throw unsafe meanwhile.
+bool server_bot_update_pending_throw(ServerBot& bot, rf::Entity& ep)
+{
+    ServerBotPendingThrow& pending = bot.pending_throw;
+    if (!pending.release.valid()) {
+        return false;
+    }
+    if (pending.entity_handle != ep.handle || pending.weapon_type != ep.ai.current_primary_weapon) {
+        pending = {};
+        return false;
+    }
+    if (bot.ctx.state.firing.explosive_release_aborted) {
+        // The fire wait counted from the press would hold the weapon for a throw that never left the hand.
+        ep.ai.next_fire_primary.set(std::max(pending.release.time_until(), 0));
+        pending = {};
+        return false;
+    }
+    if (!pending.release.elapsed()) {
+        return true;
+    }
+    const ServerBotPendingThrow released = pending;
+    pending = {};
+    server_bot_fire(ep, released.weapon_type, released.alt_fire);
+    return false;
+}
+
+void server_bot_apply_fire(ServerBot& bot, rf::Player& pp, rf::Entity& ep, const bool thought)
+{
+    const BotCombatFiringState& firing = bot.ctx.state.firing;
     const int weapon_type = ep.ai.current_primary_weapon;
-    if (weapon_type < 0 || weapon_type >= rf::num_weapon_types) {
+    if (weapon_type < 0 || weapon_type >= rf::num_weapon_types || server_bot_update_pending_throw(bot, ep)) {
         return;
     }
     const bool down = firing.synthetic_primary_fire_down || firing.synthetic_secondary_fire_down;
@@ -123,17 +187,23 @@ void server_bot_apply_fire(const BotCombatFiringState& firing, rf::Player& pp, r
         multi_turn_weapon_off(&ep);
     }
 
-    const bool trigger = rf::weapon_is_semi_automatic(weapon_type) ? just_pressed : down;
+    // A fired splash shot leaves only on a think's frame, whose view its safety check judged; a throw's release is
+    // judged again every think of its wind-up.
+    const bool splash = rf::weapon_types[weapon_type].damage_radius > 0.0f;
+    const bool trigger = rf::weapon_is_semi_automatic(weapon_type) ? just_pressed : down && (thought || !splash);
     if (!trigger
         || (ep.ai.next_fire_primary.valid() && !ep.ai.next_fire_primary.elapsed())
         || !server_bot_clip_ready(pp, ep, weapon_type)) {
         return;
     }
-    rf::Vector3 pos{};
-    rf::Matrix3 orient{};
-    rf::entity_get_weapon_fire_pos_orient(&ep, weapon_type, &pos, &orient, ep.ai.next_fire_primary_slot, true);
-    rf::multi_process_remote_weapon_fire(&ep, weapon_type, pos, orient, alt_fire);
-    // Thrown weapons are created inline by the remote-fire handler, which never re-arms the fire wait.
+    if (multi_weapon_fire_is_thrown(weapon_type, alt_fire)) {
+        server_bot_throw(bot, ep, weapon_type, alt_fire);
+    }
+    else {
+        server_bot_fire(ep, weapon_type, alt_fire);
+    }
+    // Thrown weapons are created inline by the remote-fire handler, which never re-arms the fire wait; a player's
+    // wait starts at the press.
     if (!ep.ai.next_fire_primary.valid() || ep.ai.next_fire_primary.elapsed()) {
         ep.ai.next_fire_primary.set(rf::weapon_get_fire_wait_ms(weapon_type, alt_fire));
     }
@@ -208,14 +278,15 @@ void server_bot_apply_outputs(ServerBot& bot, const bool thought)
             BotActiveScope scope{ctx};
             bot_track_aim_goal(*ep);
         }
-        server_bot_apply_fire(state.firing, *pp, *ep, thought);
+        server_bot_apply_fire(bot, *pp, *ep, thought);
     }
     // Keeps the ring non-empty (obj_update skips an entity without keyframes) and recent without recipients.
     server_bot_refresh_keyframe(*ep, server_bot_keyframe_interval_ms());
 }
 
-void server_bot_stop_idle_entity(const ServerBot& bot)
+void server_bot_stop_idle_entity(ServerBot& bot)
 {
+    bot.pending_throw = {};
     rf::Player* const pp = bot.ctx.player;
     if (rf::Entity* const ep = pp ? rf::entity_from_handle(pp->entity_handle) : nullptr) {
         ep->ai.ci.move = {};

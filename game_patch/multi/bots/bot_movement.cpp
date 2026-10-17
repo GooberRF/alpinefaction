@@ -5,11 +5,13 @@
 #include "bot_internal.h"
 #include "bot_math.h"
 #include "bot_navigation_routes.h"
+#include "bot_utils.h"
 #include "../../main/main.h"
 #include "../../rf/collide.h"
 #include "../../rf/entity.h"
 #include "../../rf/level.h"
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <cmath>
 #include <random>
@@ -22,6 +24,9 @@ constexpr float kMaxWaypointStepJumpHeight = 1.5f;
 constexpr float kJumpPadFinalApproachStopDistance = 0.05f;
 constexpr float kWeaponStopDistanceCapScale = 1.5f;
 constexpr float kWeaponSafeStopDistanceScale = 1.25f;
+constexpr float kSplashRetreatProbeDistance = 1.5f;
+// A cornered verdict outlives the think that found it until the next movement update.
+constexpr int kSplashRetreatBlockedHoldMs = 100;
 constexpr float kLadderClimbVerticalThreshold = 0.12f;
 constexpr int kJumpBlockedEdgeCooldownMs = 9000;
 constexpr int kWallAvoidSoftRepathMs = 100;
@@ -1021,6 +1026,57 @@ void bot_process_movement(
         && enemy_has_los
         && (horizontal_dist < stop_distance * 0.45f || horizontal_dist < weapon_min_safe_distance)) {
         desired_move_z = -0.45f;
+    }
+    const rf::Entity* const pursued_enemy = pursuing_enemy_goal && enemy_has_los
+        ? rf::entity_from_handle(bot_state().pursuit_target_handle)
+        : nullptr;
+    const float splash_keep_distance = pursued_enemy ? bot_combat_splash_keep_distance(local_entity) : 0.0f;
+    bot_state().splash_retreat_blocked_timer.invalidate();
+    if (splash_keep_distance > 0.0f) {
+        // A splash weapon fires from outside its own blast: the bot does not close in near it, even along a route, and
+        // backs out of it at full speed, or steps aside, where the way is clear and the ground holds. With neither it
+        // is cornered (splash_trade_allowed).
+        rf::Vector3 away = local_entity.pos - pursued_enemy->pos;
+        away.y = 0.0f;
+        const float enemy_dist = away.len();
+        const rf::Vector3 view_forward = forward_from_non_linear_yaw_pitch(local_entity.control_data.phb.y, 0.0f);
+        if (enemy_dist < splash_keep_distance) {
+            away.normalize_safe();
+            const rf::Vector3 side{away.z, 0.0f, -away.x};
+            const std::array<rf::Vector3, 5> escapes{away, away + side, away - side, side, -side};
+            const rf::Vector3* escape = nullptr;
+            for (const rf::Vector3& dir : escapes) {
+                if (!is_forward_probe_blocked(local_entity, dir, kSplashRetreatProbeDistance)
+                    && !is_forward_probe_over_edge(local_entity, dir, kSplashRetreatProbeDistance)) {
+                    escape = &dir;
+                    break;
+                }
+            }
+            desired_move_x = 0.0f;
+            desired_move_z = 0.0f;
+            if (escape) {
+                rf::Vector3 dir = *escape;
+                dir.normalize_safe();
+                const rf::Vector3 view_right{view_forward.z, 0.0f, -view_forward.x};
+                desired_move_z = std::clamp(dir.dot_prod(view_forward), -1.0f, 1.0f);
+                desired_move_x = std::clamp(dir.dot_prod(view_right), -1.0f, 1.0f);
+            }
+            else {
+                bot_state().splash_retreat_blocked_timer.set(kSplashRetreatBlockedHoldMs);
+            }
+        }
+        else if (enemy_dist < splash_keep_distance * kWeaponSafeStopDistanceScale) {
+            // No step towards the enemy.
+            const rf::Vector3 view_right{view_forward.z, 0.0f, -view_forward.x};
+            const rf::Vector3 move_world = view_forward * desired_move_z + view_right * desired_move_x;
+            const float toward = -move_world.dot_prod(away) / std::max(enemy_dist, 0.01f);
+            if (toward > 0.0f) {
+                away.normalize_safe();
+                const rf::Vector3 kept = move_world + away * toward;
+                desired_move_z = std::clamp(kept.dot_prod(view_forward), -1.0f, 1.0f);
+                desired_move_x = std::clamp(kept.dot_prod(view_right), -1.0f, 1.0f);
+            }
+        }
     }
 
     const BotPersonality& personality = get_active_bot_personality();

@@ -145,6 +145,8 @@ inline constexpr int kSemiAutoClickMinMs = 90;
 inline constexpr int kSemiAutoClickMaxMs = 900;
 inline constexpr int kRemoteChargeDetonationWindowMs = 3000;
 inline constexpr int kRemoteChargeCraterWindowMs = 6000;
+// Charges not set off this long after their detonation window no longer hold up the next throw.
+inline constexpr int kRemoteChargeGiveUpMs = 10000;
 inline constexpr int kFailedCraterTargetCooldownMs = 15000;
 inline constexpr int kBotServerConfigTimeoutMs = 10000;
 inline constexpr int kBotConnectionWatchdogMs = 30000;
@@ -443,6 +445,11 @@ struct BotCombatFiringState
     bool remote_charge_pending_detonation = false;
     rf::Timestamp remote_charge_pending_detonation_timer{};
     rf::Timestamp remote_charge_settle_timer{};
+    rf::Timestamp remote_charge_give_up_timer{};
+    // Charges of the bot in the world at this think's scan.
+    int remote_charges_live = 0;
+    // A throw winding up turned unsafe; a server bot does not let it go.
+    bool explosive_release_aborted = false;
     // Weapon choice: events that force an evaluation, and the challenger that must stay best for a while.
     bool weapon_pickup_pending = false;
     int weapon_select_target_handle = -1;
@@ -630,6 +637,8 @@ struct BotState
     bool recovery_pending_reroute = false;
     bool drop_link_route_locked = false;
     bool freefall_suppress_aim = false;
+    // Set while a splash weapon's holder, inside its blast distance of the enemy, finds no clear way back or aside.
+    rf::Timestamp splash_retreat_blocked_timer{};
     bool drop_freefall_active = false;
     bool jump_pad_landing_steer_active = false;
     bool obstacle_crouch_active = false;
