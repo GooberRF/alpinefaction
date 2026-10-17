@@ -297,6 +297,13 @@ struct VehicleTreadScroll
     int config = -1;     // which vehicle_tread_configs row this hull is
 };
 
+// Server: the last player blow that took life off a hull, recorded as its destroyer would be, and when.
+struct VehicleLastHurt
+{
+    VehicleLethalKiller blow;
+    int64_t ms = 0;
+};
+
 // Every map here is keyed by the vehicle's local object handle and dropped wholesale on level init.
 struct VehicleModuleState
 {
@@ -306,6 +313,8 @@ struct VehicleModuleState
     std::unordered_map<int, rf::Timestamp> fire_rearm;
     std::unordered_map<int, VehicleHealthSync> health_sync;
     std::unordered_map<int, int> last_damager; // vehicle handle -> attacker entity handle
+    // What a drown or strand scuttle credits, if the hull went in soon after.
+    std::unordered_map<int, VehicleLastHurt> last_hurt;
     std::unordered_map<int, VehicleLethalKiller> lethal_killer;
     // What bounds a crash report and gates a run-over; fed by received rows and local bodies.
     std::unordered_map<int, VehicleObservedSpeed> observed_speed;
@@ -320,9 +329,15 @@ struct VehicleModuleState
     std::unordered_map<int, VehicleRegen> regen;
     // Server: how long each vehicle has had nothing beneath it, for the void-fall death.
     std::unordered_map<int, float> void_timer;
-    // Server: an entry exists only while the hull is continuously in its lethal medium - under water
-    // for a non-sub, out of it for a sub.
-    std::unordered_map<int, int64_t> hazard_since;
+    // Every machine: seconds each hull has spent in its lethal medium - under water for a non-sub, out
+    // of it for a sub - counting back down once clear. An entry exists only while that is above zero.
+    std::unordered_map<int, float> hazard_time;
+    // Client: the cockpit alarm of the hull the local player rides or watches.
+    int hazard_alarm_snd = -1;
+    // Client: the sub this machine's pilot last pressed alt in, and when, for the server's DETONATE that answers it.
+    // On game time, the clock a torpedo's lifeleft runs on.
+    int torpedo_press_hull = -1;
+    rf::Timestamp torpedo_press;
     // Factory-spawned hull attributes; team is NOT obj->team, which feeds the engine's friendliness
     // rules. Maintained on the server and mirrored on clients, both keyed by local object handle.
     std::unordered_map<int, VehicleState> hull_state;
@@ -349,9 +364,9 @@ struct VehicleModuleState
     int reported_fire_vehicle = -1;
     bool reported_primary_held = false;
     bool reported_alt_held = false;
-    // Client: the turret the local operator has zoomed in, -1 for none, and last frame's alt trigger.
-    int turret_zoom_handle = -1;
-    bool turret_zoom_alt_down = false;
+    // Client: the turret or jeep the local gunner has zoomed in, -1 for none, and last frame's alt trigger.
+    int gun_zoom_handle = -1;
+    bool gun_zoom_alt_down = false;
     // Server: an entry exists only while the jeep's driver holds the horn.
     std::unordered_map<int, VehicleHorn> horn;
     std::unordered_map<int, rf::Timestamp> horn_cooldown; // by player id
@@ -438,6 +453,15 @@ rf::Player* vehicle_seat_occupant_player(const rf::Entity* vehicle, int seat);
 VehicleSpawnSlot* vehicle_slot_for_hull(int vehicle_handle);
 // Any seat the occupancy packet can state holds a rider.
 bool vehicle_hull_occupied(const rf::Entity* vehicle);
+bool vehicle_hazard_on_clock(int vehicle_handle);
+void vehicle_hazard_client_do_frame();
+// A torpedo arms after vehicle_torpedo_arm_s of flight on the server. The server's copy can be a little younger than
+// the pilot's (it fires in a later pass, and the press arrives with jitter), so he predicts only well past it.
+inline constexpr float vehicle_torpedo_arm_s = 0.2f;
+inline constexpr float vehicle_torpedo_arm_pilot_s = 0.3f;
+// Sets off the hull's armed torpedoes; false when there were none. still_flying gets how many are left in flight.
+bool vehicle_detonate_armed_torpedoes(rf::Entity* hull, float arm_s, int* still_flying = nullptr);
+void vehicle_note_hazard_destroyer(rf::Entity* vehicle, float window_s);
 // Server: re-state a turret factory whose hull just changed occupancy; other slots are unaffected.
 void vehicle_slot_announce_for_hull(int vehicle_handle);
 // Server: every boarding - the hull takes the boarder's team, clears the auto-return, and the first

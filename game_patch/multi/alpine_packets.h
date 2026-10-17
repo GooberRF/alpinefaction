@@ -667,7 +667,8 @@ static_assert(sizeof(af_vehicle_state_packet) == sizeof(RF_GamePacketHeader) + 4
 
 // Vehicle weapon control. Client -> server: trigger edges, and the jeep driver's horn edges (alt_fire 0).
 // Server -> client: a discrete shot, or a continuous weapon's actual on/off edge (STOP's alt_fire is 0
-// and ignored); the horn reaches clients as AF_VEHICLE_STATE_HORN.
+// and ignored), or the sub setting off its torpedoes in flight (DETONATE's alt_fire is how many it left
+// flying); the horn reaches clients as AF_VEHICLE_STATE_HORN.
 enum af_vehicle_fire_action : uint8_t
 {
     AF_VEHICLE_FIRE_STOP = 0,
@@ -675,6 +676,7 @@ enum af_vehicle_fire_action : uint8_t
     AF_VEHICLE_FIRE_SHOT = 2,
     AF_VEHICLE_HORN_STOP = 3,
     AF_VEHICLE_HORN_START = 4,
+    AF_VEHICLE_FIRE_DETONATE = 5,
 };
 
 struct af_vehicle_fire_packet

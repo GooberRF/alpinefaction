@@ -69,22 +69,6 @@ namespace gr::d3d11
         render_context_.draw_indexed(num_index, start_index, start_vertex);
     }
 
-    static inline bool mode_uses_vertex_color(rf::gr::Mode mode)
-    {
-        if (mode.get_texture_source() == rf::gr::TEXTURE_SOURCE_NONE) {
-            return true;
-        }
-        return mode.get_color_source() != rf::gr::COLOR_SOURCE_TEXTURE;
-    }
-
-    static inline bool mode_uses_vertex_alpha(rf::gr::Mode mode)
-    {
-        if (mode.get_texture_source() == rf::gr::TEXTURE_SOURCE_NONE) {
-            return true;
-        }
-        return mode.get_alpha_source() != rf::gr::ALPHA_SOURCE_TEXTURE;
-    }
-
     static inline rf::Color get_vertex_color_from_screen(rf::gr::Mode mode)
     {
         rf::Color color{255, 255, 255, 255};

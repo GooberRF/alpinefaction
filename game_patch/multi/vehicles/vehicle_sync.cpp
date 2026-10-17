@@ -5,6 +5,7 @@
 #include <cstring>
 #include <numbers>
 #include <optional>
+#include <vector>
 #include <patch_common/CallHook.h>
 #include <patch_common/CodeInjection.h>
 #include <patch_common/FunHook.h>
@@ -790,8 +791,8 @@ namespace
     // next_fire_secondary), so holding both is not a conflict.
     void vehicle_server_apply_trigger(rf::Entity* vehicle, bool alt, bool held, uint8_t requester_id)
     {
-        // A turret's alt trigger is its operator's local zoom and drives no weapon.
-        if (alt && vehicle_hull_is_turret(vehicle)) {
+        // A turret's or jeep's alt trigger is its gunner's local zoom and drives no weapon.
+        if (alt && vehicle_alt_fire_zooms(vehicle)) {
             return;
         }
         const int weapon = alt ? vehicle->ai.current_secondary_weapon : vehicle->ai.current_primary_weapon;
@@ -944,6 +945,7 @@ void vehicle_drop_combat_state(int vehicle_handle)
     g_vehicle_state.horn.erase(vehicle_handle);
     g_vehicle_state.health_sync.erase(vehicle_handle);
     g_vehicle_state.last_damager.erase(vehicle_handle);
+    g_vehicle_state.last_hurt.erase(vehicle_handle);
     g_vehicle_state.lethal_killer.erase(vehicle_handle);
     g_vehicle_state.observed_speed.erase(vehicle_handle);
     g_vehicle_state.crash_cooldown.erase(vehicle_handle);
@@ -954,7 +956,7 @@ void vehicle_drop_combat_state(int vehicle_handle)
     g_vehicle_state.orient_sent.erase(vehicle_handle);
     g_vehicle_state.kinematics.erase(vehicle_handle);
     g_vehicle_state.void_timer.erase(vehicle_handle);
-    g_vehicle_state.hazard_since.erase(vehicle_handle);
+    g_vehicle_state.hazard_time.erase(vehicle_handle);
     g_vehicle_state.coast_memory.erase(vehicle_handle);
     g_vehicle_state.regen.erase(vehicle_handle);
     g_vehicle_state.pending_seats.erase(vehicle_handle);
@@ -1670,7 +1672,17 @@ void vehicle_server_handle_fire_request(rf::Player* pp, int vehicle_handle, uint
     const bool held = action == AF_VEHICLE_FIRE_START;
     const bool alt = alt_fire != 0;
     // Never stored, so it can neither fire nor hold off the ammo refill.
-    if (alt && vehicle_hull_is_turret(vehicle)) {
+    if (alt && vehicle_alt_fire_zooms(vehicle)) {
+        return;
+    }
+    // The sub's alt trigger sets off its armed torpedoes in flight, here and on every machine, the pilot's
+    // included: his prediction may have spared one this side of the arming time.
+    if (alt && rf::entity_is_sub(vehicle)) {
+        int still_flying = 0;
+        if (held && vehicle_detonate_armed_torpedoes(vehicle, vehicle_torpedo_arm_s, &still_flying)) {
+            af_send_vehicle_fire_packet_to_all(nullptr, vehicle->handle, AF_VEHICLE_FIRE_DETONATE,
+                                               static_cast<uint8_t>(std::min(still_flying, 255)));
+        }
         return;
     }
 
@@ -1704,6 +1716,75 @@ void vehicle_server_announce_weapon_edge(int entity_handle, int weapon_type, boo
                                        on && alt_fire ? 1 : 0);
 }
 
+// The sub's torpedoes are set off as entity_detonate_remote_charges (0x00429C70) does: an expired torpedo
+// detonates on its next move, damaging only on the server. Each machine sets off its own copies.
+namespace
+{
+    // This machine's copies of the hull's own rounds still in flight, never one a rider fired by hand.
+    void vehicle_flying_torpedoes(rf::Entity* hull, std::vector<rf::Weapon*>& flying)
+    {
+        flying.clear();
+        for (rf::Weapon& weapon : DoublyLinkedList{rf::weapon_list}) {
+            if (weapon.info && (weapon.info->flags & rf::WTF_TORPEDO) && weapon.lifeleft_seconds > 0.0f
+                && weapon.parent_handle == hull->handle) {
+                flying.push_back(&weapon);
+            }
+        }
+    }
+
+    float vehicle_torpedo_age(const rf::Weapon* weapon)
+    {
+        return weapon->info->lifetime_seconds - weapon->lifeleft_seconds;
+    }
+
+    // A watcher's DETONATE: the server's count rather than this machine's clock, its copies being a trip off the
+    // server's; all but the `keep` youngest go. A shot the server fires after it is sent reaches him after it.
+    void vehicle_detonate_all_but_youngest_torpedoes(rf::Entity* hull, std::size_t keep)
+    {
+        std::vector<rf::Weapon*> flying;
+        vehicle_flying_torpedoes(hull, flying);
+        std::sort(flying.begin(), flying.end(), [](const rf::Weapon* a, const rf::Weapon* b) {
+            return vehicle_torpedo_age(a) < vehicle_torpedo_age(b);
+        });
+        for (std::size_t i = keep; i < flying.size(); ++i) {
+            flying[i]->lifeleft_seconds = -1.0f;
+        }
+    }
+
+    // The pilot's DETONATE: the server's rule applied as of his press. The server's count cannot serve him: a shot
+    // he fires around the press exists here before the server fires its copy, so it was never counted.
+    void vehicle_detonate_torpedoes_armed_at_press(rf::Entity* hull, const rf::Timestamp& press)
+    {
+        const float since_press_s = static_cast<float>(press.time_since()) / 1000.0f;
+        std::vector<rf::Weapon*> flying;
+        vehicle_flying_torpedoes(hull, flying);
+        for (rf::Weapon* weapon : flying) {
+            if (vehicle_torpedo_age(weapon) - since_press_s >= vehicle_torpedo_arm_s) {
+                weapon->lifeleft_seconds = -1.0f;
+            }
+        }
+    }
+} // namespace
+
+bool vehicle_detonate_armed_torpedoes(rf::Entity* hull, float arm_s, int* still_flying)
+{
+    std::vector<rf::Weapon*> flying;
+    vehicle_flying_torpedoes(hull, flying);
+    int kept = 0;
+    for (rf::Weapon* weapon : flying) {
+        if (vehicle_torpedo_age(weapon) >= arm_s) {
+            weapon->lifeleft_seconds = -1.0f;
+        }
+        else {
+            ++kept;
+        }
+    }
+    if (still_flying) {
+        *still_flying = kept;
+    }
+    return kept < static_cast<int>(flying.size());
+}
+
 void vehicle_apply_fire_from_packet(int vehicle_handle, uint8_t action, uint8_t alt_fire)
 {
     rf::Object* obj = rf::obj_from_remote_handle(vehicle_handle);
@@ -1711,6 +1792,18 @@ void vehicle_apply_fire_from_packet(int vehicle_handle, uint8_t action, uint8_t 
         return;
     }
     const bool alt = alt_fire != 0;
+    // A dying sub's torpedoes are still its own.
+    if (action == AF_VEHICLE_FIRE_DETONATE) {
+        if (rf::Entity* vehicle = vehicle_synced_entity(obj->handle)) {
+            if (vehicle_local_firing_vehicle() == vehicle && g_vehicle_state.torpedo_press_hull == vehicle->handle) {
+                vehicle_detonate_torpedoes_armed_at_press(vehicle, g_vehicle_state.torpedo_press);
+            }
+            else {
+                vehicle_detonate_all_but_youngest_torpedoes(vehicle, alt_fire);
+            }
+        }
+        return;
+    }
     if (action == AF_VEHICLE_FIRE_STOP) {
         // Unconditional, dying hull included: a spare turn-off is a no-op, a missed one fires forever.
         if (rf::Entity* vehicle = vehicle_synced_entity(obj->handle)) {
@@ -1795,6 +1888,11 @@ void vehicle_apply_orient_from_packet(int vehicle_handle, uint16_t tick, int16_t
 // rides; a spectator gets the flash alone, as for the man he watches.
 void vehicle_rider_damage_feedback(int vehicle_handle, const rf::Vector3* hit_dir)
 {
+    // A draining hull loses life on every health update; its alarm and warning say so instead. The whole
+    // clock, not just the drain: this machine's runs a little behind the server's.
+    if (!hit_dir && !rf::is_server && vehicle_hazard_on_clock(vehicle_handle)) {
+        return;
+    }
     rf::Entity* local_hull = vehicle_ridden_hull(rf::local_player_entity);
     if (rf::local_player && local_hull && local_hull->handle == vehicle_handle) {
         player_damage_feedback();

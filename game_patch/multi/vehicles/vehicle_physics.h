@@ -10,8 +10,13 @@ namespace rf
     struct Entity;
     struct GeomodParams;
     struct GRoom;
+    struct PCollisionOut;
     struct Vector3;
 }
+
+// collide_linesegment_world plus mover_brush_is_solid: a see-through mover the hulls pass through is
+// skipped. `flags` are rf::CollideFlags.
+bool vphys_collide_solid_segment(const rf::Vector3& a, const rf::Vector3& b, int flags, rf::PCollisionOut& out);
 
 // True means the camera entity is already posed and camera_do_frame must not run (orbit view).
 bool vehicle_physics_camera_do_frame(rf::Camera* camera);
@@ -22,6 +27,8 @@ bool vehicle_physics_camera_toggle_view();
 
 // Whether the local player's current seat is viewed through the orbit camera.
 bool vehicle_physics_camera_local_seat_is_orbit();
+// Whether the local player's seat offers a third-person view to toggle into.
+bool vehicle_physics_camera_local_can_toggle_view();
 
 // A third-person driver's mouse and look keys turn the orbit, not the hull.
 bool vehicle_physics_camera_owns_driver_look();

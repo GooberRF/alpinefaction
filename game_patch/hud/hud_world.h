@@ -125,6 +125,8 @@ void populate_fullscreen_overlay_events();
 void fullscreen_overlay_do_frame();
 void hud_world_level_unload();
 void add_location_ping_world_hud_sprite(rf::Vector3 pos, std::string player_name, int player_id);
+// Hits on one victim within this window add up into one damage number.
+inline constexpr int damage_number_merge_ms = 1000;
 void add_damage_notify_world_hud_string(rf::Vector3 pos, uint8_t damaged_player_id, int hull_handle, uint16_t damage,
                                        bool died, bool crit = false);
 void do_render_world_hud_sprite(rf::Vector3 pos, float base_scale, int bitmap_handle, WorldHUDRenderMode render_mode,

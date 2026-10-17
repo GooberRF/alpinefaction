@@ -13,6 +13,8 @@ namespace gr::d3d11
         character,
         transformed,
         standard_instanced,
+        particle_instance,
+        weather_seed,
     };
 
     using float3 = std::array<float, 3>;
@@ -128,6 +130,41 @@ namespace gr::d3d11
         return desc;
     }
 
+    // One particle quad per instance, in slot 1: no per vertex data, the corner comes from SV_VertexID.
+    // Billboards carry their rotated half extents in axes, velocity stretched quads the streak tail.
+    struct GpuParticleInstance
+    {
+        float3 pos;
+        float radius;
+        std::array<float, 4> axes;
+        int color;
+    };
+    static_assert(sizeof(GpuParticleInstance) == 36);
+
+    template<>
+    inline
+    std::vector<D3D11_INPUT_ELEMENT_DESC>
+    VertexLayoutTrait<VertexLayout::particle_instance>::get_desc()
+    {
+        return {
+            { "INSTANCE", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 0, D3D11_INPUT_PER_INSTANCE_DATA, 1 },
+            { "INSTANCE", 1, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 16, D3D11_INPUT_PER_INSTANCE_DATA, 1 },
+            { "INSTANCE_COLOR", 0, DXGI_FORMAT_R8G8B8A8_UNORM, 1, 32, D3D11_INPUT_PER_INSTANCE_DATA, 1 },
+        };
+    }
+
+    // One gr::d3d11::WeatherSeed per instance, in slot 1: the corner comes from SV_VertexID like the particles'
+    template<>
+    inline
+    std::vector<D3D11_INPUT_ELEMENT_DESC>
+    VertexLayoutTrait<VertexLayout::weather_seed>::get_desc()
+    {
+        return {
+            { "INSTANCE", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 0, D3D11_INPUT_PER_INSTANCE_DATA, 1 },
+            { "INSTANCE", 1, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 16, D3D11_INPUT_PER_INSTANCE_DATA, 1 },
+        };
+    }
+
     inline std::vector<D3D11_INPUT_ELEMENT_DESC> get_vertex_layout_desc(VertexLayout vertex_layout)
     {
         switch (vertex_layout) {
@@ -139,6 +176,10 @@ namespace gr::d3d11
                 return VertexLayoutTrait<VertexLayout::transformed>::get_desc();
             case VertexLayout::standard_instanced:
                 return VertexLayoutTrait<VertexLayout::standard_instanced>::get_desc();
+            case VertexLayout::particle_instance:
+                return VertexLayoutTrait<VertexLayout::particle_instance>::get_desc();
+            case VertexLayout::weather_seed:
+                return VertexLayoutTrait<VertexLayout::weather_seed>::get_desc();
             default:
                 assert(false);
                 return {};

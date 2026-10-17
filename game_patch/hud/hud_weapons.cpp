@@ -40,16 +40,7 @@ constexpr float hud_refill_bar_fill_alpha = 0.75f;
 namespace
 {
     // Per weapon slot; only the viewed hull's bars are ever drawn.
-    struct HudRefillBar
-    {
-        int hull_handle = -1;
-        int last_frame = -1;
-        bool active = false;
-        int64_t rise_since_ms = 0;
-        float rise_from = 0.0f;
-        int64_t full_since_ms = -1; // -1 while charging
-    };
-    HudRefillBar g_hud_refill_bars[2];
+    HudVehicleBarFade g_hud_refill_bars[2];
 } // namespace
 
 static void hud_ammo_bitmap_size(int bmh, int& w, int& h);
@@ -78,51 +69,17 @@ static bool hud_ammo_hull_has_secondary(const rf::Entity* hull)
     return vehicle_weapon_ammo(hull, hull->ai.current_secondary_weapon) >= 0;
 }
 
-static float hud_refill_bar_alpha(const HudRefillBar& bar, int64_t now)
-{
-    const float fade = bar.full_since_ms < 0
-        ? 1.0f
-        : std::clamp(1.0f - static_cast<float>(now - bar.full_since_ms) / hud_vehicle_bar_fade_ms, 0.0f, 1.0f);
-    const float t = std::clamp(static_cast<float>(now - bar.rise_since_ms) / hud_vehicle_bar_rise_ms, 0.0f, 1.0f);
-    return std::min(bar.rise_from + (1.0f - bar.rise_from) * t, fade);
-}
-
 // Left of the no-clip row, centred on its signal light; dy is the row's offset.
 static void hud_render_vehicle_refill_bar(const rf::Entity* hull, int slot, int dy)
 {
-    HudRefillBar& bar = g_hud_refill_bars[slot];
-    // A bar not drawn last frame starts afresh rather than finishing a fade nobody saw.
-    if (bar.hull_handle != hull->handle || bar.last_frame != rf::frame_count - 1) {
-        bar = HudRefillBar{hull->handle};
-    }
-    bar.last_frame = rf::frame_count;
-
-    const int64_t now = timer::get_i64(1000);
     float progress = 1.0f;
-    if (vehicle_hud_ammo_refill_progress(hull, slot, progress)) {
-        if (!bar.active || bar.full_since_ms >= 0) {
-            bar.rise_from = bar.active ? hud_refill_bar_alpha(bar, now) : 0.0f;
-            bar.rise_since_ms = now;
-            bar.full_since_ms = -1;
-            bar.active = true;
-        }
-    }
-    else {
-        if (!bar.active) {
-            return;
-        }
-        if (bar.full_since_ms < 0) {
-            bar.full_since_ms = now;
-        }
-        if (now - bar.full_since_ms >= hud_vehicle_bar_fade_ms) {
-            bar.active = false;
-            return;
-        }
-        progress = 1.0f;
-    }
-    const float alpha = hud_refill_bar_alpha(bar, now);
+    const bool charging = vehicle_hud_ammo_refill_progress(hull, slot, progress);
+    const float alpha = g_hud_refill_bars[slot].update(hull->handle, charging);
     if (alpha <= 0.0f) {
         return;
+    }
+    if (!charging) {
+        progress = 1.0f;
     }
 
     int signal_w = 0;

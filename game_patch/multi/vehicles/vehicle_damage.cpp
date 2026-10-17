@@ -1480,8 +1480,8 @@ namespace
         if (vehicle_blast_damage_is_mint(victim->handle)) {
             rf::Entity* vehicle = vehicle_synced_entity(g_vehicle_blast_mint.vehicle_handle);
             if (vehicle) {
-                // An unattributed lethal blow (drowned, stranded, returned, void, own ram share) is the
-                // rider's own death, whoever softened the hull first; they are paid in assists instead.
+                // An unattributed lethal blow (drowned or stranded with no recent hit to blame, returned,
+                // void, own ram share) is the rider's own death; whoever softened the hull is paid in assists.
                 auto lethal = g_vehicle_state.lethal_killer.find(vehicle->handle);
                 if (lethal != g_vehicle_state.lethal_killer.end() && lethal->second.entity_handle == -1) {
                     return victim->handle;
@@ -1540,7 +1540,7 @@ namespace
             && wi.ammo_type < static_cast<int>(std::extent_v<decltype(rf::AiInfo::ammo)>);
     }
 
-    // Slot 0 is the primary weapon, slot 1 the secondary; a turret's alt trigger is never stored.
+    // Slot 0 is the primary weapon, slot 1 the secondary; a zooming alt trigger is never stored.
     bool vehicle_ammo_slot_trigger_held(const rf::Entity* ep, int slot_index)
     {
         auto it = g_vehicle_state.fire.find(ep->handle);
@@ -1671,6 +1671,34 @@ int vehicle_occupant_death_blast_hull(int victim_handle, int damage_type)
         ? g_vehicle_blast_mint.vehicle_handle : -1;
 }
 
+// Ahead of a drown or strand scuttle, which is unattributed: the last player blow that hurt the hull
+// within window_s names its destroyer, so the riders it takes die to him rather than by their own hand.
+void vehicle_note_hazard_destroyer(rf::Entity* vehicle, float window_s)
+{
+    auto it = g_vehicle_state.last_hurt.find(vehicle->handle);
+    if (it == g_vehicle_state.last_hurt.end()
+        || timer::get_i64(1000) - it->second.ms > static_cast<int64_t>(window_s * 1000.0f)) {
+        return;
+    }
+    // A team-mate's graze, friendly fire or not, never makes the riders' drowning his team kills.
+    const VehicleLethalKiller& blow = it->second.blow;
+    const rf::Player* attacker = blow.player_id != 0xFF ? rf::multi_find_player_by_id(blow.player_id)
+                                                        : rf::player_from_entity_handle(blow.entity_handle);
+    if (!attacker) {
+        return;
+    }
+    if (multi_is_team_game_type()) {
+        for (int i = 0; i < vehicle_seat_count(vehicle); ++i) {
+            const int leech = vehicle_seat_leech(vehicle, i);
+            const rf::Player* rider = leech != -1 ? rf::player_from_entity_handle(leech) : nullptr;
+            if (rider && rider != attacker && rider->team == attacker->team) {
+                return;
+            }
+        }
+    }
+    g_vehicle_state.lethal_killer.try_emplace(vehicle->handle, blow);
+}
+
 bool vehicle_lethal_blow_attribution(int vehicle_handle, const rf::Player* killer_player, int& weapon_type,
                                      bool& splash, int& vehicle_class)
 {
@@ -1692,7 +1720,8 @@ void vehicle_note_hull_damage(rf::Entity* vehicle, float life_before, int killer
         || life_before <= 0.0f) {
         return; // a blow on a wreck neither kills it again nor softens it for anybody
     }
-    if (vehicle->life <= 0.0f) {
+    // This blow as the hull's destroyer.
+    const auto blow = [&] {
         VehicleLethalKiller lethal;
         rf::Entity* killer = killer_handle != -1 ? rf::entity_from_handle(killer_handle) : nullptr;
         // A rider's own shot is his own death, as the own ram share is: suicides and assists.
@@ -1713,11 +1742,19 @@ void vehicle_note_hull_damage(rf::Entity* vehicle, float life_before, int killer
                 lethal.splash = splash;
             }
         }
-        g_vehicle_state.lethal_killer.try_emplace(vehicle->handle, lethal);
+        return lethal;
+    };
+    if (vehicle->life <= 0.0f) {
+        g_vehicle_state.lethal_killer.try_emplace(vehicle->handle, blow());
     }
     else if (real_damage > 0.0f) {
         const bool stock_indicated = splash || (kill_attribution_in_projectile_impact() && weapon_type >= 0);
         vehicle_note_hull_hit(vehicle, killer_handle, stock_indicated);
+        if (killer_handle != -1 && rf::player_from_entity_handle(killer_handle)) {
+            if (VehicleLethalKiller hurt = blow(); hurt.entity_handle != -1) {
+                g_vehicle_state.last_hurt[vehicle->handle] = {hurt, timer::get_i64(1000)};
+            }
+        }
     }
     if (killer_handle == -1 || real_damage <= 0.0f) {
         return; // player_from_entity_handle does not validate -1
@@ -2077,7 +2114,7 @@ void vehicle_regen_do_frame(rf::Entity* ep)
         return;
     }
     // A hull on the drown or strand clock is not on the repair clock.
-    if (g_vehicle_state.hazard_since.count(ep->handle) != 0) {
+    if (g_vehicle_state.hazard_time.count(ep->handle) != 0) {
         return;
     }
 

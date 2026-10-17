@@ -67,6 +67,13 @@ namespace rf
         int num_material_sounds[iss_num_material_types];                  // +0xA0
         int is_all_sounds;                                                // +0xC8
         String name;                                                      // +0xCC
+
+        // A material's sound list and its count, unclamped; every material gets list 0 when is_all_sounds
+        // (read as a byte) is set, and an out-of-range material gets null and 0.
+        void get_material_sounds(int material, const int*& sounds_out, int& count_out) const
+        {
+            AddrCaller{0x00413660}.this_call(this, material, &sounds_out, &count_out);
+        }
     };
     static_assert(sizeof(ImpactSoundSet) == 0xD4);
 
@@ -80,7 +87,9 @@ namespace rf
     static auto& ds3d_enabled = addr_as_ref<bool>(0x01AED340);
 #ifdef ALPINE_FACTION
     // In DF sound channels limit has been raised
-    constexpr int num_sound_channels = 64;
+    constexpr int num_sound_channels = 127;
+    // The count is patched into signed 8-bit instruction operands
+    static_assert(num_sound_channels <= 127);
     extern SoundInstance sound_instances[num_sound_channels];
 #else
     constexpr int num_sound_channels = 30;

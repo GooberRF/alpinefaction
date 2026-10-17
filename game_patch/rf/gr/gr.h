@@ -376,6 +376,9 @@ namespace rf::gr
     static auto& light_base = addr_as_ref<Vector3>(0x01818A28);
     static auto& matrix_scale = addr_as_ref<Vector3>(0x01818B48);
     static auto& one_over_matrix_scale_z = addr_as_ref<float>(0x01818A60);
+    // Cleared by gr_setup_3d (0x00547150) for an orthographic view, in which rotate_vertex gives every
+    // vertex the same depth and compute_vertex_codes skips the near and far planes.
+    static auto& perspective_projection = addr_as_ref<bool>(0x005A4D19);
     static auto& projection_xadd = addr_as_ref<float>(0x01818B54);
     static auto& projection_xmul = addr_as_ref<float>(0x01818B58);
     static auto& projection_yadd = addr_as_ref<float>(0x01818B5C);

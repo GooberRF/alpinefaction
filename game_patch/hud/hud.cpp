@@ -8,6 +8,7 @@
 #include "../misc/vote_panel.h"
 #include "../multi/demo/demo.h"
 #include "../multi/jetpack.h"
+#include "../multi/vehicles/vehicle_view.h"
 #include "minimap.h"
 #include "multi_scoreboard.h"
 #include "multi_spectate.h"
@@ -466,6 +467,7 @@ void hud_render_00437BC0()
 
     // Render spectate mode UI under scoreboard
     multi_spectate_render();
+    vehicle_render_control_hints();
 
     if (rf::gameseq_get_state() != rf::GS_MULTI_LIMBO) {
         multi_hud_render_killfeed();

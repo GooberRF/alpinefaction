@@ -570,12 +570,13 @@ FunHook<void(rf::Player*, rf::ControlConfigAction, bool)> player_execute_action_
         if (multi_spectate_execute_action(action, was_pressed)) {
             return;
         }
-        // A turret operator's alt is his zoom, read from the raw control state. Stock would run his
-        // hand weapon's alt route, which can fire the turret locally where the server never hears it.
-        // A dying operator still needs alt: it is his respawn request.
+        // A turret operator's or jeep gunner's alt is his zoom, read from the raw control state. Stock
+        // would run his hand weapon's alt route, which can fire the gun locally where the server never
+        // hears it. A dying gunner still needs alt: it is his respawn request.
         if (action == rf::CC_ACTION_SECONDARY_ATTACK && rf::is_multi) {
             rf::Entity* ep = rf::entity_from_handle(player->entity_handle);
-            if (ep && !rf::entity_is_dying(ep) && vehicle_hull_is_turret(vehicle_ridden_hull(ep))) {
+            rf::Entity* hull = ep && !rf::entity_is_dying(ep) ? vehicle_ridden_hull(ep) : nullptr;
+            if (hull && vehicle_alt_fire_zooms(hull) && vehicle_firing_seat_occupant(hull) == ep) {
                 return;
             }
         }
@@ -744,8 +745,8 @@ void play_local_sound_3d(uint16_t sound_id, rf::Vector3 pos, int group, float vo
     rf::snd_play_3d(sound_id, pos, volume, rf::Vector3{}, group);
 }
 
-void play_local_sound_2d(uint16_t sound_id, int group, float volume) {
-    rf::snd_play(sound_id, group, 0.0f, volume);
+int play_local_sound_2d(uint16_t sound_id, int group, float volume) {
+    return rf::snd_play(sound_id, group, 0.0f, volume);
 }
 
 void play_local_hit_sound(bool died) {
@@ -767,7 +768,22 @@ void play_local_hit_sound(bool died) {
         hit_sound_timestamp.invalidate();
     }
 
-    play_local_sound_2d(get_custom_sound_id(died ? 3 : 2), 0, 1.0f);
+    // Each hit within the damage number merge window of the last climbs a step in pitch; a kill ends the streak and
+    // always plays at its own pitch.
+    constexpr float streak_pitch_step = 0.06f;
+    constexpr int streak_max_steps = 6;
+    static rf::TimestampRealtime streak_timestamp;
+    static int streak = 0;
+    streak = streak_timestamp.valid() && !streak_timestamp.elapsed() ? std::min(streak + 1, streak_max_steps) : 0;
+    streak_timestamp.set(damage_number_merge_ms);
+    if (died) {
+        streak_timestamp.invalidate();
+    }
+
+    const int instance = play_local_sound_2d(get_custom_sound_id(died ? 3 : 2), 0, 1.0f);
+    if (g_alpine_game_config.hit_sound_streak_pitch && !died && streak > 0) {
+        snd_instance_set_pitch(instance, 1.0f + streak_pitch_step * streak);
+    }
     last_hit_sound_was_died = died;
 }
 
@@ -800,6 +816,17 @@ ConsoleCommand2 hit_sound_interval_cmd{
         rf::console::print("Hit sound minimum interval is {} ms.", g_alpine_game_config.hit_sound_min_interval_ms);
     },
     "Set a minimum interval between damage notification hit sounds in milliseconds",
+};
+
+ConsoleCommand2 hit_sound_streak_pitch_cmd{
+    "cl_hitsounds_streakpitch",
+    []() {
+        g_alpine_game_config.hit_sound_streak_pitch = !g_alpine_game_config.hit_sound_streak_pitch;
+        rf::console::print("Hit sound pitch rising with consecutive hits is {}",
+                           g_alpine_game_config.hit_sound_streak_pitch ? "enabled" : "disabled");
+    },
+    "Toggle whether hit sounds rise in pitch as consecutive hits land",
+    "cl_hitsounds_streakpitch",
 };
 
 ConsoleCommand2 location_ping_display_cmd{
@@ -1158,6 +1185,7 @@ void player_do_patch()
     mp_set_character_cmd.register_cmd();
     localhitsound_cmd.register_cmd();
     hit_sound_interval_cmd.register_cmd();
+    hit_sound_streak_pitch_cmd.register_cmd();
     tauntsound_cmd.register_cmd();
     set_autoswitch_fire_wait_cmd.register_cmd();
     location_ping_display_cmd.register_cmd();

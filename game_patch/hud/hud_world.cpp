@@ -1622,7 +1622,7 @@ void add_damage_notify_world_hud_string(rf::Vector3 pos, uint8_t damaged_player_
     es.player_id = damaged_player_id;
     es.hull_handle = hull_handle;
     es.damage = damage;
-    es.timestamp.set_ms(1000);
+    es.timestamp.set_ms(damage_number_merge_ms);
     es.float_away = true;
     es.wind_phase_offset = wind_offset_dist(g_rng);
     es.crit = crit;
